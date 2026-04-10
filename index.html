@@ -32,14 +32,13 @@ const SUPABASE_URL = "https://xqongyahdnkozqunpwmu.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inhxb25neWFoZG5rb3pxdW5wd211Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU3Nzg2NDksImV4cCI6MjA5MTM1NDY0OX0.a2p_twcuDAfI_ju-oGzut_NCPNzKjBEbkhVsMGXYyww";
 
 // Lightweight Supabase REST client (no SDK dependency needed)
+const dbHeaders = { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}`, "Content-Type": "application/json" };
 const supabase = {
   from: (table) => ({
     select: (cols) => ({
       eq: (col, val) => ({
         single: async () => {
-          const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}?select=${cols}&${col}=eq.${val}`, {
-            headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` }
-          });
+          const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}?select=${cols}&${col}=eq.${val}`, { headers: dbHeaders });
           const rows = await res.json();
           return { data: rows?.[0] || null, error: rows?.error || null };
         }
@@ -47,18 +46,42 @@ const supabase = {
     }),
     upsert: async (row) => {
       const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}`, {
-        method: "POST",
-        headers: {
-          apikey: SUPABASE_ANON_KEY,
-          Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
-          "Content-Type": "application/json",
-          Prefer: "resolution=merge-duplicates",
-        },
+        method: "POST", headers: { ...dbHeaders, Prefer: "resolution=merge-duplicates" },
         body: JSON.stringify(row),
       });
       return { error: res.ok ? null : await res.text() };
     },
   }),
+};
+
+// Extended DB helpers for new tables
+const db = {
+  async query(table, { eq, order, limit, select } = {}) {
+    let url = `${SUPABASE_URL}/rest/v1/${table}?select=${select || "*"}`;
+    if (eq) Object.entries(eq).forEach(([k, v]) => { url += `&${k}=eq.${v}`; });
+    if (order) url += `&order=${order}`;
+    if (limit) url += `&limit=${limit}`;
+    const res = await fetch(url, { headers: dbHeaders });
+    return res.ok ? await res.json() : [];
+  },
+  async insert(table, row) {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}`, {
+      method: "POST", headers: { ...dbHeaders, Prefer: "return=representation" },
+      body: JSON.stringify(row),
+    });
+    const data = await res.json();
+    return { data: Array.isArray(data) ? data[0] : data, error: res.ok ? null : data };
+  },
+  async update(table, id, data) {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}?id=eq.${id}`, {
+      method: "PATCH", headers: { ...dbHeaders, Prefer: "return=representation" },
+      body: JSON.stringify(data),
+    });
+    return { error: res.ok ? null : await res.text() };
+  },
+  async upsert(table, row) {
+    return supabase.from(table).upsert(row);
+  },
 };
 
 /* ═══════════════════════════════════════════════════
@@ -578,6 +601,37 @@ function CallSchedule() {
   const [apiKey, setApiKey] = useState("");
   const [showApiKey, setShowApiKey] = useState(false);
 
+  // ─── Vacation Requests ───
+  const [vacRequests, setVacRequests] = useState([]);
+  const [vacReqSurgeon, setVacReqSurgeon] = useState("");
+  const [vacReqStart, setVacReqStart] = useState("");
+  const [vacReqEnd, setVacReqEnd] = useState("");
+  const [vacReqReason, setVacReqReason] = useState("");
+
+  // ─── Scheduler Mode (PIN protected) ───
+  const [isScheduler, setIsScheduler] = useState(false);
+  const [schedulerPin, setSchedulerPin] = useState("");
+  const [pinInput, setPinInput] = useState("");
+  const [pinError, setPinError] = useState("");
+
+  // ─── Notifications ───
+  const [notifications, setNotifications] = useState([]);
+  const [showNotifs, setShowNotifs] = useState(false);
+  const [notifLastSeen, setNotifLastSeen] = useState(() => {
+    try { return localStorage.getItem("dsg-notif-seen") || "2000-01-01T00:00:00Z"; } catch(e) { return "2000-01-01T00:00:00Z"; }
+  });
+  const unreadCount = useMemo(() => notifications.filter(n => n.created_at > notifLastSeen).length, [notifications, notifLastSeen]);
+
+  // ─── My Schedule ───
+  const [mySurgeon, setMySurgeon] = useState(() => {
+    try { return localStorage.getItem("dsg-my-surgeon") || ""; } catch(e) { return ""; }
+  });
+
+  // Save My Surgeon choice to localStorage
+  useEffect(() => {
+    try { if(mySurgeon) localStorage.setItem("dsg-my-surgeon", mySurgeon); } catch(e) {}
+  }, [mySurgeon]);
+
   // ─── Supabase: Load on mount + real-time sync ───
   useEffect(() => {
     (async () => {
@@ -596,18 +650,31 @@ function CallSchedule() {
           if (d.fierceBackup) setFierceBackupSet(new Set(d.fierceBackup));
           if (d.schedule) setSchedule(d.schedule);
           if (d.appShifts) setAppShifts(d.appShifts);
-          if (d.priorCounts) setPriorCounts(d.priorCounts);
-          if (d.year1Counts) setYear1Counts(d.year1Counts);
-          if (d.year2Counts) setYear2Counts(d.year2Counts);
+          if (d.priorCounts && Object.values(d.priorCounts).some(c => Object.values(c).some(v => v > 0))) setPriorCounts(d.priorCounts);
+          if (d.year1Counts && Object.values(d.year1Counts).some(c => Object.values(c).some(v => v > 0))) setYear1Counts(d.year1Counts);
+          if (d.year2Counts && Object.values(d.year2Counts).some(c => Object.values(c).some(v => v > 0))) setYear2Counts(d.year2Counts);
           if (d.startMonth !== undefined) setStartMonth(d.startMonth);
           if (d.startYear !== undefined) setStartYear(d.startYear);
         }
         const { data: cfgRow } = await supabase
           .from("call_schedule_config")
-          .select("api_key")
+          .select("api_key,scheduler_pin")
           .eq("id", "config")
           .single();
         if (cfgRow?.api_key) setApiKey(cfgRow.api_key);
+        if (cfgRow?.scheduler_pin) setSchedulerPin(cfgRow.scheduler_pin);
+
+        // Load vacation requests
+        try {
+          const reqs = await db.query("vacation_requests", { order: "submitted_at.desc", limit: 100 });
+          if (Array.isArray(reqs)) setVacRequests(reqs);
+        } catch(e) {}
+
+        // Load recent notifications
+        try {
+          const notifs = await db.query("notifications", { order: "created_at.desc", limit: 50 });
+          if (Array.isArray(notifs)) setNotifications(notifs);
+        } catch(e) {}
       } catch (e) {
         console.error("Supabase load error:", e);
       }
@@ -630,15 +697,26 @@ function CallSchedule() {
             if (d.fierceBackup) setFierceBackupSet(new Set(d.fierceBackup));
             if (d.schedule) setSchedule(d.schedule);
             if (d.appShifts) setAppShifts(d.appShifts);
-            if (d.priorCounts) setPriorCounts(d.priorCounts);
-            if (d.year1Counts) setYear1Counts(d.year1Counts);
-            if (d.year2Counts) setYear2Counts(d.year2Counts);
+            if (d.priorCounts && Object.values(d.priorCounts).some(c => Object.values(c).some(v => v > 0))) setPriorCounts(d.priorCounts);
+            if (d.year1Counts && Object.values(d.year1Counts).some(c => Object.values(c).some(v => v > 0))) setYear1Counts(d.year1Counts);
+            if (d.year2Counts && Object.values(d.year2Counts).some(c => Object.values(c).some(v => v > 0))) setYear2Counts(d.year2Counts);
             if (d.startMonth !== undefined) setStartMonth(d.startMonth);
             if (d.startYear !== undefined) setStartYear(d.startYear);
           }
         }
-        const { data: cfgRow2 } = await supabase.from("call_schedule_config").select("api_key").eq("id", "config").single();
+        const { data: cfgRow2 } = await supabase.from("call_schedule_config").select("api_key,scheduler_pin").eq("id", "config").single();
         if (cfgRow2?.api_key !== undefined) setApiKey(prev => cfgRow2.api_key !== prev ? cfgRow2.api_key : prev);
+        if (cfgRow2?.scheduler_pin !== undefined) setSchedulerPin(prev => cfgRow2.scheduler_pin !== prev ? cfgRow2.scheduler_pin : prev);
+
+        // Refresh vacation requests and notifications
+        try {
+          const reqs = await db.query("vacation_requests", { order: "submitted_at.desc", limit: 100 });
+          if (Array.isArray(reqs)) setVacRequests(reqs);
+        } catch(e) {}
+        try {
+          const notifs = await db.query("notifications", { order: "created_at.desc", limit: 50 });
+          if (Array.isArray(notifs)) setNotifications(notifs);
+        } catch(e) {}
       } catch(e) {}
     }, 15000);
 
@@ -671,18 +749,18 @@ function CallSchedule() {
     return () => clearTimeout(timer);
   }, [loaded, surgeons, apps, vacations, backupMondaySet, fierceBackupSet, schedule, appShifts, priorCounts, year1Counts, year2Counts, startMonth, startYear]);
 
-  // ─── Supabase: Save API key ───
+  // ─── Supabase: Save API key + scheduler PIN ───
   useEffect(() => {
     if (!loaded) return;
     const timer = setTimeout(async () => {
       try {
         await supabase
           .from("call_schedule_config")
-          .upsert({ id: "config", api_key: apiKey || "", updated_at: new Date().toISOString() });
+          .upsert({ id: "config", api_key: apiKey || "", scheduler_pin: schedulerPin || "", updated_at: new Date().toISOString() });
       } catch(e) {}
     }, 500);
     return () => clearTimeout(timer);
-  }, [loaded, apiKey]);
+  }, [loaded, apiKey, schedulerPin]);
 
   // ─── Reset all data ───
   const resetAllData = async () => {
@@ -704,6 +782,107 @@ function CallSchedule() {
     setStartYear(2026);
     setSaveStatus("Reset complete");
     setTimeout(() => setSaveStatus(""), 2000);
+  };
+
+  // ─── Add Notification ───
+  const addNotification = useCallback(async (type, title, message, data = {}) => {
+    try {
+      const notif = { type, title, message, data, created_at: new Date().toISOString() };
+      const { data: inserted } = await db.insert("notifications", notif);
+      if (inserted) setNotifications(prev => [inserted, ...prev].slice(0, 50));
+    } catch(e) { console.error("Notification error:", e); }
+  }, []);
+
+  // ─── Vacation Request: Submit ───
+  const submitVacRequest = useCallback(async () => {
+    if (!vacReqSurgeon || !vacReqStart || !vacReqEnd) return;
+    const surgeonName = surgeons.find(s => s.id === vacReqSurgeon)?.name || vacReqSurgeon;
+    try {
+      const req = {
+        surgeon_id: vacReqSurgeon, surgeon_name: surgeonName,
+        start_date: vacReqStart, end_date: vacReqEnd,
+        reason: vacReqReason, status: "pending",
+        submitted_at: new Date().toISOString(),
+      };
+      const { data: inserted } = await db.insert("vacation_requests", req);
+      if (inserted) {
+        setVacRequests(prev => [inserted, ...prev]);
+        await addNotification("vacation_submitted", "Vacation Request",
+          `${surgeonName} requested ${vacReqStart} to ${vacReqEnd}`, { surgeon_id: vacReqSurgeon });
+      }
+      setVacReqStart(""); setVacReqEnd(""); setVacReqReason("");
+    } catch(e) { console.error("Submit vacation error:", e); }
+  }, [vacReqSurgeon, vacReqStart, vacReqEnd, vacReqReason, surgeons, addNotification]);
+
+  // ─── Vacation Request: Approve ───
+  const approveVacRequest = useCallback(async (req) => {
+    try {
+      await db.update("vacation_requests", req.id, {
+        status: "approved", reviewed_at: new Date().toISOString(), reviewed_by: "Scheduler"
+      });
+      setVacRequests(prev => prev.map(r => r.id === req.id ? { ...r, status: "approved" } : r));
+      // Auto-add to vacations
+      setVacations(prev => ({
+        ...prev,
+        [req.surgeon_id]: [...(prev[req.surgeon_id] || []), [req.start_date, req.end_date]]
+      }));
+      await addNotification("vacation_approved", "Vacation Approved",
+        `${req.surgeon_name}'s vacation ${req.start_date} to ${req.end_date} was approved`,
+        { surgeon_id: req.surgeon_id });
+    } catch(e) { console.error("Approve error:", e); }
+  }, [addNotification]);
+
+  // ─── Vacation Request: Deny ───
+  const denyVacRequest = useCallback(async (req, note = "") => {
+    try {
+      await db.update("vacation_requests", req.id, {
+        status: "denied", reviewed_at: new Date().toISOString(), reviewed_by: "Scheduler", review_note: note
+      });
+      setVacRequests(prev => prev.map(r => r.id === req.id ? { ...r, status: "denied", review_note: note } : r));
+      await addNotification("vacation_denied", "Vacation Denied",
+        `${req.surgeon_name}'s vacation ${req.start_date} to ${req.end_date} was denied${note ? ": " + note : ""}`,
+        { surgeon_id: req.surgeon_id });
+    } catch(e) { console.error("Deny error:", e); }
+  }, [addNotification]);
+
+  // ─── Scheduler PIN Check ───
+  const checkPin = () => {
+    if (pinInput === schedulerPin) { setIsScheduler(true); setPinError(""); setPinInput(""); }
+    else { setPinError("Incorrect PIN"); setTimeout(() => setPinError(""), 2000); }
+  };
+
+  // ─── Mark Notifications as Seen ───
+  const markNotifsSeen = () => {
+    const now = new Date().toISOString();
+    setNotifLastSeen(now);
+    try { localStorage.setItem("dsg-notif-seen", now); } catch(e) {}
+  };
+
+  // ─── Publish Schedule (with notification) ───
+  const doGenerateAndNotify = async () => {
+    doGenerate();
+    await addNotification("schedule_published", "Schedule Published",
+      "A new call schedule has been generated. Check the Schedule or Calendar tab.");
+  };
+
+  // ─── Build Individual ICS for a surgeon (their shifts + vacations only) ───
+  const downloadMyCal = (surgeonId) => {
+    const s = surgeons.find(x => x.id === surgeonId);
+    if (!s) return;
+    const events = buildICSEvents(schedule, s.id, s.name, {}, {});
+    // Add vacation events
+    const vacRanges = vacations[s.id] || [];
+    vacRanges.forEach(([vs, ve]) => {
+      const sd = parse(vs), ed = parse(ve);
+      events.push({
+        start: icsDate(sd.getFullYear(), sd.getMonth()+1, sd.getDate(), 0),
+        end: icsDate(ed.getFullYear(), ed.getMonth()+1, ed.getDate()+1 > 28 ? 28 : ed.getDate()+1, 0),
+        summary: `VACATION — ${s.name}`,
+        desc: `${vs} to ${ve}`
+      });
+    });
+    const ics = generateICS(events, `${s.name} Call Schedule`);
+    downloadICS(ics, `my-schedule-${s.name.toLowerCase()}.ics`);
   };
 
   // Download CSV template pre-filled with surgeon names
@@ -901,19 +1080,9 @@ Match surgeon names/initials as best you can to: ${surgeonNames}. If you cannot 
         setPriorScanMsg("Analyzing document…");
         messages = [{ role:"user", content: `Here is a past call schedule from a Word document:\n\n${result.value}\n\n${promptText}` }];
       } else {
-        // Image
-        setPriorScanMsg("Analyzing image…");
-        const base64 = await new Promise((res, rej) => {
-          const r = new FileReader();
-          r.onload = () => res(r.result.split(",")[1]);
-          r.onerror = () => rej(new Error("Failed to read file"));
-          r.readAsDataURL(file);
-        });
-        const mediaType = file.type || "image/jpeg";
-        messages = [{ role:"user", content: [
-          { type:"image", source:{ type:"base64", media_type:mediaType, data:base64 } },
-          { type:"text", text: promptText }
-        ]}];
+        setPriorScanMsg("Unsupported file type. Please upload a PDF, Excel (.xlsx), Word (.docx), or CSV file.");
+        setPriorScanning(false);
+        return;
       }
 
       setPriorScanMsg("Counting shifts…");
@@ -946,18 +1115,18 @@ Match surgeon names/initials as best you can to: ${surgeonNames}. If you cannot 
         const extraNote = result.notes ? ` — ${result.notes}` : "";
         setPriorScanMsg(`Imported counts for ${matched} surgeon${matched>1?"s":""}${weeksNote}. Review and adjust if needed.${extraNote}`);
       } else {
-        setPriorScanMsg("Could not extract call counts from the file. Try a clearer image or different format.");
+        setPriorScanMsg("Could not extract call counts from the file. Try a different file or format.");
       }
     } catch (err) {
       console.error("Prior schedule scan error:", err);
-      setPriorScanMsg(`Could not analyze the file. ${err.message?.includes("API error") ? "Check your API key." : "Try a photo, PDF, Excel, Word, or CSV file."}`);
+      setPriorScanMsg(`Could not analyze the file. ${err.message?.includes("API error") ? "Check your API key." : "Try a PDF, Excel, Word, or CSV file."}`);
     } finally {
       setPriorScanning(false);
       if (priorFileRef.current) priorFileRef.current.value = "";
     }
   }, [surgeons, apiKey, callApi]);
 
-  // Scan Fierce's schedule from image or file to auto-mark backup weeks
+  // Scan Fierce schedule from uploaded file to auto-mark backup weeks
   const handleBackupScan = useCallback(async (file) => {
     if (!file) return;
     if (!apiKey) { setBkScanMsg("API key required. Go to the ⚙️ settings at the bottom of Setup to add one."); return; }
@@ -1001,19 +1170,9 @@ If you cannot determine specific dates, return an empty array [].`;
         setBkScanMsg("Analyzing schedule…");
         messages = [{ role:"user", content: `Here is a schedule from a Word document:\n\n${result.value}\n\n${promptText}` }];
       } else {
-        // Image
-        setBkScanMsg("Analyzing image…");
-        const base64 = await new Promise((res, rej) => {
-          const r = new FileReader();
-          r.onload = () => res(r.result.split(",")[1]);
-          r.onerror = () => rej(new Error("Failed to read file"));
-          r.readAsDataURL(file);
-        });
-        const mediaType = file.type || "image/jpeg";
-        messages = [{ role:"user", content: [
-          { type:"image", source:{ type:"base64", media_type:mediaType, data:base64 } },
-          { type:"text", text: promptText }
-        ]}];
+        setBkScanMsg("Unsupported file type. Please upload a PDF, Excel (.xlsx), Word (.docx), or CSV file.");
+        setBkScanning(false);
+        return;
       }
 
       const text = await callApi(messages, 1000);
@@ -1060,11 +1219,11 @@ If you cannot determine specific dates, return an empty array [].`;
         if (backupCount > 0) parts.push(`${backupCount} Fierce Backup`);
         setBkScanMsg(`Found ${parts.join(" and ")} week${entries.length>1?"s":""}. Review below and adjust if needed.`);
       } else {
-        setBkScanMsg("No Fierce weeks found in the file. Try a clearer image or different file format.");
+        setBkScanMsg("No Fierce weeks found in the file. Try a different file format.");
       }
     } catch (err) {
       console.error("Backup scan error:", err);
-      setBkScanMsg("Could not parse the file. Try a photo, Excel, Word, or CSV file.");
+      setBkScanMsg("Could not parse the file. Try a PDF, Excel, Word, or CSV file.");
     } finally {
       setBkScanning(false);
       if (bkFileRef.current) bkFileRef.current.value = "";
@@ -1133,19 +1292,9 @@ If you cannot find any vacations, return an empty array []. Match surgeon names/
         setVacScanMsg("Analyzing document…");
         messages = [{ role:"user", content: `Here is a vacation document:\n\n${result.value}\n\n${promptText}` }];
       } else {
-        // Image
-        setVacScanMsg("Analyzing image…");
-        const base64 = await new Promise((res, rej) => {
-          const r = new FileReader();
-          r.onload = () => res(r.result.split(",")[1]);
-          r.onerror = () => rej(new Error("Failed to read file"));
-          r.readAsDataURL(file);
-        });
-        const mediaType = file.type || "image/jpeg";
-        messages = [{ role:"user", content: [
-          { type:"image", source:{ type:"base64", media_type:mediaType, data:base64 } },
-          { type:"text", text: promptText }
-        ]}];
+        setVacScanMsg("Unsupported file type. Please upload a PDF, Excel (.xlsx), Word (.docx), or CSV file.");
+        setVacScanning(false);
+        return;
       }
 
       setVacScanMsg("Extracting vacation dates…");
@@ -1175,7 +1324,7 @@ If you cannot find any vacations, return an empty array []. Match surgeon names/
       }
     } catch (err) {
       console.error("Vacation scan error:", err);
-      setVacScanMsg("Could not parse the file. Accepts PDF, Excel, Word, CSV, or image files.");
+      setVacScanMsg("Could not parse the file. Accepts PDF, Excel, Word, or CSV files.");
     } finally {
       setVacScanning(false);
       if (vacFileRef.current) vacFileRef.current.value = "";
@@ -1585,13 +1734,47 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           </div>
         </div>
         <div style={css.nav}>
-          {[["setup","Setup"],["totals","Totals"],["schedule","Schedule"],["calendar","Calendar"],["stats","Stats"]].map(([k,l])=>
-            <button key={k} style={css.tab(view===k)} onClick={()=>setView(k)}>{l}</button>
+          {[["setup","Setup"],["totals","Totals"],["schedule","Schedule"],["calendar","Calendar"],["myschedule","Mine"],["requests","Requests"],["stats","Stats"]].map(([k,l])=>
+            <button key={k} style={{...css.tab(view===k),position:"relative"}} onClick={()=>setView(k)}>
+              {l}
+              {k==="requests" && vacRequests.filter(r=>r.status==="pending").length > 0 && (
+                <span style={{position:"absolute",top:-4,right:-4,background:"#e04040",color:"#fff",borderRadius:10,fontSize:9,fontWeight:700,minWidth:16,height:16,display:"flex",alignItems:"center",justifyContent:"center",padding:"0 4px"}}>{vacRequests.filter(r=>r.status==="pending").length}</span>
+              )}
+            </button>
           )}
+          {/* Notification Bell */}
+          <button onClick={()=>{setShowNotifs(p=>!p); if(!showNotifs) markNotifsSeen();}}
+            style={{...css.tab(showNotifs),position:"relative",fontSize:15,padding:"4px 10px"}}>
+            🔔
+            {unreadCount > 0 && (
+              <span style={{position:"absolute",top:-4,right:-4,background:"#e04040",color:"#fff",borderRadius:10,fontSize:9,fontWeight:700,minWidth:16,height:16,display:"flex",alignItems:"center",justifyContent:"center",padding:"0 4px"}}>{unreadCount}</span>
+            )}
+          </button>
         </div>
       </div>
 
-      <div style={{maxWidth:1020,margin:"0 auto",padding:"18px 14px 60px"}}>
+      <div style={{maxWidth:1020,margin:"0 auto",padding:"18px 14px 60px",position:"relative"}}>
+
+        {/* ─── Notification Panel ─── */}
+        {showNotifs && (
+          <div style={{position:"absolute",top:0,right:14,width:340,maxHeight:400,overflowY:"auto",background:"#fff",border:"1px solid #dce2e8",borderRadius:10,boxShadow:"0 4px 20px rgba(0,0,0,0.12)",zIndex:100,padding:12}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+              <span style={{fontSize:14,fontWeight:700,color:"#1a2a3a"}}>Notifications</span>
+              <button onClick={()=>setShowNotifs(false)} style={{background:"none",border:"none",fontSize:16,cursor:"pointer",color:"#8a94a0"}}>✕</button>
+            </div>
+            {notifications.length === 0 ? (
+              <p style={{color:"#8a94a0",fontSize:13,textAlign:"center",padding:20}}>No notifications yet</p>
+            ) : notifications.map(n => (
+              <div key={n.id} style={{padding:"8px 10px",marginBottom:6,borderRadius:6,background:n.created_at > notifLastSeen ? "#f0f8ff" : "#f8f9fb",border:`1px solid ${n.created_at > notifLastSeen ? "#c0d8f0" : "#e8ecf0"}`}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                  <span style={{fontSize:12,fontWeight:600,color:"#1a2a3a"}}>{n.title}</span>
+                  <span style={{fontSize:10,color:"#a0a8b0"}}>{new Date(n.created_at).toLocaleDateString()}</span>
+                </div>
+                <p style={{fontSize:12,color:"#5a6a78",margin:"3px 0 0",lineHeight:1.4}}>{n.message}</p>
+              </div>
+            ))}
+          </div>
+        )}
 
         {/* ════════════════ SETUP ════════════════ */}
         {view==="setup"&&<>
@@ -1645,10 +1828,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             <div style={{background:"linear-gradient(135deg,#f4f6f8,#f0f2f5)",border:"1px dashed #a8c0d8",borderRadius:8,padding:"12px 16px",marginBottom:14}}>
               <div style={{fontSize:13,fontWeight:600,color:"#1a6fa8",marginBottom:6}}>📄 Import Vacation Schedule</div>
               <div style={{fontSize:11,color:"#7a8a98",lineHeight:1.5,marginBottom:8}}>
-                Upload a PDF, Excel, Word, or image of approved vacations. The tool will match surgeon initials and import dates automatically.
+                Upload a PDF, Excel, Word, or CSV of approved vacations. The tool will match surgeon initials and import dates automatically.
               </div>
               <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
-                <input ref={vacFileRef} type="file" accept=".pdf,image/*,.xlsx,.xls,.csv,.docx,.doc" capture="environment"
+                <input ref={vacFileRef} type="file" accept=".pdf,.xlsx,.xls,.csv,.docx,.doc"
                   onChange={e => { if(e.target.files?.[0]) handleVacationScan(e.target.files[0]); }}
                   style={{display:"none"}} id="vacScanInput"/>
                 <button onClick={()=>vacFileRef.current?.click()} disabled={vacScanning}
@@ -1740,15 +1923,15 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             <div style={{background:"#fef8e8",border:"1px dashed #d8c070",borderRadius:8,padding:"12px 16px",marginBottom:14}}>
               <div style={{fontSize:13,fontWeight:600,color:"#7a5a00",marginBottom:6}}>📄 Import Fierce's Schedule</div>
               <div style={{fontSize:12,color:"#5a5030",lineHeight:1.5,marginBottom:8}}>
-                Upload a photo, Excel, Word, or CSV file of Fierce's upcoming schedule. The tool will identify which weeks Fierce is on and auto-mark them as backup.
+                Upload a PDF, Excel, Word, or CSV file of Fierce's upcoming schedule. The tool will identify which weeks Fierce is on and auto-mark them as backup.
               </div>
               <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
-                <input ref={bkFileRef} type="file" accept="image/*,.xlsx,.xls,.csv,.docx,.doc" capture="environment"
+                <input ref={bkFileRef} type="file" accept=".pdf,.xlsx,.xls,.csv,.docx,.doc"
                   onChange={e => { if(e.target.files?.[0]) handleBackupScan(e.target.files[0]); }}
                   style={{display:"none"}} id="bkScanInput"/>
                 <button onClick={()=>bkFileRef.current?.click()} disabled={bkScanning}
                   style={{...css.btn(true),opacity:bkScanning?0.5:1,padding:"6px 14px",fontSize:12,background:"linear-gradient(135deg,#f8f0d8,#e0c870)",borderColor:"#d0b860",color:"#8a6a10"}}>
-                  {bkScanning ? "⏳ Scanning…" : "📷 Upload Fierce's Schedule"}
+                  {bkScanning ? "⏳ Scanning…" : "📄 Upload Fierce's Schedule"}
                 </button>
               </div>
             </div>
@@ -1793,7 +1976,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             </div>
           </div>
 
-          <button onClick={doGenerate} style={{...css.btn(true),padding:"13px 30px",fontSize:14,fontWeight:700,width:"100%",borderRadius:9,letterSpacing:0.3}}>
+          <button onClick={doGenerateAndNotify} style={{...css.btn(true),padding:"13px 30px",fontSize:14,fontWeight:700,width:"100%",borderRadius:9,letterSpacing:0.3}}>
             Generate 14-Week Schedule →
           </button>
 
@@ -1828,6 +2011,41 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                     <button onClick={()=>setApiKey("")} style={{background:"none",border:"1px solid #e8c0c0",color:"#804040",borderRadius:5,padding:"3px 10px",fontSize:11,cursor:"pointer",fontFamily:font}}>Remove</button>
                   </div>
                 )}
+
+                <div style={{marginTop:16,paddingTop:12,borderTop:"1px solid #e0e4ea"}}>
+                  <div style={{fontSize:12,fontWeight:700,color:"#5a7a90",marginBottom:8}}>🔒 Scheduler Mode</div>
+                  {!isScheduler ? (
+                    <div>
+                      <p style={{fontSize:12,color:"#7a8a98",margin:"0 0 8px",lineHeight:1.5}}>
+                        Enter the scheduler PIN to unlock admin features (approve/deny vacation requests, set PIN).
+                      </p>
+                      <div style={{display:"flex",gap:6,alignItems:"center"}}>
+                        <input type="password" placeholder="Enter PIN" value={pinInput} onChange={e=>setPinInput(e.target.value)}
+                          onKeyDown={e=>e.key==="Enter"&&checkPin()}
+                          style={{...css.inp,width:140,fontSize:13,fontFamily:mono}}/>
+                        <button onClick={checkPin} style={{...css.btn(true),padding:"6px 14px"}}>Unlock</button>
+                        {pinError && <span style={{fontSize:12,color:"#c04040",fontWeight:600}}>{pinError}</span>}
+                      </div>
+                      {!schedulerPin && <p style={{fontSize:11,color:"#a0a8b0",margin:"6px 0 0"}}>No PIN set yet. The first person to set a PIN becomes the scheduler admin.</p>}
+                    </div>
+                  ) : (
+                    <div>
+                      <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
+                        <span style={{fontSize:12,color:"#1a8040",fontWeight:600}}>✓ Scheduler mode active</span>
+                        <button onClick={()=>setIsScheduler(false)} style={{background:"none",border:"1px solid #d0d8e0",color:"#6a7a88",borderRadius:5,padding:"3px 10px",fontSize:11,cursor:"pointer",fontFamily:font}}>Lock</button>
+                      </div>
+                      <div>
+                        <label style={{fontSize:11,color:"#7a8a98",display:"block",marginBottom:2}}>Set or change scheduler PIN</label>
+                        <div style={{display:"flex",gap:6,alignItems:"center"}}>
+                          <input type="password" placeholder="New PIN" value={pinInput} onChange={e=>setPinInput(e.target.value)}
+                            style={{...css.inp,width:140,fontSize:13,fontFamily:mono}}/>
+                          <button onClick={()=>{if(pinInput.length>=4){setSchedulerPin(pinInput);setPinInput("");alert("PIN updated!");}else{alert("PIN must be at least 4 characters");}}} style={{...css.btn(true),padding:"6px 14px"}}>Save PIN</button>
+                        </div>
+                        {schedulerPin && <p style={{fontSize:11,color:"#8a94a0",margin:"4px 0 0"}}>Current PIN: {schedulerPin.replace(/./g,"•")}</p>}
+                      </div>
+                    </div>
+                  )}
+                </div>
 
                 <div style={{marginTop:16,paddingTop:12,borderTop:"1px solid #e0e4ea"}}>
                   <button onClick={resetAllData} style={{background:"none",border:"1px solid #e8c0c0",color:"#804040",borderRadius:6,padding:"5px 12px",fontSize:11,cursor:"pointer",fontFamily:font}}>
@@ -1876,16 +2094,16 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             <div style={{background:"linear-gradient(135deg,#f8f0f4,#f8f0f4)",border:"1px dashed #c0a0d8",borderRadius:8,padding:"14px 16px",marginBottom:14}}>
               <div style={{fontSize:13,fontWeight:600,color:"#7030a8",marginBottom:6}}>🤖 Scan a Past Call Schedule</div>
               <div style={{fontSize:11,color:"#7a8a98",lineHeight:1.5,marginBottom:10}}>
-                Upload a photo, PDF, Excel, Word, or CSV of a previous call schedule. AI will read it and count each surgeon's shifts automatically. Imports into the Multi-Year table.
+                Upload a PDF, Excel, Word, or CSV of a previous call schedule. AI will read it and count each surgeon's shifts automatically. Imports into the Multi-Year table.
                 {!apiKey && <span style={{color:"#c04040",fontWeight:600}}> Requires API key — add one in ⚙️ Settings on the Setup tab.</span>}
               </div>
               <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
-                <input ref={priorFileRef} type="file" accept=".pdf,image/*,.xlsx,.xls,.csv,.docx,.doc" capture="environment"
+                <input ref={priorFileRef} type="file" accept=".pdf,.xlsx,.xls,.csv,.docx,.doc"
                   onChange={e => { if(e.target.files?.[0]) handlePriorScheduleScan(e.target.files[0]); }}
                   style={{display:"none"}} id="priorScanInput"/>
                 <button onClick={()=>priorFileRef.current?.click()} disabled={priorScanning}
                   style={{...css.btn(true),opacity:priorScanning?0.5:1,padding:"6px 14px",fontSize:12,background:"linear-gradient(135deg,#f0e8f8,#e8d8f4)",borderColor:"#c0a0d8",color:"#7030a8"}}>
-                  {priorScanning ? "⏳ Analyzing…" : "📷 Upload Past Schedule"}
+                  {priorScanning ? "⏳ Analyzing…" : "📄 Upload Past Schedule"}
                 </button>
                 {apiKey && <span style={{fontSize:10,color:"#1a8040"}}>✓ AI scanning ready</span>}
               </div>
@@ -2397,6 +2615,178 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               </div>
             </div>
           )}
+        </>}
+
+        {/* ════════════════ MY SCHEDULE ════════════════ */}
+        {view==="myschedule"&&<>
+          <div style={css.card}>
+            <div style={css.cardT}>My Call Schedule</div>
+            <p style={{fontSize:13,color:"#5a6a78",margin:"0 0 12px",lineHeight:1.5}}>
+              Select your name to see only your shifts and vacations. Your choice is remembered on this device.
+            </p>
+            <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap",marginBottom:16}}>
+              <select value={mySurgeon} onChange={e=>setMySurgeon(e.target.value)} style={{...css.inp,width:180,fontSize:14}}>
+                <option value="">Select your name…</option>
+                {surgeons.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
+              </select>
+              {mySurgeon && (
+                <button onClick={()=>downloadMyCal(mySurgeon)} style={{...css.btn(true),padding:"8px 18px"}}>
+                  📅 Download My Calendar (.ics)
+                </button>
+              )}
+            </div>
+          </div>
+
+          {mySurgeon && Object.keys(schedule).length > 0 && (() => {
+            const myId = mySurgeon;
+            const myName = sMap[myId]?.name || "?";
+            const myVacs = vacations[myId] || [];
+
+            // Build my shifts
+            const myShifts = [];
+            Object.entries(schedule).forEach(([mStr, wk]) => {
+              const mon = parse(mStr);
+              const endStr = fmt(addD(mon, 6));
+              const roles = [];
+              if (wk.dayCall === myId) roles.push({type: "Day Call", icon: "☀️", detail: "M–F 7a–5p + Sat 24h", color: "#1a6fa8"});
+              NIGHT_KEYS.forEach((sk, i) => {
+                if (wk.nights?.[sk] === myId) roles.push({type: SHIFT_LABELS[sk], icon: "🌙", detail: SHIFT_TIMES[sk], color: "#6030a0"});
+              });
+              if (wk.nights?.wknd === myId) roles.push({type: "Weekend", icon: "🌗", detail: SHIFT_TIMES.wknd, color: "#7a6030"});
+              if (wk.off === myId) roles.push({type: "OFF", icon: "✅", detail: "No call this week", color: "#2a7a40"});
+              if (roles.length > 0) {
+                myShifts.push({ mStr, endStr, roles, isBackup: wk.isBackup, isFierceBackup: wk.isFierceBackup });
+              }
+            });
+
+            return (
+              <>
+                <div style={{fontSize:15,fontWeight:700,color:"#1a2a3a",marginBottom:12}}>
+                  <Badge id={myId}/> <span style={{marginLeft:8}}>{MO[startMonth]} – {MO[endMoIdx]} {startYear}</span>
+                </div>
+
+                {/* My Vacations */}
+                {myVacs.length > 0 && (
+                  <div style={{...css.card,background:"#fef8f0",border:"1px solid #e8d8c0"}}>
+                    <div style={{fontSize:12,fontWeight:700,color:"#8a6a10",marginBottom:6}}>🏖 My Vacations</div>
+                    {myVacs.map(([vs,ve],i) => (
+                      <div key={i} style={{fontSize:13,color:"#5a5030",marginBottom:3}}>{vs} → {ve}</div>
+                    ))}
+                  </div>
+                )}
+
+                {/* My Shifts */}
+                {myShifts.map(wk => (
+                  <div key={wk.mStr} style={{...css.card,padding:12,marginBottom:8,border:wk.isBackup?"1px solid #e8d090":"1px solid #e0e4ea"}}>
+                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6,flexWrap:"wrap",gap:4}}>
+                      <span style={{fontFamily:mono,fontSize:13,color:wk.isBackup?"#8a6a10":"#1a6fa8",fontWeight:600}}>{wk.mStr} → {wk.endStr}</span>
+                      {wk.isBackup && <span style={css.backupBanner}>⚡ BACKUP</span>}
+                      {wk.isFierceBackup && <span style={{fontSize:11,color:"#1a6fa8",background:"#e8f0fc",border:"1px solid #a8c8e0",borderRadius:6,padding:"2px 8px",fontWeight:600}}>🛡 Fierce Backup</span>}
+                    </div>
+                    {wk.roles.map((r,i) => (
+                      <div key={i} style={{display:"flex",alignItems:"center",gap:8,padding:"5px 10px",background:"#f8f9fb",borderRadius:5,border:"1px solid #e8ecf0",marginBottom:3}}>
+                        <span style={{fontSize:14}}>{r.icon}</span>
+                        <span style={{fontSize:13,fontWeight:600,color:r.color}}>{r.type}</span>
+                        <span style={{fontSize:11,color:"#8a94a0",fontFamily:mono}}>{r.detail}</span>
+                      </div>
+                    ))}
+                  </div>
+                ))}
+
+                {myShifts.length === 0 && (
+                  <div style={{...css.card,textAlign:"center",color:"#8a94a0",padding:30}}>No shifts assigned yet. Generate a schedule first.</div>
+                )}
+              </>
+            );
+          })()}
+
+          {!mySurgeon && (
+            <div style={{...css.card,textAlign:"center",color:"#8a94a0",padding:30}}>Select your name above to view your schedule.</div>
+          )}
+        </>}
+
+        {/* ════════════════ REQUESTS ════════════════ */}
+        {view==="requests"&&<>
+          {/* Submit Vacation Request */}
+          <div style={css.card}>
+            <div style={css.cardT}>🏖 Request Vacation</div>
+            <p style={{fontSize:13,color:"#5a6a78",margin:"0 0 12px",lineHeight:1.5}}>
+              Submit a vacation request. It will be reviewed at the regular Friday meeting.
+            </p>
+            <div style={{display:"flex",gap:6,alignItems:"end",flexWrap:"wrap",marginBottom:8}}>
+              <div>
+                <label style={{fontSize:11,color:"#7a8a98",display:"block",marginBottom:2}}>Surgeon</label>
+                <select value={vacReqSurgeon} onChange={e=>setVacReqSurgeon(e.target.value)} style={{...css.inp,width:140}}>
+                  <option value="">Select…</option>
+                  {surgeons.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
+                </select>
+              </div>
+              <div>
+                <label style={{fontSize:11,color:"#7a8a98",display:"block",marginBottom:2}}>Start Date</label>
+                <input type="date" value={vacReqStart} onChange={e=>setVacReqStart(e.target.value)} style={{...css.inp,width:150}}/>
+              </div>
+              <div>
+                <label style={{fontSize:11,color:"#7a8a98",display:"block",marginBottom:2}}>End Date</label>
+                <input type="date" value={vacReqEnd} onChange={e=>setVacReqEnd(e.target.value)} style={{...css.inp,width:150}}/>
+              </div>
+              <button onClick={submitVacRequest} style={{...css.btn(true),padding:"7px 18px"}}>Submit Request</button>
+            </div>
+            <div>
+              <label style={{fontSize:11,color:"#7a8a98",display:"block",marginBottom:2}}>Reason (optional)</label>
+              <input value={vacReqReason} onChange={e=>setVacReqReason(e.target.value)} placeholder="Conference, personal, etc."
+                style={{...css.inp,width:"100%",maxWidth:400}}/>
+            </div>
+          </div>
+
+          {/* Pending Requests */}
+          {(()=>{
+            const pending = vacRequests.filter(r => r.status === "pending");
+            const reviewed = vacRequests.filter(r => r.status !== "pending");
+            return <>
+              <div style={css.card}>
+                <div style={css.cardT}>⏳ Pending Requests <span style={{fontWeight:400,fontSize:12,color:"#8a94a0"}}>— {pending.length}</span></div>
+                {pending.length === 0 ? (
+                  <p style={{color:"#8a94a0",fontSize:13}}>No pending requests.</p>
+                ) : pending.map(r => (
+                  <div key={r.id} style={{display:"flex",alignItems:"center",gap:10,padding:"10px 12px",marginBottom:6,background:"#fef8f0",border:"1px solid #e8d8c0",borderRadius:8,flexWrap:"wrap"}}>
+                    <Badge id={r.surgeon_id}/>
+                    <span style={{fontFamily:mono,fontSize:13,color:"#2c3e50"}}>{r.start_date} → {r.end_date}</span>
+                    {r.reason && <span style={{fontSize:12,color:"#7a8a98",fontStyle:"italic"}}>"{r.reason}"</span>}
+                    <span style={{fontSize:11,color:"#a0a8b0"}}>Submitted {new Date(r.submitted_at).toLocaleDateString()}</span>
+                    {isScheduler && (
+                      <div style={{marginLeft:"auto",display:"flex",gap:6}}>
+                        <button onClick={()=>approveVacRequest(r)} style={{background:"#e8f8e8",border:"1px solid #a0d8a0",color:"#1a8040",borderRadius:6,padding:"4px 12px",fontSize:12,fontWeight:600,cursor:"pointer",fontFamily:font}}>✓ Approve</button>
+                        <button onClick={()=>{const note=prompt("Reason for denial (optional):"); if(note!==null) denyVacRequest(r,note);}} style={{background:"#fce8e8",border:"1px solid #e0b0b0",color:"#c04040",borderRadius:6,padding:"4px 12px",fontSize:12,fontWeight:600,cursor:"pointer",fontFamily:font}}>✕ Deny</button>
+                      </div>
+                    )}
+                    {!isScheduler && <span style={{marginLeft:"auto",fontSize:11,color:"#c09030",fontWeight:600,background:"#fef8e8",padding:"2px 8px",borderRadius:4,border:"1px solid #e8d090"}}>Pending review</span>}
+                  </div>
+                ))}
+                {pending.length > 0 && !isScheduler && (
+                  <p style={{fontSize:12,color:"#8a94a0",margin:"10px 0 0",lineHeight:1.5}}>
+                    Only the scheduler can approve or deny requests. Enter the scheduler PIN in ⚙️ Settings to unlock.
+                  </p>
+                )}
+              </div>
+
+              {/* Reviewed Requests */}
+              {reviewed.length > 0 && (
+                <div style={css.card}>
+                  <div style={css.cardT}>📋 Reviewed <span style={{fontWeight:400,fontSize:12,color:"#8a94a0"}}>— {reviewed.length}</span></div>
+                  {reviewed.slice(0, 20).map(r => (
+                    <div key={r.id} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 12px",marginBottom:4,background:r.status==="approved"?"#f0faf0":"#faf0f0",border:`1px solid ${r.status==="approved"?"#c0e0c0":"#e0c0c0"}`,borderRadius:6,flexWrap:"wrap"}}>
+                      <span style={{fontSize:13,fontWeight:700,color:r.status==="approved"?"#1a8040":"#c04040"}}>{r.status==="approved"?"✓":"✕"}</span>
+                      <Badge id={r.surgeon_id}/>
+                      <span style={{fontFamily:mono,fontSize:12,color:"#2c3e50"}}>{r.start_date} → {r.end_date}</span>
+                      {r.reason && <span style={{fontSize:11,color:"#8a94a0"}}>"{r.reason}"</span>}
+                      {r.review_note && <span style={{fontSize:11,color:"#c04040"}}>Note: {r.review_note}</span>}
+                      <span style={{fontSize:11,color:"#a0a8b0",marginLeft:"auto"}}>{r.reviewed_at ? new Date(r.reviewed_at).toLocaleDateString() : ""}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </>;
+          })()}
         </>}
       </div>
     </div>
