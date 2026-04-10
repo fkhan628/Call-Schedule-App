@@ -100,6 +100,19 @@ const INIT_APPS = [
   { id:"a1", name:"MA" }, { id:"a2", name:"SJ" }, { id:"a3", name:"MS" }, { id:"a4", name:"SS" },
 ];
 
+/* ═══ 2025 Call Schedule Prior Counts (Jan–Dec 2025) ═══
+   Counted from the 2025 PDF calendar. ~38 regular weeks, ~14 Fierce Primary (backup) weeks.
+   These serve as default prior data for the generator's fairness balancing. */
+const COUNTS_2025 = {
+  s1: { dc:7, nights:20, wknd:6, off:7, dcB:1, nightsB:8, wkndB:1, offB:2 },  // DJA
+  s2: { dc:3, nights:21, wknd:6, off:8, dcB:4, nightsB:8, wkndB:1, offB:2 },  // MCC
+  s3: { dc:7, nights:22, wknd:4, off:7, dcB:1, nightsB:8, wkndB:3, offB:2 },  // RPC
+  s4: { dc:4, nights:16, wknd:7, off:9, dcB:3, nightsB:6, wkndB:1, offB:2 },  // KJH (extended leave)
+  s5: { dc:6, nights:22, wknd:7, off:7, dcB:1, nightsB:8, wkndB:0, offB:2 },  // REH
+  s6: { dc:6, nights:24, wknd:3, off:6, dcB:2, nightsB:9, wkndB:5, offB:2 },  // FAK
+  s7: { dc:5, nights:21, wknd:6, off:8, dcB:2, nightsB:8, wkndB:2, offB:2 },  // ARW
+};
+
 /* ═══ Date helpers ═══ */
 const fmt = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
 const parse = s => { const [y,m,d]=s.split("-").map(Number); return new Date(y,m-1,d); };
@@ -535,9 +548,9 @@ function CallSchedule() {
   const [fierceBackupSet, setFierceBackupSet] = useState(new Set()); // Fierce backs up our group, regular schedule unchanged
   const [schedule, setSchedule] = useState({});
   const [appShifts, setAppShifts] = useState({}); // { "2026-05-06": "a1", ... }
-  const [priorCounts, setPriorCounts] = useState({}); // Multi-year totals (used by generator)
-  const [year1Counts, setYear1Counts] = useState({}); // Current year totals
-  const [year2Counts, setYear2Counts] = useState({}); // 2-year totals
+  const [priorCounts, setPriorCounts] = useState(COUNTS_2025); // Multi-year totals (used by generator)
+  const [year1Counts, setYear1Counts] = useState(COUNTS_2025); // Current year totals
+  const [year2Counts, setYear2Counts] = useState(COUNTS_2025); // 2-year totals
   const [startMonth, setStartMonth] = useState(4);
   const [startYear, setStartYear] = useState(2026);
   const [calMonth, setCalMonth] = useState(4);
