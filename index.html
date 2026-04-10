@@ -1,0 +1,2401 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="theme-color" content="#f8f9fb">
+  <title>DSG Call Schedule</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📋</text></svg>">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #f0f2f5; overflow-x: hidden; }
+    #root { min-height: 100vh; }
+    /* Hide Babel warning */
+    .babel-warning { display: none !important; }
+  </style>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel">
+    const { useState, useMemo, useCallback, useRef, useEffect } = React;
+
+
+/* ═══════════════════════════════════════════════════
+   SUPABASE CONFIG
+   ═══════════════════════════════════════════════════ */
+const SUPABASE_URL = "https://xqongyahdnkozqunpwmu.supabase.co";
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inhxb25neWFoZG5rb3pxdW5wd211Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU3Nzg2NDksImV4cCI6MjA5MTM1NDY0OX0.a2p_twcuDAfI_ju-oGzut_NCPNzKjBEbkhVsMGXYyww";
+
+// Lightweight Supabase REST client (no SDK dependency needed)
+const supabase = {
+  from: (table) => ({
+    select: (cols) => ({
+      eq: (col, val) => ({
+        single: async () => {
+          const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}?select=${cols}&${col}=eq.${val}`, {
+            headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` }
+          });
+          const rows = await res.json();
+          return { data: rows?.[0] || null, error: rows?.error || null };
+        }
+      })
+    }),
+    upsert: async (row) => {
+      const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}`, {
+        method: "POST",
+        headers: {
+          apikey: SUPABASE_ANON_KEY,
+          Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+          "Content-Type": "application/json",
+          Prefer: "resolution=merge-duplicates",
+        },
+        body: JSON.stringify(row),
+      });
+      return { error: res.ok ? null : await res.text() };
+    },
+  }),
+};
+
+/* ═══════════════════════════════════════════════════
+   CONSTANTS
+   ═══════════════════════════════════════════════════ */
+const NIGHT_KEYS = ["mon","tue","wed","thu"];
+const ALL_SHIFT_KEYS = ["dayCall","mon","tue","wed","thu","wknd"];
+const SHIFT_LABELS = { dayCall:"Day Call", mon:"Mon Night", tue:"Tue Night", wed:"Wed Night", thu:"Thu Night", wknd:"Weekend" };
+const SHIFT_TIMES = { dayCall:"M–F 7a–5p + Sat 7a–Sun 7a", mon:"Mon 5p–7a", tue:"Tue 5p–7a", wed:"Wed 5p–7a", thu:"Thu 5p–7a", wknd:"Fri 5p–Sat 7a & Sun 7a–Mon 7a" };
+const SHIFT_ICONS = { dayCall:"☀️", mon:"🌙", tue:"🌙", wed:"🌙", thu:"🌙", wknd:"🌗" };
+const DAY_HDR = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+const MO = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+
+const PAL = [
+  { tx:"#0e6fa8", bd:"#a8d4f0", tg:"#e8f4fc" },
+  { tx:"#a8306a", bd:"#e8a0c8", tg:"#fce8f4" },
+  { tx:"#1a8040", bd:"#a0d8b0", tg:"#e8fce8" },
+  { tx:"#8a7010", bd:"#e0d090", tg:"#faf4e0" },
+  { tx:"#6030a8", bd:"#c0a8e8", tg:"#f0e8fc" },
+  { tx:"#2868a8", bd:"#a0c8e8", tg:"#e8f0fc" },
+  { tx:"#a85820", bd:"#e8c0a0", tg:"#fcf0e8" },
+];
+
+// APP palette — warm tones to distinguish from surgeon colors
+const APP_PAL = [
+  { tx:"#985020", bd:"#e0b890", tg:"#faf0e4" },
+  { tx:"#883868", bd:"#d8a0c0", tg:"#f8e8f0" },
+  { tx:"#487020", bd:"#b8d898", tg:"#f0f8e8" },
+  { tx:"#306080", bd:"#a0c8d8", tg:"#e8f4f8" },
+];
+
+const INIT_SURGEONS = [
+  { id:"s1", name:"DJA" }, { id:"s2", name:"MCC" }, { id:"s3", name:"RPC" },
+  { id:"s4", name:"KJH" }, { id:"s5", name:"REH" }, { id:"s6", name:"FAK" },
+  { id:"s7", name:"ARW" },
+];
+
+const INIT_APPS = [
+  { id:"a1", name:"MA" }, { id:"a2", name:"SJ" }, { id:"a3", name:"MS" }, { id:"a4", name:"SS" },
+];
+
+/* ═══ Date helpers ═══ */
+const fmt = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+const parse = s => { const [y,m,d]=s.split("-").map(Number); return new Date(y,m-1,d); };
+const addD = (d,n) => { const r=new Date(d); r.setDate(r.getDate()+n); return r; };
+const monOf = d => { const r=new Date(d); r.setDate(r.getDate()-((r.getDay()+6)%7)); return r; };
+
+function getMondays(yr,mo,numWeeks) {
+  const ms=[], s=new Date(yr,mo,1);
+  let d=monOf(s); if(d<s) d=addD(d,7);
+  while(ms.length<numWeeks){ ms.push(new Date(d)); d=addD(d,7); }
+  return ms;
+}
+
+function onVac(id,ds,v){ return (v[id]||[]).some(([a,b])=>ds>=a&&ds<=b); }
+
+/* ═══ ICS Calendar Generation ═══ */
+function icsDate(y,m,d,h,min) {
+  return `${y}${String(m).padStart(2,"0")}${String(d).padStart(2,"0")}T${String(h).padStart(2,"0")}${String(min||0).padStart(2,"0")}00`;
+}
+
+function buildICSEvents(schedule, surgeonId, surgeonName, appShifts, aMap) {
+  const events = [];
+  const uid = () => `${Date.now()}-${Math.random().toString(36).slice(2,9)}@callsched`;
+
+  Object.entries(schedule).forEach(([mondayStr, wk]) => {
+    const mon = parse(mondayStr);
+    const bkLabel = wk.isBackup ? " [BACKUP]" : "";
+
+    // Day Call
+    if (wk.dayCall === surgeonId) {
+      // Mon-Fri 7a-5p
+      for (let i = 0; i < 5; i++) {
+        const d = addD(mon, i);
+        const y=d.getFullYear(), m=d.getMonth()+1, day=d.getDate();
+        events.push({
+          start: icsDate(y,m,day,7), end: icsDate(y,m,day,17),
+          summary: `Day Call${bkLabel} — ${surgeonName}`,
+          desc: `Day Call 7:00 AM – 5:00 PM${bkLabel}`
+        });
+      }
+      // Sat 7a - Sun 7a (24h)
+      const sat = addD(mon, 5);
+      const sunD = addD(mon, 6);
+      events.push({
+        start: icsDate(sat.getFullYear(),sat.getMonth()+1,sat.getDate(),7),
+        end: icsDate(sunD.getFullYear(),sunD.getMonth()+1,sunD.getDate(),7),
+        summary: `Day Call Saturday 24h${bkLabel} — ${surgeonName}`,
+        desc: `Saturday 7:00 AM – Sunday 7:00 AM${bkLabel}`
+      });
+    }
+
+    // Night shifts (Mon-Thu)
+    const nightKeys = ["mon","tue","wed","thu"];
+    nightKeys.forEach((sk, i) => {
+      if (wk.nights?.[sk] === surgeonId) {
+        const d = addD(mon, i);
+        const next = addD(mon, i + 1);
+        events.push({
+          start: icsDate(d.getFullYear(),d.getMonth()+1,d.getDate(),17),
+          end: icsDate(next.getFullYear(),next.getMonth()+1,next.getDate(),7),
+          summary: `Night Call${bkLabel} — ${surgeonName}`,
+          desc: `${SHIFT_LABELS[sk]} 5:00 PM – 7:00 AM${bkLabel}`
+        });
+      }
+    });
+
+    // Weekend (Fri night + Sunday)
+    if (wk.nights?.wknd === surgeonId) {
+      // Fri 5p - Sat 7a
+      const fri = addD(mon, 4);
+      const sat = addD(mon, 5);
+      events.push({
+        start: icsDate(fri.getFullYear(),fri.getMonth()+1,fri.getDate(),17),
+        end: icsDate(sat.getFullYear(),sat.getMonth()+1,sat.getDate(),7),
+        summary: `Weekend Call (Fri Night)${bkLabel} — ${surgeonName}`,
+        desc: `Friday 5:00 PM – Saturday 7:00 AM${bkLabel}`
+      });
+      // Sun 7a - Mon 7a
+      const sunD = addD(mon, 6);
+      const nextMon = addD(mon, 7);
+      events.push({
+        start: icsDate(sunD.getFullYear(),sunD.getMonth()+1,sunD.getDate(),7),
+        end: icsDate(nextMon.getFullYear(),nextMon.getMonth()+1,nextMon.getDate(),7),
+        summary: `Weekend Call (Sunday 24h)${bkLabel} — ${surgeonName}`,
+        desc: `Sunday 7:00 AM – Monday 7:00 AM${bkLabel}`
+      });
+    }
+  });
+
+  // APP shifts (only if surgeonId is null = export all, or for APP-specific export)
+  if (!surgeonId) {
+    Object.entries(appShifts).forEach(([ds, aid]) => {
+      const d = parse(ds);
+      const next = addD(d, 1);
+      const appName = aMap?.[aid]?.name || aid;
+      events.push({
+        start: icsDate(d.getFullYear(),d.getMonth()+1,d.getDate(),17),
+        end: icsDate(next.getFullYear(),next.getMonth()+1,next.getDate(),7),
+        summary: `APP Call — ${appName}`,
+        desc: `APP Night Call 5:00 PM – 7:00 AM`
+      });
+    });
+  }
+
+  return events;
+}
+
+function generateICS(events, calName) {
+  const uid = () => `${Date.now()}-${Math.random().toString(36).slice(2,9)}@callsched`;
+  let ics = `BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//DSG Call Schedule//EN\r\nCALSCALE:GREGORIAN\r\nX-WR-CALNAME:${calName}\r\n`;
+  events.forEach(e => {
+    ics += `BEGIN:VEVENT\r\nUID:${uid()}\r\nDTSTART:${e.start}\r\nDTEND:${e.end}\r\nSUMMARY:${e.summary}\r\nDESCRIPTION:${e.desc}\r\nEND:VEVENT\r\n`;
+  });
+  ics += `END:VCALENDAR\r\n`;
+  return ics;
+}
+
+function downloadICS(content, filename) {
+  const blob = new Blob([content], { type: "text/calendar;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = filename; a.click();
+  URL.revokeObjectURL(url);
+}
+
+/* ═══ Schedule Generator (surgeons only — APPs are manual) ═══ */
+function generate(surgeons, mondays, vac, backupMondays, priorCounts, preferences, fierceBackupMondays) {
+  const sched = {};
+  const ids = surgeons.map(s=>s.id);
+  const nameMap = {}; surgeons.forEach(s => nameMap[s.id] = s.name);
+
+  // Running counters seeded from prior totals
+  const dcCt={}; const nCt={}; const wkndCt={}; const offCt={}; const lastPos={};
+  // Weighted total burden: DC week=7, Night=1, Weekend=3
+  const burden = {};
+  ids.forEach(id=>{
+    const p = priorCounts[id] || {};
+    dcCt[id] = (p.dc||0) + (p.dcB||0);
+    nCt[id] = (p.nights||0) + (p.nightsB||0);
+    wkndCt[id] = (p.wknd||0) + (p.wkndB||0);
+    offCt[id] = (p.off||0) + (p.offB||0);
+    burden[id] = dcCt[id]*7 + nCt[id] + wkndCt[id]*3;
+  });
+  let prevWkndSurgeon = null;
+  let prevDcSurgeon = null;
+
+  const prefs = preferences || {};
+
+  // Helper: is surgeon on vacation on a given date?
+  const vacStartsNextDay = (id, dateStr) => {
+    const d = parse(dateStr);
+    const nextDay = fmt(addD(d, 1));
+    return onVac(id, nextDay, vac);
+  };
+
+  for (const monday of mondays) {
+    const mStr = fmt(monday);
+    const isBackup = backupMondays.has(mStr);
+    const isFierceBackup = (fierceBackupMondays||new Set()).has(mStr);
+    const nextMondayStr = fmt(addD(monday, 7));
+
+    // ═══ DAY CALL — pick surgeon with lowest DC count, tiebreak by total burden ═══
+    const availDC = ids.filter(id => {
+      for(let i=0;i<6;i++) if(onVac(id, fmt(addD(monday,i)), vac)) return false;
+      return true;
+    });
+
+    let dc = null;
+    if (availDC.length) {
+      // Prefer surgeon who has had MORE off-weeks (they've been resting more, should work more)
+      availDC.sort((a,b) => {
+        const d = dcCt[a]-dcCt[b]; if(d) return d;
+        // Tiebreak: lower total burden gets priority
+        const bd = burden[a]-burden[b]; if(bd) return bd;
+        // Tiebreak: more off-weeks → should take DC
+        const od = offCt[b]-offCt[a]; if(od) return od;
+        // RULE: avoid weekend call into day call week
+        if(a===prevWkndSurgeon) return 1;
+        if(b===prevWkndSurgeon) return -1;
+        return 0;
+      });
+      dc = availDC[0]; dcCt[dc]++; burden[dc]+=7;
+    }
+
+    const rem = ids.filter(id=>id!==dc);
+    const nights = {};
+    const used = new Set();
+
+    // ═══ WEEKEND SHIFT — assign first (most constrained) ═══
+    const friDate = fmt(addD(monday,4));
+    const sunDate = fmt(addD(monday,6));
+    const nextMonDate = fmt(addD(monday,7));
+
+    let availWknd = rem.filter(id => !onVac(id,friDate,vac) && !onVac(id,sunDate,vac));
+    availWknd = availWknd.filter(id => !onVac(id, nextMonDate, vac));
+
+    const prefWknd = availWknd.filter(id => id !== prevWkndSurgeon);
+    const wkndPool = prefWknd.length > 0 ? prefWknd : availWknd;
+
+    if (wkndPool.length) {
+      wkndPool.sort((a,b) => {
+        const d = wkndCt[a]-wkndCt[b]; if(d) return d;
+        const bd = burden[a]-burden[b]; if(bd) return bd;
+        if(lastPos[a]==="wknd"&&lastPos[b]!=="wknd") return 1;
+        if(lastPos[b]==="wknd"&&lastPos[a]!=="wknd") return -1;
+        return 0;
+      });
+      nights.wknd = wkndPool[0]; used.add(wkndPool[0]); wkndCt[wkndPool[0]]++; burden[wkndPool[0]]+=3;
+    } else {
+      const fb=rem.filter(id=>!used.has(id));
+      if(fb.length){nights.wknd=fb[0];used.add(fb[0]);} else nights.wknd=null;
+    }
+
+    // ═══ WEEKNIGHT SHIFTS — assign with fairness-aware ordering ═══
+    // Before assigning nights: figure out who SHOULD get the off-week
+    // The surgeon with the highest burden (who is not on vacation) should ideally be off
+    const nightCandidates = rem.filter(id => !used.has(id));
+
+    // Identify the ideal off-person: highest burden among available, or lowest off-count
+    let idealOff = null;
+    if (nightCandidates.length > 0) {
+      const sorted = [...nightCandidates].sort((a,b) => {
+        // Surgeon with fewest off-weeks should get off next (fairness)
+        const od = offCt[a]-offCt[b]; if(od) return od;
+        // Tiebreak: highest burden → most deserving of rest
+        const bd = burden[b]-burden[a]; if(bd) return bd;
+        return 0;
+      });
+      idealOff = sorted[0];
+    }
+
+    // Shuffle night keys to prevent Mon-first positional bias
+    const shuffledNightKeys = [...NIGHT_KEYS];
+    for(let i=shuffledNightKeys.length-1;i>0;i--){
+      const j=Math.floor(Math.random()*(i+1));
+      [shuffledNightKeys[i],shuffledNightKeys[j]]=[shuffledNightKeys[j],shuffledNightKeys[i]];
+    }
+
+    // Assign nights: try to leave idealOff unassigned
+    const nightAssignments = {};
+    const nightUsed = new Set();
+
+    for (const sk of shuffledNightKeys) {
+      const dayOffset = {mon:0,tue:1,wed:2,thu:3}[sk];
+      const sd = fmt(addD(monday, dayOffset));
+      const nextDayStr = fmt(addD(monday, dayOffset + 1));
+
+      let avail = rem.filter(id => !used.has(id) && !nightUsed.has(id) && !onVac(id,sd,vac));
+      avail = avail.filter(id => !onVac(id, nextDayStr, vac));
+
+      // Fallback layers
+      if(!avail.length) avail = rem.filter(id => !used.has(id) && !nightUsed.has(id) && !onVac(id,sd,vac));
+      if(!avail.length) avail = rem.filter(id => !used.has(id) && !nightUsed.has(id));
+      if(!avail.length){ nightAssignments[sk]=null; continue; }
+
+      avail.sort((a,b) => {
+        // If idealOff is in the pool, push them to the back
+        if(a===idealOff && b!==idealOff) return 1;
+        if(b===idealOff && a!==idealOff) return -1;
+
+        const d=nCt[a]-nCt[b]; if(d) return d;
+        const bd = burden[a]-burden[b]; if(bd) return bd;
+
+        // Preferences
+        const aPref = prefs[a]; const bPref = prefs[b];
+        const aBonus = (aPref?.preferShift===sk ? -10 : 0) + (aPref?.avoidShift===sk ? 10 : 0);
+        const bBonus = (bPref?.preferShift===sk ? -10 : 0) + (bPref?.avoidShift===sk ? 10 : 0);
+        if(aBonus !== bBonus) return aBonus - bBonus;
+
+        if(lastPos[a]===sk&&lastPos[b]!==sk) return 1;
+        if(lastPos[b]===sk&&lastPos[a]!==sk) return -1;
+        if(sk==="mon"&&a===prevWkndSurgeon) return 1;
+        if(sk==="mon"&&b===prevWkndSurgeon) return -1;
+        return 0;
+      });
+
+      nightAssignments[sk] = avail[0]; nightUsed.add(avail[0]); nCt[avail[0]]++; burden[avail[0]]++; lastPos[avail[0]] = sk;
+    }
+
+    // Copy to nights object
+    for (const sk of NIGHT_KEYS) nights[sk] = nightAssignments[sk] || null;
+
+    if(nights.wknd) lastPos[nights.wknd] = "wknd";
+    prevWkndSurgeon = nights.wknd || null;
+    prevDcSurgeon = dc;
+
+    const assigned = new Set([dc, ...Object.values(nights)].filter(Boolean));
+    const off = ids.find(id => !assigned.has(id)) || null;
+    if(off) offCt[off]++;
+
+    sched[mStr] = { dayCall:dc, nights, off, isBackup, isFierceBackup };
+  }
+
+  // ═══ POST-OPTIMIZATION PASS ═══
+  // Try swaps within same shift type to reduce unfairness
+  const mondayStrs = mondays.map(m => fmt(m));
+  const calcSpread = (ct) => { const vals = Object.values(ct); return Math.max(...vals)-Math.min(...vals); };
+
+  for (let pass = 0; pass < 50; pass++) {
+    let improved = false;
+
+    // Try swapping day call between two weeks
+    for (let i = 0; i < mondayStrs.length && !improved; i++) {
+      for (let j = i+1; j < mondayStrs.length && !improved; j++) {
+        const wkA = sched[mondayStrs[i]];
+        const wkB = sched[mondayStrs[j]];
+        if (!wkA?.dayCall || !wkB?.dayCall || wkA.dayCall === wkB.dayCall) continue;
+
+        const a = wkA.dayCall, b = wkB.dayCall;
+        const monA = parse(mondayStrs[i]), monB = parse(mondayStrs[j]);
+
+        // Check vacation constraints
+        let aCanDoB = true, bCanDoA = true;
+        for(let d=0;d<6;d++){
+          if(onVac(a, fmt(addD(monB,d)), vac)) aCanDoB=false;
+          if(onVac(b, fmt(addD(monA,d)), vac)) bCanDoA=false;
+        }
+        if(!aCanDoB || !bCanDoA) continue;
+
+        // Check if swap reduces DC spread
+        const oldSpread = calcSpread(dcCt);
+        dcCt[a]--; dcCt[b]--;
+        dcCt[a]++; dcCt[b]++;
+        // Simulate swap
+        const simDcCt = {...dcCt};
+        simDcCt[a]--; simDcCt[b]--; // undo both
+        simDcCt[b]++; simDcCt[a]++; // swap: a does j, b does i... wait this is same
+        // Actually the counts don't change for DC since both still do 1 DC each
+        // Swaps help when one surgeon has an extra DC due to vacation constraints
+        // Skip DC swaps for now — they're already well-balanced
+      }
+    }
+
+    // Try swapping weekend assignments between two weeks
+    for (let i = 0; i < mondayStrs.length && !improved; i++) {
+      for (let j = i+1; j < mondayStrs.length && !improved; j++) {
+        const wkA = sched[mondayStrs[i]];
+        const wkB = sched[mondayStrs[j]];
+        const a = wkA.nights?.wknd, b = wkB.nights?.wknd;
+        if (!a || !b || a === b) continue;
+
+        const monA = parse(mondayStrs[i]), monB = parse(mondayStrs[j]);
+
+        // Check vacation constraints for weekend (Fri + Sun)
+        const friA = fmt(addD(monA,4)), sunA = fmt(addD(monA,6)), nMonA = fmt(addD(monA,7));
+        const friB = fmt(addD(monB,4)), sunB = fmt(addD(monB,6)), nMonB = fmt(addD(monB,7));
+
+        const bCanDoA = !onVac(b,friA,vac) && !onVac(b,sunA,vac) && !onVac(b,nMonA,vac) && b !== wkA.dayCall;
+        const aCanDoB = !onVac(a,friB,vac) && !onVac(a,sunB,vac) && !onVac(a,nMonB,vac) && a !== wkB.dayCall;
+        if (!bCanDoA || !aCanDoB) continue;
+
+        // Check if swap reduces weekend spread
+        const oldSpread = calcSpread(wkndCt);
+        const simWknd = {...wkndCt};
+        simWknd[a]--; simWknd[b]--;
+        simWknd[b]++; simWknd[a]++;
+        // Swap: a→j's weekend, b→i's weekend
+        const swapWknd = {...wkndCt};
+        swapWknd[a]--; swapWknd[b]--;
+        swapWknd[a]++; swapWknd[b]++;
+        // Again counts don't change if both had 1 weekend each
+        // Swaps help when one has 3 weekends and another has 1
+        const testCt = {...wkndCt};
+        testCt[a]--; testCt[b]++; // a loses one, b gains one
+        const testCt2 = {...testCt};
+        testCt2[b]--; testCt2[a]++; // reverse — net zero
+        // Need asymmetric check only when counts differ
+        if (wkndCt[a] > wkndCt[b] + 1) {
+          // a has more weekends — swap so a does fewer
+          wkndCt[a]--; wkndCt[b]++;
+          burden[a]-=3; burden[b]+=3;
+          wkA.nights.wknd = b; wkB.nights.wknd = a;
+          // Update off assignments
+          const fixOff = (wk, mStr) => {
+            const assigned = new Set([wk.dayCall, ...Object.values(wk.nights)].filter(Boolean));
+            wk.off = ids.find(id => !assigned.has(id)) || null;
+          };
+          fixOff(wkA, mondayStrs[i]);
+          fixOff(wkB, mondayStrs[j]);
+          improved = true;
+        } else if (wkndCt[b] > wkndCt[a] + 1) {
+          wkndCt[b]--; wkndCt[a]++;
+          burden[b]-=3; burden[a]+=3;
+          wkA.nights.wknd = b; wkB.nights.wknd = a;
+          const fixOff = (wk) => {
+            const assigned = new Set([wk.dayCall, ...Object.values(wk.nights)].filter(Boolean));
+            wk.off = ids.find(id => !assigned.has(id)) || null;
+          };
+          fixOff(wkA); fixOff(wkB);
+          improved = true;
+        }
+      }
+    }
+
+    if (!improved) break;
+  }
+
+  return sched;
+}
+
+/* ═══════════════════════════════════════════════════
+   STYLES
+   ═══════════════════════════════════════════════════ */
+const font = "'Outfit', sans-serif";
+const mono = "'JetBrains Mono', monospace";
+
+const css = {
+  root: { fontFamily:font, background:"#f0f2f5", color:"#2c3e50", minHeight:"100vh" },
+  hdr: { background:"linear-gradient(180deg,#ffffff,#f8f9fb)", borderBottom:"1px solid #dce2e8", padding:"14px 20px", display:"flex", alignItems:"center", justifyContent:"space-between", flexWrap:"wrap", gap:10 },
+  h1: { fontSize:21, fontWeight:700, color:"#1a2a3a", margin:0, letterSpacing:-0.5 },
+  sub: { fontSize:11, color:"#7a8a98", margin:"2px 0 0", letterSpacing:0.8, textTransform:"uppercase" },
+  nav: { display:"flex", gap:3, flexWrap:"wrap" },
+  tab: a => ({ background:a?"#1a6fa8":"transparent", border:`1px solid ${a?"#1a6fa8":"#c8d0d8"}`, color:a?"#ffffff":"#6a7a88", borderRadius:7, padding:"5px 13px", fontSize:12, fontWeight:600, cursor:"pointer", fontFamily:font }),
+  card: { background:"#ffffff", border:"1px solid #e0e4ea", borderRadius:10, padding:18, marginBottom:14, boxShadow:"0 1px 3px rgba(0,0,0,0.04)" },
+  cardT: { fontSize:13, fontWeight:700, color:"#1a6fa8", margin:"0 0 12px", textTransform:"uppercase", letterSpacing:1.2 },
+  inp: { background:"#f8f9fb", border:"1px solid #d0d8e0", borderRadius:5, padding:"6px 10px", color:"#2c3e50", fontSize:13, fontFamily:font, outline:"none" },
+  btn: a => ({ background:a?"linear-gradient(135deg,#1a6fa8,#2488c8)":"#f0f2f5", border:`1px solid ${a?"#1a6fa8":"#c8d0d8"}`, color:a?"#ffffff":"#5a6a78", borderRadius:7, padding:"7px 16px", fontSize:12, fontWeight:600, cursor:"pointer", fontFamily:font }),
+  badge: i => ({ display:"inline-flex", alignItems:"center", background:PAL[i%7].tg, color:PAL[i%7].tx, border:`1px solid ${PAL[i%7].bd}`, borderRadius:5, padding:"2px 9px", fontSize:12, fontWeight:600, whiteSpace:"nowrap", letterSpacing:0.3 }),
+  appBadge: i => ({ display:"inline-flex", alignItems:"center", background:APP_PAL[i%4].tg, color:APP_PAL[i%4].tx, border:`1px solid ${APP_PAL[i%4].bd}`, borderRadius:5, padding:"2px 9px", fontSize:12, fontWeight:600, whiteSpace:"nowrap", letterSpacing:0.3 }),
+  backupBanner: { background:"linear-gradient(90deg,#fef8e8,#fdf0d0)", border:"1px solid #e8d090", borderRadius:6, padding:"4px 10px", fontSize:11, fontWeight:700, color:"#8a6a10", letterSpacing:0.5 },
+};
+
+/* ═══════════════════════════════════════════════════
+   COMPONENT
+   ═══════════════════════════════════════════════════ */
+function CallSchedule() {
+  const [view, setView] = useState("setup");
+
+  const [surgeons, setSurgeons] = useState(INIT_SURGEONS);
+  const [apps, setApps] = useState(INIT_APPS);
+  const [vacations, setVacations] = useState({});
+  const [backupMondaySet, setBackupMondaySet] = useState(new Set());
+  const [fierceBackupSet, setFierceBackupSet] = useState(new Set()); // Fierce backs up our group, regular schedule unchanged
+  const [schedule, setSchedule] = useState({});
+  const [appShifts, setAppShifts] = useState({}); // { "2026-05-06": "a1", ... }
+  const [priorCounts, setPriorCounts] = useState({}); // Multi-year totals (used by generator)
+  const [year1Counts, setYear1Counts] = useState({}); // Current year totals
+  const [year2Counts, setYear2Counts] = useState({}); // 2-year totals
+  const [startMonth, setStartMonth] = useState(4);
+  const [startYear, setStartYear] = useState(2026);
+  const [calMonth, setCalMonth] = useState(4);
+  const [calYear, setCalYear] = useState(2026);
+  const [editingWeek, setEditingWeek] = useState(null);
+  const [editShift, setEditShift] = useState(null);
+
+  // Form states
+  const [vacSurgeon, setVacSurgeon] = useState("");
+  const [vacStart, setVacStart] = useState("");
+  const [vacEnd, setVacEnd] = useState("");
+  const [bkMonday, setBkMonday] = useState("");
+  const [appDate, setAppDate] = useState("");
+  const [appPerson, setAppPerson] = useState("");
+  const [scanning, setScanning] = useState(false);
+  const [scanMsg, setScanMsg] = useState("");
+  const [bkScanning, setBkScanning] = useState(false);
+  const [bkScanMsg, setBkScanMsg] = useState("");
+  const [loaded, setLoaded] = useState(false);
+  const [saveStatus, setSaveStatus] = useState("");
+  const fileRef = useRef(null);
+  const bkFileRef = useRef(null);
+  const lastSyncRef = useRef(null);
+
+  const [apiKey, setApiKey] = useState("");
+  const [showApiKey, setShowApiKey] = useState(false);
+
+  // ─── Supabase: Load on mount + real-time sync ───
+  useEffect(() => {
+    (async () => {
+      try {
+        const { data: row } = await supabase
+          .from("call_schedule_data")
+          .select("data")
+          .eq("id", "main")
+          .single();
+        if (row?.data) {
+          const d = typeof row.data === "string" ? JSON.parse(row.data) : row.data;
+          if (d.surgeons) setSurgeons(d.surgeons);
+          if (d.apps) setApps(d.apps);
+          if (d.vacations) setVacations(d.vacations);
+          if (d.backupMondays) setBackupMondaySet(new Set(d.backupMondays));
+          if (d.fierceBackup) setFierceBackupSet(new Set(d.fierceBackup));
+          if (d.schedule) setSchedule(d.schedule);
+          if (d.appShifts) setAppShifts(d.appShifts);
+          if (d.priorCounts) setPriorCounts(d.priorCounts);
+          if (d.year1Counts) setYear1Counts(d.year1Counts);
+          if (d.year2Counts) setYear2Counts(d.year2Counts);
+          if (d.startMonth !== undefined) setStartMonth(d.startMonth);
+          if (d.startYear !== undefined) setStartYear(d.startYear);
+        }
+        const { data: cfgRow } = await supabase
+          .from("call_schedule_config")
+          .select("api_key")
+          .eq("id", "config")
+          .single();
+        if (cfgRow?.api_key) setApiKey(cfgRow.api_key);
+      } catch (e) {
+        console.error("Supabase load error:", e);
+      }
+      setLoaded(true);
+    })();
+
+    // Poll for changes from other users every 15 seconds
+    const pollInterval = setInterval(async () => {
+      try {
+        const { data: row } = await supabase.from("call_schedule_data").select("data,updated_at").eq("id", "main").single();
+        if (row?.data) {
+          const d = typeof row.data === "string" ? JSON.parse(row.data) : row.data;
+          // Only update if data actually changed (compare updated_at)
+          if (row.updated_at !== lastSyncRef.current) {
+            lastSyncRef.current = row.updated_at;
+            if (d.surgeons) setSurgeons(d.surgeons);
+            if (d.apps) setApps(d.apps);
+            if (d.vacations) setVacations(d.vacations);
+            if (d.backupMondays) setBackupMondaySet(new Set(d.backupMondays));
+            if (d.fierceBackup) setFierceBackupSet(new Set(d.fierceBackup));
+            if (d.schedule) setSchedule(d.schedule);
+            if (d.appShifts) setAppShifts(d.appShifts);
+            if (d.priorCounts) setPriorCounts(d.priorCounts);
+            if (d.year1Counts) setYear1Counts(d.year1Counts);
+            if (d.year2Counts) setYear2Counts(d.year2Counts);
+            if (d.startMonth !== undefined) setStartMonth(d.startMonth);
+            if (d.startYear !== undefined) setStartYear(d.startYear);
+          }
+        }
+        const { data: cfgRow2 } = await supabase.from("call_schedule_config").select("api_key").eq("id", "config").single();
+        if (cfgRow2?.api_key !== undefined) setApiKey(prev => cfgRow2.api_key !== prev ? cfgRow2.api_key : prev);
+      } catch(e) {}
+    }, 15000);
+
+    return () => clearInterval(pollInterval);
+  }, []);
+
+  // ─── Supabase: Auto-save on changes ───
+  useEffect(() => {
+    if (!loaded) return;
+    const timer = setTimeout(async () => {
+      try {
+        const payload = {
+          surgeons, apps, vacations,
+          backupMondays: [...backupMondaySet],
+          fierceBackup: [...fierceBackupSet],
+          schedule, appShifts, priorCounts, year1Counts, year2Counts,
+          startMonth, startYear,
+        };
+        const ts = new Date().toISOString();
+        await supabase
+          .from("call_schedule_data")
+          .upsert({ id: "main", data: payload, updated_at: ts });
+        lastSyncRef.current = ts;
+        setSaveStatus("Saved");
+        setTimeout(() => setSaveStatus(""), 2000);
+      } catch (e) {
+        console.error("Save failed:", e);
+      }
+    }, 800);
+    return () => clearTimeout(timer);
+  }, [loaded, surgeons, apps, vacations, backupMondaySet, fierceBackupSet, schedule, appShifts, priorCounts, year1Counts, year2Counts, startMonth, startYear]);
+
+  // ─── Supabase: Save API key ───
+  useEffect(() => {
+    if (!loaded) return;
+    const timer = setTimeout(async () => {
+      try {
+        await supabase
+          .from("call_schedule_config")
+          .upsert({ id: "config", api_key: apiKey || "", updated_at: new Date().toISOString() });
+      } catch(e) {}
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [loaded, apiKey]);
+
+  // ─── Reset all data ───
+  const resetAllData = async () => {
+    if (!confirm("Clear all saved data and reset to defaults? This cannot be undone.")) return;
+    try {
+      await supabase.from("call_schedule_data").upsert({ id: "main", data: {}, updated_at: new Date().toISOString() });
+    } catch(e) {}
+    setSurgeons(INIT_SURGEONS);
+    setApps(INIT_APPS);
+    setVacations({});
+    setBackupMondaySet(new Set());
+    setFierceBackupSet(new Set());
+    setSchedule({});
+    setAppShifts({});
+    setPriorCounts({});
+    setYear1Counts({});
+    setYear2Counts({});
+    setStartMonth(4);
+    setStartYear(2026);
+    setSaveStatus("Reset complete");
+    setTimeout(() => setSaveStatus(""), 2000);
+  };
+
+  // Download CSV template pre-filled with surgeon names
+  const downloadTemplate = useCallback(() => {
+    const header = "Surgeon,Day Call Weeks,Night Shifts,Weekend Shifts,Backup Day Call,Backup Nights,Backup Weekends";
+    const rows = surgeons.map(s => {
+      const p = priorCounts[s.id] || {};
+      return `${s.name},${p.dc||0},${p.nights||0},${p.wknd||0},${p.dcB||0},${p.nightsB||0},${p.wkndB||0}`;
+    });
+    const csv = [header, ...rows].join("\n");
+    const blob = new Blob([csv], {type:"text/csv"});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = "call-schedule-prior-totals.csv"; a.click();
+    URL.revokeObjectURL(url);
+  }, [surgeons, priorCounts]);
+
+  // Upload filled template (CSV or Excel)
+  const handleTemplateUpload = useCallback(async (file) => {
+    if (!file) return;
+    setScanning(true);
+    setScanMsg("Reading file…");
+
+    try {
+      const ext = file.name.split(".").pop().toLowerCase();
+      let rows = [];
+
+      if (["xlsx","xls"].includes(ext)) {
+        // Excel: parse with SheetJS
+        const XLSX = await import("https://cdn.sheetjs.com/xlsx-0.20.0/package/xlsx.mjs");
+        const buf = await file.arrayBuffer();
+        const wb = XLSX.read(buf, {type:"array"});
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        rows = XLSX.utils.sheet_to_json(ws, {defval:0});
+      } else {
+        // CSV: parse manually
+        const text = await file.text();
+        const lines = text.trim().split("\n").map(l => l.split(",").map(c => c.trim()));
+        if (lines.length > 1) {
+          const headers = lines[0];
+          for (let i = 1; i < lines.length; i++) {
+            const row = {};
+            headers.forEach((h, j) => row[h] = lines[i]?.[j] || "0");
+            rows.push(row);
+          }
+        }
+      }
+
+      // Map rows to surgeon IDs
+      const nameToId = {};
+      surgeons.forEach(s => {
+        nameToId[s.name.toUpperCase()] = s.id;
+        nameToId[s.name] = s.id;
+      });
+
+      // Find the right columns (flexible header matching)
+      const findCol = (row, patterns) => {
+        for (const key of Object.keys(row)) {
+          const k = key.toLowerCase().replace(/[^a-z]/g,"");
+          for (const p of patterns) {
+            if (k.includes(p)) return parseInt(row[key]) || 0;
+          }
+        }
+        return 0;
+      };
+
+      const newCounts = {};
+      let matched = 0;
+      rows.forEach(row => {
+        // Find surgeon name in first column or "Surgeon" column
+        const nameVal = row["Surgeon"] || row["surgeon"] || row["Name"] || row["name"] || Object.values(row)[0] || "";
+        const nameStr = String(nameVal).trim();
+        const id = nameToId[nameStr] || nameToId[nameStr.toUpperCase()];
+        if (!id) return;
+
+        newCounts[id] = {
+          dc: findCol(row, ["daycall","dayweek","dcweek","dc"]) || parseInt(Object.values(row)[1]) || 0,
+          nights: findCol(row, ["night","ngt"]) || parseInt(Object.values(row)[2]) || 0,
+          wknd: findCol(row, ["weekend","wknd","wkend"]) || parseInt(Object.values(row)[3]) || 0,
+          dcB: findCol(row, ["backupday","bkpday","backupdaycall"]) || parseInt(Object.values(row)[4]) || 0,
+          nightsB: findCol(row, ["backupnight","bkpnight"]) || parseInt(Object.values(row)[5]) || 0,
+          wkndB: findCol(row, ["backupweekend","bkpwknd","backupwkend"]) || parseInt(Object.values(row)[6]) || 0,
+        };
+        matched++;
+      });
+
+      setPriorCounts(prev => ({ ...prev, ...newCounts }));
+      setScanMsg(matched > 0
+        ? `Imported counts for ${matched} surgeon${matched>1?"s":""}. Review and adjust if needed.`
+        : "Could not match surgeon names. Make sure the first column has initials matching: " + surgeons.map(s=>s.name).join(", "));
+    } catch (err) {
+      console.error("Upload error:", err);
+      setScanMsg("Could not parse the file. Use the CSV template or an Excel file with matching columns.");
+    } finally {
+      setScanning(false);
+      if (fileRef.current) fileRef.current.value = "";
+    }
+  }, [surgeons]);
+
+  // ─── AI-Powered Prior Call Schedule Scanner ───
+  const [priorScanning, setPriorScanning] = useState(false);
+  const [priorScanMsg, setPriorScanMsg] = useState("");
+  const priorFileRef = useRef(null);
+
+  const callApi = useCallback(async (messages, maxTokens = 2000) => {
+    const headers = { "Content-Type": "application/json" };
+    if (apiKey) { headers["x-api-key"] = apiKey; headers["anthropic-version"] = "2023-06-01"; }
+    const resp = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST", headers,
+      body: JSON.stringify({ model:"claude-sonnet-4-20250514", max_tokens: maxTokens, messages })
+    });
+    if (!resp.ok) {
+      const err = await resp.text();
+      throw new Error(`API error ${resp.status}: ${err}`);
+    }
+    const data = await resp.json();
+    return data.content?.map(c => c.text || "").join("") || "";
+  }, [apiKey]);
+
+  const handlePriorScheduleScan = useCallback(async (file) => {
+    if (!file) return;
+    if (!apiKey) { setPriorScanMsg("API key required. Go to the ⚙️ settings at the bottom of Setup to add one."); return; }
+    setPriorScanning(true);
+    setPriorScanMsg("Reading file…");
+
+    try {
+      const ext = file.name.split(".").pop().toLowerCase();
+      const surgeonNames = surgeons.map(s => s.name).join(", ");
+      let messages;
+
+      const promptText = `You are analyzing a past surgical call schedule. The surgeons in the group are: ${surgeonNames}.
+
+This schedule shows weekly assignments over a period of time. Each week has:
+- Day Call (one surgeon, covers M-F 7a-5p + Sat 7a-Sun 7a)
+- Night shifts: Mon, Tue, Wed, Thu (each 5p-7a)
+- Weekend shift (Fri 5p-Sat 7a + Sun 7a-Mon 7a)
+- Some weeks may be marked as "backup" weeks (when Fierce is primary)
+
+For each surgeon, count how many times they were assigned to each role across the ENTIRE schedule. Track regular and backup weeks separately.
+
+Respond with ONLY valid JSON, no markdown backticks, no explanation:
+{
+  "surgeons": [
+    {
+      "name": "DJA",
+      "dc": 2,
+      "nights": 5,
+      "wknd": 1,
+      "dcB": 0,
+      "nightsB": 1,
+      "wkndB": 0
+    }
+  ],
+  "weeks_counted": 14,
+  "notes": "Any relevant notes about what was found"
+}
+
+Where:
+- dc = number of regular Day Call weeks
+- nights = number of regular weeknight shifts
+- wknd = number of regular weekend shifts
+- dcB = number of backup Day Call weeks
+- nightsB = number of backup weeknight shifts
+- wkndB = number of backup weekend shifts
+
+Match surgeon names/initials as best you can to: ${surgeonNames}. If you cannot determine counts, return all zeros.`;
+
+      if (ext === "pdf") {
+        setPriorScanMsg("Reading PDF…");
+        const base64 = await new Promise((res, rej) => {
+          const r = new FileReader();
+          r.onload = () => res(r.result.split(",")[1]);
+          r.onerror = () => rej(new Error("Failed to read file"));
+          r.readAsDataURL(file);
+        });
+        messages = [{ role:"user", content: [
+          { type:"document", source:{ type:"base64", media_type:"application/pdf", data:base64 } },
+          { type:"text", text: promptText }
+        ]}];
+      } else if (["xlsx","xls","csv"].includes(ext)) {
+        const XLSX = await import("https://cdn.sheetjs.com/xlsx-0.20.0/package/xlsx.mjs");
+        const buf = await file.arrayBuffer();
+        const wb = XLSX.read(buf, {type:"array"});
+        let allText = "";
+        wb.SheetNames.forEach(name => {
+          const ws = wb.Sheets[name];
+          allText += `Sheet: ${name}\n${XLSX.utils.sheet_to_csv(ws)}\n\n`;
+        });
+        setPriorScanMsg("Analyzing schedule…");
+        messages = [{ role:"user", content: `Here is a past call schedule:\n\n${allText}\n\n${promptText}` }];
+      } else if (["docx","doc"].includes(ext)) {
+        const mammoth = await import("mammoth");
+        const buf = await file.arrayBuffer();
+        const result = await mammoth.extractRawText({arrayBuffer: buf});
+        setPriorScanMsg("Analyzing document…");
+        messages = [{ role:"user", content: `Here is a past call schedule from a Word document:\n\n${result.value}\n\n${promptText}` }];
+      } else {
+        // Image
+        setPriorScanMsg("Analyzing image…");
+        const base64 = await new Promise((res, rej) => {
+          const r = new FileReader();
+          r.onload = () => res(r.result.split(",")[1]);
+          r.onerror = () => rej(new Error("Failed to read file"));
+          r.readAsDataURL(file);
+        });
+        const mediaType = file.type || "image/jpeg";
+        messages = [{ role:"user", content: [
+          { type:"image", source:{ type:"base64", media_type:mediaType, data:base64 } },
+          { type:"text", text: promptText }
+        ]}];
+      }
+
+      setPriorScanMsg("Counting shifts…");
+      const text = await callApi(messages, 2000);
+      const clean = text.replace(/```json|```/g, "").trim();
+      const result = JSON.parse(clean);
+
+      if (result?.surgeons && Array.isArray(result.surgeons) && result.surgeons.length > 0) {
+        const nameToId = {};
+        surgeons.forEach(s => { nameToId[s.name.toUpperCase()] = s.id; nameToId[s.name] = s.id; });
+
+        const newCounts = {};
+        let matched = 0;
+        result.surgeons.forEach(entry => {
+          const id = nameToId[entry.name] || nameToId[entry.name?.toUpperCase()];
+          if (!id) return;
+          newCounts[id] = {
+            dc: entry.dc || 0,
+            nights: entry.nights || 0,
+            wknd: entry.wknd || 0,
+            dcB: entry.dcB || 0,
+            nightsB: entry.nightsB || 0,
+            wkndB: entry.wkndB || 0,
+          };
+          matched++;
+        });
+
+        setPriorCounts(prev => ({ ...prev, ...newCounts }));
+        const weeksNote = result.weeks_counted ? ` from ${result.weeks_counted} weeks` : "";
+        const extraNote = result.notes ? ` — ${result.notes}` : "";
+        setPriorScanMsg(`Imported counts for ${matched} surgeon${matched>1?"s":""}${weeksNote}. Review and adjust if needed.${extraNote}`);
+      } else {
+        setPriorScanMsg("Could not extract call counts from the file. Try a clearer image or different format.");
+      }
+    } catch (err) {
+      console.error("Prior schedule scan error:", err);
+      setPriorScanMsg(`Could not analyze the file. ${err.message?.includes("API error") ? "Check your API key." : "Try a photo, PDF, Excel, Word, or CSV file."}`);
+    } finally {
+      setPriorScanning(false);
+      if (priorFileRef.current) priorFileRef.current.value = "";
+    }
+  }, [surgeons, apiKey, callApi]);
+
+  // Scan Fierce's schedule from image or file to auto-mark backup weeks
+  const handleBackupScan = useCallback(async (file) => {
+    if (!file) return;
+    if (!apiKey) { setBkScanMsg("API key required. Go to the ⚙️ settings at the bottom of Setup to add one."); return; }
+    setBkScanning(true);
+    setBkScanMsg("Reading file…");
+
+    try {
+      const ext = file.name.split(".").pop().toLowerCase();
+      let messages;
+
+      const promptText = `You are analyzing a schedule for a surgeon named "Fierce". Weeks run Monday to Sunday. There are TWO types of Fierce weeks:
+
+1. "Fierce 1st" or "Fierce ND" or "Fierce 1st/ND" — these mean Fierce is the PRIMARY surgeon. Label these as "primary".
+2. "Fierce Backup" or "Fierce Back Up" — these mean Fierce is backing up the group. Label these as "backup".
+
+Look at this schedule and identify every week where Fierce appears. For each, give the Monday start date (YYYY-MM-DD) and the type.
+
+Respond with ONLY valid JSON, no markdown backticks, no explanation:
+[
+  {"monday": "2026-05-04", "type": "primary"},
+  {"monday": "2026-05-18", "type": "backup"}
+]
+
+If you cannot determine specific dates, return an empty array [].`;
+
+      if (["xlsx","xls","csv"].includes(ext)) {
+        const XLSX = await import("https://cdn.sheetjs.com/xlsx-0.20.0/package/xlsx.mjs");
+        const buf = await file.arrayBuffer();
+        const wb = XLSX.read(buf, {type:"array"});
+        let allText = "";
+        wb.SheetNames.forEach(name => {
+          const ws = wb.Sheets[name];
+          allText += `Sheet: ${name}\n${XLSX.utils.sheet_to_csv(ws)}\n\n`;
+        });
+        setBkScanMsg("Analyzing schedule…");
+        messages = [{ role:"user", content: `Here is a schedule:\n\n${allText}\n\n${promptText}` }];
+      } else if (["docx","doc"].includes(ext)) {
+        const mammoth = await import("mammoth");
+        const buf = await file.arrayBuffer();
+        const result = await mammoth.extractRawText({arrayBuffer: buf});
+        setBkScanMsg("Analyzing schedule…");
+        messages = [{ role:"user", content: `Here is a schedule from a Word document:\n\n${result.value}\n\n${promptText}` }];
+      } else {
+        // Image
+        setBkScanMsg("Analyzing image…");
+        const base64 = await new Promise((res, rej) => {
+          const r = new FileReader();
+          r.onload = () => res(r.result.split(",")[1]);
+          r.onerror = () => rej(new Error("Failed to read file"));
+          r.readAsDataURL(file);
+        });
+        const mediaType = file.type || "image/jpeg";
+        messages = [{ role:"user", content: [
+          { type:"image", source:{ type:"base64", media_type:mediaType, data:base64 } },
+          { type:"text", text: promptText }
+        ]}];
+      }
+
+      const text = await callApi(messages, 1000);
+      const clean = text.replace(/```json|```/g, "").trim();
+      const entries = JSON.parse(clean);
+
+      if (Array.isArray(entries) && entries.length > 0) {
+        let primaryCount = 0;
+        let backupCount = 0;
+
+        const primaryDates = [];
+        const backupDates = [];
+
+        entries.forEach(e => {
+          const mStr = e.monday ? fmt(monOf(parse(e.monday))) : null;
+          if (!mStr) return;
+          if (e.type === "backup") {
+            backupDates.push(mStr);
+            backupCount++;
+          } else {
+            // "primary" or anything else defaults to primary
+            primaryDates.push(mStr);
+            primaryCount++;
+          }
+        });
+
+        if (primaryDates.length > 0) {
+          setBackupMondaySet(prev => {
+            const n = new Set(prev);
+            primaryDates.forEach(m => n.add(m));
+            return n;
+          });
+        }
+        if (backupDates.length > 0) {
+          setFierceBackupSet(prev => {
+            const n = new Set(prev);
+            backupDates.forEach(m => n.add(m));
+            return n;
+          });
+        }
+
+        const parts = [];
+        if (primaryCount > 0) parts.push(`${primaryCount} Fierce Primary (1st/ND)`);
+        if (backupCount > 0) parts.push(`${backupCount} Fierce Backup`);
+        setBkScanMsg(`Found ${parts.join(" and ")} week${entries.length>1?"s":""}. Review below and adjust if needed.`);
+      } else {
+        setBkScanMsg("No Fierce weeks found in the file. Try a clearer image or different file format.");
+      }
+    } catch (err) {
+      console.error("Backup scan error:", err);
+      setBkScanMsg("Could not parse the file. Try a photo, Excel, Word, or CSV file.");
+    } finally {
+      setBkScanning(false);
+      if (bkFileRef.current) bkFileRef.current.value = "";
+    }
+  }, [apiKey]);
+
+  // Scan vacation PDF/file to auto-import vacation dates
+  const [vacScanning, setVacScanning] = useState(false);
+  const [vacScanMsg, setVacScanMsg] = useState("");
+  const vacFileRef = useRef(null);
+
+  const handleVacationScan = useCallback(async (file) => {
+    if (!file) return;
+    if (!apiKey) { setVacScanMsg("API key required. Go to the ⚙️ settings at the bottom of Setup to add one."); return; }
+    setVacScanning(true);
+    setVacScanMsg("Reading file…");
+
+    try {
+      const ext = file.name.split(".").pop().toLowerCase();
+      const surgeonNames = surgeons.map(s => s.name).join(", ");
+      let messages;
+
+      const promptText = `You are analyzing an approved vacation/time-off document for a surgical group. The surgeons in the group are: ${surgeonNames}.
+
+Extract every vacation or time-off entry. For each entry, identify:
+- Which surgeon (match to these initials: ${surgeonNames})
+- Start date (YYYY-MM-DD format)
+- End date (YYYY-MM-DD format) — if only one day, start and end are the same
+
+Respond with ONLY valid JSON, no markdown backticks, no explanation:
+[
+  {"surgeon": "DJA", "start": "2026-05-12", "end": "2026-05-16"},
+  {"surgeon": "MCC", "start": "2026-06-01", "end": "2026-06-05"}
+]
+
+If you cannot find any vacations, return an empty array []. Match surgeon names/initials as best you can to: ${surgeonNames}.`;
+
+      if (ext === "pdf") {
+        // Send PDF as base64 document
+        setVacScanMsg("Reading PDF…");
+        const base64 = await new Promise((res, rej) => {
+          const r = new FileReader();
+          r.onload = () => res(r.result.split(",")[1]);
+          r.onerror = () => rej(new Error("Failed to read file"));
+          r.readAsDataURL(file);
+        });
+        messages = [{ role:"user", content: [
+          { type:"document", source:{ type:"base64", media_type:"application/pdf", data:base64 } },
+          { type:"text", text: promptText }
+        ]}];
+      } else if (["xlsx","xls","csv"].includes(ext)) {
+        const XLSX = await import("https://cdn.sheetjs.com/xlsx-0.20.0/package/xlsx.mjs");
+        const buf = await file.arrayBuffer();
+        const wb = XLSX.read(buf, {type:"array"});
+        let allText = "";
+        wb.SheetNames.forEach(name => {
+          const ws = wb.Sheets[name];
+          allText += `Sheet: ${name}\n${XLSX.utils.sheet_to_csv(ws)}\n\n`;
+        });
+        setVacScanMsg("Analyzing schedule…");
+        messages = [{ role:"user", content: `Here is a vacation schedule:\n\n${allText}\n\n${promptText}` }];
+      } else if (["docx","doc"].includes(ext)) {
+        const mammoth = await import("mammoth");
+        const buf = await file.arrayBuffer();
+        const result = await mammoth.extractRawText({arrayBuffer: buf});
+        setVacScanMsg("Analyzing document…");
+        messages = [{ role:"user", content: `Here is a vacation document:\n\n${result.value}\n\n${promptText}` }];
+      } else {
+        // Image
+        setVacScanMsg("Analyzing image…");
+        const base64 = await new Promise((res, rej) => {
+          const r = new FileReader();
+          r.onload = () => res(r.result.split(",")[1]);
+          r.onerror = () => rej(new Error("Failed to read file"));
+          r.readAsDataURL(file);
+        });
+        const mediaType = file.type || "image/jpeg";
+        messages = [{ role:"user", content: [
+          { type:"image", source:{ type:"base64", media_type:mediaType, data:base64 } },
+          { type:"text", text: promptText }
+        ]}];
+      }
+
+      setVacScanMsg("Extracting vacation dates…");
+      const text = await callApi(messages, 2000);
+      const clean = text.replace(/```json|```/g, "").trim();
+      const entries = JSON.parse(clean);
+
+      if (Array.isArray(entries) && entries.length > 0) {
+        const nameToId = {};
+        surgeons.forEach(s => { nameToId[s.name.toUpperCase()] = s.id; nameToId[s.name] = s.id; });
+
+        let added = 0;
+        setVacations(prev => {
+          const n = {...prev};
+          entries.forEach(e => {
+            const id = nameToId[e.surgeon] || nameToId[e.surgeon?.toUpperCase()];
+            if (id && e.start && e.end) {
+              n[id] = [...(n[id]||[]), [e.start, e.end]];
+              added++;
+            }
+          });
+          return n;
+        });
+        setVacScanMsg(`Imported ${added} vacation${added>1?"s":""} for ${new Set(entries.map(e=>e.surgeon)).size} surgeon${new Set(entries.map(e=>e.surgeon)).size>1?"s":""}. Review below and adjust if needed.`);
+      } else {
+        setVacScanMsg("No vacations found in the file. Try a different file or add manually.");
+      }
+    } catch (err) {
+      console.error("Vacation scan error:", err);
+      setVacScanMsg("Could not parse the file. Accepts PDF, Excel, Word, CSV, or image files.");
+    } finally {
+      setVacScanning(false);
+      if (vacFileRef.current) vacFileRef.current.value = "";
+    }
+  }, [surgeons, apiKey]);
+
+  const sMap = useMemo(() => { const m={}; surgeons.forEach((s,i)=>m[s.id]={...s,idx:i}); return m; }, [surgeons]);
+  const aMap = useMemo(() => { const m={}; apps.forEach((a,i)=>m[a.id]={...a,idx:i}); return m; }, [apps]);
+  const mondays = useMemo(() => getMondays(startYear, startMonth, 14), [startYear, startMonth]);
+  const endDate = mondays.length > 0 ? addD(mondays[mondays.length-1], 6) : null;
+  const endMoIdx = endDate ? endDate.getMonth() : (startMonth+2)%12;
+  const endYr = endDate ? endDate.getFullYear() : startYear;
+
+  const rename = (id,name) => setSurgeons(p=>p.map(s=>s.id===id?{...s,name}:s));
+  const renameApp = (id,name) => setApps(p=>p.map(a=>a.id===id?{...a,name}:a));
+
+  const addVac = () => {
+    if(!vacSurgeon||!vacStart||!vacEnd) return;
+    setVacations(p=>({...p,[vacSurgeon]:[...(p[vacSurgeon]||[]),[vacStart,vacEnd]]}));
+    setVacStart(""); setVacEnd("");
+  };
+  const rmVac = (sid,idx) => setVacations(p=>({...p,[sid]:(p[sid]||[]).filter((_,i)=>i!==idx)}));
+
+  const addAppShift = () => {
+    if(!appDate||!appPerson) return;
+    setAppShifts(p=>({...p,[appDate]:appPerson}));
+    setAppDate("");
+  };
+  const rmAppShift = (ds) => setAppShifts(p=>{const n={...p};delete n[ds];return n;});
+
+  // Build surgeon preferences map by matching names
+  const buildPrefs = () => {
+    const p = {};
+    surgeons.forEach(s => {
+      const n = s.name.toUpperCase();
+      if (n === "MCC") p[s.id] = { preferShift:"tue", avoidShift:null };
+      else if (n === "DJA") p[s.id] = { preferShift:null, avoidShift:"thu" };
+    });
+    return p;
+  };
+
+  const doGenerate = () => {
+    const prefs = buildPrefs();
+    const result = generate(surgeons, mondays, vacations, backupMondaySet, priorCounts, prefs, fierceBackupSet);
+    setSchedule(result);
+    setView("schedule");
+  };
+
+  const swapShift = (mStr, shift, newId) => {
+    setSchedule(p => {
+      const wk = {...p[mStr]};
+      if(shift==="dayCall") wk.dayCall=newId;
+      else wk.nights={...wk.nights,[shift]:newId};
+      const assigned = new Set([wk.dayCall,...Object.values(wk.nights)].filter(Boolean));
+      wk.off = surgeons.map(s=>s.id).find(id=>!assigned.has(id))||null;
+      return {...p,[mStr]:wk};
+    });
+    setEditShift(null); setEditingWeek(null);
+  };
+
+  // Generate shareable read-only HTML with calendar grid view
+  const generateShareHTML = () => {
+    const colors = surgeons.map((s,i) => ({name:s.name, tx:PAL[i%7].tx, bg:PAL[i%7].tg, bd:PAL[i%7].bd}));
+    const colorMap = {}; surgeons.forEach((s,i) => colorMap[s.id] = colors[i]);
+    const appColors = {}; apps.forEach((a,i) => appColors[a.id] = {name:a.name, tx:APP_PAL[i%4].tx, bg:APP_PAL[i%4].tg, bd:APP_PAL[i%4].bd});
+
+    // Pre-generate ICS content per surgeon + full
+    const icsMap = {};
+    surgeons.forEach(s => {
+      const ev = buildICSEvents(schedule, s.id, s.name, appShifts, aMap);
+      icsMap[s.name] = generateICS(ev, "Call Schedule - " + s.name);
+    });
+    const allEv = [];
+    surgeons.forEach(s => allEv.push(...buildICSEvents(schedule, s.id, s.name, appShifts, aMap)));
+    Object.entries(appShifts).forEach(([ds, aid]) => {
+      const d = parse(ds); const nx = addD(d, 1); const an = aMap?.[aid]?.name || aid;
+      allEv.push({ start: icsDate(d.getFullYear(),d.getMonth()+1,d.getDate(),17), end: icsDate(nx.getFullYear(),nx.getMonth()+1,nx.getDate(),7), summary: "APP Call - " + an, desc: "APP Night Call 5:00 PM - 7:00 AM" });
+    });
+    icsMap["__full__"] = generateICS(allEv, "Full Call Schedule");
+
+    let calBtns = surgeons.map(s => {
+      const c = colorMap[s.id];
+      return `<button onclick="dlCal('${s.name.replace(/'/g,"\\'")}')" class="cal-btn" style="background:${c.bg};color:${c.tx};border-color:${c.bd}">📅 ${c.name}</button>`;
+    }).join("") + `<button onclick="dlCal('__full__')" class="cal-btn full-btn">📅 Full Schedule</button>`;
+
+    // Build calendar grid data
+    const buildCalData = () => {
+      const d = {};
+      Object.entries(schedule).forEach(([mStr,wk]) => {
+        const mon = parse(mStr);
+        const pfx = wk.isBackup ? "B-" : "";
+        if(wk.dayCall){
+          for(let i=0;i<5;i++){ const ds=fmt(addD(mon,i)); d[ds]=[...(d[ds]||[]),{type:pfx+"Day",sid:wk.dayCall}]; }
+          const sat=fmt(addD(mon,5)); d[sat]=[...(d[sat]||[]),{type:pfx+"Day",sid:wk.dayCall,note:"24h"}];
+        }
+        NIGHT_KEYS.forEach((sk,i)=>{
+          const sid=wk.nights?.[sk]; if(!sid) return;
+          const ds=fmt(addD(mon,i)); d[ds]=[...(d[ds]||[]),{type:pfx+"Ngt",sid}];
+        });
+        const ws=wk.nights?.wknd;
+        if(ws){
+          d[fmt(addD(mon,4))]=[...(d[fmt(addD(mon,4))]||[]),{type:pfx+"Wknd",sid:ws}];
+          d[fmt(addD(mon,6))]=[...(d[fmt(addD(mon,6))]||[]),{type:pfx+"Wknd",sid:ws}];
+        }
+        if(wk.isBackup){ for(let i=0;i<7;i++){ const ds=fmt(addD(mon,i)); d[ds]=[...(d[ds]||[]),{type:"Fierce"}]; }}
+        if(wk.isFierceBackup){ for(let i=0;i<7;i++){ const ds=fmt(addD(mon,i)); d[ds]=[...(d[ds]||[]),{type:"FierceBkp"}]; }}
+      });
+      Object.entries(appShifts).forEach(([ds,aid])=>{
+        d[ds]=[...(d[ds]||[]),{type:"APP",aid}];
+      });
+      return d;
+    };
+    const cd = buildCalData();
+
+    // Determine months to render
+    const startDt = mondays[0];
+    const endDt = addD(mondays[mondays.length-1], 6);
+    const monthsToRender = [];
+    let cur = new Date(startDt.getFullYear(), startDt.getMonth(), 1);
+    while(cur <= endDt) {
+      monthsToRender.push({year:cur.getFullYear(), month:cur.getMonth()});
+      cur = new Date(cur.getFullYear(), cur.getMonth()+1, 1);
+    }
+
+    // Build badge HTML
+    const bdg = (sid) => {
+      const c = colorMap[sid];
+      return c ? `<span class="bdg" style="background:${c.bg};color:${c.tx};border-color:${c.bd}">${c.name}</span>` : '';
+    };
+    const abdg = (aid) => {
+      const c = appColors[aid];
+      return c ? `<span class="bdg" style="background:${c.bg};color:${c.tx};border-color:${c.bd}">${c.name}</span>` : '';
+    };
+
+    // Build calendar HTML for each month
+    let calendarHTML = "";
+    monthsToRender.forEach(({year, month}) => {
+      const days = new Date(year, month+1, 0).getDate();
+      const firstDow = new Date(year, month, 1).getDay();
+      calendarHTML += `<div class="mo"><h2 class="mh">${MO[month]} ${year}</h2>`;
+      calendarHTML += `<div class="cg"><div class="ch">Sun</div><div class="ch">Mon</div><div class="ch">Tue</div><div class="ch">Wed</div><div class="ch">Thu</div><div class="ch">Fri</div><div class="ch">Sat</div>`;
+      for(let i=0;i<firstDow;i++) calendarHTML += `<div class="ce"></div>`;
+      for(let day=1;day<=days;day++){
+        const ds = `${year}-${String(month+1).padStart(2,"0")}-${String(day).padStart(2,"0")}`;
+        const entries = cd[ds] || [];
+        const dow = new Date(year,month,day).getDay();
+        const isWknd = dow===0||dow===6;
+        const hasFierce = entries.some(e=>e.type==="Fierce");
+        const hasFBkp = entries.some(e=>e.type==="FierceBkp");
+        const vacList = surgeons.filter(s=>onVac(s.id,ds,vacations));
+
+        let cls = "cd";
+        if(hasFierce) cls += " fierce";
+        else if(isWknd) cls += " wknd";
+
+        let inner = `<div class="dn">${day}`;
+        if(hasFierce) inner += `<span class="ft">BKP</span>`;
+        if(hasFBkp && !hasFierce) inner += `<span class="fbt">F·BKP</span>`;
+        inner += `</div>`;
+
+        entries.filter(e=>e.type!=="Fierce"&&e.type!=="FierceBkp"&&e.type!=="APP").forEach(e => {
+          const isB = e.type.startsWith("B-");
+          const isD = e.type.includes("Day");
+          const isW = e.type.includes("Wknd");
+          const label = isD?"D":isW?"W":"N";
+          const lcls = isD?"dc":isW?"wk":"ng";
+          inner += `<div class="en ${lcls}${isB?" bk":""}">${isB?'<span class="bt">B</span>':''}${label} ${bdg(e.sid)}</div>`;
+        });
+        entries.filter(e=>e.type==="APP").forEach(e => {
+          inner += `<div class="en ap">A ${abdg(e.aid)}</div>`;
+        });
+        if(hasFierce) inner += `<div class="fl">⚡ Fierce Primary</div>`;
+        if(hasFBkp && !hasFierce) inner += `<div class="fbl">🛡 Fierce Backup</div>`;
+        vacList.forEach(s => { inner += `<div class="vl">🏖 ${s.name}</div>`; });
+
+        calendarHTML += `<div class="${cls}">${inner}</div>`;
+      }
+      // Pad remaining cells
+      const totalCells = firstDow + days;
+      const rem = totalCells % 7 === 0 ? 0 : 7 - (totalCells % 7);
+      for(let i=0;i<rem;i++) calendarHTML += `<div class="ce"></div>`;
+      calendarHTML += `</div></div>`;
+    });
+
+    // Legend
+    calendarHTML += `<div class="lg"><span><b class="dc-l">D</b> Day Call</span><span><b class="ng-l">N</b> Night</span><span><b class="wk-l">W</b> Weekend</span><span><b class="ap-l">A</b> APP</span><span><b class="bk-l">B</b> Backup</span><span>⚡ Fierce Primary</span><span>🛡 Fierce Backup</span><span>🏖 Vacation</span></div>`;
+
+    const icsJSON = JSON.stringify(icsMap);
+
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>DSG Call Schedule — ${MO[startMonth]} to ${MO[endMoIdx]} ${startYear}</title>
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;700&display=swap" rel="stylesheet">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'Outfit',sans-serif;background:#f0f2f5;color:#2c3e50;padding:16px;max-width:1100px;margin:0 auto}
+.hd{text-align:center;margin-bottom:16px;padding:18px;background:#fff;border:1px solid #dce2e8;border-radius:12px}
+.hd h1{font-size:20px;color:#1a2a3a;margin-bottom:4px}.hd p{font-size:12px;color:#6a7a88}
+.cs{background:#fff;border:1px solid #dce2e8;border-radius:10px;padding:14px 16px;margin-bottom:16px}
+.ct{font-size:12px;font-weight:700;color:#1a6fa8;margin-bottom:4px}
+.cd-desc{font-size:10px;color:#7a8a98;margin-bottom:10px;line-height:1.4}
+.cb{display:flex;gap:6px;flex-wrap:wrap}
+.cal-btn{border-radius:6px;padding:6px 14px;font-size:11px;font-weight:600;border:1px solid;cursor:pointer;font-family:'Outfit',sans-serif}
+.cal-btn:hover{opacity:0.8}
+.full-btn{background:linear-gradient(135deg,#1a6fa8,#2488c8)!important;color:#fff!important;border-color:#1a6fa8!important}
+.ro{text-align:center;margin-bottom:16px;padding:8px 16px;background:#fff;border:1px solid #dce2e8;border-radius:8px;font-size:11px;color:#1a6fa8}
+.mo{background:#fff;border:1px solid #dce2e8;border-radius:10px;margin-bottom:16px;padding:14px;overflow:hidden}
+.mh{font-size:16px;font-weight:700;color:#1a2a3a;margin-bottom:10px;text-align:center}
+.cg{display:grid;grid-template-columns:repeat(7,1fr);gap:2px}
+.ch{text-align:center;font-size:10px;font-weight:700;color:#8a94a0;padding:4px 0;text-transform:uppercase;letter-spacing:1px}
+.ce{background:#f8f9fb;min-height:80px;border-radius:3px}
+.cd{background:#fff;border:1px solid #e8ecf0;min-height:80px;padding:3px 4px;border-radius:3px}
+.cd.wknd{background:#f4f6f9}
+.cd.fierce{background:#fefaf0;border-color:#e8d890}
+.dn{display:flex;justify-content:space-between;align-items:center;margin-bottom:2px;font-size:11px;font-weight:600;color:#4a5a68;font-family:monospace}
+.ft{font-size:8px;font-weight:700;color:#8a6a10;background:#fef4d8;border-radius:3px;padding:0 4px;letter-spacing:0.5px}
+.fbt{font-size:8px;font-weight:700;color:#1a6fa8;background:#e8f0fc;border-radius:3px;padding:0 4px}
+.en{margin-bottom:1px;padding:1px 3px;border-radius:3px;font-size:10px;border:1px solid #e8ecf0}
+.en.dc{background:#f0f8ff;border-color:#c0d8f0}.en.ng{background:#f8f0ff;border-color:#d8c8f0}.en.wk{background:#faf8f0;border-color:#e0d8c0}
+.en.ap{background:#fcf4f0;border-color:#e8d0c0}
+.en.bk{opacity:0.8;border-style:dashed}
+.bt{font-weight:700;font-size:8px;color:#8a6a10;margin-right:2px}
+.dc-l{color:#1a6fa8}.ng-l{color:#6030a0}.wk-l{color:#7a6030}.ap-l{color:#985020}.bk-l{color:#8a6a10}
+.bdg{display:inline-flex;border-radius:4px;padding:1px 6px;font-size:10px;font-weight:600;border:1px solid}
+.fl{font-size:8px;color:#8a6a10;margin-top:1px;font-weight:600}
+.fbl{font-size:8px;color:#1a6fa8;margin-top:1px;font-weight:600}
+.vl{font-size:8px;color:#c04848;margin-top:1px}
+.lg{display:flex;gap:14px;flex-wrap:wrap;font-size:10px;color:#6a7a88;padding:10px 0;justify-content:center}
+.lg b{font-weight:700;margin-right:2px}
+.footer{text-align:center;margin-top:20px;font-size:10px;color:#a0a8b0}
+@media print{body{background:#fff;padding:8px}.mo{break-inside:avoid}.cs{display:none}}
+${"</"}style>${"</"}head><body>
+<div class="hd"><h1><span style="background:linear-gradient(135deg,#1a6fa8,#2488c8);color:#fff;padding:2px 8px;border-radius:5px;font-size:14px;font-weight:800;margin-right:8px">DSG</span> Davenport Surgical Group</h1><p>Call Schedule · ${MO[startMonth]} – ${MO[endMoIdx]} ${startYear} · ${mondays.length} Weeks</p></div>
+<div class="cs"><div class="ct">📅 Add to Your Calendar</div><div class="cd-desc">Tap your name to download your shifts as a calendar file (.ics). Import into Google Calendar, Outlook, or Apple Calendar.</div><div class="cb">${calBtns}</div></div>
+<div class="ro">📋 Read-Only Calendar · Contact the scheduler for any changes</div>
+${calendarHTML}
+<div class="footer">Generated ${new Date().toLocaleDateString()} · DSG Call Schedule</div>
+${"<"}script>
+var D=${icsJSON};
+function dlCal(k){var c=D[k];if(!c){alert("Not found");return;}var f=k==="__full__"?"call-schedule-full.ics":"call-schedule-"+k.toLowerCase()+".ics";var b=new Blob([c],{type:"text/calendar;charset=utf-8"});var u=URL.createObjectURL(b);var a=document.createElement("a");a.href=u;a.download=f;a.click();URL.revokeObjectURL(u);}
+${"</"}script>${"</"}body>${"</"}html>`;
+
+    const blob = new Blob([html], {type:"text/html"});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `dsg-call-schedule-${MO[startMonth].toLowerCase()}-${MO[endMoIdx].toLowerCase()}-${startYear}.html`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  // Stats
+  const stats = useMemo(() => {
+    const s={}; surgeons.forEach(sg=>s[sg.id]={dc:0,nights:0,wknd:0,off:0,dcB:0,nightsB:0,wkndB:0,offB:0});
+    Object.values(schedule).forEach(wk => {
+      const bk = wk.isBackup;
+      if(wk.dayCall&&s[wk.dayCall]) s[wk.dayCall][bk?"dcB":"dc"]++;
+      if(wk.off&&s[wk.off]) s[wk.off][bk?"offB":"off"]++;
+      Object.entries(wk.nights||{}).forEach(([sh,sid])=>{
+        if(!sid||!s[sid]) return;
+        if(sh==="wknd") s[sid][bk?"wkndB":"wknd"]++;
+        else s[sid][bk?"nightsB":"nights"]++;
+      });
+    });
+    return s;
+  }, [schedule, surgeons]);
+
+  // APP stats
+  const appStats = useMemo(() => {
+    const s={}; apps.forEach(a=>s[a.id]=0);
+    Object.values(appShifts).forEach(aid=>{ if(s[aid]!==undefined) s[aid]++; });
+    return s;
+  }, [appShifts, apps]);
+
+  // Vacation days per surgeon
+  const vacDays = useMemo(() => {
+    const d = {};
+    surgeons.forEach(s => {
+      const ranges = vacations[s.id] || [];
+      let total = 0;
+      ranges.forEach(([start, end]) => {
+        const s1 = parse(start);
+        const s2 = parse(end);
+        const diff = Math.round((s2 - s1) / (1000*60*60*24)) + 1;
+        if (diff > 0) total += diff;
+      });
+      d[s.id] = total;
+    });
+    return d;
+  }, [vacations, surgeons]);
+
+  // Cumulative stats: 1-year, 2-year, multi-year (each = prior tier + current schedule)
+  const buildCum = (prior) => {
+    const c = {};
+    surgeons.forEach(s => {
+      const p = prior[s.id] || {};
+      const cur = stats[s.id] || {};
+      c[s.id] = {
+        dc: (p.dc||0)+(cur.dc||0), nights: (p.nights||0)+(cur.nights||0), wknd: (p.wknd||0)+(cur.wknd||0), off: (p.off||0)+(cur.off||0),
+        dcB: (p.dcB||0)+(cur.dcB||0), nightsB: (p.nightsB||0)+(cur.nightsB||0), wkndB: (p.wkndB||0)+(cur.wkndB||0), offB: (p.offB||0)+(cur.offB||0),
+      };
+    });
+    return c;
+  };
+  const cum1yr = useMemo(() => buildCum(year1Counts), [stats, year1Counts, surgeons]);
+  const cum2yr = useMemo(() => buildCum(year2Counts), [stats, year2Counts, surgeons]);
+  const cumStats = useMemo(() => buildCum(priorCounts), [stats, priorCounts, surgeons]);
+
+  // Total call shifts (regular only): Day Call wk = 7, Night = 1, Weekend = 3
+  const calcShifts = (s) => (s.dc||0)*7 + (s.nights||0)*1 + (s.wknd||0)*3;
+
+  // Calendar data
+  const calData = useMemo(() => {
+    const d={};
+    Object.entries(schedule).forEach(([mStr,wk])=>{
+      const mon=parse(mStr);
+      const pfx = wk.isBackup ? "B-" : "";
+      const cls = wk.isBackup ? "backup" : "primary";
+      if(wk.dayCall){
+        for(let i=0;i<5;i++){
+          const ds=fmt(addD(mon,i));
+          d[ds]=[...(d[ds]||[]),{type:pfx+"Day",surgeon:wk.dayCall,cls}];
+        }
+        const sat=fmt(addD(mon,5));
+        d[sat]=[...(d[sat]||[]),{type:pfx+"Day",surgeon:wk.dayCall,cls,note:"24h"}];
+      }
+      NIGHT_KEYS.forEach((sk,i)=>{
+        const sid=wk.nights?.[sk]; if(!sid) return;
+        const ds=fmt(addD(mon,i));
+        d[ds]=[...(d[ds]||[]),{type:pfx+"Ngt",surgeon:sid,cls}];
+      });
+      const wkndS = wk.nights?.wknd;
+      if(wkndS){
+        const fri=fmt(addD(mon,4));
+        d[fri]=[...(d[fri]||[]),{type:pfx+"Wknd",surgeon:wkndS,cls,note:"5p–7a"}];
+        const sun=fmt(addD(mon,6));
+        d[sun]=[...(d[sun]||[]),{type:pfx+"Wknd",surgeon:wkndS,cls,note:"7a–7a"}];
+      }
+      if(wk.isBackup){
+        for(let i=0;i<7;i++){
+          const ds=fmt(addD(mon,i));
+          d[ds]=[...(d[ds]||[]),{type:"Fierce",surgeon:null,cls:"fierce"}];
+        }
+      }
+      if(wk.isFierceBackup){
+        for(let i=0;i<7;i++){
+          const ds=fmt(addD(mon,i));
+          d[ds]=[...(d[ds]||[]),{type:"FierceBkp",surgeon:null,cls:"fiercebkp"}];
+        }
+      }
+    });
+    // APP shifts
+    Object.entries(appShifts).forEach(([ds,aid])=>{
+      d[ds]=[...(d[ds]||[]),{type:"APP",appId:aid,cls:"app"}];
+    });
+    return d;
+  }, [schedule, appShifts]);
+
+  // Calendar grid
+  const calGrid = useMemo(() => {
+    const days=new Date(calYear,calMonth+1,0).getDate();
+    const first=new Date(calYear,calMonth,1).getDay();
+    const c=[]; for(let i=0;i<first;i++) c.push(null);
+    for(let d=1;d<=days;d++) c.push(d);
+    while(c.length%7) c.push(null);
+    return c;
+  }, [calYear,calMonth]);
+
+  // Which APP shifts fall in a given week (for schedule view)
+  const appShiftsInWeek = (mondayStr) => {
+    const mon = parse(mondayStr);
+    const result = [];
+    for(let i=0;i<7;i++){
+      const ds = fmt(addD(mon,i));
+      if(appShifts[ds]) result.push({date:ds, day:DAY_HDR[addD(mon,i).getDay()], appId:appShifts[ds]});
+    }
+    return result;
+  };
+
+  const Badge = ({id,small}) => {
+    const s=sMap[id]; if(!s) return <span style={{color:"#a0a8b0",fontSize:10}}>—</span>;
+    return <span style={{...css.badge(s.idx),fontSize:small?10:11,padding:small?"1px 6px":"2px 9px"}}>{s.name}</span>;
+  };
+
+  const AppBadge = ({id,small}) => {
+    const a=aMap[id]; if(!a) return <span style={{color:"#a0a8b0",fontSize:10}}>—</span>;
+    return <span style={{...css.appBadge(a.idx),fontSize:small?10:11,padding:small?"1px 6px":"2px 9px"}}>{a.name}</span>;
+  };
+
+  return (
+    <div style={css.root}>
+      <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet"/>
+
+      {/* ─── Header ─── */}
+      <div style={css.hdr}>
+        <div style={{display:"flex",alignItems:"center",gap:12}}>
+          <div style={{width:38,height:38,borderRadius:8,background:"linear-gradient(135deg,#1a6fa8,#2488c8)",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,boxShadow:"0 2px 6px rgba(26,111,168,0.25)"}}>
+            <span style={{color:"#fff",fontSize:15,fontWeight:800,letterSpacing:-0.5,fontFamily:font}}>DSG</span>
+          </div>
+          <div>
+            <h1 style={css.h1}>Davenport Surgical Group</h1>
+            <p style={css.sub}>
+              Call Schedule · Surgeons + APPs
+              {saveStatus && <span style={{marginLeft:8,color:"#1a8040",fontWeight:600,fontSize:11}}>☁ {saveStatus}</span>}
+              {loaded && !saveStatus && <span style={{marginLeft:8,color:"#a0a8b0",fontSize:10}}>☁ Synced</span>}
+              {!loaded && <span style={{marginLeft:8,color:"#6a7a88",fontSize:10}}>Connecting…</span>}
+            </p>
+          </div>
+        </div>
+        <div style={css.nav}>
+          {[["setup","Setup"],["totals","Totals"],["schedule","Schedule"],["calendar","Calendar"],["stats","Stats"]].map(([k,l])=>
+            <button key={k} style={css.tab(view===k)} onClick={()=>setView(k)}>{l}</button>
+          )}
+        </div>
+      </div>
+
+      <div style={{maxWidth:1020,margin:"0 auto",padding:"18px 14px 60px"}}>
+
+        {/* ════════════════ SETUP ════════════════ */}
+        {view==="setup"&&<>
+          {/* Surgeons */}
+          <div style={css.card}>
+            <div style={css.cardT}>Surgeons</div>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(130px,1fr))",gap:6}}>
+              {surgeons.map((s,i)=>(
+                <div key={s.id} style={{display:"flex",alignItems:"center",gap:6,background:"#f4f6f8",borderRadius:6,padding:"5px 8px",border:"1px solid #e0e4ea"}}>
+                  <div style={{width:8,height:8,borderRadius:2,background:PAL[i%7].tx,flexShrink:0}}/>
+                  <input value={s.name} onChange={e=>rename(s.id,e.target.value)}
+                    style={{...css.inp,border:"none",padding:"3px 4px",background:"transparent",width:"100%",fontWeight:600,letterSpacing:0.5}}/>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* APPs */}
+          <div style={css.card}>
+            <div style={css.cardT}>APPs <span style={{fontWeight:400,fontSize:11,color:"#7a8a98"}}>— Night Call 5p–7a (Intermittent)</span></div>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(130px,1fr))",gap:6}}>
+              {apps.map((a,i)=>(
+                <div key={a.id} style={{display:"flex",alignItems:"center",gap:6,background:"#f4f6f8",borderRadius:6,padding:"5px 8px",border:`1px solid ${APP_PAL[i%4].bd}`}}>
+                  <div style={{width:8,height:8,borderRadius:2,background:APP_PAL[i%4].tx,flexShrink:0}}/>
+                  <input value={a.name} onChange={e=>renameApp(a.id,e.target.value)}
+                    style={{...css.inp,border:"none",padding:"3px 4px",background:"transparent",width:"100%",fontWeight:600,letterSpacing:0.5}}/>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Period */}
+          <div style={css.card}>
+            <div style={css.cardT}>Schedule Period (14 Weeks)</div>
+            <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+              <select value={startMonth} onChange={e=>setStartMonth(+e.target.value)} style={{...css.inp,width:140}}>
+                {MO.map((m,i)=><option key={i} value={i}>{m}</option>)}
+              </select>
+              <select value={startYear} onChange={e=>setStartYear(+e.target.value)} style={{...css.inp,width:90}}>
+                {[2025,2026,2027,2028].map(y=><option key={y} value={y}>{y}</option>)}
+              </select>
+              <span style={{color:"#7a8a98",fontSize:12}}>→ {MO[endMoIdx]} {endYr}</span>
+            </div>
+          </div>
+
+          {/* Vacations */}
+          <div style={css.card}>
+            <div style={css.cardT}>Vacations / Time Off</div>
+
+            {/* Scan vacation file */}
+            <div style={{background:"linear-gradient(135deg,#f4f6f8,#f0f2f5)",border:"1px dashed #a8c0d8",borderRadius:8,padding:"12px 16px",marginBottom:14}}>
+              <div style={{fontSize:13,fontWeight:600,color:"#1a6fa8",marginBottom:6}}>📄 Import Vacation Schedule</div>
+              <div style={{fontSize:11,color:"#7a8a98",lineHeight:1.5,marginBottom:8}}>
+                Upload a PDF, Excel, Word, or image of approved vacations. The tool will match surgeon initials and import dates automatically.
+              </div>
+              <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
+                <input ref={vacFileRef} type="file" accept=".pdf,image/*,.xlsx,.xls,.csv,.docx,.doc" capture="environment"
+                  onChange={e => { if(e.target.files?.[0]) handleVacationScan(e.target.files[0]); }}
+                  style={{display:"none"}} id="vacScanInput"/>
+                <button onClick={()=>vacFileRef.current?.click()} disabled={vacScanning}
+                  style={{...css.btn(true),opacity:vacScanning?0.5:1,padding:"6px 14px",fontSize:12}}>
+                  {vacScanning ? "⏳ Reading…" : "📄 Upload Vacation File"}
+                </button>
+              </div>
+            </div>
+            {vacScanMsg && (
+              <div style={{fontSize:12,color:vacScanMsg.includes("Could not")||vacScanMsg.includes("No vacations")?"#c06060":"#50a070",marginBottom:10,padding:"6px 10px",background:vacScanMsg.includes("Could not")||vacScanMsg.includes("No vacations")?"#fce8e8":"#e8f8e8",border:`1px solid ${vacScanMsg.includes("Could not")||vacScanMsg.includes("No vacations")?"#e8c0c0":"#b0d8b0"}`,borderRadius:6}}>
+                {vacScanMsg}
+              </div>
+            )}
+
+            <div style={{fontSize:11,fontWeight:600,color:"#6a7a88",marginBottom:8}}>Or add manually:</div>
+            <div style={{display:"flex",gap:6,alignItems:"end",flexWrap:"wrap",marginBottom:12}}>
+              <div>
+                <label style={{fontSize:10,color:"#7a8a98",display:"block",marginBottom:2}}>Surgeon</label>
+                <select value={vacSurgeon} onChange={e=>setVacSurgeon(e.target.value)} style={{...css.inp,width:120}}>
+                  <option value="">Select…</option>
+                  {surgeons.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
+                </select>
+              </div>
+              <div>
+                <label style={{fontSize:10,color:"#7a8a98",display:"block",marginBottom:2}}>Start</label>
+                <input type="date" value={vacStart} onChange={e=>setVacStart(e.target.value)} style={{...css.inp,width:140}}/>
+              </div>
+              <div>
+                <label style={{fontSize:10,color:"#7a8a98",display:"block",marginBottom:2}}>End</label>
+                <input type="date" value={vacEnd} onChange={e=>setVacEnd(e.target.value)} style={{...css.inp,width:140}}/>
+              </div>
+              <button onClick={addVac} style={css.btn(true)}>+ Add</button>
+            </div>
+            {surgeons.map(s=>{
+              const v=vacations[s.id]||[]; if(!v.length) return null;
+              return (
+                <div key={s.id} style={{marginBottom:6,display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
+                  <Badge id={s.id}/>
+                  {v.map(([vs,ve],i)=>(
+                    <span key={i} style={{fontFamily:mono,fontSize:11,color:"#5a6a78"}}>
+                      {vs} → {ve}
+                      <button onClick={()=>rmVac(s.id,i)} style={{background:"none",border:"none",color:"#904040",cursor:"pointer",fontSize:11,marginLeft:3}}>✕</button>
+                    </span>
+                  ))}
+                </div>
+              );
+            })}
+          </div>
+
+          {/* APP Shift Assignments */}
+          <div style={css.card}>
+            <div style={css.cardT}>APP Call Shifts <span style={{fontWeight:400,fontSize:11,color:"#7a8a98"}}>— Assign Individually</span></div>
+            <p style={{fontSize:12,color:"#7a8a98",margin:"0 0 10px",lineHeight:1.5}}>
+              Assign APP night shifts (5p–7a) on specific dates. These are added manually since APP coverage is intermittent.
+            </p>
+            <div style={{display:"flex",gap:6,alignItems:"end",flexWrap:"wrap",marginBottom:12}}>
+              <div>
+                <label style={{fontSize:10,color:"#7a8a98",display:"block",marginBottom:2}}>Date</label>
+                <input type="date" value={appDate} onChange={e=>setAppDate(e.target.value)} style={{...css.inp,width:150}}/>
+              </div>
+              <div>
+                <label style={{fontSize:10,color:"#7a8a98",display:"block",marginBottom:2}}>APP</label>
+                <select value={appPerson} onChange={e=>setAppPerson(e.target.value)} style={{...css.inp,width:120}}>
+                  <option value="">Select…</option>
+                  {apps.map(a=><option key={a.id} value={a.id}>{a.name}</option>)}
+                </select>
+              </div>
+              <button onClick={addAppShift} style={css.btn(true)}>+ Assign</button>
+            </div>
+            {Object.entries(appShifts).sort(([a],[b])=>a.localeCompare(b)).map(([ds,aid])=>(
+              <div key={ds} style={{display:"flex",alignItems:"center",gap:8,marginBottom:4}}>
+                <span style={{fontFamily:mono,fontSize:12,color:"#5a6a78"}}>{ds}</span>
+                <span style={{fontSize:11,color:"#5a6a78"}}>{DAY_HDR[parse(ds).getDay()]}</span>
+                <AppBadge id={aid}/>
+                <span style={{fontSize:10,color:"#7a8a98"}}>5p–7a</span>
+                <button onClick={()=>rmAppShift(ds)} style={{background:"none",border:"none",color:"#904040",cursor:"pointer",fontSize:11}}>✕</button>
+              </div>
+            ))}
+          </div>
+
+          {/* Backup Weeks */}
+          <div style={css.card}>
+            <div style={css.cardT}>Backup Weeks <span style={{fontWeight:400,fontSize:11,color:"#7a8a98"}}>(Fierce = Primary)</span></div>
+            <p style={{fontSize:12,color:"#7a8a98",margin:"0 0 10px",lineHeight:1.5}}>
+              Mark weeks where <strong style={{color:"#8a6a10"}}>Fierce</strong> is the primary surgeon. Group provides backup coverage with the same rotation.
+            </p>
+
+            {/* Scan Fierce's schedule */}
+            <div style={{background:"#fef8e8",border:"1px dashed #d8c070",borderRadius:8,padding:"12px 16px",marginBottom:14}}>
+              <div style={{fontSize:13,fontWeight:600,color:"#7a5a00",marginBottom:6}}>📄 Import Fierce's Schedule</div>
+              <div style={{fontSize:12,color:"#5a5030",lineHeight:1.5,marginBottom:8}}>
+                Upload a photo, Excel, Word, or CSV file of Fierce's upcoming schedule. The tool will identify which weeks Fierce is on and auto-mark them as backup.
+              </div>
+              <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
+                <input ref={bkFileRef} type="file" accept="image/*,.xlsx,.xls,.csv,.docx,.doc" capture="environment"
+                  onChange={e => { if(e.target.files?.[0]) handleBackupScan(e.target.files[0]); }}
+                  style={{display:"none"}} id="bkScanInput"/>
+                <button onClick={()=>bkFileRef.current?.click()} disabled={bkScanning}
+                  style={{...css.btn(true),opacity:bkScanning?0.5:1,padding:"6px 14px",fontSize:12,background:"linear-gradient(135deg,#f8f0d8,#e0c870)",borderColor:"#d0b860",color:"#8a6a10"}}>
+                  {bkScanning ? "⏳ Scanning…" : "📷 Upload Fierce's Schedule"}
+                </button>
+              </div>
+            </div>
+            {bkScanMsg && (
+              <div style={{fontSize:12,color:bkScanMsg.includes("Could not")||bkScanMsg.includes("No weeks")?"#c06060":"#50a070",marginBottom:10,padding:"6px 10px",background:bkScanMsg.includes("Could not")||bkScanMsg.includes("No weeks")?"#fce8e8":"#e8f8e8",border:`1px solid ${bkScanMsg.includes("Could not")||bkScanMsg.includes("No weeks")?"#e8c0c0":"#b0d8b0"}`,borderRadius:6}}>
+                {bkScanMsg}
+              </div>
+            )}
+
+            <div style={{display:"flex",gap:6,alignItems:"end",flexWrap:"wrap",marginBottom:12}}>
+              <div>
+                <label style={{fontSize:10,color:"#7a8a98",display:"block",marginBottom:2}}>Or add manually — Week Starting (Monday)</label>
+                <input type="date" value={bkMonday} onChange={e=>setBkMonday(e.target.value)} style={{...css.inp,width:160}}/>
+              </div>
+              <button onClick={()=>{ if(bkMonday){ setBackupMondaySet(p=>{const n=new Set(p);n.add(bkMonday);return n;}); setBkMonday(""); }}} style={css.btn(true)}>+ Mark Backup</button>
+            </div>
+            {[...backupMondaySet].sort().map(m=>(
+              <div key={m} style={{display:"flex",alignItems:"center",gap:8,marginBottom:5}}>
+                <span style={{fontFamily:mono,fontSize:12,color:"#5a6a78"}}>Wk of {m}</span>
+                <span style={css.backupBanner}>⚡ BACKUP — Fierce Primary</span>
+                <button onClick={()=>setBackupMondaySet(p=>{const n=new Set(p);n.delete(m);return n;})} style={{background:"none",border:"none",color:"#904040",cursor:"pointer",fontSize:12}}>✕</button>
+              </div>
+            ))}
+
+            {/* Fierce Backup weeks — label only, no schedule change */}
+            <div style={{marginTop:14,paddingTop:14,borderTop:"1px solid #e0e4ea"}}>
+              <div style={{fontSize:12,fontWeight:700,color:"#6090a8",marginBottom:6}}>Fierce Backup Weeks <span style={{fontWeight:400,color:"#7a8a98"}}>— Regular schedule, Fierce backs up the group</span></div>
+              <div style={{display:"flex",gap:6,alignItems:"end",flexWrap:"wrap",marginBottom:10}}>
+                <div>
+                  <label style={{fontSize:10,color:"#7a8a98",display:"block",marginBottom:2}}>Week Starting (Monday)</label>
+                  <input type="date" value={bkMonday} onChange={e=>setBkMonday(e.target.value)} style={{...css.inp,width:160}}/>
+                </div>
+                <button onClick={()=>{ if(bkMonday){ setFierceBackupSet(p=>{const n=new Set(p);n.add(bkMonday);return n;}); setBkMonday(""); }}} style={{...css.btn(true),background:"linear-gradient(135deg,#e0ecf8,#d0e0f0)",borderColor:"#a0c0e0",color:"#1a6fa8",padding:"7px 16px",fontSize:12}}>+ Mark Fierce Backup</button>
+              </div>
+              {[...fierceBackupSet].sort().map(m=>(
+                <div key={m} style={{display:"flex",alignItems:"center",gap:8,marginBottom:5}}>
+                  <span style={{fontFamily:mono,fontSize:12,color:"#5a6a78"}}>Wk of {m}</span>
+                  <span style={{fontSize:11,color:"#1a6fa8",background:"#e8f0fc",border:"1px solid #a8c8e0",borderRadius:6,padding:"3px 8px",fontWeight:600}}>🛡 Fierce Backup</span>
+                  <button onClick={()=>setFierceBackupSet(p=>{const n=new Set(p);n.delete(m);return n;})} style={{background:"none",border:"none",color:"#904040",cursor:"pointer",fontSize:12}}>✕</button>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <button onClick={doGenerate} style={{...css.btn(true),padding:"13px 30px",fontSize:14,fontWeight:700,width:"100%",borderRadius:9,letterSpacing:0.3}}>
+            Generate 14-Week Schedule →
+          </button>
+
+          {/* ─── Settings (collapsed) ─── */}
+          <div style={{marginTop:14}}>
+            <button onClick={()=>setShowApiKey(p=>!p)}
+              style={{background:"none",border:"1px solid #e0e4ea",borderRadius:7,padding:"8px 14px",cursor:"pointer",fontFamily:font,display:"flex",alignItems:"center",gap:8,width:"100%",justifyContent:"space-between"}}>
+              <span style={{fontSize:12,color:"#6a7a88",fontWeight:600}}>
+                ⚙️ Settings
+                {apiKey && <span style={{marginLeft:8,color:"#1a8040",fontSize:11}}>✓ API key configured</span>}
+                {!apiKey && <span style={{marginLeft:8,color:"#5a3030",fontSize:11}}>API key needed for file scanning</span>}
+              </span>
+              <span style={{fontSize:11,color:"#7a8a98"}}>{showApiKey ? "▲" : "▼"}</span>
+            </button>
+            {showApiKey && (
+              <div style={{...css.card,marginTop:6,background:"#f4f6f8",border:"1px solid #e0e4ea"}}>
+                <div style={{fontSize:12,fontWeight:700,color:"#2c5a80",marginBottom:8}}>🔑 Anthropic API Key</div>
+                <p style={{fontSize:11,color:"#7a8a98",margin:"0 0 10px",lineHeight:1.6}}>
+                  Required for AI-powered file scanning (vacations, Fierce schedules, prior call sheets). This key is shared with anyone who has access to this artifact.
+                  Get a key at <span style={{color:"#1a6fa8"}}>console.anthropic.com</span>
+                </p>
+                {!apiKey ? (
+                  <div style={{display:"flex",gap:6,alignItems:"center",flexWrap:"wrap"}}>
+                    <input type="password" placeholder="sk-ant-api03-..." value={apiKey} onChange={e=>setApiKey(e.target.value)}
+                      style={{...css.inp,width:300,fontSize:12,fontFamily:mono}}/>
+                    <span style={{fontSize:10,color:"#8a94a0"}}>Paste and it auto-saves</span>
+                  </div>
+                ) : (
+                  <div style={{display:"flex",gap:8,alignItems:"center"}}>
+                    <span style={{fontSize:12,color:"#6a7a88",fontFamily:mono}}>{apiKey.slice(0,12)}…{apiKey.slice(-4)}</span>
+                    <span style={{fontSize:11,color:"#1a8040",fontWeight:600}}>✓ Active</span>
+                    <button onClick={()=>setApiKey("")} style={{background:"none",border:"1px solid #e8c0c0",color:"#804040",borderRadius:5,padding:"3px 10px",fontSize:11,cursor:"pointer",fontFamily:font}}>Remove</button>
+                  </div>
+                )}
+
+                <div style={{marginTop:16,paddingTop:12,borderTop:"1px solid #e0e4ea"}}>
+                  <button onClick={resetAllData} style={{background:"none",border:"1px solid #e8c0c0",color:"#804040",borderRadius:6,padding:"5px 12px",fontSize:11,cursor:"pointer",fontFamily:font}}>
+                    Reset All Data
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </>}
+
+        {/* ════════════════ TOTALS ════════════════ */}
+        {view==="totals"&&<>
+          <div style={css.card}>
+            <div style={css.cardT}>Running Totals <span style={{fontWeight:400,fontSize:11,color:"#7a8a98"}}>— 1-Year, 2-Year, and Multi-Year</span></div>
+            <p style={{fontSize:12,color:"#7a8a98",margin:"0 0 10px",lineHeight:1.5}}>
+              Enter shift counts across three time frames. The generator uses the <strong style={{color:"#7030a8"}}>multi-year</strong> totals for balancing assignments. All three are shown in Stats for tracking.
+            </p>
+
+            {/* Template download & upload */}
+            <div style={{background:"linear-gradient(135deg,#f4f6f8,#f0f2f5)",border:"1px dashed #a8c0d8",borderRadius:8,padding:"14px 16px",marginBottom:14}}>
+              <div style={{fontSize:13,fontWeight:600,color:"#1a6fa8",marginBottom:6}}>📄 Import from Spreadsheet</div>
+              <div style={{fontSize:11,color:"#7a8a98",lineHeight:1.5,marginBottom:10}}>
+                Download the template, fill in each surgeon's counts, then upload. Imports into the Multi-Year table. Accepts CSV or Excel (.xlsx).
+              </div>
+              <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
+                <button onClick={downloadTemplate} style={{...css.btn(false),padding:"6px 14px",fontSize:12}}>
+                  ⬇ Download Template
+                </button>
+                <input ref={fileRef} type="file" accept=".csv,.xlsx,.xls"
+                  onChange={e => { if(e.target.files?.[0]) handleTemplateUpload(e.target.files[0]); }}
+                  style={{display:"none"}} id="templateInput"/>
+                <button onClick={()=>fileRef.current?.click()} disabled={scanning}
+                  style={{...css.btn(true),opacity:scanning?0.5:1,padding:"6px 14px",fontSize:12}}>
+                  {scanning ? "⏳ Reading…" : "⬆ Upload Filled Template"}
+                </button>
+              </div>
+            </div>
+            {scanMsg && (
+              <div style={{fontSize:12,color:scanMsg.includes("Could not")||scanMsg.includes("could not")?"#c06060":"#50a070",marginBottom:10,padding:"6px 10px",background:scanMsg.includes("Could not")||scanMsg.includes("could not")?"#fce8e8":"#e8f8e8",border:`1px solid ${scanMsg.includes("Could not")||scanMsg.includes("could not")?"#e8c0c0":"#b0d8b0"}`,borderRadius:6}}>
+                {scanMsg}
+              </div>
+            )}
+
+            {/* AI-powered schedule scan */}
+            <div style={{background:"linear-gradient(135deg,#f8f0f4,#f8f0f4)",border:"1px dashed #c0a0d8",borderRadius:8,padding:"14px 16px",marginBottom:14}}>
+              <div style={{fontSize:13,fontWeight:600,color:"#7030a8",marginBottom:6}}>🤖 Scan a Past Call Schedule</div>
+              <div style={{fontSize:11,color:"#7a8a98",lineHeight:1.5,marginBottom:10}}>
+                Upload a photo, PDF, Excel, Word, or CSV of a previous call schedule. AI will read it and count each surgeon's shifts automatically. Imports into the Multi-Year table.
+                {!apiKey && <span style={{color:"#c04040",fontWeight:600}}> Requires API key — add one in ⚙️ Settings on the Setup tab.</span>}
+              </div>
+              <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
+                <input ref={priorFileRef} type="file" accept=".pdf,image/*,.xlsx,.xls,.csv,.docx,.doc" capture="environment"
+                  onChange={e => { if(e.target.files?.[0]) handlePriorScheduleScan(e.target.files[0]); }}
+                  style={{display:"none"}} id="priorScanInput"/>
+                <button onClick={()=>priorFileRef.current?.click()} disabled={priorScanning}
+                  style={{...css.btn(true),opacity:priorScanning?0.5:1,padding:"6px 14px",fontSize:12,background:"linear-gradient(135deg,#f0e8f8,#e8d8f4)",borderColor:"#c0a0d8",color:"#7030a8"}}>
+                  {priorScanning ? "⏳ Analyzing…" : "📷 Upload Past Schedule"}
+                </button>
+                {apiKey && <span style={{fontSize:10,color:"#1a8040"}}>✓ AI scanning ready</span>}
+              </div>
+            </div>
+            {priorScanMsg && (
+              <div style={{fontSize:12,color:priorScanMsg.includes("Could not")||priorScanMsg.includes("API key")?"#c06060":"#50a070",marginBottom:10,padding:"6px 10px",background:priorScanMsg.includes("Could not")||priorScanMsg.includes("API key")?"#fce8e8":"#e8f8e8",border:`1px solid ${priorScanMsg.includes("Could not")||priorScanMsg.includes("API key")?"#e8c0c0":"#b0d8b0"}`,borderRadius:6,lineHeight:1.5}}>
+                {priorScanMsg}
+              </div>
+            )}
+
+            {/* Helper to render an editable totals table */}
+            {[
+              {label:"1-Year (Current Year)",color:"#1a6fa8",counts:year1Counts,setter:setYear1Counts},
+              {label:"2-Year",color:"#8a6a10",counts:year2Counts,setter:setYear2Counts},
+              {label:"Multi-Year (Used by Generator)",color:"#7030a8",counts:priorCounts,setter:setPriorCounts},
+            ].map(tier=>(
+              <div key={tier.label} style={{marginBottom:16}}>
+                <div style={{fontSize:12,fontWeight:700,color:tier.color,marginBottom:6,textTransform:"uppercase",letterSpacing:0.8}}>{tier.label}</div>
+                <div style={{overflowX:"auto"}}>
+                  <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+                    <thead>
+                      <tr style={{borderBottom:"1px solid #d0d8e0"}}>
+                        <th style={thS2}>Surgeon</th>
+                        <th style={{...thS2,color:tier.color}}>Shifts</th>
+                        <th style={thS2}>Day Call</th><th style={thS2}>Nights</th><th style={thS2}>Wknds</th>
+                        <th style={{...thS2,borderLeft:"1px solid #d8c880"}}>B-Day</th><th style={thS2}>B-Ngt</th><th style={thS2}>B-Wknd</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {surgeons.map(s=>{
+                        const p = tier.counts[s.id]||{};
+                        const total = calcShifts(p);
+                        const upd = (field, val) => {
+                          const v = parseInt(val)||0;
+                          tier.setter(prev=>({...prev,[s.id]:{...(prev[s.id]||{}), [field]:v}}));
+                        };
+                        const ci = (field) => (
+                          <input type="number" min="0" value={p[field]||0}
+                            onChange={e=>upd(field,e.target.value)}
+                            style={{...css.inp,width:46,padding:"2px 4px",textAlign:"center",fontFamily:mono,fontSize:12}}/>
+                        );
+                        return (
+                          <tr key={s.id} style={{borderBottom:"1px solid #e8ecf0"}}>
+                            <td style={{padding:"5px 6px"}}><Badge id={s.id} small/></td>
+                            <td style={{padding:"5px 6px",fontFamily:mono,fontSize:13,color:tier.color,fontWeight:700}}>{total}</td>
+                            <td style={{padding:"3px 4px"}}>{ci("dc")}</td>
+                            <td style={{padding:"3px 4px"}}>{ci("nights")}</td>
+                            <td style={{padding:"3px 4px"}}>{ci("wknd")}</td>
+                            <td style={{padding:"3px 4px",borderLeft:"1px solid #d8c880"}}>{ci("dcB")}</td>
+                            <td style={{padding:"3px 4px"}}>{ci("nightsB")}</td>
+                            <td style={{padding:"3px 4px"}}>{ci("wkndB")}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            ))}
+
+            <div style={{fontSize:11,color:"#7a8a98",lineHeight:1.5}}>
+              <strong style={{color:"#2c5a80"}}>Total Shifts</strong> = regular call only. Day Call wk = 7 · Weeknight = 1 · Weekend = 3
+            </div>
+          </div>
+        </>}
+
+        {/* ════════════════ SCHEDULE ════════════════ */}
+        {view==="schedule"&&<>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14,flexWrap:"wrap",gap:8}}>
+            <div style={{fontSize:14,fontWeight:600,color:"#2c5a80"}}>
+              {MO[startMonth]} – {MO[endMoIdx]} {startYear}
+              <span style={{fontSize:11,color:"#7a8a98",marginLeft:6}}>({mondays.length} weeks)</span>
+            </div>
+            <div style={{display:"flex",gap:5}}>
+              <button onClick={()=>setView("setup")} style={css.btn(false)}>← Setup</button>
+              <button onClick={doGenerate} style={css.btn(true)}>↻ Regenerate</button>
+            </div>
+          </div>
+
+          {!Object.keys(schedule).length && (
+            <div style={{...css.card,textAlign:"center",color:"#7a8a98",padding:36}}>No schedule yet. Go to Setup → Generate.</div>
+          )}
+
+          {/* Calendar Export */}
+          {Object.keys(schedule).length > 0 && (
+            <div style={{...css.card,background:"linear-gradient(135deg,#f8f9fb,#f0f2f5)",border:"1px solid #d0d8e4"}}>
+              <div style={css.cardT}>📤 Export to Calendar <span style={{fontWeight:400,fontSize:11,color:"#7a8a98"}}>— Google / Outlook / Apple</span></div>
+              <p style={{fontSize:12,color:"#7a8a98",margin:"0 0 12px",lineHeight:1.5}}>
+                Download .ics files to import directly into any calendar app. Each surgeon gets their own file with just their shifts.
+              </p>
+              <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:10}}>
+                {surgeons.map(s => (
+                  <button key={s.id} onClick={() => {
+                    const events = buildICSEvents(schedule, s.id, s.name, appShifts, aMap);
+                    const ics = generateICS(events, `Call Schedule — ${s.name}`);
+                    downloadICS(ics, `call-schedule-${s.name.toLowerCase()}.ics`);
+                  }} style={{...css.badge(sMap[s.id]?.idx||0),cursor:"pointer",padding:"5px 12px",fontSize:12}}>
+                    ⬇ {s.name}
+                  </button>
+                ))}
+              </div>
+              <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+                <button onClick={() => {
+                  const allEvents = [];
+                  surgeons.forEach(s => {
+                    allEvents.push(...buildICSEvents(schedule, s.id, s.name, appShifts, aMap));
+                  });
+                  // Also add APP shifts
+                  Object.entries(appShifts).forEach(([ds, aid]) => {
+                    const d = parse(ds);
+                    const next = addD(d, 1);
+                    const appName = aMap?.[aid]?.name || aid;
+                    allEvents.push({
+                      start: icsDate(d.getFullYear(),d.getMonth()+1,d.getDate(),17),
+                      end: icsDate(next.getFullYear(),next.getMonth()+1,next.getDate(),7),
+                      summary: `APP Call — ${appName}`,
+                      desc: `APP Night Call 5:00 PM – 7:00 AM`
+                    });
+                  });
+                  const ics = generateICS(allEvents, "Full Call Schedule");
+                  downloadICS(ics, "call-schedule-full.ics");
+                }} style={{...css.btn(true),padding:"6px 16px"}}>
+                  ⬇ Full Schedule (All Surgeons + APPs)
+                </button>
+              </div>
+
+              {/* Share read-only */}
+              <div style={{marginTop:14,paddingTop:14,borderTop:"1px solid #e0e4ea"}}>
+                <div style={{fontSize:12,fontWeight:700,color:"#1a6fa8",marginBottom:6}}>📋 Share Read-Only Calendar</div>
+                <p style={{fontSize:11,color:"#7a8a98",margin:"0 0 8px",lineHeight:1.4}}>
+                  Download a read-only calendar view of the finalized schedule. Email it, drop it in a shared drive, or text it to the group. No one can edit it — it's view-only and prints cleanly.
+                </p>
+                <button onClick={generateShareHTML} style={{...css.btn(true),padding:"8px 20px"}}>
+                  ⬇ Download Shareable Calendar (HTML)
+                </button>
+              </div>
+            </div>
+          )}
+
+          {mondays.map(monday=>{
+            const mStr=fmt(monday);
+            const wk=schedule[mStr]; if(!wk) return null;
+            const endStr=fmt(addD(monday,6));
+            const isEd=editingWeek===mStr;
+            const weekAppShifts = appShiftsInWeek(mStr);
+
+            return (
+              <div key={mStr} style={{...css.card,padding:0,overflow:"hidden",border:wk.isBackup?"1px solid #e0c870":"1px solid #e0e4ea"}}>
+                {/* Week header */}
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"9px 14px",background:wk.isBackup?"linear-gradient(90deg,#fef8e8,#fdf4e0)":"#f4f5f8",borderBottom:"1px solid #e0e4ea",flexWrap:"wrap",gap:6}}>
+                  <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+                    <span style={{fontFamily:mono,fontSize:12,color:wk.isBackup?"#d0a830":"#50b0d8",fontWeight:600}}>{mStr}</span>
+                    <span style={{fontSize:11,color:"#8a94a0"}}>→ {endStr}</span>
+                    {wk.isBackup && <span style={css.backupBanner}>⚡ BACKUP WEEK — Fierce Primary</span>}
+                    {wk.isFierceBackup && <span style={{fontSize:11,color:"#1a6fa8",background:"#e8f0fc",border:"1px solid #a8c8e0",borderRadius:6,padding:"3px 8px",fontWeight:600}}>🛡 Fierce Backup</span>}
+                  </div>
+                  <div style={{display:"flex",alignItems:"center",gap:6}}>
+                    {wk.off && <span style={{fontSize:11,color:"#2a7a40",background:"#e8f8e8",border:"1px solid #b0d8b0",borderRadius:5,padding:"2px 8px"}}>OFF: {sMap[wk.off]?.name}</span>}
+                    <button onClick={()=>{setEditingWeek(isEd?null:mStr);setEditShift(null);}} style={{...css.btn(false),padding:"3px 9px",fontSize:11}}>{isEd?"Done":"Edit"}</button>
+                  </div>
+                </div>
+
+                <div style={{padding:"10px 14px 12px"}}>
+                  {/* Surgeon shifts */}
+                  {ALL_SHIFT_KEYS.map(sk=>{
+                    const sid = sk==="dayCall" ? wk.dayCall : wk.nights?.[sk];
+                    const editing = isEd && editShift===sk+"-"+mStr;
+                    const isDay = sk==="dayCall";
+                    const isWknd = sk==="wknd";
+
+                    return (
+                      <div key={sk} style={{display:"flex",alignItems:"center",gap:8,marginBottom:sk==="dayCall"?8:4,padding:isDay?"8px 10px":"5px 10px",background:isDay?"#f4f5f8":"#f8f9fb",borderRadius:isDay?7:5,border:`1px solid ${!sid&&sk!=="dayCall"?"#e8c0c0":"#e0e4ea"}`,flexWrap:"wrap"}}>
+                        <span style={{fontSize:isDay?11:10,color:isDay?"#1a6fa8":isWknd?"#7a6030":"#4a5868",width:isDay?85:80,flexShrink:0,fontWeight:isDay?700:600}}>
+                          {SHIFT_ICONS[sk]} {SHIFT_LABELS[sk]}
+                        </span>
+                        <span style={{fontSize:10,color:"#8a94a0",width:isDay?175:135,flexShrink:0,fontFamily:mono}}>
+                          {SHIFT_TIMES[sk]}
+                        </span>
+                        {editing ? (
+                          <div style={{display:"flex",gap:3,flexWrap:"wrap"}}>
+                            {surgeons.filter(s=> isDay ? true : s.id!==wk.dayCall).map(s=>(
+                              <button key={s.id} onClick={()=>swapShift(mStr,sk,s.id)}
+                                style={{...css.badge(sMap[s.id]?.idx||0),cursor:"pointer",fontSize:11}}>{s.name}</button>
+                            ))}
+                          </div>
+                        ) : (
+                          <div onClick={()=>isEd&&setEditShift(sk+"-"+mStr)} style={{cursor:isEd?"pointer":"default"}}>
+                            {sid ? <Badge id={sid} small={!isDay}/> : <span style={{color:"#c04040",fontSize:11,fontWeight:700}}>⚠ UNFILLED</span>}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+
+                  {/* APP shifts this week */}
+                  {weekAppShifts.length > 0 && (
+                    <div style={{marginTop:8,paddingTop:8,borderTop:"1px solid #e0e4ea"}}>
+                      <span style={{fontSize:11,fontWeight:700,color:"#7a6030",textTransform:"uppercase",letterSpacing:0.8}}>APP Coverage</span>
+                      <div style={{display:"flex",gap:6,flexWrap:"wrap",marginTop:4}}>
+                        {weekAppShifts.map(as=>(
+                          <div key={as.date} style={{display:"flex",alignItems:"center",gap:6,padding:"4px 8px",background:"#f8f5f4",borderRadius:5,border:"1px solid #e8d0d0"}}>
+                            <span style={{fontSize:11,color:"#5a6a78",fontFamily:mono}}>{as.day}</span>
+                            <AppBadge id={as.appId} small/>
+                            <span style={{fontSize:10,color:"#7a8a98"}}>5p–7a</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </>}
+
+        {/* ════════════════ CALENDAR ════════════════ */}
+        {view==="calendar"&&<>
+          <div style={{display:"flex",justifyContent:"center",alignItems:"center",gap:10,marginBottom:14}}>
+            <button onClick={()=>{if(calMonth===0){setCalMonth(11);setCalYear(y=>y-1);}else setCalMonth(m=>m-1);}} style={css.btn(false)}>◀</button>
+            <span style={{fontSize:15,fontWeight:700,color:"#2c5a80",minWidth:170,textAlign:"center"}}>{MO[calMonth]} {calYear}</span>
+            <button onClick={()=>{if(calMonth===11){setCalMonth(0);setCalYear(y=>y+1);}else setCalMonth(m=>m+1);}} style={css.btn(false)}>▶</button>
+          </div>
+
+          <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:1,marginBottom:1}}>
+            {DAY_HDR.map(d=><div key={d} style={{textAlign:"center",fontSize:10,fontWeight:700,color:"#8a94a0",padding:"5px 0",letterSpacing:1}}>{d}</div>)}
+          </div>
+
+          <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:1}}>
+            {calGrid.map((day,i)=>{
+              if(!day) return <div key={`e${i}`} style={{background:"#f8f9fb",minHeight:82}}/>;
+              const ds=`${calYear}-${String(calMonth+1).padStart(2,"0")}-${String(day).padStart(2,"0")}`;
+              const entries=calData[ds]||[];
+              const isWknd=[0,6].includes(new Date(calYear,calMonth,day).getDay());
+              const hasFierce = entries.some(e=>e.type==="Fierce");
+              const hasFierceBkp = entries.some(e=>e.type==="FierceBkp");
+              const hasApp = entries.some(e=>e.type==="APP");
+              const onVacList = surgeons.filter(s=>onVac(s.id,ds,vacations));
+
+              return (
+                <div key={ds} style={{
+                  background: hasFierce?"#faf8f0":hasFierceBkp?"#f8f9fb":isWknd?"#edf0f4":"#f8f9fb",
+                  border: hasFierce?"1px solid #2a2810":hasFierceBkp?"1px solid #d0d8e4":"1px solid #e8ecf0",
+                  minHeight:82, padding:"3px 4px", borderRadius:2,
+                }}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:2}}>
+                    <span style={{fontSize:11,fontWeight:600,color:isWknd?"#5a7090":"#4a5868",fontFamily:mono}}>{day}</span>
+                    {hasFierce && <span style={{fontSize:8,fontWeight:700,color:"#8a6a10",background:"#fef8e8",borderRadius:3,padding:"0 4px",letterSpacing:0.5}}>BKP</span>}
+                    {hasFierceBkp && !hasFierce && <span style={{fontSize:8,fontWeight:700,color:"#1a6fa8",background:"#e8f0fc",borderRadius:3,padding:"0 4px",letterSpacing:0.5}}>F·BKP</span>}
+                  </div>
+
+                  {entries.filter(e=>e.type!=="Fierce"&&e.type!=="FierceBkp"&&e.type!=="APP").map((e,j)=>{
+                    const isB = e.cls==="backup";
+                    const isD = e.type.includes("Day");
+                    const isW = e.type.includes("Wknd");
+                    const label = isD?"D":isW?"W":"N";
+                    const color = isD?"#3080a8":isW?"#908050":"#6850a0";
+                    return (
+                      <div key={j} style={{marginBottom:1,padding:"1px 3px",borderRadius:3,fontSize:10,
+                        background:isB?"#fef8e8":isD?"#f8f9fb":isW?"#faf8f0":"#f4f0f8",
+                        border:`1px solid ${isB?"#d8c880":isD?"#d0dce8":isW?"#faf0d8":"#141028"}`,
+                        opacity:isB?0.85:1,
+                      }}>
+                        {isB&&<span style={{color:"#8a6a10",fontWeight:700,fontSize:8,marginRight:2}}>B</span>}
+                        <span style={{color,fontWeight:700}}>{label}</span>
+                        {" "}
+                        <span style={{color:PAL[sMap[e.surgeon]?.idx%7]?.tx||"#4a5868"}}>{sMap[e.surgeon]?.name||"?"}</span>
+                      </div>
+                    );
+                  })}
+
+                  {/* APP entries */}
+                  {entries.filter(e=>e.type==="APP").map((e,j)=>(
+                    <div key={"app"+j} style={{marginBottom:1,padding:"1px 3px",borderRadius:3,fontSize:10,
+                      background:"#fcf4f0",border:"1px solid #281818"}}>
+                      <span style={{color:"#c08050",fontWeight:700}}>A</span>
+                      {" "}
+                      <span style={{color:APP_PAL[aMap[e.appId]?.idx%4]?.tx||"#5a6878"}}>{aMap[e.appId]?.name||"?"}</span>
+                      <span style={{color:"#8a94a0",fontSize:8,marginLeft:2}}>5p–7a</span>
+                    </div>
+                  ))}
+
+                  {hasFierce && <div style={{fontSize:8,color:"#8a6a10",marginTop:1,fontWeight:600}}>⚡ Fierce Primary</div>}
+                  {hasFierceBkp && !hasFierce && <div style={{fontSize:8,color:"#1a6fa8",marginTop:1,fontWeight:600}}>🛡 Fierce Backup</div>}
+                  {onVacList.map(s=>(
+                    <div key={s.id} style={{fontSize:8,color:"#c04848",marginTop:1}}>🏖 {s.name}</div>
+                  ))}
+                </div>
+              );
+            })}
+          </div>
+
+          <div style={{marginTop:10,display:"flex",gap:12,fontSize:10,color:"#8a94a0",flexWrap:"wrap"}}>
+            <span><span style={{color:"#3080a8",fontWeight:700}}>D</span> Day Call</span>
+            <span><span style={{color:"#6030a0",fontWeight:700}}>N</span> Night</span>
+            <span><span style={{color:"#908050",fontWeight:700}}>W</span> Weekend</span>
+            <span><span style={{color:"#c08050",fontWeight:700}}>A</span> APP</span>
+            <span><span style={{color:"#8a6a10",fontWeight:700}}>B</span> Backup</span>
+            <span><span style={{color:"#8a6a10"}}>⚡</span> Fierce Primary</span>
+            <span><span style={{color:"#1a6fa8"}}>🛡</span> Fierce Backup</span>
+            <span>🏖 Vacation</span>
+          </div>
+        </>}
+
+        {/* ════════════════ STATS ════════════════ */}
+        {view==="stats"&&<>
+          {/* Surgeon stats */}
+          <div style={css.card}>
+            <div style={css.cardT}>This Period — {MO[startMonth]} to {MO[endMoIdx]} {startYear}</div>
+            {!Object.values(stats).some(s=>s.dc>0||s.nights>0) ? (
+              <p style={{color:"#7a8a98",fontSize:13}}>Generate a schedule first.</p>
+            ) : (
+              <div style={{overflowX:"auto"}}>
+                <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+                  <thead>
+                    <tr style={{borderBottom:"2px solid #d0d8e0"}}>
+                      <th style={thS}>Surgeon</th>
+                      <th style={thS}><span style={{color:"#1a8040"}}>Total</span></th>
+                      <th style={thS} colSpan={4}><span style={{color:"#1a6fa8"}}>Regular</span></th>
+                      <th style={{...thS,borderLeft:"2px solid #d8c880"}} colSpan={4}><span style={{color:"#8a6a10"}}>Backup</span></th>
+                    </tr>
+                    <tr style={{borderBottom:"1px solid #e0e4ea"}}>
+                      <th style={thS2}></th>
+                      <th style={thS2}><span style={{color:"#1a8040"}}>Shifts</span></th>
+                      <th style={thS2}>Day</th><th style={thS2}>Nights</th><th style={thS2}>Wknds</th><th style={thS2}>Off</th>
+                      <th style={{...thS2,borderLeft:"2px solid #d8c880"}}>Day</th><th style={thS2}>Nights</th><th style={thS2}>Wknds</th><th style={thS2}>Off</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {surgeons.map(s=>{
+                      const st=stats[s.id]||{};
+                      const total = calcShifts(st);
+                      return (
+                        <tr key={s.id} style={{borderBottom:"1px solid #e8ecf0"}}>
+                          <td style={{padding:"7px 8px"}}><Badge id={s.id}/></td>
+                          <td style={{...tdS,color:"#1a8040",fontWeight:700,fontSize:15}}>{total}</td>
+                          {[st.dc,st.nights,st.wknd,st.off].map((v,i)=>
+                            <td key={i} style={tdS}>{v||0}</td>
+                          )}
+                          {[st.dcB,st.nightsB,st.wkndB,st.offB].map((v,i)=>
+                            <td key={"b"+i} style={{...tdS,...(i===0?{borderLeft:"2px solid #d8c880"}:{})}}>{v||0}</td>
+                          )}
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+                <div style={{marginTop:8,fontSize:11,color:"#7a8a98",lineHeight:1.5}}>
+                  <strong style={{color:"#2c5a80"}}>Total Shifts</strong> = regular call only (not backup). Day Call wk = 7 shifts · Weeknight = 1 shift · Weekend = 3 shifts (Fri night 1 + Sun 24h = 2)
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* APP stats */}
+          <div style={css.card}>
+            <div style={css.cardT}>APP Distribution</div>
+            {!Object.values(appStats).some(v=>v>0) ? (
+              <p style={{color:"#7a8a98",fontSize:13}}>No APP shifts assigned yet.</p>
+            ) : (
+              <div style={{overflowX:"auto"}}>
+                <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+                  <thead>
+                    <tr style={{borderBottom:"2px solid #d0d8e0"}}>
+                      <th style={thS}>APP</th>
+                      <th style={thS}>Night Shifts (5p–7a)</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {apps.map(a=>(
+                      <tr key={a.id} style={{borderBottom:"1px solid #e8ecf0"}}>
+                        <td style={{padding:"7px 8px"}}><AppBadge id={a.id}/></td>
+                        <td style={tdS}>{appStats[a.id]||0}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+
+          {/* Vacation Days */}
+          <div style={css.card}>
+            <div style={css.cardT}>Vacation Days Used</div>
+            {!Object.values(vacDays).some(v=>v>0) ? (
+              <p style={{color:"#7a8a98",fontSize:13}}>No vacations entered yet.</p>
+            ) : (
+              <div style={{overflowX:"auto"}}>
+                <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+                  <thead>
+                    <tr style={{borderBottom:"2px solid #d0d8e0"}}>
+                      <th style={thS}>Surgeon</th>
+                      <th style={thS}>Days Used</th>
+                      <th style={thS}>Vacation Periods</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {surgeons.map(s=>{
+                      const days = vacDays[s.id] || 0;
+                      const ranges = vacations[s.id] || [];
+                      return (
+                        <tr key={s.id} style={{borderBottom:"1px solid #e8ecf0"}}>
+                          <td style={{padding:"7px 8px"}}><Badge id={s.id}/></td>
+                          <td style={{...tdS,fontWeight:700,color:days>0?"#60c0a0":"#3e4e5e",fontSize:15}}>{days}</td>
+                          <td style={{padding:"7px 8px",fontSize:11,color:"#5a6a78",fontFamily:mono}}>
+                            {ranges.map(([vs,ve],i)=>(
+                              <span key={i}>{i>0?" · ":""}{vs} → {ve}</span>
+                            ))}
+                            {ranges.length===0 && <span style={{color:"#8a94a0"}}>—</span>}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+
+          {/* Fairness — based on 1-YEAR totals */}
+          {Object.values(stats).some(s=>s.dc>0) && (
+            <div style={css.card}>
+              <div style={css.cardT}>Fairness Check <span style={{fontWeight:400,fontSize:11,color:"#7a8a98"}}>— 1-Year (Prior + This Period)</span></div>
+              <p style={{fontSize:12,color:"#7a8a98",margin:"0 0 10px",lineHeight:1.5}}>
+                Evaluated against 1-year running totals. Enter current year prior counts in the Totals tab.
+              </p>
+              {(()=>{
+                const v=fn=>surgeons.map(s=>fn(cum1yr[s.id]||{}));
+                const sp=arr=>Math.max(...arr)-Math.min(...arr);
+                const totalArr = surgeons.map(s=>calcShifts(cum1yr[s.id]||{}));
+                const tSp = sp(totalArr);
+                const tOk = tSp <= 5;
+                return <>
+                  <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10,padding:"8px 12px",background:tOk?"#e8f8e8":"#fef8e8",border:`1px solid ${tOk?"#b0d8b0":"#302810"}`,borderRadius:7}}>
+                    <span style={{fontSize:16}}>{tOk?"✅":"⚠️"}</span>
+                    <span style={{fontSize:13,fontWeight:700,color:tOk?"#60e0a0":"#e0a060"}}>
+                      Total Call Shifts (1yr): spread {tSp} (min {Math.min(...totalArr)}, max {Math.max(...totalArr)}) — {tOk?"Fair":"Review recommended"}
+                    </span>
+                  </div>
+                  {[
+                    ["Day Call (reg)", v(s=>s.dc||0)],
+                    ["Nights (reg)", v(s=>s.nights||0)],
+                    ["Weekends (reg)", v(s=>s.wknd||0)],
+                    ["Day Call (backup)", v(s=>s.dcB||0)],
+                    ["Nights (backup)", v(s=>s.nightsB||0)],
+                    ["Weekends (backup)", v(s=>s.wkndB||0)],
+                  ].map(([label,arr])=>{
+                    const s=sp(arr); const ok=s<=2;
+                    return (
+                      <div key={label} style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}>
+                        <span style={{fontSize:15}}>{ok?"✅":"⚠️"}</span>
+                        <span style={{fontSize:12,color:ok?"#50b070":"#b09040"}}>
+                          {label}: spread {s} (min {Math.min(...arr)}, max {Math.max(...arr)}) — {ok?"Fair":"Review"}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </>;
+              })()}
+            </div>
+          )}
+
+          {/* Running Totals — 1yr, 2yr, multi-year */}
+          {Object.values(stats).some(s=>s.dc>0) && (
+            <div style={css.card}>
+              <div style={css.cardT}>Running Totals <span style={{fontWeight:400,fontSize:11,color:"#7a8a98"}}>— Prior + This Period</span></div>
+
+              {[
+                {label:"1-Year", color:"#1a6fa8", data:cum1yr},
+                {label:"2-Year", color:"#8a6a10", data:cum2yr},
+                {label:"Multi-Year", color:"#7030a8", data:cumStats},
+              ].map(tier=>(
+                <div key={tier.label} style={{marginBottom:16}}>
+                  <div style={{fontSize:12,fontWeight:700,color:tier.color,marginBottom:4,textTransform:"uppercase",letterSpacing:0.8}}>{tier.label}</div>
+                  <div style={{overflowX:"auto"}}>
+                    <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+                      <thead>
+                        <tr style={{borderBottom:"1px solid #d0d8e0"}}>
+                          <th style={thS2}>Surgeon</th>
+                          <th style={{...thS2,color:tier.color}}>Shifts</th>
+                          <th style={thS2}>Day</th><th style={thS2}>Nights</th><th style={thS2}>Wknds</th><th style={thS2}>Off</th>
+                          <th style={{...thS2,borderLeft:"1px solid #d8c880"}}>B-Day</th><th style={thS2}>B-Ngt</th><th style={thS2}>B-Wknd</th><th style={thS2}>B-Off</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {surgeons.map(s=>{
+                          const c=tier.data[s.id]||{};
+                          const total = calcShifts(c);
+                          return (
+                            <tr key={s.id} style={{borderBottom:"1px solid #e8ecf0"}}>
+                              <td style={{padding:"5px 6px"}}><Badge id={s.id} small/></td>
+                              <td style={{...tdS,color:tier.color,fontWeight:700,fontSize:14}}>{total}</td>
+                              {[c.dc,c.nights,c.wknd,c.off].map((v,i)=>
+                                <td key={i} style={{...tdS,fontWeight:600}}>{v||0}</td>
+                              )}
+                              {[c.dcB,c.nightsB,c.wkndB,c.offB].map((v,i)=>
+                                <td key={"b"+i} style={{...tdS,fontWeight:600,...(i===0?{borderLeft:"1px solid #d8c880"}:{})}}>{v||0}</td>
+                              )}
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              ))}
+
+              <div style={{fontSize:11,color:"#7a8a98",lineHeight:1.5}}>
+                <strong style={{color:"#2c5a80"}}>Total Shifts</strong> = regular call only. Day Call wk = 7 · Weeknight = 1 · Weekend = 3
+              </div>
+            </div>
+          )}
+        </>}
+      </div>
+    </div>
+  );
+}
+
+const thS = {textAlign:"left",padding:"7px 8px",color:"#5a6a78",fontWeight:600,fontSize:10,textTransform:"uppercase",letterSpacing:0.5};
+const thS2 = {textAlign:"left",padding:"4px 8px",color:"#7a8a98",fontWeight:500,fontSize:10,textTransform:"uppercase",letterSpacing:0.3};
+const tdS = {padding:"7px 8px",fontFamily:"'JetBrains Mono',monospace",color:"#4a5a68",fontSize:13};
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(React.createElement(CallSchedule));
+  </script>
+</body>
+</html>
