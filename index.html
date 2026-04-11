@@ -931,10 +931,10 @@ function CallSchedule() {
     } catch(e) { console.error("Push permission error:", e); setPushPermission("unsupported"); }
   }, []);
 
-  const sendBrowserNotif = useCallback((title, body, tag) => {
+  const sendBrowserNotif = useCallback((title, body, tag, forceShow) => {
     try {
       if (pushPermission !== "granted") return;
-      if (document.hasFocus()) return; // don't fire if app is focused
+      if (!forceShow && document.hasFocus()) return; // don't fire if app is focused (unless forced)
       new Notification(title, {
         body, icon: "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📋</text></svg>",
         tag: tag || "dsg-call-" + Date.now(), badge: "📋",
@@ -950,9 +950,10 @@ function CallSchedule() {
       const recipients = [];
       Object.entries(notifPrefs).forEach(([sid, prefs]) => {
         if (!prefs.email || !prefs.email_notifs) return;
-        if (type === "schedule_published" && !prefs.schedule_changes) return;
-        if ((type === "vacation_approved" || type === "vacation_denied" || type === "vacation_submitted") && !prefs.vacation_updates) return;
-        if (type === "shift_reminder" && !prefs.shift_reminders) return;
+        if (type === "test") { /* send to all email-enabled */ }
+        else if (type === "schedule_published" && !prefs.schedule_changes) return;
+        else if ((type === "vacation_approved" || type === "vacation_denied" || type === "vacation_submitted") && !prefs.vacation_updates) return;
+        else if (type === "shift_reminder" && !prefs.shift_reminders) return;
         recipients.push({ email: prefs.email, surgeon_id: sid, name: surgeons.find(s => s.id === sid)?.name || sid });
       });
       if (recipients.length === 0) return;
@@ -1028,10 +1029,11 @@ function CallSchedule() {
 
   // ─── Test Notification ───
   const sendTestNotification = useCallback(async () => {
-    sendBrowserNotif("DSG Call Schedule", "This is a test notification. Browser push is working!", "dsg-test");
+    sendBrowserNotif("DSG Call Schedule", "This is a test notification. Browser push is working!", "dsg-test", true);
     setNotifTestSent("Browser notification sent!");
-    // Also test email if configured
-    if (edgeFunctionUrl && mySurgeon && notifPrefs[mySurgeon]?.email) {
+    // Also test email if configured — send to any surgeon with email enabled
+    const hasEmailRecipients = Object.values(notifPrefs).some(p => p.email && p.email_notifs);
+    if (edgeFunctionUrl && hasEmailRecipients) {
       try {
         await sendEmailNotif("test", { message: "This is a test email from DSG Call Schedule." });
         setNotifTestSent("Browser + email notifications sent!");
@@ -1040,7 +1042,7 @@ function CallSchedule() {
       }
     }
     setTimeout(() => setNotifTestSent(""), 3000);
-  }, [sendBrowserNotif, sendEmailNotif, edgeFunctionUrl, mySurgeon, notifPrefs]);
+  }, [sendBrowserNotif, sendEmailNotif, edgeFunctionUrl, notifPrefs]);
 
   // ─── Publish Schedule (with notification) ───
   const doGenerateAndNotify = async () => {
