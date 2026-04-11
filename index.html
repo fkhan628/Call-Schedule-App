@@ -658,7 +658,6 @@ function CallSchedule() {
   const fileRef = useRef(null);
   const lastSyncRef = useRef(null);
 
-  const [apiKey, setApiKey] = useState("");
   const [showApiKey, setShowApiKey] = useState(false);
 
   // ─── Vacation Requests ───
@@ -729,10 +728,9 @@ function CallSchedule() {
         }
         const { data: cfgRow } = await supabase
           .from("call_schedule_config")
-          .select("api_key,scheduler_pin,edge_function_url")
+          .select("scheduler_pin,edge_function_url")
           .eq("id", "config")
           .single();
-        if (cfgRow?.api_key) setApiKey(cfgRow.api_key);
         if (cfgRow?.scheduler_pin) setSchedulerPin(cfgRow.scheduler_pin);
         if (cfgRow?.edge_function_url) setEdgeFunctionUrl(cfgRow.edge_function_url);
 
@@ -776,8 +774,7 @@ function CallSchedule() {
             if (d.startYear !== undefined) setStartYear(d.startYear);
           }
         }
-        const { data: cfgRow2 } = await supabase.from("call_schedule_config").select("api_key,scheduler_pin,edge_function_url").eq("id", "config").single();
-        if (cfgRow2?.api_key !== undefined) setApiKey(prev => cfgRow2.api_key !== prev ? cfgRow2.api_key : prev);
+        const { data: cfgRow2 } = await supabase.from("call_schedule_config").select("scheduler_pin,edge_function_url").eq("id", "config").single();
         if (cfgRow2?.scheduler_pin !== undefined) setSchedulerPin(prev => cfgRow2.scheduler_pin !== prev ? cfgRow2.scheduler_pin : prev);
         if (cfgRow2?.edge_function_url !== undefined) setEdgeFunctionUrl(prev => cfgRow2.edge_function_url !== prev ? cfgRow2.edge_function_url : prev);
 
@@ -822,18 +819,18 @@ function CallSchedule() {
     return () => clearTimeout(timer);
   }, [loaded, surgeons, apps, vacations, backupMondaySet, fierceBackupSet, schedule, appShifts, priorCounts, year1Counts, year2Counts, startMonth, startYear]);
 
-  // ─── Supabase: Save API key + scheduler PIN + edge function URL ───
+  // ─── Supabase: Save scheduler PIN + edge function URL ───
   useEffect(() => {
     if (!loaded) return;
     const timer = setTimeout(async () => {
       try {
         await supabase
           .from("call_schedule_config")
-          .upsert({ id: "config", api_key: apiKey || "", scheduler_pin: schedulerPin || "", edge_function_url: edgeFunctionUrl || "", updated_at: new Date().toISOString() });
+          .upsert({ id: "config", scheduler_pin: schedulerPin || "", edge_function_url: edgeFunctionUrl || "", updated_at: new Date().toISOString() });
       } catch(e) {}
     }, 500);
     return () => clearTimeout(timer);
-  }, [loaded, apiKey, schedulerPin, edgeFunctionUrl]);
+  }, [loaded, schedulerPin, edgeFunctionUrl]);
 
   // ─── Reset all data ───
   const resetAllData = async () => {
@@ -1183,16 +1180,13 @@ function CallSchedule() {
   const [priorScanMsg, setPriorScanMsg] = useState("");
   const priorFileRef = useRef(null);
 
+  const AI_SCAN_URL = `${SUPABASE_URL}/functions/v1/ai-scan`;
+
   const callApi = useCallback(async (messages, maxTokens = 2000) => {
-    const headers = { "Content-Type": "application/json" };
-    if (apiKey) {
-      headers["x-api-key"] = apiKey;
-      headers["anthropic-version"] = "2023-06-01";
-      headers["anthropic-dangerous-direct-browser-access"] = "true";
-    }
-    const resp = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST", headers,
-      body: JSON.stringify({ model:"claude-sonnet-4-20250514", max_tokens: maxTokens, messages })
+    const resp = await fetch(AI_SCAN_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${SUPABASE_ANON_KEY}` },
+      body: JSON.stringify({ messages, max_tokens: maxTokens })
     });
     if (!resp.ok) {
       const err = await resp.text();
@@ -1200,11 +1194,10 @@ function CallSchedule() {
     }
     const data = await resp.json();
     return data.content?.map(c => c.text || "").join("") || "";
-  }, [apiKey]);
+  }, []);
 
   const handlePriorScheduleScan = useCallback(async (file) => {
     if (!file) return;
-    if (!apiKey) { setPriorScanMsg("API key required. Go to the ⚙️ settings at the bottom of Setup to add one."); return; }
     setPriorScanning(true);
     setPriorScanMsg("Reading file…");
 
@@ -1319,12 +1312,12 @@ Match surgeon names/initials as best you can to: ${surgeonNames}. If you cannot 
       }
     } catch (err) {
       console.error("Prior schedule scan error:", err);
-      setPriorScanMsg(`Could not analyze the file. ${err.message?.includes("API error") ? "Check your API key." : "Try a PDF, Excel, Word, or CSV file."}`);
+      setPriorScanMsg(`Could not analyze the file. ${err.message?.includes("API error") ? "The AI service may be temporarily unavailable." : "Try a PDF, Excel, Word, or CSV file."}`);
     } finally {
       setPriorScanning(false);
       if (priorFileRef.current) priorFileRef.current.value = "";
     }
-  }, [surgeons, apiKey, callApi]);
+  }, [surgeons, callApi]);
 
   // ─── Unified Schedule Scanner — extracts vacations + Fierce weeks from one file ───
   const [schedScanning, setSchedScanning] = useState(false);
@@ -1333,7 +1326,6 @@ Match surgeon names/initials as best you can to: ${surgeonNames}. If you cannot 
 
   const handleScheduleScan = useCallback(async (file) => {
     if (!file) return;
-    if (!apiKey) { setSchedScanMsg("API key required. Go to the ⚙️ settings at the bottom of Setup to add one."); return; }
     setSchedScanning(true);
     setSchedScanMsg("Reading file…");
 
@@ -1452,7 +1444,7 @@ If you cannot find vacations, return an empty array for "vacations". Same for "f
       console.error("Schedule scan error:", err);
       const msg = err.message || "";
       if (msg.includes("API error")) {
-        setSchedScanMsg(`API error: ${msg}. Check your API key in ⚙️ Settings.`);
+        setSchedScanMsg(`AI service error: ${msg}. Please try again later.`);
       } else if (msg.includes("Failed to fetch") || msg.includes("NetworkError")) {
         setSchedScanMsg("Network error — could not reach the API. Check your internet connection.");
       } else {
@@ -1462,7 +1454,7 @@ If you cannot find vacations, return an empty array for "vacations". Same for "f
       setSchedScanning(false);
       if (schedFileRef.current) schedFileRef.current.value = "";
     }
-  }, [surgeons, apiKey, callApi]);
+  }, [surgeons, callApi]);
 
   const sMap = useMemo(() => { const m={}; surgeons.forEach((s,i)=>m[s.id]={...s,idx:i}); return m; }, [surgeons]);
   const aMap = useMemo(() => { const m={}; apps.forEach((a,i)=>m[a.id]={...a,idx:i}); return m; }, [apps]);
@@ -2060,7 +2052,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               <div style={{fontSize:13,fontWeight:600,color:"#1a6fa8",marginBottom:6}}>📄 Upload Call Schedule</div>
               <div style={{fontSize:12,color:"#5a6a78",lineHeight:1.5,marginBottom:8}}>
                 Upload the call schedule PDF, Excel, Word, or CSV file. This will automatically extract <strong>vacations</strong> (e.g. "DJA VAC") and <strong>Fierce weeks</strong> (1st/ND and Backup) in one step.
-                {!apiKey && <span style={{color:"#c04040",fontWeight:600}}> Requires API key — add one in ⚙️ Settings below.</span>}
+                
               </div>
               <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
                 <input ref={schedFileRef} type="file" accept=".pdf,.xlsx,.xls,.csv,.docx,.doc"
@@ -2070,11 +2062,11 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   style={{...css.btn(true),opacity:schedScanning?0.5:1,padding:"7px 16px",fontSize:13}}>
                   {schedScanning ? "⏳ Analyzing…" : "📄 Upload Schedule File"}
                 </button>
-                {apiKey && <span style={{fontSize:11,color:"#1a8040"}}>✓ AI scanning ready</span>}
+                <span style={{fontSize:11,color:"#1a8040"}}>✓ AI scanning ready</span>
               </div>
             </div>
             {schedScanMsg && (
-              <div style={{fontSize:12,color:schedScanMsg.includes("Could not")||schedScanMsg.includes("No vacations")||schedScanMsg.includes("API key")?"#c04040":"#1a8040",marginBottom:10,padding:"8px 12px",background:schedScanMsg.includes("Could not")||schedScanMsg.includes("No vacations")||schedScanMsg.includes("API key")?"#fce8e8":"#e8f8e8",border:`1px solid ${schedScanMsg.includes("Could not")||schedScanMsg.includes("No vacations")||schedScanMsg.includes("API key")?"#e8c0c0":"#b0d8b0"}`,borderRadius:6,lineHeight:1.5}}>
+              <div style={{fontSize:12,color:schedScanMsg.includes("Could not")||schedScanMsg.includes("No vacations")?"#c04040":"#1a8040",marginBottom:10,padding:"8px 12px",background:schedScanMsg.includes("Could not")||schedScanMsg.includes("No vacations")?"#fce8e8":"#e8f8e8",border:`1px solid ${schedScanMsg.includes("Could not")||schedScanMsg.includes("No vacations")?"#e8c0c0":"#b0d8b0"}`,borderRadius:6,lineHeight:1.5}}>
                 {schedScanMsg}
               </div>
             )}
@@ -2197,34 +2189,13 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               style={{background:"none",border:"1px solid #e0e4ea",borderRadius:7,padding:"8px 14px",cursor:"pointer",fontFamily:font,display:"flex",alignItems:"center",gap:8,width:"100%",justifyContent:"space-between"}}>
               <span style={{fontSize:12,color:"#6a7a88",fontWeight:600}}>
                 ⚙️ Settings
-                {apiKey && <span style={{marginLeft:8,color:"#1a8040",fontSize:11}}>✓ API key configured</span>}
-                {!apiKey && <span style={{marginLeft:8,color:"#5a3030",fontSize:11}}>API key needed for file scanning</span>}
               </span>
               <span style={{fontSize:11,color:"#7a8a98"}}>{showApiKey ? "▲" : "▼"}</span>
             </button>
             {showApiKey && (
               <div style={{...css.card,marginTop:6,background:"#f4f6f8",border:"1px solid #e0e4ea"}}>
-                <div style={{fontSize:12,fontWeight:700,color:"#2c5a80",marginBottom:8}}>🔑 Anthropic API Key</div>
-                <p style={{fontSize:11,color:"#7a8a98",margin:"0 0 10px",lineHeight:1.6}}>
-                  Required for AI-powered file scanning (vacations, Fierce schedules, prior call sheets). This key is shared with anyone who has access to this artifact.
-                  Get a key at <span style={{color:"#1a6fa8"}}>console.anthropic.com</span>
-                </p>
-                {!apiKey ? (
-                  <div style={{display:"flex",gap:6,alignItems:"center",flexWrap:"wrap"}}>
-                    <input type="password" placeholder="sk-ant-api03-..." value={apiKey} onChange={e=>setApiKey(e.target.value)}
-                      style={{...css.inp,width:300,fontSize:12,fontFamily:mono}}/>
-                    <span style={{fontSize:10,color:"#8a94a0"}}>Paste and it auto-saves</span>
-                  </div>
-                ) : (
-                  <div style={{display:"flex",gap:8,alignItems:"center"}}>
-                    <span style={{fontSize:12,color:"#6a7a88",fontFamily:mono}}>{apiKey.slice(0,12)}…{apiKey.slice(-4)}</span>
-                    <span style={{fontSize:11,color:"#1a8040",fontWeight:600}}>✓ Active</span>
-                    <button onClick={()=>setApiKey("")} style={{background:"none",border:"1px solid #e8c0c0",color:"#804040",borderRadius:5,padding:"3px 10px",fontSize:11,cursor:"pointer",fontFamily:font}}>Remove</button>
-                  </div>
-                )}
 
-                <div style={{marginTop:16,paddingTop:12,borderTop:"1px solid #e0e4ea"}}>
-                  <div style={{fontSize:12,fontWeight:700,color:"#5a7a90",marginBottom:8}}>🔒 Scheduler Mode</div>
+                <div style={{fontSize:12,fontWeight:700,color:"#5a7a90",marginBottom:8}}>🔒 Scheduler Mode</div>
                   {!isScheduler ? (
                     <div>
                       <p style={{fontSize:12,color:"#7a8a98",margin:"0 0 8px",lineHeight:1.5}}>
@@ -2423,7 +2394,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               <div style={{fontSize:13,fontWeight:600,color:"#7030a8",marginBottom:6}}>🤖 Scan a Past Call Schedule</div>
               <div style={{fontSize:11,color:"#7a8a98",lineHeight:1.5,marginBottom:10}}>
                 Upload a PDF, Excel, Word, or CSV of a previous call schedule. AI will read it and count each surgeon's shifts automatically. Imports into the Multi-Year table.
-                {!apiKey && <span style={{color:"#c04040",fontWeight:600}}> Requires API key — add one in ⚙️ Settings on the Setup tab.</span>}
+                
               </div>
               <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
                 <input ref={priorFileRef} type="file" accept=".pdf,.xlsx,.xls,.csv,.docx,.doc"
@@ -2433,11 +2404,11 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   style={{...css.btn(true),opacity:priorScanning?0.5:1,padding:"6px 14px",fontSize:12,background:"linear-gradient(135deg,#f0e8f8,#e8d8f4)",borderColor:"#c0a0d8",color:"#7030a8"}}>
                   {priorScanning ? "⏳ Analyzing…" : "📄 Upload Past Schedule"}
                 </button>
-                {apiKey && <span style={{fontSize:10,color:"#1a8040"}}>✓ AI scanning ready</span>}
+                <span style={{fontSize:10,color:"#1a8040"}}>✓ AI scanning ready</span>
               </div>
             </div>
             {priorScanMsg && (
-              <div style={{fontSize:12,color:priorScanMsg.includes("Could not")||priorScanMsg.includes("API key")?"#c06060":"#50a070",marginBottom:10,padding:"6px 10px",background:priorScanMsg.includes("Could not")||priorScanMsg.includes("API key")?"#fce8e8":"#e8f8e8",border:`1px solid ${priorScanMsg.includes("Could not")||priorScanMsg.includes("API key")?"#e8c0c0":"#b0d8b0"}`,borderRadius:6,lineHeight:1.5}}>
+              <div style={{fontSize:12,color:priorScanMsg.includes("Could not")?"#c06060":"#50a070",marginBottom:10,padding:"6px 10px",background:priorScanMsg.includes("Could not")?"#fce8e8":"#e8f8e8",border:`1px solid ${priorScanMsg.includes("Could not")?"#e8c0c0":"#b0d8b0"}`,borderRadius:6,lineHeight:1.5}}>
                 {priorScanMsg}
               </div>
             )}
