@@ -123,18 +123,30 @@ const INIT_APPS = [
   { id:"a1", name:"MA" }, { id:"a2", name:"SJ" }, { id:"a3", name:"MS" }, { id:"a4", name:"SS" },
 ];
 
-/* ═══ 2025 Call Schedule Prior Counts (Jan–Dec 2025) ═══
-   Regular shift totals verified from RVU spreadsheet.
-   Category splits (dc/nights/wknd) are estimated proportionally — update when manual tally is complete.
-   Backup counts estimated from PDF. DC wk=7, Night=1, Wknd=3. */
-const COUNTS_2025 = {
-  s1: { dc:6, nights:40, wknd:6, off:6, dcB:1, nightsB:8, wkndB:1, offB:2 },  // DJA — total 100
-  s2: { dc:5, nights:39, wknd:5, off:6, dcB:4, nightsB:8, wkndB:1, offB:2 },  // MCC — total 89
-  s3: { dc:6, nights:37, wknd:6, off:6, dcB:1, nightsB:8, wkndB:3, offB:2 },  // RPC — total 97
-  s4: { dc:5, nights:28, wknd:5, off:8, dcB:3, nightsB:6, wkndB:1, offB:2 },  // KJH — total 78
-  s5: { dc:5, nights:30, wknd:5, off:6, dcB:1, nightsB:8, wkndB:0, offB:2 },  // REH — total 80
-  s6: { dc:6, nights:32, wknd:5, off:6, dcB:2, nightsB:9, wkndB:5, offB:2 },  // FAK — total 89
-  s7: { dc:7, nights:32, wknd:6, off:6, dcB:2, nightsB:8, wkndB:2, offB:2 },  // ARW — total 99
+/* ═══ Verified Call Counts from Shift Distribution Spreadsheets ═══
+   Regular vs backup split derived from 1st/2nd call ratios in monthly totals.
+   totalDays/totalDaysB = actual call day counts from main sheets (used for pay). */
+
+// 2025 only (1-Year)
+const COUNTS_1YR = {
+  s1: { dc:7, nights:49, wknd:7, off:0, dcB:1, nightsB:5, wkndB:1, offB:0, totalDays:100, totalDaysB:10 },  // DJA
+  s2: { dc:6, nights:45, wknd:7, off:0, dcB:1, nightsB:6, wkndB:1, offB:0, totalDays:89,  totalDaysB:12 },  // MCC
+  s3: { dc:7, nights:47, wknd:6, off:0, dcB:1, nightsB:6, wkndB:1, offB:0, totalDays:97,  totalDaysB:13 },  // RPC
+  s4: { dc:6, nights:37, wknd:8, off:0, dcB:1, nightsB:6, wkndB:1, offB:0, totalDays:78,  totalDaysB:12 },  // KJH
+  s5: { dc:7, nights:40, wknd:6, off:0, dcB:1, nightsB:8, wkndB:1, offB:0, totalDays:80,  totalDaysB:15 },  // REH
+  s6: { dc:5, nights:45, wknd:5, off:0, dcB:2, nightsB:14, wkndB:2, offB:0, totalDays:89,  totalDaysB:27 },  // FAK
+  s7: { dc:6, nights:50, wknd:6, off:0, dcB:1, nightsB:4, wkndB:0, offB:0, totalDays:99,  totalDaysB:8 },   // ARW
+};
+
+// 2024 + 2025 combined (2-Year / Multi-Year)
+const COUNTS_2YR = {
+  s1: { dc:14, nights:96,  wknd:13, off:0, dcB:2, nightsB:10, wkndB:2, offB:0, totalDays:197, totalDaysB:21 },  // DJA
+  s2: { dc:13, nights:90,  wknd:15, off:0, dcB:2, nightsB:15, wkndB:2, offB:0, totalDays:183, totalDaysB:30 },  // MCC
+  s3: { dc:13, nights:100, wknd:12, off:0, dcB:2, nightsB:10, wkndB:2, offB:0, totalDays:196, totalDaysB:21 },  // RPC
+  s4: { dc:12, nights:75,  wknd:12, off:0, dcB:3, nightsB:19, wkndB:3, offB:0, totalDays:156, totalDaysB:39 },  // KJH
+  s5: { dc:13, nights:90,  wknd:15, off:0, dcB:2, nightsB:19, wkndB:3, offB:0, totalDays:180, totalDaysB:36 },  // REH
+  s6: { dc:12, nights:91,  wknd:13, off:0, dcB:2, nightsB:17, wkndB:2, offB:0, totalDays:184, totalDaysB:33 },  // FAK
+  s7: { dc:11, nights:78,  wknd:10, off:0, dcB:2, nightsB:13, wkndB:1, offB:0, totalDays:159, totalDaysB:26 },  // ARW
 };
 
 /* ═══ Date helpers ═══ */
@@ -622,9 +634,9 @@ function CallSchedule() {
   const [fierceBackupSet, setFierceBackupSet] = useState(new Set()); // Fierce backs up our group, regular schedule unchanged
   const [schedule, setSchedule] = useState({});
   const [appShifts, setAppShifts] = useState({}); // { "2026-05-06": "a1", ... }
-  const [priorCounts, setPriorCounts] = useState(COUNTS_2025); // Multi-year totals (used by generator)
-  const [year1Counts, setYear1Counts] = useState(COUNTS_2025); // Current year totals
-  const [year2Counts, setYear2Counts] = useState(COUNTS_2025); // 2-year totals
+  const [priorCounts, setPriorCounts] = useState(COUNTS_2YR); // Multi-year totals (used by generator)
+  const [year1Counts, setYear1Counts] = useState(COUNTS_1YR); // Current year totals
+  const [year2Counts, setYear2Counts] = useState(COUNTS_2YR); // 2-year totals
   const [startMonth, setStartMonth] = useState(4);
   const [startYear, setStartYear] = useState(2026);
   const [calMonth, setCalMonth] = useState(4);
@@ -1773,12 +1785,19 @@ ${"</"}script>${"</"}body>${"</"}html>`;
   // Cumulative stats: 1-year, 2-year, multi-year (each = prior tier + current schedule)
   const buildCum = (prior) => {
     const c = {};
+    const estTotal = (s) => (s.dc||0)*7 + (s.nights||0) + (s.wknd||0)*3;
     surgeons.forEach(s => {
       const p = prior[s.id] || {};
       const cur = stats[s.id] || {};
+      const pTotal = p.totalDays !== undefined ? p.totalDays : estTotal(p);
+      const cTotal = cur.totalDays !== undefined ? cur.totalDays : estTotal(cur);
+      const pTotalB = p.totalDaysB !== undefined ? p.totalDaysB : ((p.dcB||0)*7 + (p.nightsB||0) + (p.wkndB||0)*3);
+      const cTotalB = cur.totalDaysB !== undefined ? cur.totalDaysB : ((cur.dcB||0)*7 + (cur.nightsB||0) + (cur.wkndB||0)*3);
       c[s.id] = {
         dc: (p.dc||0)+(cur.dc||0), nights: (p.nights||0)+(cur.nights||0), wknd: (p.wknd||0)+(cur.wknd||0), off: (p.off||0)+(cur.off||0),
         dcB: (p.dcB||0)+(cur.dcB||0), nightsB: (p.nightsB||0)+(cur.nightsB||0), wkndB: (p.wkndB||0)+(cur.wkndB||0), offB: (p.offB||0)+(cur.offB||0),
+        totalDays: pTotal + cTotal,
+        totalDaysB: pTotalB + cTotalB,
       };
     });
     return c;
@@ -1787,8 +1806,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
   const cum2yr = useMemo(() => buildCum(year2Counts), [stats, year2Counts, surgeons]);
   const cumStats = useMemo(() => buildCum(priorCounts), [stats, priorCounts, surgeons]);
 
-  // Total call shifts (regular only): Service Wk = 7, Night = 1, Weekend = 3
-  const calcShifts = (s) => (s.dc||0)*7 + (s.nights||0)*1 + (s.wknd||0)*3;
+  // Total call days — uses stored totalDays from spreadsheet if available, otherwise estimates
+  const calcShifts = (s) => (s.totalDays !== undefined) ? (s.totalDays||0) : ((s.dc||0)*7 + (s.nights||0) + (s.wknd||0)*3);
 
   // Calendar data
   const calData = useMemo(() => {
@@ -2439,7 +2458,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                     <thead>
                       <tr style={{borderBottom:"1px solid #d0d8e0"}}>
                         <th style={thS2}>Surgeon</th>
-                        <th style={{...thS2,color:tier.color}}>Shifts</th>
+                        <th style={{...thS2,color:tier.color}}>1st Call</th>
+                        <th style={{...thS2,color:"#8a6a10"}}>2nd Call</th>
                         <th style={thS2}>Svc Wk</th><th style={thS2}>Nights</th><th style={thS2}>Wknds</th>
                         <th style={{...thS2,borderLeft:"1px solid #d8c880"}}>B-Day</th><th style={thS2}>B-Ngt</th><th style={thS2}>B-Wknd</th>
                       </tr>
@@ -2448,6 +2468,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                       {surgeons.map(s=>{
                         const p = tier.counts[s.id]||{};
                         const total = calcShifts(p);
+                        const totalB = p.totalDaysB||0;
                         const upd = (field, val) => {
                           const v = parseInt(val)||0;
                           tier.setter(prev=>({...prev,[s.id]:{...(prev[s.id]||{}), [field]:v}}));
@@ -2460,7 +2481,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                         return (
                           <tr key={s.id} style={{borderBottom:"1px solid #e8ecf0"}}>
                             <td style={{padding:"5px 6px"}}><Badge id={s.id} small/></td>
-                            <td style={{padding:"5px 6px",fontFamily:mono,fontSize:13,color:tier.color,fontWeight:700}}>{total}</td>
+                            <td style={{padding:"3px 4px"}}><input type="number" min="0" value={p.totalDays||0} onChange={e=>upd("totalDays",e.target.value)} style={{...css.inp,width:52,padding:"2px 4px",textAlign:"center",fontFamily:mono,fontSize:12,fontWeight:700,color:tier.color}}/></td>
+                            <td style={{padding:"3px 4px"}}><input type="number" min="0" value={p.totalDaysB||0} onChange={e=>upd("totalDaysB",e.target.value)} style={{...css.inp,width:52,padding:"2px 4px",textAlign:"center",fontFamily:mono,fontSize:12,fontWeight:600,color:"#8a6a10"}}/></td>
                             <td style={{padding:"3px 4px"}}>{ci("dc")}</td>
                             <td style={{padding:"3px 4px"}}>{ci("nights")}</td>
                             <td style={{padding:"3px 4px"}}>{ci("wknd")}</td>
@@ -2477,7 +2499,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             ))}
 
             <div style={{fontSize:11,color:"#7a8a98",lineHeight:1.5}}>
-              <strong style={{color:"#2c5a80"}}>Total Shifts</strong> = regular call only. Service Wk = 7 (M–F 5 + Sat 2) · Weeknight = 1 · Weekend = 3 (Fri night + Sun)
+              <strong style={{color:"#2c5a80"}}>1st Call / 2nd Call</strong> = total call days from spreadsheet. Type breakdown (Svc Wk, Nights, Wknds) used by generator for balancing.
             </div>
           </div>
         </>}
@@ -2716,7 +2738,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   </tbody>
                 </table>
                 <div style={{marginTop:8,fontSize:11,color:"#7a8a98",lineHeight:1.5}}>
-                  <strong style={{color:"#2c5a80"}}>Total Shifts</strong> = regular call only (not backup). Service Wk = 7 (M–F 5 + Sat 2) · Weeknight = 1 · Weekend = 3 (Fri night 1 + Sun 2)
+                  <strong style={{color:"#2c5a80"}}>1st Call / 2nd Call</strong> = total call days from spreadsheet. Type breakdown (Svc Wk, Nights, Wknds) used by generator for balancing.
                 </div>
               </div>
             )}
@@ -2804,7 +2826,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10,padding:"8px 12px",background:tOk?"#e8f8e8":"#fef8e8",border:`1px solid ${tOk?"#b0d8b0":"#302810"}`,borderRadius:7}}>
                     <span style={{fontSize:16}}>{tOk?"✅":"⚠️"}</span>
                     <span style={{fontSize:13,fontWeight:700,color:tOk?"#60e0a0":"#e0a060"}}>
-                      Total Call Shifts (1yr): spread {tSp} (min {Math.min(...totalArr)}, max {Math.max(...totalArr)}) — {tOk?"Fair":"Review recommended"}
+                      Total Call Days (1yr): spread {tSp} (min {Math.min(...totalArr)}, max {Math.max(...totalArr)}) — {tOk?"Fair":"Review recommended"}
                     </span>
                   </div>
                   {[
@@ -2876,7 +2898,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               ))}
 
               <div style={{fontSize:11,color:"#7a8a98",lineHeight:1.5}}>
-                <strong style={{color:"#2c5a80"}}>Total Shifts</strong> = regular call only. Service Wk = 7 (M–F 5 + Sat 2) · Weeknight = 1 · Weekend = 3 (Fri night + Sun)
+                <strong style={{color:"#2c5a80"}}>1st Call / 2nd Call</strong> = total call days from spreadsheet. Type breakdown (Svc Wk, Nights, Wknds) used by generator for balancing.
               </div>
             </div>
           )}
