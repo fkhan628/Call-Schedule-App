@@ -946,11 +946,8 @@ function CallSchedule() {
   const sendBrowserNotif = useCallback((title, body, tag, forceShow) => {
     try {
       if (pushPermission !== "granted") return;
-      if (!forceShow && document.hasFocus()) return; // don't fire if app is focused (unless forced)
-      new Notification(title, {
-        body, icon: "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📋</text></svg>",
-        tag: tag || "dsg-call-" + Date.now(), badge: "📋",
-      });
+      if (!forceShow && document.hasFocus()) return;
+      new Notification(title, { body, tag: tag || "dsg-call-" + Date.now() });
     } catch(e) { console.error("Browser notification error:", e); }
   }, [pushPermission]);
 
