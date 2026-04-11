@@ -14,6 +14,22 @@
     #root { min-height: 100vh; }
     /* Hide Babel warning */
     .babel-warning { display: none !important; }
+    /* Print-friendly styles */
+    @media print {
+      body { background: #fff !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+      #root > div > div:first-child { display: none !important; } /* hide header */
+      button, select, input { display: none !important; }
+      [style*="position: absolute"] { display: none !important; } /* hide notification panel */
+      div[style*="maxWidth"] { max-width: 100% !important; padding: 0 !important; }
+      div[style*="grid-template-columns: repeat(7"] { gap: 0 !important; }
+      div[style*="grid-template-columns: repeat(7"] > div { border: 1px solid #ccc !important; min-height: 60px !important; font-size: 9px !important; }
+      @page { margin: 0.5cm; size: landscape; }
+    }
+    /* Mobile improvements */
+    @media (max-width: 600px) {
+      select, input[type="date"], input[type="text"], input[type="password"], input[type="email"] { font-size: 16px !important; min-height: 38px; }
+      button { min-height: 36px; }
+    }
   </style>
   <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -89,8 +105,8 @@ const db = {
    ═══════════════════════════════════════════════════ */
 const NIGHT_KEYS = ["mon","tue","wed","thu"];
 const ALL_SHIFT_KEYS = ["dayCall","mon","tue","wed","thu","wknd"];
-const SHIFT_LABELS = { dayCall:"Service Week", mon:"Mon Night", tue:"Tue Night", wed:"Wed Night", thu:"Thu Night", wknd:"Weekend" };
-const SHIFT_TIMES = { dayCall:"M–F 7a–5p", mon:"Mon 5p–7a", tue:"Tue 5p–7a", wed:"Wed 5p–7a", thu:"Thu 5p–7a", wknd:"Fri 5p–Sat 7a & Sun 7a–Mon 7a" };
+const SHIFT_LABELS = { dayCall:"Service Week (incl. Sat)", mon:"Mon Night", tue:"Tue Night", wed:"Wed Night", thu:"Thu Night", wknd:"Weekend" };
+const SHIFT_TIMES = { dayCall:"M–F 7a–5p + Sat 7a–Sun 7a", mon:"Mon 5p–7a", tue:"Tue 5p–7a", wed:"Wed 5p–7a", thu:"Thu 5p–7a", wknd:"Fri 5p–Sat 7a & Sun 7a–Mon 7a" };
 const SHIFT_ICONS = { dayCall:"🏥", mon:"🌙", tue:"🌙", wed:"🌙", thu:"🌙", wknd:"🌗" };
 const DAY_HDR = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
 const MO = ["January","February","March","April","May","June","July","August","September","October","November","December"];
@@ -644,6 +660,30 @@ function CallSchedule() {
   const [editingWeek, setEditingWeek] = useState(null);
   const [editShift, setEditShift] = useState(null);
 
+  // ─── Dark Mode ───
+  const [darkMode, setDarkMode] = useState(() => {
+    try { return localStorage.getItem("dsg-dark-mode") === "true"; } catch(e) { return false; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem("dsg-dark-mode", darkMode); } catch(e) {}
+  }, [darkMode]);
+
+  // ─── Undo History ───
+  const [scheduleHistory, setScheduleHistory] = useState([]);
+  const pushUndo = useCallback((sched) => {
+    setScheduleHistory(prev => [...prev.slice(-9), JSON.parse(JSON.stringify(sched))]);
+  }, []);
+  const undoLastChange = useCallback(() => {
+    if (scheduleHistory.length === 0) return;
+    const prev = scheduleHistory[scheduleHistory.length - 1];
+    setSchedule(prev);
+    setScheduleHistory(h => h.slice(0, -1));
+  }, [scheduleHistory]);
+
+  // ─── What-If Preview ───
+  const [previewSchedule, setPreviewSchedule] = useState(null);
+  const [showPreview, setShowPreview] = useState(false);
+
   // Form states
   const [vacSurgeon, setVacSurgeon] = useState("");
   const [vacStart, setVacStart] = useState("");
@@ -666,6 +706,15 @@ function CallSchedule() {
   const [vacReqStart, setVacReqStart] = useState("");
   const [vacReqEnd, setVacReqEnd] = useState("");
   const [vacReqReason, setVacReqReason] = useState("");
+
+  // ─── Shift Trade Requests ───
+  const [tradeRequests, setTradeRequests] = useState([]);
+  const [tradeFrom, setTradeFrom] = useState("");
+  const [tradeTo, setTradeTo] = useState("");
+  const [tradeWeek, setTradeWeek] = useState("");
+  const [tradeShift, setTradeShift] = useState("");
+  const [tradeReturnWeek, setTradeReturnWeek] = useState("");
+  const [tradeReturnShift, setTradeReturnShift] = useState("");
 
   // ─── Scheduler Mode (PIN protected) ───
   const [isScheduler, setIsScheduler] = useState(false);
@@ -740,6 +789,12 @@ function CallSchedule() {
           if (Array.isArray(reqs)) setVacRequests(reqs);
         } catch(e) {}
 
+        // Load shift trade requests
+        try {
+          const trades = await db.query("shift_trade_requests", { order: "submitted_at.desc", limit: 100 });
+          if (Array.isArray(trades)) setTradeRequests(trades);
+        } catch(e) {}
+
         // Load recent notifications
         try {
           const notifs = await db.query("notifications", { order: "created_at.desc", limit: 50 });
@@ -782,6 +837,10 @@ function CallSchedule() {
         try {
           const reqs = await db.query("vacation_requests", { order: "submitted_at.desc", limit: 100 });
           if (Array.isArray(reqs)) setVacRequests(reqs);
+        } catch(e) {}
+        try {
+          const trades = await db.query("shift_trade_requests", { order: "submitted_at.desc", limit: 100 });
+          if (Array.isArray(trades)) setTradeRequests(trades);
         } catch(e) {}
         try {
           const notifs = await db.query("notifications", { order: "created_at.desc", limit: 50 });
@@ -918,6 +977,81 @@ function CallSchedule() {
     } catch(e) { console.error("Deny error:", e); }
   }, [addNotification]);
 
+  // ─── Shift Trade Request: Submit ───
+  const submitTradeRequest = useCallback(async () => {
+    if (!tradeFrom || !tradeTo || !tradeWeek || !tradeShift) return;
+    const fromName = surgeons.find(s => s.id === tradeFrom)?.name || tradeFrom;
+    const toName = surgeons.find(s => s.id === tradeTo)?.name || tradeTo;
+    const shiftLabel = SHIFT_LABELS[tradeShift] || tradeShift;
+    try {
+      const req = {
+        from_surgeon_id: tradeFrom, from_surgeon_name: fromName,
+        to_surgeon_id: tradeTo, to_surgeon_name: toName,
+        week_monday: tradeWeek, shift_key: tradeShift, shift_label: shiftLabel,
+        return_week: tradeReturnWeek || null, return_shift: tradeReturnShift || null,
+        return_shift_label: tradeReturnShift ? (SHIFT_LABELS[tradeReturnShift]||tradeReturnShift) : null,
+        status: "pending", submitted_at: new Date().toISOString(),
+      };
+      const { data: inserted } = await db.insert("shift_trade_requests", req);
+      if (inserted) {
+        setTradeRequests(prev => [inserted, ...prev]);
+        await addNotification("trade_submitted", "Shift Trade Proposed",
+          `${fromName} wants to trade ${shiftLabel} (${tradeWeek}) with ${toName}`);
+        sendEmailNotif("trade_submitted", { from_name: fromName, to_name: toName, shift: shiftLabel, week: tradeWeek });
+      }
+      setTradeWeek(""); setTradeShift(""); setTradeReturnWeek(""); setTradeReturnShift("");
+    } catch(e) { console.error("Submit trade error:", e); }
+  }, [tradeFrom, tradeTo, tradeWeek, tradeShift, tradeReturnWeek, tradeReturnShift, surgeons, addNotification, sendEmailNotif]);
+
+  // ─── Shift Trade Request: Accept ───
+  const acceptTradeRequest = useCallback(async (req) => {
+    try {
+      await db.update("shift_trade_requests", req.id, { status: "accepted", reviewed_at: new Date().toISOString() });
+      setTradeRequests(prev => prev.map(r => r.id === req.id ? { ...r, status: "accepted" } : r));
+      pushUndo(schedule);
+      setSchedule(p => {
+        const n = { ...p };
+        const wk1 = { ...n[req.week_monday] };
+        if (req.shift_key === "dayCall") wk1.dayCall = req.to_surgeon_id;
+        else wk1.nights = { ...wk1.nights, [req.shift_key]: req.to_surgeon_id };
+        let a1 = new Set([wk1.dayCall, ...Object.values(wk1.nights)].filter(Boolean));
+        wk1.off = surgeons.map(s => s.id).find(id => !a1.has(id)) || null;
+        n[req.week_monday] = wk1;
+        if (req.return_week && req.return_shift) {
+          const wk2 = { ...n[req.return_week] };
+          if (req.return_shift === "dayCall") wk2.dayCall = req.from_surgeon_id;
+          else wk2.nights = { ...wk2.nights, [req.return_shift]: req.from_surgeon_id };
+          let a2 = new Set([wk2.dayCall, ...Object.values(wk2.nights)].filter(Boolean));
+          wk2.off = surgeons.map(s => s.id).find(id => !a2.has(id)) || null;
+          n[req.return_week] = wk2;
+        }
+        return n;
+      });
+      await addNotification("trade_accepted", "Shift Trade Accepted",
+        `${req.to_surgeon_name} accepted: ${req.shift_label} (${req.week_monday}) with ${req.from_surgeon_name}`);
+      sendEmailNotif("trade_accepted", { from_name: req.from_surgeon_name, to_name: req.to_surgeon_name, shift: req.shift_label, week: req.week_monday });
+    } catch(e) { console.error("Accept trade error:", e); }
+  }, [schedule, surgeons, pushUndo, addNotification, sendEmailNotif]);
+
+  // ─── Shift Trade Request: Decline ───
+  const declineTradeRequest = useCallback(async (req) => {
+    try {
+      await db.update("shift_trade_requests", req.id, { status: "declined", reviewed_at: new Date().toISOString() });
+      setTradeRequests(prev => prev.map(r => r.id === req.id ? { ...r, status: "declined" } : r));
+      await addNotification("trade_declined", "Shift Trade Declined",
+        `${req.to_surgeon_name} declined: ${req.shift_label} (${req.week_monday})`);
+    } catch(e) { console.error("Decline trade error:", e); }
+  }, [addNotification]);
+
+  // ─── Delete Trade Request ───
+  const deleteTradeRequest = useCallback(async (reqId) => {
+    if (!confirm("Delete this trade request?")) return;
+    try {
+      await fetch(`${SUPABASE_URL}/rest/v1/shift_trade_requests?id=eq.${reqId}`, { method: "DELETE", headers: { ...dbHeaders, Prefer: "return=minimal" } });
+      setTradeRequests(prev => prev.filter(r => r.id !== reqId));
+    } catch(e) {}
+  }, []);
+
   // ─── Scheduler PIN Check ───
   const checkPin = () => {
     if (pinInput === schedulerPin) { setIsScheduler(true); setPinError(""); setPinInput(""); }
@@ -930,6 +1064,33 @@ function CallSchedule() {
     setNotifLastSeen(now);
     try { localStorage.setItem("dsg-notif-seen", now); } catch(e) {}
   };
+
+  // ─── Clear All Notifications ───
+  const clearAllNotifications = useCallback(async () => {
+    if (!confirm("Clear all notifications? This cannot be undone.")) return;
+    try {
+      await fetch(`${SUPABASE_URL}/rest/v1/notifications`, { method: "DELETE", headers: { ...dbHeaders, Prefer: "return=minimal" } });
+      setNotifications([]);
+    } catch(e) { console.error("Clear notifications error:", e); }
+  }, []);
+
+  // ─── Delete a Single Vacation Request ───
+  const deleteVacRequest = useCallback(async (reqId) => {
+    if (!confirm("Delete this request?")) return;
+    try {
+      await fetch(`${SUPABASE_URL}/rest/v1/vacation_requests?id=eq.${reqId}`, { method: "DELETE", headers: { ...dbHeaders, Prefer: "return=minimal" } });
+      setVacRequests(prev => prev.filter(r => r.id !== reqId));
+    } catch(e) { console.error("Delete vacation request error:", e); }
+  }, []);
+
+  // ─── Clear All Reviewed Vacation Requests ───
+  const clearReviewedRequests = useCallback(async () => {
+    if (!confirm("Clear all reviewed (approved/denied) requests? Pending requests will be kept.")) return;
+    try {
+      await fetch(`${SUPABASE_URL}/rest/v1/vacation_requests?status=neq.pending`, { method: "DELETE", headers: { ...dbHeaders, Prefer: "return=minimal" } });
+      setVacRequests(prev => prev.filter(r => r.status === "pending"));
+    } catch(e) { console.error("Clear reviewed requests error:", e); }
+  }, []);
 
   // ─── Browser Push Notifications ───
   const requestPushPermission = useCallback(async () => {
@@ -957,7 +1118,7 @@ function CallSchedule() {
       Object.entries(notifPrefs).forEach(([sid, prefs]) => {
         if (!prefs.email || !prefs.email_notifs) return;
         if (type === "test") { /* send to all email-enabled */ }
-        else if (type === "schedule_published" && !prefs.schedule_changes) return;
+        else if ((type === "schedule_published" || type === "schedule_changed" || type === "trade_submitted" || type === "trade_accepted" || type === "trade_declined") && !prefs.schedule_changes) return;
         else if ((type === "vacation_approved" || type === "vacation_denied" || type === "vacation_submitted") && !prefs.vacation_updates) return;
         else if (type === "shift_reminder" && !prefs.shift_reminders) return;
         recipients.push({ email: prefs.email, surgeon_id: sid, name: surgeons.find(s => s.id === sid)?.name || sid });
@@ -1052,7 +1213,7 @@ function CallSchedule() {
 
   // ─── Publish Schedule (with notification) ───
   const doGenerateAndNotify = async () => {
-    doGenerate();
+    doGenerate(false);
     await addNotification("schedule_published", "Schedule Published",
       "A new call schedule has been generated. Check the Schedule or Calendar tab.");
     sendEmailNotif("schedule_published", { period: `${MO[startMonth]} – ${MO[endMoIdx]} ${startYear}` });
@@ -1512,17 +1673,40 @@ If you cannot find vacations, return an empty array for "vacations". Same for "f
     return p;
   };
 
-  const doGenerate = () => {
+  const doGenerate = (preview) => {
     const prefs = buildPrefs();
     const result = generate(surgeons, mondays, vacations, backupMondaySet, priorCounts, prefs, fierceBackupSet);
-    setSchedule(result);
-    setCalMonth(startMonth);
-    setCalYear(startYear);
-    setView("calendar");
+    if (preview) {
+      setPreviewSchedule(result);
+      setShowPreview(true);
+    } else {
+      if (Object.keys(schedule).length > 0) pushUndo(schedule);
+      setSchedule(result);
+      setPreviewSchedule(null); setShowPreview(false);
+      setCalMonth(startMonth);
+      setCalYear(startYear);
+      setView("calendar");
+    }
+  };
+
+  const acceptPreview = () => {
+    if (previewSchedule) {
+      if (Object.keys(schedule).length > 0) pushUndo(schedule);
+      setSchedule(previewSchedule);
+      setPreviewSchedule(null); setShowPreview(false);
+      setCalMonth(startMonth);
+      setCalYear(startYear);
+      setView("calendar");
+    }
+  };
+
+  const discardPreview = () => {
+    setPreviewSchedule(null); setShowPreview(false);
   };
 
   const swapShift = (mStr, shift, newId) => {
     const oldId = shift === "dayCall" ? schedule[mStr]?.dayCall : schedule[mStr]?.nights?.[shift];
+    pushUndo(schedule);
     setSchedule(p => {
       const wk = {...p[mStr]};
       if(shift==="dayCall") wk.dayCall=newId;
@@ -1532,6 +1716,7 @@ If you cannot find vacations, return an empty array for "vacations". Same for "f
       return {...p,[mStr]:wk};
     });
     setEditShift(null); setEditingWeek(null);
+    setSwapSuggestions(null); setSwapTarget(null);
     // Notify about the change
     const oldName = sMap[oldId]?.name || "—";
     const newName = sMap[newId]?.name || "—";
@@ -1540,6 +1725,169 @@ If you cannot find vacations, return an empty array for "vacations". Same for "f
       `${shiftLabel} (wk of ${mStr}): ${oldName} → ${newName}`);
     sendEmailNotif("schedule_changed", { shift: shiftLabel, week: mStr, old_surgeon: oldName, new_surgeon: newName });
   };
+
+  // ─── Smart Swap Suggestions ───
+  const [swapTarget, setSwapTarget] = useState(null); // { mondayStr, shift, surgeonId }
+  const [swapSuggestions, setSwapSuggestions] = useState(null); // [{ candidateId, score, reasons, returnSwaps }]
+
+  const findSwapSuggestions = useCallback((mondayStr, shift, currentSurgeonId) => {
+    if (!schedule[mondayStr]) return;
+    const currentName = sMap[currentSurgeonId]?.name || "?";
+    const mon = parse(mondayStr);
+    const ids = surgeons.map(s => s.id).filter(id => id !== currentSurgeonId);
+
+    // Current shift counts from schedule
+    const sCounts = {};
+    surgeons.forEach(s => { sCounts[s.id] = { dc: 0, nights: 0, wknd: 0 }; });
+    Object.values(schedule).forEach(wk => {
+      if (wk.dayCall && sCounts[wk.dayCall]) sCounts[wk.dayCall].dc++;
+      Object.entries(wk.nights || {}).forEach(([sk, sid]) => {
+        if (!sid || !sCounts[sid]) return;
+        if (sk === "wknd") sCounts[sid].wknd++;
+        else sCounts[sid].nights++;
+      });
+    });
+
+    // Determine shift type for counting
+    const shiftType = shift === "dayCall" ? "dc" : shift === "wknd" ? "wknd" : "nights";
+
+    // Check each candidate
+    const candidates = [];
+    ids.forEach(candId => {
+      const candName = sMap[candId]?.name || "?";
+      const reasons = [];
+      let eligible = true;
+
+      // 1. Check vacation conflict
+      const dayOffset = { dayCall: 0, mon: 0, tue: 1, wed: 2, thu: 3, wknd: 4 }[shift] || 0;
+      const shiftDate = fmt(addD(mon, dayOffset));
+      if (shift === "dayCall") {
+        for (let i = 0; i < 6; i++) {
+          if (onVac(candId, fmt(addD(mon, i)), vacations)) { eligible = false; break; }
+        }
+      } else if (shift === "wknd") {
+        const friDate = fmt(addD(mon, 4));
+        const sunDate = fmt(addD(mon, 6));
+        const nextMonDate = fmt(addD(mon, 7));
+        if (onVac(candId, friDate, vacations) || onVac(candId, sunDate, vacations) || onVac(candId, nextMonDate, vacations)) eligible = false;
+      } else {
+        const nextDay = fmt(addD(mon, dayOffset + 1));
+        if (onVac(candId, shiftDate, vacations) || onVac(candId, nextDay, vacations)) eligible = false;
+      }
+      if (!eligible) return;
+
+      // 2. Check if candidate is already assigned DC that week (can't do night + DC)
+      const wk = schedule[mondayStr];
+      if (shift !== "dayCall" && wk.dayCall === candId) {
+        reasons.push("Already on service week");
+        return; // can't take a night/weekend if on DC
+      }
+
+      // 3. Check if candidate already has a shift that week they'd need to keep
+      const candShiftsThisWeek = [];
+      if (wk.dayCall === candId) candShiftsThisWeek.push("Service Week");
+      Object.entries(wk.nights || {}).forEach(([sk, sid]) => {
+        if (sid === candId) candShiftsThisWeek.push(SHIFT_LABELS[sk]);
+      });
+
+      // 4. Calculate fairness score — lower is better (candidate has fewer of this type)
+      const currentCount = sCounts[currentSurgeonId]?.[shiftType] || 0;
+      const candCount = sCounts[candId]?.[shiftType] || 0;
+      const countDiff = currentCount - candCount; // positive = current has more → good swap
+
+      // Include prior counts for total fairness
+      const priorCurr = priorCounts[currentSurgeonId] || {};
+      const priorCand = priorCounts[candId] || {};
+      const totalCurrType = (priorCurr[shiftType === "dc" ? "dc" : shiftType === "wknd" ? "wknd" : "nights"] || 0) + (sCounts[currentSurgeonId]?.[shiftType] || 0);
+      const totalCandType = (priorCand[shiftType === "dc" ? "dc" : shiftType === "wknd" ? "wknd" : "nights"] || 0) + (sCounts[candId]?.[shiftType] || 0);
+      const totalDiff = totalCurrType - totalCandType;
+
+      if (countDiff > 0) reasons.push(`${candName} has ${countDiff} fewer ${shiftType === "dc" ? "service weeks" : shiftType === "wknd" ? "weekends" : "nights"} this period`);
+      else if (countDiff === 0) reasons.push(`Equal ${shiftType === "dc" ? "service weeks" : shiftType === "wknd" ? "weekends" : "nights"} this period`);
+      else reasons.push(`${candName} has ${Math.abs(countDiff)} more ${shiftType === "dc" ? "service weeks" : shiftType === "wknd" ? "weekends" : "nights"} — less ideal`);
+
+      if (totalDiff > 1) reasons.push(`${totalDiff} fewer overall (good for balance)`);
+
+      if (candShiftsThisWeek.length > 0) reasons.push(`Already assigned: ${candShiftsThisWeek.join(", ")}`);
+
+      // 5. Find possible return swaps — shifts the current surgeon could take from the candidate in another week
+      const returnSwaps = [];
+      Object.entries(schedule).forEach(([otherMon, otherWk]) => {
+        if (otherMon === mondayStr) return;
+        // Check if candidate has a shift of the same type in another week
+        if (shiftType === "dc" && otherWk.dayCall === candId) {
+          // Check current surgeon can do DC that week
+          const otherMonDate = parse(otherMon);
+          let canDo = true;
+          for (let i = 0; i < 6; i++) { if (onVac(currentSurgeonId, fmt(addD(otherMonDate, i)), vacations)) { canDo = false; break; } }
+          if (canDo) returnSwaps.push({ mondayStr: otherMon, shift: "dayCall", label: `Svc Wk (${otherMon})` });
+        }
+        if (shiftType === "nights") {
+          NIGHT_KEYS.forEach((sk, i) => {
+            if (otherWk.nights?.[sk] === candId && otherWk.dayCall !== currentSurgeonId) {
+              const otherMonDate = parse(otherMon);
+              const sd = fmt(addD(otherMonDate, i));
+              const nd = fmt(addD(otherMonDate, i + 1));
+              if (!onVac(currentSurgeonId, sd, vacations) && !onVac(currentSurgeonId, nd, vacations)) {
+                returnSwaps.push({ mondayStr: otherMon, shift: sk, label: `${SHIFT_LABELS[sk]} (${otherMon})` });
+              }
+            }
+          });
+        }
+        if (shiftType === "wknd" && otherWk.nights?.wknd === candId) {
+          const otherMonDate = parse(otherMon);
+          const f = fmt(addD(otherMonDate, 4)), su = fmt(addD(otherMonDate, 6)), nm = fmt(addD(otherMonDate, 7));
+          if (!onVac(currentSurgeonId, f, vacations) && !onVac(currentSurgeonId, su, vacations) && !onVac(currentSurgeonId, nm, vacations) && otherWk.dayCall !== currentSurgeonId) {
+            returnSwaps.push({ mondayStr: otherMon, shift: "wknd", label: `Weekend (${otherMon})` });
+          }
+        }
+      });
+
+      // Score: higher = better swap. Favor candidates with fewer shifts of this type.
+      const score = (countDiff * 10) + (totalDiff * 5) + (returnSwaps.length > 0 ? 20 : 0) + (candShiftsThisWeek.length === 0 ? 10 : -5);
+
+      candidates.push({ candidateId: candId, candidateName: candName, score, reasons, returnSwaps, countDiff, totalDiff, candShiftsThisWeek });
+    });
+
+    // Sort by score descending (best first)
+    candidates.sort((a, b) => b.score - a.score);
+    setSwapTarget({ mondayStr, shift, surgeonId: currentSurgeonId, surgeonName: currentName });
+    setSwapSuggestions(candidates);
+  }, [schedule, surgeons, sMap, vacations, priorCounts]);
+
+  // ─── Execute a two-way swap ───
+  const executeTwoWaySwap = useCallback((targetMon, targetShift, targetOldId, candId, returnMon, returnShift) => {
+    pushUndo(schedule);
+    setSchedule(p => {
+      const n = { ...p };
+      // Swap 1: candidate takes the target shift
+      const wk1 = { ...n[targetMon] };
+      if (targetShift === "dayCall") wk1.dayCall = candId;
+      else wk1.nights = { ...wk1.nights, [targetShift]: candId };
+      let assigned1 = new Set([wk1.dayCall, ...Object.values(wk1.nights)].filter(Boolean));
+      wk1.off = surgeons.map(s => s.id).find(id => !assigned1.has(id)) || null;
+      n[targetMon] = wk1;
+
+      // Swap 2: original surgeon takes the candidate's return shift
+      if (returnMon && returnShift) {
+        const wk2 = { ...n[returnMon] };
+        if (returnShift === "dayCall") wk2.dayCall = targetOldId;
+        else wk2.nights = { ...wk2.nights, [returnShift]: targetOldId };
+        let assigned2 = new Set([wk2.dayCall, ...Object.values(wk2.nights)].filter(Boolean));
+        wk2.off = surgeons.map(s => s.id).find(id => !assigned2.has(id)) || null;
+        n[returnMon] = wk2;
+      }
+      return n;
+    });
+
+    const oldName = sMap[targetOldId]?.name || "—";
+    const newName = sMap[candId]?.name || "—";
+    const shiftLabel = SHIFT_LABELS[targetShift] || targetShift;
+    addNotification("schedule_changed", "Shift Swap",
+      `${shiftLabel} (wk of ${targetMon}): ${oldName} ↔ ${newName}${returnMon ? ` (return: ${SHIFT_LABELS[returnShift]||returnShift} wk of ${returnMon})` : ""}`);
+    sendEmailNotif("schedule_changed", { shift: shiftLabel, week: targetMon, old_surgeon: oldName, new_surgeon: newName });
+    setSwapSuggestions(null); setSwapTarget(null);
+  }, [surgeons, sMap, addNotification, sendEmailNotif]);
 
   // Generate shareable read-only HTML with calendar grid view
   const generateShareHTML = () => {
@@ -1798,6 +2146,95 @@ ${"</"}script>${"</"}body>${"</"}html>`;
   // Total call days — uses stored totalDays from spreadsheet if available, otherwise estimates
   const calcShifts = (s) => (s.totalDays !== undefined) ? (s.totalDays||0) : ((s.dc||0)*7 + (s.nights||0) + (s.wknd||0)*3);
 
+  // ─── Conflict Detection ───
+  const conflicts = useMemo(() => {
+    const issues = [];
+    const mondayStrs = Object.keys(schedule).sort();
+    const ids = surgeons.map(s => s.id);
+
+    mondayStrs.forEach((mStr, wkIdx) => {
+      const wk = schedule[mStr];
+      const mon = parse(mStr);
+
+      // Check back-to-back nights within the week
+      const nightOrder = ["mon","tue","wed","thu"];
+      for (let i = 0; i < nightOrder.length - 1; i++) {
+        const a = wk.nights?.[nightOrder[i]];
+        const b = wk.nights?.[nightOrder[i+1]];
+        if (a && a === b) {
+          issues.push({ type: "consecutive", severity: "warning", week: mStr, message: `${sMap[a]?.name} has consecutive nights (${SHIFT_LABELS[nightOrder[i]]} + ${SHIFT_LABELS[nightOrder[i+1]]})` });
+        }
+      }
+
+      // Check Thu night → next week Mon night
+      if (wkIdx < mondayStrs.length - 1) {
+        const nextWk = schedule[mondayStrs[wkIdx + 1]];
+        const thuSurgeon = wk.nights?.thu;
+        const nextMonSurgeon = nextWk?.nights?.mon;
+        if (thuSurgeon && thuSurgeon === nextMonSurgeon) {
+          issues.push({ type: "consecutive", severity: "info", week: mStr, message: `${sMap[thuSurgeon]?.name} has Thu night then Mon night next week` });
+        }
+      }
+
+      // Check weekend → Mon night same person
+      const wkndSurgeon = wk.nights?.wknd;
+      if (wkIdx < mondayStrs.length - 1) {
+        const nextWk = schedule[mondayStrs[wkIdx + 1]];
+        if (wkndSurgeon && nextWk?.nights?.mon === wkndSurgeon) {
+          issues.push({ type: "consecutive", severity: "warning", week: mStr, message: `${sMap[wkndSurgeon]?.name} has Weekend then Mon night the next week` });
+        }
+      }
+
+      // Check DC surgeon also on night same week (should not happen)
+      if (wk.dayCall) {
+        nightOrder.forEach(sk => {
+          if (wk.nights?.[sk] === wk.dayCall) {
+            issues.push({ type: "double", severity: "error", week: mStr, message: `${sMap[wk.dayCall]?.name} is on Service Week AND ${SHIFT_LABELS[sk]} (same week)` });
+          }
+        });
+        if (wk.nights?.wknd === wk.dayCall) {
+          issues.push({ type: "double", severity: "error", week: mStr, message: `${sMap[wk.dayCall]?.name} is on Service Week AND Weekend (same week)` });
+        }
+      }
+    });
+
+    return issues;
+  }, [schedule, surgeons, sMap]);
+
+  // ─── Yearly Summary Export ───
+  const exportYearlySummary = useCallback(() => {
+    const header = ["Surgeon","Svc Wk","Nights","Wknds","1st Call Days","B-Svc Wk","B-Nights","B-Wknds","2nd Call Days","Total"];
+    const rows = surgeons.map(s => {
+      const cur = stats[s.id] || {};
+      const pri = priorCounts[s.id] || {};
+      const cumDc = (pri.dc||0) + (cur.dc||0);
+      const cumN = (pri.nights||0) + (cur.nights||0);
+      const cumW = (pri.wknd||0) + (cur.wknd||0);
+      const cumDcB = (pri.dcB||0) + (cur.dcB||0);
+      const cumNB = (pri.nightsB||0) + (cur.nightsB||0);
+      const cumWB = (pri.wkndB||0) + (cur.wkndB||0);
+      const total1 = calcShifts({dc:cumDc,nights:cumN,wknd:cumW,totalDays:(pri.totalDays||0)+(cur.totalDays||0)});
+      const total2 = (pri.totalDaysB||0) + (cur.totalDaysB||0);
+      return [s.name, cumDc, cumN, cumW, total1, cumDcB, cumNB, cumWB, total2, total1+total2].join(",");
+    });
+    const csv = [header.join(","), ...rows].join("\n");
+    const blob = new Blob([csv], {type:"text/csv"});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = `call-schedule-summary-${startYear}.csv`; a.click();
+    URL.revokeObjectURL(url);
+  }, [surgeons, stats, priorCounts, startYear, calcShifts]);
+
+  // ─── Dark Mode Styles ───
+  const dk = darkMode;
+  const dkBg = dk ? "#1a1a2e" : "#f0f2f5";
+  const dkCard = dk ? "#16213e" : "#ffffff";
+  const dkCardBorder = dk ? "#2a3a5e" : "#e0e4ea";
+  const dkText = dk ? "#e0e0f0" : "#2c3e50";
+  const dkSubtext = dk ? "#8a8aaa" : "#7a8a98";
+  const dkHdr = dk ? "linear-gradient(180deg,#16213e,#1a1a2e)" : "linear-gradient(180deg,#ffffff,#f8f9fb)";
+  const dkInp = dk ? {background:"#0f3460",border:"1px solid #2a3a5e",color:"#e0e0f0"} : {};
+
   // Calendar data
   const calData = useMemo(() => {
     const d={};
@@ -1923,11 +2360,20 @@ ${"</"}script>${"</"}body>${"</"}html>`;
   };
 
   return (
-    <div style={css.root}>
+    <div style={{...css.root,background:dkBg,color:dkText}}>
       <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet"/>
+      {darkMode && <style>{`
+        body { background: #1a1a2e !important; }
+        div[style*="background: rgb(255, 255, 255)"], div[style*="background:#ffffff"], div[style*="background: #fff"] { background: #16213e !important; border-color: #2a3a5e !important; }
+        select, input[type="date"], input[type="number"], input[type="text"], input[type="password"], input[type="email"] { background: #0f3460 !important; border-color: #2a3a5e !important; color: #e0e0f0 !important; }
+        table { color: #c0c0d0 !important; }
+        th { color: #8a8aaa !important; }
+        td { color: #c0c0d0 !important; }
+        details summary { color: #6080c0 !important; }
+      `}</style>}
 
       {/* ─── Header ─── */}
-      <div style={css.hdr}>
+      <div style={{...css.hdr,background:dkHdr,borderBottom:`1px solid ${dkCardBorder}`}}>
         <div style={{display:"flex",alignItems:"center",gap:12}}>
           <div style={{width:38,height:38,borderRadius:8,background:"linear-gradient(135deg,#1a6fa8,#2488c8)",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,boxShadow:"0 2px 6px rgba(26,111,168,0.25)"}}>
             <span style={{color:"#fff",fontSize:15,fontWeight:800,letterSpacing:-0.5,fontFamily:font}}>DSG</span>
@@ -1946,8 +2392,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           {[["setup","Setup"],["totals","Totals"],["calendar","Calendar"],["myschedule","Mine"],["requests","Requests"],["stats","Stats"]].map(([k,l])=>
             <button key={k} style={{...css.tab(view===k),position:"relative"}} onClick={()=>setView(k)}>
               {l}
-              {k==="requests" && vacRequests.filter(r=>r.status==="pending").length > 0 && (
-                <span style={{position:"absolute",top:-4,right:-4,background:"#e04040",color:"#fff",borderRadius:10,fontSize:9,fontWeight:700,minWidth:16,height:16,display:"flex",alignItems:"center",justifyContent:"center",padding:"0 4px"}}>{vacRequests.filter(r=>r.status==="pending").length}</span>
+              {k==="requests" && (vacRequests.filter(r=>r.status==="pending").length + tradeRequests.filter(r=>r.status==="pending").length) > 0 && (
+                <span style={{position:"absolute",top:-4,right:-4,background:"#e04040",color:"#fff",borderRadius:10,fontSize:9,fontWeight:700,minWidth:16,height:16,display:"flex",alignItems:"center",justifyContent:"center",padding:"0 4px"}}>{vacRequests.filter(r=>r.status==="pending").length + tradeRequests.filter(r=>r.status==="pending").length}</span>
               )}
             </button>
           )}
@@ -1959,6 +2405,14 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               <span style={{position:"absolute",top:-4,right:-4,background:"#e04040",color:"#fff",borderRadius:10,fontSize:9,fontWeight:700,minWidth:16,height:16,display:"flex",alignItems:"center",justifyContent:"center",padding:"0 4px"}}>{unreadCount}</span>
             )}
           </button>
+          <button onClick={()=>setDarkMode(d=>!d)} style={{...css.tab(false),fontSize:15,padding:"4px 10px"}} title="Toggle dark mode">
+            {darkMode ? "☀️" : "🌙"}
+          </button>
+          {scheduleHistory.length > 0 && (
+            <button onClick={undoLastChange} style={{...css.tab(false),fontSize:12,padding:"4px 10px",color:"#c09030"}} title={`Undo (${scheduleHistory.length} steps)`}>
+              ↩ Undo
+            </button>
+          )}
         </div>
       </div>
 
@@ -1969,12 +2423,17 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           <div style={{position:"absolute",top:0,right:14,width:340,maxHeight:400,overflowY:"auto",background:"#fff",border:"1px solid #dce2e8",borderRadius:10,boxShadow:"0 4px 20px rgba(0,0,0,0.12)",zIndex:100,padding:12}}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
               <span style={{fontSize:14,fontWeight:700,color:"#1a2a3a"}}>Notifications</span>
-              <button onClick={()=>setShowNotifs(false)} style={{background:"none",border:"none",fontSize:16,cursor:"pointer",color:"#8a94a0"}}>✕</button>
+              <div style={{display:"flex",gap:6,alignItems:"center"}}>
+                {notifications.length > 0 && (
+                  <button onClick={clearAllNotifications} style={{background:"none",border:"1px solid #e8c0c0",color:"#904040",borderRadius:5,padding:"2px 8px",fontSize:10,cursor:"pointer",fontFamily:font}}>Clear All</button>
+                )}
+                <button onClick={()=>setShowNotifs(false)} style={{background:"none",border:"none",fontSize:16,cursor:"pointer",color:"#8a94a0"}}>✕</button>
+              </div>
             </div>
             {notifications.length === 0 ? (
               <p style={{color:"#8a94a0",fontSize:13,textAlign:"center",padding:20}}>No notifications yet</p>
             ) : notifications.map(n => {
-              const tabMap = {vacation_submitted:"requests",vacation_approved:"requests",vacation_denied:"requests",schedule_published:"schedule",schedule_changed:"schedule"};
+              const tabMap = {vacation_submitted:"requests",vacation_approved:"requests",vacation_denied:"requests",schedule_published:"schedule",schedule_changed:"schedule",trade_submitted:"requests",trade_accepted:"requests",trade_declined:"requests"};
               const targetTab = tabMap[n.type] || null;
               return (
               <div key={n.id} onClick={()=>{if(targetTab){setView(targetTab);setShowNotifs(false);markNotifsSeen();}}}
@@ -2179,9 +2638,67 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             </div>
           </div>
 
-          <button onClick={doGenerateAndNotify} style={{...css.btn(true),padding:"13px 30px",fontSize:14,fontWeight:700,width:"100%",borderRadius:9,letterSpacing:0.3}}>
-            Generate 14-Week Schedule →
-          </button>
+          <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+            <button onClick={()=>doGenerate(true)} style={{...css.btn(false),padding:"13px 24px",fontSize:14,fontWeight:700,borderRadius:9,letterSpacing:0.3,flex:1}}>
+              👁 Preview Schedule
+            </button>
+            <button onClick={doGenerateAndNotify} style={{...css.btn(true),padding:"13px 24px",fontSize:14,fontWeight:700,borderRadius:9,letterSpacing:0.3,flex:1}}>
+              Generate & Publish →
+            </button>
+          </div>
+
+          {/* What-If Preview */}
+          {showPreview && previewSchedule && (()=>{
+            // Build preview stats
+            const pStats = {};
+            surgeons.forEach(s => { pStats[s.id] = {dc:0,nights:0,wknd:0,off:0}; });
+            Object.values(previewSchedule).forEach(wk => {
+              if (wk.dayCall && pStats[wk.dayCall]) pStats[wk.dayCall][wk.isBackup?"dcB":"dc"]++;
+              if (wk.off && pStats[wk.off]) pStats[wk.off][wk.isBackup?"offB":"off"]++;
+              Object.entries(wk.nights||{}).forEach(([sh,sid]) => {
+                if (!sid || !pStats[sid]) return;
+                if (sh==="wknd") pStats[sid][wk.isBackup?"wkndB":"wknd"]++;
+                else pStats[sid][wk.isBackup?"nightsB":"nights"]++;
+              });
+            });
+            return (
+              <div style={{...css.card,marginTop:14,background:dk?"#1a2a1a":"#f0faf0",border:"2px solid #80c080"}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12,flexWrap:"wrap",gap:8}}>
+                  <div style={css.cardT}>👁 Schedule Preview</div>
+                  <div style={{display:"flex",gap:6}}>
+                    <button onClick={()=>doGenerate(true)} style={{...css.btn(false),padding:"6px 14px",fontSize:12}}>↻ Re-roll</button>
+                    <button onClick={acceptPreview} style={{...css.btn(true),padding:"6px 14px",fontSize:12,background:"linear-gradient(135deg,#1a8040,#30a060)",borderColor:"#1a8040"}}>✓ Accept & Publish</button>
+                    <button onClick={discardPreview} style={{background:"none",border:"1px solid #e0c0c0",color:"#904040",borderRadius:6,padding:"6px 14px",fontSize:12,cursor:"pointer",fontFamily:font}}>✕ Discard</button>
+                  </div>
+                </div>
+                <div style={{overflowX:"auto"}}>
+                  <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+                    <thead>
+                      <tr style={{borderBottom:"2px solid #b0d8b0"}}>
+                        <th style={thS2}>Surgeon</th>
+                        <th style={thS2}>Svc Wk</th><th style={thS2}>Nights</th><th style={thS2}>Wknds</th><th style={thS2}>Off</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {surgeons.map(s => {
+                        const ps = pStats[s.id]||{};
+                        return (
+                          <tr key={s.id} style={{borderBottom:"1px solid #c0e0c0"}}>
+                            <td style={{padding:"5px 6px"}}><Badge id={s.id} small/></td>
+                            <td style={tdS}>{ps.dc||0}</td>
+                            <td style={tdS}>{ps.nights||0}</td>
+                            <td style={tdS}>{ps.wknd||0}</td>
+                            <td style={tdS}>{ps.off||0}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+                <p style={{fontSize:11,color:"#5a8a5a",marginTop:8}}>Click "Re-roll" to generate a different version. Click "Accept" to commit this schedule.</p>
+              </div>
+            );
+          })()}
 
           {/* ─── Settings (collapsed) ─── */}
           <div style={{marginTop:14}}>
@@ -2541,9 +3058,26 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             </div>
             <div style={{display:"flex",gap:5}}>
               <button onClick={()=>setView("setup")} style={css.btn(false)}>← Setup</button>
-              <button onClick={doGenerate} style={css.btn(true)}>↻ Regenerate</button>
+              <button onClick={()=>doGenerate(false)} style={css.btn(true)}>↻ Regenerate</button>
             </div>
           </div>
+
+          {/* Conflict Warnings */}
+          {conflicts.length > 0 && (
+            <div style={{...css.card,marginBottom:14,background:dk?"#2a1a1a":"#fef8f0",border:"1px solid #e8c0a0"}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+                <div style={{fontSize:13,fontWeight:700,color:"#c06020"}}>⚠️ Schedule Warnings — {conflicts.length}</div>
+              </div>
+              {conflicts.slice(0,10).map((c,i) => (
+                <div key={i} style={{display:"flex",alignItems:"center",gap:8,padding:"4px 8px",marginBottom:3,fontSize:12,color:c.severity==="error"?"#c04040":c.severity==="warning"?"#a06020":"#5a6a78",background:c.severity==="error"?(dk?"#2a0a0a":"#fce8e8"):dk?"#2a1a0a":"#fef8e8",borderRadius:4,border:`1px solid ${c.severity==="error"?"#e0b0b0":"#e8d0b0"}`}}>
+                  <span style={{fontWeight:700}}>{c.severity==="error"?"🔴":c.severity==="warning"?"🟡":"🔵"}</span>
+                  <span style={{fontFamily:mono,fontSize:11,color:dkSubtext}}>{c.week}</span>
+                  <span>{c.message}</span>
+                </div>
+              ))}
+              {conflicts.length > 10 && <p style={{fontSize:11,color:"#8a94a0",marginTop:4}}>+ {conflicts.length-10} more…</p>}
+            </div>
+          )}
 
           <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:1,marginBottom:1}}>
             {DAY_HDR.map(d=><div key={d} style={{textAlign:"center",fontSize:10,fontWeight:700,color:"#8a94a0",padding:"5px 0",letterSpacing:1}}>{d}</div>)}
@@ -2624,6 +3158,106 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             <span>🏖 Vacation</span>
           </div>
 
+          {/* ─── Shift Swap Tool ─── */}
+          {Object.keys(schedule).length > 0 && (
+            <div style={{...css.card,marginTop:14,background:"linear-gradient(135deg,#f8f0ff,#f4f0f8)",border:"1px solid #d0c0e4"}}>
+              <div style={css.cardT}>🔄 Shift Swap Tool</div>
+              <p style={{fontSize:12,color:"#5a6a78",margin:"0 0 12px",lineHeight:1.5}}>
+                Need to change a shift? Select who needs to swap, and the system will suggest fair trades.
+              </p>
+              <div style={{display:"flex",gap:6,alignItems:"end",flexWrap:"wrap",marginBottom:10}}>
+                <div>
+                  <label style={{fontSize:10,color:"#7a8a98",display:"block",marginBottom:2}}>Week</label>
+                  <select value={swapTarget?.mondayStr||""} onChange={e=>{setSwapTarget(prev=>({...(prev||{}),mondayStr:e.target.value}));setSwapSuggestions(null);}} style={{...css.inp,width:160}}>
+                    <option value="">Select week…</option>
+                    {Object.keys(schedule).sort().map(m=><option key={m} value={m}>Wk of {m}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label style={{fontSize:10,color:"#7a8a98",display:"block",marginBottom:2}}>Shift</label>
+                  <select value={swapTarget?.shift||""} onChange={e=>{setSwapTarget(prev=>({...(prev||{}),shift:e.target.value}));setSwapSuggestions(null);}} style={{...css.inp,width:140}}>
+                    <option value="">Select shift…</option>
+                    {ALL_SHIFT_KEYS.map(sk=><option key={sk} value={sk}>{SHIFT_LABELS[sk]}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label style={{fontSize:10,color:"#7a8a98",display:"block",marginBottom:2}}>Current Surgeon</label>
+                  {(()=>{
+                    const m = swapTarget?.mondayStr;
+                    const sh = swapTarget?.shift;
+                    const wk = m ? schedule[m] : null;
+                    let currentId = null;
+                    if (wk && sh) {
+                      currentId = sh === "dayCall" ? wk.dayCall : wk.nights?.[sh];
+                    }
+                    return currentId ? (
+                      <div style={{padding:"6px 10px"}}><Badge id={currentId}/></div>
+                    ) : (
+                      <div style={{padding:"6px 10px",fontSize:12,color:"#8a94a0"}}>—</div>
+                    );
+                  })()}
+                </div>
+                <button onClick={()=>{
+                  const m = swapTarget?.mondayStr;
+                  const sh = swapTarget?.shift;
+                  const wk = m ? schedule[m] : null;
+                  if (!wk || !sh) return;
+                  const currentId = sh === "dayCall" ? wk.dayCall : wk.nights?.[sh];
+                  if (!currentId) return;
+                  findSwapSuggestions(m, sh, currentId);
+                }} disabled={!swapTarget?.mondayStr || !swapTarget?.shift}
+                  style={{...css.btn(true),padding:"7px 16px",opacity:(!swapTarget?.mondayStr || !swapTarget?.shift)?0.5:1,background:"linear-gradient(135deg,#6030a0,#8050c0)",borderColor:"#6030a0"}}>
+                  Find Swap Options
+                </button>
+              </div>
+
+              {/* Swap Suggestions */}
+              {swapSuggestions && (
+                <div style={{marginTop:12}}>
+                  <div style={{fontSize:12,fontWeight:700,color:"#6030a0",marginBottom:8}}>
+                    Swap options for <Badge id={swapTarget.surgeonId}/> — {SHIFT_LABELS[swapTarget.shift]} (wk of {swapTarget.mondayStr})
+                  </div>
+                  {swapSuggestions.length === 0 ? (
+                    <p style={{color:"#8a94a0",fontSize:13,padding:10}}>No eligible swap candidates found. All surgeons are either on vacation or have conflicts.</p>
+                  ) : swapSuggestions.map((s,i) => (
+                    <div key={s.candidateId} style={{background:i===0?"#f0f8f0":"#f8f9fb",border:`1px solid ${i===0?"#b0d8b0":"#e0e4ea"}`,borderRadius:8,padding:"10px 14px",marginBottom:6}}>
+                      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6,flexWrap:"wrap",gap:4}}>
+                        <div style={{display:"flex",alignItems:"center",gap:8}}>
+                          {i===0 && <span style={{fontSize:10,fontWeight:700,color:"#1a8040",background:"#e0f8e0",padding:"1px 6px",borderRadius:4}}>BEST</span>}
+                          <Badge id={s.candidateId}/>
+                          <span style={{fontSize:12,color:s.countDiff>0?"#1a8040":s.countDiff===0?"#5a6a78":"#c09030",fontWeight:600}}>
+                            {s.countDiff>0?"▲ Fewer shifts":s.countDiff===0?"= Equal":"▼ More shifts"}
+                          </span>
+                        </div>
+                        <button onClick={()=>swapShift(swapTarget.mondayStr, swapTarget.shift, s.candidateId)}
+                          style={{...css.btn(true),padding:"4px 12px",fontSize:11}}>
+                          Swap (one-way)
+                        </button>
+                      </div>
+                      <div style={{fontSize:11,color:"#5a6a78",lineHeight:1.6,marginBottom:4}}>
+                        {s.reasons.map((r,j)=><div key={j}>• {r}</div>)}
+                      </div>
+                      {s.returnSwaps.length > 0 && (
+                        <div style={{marginTop:6,paddingTop:6,borderTop:"1px solid #e8ecf0"}}>
+                          <div style={{fontSize:10,fontWeight:700,color:"#6030a0",marginBottom:4}}>↔ Two-way swap options (they take this shift, {swapTarget.surgeonName} takes one of theirs):</div>
+                          <div style={{display:"flex",gap:4,flexWrap:"wrap"}}>
+                            {s.returnSwaps.slice(0,6).map((rs,k) => (
+                              <button key={k} onClick={()=>executeTwoWaySwap(swapTarget.mondayStr, swapTarget.shift, swapTarget.surgeonId, s.candidateId, rs.mondayStr, rs.shift)}
+                                style={{background:"#f0e8fc",border:"1px solid #c8b0e0",color:"#6030a0",borderRadius:5,padding:"3px 10px",fontSize:10,fontWeight:600,cursor:"pointer",fontFamily:font}}>
+                                ↔ {rs.label}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                  <button onClick={()=>{setSwapSuggestions(null);setSwapTarget(null);}} style={{...css.btn(false),padding:"5px 12px",fontSize:11,marginTop:6}}>Close</button>
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Export & Share */}
           {Object.keys(schedule).length > 0 && (
             <div style={{...css.card,marginTop:14,background:"linear-gradient(135deg,#f8f9fb,#f0f2f5)",border:"1px solid #d0d8e4"}}>
@@ -2658,6 +3292,39 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                 <button onClick={generateShareHTML} style={{...css.btn(true),padding:"6px 16px"}}>
                   ⬇ Shareable Calendar (HTML)
                 </button>
+                <button onClick={()=>window.print()} style={{...css.btn(false),padding:"6px 16px"}}>
+                  🖨 Print Calendar
+                </button>
+              </div>
+
+              {/* Calendar Sync - Subscribable URLs */}
+              <div style={{marginTop:14,paddingTop:14,borderTop:"1px solid #d0d8e4"}}>
+                <div style={{fontSize:13,fontWeight:700,color:"#1a6fa8",marginBottom:6}}>📅 Subscribe to Live Calendar</div>
+                <p style={{fontSize:12,color:"#5a6a78",margin:"0 0 10px",lineHeight:1.5}}>
+                  Subscribe to these URLs in Google Calendar, Outlook, or Apple Calendar. The calendar auto-updates when the schedule changes — no need to re-download.
+                </p>
+                <div style={{fontSize:11,color:"#7a8a98",marginBottom:6}}>
+                  <strong>How to subscribe:</strong> In Google Calendar: Other calendars (+) → From URL → paste the link below.
+                </div>
+                <div style={{marginBottom:8}}>
+                  <div style={{fontSize:11,fontWeight:600,color:"#5a6a78",marginBottom:4}}>Full Schedule:</div>
+                  <div style={{display:"flex",gap:6,alignItems:"center"}}>
+                    <input readOnly value={`${SUPABASE_URL}/functions/v1/calendar-sync`}
+                      style={{...css.inp,width:"100%",maxWidth:420,fontSize:10,fontFamily:mono,padding:"4px 8px"}}
+                      onClick={e=>e.target.select()}/>
+                    <button onClick={()=>{navigator.clipboard.writeText(`${SUPABASE_URL}/functions/v1/calendar-sync`);}} style={{...css.btn(false),padding:"4px 10px",fontSize:10,whiteSpace:"nowrap"}}>Copy</button>
+                  </div>
+                </div>
+                <div style={{fontSize:11,fontWeight:600,color:"#5a6a78",marginBottom:4}}>Per Surgeon:</div>
+                <div style={{display:"flex",gap:4,flexWrap:"wrap"}}>
+                  {surgeons.map(s => (
+                    <button key={s.id} onClick={()=>{navigator.clipboard.writeText(`${SUPABASE_URL}/functions/v1/calendar-sync?surgeon=${s.name}`);}}
+                      style={{...css.badge(sMap[s.id]?.idx||0),cursor:"pointer",padding:"3px 10px",fontSize:10}}>
+                      📋 {s.name}
+                    </button>
+                  ))}
+                </div>
+                <p style={{fontSize:10,color:"#8a94a0",marginTop:6}}>Click a name to copy their subscribe URL. Requires deploying the calendar-sync Edge Function.</p>
               </div>
             </div>
           )}
@@ -2665,6 +3332,12 @@ ${"</"}script>${"</"}body>${"</"}html>`;
 
         {/* ════════════════ STATS ════════════════ */}
         {view==="stats"&&<>
+          {/* Export */}
+          <div style={{display:"flex",justifyContent:"flex-end",marginBottom:10}}>
+            <button onClick={exportYearlySummary} style={{...css.btn(true),padding:"6px 16px",fontSize:12}}>
+              ⬇ Export Yearly Summary (CSV)
+            </button>
+          </div>
           {/* Surgeon stats */}
           <div style={css.card}>
             <div style={css.cardT}>This Period — {MO[startMonth]} to {MO[endMoIdx]} {startYear}</div>
@@ -2712,6 +3385,144 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               </div>
             )}
           </div>
+
+          {/* Monthly Call Summary (for stipends) */}
+          {Object.keys(schedule).length > 0 && (()=>{
+            // Compute monthly breakdown
+            const monthlyData = {};
+            const allMonths = new Set();
+            Object.entries(schedule).forEach(([mStr, wk]) => {
+              const mon = parse(mStr);
+              // Each day of the week maps to a calendar month
+              for (let i = 0; i < 7; i++) {
+                const d = addD(mon, i);
+                const moKey = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
+                allMonths.add(moKey);
+                if (!monthlyData[moKey]) monthlyData[moKey] = {};
+                surgeons.forEach(s => { if (!monthlyData[moKey][s.id]) monthlyData[moKey][s.id] = { total1st: 0, total2nd: 0 }; });
+              }
+              const isB = wk.isBackup;
+              const countKey = isB ? "total2nd" : "total1st";
+
+              // Service Week: M-F = 5 days + Sat = 2 days = 7 total
+              if (wk.dayCall) {
+                for (let i = 0; i < 5; i++) {
+                  const d = addD(mon, i);
+                  const moKey = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
+                  if (monthlyData[moKey]?.[wk.dayCall]) monthlyData[moKey][wk.dayCall][countKey]++;
+                }
+                // Saturday = 2 call days (7a–7a, 24hr)
+                const sat = addD(mon, 5);
+                const satMo = `${sat.getFullYear()}-${String(sat.getMonth()+1).padStart(2,"0")}`;
+                if (monthlyData[satMo]?.[wk.dayCall]) monthlyData[satMo][wk.dayCall][countKey] += 2;
+              }
+
+              // Night shifts (Mon-Thu): 1 call day each (5p–7a)
+              NIGHT_KEYS.forEach((sk, i) => {
+                const sid = wk.nights?.[sk];
+                if (!sid) return;
+                const d = addD(mon, i);
+                const moKey = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
+                if (monthlyData[moKey]?.[sid]) monthlyData[moKey][sid][countKey]++;
+              });
+
+              // Weekend: Fri night (5p–7a) = 1 + Sun (7a–7a) = 2 = 3 total
+              const wkndSid = wk.nights?.wknd;
+              if (wkndSid) {
+                const fri = addD(mon, 4);
+                const sun = addD(mon, 6);
+                const friMo = `${fri.getFullYear()}-${String(fri.getMonth()+1).padStart(2,"0")}`;
+                const sunMo = `${sun.getFullYear()}-${String(sun.getMonth()+1).padStart(2,"0")}`;
+                if (monthlyData[friMo]?.[wkndSid]) monthlyData[friMo][wkndSid][countKey] += 1;
+                if (monthlyData[sunMo]?.[wkndSid]) monthlyData[sunMo][wkndSid][countKey] += 2;
+              }
+            });
+
+            const sortedMonths = [...allMonths].sort();
+            const moLabels = sortedMonths.map(m => { const [y,mo] = m.split("-"); return MO[parseInt(mo)-1].slice(0,3) + " " + y.slice(2); });
+
+            return (
+              <div style={css.card}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12,flexWrap:"wrap",gap:8}}>
+                  <div style={css.cardT}>📊 Monthly Call Summary <span style={{fontWeight:400,fontSize:11,color:"#7a8a98"}}>— for Stipend Tracking</span></div>
+                  <button onClick={()=>{
+                    const header = ["Surgeon", ...moLabels.map(m=>m+" 1st"), "Total 1st", ...moLabels.map(m=>m+" 2nd"), "Total 2nd", "Grand Total"];
+                    const rows = surgeons.map(s => {
+                      const m1 = sortedMonths.map(m => monthlyData[m]?.[s.id]?.total1st || 0);
+                      const m2 = sortedMonths.map(m => monthlyData[m]?.[s.id]?.total2nd || 0);
+                      const t1 = m1.reduce((a,b)=>a+b,0);
+                      const t2 = m2.reduce((a,b)=>a+b,0);
+                      return [s.name, ...m1, t1, ...m2, t2, t1+t2].join(",");
+                    });
+                    const csv = [header.join(","), ...rows].join("\n");
+                    const blob = new Blob([csv], {type:"text/csv"});
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement("a"); a.href=url; a.download=`monthly-call-summary-${startYear}.csv`; a.click();
+                    URL.revokeObjectURL(url);
+                  }} style={{...css.btn(true),padding:"5px 14px",fontSize:11}}>
+                    ⬇ Export CSV
+                  </button>
+                </div>
+
+                {/* 1st Call (Regular) */}
+                <div style={{fontSize:11,fontWeight:700,color:"#1a6fa8",marginBottom:4}}>1st Call (Regular)</div>
+                <div style={{overflowX:"auto",marginBottom:14}}>
+                  <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
+                    <thead>
+                      <tr style={{borderBottom:"2px solid #d0d8e0"}}>
+                        <th style={{...thS2,position:"sticky",left:0,background:dk?"#16213e":"#fff",zIndex:1}}>Surgeon</th>
+                        {moLabels.map(m=><th key={m} style={{...thS2,textAlign:"center",minWidth:40}}>{m}</th>)}
+                        <th style={{...thS2,textAlign:"center",fontWeight:700,color:"#1a8040"}}>Total</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {surgeons.map(s=>{
+                        const vals = sortedMonths.map(m => monthlyData[m]?.[s.id]?.total1st || 0);
+                        const total = vals.reduce((a,b)=>a+b,0);
+                        return (
+                          <tr key={s.id} style={{borderBottom:"1px solid #e8ecf0"}}>
+                            <td style={{padding:"4px 6px",position:"sticky",left:0,background:dk?"#16213e":"#fff",zIndex:1}}><Badge id={s.id} small/></td>
+                            {vals.map((v,i)=><td key={i} style={{...tdS,textAlign:"center",fontSize:12,padding:"4px 3px",color:v===0?"#c0c8d0":undefined}}>{v||"–"}</td>)}
+                            <td style={{...tdS,textAlign:"center",fontSize:13,fontWeight:700,color:"#1a8040"}}>{total}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+
+                {/* 2nd Call (Backup) */}
+                <div style={{fontSize:11,fontWeight:700,color:"#8a6a10",marginBottom:4}}>2nd Call (Backup)</div>
+                <div style={{overflowX:"auto"}}>
+                  <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
+                    <thead>
+                      <tr style={{borderBottom:"2px solid #d8c880"}}>
+                        <th style={{...thS2,position:"sticky",left:0,background:dk?"#16213e":"#fff",zIndex:1}}>Surgeon</th>
+                        {moLabels.map(m=><th key={m} style={{...thS2,textAlign:"center",minWidth:40}}>{m}</th>)}
+                        <th style={{...thS2,textAlign:"center",fontWeight:700,color:"#8a6a10"}}>Total</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {surgeons.map(s=>{
+                        const vals = sortedMonths.map(m => monthlyData[m]?.[s.id]?.total2nd || 0);
+                        const total = vals.reduce((a,b)=>a+b,0);
+                        return (
+                          <tr key={s.id} style={{borderBottom:"1px solid #e8ecf0"}}>
+                            <td style={{padding:"4px 6px",position:"sticky",left:0,background:dk?"#16213e":"#fff",zIndex:1}}><Badge id={s.id} small/></td>
+                            {vals.map((v,i)=><td key={i} style={{...tdS,textAlign:"center",fontSize:12,padding:"4px 3px",color:v===0?"#c0c8d0":undefined}}>{v||"–"}</td>)}
+                            <td style={{...tdS,textAlign:"center",fontSize:13,fontWeight:700,color:"#8a6a10"}}>{total}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+                <div style={{fontSize:11,color:"#7a8a98",lineHeight:1.5,marginTop:10}}>
+                  <strong style={{color:"#2c5a80"}}>Call Day Counting:</strong> Service Week M–F = 5 days (7a–5p) · Saturday = 2 days (7a–7a) · Night = 1 day (5p–7a) · Weekend = 3 days (Fri 5p–Sat 7a = 1 + Sun 7a–Mon 7a = 2)
+                </div>
+              </div>
+            );
+          })()}
 
           {/* APP stats */}
           <div style={css.card}>
@@ -2904,12 +3715,12 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               const mon = parse(mStr);
               const endStr = fmt(addD(mon, 6));
               const roles = [];
-              if (wk.dayCall === myId) roles.push({type: "Service Week", icon: "🏥", detail: "M–F 7a–5p", color: "#1a6fa8"});
+              if (wk.dayCall === myId) roles.push({type: "Service Week (incl. Sat)", icon: "🏥", detail: "M–F 7a–5p + Sat 7a–Sun 7a", color: "#1a6fa8", shiftKey: "dayCall"});
               NIGHT_KEYS.forEach((sk, i) => {
-                if (wk.nights?.[sk] === myId) roles.push({type: SHIFT_LABELS[sk], icon: "🌙", detail: SHIFT_TIMES[sk], color: "#6030a0"});
+                if (wk.nights?.[sk] === myId) roles.push({type: SHIFT_LABELS[sk], icon: "🌙", detail: SHIFT_TIMES[sk], color: "#6030a0", shiftKey: sk});
               });
-              if (wk.nights?.wknd === myId) roles.push({type: "Weekend", icon: "🌗", detail: SHIFT_TIMES.wknd, color: "#7a6030"});
-              if (wk.off === myId) roles.push({type: "OFF", icon: "✅", detail: "No call this week", color: "#2a7a40"});
+              if (wk.nights?.wknd === myId) roles.push({type: "Weekend", icon: "🌗", detail: SHIFT_TIMES.wknd, color: "#7a6030", shiftKey: "wknd"});
+              if (wk.off === myId) roles.push({type: "OFF", icon: "✅", detail: "No call this week", color: "#2a7a40", shiftKey: null});
               if (roles.length > 0) {
                 myShifts.push({ mStr, endStr, roles, isBackup: wk.isBackup, isFierceBackup: wk.isFierceBackup });
               }
@@ -2944,6 +3755,12 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                         <span style={{fontSize:14}}>{r.icon}</span>
                         <span style={{fontSize:13,fontWeight:600,color:r.color}}>{r.type}</span>
                         <span style={{fontSize:11,color:"#8a94a0",fontFamily:mono}}>{r.detail}</span>
+                        {r.shiftKey && (
+                          <button onClick={()=>{findSwapSuggestions(wk.mStr, r.shiftKey, myId); setView("calendar");}}
+                            style={{marginLeft:"auto",background:"#f0e8fc",border:"1px solid #c8b0e0",color:"#6030a0",borderRadius:5,padding:"2px 10px",fontSize:10,fontWeight:600,cursor:"pointer",fontFamily:font}}>
+                            🔄 Find Swap
+                          </button>
+                        )}
                       </div>
                     ))}
                   </div>
@@ -3016,6 +3833,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                       </div>
                     )}
                     {!isScheduler && <span style={{marginLeft:"auto",fontSize:11,color:"#c09030",fontWeight:600,background:"#fef8e8",padding:"2px 8px",borderRadius:4,border:"1px solid #e8d090"}}>Pending review</span>}
+                    <button onClick={()=>deleteVacRequest(r.id)} style={{background:"none",border:"1px solid #e0c0c0",color:"#904040",borderRadius:5,padding:"2px 8px",fontSize:10,cursor:"pointer",fontFamily:font}}>Withdraw</button>
                   </div>
                 ))}
                 {pending.length > 0 && !isScheduler && (
@@ -3025,10 +3843,14 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                 )}
               </div>
 
-              {/* Reviewed Requests */}
               {reviewed.length > 0 && (
                 <div style={css.card}>
-                  <div style={css.cardT}>📋 Reviewed <span style={{fontWeight:400,fontSize:12,color:"#8a94a0"}}>— {reviewed.length}</span></div>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+                    <div style={css.cardT}>📋 Reviewed <span style={{fontWeight:400,fontSize:12,color:"#8a94a0"}}>— {reviewed.length}</span></div>
+                    {isScheduler && reviewed.length > 0 && (
+                      <button onClick={clearReviewedRequests} style={{background:"none",border:"1px solid #e8c0c0",color:"#904040",borderRadius:5,padding:"3px 10px",fontSize:10,cursor:"pointer",fontFamily:font}}>Clear All Reviewed</button>
+                    )}
+                  </div>
                   {reviewed.slice(0, 20).map(r => (
                     <div key={r.id} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 12px",marginBottom:4,background:r.status==="approved"?"#f0faf0":"#faf0f0",border:`1px solid ${r.status==="approved"?"#c0e0c0":"#e0c0c0"}`,borderRadius:6,flexWrap:"wrap"}}>
                       <span style={{fontSize:13,fontWeight:700,color:r.status==="approved"?"#1a8040":"#c04040"}}>{r.status==="approved"?"✓":"✕"}</span>
@@ -3037,6 +3859,115 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                       {r.reason && <span style={{fontSize:11,color:"#8a94a0"}}>"{r.reason}"</span>}
                       {r.review_note && <span style={{fontSize:11,color:"#c04040"}}>Note: {r.review_note}</span>}
                       <span style={{fontSize:11,color:"#a0a8b0",marginLeft:"auto"}}>{r.reviewed_at ? new Date(r.reviewed_at).toLocaleDateString() : ""}</span>
+                      {isScheduler && (
+                        <button onClick={()=>deleteVacRequest(r.id)} style={{background:"none",border:"none",color:"#c04040",cursor:"pointer",fontSize:12,padding:"0 4px"}}>✕</button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </>;
+          })()}
+
+          {/* ─── Shift Trade Requests ─── */}
+          <div style={css.card}>
+            <div style={css.cardT}>🔄 Propose a Shift Trade</div>
+            <p style={{fontSize:13,color:"#5a6a78",margin:"0 0 12px",lineHeight:1.5}}>
+              Propose trading a shift with another surgeon. They'll be notified and can accept or decline.
+            </p>
+            <div style={{display:"flex",gap:6,alignItems:"end",flexWrap:"wrap",marginBottom:8}}>
+              <div>
+                <label style={{fontSize:10,color:"#7a8a98",display:"block",marginBottom:2}}>From</label>
+                <select value={tradeFrom} onChange={e=>setTradeFrom(e.target.value)} style={{...css.inp,width:100}}>
+                  <option value="">Who…</option>
+                  {surgeons.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
+                </select>
+              </div>
+              <div>
+                <label style={{fontSize:10,color:"#7a8a98",display:"block",marginBottom:2}}>Trade with</label>
+                <select value={tradeTo} onChange={e=>setTradeTo(e.target.value)} style={{...css.inp,width:100}}>
+                  <option value="">Who…</option>
+                  {surgeons.filter(s=>s.id!==tradeFrom).map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
+                </select>
+              </div>
+              <div>
+                <label style={{fontSize:10,color:"#7a8a98",display:"block",marginBottom:2}}>Week</label>
+                <select value={tradeWeek} onChange={e=>setTradeWeek(e.target.value)} style={{...css.inp,width:140}}>
+                  <option value="">Select…</option>
+                  {Object.keys(schedule).sort().map(m=><option key={m} value={m}>{m}</option>)}
+                </select>
+              </div>
+              <div>
+                <label style={{fontSize:10,color:"#7a8a98",display:"block",marginBottom:2}}>Shift to give</label>
+                <select value={tradeShift} onChange={e=>setTradeShift(e.target.value)} style={{...css.inp,width:130}}>
+                  <option value="">Select…</option>
+                  {ALL_SHIFT_KEYS.map(sk=><option key={sk} value={sk}>{SHIFT_LABELS[sk]}</option>)}
+                </select>
+              </div>
+            </div>
+            <div style={{display:"flex",gap:6,alignItems:"end",flexWrap:"wrap",marginBottom:10}}>
+              <div>
+                <label style={{fontSize:10,color:"#7a8a98",display:"block",marginBottom:2}}>Return week (optional)</label>
+                <select value={tradeReturnWeek} onChange={e=>setTradeReturnWeek(e.target.value)} style={{...css.inp,width:140}}>
+                  <option value="">None</option>
+                  {Object.keys(schedule).sort().map(m=><option key={m} value={m}>{m}</option>)}
+                </select>
+              </div>
+              <div>
+                <label style={{fontSize:10,color:"#7a8a98",display:"block",marginBottom:2}}>Return shift (optional)</label>
+                <select value={tradeReturnShift} onChange={e=>setTradeReturnShift(e.target.value)} style={{...css.inp,width:130}}>
+                  <option value="">None</option>
+                  {ALL_SHIFT_KEYS.map(sk=><option key={sk} value={sk}>{SHIFT_LABELS[sk]}</option>)}
+                </select>
+              </div>
+              <button onClick={submitTradeRequest} style={{...css.btn(true),padding:"7px 18px",background:"linear-gradient(135deg,#6030a0,#8050c0)",borderColor:"#6030a0"}}>Propose Trade</button>
+            </div>
+          </div>
+
+          {/* Pending Trades */}
+          {(()=>{
+            const pendingTrades = tradeRequests.filter(r => r.status === "pending");
+            const reviewedTrades = tradeRequests.filter(r => r.status !== "pending");
+            return <>
+              {pendingTrades.length > 0 && (
+                <div style={css.card}>
+                  <div style={css.cardT}>⏳ Pending Trades <span style={{fontWeight:400,fontSize:12,color:"#8a94a0"}}>— {pendingTrades.length}</span></div>
+                  {pendingTrades.map(r => (
+                    <div key={r.id} style={{padding:"10px 12px",marginBottom:6,background:"#f8f0ff",border:"1px solid #d0c0e8",borderRadius:8,flexWrap:"wrap"}}>
+                      <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:4,flexWrap:"wrap"}}>
+                        <Badge id={r.from_surgeon_id}/>
+                        <span style={{fontSize:12,color:"#6030a0",fontWeight:600}}>→</span>
+                        <Badge id={r.to_surgeon_id}/>
+                        <span style={{fontFamily:mono,fontSize:12,color:"#2c3e50"}}>{r.shift_label} ({r.week_monday})</span>
+                        {r.return_shift_label && <span style={{fontSize:11,color:"#8a94a0"}}>↔ {r.return_shift_label} ({r.return_week})</span>}
+                      </div>
+                      <div style={{display:"flex",gap:6,alignItems:"center",flexWrap:"wrap"}}>
+                        <span style={{fontSize:10,color:"#a0a8b0"}}>Proposed {new Date(r.submitted_at).toLocaleDateString()}</span>
+                        {(mySurgeon === r.to_surgeon_id || isScheduler) && (
+                          <>
+                            <button onClick={()=>acceptTradeRequest(r)} style={{background:"#e8f8e8",border:"1px solid #a0d8a0",color:"#1a8040",borderRadius:6,padding:"3px 10px",fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:font}}>✓ Accept</button>
+                            <button onClick={()=>declineTradeRequest(r)} style={{background:"#fce8e8",border:"1px solid #e0b0b0",color:"#c04040",borderRadius:6,padding:"3px 10px",fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:font}}>✕ Decline</button>
+                          </>
+                        )}
+                        {mySurgeon === r.from_surgeon_id && <button onClick={()=>deleteTradeRequest(r.id)} style={{background:"none",border:"1px solid #d0d8e0",color:"#8a94a0",borderRadius:5,padding:"2px 8px",fontSize:10,cursor:"pointer",fontFamily:font}}>Withdraw</button>}
+                        {mySurgeon !== r.to_surgeon_id && mySurgeon !== r.from_surgeon_id && !isScheduler && (
+                          <span style={{fontSize:10,color:"#8a6a10",fontWeight:600}}>Awaiting {r.to_surgeon_name}'s response</span>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {reviewedTrades.length > 0 && (
+                <div style={css.card}>
+                  <div style={css.cardT}>📋 Completed Trades <span style={{fontWeight:400,fontSize:12,color:"#8a94a0"}}>— {reviewedTrades.length}</span></div>
+                  {reviewedTrades.slice(0,15).map(r => (
+                    <div key={r.id} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 10px",marginBottom:3,background:r.status==="accepted"?"#f0faf0":"#faf0f0",border:`1px solid ${r.status==="accepted"?"#c0e0c0":"#e0c0c0"}`,borderRadius:5,flexWrap:"wrap"}}>
+                      <span style={{fontSize:12,fontWeight:700,color:r.status==="accepted"?"#1a8040":"#c04040"}}>{r.status==="accepted"?"✓":"✕"}</span>
+                      <Badge id={r.from_surgeon_id} small/><span style={{fontSize:10,color:"#6030a0"}}>↔</span><Badge id={r.to_surgeon_id} small/>
+                      <span style={{fontFamily:mono,fontSize:11,color:"#5a6a78"}}>{r.shift_label} ({r.week_monday})</span>
+                      {isScheduler && <button onClick={()=>deleteTradeRequest(r.id)} style={{background:"none",border:"none",color:"#c04040",cursor:"pointer",fontSize:11,marginLeft:"auto"}}>✕</button>}
                     </div>
                   ))}
                 </div>
