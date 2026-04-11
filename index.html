@@ -822,18 +822,18 @@ function CallSchedule() {
     return () => clearTimeout(timer);
   }, [loaded, surgeons, apps, vacations, backupMondaySet, fierceBackupSet, schedule, appShifts, priorCounts, year1Counts, year2Counts, startMonth, startYear]);
 
-  // ─── Supabase: Save API key + scheduler PIN ───
+  // ─── Supabase: Save API key + scheduler PIN + edge function URL ───
   useEffect(() => {
     if (!loaded) return;
     const timer = setTimeout(async () => {
       try {
         await supabase
           .from("call_schedule_config")
-          .upsert({ id: "config", api_key: apiKey || "", scheduler_pin: schedulerPin || "", updated_at: new Date().toISOString() });
+          .upsert({ id: "config", api_key: apiKey || "", scheduler_pin: schedulerPin || "", edge_function_url: edgeFunctionUrl || "", updated_at: new Date().toISOString() });
       } catch(e) {}
     }, 500);
     return () => clearTimeout(timer);
-  }, [loaded, apiKey, schedulerPin]);
+  }, [loaded, apiKey, schedulerPin, edgeFunctionUrl]);
 
   // ─── Reset all data ───
   const resetAllData = async () => {
