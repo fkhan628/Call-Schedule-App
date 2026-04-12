@@ -1886,7 +1886,31 @@ If you cannot find vacations, return an empty array for "vacations". Same for "f
       setPreviewSchedule(null); setShowPreview(false);
       setSaveStatus("Regenerated!");
       setTimeout(() => setSaveStatus(""), 2000);
+      // Immediately save to Supabase to prevent polling race condition
+      (async () => {
+        try {
+          const ts = new Date().toISOString();
+          lastSyncRef.current = ts; // block poll from overwriting
+          const payload = {
+            surgeons, apps, vacations,
+            backupMondays: [...backupMondaySet],
+            fierceBackup: [...fierceBackupSet],
+            schedule: result, appShifts, priorCounts, year1Counts, year2Counts,
+            startMonth, startYear, holidayAssignments,
+          };
+          await supabase.from("call_schedule_data").upsert({ id: "main", data: payload, updated_at: ts });
+        } catch(e) { console.error("Immediate save failed:", e); }
+      })();
     }
+  };
+
+  // ─── Clear / Reset Schedule ───
+  const clearSchedule = () => {
+    if (!confirm("Clear the entire generated schedule? Holiday assignments and setup data will be kept.\n\nThis cannot be undone.")) return;
+    if (Object.keys(schedule).length > 0) pushUndo(schedule);
+    setSchedule({});
+    setSaveStatus("Schedule cleared");
+    setTimeout(() => setSaveStatus(""), 2000);
   };
 
   const acceptPreview = () => {
@@ -1936,13 +1960,21 @@ If you cannot find vacations, return an empty array for "vacations". Same for "f
     const fakId = ids.find(id => (nameMap[id] || "").toUpperCase() === "FAK") || null;
 
     // Helper: build coverage days from a holiday + assigned pair
+    // Always includes: Day Before (Eve) → A, Holiday Day → A, Day After → B (minimum 3 days)
     const buildCoverage = (hol, sA, sB) => {
       const holDate = parse(hol.date);
       const holDow = holDate.getDay();
       const coverage = [];
+
+      // Day before (Eve) — Surgeon A
+      const evDate = addD(holDate, -1);
+      coverage.push({ date: fmt(evDate), surgeon: sA, label: hol.name + " Eve", day: DAYNAMES[evDate.getDay()], isEve: true });
+
+      // Holiday day — Surgeon A
       coverage.push({ date: hol.date, surgeon: sA, label: hol.name + " 24h", day: DAYNAMES[holDow] });
 
       if (hol.endDate && hol.endDate !== hol.date) {
+        // New Year's: Dec 31 (A) + Jan 1 (B), then continue alternating
         coverage.push({ date: hol.endDate, surgeon: sB, label: "New Year's Day 24h", day: DAYNAMES[parse(hol.endDate).getDay()] });
         let next = addD(parse(hol.endDate), 1);
         let toggle = true;
@@ -1952,20 +1984,32 @@ If you cannot find vacations, return an empty array for "vacations". Same for "f
           next = addD(next, 1);
         }
       } else if (holDow === 1) {
-        // Monday holiday: just 1 day
+        // Monday holiday: Eve (Sun) already added, Holiday (Mon) = A, Day After (Tue) = B
+        const dayAfter = addD(holDate, 1);
+        coverage.push({ date: fmt(dayAfter), surgeon: sB, label: DAYNAMES[dayAfter.getDay()] + " 24h", day: DAYNAMES[dayAfter.getDay()] });
       } else if (holDow === 5) {
+        // Friday holiday: Eve (Thu), Fri (A), Sat (B)
         coverage.push({ date: fmt(addD(holDate, 1)), surgeon: sB, label: "Sat 24h", day: "Sat" });
       } else if (holDow === 6) {
+        // Saturday holiday: Eve (Fri), Sat (A), Sun (B)
         coverage.push({ date: fmt(addD(holDate, 1)), surgeon: sB, label: "Sun 24h", day: "Sun" });
       } else if (holDow === 0) {
-        // Sunday: just Sun
+        // Sunday holiday: Eve (Sat), Sun (A), Mon (B)
+        const dayAfter = addD(holDate, 1);
+        coverage.push({ date: fmt(dayAfter), surgeon: sB, label: DAYNAMES[dayAfter.getDay()] + " 24h", day: DAYNAMES[dayAfter.getDay()] });
       } else {
+        // Mid-week (Tue-Thu): Eve already added, holiday (A), then alternate B, A through Sat
         let next = addD(holDate, 1);
-        let toggle = false;
+        let toggle = false; // false=B, true=A
         while (next.getDay() !== 0 && next.getDay() !== 1) {
           coverage.push({ date: fmt(next), surgeon: toggle ? sA : sB, label: DAYNAMES[next.getDay()] + " 24h", day: DAYNAMES[next.getDay()] });
           toggle = !toggle;
           next = addD(next, 1);
+        }
+        // Ensure at least day-after is present
+        if (coverage.length === 2) {
+          const dayAfter = addD(holDate, 1);
+          coverage.push({ date: fmt(dayAfter), surgeon: sB, label: DAYNAMES[dayAfter.getDay()] + " 24h", day: DAYNAMES[dayAfter.getDay()] });
         }
       }
       return coverage;
@@ -2087,7 +2131,13 @@ If you cannot find vacations, return an empty array for "vacations". Same for "f
       const sB = slot === "surgeonB" ? newSurgeonId : hol.surgeonB;
       hol.surgeonA = sA;
       hol.surgeonB = sB;
-      hol.coverage = hol.coverage.map((c, i) => ({ ...c, surgeon: i % 2 === 0 ? sA : sB }));
+      let nonEveIdx = 0;
+      hol.coverage = hol.coverage.map((c) => {
+        if (c.isEve) return { ...c, surgeon: sA };
+        const surgeon = nonEveIdx % 2 === 0 ? sA : sB;
+        nonEveIdx++;
+        return { ...c, surgeon };
+      });
       arr[holidayIdx] = hol;
       n[String(year)] = arr;
       return n;
@@ -3100,7 +3150,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               Eves stay on the regular schedule — only the holiday day and days after switch to 24h.
             </p>
             <div style={{fontSize:11,color:"#5a6a78",background:"#fef8f0",border:"1px solid #e8d8c0",borderRadius:6,padding:"8px 12px",marginBottom:12,lineHeight:1.7}}>
-              <strong>Pattern:</strong> Surgeon A → Holiday 24h · Surgeon B → Day After 24h · alternating through Sat<br/>
+              <strong>Pattern:</strong> Surgeon A → Eve + Holiday 24h · Surgeon B → Day After 24h · alternating through Sat<br/>
               <strong>Monday holidays:</strong> Only Monday is 24h, rest of week is normal<br/>
               <strong>Friday holidays:</strong> Fri (A) + Sat (B)<br/>
               <strong>Exception:</strong> FAK always covers Christmas Day<br/>
@@ -3164,16 +3214,24 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                     </div>
                   </div>
                   <div style={{display:"flex",gap:4,flexWrap:"wrap"}}>
-                    {(hol.coverage||[]).map((c,j)=>(
+                    {(hol.coverage||[]).map((c,j)=>{
+                      const isEve = c.isEve;
+                      const isA = !isEve && j%2===0; // after eve, odd/even tracks A/B but eve shifts index
+                      const surgIdx = (hol.coverage||[]).filter(x=>!x.isEve).indexOf(c);
+                      const isSurgA = isEve || surgIdx % 2 === 0;
+                      return (
                       <div key={j} style={{padding:"4px 10px",borderRadius:5,fontSize:11,fontWeight:600,
-                        background:j%2===0?(dk?"#1a3020":"#e8f8e8"):(dk?"#2a2040":"#f0e8f8"),
-                        border:`1px solid ${j%2===0?"#a0d0a0":"#c0b0e0"}`,
-                        color:j%2===0?"#1a6030":"#5030a0"}}>
+                        background: isEve
+                          ? (dk?"#2a2420":"#fef8f0")
+                          : isSurgA?(dk?"#1a3020":"#e8f8e8"):(dk?"#2a2040":"#f0e8f8"),
+                        border:`1px solid ${isEve?"#e0c890":isSurgA?"#a0d0a0":"#c0b0e0"}`,
+                        color:isEve?"#8a6820":isSurgA?"#1a6030":"#5030a0",
+                        opacity:isEve?0.85:1}}>
                         <span style={{fontWeight:400,marginRight:4}}>{c.day}</span>
                         <Badge id={c.surgeon} small/>
-                        <span style={{fontSize:9,color:"#8a94a0",marginLeft:4}}>24h</span>
+                        <span style={{fontSize:9,color:isEve?"#b09050":"#8a94a0",marginLeft:4}}>{isEve?"eve":"24h"}</span>
                       </div>
-                    ))}
+                    )})}
                   </div>
                 </div>
               )};
@@ -3656,6 +3714,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             <div style={{display:"flex",gap:5}}>
               <button onClick={()=>setView("setup")} style={css.btn(false)}>← Setup</button>
               <button onClick={()=>doGenerate(false)} style={css.btn(true)}>↻ Regenerate</button>
+              <button onClick={clearSchedule} style={{...css.btn(false),color:"#c04040",borderColor:"#e0a0a0"}}>✕ Clear</button>
             </div>
           </div>
 
