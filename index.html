@@ -296,10 +296,9 @@ function downloadICS(content, filename) {
 function getHolidays(year) {
   // Thanksgiving = 4th Thursday of November
   const nov1 = new Date(year, 10, 1);
-  let thxDay = 1 + ((4 - nov1.getDay() + 7) % 7); // first Thursday
-  thxDay += 21; // 4th Thursday
+  let thxDay = 1 + ((4 - nov1.getDay() + 7) % 7);
+  thxDay += 21;
   const thx = fmt(new Date(year, 10, thxDay));
-  const thxEve = fmt(addD(new Date(year, 10, thxDay), -1));
   // Memorial Day = last Monday of May
   const may31 = new Date(year, 4, 31);
   let memDay = 31 - ((may31.getDay() - 1 + 7) % 7);
@@ -311,20 +310,14 @@ function getHolidays(year) {
 
   return {
     major: [
-      { name: "New Year's Eve", date: fmt(new Date(year, 11, 31)), isEve: true },
-      { name: "New Year's Day", date: fmt(new Date(year, 0, 1)) },
-      { name: "Thanksgiving Eve", date: thxEve, isEve: true },
-      { name: "Thanksgiving", date: thx },
-      { name: "Christmas Eve", date: fmt(new Date(year, 11, 24)), isEve: true },
-      { name: "Christmas Day", date: fmt(new Date(year, 11, 25)) },
+      { name: "New Year's", date: fmt(new Date(year, 11, 31)), emoji: "🎆", startDate: fmt(new Date(year, 11, 31)), endDate: fmt(new Date(year+1, 0, 1)) },
+      { name: "Thanksgiving", date: thx, emoji: "🦃" },
+      { name: "Christmas Day", date: fmt(new Date(year, 11, 25)), emoji: "🎄" },
     ],
     minor: [
-      { name: "Memorial Day Eve", date: fmt(addD(new Date(year, 4, memDay), -1)), isEve: true },
-      { name: "Memorial Day", date: mem },
-      { name: "July 3rd", date: fmt(new Date(year, 6, 3)), isEve: true },
-      { name: "July 4th", date: fmt(new Date(year, 6, 4)) },
-      { name: "Labor Day Eve", date: fmt(addD(new Date(year, 8, labDay), -1)), isEve: true },
-      { name: "Labor Day", date: lab },
+      { name: "Memorial Day", date: mem, emoji: "🇺🇸" },
+      { name: "July 4th", date: fmt(new Date(year, 6, 4)), emoji: "🎆" },
+      { name: "Labor Day", date: lab, emoji: "🇺🇸" },
     ]
   };
 }
@@ -334,58 +327,21 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
   const ids = surgeons.map(s=>s.id);
   const nameMap = {}; surgeons.forEach(s => nameMap[s.id] = s.name);
 
-  // Build holiday assignment lookup: { "YYYY-MM-DD": { surgeon1, surgeon2 } }
-  const holLookup = {};
-  if (holAssignments) {
-    Object.values(holAssignments).forEach(yearArr => {
-      if (Array.isArray(yearArr)) yearArr.forEach(h => {
-        if (h.date) holLookup[h.date] = { surgeon1: h.surgeon1, surgeon2: h.surgeon2, name: h.name, isEve: h.isEve, type: h.type };
-      });
-    });
-  }
-
-  // Build holiday coverage map: for each holiday pair, compute the alternating 24h coverage
-  // Surgeon A = surgeon1 (holiday day, day+2), Surgeon B = surgeon2 (eve, day+1)
-  const holCoverage = {}; // { "YYYY-MM-DD": { surgeonId, role, hours, name } }
+  // Build holiday coverage map from pre-computed coverage arrays
+  // { "YYYY-MM-DD": { surgeonId, role, name, type } }
+  const holCoverage = {};
+  const holByDate = {}; // { "YYYY-MM-DD": { surgeonA, surgeonB, name, type } }
   if (holAssignments) {
     Object.values(holAssignments).forEach(yearArr => {
       if (!Array.isArray(yearArr)) return;
-      // Process pairs (eve + day)
-      const processed = new Set();
       yearArr.forEach(h => {
-        if (processed.has(h.date) || h.isEve) return;
-        processed.add(h.date);
-        const eveEntry = yearArr.find(e => e.isEve && e.pairWith === h.name);
-        const sA = h.surgeon1; // Holiday 24h surgeon
-        const sB = h.surgeon2; // Eve / day-after surgeon
-        const holDate = parse(h.date);
-        const holDow = holDate.getDay();
-        const isWeekend = holDow === 0 || holDow === 6;
-        const isMajor = h.type === "major";
-
-        // Eve coverage (Surgeon B)
-        if (eveEntry) {
-          const eveDow = parse(eveEntry.date).getDay();
-          const eveIsWeekend = eveDow === 0 || eveDow === 6;
-          const eveHours = eveIsWeekend ? "7a–7a" : (isMajor ? "12p–7a" : "5p–7a");
-          holCoverage[eveEntry.date] = { surgeonId: sB, role: "eve", hours: eveHours, name: eveEntry.name, type: h.type };
-          processed.add(eveEntry.date);
-        }
-
-        // Holiday day (Surgeon A) — 24h
-        holCoverage[h.date] = { surgeonId: sA, role: "holiday", hours: "7a–7a", name: h.name, type: h.type };
-
-        // Day after holiday (Surgeon B) — 24h
-        const dayAfter = fmt(addD(holDate, 1));
-        if (!holCoverage[dayAfter]) {
-          holCoverage[dayAfter] = { surgeonId: sB, role: "day_after", hours: "7a–7a", name: "Day after " + h.name, type: h.type };
-        }
-
-        // Day after that (Surgeon A) — 24h, only if not already a new week
-        const day2After = fmt(addD(holDate, 2));
-        const day2Dow = addD(holDate, 2).getDay();
-        if (day2Dow !== 1 && !holCoverage[day2After]) { // Don't extend into Monday of next week
-          holCoverage[day2After] = { surgeonId: sA, role: "next_day", hours: "7a–7a", name: h.name + " +2", type: h.type };
+        // Store the holiday metadata by date
+        holByDate[h.date] = { surgeonA: h.surgeonA, surgeonB: h.surgeonB, name: h.name, type: h.type };
+        // Store each coverage day
+        if (h.coverage && Array.isArray(h.coverage)) {
+          h.coverage.forEach(c => {
+            holCoverage[c.date] = { surgeonId: c.surgeon, role: "holiday_24h", hours: "7a–7a", name: c.label, type: h.type };
+          });
         }
       });
     });
@@ -418,7 +374,10 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
   years.forEach(y => { years.add(y+1); }); // include next year for Dec→Jan
   years.forEach(y => {
     const h = getHolidays(y);
-    h.major.forEach(hol => { holidayMap[hol.date] = { ...hol, type: "major" }; });
+    h.major.forEach(hol => { 
+      holidayMap[hol.date] = { ...hol, type: "major" }; 
+      if (hol.endDate && hol.endDate !== hol.date) holidayMap[hol.endDate] = { ...hol, date: hol.endDate, name: hol.name + " (Day 2)", type: "major" };
+    });
     h.minor.forEach(hol => { holidayMap[hol.date] = { ...hol, type: "minor" }; });
   });
 
@@ -452,12 +411,12 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
 
     let dc = null;
     if (availDC.length) {
-      // Check for pre-assigned holiday surgeon1 for DC this week
+      // Check for pre-assigned holiday surgeonA for DC this week
       const weekdayHoliday = weekHolidays.find(h => {
         const dow = parse(h.ds).getDay();
         return dow >= 1 && dow <= 5; // M-F holiday
       });
-      const holDcSurgeon = weekdayHoliday && holLookup[weekdayHoliday.ds]?.surgeon1;
+      const holDcSurgeon = weekdayHoliday && holByDate[weekdayHoliday.ds]?.surgeonA;
 
       // Christmas exception: FAK takes Christmas, so prefer FAK for DC that week
       if (isChristmasWeek && fakId && availDC.includes(fakId)) {
@@ -468,7 +427,6 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
         availDC.sort((a,b) => {
           const d = dcCt[a]-dcCt[b]; if(d) return d;
           const bd = burden[a]-burden[b]; if(bd) return bd;
-          const od = offCt[b]-offCt[a]; if(od) return od;
           // Day Call spacing: prefer surgeons who haven't had DC recently
           const spacingA = wkIdx - lastDcWeek[a];
           const spacingB = wkIdx - lastDcWeek[b];
@@ -476,7 +434,7 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
           // Avoid weekend→DC
           if(a===prevWkndSurgeon) return 1;
           if(b===prevWkndSurgeon) return -1;
-          return 0;
+          return Math.random() - 0.5;
         });
         dc = availDC[0];
       }
@@ -520,7 +478,7 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
         const bd = burden[a]-burden[b]; if(bd) return bd;
         if(lastPos[a]==="wknd"&&lastPos[b]!=="wknd") return 1;
         if(lastPos[b]==="wknd"&&lastPos[a]!=="wknd") return -1;
-        return 0;
+        return Math.random() - 0.5;
       });
       nights.wknd = wkndPool[0]; used.add(wkndPool[0]); wkndCt[wkndPool[0]]++; burden[wkndPool[0]]+=3;
       if (friHoliday) holidayCt[wkndPool[0]][friHoliday.type]++;
@@ -531,16 +489,6 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
     }
 
     // ═══ WEEKNIGHT SHIFTS ═══
-    const nightCandidates = rem.filter(id => !used.has(id));
-    let idealOff = null;
-    if (nightCandidates.length > 0) {
-      const sorted = [...nightCandidates].sort((a,b) => {
-        const od = offCt[a]-offCt[b]; if(od) return od;
-        const bd = burden[b]-burden[a]; if(bd) return bd;
-        return 0;
-      });
-      idealOff = sorted[0];
-    }
 
     // Shuffle night keys to prevent positional bias
     const shuffledNightKeys = [...NIGHT_KEYS];
@@ -557,15 +505,11 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
     NIGHT_KEYS.forEach((sk, i) => {
       const dayOffset = {mon:0,tue:1,wed:2,thu:3}[sk];
       const nightDate = fmt(addD(monday, dayOffset));
-      const nextDay = fmt(addD(monday, dayOffset + 1));
-      // If this night's date or the next morning is covered by holiday 24h, the holiday surgeon takes the night
+      // If this date has holiday 24h coverage, that surgeon covers the night too
+      // BUT only if they're not already the DC surgeon this week
       const cov = holCoverage[nightDate];
-      const covNext = holCoverage[nextDay];
-      if (cov && (cov.role === "holiday" || cov.role === "day_after" || cov.role === "next_day")) {
+      if (cov && cov.role === "holiday_24h" && cov.surgeonId !== dc) {
         holidayNightOverrides[sk] = cov.surgeonId;
-      } else if (covNext && covNext.role === "holiday" && holCoverage[nightDate]?.role === "eve") {
-        // Eve night: assigned to Surgeon B
-        holidayNightOverrides[sk] = holCoverage[nightDate].surgeonId;
       }
     });
 
@@ -575,9 +519,9 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
     const friCov = holCoverage[holFriDate];
     const sunCov = holCoverage[holSunDate];
     let holidayWkndOverride = null;
-    if (friCov && (friCov.role === "holiday" || friCov.role === "day_after" || friCov.role === "eve")) {
+    if (friCov && friCov.role === "holiday_24h" && friCov.surgeonId !== dc) {
       holidayWkndOverride = friCov.surgeonId;
-    } else if (sunCov && (sunCov.role === "holiday" || sunCov.role === "day_after")) {
+    } else if (sunCov && sunCov.role === "holiday_24h" && sunCov.surgeonId !== dc) {
       holidayWkndOverride = sunCov.surgeonId;
     }
 
@@ -602,7 +546,7 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
       const dayOffset = {mon:0,tue:1,wed:2,thu:3}[sk];
       const sd = fmt(addD(monday, dayOffset));
       const nextDayStr = fmt(addD(monday, dayOffset + 1));
-      const nightHoliday = holidayMap[sd]; // is this night a holiday eve?
+      const nightHoliday = holidayMap[sd]; // is this night a holiday?
       const nextDayHoliday = holidayMap[nextDayStr]; // is tomorrow a holiday?
 
       let avail = rem.filter(id => !used.has(id) && !nightUsed.has(id) && !onVac(id,sd,vac));
@@ -624,17 +568,13 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
       if(!avail.length){ nightAssignments[sk]=null; continue; }
 
       avail.sort((a,b) => {
-        // HOLIDAY ASSIGNMENT: prefer pre-assigned surgeon2 for this night
-        const holNight = holLookup[sd] || holLookup[nextDayStr];
-        const holSurgeon2 = holNight?.surgeon2;
-        if (holSurgeon2) {
-          if (a === holSurgeon2 && b !== holSurgeon2) return -1;
-          if (b === holSurgeon2 && a !== holSurgeon2) return 1;
+        // HOLIDAY ASSIGNMENT: prefer pre-assigned surgeonB for this night
+        const holNight = holByDate[sd] || holByDate[nextDayStr];
+        const holSurgeonB = holNight?.surgeonB;
+        if (holSurgeonB) {
+          if (a === holSurgeonB && b !== holSurgeonB) return -1;
+          if (b === holSurgeonB && a !== holSurgeonB) return 1;
         }
-
-        // Push idealOff to back
-        if(a===idealOff && b!==idealOff) return 1;
-        if(b===idealOff && a!==idealOff) return -1;
 
         // CONSECUTIVE NIGHT AVOIDANCE: if a surgeon had a night yesterday, push them back
         const aConsec = prevNightSurgeon[a] === yesterdayStr ? 1 : 0;
@@ -665,7 +605,7 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
         // Soft: avoid previous week's service week surgeon on Monday night
         if(sk==="mon"&&a===prevDcSurgeon) return 1;
         if(sk==="mon"&&b===prevDcSurgeon) return -1;
-        return 0;
+        return Math.random() - 0.5;
       });
 
       const chosen = avail[0];
@@ -721,6 +661,12 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
         const aCanDoB = !onVac(a,friB,vac) && !onVac(a,sunB,vac) && !onVac(a,nMonB,vac) && a !== wkB.dayCall;
         if (!bCanDoA || !aCanDoB) continue;
 
+        // Check weekend→Monday night conflict: new weekend surgeon shouldn't be Monday night next week
+        const nextWkA = i + 1 < mondayStrs.length ? sched[mondayStrs[i + 1]] : null;
+        const nextWkB = j + 1 < mondayStrs.length ? sched[mondayStrs[j + 1]] : null;
+        if (nextWkA?.nights?.mon === b) continue; // b doing weekend in A would conflict with Mon night
+        if (nextWkB?.nights?.mon === a) continue; // a doing weekend in B would conflict with Mon night
+
         if (wkndCt[a] > wkndCt[b] + 1) {
           wkndCt[a]--; wkndCt[b]++;
           burden[a]-=3; burden[b]+=3;
@@ -746,6 +692,53 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
     }
 
     if (!improved) break;
+  }
+
+  // ═══ VALIDATION PASS — fix any remaining hard-rule violations via swaps ═══
+  for (let pass = 0; pass < 3; pass++) {
+    for (let i = 0; i < mondayStrs.length; i++) {
+      const wk = sched[mondayStrs[i]];
+      const recalcOff = (w) => {
+        const a = new Set([w.dayCall, ...Object.values(w.nights)].filter(Boolean));
+        w.off = ids.find(id => !a.has(id)) || null;
+      };
+
+      // Fix: DC surgeon should not also have a night in same week
+      if (wk.dayCall) {
+        NIGHT_KEYS.forEach(sk => {
+          if (wk.nights?.[sk] === wk.dayCall && wk.off) {
+            // Swap the conflicting night with the off surgeon
+            wk.nights[sk] = wk.off;
+            recalcOff(wk);
+          }
+        });
+        // Fix: DC surgeon should not have weekend in same week
+        if (wk.nights?.wknd === wk.dayCall && wk.off) {
+          wk.nights.wknd = wk.off;
+          recalcOff(wk);
+        }
+      }
+
+      // Fix: Weekend surgeon should not have Monday night next week
+      if (i < mondayStrs.length - 1 && wk.nights?.wknd) {
+        const nextWk = sched[mondayStrs[i + 1]];
+        if (nextWk?.nights?.mon === wk.nights.wknd) {
+          // Try swapping Monday night with off surgeon of next week
+          if (nextWk.off && nextWk.off !== nextWk.dayCall) {
+            nextWk.nights.mon = nextWk.off;
+            recalcOff(nextWk);
+          } else {
+            // Try swapping Monday night with another night surgeon in next week
+            const otherNight = NIGHT_KEYS.find(sk => sk !== "mon" && nextWk.nights?.[sk] && nextWk.nights[sk] !== nextWk.dayCall && nextWk.nights[sk] !== wk.nights.wknd);
+            if (otherNight) {
+              const temp = nextWk.nights.mon;
+              nextWk.nights.mon = nextWk.nights[otherNight];
+              nextWk.nights[otherNight] = temp;
+            }
+          }
+        }
+      }
+    }
   }
 
   return sched;
@@ -800,7 +793,7 @@ function CallSchedule() {
   const toggleFilter = (key) => setCalFilters(p => ({ ...p, [key]: !p[key] }));
 
   // ─── Holiday Assignments ───
-  const [holidayAssignments, setHolidayAssignments] = useState({}); // { "2026": [ { name, date, type, surgeon1, surgeon2 } ] }
+  const [holidayAssignments, setHolidayAssignments] = useState({}); // { "2026": [ { name, date, type, surgeonA, surgeonB, coverage } ] }
   const [holidayYear, setHolidayYear] = useState(2026);
   const [editingWeek, setEditingWeek] = useState(null);
   const [editShift, setEditShift] = useState(null);
@@ -1891,9 +1884,8 @@ If you cannot find vacations, return an empty array for "vacations". Same for "f
       if (Object.keys(schedule).length > 0) pushUndo(schedule);
       setSchedule(result);
       setPreviewSchedule(null); setShowPreview(false);
-      setCalMonth(startMonth);
-      setCalYear(startYear);
-      setView("calendar");
+      setSaveStatus("Regenerated!");
+      setTimeout(() => setSaveStatus(""), 2000);
     }
   };
 
@@ -1913,126 +1905,194 @@ If you cannot find vacations, return an empty array for "vacations". Same for "f
   };
 
   // ─── Holiday Assignment Generator ───
+  // RULE: Each holiday within a group (major / minor) must have a DISTINCT
+  // surgeon pair — no surgeon appears on more than one holiday in the same group.
+  // Major = Christmas, Thanksgiving, New Year's  (3 holidays × 2 = 6 of 7 surgeons)
+  // Minor = Memorial Day, July 4th, Labor Day    (3 holidays × 2 = 6 of 7 surgeons)
+  // FAK is always locked to Christmas.
   const generateHolidayAssignments = useCallback((year) => {
     const holidays = getHolidays(year);
     const ids = surgeons.map(s => s.id);
     const nameMap = {}; surgeons.forEach(s => nameMap[s.id] = s.name);
+    const DAYNAMES = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
 
-    // Load prior year assignments for rotation
+    // Load prior year assignments to avoid same surgeon on same holiday 2 years running
     const priorYear = holidayAssignments[String(year - 1)] || [];
-    const priorHolidayCounts = {};
-    ids.forEach(id => { priorHolidayCounts[id] = { major: 0, minor: 0 }; });
-    priorYear.forEach(h => {
-      const type = h.type === "major" ? "major" : "minor";
-      if (h.surgeon1 && priorHolidayCounts[h.surgeon1]) priorHolidayCounts[h.surgeon1][type]++;
-      if (h.surgeon2 && priorHolidayCounts[h.surgeon2]) priorHolidayCounts[h.surgeon2][type]++;
+    const priorByName = {}; // { "Christmas Day": { surgeonA, surgeonB }, ... }
+    priorYear.forEach(h => { priorByName[h.name] = { surgeonA: h.surgeonA, surgeonB: h.surgeonB }; });
+
+    // Lifetime holiday counts across all stored years for overall fairness
+    const lifetimeCt = {};
+    ids.forEach(id => { lifetimeCt[id] = { major: 0, minor: 0 }; });
+    Object.entries(holidayAssignments).forEach(([yr, arr]) => {
+      if (String(yr) === String(year)) return; // skip current year (we're regenerating it)
+      if (!Array.isArray(arr)) return;
+      arr.forEach(h => {
+        if (h.surgeonA && lifetimeCt[h.surgeonA]) lifetimeCt[h.surgeonA][h.type]++;
+        if (h.surgeonB && lifetimeCt[h.surgeonB]) lifetimeCt[h.surgeonB][h.type]++;
+      });
     });
 
-    // Track assignments this year
-    const yearCounts = {};
-    ids.forEach(id => { yearCounts[id] = { major: 0, minor: 0, total: 0 }; });
-
-    // FAK's ID for Christmas exception
     const fakId = ids.find(id => (nameMap[id] || "").toUpperCase() === "FAK") || null;
 
-    const assignments = [];
+    // Helper: build coverage days from a holiday + assigned pair
+    const buildCoverage = (hol, sA, sB) => {
+      const holDate = parse(hol.date);
+      const holDow = holDate.getDay();
+      const coverage = [];
+      coverage.push({ date: hol.date, surgeon: sA, label: hol.name + " 24h", day: DAYNAMES[holDow] });
 
-    // Group holidays into pairs (Eve + Day)
-    const allHolidays = [
-      ...holidays.major.map(h => ({ ...h, type: "major" })),
-      ...holidays.minor.map(h => ({ ...h, type: "minor" })),
-    ];
-
-    // Build pairs: each eve is paired with the following day
-    const pairs = [];
-    const used = new Set();
-    allHolidays.forEach(h => {
-      if (used.has(h.date)) return;
-      if (h.isEve) {
-        // Find the matching day holiday (next day)
-        const nextDate = fmt(addD(parse(h.date), 1));
-        const dayHol = allHolidays.find(d => d.date === nextDate && !d.isEve);
-        if (dayHol) {
-          pairs.push({ eve: h, day: dayHol, type: h.type });
-          used.add(h.date); used.add(dayHol.date);
-        } else {
-          pairs.push({ eve: null, day: h, type: h.type });
-          used.add(h.date);
+      if (hol.endDate && hol.endDate !== hol.date) {
+        coverage.push({ date: hol.endDate, surgeon: sB, label: "New Year's Day 24h", day: DAYNAMES[parse(hol.endDate).getDay()] });
+        let next = addD(parse(hol.endDate), 1);
+        let toggle = true;
+        while (next.getDay() !== 0 && next.getDay() !== 1) {
+          coverage.push({ date: fmt(next), surgeon: toggle ? sA : sB, label: DAYNAMES[next.getDay()] + " 24h", day: DAYNAMES[next.getDay()] });
+          toggle = !toggle;
+          next = addD(next, 1);
         }
-      } else if (!used.has(h.date)) {
-        pairs.push({ eve: null, day: h, type: h.type });
-        used.add(h.date);
+      } else if (holDow === 1) {
+        // Monday holiday: just 1 day
+      } else if (holDow === 5) {
+        coverage.push({ date: fmt(addD(holDate, 1)), surgeon: sB, label: "Sat 24h", day: "Sat" });
+      } else if (holDow === 6) {
+        coverage.push({ date: fmt(addD(holDate, 1)), surgeon: sB, label: "Sun 24h", day: "Sun" });
+      } else if (holDow === 0) {
+        // Sunday: just Sun
+      } else {
+        let next = addD(holDate, 1);
+        let toggle = false;
+        while (next.getDay() !== 0 && next.getDay() !== 1) {
+          coverage.push({ date: fmt(next), surgeon: toggle ? sA : sB, label: DAYNAMES[next.getDay()] + " 24h", day: DAYNAMES[next.getDay()] });
+          toggle = !toggle;
+          next = addD(next, 1);
+        }
       }
-    });
+      return coverage;
+    };
 
-    // Sort: Christmas first (FAK rule), then by date
-    pairs.sort((a, b) => {
-      if (a.day.name === "Christmas Day") return -1;
-      if (b.day.name === "Christmas Day") return 1;
-      return a.day.date.localeCompare(b.day.date);
-    });
+    // Helper: pick best pair from a pool, considering vacation + fairness
+    const pickPair = (hol, pool) => {
+      const holDate = parse(hol.date);
+      const dayAfterStr = fmt(addD(holDate, 1));
+      const type = hol.type;
 
-    pairs.forEach(pair => {
-      const type = pair.type;
-      const holDate = pair.day.date;
+      // Filter by vacation availability; fall back to full pool if too few
+      let avail = pool.filter(id => !onVac(id, hol.date, vacations) && !onVac(id, dayAfterStr, vacations));
+      if (avail.length < 2) avail = [...pool];
 
-      // Filter out surgeons on vacation for the holiday period
-      let avail = ids.filter(id => {
-        if (onVac(id, holDate, vacations)) return false;
-        if (pair.eve && onVac(id, pair.eve.date, vacations)) return false;
-        return true;
-      });
-      if (avail.length < 2) avail = [...ids];
-
+      // Sort by fairness: lifetime holiday count → avoid repeat from prior year → random
+      const prior = priorByName[hol.name] || {};
       avail.sort((a, b) => {
-        const da = yearCounts[a][type] - yearCounts[b][type]; if (da) return da;
-        const dt = yearCounts[a].total - yearCounts[b].total; if (dt) return dt;
-        const dp = (priorHolidayCounts[a]?.[type] || 0) - (priorHolidayCounts[b]?.[type] || 0); if (dp) return dp;
+        // Prefer surgeons with fewer lifetime assignments of this type
+        const la = (lifetimeCt[a]?.[type] || 0);
+        const lb = (lifetimeCt[b]?.[type] || 0);
+        if (la !== lb) return la - lb;
+        // Avoid repeating the same holiday as last year
+        const aRepeat = (a === prior.surgeonA || a === prior.surgeonB) ? 1 : 0;
+        const bRepeat = (b === prior.surgeonA || b === prior.surgeonB) ? 1 : 0;
+        if (aRepeat !== bRepeat) return aRepeat - bRepeat;
         return Math.random() - 0.5;
       });
 
-      let s1, s2; // s1 = Surgeon A (holiday 24h), s2 = Surgeon B (eve/day after)
+      return { sA: avail[0], sB: avail[1] || avail[0] };
+    };
 
-      if (pair.day.name === "Christmas Day" && fakId && avail.includes(fakId)) {
-        s1 = fakId;
-        const remaining = avail.filter(id => id !== fakId);
-        s2 = remaining[0] || avail.find(id => id !== s1);
-      } else {
-        s1 = avail[0];
-        s2 = avail.find(id => id !== s1) || avail[1];
-      }
+    // ─── Process each group independently with distinct-pair constraint ───
+    const majorHols = holidays.major.map(h => ({ ...h, type: "major" }));
+    const minorHols = holidays.minor.map(h => ({ ...h, type: "minor" }));
+    const assignments = [];
 
-      yearCounts[s1][type]++; yearCounts[s1].total++;
-      yearCounts[s2][type]++; yearCounts[s2].total++;
+    [majorHols, minorHols].forEach(group => {
+      const type = group[0]?.type;
+      const usedInGroup = new Set(); // surgeons already assigned in this group
 
-      // Add eve assignment (Surgeon B covers eve night)
-      if (pair.eve) {
+      // Sort: Christmas first (FAK locked), then by date
+      group.sort((a, b) => {
+        if (a.name === "Christmas Day") return -1;
+        if (b.name === "Christmas Day") return 1;
+        return a.date.localeCompare(b.date);
+      });
+
+      group.forEach(hol => {
+        // Build available pool: all surgeons NOT yet used in this group
+        let pool = ids.filter(id => !usedInGroup.has(id));
+
+        // FAK locked to Christmas
+        if (hol.name === "Christmas Day" && fakId) {
+          const sA = fakId;
+          const remaining = pool.filter(id => id !== fakId);
+          // Pick best partner from remaining pool
+          const holDate = parse(hol.date);
+          const dayAfterStr = fmt(addD(holDate, 1));
+          let partnerPool = remaining.filter(id => !onVac(id, hol.date, vacations) && !onVac(id, dayAfterStr, vacations));
+          if (partnerPool.length === 0) partnerPool = remaining;
+          const prior = priorByName["Christmas Day"] || {};
+          partnerPool.sort((a, b) => {
+            const la = (lifetimeCt[a]?.[type] || 0) - (lifetimeCt[b]?.[type] || 0);
+            if (la) return la;
+            const aR = (a === prior.surgeonB) ? 1 : 0;
+            const bR = (b === prior.surgeonB) ? 1 : 0;
+            if (aR !== bR) return aR - bR;
+            return Math.random() - 0.5;
+          });
+          const sB = partnerPool[0] || remaining[0];
+          usedInGroup.add(sA); usedInGroup.add(sB);
+          assignments.push({
+            name: hol.name, date: hol.date, type, emoji: hol.emoji || "📅",
+            surgeonA: sA, surgeonB: sB, coverage: buildCoverage(hol, sA, sB),
+          });
+          return;
+        }
+
+        // If pool is too small (shouldn't happen with 7 surgeons & 3 holidays),
+        // fall back to full list
+        if (pool.length < 2) pool = [...ids];
+
+        const { sA, sB } = pickPair(hol, pool);
+        usedInGroup.add(sA); usedInGroup.add(sB);
+
         assignments.push({
-          name: pair.eve.name, date: pair.eve.date, type, isEve: true,
-          surgeon1: s1, surgeon2: s2, pairWith: pair.day.name,
+          name: hol.name, date: hol.date, type, emoji: hol.emoji || "📅",
+          surgeonA: sA, surgeonB: sB, coverage: buildCoverage(hol, sA, sB),
         });
-      }
-
-      // Add day assignment (Surgeon A covers holiday 24h)
-      assignments.push({
-        name: pair.day.name, date: pair.day.date, type,
-        surgeon1: s1, surgeon2: s2, pairWith: pair.eve?.name || null,
       });
     });
 
+    // Sort final assignments by date for display
+    assignments.sort((a, b) => a.date.localeCompare(b.date));
     setHolidayAssignments(prev => ({ ...prev, [String(year)]: assignments }));
   }, [surgeons, vacations, holidayAssignments]);
 
   // ─── Swap a holiday surgeon ───
   const swapHolidaySurgeon = useCallback((year, holidayIdx, slot, newSurgeonId) => {
+    // Check distinct-pair constraint: is this surgeon already assigned to another holiday in the same group?
+    const arr = holidayAssignments[String(year)] || [];
+    const targetHol = arr[holidayIdx];
+    if (targetHol) {
+      const sameGroup = arr.filter((h, i) => i !== holidayIdx && h.type === targetHol.type);
+      const usedInGroup = new Set();
+      sameGroup.forEach(h => { usedInGroup.add(h.surgeonA); usedInGroup.add(h.surgeonB); });
+      if (usedInGroup.has(newSurgeonId)) {
+        const conflictHol = sameGroup.find(h => h.surgeonA === newSurgeonId || h.surgeonB === newSurgeonId);
+        const surgeonName = surgeons.find(s => s.id === newSurgeonId)?.name || newSurgeonId;
+        if (!confirm(`⚠️ ${surgeonName} is already assigned to ${conflictHol?.name} (${targetHol.type} group).\n\nThis violates the distinct-pairs rule. Assign anyway?`)) return;
+      }
+    }
     setHolidayAssignments(prev => {
       const n = { ...prev };
       const arr = [...(n[String(year)] || [])];
-      arr[holidayIdx] = { ...arr[holidayIdx], [slot]: newSurgeonId };
+      const hol = { ...arr[holidayIdx] };
+      const sA = slot === "surgeonA" ? newSurgeonId : hol.surgeonA;
+      const sB = slot === "surgeonB" ? newSurgeonId : hol.surgeonB;
+      hol.surgeonA = sA;
+      hol.surgeonB = sB;
+      hol.coverage = hol.coverage.map((c, i) => ({ ...c, surgeon: i % 2 === 0 ? sA : sB }));
+      arr[holidayIdx] = hol;
       n[String(year)] = arr;
       return n;
     });
-  }, []);
+  }, [holidayAssignments, surgeons]);
 
   const swapShift = (mStr, shift, newId) => {
     const oldId = shift === "dayCall" ? schedule[mStr]?.dayCall : schedule[mStr]?.nights?.[shift];
@@ -2521,15 +2581,23 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         }
       }
 
-      // Check DC surgeon also on night same week (should not happen)
+      // Check DC surgeon also on night same week (should not happen, unless holiday 24h covers that day)
       if (wk.dayCall) {
+        const holCov = wk.holidayCoverage || {};
         nightOrder.forEach(sk => {
           if (wk.nights?.[sk] === wk.dayCall) {
+            const nightDate = fmt(addD(mon, {mon:0,tue:1,wed:2,thu:3}[sk]));
+            // Skip if this day is covered by holiday 24h (the same surgeon covering both is intentional)
+            if (holCov[nightDate]) return;
             issues.push({ type: "double", severity: "error", week: mStr, message: `${sMap[wk.dayCall]?.name} is on Service Week AND ${SHIFT_LABELS[sk]} (same week)` });
           }
         });
         if (wk.nights?.wknd === wk.dayCall) {
-          issues.push({ type: "double", severity: "error", week: mStr, message: `${sMap[wk.dayCall]?.name} is on Service Week AND Weekend (same week)` });
+          const friD = fmt(addD(mon, 4));
+          const sunD = fmt(addD(mon, 6));
+          if (!holCov[friD] && !holCov[sunD]) {
+            issues.push({ type: "double", severity: "error", week: mStr, message: `${sMap[wk.dayCall]?.name} is on Service Week AND Weekend (same week)` });
+          }
         }
       }
     });
@@ -3027,15 +3095,16 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           {/* Holiday Assignments */}
           <div style={css.card}>
             <div style={css.cardT}>🎄 Holiday Call Assignments</div>
-            <p style={{fontSize:12,color:"#5a6a78",margin:"0 0 12px",lineHeight:1.5}}>
-              Generate yearly holiday assignments. Each holiday pair (Eve + Day) gets 2 surgeons who alternate 24h coverage:
+            <p style={{fontSize:12,color:"#5a6a78",margin:"0 0 10px",lineHeight:1.5}}>
+              Generate yearly holiday assignments. Each holiday gets 2 surgeons who alternate 24h blocks.
+              Eves stay on the regular schedule — only the holiday day and days after switch to 24h.
             </p>
             <div style={{fontSize:11,color:"#5a6a78",background:"#fef8f0",border:"1px solid #e8d8c0",borderRadius:6,padding:"8px 12px",marginBottom:12,lineHeight:1.7}}>
-              <strong>Coverage Pattern:</strong> Surgeon B → Eve · Surgeon A → Holiday (24h) · Surgeon B → Day after (24h) · Surgeon A → Next day (24h)<br/>
-              <strong>Major Holiday Eves (weekday):</strong> Coverage starts at <strong>12 PM</strong> (noon) → 7 AM next day (1 call day)<br/>
-              <strong>Major Holiday Eves (weekend):</strong> Regular weekend schedule — 7 AM → 7 AM (24h)<br/>
-              <strong>Minor Holiday Eves:</strong> Coverage starts at 5 PM → 7 AM next day (1 call day)<br/>
-              <strong>Exception:</strong> FAK covers Christmas Day and can continue into the next day.
+              <strong>Pattern:</strong> Surgeon A → Holiday 24h · Surgeon B → Day After 24h · alternating through Sat<br/>
+              <strong>Monday holidays:</strong> Only Monday is 24h, rest of week is normal<br/>
+              <strong>Friday holidays:</strong> Fri (A) + Sat (B)<br/>
+              <strong>Exception:</strong> FAK always covers Christmas Day<br/>
+              <strong style={{color:"#8a4010"}}>Distinct-pair rule:</strong> Within each group (major / minor), every holiday must have a completely different surgeon pair — no surgeon appears on two holidays in the same group.
             </div>
             <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap",marginBottom:12}}>
               <select value={holidayYear} onChange={e=>setHolidayYear(+e.target.value)} style={{...css.inp,width:90}}>
@@ -3055,79 +3124,112 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               const holCounts = {};
               surgeons.forEach(s=>{holCounts[s.id]={major:0,minor:0};});
               assignments.forEach(h=>{
-                if(h.surgeon1&&holCounts[h.surgeon1]) holCounts[h.surgeon1][h.type]++;
-                if(h.surgeon2&&holCounts[h.surgeon2]) holCounts[h.surgeon2][h.type]++;
+                if(h.surgeonA&&holCounts[h.surgeonA]) holCounts[h.surgeonA][h.type]++;
+                if(h.surgeonB&&holCounts[h.surgeonB]) holCounts[h.surgeonB][h.type]++;
               });
 
-              const renderTable = (title, emoji, color, holidays) => (
-                <div style={{marginBottom:14}}>
-                  <div style={{fontSize:12,fontWeight:700,color,marginBottom:6}}>{emoji} {title}</div>
-                  <div style={{overflowX:"auto"}}>
-                    <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
-                      <thead>
-                        <tr style={{borderBottom:`2px solid ${color}40`}}>
-                          <th style={thS2}>Holiday</th>
-                          <th style={thS2}>Date</th>
-                          <th style={thS2}>Day</th>
-                          <th style={thS2}>A (Holiday 24h)</th>
-                          <th style={thS2}>B (Eve/Day After)</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {holidays.map((h,i) => {
-                          const origIdx = assignments.indexOf(h);
-                          const d = parse(h.date);
-                          const dayName = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][d.getDay()];
-                          return (
-                            <tr key={h.date} style={{borderBottom:"1px solid #e8ecf0"}}>
-                              <td style={{padding:"6px 8px",fontWeight:600,color:"#2c3e50"}}>
-                                {h.name}
-                                {h.isEve && (()=>{
-                                  const dow = parse(h.date).getDay();
-                                  const isWeekend = dow === 0 || dow === 6;
-                                  return <span style={{fontSize:10,fontWeight:400,color:"#8a94a0",marginLeft:6}}>
-                                    {isWeekend ? "7a–7a" : h.type==="major" ? "12p–7a" : "5p–7a"}
-                                  </span>;
-                                })()}
-                                {!h.isEve && <span style={{fontSize:10,fontWeight:400,color:"#8a94a0",marginLeft:6}}>24h</span>}
-                              </td>
-                              <td style={{...tdS,fontSize:12}}>{h.date}</td>
-                              <td style={{...tdS,fontSize:12}}>{dayName}</td>
-                              <td style={{padding:"4px 6px"}}>
-                                <select value={h.surgeon1||""} onChange={e=>swapHolidaySurgeon(holidayYear,origIdx,"surgeon1",e.target.value)} style={{...css.inp,padding:"2px 6px",fontSize:11,width:80}}>
-                                  {surgeons.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
-                                </select>
-                              </td>
-                              <td style={{padding:"4px 6px"}}>
-                                <select value={h.surgeon2||""} onChange={e=>swapHolidaySurgeon(holidayYear,origIdx,"surgeon2",e.target.value)} style={{...css.inp,padding:"2px 6px",fontSize:11,width:80}}>
-                                  {surgeons.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
-                                </select>
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
+              // Build sets of surgeons already used in each group (for dropdown hints)
+              const usedInMajor = new Set();
+              const usedInMinor = new Set();
+              majors.forEach(h => { if(h.surgeonA) usedInMajor.add(h.surgeonA); if(h.surgeonB) usedInMajor.add(h.surgeonB); });
+              minors.forEach(h => { if(h.surgeonA) usedInMinor.add(h.surgeonA); if(h.surgeonB) usedInMinor.add(h.surgeonB); });
+
+              const renderCard = (hol, idx) => {
+                // Surgeons used in OTHER holidays of the same group (not this one)
+                const sameGroup = assignments.filter(h => h.type === hol.type && h.date !== hol.date);
+                const usedElsewhere = new Set();
+                sameGroup.forEach(h => { if(h.surgeonA) usedElsewhere.add(h.surgeonA); if(h.surgeonB) usedElsewhere.add(h.surgeonB); });
+
+                return (
+                <div key={hol.date} style={{background:dk?"#1a2a2e":"#fff",border:`1px solid ${hol.type==="major"?"#e0a868":"#a0c0d8"}`,borderRadius:8,padding:"10px 14px",marginBottom:8}}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8,flexWrap:"wrap",gap:6}}>
+                    <div style={{fontSize:14,fontWeight:700,color:hol.type==="major"?"#c06020":"#2868a8"}}>
+                      {hol.emoji} {hol.name}
+                      <span style={{fontSize:11,fontWeight:400,color:"#8a94a0",marginLeft:8}}>{hol.date} ({["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][parse(hol.date).getDay()]})</span>
+                    </div>
+                    <span style={{fontSize:10,fontWeight:600,color:hol.type==="major"?"#c06020":"#2868a8",background:hol.type==="major"?"#fef0e0":"#e0f0ff",padding:"2px 8px",borderRadius:4}}>{hol.type.toUpperCase()}</span>
+                  </div>
+                  <div style={{display:"flex",gap:8,alignItems:"center",marginBottom:8,flexWrap:"wrap"}}>
+                    <div>
+                      <label style={{fontSize:10,color:"#7a8a98",display:"block",marginBottom:1}}>Surgeon A (Holiday)</label>
+                      <select value={hol.surgeonA||""} onChange={e=>swapHolidaySurgeon(holidayYear,idx,"surgeonA",e.target.value)} style={{...css.inp,padding:"3px 6px",fontSize:11,width:110}}>
+                        {surgeons.map(s=><option key={s.id} value={s.id}>{s.name}{usedElsewhere.has(s.id)?" ⚠️":""}</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <label style={{fontSize:10,color:"#7a8a98",display:"block",marginBottom:1}}>Surgeon B (Day After)</label>
+                      <select value={hol.surgeonB||""} onChange={e=>swapHolidaySurgeon(holidayYear,idx,"surgeonB",e.target.value)} style={{...css.inp,padding:"3px 6px",fontSize:11,width:110}}>
+                        {surgeons.map(s=><option key={s.id} value={s.id}>{s.name}{usedElsewhere.has(s.id)?" ⚠️":""}</option>)}
+                      </select>
+                    </div>
+                  </div>
+                  <div style={{display:"flex",gap:4,flexWrap:"wrap"}}>
+                    {(hol.coverage||[]).map((c,j)=>(
+                      <div key={j} style={{padding:"4px 10px",borderRadius:5,fontSize:11,fontWeight:600,
+                        background:j%2===0?(dk?"#1a3020":"#e8f8e8"):(dk?"#2a2040":"#f0e8f8"),
+                        border:`1px solid ${j%2===0?"#a0d0a0":"#c0b0e0"}`,
+                        color:j%2===0?"#1a6030":"#5030a0"}}>
+                        <span style={{fontWeight:400,marginRight:4}}>{c.day}</span>
+                        <Badge id={c.surgeon} small/>
+                        <span style={{fontSize:9,color:"#8a94a0",marginLeft:4}}>24h</span>
+                      </div>
+                    ))}
                   </div>
                 </div>
-              );
+              )};
 
               return <>
-                {renderTable("Major Holidays", "⭐", "#c06020", majors)}
-                {renderTable("Minor Holidays", "📌", "#2868a8", minors)}
+                <div style={{fontSize:12,fontWeight:700,color:"#c06020",marginBottom:6}}>⭐ Major Holidays</div>
+                {majors.map((h,i)=>renderCard(h, assignments.indexOf(h)))}
 
-                {/* Summary: shifts per surgeon */}
-                <div style={{fontSize:12,fontWeight:700,color:"#5a6a78",marginBottom:6}}>Holiday Shifts per Surgeon — {holidayYear}</div>
-                <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
-                  {surgeons.map(s=>{
-                    const mc = holCounts[s.id]?.major||0;
-                    const mi = holCounts[s.id]?.minor||0;
-                    return (
-                      <div key={s.id} style={{...css.badge(sMap[s.id]?.idx||0),padding:"4px 10px",fontSize:11}}>
-                        {s.name} <span style={{fontWeight:400}}>— {mc} major, {mi} minor</span>
-                      </div>
-                    );
-                  })}
+                <div style={{fontSize:12,fontWeight:700,color:"#2868a8",marginBottom:6,marginTop:14}}>📌 Minor Holidays</div>
+                {minors.map((h,i)=>renderCard(h, assignments.indexOf(h)))}
+
+                {/* Distinct-pair validation */}
+                {(()=>{
+                  const checkGroup = (group, label) => {
+                    const seen = {};
+                    const dupes = [];
+                    group.forEach(h => {
+                      [h.surgeonA, h.surgeonB].forEach(sid => {
+                        if (!sid) return;
+                        if (seen[sid]) dupes.push({ surgeon: sid, hol1: seen[sid], hol2: h.name });
+                        else seen[sid] = h.name;
+                      });
+                    });
+                    return { label, ok: dupes.length === 0, dupes, uniqueCount: Object.keys(seen).length, freeCount: surgeons.length - Object.keys(seen).length };
+                  };
+                  const majorCheck = checkGroup(majors, "Major");
+                  const minorCheck = checkGroup(minors, "Minor");
+                  return (
+                    <div style={{marginTop:10,display:"flex",gap:8,flexWrap:"wrap"}}>
+                      {[majorCheck, minorCheck].map(ck => (
+                        <div key={ck.label} style={{flex:1,minWidth:180,padding:"8px 12px",borderRadius:6,fontSize:11,
+                          background:ck.ok?"#e8f8e8":"#fce8e8",border:`1px solid ${ck.ok?"#a0d8a0":"#e0a0a0"}`,color:ck.ok?"#1a6030":"#903030"}}>
+                          <span style={{fontWeight:700}}>{ck.ok?"✓":"⚠"} {ck.label} group:</span>{" "}
+                          {ck.ok
+                            ? `All ${ck.uniqueCount} surgeons distinct (${ck.freeCount} free)`
+                            : ck.dupes.map(d => `${surgeons.find(s=>s.id===d.surgeon)?.name||d.surgeon} is on both ${d.hol1} & ${d.hol2}`).join("; ")}
+                        </div>
+                      ))}
+                    </div>
+                  );
+                })()}
+
+                {/* Summary */}
+                <div style={{marginTop:14,paddingTop:10,borderTop:"1px solid #e0e4ea"}}>
+                  <div style={{fontSize:12,fontWeight:700,color:"#5a6a78",marginBottom:6}}>Holiday Coverage per Surgeon — {holidayYear}</div>
+                  <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+                    {surgeons.map(s=>{
+                      const mc = holCounts[s.id]?.major||0;
+                      const mi = holCounts[s.id]?.minor||0;
+                      return (
+                        <div key={s.id} style={{...css.badge(sMap[s.id]?.idx||0),padding:"4px 10px",fontSize:11}}>
+                          {s.name} <span style={{fontWeight:400}}>— {mc} major, {mi} minor</span>
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
               </>;
             })()}
