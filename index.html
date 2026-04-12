@@ -566,9 +566,10 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
         if (nonDc.length > 0) avail = nonDc;
       }
 
-      // CONSECUTIVE NIGHT AVOIDANCE: penalize surgeons who had a night shift yesterday
-      // (previous night in this same week)
+      // HARD RULE: No back-to-back nights — filter out anyone who had a night yesterday
       const yesterdayStr = fmt(addD(monday, dayOffset - 1));
+      const nonConsec = avail.filter(id => prevNightSurgeon[id] !== yesterdayStr);
+      if (nonConsec.length > 0) avail = nonConsec;
 
       // Fallback layers
       if(!avail.length) avail = rem.filter(id => !used.has(id) && !nightUsed.has(id) && !onVac(id,sd,vac));
@@ -583,11 +584,6 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
           if (a === holSurgeonB && b !== holSurgeonB) return -1;
           if (b === holSurgeonB && a !== holSurgeonB) return 1;
         }
-
-        // CONSECUTIVE NIGHT AVOIDANCE: if a surgeon had a night yesterday, push them back
-        const aConsec = prevNightSurgeon[a] === yesterdayStr ? 1 : 0;
-        const bConsec = prevNightSurgeon[b] === yesterdayStr ? 1 : 0;
-        if (aConsec !== bConsec) return aConsec - bConsec;
 
         // Holiday fairness: if this night is a holiday or eve of holiday
         if (nextDayHoliday) {
@@ -756,6 +752,25 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
               nextWk.nights.mon = nextWk.nights[otherNight];
               nextWk.nights[otherNight] = temp;
             }
+          }
+        }
+      }
+      // Fix: No back-to-back nights within the same week
+      const nightOrder = ["mon","tue","wed","thu"];
+      for (let ni = 0; ni < nightOrder.length - 1; ni++) {
+        const sk1 = nightOrder[ni], sk2 = nightOrder[ni + 1];
+        const s1 = wk.nights?.[sk1], s2 = wk.nights?.[sk2];
+        if (s1 && s1 === s2) {
+          // Try swapping sk2 with another night that doesn't create a new consecutive pair
+          const swapCandidate = nightOrder.find(sk => sk !== sk1 && sk !== sk2 && wk.nights?.[sk] && wk.nights[sk] !== s1 && wk.nights[sk] !== wk.dayCall);
+          if (swapCandidate) {
+            const temp = wk.nights[sk2];
+            wk.nights[sk2] = wk.nights[swapCandidate];
+            wk.nights[swapCandidate] = temp;
+            recalcOff(wk);
+          } else if (wk.off && wk.off !== wk.dayCall) {
+            wk.nights[sk2] = wk.off;
+            recalcOff(wk);
           }
         }
       }
@@ -1995,15 +2010,16 @@ If you cannot find vacations, return an empty array for "vacations". Same for "f
     const fakId = ids.find(id => (nameMap[id] || "").toUpperCase() === "FAK") || null;
 
     // Helper: build coverage days from a holiday + assigned pair
-    // Always includes: Day Before (Eve) → A, Holiday Day → A, Day After → B (minimum 3 days)
+    // Always includes: Night Before (B) → Holiday Day (A) → Day After (B) (minimum 3 days)
+    // Night-before defaults to Surgeon B; at display time it's replaced by the actual night-shift person from the schedule
     const buildCoverage = (hol, sA, sB) => {
       const holDate = parse(hol.date);
       const holDow = holDate.getDay();
       const coverage = [];
 
-      // Day before (Eve) — Surgeon A
+      // Night before — defaults to Surgeon B (replaced at display time by actual night-shift person)
       const evDate = addD(holDate, -1);
-      coverage.push({ date: fmt(evDate), surgeon: sA, label: hol.name + " Eve", day: DAYNAMES[evDate.getDay()], isEve: true });
+      coverage.push({ date: fmt(evDate), surgeon: sB, label: hol.name + " Night Before", day: DAYNAMES[evDate.getDay()], isEve: true });
 
       // Holiday day — Surgeon A
       coverage.push({ date: hol.date, surgeon: sA, label: hol.name + " 24h", day: DAYNAMES[holDow] });
@@ -2163,7 +2179,7 @@ If you cannot find vacations, return an empty array for "vacations". Same for "f
       hol.surgeonB = sB;
       let nonEveIdx = 0;
       hol.coverage = hol.coverage.map((c) => {
-        if (c.isEve) return { ...c, surgeon: sA };
+        if (c.isEve) return { ...c, surgeon: sB };
         const surgeon = nonEveIdx % 2 === 0 ? sA : sB;
         nonEveIdx++;
         return { ...c, surgeon };
@@ -2634,17 +2650,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         const a = wk.nights?.[nightOrder[i]];
         const b = wk.nights?.[nightOrder[i+1]];
         if (a && a === b) {
-          issues.push({ type: "consecutive", severity: "warning", week: mStr, message: `${sMap[a]?.name} has consecutive nights (${SHIFT_LABELS[nightOrder[i]]} + ${SHIFT_LABELS[nightOrder[i+1]]})` });
-        }
-      }
-
-      // Check Thu night → next week Mon night
-      if (wkIdx < mondayStrs.length - 1) {
-        const nextWk = schedule[mondayStrs[wkIdx + 1]];
-        const thuSurgeon = wk.nights?.thu;
-        const nextMonSurgeon = nextWk?.nights?.mon;
-        if (thuSurgeon && thuSurgeon === nextMonSurgeon) {
-          issues.push({ type: "consecutive", severity: "info", week: mStr, message: `${sMap[thuSurgeon]?.name} has Thu night then Mon night next week` });
+          issues.push({ type: "consecutive", severity: "error", week: mStr, message: `${sMap[a]?.name} has consecutive nights (${SHIFT_LABELS[nightOrder[i]]} + ${SHIFT_LABELS[nightOrder[i+1]]})` });
         }
       }
 
