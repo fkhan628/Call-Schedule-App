@@ -570,10 +570,10 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
     });
 
     // Also check weekend for holiday coverage
-    const friDate = fmt(addD(monday, 4));
-    const sunDate = fmt(addD(monday, 6));
-    const friCov = holCoverage[friDate];
-    const sunCov = holCoverage[sunDate];
+    const holFriDate = fmt(addD(monday, 4));
+    const holSunDate = fmt(addD(monday, 6));
+    const friCov = holCoverage[holFriDate];
+    const sunCov = holCoverage[holSunDate];
     let holidayWkndOverride = null;
     if (friCov && (friCov.role === "holiday" || friCov.role === "day_after" || friCov.role === "eve")) {
       holidayWkndOverride = friCov.surgeonId;
