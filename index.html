@@ -371,7 +371,8 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
   // Build holiday lookup for all years in the schedule
   const holidayMap = {}; // { "YYYY-MM-DD": { name, type:"major"|"minor" } }
   const years = new Set(mondays.map(m => m.getFullYear()));
-  years.forEach(y => { years.add(y+1); }); // include next year for Dec→Jan
+  // Include next year for Dec→Jan overlap (build a separate array to avoid mutating Set during iteration)
+  [...years].forEach(y => { years.add(y+1); });
   years.forEach(y => {
     const h = getHolidays(y);
     h.major.forEach(hol => { 
@@ -1062,6 +1063,28 @@ function CallSchedule() {
     } catch(e) { console.error("Notification error:", e); }
   }, []);
 
+  // ─── Email Notifications via Supabase Edge Function ───
+  const sendEmailNotif = useCallback(async (type, data) => {
+    if (!edgeFunctionUrl) return;
+    try {
+      const recipients = [];
+      Object.entries(notifPrefs).forEach(([sid, prefs]) => {
+        if (!prefs.email || !prefs.email_notifs) return;
+        if (type === "test") { /* send to all email-enabled */ }
+        else if ((type === "schedule_published" || type === "schedule_changed" || type === "trade_submitted" || type === "trade_accepted" || type === "trade_declined") && !prefs.schedule_changes) return;
+        else if ((type === "vacation_approved" || type === "vacation_denied" || type === "vacation_submitted") && !prefs.vacation_updates) return;
+        else if (type === "shift_reminder" && !prefs.shift_reminders) return;
+        recipients.push({ email: prefs.email, surgeon_id: sid, name: surgeons.find(s => s.id === sid)?.name || sid });
+      });
+      if (recipients.length === 0) return;
+      await fetch(edgeFunctionUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${SUPABASE_ANON_KEY}` },
+        body: JSON.stringify({ type, data, recipients }),
+      });
+    } catch(e) { console.error("Email notification error:", e); }
+  }, [edgeFunctionUrl, notifPrefs, surgeons]);
+
   // ─── Vacation Request: Submit ───
   const submitVacRequest = useCallback(async () => {
     if (!vacReqSurgeon || !vacReqStart || !vacReqEnd) return;
@@ -1310,30 +1333,6 @@ function CallSchedule() {
     } catch(e) { console.error("Browser notification error:", e); }
   }, [pushPermission]);
 
-  // ─── Email Notifications via Supabase Edge Function ───
-  const sendEmailNotif = useCallback(async (type, data) => {
-    if (!edgeFunctionUrl) return;
-    try {
-      // Collect recipients based on preferences
-      const recipients = [];
-      Object.entries(notifPrefs).forEach(([sid, prefs]) => {
-        if (!prefs.email || !prefs.email_notifs) return;
-        if (type === "test") { /* send to all email-enabled */ }
-        else if ((type === "schedule_published" || type === "schedule_changed" || type === "trade_submitted" || type === "trade_accepted" || type === "trade_declined") && !prefs.schedule_changes) return;
-        else if ((type === "vacation_approved" || type === "vacation_denied" || type === "vacation_submitted") && !prefs.vacation_updates) return;
-        else if (type === "shift_reminder" && !prefs.shift_reminders) return;
-        recipients.push({ email: prefs.email, surgeon_id: sid, name: surgeons.find(s => s.id === sid)?.name || sid });
-      });
-      if (recipients.length === 0) return;
-
-      await fetch(edgeFunctionUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${SUPABASE_ANON_KEY}` },
-        body: JSON.stringify({ type, data, recipients }),
-      });
-    } catch(e) { console.error("Email notification error:", e); }
-  }, [edgeFunctionUrl, notifPrefs, surgeons]);
-
   // ─── Load Notification Preferences ───
   useEffect(() => {
     if (!loaded) return;
@@ -1429,9 +1428,10 @@ function CallSchedule() {
     const vacRanges = vacations[s.id] || [];
     vacRanges.forEach(([vs, ve]) => {
       const sd = parse(vs), ed = parse(ve);
+      const edNext = addD(ed, 1);
       events.push({
         start: icsDate(sd.getFullYear(), sd.getMonth()+1, sd.getDate(), 0),
-        end: icsDate(ed.getFullYear(), ed.getMonth()+1, ed.getDate()+1 > 28 ? 28 : ed.getDate()+1, 0),
+        end: icsDate(edNext.getFullYear(), edNext.getMonth()+1, edNext.getDate(), 0),
         summary: `VACATION — ${s.name}`,
         desc: `${vs} to ${ve}`
       });
@@ -1911,6 +1911,21 @@ If you cannot find vacations, return an empty array for "vacations". Same for "f
     setSchedule({});
     setSaveStatus("Schedule cleared");
     setTimeout(() => setSaveStatus(""), 2000);
+    // Immediately save to prevent polling race condition
+    (async () => {
+      try {
+        const ts = new Date().toISOString();
+        lastSyncRef.current = ts;
+        const payload = {
+          surgeons, apps, vacations,
+          backupMondays: [...backupMondaySet],
+          fierceBackup: [...fierceBackupSet],
+          schedule: {}, appShifts, priorCounts, year1Counts, year2Counts,
+          startMonth, startYear, holidayAssignments,
+        };
+        await supabase.from("call_schedule_data").upsert({ id: "main", data: payload, updated_at: ts });
+      } catch(e) { console.error("Immediate save failed:", e); }
+    })();
   };
 
   const acceptPreview = () => {
@@ -2005,11 +2020,6 @@ If you cannot find vacations, return an empty array for "vacations". Same for "f
           coverage.push({ date: fmt(next), surgeon: toggle ? sA : sB, label: DAYNAMES[next.getDay()] + " 24h", day: DAYNAMES[next.getDay()] });
           toggle = !toggle;
           next = addD(next, 1);
-        }
-        // Ensure at least day-after is present
-        if (coverage.length === 2) {
-          const dayAfter = addD(holDate, 1);
-          coverage.push({ date: fmt(dayAfter), surgeon: sB, label: DAYNAMES[dayAfter.getDay()] + " 24h", day: DAYNAMES[dayAfter.getDay()] });
         }
       }
       return coverage;
@@ -3216,9 +3226,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   <div style={{display:"flex",gap:4,flexWrap:"wrap"}}>
                     {(hol.coverage||[]).map((c,j)=>{
                       const isEve = c.isEve;
-                      const isA = !isEve && j%2===0; // after eve, odd/even tracks A/B but eve shifts index
-                      const surgIdx = (hol.coverage||[]).filter(x=>!x.isEve).indexOf(c);
-                      const isSurgA = isEve || surgIdx % 2 === 0;
+                      const isSurgA = c.surgeon === hol.surgeonA;
                       return (
                       <div key={j} style={{padding:"4px 10px",borderRadius:5,fontSize:11,fontWeight:600,
                         background: isEve
