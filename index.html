@@ -337,9 +337,10 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
       yearArr.forEach(h => {
         // Store the holiday metadata by date
         holByDate[h.date] = { surgeonA: h.surgeonA, surgeonB: h.surgeonB, name: h.name, type: h.type };
-        // Store each coverage day
+        // Store each coverage day (skip Eve entries — those are display-only, not schedule overrides)
         if (h.coverage && Array.isArray(h.coverage)) {
           h.coverage.forEach(c => {
+            if (c.isEve) return; // Eve is informational only — regular schedule stays
             holCoverage[c.date] = { surgeonId: c.surgeon, role: "holiday_24h", hours: "7a–7a", name: c.label, type: h.type };
           });
         }
@@ -559,6 +560,12 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
         if (nonWknd.length > 0) avail = nonWknd;
       }
 
+      // HARD RULE: Service week surgeon cannot take Monday night the following week
+      if (sk === "mon" && prevDcSurgeon) {
+        const nonDc = avail.filter(id => id !== prevDcSurgeon);
+        if (nonDc.length > 0) avail = nonDc;
+      }
+
       // CONSECUTIVE NIGHT AVOIDANCE: penalize surgeons who had a night shift yesterday
       // (previous night in this same week)
       const yesterdayStr = fmt(addD(monday, dayOffset - 1));
@@ -601,11 +608,6 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
 
         if(lastPos[a]===sk&&lastPos[b]!==sk) return 1;
         if(lastPos[b]===sk&&lastPos[a]!==sk) return -1;
-        if(sk==="mon"&&a===prevWkndSurgeon) return 1;
-        if(sk==="mon"&&b===prevWkndSurgeon) return -1;
-        // Soft: avoid previous week's service week surgeon on Monday night
-        if(sk==="mon"&&a===prevDcSurgeon) return 1;
-        if(sk==="mon"&&b===prevDcSurgeon) return -1;
         return Math.random() - 0.5;
       });
 
@@ -731,6 +733,24 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
           } else {
             // Try swapping Monday night with another night surgeon in next week
             const otherNight = NIGHT_KEYS.find(sk => sk !== "mon" && nextWk.nights?.[sk] && nextWk.nights[sk] !== nextWk.dayCall && nextWk.nights[sk] !== wk.nights.wknd);
+            if (otherNight) {
+              const temp = nextWk.nights.mon;
+              nextWk.nights.mon = nextWk.nights[otherNight];
+              nextWk.nights[otherNight] = temp;
+            }
+          }
+        }
+      }
+
+      // Fix: Service week surgeon should not have Monday night next week
+      if (i < mondayStrs.length - 1 && wk.dayCall) {
+        const nextWk = sched[mondayStrs[i + 1]];
+        if (nextWk?.nights?.mon === wk.dayCall) {
+          if (nextWk.off && nextWk.off !== nextWk.dayCall && nextWk.off !== sched[mondayStrs[i]]?.nights?.wknd) {
+            nextWk.nights.mon = nextWk.off;
+            recalcOff(nextWk);
+          } else {
+            const otherNight = NIGHT_KEYS.find(sk => sk !== "mon" && nextWk.nights?.[sk] && nextWk.nights[sk] !== nextWk.dayCall && nextWk.nights[sk] !== wk.dayCall);
             if (otherNight) {
               const temp = nextWk.nights.mon;
               nextWk.nights.mon = nextWk.nights[otherNight];
@@ -2635,9 +2655,9 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         if (wkndSurgeon && nextWk?.nights?.mon === wkndSurgeon) {
           issues.push({ type: "consecutive", severity: "error", week: mStr, message: `${sMap[wkndSurgeon]?.name} has Weekend then Mon night the next week` });
         }
-        // Check service week surgeon → Mon night next week (soft preference)
+        // Check service week surgeon → Mon night next week (hard rule)
         if (wk.dayCall && nextWk?.nights?.mon === wk.dayCall) {
-          issues.push({ type: "consecutive", severity: "info", week: mStr, message: `${sMap[wk.dayCall]?.name} has Service Week (incl. Sat) then Mon night the next week` });
+          issues.push({ type: "consecutive", severity: "error", week: mStr, message: `${sMap[wk.dayCall]?.name} has Service Week then Mon night the next week` });
         }
       }
 
@@ -3226,7 +3246,34 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   <div style={{display:"flex",gap:4,flexWrap:"wrap"}}>
                     {(hol.coverage||[]).map((c,j)=>{
                       const isEve = c.isEve;
-                      const isSurgA = c.surgeon === hol.surgeonA;
+                      // For Eve: look up who actually has the night shift the night before the holiday
+                      let eveSurgeon = c.surgeon;
+                      let eveLabel = "night before";
+                      if (isEve && Object.keys(schedule).length > 0) {
+                        const eveDate = parse(c.date);
+                        const holDate = parse(hol.date);
+                        const holDow = holDate.getDay(); // day of week of the holiday
+                        const eveMon = monOf(eveDate);
+                        const eveMonStr = fmt(eveMon);
+                        const wk = schedule[eveMonStr];
+                        if (wk) {
+                          // Which night shift covers the night before the holiday?
+                          if (holDow === 1) { // Holiday=Mon → night before = prev week's weekend (Sun 7a-Mon 7a)
+                            const prevMon = fmt(addD(eveMon, -7));
+                            eveSurgeon = schedule[prevMon]?.nights?.wknd || c.surgeon;
+                          } else if (holDow === 0) { // Holiday=Sun → night before = Sat night = service week surgeon
+                            eveSurgeon = wk.dayCall || c.surgeon;
+                          } else if (holDow === 6) { // Holiday=Sat → night before = Fri night = weekend surgeon
+                            eveSurgeon = wk.nights?.wknd || c.surgeon;
+                          } else { // Holiday=Tue-Fri → night before = Mon-Thu night
+                            const nightKeys = ["","mon","tue","wed","thu","fri"];
+                            const nk = nightKeys[holDow - 1]; // holDow 2(Tue)→mon, 3(Wed)→tue, etc.
+                            eveSurgeon = wk.nights?.[nk] || c.surgeon;
+                          }
+                        }
+                      }
+                      const displaySurgeon = isEve ? eveSurgeon : c.surgeon;
+                      const isSurgA = !isEve && c.surgeon === hol.surgeonA;
                       return (
                       <div key={j} style={{padding:"4px 10px",borderRadius:5,fontSize:11,fontWeight:600,
                         background: isEve
@@ -3236,8 +3283,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                         color:isEve?"#8a6820":isSurgA?"#1a6030":"#5030a0",
                         opacity:isEve?0.85:1}}>
                         <span style={{fontWeight:400,marginRight:4}}>{c.day}</span>
-                        <Badge id={c.surgeon} small/>
-                        <span style={{fontSize:9,color:isEve?"#b09050":"#8a94a0",marginLeft:4}}>{isEve?"eve":"24h"}</span>
+                        <Badge id={displaySurgeon} small/>
+                        <span style={{fontSize:9,color:isEve?"#b09050":"#8a94a0",marginLeft:4}}>{isEve ? eveLabel : "24h"}</span>
                       </div>
                     )})}
                   </div>
