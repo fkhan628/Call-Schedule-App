@@ -909,6 +909,8 @@ function CallSchedule() {
     try { return Notification?.permission || "default"; } catch(e) { return "unsupported"; }
   });
   const [notifPrefs, setNotifPrefs] = useState({}); // { surgeonId: { email, browser_push, email_notifs, schedule_changes, vacation_updates, shift_reminders } }
+  const notifPrefsRef = useRef(notifPrefs);
+  useEffect(() => { notifPrefsRef.current = notifPrefs; }, [notifPrefs]);
   const [notifPrefsLoaded, setNotifPrefsLoaded] = useState(false);
   const [notifPrefsSaving, setNotifPrefsSaving] = useState(false);
   const [notifTestSent, setNotifTestSent] = useState("");
@@ -1102,8 +1104,9 @@ function CallSchedule() {
   const sendEmailNotif = useCallback(async (type, data) => {
     if (!edgeFunctionUrl) return;
     try {
+      const currentPrefs = notifPrefsRef.current || {};
       const recipients = [];
-      Object.entries(notifPrefs).forEach(([sid, prefs]) => {
+      Object.entries(currentPrefs).forEach(([sid, prefs]) => {
         if (!prefs.email || !prefs.email_notifs) return;
         if (type === "test") { /* send to all email-enabled */ }
         else if ((type === "schedule_published" || type === "schedule_changed" || type === "trade_submitted" || type === "trade_accepted" || type === "trade_declined") && !prefs.schedule_changes) return;
@@ -1118,7 +1121,7 @@ function CallSchedule() {
         body: JSON.stringify({ type, data, recipients }),
       });
     } catch(e) { console.error("Email notification error:", e); }
-  }, [edgeFunctionUrl, notifPrefs, surgeons]);
+  }, [edgeFunctionUrl, surgeons]);
 
   // ─── Vacation Request: Submit ───
   const submitVacRequest = useCallback(async () => {
@@ -1397,27 +1400,32 @@ function CallSchedule() {
 
   // ─── Save Notification Preference for a surgeon ───
   const saveNotifPref = useCallback(async (surgeonId, updates) => {
+    // Update local state immediately
     setNotifPrefs(prev => {
       const cur = prev[surgeonId] || { surgeon_id: surgeonId, email: "", browser_push: true, email_notifs: false, schedule_changes: true, vacation_updates: true, shift_reminders: true };
-      return { ...prev, [surgeonId]: { ...cur, ...updates } };
+      const merged = { ...cur, ...updates };
+      // Also update the ref so the Supabase save below gets the latest values
+      notifPrefsRef.current = { ...prev, [surgeonId]: merged };
+      return { ...prev, [surgeonId]: merged };
     });
     setNotifPrefsSaving(true);
     try {
-      const cur = notifPrefs[surgeonId] || {};
+      // Use ref to get the LATEST merged state, not the stale closure
+      const cur = notifPrefsRef.current[surgeonId] || {};
       const row = {
         surgeon_id: surgeonId,
-        email: updates.email !== undefined ? updates.email : (cur.email || ""),
-        browser_push: updates.browser_push !== undefined ? updates.browser_push : (cur.browser_push !== false),
-        email_notifs: updates.email_notifs !== undefined ? updates.email_notifs : (cur.email_notifs || false),
-        schedule_changes: updates.schedule_changes !== undefined ? updates.schedule_changes : (cur.schedule_changes !== false),
-        vacation_updates: updates.vacation_updates !== undefined ? updates.vacation_updates : (cur.vacation_updates !== false),
-        shift_reminders: updates.shift_reminders !== undefined ? updates.shift_reminders : (cur.shift_reminders !== false),
+        email: cur.email || "",
+        browser_push: cur.browser_push !== false,
+        email_notifs: cur.email_notifs || false,
+        schedule_changes: cur.schedule_changes !== false,
+        vacation_updates: cur.vacation_updates !== false,
+        shift_reminders: cur.shift_reminders !== false,
         updated_at: new Date().toISOString(),
       };
       await db.upsert("notification_preferences", row);
     } catch(e) { console.error("Save notif pref error:", e); }
     setNotifPrefsSaving(false);
-  }, [notifPrefs]);
+  }, []);
 
   // ─── Fire browser notifications when polling detects new in-app notifications ───
   useEffect(() => {
