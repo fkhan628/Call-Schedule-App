@@ -1729,19 +1729,17 @@ Match surgeon names/initials as best you can to: ${surgeonNames}. If you cannot 
   const [schedScanMsg, setSchedScanMsg] = useState("");
   const schedFileRef = useRef(null);
 
-  const handleScheduleScan = useCallback(async (file) => {
-    if (!file) return;
+  const handleScheduleScan = useCallback(async (fileOrFiles) => {
+    const files = fileOrFiles instanceof FileList ? Array.from(fileOrFiles) : [fileOrFiles];
+    if (!files || files.length === 0) return;
     setSchedScanning(true);
-    setSchedScanMsg("Reading file…");
+    const allParts = [];
+    let totalVac = 0, totalPrimary = 0, totalBackup = 0;
 
-    try {
-      const ext = file.name.split(".").pop().toLowerCase();
-      const surgeonNames = surgeons.map(s => s.name).join(", ");
-      let messages;
+    const surgeonNames = surgeons.map(s => s.name).join(", ");
+    const promptText = `You are analyzing a surgical call schedule calendar. Extract TWO things from this document:
 
-      const promptText = `You are analyzing a surgical call schedule calendar. Extract TWO things from this document:
-
-1. VACATIONS: Look for entries labeled like "DJA VAC", "MCC VAC", "REH VAC", etc. The surgeons are: ${surgeonNames}. For each vacation, identify the surgeon initials, start date, and end date (YYYY-MM-DD). If a vacation spans multiple days, give the full range. If only one day, start and end are the same.
+1. VACATIONS: Look for entries labeled like "DJA VAC", "MCC VAC", "REH VAC", etc. Also look for "No Call", "On Leave", "PTO", "OFF" annotations. The surgeons are: ${surgeonNames}. APPs may also have vacations (MA, SJ, MS, SS). For each vacation, identify the person's initials, start date, and end date (YYYY-MM-DD). If a vacation spans multiple days, give the full range. If only one day, start and end are the same.
 
 2. FIERCE WEEKS: Look for entries labeled "FIERCE 1ST/ND", "FIERCE 1ST", "FIERCE ND" (these mean Fierce is PRIMARY — label as "primary") or "FIERCE BACKUP", "FIERCE BACK UP" (these mean Fierce backs up the group — label as "backup"). For each, give the Monday of that week (YYYY-MM-DD) and the type.
 
@@ -1757,108 +1755,131 @@ Respond with ONLY valid JSON, no markdown backticks, no explanation:
   ]
 }
 
-If you cannot find vacations, return an empty array for "vacations". Same for "fierce_weeks". Match surgeon initials to: ${surgeonNames}.`;
+If you cannot find vacations, return an empty array for "vacations". Same for "fierce_weeks". Match surgeon/APP initials to: ${surgeonNames}.`;
 
-      if (ext === "pdf") {
-        setSchedScanMsg("Reading PDF…");
-        const base64 = await new Promise((res, rej) => {
-          const r = new FileReader();
-          r.onload = () => res(r.result.split(",")[1]);
-          r.onerror = () => rej(new Error("Failed to read file"));
-          r.readAsDataURL(file);
-        });
-        messages = [{ role:"user", content: [
-          { type:"document", source:{ type:"base64", media_type:"application/pdf", data:base64 } },
-          { type:"text", text: promptText }
-        ]}];
-      } else if (["xlsx","xls","csv"].includes(ext)) {
-        const XLSX = await import("https://cdn.sheetjs.com/xlsx-0.20.0/package/xlsx.mjs");
-        const buf = await file.arrayBuffer();
-        const wb = XLSX.read(buf, {type:"array"});
-        let allText = "";
-        wb.SheetNames.forEach(name => {
-          const ws = wb.Sheets[name];
-          allText += `Sheet: ${name}\n${XLSX.utils.sheet_to_csv(ws)}\n\n`;
-        });
-        setSchedScanMsg("Analyzing schedule…");
-        messages = [{ role:"user", content: `Here is a call schedule:\n\n${allText}\n\n${promptText}` }];
-      } else if (["docx","doc"].includes(ext)) {
-        const mammoth = await import("mammoth");
-        const buf = await file.arrayBuffer();
-        const result = await mammoth.extractRawText({arrayBuffer: buf});
-        setSchedScanMsg("Analyzing document…");
-        messages = [{ role:"user", content: `Here is a call schedule document:\n\n${result.value}\n\n${promptText}` }];
-      } else {
-        setSchedScanMsg("Unsupported file type. Please upload a PDF, Excel (.xlsx), Word (.docx), or CSV file.");
-        setSchedScanning(false);
-        return;
-      }
+    for (let fi = 0; fi < files.length; fi++) {
+      const file = files[fi];
+      setSchedScanMsg(files.length > 1
+        ? `Analyzing file ${fi + 1} of ${files.length}: ${file.name}…`
+        : `Analyzing ${file.name}…`);
 
-      setSchedScanMsg("Extracting vacations & Fierce weeks…");
-      const text = await callApi(messages, 3000);
-      const clean = text.replace(/```json|```/g, "").trim();
-      const result = JSON.parse(clean);
+      try {
+        const ext = file.name.split(".").pop().toLowerCase();
+        let messages;
 
-      const parts = [];
-
-      // Process vacations
-      if (result?.vacations && Array.isArray(result.vacations) && result.vacations.length > 0) {
-        const nameToId = {};
-        surgeons.forEach(s => { nameToId[s.name.toUpperCase()] = s.id; nameToId[s.name] = s.id; });
-        let added = 0;
-        setVacations(prev => {
-          const n = {...prev};
-          result.vacations.forEach(e => {
-            const id = nameToId[e.surgeon] || nameToId[e.surgeon?.toUpperCase()];
-            if (id && e.start && e.end) {
-              n[id] = [...(n[id]||[]), [e.start, e.end]];
-              added++;
-            }
+        if (ext === "pdf") {
+          const base64 = await new Promise((res, rej) => {
+            const r = new FileReader();
+            r.onload = () => res(r.result.split(",")[1]);
+            r.onerror = () => rej(new Error("Failed to read file"));
+            r.readAsDataURL(file);
           });
-          return n;
-        });
-        parts.push(`${added} vacation${added>1?"s":""}`)
-      }
-
-      // Process Fierce weeks
-      if (result?.fierce_weeks && Array.isArray(result.fierce_weeks) && result.fierce_weeks.length > 0) {
-        let primaryCount = 0, backupCount = 0;
-        const primaryDates = [], backupDates = [];
-        result.fierce_weeks.forEach(e => {
-          const mStr = e.monday ? fmt(monOf(parse(e.monday))) : null;
-          if (!mStr) return;
-          if (e.type === "backup") { backupDates.push(mStr); backupCount++; }
-          else { primaryDates.push(mStr); primaryCount++; }
-        });
-        if (primaryDates.length > 0) {
-          setBackupMondaySet(prev => { const n = new Set(prev); primaryDates.forEach(m => n.add(m)); return n; });
+          messages = [{ role:"user", content: [
+            { type:"document", source:{ type:"base64", media_type:"application/pdf", data:base64 } },
+            { type:"text", text: promptText }
+          ]}];
+        } else if (["xlsx","xls","csv"].includes(ext)) {
+          const XLSX = await import("https://cdn.sheetjs.com/xlsx-0.20.0/package/xlsx.mjs");
+          const buf = await file.arrayBuffer();
+          const wb = XLSX.read(buf, {type:"array"});
+          let allText = "";
+          wb.SheetNames.forEach(name => {
+            const ws = wb.Sheets[name];
+            allText += `Sheet: ${name}\n${XLSX.utils.sheet_to_csv(ws)}\n\n`;
+          });
+          messages = [{ role:"user", content: `Here is a call schedule:\n\n${allText}\n\n${promptText}` }];
+        } else if (["docx","doc"].includes(ext)) {
+          const mammoth = await import("mammoth");
+          const buf = await file.arrayBuffer();
+          const result = await mammoth.extractRawText({arrayBuffer: buf});
+          messages = [{ role:"user", content: `Here is a call schedule document:\n\n${result.value}\n\n${promptText}` }];
+        } else if (["png","jpg","jpeg","webp","gif"].includes(ext)) {
+          const base64 = await new Promise((res, rej) => {
+            const r = new FileReader();
+            r.onload = () => res(r.result.split(",")[1]);
+            r.onerror = () => rej(new Error("Failed to read file"));
+            r.readAsDataURL(file);
+          });
+          const mimeMap = {png:"image/png",jpg:"image/jpeg",jpeg:"image/jpeg",webp:"image/webp",gif:"image/gif"};
+          messages = [{ role:"user", content: [
+            { type:"image", source:{ type:"base64", media_type: mimeMap[ext] || "image/jpeg", data:base64 } },
+            { type:"text", text: promptText }
+          ]}];
+        } else {
+          allParts.push(`${file.name}: unsupported format`);
+          continue;
         }
-        if (backupDates.length > 0) {
-          setFierceBackupSet(prev => { const n = new Set(prev); backupDates.forEach(m => n.add(m)); return n; });
-        }
-        if (primaryCount > 0) parts.push(`${primaryCount} Fierce Primary week${primaryCount>1?"s":""}`);
-        if (backupCount > 0) parts.push(`${backupCount} Fierce Backup week${backupCount>1?"s":""}`);
-      }
 
-      if (parts.length > 0) {
-        setSchedScanMsg(`Found ${parts.join(", ")}. Review below and adjust if needed.`);
-      } else {
-        setSchedScanMsg("No vacations or Fierce weeks found in the file. Try a different file or add manually.");
+        setSchedScanMsg(files.length > 1
+          ? `Extracting from file ${fi + 1}/${files.length}: ${file.name}…`
+          : `Extracting vacations & Fierce weeks…`);
+        const text = await callApi(messages, 3000);
+        const clean = text.replace(/```json|```/g, "").trim();
+        const result = JSON.parse(clean);
+
+        // Process vacations
+        let fileVac = 0;
+        if (result?.vacations && Array.isArray(result.vacations) && result.vacations.length > 0) {
+          const nameToId = {};
+          surgeons.forEach(s => { nameToId[s.name.toUpperCase()] = s.id; nameToId[s.name] = s.id; });
+          setVacations(prev => {
+            const n = {...prev};
+            result.vacations.forEach(e => {
+              const id = nameToId[e.surgeon] || nameToId[e.surgeon?.toUpperCase()];
+              if (id && e.start && e.end) {
+                const existing = n[id] || [];
+                const isDupe = existing.some(([s,e2]) => s === e.start && e2 === e.end);
+                if (!isDupe) { n[id] = [...existing, [e.start, e.end]]; fileVac++; totalVac++; }
+              }
+            });
+            return n;
+          });
+        }
+
+        // Process Fierce weeks
+        let fileFierce = 0;
+        if (result?.fierce_weeks && Array.isArray(result.fierce_weeks) && result.fierce_weeks.length > 0) {
+          const primaryDates = [], backupDates = [];
+          result.fierce_weeks.forEach(e => {
+            const mStr = e.monday ? fmt(monOf(parse(e.monday))) : null;
+            if (!mStr) return;
+            fileFierce++;
+            if (e.type === "backup") { backupDates.push(mStr); totalBackup++; }
+            else { primaryDates.push(mStr); totalPrimary++; }
+          });
+          if (primaryDates.length > 0) {
+            setBackupMondaySet(prev => { const n = new Set(prev); primaryDates.forEach(m => n.add(m)); return n; });
+          }
+          if (backupDates.length > 0) {
+            setFierceBackupSet(prev => { const n = new Set(prev); backupDates.forEach(m => n.add(m)); return n; });
+          }
+        }
+
+        const fileParts = [];
+        if (fileVac > 0) fileParts.push(`${fileVac} vac`);
+        if (fileFierce > 0) fileParts.push(`${fileFierce} Fierce`);
+        allParts.push(`${file.name}: ${fileParts.length > 0 ? fileParts.join(", ") : "nothing found"}`);
+
+      } catch (err) {
+        console.error(`Schedule scan error (${file.name}):`, err);
+        allParts.push(`${file.name}: error`);
       }
-    } catch (err) {
-      console.error("Schedule scan error:", err);
-      const msg = err.message || "";
-      if (msg.includes("API error")) {
-        setSchedScanMsg(`AI service error: ${msg}. Please try again later.`);
-      } else if (msg.includes("Failed to fetch") || msg.includes("NetworkError")) {
-        setSchedScanMsg("Network error — could not reach the API. Check your internet connection.");
-      } else {
-        setSchedScanMsg(`Could not analyze the file: ${msg}. Try a different format (PDF, Excel, Word, CSV).`);
-      }
-    } finally {
-      setSchedScanning(false);
-      if (schedFileRef.current) schedFileRef.current.value = "";
     }
+
+    // Summary
+    const summary = [];
+    if (totalVac > 0) summary.push(`${totalVac} vacation${totalVac>1?"s":""}`);
+    if (totalPrimary > 0) summary.push(`${totalPrimary} Fierce Primary week${totalPrimary>1?"s":""}`);
+    if (totalBackup > 0) summary.push(`${totalBackup} Fierce Backup week${totalBackup>1?"s":""}`);
+
+    if (summary.length > 0) {
+      setSchedScanMsg(`Found ${summary.join(", ")} across ${files.length} file${files.length>1?"s":""}. ${allParts.join(" · ")}`);
+    } else {
+      setSchedScanMsg(`No vacations or Fierce weeks found in ${files.length} file${files.length>1?"s":""}. ${allParts.join(" · ")}`);
+    }
+
+    setSchedScanning(false);
+    if (schedFileRef.current) schedFileRef.current.value = "";
   }, [surgeons, callApi]);
 
   const sMap = useMemo(() => { const m={}; surgeons.forEach((s,i)=>m[s.id]={...s,idx:i}); return m; }, [surgeons]);
@@ -3039,16 +3060,16 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             <div style={{background:"linear-gradient(135deg,#f4f6f8,#f0f2f5)",border:"1px dashed #a8c0d8",borderRadius:8,padding:"12px 16px",marginBottom:14}}>
               <div style={{fontSize:13,fontWeight:600,color:"#1a6fa8",marginBottom:6}}>📄 Upload Call Schedule</div>
               <div style={{fontSize:12,color:"#5a6a78",lineHeight:1.5,marginBottom:8}}>
-                Upload the call schedule PDF, Excel, Word, or CSV file. This will automatically extract <strong>vacations</strong> (e.g. "DJA VAC") and <strong>Fierce weeks</strong> (1st/ND and Backup) in one step.
+                Upload the call schedule files — PDF, Excel, Word, CSV, or images. Supports multiple files at once. This will automatically extract <strong>vacations</strong> (e.g. "DJA VAC") and <strong>Fierce weeks</strong> (1st/ND and Backup).
                 
               </div>
               <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
-                <input ref={schedFileRef} type="file" accept=".pdf,.xlsx,.xls,.csv,.docx,.doc"
-                  onChange={e => { if(e.target.files?.[0]) handleScheduleScan(e.target.files[0]); }}
+                <input ref={schedFileRef} type="file" accept=".pdf,.xlsx,.xls,.csv,.docx,.doc,.png,.jpg,.jpeg,.webp,.gif" multiple
+                  onChange={e => { if(e.target.files?.length) handleScheduleScan(e.target.files); }}
                   style={{display:"none"}} id="schedScanInput"/>
                 <button onClick={()=>schedFileRef.current?.click()} disabled={schedScanning}
                   style={{...css.btn(true),opacity:schedScanning?0.5:1,padding:"7px 16px",fontSize:13}}>
-                  {schedScanning ? "⏳ Analyzing…" : "📄 Upload Schedule File"}
+                  {schedScanning ? "⏳ Analyzing…" : "📄 Upload Schedule Files"}
                 </button>
                 <span style={{fontSize:11,color:"#1a8040"}}>✓ AI scanning ready</span>
               </div>
