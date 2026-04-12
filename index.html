@@ -1384,28 +1384,11 @@ function CallSchedule() {
     if (!loaded) return;
     (async () => {
       try {
-        const rows = await db.query("notification_preferences", { order: "updated_at.desc" });
+        const rows = await db.query("notification_preferences");
         if (Array.isArray(rows) && rows.length > 0) {
           const prefs = {};
-          const dupeIds = []; // track duplicate row IDs to clean up
-          rows.forEach(r => {
-            if (prefs[r.surgeon_id]) {
-              // Duplicate — mark the older one for deletion
-              dupeIds.push(r.id);
-            } else {
-              prefs[r.surgeon_id] = r;
-            }
-          });
+          rows.forEach(r => { prefs[r.surgeon_id] = r; });
           setNotifPrefs(prefs);
-          // Clean up duplicates in background
-          if (dupeIds.length > 0) {
-            console.log(`Cleaning up ${dupeIds.length} duplicate notification_preferences rows`);
-            for (const id of dupeIds) {
-              try {
-                await fetch(`${SUPABASE_URL}/rest/v1/notification_preferences?id=eq.${id}`, { method: "DELETE", headers: { ...dbHeaders, Prefer: "return=minimal" } });
-              } catch(e) {}
-            }
-          }
         }
         const { data: cfgRow } = await supabase.from("call_schedule_config").select("edge_function_url").eq("id", "config").single();
         if (cfgRow?.edge_function_url) setEdgeFunctionUrl(cfgRow.edge_function_url);
@@ -1417,7 +1400,7 @@ function CallSchedule() {
   // ─── Save Notification Preference for a surgeon ───
   const notifSaveTimerRef = useRef(null);
   const saveNotifPref = useCallback(async (surgeonId, updates) => {
-    // Update local state immediately
+    // Update local state + ref immediately
     setNotifPrefs(prev => {
       const cur = prev[surgeonId] || { surgeon_id: surgeonId, email: "", browser_push: true, email_notifs: false, schedule_changes: true, vacation_updates: true, shift_reminders: true };
       const merged = { ...cur, ...updates };
@@ -1429,6 +1412,7 @@ function CallSchedule() {
     notifSaveTimerRef.current = setTimeout(async () => {
       setNotifPrefsSaving(true);
       try {
+        // Read from ref to get the LATEST merged values (not stale closure)
         const cur = notifPrefsRef.current[surgeonId] || {};
         const row = {
           surgeon_id: surgeonId,
@@ -1440,13 +1424,8 @@ function CallSchedule() {
           shift_reminders: cur.shift_reminders !== false,
           updated_at: new Date().toISOString(),
         };
-        // Check if a row already exists for this surgeon
-        const existing = await db.query("notification_preferences", { eq: { surgeon_id: surgeonId }, limit: 1 });
-        if (Array.isArray(existing) && existing.length > 0) {
-          await db.update("notification_preferences", existing[0].id, row);
-        } else {
-          await db.insert("notification_preferences", row);
-        }
+        // surgeon_id is the PK, so upsert correctly updates existing rows
+        await db.upsert("notification_preferences", row);
       } catch(e) { console.error("Save notif pref error:", e); }
       setNotifPrefsSaving(false);
     }, 500);
@@ -3626,6 +3605,56 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                       );
                     })}
                     {notifPrefsSaving && <span style={{fontSize:10,color:"#1a8040"}}>Saving…</span>}
+
+                    {/* Email Diagnostic */}
+                    <details style={{marginTop:8}}>
+                      <summary style={{fontSize:10,color:"#8a94a0",cursor:"pointer"}}>🔍 Debug email delivery</summary>
+                      <div style={{marginTop:6,padding:"8px 10px",background:"#f0f2f5",borderRadius:6,fontSize:11,lineHeight:1.7}}>
+                        <button onClick={async ()=>{
+                          try {
+                            const rows = await db.query("notification_preferences");
+                            const dbState = JSON.stringify(rows, null, 2);
+                            const localState = JSON.stringify(notifPrefsRef.current, null, 2);
+                            const currentPrefs = notifPrefsRef.current || {};
+                            const recipients = [];
+                            Object.entries(currentPrefs).forEach(([sid, prefs]) => {
+                              if (prefs.email && prefs.email_notifs) {
+                                recipients.push({ surgeon_id: sid, email: prefs.email, name: surgeons.find(s=>s.id===sid)?.name || sid });
+                              }
+                            });
+                            alert(`EDGE FUNCTION URL:\n${edgeFunctionUrl || "(not set)"}\n\nRECIPIENTS (who would receive email):\n${recipients.length === 0 ? "(none)" : recipients.map(r=>`${r.name}: ${r.email}`).join("\n")}\n\nSUPABASE ROWS (${rows?.length || 0}):\n${dbState}\n\nLOCAL STATE:\n${localState}`);
+                          } catch(e) { alert("Error: " + e.message); }
+                        }} style={{...css.btn(false),padding:"4px 10px",fontSize:10}}>
+                          Show email state
+                        </button>
+                        <button onClick={async ()=>{
+                          if (!edgeFunctionUrl) { alert("No Edge Function URL set"); return; }
+                          const currentPrefs = notifPrefsRef.current || {};
+                          const recipients = [];
+                          Object.entries(currentPrefs).forEach(([sid, prefs]) => {
+                            if (prefs.email && prefs.email_notifs) {
+                              recipients.push({ email: prefs.email, surgeon_id: sid, name: surgeons.find(s=>s.id===sid)?.name || sid });
+                            }
+                          });
+                          if (recipients.length === 0) { alert("No recipients with email enabled"); return; }
+                          try {
+                            const resp = await fetch(edgeFunctionUrl, {
+                              method: "POST",
+                              headers: { "Content-Type": "application/json", Authorization: `Bearer ${SUPABASE_ANON_KEY}` },
+                              body: JSON.stringify({ type: "test", data: { message: "Diagnostic test email" }, recipients }),
+                            });
+                            const text = await resp.text();
+                            alert(`Edge Function response:\nStatus: ${resp.status}\nBody: ${text}\n\nSent to: ${recipients.map(r=>r.email).join(", ")}`);
+                          } catch(e) { alert("Fetch error: " + e.message); }
+                        }} style={{...css.btn(false),padding:"4px 10px",fontSize:10,marginLeft:6}}>
+                          Test email delivery
+                        </button>
+                        <div style={{marginTop:6,color:"#7a8a98",fontSize:10}}>
+                          "Show email state" shows what's in Supabase vs local state.<br/>
+                          "Test email delivery" sends a real test email to ALL enabled recipients and shows the Edge Function response.
+                        </div>
+                      </div>
+                    </details>
 
                     {/* Notification type toggles */}
                     {mySurgeon && (
