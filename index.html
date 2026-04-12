@@ -1192,6 +1192,14 @@ function CallSchedule() {
   // ─── Shift Trade Request: Submit ───
   const submitTradeRequest = useCallback(async () => {
     if (!tradeFrom || !tradeTo || !tradeWeek || !tradeShift) return;
+    // Two-way swap required unless scheduler emergency override
+    if (!tradeReturnWeek || !tradeReturnShift) {
+      if (!isScheduler) {
+        alert("A return swap is required. All trades must be two-way — select the week and shift you'll take in return.");
+        return;
+      }
+      if (!confirm("⚠️ No return swap specified.\n\nOne-way trades should only be used for emergencies (illness, family emergency).\n\nSubmit anyway?")) return;
+    }
     const fromName = surgeons.find(s => s.id === tradeFrom)?.name || tradeFrom;
     const toName = surgeons.find(s => s.id === tradeTo)?.name || tradeTo;
     const shiftLabel = SHIFT_LABELS[tradeShift] || tradeShift;
@@ -1213,7 +1221,7 @@ function CallSchedule() {
       }
       setTradeWeek(""); setTradeShift(""); setTradeReturnWeek(""); setTradeReturnShift("");
     } catch(e) { console.error("Submit trade error:", e); }
-  }, [tradeFrom, tradeTo, tradeWeek, tradeShift, tradeReturnWeek, tradeReturnShift, surgeons, addNotification, sendEmailNotif]);
+  }, [tradeFrom, tradeTo, tradeWeek, tradeShift, tradeReturnWeek, tradeReturnShift, surgeons, addNotification, sendEmailNotif, isScheduler]);
 
   // ─── Shift Trade Request: Accept ───
   const acceptTradeRequest = useCallback(async (req) => {
@@ -3941,7 +3949,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             <div style={{...css.card,marginTop:14,background:"linear-gradient(135deg,#f8f0ff,#f4f0f8)",border:"1px solid #d0c0e4"}}>
               <div style={css.cardT}>🔄 Shift Swap Tool</div>
               <p style={{fontSize:12,color:"#5a6a78",margin:"0 0 12px",lineHeight:1.5}}>
-                Need to change a shift? Select who needs to swap, and the system will suggest fair trades.
+                Need to change a shift? All swaps must be <strong>two-way</strong> — the other surgeon takes your shift and you take one of theirs.
+                One-way swaps are only permitted for emergencies (illness, family emergency) and require scheduler approval.
               </p>
               <div style={{display:"flex",gap:6,alignItems:"end",flexWrap:"wrap",marginBottom:10}}>
                 <div>
@@ -4007,25 +4016,37 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                             {s.countDiff>0?"▲ Fewer shifts":s.countDiff===0?"= Equal":"▼ More shifts"}
                           </span>
                         </div>
-                        <button onClick={()=>swapShift(swapTarget.mondayStr, swapTarget.shift, s.candidateId)}
-                          style={{...css.btn(true),padding:"4px 12px",fontSize:11}}>
-                          Swap (one-way)
-                        </button>
                       </div>
                       <div style={{fontSize:11,color:"#5a6a78",lineHeight:1.6,marginBottom:4}}>
                         {s.reasons.map((r,j)=><div key={j}>• {r}</div>)}
                       </div>
-                      {s.returnSwaps.length > 0 && (
+                      {s.returnSwaps.length > 0 ? (
                         <div style={{marginTop:6,paddingTop:6,borderTop:"1px solid #e8ecf0"}}>
-                          <div style={{fontSize:10,fontWeight:700,color:"#6030a0",marginBottom:4}}>↔ Two-way swap options (they take this shift, {swapTarget.surgeonName} takes one of theirs):</div>
+                          <div style={{fontSize:10,fontWeight:700,color:"#6030a0",marginBottom:4}}>↔ Two-way swap — {s.candidateName} takes this shift, {swapTarget.surgeonName} takes one of theirs:</div>
                           <div style={{display:"flex",gap:4,flexWrap:"wrap"}}>
-                            {s.returnSwaps.slice(0,6).map((rs,k) => (
+                            {s.returnSwaps.slice(0,8).map((rs,k) => (
                               <button key={k} onClick={()=>executeTwoWaySwap(swapTarget.mondayStr, swapTarget.shift, swapTarget.surgeonId, s.candidateId, rs.mondayStr, rs.shift)}
-                                style={{background:"#f0e8fc",border:"1px solid #c8b0e0",color:"#6030a0",borderRadius:5,padding:"3px 10px",fontSize:10,fontWeight:600,cursor:"pointer",fontFamily:font}}>
+                                style={{background:"#f0e8fc",border:"1px solid #c8b0e0",color:"#6030a0",borderRadius:5,padding:"4px 12px",fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:font}}>
                                 ↔ {rs.label}
                               </button>
                             ))}
                           </div>
+                        </div>
+                      ) : (
+                        <div style={{fontSize:11,color:"#a08040",background:"#fef8e8",border:"1px solid #e8d8a0",borderRadius:5,padding:"6px 10px",marginTop:4}}>
+                          No return swap available — {s.candidateName} doesn't have a matching shift {swapTarget.surgeonName} could take back.
+                        </div>
+                      )}
+                      {/* Emergency one-way swap — scheduler only */}
+                      {isScheduler && (
+                        <div style={{marginTop:6,paddingTop:6,borderTop:"1px dashed #e0d0c0"}}>
+                          <button onClick={()=>{
+                            if (!confirm(`⚠️ Emergency one-way swap\n\nThis will reassign ${SHIFT_LABELS[swapTarget.shift]} to ${s.candidateName} WITHOUT a return swap.\n\nOne-way swaps should only be used for illness, family emergency, or other acute circumstances.\n\nProceed?`)) return;
+                            swapShift(swapTarget.mondayStr, swapTarget.shift, s.candidateId);
+                          }}
+                            style={{background:"none",border:"1px solid #e0c0a0",color:"#a08040",borderRadius:5,padding:"3px 10px",fontSize:10,cursor:"pointer",fontFamily:font}}>
+                            ⚠ Emergency one-way (scheduler only)
+                          </button>
                         </div>
                       )}
                     </div>
@@ -4720,7 +4741,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           <div style={css.card}>
             <div style={css.cardT}>🔄 Propose a Shift Trade</div>
             <p style={{fontSize:13,color:"#5a6a78",margin:"0 0 12px",lineHeight:1.5}}>
-              Propose trading a shift with another surgeon. They'll be notified and can accept or decline.
+              Propose a two-way trade with another surgeon — you take one of their shifts in return. They'll be notified and can accept or decline.
             </p>
             <div style={{display:"flex",gap:6,alignItems:"end",flexWrap:"wrap",marginBottom:8}}>
               <div>
@@ -4754,16 +4775,16 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             </div>
             <div style={{display:"flex",gap:6,alignItems:"end",flexWrap:"wrap",marginBottom:10}}>
               <div>
-                <label style={{fontSize:10,color:"#7a8a98",display:"block",marginBottom:2}}>Return week (optional)</label>
+                <label style={{fontSize:10,color:"#7a8a98",display:"block",marginBottom:2}}>Return week</label>
                 <select value={tradeReturnWeek} onChange={e=>setTradeReturnWeek(e.target.value)} style={{...css.inp,width:140}}>
-                  <option value="">None</option>
+                  <option value="">Select…</option>
                   {Object.keys(schedule).sort().map(m=><option key={m} value={m}>{m}</option>)}
                 </select>
               </div>
               <div>
-                <label style={{fontSize:10,color:"#7a8a98",display:"block",marginBottom:2}}>Return shift (optional)</label>
+                <label style={{fontSize:10,color:"#7a8a98",display:"block",marginBottom:2}}>Return shift</label>
                 <select value={tradeReturnShift} onChange={e=>setTradeReturnShift(e.target.value)} style={{...css.inp,width:130}}>
-                  <option value="">None</option>
+                  <option value="">Select…</option>
                   {ALL_SHIFT_KEYS.map(sk=><option key={sk} value={sk}>{SHIFT_LABELS[sk]}</option>)}
                 </select>
               </div>
