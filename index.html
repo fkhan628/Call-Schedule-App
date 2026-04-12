@@ -1737,16 +1737,29 @@ Match surgeon names/initials as best you can to: ${surgeonNames}. If you cannot 
     let totalVac = 0, totalPrimary = 0, totalBackup = 0;
 
     const surgeonNames = surgeons.map(s => s.name).join(", ");
-    const promptText = `You are analyzing a surgical call schedule calendar. Extract TWO things from this document:
+    const promptText = `You are analyzing a surgical call schedule printed from Calendar Creator for Windows. The layout is a monthly calendar grid where each cell represents ONE day. The day number appears at the top of each cell.
 
-1. VACATIONS: Look for entries labeled like "DJA VAC", "MCC VAC", "REH VAC", etc. Also look for "No Call", "On Leave", "PTO", "OFF" annotations. The surgeons are: ${surgeonNames}. APPs may also have vacations (MA, SJ, MS, SS). For each vacation, identify the person's initials, start date, and end date (YYYY-MM-DD). If a vacation spans multiple days, give the full range. If only one day, start and end are the same.
+CRITICAL DATE RULES:
+- Each cell in the calendar grid has a day number (1-31) at the top. Any text WITHIN that cell belongs to THAT date.
+- When a "VAC" label spans multiple consecutive day cells, the vacation starts on the FIRST cell it appears in and ends on the LAST cell it appears in. Include ALL days.
+- Be very careful: if "DJA VAC" appears in the cells for days 7, 8, and 9, the range is the 7th through the 9th (NOT the 8th through 9th).
+- A "VAC" bar that starts in a cell means that date IS the start date, even if the bar visually extends from a prior cell.
+- Always double-check the day number at the top of the cell where the VAC annotation first appears.
 
-2. FIERCE WEEKS: Look for entries labeled "FIERCE 1ST/ND", "FIERCE 1ST", "FIERCE ND" (these mean Fierce is PRIMARY — label as "primary") or "FIERCE BACKUP", "FIERCE BACK UP" (these mean Fierce backs up the group — label as "backup"). For each, give the Monday of that week (YYYY-MM-DD) and the type.
+Extract TWO things:
+
+1. VACATIONS: Look for entries labeled "DJA VAC", "MCC VAC", "REH VAC", "KJH VAC", "ARW VAC", "FAK VAC", etc. Also look for "No Call", "On Leave", "PTO", "OFF", "VAC 12p" (half-day). The surgeons are: ${surgeonNames}. APPs may also have vacations (MA, SJ, MS, SS, LD, KB). For each vacation, identify:
+   - The person's initials (match to the surgeons/APPs listed)
+   - Start date (YYYY-MM-DD) — the FIRST day the VAC annotation appears
+   - End date (YYYY-MM-DD) — the LAST day the VAC annotation appears
+   If a vacation is only one day, start and end are the same date.
+
+2. FIERCE WEEKS: Look for "FIERCE 1ST/ND", "FIERCE 1ST", "FIERCE ND" (Fierce is PRIMARY — label "primary") or "FIERCE BACKUP" (Fierce backs up the group — label "backup"). For each, give the Monday of that week (YYYY-MM-DD) and the type.
 
 Respond with ONLY valid JSON, no markdown backticks, no explanation:
 {
   "vacations": [
-    {"surgeon": "DJA", "start": "2026-05-12", "end": "2026-05-16"},
+    {"surgeon": "DJA", "start": "2026-05-07", "end": "2026-05-09"},
     {"surgeon": "MCC", "start": "2026-06-01", "end": "2026-06-05"}
   ],
   "fierce_weeks": [
@@ -1755,7 +1768,7 @@ Respond with ONLY valid JSON, no markdown backticks, no explanation:
   ]
 }
 
-If you cannot find vacations, return an empty array for "vacations". Same for "fierce_weeks". Match surgeon/APP initials to: ${surgeonNames}.`;
+If you cannot find vacations, return an empty array. Same for fierce_weeks. Match initials to: ${surgeonNames}.`;
 
     for (let fi = 0; fi < files.length; fi++) {
       const file = files[fi];
