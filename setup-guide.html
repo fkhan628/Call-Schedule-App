@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DSG Call Schedule — Setup Guide</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📋</text></svg>">
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700&display=swap" rel="stylesheet">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: 'DM Sans', sans-serif; background: #f4f6f8; color: #2c3e50; line-height: 1.7; }
+    .hero { background: linear-gradient(135deg, #1a5276, #2980b9); color: #fff; padding: 48px 24px 40px; text-align: center; }
+    .hero h1 { font-size: 28px; font-weight: 700; margin-bottom: 8px; letter-spacing: -0.5px; }
+    .hero p { font-size: 15px; opacity: 0.85; max-width: 480px; margin: 0 auto; }
+    .container { max-width: 600px; margin: 0 auto; padding: 24px 20px 60px; }
+    .step-card { background: #fff; border: 1px solid #e0e4ea; border-radius: 12px; padding: 24px; margin-bottom: 16px; position: relative; }
+    .step-num { position: absolute; top: -14px; left: 20px; background: #2980b9; color: #fff; width: 28px; height: 28px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 14px; }
+    .step-card h2 { font-size: 17px; font-weight: 700; color: #1a5276; margin-bottom: 8px; padding-left: 4px; }
+    .step-card p { font-size: 14px; color: #4a5a68; margin-bottom: 10px; }
+    .step-card img { max-width: 100%; border-radius: 8px; border: 1px solid #e0e4ea; margin: 8px 0; }
+    .highlight { background: #eaf4fc; border: 1px solid #b8d4e8; border-radius: 8px; padding: 12px 16px; font-size: 13px; color: #1a5276; margin: 10px 0; }
+    .highlight strong { color: #0e4a6f; }
+    .link-btn { display: inline-block; background: #2980b9; color: #fff; text-decoration: none; padding: 12px 28px; border-radius: 8px; font-weight: 700; font-size: 15px; margin: 12px 0; transition: background 0.2s; }
+    .link-btn:hover { background: #1a5276; }
+    .warn { background: #fef8e8; border: 1px solid #e8d090; border-radius: 8px; padding: 12px 16px; font-size: 13px; color: #6a5010; margin: 10px 0; }
+    .done { background: #e8f8e8; border: 1px solid #a0d8a0; border-radius: 12px; padding: 20px 24px; text-align: center; margin-top: 24px; }
+    .done h2 { color: #1a6030; font-size: 18px; margin-bottom: 6px; }
+    .done p { color: #3a6a40; font-size: 14px; }
+    .faq { margin-top: 24px; }
+    .faq h2 { font-size: 16px; font-weight: 700; color: #1a5276; margin-bottom: 12px; }
+    .faq-item { border-bottom: 1px solid #e8ecf0; padding: 12px 0; }
+    .faq-item summary { font-size: 14px; font-weight: 600; color: #2c3e50; cursor: pointer; }
+    .faq-item p { font-size: 13px; color: #5a6a78; margin-top: 8px; }
+    @media (max-width: 480px) {
+      .hero h1 { font-size: 22px; }
+      .step-card { padding: 20px 16px; }
+    }
+  </style>
+</head>
+<body>
+
+<div class="hero">
+  <h1>📋 DSG Call Schedule</h1>
+  <p>Quick setup to get notifications on your phone and computer — takes less than 2 minutes</p>
+</div>
+
+<div class="container">
+
+  <div style="text-align: center; margin-bottom: 28px;">
+    <a href="https://fkhan628.github.io/Call-Schedule-App/" class="link-btn">Open the Call Schedule App</a>
+  </div>
+
+  <!-- Step 1 -->
+  <div class="step-card">
+    <div class="step-num">1</div>
+    <h2>Open the app</h2>
+    <p>Click the button above or go to:</p>
+    <div class="highlight">
+      <strong>fkhan628.github.io/Call-Schedule-App/</strong>
+    </div>
+    <p>Works on any phone, tablet, or computer browser (Chrome, Safari, Edge, Firefox).</p>
+  </div>
+
+  <!-- Step 2 -->
+  <div class="step-card">
+    <div class="step-num">2</div>
+    <h2>Allow push notifications</h2>
+    <p>When you first open the app, your browser will ask if you want to allow notifications. <strong>Click "Allow"</strong>.</p>
+    <div class="warn">
+      If you don't see the prompt, go to the <strong>Setup</strong> tab → scroll to the bottom → click <strong>⚙️ Settings</strong> → click <strong>"Enable Push Notifications"</strong>.
+    </div>
+    <p>This lets you receive alerts on your device when the schedule changes, shifts are swapped, or vacation requests need your attention — even when the browser is closed.</p>
+  </div>
+
+  <!-- Step 3 -->
+  <div class="step-card">
+    <div class="step-num">3</div>
+    <h2>Select your name</h2>
+    <p>Go to the <strong>"My Schedule"</strong> tab and pick your name from the dropdown. This tells the app who you are so it can:</p>
+    <ul style="font-size: 14px; color: #4a5a68; padding-left: 20px; margin: 8px 0;">
+      <li>Show only your shifts and vacations</li>
+      <li>Let you download your personal calendar (.ics)</li>
+      <li>Tag your device for targeted notifications</li>
+    </ul>
+    <div class="highlight">
+      Your choice is saved on this device — you only need to do this once.
+    </div>
+  </div>
+
+  <!-- Step 4 -->
+  <div class="step-card">
+    <div class="step-num">4</div>
+    <h2>Add to your home screen (optional)</h2>
+    <p>For quick access, add the app to your phone's home screen:</p>
+    <p><strong>iPhone/iPad:</strong> Tap the share button (box with arrow) → "Add to Home Screen"</p>
+    <p><strong>Android:</strong> Tap the three-dot menu → "Add to Home Screen" or "Install App"</p>
+    <p><strong>Desktop:</strong> Bookmark the page or pin the tab</p>
+  </div>
+
+  <!-- Done -->
+  <div class="done">
+    <h2>You're all set!</h2>
+    <p>You'll now receive push notifications when:</p>
+    <ul style="text-align: left; font-size: 14px; color: #3a6a40; padding-left: 20px; margin: 8px auto; max-width: 340px;">
+      <li>A new schedule is published</li>
+      <li>Shifts are swapped</li>
+      <li>Vacation requests are submitted or approved</li>
+      <li>Trade requests need your response</li>
+    </ul>
+  </div>
+
+  <!-- FAQ -->
+  <div class="faq">
+    <h2>Common Questions</h2>
+
+    <details class="faq-item">
+      <summary>I accidentally blocked notifications — how do I fix it?</summary>
+      <p><strong>Chrome:</strong> Click the lock icon in the address bar → Site settings → Notifications → Allow<br>
+      <strong>Safari:</strong> Settings → Notifications → find the site → Allow<br>
+      <strong>iPhone:</strong> Settings → Safari → Notifications → find the site → Allow</p>
+    </details>
+
+    <details class="faq-item">
+      <summary>Do I need to keep the app open?</summary>
+      <p>No. Once you've allowed notifications, they'll arrive even when the browser is closed. The service worker runs in the background.</p>
+    </details>
+
+    <details class="faq-item">
+      <summary>Can I get notifications on multiple devices?</summary>
+      <p>Yes. Open the app on each device (phone + computer), allow notifications on each, and select your name on each. You'll get alerts on all of them.</p>
+    </details>
+
+    <details class="faq-item">
+      <summary>How do I propose a shift trade?</summary>
+      <p>Go to the <strong>Requests</strong> tab → "Propose a Shift Trade" section. All trades are two-way — you take one of their shifts in return. The other surgeon will be notified and can accept or decline.</p>
+    </details>
+
+    <details class="faq-item">
+      <summary>How do I request vacation?</summary>
+      <p>Go to the <strong>Requests</strong> tab → "Request Vacation" section. Fill in your name, dates, and reason. The scheduler will be notified and can approve or deny.</p>
+    </details>
+
+    <details class="faq-item">
+      <summary>How do I download my personal calendar?</summary>
+      <p>Go to <strong>My Schedule</strong> tab → select your name → click <strong>"Download My Calendar (.ics)"</strong>. Import the file into Google Calendar, Apple Calendar, or Outlook.</p>
+    </details>
+
+    <details class="faq-item">
+      <summary>Who do I contact for issues?</summary>
+      <p>Reach out to the schedule administrator (whoever sent you this link).</p>
+    </details>
+  </div>
+
+</div>
+
+</body>
+</html>
