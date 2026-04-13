@@ -6,6 +6,9 @@
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="theme-color" content="#f8f9fb">
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
   <title>DSG Call Schedule</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📋</text></svg>">
   <style>
@@ -38,10 +41,13 @@
 </head>
 <body>
   <div id="root"></div>
-  <script src="config.js"></script>
-  <script src="helpers.js"></script>
-  <script src="generator.js"></script>
-  <script src="app-styles.js"></script>
+  <script>
+    // Auto cache-bust: appends timestamp so browsers always fetch the latest version
+    const _v = Date.now();
+    ['config.js','helpers.js','generator.js','app-styles.js'].forEach(f => {
+      document.write('<script src="'+f+'?v='+_v+'"><\/script>');
+    });
+  </script>
   <script type="text/babel">
     const { useState, useMemo, useCallback, useRef, useEffect } = React;
 
