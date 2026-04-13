@@ -34,6 +34,7 @@
   <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.page.js" defer></script>
 </head>
 <body>
   <div id="root"></div>
@@ -959,6 +960,8 @@ function CallSchedule() {
           .single();
         if (cfgRow?.scheduler_pin) setSchedulerPin(cfgRow.scheduler_pin);
         if (cfgRow?.edge_function_url) setEdgeFunctionUrl(cfgRow.edge_function_url);
+        // Load OneSignal API key from localStorage (not in DB for security)
+        try { const osKey = localStorage.getItem("dsg-onesignal-key"); if (osKey) setOneSignalApiKey(osKey); } catch(e) {}
 
         // Load vacation requests
         try {
@@ -1097,8 +1100,10 @@ function CallSchedule() {
       const notif = { type, title, message, data, created_at: new Date().toISOString() };
       const { data: inserted } = await db.insert("notifications", notif);
       if (inserted) setNotifications(prev => [inserted, ...prev].slice(0, 50));
+      // Also send as device push via OneSignal
+      sendPushNotif(title, message);
     } catch(e) { console.error("Notification error:", e); }
-  }, []);
+  }, [sendPushNotif]);
 
   // ─── Email Notifications via Supabase Edge Function ───
   const sendEmailNotif = useCallback(async (type, data) => {
@@ -1122,6 +1127,25 @@ function CallSchedule() {
       });
     } catch(e) { console.error("Email notification error:", e); }
   }, [edgeFunctionUrl, surgeons]);
+
+  // ─── OneSignal Push — send to all subscribed devices ───
+  const [oneSignalApiKey, setOneSignalApiKey] = useState("");
+  const sendPushNotif = useCallback(async (title, message) => {
+    if (!oneSignalApiKey) return;
+    try {
+      await fetch("https://onesignal.com/api/v1/notifications", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Basic ${oneSignalApiKey}` },
+        body: JSON.stringify({
+          app_id: "9ca5c08f-6fb3-4ee5-b564-09aafc1c1901",
+          included_segments: ["Subscribed Users"],
+          headings: { en: title },
+          contents: { en: message },
+          url: "https://fkhan628.github.io/Call-Schedule-App/",
+        }),
+      });
+    } catch(e) { console.error("OneSignal push error:", e); }
+  }, [oneSignalApiKey]);
 
   // ─── Vacation Request: Submit ───
   const submitVacRequest = useCallback(async () => {
@@ -1362,15 +1386,66 @@ function CallSchedule() {
     } catch(e) { console.error("Clear reviewed requests error:", e); }
   }, []);
 
-  // ─── Browser Push Notifications ───
+  // ─── OneSignal Push Notifications ───
+  const [oneSignalReady, setOneSignalReady] = useState(false);
+  const [oneSignalSubscribed, setOneSignalSubscribed] = useState(false);
+
+  // Initialize OneSignal on mount
+  useEffect(() => {
+    const initOneSignal = async () => {
+      try {
+        if (!window.OneSignalDeferred) { console.log("OneSignal SDK not loaded"); return; }
+        window.OneSignalDeferred = window.OneSignalDeferred || [];
+        window.OneSignalDeferred.push(async function(OneSignal) {
+          await OneSignal.init({
+            appId: "9ca5c08f-6fb3-4ee5-b564-09aafc1c1901",
+            serviceWorkerParam: { scope: "/Call-Schedule-App/" },
+            serviceWorkerPath: "/Call-Schedule-App/OneSignalSDKWorker.js",
+          });
+          setOneSignalReady(true);
+          // Check current permission
+          const perm = OneSignal.Notifications.permission;
+          setOneSignalSubscribed(perm);
+          setPushPermission(perm ? "granted" : "default");
+          // Listen for subscription changes
+          OneSignal.Notifications.addEventListener("permissionChange", (granted) => {
+            setOneSignalSubscribed(granted);
+            setPushPermission(granted ? "granted" : "denied");
+          });
+        });
+      } catch(e) { console.error("OneSignal init error:", e); }
+    };
+    initOneSignal();
+  }, []);
+
+  // Request push permission via OneSignal
   const requestPushPermission = useCallback(async () => {
     try {
-      if (!("Notification" in window)) { setPushPermission("unsupported"); return; }
-      const perm = await Notification.requestPermission();
-      setPushPermission(perm);
+      if (window.OneSignal?.Notifications) {
+        await window.OneSignal.Notifications.requestPermission();
+        const perm = window.OneSignal.Notifications.permission;
+        setOneSignalSubscribed(perm);
+        setPushPermission(perm ? "granted" : "denied");
+      } else if ("Notification" in window) {
+        const perm = await Notification.requestPermission();
+        setPushPermission(perm);
+      } else {
+        setPushPermission("unsupported");
+      }
     } catch(e) { console.error("Push permission error:", e); setPushPermission("unsupported"); }
   }, []);
 
+  // Tag the OneSignal subscription with the surgeon ID so we can target them
+  useEffect(() => {
+    if (!oneSignalReady || !mySurgeon || !window.OneSignal) return;
+    try {
+      window.OneSignal.User.addTag("surgeon_id", mySurgeon);
+      const surgeonName = surgeons.find(s => s.id === mySurgeon)?.name || mySurgeon;
+      window.OneSignal.User.addTag("surgeon_name", surgeonName);
+    } catch(e) { console.error("OneSignal tag error:", e); }
+  }, [oneSignalReady, mySurgeon, surgeons]);
+
+  // Send notification — uses browser Notification API as fallback
   const sendBrowserNotif = useCallback((title, body, tag, forceShow) => {
     try {
       if (pushPermission !== "granted") return;
@@ -3527,20 +3602,19 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                 <div style={{marginTop:16,paddingTop:12,borderTop:"1px solid #e0e4ea"}}>
                   <div style={{fontSize:12,fontWeight:700,color:"#2c5a80",marginBottom:10}}>🔔 Notification Settings</div>
 
-                  {/* Browser Push */}
+                  {/* Push Notifications via OneSignal */}
                   <div style={{background:"#f8f9fb",border:"1px solid #e0e4ea",borderRadius:8,padding:"12px 14px",marginBottom:12}}>
                     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
-                      <span style={{fontSize:12,fontWeight:600,color:"#2c3e50"}}>Browser Push Notifications</span>
-                      {pushPermission === "granted" && <span style={{fontSize:11,color:"#1a8040",fontWeight:600}}>✓ Enabled</span>}
+                      <span style={{fontSize:12,fontWeight:600,color:"#2c3e50"}}>Push Notifications (OneSignal)</span>
+                      {oneSignalSubscribed && <span style={{fontSize:11,color:"#1a8040",fontWeight:600}}>✓ Subscribed on this device</span>}
                       {pushPermission === "denied" && <span style={{fontSize:11,color:"#c04040",fontWeight:600}}>✕ Blocked</span>}
-                      {pushPermission === "unsupported" && <span style={{fontSize:11,color:"#8a94a0"}}>Not supported</span>}
                     </div>
                     <p style={{fontSize:11,color:"#7a8a98",margin:"0 0 8px",lineHeight:1.5}}>
-                      Get browser alerts when schedules change, vacation requests are submitted/approved, and more. Works even when this tab is in the background.
+                      Each partner needs to click "Enable" once on their device. Notifications will arrive even when the browser is closed.
                     </p>
-                    {pushPermission === "default" && (
+                    {!oneSignalSubscribed && pushPermission !== "denied" && (
                       <button onClick={requestPushPermission} style={{...css.btn(true),padding:"6px 14px",fontSize:12}}>
-                        Enable Browser Notifications
+                        Enable Push Notifications
                       </button>
                     )}
                     {pushPermission === "denied" && (
@@ -3549,11 +3623,48 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                       </p>
                     )}
                     {pushPermission === "granted" && (
-                      <div style={{display:"flex",gap:8,alignItems:"center"}}>
+                      <div style={{display:"flex",gap:8,alignItems:"center",marginBottom:8}}>
                         <button onClick={sendTestNotification} style={{...css.btn(false),padding:"5px 12px",fontSize:11}}>
                           🔔 Send Test Notification
                         </button>
                         {notifTestSent && <span style={{fontSize:11,color:"#1a8040",fontWeight:600}}>{notifTestSent}</span>}
+                      </div>
+                    )}
+                    {/* OneSignal REST API Key — needed to send push to OTHER devices */}
+                    {isScheduler && (
+                      <div style={{marginTop:8,paddingTop:8,borderTop:"1px dashed #e0e4ea"}}>
+                        <label style={{fontSize:10,color:"#7a8a98",display:"block",marginBottom:2}}>OneSignal REST API Key (for sending push to all devices)</label>
+                        <div style={{display:"flex",gap:6,alignItems:"center"}}>
+                          <input type="password" value={oneSignalApiKey} onChange={e=>setOneSignalApiKey(e.target.value)}
+                            placeholder="Paste REST API key from OneSignal → Settings → Keys & IDs"
+                            style={{...css.inp,width:"100%",maxWidth:420,fontSize:11,fontFamily:mono}}/>
+                          <button onClick={()=>{
+                            try { localStorage.setItem("dsg-onesignal-key", oneSignalApiKey); } catch(e) {}
+                            setSaveStatus("Saved"); setTimeout(()=>setSaveStatus(""),2000);
+                          }} style={{...css.btn(true),padding:"5px 12px",fontSize:11,whiteSpace:"nowrap"}}>Save</button>
+                        </div>
+                        <p style={{fontSize:10,color:"#8a94a0",margin:"4px 0 0"}}>Find this at onesignal.com → your app → Settings → Keys & IDs → REST API Key</p>
+                        {oneSignalApiKey && (
+                          <button onClick={async ()=>{
+                            try {
+                              const resp = await fetch("https://onesignal.com/api/v1/notifications", {
+                                method: "POST",
+                                headers: { "Content-Type": "application/json", Authorization: `Basic ${oneSignalApiKey}` },
+                                body: JSON.stringify({
+                                  app_id: "9ca5c08f-6fb3-4ee5-b564-09aafc1c1901",
+                                  included_segments: ["Subscribed Users"],
+                                  headings: { en: "DSG Call Schedule" },
+                                  contents: { en: "Test push notification — if you see this, push is working!" },
+                                  url: "https://fkhan628.github.io/Call-Schedule-App/",
+                                }),
+                              });
+                              const data = await resp.json();
+                              alert(`Push test result:\nStatus: ${resp.status}\nRecipients: ${data.recipients || 0}\n${data.errors ? "Errors: " + JSON.stringify(data.errors) : "Success!"}`);
+                            } catch(e) { alert("Push test error: " + e.message); }
+                          }} style={{...css.btn(false),padding:"4px 10px",fontSize:10,marginTop:6}}>
+                            Test Push to All Devices
+                          </button>
+                        )}
                       </div>
                     )}
                   </div>
