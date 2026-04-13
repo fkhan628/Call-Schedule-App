@@ -1301,6 +1301,20 @@ function CallSchedule() {
 
   // ─── Scheduler PIN Check ───
   const checkPin = () => {
+    // If no PIN has been set yet, the first entry becomes the PIN
+    if (!schedulerPin) {
+      if (pinInput.length >= 4) {
+        setSchedulerPin(pinInput);
+        setIsScheduler(true);
+        setPinError("");
+        setPinInput("");
+        alert("PIN set! Remember this PIN — you'll need it to unlock scheduler mode in the future.");
+      } else {
+        setPinError("Enter at least 4 characters to set your PIN");
+        setTimeout(() => setPinError(""), 3000);
+      }
+      return;
+    }
     if (pinInput === schedulerPin) { setIsScheduler(true); setPinError(""); setPinInput(""); }
     else { setPinError("Incorrect PIN"); setTimeout(() => setPinError(""), 2000); }
   };
@@ -3571,7 +3585,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                         <button onClick={checkPin} style={{...css.btn(true),padding:"6px 14px"}}>Unlock</button>
                         {pinError && <span style={{fontSize:12,color:"#c04040",fontWeight:600}}>{pinError}</span>}
                       </div>
-                      {!schedulerPin && <p style={{fontSize:11,color:"#a0a8b0",margin:"6px 0 0"}}>No PIN set yet. The first person to set a PIN becomes the scheduler admin.</p>}
+                      {!schedulerPin && <p style={{fontSize:11,color:"#a0a8b0",margin:"6px 0 0"}}>No PIN set yet. Enter at least 4 characters and click Unlock to set your PIN.</p>}
                     </div>
                   ) : (
                     <div>
