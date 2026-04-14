@@ -42,7 +42,7 @@
   <div id="root"></div>
   <script>
     // Cache-bust with version — update this string when deploying changes
-    var _v = "2026.04.13a";
+    var _v = "2026.04.13f";
     ['config.js','helpers.js','generator.js','app-styles.js'].forEach(function(f) {
       document.write('<script src="'+f+'?v='+_v+'"><\/script>');
     });
@@ -274,7 +274,7 @@ function CallSchedule() {
 
       // One-time merge of May-Aug 2026 vacations & Fierce weeks from PDFs
       try {
-        const mergeKey = "dsg-vac-merge-may-aug-2026-v4";
+        const mergeKey = "dsg-vac-merge-may-aug-2026-v8";
         if (!localStorage.getItem(mergeKey) && typeof MAY_AUG_VACATIONS !== "undefined") {
           setVacations(prev => {
             const n = {
@@ -455,6 +455,34 @@ function CallSchedule() {
     setTimeout(() => setSaveStatus(""), 2000);
   };
 
+  // ─── OneSignal Push — send to all subscribed devices ───
+  const [oneSignalApiKey, setOneSignalApiKey] = useState("");
+  const sendPushNotif = useCallback(async (title, message) => {
+    if (!oneSignalApiKey) return;
+    try {
+      await fetch("https://onesignal.com/api/v1/notifications", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Basic ${oneSignalApiKey}`
+        },
+        body: JSON.stringify({
+          app_id: "9ca5c08f-6fb3-4ee5-b564-09aafc1c1901",
+          included_segments: ["Subscribed Users"],
+          headings: {
+            en: title
+          },
+          contents: {
+            en: message
+          },
+          url: "https://fkhan628.github.io/Call-Schedule-App/"
+        })
+      });
+    } catch (e) {
+      console.error("OneSignal push error:", e);
+    }
+  }, [oneSignalApiKey]);
+
   // ─── Add Notification ───
   const addNotification = useCallback(async (type, title, message, data = {}) => {
     try {
@@ -508,34 +536,6 @@ function CallSchedule() {
       console.error("Email notification error:", e);
     }
   }, [edgeFunctionUrl, surgeons]);
-
-  // ─── OneSignal Push — send to all subscribed devices ───
-  const [oneSignalApiKey, setOneSignalApiKey] = useState("");
-  const sendPushNotif = useCallback(async (title, message) => {
-    if (!oneSignalApiKey) return;
-    try {
-      await fetch("https://onesignal.com/api/v1/notifications", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Basic ${oneSignalApiKey}`
-        },
-        body: JSON.stringify({
-          app_id: "9ca5c08f-6fb3-4ee5-b564-09aafc1c1901",
-          included_segments: ["Subscribed Users"],
-          headings: {
-            en: title
-          },
-          contents: {
-            en: message
-          },
-          url: "https://fkhan628.github.io/Call-Schedule-App/"
-        })
-      });
-    } catch (e) {
-      console.error("OneSignal push error:", e);
-    }
-  }, [oneSignalApiKey]);
 
   // ─── Vacation Request: Submit ───
   const submitVacRequest = useCallback(async () => {
