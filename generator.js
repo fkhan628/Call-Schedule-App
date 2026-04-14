@@ -134,7 +134,31 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
       if (isChristmasWeek && fakId && availDC.includes(fakId)) {
         dc = fakId;
       } else if (holDcSurgeon && availDC.includes(holDcSurgeon)) {
-        dc = holDcSurgeon; // Pre-assigned holiday surgeon gets DC
+        // For Monday holidays, the holiday surgeon only covers Monday 24h
+        // A different surgeon should handle service week (Tue-Fri)
+        const holDow = weekdayHoliday ? parse(weekdayHoliday.ds).getDay() : -1;
+        if (holDow === 1) {
+          // Monday holiday — do NOT force holiday surgeon as DC
+          // Instead, prefer someone else for service week
+          const nonHolPool = availDC.filter(id => id !== holDcSurgeon);
+          if (nonHolPool.length > 0) {
+            nonHolPool.sort((a,b) => {
+              const d = dcCt[a]-dcCt[b]; if(d) return d;
+              const bd = burden[a]-burden[b]; if(bd) return bd;
+              const spacingA = wkIdx - lastDcWeek[a];
+              const spacingB = wkIdx - lastDcWeek[b];
+              if (spacingA !== spacingB) return spacingB - spacingA;
+              if(a===prevWkndSurgeon) return 1;
+              if(b===prevWkndSurgeon) return -1;
+              return Math.random() - 0.5;
+            });
+            dc = nonHolPool[0];
+          } else {
+            dc = holDcSurgeon; // fallback if no one else available
+          }
+        } else {
+          dc = holDcSurgeon; // Non-Monday holiday: holiday surgeon takes DC
+        }
       } else {
         availDC.sort((a,b) => {
           const d = dcCt[a]-dcCt[b]; if(d) return d;
@@ -213,14 +237,14 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
     const nightUsed = new Set();
 
     // Pre-assign nights that are covered by holiday 24h shifts
+    // Holiday surgeon covers the full 24h — no separate night shift needed
     const holidayNightOverrides = {};
     NIGHT_KEYS.forEach((sk, i) => {
       const dayOffset = {mon:0,tue:1,wed:2,thu:3}[sk];
       const nightDate = fmt(addD(monday, dayOffset));
-      // If this date has holiday 24h coverage, that surgeon covers the night too
-      // BUT only if they're not already the DC surgeon this week
       const cov = holCoverage[nightDate];
-      if (cov && cov.role === "holiday_24h" && cov.surgeonId !== dc) {
+      if (cov && cov.role === "holiday_24h") {
+        // Mark this night as covered by the holiday surgeon (suppresses separate assignment)
         holidayNightOverrides[sk] = cov.surgeonId;
       }
     });
@@ -231,9 +255,9 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
     const friCov = holCoverage[holFriDate];
     const sunCov = holCoverage[holSunDate];
     let holidayWkndOverride = null;
-    if (friCov && friCov.role === "holiday_24h" && friCov.surgeonId !== dc) {
+    if (friCov && friCov.role === "holiday_24h") {
       holidayWkndOverride = friCov.surgeonId;
-    } else if (sunCov && sunCov.role === "holiday_24h" && sunCov.surgeonId !== dc) {
+    } else if (sunCov && sunCov.role === "holiday_24h") {
       holidayWkndOverride = sunCov.surgeonId;
     }
 
