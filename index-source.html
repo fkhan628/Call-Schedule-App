@@ -4,8 +4,11 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="DSG Call">
   <meta name="theme-color" content="#f8f9fb">
+  <link rel="manifest" href="manifest.json">
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
@@ -138,6 +141,7 @@ function CallSchedule() {
   const [saveStatus, setSaveStatus] = useState("");
   const fileRef = useRef(null);
   const lastSyncRef = useRef(null);
+  const loadedAtRef = useRef(null); // timestamp when initial load completed — prevents auto-save race
 
   const [showApiKey, setShowApiKey] = useState(false);
 
@@ -202,11 +206,12 @@ function CallSchedule() {
       try {
         const { data: row } = await supabase
           .from("call_schedule_data")
-          .select("data")
+          .select("data,updated_at")
           .eq("id", "main")
           .single();
         if (row?.data) {
           const d = typeof row.data === "string" ? JSON.parse(row.data) : row.data;
+          if (row.updated_at) lastSyncRef.current = row.updated_at; // prevent auto-save from re-saving unchanged data
           if (d.surgeons) setSurgeons(d.surgeons);
           if (d.apps) setApps(d.apps);
           if (d.vacations) setVacations(d.vacations);
@@ -253,6 +258,7 @@ function CallSchedule() {
         console.error("Supabase load error:", e);
       }
       setLoaded(true);
+      loadedAtRef.current = Date.now();
 
       // One-time merge of May-Aug 2026 vacations & Fierce weeks from PDFs
       try {
@@ -339,6 +345,9 @@ function CallSchedule() {
   // ─── Supabase: Auto-save on changes ───
   useEffect(() => {
     if (!loaded) return;
+    // Skip auto-save for 3s after initial load — prevents re-saving unchanged data
+    // when initial state hydration triggers this effect
+    if (loadedAtRef.current && Date.now() - loadedAtRef.current < 3000) return;
     const timer = setTimeout(async () => {
       try {
         const payload = {
@@ -825,7 +834,11 @@ function CallSchedule() {
 
   // ─── Fire browser notifications when polling detects new in-app notifications ───
   useEffect(() => {
+    // Don't fire until initial data is loaded — prevents all existing notifications
+    // from triggering browser push on every app open
+    if (!loaded) return;
     if (lastNotifCountRef.current === null) {
+      // First run after load: snapshot the current count so only truly new ones fire
       lastNotifCountRef.current = notifications.length;
       return;
     }
@@ -839,7 +852,7 @@ function CallSchedule() {
       });
     }
     lastNotifCountRef.current = notifications.length;
-  }, [notifications, sendBrowserNotif, mySurgeon, notifPrefs]);
+  }, [loaded, notifications, sendBrowserNotif, mySurgeon, notifPrefs]);
 
   // ─── Test Notification ───
   const sendTestNotification = useCallback(async () => {
