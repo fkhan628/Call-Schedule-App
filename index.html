@@ -38,7 +38,7 @@
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.page.js" defer></script>
   <script>
-    var APP_VERSION = "2026.04.14a";
+    var APP_VERSION = "2026.04.14b";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       if (stored && stored !== APP_VERSION) {
@@ -910,6 +910,7 @@ function CallSchedule() {
   const [year2Counts, setYear2Counts] = useState(COUNTS_2YR); // 2-year totals
   const [startMonth, setStartMonth] = useState(4);
   const [startYear, setStartYear] = useState(2026);
+  const [numWeeks, setNumWeeks] = useState(14);
   const [calMonth, setCalMonth] = useState(4);
   const [calYear, setCalYear] = useState(2026);
 
@@ -1076,6 +1077,7 @@ function CallSchedule() {
           if (d.year2Counts && Object.values(d.year2Counts).some(c => Object.values(c).some(v => v > 0))) setYear2Counts(d.year2Counts);
           if (d.startMonth !== undefined) setStartMonth(d.startMonth);
           if (d.startYear !== undefined) setStartYear(d.startYear);
+          if (d.numWeeks) setNumWeeks(d.numWeeks);
           if (d.holidayAssignments) setHolidayAssignments(d.holidayAssignments);
         }
         const {
@@ -1189,6 +1191,7 @@ function CallSchedule() {
             if (d.year2Counts && Object.values(d.year2Counts).some(c => Object.values(c).some(v => v > 0))) setYear2Counts(d.year2Counts);
             if (d.startMonth !== undefined) setStartMonth(d.startMonth);
             if (d.startYear !== undefined) setStartYear(d.startYear);
+            if (d.numWeeks) setNumWeeks(d.numWeeks);
             if (d.holidayAssignments) setHolidayAssignments(d.holidayAssignments);
           }
         }
@@ -1243,6 +1246,7 @@ function CallSchedule() {
           year2Counts,
           startMonth,
           startYear,
+          numWeeks,
           holidayAssignments
         };
         const ts = new Date().toISOString();
@@ -1259,7 +1263,7 @@ function CallSchedule() {
       }
     }, 800);
     return () => clearTimeout(timer);
-  }, [loaded, surgeons, apps, vacations, backupMondaySet, fierceBackupSet, schedule, appShifts, priorCounts, year1Counts, year2Counts, startMonth, startYear, holidayAssignments]);
+  }, [loaded, surgeons, apps, vacations, backupMondaySet, fierceBackupSet, schedule, appShifts, priorCounts, year1Counts, year2Counts, startMonth, startYear, numWeeks, holidayAssignments]);
 
   // ─── Supabase: Save scheduler PIN + edge function URL ───
   useEffect(() => {
@@ -2528,7 +2532,7 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
     });
     return m;
   }, [apps]);
-  const mondays = useMemo(() => getMondays(startYear, startMonth, 14), [startYear, startMonth]);
+  const mondays = useMemo(() => getMondays(startYear, startMonth, numWeeks), [startYear, startMonth, numWeeks]);
   const endDate = mondays.length > 0 ? addD(mondays[mondays.length - 1], 6) : null;
   const endMoIdx = endDate ? endDate.getMonth() : (startMonth + 2) % 12;
   const endYr = endDate ? endDate.getFullYear() : startYear;
@@ -4158,7 +4162,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     }
   }, "Connecting\u2026")))), /*#__PURE__*/React.createElement("div", {
     style: css.nav
-  }, [["setup", "Setup"], ["totals", "Totals"], ["calendar", "Calendar"], ["myschedule", "Mine"], ["requests", "Requests"], ["stats", "Stats"]].map(([k, l]) => /*#__PURE__*/React.createElement("button", {
+  }, [["setup", "Setup"], ["calendar", "Calendar"], ["myschedule", "Mine"], ["requests", "Requests"], ["stats", "Stats"], ["totals", "Totals"], ["settings", "Settings"]].map(([k, l]) => /*#__PURE__*/React.createElement("button", {
     key: k,
     style: {
       ...css.tab(view === k),
@@ -4210,15 +4214,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       justifyContent: "center",
       padding: "0 4px"
     }
-  }, unreadCount)), /*#__PURE__*/React.createElement("button", {
-    onClick: () => setDarkMode(d => !d),
-    style: {
-      ...css.tab(false),
-      fontSize: 15,
-      padding: "4px 10px"
-    },
-    title: "Toggle dark mode"
-  }, darkMode ? "☀️" : "🌙"), scheduleHistory.length > 0 && /*#__PURE__*/React.createElement("button", {
+  }, unreadCount)), scheduleHistory.length > 0 && /*#__PURE__*/React.createElement("button", {
     onClick: undoLastChange,
     style: {
       ...css.tab(false),
@@ -4301,8 +4297,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       vacation_submitted: "requests",
       vacation_approved: "requests",
       vacation_denied: "requests",
-      schedule_published: "schedule",
-      schedule_changed: "schedule",
+      schedule_published: "calendar",
+      schedule_changed: "calendar",
       trade_submitted: "requests",
       trade_accepted: "requests",
       trade_declined: "requests"
@@ -4500,7 +4496,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     style: css.card
   }, /*#__PURE__*/React.createElement("div", {
     style: css.cardT
-  }, "Schedule Period (14 Weeks)"), /*#__PURE__*/React.createElement("div", {
+  }, "Schedule Period"), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       gap: 8,
@@ -4527,7 +4523,17 @@ ${"</"}script>${"</"}body>${"</"}html>`;
   }, [2025, 2026, 2027, 2028].map(y => /*#__PURE__*/React.createElement("option", {
     key: y,
     value: y
-  }, y))), /*#__PURE__*/React.createElement("span", {
+  }, y))), /*#__PURE__*/React.createElement("select", {
+    value: numWeeks,
+    onChange: e => setNumWeeks(+e.target.value),
+    style: {
+      ...css.inp,
+      width: 120
+    }
+  }, [14, 28, 42, 56].map(w => /*#__PURE__*/React.createElement("option", {
+    key: w,
+    value: w
+  }, w, " weeks"))), /*#__PURE__*/React.createElement("span", {
     style: {
       color: "#7a8a98",
       fontSize: 12
@@ -4692,221 +4698,197 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       cursor: "pointer",
       fontFamily: font
     }
-  }, "\uD83D\uDDD1 Clear All")), surgeons.map(s => {
-    const v = vacations[s.id] || [];
-    if (!v.length) return null;
-    return /*#__PURE__*/React.createElement("div", {
-      key: s.id,
-      style: {
-        marginBottom: 6,
-        display: "flex",
-        alignItems: "center",
-        gap: 6,
-        flexWrap: "wrap"
-      }
-    }, /*#__PURE__*/React.createElement(Badge, {
-      id: s.id
-    }), v.map(([vs, ve], i) => editVac && editVac.sid === s.id && editVac.idx === i ? /*#__PURE__*/React.createElement("span", {
-      key: i,
-      style: {
-        display: "inline-flex",
-        gap: 4,
-        alignItems: "center",
-        background: "#f0f8ff",
-        border: "1px solid #a0c0e0",
-        borderRadius: 5,
-        padding: "2px 6px"
-      }
-    }, /*#__PURE__*/React.createElement("input", {
-      type: "date",
-      value: editVac.start,
-      onChange: e => setEditVac(p => ({
-        ...p,
-        start: e.target.value
-      })),
-      style: {
-        ...css.inp,
-        width: 120,
-        fontSize: 11,
-        padding: "2px 4px"
-      }
-    }), /*#__PURE__*/React.createElement("span", {
-      style: {
-        fontSize: 11,
-        color: "#7a8a98"
-      }
-    }, "\u2192"), /*#__PURE__*/React.createElement("input", {
-      type: "date",
-      value: editVac.end,
-      onChange: e => setEditVac(p => ({
-        ...p,
-        end: e.target.value
-      })),
-      style: {
-        ...css.inp,
-        width: 120,
-        fontSize: 11,
-        padding: "2px 4px"
-      }
-    }), /*#__PURE__*/React.createElement("button", {
-      onClick: saveEditVac,
-      style: {
-        background: "none",
-        border: "none",
-        color: "#1a8040",
-        cursor: "pointer",
-        fontSize: 13,
-        fontWeight: 700
-      }
-    }, "\u2713"), /*#__PURE__*/React.createElement("button", {
-      onClick: () => setEditVac(null),
-      style: {
-        background: "none",
-        border: "none",
-        color: "#904040",
-        cursor: "pointer",
-        fontSize: 11
-      }
-    }, "\u2715")) : /*#__PURE__*/React.createElement("span", {
-      key: i,
-      style: {
-        fontFamily: mono,
-        fontSize: 11,
-        color: "#5a6a78",
-        cursor: "pointer",
-        padding: "1px 4px",
-        borderRadius: 4,
-        border: "1px solid transparent"
-      },
-      onClick: () => setEditVac({
-        sid: s.id,
-        idx: i,
-        start: vs,
-        end: ve
-      }),
-      title: "Click to edit dates"
-    }, vs, " \u2192 ", ve, /*#__PURE__*/React.createElement("button", {
-      onClick: e => {
-        e.stopPropagation();
-        rmVac(s.id, i);
-      },
-      style: {
-        background: "none",
-        border: "none",
-        color: "#904040",
-        cursor: "pointer",
-        fontSize: 11,
-        marginLeft: 3
-      }
-    }, "\u2715"))));
-  }), apps.map(a => {
-    const v = vacations[a.id] || [];
-    if (!v.length) return null;
-    return /*#__PURE__*/React.createElement("div", {
-      key: a.id,
-      style: {
-        marginBottom: 6,
-        display: "flex",
-        alignItems: "center",
-        gap: 6,
-        flexWrap: "wrap"
-      }
-    }, /*#__PURE__*/React.createElement(AppBadge, {
-      id: a.id
-    }), v.map(([vs, ve], i) => editVac && editVac.sid === a.id && editVac.idx === i ? /*#__PURE__*/React.createElement("span", {
-      key: i,
-      style: {
-        display: "inline-flex",
-        gap: 4,
-        alignItems: "center",
-        background: "#f0f8ff",
-        border: "1px solid #a0c0e0",
-        borderRadius: 5,
-        padding: "2px 6px"
-      }
-    }, /*#__PURE__*/React.createElement("input", {
-      type: "date",
-      value: editVac.start,
-      onChange: e => setEditVac(p => ({
-        ...p,
-        start: e.target.value
-      })),
-      style: {
-        ...css.inp,
-        width: 120,
-        fontSize: 11,
-        padding: "2px 4px"
-      }
-    }), /*#__PURE__*/React.createElement("span", {
-      style: {
-        fontSize: 11,
-        color: "#7a8a98"
-      }
-    }, "\u2192"), /*#__PURE__*/React.createElement("input", {
-      type: "date",
-      value: editVac.end,
-      onChange: e => setEditVac(p => ({
-        ...p,
-        end: e.target.value
-      })),
-      style: {
-        ...css.inp,
-        width: 120,
-        fontSize: 11,
-        padding: "2px 4px"
-      }
-    }), /*#__PURE__*/React.createElement("button", {
-      onClick: saveEditVac,
-      style: {
-        background: "none",
-        border: "none",
-        color: "#1a8040",
-        cursor: "pointer",
-        fontSize: 13,
-        fontWeight: 700
-      }
-    }, "\u2713"), /*#__PURE__*/React.createElement("button", {
-      onClick: () => setEditVac(null),
-      style: {
-        background: "none",
-        border: "none",
-        color: "#904040",
-        cursor: "pointer",
-        fontSize: 11
-      }
-    }, "\u2715")) : /*#__PURE__*/React.createElement("span", {
-      key: i,
-      style: {
-        fontFamily: mono,
-        fontSize: 11,
-        color: "#5a6a78",
-        cursor: "pointer",
-        padding: "1px 4px",
-        borderRadius: 4,
-        border: "1px solid transparent"
-      },
-      onClick: () => setEditVac({
-        sid: a.id,
-        idx: i,
-        start: vs,
-        end: ve
-      }),
-      title: "Click to edit dates"
-    }, vs, " \u2192 ", ve, /*#__PURE__*/React.createElement("button", {
-      onClick: e => {
-        e.stopPropagation();
-        rmVac(a.id, i);
-      },
-      style: {
-        background: "none",
-        border: "none",
-        color: "#904040",
-        cursor: "pointer",
-        fontSize: 11,
-        marginLeft: 3
-      }
-    }, "\u2715"))));
-  })), /*#__PURE__*/React.createElement("div", {
+  }, "\uD83D\uDDD1 Clear All")), (() => {
+    const allPeople = [...surgeons.map(s => ({
+      ...s,
+      type: "s"
+    })), ...apps.map(a => ({
+      ...a,
+      type: "a"
+    }))];
+    const peopleWithVac = allPeople.filter(p => (vacations[p.id] || []).length > 0);
+    if (!peopleWithVac.length) return null;
+    const shortRange = (s, e) => {
+      var _MO, _MO2;
+      const sp = s.split("-"),
+        ep = e.split("-");
+      const sm = (_MO = MO[parseInt(sp[1]) - 1]) === null || _MO === void 0 ? void 0 : _MO.slice(0, 3),
+        sd = parseInt(sp[2]);
+      const em = (_MO2 = MO[parseInt(ep[1]) - 1]) === null || _MO2 === void 0 ? void 0 : _MO2.slice(0, 3),
+        ed = parseInt(ep[2]);
+      if (s === e) return `${sm} ${sd}`;
+      if (sp[1] === ep[1]) return `${sm} ${sd}–${ed}`;
+      return `${sm} ${sd} – ${em} ${ed}`;
+    };
+    return peopleWithVac.map(p => {
+      const v = vacations[p.id] || [];
+      const expanded = expandedVacGroups["sv_" + p.id];
+      return /*#__PURE__*/React.createElement("div", {
+        key: p.id,
+        style: {
+          marginBottom: 5,
+          border: "1px solid #e0e4ea",
+          borderRadius: 7,
+          overflow: "hidden",
+          background: "#f8f9fb"
+        }
+      }, /*#__PURE__*/React.createElement("div", {
+        onClick: () => toggleVacGroup("sv_" + p.id),
+        style: {
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          padding: "7px 10px",
+          cursor: "pointer",
+          flexWrap: "wrap"
+        }
+      }, /*#__PURE__*/React.createElement("span", {
+        style: {
+          fontSize: 10,
+          color: "#a0a8b0",
+          transition: "transform 0.15s",
+          transform: expanded ? "rotate(90deg)" : "rotate(0deg)"
+        }
+      }, "\u25B6"), p.type === "s" ? /*#__PURE__*/React.createElement(Badge, {
+        id: p.id
+      }) : /*#__PURE__*/React.createElement(AppBadge, {
+        id: p.id
+      }), /*#__PURE__*/React.createElement("span", {
+        style: {
+          fontSize: 11,
+          color: "#6a7a88",
+          fontWeight: 600
+        }
+      }, v.length, " date", v.length !== 1 ? "s" : ""), /*#__PURE__*/React.createElement("div", {
+        style: {
+          display: "flex",
+          gap: 3,
+          flexWrap: "wrap",
+          marginLeft: "auto"
+        }
+      }, v.slice(0, 5).map(([vs, ve], i) => /*#__PURE__*/React.createElement("span", {
+        key: i,
+        style: {
+          fontFamily: mono,
+          fontSize: 10,
+          color: "#6a7a88",
+          background: "#eef0f4",
+          padding: "1px 6px",
+          borderRadius: 4,
+          border: "1px solid #dce2e8"
+        }
+      }, shortRange(vs, ve))), v.length > 5 && /*#__PURE__*/React.createElement("span", {
+        style: {
+          fontSize: 10,
+          color: "#a0a8b0"
+        }
+      }, "+", v.length - 5))), expanded && /*#__PURE__*/React.createElement("div", {
+        style: {
+          borderTop: "1px solid #e0e4ea",
+          padding: "6px 10px"
+        }
+      }, v.map(([vs, ve], i) => editVac && editVac.sid === p.id && editVac.idx === i ? /*#__PURE__*/React.createElement("div", {
+        key: i,
+        style: {
+          display: "inline-flex",
+          gap: 4,
+          alignItems: "center",
+          background: "#f0f8ff",
+          border: "1px solid #a0c0e0",
+          borderRadius: 5,
+          padding: "3px 6px",
+          marginBottom: 4,
+          marginRight: 4
+        }
+      }, /*#__PURE__*/React.createElement("input", {
+        type: "date",
+        value: editVac.start,
+        onChange: e => setEditVac(pr => ({
+          ...pr,
+          start: e.target.value
+        })),
+        style: {
+          ...css.inp,
+          width: 120,
+          fontSize: 11,
+          padding: "2px 4px"
+        }
+      }), /*#__PURE__*/React.createElement("span", {
+        style: {
+          fontSize: 11,
+          color: "#7a8a98"
+        }
+      }, "\u2192"), /*#__PURE__*/React.createElement("input", {
+        type: "date",
+        value: editVac.end,
+        onChange: e => setEditVac(pr => ({
+          ...pr,
+          end: e.target.value
+        })),
+        style: {
+          ...css.inp,
+          width: 120,
+          fontSize: 11,
+          padding: "2px 4px"
+        }
+      }), /*#__PURE__*/React.createElement("button", {
+        onClick: saveEditVac,
+        style: {
+          background: "none",
+          border: "none",
+          color: "#1a8040",
+          cursor: "pointer",
+          fontSize: 13,
+          fontWeight: 700
+        }
+      }, "\u2713"), /*#__PURE__*/React.createElement("button", {
+        onClick: () => setEditVac(null),
+        style: {
+          background: "none",
+          border: "none",
+          color: "#904040",
+          cursor: "pointer",
+          fontSize: 11
+        }
+      }, "\u2715")) : /*#__PURE__*/React.createElement("span", {
+        key: i,
+        style: {
+          display: "inline-flex",
+          alignItems: "center",
+          fontFamily: mono,
+          fontSize: 11,
+          color: "#5a6a78",
+          cursor: "pointer",
+          padding: "2px 6px",
+          borderRadius: 4,
+          border: "1px solid #e8ecf0",
+          background: "#fff",
+          marginBottom: 4,
+          marginRight: 4
+        },
+        onClick: () => setEditVac({
+          sid: p.id,
+          idx: i,
+          start: vs,
+          end: ve
+        }),
+        title: "Click to edit dates"
+      }, vs, " \u2192 ", ve, /*#__PURE__*/React.createElement("button", {
+        onClick: e => {
+          e.stopPropagation();
+          rmVac(p.id, i);
+        },
+        style: {
+          background: "none",
+          border: "none",
+          color: "#904040",
+          cursor: "pointer",
+          fontSize: 11,
+          marginLeft: 4
+        }
+      }, "\u2715")))));
+    });
+  })()), /*#__PURE__*/React.createElement("div", {
     style: css.card
   }, /*#__PURE__*/React.createElement("div", {
     style: css.cardT
@@ -5681,672 +5663,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         marginTop: 8
       }
     }, "Click \"Re-roll\" to generate a different version. Click \"Accept\" to commit this schedule."));
-  })(), /*#__PURE__*/React.createElement("div", {
-    style: {
-      marginTop: 14
-    }
-  }, /*#__PURE__*/React.createElement("button", {
-    onClick: () => setShowApiKey(p => !p),
-    style: {
-      background: "none",
-      border: "1px solid #e0e4ea",
-      borderRadius: 7,
-      padding: "8px 14px",
-      cursor: "pointer",
-      fontFamily: font,
-      display: "flex",
-      alignItems: "center",
-      gap: 8,
-      width: "100%",
-      justifyContent: "space-between"
-    }
-  }, /*#__PURE__*/React.createElement("span", {
-    style: {
-      fontSize: 12,
-      color: "#6a7a88",
-      fontWeight: 600
-    }
-  }, "\u2699\uFE0F Settings"), /*#__PURE__*/React.createElement("span", {
-    style: {
-      fontSize: 11,
-      color: "#7a8a98"
-    }
-  }, showApiKey ? "▲" : "▼")), showApiKey && /*#__PURE__*/React.createElement("div", {
-    style: {
-      ...css.card,
-      marginTop: 6,
-      background: "#f4f6f8",
-      border: "1px solid #e0e4ea"
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      marginBottom: 16
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 12,
-      fontWeight: 700,
-      color: "#5a7a90",
-      marginBottom: 8
-    }
-  }, "\uD83D\uDD12 Scheduler Mode"), !isScheduler ? /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("p", {
-    style: {
-      fontSize: 12,
-      color: "#7a8a98",
-      margin: "0 0 8px",
-      lineHeight: 1.5
-    }
-  }, "Enter the scheduler PIN to unlock admin features (approve/deny vacation requests, set PIN)."), /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      gap: 6,
-      alignItems: "center"
-    }
-  }, /*#__PURE__*/React.createElement("input", {
-    type: "password",
-    placeholder: "Enter PIN",
-    value: pinInput,
-    onChange: e => setPinInput(e.target.value),
-    onKeyDown: e => e.key === "Enter" && checkPin(),
-    style: {
-      ...css.inp,
-      width: 140,
-      fontSize: 13,
-      fontFamily: mono
-    }
-  }), /*#__PURE__*/React.createElement("button", {
-    onClick: checkPin,
-    style: {
-      ...css.btn(true),
-      padding: "6px 14px"
-    }
-  }, "Unlock"), pinError && /*#__PURE__*/React.createElement("span", {
-    style: {
-      fontSize: 12,
-      color: "#c04040",
-      fontWeight: 600
-    }
-  }, pinError)), !schedulerPin && /*#__PURE__*/React.createElement("p", {
-    style: {
-      fontSize: 11,
-      color: "#a0a8b0",
-      margin: "6px 0 0"
-    }
-  }, "No PIN set yet. Enter at least 4 characters and click Unlock to set your PIN.")) : /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      alignItems: "center",
-      gap: 8,
-      marginBottom: 8
-    }
-  }, /*#__PURE__*/React.createElement("span", {
-    style: {
-      fontSize: 12,
-      color: "#1a8040",
-      fontWeight: 600
-    }
-  }, "\u2713 Scheduler mode active"), /*#__PURE__*/React.createElement("button", {
-    onClick: () => setIsScheduler(false),
-    style: {
-      background: "none",
-      border: "1px solid #d0d8e0",
-      color: "#6a7a88",
-      borderRadius: 5,
-      padding: "3px 10px",
-      fontSize: 11,
-      cursor: "pointer",
-      fontFamily: font
-    }
-  }, "Lock")), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
-    style: {
-      fontSize: 11,
-      color: "#7a8a98",
-      display: "block",
-      marginBottom: 2
-    }
-  }, "Set or change scheduler PIN"), /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      gap: 6,
-      alignItems: "center"
-    }
-  }, /*#__PURE__*/React.createElement("input", {
-    type: "password",
-    placeholder: "New PIN",
-    value: pinInput,
-    onChange: e => setPinInput(e.target.value),
-    style: {
-      ...css.inp,
-      width: 140,
-      fontSize: 13,
-      fontFamily: mono
-    }
-  }), /*#__PURE__*/React.createElement("button", {
-    onClick: () => {
-      if (pinInput.length >= 4) {
-        setSchedulerPin(pinInput);
-        setPinInput("");
-        alert("PIN updated!");
-      } else {
-        alert("PIN must be at least 4 characters");
-      }
-    },
-    style: {
-      ...css.btn(true),
-      padding: "6px 14px"
-    }
-  }, "Save PIN")), schedulerPin && /*#__PURE__*/React.createElement("p", {
-    style: {
-      fontSize: 11,
-      color: "#8a94a0",
-      margin: "4px 0 0"
-    }
-  }, "Current PIN: ", schedulerPin.replace(/./g, "•"))))), /*#__PURE__*/React.createElement("div", {
-    style: {
-      marginTop: 16,
-      paddingTop: 12,
-      borderTop: "1px solid #e0e4ea"
-    }
-  }, /*#__PURE__*/React.createElement("button", {
-    onClick: resetAllData,
-    style: {
-      background: "none",
-      border: "1px solid #e8c0c0",
-      color: "#804040",
-      borderRadius: 6,
-      padding: "5px 12px",
-      fontSize: 11,
-      cursor: "pointer",
-      fontFamily: font
-    }
-  }, "Reset All Data")), /*#__PURE__*/React.createElement("div", {
-    style: {
-      marginTop: 16,
-      paddingTop: 12,
-      borderTop: "1px solid #e0e4ea"
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 12,
-      fontWeight: 700,
-      color: "#2c5a80",
-      marginBottom: 10
-    }
-  }, "\uD83D\uDD14 Notification Settings"), /*#__PURE__*/React.createElement("div", {
-    style: {
-      background: "#f8f9fb",
-      border: "1px solid #e0e4ea",
-      borderRadius: 8,
-      padding: "12px 14px",
-      marginBottom: 12
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      justifyContent: "space-between",
-      alignItems: "center",
-      marginBottom: 6
-    }
-  }, /*#__PURE__*/React.createElement("span", {
-    style: {
-      fontSize: 12,
-      fontWeight: 600,
-      color: "#2c3e50"
-    }
-  }, "Push Notifications (OneSignal)"), oneSignalSubscribed && /*#__PURE__*/React.createElement("span", {
-    style: {
-      fontSize: 11,
-      color: "#1a8040",
-      fontWeight: 600
-    }
-  }, "\u2713 Subscribed on this device"), pushPermission === "denied" && /*#__PURE__*/React.createElement("span", {
-    style: {
-      fontSize: 11,
-      color: "#c04040",
-      fontWeight: 600
-    }
-  }, "\u2715 Blocked")), /*#__PURE__*/React.createElement("p", {
-    style: {
-      fontSize: 11,
-      color: "#7a8a98",
-      margin: "0 0 8px",
-      lineHeight: 1.5
-    }
-  }, "Each partner needs to click \"Enable\" once on their device. Notifications will arrive even when the browser is closed."), !oneSignalSubscribed && pushPermission !== "denied" && /*#__PURE__*/React.createElement("button", {
-    onClick: requestPushPermission,
-    style: {
-      ...css.btn(true),
-      padding: "6px 14px",
-      fontSize: 12
-    }
-  }, "Enable Push Notifications"), pushPermission === "denied" && /*#__PURE__*/React.createElement("p", {
-    style: {
-      fontSize: 11,
-      color: "#c04040",
-      lineHeight: 1.5
-    }
-  }, "Notifications are blocked. Please allow notifications for this site in your browser settings."), pushPermission === "granted" && /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      gap: 8,
-      alignItems: "center",
-      marginBottom: 8
-    }
-  }, /*#__PURE__*/React.createElement("button", {
-    onClick: sendTestNotification,
-    style: {
-      ...css.btn(false),
-      padding: "5px 12px",
-      fontSize: 11
-    }
-  }, "\uD83D\uDD14 Send Test Notification"), notifTestSent && /*#__PURE__*/React.createElement("span", {
-    style: {
-      fontSize: 11,
-      color: "#1a8040",
-      fontWeight: 600
-    }
-  }, notifTestSent)), isScheduler && /*#__PURE__*/React.createElement("div", {
-    style: {
-      marginTop: 8,
-      paddingTop: 8,
-      borderTop: "1px dashed #e0e4ea"
-    }
-  }, /*#__PURE__*/React.createElement("label", {
-    style: {
-      fontSize: 10,
-      color: "#7a8a98",
-      display: "block",
-      marginBottom: 2
-    }
-  }, "OneSignal REST API Key (for sending push to all devices)"), /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      gap: 6,
-      alignItems: "center"
-    }
-  }, /*#__PURE__*/React.createElement("input", {
-    type: "password",
-    value: oneSignalApiKey,
-    onChange: e => setOneSignalApiKey(e.target.value),
-    placeholder: "Paste REST API key from OneSignal \u2192 Settings \u2192 Keys & IDs",
-    style: {
-      ...css.inp,
-      width: "100%",
-      maxWidth: 420,
-      fontSize: 11,
-      fontFamily: mono
-    }
-  }), /*#__PURE__*/React.createElement("button", {
-    onClick: () => {
-      try {
-        localStorage.setItem("dsg-onesignal-key", oneSignalApiKey);
-      } catch (e) {}
-      setSaveStatus("Saved");
-      setTimeout(() => setSaveStatus(""), 2000);
-    },
-    style: {
-      ...css.btn(true),
-      padding: "5px 12px",
-      fontSize: 11,
-      whiteSpace: "nowrap"
-    }
-  }, "Save")), /*#__PURE__*/React.createElement("p", {
-    style: {
-      fontSize: 10,
-      color: "#8a94a0",
-      margin: "4px 0 0"
-    }
-  }, "Find this at onesignal.com \u2192 your app \u2192 Settings \u2192 Keys & IDs \u2192 REST API Key"), oneSignalApiKey && /*#__PURE__*/React.createElement("button", {
-    onClick: async () => {
-      try {
-        const resp = await fetch("https://onesignal.com/api/v1/notifications", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Basic ${oneSignalApiKey}`
-          },
-          body: JSON.stringify({
-            app_id: "9ca5c08f-6fb3-4ee5-b564-09aafc1c1901",
-            included_segments: ["Subscribed Users"],
-            headings: {
-              en: "DSG Call Schedule"
-            },
-            contents: {
-              en: "Test push notification — if you see this, push is working!"
-            },
-            url: "https://fkhan628.github.io/Call-Schedule-App/"
-          })
-        });
-        const data = await resp.json();
-        alert(`Push test result:\nStatus: ${resp.status}\nRecipients: ${data.recipients || 0}\n${data.errors ? "Errors: " + JSON.stringify(data.errors) : "Success!"}`);
-      } catch (e) {
-        alert("Push test error: " + e.message);
-      }
-    },
-    style: {
-      ...css.btn(false),
-      padding: "4px 10px",
-      fontSize: 10,
-      marginTop: 6
-    }
-  }, "Test Push to All Devices"))), /*#__PURE__*/React.createElement("div", {
-    style: {
-      background: "#f8f9fb",
-      border: "1px solid #e0e4ea",
-      borderRadius: 8,
-      padding: "12px 14px",
-      marginBottom: 12
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 12,
-      fontWeight: 600,
-      color: "#2c3e50",
-      marginBottom: 6
-    }
-  }, "\uD83D\uDCE7 Email Notifications"), /*#__PURE__*/React.createElement("p", {
-    style: {
-      fontSize: 11,
-      color: "#7a8a98",
-      margin: "0 0 8px",
-      lineHeight: 1.5
-    }
-  }, "Set up email addresses for each surgeon. Requires a Supabase Edge Function \u2014 see the setup guide below."), /*#__PURE__*/React.createElement("div", {
-    style: {
-      marginBottom: 12
-    }
-  }, /*#__PURE__*/React.createElement("label", {
-    style: {
-      fontSize: 10,
-      color: "#7a8a98",
-      display: "block",
-      marginBottom: 2
-    }
-  }, "Edge Function URL"), /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      gap: 6,
-      alignItems: "center"
-    }
-  }, /*#__PURE__*/React.createElement("input", {
-    value: edgeFunctionUrl,
-    onChange: e => setEdgeFunctionUrl(e.target.value),
-    placeholder: "https://your-project.supabase.co/functions/v1/send-notification",
-    style: {
-      ...css.inp,
-      width: "100%",
-      maxWidth: 420,
-      fontSize: 11,
-      fontFamily: mono
-    }
-  }), /*#__PURE__*/React.createElement("button", {
-    onClick: async () => {
-      try {
-        await supabase.from("call_schedule_config").upsert({
-          id: "config",
-          edge_function_url: edgeFunctionUrl,
-          updated_at: new Date().toISOString()
-        });
-        setSaveStatus("Saved");
-        setTimeout(() => setSaveStatus(""), 2000);
-      } catch (e) {}
-    },
-    style: {
-      ...css.btn(true),
-      padding: "5px 12px",
-      fontSize: 11,
-      whiteSpace: "nowrap"
-    }
-  }, "Save URL")), !edgeFunctionUrl && /*#__PURE__*/React.createElement("p", {
-    style: {
-      fontSize: 10,
-      color: "#c04040",
-      margin: "4px 0 0"
-    }
-  }, "Email notifications require the Edge Function URL. Deploy the function first."), edgeFunctionUrl && /*#__PURE__*/React.createElement("p", {
-    style: {
-      fontSize: 10,
-      color: "#1a8040",
-      margin: "4px 0 0"
-    }
-  }, "\u2713 Edge Function configured")), /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 11,
-      fontWeight: 600,
-      color: "#5a6a78",
-      marginBottom: 6
-    }
-  }, "Surgeon Email Addresses"), /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 10,
-      color: "#8a94a0",
-      marginBottom: 8,
-      lineHeight: 1.5
-    }
-  }, "Enter each surgeon's email and check \"Email\" to send them notifications. Browser push only works on the device where the app is open \u2014 each person must enable push on their own device via the My Schedule tab."), surgeons.map(s => {
-    const pref = notifPrefs[s.id] || {};
-    return /*#__PURE__*/React.createElement("div", {
-      key: s.id,
-      style: {
-        display: "flex",
-        gap: 6,
-        alignItems: "center",
-        marginBottom: 6,
-        flexWrap: "wrap"
-      }
-    }, /*#__PURE__*/React.createElement(Badge, {
-      id: s.id,
-      small: true
-    }), /*#__PURE__*/React.createElement("input", {
-      value: pref.email || "",
-      onChange: e => saveNotifPref(s.id, {
-        email: e.target.value
-      }),
-      placeholder: "email@example.com",
-      type: "email",
-      style: {
-        ...css.inp,
-        width: 200,
-        fontSize: 11,
-        fontFamily: mono,
-        padding: "4px 8px"
-      }
-    }), /*#__PURE__*/React.createElement("label", {
-      style: {
-        display: "flex",
-        alignItems: "center",
-        gap: 3,
-        fontSize: 10,
-        color: "#5a6a78",
-        cursor: "pointer"
-      }
-    }, /*#__PURE__*/React.createElement("input", {
-      type: "checkbox",
-      checked: pref.email_notifs || false,
-      onChange: e => saveNotifPref(s.id, {
-        email_notifs: e.target.checked
-      })
-    }), "Email"), /*#__PURE__*/React.createElement("label", {
-      style: {
-        display: "flex",
-        alignItems: "center",
-        gap: 3,
-        fontSize: 10,
-        color: "#5a6a78",
-        cursor: "pointer"
-      },
-      title: "Browser push only works on the device where the app is open"
-    }, /*#__PURE__*/React.createElement("input", {
-      type: "checkbox",
-      checked: pref.browser_push !== false,
-      onChange: e => saveNotifPref(s.id, {
-        browser_push: e.target.checked
-      })
-    }), "Push"));
-  }), notifPrefsSaving && /*#__PURE__*/React.createElement("span", {
-    style: {
-      fontSize: 10,
-      color: "#1a8040"
-    }
-  }, "Saving\u2026"), /*#__PURE__*/React.createElement("details", {
-    style: {
-      marginTop: 8
-    }
-  }, /*#__PURE__*/React.createElement("summary", {
-    style: {
-      fontSize: 10,
-      color: "#8a94a0",
-      cursor: "pointer"
-    }
-  }, "\uD83D\uDD0D Debug email delivery"), /*#__PURE__*/React.createElement("div", {
-    style: {
-      marginTop: 6,
-      padding: "8px 10px",
-      background: "#f0f2f5",
-      borderRadius: 6,
-      fontSize: 11,
-      lineHeight: 1.7
-    }
-  }, /*#__PURE__*/React.createElement("button", {
-    onClick: async () => {
-      try {
-        const rows = await db.query("notification_preferences");
-        const dbState = JSON.stringify(rows, null, 2);
-        const localState = JSON.stringify(notifPrefsRef.current, null, 2);
-        const currentPrefs = notifPrefsRef.current || {};
-        const recipients = [];
-        Object.entries(currentPrefs).forEach(([sid, prefs]) => {
-          if (prefs.email && prefs.email_notifs) {
-            var _surgeons$find8;
-            recipients.push({
-              surgeon_id: sid,
-              email: prefs.email,
-              name: ((_surgeons$find8 = surgeons.find(s => s.id === sid)) === null || _surgeons$find8 === void 0 ? void 0 : _surgeons$find8.name) || sid
-            });
-          }
-        });
-        alert(`EDGE FUNCTION URL:\n${edgeFunctionUrl || "(not set)"}\n\nRECIPIENTS (who would receive email):\n${recipients.length === 0 ? "(none)" : recipients.map(r => `${r.name}: ${r.email}`).join("\n")}\n\nSUPABASE ROWS (${(rows === null || rows === void 0 ? void 0 : rows.length) || 0}):\n${dbState}\n\nLOCAL STATE:\n${localState}`);
-      } catch (e) {
-        alert("Error: " + e.message);
-      }
-    },
-    style: {
-      ...css.btn(false),
-      padding: "4px 10px",
-      fontSize: 10
-    }
-  }, "Show email state"), /*#__PURE__*/React.createElement("button", {
-    onClick: async () => {
-      if (!edgeFunctionUrl) {
-        alert("No Edge Function URL set");
-        return;
-      }
-      const currentPrefs = notifPrefsRef.current || {};
-      const recipients = [];
-      Object.entries(currentPrefs).forEach(([sid, prefs]) => {
-        if (prefs.email && prefs.email_notifs) {
-          var _surgeons$find9;
-          recipients.push({
-            email: prefs.email,
-            surgeon_id: sid,
-            name: ((_surgeons$find9 = surgeons.find(s => s.id === sid)) === null || _surgeons$find9 === void 0 ? void 0 : _surgeons$find9.name) || sid
-          });
-        }
-      });
-      if (recipients.length === 0) {
-        alert("No recipients with email enabled");
-        return;
-      }
-      try {
-        const resp = await fetch(edgeFunctionUrl, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${SUPABASE_ANON_KEY}`
-          },
-          body: JSON.stringify({
-            type: "test",
-            data: {
-              message: "Diagnostic test email"
-            },
-            recipients
-          })
-        });
-        const text = await resp.text();
-        alert(`Edge Function response:\nStatus: ${resp.status}\nBody: ${text}\n\nSent to: ${recipients.map(r => r.email).join(", ")}`);
-      } catch (e) {
-        alert("Fetch error: " + e.message);
-      }
-    },
-    style: {
-      ...css.btn(false),
-      padding: "4px 10px",
-      fontSize: 10,
-      marginLeft: 6
-    }
-  }, "Test email delivery"), /*#__PURE__*/React.createElement("div", {
-    style: {
-      marginTop: 6,
-      color: "#7a8a98",
-      fontSize: 10
-    }
-  }, "\"Show email state\" shows what's in Supabase vs local state.", /*#__PURE__*/React.createElement("br", null), "\"Test email delivery\" sends a real test email to ALL enabled recipients and shows the Edge Function response."))), mySurgeon && /*#__PURE__*/React.createElement("div", {
-    style: {
-      marginTop: 10,
-      paddingTop: 8,
-      borderTop: "1px solid #e8ecf0"
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 11,
-      fontWeight: 600,
-      color: "#5a6a78",
-      marginBottom: 6
-    }
-  }, "Notify me about:"), [["schedule_changes", "Schedule changes & shift swaps"], ["vacation_updates", "Vacation requests & approvals"], ["shift_reminders", "Shift reminders"]].map(([key, label]) => /*#__PURE__*/React.createElement("label", {
-    key: key,
-    style: {
-      display: "flex",
-      alignItems: "center",
-      gap: 6,
-      marginBottom: 4,
-      fontSize: 12,
-      color: "#3a4a58",
-      cursor: "pointer"
-    }
-  }, /*#__PURE__*/React.createElement("input", {
-    type: "checkbox",
-    checked: (notifPrefs[mySurgeon] || {})[key] !== false,
-    onChange: e => saveNotifPref(mySurgeon, {
-      [key]: e.target.checked
-    })
-  }), label)))), /*#__PURE__*/React.createElement("details", {
-    style: {
-      marginTop: 8
-    }
-  }, /*#__PURE__*/React.createElement("summary", {
-    style: {
-      fontSize: 11,
-      color: "#1a6fa8",
-      cursor: "pointer",
-      fontWeight: 600
-    }
-  }, "\uD83D\uDCD6 Email Setup Guide"), /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 11,
-      color: "#5a6a78",
-      lineHeight: 1.7,
-      marginTop: 6,
-      padding: "8px 12px",
-      background: "#f0f8ff",
-      borderRadius: 6,
-      border: "1px solid #d0e0f0"
-    }
-  }, /*#__PURE__*/React.createElement("strong", null, "1. Create a Resend account"), " \u2014 Sign up at ", /*#__PURE__*/React.createElement("span", {
-    style: {
-      color: "#1a6fa8"
-    }
-  }, "resend.com"), " and get an API key.", /*#__PURE__*/React.createElement("br", null), /*#__PURE__*/React.createElement("strong", null, "2. Create the Supabase table"), " \u2014 Run the SQL migration (see the ", /*#__PURE__*/React.createElement("code", null, "notification_preferences"), " table SQL provided).", /*#__PURE__*/React.createElement("br", null), /*#__PURE__*/React.createElement("strong", null, "3. Deploy the Edge Function"), " \u2014 Deploy the ", /*#__PURE__*/React.createElement("code", null, "send-notification"), " Edge Function to your Supabase project.", /*#__PURE__*/React.createElement("br", null), /*#__PURE__*/React.createElement("strong", null, "4. Set environment variables"), " \u2014 Add ", /*#__PURE__*/React.createElement("code", null, "RESEND_API_KEY"), " and ", /*#__PURE__*/React.createElement("code", null, "NOTIFICATION_FROM_EMAIL"), " to your Edge Function secrets.", /*#__PURE__*/React.createElement("br", null), /*#__PURE__*/React.createElement("strong", null, "5. Paste the URL above"), " \u2014 Copy the Edge Function URL into the field above.")))))), view === "totals" && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+  })()), view === "totals" && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
     style: css.card
   }, /*#__PURE__*/React.createElement("div", {
     style: css.cardT
@@ -6437,79 +5754,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       border: `1px solid ${scanMsg.includes("Could not") || scanMsg.includes("could not") ? "#e8c0c0" : "#b0d8b0"}`,
       borderRadius: 6
     }
-  }, scanMsg), /*#__PURE__*/React.createElement("div", {
-    style: {
-      background: "linear-gradient(135deg,#f8f0f4,#f8f0f4)",
-      border: "1px dashed #c0a0d8",
-      borderRadius: 8,
-      padding: "14px 16px",
-      marginBottom: 14
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 13,
-      fontWeight: 600,
-      color: "#7030a8",
-      marginBottom: 6
-    }
-  }, "\uD83E\uDD16 Scan a Past Call Schedule"), /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 11,
-      color: "#7a8a98",
-      lineHeight: 1.5,
-      marginBottom: 10
-    }
-  }, "Upload a PDF, Excel, Word, or CSV of a previous call schedule. AI will read it and count each surgeon's shifts automatically. Imports into the Multi-Year table."), /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      gap: 8,
-      flexWrap: "wrap",
-      alignItems: "center"
-    }
-  }, /*#__PURE__*/React.createElement("input", {
-    ref: priorFileRef,
-    type: "file",
-    accept: ".pdf,.xlsx,.xls,.csv,.docx,.doc",
-    onChange: e => {
-      var _e$target$files3;
-      if ((_e$target$files3 = e.target.files) !== null && _e$target$files3 !== void 0 && _e$target$files3[0]) handlePriorScheduleScan(e.target.files[0]);
-    },
-    style: {
-      display: "none"
-    },
-    id: "priorScanInput"
-  }), /*#__PURE__*/React.createElement("button", {
-    onClick: () => {
-      var _priorFileRef$current;
-      return (_priorFileRef$current = priorFileRef.current) === null || _priorFileRef$current === void 0 ? void 0 : _priorFileRef$current.click();
-    },
-    disabled: priorScanning,
-    style: {
-      ...css.btn(true),
-      opacity: priorScanning ? 0.5 : 1,
-      padding: "6px 14px",
-      fontSize: 12,
-      background: "linear-gradient(135deg,#f0e8f8,#e8d8f4)",
-      borderColor: "#c0a0d8",
-      color: "#7030a8"
-    }
-  }, priorScanning ? "⏳ Analyzing…" : "📄 Upload Past Schedule"), /*#__PURE__*/React.createElement("span", {
-    style: {
-      fontSize: 10,
-      color: "#1a8040"
-    }
-  }, "\u2713 AI scanning ready"))), priorScanMsg && /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 12,
-      color: priorScanMsg.includes("Could not") ? "#c06060" : "#50a070",
-      marginBottom: 10,
-      padding: "6px 10px",
-      background: priorScanMsg.includes("Could not") ? "#fce8e8" : "#e8f8e8",
-      border: `1px solid ${priorScanMsg.includes("Could not") ? "#e8c0c0" : "#b0d8b0"}`,
-      borderRadius: 6,
-      lineHeight: 1.5
-    }
-  }, priorScanMsg), [{
+  }, scanMsg), [{
     label: "1-Year (Current Year)",
     color: "#1a6fa8",
     counts: year1Counts,
@@ -8872,12 +8117,12 @@ ${"</"}script>${"</"}body>${"</"}html>`;
 
     // Helper to format date range compactly
     const shortRange = (s, e) => {
-      var _MO, _MO2;
+      var _MO3, _MO4;
       const sp = s.split("-"),
         ep = e.split("-");
-      const sm = (_MO = MO[parseInt(sp[1]) - 1]) === null || _MO === void 0 ? void 0 : _MO.slice(0, 3),
+      const sm = (_MO3 = MO[parseInt(sp[1]) - 1]) === null || _MO3 === void 0 ? void 0 : _MO3.slice(0, 3),
         sd = parseInt(sp[2]);
-      const em = (_MO2 = MO[parseInt(ep[1]) - 1]) === null || _MO2 === void 0 ? void 0 : _MO2.slice(0, 3),
+      const em = (_MO4 = MO[parseInt(ep[1]) - 1]) === null || _MO4 === void 0 ? void 0 : _MO4.slice(0, 3),
         ed = parseInt(ep[2]);
       if (s === e) return `${sm} ${sd}`;
       if (sp[1] === ep[1]) return `${sm} ${sd}–${ed}`;
@@ -9730,7 +8975,510 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         marginLeft: "auto"
       }
     }, "\u2715")))));
-  })())));
+  })()), view === "settings" && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+    style: css.card
+  }, /*#__PURE__*/React.createElement("div", {
+    style: css.cardT
+  }, "\uD83C\uDFA8 Appearance"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 12
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 13,
+      color: "#5a6a78"
+    }
+  }, "Theme"), /*#__PURE__*/React.createElement("button", {
+    onClick: () => setDarkMode(d => !d),
+    style: {
+      ...css.btn(!darkMode),
+      padding: "6px 16px",
+      fontSize: 12
+    }
+  }, "\u2600\uFE0F Light"), /*#__PURE__*/React.createElement("button", {
+    onClick: () => setDarkMode(d => !d),
+    style: {
+      ...css.btn(darkMode),
+      padding: "6px 16px",
+      fontSize: 12
+    }
+  }, "\uD83C\uDF19 Dark"))), /*#__PURE__*/React.createElement("div", {
+    style: css.card
+  }, /*#__PURE__*/React.createElement("div", {
+    style: css.cardT
+  }, "\uD83D\uDD12 Scheduler Mode"), !isScheduler ? /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 12,
+      color: "#7a8a98",
+      margin: "0 0 8px",
+      lineHeight: 1.5
+    }
+  }, "Enter the scheduler PIN to unlock admin features (approve/deny vacation requests, set PIN)."), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 6,
+      alignItems: "center"
+    }
+  }, /*#__PURE__*/React.createElement("input", {
+    type: "password",
+    placeholder: "Enter PIN",
+    value: pinInput,
+    onChange: e => setPinInput(e.target.value),
+    onKeyDown: e => e.key === "Enter" && checkPin(),
+    style: {
+      ...css.inp,
+      width: 140,
+      fontSize: 13,
+      fontFamily: mono
+    }
+  }), /*#__PURE__*/React.createElement("button", {
+    onClick: checkPin,
+    style: {
+      ...css.btn(true),
+      padding: "6px 14px"
+    }
+  }, "Unlock"), pinError && /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 12,
+      color: "#c04040",
+      fontWeight: 600
+    }
+  }, pinError)), !schedulerPin && /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 11,
+      color: "#a0a8b0",
+      margin: "6px 0 0"
+    }
+  }, "No PIN set yet. Enter at least 4 characters and click Unlock to set your PIN.")) : /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 8,
+      marginBottom: 8
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 12,
+      color: "#1a8040",
+      fontWeight: 600
+    }
+  }, "\u2713 Scheduler mode active"), /*#__PURE__*/React.createElement("button", {
+    onClick: () => setIsScheduler(false),
+    style: {
+      background: "none",
+      border: "1px solid #d0d8e0",
+      color: "#6a7a88",
+      borderRadius: 5,
+      padding: "3px 10px",
+      fontSize: 11,
+      cursor: "pointer",
+      fontFamily: font
+    }
+  }, "Lock")), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
+    style: {
+      fontSize: 11,
+      color: "#7a8a98",
+      display: "block",
+      marginBottom: 2
+    }
+  }, "Set or change scheduler PIN"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 6,
+      alignItems: "center"
+    }
+  }, /*#__PURE__*/React.createElement("input", {
+    type: "password",
+    placeholder: "New PIN",
+    value: pinInput,
+    onChange: e => setPinInput(e.target.value),
+    style: {
+      ...css.inp,
+      width: 140,
+      fontSize: 13,
+      fontFamily: mono
+    }
+  }), /*#__PURE__*/React.createElement("button", {
+    onClick: () => {
+      if (pinInput.length >= 4) {
+        setSchedulerPin(pinInput);
+        setPinInput("");
+        alert("PIN updated!");
+      } else {
+        alert("PIN must be at least 4 characters");
+      }
+    },
+    style: {
+      ...css.btn(true),
+      padding: "6px 14px"
+    }
+  }, "Save PIN")), schedulerPin && /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 11,
+      color: "#8a94a0",
+      margin: "4px 0 0"
+    }
+  }, "Current PIN: ", schedulerPin.replace(/./g, "•"))))), /*#__PURE__*/React.createElement("div", {
+    style: css.card
+  }, /*#__PURE__*/React.createElement("div", {
+    style: css.cardT
+  }, "\uD83D\uDD14 Notification Settings"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: dk ? "#1a2a3e" : "#f8f9fb",
+      border: `1px solid ${dkCardBorder}`,
+      borderRadius: 8,
+      padding: "12px 14px",
+      marginBottom: 12
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "center",
+      marginBottom: 6
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 12,
+      fontWeight: 600,
+      color: dkText
+    }
+  }, "Push Notifications (OneSignal)"), oneSignalSubscribed && /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 11,
+      color: "#1a8040",
+      fontWeight: 600
+    }
+  }, "\u2713 Subscribed on this device"), pushPermission === "denied" && /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 11,
+      color: "#c04040",
+      fontWeight: 600
+    }
+  }, "\u2715 Blocked")), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 11,
+      color: dkSubtext,
+      margin: "0 0 8px",
+      lineHeight: 1.5
+    }
+  }, "Each partner needs to click \"Enable\" once on their device. Notifications will arrive even when the browser is closed."), !oneSignalSubscribed && pushPermission !== "denied" && /*#__PURE__*/React.createElement("button", {
+    onClick: requestPushPermission,
+    style: {
+      ...css.btn(true),
+      padding: "6px 14px",
+      fontSize: 12
+    }
+  }, "Enable Push Notifications"), pushPermission === "denied" && /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 11,
+      color: "#c04040",
+      lineHeight: 1.5
+    }
+  }, "Notifications are blocked. Please allow notifications for this site in your browser settings."), pushPermission === "granted" && /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 8,
+      alignItems: "center",
+      marginBottom: 8
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: sendTestNotification,
+    style: {
+      ...css.btn(false),
+      padding: "5px 12px",
+      fontSize: 11
+    }
+  }, "\uD83D\uDD14 Send Test Notification"), notifTestSent && /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 11,
+      color: "#1a8040",
+      fontWeight: 600
+    }
+  }, notifTestSent)), isScheduler && /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 8,
+      paddingTop: 8,
+      borderTop: "1px dashed #e0e4ea"
+    }
+  }, /*#__PURE__*/React.createElement("label", {
+    style: {
+      fontSize: 10,
+      color: "#7a8a98",
+      display: "block",
+      marginBottom: 2
+    }
+  }, "OneSignal REST API Key (for sending push to all devices)"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 6,
+      alignItems: "center"
+    }
+  }, /*#__PURE__*/React.createElement("input", {
+    type: "password",
+    value: oneSignalApiKey,
+    onChange: e => setOneSignalApiKey(e.target.value),
+    placeholder: "Paste REST API key from OneSignal \u2192 Settings \u2192 Keys & IDs",
+    style: {
+      ...css.inp,
+      width: "100%",
+      maxWidth: 420,
+      fontSize: 11,
+      fontFamily: mono
+    }
+  }), /*#__PURE__*/React.createElement("button", {
+    onClick: () => {
+      try {
+        localStorage.setItem("dsg-onesignal-key", oneSignalApiKey);
+      } catch (e) {}
+      setSaveStatus("Saved");
+      setTimeout(() => setSaveStatus(""), 2000);
+    },
+    style: {
+      ...css.btn(true),
+      padding: "5px 12px",
+      fontSize: 11,
+      whiteSpace: "nowrap"
+    }
+  }, "Save")), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 10,
+      color: "#8a94a0",
+      margin: "4px 0 0"
+    }
+  }, "Find this at onesignal.com \u2192 your app \u2192 Settings \u2192 Keys & IDs \u2192 REST API Key"), oneSignalApiKey && /*#__PURE__*/React.createElement("button", {
+    onClick: async () => {
+      try {
+        const resp = await fetch("https://onesignal.com/api/v1/notifications", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Basic ${oneSignalApiKey}`
+          },
+          body: JSON.stringify({
+            app_id: "9ca5c08f-6fb3-4ee5-b564-09aafc1c1901",
+            included_segments: ["Subscribed Users"],
+            headings: {
+              en: "DSG Call Schedule"
+            },
+            contents: {
+              en: "Test push notification — if you see this, push is working!"
+            },
+            url: "https://fkhan628.github.io/Call-Schedule-App/"
+          })
+        });
+        const data = await resp.json();
+        alert(`Push test result:\nStatus: ${resp.status}\nRecipients: ${data.recipients || 0}\n${data.errors ? "Errors: " + JSON.stringify(data.errors) : "Success!"}`);
+      } catch (e) {
+        alert("Push test error: " + e.message);
+      }
+    },
+    style: {
+      ...css.btn(false),
+      padding: "4px 10px",
+      fontSize: 10,
+      marginTop: 6
+    }
+  }, "Test Push to All Devices"))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: dk ? "#1a2a3e" : "#f8f9fb",
+      border: `1px solid ${dkCardBorder}`,
+      borderRadius: 8,
+      padding: "12px 14px",
+      marginBottom: 12
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      fontWeight: 600,
+      color: dkText,
+      marginBottom: 6
+    }
+  }, "\uD83D\uDCE7 Email Notifications"), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 11,
+      color: dkSubtext,
+      margin: "0 0 8px",
+      lineHeight: 1.5
+    }
+  }, "Set up email addresses for each surgeon. Requires a Supabase Edge Function \u2014 see the setup guide below."), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: 12
+    }
+  }, /*#__PURE__*/React.createElement("label", {
+    style: {
+      fontSize: 10,
+      color: "#7a8a98",
+      display: "block",
+      marginBottom: 2
+    }
+  }, "Edge Function URL"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 6,
+      alignItems: "center"
+    }
+  }, /*#__PURE__*/React.createElement("input", {
+    value: edgeFunctionUrl,
+    onChange: e => setEdgeFunctionUrl(e.target.value),
+    placeholder: "https://your-project.supabase.co/functions/v1/send-notification",
+    style: {
+      ...css.inp,
+      width: "100%",
+      maxWidth: 420,
+      fontSize: 11,
+      fontFamily: mono
+    }
+  }), /*#__PURE__*/React.createElement("button", {
+    onClick: async () => {
+      try {
+        await supabase.from("call_schedule_config").upsert({
+          id: "config",
+          edge_function_url: edgeFunctionUrl,
+          updated_at: new Date().toISOString()
+        });
+        setSaveStatus("Saved");
+        setTimeout(() => setSaveStatus(""), 2000);
+      } catch (e) {}
+    },
+    style: {
+      ...css.btn(true),
+      padding: "5px 12px",
+      fontSize: 11,
+      whiteSpace: "nowrap"
+    }
+  }, "Save URL")), !edgeFunctionUrl && /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 10,
+      color: "#c04040",
+      margin: "4px 0 0"
+    }
+  }, "Email notifications require the Edge Function URL. Deploy the function first."), edgeFunctionUrl && /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 10,
+      color: "#1a8040",
+      margin: "4px 0 0"
+    }
+  }, "\u2713 Edge Function configured")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      fontWeight: 600,
+      color: "#5a6a78",
+      marginBottom: 6
+    }
+  }, "Surgeon Email Addresses"), surgeons.map(s => {
+    const pref = notifPrefs[s.id] || {};
+    return /*#__PURE__*/React.createElement("div", {
+      key: s.id,
+      style: {
+        display: "flex",
+        gap: 6,
+        alignItems: "center",
+        marginBottom: 6,
+        flexWrap: "wrap"
+      }
+    }, /*#__PURE__*/React.createElement(Badge, {
+      id: s.id,
+      small: true
+    }), /*#__PURE__*/React.createElement("input", {
+      value: pref.email || "",
+      onChange: e => saveNotifPref(s.id, {
+        email: e.target.value
+      }),
+      placeholder: "email@example.com",
+      type: "email",
+      style: {
+        ...css.inp,
+        width: 200,
+        fontSize: 11,
+        fontFamily: mono,
+        padding: "4px 8px"
+      }
+    }), /*#__PURE__*/React.createElement("label", {
+      style: {
+        display: "flex",
+        alignItems: "center",
+        gap: 3,
+        fontSize: 10,
+        color: "#5a6a78",
+        cursor: "pointer"
+      }
+    }, /*#__PURE__*/React.createElement("input", {
+      type: "checkbox",
+      checked: pref.email_notifs || false,
+      onChange: e => saveNotifPref(s.id, {
+        email_notifs: e.target.checked
+      })
+    }), "Email"), /*#__PURE__*/React.createElement("label", {
+      style: {
+        display: "flex",
+        alignItems: "center",
+        gap: 3,
+        fontSize: 10,
+        color: "#5a6a78",
+        cursor: "pointer"
+      }
+    }, /*#__PURE__*/React.createElement("input", {
+      type: "checkbox",
+      checked: pref.browser_push !== false,
+      onChange: e => saveNotifPref(s.id, {
+        browser_push: e.target.checked
+      })
+    }), "Push"));
+  }), notifPrefsSaving && /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 10,
+      color: "#1a8040"
+    }
+  }, "Saving\u2026"), mySurgeon && /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 10,
+      paddingTop: 8,
+      borderTop: "1px solid #e8ecf0"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      fontWeight: 600,
+      color: "#5a6a78",
+      marginBottom: 6
+    }
+  }, "Notify me about:"), [["schedule_changes", "Schedule changes & shift swaps"], ["vacation_updates", "Vacation requests & approvals"], ["shift_reminders", "Shift reminders"]].map(([key, label]) => /*#__PURE__*/React.createElement("label", {
+    key: key,
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 6,
+      marginBottom: 4,
+      fontSize: 12,
+      color: "#3a4a58",
+      cursor: "pointer"
+    }
+  }, /*#__PURE__*/React.createElement("input", {
+    type: "checkbox",
+    checked: (notifPrefs[mySurgeon] || {})[key] !== false,
+    onChange: e => saveNotifPref(mySurgeon, {
+      [key]: e.target.checked
+    })
+  }), label))))), /*#__PURE__*/React.createElement("div", {
+    style: css.card
+  }, /*#__PURE__*/React.createElement("div", {
+    style: css.cardT
+  }, "\uD83D\uDDD1 Data Management"), /*#__PURE__*/React.createElement("button", {
+    onClick: resetAllData,
+    style: {
+      background: "none",
+      border: "1px solid #e8c0c0",
+      color: "#804040",
+      borderRadius: 6,
+      padding: "6px 14px",
+      fontSize: 12,
+      cursor: "pointer",
+      fontFamily: font
+    }
+  }, "Reset All Data")))));
 }
 const thS = {
   textAlign: "left",
@@ -9757,7 +9505,6 @@ const tdS = {
   fontSize: 13
 };
 const root = ReactDOM.createRoot(document.getElementById('root'));
-root.render(React.createElement(CallSchedule));
   </script>
 </body>
 </html>

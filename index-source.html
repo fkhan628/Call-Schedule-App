@@ -40,7 +40,7 @@
   <script src="https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.page.js" defer></script>
   <script>
     // ─── Auto-update: bump this version string each deploy ───
-    var APP_VERSION = "2026.04.14a";
+    var APP_VERSION = "2026.04.14b";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       if (stored && stored !== APP_VERSION) {
@@ -85,6 +85,7 @@ function CallSchedule() {
   const [year2Counts, setYear2Counts] = useState(COUNTS_2YR); // 2-year totals
   const [startMonth, setStartMonth] = useState(4);
   const [startYear, setStartYear] = useState(2026);
+  const [numWeeks, setNumWeeks] = useState(14);
   const [calMonth, setCalMonth] = useState(4);
   const [calYear, setCalYear] = useState(2026);
 
@@ -218,6 +219,7 @@ function CallSchedule() {
           if (d.year2Counts && Object.values(d.year2Counts).some(c => Object.values(c).some(v => v > 0))) setYear2Counts(d.year2Counts);
           if (d.startMonth !== undefined) setStartMonth(d.startMonth);
           if (d.startYear !== undefined) setStartYear(d.startYear);
+          if (d.numWeeks) setNumWeeks(d.numWeeks);
           if (d.holidayAssignments) setHolidayAssignments(d.holidayAssignments);
         }
         const { data: cfgRow } = await supabase
@@ -307,6 +309,7 @@ function CallSchedule() {
             if (d.year2Counts && Object.values(d.year2Counts).some(c => Object.values(c).some(v => v > 0))) setYear2Counts(d.year2Counts);
             if (d.startMonth !== undefined) setStartMonth(d.startMonth);
             if (d.startYear !== undefined) setStartYear(d.startYear);
+            if (d.numWeeks) setNumWeeks(d.numWeeks);
             if (d.holidayAssignments) setHolidayAssignments(d.holidayAssignments);
           }
         }
@@ -343,7 +346,7 @@ function CallSchedule() {
           backupMondays: [...backupMondaySet],
           fierceBackup: [...fierceBackupSet],
           schedule, appShifts, priorCounts, year1Counts, year2Counts,
-          startMonth, startYear, holidayAssignments,
+          startMonth, startYear, numWeeks, holidayAssignments,
         };
         const ts = new Date().toISOString();
         await supabase
@@ -357,7 +360,7 @@ function CallSchedule() {
       }
     }, 800);
     return () => clearTimeout(timer);
-  }, [loaded, surgeons, apps, vacations, backupMondaySet, fierceBackupSet, schedule, appShifts, priorCounts, year1Counts, year2Counts, startMonth, startYear, holidayAssignments]);
+  }, [loaded, surgeons, apps, vacations, backupMondaySet, fierceBackupSet, schedule, appShifts, priorCounts, year1Counts, year2Counts, startMonth, startYear, numWeeks, holidayAssignments]);
 
   // ─── Supabase: Save scheduler PIN + edge function URL ───
   useEffect(() => {
@@ -1298,7 +1301,7 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
 
   const sMap = useMemo(() => { const m={}; surgeons.forEach((s,i)=>m[s.id]={...s,idx:i}); return m; }, [surgeons]);
   const aMap = useMemo(() => { const m={}; apps.forEach((a,i)=>m[a.id]={...a,idx:i}); return m; }, [apps]);
-  const mondays = useMemo(() => getMondays(startYear, startMonth, 14), [startYear, startMonth]);
+  const mondays = useMemo(() => getMondays(startYear, startMonth, numWeeks), [startYear, startMonth, numWeeks]);
   const endDate = mondays.length > 0 ? addD(mondays[mondays.length-1], 6) : null;
   const endMoIdx = endDate ? endDate.getMonth() : (startMonth+2)%12;
   const endYr = endDate ? endDate.getFullYear() : startYear;
@@ -2420,7 +2423,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           </div>
         </div>
         <div style={css.nav}>
-          {[["setup","Setup"],["totals","Totals"],["calendar","Calendar"],["myschedule","Mine"],["requests","Requests"],["stats","Stats"]].map(([k,l])=>
+          {[["setup","Setup"],["calendar","Calendar"],["myschedule","Mine"],["requests","Requests"],["stats","Stats"],["totals","Totals"],["settings","Settings"]].map(([k,l])=>
             <button key={k} style={{...css.tab(view===k),position:"relative"}} onClick={()=>setView(k)}>
               {l}
               {k==="requests" && (vacRequests.filter(r=>r.status==="pending").length + tradeRequests.filter(r=>r.status==="pending").length) > 0 && (
@@ -2435,9 +2438,6 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             {unreadCount > 0 && (
               <span style={{position:"absolute",top:-4,right:-4,background:"#e04040",color:"#fff",borderRadius:10,fontSize:9,fontWeight:700,minWidth:16,height:16,display:"flex",alignItems:"center",justifyContent:"center",padding:"0 4px"}}>{unreadCount}</span>
             )}
-          </button>
-          <button onClick={()=>setDarkMode(d=>!d)} style={{...css.tab(false),fontSize:15,padding:"4px 10px"}} title="Toggle dark mode">
-            {darkMode ? "☀️" : "🌙"}
           </button>
           {scheduleHistory.length > 0 && (
             <button onClick={undoLastChange} style={{...css.tab(false),fontSize:12,padding:"4px 10px",color:"#c09030"}} title={`Undo (${scheduleHistory.length} steps)`}>
@@ -2464,7 +2464,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             {notifications.length === 0 ? (
               <p style={{color:"#8a94a0",fontSize:13,textAlign:"center",padding:20}}>No notifications yet</p>
             ) : notifications.map(n => {
-              const tabMap = {vacation_submitted:"requests",vacation_approved:"requests",vacation_denied:"requests",schedule_published:"schedule",schedule_changed:"schedule",trade_submitted:"requests",trade_accepted:"requests",trade_declined:"requests"};
+              const tabMap = {vacation_submitted:"requests",vacation_approved:"requests",vacation_denied:"requests",schedule_published:"calendar",schedule_changed:"calendar",trade_submitted:"requests",trade_accepted:"requests",trade_declined:"requests"};
               const targetTab = tabMap[n.type] || null;
               return (
               <div key={n.id} onClick={()=>{if(targetTab){setView(targetTab);setShowNotifs(false);markNotifsSeen();}}}
@@ -2521,13 +2521,16 @@ ${"</"}script>${"</"}body>${"</"}html>`;
 
           {/* Period */}
           <div style={css.card}>
-            <div style={css.cardT}>Schedule Period (14 Weeks)</div>
+            <div style={css.cardT}>Schedule Period</div>
             <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
               <select value={startMonth} onChange={e=>setStartMonth(+e.target.value)} style={{...css.inp,width:140}}>
                 {MO.map((m,i)=><option key={i} value={i}>{m}</option>)}
               </select>
               <select value={startYear} onChange={e=>setStartYear(+e.target.value)} style={{...css.inp,width:90}}>
                 {[2025,2026,2027,2028].map(y=><option key={y} value={y}>{y}</option>)}
+              </select>
+              <select value={numWeeks} onChange={e=>setNumWeeks(+e.target.value)} style={{...css.inp,width:120}}>
+                {[14,28,42,56].map(w=><option key={w} value={w}>{w} weeks</option>)}
               </select>
               <span style={{color:"#7a8a98",fontSize:12}}>→ {MO[endMoIdx]} {endYr}</span>
             </div>
@@ -2588,58 +2591,54 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                 <button onClick={clearAllVacations} style={{background:"none",border:"1px solid #e0a0a0",color:"#904040",borderRadius:6,padding:"6px 12px",fontSize:11,cursor:"pointer",fontFamily:font}}>🗑 Clear All</button>
               )}
             </div>
-            {surgeons.map(s=>{
-              const v=vacations[s.id]||[]; if(!v.length) return null;
-              return (
-                <div key={s.id} style={{marginBottom:6,display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
-                  <Badge id={s.id}/>
-                  {v.map(([vs,ve],i)=>(
-                    editVac && editVac.sid===s.id && editVac.idx===i ? (
-                      <span key={i} style={{display:"inline-flex",gap:4,alignItems:"center",background:"#f0f8ff",border:"1px solid #a0c0e0",borderRadius:5,padding:"2px 6px"}}>
-                        <input type="date" value={editVac.start} onChange={e=>setEditVac(p=>({...p,start:e.target.value}))} style={{...css.inp,width:120,fontSize:11,padding:"2px 4px"}}/>
-                        <span style={{fontSize:11,color:"#7a8a98"}}>→</span>
-                        <input type="date" value={editVac.end} onChange={e=>setEditVac(p=>({...p,end:e.target.value}))} style={{...css.inp,width:120,fontSize:11,padding:"2px 4px"}}/>
-                        <button onClick={saveEditVac} style={{background:"none",border:"none",color:"#1a8040",cursor:"pointer",fontSize:13,fontWeight:700}}>✓</button>
-                        <button onClick={()=>setEditVac(null)} style={{background:"none",border:"none",color:"#904040",cursor:"pointer",fontSize:11}}>✕</button>
-                      </span>
-                    ) : (
-                      <span key={i} style={{fontFamily:mono,fontSize:11,color:"#5a6a78",cursor:"pointer",padding:"1px 4px",borderRadius:4,border:"1px solid transparent"}}
-                        onClick={()=>setEditVac({sid:s.id,idx:i,start:vs,end:ve})}
-                        title="Click to edit dates">
-                        {vs} → {ve}
-                        <button onClick={e=>{e.stopPropagation();rmVac(s.id,i);}} style={{background:"none",border:"none",color:"#904040",cursor:"pointer",fontSize:11,marginLeft:3}}>✕</button>
-                      </span>
-                    )
-                  ))}
-                </div>
-              );
-            })}
-            {apps.map(a=>{
-              const v=vacations[a.id]||[]; if(!v.length) return null;
-              return (
-                <div key={a.id} style={{marginBottom:6,display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
-                  <AppBadge id={a.id}/>
-                  {v.map(([vs,ve],i)=>(
-                    editVac && editVac.sid===a.id && editVac.idx===i ? (
-                      <span key={i} style={{display:"inline-flex",gap:4,alignItems:"center",background:"#f0f8ff",border:"1px solid #a0c0e0",borderRadius:5,padding:"2px 6px"}}>
-                        <input type="date" value={editVac.start} onChange={e=>setEditVac(p=>({...p,start:e.target.value}))} style={{...css.inp,width:120,fontSize:11,padding:"2px 4px"}}/>
-                        <span style={{fontSize:11,color:"#7a8a98"}}>→</span>
-                        <input type="date" value={editVac.end} onChange={e=>setEditVac(p=>({...p,end:e.target.value}))} style={{...css.inp,width:120,fontSize:11,padding:"2px 4px"}}/>
-                        <button onClick={saveEditVac} style={{background:"none",border:"none",color:"#1a8040",cursor:"pointer",fontSize:13,fontWeight:700}}>✓</button>
-                        <button onClick={()=>setEditVac(null)} style={{background:"none",border:"none",color:"#904040",cursor:"pointer",fontSize:11}}>✕</button>
-                      </span>
-                    ) : (
-                      <span key={i} style={{fontFamily:mono,fontSize:11,color:"#5a6a78",cursor:"pointer",padding:"1px 4px",borderRadius:4,border:"1px solid transparent"}}
-                        onClick={()=>setEditVac({sid:a.id,idx:i,start:vs,end:ve})}
-                        title="Click to edit dates">
-                        {vs} → {ve}
-                        <button onClick={e=>{e.stopPropagation();rmVac(a.id,i);}} style={{background:"none",border:"none",color:"#904040",cursor:"pointer",fontSize:11,marginLeft:3}}>✕</button>
-                      </span>
-                    )
-                  ))}
-                </div>
-              );
-            })}
+            {(()=>{
+              const allPeople = [...surgeons.map(s=>({...s,type:"s"})), ...apps.map(a=>({...a,type:"a"}))];
+              const peopleWithVac = allPeople.filter(p=>(vacations[p.id]||[]).length>0);
+              if(!peopleWithVac.length) return null;
+              const shortRange = (s, e) => {
+                const sp = s.split("-"), ep = e.split("-");
+                const sm = MO[parseInt(sp[1])-1]?.slice(0,3), sd = parseInt(sp[2]);
+                const em = MO[parseInt(ep[1])-1]?.slice(0,3), ed = parseInt(ep[2]);
+                if (s === e) return `${sm} ${sd}`;
+                if (sp[1] === ep[1]) return `${sm} ${sd}–${ed}`;
+                return `${sm} ${sd} – ${em} ${ed}`;
+              };
+              return peopleWithVac.map(p=>{
+                const v=vacations[p.id]||[];
+                const expanded=expandedVacGroups["sv_"+p.id];
+                return <div key={p.id} style={{marginBottom:5,border:"1px solid #e0e4ea",borderRadius:7,overflow:"hidden",background:"#f8f9fb"}}>
+                  <div onClick={()=>toggleVacGroup("sv_"+p.id)} style={{display:"flex",alignItems:"center",gap:8,padding:"7px 10px",cursor:"pointer",flexWrap:"wrap"}}>
+                    <span style={{fontSize:10,color:"#a0a8b0",transition:"transform 0.15s",transform:expanded?"rotate(90deg)":"rotate(0deg)"}}>▶</span>
+                    {p.type==="s"?<Badge id={p.id}/>:<AppBadge id={p.id}/>}
+                    <span style={{fontSize:11,color:"#6a7a88",fontWeight:600}}>{v.length} date{v.length!==1?"s":""}</span>
+                    <div style={{display:"flex",gap:3,flexWrap:"wrap",marginLeft:"auto"}}>
+                      {v.slice(0,5).map(([vs,ve],i)=><span key={i} style={{fontFamily:mono,fontSize:10,color:"#6a7a88",background:"#eef0f4",padding:"1px 6px",borderRadius:4,border:"1px solid #dce2e8"}}>{shortRange(vs,ve)}</span>)}
+                      {v.length>5&&<span style={{fontSize:10,color:"#a0a8b0"}}>+{v.length-5}</span>}
+                    </div>
+                  </div>
+                  {expanded&&<div style={{borderTop:"1px solid #e0e4ea",padding:"6px 10px"}}>
+                    {v.map(([vs,ve],i)=>(
+                      editVac && editVac.sid===p.id && editVac.idx===i ? (
+                        <div key={i} style={{display:"inline-flex",gap:4,alignItems:"center",background:"#f0f8ff",border:"1px solid #a0c0e0",borderRadius:5,padding:"3px 6px",marginBottom:4,marginRight:4}}>
+                          <input type="date" value={editVac.start} onChange={e=>setEditVac(pr=>({...pr,start:e.target.value}))} style={{...css.inp,width:120,fontSize:11,padding:"2px 4px"}}/>
+                          <span style={{fontSize:11,color:"#7a8a98"}}>→</span>
+                          <input type="date" value={editVac.end} onChange={e=>setEditVac(pr=>({...pr,end:e.target.value}))} style={{...css.inp,width:120,fontSize:11,padding:"2px 4px"}}/>
+                          <button onClick={saveEditVac} style={{background:"none",border:"none",color:"#1a8040",cursor:"pointer",fontSize:13,fontWeight:700}}>✓</button>
+                          <button onClick={()=>setEditVac(null)} style={{background:"none",border:"none",color:"#904040",cursor:"pointer",fontSize:11}}>✕</button>
+                        </div>
+                      ) : (
+                        <span key={i} style={{display:"inline-flex",alignItems:"center",fontFamily:mono,fontSize:11,color:"#5a6a78",cursor:"pointer",padding:"2px 6px",borderRadius:4,border:"1px solid #e8ecf0",background:"#fff",marginBottom:4,marginRight:4}}
+                          onClick={()=>setEditVac({sid:p.id,idx:i,start:vs,end:ve})}
+                          title="Click to edit dates">
+                          {vs} → {ve}
+                          <button onClick={e=>{e.stopPropagation();rmVac(p.id,i);}} style={{background:"none",border:"none",color:"#904040",cursor:"pointer",fontSize:11,marginLeft:4}}>✕</button>
+                        </span>
+                      )
+                    ))}
+                  </div>}
+                </div>;
+              });
+            })()}
           </div>
 
           {/* APP Shift Assignments */}
@@ -2953,267 +2952,6 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             );
           })()}
 
-          {/* ─── Settings (collapsed) ─── */}
-          <div style={{marginTop:14}}>
-            <button onClick={()=>setShowApiKey(p=>!p)}
-              style={{background:"none",border:"1px solid #e0e4ea",borderRadius:7,padding:"8px 14px",cursor:"pointer",fontFamily:font,display:"flex",alignItems:"center",gap:8,width:"100%",justifyContent:"space-between"}}>
-              <span style={{fontSize:12,color:"#6a7a88",fontWeight:600}}>
-                ⚙️ Settings
-              </span>
-              <span style={{fontSize:11,color:"#7a8a98"}}>{showApiKey ? "▲" : "▼"}</span>
-            </button>
-            {showApiKey && (
-              <div style={{...css.card,marginTop:6,background:"#f4f6f8",border:"1px solid #e0e4ea"}}>
-
-                <div style={{marginBottom:16}}>
-                  <div style={{fontSize:12,fontWeight:700,color:"#5a7a90",marginBottom:8}}>🔒 Scheduler Mode</div>
-                  {!isScheduler ? (
-                    <div>
-                      <p style={{fontSize:12,color:"#7a8a98",margin:"0 0 8px",lineHeight:1.5}}>
-                        Enter the scheduler PIN to unlock admin features (approve/deny vacation requests, set PIN).
-                      </p>
-                      <div style={{display:"flex",gap:6,alignItems:"center"}}>
-                        <input type="password" placeholder="Enter PIN" value={pinInput} onChange={e=>setPinInput(e.target.value)}
-                          onKeyDown={e=>e.key==="Enter"&&checkPin()}
-                          style={{...css.inp,width:140,fontSize:13,fontFamily:mono}}/>
-                        <button onClick={checkPin} style={{...css.btn(true),padding:"6px 14px"}}>Unlock</button>
-                        {pinError && <span style={{fontSize:12,color:"#c04040",fontWeight:600}}>{pinError}</span>}
-                      </div>
-                      {!schedulerPin && <p style={{fontSize:11,color:"#a0a8b0",margin:"6px 0 0"}}>No PIN set yet. Enter at least 4 characters and click Unlock to set your PIN.</p>}
-                    </div>
-                  ) : (
-                    <div>
-                      <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
-                        <span style={{fontSize:12,color:"#1a8040",fontWeight:600}}>✓ Scheduler mode active</span>
-                        <button onClick={()=>setIsScheduler(false)} style={{background:"none",border:"1px solid #d0d8e0",color:"#6a7a88",borderRadius:5,padding:"3px 10px",fontSize:11,cursor:"pointer",fontFamily:font}}>Lock</button>
-                      </div>
-                      <div>
-                        <label style={{fontSize:11,color:"#7a8a98",display:"block",marginBottom:2}}>Set or change scheduler PIN</label>
-                        <div style={{display:"flex",gap:6,alignItems:"center"}}>
-                          <input type="password" placeholder="New PIN" value={pinInput} onChange={e=>setPinInput(e.target.value)}
-                            style={{...css.inp,width:140,fontSize:13,fontFamily:mono}}/>
-                          <button onClick={()=>{if(pinInput.length>=4){setSchedulerPin(pinInput);setPinInput("");alert("PIN updated!");}else{alert("PIN must be at least 4 characters");}}} style={{...css.btn(true),padding:"6px 14px"}}>Save PIN</button>
-                        </div>
-                        {schedulerPin && <p style={{fontSize:11,color:"#8a94a0",margin:"4px 0 0"}}>Current PIN: {schedulerPin.replace(/./g,"•")}</p>}
-                      </div>
-                    </div>
-                  )}
-                </div>
-
-                <div style={{marginTop:16,paddingTop:12,borderTop:"1px solid #e0e4ea"}}>
-                  <button onClick={resetAllData} style={{background:"none",border:"1px solid #e8c0c0",color:"#804040",borderRadius:6,padding:"5px 12px",fontSize:11,cursor:"pointer",fontFamily:font}}>
-                    Reset All Data
-                  </button>
-                </div>
-
-                {/* ─── Notification Settings ─── */}
-                <div style={{marginTop:16,paddingTop:12,borderTop:"1px solid #e0e4ea"}}>
-                  <div style={{fontSize:12,fontWeight:700,color:"#2c5a80",marginBottom:10}}>🔔 Notification Settings</div>
-
-                  {/* Push Notifications via OneSignal */}
-                  <div style={{background:"#f8f9fb",border:"1px solid #e0e4ea",borderRadius:8,padding:"12px 14px",marginBottom:12}}>
-                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
-                      <span style={{fontSize:12,fontWeight:600,color:"#2c3e50"}}>Push Notifications (OneSignal)</span>
-                      {oneSignalSubscribed && <span style={{fontSize:11,color:"#1a8040",fontWeight:600}}>✓ Subscribed on this device</span>}
-                      {pushPermission === "denied" && <span style={{fontSize:11,color:"#c04040",fontWeight:600}}>✕ Blocked</span>}
-                    </div>
-                    <p style={{fontSize:11,color:"#7a8a98",margin:"0 0 8px",lineHeight:1.5}}>
-                      Each partner needs to click "Enable" once on their device. Notifications will arrive even when the browser is closed.
-                    </p>
-                    {!oneSignalSubscribed && pushPermission !== "denied" && (
-                      <button onClick={requestPushPermission} style={{...css.btn(true),padding:"6px 14px",fontSize:12}}>
-                        Enable Push Notifications
-                      </button>
-                    )}
-                    {pushPermission === "denied" && (
-                      <p style={{fontSize:11,color:"#c04040",lineHeight:1.5}}>
-                        Notifications are blocked. Please allow notifications for this site in your browser settings.
-                      </p>
-                    )}
-                    {pushPermission === "granted" && (
-                      <div style={{display:"flex",gap:8,alignItems:"center",marginBottom:8}}>
-                        <button onClick={sendTestNotification} style={{...css.btn(false),padding:"5px 12px",fontSize:11}}>
-                          🔔 Send Test Notification
-                        </button>
-                        {notifTestSent && <span style={{fontSize:11,color:"#1a8040",fontWeight:600}}>{notifTestSent}</span>}
-                      </div>
-                    )}
-                    {/* OneSignal REST API Key — needed to send push to OTHER devices */}
-                    {isScheduler && (
-                      <div style={{marginTop:8,paddingTop:8,borderTop:"1px dashed #e0e4ea"}}>
-                        <label style={{fontSize:10,color:"#7a8a98",display:"block",marginBottom:2}}>OneSignal REST API Key (for sending push to all devices)</label>
-                        <div style={{display:"flex",gap:6,alignItems:"center"}}>
-                          <input type="password" value={oneSignalApiKey} onChange={e=>setOneSignalApiKey(e.target.value)}
-                            placeholder="Paste REST API key from OneSignal → Settings → Keys & IDs"
-                            style={{...css.inp,width:"100%",maxWidth:420,fontSize:11,fontFamily:mono}}/>
-                          <button onClick={()=>{
-                            try { localStorage.setItem("dsg-onesignal-key", oneSignalApiKey); } catch(e) {}
-                            setSaveStatus("Saved"); setTimeout(()=>setSaveStatus(""),2000);
-                          }} style={{...css.btn(true),padding:"5px 12px",fontSize:11,whiteSpace:"nowrap"}}>Save</button>
-                        </div>
-                        <p style={{fontSize:10,color:"#8a94a0",margin:"4px 0 0"}}>Find this at onesignal.com → your app → Settings → Keys & IDs → REST API Key</p>
-                        {oneSignalApiKey && (
-                          <button onClick={async ()=>{
-                            try {
-                              const resp = await fetch("https://onesignal.com/api/v1/notifications", {
-                                method: "POST",
-                                headers: { "Content-Type": "application/json", Authorization: `Basic ${oneSignalApiKey}` },
-                                body: JSON.stringify({
-                                  app_id: "9ca5c08f-6fb3-4ee5-b564-09aafc1c1901",
-                                  included_segments: ["Subscribed Users"],
-                                  headings: { en: "DSG Call Schedule" },
-                                  contents: { en: "Test push notification — if you see this, push is working!" },
-                                  url: "https://fkhan628.github.io/Call-Schedule-App/",
-                                }),
-                              });
-                              const data = await resp.json();
-                              alert(`Push test result:\nStatus: ${resp.status}\nRecipients: ${data.recipients || 0}\n${data.errors ? "Errors: " + JSON.stringify(data.errors) : "Success!"}`);
-                            } catch(e) { alert("Push test error: " + e.message); }
-                          }} style={{...css.btn(false),padding:"4px 10px",fontSize:10,marginTop:6}}>
-                            Test Push to All Devices
-                          </button>
-                        )}
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Email Notifications */}
-                  <div style={{background:"#f8f9fb",border:"1px solid #e0e4ea",borderRadius:8,padding:"12px 14px",marginBottom:12}}>
-                    <div style={{fontSize:12,fontWeight:600,color:"#2c3e50",marginBottom:6}}>📧 Email Notifications</div>
-                    <p style={{fontSize:11,color:"#7a8a98",margin:"0 0 8px",lineHeight:1.5}}>
-                      Set up email addresses for each surgeon. Requires a Supabase Edge Function — see the setup guide below.
-                    </p>
-
-                    {/* Edge Function URL */}
-                    <div style={{marginBottom:12}}>
-                      <label style={{fontSize:10,color:"#7a8a98",display:"block",marginBottom:2}}>Edge Function URL</label>
-                      <div style={{display:"flex",gap:6,alignItems:"center"}}>
-                        <input value={edgeFunctionUrl} onChange={e=>setEdgeFunctionUrl(e.target.value)}
-                          placeholder="https://your-project.supabase.co/functions/v1/send-notification"
-                          style={{...css.inp,width:"100%",maxWidth:420,fontSize:11,fontFamily:mono}}/>
-                        <button onClick={async ()=>{
-                          try {
-                            await supabase.from("call_schedule_config").upsert({ id:"config", edge_function_url: edgeFunctionUrl, updated_at: new Date().toISOString() });
-                            setSaveStatus("Saved"); setTimeout(()=>setSaveStatus(""),2000);
-                          } catch(e){}
-                        }} style={{...css.btn(true),padding:"5px 12px",fontSize:11,whiteSpace:"nowrap"}}>Save URL</button>
-                      </div>
-                      {!edgeFunctionUrl && <p style={{fontSize:10,color:"#c04040",margin:"4px 0 0"}}>Email notifications require the Edge Function URL. Deploy the function first.</p>}
-                      {edgeFunctionUrl && <p style={{fontSize:10,color:"#1a8040",margin:"4px 0 0"}}>✓ Edge Function configured</p>}
-                    </div>
-
-                    {/* Per-surgeon email settings */}
-                    <div style={{fontSize:11,fontWeight:600,color:"#5a6a78",marginBottom:6}}>Surgeon Email Addresses</div>
-                    <div style={{fontSize:10,color:"#8a94a0",marginBottom:8,lineHeight:1.5}}>
-                      Enter each surgeon's email and check "Email" to send them notifications. Browser push only works on the device where the app is open — each person must enable push on their own device via the My Schedule tab.
-                    </div>
-                    {surgeons.map(s => {
-                      const pref = notifPrefs[s.id] || {};
-                      return (
-                        <div key={s.id} style={{display:"flex",gap:6,alignItems:"center",marginBottom:6,flexWrap:"wrap"}}>
-                          <Badge id={s.id} small/>
-                          <input value={pref.email || ""} onChange={e=>saveNotifPref(s.id, {email:e.target.value})}
-                            placeholder="email@example.com" type="email"
-                            style={{...css.inp,width:200,fontSize:11,fontFamily:mono,padding:"4px 8px"}}/>
-                          <label style={{display:"flex",alignItems:"center",gap:3,fontSize:10,color:"#5a6a78",cursor:"pointer"}}>
-                            <input type="checkbox" checked={pref.email_notifs || false}
-                              onChange={e=>saveNotifPref(s.id, {email_notifs:e.target.checked})}/>
-                            Email
-                          </label>
-                          <label style={{display:"flex",alignItems:"center",gap:3,fontSize:10,color:"#5a6a78",cursor:"pointer"}} title="Browser push only works on the device where the app is open">
-                            <input type="checkbox" checked={pref.browser_push !== false}
-                              onChange={e=>saveNotifPref(s.id, {browser_push:e.target.checked})}/>
-                            Push
-                          </label>
-                        </div>
-                      );
-                    })}
-                    {notifPrefsSaving && <span style={{fontSize:10,color:"#1a8040"}}>Saving…</span>}
-
-                    {/* Email Diagnostic */}
-                    <details style={{marginTop:8}}>
-                      <summary style={{fontSize:10,color:"#8a94a0",cursor:"pointer"}}>🔍 Debug email delivery</summary>
-                      <div style={{marginTop:6,padding:"8px 10px",background:"#f0f2f5",borderRadius:6,fontSize:11,lineHeight:1.7}}>
-                        <button onClick={async ()=>{
-                          try {
-                            const rows = await db.query("notification_preferences");
-                            const dbState = JSON.stringify(rows, null, 2);
-                            const localState = JSON.stringify(notifPrefsRef.current, null, 2);
-                            const currentPrefs = notifPrefsRef.current || {};
-                            const recipients = [];
-                            Object.entries(currentPrefs).forEach(([sid, prefs]) => {
-                              if (prefs.email && prefs.email_notifs) {
-                                recipients.push({ surgeon_id: sid, email: prefs.email, name: surgeons.find(s=>s.id===sid)?.name || sid });
-                              }
-                            });
-                            alert(`EDGE FUNCTION URL:\n${edgeFunctionUrl || "(not set)"}\n\nRECIPIENTS (who would receive email):\n${recipients.length === 0 ? "(none)" : recipients.map(r=>`${r.name}: ${r.email}`).join("\n")}\n\nSUPABASE ROWS (${rows?.length || 0}):\n${dbState}\n\nLOCAL STATE:\n${localState}`);
-                          } catch(e) { alert("Error: " + e.message); }
-                        }} style={{...css.btn(false),padding:"4px 10px",fontSize:10}}>
-                          Show email state
-                        </button>
-                        <button onClick={async ()=>{
-                          if (!edgeFunctionUrl) { alert("No Edge Function URL set"); return; }
-                          const currentPrefs = notifPrefsRef.current || {};
-                          const recipients = [];
-                          Object.entries(currentPrefs).forEach(([sid, prefs]) => {
-                            if (prefs.email && prefs.email_notifs) {
-                              recipients.push({ email: prefs.email, surgeon_id: sid, name: surgeons.find(s=>s.id===sid)?.name || sid });
-                            }
-                          });
-                          if (recipients.length === 0) { alert("No recipients with email enabled"); return; }
-                          try {
-                            const resp = await fetch(edgeFunctionUrl, {
-                              method: "POST",
-                              headers: { "Content-Type": "application/json", Authorization: `Bearer ${SUPABASE_ANON_KEY}` },
-                              body: JSON.stringify({ type: "test", data: { message: "Diagnostic test email" }, recipients }),
-                            });
-                            const text = await resp.text();
-                            alert(`Edge Function response:\nStatus: ${resp.status}\nBody: ${text}\n\nSent to: ${recipients.map(r=>r.email).join(", ")}`);
-                          } catch(e) { alert("Fetch error: " + e.message); }
-                        }} style={{...css.btn(false),padding:"4px 10px",fontSize:10,marginLeft:6}}>
-                          Test email delivery
-                        </button>
-                        <div style={{marginTop:6,color:"#7a8a98",fontSize:10}}>
-                          "Show email state" shows what's in Supabase vs local state.<br/>
-                          "Test email delivery" sends a real test email to ALL enabled recipients and shows the Edge Function response.
-                        </div>
-                      </div>
-                    </details>
-
-                    {/* Notification type toggles */}
-                    {mySurgeon && (
-                      <div style={{marginTop:10,paddingTop:8,borderTop:"1px solid #e8ecf0"}}>
-                        <div style={{fontSize:11,fontWeight:600,color:"#5a6a78",marginBottom:6}}>Notify me about:</div>
-                        {[
-                          ["schedule_changes", "Schedule changes & shift swaps"],
-                          ["vacation_updates", "Vacation requests & approvals"],
-                          ["shift_reminders", "Shift reminders"],
-                        ].map(([key, label]) => (
-                          <label key={key} style={{display:"flex",alignItems:"center",gap:6,marginBottom:4,fontSize:12,color:"#3a4a58",cursor:"pointer"}}>
-                            <input type="checkbox" checked={(notifPrefs[mySurgeon] || {})[key] !== false}
-                              onChange={e=>saveNotifPref(mySurgeon, {[key]:e.target.checked})}/>
-                            {label}
-                          </label>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Setup Guide */}
-                  <details style={{marginTop:8}}>
-                    <summary style={{fontSize:11,color:"#1a6fa8",cursor:"pointer",fontWeight:600}}>📖 Email Setup Guide</summary>
-                    <div style={{fontSize:11,color:"#5a6a78",lineHeight:1.7,marginTop:6,padding:"8px 12px",background:"#f0f8ff",borderRadius:6,border:"1px solid #d0e0f0"}}>
-                      <strong>1. Create a Resend account</strong> — Sign up at <span style={{color:"#1a6fa8"}}>resend.com</span> and get an API key.<br/>
-                      <strong>2. Create the Supabase table</strong> — Run the SQL migration (see the <code>notification_preferences</code> table SQL provided).<br/>
-                      <strong>3. Deploy the Edge Function</strong> — Deploy the <code>send-notification</code> Edge Function to your Supabase project.<br/>
-                      <strong>4. Set environment variables</strong> — Add <code>RESEND_API_KEY</code> and <code>NOTIFICATION_FROM_EMAIL</code> to your Edge Function secrets.<br/>
-                      <strong>5. Paste the URL above</strong> — Copy the Edge Function URL into the field above.
-                    </div>
-                  </details>
-                </div>
-              </div>
-            )}
-          </div>
         </>}
 
         {/* ════════════════ TOTALS ════════════════ */}
@@ -3246,30 +2984,6 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             {scanMsg && (
               <div style={{fontSize:12,color:scanMsg.includes("Could not")||scanMsg.includes("could not")?"#c06060":"#50a070",marginBottom:10,padding:"6px 10px",background:scanMsg.includes("Could not")||scanMsg.includes("could not")?"#fce8e8":"#e8f8e8",border:`1px solid ${scanMsg.includes("Could not")||scanMsg.includes("could not")?"#e8c0c0":"#b0d8b0"}`,borderRadius:6}}>
                 {scanMsg}
-              </div>
-            )}
-
-            {/* AI-powered schedule scan */}
-            <div style={{background:"linear-gradient(135deg,#f8f0f4,#f8f0f4)",border:"1px dashed #c0a0d8",borderRadius:8,padding:"14px 16px",marginBottom:14}}>
-              <div style={{fontSize:13,fontWeight:600,color:"#7030a8",marginBottom:6}}>🤖 Scan a Past Call Schedule</div>
-              <div style={{fontSize:11,color:"#7a8a98",lineHeight:1.5,marginBottom:10}}>
-                Upload a PDF, Excel, Word, or CSV of a previous call schedule. AI will read it and count each surgeon's shifts automatically. Imports into the Multi-Year table.
-                
-              </div>
-              <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
-                <input ref={priorFileRef} type="file" accept=".pdf,.xlsx,.xls,.csv,.docx,.doc"
-                  onChange={e => { if(e.target.files?.[0]) handlePriorScheduleScan(e.target.files[0]); }}
-                  style={{display:"none"}} id="priorScanInput"/>
-                <button onClick={()=>priorFileRef.current?.click()} disabled={priorScanning}
-                  style={{...css.btn(true),opacity:priorScanning?0.5:1,padding:"6px 14px",fontSize:12,background:"linear-gradient(135deg,#f0e8f8,#e8d8f4)",borderColor:"#c0a0d8",color:"#7030a8"}}>
-                  {priorScanning ? "⏳ Analyzing…" : "📄 Upload Past Schedule"}
-                </button>
-                <span style={{fontSize:10,color:"#1a8040"}}>✓ AI scanning ready</span>
-              </div>
-            </div>
-            {priorScanMsg && (
-              <div style={{fontSize:12,color:priorScanMsg.includes("Could not")?"#c06060":"#50a070",marginBottom:10,padding:"6px 10px",background:priorScanMsg.includes("Could not")?"#fce8e8":"#e8f8e8",border:`1px solid ${priorScanMsg.includes("Could not")?"#e8c0c0":"#b0d8b0"}`,borderRadius:6,lineHeight:1.5}}>
-                {priorScanMsg}
               </div>
             )}
 
@@ -4521,6 +4235,201 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               )}
             </>;
           })()}
+        </>}
+
+        {/* ════════════════ SETTINGS ════════════════ */}
+        {view==="settings"&&<>
+          {/* Dark / Light Mode */}
+          <div style={css.card}>
+            <div style={css.cardT}>🎨 Appearance</div>
+            <div style={{display:"flex",alignItems:"center",gap:12}}>
+              <span style={{fontSize:13,color:"#5a6a78"}}>Theme</span>
+              <button onClick={()=>setDarkMode(d=>!d)} style={{...css.btn(!darkMode),padding:"6px 16px",fontSize:12}}>
+                ☀️ Light
+              </button>
+              <button onClick={()=>setDarkMode(d=>!d)} style={{...css.btn(darkMode),padding:"6px 16px",fontSize:12}}>
+                🌙 Dark
+              </button>
+            </div>
+          </div>
+
+          {/* Scheduler Mode */}
+          <div style={css.card}>
+            <div style={css.cardT}>🔒 Scheduler Mode</div>
+            {!isScheduler ? (
+              <div>
+                <p style={{fontSize:12,color:"#7a8a98",margin:"0 0 8px",lineHeight:1.5}}>
+                  Enter the scheduler PIN to unlock admin features (approve/deny vacation requests, set PIN).
+                </p>
+                <div style={{display:"flex",gap:6,alignItems:"center"}}>
+                  <input type="password" placeholder="Enter PIN" value={pinInput} onChange={e=>setPinInput(e.target.value)}
+                    onKeyDown={e=>e.key==="Enter"&&checkPin()}
+                    style={{...css.inp,width:140,fontSize:13,fontFamily:mono}}/>
+                  <button onClick={checkPin} style={{...css.btn(true),padding:"6px 14px"}}>Unlock</button>
+                  {pinError && <span style={{fontSize:12,color:"#c04040",fontWeight:600}}>{pinError}</span>}
+                </div>
+                {!schedulerPin && <p style={{fontSize:11,color:"#a0a8b0",margin:"6px 0 0"}}>No PIN set yet. Enter at least 4 characters and click Unlock to set your PIN.</p>}
+              </div>
+            ) : (
+              <div>
+                <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
+                  <span style={{fontSize:12,color:"#1a8040",fontWeight:600}}>✓ Scheduler mode active</span>
+                  <button onClick={()=>setIsScheduler(false)} style={{background:"none",border:"1px solid #d0d8e0",color:"#6a7a88",borderRadius:5,padding:"3px 10px",fontSize:11,cursor:"pointer",fontFamily:font}}>Lock</button>
+                </div>
+                <div>
+                  <label style={{fontSize:11,color:"#7a8a98",display:"block",marginBottom:2}}>Set or change scheduler PIN</label>
+                  <div style={{display:"flex",gap:6,alignItems:"center"}}>
+                    <input type="password" placeholder="New PIN" value={pinInput} onChange={e=>setPinInput(e.target.value)}
+                      style={{...css.inp,width:140,fontSize:13,fontFamily:mono}}/>
+                    <button onClick={()=>{if(pinInput.length>=4){setSchedulerPin(pinInput);setPinInput("");alert("PIN updated!");}else{alert("PIN must be at least 4 characters");}}} style={{...css.btn(true),padding:"6px 14px"}}>Save PIN</button>
+                  </div>
+                  {schedulerPin && <p style={{fontSize:11,color:"#8a94a0",margin:"4px 0 0"}}>Current PIN: {schedulerPin.replace(/./g,"•")}</p>}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Notifications */}
+          <div style={css.card}>
+            <div style={css.cardT}>🔔 Notification Settings</div>
+
+            {/* Push Notifications via OneSignal */}
+            <div style={{background:dk?"#1a2a3e":"#f8f9fb",border:`1px solid ${dkCardBorder}`,borderRadius:8,padding:"12px 14px",marginBottom:12}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+                <span style={{fontSize:12,fontWeight:600,color:dkText}}>Push Notifications (OneSignal)</span>
+                {oneSignalSubscribed && <span style={{fontSize:11,color:"#1a8040",fontWeight:600}}>✓ Subscribed on this device</span>}
+                {pushPermission === "denied" && <span style={{fontSize:11,color:"#c04040",fontWeight:600}}>✕ Blocked</span>}
+              </div>
+              <p style={{fontSize:11,color:dkSubtext,margin:"0 0 8px",lineHeight:1.5}}>
+                Each partner needs to click "Enable" once on their device. Notifications will arrive even when the browser is closed.
+              </p>
+              {!oneSignalSubscribed && pushPermission !== "denied" && (
+                <button onClick={requestPushPermission} style={{...css.btn(true),padding:"6px 14px",fontSize:12}}>
+                  Enable Push Notifications
+                </button>
+              )}
+              {pushPermission === "denied" && (
+                <p style={{fontSize:11,color:"#c04040",lineHeight:1.5}}>
+                  Notifications are blocked. Please allow notifications for this site in your browser settings.
+                </p>
+              )}
+              {pushPermission === "granted" && (
+                <div style={{display:"flex",gap:8,alignItems:"center",marginBottom:8}}>
+                  <button onClick={sendTestNotification} style={{...css.btn(false),padding:"5px 12px",fontSize:11}}>
+                    🔔 Send Test Notification
+                  </button>
+                  {notifTestSent && <span style={{fontSize:11,color:"#1a8040",fontWeight:600}}>{notifTestSent}</span>}
+                </div>
+              )}
+              {isScheduler && (
+                <div style={{marginTop:8,paddingTop:8,borderTop:"1px dashed #e0e4ea"}}>
+                  <label style={{fontSize:10,color:"#7a8a98",display:"block",marginBottom:2}}>OneSignal REST API Key (for sending push to all devices)</label>
+                  <div style={{display:"flex",gap:6,alignItems:"center"}}>
+                    <input type="password" value={oneSignalApiKey} onChange={e=>setOneSignalApiKey(e.target.value)}
+                      placeholder="Paste REST API key from OneSignal → Settings → Keys & IDs"
+                      style={{...css.inp,width:"100%",maxWidth:420,fontSize:11,fontFamily:mono}}/>
+                    <button onClick={()=>{
+                      try { localStorage.setItem("dsg-onesignal-key", oneSignalApiKey); } catch(e) {}
+                      setSaveStatus("Saved"); setTimeout(()=>setSaveStatus(""),2000);
+                    }} style={{...css.btn(true),padding:"5px 12px",fontSize:11,whiteSpace:"nowrap"}}>Save</button>
+                  </div>
+                  <p style={{fontSize:10,color:"#8a94a0",margin:"4px 0 0"}}>Find this at onesignal.com → your app → Settings → Keys & IDs → REST API Key</p>
+                  {oneSignalApiKey && (
+                    <button onClick={async ()=>{
+                      try {
+                        const resp = await fetch("https://onesignal.com/api/v1/notifications", {
+                          method: "POST",
+                          headers: { "Content-Type": "application/json", Authorization: `Basic ${oneSignalApiKey}` },
+                          body: JSON.stringify({
+                            app_id: "9ca5c08f-6fb3-4ee5-b564-09aafc1c1901",
+                            included_segments: ["Subscribed Users"],
+                            headings: { en: "DSG Call Schedule" },
+                            contents: { en: "Test push notification — if you see this, push is working!" },
+                            url: "https://fkhan628.github.io/Call-Schedule-App/",
+                          }),
+                        });
+                        const data = await resp.json();
+                        alert(`Push test result:\nStatus: ${resp.status}\nRecipients: ${data.recipients || 0}\n${data.errors ? "Errors: " + JSON.stringify(data.errors) : "Success!"}`);
+                      } catch(e) { alert("Push test error: " + e.message); }
+                    }} style={{...css.btn(false),padding:"4px 10px",fontSize:10,marginTop:6}}>
+                      Test Push to All Devices
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* Email Notifications */}
+            <div style={{background:dk?"#1a2a3e":"#f8f9fb",border:`1px solid ${dkCardBorder}`,borderRadius:8,padding:"12px 14px",marginBottom:12}}>
+              <div style={{fontSize:12,fontWeight:600,color:dkText,marginBottom:6}}>📧 Email Notifications</div>
+              <p style={{fontSize:11,color:dkSubtext,margin:"0 0 8px",lineHeight:1.5}}>
+                Set up email addresses for each surgeon. Requires a Supabase Edge Function — see the setup guide below.
+              </p>
+              <div style={{marginBottom:12}}>
+                <label style={{fontSize:10,color:"#7a8a98",display:"block",marginBottom:2}}>Edge Function URL</label>
+                <div style={{display:"flex",gap:6,alignItems:"center"}}>
+                  <input value={edgeFunctionUrl} onChange={e=>setEdgeFunctionUrl(e.target.value)}
+                    placeholder="https://your-project.supabase.co/functions/v1/send-notification"
+                    style={{...css.inp,width:"100%",maxWidth:420,fontSize:11,fontFamily:mono}}/>
+                  <button onClick={async ()=>{
+                    try {
+                      await supabase.from("call_schedule_config").upsert({ id:"config", edge_function_url: edgeFunctionUrl, updated_at: new Date().toISOString() });
+                      setSaveStatus("Saved"); setTimeout(()=>setSaveStatus(""),2000);
+                    } catch(e){}
+                  }} style={{...css.btn(true),padding:"5px 12px",fontSize:11,whiteSpace:"nowrap"}}>Save URL</button>
+                </div>
+                {!edgeFunctionUrl && <p style={{fontSize:10,color:"#c04040",margin:"4px 0 0"}}>Email notifications require the Edge Function URL. Deploy the function first.</p>}
+                {edgeFunctionUrl && <p style={{fontSize:10,color:"#1a8040",margin:"4px 0 0"}}>✓ Edge Function configured</p>}
+              </div>
+              <div style={{fontSize:11,fontWeight:600,color:"#5a6a78",marginBottom:6}}>Surgeon Email Addresses</div>
+              {surgeons.map(s => {
+                const pref = notifPrefs[s.id] || {};
+                return (
+                  <div key={s.id} style={{display:"flex",gap:6,alignItems:"center",marginBottom:6,flexWrap:"wrap"}}>
+                    <Badge id={s.id} small/>
+                    <input value={pref.email || ""} onChange={e=>saveNotifPref(s.id, {email:e.target.value})}
+                      placeholder="email@example.com" type="email"
+                      style={{...css.inp,width:200,fontSize:11,fontFamily:mono,padding:"4px 8px"}}/>
+                    <label style={{display:"flex",alignItems:"center",gap:3,fontSize:10,color:"#5a6a78",cursor:"pointer"}}>
+                      <input type="checkbox" checked={pref.email_notifs || false}
+                        onChange={e=>saveNotifPref(s.id, {email_notifs:e.target.checked})}/>
+                      Email
+                    </label>
+                    <label style={{display:"flex",alignItems:"center",gap:3,fontSize:10,color:"#5a6a78",cursor:"pointer"}}>
+                      <input type="checkbox" checked={pref.browser_push !== false}
+                        onChange={e=>saveNotifPref(s.id, {browser_push:e.target.checked})}/>
+                      Push
+                    </label>
+                  </div>
+                );
+              })}
+              {notifPrefsSaving && <span style={{fontSize:10,color:"#1a8040"}}>Saving…</span>}
+              {mySurgeon && (
+                <div style={{marginTop:10,paddingTop:8,borderTop:"1px solid #e8ecf0"}}>
+                  <div style={{fontSize:11,fontWeight:600,color:"#5a6a78",marginBottom:6}}>Notify me about:</div>
+                  {[
+                    ["schedule_changes", "Schedule changes & shift swaps"],
+                    ["vacation_updates", "Vacation requests & approvals"],
+                    ["shift_reminders", "Shift reminders"],
+                  ].map(([key, label]) => (
+                    <label key={key} style={{display:"flex",alignItems:"center",gap:6,marginBottom:4,fontSize:12,color:"#3a4a58",cursor:"pointer"}}>
+                      <input type="checkbox" checked={(notifPrefs[mySurgeon] || {})[key] !== false}
+                        onChange={e=>saveNotifPref(mySurgeon, {[key]:e.target.checked})}/>
+                      {label}
+                    </label>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Reset */}
+          <div style={css.card}>
+            <div style={css.cardT}>🗑 Data Management</div>
+            <button onClick={resetAllData} style={{background:"none",border:"1px solid #e8c0c0",color:"#804040",borderRadius:6,padding:"6px 14px",fontSize:12,cursor:"pointer",fontFamily:font}}>
+              Reset All Data
+            </button>
+          </div>
         </>}
       </div>
     </div>
