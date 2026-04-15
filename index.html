@@ -3810,8 +3810,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       const mon = parse(mStr);
       const pfx = wk.isBackup ? "B-" : "";
       const cls = wk.isBackup ? "backup" : "primary";
+      const holCov = wk.holidayCoverage || {};
       if (wk.dayCall) {
-        const holCov = wk.holidayCoverage || {};
         for (let i = 0; i < 5; i++) {
           const ds = fmt(addD(mon, i));
           // Skip Svc entry on days covered by a holiday 24h surgeon
