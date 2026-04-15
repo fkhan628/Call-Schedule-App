@@ -1,5 +1,4 @@
 <!DOCTYPE html>
-
 <html lang="en">
 <head>
   <meta charset="UTF-8">
@@ -46,291 +45,288 @@
 // This file contains Supabase config, DB helpers, surgeon data, and shift constants.
 
 /* ═══════════════════════════════════════════════════
-SUPABASE CONFIG
-═══════════════════════════════════════════════════ */
-const SUPABASE_URL = “https://xqongyahdnkozqunpwmu.supabase.co”;
-const SUPABASE_ANON_KEY = “eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inhxb25neWFoZG5rb3pxdW5wd211Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU3Nzg2NDksImV4cCI6MjA5MTM1NDY0OX0.a2p_twcuDAfI_ju-oGzut_NCPNzKjBEbkhVsMGXYyww”;
+   SUPABASE CONFIG
+   ═══════════════════════════════════════════════════ */
+const SUPABASE_URL = "https://xqongyahdnkozqunpwmu.supabase.co";
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inhxb25neWFoZG5rb3pxdW5wd211Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU3Nzg2NDksImV4cCI6MjA5MTM1NDY0OX0.a2p_twcuDAfI_ju-oGzut_NCPNzKjBEbkhVsMGXYyww";
 
 // Lightweight Supabase REST client (no SDK dependency needed)
-const dbHeaders = { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}`, “Content-Type”: “application/json” };
+const dbHeaders = { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}`, "Content-Type": "application/json" };
 const supabase = {
-from: (table) => ({
-select: (cols) => ({
-eq: (col, val) => ({
-single: async () => {
-const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}?select=${cols}&${col}=eq.${val}`, { headers: dbHeaders });
-const rows = await res.json();
-return { data: rows?.[0] || null, error: rows?.error || null };
-}
-})
-}),
-upsert: async (row) => {
-const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}`, {
-method: “POST”, headers: { …dbHeaders, Prefer: “resolution=merge-duplicates” },
-body: JSON.stringify(row),
-});
-return { error: res.ok ? null : await res.text() };
-},
-}),
+  from: (table) => ({
+    select: (cols) => ({
+      eq: (col, val) => ({
+        single: async () => {
+          const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}?select=${cols}&${col}=eq.${val}`, { headers: dbHeaders });
+          const rows = await res.json();
+          return { data: rows?.[0] || null, error: rows?.error || null };
+        }
+      })
+    }),
+    upsert: async (row) => {
+      const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}`, {
+        method: "POST", headers: { ...dbHeaders, Prefer: "resolution=merge-duplicates" },
+        body: JSON.stringify(row),
+      });
+      return { error: res.ok ? null : await res.text() };
+    },
+  }),
 };
 
 // Extended DB helpers for new tables
 const db = {
-async query(table, { eq, order, limit, select } = {}) {
-let url = `${SUPABASE_URL}/rest/v1/${table}?select=${select || "*"}`;
-if (eq) Object.entries(eq).forEach(([k, v]) => { url += `&${k}=eq.${v}`; });
-if (order) url += `&order=${order}`;
-if (limit) url += `&limit=${limit}`;
-const res = await fetch(url, { headers: dbHeaders });
-return res.ok ? await res.json() : [];
-},
-async insert(table, row) {
-const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}`, {
-method: “POST”, headers: { …dbHeaders, Prefer: “return=representation” },
-body: JSON.stringify(row),
-});
-const data = await res.json();
-return { data: Array.isArray(data) ? data[0] : data, error: res.ok ? null : data };
-},
-async update(table, id, data) {
-const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}?id=eq.${id}`, {
-method: “PATCH”, headers: { …dbHeaders, Prefer: “return=representation” },
-body: JSON.stringify(data),
-});
-return { error: res.ok ? null : await res.text() };
-},
-async upsert(table, row) {
-return supabase.from(table).upsert(row);
-},
+  async query(table, { eq, order, limit, select } = {}) {
+    let url = `${SUPABASE_URL}/rest/v1/${table}?select=${select || "*"}`;
+    if (eq) Object.entries(eq).forEach(([k, v]) => { url += `&${k}=eq.${v}`; });
+    if (order) url += `&order=${order}`;
+    if (limit) url += `&limit=${limit}`;
+    const res = await fetch(url, { headers: dbHeaders });
+    return res.ok ? await res.json() : [];
+  },
+  async insert(table, row) {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}`, {
+      method: "POST", headers: { ...dbHeaders, Prefer: "return=representation" },
+      body: JSON.stringify(row),
+    });
+    const data = await res.json();
+    return { data: Array.isArray(data) ? data[0] : data, error: res.ok ? null : data };
+  },
+  async update(table, id, data) {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}?id=eq.${id}`, {
+      method: "PATCH", headers: { ...dbHeaders, Prefer: "return=representation" },
+      body: JSON.stringify(data),
+    });
+    return { error: res.ok ? null : await res.text() };
+  },
+  async upsert(table, row) {
+    return supabase.from(table).upsert(row);
+  },
 };
 
 /* ═══════════════════════════════════════════════════
-CONSTANTS
-═══════════════════════════════════════════════════ */
-const NIGHT_KEYS = [“mon”,“tue”,“wed”,“thu”];
-const ALL_SHIFT_KEYS = [“dayCall”,“mon”,“tue”,“wed”,“thu”,“wknd”];
-const SHIFT_LABELS = { dayCall:“Service Week (incl. Sat)”, mon:“Mon Night”, tue:“Tue Night”, wed:“Wed Night”, thu:“Thu Night”, wknd:“Weekend” };
-const SHIFT_TIMES = { dayCall:“M–F 7a–5p + Sat 7a–Sun 7a”, mon:“Mon 5p–7a”, tue:“Tue 5p–7a”, wed:“Wed 5p–7a”, thu:“Thu 5p–7a”, wknd:“Fri 5p–Sat 7a & Sun 7a–Mon 7a” };
-const SHIFT_ICONS = { dayCall:“🏥”, mon:“🌙”, tue:“🌙”, wed:“🌙”, thu:“🌙”, wknd:“🌗” };
-const DAY_HDR = [“Sun”,“Mon”,“Tue”,“Wed”,“Thu”,“Fri”,“Sat”];
-const MO = [“January”,“February”,“March”,“April”,“May”,“June”,“July”,“August”,“September”,“October”,“November”,“December”];
+   CONSTANTS
+   ═══════════════════════════════════════════════════ */
+const NIGHT_KEYS = ["mon","tue","wed","thu"];
+const ALL_SHIFT_KEYS = ["dayCall","mon","tue","wed","thu","wknd"];
+const SHIFT_LABELS = { dayCall:"Service Week (incl. Sat)", mon:"Mon Night", tue:"Tue Night", wed:"Wed Night", thu:"Thu Night", wknd:"Weekend" };
+const SHIFT_TIMES = { dayCall:"M–F 7a–5p + Sat 7a–Sun 7a", mon:"Mon 5p–7a", tue:"Tue 5p–7a", wed:"Wed 5p–7a", thu:"Thu 5p–7a", wknd:"Fri 5p–Sat 7a & Sun 7a–Mon 7a" };
+const SHIFT_ICONS = { dayCall:"🏥", mon:"🌙", tue:"🌙", wed:"🌙", thu:"🌙", wknd:"🌗" };
+const DAY_HDR = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+const MO = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 
 const PAL = [
-{ tx:”#0e6fa8”, bd:”#a8d4f0”, tg:”#e8f4fc” },
-{ tx:”#a8306a”, bd:”#e8a0c8”, tg:”#fce8f4” },
-{ tx:”#1a8040”, bd:”#a0d8b0”, tg:”#e8fce8” },
-{ tx:”#8a7010”, bd:”#e0d090”, tg:”#faf4e0” },
-{ tx:”#6030a8”, bd:”#c0a8e8”, tg:”#f0e8fc” },
-{ tx:”#2868a8”, bd:”#a0c8e8”, tg:”#e8f0fc” },
-{ tx:”#a85820”, bd:”#e8c0a0”, tg:”#fcf0e8” },
+  { tx:"#0e6fa8", bd:"#a8d4f0", tg:"#e8f4fc" },
+  { tx:"#a8306a", bd:"#e8a0c8", tg:"#fce8f4" },
+  { tx:"#1a8040", bd:"#a0d8b0", tg:"#e8fce8" },
+  { tx:"#8a7010", bd:"#e0d090", tg:"#faf4e0" },
+  { tx:"#6030a8", bd:"#c0a8e8", tg:"#f0e8fc" },
+  { tx:"#2868a8", bd:"#a0c8e8", tg:"#e8f0fc" },
+  { tx:"#a85820", bd:"#e8c0a0", tg:"#fcf0e8" },
 ];
 
 // APP palette — warm tones to distinguish from surgeon colors
 const APP_PAL = [
-{ tx:”#985020”, bd:”#e0b890”, tg:”#faf0e4” },
-{ tx:”#883868”, bd:”#d8a0c0”, tg:”#f8e8f0” },
-{ tx:”#487020”, bd:”#b8d898”, tg:”#f0f8e8” },
-{ tx:”#306080”, bd:”#a0c8d8”, tg:”#e8f4f8” },
+  { tx:"#985020", bd:"#e0b890", tg:"#faf0e4" },
+  { tx:"#883868", bd:"#d8a0c0", tg:"#f8e8f0" },
+  { tx:"#487020", bd:"#b8d898", tg:"#f0f8e8" },
+  { tx:"#306080", bd:"#a0c8d8", tg:"#e8f4f8" },
 ];
 
 const INIT_SURGEONS = [
-{ id:“s1”, name:“DJA” }, { id:“s2”, name:“MCC” }, { id:“s3”, name:“RPC” },
-{ id:“s4”, name:“KJH” }, { id:“s5”, name:“REH” }, { id:“s6”, name:“FAK” },
-{ id:“s7”, name:“ARW” },
+  { id:"s1", name:"DJA" }, { id:"s2", name:"MCC" }, { id:"s3", name:"RPC" },
+  { id:"s4", name:"KJH" }, { id:"s5", name:"REH" }, { id:"s6", name:"FAK" },
+  { id:"s7", name:"ARW" },
 ];
 
 const INIT_APPS = [
-{ id:“a1”, name:“MA” }, { id:“a2”, name:“SJ” }, { id:“a3”, name:“MS” }, { id:“a4”, name:“SS” },
+  { id:"a1", name:"MA" }, { id:"a2", name:"SJ" }, { id:"a3", name:"MS" }, { id:"a4", name:"SS" },
 ];
 
 /* ═══ Verified Call Counts from Shift Distribution Spreadsheets ═══
-Regular vs backup split derived from 1st/2nd call ratios in monthly totals.
-totalDays/totalDaysB = actual call day counts from main sheets (used for pay). */
+   Regular vs backup split derived from 1st/2nd call ratios in monthly totals.
+   totalDays/totalDaysB = actual call day counts from main sheets (used for pay). */
 
 // 2025 only (1-Year)
 const COUNTS_1YR = {
-s1: { dc:7, nights:49, wknd:7, off:0, dcB:1, nightsB:5, wkndB:1, offB:0, totalDays:100, totalDaysB:10 },  // DJA
-s2: { dc:6, nights:45, wknd:7, off:0, dcB:1, nightsB:6, wkndB:1, offB:0, totalDays:89,  totalDaysB:12 },  // MCC
-s3: { dc:7, nights:47, wknd:6, off:0, dcB:1, nightsB:6, wkndB:1, offB:0, totalDays:97,  totalDaysB:13 },  // RPC
-s4: { dc:6, nights:37, wknd:8, off:0, dcB:1, nightsB:6, wkndB:1, offB:0, totalDays:78,  totalDaysB:12 },  // KJH
-s5: { dc:7, nights:40, wknd:6, off:0, dcB:1, nightsB:8, wkndB:1, offB:0, totalDays:80,  totalDaysB:15 },  // REH
-s6: { dc:5, nights:45, wknd:5, off:0, dcB:2, nightsB:14, wkndB:2, offB:0, totalDays:89,  totalDaysB:27 },  // FAK
-s7: { dc:6, nights:50, wknd:6, off:0, dcB:1, nightsB:4, wkndB:0, offB:0, totalDays:99,  totalDaysB:8 },   // ARW
+  s1: { dc:7, nights:49, wknd:7, off:0, dcB:1, nightsB:5, wkndB:1, offB:0, totalDays:100, totalDaysB:10 },  // DJA
+  s2: { dc:6, nights:45, wknd:7, off:0, dcB:1, nightsB:6, wkndB:1, offB:0, totalDays:89,  totalDaysB:12 },  // MCC
+  s3: { dc:7, nights:47, wknd:6, off:0, dcB:1, nightsB:6, wkndB:1, offB:0, totalDays:97,  totalDaysB:13 },  // RPC
+  s4: { dc:6, nights:37, wknd:8, off:0, dcB:1, nightsB:6, wkndB:1, offB:0, totalDays:78,  totalDaysB:12 },  // KJH
+  s5: { dc:7, nights:40, wknd:6, off:0, dcB:1, nightsB:8, wkndB:1, offB:0, totalDays:80,  totalDaysB:15 },  // REH
+  s6: { dc:5, nights:45, wknd:5, off:0, dcB:2, nightsB:14, wkndB:2, offB:0, totalDays:89,  totalDaysB:27 },  // FAK
+  s7: { dc:6, nights:50, wknd:6, off:0, dcB:1, nightsB:4, wkndB:0, offB:0, totalDays:99,  totalDaysB:8 },   // ARW
 };
 
 // 2024 + 2025 combined (2-Year / Multi-Year)
 const COUNTS_2YR = {
-s1: { dc:14, nights:96,  wknd:13, off:0, dcB:2, nightsB:10, wkndB:2, offB:0, totalDays:197, totalDaysB:21 },  // DJA
-s2: { dc:13, nights:90,  wknd:15, off:0, dcB:2, nightsB:15, wkndB:2, offB:0, totalDays:183, totalDaysB:30 },  // MCC
-s3: { dc:13, nights:100, wknd:12, off:0, dcB:2, nightsB:10, wkndB:2, offB:0, totalDays:196, totalDaysB:21 },  // RPC
-s4: { dc:12, nights:75,  wknd:12, off:0, dcB:3, nightsB:19, wkndB:3, offB:0, totalDays:156, totalDaysB:39 },  // KJH
-s5: { dc:13, nights:90,  wknd:15, off:0, dcB:2, nightsB:19, wkndB:3, offB:0, totalDays:180, totalDaysB:36 },  // REH
-s6: { dc:12, nights:91,  wknd:13, off:0, dcB:2, nightsB:17, wkndB:2, offB:0, totalDays:184, totalDaysB:33 },  // FAK
-s7: { dc:11, nights:78,  wknd:10, off:0, dcB:2, nightsB:13, wkndB:1, offB:0, totalDays:159, totalDaysB:26 },  // ARW
+  s1: { dc:14, nights:96,  wknd:13, off:0, dcB:2, nightsB:10, wkndB:2, offB:0, totalDays:197, totalDaysB:21 },  // DJA
+  s2: { dc:13, nights:90,  wknd:15, off:0, dcB:2, nightsB:15, wkndB:2, offB:0, totalDays:183, totalDaysB:30 },  // MCC
+  s3: { dc:13, nights:100, wknd:12, off:0, dcB:2, nightsB:10, wkndB:2, offB:0, totalDays:196, totalDaysB:21 },  // RPC
+  s4: { dc:12, nights:75,  wknd:12, off:0, dcB:3, nightsB:19, wkndB:3, offB:0, totalDays:156, totalDaysB:39 },  // KJH
+  s5: { dc:13, nights:90,  wknd:15, off:0, dcB:2, nightsB:19, wkndB:3, offB:0, totalDays:180, totalDaysB:36 },  // REH
+  s6: { dc:12, nights:91,  wknd:13, off:0, dcB:2, nightsB:17, wkndB:2, offB:0, totalDays:184, totalDaysB:33 },  // FAK
+  s7: { dc:11, nights:78,  wknd:10, off:0, dcB:2, nightsB:13, wkndB:1, offB:0, totalDays:159, totalDaysB:26 },  // ARW
 };
 
 /* ═══ May–August 2026 Vacation & Fierce Schedule ═══
-Parsed from Calendar Creator screenshots uploaded 2026-04-12.
-Merged on first load; edit in app to adjust dates. */
+   Parsed from Calendar Creator screenshots uploaded 2026-04-12.
+   Merged on first load; edit in app to adjust dates. */
 const MAY_AUG_VACATIONS = {
-“s1”: [[“2026-05-01”,“2026-05-04”],[“2026-05-14”,“2026-05-17”]], // DJA
-“s2”: [[“2026-05-08”,“2026-05-20”],[“2026-06-27”,“2026-07-07”],[“2026-08-07”,“2026-08-16”],[“2026-08-24”,“2026-08-30”]], // MCC
-“s3”: [[“2026-05-18”,“2026-05-18”],[“2026-06-13”,“2026-06-21”],[“2026-07-30”,“2026-08-16”]], // RPC
-“s4”: [[“2026-05-27”,“2026-05-27”],[“2026-06-24”,“2026-06-28”],[“2026-08-06”,“2026-08-06”],[“2026-08-07”,“2026-08-09”]], // KJH
-“s5”: [[“2026-05-15”,“2026-05-17”],[“2026-05-23”,“2026-05-25”],[“2026-05-29”,“2026-05-31”],[“2026-06-05”,“2026-06-07”],[“2026-07-10”,“2026-07-12”],[“2026-07-24”,“2026-07-26”],[“2026-08-13”,“2026-08-13”]], // REH
-“s6”: [[“2026-05-07”,“2026-05-10”],[“2026-05-22”,“2026-05-23”],[“2026-05-27”,“2026-06-14”],[“2026-06-27”,“2026-06-28”]], // FAK
-“s7”: [[“2026-05-01”,“2026-05-03”],[“2026-05-21”,“2026-05-27”],[“2026-06-05”,“2026-06-09”],[“2026-07-03”,“2026-07-05”],[“2026-07-14”,“2026-07-15”]], // ARW
-“a1”: [[“2026-05-01”,“2026-05-03”],[“2026-05-21”,“2026-05-21”],[“2026-05-29”,“2026-05-29”],[“2026-06-16”,“2026-06-19”],[“2026-06-22”,“2026-06-22”]], // MA
-“a2”: [[“2026-05-15”,“2026-05-15”],[“2026-05-18”,“2026-05-18”],[“2026-05-27”,“2026-05-28”],[“2026-06-01”,“2026-06-01”],[“2026-06-19”,“2026-06-19”],[“2026-07-06”,“2026-07-06”],[“2026-07-27”,“2026-08-02”]], // SJ
-“a3”: [[“2026-05-27”,“2026-05-28”]], // MS
-“a4”: [[“2026-05-19”,“2026-05-20”],[“2026-06-29”,“2026-07-03”],[“2026-07-06”,“2026-07-10”],[“2026-07-21”,“2026-07-24”],[“2026-07-31”,“2026-08-01”],[“2026-08-28”,“2026-08-30”]], // SS
+  "s1": [["2026-05-01","2026-05-04"],["2026-05-14","2026-05-17"]], // DJA
+  "s2": [["2026-05-08","2026-05-20"],["2026-06-27","2026-07-07"],["2026-08-07","2026-08-16"],["2026-08-24","2026-08-30"]], // MCC
+  "s3": [["2026-05-18","2026-05-18"],["2026-06-13","2026-06-21"],["2026-07-30","2026-08-16"]], // RPC
+  "s4": [["2026-05-27","2026-05-27"],["2026-06-24","2026-06-28"],["2026-08-06","2026-08-06"],["2026-08-07","2026-08-09"]], // KJH
+  "s5": [["2026-05-15","2026-05-17"],["2026-05-23","2026-05-25"],["2026-05-29","2026-05-31"],["2026-06-05","2026-06-07"],["2026-07-10","2026-07-12"],["2026-07-24","2026-07-26"],["2026-08-13","2026-08-13"]], // REH
+  "s6": [["2026-05-07","2026-05-10"],["2026-05-22","2026-05-23"],["2026-05-27","2026-06-14"],["2026-06-27","2026-06-28"]], // FAK
+  "s7": [["2026-05-01","2026-05-03"],["2026-05-21","2026-05-27"],["2026-06-05","2026-06-09"],["2026-07-03","2026-07-05"],["2026-07-14","2026-07-15"]], // ARW
+  "a1": [["2026-05-01","2026-05-03"],["2026-05-21","2026-05-21"],["2026-05-29","2026-05-29"],["2026-06-16","2026-06-19"],["2026-06-22","2026-06-22"]], // MA
+  "a2": [["2026-05-15","2026-05-15"],["2026-05-18","2026-05-18"],["2026-05-27","2026-05-28"],["2026-06-01","2026-06-01"],["2026-06-19","2026-06-19"],["2026-07-06","2026-07-06"],["2026-07-27","2026-08-02"]], // SJ
+  "a3": [["2026-05-27","2026-05-28"]], // MS
+  "a4": [["2026-05-19","2026-05-20"],["2026-06-29","2026-07-03"],["2026-07-06","2026-07-10"],["2026-07-21","2026-07-24"],["2026-07-31","2026-08-01"],["2026-08-28","2026-08-30"]], // SS
 };
-const MAY_AUG_FIERCE_PRIMARY = [“2026-05-25”,“2026-07-20”];
-const MAY_AUG_FIERCE_BACKUP = [“2026-05-04”,“2026-06-22”,“2026-08-17”];
+const MAY_AUG_FIERCE_PRIMARY = ["2026-05-25","2026-07-20"];
+const MAY_AUG_FIERCE_BACKUP = ["2026-05-04","2026-06-22","2026-08-17"];
 
 /* ═══ 2026 Holiday Assignments (pre-set from handwritten schedule) ═══
-First surgeon = covers the actual holiday day (24h)
-Second surgeon = covers night before (and day after where applicable)
-Format: { “HolidayName”: [“surgeonA_id”, “surgeonB_id”] } */
+   First surgeon = covers the actual holiday day (24h)
+   Second surgeon = covers night before (and day after where applicable)
+   Format: { "HolidayName": ["surgeonA_id", "surgeonB_id"] } */
 const HOLIDAY_PRESETS = {
-“2026”: {
-“Memorial Day”:    [“s1”, “s2”],  // DJA | MCC
-“July 4th”:        [“s6”, “s5”],  // FAK | REH
-“Labor Day”:       [“s3”, “s7”],  // RPC | ARW
-“Thanksgiving”:    [“s2”, “s3”],  // MCC | RPC
-“Christmas Day”:   [“s6”, “s4”],  // FAK | KJH
-“New Year’s”:      [“s5”, “s1”],  // REH | DJA
-}
+  "2026": {
+    "Memorial Day":    ["s1", "s2"],  // DJA | MCC
+    "July 4th":        ["s6", "s5"],  // FAK | REH
+    "Labor Day":       ["s3", "s7"],  // RPC | ARW
+    "Thanksgiving":    ["s2", "s3"],  // MCC | RPC
+    "Christmas Day":   ["s6", "s4"],  // FAK | KJH
+    "New Year's":      ["s5", "s1"],  // REH | DJA
+  }
 };
 
 // DSG Call Schedule — Date Helpers, ICS Generation & Utilities
 
 /* ═══ Date helpers ═══ */
 const fmt = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
-const parse = s => { const [y,m,d]=s.split(”-”).map(Number); return new Date(y,m-1,d); };
+const parse = s => { const [y,m,d]=s.split("-").map(Number); return new Date(y,m-1,d); };
 const addD = (d,n) => { const r=new Date(d); r.setDate(r.getDate()+n); return r; };
 const monOf = d => { const r=new Date(d); r.setDate(r.getDate()-((r.getDay()+6)%7)); return r; };
 
 function getMondays(yr,mo,numWeeks) {
-const ms=[], s=new Date(yr,mo,1);
-let d=monOf(s); if(d<s) d=addD(d,7);
-while(ms.length<numWeeks){ ms.push(new Date(d)); d=addD(d,7); }
-return ms;
+  const ms=[], s=new Date(yr,mo,1);
+  let d=monOf(s); if(d<s) d=addD(d,7);
+  while(ms.length<numWeeks){ ms.push(new Date(d)); d=addD(d,7); }
+  return ms;
 }
 
 function onVac(id,ds,v){ return (v[id]||[]).some(([a,b])=>ds>=a&&ds<=b); }
 
 /* ═══ ICS Calendar Generation ═══ */
 function icsDate(y,m,d,h,min) {
-return `${y}${String(m).padStart(2,"0")}${String(d).padStart(2,"0")}T${String(h).padStart(2,"0")}${String(min||0).padStart(2,"0")}00`;
+  return `${y}${String(m).padStart(2,"0")}${String(d).padStart(2,"0")}T${String(h).padStart(2,"0")}${String(min||0).padStart(2,"0")}00`;
 }
 
 function buildICSEvents(schedule, surgeonId, surgeonName, appShifts, aMap) {
-const events = [];
-const uid = () => `${Date.now()}-${Math.random().toString(36).slice(2,9)}@callsched`;
+  const events = [];
+  const uid = () => `${Date.now()}-${Math.random().toString(36).slice(2,9)}@callsched`;
 
-Object.entries(schedule).forEach(([mondayStr, wk]) => {
-const mon = parse(mondayStr);
-const bkLabel = wk.isBackup ? “ [BACKUP]” : “”;
+  Object.entries(schedule).forEach(([mondayStr, wk]) => {
+    const mon = parse(mondayStr);
+    const bkLabel = wk.isBackup ? " [BACKUP]" : "";
 
-```
-// Day Call
-if (wk.dayCall === surgeonId) {
-  // Mon-Fri 7a-5p
-  for (let i = 0; i < 5; i++) {
-    const d = addD(mon, i);
-    const y=d.getFullYear(), m=d.getMonth()+1, day=d.getDate();
-    events.push({
-      start: icsDate(y,m,day,7), end: icsDate(y,m,day,17),
-      summary: `Service Week${bkLabel} — ${surgeonName}`,
-      desc: `Service Week 7:00 AM – 5:00 PM${bkLabel}`
+    // Day Call
+    if (wk.dayCall === surgeonId) {
+      // Mon-Fri 7a-5p
+      for (let i = 0; i < 5; i++) {
+        const d = addD(mon, i);
+        const y=d.getFullYear(), m=d.getMonth()+1, day=d.getDate();
+        events.push({
+          start: icsDate(y,m,day,7), end: icsDate(y,m,day,17),
+          summary: `Service Week${bkLabel} — ${surgeonName}`,
+          desc: `Service Week 7:00 AM – 5:00 PM${bkLabel}`
+        });
+      }
+      // Sat 7a - Sun 7a (24h)
+      const sat = addD(mon, 5);
+      const sunD = addD(mon, 6);
+      events.push({
+        start: icsDate(sat.getFullYear(),sat.getMonth()+1,sat.getDate(),7),
+        end: icsDate(sunD.getFullYear(),sunD.getMonth()+1,sunD.getDate(),7),
+        summary: `Weekend Saturday 24h${bkLabel} — ${surgeonName}`,
+        desc: `Weekend Saturday 7:00 AM – Sunday 7:00 AM${bkLabel}`
+      });
+    }
+
+    // Night shifts (Mon-Thu)
+    const nightKeys = ["mon","tue","wed","thu"];
+    nightKeys.forEach((sk, i) => {
+      if (wk.nights?.[sk] === surgeonId) {
+        const d = addD(mon, i);
+        const next = addD(mon, i + 1);
+        events.push({
+          start: icsDate(d.getFullYear(),d.getMonth()+1,d.getDate(),17),
+          end: icsDate(next.getFullYear(),next.getMonth()+1,next.getDate(),7),
+          summary: `Night Call${bkLabel} — ${surgeonName}`,
+          desc: `${SHIFT_LABELS[sk]} 5:00 PM – 7:00 AM${bkLabel}`
+        });
+      }
+    });
+
+    // Weekend (Fri night + Sunday)
+    if (wk.nights?.wknd === surgeonId) {
+      // Fri 5p - Sat 7a
+      const fri = addD(mon, 4);
+      const sat = addD(mon, 5);
+      events.push({
+        start: icsDate(fri.getFullYear(),fri.getMonth()+1,fri.getDate(),17),
+        end: icsDate(sat.getFullYear(),sat.getMonth()+1,sat.getDate(),7),
+        summary: `Weekend Call (Fri Night)${bkLabel} — ${surgeonName}`,
+        desc: `Friday 5:00 PM – Saturday 7:00 AM${bkLabel}`
+      });
+      // Sun 7a - Mon 7a
+      const sunD = addD(mon, 6);
+      const nextMon = addD(mon, 7);
+      events.push({
+        start: icsDate(sunD.getFullYear(),sunD.getMonth()+1,sunD.getDate(),7),
+        end: icsDate(nextMon.getFullYear(),nextMon.getMonth()+1,nextMon.getDate(),7),
+        summary: `Weekend Call (Sunday 24h)${bkLabel} — ${surgeonName}`,
+        desc: `Sunday 7:00 AM – Monday 7:00 AM${bkLabel}`
+      });
+    }
+  });
+
+  // APP shifts (only if surgeonId is null = export all, or for APP-specific export)
+  if (!surgeonId) {
+    Object.entries(appShifts).forEach(([ds, aid]) => {
+      const d = parse(ds);
+      const next = addD(d, 1);
+      const appName = aMap?.[aid]?.name || aid;
+      events.push({
+        start: icsDate(d.getFullYear(),d.getMonth()+1,d.getDate(),17),
+        end: icsDate(next.getFullYear(),next.getMonth()+1,next.getDate(),7),
+        summary: `APP Call — ${appName}`,
+        desc: `APP Night Call 5:00 PM – 7:00 AM`
+      });
     });
   }
-  // Sat 7a - Sun 7a (24h)
-  const sat = addD(mon, 5);
-  const sunD = addD(mon, 6);
-  events.push({
-    start: icsDate(sat.getFullYear(),sat.getMonth()+1,sat.getDate(),7),
-    end: icsDate(sunD.getFullYear(),sunD.getMonth()+1,sunD.getDate(),7),
-    summary: `Weekend Saturday 24h${bkLabel} — ${surgeonName}`,
-    desc: `Weekend Saturday 7:00 AM – Sunday 7:00 AM${bkLabel}`
-  });
-}
 
-// Night shifts (Mon-Thu)
-const nightKeys = ["mon","tue","wed","thu"];
-nightKeys.forEach((sk, i) => {
-  if (wk.nights?.[sk] === surgeonId) {
-    const d = addD(mon, i);
-    const next = addD(mon, i + 1);
-    events.push({
-      start: icsDate(d.getFullYear(),d.getMonth()+1,d.getDate(),17),
-      end: icsDate(next.getFullYear(),next.getMonth()+1,next.getDate(),7),
-      summary: `Night Call${bkLabel} — ${surgeonName}`,
-      desc: `${SHIFT_LABELS[sk]} 5:00 PM – 7:00 AM${bkLabel}`
-    });
-  }
-});
-
-// Weekend (Fri night + Sunday)
-if (wk.nights?.wknd === surgeonId) {
-  // Fri 5p - Sat 7a
-  const fri = addD(mon, 4);
-  const sat = addD(mon, 5);
-  events.push({
-    start: icsDate(fri.getFullYear(),fri.getMonth()+1,fri.getDate(),17),
-    end: icsDate(sat.getFullYear(),sat.getMonth()+1,sat.getDate(),7),
-    summary: `Weekend Call (Fri Night)${bkLabel} — ${surgeonName}`,
-    desc: `Friday 5:00 PM – Saturday 7:00 AM${bkLabel}`
-  });
-  // Sun 7a - Mon 7a
-  const sunD = addD(mon, 6);
-  const nextMon = addD(mon, 7);
-  events.push({
-    start: icsDate(sunD.getFullYear(),sunD.getMonth()+1,sunD.getDate(),7),
-    end: icsDate(nextMon.getFullYear(),nextMon.getMonth()+1,nextMon.getDate(),7),
-    summary: `Weekend Call (Sunday 24h)${bkLabel} — ${surgeonName}`,
-    desc: `Sunday 7:00 AM – Monday 7:00 AM${bkLabel}`
-  });
-}
-```
-
-});
-
-// APP shifts (only if surgeonId is null = export all, or for APP-specific export)
-if (!surgeonId) {
-Object.entries(appShifts).forEach(([ds, aid]) => {
-const d = parse(ds);
-const next = addD(d, 1);
-const appName = aMap?.[aid]?.name || aid;
-events.push({
-start: icsDate(d.getFullYear(),d.getMonth()+1,d.getDate(),17),
-end: icsDate(next.getFullYear(),next.getMonth()+1,next.getDate(),7),
-summary: `APP Call — ${appName}`,
-desc: `APP Night Call 5:00 PM – 7:00 AM`
-});
-});
-}
-
-return events;
+  return events;
 }
 
 function generateICS(events, calName) {
-const uid = () => `${Date.now()}-${Math.random().toString(36).slice(2,9)}@callsched`;
-let ics = `BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//DSG Call Schedule//EN\r\nCALSCALE:GREGORIAN\r\nX-WR-CALNAME:${calName}\r\n`;
-events.forEach(e => {
-ics += `BEGIN:VEVENT\r\nUID:${uid()}\r\nDTSTART:${e.start}\r\nDTEND:${e.end}\r\nSUMMARY:${e.summary}\r\nDESCRIPTION:${e.desc}\r\nEND:VEVENT\r\n`;
-});
-ics += `END:VCALENDAR\r\n`;
-return ics;
+  const uid = () => `${Date.now()}-${Math.random().toString(36).slice(2,9)}@callsched`;
+  let ics = `BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//DSG Call Schedule//EN\r\nCALSCALE:GREGORIAN\r\nX-WR-CALNAME:${calName}\r\n`;
+  events.forEach(e => {
+    ics += `BEGIN:VEVENT\r\nUID:${uid()}\r\nDTSTART:${e.start}\r\nDTEND:${e.end}\r\nSUMMARY:${e.summary}\r\nDESCRIPTION:${e.desc}\r\nEND:VEVENT\r\n`;
+  });
+  ics += `END:VCALENDAR\r\n`;
+  return ics;
 }
 
 function downloadICS(content, filename) {
-const blob = new Blob([content], { type: “text/calendar;charset=utf-8” });
-const url = URL.createObjectURL(blob);
-const a = document.createElement(“a”);
-a.href = url; a.download = filename; a.click();
-URL.revokeObjectURL(url);
+  const blob = new Blob([content], { type: "text/calendar;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = filename; a.click();
+  URL.revokeObjectURL(url);
 }
 
 // DSG Call Schedule — Schedule Generator & Holiday Logic
@@ -339,551 +335,541 @@ URL.revokeObjectURL(url);
 
 // Holiday definitions — returns holidays for a given year
 function getHolidays(year) {
-// Thanksgiving = 4th Thursday of November
-const nov1 = new Date(year, 10, 1);
-let thxDay = 1 + ((4 - nov1.getDay() + 7) % 7);
-thxDay += 21;
-const thx = fmt(new Date(year, 10, thxDay));
-// Memorial Day = last Monday of May
-const may31 = new Date(year, 4, 31);
-let memDay = 31 - ((may31.getDay() - 1 + 7) % 7);
-const mem = fmt(new Date(year, 4, memDay));
-// Labor Day = first Monday of September
-const sep1 = new Date(year, 8, 1);
-let labDay = 1 + ((1 - sep1.getDay() + 7) % 7);
-const lab = fmt(new Date(year, 8, labDay));
+  // Thanksgiving = 4th Thursday of November
+  const nov1 = new Date(year, 10, 1);
+  let thxDay = 1 + ((4 - nov1.getDay() + 7) % 7);
+  thxDay += 21;
+  const thx = fmt(new Date(year, 10, thxDay));
+  // Memorial Day = last Monday of May
+  const may31 = new Date(year, 4, 31);
+  let memDay = 31 - ((may31.getDay() - 1 + 7) % 7);
+  const mem = fmt(new Date(year, 4, memDay));
+  // Labor Day = first Monday of September
+  const sep1 = new Date(year, 8, 1);
+  let labDay = 1 + ((1 - sep1.getDay() + 7) % 7);
+  const lab = fmt(new Date(year, 8, labDay));
 
-return {
-major: [
-{ name: “New Year’s”, date: fmt(new Date(year, 11, 31)), emoji: “🎆”, startDate: fmt(new Date(year, 11, 31)), endDate: fmt(new Date(year+1, 0, 1)) },
-{ name: “Thanksgiving”, date: thx, emoji: “🦃” },
-{ name: “Christmas Day”, date: fmt(new Date(year, 11, 25)), emoji: “🎄” },
-],
-minor: [
-{ name: “Memorial Day”, date: mem, emoji: “🇺🇸” },
-{ name: “July 4th”, date: fmt(new Date(year, 6, 4)), emoji: “🎆” },
-{ name: “Labor Day”, date: lab, emoji: “🇺🇸” },
-]
-};
+  return {
+    major: [
+      { name: "New Year's", date: fmt(new Date(year, 11, 31)), emoji: "🎆", startDate: fmt(new Date(year, 11, 31)), endDate: fmt(new Date(year+1, 0, 1)) },
+      { name: "Thanksgiving", date: thx, emoji: "🦃" },
+      { name: "Christmas Day", date: fmt(new Date(year, 11, 25)), emoji: "🎄" },
+    ],
+    minor: [
+      { name: "Memorial Day", date: mem, emoji: "🇺🇸" },
+      { name: "July 4th", date: fmt(new Date(year, 6, 4)), emoji: "🎆" },
+      { name: "Labor Day", date: lab, emoji: "🇺🇸" },
+    ]
+  };
 }
 
 function generate(surgeons, mondays, vac, backupMondays, priorCounts, preferences, fierceBackupMondays, holAssignments) {
-const sched = {};
-const ids = surgeons.map(s=>s.id);
-const nameMap = {}; surgeons.forEach(s => nameMap[s.id] = s.name);
+  const sched = {};
+  const ids = surgeons.map(s=>s.id);
+  const nameMap = {}; surgeons.forEach(s => nameMap[s.id] = s.name);
 
-// Build holiday coverage map from pre-computed coverage arrays
-// { “YYYY-MM-DD”: { surgeonId, role, name, type } }
-const holCoverage = {};
-const holByDate = {}; // { “YYYY-MM-DD”: { surgeonA, surgeonB, name, type } }
-if (holAssignments) {
-Object.values(holAssignments).forEach(yearArr => {
-if (!Array.isArray(yearArr)) return;
-yearArr.forEach(h => {
-// Store the holiday metadata by date
-holByDate[h.date] = { surgeonA: h.surgeonA, surgeonB: h.surgeonB, name: h.name, type: h.type };
-// Store each coverage day (skip Eve entries — those are display-only, not schedule overrides)
-if (h.coverage && Array.isArray(h.coverage)) {
-h.coverage.forEach(c => {
-if (c.isEve) return; // Eve is informational only — regular schedule stays
-holCoverage[c.date] = { surgeonId: c.surgeon, role: “holiday_24h”, hours: “7a–7a”, name: c.label, type: h.type };
-});
-}
-});
-});
-}
+  // Build holiday coverage map from pre-computed coverage arrays
+  // { "YYYY-MM-DD": { surgeonId, role, name, type } }
+  const holCoverage = {};
+  const holByDate = {}; // { "YYYY-MM-DD": { surgeonA, surgeonB, name, type } }
+  if (holAssignments) {
+    Object.values(holAssignments).forEach(yearArr => {
+      if (!Array.isArray(yearArr)) return;
+      yearArr.forEach(h => {
+        // Store the holiday metadata by date
+        holByDate[h.date] = { surgeonA: h.surgeonA, surgeonB: h.surgeonB, name: h.name, type: h.type };
+        // Store each coverage day (skip Eve entries — those are display-only, not schedule overrides)
+        if (h.coverage && Array.isArray(h.coverage)) {
+          h.coverage.forEach(c => {
+            if (c.isEve) return; // Eve is informational only — regular schedule stays
+            holCoverage[c.date] = { surgeonId: c.surgeon, role: "holiday_24h", hours: "7a–7a", name: c.label, type: h.type };
+          });
+        }
+      });
+    });
+  }
 
-// Running counters seeded from prior totals
-const dcCt={}; const nCt={}; const wkndCt={}; const offCt={}; const lastPos={};
-const burden = {};
-// Track last DC week index per surgeon for spacing
-const lastDcWeek = {};
-// Track consecutive night assignments
-const prevNightSurgeon = {}; // { surgeonId: lastNightDate }
-ids.forEach(id=>{
-const p = priorCounts[id] || {};
-dcCt[id] = (p.dc||0) + (p.dcB||0);
-nCt[id] = (p.nights||0) + (p.nightsB||0);
-wkndCt[id] = (p.wknd||0) + (p.wkndB||0);
-offCt[id] = (p.off||0) + (p.offB||0);
-burden[id] = dcCt[id]*7 + nCt[id] + wkndCt[id]*3;
-lastDcWeek[id] = -99;
-});
-let prevWkndSurgeon = null;
-let prevDcSurgeon = null;
-
-const prefs = preferences || {};
-
-// Build holiday lookup for all years in the schedule
-const holidayMap = {}; // { “YYYY-MM-DD”: { name, type:“major”|“minor” } }
-const years = new Set(mondays.map(m => m.getFullYear()));
-// Include next year for Dec→Jan overlap (build a separate array to avoid mutating Set during iteration)
-[…years].forEach(y => { years.add(y+1); });
-years.forEach(y => {
-const h = getHolidays(y);
-h.major.forEach(hol => {
-holidayMap[hol.date] = { …hol, type: “major” };
-if (hol.endDate && hol.endDate !== hol.date) holidayMap[hol.endDate] = { …hol, date: hol.endDate, name: hol.name + “ (Day 2)”, type: “major” };
-});
-h.minor.forEach(hol => { holidayMap[hol.date] = { …hol, type: “minor” }; });
-});
-
-// Find FAK’s ID for Christmas exception
-const fakId = ids.find(id => (nameMap[id]||””).toUpperCase() === “FAK”) || null;
-
-// Track holiday assignments this period for fairness
-const holidayCt = {}; // { surgeonId: { major: count, minor: count } }
-ids.forEach(id => { holidayCt[id] = { major: 0, minor: 0 }; });
-
-for (let wkIdx = 0; wkIdx < mondays.length; wkIdx++) {
-const monday = mondays[wkIdx];
-const mStr = fmt(monday);
-const isBackup = backupMondays.has(mStr);
-const isFierceBackup = (fierceBackupMondays||new Set()).has(mStr);
-
-```
-// Check for holidays this week
-const weekDates = [];
-for (let i = 0; i < 7; i++) weekDates.push(fmt(addD(monday, i)));
-const weekHolidays = weekDates.map(ds => holidayMap[ds] ? { ...holidayMap[ds], ds } : null).filter(Boolean);
-const hasHoliday = weekHolidays.length > 0;
-const hasMajorHoliday = weekHolidays.some(h => h.type === "major");
-const isChristmasWeek = weekHolidays.some(h => h.name === "Christmas Day");
-const christmasDate = weekHolidays.find(h => h.name === "Christmas Day")?.ds;
-
-// ═══ DAY CALL ═══
-const availDC = ids.filter(id => {
-  for(let i=0;i<6;i++) if(onVac(id, fmt(addD(monday,i)), vac)) return false;
-  return true;
-});
-
-let dc = null;
-if (availDC.length) {
-  // Check for pre-assigned holiday surgeonA for DC this week
-  const weekdayHoliday = weekHolidays.find(h => {
-    const dow = parse(h.ds).getDay();
-    return dow >= 1 && dow <= 5; // M-F holiday
+  // Running counters seeded from prior totals
+  const dcCt={}; const nCt={}; const wkndCt={}; const offCt={}; const lastPos={};
+  const burden = {};
+  // Track last DC week index per surgeon for spacing
+  const lastDcWeek = {};
+  // Track consecutive night assignments
+  const prevNightSurgeon = {}; // { surgeonId: lastNightDate }
+  ids.forEach(id=>{
+    const p = priorCounts[id] || {};
+    dcCt[id] = (p.dc||0) + (p.dcB||0);
+    nCt[id] = (p.nights||0) + (p.nightsB||0);
+    wkndCt[id] = (p.wknd||0) + (p.wkndB||0);
+    offCt[id] = (p.off||0) + (p.offB||0);
+    burden[id] = dcCt[id]*7 + nCt[id] + wkndCt[id]*3;
+    lastDcWeek[id] = -99;
   });
-  const holDcSurgeon = weekdayHoliday && holByDate[weekdayHoliday.ds]?.surgeonA;
+  let prevWkndSurgeon = null;
+  let prevDcSurgeon = null;
 
-  // Christmas exception: FAK takes Christmas, so prefer FAK for DC that week
-  if (isChristmasWeek && fakId && availDC.includes(fakId)) {
-    dc = fakId;
-  } else if (holDcSurgeon && availDC.includes(holDcSurgeon)) {
-    // For Monday holidays, the holiday surgeon only covers Monday 24h
-    // A different surgeon should handle service week (Tue-Fri)
-    const holDow = weekdayHoliday ? parse(weekdayHoliday.ds).getDay() : -1;
-    if (holDow === 1) {
-      // Monday holiday — do NOT force holiday surgeon as DC
-      // Instead, prefer someone else for service week
-      const nonHolPool = availDC.filter(id => id !== holDcSurgeon);
-      if (nonHolPool.length > 0) {
-        nonHolPool.sort((a,b) => {
+  const prefs = preferences || {};
+
+  // Build holiday lookup for all years in the schedule
+  const holidayMap = {}; // { "YYYY-MM-DD": { name, type:"major"|"minor" } }
+  const years = new Set(mondays.map(m => m.getFullYear()));
+  // Include next year for Dec→Jan overlap (build a separate array to avoid mutating Set during iteration)
+  [...years].forEach(y => { years.add(y+1); });
+  years.forEach(y => {
+    const h = getHolidays(y);
+    h.major.forEach(hol => { 
+      holidayMap[hol.date] = { ...hol, type: "major" }; 
+      if (hol.endDate && hol.endDate !== hol.date) holidayMap[hol.endDate] = { ...hol, date: hol.endDate, name: hol.name + " (Day 2)", type: "major" };
+    });
+    h.minor.forEach(hol => { holidayMap[hol.date] = { ...hol, type: "minor" }; });
+  });
+
+  // Find FAK's ID for Christmas exception
+  const fakId = ids.find(id => (nameMap[id]||"").toUpperCase() === "FAK") || null;
+
+  // Track holiday assignments this period for fairness
+  const holidayCt = {}; // { surgeonId: { major: count, minor: count } }
+  ids.forEach(id => { holidayCt[id] = { major: 0, minor: 0 }; });
+
+  for (let wkIdx = 0; wkIdx < mondays.length; wkIdx++) {
+    const monday = mondays[wkIdx];
+    const mStr = fmt(monday);
+    const isBackup = backupMondays.has(mStr);
+    const isFierceBackup = (fierceBackupMondays||new Set()).has(mStr);
+
+    // Check for holidays this week
+    const weekDates = [];
+    for (let i = 0; i < 7; i++) weekDates.push(fmt(addD(monday, i)));
+    const weekHolidays = weekDates.map(ds => holidayMap[ds] ? { ...holidayMap[ds], ds } : null).filter(Boolean);
+    const hasHoliday = weekHolidays.length > 0;
+    const hasMajorHoliday = weekHolidays.some(h => h.type === "major");
+    const isChristmasWeek = weekHolidays.some(h => h.name === "Christmas Day");
+    const christmasDate = weekHolidays.find(h => h.name === "Christmas Day")?.ds;
+
+    // ═══ DAY CALL ═══
+    const availDC = ids.filter(id => {
+      for(let i=0;i<6;i++) if(onVac(id, fmt(addD(monday,i)), vac)) return false;
+      return true;
+    });
+
+    let dc = null;
+    if (availDC.length) {
+      // Check for pre-assigned holiday surgeonA for DC this week
+      const weekdayHoliday = weekHolidays.find(h => {
+        const dow = parse(h.ds).getDay();
+        return dow >= 1 && dow <= 5; // M-F holiday
+      });
+      const holDcSurgeon = weekdayHoliday && holByDate[weekdayHoliday.ds]?.surgeonA;
+
+      // Christmas exception: FAK takes Christmas, so prefer FAK for DC that week
+      if (isChristmasWeek && fakId && availDC.includes(fakId)) {
+        dc = fakId;
+      } else if (holDcSurgeon && availDC.includes(holDcSurgeon)) {
+        // For Monday holidays, the holiday surgeon only covers Monday 24h
+        // A different surgeon should handle service week (Tue-Fri)
+        const holDow = weekdayHoliday ? parse(weekdayHoliday.ds).getDay() : -1;
+        if (holDow === 1) {
+          // Monday holiday — do NOT force holiday surgeon as DC
+          // Instead, prefer someone else for service week
+          const nonHolPool = availDC.filter(id => id !== holDcSurgeon);
+          if (nonHolPool.length > 0) {
+            nonHolPool.sort((a,b) => {
+              const d = dcCt[a]-dcCt[b]; if(d) return d;
+              const bd = burden[a]-burden[b]; if(bd) return bd;
+              const spacingA = wkIdx - lastDcWeek[a];
+              const spacingB = wkIdx - lastDcWeek[b];
+              if (spacingA !== spacingB) return spacingB - spacingA;
+              if(a===prevWkndSurgeon) return 1;
+              if(b===prevWkndSurgeon) return -1;
+              return Math.random() - 0.5;
+            });
+            dc = nonHolPool[0];
+          } else {
+            dc = holDcSurgeon; // fallback if no one else available
+          }
+        } else {
+          dc = holDcSurgeon; // Non-Monday holiday: holiday surgeon takes DC
+        }
+      } else {
+        availDC.sort((a,b) => {
           const d = dcCt[a]-dcCt[b]; if(d) return d;
           const bd = burden[a]-burden[b]; if(bd) return bd;
+          // Day Call spacing: prefer surgeons who haven't had DC recently
           const spacingA = wkIdx - lastDcWeek[a];
           const spacingB = wkIdx - lastDcWeek[b];
-          if (spacingA !== spacingB) return spacingB - spacingA;
+          if (spacingA !== spacingB) return spacingB - spacingA; // larger gap = better
+          // Avoid weekend→DC
           if(a===prevWkndSurgeon) return 1;
           if(b===prevWkndSurgeon) return -1;
           return Math.random() - 0.5;
         });
-        dc = nonHolPool[0];
-      } else {
-        dc = holDcSurgeon; // fallback if no one else available
+        dc = availDC[0];
       }
+      dcCt[dc]++; burden[dc]+=7; lastDcWeek[dc] = wkIdx;
+
+      // Holiday tracking for DC surgeon
+      weekHolidays.forEach(h => {
+        holidayCt[dc][h.type]++;
+      });
+    }
+
+    const rem = ids.filter(id=>id!==dc);
+    const nights = {};
+    const used = new Set();
+
+    // ═══ WEEKEND SHIFT ═══
+    const friDate = fmt(addD(monday,4));
+    const sunDate = fmt(addD(monday,6));
+    const nextMonDate = fmt(addD(monday,7));
+
+    let availWknd = rem.filter(id => !onVac(id,friDate,vac) && !onVac(id,sunDate,vac));
+    availWknd = availWknd.filter(id => !onVac(id, nextMonDate, vac));
+
+    // Check if Friday or Sunday is a holiday — special handling
+    const friHoliday = holidayMap[friDate];
+    const sunHoliday = holidayMap[sunDate];
+
+    const prefWknd = availWknd.filter(id => id !== prevWkndSurgeon);
+    const wkndPool = prefWknd.length > 0 ? prefWknd : availWknd;
+
+    if (wkndPool.length) {
+      wkndPool.sort((a,b) => {
+        const d = wkndCt[a]-wkndCt[b]; if(d) return d;
+        // Holiday fairness: if weekend includes a holiday, prefer surgeon with fewer holiday shifts
+        if (friHoliday || sunHoliday) {
+          const hType = (friHoliday || sunHoliday).type;
+          const ha = holidayCt[a][hType] || 0;
+          const hb = holidayCt[b][hType] || 0;
+          if (ha !== hb) return ha - hb;
+        }
+        const bd = burden[a]-burden[b]; if(bd) return bd;
+        if(lastPos[a]==="wknd"&&lastPos[b]!=="wknd") return 1;
+        if(lastPos[b]==="wknd"&&lastPos[a]!=="wknd") return -1;
+        return Math.random() - 0.5;
+      });
+      nights.wknd = wkndPool[0]; used.add(wkndPool[0]); wkndCt[wkndPool[0]]++; burden[wkndPool[0]]+=3;
+      if (friHoliday) holidayCt[wkndPool[0]][friHoliday.type]++;
+      if (sunHoliday) holidayCt[wkndPool[0]][sunHoliday.type]++;
     } else {
-      dc = holDcSurgeon; // Non-Monday holiday: holiday surgeon takes DC
-    }
-  } else {
-    availDC.sort((a,b) => {
-      const d = dcCt[a]-dcCt[b]; if(d) return d;
-      const bd = burden[a]-burden[b]; if(bd) return bd;
-      // Day Call spacing: prefer surgeons who haven't had DC recently
-      const spacingA = wkIdx - lastDcWeek[a];
-      const spacingB = wkIdx - lastDcWeek[b];
-      if (spacingA !== spacingB) return spacingB - spacingA; // larger gap = better
-      // Avoid weekend→DC
-      if(a===prevWkndSurgeon) return 1;
-      if(b===prevWkndSurgeon) return -1;
-      return Math.random() - 0.5;
-    });
-    dc = availDC[0];
-  }
-  dcCt[dc]++; burden[dc]+=7; lastDcWeek[dc] = wkIdx;
-
-  // Holiday tracking for DC surgeon
-  weekHolidays.forEach(h => {
-    holidayCt[dc][h.type]++;
-  });
-}
-
-const rem = ids.filter(id=>id!==dc);
-const nights = {};
-const used = new Set();
-
-// ═══ WEEKEND SHIFT ═══
-const friDate = fmt(addD(monday,4));
-const sunDate = fmt(addD(monday,6));
-const nextMonDate = fmt(addD(monday,7));
-
-let availWknd = rem.filter(id => !onVac(id,friDate,vac) && !onVac(id,sunDate,vac));
-availWknd = availWknd.filter(id => !onVac(id, nextMonDate, vac));
-
-// Check if Friday or Sunday is a holiday — special handling
-const friHoliday = holidayMap[friDate];
-const sunHoliday = holidayMap[sunDate];
-
-const prefWknd = availWknd.filter(id => id !== prevWkndSurgeon);
-const wkndPool = prefWknd.length > 0 ? prefWknd : availWknd;
-
-if (wkndPool.length) {
-  wkndPool.sort((a,b) => {
-    const d = wkndCt[a]-wkndCt[b]; if(d) return d;
-    // Holiday fairness: if weekend includes a holiday, prefer surgeon with fewer holiday shifts
-    if (friHoliday || sunHoliday) {
-      const hType = (friHoliday || sunHoliday).type;
-      const ha = holidayCt[a][hType] || 0;
-      const hb = holidayCt[b][hType] || 0;
-      if (ha !== hb) return ha - hb;
-    }
-    const bd = burden[a]-burden[b]; if(bd) return bd;
-    if(lastPos[a]==="wknd"&&lastPos[b]!=="wknd") return 1;
-    if(lastPos[b]==="wknd"&&lastPos[a]!=="wknd") return -1;
-    return Math.random() - 0.5;
-  });
-  nights.wknd = wkndPool[0]; used.add(wkndPool[0]); wkndCt[wkndPool[0]]++; burden[wkndPool[0]]+=3;
-  if (friHoliday) holidayCt[wkndPool[0]][friHoliday.type]++;
-  if (sunHoliday) holidayCt[wkndPool[0]][sunHoliday.type]++;
-} else {
-  const fb=rem.filter(id=>!used.has(id));
-  if(fb.length){nights.wknd=fb[0];used.add(fb[0]);} else nights.wknd=null;
-}
-
-// ═══ WEEKNIGHT SHIFTS ═══
-
-// Shuffle night keys to prevent positional bias
-const shuffledNightKeys = [...NIGHT_KEYS];
-for(let i=shuffledNightKeys.length-1;i>0;i--){
-  const j=Math.floor(Math.random()*(i+1));
-  [shuffledNightKeys[i],shuffledNightKeys[j]]=[shuffledNightKeys[j],shuffledNightKeys[i]];
-}
-
-const nightAssignments = {};
-const nightUsed = new Set();
-
-// Pre-assign nights that are covered by holiday 24h shifts
-// Holiday surgeon covers the full 24h — no separate night shift needed
-const holidayNightOverrides = {};
-NIGHT_KEYS.forEach((sk, i) => {
-  const dayOffset = {mon:0,tue:1,wed:2,thu:3}[sk];
-  const nightDate = fmt(addD(monday, dayOffset));
-  const cov = holCoverage[nightDate];
-  if (cov && cov.role === "holiday_24h") {
-    // Mark this night as covered by the holiday surgeon (suppresses separate assignment)
-    holidayNightOverrides[sk] = cov.surgeonId;
-  }
-});
-
-// Also check weekend for holiday coverage
-const holFriDate = fmt(addD(monday, 4));
-const holSunDate = fmt(addD(monday, 6));
-const friCov = holCoverage[holFriDate];
-const sunCov = holCoverage[holSunDate];
-let holidayWkndOverride = null;
-if (friCov && friCov.role === "holiday_24h") {
-  holidayWkndOverride = friCov.surgeonId;
-} else if (sunCov && sunCov.role === "holiday_24h") {
-  holidayWkndOverride = sunCov.surgeonId;
-}
-
-// If weekend has holiday override, use it instead of normal weekend assignment
-if (holidayWkndOverride && nights.wknd) {
-  // Undo the normal weekend assignment counts
-  if (nights.wknd) { wkndCt[nights.wknd]--; burden[nights.wknd]-=3; used.delete(nights.wknd); }
-  nights.wknd = holidayWkndOverride;
-  used.add(holidayWkndOverride);
-  wkndCt[holidayWkndOverride] = (wkndCt[holidayWkndOverride]||0) + 1;
-  burden[holidayWkndOverride] = (burden[holidayWkndOverride]||0) + 3;
-}
-
-for (const sk of shuffledNightKeys) {
-  // If this night is overridden by holiday coverage, use the holiday surgeon
-  if (holidayNightOverrides[sk]) {
-    nightAssignments[sk] = holidayNightOverrides[sk];
-    nightUsed.add(holidayNightOverrides[sk]);
-    nCt[holidayNightOverrides[sk]]++; burden[holidayNightOverrides[sk]]++;
-    continue;
-  }
-  const dayOffset = {mon:0,tue:1,wed:2,thu:3}[sk];
-  const sd = fmt(addD(monday, dayOffset));
-  const nextDayStr = fmt(addD(monday, dayOffset + 1));
-  const nightHoliday = holidayMap[sd]; // is this night a holiday?
-  const nextDayHoliday = holidayMap[nextDayStr]; // is tomorrow a holiday?
-
-  let avail = rem.filter(id => !used.has(id) && !nightUsed.has(id) && !onVac(id,sd,vac));
-  avail = avail.filter(id => !onVac(id, nextDayStr, vac));
-
-  // HARD RULE: Weekend surgeon cannot take Monday night the following week
-  if (sk === "mon" && prevWkndSurgeon) {
-    const nonWknd = avail.filter(id => id !== prevWkndSurgeon);
-    if (nonWknd.length > 0) avail = nonWknd;
-  }
-
-  // HARD RULE: Service week surgeon cannot take Monday night the following week
-  if (sk === "mon" && prevDcSurgeon) {
-    const nonDc = avail.filter(id => id !== prevDcSurgeon);
-    if (nonDc.length > 0) avail = nonDc;
-  }
-
-  // HARD RULE: No back-to-back nights — filter out anyone who had a night yesterday
-  const yesterdayStr = fmt(addD(monday, dayOffset - 1));
-  const nonConsec = avail.filter(id => prevNightSurgeon[id] !== yesterdayStr);
-  if (nonConsec.length > 0) avail = nonConsec;
-
-  // Fallback layers
-  if(!avail.length) avail = rem.filter(id => !used.has(id) && !nightUsed.has(id) && !onVac(id,sd,vac));
-  if(!avail.length) avail = rem.filter(id => !used.has(id) && !nightUsed.has(id));
-  if(!avail.length){ nightAssignments[sk]=null; continue; }
-
-  avail.sort((a,b) => {
-    // HOLIDAY ASSIGNMENT: prefer pre-assigned surgeonB for this night
-    const holNight = holByDate[sd] || holByDate[nextDayStr];
-    const holSurgeonB = holNight?.surgeonB;
-    if (holSurgeonB) {
-      if (a === holSurgeonB && b !== holSurgeonB) return -1;
-      if (b === holSurgeonB && a !== holSurgeonB) return 1;
+      const fb=rem.filter(id=>!used.has(id));
+      if(fb.length){nights.wknd=fb[0];used.add(fb[0]);} else nights.wknd=null;
     }
 
-    // Holiday fairness: if this night is a holiday or eve of holiday
-    if (nextDayHoliday) {
-      const hType = nextDayHoliday.type;
-      const ha = holidayCt[a]?.[hType] || 0;
-      const hb = holidayCt[b]?.[hType] || 0;
-      if (ha !== hb) return ha - hb; // fewer holiday shifts → gets this one
+    // ═══ WEEKNIGHT SHIFTS ═══
+
+    // Shuffle night keys to prevent positional bias
+    const shuffledNightKeys = [...NIGHT_KEYS];
+    for(let i=shuffledNightKeys.length-1;i>0;i--){
+      const j=Math.floor(Math.random()*(i+1));
+      [shuffledNightKeys[i],shuffledNightKeys[j]]=[shuffledNightKeys[j],shuffledNightKeys[i]];
     }
 
-    const d=nCt[a]-nCt[b]; if(d) return d;
-    const bd = burden[a]-burden[b]; if(bd) return bd;
+    const nightAssignments = {};
+    const nightUsed = new Set();
 
-    // Preferences
-    const aPref = prefs[a]; const bPref = prefs[b];
-    const aBonus = (aPref?.preferShift===sk ? -10 : 0) + (aPref?.avoidShift===sk ? 10 : 0);
-    const bBonus = (bPref?.preferShift===sk ? -10 : 0) + (bPref?.avoidShift===sk ? 10 : 0);
-    if(aBonus !== bBonus) return aBonus - bBonus;
-
-    if(lastPos[a]===sk&&lastPos[b]!==sk) return 1;
-    if(lastPos[b]===sk&&lastPos[a]!==sk) return -1;
-    return Math.random() - 0.5;
-  });
-
-  const chosen = avail[0];
-  nightAssignments[sk] = chosen;
-  nightUsed.add(chosen);
-  nCt[chosen]++; burden[chosen]++; lastPos[chosen] = sk;
-  prevNightSurgeon[chosen] = sd; // track for consecutive night detection
-
-  // Track holiday assignments
-  if (nextDayHoliday) holidayCt[chosen][nextDayHoliday.type]++;
-}
-
-for (const sk of NIGHT_KEYS) nights[sk] = nightAssignments[sk] || null;
-
-if(nights.wknd) lastPos[nights.wknd] = "wknd";
-prevWkndSurgeon = nights.wknd || null;
-prevDcSurgeon = dc || null;
-
-const assigned = new Set([dc, ...Object.values(nights)].filter(Boolean));
-const off = ids.find(id => !assigned.has(id)) || null;
-if(off) offCt[off]++;
-
-// Collect holiday coverage for this week
-const weekHolCoverage = {};
-for (let i = 0; i < 7; i++) {
-  const ds = fmt(addD(monday, i));
-  if (holCoverage[ds]) weekHolCoverage[ds] = holCoverage[ds];
-}
-
-sched[mStr] = { dayCall:dc, nights, off, isBackup, isFierceBackup, holidayCoverage: Object.keys(weekHolCoverage).length > 0 ? weekHolCoverage : null };
-```
-
-}
-
-// ═══ POST-OPTIMIZATION PASS ═══
-const mondayStrs = mondays.map(m => fmt(m));
-const calcSpread = (ct) => { const vals = Object.values(ct); return Math.max(…vals)-Math.min(…vals); };
-
-for (let pass = 0; pass < 50; pass++) {
-let improved = false;
-
-```
-// Try swapping weekend assignments to reduce spread
-for (let i = 0; i < mondayStrs.length && !improved; i++) {
-  for (let j = i+1; j < mondayStrs.length && !improved; j++) {
-    const wkA = sched[mondayStrs[i]];
-    const wkB = sched[mondayStrs[j]];
-    const a = wkA.nights?.wknd, b = wkB.nights?.wknd;
-    if (!a || !b || a === b) continue;
-
-    const monA = parse(mondayStrs[i]), monB = parse(mondayStrs[j]);
-    const friA = fmt(addD(monA,4)), sunA = fmt(addD(monA,6)), nMonA = fmt(addD(monA,7));
-    const friB = fmt(addD(monB,4)), sunB = fmt(addD(monB,6)), nMonB = fmt(addD(monB,7));
-
-    const bCanDoA = !onVac(b,friA,vac) && !onVac(b,sunA,vac) && !onVac(b,nMonA,vac) && b !== wkA.dayCall;
-    const aCanDoB = !onVac(a,friB,vac) && !onVac(a,sunB,vac) && !onVac(a,nMonB,vac) && a !== wkB.dayCall;
-    if (!bCanDoA || !aCanDoB) continue;
-
-    // Check weekend→Monday night conflict: new weekend surgeon shouldn't be Monday night next week
-    const nextWkA = i + 1 < mondayStrs.length ? sched[mondayStrs[i + 1]] : null;
-    const nextWkB = j + 1 < mondayStrs.length ? sched[mondayStrs[j + 1]] : null;
-    if (nextWkA?.nights?.mon === b) continue; // b doing weekend in A would conflict with Mon night
-    if (nextWkB?.nights?.mon === a) continue; // a doing weekend in B would conflict with Mon night
-
-    if (wkndCt[a] > wkndCt[b] + 1) {
-      wkndCt[a]--; wkndCt[b]++;
-      burden[a]-=3; burden[b]+=3;
-      wkA.nights.wknd = b; wkB.nights.wknd = a;
-      const fixOff = (wk) => {
-        const assigned = new Set([wk.dayCall, ...Object.values(wk.nights)].filter(Boolean));
-        wk.off = ids.find(id => !assigned.has(id)) || null;
-      };
-      fixOff(wkA); fixOff(wkB);
-      improved = true;
-    } else if (wkndCt[b] > wkndCt[a] + 1) {
-      wkndCt[b]--; wkndCt[a]++;
-      burden[b]-=3; burden[a]+=3;
-      wkA.nights.wknd = b; wkB.nights.wknd = a;
-      const fixOff = (wk) => {
-        const assigned = new Set([wk.dayCall, ...Object.values(wk.nights)].filter(Boolean));
-        wk.off = ids.find(id => !assigned.has(id)) || null;
-      };
-      fixOff(wkA); fixOff(wkB);
-      improved = true;
-    }
-  }
-}
-
-if (!improved) break;
-```
-
-}
-
-// ═══ VALIDATION PASS — fix any remaining hard-rule violations via swaps ═══
-for (let pass = 0; pass < 3; pass++) {
-for (let i = 0; i < mondayStrs.length; i++) {
-const wk = sched[mondayStrs[i]];
-const recalcOff = (w) => {
-const a = new Set([w.dayCall, …Object.values(w.nights)].filter(Boolean));
-w.off = ids.find(id => !a.has(id)) || null;
-};
-
-```
-  // Fix: DC surgeon should not also have a night in same week
-  if (wk.dayCall) {
-    NIGHT_KEYS.forEach(sk => {
-      if (wk.nights?.[sk] === wk.dayCall && wk.off) {
-        // Swap the conflicting night with the off surgeon
-        wk.nights[sk] = wk.off;
-        recalcOff(wk);
+    // Pre-assign nights that are covered by holiday 24h shifts
+    // Holiday surgeon covers the full 24h — no separate night shift needed
+    const holidayNightOverrides = {};
+    NIGHT_KEYS.forEach((sk, i) => {
+      const dayOffset = {mon:0,tue:1,wed:2,thu:3}[sk];
+      const nightDate = fmt(addD(monday, dayOffset));
+      const cov = holCoverage[nightDate];
+      if (cov && cov.role === "holiday_24h") {
+        // Mark this night as covered by the holiday surgeon (suppresses separate assignment)
+        holidayNightOverrides[sk] = cov.surgeonId;
       }
     });
-    // Fix: DC surgeon should not have weekend in same week
-    if (wk.nights?.wknd === wk.dayCall && wk.off) {
-      wk.nights.wknd = wk.off;
-      recalcOff(wk);
+
+    // Also check weekend for holiday coverage
+    const holFriDate = fmt(addD(monday, 4));
+    const holSunDate = fmt(addD(monday, 6));
+    const friCov = holCoverage[holFriDate];
+    const sunCov = holCoverage[holSunDate];
+    let holidayWkndOverride = null;
+    if (friCov && friCov.role === "holiday_24h") {
+      holidayWkndOverride = friCov.surgeonId;
+    } else if (sunCov && sunCov.role === "holiday_24h") {
+      holidayWkndOverride = sunCov.surgeonId;
     }
+
+    // If weekend has holiday override, use it instead of normal weekend assignment
+    if (holidayWkndOverride && nights.wknd) {
+      // Undo the normal weekend assignment counts
+      if (nights.wknd) { wkndCt[nights.wknd]--; burden[nights.wknd]-=3; used.delete(nights.wknd); }
+      nights.wknd = holidayWkndOverride;
+      used.add(holidayWkndOverride);
+      wkndCt[holidayWkndOverride] = (wkndCt[holidayWkndOverride]||0) + 1;
+      burden[holidayWkndOverride] = (burden[holidayWkndOverride]||0) + 3;
+    }
+
+    for (const sk of shuffledNightKeys) {
+      // If this night is overridden by holiday coverage, use the holiday surgeon
+      if (holidayNightOverrides[sk]) {
+        nightAssignments[sk] = holidayNightOverrides[sk];
+        nightUsed.add(holidayNightOverrides[sk]);
+        nCt[holidayNightOverrides[sk]]++; burden[holidayNightOverrides[sk]]++;
+        continue;
+      }
+      const dayOffset = {mon:0,tue:1,wed:2,thu:3}[sk];
+      const sd = fmt(addD(monday, dayOffset));
+      const nextDayStr = fmt(addD(monday, dayOffset + 1));
+      const nightHoliday = holidayMap[sd]; // is this night a holiday?
+      const nextDayHoliday = holidayMap[nextDayStr]; // is tomorrow a holiday?
+
+      let avail = rem.filter(id => !used.has(id) && !nightUsed.has(id) && !onVac(id,sd,vac));
+      avail = avail.filter(id => !onVac(id, nextDayStr, vac));
+
+      // HARD RULE: Weekend surgeon cannot take Monday night the following week
+      if (sk === "mon" && prevWkndSurgeon) {
+        const nonWknd = avail.filter(id => id !== prevWkndSurgeon);
+        if (nonWknd.length > 0) avail = nonWknd;
+      }
+
+      // HARD RULE: Service week surgeon cannot take Monday night the following week
+      if (sk === "mon" && prevDcSurgeon) {
+        const nonDc = avail.filter(id => id !== prevDcSurgeon);
+        if (nonDc.length > 0) avail = nonDc;
+      }
+
+      // HARD RULE: No back-to-back nights — filter out anyone who had a night yesterday
+      const yesterdayStr = fmt(addD(monday, dayOffset - 1));
+      const nonConsec = avail.filter(id => prevNightSurgeon[id] !== yesterdayStr);
+      if (nonConsec.length > 0) avail = nonConsec;
+
+      // Fallback layers
+      if(!avail.length) avail = rem.filter(id => !used.has(id) && !nightUsed.has(id) && !onVac(id,sd,vac));
+      if(!avail.length) avail = rem.filter(id => !used.has(id) && !nightUsed.has(id));
+      if(!avail.length){ nightAssignments[sk]=null; continue; }
+
+      avail.sort((a,b) => {
+        // HOLIDAY ASSIGNMENT: prefer pre-assigned surgeonB for this night
+        const holNight = holByDate[sd] || holByDate[nextDayStr];
+        const holSurgeonB = holNight?.surgeonB;
+        if (holSurgeonB) {
+          if (a === holSurgeonB && b !== holSurgeonB) return -1;
+          if (b === holSurgeonB && a !== holSurgeonB) return 1;
+        }
+
+        // Holiday fairness: if this night is a holiday or eve of holiday
+        if (nextDayHoliday) {
+          const hType = nextDayHoliday.type;
+          const ha = holidayCt[a]?.[hType] || 0;
+          const hb = holidayCt[b]?.[hType] || 0;
+          if (ha !== hb) return ha - hb; // fewer holiday shifts → gets this one
+        }
+
+        const d=nCt[a]-nCt[b]; if(d) return d;
+        const bd = burden[a]-burden[b]; if(bd) return bd;
+
+        // Preferences
+        const aPref = prefs[a]; const bPref = prefs[b];
+        const aBonus = (aPref?.preferShift===sk ? -10 : 0) + (aPref?.avoidShift===sk ? 10 : 0);
+        const bBonus = (bPref?.preferShift===sk ? -10 : 0) + (bPref?.avoidShift===sk ? 10 : 0);
+        if(aBonus !== bBonus) return aBonus - bBonus;
+
+        if(lastPos[a]===sk&&lastPos[b]!==sk) return 1;
+        if(lastPos[b]===sk&&lastPos[a]!==sk) return -1;
+        return Math.random() - 0.5;
+      });
+
+      const chosen = avail[0];
+      nightAssignments[sk] = chosen;
+      nightUsed.add(chosen);
+      nCt[chosen]++; burden[chosen]++; lastPos[chosen] = sk;
+      prevNightSurgeon[chosen] = sd; // track for consecutive night detection
+
+      // Track holiday assignments
+      if (nextDayHoliday) holidayCt[chosen][nextDayHoliday.type]++;
+    }
+
+    for (const sk of NIGHT_KEYS) nights[sk] = nightAssignments[sk] || null;
+
+    if(nights.wknd) lastPos[nights.wknd] = "wknd";
+    prevWkndSurgeon = nights.wknd || null;
+    prevDcSurgeon = dc || null;
+
+    const assigned = new Set([dc, ...Object.values(nights)].filter(Boolean));
+    const off = ids.find(id => !assigned.has(id)) || null;
+    if(off) offCt[off]++;
+
+    // Collect holiday coverage for this week
+    const weekHolCoverage = {};
+    for (let i = 0; i < 7; i++) {
+      const ds = fmt(addD(monday, i));
+      if (holCoverage[ds]) weekHolCoverage[ds] = holCoverage[ds];
+    }
+
+    sched[mStr] = { dayCall:dc, nights, off, isBackup, isFierceBackup, holidayCoverage: Object.keys(weekHolCoverage).length > 0 ? weekHolCoverage : null };
   }
 
-  // Fix: Weekend surgeon should not have Monday night next week
-  if (i < mondayStrs.length - 1 && wk.nights?.wknd) {
-    const nextWk = sched[mondayStrs[i + 1]];
-    if (nextWk?.nights?.mon === wk.nights.wknd) {
-      // Try swapping Monday night with off surgeon of next week
-      if (nextWk.off && nextWk.off !== nextWk.dayCall) {
-        nextWk.nights.mon = nextWk.off;
-        recalcOff(nextWk);
-      } else {
-        // Try swapping Monday night with another night surgeon in next week
-        const otherNight = NIGHT_KEYS.find(sk => sk !== "mon" && nextWk.nights?.[sk] && nextWk.nights[sk] !== nextWk.dayCall && nextWk.nights[sk] !== wk.nights.wknd);
-        if (otherNight) {
-          const temp = nextWk.nights.mon;
-          nextWk.nights.mon = nextWk.nights[otherNight];
-          nextWk.nights[otherNight] = temp;
+  // ═══ POST-OPTIMIZATION PASS ═══
+  const mondayStrs = mondays.map(m => fmt(m));
+  const calcSpread = (ct) => { const vals = Object.values(ct); return Math.max(...vals)-Math.min(...vals); };
+
+  for (let pass = 0; pass < 50; pass++) {
+    let improved = false;
+
+    // Try swapping weekend assignments to reduce spread
+    for (let i = 0; i < mondayStrs.length && !improved; i++) {
+      for (let j = i+1; j < mondayStrs.length && !improved; j++) {
+        const wkA = sched[mondayStrs[i]];
+        const wkB = sched[mondayStrs[j]];
+        const a = wkA.nights?.wknd, b = wkB.nights?.wknd;
+        if (!a || !b || a === b) continue;
+
+        const monA = parse(mondayStrs[i]), monB = parse(mondayStrs[j]);
+        const friA = fmt(addD(monA,4)), sunA = fmt(addD(monA,6)), nMonA = fmt(addD(monA,7));
+        const friB = fmt(addD(monB,4)), sunB = fmt(addD(monB,6)), nMonB = fmt(addD(monB,7));
+
+        const bCanDoA = !onVac(b,friA,vac) && !onVac(b,sunA,vac) && !onVac(b,nMonA,vac) && b !== wkA.dayCall;
+        const aCanDoB = !onVac(a,friB,vac) && !onVac(a,sunB,vac) && !onVac(a,nMonB,vac) && a !== wkB.dayCall;
+        if (!bCanDoA || !aCanDoB) continue;
+
+        // Check weekend→Monday night conflict: new weekend surgeon shouldn't be Monday night next week
+        const nextWkA = i + 1 < mondayStrs.length ? sched[mondayStrs[i + 1]] : null;
+        const nextWkB = j + 1 < mondayStrs.length ? sched[mondayStrs[j + 1]] : null;
+        if (nextWkA?.nights?.mon === b) continue; // b doing weekend in A would conflict with Mon night
+        if (nextWkB?.nights?.mon === a) continue; // a doing weekend in B would conflict with Mon night
+
+        if (wkndCt[a] > wkndCt[b] + 1) {
+          wkndCt[a]--; wkndCt[b]++;
+          burden[a]-=3; burden[b]+=3;
+          wkA.nights.wknd = b; wkB.nights.wknd = a;
+          const fixOff = (wk) => {
+            const assigned = new Set([wk.dayCall, ...Object.values(wk.nights)].filter(Boolean));
+            wk.off = ids.find(id => !assigned.has(id)) || null;
+          };
+          fixOff(wkA); fixOff(wkB);
+          improved = true;
+        } else if (wkndCt[b] > wkndCt[a] + 1) {
+          wkndCt[b]--; wkndCt[a]++;
+          burden[b]-=3; burden[a]+=3;
+          wkA.nights.wknd = b; wkB.nights.wknd = a;
+          const fixOff = (wk) => {
+            const assigned = new Set([wk.dayCall, ...Object.values(wk.nights)].filter(Boolean));
+            wk.off = ids.find(id => !assigned.has(id)) || null;
+          };
+          fixOff(wkA); fixOff(wkB);
+          improved = true;
+        }
+      }
+    }
+
+    if (!improved) break;
+  }
+
+  // ═══ VALIDATION PASS — fix any remaining hard-rule violations via swaps ═══
+  for (let pass = 0; pass < 3; pass++) {
+    for (let i = 0; i < mondayStrs.length; i++) {
+      const wk = sched[mondayStrs[i]];
+      const recalcOff = (w) => {
+        const a = new Set([w.dayCall, ...Object.values(w.nights)].filter(Boolean));
+        w.off = ids.find(id => !a.has(id)) || null;
+      };
+
+      // Fix: DC surgeon should not also have a night in same week
+      if (wk.dayCall) {
+        NIGHT_KEYS.forEach(sk => {
+          if (wk.nights?.[sk] === wk.dayCall && wk.off) {
+            // Swap the conflicting night with the off surgeon
+            wk.nights[sk] = wk.off;
+            recalcOff(wk);
+          }
+        });
+        // Fix: DC surgeon should not have weekend in same week
+        if (wk.nights?.wknd === wk.dayCall && wk.off) {
+          wk.nights.wknd = wk.off;
+          recalcOff(wk);
+        }
+      }
+
+      // Fix: Weekend surgeon should not have Monday night next week
+      if (i < mondayStrs.length - 1 && wk.nights?.wknd) {
+        const nextWk = sched[mondayStrs[i + 1]];
+        if (nextWk?.nights?.mon === wk.nights.wknd) {
+          // Try swapping Monday night with off surgeon of next week
+          if (nextWk.off && nextWk.off !== nextWk.dayCall) {
+            nextWk.nights.mon = nextWk.off;
+            recalcOff(nextWk);
+          } else {
+            // Try swapping Monday night with another night surgeon in next week
+            const otherNight = NIGHT_KEYS.find(sk => sk !== "mon" && nextWk.nights?.[sk] && nextWk.nights[sk] !== nextWk.dayCall && nextWk.nights[sk] !== wk.nights.wknd);
+            if (otherNight) {
+              const temp = nextWk.nights.mon;
+              nextWk.nights.mon = nextWk.nights[otherNight];
+              nextWk.nights[otherNight] = temp;
+            }
+          }
+        }
+      }
+
+      // Fix: Service week surgeon should not have Monday night next week
+      if (i < mondayStrs.length - 1 && wk.dayCall) {
+        const nextWk = sched[mondayStrs[i + 1]];
+        if (nextWk?.nights?.mon === wk.dayCall) {
+          if (nextWk.off && nextWk.off !== nextWk.dayCall && nextWk.off !== sched[mondayStrs[i]]?.nights?.wknd) {
+            nextWk.nights.mon = nextWk.off;
+            recalcOff(nextWk);
+          } else {
+            const otherNight = NIGHT_KEYS.find(sk => sk !== "mon" && nextWk.nights?.[sk] && nextWk.nights[sk] !== nextWk.dayCall && nextWk.nights[sk] !== wk.dayCall);
+            if (otherNight) {
+              const temp = nextWk.nights.mon;
+              nextWk.nights.mon = nextWk.nights[otherNight];
+              nextWk.nights[otherNight] = temp;
+            }
+          }
+        }
+      }
+      // Fix: No back-to-back nights within the same week
+      const nightOrder = ["mon","tue","wed","thu"];
+      for (let ni = 0; ni < nightOrder.length - 1; ni++) {
+        const sk1 = nightOrder[ni], sk2 = nightOrder[ni + 1];
+        const s1 = wk.nights?.[sk1], s2 = wk.nights?.[sk2];
+        if (s1 && s1 === s2) {
+          // Try swapping sk2 with another night that doesn't create a new consecutive pair
+          const swapCandidate = nightOrder.find(sk => sk !== sk1 && sk !== sk2 && wk.nights?.[sk] && wk.nights[sk] !== s1 && wk.nights[sk] !== wk.dayCall);
+          if (swapCandidate) {
+            const temp = wk.nights[sk2];
+            wk.nights[sk2] = wk.nights[swapCandidate];
+            wk.nights[swapCandidate] = temp;
+            recalcOff(wk);
+          } else if (wk.off && wk.off !== wk.dayCall) {
+            wk.nights[sk2] = wk.off;
+            recalcOff(wk);
+          }
         }
       }
     }
   }
 
-  // Fix: Service week surgeon should not have Monday night next week
-  if (i < mondayStrs.length - 1 && wk.dayCall) {
-    const nextWk = sched[mondayStrs[i + 1]];
-    if (nextWk?.nights?.mon === wk.dayCall) {
-      if (nextWk.off && nextWk.off !== nextWk.dayCall && nextWk.off !== sched[mondayStrs[i]]?.nights?.wknd) {
-        nextWk.nights.mon = nextWk.off;
-        recalcOff(nextWk);
-      } else {
-        const otherNight = NIGHT_KEYS.find(sk => sk !== "mon" && nextWk.nights?.[sk] && nextWk.nights[sk] !== nextWk.dayCall && nextWk.nights[sk] !== wk.dayCall);
-        if (otherNight) {
-          const temp = nextWk.nights.mon;
-          nextWk.nights.mon = nextWk.nights[otherNight];
-          nextWk.nights[otherNight] = temp;
-        }
-      }
-    }
-  }
-  // Fix: No back-to-back nights within the same week
-  const nightOrder = ["mon","tue","wed","thu"];
-  for (let ni = 0; ni < nightOrder.length - 1; ni++) {
-    const sk1 = nightOrder[ni], sk2 = nightOrder[ni + 1];
-    const s1 = wk.nights?.[sk1], s2 = wk.nights?.[sk2];
-    if (s1 && s1 === s2) {
-      // Try swapping sk2 with another night that doesn't create a new consecutive pair
-      const swapCandidate = nightOrder.find(sk => sk !== sk1 && sk !== sk2 && wk.nights?.[sk] && wk.nights[sk] !== s1 && wk.nights[sk] !== wk.dayCall);
-      if (swapCandidate) {
-        const temp = wk.nights[sk2];
-        wk.nights[sk2] = wk.nights[swapCandidate];
-        wk.nights[swapCandidate] = temp;
-        recalcOff(wk);
-      } else if (wk.off && wk.off !== wk.dayCall) {
-        wk.nights[sk2] = wk.off;
-        recalcOff(wk);
-      }
-    }
-  }
-}
-```
-
-}
-
-return sched;
+  return sched;
 }
 
 // DSG Call Schedule — Style Constants
 
-const font = “‘Outfit’, sans-serif”;
-const mono = “‘JetBrains Mono’, monospace”;
+const font = "'Outfit', sans-serif";
+const mono = "'JetBrains Mono', monospace";
 
 const css = {
-root: { fontFamily:font, background:”#f0f2f5”, color:”#2c3e50”, minHeight:“100vh” },
-hdr: { background:“linear-gradient(180deg,#ffffff,#f8f9fb)”, borderBottom:“1px solid #dce2e8”, padding:“14px 20px”, display:“flex”, alignItems:“center”, justifyContent:“space-between”, flexWrap:“wrap”, gap:10 },
-h1: { fontSize:21, fontWeight:700, color:”#1a2a3a”, margin:0, letterSpacing:-0.5 },
-sub: { fontSize:11, color:”#7a8a98”, margin:“2px 0 0”, letterSpacing:0.8, textTransform:“uppercase” },
-nav: { display:“flex”, gap:3, flexWrap:“wrap” },
-tab: a => ({ background:a?”#1a6fa8”:“transparent”, border:`1px solid ${a?"#1a6fa8":"#c8d0d8"}`, color:a?”#ffffff”:”#6a7a88”, borderRadius:7, padding:“5px 13px”, fontSize:12, fontWeight:600, cursor:“pointer”, fontFamily:font }),
-card: { background:”#ffffff”, border:“1px solid #e0e4ea”, borderRadius:10, padding:18, marginBottom:14, boxShadow:“0 1px 3px rgba(0,0,0,0.04)” },
-cardT: { fontSize:13, fontWeight:700, color:”#1a6fa8”, margin:“0 0 12px”, textTransform:“uppercase”, letterSpacing:1.2 },
-inp: { background:”#f8f9fb”, border:“1px solid #d0d8e0”, borderRadius:5, padding:“6px 10px”, color:”#2c3e50”, fontSize:13, fontFamily:font, outline:“none” },
-btn: a => ({ background:a?“linear-gradient(135deg,#1a6fa8,#2488c8)”:”#f0f2f5”, border:`1px solid ${a?"#1a6fa8":"#c8d0d8"}`, color:a?”#ffffff”:”#5a6a78”, borderRadius:7, padding:“7px 16px”, fontSize:12, fontWeight:600, cursor:“pointer”, fontFamily:font }),
-badge: i => ({ display:“inline-flex”, alignItems:“center”, background:PAL[i%7].tg, color:PAL[i%7].tx, border:`1px solid ${PAL[i%7].bd}`, borderRadius:5, padding:“2px 9px”, fontSize:12, fontWeight:600, whiteSpace:“nowrap”, letterSpacing:0.3 }),
-appBadge: i => ({ display:“inline-flex”, alignItems:“center”, background:APP_PAL[i%4].tg, color:APP_PAL[i%4].tx, border:`1px solid ${APP_PAL[i%4].bd}`, borderRadius:5, padding:“2px 9px”, fontSize:12, fontWeight:600, whiteSpace:“nowrap”, letterSpacing:0.3 }),
-backupBanner: { background:“linear-gradient(90deg,#fef8e8,#fdf0d0)”, border:“1px solid #e8d090”, borderRadius:6, padding:“4px 10px”, fontSize:11, fontWeight:700, color:”#8a6a10”, letterSpacing:0.5 },
+  root: { fontFamily:font, background:"#f0f2f5", color:"#2c3e50", minHeight:"100vh" },
+  hdr: { background:"linear-gradient(180deg,#ffffff,#f8f9fb)", borderBottom:"1px solid #dce2e8", padding:"14px 20px", display:"flex", alignItems:"center", justifyContent:"space-between", flexWrap:"wrap", gap:10 },
+  h1: { fontSize:21, fontWeight:700, color:"#1a2a3a", margin:0, letterSpacing:-0.5 },
+  sub: { fontSize:11, color:"#7a8a98", margin:"2px 0 0", letterSpacing:0.8, textTransform:"uppercase" },
+  nav: { display:"flex", gap:3, flexWrap:"wrap" },
+  tab: a => ({ background:a?"#1a6fa8":"transparent", border:`1px solid ${a?"#1a6fa8":"#c8d0d8"}`, color:a?"#ffffff":"#6a7a88", borderRadius:7, padding:"5px 13px", fontSize:12, fontWeight:600, cursor:"pointer", fontFamily:font }),
+  card: { background:"#ffffff", border:"1px solid #e0e4ea", borderRadius:10, padding:18, marginBottom:14, boxShadow:"0 1px 3px rgba(0,0,0,0.04)" },
+  cardT: { fontSize:13, fontWeight:700, color:"#1a6fa8", margin:"0 0 12px", textTransform:"uppercase", letterSpacing:1.2 },
+  inp: { background:"#f8f9fb", border:"1px solid #d0d8e0", borderRadius:5, padding:"6px 10px", color:"#2c3e50", fontSize:13, fontFamily:font, outline:"none" },
+  btn: a => ({ background:a?"linear-gradient(135deg,#1a6fa8,#2488c8)":"#f0f2f5", border:`1px solid ${a?"#1a6fa8":"#c8d0d8"}`, color:a?"#ffffff":"#5a6a78", borderRadius:7, padding:"7px 16px", fontSize:12, fontWeight:600, cursor:"pointer", fontFamily:font }),
+  badge: i => ({ display:"inline-flex", alignItems:"center", background:PAL[i%7].tg, color:PAL[i%7].tx, border:`1px solid ${PAL[i%7].bd}`, borderRadius:5, padding:"2px 9px", fontSize:12, fontWeight:600, whiteSpace:"nowrap", letterSpacing:0.3 }),
+  appBadge: i => ({ display:"inline-flex", alignItems:"center", background:APP_PAL[i%4].tg, color:APP_PAL[i%4].tx, border:`1px solid ${APP_PAL[i%4].bd}`, borderRadius:5, padding:"2px 9px", fontSize:12, fontWeight:600, whiteSpace:"nowrap", letterSpacing:0.3 }),
+  backupBanner: { background:"linear-gradient(90deg,#fef8e8,#fdf0d0)", border:"1px solid #e8d090", borderRadius:6, padding:"4px 10px", fontSize:11, fontWeight:700, color:"#8a6a10", letterSpacing:0.5 },
 };
 
 /* ═══════════════════════════════════════════════════
-COMPONENT
-═══════════════════════════════════════════════════ */
-</script>
-
+   COMPONENT
+   ═══════════════════════════════════════════════════ */
+  </script>
   <script>
 const {
   useState,
@@ -9755,6 +9741,5 @@ const tdS = {
 const root = ReactDOM.createRoot(document.getElementById('root'));
 root.render(React.createElement(CallSchedule));
   </script>
-
 </body>
 </html>
