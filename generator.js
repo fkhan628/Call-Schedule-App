@@ -77,6 +77,11 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
   let prevWkndSurgeon = null;
   let prevDcSurgeon = null;
 
+  // Random jitter per surgeon — ensures Regenerate produces visibly different schedules
+  // by perturbing sort order among closely-scored candidates
+  const jitter = {};
+  ids.forEach(id => { jitter[id] = (Math.random() - 0.5) * 3; }); // ±1.5 range
+
   const prefs = preferences || {};
 
   // Build holiday lookup for all years in the schedule
@@ -140,16 +145,16 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
         if (holDow === 1) {
           // Monday holiday — do NOT force holiday surgeon as DC
           // Instead, prefer someone else for service week
-          const nonHolPool = availDC.filter(id => id !== holDcSurgeon);
+          // HARD RULE: also exclude previous weekend surgeon from DC (no back-to-back wknd→DC)
+          let nonHolPool = availDC.filter(id => id !== holDcSurgeon && id !== prevWkndSurgeon);
+          if (nonHolPool.length === 0) nonHolPool = availDC.filter(id => id !== holDcSurgeon); // fallback
           if (nonHolPool.length > 0) {
             nonHolPool.sort((a,b) => {
               const d = dcCt[a]-dcCt[b]; if(d) return d;
-              const bd = burden[a]-burden[b]; if(bd) return bd;
+              const bd = (burden[a]+jitter[a])-(burden[b]+jitter[b]); if(Math.abs(bd)>1) return bd;
               const spacingA = wkIdx - lastDcWeek[a];
               const spacingB = wkIdx - lastDcWeek[b];
               if (spacingA !== spacingB) return spacingB - spacingA;
-              if(a===prevWkndSurgeon) return 1;
-              if(b===prevWkndSurgeon) return -1;
               return Math.random() - 0.5;
             });
             dc = nonHolPool[0];
@@ -160,19 +165,19 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
           dc = holDcSurgeon; // Non-Monday holiday: holiday surgeon takes DC
         }
       } else {
-        availDC.sort((a,b) => {
+        // HARD RULE: exclude previous weekend surgeon from DC (no back-to-back wknd→DC)
+        let dcPool = prevWkndSurgeon ? availDC.filter(id => id !== prevWkndSurgeon) : availDC;
+        if (dcPool.length === 0) dcPool = availDC; // fallback if no one else
+        dcPool.sort((a,b) => {
           const d = dcCt[a]-dcCt[b]; if(d) return d;
-          const bd = burden[a]-burden[b]; if(bd) return bd;
+          const bd = (burden[a]+jitter[a])-(burden[b]+jitter[b]); if(Math.abs(bd)>1) return bd;
           // Day Call spacing: prefer surgeons who haven't had DC recently
           const spacingA = wkIdx - lastDcWeek[a];
           const spacingB = wkIdx - lastDcWeek[b];
           if (spacingA !== spacingB) return spacingB - spacingA; // larger gap = better
-          // Avoid weekend→DC
-          if(a===prevWkndSurgeon) return 1;
-          if(b===prevWkndSurgeon) return -1;
           return Math.random() - 0.5;
         });
-        dc = availDC[0];
+        dc = dcPool[0];
       }
       dcCt[dc]++; burden[dc]+=7; lastDcWeek[dc] = wkIdx;
 
@@ -211,7 +216,7 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
           const hb = holidayCt[b][hType] || 0;
           if (ha !== hb) return ha - hb;
         }
-        const bd = burden[a]-burden[b]; if(bd) return bd;
+        const bd = (burden[a]+jitter[a])-(burden[b]+jitter[b]); if(Math.abs(bd)>1) return bd;
         if(lastPos[a]==="wknd"&&lastPos[b]!=="wknd") return 1;
         if(lastPos[b]==="wknd"&&lastPos[a]!=="wknd") return -1;
         return Math.random() - 0.5;
@@ -328,7 +333,7 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
         }
 
         const d=nCt[a]-nCt[b]; if(d) return d;
-        const bd = burden[a]-burden[b]; if(bd) return bd;
+        const bd = (burden[a]+jitter[a])-(burden[b]+jitter[b]); if(Math.abs(bd)>1) return bd;
 
         // Preferences
         const aPref = prefs[a]; const bPref = prefs[b];

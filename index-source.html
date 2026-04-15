@@ -62,7 +62,7 @@
   <div id="root"></div>
   <script>
     // Cache-bust with version — update this string when deploying changes
-    var _v = "2026.04.13g";
+    var _v = "2026.04.14a";
     ['config.js','helpers.js','generator.js','app-styles.js'].forEach(function(f) {
       document.write('<script src="'+f+'?v='+_v+'"><\/script>');
     });
@@ -3427,36 +3427,6 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   🖨 Print Calendar
                 </button>
               </div>
-
-              {/* Calendar Sync - Subscribable URLs */}
-              <div style={{marginTop:14,paddingTop:14,borderTop:"1px solid #d0d8e4"}}>
-                <div style={{fontSize:13,fontWeight:700,color:"#1a6fa8",marginBottom:6}}>📅 Subscribe to Live Calendar</div>
-                <p style={{fontSize:12,color:"#5a6a78",margin:"0 0 10px",lineHeight:1.5}}>
-                  Subscribe to these URLs in Google Calendar, Outlook, or Apple Calendar. The calendar auto-updates when the schedule changes — no need to re-download.
-                </p>
-                <div style={{fontSize:11,color:"#7a8a98",marginBottom:6}}>
-                  <strong>How to subscribe:</strong> In Google Calendar: Other calendars (+) → From URL → paste the link below.
-                </div>
-                <div style={{marginBottom:8}}>
-                  <div style={{fontSize:11,fontWeight:600,color:"#5a6a78",marginBottom:4}}>Full Schedule:</div>
-                  <div style={{display:"flex",gap:6,alignItems:"center"}}>
-                    <input readOnly value={`${SUPABASE_URL}/functions/v1/calendar-sync`}
-                      style={{...css.inp,width:"100%",maxWidth:420,fontSize:10,fontFamily:mono,padding:"4px 8px"}}
-                      onClick={e=>e.target.select()}/>
-                    <button onClick={()=>{navigator.clipboard.writeText(`${SUPABASE_URL}/functions/v1/calendar-sync`);}} style={{...css.btn(false),padding:"4px 10px",fontSize:10,whiteSpace:"nowrap"}}>Copy</button>
-                  </div>
-                </div>
-                <div style={{fontSize:11,fontWeight:600,color:"#5a6a78",marginBottom:4}}>Per Surgeon:</div>
-                <div style={{display:"flex",gap:4,flexWrap:"wrap"}}>
-                  {surgeons.map(s => (
-                    <button key={s.id} onClick={()=>{navigator.clipboard.writeText(`${SUPABASE_URL}/functions/v1/calendar-sync?surgeon=${s.name}`);}}
-                      style={{...css.badge(sMap[s.id]?.idx||0),cursor:"pointer",padding:"3px 10px",fontSize:10}}>
-                      📋 {s.name}
-                    </button>
-                  ))}
-                </div>
-                <p style={{fontSize:10,color:"#8a94a0",marginTop:6}}>Click a name to copy their subscribe URL. Requires deploying the calendar-sync Edge Function.</p>
-              </div>
             </div>
           )}
         </>}
@@ -4421,6 +4391,36 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                 </div>
               )}
             </div>
+          </div>
+
+          {/* Calendar Sync - Subscribable URLs */}
+          <div style={css.card}>
+            <div style={css.cardT}>📅 Live Calendar Sync</div>
+            <p style={{fontSize:12,color:"#5a6a78",margin:"0 0 10px",lineHeight:1.5}}>
+              Subscribe to these URLs in Google Calendar, Outlook, or Apple Calendar. The calendar auto-updates when the schedule changes — no need to re-download.
+            </p>
+            <div style={{fontSize:11,color:"#7a8a98",marginBottom:8}}>
+              <strong>How to subscribe:</strong> In Google Calendar: Other calendars (+) → From URL → paste the link below.
+            </div>
+            <div style={{marginBottom:10}}>
+              <div style={{fontSize:11,fontWeight:600,color:"#5a6a78",marginBottom:4}}>Full Schedule:</div>
+              <div style={{display:"flex",gap:6,alignItems:"center"}}>
+                <input readOnly value={`${SUPABASE_URL}/functions/v1/calendar-sync`}
+                  style={{...css.inp,width:"100%",maxWidth:420,fontSize:10,fontFamily:mono,padding:"4px 8px"}}
+                  onClick={e=>e.target.select()}/>
+                <button onClick={()=>{navigator.clipboard.writeText(`${SUPABASE_URL}/functions/v1/calendar-sync`);}} style={{...css.btn(false),padding:"4px 10px",fontSize:10,whiteSpace:"nowrap"}}>Copy</button>
+              </div>
+            </div>
+            <div style={{fontSize:11,fontWeight:600,color:"#5a6a78",marginBottom:4}}>Per Surgeon:</div>
+            <div style={{display:"flex",gap:4,flexWrap:"wrap"}}>
+              {surgeons.map(s => (
+                <button key={s.id} onClick={()=>{navigator.clipboard.writeText(`${SUPABASE_URL}/functions/v1/calendar-sync?surgeon=${s.name}`);}}
+                  style={{...css.badge(sMap[s.id]?.idx||0),cursor:"pointer",padding:"3px 10px",fontSize:10}}>
+                  📋 {s.name}
+                </button>
+              ))}
+            </div>
+            <p style={{fontSize:10,color:"#8a94a0",marginTop:6}}>Click a name to copy their subscribe URL. Requires deploying the calendar-sync Edge Function.</p>
           </div>
 
           {/* Reset */}
