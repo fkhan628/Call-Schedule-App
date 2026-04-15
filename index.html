@@ -41,7 +41,7 @@
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.page.js" defer></script>
   <script>
-    var APP_VERSION = "2026.04.14d";
+    var APP_VERSION = "2026.04.14g";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       if (stored && stored !== APP_VERSION) {
@@ -223,6 +223,247 @@ const HOLIDAY_PRESETS = {
   }
 };
 
+
+
+/* ═══════════════════════════════════════════════════
+   SUPABASE AUTH HELPERS
+   ═══════════════════════════════════════════════════ */
+const AUTH_TOKEN_KEY = "dsg-auth-token";
+const AUTH_REFRESH_KEY = "dsg-auth-refresh";
+
+const auth = {
+  // Get stored session
+  getSession() {
+    try {
+      const token = localStorage.getItem(AUTH_TOKEN_KEY);
+      const refresh = localStorage.getItem(AUTH_REFRESH_KEY);
+      return token ? { access_token: token, refresh_token: refresh } : null;
+    } catch(e) { return null; }
+  },
+
+  // Store session
+  _saveSession(data) {
+    try {
+      if (data?.access_token) {
+        localStorage.setItem(AUTH_TOKEN_KEY, data.access_token);
+        if (data.refresh_token) localStorage.setItem(AUTH_REFRESH_KEY, data.refresh_token);
+      }
+    } catch(e) {}
+  },
+
+  // Clear session
+  _clearSession() {
+    try {
+      localStorage.removeItem(AUTH_TOKEN_KEY);
+      localStorage.removeItem(AUTH_REFRESH_KEY);
+    } catch(e) {}
+  },
+
+  // Sign up with email & password
+  async signUp(email, password) {
+    const res = await fetch(`${SUPABASE_URL}/auth/v1/signup`, {
+      method: "POST",
+      headers: { apikey: SUPABASE_ANON_KEY, "Content-Type": "application/json" },
+      body: JSON.stringify({ email, password }),
+    });
+    const data = await res.json();
+    if (!res.ok) return { user: null, error: data.msg || data.error_description || data.message || "Sign up failed" };
+    if (data.access_token) auth._saveSession(data);
+    return { user: data.user || data, session: data, error: null };
+  },
+
+  // Sign in with email & password
+  async signIn(email, password) {
+    const res = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=password`, {
+      method: "POST",
+      headers: { apikey: SUPABASE_ANON_KEY, "Content-Type": "application/json" },
+      body: JSON.stringify({ email, password }),
+    });
+    const data = await res.json();
+    if (!res.ok) return { user: null, error: data.msg || data.error_description || data.message || "Sign in failed" };
+    auth._saveSession(data);
+    return { user: data.user, session: data, error: null };
+  },
+
+  // Get current user from token
+  async getUser() {
+    const session = auth.getSession();
+    if (!session) return { user: null };
+    const res = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
+      headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${session.access_token}` },
+    });
+    if (!res.ok) {
+      // Token expired — try refresh
+      if (res.status === 401 && session.refresh_token) {
+        const refreshed = await auth._refresh(session.refresh_token);
+        if (refreshed?.user) return refreshed;
+      }
+      auth._clearSession();
+      return { user: null };
+    }
+    const user = await res.json();
+    return { user };
+  },
+
+  // Refresh token
+  async _refresh(refreshToken) {
+    try {
+      const res = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`, {
+        method: "POST",
+        headers: { apikey: SUPABASE_ANON_KEY, "Content-Type": "application/json" },
+        body: JSON.stringify({ refresh_token: refreshToken }),
+      });
+      if (!res.ok) { auth._clearSession(); return { user: null }; }
+      const data = await res.json();
+      auth._saveSession(data);
+      return { user: data.user, session: data };
+    } catch(e) { auth._clearSession(); return { user: null }; }
+  },
+
+  // Sign out
+  async signOut() {
+    const session = auth.getSession();
+    if (session?.access_token) {
+      try {
+        await fetch(`${SUPABASE_URL}/auth/v1/logout`, {
+          method: "POST",
+          headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${session.access_token}` },
+        });
+      } catch(e) {}
+    }
+    auth._clearSession();
+  },
+
+  // Get auth headers for DB queries (user-level RLS)
+  getAuthHeaders() {
+    const session = auth.getSession();
+    if (!session) return dbHeaders;
+    return { ...dbHeaders, Authorization: `Bearer ${session.access_token}` };
+  },
+};
+
+// DB helper that uses auth token for user_profiles table
+const dbAuth = {
+  async getProfile(userId) {
+    const hdrs = auth.getAuthHeaders();
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/user_profiles?id=eq.${userId}&select=*`, { headers: hdrs });
+    if (!res.ok) return null;
+    const rows = await res.json();
+    return rows?.[0] || null;
+  },
+  async upsertProfile(profile) {
+    const hdrs = auth.getAuthHeaders();
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/user_profiles`, {
+      method: "POST",
+      headers: { ...hdrs, Prefer: "resolution=merge-duplicates,return=representation" },
+      body: JSON.stringify(profile),
+    });
+    if (!res.ok) return { error: await res.text() };
+    const data = await res.json();
+    return { data: data?.[0] || data, error: null };
+  },
+  async getAllProfiles() {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/user_profiles?select=*`, { headers: dbHeaders });
+    if (!res.ok) return [];
+    return await res.json();
+  },
+};
+
+/* ═══════════════════════════════════════════════════
+   BIOMETRIC AUTH (WebAuthn / Face ID / Touch ID)
+   ═══════════════════════════════════════════════════ */
+const BIOMETRIC_CRED_KEY = "dsg-biometric-cred";
+const BIOMETRIC_USER_KEY = "dsg-biometric-user";
+
+const biometric = {
+  // Check if WebAuthn platform authenticator is available (Face ID, Touch ID, fingerprint)
+  async isAvailable() {
+    try {
+      if (!window.PublicKeyCredential) return false;
+      return await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable();
+    } catch(e) { return false; }
+  },
+
+  // Check if biometric is already enrolled
+  isEnrolled() {
+    try { return !!localStorage.getItem(BIOMETRIC_CRED_KEY); } catch(e) { return false; }
+  },
+
+  // Get stored user email for biometric
+  getStoredUser() {
+    try { return localStorage.getItem(BIOMETRIC_USER_KEY) || null; } catch(e) { return null; }
+  },
+
+  // Register biometric credential (call after successful email/password login)
+  async enroll(userId, userEmail) {
+    try {
+      const challenge = crypto.getRandomValues(new Uint8Array(32));
+      const userIdBytes = new TextEncoder().encode(userId.slice(0, 32));
+
+      const credential = await navigator.credentials.create({
+        publicKey: {
+          challenge,
+          rp: { name: "DSG Call Schedule", id: window.location.hostname },
+          user: { id: userIdBytes, name: userEmail, displayName: userEmail.split("@")[0] },
+          pubKeyCredParams: [
+            { alg: -7, type: "public-key" },   // ES256
+            { alg: -257, type: "public-key" },  // RS256
+          ],
+          authenticatorSelection: {
+            authenticatorAttachment: "platform",  // built-in biometric only
+            userVerification: "required",         // require Face ID / Touch ID
+            residentKey: "preferred",
+          },
+          timeout: 60000,
+        }
+      });
+
+      if (credential) {
+        // Store credential ID for future authentication
+        const credIdArray = Array.from(new Uint8Array(credential.rawId));
+        localStorage.setItem(BIOMETRIC_CRED_KEY, JSON.stringify(credIdArray));
+        localStorage.setItem(BIOMETRIC_USER_KEY, userEmail);
+        return { success: true };
+      }
+      return { success: false, error: "No credential created" };
+    } catch(e) {
+      return { success: false, error: e.name === "NotAllowedError" ? "Biometric enrollment was cancelled" : e.message };
+    }
+  },
+
+  // Authenticate with biometric (call on app open)
+  async authenticate() {
+    try {
+      const credIdJson = localStorage.getItem(BIOMETRIC_CRED_KEY);
+      if (!credIdJson) return { success: false, error: "No biometric enrolled" };
+
+      const credIdArray = JSON.parse(credIdJson);
+      const credId = new Uint8Array(credIdArray).buffer;
+      const challenge = crypto.getRandomValues(new Uint8Array(32));
+
+      const assertion = await navigator.credentials.get({
+        publicKey: {
+          challenge,
+          allowCredentials: [{ id: credId, type: "public-key", transports: ["internal"] }],
+          userVerification: "required",
+          timeout: 60000,
+        }
+      });
+
+      return assertion ? { success: true } : { success: false, error: "Authentication failed" };
+    } catch(e) {
+      return { success: false, error: e.name === "NotAllowedError" ? "Biometric authentication was cancelled" : e.message };
+    }
+  },
+
+  // Remove biometric enrollment
+  unenroll() {
+    try {
+      localStorage.removeItem(BIOMETRIC_CRED_KEY);
+      localStorage.removeItem(BIOMETRIC_USER_KEY);
+    } catch(e) {}
+  },
+};
 // DSG Call Schedule — Date Helpers, ICS Generation & Utilities
 
 /* ═══ Date helpers ═══ */
@@ -972,6 +1213,24 @@ function CallSchedule() {
   // ─── What-If Preview ───
   const [previewSchedule, setPreviewSchedule] = useState(null);
   const [showPreview, setShowPreview] = useState(false);
+  const [previewCalMonth, setPreviewCalMonth] = useState(0);
+
+  // ─── Authentication ───
+  const [authUser, setAuthUser] = useState(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [authEmail, setAuthEmail] = useState("");
+  const [authPassword, setAuthPassword] = useState("");
+  const [authMode, setAuthMode] = useState("login");
+  const [authError, setAuthError] = useState("");
+  const [authBusy, setAuthBusy] = useState(false);
+  const [signupPersonId, setSignupPersonId] = useState("");
+  const [userProfile, setUserProfile] = useState(null);
+  const [needsProfile, setNeedsProfile] = useState(false);
+  const [biometricAvail, setBiometricAvail] = useState(false);
+  const [biometricEnrolled, setBiometricEnrolled] = useState(false);
+  const [biometricPending, setBiometricPending] = useState(false);
+  const allPeople = [...INIT_SURGEONS, ...INIT_APPS];
+
 
   // Form states
   const [vacSurgeon, setVacSurgeon] = useState("");
@@ -987,7 +1246,6 @@ function CallSchedule() {
   const [saveStatus, setSaveStatus] = useState("");
   const fileRef = useRef(null);
   const lastSyncRef = useRef(null);
-  const loadedAtRef = useRef(null);
   const [showApiKey, setShowApiKey] = useState(false);
 
   // ─── Vacation Requests ───
@@ -1065,16 +1323,120 @@ function CallSchedule() {
     } catch (e) {}
   }, [mySurgeon]);
 
+
+  // ─── Auth: Check session on mount ───
+  useEffect(() => {
+    (async () => {
+      try {
+        const bioAvail = await biometric.isAvailable();
+        setBiometricAvail(bioAvail);
+        const bioEnrolled = biometric.isEnrolled();
+        setBiometricEnrolled(bioEnrolled);
+        const session = auth.getSession();
+        if (bioEnrolled && session) {
+          setBiometricPending(true); setAuthLoading(false); return;
+        }
+        if (session && !bioEnrolled) {
+          const { user } = await auth.getUser();
+          if (user) {
+            setAuthUser(user);
+            const profile = await dbAuth.getProfile(user.id);
+            if (profile) { setUserProfile(profile); setMySurgeon(profile.person_id); }
+            else { setNeedsProfile(true); }
+          }
+        }
+      } catch(e) { console.error("Auth check error:", e); }
+      setAuthLoading(false);
+    })();
+  }, []);
+
+  const handleBiometricUnlock = async () => {
+    setAuthError(""); setAuthBusy(true);
+    const result = await biometric.authenticate();
+    if (result.success) {
+      const { user } = await auth.getUser();
+      if (user) {
+        setAuthUser(user);
+        const profile = await dbAuth.getProfile(user.id);
+        if (profile) { setUserProfile(profile); setMySurgeon(profile.person_id); }
+        else { setNeedsProfile(true); }
+        setBiometricPending(false);
+      } else {
+        setBiometricPending(false); biometric.unenroll(); setBiometricEnrolled(false);
+        setAuthError("Session expired. Please sign in again.");
+      }
+    } else { setAuthError(result.error || "Biometric failed"); }
+    setAuthBusy(false);
+  };
+
+  const handleBiometricEnroll = async () => {
+    if (!authUser) return;
+    const result = await biometric.enroll(authUser.id, authUser.email);
+    if (result.success) setBiometricEnrolled(true);
+    else alert(result.error || "Could not enable biometric login");
+  };
+
+  const handleBiometricUnenroll = () => { biometric.unenroll(); setBiometricEnrolled(false); };
+
+  const handleAuthSubmit = async () => {
+    setAuthError(""); setAuthBusy(true);
+    try {
+      if (authMode === "signup") {
+        if (!signupPersonId) { setAuthError("Please select your name"); setAuthBusy(false); return; }
+        const profiles = await dbAuth.getAllProfiles();
+        if (profiles.some(p => p.person_id === signupPersonId)) { setAuthError("This name is already registered"); setAuthBusy(false); return; }
+        const { user, session, error } = await auth.signUp(authEmail, authPassword);
+        if (error) { setAuthError(error); setAuthBusy(false); return; }
+        const userId = user?.id || session?.user?.id;
+        if (userId) {
+          const personName = allPeople.find(p=>p.id===signupPersonId)?.name || signupPersonId;
+          await dbAuth.upsertProfile({ id: userId, person_id: signupPersonId, display_name: personName, role: "member" });
+          setAuthUser(user || session?.user);
+          setUserProfile({ person_id: signupPersonId, display_name: personName, role: "member" });
+          setMySurgeon(signupPersonId); setNeedsProfile(false);
+        }
+      } else {
+        const { user, error } = await auth.signIn(authEmail, authPassword);
+        if (error) { setAuthError(error); setAuthBusy(false); return; }
+        setAuthUser(user);
+        const profile = await dbAuth.getProfile(user.id);
+        if (profile) { setUserProfile(profile); setMySurgeon(profile.person_id); setNeedsProfile(false); }
+        else { setNeedsProfile(true); }
+      }
+      setAuthEmail(""); setAuthPassword("");
+    } catch(e) { setAuthError(e.message || "Auth error"); }
+    setAuthBusy(false);
+  };
+
+  const handleSetProfile = async () => {
+    if (!signupPersonId || !authUser) return;
+    setAuthBusy(true); setAuthError("");
+    try {
+      const profiles = await dbAuth.getAllProfiles();
+      if (profiles.some(p => p.person_id === signupPersonId && p.id !== authUser.id)) { setAuthError("This name is already registered"); setAuthBusy(false); return; }
+      const personName = allPeople.find(p=>p.id===signupPersonId)?.name || signupPersonId;
+      await dbAuth.upsertProfile({ id: authUser.id, person_id: signupPersonId, display_name: personName, role: "member" });
+      setUserProfile({ person_id: signupPersonId, display_name: personName, role: "member" });
+      setMySurgeon(signupPersonId); setNeedsProfile(false);
+    } catch(e) { setAuthError(e.message); }
+    setAuthBusy(false);
+  };
+
+  const handleSignOut = async () => {
+    await auth.signOut(); biometric.unenroll();
+    setAuthUser(null); setUserProfile(null); setNeedsProfile(false); setMySurgeon("");
+    setBiometricEnrolled(false); setBiometricPending(false);
+  };
+
   // ─── Supabase: Load on mount + real-time sync ───
   useEffect(() => {
     (async () => {
       try {
         const {
           data: row
-        } = await supabase.from("call_schedule_data").select("data,updated_at").eq("id", "main").single();
+        } = await supabase.from("call_schedule_data").select("data").eq("id", "main").single();
         if (row !== null && row !== void 0 && row.data) {
           const d = typeof row.data === "string" ? JSON.parse(row.data) : row.data;
-          if (row.updated_at) lastSyncRef.current = row.updated_at;
           if (d.surgeons) setSurgeons(d.surgeons);
           if (d.apps) setApps(d.apps);
           if (d.vacations) setVacations(d.vacations);
@@ -1131,7 +1493,6 @@ function CallSchedule() {
         console.error("Supabase load error:", e);
       }
       setLoaded(true);
-      loadedAtRef.current = Date.now();
 
       // One-time merge of May-Aug 2026 vacations & Fierce weeks from PDFs
       try {
@@ -1242,7 +1603,6 @@ function CallSchedule() {
   // ─── Supabase: Auto-save on changes ───
   useEffect(() => {
     if (!loaded) return;
-    if (loadedAtRef.current && Date.now() - loadedAtRef.current < 3000) return;
     const timer = setTimeout(async () => {
       try {
         const payload = {
@@ -1970,7 +2330,6 @@ function CallSchedule() {
 
   // ─── Fire browser notifications when polling detects new in-app notifications ───
   useEffect(() => {
-    if (!loaded) return;
     if (lastNotifCountRef.current === null) {
       lastNotifCountRef.current = notifications.length;
       return;
@@ -1986,7 +2345,7 @@ function CallSchedule() {
       });
     }
     lastNotifCountRef.current = notifications.length;
-  }, [loaded, notifications, sendBrowserNotif, mySurgeon, notifPrefs]);
+  }, [notifications, sendBrowserNotif, mySurgeon, notifPrefs]);
 
   // ─── Test Notification ───
   const sendTestNotification = useCallback(async () => {
@@ -3792,7 +4151,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
 
   // ─── Yearly Summary Export ───
   const exportYearlySummary = useCallback(() => {
-    const header = ["Surgeon", "Svc Wk", "Nights", "Wknds", "1st Call Days", "B-Svc Wk", "B-Nights", "B-Wknds", "2nd Call Days", "Total"];
+    const header = ["Surgeon", "Svc Wk", "Nights", "Wknds", "B-SW", "B-Nights", "B-Wknds", "Total"];
     const rows = surgeons.map(s => {
       const cur = stats[s.id] || {};
       const pri = priorCounts[s.id] || {};
@@ -3809,7 +4168,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         totalDays: (pri.totalDays || 0) + (cur.totalDays || 0)
       });
       const total2 = (pri.totalDaysB || 0) + (cur.totalDaysB || 0);
-      return [s.name, cumDc, cumN, cumW, total1, cumDcB, cumNB, cumWB, total2, total1 + total2].join(",");
+      return [s.name, cumDc, cumN, cumW, cumDcB, cumNB, cumWB, total1 + total2].join(",");
     });
     const csv = [header.join(","), ...rows].join("\n");
     const blob = new Blob([csv], {
@@ -4118,7 +4477,53 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         span[style*="color:#1a8040"] { color: #40c060 !important; }
         span[style*="color:#c04040"] { color: #f06060 !important; }
         span[style*="color:#8a6a10"], div[style*="color:#8a6a10"] { color: #c0a040 !important; }
-      `), /*#__PURE__*/React.createElement("div", {
+      `), authLoading ? React.createElement("div", { style: { display: "flex", justifyContent: "center", alignItems: "center", minHeight: "60vh" } },
+    React.createElement("div", { style: { textAlign: "center" } },
+      React.createElement("div", { style: { width: 44, height: 44, borderRadius: 10, background: "linear-gradient(135deg,#1a6fa8,#2488c8)", display: "inline-flex", alignItems: "center", justifyContent: "center", marginBottom: 12 } },
+        React.createElement("span", { style: { color: "#fff", fontSize: 16, fontWeight: 800, fontFamily: font } }, "DSG")),
+      React.createElement("p", { style: { fontSize: 13, color: "#7a8a98" } }, "Loading\u2026")))
+  : biometricPending ? React.createElement("div", { style: { display: "flex", justifyContent: "center", alignItems: "center", minHeight: "80vh", padding: 20 } },
+    React.createElement("div", { style: { ...css.card, maxWidth: 380, width: "100%", padding: 28, textAlign: "center" } },
+      React.createElement("div", { style: { width: 64, height: 64, borderRadius: 16, background: "linear-gradient(135deg,#1a6fa8,#2488c8)", display: "inline-flex", alignItems: "center", justifyContent: "center", marginBottom: 16 } },
+        React.createElement("span", { style: { fontSize: 28 } }, "\uD83D\uDD10")),
+      React.createElement("h2", { style: { fontSize: 18, fontWeight: 700, color: dkText, margin: "0 0 4px" } }, "Welcome Back"),
+      React.createElement("p", { style: { fontSize: 12, color: "#7a8a98", margin: "0 0 16px" } }, biometric.getStoredUser() || "Use biometric to unlock"),
+      authError && React.createElement("div", { style: { fontSize: 12, color: "#c04040", padding: "6px 10px", background: "#fce8e8", borderRadius: 6, border: "1px solid #e8c0c0", marginBottom: 10, textAlign: "left" } }, authError),
+      React.createElement("button", { onClick: handleBiometricUnlock, disabled: authBusy, style: { ...css.btn(true), width: "100%", padding: "13px 16px", fontSize: 15, fontWeight: 700, marginBottom: 10, opacity: authBusy ? 0.6 : 1 } },
+        authBusy ? "Verifying\u2026" : "\uD83D\uDD13 Unlock with Face ID / Touch ID"),
+      React.createElement("button", { onClick: () => { setBiometricPending(false); setAuthError(""); }, style: { background: "none", border: "none", color: "#1a6fa8", fontSize: 12, cursor: "pointer", fontFamily: font, textDecoration: "underline" } },
+        "Use email & password instead")))
+  : !authUser ? React.createElement("div", { style: { display: "flex", justifyContent: "center", alignItems: "center", minHeight: "80vh", padding: 20 } },
+    React.createElement("div", { style: { ...css.card, maxWidth: 380, width: "100%", padding: 28 } },
+      React.createElement("div", { style: { textAlign: "center", marginBottom: 20 } },
+        React.createElement("div", { style: { width: 48, height: 48, borderRadius: 10, background: "linear-gradient(135deg,#1a6fa8,#2488c8)", display: "inline-flex", alignItems: "center", justifyContent: "center", marginBottom: 10 } },
+          React.createElement("span", { style: { color: "#fff", fontSize: 18, fontWeight: 800, fontFamily: font } }, "DSG")),
+        React.createElement("h2", { style: { fontSize: 18, fontWeight: 700, color: dkText, margin: "0 0 4px" } }, "DSG Call Schedule"),
+        React.createElement("p", { style: { fontSize: 12, color: "#7a8a98", margin: 0 } }, authMode === "login" ? "Sign in to your account" : "Create your account")),
+      React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 10 } },
+        React.createElement("input", { type: "email", placeholder: "Email address", value: authEmail, onChange: e => setAuthEmail(e.target.value), onKeyDown: e => e.key === "Enter" && handleAuthSubmit(), style: { ...css.inp, width: "100%", padding: "10px 12px", fontSize: 14 } }),
+        React.createElement("input", { type: "password", placeholder: "Password", value: authPassword, onChange: e => setAuthPassword(e.target.value), onKeyDown: e => e.key === "Enter" && handleAuthSubmit(), style: { ...css.inp, width: "100%", padding: "10px 12px", fontSize: 14 } }),
+        authMode === "signup" && React.createElement("select", { value: signupPersonId, onChange: e => setSignupPersonId(e.target.value), style: { ...css.inp, width: "100%", padding: "10px 12px", fontSize: 14 } },
+          React.createElement("option", { value: "" }, "Select your name\u2026"),
+          React.createElement("optgroup", { label: "Surgeons" }, INIT_SURGEONS.map(s => React.createElement("option", { key: s.id, value: s.id }, s.name))),
+          React.createElement("optgroup", { label: "APPs" }, INIT_APPS.map(a => React.createElement("option", { key: a.id, value: a.id }, a.name)))),
+        authError && React.createElement("div", { style: { fontSize: 12, color: "#c04040", padding: "6px 10px", background: "#fce8e8", borderRadius: 6, border: "1px solid #e8c0c0" } }, authError),
+        React.createElement("button", { onClick: handleAuthSubmit, disabled: authBusy, style: { ...css.btn(true), width: "100%", padding: "11px 16px", fontSize: 14, fontWeight: 700, opacity: authBusy ? 0.6 : 1 } }, authBusy ? "Please wait\u2026" : authMode === "login" ? "Sign In" : "Create Account"),
+        React.createElement("div", { style: { textAlign: "center", marginTop: 4 } },
+          React.createElement("button", { onClick: () => { setAuthMode(m => m === "login" ? "signup" : "login"); setAuthError(""); }, style: { background: "none", border: "none", color: "#1a6fa8", fontSize: 12, cursor: "pointer", fontFamily: font, textDecoration: "underline" } },
+            authMode === "login" ? "Don't have an account? Sign up" : "Already have an account? Sign in")))))
+  : needsProfile ? React.createElement("div", { style: { display: "flex", justifyContent: "center", alignItems: "center", minHeight: "80vh", padding: 20 } },
+    React.createElement("div", { style: { ...css.card, maxWidth: 380, width: "100%", padding: 28 } },
+      React.createElement("div", { style: { textAlign: "center", marginBottom: 16 } },
+        React.createElement("h2", { style: { fontSize: 18, fontWeight: 700, color: dkText, margin: "0 0 4px" } }, "Welcome!"),
+        React.createElement("p", { style: { fontSize: 12, color: "#7a8a98", margin: 0 } }, "Select your name to complete setup")),
+      React.createElement("select", { value: signupPersonId, onChange: e => setSignupPersonId(e.target.value), style: { ...css.inp, width: "100%", padding: "10px 12px", fontSize: 14, marginBottom: 10 } },
+        React.createElement("option", { value: "" }, "Select your name\u2026"),
+        React.createElement("optgroup", { label: "Surgeons" }, INIT_SURGEONS.map(s => React.createElement("option", { key: s.id, value: s.id }, s.name))),
+        React.createElement("optgroup", { label: "APPs" }, INIT_APPS.map(a => React.createElement("option", { key: a.id, value: a.id }, a.name)))),
+      authError && React.createElement("div", { style: { fontSize: 12, color: "#c04040", padding: "6px 10px", background: "#fce8e8", borderRadius: 6, border: "1px solid #e8c0c0", marginBottom: 8 } }, authError),
+      React.createElement("button", { onClick: handleSetProfile, disabled: authBusy || !signupPersonId, style: { ...css.btn(true), width: "100%", padding: "11px 16px", fontSize: 14, fontWeight: 700, opacity: authBusy || !signupPersonId ? 0.6 : 1 } }, authBusy ? "Saving\u2026" : "Continue")))
+  : React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
     style: {
       ...css.hdr,
       background: dkHdr,
@@ -5555,128 +5960,126 @@ ${"</"}script>${"</"}body>${"</"}html>`;
   }, "Generate & Publish \u2192")), showPreview && previewSchedule && (() => {
     // Build preview stats
     const pStats = {};
-    surgeons.forEach(s => {
-      pStats[s.id] = {
-        dc: 0,
-        nights: 0,
-        wknd: 0,
-        off: 0
-      };
-    });
+    surgeons.forEach(s => { pStats[s.id] = { dc: 0, nights: 0, wknd: 0, off: 0 }; });
     Object.values(previewSchedule).forEach(wk => {
       if (wk.dayCall && pStats[wk.dayCall]) pStats[wk.dayCall][wk.isBackup ? "dcB" : "dc"]++;
       if (wk.off && pStats[wk.off]) pStats[wk.off][wk.isBackup ? "offB" : "off"]++;
       Object.entries(wk.nights || {}).forEach(([sh, sid]) => {
         if (!sid || !pStats[sid]) return;
-        if (sh === "wknd") pStats[sid][wk.isBackup ? "wkndB" : "wknd"]++;else pStats[sid][wk.isBackup ? "nightsB" : "nights"]++;
+        if (sh === "wknd") pStats[sid][wk.isBackup ? "wkndB" : "wknd"]++;
+        else pStats[sid][wk.isBackup ? "nightsB" : "nights"]++;
       });
     });
-    return /*#__PURE__*/React.createElement("div", {
-      style: {
-        ...css.card,
-        marginTop: 14,
-        background: dk ? "#1a2a1a" : "#f0faf0",
-        border: "2px solid #80c080"
+    // Build calData from preview schedule
+    const pCalData = {};
+    Object.entries(previewSchedule).forEach(([mStr, wk]) => {
+      const mon = parse(mStr);
+      const pfx = wk.isBackup ? "B-" : "";
+      const cls = wk.isBackup ? "backup" : "primary";
+      const holCov = wk.holidayCoverage || {};
+      if (wk.dayCall) {
+        for (let i = 0; i < 5; i++) { const ds = fmt(addD(mon, i)); if (holCov[ds]) continue; pCalData[ds] = [...(pCalData[ds] || []), { type: pfx + "Svc", surgeon: wk.dayCall, cls }]; }
+        const sat = fmt(addD(mon, 5));
+        if (!holCov[sat]) pCalData[sat] = [...(pCalData[sat] || []), { type: pfx + "Wknd", surgeon: wk.dayCall, cls, note: "Sat 7a-7a" }];
       }
-    }, /*#__PURE__*/React.createElement("div", {
-      style: {
-        display: "flex",
-        justifyContent: "space-between",
-        alignItems: "center",
-        marginBottom: 12,
-        flexWrap: "wrap",
-        gap: 8
+      NIGHT_KEYS.forEach((sk, i) => { const sid = wk.nights?.[sk]; if (!sid) return; const ds = fmt(addD(mon, i)); if (holCov[ds]) return; pCalData[ds] = [...(pCalData[ds] || []), { type: pfx + "Ngt", surgeon: sid, cls }]; });
+      const wkndS = wk.nights?.wknd;
+      if (wkndS) {
+        const fri = fmt(addD(mon, 4)); if (!holCov[fri]) pCalData[fri] = [...(pCalData[fri] || []), { type: pfx + "Wknd", surgeon: wkndS, cls, note: "5p-7a" }];
+        const sun = fmt(addD(mon, 6)); if (!holCov[sun]) pCalData[sun] = [...(pCalData[sun] || []), { type: pfx + "Wknd", surgeon: wkndS, cls, note: "7a-7a" }];
       }
-    }, /*#__PURE__*/React.createElement("div", {
-      style: css.cardT
-    }, "\uD83D\uDC41 Schedule Preview"), /*#__PURE__*/React.createElement("div", {
-      style: {
-        display: "flex",
-        gap: 6
-      }
-    }, /*#__PURE__*/React.createElement("button", {
-      onClick: () => doGenerate(true),
-      style: {
-        ...css.btn(false),
-        padding: "6px 14px",
-        fontSize: 12
-      }
-    }, "\u21BB Re-roll"), /*#__PURE__*/React.createElement("button", {
-      onClick: acceptPreview,
-      style: {
-        ...css.btn(true),
-        padding: "6px 14px",
-        fontSize: 12,
-        background: "linear-gradient(135deg,#1a8040,#30a060)",
-        borderColor: "#1a8040"
-      }
-    }, "\u2713 Accept & Publish"), /*#__PURE__*/React.createElement("button", {
-      onClick: discardPreview,
-      style: {
-        background: "none",
-        border: "1px solid #e0c0c0",
-        color: "#904040",
-        borderRadius: 6,
-        padding: "6px 14px",
-        fontSize: 12,
-        cursor: "pointer",
-        fontFamily: font
-      }
-    }, "\u2715 Discard"))), /*#__PURE__*/React.createElement("div", {
-      style: {
-        overflowX: "auto"
-      }
-    }, /*#__PURE__*/React.createElement("table", {
-      style: {
-        width: "100%",
-        borderCollapse: "collapse",
-        fontSize: 12
-      }
-    }, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", {
-      style: {
-        borderBottom: "2px solid #b0d8b0"
-      }
-    }, /*#__PURE__*/React.createElement("th", {
-      style: thS2
-    }, "Surgeon"), /*#__PURE__*/React.createElement("th", {
-      style: thS2
-    }, "Svc Wk"), /*#__PURE__*/React.createElement("th", {
-      style: thS2
-    }, "Nights"), /*#__PURE__*/React.createElement("th", {
-      style: thS2
-    }, "Wknds"), /*#__PURE__*/React.createElement("th", {
-      style: thS2
-    }, "Off"))), /*#__PURE__*/React.createElement("tbody", null, surgeons.map(s => {
-      const ps = pStats[s.id] || {};
-      return /*#__PURE__*/React.createElement("tr", {
-        key: s.id,
-        style: {
-          borderBottom: "1px solid #c0e0c0"
-        }
-      }, /*#__PURE__*/React.createElement("td", {
-        style: {
-          padding: "5px 6px"
-        }
-      }, /*#__PURE__*/React.createElement(Badge, {
-        id: s.id,
-        small: true
-      })), /*#__PURE__*/React.createElement("td", {
-        style: tdS
-      }, ps.dc || 0), /*#__PURE__*/React.createElement("td", {
-        style: tdS
-      }, ps.nights || 0), /*#__PURE__*/React.createElement("td", {
-        style: tdS
-      }, ps.wknd || 0), /*#__PURE__*/React.createElement("td", {
-        style: tdS
-      }, ps.off || 0));
-    })))), /*#__PURE__*/React.createElement("p", {
-      style: {
-        fontSize: 11,
-        color: "#5a8a5a",
-        marginTop: 8
-      }
-    }, "Click \"Re-roll\" to generate a different version. Click \"Accept\" to commit this schedule."));
-  })()), view === "totals" && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+      if (wk.holidayCoverage) { Object.entries(wk.holidayCoverage).forEach(([ds, cov]) => { pCalData[ds] = [...(pCalData[ds] || []), { type: "Holiday", surgeon: cov.surgeonId, cls: "holiday", hours: cov.hours, holName: cov.name }]; }); }
+    });
+    Object.entries(appShifts).forEach(([ds, aid]) => { pCalData[ds] = [...(pCalData[ds] || []), { type: "APP", appId: aid, cls: "app" }]; });
+    const pvOnVac = (ds) => [...surgeons, ...apps].filter(s => onVac(s.id, ds, vacations));
+    // Get unique months
+    const previewMonths = [];
+    const seenMonths = new Set();
+    Object.keys(previewSchedule).forEach(mStr => {
+      const mon = parse(mStr);
+      for (let i = 0; i < 7; i++) { const d = addD(mon, i); const key = d.getFullYear() + "-" + d.getMonth(); if (!seenMonths.has(key)) { seenMonths.add(key); previewMonths.push({ year: d.getFullYear(), month: d.getMonth() }); } }
+    });
+    previewMonths.sort((a, b) => a.year - b.year || a.month - b.month);
+    const pmi = Math.min(previewCalMonth, previewMonths.length - 1);
+    const pm = previewMonths[pmi] || previewMonths[0];
+    const pmDays = pm ? new Date(pm.year, pm.month + 1, 0).getDate() : 0;
+    const pmFirst = pm ? new Date(pm.year, pm.month, 1).getDay() : 0;
+    const pmGrid = [];
+    for (let i = 0; i < pmFirst; i++) pmGrid.push(null);
+    for (let d = 1; d <= pmDays; d++) pmGrid.push(d);
+    while (pmGrid.length % 7) pmGrid.push(null);
+
+    return React.createElement("div", { style: { ...css.card, marginTop: 14, background: dk ? "#1a2a1a" : "#f0faf0", border: "2px solid #80c080" } },
+      React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, flexWrap: "wrap", gap: 8 } },
+        React.createElement("div", { style: css.cardT }, "\uD83D\uDC41 Schedule Preview"),
+        React.createElement("div", { style: { display: "flex", gap: 6 } },
+          React.createElement("button", { onClick: () => { setPreviewCalMonth(0); doGenerate(true); }, style: { ...css.btn(false), padding: "6px 14px", fontSize: 12 } }, "\u21BB Re-roll"),
+          React.createElement("button", { onClick: acceptPreview, style: { ...css.btn(true), padding: "6px 14px", fontSize: 12, background: "linear-gradient(135deg,#1a8040,#30a060)", borderColor: "#1a8040" } }, "\u2713 Accept & Publish"),
+          React.createElement("button", { onClick: discardPreview, style: { background: "none", border: "1px solid #e0c0c0", color: "#904040", borderRadius: 6, padding: "6px 14px", fontSize: 12, cursor: "pointer", fontFamily: font } }, "\u2715 Discard")
+        )
+      ),
+      pm && React.createElement(React.Fragment, null,
+        React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "center", gap: 8, marginBottom: 10 } },
+          React.createElement("button", { onClick: () => setPreviewCalMonth(Math.max(0, pmi - 1)), disabled: pmi === 0, style: { ...css.btn(false), padding: "4px 10px", fontSize: 14, opacity: pmi === 0 ? 0.3 : 1 } }, "\u25C0"),
+          React.createElement("span", { style: { fontSize: 15, fontWeight: 700, color: "#1a6fa8", minWidth: 140, textAlign: "center" } }, MO[pm.month] + " " + pm.year),
+          React.createElement("button", { onClick: () => setPreviewCalMonth(Math.min(previewMonths.length - 1, pmi + 1)), disabled: pmi >= previewMonths.length - 1, style: { ...css.btn(false), padding: "4px 10px", fontSize: 14, opacity: pmi >= previewMonths.length - 1 ? 0.3 : 1 } }, "\u25B6")
+        ),
+        React.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 1, marginBottom: 1 } },
+          DAY_HDR.map(d => React.createElement("div", { key: d, style: { textAlign: "center", fontSize: 10, fontWeight: 700, color: "#8a94a0", padding: "4px 0", letterSpacing: 1 } }, d))
+        ),
+        React.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 1, marginBottom: 14 } },
+          pmGrid.map((day, i) => {
+            if (!day) return React.createElement("div", { key: "e" + i, style: { background: dk ? "#162016" : "#f0faf0", minHeight: 70 } });
+            const ds = pm.year + "-" + String(pm.month + 1).padStart(2, "0") + "-" + String(day).padStart(2, "0");
+            const entries = pCalData[ds] || [];
+            const isWknd = [0, 6].includes(new Date(pm.year, pm.month, day).getDay());
+            const vacList = pvOnVac(ds);
+            return React.createElement("div", { key: ds, style: { background: dk ? "#162016" : isWknd ? "#e8f0e8" : "#f4faf4", border: "1px solid #a0d0a0", minHeight: 70, padding: "2px 3px", borderRadius: 2 } },
+              React.createElement("div", { style: { fontSize: 10, fontWeight: 600, color: isWknd ? "#5a8a5a" : "#3a6a3a", fontFamily: mono, marginBottom: 1 } }, day),
+              entries.filter(e => e.type !== "APP").map((e, j) => {
+                const isB = e.cls === "backup"; const isD = e.type.includes("Svc"); const isW = e.type.includes("Wknd"); const isH = e.type === "Holiday";
+                const label = isH ? "H" : isD ? "S" : isW ? "W" : "N";
+                const color = isH ? "#c06020" : isD ? "#3080a8" : isW ? "#908050" : "#6850a0";
+                return React.createElement("div", { key: j, style: { fontSize: 9, marginBottom: 1, padding: "0 2px", borderRadius: 2, background: isH ? "#fef0e8" : isB ? "#fef8e8" : "transparent", whiteSpace: "nowrap", overflow: "hidden" } },
+                  isB && React.createElement("span", { style: { color: "#8a6a10", fontWeight: 700, fontSize: 7, marginRight: 1 } }, "B"),
+                  React.createElement("span", { style: { color, fontWeight: 700 } }, label), " ",
+                  React.createElement("span", { style: { color: (PAL[sMap[e.surgeon]?.idx % 7] || {}).tx || "#4a5868", fontWeight: 500 } }, sMap[e.surgeon]?.name || "?")
+                );
+              }),
+              entries.filter(e => e.type === "APP").map((e, j) => React.createElement("div", { key: "a" + j, style: { fontSize: 9, marginBottom: 1, padding: "0 2px", whiteSpace: "nowrap" } },
+                React.createElement("span", { style: { color: "#c08050", fontWeight: 700 } }, "A"), " ",
+                React.createElement("span", { style: { color: "#8a6040" } }, aMap[e.appId]?.name || "?")
+              )),
+              vacList.length > 0 && React.createElement("div", { style: { fontSize: 8, color: "#a07070", marginTop: 1 } }, "\uD83C\uDFD6" + vacList.map(v => v.name).join(","))
+            );
+          })
+        )
+      ),
+      React.createElement("div", { style: { fontSize: 12, fontWeight: 700, color: "#3a6a3a", marginBottom: 6 } }, "Assignment Counts"),
+      React.createElement("div", { style: { overflowX: "auto" } },
+        React.createElement("table", { style: { width: "100%", borderCollapse: "collapse", fontSize: 12 } },
+          React.createElement("thead", null, React.createElement("tr", { style: { borderBottom: "2px solid #b0d8b0" } },
+            React.createElement("th", { style: thS2 }, "Surgeon"),
+            React.createElement("th", { style: thS2 }, "Svc Wk"),
+            React.createElement("th", { style: thS2 }, "Nights"),
+            React.createElement("th", { style: thS2 }, "Wknds"),
+            React.createElement("th", { style: thS2 }, "Off")
+          )),
+          React.createElement("tbody", null, surgeons.map(s => {
+            const ps = pStats[s.id] || {};
+            return React.createElement("tr", { key: s.id, style: { borderBottom: "1px solid #c0e0c0" } },
+              React.createElement("td", { style: { padding: "5px 6px" } }, React.createElement(Badge, { id: s.id, small: true })),
+              React.createElement("td", { style: tdS }, ps.dc || 0),
+              React.createElement("td", { style: tdS }, ps.nights || 0),
+              React.createElement("td", { style: tdS }, ps.wknd || 0),
+              React.createElement("td", { style: tdS }, ps.off || 0)
+            );
+          }))
+        )
+      ),
+      React.createElement("p", { style: { fontSize: 11, color: "#5a8a5a", marginTop: 8 } }, "Click \"Re-roll\" to generate a different version. Use \u25C0 \u25B6 to browse months. Click \"Accept\" to commit this schedule.")
+    );
+  })(), })()), view === "totals" && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
     style: css.card
   }, /*#__PURE__*/React.createElement("div", {
     style: css.cardT
@@ -5813,16 +6216,6 @@ ${"</"}script>${"</"}body>${"</"}html>`;
   }, /*#__PURE__*/React.createElement("th", {
     style: thS2
   }, "Surgeon"), /*#__PURE__*/React.createElement("th", {
-    style: {
-      ...thS2,
-      color: tier.color
-    }
-  }, "1st Call"), /*#__PURE__*/React.createElement("th", {
-    style: {
-      ...thS2,
-      color: "#8a6a10"
-    }
-  }, "2nd Call"), /*#__PURE__*/React.createElement("th", {
     style: thS2
   }, "Svc Wk"), /*#__PURE__*/React.createElement("th", {
     style: thS2
@@ -5833,7 +6226,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       ...thS2,
       borderLeft: "1px solid #d8c880"
     }
-  }, "B-Day"), /*#__PURE__*/React.createElement("th", {
+  }, "B-SW"), /*#__PURE__*/React.createElement("th", {
     style: thS2
   }, "B-Ngt"), /*#__PURE__*/React.createElement("th", {
     style: thS2
@@ -5881,44 +6274,6 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       style: {
         padding: "3px 4px"
       }
-    }, /*#__PURE__*/React.createElement("input", {
-      type: "number",
-      min: "0",
-      value: p.totalDays || 0,
-      onChange: e => upd("totalDays", e.target.value),
-      style: {
-        ...css.inp,
-        width: 52,
-        padding: "2px 4px",
-        textAlign: "center",
-        fontFamily: mono,
-        fontSize: 12,
-        fontWeight: 700,
-        color: tier.color
-      }
-    })), /*#__PURE__*/React.createElement("td", {
-      style: {
-        padding: "3px 4px"
-      }
-    }, /*#__PURE__*/React.createElement("input", {
-      type: "number",
-      min: "0",
-      value: p.totalDaysB || 0,
-      onChange: e => upd("totalDaysB", e.target.value),
-      style: {
-        ...css.inp,
-        width: 52,
-        padding: "2px 4px",
-        textAlign: "center",
-        fontFamily: mono,
-        fontSize: 12,
-        fontWeight: 600,
-        color: "#8a6a10"
-      }
-    })), /*#__PURE__*/React.createElement("td", {
-      style: {
-        padding: "3px 4px"
-      }
     }, ci("dc")), /*#__PURE__*/React.createElement("td", {
       style: {
         padding: "3px 4px"
@@ -5951,7 +6306,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     style: {
       color: "#2c5a80"
     }
-  }, "1st Call / 2nd Call"), " = total call days from spreadsheet. Type breakdown (Svc Wk, Nights, Wknds) used by generator for balancing."))), view === "calendar" && /*#__PURE__*/React.createElement(React.Fragment, null, hasCallToday && /*#__PURE__*/React.createElement("div", {
+  }, "B-SW"), " = backup service week days. Type breakdown (Svc Wk, Nights, Wknds) used by generator for balancing."))), view === "calendar" && /*#__PURE__*/React.createElement(React.Fragment, null, hasCallToday && /*#__PURE__*/React.createElement("div", {
     style: {
       background: "linear-gradient(135deg,#ffffff,#f0f8ff)",
       border: "1px solid #b0d0f0",
@@ -7078,7 +7433,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     style: {
       color: "#2c5a80"
     }
-  }, "1st Call / 2nd Call"), " = total call days from spreadsheet. Type breakdown (Svc Wk, Nights, Wknds) used by generator for balancing."))), Object.keys(schedule).length > 0 && (() => {
+  }, "B-SW"), " = backup service week days. Type breakdown (Svc Wk, Nights, Wknds) used by generator for balancing."))), Object.keys(schedule).length > 0 && (() => {
     // Compute monthly breakdown
     const monthlyData = {};
     const allMonths = new Set();
@@ -7645,7 +8000,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       ...thS2,
       borderLeft: "1px solid #d8c880"
     }
-  }, "B-Day"), /*#__PURE__*/React.createElement("th", {
+  }, "B-SW"), /*#__PURE__*/React.createElement("th", {
     style: thS2
   }, "B-Ngt"), /*#__PURE__*/React.createElement("th", {
     style: thS2
@@ -7699,7 +8054,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     style: {
       color: "#2c5a80"
     }
-  }, "1st Call / 2nd Call"), " = total call days from spreadsheet. Type breakdown (Svc Wk, Nights, Wknds) used by generator for balancing."))), view === "myschedule" && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+  }, "B-SW"), " = backup service week days. Type breakdown (Svc Wk, Nights, Wknds) used by generator for balancing."))), view === "myschedule" && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
     style: css.card
   }, /*#__PURE__*/React.createElement("div", {
     style: css.cardT
@@ -9381,6 +9736,23 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     style: css.card
   }, /*#__PURE__*/React.createElement("div", {
     style: css.cardT
+  }, "\uD83D\uDC64 Account"), /*#__PURE__*/React.createElement("div", {
+    style: { display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }
+  }, /*#__PURE__*/React.createElement("div", null,
+    /*#__PURE__*/React.createElement("p", { style: { fontSize: 13, color: dkText, margin: "0 0 2px" } }, "Signed in as ", /*#__PURE__*/React.createElement("strong", { style: { color: "#1a6fa8" } }, userProfile?.display_name || "\u2014")),
+    /*#__PURE__*/React.createElement("p", { style: { fontSize: 11, color: "#7a8a98", margin: 0 } }, authUser?.email)),
+    /*#__PURE__*/React.createElement("button", { onClick: handleSignOut, style: { ...css.btn(false), padding: "6px 14px", fontSize: 12 } }, "Sign Out"))),
+    biometricAvail && React.createElement("div", { style: { paddingTop: 12, borderTop: "1px solid #e0e4ea" } },
+      React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 } },
+        React.createElement("div", null,
+          React.createElement("p", { style: { fontSize: 12, fontWeight: 600, color: dkText, margin: "0 0 2px" } }, "\uD83D\uDD10 Biometric Login"),
+          React.createElement("p", { style: { fontSize: 11, color: "#7a8a98", margin: 0 } }, biometricEnrolled ? "Face ID / Touch ID is enabled" : "Use Face ID or Touch ID to unlock the app")),
+        biometricEnrolled
+          ? React.createElement("button", { onClick: handleBiometricUnenroll, style: { ...css.btn(false), padding: "6px 14px", fontSize: 12 } }, "Disable")
+          : React.createElement("button", { onClick: handleBiometricEnroll, style: { ...css.btn(true), padding: "6px 14px", fontSize: 12 } }, "Enable")))), /*#__PURE__*/React.createElement("div", {
+    style: css.card
+  }, /*#__PURE__*/React.createElement("div", {
+    style: css.cardT
   }, "\uD83D\uDCC5 Live Calendar Sync"), /*#__PURE__*/React.createElement("p", {
     style: {
       fontSize: 12,
@@ -9482,7 +9854,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       cursor: "pointer",
       fontFamily: font
     }
-  }, "Reset All Data")))));
+  }, "Reset All Data"))))));
 }
 const thS = {
   textAlign: "left",

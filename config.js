@@ -158,3 +158,245 @@ const HOLIDAY_PRESETS = {
     "New Year's":      ["s5", "s1"],  // REH | DJA
   }
 };
+
+
+
+/* ═══════════════════════════════════════════════════
+   SUPABASE AUTH HELPERS
+   ═══════════════════════════════════════════════════ */
+const AUTH_TOKEN_KEY = "dsg-auth-token";
+const AUTH_REFRESH_KEY = "dsg-auth-refresh";
+
+const auth = {
+  // Get stored session
+  getSession() {
+    try {
+      const token = localStorage.getItem(AUTH_TOKEN_KEY);
+      const refresh = localStorage.getItem(AUTH_REFRESH_KEY);
+      return token ? { access_token: token, refresh_token: refresh } : null;
+    } catch(e) { return null; }
+  },
+
+  // Store session
+  _saveSession(data) {
+    try {
+      if (data?.access_token) {
+        localStorage.setItem(AUTH_TOKEN_KEY, data.access_token);
+        if (data.refresh_token) localStorage.setItem(AUTH_REFRESH_KEY, data.refresh_token);
+      }
+    } catch(e) {}
+  },
+
+  // Clear session
+  _clearSession() {
+    try {
+      localStorage.removeItem(AUTH_TOKEN_KEY);
+      localStorage.removeItem(AUTH_REFRESH_KEY);
+    } catch(e) {}
+  },
+
+  // Sign up with email & password
+  async signUp(email, password) {
+    const res = await fetch(`${SUPABASE_URL}/auth/v1/signup`, {
+      method: "POST",
+      headers: { apikey: SUPABASE_ANON_KEY, "Content-Type": "application/json" },
+      body: JSON.stringify({ email, password }),
+    });
+    const data = await res.json();
+    if (!res.ok) return { user: null, error: data.msg || data.error_description || data.message || "Sign up failed" };
+    if (data.access_token) auth._saveSession(data);
+    return { user: data.user || data, session: data, error: null };
+  },
+
+  // Sign in with email & password
+  async signIn(email, password) {
+    const res = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=password`, {
+      method: "POST",
+      headers: { apikey: SUPABASE_ANON_KEY, "Content-Type": "application/json" },
+      body: JSON.stringify({ email, password }),
+    });
+    const data = await res.json();
+    if (!res.ok) return { user: null, error: data.msg || data.error_description || data.message || "Sign in failed" };
+    auth._saveSession(data);
+    return { user: data.user, session: data, error: null };
+  },
+
+  // Get current user from token
+  async getUser() {
+    const session = auth.getSession();
+    if (!session) return { user: null };
+    const res = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
+      headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${session.access_token}` },
+    });
+    if (!res.ok) {
+      // Token expired — try refresh
+      if (res.status === 401 && session.refresh_token) {
+        const refreshed = await auth._refresh(session.refresh_token);
+        if (refreshed?.user) return refreshed;
+      }
+      auth._clearSession();
+      return { user: null };
+    }
+    const user = await res.json();
+    return { user };
+  },
+
+  // Refresh token
+  async _refresh(refreshToken) {
+    try {
+      const res = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`, {
+        method: "POST",
+        headers: { apikey: SUPABASE_ANON_KEY, "Content-Type": "application/json" },
+        body: JSON.stringify({ refresh_token: refreshToken }),
+      });
+      if (!res.ok) { auth._clearSession(); return { user: null }; }
+      const data = await res.json();
+      auth._saveSession(data);
+      return { user: data.user, session: data };
+    } catch(e) { auth._clearSession(); return { user: null }; }
+  },
+
+  // Sign out
+  async signOut() {
+    const session = auth.getSession();
+    if (session?.access_token) {
+      try {
+        await fetch(`${SUPABASE_URL}/auth/v1/logout`, {
+          method: "POST",
+          headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${session.access_token}` },
+        });
+      } catch(e) {}
+    }
+    auth._clearSession();
+  },
+
+  // Get auth headers for DB queries (user-level RLS)
+  getAuthHeaders() {
+    const session = auth.getSession();
+    if (!session) return dbHeaders;
+    return { ...dbHeaders, Authorization: `Bearer ${session.access_token}` };
+  },
+};
+
+// DB helper that uses auth token for user_profiles table
+const dbAuth = {
+  async getProfile(userId) {
+    const hdrs = auth.getAuthHeaders();
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/user_profiles?id=eq.${userId}&select=*`, { headers: hdrs });
+    if (!res.ok) return null;
+    const rows = await res.json();
+    return rows?.[0] || null;
+  },
+  async upsertProfile(profile) {
+    const hdrs = auth.getAuthHeaders();
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/user_profiles`, {
+      method: "POST",
+      headers: { ...hdrs, Prefer: "resolution=merge-duplicates,return=representation" },
+      body: JSON.stringify(profile),
+    });
+    if (!res.ok) return { error: await res.text() };
+    const data = await res.json();
+    return { data: data?.[0] || data, error: null };
+  },
+  async getAllProfiles() {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/user_profiles?select=*`, { headers: dbHeaders });
+    if (!res.ok) return [];
+    return await res.json();
+  },
+};
+
+/* ═══════════════════════════════════════════════════
+   BIOMETRIC AUTH (WebAuthn / Face ID / Touch ID)
+   ═══════════════════════════════════════════════════ */
+const BIOMETRIC_CRED_KEY = "dsg-biometric-cred";
+const BIOMETRIC_USER_KEY = "dsg-biometric-user";
+
+const biometric = {
+  // Check if WebAuthn platform authenticator is available (Face ID, Touch ID, fingerprint)
+  async isAvailable() {
+    try {
+      if (!window.PublicKeyCredential) return false;
+      return await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable();
+    } catch(e) { return false; }
+  },
+
+  // Check if biometric is already enrolled
+  isEnrolled() {
+    try { return !!localStorage.getItem(BIOMETRIC_CRED_KEY); } catch(e) { return false; }
+  },
+
+  // Get stored user email for biometric
+  getStoredUser() {
+    try { return localStorage.getItem(BIOMETRIC_USER_KEY) || null; } catch(e) { return null; }
+  },
+
+  // Register biometric credential (call after successful email/password login)
+  async enroll(userId, userEmail) {
+    try {
+      const challenge = crypto.getRandomValues(new Uint8Array(32));
+      const userIdBytes = new TextEncoder().encode(userId.slice(0, 32));
+
+      const credential = await navigator.credentials.create({
+        publicKey: {
+          challenge,
+          rp: { name: "DSG Call Schedule", id: window.location.hostname },
+          user: { id: userIdBytes, name: userEmail, displayName: userEmail.split("@")[0] },
+          pubKeyCredParams: [
+            { alg: -7, type: "public-key" },   // ES256
+            { alg: -257, type: "public-key" },  // RS256
+          ],
+          authenticatorSelection: {
+            authenticatorAttachment: "platform",  // built-in biometric only
+            userVerification: "required",         // require Face ID / Touch ID
+            residentKey: "preferred",
+          },
+          timeout: 60000,
+        }
+      });
+
+      if (credential) {
+        // Store credential ID for future authentication
+        const credIdArray = Array.from(new Uint8Array(credential.rawId));
+        localStorage.setItem(BIOMETRIC_CRED_KEY, JSON.stringify(credIdArray));
+        localStorage.setItem(BIOMETRIC_USER_KEY, userEmail);
+        return { success: true };
+      }
+      return { success: false, error: "No credential created" };
+    } catch(e) {
+      return { success: false, error: e.name === "NotAllowedError" ? "Biometric enrollment was cancelled" : e.message };
+    }
+  },
+
+  // Authenticate with biometric (call on app open)
+  async authenticate() {
+    try {
+      const credIdJson = localStorage.getItem(BIOMETRIC_CRED_KEY);
+      if (!credIdJson) return { success: false, error: "No biometric enrolled" };
+
+      const credIdArray = JSON.parse(credIdJson);
+      const credId = new Uint8Array(credIdArray).buffer;
+      const challenge = crypto.getRandomValues(new Uint8Array(32));
+
+      const assertion = await navigator.credentials.get({
+        publicKey: {
+          challenge,
+          allowCredentials: [{ id: credId, type: "public-key", transports: ["internal"] }],
+          userVerification: "required",
+          timeout: 60000,
+        }
+      });
+
+      return assertion ? { success: true } : { success: false, error: "Authentication failed" };
+    } catch(e) {
+      return { success: false, error: e.name === "NotAllowedError" ? "Biometric authentication was cancelled" : e.message };
+    }
+  },
+
+  // Remove biometric enrollment
+  unenroll() {
+    try {
+      localStorage.removeItem(BIOMETRIC_CRED_KEY);
+      localStorage.removeItem(BIOMETRIC_USER_KEY);
+    } catch(e) {}
+  },
+};
