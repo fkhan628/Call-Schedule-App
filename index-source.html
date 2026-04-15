@@ -65,7 +65,7 @@
   <div id="root"></div>
   <script>
     // Cache-bust with version — update this string when deploying changes
-    var _v = "2026.04.14a";
+    var _v = "2026.04.14g";
     ['config.js','helpers.js','generator.js','app-styles.js'].forEach(function(f) {
       document.write('<script src="'+f+'?v='+_v+'"><\/script>');
     });
@@ -126,6 +126,7 @@ function CallSchedule() {
   // ─── What-If Preview ───
   const [previewSchedule, setPreviewSchedule] = useState(null);
   const [showPreview, setShowPreview] = useState(false);
+  const [previewCalMonth, setPreviewCalMonth] = useState(0); // index into preview months
 
   // Form states
   const [vacSurgeon, setVacSurgeon] = useState("");
@@ -163,6 +164,22 @@ function CallSchedule() {
   const [tradeReturnWeek, setTradeReturnWeek] = useState("");
   const [tradeReturnShift, setTradeReturnShift] = useState("");
 
+  // ─── Authentication ───
+  const [authUser, setAuthUser] = useState(null);       // { id, email, ... }
+  const [authLoading, setAuthLoading] = useState(true);  // checking session on mount
+  const [authEmail, setAuthEmail] = useState("");
+  const [authPassword, setAuthPassword] = useState("");
+  const [authMode, setAuthMode] = useState("login");     // "login" | "signup"
+  const [authError, setAuthError] = useState("");
+  const [authBusy, setAuthBusy] = useState(false);
+  const [signupPersonId, setSignupPersonId] = useState(""); // person_id during signup
+  const [userProfile, setUserProfile] = useState(null);  // { person_id, display_name, role }
+  const [needsProfile, setNeedsProfile] = useState(false); // true if logged in but no profile yet
+  const [biometricAvail, setBiometricAvail] = useState(false);
+  const [biometricEnrolled, setBiometricEnrolled] = useState(false);
+  const [biometricPending, setBiometricPending] = useState(false); // waiting for biometric prompt
+  const allPeople = useMemo(() => [...INIT_SURGEONS, ...INIT_APPS], []);
+
   // ─── Scheduler Mode (PIN protected) ───
   const [isScheduler, setIsScheduler] = useState(false);
   const [schedulerPin, setSchedulerPin] = useState("");
@@ -199,6 +216,148 @@ function CallSchedule() {
   useEffect(() => {
     try { if(mySurgeon) localStorage.setItem("dsg-my-surgeon", mySurgeon); } catch(e) {}
   }, [mySurgeon]);
+
+  // ─── Auth: Check session on mount ───
+  useEffect(() => {
+    (async () => {
+      try {
+        const bioAvail = await biometric.isAvailable();
+        setBiometricAvail(bioAvail);
+        const bioEnrolled = biometric.isEnrolled();
+        setBiometricEnrolled(bioEnrolled);
+        const session = auth.getSession();
+
+        if (bioEnrolled && session) {
+          // Has biometric + stored session — require biometric to unlock
+          setBiometricPending(true);
+          setAuthLoading(false);
+          return; // Don't auto-login; wait for biometric prompt
+        }
+
+        if (session && !bioEnrolled) {
+          // Has session but no biometric — auto-login (legacy behavior)
+          const { user } = await auth.getUser();
+          if (user) {
+            setAuthUser(user);
+            const profile = await dbAuth.getProfile(user.id);
+            if (profile) { setUserProfile(profile); setMySurgeon(profile.person_id); }
+            else { setNeedsProfile(true); }
+          }
+        }
+      } catch(e) { console.error("Auth check error:", e); }
+      setAuthLoading(false);
+    })();
+  }, []);
+
+  // Biometric unlock handler
+  const handleBiometricUnlock = async () => {
+    setAuthError(""); setAuthBusy(true);
+    const result = await biometric.authenticate();
+    if (result.success) {
+      // Biometric passed — use stored session
+      const { user } = await auth.getUser();
+      if (user) {
+        setAuthUser(user);
+        const profile = await dbAuth.getProfile(user.id);
+        if (profile) { setUserProfile(profile); setMySurgeon(profile.person_id); }
+        else { setNeedsProfile(true); }
+        setBiometricPending(false);
+      } else {
+        // Session expired — fall back to email/password
+        setBiometricPending(false);
+        biometric.unenroll(); setBiometricEnrolled(false);
+        setAuthError("Session expired. Please sign in again.");
+      }
+    } else {
+      setAuthError(result.error || "Biometric failed");
+    }
+    setAuthBusy(false);
+  };
+
+  // Biometric enrollment handler (call from Settings)
+  const handleBiometricEnroll = async () => {
+    if (!authUser) return;
+    const result = await biometric.enroll(authUser.id, authUser.email);
+    if (result.success) {
+      setBiometricEnrolled(true);
+    } else {
+      alert(result.error || "Could not enable biometric login");
+    }
+  };
+
+  const handleBiometricUnenroll = () => {
+    biometric.unenroll();
+    setBiometricEnrolled(false);
+  };
+
+  // Auth handlers
+  const handleAuthSubmit = async () => {
+    setAuthError(""); setAuthBusy(true);
+    try {
+      if (authMode === "signup") {
+        if (!signupPersonId) { setAuthError("Please select your name"); setAuthBusy(false); return; }
+        // Check if person_id already claimed
+        const profiles = await dbAuth.getAllProfiles();
+        if (profiles.some(p => p.person_id === signupPersonId)) {
+          setAuthError("This name is already registered to another account");
+          setAuthBusy(false); return;
+        }
+        const { user, session, error } = await auth.signUp(authEmail, authPassword);
+        if (error) { setAuthError(error); setAuthBusy(false); return; }
+        const userId = user?.id || session?.user?.id;
+        if (userId) {
+          // Create profile
+          const personName = allPeople.find(p=>p.id===signupPersonId)?.name || signupPersonId;
+          await dbAuth.upsertProfile({ id: userId, person_id: signupPersonId, display_name: personName, role: "member" });
+          const profile = { person_id: signupPersonId, display_name: personName, role: "member" };
+          setAuthUser(user || session?.user);
+          setUserProfile(profile);
+          setMySurgeon(signupPersonId);
+          setNeedsProfile(false);
+        }
+      } else {
+        const { user, error } = await auth.signIn(authEmail, authPassword);
+        if (error) { setAuthError(error); setAuthBusy(false); return; }
+        setAuthUser(user);
+        // Load profile
+        const profile = await dbAuth.getProfile(user.id);
+        if (profile) {
+          setUserProfile(profile);
+          setMySurgeon(profile.person_id);
+          setNeedsProfile(false);
+        } else {
+          setNeedsProfile(true);
+        }
+      }
+      setAuthEmail(""); setAuthPassword("");
+    } catch(e) { setAuthError(e.message || "Auth error"); }
+    setAuthBusy(false);
+  };
+
+  const handleSetProfile = async () => {
+    if (!signupPersonId || !authUser) return;
+    setAuthBusy(true); setAuthError("");
+    try {
+      const profiles = await dbAuth.getAllProfiles();
+      if (profiles.some(p => p.person_id === signupPersonId && p.id !== authUser.id)) {
+        setAuthError("This name is already registered to another account");
+        setAuthBusy(false); return;
+      }
+      const personName = allPeople.find(p=>p.id===signupPersonId)?.name || signupPersonId;
+      await dbAuth.upsertProfile({ id: authUser.id, person_id: signupPersonId, display_name: personName, role: "member" });
+      setUserProfile({ person_id: signupPersonId, display_name: personName, role: "member" });
+      setMySurgeon(signupPersonId);
+      setNeedsProfile(false);
+    } catch(e) { setAuthError(e.message); }
+    setAuthBusy(false);
+  };
+
+  const handleSignOut = async () => {
+    await auth.signOut();
+    biometric.unenroll();
+    setAuthUser(null); setUserProfile(null); setNeedsProfile(false); setMySurgeon("");
+    setBiometricEnrolled(false); setBiometricPending(false);
+  };
 
   // ─── Supabase: Load on mount + real-time sync ───
   useEffect(() => {
@@ -2203,7 +2362,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
 
   // ─── Yearly Summary Export ───
   const exportYearlySummary = useCallback(() => {
-    const header = ["Surgeon","Svc Wk","Nights","Wknds","1st Call Days","B-Svc Wk","B-Nights","B-Wknds","2nd Call Days","Total"];
+    const header = ["Surgeon","Svc Wk","Nights","Wknds","B-SW","B-Nights","B-Wknds","Total"];
     const rows = surgeons.map(s => {
       const cur = stats[s.id] || {};
       const pri = priorCounts[s.id] || {};
@@ -2215,7 +2374,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       const cumWB = (pri.wkndB||0) + (cur.wkndB||0);
       const total1 = calcShifts({dc:cumDc,nights:cumN,wknd:cumW,totalDays:(pri.totalDays||0)+(cur.totalDays||0)});
       const total2 = (pri.totalDaysB||0) + (cur.totalDaysB||0);
-      return [s.name, cumDc, cumN, cumW, total1, cumDcB, cumNB, cumWB, total2, total1+total2].join(",");
+      return [s.name, cumDc, cumN, cumW, cumDcB, cumNB, cumWB, total1+total2].join(",");
     });
     const csv = [header.join(","), ...rows].join("\n");
     const blob = new Blob([csv], {type:"text/csv"});
@@ -2418,6 +2577,106 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         span[style*="color:#c04040"] { color: #f06060 !important; }
         span[style*="color:#8a6a10"], div[style*="color:#8a6a10"] { color: #c0a040 !important; }
       `}</style>}
+
+      {/* ─── Auth Gate ─── */}
+      {authLoading ? (
+        <div style={{display:"flex",justifyContent:"center",alignItems:"center",minHeight:"60vh"}}>
+          <div style={{textAlign:"center"}}>
+            <div style={{width:44,height:44,borderRadius:10,background:"linear-gradient(135deg,#1a6fa8,#2488c8)",display:"inline-flex",alignItems:"center",justifyContent:"center",marginBottom:12}}>
+              <span style={{color:"#fff",fontSize:16,fontWeight:800,fontFamily:font}}>DSG</span>
+            </div>
+            <p style={{fontSize:13,color:"#7a8a98"}}>Loading…</p>
+          </div>
+        </div>
+      ) : biometricPending ? (
+        <div style={{display:"flex",justifyContent:"center",alignItems:"center",minHeight:"80vh",padding:20}}>
+          <div style={{...css.card,maxWidth:380,width:"100%",padding:28,textAlign:"center"}}>
+            <div style={{width:64,height:64,borderRadius:16,background:"linear-gradient(135deg,#1a6fa8,#2488c8)",display:"inline-flex",alignItems:"center",justifyContent:"center",marginBottom:16}}>
+              <span style={{fontSize:28}}>🔐</span>
+            </div>
+            <h2 style={{fontSize:18,fontWeight:700,color:dkText,margin:"0 0 4px"}}>Welcome Back</h2>
+            <p style={{fontSize:12,color:"#7a8a98",margin:"0 0 16px"}}>{biometric.getStoredUser() || "Use biometric to unlock"}</p>
+            {authError && <div style={{fontSize:12,color:"#c04040",padding:"6px 10px",background:"#fce8e8",borderRadius:6,border:"1px solid #e8c0c0",marginBottom:10,textAlign:"left"}}>{authError}</div>}
+            <button onClick={handleBiometricUnlock} disabled={authBusy}
+              style={{...css.btn(true),width:"100%",padding:"13px 16px",fontSize:15,fontWeight:700,marginBottom:10,opacity:authBusy?0.6:1}}>
+              {authBusy ? "Verifying…" : "🔓 Unlock with Face ID / Touch ID"}
+            </button>
+            <button onClick={()=>{setBiometricPending(false);setAuthError("");}}
+              style={{background:"none",border:"none",color:"#1a6fa8",fontSize:12,cursor:"pointer",fontFamily:font,textDecoration:"underline"}}>
+              Use email & password instead
+            </button>
+          </div>
+        </div>
+      ) : !authUser ? (
+        <div style={{display:"flex",justifyContent:"center",alignItems:"center",minHeight:"80vh",padding:20}}>
+          <div style={{...css.card,maxWidth:380,width:"100%",padding:28}}>
+            <div style={{textAlign:"center",marginBottom:20}}>
+              <div style={{width:48,height:48,borderRadius:10,background:"linear-gradient(135deg,#1a6fa8,#2488c8)",display:"inline-flex",alignItems:"center",justifyContent:"center",marginBottom:10}}>
+                <span style={{color:"#fff",fontSize:18,fontWeight:800,fontFamily:font}}>DSG</span>
+              </div>
+              <h2 style={{fontSize:18,fontWeight:700,color:dkText,margin:"0 0 4px"}}>DSG Call Schedule</h2>
+              <p style={{fontSize:12,color:"#7a8a98",margin:0}}>
+                {authMode==="login" ? "Sign in to your account" : "Create your account"}
+              </p>
+            </div>
+            <div style={{display:"flex",flexDirection:"column",gap:10}}>
+              <input type="email" placeholder="Email address" value={authEmail} onChange={e=>setAuthEmail(e.target.value)}
+                onKeyDown={e=>e.key==="Enter"&&handleAuthSubmit()}
+                style={{...css.inp,width:"100%",padding:"10px 12px",fontSize:14}}/>
+              <input type="password" placeholder="Password" value={authPassword} onChange={e=>setAuthPassword(e.target.value)}
+                onKeyDown={e=>e.key==="Enter"&&handleAuthSubmit()}
+                style={{...css.inp,width:"100%",padding:"10px 12px",fontSize:14}}/>
+              {authMode==="signup" && (
+                <select value={signupPersonId} onChange={e=>setSignupPersonId(e.target.value)}
+                  style={{...css.inp,width:"100%",padding:"10px 12px",fontSize:14}}>
+                  <option value="">Select your name…</option>
+                  <optgroup label="Surgeons">
+                    {INIT_SURGEONS.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
+                  </optgroup>
+                  <optgroup label="APPs">
+                    {INIT_APPS.map(a=><option key={a.id} value={a.id}>{a.name}</option>)}
+                  </optgroup>
+                </select>
+              )}
+              {authError && <div style={{fontSize:12,color:"#c04040",padding:"6px 10px",background:"#fce8e8",borderRadius:6,border:"1px solid #e8c0c0"}}>{authError}</div>}
+              <button onClick={handleAuthSubmit} disabled={authBusy}
+                style={{...css.btn(true),width:"100%",padding:"11px 16px",fontSize:14,fontWeight:700,opacity:authBusy?0.6:1}}>
+                {authBusy ? "Please wait…" : authMode==="login" ? "Sign In" : "Create Account"}
+              </button>
+              <div style={{textAlign:"center",marginTop:4}}>
+                <button onClick={()=>{setAuthMode(m=>m==="login"?"signup":"login");setAuthError("");}}
+                  style={{background:"none",border:"none",color:"#1a6fa8",fontSize:12,cursor:"pointer",fontFamily:font,textDecoration:"underline"}}>
+                  {authMode==="login" ? "Don't have an account? Sign up" : "Already have an account? Sign in"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : needsProfile ? (
+        <div style={{display:"flex",justifyContent:"center",alignItems:"center",minHeight:"80vh",padding:20}}>
+          <div style={{...css.card,maxWidth:380,width:"100%",padding:28}}>
+            <div style={{textAlign:"center",marginBottom:16}}>
+              <h2 style={{fontSize:18,fontWeight:700,color:dkText,margin:"0 0 4px"}}>Welcome!</h2>
+              <p style={{fontSize:12,color:"#7a8a98",margin:0}}>Select your name to complete setup</p>
+            </div>
+            <select value={signupPersonId} onChange={e=>setSignupPersonId(e.target.value)}
+              style={{...css.inp,width:"100%",padding:"10px 12px",fontSize:14,marginBottom:10}}>
+              <option value="">Select your name…</option>
+              <optgroup label="Surgeons">
+                {INIT_SURGEONS.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
+              </optgroup>
+              <optgroup label="APPs">
+                {INIT_APPS.map(a=><option key={a.id} value={a.id}>{a.name}</option>)}
+              </optgroup>
+            </select>
+            {authError && <div style={{fontSize:12,color:"#c04040",padding:"6px 10px",background:"#fce8e8",borderRadius:6,border:"1px solid #e8c0c0",marginBottom:8}}>{authError}</div>}
+            <button onClick={handleSetProfile} disabled={authBusy||!signupPersonId}
+              style={{...css.btn(true),width:"100%",padding:"11px 16px",fontSize:14,fontWeight:700,opacity:authBusy||!signupPersonId?0.6:1}}>
+              {authBusy ? "Saving…" : "Continue"}
+            </button>
+          </div>
+        </div>
+      ) : <>
 
       {/* ─── Header ─── */}
       <div style={{...css.hdr,background:dkHdr,borderBottom:`1px solid ${dkCardBorder}`}}>
@@ -2926,16 +3185,140 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                 else pStats[sid][wk.isBackup?"nightsB":"nights"]++;
               });
             });
+
+            // Build calData from preview schedule
+            const pCalData = {};
+            Object.entries(previewSchedule).forEach(([mStr,wk])=>{
+              const mon=parse(mStr);
+              const pfx = wk.isBackup ? "B-" : "";
+              const cls = wk.isBackup ? "backup" : "primary";
+              const holCov = wk.holidayCoverage || {};
+              if(wk.dayCall){
+                for(let i=0;i<5;i++){
+                  const ds=fmt(addD(mon,i));
+                  if(holCov[ds]) continue;
+                  pCalData[ds]=[...(pCalData[ds]||[]),{type:pfx+"Svc",surgeon:wk.dayCall,cls}];
+                }
+                const sat=fmt(addD(mon,5));
+                if(!holCov[sat]) pCalData[sat]=[...(pCalData[sat]||[]),{type:pfx+"Wknd",surgeon:wk.dayCall,cls,note:"Sat 7a–7a"}];
+              }
+              NIGHT_KEYS.forEach((sk,i)=>{
+                const sid=wk.nights?.[sk]; if(!sid) return;
+                const ds=fmt(addD(mon,i));
+                if(holCov[ds]) return;
+                pCalData[ds]=[...(pCalData[ds]||[]),{type:pfx+"Ngt",surgeon:sid,cls}];
+              });
+              const wkndS = wk.nights?.wknd;
+              if(wkndS){
+                const fri=fmt(addD(mon,4));
+                if(!holCov[fri]) pCalData[fri]=[...(pCalData[fri]||[]),{type:pfx+"Wknd",surgeon:wkndS,cls,note:"5p–7a"}];
+                const sun=fmt(addD(mon,6));
+                if(!holCov[sun]) pCalData[sun]=[...(pCalData[sun]||[]),{type:pfx+"Wknd",surgeon:wkndS,cls,note:"7a–7a"}];
+              }
+              if(wk.holidayCoverage){
+                Object.entries(wk.holidayCoverage).forEach(([ds, cov]) => {
+                  pCalData[ds]=[...(pCalData[ds]||[]),{type:"Holiday",surgeon:cov.surgeonId,cls:"holiday",hours:cov.hours,holName:cov.name}];
+                });
+              }
+            });
+            // APP shifts
+            Object.entries(appShifts).forEach(([ds,aid])=>{
+              pCalData[ds]=[...(pCalData[ds]||[]),{type:"APP",appId:aid,cls:"app"}];
+            });
+            // Vacation entries
+            const pvOnVac = (ds) => [...surgeons,...apps].filter(s=>onVac(s.id,ds,vacations));
+
+            // Get unique months covered by preview
+            const previewMonths = [];
+            const seenMonths = new Set();
+            Object.keys(previewSchedule).forEach(mStr => {
+              const mon = parse(mStr);
+              for(let i=0;i<7;i++){
+                const d = addD(mon,i);
+                const key = `${d.getFullYear()}-${d.getMonth()}`;
+                if(!seenMonths.has(key)){
+                  seenMonths.add(key);
+                  previewMonths.push({year:d.getFullYear(),month:d.getMonth()});
+                }
+              }
+            });
+            previewMonths.sort((a,b)=>a.year-b.year||a.month-b.month);
+
+            const pmi = Math.min(previewCalMonth, previewMonths.length-1);
+            const pm = previewMonths[pmi] || previewMonths[0];
+            const pmDays = pm ? new Date(pm.year, pm.month+1, 0).getDate() : 0;
+            const pmFirst = pm ? new Date(pm.year, pm.month, 1).getDay() : 0;
+            const pmGrid = [];
+            for(let i=0;i<pmFirst;i++) pmGrid.push(null);
+            for(let d=1;d<=pmDays;d++) pmGrid.push(d);
+            while(pmGrid.length%7) pmGrid.push(null);
+
             return (
               <div style={{...css.card,marginTop:14,background:dk?"#1a2a1a":"#f0faf0",border:"2px solid #80c080"}}>
                 <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12,flexWrap:"wrap",gap:8}}>
                   <div style={css.cardT}>👁 Schedule Preview</div>
                   <div style={{display:"flex",gap:6}}>
-                    <button onClick={()=>doGenerate(true)} style={{...css.btn(false),padding:"6px 14px",fontSize:12}}>↻ Re-roll</button>
+                    <button onClick={()=>{setPreviewCalMonth(0);doGenerate(true);}} style={{...css.btn(false),padding:"6px 14px",fontSize:12}}>↻ Re-roll</button>
                     <button onClick={acceptPreview} style={{...css.btn(true),padding:"6px 14px",fontSize:12,background:"linear-gradient(135deg,#1a8040,#30a060)",borderColor:"#1a8040"}}>✓ Accept & Publish</button>
                     <button onClick={discardPreview} style={{background:"none",border:"1px solid #e0c0c0",color:"#904040",borderRadius:6,padding:"6px 14px",fontSize:12,cursor:"pointer",fontFamily:font}}>✕ Discard</button>
                   </div>
                 </div>
+
+                {/* Preview Calendar Grid */}
+                {pm && <>
+                  <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:8,marginBottom:10}}>
+                    <button onClick={()=>setPreviewCalMonth(Math.max(0,pmi-1))} disabled={pmi===0}
+                      style={{...css.btn(false),padding:"4px 10px",fontSize:14,opacity:pmi===0?0.3:1}}>◀</button>
+                    <span style={{fontSize:15,fontWeight:700,color:"#1a6fa8",minWidth:140,textAlign:"center"}}>{MO[pm.month]} {pm.year}</span>
+                    <button onClick={()=>setPreviewCalMonth(Math.min(previewMonths.length-1,pmi+1))} disabled={pmi>=previewMonths.length-1}
+                      style={{...css.btn(false),padding:"4px 10px",fontSize:14,opacity:pmi>=previewMonths.length-1?0.3:1}}>▶</button>
+                  </div>
+                  <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:1,marginBottom:1}}>
+                    {DAY_HDR.map(d=><div key={d} style={{textAlign:"center",fontSize:10,fontWeight:700,color:"#8a94a0",padding:"4px 0",letterSpacing:1}}>{d}</div>)}
+                  </div>
+                  <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:1,marginBottom:14}}>
+                    {pmGrid.map((day,i)=>{
+                      if(!day) return <div key={`e${i}`} style={{background:dk?"#162016":"#f0faf0",minHeight:70}}/>;
+                      const ds=`${pm.year}-${String(pm.month+1).padStart(2,"0")}-${String(day).padStart(2,"0")}`;
+                      const entries=pCalData[ds]||[];
+                      const isWknd=[0,6].includes(new Date(pm.year,pm.month,day).getDay());
+                      const vacList = pvOnVac(ds);
+                      return (
+                        <div key={ds} style={{background:dk?"#162016":isWknd?"#e8f0e8":"#f4faf4",border:"1px solid #a0d0a0",minHeight:70,padding:"2px 3px",borderRadius:2}}>
+                          <div style={{fontSize:10,fontWeight:600,color:isWknd?"#5a8a5a":"#3a6a3a",fontFamily:mono,marginBottom:1}}>{day}</div>
+                          {entries.filter(e=>e.type!=="APP").map((e,j)=>{
+                            const isB = e.cls==="backup";
+                            const isD = e.type.includes("Svc");
+                            const isW = e.type.includes("Wknd");
+                            const isH = e.type==="Holiday";
+                            const label = isH?"H":isD?"S":isW?"W":"N";
+                            const color = isH?"#c06020":isD?"#3080a8":isW?"#908050":"#6850a0";
+                            return (
+                              <div key={j} style={{fontSize:9,marginBottom:1,padding:"0 2px",borderRadius:2,
+                                background:isH?"#fef0e8":isB?"#fef8e8":"transparent",whiteSpace:"nowrap",overflow:"hidden"}}>
+                                {isB&&<span style={{color:"#8a6a10",fontWeight:700,fontSize:7,marginRight:1}}>B</span>}
+                                <span style={{color,fontWeight:700}}>{label}</span>
+                                {" "}
+                                <span style={{color:PAL[sMap[e.surgeon]?.idx%7]?.tx||"#4a5868",fontWeight:500}}>{sMap[e.surgeon]?.name||"?"}</span>
+                              </div>
+                            );
+                          })}
+                          {entries.filter(e=>e.type==="APP").map((e,j)=>(
+                            <div key={"a"+j} style={{fontSize:9,marginBottom:1,padding:"0 2px",whiteSpace:"nowrap"}}>
+                              <span style={{color:"#c08050",fontWeight:700}}>A</span>
+                              {" "}
+                              <span style={{color:"#8a6040"}}>{aMap[e.appId]?.name||"?"}</span>
+                            </div>
+                          ))}
+                          {vacList.length>0&&<div style={{fontSize:8,color:"#a07070",marginTop:1}}>🏖{vacList.map(v=>v.name).join(",")}</div>}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </>}
+
+                {/* Counts Table */}
+                <div style={{fontSize:12,fontWeight:700,color:"#3a6a3a",marginBottom:6}}>Assignment Counts</div>
                 <div style={{overflowX:"auto"}}>
                   <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
                     <thead>
@@ -2960,7 +3343,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                     </tbody>
                   </table>
                 </div>
-                <p style={{fontSize:11,color:"#5a8a5a",marginTop:8}}>Click "Re-roll" to generate a different version. Click "Accept" to commit this schedule.</p>
+                <p style={{fontSize:11,color:"#5a8a5a",marginTop:8}}>Click "Re-roll" to generate a different version. Use ◀ ▶ to browse months. Click "Accept" to commit this schedule.</p>
               </div>
             );
           })()}
@@ -3013,10 +3396,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                     <thead>
                       <tr style={{borderBottom:"1px solid #d0d8e0"}}>
                         <th style={thS2}>Surgeon</th>
-                        <th style={{...thS2,color:tier.color}}>1st Call</th>
-                        <th style={{...thS2,color:"#8a6a10"}}>2nd Call</th>
                         <th style={thS2}>Svc Wk</th><th style={thS2}>Nights</th><th style={thS2}>Wknds</th>
-                        <th style={{...thS2,borderLeft:"1px solid #d8c880"}}>B-Day</th><th style={thS2}>B-Ngt</th><th style={thS2}>B-Wknd</th>
+                        <th style={{...thS2,borderLeft:"1px solid #d8c880"}}>B-SW</th><th style={thS2}>B-Ngt</th><th style={thS2}>B-Wknd</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -3036,8 +3417,6 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                         return (
                           <tr key={s.id} style={{borderBottom:"1px solid #e8ecf0"}}>
                             <td style={{padding:"5px 6px"}}><Badge id={s.id} small/></td>
-                            <td style={{padding:"3px 4px"}}><input type="number" min="0" value={p.totalDays||0} onChange={e=>upd("totalDays",e.target.value)} style={{...css.inp,width:52,padding:"2px 4px",textAlign:"center",fontFamily:mono,fontSize:12,fontWeight:700,color:tier.color}}/></td>
-                            <td style={{padding:"3px 4px"}}><input type="number" min="0" value={p.totalDaysB||0} onChange={e=>upd("totalDaysB",e.target.value)} style={{...css.inp,width:52,padding:"2px 4px",textAlign:"center",fontFamily:mono,fontSize:12,fontWeight:600,color:"#8a6a10"}}/></td>
                             <td style={{padding:"3px 4px"}}>{ci("dc")}</td>
                             <td style={{padding:"3px 4px"}}>{ci("nights")}</td>
                             <td style={{padding:"3px 4px"}}>{ci("wknd")}</td>
@@ -3054,7 +3433,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             ))}
 
             <div style={{fontSize:11,color:"#7a8a98",lineHeight:1.5}}>
-              <strong style={{color:"#2c5a80"}}>1st Call / 2nd Call</strong> = total call days from spreadsheet. Type breakdown (Svc Wk, Nights, Wknds) used by generator for balancing.
+              <strong style={{color:"#2c5a80"}}>B-SW</strong> = backup service week days. Type breakdown (Svc Wk, Nights, Wknds) used by generator for balancing.
             </div>
           </div>
         </>}
@@ -3494,7 +3873,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   </tbody>
                 </table>
                 <div style={{marginTop:8,fontSize:11,color:"#7a8a98",lineHeight:1.5}}>
-                  <strong style={{color:"#2c5a80"}}>1st Call / 2nd Call</strong> = total call days from spreadsheet. Type breakdown (Svc Wk, Nights, Wknds) used by generator for balancing.
+                  <strong style={{color:"#2c5a80"}}>B-SW</strong> = backup service week days. Type breakdown (Svc Wk, Nights, Wknds) used by generator for balancing.
                 </div>
               </div>
             )}
@@ -3781,7 +4160,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                           <th style={thS2}>Surgeon</th>
                           <th style={{...thS2,color:tier.color}}>Shifts</th>
                           <th style={thS2}>Day</th><th style={thS2}>Nights</th><th style={thS2}>Wknds</th><th style={thS2}>Off</th>
-                          <th style={{...thS2,borderLeft:"1px solid #d8c880"}}>B-Day</th><th style={thS2}>B-Ngt</th><th style={thS2}>B-Wknd</th><th style={thS2}>B-Off</th>
+                          <th style={{...thS2,borderLeft:"1px solid #d8c880"}}>B-SW</th><th style={thS2}>B-Ngt</th><th style={thS2}>B-Wknd</th><th style={thS2}>B-Off</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -3808,7 +4187,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               ))}
 
               <div style={{fontSize:11,color:"#7a8a98",lineHeight:1.5}}>
-                <strong style={{color:"#2c5a80"}}>1st Call / 2nd Call</strong> = total call days from spreadsheet. Type breakdown (Svc Wk, Nights, Wknds) used by generator for balancing.
+                <strong style={{color:"#2c5a80"}}>B-SW</strong> = backup service week days. Type breakdown (Svc Wk, Nights, Wknds) used by generator for balancing.
               </div>
             </div>
           )}
@@ -3819,7 +4198,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           <div style={css.card}>
             <div style={css.cardT}>My Call Schedule</div>
             <p style={{fontSize:13,color:"#5a6a78",margin:"0 0 12px",lineHeight:1.5}}>
-              Select your name to see only your shifts and vacations. Your choice is remembered on this device.
+              {userProfile ? `Showing schedule for ${userProfile.display_name}.` : "Select your name to see only your shifts and vacations."}
+              {isScheduler && " As scheduler, you can view any surgeon's schedule."}
             </p>
             <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap",marginBottom:16}}>
               <select value={mySurgeon} onChange={e=>setMySurgeon(e.target.value)} style={{...css.inp,width:180,fontSize:14}}>
@@ -4406,6 +4786,43 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             </div>
           </div>
 
+          {/* Account */}
+          <div style={css.card}>
+            <div style={css.cardT}>👤 Account</div>
+            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:8,marginBottom:biometricAvail?12:0}}>
+              <div>
+                <p style={{fontSize:13,color:dkText,margin:"0 0 2px"}}>
+                  Signed in as <strong style={{color:"#1a6fa8"}}>{userProfile?.display_name || "—"}</strong>
+                </p>
+                <p style={{fontSize:11,color:"#7a8a98",margin:0}}>{authUser?.email}</p>
+              </div>
+              <button onClick={handleSignOut} style={{...css.btn(false),padding:"6px 14px",fontSize:12}}>
+                Sign Out
+              </button>
+            </div>
+            {biometricAvail && (
+              <div style={{paddingTop:12,borderTop:"1px solid #e0e4ea"}}>
+                <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:8}}>
+                  <div>
+                    <p style={{fontSize:12,fontWeight:600,color:dkText,margin:"0 0 2px"}}>🔐 Biometric Login</p>
+                    <p style={{fontSize:11,color:"#7a8a98",margin:0}}>
+                      {biometricEnrolled ? "Face ID / Touch ID is enabled" : "Use Face ID or Touch ID to unlock the app"}
+                    </p>
+                  </div>
+                  {biometricEnrolled ? (
+                    <button onClick={handleBiometricUnenroll} style={{...css.btn(false),padding:"6px 14px",fontSize:12}}>
+                      Disable
+                    </button>
+                  ) : (
+                    <button onClick={handleBiometricEnroll} style={{...css.btn(true),padding:"6px 14px",fontSize:12}}>
+                      Enable
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+
           {/* Calendar Sync - Subscribable URLs */}
           <div style={css.card}>
             <div style={css.cardT}>📅 Live Calendar Sync</div>
@@ -4445,6 +4862,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           </div>
         </>}
       </div>
+      </>}
     </div>
   );
 }
