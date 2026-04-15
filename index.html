@@ -37,6 +37,24 @@
   <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.page.js" defer></script>
+  <script>
+    var APP_VERSION = "2026.04.14a";
+    (function() {
+      var stored = localStorage.getItem("dsg_app_version");
+      if (stored && stored !== APP_VERSION) {
+        localStorage.setItem("dsg_app_version", APP_VERSION);
+        if (window.caches) {
+          caches.keys().then(function(names) {
+            names.forEach(function(n) { caches.delete(n); });
+          }).then(function() { location.reload(true); });
+        } else {
+          location.reload(true);
+        }
+      } else {
+        localStorage.setItem("dsg_app_version", APP_VERSION);
+      }
+    })();
+  </script>
 </head>
 <body>
   <div id="root"></div>
