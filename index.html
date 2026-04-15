@@ -18,20 +18,16 @@
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body { background: #f0f2f5; overflow-x: hidden; }
     #root { min-height: 100vh; }
-    /* Hide Babel warning */
-    .babel-warning { display: none !important; }
-    /* Print-friendly styles */
     @media print {
       body { background: #fff !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-      #root > div > div:first-child { display: none !important; } /* hide header */
+      #root > div > div:first-child { display: none !important; }
       button, select, input { display: none !important; }
-      [style*="position: absolute"] { display: none !important; } /* hide notification panel */
+      [style*="position: absolute"] { display: none !important; }
       div[style*="maxWidth"] { max-width: 100% !important; padding: 0 !important; }
       div[style*="grid-template-columns: repeat(7"] { gap: 0 !important; }
       div[style*="grid-template-columns: repeat(7"] > div { border: 1px solid #ccc !important; min-height: 60px !important; font-size: 9px !important; }
       @page { margin: 0.5cm; size: landscape; }
     }
-    /* Mobile improvements */
     @media (max-width: 600px) {
       select, input[type="date"], input[type="text"], input[type="password"], input[type="email"] { font-size: 16px !important; min-height: 38px; }
       button { min-height: 36px; }
@@ -41,7 +37,7 @@
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.page.js" defer></script>
   <script>
-    var APP_VERSION = "2026.04.14g";
+    var APP_VERSION = "2026.04.15a";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       if (stored && stored !== APP_VERSION) {
@@ -464,9 +460,6 @@ const biometric = {
     } catch(e) {}
   },
 };
-// DSG Call Schedule — Date Helpers, ICS Generation & Utilities
-
-/* ═══ Date helpers ═══ */
 const fmt = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
 const parse = s => { const [y,m,d]=s.split("-").map(Number); return new Date(y,m-1,d); };
 const addD = (d,n) => { const r=new Date(d); r.setDate(r.getDate()+n); return r; };
@@ -590,7 +583,6 @@ function downloadICS(content, filename) {
   a.href = url; a.download = filename; a.click();
   URL.revokeObjectURL(url);
 }
-
 // DSG Call Schedule — Schedule Generator & Holiday Logic
 
 /* ═══ Schedule Generator (surgeons only — APPs are manual) ═══ */
@@ -1111,7 +1103,6 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
 
   return sched;
 }
-
 // DSG Call Schedule — Style Constants
 
 const font = "'Outfit', sans-serif";
@@ -1132,12 +1123,6 @@ const css = {
   appBadge: i => ({ display:"inline-flex", alignItems:"center", background:APP_PAL[i%4].tg, color:APP_PAL[i%4].tx, border:`1px solid ${APP_PAL[i%4].bd}`, borderRadius:5, padding:"2px 9px", fontSize:12, fontWeight:600, whiteSpace:"nowrap", letterSpacing:0.3 }),
   backupBanner: { background:"linear-gradient(90deg,#fef8e8,#fdf0d0)", border:"1px solid #e8d090", borderRadius:6, padding:"4px 10px", fontSize:11, fontWeight:700, color:"#8a6a10", letterSpacing:0.5 },
 };
-
-/* ═══════════════════════════════════════════════════
-   COMPONENT
-   ═══════════════════════════════════════════════════ */
-  </script>
-  <script>
 const {
   useState,
   useMemo,
@@ -1213,24 +1198,7 @@ function CallSchedule() {
   // ─── What-If Preview ───
   const [previewSchedule, setPreviewSchedule] = useState(null);
   const [showPreview, setShowPreview] = useState(false);
-  const [previewCalMonth, setPreviewCalMonth] = useState(0);
-
-  // ─── Authentication ───
-  const [authUser, setAuthUser] = useState(null);
-  const [authLoading, setAuthLoading] = useState(true);
-  const [authEmail, setAuthEmail] = useState("");
-  const [authPassword, setAuthPassword] = useState("");
-  const [authMode, setAuthMode] = useState("login");
-  const [authError, setAuthError] = useState("");
-  const [authBusy, setAuthBusy] = useState(false);
-  const [signupPersonId, setSignupPersonId] = useState("");
-  const [userProfile, setUserProfile] = useState(null);
-  const [needsProfile, setNeedsProfile] = useState(false);
-  const [biometricAvail, setBiometricAvail] = useState(false);
-  const [biometricEnrolled, setBiometricEnrolled] = useState(false);
-  const [biometricPending, setBiometricPending] = useState(false);
-  const allPeople = [...INIT_SURGEONS, ...INIT_APPS];
-
+  const [previewCalMonth, setPreviewCalMonth] = useState(0); // index into preview months
 
   // Form states
   const [vacSurgeon, setVacSurgeon] = useState("");
@@ -1246,6 +1214,8 @@ function CallSchedule() {
   const [saveStatus, setSaveStatus] = useState("");
   const fileRef = useRef(null);
   const lastSyncRef = useRef(null);
+  const loadedAtRef = useRef(null); // timestamp when initial load completed — prevents auto-save race
+
   const [showApiKey, setShowApiKey] = useState(false);
 
   // ─── Vacation Requests ───
@@ -1269,6 +1239,22 @@ function CallSchedule() {
   const [tradeReturnWeek, setTradeReturnWeek] = useState("");
   const [tradeReturnShift, setTradeReturnShift] = useState("");
 
+  // ─── Authentication ───
+  const [authUser, setAuthUser] = useState(null); // { id, email, ... }
+  const [authLoading, setAuthLoading] = useState(true); // checking session on mount
+  const [authEmail, setAuthEmail] = useState("");
+  const [authPassword, setAuthPassword] = useState("");
+  const [authMode, setAuthMode] = useState("login"); // "login" | "signup"
+  const [authError, setAuthError] = useState("");
+  const [authBusy, setAuthBusy] = useState(false);
+  const [signupPersonId, setSignupPersonId] = useState(""); // person_id during signup
+  const [userProfile, setUserProfile] = useState(null); // { person_id, display_name, role }
+  const [needsProfile, setNeedsProfile] = useState(false); // true if logged in but no profile yet
+  const [biometricAvail, setBiometricAvail] = useState(false);
+  const [biometricEnrolled, setBiometricEnrolled] = useState(false);
+  const [biometricPending, setBiometricPending] = useState(false); // waiting for biometric prompt
+  const allPeople = useMemo(() => [...INIT_SURGEONS, ...INIT_APPS], []);
+
   // ─── Scheduler Mode (PIN protected) ───
   const [isScheduler, setIsScheduler] = useState(false);
   const [schedulerPin, setSchedulerPin] = useState("");
@@ -1290,8 +1276,7 @@ function CallSchedule() {
   // ─── Browser Push & Email Notification Preferences ───
   const [pushPermission, setPushPermission] = useState(() => {
     try {
-      var _Notification;
-      return ((_Notification = Notification) === null || _Notification === void 0 ? void 0 : _Notification.permission) || "default";
+      return Notification?.permission || "default";
     } catch (e) {
       return "unsupported";
     }
@@ -1323,7 +1308,6 @@ function CallSchedule() {
     } catch (e) {}
   }, [mySurgeon]);
 
-
   // ─── Auth: Check session on mount ───
   useEffect(() => {
     (async () => {
@@ -1334,98 +1318,197 @@ function CallSchedule() {
         setBiometricEnrolled(bioEnrolled);
         const session = auth.getSession();
         if (bioEnrolled && session) {
-          setBiometricPending(true); setAuthLoading(false); return;
+          // Has biometric + stored session — require biometric to unlock
+          setBiometricPending(true);
+          setAuthLoading(false);
+          return; // Don't auto-login; wait for biometric prompt
         }
         if (session && !bioEnrolled) {
-          const { user } = await auth.getUser();
+          // Has session but no biometric — auto-login (legacy behavior)
+          const {
+            user
+          } = await auth.getUser();
           if (user) {
             setAuthUser(user);
             const profile = await dbAuth.getProfile(user.id);
-            if (profile) { setUserProfile(profile); setMySurgeon(profile.person_id); }
-            else { setNeedsProfile(true); }
+            if (profile) {
+              setUserProfile(profile);
+              setMySurgeon(profile.person_id);
+            } else {
+              setNeedsProfile(true);
+            }
           }
         }
-      } catch(e) { console.error("Auth check error:", e); }
+      } catch (e) {
+        console.error("Auth check error:", e);
+      }
       setAuthLoading(false);
     })();
   }, []);
 
+  // Biometric unlock handler
   const handleBiometricUnlock = async () => {
-    setAuthError(""); setAuthBusy(true);
+    setAuthError("");
+    setAuthBusy(true);
     const result = await biometric.authenticate();
     if (result.success) {
-      const { user } = await auth.getUser();
+      // Biometric passed — use stored session
+      const {
+        user
+      } = await auth.getUser();
       if (user) {
         setAuthUser(user);
         const profile = await dbAuth.getProfile(user.id);
-        if (profile) { setUserProfile(profile); setMySurgeon(profile.person_id); }
-        else { setNeedsProfile(true); }
+        if (profile) {
+          setUserProfile(profile);
+          setMySurgeon(profile.person_id);
+        } else {
+          setNeedsProfile(true);
+        }
         setBiometricPending(false);
       } else {
-        setBiometricPending(false); biometric.unenroll(); setBiometricEnrolled(false);
+        // Session expired — fall back to email/password
+        setBiometricPending(false);
+        biometric.unenroll();
+        setBiometricEnrolled(false);
         setAuthError("Session expired. Please sign in again.");
       }
-    } else { setAuthError(result.error || "Biometric failed"); }
+    } else {
+      setAuthError(result.error || "Biometric failed");
+    }
     setAuthBusy(false);
   };
 
+  // Biometric enrollment handler (call from Settings)
   const handleBiometricEnroll = async () => {
     if (!authUser) return;
     const result = await biometric.enroll(authUser.id, authUser.email);
-    if (result.success) setBiometricEnrolled(true);
-    else alert(result.error || "Could not enable biometric login");
+    if (result.success) {
+      setBiometricEnrolled(true);
+    } else {
+      alert(result.error || "Could not enable biometric login");
+    }
+  };
+  const handleBiometricUnenroll = () => {
+    biometric.unenroll();
+    setBiometricEnrolled(false);
   };
 
-  const handleBiometricUnenroll = () => { biometric.unenroll(); setBiometricEnrolled(false); };
-
+  // Auth handlers
   const handleAuthSubmit = async () => {
-    setAuthError(""); setAuthBusy(true);
+    setAuthError("");
+    setAuthBusy(true);
     try {
       if (authMode === "signup") {
-        if (!signupPersonId) { setAuthError("Please select your name"); setAuthBusy(false); return; }
+        if (!signupPersonId) {
+          setAuthError("Please select your name");
+          setAuthBusy(false);
+          return;
+        }
+        // Check if person_id already claimed
         const profiles = await dbAuth.getAllProfiles();
-        if (profiles.some(p => p.person_id === signupPersonId)) { setAuthError("This name is already registered"); setAuthBusy(false); return; }
-        const { user, session, error } = await auth.signUp(authEmail, authPassword);
-        if (error) { setAuthError(error); setAuthBusy(false); return; }
+        if (profiles.some(p => p.person_id === signupPersonId)) {
+          setAuthError("This name is already registered to another account");
+          setAuthBusy(false);
+          return;
+        }
+        const {
+          user,
+          session,
+          error
+        } = await auth.signUp(authEmail, authPassword);
+        if (error) {
+          setAuthError(error);
+          setAuthBusy(false);
+          return;
+        }
         const userId = user?.id || session?.user?.id;
         if (userId) {
-          const personName = allPeople.find(p=>p.id===signupPersonId)?.name || signupPersonId;
-          await dbAuth.upsertProfile({ id: userId, person_id: signupPersonId, display_name: personName, role: "member" });
+          // Create profile
+          const personName = allPeople.find(p => p.id === signupPersonId)?.name || signupPersonId;
+          await dbAuth.upsertProfile({
+            id: userId,
+            person_id: signupPersonId,
+            display_name: personName,
+            role: "member"
+          });
+          const profile = {
+            person_id: signupPersonId,
+            display_name: personName,
+            role: "member"
+          };
           setAuthUser(user || session?.user);
-          setUserProfile({ person_id: signupPersonId, display_name: personName, role: "member" });
-          setMySurgeon(signupPersonId); setNeedsProfile(false);
+          setUserProfile(profile);
+          setMySurgeon(signupPersonId);
+          setNeedsProfile(false);
         }
       } else {
-        const { user, error } = await auth.signIn(authEmail, authPassword);
-        if (error) { setAuthError(error); setAuthBusy(false); return; }
+        const {
+          user,
+          error
+        } = await auth.signIn(authEmail, authPassword);
+        if (error) {
+          setAuthError(error);
+          setAuthBusy(false);
+          return;
+        }
         setAuthUser(user);
+        // Load profile
         const profile = await dbAuth.getProfile(user.id);
-        if (profile) { setUserProfile(profile); setMySurgeon(profile.person_id); setNeedsProfile(false); }
-        else { setNeedsProfile(true); }
+        if (profile) {
+          setUserProfile(profile);
+          setMySurgeon(profile.person_id);
+          setNeedsProfile(false);
+        } else {
+          setNeedsProfile(true);
+        }
       }
-      setAuthEmail(""); setAuthPassword("");
-    } catch(e) { setAuthError(e.message || "Auth error"); }
+      setAuthEmail("");
+      setAuthPassword("");
+    } catch (e) {
+      setAuthError(e.message || "Auth error");
+    }
     setAuthBusy(false);
   };
-
   const handleSetProfile = async () => {
     if (!signupPersonId || !authUser) return;
-    setAuthBusy(true); setAuthError("");
+    setAuthBusy(true);
+    setAuthError("");
     try {
       const profiles = await dbAuth.getAllProfiles();
-      if (profiles.some(p => p.person_id === signupPersonId && p.id !== authUser.id)) { setAuthError("This name is already registered"); setAuthBusy(false); return; }
-      const personName = allPeople.find(p=>p.id===signupPersonId)?.name || signupPersonId;
-      await dbAuth.upsertProfile({ id: authUser.id, person_id: signupPersonId, display_name: personName, role: "member" });
-      setUserProfile({ person_id: signupPersonId, display_name: personName, role: "member" });
-      setMySurgeon(signupPersonId); setNeedsProfile(false);
-    } catch(e) { setAuthError(e.message); }
+      if (profiles.some(p => p.person_id === signupPersonId && p.id !== authUser.id)) {
+        setAuthError("This name is already registered to another account");
+        setAuthBusy(false);
+        return;
+      }
+      const personName = allPeople.find(p => p.id === signupPersonId)?.name || signupPersonId;
+      await dbAuth.upsertProfile({
+        id: authUser.id,
+        person_id: signupPersonId,
+        display_name: personName,
+        role: "member"
+      });
+      setUserProfile({
+        person_id: signupPersonId,
+        display_name: personName,
+        role: "member"
+      });
+      setMySurgeon(signupPersonId);
+      setNeedsProfile(false);
+    } catch (e) {
+      setAuthError(e.message);
+    }
     setAuthBusy(false);
   };
-
   const handleSignOut = async () => {
-    await auth.signOut(); biometric.unenroll();
-    setAuthUser(null); setUserProfile(null); setNeedsProfile(false); setMySurgeon("");
-    setBiometricEnrolled(false); setBiometricPending(false);
+    await auth.signOut();
+    biometric.unenroll();
+    setAuthUser(null);
+    setUserProfile(null);
+    setNeedsProfile(false);
+    setMySurgeon("");
+    setBiometricEnrolled(false);
+    setBiometricPending(false);
   };
 
   // ─── Supabase: Load on mount + real-time sync ───
@@ -1434,9 +1517,10 @@ function CallSchedule() {
       try {
         const {
           data: row
-        } = await supabase.from("call_schedule_data").select("data").eq("id", "main").single();
-        if (row !== null && row !== void 0 && row.data) {
+        } = await supabase.from("call_schedule_data").select("data,updated_at").eq("id", "main").single();
+        if (row?.data) {
           const d = typeof row.data === "string" ? JSON.parse(row.data) : row.data;
+          if (row.updated_at) lastSyncRef.current = row.updated_at; // prevent auto-save from re-saving unchanged data
           if (d.surgeons) setSurgeons(d.surgeons);
           if (d.apps) setApps(d.apps);
           if (d.vacations) setVacations(d.vacations);
@@ -1455,8 +1539,8 @@ function CallSchedule() {
         const {
           data: cfgRow
         } = await supabase.from("call_schedule_config").select("scheduler_pin,edge_function_url").eq("id", "config").single();
-        if (cfgRow !== null && cfgRow !== void 0 && cfgRow.scheduler_pin) setSchedulerPin(cfgRow.scheduler_pin);
-        if (cfgRow !== null && cfgRow !== void 0 && cfgRow.edge_function_url) setEdgeFunctionUrl(cfgRow.edge_function_url);
+        if (cfgRow?.scheduler_pin) setSchedulerPin(cfgRow.scheduler_pin);
+        if (cfgRow?.edge_function_url) setEdgeFunctionUrl(cfgRow.edge_function_url);
         // Load OneSignal API key from localStorage (not in DB for security)
         try {
           const osKey = localStorage.getItem("dsg-onesignal-key");
@@ -1493,6 +1577,7 @@ function CallSchedule() {
         console.error("Supabase load error:", e);
       }
       setLoaded(true);
+      loadedAtRef.current = Date.now();
 
       // One-time merge of May-Aug 2026 vacations & Fierce weeks from PDFs
       try {
@@ -1546,7 +1631,7 @@ function CallSchedule() {
         const {
           data: row
         } = await supabase.from("call_schedule_data").select("data,updated_at").eq("id", "main").single();
-        if (row !== null && row !== void 0 && row.data) {
+        if (row?.data) {
           const d = typeof row.data === "string" ? JSON.parse(row.data) : row.data;
           // Only update if data actually changed (compare updated_at)
           if (row.updated_at !== lastSyncRef.current) {
@@ -1570,8 +1655,8 @@ function CallSchedule() {
         const {
           data: cfgRow2
         } = await supabase.from("call_schedule_config").select("scheduler_pin,edge_function_url").eq("id", "config").single();
-        if ((cfgRow2 === null || cfgRow2 === void 0 ? void 0 : cfgRow2.scheduler_pin) !== undefined) setSchedulerPin(prev => cfgRow2.scheduler_pin !== prev ? cfgRow2.scheduler_pin : prev);
-        if ((cfgRow2 === null || cfgRow2 === void 0 ? void 0 : cfgRow2.edge_function_url) !== undefined) setEdgeFunctionUrl(prev => cfgRow2.edge_function_url !== prev ? cfgRow2.edge_function_url : prev);
+        if (cfgRow2?.scheduler_pin !== undefined) setSchedulerPin(prev => cfgRow2.scheduler_pin !== prev ? cfgRow2.scheduler_pin : prev);
+        if (cfgRow2?.edge_function_url !== undefined) setEdgeFunctionUrl(prev => cfgRow2.edge_function_url !== prev ? cfgRow2.edge_function_url : prev);
 
         // Refresh vacation requests and notifications
         try {
@@ -1603,6 +1688,9 @@ function CallSchedule() {
   // ─── Supabase: Auto-save on changes ───
   useEffect(() => {
     if (!loaded) return;
+    // Skip auto-save for 3s after initial load — prevents re-saving unchanged data
+    // when initial state hydration triggers this effect
+    if (loadedAtRef.current && Date.now() - loadedAtRef.current < 3000) return;
     const timer = setTimeout(async () => {
       try {
         const payload = {
@@ -1735,13 +1823,12 @@ function CallSchedule() {
       const currentPrefs = notifPrefsRef.current || {};
       const recipients = [];
       Object.entries(currentPrefs).forEach(([sid, prefs]) => {
-        var _surgeons$find;
         if (!prefs.email || !prefs.email_notifs) return;
         if (type === "test") {/* send to all email-enabled */} else if ((type === "schedule_published" || type === "schedule_changed" || type === "trade_submitted" || type === "trade_accepted" || type === "trade_declined") && !prefs.schedule_changes) return;else if ((type === "vacation_approved" || type === "vacation_denied" || type === "vacation_submitted") && !prefs.vacation_updates) return;else if (type === "shift_reminder" && !prefs.shift_reminders) return;
         recipients.push({
           email: prefs.email,
           surgeon_id: sid,
-          name: ((_surgeons$find = surgeons.find(s => s.id === sid)) === null || _surgeons$find === void 0 ? void 0 : _surgeons$find.name) || sid
+          name: surgeons.find(s => s.id === sid)?.name || sid
         });
       });
       if (recipients.length === 0) return;
@@ -1764,9 +1851,8 @@ function CallSchedule() {
 
   // ─── Vacation Request: Submit ───
   const submitVacRequest = useCallback(async () => {
-    var _surgeons$find2, _apps$find;
     if (!vacReqSurgeon || !vacReqStart || !vacReqEnd) return;
-    const surgeonName = ((_surgeons$find2 = surgeons.find(s => s.id === vacReqSurgeon)) === null || _surgeons$find2 === void 0 ? void 0 : _surgeons$find2.name) || ((_apps$find = apps.find(a => a.id === vacReqSurgeon)) === null || _apps$find === void 0 ? void 0 : _apps$find.name) || vacReqSurgeon;
+    const surgeonName = surgeons.find(s => s.id === vacReqSurgeon)?.name || apps.find(a => a.id === vacReqSurgeon)?.name || vacReqSurgeon;
     try {
       const req = {
         surgeon_id: vacReqSurgeon,
@@ -1877,7 +1963,6 @@ function CallSchedule() {
 
   // ─── Shift Trade Request: Submit ───
   const submitTradeRequest = useCallback(async () => {
-    var _surgeons$find3, _surgeons$find4;
     if (!tradeFrom || !tradeTo || !tradeWeek || !tradeShift) return;
     // Two-way swap required unless scheduler emergency override
     if (!tradeReturnWeek || !tradeReturnShift) {
@@ -1887,8 +1972,8 @@ function CallSchedule() {
       }
       if (!confirm("⚠️ No return swap specified.\n\nOne-way trades should only be used for emergencies (illness, family emergency).\n\nSubmit anyway?")) return;
     }
-    const fromName = ((_surgeons$find3 = surgeons.find(s => s.id === tradeFrom)) === null || _surgeons$find3 === void 0 ? void 0 : _surgeons$find3.name) || tradeFrom;
-    const toName = ((_surgeons$find4 = surgeons.find(s => s.id === tradeTo)) === null || _surgeons$find4 === void 0 ? void 0 : _surgeons$find4.name) || tradeTo;
+    const fromName = surgeons.find(s => s.id === tradeFrom)?.name || tradeFrom;
+    const toName = surgeons.find(s => s.id === tradeTo)?.name || tradeTo;
     const shiftLabel = SHIFT_LABELS[tradeShift] || tradeShift;
     try {
       const req = {
@@ -2098,7 +2183,7 @@ function CallSchedule() {
       } : r));
       // If approved, also update the vacations object
       const req = vacRequests.find(r => r.id === editingVacReq.id);
-      if ((req === null || req === void 0 ? void 0 : req.status) === "approved") {
+      if (req?.status === "approved") {
         setVacations(prev => {
           const n = {
             ...prev
@@ -2206,8 +2291,7 @@ function CallSchedule() {
   // Request push permission via OneSignal
   const requestPushPermission = useCallback(async () => {
     try {
-      var _window$OneSignal;
-      if ((_window$OneSignal = window.OneSignal) !== null && _window$OneSignal !== void 0 && _window$OneSignal.Notifications) {
+      if (window.OneSignal?.Notifications) {
         await window.OneSignal.Notifications.requestPermission();
         const perm = window.OneSignal.Notifications.permission;
         setOneSignalSubscribed(perm);
@@ -2228,9 +2312,8 @@ function CallSchedule() {
   useEffect(() => {
     if (!oneSignalReady || !mySurgeon || !window.OneSignal) return;
     try {
-      var _surgeons$find5;
       window.OneSignal.User.addTag("surgeon_id", mySurgeon);
-      const surgeonName = ((_surgeons$find5 = surgeons.find(s => s.id === mySurgeon)) === null || _surgeons$find5 === void 0 ? void 0 : _surgeons$find5.name) || mySurgeon;
+      const surgeonName = surgeons.find(s => s.id === mySurgeon)?.name || mySurgeon;
       window.OneSignal.User.addTag("surgeon_name", surgeonName);
     } catch (e) {
       console.error("OneSignal tag error:", e);
@@ -2267,7 +2350,7 @@ function CallSchedule() {
         const {
           data: cfgRow
         } = await supabase.from("call_schedule_config").select("edge_function_url").eq("id", "config").single();
-        if (cfgRow !== null && cfgRow !== void 0 && cfgRow.edge_function_url) setEdgeFunctionUrl(cfgRow.edge_function_url);
+        if (cfgRow?.edge_function_url) setEdgeFunctionUrl(cfgRow.edge_function_url);
       } catch (e) {
         console.error("Load notif prefs error:", e);
       }
@@ -2330,7 +2413,11 @@ function CallSchedule() {
 
   // ─── Fire browser notifications when polling detects new in-app notifications ───
   useEffect(() => {
+    // Don't fire until initial data is loaded — prevents all existing notifications
+    // from triggering browser push on every app open
+    if (!loaded) return;
     if (lastNotifCountRef.current === null) {
+      // First run after load: snapshot the current count so only truly new ones fire
       lastNotifCountRef.current = notifications.length;
       return;
     }
@@ -2338,14 +2425,13 @@ function CallSchedule() {
       // New notifications arrived — fire browser push for each new one
       const newOnes = notifications.slice(0, notifications.length - lastNotifCountRef.current);
       newOnes.forEach(n => {
-        var _notifPrefs$mySurgeon;
         // Check if the current user has browser_push enabled
-        if (mySurgeon && ((_notifPrefs$mySurgeon = notifPrefs[mySurgeon]) === null || _notifPrefs$mySurgeon === void 0 ? void 0 : _notifPrefs$mySurgeon.browser_push) === false) return;
+        if (mySurgeon && notifPrefs[mySurgeon]?.browser_push === false) return;
         sendBrowserNotif(n.title || "DSG Call Schedule", n.message || "", `dsg-${n.id}`);
       });
     }
     lastNotifCountRef.current = notifications.length;
-  }, [notifications, sendBrowserNotif, mySurgeon, notifPrefs]);
+  }, [loaded, notifications, sendBrowserNotif, mySurgeon, notifPrefs]);
 
   // ─── Test Notification ───
   const sendTestNotification = useCallback(async () => {
@@ -2443,10 +2529,7 @@ function CallSchedule() {
           const headers = lines[0];
           for (let i = 1; i < lines.length; i++) {
             const row = {};
-            headers.forEach((h, j) => {
-              var _lines$i;
-              return row[h] = ((_lines$i = lines[i]) === null || _lines$i === void 0 ? void 0 : _lines$i[j]) || "0";
-            });
+            headers.forEach((h, j) => row[h] = lines[i]?.[j] || "0");
             rows.push(row);
           }
         }
@@ -2507,7 +2590,6 @@ function CallSchedule() {
   const priorFileRef = useRef(null);
   const AI_SCAN_URL = `${SUPABASE_URL}/functions/v1/ai-scan`;
   const callApi = useCallback(async (messages, maxTokens = 2000) => {
-    var _data$content;
     const resp = await fetch(AI_SCAN_URL, {
       method: "POST",
       headers: {
@@ -2524,7 +2606,7 @@ function CallSchedule() {
       throw new Error(`API error ${resp.status}: ${err}`);
     }
     const data = await resp.json();
-    return ((_data$content = data.content) === null || _data$content === void 0 ? void 0 : _data$content.map(c => c.text || "").join("")) || "";
+    return data.content?.map(c => c.text || "").join("") || "";
   }, []);
   const handlePriorScheduleScan = useCallback(async file => {
     if (!file) return;
@@ -2628,7 +2710,7 @@ Match surgeon names/initials as best you can to: ${surgeonNames}. If you cannot 
       const text = await callApi(messages, 2000);
       const clean = text.replace(/```json|```/g, "").trim();
       const result = JSON.parse(clean);
-      if (result !== null && result !== void 0 && result.surgeons && Array.isArray(result.surgeons) && result.surgeons.length > 0) {
+      if (result?.surgeons && Array.isArray(result.surgeons) && result.surgeons.length > 0) {
         const nameToId = {};
         surgeons.forEach(s => {
           nameToId[s.name.toUpperCase()] = s.id;
@@ -2637,8 +2719,7 @@ Match surgeon names/initials as best you can to: ${surgeonNames}. If you cannot 
         const newCounts = {};
         let matched = 0;
         result.surgeons.forEach(entry => {
-          var _entry$name;
-          const id = nameToId[entry.name] || nameToId[(_entry$name = entry.name) === null || _entry$name === void 0 ? void 0 : _entry$name.toUpperCase()];
+          const id = nameToId[entry.name] || nameToId[entry.name?.toUpperCase()];
           if (!id) return;
           newCounts[id] = {
             dc: entry.dc || 0,
@@ -2661,9 +2742,8 @@ Match surgeon names/initials as best you can to: ${surgeonNames}. If you cannot 
         setPriorScanMsg("Could not extract call counts from the file. Try a different file or format.");
       }
     } catch (err) {
-      var _err$message;
       console.error("Prior schedule scan error:", err);
-      setPriorScanMsg(`Could not analyze the file. ${(_err$message = err.message) !== null && _err$message !== void 0 && _err$message.includes("API error") ? "The AI service may be temporarily unavailable." : "Try a PDF, Excel, Word, or CSV file."}`);
+      setPriorScanMsg(`Could not analyze the file. ${err.message?.includes("API error") ? "The AI service may be temporarily unavailable." : "Try a PDF, Excel, Word, or CSV file."}`);
     } finally {
       setPriorScanning(false);
       if (priorFileRef.current) priorFileRef.current.value = "";
@@ -2806,7 +2886,7 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
 
         // Process vacations
         let fileVac = 0;
-        if (result !== null && result !== void 0 && result.vacations && Array.isArray(result.vacations) && result.vacations.length > 0) {
+        if (result?.vacations && Array.isArray(result.vacations) && result.vacations.length > 0) {
           const nameToId = {};
           surgeons.forEach(s => {
             nameToId[s.name.toUpperCase()] = s.id;
@@ -2817,8 +2897,7 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
               ...prev
             };
             result.vacations.forEach(e => {
-              var _e$surgeon;
-              const id = nameToId[e.surgeon] || nameToId[(_e$surgeon = e.surgeon) === null || _e$surgeon === void 0 ? void 0 : _e$surgeon.toUpperCase()];
+              const id = nameToId[e.surgeon] || nameToId[e.surgeon?.toUpperCase()];
               if (id && e.start && e.end) {
                 const existing = n[id] || [];
                 const isDupe = existing.some(([s, e2]) => s === e.start && e2 === e.end);
@@ -2835,7 +2914,7 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
 
         // Process Fierce weeks
         let fileFierce = 0;
-        if (result !== null && result !== void 0 && result.fierce_weeks && Array.isArray(result.fierce_weeks) && result.fierce_weeks.length > 0) {
+        if (result?.fierce_weeks && Array.isArray(result.fierce_weeks) && result.fierce_weeks.length > 0) {
           const primaryDates = [],
             backupDates = [];
           result.fierce_weeks.forEach(e => {
@@ -3247,10 +3326,9 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
       // Sort by fairness: lifetime holiday count → avoid repeat from prior year → random
       const prior = priorByName[hol.name] || {};
       avail.sort((a, b) => {
-        var _lifetimeCt$a, _lifetimeCt$b;
         // Prefer surgeons with fewer lifetime assignments of this type
-        const la = ((_lifetimeCt$a = lifetimeCt[a]) === null || _lifetimeCt$a === void 0 ? void 0 : _lifetimeCt$a[type]) || 0;
-        const lb = ((_lifetimeCt$b = lifetimeCt[b]) === null || _lifetimeCt$b === void 0 ? void 0 : _lifetimeCt$b[type]) || 0;
+        const la = lifetimeCt[a]?.[type] || 0;
+        const lb = lifetimeCt[b]?.[type] || 0;
         if (la !== lb) return la - lb;
         // Avoid repeating the same holiday as last year
         const aRepeat = a === prior.surgeonA || a === prior.surgeonB ? 1 : 0;
@@ -3275,8 +3353,7 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
     }));
     const assignments = [];
     [majorHols, minorHols].forEach(group => {
-      var _group$;
-      const type = (_group$ = group[0]) === null || _group$ === void 0 ? void 0 : _group$.type;
+      const type = group[0]?.type;
       const usedInGroup = new Set(); // surgeons already assigned in this group
 
       // Sort: Christmas first (FAK locked), then by date
@@ -3318,8 +3395,7 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
           if (partnerPool.length === 0) partnerPool = remaining;
           const prior = priorByName["Christmas Day"] || {};
           partnerPool.sort((a, b) => {
-            var _lifetimeCt$a2, _lifetimeCt$b2;
-            const la = (((_lifetimeCt$a2 = lifetimeCt[a]) === null || _lifetimeCt$a2 === void 0 ? void 0 : _lifetimeCt$a2[type]) || 0) - (((_lifetimeCt$b2 = lifetimeCt[b]) === null || _lifetimeCt$b2 === void 0 ? void 0 : _lifetimeCt$b2[type]) || 0);
+            const la = (lifetimeCt[a]?.[type] || 0) - (lifetimeCt[b]?.[type] || 0);
             if (la) return la;
             const aR = a === prior.surgeonB ? 1 : 0;
             const bR = b === prior.surgeonB ? 1 : 0;
@@ -3383,10 +3459,9 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
         usedInGroup.add(h.surgeonB);
       });
       if (usedInGroup.has(newSurgeonId)) {
-        var _surgeons$find6;
         const conflictHol = sameGroup.find(h => h.surgeonA === newSurgeonId || h.surgeonB === newSurgeonId);
-        const surgeonName = ((_surgeons$find6 = surgeons.find(s => s.id === newSurgeonId)) === null || _surgeons$find6 === void 0 ? void 0 : _surgeons$find6.name) || newSurgeonId;
-        if (!confirm(`⚠️ ${surgeonName} is already assigned to ${conflictHol === null || conflictHol === void 0 ? void 0 : conflictHol.name} (${targetHol.type} group).\n\nThis violates the distinct-pairs rule. Assign anyway?`)) return;
+        const surgeonName = surgeons.find(s => s.id === newSurgeonId)?.name || newSurgeonId;
+        if (!confirm(`⚠️ ${surgeonName} is already assigned to ${conflictHol?.name} (${targetHol.type} group).\n\nThis violates the distinct-pairs rule. Assign anyway?`)) return;
       }
     }
     setHolidayAssignments(prev => {
@@ -3420,8 +3495,7 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
     });
   }, [holidayAssignments, surgeons]);
   const swapShift = (mStr, shift, newId) => {
-    var _schedule$mStr, _schedule$mStr2, _sMap$oldId, _sMap$newId;
-    const oldId = shift === "dayCall" ? (_schedule$mStr = schedule[mStr]) === null || _schedule$mStr === void 0 ? void 0 : _schedule$mStr.dayCall : (_schedule$mStr2 = schedule[mStr]) === null || _schedule$mStr2 === void 0 || (_schedule$mStr2 = _schedule$mStr2.nights) === null || _schedule$mStr2 === void 0 ? void 0 : _schedule$mStr2[shift];
+    const oldId = shift === "dayCall" ? schedule[mStr]?.dayCall : schedule[mStr]?.nights?.[shift];
     pushUndo(schedule);
     setSchedule(p => {
       const wk = {
@@ -3443,8 +3517,8 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
     setSwapSuggestions(null);
     setSwapTarget(null);
     // Notify about the change
-    const oldName = ((_sMap$oldId = sMap[oldId]) === null || _sMap$oldId === void 0 ? void 0 : _sMap$oldId.name) || "—";
-    const newName = ((_sMap$newId = sMap[newId]) === null || _sMap$newId === void 0 ? void 0 : _sMap$newId.name) || "—";
+    const oldName = sMap[oldId]?.name || "—";
+    const newName = sMap[newId]?.name || "—";
     const shiftLabel = SHIFT_LABELS[shift] || shift;
     addNotification("schedule_changed", "Schedule Changed", `${shiftLabel} (wk of ${mStr}): ${oldName} → ${newName}`);
     sendEmailNotif("schedule_changed", {
@@ -3460,9 +3534,8 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
   const [swapSuggestions, setSwapSuggestions] = useState(null); // [{ candidateId, score, reasons, returnSwaps }]
 
   const findSwapSuggestions = useCallback((mondayStr, shift, currentSurgeonId) => {
-    var _sMap$currentSurgeonI;
     if (!schedule[mondayStr]) return;
-    const currentName = ((_sMap$currentSurgeonI = sMap[currentSurgeonId]) === null || _sMap$currentSurgeonI === void 0 ? void 0 : _sMap$currentSurgeonI.name) || "?";
+    const currentName = sMap[currentSurgeonId]?.name || "?";
     const mon = parse(mondayStr);
     const ids = surgeons.map(s => s.id).filter(id => id !== currentSurgeonId);
 
@@ -3489,8 +3562,7 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
     // Check each candidate
     const candidates = [];
     ids.forEach(candId => {
-      var _sMap$candId, _sCounts$currentSurge, _sCounts$candId, _sCounts$currentSurge2, _sCounts$candId2;
-      const candName = ((_sMap$candId = sMap[candId]) === null || _sMap$candId === void 0 ? void 0 : _sMap$candId.name) || "?";
+      const candName = sMap[candId]?.name || "?";
       const reasons = [];
       let eligible = true;
 
@@ -3537,15 +3609,15 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
       });
 
       // 4. Calculate fairness score — lower is better (candidate has fewer of this type)
-      const currentCount = ((_sCounts$currentSurge = sCounts[currentSurgeonId]) === null || _sCounts$currentSurge === void 0 ? void 0 : _sCounts$currentSurge[shiftType]) || 0;
-      const candCount = ((_sCounts$candId = sCounts[candId]) === null || _sCounts$candId === void 0 ? void 0 : _sCounts$candId[shiftType]) || 0;
+      const currentCount = sCounts[currentSurgeonId]?.[shiftType] || 0;
+      const candCount = sCounts[candId]?.[shiftType] || 0;
       const countDiff = currentCount - candCount; // positive = current has more → good swap
 
       // Include prior counts for total fairness
       const priorCurr = priorCounts[currentSurgeonId] || {};
       const priorCand = priorCounts[candId] || {};
-      const totalCurrType = (priorCurr[shiftType === "dc" ? "dc" : shiftType === "wknd" ? "wknd" : "nights"] || 0) + (((_sCounts$currentSurge2 = sCounts[currentSurgeonId]) === null || _sCounts$currentSurge2 === void 0 ? void 0 : _sCounts$currentSurge2[shiftType]) || 0);
-      const totalCandType = (priorCand[shiftType === "dc" ? "dc" : shiftType === "wknd" ? "wknd" : "nights"] || 0) + (((_sCounts$candId2 = sCounts[candId]) === null || _sCounts$candId2 === void 0 ? void 0 : _sCounts$candId2[shiftType]) || 0);
+      const totalCurrType = (priorCurr[shiftType === "dc" ? "dc" : shiftType === "wknd" ? "wknd" : "nights"] || 0) + (sCounts[currentSurgeonId]?.[shiftType] || 0);
+      const totalCandType = (priorCand[shiftType === "dc" ? "dc" : shiftType === "wknd" ? "wknd" : "nights"] || 0) + (sCounts[candId]?.[shiftType] || 0);
       const totalDiff = totalCurrType - totalCandType;
       if (countDiff > 0) reasons.push(`${candName} has ${countDiff} fewer ${shiftType === "dc" ? "service weeks" : shiftType === "wknd" ? "weekends" : "nights"} this period`);else if (countDiff === 0) reasons.push(`Equal ${shiftType === "dc" ? "service weeks" : shiftType === "wknd" ? "weekends" : "nights"} this period`);else reasons.push(`${candName} has ${Math.abs(countDiff)} more ${shiftType === "dc" ? "service weeks" : shiftType === "wknd" ? "weekends" : "nights"} — less ideal`);
       if (totalDiff > 1) reasons.push(`${totalDiff} fewer overall (good for balance)`);
@@ -3554,7 +3626,6 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
       // 5. Find possible return swaps — shifts the current surgeon could take from the candidate in another week
       const returnSwaps = [];
       Object.entries(schedule).forEach(([otherMon, otherWk]) => {
-        var _otherWk$nights2;
         if (otherMon === mondayStr) return;
         // Check if candidate has a shift of the same type in another week
         if (shiftType === "dc" && otherWk.dayCall === candId) {
@@ -3575,8 +3646,7 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
         }
         if (shiftType === "nights") {
           NIGHT_KEYS.forEach((sk, i) => {
-            var _otherWk$nights;
-            if (((_otherWk$nights = otherWk.nights) === null || _otherWk$nights === void 0 ? void 0 : _otherWk$nights[sk]) === candId && otherWk.dayCall !== currentSurgeonId) {
+            if (otherWk.nights?.[sk] === candId && otherWk.dayCall !== currentSurgeonId) {
               const otherMonDate = parse(otherMon);
               const sd = fmt(addD(otherMonDate, i));
               const nd = fmt(addD(otherMonDate, i + 1));
@@ -3590,7 +3660,7 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
             }
           });
         }
-        if (shiftType === "wknd" && ((_otherWk$nights2 = otherWk.nights) === null || _otherWk$nights2 === void 0 ? void 0 : _otherWk$nights2.wknd) === candId) {
+        if (shiftType === "wknd" && otherWk.nights?.wknd === candId) {
           const otherMonDate = parse(otherMon);
           const f = fmt(addD(otherMonDate, 4)),
             su = fmt(addD(otherMonDate, 6)),
@@ -3632,7 +3702,6 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
 
   // ─── Execute a two-way swap ───
   const executeTwoWaySwap = useCallback((targetMon, targetShift, targetOldId, candId, returnMon, returnShift) => {
-    var _sMap$targetOldId, _sMap$candId2;
     pushUndo(schedule);
     setSchedule(p => {
       const n = {
@@ -3665,8 +3734,8 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
       }
       return n;
     });
-    const oldName = ((_sMap$targetOldId = sMap[targetOldId]) === null || _sMap$targetOldId === void 0 ? void 0 : _sMap$targetOldId.name) || "—";
-    const newName = ((_sMap$candId2 = sMap[candId]) === null || _sMap$candId2 === void 0 ? void 0 : _sMap$candId2.name) || "—";
+    const oldName = sMap[targetOldId]?.name || "—";
+    const newName = sMap[candId]?.name || "—";
     const shiftLabel = SHIFT_LABELS[targetShift] || targetShift;
     addNotification("schedule_changed", "Shift Swap", `${shiftLabel} (wk of ${targetMon}): ${oldName} ↔ ${newName}${returnMon ? ` (return: ${SHIFT_LABELS[returnShift] || returnShift} wk of ${returnMon})` : ""}`);
     sendEmailNotif("schedule_changed", {
@@ -3706,10 +3775,9 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
     const allEv = [];
     surgeons.forEach(s => allEv.push(...buildICSEvents(schedule, s.id, s.name, appShifts, aMap)));
     Object.entries(appShifts).forEach(([ds, aid]) => {
-      var _aMap$aid;
       const d = parse(ds);
       const nx = addD(d, 1);
-      const an = (aMap === null || aMap === void 0 || (_aMap$aid = aMap[aid]) === null || _aMap$aid === void 0 ? void 0 : _aMap$aid.name) || aid;
+      const an = aMap?.[aid]?.name || aid;
       allEv.push({
         start: icsDate(d.getFullYear(), d.getMonth() + 1, d.getDate(), 17),
         end: icsDate(nx.getFullYear(), nx.getMonth() + 1, nx.getDate(), 7),
@@ -3727,7 +3795,6 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
     const buildCalData = () => {
       const d = {};
       Object.entries(schedule).forEach(([mStr, wk]) => {
-        var _wk$nights2;
         const mon = parse(mStr);
         const pfx = wk.isBackup ? "B-" : "";
         if (wk.dayCall) {
@@ -3746,8 +3813,7 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
           }];
         }
         NIGHT_KEYS.forEach((sk, i) => {
-          var _wk$nights;
-          const sid = (_wk$nights = wk.nights) === null || _wk$nights === void 0 ? void 0 : _wk$nights[sk];
+          const sid = wk.nights?.[sk];
           if (!sid) return;
           const ds = fmt(addD(mon, i));
           d[ds] = [...(d[ds] || []), {
@@ -3755,7 +3821,7 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
             sid
           }];
         });
-        const ws = (_wk$nights2 = wk.nights) === null || _wk$nights2 === void 0 ? void 0 : _wk$nights2.wknd;
+        const ws = wk.nights?.wknd;
         if (ws) {
           d[fmt(addD(mon, 4))] = [...(d[fmt(addD(mon, 4))] || []), {
             type: pfx + "Wknd",
@@ -4028,61 +4094,52 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     const mondayStrs = Object.keys(schedule).sort();
     const ids = surgeons.map(s => s.id);
     mondayStrs.forEach((mStr, wkIdx) => {
-      var _wk$nights5;
       const wk = schedule[mStr];
       const mon = parse(mStr);
 
       // Check back-to-back nights within the week
       const nightOrder = ["mon", "tue", "wed", "thu"];
       for (let i = 0; i < nightOrder.length - 1; i++) {
-        var _wk$nights3, _wk$nights4;
-        const a = (_wk$nights3 = wk.nights) === null || _wk$nights3 === void 0 ? void 0 : _wk$nights3[nightOrder[i]];
-        const b = (_wk$nights4 = wk.nights) === null || _wk$nights4 === void 0 ? void 0 : _wk$nights4[nightOrder[i + 1]];
+        const a = wk.nights?.[nightOrder[i]];
+        const b = wk.nights?.[nightOrder[i + 1]];
         if (a && a === b) {
-          var _sMap$a;
           issues.push({
             type: "consecutive",
             severity: "error",
             week: mStr,
-            message: `${(_sMap$a = sMap[a]) === null || _sMap$a === void 0 ? void 0 : _sMap$a.name} has consecutive nights (${SHIFT_LABELS[nightOrder[i]]} + ${SHIFT_LABELS[nightOrder[i + 1]]})`
+            message: `${sMap[a]?.name} has consecutive nights (${SHIFT_LABELS[nightOrder[i]]} + ${SHIFT_LABELS[nightOrder[i + 1]]})`
           });
         }
       }
 
       // Check weekend → Mon night same person (hard rule violation)
-      const wkndSurgeon = (_wk$nights5 = wk.nights) === null || _wk$nights5 === void 0 ? void 0 : _wk$nights5.wknd;
+      const wkndSurgeon = wk.nights?.wknd;
       if (wkIdx < mondayStrs.length - 1) {
-        var _nextWk$nights, _nextWk$nights2;
         const nextWk = schedule[mondayStrs[wkIdx + 1]];
-        if (wkndSurgeon && (nextWk === null || nextWk === void 0 || (_nextWk$nights = nextWk.nights) === null || _nextWk$nights === void 0 ? void 0 : _nextWk$nights.mon) === wkndSurgeon) {
-          var _sMap$wkndSurgeon;
+        if (wkndSurgeon && nextWk?.nights?.mon === wkndSurgeon) {
           issues.push({
             type: "consecutive",
             severity: "error",
             week: mStr,
-            message: `${(_sMap$wkndSurgeon = sMap[wkndSurgeon]) === null || _sMap$wkndSurgeon === void 0 ? void 0 : _sMap$wkndSurgeon.name} has Weekend then Mon night the next week`
+            message: `${sMap[wkndSurgeon]?.name} has Weekend then Mon night the next week`
           });
         }
         // Check service week surgeon → Mon night next week (hard rule)
-        if (wk.dayCall && (nextWk === null || nextWk === void 0 || (_nextWk$nights2 = nextWk.nights) === null || _nextWk$nights2 === void 0 ? void 0 : _nextWk$nights2.mon) === wk.dayCall) {
-          var _sMap$wk$dayCall;
+        if (wk.dayCall && nextWk?.nights?.mon === wk.dayCall) {
           issues.push({
             type: "consecutive",
             severity: "error",
             week: mStr,
-            message: `${(_sMap$wk$dayCall = sMap[wk.dayCall]) === null || _sMap$wk$dayCall === void 0 ? void 0 : _sMap$wk$dayCall.name} has Service Week then Mon night the next week`
+            message: `${sMap[wk.dayCall]?.name} has Service Week then Mon night the next week`
           });
         }
       }
 
       // Check DC surgeon also on night same week (should not happen, unless holiday 24h covers that day)
       if (wk.dayCall) {
-        var _wk$nights7;
         const holCov = wk.holidayCoverage || {};
         nightOrder.forEach(sk => {
-          var _wk$nights6;
-          if (((_wk$nights6 = wk.nights) === null || _wk$nights6 === void 0 ? void 0 : _wk$nights6[sk]) === wk.dayCall) {
-            var _sMap$wk$dayCall2;
+          if (wk.nights?.[sk] === wk.dayCall) {
             const nightDate = fmt(addD(mon, {
               mon: 0,
               tue: 1,
@@ -4095,20 +4152,19 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               type: "double",
               severity: "error",
               week: mStr,
-              message: `${(_sMap$wk$dayCall2 = sMap[wk.dayCall]) === null || _sMap$wk$dayCall2 === void 0 ? void 0 : _sMap$wk$dayCall2.name} is on Service Week AND ${SHIFT_LABELS[sk]} (same week)`
+              message: `${sMap[wk.dayCall]?.name} is on Service Week AND ${SHIFT_LABELS[sk]} (same week)`
             });
           }
         });
-        if (((_wk$nights7 = wk.nights) === null || _wk$nights7 === void 0 ? void 0 : _wk$nights7.wknd) === wk.dayCall) {
+        if (wk.nights?.wknd === wk.dayCall) {
           const friD = fmt(addD(mon, 4));
           const sunD = fmt(addD(mon, 6));
           if (!holCov[friD] && !holCov[sunD]) {
-            var _sMap$wk$dayCall3;
             issues.push({
               type: "double",
               severity: "error",
               week: mStr,
-              message: `${(_sMap$wk$dayCall3 = sMap[wk.dayCall]) === null || _sMap$wk$dayCall3 === void 0 ? void 0 : _sMap$wk$dayCall3.name} is on Service Week AND Weekend (same week)`
+              message: `${sMap[wk.dayCall]?.name} is on Service Week AND Weekend (same week)`
             });
           }
         }
@@ -4200,7 +4256,6 @@ ${"</"}script>${"</"}body>${"</"}html>`;
   const calData = useMemo(() => {
     const d = {};
     Object.entries(schedule).forEach(([mStr, wk]) => {
-      var _wk$nights9;
       const mon = parse(mStr);
       const pfx = wk.isBackup ? "B-" : "";
       const cls = wk.isBackup ? "backup" : "primary";
@@ -4225,8 +4280,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         }];
       }
       NIGHT_KEYS.forEach((sk, i) => {
-        var _wk$nights8;
-        const sid = (_wk$nights8 = wk.nights) === null || _wk$nights8 === void 0 ? void 0 : _wk$nights8[sk];
+        const sid = wk.nights?.[sk];
         if (!sid) return;
         const ds = fmt(addD(mon, i));
         if (holCov[ds]) return; // Holiday 24h covers this night
@@ -4236,7 +4290,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           cls
         }];
       });
-      const wkndS = (_wk$nights9 = wk.nights) === null || _wk$nights9 === void 0 ? void 0 : _wk$nights9.wknd;
+      const wkndS = wk.nights?.wknd;
       if (wkndS) {
         const fri = fmt(addD(mon, 4));
         if (!holCov[fri]) d[fri] = [...(d[fri] || []), {
@@ -4324,11 +4378,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       fierceBkp: false
     };
     todayEntries.forEach(e => {
-      var _sMap$e$surgeon, _sMap$e$surgeon2, _sMap$e$surgeon3, _aMap$e$appId;
-      if (e.type === "Svc" || e.type === "B-Svc") info.dayCall = ((_sMap$e$surgeon = sMap[e.surgeon]) === null || _sMap$e$surgeon === void 0 ? void 0 : _sMap$e$surgeon.name) || null;
-      if (e.type === "Ngt" || e.type === "B-Ngt") info.night = ((_sMap$e$surgeon2 = sMap[e.surgeon]) === null || _sMap$e$surgeon2 === void 0 ? void 0 : _sMap$e$surgeon2.name) || null;
-      if (e.type === "Wknd" || e.type === "B-Wknd") info.weekend = ((_sMap$e$surgeon3 = sMap[e.surgeon]) === null || _sMap$e$surgeon3 === void 0 ? void 0 : _sMap$e$surgeon3.name) || null;
-      if (e.type === "APP") info.app = ((_aMap$e$appId = aMap[e.appId]) === null || _aMap$e$appId === void 0 ? void 0 : _aMap$e$appId.name) || null;
+      if (e.type === "Svc" || e.type === "B-Svc") info.dayCall = sMap[e.surgeon]?.name || null;
+      if (e.type === "Ngt" || e.type === "B-Ngt") info.night = sMap[e.surgeon]?.name || null;
+      if (e.type === "Wknd" || e.type === "B-Wknd") info.weekend = sMap[e.surgeon]?.name || null;
+      if (e.type === "APP") info.app = aMap[e.appId]?.name || null;
       if (e.type === "Fierce") info.fierce = true;
       if (e.type === "FierceBkp") info.fierceBkp = true;
     });
@@ -4477,53 +4530,339 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         span[style*="color:#1a8040"] { color: #40c060 !important; }
         span[style*="color:#c04040"] { color: #f06060 !important; }
         span[style*="color:#8a6a10"], div[style*="color:#8a6a10"] { color: #c0a040 !important; }
-      `), authLoading ? React.createElement("div", { style: { display: "flex", justifyContent: "center", alignItems: "center", minHeight: "60vh" } },
-    React.createElement("div", { style: { textAlign: "center" } },
-      React.createElement("div", { style: { width: 44, height: 44, borderRadius: 10, background: "linear-gradient(135deg,#1a6fa8,#2488c8)", display: "inline-flex", alignItems: "center", justifyContent: "center", marginBottom: 12 } },
-        React.createElement("span", { style: { color: "#fff", fontSize: 16, fontWeight: 800, fontFamily: font } }, "DSG")),
-      React.createElement("p", { style: { fontSize: 13, color: "#7a8a98" } }, "Loading\u2026")))
-  : biometricPending ? React.createElement("div", { style: { display: "flex", justifyContent: "center", alignItems: "center", minHeight: "80vh", padding: 20 } },
-    React.createElement("div", { style: { ...css.card, maxWidth: 380, width: "100%", padding: 28, textAlign: "center" } },
-      React.createElement("div", { style: { width: 64, height: 64, borderRadius: 16, background: "linear-gradient(135deg,#1a6fa8,#2488c8)", display: "inline-flex", alignItems: "center", justifyContent: "center", marginBottom: 16 } },
-        React.createElement("span", { style: { fontSize: 28 } }, "\uD83D\uDD10")),
-      React.createElement("h2", { style: { fontSize: 18, fontWeight: 700, color: dkText, margin: "0 0 4px" } }, "Welcome Back"),
-      React.createElement("p", { style: { fontSize: 12, color: "#7a8a98", margin: "0 0 16px" } }, biometric.getStoredUser() || "Use biometric to unlock"),
-      authError && React.createElement("div", { style: { fontSize: 12, color: "#c04040", padding: "6px 10px", background: "#fce8e8", borderRadius: 6, border: "1px solid #e8c0c0", marginBottom: 10, textAlign: "left" } }, authError),
-      React.createElement("button", { onClick: handleBiometricUnlock, disabled: authBusy, style: { ...css.btn(true), width: "100%", padding: "13px 16px", fontSize: 15, fontWeight: 700, marginBottom: 10, opacity: authBusy ? 0.6 : 1 } },
-        authBusy ? "Verifying\u2026" : "\uD83D\uDD13 Unlock with Face ID / Touch ID"),
-      React.createElement("button", { onClick: () => { setBiometricPending(false); setAuthError(""); }, style: { background: "none", border: "none", color: "#1a6fa8", fontSize: 12, cursor: "pointer", fontFamily: font, textDecoration: "underline" } },
-        "Use email & password instead")))
-  : !authUser ? React.createElement("div", { style: { display: "flex", justifyContent: "center", alignItems: "center", minHeight: "80vh", padding: 20 } },
-    React.createElement("div", { style: { ...css.card, maxWidth: 380, width: "100%", padding: 28 } },
-      React.createElement("div", { style: { textAlign: "center", marginBottom: 20 } },
-        React.createElement("div", { style: { width: 48, height: 48, borderRadius: 10, background: "linear-gradient(135deg,#1a6fa8,#2488c8)", display: "inline-flex", alignItems: "center", justifyContent: "center", marginBottom: 10 } },
-          React.createElement("span", { style: { color: "#fff", fontSize: 18, fontWeight: 800, fontFamily: font } }, "DSG")),
-        React.createElement("h2", { style: { fontSize: 18, fontWeight: 700, color: dkText, margin: "0 0 4px" } }, "DSG Call Schedule"),
-        React.createElement("p", { style: { fontSize: 12, color: "#7a8a98", margin: 0 } }, authMode === "login" ? "Sign in to your account" : "Create your account")),
-      React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 10 } },
-        React.createElement("input", { type: "email", placeholder: "Email address", value: authEmail, onChange: e => setAuthEmail(e.target.value), onKeyDown: e => e.key === "Enter" && handleAuthSubmit(), style: { ...css.inp, width: "100%", padding: "10px 12px", fontSize: 14 } }),
-        React.createElement("input", { type: "password", placeholder: "Password", value: authPassword, onChange: e => setAuthPassword(e.target.value), onKeyDown: e => e.key === "Enter" && handleAuthSubmit(), style: { ...css.inp, width: "100%", padding: "10px 12px", fontSize: 14 } }),
-        authMode === "signup" && React.createElement("select", { value: signupPersonId, onChange: e => setSignupPersonId(e.target.value), style: { ...css.inp, width: "100%", padding: "10px 12px", fontSize: 14 } },
-          React.createElement("option", { value: "" }, "Select your name\u2026"),
-          React.createElement("optgroup", { label: "Surgeons" }, INIT_SURGEONS.map(s => React.createElement("option", { key: s.id, value: s.id }, s.name))),
-          React.createElement("optgroup", { label: "APPs" }, INIT_APPS.map(a => React.createElement("option", { key: a.id, value: a.id }, a.name)))),
-        authError && React.createElement("div", { style: { fontSize: 12, color: "#c04040", padding: "6px 10px", background: "#fce8e8", borderRadius: 6, border: "1px solid #e8c0c0" } }, authError),
-        React.createElement("button", { onClick: handleAuthSubmit, disabled: authBusy, style: { ...css.btn(true), width: "100%", padding: "11px 16px", fontSize: 14, fontWeight: 700, opacity: authBusy ? 0.6 : 1 } }, authBusy ? "Please wait\u2026" : authMode === "login" ? "Sign In" : "Create Account"),
-        React.createElement("div", { style: { textAlign: "center", marginTop: 4 } },
-          React.createElement("button", { onClick: () => { setAuthMode(m => m === "login" ? "signup" : "login"); setAuthError(""); }, style: { background: "none", border: "none", color: "#1a6fa8", fontSize: 12, cursor: "pointer", fontFamily: font, textDecoration: "underline" } },
-            authMode === "login" ? "Don't have an account? Sign up" : "Already have an account? Sign in")))))
-  : needsProfile ? React.createElement("div", { style: { display: "flex", justifyContent: "center", alignItems: "center", minHeight: "80vh", padding: 20 } },
-    React.createElement("div", { style: { ...css.card, maxWidth: 380, width: "100%", padding: 28 } },
-      React.createElement("div", { style: { textAlign: "center", marginBottom: 16 } },
-        React.createElement("h2", { style: { fontSize: 18, fontWeight: 700, color: dkText, margin: "0 0 4px" } }, "Welcome!"),
-        React.createElement("p", { style: { fontSize: 12, color: "#7a8a98", margin: 0 } }, "Select your name to complete setup")),
-      React.createElement("select", { value: signupPersonId, onChange: e => setSignupPersonId(e.target.value), style: { ...css.inp, width: "100%", padding: "10px 12px", fontSize: 14, marginBottom: 10 } },
-        React.createElement("option", { value: "" }, "Select your name\u2026"),
-        React.createElement("optgroup", { label: "Surgeons" }, INIT_SURGEONS.map(s => React.createElement("option", { key: s.id, value: s.id }, s.name))),
-        React.createElement("optgroup", { label: "APPs" }, INIT_APPS.map(a => React.createElement("option", { key: a.id, value: a.id }, a.name)))),
-      authError && React.createElement("div", { style: { fontSize: 12, color: "#c04040", padding: "6px 10px", background: "#fce8e8", borderRadius: 6, border: "1px solid #e8c0c0", marginBottom: 8 } }, authError),
-      React.createElement("button", { onClick: handleSetProfile, disabled: authBusy || !signupPersonId, style: { ...css.btn(true), width: "100%", padding: "11px 16px", fontSize: 14, fontWeight: 700, opacity: authBusy || !signupPersonId ? 0.6 : 1 } }, authBusy ? "Saving\u2026" : "Continue")))
-  : React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+      `), authLoading ? /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "center",
+      alignItems: "center",
+      minHeight: "60vh"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      textAlign: "center"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      width: 44,
+      height: 44,
+      borderRadius: 10,
+      background: "linear-gradient(135deg,#1a6fa8,#2488c8)",
+      display: "inline-flex",
+      alignItems: "center",
+      justifyContent: "center",
+      marginBottom: 12
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: "#fff",
+      fontSize: 16,
+      fontWeight: 800,
+      fontFamily: font
+    }
+  }, "DSG")), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 13,
+      color: "#7a8a98"
+    }
+  }, "Loading\u2026"))) : biometricPending ? /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "center",
+      alignItems: "center",
+      minHeight: "80vh",
+      padding: 20
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      ...css.card,
+      maxWidth: 380,
+      width: "100%",
+      padding: 28,
+      textAlign: "center"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      width: 64,
+      height: 64,
+      borderRadius: 16,
+      background: "linear-gradient(135deg,#1a6fa8,#2488c8)",
+      display: "inline-flex",
+      alignItems: "center",
+      justifyContent: "center",
+      marginBottom: 16
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 28
+    }
+  }, "\uD83D\uDD10")), /*#__PURE__*/React.createElement("h2", {
+    style: {
+      fontSize: 18,
+      fontWeight: 700,
+      color: dkText,
+      margin: "0 0 4px"
+    }
+  }, "Welcome Back"), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 12,
+      color: "#7a8a98",
+      margin: "0 0 16px"
+    }
+  }, biometric.getStoredUser() || "Use biometric to unlock"), authError && /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: "#c04040",
+      padding: "6px 10px",
+      background: "#fce8e8",
+      borderRadius: 6,
+      border: "1px solid #e8c0c0",
+      marginBottom: 10,
+      textAlign: "left"
+    }
+  }, authError), /*#__PURE__*/React.createElement("button", {
+    onClick: handleBiometricUnlock,
+    disabled: authBusy,
+    style: {
+      ...css.btn(true),
+      width: "100%",
+      padding: "13px 16px",
+      fontSize: 15,
+      fontWeight: 700,
+      marginBottom: 10,
+      opacity: authBusy ? 0.6 : 1
+    }
+  }, authBusy ? "Verifying…" : "🔓 Unlock with Face ID / Touch ID"), /*#__PURE__*/React.createElement("button", {
+    onClick: () => {
+      setBiometricPending(false);
+      setAuthError("");
+    },
+    style: {
+      background: "none",
+      border: "none",
+      color: "#1a6fa8",
+      fontSize: 12,
+      cursor: "pointer",
+      fontFamily: font,
+      textDecoration: "underline"
+    }
+  }, "Use email & password instead"))) : !authUser ? /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "center",
+      alignItems: "center",
+      minHeight: "80vh",
+      padding: 20
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      ...css.card,
+      maxWidth: 380,
+      width: "100%",
+      padding: 28
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      textAlign: "center",
+      marginBottom: 20
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      width: 48,
+      height: 48,
+      borderRadius: 10,
+      background: "linear-gradient(135deg,#1a6fa8,#2488c8)",
+      display: "inline-flex",
+      alignItems: "center",
+      justifyContent: "center",
+      marginBottom: 10
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: "#fff",
+      fontSize: 18,
+      fontWeight: 800,
+      fontFamily: font
+    }
+  }, "DSG")), /*#__PURE__*/React.createElement("h2", {
+    style: {
+      fontSize: 18,
+      fontWeight: 700,
+      color: dkText,
+      margin: "0 0 4px"
+    }
+  }, "DSG Call Schedule"), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 12,
+      color: "#7a8a98",
+      margin: 0
+    }
+  }, authMode === "login" ? "Sign in to your account" : "Create your account")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      flexDirection: "column",
+      gap: 10
+    }
+  }, /*#__PURE__*/React.createElement("input", {
+    type: "email",
+    placeholder: "Email address",
+    value: authEmail,
+    onChange: e => setAuthEmail(e.target.value),
+    onKeyDown: e => e.key === "Enter" && handleAuthSubmit(),
+    style: {
+      ...css.inp,
+      width: "100%",
+      padding: "10px 12px",
+      fontSize: 14
+    }
+  }), /*#__PURE__*/React.createElement("input", {
+    type: "password",
+    placeholder: "Password",
+    value: authPassword,
+    onChange: e => setAuthPassword(e.target.value),
+    onKeyDown: e => e.key === "Enter" && handleAuthSubmit(),
+    style: {
+      ...css.inp,
+      width: "100%",
+      padding: "10px 12px",
+      fontSize: 14
+    }
+  }), authMode === "signup" && /*#__PURE__*/React.createElement("select", {
+    value: signupPersonId,
+    onChange: e => setSignupPersonId(e.target.value),
+    style: {
+      ...css.inp,
+      width: "100%",
+      padding: "10px 12px",
+      fontSize: 14
+    }
+  }, /*#__PURE__*/React.createElement("option", {
+    value: ""
+  }, "Select your name\u2026"), /*#__PURE__*/React.createElement("optgroup", {
+    label: "Surgeons"
+  }, INIT_SURGEONS.map(s => /*#__PURE__*/React.createElement("option", {
+    key: s.id,
+    value: s.id
+  }, s.name))), /*#__PURE__*/React.createElement("optgroup", {
+    label: "APPs"
+  }, INIT_APPS.map(a => /*#__PURE__*/React.createElement("option", {
+    key: a.id,
+    value: a.id
+  }, a.name)))), authError && /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: "#c04040",
+      padding: "6px 10px",
+      background: "#fce8e8",
+      borderRadius: 6,
+      border: "1px solid #e8c0c0"
+    }
+  }, authError), /*#__PURE__*/React.createElement("button", {
+    onClick: handleAuthSubmit,
+    disabled: authBusy,
+    style: {
+      ...css.btn(true),
+      width: "100%",
+      padding: "11px 16px",
+      fontSize: 14,
+      fontWeight: 700,
+      opacity: authBusy ? 0.6 : 1
+    }
+  }, authBusy ? "Please wait…" : authMode === "login" ? "Sign In" : "Create Account"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      textAlign: "center",
+      marginTop: 4
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: () => {
+      setAuthMode(m => m === "login" ? "signup" : "login");
+      setAuthError("");
+    },
+    style: {
+      background: "none",
+      border: "none",
+      color: "#1a6fa8",
+      fontSize: 12,
+      cursor: "pointer",
+      fontFamily: font,
+      textDecoration: "underline"
+    }
+  }, authMode === "login" ? "Don't have an account? Sign up" : "Already have an account? Sign in"))))) : needsProfile ? /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "center",
+      alignItems: "center",
+      minHeight: "80vh",
+      padding: 20
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      ...css.card,
+      maxWidth: 380,
+      width: "100%",
+      padding: 28
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      textAlign: "center",
+      marginBottom: 16
+    }
+  }, /*#__PURE__*/React.createElement("h2", {
+    style: {
+      fontSize: 18,
+      fontWeight: 700,
+      color: dkText,
+      margin: "0 0 4px"
+    }
+  }, "Welcome!"), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 12,
+      color: "#7a8a98",
+      margin: 0
+    }
+  }, "Select your name to complete setup")), /*#__PURE__*/React.createElement("select", {
+    value: signupPersonId,
+    onChange: e => setSignupPersonId(e.target.value),
+    style: {
+      ...css.inp,
+      width: "100%",
+      padding: "10px 12px",
+      fontSize: 14,
+      marginBottom: 10
+    }
+  }, /*#__PURE__*/React.createElement("option", {
+    value: ""
+  }, "Select your name\u2026"), /*#__PURE__*/React.createElement("optgroup", {
+    label: "Surgeons"
+  }, INIT_SURGEONS.map(s => /*#__PURE__*/React.createElement("option", {
+    key: s.id,
+    value: s.id
+  }, s.name))), /*#__PURE__*/React.createElement("optgroup", {
+    label: "APPs"
+  }, INIT_APPS.map(a => /*#__PURE__*/React.createElement("option", {
+    key: a.id,
+    value: a.id
+  }, a.name)))), authError && /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: "#c04040",
+      padding: "6px 10px",
+      background: "#fce8e8",
+      borderRadius: 6,
+      border: "1px solid #e8c0c0",
+      marginBottom: 8
+    }
+  }, authError), /*#__PURE__*/React.createElement("button", {
+    onClick: handleSetProfile,
+    disabled: authBusy || !signupPersonId,
+    style: {
+      ...css.btn(true),
+      width: "100%",
+      padding: "11px 16px",
+      fontSize: 14,
+      fontWeight: 700,
+      opacity: authBusy || !signupPersonId ? 0.6 : 1
+    }
+  }, authBusy ? "Saving…" : "Continue"))) : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
     style: {
       ...css.hdr,
       background: dkHdr,
@@ -4995,18 +5334,14 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     accept: ".pdf,.xlsx,.xls,.csv,.docx,.doc,.png,.jpg,.jpeg,.webp,.gif",
     multiple: true,
     onChange: e => {
-      var _e$target$files;
-      if ((_e$target$files = e.target.files) !== null && _e$target$files !== void 0 && _e$target$files.length) handleScheduleScan(e.target.files);
+      if (e.target.files?.length) handleScheduleScan(e.target.files);
     },
     style: {
       display: "none"
     },
     id: "schedScanInput"
   }), /*#__PURE__*/React.createElement("button", {
-    onClick: () => {
-      var _schedFileRef$current;
-      return (_schedFileRef$current = schedFileRef.current) === null || _schedFileRef$current === void 0 ? void 0 : _schedFileRef$current.click();
-    },
+    onClick: () => schedFileRef.current?.click(),
     disabled: schedScanning,
     style: {
       ...css.btn(true),
@@ -5127,12 +5462,11 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     const peopleWithVac = allPeople.filter(p => (vacations[p.id] || []).length > 0);
     if (!peopleWithVac.length) return null;
     const shortRange = (s, e) => {
-      var _MO, _MO2;
       const sp = s.split("-"),
         ep = e.split("-");
-      const sm = (_MO = MO[parseInt(sp[1]) - 1]) === null || _MO === void 0 ? void 0 : _MO.slice(0, 3),
+      const sm = MO[parseInt(sp[1]) - 1]?.slice(0, 3),
         sd = parseInt(sp[2]);
-      const em = (_MO2 = MO[parseInt(ep[1]) - 1]) === null || _MO2 === void 0 ? void 0 : _MO2.slice(0, 3),
+      const em = MO[parseInt(ep[1]) - 1]?.slice(0, 3),
         ed = parseInt(ep[2]);
       if (s === e) return `${sm} ${sd}`;
       if (sp[1] === ep[1]) return `${sm} ${sd}–${ed}`;
@@ -5776,23 +6110,20 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           if (wk) {
             // Which night shift covers the night before the holiday?
             if (holDow === 1) {
-              var _schedule$prevMon;
               // Holiday=Mon → night before = prev week's weekend (Sun 7a-Mon 7a)
               const prevMon = fmt(addD(eveMon, -7));
-              eveSurgeon = ((_schedule$prevMon = schedule[prevMon]) === null || _schedule$prevMon === void 0 || (_schedule$prevMon = _schedule$prevMon.nights) === null || _schedule$prevMon === void 0 ? void 0 : _schedule$prevMon.wknd) || c.surgeon;
+              eveSurgeon = schedule[prevMon]?.nights?.wknd || c.surgeon;
             } else if (holDow === 0) {
               // Holiday=Sun → night before = Sat night = service week surgeon
               eveSurgeon = wk.dayCall || c.surgeon;
             } else if (holDow === 6) {
-              var _wk$nights0;
               // Holiday=Sat → night before = Fri night = weekend surgeon
-              eveSurgeon = ((_wk$nights0 = wk.nights) === null || _wk$nights0 === void 0 ? void 0 : _wk$nights0.wknd) || c.surgeon;
+              eveSurgeon = wk.nights?.wknd || c.surgeon;
             } else {
-              var _wk$nights1;
               // Holiday=Tue-Fri → night before = Mon-Thu night
               const nightKeys = ["", "mon", "tue", "wed", "thu", "fri"];
               const nk = nightKeys[holDow - 1]; // holDow 2(Tue)→mon, 3(Wed)→tue, etc.
-              eveSurgeon = ((_wk$nights1 = wk.nights) === null || _wk$nights1 === void 0 ? void 0 : _wk$nights1[nk]) || c.surgeon;
+              eveSurgeon = wk.nights?.[nk] || c.surgeon;
             }
           }
         }
@@ -5889,10 +6220,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         style: {
           fontWeight: 700
         }
-      }, ck.ok ? "✓" : "⚠", " ", ck.label, " group:"), " ", ck.ok ? `All ${ck.uniqueCount} surgeons distinct (${ck.freeCount} free)` : ck.dupes.map(d => {
-        var _surgeons$find7;
-        return `${((_surgeons$find7 = surgeons.find(s => s.id === d.surgeon)) === null || _surgeons$find7 === void 0 ? void 0 : _surgeons$find7.name) || d.surgeon} is on both ${d.hol1} & ${d.hol2}`;
-      }).join("; "))));
+      }, ck.ok ? "✓" : "⚠", " ", ck.label, " group:"), " ", ck.ok ? `All ${ck.uniqueCount} surgeons distinct (${ck.freeCount} free)` : ck.dupes.map(d => `${surgeons.find(s => s.id === d.surgeon)?.name || d.surgeon} is on both ${d.hol1} & ${d.hol2}`).join("; "))));
     })(), /*#__PURE__*/React.createElement("div", {
       style: {
         marginTop: 14,
@@ -5913,13 +6241,12 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         flexWrap: "wrap"
       }
     }, surgeons.map(s => {
-      var _holCounts$s$id, _holCounts$s$id2, _sMap$s$id;
-      const mc = ((_holCounts$s$id = holCounts[s.id]) === null || _holCounts$s$id === void 0 ? void 0 : _holCounts$s$id.major) || 0;
-      const mi = ((_holCounts$s$id2 = holCounts[s.id]) === null || _holCounts$s$id2 === void 0 ? void 0 : _holCounts$s$id2.minor) || 0;
+      const mc = holCounts[s.id]?.major || 0;
+      const mi = holCounts[s.id]?.minor || 0;
       return /*#__PURE__*/React.createElement("div", {
         key: s.id,
         style: {
-          ...css.badge(((_sMap$s$id = sMap[s.id]) === null || _sMap$s$id === void 0 ? void 0 : _sMap$s$id.idx) || 0),
+          ...css.badge(sMap[s.id]?.idx || 0),
           padding: "4px 10px",
           fontSize: 11
         }
@@ -5960,16 +6287,23 @@ ${"</"}script>${"</"}body>${"</"}html>`;
   }, "Generate & Publish \u2192")), showPreview && previewSchedule && (() => {
     // Build preview stats
     const pStats = {};
-    surgeons.forEach(s => { pStats[s.id] = { dc: 0, nights: 0, wknd: 0, off: 0 }; });
+    surgeons.forEach(s => {
+      pStats[s.id] = {
+        dc: 0,
+        nights: 0,
+        wknd: 0,
+        off: 0
+      };
+    });
     Object.values(previewSchedule).forEach(wk => {
       if (wk.dayCall && pStats[wk.dayCall]) pStats[wk.dayCall][wk.isBackup ? "dcB" : "dc"]++;
       if (wk.off && pStats[wk.off]) pStats[wk.off][wk.isBackup ? "offB" : "off"]++;
       Object.entries(wk.nights || {}).forEach(([sh, sid]) => {
         if (!sid || !pStats[sid]) return;
-        if (sh === "wknd") pStats[sid][wk.isBackup ? "wkndB" : "wknd"]++;
-        else pStats[sid][wk.isBackup ? "nightsB" : "nights"]++;
+        if (sh === "wknd") pStats[sid][wk.isBackup ? "wkndB" : "wknd"]++;else pStats[sid][wk.isBackup ? "nightsB" : "nights"]++;
       });
     });
+
     // Build calData from preview schedule
     const pCalData = {};
     Object.entries(previewSchedule).forEach(([mStr, wk]) => {
@@ -5978,26 +6312,90 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       const cls = wk.isBackup ? "backup" : "primary";
       const holCov = wk.holidayCoverage || {};
       if (wk.dayCall) {
-        for (let i = 0; i < 5; i++) { const ds = fmt(addD(mon, i)); if (holCov[ds]) continue; pCalData[ds] = [...(pCalData[ds] || []), { type: pfx + "Svc", surgeon: wk.dayCall, cls }]; }
+        for (let i = 0; i < 5; i++) {
+          const ds = fmt(addD(mon, i));
+          if (holCov[ds]) continue;
+          pCalData[ds] = [...(pCalData[ds] || []), {
+            type: pfx + "Svc",
+            surgeon: wk.dayCall,
+            cls
+          }];
+        }
         const sat = fmt(addD(mon, 5));
-        if (!holCov[sat]) pCalData[sat] = [...(pCalData[sat] || []), { type: pfx + "Wknd", surgeon: wk.dayCall, cls, note: "Sat 7a-7a" }];
+        if (!holCov[sat]) pCalData[sat] = [...(pCalData[sat] || []), {
+          type: pfx + "Wknd",
+          surgeon: wk.dayCall,
+          cls,
+          note: "Sat 7a–7a"
+        }];
       }
-      NIGHT_KEYS.forEach((sk, i) => { const sid = wk.nights?.[sk]; if (!sid) return; const ds = fmt(addD(mon, i)); if (holCov[ds]) return; pCalData[ds] = [...(pCalData[ds] || []), { type: pfx + "Ngt", surgeon: sid, cls }]; });
+      NIGHT_KEYS.forEach((sk, i) => {
+        const sid = wk.nights?.[sk];
+        if (!sid) return;
+        const ds = fmt(addD(mon, i));
+        if (holCov[ds]) return;
+        pCalData[ds] = [...(pCalData[ds] || []), {
+          type: pfx + "Ngt",
+          surgeon: sid,
+          cls
+        }];
+      });
       const wkndS = wk.nights?.wknd;
       if (wkndS) {
-        const fri = fmt(addD(mon, 4)); if (!holCov[fri]) pCalData[fri] = [...(pCalData[fri] || []), { type: pfx + "Wknd", surgeon: wkndS, cls, note: "5p-7a" }];
-        const sun = fmt(addD(mon, 6)); if (!holCov[sun]) pCalData[sun] = [...(pCalData[sun] || []), { type: pfx + "Wknd", surgeon: wkndS, cls, note: "7a-7a" }];
+        const fri = fmt(addD(mon, 4));
+        if (!holCov[fri]) pCalData[fri] = [...(pCalData[fri] || []), {
+          type: pfx + "Wknd",
+          surgeon: wkndS,
+          cls,
+          note: "5p–7a"
+        }];
+        const sun = fmt(addD(mon, 6));
+        if (!holCov[sun]) pCalData[sun] = [...(pCalData[sun] || []), {
+          type: pfx + "Wknd",
+          surgeon: wkndS,
+          cls,
+          note: "7a–7a"
+        }];
       }
-      if (wk.holidayCoverage) { Object.entries(wk.holidayCoverage).forEach(([ds, cov]) => { pCalData[ds] = [...(pCalData[ds] || []), { type: "Holiday", surgeon: cov.surgeonId, cls: "holiday", hours: cov.hours, holName: cov.name }]; }); }
+      if (wk.holidayCoverage) {
+        Object.entries(wk.holidayCoverage).forEach(([ds, cov]) => {
+          pCalData[ds] = [...(pCalData[ds] || []), {
+            type: "Holiday",
+            surgeon: cov.surgeonId,
+            cls: "holiday",
+            hours: cov.hours,
+            holName: cov.name
+          }];
+        });
+      }
     });
-    Object.entries(appShifts).forEach(([ds, aid]) => { pCalData[ds] = [...(pCalData[ds] || []), { type: "APP", appId: aid, cls: "app" }]; });
-    const pvOnVac = (ds) => [...surgeons, ...apps].filter(s => onVac(s.id, ds, vacations));
-    // Get unique months
+    // APP shifts
+    Object.entries(appShifts).forEach(([ds, aid]) => {
+      pCalData[ds] = [...(pCalData[ds] || []), {
+        type: "APP",
+        appId: aid,
+        cls: "app"
+      }];
+    });
+    // Vacation entries
+    const pvOnVac = ds => [...surgeons, ...apps].filter(s => onVac(s.id, ds, vacations));
+
+    // Get unique months covered by preview
     const previewMonths = [];
     const seenMonths = new Set();
     Object.keys(previewSchedule).forEach(mStr => {
       const mon = parse(mStr);
-      for (let i = 0; i < 7; i++) { const d = addD(mon, i); const key = d.getFullYear() + "-" + d.getMonth(); if (!seenMonths.has(key)) { seenMonths.add(key); previewMonths.push({ year: d.getFullYear(), month: d.getMonth() }); } }
+      for (let i = 0; i < 7; i++) {
+        const d = addD(mon, i);
+        const key = `${d.getFullYear()}-${d.getMonth()}`;
+        if (!seenMonths.has(key)) {
+          seenMonths.add(key);
+          previewMonths.push({
+            year: d.getFullYear(),
+            month: d.getMonth()
+          });
+        }
+      }
     });
     previewMonths.sort((a, b) => a.year - b.year || a.month - b.month);
     const pmi = Math.min(previewCalMonth, previewMonths.length - 1);
@@ -6008,78 +6406,269 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     for (let i = 0; i < pmFirst; i++) pmGrid.push(null);
     for (let d = 1; d <= pmDays; d++) pmGrid.push(d);
     while (pmGrid.length % 7) pmGrid.push(null);
-
-    return React.createElement("div", { style: { ...css.card, marginTop: 14, background: dk ? "#1a2a1a" : "#f0faf0", border: "2px solid #80c080" } },
-      React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, flexWrap: "wrap", gap: 8 } },
-        React.createElement("div", { style: css.cardT }, "\uD83D\uDC41 Schedule Preview"),
-        React.createElement("div", { style: { display: "flex", gap: 6 } },
-          React.createElement("button", { onClick: () => { setPreviewCalMonth(0); doGenerate(true); }, style: { ...css.btn(false), padding: "6px 14px", fontSize: 12 } }, "\u21BB Re-roll"),
-          React.createElement("button", { onClick: acceptPreview, style: { ...css.btn(true), padding: "6px 14px", fontSize: 12, background: "linear-gradient(135deg,#1a8040,#30a060)", borderColor: "#1a8040" } }, "\u2713 Accept & Publish"),
-          React.createElement("button", { onClick: discardPreview, style: { background: "none", border: "1px solid #e0c0c0", color: "#904040", borderRadius: 6, padding: "6px 14px", fontSize: 12, cursor: "pointer", fontFamily: font } }, "\u2715 Discard")
-        )
-      ),
-      pm && React.createElement(React.Fragment, null,
-        React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "center", gap: 8, marginBottom: 10 } },
-          React.createElement("button", { onClick: () => setPreviewCalMonth(Math.max(0, pmi - 1)), disabled: pmi === 0, style: { ...css.btn(false), padding: "4px 10px", fontSize: 14, opacity: pmi === 0 ? 0.3 : 1 } }, "\u25C0"),
-          React.createElement("span", { style: { fontSize: 15, fontWeight: 700, color: "#1a6fa8", minWidth: 140, textAlign: "center" } }, MO[pm.month] + " " + pm.year),
-          React.createElement("button", { onClick: () => setPreviewCalMonth(Math.min(previewMonths.length - 1, pmi + 1)), disabled: pmi >= previewMonths.length - 1, style: { ...css.btn(false), padding: "4px 10px", fontSize: 14, opacity: pmi >= previewMonths.length - 1 ? 0.3 : 1 } }, "\u25B6")
-        ),
-        React.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 1, marginBottom: 1 } },
-          DAY_HDR.map(d => React.createElement("div", { key: d, style: { textAlign: "center", fontSize: 10, fontWeight: 700, color: "#8a94a0", padding: "4px 0", letterSpacing: 1 } }, d))
-        ),
-        React.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 1, marginBottom: 14 } },
-          pmGrid.map((day, i) => {
-            if (!day) return React.createElement("div", { key: "e" + i, style: { background: dk ? "#162016" : "#f0faf0", minHeight: 70 } });
-            const ds = pm.year + "-" + String(pm.month + 1).padStart(2, "0") + "-" + String(day).padStart(2, "0");
-            const entries = pCalData[ds] || [];
-            const isWknd = [0, 6].includes(new Date(pm.year, pm.month, day).getDay());
-            const vacList = pvOnVac(ds);
-            return React.createElement("div", { key: ds, style: { background: dk ? "#162016" : isWknd ? "#e8f0e8" : "#f4faf4", border: "1px solid #a0d0a0", minHeight: 70, padding: "2px 3px", borderRadius: 2 } },
-              React.createElement("div", { style: { fontSize: 10, fontWeight: 600, color: isWknd ? "#5a8a5a" : "#3a6a3a", fontFamily: mono, marginBottom: 1 } }, day),
-              entries.filter(e => e.type !== "APP").map((e, j) => {
-                const isB = e.cls === "backup"; const isD = e.type.includes("Svc"); const isW = e.type.includes("Wknd"); const isH = e.type === "Holiday";
-                const label = isH ? "H" : isD ? "S" : isW ? "W" : "N";
-                const color = isH ? "#c06020" : isD ? "#3080a8" : isW ? "#908050" : "#6850a0";
-                return React.createElement("div", { key: j, style: { fontSize: 9, marginBottom: 1, padding: "0 2px", borderRadius: 2, background: isH ? "#fef0e8" : isB ? "#fef8e8" : "transparent", whiteSpace: "nowrap", overflow: "hidden" } },
-                  isB && React.createElement("span", { style: { color: "#8a6a10", fontWeight: 700, fontSize: 7, marginRight: 1 } }, "B"),
-                  React.createElement("span", { style: { color, fontWeight: 700 } }, label), " ",
-                  React.createElement("span", { style: { color: (PAL[sMap[e.surgeon]?.idx % 7] || {}).tx || "#4a5868", fontWeight: 500 } }, sMap[e.surgeon]?.name || "?")
-                );
-              }),
-              entries.filter(e => e.type === "APP").map((e, j) => React.createElement("div", { key: "a" + j, style: { fontSize: 9, marginBottom: 1, padding: "0 2px", whiteSpace: "nowrap" } },
-                React.createElement("span", { style: { color: "#c08050", fontWeight: 700 } }, "A"), " ",
-                React.createElement("span", { style: { color: "#8a6040" } }, aMap[e.appId]?.name || "?")
-              )),
-              vacList.length > 0 && React.createElement("div", { style: { fontSize: 8, color: "#a07070", marginTop: 1 } }, "\uD83C\uDFD6" + vacList.map(v => v.name).join(","))
-            );
-          })
-        )
-      ),
-      React.createElement("div", { style: { fontSize: 12, fontWeight: 700, color: "#3a6a3a", marginBottom: 6 } }, "Assignment Counts"),
-      React.createElement("div", { style: { overflowX: "auto" } },
-        React.createElement("table", { style: { width: "100%", borderCollapse: "collapse", fontSize: 12 } },
-          React.createElement("thead", null, React.createElement("tr", { style: { borderBottom: "2px solid #b0d8b0" } },
-            React.createElement("th", { style: thS2 }, "Surgeon"),
-            React.createElement("th", { style: thS2 }, "Svc Wk"),
-            React.createElement("th", { style: thS2 }, "Nights"),
-            React.createElement("th", { style: thS2 }, "Wknds"),
-            React.createElement("th", { style: thS2 }, "Off")
-          )),
-          React.createElement("tbody", null, surgeons.map(s => {
-            const ps = pStats[s.id] || {};
-            return React.createElement("tr", { key: s.id, style: { borderBottom: "1px solid #c0e0c0" } },
-              React.createElement("td", { style: { padding: "5px 6px" } }, React.createElement(Badge, { id: s.id, small: true })),
-              React.createElement("td", { style: tdS }, ps.dc || 0),
-              React.createElement("td", { style: tdS }, ps.nights || 0),
-              React.createElement("td", { style: tdS }, ps.wknd || 0),
-              React.createElement("td", { style: tdS }, ps.off || 0)
-            );
-          }))
-        )
-      ),
-      React.createElement("p", { style: { fontSize: 11, color: "#5a8a5a", marginTop: 8 } }, "Click \"Re-roll\" to generate a different version. Use \u25C0 \u25B6 to browse months. Click \"Accept\" to commit this schedule.")
-    );
-  })(), view === "totals" && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+    return /*#__PURE__*/React.createElement("div", {
+      style: {
+        ...css.card,
+        marginTop: 14,
+        background: dk ? "#1a2a1a" : "#f0faf0",
+        border: "2px solid #80c080"
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        justifyContent: "space-between",
+        alignItems: "center",
+        marginBottom: 12,
+        flexWrap: "wrap",
+        gap: 8
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: css.cardT
+    }, "\uD83D\uDC41 Schedule Preview"), /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        gap: 6
+      }
+    }, /*#__PURE__*/React.createElement("button", {
+      onClick: () => {
+        setPreviewCalMonth(0);
+        doGenerate(true);
+      },
+      style: {
+        ...css.btn(false),
+        padding: "6px 14px",
+        fontSize: 12
+      }
+    }, "\u21BB Re-roll"), /*#__PURE__*/React.createElement("button", {
+      onClick: acceptPreview,
+      style: {
+        ...css.btn(true),
+        padding: "6px 14px",
+        fontSize: 12,
+        background: "linear-gradient(135deg,#1a8040,#30a060)",
+        borderColor: "#1a8040"
+      }
+    }, "\u2713 Accept & Publish"), /*#__PURE__*/React.createElement("button", {
+      onClick: discardPreview,
+      style: {
+        background: "none",
+        border: "1px solid #e0c0c0",
+        color: "#904040",
+        borderRadius: 6,
+        padding: "6px 14px",
+        fontSize: 12,
+        cursor: "pointer",
+        fontFamily: font
+      }
+    }, "\u2715 Discard"))), pm && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 8,
+        marginBottom: 10
+      }
+    }, /*#__PURE__*/React.createElement("button", {
+      onClick: () => setPreviewCalMonth(Math.max(0, pmi - 1)),
+      disabled: pmi === 0,
+      style: {
+        ...css.btn(false),
+        padding: "4px 10px",
+        fontSize: 14,
+        opacity: pmi === 0 ? 0.3 : 1
+      }
+    }, "\u25C0"), /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 15,
+        fontWeight: 700,
+        color: "#1a6fa8",
+        minWidth: 140,
+        textAlign: "center"
+      }
+    }, MO[pm.month], " ", pm.year), /*#__PURE__*/React.createElement("button", {
+      onClick: () => setPreviewCalMonth(Math.min(previewMonths.length - 1, pmi + 1)),
+      disabled: pmi >= previewMonths.length - 1,
+      style: {
+        ...css.btn(false),
+        padding: "4px 10px",
+        fontSize: 14,
+        opacity: pmi >= previewMonths.length - 1 ? 0.3 : 1
+      }
+    }, "\u25B6")), /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "grid",
+        gridTemplateColumns: "repeat(7,1fr)",
+        gap: 1,
+        marginBottom: 1
+      }
+    }, DAY_HDR.map(d => /*#__PURE__*/React.createElement("div", {
+      key: d,
+      style: {
+        textAlign: "center",
+        fontSize: 10,
+        fontWeight: 700,
+        color: "#8a94a0",
+        padding: "4px 0",
+        letterSpacing: 1
+      }
+    }, d))), /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "grid",
+        gridTemplateColumns: "repeat(7,1fr)",
+        gap: 1,
+        marginBottom: 14
+      }
+    }, pmGrid.map((day, i) => {
+      if (!day) return /*#__PURE__*/React.createElement("div", {
+        key: `e${i}`,
+        style: {
+          background: dk ? "#162016" : "#f0faf0",
+          minHeight: 70
+        }
+      });
+      const ds = `${pm.year}-${String(pm.month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+      const entries = pCalData[ds] || [];
+      const isWknd = [0, 6].includes(new Date(pm.year, pm.month, day).getDay());
+      const vacList = pvOnVac(ds);
+      return /*#__PURE__*/React.createElement("div", {
+        key: ds,
+        style: {
+          background: dk ? "#162016" : isWknd ? "#e8f0e8" : "#f4faf4",
+          border: "1px solid #a0d0a0",
+          minHeight: 70,
+          padding: "2px 3px",
+          borderRadius: 2
+        }
+      }, /*#__PURE__*/React.createElement("div", {
+        style: {
+          fontSize: 10,
+          fontWeight: 600,
+          color: isWknd ? "#5a8a5a" : "#3a6a3a",
+          fontFamily: mono,
+          marginBottom: 1
+        }
+      }, day), entries.filter(e => e.type !== "APP").map((e, j) => {
+        const isB = e.cls === "backup";
+        const isD = e.type.includes("Svc");
+        const isW = e.type.includes("Wknd");
+        const isH = e.type === "Holiday";
+        const label = isH ? "H" : isD ? "S" : isW ? "W" : "N";
+        const color = isH ? "#c06020" : isD ? "#3080a8" : isW ? "#908050" : "#6850a0";
+        return /*#__PURE__*/React.createElement("div", {
+          key: j,
+          style: {
+            fontSize: 9,
+            marginBottom: 1,
+            padding: "0 2px",
+            borderRadius: 2,
+            background: isH ? "#fef0e8" : isB ? "#fef8e8" : "transparent",
+            whiteSpace: "nowrap",
+            overflow: "hidden"
+          }
+        }, isB && /*#__PURE__*/React.createElement("span", {
+          style: {
+            color: "#8a6a10",
+            fontWeight: 700,
+            fontSize: 7,
+            marginRight: 1
+          }
+        }, "B"), /*#__PURE__*/React.createElement("span", {
+          style: {
+            color,
+            fontWeight: 700
+          }
+        }, label), " ", /*#__PURE__*/React.createElement("span", {
+          style: {
+            color: PAL[sMap[e.surgeon]?.idx % 7]?.tx || "#4a5868",
+            fontWeight: 500
+          }
+        }, sMap[e.surgeon]?.name || "?"));
+      }), entries.filter(e => e.type === "APP").map((e, j) => /*#__PURE__*/React.createElement("div", {
+        key: "a" + j,
+        style: {
+          fontSize: 9,
+          marginBottom: 1,
+          padding: "0 2px",
+          whiteSpace: "nowrap"
+        }
+      }, /*#__PURE__*/React.createElement("span", {
+        style: {
+          color: "#c08050",
+          fontWeight: 700
+        }
+      }, "A"), " ", /*#__PURE__*/React.createElement("span", {
+        style: {
+          color: "#8a6040"
+        }
+      }, aMap[e.appId]?.name || "?"))), vacList.length > 0 && /*#__PURE__*/React.createElement("div", {
+        style: {
+          fontSize: 8,
+          color: "#a07070",
+          marginTop: 1
+        }
+      }, "\uD83C\uDFD6", vacList.map(v => v.name).join(",")));
+    }))), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 12,
+        fontWeight: 700,
+        color: "#3a6a3a",
+        marginBottom: 6
+      }
+    }, "Assignment Counts"), /*#__PURE__*/React.createElement("div", {
+      style: {
+        overflowX: "auto"
+      }
+    }, /*#__PURE__*/React.createElement("table", {
+      style: {
+        width: "100%",
+        borderCollapse: "collapse",
+        fontSize: 12
+      }
+    }, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", {
+      style: {
+        borderBottom: "2px solid #b0d8b0"
+      }
+    }, /*#__PURE__*/React.createElement("th", {
+      style: thS2
+    }, "Surgeon"), /*#__PURE__*/React.createElement("th", {
+      style: thS2
+    }, "Svc Wk"), /*#__PURE__*/React.createElement("th", {
+      style: thS2
+    }, "Nights"), /*#__PURE__*/React.createElement("th", {
+      style: thS2
+    }, "Wknds"), /*#__PURE__*/React.createElement("th", {
+      style: thS2
+    }, "Off"))), /*#__PURE__*/React.createElement("tbody", null, surgeons.map(s => {
+      const ps = pStats[s.id] || {};
+      return /*#__PURE__*/React.createElement("tr", {
+        key: s.id,
+        style: {
+          borderBottom: "1px solid #c0e0c0"
+        }
+      }, /*#__PURE__*/React.createElement("td", {
+        style: {
+          padding: "5px 6px"
+        }
+      }, /*#__PURE__*/React.createElement(Badge, {
+        id: s.id,
+        small: true
+      })), /*#__PURE__*/React.createElement("td", {
+        style: tdS
+      }, ps.dc || 0), /*#__PURE__*/React.createElement("td", {
+        style: tdS
+      }, ps.nights || 0), /*#__PURE__*/React.createElement("td", {
+        style: tdS
+      }, ps.wknd || 0), /*#__PURE__*/React.createElement("td", {
+        style: tdS
+      }, ps.off || 0));
+    })))), /*#__PURE__*/React.createElement("p", {
+      style: {
+        fontSize: 11,
+        color: "#5a8a5a",
+        marginTop: 8
+      }
+    }, "Click \"Re-roll\" to generate a different version. Use \u25C0 \u25B6 to browse months. Click \"Accept\" to commit this schedule."));
+  })()), view === "totals" && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
     style: css.card
   }, /*#__PURE__*/React.createElement("div", {
     style: css.cardT
@@ -6141,18 +6730,14 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     type: "file",
     accept: ".csv,.xlsx,.xls",
     onChange: e => {
-      var _e$target$files2;
-      if ((_e$target$files2 = e.target.files) !== null && _e$target$files2 !== void 0 && _e$target$files2[0]) handleTemplateUpload(e.target.files[0]);
+      if (e.target.files?.[0]) handleTemplateUpload(e.target.files[0]);
     },
     style: {
       display: "none"
     },
     id: "templateInput"
   }), /*#__PURE__*/React.createElement("button", {
-    onClick: () => {
-      var _fileRef$current;
-      return (_fileRef$current = fileRef.current) === null || _fileRef$current === void 0 ? void 0 : _fileRef$current.click();
-    },
+    onClick: () => fileRef.current?.click(),
     disabled: scanning,
     style: {
       ...css.btn(true),
@@ -6787,7 +7372,6 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       if (sf && e.surgeon !== sf) return false;
       return true;
     }).map((e, j) => {
-      var _PAL, _sMap$e$surgeon4, _sMap$e$surgeon5;
       const isB = e.cls === "backup";
       const isD = e.type.includes("Svc");
       const isW = e.type.includes("Wknd");
@@ -6819,68 +7403,62 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         }
       }, label), " ", /*#__PURE__*/React.createElement("span", {
         style: {
-          color: ((_PAL = PAL[((_sMap$e$surgeon4 = sMap[e.surgeon]) === null || _sMap$e$surgeon4 === void 0 ? void 0 : _sMap$e$surgeon4.idx) % 7]) === null || _PAL === void 0 ? void 0 : _PAL.tx) || "#4a5868",
+          color: PAL[sMap[e.surgeon]?.idx % 7]?.tx || "#4a5868",
           fontWeight: highlighted ? 700 : 400
         }
-      }, ((_sMap$e$surgeon5 = sMap[e.surgeon]) === null || _sMap$e$surgeon5 === void 0 ? void 0 : _sMap$e$surgeon5.name) || "?"));
-    }), entries.filter(e => e.type === "Holiday").filter(e => !sf || e.surgeon === sf).map((e, j) => {
-      var _PAL2, _sMap$e$surgeon6, _sMap$e$surgeon7;
-      return /*#__PURE__*/React.createElement("div", {
-        key: "hol" + j,
-        style: {
-          marginBottom: 1,
-          padding: "1px 3px",
-          borderRadius: 3,
-          fontSize: 10,
-          background: "#fef0e8",
-          border: "1px solid #e0a868",
-          fontWeight: 600
-        }
-      }, /*#__PURE__*/React.createElement("span", {
-        style: {
-          color: "#c06020",
-          fontWeight: 700
-        }
-      }, "\uD83C\uDF84"), " ", /*#__PURE__*/React.createElement("span", {
-        style: {
-          color: ((_PAL2 = PAL[((_sMap$e$surgeon6 = sMap[e.surgeon]) === null || _sMap$e$surgeon6 === void 0 ? void 0 : _sMap$e$surgeon6.idx) % 7]) === null || _PAL2 === void 0 ? void 0 : _PAL2.tx) || "#4a5868"
-        }
-      }, ((_sMap$e$surgeon7 = sMap[e.surgeon]) === null || _sMap$e$surgeon7 === void 0 ? void 0 : _sMap$e$surgeon7.name) || "?"), /*#__PURE__*/React.createElement("span", {
-        style: {
-          color: "#a07030",
-          fontSize: 8,
-          marginLeft: 2
-        }
-      }, e.hours));
-    }), calFilters.app && entries.filter(e => e.type === "APP").map((e, j) => {
-      var _APP_PAL, _aMap$e$appId2, _aMap$e$appId3;
-      return /*#__PURE__*/React.createElement("div", {
-        key: "app" + j,
-        style: {
-          marginBottom: 1,
-          padding: "1px 3px",
-          borderRadius: 3,
-          fontSize: 10,
-          background: "#fcf4f0",
-          border: "1px solid #281818"
-        }
-      }, /*#__PURE__*/React.createElement("span", {
-        style: {
-          color: "#c08050",
-          fontWeight: 700
-        }
-      }, "A"), " ", /*#__PURE__*/React.createElement("span", {
-        style: {
-          color: ((_APP_PAL = APP_PAL[((_aMap$e$appId2 = aMap[e.appId]) === null || _aMap$e$appId2 === void 0 ? void 0 : _aMap$e$appId2.idx) % 4]) === null || _APP_PAL === void 0 ? void 0 : _APP_PAL.tx) || "#5a6878"
-        }
-      }, ((_aMap$e$appId3 = aMap[e.appId]) === null || _aMap$e$appId3 === void 0 ? void 0 : _aMap$e$appId3.name) || "?"), /*#__PURE__*/React.createElement("span", {
-        style: {
-          color: "#8a94a0",
-          fontSize: 8,
-          marginLeft: 2
-        }
-      }, "5p\u20137a"));
-    }), calFilters.fierce && hasFierce && /*#__PURE__*/React.createElement("div", {
+      }, sMap[e.surgeon]?.name || "?"));
+    }), entries.filter(e => e.type === "Holiday").filter(e => !sf || e.surgeon === sf).map((e, j) => /*#__PURE__*/React.createElement("div", {
+      key: "hol" + j,
+      style: {
+        marginBottom: 1,
+        padding: "1px 3px",
+        borderRadius: 3,
+        fontSize: 10,
+        background: "#fef0e8",
+        border: "1px solid #e0a868",
+        fontWeight: 600
+      }
+    }, /*#__PURE__*/React.createElement("span", {
+      style: {
+        color: "#c06020",
+        fontWeight: 700
+      }
+    }, "\uD83C\uDF84"), " ", /*#__PURE__*/React.createElement("span", {
+      style: {
+        color: PAL[sMap[e.surgeon]?.idx % 7]?.tx || "#4a5868"
+      }
+    }, sMap[e.surgeon]?.name || "?"), /*#__PURE__*/React.createElement("span", {
+      style: {
+        color: "#a07030",
+        fontSize: 8,
+        marginLeft: 2
+      }
+    }, e.hours))), calFilters.app && entries.filter(e => e.type === "APP").map((e, j) => /*#__PURE__*/React.createElement("div", {
+      key: "app" + j,
+      style: {
+        marginBottom: 1,
+        padding: "1px 3px",
+        borderRadius: 3,
+        fontSize: 10,
+        background: "#fcf4f0",
+        border: "1px solid #281818"
+      }
+    }, /*#__PURE__*/React.createElement("span", {
+      style: {
+        color: "#c08050",
+        fontWeight: 700
+      }
+    }, "A"), " ", /*#__PURE__*/React.createElement("span", {
+      style: {
+        color: APP_PAL[aMap[e.appId]?.idx % 4]?.tx || "#5a6878"
+      }
+    }, aMap[e.appId]?.name || "?"), /*#__PURE__*/React.createElement("span", {
+      style: {
+        color: "#8a94a0",
+        fontSize: 8,
+        marginLeft: 2
+      }
+    }, "5p\u20137a"))), calFilters.fierce && hasFierce && /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 8,
         color: "#8a6a10",
@@ -6980,7 +7558,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       marginBottom: 2
     }
   }, "Week"), /*#__PURE__*/React.createElement("select", {
-    value: (swapTarget === null || swapTarget === void 0 ? void 0 : swapTarget.mondayStr) || "",
+    value: swapTarget?.mondayStr || "",
     onChange: e => {
       setSwapTarget(prev => ({
         ...(prev || {}),
@@ -7005,7 +7583,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       marginBottom: 2
     }
   }, "Shift"), /*#__PURE__*/React.createElement("select", {
-    value: (swapTarget === null || swapTarget === void 0 ? void 0 : swapTarget.shift) || "",
+    value: swapTarget?.shift || "",
     onChange: e => {
       setSwapTarget(prev => ({
         ...(prev || {}),
@@ -7030,13 +7608,12 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       marginBottom: 2
     }
   }, "Current Surgeon"), (() => {
-    const m = swapTarget === null || swapTarget === void 0 ? void 0 : swapTarget.mondayStr;
-    const sh = swapTarget === null || swapTarget === void 0 ? void 0 : swapTarget.shift;
+    const m = swapTarget?.mondayStr;
+    const sh = swapTarget?.shift;
     const wk = m ? schedule[m] : null;
     let currentId = null;
     if (wk && sh) {
-      var _wk$nights10;
-      currentId = sh === "dayCall" ? wk.dayCall : (_wk$nights10 = wk.nights) === null || _wk$nights10 === void 0 ? void 0 : _wk$nights10[sh];
+      currentId = sh === "dayCall" ? wk.dayCall : wk.nights?.[sh];
     }
     return currentId ? /*#__PURE__*/React.createElement("div", {
       style: {
@@ -7053,20 +7630,19 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     }, "\u2014");
   })()), /*#__PURE__*/React.createElement("button", {
     onClick: () => {
-      var _wk$nights11;
-      const m = swapTarget === null || swapTarget === void 0 ? void 0 : swapTarget.mondayStr;
-      const sh = swapTarget === null || swapTarget === void 0 ? void 0 : swapTarget.shift;
+      const m = swapTarget?.mondayStr;
+      const sh = swapTarget?.shift;
       const wk = m ? schedule[m] : null;
       if (!wk || !sh) return;
-      const currentId = sh === "dayCall" ? wk.dayCall : (_wk$nights11 = wk.nights) === null || _wk$nights11 === void 0 ? void 0 : _wk$nights11[sh];
+      const currentId = sh === "dayCall" ? wk.dayCall : wk.nights?.[sh];
       if (!currentId) return;
       findSwapSuggestions(m, sh, currentId);
     },
-    disabled: !(swapTarget !== null && swapTarget !== void 0 && swapTarget.mondayStr) || !(swapTarget !== null && swapTarget !== void 0 && swapTarget.shift),
+    disabled: !swapTarget?.mondayStr || !swapTarget?.shift,
     style: {
       ...css.btn(true),
       padding: "7px 16px",
-      opacity: !(swapTarget !== null && swapTarget !== void 0 && swapTarget.mondayStr) || !(swapTarget !== null && swapTarget !== void 0 && swapTarget.shift) ? 0.5 : 1,
+      opacity: !swapTarget?.mondayStr || !swapTarget?.shift ? 0.5 : 1,
       background: "linear-gradient(135deg,#6030a0,#8050c0)",
       borderColor: "#6030a0"
     }
@@ -7237,23 +7813,20 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       flexWrap: "wrap",
       marginBottom: 10
     }
-  }, surgeons.map(s => {
-    var _sMap$s$id2;
-    return /*#__PURE__*/React.createElement("button", {
-      key: s.id,
-      onClick: () => {
-        const events = buildICSEvents(schedule, s.id, s.name, appShifts, aMap);
-        const ics = generateICS(events, `Call Schedule — ${s.name}`);
-        downloadICS(ics, `call-schedule-${s.name.toLowerCase()}.ics`);
-      },
-      style: {
-        ...css.badge(((_sMap$s$id2 = sMap[s.id]) === null || _sMap$s$id2 === void 0 ? void 0 : _sMap$s$id2.idx) || 0),
-        cursor: "pointer",
-        padding: "5px 12px",
-        fontSize: 12
-      }
-    }, "\u2B07 ", s.name);
-  })), /*#__PURE__*/React.createElement("div", {
+  }, surgeons.map(s => /*#__PURE__*/React.createElement("button", {
+    key: s.id,
+    onClick: () => {
+      const events = buildICSEvents(schedule, s.id, s.name, appShifts, aMap);
+      const ics = generateICS(events, `Call Schedule — ${s.name}`);
+      downloadICS(ics, `call-schedule-${s.name.toLowerCase()}.ics`);
+    },
+    style: {
+      ...css.badge(sMap[s.id]?.idx || 0),
+      cursor: "pointer",
+      padding: "5px 12px",
+      fontSize: 12
+    }
+  }, "\u2B07 ", s.name))), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       gap: 6,
@@ -7267,10 +7840,9 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         allEvents.push(...buildICSEvents(schedule, s.id, s.name, appShifts, aMap));
       });
       Object.entries(appShifts).forEach(([ds, aid]) => {
-        var _aMap$aid2;
         const d = parse(ds);
         const next = addD(d, 1);
-        const appName = (aMap === null || aMap === void 0 || (_aMap$aid2 = aMap[aid]) === null || _aMap$aid2 === void 0 ? void 0 : _aMap$aid2.name) || aid;
+        const appName = aMap?.[aid]?.name || aid;
         allEvents.push({
           start: icsDate(d.getFullYear(), d.getMonth() + 1, d.getDate(), 17),
           end: icsDate(next.getFullYear(), next.getMonth() + 1, next.getDate(), 7),
@@ -7438,7 +8010,6 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     const monthlyData = {};
     const allMonths = new Set();
     Object.entries(schedule).forEach(([mStr, wk]) => {
-      var _wk$nights13;
       const mon = parse(mStr);
       // Each day of the week maps to a calendar month
       for (let i = 0; i < 7; i++) {
@@ -7458,39 +8029,35 @@ ${"</"}script>${"</"}body>${"</"}html>`;
 
       // Service Week: M-F = 5 days + Sat = 2 days = 7 total
       if (wk.dayCall) {
-        var _monthlyData$satMo;
         for (let i = 0; i < 5; i++) {
-          var _monthlyData$moKey;
           const d = addD(mon, i);
           const moKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
-          if ((_monthlyData$moKey = monthlyData[moKey]) !== null && _monthlyData$moKey !== void 0 && _monthlyData$moKey[wk.dayCall]) monthlyData[moKey][wk.dayCall][countKey]++;
+          if (monthlyData[moKey]?.[wk.dayCall]) monthlyData[moKey][wk.dayCall][countKey]++;
         }
         // Saturday = 2 call days (7a–7a, 24hr)
         const sat = addD(mon, 5);
         const satMo = `${sat.getFullYear()}-${String(sat.getMonth() + 1).padStart(2, "0")}`;
-        if ((_monthlyData$satMo = monthlyData[satMo]) !== null && _monthlyData$satMo !== void 0 && _monthlyData$satMo[wk.dayCall]) monthlyData[satMo][wk.dayCall][countKey] += 2;
+        if (monthlyData[satMo]?.[wk.dayCall]) monthlyData[satMo][wk.dayCall][countKey] += 2;
       }
 
       // Night shifts (Mon-Thu): 1 call day each (5p–7a)
       NIGHT_KEYS.forEach((sk, i) => {
-        var _wk$nights12, _monthlyData$moKey2;
-        const sid = (_wk$nights12 = wk.nights) === null || _wk$nights12 === void 0 ? void 0 : _wk$nights12[sk];
+        const sid = wk.nights?.[sk];
         if (!sid) return;
         const d = addD(mon, i);
         const moKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
-        if ((_monthlyData$moKey2 = monthlyData[moKey]) !== null && _monthlyData$moKey2 !== void 0 && _monthlyData$moKey2[sid]) monthlyData[moKey][sid][countKey]++;
+        if (monthlyData[moKey]?.[sid]) monthlyData[moKey][sid][countKey]++;
       });
 
       // Weekend: Fri night (5p–7a) = 1 + Sun (7a–7a) = 2 = 3 total
-      const wkndSid = (_wk$nights13 = wk.nights) === null || _wk$nights13 === void 0 ? void 0 : _wk$nights13.wknd;
+      const wkndSid = wk.nights?.wknd;
       if (wkndSid) {
-        var _monthlyData$friMo, _monthlyData$sunMo;
         const fri = addD(mon, 4);
         const sun = addD(mon, 6);
         const friMo = `${fri.getFullYear()}-${String(fri.getMonth() + 1).padStart(2, "0")}`;
         const sunMo = `${sun.getFullYear()}-${String(sun.getMonth() + 1).padStart(2, "0")}`;
-        if ((_monthlyData$friMo = monthlyData[friMo]) !== null && _monthlyData$friMo !== void 0 && _monthlyData$friMo[wkndSid]) monthlyData[friMo][wkndSid][countKey] += 1;
-        if ((_monthlyData$sunMo = monthlyData[sunMo]) !== null && _monthlyData$sunMo !== void 0 && _monthlyData$sunMo[wkndSid]) monthlyData[sunMo][wkndSid][countKey] += 2;
+        if (monthlyData[friMo]?.[wkndSid]) monthlyData[friMo][wkndSid][countKey] += 1;
+        if (monthlyData[sunMo]?.[wkndSid]) monthlyData[sunMo][wkndSid][countKey] += 2;
       }
     });
     const sortedMonths = [...allMonths].sort();
@@ -7521,14 +8088,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       onClick: () => {
         const header = ["Surgeon", ...moLabels.map(m => m + " 1st"), "Total 1st", ...moLabels.map(m => m + " 2nd"), "Total 2nd", "Grand Total"];
         const rows = surgeons.map(s => {
-          const m1 = sortedMonths.map(m => {
-            var _monthlyData$m;
-            return ((_monthlyData$m = monthlyData[m]) === null || _monthlyData$m === void 0 || (_monthlyData$m = _monthlyData$m[s.id]) === null || _monthlyData$m === void 0 ? void 0 : _monthlyData$m.total1st) || 0;
-          });
-          const m2 = sortedMonths.map(m => {
-            var _monthlyData$m2;
-            return ((_monthlyData$m2 = monthlyData[m]) === null || _monthlyData$m2 === void 0 || (_monthlyData$m2 = _monthlyData$m2[s.id]) === null || _monthlyData$m2 === void 0 ? void 0 : _monthlyData$m2.total2nd) || 0;
-          });
+          const m1 = sortedMonths.map(m => monthlyData[m]?.[s.id]?.total1st || 0);
+          const m2 = sortedMonths.map(m => monthlyData[m]?.[s.id]?.total2nd || 0);
           const t1 = m1.reduce((a, b) => a + b, 0);
           const t2 = m2.reduce((a, b) => a + b, 0);
           return [s.name, ...m1, t1, ...m2, t2, t1 + t2].join(",");
@@ -7594,10 +8155,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         color: "#1a8040"
       }
     }, "Total"))), /*#__PURE__*/React.createElement("tbody", null, surgeons.map(s => {
-      const vals = sortedMonths.map(m => {
-        var _monthlyData$m3;
-        return ((_monthlyData$m3 = monthlyData[m]) === null || _monthlyData$m3 === void 0 || (_monthlyData$m3 = _monthlyData$m3[s.id]) === null || _monthlyData$m3 === void 0 ? void 0 : _monthlyData$m3.total1st) || 0;
-      });
+      const vals = sortedMonths.map(m => monthlyData[m]?.[s.id]?.total1st || 0);
       const total = vals.reduce((a, b) => a + b, 0);
       return /*#__PURE__*/React.createElement("tr", {
         key: s.id,
@@ -7677,10 +8235,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         color: "#8a6a10"
       }
     }, "Total"))), /*#__PURE__*/React.createElement("tbody", null, surgeons.map(s => {
-      const vals = sortedMonths.map(m => {
-        var _monthlyData$m4;
-        return ((_monthlyData$m4 = monthlyData[m]) === null || _monthlyData$m4 === void 0 || (_monthlyData$m4 = _monthlyData$m4[s.id]) === null || _monthlyData$m4 === void 0 ? void 0 : _monthlyData$m4.total2nd) || 0;
-      });
+      const vals = sortedMonths.map(m => monthlyData[m]?.[s.id]?.total2nd || 0);
       const total = vals.reduce((a, b) => a + b, 0);
       return /*#__PURE__*/React.createElement("tr", {
         key: s.id,
@@ -8065,7 +8620,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       margin: "0 0 12px",
       lineHeight: 1.5
     }
-  }, "Select your name to see only your shifts and vacations. Your choice is remembered on this device."), /*#__PURE__*/React.createElement("div", {
+  }, userProfile ? `Showing schedule for ${userProfile.display_name}.` : "Select your name to see only your shifts and vacations.", isScheduler && " As scheduler, you can view any surgeon's schedule."), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       gap: 8,
@@ -8092,15 +8647,14 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       ...css.btn(true),
       padding: "8px 18px"
     }
-  }, "\uD83D\uDCC5 Download My Calendar (.ics)"))), mySurgeon && Object.keys(schedule).length > 0 && (_sMap$myId => {
+  }, "\uD83D\uDCC5 Download My Calendar (.ics)"))), mySurgeon && Object.keys(schedule).length > 0 && (() => {
     const myId = mySurgeon;
-    const myName = ((_sMap$myId = sMap[myId]) === null || _sMap$myId === void 0 ? void 0 : _sMap$myId.name) || "?";
+    const myName = sMap[myId]?.name || "?";
     const myVacs = vacations[myId] || [];
 
     // Build my shifts
     const myShifts = [];
     Object.entries(schedule).forEach(([mStr, wk]) => {
-      var _wk$nights15;
       const mon = parse(mStr);
       const endStr = fmt(addD(mon, 6));
       const roles = [];
@@ -8112,8 +8666,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         shiftKey: "dayCall"
       });
       NIGHT_KEYS.forEach((sk, i) => {
-        var _wk$nights14;
-        if (((_wk$nights14 = wk.nights) === null || _wk$nights14 === void 0 ? void 0 : _wk$nights14[sk]) === myId) roles.push({
+        if (wk.nights?.[sk] === myId) roles.push({
           type: SHIFT_LABELS[sk],
           icon: "🌙",
           detail: SHIFT_TIMES[sk],
@@ -8121,7 +8674,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           shiftKey: sk
         });
       });
-      if (((_wk$nights15 = wk.nights) === null || _wk$nights15 === void 0 ? void 0 : _wk$nights15.wknd) === myId) roles.push({
+      if (wk.nights?.wknd === myId) roles.push({
         type: "Weekend",
         icon: "🌗",
         detail: SHIFT_TIMES.wknd,
@@ -8387,12 +8940,11 @@ ${"</"}script>${"</"}body>${"</"}html>`;
 
     // Helper to format date range compactly
     const shortRange = (s, e) => {
-      var _MO3, _MO4;
       const sp = s.split("-"),
         ep = e.split("-");
-      const sm = (_MO3 = MO[parseInt(sp[1]) - 1]) === null || _MO3 === void 0 ? void 0 : _MO3.slice(0, 3),
+      const sm = MO[parseInt(sp[1]) - 1]?.slice(0, 3),
         sd = parseInt(sp[2]);
-      const em = (_MO4 = MO[parseInt(ep[1]) - 1]) === null || _MO4 === void 0 ? void 0 : _MO4.slice(0, 3),
+      const em = MO[parseInt(ep[1]) - 1]?.slice(0, 3),
         ed = parseInt(ep[2]);
       if (s === e) return `${sm} ${sd}`;
       if (sp[1] === ep[1]) return `${sm} ${sd}–${ed}`;
@@ -8493,7 +9045,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           padding: "8px 0",
           borderBottom: "1px solid #f0e8d8"
         }
-      }, (editingVacReq === null || editingVacReq === void 0 ? void 0 : editingVacReq.id) === r.id ? /*#__PURE__*/React.createElement("div", {
+      }, editingVacReq?.id === r.id ? /*#__PURE__*/React.createElement("div", {
         style: {
           display: "flex",
           gap: 6,
@@ -8792,7 +9344,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           padding: "6px 0",
           borderBottom: "1px solid #e8f0e8"
         }
-      }, (editingVacReq === null || editingVacReq === void 0 ? void 0 : editingVacReq.id) === r.id ? /*#__PURE__*/React.createElement("div", {
+      }, editingVacReq?.id === r.id ? /*#__PURE__*/React.createElement("div", {
         style: {
           display: "flex",
           gap: 6,
@@ -9737,19 +10289,78 @@ ${"</"}script>${"</"}body>${"</"}html>`;
   }, /*#__PURE__*/React.createElement("div", {
     style: css.cardT
   }, "\uD83D\uDC64 Account"), /*#__PURE__*/React.createElement("div", {
-    style: { display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }
-  }, /*#__PURE__*/React.createElement("div", null,
-    /*#__PURE__*/React.createElement("p", { style: { fontSize: 13, color: dkText, margin: "0 0 2px" } }, "Signed in as ", /*#__PURE__*/React.createElement("strong", { style: { color: "#1a6fa8" } }, userProfile?.display_name || "\u2014")),
-    /*#__PURE__*/React.createElement("p", { style: { fontSize: 11, color: "#7a8a98", margin: 0 } }, authUser?.email)),
-    /*#__PURE__*/React.createElement("button", { onClick: handleSignOut, style: { ...css.btn(false), padding: "6px 14px", fontSize: 12 } }, "Sign Out"))),
-    biometricAvail && React.createElement("div", { style: { paddingTop: 12, borderTop: "1px solid #e0e4ea" } },
-      React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 } },
-        React.createElement("div", null,
-          React.createElement("p", { style: { fontSize: 12, fontWeight: 600, color: dkText, margin: "0 0 2px" } }, "\uD83D\uDD10 Biometric Login"),
-          React.createElement("p", { style: { fontSize: 11, color: "#7a8a98", margin: 0 } }, biometricEnrolled ? "Face ID / Touch ID is enabled" : "Use Face ID or Touch ID to unlock the app")),
-        biometricEnrolled
-          ? React.createElement("button", { onClick: handleBiometricUnenroll, style: { ...css.btn(false), padding: "6px 14px", fontSize: 12 } }, "Disable")
-          : React.createElement("button", { onClick: handleBiometricEnroll, style: { ...css.btn(true), padding: "6px 14px", fontSize: 12 } }, "Enable")))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "space-between",
+      flexWrap: "wrap",
+      gap: 8,
+      marginBottom: biometricAvail ? 12 : 0
+    }
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 13,
+      color: dkText,
+      margin: "0 0 2px"
+    }
+  }, "Signed in as ", /*#__PURE__*/React.createElement("strong", {
+    style: {
+      color: "#1a6fa8"
+    }
+  }, userProfile?.display_name || "—")), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 11,
+      color: "#7a8a98",
+      margin: 0
+    }
+  }, authUser?.email)), /*#__PURE__*/React.createElement("button", {
+    onClick: handleSignOut,
+    style: {
+      ...css.btn(false),
+      padding: "6px 14px",
+      fontSize: 12
+    }
+  }, "Sign Out")), biometricAvail && /*#__PURE__*/React.createElement("div", {
+    style: {
+      paddingTop: 12,
+      borderTop: "1px solid #e0e4ea"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "space-between",
+      flexWrap: "wrap",
+      gap: 8
+    }
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 12,
+      fontWeight: 600,
+      color: dkText,
+      margin: "0 0 2px"
+    }
+  }, "\uD83D\uDD10 Biometric Login"), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 11,
+      color: "#7a8a98",
+      margin: 0
+    }
+  }, biometricEnrolled ? "Face ID / Touch ID is enabled" : "Use Face ID or Touch ID to unlock the app")), biometricEnrolled ? /*#__PURE__*/React.createElement("button", {
+    onClick: handleBiometricUnenroll,
+    style: {
+      ...css.btn(false),
+      padding: "6px 14px",
+      fontSize: 12
+    }
+  }, "Disable") : /*#__PURE__*/React.createElement("button", {
+    onClick: handleBiometricEnroll,
+    style: {
+      ...css.btn(true),
+      padding: "6px 14px",
+      fontSize: 12
+    }
+  }, "Enable")))), /*#__PURE__*/React.createElement("div", {
     style: css.card
   }, /*#__PURE__*/React.createElement("div", {
     style: css.cardT
@@ -9818,21 +10429,18 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       gap: 4,
       flexWrap: "wrap"
     }
-  }, surgeons.map(s => {
-    var _sMap$s$id;
-    return /*#__PURE__*/React.createElement("button", {
-      key: s.id,
-      onClick: () => {
-        navigator.clipboard.writeText(`${SUPABASE_URL}/functions/v1/calendar-sync?surgeon=${s.name}`);
-      },
-      style: {
-        ...css.badge(((_sMap$s$id = sMap[s.id]) === null || _sMap$s$id === void 0 ? void 0 : _sMap$s$id.idx) || 0),
-        cursor: "pointer",
-        padding: "3px 10px",
-        fontSize: 10
-      }
-    }, "\uD83D\uDCCB ", s.name);
-  })), /*#__PURE__*/React.createElement("p", {
+  }, surgeons.map(s => /*#__PURE__*/React.createElement("button", {
+    key: s.id,
+    onClick: () => {
+      navigator.clipboard.writeText(`${SUPABASE_URL}/functions/v1/calendar-sync?surgeon=${s.name}`);
+    },
+    style: {
+      ...css.badge(sMap[s.id]?.idx || 0),
+      cursor: "pointer",
+      padding: "3px 10px",
+      fontSize: 10
+    }
+  }, "\uD83D\uDCCB ", s.name))), /*#__PURE__*/React.createElement("p", {
     style: {
       fontSize: 10,
       color: "#8a94a0",
