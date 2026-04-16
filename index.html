@@ -40,7 +40,7 @@
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.page.js" defer></script>
   <script>
-    var APP_VERSION = "2026.04.15i";
+    var APP_VERSION = "2026.04.15j";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -1186,13 +1186,6 @@ const {
 } = React;
 function CallSchedule() {
   const [view, setView] = useState("calendar");
-
-  // If non-scheduler ends up on a restricted tab, redirect them
-  useEffect(() => {
-    if (!isScheduler && (view === "setup" || view === "totals")) {
-      setView("calendar");
-    }
-  }, [isScheduler, view]);
   const [surgeons, setSurgeons] = useState(INIT_SURGEONS);
   const [apps, setApps] = useState(INIT_APPS);
   const [vacations, setVacations] = useState({});
@@ -1324,6 +1317,13 @@ function CallSchedule() {
   const [schedulerPin, setSchedulerPin] = useState("");
   const [pinInput, setPinInput] = useState("");
   const [pinError, setPinError] = useState("");
+
+  // If non-scheduler ends up on a restricted tab, redirect them
+  useEffect(() => {
+    if (!isScheduler && (view === "setup" || view === "totals")) {
+      setView("calendar");
+    }
+  }, [isScheduler, view]);
 
   // ─── Notifications ───
   const [notifications, setNotifications] = useState([]);
