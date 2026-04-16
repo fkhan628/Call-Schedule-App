@@ -41,41 +41,29 @@
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
-
       function nukeAndReload() {
         var promises = [];
-        // 1. Clear Cache Storage API entries
         if (window.caches) {
-          promises.push(
-            caches.keys().then(function(names) {
-              return Promise.all(names.map(function(n) { return caches.delete(n); }));
-            })
-          );
+          promises.push(caches.keys().then(function(names) {
+            return Promise.all(names.map(function(n) { return caches.delete(n); }));
+          }));
         }
-        // 2. Unregister ALL service workers (force a fresh fetch of the worker itself)
         if (navigator.serviceWorker) {
-          promises.push(
-            navigator.serviceWorker.getRegistrations().then(function(regs) {
-              return Promise.all(regs.map(function(r) { return r.unregister(); }));
-            })
-          );
+          promises.push(navigator.serviceWorker.getRegistrations().then(function(regs) {
+            return Promise.all(regs.map(function(r) { return r.unregister(); }));
+          }));
         }
         Promise.all(promises).then(function() {
-          // 3. Hard reload with cache-bust query param so browser refetches index.html
           var url = new URL(window.location.href);
           url.searchParams.set("_v", APP_VERSION);
           window.location.replace(url.toString());
-        }).catch(function() {
-          window.location.reload(true);
-        });
+        }).catch(function() { window.location.reload(true); });
       }
-
       if (mismatch) {
         localStorage.setItem("dsg_app_version", APP_VERSION);
         nukeAndReload();
       } else {
         localStorage.setItem("dsg_app_version", APP_VERSION);
-        // Also expose manually for support cases
         window.__dsgHardReset = nukeAndReload;
       }
     })();
@@ -1194,7 +1182,14 @@ const {
   useEffect
 } = React;
 function CallSchedule() {
-  const [view, setView] = useState("setup");
+  const [view, setView] = useState("calendar");
+
+  // If non-scheduler ends up on a restricted tab, redirect them
+  useEffect(() => {
+    if (!isScheduler && (view === "setup" || view === "totals")) {
+      setView("calendar");
+    }
+  }, [isScheduler, view]);
   const [surgeons, setSurgeons] = useState(INIT_SURGEONS);
   const [apps, setApps] = useState(INIT_APPS);
   const [vacations, setVacations] = useState({});
@@ -5171,31 +5166,35 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     }
   }, "Connecting\u2026")))), /*#__PURE__*/React.createElement("div", {
     style: css.nav
-  }, [["setup", "Setup"], ["calendar", "Calendar"], ["myschedule", "Mine"], ["requests", "Requests"], ["stats", "Stats"], ["totals", "Totals"], ["settings", "Settings"]].map(([k, l]) => /*#__PURE__*/React.createElement("button", {
-    key: k,
-    style: {
-      ...css.tab(view === k),
-      position: "relative"
-    },
-    onClick: () => setView(k)
-  }, l, k === "requests" && vacRequests.filter(r => r.status === "pending").length + tradeRequests.filter(r => r.status === "pending").length > 0 && /*#__PURE__*/React.createElement("span", {
-    style: {
-      position: "absolute",
-      top: -4,
-      right: -4,
-      background: "#e04040",
-      color: "#fff",
-      borderRadius: 10,
-      fontSize: 9,
-      fontWeight: 700,
-      minWidth: 16,
-      height: 16,
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "center",
-      padding: "0 4px"
-    }
-  }, vacRequests.filter(r => r.status === "pending").length + tradeRequests.filter(r => r.status === "pending").length))), /*#__PURE__*/React.createElement("button", {
+  }, (() => {
+    const allTabs = [["setup", "Setup"], ["calendar", "Calendar"], ["myschedule", "Mine"], ["requests", "Requests"], ["stats", "Stats"], ["totals", "Totals"], ["settings", "Settings"]];
+    const tabs = isScheduler ? allTabs : allTabs.filter(([k]) => k !== "setup" && k !== "totals");
+    return tabs.map(([k, l]) => /*#__PURE__*/React.createElement("button", {
+      key: k,
+      style: {
+        ...css.tab(view === k),
+        position: "relative"
+      },
+      onClick: () => setView(k)
+    }, l, k === "requests" && vacRequests.filter(r => r.status === "pending").length + tradeRequests.filter(r => r.status === "pending").length > 0 && /*#__PURE__*/React.createElement("span", {
+      style: {
+        position: "absolute",
+        top: -4,
+        right: -4,
+        background: "#e04040",
+        color: "#fff",
+        borderRadius: 10,
+        fontSize: 9,
+        fontWeight: 700,
+        minWidth: 16,
+        height: 16,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: "0 4px"
+      }
+    }, vacRequests.filter(r => r.status === "pending").length + tradeRequests.filter(r => r.status === "pending").length)));
+  })(), /*#__PURE__*/React.createElement("button", {
     onClick: () => {
       setShowNotifs(p => !p);
       if (!showNotifs) markNotifsSeen();
@@ -7343,7 +7342,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       display: "flex",
       gap: 5
     }
-  }, /*#__PURE__*/React.createElement("button", {
+  }, isScheduler && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("button", {
     onClick: () => setView("setup"),
     style: css.btn(false)
   }, "\u2190 Setup"), /*#__PURE__*/React.createElement("button", {
@@ -7356,7 +7355,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       color: "#c04040",
       borderColor: "#e0a0a0"
     }
-  }, "\u2715 Clear"))), /*#__PURE__*/React.createElement("div", {
+  }, "\u2715 Clear")))), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       gap: 4,

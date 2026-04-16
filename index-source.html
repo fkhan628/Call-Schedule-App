@@ -90,7 +90,14 @@
     const { useState, useMemo, useCallback, useRef, useEffect } = React;
 
 function CallSchedule() {
-  const [view, setView] = useState("setup");
+  const [view, setView] = useState("calendar");
+
+  // If non-scheduler ends up on a restricted tab, redirect them
+  useEffect(() => {
+    if (!isScheduler && (view === "setup" || view === "totals")) {
+      setView("calendar");
+    }
+  }, [isScheduler, view]);
 
   const [surgeons, setSurgeons] = useState(INIT_SURGEONS);
   const [apps, setApps] = useState(INIT_APPS);
@@ -2849,14 +2856,18 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           </div>
         </div>
         <div style={css.nav}>
-          {[["setup","Setup"],["calendar","Calendar"],["myschedule","Mine"],["requests","Requests"],["stats","Stats"],["totals","Totals"],["settings","Settings"]].map(([k,l])=>
-            <button key={k} style={{...css.tab(view===k),position:"relative"}} onClick={()=>setView(k)}>
-              {l}
-              {k==="requests" && (vacRequests.filter(r=>r.status==="pending").length + tradeRequests.filter(r=>r.status==="pending").length) > 0 && (
-                <span style={{position:"absolute",top:-4,right:-4,background:"#e04040",color:"#fff",borderRadius:10,fontSize:9,fontWeight:700,minWidth:16,height:16,display:"flex",alignItems:"center",justifyContent:"center",padding:"0 4px"}}>{vacRequests.filter(r=>r.status==="pending").length + tradeRequests.filter(r=>r.status==="pending").length}</span>
-              )}
-            </button>
-          )}
+          {(() => {
+            const allTabs = [["setup","Setup"],["calendar","Calendar"],["myschedule","Mine"],["requests","Requests"],["stats","Stats"],["totals","Totals"],["settings","Settings"]];
+            const tabs = isScheduler ? allTabs : allTabs.filter(([k]) => k !== "setup" && k !== "totals");
+            return tabs.map(([k,l]) =>
+              <button key={k} style={{...css.tab(view===k),position:"relative"}} onClick={()=>setView(k)}>
+                {l}
+                {k==="requests" && (vacRequests.filter(r=>r.status==="pending").length + tradeRequests.filter(r=>r.status==="pending").length) > 0 && (
+                  <span style={{position:"absolute",top:-4,right:-4,background:"#e04040",color:"#fff",borderRadius:10,fontSize:9,fontWeight:700,minWidth:16,height:16,display:"flex",alignItems:"center",justifyContent:"center",padding:"0 4px"}}>{vacRequests.filter(r=>r.status==="pending").length + tradeRequests.filter(r=>r.status==="pending").length}</span>
+                )}
+              </button>
+            );
+          })()}
           {/* Notification Bell */}
           <button onClick={()=>{setShowNotifs(p=>!p); if(!showNotifs) markNotifsSeen();}}
             style={{...css.tab(showNotifs),position:"relative",fontSize:15,padding:"4px 10px"}}>
@@ -3659,9 +3670,11 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               <button onClick={()=>{if(calMonth===11){setCalMonth(0);setCalYear(y=>y+1);}else setCalMonth(m=>m+1);}} style={css.btn(false)}>▶</button>
             </div>
             <div style={{display:"flex",gap:5}}>
-              <button onClick={()=>setView("setup")} style={css.btn(false)}>← Setup</button>
-              <button onClick={()=>doGenerate(false)} style={css.btn(true)}>↻ Regenerate</button>
-              <button onClick={clearSchedule} style={{...css.btn(false),color:"#c04040",borderColor:"#e0a0a0"}}>✕ Clear</button>
+              {isScheduler && <>
+                <button onClick={()=>setView("setup")} style={css.btn(false)}>← Setup</button>
+                <button onClick={()=>doGenerate(false)} style={css.btn(true)}>↻ Regenerate</button>
+                <button onClick={clearSchedule} style={{...css.btn(false),color:"#c04040",borderColor:"#e0a0a0"}}>✕ Clear</button>
+              </>}
             </div>
           </div>
 
