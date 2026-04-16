@@ -40,7 +40,7 @@
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.page.js" defer></script>
   <script>
-    var APP_VERSION = "2026.04.15j";
+    var APP_VERSION = "2026.04.15l";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -1310,7 +1310,10 @@ function CallSchedule() {
   const [biometricAvail, setBiometricAvail] = useState(false);
   const [biometricEnrolled, setBiometricEnrolled] = useState(false);
   const [biometricPending, setBiometricPending] = useState(false); // waiting for biometric prompt
-  const allPeople = useMemo(() => [...INIT_SURGEONS, ...INIT_APPS], []);
+  const allPeople = useMemo(() => [...INIT_SURGEONS, ...INIT_APPS, {
+    id: "admin",
+    name: "ADMIN (Clinic Manager)"
+  }], []);
 
   // ─── Scheduler Mode (PIN protected) ───
   const [isScheduler, setIsScheduler] = useState(false);
@@ -1320,10 +1323,14 @@ function CallSchedule() {
 
   // If non-scheduler ends up on a restricted tab, redirect them
   useEffect(() => {
+    const isAdmin = userProfile?.person_id === "admin";
     if (!isScheduler && (view === "setup" || view === "totals")) {
       setView("calendar");
     }
-  }, [isScheduler, view]);
+    if (isAdmin && view === "myschedule") {
+      setView("calendar");
+    }
+  }, [isScheduler, view, userProfile]);
 
   // ─── Notifications ───
   const [notifications, setNotifications] = useState([]);
@@ -1490,21 +1497,24 @@ function CallSchedule() {
         if (userId) {
           // Create profile
           const personName = allPeople.find(p => p.id === signupPersonId)?.name || signupPersonId;
+          const role = signupPersonId === "admin" ? "admin" : "member";
           await dbAuth.upsertProfile({
             id: userId,
             person_id: signupPersonId,
             display_name: personName,
-            role: "member"
+            role
           });
           const profile = {
             person_id: signupPersonId,
             display_name: personName,
-            role: "member"
+            role
           };
           setAuthUser(user || session?.user);
           setUserProfile(profile);
           setMySurgeon(signupPersonId);
           setNeedsProfile(false);
+          // Auto-elevate admin accounts to scheduler
+          if (signupPersonId === "admin") setIsScheduler(true);
         }
       } else {
         const {
@@ -1523,6 +1533,8 @@ function CallSchedule() {
           setUserProfile(profile);
           setMySurgeon(profile.person_id);
           setNeedsProfile(false);
+          // Auto-elevate admin accounts to scheduler
+          if (profile.person_id === "admin") setIsScheduler(true);
         } else {
           setNeedsProfile(true);
         }
@@ -1546,19 +1558,21 @@ function CallSchedule() {
         return;
       }
       const personName = allPeople.find(p => p.id === signupPersonId)?.name || signupPersonId;
+      const role = signupPersonId === "admin" ? "admin" : "member";
       await dbAuth.upsertProfile({
         id: authUser.id,
         person_id: signupPersonId,
         display_name: personName,
-        role: "member"
+        role
       });
       setUserProfile({
         person_id: signupPersonId,
         display_name: personName,
-        role: "member"
+        role
       });
       setMySurgeon(signupPersonId);
       setNeedsProfile(false);
+      if (signupPersonId === "admin") setIsScheduler(true);
     } catch (e) {
       setAuthError(e.message);
     }
@@ -1688,24 +1702,37 @@ function CallSchedule() {
         console.error("Vacation merge error:", e);
       }
 
-      // One-time import of the May-Aug 2026 hand-built schedule
+      // Import of the May-Aug 2026 hand-built schedule (content-aware: re-merges if missing/mismatched)
       try {
-        const schedMergeKey = "dsg-hand-schedule-may-aug-2026-v1";
-        if (!localStorage.getItem(schedMergeKey) && typeof HAND_SCHEDULE_MAY_AUG !== "undefined") {
+        if (typeof HAND_SCHEDULE_MAY_AUG !== "undefined") {
+          const expectedEntries = Object.entries(HAND_SCHEDULE_MAY_AUG);
           setSchedule(prev => {
+            // Check if hand-schedule is actually present in current state
+            let needsMerge = false;
+            for (const [mStr, wk] of expectedEntries) {
+              const existing = prev[mStr];
+              if (!existing || existing.dayCall !== wk.dayCall) {
+                needsMerge = true;
+                break;
+              }
+              if (existing.nights?.wknd !== wk.nights?.wknd) {
+                needsMerge = true;
+                break;
+              }
+            }
+            if (!needsMerge) return prev; // Already in place — no change
+
             const next = {
               ...prev
             };
-            // Overwrite any existing entries for these Mondays with the hand-built schedule
-            Object.entries(HAND_SCHEDULE_MAY_AUG).forEach(([mStr, wk]) => {
+            expectedEntries.forEach(([mStr, wk]) => {
               next[mStr] = {
                 ...wk
               };
             });
+            console.log("Imported/refreshed May-Aug 2026 hand-built schedule");
             return next;
           });
-          localStorage.setItem(schedMergeKey, "1");
-          console.log("Imported May-Aug 2026 hand-built schedule");
         }
       } catch (e) {
         console.error("Schedule import error:", e);
@@ -5171,7 +5198,9 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     style: css.nav
   }, (() => {
     const allTabs = [["setup", "Setup"], ["calendar", "Calendar"], ["myschedule", "Mine"], ["requests", "Requests"], ["stats", "Stats"], ["totals", "Totals"], ["settings", "Settings"]];
-    const tabs = isScheduler ? allTabs : allTabs.filter(([k]) => k !== "setup" && k !== "totals");
+    const isAdmin = userProfile?.person_id === "admin";
+    let tabs = isScheduler ? allTabs : allTabs.filter(([k]) => k !== "setup" && k !== "totals");
+    if (isAdmin) tabs = tabs.filter(([k]) => k !== "myschedule");
     return tabs.map(([k, l]) => /*#__PURE__*/React.createElement("button", {
       key: k,
       style: {
@@ -10706,6 +10735,29 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       marginTop: 6
     }
   }, "Click a name to copy their subscribe URL. Requires deploying the calendar-sync Edge Function.")), /*#__PURE__*/React.createElement("div", {
+    style: css.card
+  }, /*#__PURE__*/React.createElement("div", {
+    style: css.cardT
+  }, "\uD83D\uDD04 Refresh App"), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 12,
+      color: "#5a6a78",
+      marginBottom: 10,
+      lineHeight: 1.4
+    }
+  }, "If the app seems stuck on an old version or the schedule looks wrong, tap below to clear the cache and reload fresh."), /*#__PURE__*/React.createElement("button", {
+    onClick: () => {
+      if (confirm("Refresh the app? This clears the local cache and reloads the latest version. No data is lost.")) {
+        if (typeof window.__dsgHardReset === "function") window.__dsgHardReset();else window.location.reload();
+      }
+    },
+    style: {
+      ...css.btn(true),
+      padding: "8px 16px",
+      fontSize: 13,
+      borderRadius: 7
+    }
+  }, "Refresh Now")), isScheduler && /*#__PURE__*/React.createElement("div", {
     style: css.card
   }, /*#__PURE__*/React.createElement("div", {
     style: css.cardT
