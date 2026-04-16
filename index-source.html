@@ -65,7 +65,7 @@
   <div id="root"></div>
   <script>
     // Cache-bust with version — update this string when deploying changes
-    var _v = "2026.04.15f";
+    var _v = "2026.04.15g";
     ['config.js','helpers.js','generator.js','app-styles.js'].forEach(function(f) {
       document.write('<script src="'+f+'?v='+_v+'"><\/script>');
     });
@@ -453,6 +453,23 @@ function CallSchedule() {
           console.log("Merged 2026-2027 vacations & Fierce weeks");
         }
       } catch(e) { console.error("Vacation merge error:", e); }
+
+      // One-time import of the May-Aug 2026 hand-built schedule
+      try {
+        const schedMergeKey = "dsg-hand-schedule-may-aug-2026-v1";
+        if (!localStorage.getItem(schedMergeKey) && typeof HAND_SCHEDULE_MAY_AUG !== "undefined") {
+          setSchedule(prev => {
+            const next = { ...prev };
+            // Overwrite any existing entries for these Mondays with the hand-built schedule
+            Object.entries(HAND_SCHEDULE_MAY_AUG).forEach(([mStr, wk]) => {
+              next[mStr] = { ...wk };
+            });
+            return next;
+          });
+          localStorage.setItem(schedMergeKey, "1");
+          console.log("Imported May-Aug 2026 hand-built schedule");
+        }
+      } catch(e) { console.error("Schedule import error:", e); }
     })();
 
     // Poll for changes from other users every 15 seconds

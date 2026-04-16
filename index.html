@@ -37,7 +37,7 @@
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.page.js" defer></script>
   <script>
-    var APP_VERSION = "2026.04.15f";
+    var APP_VERSION = "2026.04.15g";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       if (stored && stored !== APP_VERSION) {
@@ -203,6 +203,32 @@ const MAY_AUG_VACATIONS = {
 };
 const MAY_AUG_FIERCE_PRIMARY = ["2026-05-25","2026-07-20","2026-09-14","2026-11-09"];
 const MAY_AUG_FIERCE_BACKUP = ["2026-05-04","2026-06-22","2026-08-17","2026-10-12","2026-12-07"];
+
+/* ═══ May–August 2026 Hand-Built Schedule ═══
+   Parsed from Calendar Creator PDFs uploaded by Faraz.
+   Surgeon IDs: s1=DJA, s2=MCC, s3=RPC, s4=KJH, s5=REH, s6=FAK, s7=ARW
+   Format: { "YYYY-MM-DD" (Monday): { dayCall, nights:{mon,tue,wed,thu,wknd}, off, isBackup, isFierceBackup, holidayCoverage } } */
+const HAND_SCHEDULE_MAY_AUG = {
+  "2026-05-04": { dayCall:"s5", nights:{mon:"s7",tue:"s2",wed:"s1",thu:"s4",wknd:"s3"}, off:"s6", isBackup:false, isFierceBackup:true },
+  "2026-05-11": { dayCall:"s6", nights:{mon:"s7",tue:"s1",wed:"s5",thu:"s3",wknd:"s7"}, off:"s4", isBackup:false, isFierceBackup:false },
+  "2026-05-18": { dayCall:"s1", nights:{mon:"s4",tue:"s3",wed:"s6",thu:"s5",wknd:"s2"}, off:"s7", isBackup:false, isFierceBackup:false },
+  // May 25: Memorial Day. DJA covers Mon 24h (holiday), MCC covers Sun eve. RPC is Service Week starting Tue.
+  "2026-05-25": { dayCall:"s3", nights:{mon:null,tue:"s5",wed:"s2",thu:"s7",wknd:"s4"}, off:"s6", isBackup:true, isFierceBackup:false,
+                  holidayCoverage:{
+                    "2026-05-24":{surgeonId:"s2",role:"holiday_24h",hours:"7a–7a",name:"Memorial Day Eve",type:"minor"},
+                    "2026-05-25":{surgeonId:"s1",role:"holiday_24h",hours:"7a–7a",name:"Memorial Day",type:"minor"}
+                  }},
+  "2026-06-01": { dayCall:"s2", nights:{mon:"s1",tue:"s7",wed:"s4",thu:"s3",wknd:"s1"}, off:"s5", isBackup:false, isFierceBackup:false },
+  "2026-06-08": { dayCall:"s4", nights:{mon:"s5",tue:"s2",wed:"s1",thu:"s7",wknd:"s5"}, off:"s6", isBackup:false, isFierceBackup:false },
+  "2026-06-15": { dayCall:"s7", nights:{mon:"s6",tue:"s2",wed:"s4",thu:"s5",wknd:"s6"}, off:"s1", isBackup:false, isFierceBackup:false },
+  "2026-06-22": { dayCall:"s1", nights:{mon:"s3",tue:"s2",wed:"s6",thu:"s7",wknd:"s3"}, off:"s4", isBackup:false, isFierceBackup:true },
+  "2026-06-29": { dayCall:"s5", nights:{mon:"s6",tue:"s4",wed:"s3",thu:"s1",wknd:"s6"}, off:"s7", isBackup:false, isFierceBackup:false },
+  "2026-07-06": { dayCall:"s3", nights:{mon:"s7",tue:"s5",wed:"s2",thu:"s6",wknd:"s4"}, off:"s1", isBackup:false, isFierceBackup:false },
+  "2026-07-13": { dayCall:"s2", nights:{mon:"s5",tue:"s6",wed:"s3",thu:"s4",wknd:"s5"}, off:"s1", isBackup:false, isFierceBackup:false },
+  "2026-07-20": { dayCall:"s4", nights:{mon:"s3",tue:"s2",wed:"s6",thu:"s1",wknd:"s7"}, off:"s5", isBackup:true, isFierceBackup:false },
+  "2026-07-27": { dayCall:"s6", nights:{mon:"s3",tue:"s4",wed:"s7",thu:"s5",wknd:"s2"}, off:"s1", isBackup:false, isFierceBackup:false },
+  "2026-08-03": { dayCall:"s7", nights:{mon:"s1",tue:"s4",wed:"s2",thu:"s6",wknd:"s1"}, off:"s3", isBackup:false, isFierceBackup:false },
+};
 
 /* ═══ 2026 Holiday Assignments (pre-set from handwritten schedule) ═══
    First surgeon = covers the actual holiday day (24h)
@@ -1636,6 +1662,29 @@ function CallSchedule() {
         }
       } catch (e) {
         console.error("Vacation merge error:", e);
+      }
+
+      // One-time import of the May-Aug 2026 hand-built schedule
+      try {
+        const schedMergeKey = "dsg-hand-schedule-may-aug-2026-v1";
+        if (!localStorage.getItem(schedMergeKey) && typeof HAND_SCHEDULE_MAY_AUG !== "undefined") {
+          setSchedule(prev => {
+            const next = {
+              ...prev
+            };
+            // Overwrite any existing entries for these Mondays with the hand-built schedule
+            Object.entries(HAND_SCHEDULE_MAY_AUG).forEach(([mStr, wk]) => {
+              next[mStr] = {
+                ...wk
+              };
+            });
+            return next;
+          });
+          localStorage.setItem(schedMergeKey, "1");
+          console.log("Imported May-Aug 2026 hand-built schedule");
+        }
+      } catch (e) {
+        console.error("Schedule import error:", e);
       }
     })();
 
