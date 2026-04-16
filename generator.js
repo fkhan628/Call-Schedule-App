@@ -313,6 +313,17 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
       // Fallback layers
       if(!avail.length) avail = rem.filter(id => !used.has(id) && !nightUsed.has(id) && !onVac(id,sd,vac));
       if(!avail.length) avail = rem.filter(id => !used.has(id) && !nightUsed.has(id));
+
+      // DOUBLE DUTY: Allow weekend surgeon to also take Monday night when pool is short
+      // Matches hand-schedule pattern: Mon night (5p-7a) then Tue-Thu off then Fri night (5p-7a)
+      // Safe because there's a 3-day gap between the two assignments
+      if (!avail.length && sk === "mon" && nights.wknd) {
+        const wkndId = nights.wknd;
+        if (!onVac(wkndId, sd, vac) && !onVac(wkndId, nextDayStr, vac)) {
+          avail = [wkndId];
+        }
+      }
+
       if(!avail.length){ nightAssignments[sk]=null; continue; }
 
       avail.sort((a,b) => {
