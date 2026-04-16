@@ -1,19 +1,25 @@
 {
   "name": "DSG Call Schedule",
-  "short_name": "Call Schedule",
+  "short_name": "DSG Call",
   "description": "Surgical call scheduling for Davenport Surgical Group",
-  "start_url": "/Call-Schedule-App/",
-  "scope": "/Call-Schedule-App/",
+  "start_url": "./",
+  "scope": "./",
   "display": "standalone",
   "background_color": "#f0f2f5",
-  "theme_color": "#f8f9fb",
+  "theme_color": "#1a6fa8",
   "orientation": "any",
   "icons": [
     {
-      "src": "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%93%8B%3C/text%3E%3C/svg%3E",
-      "sizes": "any",
-      "type": "image/svg+xml",
-      "purpose": "any"
+      "src": "icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
     }
   ]
 }
