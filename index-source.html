@@ -43,20 +43,36 @@
   <script src="https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.page.js" defer></script>
   <script>
     // ─── Auto-update: bump this version string each deploy ───
-    var APP_VERSION = "2026.04.14b";
+    var APP_VERSION = "2026.04.15h";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
-      if (stored && stored !== APP_VERSION) {
-        localStorage.setItem("dsg_app_version", APP_VERSION);
+      var mismatch = stored && stored !== APP_VERSION;
+
+      function nukeAndReload() {
+        var promises = [];
         if (window.caches) {
-          caches.keys().then(function(names) {
-            names.forEach(function(n) { caches.delete(n); });
-          }).then(function() { location.reload(true); });
-        } else {
-          location.reload(true);
+          promises.push(caches.keys().then(function(names) {
+            return Promise.all(names.map(function(n) { return caches.delete(n); }));
+          }));
         }
+        if (navigator.serviceWorker) {
+          promises.push(navigator.serviceWorker.getRegistrations().then(function(regs) {
+            return Promise.all(regs.map(function(r) { return r.unregister(); }));
+          }));
+        }
+        Promise.all(promises).then(function() {
+          var url = new URL(window.location.href);
+          url.searchParams.set("_v", APP_VERSION);
+          window.location.replace(url.toString());
+        }).catch(function() { window.location.reload(true); });
+      }
+
+      if (mismatch) {
+        localStorage.setItem("dsg_app_version", APP_VERSION);
+        nukeAndReload();
       } else {
         localStorage.setItem("dsg_app_version", APP_VERSION);
+        window.__dsgHardReset = nukeAndReload;
       }
     })();
   </script>
@@ -65,7 +81,7 @@
   <div id="root"></div>
   <script>
     // Cache-bust with version — update this string when deploying changes
-    var _v = "2026.04.15g";
+    var _v = "2026.04.15h";
     ['config.js','helpers.js','generator.js','app-styles.js'].forEach(function(f) {
       document.write('<script src="'+f+'?v='+_v+'"><\/script>');
     });
