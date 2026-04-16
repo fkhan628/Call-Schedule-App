@@ -37,7 +37,7 @@
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.page.js" defer></script>
   <script>
-    var APP_VERSION = "2026.04.15c";
+    var APP_VERSION = "2026.04.15f";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       if (stored && stored !== APP_VERSION) {
@@ -1226,7 +1226,10 @@ function CallSchedule() {
   const fileRef = useRef(null);
   const lastSyncRef = useRef(null);
   const loadedAtRef = useRef(null); // timestamp when initial load completed — prevents auto-save race
-
+  const scheduleRef = useRef({});
+  useEffect(() => {
+    scheduleRef.current = schedule;
+  }, [schedule]);
   const [showApiKey, setShowApiKey] = useState(false);
 
   // ─── Vacation Requests ───
@@ -1590,20 +1593,20 @@ function CallSchedule() {
       setLoaded(true);
       loadedAtRef.current = Date.now();
 
-      // One-time merge of May-Aug 2026 vacations & Fierce weeks from PDFs
+      // One-time merge of 2026-2027 vacations & Fierce weeks from PDFs
       try {
-        const mergeKey = "dsg-vac-merge-may-aug-2026-v8";
+        const mergeKey = "dsg-vac-merge-2026-2027-v1";
         if (!localStorage.getItem(mergeKey) && typeof MAY_AUG_VACATIONS !== "undefined") {
           setVacations(prev => {
             const n = {
               ...prev
             };
-            // Clear existing May-Aug 2026 entries first (remove old incorrect dates)
+            // Clear existing May 2026 - Jan 2027 entries first
             Object.keys(n).forEach(id => {
               if (Array.isArray(n[id])) {
                 n[id] = n[id].filter(([s]) => {
                   const d = s.substring(0, 7); // "YYYY-MM"
-                  return !(d >= "2026-05" && d <= "2026-08");
+                  return !(d >= "2026-05" && d <= "2026-12" || d === "2027-01");
                 });
               }
             });
@@ -1629,7 +1632,7 @@ function CallSchedule() {
             });
           }
           localStorage.setItem(mergeKey, "1");
-          console.log("Merged May-Aug 2026 vacations & Fierce weeks");
+          console.log("Merged 2026-2027 vacations & Fierce weeks");
         }
       } catch (e) {
         console.error("Vacation merge error:", e);
@@ -2465,7 +2468,18 @@ function CallSchedule() {
 
   // ─── Publish Schedule (with notification) ───
   const doGenerateAndNotify = async () => {
+    const hadExistingSchedule = Object.keys(schedule).length > 0;
     doGenerate(false);
+    // If this is a brand new schedule period (no existing schedule),
+    // roll the generated counts forward into the running totals.
+    // When regenerating an existing period, do not roll forward (same period, not a new one).
+    if (!hadExistingSchedule) {
+      // Give doGenerate's setSchedule a tick to flush, then roll forward
+      setTimeout(() => {
+        const latest = scheduleRef.current;
+        if (latest && Object.keys(latest).length > 0) rollForwardCounts(latest);
+      }, 100);
+    }
     await addNotification("schedule_published", "Schedule Published", "A new call schedule has been generated. Check the Schedule or Calendar tab.");
     sendEmailNotif("schedule_published", {
       period: `${MO[startMonth]} – ${MO[endMoIdx]} ${startYear}`
@@ -3174,15 +3188,142 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
       }
     })();
   };
+
+  // ─── Roll forward counts: sum up a schedule's shifts and add them to priorCounts ───
+  // Called on Accept & Publish so the next generation uses up-to-date totals
+  const rollForwardCounts = useCallback(sched => {
+    if (!sched || Object.keys(sched).length === 0) return;
+    const delta = {};
+    surgeons.forEach(s => {
+      delta[s.id] = {
+        dc: 0,
+        nights: 0,
+        wknd: 0,
+        off: 0,
+        dcB: 0,
+        nightsB: 0,
+        wkndB: 0,
+        offB: 0
+      };
+    });
+    Object.values(sched).forEach(wk => {
+      const bk = wk.isBackup;
+      if (wk.dayCall && delta[wk.dayCall]) delta[wk.dayCall][bk ? "dcB" : "dc"]++;
+      if (wk.off && delta[wk.off]) delta[wk.off][bk ? "offB" : "off"]++;
+      Object.entries(wk.nights || {}).forEach(([sh, sid]) => {
+        if (!sid || !delta[sid]) return;
+        if (sh === "wknd") delta[sid][bk ? "wkndB" : "wknd"]++;else delta[sid][bk ? "nightsB" : "nights"]++;
+      });
+    });
+    // Compute day totals (dc*7 + nights + wknd*3 = approximation of days worked)
+    const addDays = c => (c.dc || 0) * 7 + (c.nights || 0) + (c.wknd || 0) * 3;
+    const addDaysB = c => (c.dcB || 0) * 7 + (c.nightsB || 0) + (c.wkndB || 0) * 3;
+    // Merge into priorCounts (Multi-Year — used by generator)
+    setPriorCounts(prev => {
+      const next = {
+        ...prev
+      };
+      Object.keys(delta).forEach(id => {
+        const p = next[id] || {};
+        const d = delta[id];
+        next[id] = {
+          dc: (p.dc || 0) + d.dc,
+          nights: (p.nights || 0) + d.nights,
+          wknd: (p.wknd || 0) + d.wknd,
+          off: (p.off || 0) + d.off,
+          dcB: (p.dcB || 0) + d.dcB,
+          nightsB: (p.nightsB || 0) + d.nightsB,
+          wkndB: (p.wkndB || 0) + d.wkndB,
+          offB: (p.offB || 0) + d.offB,
+          totalDays: (p.totalDays || 0) + addDays(d),
+          totalDaysB: (p.totalDaysB || 0) + addDaysB(d)
+        };
+      });
+      return next;
+    });
+    // Also merge into year2Counts (2-Year)
+    setYear2Counts(prev => {
+      const next = {
+        ...prev
+      };
+      Object.keys(delta).forEach(id => {
+        const p = next[id] || {};
+        const d = delta[id];
+        next[id] = {
+          dc: (p.dc || 0) + d.dc,
+          nights: (p.nights || 0) + d.nights,
+          wknd: (p.wknd || 0) + d.wknd,
+          off: (p.off || 0) + d.off,
+          dcB: (p.dcB || 0) + d.dcB,
+          nightsB: (p.nightsB || 0) + d.nightsB,
+          wkndB: (p.wkndB || 0) + d.wkndB,
+          offB: (p.offB || 0) + d.offB,
+          totalDays: (p.totalDays || 0) + addDays(d),
+          totalDaysB: (p.totalDaysB || 0) + addDaysB(d)
+        };
+      });
+      return next;
+    });
+    // And into year1Counts (1-Year) — only for shifts in the current year
+    const currentYear = new Date().getFullYear();
+    const delta1yr = {};
+    surgeons.forEach(s => {
+      delta1yr[s.id] = {
+        dc: 0,
+        nights: 0,
+        wknd: 0,
+        off: 0,
+        dcB: 0,
+        nightsB: 0,
+        wkndB: 0,
+        offB: 0
+      };
+    });
+    Object.entries(sched).forEach(([mStr, wk]) => {
+      if (parse(mStr).getFullYear() !== currentYear) return;
+      const bk = wk.isBackup;
+      if (wk.dayCall && delta1yr[wk.dayCall]) delta1yr[wk.dayCall][bk ? "dcB" : "dc"]++;
+      if (wk.off && delta1yr[wk.off]) delta1yr[wk.off][bk ? "offB" : "off"]++;
+      Object.entries(wk.nights || {}).forEach(([sh, sid]) => {
+        if (!sid || !delta1yr[sid]) return;
+        if (sh === "wknd") delta1yr[sid][bk ? "wkndB" : "wknd"]++;else delta1yr[sid][bk ? "nightsB" : "nights"]++;
+      });
+    });
+    setYear1Counts(prev => {
+      const next = {
+        ...prev
+      };
+      Object.keys(delta1yr).forEach(id => {
+        const p = next[id] || {};
+        const d = delta1yr[id];
+        next[id] = {
+          dc: (p.dc || 0) + d.dc,
+          nights: (p.nights || 0) + d.nights,
+          wknd: (p.wknd || 0) + d.wknd,
+          off: (p.off || 0) + d.off,
+          dcB: (p.dcB || 0) + d.dcB,
+          nightsB: (p.nightsB || 0) + d.nightsB,
+          wkndB: (p.wkndB || 0) + d.wkndB,
+          offB: (p.offB || 0) + d.offB,
+          totalDays: (p.totalDays || 0) + addDays(d),
+          totalDaysB: (p.totalDaysB || 0) + addDaysB(d)
+        };
+      });
+      return next;
+    });
+  }, [surgeons]);
   const acceptPreview = () => {
     if (previewSchedule) {
       if (Object.keys(schedule).length > 0) pushUndo(schedule);
+      rollForwardCounts(previewSchedule);
       setSchedule(previewSchedule);
       setPreviewSchedule(null);
       setShowPreview(false);
       setCalMonth(startMonth);
       setCalYear(startYear);
       setView("calendar");
+      setSaveStatus("Published — totals updated");
+      setTimeout(() => setSaveStatus(""), 3000);
     }
   };
   const discardPreview = () => {
@@ -4418,6 +4559,31 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     return msg;
   };
   const [copied, setCopied] = useState(false);
+  const [copiedUrl, setCopiedUrl] = useState(""); // tracks which calendar URL was just copied
+
+  // Robust copy that works across mobile browsers; falls back to prompt() if clipboard API fails
+  const copyText = async (text, label) => {
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        // Fallback for iOS Safari, older browsers
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta);
+      }
+      setCopiedUrl(label);
+      setTimeout(() => setCopiedUrl(""), 2500);
+    } catch (e) {
+      // Last resort: show the URL in a prompt so the user can copy manually
+      prompt("Copy this URL:", text);
+    }
+  };
   const shareTonightMsg = async () => {
     const msg = buildTonightMsg();
     if (navigator.share) {
@@ -10418,16 +10584,14 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     },
     onClick: e => e.target.select()
   }), /*#__PURE__*/React.createElement("button", {
-    onClick: () => {
-      navigator.clipboard.writeText(`${SUPABASE_URL}/functions/v1/calendar-sync`);
-    },
+    onClick: () => copyText(`${SUPABASE_URL}/functions/v1/calendar-sync`, "full"),
     style: {
-      ...css.btn(false),
+      ...css.btn(copiedUrl === "full"),
       padding: "4px 10px",
       fontSize: 10,
       whiteSpace: "nowrap"
     }
-  }, "Copy"))), /*#__PURE__*/React.createElement("div", {
+  }, copiedUrl === "full" ? "✓ Copied" : "Copy"))), /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 11,
       fontWeight: 600,
@@ -10438,20 +10602,27 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     style: {
       display: "flex",
       gap: 4,
-      flexWrap: "wrap"
+      flexWrap: "wrap",
+      alignItems: "center"
     }
   }, surgeons.map(s => /*#__PURE__*/React.createElement("button", {
     key: s.id,
-    onClick: () => {
-      navigator.clipboard.writeText(`${SUPABASE_URL}/functions/v1/calendar-sync?surgeon=${s.name}`);
-    },
+    onClick: () => copyText(`${SUPABASE_URL}/functions/v1/calendar-sync?surgeon=${s.name}`, s.id),
     style: {
       ...css.badge(sMap[s.id]?.idx || 0),
       cursor: "pointer",
       padding: "3px 10px",
-      fontSize: 10
+      fontSize: 10,
+      border: copiedUrl === s.id ? "2px solid #1a8040" : undefined
     }
-  }, "\uD83D\uDCCB ", s.name))), /*#__PURE__*/React.createElement("p", {
+  }, copiedUrl === s.id ? "✓ " : "📋 ", s.name)), copiedUrl && copiedUrl !== "full" && /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 10,
+      color: "#1a8040",
+      fontWeight: 600,
+      marginLeft: 6
+    }
+  }, "URL copied to clipboard")), /*#__PURE__*/React.createElement("p", {
     style: {
       fontSize: 10,
       color: "#8a94a0",
