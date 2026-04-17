@@ -46,7 +46,7 @@
   <script src="https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.page.js" defer></script>
   <script>
     // ─── Auto-update: bump this version string each deploy ───
-    var APP_VERSION = "2026.04.15l";
+    var APP_VERSION = "2026.04.15p";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -84,7 +84,7 @@
   <div id="root"></div>
   <script>
     // Cache-bust with version — update this string when deploying changes
-    var _v = "2026.04.15l";
+    var _v = "2026.04.15p";
     ['config.js','helpers.js','generator.js','app-styles.js'].forEach(function(f) {
       document.write('<script src="'+f+'?v='+_v+'"><\/script>');
     });
@@ -200,10 +200,10 @@ function CallSchedule() {
   const [biometricEnrolled, setBiometricEnrolled] = useState(false);
   const [biometricPending, setBiometricPending] = useState(false); // waiting for biometric prompt
   const allPeople = useMemo(() => [
-    ...INIT_SURGEONS,
-    ...INIT_APPS,
+    ...surgeons,
+    ...apps,
     { id: "admin", name: "ADMIN (Clinic Manager)" }
-  ], []);
+  ], [surgeons, apps]);
 
   // ─── Scheduler Mode (PIN protected) ───
   const [isScheduler, setIsScheduler] = useState(false);
@@ -462,36 +462,83 @@ function CallSchedule() {
       setLoaded(true);
       loadedAtRef.current = Date.now();
 
-      // One-time merge of 2026-2027 vacations & Fierce weeks from PDFs
+      // Merge 2026-2027 vacations & Fierce weeks (content-aware: re-runs if any expected entries are missing)
       try {
-        const mergeKey = "dsg-vac-merge-2026-2027-v1";
-        if (!localStorage.getItem(mergeKey) && typeof MAY_AUG_VACATIONS !== "undefined") {
+        if (typeof MAY_AUG_VACATIONS !== "undefined") {
           setVacations(prev => {
+            // Check if all expected vacation ranges are present
+            let allPresent = true;
+            for (const [id, ranges] of Object.entries(MAY_AUG_VACATIONS)) {
+              const existingList = prev[id] || [];
+              for (const [s, e] of ranges) {
+                const found = existingList.some(([es, ee]) => es === s && ee === e);
+                if (!found) { allPresent = false; break; }
+              }
+              if (!allPresent) break;
+            }
+            if (allPresent) return prev; // Everything is already in place
+
             const n = { ...prev };
-            // Clear existing May 2026 - Jan 2027 entries first
+            // Clear existing May 2026 - Jan 2027 entries (to avoid duplicates)
             Object.keys(n).forEach(id => {
               if (Array.isArray(n[id])) {
                 n[id] = n[id].filter(([s]) => {
-                  const d = s.substring(0, 7); // "YYYY-MM"
+                  const d = s.substring(0, 7);
                   return !((d >= "2026-05" && d <= "2026-12") || d === "2027-01");
                 });
               }
             });
-            // Add corrected vacations
+            // Add full vacation set
             Object.entries(MAY_AUG_VACATIONS).forEach(([id, ranges]) => {
               if (!n[id]) n[id] = [];
               ranges.forEach(([s, e]) => n[id].push([s, e]));
             });
+            console.log("Merged/refreshed 2026-2027 vacations");
+
+            // Force save vacations to Supabase after merge
+            setTimeout(async () => {
+              try {
+                const { data: row } = await supabase.from("call_schedule_data").select("data").eq("id", "main").single();
+                const d = typeof row.data === "string" ? JSON.parse(row.data) : row.data;
+                // Rebuild vacations in the saved data
+                Object.keys(d.vacations || {}).forEach(id => {
+                  if (Array.isArray(d.vacations[id])) {
+                    d.vacations[id] = d.vacations[id].filter(([s]) => {
+                      const m = s.substring(0, 7);
+                      return !((m >= "2026-05" && m <= "2026-12") || m === "2027-01");
+                    });
+                  }
+                });
+                Object.entries(MAY_AUG_VACATIONS).forEach(([id, ranges]) => {
+                  if (!d.vacations[id]) d.vacations[id] = [];
+                  ranges.forEach(([s, e]) => d.vacations[id].push([s, e]));
+                });
+                const ts = new Date().toISOString();
+                await supabase.from("call_schedule_data").upsert({ id: "main", data: d, updated_at: ts });
+                lastSyncRef.current = ts;
+                console.log("Force-saved vacations to Supabase");
+              } catch(e) { console.error("Vacation force save error:", e); }
+            }, 2500);
+
             return n;
           });
-          if (typeof MAY_AUG_FIERCE_PRIMARY !== "undefined") {
-            setBackupMondaySet(prev => { const n = new Set(prev); MAY_AUG_FIERCE_PRIMARY.forEach(m => n.add(m)); return n; });
-          }
-          if (typeof MAY_AUG_FIERCE_BACKUP !== "undefined") {
-            setFierceBackupSet(prev => { const n = new Set(prev); MAY_AUG_FIERCE_BACKUP.forEach(m => n.add(m)); return n; });
-          }
-          localStorage.setItem(mergeKey, "1");
-          console.log("Merged 2026-2027 vacations & Fierce weeks");
+        }
+        // Fierce merges: only add missing entries (additive, safe to re-run)
+        if (typeof MAY_AUG_FIERCE_PRIMARY !== "undefined") {
+          setBackupMondaySet(prev => {
+            const n = new Set(prev);
+            let added = false;
+            MAY_AUG_FIERCE_PRIMARY.forEach(m => { if (!n.has(m)) { n.add(m); added = true; } });
+            return added ? n : prev;
+          });
+        }
+        if (typeof MAY_AUG_FIERCE_BACKUP !== "undefined") {
+          setFierceBackupSet(prev => {
+            const n = new Set(prev);
+            let added = false;
+            MAY_AUG_FIERCE_BACKUP.forEach(m => { if (!n.has(m)) { n.add(m); added = true; } });
+            return added ? n : prev;
+          });
         }
       } catch(e) { console.error("Vacation merge error:", e); }
 
@@ -512,6 +559,20 @@ function CallSchedule() {
             const next = { ...prev };
             expectedEntries.forEach(([mStr, wk]) => { next[mStr] = { ...wk }; });
             console.log("Imported/refreshed May-Aug 2026 hand-built schedule");
+
+            // Force save to Supabase after merge (delayed to let React state flush)
+            setTimeout(async () => {
+              try {
+                const { data: row } = await supabase.from("call_schedule_data").select("data").eq("id", "main").single();
+                const d = typeof row.data === "string" ? JSON.parse(row.data) : row.data;
+                Object.entries(HAND_SCHEDULE_MAY_AUG).forEach(([m, w]) => { d.schedule[m] = { ...w }; });
+                const ts = new Date().toISOString();
+                await supabase.from("call_schedule_data").upsert({ id: "main", data: d, updated_at: ts });
+                lastSyncRef.current = ts;
+                console.log("Force-saved hand-built schedule to Supabase");
+              } catch(e) { console.error("Force save error:", e); }
+            }, 2000);
+
             return next;
           });
         }
