@@ -2747,10 +2747,9 @@ ${"</"}script>${"</"}body>${"</"}html>`;
   const cumStats = useMemo(() => buildCum(priorCounts), [stats, priorCounts, surgeons]);
 
   // Total call days — uses stored totalDays from spreadsheet if available, otherwise estimates
-  // For display in Totals: night=1, service week=6 (M-Sat), sunday(weekend)=1
-  // Total call shifts for DISPLAY: Service Week=6, Night=1, Weekend(Sunday)=1
-  const calcShifts = (s) => (s.dc||0)*6 + (s.nights||0) + (s.wknd||0);
-  const calcShiftsB = (s) => (s.dcB||0)*6 + (s.nightsB||0) + (s.wkndB||0);
+  // Formula: Service Week=6, Week Night=1, Weekend=2
+  const calcShifts = (s) => (s.dc||0)*6 + (s.nights||0) + (s.wknd||0)*2;
+  const calcShiftsB = (s) => (s.dcB||0)*6 + (s.nightsB||0) + (s.wkndB||0)*2;
   const calcTotal = (s) => calcShifts(s) + calcShiftsB(s);
 
   // ─── Conflict Detection ───
@@ -4483,7 +4482,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   </tbody>
                 </table>
                 <div style={{marginTop:8,fontSize:11,color:"#7a8a98",lineHeight:1.5}}>
-                  <strong style={{color:"#2c5a80"}}>Total</strong> = 1st Call + 2nd Call. Svc Wk = 6 days (M–Sat), Night = 1, Weekend (Sun) = 1.
+                  <strong style={{color:"#2c5a80"}}>Total</strong> = 1st Call + 2nd Call. Service Week = 6, Week Night = 1, Weekend = 2.
                 </div>
               </div>
             )}
@@ -4760,8 +4759,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             )}
           </div>
 
-          {/* Fairness — based on 1-YEAR totals */}
-          {Object.values(stats).some(s=>s.dc>0) && (
+          {/* Fairness — based on 1-YEAR totals (scheduler/admin only) */}
+          {(isScheduler || mySurgeon === "admin") && Object.values(stats).some(s=>s.dc>0) && (
             <div style={css.card}>
               <div style={css.cardT}>Fairness Check <span style={{fontWeight:400,fontSize:11,color:"#7a8a98"}}>— 1-Year (Prior + This Period)</span></div>
               <p style={{fontSize:12,color:"#7a8a98",margin:"0 0 10px",lineHeight:1.5}}>
@@ -4772,7 +4771,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                 const sp=arr=>Math.max(...arr)-Math.min(...arr);
                 const totalArr = surgeons.map(s=>calcShifts(cum1yr[s.id]||{}));
                 const tSp = sp(totalArr);
-                const tOk = tSp <= 5;
+                const tOk = tSp <= 7;
                 return <>
                   <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10,padding:"8px 12px",background:tOk?"#e8f8e8":"#fef8e8",border:`1px solid ${tOk?"#b0d8b0":"#302810"}`,borderRadius:7}}>
                     <span style={{fontSize:16}}>{tOk?"✅":"⚠️"}</span>
@@ -4849,7 +4848,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               ))}
 
               <div style={{fontSize:11,color:"#7a8a98",lineHeight:1.5}}>
-                <strong style={{color:"#2c5a80"}}>Total</strong> = 1st Call + 2nd Call. Svc Wk = 6 days, Night = 1, Weekend (Sun) = 1.
+                <strong style={{color:"#2c5a80"}}>Total</strong> = 1st Call + 2nd Call. Service Week = 6, Week Night = 1, Weekend = 2.
               </div>
             </div>
           )}
@@ -5190,36 +5189,103 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   {surgeons.filter(s=>s.id!==tradeFrom).map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
                 </select>
               </div>
-              <div>
-                <label style={{fontSize:10,color:"#7a8a98",display:"block",marginBottom:2}}>Week</label>
-                <select value={tradeWeek} onChange={e=>setTradeWeek(e.target.value)} style={{...css.inp,width:140}}>
-                  <option value="">Select…</option>
-                  {Object.keys(schedule).sort().map(m=><option key={m} value={m}>{m}</option>)}
-                </select>
-              </div>
-              <div>
-                <label style={{fontSize:10,color:"#7a8a98",display:"block",marginBottom:2}}>Shift to give</label>
-                <select value={tradeShift} onChange={e=>setTradeShift(e.target.value)} style={{...css.inp,width:130}}>
-                  <option value="">Select…</option>
-                  {ALL_SHIFT_KEYS.map(sk=><option key={sk} value={sk}>{SHIFT_LABELS[sk]}</option>)}
-                </select>
-              </div>
+              {isScheduler ? <>
+                <div>
+                  <label style={{fontSize:10,color:"#7a8a98",display:"block",marginBottom:2}}>Week</label>
+                  <select value={tradeWeek} onChange={e=>setTradeWeek(e.target.value)} style={{...css.inp,width:140}}>
+                    <option value="">Select…</option>
+                    {Object.keys(schedule).sort().map(m=><option key={m} value={m}>{m}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label style={{fontSize:10,color:"#7a8a98",display:"block",marginBottom:2}}>Shift to give</label>
+                  <select value={tradeShift} onChange={e=>setTradeShift(e.target.value)} style={{...css.inp,width:130}}>
+                    <option value="">Select…</option>
+                    {ALL_SHIFT_KEYS.map(sk=><option key={sk} value={sk}>{SHIFT_LABELS[sk]}</option>)}
+                  </select>
+                </div>
+              </> : (
+                <div>
+                  <label style={{fontSize:10,color:"#7a8a98",display:"block",marginBottom:2}}>Shift to give</label>
+                  {(()=>{
+                    const opts = [];
+                    Object.keys(schedule).sort().forEach(m => {
+                      const wk = schedule[m];
+                      if (!wk) return;
+                      ALL_SHIFT_KEYS.forEach(sk => {
+                        const holder = sk === "dayCall" ? wk.dayCall : wk.nights?.[sk];
+                        if (holder === tradeFrom) {
+                          const d = parse(m);
+                          const label = `${MO[d.getMonth()].slice(0,3)} ${d.getDate()} — ${SHIFT_LABELS[sk]}${wk.isBackup ? " (Backup)" : ""}`;
+                          opts.push({ value: `${m}|${sk}`, label });
+                        }
+                      });
+                    });
+                    const curVal = tradeWeek && tradeShift ? `${tradeWeek}|${tradeShift}` : "";
+                    return (
+                      <select value={curVal} onChange={e=>{
+                        const v = e.target.value;
+                        if (!v) { setTradeWeek(""); setTradeShift(""); }
+                        else { const [w, s] = v.split("|"); setTradeWeek(w); setTradeShift(s); }
+                      }} style={{...css.inp,minWidth:240}}>
+                        <option value="">{opts.length === 0 ? "No shifts scheduled" : "Select your shift…"}</option>
+                        {opts.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                      </select>
+                    );
+                  })()}
+                </div>
+              )}
             </div>
             <div style={{display:"flex",gap:6,alignItems:"end",flexWrap:"wrap",marginBottom:10}}>
-              <div>
-                <label style={{fontSize:10,color:"#7a8a98",display:"block",marginBottom:2}}>Return week</label>
-                <select value={tradeReturnWeek} onChange={e=>setTradeReturnWeek(e.target.value)} style={{...css.inp,width:140}}>
-                  <option value="">Select…</option>
-                  {Object.keys(schedule).sort().map(m=><option key={m} value={m}>{m}</option>)}
-                </select>
-              </div>
-              <div>
-                <label style={{fontSize:10,color:"#7a8a98",display:"block",marginBottom:2}}>Return shift</label>
-                <select value={tradeReturnShift} onChange={e=>setTradeReturnShift(e.target.value)} style={{...css.inp,width:130}}>
-                  <option value="">Select…</option>
-                  {ALL_SHIFT_KEYS.map(sk=><option key={sk} value={sk}>{SHIFT_LABELS[sk]}</option>)}
-                </select>
-              </div>
+              {isScheduler ? <>
+                <div>
+                  <label style={{fontSize:10,color:"#7a8a98",display:"block",marginBottom:2}}>Return week</label>
+                  <select value={tradeReturnWeek} onChange={e=>setTradeReturnWeek(e.target.value)} style={{...css.inp,width:140}}>
+                    <option value="">Select…</option>
+                    {Object.keys(schedule).sort().map(m=><option key={m} value={m}>{m}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label style={{fontSize:10,color:"#7a8a98",display:"block",marginBottom:2}}>Return shift</label>
+                  <select value={tradeReturnShift} onChange={e=>setTradeReturnShift(e.target.value)} style={{...css.inp,width:130}}>
+                    <option value="">Select…</option>
+                    {ALL_SHIFT_KEYS.map(sk=><option key={sk} value={sk}>{SHIFT_LABELS[sk]}</option>)}
+                  </select>
+                </div>
+              </> : (
+                <div>
+                  <label style={{fontSize:10,color:"#7a8a98",display:"block",marginBottom:2}}>Return shift</label>
+                  {(()=>{
+                    const opts = [];
+                    if (tradeTo) {
+                      Object.keys(schedule).sort().forEach(m => {
+                        const wk = schedule[m];
+                        if (!wk) return;
+                        ALL_SHIFT_KEYS.forEach(sk => {
+                          const holder = sk === "dayCall" ? wk.dayCall : wk.nights?.[sk];
+                          if (holder === tradeTo) {
+                            const d = parse(m);
+                            const label = `${MO[d.getMonth()].slice(0,3)} ${d.getDate()} — ${SHIFT_LABELS[sk]}${wk.isBackup ? " (Backup)" : ""}`;
+                            opts.push({ value: `${m}|${sk}`, label });
+                          }
+                        });
+                      });
+                    }
+                    const curVal = tradeReturnWeek && tradeReturnShift ? `${tradeReturnWeek}|${tradeReturnShift}` : "";
+                    const placeholder = !tradeTo ? "Pick trade partner first" : (opts.length === 0 ? "They have no scheduled shifts" : "Select their shift…");
+                    return (
+                      <select value={curVal} onChange={e=>{
+                        const v = e.target.value;
+                        if (!v) { setTradeReturnWeek(""); setTradeReturnShift(""); }
+                        else { const [w, s] = v.split("|"); setTradeReturnWeek(w); setTradeReturnShift(s); }
+                      }} style={{...css.inp,minWidth:240}} disabled={!tradeTo}>
+                        <option value="">{placeholder}</option>
+                        {opts.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                      </select>
+                    );
+                  })()}
+                </div>
+              )}
               <button onClick={submitTradeRequest} style={{...css.btn(true),padding:"7px 18px",background:"linear-gradient(135deg,#6030a0,#8050c0)",borderColor:"#6030a0"}}>Propose Trade</button>
             </div>
             {/* Cascade Preview — show downstream effects of DC/Weekend swaps */}

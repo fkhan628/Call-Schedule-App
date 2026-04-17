@@ -4736,10 +4736,9 @@ ${"</"}script>${"</"}body>${"</"}html>`;
   const cumStats = useMemo(() => buildCum(priorCounts), [stats, priorCounts, surgeons]);
 
   // Total call days — uses stored totalDays from spreadsheet if available, otherwise estimates
-  // For display in Totals: night=1, service week=6 (M-Sat), sunday(weekend)=1
-  // Total call shifts for DISPLAY: Service Week=6, Night=1, Weekend(Sunday)=1
-  const calcShifts = s => (s.dc || 0) * 6 + (s.nights || 0) + (s.wknd || 0);
-  const calcShiftsB = s => (s.dcB || 0) * 6 + (s.nightsB || 0) + (s.wkndB || 0);
+  // Formula: Service Week=6, Week Night=1, Weekend=2
+  const calcShifts = s => (s.dc || 0) * 6 + (s.nights || 0) + (s.wknd || 0) * 2;
+  const calcShiftsB = s => (s.dcB || 0) * 6 + (s.nightsB || 0) + (s.wkndB || 0) * 2;
   const calcTotal = s => calcShifts(s) + calcShiftsB(s);
 
   // ─── Conflict Detection ───
@@ -8961,7 +8960,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     style: {
       color: "#2c5a80"
     }
-  }, "Total"), " = 1st Call + 2nd Call. Svc Wk = 6 days (M\u2013Sat), Night = 1, Weekend (Sun) = 1."))), Object.keys(schedule).length > 0 && (() => {
+  }, "Total"), " = 1st Call + 2nd Call. Service Week = 6, Week Night = 1, Weekend = 2."))), Object.keys(schedule).length > 0 && (() => {
     // Compute monthly breakdown
     // Formula: Service Week = 6, Week Night = 1, Weekend = 2
     // Whole-shift shifts (Svc Wk, Weekend) are attributed to the month the shift STARTS in
@@ -9497,7 +9496,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     }, ranges.map(([vs, ve], i) => /*#__PURE__*/React.createElement("span", {
       key: i
     }, i > 0 ? " · " : "", vs, " \u2192 ", ve))));
-  }))))), Object.values(stats).some(s => s.dc > 0) && /*#__PURE__*/React.createElement("div", {
+  }))))), (isScheduler || mySurgeon === "admin") && Object.values(stats).some(s => s.dc > 0) && /*#__PURE__*/React.createElement("div", {
     style: css.card
   }, /*#__PURE__*/React.createElement("div", {
     style: css.cardT
@@ -9519,7 +9518,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     const sp = arr => Math.max(...arr) - Math.min(...arr);
     const totalArr = surgeons.map(s => calcShifts(cum1yr[s.id] || {}));
     const tSp = sp(totalArr);
-    const tOk = tSp <= 5;
+    const tOk = tSp <= 7;
     return /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
       style: {
         display: "flex",
@@ -9687,7 +9686,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     style: {
       color: "#2c5a80"
     }
-  }, "Total"), " = 1st Call + 2nd Call. Svc Wk = 6 days, Night = 1, Weekend (Sun) = 1."))), view === "myschedule" && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+  }, "Total"), " = 1st Call + 2nd Call. Service Week = 6, Week Night = 1, Weekend = 2."))), view === "myschedule" && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
     style: css.card
   }, /*#__PURE__*/React.createElement("div", {
     style: css.cardT
@@ -10646,7 +10645,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
   }, "Who\u2026"), surgeons.filter(s => s.id !== tradeFrom).map(s => /*#__PURE__*/React.createElement("option", {
     key: s.id,
     value: s.id
-  }, s.name)))), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
+  }, s.name)))), isScheduler ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
     style: {
       fontSize: 10,
       color: "#7a8a98",
@@ -10684,7 +10683,43 @@ ${"</"}script>${"</"}body>${"</"}html>`;
   }, "Select\u2026"), ALL_SHIFT_KEYS.map(sk => /*#__PURE__*/React.createElement("option", {
     key: sk,
     value: sk
-  }, SHIFT_LABELS[sk]))))), /*#__PURE__*/React.createElement("div", {
+  }, SHIFT_LABELS[sk]))))) : /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
+    style: {
+      fontSize: 10,
+      color: "#7a8a98",
+      display: "block",
+      marginBottom: 2
+    }
+  }, "Shift to give"), (() => {
+    const opts = [];
+    Object.keys(schedule).sort().forEach(m => {
+      const wk = schedule[m];
+      if (!wk) return;
+      ALL_SHIFT_KEYS.forEach(sk => {
+        const holder = sk === "dayCall" ? wk.dayCall : wk.nights?.[sk];
+        if (holder === tradeFrom) {
+          const d = parse(m);
+          const label = `${MO[d.getMonth()].slice(0, 3)} ${d.getDate()} \u2014 ${SHIFT_LABELS[sk]}${wk.isBackup ? " (Backup)" : ""}`;
+          opts.push({ value: `${m}|${sk}`, label });
+        }
+      });
+    });
+    const curVal = tradeWeek && tradeShift ? `${tradeWeek}|${tradeShift}` : "";
+    return /*#__PURE__*/React.createElement("select", {
+      value: curVal,
+      onChange: e => {
+        const v = e.target.value;
+        if (!v) { setTradeWeek(""); setTradeShift(""); }
+        else { const [w, s] = v.split("|"); setTradeWeek(w); setTradeShift(s); }
+      },
+      style: { ...css.inp, minWidth: 240 }
+    }, /*#__PURE__*/React.createElement("option", {
+      value: ""
+    }, opts.length === 0 ? "No shifts scheduled" : "Select your shift\u2026"), opts.map(o => /*#__PURE__*/React.createElement("option", {
+      key: o.value,
+      value: o.value
+    }, o.label)));
+  })())), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       gap: 6,
@@ -10692,7 +10727,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       flexWrap: "wrap",
       marginBottom: 10
     }
-  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
+  }, isScheduler ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
     style: {
       fontSize: 10,
       color: "#7a8a98",
@@ -10730,7 +10765,47 @@ ${"</"}script>${"</"}body>${"</"}html>`;
   }, "Select\u2026"), ALL_SHIFT_KEYS.map(sk => /*#__PURE__*/React.createElement("option", {
     key: sk,
     value: sk
-  }, SHIFT_LABELS[sk])))), /*#__PURE__*/React.createElement("button", {
+  }, SHIFT_LABELS[sk]))))) : /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
+    style: {
+      fontSize: 10,
+      color: "#7a8a98",
+      display: "block",
+      marginBottom: 2
+    }
+  }, "Return shift"), (() => {
+    const opts = [];
+    if (tradeTo) {
+      Object.keys(schedule).sort().forEach(m => {
+        const wk = schedule[m];
+        if (!wk) return;
+        ALL_SHIFT_KEYS.forEach(sk => {
+          const holder = sk === "dayCall" ? wk.dayCall : wk.nights?.[sk];
+          if (holder === tradeTo) {
+            const d = parse(m);
+            const label = `${MO[d.getMonth()].slice(0, 3)} ${d.getDate()} \u2014 ${SHIFT_LABELS[sk]}${wk.isBackup ? " (Backup)" : ""}`;
+            opts.push({ value: `${m}|${sk}`, label });
+          }
+        });
+      });
+    }
+    const curVal = tradeReturnWeek && tradeReturnShift ? `${tradeReturnWeek}|${tradeReturnShift}` : "";
+    const placeholder = !tradeTo ? "Pick trade partner first" : (opts.length === 0 ? "They have no scheduled shifts" : "Select their shift\u2026");
+    return /*#__PURE__*/React.createElement("select", {
+      value: curVal,
+      onChange: e => {
+        const v = e.target.value;
+        if (!v) { setTradeReturnWeek(""); setTradeReturnShift(""); }
+        else { const [w, s] = v.split("|"); setTradeReturnWeek(w); setTradeReturnShift(s); }
+      },
+      style: { ...css.inp, minWidth: 240 },
+      disabled: !tradeTo
+    }, /*#__PURE__*/React.createElement("option", {
+      value: ""
+    }, placeholder), opts.map(o => /*#__PURE__*/React.createElement("option", {
+      key: o.value,
+      value: o.value
+    }, o.label)));
+  })()), /*#__PURE__*/React.createElement("button", {
     onClick: submitTradeRequest,
     style: {
       ...css.btn(true),
