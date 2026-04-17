@@ -170,13 +170,6 @@ function CallSchedule() {
   // ─── Vacation Requests ───
   const [vacRequests, setVacRequests] = useState([]);
   const [vacReqSurgeon, setVacReqSurgeon] = useState("");
-  // Auto-set vacation requester and trade initiator to logged-in user
-  useEffect(() => {
-    if (mySurgeon && mySurgeon !== "admin" && !isScheduler) {
-      setVacReqSurgeon(mySurgeon);
-      setTradeFrom(mySurgeon);
-    }
-  }, [mySurgeon, isScheduler]);
   const [vacReqStart, setVacReqStart] = useState("");
   const [vacReqEnd, setVacReqEnd] = useState("");
   const [vacReqReason, setVacReqReason] = useState("");
@@ -259,6 +252,14 @@ function CallSchedule() {
   useEffect(() => {
     try { if(mySurgeon) localStorage.setItem("dsg-my-surgeon", mySurgeon); } catch(e) {}
   }, [mySurgeon]);
+
+  // Auto-set vacation requester and trade initiator to logged-in user
+  useEffect(() => {
+    if (mySurgeon && mySurgeon !== "admin" && !isScheduler) {
+      setVacReqSurgeon(mySurgeon);
+      setTradeFrom(mySurgeon);
+    }
+  }, [mySurgeon, isScheduler]);
 
   // ─── Person-specific filtering (non-schedulers see only their own data) ───
   const myNotifications = useMemo(() => {

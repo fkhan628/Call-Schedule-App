@@ -40,7 +40,7 @@
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.page.js" defer></script>
   <script>
-    var APP_VERSION = "2026.04.16b";
+    var APP_VERSION = "2026.04.16c";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -1278,13 +1278,6 @@ function CallSchedule() {
   // ─── Vacation Requests ───
   const [vacRequests, setVacRequests] = useState([]);
   const [vacReqSurgeon, setVacReqSurgeon] = useState("");
-  // Auto-set vacation requester and trade initiator to logged-in user
-  useEffect(() => {
-    if (mySurgeon && mySurgeon !== "admin" && !isScheduler) {
-      setVacReqSurgeon(mySurgeon);
-      setTradeFrom(mySurgeon);
-    }
-  }, [mySurgeon, isScheduler]);
   const [vacReqStart, setVacReqStart] = useState("");
   const [vacReqEnd, setVacReqEnd] = useState("");
   const [vacReqReason, setVacReqReason] = useState("");
@@ -1385,6 +1378,14 @@ function CallSchedule() {
       if (mySurgeon) localStorage.setItem("dsg-my-surgeon", mySurgeon);
     } catch (e) {}
   }, [mySurgeon]);
+
+  // Auto-set vacation requester and trade initiator to logged-in user
+  useEffect(() => {
+    if (mySurgeon && mySurgeon !== "admin" && !isScheduler) {
+      setVacReqSurgeon(mySurgeon);
+      setTradeFrom(mySurgeon);
+    }
+  }, [mySurgeon, isScheduler]);
 
   // ─── Person-specific filtering (non-schedulers see only their own data) ───
   const myNotifications = useMemo(() => {
