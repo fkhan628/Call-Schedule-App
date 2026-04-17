@@ -237,41 +237,6 @@ function CallSchedule() {
   });
   const unreadCount = useMemo(() => notifications.filter(n => n.created_at > notifLastSeen).length, [notifications, notifLastSeen]);
 
-  // ─── Person-specific filtering (non-schedulers see only their own data) ───
-  // Notifications: filter to ones relevant to the logged-in person
-  const myNotifications = useMemo(() => {
-    if (isScheduler) return notifications; // schedulers see everything
-    if (!mySurgeon || mySurgeon === "admin") return notifications;
-    return notifications.filter(n => {
-      // Schedule-wide notifications (published, changed) — show to everyone
-      if (n.type === "schedule_published" || n.type === "schedule_changed") return true;
-      // Vacation notifications — show if it involves this person
-      if (n.data?.surgeon_id === mySurgeon) return true;
-      // Trade notifications — show if from or to this person
-      if (n.data?.from_surgeon_id === mySurgeon || n.data?.to_surgeon_id === mySurgeon) return true;
-      // Check message for this person's name as fallback
-      const myName = [...(typeof INIT_SURGEONS !== "undefined" ? INIT_SURGEONS : []), ...(typeof INIT_APPS !== "undefined" ? INIT_APPS : [])].find(p => p.id === mySurgeon)?.name;
-      if (myName && n.message?.includes(myName)) return true;
-      return false;
-    });
-  }, [notifications, isScheduler, mySurgeon]);
-
-  const myUnreadCount = useMemo(() => myNotifications.filter(n => n.created_at > notifLastSeen).length, [myNotifications, notifLastSeen]);
-
-  // Vacation requests: non-schedulers see only their own
-  const myVacRequests = useMemo(() => {
-    if (isScheduler) return vacRequests;
-    if (!mySurgeon || mySurgeon === "admin") return vacRequests;
-    return vacRequests.filter(r => r.surgeon_id === mySurgeon);
-  }, [vacRequests, isScheduler, mySurgeon]);
-
-  // Trade requests: non-schedulers see only trades they're involved in
-  const myTradeRequests = useMemo(() => {
-    if (isScheduler) return tradeRequests;
-    if (!mySurgeon || mySurgeon === "admin") return tradeRequests;
-    return tradeRequests.filter(r => r.from_surgeon_id === mySurgeon || r.to_surgeon_id === mySurgeon);
-  }, [tradeRequests, isScheduler, mySurgeon]);
-
   // ─── Browser Push & Email Notification Preferences ───
   const [pushPermission, setPushPermission] = useState(() => {
     try { return Notification?.permission || "default"; } catch(e) { return "unsupported"; }
@@ -294,6 +259,34 @@ function CallSchedule() {
   useEffect(() => {
     try { if(mySurgeon) localStorage.setItem("dsg-my-surgeon", mySurgeon); } catch(e) {}
   }, [mySurgeon]);
+
+  // ─── Person-specific filtering (non-schedulers see only their own data) ───
+  const myNotifications = useMemo(() => {
+    if (isScheduler) return notifications;
+    if (!mySurgeon || mySurgeon === "admin") return notifications;
+    return notifications.filter(n => {
+      if (n.type === "schedule_published" || n.type === "schedule_changed") return true;
+      if (n.data?.surgeon_id === mySurgeon) return true;
+      if (n.data?.from_surgeon_id === mySurgeon || n.data?.to_surgeon_id === mySurgeon) return true;
+      const myName = allPeople.find(p => p.id === mySurgeon)?.name;
+      if (myName && n.message?.includes(myName)) return true;
+      return false;
+    });
+  }, [notifications, isScheduler, mySurgeon, allPeople]);
+
+  const myUnreadCount = useMemo(() => myNotifications.filter(n => n.created_at > notifLastSeen).length, [myNotifications, notifLastSeen]);
+
+  const myVacRequests = useMemo(() => {
+    if (isScheduler) return vacRequests;
+    if (!mySurgeon || mySurgeon === "admin") return vacRequests;
+    return vacRequests.filter(r => r.surgeon_id === mySurgeon);
+  }, [vacRequests, isScheduler, mySurgeon]);
+
+  const myTradeRequests = useMemo(() => {
+    if (isScheduler) return tradeRequests;
+    if (!mySurgeon || mySurgeon === "admin") return tradeRequests;
+    return tradeRequests.filter(r => r.from_surgeon_id === mySurgeon || r.to_surgeon_id === mySurgeon);
+  }, [tradeRequests, isScheduler, mySurgeon]);
 
   // ─── Auth: Check session on mount ───
   useEffect(() => {
