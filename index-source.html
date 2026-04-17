@@ -4579,7 +4579,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                       </tr>
                     </thead>
                     <tbody>
-                      {surgeons.map(s=>{
+                      {surgeons.filter(s => isScheduler || !mySurgeon || mySurgeon === "admin" || s.id === mySurgeon).map(s=>{
                         const vals = sortedMonths.map(m => monthlyData[m]?.[s.id]?.total1st || 0);
                         const total = vals.reduce((a,b)=>a+b,0);
                         return (
@@ -4606,7 +4606,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                       </tr>
                     </thead>
                     <tbody>
-                      {surgeons.map(s=>{
+                      {surgeons.filter(s => isScheduler || !mySurgeon || mySurgeon === "admin" || s.id === mySurgeon).map(s=>{
                         const vals = sortedMonths.map(m => monthlyData[m]?.[s.id]?.total2nd || 0);
                         const total = vals.reduce((a,b)=>a+b,0);
                         return (

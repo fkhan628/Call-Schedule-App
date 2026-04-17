@@ -40,7 +40,7 @@
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.page.js" defer></script>
   <script>
-    var APP_VERSION = "2026.04.16j";
+    var APP_VERSION = "2026.04.16k";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -9110,7 +9110,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         fontWeight: 700,
         color: "#1a8040"
       }
-    }, "Total"))), /*#__PURE__*/React.createElement("tbody", null, surgeons.map(s => {
+    }, "Total"))), /*#__PURE__*/React.createElement("tbody", null, surgeons.filter(s => isScheduler || !mySurgeon || mySurgeon === "admin" || s.id === mySurgeon).map(s => {
       const vals = sortedMonths.map(m => monthlyData[m]?.[s.id]?.total1st || 0);
       const total = vals.reduce((a, b) => a + b, 0);
       return /*#__PURE__*/React.createElement("tr", {
@@ -9190,7 +9190,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         fontWeight: 700,
         color: "#8a6a10"
       }
-    }, "Total"))), /*#__PURE__*/React.createElement("tbody", null, surgeons.map(s => {
+    }, "Total"))), /*#__PURE__*/React.createElement("tbody", null, surgeons.filter(s => isScheduler || !mySurgeon || mySurgeon === "admin" || s.id === mySurgeon).map(s => {
       const vals = sortedMonths.map(m => monthlyData[m]?.[s.id]?.total2nd || 0);
       const total = vals.reduce((a, b) => a + b, 0);
       return /*#__PURE__*/React.createElement("tr", {
