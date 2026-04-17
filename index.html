@@ -8963,11 +8963,13 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     }
   }, "Total"), " = 1st Call + 2nd Call. Svc Wk = 6 days (M\u2013Sat), Night = 1, Weekend (Sun) = 1."))), Object.keys(schedule).length > 0 && (() => {
     // Compute monthly breakdown
+    // Formula: Service Week = 6, Week Night = 1, Weekend = 2
+    // Whole-shift shifts (Svc Wk, Weekend) are attributed to the month the shift STARTS in
     const monthlyData = {};
     const allMonths = new Set();
     Object.entries(schedule).forEach(([mStr, wk]) => {
       const mon = parse(mStr);
-      // Each day of the week maps to a calendar month
+      // Register every month touched by this week so all surgeons show columns
       for (let i = 0; i < 7; i++) {
         const d = addD(mon, i);
         const moKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
@@ -8983,37 +8985,27 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       const isB = wk.isBackup;
       const countKey = isB ? "total2nd" : "total1st";
 
-      // Service Week: M-F = 5 days + Sat = 2 days = 7 total
+      // Service Week = 6 points, attributed to the month containing Monday
       if (wk.dayCall) {
-        for (let i = 0; i < 5; i++) {
-          const d = addD(mon, i);
-          const moKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
-          if (monthlyData[moKey]?.[wk.dayCall]) monthlyData[moKey][wk.dayCall][countKey]++;
-        }
-        // Saturday = 2 call days (7a–7a, 24hr)
-        const sat = addD(mon, 5);
-        const satMo = `${sat.getFullYear()}-${String(sat.getMonth() + 1).padStart(2, "0")}`;
-        if (monthlyData[satMo]?.[wk.dayCall]) monthlyData[satMo][wk.dayCall][countKey] += 2;
+        const monMoKey = `${mon.getFullYear()}-${String(mon.getMonth() + 1).padStart(2, "0")}`;
+        if (monthlyData[monMoKey]?.[wk.dayCall]) monthlyData[monMoKey][wk.dayCall][countKey] += 6;
       }
 
-      // Night shifts (Mon-Thu): 1 call day each (5p–7a)
+      // Week Nights (Mon-Thu) = 1 point each, attributed to the night's own month
       NIGHT_KEYS.forEach((sk, i) => {
         const sid = wk.nights?.[sk];
         if (!sid) return;
         const d = addD(mon, i);
         const moKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
-        if (monthlyData[moKey]?.[sid]) monthlyData[moKey][sid][countKey]++;
+        if (monthlyData[moKey]?.[sid]) monthlyData[moKey][sid][countKey] += 1;
       });
 
-      // Weekend: Fri night (5p–7a) = 1 + Sun (7a–7a) = 2 = 3 total
+      // Weekend (Fri night + Sun 24h) = 2 points, attributed to the month containing Friday
       const wkndSid = wk.nights?.wknd;
       if (wkndSid) {
         const fri = addD(mon, 4);
-        const sun = addD(mon, 6);
         const friMo = `${fri.getFullYear()}-${String(fri.getMonth() + 1).padStart(2, "0")}`;
-        const sunMo = `${sun.getFullYear()}-${String(sun.getMonth() + 1).padStart(2, "0")}`;
-        if (monthlyData[friMo]?.[wkndSid]) monthlyData[friMo][wkndSid][countKey] += 1;
-        if (monthlyData[sunMo]?.[wkndSid]) monthlyData[sunMo][wkndSid][countKey] += 2;
+        if (monthlyData[friMo]?.[wkndSid]) monthlyData[friMo][wkndSid][countKey] += 2;
       }
     });
     const sortedMonths = [...allMonths].sort();
@@ -9034,13 +9026,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       }
     }, /*#__PURE__*/React.createElement("div", {
       style: css.cardT
-    }, "\uD83D\uDCCA Monthly Call Summary ", /*#__PURE__*/React.createElement("span", {
-      style: {
-        fontWeight: 400,
-        fontSize: 11,
-        color: "#7a8a98"
-      }
-    }, "\u2014 for Stipend Tracking")), /*#__PURE__*/React.createElement("button", {
+    }, "\uD83D\uDCCA Monthly Call Summary"), /*#__PURE__*/React.createElement("button", {
       onClick: () => {
         const header = ["Surgeon", ...moLabels.map(m => m + " 1st"), "Total 1st", ...moLabels.map(m => m + " 2nd"), "Total 2nd", "Grand Total"];
         const rows = surgeons.map(s => {
@@ -9238,7 +9224,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       style: {
         color: "#2c5a80"
       }
-    }, "Call Day Counting:"), " Service Week M\u2013F = 5 days (7a\u20135p) \xB7 Saturday = 2 days (7a\u20137a) \xB7 Night = 1 day (5p\u20137a) \xB7 Weekend = 3 days (Fri 5p\u2013Sat 7a = 1 + Sun 7a\u2013Mon 7a = 2)"));
+    }, "Formula:"), " Service Week = 6 \xB7 Week Night = 1 \xB7 Weekend = 2. Multi-day shifts counted in the month they start."));
   })(), isScheduler && Object.values(stats).some(s => s.dc > 0) && /*#__PURE__*/React.createElement("div", {
     style: css.card
   }, /*#__PURE__*/React.createElement("div", {
