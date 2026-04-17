@@ -40,7 +40,7 @@
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.page.js" defer></script>
   <script>
-    var APP_VERSION = "2026.04.16c";
+    var APP_VERSION = "2026.04.16j";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -371,6 +371,37 @@ const auth = {
       } catch(e) {}
     }
     auth._clearSession();
+  },
+
+  // Send password reset email
+  async resetPassword(email) {
+    const redirectUrl = window.location.origin + window.location.pathname;
+    const res = await fetch(`${SUPABASE_URL}/auth/v1/recover`, {
+      method: "POST",
+      headers: { apikey: SUPABASE_ANON_KEY, "Content-Type": "application/json" },
+      body: JSON.stringify({ email, gotrue_meta_security: { captcha_token: "" } }),
+    });
+    if (!res.ok) {
+      const data = await res.json();
+      return { error: data.msg || data.error_description || data.message || "Reset failed" };
+    }
+    return { error: null };
+  },
+
+  // Update password (after clicking reset link — user has a valid session)
+  async updatePassword(newPassword) {
+    const session = auth.getSession();
+    if (!session?.access_token) return { error: "No active session" };
+    const res = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
+      method: "PUT",
+      headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${session.access_token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ password: newPassword }),
+    });
+    if (!res.ok) {
+      const data = await res.json();
+      return { error: data.msg || data.error_description || data.message || "Update failed" };
+    }
+    return { error: null };
   },
 
   // Get auth headers for DB queries (user-level RLS)
@@ -1211,6 +1242,7 @@ function CallSchedule() {
     fierce: true,
     vac: true
   });
+  const [showBackupStats, setShowBackupStats] = useState(false); // Toggle 2nd call columns in Stats
   const [calSurgeonFilter, setCalSurgeonFilter] = useState(""); // "" = all, or surgeon ID
   const toggleFilter = key => setCalFilters(p => ({
     ...p,
@@ -1301,7 +1333,11 @@ function CallSchedule() {
   const [authLoading, setAuthLoading] = useState(true); // checking session on mount
   const [authEmail, setAuthEmail] = useState("");
   const [authPassword, setAuthPassword] = useState("");
-  const [authMode, setAuthMode] = useState("login"); // "login" | "signup"
+  const [authMode, setAuthMode] = useState("login"); // "login" | "signup" | "reset" | "newpassword"
+  const [resetEmail, setResetEmail] = useState("");
+  const [resetSent, setResetSent] = useState(false);
+  const [newPassword, setNewPassword] = useState("");
+  const [newPasswordConfirm, setNewPasswordConfirm] = useState("");
   const [authError, setAuthError] = useState("");
   const [authBusy, setAuthBusy] = useState(false);
   const [signupPersonId, setSignupPersonId] = useState(""); // person_id during signup
@@ -1416,6 +1452,24 @@ function CallSchedule() {
   useEffect(() => {
     (async () => {
       try {
+        // Check for password recovery token in URL hash (Supabase sends #access_token=...&type=recovery)
+        const hash = window.location.hash;
+        if (hash && hash.includes("type=recovery")) {
+          const params = new URLSearchParams(hash.substring(1));
+          const accessToken = params.get("access_token");
+          const refreshToken = params.get("refresh_token");
+          if (accessToken) {
+            auth._saveSession({
+              access_token: accessToken,
+              refresh_token: refreshToken
+            });
+            // Clear the hash from URL
+            window.history.replaceState(null, "", window.location.pathname + window.location.search);
+            setAuthMode("newpassword");
+            setAuthLoading(false);
+            return;
+          }
+        }
         const bioAvail = await biometric.isAvailable();
         setBiometricAvail(bioAvail);
         const bioEnrolled = biometric.isEnrolled();
@@ -2246,9 +2300,189 @@ function CallSchedule() {
     }
   }, [tradeFrom, tradeTo, tradeWeek, tradeShift, tradeReturnWeek, tradeReturnShift, surgeons, addNotification, sendEmailNotif, isScheduler]);
 
-  // ─── Shift Trade Request: Accept ───
+  // ─── Shift Trade: Cascade Detection ───
+  // When a DC or Weekend swap happens, detect downstream conflicts and propose fixes
+  const detectCascadeChanges = useCallback((sched, req) => {
+    const changes = []; // { week, shiftKey, from, to, reason }
+    const ids = surgeons.map(s => s.id);
+    const nameOf = id => surgeons.find(s => s.id === id)?.name || id;
+    const nightKeys = ["mon", "tue", "wed", "thu"];
+    const applySwap = (s, r) => {
+      const n = JSON.parse(JSON.stringify(s));
+      const wk1 = n[r.week_monday];
+      if (!wk1) return n;
+      if (r.shift_key === "dayCall") wk1.dayCall = r.to_surgeon_id;else if (r.shift_key === "wknd") wk1.nights = {
+        ...wk1.nights,
+        wknd: r.to_surgeon_id
+      };else wk1.nights = {
+        ...wk1.nights,
+        [r.shift_key]: r.to_surgeon_id
+      };
+      if (r.return_week && r.return_shift) {
+        const wk2 = n[r.return_week];
+        if (wk2) {
+          if (r.return_shift === "dayCall") wk2.dayCall = r.from_surgeon_id;else if (r.return_shift === "wknd") wk2.nights = {
+            ...wk2.nights,
+            wknd: r.from_surgeon_id
+          };else wk2.nights = {
+            ...wk2.nights,
+            [r.return_shift]: r.from_surgeon_id
+          };
+        }
+      }
+      return n;
+    };
+    const afterSwap = applySwap(sched, req);
+
+    // Check both weeks involved
+    const weeksToCheck = [req.week_monday];
+    if (req.return_week && req.return_week !== req.week_monday) weeksToCheck.push(req.return_week);
+    for (const mStr of weeksToCheck) {
+      const wk = afterSwap[mStr];
+      if (!wk) continue;
+      const dc = wk.dayCall;
+      const nights = wk.nights || {};
+
+      // RULE 1: DC surgeon cannot have a night in the same week
+      if (dc) {
+        for (const nk of nightKeys) {
+          if (nights[nk] === dc) {
+            // DC has a night conflict — try to give it to the OTHER surgeon in the trade
+            const otherSurgeon = dc === req.to_surgeon_id ? req.from_surgeon_id : req.to_surgeon_id;
+            // Check the other surgeon isn't already DC or has that night
+            const otherHasConflict = otherSurgeon === wk.dayCall || nightKeys.some(k => k !== nk && nights[k] === otherSurgeon);
+            // Also check consecutive night rule
+            const nkIdx = nightKeys.indexOf(nk);
+            const prevNight = nkIdx > 0 ? nights[nightKeys[nkIdx - 1]] : null;
+            const nextNight = nkIdx < 3 ? nights[nightKeys[nkIdx + 1]] : null;
+            const wouldBeConsecutive = prevNight === otherSurgeon || nextNight === otherSurgeon;
+            if (!otherHasConflict && !wouldBeConsecutive) {
+              changes.push({
+                week: mStr,
+                shiftKey: nk,
+                from: dc,
+                to: otherSurgeon,
+                reason: `${nameOf(dc)} is now Service Week — ${SHIFT_LABELS[nk]} moves to ${nameOf(otherSurgeon)}`
+              });
+            } else {
+              // Try the off surgeon
+              const assigned = new Set([dc, ...Object.values(nights)].filter(Boolean));
+              const offSurgeon = ids.find(id => !assigned.has(id));
+              if (offSurgeon) {
+                changes.push({
+                  week: mStr,
+                  shiftKey: nk,
+                  from: dc,
+                  to: offSurgeon,
+                  reason: `${nameOf(dc)} is now Service Week — ${SHIFT_LABELS[nk]} moves to ${nameOf(offSurgeon)} (off surgeon)`,
+                  requiresApproval: true,
+                  approverId: offSurgeon
+                });
+              }
+            }
+          }
+        }
+        // DC surgeon cannot have weekend
+        if (nights.wknd === dc) {
+          const otherSurgeon = dc === req.to_surgeon_id ? req.from_surgeon_id : req.to_surgeon_id;
+          const otherIsDC = otherSurgeon === wk.dayCall;
+          if (!otherIsDC) {
+            changes.push({
+              week: mStr,
+              shiftKey: "wknd",
+              from: dc,
+              to: otherSurgeon,
+              reason: `${nameOf(dc)} is now Service Week — Weekend moves to ${nameOf(otherSurgeon)}`
+            });
+          } else {
+            const assigned = new Set([dc, ...Object.values(nights)].filter(Boolean));
+            const offSurgeon = ids.find(id => !assigned.has(id));
+            if (offSurgeon) {
+              changes.push({
+                week: mStr,
+                shiftKey: "wknd",
+                from: dc,
+                to: offSurgeon,
+                reason: `${nameOf(dc)} is now Service Week — Weekend moves to ${nameOf(offSurgeon)} (off surgeon)`,
+                requiresApproval: true,
+                approverId: offSurgeon
+              });
+            }
+          }
+        }
+      }
+    }
+
+    // RULE 2: Weekend swap → check Monday night of NEXT week
+    const checkWeekendMonday = (weekMon, newWkndSurgeon) => {
+      const mondayStrs = Object.keys(afterSwap).sort();
+      const idx = mondayStrs.indexOf(weekMon);
+      if (idx < 0 || idx >= mondayStrs.length - 1) return;
+      const nextMon = mondayStrs[idx + 1];
+      const nextWk = afterSwap[nextMon];
+      if (!nextWk?.nights?.mon) return;
+      if (nextWk.nights.mon === newWkndSurgeon) {
+        // Weekend surgeon has Monday night next week — conflict
+        const otherSurgeon = newWkndSurgeon === req.to_surgeon_id ? req.from_surgeon_id : req.to_surgeon_id;
+        // Check other surgeon isn't DC next week
+        const otherIsDC = otherSurgeon === nextWk.dayCall;
+        // Check consecutive night
+        const tueNight = nextWk.nights?.tue;
+        const wouldBeConsecutive = tueNight === otherSurgeon;
+        if (!otherIsDC && !wouldBeConsecutive) {
+          changes.push({
+            week: nextMon,
+            shiftKey: "mon",
+            from: newWkndSurgeon,
+            to: otherSurgeon,
+            reason: `${nameOf(newWkndSurgeon)} now has Weekend — Mon Night (next week) moves to ${nameOf(otherSurgeon)}`
+          });
+        } else {
+          const assigned = new Set([nextWk.dayCall, ...Object.values(nextWk.nights)].filter(Boolean));
+          const offSurgeon = ids.find(id => !assigned.has(id));
+          if (offSurgeon) {
+            changes.push({
+              week: nextMon,
+              shiftKey: "mon",
+              from: newWkndSurgeon,
+              to: offSurgeon,
+              reason: `${nameOf(newWkndSurgeon)} now has Weekend — Mon Night (next week) moves to ${nameOf(offSurgeon)} (off surgeon)`,
+              requiresApproval: true,
+              approverId: offSurgeon
+            });
+          }
+        }
+      }
+    };
+
+    // Check weekend cascades
+    if (req.shift_key === "wknd") checkWeekendMonday(req.week_monday, req.to_surgeon_id);
+    if (req.return_shift === "wknd") checkWeekendMonday(req.return_week, req.from_surgeon_id);
+    // Also check if a DC swap moved someone to weekend indirectly (from cascade)
+    for (const ch of [...changes]) {
+      if (ch.shiftKey === "wknd") checkWeekendMonday(ch.week, ch.to);
+    }
+    return changes;
+  }, [surgeons]);
+
+  // ─── Shift Trade Request: Accept (with cascade) ───
   const acceptTradeRequest = useCallback(async req => {
     try {
+      // Detect cascade changes
+      const cascades = detectCascadeChanges(schedule, req);
+      const nameOf = id => surgeons.find(s => s.id === id)?.name || id;
+
+      // If cascades exist, show confirmation with details
+      if (cascades.length > 0) {
+        const cascadeDesc = cascades.map(c => `  • ${c.reason}`).join("\n");
+        const needsApproval = cascades.filter(c => c.requiresApproval);
+        let msg = `Accepting this trade will also change:\n\n${cascadeDesc}`;
+        if (needsApproval.length > 0) {
+          msg += `\n\n⚠️ ${needsApproval.map(c => nameOf(c.approverId)).join(", ")} will be notified and must be available for the new assignment.`;
+        }
+        msg += "\n\nProceed with all changes?";
+        if (!confirm(msg)) return;
+      }
       await db.update("shift_trade_requests", req.id, {
         status: "accepted",
         reviewed_at: new Date().toISOString()
@@ -2262,6 +2496,8 @@ function CallSchedule() {
         const n = {
           ...p
         };
+
+        // Apply the primary swap
         const wk1 = {
           ...n[req.week_monday]
         };
@@ -2269,9 +2505,9 @@ function CallSchedule() {
           ...wk1.nights,
           [req.shift_key]: req.to_surgeon_id
         };
-        let a1 = new Set([wk1.dayCall, ...Object.values(wk1.nights)].filter(Boolean));
-        wk1.off = surgeons.map(s => s.id).find(id => !a1.has(id)) || null;
         n[req.week_monday] = wk1;
+
+        // Apply the return swap
         if (req.return_week && req.return_shift) {
           const wk2 = {
             ...n[req.return_week]
@@ -2280,12 +2516,37 @@ function CallSchedule() {
             ...wk2.nights,
             [req.return_shift]: req.from_surgeon_id
           };
-          let a2 = new Set([wk2.dayCall, ...Object.values(wk2.nights)].filter(Boolean));
-          wk2.off = surgeons.map(s => s.id).find(id => !a2.has(id)) || null;
           n[req.return_week] = wk2;
         }
+
+        // Apply all cascade changes
+        for (const ch of cascades) {
+          const wkC = {
+            ...n[ch.week]
+          };
+          wkC.nights = {
+            ...wkC.nights,
+            [ch.shiftKey]: ch.to
+          };
+          // Recalculate off surgeon
+          const assigned = new Set([wkC.dayCall, ...Object.values(wkC.nights)].filter(Boolean));
+          wkC.off = surgeons.map(s => s.id).find(id => !assigned.has(id)) || null;
+          n[ch.week] = wkC;
+        }
+
+        // Recalculate off for primary swap weeks
+        [req.week_monday, req.return_week].filter(Boolean).forEach(mStr => {
+          const wk = {
+            ...n[mStr]
+          };
+          const assigned = new Set([wk.dayCall, ...Object.values(wk.nights)].filter(Boolean));
+          wk.off = surgeons.map(s => s.id).find(id => !assigned.has(id)) || null;
+          n[mStr] = wk;
+        });
         return n;
       });
+
+      // Notify about the primary trade
       await addNotification("trade_accepted", "Shift Trade Accepted", `${req.to_surgeon_name} accepted: ${req.shift_label} (${req.week_monday}) with ${req.from_surgeon_name}`, {
         from_surgeon_id: req.from_surgeon_id,
         to_surgeon_id: req.to_surgeon_id
@@ -2296,10 +2557,21 @@ function CallSchedule() {
         shift: req.shift_label,
         week: req.week_monday
       });
+
+      // Notify about each cascade change
+      for (const ch of cascades) {
+        const fromName = nameOf(ch.from);
+        const toName = nameOf(ch.to);
+        await addNotification("schedule_changed", "Shift Reassigned", `${SHIFT_LABELS[ch.shiftKey]} (${ch.week}) moved from ${fromName} to ${toName} due to trade`, {
+          from_surgeon_id: ch.from,
+          to_surgeon_id: ch.to,
+          surgeon_id: ch.to
+        });
+      }
     } catch (e) {
       console.error("Accept trade error:", e);
     }
-  }, [schedule, surgeons, pushUndo, addNotification, sendEmailNotif]);
+  }, [schedule, surgeons, pushUndo, addNotification, sendEmailNotif, detectCascadeChanges]);
 
   // ─── Shift Trade Request: Decline ───
   const declineTradeRequest = useCallback(async req => {
@@ -4436,14 +4708,14 @@ ${"</"}script>${"</"}body>${"</"}html>`;
   // Cumulative stats: 1-year, 2-year, multi-year (each = prior tier + current schedule)
   const buildCum = prior => {
     const c = {};
-    const estTotal = s => (s.dc || 0) * 7 + (s.nights || 0) + (s.wknd || 0) * 3;
+    const estTotal = s => (s.dc || 0) * 6 + (s.nights || 0) + (s.wknd || 0) * 1;
     surgeons.forEach(s => {
       const p = prior[s.id] || {};
       const cur = stats[s.id] || {};
       const pTotal = p.totalDays !== undefined ? p.totalDays : estTotal(p);
       const cTotal = cur.totalDays !== undefined ? cur.totalDays : estTotal(cur);
-      const pTotalB = p.totalDaysB !== undefined ? p.totalDaysB : (p.dcB || 0) * 7 + (p.nightsB || 0) + (p.wkndB || 0) * 3;
-      const cTotalB = cur.totalDaysB !== undefined ? cur.totalDaysB : (cur.dcB || 0) * 7 + (cur.nightsB || 0) + (cur.wkndB || 0) * 3;
+      const pTotalB = p.totalDaysB !== undefined ? p.totalDaysB : (p.dcB || 0) * 6 + (p.nightsB || 0) + (p.wkndB || 0) * 1;
+      const cTotalB = cur.totalDaysB !== undefined ? cur.totalDaysB : (cur.dcB || 0) * 6 + (cur.nightsB || 0) + (cur.wkndB || 0) * 1;
       c[s.id] = {
         dc: (p.dc || 0) + (cur.dc || 0),
         nights: (p.nights || 0) + (cur.nights || 0),
@@ -4464,7 +4736,11 @@ ${"</"}script>${"</"}body>${"</"}html>`;
   const cumStats = useMemo(() => buildCum(priorCounts), [stats, priorCounts, surgeons]);
 
   // Total call days — uses stored totalDays from spreadsheet if available, otherwise estimates
-  const calcShifts = s => s.totalDays !== undefined ? s.totalDays || 0 : (s.dc || 0) * 7 + (s.nights || 0) + (s.wknd || 0) * 3;
+  // For display in Totals: night=1, service week=6 (M-Sat), sunday(weekend)=1
+  // Total call shifts for DISPLAY: Service Week=6, Night=1, Weekend(Sunday)=1
+  const calcShifts = s => (s.dc || 0) * 6 + (s.nights || 0) + (s.wknd || 0);
+  const calcShiftsB = s => (s.dcB || 0) * 6 + (s.nightsB || 0) + (s.wkndB || 0);
+  const calcTotal = s => calcShifts(s) + calcShiftsB(s);
 
   // ─── Conflict Detection ───
   const conflicts = useMemo(() => {
@@ -5099,7 +5375,237 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       color: "#7a8a98",
       margin: 0
     }
-  }, authMode === "login" ? "Sign in to your account" : "Create your account")), /*#__PURE__*/React.createElement("div", {
+  }, authMode === "login" ? "Sign in to your account" : authMode === "signup" ? "Create your account" : authMode === "reset" ? "Reset your password" : "Set a new password")), authMode === "newpassword" ? /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      flexDirection: "column",
+      gap: 10
+    }
+  }, /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 13,
+      color: "#2c5a80",
+      margin: 0
+    }
+  }, "Enter your new password below."), /*#__PURE__*/React.createElement("input", {
+    type: "password",
+    placeholder: "New password",
+    value: newPassword,
+    onChange: e => setNewPassword(e.target.value),
+    style: {
+      ...css.inp,
+      width: "100%",
+      padding: "10px 12px",
+      fontSize: 14
+    }
+  }), /*#__PURE__*/React.createElement("input", {
+    type: "password",
+    placeholder: "Confirm new password",
+    value: newPasswordConfirm,
+    onChange: e => setNewPasswordConfirm(e.target.value),
+    onKeyDown: e => {
+      if (e.key === "Enter") {
+        if (!newPassword || newPassword.length < 6) {
+          setAuthError("Password must be at least 6 characters");
+          return;
+        }
+        if (newPassword !== newPasswordConfirm) {
+          setAuthError("Passwords don't match");
+          return;
+        }
+        setAuthBusy(true);
+        setAuthError("");
+        auth.updatePassword(newPassword).then(r => {
+          setAuthBusy(false);
+          if (r.error) {
+            setAuthError(r.error);
+          } else {
+            setAuthMode("login");
+            setAuthError("");
+            setNewPassword("");
+            setNewPasswordConfirm("");
+            alert("Password updated! Please sign in with your new password.");
+            auth.signOut();
+          }
+        });
+      }
+    },
+    style: {
+      ...css.inp,
+      width: "100%",
+      padding: "10px 12px",
+      fontSize: 14
+    }
+  }), authError && /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: "#c04040",
+      padding: "6px 10px",
+      background: "#fce8e8",
+      borderRadius: 6,
+      border: "1px solid #e8c0c0"
+    }
+  }, authError), /*#__PURE__*/React.createElement("button", {
+    onClick: () => {
+      if (!newPassword || newPassword.length < 6) {
+        setAuthError("Password must be at least 6 characters");
+        return;
+      }
+      if (newPassword !== newPasswordConfirm) {
+        setAuthError("Passwords don't match");
+        return;
+      }
+      setAuthBusy(true);
+      setAuthError("");
+      auth.updatePassword(newPassword).then(r => {
+        setAuthBusy(false);
+        if (r.error) {
+          setAuthError(r.error);
+        } else {
+          setAuthMode("login");
+          setAuthError("");
+          setNewPassword("");
+          setNewPasswordConfirm("");
+          alert("Password updated! Please sign in with your new password.");
+          auth.signOut();
+        }
+      });
+    },
+    disabled: authBusy,
+    style: {
+      ...css.btn(true),
+      width: "100%",
+      padding: "11px 16px",
+      fontSize: 14,
+      fontWeight: 700,
+      opacity: authBusy ? 0.6 : 1
+    }
+  }, authBusy ? "Updating…" : "Update Password")) : authMode === "reset" ?
+  /*#__PURE__*/
+  /* ─── Password Reset Request Mode ─── */
+  React.createElement("div", {
+    style: {
+      display: "flex",
+      flexDirection: "column",
+      gap: 10
+    }
+  }, resetSent ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      color: "#1a6030",
+      padding: "12px 14px",
+      background: "#e8f8e8",
+      borderRadius: 8,
+      border: "1px solid #a0d8a0",
+      lineHeight: 1.5
+    }
+  }, "Password reset email sent! Check your inbox for a link to reset your password."), /*#__PURE__*/React.createElement("button", {
+    onClick: () => {
+      setAuthMode("login");
+      setResetSent(false);
+      setResetEmail("");
+      setAuthError("");
+    },
+    style: {
+      background: "none",
+      border: "none",
+      color: "#1a6fa8",
+      fontSize: 12,
+      cursor: "pointer",
+      fontFamily: font,
+      textDecoration: "underline",
+      textAlign: "center"
+    }
+  }, "Back to Sign In")) : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 13,
+      color: "#5a6a78",
+      margin: 0
+    }
+  }, "Enter the email address you signed up with. We'll send you a link to reset your password."), /*#__PURE__*/React.createElement("input", {
+    type: "email",
+    placeholder: "Email address",
+    value: resetEmail,
+    onChange: e => setResetEmail(e.target.value),
+    onKeyDown: e => {
+      if (e.key === "Enter" && resetEmail) {
+        setAuthBusy(true);
+        setAuthError("");
+        auth.resetPassword(resetEmail).then(r => {
+          setAuthBusy(false);
+          if (r.error) {
+            setAuthError(r.error);
+          } else {
+            setResetSent(true);
+          }
+        });
+      }
+    },
+    style: {
+      ...css.inp,
+      width: "100%",
+      padding: "10px 12px",
+      fontSize: 14
+    }
+  }), authError && /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: "#c04040",
+      padding: "6px 10px",
+      background: "#fce8e8",
+      borderRadius: 6,
+      border: "1px solid #e8c0c0"
+    }
+  }, authError), /*#__PURE__*/React.createElement("button", {
+    onClick: () => {
+      if (!resetEmail) {
+        setAuthError("Please enter your email");
+        return;
+      }
+      setAuthBusy(true);
+      setAuthError("");
+      auth.resetPassword(resetEmail).then(r => {
+        setAuthBusy(false);
+        if (r.error) {
+          setAuthError(r.error);
+        } else {
+          setResetSent(true);
+        }
+      });
+    },
+    disabled: authBusy,
+    style: {
+      ...css.btn(true),
+      width: "100%",
+      padding: "11px 16px",
+      fontSize: 14,
+      fontWeight: 700,
+      opacity: authBusy ? 0.6 : 1
+    }
+  }, authBusy ? "Sending…" : "Send Reset Link"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      textAlign: "center",
+      marginTop: 4
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: () => {
+      setAuthMode("login");
+      setAuthError("");
+      setResetEmail("");
+    },
+    style: {
+      background: "none",
+      border: "none",
+      color: "#1a6fa8",
+      fontSize: 12,
+      cursor: "pointer",
+      fontFamily: font,
+      textDecoration: "underline"
+    }
+  }, "Back to Sign In")))) :
+  /*#__PURE__*/
+  /* ─── Normal Login / Signup Mode ─── */
+  React.createElement("div", {
     style: {
       display: "flex",
       flexDirection: "column",
@@ -5140,14 +5646,16 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     }
   }, /*#__PURE__*/React.createElement("option", {
     value: ""
-  }, "Select your name\u2026"), /*#__PURE__*/React.createElement("optgroup", {
+  }, "Select your name\u2026"), /*#__PURE__*/React.createElement("option", {
+    value: "admin"
+  }, "ADMIN (Clinic Manager)"), /*#__PURE__*/React.createElement("optgroup", {
     label: "Surgeons"
-  }, INIT_SURGEONS.map(s => /*#__PURE__*/React.createElement("option", {
+  }, surgeons.map(s => /*#__PURE__*/React.createElement("option", {
     key: s.id,
     value: s.id
   }, s.name))), /*#__PURE__*/React.createElement("optgroup", {
     label: "APPs"
-  }, INIT_APPS.map(a => /*#__PURE__*/React.createElement("option", {
+  }, apps.map(a => /*#__PURE__*/React.createElement("option", {
     key: a.id,
     value: a.id
   }, a.name)))), authError && /*#__PURE__*/React.createElement("div", {
@@ -5189,7 +5697,25 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       fontFamily: font,
       textDecoration: "underline"
     }
-  }, authMode === "login" ? "Don't have an account? Sign up" : "Already have an account? Sign in"))))) : needsProfile ? /*#__PURE__*/React.createElement("div", {
+  }, authMode === "login" ? "Don't have an account? Sign up" : "Already have an account? Sign in"), authMode === "login" && /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 8
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: () => {
+      setAuthMode("reset");
+      setAuthError("");
+    },
+    style: {
+      background: "none",
+      border: "none",
+      color: "#7a8a98",
+      fontSize: 11,
+      cursor: "pointer",
+      fontFamily: font,
+      textDecoration: "underline"
+    }
+  }, "Forgot your password?")))))) : needsProfile ? /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       justifyContent: "center",
@@ -5234,14 +5760,16 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     }
   }, /*#__PURE__*/React.createElement("option", {
     value: ""
-  }, "Select your name\u2026"), /*#__PURE__*/React.createElement("optgroup", {
+  }, "Select your name\u2026"), /*#__PURE__*/React.createElement("option", {
+    value: "admin"
+  }, "ADMIN (Clinic Manager)"), /*#__PURE__*/React.createElement("optgroup", {
     label: "Surgeons"
-  }, INIT_SURGEONS.map(s => /*#__PURE__*/React.createElement("option", {
+  }, surgeons.map(s => /*#__PURE__*/React.createElement("option", {
     key: s.id,
     value: s.id
   }, s.name))), /*#__PURE__*/React.createElement("optgroup", {
     label: "APPs"
-  }, INIT_APPS.map(a => /*#__PURE__*/React.createElement("option", {
+  }, apps.map(a => /*#__PURE__*/React.createElement("option", {
     key: a.id,
     value: a.id
   }, a.name)))), authError && /*#__PURE__*/React.createElement("div", {
@@ -7842,7 +8370,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         fontSize: 8,
         marginLeft: 2
       }
-    }, e.hours))), calFilters.app && entries.filter(e => e.type === "APP").map((e, j) => /*#__PURE__*/React.createElement("div", {
+    }, e.hours))), calFilters.app && !sf && entries.filter(e => e.type === "APP").map((e, j) => /*#__PURE__*/React.createElement("div", {
       key: "app" + j,
       style: {
         marginBottom: 1,
@@ -7881,7 +8409,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         marginTop: 1,
         fontWeight: 600
       }
-    }, "\uD83D\uDEE1 Fierce Backup"), calFilters.vac && onVacList.map(s => /*#__PURE__*/React.createElement("div", {
+    }, "\uD83D\uDEE1 Fierce Backup"), calFilters.vac && onVacList.filter(s => !sf || s.id === sf).map(s => /*#__PURE__*/React.createElement("div", {
       key: s.id,
       style: {
         fontSize: 8,
@@ -8278,7 +8806,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       ...css.btn(false),
       padding: "6px 16px"
     }
-  }, "\uD83D\uDDA8 Print Calendar")))), view === "stats" && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+  }, "\uD83D\uDDA8 Print Calendar")))), view === "stats" && /*#__PURE__*/React.createElement(React.Fragment, null, isScheduler && /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       justifyContent: "flex-end",
@@ -8292,6 +8820,25 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       fontSize: 12
     }
   }, "\u2B07 Export Yearly Summary (CSV)")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "flex-end",
+      marginBottom: 8
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: () => setShowBackupStats(p => !p),
+    style: {
+      background: showBackupStats ? "#fef8e8" : "#f4f6f8",
+      border: `1px solid ${showBackupStats ? "#d8c880" : "#d0d8e0"}`,
+      color: showBackupStats ? "#8a6a10" : "#5a6a78",
+      borderRadius: 6,
+      padding: "4px 12px",
+      fontSize: 11,
+      fontWeight: 600,
+      cursor: "pointer",
+      fontFamily: font
+    }
+  }, showBackupStats ? "Hide 2nd Call" : "Show 2nd Call")), /*#__PURE__*/React.createElement("div", {
     style: css.card
   }, /*#__PURE__*/React.createElement("div", {
     style: css.cardT
@@ -8329,7 +8876,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     style: {
       color: "#1a6fa8"
     }
-  }, "Regular")), /*#__PURE__*/React.createElement("th", {
+  }, showBackupStats ? "1st Call" : "Regular")), showBackupStats && /*#__PURE__*/React.createElement("th", {
     style: {
       ...thS,
       borderLeft: "2px solid #d8c880"
@@ -8339,7 +8886,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     style: {
       color: "#8a6a10"
     }
-  }, "Backup"))), /*#__PURE__*/React.createElement("tr", {
+  }, "2nd Call"))), /*#__PURE__*/React.createElement("tr", {
     style: {
       borderBottom: "1px solid #e0e4ea"
     }
@@ -8353,26 +8900,26 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     }
   }, "Shifts")), /*#__PURE__*/React.createElement("th", {
     style: thS2
-  }, "Day"), /*#__PURE__*/React.createElement("th", {
+  }, "Svc Wk"), /*#__PURE__*/React.createElement("th", {
     style: thS2
   }, "Nights"), /*#__PURE__*/React.createElement("th", {
     style: thS2
   }, "Wknds"), /*#__PURE__*/React.createElement("th", {
     style: thS2
-  }, "Off"), /*#__PURE__*/React.createElement("th", {
+  }, "Off"), showBackupStats && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("th", {
     style: {
       ...thS2,
       borderLeft: "2px solid #d8c880"
     }
-  }, "Day"), /*#__PURE__*/React.createElement("th", {
+  }, "Svc Wk"), /*#__PURE__*/React.createElement("th", {
     style: thS2
   }, "Nights"), /*#__PURE__*/React.createElement("th", {
     style: thS2
   }, "Wknds"), /*#__PURE__*/React.createElement("th", {
     style: thS2
-  }, "Off"))), /*#__PURE__*/React.createElement("tbody", null, surgeons.map(s => {
+  }, "Off")))), /*#__PURE__*/React.createElement("tbody", null, surgeons.filter(s => isScheduler || !mySurgeon || mySurgeon === "admin" || s.id === mySurgeon).map(s => {
     const st = stats[s.id] || {};
-    const total = calcShifts(st);
+    const total = calcTotal(st);
     return /*#__PURE__*/React.createElement("tr", {
       key: s.id,
       style: {
@@ -8394,7 +8941,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     }, total), [st.dc, st.nights, st.wknd, st.off].map((v, i) => /*#__PURE__*/React.createElement("td", {
       key: i,
       style: tdS
-    }, v || 0)), [st.dcB, st.nightsB, st.wkndB, st.offB].map((v, i) => /*#__PURE__*/React.createElement("td", {
+    }, v || 0)), showBackupStats && [st.dcB, st.nightsB, st.wkndB, st.offB].map((v, i) => /*#__PURE__*/React.createElement("td", {
       key: "b" + i,
       style: {
         ...tdS,
@@ -8414,7 +8961,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     style: {
       color: "#2c5a80"
     }
-  }, "B-SW"), " = backup service week days. Type breakdown (Svc Wk, Nights, Wknds) used by generator for balancing."))), Object.keys(schedule).length > 0 && (() => {
+  }, "Total"), " = 1st Call + 2nd Call. Svc Wk = 6 days (M\u2013Sat), Night = 1, Weekend (Sun) = 1."))), Object.keys(schedule).length > 0 && (() => {
     // Compute monthly breakdown
     const monthlyData = {};
     const allMonths = new Set();
@@ -8692,7 +9239,143 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         color: "#2c5a80"
       }
     }, "Call Day Counting:"), " Service Week M\u2013F = 5 days (7a\u20135p) \xB7 Saturday = 2 days (7a\u20137a) \xB7 Night = 1 day (5p\u20137a) \xB7 Weekend = 3 days (Fri 5p\u2013Sat 7a = 1 + Sun 7a\u2013Mon 7a = 2)"));
-  })(), /*#__PURE__*/React.createElement("div", {
+  })(), isScheduler && Object.values(stats).some(s => s.dc > 0) && /*#__PURE__*/React.createElement("div", {
+    style: css.card
+  }, /*#__PURE__*/React.createElement("div", {
+    style: css.cardT
+  }, "\uD83D\uDCB0 Billing Summary ", /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontWeight: 400,
+      fontSize: 11,
+      color: "#7a8a98"
+    }
+  }, "\u2014 Call Days for Stipend Calculation")), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 11,
+      color: "#7a8a98",
+      margin: "0 0 10px",
+      lineHeight: 1.5
+    }
+  }, "Service Week = 7 days \xB7 Night = 1 day \xB7 Weekend (Fri + Sun) = 3 days"), [{
+    label: "This Period",
+    color: "#1a6fa8",
+    getData: sid => stats[sid] || {}
+  }, {
+    label: "1-Year Cumulative",
+    color: "#1a6fa8",
+    getData: sid => cum1yr[sid] || {}
+  }, {
+    label: "2-Year Cumulative",
+    color: "#8a6a10",
+    getData: sid => cum2yr[sid] || {}
+  }, {
+    label: "Multi-Year Cumulative",
+    color: "#7030a8",
+    getData: sid => cumStats[sid] || {}
+  }].map(tier => {
+    const billingCalc = s => (s.dc || 0) * 7 + (s.nights || 0) + (s.wknd || 0) * 3;
+    const billingCalcB = s => (s.dcB || 0) * 7 + (s.nightsB || 0) + (s.wkndB || 0) * 3;
+    return /*#__PURE__*/React.createElement("div", {
+      key: tier.label,
+      style: {
+        marginBottom: 14
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 11,
+        fontWeight: 700,
+        color: tier.color,
+        marginBottom: 4,
+        textTransform: "uppercase",
+        letterSpacing: 0.8
+      }
+    }, tier.label), /*#__PURE__*/React.createElement("div", {
+      style: {
+        overflowX: "auto"
+      }
+    }, /*#__PURE__*/React.createElement("table", {
+      style: {
+        width: "100%",
+        borderCollapse: "collapse",
+        fontSize: 12
+      }
+    }, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", {
+      style: {
+        borderBottom: "1px solid #d0d8e0"
+      }
+    }, /*#__PURE__*/React.createElement("th", {
+      style: thS2
+    }, "Surgeon"), /*#__PURE__*/React.createElement("th", {
+      style: {
+        ...thS2,
+        color: "#1a8040"
+      }
+    }, "Total Days"), /*#__PURE__*/React.createElement("th", {
+      style: thS2
+    }, "1st Call"), showBackupStats && /*#__PURE__*/React.createElement("th", {
+      style: {
+        ...thS2,
+        borderLeft: "1px solid #d8c880"
+      }
+    }, "2nd Call"), /*#__PURE__*/React.createElement("th", {
+      style: thS2
+    }, "Svc Wk"), /*#__PURE__*/React.createElement("th", {
+      style: thS2
+    }, "Nights"), /*#__PURE__*/React.createElement("th", {
+      style: thS2
+    }, "Wknds"))), /*#__PURE__*/React.createElement("tbody", null, surgeons.map(s => {
+      const d = tier.getData(s.id);
+      const first = billingCalc(d);
+      const second = billingCalcB(d);
+      return /*#__PURE__*/React.createElement("tr", {
+        key: s.id,
+        style: {
+          borderBottom: "1px solid #e8ecf0"
+        }
+      }, /*#__PURE__*/React.createElement("td", {
+        style: {
+          padding: "5px 6px"
+        }
+      }, /*#__PURE__*/React.createElement(Badge, {
+        id: s.id,
+        small: true
+      })), /*#__PURE__*/React.createElement("td", {
+        style: {
+          ...tdS,
+          color: "#1a8040",
+          fontWeight: 700,
+          fontSize: 14
+        }
+      }, first + second), /*#__PURE__*/React.createElement("td", {
+        style: {
+          ...tdS,
+          fontWeight: 600
+        }
+      }, first), showBackupStats && /*#__PURE__*/React.createElement("td", {
+        style: {
+          ...tdS,
+          fontWeight: 600,
+          borderLeft: "1px solid #d8c880"
+        }
+      }, second), /*#__PURE__*/React.createElement("td", {
+        style: tdS
+      }, (d.dc || 0) + (d.dcB || 0)), /*#__PURE__*/React.createElement("td", {
+        style: tdS
+      }, (d.nights || 0) + (d.nightsB || 0)), /*#__PURE__*/React.createElement("td", {
+        style: tdS
+      }, (d.wknd || 0) + (d.wkndB || 0)));
+    })))));
+  }), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: "#7a8a98",
+      lineHeight: 1.5
+    }
+  }, /*#__PURE__*/React.createElement("strong", {
+    style: {
+      color: "#2c5a80"
+    }
+  }, "Formula:"), " Svc Wk \xD7 7 + Nights \xD7 1 + Weekends \xD7 3 = Total Call Days. Used for stipend/billing \u2014 differs from shift count display above.")), /*#__PURE__*/React.createElement("div", {
     style: css.card
   }, /*#__PURE__*/React.createElement("div", {
     style: css.cardT
@@ -8761,7 +9444,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     style: thS
   }, "Days Used"), /*#__PURE__*/React.createElement("th", {
     style: thS
-  }, "Vacation Periods"))), /*#__PURE__*/React.createElement("tbody", null, surgeons.map(s => {
+  }, "Vacation Periods"))), /*#__PURE__*/React.createElement("tbody", null, surgeons.filter(s => isScheduler || !mySurgeon || mySurgeon === "admin" || s.id === mySurgeon).map(s => {
     const days = vacDays[s.id] || 0;
     const ranges = vacations[s.id] || [];
     return /*#__PURE__*/React.createElement("tr", {
@@ -8796,7 +9479,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         color: "#8a94a0"
       }
     }, "\u2014")));
-  }), apps.map(a => {
+  }), (isScheduler || mySurgeon === "admin" || apps.some(a => a.id === mySurgeon)) && apps.filter(a => isScheduler || mySurgeon === "admin" || a.id === mySurgeon).map(a => {
     const days = vacDays[a.id] || 0;
     const ranges = vacations[a.id] || [];
     if (!days && !ranges.length) return null;
@@ -8951,15 +9634,15 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       ...thS2,
       color: tier.color
     }
-  }, "Shifts"), /*#__PURE__*/React.createElement("th", {
+  }, "Total"), /*#__PURE__*/React.createElement("th", {
     style: thS2
-  }, "Day"), /*#__PURE__*/React.createElement("th", {
+  }, "Svc Wk"), /*#__PURE__*/React.createElement("th", {
     style: thS2
   }, "Nights"), /*#__PURE__*/React.createElement("th", {
     style: thS2
   }, "Wknds"), /*#__PURE__*/React.createElement("th", {
     style: thS2
-  }, "Off"), /*#__PURE__*/React.createElement("th", {
+  }, "Off"), showBackupStats && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("th", {
     style: {
       ...thS2,
       borderLeft: "1px solid #d8c880"
@@ -8970,9 +9653,9 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     style: thS2
   }, "B-Wknd"), /*#__PURE__*/React.createElement("th", {
     style: thS2
-  }, "B-Off"))), /*#__PURE__*/React.createElement("tbody", null, surgeons.map(s => {
+  }, "B-Off")))), /*#__PURE__*/React.createElement("tbody", null, surgeons.filter(s => isScheduler || !mySurgeon || mySurgeon === "admin" || s.id === mySurgeon).map(s => {
     const c = tier.data[s.id] || {};
-    const total = calcShifts(c);
+    const total = calcTotal(c);
     return /*#__PURE__*/React.createElement("tr", {
       key: s.id,
       style: {
@@ -8998,7 +9681,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         ...tdS,
         fontWeight: 600
       }
-    }, v || 0)), [c.dcB, c.nightsB, c.wkndB, c.offB].map((v, i) => /*#__PURE__*/React.createElement("td", {
+    }, v || 0)), showBackupStats && [c.dcB, c.nightsB, c.wkndB, c.offB].map((v, i) => /*#__PURE__*/React.createElement("td", {
       key: "b" + i,
       style: {
         ...tdS,
@@ -9018,7 +9701,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     style: {
       color: "#2c5a80"
     }
-  }, "B-SW"), " = backup service week days. Type breakdown (Svc Wk, Nights, Wknds) used by generator for balancing."))), view === "myschedule" && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+  }, "Total"), " = 1st Call + 2nd Call. Svc Wk = 6 days, Night = 1, Weekend (Sun) = 1."))), view === "myschedule" && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
     style: css.card
   }, /*#__PURE__*/React.createElement("div", {
     style: css.cardT
@@ -10069,7 +10752,42 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       background: "linear-gradient(135deg,#6030a0,#8050c0)",
       borderColor: "#6030a0"
     }
-  }, "Propose Trade"))), (() => {
+  }, "Propose Trade")), tradeFrom && tradeTo && tradeWeek && tradeShift && (tradeShift === "dayCall" || tradeShift === "wknd") && (() => {
+    const previewReq = {
+      from_surgeon_id: tradeFrom,
+      to_surgeon_id: tradeTo,
+      week_monday: tradeWeek,
+      shift_key: tradeShift,
+      return_week: tradeReturnWeek || null,
+      return_shift: tradeReturnShift || null
+    };
+    const cascades = detectCascadeChanges(schedule, previewReq);
+    if (cascades.length === 0) return null;
+    return /*#__PURE__*/React.createElement("div", {
+      style: {
+        marginTop: 10,
+        padding: "10px 14px",
+        background: "#fef8e8",
+        border: "1px solid #e8d090",
+        borderRadius: 8
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 12,
+        fontWeight: 700,
+        color: "#8a6a10",
+        marginBottom: 6
+      }
+    }, "\u26A0\uFE0F This swap will also change:"), cascades.map((c, i) => /*#__PURE__*/React.createElement("div", {
+      key: i,
+      style: {
+        fontSize: 11,
+        color: "#5a4a10",
+        marginBottom: 3,
+        paddingLeft: 8
+      }
+    }, "\u2022 ", c.reason, c.requiresApproval ? " ⚠️ requires approval" : "")));
+  })()), (() => {
     const pendingTrades = myTradeRequests.filter(r => r.status === "pending");
     const reviewedTrades = myTradeRequests.filter(r => r.status !== "pending");
     return /*#__PURE__*/React.createElement(React.Fragment, null, pendingTrades.length > 0 && /*#__PURE__*/React.createElement("div", {
@@ -10436,7 +11154,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       color: "#c04040",
       lineHeight: 1.5
     }
-  }, "Notifications are blocked. Please allow notifications for this site in your browser settings."), pushPermission === "granted" && /*#__PURE__*/React.createElement("div", {
+  }, "Notifications are blocked. Please allow notifications for this site in your browser settings."), pushPermission === "granted" && isScheduler && /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       gap: 8,
