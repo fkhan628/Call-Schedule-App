@@ -40,7 +40,7 @@
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.page.js" defer></script>
   <script>
-    var APP_VERSION = "2026.04.17a";
+    var APP_VERSION = "2026.04.17b";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -8514,85 +8514,137 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       flexWrap: "wrap",
       marginBottom: 10
     }
-  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
+  }, /*#__PURE__*/React.createElement(React.Fragment, null, isScheduler ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
+  style: {
+    fontSize: 10,
+    color: "#7a8a98",
+    display: "block",
+    marginBottom: 2
+  }
+}, "Week"), /*#__PURE__*/React.createElement("select", {
+  value: swapTarget?.mondayStr || "",
+  onChange: e => {
+    setSwapTarget(prev => ({
+      ...(prev || {}),
+      mondayStr: e.target.value
+    }));
+    setSwapSuggestions(null);
+  },
+  style: {
+    ...css.inp,
+    width: 160
+  }
+}, /*#__PURE__*/React.createElement("option", {
+  value: ""
+}, "Select week\u2026"), Object.keys(schedule).sort().map(m => /*#__PURE__*/React.createElement("option", {
+  key: m,
+  value: m
+}, "Wk of ", m)))), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
+  style: {
+    fontSize: 10,
+    color: "#7a8a98",
+    display: "block",
+    marginBottom: 2
+  }
+}, "Shift"), /*#__PURE__*/React.createElement("select", {
+  value: swapTarget?.shift || "",
+  onChange: e => {
+    setSwapTarget(prev => ({
+      ...(prev || {}),
+      shift: e.target.value
+    }));
+    setSwapSuggestions(null);
+  },
+  style: {
+    ...css.inp,
+    width: 140
+  }
+}, /*#__PURE__*/React.createElement("option", {
+  value: ""
+}, "Select shift\u2026"), ALL_SHIFT_KEYS.map(sk => /*#__PURE__*/React.createElement("option", {
+  key: sk,
+  value: sk
+}, SHIFT_LABELS[sk])))), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
+  style: {
+    fontSize: 10,
+    color: "#7a8a98",
+    display: "block",
+    marginBottom: 2
+  }
+}, "Current Surgeon"), (() => {
+  const m = swapTarget?.mondayStr;
+  const sh = swapTarget?.shift;
+  const wk = m ? schedule[m] : null;
+  let currentId = null;
+  if (wk && sh) {
+    currentId = sh === "dayCall" ? wk.dayCall : wk.nights?.[sh];
+  }
+  return currentId ? /*#__PURE__*/React.createElement("div", {
     style: {
-      fontSize: 10,
-      color: "#7a8a98",
-      display: "block",
-      marginBottom: 2
+      padding: "6px 10px"
     }
-  }, "Week"), /*#__PURE__*/React.createElement("select", {
-    value: swapTarget?.mondayStr || "",
+  }, /*#__PURE__*/React.createElement(Badge, {
+    id: currentId
+  })) : /*#__PURE__*/React.createElement("div", {
+    style: {
+      padding: "6px 10px",
+      fontSize: 12,
+      color: "#8a94a0"
+    }
+  }, "\u2014");
+})())) : /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
+  style: {
+    fontSize: 10,
+    color: "#7a8a98",
+    display: "block",
+    marginBottom: 2
+  }
+}, "Your shift to swap"), (() => {
+  const opts = [];
+  Object.keys(schedule).sort().forEach(m => {
+    const wk = schedule[m];
+    if (!wk) return;
+    ALL_SHIFT_KEYS.forEach(sk => {
+      const holder = sk === "dayCall" ? wk.dayCall : wk.nights?.[sk];
+      if (holder === mySurgeon) {
+        const d = parse(m);
+        const label = `${MO[d.getMonth()].slice(0, 3)} ${d.getDate()} \u2014 ${SHIFT_LABELS[sk]}${wk.isBackup ? " (Backup)" : ""}`;
+        opts.push({
+          value: `${m}|${sk}`,
+          label
+        });
+      }
+    });
+  });
+  const curVal = swapTarget?.mondayStr && swapTarget?.shift ? `${swapTarget.mondayStr}|${swapTarget.shift}` : "";
+  const placeholder = !mySurgeon ? "Select your name in Mine tab first" : opts.length === 0 ? "You have no scheduled shifts" : "Select your shift\u2026";
+  return /*#__PURE__*/React.createElement("select", {
+    value: curVal,
     onChange: e => {
-      setSwapTarget(prev => ({
-        ...(prev || {}),
-        mondayStr: e.target.value
-      }));
+      const v = e.target.value;
       setSwapSuggestions(null);
+      if (!v) {
+        setSwapTarget(null);
+      } else {
+        const [w, s] = v.split("|");
+        setSwapTarget({
+          mondayStr: w,
+          shift: s
+        });
+      }
     },
     style: {
       ...css.inp,
-      width: 160
-    }
-  }, /*#__PURE__*/React.createElement("option", {
-    value: ""
-  }, "Select week\u2026"), Object.keys(schedule).sort().map(m => /*#__PURE__*/React.createElement("option", {
-    key: m,
-    value: m
-  }, "Wk of ", m)))), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
-    style: {
-      fontSize: 10,
-      color: "#7a8a98",
-      display: "block",
-      marginBottom: 2
-    }
-  }, "Shift"), /*#__PURE__*/React.createElement("select", {
-    value: swapTarget?.shift || "",
-    onChange: e => {
-      setSwapTarget(prev => ({
-        ...(prev || {}),
-        shift: e.target.value
-      }));
-      setSwapSuggestions(null);
+      minWidth: 260
     },
-    style: {
-      ...css.inp,
-      width: 140
-    }
+    disabled: !mySurgeon || opts.length === 0
   }, /*#__PURE__*/React.createElement("option", {
     value: ""
-  }, "Select shift\u2026"), ALL_SHIFT_KEYS.map(sk => /*#__PURE__*/React.createElement("option", {
-    key: sk,
-    value: sk
-  }, SHIFT_LABELS[sk])))), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
-    style: {
-      fontSize: 10,
-      color: "#7a8a98",
-      display: "block",
-      marginBottom: 2
-    }
-  }, "Current Surgeon"), (() => {
-    const m = swapTarget?.mondayStr;
-    const sh = swapTarget?.shift;
-    const wk = m ? schedule[m] : null;
-    let currentId = null;
-    if (wk && sh) {
-      currentId = sh === "dayCall" ? wk.dayCall : wk.nights?.[sh];
-    }
-    return currentId ? /*#__PURE__*/React.createElement("div", {
-      style: {
-        padding: "6px 10px"
-      }
-    }, /*#__PURE__*/React.createElement(Badge, {
-      id: currentId
-    })) : /*#__PURE__*/React.createElement("div", {
-      style: {
-        padding: "6px 10px",
-        fontSize: 12,
-        color: "#8a94a0"
-      }
-    }, "\u2014");
-  })()), /*#__PURE__*/React.createElement("button", {
+  }, placeholder), opts.map(o => /*#__PURE__*/React.createElement("option", {
+    key: o.value,
+    value: o.value
+  }, o.label)));
+})())), /*#__PURE__*/React.createElement("button", {
     onClick: () => {
       const m = swapTarget?.mondayStr;
       const sh = swapTarget?.shift;

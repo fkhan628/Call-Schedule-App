@@ -46,7 +46,7 @@
   <script src="https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.page.js" defer></script>
   <script>
     // ─── Auto-update: bump this version string each deploy ───
-    var APP_VERSION = "2026.04.17a";
+    var APP_VERSION = "2026.04.17b";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -84,7 +84,7 @@
   <div id="root"></div>
   <script>
     // Cache-bust with version — update this string when deploying changes
-    var _v = "2026.04.17a";
+    var _v = "2026.04.17b";
     ['config.js','helpers.js','generator.js','app-styles.js'].forEach(function(f) {
       document.write('<script src="'+f+'?v='+_v+'"><\/script>');
     });
@@ -4304,37 +4304,72 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                 One-way swaps are only permitted for emergencies (illness, family emergency) and require scheduler approval.
               </p>
               <div style={{display:"flex",gap:6,alignItems:"end",flexWrap:"wrap",marginBottom:10}}>
-                <div>
-                  <label style={{fontSize:10,color:"#7a8a98",display:"block",marginBottom:2}}>Week</label>
-                  <select value={swapTarget?.mondayStr||""} onChange={e=>{setSwapTarget(prev=>({...(prev||{}),mondayStr:e.target.value}));setSwapSuggestions(null);}} style={{...css.inp,width:160}}>
-                    <option value="">Select week…</option>
-                    {Object.keys(schedule).sort().map(m=><option key={m} value={m}>Wk of {m}</option>)}
-                  </select>
-                </div>
-                <div>
-                  <label style={{fontSize:10,color:"#7a8a98",display:"block",marginBottom:2}}>Shift</label>
-                  <select value={swapTarget?.shift||""} onChange={e=>{setSwapTarget(prev=>({...(prev||{}),shift:e.target.value}));setSwapSuggestions(null);}} style={{...css.inp,width:140}}>
-                    <option value="">Select shift…</option>
-                    {ALL_SHIFT_KEYS.map(sk=><option key={sk} value={sk}>{SHIFT_LABELS[sk]}</option>)}
-                  </select>
-                </div>
-                <div>
-                  <label style={{fontSize:10,color:"#7a8a98",display:"block",marginBottom:2}}>Current Surgeon</label>
-                  {(()=>{
-                    const m = swapTarget?.mondayStr;
-                    const sh = swapTarget?.shift;
-                    const wk = m ? schedule[m] : null;
-                    let currentId = null;
-                    if (wk && sh) {
-                      currentId = sh === "dayCall" ? wk.dayCall : wk.nights?.[sh];
-                    }
-                    return currentId ? (
-                      <div style={{padding:"6px 10px"}}><Badge id={currentId}/></div>
-                    ) : (
-                      <div style={{padding:"6px 10px",fontSize:12,color:"#8a94a0"}}>—</div>
-                    );
-                  })()}
-                </div>
+                {isScheduler ? <>
+                  <div>
+                    <label style={{fontSize:10,color:"#7a8a98",display:"block",marginBottom:2}}>Week</label>
+                    <select value={swapTarget?.mondayStr||""} onChange={e=>{setSwapTarget(prev=>({...(prev||{}),mondayStr:e.target.value}));setSwapSuggestions(null);}} style={{...css.inp,width:160}}>
+                      <option value="">Select week…</option>
+                      {Object.keys(schedule).sort().map(m=><option key={m} value={m}>Wk of {m}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label style={{fontSize:10,color:"#7a8a98",display:"block",marginBottom:2}}>Shift</label>
+                    <select value={swapTarget?.shift||""} onChange={e=>{setSwapTarget(prev=>({...(prev||{}),shift:e.target.value}));setSwapSuggestions(null);}} style={{...css.inp,width:140}}>
+                      <option value="">Select shift…</option>
+                      {ALL_SHIFT_KEYS.map(sk=><option key={sk} value={sk}>{SHIFT_LABELS[sk]}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label style={{fontSize:10,color:"#7a8a98",display:"block",marginBottom:2}}>Current Surgeon</label>
+                    {(()=>{
+                      const m = swapTarget?.mondayStr;
+                      const sh = swapTarget?.shift;
+                      const wk = m ? schedule[m] : null;
+                      let currentId = null;
+                      if (wk && sh) {
+                        currentId = sh === "dayCall" ? wk.dayCall : wk.nights?.[sh];
+                      }
+                      return currentId ? (
+                        <div style={{padding:"6px 10px"}}><Badge id={currentId}/></div>
+                      ) : (
+                        <div style={{padding:"6px 10px",fontSize:12,color:"#8a94a0"}}>—</div>
+                      );
+                    })()}
+                  </div>
+                </> : (
+                  <div>
+                    <label style={{fontSize:10,color:"#7a8a98",display:"block",marginBottom:2}}>Your shift to swap</label>
+                    {(()=>{
+                      const opts = [];
+                      Object.keys(schedule).sort().forEach(m => {
+                        const wk = schedule[m];
+                        if (!wk) return;
+                        ALL_SHIFT_KEYS.forEach(sk => {
+                          const holder = sk === "dayCall" ? wk.dayCall : wk.nights?.[sk];
+                          if (holder === mySurgeon) {
+                            const d = parse(m);
+                            const label = `${MO[d.getMonth()].slice(0,3)} ${d.getDate()} — ${SHIFT_LABELS[sk]}${wk.isBackup ? " (Backup)" : ""}`;
+                            opts.push({ value: `${m}|${sk}`, label });
+                          }
+                        });
+                      });
+                      const curVal = swapTarget?.mondayStr && swapTarget?.shift ? `${swapTarget.mondayStr}|${swapTarget.shift}` : "";
+                      const placeholder = !mySurgeon ? "Select your name in Mine tab first"
+                        : (opts.length === 0 ? "You have no scheduled shifts" : "Select your shift…");
+                      return (
+                        <select value={curVal} onChange={e=>{
+                          const v = e.target.value;
+                          setSwapSuggestions(null);
+                          if (!v) { setSwapTarget(null); }
+                          else { const [w, s] = v.split("|"); setSwapTarget({ mondayStr: w, shift: s }); }
+                        }} style={{...css.inp,minWidth:260}} disabled={!mySurgeon || opts.length === 0}>
+                          <option value="">{placeholder}</option>
+                          {opts.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                        </select>
+                      );
+                    })()}
+                  </div>
+                )}
                 <button onClick={()=>{
                   const m = swapTarget?.mondayStr;
                   const sh = swapTarget?.shift;
