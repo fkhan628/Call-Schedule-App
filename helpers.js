@@ -95,11 +95,15 @@ function buildICSEvents(schedule, surgeonId, surgeonName, appShifts, aMap) {
       const d = parse(ds);
       const next = addD(d, 1);
       const appName = aMap?.[aid]?.name || aid;
+      const dow = d.getDay(); // 0=Sun, 6=Sat
+      const isWeekend = dow === 0 || dow === 6;
+      const startHour = isWeekend ? 7 : 17;
+      const timeLabel = isWeekend ? "7:00 AM – 7:00 AM" : "5:00 PM – 7:00 AM";
       events.push({
-        start: icsDate(d.getFullYear(),d.getMonth()+1,d.getDate(),17),
+        start: icsDate(d.getFullYear(),d.getMonth()+1,d.getDate(),startHour),
         end: icsDate(next.getFullYear(),next.getMonth()+1,next.getDate(),7),
         summary: `APP Call — ${appName}`,
-        desc: `APP Night Call 5:00 PM – 7:00 AM`
+        desc: `APP Call ${timeLabel}`
       });
     });
   }

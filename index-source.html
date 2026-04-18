@@ -204,6 +204,7 @@ function CallSchedule() {
   const [biometricAvail, setBiometricAvail] = useState(false);
   const [biometricEnrolled, setBiometricEnrolled] = useState(false);
   const [biometricPending, setBiometricPending] = useState(false); // waiting for biometric prompt
+  const [allProfiles, setAllProfiles] = useState([]); // for scheduler to manage per-user flags
   const allPeople = useMemo(() => [
     ...surgeons,
     ...apps,
@@ -219,7 +220,13 @@ function CallSchedule() {
   // If non-scheduler ends up on a restricted tab, redirect them
   useEffect(() => {
     const isAdmin = userProfile?.person_id === "admin";
-    if (!isScheduler && (view === "setup" || view === "totals")) {
+    const canAssignApps = userProfile?.can_assign_apps === true;
+    // Setup is accessible to: scheduler, admin, or APP-assign-permitted users (for the APP card only).
+    // Totals remains scheduler-only.
+    if (!isScheduler && !isAdmin && !canAssignApps && view === "setup") {
+      setView("calendar");
+    }
+    if (!isScheduler && view === "totals") {
       setView("calendar");
     }
     if (isAdmin && view === "myschedule") {
@@ -2506,7 +2513,10 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
     surgeons.forEach(s => allEv.push(...buildICSEvents(schedule, s.id, s.name, appShifts, aMap)));
     Object.entries(appShifts).forEach(([ds, aid]) => {
       const d = parse(ds); const nx = addD(d, 1); const an = aMap?.[aid]?.name || aid;
-      allEv.push({ start: icsDate(d.getFullYear(),d.getMonth()+1,d.getDate(),17), end: icsDate(nx.getFullYear(),nx.getMonth()+1,nx.getDate(),7), summary: "APP Call - " + an, desc: "APP Night Call 5:00 PM - 7:00 AM" });
+      const dow = d.getDay(); const isWeekend = dow === 0 || dow === 6;
+      const startHour = isWeekend ? 7 : 17;
+      const timeLabel = isWeekend ? "7:00 AM - 7:00 AM" : "5:00 PM - 7:00 AM";
+      allEv.push({ start: icsDate(d.getFullYear(),d.getMonth()+1,d.getDate(),startHour), end: icsDate(nx.getFullYear(),nx.getMonth()+1,nx.getDate(),7), summary: "APP Call - " + an, desc: "APP Call " + timeLabel });
     });
     icsMap["__full__"] = generateICS(allEv, "Full Call Schedule");
 
@@ -2960,11 +2970,13 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     const dayName = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"][today.getDay()];
     const mo = today.getMonth()+1;
     const dy = today.getDate();
+    const dow = today.getDay();
+    const appTimeLabel = (dow === 0 || dow === 6) ? "7a–7a" : "5p–7a";
     let msg = `🏥 DSG Call — ${dayName} ${mo}/${dy}\n\n`;
     if (todayCall.dayCall) msg += `🏥 Service Week: ${todayCall.dayCall}\n`;
     if (todayCall.night) msg += `🌙 Night (5p–7a): ${todayCall.night}\n`;
     if (todayCall.weekend) msg += `🌗 Weekend: ${todayCall.weekend}\n`;
-    if (todayCall.app) msg += `👩‍⚕️ APP (5p–7a): ${todayCall.app}\n`;
+    if (todayCall.app) msg += `👩‍⚕️ APP (${appTimeLabel}): ${todayCall.app}\n`;
     if (todayCall.fierce) msg += `⚡ Fierce Primary Week\n`;
     if (todayCall.fierceBkp) msg += `🛡 Fierce Backup Week\n`;
     if (!hasCallToday) msg += `No call assignments found for today.\n`;
@@ -3290,7 +3302,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           {(() => {
             const allTabs = [["setup","Setup"],["calendar","Calendar"],["myschedule","Mine"],["requests","Requests"],["stats","Stats"],["totals","Totals"],["settings","Settings"]];
             const isAdmin = userProfile?.person_id === "admin";
-            let tabs = isScheduler ? allTabs : allTabs.filter(([k]) => k !== "setup" && k !== "totals");
+            const canAssignApps = userProfile?.can_assign_apps === true;
+            const canSeeSetup = isScheduler || isAdmin || canAssignApps;
+            let tabs = canSeeSetup ? allTabs : allTabs.filter(([k]) => k !== "setup");
+            if (!isScheduler) tabs = tabs.filter(([k]) => k !== "totals");
             if (isAdmin) tabs = tabs.filter(([k]) => k !== "myschedule");
             return tabs.map(([k,l]) =>
               <button key={k} style={{...css.tab(view===k),position:"relative"}} onClick={()=>setView(k)}>
@@ -3353,6 +3368,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
 
         {/* ════════════════ SETUP ════════════════ */}
         {view==="setup"&&<>
+          {(isScheduler || userProfile?.person_id === "admin") && <>
           {/* Surgeons */}
           <div style={css.card}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
@@ -3374,7 +3390,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           {/* APPs */}
           <div style={css.card}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
-              <div style={css.cardT}>APPs <span style={{fontWeight:400,fontSize:11,color:"#7a8a98"}}>— Night Call 5p–7a (Intermittent)</span></div>
+              <div style={css.cardT}>APPs <span style={{fontWeight:400,fontSize:11,color:"#7a8a98"}}>— Intermittent Call (5p–7a weeknights, 7a–7a weekends)</span></div>
               <button onClick={addApp} style={{...css.btn(true),padding:"4px 12px",fontSize:12}}>+ Add APP</button>
             </div>
             <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(160px,1fr))",gap:6}}>
@@ -3510,12 +3526,13 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               });
             })()}
           </div>
+          </>}
 
           {/* APP Shift Assignments */}
           <div style={css.card}>
             <div style={css.cardT}>APP Call Shifts <span style={{fontWeight:400,fontSize:11,color:"#7a8a98"}}>— Assign Individually</span></div>
             <p style={{fontSize:12,color:"#7a8a98",margin:"0 0 10px",lineHeight:1.5}}>
-              Assign APP night shifts (5p–7a) on specific dates. These are added manually since APP coverage is intermittent.
+              Assign APP shifts on specific dates. Weeknights run 5p–7a; Saturday and Sunday run 7a–7a.
             </p>
             <div style={{display:"flex",gap:6,alignItems:"end",flexWrap:"wrap",marginBottom:12}}>
               <div>
@@ -3531,17 +3548,22 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               </div>
               <button onClick={addAppShift} style={css.btn(true)}>+ Assign</button>
             </div>
-            {Object.entries(appShifts).sort(([a],[b])=>a.localeCompare(b)).map(([ds,aid])=>(
+            {Object.entries(appShifts).sort(([a],[b])=>a.localeCompare(b)).map(([ds,aid])=>{
+              const dow = parse(ds).getDay();
+              const timeLabel = (dow === 0 || dow === 6) ? "7a–7a" : "5p–7a";
+              return (
               <div key={ds} style={{display:"flex",alignItems:"center",gap:8,marginBottom:4}}>
                 <span style={{fontFamily:mono,fontSize:12,color:"#5a6a78"}}>{ds}</span>
                 <span style={{fontSize:11,color:"#5a6a78"}}>{DAY_HDR[parse(ds).getDay()]}</span>
                 <AppBadge id={aid}/>
-                <span style={{fontSize:10,color:"#7a8a98"}}>5p–7a</span>
+                <span style={{fontSize:10,color:"#7a8a98"}}>{timeLabel}</span>
                 <button onClick={()=>rmAppShift(ds)} style={{background:"none",border:"none",color:"#904040",cursor:"pointer",fontSize:11}}>✕</button>
               </div>
-            ))}
+              );
+            })}
           </div>
 
+          {(isScheduler || userProfile?.person_id === "admin") && <>
           {/* Backup Weeks */}
           <div style={css.card}>
             <div style={css.cardT}>Backup Weeks <span style={{fontWeight:400,fontSize:11,color:"#7a8a98"}}>(Fierce = Primary)</span></div>
@@ -3945,6 +3967,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               </div>
             );
           })()}
+          </>}
 
         </>}
 
@@ -4078,15 +4101,19 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                     </div>
                   </div>
                 )}
-                {todayCall.app && (
+                {todayCall.app && (()=>{
+                  const dow = new Date().getDay();
+                  const appTimeLabel = (dow === 0 || dow === 6) ? "APP 7a–7a" : "APP 5p–7a";
+                  return (
                   <div style={{display:"flex",alignItems:"center",gap:6,padding:"6px 12px",background:"#fcf4f0",borderRadius:8,border:"1px solid #e8d0c0"}}>
                     <span style={{fontSize:16}}>👩‍⚕️</span>
                     <div>
-                      <div style={{fontSize:10,color:"#985020",fontWeight:600,textTransform:"uppercase",letterSpacing:0.5}}>APP 5p–7a</div>
+                      <div style={{fontSize:10,color:"#985020",fontWeight:600,textTransform:"uppercase",letterSpacing:0.5}}>{appTimeLabel}</div>
                       <div style={{fontSize:15,fontWeight:700,color:"#1a2a3a"}}>{todayCall.app}</div>
                     </div>
                   </div>
-                )}
+                  );
+                })()}
               </div>
               {(todayCall.fierce || todayCall.fierceBkp) && (
                 <div style={{marginTop:8,fontSize:12,fontWeight:600,color:todayCall.fierce?"#8a6a10":"#1a6fa8"}}>
@@ -4405,7 +4432,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   surgeons.forEach(s => { allEvents.push(...buildICSEvents(schedule, s.id, s.name, appShifts, aMap)); });
                   Object.entries(appShifts).forEach(([ds, aid]) => {
                     const d = parse(ds); const next = addD(d, 1); const appName = aMap?.[aid]?.name || aid;
-                    allEvents.push({ start: icsDate(d.getFullYear(),d.getMonth()+1,d.getDate(),17), end: icsDate(next.getFullYear(),next.getMonth()+1,next.getDate(),7), summary: `APP Call — ${appName}`, desc: `APP Night Call 5:00 PM – 7:00 AM` });
+                    const dow = d.getDay(); const isWeekend = dow === 0 || dow === 6;
+                    const startHour = isWeekend ? 7 : 17;
+                    const timeLabel = isWeekend ? "7:00 AM – 7:00 AM" : "5:00 PM – 7:00 AM";
+                    allEvents.push({ start: icsDate(d.getFullYear(),d.getMonth()+1,d.getDate(),startHour), end: icsDate(next.getFullYear(),next.getMonth()+1,next.getDate(),7), summary: `APP Call — ${appName}`, desc: `APP Call ${timeLabel}` });
                   });
                   const ics = generateICS(allEvents, "Full Call Schedule");
                   downloadICS(ics, "call-schedule-full.ics");
@@ -4689,7 +4719,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   <thead>
                     <tr style={{borderBottom:"2px solid #d0d8e0"}}>
                       <th style={thS}>APP</th>
-                      <th style={thS}>Night Shifts (5p–7a)</th>
+                      <th style={thS}>Shifts</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -5413,6 +5443,52 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               </div>
             )}
           </div>
+
+          {/* APP Shift Managers — scheduler/admin only */}
+          {(isScheduler || userProfile?.person_id === "admin") && (
+            <div style={css.card}>
+              <div style={css.cardT}>👩‍⚕️ APP Shift Managers</div>
+              <p style={{fontSize:12,color:"#7a8a98",margin:"0 0 10px",lineHeight:1.5}}>
+                Users listed here can assign APP shifts on the Setup tab (but have no other scheduler access). Toggle the switch to grant or revoke permission.
+              </p>
+              <button onClick={async ()=>{
+                const profiles = await dbAuth.getAllProfiles();
+                setAllProfiles(profiles || []);
+              }} style={{...css.btn(false),padding:"5px 12px",fontSize:11,marginBottom:10}}>
+                🔄 Load Users
+              </button>
+              {allProfiles.length === 0 ? (
+                <p style={{fontSize:12,color:"#a0a8b0",fontStyle:"italic"}}>Click "Load Users" to see all signed-up users.</p>
+              ) : (
+                <div style={{display:"flex",flexDirection:"column",gap:4}}>
+                  {allProfiles.sort((a,b)=>(a.display_name||"").localeCompare(b.display_name||"")).map(p => (
+                    <div key={p.id} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"6px 10px",background:"#f8f9fb",borderRadius:6,border:"1px solid #e0e4ea"}}>
+                      <div>
+                        <span style={{fontSize:13,fontWeight:600,color:"#2c3e50"}}>{p.display_name}</span>
+                        <span style={{fontSize:11,color:"#8a94a0",marginLeft:8}}>{p.person_id}</span>
+                        {p.person_id === "admin" && <span style={{fontSize:10,color:"#6030a0",marginLeft:6,fontWeight:600}}>(admin)</span>}
+                        {p.role === "scheduler" && <span style={{fontSize:10,color:"#1a6fa8",marginLeft:6,fontWeight:600}}>(scheduler)</span>}
+                      </div>
+                      <label style={{display:"flex",alignItems:"center",gap:6,cursor:"pointer"}}>
+                        <span style={{fontSize:11,color:p.can_assign_apps?"#1a8040":"#a0a8b0",fontWeight:600}}>
+                          {p.can_assign_apps ? "Can assign APPs" : "No APP access"}
+                        </span>
+                        <input type="checkbox" checked={!!p.can_assign_apps} onChange={async (e)=>{
+                          const newVal = e.target.checked;
+                          const updated = { ...p, can_assign_apps: newVal };
+                          const { error } = await dbAuth.upsertProfile(updated);
+                          if (error) { alert("Failed to update: " + error); return; }
+                          setAllProfiles(prev => prev.map(x => x.id === p.id ? updated : x));
+                          // If updating the current user, refresh their own profile too
+                          if (p.id === authUser?.id) setUserProfile(updated);
+                        }} style={{cursor:"pointer",width:16,height:16}}/>
+                      </label>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Notifications */}
           <div style={css.card}>
