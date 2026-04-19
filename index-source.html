@@ -46,7 +46,7 @@
   <script src="https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.page.js" defer></script>
   <script>
     // ─── Auto-update: bump this version string each deploy ───
-    var APP_VERSION = "2026.04.18d";
+    var APP_VERSION = "2026.04.18e";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -84,7 +84,7 @@
   <div id="root"></div>
   <script>
     // Cache-bust with version — update this string when deploying changes
-    var _v = "2026.04.18d";
+    var _v = "2026.04.18e";
     ['config.js','helpers.js','generator.js','app-styles.js'].forEach(function(f) {
       document.write('<script src="'+f+'?v='+_v+'"><\/script>');
     });
@@ -1545,6 +1545,22 @@ function CallSchedule() {
       if (fileRef.current) fileRef.current.value = "";
     }
   }, [surgeons]);
+
+  // ─── Shared helper: Anthropic API call via Edge Function (used by Unified Schedule Scanner) ───
+  const AI_SCAN_URL = `${SUPABASE_URL}/functions/v1/ai-scan`;
+  const callApi = useCallback(async (messages, maxTokens = 2000) => {
+    const resp = await fetch(AI_SCAN_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${SUPABASE_ANON_KEY}` },
+      body: JSON.stringify({ messages, max_tokens: maxTokens })
+    });
+    if (!resp.ok) {
+      const err = await resp.text();
+      throw new Error(`API error ${resp.status}: ${err}`);
+    }
+    const data = await resp.json();
+    return data.content?.map(c => c.text || "").join("") || "";
+  }, []);
 
   // ─── Unified Schedule Scanner — extracts vacations + Fierce weeks from one file ───
   const [schedScanning, setSchedScanning] = useState(false);
