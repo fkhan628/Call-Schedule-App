@@ -40,7 +40,7 @@
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.page.js" defer></script>
   <script>
-    var APP_VERSION = "2026.04.18e";
+    var APP_VERSION = "2026.04.19a";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -1612,6 +1612,23 @@ function CallSchedule() {
           setNeedsProfile(false);
           // Auto-elevate admin accounts to scheduler
           if (signupPersonId === "admin") setIsScheduler(true);
+          // Auto-populate "All Surgeon Email Addresses" only if slot is empty in DB —
+          // don't clobber an email the scheduler already entered manually.
+          if (signupPersonId !== "admin" && authEmail) {
+            try {
+              const { data: existingRow } = await supabase
+                .from("notification_preferences")
+                .select("email")
+                .eq("surgeon_id", signupPersonId)
+                .maybeSingle();
+              const existingEmail = (existingRow?.email || "").trim();
+              if (!existingEmail) {
+                saveNotifPref(signupPersonId, { email: authEmail, email_notifs: true });
+              }
+            } catch (e) {
+              saveNotifPref(signupPersonId, { email: authEmail, email_notifs: true });
+            }
+          }
         }
       } else {
         const {
@@ -8450,7 +8467,12 @@ ${"</"}script>${"</"}body>${"</"}html>`;
   }
 }, /*#__PURE__*/React.createElement("option", {
   value: ""
-}, "Select a week\u2026"), Object.keys(schedule).sort().map(m => {
+}, "Select a week\u2026"), (() => {
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const curMon = fmt(monOf(today));
+  return Object.keys(schedule).sort().filter(m => m >= curMon);
+})().map(m => {
   const mon = parse(m);
   const sun = addD(mon, 6);
   const label = `Wk of ${MO[mon.getMonth()]} ${mon.getDate()} – ${MO[sun.getMonth()]} ${sun.getDate()}${schedule[m].isBackup ? " (Backup)" : ""}`;

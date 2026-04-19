@@ -46,7 +46,7 @@
   <script src="https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.page.js" defer></script>
   <script>
     // ─── Auto-update: bump this version string each deploy ───
-    var APP_VERSION = "2026.04.18e";
+    var APP_VERSION = "2026.04.19a";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -84,7 +84,7 @@
   <div id="root"></div>
   <script>
     // Cache-bust with version — update this string when deploying changes
-    var _v = "2026.04.18e";
+    var _v = "2026.04.19a";
     ['config.js','helpers.js','generator.js','app-styles.js'].forEach(function(f) {
       document.write('<script src="'+f+'?v='+_v+'"><\/script>');
     });
@@ -416,6 +416,25 @@ function CallSchedule() {
           setNeedsProfile(false);
           // Auto-elevate admin accounts to scheduler
           if (signupPersonId === "admin") setIsScheduler(true);
+          // Auto-populate "All Surgeon Email Addresses" only if slot is empty in DB —
+          // don't clobber an email the scheduler already entered manually.
+          if (signupPersonId !== "admin" && authEmail) {
+            try {
+              const { data: existingRow } = await supabase
+                .from("notification_preferences")
+                .select("email")
+                .eq("surgeon_id", signupPersonId)
+                .maybeSingle();
+              const existingEmail = (existingRow?.email || "").trim();
+              if (!existingEmail) {
+                saveNotifPref(signupPersonId, { email: authEmail, email_notifs: true });
+              }
+            } catch(e) {
+              // If the check fails for any reason, fall back to populating —
+              // better to risk clobbering (rare) than to fail silently.
+              saveNotifPref(signupPersonId, { email: authEmail, email_notifs: true });
+            }
+          }
         }
       } else {
         const { user, error } = await auth.signIn(authEmail, authPassword);
@@ -4254,7 +4273,13 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
                 <select value={editWeekPick} onChange={e=>setEditWeekPick(e.target.value)} style={{...css.inp,flex:1,minWidth:180}}>
                   <option value="">Select a week…</option>
-                  {Object.keys(schedule).sort().map(m => {
+                  {(()=>{
+                    // Only show current week and later (past weeks aren't editable)
+                    const now = new Date();
+                    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+                    const curMon = fmt(monOf(today));
+                    return Object.keys(schedule).sort().filter(m => m >= curMon);
+                  })().map(m => {
                     const mon = parse(m);
                     const sun = addD(mon, 6);
                     const label = `Wk of ${MO[mon.getMonth()]} ${mon.getDate()} – ${MO[sun.getMonth()]} ${sun.getDate()}${schedule[m].isBackup?" (Backup)":""}`;
