@@ -46,7 +46,7 @@
   <script src="https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.page.js" defer></script>
   <script>
     // ─── Auto-update: bump this version string each deploy ───
-    var APP_VERSION = "2026.04.17b";
+    var APP_VERSION = "2026.04.18d";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -84,7 +84,7 @@
   <div id="root"></div>
   <script>
     // Cache-bust with version — update this string when deploying changes
-    var _v = "2026.04.17b";
+    var _v = "2026.04.18d";
     ['config.js','helpers.js','generator.js','app-styles.js'].forEach(function(f) {
       document.write('<script src="'+f+'?v='+_v+'"><\/script>');
     });
@@ -240,7 +240,6 @@ function CallSchedule() {
   const [notifLastSeen, setNotifLastSeen] = useState(() => {
     try { return localStorage.getItem("dsg-notif-seen") || "2000-01-01T00:00:00Z"; } catch(e) { return "2000-01-01T00:00:00Z"; }
   });
-  const unreadCount = useMemo(() => notifications.filter(n => n.created_at > notifLastSeen).length, [notifications, notifLastSeen]);
 
   // ─── Browser Push & Email Notification Preferences ───
   const [pushPermission, setPushPermission] = useState(() => {
@@ -1547,150 +1546,6 @@ function CallSchedule() {
     }
   }, [surgeons]);
 
-  // ─── AI-Powered Prior Call Schedule Scanner ───
-  const [priorScanning, setPriorScanning] = useState(false);
-  const [priorScanMsg, setPriorScanMsg] = useState("");
-  const priorFileRef = useRef(null);
-
-  const AI_SCAN_URL = `${SUPABASE_URL}/functions/v1/ai-scan`;
-
-  const callApi = useCallback(async (messages, maxTokens = 2000) => {
-    const resp = await fetch(AI_SCAN_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${SUPABASE_ANON_KEY}` },
-      body: JSON.stringify({ messages, max_tokens: maxTokens })
-    });
-    if (!resp.ok) {
-      const err = await resp.text();
-      throw new Error(`API error ${resp.status}: ${err}`);
-    }
-    const data = await resp.json();
-    return data.content?.map(c => c.text || "").join("") || "";
-  }, []);
-
-  const handlePriorScheduleScan = useCallback(async (file) => {
-    if (!file) return;
-    setPriorScanning(true);
-    setPriorScanMsg("Reading file…");
-
-    try {
-      const ext = file.name.split(".").pop().toLowerCase();
-      const surgeonNames = surgeons.map(s => s.name).join(", ");
-      let messages;
-
-      const promptText = `You are analyzing a past surgical call schedule. The surgeons in the group are: ${surgeonNames}.
-
-This schedule shows weekly assignments over a period of time. Each week has:
-- Service Week (one surgeon, covers M-F 7a-5p; same surgeon also covers Sat 7a-Sun 7a as part of weekend)
-- Night shifts: Mon, Tue, Wed, Thu (each 5p-7a)
-- Weekend shift (Fri 5p-Sat 7a + Sun 7a-Mon 7a)
-- Some weeks may be marked as "backup" weeks (when Fierce is primary)
-
-For each surgeon, count how many times they were assigned to each role across the ENTIRE schedule. Track regular and backup weeks separately.
-
-Respond with ONLY valid JSON, no markdown backticks, no explanation:
-{
-  "surgeons": [
-    {
-      "name": "DJA",
-      "dc": 2,
-      "nights": 5,
-      "wknd": 1,
-      "dcB": 0,
-      "nightsB": 1,
-      "wkndB": 0
-    }
-  ],
-  "weeks_counted": 14,
-  "notes": "Any relevant notes about what was found"
-}
-
-Where:
-- dc = number of regular Service Weeks
-- nights = number of regular weeknight shifts
-- wknd = number of regular weekend shifts
-- dcB = number of backup Service Weeks
-- nightsB = number of backup weeknight shifts
-- wkndB = number of backup weekend shifts
-
-Match surgeon names/initials as best you can to: ${surgeonNames}. If you cannot determine counts, return all zeros.`;
-
-      if (ext === "pdf") {
-        setPriorScanMsg("Reading PDF…");
-        const base64 = await new Promise((res, rej) => {
-          const r = new FileReader();
-          r.onload = () => res(r.result.split(",")[1]);
-          r.onerror = () => rej(new Error("Failed to read file"));
-          r.readAsDataURL(file);
-        });
-        messages = [{ role:"user", content: [
-          { type:"document", source:{ type:"base64", media_type:"application/pdf", data:base64 } },
-          { type:"text", text: promptText }
-        ]}];
-      } else if (["xlsx","xls","csv"].includes(ext)) {
-        const XLSX = await import("https://cdn.sheetjs.com/xlsx-0.20.0/package/xlsx.mjs");
-        const buf = await file.arrayBuffer();
-        const wb = XLSX.read(buf, {type:"array"});
-        let allText = "";
-        wb.SheetNames.forEach(name => {
-          const ws = wb.Sheets[name];
-          allText += `Sheet: ${name}\n${XLSX.utils.sheet_to_csv(ws)}\n\n`;
-        });
-        setPriorScanMsg("Analyzing schedule…");
-        messages = [{ role:"user", content: `Here is a past call schedule:\n\n${allText}\n\n${promptText}` }];
-      } else if (["docx","doc"].includes(ext)) {
-        const mammoth = await import("mammoth");
-        const buf = await file.arrayBuffer();
-        const result = await mammoth.extractRawText({arrayBuffer: buf});
-        setPriorScanMsg("Analyzing document…");
-        messages = [{ role:"user", content: `Here is a past call schedule from a Word document:\n\n${result.value}\n\n${promptText}` }];
-      } else {
-        setPriorScanMsg("Unsupported file type. Please upload a PDF, Excel (.xlsx), Word (.docx), or CSV file.");
-        setPriorScanning(false);
-        return;
-      }
-
-      setPriorScanMsg("Counting shifts…");
-      const text = await callApi(messages, 2000);
-      const clean = text.replace(/```json|```/g, "").trim();
-      const result = JSON.parse(clean);
-
-      if (result?.surgeons && Array.isArray(result.surgeons) && result.surgeons.length > 0) {
-        const nameToId = {};
-        surgeons.forEach(s => { nameToId[s.name.toUpperCase()] = s.id; nameToId[s.name] = s.id; });
-
-        const newCounts = {};
-        let matched = 0;
-        result.surgeons.forEach(entry => {
-          const id = nameToId[entry.name] || nameToId[entry.name?.toUpperCase()];
-          if (!id) return;
-          newCounts[id] = {
-            dc: entry.dc || 0,
-            nights: entry.nights || 0,
-            wknd: entry.wknd || 0,
-            dcB: entry.dcB || 0,
-            nightsB: entry.nightsB || 0,
-            wkndB: entry.wkndB || 0,
-          };
-          matched++;
-        });
-
-        setPriorCounts(prev => ({ ...prev, ...newCounts }));
-        const weeksNote = result.weeks_counted ? ` from ${result.weeks_counted} weeks` : "";
-        const extraNote = result.notes ? ` — ${result.notes}` : "";
-        setPriorScanMsg(`Imported counts for ${matched} surgeon${matched>1?"s":""}${weeksNote}. Review and adjust if needed.${extraNote}`);
-      } else {
-        setPriorScanMsg("Could not extract call counts from the file. Try a different file or format.");
-      }
-    } catch (err) {
-      console.error("Prior schedule scan error:", err);
-      setPriorScanMsg(`Could not analyze the file. ${err.message?.includes("API error") ? "The AI service may be temporarily unavailable." : "Try a PDF, Excel, Word, or CSV file."}`);
-    } finally {
-      setPriorScanning(false);
-      if (priorFileRef.current) priorFileRef.current.value = "";
-    }
-  }, [surgeons, callApi]);
-
   // ─── Unified Schedule Scanner — extracts vacations + Fierce weeks from one file ───
   const [schedScanning, setSchedScanning] = useState(false);
   const [schedScanMsg, setSchedScanMsg] = useState("");
@@ -2337,6 +2192,8 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
   // ─── Smart Swap Suggestions ───
   const [swapTarget, setSwapTarget] = useState(null); // { mondayStr, shift, surgeonId }
   const [swapSuggestions, setSwapSuggestions] = useState(null); // [{ candidateId, score, reasons, returnSwaps }]
+  const [editWeekModal, setEditWeekModal] = useState(null); // { mondayStr, draft: { dayCall, nights, apps, reason } } or null
+  const [editWeekPick, setEditWeekPick] = useState(""); // dropdown selection on the Manual Adjustments card
 
   const findSwapSuggestions = useCallback((mondayStr, shift, currentSurgeonId) => {
     if (!schedule[mondayStr]) return;
@@ -2496,6 +2353,111 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
     sendEmailNotif("schedule_changed", { shift: shiftLabel, week: targetMon, old_surgeon: oldName, new_surgeon: newName });
     setSwapSuggestions(null); setSwapTarget(null);
   }, [surgeons, sMap, addNotification, sendEmailNotif]);
+
+  // ─── Manual Weekly Edit (scheduler/admin) ───
+  const openWeekEditor = useCallback((mondayStr) => {
+    const wk = schedule[mondayStr];
+    if (!wk) return;
+    const mon = parse(mondayStr);
+    // Snapshot current APP assignments for each day of this week
+    const appsDraft = {};
+    for (let i = 0; i < 7; i++) {
+      const d = addD(mon, i);
+      const ds = fmt(d);
+      appsDraft[ds] = appShifts[ds] || "";
+    }
+    setEditWeekModal({
+      mondayStr,
+      draft: {
+        dayCall: wk.dayCall || "",
+        nights: { ...(wk.nights || {}) },
+        apps: appsDraft,
+        reason: "",
+      },
+    });
+  }, [schedule, appShifts]);
+
+  const saveWeekEdits = useCallback(() => {
+    if (!editWeekModal) return;
+    const { mondayStr, draft } = editWeekModal;
+    const oldWk = schedule[mondayStr] || {};
+    const oldApps = {};
+    Object.keys(draft.apps).forEach(ds => { oldApps[ds] = appShifts[ds] || ""; });
+
+    // Build diff list of changes
+    const changes = []; // { slotLabel, oldId, newId, isApp, date }
+    if ((oldWk.dayCall || "") !== draft.dayCall) {
+      changes.push({ slotLabel: `Service Week`, oldId: oldWk.dayCall || "", newId: draft.dayCall, isApp: false });
+    }
+    ["mon","tue","wed","thu","wknd"].forEach(nk => {
+      const oldId = oldWk.nights?.[nk] || "";
+      const newId = draft.nights?.[nk] || "";
+      if (oldId !== newId) {
+        changes.push({ slotLabel: SHIFT_LABELS[nk] || nk, oldId, newId, isApp: false });
+      }
+    });
+    Object.entries(draft.apps).forEach(([ds, newAppId]) => {
+      const oldAppId = oldApps[ds] || "";
+      if ((oldAppId || "") !== (newAppId || "")) {
+        changes.push({ slotLabel: `APP ${ds}`, oldId: oldAppId, newId: newAppId, isApp: true, date: ds });
+      }
+    });
+
+    if (changes.length === 0) {
+      setEditWeekModal(null);
+      return;
+    }
+    // Safety confirmation if many changes at once
+    if (changes.length >= 3) {
+      if (!confirm(`You are changing ${changes.length} shifts in the week of ${mondayStr}. Continue?`)) return;
+    }
+
+    // Commit
+    pushUndo(schedule);
+    setSchedule(p => {
+      const n = { ...p };
+      const wk = { ...(n[mondayStr] || {}) };
+      wk.dayCall = draft.dayCall || null;
+      wk.nights = { ...(wk.nights || {}), ...draft.nights };
+      // Recompute 'off' — any surgeon not assigned anywhere this week
+      const assigned = new Set([wk.dayCall, ...Object.values(wk.nights)].filter(Boolean));
+      wk.off = surgeons.map(s => s.id).find(id => !assigned.has(id)) || null;
+      n[mondayStr] = wk;
+      return n;
+    });
+    setAppShifts(p => {
+      const n = { ...p };
+      Object.entries(draft.apps).forEach(([ds, aid]) => {
+        if (aid) n[ds] = aid;
+        else delete n[ds];
+      });
+      return n;
+    });
+
+    // Notifications — to both old and new parties for each change (deduped)
+    const notifiedIds = new Set();
+    const reasonSuffix = draft.reason ? ` (${draft.reason})` : "";
+    changes.forEach(c => {
+      const oldName = c.isApp ? (aMap[c.oldId]?.name || (c.oldId ? c.oldId : "—")) : (sMap[c.oldId]?.name || "—");
+      const newName = c.isApp ? (aMap[c.newId]?.name || (c.newId ? c.newId : "—")) : (sMap[c.newId]?.name || "—");
+      const msg = `${c.slotLabel}: ${oldName} → ${newName}${reasonSuffix}`;
+      addNotification("schedule_changed", "Manual Schedule Edit", msg);
+      // Email each affected person once per save
+      [c.oldId, c.newId].forEach(id => {
+        if (id && !notifiedIds.has(id)) {
+          notifiedIds.add(id);
+          sendEmailNotif("schedule_changed", {
+            shift: c.slotLabel,
+            week: mondayStr,
+            old_surgeon: oldName,
+            new_surgeon: newName,
+          });
+        }
+      });
+    });
+
+    setEditWeekModal(null);
+  }, [editWeekModal, schedule, appShifts, surgeons, sMap, aMap, addNotification, sendEmailNotif, pushUndo]);
 
   // Generate shareable read-only HTML with calendar grid view
   const generateShareHTML = () => {
@@ -2871,7 +2833,6 @@ ${"</"}script>${"</"}body>${"</"}html>`;
   // ─── Dark Mode Styles ───
   const dk = darkMode;
   const dkBg = dk ? "#1a1a2e" : "#f0f2f5";
-  const dkCard = dk ? "#16213e" : "#ffffff";
   const dkCardBorder = dk ? "#2a3a5e" : "#e0e4ea";
   const dkText = dk ? "#e0e0f0" : "#2c3e50";
   const dkSubtext = dk ? "#8a8aaa" : "#7a8a98";
@@ -3012,17 +2973,6 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       try { await navigator.share({ text: msg }); return; } catch(e) {}
     }
     try { await navigator.clipboard.writeText(msg); setCopied(true); setTimeout(()=>setCopied(false), 2000); } catch(e) {}
-  };
-
-  // Which APP shifts fall in a given week (for schedule view)
-  const appShiftsInWeek = (mondayStr) => {
-    const mon = parse(mondayStr);
-    const result = [];
-    for(let i=0;i<7;i++){
-      const ds = fmt(addD(mon,i));
-      if(appShifts[ds]) result.push({date:ds, day:DAY_HDR[addD(mon,i).getDay()], appId:appShifts[ds]});
-    }
-    return result;
   };
 
   const Badge = ({id,small}) => {
@@ -3680,33 +3630,9 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   <div style={{display:"flex",gap:4,flexWrap:"wrap"}}>
                     {(hol.coverage||[]).map((c,j)=>{
                       const isEve = c.isEve;
-                      // For Eve: look up who actually has the night shift the night before the holiday
-                      let eveSurgeon = c.surgeon;
-                      let eveLabel = "night before";
-                      if (isEve && Object.keys(schedule).length > 0) {
-                        const eveDate = parse(c.date);
-                        const holDate = parse(hol.date);
-                        const holDow = holDate.getDay(); // day of week of the holiday
-                        const eveMon = monOf(eveDate);
-                        const eveMonStr = fmt(eveMon);
-                        const wk = schedule[eveMonStr];
-                        if (wk) {
-                          // Which night shift covers the night before the holiday?
-                          if (holDow === 1) { // Holiday=Mon → night before = prev week's weekend (Sun 7a-Mon 7a)
-                            const prevMon = fmt(addD(eveMon, -7));
-                            eveSurgeon = schedule[prevMon]?.nights?.wknd || c.surgeon;
-                          } else if (holDow === 0) { // Holiday=Sun → night before = Sat night = service week surgeon
-                            eveSurgeon = wk.dayCall || c.surgeon;
-                          } else if (holDow === 6) { // Holiday=Sat → night before = Fri night = weekend surgeon
-                            eveSurgeon = wk.nights?.wknd || c.surgeon;
-                          } else { // Holiday=Tue-Fri → night before = Mon-Thu night
-                            const nightKeys = ["","mon","tue","wed","thu","fri"];
-                            const nk = nightKeys[holDow - 1]; // holDow 2(Tue)→mon, 3(Wed)→tue, etc.
-                            eveSurgeon = wk.nights?.[nk] || c.surgeon;
-                          }
-                        }
-                      }
-                      const displaySurgeon = isEve ? eveSurgeon : c.surgeon;
+                      // Eve tag shows Surgeon B (the "Day After / Eve" dropdown value).
+                      // Non-eve tag shows whoever that specific coverage row is assigned to.
+                      const displaySurgeon = isEve ? (hol.surgeonB || c.surgeon) : c.surgeon;
                       const isSurgA = !isEve && c.surgeon === hol.surgeonA;
                       return (
                       <div key={j} style={{padding:"4px 10px",borderRadius:5,fontSize:11,fontWeight:600,
@@ -3718,7 +3644,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                         opacity:isEve?0.85:1}}>
                         <span style={{fontWeight:400,marginRight:4}}>{c.day}</span>
                         <Badge id={displaySurgeon} small/>
-                        <span style={{fontSize:9,color:isEve?"#b09050":"#8a94a0",marginLeft:4}}>{isEve ? eveLabel : "24h"}</span>
+                        <span style={{fontSize:9,color:isEve?"#b09050":"#8a94a0",marginLeft:4}}>{isEve ? "night before" : "24h"}</span>
                       </div>
                     )})}
                   </div>
@@ -4025,7 +3951,6 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                       {surgeons.map(s=>{
                         const p = tier.counts[s.id]||{};
                         const total = calcShifts(p);
-                        const totalB = p.totalDaysB||0;
                         const upd = (field, val) => {
                           const v = parseInt(val)||0;
                           tier.setter(prev=>({...prev,[s.id]:{...(prev[s.id]||{}), [field]:v}}));
@@ -4196,14 +4121,17 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           </div>
 
           <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:1}}>
-            {calGrid.map((day,i)=>{
+            {(()=>{
+              const now = new Date();
+              const todayStr = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,"0")}-${String(now.getDate()).padStart(2,"0")}`;
+              return calGrid.map((day,i)=>{
               if(!day) return <div key={`e${i}`} style={{background:"#f8f9fb",minHeight:82}}/>;
               const ds=`${calYear}-${String(calMonth+1).padStart(2,"0")}-${String(day).padStart(2,"0")}`;
+              const isToday = ds === todayStr;
               const entries=calData[ds]||[];
               const isWknd=[0,6].includes(new Date(calYear,calMonth,day).getDay());
               const hasFierce = entries.some(e=>e.type==="Fierce");
               const hasFierceBkp = entries.some(e=>e.type==="FierceBkp");
-              const hasApp = entries.some(e=>e.type==="APP");
               const onVacList = [...surgeons, ...apps].filter(s=>onVac(s.id,ds,vacations));
 
               // Apply surgeon filter
@@ -4216,7 +4144,11 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   minHeight:82, padding:"3px 4px", borderRadius:2,
                 }}>
                   <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:2}}>
-                    <span style={{fontSize:11,fontWeight:600,color:isWknd?"#5a7090":"#4a5868",fontFamily:mono}}>{day}</span>
+                    {isToday ? (
+                      <span style={{fontSize:11,fontWeight:700,color:"#ffffff",fontFamily:mono,background:"#1a6fa8",borderRadius:"50%",width:20,height:20,display:"inline-flex",alignItems:"center",justifyContent:"center",lineHeight:1}}>{day}</span>
+                    ) : (
+                      <span style={{fontSize:11,fontWeight:600,color:isWknd?"#5a7090":"#4a5868",fontFamily:mono}}>{day}</span>
+                    )}
                     {calFilters.fierce && hasFierce && <span style={{fontSize:8,fontWeight:700,color:"#8a6a10",background:"#fef8e8",borderRadius:3,padding:"0 4px",letterSpacing:0.5}}>BKP</span>}
                     {calFilters.fierce && hasFierceBkp && !hasFierce && <span style={{fontSize:8,fontWeight:700,color:"#1a6fa8",background:"#e8f0fc",borderRadius:3,padding:"0 4px",letterSpacing:0.5}}>F·BKP</span>}
                   </div>
@@ -4280,7 +4212,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   ))}
                 </div>
               );
-            })}
+            });
+            })()}
           </div>
 
           <div style={{marginTop:10,display:"flex",gap:12,fontSize:10,color:"#8a94a0",flexWrap:"wrap"}}>
@@ -4294,6 +4227,32 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             <span>🏖 Vacation</span>
             <span><span style={{color:"#c06020"}}>🎄</span> Holiday Coverage</span>
           </div>
+
+          {/* ─── Manual Adjustments (scheduler/admin only) ─── */}
+          {(isScheduler || userProfile?.person_id === "admin") && Object.keys(schedule).length > 0 && (
+            <div style={{...css.card,marginTop:14,background:"linear-gradient(135deg,#fff8e8,#fcf4e0)",border:"1px solid #e0c890"}}>
+              <div style={css.cardT}>✏️ Manual Adjustments</div>
+              <p style={{fontSize:12,color:"#5a6a78",margin:"0 0 12px",lineHeight:1.5}}>
+                For acute changes after the schedule is generated. Affected surgeons/APPs will be notified via push and email.
+              </p>
+              <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+                <select value={editWeekPick} onChange={e=>setEditWeekPick(e.target.value)} style={{...css.inp,flex:1,minWidth:180}}>
+                  <option value="">Select a week…</option>
+                  {Object.keys(schedule).sort().map(m => {
+                    const mon = parse(m);
+                    const sun = addD(mon, 6);
+                    const label = `Wk of ${MO[mon.getMonth()]} ${mon.getDate()} – ${MO[sun.getMonth()]} ${sun.getDate()}${schedule[m].isBackup?" (Backup)":""}`;
+                    return <option key={m} value={m}>{label}</option>;
+                  })}
+                </select>
+                <button onClick={()=>{ if(editWeekPick) openWeekEditor(editWeekPick); }}
+                  disabled={!editWeekPick}
+                  style={{...css.btn(true),padding:"8px 14px",opacity:editWeekPick?1:0.5,cursor:editWeekPick?"pointer":"not-allowed"}}>
+                  Open Week Editor
+                </button>
+              </div>
+            </div>
+          )}
 
           {/* ─── Shift Swap Tool ─── */}
           {Object.keys(schedule).length > 0 && (
@@ -4486,6 +4445,77 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               </div>
             </div>
           )}
+
+          {/* ─── Edit Week Modal (scheduler/admin) ─── */}
+          {editWeekModal && (()=>{
+            const { mondayStr, draft } = editWeekModal;
+            const mon = parse(mondayStr);
+            const wkLabel = `${MO[mon.getMonth()]} ${mon.getDate()} – ${MO[addD(mon,6).getMonth()]} ${addD(mon,6).getDate()}`;
+            const dayLabels = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+            const surgeonOpts = [<option key="_empty" value="">— none —</option>, ...surgeons.map(s=><option key={s.id} value={s.id}>{s.name}</option>)];
+            const appOpts = [<option key="_none" value="">— none —</option>, ...apps.map(a=><option key={a.id} value={a.id}>{a.name}</option>)];
+            const updateDraft = (fn) => setEditWeekModal(em => em ? { ...em, draft: fn(em.draft) } : em);
+            return (
+              <div onClick={()=>setEditWeekModal(null)} style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.55)",zIndex:9000,display:"flex",alignItems:"flex-start",justifyContent:"center",padding:"20px 10px",overflowY:"auto"}}>
+                <div onClick={e=>e.stopPropagation()} style={{background:dk?"#1a1f2a":"#fff",borderRadius:10,maxWidth:520,width:"100%",padding:20,boxShadow:"0 10px 40px rgba(0,0,0,0.3)"}}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+                    <div style={{fontSize:16,fontWeight:700,color:dk?"#e8e8f0":"#2c5a80"}}>✏️ Edit Week — {wkLabel}</div>
+                    <button onClick={()=>setEditWeekModal(null)} style={{background:"none",border:"none",fontSize:20,cursor:"pointer",color:dk?"#8a94a0":"#5a6a78"}}>×</button>
+                  </div>
+
+                  <div style={{fontSize:11,color:"#7a8a98",marginBottom:14,lineHeight:1.5}}>
+                    Changes will be saved immediately. Affected surgeons and APPs will be notified via push and email.
+                  </div>
+
+                  {/* Surgeon shifts */}
+                  <div style={{marginBottom:14}}>
+                    <div style={{fontSize:12,fontWeight:700,color:dk?"#b0b8c0":"#5a6a78",marginBottom:6,textTransform:"uppercase",letterSpacing:0.5}}>Surgeon Shifts</div>
+                    <div style={{display:"grid",gridTemplateColumns:"110px 1fr",gap:6,alignItems:"center"}}>
+                      <label style={{fontSize:12,color:dk?"#b0b8c0":"#4a5868"}}>Service Week</label>
+                      <select value={draft.dayCall} onChange={e=>updateDraft(d=>({...d,dayCall:e.target.value}))} style={{...css.inp,padding:"6px 8px"}}>{surgeonOpts}</select>
+                      {["mon","tue","wed","thu"].map(nk => (
+                        <React.Fragment key={nk}>
+                          <label style={{fontSize:12,color:dk?"#b0b8c0":"#4a5868"}}>{SHIFT_LABELS[nk]||nk}</label>
+                          <select value={draft.nights[nk]||""} onChange={e=>updateDraft(d=>({...d,nights:{...d.nights,[nk]:e.target.value}}))} style={{...css.inp,padding:"6px 8px"}}>{surgeonOpts}</select>
+                        </React.Fragment>
+                      ))}
+                      <label style={{fontSize:12,color:dk?"#b0b8c0":"#4a5868"}}>Weekend</label>
+                      <select value={draft.nights.wknd||""} onChange={e=>updateDraft(d=>({...d,nights:{...d.nights,wknd:e.target.value}}))} style={{...css.inp,padding:"6px 8px"}}>{surgeonOpts}</select>
+                    </div>
+                  </div>
+
+                  {/* APP shifts */}
+                  <div style={{marginBottom:14}}>
+                    <div style={{fontSize:12,fontWeight:700,color:dk?"#b0b8c0":"#5a6a78",marginBottom:6,textTransform:"uppercase",letterSpacing:0.5}}>APP Shifts</div>
+                    <div style={{display:"grid",gridTemplateColumns:"110px 1fr",gap:6,alignItems:"center"}}>
+                      {Array.from({length:7}).map((_,i) => {
+                        const d = addD(mon, i);
+                        const ds = fmt(d);
+                        return (
+                          <React.Fragment key={ds}>
+                            <label style={{fontSize:12,color:dk?"#b0b8c0":"#4a5868"}}>{dayLabels[d.getDay()]} {d.getMonth()+1}/{d.getDate()}</label>
+                            <select value={draft.apps[ds]||""} onChange={e=>updateDraft(dr=>({...dr,apps:{...dr.apps,[ds]:e.target.value}}))} style={{...css.inp,padding:"6px 8px"}}>{appOpts}</select>
+                          </React.Fragment>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Reason */}
+                  <div style={{marginBottom:14}}>
+                    <label style={{fontSize:12,fontWeight:700,color:dk?"#b0b8c0":"#5a6a78",marginBottom:4,display:"block",textTransform:"uppercase",letterSpacing:0.5}}>Reason (optional)</label>
+                    <input type="text" value={draft.reason} onChange={e=>updateDraft(d=>({...d,reason:e.target.value}))} placeholder="e.g. REH sick, covering with FAK" style={{...css.inp,width:"100%",padding:"6px 8px"}} />
+                  </div>
+
+                  {/* Buttons */}
+                  <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}>
+                    <button onClick={()=>setEditWeekModal(null)} style={{...css.btn(false),padding:"8px 16px"}}>Cancel</button>
+                    <button onClick={saveWeekEdits} style={{...css.btn(true),padding:"8px 16px"}}>💾 Save Changes</button>
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
         </>}
 
         {/* ════════════════ STATS ════════════════ */}
@@ -4683,32 +4713,69 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             );
           })()}
 
-          {/* Billing Summary — Scheduler/ADMIN only */}
-          {isScheduler && Object.values(stats).some(s=>s.dc>0) && (
+          {/* Billing Summary — Scheduler/ADMIN only, month-by-month */}
+          {(isScheduler || userProfile?.person_id === "admin") && Object.keys(schedule).length > 0 && (()=>{
+            // Compute monthly billing breakdown. 1st-call only (backup weeks excluded).
+            // Attribution:
+            //   Service Week (dayCall) → month containing Monday (1 shift = 7 call days)
+            //   Week Nights (Mon-Thu)  → each night's own month (1 shift = 1 call day)
+            //   Weekend (Fri + Sun)    → month containing Friday (1 shift = 3 call days)
+            const monthly = {}; // { "2026-05": { s1: { dc: n, nights: n, wknd: n }, ... } }
+            const allMonths = new Set();
+            Object.entries(schedule).forEach(([mStr, wk]) => {
+              const mon = parse(mStr);
+              for (let i = 0; i < 7; i++) {
+                const d = addD(mon, i);
+                const moKey = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
+                allMonths.add(moKey);
+                if (!monthly[moKey]) monthly[moKey] = {};
+                surgeons.forEach(s => { if (!monthly[moKey][s.id]) monthly[moKey][s.id] = { dc:0, nights:0, wknd:0 }; });
+              }
+              // Skip backup weeks entirely — they're 2nd-call and not billed
+              if (wk.isBackup) return;
+              if (wk.dayCall) {
+                const monMoKey = `${mon.getFullYear()}-${String(mon.getMonth()+1).padStart(2,"0")}`;
+                if (monthly[monMoKey]?.[wk.dayCall]) monthly[monMoKey][wk.dayCall].dc += 1;
+              }
+              NIGHT_KEYS.forEach((sk, i) => {
+                const sid = wk.nights?.[sk];
+                if (!sid) return;
+                const d = addD(mon, i);
+                const moKey = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
+                if (monthly[moKey]?.[sid]) monthly[moKey][sid].nights += 1;
+              });
+              const wkndSid = wk.nights?.wknd;
+              if (wkndSid) {
+                const fri = addD(mon, 4);
+                const friMo = `${fri.getFullYear()}-${String(fri.getMonth()+1).padStart(2,"0")}`;
+                if (monthly[friMo]?.[wkndSid]) monthly[friMo][wkndSid].wknd += 1;
+              }
+            });
+            const sortedMonths = [...allMonths].sort();
+            const moLabel = (mk) => { const [y,mo] = mk.split("-"); return `${MO[parseInt(mo)-1]} ${y}`; };
+            const billingDays = (r) => (r.dc||0)*7 + (r.nights||0) + (r.wknd||0)*3;
+            return (
             <div style={css.card}>
-              <div style={css.cardT}>💰 Billing Summary <span style={{fontWeight:400,fontSize:11,color:"#7a8a98"}}>— Call Days for Stipend Calculation</span></div>
-              <p style={{fontSize:11,color:"#7a8a98",margin:"0 0 10px",lineHeight:1.5}}>
-                Service Week = 7 days · Night = 1 day · Weekend (Fri + Sun) = 3 days
+              <div style={css.cardT}>💰 Billing Summary <span style={{fontWeight:400,fontSize:11,color:"#7a8a98"}}>— Monthly, 1st Call Only</span></div>
+              <p style={{fontSize:11,color:"#7a8a98",margin:"0 0 14px",lineHeight:1.5}}>
+                Breakdown by calendar month. Backup weeks are excluded — only 1st-call shifts count toward billing. Shifts that span a month boundary are counted in the month they start (service week → Monday's month · weekend → Friday's month).
               </p>
-              {[
-                {label:"This Period", color:"#1a6fa8", getData: (sid) => stats[sid]||{}},
-                {label:"1-Year Cumulative", color:"#1a6fa8", getData: (sid) => cum1yr[sid]||{}},
-                {label:"2-Year Cumulative", color:"#8a6a10", getData: (sid) => cum2yr[sid]||{}},
-                {label:"Multi-Year Cumulative", color:"#7030a8", getData: (sid) => cumStats[sid]||{}},
-              ].map(tier => {
-                const billingCalc = (s) => (s.dc||0)*7 + (s.nights||0) + (s.wknd||0)*3;
-                const billingCalcB = (s) => (s.dcB||0)*7 + (s.nightsB||0) + (s.wkndB||0)*3;
+              {sortedMonths.map(mk => {
+                const monthData = monthly[mk] || {};
+                const hasAny = surgeons.some(s => {
+                  const r = monthData[s.id] || {};
+                  return (r.dc||0) + (r.nights||0) + (r.wknd||0) > 0;
+                });
+                if (!hasAny) return null;
                 return (
-                  <div key={tier.label} style={{marginBottom:14}}>
-                    <div style={{fontSize:11,fontWeight:700,color:tier.color,marginBottom:4,textTransform:"uppercase",letterSpacing:0.8}}>{tier.label}</div>
+                  <div key={mk} style={{marginBottom:16}}>
+                    <div style={{fontSize:12,fontWeight:700,color:"#1a6fa8",marginBottom:4,textTransform:"uppercase",letterSpacing:0.8}}>{moLabel(mk)}</div>
                     <div style={{overflowX:"auto"}}>
                       <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
                         <thead>
                           <tr style={{borderBottom:"1px solid #d0d8e0"}}>
                             <th style={thS2}>Surgeon</th>
                             <th style={{...thS2,color:"#1a8040"}}>Total Days</th>
-                            <th style={thS2}>1st Call</th>
-                            {showBackupStats && <th style={{...thS2,borderLeft:"1px solid #d8c880"}}>2nd Call</th>}
                             <th style={thS2}>Svc Wk</th>
                             <th style={thS2}>Nights</th>
                             <th style={thS2}>Wknds</th>
@@ -4716,18 +4783,16 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                         </thead>
                         <tbody>
                           {surgeons.map(s => {
-                            const d = tier.getData(s.id);
-                            const first = billingCalc(d);
-                            const second = billingCalcB(d);
+                            const r = monthData[s.id] || {dc:0,nights:0,wknd:0};
+                            const days = billingDays(r);
+                            const empty = days === 0;
                             return (
-                              <tr key={s.id} style={{borderBottom:"1px solid #e8ecf0"}}>
+                              <tr key={s.id} style={{borderBottom:"1px solid #e8ecf0",opacity:empty?0.45:1}}>
                                 <td style={{padding:"5px 6px"}}><Badge id={s.id} small/></td>
-                                <td style={{...tdS,color:"#1a8040",fontWeight:700,fontSize:14}}>{first + second}</td>
-                                <td style={{...tdS,fontWeight:600}}>{first}</td>
-                                {showBackupStats && <td style={{...tdS,fontWeight:600,borderLeft:"1px solid #d8c880"}}>{second}</td>}
-                                <td style={tdS}>{(d.dc||0)+(d.dcB||0)}</td>
-                                <td style={tdS}>{(d.nights||0)+(d.nightsB||0)}</td>
-                                <td style={tdS}>{(d.wknd||0)+(d.wkndB||0)}</td>
+                                <td style={{...tdS,color:empty?"#a0a8b0":"#1a8040",fontWeight:700,fontSize:14}}>{days||"–"}</td>
+                                <td style={tdS}>{r.dc||"–"}</td>
+                                <td style={tdS}>{r.nights||"–"}</td>
+                                <td style={tdS}>{r.wknd||"–"}</td>
                               </tr>
                             );
                           })}
@@ -4737,11 +4802,12 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   </div>
                 );
               })}
-              <div style={{fontSize:11,color:"#7a8a98",lineHeight:1.5}}>
-                <strong style={{color:"#2c5a80"}}>Formula:</strong> Svc Wk × 7 + Nights × 1 + Weekends × 3 = Total Call Days. Used for stipend/billing — differs from shift count display above.
+              <div style={{fontSize:11,color:"#7a8a98",lineHeight:1.5,marginTop:6}}>
+                <strong style={{color:"#2c5a80"}}>Formula:</strong> Svc Wk × 7 + Nights × 1 + Weekends × 3 = Total Call Days. Billed monthly.
               </div>
             </div>
-          )}
+            );
+          })()}
 
           {/* APP stats */}
           <div style={css.card}>
