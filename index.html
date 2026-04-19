@@ -40,7 +40,7 @@
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.page.js" defer></script>
   <script>
-    var APP_VERSION = "2026.04.19a";
+    var APP_VERSION = "2026.04.19b";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -4067,6 +4067,8 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
   const [swapSuggestions, setSwapSuggestions] = useState(null); // [{ candidateId, score, reasons, returnSwaps }]
   const [editWeekModal, setEditWeekModal] = useState(null); // { mondayStr, draft: { dayCall, nights, apps, reason } } or null
   const [editWeekPick, setEditWeekPick] = useState(""); // dropdown selection on the Manual Adjustments card
+  // Clear stale selection when the user navigates to a different month
+  useEffect(() => { setEditWeekPick(""); }, [calMonth, calYear]);
 
   const findSwapSuggestions = useCallback((mondayStr, shift, currentSurgeonId) => {
     if (!schedule[mondayStr]) return;
@@ -4285,8 +4287,8 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
 
   // ─── Manual Weekly Edit (scheduler/admin) ───
   const openWeekEditor = useCallback((mondayStr) => {
-    const wk = schedule[mondayStr];
-    if (!wk) return;
+    // wk may be undefined — that's OK. Allow creating brand-new weeks.
+    const wk = schedule[mondayStr] || {};
     const mon = parse(mondayStr);
     const appsDraft = {};
     for (let i = 0; i < 7; i++) {
@@ -8434,7 +8436,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     style: {
       color: "#c06020"
     }
-  }, "\uD83C\uDF84"), " Holiday Coverage")), (isScheduler || userProfile?.person_id === "admin") && Object.keys(schedule).length > 0 && /*#__PURE__*/React.createElement("div", {
+  }, "\uD83C\uDF84"), " Holiday Coverage")), (isScheduler || userProfile?.person_id === "admin") && /*#__PURE__*/React.createElement("div", {
   style: {
     ...css.card,
     marginTop: 14,
@@ -8450,7 +8452,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     margin: "0 0 12px",
     lineHeight: 1.5
   }
-}, "For acute changes after the schedule is generated. Affected surgeons/APPs will be notified via push and email."), /*#__PURE__*/React.createElement("div", {
+}, "Edit an existing week or create a new week's schedule on the fly. Weeks shown match the month displayed in the calendar above. Affected surgeons/APPs will be notified via push and email."), /*#__PURE__*/React.createElement("div", {
   style: {
     display: "flex",
     gap: 8,
@@ -8467,15 +8469,26 @@ ${"</"}script>${"</"}body>${"</"}html>`;
   }
 }, /*#__PURE__*/React.createElement("option", {
   value: ""
-}, "Select a week\u2026"), (() => {
-  const now = new Date();
-  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const curMon = fmt(monOf(today));
-  return Object.keys(schedule).sort().filter(m => m >= curMon);
+}, "Select a week in ", MO[calMonth], " ", calYear, "\u2026"), (() => {
+  const first = new Date(calYear, calMonth, 1);
+  let mon = new Date(first);
+  if (mon.getDay() !== 1) {
+    const dow = mon.getDay();
+    const offset = dow === 0 ? 1 : 8 - dow;
+    mon = addD(mon, offset);
+  }
+  const results = [];
+  while (mon.getMonth() === calMonth && mon.getFullYear() === calYear) {
+    results.push(fmt(mon));
+    mon = addD(mon, 7);
+  }
+  return results;
 })().map(m => {
   const mon = parse(m);
   const sun = addD(mon, 6);
-  const label = `Wk of ${MO[mon.getMonth()]} ${mon.getDate()} – ${MO[sun.getMonth()]} ${sun.getDate()}${schedule[m].isBackup ? " (Backup)" : ""}`;
+  const exists = !!schedule[m];
+  const suffix = exists ? schedule[m].isBackup ? " (Backup)" : "" : " (new)";
+  const label = `Wk of ${MO[mon.getMonth()].slice(0, 3)} ${mon.getDate()} – ${MO[sun.getMonth()].slice(0, 3)} ${sun.getDate()}${suffix}`;
   return /*#__PURE__*/React.createElement("option", {
     key: m,
     value: m

@@ -46,7 +46,7 @@
   <script src="https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.page.js" defer></script>
   <script>
     // ─── Auto-update: bump this version string each deploy ───
-    var APP_VERSION = "2026.04.19a";
+    var APP_VERSION = "2026.04.19b";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -84,7 +84,7 @@
   <div id="root"></div>
   <script>
     // Cache-bust with version — update this string when deploying changes
-    var _v = "2026.04.19a";
+    var _v = "2026.04.19b";
     ['config.js','helpers.js','generator.js','app-styles.js'].forEach(function(f) {
       document.write('<script src="'+f+'?v='+_v+'"><\/script>');
     });
@@ -2229,6 +2229,8 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
   const [swapSuggestions, setSwapSuggestions] = useState(null); // [{ candidateId, score, reasons, returnSwaps }]
   const [editWeekModal, setEditWeekModal] = useState(null); // { mondayStr, draft: { dayCall, nights, apps, reason } } or null
   const [editWeekPick, setEditWeekPick] = useState(""); // dropdown selection on the Manual Adjustments card
+  // Clear stale selection when the user navigates to a different month
+  useEffect(() => { setEditWeekPick(""); }, [calMonth, calYear]);
 
   const findSwapSuggestions = useCallback((mondayStr, shift, currentSurgeonId) => {
     if (!schedule[mondayStr]) return;
@@ -2391,8 +2393,10 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
 
   // ─── Manual Weekly Edit (scheduler/admin) ───
   const openWeekEditor = useCallback((mondayStr) => {
-    const wk = schedule[mondayStr];
-    if (!wk) return;
+    // wk may be undefined — that's OK. We're allowing the scheduler to create
+    // a brand-new week entry (for ad-hoc coverage in periods the algorithm
+    // doesn't cover, e.g. before the hand-written schedule starts).
+    const wk = schedule[mondayStr] || {};
     const mon = parse(mondayStr);
     // Snapshot current APP assignments for each day of this week
     const appsDraft = {};
@@ -4264,25 +4268,41 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           </div>
 
           {/* ─── Manual Adjustments (scheduler/admin only) ─── */}
-          {(isScheduler || userProfile?.person_id === "admin") && Object.keys(schedule).length > 0 && (
+          {(isScheduler || userProfile?.person_id === "admin") && (
             <div style={{...css.card,marginTop:14,background:"linear-gradient(135deg,#fff8e8,#fcf4e0)",border:"1px solid #e0c890"}}>
               <div style={css.cardT}>✏️ Manual Adjustments</div>
               <p style={{fontSize:12,color:"#5a6a78",margin:"0 0 12px",lineHeight:1.5}}>
-                For acute changes after the schedule is generated. Affected surgeons/APPs will be notified via push and email.
+                Edit an existing week or create a new week's schedule on the fly. Weeks shown match the month displayed in the calendar above. Affected surgeons/APPs will be notified via push and email.
               </p>
               <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
                 <select value={editWeekPick} onChange={e=>setEditWeekPick(e.target.value)} style={{...css.inp,flex:1,minWidth:180}}>
-                  <option value="">Select a week…</option>
+                  <option value="">Select a week in {MO[calMonth]} {calYear}…</option>
                   {(()=>{
-                    // Only show current week and later (past weeks aren't editable)
-                    const now = new Date();
-                    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-                    const curMon = fmt(monOf(today));
-                    return Object.keys(schedule).sort().filter(m => m >= curMon);
+                    // Find all Mondays whose week STARTS in the viewed calendar month.
+                    // Week is "in" a month if its Monday falls in that month.
+                    const first = new Date(calYear, calMonth, 1);
+                    // Find the first Monday on or after the 1st of the month
+                    let mon = new Date(first);
+                    if (mon.getDay() !== 1) {
+                      // day=0 (Sun) → +1; day=2 (Tue) → +6; day=3 (Wed) → +5; etc.
+                      const dow = mon.getDay();
+                      const offset = (dow === 0) ? 1 : (8 - dow);
+                      mon = addD(mon, offset);
+                    }
+                    const results = [];
+                    while (mon.getMonth() === calMonth && mon.getFullYear() === calYear) {
+                      results.push(fmt(mon));
+                      mon = addD(mon, 7);
+                    }
+                    return results;
                   })().map(m => {
                     const mon = parse(m);
                     const sun = addD(mon, 6);
-                    const label = `Wk of ${MO[mon.getMonth()]} ${mon.getDate()} – ${MO[sun.getMonth()]} ${sun.getDate()}${schedule[m].isBackup?" (Backup)":""}`;
+                    const exists = !!schedule[m];
+                    const suffix = exists
+                      ? (schedule[m].isBackup ? " (Backup)" : "")
+                      : " (new)";
+                    const label = `Wk of ${MO[mon.getMonth()].slice(0,3)} ${mon.getDate()} – ${MO[sun.getMonth()].slice(0,3)} ${sun.getDate()}${suffix}`;
                     return <option key={m} value={m}>{label}</option>;
                   })}
                 </select>
