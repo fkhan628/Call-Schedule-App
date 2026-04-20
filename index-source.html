@@ -46,7 +46,7 @@
   <script src="https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.page.js" defer></script>
   <script>
     // ─── Auto-update: bump this version string each deploy ───
-    var APP_VERSION = "2026.04.19i";
+    var APP_VERSION = "2026.04.19j";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -84,7 +84,7 @@
   <div id="root"></div>
   <script>
     // Cache-bust with version — update this string when deploying changes
-    var _v = "2026.04.19i";
+    var _v = "2026.04.19j";
     ['config.js','helpers.js','generator.js','app-styles.js'].forEach(function(f) {
       document.write('<script src="'+f+'?v='+_v+'"><\/script>');
     });
@@ -1285,13 +1285,15 @@ function CallSchedule() {
   const [oneSignalReady, setOneSignalReady] = useState(false);
   const [oneSignalSubscribed, setOneSignalSubscribed] = useState(false);
 
-  // Initialize OneSignal on mount
+  // Initialize OneSignal on mount.
+  // OneSignalDeferred is a queue that the SDK processes once loaded.
+  // By always pushing to it (and creating it if it doesn't exist yet),
+  // we avoid races with the deferred SDK script tag.
   useEffect(() => {
-    const initOneSignal = async () => {
-      try {
-        if (!window.OneSignalDeferred) { console.warn("OneSignal SDK not loaded"); return; }
-        window.OneSignalDeferred = window.OneSignalDeferred || [];
-        window.OneSignalDeferred.push(async function(OneSignal) {
+    try {
+      window.OneSignalDeferred = window.OneSignalDeferred || [];
+      window.OneSignalDeferred.push(async function(OneSignal) {
+        try {
           await OneSignal.init({
             appId: "9ca5c08f-6fb3-4ee5-b564-09aafc1c1901",
             serviceWorkerParam: { scope: "/Call-Schedule-App/" },
@@ -1307,10 +1309,9 @@ function CallSchedule() {
             setOneSignalSubscribed(granted);
             setPushPermission(granted ? "granted" : "denied");
           });
-        });
-      } catch(e) { console.error("OneSignal init error:", e); }
-    };
-    initOneSignal();
+        } catch(e) { console.error("OneSignal init error:", e); }
+      });
+    } catch(e) { console.error("OneSignal setup error:", e); }
   }, []);
 
   // Associate the OneSignal subscription with this user's person_id so that
