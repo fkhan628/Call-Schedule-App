@@ -55,7 +55,7 @@
   </script>
   <script>
     // ─── Auto-update: bump this version string each deploy ───
-    var APP_VERSION = "2026.04.20a";
+    var APP_VERSION = "2026.04.20c";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -69,7 +69,13 @@
         }
         if (navigator.serviceWorker) {
           promises.push(navigator.serviceWorker.getRegistrations().then(function(regs) {
-            return Promise.all(regs.map(function(r) { return r.unregister(); }));
+            // Preserve OneSignal's service worker — unregistering it kills
+            // existing push subscriptions. Only clear app-cache-related SWs.
+            return Promise.all(regs.map(function(r) {
+              var url = r.active && r.active.scriptURL || "";
+              if (/OneSignalSDK/i.test(url)) return null;
+              return r.unregister();
+            }));
           }));
         }
         Promise.all(promises).then(function() {
@@ -93,7 +99,7 @@
   <div id="root"></div>
   <script>
     // Cache-bust with version — update this string when deploying changes
-    var _v = "2026.04.20a";
+    var _v = "2026.04.20c";
     ['config.js','helpers.js','generator.js','app-styles.js'].forEach(function(f) {
       document.write('<script src="'+f+'?v='+_v+'"><\/script>');
     });
@@ -1378,11 +1384,19 @@ function CallSchedule() {
   const [pushDiag, setPushDiag] = useState({ msg: "", loading: false });
   const [pushSubscriptionId, setPushSubscriptionId] = useState(null);
   const [pushExternalId, setPushExternalId] = useState(null);
+  const [oneSignalInitError, setOneSignalInitError] = useState(null);
 
   // Initialize OneSignal on mount.
   // OneSignalDeferred is a queue that the SDK processes once loaded.
   // By always pushing to it (and creating it if it doesn't exist yet),
   // we avoid races with the deferred SDK script tag.
+  //
+  // The service worker path is explicit — this app runs at
+  // fkhan628.github.io/Call-Schedule-App/ (a GitHub Pages project subpath),
+  // but OneSignal defaults to looking for its SW at the origin root. Without
+  // these options the SW silently 404s and no push subscription gets created,
+  // even though the browser still shows "permission granted" from any earlier
+  // successful registration.
   useEffect(() => {
     try {
       window.OneSignalDeferred = window.OneSignalDeferred || [];
@@ -1390,8 +1404,11 @@ function CallSchedule() {
         try {
           await OneSignal.init({
             appId: "9ca5c08f-6fb3-4ee5-b564-09aafc1c1901",
+            serviceWorkerPath: "OneSignalSDKWorker.js",
+            serviceWorkerParam: { scope: "./" },
           });
           setOneSignalReady(true);
+          setOneSignalInitError(null);
           // Check current permission
           const perm = OneSignal.Notifications.permission;
           setOneSignalSubscribed(perm);
@@ -1401,9 +1418,20 @@ function CallSchedule() {
             setOneSignalSubscribed(granted);
             setPushPermission(granted ? "granted" : "denied");
           });
-        } catch(e) { console.error("OneSignal init error:", e); }
+          // Listen for subscription-id changes so the panel updates when the
+          // SW finishes registering and the push endpoint becomes available.
+          try {
+            OneSignal.User.PushSubscription.addEventListener("change", (ev) => {
+              const id = ev?.current?.id || OneSignal?.User?.PushSubscription?.id || null;
+              setPushSubscriptionId(id);
+            });
+          } catch(evErr) { console.warn("Subscription change listener:", evErr); }
+        } catch(e) {
+          console.error("OneSignal init error:", e);
+          setOneSignalInitError(e?.message || String(e));
+        }
       });
-    } catch(e) { console.error("OneSignal setup error:", e); }
+    } catch(e) { console.error("OneSignal setup error:", e); setOneSignalInitError(e?.message || String(e)); }
   }, []);
 
   // Associate the OneSignal subscription with this user's person_id so that
@@ -1503,11 +1531,54 @@ function CallSchedule() {
         `External ID: ${extId || "none"}`,
         `Logged in as: ${mySurgeon || "nobody"}`,
       ];
+      if (oneSignalInitError) parts.push(`Init error: ${oneSignalInitError}`);
       setPushDiag({ msg: parts.join(" · "), loading: false });
     } catch(e) {
       setPushDiag({ msg: `Diag error: ${e.message || e}`, loading: false });
     }
-  }, [oneSignalReady, mySurgeon]);
+  }, [oneSignalReady, mySurgeon, oneSignalInitError]);
+
+  // Rescue tool for users stuck in "opted in but no subscription ID" state.
+  // Clears the OneSignal service worker, logs out, forces a fresh subscribe,
+  // then re-logs-in with the current person_id.
+  const resetPushSubscription = useCallback(async () => {
+    setPushDiag({ msg: "Resetting push subscription…", loading: true });
+    try {
+      // Unregister OneSignal's service worker to force a clean re-registration
+      if (navigator.serviceWorker) {
+        const regs = await navigator.serviceWorker.getRegistrations();
+        await Promise.all(regs.filter(r => /OneSignalSDK/i.test(r.active?.scriptURL || "")).map(r => r.unregister()));
+      }
+      // Log out (clears external_id association)
+      try { if (window.OneSignal?.logout) await window.OneSignal.logout(); } catch(e) { console.warn("logout:", e); }
+      // Opt out then opt in to force resubscribe
+      try {
+        if (window.OneSignal?.User?.PushSubscription?.optOut) await window.OneSignal.User.PushSubscription.optOut();
+      } catch(e) { console.warn("optOut:", e); }
+      try {
+        if (window.OneSignal?.User?.PushSubscription?.optIn) await window.OneSignal.User.PushSubscription.optIn();
+      } catch(e) { console.warn("optIn:", e); }
+      // Wait briefly for subscription to register, then re-login
+      setTimeout(async () => {
+        try {
+          if (mySurgeon && mySurgeon !== "admin" && window.OneSignal?.login) {
+            await window.OneSignal.login(mySurgeon);
+          }
+          const subId = window.OneSignal?.User?.PushSubscription?.id || null;
+          const extId = window.OneSignal?.User?.externalId || null;
+          setPushSubscriptionId(subId);
+          setPushExternalId(extId);
+          if (subId) {
+            setPushDiag({ msg: `✓ Resubscribed${extId ? ` as ${extId}` : ""}. Tap "Diagnose" to verify.`, loading: false });
+          } else {
+            setPushDiag({ msg: "Reset complete but no subscription ID yet. Reload the app (Refresh Now in Settings) and try again.", loading: false });
+          }
+        } catch(e) { setPushDiag({ msg: `Reset post-step error: ${e.message || e}`, loading: false }); }
+      }, 2500);
+    } catch(e) {
+      setPushDiag({ msg: `Reset error: ${e.message || e}`, loading: false });
+    }
+  }, [mySurgeon]);
 
   // Tag the OneSignal subscription with the surgeon ID so we can target them
   useEffect(() => {
@@ -2671,31 +2742,27 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
     // Notifications — targeted to the specific affected people.
     // For each change, notify both the old assignee (removed) and new assignee (added)
     // with targeted in-app notifications (data.surgeon_id set) AND targeted emails
-    // (only those two people, not a broadcast).
+    // (only affected people + scheduler/admin, not a broadcast).
     const reasonSuffix = draft.reason ? ` (${draft.reason})` : "";
     changes.forEach(c => {
       const oldName = c.isApp ? (aMap[c.oldId]?.name || "—") : (sMap[c.oldId]?.name || "—");
       const newName = c.isApp ? (aMap[c.newId]?.name || "—") : (sMap[c.newId]?.name || "—");
       const baseMsg = `${c.slotLabel}: ${oldName} → ${newName}${reasonSuffix}`;
-      // Build list of affected person_ids for this specific change
-      const affected = [c.oldId, c.newId].filter(Boolean);
-      // One notification per affected person, attributed to them specifically
-      affected.forEach(pid => {
-        addNotification("schedule_changed", "Manual Schedule Edit", baseMsg, { surgeon_id: pid }, [pid]);
-      });
-      // One email send per change, targeted to the old + new person only
-      if (affected.length > 0) {
+      // Affected: old person + new person + scheduler + admin
+      const editTargets = [...new Set([c.oldId, c.newId, ...schedulerAdminIds].filter(Boolean))];
+      if (editTargets.length > 0) {
+        addNotification("schedule_changed", "Manual Schedule Edit", baseMsg, {}, editTargets);
         sendEmailNotif("schedule_changed", {
           shift: c.slotLabel,
           week: mondayStr,
           old_surgeon: oldName,
           new_surgeon: newName,
-        }, affected);
+        }, editTargets);
       }
     });
 
     setEditWeekModal(null);
-  }, [editWeekModal, schedule, appShifts, surgeons, sMap, aMap, addNotification, sendEmailNotif, pushUndo]);
+  }, [editWeekModal, schedule, appShifts, surgeons, sMap, aMap, addNotification, sendEmailNotif, pushUndo, schedulerAdminIds]);
 
   // Generate shareable read-only HTML with calendar grid view
   const generateShareHTML = () => {
@@ -5889,6 +5956,9 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               <div style={{marginTop:8,display:"flex",gap:6,flexWrap:"wrap"}}>
                 <button onClick={refreshPushDiag} style={{...css.btn(false),padding:"4px 10px",fontSize:11}}>
                   🔍 Diagnose
+                </button>
+                <button onClick={resetPushSubscription} disabled={pushDiag.loading} style={{...css.btn(false),padding:"4px 10px",fontSize:11,opacity:pushDiag.loading?0.6:1}}>
+                  🔄 Reset Subscription
                 </button>
                 {pushPermission === "granted" && isScheduler && (
                   <button onClick={sendTestNotification} style={{...css.btn(false),padding:"4px 10px",fontSize:11}}>

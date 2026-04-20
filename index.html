@@ -52,7 +52,7 @@
   </script>
   <script>
     // ─── Auto-update: bump this version string each deploy ───
-    var APP_VERSION = "2026.04.20b";
+    var APP_VERSION = "2026.04.20c";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -4692,33 +4692,27 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
 
     // Notifications — targeted to the specific affected people.
     // For each change, notify both the old assignee (removed) and new assignee (added)
-    // with targeted in-app notifications (data.surgeon_id set) AND targeted emails
-    // (only those two people, not a broadcast).
+    // with targeted in-app notifications AND targeted emails
+    // (affected people + scheduler/admin, not a broadcast).
     const reasonSuffix = draft.reason ? ` (${draft.reason})` : "";
     changes.forEach(c => {
       const oldName = c.isApp ? aMap[c.oldId]?.name || "—" : sMap[c.oldId]?.name || "—";
       const newName = c.isApp ? aMap[c.newId]?.name || "—" : sMap[c.newId]?.name || "—";
       const baseMsg = `${c.slotLabel}: ${oldName} → ${newName}${reasonSuffix}`;
-      // Build list of affected person_ids for this specific change
-      const affected = [c.oldId, c.newId].filter(Boolean);
-      // One notification per affected person, attributed to them specifically
-      affected.forEach(pid => {
-        addNotification("schedule_changed", "Manual Schedule Edit", baseMsg, {
-          surgeon_id: pid
-        }, [pid]);
-      });
-      // One email send per change, targeted to the old + new person only
-      if (affected.length > 0) {
+      // Affected: old person + new person + scheduler + admin
+      const editTargets = [...new Set([c.oldId, c.newId, ...schedulerAdminIds].filter(Boolean))];
+      if (editTargets.length > 0) {
+        addNotification("schedule_changed", "Manual Schedule Edit", baseMsg, {}, editTargets);
         sendEmailNotif("schedule_changed", {
           shift: c.slotLabel,
           week: mondayStr,
           old_surgeon: oldName,
           new_surgeon: newName
-        }, affected);
+        }, editTargets);
       }
     });
     setEditWeekModal(null);
-  }, [editWeekModal, schedule, appShifts, surgeons, sMap, aMap, addNotification, sendEmailNotif, pushUndo]);
+  }, [editWeekModal, schedule, appShifts, surgeons, sMap, aMap, addNotification, sendEmailNotif, pushUndo, schedulerAdminIds]);
 
   // Generate shareable read-only HTML with calendar grid view
   const generateShareHTML = () => {
