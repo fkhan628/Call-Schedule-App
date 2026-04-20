@@ -55,7 +55,7 @@
   </script>
   <script>
     // ─── Auto-update: bump this version string each deploy ───
-    var APP_VERSION = "2026.04.19r";
+    var APP_VERSION = "2026.04.20a";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -93,7 +93,7 @@
   <div id="root"></div>
   <script>
     // Cache-bust with version — update this string when deploying changes
-    var _v = "2026.04.19r";
+    var _v = "2026.04.20a";
     ['config.js','helpers.js','generator.js','app-styles.js'].forEach(function(f) {
       document.write('<script src="'+f+'?v='+_v+'"><\/script>');
     });
@@ -967,12 +967,13 @@ function CallSchedule() {
         ...prev,
         [req.surgeon_id]: [...(prev[req.surgeon_id] || []), [req.start_date, req.end_date]]
       }));
+      const approveTargets = [...new Set([req.surgeon_id, ...schedulerAdminIds].filter(Boolean))];
       await addNotification("vacation_approved", "Vacation Approved",
         `${req.surgeon_name}'s vacation ${req.start_date} to ${req.end_date} was approved`,
-        { surgeon_id: req.surgeon_id });
-      sendEmailNotif("vacation_approved", { surgeon_name: req.surgeon_name, surgeon_id: req.surgeon_id, start_date: req.start_date, end_date: req.end_date });
+        { surgeon_id: req.surgeon_id }, approveTargets);
+      sendEmailNotif("vacation_approved", { surgeon_name: req.surgeon_name, surgeon_id: req.surgeon_id, start_date: req.start_date, end_date: req.end_date }, approveTargets);
     } catch(e) { console.error("Approve error:", e); }
-  }, [addNotification]);
+  }, [addNotification, sendEmailNotif, schedulerAdminIds]);
 
   // ─── Vacation Request: Deny ───
   const denyVacRequest = useCallback(async (req, note = "") => {
@@ -981,12 +982,13 @@ function CallSchedule() {
         status: "denied", reviewed_at: new Date().toISOString(), reviewed_by: "Scheduler", review_note: note
       });
       setVacRequests(prev => prev.map(r => r.id === req.id ? { ...r, status: "denied", review_note: note } : r));
+      const denyTargets = [...new Set([req.surgeon_id, ...schedulerAdminIds].filter(Boolean))];
       await addNotification("vacation_denied", "Vacation Denied",
         `${req.surgeon_name}'s vacation ${req.start_date} to ${req.end_date} was denied${note ? ": " + note : ""}`,
-        { surgeon_id: req.surgeon_id });
-      sendEmailNotif("vacation_denied", { surgeon_name: req.surgeon_name, surgeon_id: req.surgeon_id, start_date: req.start_date, end_date: req.end_date, note });
+        { surgeon_id: req.surgeon_id }, denyTargets);
+      sendEmailNotif("vacation_denied", { surgeon_name: req.surgeon_name, surgeon_id: req.surgeon_id, start_date: req.start_date, end_date: req.end_date, note }, denyTargets);
     } catch(e) { console.error("Deny error:", e); }
-  }, [addNotification]);
+  }, [addNotification, sendEmailNotif, schedulerAdminIds]);
 
   // ─── Shift Trade Request: Submit ───
   const submitTradeRequest = useCallback(async () => {
@@ -1373,6 +1375,9 @@ function CallSchedule() {
   // ─── OneSignal Push Notifications ───
   const [oneSignalReady, setOneSignalReady] = useState(false);
   const [oneSignalSubscribed, setOneSignalSubscribed] = useState(false);
+  const [pushDiag, setPushDiag] = useState({ msg: "", loading: false });
+  const [pushSubscriptionId, setPushSubscriptionId] = useState(null);
+  const [pushExternalId, setPushExternalId] = useState(null);
 
   // Initialize OneSignal on mount.
   // OneSignalDeferred is a queue that the SDK processes once loaded.
@@ -1415,22 +1420,94 @@ function CallSchedule() {
     } catch(e) { console.error("OneSignal external id set error:", e); }
   }, [oneSignalReady, mySurgeon]);
 
-  // Request push permission via OneSignal
+  // Request push permission via OneSignal.
+  // Robust version: detects common failure modes (iOS non-PWA, SDK not loaded,
+  // user gesture lost, subscription didn't register) and surfaces them to the
+  // user instead of silently doing nothing.
   const requestPushPermission = useCallback(async () => {
+    setPushDiag({ msg: "Requesting permission…", loading: true });
     try {
-      if (window.OneSignal?.Notifications) {
-        await window.OneSignal.Notifications.requestPermission();
-        const perm = window.OneSignal.Notifications.permission;
-        setOneSignalSubscribed(perm);
-        setPushPermission(perm ? "granted" : "denied");
-      } else if ("Notification" in window) {
-        const perm = await Notification.requestPermission();
-        setPushPermission(perm);
-      } else {
+      // iOS Safari requires the app to be installed as a PWA (home screen) for
+      // web push to work. Detect that up front so users aren't left wondering.
+      const ua = navigator.userAgent || "";
+      const isIOS = /iPad|iPhone|iPod/.test(ua) && !window.MSStream;
+      const isStandalone = window.navigator.standalone === true ||
+        window.matchMedia?.("(display-mode: standalone)").matches;
+      if (isIOS && !isStandalone) {
+        setPushDiag({ msg: "On iPhone/iPad, push notifications only work after adding this app to your home screen (Share → Add to Home Screen), then opening it from the home-screen icon.", loading: false });
         setPushPermission("unsupported");
+        return;
       }
-    } catch(e) { console.error("Push permission error:", e); setPushPermission("unsupported"); }
-  }, []);
+
+      // If OneSignal isn't loaded yet, tell the user to wait instead of falling
+      // through to the native API (which wouldn't register with OneSignal and
+      // silently leaves them unable to receive pushes).
+      if (!window.OneSignal?.Notifications) {
+        setPushDiag({ msg: "Notification service still loading. Wait a few seconds and tap Enable again.", loading: false });
+        return;
+      }
+
+      await window.OneSignal.Notifications.requestPermission();
+      const perm = window.OneSignal.Notifications.permission;
+      setOneSignalSubscribed(perm);
+      setPushPermission(perm ? "granted" : "denied");
+
+      if (!perm) {
+        setPushDiag({ msg: "Permission was not granted. If you didn't see a prompt, notifications may be blocked at the browser or OS level — check your device notification settings for this site.", loading: false });
+        return;
+      }
+
+      // Associate this subscription with the logged-in person_id so targeted
+      // pushes (manual edits, vacation updates, etc.) can reach this device.
+      // Without this, only broadcast pushes arrive.
+      if (mySurgeon && mySurgeon !== "admin" && window.OneSignal?.login) {
+        try { await window.OneSignal.login(mySurgeon); } catch(e) { console.error("OneSignal login after permission:", e); }
+      }
+
+      // Read back the subscription ID and external ID so the Settings panel can
+      // prove the device is fully registered.
+      setTimeout(() => {
+        try {
+          const subId = window.OneSignal?.User?.PushSubscription?.id || null;
+          const extId = window.OneSignal?.User?.externalId || null;
+          setPushSubscriptionId(subId);
+          setPushExternalId(extId);
+          if (subId) {
+            setPushDiag({ msg: `✓ Subscribed successfully${extId ? ` (as ${extId})` : ""}.`, loading: false });
+          } else {
+            setPushDiag({ msg: "Permission granted, but subscription ID not yet available. Reload the app and check Settings again — if it still says no ID, the service worker may be blocked.", loading: false });
+          }
+        } catch(e) { console.error("Push diag readback:", e); }
+      }, 1500);
+    } catch(e) {
+      console.error("Push permission error:", e);
+      setPushPermission("unsupported");
+      setPushDiag({ msg: `Error: ${e.message || e}. Check browser console for details.`, loading: false });
+    }
+  }, [mySurgeon]);
+
+  // Refresh diagnostic info — useful for debugging why pushes aren't arriving.
+  const refreshPushDiag = useCallback(() => {
+    try {
+      const subId = window.OneSignal?.User?.PushSubscription?.id || null;
+      const extId = window.OneSignal?.User?.externalId || null;
+      const optedIn = window.OneSignal?.User?.PushSubscription?.optedIn;
+      setPushSubscriptionId(subId);
+      setPushExternalId(extId);
+      const parts = [
+        `SDK: ${window.OneSignal ? "loaded" : "NOT loaded"}`,
+        `Ready: ${oneSignalReady ? "yes" : "no"}`,
+        `Permission: ${window.OneSignal?.Notifications?.permission ? "granted" : "not granted"}`,
+        `Opted in: ${optedIn === true ? "yes" : optedIn === false ? "no" : "unknown"}`,
+        `Subscription ID: ${subId || "none"}`,
+        `External ID: ${extId || "none"}`,
+        `Logged in as: ${mySurgeon || "nobody"}`,
+      ];
+      setPushDiag({ msg: parts.join(" · "), loading: false });
+    } catch(e) {
+      setPushDiag({ msg: `Diag error: ${e.message || e}`, loading: false });
+    }
+  }, [oneSignalReady, mySurgeon]);
 
   // Tag the OneSignal subscription with the surgeon ID so we can target them
   useEffect(() => {
@@ -2501,11 +2578,13 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
     const oldName = sMap[targetOldId]?.name || "—";
     const newName = sMap[candId]?.name || "—";
     const shiftLabel = SHIFT_LABELS[targetShift] || targetShift;
+    const swapTargets = [...new Set([targetOldId, candId, ...schedulerAdminIds].filter(Boolean))];
     addNotification("schedule_changed", "Shift Swap",
-      `${shiftLabel} (wk of ${targetMon}): ${oldName} ↔ ${newName}${returnMon ? ` (return: ${SHIFT_LABELS[returnShift]||returnShift} wk of ${returnMon})` : ""}`);
-    sendEmailNotif("schedule_changed", { shift: shiftLabel, week: targetMon, old_surgeon: oldName, new_surgeon: newName });
+      `${shiftLabel} (wk of ${targetMon}): ${oldName} ↔ ${newName}${returnMon ? ` (return: ${SHIFT_LABELS[returnShift]||returnShift} wk of ${returnMon})` : ""}`,
+      {}, swapTargets);
+    sendEmailNotif("schedule_changed", { shift: shiftLabel, week: targetMon, old_surgeon: oldName, new_surgeon: newName }, swapTargets);
     setSwapSuggestions(null); setSwapTarget(null);
-  }, [surgeons, sMap, addNotification, sendEmailNotif]);
+  }, [surgeons, sMap, addNotification, sendEmailNotif, schedulerAdminIds]);
 
   // ─── Manual Weekly Edit (scheduler/admin) ───
   const openWeekEditor = useCallback((mondayStr) => {
@@ -5790,10 +5869,11 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               </div>
               <p style={{fontSize:11,color:dkSubtext,margin:"0 0 8px",lineHeight:1.5}}>
                 Each partner needs to click "Enable" once on their device. Notifications will arrive even when the browser is closed.
+                {" "}On iPhone/iPad you must first install the app to the home screen (Share → Add to Home Screen) and open it from there.
               </p>
               {!oneSignalSubscribed && pushPermission !== "denied" && (
-                <button onClick={requestPushPermission} style={{...css.btn(true),padding:"6px 14px",fontSize:12}}>
-                  Enable Push Notifications
+                <button onClick={requestPushPermission} disabled={pushDiag.loading} style={{...css.btn(true),padding:"6px 14px",fontSize:12,opacity:pushDiag.loading?0.6:1}}>
+                  {pushDiag.loading ? "Working…" : "Enable Push Notifications"}
                 </button>
               )}
               {pushPermission === "denied" && (
@@ -5801,14 +5881,22 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   Notifications are blocked. Please allow notifications for this site in your browser settings.
                 </p>
               )}
-              {pushPermission === "granted" && isScheduler && (
-                <div style={{display:"flex",gap:8,alignItems:"center",marginBottom:8}}>
-                  <button onClick={sendTestNotification} style={{...css.btn(false),padding:"5px 12px",fontSize:11}}>
-                    🔔 Send Test Notification
-                  </button>
-                  {notifTestSent && <span style={{fontSize:11,color:"#1a8040",fontWeight:600}}>{notifTestSent}</span>}
+              {pushDiag.msg && (
+                <div style={{marginTop:8,padding:"6px 10px",background:dk?"#0f1e30":"#eef3f8",border:`1px solid ${dkCardBorder}`,borderRadius:6,fontSize:11,color:dkText,lineHeight:1.5,fontFamily:mono,wordBreak:"break-all"}}>
+                  {pushDiag.msg}
                 </div>
               )}
+              <div style={{marginTop:8,display:"flex",gap:6,flexWrap:"wrap"}}>
+                <button onClick={refreshPushDiag} style={{...css.btn(false),padding:"4px 10px",fontSize:11}}>
+                  🔍 Diagnose
+                </button>
+                {pushPermission === "granted" && isScheduler && (
+                  <button onClick={sendTestNotification} style={{...css.btn(false),padding:"4px 10px",fontSize:11}}>
+                    🔔 Send Test Notification
+                  </button>
+                )}
+                {notifTestSent && <span style={{fontSize:11,color:"#1a8040",fontWeight:600,alignSelf:"center"}}>{notifTestSent}</span>}
+              </div>
               {isScheduler && (
                 <div style={{marginTop:8,paddingTop:8,borderTop:"1px dashed #e0e4ea"}}>
                   <div style={{fontSize:11,color:dkSubtext,lineHeight:1.5,marginBottom:6}}>
