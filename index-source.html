@@ -46,7 +46,7 @@
   <script src="https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.page.js" defer></script>
   <script>
     // ─── Auto-update: bump this version string each deploy ───
-    var APP_VERSION = "2026.04.19h";
+    var APP_VERSION = "2026.04.19i";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -84,7 +84,7 @@
   <div id="root"></div>
   <script>
     // Cache-bust with version — update this string when deploying changes
-    var _v = "2026.04.19h";
+    var _v = "2026.04.19i";
     ['config.js','helpers.js','generator.js','app-styles.js'].forEach(function(f) {
       document.write('<script src="'+f+'?v='+_v+'"><\/script>');
     });
@@ -515,8 +515,6 @@ function CallSchedule() {
           .single();
         if (cfgRow?.scheduler_pin) setSchedulerPin(cfgRow.scheduler_pin);
         if (cfgRow?.edge_function_url) setEdgeFunctionUrl(cfgRow.edge_function_url);
-        // Load OneSignal API key from localStorage (not in DB for security)
-        try { const osKey = localStorage.getItem("dsg-onesignal-key"); if (osKey) setOneSignalApiKey(osKey); } catch(e) {}
 
         // Load vacation requests
         try {
@@ -769,34 +767,29 @@ function CallSchedule() {
     setTimeout(() => setSaveStatus(""), 2000);
   };
 
-  // ─── OneSignal Push — targeted or broadcast ───
-  // If targetIds is an array of person_ids, only those devices get the push
-  // (using OneSignal external_id aliases). Otherwise broadcasts to all subscribers.
-  const [oneSignalApiKey, setOneSignalApiKey] = useState("");
+  // ─── Push Notifications — sent via send-push Edge Function ───
+  // The OneSignal REST API key lives server-side in Supabase secrets.
+  // Client only sends { title, message, targetIds? } to the Edge Function,
+  // which proxies to OneSignal. If targetIds is a non-empty array, only those
+  // person_ids (mapped via OneSignal external_id aliases) receive the push.
+  // Otherwise it broadcasts to all subscribed users.
   const sendPushNotif = useCallback(async (title, message, targetIds = null) => {
-    if (!oneSignalApiKey) return;
+    if (!edgeFunctionUrl) return;
+    // Derive send-push URL from the configured send-notification URL
+    // (they share the /functions/v1/ base path).
+    const pushUrl = edgeFunctionUrl.replace(/\/[^/]+$/, "/send-push");
     try {
-      const body = {
-        app_id: "9ca5c08f-6fb3-4ee5-b564-09aafc1c1901",
-        headings: { en: title },
-        contents: { en: message },
-        url: "https://fkhan628.github.io/Call-Schedule-App/",
-      };
+      const body = { title, message };
       if (Array.isArray(targetIds) && targetIds.length > 0) {
-        // Targeted push: only these people
-        body.include_aliases = { external_id: targetIds };
-        body.target_channel = "push";
-      } else {
-        // Broadcast to all subscribed users
-        body.included_segments = ["Subscribed Users"];
+        body.targetIds = targetIds;
       }
-      await fetch("https://onesignal.com/api/v1/notifications", {
+      await fetch(pushUrl, {
         method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Basic ${oneSignalApiKey}` },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
-    } catch(e) { console.error("OneSignal push error:", e); }
-  }, [oneSignalApiKey]);
+    } catch(e) { console.error("Push notification error:", e); }
+  }, [edgeFunctionUrl]);
 
   // ─── Add Notification ───
   // pushTargetIds: optional array of person_ids to scope the push notification to.
@@ -5728,35 +5721,28 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               )}
               {isScheduler && (
                 <div style={{marginTop:8,paddingTop:8,borderTop:"1px dashed #e0e4ea"}}>
-                  <label style={{fontSize:10,color:"#7a8a98",display:"block",marginBottom:2}}>OneSignal REST API Key (for sending push to all devices)</label>
-                  <div style={{display:"flex",gap:6,alignItems:"center"}}>
-                    <input type="password" value={oneSignalApiKey} onChange={e=>setOneSignalApiKey(e.target.value)}
-                      placeholder="Paste REST API key from OneSignal → Settings → Keys & IDs"
-                      style={{...css.inp,width:"100%",maxWidth:420,fontSize:11,fontFamily:mono}}/>
-                    <button onClick={()=>{
-                      try { localStorage.setItem("dsg-onesignal-key", oneSignalApiKey); } catch(e) {}
-                      setSaveStatus("Saved"); setTimeout(()=>setSaveStatus(""),2000);
-                    }} style={{...css.btn(true),padding:"5px 12px",fontSize:11,whiteSpace:"nowrap"}}>Save</button>
+                  <div style={{fontSize:11,color:dkSubtext,lineHeight:1.5,marginBottom:6}}>
+                    <strong style={{color:dkText}}>🔒 Push sending is configured server-side.</strong>
+                    <br/>
+                    The OneSignal REST API key lives in Supabase secrets and is accessed via the <code style={{fontFamily:mono,fontSize:10}}>send-push</code> Edge Function.
+                    {!edgeFunctionUrl && <span style={{color:"#b85020",display:"block",marginTop:4}}>⚠ Set the Edge Function URL below — the push sender derives its URL from it.</span>}
                   </div>
-                  <p style={{fontSize:10,color:"#8a94a0",margin:"4px 0 0"}}>Find this at onesignal.com → your app → Settings → Keys & IDs → REST API Key</p>
-                  {oneSignalApiKey && (
+                  {edgeFunctionUrl && (
                     <button onClick={async ()=>{
                       try {
-                        const resp = await fetch("https://onesignal.com/api/v1/notifications", {
+                        const pushUrl = edgeFunctionUrl.replace(/\/[^/]+$/, "/send-push");
+                        const resp = await fetch(pushUrl, {
                           method: "POST",
-                          headers: { "Content-Type": "application/json", Authorization: `Basic ${oneSignalApiKey}` },
+                          headers: { "Content-Type": "application/json" },
                           body: JSON.stringify({
-                            app_id: "9ca5c08f-6fb3-4ee5-b564-09aafc1c1901",
-                            included_segments: ["Subscribed Users"],
-                            headings: { en: "DSG Call Schedule" },
-                            contents: { en: "Test push notification — if you see this, push is working!" },
-                            url: "https://fkhan628.github.io/Call-Schedule-App/",
+                            title: "DSG Call Schedule",
+                            message: "Test push notification — if you see this, push is working!",
                           }),
                         });
-                        const data = await resp.json();
-                        alert(`Push test result:\nStatus: ${resp.status}\nRecipients: ${data.recipients || 0}\n${data.errors ? "Errors: " + JSON.stringify(data.errors) : "Success!"}`);
+                        const data = await resp.json().catch(()=>({}));
+                        alert(`Push test result:\nStatus: ${resp.status}\nRecipients: ${data.recipients || 0}\n${data.errors ? "Errors: " + JSON.stringify(data.errors) : (data.error || "Success!")}`);
                       } catch(e) { alert("Push test error: " + e.message); }
-                    }} style={{...css.btn(false),padding:"4px 10px",fontSize:10,marginTop:6}}>
+                    }} style={{...css.btn(false),padding:"4px 10px",fontSize:10,marginTop:4}}>
                       Test Push to All Devices
                     </button>
                   )}

@@ -21,16 +21,18 @@
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body { background: #f0f2f5; overflow-x: hidden; }
     #root { min-height: 100vh; }
+    /* Print-friendly styles */
     @media print {
       body { background: #fff !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-      #root > div > div:first-child { display: none !important; }
+      #root > div > div:first-child { display: none !important; } /* hide header */
       button, select, input { display: none !important; }
-      [style*="position: absolute"] { display: none !important; }
+      [style*="position: absolute"] { display: none !important; } /* hide notification panel */
       div[style*="maxWidth"] { max-width: 100% !important; padding: 0 !important; }
       div[style*="grid-template-columns: repeat(7"] { gap: 0 !important; }
       div[style*="grid-template-columns: repeat(7"] > div { border: 1px solid #ccc !important; min-height: 60px !important; font-size: 9px !important; }
       @page { margin: 0.5cm; size: landscape; }
     }
+    /* Mobile improvements */
     @media (max-width: 600px) {
       select, input[type="date"], input[type="text"], input[type="password"], input[type="email"] { font-size: 16px !important; min-height: 38px; }
       button { min-height: 36px; }
@@ -40,10 +42,12 @@
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.page.js" defer></script>
   <script>
-    var APP_VERSION = "2026.04.19h";
+    // ─── Auto-update: bump this version string each deploy ───
+    var APP_VERSION = "2026.04.19i";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
+
       function nukeAndReload() {
         var promises = [];
         if (window.caches) {
@@ -62,6 +66,7 @@
           window.location.replace(url.toString());
         }).catch(function() { window.location.reload(true); });
       }
+
       if (mismatch) {
         localStorage.setItem("dsg_app_version", APP_VERSION);
         nukeAndReload();
@@ -534,6 +539,10 @@ const biometric = {
     } catch(e) {}
   },
 };
+
+// DSG Call Schedule — Date Helpers, ICS Generation & Utilities
+
+/* ═══ Date helpers ═══ */
 const fmt = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
 const parse = s => { const [y,m,d]=s.split("-").map(Number); return new Date(y,m-1,d); };
 const addD = (d,n) => { const r=new Date(d); r.setDate(r.getDate()+n); return r; };
@@ -661,6 +670,7 @@ function downloadICS(content, filename) {
   a.href = url; a.download = filename; a.click();
   URL.revokeObjectURL(url);
 }
+
 // DSG Call Schedule — Schedule Generator & Holiday Logic
 
 /* ═══ Schedule Generator (surgeons only — APPs are manual) ═══ */
@@ -1192,6 +1202,7 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
 
   return sched;
 }
+
 // DSG Call Schedule — Style Constants
 
 const font = "'Outfit', sans-serif";
@@ -1212,6 +1223,12 @@ const css = {
   appBadge: i => ({ display:"inline-flex", alignItems:"center", background:APP_PAL[i%4].tg, color:APP_PAL[i%4].tx, border:`1px solid ${APP_PAL[i%4].bd}`, borderRadius:5, padding:"2px 9px", fontSize:12, fontWeight:600, whiteSpace:"nowrap", letterSpacing:0.3 }),
   backupBanner: { background:"linear-gradient(90deg,#fef8e8,#fdf0d0)", border:"1px solid #e8d090", borderRadius:6, padding:"4px 10px", fontSize:11, fontWeight:700, color:"#8a6a10", letterSpacing:0.5 },
 };
+
+/* ═══════════════════════════════════════════════════
+   COMPONENT
+   ═══════════════════════════════════════════════════ */
+
+
 const {
   useState,
   useMemo,
@@ -1302,7 +1319,7 @@ function CallSchedule() {
   const [scanMsg, setScanMsg] = useState("");
   const [loaded, setLoaded] = useState(false);
   const [saveStatus, setSaveStatus] = useState("");
-  const [saveError, setSaveError] = useState(false);
+  const [saveError, setSaveError] = useState(false); // true = last save failed
   const fileRef = useRef(null);
   const lastSyncRef = useRef(null);
   const loadedAtRef = useRef(null); // timestamp when initial load completed — prevents auto-save race
@@ -1614,17 +1631,23 @@ function CallSchedule() {
           // don't clobber an email the scheduler already entered manually.
           if (signupPersonId !== "admin" && authEmail) {
             try {
-              const { data: existingRow } = await supabase
-                .from("notification_preferences")
-                .select("email")
-                .eq("surgeon_id", signupPersonId)
-                .maybeSingle();
+              const {
+                data: existingRow
+              } = await supabase.from("notification_preferences").select("email").eq("surgeon_id", signupPersonId).maybeSingle();
               const existingEmail = (existingRow?.email || "").trim();
               if (!existingEmail) {
-                saveNotifPref(signupPersonId, { email: authEmail, email_notifs: true });
+                saveNotifPref(signupPersonId, {
+                  email: authEmail,
+                  email_notifs: true
+                });
               }
             } catch (e) {
-              saveNotifPref(signupPersonId, { email: authEmail, email_notifs: true });
+              // If the check fails for any reason, fall back to populating —
+              // better to risk clobbering (rare) than to fail silently.
+              saveNotifPref(signupPersonId, {
+                email: authEmail,
+                email_notifs: true
+              });
             }
           }
         }
@@ -1731,11 +1754,6 @@ function CallSchedule() {
         } = await supabase.from("call_schedule_config").select("scheduler_pin,edge_function_url").eq("id", "config").single();
         if (cfgRow?.scheduler_pin) setSchedulerPin(cfgRow.scheduler_pin);
         if (cfgRow?.edge_function_url) setEdgeFunctionUrl(cfgRow.edge_function_url);
-        // Load OneSignal API key from localStorage (not in DB for security)
-        try {
-          const osKey = localStorage.getItem("dsg-onesignal-key");
-          if (osKey) setOneSignalApiKey(osKey);
-        } catch (e) {}
 
         // Load vacation requests
         try {
@@ -2076,37 +2094,41 @@ function CallSchedule() {
     setTimeout(() => setSaveStatus(""), 2000);
   };
 
-  // ─── OneSignal Push — targeted or broadcast ───
-  const [oneSignalApiKey, setOneSignalApiKey] = useState("");
+  // ─── Push Notifications — sent via send-push Edge Function ───
+  // The OneSignal REST API key lives server-side in Supabase secrets.
+  // Client only sends { title, message, targetIds? } to the Edge Function,
+  // which proxies to OneSignal. If targetIds is a non-empty array, only those
+  // person_ids (mapped via OneSignal external_id aliases) receive the push.
+  // Otherwise it broadcasts to all subscribed users.
   const sendPushNotif = useCallback(async (title, message, targetIds = null) => {
-    if (!oneSignalApiKey) return;
+    if (!edgeFunctionUrl) return;
+    // Derive send-push URL from the configured send-notification URL
+    // (they share the /functions/v1/ base path).
+    const pushUrl = edgeFunctionUrl.replace(/\/[^/]+$/, "/send-push");
     try {
       const body = {
-        app_id: "9ca5c08f-6fb3-4ee5-b564-09aafc1c1901",
-        headings: { en: title },
-        contents: { en: message },
-        url: "https://fkhan628.github.io/Call-Schedule-App/"
+        title,
+        message
       };
       if (Array.isArray(targetIds) && targetIds.length > 0) {
-        body.include_aliases = { external_id: targetIds };
-        body.target_channel = "push";
-      } else {
-        body.included_segments = ["Subscribed Users"];
+        body.targetIds = targetIds;
       }
-      await fetch("https://onesignal.com/api/v1/notifications", {
+      await fetch(pushUrl, {
         method: "POST",
         headers: {
-          "Content-Type": "application/json",
-          Authorization: `Basic ${oneSignalApiKey}`
+          "Content-Type": "application/json"
         },
         body: JSON.stringify(body)
       });
     } catch (e) {
-      console.error("OneSignal push error:", e);
+      console.error("Push notification error:", e);
     }
-  }, [oneSignalApiKey]);
+  }, [edgeFunctionUrl]);
 
   // ─── Add Notification ───
+  // pushTargetIds: optional array of person_ids to scope the push notification to.
+  // If omitted, the push is a broadcast (useful for group-wide events like
+  // "Schedule Published"). Targeted push is used for manual edits, trades, etc.
   const addNotification = useCallback(async (type, title, message, data = {}, pushTargetIds = null) => {
     try {
       const notif = {
@@ -2128,6 +2150,9 @@ function CallSchedule() {
   }, [sendPushNotif]);
 
   // ─── Email Notifications via Supabase Edge Function ───
+  // If targetIds is provided, only those person_ids receive the email (used for
+  // targeted notifications like manual edits). Otherwise broadcasts to everyone
+  // with matching prefs.
   const sendEmailNotif = useCallback(async (type, data, targetIds = null) => {
     if (!edgeFunctionUrl) return;
     try {
@@ -2135,7 +2160,7 @@ function CallSchedule() {
       const recipients = [];
       Object.entries(currentPrefs).forEach(([sid, prefs]) => {
         if (!prefs.email || !prefs.email_notifs) return;
-        if (targetIds && !targetIds.includes(sid)) return;
+        if (targetIds && !targetIds.includes(sid)) return; // targeted filter
         if (type === "test") {/* send to all email-enabled */} else if ((type === "schedule_published" || type === "schedule_changed" || type === "trade_submitted" || type === "trade_accepted" || type === "trade_declined") && !prefs.schedule_changes) return;else if ((type === "vacation_approved" || type === "vacation_denied" || type === "vacation_submitted") && !prefs.vacation_updates) return;else if (type === "shift_reminder" && !prefs.shift_reminders) return;
         const person = surgeons.find(s => s.id === sid) || apps.find(a => a.id === sid);
         recipients.push({
@@ -2835,8 +2860,10 @@ function CallSchedule() {
   }, []);
 
   // Associate the OneSignal subscription with this user's person_id so that
-  // push notifications can be targeted via external_id. Existing subscribed
-  // users get tagged on next app open — no re-subscription required.
+  // push notifications can be targeted to specific people via external_id.
+  // This runs whenever the user signs in or the person_id changes.
+  // Existing subscribed users will get tagged next time they open the app
+  // after this deploy — no re-subscription required.
   useEffect(() => {
     if (!oneSignalReady || !mySurgeon || mySurgeon === "admin") return;
     try {
@@ -4091,8 +4118,9 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
   const [editWeekModal, setEditWeekModal] = useState(null); // { mondayStr, draft: { dayCall, nights, apps, reason } } or null
   const [editWeekPick, setEditWeekPick] = useState(""); // dropdown selection on the Manual Adjustments card
   // Clear stale selection when the user navigates to a different month
-  useEffect(() => { setEditWeekPick(""); }, [calMonth, calYear]);
-
+  useEffect(() => {
+    setEditWeekPick("");
+  }, [calMonth, calYear]);
   const findSwapSuggestions = useCallback((mondayStr, shift, currentSurgeonId) => {
     if (!schedule[mondayStr]) return;
     const currentName = sMap[currentSurgeonId]?.name || "?";
@@ -4309,10 +4337,13 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
   }, [surgeons, sMap, addNotification, sendEmailNotif]);
 
   // ─── Manual Weekly Edit (scheduler/admin) ───
-  const openWeekEditor = useCallback((mondayStr) => {
-    // wk may be undefined — that's OK. Allow creating brand-new weeks.
+  const openWeekEditor = useCallback(mondayStr => {
+    // wk may be undefined — that's OK. We're allowing the scheduler to create
+    // a brand-new week entry (for ad-hoc coverage in periods the algorithm
+    // doesn't cover, e.g. before the hand-written schedule starts).
     const wk = schedule[mondayStr] || {};
     const mon = parse(mondayStr);
+    // Snapshot current APP assignments for each day of this week
     const appsDraft = {};
     for (let i = 0; i < 7; i++) {
       const d = addD(mon, i);
@@ -4323,82 +4354,126 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
       mondayStr,
       draft: {
         dayCall: wk.dayCall || "",
-        nights: { ...(wk.nights || {}) },
+        nights: {
+          ...(wk.nights || {})
+        },
         apps: appsDraft,
-        reason: "",
-      },
+        reason: ""
+      }
     });
   }, [schedule, appShifts]);
-
   const saveWeekEdits = useCallback(() => {
     if (!editWeekModal) return;
-    const { mondayStr, draft } = editWeekModal;
+    const {
+      mondayStr,
+      draft
+    } = editWeekModal;
     const oldWk = schedule[mondayStr] || {};
     const oldApps = {};
-    Object.keys(draft.apps).forEach(ds => { oldApps[ds] = appShifts[ds] || ""; });
+    Object.keys(draft.apps).forEach(ds => {
+      oldApps[ds] = appShifts[ds] || "";
+    });
 
-    const changes = [];
+    // Build diff list of changes
+    const changes = []; // { slotLabel, oldId, newId, isApp, date }
     if ((oldWk.dayCall || "") !== draft.dayCall) {
-      changes.push({ slotLabel: `Service Week`, oldId: oldWk.dayCall || "", newId: draft.dayCall, isApp: false });
+      changes.push({
+        slotLabel: `Service Week`,
+        oldId: oldWk.dayCall || "",
+        newId: draft.dayCall,
+        isApp: false
+      });
     }
-    ["mon","tue","wed","thu","wknd"].forEach(nk => {
+    ["mon", "tue", "wed", "thu", "wknd"].forEach(nk => {
       const oldId = oldWk.nights?.[nk] || "";
       const newId = draft.nights?.[nk] || "";
       if (oldId !== newId) {
-        changes.push({ slotLabel: SHIFT_LABELS[nk] || nk, oldId, newId, isApp: false });
+        changes.push({
+          slotLabel: SHIFT_LABELS[nk] || nk,
+          oldId,
+          newId,
+          isApp: false
+        });
       }
     });
     Object.entries(draft.apps).forEach(([ds, newAppId]) => {
       const oldAppId = oldApps[ds] || "";
       if ((oldAppId || "") !== (newAppId || "")) {
-        changes.push({ slotLabel: `APP ${ds}`, oldId: oldAppId, newId: newAppId, isApp: true, date: ds });
+        changes.push({
+          slotLabel: `APP ${ds}`,
+          oldId: oldAppId,
+          newId: newAppId,
+          isApp: true,
+          date: ds
+        });
       }
     });
-
-    if (changes.length === 0) { setEditWeekModal(null); return; }
+    if (changes.length === 0) {
+      setEditWeekModal(null);
+      return;
+    }
+    // Safety confirmation if many changes at once
     if (changes.length >= 3) {
       if (!confirm(`You are changing ${changes.length} shifts in the week of ${mondayStr}. Continue?`)) return;
     }
 
+    // Commit
     pushUndo(schedule);
     setSchedule(p => {
-      const n = { ...p };
-      const wk = { ...(n[mondayStr] || {}) };
+      const n = {
+        ...p
+      };
+      const wk = {
+        ...(n[mondayStr] || {})
+      };
       wk.dayCall = draft.dayCall || null;
-      wk.nights = { ...(wk.nights || {}), ...draft.nights };
+      wk.nights = {
+        ...(wk.nights || {}),
+        ...draft.nights
+      };
+      // Recompute 'off' — any surgeon not assigned anywhere this week
       const assigned = new Set([wk.dayCall, ...Object.values(wk.nights)].filter(Boolean));
       wk.off = surgeons.map(s => s.id).find(id => !assigned.has(id)) || null;
       n[mondayStr] = wk;
       return n;
     });
     setAppShifts(p => {
-      const n = { ...p };
+      const n = {
+        ...p
+      };
       Object.entries(draft.apps).forEach(([ds, aid]) => {
-        if (aid) n[ds] = aid;
-        else delete n[ds];
+        if (aid) n[ds] = aid;else delete n[ds];
       });
       return n;
     });
 
+    // Notifications — targeted to the specific affected people.
+    // For each change, notify both the old assignee (removed) and new assignee (added)
+    // with targeted in-app notifications (data.surgeon_id set) AND targeted emails
+    // (only those two people, not a broadcast).
     const reasonSuffix = draft.reason ? ` (${draft.reason})` : "";
     changes.forEach(c => {
-      const oldName = c.isApp ? (aMap[c.oldId]?.name || "—") : (sMap[c.oldId]?.name || "—");
-      const newName = c.isApp ? (aMap[c.newId]?.name || "—") : (sMap[c.newId]?.name || "—");
+      const oldName = c.isApp ? aMap[c.oldId]?.name || "—" : sMap[c.oldId]?.name || "—";
+      const newName = c.isApp ? aMap[c.newId]?.name || "—" : sMap[c.newId]?.name || "—";
       const baseMsg = `${c.slotLabel}: ${oldName} → ${newName}${reasonSuffix}`;
+      // Build list of affected person_ids for this specific change
       const affected = [c.oldId, c.newId].filter(Boolean);
+      // One notification per affected person, attributed to them specifically
       affected.forEach(pid => {
-        addNotification("schedule_changed", "Manual Schedule Edit", baseMsg, { surgeon_id: pid }, [pid]);
+        addNotification("schedule_changed", "Manual Schedule Edit", baseMsg, {
+          surgeon_id: pid
+        }, [pid]);
       });
+      // One email send per change, targeted to the old + new person only
       if (affected.length > 0) {
         sendEmailNotif("schedule_changed", {
           shift: c.slotLabel,
           week: mondayStr,
           old_surgeon: oldName,
-          new_surgeon: newName,
+          new_surgeon: newName
         }, affected);
       }
     });
-
     setEditWeekModal(null);
   }, [editWeekModal, schedule, appShifts, surgeons, sMap, aMap, addNotification, sendEmailNotif, pushUndo]);
 
@@ -4668,6 +4743,9 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       wkndB: 0,
       offB: 0
     });
+    // Only count weeks within the currently-selected Schedule Period.
+    // Without this filter, stats would include all weeks ever stored in `schedule`,
+    // causing the "This Period" totals to not match the header label when the period changes.
     const periodKeys = new Set(mondays.map(m => fmt(m)));
     Object.entries(schedule).forEach(([mStr, wk]) => {
       if (!periodKeys.has(mStr)) return;
@@ -5058,7 +5136,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     const mo = today.getMonth() + 1;
     const dy = today.getDate();
     const dow = today.getDay();
-    const appTimeLabel = (dow === 0 || dow === 6) ? "7a–7a" : "5p–7a";
+    const appTimeLabel = dow === 0 || dow === 6 ? "7a–7a" : "5p–7a";
     let msg = `🏥 DSG Call — ${dayName} ${mo}/${dy}\n\n`;
     if (todayCall.dayCall) msg += `🏥 Service Week: ${todayCall.dayCall}\n`;
     if (todayCall.night) msg += `🌙 Night (5p–7a): ${todayCall.night}\n`;
@@ -5112,7 +5190,6 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       setTimeout(() => setCopied(false), 2000);
     } catch (e) {}
   };
-
   const Badge = ({
     id,
     small
@@ -5832,7 +5909,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       fontWeight: 600,
       fontSize: 11
     }
-  }, saveError ? "\u26A0 " : "\u2601 ", saveStatus), loaded && !saveStatus && /*#__PURE__*/React.createElement("span", {
+  }, saveError ? "⚠" : "☁", " ", saveStatus), loaded && !saveStatus && /*#__PURE__*/React.createElement("span", {
     style: {
       marginLeft: 8,
       color: "#a0a8b0",
@@ -6640,43 +6717,43 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     style: css.btn(true)
   }, "+ Assign")), Object.entries(appShifts).sort(([a], [b]) => a.localeCompare(b)).map(([ds, aid]) => {
     const dow = parse(ds).getDay();
-    const timeLabel = dow === 0 || dow === 6 ? "7a\u20137a" : "5p\u20137a";
+    const timeLabel = dow === 0 || dow === 6 ? "7a–7a" : "5p–7a";
     return /*#__PURE__*/React.createElement("div", {
-    key: ds,
-    style: {
-      display: "flex",
-      alignItems: "center",
-      gap: 8,
-      marginBottom: 4
-    }
-  }, /*#__PURE__*/React.createElement("span", {
-    style: {
-      fontFamily: mono,
-      fontSize: 12,
-      color: "#5a6a78"
-    }
-  }, ds), /*#__PURE__*/React.createElement("span", {
-    style: {
-      fontSize: 11,
-      color: "#5a6a78"
-    }
-  }, DAY_HDR[parse(ds).getDay()]), /*#__PURE__*/React.createElement(AppBadge, {
-    id: aid
-  }), /*#__PURE__*/React.createElement("span", {
-    style: {
-      fontSize: 10,
-      color: "#7a8a98"
-    }
-  }, timeLabel), /*#__PURE__*/React.createElement("button", {
-    onClick: () => rmAppShift(ds),
-    style: {
-      background: "none",
-      border: "none",
-      color: "#904040",
-      cursor: "pointer",
-      fontSize: 11
-    }
-  }, "\u2715"));
+      key: ds,
+      style: {
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        marginBottom: 4
+      }
+    }, /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontFamily: mono,
+        fontSize: 12,
+        color: "#5a6a78"
+      }
+    }, ds), /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 11,
+        color: "#5a6a78"
+      }
+    }, DAY_HDR[parse(ds).getDay()]), /*#__PURE__*/React.createElement(AppBadge, {
+      id: aid
+    }), /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 10,
+        color: "#7a8a98"
+      }
+    }, timeLabel), /*#__PURE__*/React.createElement("button", {
+      onClick: () => rmAppShift(ds),
+      style: {
+        background: "none",
+        border: "none",
+        color: "#904040",
+        cursor: "pointer",
+        fontSize: 11
+      }
+    }, "\u2715"));
   })), (isScheduler || userProfile?.person_id === "admin") && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
     style: css.card
   }, /*#__PURE__*/React.createElement("div", {
@@ -7039,7 +7116,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         const isEve = c.isEve;
         // Eve tag shows Surgeon B (the "Day After / Eve" dropdown value).
         // Non-eve tag shows whoever that specific coverage row is assigned to.
-        const displaySurgeon = isEve ? (hol.surgeonB || c.surgeon) : c.surgeon;
+        const displaySurgeon = isEve ? hol.surgeonB || c.surgeon : c.surgeon;
         const isSurgA = !isEve && c.surgeon === hol.surgeonA;
         return /*#__PURE__*/React.createElement("div", {
           key: j,
@@ -7925,36 +8002,36 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     }
   }, todayCall.weekend))), todayCall.app && (() => {
     const dow = new Date().getDay();
-    const appTimeLabel = (dow === 0 || dow === 6) ? "APP 7a\u20137a" : "APP 5p\u20137a";
+    const appTimeLabel = dow === 0 || dow === 6 ? "APP 7a–7a" : "APP 5p–7a";
     return /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      alignItems: "center",
-      gap: 6,
-      padding: "6px 12px",
-      background: "#fcf4f0",
-      borderRadius: 8,
-      border: "1px solid #e8d0c0"
-    }
-  }, /*#__PURE__*/React.createElement("span", {
-    style: {
-      fontSize: 16
-    }
-  }, "\uD83D\uDC69\u200D\u2695\uFE0F"), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 10,
-      color: "#985020",
-      fontWeight: 600,
-      textTransform: "uppercase",
-      letterSpacing: 0.5
-    }
-  }, appTimeLabel), /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 15,
-      fontWeight: 700,
-      color: "#1a2a3a"
-    }
-  }, todayCall.app)));
+      style: {
+        display: "flex",
+        alignItems: "center",
+        gap: 6,
+        padding: "6px 12px",
+        background: "#fcf4f0",
+        borderRadius: 8,
+        border: "1px solid #e8d0c0"
+      }
+    }, /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 16
+      }
+    }, "\uD83D\uDC69\u200D\u2695\uFE0F"), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 10,
+        color: "#985020",
+        fontWeight: 600,
+        textTransform: "uppercase",
+        letterSpacing: 0.5
+      }
+    }, appTimeLabel), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 15,
+        fontWeight: 700,
+        color: "#1a2a3a"
+      }
+    }, todayCall.app)));
   })()), (todayCall.fierce || todayCall.fierceBkp) && /*#__PURE__*/React.createElement("div", {
     style: {
       marginTop: 8,
@@ -8220,199 +8297,199 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     const now = new Date();
     const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
     return calGrid.map((day, i) => {
-    if (!day) return /*#__PURE__*/React.createElement("div", {
-      key: `e${i}`,
-      style: {
-        background: "#f8f9fb",
-        minHeight: 82
-      }
-    });
-    const ds = `${calYear}-${String(calMonth + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
-    const isToday = ds === todayStr;
-    const entries = calData[ds] || [];
-    const isWknd = [0, 6].includes(new Date(calYear, calMonth, day).getDay());
-    const hasFierce = entries.some(e => e.type === "Fierce");
-    const hasFierceBkp = entries.some(e => e.type === "FierceBkp");
-    const onVacList = [...surgeons, ...apps].filter(s => onVac(s.id, ds, vacations));
+      if (!day) return /*#__PURE__*/React.createElement("div", {
+        key: `e${i}`,
+        style: {
+          background: "#f8f9fb",
+          minHeight: 82
+        }
+      });
+      const ds = `${calYear}-${String(calMonth + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+      const isToday = ds === todayStr;
+      const entries = calData[ds] || [];
+      const isWknd = [0, 6].includes(new Date(calYear, calMonth, day).getDay());
+      const hasFierce = entries.some(e => e.type === "Fierce");
+      const hasFierceBkp = entries.some(e => e.type === "FierceBkp");
+      const onVacList = [...surgeons, ...apps].filter(s => onVac(s.id, ds, vacations));
 
-    // Apply surgeon filter
-    const sf = calSurgeonFilter;
-    return /*#__PURE__*/React.createElement("div", {
-      key: ds,
-      style: {
-        background: hasFierce && calFilters.fierce ? "#faf8f0" : hasFierceBkp && calFilters.fierce ? "#f8f9fb" : isWknd ? "#edf0f4" : "#f8f9fb",
-        border: hasFierce && calFilters.fierce ? "1px solid #2a2810" : hasFierceBkp && calFilters.fierce ? "1px solid #d0d8e4" : "1px solid #e8ecf0",
-        minHeight: 82,
-        padding: "3px 4px",
-        borderRadius: 2
-      }
-    }, /*#__PURE__*/React.createElement("div", {
-      style: {
-        display: "flex",
-        justifyContent: "space-between",
-        alignItems: "center",
-        marginBottom: 2
-      }
-    }, isToday ? /*#__PURE__*/React.createElement("span", {
-      style: {
-        fontSize: 11,
-        fontWeight: 700,
-        color: "#ffffff",
-        fontFamily: mono,
-        background: "#1a6fa8",
-        borderRadius: "50%",
-        width: 20,
-        height: 20,
-        display: "inline-flex",
-        alignItems: "center",
-        justifyContent: "center",
-        lineHeight: 1
-      }
-    }, day) : /*#__PURE__*/React.createElement("span", {
-      style: {
-        fontSize: 11,
-        fontWeight: 600,
-        color: isWknd ? "#5a7090" : "#4a5868",
-        fontFamily: mono
-      }
-    }, day), calFilters.fierce && hasFierce && /*#__PURE__*/React.createElement("span", {
-      style: {
-        fontSize: 8,
-        fontWeight: 700,
-        color: "#8a6a10",
-        background: "#fef8e8",
-        borderRadius: 3,
-        padding: "0 4px",
-        letterSpacing: 0.5
-      }
-    }, "BKP"), calFilters.fierce && hasFierceBkp && !hasFierce && /*#__PURE__*/React.createElement("span", {
-      style: {
-        fontSize: 8,
-        fontWeight: 700,
-        color: "#1a6fa8",
-        background: "#e8f0fc",
-        borderRadius: 3,
-        padding: "0 4px",
-        letterSpacing: 0.5
-      }
-    }, "F\xB7BKP")), entries.filter(e => {
-      if (e.type === "Fierce" || e.type === "FierceBkp" || e.type === "APP" || e.type === "Holiday") return false;
-      const isD = e.type.includes("Svc");
-      const isW = e.type.includes("Wknd");
-      if (isD && !calFilters.svc) return false;
-      if (isW && !calFilters.wknd) return false;
-      if (!isD && !isW && !calFilters.night) return false;
-      if (sf && e.surgeon !== sf) return false;
-      return true;
-    }).map((e, j) => {
-      const isB = e.cls === "backup";
-      const isD = e.type.includes("Svc");
-      const isW = e.type.includes("Wknd");
-      const label = isD ? "S" : isW ? "W" : "N";
-      const color = isD ? "#3080a8" : isW ? "#908050" : "#6850a0";
-      const highlighted = sf && e.surgeon === sf;
+      // Apply surgeon filter
+      const sf = calSurgeonFilter;
       return /*#__PURE__*/React.createElement("div", {
-        key: j,
+        key: ds,
+        style: {
+          background: hasFierce && calFilters.fierce ? "#faf8f0" : hasFierceBkp && calFilters.fierce ? "#f8f9fb" : isWknd ? "#edf0f4" : "#f8f9fb",
+          border: hasFierce && calFilters.fierce ? "1px solid #2a2810" : hasFierceBkp && calFilters.fierce ? "1px solid #d0d8e4" : "1px solid #e8ecf0",
+          minHeight: 82,
+          padding: "3px 4px",
+          borderRadius: 2
+        }
+      }, /*#__PURE__*/React.createElement("div", {
+        style: {
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          marginBottom: 2
+        }
+      }, isToday ? /*#__PURE__*/React.createElement("span", {
+        style: {
+          fontSize: 11,
+          fontWeight: 700,
+          color: "#ffffff",
+          fontFamily: mono,
+          background: "#1a6fa8",
+          borderRadius: "50%",
+          width: 20,
+          height: 20,
+          display: "inline-flex",
+          alignItems: "center",
+          justifyContent: "center",
+          lineHeight: 1
+        }
+      }, day) : /*#__PURE__*/React.createElement("span", {
+        style: {
+          fontSize: 11,
+          fontWeight: 600,
+          color: isWknd ? "#5a7090" : "#4a5868",
+          fontFamily: mono
+        }
+      }, day), calFilters.fierce && hasFierce && /*#__PURE__*/React.createElement("span", {
+        style: {
+          fontSize: 8,
+          fontWeight: 700,
+          color: "#8a6a10",
+          background: "#fef8e8",
+          borderRadius: 3,
+          padding: "0 4px",
+          letterSpacing: 0.5
+        }
+      }, "BKP"), calFilters.fierce && hasFierceBkp && !hasFierce && /*#__PURE__*/React.createElement("span", {
+        style: {
+          fontSize: 8,
+          fontWeight: 700,
+          color: "#1a6fa8",
+          background: "#e8f0fc",
+          borderRadius: 3,
+          padding: "0 4px",
+          letterSpacing: 0.5
+        }
+      }, "F\xB7BKP")), entries.filter(e => {
+        if (e.type === "Fierce" || e.type === "FierceBkp" || e.type === "APP" || e.type === "Holiday") return false;
+        const isD = e.type.includes("Svc");
+        const isW = e.type.includes("Wknd");
+        if (isD && !calFilters.svc) return false;
+        if (isW && !calFilters.wknd) return false;
+        if (!isD && !isW && !calFilters.night) return false;
+        if (sf && e.surgeon !== sf) return false;
+        return true;
+      }).map((e, j) => {
+        const isB = e.cls === "backup";
+        const isD = e.type.includes("Svc");
+        const isW = e.type.includes("Wknd");
+        const label = isD ? "S" : isW ? "W" : "N";
+        const color = isD ? "#3080a8" : isW ? "#908050" : "#6850a0";
+        const highlighted = sf && e.surgeon === sf;
+        return /*#__PURE__*/React.createElement("div", {
+          key: j,
+          style: {
+            marginBottom: 1,
+            padding: "1px 3px",
+            borderRadius: 3,
+            fontSize: 10,
+            background: highlighted ? "#e0f0ff" : isB ? "#fef8e8" : isD ? "#f8f9fb" : isW ? "#faf8f0" : "#f4f0f8",
+            border: `1px solid ${highlighted ? "#80b8e0" : isB ? "#d8c880" : isD ? "#d0dce8" : isW ? "#faf0d8" : "#141028"}`,
+            opacity: isB ? 0.85 : 1
+          }
+        }, isB && /*#__PURE__*/React.createElement("span", {
+          style: {
+            color: "#8a6a10",
+            fontWeight: 700,
+            fontSize: 8,
+            marginRight: 2
+          }
+        }, "B"), /*#__PURE__*/React.createElement("span", {
+          style: {
+            color,
+            fontWeight: 700
+          }
+        }, label), " ", /*#__PURE__*/React.createElement("span", {
+          style: {
+            color: PAL[sMap[e.surgeon]?.idx % 7]?.tx || "#4a5868",
+            fontWeight: highlighted ? 700 : 400
+          }
+        }, sMap[e.surgeon]?.name || "?"));
+      }), entries.filter(e => e.type === "Holiday").filter(e => !sf || e.surgeon === sf).map((e, j) => /*#__PURE__*/React.createElement("div", {
+        key: "hol" + j,
         style: {
           marginBottom: 1,
           padding: "1px 3px",
           borderRadius: 3,
           fontSize: 10,
-          background: highlighted ? "#e0f0ff" : isB ? "#fef8e8" : isD ? "#f8f9fb" : isW ? "#faf8f0" : "#f4f0f8",
-          border: `1px solid ${highlighted ? "#80b8e0" : isB ? "#d8c880" : isD ? "#d0dce8" : isW ? "#faf0d8" : "#141028"}`,
-          opacity: isB ? 0.85 : 1
+          background: "#fef0e8",
+          border: "1px solid #e0a868",
+          fontWeight: 600
         }
-      }, isB && /*#__PURE__*/React.createElement("span", {
+      }, /*#__PURE__*/React.createElement("span", {
         style: {
-          color: "#8a6a10",
-          fontWeight: 700,
-          fontSize: 8,
-          marginRight: 2
-        }
-      }, "B"), /*#__PURE__*/React.createElement("span", {
-        style: {
-          color,
+          color: "#c06020",
           fontWeight: 700
         }
-      }, label), " ", /*#__PURE__*/React.createElement("span", {
+      }, "\uD83C\uDF84"), " ", /*#__PURE__*/React.createElement("span", {
         style: {
-          color: PAL[sMap[e.surgeon]?.idx % 7]?.tx || "#4a5868",
-          fontWeight: highlighted ? 700 : 400
+          color: PAL[sMap[e.surgeon]?.idx % 7]?.tx || "#4a5868"
         }
-      }, sMap[e.surgeon]?.name || "?"));
-    }), entries.filter(e => e.type === "Holiday").filter(e => !sf || e.surgeon === sf).map((e, j) => /*#__PURE__*/React.createElement("div", {
-      key: "hol" + j,
-      style: {
-        marginBottom: 1,
-        padding: "1px 3px",
-        borderRadius: 3,
-        fontSize: 10,
-        background: "#fef0e8",
-        border: "1px solid #e0a868",
-        fontWeight: 600
-      }
-    }, /*#__PURE__*/React.createElement("span", {
-      style: {
-        color: "#c06020",
-        fontWeight: 700
-      }
-    }, "\uD83C\uDF84"), " ", /*#__PURE__*/React.createElement("span", {
-      style: {
-        color: PAL[sMap[e.surgeon]?.idx % 7]?.tx || "#4a5868"
-      }
-    }, sMap[e.surgeon]?.name || "?"), /*#__PURE__*/React.createElement("span", {
-      style: {
-        color: "#a07030",
-        fontSize: 8,
-        marginLeft: 2
-      }
-    }, e.hours))), calFilters.app && !sf && entries.filter(e => e.type === "APP").map((e, j) => /*#__PURE__*/React.createElement("div", {
-      key: "app" + j,
-      style: {
-        marginBottom: 1,
-        padding: "1px 3px",
-        borderRadius: 3,
-        fontSize: 10,
-        background: "#fcf4f0",
-        border: "1px solid #281818"
-      }
-    }, /*#__PURE__*/React.createElement("span", {
-      style: {
-        color: "#c08050",
-        fontWeight: 700
-      }
-    }, "A"), " ", /*#__PURE__*/React.createElement("span", {
-      style: {
-        color: APP_PAL[aMap[e.appId]?.idx % 4]?.tx || "#5a6878"
-      }
-    }, aMap[e.appId]?.name || "?"), /*#__PURE__*/React.createElement("span", {
-      style: {
-        color: "#8a94a0",
-        fontSize: 8,
-        marginLeft: 2
-      }
-    }, "5p\u20137a"))), calFilters.fierce && hasFierce && /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 8,
-        color: "#8a6a10",
-        marginTop: 1,
-        fontWeight: 600
-      }
-    }, "\u26A1 Fierce Primary"), calFilters.fierce && hasFierceBkp && !hasFierce && /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 8,
-        color: "#1a6fa8",
-        marginTop: 1,
-        fontWeight: 600
-      }
-    }, "\uD83D\uDEE1 Fierce Backup"), calFilters.vac && onVacList.filter(s => !sf || s.id === sf).map(s => /*#__PURE__*/React.createElement("div", {
-      key: s.id,
-      style: {
-        fontSize: 8,
-        color: "#c04848",
-        marginTop: 1
-      }
-    }, "\uD83C\uDFD6 ", s.name)));
+      }, sMap[e.surgeon]?.name || "?"), /*#__PURE__*/React.createElement("span", {
+        style: {
+          color: "#a07030",
+          fontSize: 8,
+          marginLeft: 2
+        }
+      }, e.hours))), calFilters.app && !sf && entries.filter(e => e.type === "APP").map((e, j) => /*#__PURE__*/React.createElement("div", {
+        key: "app" + j,
+        style: {
+          marginBottom: 1,
+          padding: "1px 3px",
+          borderRadius: 3,
+          fontSize: 10,
+          background: "#fcf4f0",
+          border: "1px solid #281818"
+        }
+      }, /*#__PURE__*/React.createElement("span", {
+        style: {
+          color: "#c08050",
+          fontWeight: 700
+        }
+      }, "A"), " ", /*#__PURE__*/React.createElement("span", {
+        style: {
+          color: APP_PAL[aMap[e.appId]?.idx % 4]?.tx || "#5a6878"
+        }
+      }, aMap[e.appId]?.name || "?"), /*#__PURE__*/React.createElement("span", {
+        style: {
+          color: "#8a94a0",
+          fontSize: 8,
+          marginLeft: 2
+        }
+      }, "5p\u20137a"))), calFilters.fierce && hasFierce && /*#__PURE__*/React.createElement("div", {
+        style: {
+          fontSize: 8,
+          color: "#8a6a10",
+          marginTop: 1,
+          fontWeight: 600
+        }
+      }, "\u26A1 Fierce Primary"), calFilters.fierce && hasFierceBkp && !hasFierce && /*#__PURE__*/React.createElement("div", {
+        style: {
+          fontSize: 8,
+          color: "#1a6fa8",
+          marginTop: 1,
+          fontWeight: 600
+        }
+      }, "\uD83D\uDEE1 Fierce Backup"), calFilters.vac && onVacList.filter(s => !sf || s.id === sf).map(s => /*#__PURE__*/React.createElement("div", {
+        key: s.id,
+        style: {
+          fontSize: 8,
+          color: "#c04848",
+          marginTop: 1
+        }
+      }, "\uD83C\uDFD6 ", s.name)));
     });
   })()), /*#__PURE__*/React.createElement("div", {
     style: {
@@ -8461,74 +8538,78 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       color: "#c06020"
     }
   }, "\uD83C\uDF84"), " Holiday Coverage")), (isScheduler || userProfile?.person_id === "admin") && /*#__PURE__*/React.createElement("div", {
-  style: {
-    ...css.card,
-    marginTop: 14,
-    background: "linear-gradient(135deg,#fff8e8,#fcf4e0)",
-    border: "1px solid #e0c890"
-  }
-}, /*#__PURE__*/React.createElement("div", {
-  style: css.cardT
-}, "\u270F\uFE0F Manual Adjustments"), /*#__PURE__*/React.createElement("p", {
-  style: {
-    fontSize: 12,
-    color: "#5a6a78",
-    margin: "0 0 12px",
-    lineHeight: 1.5
-  }
-}, "Edit an existing week or create a new week's schedule on the fly. Weeks shown match the month displayed in the calendar above. Affected surgeons/APPs will be notified via push and email."), /*#__PURE__*/React.createElement("div", {
-  style: {
-    display: "flex",
-    gap: 8,
-    alignItems: "center",
-    flexWrap: "wrap"
-  }
-}, /*#__PURE__*/React.createElement("select", {
-  value: editWeekPick,
-  onChange: e => setEditWeekPick(e.target.value),
-  style: {
-    ...css.inp,
-    flex: 1,
-    minWidth: 180
-  }
-}, /*#__PURE__*/React.createElement("option", {
-  value: ""
-}, "Select a week in ", MO[calMonth], " ", calYear, "\u2026"), (() => {
-  const first = new Date(calYear, calMonth, 1);
-  let mon = new Date(first);
-  if (mon.getDay() !== 1) {
-    const dow = mon.getDay();
-    const offset = dow === 0 ? 1 : 8 - dow;
-    mon = addD(mon, offset);
-  }
-  const results = [];
-  while (mon.getMonth() === calMonth && mon.getFullYear() === calYear) {
-    results.push(fmt(mon));
-    mon = addD(mon, 7);
-  }
-  return results;
-})().map(m => {
-  const mon = parse(m);
-  const sun = addD(mon, 6);
-  const exists = !!schedule[m];
-  const suffix = exists ? schedule[m].isBackup ? " (Backup)" : "" : " (new)";
-  const label = `Wk of ${MO[mon.getMonth()].slice(0, 3)} ${mon.getDate()} – ${MO[sun.getMonth()].slice(0, 3)} ${sun.getDate()}${suffix}`;
-  return /*#__PURE__*/React.createElement("option", {
-    key: m,
-    value: m
-  }, label);
-})), /*#__PURE__*/React.createElement("button", {
-  onClick: () => {
-    if (editWeekPick) openWeekEditor(editWeekPick);
-  },
-  disabled: !editWeekPick,
-  style: {
-    ...css.btn(true),
-    padding: "8px 14px",
-    opacity: editWeekPick ? 1 : 0.5,
-    cursor: editWeekPick ? "pointer" : "not-allowed"
-  }
-}, "Open Week Editor"))), Object.keys(schedule).length > 0 && /*#__PURE__*/React.createElement("div", {
+    style: {
+      ...css.card,
+      marginTop: 14,
+      background: "linear-gradient(135deg,#fff8e8,#fcf4e0)",
+      border: "1px solid #e0c890"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: css.cardT
+  }, "\u270F\uFE0F Manual Adjustments"), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 12,
+      color: "#5a6a78",
+      margin: "0 0 12px",
+      lineHeight: 1.5
+    }
+  }, "Edit an existing week or create a new week's schedule on the fly. Weeks shown match the month displayed in the calendar above. Affected surgeons/APPs will be notified via push and email."), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 8,
+      alignItems: "center",
+      flexWrap: "wrap"
+    }
+  }, /*#__PURE__*/React.createElement("select", {
+    value: editWeekPick,
+    onChange: e => setEditWeekPick(e.target.value),
+    style: {
+      ...css.inp,
+      flex: 1,
+      minWidth: 180
+    }
+  }, /*#__PURE__*/React.createElement("option", {
+    value: ""
+  }, "Select a week in ", MO[calMonth], " ", calYear, "\u2026"), (() => {
+    // Find all Mondays whose week STARTS in the viewed calendar month.
+    // Week is "in" a month if its Monday falls in that month.
+    const first = new Date(calYear, calMonth, 1);
+    // Find the first Monday on or after the 1st of the month
+    let mon = new Date(first);
+    if (mon.getDay() !== 1) {
+      // day=0 (Sun) → +1; day=2 (Tue) → +6; day=3 (Wed) → +5; etc.
+      const dow = mon.getDay();
+      const offset = dow === 0 ? 1 : 8 - dow;
+      mon = addD(mon, offset);
+    }
+    const results = [];
+    while (mon.getMonth() === calMonth && mon.getFullYear() === calYear) {
+      results.push(fmt(mon));
+      mon = addD(mon, 7);
+    }
+    return results;
+  })().map(m => {
+    const mon = parse(m);
+    const sun = addD(mon, 6);
+    const exists = !!schedule[m];
+    const suffix = exists ? schedule[m].isBackup ? " (Backup)" : "" : " (new)";
+    const label = `Wk of ${MO[mon.getMonth()].slice(0, 3)} ${mon.getDate()} – ${MO[sun.getMonth()].slice(0, 3)} ${sun.getDate()}${suffix}`;
+    return /*#__PURE__*/React.createElement("option", {
+      key: m,
+      value: m
+    }, label);
+  })), /*#__PURE__*/React.createElement("button", {
+    onClick: () => {
+      if (editWeekPick) openWeekEditor(editWeekPick);
+    },
+    disabled: !editWeekPick,
+    style: {
+      ...css.btn(true),
+      padding: "8px 14px",
+      opacity: editWeekPick ? 1 : 0.5,
+      cursor: editWeekPick ? "pointer" : "not-allowed"
+    }
+  }, "Open Week Editor"))), Object.keys(schedule).length > 0 && /*#__PURE__*/React.createElement("div", {
     style: {
       ...css.card,
       marginTop: 14,
@@ -8552,137 +8633,137 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       flexWrap: "wrap",
       marginBottom: 10
     }
-  }, /*#__PURE__*/React.createElement(React.Fragment, null, isScheduler ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
-  style: {
-    fontSize: 10,
-    color: "#7a8a98",
-    display: "block",
-    marginBottom: 2
-  }
-}, "Week"), /*#__PURE__*/React.createElement("select", {
-  value: swapTarget?.mondayStr || "",
-  onChange: e => {
-    setSwapTarget(prev => ({
-      ...(prev || {}),
-      mondayStr: e.target.value
-    }));
-    setSwapSuggestions(null);
-  },
-  style: {
-    ...css.inp,
-    width: 160
-  }
-}, /*#__PURE__*/React.createElement("option", {
-  value: ""
-}, "Select week\u2026"), Object.keys(schedule).sort().map(m => /*#__PURE__*/React.createElement("option", {
-  key: m,
-  value: m
-}, "Wk of ", m)))), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
-  style: {
-    fontSize: 10,
-    color: "#7a8a98",
-    display: "block",
-    marginBottom: 2
-  }
-}, "Shift"), /*#__PURE__*/React.createElement("select", {
-  value: swapTarget?.shift || "",
-  onChange: e => {
-    setSwapTarget(prev => ({
-      ...(prev || {}),
-      shift: e.target.value
-    }));
-    setSwapSuggestions(null);
-  },
-  style: {
-    ...css.inp,
-    width: 140
-  }
-}, /*#__PURE__*/React.createElement("option", {
-  value: ""
-}, "Select shift\u2026"), ALL_SHIFT_KEYS.map(sk => /*#__PURE__*/React.createElement("option", {
-  key: sk,
-  value: sk
-}, SHIFT_LABELS[sk])))), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
-  style: {
-    fontSize: 10,
-    color: "#7a8a98",
-    display: "block",
-    marginBottom: 2
-  }
-}, "Current Surgeon"), (() => {
-  const m = swapTarget?.mondayStr;
-  const sh = swapTarget?.shift;
-  const wk = m ? schedule[m] : null;
-  let currentId = null;
-  if (wk && sh) {
-    currentId = sh === "dayCall" ? wk.dayCall : wk.nights?.[sh];
-  }
-  return currentId ? /*#__PURE__*/React.createElement("div", {
+  }, isScheduler ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
     style: {
-      padding: "6px 10px"
+      fontSize: 10,
+      color: "#7a8a98",
+      display: "block",
+      marginBottom: 2
     }
-  }, /*#__PURE__*/React.createElement(Badge, {
-    id: currentId
-  })) : /*#__PURE__*/React.createElement("div", {
-    style: {
-      padding: "6px 10px",
-      fontSize: 12,
-      color: "#8a94a0"
-    }
-  }, "\u2014");
-})())) : /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
-  style: {
-    fontSize: 10,
-    color: "#7a8a98",
-    display: "block",
-    marginBottom: 2
-  }
-}, "Your shift to swap"), (() => {
-  const opts = [];
-  Object.keys(schedule).sort().forEach(m => {
-    const wk = schedule[m];
-    if (!wk) return;
-    ALL_SHIFT_KEYS.forEach(sk => {
-      const holder = sk === "dayCall" ? wk.dayCall : wk.nights?.[sk];
-      if (holder === mySurgeon) {
-        const d = parse(m);
-        const label = `${MO[d.getMonth()].slice(0, 3)} ${d.getDate()} \u2014 ${SHIFT_LABELS[sk]}${wk.isBackup ? " (Backup)" : ""}`;
-        opts.push({
-          value: `${m}|${sk}`,
-          label
-        });
-      }
-    });
-  });
-  const curVal = swapTarget?.mondayStr && swapTarget?.shift ? `${swapTarget.mondayStr}|${swapTarget.shift}` : "";
-  const placeholder = !mySurgeon ? "Select your name in Mine tab first" : opts.length === 0 ? "You have no scheduled shifts" : "Select your shift\u2026";
-  return /*#__PURE__*/React.createElement("select", {
-    value: curVal,
+  }, "Week"), /*#__PURE__*/React.createElement("select", {
+    value: swapTarget?.mondayStr || "",
     onChange: e => {
-      const v = e.target.value;
+      setSwapTarget(prev => ({
+        ...(prev || {}),
+        mondayStr: e.target.value
+      }));
       setSwapSuggestions(null);
-      if (!v) {
-        setSwapTarget(null);
-      } else {
-        const [w, s] = v.split("|");
-        setSwapTarget({
-          mondayStr: w,
-          shift: s
-        });
-      }
     },
     style: {
       ...css.inp,
-      minWidth: 260
-    },
-    disabled: !mySurgeon || opts.length === 0
+      width: 160
+    }
   }, /*#__PURE__*/React.createElement("option", {
     value: ""
-  }, placeholder), opts.map(o => /*#__PURE__*/React.createElement("option", {
-    key: o.value,
-    value: o.value
-  }, o.label)));
-})())), /*#__PURE__*/React.createElement("button", {
+  }, "Select week\u2026"), Object.keys(schedule).sort().map(m => /*#__PURE__*/React.createElement("option", {
+    key: m,
+    value: m
+  }, "Wk of ", m)))), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
+    style: {
+      fontSize: 10,
+      color: "#7a8a98",
+      display: "block",
+      marginBottom: 2
+    }
+  }, "Shift"), /*#__PURE__*/React.createElement("select", {
+    value: swapTarget?.shift || "",
+    onChange: e => {
+      setSwapTarget(prev => ({
+        ...(prev || {}),
+        shift: e.target.value
+      }));
+      setSwapSuggestions(null);
+    },
+    style: {
+      ...css.inp,
+      width: 140
+    }
+  }, /*#__PURE__*/React.createElement("option", {
+    value: ""
+  }, "Select shift\u2026"), ALL_SHIFT_KEYS.map(sk => /*#__PURE__*/React.createElement("option", {
+    key: sk,
+    value: sk
+  }, SHIFT_LABELS[sk])))), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
+    style: {
+      fontSize: 10,
+      color: "#7a8a98",
+      display: "block",
+      marginBottom: 2
+    }
+  }, "Current Surgeon"), (() => {
+    const m = swapTarget?.mondayStr;
+    const sh = swapTarget?.shift;
+    const wk = m ? schedule[m] : null;
+    let currentId = null;
+    if (wk && sh) {
+      currentId = sh === "dayCall" ? wk.dayCall : wk.nights?.[sh];
+    }
+    return currentId ? /*#__PURE__*/React.createElement("div", {
+      style: {
+        padding: "6px 10px"
+      }
+    }, /*#__PURE__*/React.createElement(Badge, {
+      id: currentId
+    })) : /*#__PURE__*/React.createElement("div", {
+      style: {
+        padding: "6px 10px",
+        fontSize: 12,
+        color: "#8a94a0"
+      }
+    }, "\u2014");
+  })())) : /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
+    style: {
+      fontSize: 10,
+      color: "#7a8a98",
+      display: "block",
+      marginBottom: 2
+    }
+  }, "Your shift to swap"), (() => {
+    const opts = [];
+    Object.keys(schedule).sort().forEach(m => {
+      const wk = schedule[m];
+      if (!wk) return;
+      ALL_SHIFT_KEYS.forEach(sk => {
+        const holder = sk === "dayCall" ? wk.dayCall : wk.nights?.[sk];
+        if (holder === mySurgeon) {
+          const d = parse(m);
+          const label = `${MO[d.getMonth()].slice(0, 3)} ${d.getDate()} — ${SHIFT_LABELS[sk]}${wk.isBackup ? " (Backup)" : ""}`;
+          opts.push({
+            value: `${m}|${sk}`,
+            label
+          });
+        }
+      });
+    });
+    const curVal = swapTarget?.mondayStr && swapTarget?.shift ? `${swapTarget.mondayStr}|${swapTarget.shift}` : "";
+    const placeholder = !mySurgeon ? "Select your name in Mine tab first" : opts.length === 0 ? "You have no scheduled shifts" : "Select your shift…";
+    return /*#__PURE__*/React.createElement("select", {
+      value: curVal,
+      onChange: e => {
+        const v = e.target.value;
+        setSwapSuggestions(null);
+        if (!v) {
+          setSwapTarget(null);
+        } else {
+          const [w, s] = v.split("|");
+          setSwapTarget({
+            mondayStr: w,
+            shift: s
+          });
+        }
+      },
+      style: {
+        ...css.inp,
+        minWidth: 260
+      },
+      disabled: !mySurgeon || opts.length === 0
+    }, /*#__PURE__*/React.createElement("option", {
+      value: ""
+    }, placeholder), opts.map(o => /*#__PURE__*/React.createElement("option", {
+      key: o.value,
+      value: o.value
+    }, o.label)));
+  })()), /*#__PURE__*/React.createElement("button", {
     onClick: () => {
       const m = swapTarget?.mondayStr;
       const sh = swapTarget?.shift;
@@ -8928,249 +9009,249 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       padding: "6px 16px"
     }
   }, "\uD83D\uDDA8 Print Calendar"))), editWeekModal && (() => {
-  const {
-    mondayStr,
-    draft
-  } = editWeekModal;
-  const mon = parse(mondayStr);
-  const wkLabel = `${MO[mon.getMonth()]} ${mon.getDate()} – ${MO[addD(mon, 6).getMonth()]} ${addD(mon, 6).getDate()}`;
-  const dayLabels = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-  const surgeonOpts = [/*#__PURE__*/React.createElement("option", {
-    key: "_empty",
-    value: ""
-  }, "\u2014 none \u2014"), ...surgeons.map(s => /*#__PURE__*/React.createElement("option", {
-    key: s.id,
-    value: s.id
-  }, s.name))];
-  const appOpts = [/*#__PURE__*/React.createElement("option", {
-    key: "_none",
-    value: ""
-  }, "\u2014 none \u2014"), ...apps.map(a => /*#__PURE__*/React.createElement("option", {
-    key: a.id,
-    value: a.id
-  }, a.name))];
-  const updateDraft = fn => setEditWeekModal(em => em ? {
-    ...em,
-    draft: fn(em.draft)
-  } : em);
-  return /*#__PURE__*/React.createElement("div", {
-    onClick: () => setEditWeekModal(null),
-    style: {
-      position: "fixed",
-      inset: 0,
-      background: "rgba(0,0,0,0.55)",
-      zIndex: 9000,
-      display: "flex",
-      alignItems: "flex-start",
-      justifyContent: "center",
-      padding: "20px 10px",
-      overflowY: "auto"
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    onClick: e => e.stopPropagation(),
-    style: {
-      background: dk ? "#1a1f2a" : "#fff",
-      borderRadius: 10,
-      maxWidth: 520,
-      width: "100%",
-      padding: 20,
-      boxShadow: "0 10px 40px rgba(0,0,0,0.3)"
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      justifyContent: "space-between",
-      alignItems: "center",
-      marginBottom: 12
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 16,
-      fontWeight: 700,
-      color: dk ? "#e8e8f0" : "#2c5a80"
-    }
-  }, "\u270F\uFE0F Edit Week \u2014 ", wkLabel), /*#__PURE__*/React.createElement("button", {
-    onClick: () => setEditWeekModal(null),
-    style: {
-      background: "none",
-      border: "none",
-      fontSize: 20,
-      cursor: "pointer",
-      color: dk ? "#8a94a0" : "#5a6a78"
-    }
-  }, "\xD7")), /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 11,
-      color: "#7a8a98",
-      marginBottom: 14,
-      lineHeight: 1.5
-    }
-  }, "Changes will be saved immediately. Affected surgeons and APPs will be notified via push and email."), /*#__PURE__*/React.createElement("div", {
-    style: {
-      marginBottom: 14
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 12,
-      fontWeight: 700,
-      color: dk ? "#b0b8c0" : "#5a6a78",
-      marginBottom: 6,
-      textTransform: "uppercase",
-      letterSpacing: 0.5
-    }
-  }, "Surgeon Shifts"), /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "grid",
-      gridTemplateColumns: "110px 1fr",
-      gap: 6,
-      alignItems: "center"
-    }
-  }, /*#__PURE__*/React.createElement("label", {
-    style: {
-      fontSize: 12,
-      color: dk ? "#b0b8c0" : "#4a5868"
-    }
-  }, "Service Week"), /*#__PURE__*/React.createElement("select", {
-    value: draft.dayCall,
-    onChange: e => updateDraft(d => ({
-      ...d,
-      dayCall: e.target.value
-    })),
-    style: {
-      ...css.inp,
-      padding: "6px 8px"
-    }
-  }, surgeonOpts), ["mon", "tue", "wed", "thu"].map(nk => /*#__PURE__*/React.createElement(React.Fragment, {
-    key: nk
-  }, /*#__PURE__*/React.createElement("label", {
-    style: {
-      fontSize: 12,
-      color: dk ? "#b0b8c0" : "#4a5868"
-    }
-  }, SHIFT_LABELS[nk] || nk), /*#__PURE__*/React.createElement("select", {
-    value: draft.nights[nk] || "",
-    onChange: e => updateDraft(d => ({
-      ...d,
-      nights: {
-        ...d.nights,
-        [nk]: e.target.value
+    const {
+      mondayStr,
+      draft
+    } = editWeekModal;
+    const mon = parse(mondayStr);
+    const wkLabel = `${MO[mon.getMonth()]} ${mon.getDate()} – ${MO[addD(mon, 6).getMonth()]} ${addD(mon, 6).getDate()}`;
+    const dayLabels = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    const surgeonOpts = [/*#__PURE__*/React.createElement("option", {
+      key: "_empty",
+      value: ""
+    }, "\u2014 none \u2014"), ...surgeons.map(s => /*#__PURE__*/React.createElement("option", {
+      key: s.id,
+      value: s.id
+    }, s.name))];
+    const appOpts = [/*#__PURE__*/React.createElement("option", {
+      key: "_none",
+      value: ""
+    }, "\u2014 none \u2014"), ...apps.map(a => /*#__PURE__*/React.createElement("option", {
+      key: a.id,
+      value: a.id
+    }, a.name))];
+    const updateDraft = fn => setEditWeekModal(em => em ? {
+      ...em,
+      draft: fn(em.draft)
+    } : em);
+    return /*#__PURE__*/React.createElement("div", {
+      onClick: () => setEditWeekModal(null),
+      style: {
+        position: "fixed",
+        inset: 0,
+        background: "rgba(0,0,0,0.55)",
+        zIndex: 9000,
+        display: "flex",
+        alignItems: "flex-start",
+        justifyContent: "center",
+        padding: "20px 10px",
+        overflowY: "auto"
       }
-    })),
-    style: {
-      ...css.inp,
-      padding: "6px 8px"
-    }
-  }, surgeonOpts))), /*#__PURE__*/React.createElement("label", {
-    style: {
-      fontSize: 12,
-      color: dk ? "#b0b8c0" : "#4a5868"
-    }
-  }, "Weekend"), /*#__PURE__*/React.createElement("select", {
-    value: draft.nights.wknd || "",
-    onChange: e => updateDraft(d => ({
-      ...d,
-      nights: {
-        ...d.nights,
-        wknd: e.target.value
+    }, /*#__PURE__*/React.createElement("div", {
+      onClick: e => e.stopPropagation(),
+      style: {
+        background: dk ? "#1a1f2a" : "#fff",
+        borderRadius: 10,
+        maxWidth: 520,
+        width: "100%",
+        padding: 20,
+        boxShadow: "0 10px 40px rgba(0,0,0,0.3)"
       }
-    })),
-    style: {
-      ...css.inp,
-      padding: "6px 8px"
-    }
-  }, surgeonOpts))), /*#__PURE__*/React.createElement("div", {
-    style: {
-      marginBottom: 14
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 12,
-      fontWeight: 700,
-      color: dk ? "#b0b8c0" : "#5a6a78",
-      marginBottom: 6,
-      textTransform: "uppercase",
-      letterSpacing: 0.5
-    }
-  }, "APP Shifts"), /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "grid",
-      gridTemplateColumns: "110px 1fr",
-      gap: 6,
-      alignItems: "center"
-    }
-  }, Array.from({
-    length: 7
-  }).map((_, i) => {
-    const d = addD(mon, i);
-    const ds = fmt(d);
-    return /*#__PURE__*/React.createElement(React.Fragment, {
-      key: ds
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        justifyContent: "space-between",
+        alignItems: "center",
+        marginBottom: 12
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 16,
+        fontWeight: 700,
+        color: dk ? "#e8e8f0" : "#2c5a80"
+      }
+    }, "\u270F\uFE0F Edit Week \u2014 ", wkLabel), /*#__PURE__*/React.createElement("button", {
+      onClick: () => setEditWeekModal(null),
+      style: {
+        background: "none",
+        border: "none",
+        fontSize: 20,
+        cursor: "pointer",
+        color: dk ? "#8a94a0" : "#5a6a78"
+      }
+    }, "\xD7")), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 11,
+        color: "#7a8a98",
+        marginBottom: 14,
+        lineHeight: 1.5
+      }
+    }, "Changes will be saved immediately. Affected surgeons and APPs will be notified via push and email."), /*#__PURE__*/React.createElement("div", {
+      style: {
+        marginBottom: 14
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 12,
+        fontWeight: 700,
+        color: dk ? "#b0b8c0" : "#5a6a78",
+        marginBottom: 6,
+        textTransform: "uppercase",
+        letterSpacing: 0.5
+      }
+    }, "Surgeon Shifts"), /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "grid",
+        gridTemplateColumns: "110px 1fr",
+        gap: 6,
+        alignItems: "center"
+      }
     }, /*#__PURE__*/React.createElement("label", {
       style: {
         fontSize: 12,
         color: dk ? "#b0b8c0" : "#4a5868"
       }
-    }, dayLabels[d.getDay()], " ", d.getMonth() + 1, "/", d.getDate()), /*#__PURE__*/React.createElement("select", {
-      value: draft.apps[ds] || "",
-      onChange: e => updateDraft(dr => ({
-        ...dr,
-        apps: {
-          ...dr.apps,
-          [ds]: e.target.value
+    }, "Service Week"), /*#__PURE__*/React.createElement("select", {
+      value: draft.dayCall,
+      onChange: e => updateDraft(d => ({
+        ...d,
+        dayCall: e.target.value
+      })),
+      style: {
+        ...css.inp,
+        padding: "6px 8px"
+      }
+    }, surgeonOpts), ["mon", "tue", "wed", "thu"].map(nk => /*#__PURE__*/React.createElement(React.Fragment, {
+      key: nk
+    }, /*#__PURE__*/React.createElement("label", {
+      style: {
+        fontSize: 12,
+        color: dk ? "#b0b8c0" : "#4a5868"
+      }
+    }, SHIFT_LABELS[nk] || nk), /*#__PURE__*/React.createElement("select", {
+      value: draft.nights[nk] || "",
+      onChange: e => updateDraft(d => ({
+        ...d,
+        nights: {
+          ...d.nights,
+          [nk]: e.target.value
         }
       })),
       style: {
         ...css.inp,
         padding: "6px 8px"
       }
-    }, appOpts));
-  }))), /*#__PURE__*/React.createElement("div", {
-    style: {
-      marginBottom: 14
-    }
-  }, /*#__PURE__*/React.createElement("label", {
-    style: {
-      fontSize: 12,
-      fontWeight: 700,
-      color: dk ? "#b0b8c0" : "#5a6a78",
-      marginBottom: 4,
-      display: "block",
-      textTransform: "uppercase",
-      letterSpacing: 0.5
-    }
-  }, "Reason (optional)"), /*#__PURE__*/React.createElement("input", {
-    type: "text",
-    value: draft.reason,
-    onChange: e => updateDraft(d => ({
-      ...d,
-      reason: e.target.value
-    })),
-    placeholder: "e.g. REH sick, covering with FAK",
-    style: {
-      ...css.inp,
-      width: "100%",
-      padding: "6px 8px"
-    }
-  })), /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      gap: 8,
-      justifyContent: "flex-end"
-    }
-  }, /*#__PURE__*/React.createElement("button", {
-    onClick: () => setEditWeekModal(null),
-    style: {
-      ...css.btn(false),
-      padding: "8px 16px"
-    }
-  }, "Cancel"), /*#__PURE__*/React.createElement("button", {
-    onClick: saveWeekEdits,
-    style: {
-      ...css.btn(true),
-      padding: "8px 16px"
-    }
-  }, "\uD83D\uDCBE Save Changes"))));
-})()), view === "stats" && /*#__PURE__*/React.createElement(React.Fragment, null, isScheduler && /*#__PURE__*/React.createElement("div", {
+    }, surgeonOpts))), /*#__PURE__*/React.createElement("label", {
+      style: {
+        fontSize: 12,
+        color: dk ? "#b0b8c0" : "#4a5868"
+      }
+    }, "Weekend"), /*#__PURE__*/React.createElement("select", {
+      value: draft.nights.wknd || "",
+      onChange: e => updateDraft(d => ({
+        ...d,
+        nights: {
+          ...d.nights,
+          wknd: e.target.value
+        }
+      })),
+      style: {
+        ...css.inp,
+        padding: "6px 8px"
+      }
+    }, surgeonOpts))), /*#__PURE__*/React.createElement("div", {
+      style: {
+        marginBottom: 14
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 12,
+        fontWeight: 700,
+        color: dk ? "#b0b8c0" : "#5a6a78",
+        marginBottom: 6,
+        textTransform: "uppercase",
+        letterSpacing: 0.5
+      }
+    }, "APP Shifts"), /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "grid",
+        gridTemplateColumns: "110px 1fr",
+        gap: 6,
+        alignItems: "center"
+      }
+    }, Array.from({
+      length: 7
+    }).map((_, i) => {
+      const d = addD(mon, i);
+      const ds = fmt(d);
+      return /*#__PURE__*/React.createElement(React.Fragment, {
+        key: ds
+      }, /*#__PURE__*/React.createElement("label", {
+        style: {
+          fontSize: 12,
+          color: dk ? "#b0b8c0" : "#4a5868"
+        }
+      }, dayLabels[d.getDay()], " ", d.getMonth() + 1, "/", d.getDate()), /*#__PURE__*/React.createElement("select", {
+        value: draft.apps[ds] || "",
+        onChange: e => updateDraft(dr => ({
+          ...dr,
+          apps: {
+            ...dr.apps,
+            [ds]: e.target.value
+          }
+        })),
+        style: {
+          ...css.inp,
+          padding: "6px 8px"
+        }
+      }, appOpts));
+    }))), /*#__PURE__*/React.createElement("div", {
+      style: {
+        marginBottom: 14
+      }
+    }, /*#__PURE__*/React.createElement("label", {
+      style: {
+        fontSize: 12,
+        fontWeight: 700,
+        color: dk ? "#b0b8c0" : "#5a6a78",
+        marginBottom: 4,
+        display: "block",
+        textTransform: "uppercase",
+        letterSpacing: 0.5
+      }
+    }, "Reason (optional)"), /*#__PURE__*/React.createElement("input", {
+      type: "text",
+      value: draft.reason,
+      onChange: e => updateDraft(d => ({
+        ...d,
+        reason: e.target.value
+      })),
+      placeholder: "e.g. REH sick, covering with FAK",
+      style: {
+        ...css.inp,
+        width: "100%",
+        padding: "6px 8px"
+      }
+    })), /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        gap: 8,
+        justifyContent: "flex-end"
+      }
+    }, /*#__PURE__*/React.createElement("button", {
+      onClick: () => setEditWeekModal(null),
+      style: {
+        ...css.btn(false),
+        padding: "8px 16px"
+      }
+    }, "Cancel"), /*#__PURE__*/React.createElement("button", {
+      onClick: saveWeekEdits,
+      style: {
+        ...css.btn(true),
+        padding: "8px 16px"
+      }
+    }, "\uD83D\uDCBE Save Changes"))));
+  })()), view === "stats" && /*#__PURE__*/React.createElement(React.Fragment, null, isScheduler && /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       justifyContent: "flex-end",
@@ -9590,163 +9671,168 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       }
     }, "Formula:"), " Service Week = 6 \xB7 Week Night = 1 \xB7 Weekend = 2. Multi-day shifts counted in the month they start."));
   })(), (isScheduler || userProfile?.person_id === "admin") && Object.keys(schedule).length > 0 && (() => {
-  const monthly = {};
-  const allMonths = new Set();
-  Object.entries(schedule).forEach(([mStr, wk]) => {
-    const mon = parse(mStr);
-    for (let i = 0; i < 7; i++) {
-      const d = addD(mon, i);
-      const moKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
-      allMonths.add(moKey);
-      if (!monthly[moKey]) monthly[moKey] = {};
-      surgeons.forEach(s => {
-        if (!monthly[moKey][s.id]) monthly[moKey][s.id] = {
+    // Compute monthly billing breakdown. 1st-call only (backup weeks excluded).
+    // Attribution:
+    //   Service Week (dayCall) → month containing Monday (1 shift = 7 call days)
+    //   Week Nights (Mon-Thu)  → each night's own month (1 shift = 1 call day)
+    //   Weekend (Fri + Sun)    → month containing Friday (1 shift = 3 call days)
+    const monthly = {}; // { "2026-05": { s1: { dc: n, nights: n, wknd: n }, ... } }
+    const allMonths = new Set();
+    Object.entries(schedule).forEach(([mStr, wk]) => {
+      const mon = parse(mStr);
+      for (let i = 0; i < 7; i++) {
+        const d = addD(mon, i);
+        const moKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+        allMonths.add(moKey);
+        if (!monthly[moKey]) monthly[moKey] = {};
+        surgeons.forEach(s => {
+          if (!monthly[moKey][s.id]) monthly[moKey][s.id] = {
+            dc: 0,
+            nights: 0,
+            wknd: 0
+          };
+        });
+      }
+      // Skip backup weeks entirely — they're 2nd-call and not billed
+      if (wk.isBackup) return;
+      if (wk.dayCall) {
+        const monMoKey = `${mon.getFullYear()}-${String(mon.getMonth() + 1).padStart(2, "0")}`;
+        if (monthly[monMoKey]?.[wk.dayCall]) monthly[monMoKey][wk.dayCall].dc += 1;
+      }
+      NIGHT_KEYS.forEach((sk, i) => {
+        const sid = wk.nights?.[sk];
+        if (!sid) return;
+        const d = addD(mon, i);
+        const moKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+        if (monthly[moKey]?.[sid]) monthly[moKey][sid].nights += 1;
+      });
+      const wkndSid = wk.nights?.wknd;
+      if (wkndSid) {
+        const fri = addD(mon, 4);
+        const friMo = `${fri.getFullYear()}-${String(fri.getMonth() + 1).padStart(2, "0")}`;
+        if (monthly[friMo]?.[wkndSid]) monthly[friMo][wkndSid].wknd += 1;
+      }
+    });
+    const sortedMonths = [...allMonths].sort();
+    const moLabel = mk => {
+      const [y, mo] = mk.split("-");
+      return `${MO[parseInt(mo) - 1]} ${y}`;
+    };
+    const billingDays = r => (r.dc || 0) * 7 + (r.nights || 0) + (r.wknd || 0) * 3;
+    return /*#__PURE__*/React.createElement("div", {
+      style: css.card
+    }, /*#__PURE__*/React.createElement("div", {
+      style: css.cardT
+    }, "\uD83D\uDCB0 Billing Summary ", /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontWeight: 400,
+        fontSize: 11,
+        color: "#7a8a98"
+      }
+    }, "\u2014 Monthly, 1st Call Only")), /*#__PURE__*/React.createElement("p", {
+      style: {
+        fontSize: 11,
+        color: "#7a8a98",
+        margin: "0 0 14px",
+        lineHeight: 1.5
+      }
+    }, "Breakdown by calendar month. Backup weeks are excluded \u2014 only 1st-call shifts count toward billing. Shifts that span a month boundary are counted in the month they start (service week \u2192 Monday's month \xB7 weekend \u2192 Friday's month)."), sortedMonths.map(mk => {
+      const monthData = monthly[mk] || {};
+      const hasAny = surgeons.some(s => {
+        const r = monthData[s.id] || {};
+        return (r.dc || 0) + (r.nights || 0) + (r.wknd || 0) > 0;
+      });
+      if (!hasAny) return null;
+      return /*#__PURE__*/React.createElement("div", {
+        key: mk,
+        style: {
+          marginBottom: 16
+        }
+      }, /*#__PURE__*/React.createElement("div", {
+        style: {
+          fontSize: 12,
+          fontWeight: 700,
+          color: "#1a6fa8",
+          marginBottom: 4,
+          textTransform: "uppercase",
+          letterSpacing: 0.8
+        }
+      }, moLabel(mk)), /*#__PURE__*/React.createElement("div", {
+        style: {
+          overflowX: "auto"
+        }
+      }, /*#__PURE__*/React.createElement("table", {
+        style: {
+          width: "100%",
+          borderCollapse: "collapse",
+          fontSize: 12
+        }
+      }, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", {
+        style: {
+          borderBottom: "1px solid #d0d8e0"
+        }
+      }, /*#__PURE__*/React.createElement("th", {
+        style: thS2
+      }, "Surgeon"), /*#__PURE__*/React.createElement("th", {
+        style: {
+          ...thS2,
+          color: "#1a8040"
+        }
+      }, "Total Days"), /*#__PURE__*/React.createElement("th", {
+        style: thS2
+      }, "Svc Wk"), /*#__PURE__*/React.createElement("th", {
+        style: thS2
+      }, "Nights"), /*#__PURE__*/React.createElement("th", {
+        style: thS2
+      }, "Wknds"))), /*#__PURE__*/React.createElement("tbody", null, surgeons.map(s => {
+        const r = monthData[s.id] || {
           dc: 0,
           nights: 0,
           wknd: 0
         };
-      });
-    }
-    // Skip backup weeks entirely — they're 2nd-call and not billed
-    if (wk.isBackup) return;
-    if (wk.dayCall) {
-      const monMoKey = `${mon.getFullYear()}-${String(mon.getMonth() + 1).padStart(2, "0")}`;
-      if (monthly[monMoKey]?.[wk.dayCall]) monthly[monMoKey][wk.dayCall].dc += 1;
-    }
-    NIGHT_KEYS.forEach((sk, i) => {
-      const sid = wk.nights?.[sk];
-      if (!sid) return;
-      const d = addD(mon, i);
-      const moKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
-      if (monthly[moKey]?.[sid]) monthly[moKey][sid].nights += 1;
-    });
-    const wkndSid = wk.nights?.wknd;
-    if (wkndSid) {
-      const fri = addD(mon, 4);
-      const friMo = `${fri.getFullYear()}-${String(fri.getMonth() + 1).padStart(2, "0")}`;
-      if (monthly[friMo]?.[wkndSid]) monthly[friMo][wkndSid].wknd += 1;
-    }
-  });
-  const sortedMonths = [...allMonths].sort();
-  const moLabel = mk => {
-    const [y, mo] = mk.split("-");
-    return `${MO[parseInt(mo) - 1]} ${y}`;
-  };
-  const billingDays = r => (r.dc || 0) * 7 + (r.nights || 0) + (r.wknd || 0) * 3;
-  return /*#__PURE__*/React.createElement("div", {
-    style: css.card
-  }, /*#__PURE__*/React.createElement("div", {
-    style: css.cardT
-  }, "\uD83D\uDCB0 Billing Summary ", /*#__PURE__*/React.createElement("span", {
-    style: {
-      fontWeight: 400,
-      fontSize: 11,
-      color: "#7a8a98"
-    }
-  }, "\u2014 Monthly, 1st Call Only")), /*#__PURE__*/React.createElement("p", {
-    style: {
-      fontSize: 11,
-      color: "#7a8a98",
-      margin: "0 0 14px",
-      lineHeight: 1.5
-    }
-  }, "Breakdown by calendar month. Backup weeks are excluded — only 1st-call shifts count toward billing. Shifts that span a month boundary are counted in the month they start (service week \u2192 Monday's month \xB7 weekend \u2192 Friday's month)."), sortedMonths.map(mk => {
-    const monthData = monthly[mk] || {};
-    const hasAny = surgeons.some(s => {
-      const r = monthData[s.id] || {};
-      return (r.dc || 0) + (r.nights || 0) + (r.wknd || 0) > 0;
-    });
-    if (!hasAny) return null;
-    return /*#__PURE__*/React.createElement("div", {
-      key: mk,
+        const days = billingDays(r);
+        const empty = days === 0;
+        return /*#__PURE__*/React.createElement("tr", {
+          key: s.id,
+          style: {
+            borderBottom: "1px solid #e8ecf0",
+            opacity: empty ? 0.45 : 1
+          }
+        }, /*#__PURE__*/React.createElement("td", {
+          style: {
+            padding: "5px 6px"
+          }
+        }, /*#__PURE__*/React.createElement(Badge, {
+          id: s.id,
+          small: true
+        })), /*#__PURE__*/React.createElement("td", {
+          style: {
+            ...tdS,
+            color: empty ? "#a0a8b0" : "#1a8040",
+            fontWeight: 700,
+            fontSize: 14
+          }
+        }, days || "–"), /*#__PURE__*/React.createElement("td", {
+          style: tdS
+        }, r.dc || "–"), /*#__PURE__*/React.createElement("td", {
+          style: tdS
+        }, r.nights || "–"), /*#__PURE__*/React.createElement("td", {
+          style: tdS
+        }, r.wknd || "–"));
+      })))));
+    }), /*#__PURE__*/React.createElement("div", {
       style: {
-        marginBottom: 16
+        fontSize: 11,
+        color: "#7a8a98",
+        lineHeight: 1.5,
+        marginTop: 6
       }
-    }, /*#__PURE__*/React.createElement("div", {
+    }, /*#__PURE__*/React.createElement("strong", {
       style: {
-        fontSize: 12,
-        fontWeight: 700,
-        color: "#1a6fa8",
-        marginBottom: 4,
-        textTransform: "uppercase",
-        letterSpacing: 0.8
+        color: "#2c5a80"
       }
-    }, moLabel(mk)), /*#__PURE__*/React.createElement("div", {
-      style: {
-        overflowX: "auto"
-      }
-    }, /*#__PURE__*/React.createElement("table", {
-      style: {
-        width: "100%",
-        borderCollapse: "collapse",
-        fontSize: 12
-      }
-    }, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", {
-      style: {
-        borderBottom: "1px solid #d0d8e0"
-      }
-    }, /*#__PURE__*/React.createElement("th", {
-      style: thS2
-    }, "Surgeon"), /*#__PURE__*/React.createElement("th", {
-      style: {
-        ...thS2,
-        color: "#1a8040"
-      }
-    }, "Total Days"), /*#__PURE__*/React.createElement("th", {
-      style: thS2
-    }, "Svc Wk"), /*#__PURE__*/React.createElement("th", {
-      style: thS2
-    }, "Nights"), /*#__PURE__*/React.createElement("th", {
-      style: thS2
-    }, "Wknds"))), /*#__PURE__*/React.createElement("tbody", null, surgeons.map(s => {
-      const r = monthData[s.id] || {
-        dc: 0,
-        nights: 0,
-        wknd: 0
-      };
-      const days = billingDays(r);
-      const empty = days === 0;
-      return /*#__PURE__*/React.createElement("tr", {
-        key: s.id,
-        style: {
-          borderBottom: "1px solid #e8ecf0",
-          opacity: empty ? 0.45 : 1
-        }
-      }, /*#__PURE__*/React.createElement("td", {
-        style: {
-          padding: "5px 6px"
-        }
-      }, /*#__PURE__*/React.createElement(Badge, {
-        id: s.id,
-        small: true
-      })), /*#__PURE__*/React.createElement("td", {
-        style: {
-          ...tdS,
-          color: empty ? "#a0a8b0" : "#1a8040",
-          fontWeight: 700,
-          fontSize: 14
-        }
-      }, days || "\u2013"), /*#__PURE__*/React.createElement("td", {
-        style: tdS
-      }, r.dc || "\u2013"), /*#__PURE__*/React.createElement("td", {
-        style: tdS
-      }, r.nights || "\u2013"), /*#__PURE__*/React.createElement("td", {
-        style: tdS
-      }, r.wknd || "\u2013"));
-    })))));
-  }), /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 11,
-      color: "#7a8a98",
-      lineHeight: 1.5,
-      marginTop: 6
-    }
-  }, /*#__PURE__*/React.createElement("strong", {
-    style: {
-      color: "#2c5a80"
-    }
-  }, "Formula:"), " Svc Wk \xD7 7 + Nights \xD7 1 + Weekends \xD7 3 = Total Call Days. Billed monthly."));
-})(), /*#__PURE__*/React.createElement("div", {
+    }, "Formula:"), " Svc Wk \xD7 7 + Nights \xD7 1 + Weekends \xD7 3 = Total Call Days. Billed monthly."));
+  })(), /*#__PURE__*/React.createElement("div", {
     style: css.card
   }, /*#__PURE__*/React.createElement("div", {
     style: css.cardT
@@ -11085,8 +11171,11 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         const holder = sk === "dayCall" ? wk.dayCall : wk.nights?.[sk];
         if (holder === tradeFrom) {
           const d = parse(m);
-          const label = `${MO[d.getMonth()].slice(0, 3)} ${d.getDate()} \u2014 ${SHIFT_LABELS[sk]}${wk.isBackup ? " (Backup)" : ""}`;
-          opts.push({ value: `${m}|${sk}`, label });
+          const label = `${MO[d.getMonth()].slice(0, 3)} ${d.getDate()} — ${SHIFT_LABELS[sk]}${wk.isBackup ? " (Backup)" : ""}`;
+          opts.push({
+            value: `${m}|${sk}`,
+            label
+          });
         }
       });
     });
@@ -11095,13 +11184,22 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       value: curVal,
       onChange: e => {
         const v = e.target.value;
-        if (!v) { setTradeWeek(""); setTradeShift(""); }
-        else { const [w, s] = v.split("|"); setTradeWeek(w); setTradeShift(s); }
+        if (!v) {
+          setTradeWeek("");
+          setTradeShift("");
+        } else {
+          const [w, s] = v.split("|");
+          setTradeWeek(w);
+          setTradeShift(s);
+        }
       },
-      style: { ...css.inp, minWidth: 240 }
+      style: {
+        ...css.inp,
+        minWidth: 240
+      }
     }, /*#__PURE__*/React.createElement("option", {
       value: ""
-    }, opts.length === 0 ? "No shifts scheduled" : "Select your shift\u2026"), opts.map(o => /*#__PURE__*/React.createElement("option", {
+    }, opts.length === 0 ? "No shifts scheduled" : "Select your shift…"), opts.map(o => /*#__PURE__*/React.createElement("option", {
       key: o.value,
       value: o.value
     }, o.label)));
@@ -11168,22 +11266,34 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           const holder = sk === "dayCall" ? wk.dayCall : wk.nights?.[sk];
           if (holder === tradeTo) {
             const d = parse(m);
-            const label = `${MO[d.getMonth()].slice(0, 3)} ${d.getDate()} \u2014 ${SHIFT_LABELS[sk]}${wk.isBackup ? " (Backup)" : ""}`;
-            opts.push({ value: `${m}|${sk}`, label });
+            const label = `${MO[d.getMonth()].slice(0, 3)} ${d.getDate()} — ${SHIFT_LABELS[sk]}${wk.isBackup ? " (Backup)" : ""}`;
+            opts.push({
+              value: `${m}|${sk}`,
+              label
+            });
           }
         });
       });
     }
     const curVal = tradeReturnWeek && tradeReturnShift ? `${tradeReturnWeek}|${tradeReturnShift}` : "";
-    const placeholder = !tradeTo ? "Pick trade partner first" : (opts.length === 0 ? "They have no scheduled shifts" : "Select their shift\u2026");
+    const placeholder = !tradeTo ? "Pick trade partner first" : opts.length === 0 ? "They have no scheduled shifts" : "Select their shift…";
     return /*#__PURE__*/React.createElement("select", {
       value: curVal,
       onChange: e => {
         const v = e.target.value;
-        if (!v) { setTradeReturnWeek(""); setTradeReturnShift(""); }
-        else { const [w, s] = v.split("|"); setTradeReturnWeek(w); setTradeReturnShift(s); }
+        if (!v) {
+          setTradeReturnWeek("");
+          setTradeReturnShift("");
+        } else {
+          const [w, s] = v.split("|");
+          setTradeReturnWeek(w);
+          setTradeReturnShift(s);
+        }
       },
-      style: { ...css.inp, minWidth: 240 },
+      style: {
+        ...css.inp,
+        minWidth: 240
+      },
       disabled: !tradeTo
     }, /*#__PURE__*/React.createElement("option", {
       value: ""
@@ -11545,114 +11655,115 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       margin: "4px 0 0"
     }
   }, "Current PIN: ", schedulerPin.replace(/./g, "•"))))), (isScheduler || userProfile?.person_id === "admin") && /*#__PURE__*/React.createElement("div", {
-  style: css.card
-}, /*#__PURE__*/React.createElement("div", {
-  style: css.cardT
-}, "\uD83D\uDC69\u200D\u2695\uFE0F APP Shift Managers"), /*#__PURE__*/React.createElement("p", {
-  style: {
-    fontSize: 12,
-    color: "#7a8a98",
-    margin: "0 0 10px",
-    lineHeight: 1.5
-  }
-}, "Users listed here can assign APP shifts on the Setup tab (but have no other scheduler access). Toggle the switch to grant or revoke permission."), /*#__PURE__*/React.createElement("button", {
-  onClick: async () => {
-    const profiles = await dbAuth.getAllProfiles();
-    setAllProfiles(profiles || []);
-  },
-  style: {
-    ...css.btn(false),
-    padding: "5px 12px",
-    fontSize: 11,
-    marginBottom: 10
-  }
-}, "\uD83D\uDD04 Load Users"), allProfiles.length === 0 ? /*#__PURE__*/React.createElement("p", {
-  style: {
-    fontSize: 12,
-    color: "#a0a8b0",
-    fontStyle: "italic"
-  }
-}, "Click \"Load Users\" to see all signed-up users.") : /*#__PURE__*/React.createElement("div", {
-  style: {
-    display: "flex",
-    flexDirection: "column",
-    gap: 4
-  }
-}, allProfiles.sort((a, b) => (a.display_name || "").localeCompare(b.display_name || "")).map(p => /*#__PURE__*/React.createElement("div", {
-  key: p.id,
-  style: {
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "space-between",
-    padding: "6px 10px",
-    background: "#f8f9fb",
-    borderRadius: 6,
-    border: "1px solid #e0e4ea"
-  }
-}, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("span", {
-  style: {
-    fontSize: 13,
-    fontWeight: 600,
-    color: "#2c3e50"
-  }
-}, p.display_name), /*#__PURE__*/React.createElement("span", {
-  style: {
-    fontSize: 11,
-    color: "#8a94a0",
-    marginLeft: 8
-  }
-}, p.person_id), p.person_id === "admin" && /*#__PURE__*/React.createElement("span", {
-  style: {
-    fontSize: 10,
-    color: "#6030a0",
-    marginLeft: 6,
-    fontWeight: 600
-  }
-}, "(admin)"), p.role === "scheduler" && /*#__PURE__*/React.createElement("span", {
-  style: {
-    fontSize: 10,
-    color: "#1a6fa8",
-    marginLeft: 6,
-    fontWeight: 600
-  }
-}, "(scheduler)")), /*#__PURE__*/React.createElement("label", {
-  style: {
-    display: "flex",
-    alignItems: "center",
-    gap: 6,
-    cursor: "pointer"
-  }
-}, /*#__PURE__*/React.createElement("span", {
-  style: {
-    fontSize: 11,
-    color: p.can_assign_apps ? "#1a8040" : "#a0a8b0",
-    fontWeight: 600
-  }
-}, p.can_assign_apps ? "Can assign APPs" : "No APP access"), /*#__PURE__*/React.createElement("input", {
-  type: "checkbox",
-  checked: !!p.can_assign_apps,
-  onChange: async e => {
-    const newVal = e.target.checked;
-    const updated = {
-      ...p,
-      can_assign_apps: newVal
-    };
-    const {
-      error
-    } = await dbAuth.upsertProfile(updated);
-    if (error) {
-      alert("Failed to update: " + error);
-      return;
+    style: css.card
+  }, /*#__PURE__*/React.createElement("div", {
+    style: css.cardT
+  }, "\uD83D\uDC69\u200D\u2695\uFE0F APP Shift Managers"), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 12,
+      color: "#7a8a98",
+      margin: "0 0 10px",
+      lineHeight: 1.5
     }
-    setAllProfiles(prev => prev.map(x => x.id === p.id ? updated : x));
-    if (p.id === authUser?.id) setUserProfile(updated);
-  },
-  style: {
-    cursor: "pointer",
-    width: 16,
-    height: 16
-  }
-})))))), /*#__PURE__*/React.createElement("div", {
+  }, "Users listed here can assign APP shifts on the Setup tab (but have no other scheduler access). Toggle the switch to grant or revoke permission."), /*#__PURE__*/React.createElement("button", {
+    onClick: async () => {
+      const profiles = await dbAuth.getAllProfiles();
+      setAllProfiles(profiles || []);
+    },
+    style: {
+      ...css.btn(false),
+      padding: "5px 12px",
+      fontSize: 11,
+      marginBottom: 10
+    }
+  }, "\uD83D\uDD04 Load Users"), allProfiles.length === 0 ? /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 12,
+      color: "#a0a8b0",
+      fontStyle: "italic"
+    }
+  }, "Click \"Load Users\" to see all signed-up users.") : /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      flexDirection: "column",
+      gap: 4
+    }
+  }, allProfiles.sort((a, b) => (a.display_name || "").localeCompare(b.display_name || "")).map(p => /*#__PURE__*/React.createElement("div", {
+    key: p.id,
+    style: {
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "space-between",
+      padding: "6px 10px",
+      background: "#f8f9fb",
+      borderRadius: 6,
+      border: "1px solid #e0e4ea"
+    }
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 13,
+      fontWeight: 600,
+      color: "#2c3e50"
+    }
+  }, p.display_name), /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 11,
+      color: "#8a94a0",
+      marginLeft: 8
+    }
+  }, p.person_id), p.person_id === "admin" && /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 10,
+      color: "#6030a0",
+      marginLeft: 6,
+      fontWeight: 600
+    }
+  }, "(admin)"), p.role === "scheduler" && /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 10,
+      color: "#1a6fa8",
+      marginLeft: 6,
+      fontWeight: 600
+    }
+  }, "(scheduler)")), /*#__PURE__*/React.createElement("label", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 6,
+      cursor: "pointer"
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 11,
+      color: p.can_assign_apps ? "#1a8040" : "#a0a8b0",
+      fontWeight: 600
+    }
+  }, p.can_assign_apps ? "Can assign APPs" : "No APP access"), /*#__PURE__*/React.createElement("input", {
+    type: "checkbox",
+    checked: !!p.can_assign_apps,
+    onChange: async e => {
+      const newVal = e.target.checked;
+      const updated = {
+        ...p,
+        can_assign_apps: newVal
+      };
+      const {
+        error
+      } = await dbAuth.upsertProfile(updated);
+      if (error) {
+        alert("Failed to update: " + error);
+        return;
+      }
+      setAllProfiles(prev => prev.map(x => x.id === p.id ? updated : x));
+      // If updating the current user, refresh their own profile too
+      if (p.id === authUser?.id) setUserProfile(updated);
+    },
+    style: {
+      cursor: "pointer",
+      width: 16,
+      height: 16
+    }
+  })))))), /*#__PURE__*/React.createElement("div", {
     style: css.card
   }, /*#__PURE__*/React.createElement("div", {
     style: css.cardT
@@ -11735,74 +11846,44 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       paddingTop: 8,
       borderTop: "1px dashed #e0e4ea"
     }
-  }, /*#__PURE__*/React.createElement("label", {
+  }, /*#__PURE__*/React.createElement("div", {
     style: {
-      fontSize: 10,
-      color: "#7a8a98",
+      fontSize: 11,
+      color: dkSubtext,
+      lineHeight: 1.5,
+      marginBottom: 6
+    }
+  }, /*#__PURE__*/React.createElement("strong", {
+    style: {
+      color: dkText
+    }
+  }, "\uD83D\uDD12 Push sending is configured server-side."), /*#__PURE__*/React.createElement("br", null), "The OneSignal REST API key lives in Supabase secrets and is accessed via the ", /*#__PURE__*/React.createElement("code", {
+    style: {
+      fontFamily: mono,
+      fontSize: 10
+    }
+  }, "send-push"), " Edge Function.", !edgeFunctionUrl && /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: "#b85020",
       display: "block",
-      marginBottom: 2
+      marginTop: 4
     }
-  }, "OneSignal REST API Key (for sending push to all devices)"), /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      gap: 6,
-      alignItems: "center"
-    }
-  }, /*#__PURE__*/React.createElement("input", {
-    type: "password",
-    value: oneSignalApiKey,
-    onChange: e => setOneSignalApiKey(e.target.value),
-    placeholder: "Paste REST API key from OneSignal \u2192 Settings \u2192 Keys & IDs",
-    style: {
-      ...css.inp,
-      width: "100%",
-      maxWidth: 420,
-      fontSize: 11,
-      fontFamily: mono
-    }
-  }), /*#__PURE__*/React.createElement("button", {
-    onClick: () => {
-      try {
-        localStorage.setItem("dsg-onesignal-key", oneSignalApiKey);
-      } catch (e) {}
-      setSaveStatus("Saved");
-      setTimeout(() => setSaveStatus(""), 2000);
-    },
-    style: {
-      ...css.btn(true),
-      padding: "5px 12px",
-      fontSize: 11,
-      whiteSpace: "nowrap"
-    }
-  }, "Save")), /*#__PURE__*/React.createElement("p", {
-    style: {
-      fontSize: 10,
-      color: "#8a94a0",
-      margin: "4px 0 0"
-    }
-  }, "Find this at onesignal.com \u2192 your app \u2192 Settings \u2192 Keys & IDs \u2192 REST API Key"), oneSignalApiKey && /*#__PURE__*/React.createElement("button", {
+  }, "\u26A0 Set the Edge Function URL below \u2014 the push sender derives its URL from it.")), edgeFunctionUrl && /*#__PURE__*/React.createElement("button", {
     onClick: async () => {
       try {
-        const resp = await fetch("https://onesignal.com/api/v1/notifications", {
+        const pushUrl = edgeFunctionUrl.replace(/\/[^/]+$/, "/send-push");
+        const resp = await fetch(pushUrl, {
           method: "POST",
           headers: {
-            "Content-Type": "application/json",
-            Authorization: `Basic ${oneSignalApiKey}`
+            "Content-Type": "application/json"
           },
           body: JSON.stringify({
-            app_id: "9ca5c08f-6fb3-4ee5-b564-09aafc1c1901",
-            included_segments: ["Subscribed Users"],
-            headings: {
-              en: "DSG Call Schedule"
-            },
-            contents: {
-              en: "Test push notification — if you see this, push is working!"
-            },
-            url: "https://fkhan628.github.io/Call-Schedule-App/"
+            title: "DSG Call Schedule",
+            message: "Test push notification — if you see this, push is working!"
           })
         });
-        const data = await resp.json();
-        alert(`Push test result:\nStatus: ${resp.status}\nRecipients: ${data.recipients || 0}\n${data.errors ? "Errors: " + JSON.stringify(data.errors) : "Success!"}`);
+        const data = await resp.json().catch(() => ({}));
+        alert(`Push test result:\nStatus: ${resp.status}\nRecipients: ${data.recipients || 0}\n${data.errors ? "Errors: " + JSON.stringify(data.errors) : data.error || "Success!"}`);
       } catch (e) {
         alert("Push test error: " + e.message);
       }
@@ -11811,7 +11892,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       ...css.btn(false),
       padding: "4px 10px",
       fontSize: 10,
-      marginTop: 6
+      marginTop: 4
     }
   }, "Test Push to All Devices"))), /*#__PURE__*/React.createElement("div", {
     style: {
@@ -12060,73 +12141,73 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         browser_push: e.target.checked
       })
     }), "Push"));
-  }), /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
-  style: {
-    fontSize: 11,
-    fontWeight: 600,
-    color: "#5a6a78",
-    margin: "12px 0 6px"
-  }
-}, "All APP Email Addresses (Scheduler Only)"), apps.map(a => {
-  const pref = notifPrefs[a.id] || {};
-  return /*#__PURE__*/React.createElement("div", {
-    key: a.id,
+  }), /*#__PURE__*/React.createElement("div", {
     style: {
-      display: "flex",
-      gap: 6,
-      alignItems: "center",
-      marginBottom: 6,
-      flexWrap: "wrap"
-    }
-  }, /*#__PURE__*/React.createElement(AppBadge, {
-    id: a.id,
-    small: true
-  }), /*#__PURE__*/React.createElement("input", {
-    value: pref.email || "",
-    onChange: e => saveNotifPref(a.id, {
-      email: e.target.value
-    }),
-    placeholder: "email@example.com",
-    type: "email",
-    style: {
-      ...css.inp,
-      width: 200,
       fontSize: 11,
-      fontFamily: mono,
-      padding: "4px 8px"
-    }
-  }), /*#__PURE__*/React.createElement("label", {
-    style: {
-      display: "flex",
-      alignItems: "center",
-      gap: 3,
-      fontSize: 10,
+      fontWeight: 600,
       color: "#5a6a78",
-      cursor: "pointer"
+      margin: "12px 0 6px"
     }
-  }, /*#__PURE__*/React.createElement("input", {
-    type: "checkbox",
-    checked: pref.email_notifs || false,
-    onChange: e => saveNotifPref(a.id, {
-      email_notifs: e.target.checked
-    })
-  }), "Email"), /*#__PURE__*/React.createElement("label", {
-    style: {
-      display: "flex",
-      alignItems: "center",
-      gap: 3,
-      fontSize: 10,
-      color: "#5a6a78",
-      cursor: "pointer"
-    }
-  }, /*#__PURE__*/React.createElement("input", {
-    type: "checkbox",
-    checked: pref.browser_push !== false,
-    onChange: e => saveNotifPref(a.id, {
-      browser_push: e.target.checked
-    })
-  }), "Push"));
-})), notifPrefsSaving && /*#__PURE__*/React.createElement("span", {
+  }, "All APP Email Addresses (Scheduler Only)"), apps.map(a => {
+    const pref = notifPrefs[a.id] || {};
+    return /*#__PURE__*/React.createElement("div", {
+      key: a.id,
+      style: {
+        display: "flex",
+        gap: 6,
+        alignItems: "center",
+        marginBottom: 6,
+        flexWrap: "wrap"
+      }
+    }, /*#__PURE__*/React.createElement(AppBadge, {
+      id: a.id,
+      small: true
+    }), /*#__PURE__*/React.createElement("input", {
+      value: pref.email || "",
+      onChange: e => saveNotifPref(a.id, {
+        email: e.target.value
+      }),
+      placeholder: "email@example.com",
+      type: "email",
+      style: {
+        ...css.inp,
+        width: 200,
+        fontSize: 11,
+        fontFamily: mono,
+        padding: "4px 8px"
+      }
+    }), /*#__PURE__*/React.createElement("label", {
+      style: {
+        display: "flex",
+        alignItems: "center",
+        gap: 3,
+        fontSize: 10,
+        color: "#5a6a78",
+        cursor: "pointer"
+      }
+    }, /*#__PURE__*/React.createElement("input", {
+      type: "checkbox",
+      checked: pref.email_notifs || false,
+      onChange: e => saveNotifPref(a.id, {
+        email_notifs: e.target.checked
+      })
+    }), "Email"), /*#__PURE__*/React.createElement("label", {
+      style: {
+        display: "flex",
+        alignItems: "center",
+        gap: 3,
+        fontSize: 10,
+        color: "#5a6a78",
+        cursor: "pointer"
+      }
+    }, /*#__PURE__*/React.createElement("input", {
+      type: "checkbox",
+      checked: pref.browser_push !== false,
+      onChange: e => saveNotifPref(a.id, {
+        browser_push: e.target.checked
+      })
+    }), "Push"));
+  }), notifPrefsSaving && /*#__PURE__*/React.createElement("span", {
     style: {
       fontSize: 10,
       color: "#1a8040"
@@ -12407,6 +12488,6 @@ const tdS = {
 };
 const root = ReactDOM.createRoot(document.getElementById('root'));
 root.render(React.createElement(CallSchedule));
-  </script>
+</script>
 </body>
 </html>
