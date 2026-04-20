@@ -52,7 +52,7 @@
   </script>
   <script>
     // ─── Auto-update: bump this version string each deploy ───
-    var APP_VERSION = "2026.04.19p";
+    var APP_VERSION = "2026.04.19q";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -2323,14 +2323,14 @@ function CallSchedule() {
         setVacRequests(prev => [inserted, ...prev]);
         await addNotification("vacation_submitted", "Vacation Request", `${surgeonName} requested ${vacReqStart} to ${vacReqEnd}`, {
           surgeon_id: vacReqSurgeon
-        });
+        }, schedulerAdminIds);
         sendEmailNotif("vacation_submitted", {
           surgeon_name: surgeonName,
           surgeon_id: vacReqSurgeon,
           start_date: vacReqStart,
           end_date: vacReqEnd,
           reason: vacReqReason
-        });
+        }, schedulerAdminIds);
       }
       setVacReqStart("");
       setVacReqEnd("");
@@ -2338,7 +2338,7 @@ function CallSchedule() {
     } catch (e) {
       console.error("Submit vacation error:", e);
     }
-  }, [vacReqSurgeon, vacReqStart, vacReqEnd, vacReqReason, surgeons, addNotification]);
+  }, [vacReqSurgeon, vacReqStart, vacReqEnd, vacReqReason, surgeons, addNotification, sendEmailNotif, schedulerAdminIds]);
 
   // ─── Vacation Request: Approve ───
   const approveVacRequest = useCallback(async req => {
@@ -2726,20 +2726,21 @@ function CallSchedule() {
         week: req.week_monday
       }, [req.from_surgeon_id, req.to_surgeon_id]);
 
-      // Notify about each cascade change — push to the affected surgeons only
+      // Notify about each cascade change — affected surgeons + scheduler/admin
       for (const ch of cascades) {
         const fromName = nameOf(ch.from);
         const toName = nameOf(ch.to);
+        const cascadeTargets = [...new Set([ch.from, ch.to, ...schedulerAdminIds].filter(Boolean))];
         await addNotification("schedule_changed", "Shift Reassigned", `${SHIFT_LABELS[ch.shiftKey]} (${ch.week}) moved from ${fromName} to ${toName} due to trade`, {
           from_surgeon_id: ch.from,
           to_surgeon_id: ch.to,
           surgeon_id: ch.to
-        }, [ch.from, ch.to].filter(Boolean));
+        }, cascadeTargets);
       }
     } catch (e) {
       console.error("Accept trade error:", e);
     }
-  }, [schedule, surgeons, pushUndo, addNotification, sendEmailNotif, detectCascadeChanges]);
+  }, [schedule, surgeons, pushUndo, addNotification, sendEmailNotif, detectCascadeChanges, schedulerAdminIds]);
 
   // ─── Shift Trade Request: Decline ───
   const declineTradeRequest = useCallback(async req => {
@@ -2912,11 +2913,12 @@ function CallSchedule() {
         n[sid] = (n[sid] || []).filter(([s, e]) => !(s === req.start_date && e === req.end_date));
         return n;
       });
-      await addNotification("vacation_revoked", "Vacation Revoked", `${req.surgeon_name}'s vacation ${req.start_date} → ${req.end_date} was revoked`);
+      const revokeTargets = [...new Set([req.surgeon_id, ...schedulerAdminIds].filter(Boolean))];
+      await addNotification("vacation_revoked", "Vacation Revoked", `${req.surgeon_name}'s vacation ${req.start_date} → ${req.end_date} was revoked`, {}, revokeTargets);
     } catch (e) {
       console.error("Revoke error:", e);
     }
-  }, [addNotification]);
+  }, [addNotification, schedulerAdminIds]);
 
   // ─── Clear All Reviewed Vacation Requests ───
   const clearReviewedRequests = useCallback(async () => {
@@ -3548,6 +3550,16 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
     });
     return m;
   }, [apps]);
+  // Person IDs that should receive notifications for scheduler-relevant events
+  // (manual shift edits, vacation requests, vacation revocations).
+  // Derived from user_profiles: anyone with role "scheduler" or person_id "admin".
+  const schedulerAdminIds = useMemo(() => {
+    const ids = new Set();
+    allProfiles.forEach(p => {
+      if (p?.role === "scheduler" || p?.person_id === "admin") ids.add(p.person_id);
+    });
+    return [...ids];
+  }, [allProfiles]);
   const mondays = useMemo(() => getMondays(startYear, startMonth, numWeeks), [startYear, startMonth, numWeeks]);
   const endDate = mondays.length > 0 ? addD(mondays[mondays.length - 1], 6) : null;
   const endMoIdx = endDate ? endDate.getMonth() : (startMonth + 2) % 12;
@@ -4210,17 +4222,18 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
     setEditingWeek(null);
     setSwapSuggestions(null);
     setSwapTarget(null);
-    // Notify about the change
+    // Notify about the change — only the affected surgeons and the scheduler/admin
     const oldName = sMap[oldId]?.name || "—";
     const newName = sMap[newId]?.name || "—";
     const shiftLabel = SHIFT_LABELS[shift] || shift;
-    addNotification("schedule_changed", "Schedule Changed", `${shiftLabel} (wk of ${mStr}): ${oldName} → ${newName}`);
+    const editTargets = [...new Set([oldId, newId, ...schedulerAdminIds].filter(Boolean))];
+    addNotification("schedule_changed", "Shift Reassigned", `${shiftLabel} (wk of ${mStr}): ${oldName} → ${newName}`, {}, editTargets);
     sendEmailNotif("schedule_changed", {
       shift: shiftLabel,
       week: mStr,
       old_surgeon: oldName,
       new_surgeon: newName
-    });
+    }, editTargets);
   };
 
   // ─── Smart Swap Suggestions ───
