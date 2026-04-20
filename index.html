@@ -41,10 +41,18 @@
   <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.page.js" defer></script>
-  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script type="module">
+    // Load the Supabase JS SDK as an ES module. Exposes createClient under
+    // window._supabaseSDK so our non-module scripts below can use it,
+    // without polluting the global scope with a `supabase` identifier
+    // that would collide with our const supabase REST wrapper.
+    import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js/+esm";
+    window._supabaseSDK = { createClient };
+    window.dispatchEvent(new CustomEvent("supabase-sdk-ready"));
+  </script>
   <script>
     // ─── Auto-update: bump this version string each deploy ───
-    var APP_VERSION = "2026.04.19o";
+    var APP_VERSION = "2026.04.19p";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -89,10 +97,6 @@
    ═══════════════════════════════════════════════════ */
 const SUPABASE_URL = "https://xqongyahdnkozqunpwmu.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inhxb25neWFoZG5rb3pxdW5wd211Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU3Nzg2NDksImV4cCI6MjA5MTM1NDY0OX0.a2p_twcuDAfI_ju-oGzut_NCPNzKjBEbkhVsMGXYyww";
-
-// Capture the Supabase JS SDK (loaded via CDN in head, exposes window.supabase)
-// before we shadow `supabase` with our local REST wrapper below.
-const _supabaseSDK = (typeof window !== "undefined" && window.supabase?.createClient) ? window.supabase : null;
 
 // Lightweight Supabase REST client (no SDK dependency needed)
 const dbHeaders = { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}`, "Content-Type": "application/json" };
@@ -152,21 +156,25 @@ const db = {
    ═══════════════════════════════════════════════════
    The `supabase` object above is a minimal REST wrapper we built to avoid
    dragging in the SDK. But Realtime (WebSocket channels) needs the real SDK.
-   We load it via CDN in index-source.html and create a second client here
-   that shares the same URL + anon key. The REST wrapper stays in charge of
-   all writes and initial loads; the Realtime client only subscribes to
-   channels for pushed updates. */
-const supabaseRT = (() => {
+   We load it via a <script type="module"> in index-source.html, which
+   exposes createClient on window._supabaseSDK. Since module scripts load
+   async, we lazy-initialize the Realtime client on first use — by the time
+   React mounts and calls getSupabaseRT(), the SDK is always available. */
+let _supabaseRTInstance = null;
+function getSupabaseRT() {
+  if (_supabaseRTInstance) return _supabaseRTInstance;
   try {
-    if (_supabaseSDK?.createClient) {
-      return _supabaseSDK.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+    const SDK = (typeof window !== "undefined") ? window._supabaseSDK : null;
+    if (SDK?.createClient) {
+      _supabaseRTInstance = SDK.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
         realtime: { params: { eventsPerSecond: 10 } },
         auth: { persistSession: false, autoRefreshToken: false },
       });
+      return _supabaseRTInstance;
     }
   } catch(e) { console.warn("Supabase Realtime client init failed:", e); }
   return null;
-})();
+}
 
 /* ═══════════════════════════════════════════════════
    CONSTANTS
@@ -2049,11 +2057,15 @@ function CallSchedule() {
       await Promise.allSettled([refreshScheduleRow(), refreshConfigRow(), refreshVacReqs(), refreshTradeReqs(), refreshNotifs()]);
     };
 
-    // Wire up Realtime subscriptions if the SDK is available
+    // Wire up Realtime subscriptions if the SDK is available.
+    // The SDK loads via ES module (async), so we wait for it if needed.
     let rtChannel = null;
-    if (typeof supabaseRT !== "undefined" && supabaseRT) {
+    let rtClient = null;
+    const setupRealtime = () => {
       try {
-        rtChannel = supabaseRT.channel("dsg-schedule-sync").on("postgres_changes", {
+        rtClient = typeof getSupabaseRT === "function" ? getSupabaseRT() : null;
+        if (!rtClient) return false;
+        rtChannel = rtClient.channel("dsg-schedule-sync").on("postgres_changes", {
           event: "*",
           schema: "public",
           table: "call_schedule_data"
@@ -2077,10 +2089,24 @@ function CallSchedule() {
           // On (re)connect, do one immediate fetch to catch anything we missed
           if (status === "SUBSCRIBED") refreshAll();
         });
+        return true;
       } catch (e) {
         console.warn("Realtime subscribe failed, falling back to poll:", e);
-        rtChannel = null;
+        return false;
       }
+    };
+
+    // Try immediately; if SDK not ready yet, wait for the ready event (up to 5s)
+    if (!setupRealtime()) {
+      const onReady = () => {
+        window.removeEventListener("supabase-sdk-ready", onReady);
+        setupRealtime();
+      };
+      window.addEventListener("supabase-sdk-ready", onReady);
+      setTimeout(() => {
+        window.removeEventListener("supabase-sdk-ready", onReady);
+        if (!rtChannel) setupRealtime();
+      }, 5000);
     }
 
     // Safety-net poll: every 60 seconds, do a full refresh. Runs regardless
@@ -2090,9 +2116,9 @@ function CallSchedule() {
     const pollInterval = setInterval(refreshAll, 60000);
     return () => {
       clearInterval(pollInterval);
-      if (rtChannel) {
+      if (rtChannel && rtClient) {
         try {
-          supabaseRT.removeChannel(rtChannel);
+          rtClient.removeChannel(rtChannel);
         } catch (e) {}
       }
     };

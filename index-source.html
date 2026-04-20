@@ -44,10 +44,18 @@
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
   <script src="https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.page.js" defer></script>
-  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script type="module">
+    // Load the Supabase JS SDK as an ES module. Exposes createClient under
+    // window._supabaseSDK so our non-module scripts below can use it,
+    // without polluting the global scope with a `supabase` identifier
+    // that would collide with our const supabase REST wrapper.
+    import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js/+esm";
+    window._supabaseSDK = { createClient };
+    window.dispatchEvent(new CustomEvent("supabase-sdk-ready"));
+  </script>
   <script>
     // ─── Auto-update: bump this version string each deploy ───
-    var APP_VERSION = "2026.04.19o";
+    var APP_VERSION = "2026.04.19p";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -85,7 +93,7 @@
   <div id="root"></div>
   <script>
     // Cache-bust with version — update this string when deploying changes
-    var _v = "2026.04.19o";
+    var _v = "2026.04.19p";
     ['config.js','helpers.js','generator.js','app-styles.js'].forEach(function(f) {
       document.write('<script src="'+f+'?v='+_v+'"><\/script>');
     });
@@ -725,11 +733,15 @@ function CallSchedule() {
       ]);
     };
 
-    // Wire up Realtime subscriptions if the SDK is available
+    // Wire up Realtime subscriptions if the SDK is available.
+    // The SDK loads via ES module (async), so we wait for it if needed.
     let rtChannel = null;
-    if (typeof supabaseRT !== "undefined" && supabaseRT) {
+    let rtClient = null;
+    const setupRealtime = () => {
       try {
-        rtChannel = supabaseRT.channel("dsg-schedule-sync")
+        rtClient = (typeof getSupabaseRT === "function") ? getSupabaseRT() : null;
+        if (!rtClient) return false;
+        rtChannel = rtClient.channel("dsg-schedule-sync")
           .on("postgres_changes", { event: "*", schema: "public", table: "call_schedule_data" }, refreshScheduleRow)
           .on("postgres_changes", { event: "*", schema: "public", table: "call_schedule_config" }, refreshConfigRow)
           .on("postgres_changes", { event: "*", schema: "public", table: "vacation_requests" }, refreshVacReqs)
@@ -739,7 +751,15 @@ function CallSchedule() {
             // On (re)connect, do one immediate fetch to catch anything we missed
             if (status === "SUBSCRIBED") refreshAll();
           });
-      } catch(e) { console.warn("Realtime subscribe failed, falling back to poll:", e); rtChannel = null; }
+        return true;
+      } catch(e) { console.warn("Realtime subscribe failed, falling back to poll:", e); return false; }
+    };
+
+    // Try immediately; if SDK not ready yet, wait for the ready event (up to 5s)
+    if (!setupRealtime()) {
+      const onReady = () => { window.removeEventListener("supabase-sdk-ready", onReady); setupRealtime(); };
+      window.addEventListener("supabase-sdk-ready", onReady);
+      setTimeout(() => { window.removeEventListener("supabase-sdk-ready", onReady); if (!rtChannel) setupRealtime(); }, 5000);
     }
 
     // Safety-net poll: every 60 seconds, do a full refresh. Runs regardless
@@ -750,7 +770,7 @@ function CallSchedule() {
 
     return () => {
       clearInterval(pollInterval);
-      if (rtChannel) { try { supabaseRT.removeChannel(rtChannel); } catch(e) {} }
+      if (rtChannel && rtClient) { try { rtClient.removeChannel(rtChannel); } catch(e) {} }
     };
   }, []);
 
