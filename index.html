@@ -52,7 +52,7 @@
   </script>
   <script>
     // ─── Auto-update: bump this version string each deploy ───
-    var APP_VERSION = "2026.04.19q";
+    var APP_VERSION = "2026.04.19r";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -1406,6 +1406,18 @@ function CallSchedule() {
     id: "admin",
     name: "ADMIN (Clinic Manager)"
   }], [surgeons, apps]);
+
+  // Person IDs that should receive notifications for scheduler-relevant events
+  // (manual shift edits, vacation requests, vacation revocations, trade cascades).
+  // Derived from user_profiles: anyone with role "scheduler" or person_id "admin".
+  // Declared early so it's available to useCallback dependency arrays below.
+  const schedulerAdminIds = useMemo(() => {
+    const ids = new Set();
+    allProfiles.forEach(p => {
+      if (p?.role === "scheduler" || p?.person_id === "admin") ids.add(p.person_id);
+    });
+    return [...ids];
+  }, [allProfiles]);
 
   // ─── Scheduler Mode (PIN protected) ───
   const [isScheduler, setIsScheduler] = useState(false);
@@ -3550,16 +3562,6 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
     });
     return m;
   }, [apps]);
-  // Person IDs that should receive notifications for scheduler-relevant events
-  // (manual shift edits, vacation requests, vacation revocations).
-  // Derived from user_profiles: anyone with role "scheduler" or person_id "admin".
-  const schedulerAdminIds = useMemo(() => {
-    const ids = new Set();
-    allProfiles.forEach(p => {
-      if (p?.role === "scheduler" || p?.person_id === "admin") ids.add(p.person_id);
-    });
-    return [...ids];
-  }, [allProfiles]);
   const mondays = useMemo(() => getMondays(startYear, startMonth, numWeeks), [startYear, startMonth, numWeeks]);
   const endDate = mondays.length > 0 ? addD(mondays[mondays.length - 1], 6) : null;
   const endMoIdx = endDate ? endDate.getMonth() : (startMonth + 2) % 12;
