@@ -41,9 +41,10 @@
   <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.page.js" defer></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script>
     // ─── Auto-update: bump this version string each deploy ───
-    var APP_VERSION = "2026.04.19n";
+    var APP_VERSION = "2026.04.19o";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -88,6 +89,10 @@
    ═══════════════════════════════════════════════════ */
 const SUPABASE_URL = "https://xqongyahdnkozqunpwmu.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inhxb25neWFoZG5rb3pxdW5wd211Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU3Nzg2NDksImV4cCI6MjA5MTM1NDY0OX0.a2p_twcuDAfI_ju-oGzut_NCPNzKjBEbkhVsMGXYyww";
+
+// Capture the Supabase JS SDK (loaded via CDN in head, exposes window.supabase)
+// before we shadow `supabase` with our local REST wrapper below.
+const _supabaseSDK = (typeof window !== "undefined" && window.supabase?.createClient) ? window.supabase : null;
 
 // Lightweight Supabase REST client (no SDK dependency needed)
 const dbHeaders = { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}`, "Content-Type": "application/json" };
@@ -141,6 +146,27 @@ const db = {
     return supabase.from(table).upsert(row);
   },
 };
+
+/* ═══════════════════════════════════════════════════
+   SUPABASE REALTIME CLIENT
+   ═══════════════════════════════════════════════════
+   The `supabase` object above is a minimal REST wrapper we built to avoid
+   dragging in the SDK. But Realtime (WebSocket channels) needs the real SDK.
+   We load it via CDN in index-source.html and create a second client here
+   that shares the same URL + anon key. The REST wrapper stays in charge of
+   all writes and initial loads; the Realtime client only subscribes to
+   channels for pushed updates. */
+const supabaseRT = (() => {
+  try {
+    if (_supabaseSDK?.createClient) {
+      return _supabaseSDK.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+        realtime: { params: { eventsPerSecond: 10 } },
+        auth: { persistSession: false, autoRefreshToken: false },
+      });
+    }
+  } catch(e) { console.warn("Supabase Realtime client init failed:", e); }
+  return null;
+})();
 
 /* ═══════════════════════════════════════════════════
    CONSTANTS
@@ -1949,64 +1975,127 @@ function CallSchedule() {
       }
     })();
 
-    // Poll for changes from other users every 15 seconds
-    const pollInterval = setInterval(async () => {
+    // ─── Realtime subscriptions (preferred) with safety-net poll ───
+    // Replaces the old 15-second poll. Supabase Realtime pushes changes
+    // via WebSocket the instant they happen. We also run a much slower
+    // 60-second poll as a safety net in case the WebSocket drops or misses
+    // an event. lastSyncRef still protects against self-echo (we skip our
+    // own updates by comparing updated_at timestamps).
+
+    // Helper: re-read the schedule row and apply it to state (shared by
+    // Realtime handler and safety-net poll)
+    const refreshScheduleRow = async () => {
       try {
         const {
           data: row
         } = await supabase.from("call_schedule_data").select("data,updated_at").eq("id", "main").single();
-        if (row?.data) {
-          const d = typeof row.data === "string" ? JSON.parse(row.data) : row.data;
-          // Only update if data actually changed (compare updated_at)
-          if (row.updated_at !== lastSyncRef.current) {
-            lastSyncRef.current = row.updated_at;
-            if (d.surgeons) setSurgeons(d.surgeons);
-            if (d.apps) setApps(d.apps);
-            if (d.vacations) setVacations(d.vacations);
-            if (d.backupMondays) setBackupMondaySet(new Set(d.backupMondays));
-            if (d.fierceBackup) setFierceBackupSet(new Set(d.fierceBackup));
-            if (d.schedule) setSchedule(d.schedule);
-            if (d.appShifts) setAppShifts(d.appShifts);
-            if (d.priorCounts && Object.values(d.priorCounts).some(c => Object.values(c).some(v => v > 0))) setPriorCounts(d.priorCounts);
-            if (d.year1Counts && Object.values(d.year1Counts).some(c => Object.values(c).some(v => v > 0))) setYear1Counts(d.year1Counts);
-            if (d.year2Counts && Object.values(d.year2Counts).some(c => Object.values(c).some(v => v > 0))) setYear2Counts(d.year2Counts);
-            if (d.startMonth !== undefined) setStartMonth(d.startMonth);
-            if (d.startYear !== undefined) setStartYear(d.startYear);
-            if (d.numWeeks) setNumWeeks(d.numWeeks);
-            if (d.holidayAssignments) setHolidayAssignments(d.holidayAssignments);
-          }
-        }
+        if (!row?.data) return;
+        if (row.updated_at === lastSyncRef.current) return; // nothing new
+        lastSyncRef.current = row.updated_at;
+        const d = typeof row.data === "string" ? JSON.parse(row.data) : row.data;
+        if (d.surgeons) setSurgeons(d.surgeons);
+        if (d.apps) setApps(d.apps);
+        if (d.vacations) setVacations(d.vacations);
+        if (d.backupMondays) setBackupMondaySet(new Set(d.backupMondays));
+        if (d.fierceBackup) setFierceBackupSet(new Set(d.fierceBackup));
+        if (d.schedule) setSchedule(d.schedule);
+        if (d.appShifts) setAppShifts(d.appShifts);
+        if (d.priorCounts && Object.values(d.priorCounts).some(c => Object.values(c).some(v => v > 0))) setPriorCounts(d.priorCounts);
+        if (d.year1Counts && Object.values(d.year1Counts).some(c => Object.values(c).some(v => v > 0))) setYear1Counts(d.year1Counts);
+        if (d.year2Counts && Object.values(d.year2Counts).some(c => Object.values(c).some(v => v > 0))) setYear2Counts(d.year2Counts);
+        if (d.startMonth !== undefined) setStartMonth(d.startMonth);
+        if (d.startYear !== undefined) setStartYear(d.startYear);
+        if (d.numWeeks) setNumWeeks(d.numWeeks);
+        if (d.holidayAssignments) setHolidayAssignments(d.holidayAssignments);
+      } catch (e) {}
+    };
+    const refreshConfigRow = async () => {
+      try {
         const {
           data: cfgRow2
         } = await supabase.from("call_schedule_config").select("scheduler_pin,edge_function_url").eq("id", "config").single();
         if (cfgRow2?.scheduler_pin !== undefined) setSchedulerPin(prev => cfgRow2.scheduler_pin !== prev ? cfgRow2.scheduler_pin : prev);
         if (cfgRow2?.edge_function_url !== undefined) setEdgeFunctionUrl(prev => cfgRow2.edge_function_url !== prev ? cfgRow2.edge_function_url : prev);
-
-        // Refresh vacation requests and notifications
-        try {
-          const reqs = await db.query("vacation_requests", {
-            order: "submitted_at.desc",
-            limit: 100
-          });
-          if (Array.isArray(reqs)) setVacRequests(reqs);
-        } catch (e) {}
-        try {
-          const trades = await db.query("shift_trade_requests", {
-            order: "submitted_at.desc",
-            limit: 100
-          });
-          if (Array.isArray(trades)) setTradeRequests(trades);
-        } catch (e) {}
-        try {
-          const notifs = await db.query("notifications", {
-            order: "created_at.desc",
-            limit: 50
-          });
-          if (Array.isArray(notifs)) setNotifications(notifs);
-        } catch (e) {}
       } catch (e) {}
-    }, 15000);
-    return () => clearInterval(pollInterval);
+    };
+    const refreshVacReqs = async () => {
+      try {
+        const reqs = await db.query("vacation_requests", {
+          order: "submitted_at.desc",
+          limit: 100
+        });
+        if (Array.isArray(reqs)) setVacRequests(reqs);
+      } catch (e) {}
+    };
+    const refreshTradeReqs = async () => {
+      try {
+        const trades = await db.query("shift_trade_requests", {
+          order: "submitted_at.desc",
+          limit: 100
+        });
+        if (Array.isArray(trades)) setTradeRequests(trades);
+      } catch (e) {}
+    };
+    const refreshNotifs = async () => {
+      try {
+        const notifs = await db.query("notifications", {
+          order: "created_at.desc",
+          limit: 50
+        });
+        if (Array.isArray(notifs)) setNotifications(notifs);
+      } catch (e) {}
+    };
+    const refreshAll = async () => {
+      await Promise.allSettled([refreshScheduleRow(), refreshConfigRow(), refreshVacReqs(), refreshTradeReqs(), refreshNotifs()]);
+    };
+
+    // Wire up Realtime subscriptions if the SDK is available
+    let rtChannel = null;
+    if (typeof supabaseRT !== "undefined" && supabaseRT) {
+      try {
+        rtChannel = supabaseRT.channel("dsg-schedule-sync").on("postgres_changes", {
+          event: "*",
+          schema: "public",
+          table: "call_schedule_data"
+        }, refreshScheduleRow).on("postgres_changes", {
+          event: "*",
+          schema: "public",
+          table: "call_schedule_config"
+        }, refreshConfigRow).on("postgres_changes", {
+          event: "*",
+          schema: "public",
+          table: "vacation_requests"
+        }, refreshVacReqs).on("postgres_changes", {
+          event: "*",
+          schema: "public",
+          table: "shift_trade_requests"
+        }, refreshTradeReqs).on("postgres_changes", {
+          event: "*",
+          schema: "public",
+          table: "notifications"
+        }, refreshNotifs).subscribe(status => {
+          // On (re)connect, do one immediate fetch to catch anything we missed
+          if (status === "SUBSCRIBED") refreshAll();
+        });
+      } catch (e) {
+        console.warn("Realtime subscribe failed, falling back to poll:", e);
+        rtChannel = null;
+      }
+    }
+
+    // Safety-net poll: every 60 seconds, do a full refresh. Runs regardless
+    // of Realtime state — if Realtime is working, nothing will actually change
+    // state (updated_at check prevents it). If Realtime is broken, this keeps
+    // the app usable at 60s latency instead of frozen.
+    const pollInterval = setInterval(refreshAll, 60000);
+    return () => {
+      clearInterval(pollInterval);
+      if (rtChannel) {
+        try {
+          supabaseRT.removeChannel(rtChannel);
+        } catch (e) {}
+      }
+    };
   }, []);
 
   // ─── Supabase: Auto-save on changes ───
