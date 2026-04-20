@@ -43,7 +43,7 @@
   <script src="https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.page.js" defer></script>
   <script>
     // ─── Auto-update: bump this version string each deploy ───
-    var APP_VERSION = "2026.04.19l";
+    var APP_VERSION = "2026.04.19m";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -2836,9 +2836,9 @@ function CallSchedule() {
           await OneSignal.init({
             appId: "9ca5c08f-6fb3-4ee5-b564-09aafc1c1901",
             serviceWorkerParam: {
-              scope: "/Call-Schedule-App/"
+              scope: "/"
             },
-            serviceWorkerPath: "/Call-Schedule-App/OneSignalSDKWorker.js"
+            serviceWorkerPath: "/OneSignalSDKWorker.js"
           });
           setOneSignalReady(true);
           // Check current permission
