@@ -40,7 +40,7 @@
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.page.js" defer></script>
   <script>
-    var APP_VERSION = "2026.04.19b";
+    var APP_VERSION = "2026.04.19h";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -1302,6 +1302,7 @@ function CallSchedule() {
   const [scanMsg, setScanMsg] = useState("");
   const [loaded, setLoaded] = useState(false);
   const [saveStatus, setSaveStatus] = useState("");
+  const [saveError, setSaveError] = useState(false);
   const fileRef = useRef(null);
   const lastSyncRef = useRef(null);
   const loadedAtRef = useRef(null); // timestamp when initial load completed — prevents auto-save race
@@ -1309,7 +1310,6 @@ function CallSchedule() {
   useEffect(() => {
     scheduleRef.current = schedule;
   }, [schedule]);
-  const [showApiKey, setShowApiKey] = useState(false);
 
   // ─── Vacation Requests ───
   const [vacRequests, setVacRequests] = useState([]);
@@ -1441,11 +1441,9 @@ function CallSchedule() {
       if (n.type === "schedule_published" || n.type === "schedule_changed") return true;
       if (n.data?.surgeon_id === mySurgeon) return true;
       if (n.data?.from_surgeon_id === mySurgeon || n.data?.to_surgeon_id === mySurgeon) return true;
-      const myName = allPeople.find(p => p.id === mySurgeon)?.name;
-      if (myName && n.message?.includes(myName)) return true;
       return false;
     });
-  }, [notifications, isScheduler, mySurgeon, allPeople]);
+  }, [notifications, isScheduler, mySurgeon]);
   const myUnreadCount = useMemo(() => myNotifications.filter(n => n.created_at > notifLastSeen).length, [myNotifications, notifLastSeen]);
   const myVacRequests = useMemo(() => {
     if (isScheduler) return vacRequests;
@@ -1807,7 +1805,6 @@ function CallSchedule() {
               if (!n[id]) n[id] = [];
               ranges.forEach(([s, e]) => n[id].push([s, e]));
             });
-            console.log("Merged/refreshed 2026-2027 vacations");
 
             // Force save vacations to Supabase after merge
             setTimeout(async () => {
@@ -1836,7 +1833,6 @@ function CallSchedule() {
                   updated_at: ts
                 });
                 lastSyncRef.current = ts;
-                console.log("Force-saved vacations to Supabase");
               } catch (e) {
                 console.error("Vacation force save error:", e);
               }
@@ -1903,7 +1899,6 @@ function CallSchedule() {
                 ...wk
               };
             });
-            console.log("Imported/refreshed May-Aug 2026 hand-built schedule");
 
             // Force save to Supabase after merge (delayed to let React state flush)
             setTimeout(async () => {
@@ -1924,7 +1919,6 @@ function CallSchedule() {
                   updated_at: ts
                 });
                 lastSyncRef.current = ts;
-                console.log("Force-saved hand-built schedule to Supabase");
               } catch (e) {
                 console.error("Force save error:", e);
               }
@@ -2028,10 +2022,13 @@ function CallSchedule() {
           updated_at: ts
         });
         lastSyncRef.current = ts;
+        setSaveError(false);
         setSaveStatus("Saved");
         setTimeout(() => setSaveStatus(""), 2000);
       } catch (e) {
         console.error("Save failed:", e);
+        setSaveError(true);
+        setSaveStatus("Save failed — retrying…");
       }
     }, 800);
     return () => clearTimeout(timer);
@@ -2079,28 +2076,30 @@ function CallSchedule() {
     setTimeout(() => setSaveStatus(""), 2000);
   };
 
-  // ─── OneSignal Push — send to all subscribed devices ───
+  // ─── OneSignal Push — targeted or broadcast ───
   const [oneSignalApiKey, setOneSignalApiKey] = useState("");
-  const sendPushNotif = useCallback(async (title, message) => {
+  const sendPushNotif = useCallback(async (title, message, targetIds = null) => {
     if (!oneSignalApiKey) return;
     try {
+      const body = {
+        app_id: "9ca5c08f-6fb3-4ee5-b564-09aafc1c1901",
+        headings: { en: title },
+        contents: { en: message },
+        url: "https://fkhan628.github.io/Call-Schedule-App/"
+      };
+      if (Array.isArray(targetIds) && targetIds.length > 0) {
+        body.include_aliases = { external_id: targetIds };
+        body.target_channel = "push";
+      } else {
+        body.included_segments = ["Subscribed Users"];
+      }
       await fetch("https://onesignal.com/api/v1/notifications", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           Authorization: `Basic ${oneSignalApiKey}`
         },
-        body: JSON.stringify({
-          app_id: "9ca5c08f-6fb3-4ee5-b564-09aafc1c1901",
-          included_segments: ["Subscribed Users"],
-          headings: {
-            en: title
-          },
-          contents: {
-            en: message
-          },
-          url: "https://fkhan628.github.io/Call-Schedule-App/"
-        })
+        body: JSON.stringify(body)
       });
     } catch (e) {
       console.error("OneSignal push error:", e);
@@ -2108,7 +2107,7 @@ function CallSchedule() {
   }, [oneSignalApiKey]);
 
   // ─── Add Notification ───
-  const addNotification = useCallback(async (type, title, message, data = {}) => {
+  const addNotification = useCallback(async (type, title, message, data = {}, pushTargetIds = null) => {
     try {
       const notif = {
         type,
@@ -2122,25 +2121,27 @@ function CallSchedule() {
       } = await db.insert("notifications", notif);
       if (inserted) setNotifications(prev => [inserted, ...prev].slice(0, 50));
       // Also send as device push via OneSignal
-      sendPushNotif(title, message);
+      sendPushNotif(title, message, pushTargetIds);
     } catch (e) {
       console.error("Notification error:", e);
     }
   }, [sendPushNotif]);
 
   // ─── Email Notifications via Supabase Edge Function ───
-  const sendEmailNotif = useCallback(async (type, data) => {
+  const sendEmailNotif = useCallback(async (type, data, targetIds = null) => {
     if (!edgeFunctionUrl) return;
     try {
       const currentPrefs = notifPrefsRef.current || {};
       const recipients = [];
       Object.entries(currentPrefs).forEach(([sid, prefs]) => {
         if (!prefs.email || !prefs.email_notifs) return;
+        if (targetIds && !targetIds.includes(sid)) return;
         if (type === "test") {/* send to all email-enabled */} else if ((type === "schedule_published" || type === "schedule_changed" || type === "trade_submitted" || type === "trade_accepted" || type === "trade_declined") && !prefs.schedule_changes) return;else if ((type === "vacation_approved" || type === "vacation_denied" || type === "vacation_submitted") && !prefs.vacation_updates) return;else if (type === "shift_reminder" && !prefs.shift_reminders) return;
+        const person = surgeons.find(s => s.id === sid) || apps.find(a => a.id === sid);
         recipients.push({
           email: prefs.email,
           surgeon_id: sid,
-          name: surgeons.find(s => s.id === sid)?.name || sid
+          name: person?.name || sid
         });
       });
       if (recipients.length === 0) return;
@@ -2159,7 +2160,7 @@ function CallSchedule() {
     } catch (e) {
       console.error("Email notification error:", e);
     }
-  }, [edgeFunctionUrl, surgeons]);
+  }, [edgeFunctionUrl, surgeons, apps]);
 
   // ─── Vacation Request: Submit ───
   const submitVacRequest = useCallback(async () => {
@@ -2310,13 +2311,13 @@ function CallSchedule() {
         await addNotification("trade_submitted", "Shift Trade Proposed", `${fromName} wants to trade ${shiftLabel} (${tradeWeek}) with ${toName}`, {
           from_surgeon_id: tradeFrom,
           to_surgeon_id: tradeTo
-        });
+        }, [tradeFrom, tradeTo]);
         sendEmailNotif("trade_submitted", {
           from_name: fromName,
           to_name: toName,
           shift: shiftLabel,
           week: tradeWeek
-        });
+        }, [tradeFrom, tradeTo]);
       }
       setTradeWeek("");
       setTradeShift("");
@@ -2577,15 +2578,15 @@ function CallSchedule() {
       await addNotification("trade_accepted", "Shift Trade Accepted", `${req.to_surgeon_name} accepted: ${req.shift_label} (${req.week_monday}) with ${req.from_surgeon_name}`, {
         from_surgeon_id: req.from_surgeon_id,
         to_surgeon_id: req.to_surgeon_id
-      });
+      }, [req.from_surgeon_id, req.to_surgeon_id]);
       sendEmailNotif("trade_accepted", {
         from_name: req.from_surgeon_name,
         to_name: req.to_surgeon_name,
         shift: req.shift_label,
         week: req.week_monday
-      });
+      }, [req.from_surgeon_id, req.to_surgeon_id]);
 
-      // Notify about each cascade change
+      // Notify about each cascade change — push to the affected surgeons only
       for (const ch of cascades) {
         const fromName = nameOf(ch.from);
         const toName = nameOf(ch.to);
@@ -2593,7 +2594,7 @@ function CallSchedule() {
           from_surgeon_id: ch.from,
           to_surgeon_id: ch.to,
           surgeon_id: ch.to
-        });
+        }, [ch.from, ch.to].filter(Boolean));
       }
     } catch (e) {
       console.error("Accept trade error:", e);
@@ -2614,11 +2615,17 @@ function CallSchedule() {
       await addNotification("trade_declined", "Shift Trade Declined", `${req.to_surgeon_name} declined: ${req.shift_label} (${req.week_monday})`, {
         from_surgeon_id: req.from_surgeon_id,
         to_surgeon_id: req.to_surgeon_id
-      });
+      }, [req.from_surgeon_id, req.to_surgeon_id]);
+      sendEmailNotif("trade_declined", {
+        from_name: req.from_surgeon_name,
+        to_name: req.to_surgeon_name,
+        shift: req.shift_label,
+        week: req.week_monday
+      }, [req.from_surgeon_id, req.to_surgeon_id]);
     } catch (e) {
       console.error("Decline trade error:", e);
     }
-  }, [addNotification]);
+  }, [addNotification, sendEmailNotif]);
 
   // ─── Delete Trade Request ───
   const deleteTradeRequest = useCallback(async reqId => {
@@ -2797,7 +2804,7 @@ function CallSchedule() {
     const initOneSignal = async () => {
       try {
         if (!window.OneSignalDeferred) {
-          console.log("OneSignal SDK not loaded");
+          console.warn("OneSignal SDK not loaded");
           return;
         }
         window.OneSignalDeferred = window.OneSignalDeferred || [];
@@ -2826,6 +2833,20 @@ function CallSchedule() {
     };
     initOneSignal();
   }, []);
+
+  // Associate the OneSignal subscription with this user's person_id so that
+  // push notifications can be targeted via external_id. Existing subscribed
+  // users get tagged on next app open — no re-subscription required.
+  useEffect(() => {
+    if (!oneSignalReady || !mySurgeon || mySurgeon === "admin") return;
+    try {
+      if (window.OneSignal?.login) {
+        window.OneSignal.login(mySurgeon).catch(e => console.error("OneSignal.login error:", e));
+      }
+    } catch (e) {
+      console.error("OneSignal external id set error:", e);
+    }
+  }, [oneSignalReady, mySurgeon]);
 
   // Request push permission via OneSignal
   const requestPushPermission = useCallback(async () => {
@@ -3518,6 +3539,7 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
             year2Counts,
             startMonth,
             startYear,
+            numWeeks,
             holidayAssignments
           };
           await supabase.from("call_schedule_data").upsert({
@@ -3557,6 +3579,7 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
           year2Counts,
           startMonth,
           startYear,
+          numWeeks,
           holidayAssignments
         };
         await supabase.from("call_schedule_data").upsert({
@@ -4357,24 +4380,23 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
       return n;
     });
 
-    const notifiedIds = new Set();
     const reasonSuffix = draft.reason ? ` (${draft.reason})` : "";
     changes.forEach(c => {
-      const oldName = c.isApp ? (aMap[c.oldId]?.name || (c.oldId ? c.oldId : "—")) : (sMap[c.oldId]?.name || "—");
-      const newName = c.isApp ? (aMap[c.newId]?.name || (c.newId ? c.newId : "—")) : (sMap[c.newId]?.name || "—");
-      const msg = `${c.slotLabel}: ${oldName} → ${newName}${reasonSuffix}`;
-      addNotification("schedule_changed", "Manual Schedule Edit", msg);
-      [c.oldId, c.newId].forEach(id => {
-        if (id && !notifiedIds.has(id)) {
-          notifiedIds.add(id);
-          sendEmailNotif("schedule_changed", {
-            shift: c.slotLabel,
-            week: mondayStr,
-            old_surgeon: oldName,
-            new_surgeon: newName,
-          });
-        }
+      const oldName = c.isApp ? (aMap[c.oldId]?.name || "—") : (sMap[c.oldId]?.name || "—");
+      const newName = c.isApp ? (aMap[c.newId]?.name || "—") : (sMap[c.newId]?.name || "—");
+      const baseMsg = `${c.slotLabel}: ${oldName} → ${newName}${reasonSuffix}`;
+      const affected = [c.oldId, c.newId].filter(Boolean);
+      affected.forEach(pid => {
+        addNotification("schedule_changed", "Manual Schedule Edit", baseMsg, { surgeon_id: pid }, [pid]);
       });
+      if (affected.length > 0) {
+        sendEmailNotif("schedule_changed", {
+          shift: c.slotLabel,
+          week: mondayStr,
+          old_surgeon: oldName,
+          new_surgeon: newName,
+        }, affected);
+      }
     });
 
     setEditWeekModal(null);
@@ -4646,7 +4668,9 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       wkndB: 0,
       offB: 0
     });
-    Object.values(schedule).forEach(wk => {
+    const periodKeys = new Set(mondays.map(m => fmt(m)));
+    Object.entries(schedule).forEach(([mStr, wk]) => {
+      if (!periodKeys.has(mStr)) return;
       const bk = wk.isBackup;
       if (wk.dayCall && s[wk.dayCall]) s[wk.dayCall][bk ? "dcB" : "dc"]++;
       if (wk.off && s[wk.off]) s[wk.off][bk ? "offB" : "off"]++;
@@ -4656,7 +4680,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       });
     });
     return s;
-  }, [schedule, surgeons]);
+  }, [schedule, surgeons, mondays]);
 
   // APP stats
   const appStats = useMemo(() => {
@@ -5804,11 +5828,11 @@ ${"</"}script>${"</"}body>${"</"}html>`;
   }, "Call Schedule \xB7 Surgeons + APPs", saveStatus && /*#__PURE__*/React.createElement("span", {
     style: {
       marginLeft: 8,
-      color: "#1a8040",
+      color: saveError ? "#c04040" : "#1a8040",
       fontWeight: 600,
       fontSize: 11
     }
-  }, "\u2601 ", saveStatus), loaded && !saveStatus && /*#__PURE__*/React.createElement("span", {
+  }, saveError ? "\u26A0 " : "\u2601 ", saveStatus), loaded && !saveStatus && /*#__PURE__*/React.createElement("span", {
     style: {
       marginLeft: 8,
       color: "#a0a8b0",
@@ -12036,7 +12060,73 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         browser_push: e.target.checked
       })
     }), "Push"));
-  }), notifPrefsSaving && /*#__PURE__*/React.createElement("span", {
+  }), /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+  style: {
+    fontSize: 11,
+    fontWeight: 600,
+    color: "#5a6a78",
+    margin: "12px 0 6px"
+  }
+}, "All APP Email Addresses (Scheduler Only)"), apps.map(a => {
+  const pref = notifPrefs[a.id] || {};
+  return /*#__PURE__*/React.createElement("div", {
+    key: a.id,
+    style: {
+      display: "flex",
+      gap: 6,
+      alignItems: "center",
+      marginBottom: 6,
+      flexWrap: "wrap"
+    }
+  }, /*#__PURE__*/React.createElement(AppBadge, {
+    id: a.id,
+    small: true
+  }), /*#__PURE__*/React.createElement("input", {
+    value: pref.email || "",
+    onChange: e => saveNotifPref(a.id, {
+      email: e.target.value
+    }),
+    placeholder: "email@example.com",
+    type: "email",
+    style: {
+      ...css.inp,
+      width: 200,
+      fontSize: 11,
+      fontFamily: mono,
+      padding: "4px 8px"
+    }
+  }), /*#__PURE__*/React.createElement("label", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 3,
+      fontSize: 10,
+      color: "#5a6a78",
+      cursor: "pointer"
+    }
+  }, /*#__PURE__*/React.createElement("input", {
+    type: "checkbox",
+    checked: pref.email_notifs || false,
+    onChange: e => saveNotifPref(a.id, {
+      email_notifs: e.target.checked
+    })
+  }), "Email"), /*#__PURE__*/React.createElement("label", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 3,
+      fontSize: 10,
+      color: "#5a6a78",
+      cursor: "pointer"
+    }
+  }, /*#__PURE__*/React.createElement("input", {
+    type: "checkbox",
+    checked: pref.browser_push !== false,
+    onChange: e => saveNotifPref(a.id, {
+      browser_push: e.target.checked
+    })
+  }), "Push"));
+})), notifPrefsSaving && /*#__PURE__*/React.createElement("span", {
     style: {
       fontSize: 10,
       color: "#1a8040"
