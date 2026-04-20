@@ -52,7 +52,7 @@
   </script>
   <script>
     // ─── Auto-update: bump this version string each deploy ───
-    var APP_VERSION = "2026.04.20c";
+    var APP_VERSION = "2026.04.20d";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -2966,21 +2966,16 @@ function CallSchedule() {
   const [oneSignalInitError, setOneSignalInitError] = useState(null);
 
   // Initialize OneSignal on mount.
-  // The service worker path is explicit — this app runs at
-  // fkhan628.github.io/Call-Schedule-App/ (a GitHub Pages project subpath),
-  // but OneSignal defaults to looking for its SW at the origin root. Without
-  // these options the SW silently 404s and no push subscription gets created,
-  // even though the browser still shows "permission granted" from any earlier
-  // successful registration.
+  // OneSignal dashboard Site URL is https://fkhan628.github.io/ and the SW
+  // is served from a sibling user-site repo at the origin root. That matches
+  // OneSignal's defaults, so we don't override serviceWorkerPath here.
   useEffect(() => {
     try {
       window.OneSignalDeferred = window.OneSignalDeferred || [];
       window.OneSignalDeferred.push(async function (OneSignal) {
         try {
           await OneSignal.init({
-            appId: "9ca5c08f-6fb3-4ee5-b564-09aafc1c1901",
-            serviceWorkerPath: "OneSignalSDKWorker.js",
-            serviceWorkerParam: { scope: "./" }
+            appId: "9ca5c08f-6fb3-4ee5-b564-09aafc1c1901"
           });
           setOneSignalReady(true);
           setOneSignalInitError(null);
@@ -3101,6 +3096,7 @@ function CallSchedule() {
   }, [oneSignalReady, mySurgeon, oneSignalInitError]);
 
   // Rescue tool for users stuck in "opted in but no subscription ID" state.
+  // Clears OneSignal service worker + IndexedDB then prompts user to reload.
   const resetPushSubscription = useCallback(async () => {
     setPushDiag({ msg: "Resetting push subscription…", loading: true });
     try {
@@ -3108,33 +3104,21 @@ function CallSchedule() {
         const regs = await navigator.serviceWorker.getRegistrations();
         await Promise.all(regs.filter(r => /OneSignalSDK/i.test(r.active?.scriptURL || "")).map(r => r.unregister()));
       }
+      try {
+        if (window.indexedDB?.deleteDatabase) {
+          await new Promise(resolve => {
+            const req = indexedDB.deleteDatabase("ONE_SIGNAL_SDK_DB");
+            req.onsuccess = req.onerror = req.onblocked = () => resolve();
+            setTimeout(resolve, 2000);
+          });
+        }
+      } catch (e) { console.warn("IndexedDB clear:", e); }
       try { if (window.OneSignal?.logout) await window.OneSignal.logout(); } catch (e) { console.warn("logout:", e); }
-      try {
-        if (window.OneSignal?.User?.PushSubscription?.optOut) await window.OneSignal.User.PushSubscription.optOut();
-      } catch (e) { console.warn("optOut:", e); }
-      try {
-        if (window.OneSignal?.User?.PushSubscription?.optIn) await window.OneSignal.User.PushSubscription.optIn();
-      } catch (e) { console.warn("optIn:", e); }
-      setTimeout(async () => {
-        try {
-          if (mySurgeon && mySurgeon !== "admin" && window.OneSignal?.login) {
-            await window.OneSignal.login(mySurgeon);
-          }
-          const subId = window.OneSignal?.User?.PushSubscription?.id || null;
-          const extId = window.OneSignal?.User?.externalId || null;
-          setPushSubscriptionId(subId);
-          setPushExternalId(extId);
-          if (subId) {
-            setPushDiag({ msg: `✓ Resubscribed${extId ? ` as ${extId}` : ""}. Tap "Diagnose" to verify.`, loading: false });
-          } else {
-            setPushDiag({ msg: "Reset complete but no subscription ID yet. Reload the app (Refresh Now in Settings) and try again.", loading: false });
-          }
-        } catch (e) { setPushDiag({ msg: `Reset post-step error: ${e.message || e}`, loading: false }); }
-      }, 2500);
+      setPushDiag({ msg: "✓ Reset complete. Now tap 'Refresh Now' in Settings below (or close and reopen the app), then return here and tap 'Enable Push Notifications'.", loading: false });
     } catch (e) {
       setPushDiag({ msg: `Reset error: ${e.message || e}`, loading: false });
     }
-  }, [mySurgeon]);
+  }, []);
 
   // Tag the OneSignal subscription with the surgeon ID so we can target them
   useEffect(() => {
