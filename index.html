@@ -52,7 +52,7 @@
   </script>
   <script>
     // ─── Auto-update: bump this version string each deploy ───
-    var APP_VERSION = "2026.04.20a";
+    var APP_VERSION = "2026.04.20b";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -66,7 +66,13 @@
         }
         if (navigator.serviceWorker) {
           promises.push(navigator.serviceWorker.getRegistrations().then(function(regs) {
-            return Promise.all(regs.map(function(r) { return r.unregister(); }));
+            // Preserve OneSignal's service worker — unregistering it kills
+            // existing push subscriptions. Only clear app-cache-related SWs.
+            return Promise.all(regs.map(function(r) {
+              var url = r.active && r.active.scriptURL || "";
+              if (/OneSignalSDK/i.test(url)) return null;
+              return r.unregister();
+            }));
           }));
         }
         Promise.all(promises).then(function() {
@@ -2957,20 +2963,27 @@ function CallSchedule() {
   const [pushDiag, setPushDiag] = useState({ msg: "", loading: false });
   const [pushSubscriptionId, setPushSubscriptionId] = useState(null);
   const [pushExternalId, setPushExternalId] = useState(null);
+  const [oneSignalInitError, setOneSignalInitError] = useState(null);
 
   // Initialize OneSignal on mount.
-  // OneSignalDeferred is a queue that the SDK processes once loaded.
-  // By always pushing to it (and creating it if it doesn't exist yet),
-  // we avoid races with the deferred SDK script tag.
+  // The service worker path is explicit — this app runs at
+  // fkhan628.github.io/Call-Schedule-App/ (a GitHub Pages project subpath),
+  // but OneSignal defaults to looking for its SW at the origin root. Without
+  // these options the SW silently 404s and no push subscription gets created,
+  // even though the browser still shows "permission granted" from any earlier
+  // successful registration.
   useEffect(() => {
     try {
       window.OneSignalDeferred = window.OneSignalDeferred || [];
       window.OneSignalDeferred.push(async function (OneSignal) {
         try {
           await OneSignal.init({
-            appId: "9ca5c08f-6fb3-4ee5-b564-09aafc1c1901"
+            appId: "9ca5c08f-6fb3-4ee5-b564-09aafc1c1901",
+            serviceWorkerPath: "OneSignalSDKWorker.js",
+            serviceWorkerParam: { scope: "./" }
           });
           setOneSignalReady(true);
+          setOneSignalInitError(null);
           // Check current permission
           const perm = OneSignal.Notifications.permission;
           setOneSignalSubscribed(perm);
@@ -2980,12 +2993,20 @@ function CallSchedule() {
             setOneSignalSubscribed(granted);
             setPushPermission(granted ? "granted" : "denied");
           });
+          try {
+            OneSignal.User.PushSubscription.addEventListener("change", ev => {
+              const id = ev?.current?.id || OneSignal?.User?.PushSubscription?.id || null;
+              setPushSubscriptionId(id);
+            });
+          } catch (evErr) { console.warn("Subscription change listener:", evErr); }
         } catch (e) {
           console.error("OneSignal init error:", e);
+          setOneSignalInitError(e?.message || String(e));
         }
       });
     } catch (e) {
       console.error("OneSignal setup error:", e);
+      setOneSignalInitError(e?.message || String(e));
     }
   }, []);
 
@@ -3072,11 +3093,48 @@ function CallSchedule() {
         `External ID: ${extId || "none"}`,
         `Logged in as: ${mySurgeon || "nobody"}`
       ];
+      if (oneSignalInitError) parts.push(`Init error: ${oneSignalInitError}`);
       setPushDiag({ msg: parts.join(" · "), loading: false });
     } catch (e) {
       setPushDiag({ msg: `Diag error: ${e.message || e}`, loading: false });
     }
-  }, [oneSignalReady, mySurgeon]);
+  }, [oneSignalReady, mySurgeon, oneSignalInitError]);
+
+  // Rescue tool for users stuck in "opted in but no subscription ID" state.
+  const resetPushSubscription = useCallback(async () => {
+    setPushDiag({ msg: "Resetting push subscription…", loading: true });
+    try {
+      if (navigator.serviceWorker) {
+        const regs = await navigator.serviceWorker.getRegistrations();
+        await Promise.all(regs.filter(r => /OneSignalSDK/i.test(r.active?.scriptURL || "")).map(r => r.unregister()));
+      }
+      try { if (window.OneSignal?.logout) await window.OneSignal.logout(); } catch (e) { console.warn("logout:", e); }
+      try {
+        if (window.OneSignal?.User?.PushSubscription?.optOut) await window.OneSignal.User.PushSubscription.optOut();
+      } catch (e) { console.warn("optOut:", e); }
+      try {
+        if (window.OneSignal?.User?.PushSubscription?.optIn) await window.OneSignal.User.PushSubscription.optIn();
+      } catch (e) { console.warn("optIn:", e); }
+      setTimeout(async () => {
+        try {
+          if (mySurgeon && mySurgeon !== "admin" && window.OneSignal?.login) {
+            await window.OneSignal.login(mySurgeon);
+          }
+          const subId = window.OneSignal?.User?.PushSubscription?.id || null;
+          const extId = window.OneSignal?.User?.externalId || null;
+          setPushSubscriptionId(subId);
+          setPushExternalId(extId);
+          if (subId) {
+            setPushDiag({ msg: `✓ Resubscribed${extId ? ` as ${extId}` : ""}. Tap "Diagnose" to verify.`, loading: false });
+          } else {
+            setPushDiag({ msg: "Reset complete but no subscription ID yet. Reload the app (Refresh Now in Settings) and try again.", loading: false });
+          }
+        } catch (e) { setPushDiag({ msg: `Reset post-step error: ${e.message || e}`, loading: false }); }
+      }, 2500);
+    } catch (e) {
+      setPushDiag({ msg: `Reset error: ${e.message || e}`, loading: false });
+    }
+  }, [mySurgeon]);
 
   // Tag the OneSignal subscription with the surgeon ID so we can target them
   useEffect(() => {
@@ -12034,7 +12092,16 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       padding: "4px 10px",
       fontSize: 11
     }
-  }, "\uD83D\uDD0D Diagnose"), pushPermission === "granted" && isScheduler && /*#__PURE__*/React.createElement("button", {
+  }, "\uD83D\uDD0D Diagnose"), /*#__PURE__*/React.createElement("button", {
+    onClick: resetPushSubscription,
+    disabled: pushDiag.loading,
+    style: {
+      ...css.btn(false),
+      padding: "4px 10px",
+      fontSize: 11,
+      opacity: pushDiag.loading ? 0.6 : 1
+    }
+  }, "\uD83D\uDD04 Reset Subscription"), pushPermission === "granted" && isScheduler && /*#__PURE__*/React.createElement("button", {
     onClick: sendTestNotification,
     style: {
       ...css.btn(false),
