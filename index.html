@@ -52,7 +52,7 @@
   </script>
   <script>
     // ─── Auto-update: bump this version string each deploy ───
-    var APP_VERSION = "2026.04.20d";
+    var APP_VERSION = "2026.04.20f";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -1291,8 +1291,8 @@ function CallSchedule() {
   const [startMonth, setStartMonth] = useState(4);
   const [startYear, setStartYear] = useState(2026);
   const [numWeeks, setNumWeeks] = useState(14);
-  const [calMonth, setCalMonth] = useState(4);
-  const [calYear, setCalYear] = useState(2026);
+  const [calMonth, setCalMonth] = useState(() => new Date().getMonth());
+  const [calYear, setCalYear] = useState(() => new Date().getFullYear());
 
   // ─── Calendar Filters ───
   const [calFilters, setCalFilters] = useState({
@@ -2228,15 +2228,10 @@ function CallSchedule() {
   };
 
   // ─── Push Notifications — sent via send-push Edge Function ───
-  // The OneSignal REST API key lives server-side in Supabase secrets.
-  // Client only sends { title, message, targetIds? } to the Edge Function,
-  // which proxies to OneSignal. If targetIds is a non-empty array, only those
-  // person_ids (mapped via OneSignal external_id aliases) receive the push.
-  // Otherwise it broadcasts to all subscribed users.
-  const sendPushNotif = useCallback(async (title, message, targetIds = null) => {
+  // deepLinkUrl: Edge Function forwards to OneSignal so push clicks open
+  // the app at the relevant tab/week.
+  const sendPushNotif = useCallback(async (title, message, targetIds = null, deepLinkUrl = null) => {
     if (!edgeFunctionUrl) return;
-    // Derive send-push URL from the configured send-notification URL
-    // (they share the /functions/v1/ base path).
     const pushUrl = edgeFunctionUrl.replace(/\/[^/]+$/, "/send-push");
     try {
       const body = {
@@ -2246,6 +2241,7 @@ function CallSchedule() {
       if (Array.isArray(targetIds) && targetIds.length > 0) {
         body.targetIds = targetIds;
       }
+      if (deepLinkUrl) body.url = deepLinkUrl;
       await fetch(pushUrl, {
         method: "POST",
         headers: {
@@ -2258,10 +2254,41 @@ function CallSchedule() {
     }
   }, [edgeFunctionUrl]);
 
+  // Build a deep-link URL for a notification so push clicks land on the
+  // relevant tab (and calendar week if applicable).
+  const buildDeepLink = useCallback((type, data) => {
+    try {
+      const base = window.location.origin + window.location.pathname;
+      let tab = null;
+      let week = null;
+      switch (type) {
+        case "schedule_changed":
+        case "schedule_published":
+        case "shift_reminder":
+          tab = "calendar";
+          if (data?.week && /^\d{4}-\d{2}-\d{2}$/.test(data.week)) week = data.week;
+          break;
+        case "vacation_submitted":
+        case "vacation_approved":
+        case "vacation_denied":
+        case "vacation_revoked":
+        case "trade_submitted":
+        case "trade_accepted":
+        case "trade_declined":
+          tab = "requests";
+          break;
+        default:
+          return null;
+      }
+      const params = new URLSearchParams();
+      if (tab) params.set("tab", tab);
+      if (week) params.set("week", week);
+      const q = params.toString();
+      return q ? `${base}?${q}` : base;
+    } catch (e) { return null; }
+  }, []);
+
   // ─── Add Notification ───
-  // pushTargetIds: optional array of person_ids to scope the push notification to.
-  // If omitted, the push is a broadcast (useful for group-wide events like
-  // "Schedule Published"). Targeted push is used for manual edits, trades, etc.
   const addNotification = useCallback(async (type, title, message, data = {}, pushTargetIds = null) => {
     try {
       const notif = {
@@ -2275,12 +2302,12 @@ function CallSchedule() {
         data: inserted
       } = await db.insert("notifications", notif);
       if (inserted) setNotifications(prev => [inserted, ...prev].slice(0, 50));
-      // Also send as device push via OneSignal
-      sendPushNotif(title, message, pushTargetIds);
+      const deepLinkUrl = buildDeepLink(type, data);
+      sendPushNotif(title, message, pushTargetIds, deepLinkUrl);
     } catch (e) {
       console.error("Notification error:", e);
     }
-  }, [sendPushNotif]);
+  }, [sendPushNotif, buildDeepLink]);
 
   // ─── Email Notifications via Supabase Edge Function ───
   // If targetIds is provided, only those person_ids receive the email (used for
@@ -2754,7 +2781,8 @@ function CallSchedule() {
         await addNotification("schedule_changed", "Shift Reassigned", `${SHIFT_LABELS[ch.shiftKey]} (${ch.week}) moved from ${fromName} to ${toName} due to trade`, {
           from_surgeon_id: ch.from,
           to_surgeon_id: ch.to,
-          surgeon_id: ch.to
+          surgeon_id: ch.to,
+          week: ch.week
         }, cascadeTargets);
       }
     } catch (e) {
@@ -3168,6 +3196,35 @@ function CallSchedule() {
       }
       setNotifPrefsLoaded(true);
     })();
+  }, [loaded]);
+
+  // ─── Deep-link handler for push notification clicks ───
+  // OneSignal push clicks land on the app with ?tab=X or ?tab=X&week=YYYY-MM-DD
+  // query params. Parsed when `loaded` flips true, then URL is cleaned up so a
+  // refresh doesn't re-apply the deep-link.
+  useEffect(() => {
+    if (!loaded) return;
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const tab = params.get("tab");
+      const week = params.get("week");
+      const validTabs = ["calendar", "mine", "requests", "stats", "settings", "setup", "totals"];
+      if (tab && validTabs.includes(tab)) {
+        setView(tab);
+      }
+      if (week && /^\d{4}-\d{2}-\d{2}$/.test(week)) {
+        const [y, m] = week.split("-").map(Number);
+        setCalMonth(m - 1);
+        setCalYear(y);
+      }
+      if (tab || week) {
+        params.delete("tab");
+        params.delete("week");
+        const newSearch = params.toString();
+        const newUrl = window.location.pathname + (newSearch ? "?" + newSearch : "") + window.location.hash;
+        window.history.replaceState(null, "", newUrl);
+      }
+    } catch (e) { console.error("Deep-link handler error:", e); }
   }, [loaded]);
 
   // ─── Save Notification Preference for a surgeon ───
@@ -4329,7 +4386,7 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
     const newName = sMap[newId]?.name || "—";
     const shiftLabel = SHIFT_LABELS[shift] || shift;
     const editTargets = [...new Set([oldId, newId, ...schedulerAdminIds].filter(Boolean))];
-    addNotification("schedule_changed", "Shift Reassigned", `${shiftLabel} (wk of ${mStr}): ${oldName} → ${newName}`, {}, editTargets);
+    addNotification("schedule_changed", "Shift Reassigned", `${shiftLabel} (wk of ${mStr}): ${oldName} → ${newName}`, { week: mStr }, editTargets);
     sendEmailNotif("schedule_changed", {
       shift: shiftLabel,
       week: mStr,
@@ -4552,7 +4609,7 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
     const newName = sMap[candId]?.name || "—";
     const shiftLabel = SHIFT_LABELS[targetShift] || targetShift;
     const swapTargets = [...new Set([targetOldId, candId, ...schedulerAdminIds].filter(Boolean))];
-    addNotification("schedule_changed", "Shift Swap", `${shiftLabel} (wk of ${targetMon}): ${oldName} ↔ ${newName}${returnMon ? ` (return: ${SHIFT_LABELS[returnShift] || returnShift} wk of ${returnMon})` : ""}`, {}, swapTargets);
+    addNotification("schedule_changed", "Shift Swap", `${shiftLabel} (wk of ${targetMon}): ${oldName} ↔ ${newName}${returnMon ? ` (return: ${SHIFT_LABELS[returnShift] || returnShift} wk of ${returnMon})` : ""}`, { week: targetMon }, swapTargets);
     sendEmailNotif("schedule_changed", {
       shift: shiftLabel,
       week: targetMon,
@@ -4674,26 +4731,58 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
       return n;
     });
 
-    // Notifications — targeted to the specific affected people.
-    // For each change, notify both the old assignee (removed) and new assignee (added)
-    // with targeted in-app notifications AND targeted emails
-    // (affected people + scheduler/admin, not a broadcast).
+    // Notifications — COALESCED per recipient so a bulk save of 4 shifts
+    // produces 1 notification set per affected person instead of 4. Massive
+    // reduction in email/push noise on multi-shift edits.
     const reasonSuffix = draft.reason ? ` (${draft.reason})` : "";
-    changes.forEach(c => {
-      const oldName = c.isApp ? aMap[c.oldId]?.name || "—" : sMap[c.oldId]?.name || "—";
-      const newName = c.isApp ? aMap[c.newId]?.name || "—" : sMap[c.newId]?.name || "—";
-      const baseMsg = `${c.slotLabel}: ${oldName} → ${newName}${reasonSuffix}`;
-      // Affected: old person + new person + scheduler + admin
-      const editTargets = [...new Set([c.oldId, c.newId, ...schedulerAdminIds].filter(Boolean))];
-      if (editTargets.length > 0) {
-        addNotification("schedule_changed", "Manual Schedule Edit", baseMsg, {}, editTargets);
-        sendEmailNotif("schedule_changed", {
-          shift: c.slotLabel,
-          week: mondayStr,
-          old_surgeon: oldName,
-          new_surgeon: newName
-        }, editTargets);
+    const perPerson = new Map();
+    const enrichedChanges = changes.map(c => ({
+      slotLabel: c.slotLabel,
+      oldId: c.oldId,
+      newId: c.newId,
+      oldName: c.isApp ? aMap[c.oldId]?.name || "—" : sMap[c.oldId]?.name || "—",
+      newName: c.isApp ? aMap[c.newId]?.name || "—" : sMap[c.newId]?.name || "—"
+    }));
+    enrichedChanges.forEach(ec => {
+      [ec.oldId, ec.newId].filter(Boolean).forEach(pid => {
+        if (!perPerson.has(pid)) perPerson.set(pid, []);
+        perPerson.get(pid).push({ slotLabel: ec.slotLabel, oldName: ec.oldName, newName: ec.newName });
+      });
+    });
+    schedulerAdminIds.forEach(pid => {
+      if (!pid) return;
+      if (!perPerson.has(pid)) {
+        perPerson.set(pid, enrichedChanges.map(ec => ({ slotLabel: ec.slotLabel, oldName: ec.oldName, newName: ec.newName })));
+      } else {
+        const existingLabels = new Set(perPerson.get(pid).map(x => x.slotLabel));
+        enrichedChanges.forEach(ec => {
+          if (!existingLabels.has(ec.slotLabel)) {
+            perPerson.get(pid).push({ slotLabel: ec.slotLabel, oldName: ec.oldName, newName: ec.newName });
+          }
+        });
       }
+    });
+    perPerson.forEach((personChanges, pid) => {
+      const n = personChanges.length;
+      let title, msg, emailPayload;
+      if (n === 1) {
+        const c = personChanges[0];
+        title = "Schedule Change";
+        msg = `${c.slotLabel}: ${c.oldName} → ${c.newName}${reasonSuffix}`;
+        emailPayload = { shift: c.slotLabel, week: mondayStr, old_surgeon: c.oldName, new_surgeon: c.newName };
+      } else {
+        title = `${n} Shifts Updated`;
+        const bullets = personChanges.map(c => `${c.slotLabel}: ${c.oldName} → ${c.newName}`).join("; ");
+        msg = `Week of ${mondayStr} — ${bullets}${reasonSuffix}`;
+        emailPayload = {
+          shift: `${n} shifts`,
+          week: mondayStr,
+          old_surgeon: "multiple",
+          new_surgeon: "open app for details"
+        };
+      }
+      addNotification("schedule_changed", title, msg, { week: mondayStr }, [pid]);
+      sendEmailNotif("schedule_changed", emailPayload, [pid]);
     });
     setEditWeekModal(null);
   }, [editWeekModal, schedule, appShifts, surgeons, sMap, aMap, addNotification, sendEmailNotif, pushUndo, schedulerAdminIds]);
