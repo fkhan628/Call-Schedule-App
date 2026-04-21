@@ -114,15 +114,23 @@ const COUNTS_1YR = {
   s7: { dc:6, nights:50, wknd:6, off:0, dcB:1, nightsB:4, wkndB:0, offB:0, totalDays:99,  totalDaysB:8 },   // ARW
 };
 
-// 2024 + 2025 combined (2-Year / Multi-Year)
+// Multi-Year totals — August 2022 through April 2026 (45 months of historical data)
+// Extracted from Calendar Creator PDF via coordinate-based parser, verified against source.
+// KJH normalized to peer average (of DJA/MCC/RPC/REH/FAK) to neutralize the
+// effect of his 6-week surgical absence. Raw values were dc:27, nights:141,
+// wknd:27 — adjusted up to peer-mean so the generator doesn't "catch him up"
+// by over-loading future weeks for non-voluntary time off.
+// ARW lower due to joining September 2023 (partial tenure — intentional, not
+// adjusted because the generator balances per-week load going forward).
+// Generator uses burden = dc*7 + nights + wknd*3 for fairness balancing.
 const COUNTS_2YR = {
-  s1: { dc:14, nights:96,  wknd:13, off:0, dcB:2, nightsB:10, wkndB:2, offB:0, totalDays:197, totalDaysB:21 },  // DJA
-  s2: { dc:13, nights:90,  wknd:15, off:0, dcB:2, nightsB:15, wkndB:2, offB:0, totalDays:183, totalDaysB:30 },  // MCC
-  s3: { dc:13, nights:100, wknd:12, off:0, dcB:2, nightsB:10, wkndB:2, offB:0, totalDays:196, totalDaysB:21 },  // RPC
-  s4: { dc:12, nights:75,  wknd:12, off:0, dcB:3, nightsB:19, wkndB:3, offB:0, totalDays:156, totalDaysB:39 },  // KJH
-  s5: { dc:13, nights:90,  wknd:15, off:0, dcB:2, nightsB:19, wkndB:3, offB:0, totalDays:180, totalDaysB:36 },  // REH
-  s6: { dc:12, nights:91,  wknd:13, off:0, dcB:2, nightsB:17, wkndB:2, offB:0, totalDays:184, totalDaysB:33 },  // FAK
-  s7: { dc:11, nights:78,  wknd:10, off:0, dcB:2, nightsB:13, wkndB:1, offB:0, totalDays:159, totalDaysB:26 },  // ARW
+  s1: { dc:30, nights:149, wknd:32, off:0, dcB:0, nightsB:0, wkndB:0, offB:0, totalDays:394, totalDaysB:0 },  // DJA
+  s2: { dc:28, nights:147, wknd:27, off:0, dcB:0, nightsB:0, wkndB:0, offB:0, totalDays:367, totalDaysB:0 },  // MCC
+  s3: { dc:28, nights:147, wknd:28, off:0, dcB:0, nightsB:0, wkndB:0, offB:0, totalDays:369, totalDaysB:0 },  // RPC
+  s4: { dc:29, nights:147, wknd:29, off:0, dcB:0, nightsB:0, wkndB:0, offB:0, totalDays:381, totalDaysB:0 },  // KJH (normalized — see note)
+  s5: { dc:29, nights:146, wknd:29, off:0, dcB:0, nightsB:0, wkndB:0, offB:0, totalDays:379, totalDaysB:0 },  // REH
+  s6: { dc:29, nights:148, wknd:30, off:0, dcB:0, nightsB:0, wkndB:0, offB:0, totalDays:381, totalDaysB:0 },  // FAK
+  s7: { dc:19, nights:80,  wknd:19, off:0, dcB:0, nightsB:0, wkndB:0, offB:0, totalDays:234, totalDaysB:0 },  // ARW (joined Sept 2023)
 };
 
 /* ═══ 2026–2027 Vacation & Fierce Schedule ═══
@@ -294,6 +302,37 @@ const auth = {
       } catch(e) {}
     }
     auth._clearSession();
+  },
+
+  // Send password reset email
+  async resetPassword(email) {
+    const redirectUrl = window.location.origin + window.location.pathname;
+    const res = await fetch(`${SUPABASE_URL}/auth/v1/recover`, {
+      method: "POST",
+      headers: { apikey: SUPABASE_ANON_KEY, "Content-Type": "application/json" },
+      body: JSON.stringify({ email, gotrue_meta_security: { captcha_token: "" } }),
+    });
+    if (!res.ok) {
+      const data = await res.json();
+      return { error: data.msg || data.error_description || data.message || "Reset failed" };
+    }
+    return { error: null };
+  },
+
+  // Update password (after clicking reset link — user has a valid session)
+  async updatePassword(newPassword) {
+    const session = auth.getSession();
+    if (!session?.access_token) return { error: "No active session" };
+    const res = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
+      method: "PUT",
+      headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${session.access_token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ password: newPassword }),
+    });
+    if (!res.ok) {
+      const data = await res.json();
+      return { error: data.msg || data.error_description || data.message || "Update failed" };
+    }
+    return { error: null };
   },
 
   // Get auth headers for DB queries (user-level RLS)
