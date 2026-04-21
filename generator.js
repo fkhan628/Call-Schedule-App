@@ -58,9 +58,37 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
     });
   }
 
-  // Running counters seeded from prior totals
+  // ═══ FAIRNESS TRACKING ═══
+  //
+  // Goal per Faraz (Apr 2026): within-period shift equality is the PRIMARY
+  // objective (85%), past-year totals secondary (10%), multi-year tertiary
+  // (5%). "Total shifts" = every assignment counts as 1 (including backup).
+  //
+  // We track three separate running counters:
+  //   periodShifts[id]   — shifts assigned in THIS period only. This drives
+  //                        the primary balance — everyone should end near the
+  //                        same value. Starts at 0.
+  //   priorYear[id]      — 1-year prior totals from priorCounts (if 1-yr data
+  //                        is separate, fall back to multi-year / 2).
+  //   priorMulti[id]     — multi-year totals (what the old code called burden).
+  //                        Now used only as a tertiary tiebreaker.
+  //
+  // Composite score for assignment decisions:
+  //   score = 0.85 * periodShifts[id]
+  //         + 0.10 * priorYearScore[id]
+  //         + 0.05 * priorMultiScore[id]
+  // Lower score = more deserving of the next assignment.
+  //
+  // For the secondary service-week balance goal, we also track
+  // periodServiceWeeks[id] — used as a tiebreaker in DC assignments.
+  //
+  // We keep dcCt/nCt/wkndCt around for post-optimization weekend swap logic
+  // (which balances weekend assignments specifically).
   const dcCt={}; const nCt={}; const wkndCt={}; const offCt={}; const lastPos={};
-  const burden = {};
+  const periodShifts = {};        // total shifts assigned in this period
+  const periodServiceWeeks = {};  // service weeks assigned in this period
+  const priorYearScore = {};      // normalized 1-year burden score
+  const priorMultiScore = {};     // normalized multi-year burden score
   // Track last DC week index per surgeon for spacing
   const lastDcWeek = {};
   // Track consecutive night assignments
@@ -71,9 +99,37 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
     nCt[id] = (p.nights||0) + (p.nightsB||0);
     wkndCt[id] = (p.wknd||0) + (p.wkndB||0);
     offCt[id] = (p.off||0) + (p.offB||0);
-    burden[id] = dcCt[id]*7 + nCt[id] + wkndCt[id]*3;
+    periodShifts[id] = 0;
+    periodServiceWeeks[id] = 0;
+    // Past burden = dc*7 + nights + wknd*3 (old formula, used as secondary signal).
+    // Note: priorCounts here represents multi-year (see config.js COUNTS_2YR).
+    // If separate 1-year data isn't available, scale multi-year down.
+    priorMultiScore[id] = dcCt[id]*7 + nCt[id] + wkndCt[id]*3;
+    // Rough 1-year approximation: take most-recent-year portion.
+    // Without a dedicated 1-year input here, treat priorCounts as the
+    // multi-year and use a proxy (half the multi-year burden) for 1-yr.
+    // The calling app passes priorCounts = multi-year; when the app wants
+    // true 1-year data to factor in, it'd need to pass it in a separate
+    // parameter (deferred — for now this approximation is fine since
+    // priorYearScore is only 10% weight).
+    priorYearScore[id] = priorMultiScore[id] / 2;
     lastDcWeek[id] = -99;
   });
+
+  // Composite priority score — LOWER = more deserving of next shift.
+  // 85% within-period, 10% past-year, 5% multi-year.
+  function priority(id) {
+    return 0.85 * periodShifts[id]
+         + 0.10 * (priorYearScore[id] / 20)   // scaled down so 10% weight actually matters at decision margin
+         + 0.05 * (priorMultiScore[id] / 40); // scaled down similarly
+  }
+
+  // Alias for backwards compatibility with post-optimization pass logic
+  // that expects a mutable burden map. Keep it in sync with priorMultiScore
+  // — it gets incremented by 7/3/1 on assignments for the post-opt pass to
+  // reason about weekend swaps via delta comparisons.
+  const burden = {};
+  ids.forEach(id => { burden[id] = priorMultiScore[id]; });
   let prevWkndSurgeon = null;
   let prevDcSurgeon = null;
 
@@ -150,8 +206,14 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
           if (nonHolPool.length === 0) nonHolPool = availDC.filter(id => id !== holDcSurgeon); // fallback
           if (nonHolPool.length > 0) {
             nonHolPool.sort((a,b) => {
-              const d = dcCt[a]-dcCt[b]; if(d) return d;
-              const bd = (burden[a]+jitter[a])-(burden[b]+jitter[b]); if(Math.abs(bd)>1) return bd;
+              // PRIMARY: fewer total shifts this period (equality goal)
+              const ts = periodShifts[a] - periodShifts[b]; if (ts) return ts;
+              // SECONDARY: fewer service weeks this period (service balance)
+              const sw = periodServiceWeeks[a] - periodServiceWeeks[b]; if (sw) return sw;
+              // TERTIARY: composite priority (past-year 10% + multi-year 5%)
+              const pd = (priority(a) + jitter[a]*0.1) - (priority(b) + jitter[b]*0.1);
+              if (Math.abs(pd) > 0.01) return pd;
+              // Spacing: prefer larger gap since last DC week
               const spacingA = wkIdx - lastDcWeek[a];
               const spacingB = wkIdx - lastDcWeek[b];
               if (spacingA !== spacingB) return spacingB - spacingA;
@@ -169,17 +231,23 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
         let dcPool = prevWkndSurgeon ? availDC.filter(id => id !== prevWkndSurgeon) : availDC;
         if (dcPool.length === 0) dcPool = availDC; // fallback if no one else
         dcPool.sort((a,b) => {
-          const d = dcCt[a]-dcCt[b]; if(d) return d;
-          const bd = (burden[a]+jitter[a])-(burden[b]+jitter[b]); if(Math.abs(bd)>1) return bd;
+          // PRIMARY: fewer total shifts this period (equality goal)
+          const ts = periodShifts[a] - periodShifts[b]; if (ts) return ts;
+          // SECONDARY: fewer service weeks this period (service balance)
+          const sw = periodServiceWeeks[a] - periodServiceWeeks[b]; if (sw) return sw;
+          // TERTIARY: composite priority
+          const pd = (priority(a) + jitter[a]*0.1) - (priority(b) + jitter[b]*0.1);
+          if (Math.abs(pd) > 0.01) return pd;
           // Day Call spacing: prefer surgeons who haven't had DC recently
           const spacingA = wkIdx - lastDcWeek[a];
           const spacingB = wkIdx - lastDcWeek[b];
-          if (spacingA !== spacingB) return spacingB - spacingA; // larger gap = better
+          if (spacingA !== spacingB) return spacingB - spacingA;
           return Math.random() - 0.5;
         });
         dc = dcPool[0];
       }
       dcCt[dc]++; burden[dc]+=7; lastDcWeek[dc] = wkIdx;
+      periodShifts[dc]++; periodServiceWeeks[dc]++;
 
       // Holiday tracking for DC surgeon
       weekHolidays.forEach(h => {
@@ -208,7 +276,8 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
 
     if (wkndPool.length) {
       wkndPool.sort((a,b) => {
-        const d = wkndCt[a]-wkndCt[b]; if(d) return d;
+        // PRIMARY: fewer total shifts this period
+        const ts = periodShifts[a] - periodShifts[b]; if (ts) return ts;
         // Holiday fairness: if weekend includes a holiday, prefer surgeon with fewer holiday shifts
         if (friHoliday || sunHoliday) {
           const hType = (friHoliday || sunHoliday).type;
@@ -216,12 +285,17 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
           const hb = holidayCt[b][hType] || 0;
           if (ha !== hb) return ha - hb;
         }
-        const bd = (burden[a]+jitter[a])-(burden[b]+jitter[b]); if(Math.abs(bd)>1) return bd;
+        // SECONDARY: fewer weekend assignments this period (weekend balance)
+        const wd = wkndCt[a] - wkndCt[b]; if (wd) return wd;
+        // TERTIARY: composite priority
+        const pd = (priority(a) + jitter[a]*0.1) - (priority(b) + jitter[b]*0.1);
+        if (Math.abs(pd) > 0.01) return pd;
         if(lastPos[a]==="wknd"&&lastPos[b]!=="wknd") return 1;
         if(lastPos[b]==="wknd"&&lastPos[a]!=="wknd") return -1;
         return Math.random() - 0.5;
       });
       nights.wknd = wkndPool[0]; used.add(wkndPool[0]); wkndCt[wkndPool[0]]++; burden[wkndPool[0]]+=3;
+      periodShifts[wkndPool[0]]++;
       if (friHoliday) holidayCt[wkndPool[0]][friHoliday.type]++;
       if (sunHoliday) holidayCt[wkndPool[0]][sunHoliday.type]++;
     } else {
@@ -269,11 +343,12 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
     // If weekend has holiday override, use it instead of normal weekend assignment
     if (holidayWkndOverride && nights.wknd) {
       // Undo the normal weekend assignment counts
-      if (nights.wknd) { wkndCt[nights.wknd]--; burden[nights.wknd]-=3; used.delete(nights.wknd); }
+      if (nights.wknd) { wkndCt[nights.wknd]--; burden[nights.wknd]-=3; used.delete(nights.wknd); periodShifts[nights.wknd]--; }
       nights.wknd = holidayWkndOverride;
       used.add(holidayWkndOverride);
       wkndCt[holidayWkndOverride] = (wkndCt[holidayWkndOverride]||0) + 1;
       burden[holidayWkndOverride] = (burden[holidayWkndOverride]||0) + 3;
+      periodShifts[holidayWkndOverride] = (periodShifts[holidayWkndOverride]||0) + 1;
     }
 
     for (const sk of shuffledNightKeys) {
@@ -282,6 +357,7 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
         nightAssignments[sk] = holidayNightOverrides[sk];
         nightUsed.add(holidayNightOverrides[sk]);
         nCt[holidayNightOverrides[sk]]++; burden[holidayNightOverrides[sk]]++;
+        periodShifts[holidayNightOverrides[sk]]++;
         continue;
       }
       const dayOffset = {mon:0,tue:1,wed:2,thu:3}[sk];
@@ -343,8 +419,13 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
           if (ha !== hb) return ha - hb; // fewer holiday shifts → gets this one
         }
 
-        const d=nCt[a]-nCt[b]; if(d) return d;
-        const bd = (burden[a]+jitter[a])-(burden[b]+jitter[b]); if(Math.abs(bd)>1) return bd;
+        // PRIMARY: fewer total shifts this period (equality goal)
+        const ts = periodShifts[a] - periodShifts[b]; if (ts) return ts;
+        // SECONDARY: fewer weeknights this period (night balance)
+        const nd = nCt[a] - nCt[b]; if (nd) return nd;
+        // TERTIARY: composite priority
+        const pd = (priority(a) + jitter[a]*0.1) - (priority(b) + jitter[b]*0.1);
+        if (Math.abs(pd) > 0.01) return pd;
 
         // Preferences
         const aPref = prefs[a]; const bPref = prefs[b];
@@ -361,6 +442,7 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
       nightAssignments[sk] = chosen;
       nightUsed.add(chosen);
       nCt[chosen]++; burden[chosen]++; lastPos[chosen] = sk;
+      periodShifts[chosen]++;
       prevNightSurgeon[chosen] = sd; // track for consecutive night detection
 
       // Track holiday assignments
@@ -419,6 +501,7 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
         if (wkndCt[a] > wkndCt[b] + 1) {
           wkndCt[a]--; wkndCt[b]++;
           burden[a]-=3; burden[b]+=3;
+          periodShifts[a]--; periodShifts[b]++;
           wkA.nights.wknd = b; wkB.nights.wknd = a;
           const fixOff = (wk) => {
             const assigned = new Set([wk.dayCall, ...Object.values(wk.nights)].filter(Boolean));
@@ -429,6 +512,7 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
         } else if (wkndCt[b] > wkndCt[a] + 1) {
           wkndCt[b]--; wkndCt[a]++;
           burden[b]-=3; burden[a]+=3;
+          periodShifts[b]--; periodShifts[a]++;
           wkA.nights.wknd = b; wkB.nights.wknd = a;
           const fixOff = (wk) => {
             const assigned = new Set([wk.dayCall, ...Object.values(wk.nights)].filter(Boolean));

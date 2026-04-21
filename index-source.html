@@ -55,7 +55,7 @@
   </script>
   <script>
     // ─── Auto-update: bump this version string each deploy ───
-    var APP_VERSION = "2026.04.20h";
+    var APP_VERSION = "2026.04.20j";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -99,7 +99,7 @@
   <div id="root"></div>
   <script>
     // Cache-bust with version — update this string when deploying changes
-    var _v = "2026.04.20h";
+    var _v = "2026.04.20j";
     ['config.js','helpers.js','generator.js','app-styles.js'].forEach(function(f) {
       document.write('<script src="'+f+'?v='+_v+'"><\/script>');
     });
@@ -2080,6 +2080,20 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
 
   const sMap = useMemo(() => { const m={}; surgeons.forEach((s,i)=>m[s.id]={...s,idx:i}); return m; }, [surgeons]);
   const aMap = useMemo(() => { const m={}; apps.forEach((a,i)=>m[a.id]={...a,idx:i}); return m; }, [apps]);
+
+  // Map a holiday coverage label (e.g. "July 4th 24h", "Memorial Day Night Before",
+  // "New Year's Day 24h") to its specific emoji. Falls back to 📅 if unmatched.
+  const holidayEmoji = (label) => {
+    if (!label) return "📅";
+    const s = label.toLowerCase();
+    if (s.includes("christmas")) return "🎄";
+    if (s.includes("thanksgiving")) return "🦃";
+    if (s.includes("new year")) return "🎆";
+    if (s.includes("july 4") || s.includes("independence")) return "🎆";
+    if (s.includes("memorial")) return "🇺🇸";
+    if (s.includes("labor")) return "🇺🇸";
+    return "📅";
+  };
   const mondays = useMemo(() => getMondays(startYear, startMonth, numWeeks), [startYear, startMonth, numWeeks]);
   const endDate = mondays.length > 0 ? addD(mondays[mondays.length-1], 6) : null;
   const endMoIdx = endDate ? endDate.getMonth() : (startMonth+2)%12;
@@ -3979,7 +3993,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
 
           {/* Holiday Assignments */}
           <div style={css.card}>
-            <div style={css.cardT}>🎄 Holiday Call Assignments</div>
+            <div style={css.cardT}>📅 Holiday Call Assignments</div>
             <p style={{fontSize:12,color:"#5a6a78",margin:"0 0 10px",lineHeight:1.5}}>
               Generate yearly holiday assignments. Each holiday gets 2 surgeons who alternate 24h blocks.
               Eves stay on the regular schedule — only the holiday day and days after switch to 24h.
@@ -4608,7 +4622,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   {entries.filter(e=>e.type==="Holiday").filter(e=>!sf||e.surgeon===sf).map((e,j)=>(
                     <div key={"hol"+j} style={{marginBottom:1,padding:"1px 3px",borderRadius:3,fontSize:10,
                       background:"#fef0e8",border:"1px solid #e0a868",fontWeight:600}}>
-                      <span style={{color:"#c06020",fontWeight:700}}>🎄</span>
+                      <span style={{color:"#c06020",fontWeight:700}} title={e.holName||""}>{holidayEmoji(e.holName)}</span>
                       {" "}
                       <span style={{color:PAL[sMap[e.surgeon]?.idx%7]?.tx||"#4a5868"}}>{sMap[e.surgeon]?.name||"?"}</span>
                       <span style={{color:"#a07030",fontSize:8,marginLeft:2}}>{e.hours}</span>
@@ -4646,7 +4660,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             <span><span style={{color:"#8a6a10"}}>⚡</span> Fierce Primary</span>
             <span><span style={{color:"#1a6fa8"}}>🛡</span> Fierce Backup</span>
             <span>🏖 Vacation</span>
-            <span><span style={{color:"#c06020"}}>🎄</span> Holiday Coverage</span>
+            <span><span style={{color:"#c06020"}}>📅</span> Holiday Coverage</span>
           </div>
 
           {/* ─── Manual Adjustments (scheduler/admin only) ─── */}

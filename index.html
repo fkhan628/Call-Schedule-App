@@ -52,7 +52,7 @@
   </script>
   <script>
     // ─── Auto-update: bump this version string each deploy ───
-    var APP_VERSION = "2026.04.20h";
+    var APP_VERSION = "2026.04.20j";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -3719,6 +3719,20 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
     });
     return m;
   }, [apps]);
+
+  // Map a holiday coverage label (e.g. "July 4th 24h", "Memorial Day Night Before",
+  // "New Year's Day 24h") to its specific emoji. Falls back to 📅 if unmatched.
+  const holidayEmoji = (label) => {
+    if (!label) return "📅";
+    const s = label.toLowerCase();
+    if (s.includes("christmas")) return "🎄";
+    if (s.includes("thanksgiving")) return "🦃";
+    if (s.includes("new year")) return "🎆";
+    if (s.includes("july 4") || s.includes("independence")) return "🎆";
+    if (s.includes("memorial")) return "🇺🇸";
+    if (s.includes("labor")) return "🇺🇸";
+    return "📅";
+  };
   const mondays = useMemo(() => getMondays(startYear, startMonth, numWeeks), [startYear, startMonth, numWeeks]);
   const endDate = mondays.length > 0 ? addD(mondays[mondays.length - 1], 6) : null;
   const endMoIdx = endDate ? endDate.getMonth() : (startMonth + 2) % 12;
@@ -7246,7 +7260,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     style: css.card
   }, /*#__PURE__*/React.createElement("div", {
     style: css.cardT
-  }, "\uD83C\uDF84 Holiday Call Assignments"), /*#__PURE__*/React.createElement("p", {
+  }, "\uD83D\uDCC5 Holiday Call Assignments"), /*#__PURE__*/React.createElement("p", {
     style: {
       fontSize: 12,
       color: "#5a6a78",
@@ -8742,8 +8756,9 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         style: {
           color: "#c06020",
           fontWeight: 700
-        }
-      }, "\uD83C\uDF84"), " ", /*#__PURE__*/React.createElement("span", {
+        },
+        title: e.holName || ""
+      }, holidayEmoji(e.holName)), " ", /*#__PURE__*/React.createElement("span", {
         style: {
           color: PAL[sMap[e.surgeon]?.idx % 7]?.tx || "#4a5868"
         }
@@ -8847,7 +8862,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     style: {
       color: "#c06020"
     }
-  }, "\uD83C\uDF84"), " Holiday Coverage")), (isScheduler || userProfile?.person_id === "admin") && /*#__PURE__*/React.createElement("div", {
+  }, "\uD83D\uDCC5"), " Holiday Coverage")), (isScheduler || userProfile?.person_id === "admin") && /*#__PURE__*/React.createElement("div", {
     style: {
       ...css.card,
       marginTop: 14,
