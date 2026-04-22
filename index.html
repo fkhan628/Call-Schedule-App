@@ -52,7 +52,7 @@
   </script>
   <script>
     // ─── Auto-update: bump this version string each deploy ───
-    var APP_VERSION = "2026.04.21c";
+    var APP_VERSION = "2026.04.21d";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -1840,186 +1840,14 @@ function CallSchedule() {
       setLoaded(true);
       loadedAtRef.current = Date.now();
 
-      // Merge 2026-2027 vacations & Fierce weeks — ONE-TIME seed via localStorage flag.
-      // Previous content-aware merge would overwrite user edits because a
-      // user-edited range would be detected as "missing" and re-seeded.
-      try {
-        if (typeof MAY_AUG_VACATIONS !== "undefined") {
-          const SEED_FLAG = "dsg-vac-seeded-2026-2027-v1";
-          // Auto-set the flag for existing users who already have vacation data
-          // in the seed window — prevents re-seeding on first load after this
-          // code change, which could clobber edits users have already made.
-          if (localStorage.getItem(SEED_FLAG) !== "yes") {
-            const hasExistingSeedData = Object.values(vacations).some(ranges =>
-              Array.isArray(ranges) && ranges.some(([s]) => {
-                const m = s.substring(0, 7);
-                return (m >= "2026-05" && m <= "2026-12") || m === "2027-01";
-              })
-            );
-            if (hasExistingSeedData) localStorage.setItem(SEED_FLAG, "yes");
-          }
-          const alreadySeeded = localStorage.getItem(SEED_FLAG) === "yes";
-          if (!alreadySeeded) {
-            setVacations(prev => {
-              const n = {
-                ...prev
-              };
-              // Clear existing May 2026 - Jan 2027 entries (avoid duplicates from any prior partial seed)
-              Object.keys(n).forEach(id => {
-                if (Array.isArray(n[id])) {
-                  n[id] = n[id].filter(([s]) => {
-                    const d = s.substring(0, 7);
-                    return !(d >= "2026-05" && d <= "2026-12" || d === "2027-01");
-                  });
-                }
-              });
-              // Add full vacation set
-              Object.entries(MAY_AUG_VACATIONS).forEach(([id, ranges]) => {
-                if (!n[id]) n[id] = [];
-                ranges.forEach(([s, e]) => n[id].push([s, e]));
-              });
-
-              // Force save vacations to Supabase after merge (first-time seed only)
-              setTimeout(async () => {
-                try {
-                  const {
-                    data: row
-                  } = await supabase.from("call_schedule_data").select("data").eq("id", "main").single();
-                  const d = typeof row.data === "string" ? JSON.parse(row.data) : row.data;
-                  Object.keys(d.vacations || {}).forEach(id => {
-                    if (Array.isArray(d.vacations[id])) {
-                      d.vacations[id] = d.vacations[id].filter(([s]) => {
-                        const m = s.substring(0, 7);
-                        return !(m >= "2026-05" && m <= "2026-12" || m === "2027-01");
-                      });
-                    }
-                  });
-                  Object.entries(MAY_AUG_VACATIONS).forEach(([id, ranges]) => {
-                    if (!d.vacations[id]) d.vacations[id] = [];
-                    ranges.forEach(([s, e]) => d.vacations[id].push([s, e]));
-                  });
-                  const ts = new Date().toISOString();
-                  await supabase.from("call_schedule_data").upsert({
-                    id: "main",
-                    data: d,
-                    updated_at: ts
-                  });
-                  lastSyncRef.current = ts;
-                } catch (e) {
-                  console.error("Vacation force save error:", e);
-                }
-              }, 2500);
-              return n;
-            });
-            // Mark as seeded so we don't overwrite user edits on subsequent loads
-            localStorage.setItem(SEED_FLAG, "yes");
-          }
-        }
-        // Fierce merges — ONE-TIME seed via localStorage flag.
-        if (typeof MAY_AUG_FIERCE_PRIMARY !== "undefined") {
-          const FLAG = "dsg-fierce-primary-seeded-2026-2027-v1";
-          if (localStorage.getItem(FLAG) !== "yes") {
-            const alreadyHasSome = [...backupMondaySet].some(m => MAY_AUG_FIERCE_PRIMARY.includes(m));
-            if (alreadyHasSome) {
-              localStorage.setItem(FLAG, "yes");
-            } else {
-              setBackupMondaySet(prev => {
-                const n = new Set(prev);
-                let added = false;
-                MAY_AUG_FIERCE_PRIMARY.forEach(m => {
-                  if (!n.has(m)) {
-                    n.add(m);
-                    added = true;
-                  }
-                });
-                return added ? n : prev;
-              });
-              localStorage.setItem(FLAG, "yes");
-            }
-          }
-        }
-        if (typeof MAY_AUG_FIERCE_BACKUP !== "undefined") {
-          const FLAG = "dsg-fierce-backup-seeded-2026-2027-v1";
-          if (localStorage.getItem(FLAG) !== "yes") {
-            const alreadyHasSome = [...fierceBackupSet].some(m => MAY_AUG_FIERCE_BACKUP.includes(m));
-            if (alreadyHasSome) {
-              localStorage.setItem(FLAG, "yes");
-            } else {
-              setFierceBackupSet(prev => {
-                const n = new Set(prev);
-                let added = false;
-                MAY_AUG_FIERCE_BACKUP.forEach(m => {
-                  if (!n.has(m)) {
-                    n.add(m);
-                    added = true;
-                  }
-                });
-                return added ? n : prev;
-              });
-              localStorage.setItem(FLAG, "yes");
-            }
-          }
-        }
-      } catch (e) {
-        console.error("Vacation merge error:", e);
-      }
-
-      // Import of the May-Aug 2026 hand-built schedule — ONE-TIME seed via localStorage flag.
-      try {
-        if (typeof HAND_SCHEDULE_MAY_AUG !== "undefined") {
-          const FLAG = "dsg-hand-sched-seeded-2026-v1";
-          if (localStorage.getItem(FLAG) !== "yes") {
-            const expectedEntries = Object.entries(HAND_SCHEDULE_MAY_AUG);
-            // Auto-flag for existing users who already have the hand-schedule data
-            const alreadyHasSome = expectedEntries.some(([mStr, wk]) => {
-              const existing = schedule[mStr];
-              return existing && existing.dayCall === wk.dayCall;
-            });
-            if (alreadyHasSome) {
-              localStorage.setItem(FLAG, "yes");
-            } else {
-              setSchedule(prev => {
-                const next = {
-                  ...prev
-                };
-                expectedEntries.forEach(([mStr, wk]) => {
-                  next[mStr] = {
-                    ...wk
-                  };
-                });
-
-                // Force save to Supabase after merge (first-time seed only)
-                setTimeout(async () => {
-                  try {
-                    const {
-                      data: row
-                    } = await supabase.from("call_schedule_data").select("data").eq("id", "main").single();
-                    const d = typeof row.data === "string" ? JSON.parse(row.data) : row.data;
-                    Object.entries(HAND_SCHEDULE_MAY_AUG).forEach(([m, w]) => {
-                      d.schedule[m] = {
-                        ...w
-                      };
-                    });
-                    const ts = new Date().toISOString();
-                    await supabase.from("call_schedule_data").upsert({
-                      id: "main",
-                      data: d,
-                      updated_at: ts
-                    });
-                    lastSyncRef.current = ts;
-                  } catch (e) {
-                    console.error("Force save error:", e);
-                  }
-                }, 2000);
-                return next;
-              });
-              localStorage.setItem(FLAG, "yes");
-            }
-          }
-        }
-      } catch (e) {
-        console.error("Schedule import error:", e);
-      }
+      // NOTE: The MAY_AUG_VACATIONS / FIERCE / HAND_SCHEDULE seed blocks that
+      // used to live here have been removed (v21d). They were causing edits
+      // to revert whenever a new device or browser profile (including
+      // incognito mode) loaded the app — the local seed flag doesn't exist
+      // on those fresh profiles, so the merge would run, write hardcoded
+      // original values back to Supabase, and propagate the revert via
+      // Realtime to all connected devices. Seed data is already in Supabase;
+      // all devices inherit it via the load code above. No code-side seeding.
     })();
 
     // ─── Realtime subscriptions (preferred) with safety-net poll ───
