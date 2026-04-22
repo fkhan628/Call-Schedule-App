@@ -55,7 +55,7 @@
   </script>
   <script>
     // ─── Auto-update: bump this version string each deploy ───
-    var APP_VERSION = "2026.04.21b";
+    var APP_VERSION = "2026.04.21c";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -99,7 +99,7 @@
   <div id="root"></div>
   <script>
     // Cache-bust with version — update this string when deploying changes
-    var _v = "2026.04.21b";
+    var _v = "2026.04.21c";
     ['config.js','helpers.js','generator.js','app-styles.js'].forEach(function(f) {
       document.write('<script src="'+f+'?v='+_v+'"><\/script>');
     });
@@ -181,6 +181,7 @@ function CallSchedule() {
   const fileRef = useRef(null);
   const lastSyncRef = useRef(null);
   const loadedAtRef = useRef(null); // timestamp when initial load completed — prevents auto-save race
+  const pendingSaveRef = useRef(null); // payload queued for debounced save; flushed immediately on page hide/unload
   const scheduleRef = useRef({});
   useEffect(() => { scheduleRef.current = schedule; }, [schedule]);
 
@@ -840,20 +841,24 @@ function CallSchedule() {
     // Skip auto-save for 3s after initial load — prevents re-saving unchanged data
     // when initial state hydration triggers this effect
     if (loadedAtRef.current && Date.now() - loadedAtRef.current < 3000) return;
+    // Capture the payload so the visibility/unload handlers can flush it
+    // immediately without waiting for the debounce.
+    const payload = {
+      surgeons, apps, vacations,
+      backupMondays: [...backupMondaySet],
+      fierceBackup: [...fierceBackupSet],
+      schedule, appShifts, priorCounts, year1Counts, year2Counts,
+      startMonth, startYear, numWeeks, holidayAssignments,
+    };
+    pendingSaveRef.current = payload;
     const timer = setTimeout(async () => {
       try {
-        const payload = {
-          surgeons, apps, vacations,
-          backupMondays: [...backupMondaySet],
-          fierceBackup: [...fierceBackupSet],
-          schedule, appShifts, priorCounts, year1Counts, year2Counts,
-          startMonth, startYear, numWeeks, holidayAssignments,
-        };
         const ts = new Date().toISOString();
         await supabase
           .from("call_schedule_data")
           .upsert({ id: "main", data: payload, updated_at: ts });
         lastSyncRef.current = ts;
+        pendingSaveRef.current = null; // Save committed — clear pending
         setSaveError(false);
         setSaveStatus("Saved");
         setTimeout(() => setSaveStatus(""), 2000);
@@ -865,6 +870,77 @@ function CallSchedule() {
     }, 800);
     return () => clearTimeout(timer);
   }, [loaded, surgeons, apps, vacations, backupMondaySet, fierceBackupSet, schedule, appShifts, priorCounts, year1Counts, year2Counts, startMonth, startYear, numWeeks, holidayAssignments]);
+
+  // ─── Flush pending save when app is backgrounded or closing ───
+  //
+  // The auto-save above has an 800ms debounce. If the user closes the app,
+  // locks the phone, or switches apps within that window, the save is
+  // cancelled and their edit is lost.
+  //
+  // This effect listens for three events that signal "user is leaving" and
+  // fires any pending save immediately, bypassing the debounce.
+  //
+  //   visibilitychange (hidden) — mobile: user switched apps or locked phone
+  //   pagehide                  — page is being unloaded (tab close, navigate)
+  //   beforeunload              — desktop backup for pagehide
+  //
+  // Uses fetch keepalive:true so the request completes even during unload.
+  // Supabase JS's upsert doesn't support keepalive, so we construct the fetch
+  // directly using the stored session token.
+  useEffect(() => {
+    const flushPending = (source) => {
+      const payload = pendingSaveRef.current;
+      if (!payload) return; // Nothing to save
+      pendingSaveRef.current = null; // Clear optimistically — if the flush
+      //                                fails we'll re-save on next edit or
+      //                                via the regular debounce path.
+
+      try {
+        const session = (typeof auth !== "undefined" && auth.getSession) ? auth.getSession() : null;
+        const token = session?.access_token || SUPABASE_ANON_KEY;
+        const ts = new Date().toISOString();
+        const body = JSON.stringify({ id: "main", data: payload, updated_at: ts });
+        // Fire with keepalive so the browser finishes the request even if
+        // the page is being unloaded. Payloads >64KB may still be dropped;
+        // in practice a full schedule payload is well under this.
+        fetch(`${SUPABASE_URL}/rest/v1/call_schedule_data?on_conflict=id`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "apikey": SUPABASE_ANON_KEY,
+            "Authorization": `Bearer ${token}`,
+            "Prefer": "resolution=merge-duplicates,return=minimal",
+          },
+          body,
+          keepalive: true,
+        }).then(() => {
+          lastSyncRef.current = ts;
+        }).catch(e => {
+          console.warn(`Keepalive save failed (${source}):`, e);
+          // Restore pending so next edit or debounce re-saves
+          pendingSaveRef.current = payload;
+        });
+      } catch (e) {
+        console.warn(`Flush pending save (${source}) error:`, e);
+        pendingSaveRef.current = payload;
+      }
+    };
+
+    const onVisibilityChange = () => {
+      if (document.hidden) flushPending("visibilitychange");
+    };
+    const onPageHide = () => flushPending("pagehide");
+    const onBeforeUnload = () => flushPending("beforeunload");
+
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    window.addEventListener("pagehide", onPageHide);
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      window.removeEventListener("pagehide", onPageHide);
+      window.removeEventListener("beforeunload", onBeforeUnload);
+    };
+  }, []);
 
   // ─── Supabase: Save scheduler PIN + edge function URL ───
   useEffect(() => {

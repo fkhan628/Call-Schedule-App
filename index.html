@@ -52,7 +52,7 @@
   </script>
   <script>
     // ─── Auto-update: bump this version string each deploy ───
-    var APP_VERSION = "2026.04.21b";
+    var APP_VERSION = "2026.04.21c";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -1363,6 +1363,7 @@ function CallSchedule() {
   const fileRef = useRef(null);
   const lastSyncRef = useRef(null);
   const loadedAtRef = useRef(null); // timestamp when initial load completed — prevents auto-save race
+  const pendingSaveRef = useRef(null); // payload queued for debounced save; flushed immediately on page hide/unload
   const scheduleRef = useRef({});
   useEffect(() => {
     scheduleRef.current = schedule;
@@ -2168,24 +2169,26 @@ function CallSchedule() {
     // Skip auto-save for 3s after initial load — prevents re-saving unchanged data
     // when initial state hydration triggers this effect
     if (loadedAtRef.current && Date.now() - loadedAtRef.current < 3000) return;
+    // Capture payload so visibility/unload handlers can flush it immediately.
+    const payload = {
+      surgeons,
+      apps,
+      vacations,
+      backupMondays: [...backupMondaySet],
+      fierceBackup: [...fierceBackupSet],
+      schedule,
+      appShifts,
+      priorCounts,
+      year1Counts,
+      year2Counts,
+      startMonth,
+      startYear,
+      numWeeks,
+      holidayAssignments
+    };
+    pendingSaveRef.current = payload;
     const timer = setTimeout(async () => {
       try {
-        const payload = {
-          surgeons,
-          apps,
-          vacations,
-          backupMondays: [...backupMondaySet],
-          fierceBackup: [...fierceBackupSet],
-          schedule,
-          appShifts,
-          priorCounts,
-          year1Counts,
-          year2Counts,
-          startMonth,
-          startYear,
-          numWeeks,
-          holidayAssignments
-        };
         const ts = new Date().toISOString();
         await supabase.from("call_schedule_data").upsert({
           id: "main",
@@ -2193,6 +2196,7 @@ function CallSchedule() {
           updated_at: ts
         });
         lastSyncRef.current = ts;
+        pendingSaveRef.current = null;
         setSaveError(false);
         setSaveStatus("Saved");
         setTimeout(() => setSaveStatus(""), 2000);
@@ -2204,6 +2208,59 @@ function CallSchedule() {
     }, 800);
     return () => clearTimeout(timer);
   }, [loaded, surgeons, apps, vacations, backupMondaySet, fierceBackupSet, schedule, appShifts, priorCounts, year1Counts, year2Counts, startMonth, startYear, numWeeks, holidayAssignments]);
+
+  // ─── Flush pending save when app is backgrounded or closing ───
+  // Fires the queued payload via fetch keepalive:true so browser completes
+  // the request even if the page is being unloaded.
+  useEffect(() => {
+    const flushPending = (source) => {
+      const payload = pendingSaveRef.current;
+      if (!payload) return;
+      pendingSaveRef.current = null;
+      try {
+        const session = (typeof auth !== "undefined" && auth.getSession) ? auth.getSession() : null;
+        const token = session?.access_token || SUPABASE_ANON_KEY;
+        const ts = new Date().toISOString();
+        const body = JSON.stringify({
+          id: "main",
+          data: payload,
+          updated_at: ts
+        });
+        fetch(`${SUPABASE_URL}/rest/v1/call_schedule_data?on_conflict=id`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "apikey": SUPABASE_ANON_KEY,
+            "Authorization": `Bearer ${token}`,
+            "Prefer": "resolution=merge-duplicates,return=minimal"
+          },
+          body,
+          keepalive: true
+        }).then(() => {
+          lastSyncRef.current = ts;
+        }).catch(e => {
+          console.warn(`Keepalive save failed (${source}):`, e);
+          pendingSaveRef.current = payload;
+        });
+      } catch (e) {
+        console.warn(`Flush pending save (${source}) error:`, e);
+        pendingSaveRef.current = payload;
+      }
+    };
+    const onVisibilityChange = () => {
+      if (document.hidden) flushPending("visibilitychange");
+    };
+    const onPageHide = () => flushPending("pagehide");
+    const onBeforeUnload = () => flushPending("beforeunload");
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    window.addEventListener("pagehide", onPageHide);
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      window.removeEventListener("pagehide", onPageHide);
+      window.removeEventListener("beforeunload", onBeforeUnload);
+    };
+  }, []);
 
   // ─── Supabase: Save scheduler PIN + edge function URL ───
   useEffect(() => {
