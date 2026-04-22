@@ -305,15 +305,18 @@ const auth = {
   },
 
   // Send password reset email
-  // Passes redirect_to so Supabase's email link bounces the user back to the
-  // hosted app (where the URL hash carries the recovery access_token that the
-  // app detects on load and uses to switch into "newpassword" mode).
-  // NOTE: For this to work, the redirect URL must also be added to the
-  // Supabase dashboard's "Redirect URLs" allow-list under
-  // Authentication → URL Configuration. Without that, Supabase silently
-  // strips the redirect parameter and uses the Site URL default.
+  // The redirect URL is HARDCODED (not built from window.location) because:
+  //   1. PWA shortcuts and bookmarks may point to inconsistent paths
+  //   2. Some browsers/webviews strip the path segment under redirect
+  //   3. Hardcoding ensures reset links always land at the hosted app regardless
+  // The hosted app's useEffect detects #type=recovery in the URL hash and
+  // switches into "newpassword" mode automatically.
+  // NOTE: This URL must ALSO appear in the Supabase dashboard's "Redirect URLs"
+  // allow-list (Authentication → URL Configuration). If the allow-list entry
+  // doesn't match exactly (including trailing slash), Supabase silently strips
+  // redirect_to and falls back to the Site URL default.
   async resetPassword(email) {
-    const redirectUrl = window.location.origin + window.location.pathname;
+    const redirectUrl = "https://fkhan628.github.io/Call-Schedule-App/";
     const url = `${SUPABASE_URL}/auth/v1/recover?redirect_to=${encodeURIComponent(redirectUrl)}`;
     const res = await fetch(url, {
       method: "POST",
