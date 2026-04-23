@@ -55,7 +55,7 @@
   </script>
   <script>
     // ─── Auto-update: bump this version string each deploy ───
-    var APP_VERSION = "2026.04.21i";
+    var APP_VERSION = "2026.04.21j";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -99,7 +99,7 @@
   <div id="root"></div>
   <script>
     // Cache-bust with version — update this string when deploying changes
-    var _v = "2026.04.21i";
+    var _v = "2026.04.21j";
     ['config.js','helpers.js','generator.js','app-styles.js'].forEach(function(f) {
       document.write('<script src="'+f+'?v='+_v+'"><\/script>');
     });
@@ -4856,7 +4856,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           )}
 
           {/* ─── Shift Swap Tool ─── */}
-          {Object.keys(schedule).length > 0 && (
+          {!isPublicMode && Object.keys(schedule).length > 0 && (
             <div style={{...css.card,marginTop:14,background:"linear-gradient(135deg,#f8f0ff,#f4f0f8)",border:"1px solid #d0c0e4"}}>
               <div style={css.cardT}>🔄 Shift Swap Tool</div>
               <p style={{fontSize:12,color:"#5a6a78",margin:"0 0 12px",lineHeight:1.5}}>
@@ -5004,7 +5004,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           )}
 
           {/* Export & Share */}
-          {Object.keys(schedule).length > 0 && (
+          {!isPublicMode && Object.keys(schedule).length > 0 && (
             <div style={{...css.card,marginTop:14,background:"linear-gradient(135deg,#f8f9fb,#f0f2f5)",border:"1px solid #d0d8e4"}}>
               <div style={css.cardT}>📤 Export & Share</div>
               <p style={{fontSize:12,color:"#5a6a78",margin:"0 0 12px",lineHeight:1.5}}>

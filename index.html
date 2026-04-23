@@ -55,7 +55,7 @@
   </script>
   <script>
     // ─── Auto-update: bump this version string each deploy ───
-    var APP_VERSION = "2026.04.21i";
+    var APP_VERSION = "2026.04.21j";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -99,7 +99,7 @@
   <div id="root"></div>
   <script>
     // Cache-bust with version — update this string when deploying changes
-    var _v = "2026.04.21i";
+    var _v = "2026.04.21j";
     ['config.js','helpers.js','generator.js','app-styles.js'].forEach(function(f) {
       document.write('<script src="'+f+'?v='+_v+'"><\/script>');
     });
@@ -8119,7 +8119,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       opacity: editWeekPick ? 1 : 0.5,
       cursor: editWeekPick ? "pointer" : "not-allowed"
     }
-  }, "Open Week Editor"))), Object.keys(schedule).length > 0 && /*#__PURE__*/React.createElement("div", {
+  }, "Open Week Editor"))), !isPublicMode && Object.keys(schedule).length > 0 && /*#__PURE__*/React.createElement("div", {
     style: {
       ...css.card,
       marginTop: 14,
@@ -8438,7 +8438,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       fontSize: 11,
       marginTop: 6
     }
-  }, "Close"))), Object.keys(schedule).length > 0 && /*#__PURE__*/React.createElement("div", {
+  }, "Close"))), !isPublicMode && Object.keys(schedule).length > 0 && /*#__PURE__*/React.createElement("div", {
     style: {
       ...css.card,
       marginTop: 14,
