@@ -55,7 +55,7 @@
   </script>
   <script>
     // ─── Auto-update: bump this version string each deploy ───
-    var APP_VERSION = "2026.04.21j";
+    var APP_VERSION = "2026.04.21k";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -99,7 +99,7 @@
   <div id="root"></div>
   <script>
     // Cache-bust with version — update this string when deploying changes
-    var _v = "2026.04.21j";
+    var _v = "2026.04.21k";
     ['config.js','helpers.js','generator.js','app-styles.js'].forEach(function(f) {
       document.write('<script src="'+f+'?v='+_v+'"><\/script>');
     });
@@ -4756,14 +4756,12 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                     const roundLeft = !setsEqual(yesterdaySet, todaySet);
                     const roundRight = !setsEqual(tomorrowSet, todaySet);
 
-                    // Names inside the bar — initials, comma-separated.
-                    // If 4+ surgeons, truncate with "+N".
-                    let displayNames;
-                    if (onVacToday.length <= 3) {
-                      displayNames = onVacToday.map(s => s.name).join(", ");
-                    } else {
-                      displayNames = onVacToday.slice(0, 2).map(s => s.name).join(", ") + ` +${onVacToday.length - 2}`;
-                    }
+                    // Names inside the bar — initials, comma-separated. Always
+                    // show ALL vacationers (no truncation). On narrow screens
+                    // the bar will wrap onto multiple lines naturally, and
+                    // the day cell grows to accommodate. Keeping names visible
+                    // is more useful than keeping the bar to a single line.
+                    const displayNames = onVacToday.map(s => s.name).join(", ");
 
                     return (
                       <div style={{
@@ -4780,9 +4778,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                         borderBottomLeftRadius: roundLeft ? 6 : 0,
                         borderTopRightRadius: roundRight ? 6 : 0,
                         borderBottomRightRadius: roundRight ? 6 : 0,
-                        whiteSpace: "nowrap",
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
+                        whiteSpace: "normal",       // allow wrapping
+                        overflowWrap: "break-word", // break at comma boundaries
+                        wordBreak: "break-word",
+                        lineHeight: 1.25,
                         letterSpacing: 0.2,
                       }} title={onVacToday.map(s => s.name).join(", ") + " on vacation"}>
                         🏖 {displayNames}
