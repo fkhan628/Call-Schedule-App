@@ -55,7 +55,7 @@
   </script>
   <script>
     // ─── Auto-update: bump this version string each deploy ───
-    var APP_VERSION = "2026.04.21h";
+    var APP_VERSION = "2026.04.21i";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -99,7 +99,7 @@
   <div id="root"></div>
   <script>
     // Cache-bust with version — update this string when deploying changes
-    var _v = "2026.04.21h";
+    var _v = "2026.04.21i";
     ['config.js','helpers.js','generator.js','app-styles.js'].forEach(function(f) {
       document.write('<script src="'+f+'?v='+_v+'"><\/script>');
     });
@@ -7730,6 +7730,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       const isWknd = [0, 6].includes(dObj.getDay());
       const hasFierce = entries.some(e => e.type === "Fierce");
       const hasFierceBkp = entries.some(e => e.type === "FierceBkp");
+      const sf = calSurgeonFilter; // shorthand used throughout the cell render
 
       // Determine if THIS DAY's WEEK (Mon-Sun) is a Fierce primary or
       // Fierce backup week. Used to apply bolder/lighter shading to
