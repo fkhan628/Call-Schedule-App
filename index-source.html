@@ -55,7 +55,7 @@
   </script>
   <script>
     // ─── Auto-update: bump this version string each deploy ───
-    var APP_VERSION = "2026.04.21d";
+    var APP_VERSION = "2026.04.21h";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -99,7 +99,7 @@
   <div id="root"></div>
   <script>
     // Cache-bust with version — update this string when deploying changes
-    var _v = "2026.04.21d";
+    var _v = "2026.04.21h";
     ['config.js','helpers.js','generator.js','app-styles.js'].forEach(function(f) {
       document.write('<script src="'+f+'?v='+_v+'"><\/script>');
     });
@@ -108,6 +108,16 @@
     const { useState, useMemo, useCallback, useRef, useEffect } = React;
 
 function CallSchedule() {
+  // ─── Public mode detection ───
+  // When the URL contains ?public=1, render a stripped-down read-only
+  // calendar view for external schedulers. Skips auth entirely.
+  const isPublicMode = useMemo(() => {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      return params.get("public") === "1";
+    } catch(e) { return false; }
+  }, []);
+
   const [view, setView] = useState("calendar");
 
   const [surgeons, setSurgeons] = useState(INIT_SURGEONS);
@@ -132,6 +142,8 @@ function CallSchedule() {
   const [calFilters, setCalFilters] = useState({ svc: true, night: true, wknd: true, app: true, fierce: true, vac: true });
   const [showBackupStats, setShowBackupStats] = useState(false); // Toggle 2nd call columns in Stats
   const [calSurgeonFilter, setCalSurgeonFilter] = useState(""); // "" = all, or surgeon ID
+  const [calAppFilter, setCalAppFilter] = useState("all"); // "all" | "none" | APP id
+  const [calDeptFilter, setCalDeptFilter] = useState(""); // "" = no dept filter, "CWM" or "CBH"
   const toggleFilter = (key) => setCalFilters(p => ({ ...p, [key]: !p[key] }));
 
   // ─── Holiday Assignments ───
@@ -329,6 +341,12 @@ function CallSchedule() {
 
   // ─── Auth: Check session on mount ───
   useEffect(() => {
+    // Public mode: skip auth entirely. We render the calendar read-only
+    // using the Supabase anon key, which has SELECT access to the schedule.
+    if (isPublicMode) {
+      setAuthLoading(false);
+      return;
+    }
     (async () => {
       try {
         // Check for password recovery token in URL hash (Supabase sends #access_token=...&type=recovery)
@@ -703,6 +721,7 @@ function CallSchedule() {
   // ─── Supabase: Auto-save on changes ───
   useEffect(() => {
     if (!loaded) return;
+    if (isPublicMode) return;  // Public viewers never write to the DB
     // Skip auto-save for 3s after initial load — prevents re-saving unchanged data
     // when initial state hydration triggers this effect
     if (loadedAtRef.current && Date.now() - loadedAtRef.current < 3000) return;
@@ -754,6 +773,7 @@ function CallSchedule() {
   // directly using the stored session token.
   useEffect(() => {
     const flushPending = (source) => {
+      if (isPublicMode) return; // Public viewers never write to the DB
       const payload = pendingSaveRef.current;
       if (!payload) return; // Nothing to save
       pendingSaveRef.current = null; // Clear optimistically — if the flush
@@ -810,6 +830,7 @@ function CallSchedule() {
   // ─── Supabase: Save scheduler PIN + edge function URL ───
   useEffect(() => {
     if (!loaded) return;
+    if (isPublicMode) return;  // Public viewers never write config
     const timer = setTimeout(async () => {
       try {
         await supabase
@@ -2872,7 +2893,7 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
 
   // Generate shareable read-only HTML with calendar grid view
   const generateShareHTML = () => {
-    const colors = surgeons.map((s,i) => ({name:s.name, tx:PAL[i%7].tx, bg:PAL[i%7].tg, bd:PAL[i%7].bd}));
+    const colors = surgeons.map((s,i) => { const c = surgeonColors(s.name, i); return {name:s.name, tx:c.tx, bg:c.tg, bd:c.bd}; });
     const colorMap = {}; surgeons.forEach((s,i) => colorMap[s.id] = colors[i]);
     const appColors = {}; apps.forEach((a,i) => appColors[a.id] = {name:a.name, tx:APP_PAL[i%4].tx, bg:APP_PAL[i%4].tg, bd:APP_PAL[i%4].bd});
 
@@ -3393,7 +3414,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
 
   const Badge = ({id,small}) => {
     const s=sMap[id]; if(!s) return <span style={{color:"#a0a8b0",fontSize:10}}>—</span>;
-    return <span style={{...css.badge(s.idx),fontSize:small?10:11,padding:small?"1px 6px":"2px 9px"}}>{s.name}</span>;
+    return <span style={{...css.badge(s.idx, s.name),fontSize:small?10:11,padding:small?"1px 6px":"2px 9px"}}>{s.name}</span>;
   };
 
   const AppBadge = ({id,small}) => {
@@ -3461,7 +3482,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             <p style={{fontSize:13,color:"#7a8a98"}}>Loading…</p>
           </div>
         </div>
-      ) : biometricPending ? (
+      ) : biometricPending && !isPublicMode ? (
         <div style={{display:"flex",justifyContent:"center",alignItems:"center",minHeight:"80vh",padding:20}}>
           <div style={{...css.card,maxWidth:380,width:"100%",padding:28,textAlign:"center"}}>
             <div style={{width:64,height:64,borderRadius:16,background:"linear-gradient(135deg,#1a6fa8,#2488c8)",display:"inline-flex",alignItems:"center",justifyContent:"center",marginBottom:16}}>
@@ -3480,7 +3501,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             </button>
           </div>
         </div>
-      ) : !authUser ? (
+      ) : !authUser && !isPublicMode ? (
         <div style={{display:"flex",justifyContent:"center",alignItems:"center",minHeight:"80vh",padding:20}}>
           <div style={{...css.card,maxWidth:380,width:"100%",padding:28}}>
             <div style={{textAlign:"center",marginBottom:20}}>
@@ -3655,16 +3676,26 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             <span style={{color:"#fff",fontSize:15,fontWeight:800,letterSpacing:-0.5,fontFamily:font}}>DSG</span>
           </div>
           <div>
-            <h1 style={css.h1}>Davenport Surgical Group</h1>
+            <h1 style={css.h1}>{isPublicMode ? "DSG Call Schedule" : "Davenport Surgical Group"}</h1>
             <p style={css.sub}>
-              Call Schedule · Surgeons + APPs
-              {saveStatus && <span style={{marginLeft:8,color:saveError?"#c04040":"#1a8040",fontWeight:600,fontSize:11}}>{saveError?"⚠":"☁"} {saveStatus}</span>}
-              {loaded && !saveStatus && <span style={{marginLeft:8,color:"#a0a8b0",fontSize:10}}>☁ Synced</span>}
-              {!loaded && <span style={{marginLeft:8,color:"#6a7a88",fontSize:10}}>Connecting…</span>}
+              {isPublicMode ? (
+                <>
+                  <span style={{color:"#7a8a98"}}>Read-only view</span>
+                  {lastSyncRef.current && <> · Last updated: {new Date(lastSyncRef.current).toLocaleString(undefined, {month:"short",day:"numeric",year:"numeric",hour:"numeric",minute:"2-digit"})}</>}
+                  {!lastSyncRef.current && <> · Loading schedule…</>}
+                </>
+              ) : (
+                <>
+                  Call Schedule · Surgeons + APPs
+                  {saveStatus && <span style={{marginLeft:8,color:saveError?"#c04040":"#1a8040",fontWeight:600,fontSize:11}}>{saveError?"⚠":"☁"} {saveStatus}</span>}
+                  {loaded && !saveStatus && <span style={{marginLeft:8,color:"#a0a8b0",fontSize:10}}>☁ Synced</span>}
+                  {!loaded && <span style={{marginLeft:8,color:"#6a7a88",fontSize:10}}>Connecting…</span>}
+                </>
+              )}
             </p>
           </div>
         </div>
-        <div style={css.nav}>
+        {!isPublicMode && <div style={css.nav}>
           {(() => {
             const allTabs = [["setup","Setup"],["calendar","Calendar"],["myschedule","Mine"],["requests","Requests"],["stats","Stats"],["totals","Totals"],["settings","Settings"]];
             const isAdmin = userProfile?.person_id === "admin";
@@ -3695,13 +3726,13 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               ↩ Undo
             </button>
           )}
-        </div>
+        </div>}
       </div>
 
       <div style={{maxWidth:1020,margin:"0 auto",padding:"18px 14px 60px",position:"relative"}}>
 
         {/* ─── Notification Panel ─── */}
-        {showNotifs && (
+        {!isPublicMode && showNotifs && (
           <div style={{position:"absolute",top:0,right:14,width:340,maxHeight:400,overflowY:"auto",background:"#fff",border:"1px solid #dce2e8",borderRadius:10,boxShadow:"0 4px 20px rgba(0,0,0,0.12)",zIndex:100,padding:12}}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
               <span style={{fontSize:14,fontWeight:700,color:"#1a2a3a"}}>Notifications</span>
@@ -3733,7 +3764,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         )}
 
         {/* ════════════════ SETUP ════════════════ */}
-        {view==="setup"&&<>
+        {view==="setup" && !isPublicMode && <>
           {(isScheduler || userProfile?.person_id === "admin") && <>
           {/* Surgeons */}
           <div style={css.card}>
@@ -3744,7 +3775,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(160px,1fr))",gap:6}}>
               {surgeons.map((s,i)=>(
                 <div key={s.id} style={{display:"flex",alignItems:"center",gap:6,background:"#f4f6f8",borderRadius:6,padding:"5px 8px",border:"1px solid #e0e4ea"}}>
-                  <div style={{width:8,height:8,borderRadius:2,background:PAL[i%7].tx,flexShrink:0}}/>
+                  <div style={{width:8,height:8,borderRadius:2,background:surgeonColors(s.name, i).tx,flexShrink:0}}/>
                   <input value={s.name} onChange={e=>rename(s.id,e.target.value)}
                     style={{...css.inp,border:"none",padding:"3px 4px",background:"transparent",width:"100%",fontWeight:600,letterSpacing:0.5}}/>
                   <button onClick={()=>removeSurgeon(s.id)} style={{background:"none",border:"none",color:"#c04040",cursor:"pointer",fontSize:14,flexShrink:0,padding:"0 2px"}}>✕</button>
@@ -4113,7 +4144,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                       const mc = holCounts[s.id]?.major||0;
                       const mi = holCounts[s.id]?.minor||0;
                       return (
-                        <div key={s.id} style={{...css.badge(sMap[s.id]?.idx||0),padding:"4px 10px",fontSize:11}}>
+                        <div key={s.id} style={{...css.badge(sMap[s.id]?.idx||0, sMap[s.id]?.name),padding:"4px 10px",fontSize:11}}>
                           {s.name} <span style={{fontWeight:400}}>— {mc} major, {mi} minor</span>
                         </div>
                       );
@@ -4261,7 +4292,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                                 {isB&&<span style={{color:"#8a6a10",fontWeight:700,fontSize:7,marginRight:1}}>B</span>}
                                 <span style={{color,fontWeight:700}}>{label}</span>
                                 {" "}
-                                <span style={{color:PAL[sMap[e.surgeon]?.idx%7]?.tx||"#4a5868",fontWeight:500}}>{sMap[e.surgeon]?.name||"?"}</span>
+                                <span style={{color:surgeonColors(sMap[e.surgeon]?.name, sMap[e.surgeon]?.idx).tx||"#4a5868",fontWeight:500}}>{sMap[e.surgeon]?.name||"?"}</span>
                               </div>
                             );
                           })}
@@ -4314,7 +4345,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         </>}
 
         {/* ════════════════ TOTALS ════════════════ */}
-        {view==="totals"&&<>
+        {view==="totals" && !isPublicMode && <>
           <div style={css.card}>
             <div style={css.cardT}>Running Totals <span style={{fontWeight:400,fontSize:11,color:"#7a8a98"}}>— 1-Year, 2-Year, and Multi-Year</span></div>
             <p style={{fontSize:12,color:"#7a8a98",margin:"0 0 10px",lineHeight:1.5}}>
@@ -4409,10 +4440,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                 <div style={{fontSize:15,fontWeight:700,color:"#1a2a3a"}}>
                   📋 On Call Today — {["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][todayDow]} {new Date().getMonth()+1}/{new Date().getDate()}
                 </div>
-                <button onClick={shareTonightMsg}
+                {!isPublicMode && <button onClick={shareTonightMsg}
                   style={{...css.btn(true),padding:"6px 14px",fontSize:12}}>
                   {copied ? "✓ Copied!" : "📤 Send Notification"}
-                </button>
+                </button>}
               </div>
               <div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
                 {todayCall.dayCall && (
@@ -4496,13 +4527,26 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               </button>
             ))}
             <span style={{margin:"0 4px",color:dkSubtext}}>|</span>
-            <select value={calSurgeonFilter} onChange={e=>setCalSurgeonFilter(e.target.value)}
+            <select value={calSurgeonFilter} onChange={e=>{setCalSurgeonFilter(e.target.value);if(e.target.value)setCalDeptFilter("");}}
               style={{...css.inp,padding:"3px 6px",fontSize:10,width:100,...dkInp}}>
               <option value="">All Surgeons</option>
-              {surgeons.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
+              {surgeons
+                .filter(s => !calDeptFilter || (SURGEON_DEPTS[s.name]||[]).includes(calDeptFilter))
+                .map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
             </select>
-            {(Object.values(calFilters).some(v=>!v) || calSurgeonFilter) && (
-              <button onClick={()=>{setCalFilters({svc:true,night:true,wknd:true,app:true,fierce:true,vac:true});setCalSurgeonFilter("");}}
+            <select value={calAppFilter} onChange={e=>setCalAppFilter(e.target.value)}
+              style={{...css.inp,padding:"3px 6px",fontSize:10,width:90,...dkInp}}>
+              <option value="all">All APPs</option>
+              <option value="none">No APPs</option>
+              {apps.map(a=><option key={a.id} value={a.id}>{a.name}</option>)}
+            </select>
+            <select value={calDeptFilter} onChange={e=>{setCalDeptFilter(e.target.value);if(e.target.value)setCalSurgeonFilter("");}}
+              style={{...css.inp,padding:"3px 6px",fontSize:10,width:100,...dkInp}}>
+              <option value="">All Depts</option>
+              {Object.entries(DEPT_LABELS).map(([k,v])=><option key={k} value={k}>{v}</option>)}
+            </select>
+            {(Object.values(calFilters).some(v=>!v) || calSurgeonFilter || calAppFilter!=="all" || calDeptFilter) && (
+              <button onClick={()=>{setCalFilters({svc:true,night:true,wknd:true,app:true,fierce:true,vac:true});setCalSurgeonFilter("");setCalAppFilter("all");setCalDeptFilter("");}}
                 style={{background:"none",border:"1px solid #d0d8e0",color:"#8a94a0",borderRadius:5,padding:"3px 8px",fontSize:10,cursor:"pointer",fontFamily:font}}>
                 Reset
               </button>
@@ -4540,24 +4584,87 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             {(()=>{
               const now = new Date();
               const todayStr = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,"0")}-${String(now.getDate()).padStart(2,"0")}`;
+
+              // Helper: for a given date, find the Monday that starts its week.
+              // Weeks run Monday-Sunday here (calendar grid is Sun-Sat but Fierce
+              // weeks are keyed by their Monday, matching how the schedule works).
+              const getWeekMonday = (d) => {
+                const day = d.getDay(); // 0=Sun, 1=Mon, ..., 6=Sat
+                const diff = day === 0 ? -6 : 1 - day; // shift back to Monday
+                const m = new Date(d);
+                m.setDate(d.getDate() + diff);
+                return fmt(m);
+              };
+
+              // Helper: is a given surgeon on vacation on a given date?
+              const isSurgeonOnVacDate = (sid, ds) => onVac(sid, ds, vacations);
+
+              // For a given date and surgeon, determine if today is the first
+              // and/or last day of their vacation range (considering that a
+              // range the user entered could span multiple days, but we want
+              // bars to continue across week boundaries too visually).
+              // Simpler: is yesterday NOT vacation for them? Is tomorrow NOT
+              // vacation for them? That determines corner rounding.
+              const getVacBounds = (sid, ds) => {
+                const d = parse(ds);
+                const prev = fmt(addD(d, -1));
+                const next = fmt(addD(d, 1));
+                const isFirst = !isSurgeonOnVacDate(sid, prev);
+                const isLast = !isSurgeonOnVacDate(sid, next);
+                return { isFirst, isLast };
+              };
+
               return calGrid.map((day,i)=>{
               if(!day) return <div key={`e${i}`} style={{background:"#f8f9fb",minHeight:82}}/>;
               const ds=`${calYear}-${String(calMonth+1).padStart(2,"0")}-${String(day).padStart(2,"0")}`;
               const isToday = ds === todayStr;
               const entries=calData[ds]||[];
-              const isWknd=[0,6].includes(new Date(calYear,calMonth,day).getDay());
+              const dObj = new Date(calYear,calMonth,day);
+              const isWknd=[0,6].includes(dObj.getDay());
               const hasFierce = entries.some(e=>e.type==="Fierce");
               const hasFierceBkp = entries.some(e=>e.type==="FierceBkp");
-              const onVacList = [...surgeons, ...apps].filter(s=>onVac(s.id,ds,vacations));
 
-              // Apply surgeon filter
-              const sf = calSurgeonFilter;
+              // Determine if THIS DAY's WEEK (Mon-Sun) is a Fierce primary or
+              // Fierce backup week. Used to apply bolder/lighter shading to
+              // ALL 7 days of the week, not just the Fierce day itself.
+              const weekMonday = getWeekMonday(dObj);
+              const isFiercePrimaryWeek = backupMondaySet.has(weekMonday);
+              const isFierceBackupWeek = fierceBackupSet.has(weekMonday);
+
+              // Gather surgeons on vacation today, respecting filters
+              const onVacToday = [...surgeons, ...apps].filter(s=>{
+                if (!isSurgeonOnVacDate(s.id, ds)) return false;
+                if (sf && s.id !== sf) return false;
+                const isApp = s.id.startsWith("a");
+                if (isApp) return (calAppFilter === "all" || calAppFilter === s.id);
+                if (calDeptFilter) return (SURGEON_DEPTS[s.name]||[]).includes(calDeptFilter);
+                return true;
+              });
+
+              // Background tint — Fierce primary is bolder, Fierce backup lighter,
+              // regular weekdays/weekends keep their existing soft tints.
+              let cellBg;
+              let cellBorder;
+              if (isFiercePrimaryWeek && calFilters.fierce) {
+                cellBg = "#fef3d0";      // warm gold — bolder, primary
+                cellBorder = "1px solid #e0c870";
+              } else if (isFierceBackupWeek && calFilters.fierce) {
+                cellBg = "#e8f0fc";      // soft blue — lighter, backup
+                cellBorder = "1px solid #c8d8ec";
+              } else if (isWknd) {
+                cellBg = "#edf0f4";
+                cellBorder = "1px solid #e8ecf0";
+              } else {
+                cellBg = "#f8f9fb";
+                cellBorder = "1px solid #e8ecf0";
+              }
 
               return (
                 <div key={ds} style={{
-                  background: hasFierce&&calFilters.fierce?"#faf8f0":hasFierceBkp&&calFilters.fierce?"#f8f9fb":isWknd?"#edf0f4":"#f8f9fb",
-                  border: hasFierce&&calFilters.fierce?"1px solid #2a2810":hasFierceBkp&&calFilters.fierce?"1px solid #d0d8e4":"1px solid #e8ecf0",
+                  background: cellBg,
+                  border: cellBorder,
                   minHeight:82, padding:"3px 4px", borderRadius:2,
+                  display:"flex", flexDirection:"column",
                 }}>
                   <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:2}}>
                     {isToday ? (
@@ -4577,6 +4684,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                     if(isW && !calFilters.wknd) return false;
                     if(!isD && !isW && !calFilters.night) return false;
                     if(sf && e.surgeon !== sf) return false;
+                    if(calDeptFilter && !(SURGEON_DEPTS[sMap[e.surgeon]?.name]||[]).includes(calDeptFilter)) return false;
                     return true;
                   }).map((e,j)=>{
                     const isB = e.cls==="backup";
@@ -4594,24 +4702,24 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                         {isB&&<span style={{color:"#8a6a10",fontWeight:700,fontSize:8,marginRight:2}}>B</span>}
                         <span style={{color,fontWeight:700}}>{label}</span>
                         {" "}
-                        <span style={{color:PAL[sMap[e.surgeon]?.idx%7]?.tx||"#4a5868",fontWeight:highlighted?700:400}}>{sMap[e.surgeon]?.name||"?"}</span>
+                        <span style={{color:surgeonColors(sMap[e.surgeon]?.name, sMap[e.surgeon]?.idx).tx||"#4a5868",fontWeight:highlighted?700:400}}>{sMap[e.surgeon]?.name||"?"}</span>
                       </div>
                     );
                   })}
 
                   {/* Holiday coverage entries */}
-                  {entries.filter(e=>e.type==="Holiday").filter(e=>!sf||e.surgeon===sf).map((e,j)=>(
+                  {entries.filter(e=>e.type==="Holiday").filter(e=>!sf||e.surgeon===sf).filter(e=>!calDeptFilter||(SURGEON_DEPTS[sMap[e.surgeon]?.name]||[]).includes(calDeptFilter)).map((e,j)=>(
                     <div key={"hol"+j} style={{marginBottom:1,padding:"1px 3px",borderRadius:3,fontSize:10,
                       background:"#fef0e8",border:"1px solid #e0a868",fontWeight:600}}>
                       <span style={{color:"#c06020",fontWeight:700}} title={e.holName||""}>{holidayEmoji(e.holName)}</span>
                       {" "}
-                      <span style={{color:PAL[sMap[e.surgeon]?.idx%7]?.tx||"#4a5868"}}>{sMap[e.surgeon]?.name||"?"}</span>
+                      <span style={{color:surgeonColors(sMap[e.surgeon]?.name, sMap[e.surgeon]?.idx).tx||"#4a5868"}}>{sMap[e.surgeon]?.name||"?"}</span>
                       <span style={{color:"#a07030",fontSize:8,marginLeft:2}}>{e.hours}</span>
                     </div>
                   ))}
 
                   {/* APP entries — hidden when filtering to a specific surgeon */}
-                  {calFilters.app && !sf && entries.filter(e=>e.type==="APP").map((e,j)=>(
+                  {calFilters.app && !sf && calAppFilter!=="none" && !calDeptFilter && entries.filter(e=>e.type==="APP").filter(e=>calAppFilter==="all"||e.appId===calAppFilter).map((e,j)=>(
                     <div key={"app"+j} style={{marginBottom:1,padding:"1px 3px",borderRadius:3,fontSize:10,
                       background:"#fcf4f0",border:"1px solid #281818"}}>
                       <span style={{color:"#c08050",fontWeight:700}}>A</span>
@@ -4623,9 +4731,63 @@ ${"</"}script>${"</"}body>${"</"}html>`;
 
                   {calFilters.fierce && hasFierce && <div style={{fontSize:8,color:"#8a6a10",marginTop:1,fontWeight:600}}>⚡ Fierce Primary</div>}
                   {calFilters.fierce && hasFierceBkp && !hasFierce && <div style={{fontSize:8,color:"#1a6fa8",marginTop:1,fontWeight:600}}>🛡 Fierce Backup</div>}
-                  {calFilters.vac && onVacList.filter(s=>!sf||s.id===sf).map(s=>(
-                    <div key={s.id} style={{fontSize:8,color:"#c04848",marginTop:1}}>🏖 {s.name}</div>
-                  ))}
+
+                  {/* Vacation bar — renders as a continuous bar across consecutive
+                      vacation days. Corners round based on whether today is the
+                      start/end of ANY vacation span in the group. Multiple
+                      surgeons on vacation today share the bar, names joined. */}
+                  {calFilters.vac && onVacToday.length > 0 && (() => {
+                    // Determine corner rounding based on the GROUP of vacationers:
+                    // Round the left corner only if NONE of today's vacationers
+                    // were also on vacation yesterday (i.e., at least one span
+                    // starts today). Round right corner if none continue tomorrow.
+                    // This matches the "visual continuity when same group continues"
+                    // and "split when group changes" behavior the user requested.
+                    const prevDs = fmt(addD(dObj, -1));
+                    const nextDs = fmt(addD(dObj, 1));
+                    // Set of surgeon ids on vacation on each adjacent day
+                    const yesterdaySet = new Set(onVacToday.filter(s => isSurgeonOnVacDate(s.id, prevDs)).map(s => s.id));
+                    const tomorrowSet = new Set(onVacToday.filter(s => isSurgeonOnVacDate(s.id, nextDs)).map(s => s.id));
+                    // If yesterday's vacationer set is IDENTICAL to today's, no
+                    // left round (bar continues). Otherwise round left.
+                    const todaySet = new Set(onVacToday.map(s => s.id));
+                    const setsEqual = (a, b) => a.size === b.size && [...a].every(x => b.has(x));
+                    const roundLeft = !setsEqual(yesterdaySet, todaySet);
+                    const roundRight = !setsEqual(tomorrowSet, todaySet);
+
+                    // Names inside the bar — initials, comma-separated.
+                    // If 4+ surgeons, truncate with "+N".
+                    let displayNames;
+                    if (onVacToday.length <= 3) {
+                      displayNames = onVacToday.map(s => s.name).join(", ");
+                    } else {
+                      displayNames = onVacToday.slice(0, 2).map(s => s.name).join(", ") + ` +${onVacToday.length - 2}`;
+                    }
+
+                    return (
+                      <div style={{
+                        marginTop: "auto",  // push to bottom of cell
+                        marginLeft: roundLeft ? 0 : -4,
+                        marginRight: roundRight ? 0 : -4,
+                        marginBottom: -3,
+                        padding: "2px 4px",
+                        fontSize: 9,
+                        fontWeight: 600,
+                        background: "#e4e7ec",
+                        color: "#5a6a78",
+                        borderTopLeftRadius: roundLeft ? 6 : 0,
+                        borderBottomLeftRadius: roundLeft ? 6 : 0,
+                        borderTopRightRadius: roundRight ? 6 : 0,
+                        borderBottomRightRadius: roundRight ? 6 : 0,
+                        whiteSpace: "nowrap",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        letterSpacing: 0.2,
+                      }} title={onVacToday.map(s => s.name).join(", ") + " on vacation"}>
+                        🏖 {displayNames}
+                      </div>
+                    );
+                  })()}
                 </div>
               );
             });
@@ -4853,7 +5015,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                     const events = buildICSEvents(schedule, s.id, s.name, appShifts, aMap);
                     const ics = generateICS(events, `Call Schedule — ${s.name}`);
                     downloadICS(ics, `call-schedule-${s.name.toLowerCase()}.ics`);
-                  }} style={{...css.badge(sMap[s.id]?.idx||0),cursor:"pointer",padding:"5px 12px",fontSize:12}}>
+                  }} style={{...css.badge(sMap[s.id]?.idx||0, sMap[s.id]?.name),cursor:"pointer",padding:"5px 12px",fontSize:12}}>
                     ⬇ {s.name}
                   </button>
                 ))}
@@ -4957,7 +5119,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         </>}
 
         {/* ════════════════ STATS ════════════════ */}
-        {view==="stats"&&<>
+        {view==="stats" && !isPublicMode && <>
           {/* Export — scheduler only */}
           {isScheduler && (
             <div style={{display:"flex",justifyContent:"flex-end",marginBottom:10}}>
@@ -5424,7 +5586,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         </>}
 
         {/* ════════════════ MY SCHEDULE ════════════════ */}
-        {view==="myschedule"&&<>
+        {view==="myschedule" && !isPublicMode && <>
           <div style={css.card}>
             <div style={css.cardT}>My Call Schedule</div>
             <p style={{fontSize:13,color:"#5a6a78",margin:"0 0 12px",lineHeight:1.5}}>
@@ -5519,7 +5681,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         </>}
 
         {/* ════════════════ REQUESTS ════════════════ */}
-        {view==="requests"&&<>
+        {view==="requests" && !isPublicMode && <>
           {/* Submit Vacation Request */}
           <div style={css.card}>
             <div style={css.cardT}>🏖 Request Vacation</div>
@@ -5932,7 +6094,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         </>}
 
         {/* ════════════════ SETTINGS ════════════════ */}
-        {view==="settings"&&<>
+        {view==="settings" && !isPublicMode && <>
           {/* Dark / Light Mode */}
           <div style={css.card}>
             <div style={css.cardT}>🎨 Appearance</div>
@@ -6301,7 +6463,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               <div style={{display:"flex",gap:4,flexWrap:"wrap",alignItems:"center"}}>
                 {surgeons.map(s => (
                   <button key={s.id} onClick={()=>copyText(`${SUPABASE_URL}/functions/v1/calendar-sync?surgeon=${s.name}`, s.id)}
-                    style={{...css.badge(sMap[s.id]?.idx||0),cursor:"pointer",padding:"3px 10px",fontSize:10,border:copiedUrl===s.id?"2px solid #1a8040":undefined}}>
+                    style={{...css.badge(sMap[s.id]?.idx||0, sMap[s.id]?.name),cursor:"pointer",padding:"3px 10px",fontSize:10,border:copiedUrl===s.id?"2px solid #1a8040":undefined}}>
                     {copiedUrl===s.id ? "✓ " : "📋 "}{s.name}
                   </button>
                 ))}

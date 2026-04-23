@@ -81,6 +81,27 @@ const PAL = [
   { tx:"#a85820", bd:"#e8c0a0", tg:"#fcf0e8" },
 ];
 
+// Name-pinned surgeon colors — each surgeon has consistent colors across
+// the entire app regardless of their position in the surgeons[] array.
+// Muted palette chosen for visual harmony; tx is the primary accent color
+// (labels, chips), bd is the border, tg is the soft background fill.
+const SURGEON_COLOR_BY_NAME = {
+  "DJA": { tx:"#8a6a10", bd:"#e0c870", tg:"#fcf3d0" }, // warm mustard yellow
+  "MCC": { tx:"#7a5a40", bd:"#c8ac8c", tg:"#f0e4d4" }, // warm taupe / clay
+  "RPC": { tx:"#3a7048", bd:"#a8c8a8", tg:"#e4f0e0" }, // sage green
+  "KJH": { tx:"#a04878", bd:"#e0a8c4", tg:"#fce0ec" }, // dusty rose pink
+  "REH": { tx:"#2a3040", bd:"#707888", tg:"#d8dce4" }, // deep charcoal (reads as black)
+  "FAK": { tx:"#2c5888", bd:"#9cb8d4", tg:"#dde8f4" }, // slate blue
+  "ARW": { tx:"#b06050", bd:"#e8b0a0", tg:"#fcdcd0" }, // soft coral
+};
+
+// Helper: look up colors for a surgeon by name, falling back to the indexed
+// PAL palette if the name isn't in the pinned map (e.g. future surgeons).
+function surgeonColors(name, idx) {
+  if (name && SURGEON_COLOR_BY_NAME[name]) return SURGEON_COLOR_BY_NAME[name];
+  return PAL[(idx || 0) % 7];
+}
+
 // APP palette — warm tones to distinguish from surgeon colors
 const APP_PAL = [
   { tx:"#985020", bd:"#e0b890", tg:"#faf0e4" },
@@ -94,6 +115,25 @@ const INIT_SURGEONS = [
   { id:"s4", name:"KJH" }, { id:"s5", name:"REH" }, { id:"s6", name:"FAK" },
   { id:"s7", name:"ARW" },
 ];
+
+// Department membership — used by the calendar filter to quickly show
+// only surgeons from a specific center. Name-based so it survives re-ordering.
+// A surgeon can be in multiple departments.
+const SURGEON_DEPTS = {
+  "DJA": ["CWM", "CBH"],
+  "MCC": ["CWM"],
+  "RPC": ["CBH"],
+  "KJH": ["CWM"],
+  "REH": [],
+  "FAK": ["CBH"],
+  "ARW": ["CBH"],
+};
+
+// Department display labels (for dropdown)
+const DEPT_LABELS = {
+  "CWM": "CWM (Weight Mgmt)",
+  "CBH": "CBH (Breast Health)",
+};
 
 const INIT_APPS = [
   { id:"a1", name:"MA" }, { id:"a2", name:"SJ" }, { id:"a3", name:"MS" }, { id:"a4", name:"SS" },

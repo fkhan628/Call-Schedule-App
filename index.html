@@ -21,6 +21,8 @@
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body { background: #f0f2f5; overflow-x: hidden; }
     #root { min-height: 100vh; }
+    /* Hide Babel warning */
+    .babel-warning { display: none !important; }
     /* Print-friendly styles */
     @media print {
       body { background: #fff !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
@@ -40,6 +42,7 @@
   </style>
   <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
   <script src="https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.page.js" defer></script>
   <script type="module">
     // Load the Supabase JS SDK as an ES module. Exposes createClient under
@@ -52,7 +55,7 @@
   </script>
   <script>
     // ─── Auto-update: bump this version string each deploy ───
-    var APP_VERSION = "2026.04.21d";
+    var APP_VERSION = "2026.04.21h";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -95,1180 +98,13 @@
 <body>
   <div id="root"></div>
   <script>
-// DSG Call Schedule — Configuration & Constants
-// This file contains Supabase config, DB helpers, surgeon data, and shift constants.
-
-/* ═══════════════════════════════════════════════════
-   SUPABASE CONFIG
-   ═══════════════════════════════════════════════════ */
-const SUPABASE_URL = "https://xqongyahdnkozqunpwmu.supabase.co";
-const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inhxb25neWFoZG5rb3pxdW5wd211Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU3Nzg2NDksImV4cCI6MjA5MTM1NDY0OX0.a2p_twcuDAfI_ju-oGzut_NCPNzKjBEbkhVsMGXYyww";
-
-// Lightweight Supabase REST client (no SDK dependency needed)
-const dbHeaders = { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}`, "Content-Type": "application/json" };
-const supabase = {
-  from: (table) => ({
-    select: (cols) => ({
-      eq: (col, val) => ({
-        single: async () => {
-          const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}?select=${cols}&${col}=eq.${val}`, { headers: dbHeaders });
-          const rows = await res.json();
-          return { data: rows?.[0] || null, error: rows?.error || null };
-        }
-      })
-    }),
-    upsert: async (row) => {
-      const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}`, {
-        method: "POST", headers: { ...dbHeaders, Prefer: "resolution=merge-duplicates" },
-        body: JSON.stringify(row),
-      });
-      return { error: res.ok ? null : await res.text() };
-    },
-  }),
-};
-
-// Extended DB helpers for new tables
-const db = {
-  async query(table, { eq, order, limit, select } = {}) {
-    let url = `${SUPABASE_URL}/rest/v1/${table}?select=${select || "*"}`;
-    if (eq) Object.entries(eq).forEach(([k, v]) => { url += `&${k}=eq.${v}`; });
-    if (order) url += `&order=${order}`;
-    if (limit) url += `&limit=${limit}`;
-    const res = await fetch(url, { headers: dbHeaders });
-    return res.ok ? await res.json() : [];
-  },
-  async insert(table, row) {
-    const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}`, {
-      method: "POST", headers: { ...dbHeaders, Prefer: "return=representation" },
-      body: JSON.stringify(row),
+    // Cache-bust with version — update this string when deploying changes
+    var _v = "2026.04.21h";
+    ['config.js','helpers.js','generator.js','app-styles.js'].forEach(function(f) {
+      document.write('<script src="'+f+'?v='+_v+'"><\/script>');
     });
-    const data = await res.json();
-    return { data: Array.isArray(data) ? data[0] : data, error: res.ok ? null : data };
-  },
-  async update(table, id, data) {
-    const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}?id=eq.${id}`, {
-      method: "PATCH", headers: { ...dbHeaders, Prefer: "return=representation" },
-      body: JSON.stringify(data),
-    });
-    return { error: res.ok ? null : await res.text() };
-  },
-  async upsert(table, row) {
-    return supabase.from(table).upsert(row);
-  },
-};
-
-/* ═══════════════════════════════════════════════════
-   SUPABASE REALTIME CLIENT
-   ═══════════════════════════════════════════════════
-   The `supabase` object above is a minimal REST wrapper we built to avoid
-   dragging in the SDK. But Realtime (WebSocket channels) needs the real SDK.
-   We load it via a <script type="module"> in index-source.html, which
-   exposes createClient on window._supabaseSDK. Since module scripts load
-   async, we lazy-initialize the Realtime client on first use — by the time
-   React mounts and calls getSupabaseRT(), the SDK is always available. */
-let _supabaseRTInstance = null;
-function getSupabaseRT() {
-  if (_supabaseRTInstance) return _supabaseRTInstance;
-  try {
-    const SDK = (typeof window !== "undefined") ? window._supabaseSDK : null;
-    if (SDK?.createClient) {
-      _supabaseRTInstance = SDK.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-        realtime: { params: { eventsPerSecond: 10 } },
-        auth: { persistSession: false, autoRefreshToken: false },
-      });
-      return _supabaseRTInstance;
-    }
-  } catch(e) { console.warn("Supabase Realtime client init failed:", e); }
-  return null;
-}
-
-/* ═══════════════════════════════════════════════════
-   CONSTANTS
-   ═══════════════════════════════════════════════════ */
-const NIGHT_KEYS = ["mon","tue","wed","thu"];
-const ALL_SHIFT_KEYS = ["dayCall","mon","tue","wed","thu","wknd"];
-const SHIFT_LABELS = { dayCall:"Service Week (incl. Sat)", mon:"Mon Night", tue:"Tue Night", wed:"Wed Night", thu:"Thu Night", wknd:"Weekend" };
-const SHIFT_TIMES = { dayCall:"M–F 7a–5p + Sat 7a–Sun 7a", mon:"Mon 5p–7a", tue:"Tue 5p–7a", wed:"Wed 5p–7a", thu:"Thu 5p–7a", wknd:"Fri 5p–Sat 7a & Sun 7a–Mon 7a" };
-const SHIFT_ICONS = { dayCall:"🏥", mon:"🌙", tue:"🌙", wed:"🌙", thu:"🌙", wknd:"🌗" };
-const DAY_HDR = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
-const MO = ["January","February","March","April","May","June","July","August","September","October","November","December"];
-
-const PAL = [
-  { tx:"#0e6fa8", bd:"#a8d4f0", tg:"#e8f4fc" },
-  { tx:"#a8306a", bd:"#e8a0c8", tg:"#fce8f4" },
-  { tx:"#1a8040", bd:"#a0d8b0", tg:"#e8fce8" },
-  { tx:"#8a7010", bd:"#e0d090", tg:"#faf4e0" },
-  { tx:"#6030a8", bd:"#c0a8e8", tg:"#f0e8fc" },
-  { tx:"#2868a8", bd:"#a0c8e8", tg:"#e8f0fc" },
-  { tx:"#a85820", bd:"#e8c0a0", tg:"#fcf0e8" },
-];
-
-// APP palette — warm tones to distinguish from surgeon colors
-const APP_PAL = [
-  { tx:"#985020", bd:"#e0b890", tg:"#faf0e4" },
-  { tx:"#883868", bd:"#d8a0c0", tg:"#f8e8f0" },
-  { tx:"#487020", bd:"#b8d898", tg:"#f0f8e8" },
-  { tx:"#306080", bd:"#a0c8d8", tg:"#e8f4f8" },
-];
-
-const INIT_SURGEONS = [
-  { id:"s1", name:"DJA" }, { id:"s2", name:"MCC" }, { id:"s3", name:"RPC" },
-  { id:"s4", name:"KJH" }, { id:"s5", name:"REH" }, { id:"s6", name:"FAK" },
-  { id:"s7", name:"ARW" },
-];
-
-const INIT_APPS = [
-  { id:"a1", name:"MA" }, { id:"a2", name:"SJ" }, { id:"a3", name:"MS" }, { id:"a4", name:"SS" },
-];
-
-/* ═══ Verified Call Counts from Shift Distribution Spreadsheets ═══
-   Regular vs backup split derived from 1st/2nd call ratios in monthly totals.
-   totalDays/totalDaysB = actual call day counts from main sheets (used for pay). */
-
-// 2025 only (1-Year)
-const COUNTS_1YR = {
-  s1: { dc:7, nights:49, wknd:7, off:0, dcB:1, nightsB:5, wkndB:1, offB:0, totalDays:100, totalDaysB:10 },  // DJA
-  s2: { dc:6, nights:45, wknd:7, off:0, dcB:1, nightsB:6, wkndB:1, offB:0, totalDays:89,  totalDaysB:12 },  // MCC
-  s3: { dc:7, nights:47, wknd:6, off:0, dcB:1, nightsB:6, wkndB:1, offB:0, totalDays:97,  totalDaysB:13 },  // RPC
-  s4: { dc:6, nights:37, wknd:8, off:0, dcB:1, nightsB:6, wkndB:1, offB:0, totalDays:78,  totalDaysB:12 },  // KJH
-  s5: { dc:7, nights:40, wknd:6, off:0, dcB:1, nightsB:8, wkndB:1, offB:0, totalDays:80,  totalDaysB:15 },  // REH
-  s6: { dc:5, nights:45, wknd:5, off:0, dcB:2, nightsB:14, wkndB:2, offB:0, totalDays:89,  totalDaysB:27 },  // FAK
-  s7: { dc:6, nights:50, wknd:6, off:0, dcB:1, nightsB:4, wkndB:0, offB:0, totalDays:99,  totalDaysB:8 },   // ARW
-};
-
-// 2024 + 2025 combined (2-Year / Multi-Year)
-const COUNTS_2YR = {
-  s1: { dc:14, nights:96,  wknd:13, off:0, dcB:2, nightsB:10, wkndB:2, offB:0, totalDays:197, totalDaysB:21 },  // DJA
-  s2: { dc:13, nights:90,  wknd:15, off:0, dcB:2, nightsB:15, wkndB:2, offB:0, totalDays:183, totalDaysB:30 },  // MCC
-  s3: { dc:13, nights:100, wknd:12, off:0, dcB:2, nightsB:10, wkndB:2, offB:0, totalDays:196, totalDaysB:21 },  // RPC
-  s4: { dc:12, nights:75,  wknd:12, off:0, dcB:3, nightsB:19, wkndB:3, offB:0, totalDays:156, totalDaysB:39 },  // KJH
-  s5: { dc:13, nights:90,  wknd:15, off:0, dcB:2, nightsB:19, wkndB:3, offB:0, totalDays:180, totalDaysB:36 },  // REH
-  s6: { dc:12, nights:91,  wknd:13, off:0, dcB:2, nightsB:17, wkndB:2, offB:0, totalDays:184, totalDaysB:33 },  // FAK
-  s7: { dc:11, nights:78,  wknd:10, off:0, dcB:2, nightsB:13, wkndB:1, offB:0, totalDays:159, totalDaysB:26 },  // ARW
-};
-
-/* ═══ 2026–2027 Vacation & Fierce Schedule ═══
-   Parsed from Calendar Creator screenshots.
-   Merged on first load; edit in app to adjust dates. */
-const MAY_AUG_VACATIONS = {
-  "s1": [["2026-05-01","2026-05-04"],["2026-05-14","2026-05-17"]], // DJA
-  "s2": [["2026-05-08","2026-05-20"],["2026-06-27","2026-07-07"],["2026-08-07","2026-08-16"],["2026-08-24","2026-08-30"]], // MCC
-  "s3": [["2026-05-18","2026-05-18"],["2026-06-13","2026-06-21"],["2026-07-30","2026-08-16"],["2026-10-21","2026-10-28"],["2026-12-25","2027-01-03"]], // RPC
-  "s4": [["2026-05-27","2026-05-27"],["2026-06-24","2026-06-28"],["2026-08-07","2026-08-09"]], // KJH — Aug 7 is no-call (working, not on call)
-  "s5": [["2026-05-15","2026-05-17"],["2026-05-23","2026-05-25"],["2026-05-29","2026-05-31"],["2026-06-05","2026-06-07"],["2026-07-10","2026-07-12"],["2026-07-24","2026-07-26"],["2026-08-13","2026-08-13"],["2026-09-18","2026-09-20"]], // REH
-  "s6": [["2026-05-07","2026-05-10"],["2026-05-22","2026-05-23"],["2026-05-27","2026-06-14"],["2026-06-27","2026-06-28"]], // FAK
-  "s7": [["2026-05-01","2026-05-03"],["2026-05-21","2026-05-27"],["2026-06-05","2026-06-09"],["2026-07-03","2026-07-05"],["2026-07-14","2026-07-15"]], // ARW
-  "a1": [["2026-05-01","2026-05-03"],["2026-05-21","2026-05-21"],["2026-05-29","2026-05-29"],["2026-06-16","2026-06-19"],["2026-06-22","2026-06-22"]], // MA
-  "a2": [["2026-05-15","2026-05-15"],["2026-05-18","2026-05-18"],["2026-05-27","2026-05-28"],["2026-06-01","2026-06-01"],["2026-06-19","2026-06-19"],["2026-07-06","2026-07-06"],["2026-07-27","2026-08-02"],["2026-11-20","2026-11-20"]], // SJ
-  "a3": [["2026-05-27","2026-05-28"],["2026-12-28","2027-01-04"]], // MS
-  "a4": [["2026-05-19","2026-05-20"],["2026-06-29","2026-07-03"],["2026-07-06","2026-07-10"],["2026-07-21","2026-07-24"],["2026-07-31","2026-08-01"],["2026-08-28","2026-08-30"],["2026-09-09","2026-09-13"],["2026-09-15","2026-09-15"],["2026-11-27","2026-12-03"]], // SS
-};
-const MAY_AUG_FIERCE_PRIMARY = ["2026-05-25","2026-07-20","2026-09-14","2026-11-09"];
-const MAY_AUG_FIERCE_BACKUP = ["2026-05-04","2026-06-22","2026-08-17","2026-10-12","2026-12-07"];
-
-/* ═══ May–August 2026 Hand-Built Schedule ═══
-   Parsed from Calendar Creator PDFs uploaded by Faraz.
-   Surgeon IDs: s1=DJA, s2=MCC, s3=RPC, s4=KJH, s5=REH, s6=FAK, s7=ARW
-   Format: { "YYYY-MM-DD" (Monday): { dayCall, nights:{mon,tue,wed,thu,wknd}, off, isBackup, isFierceBackup, holidayCoverage } } */
-const HAND_SCHEDULE_MAY_AUG = {
-  "2026-05-04": { dayCall:"s5", nights:{mon:"s7",tue:"s2",wed:"s1",thu:"s4",wknd:"s3"}, off:"s6", isBackup:false, isFierceBackup:true },
-  "2026-05-11": { dayCall:"s6", nights:{mon:"s7",tue:"s1",wed:"s5",thu:"s3",wknd:"s7"}, off:"s4", isBackup:false, isFierceBackup:false },
-  "2026-05-18": { dayCall:"s1", nights:{mon:"s4",tue:"s3",wed:"s6",thu:"s5",wknd:"s2"}, off:"s7", isBackup:false, isFierceBackup:false },
-  // May 25: Memorial Day. DJA covers Mon 24h (holiday), MCC covers Sun eve. RPC is Service Week starting Tue.
-  "2026-05-25": { dayCall:"s3", nights:{mon:null,tue:"s5",wed:"s2",thu:"s7",wknd:"s4"}, off:"s6", isBackup:true, isFierceBackup:false,
-                  holidayCoverage:{
-                    "2026-05-24":{surgeonId:"s2",role:"holiday_24h",hours:"7a–7a",name:"Memorial Day Eve",type:"minor"},
-                    "2026-05-25":{surgeonId:"s1",role:"holiday_24h",hours:"7a–7a",name:"Memorial Day",type:"minor"}
-                  }},
-  "2026-06-01": { dayCall:"s2", nights:{mon:"s1",tue:"s7",wed:"s4",thu:"s3",wknd:"s1"}, off:"s5", isBackup:false, isFierceBackup:false },
-  "2026-06-08": { dayCall:"s4", nights:{mon:"s5",tue:"s2",wed:"s1",thu:"s7",wknd:"s5"}, off:"s6", isBackup:false, isFierceBackup:false },
-  "2026-06-15": { dayCall:"s7", nights:{mon:"s6",tue:"s2",wed:"s4",thu:"s5",wknd:"s6"}, off:"s1", isBackup:false, isFierceBackup:false },
-  "2026-06-22": { dayCall:"s1", nights:{mon:"s3",tue:"s2",wed:"s6",thu:"s7",wknd:"s3"}, off:"s4", isBackup:false, isFierceBackup:true },
-  "2026-06-29": { dayCall:"s5", nights:{mon:"s6",tue:"s4",wed:"s3",thu:"s1",wknd:"s6"}, off:"s7", isBackup:false, isFierceBackup:false },
-  "2026-07-06": { dayCall:"s3", nights:{mon:"s7",tue:"s5",wed:"s2",thu:"s6",wknd:"s4"}, off:"s1", isBackup:false, isFierceBackup:false },
-  "2026-07-13": { dayCall:"s2", nights:{mon:"s5",tue:"s6",wed:"s3",thu:"s4",wknd:"s5"}, off:"s1", isBackup:false, isFierceBackup:false },
-  "2026-07-20": { dayCall:"s4", nights:{mon:"s3",tue:"s2",wed:"s6",thu:"s1",wknd:"s7"}, off:"s5", isBackup:true, isFierceBackup:false },
-  "2026-07-27": { dayCall:"s6", nights:{mon:"s3",tue:"s4",wed:"s7",thu:"s5",wknd:"s2"}, off:"s1", isBackup:false, isFierceBackup:false },
-  "2026-08-03": { dayCall:"s7", nights:{mon:"s1",tue:"s4",wed:"s2",thu:"s6",wknd:"s1"}, off:"s3", isBackup:false, isFierceBackup:false },
-};
-
-/* ═══ 2026 Holiday Assignments (pre-set from handwritten schedule) ═══
-   First surgeon = covers the actual holiday day (24h)
-   Second surgeon = covers night before (and day after where applicable)
-   Format: { "HolidayName": ["surgeonA_id", "surgeonB_id"] } */
-const HOLIDAY_PRESETS = {
-  "2026": {
-    "Memorial Day":    ["s1", "s2"],  // DJA | MCC
-    "July 4th":        ["s6", "s5"],  // FAK | REH
-    "Labor Day":       ["s3", "s7"],  // RPC | ARW
-    "Thanksgiving":    ["s2", "s3"],  // MCC | RPC
-    "Christmas Day":   ["s6", "s4"],  // FAK | KJH
-    "New Year's":      ["s5", "s1"],  // REH | DJA
-  }
-};
-
-
-
-/* ═══════════════════════════════════════════════════
-   SUPABASE AUTH HELPERS
-   ═══════════════════════════════════════════════════ */
-const AUTH_TOKEN_KEY = "dsg-auth-token";
-const AUTH_REFRESH_KEY = "dsg-auth-refresh";
-
-const auth = {
-  // Get stored session
-  getSession() {
-    try {
-      const token = localStorage.getItem(AUTH_TOKEN_KEY);
-      const refresh = localStorage.getItem(AUTH_REFRESH_KEY);
-      return token ? { access_token: token, refresh_token: refresh } : null;
-    } catch(e) { return null; }
-  },
-
-  // Store session
-  _saveSession(data) {
-    try {
-      if (data?.access_token) {
-        localStorage.setItem(AUTH_TOKEN_KEY, data.access_token);
-        if (data.refresh_token) localStorage.setItem(AUTH_REFRESH_KEY, data.refresh_token);
-      }
-    } catch(e) {}
-  },
-
-  // Clear session
-  _clearSession() {
-    try {
-      localStorage.removeItem(AUTH_TOKEN_KEY);
-      localStorage.removeItem(AUTH_REFRESH_KEY);
-    } catch(e) {}
-  },
-
-  // Sign up with email & password
-  async signUp(email, password) {
-    const res = await fetch(`${SUPABASE_URL}/auth/v1/signup`, {
-      method: "POST",
-      headers: { apikey: SUPABASE_ANON_KEY, "Content-Type": "application/json" },
-      body: JSON.stringify({ email, password }),
-    });
-    const data = await res.json();
-    if (!res.ok) return { user: null, error: data.msg || data.error_description || data.message || "Sign up failed" };
-    if (data.access_token) auth._saveSession(data);
-    return { user: data.user || data, session: data, error: null };
-  },
-
-  // Sign in with email & password
-  async signIn(email, password) {
-    const res = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=password`, {
-      method: "POST",
-      headers: { apikey: SUPABASE_ANON_KEY, "Content-Type": "application/json" },
-      body: JSON.stringify({ email, password }),
-    });
-    const data = await res.json();
-    if (!res.ok) return { user: null, error: data.msg || data.error_description || data.message || "Sign in failed" };
-    auth._saveSession(data);
-    return { user: data.user, session: data, error: null };
-  },
-
-  // Get current user from token
-  async getUser() {
-    const session = auth.getSession();
-    if (!session) return { user: null };
-    const res = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
-      headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${session.access_token}` },
-    });
-    if (!res.ok) {
-      // Token expired — try refresh
-      if (res.status === 401 && session.refresh_token) {
-        const refreshed = await auth._refresh(session.refresh_token);
-        if (refreshed?.user) return refreshed;
-      }
-      auth._clearSession();
-      return { user: null };
-    }
-    const user = await res.json();
-    return { user };
-  },
-
-  // Refresh token
-  async _refresh(refreshToken) {
-    try {
-      const res = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`, {
-        method: "POST",
-        headers: { apikey: SUPABASE_ANON_KEY, "Content-Type": "application/json" },
-        body: JSON.stringify({ refresh_token: refreshToken }),
-      });
-      if (!res.ok) { auth._clearSession(); return { user: null }; }
-      const data = await res.json();
-      auth._saveSession(data);
-      return { user: data.user, session: data };
-    } catch(e) { auth._clearSession(); return { user: null }; }
-  },
-
-  // Sign out
-  async signOut() {
-    const session = auth.getSession();
-    if (session?.access_token) {
-      try {
-        await fetch(`${SUPABASE_URL}/auth/v1/logout`, {
-          method: "POST",
-          headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${session.access_token}` },
-        });
-      } catch(e) {}
-    }
-    auth._clearSession();
-  },
-
-  // Send password reset email
-  async resetPassword(email) {
-    const redirectUrl = window.location.origin + window.location.pathname;
-    const res = await fetch(`${SUPABASE_URL}/auth/v1/recover`, {
-      method: "POST",
-      headers: { apikey: SUPABASE_ANON_KEY, "Content-Type": "application/json" },
-      body: JSON.stringify({ email, gotrue_meta_security: { captcha_token: "" } }),
-    });
-    if (!res.ok) {
-      const data = await res.json();
-      return { error: data.msg || data.error_description || data.message || "Reset failed" };
-    }
-    return { error: null };
-  },
-
-  // Update password (after clicking reset link — user has a valid session)
-  async updatePassword(newPassword) {
-    const session = auth.getSession();
-    if (!session?.access_token) return { error: "No active session" };
-    const res = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
-      method: "PUT",
-      headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${session.access_token}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ password: newPassword }),
-    });
-    if (!res.ok) {
-      const data = await res.json();
-      return { error: data.msg || data.error_description || data.message || "Update failed" };
-    }
-    return { error: null };
-  },
-
-  // Get auth headers for DB queries (user-level RLS)
-  getAuthHeaders() {
-    const session = auth.getSession();
-    if (!session) return dbHeaders;
-    return { ...dbHeaders, Authorization: `Bearer ${session.access_token}` };
-  },
-};
-
-// DB helper that uses auth token for user_profiles table
-const dbAuth = {
-  async getProfile(userId) {
-    const hdrs = auth.getAuthHeaders();
-    const res = await fetch(`${SUPABASE_URL}/rest/v1/user_profiles?id=eq.${userId}&select=*`, { headers: hdrs });
-    if (!res.ok) return null;
-    const rows = await res.json();
-    return rows?.[0] || null;
-  },
-  async upsertProfile(profile) {
-    const hdrs = auth.getAuthHeaders();
-    const res = await fetch(`${SUPABASE_URL}/rest/v1/user_profiles`, {
-      method: "POST",
-      headers: { ...hdrs, Prefer: "resolution=merge-duplicates,return=representation" },
-      body: JSON.stringify(profile),
-    });
-    if (!res.ok) return { error: await res.text() };
-    const data = await res.json();
-    return { data: data?.[0] || data, error: null };
-  },
-  async getAllProfiles() {
-    const res = await fetch(`${SUPABASE_URL}/rest/v1/user_profiles?select=*`, { headers: dbHeaders });
-    if (!res.ok) return [];
-    return await res.json();
-  },
-};
-
-/* ═══════════════════════════════════════════════════
-   BIOMETRIC AUTH (WebAuthn / Face ID / Touch ID)
-   ═══════════════════════════════════════════════════ */
-const BIOMETRIC_CRED_KEY = "dsg-biometric-cred";
-const BIOMETRIC_USER_KEY = "dsg-biometric-user";
-
-const biometric = {
-  // Check if WebAuthn platform authenticator is available (Face ID, Touch ID, fingerprint)
-  async isAvailable() {
-    try {
-      if (!window.PublicKeyCredential) return false;
-      return await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable();
-    } catch(e) { return false; }
-  },
-
-  // Check if biometric is already enrolled
-  isEnrolled() {
-    try { return !!localStorage.getItem(BIOMETRIC_CRED_KEY); } catch(e) { return false; }
-  },
-
-  // Get stored user email for biometric
-  getStoredUser() {
-    try { return localStorage.getItem(BIOMETRIC_USER_KEY) || null; } catch(e) { return null; }
-  },
-
-  // Register biometric credential (call after successful email/password login)
-  async enroll(userId, userEmail) {
-    try {
-      const challenge = crypto.getRandomValues(new Uint8Array(32));
-      const userIdBytes = new TextEncoder().encode(userId.slice(0, 32));
-
-      const credential = await navigator.credentials.create({
-        publicKey: {
-          challenge,
-          rp: { name: "DSG Call Schedule", id: window.location.hostname },
-          user: { id: userIdBytes, name: userEmail, displayName: userEmail.split("@")[0] },
-          pubKeyCredParams: [
-            { alg: -7, type: "public-key" },   // ES256
-            { alg: -257, type: "public-key" },  // RS256
-          ],
-          authenticatorSelection: {
-            authenticatorAttachment: "platform",  // built-in biometric only
-            userVerification: "required",         // require Face ID / Touch ID
-            residentKey: "preferred",
-          },
-          timeout: 60000,
-        }
-      });
-
-      if (credential) {
-        // Store credential ID for future authentication
-        const credIdArray = Array.from(new Uint8Array(credential.rawId));
-        localStorage.setItem(BIOMETRIC_CRED_KEY, JSON.stringify(credIdArray));
-        localStorage.setItem(BIOMETRIC_USER_KEY, userEmail);
-        return { success: true };
-      }
-      return { success: false, error: "No credential created" };
-    } catch(e) {
-      return { success: false, error: e.name === "NotAllowedError" ? "Biometric enrollment was cancelled" : e.message };
-    }
-  },
-
-  // Authenticate with biometric (call on app open)
-  async authenticate() {
-    try {
-      const credIdJson = localStorage.getItem(BIOMETRIC_CRED_KEY);
-      if (!credIdJson) return { success: false, error: "No biometric enrolled" };
-
-      const credIdArray = JSON.parse(credIdJson);
-      const credId = new Uint8Array(credIdArray).buffer;
-      const challenge = crypto.getRandomValues(new Uint8Array(32));
-
-      const assertion = await navigator.credentials.get({
-        publicKey: {
-          challenge,
-          allowCredentials: [{ id: credId, type: "public-key", transports: ["internal"] }],
-          userVerification: "required",
-          timeout: 60000,
-        }
-      });
-
-      return assertion ? { success: true } : { success: false, error: "Authentication failed" };
-    } catch(e) {
-      return { success: false, error: e.name === "NotAllowedError" ? "Biometric authentication was cancelled" : e.message };
-    }
-  },
-
-  // Remove biometric enrollment
-  unenroll() {
-    try {
-      localStorage.removeItem(BIOMETRIC_CRED_KEY);
-      localStorage.removeItem(BIOMETRIC_USER_KEY);
-    } catch(e) {}
-  },
-};
-
-// DSG Call Schedule — Date Helpers, ICS Generation & Utilities
-
-/* ═══ Date helpers ═══ */
-const fmt = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
-const parse = s => { const [y,m,d]=s.split("-").map(Number); return new Date(y,m-1,d); };
-const addD = (d,n) => { const r=new Date(d); r.setDate(r.getDate()+n); return r; };
-const monOf = d => { const r=new Date(d); r.setDate(r.getDate()-((r.getDay()+6)%7)); return r; };
-
-function getMondays(yr,mo,numWeeks) {
-  const ms=[], s=new Date(yr,mo,1);
-  let d=monOf(s); if(d<s) d=addD(d,7);
-  while(ms.length<numWeeks){ ms.push(new Date(d)); d=addD(d,7); }
-  return ms;
-}
-
-function onVac(id,ds,v){ return (v[id]||[]).some(([a,b])=>ds>=a&&ds<=b); }
-
-/* ═══ ICS Calendar Generation ═══ */
-function icsDate(y,m,d,h,min) {
-  return `${y}${String(m).padStart(2,"0")}${String(d).padStart(2,"0")}T${String(h).padStart(2,"0")}${String(min||0).padStart(2,"0")}00`;
-}
-
-function buildICSEvents(schedule, surgeonId, surgeonName, appShifts, aMap) {
-  const events = [];
-  const uid = () => `${Date.now()}-${Math.random().toString(36).slice(2,9)}@callsched`;
-
-  Object.entries(schedule).forEach(([mondayStr, wk]) => {
-    const mon = parse(mondayStr);
-    const bkLabel = wk.isBackup ? " [BACKUP]" : "";
-
-    // Day Call
-    if (wk.dayCall === surgeonId) {
-      // Mon-Fri 7a-5p
-      for (let i = 0; i < 5; i++) {
-        const d = addD(mon, i);
-        const y=d.getFullYear(), m=d.getMonth()+1, day=d.getDate();
-        events.push({
-          start: icsDate(y,m,day,7), end: icsDate(y,m,day,17),
-          summary: `Service Week${bkLabel} — ${surgeonName}`,
-          desc: `Service Week 7:00 AM – 5:00 PM${bkLabel}`
-        });
-      }
-      // Sat 7a - Sun 7a (24h)
-      const sat = addD(mon, 5);
-      const sunD = addD(mon, 6);
-      events.push({
-        start: icsDate(sat.getFullYear(),sat.getMonth()+1,sat.getDate(),7),
-        end: icsDate(sunD.getFullYear(),sunD.getMonth()+1,sunD.getDate(),7),
-        summary: `Weekend Saturday 24h${bkLabel} — ${surgeonName}`,
-        desc: `Weekend Saturday 7:00 AM – Sunday 7:00 AM${bkLabel}`
-      });
-    }
-
-    // Night shifts (Mon-Thu)
-    const nightKeys = ["mon","tue","wed","thu"];
-    nightKeys.forEach((sk, i) => {
-      if (wk.nights?.[sk] === surgeonId) {
-        const d = addD(mon, i);
-        const next = addD(mon, i + 1);
-        events.push({
-          start: icsDate(d.getFullYear(),d.getMonth()+1,d.getDate(),17),
-          end: icsDate(next.getFullYear(),next.getMonth()+1,next.getDate(),7),
-          summary: `Night Call${bkLabel} — ${surgeonName}`,
-          desc: `${SHIFT_LABELS[sk]} 5:00 PM – 7:00 AM${bkLabel}`
-        });
-      }
-    });
-
-    // Weekend (Fri night + Sunday)
-    if (wk.nights?.wknd === surgeonId) {
-      // Fri 5p - Sat 7a
-      const fri = addD(mon, 4);
-      const sat = addD(mon, 5);
-      events.push({
-        start: icsDate(fri.getFullYear(),fri.getMonth()+1,fri.getDate(),17),
-        end: icsDate(sat.getFullYear(),sat.getMonth()+1,sat.getDate(),7),
-        summary: `Weekend Call (Fri Night)${bkLabel} — ${surgeonName}`,
-        desc: `Friday 5:00 PM – Saturday 7:00 AM${bkLabel}`
-      });
-      // Sun 7a - Mon 7a
-      const sunD = addD(mon, 6);
-      const nextMon = addD(mon, 7);
-      events.push({
-        start: icsDate(sunD.getFullYear(),sunD.getMonth()+1,sunD.getDate(),7),
-        end: icsDate(nextMon.getFullYear(),nextMon.getMonth()+1,nextMon.getDate(),7),
-        summary: `Weekend Call (Sunday 24h)${bkLabel} — ${surgeonName}`,
-        desc: `Sunday 7:00 AM – Monday 7:00 AM${bkLabel}`
-      });
-    }
-  });
-
-  // APP shifts (only if surgeonId is null = export all, or for APP-specific export)
-  if (!surgeonId) {
-    Object.entries(appShifts).forEach(([ds, aid]) => {
-      const d = parse(ds);
-      const next = addD(d, 1);
-      const appName = aMap?.[aid]?.name || aid;
-      const dow = d.getDay(); // 0=Sun, 6=Sat
-      const isWeekend = dow === 0 || dow === 6;
-      const startHour = isWeekend ? 7 : 17;
-      const timeLabel = isWeekend ? "7:00 AM – 7:00 AM" : "5:00 PM – 7:00 AM";
-      events.push({
-        start: icsDate(d.getFullYear(),d.getMonth()+1,d.getDate(),startHour),
-        end: icsDate(next.getFullYear(),next.getMonth()+1,next.getDate(),7),
-        summary: `APP Call — ${appName}`,
-        desc: `APP Call ${timeLabel}`
-      });
-    });
-  }
-
-  return events;
-}
-
-function generateICS(events, calName) {
-  const uid = () => `${Date.now()}-${Math.random().toString(36).slice(2,9)}@callsched`;
-  let ics = `BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//DSG Call Schedule//EN\r\nCALSCALE:GREGORIAN\r\nX-WR-CALNAME:${calName}\r\n`;
-  events.forEach(e => {
-    ics += `BEGIN:VEVENT\r\nUID:${uid()}\r\nDTSTART:${e.start}\r\nDTEND:${e.end}\r\nSUMMARY:${e.summary}\r\nDESCRIPTION:${e.desc}\r\nEND:VEVENT\r\n`;
-  });
-  ics += `END:VCALENDAR\r\n`;
-  return ics;
-}
-
-function downloadICS(content, filename) {
-  const blob = new Blob([content], { type: "text/calendar;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url; a.download = filename; a.click();
-  URL.revokeObjectURL(url);
-}
-
-// DSG Call Schedule — Schedule Generator & Holiday Logic
-
-/* ═══ Schedule Generator (surgeons only — APPs are manual) ═══ */
-
-// Holiday definitions — returns holidays for a given year
-function getHolidays(year) {
-  // Thanksgiving = 4th Thursday of November
-  const nov1 = new Date(year, 10, 1);
-  let thxDay = 1 + ((4 - nov1.getDay() + 7) % 7);
-  thxDay += 21;
-  const thx = fmt(new Date(year, 10, thxDay));
-  // Memorial Day = last Monday of May
-  const may31 = new Date(year, 4, 31);
-  let memDay = 31 - ((may31.getDay() - 1 + 7) % 7);
-  const mem = fmt(new Date(year, 4, memDay));
-  // Labor Day = first Monday of September
-  const sep1 = new Date(year, 8, 1);
-  let labDay = 1 + ((1 - sep1.getDay() + 7) % 7);
-  const lab = fmt(new Date(year, 8, labDay));
-
-  return {
-    major: [
-      { name: "New Year's", date: fmt(new Date(year, 11, 31)), emoji: "🎆", startDate: fmt(new Date(year, 11, 31)), endDate: fmt(new Date(year+1, 0, 1)) },
-      { name: "Thanksgiving", date: thx, emoji: "🦃" },
-      { name: "Christmas Day", date: fmt(new Date(year, 11, 25)), emoji: "🎄" },
-    ],
-    minor: [
-      { name: "Memorial Day", date: mem, emoji: "🇺🇸" },
-      { name: "July 4th", date: fmt(new Date(year, 6, 4)), emoji: "🎆" },
-      { name: "Labor Day", date: lab, emoji: "🇺🇸" },
-    ]
-  };
-}
-
-function generate(surgeons, mondays, vac, backupMondays, priorCounts, preferences, fierceBackupMondays, holAssignments) {
-  const sched = {};
-  const ids = surgeons.map(s=>s.id);
-  const nameMap = {}; surgeons.forEach(s => nameMap[s.id] = s.name);
-
-  // Build holiday coverage map from pre-computed coverage arrays
-  // { "YYYY-MM-DD": { surgeonId, role, name, type } }
-  const holCoverage = {};
-  const holByDate = {}; // { "YYYY-MM-DD": { surgeonA, surgeonB, name, type } }
-  if (holAssignments) {
-    Object.values(holAssignments).forEach(yearArr => {
-      if (!Array.isArray(yearArr)) return;
-      yearArr.forEach(h => {
-        // Store the holiday metadata by date
-        holByDate[h.date] = { surgeonA: h.surgeonA, surgeonB: h.surgeonB, name: h.name, type: h.type };
-        // Store each coverage day (skip Eve entries — those are display-only, not schedule overrides)
-        if (h.coverage && Array.isArray(h.coverage)) {
-          h.coverage.forEach(c => {
-            if (c.isEve) return; // Eve is informational only — regular schedule stays
-            holCoverage[c.date] = { surgeonId: c.surgeon, role: "holiday_24h", hours: "7a–7a", name: c.label, type: h.type };
-          });
-        }
-      });
-    });
-  }
-
-  // Running counters seeded from prior totals
-  const dcCt={}; const nCt={}; const wkndCt={}; const offCt={}; const lastPos={};
-  const burden = {};
-  // Track last DC week index per surgeon for spacing
-  const lastDcWeek = {};
-  // Track consecutive night assignments
-  const prevNightSurgeon = {}; // { surgeonId: lastNightDate }
-  ids.forEach(id=>{
-    const p = priorCounts[id] || {};
-    dcCt[id] = (p.dc||0) + (p.dcB||0);
-    nCt[id] = (p.nights||0) + (p.nightsB||0);
-    wkndCt[id] = (p.wknd||0) + (p.wkndB||0);
-    offCt[id] = (p.off||0) + (p.offB||0);
-    burden[id] = dcCt[id]*7 + nCt[id] + wkndCt[id]*3;
-    lastDcWeek[id] = -99;
-  });
-  let prevWkndSurgeon = null;
-  let prevDcSurgeon = null;
-
-  // Random jitter per surgeon — ensures Regenerate produces visibly different schedules
-  // by perturbing sort order among closely-scored candidates
-  const jitter = {};
-  ids.forEach(id => { jitter[id] = (Math.random() - 0.5) * 3; }); // ±1.5 range
-
-  const prefs = preferences || {};
-
-  // Build holiday lookup for all years in the schedule
-  const holidayMap = {}; // { "YYYY-MM-DD": { name, type:"major"|"minor" } }
-  const years = new Set(mondays.map(m => m.getFullYear()));
-  // Include next year for Dec→Jan overlap (build a separate array to avoid mutating Set during iteration)
-  [...years].forEach(y => { years.add(y+1); });
-  years.forEach(y => {
-    const h = getHolidays(y);
-    h.major.forEach(hol => { 
-      holidayMap[hol.date] = { ...hol, type: "major" }; 
-      if (hol.endDate && hol.endDate !== hol.date) holidayMap[hol.endDate] = { ...hol, date: hol.endDate, name: hol.name + " (Day 2)", type: "major" };
-    });
-    h.minor.forEach(hol => { holidayMap[hol.date] = { ...hol, type: "minor" }; });
-  });
-
-  // Find FAK's ID for Christmas exception
-  const fakId = ids.find(id => (nameMap[id]||"").toUpperCase() === "FAK") || null;
-
-  // Track holiday assignments this period for fairness
-  const holidayCt = {}; // { surgeonId: { major: count, minor: count } }
-  ids.forEach(id => { holidayCt[id] = { major: 0, minor: 0 }; });
-
-  for (let wkIdx = 0; wkIdx < mondays.length; wkIdx++) {
-    const monday = mondays[wkIdx];
-    const mStr = fmt(monday);
-    const isBackup = backupMondays.has(mStr);
-    const isFierceBackup = (fierceBackupMondays||new Set()).has(mStr);
-
-    // Check for holidays this week
-    const weekDates = [];
-    for (let i = 0; i < 7; i++) weekDates.push(fmt(addD(monday, i)));
-    const weekHolidays = weekDates.map(ds => holidayMap[ds] ? { ...holidayMap[ds], ds } : null).filter(Boolean);
-    const hasHoliday = weekHolidays.length > 0;
-    const hasMajorHoliday = weekHolidays.some(h => h.type === "major");
-    const isChristmasWeek = weekHolidays.some(h => h.name === "Christmas Day");
-    const christmasDate = weekHolidays.find(h => h.name === "Christmas Day")?.ds;
-
-    // ═══ DAY CALL ═══
-    const availDC = ids.filter(id => {
-      for(let i=0;i<6;i++) if(onVac(id, fmt(addD(monday,i)), vac)) return false;
-      return true;
-    });
-
-    let dc = null;
-    if (availDC.length) {
-      // Check for pre-assigned holiday surgeonA for DC this week
-      const weekdayHoliday = weekHolidays.find(h => {
-        const dow = parse(h.ds).getDay();
-        return dow >= 1 && dow <= 5; // M-F holiday
-      });
-      const holDcSurgeon = weekdayHoliday && holByDate[weekdayHoliday.ds]?.surgeonA;
-
-      // Christmas exception: FAK takes Christmas, so prefer FAK for DC that week
-      if (isChristmasWeek && fakId && availDC.includes(fakId)) {
-        dc = fakId;
-      } else if (holDcSurgeon && availDC.includes(holDcSurgeon)) {
-        // For Monday holidays, the holiday surgeon only covers Monday 24h
-        // A different surgeon should handle service week (Tue-Fri)
-        const holDow = weekdayHoliday ? parse(weekdayHoliday.ds).getDay() : -1;
-        if (holDow === 1) {
-          // Monday holiday — do NOT force holiday surgeon as DC
-          // Instead, prefer someone else for service week
-          // HARD RULE: also exclude previous weekend surgeon from DC (no back-to-back wknd→DC)
-          let nonHolPool = availDC.filter(id => id !== holDcSurgeon && id !== prevWkndSurgeon);
-          if (nonHolPool.length === 0) nonHolPool = availDC.filter(id => id !== holDcSurgeon); // fallback
-          if (nonHolPool.length > 0) {
-            nonHolPool.sort((a,b) => {
-              const d = dcCt[a]-dcCt[b]; if(d) return d;
-              const bd = (burden[a]+jitter[a])-(burden[b]+jitter[b]); if(Math.abs(bd)>1) return bd;
-              const spacingA = wkIdx - lastDcWeek[a];
-              const spacingB = wkIdx - lastDcWeek[b];
-              if (spacingA !== spacingB) return spacingB - spacingA;
-              return Math.random() - 0.5;
-            });
-            dc = nonHolPool[0];
-          } else {
-            dc = holDcSurgeon; // fallback if no one else available
-          }
-        } else {
-          dc = holDcSurgeon; // Non-Monday holiday: holiday surgeon takes DC
-        }
-      } else {
-        // HARD RULE: exclude previous weekend surgeon from DC (no back-to-back wknd→DC)
-        let dcPool = prevWkndSurgeon ? availDC.filter(id => id !== prevWkndSurgeon) : availDC;
-        if (dcPool.length === 0) dcPool = availDC; // fallback if no one else
-        dcPool.sort((a,b) => {
-          const d = dcCt[a]-dcCt[b]; if(d) return d;
-          const bd = (burden[a]+jitter[a])-(burden[b]+jitter[b]); if(Math.abs(bd)>1) return bd;
-          // Day Call spacing: prefer surgeons who haven't had DC recently
-          const spacingA = wkIdx - lastDcWeek[a];
-          const spacingB = wkIdx - lastDcWeek[b];
-          if (spacingA !== spacingB) return spacingB - spacingA; // larger gap = better
-          return Math.random() - 0.5;
-        });
-        dc = dcPool[0];
-      }
-      dcCt[dc]++; burden[dc]+=7; lastDcWeek[dc] = wkIdx;
-
-      // Holiday tracking for DC surgeon
-      weekHolidays.forEach(h => {
-        holidayCt[dc][h.type]++;
-      });
-    }
-
-    const rem = ids.filter(id=>id!==dc);
-    const nights = {};
-    const used = new Set();
-
-    // ═══ WEEKEND SHIFT ═══
-    const friDate = fmt(addD(monday,4));
-    const sunDate = fmt(addD(monday,6));
-    const nextMonDate = fmt(addD(monday,7));
-
-    let availWknd = rem.filter(id => !onVac(id,friDate,vac) && !onVac(id,sunDate,vac));
-    availWknd = availWknd.filter(id => !onVac(id, nextMonDate, vac));
-
-    // Check if Friday or Sunday is a holiday — special handling
-    const friHoliday = holidayMap[friDate];
-    const sunHoliday = holidayMap[sunDate];
-
-    const prefWknd = availWknd.filter(id => id !== prevWkndSurgeon);
-    const wkndPool = prefWknd.length > 0 ? prefWknd : availWknd;
-
-    if (wkndPool.length) {
-      wkndPool.sort((a,b) => {
-        const d = wkndCt[a]-wkndCt[b]; if(d) return d;
-        // Holiday fairness: if weekend includes a holiday, prefer surgeon with fewer holiday shifts
-        if (friHoliday || sunHoliday) {
-          const hType = (friHoliday || sunHoliday).type;
-          const ha = holidayCt[a][hType] || 0;
-          const hb = holidayCt[b][hType] || 0;
-          if (ha !== hb) return ha - hb;
-        }
-        const bd = (burden[a]+jitter[a])-(burden[b]+jitter[b]); if(Math.abs(bd)>1) return bd;
-        if(lastPos[a]==="wknd"&&lastPos[b]!=="wknd") return 1;
-        if(lastPos[b]==="wknd"&&lastPos[a]!=="wknd") return -1;
-        return Math.random() - 0.5;
-      });
-      nights.wknd = wkndPool[0]; used.add(wkndPool[0]); wkndCt[wkndPool[0]]++; burden[wkndPool[0]]+=3;
-      if (friHoliday) holidayCt[wkndPool[0]][friHoliday.type]++;
-      if (sunHoliday) holidayCt[wkndPool[0]][sunHoliday.type]++;
-    } else {
-      const fb=rem.filter(id=>!used.has(id));
-      if(fb.length){nights.wknd=fb[0];used.add(fb[0]);} else nights.wknd=null;
-    }
-
-    // ═══ WEEKNIGHT SHIFTS ═══
-
-    // Shuffle night keys to prevent positional bias
-    const shuffledNightKeys = [...NIGHT_KEYS];
-    for(let i=shuffledNightKeys.length-1;i>0;i--){
-      const j=Math.floor(Math.random()*(i+1));
-      [shuffledNightKeys[i],shuffledNightKeys[j]]=[shuffledNightKeys[j],shuffledNightKeys[i]];
-    }
-
-    const nightAssignments = {};
-    const nightUsed = new Set();
-
-    // Pre-assign nights that are covered by holiday 24h shifts
-    // Holiday surgeon covers the full 24h — no separate night shift needed
-    const holidayNightOverrides = {};
-    NIGHT_KEYS.forEach((sk, i) => {
-      const dayOffset = {mon:0,tue:1,wed:2,thu:3}[sk];
-      const nightDate = fmt(addD(monday, dayOffset));
-      const cov = holCoverage[nightDate];
-      if (cov && cov.role === "holiday_24h") {
-        // Mark this night as covered by the holiday surgeon (suppresses separate assignment)
-        holidayNightOverrides[sk] = cov.surgeonId;
-      }
-    });
-
-    // Also check weekend for holiday coverage
-    const holFriDate = fmt(addD(monday, 4));
-    const holSunDate = fmt(addD(monday, 6));
-    const friCov = holCoverage[holFriDate];
-    const sunCov = holCoverage[holSunDate];
-    let holidayWkndOverride = null;
-    if (friCov && friCov.role === "holiday_24h") {
-      holidayWkndOverride = friCov.surgeonId;
-    } else if (sunCov && sunCov.role === "holiday_24h") {
-      holidayWkndOverride = sunCov.surgeonId;
-    }
-
-    // If weekend has holiday override, use it instead of normal weekend assignment
-    if (holidayWkndOverride && nights.wknd) {
-      // Undo the normal weekend assignment counts
-      if (nights.wknd) { wkndCt[nights.wknd]--; burden[nights.wknd]-=3; used.delete(nights.wknd); }
-      nights.wknd = holidayWkndOverride;
-      used.add(holidayWkndOverride);
-      wkndCt[holidayWkndOverride] = (wkndCt[holidayWkndOverride]||0) + 1;
-      burden[holidayWkndOverride] = (burden[holidayWkndOverride]||0) + 3;
-    }
-
-    for (const sk of shuffledNightKeys) {
-      // If this night is overridden by holiday coverage, use the holiday surgeon
-      if (holidayNightOverrides[sk]) {
-        nightAssignments[sk] = holidayNightOverrides[sk];
-        nightUsed.add(holidayNightOverrides[sk]);
-        nCt[holidayNightOverrides[sk]]++; burden[holidayNightOverrides[sk]]++;
-        continue;
-      }
-      const dayOffset = {mon:0,tue:1,wed:2,thu:3}[sk];
-      const sd = fmt(addD(monday, dayOffset));
-      const nextDayStr = fmt(addD(monday, dayOffset + 1));
-      const nightHoliday = holidayMap[sd]; // is this night a holiday?
-      const nextDayHoliday = holidayMap[nextDayStr]; // is tomorrow a holiday?
-
-      let avail = rem.filter(id => !used.has(id) && !nightUsed.has(id) && !onVac(id,sd,vac));
-      avail = avail.filter(id => !onVac(id, nextDayStr, vac));
-
-      // HARD RULE: Weekend surgeon cannot take Monday night the following week
-      if (sk === "mon" && prevWkndSurgeon) {
-        const nonWknd = avail.filter(id => id !== prevWkndSurgeon);
-        if (nonWknd.length > 0) avail = nonWknd;
-      }
-
-      // HARD RULE: Service week surgeon cannot take Monday night the following week
-      if (sk === "mon" && prevDcSurgeon) {
-        const nonDc = avail.filter(id => id !== prevDcSurgeon);
-        if (nonDc.length > 0) avail = nonDc;
-      }
-
-      // HARD RULE: No back-to-back nights — filter out anyone who had a night yesterday
-      const yesterdayStr = fmt(addD(monday, dayOffset - 1));
-      const nonConsec = avail.filter(id => prevNightSurgeon[id] !== yesterdayStr);
-      if (nonConsec.length > 0) avail = nonConsec;
-
-      // Fallback layers
-      if(!avail.length) avail = rem.filter(id => !used.has(id) && !nightUsed.has(id) && !onVac(id,sd,vac));
-      if(!avail.length) avail = rem.filter(id => !used.has(id) && !nightUsed.has(id));
-
-      // DOUBLE DUTY: Allow weekend surgeon to also take Monday night when pool is short
-      // Matches hand-schedule pattern: Mon night (5p-7a) then Tue-Thu off then Fri night (5p-7a)
-      // Safe because there's a 3-day gap between the two assignments
-      if (!avail.length && sk === "mon" && nights.wknd) {
-        const wkndId = nights.wknd;
-        if (!onVac(wkndId, sd, vac) && !onVac(wkndId, nextDayStr, vac)) {
-          avail = [wkndId];
-        }
-      }
-
-      if(!avail.length){ nightAssignments[sk]=null; continue; }
-
-      avail.sort((a,b) => {
-        // HOLIDAY ASSIGNMENT: prefer pre-assigned surgeonB for this night
-        const holNight = holByDate[sd] || holByDate[nextDayStr];
-        const holSurgeonB = holNight?.surgeonB;
-        if (holSurgeonB) {
-          if (a === holSurgeonB && b !== holSurgeonB) return -1;
-          if (b === holSurgeonB && a !== holSurgeonB) return 1;
-        }
-
-        // Holiday fairness: if this night is a holiday or eve of holiday
-        if (nextDayHoliday) {
-          const hType = nextDayHoliday.type;
-          const ha = holidayCt[a]?.[hType] || 0;
-          const hb = holidayCt[b]?.[hType] || 0;
-          if (ha !== hb) return ha - hb; // fewer holiday shifts → gets this one
-        }
-
-        const d=nCt[a]-nCt[b]; if(d) return d;
-        const bd = (burden[a]+jitter[a])-(burden[b]+jitter[b]); if(Math.abs(bd)>1) return bd;
-
-        // Preferences
-        const aPref = prefs[a]; const bPref = prefs[b];
-        const aBonus = (aPref?.preferShift===sk ? -10 : 0) + (aPref?.avoidShift===sk ? 10 : 0);
-        const bBonus = (bPref?.preferShift===sk ? -10 : 0) + (bPref?.avoidShift===sk ? 10 : 0);
-        if(aBonus !== bBonus) return aBonus - bBonus;
-
-        if(lastPos[a]===sk&&lastPos[b]!==sk) return 1;
-        if(lastPos[b]===sk&&lastPos[a]!==sk) return -1;
-        return Math.random() - 0.5;
-      });
-
-      const chosen = avail[0];
-      nightAssignments[sk] = chosen;
-      nightUsed.add(chosen);
-      nCt[chosen]++; burden[chosen]++; lastPos[chosen] = sk;
-      prevNightSurgeon[chosen] = sd; // track for consecutive night detection
-
-      // Track holiday assignments
-      if (nextDayHoliday) holidayCt[chosen][nextDayHoliday.type]++;
-    }
-
-    for (const sk of NIGHT_KEYS) nights[sk] = nightAssignments[sk] || null;
-
-    if(nights.wknd) lastPos[nights.wknd] = "wknd";
-    prevWkndSurgeon = nights.wknd || null;
-    prevDcSurgeon = dc || null;
-
-    const assigned = new Set([dc, ...Object.values(nights)].filter(Boolean));
-    const off = ids.find(id => !assigned.has(id)) || null;
-    if(off) offCt[off]++;
-
-    // Collect holiday coverage for this week
-    const weekHolCoverage = {};
-    for (let i = 0; i < 7; i++) {
-      const ds = fmt(addD(monday, i));
-      if (holCoverage[ds]) weekHolCoverage[ds] = holCoverage[ds];
-    }
-
-    sched[mStr] = { dayCall:dc, nights, off, isBackup, isFierceBackup, holidayCoverage: Object.keys(weekHolCoverage).length > 0 ? weekHolCoverage : null };
-  }
-
-  // ═══ POST-OPTIMIZATION PASS ═══
-  const mondayStrs = mondays.map(m => fmt(m));
-  const calcSpread = (ct) => { const vals = Object.values(ct); return Math.max(...vals)-Math.min(...vals); };
-
-  for (let pass = 0; pass < 50; pass++) {
-    let improved = false;
-
-    // Try swapping weekend assignments to reduce spread
-    for (let i = 0; i < mondayStrs.length && !improved; i++) {
-      for (let j = i+1; j < mondayStrs.length && !improved; j++) {
-        const wkA = sched[mondayStrs[i]];
-        const wkB = sched[mondayStrs[j]];
-        const a = wkA.nights?.wknd, b = wkB.nights?.wknd;
-        if (!a || !b || a === b) continue;
-
-        const monA = parse(mondayStrs[i]), monB = parse(mondayStrs[j]);
-        const friA = fmt(addD(monA,4)), sunA = fmt(addD(monA,6)), nMonA = fmt(addD(monA,7));
-        const friB = fmt(addD(monB,4)), sunB = fmt(addD(monB,6)), nMonB = fmt(addD(monB,7));
-
-        const bCanDoA = !onVac(b,friA,vac) && !onVac(b,sunA,vac) && !onVac(b,nMonA,vac) && b !== wkA.dayCall;
-        const aCanDoB = !onVac(a,friB,vac) && !onVac(a,sunB,vac) && !onVac(a,nMonB,vac) && a !== wkB.dayCall;
-        if (!bCanDoA || !aCanDoB) continue;
-
-        // Check weekend→Monday night conflict: new weekend surgeon shouldn't be Monday night next week
-        const nextWkA = i + 1 < mondayStrs.length ? sched[mondayStrs[i + 1]] : null;
-        const nextWkB = j + 1 < mondayStrs.length ? sched[mondayStrs[j + 1]] : null;
-        if (nextWkA?.nights?.mon === b) continue; // b doing weekend in A would conflict with Mon night
-        if (nextWkB?.nights?.mon === a) continue; // a doing weekend in B would conflict with Mon night
-
-        if (wkndCt[a] > wkndCt[b] + 1) {
-          wkndCt[a]--; wkndCt[b]++;
-          burden[a]-=3; burden[b]+=3;
-          wkA.nights.wknd = b; wkB.nights.wknd = a;
-          const fixOff = (wk) => {
-            const assigned = new Set([wk.dayCall, ...Object.values(wk.nights)].filter(Boolean));
-            wk.off = ids.find(id => !assigned.has(id)) || null;
-          };
-          fixOff(wkA); fixOff(wkB);
-          improved = true;
-        } else if (wkndCt[b] > wkndCt[a] + 1) {
-          wkndCt[b]--; wkndCt[a]++;
-          burden[b]-=3; burden[a]+=3;
-          wkA.nights.wknd = b; wkB.nights.wknd = a;
-          const fixOff = (wk) => {
-            const assigned = new Set([wk.dayCall, ...Object.values(wk.nights)].filter(Boolean));
-            wk.off = ids.find(id => !assigned.has(id)) || null;
-          };
-          fixOff(wkA); fixOff(wkB);
-          improved = true;
-        }
-      }
-    }
-
-    if (!improved) break;
-  }
-
-  // ═══ VALIDATION PASS — fix any remaining hard-rule violations via swaps ═══
-  for (let pass = 0; pass < 3; pass++) {
-    for (let i = 0; i < mondayStrs.length; i++) {
-      const wk = sched[mondayStrs[i]];
-      const recalcOff = (w) => {
-        const a = new Set([w.dayCall, ...Object.values(w.nights)].filter(Boolean));
-        w.off = ids.find(id => !a.has(id)) || null;
-      };
-
-      // Fix: DC surgeon should not also have a night in same week
-      if (wk.dayCall) {
-        NIGHT_KEYS.forEach(sk => {
-          if (wk.nights?.[sk] === wk.dayCall && wk.off) {
-            // Swap the conflicting night with the off surgeon
-            wk.nights[sk] = wk.off;
-            recalcOff(wk);
-          }
-        });
-        // Fix: DC surgeon should not have weekend in same week
-        if (wk.nights?.wknd === wk.dayCall && wk.off) {
-          wk.nights.wknd = wk.off;
-          recalcOff(wk);
-        }
-      }
-
-      // Fix: Weekend surgeon should not have Monday night next week
-      if (i < mondayStrs.length - 1 && wk.nights?.wknd) {
-        const nextWk = sched[mondayStrs[i + 1]];
-        if (nextWk?.nights?.mon === wk.nights.wknd) {
-          // Try swapping Monday night with off surgeon of next week
-          if (nextWk.off && nextWk.off !== nextWk.dayCall) {
-            nextWk.nights.mon = nextWk.off;
-            recalcOff(nextWk);
-          } else {
-            // Try swapping Monday night with another night surgeon in next week
-            const otherNight = NIGHT_KEYS.find(sk => sk !== "mon" && nextWk.nights?.[sk] && nextWk.nights[sk] !== nextWk.dayCall && nextWk.nights[sk] !== wk.nights.wknd);
-            if (otherNight) {
-              const temp = nextWk.nights.mon;
-              nextWk.nights.mon = nextWk.nights[otherNight];
-              nextWk.nights[otherNight] = temp;
-            }
-          }
-        }
-      }
-
-      // Fix: Service week surgeon should not have Monday night next week
-      if (i < mondayStrs.length - 1 && wk.dayCall) {
-        const nextWk = sched[mondayStrs[i + 1]];
-        if (nextWk?.nights?.mon === wk.dayCall) {
-          if (nextWk.off && nextWk.off !== nextWk.dayCall && nextWk.off !== sched[mondayStrs[i]]?.nights?.wknd) {
-            nextWk.nights.mon = nextWk.off;
-            recalcOff(nextWk);
-          } else {
-            const otherNight = NIGHT_KEYS.find(sk => sk !== "mon" && nextWk.nights?.[sk] && nextWk.nights[sk] !== nextWk.dayCall && nextWk.nights[sk] !== wk.dayCall);
-            if (otherNight) {
-              const temp = nextWk.nights.mon;
-              nextWk.nights.mon = nextWk.nights[otherNight];
-              nextWk.nights[otherNight] = temp;
-            }
-          }
-        }
-      }
-      // Fix: No back-to-back nights within the same week
-      const nightOrder = ["mon","tue","wed","thu"];
-      for (let ni = 0; ni < nightOrder.length - 1; ni++) {
-        const sk1 = nightOrder[ni], sk2 = nightOrder[ni + 1];
-        const s1 = wk.nights?.[sk1], s2 = wk.nights?.[sk2];
-        if (s1 && s1 === s2) {
-          // Try swapping sk2 with another night that doesn't create a new consecutive pair
-          const swapCandidate = nightOrder.find(sk => sk !== sk1 && sk !== sk2 && wk.nights?.[sk] && wk.nights[sk] !== s1 && wk.nights[sk] !== wk.dayCall);
-          if (swapCandidate) {
-            const temp = wk.nights[sk2];
-            wk.nights[sk2] = wk.nights[swapCandidate];
-            wk.nights[swapCandidate] = temp;
-            recalcOff(wk);
-          } else if (wk.off && wk.off !== wk.dayCall) {
-            wk.nights[sk2] = wk.off;
-            recalcOff(wk);
-          }
-        }
-      }
-    }
-  }
-
-  return sched;
-}
-
-// DSG Call Schedule — Style Constants
-
-const font = "'Outfit', sans-serif";
-const mono = "'JetBrains Mono', monospace";
-
-const css = {
-  root: { fontFamily:font, background:"#f0f2f5", color:"#2c3e50", minHeight:"100vh" },
-  hdr: { background:"linear-gradient(180deg,#ffffff,#f8f9fb)", borderBottom:"1px solid #dce2e8", padding:"14px 20px", display:"flex", alignItems:"center", justifyContent:"space-between", flexWrap:"wrap", gap:10 },
-  h1: { fontSize:21, fontWeight:700, color:"#1a2a3a", margin:0, letterSpacing:-0.5 },
-  sub: { fontSize:11, color:"#7a8a98", margin:"2px 0 0", letterSpacing:0.8, textTransform:"uppercase" },
-  nav: { display:"flex", gap:3, flexWrap:"wrap" },
-  tab: a => ({ background:a?"#1a6fa8":"transparent", border:`1px solid ${a?"#1a6fa8":"#c8d0d8"}`, color:a?"#ffffff":"#6a7a88", borderRadius:7, padding:"5px 13px", fontSize:12, fontWeight:600, cursor:"pointer", fontFamily:font }),
-  card: { background:"#ffffff", border:"1px solid #e0e4ea", borderRadius:10, padding:18, marginBottom:14, boxShadow:"0 1px 3px rgba(0,0,0,0.04)" },
-  cardT: { fontSize:13, fontWeight:700, color:"#1a6fa8", margin:"0 0 12px", textTransform:"uppercase", letterSpacing:1.2 },
-  inp: { background:"#f8f9fb", border:"1px solid #d0d8e0", borderRadius:5, padding:"6px 10px", color:"#2c3e50", fontSize:13, fontFamily:font, outline:"none" },
-  btn: a => ({ background:a?"linear-gradient(135deg,#1a6fa8,#2488c8)":"#f0f2f5", border:`1px solid ${a?"#1a6fa8":"#c8d0d8"}`, color:a?"#ffffff":"#5a6a78", borderRadius:7, padding:"7px 16px", fontSize:12, fontWeight:600, cursor:"pointer", fontFamily:font }),
-  badge: i => ({ display:"inline-flex", alignItems:"center", background:PAL[i%7].tg, color:PAL[i%7].tx, border:`1px solid ${PAL[i%7].bd}`, borderRadius:5, padding:"2px 9px", fontSize:12, fontWeight:600, whiteSpace:"nowrap", letterSpacing:0.3 }),
-  appBadge: i => ({ display:"inline-flex", alignItems:"center", background:APP_PAL[i%4].tg, color:APP_PAL[i%4].tx, border:`1px solid ${APP_PAL[i%4].bd}`, borderRadius:5, padding:"2px 9px", fontSize:12, fontWeight:600, whiteSpace:"nowrap", letterSpacing:0.3 }),
-  backupBanner: { background:"linear-gradient(90deg,#fef8e8,#fdf0d0)", border:"1px solid #e8d090", borderRadius:6, padding:"4px 10px", fontSize:11, fontWeight:700, color:"#8a6a10", letterSpacing:0.5 },
-};
-
-/* ═══════════════════════════════════════════════════
-   COMPONENT
-   ═══════════════════════════════════════════════════ */
-
-
+  </script>
+  <script type="text/javascript">
 const {
   useState,
   useMemo,
@@ -1277,6 +113,18 @@ const {
   useEffect
 } = React;
 function CallSchedule() {
+  var _find, _surgeons$find9;
+  // ─── Public mode detection ───
+  // When the URL contains ?public=1, render a stripped-down read-only
+  // calendar view for external schedulers. Skips auth entirely.
+  const isPublicMode = useMemo(() => {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      return params.get("public") === "1";
+    } catch (e) {
+      return false;
+    }
+  }, []);
   const [view, setView] = useState("calendar");
   const [surgeons, setSurgeons] = useState(INIT_SURGEONS);
   const [apps, setApps] = useState(INIT_APPS);
@@ -1291,6 +139,8 @@ function CallSchedule() {
   const [startMonth, setStartMonth] = useState(4);
   const [startYear, setStartYear] = useState(2026);
   const [numWeeks, setNumWeeks] = useState(14);
+  // Calendar view defaults to the current month so users land on what's
+  // relevant today, not on the scheduling period's start month.
   const [calMonth, setCalMonth] = useState(() => new Date().getMonth());
   const [calYear, setCalYear] = useState(() => new Date().getFullYear());
 
@@ -1305,6 +155,8 @@ function CallSchedule() {
   });
   const [showBackupStats, setShowBackupStats] = useState(false); // Toggle 2nd call columns in Stats
   const [calSurgeonFilter, setCalSurgeonFilter] = useState(""); // "" = all, or surgeon ID
+  const [calAppFilter, setCalAppFilter] = useState("all"); // "all" | "none" | APP id
+  const [calDeptFilter, setCalDeptFilter] = useState(""); // "" = no dept filter, "CWM" or "CBH"
   const toggleFilter = key => setCalFilters(p => ({
     ...p,
     [key]: !p[key]
@@ -1421,7 +273,7 @@ function CallSchedule() {
   const schedulerAdminIds = useMemo(() => {
     const ids = new Set();
     allProfiles.forEach(p => {
-      if (p?.role === "scheduler" || p?.person_id === "admin") ids.add(p.person_id);
+      if ((p === null || p === void 0 ? void 0 : p.role) === "scheduler" || (p === null || p === void 0 ? void 0 : p.person_id) === "admin") ids.add(p.person_id);
     });
     return [...ids];
   }, [allProfiles]);
@@ -1434,8 +286,8 @@ function CallSchedule() {
 
   // If non-scheduler ends up on a restricted tab, redirect them
   useEffect(() => {
-    const isAdmin = userProfile?.person_id === "admin";
-    const canAssignApps = userProfile?.can_assign_apps === true;
+    const isAdmin = (userProfile === null || userProfile === void 0 ? void 0 : userProfile.person_id) === "admin";
+    const canAssignApps = (userProfile === null || userProfile === void 0 ? void 0 : userProfile.can_assign_apps) === true;
     // Setup is accessible to: scheduler, admin, or APP-assign-permitted users (for the APP card only).
     // Totals remains scheduler-only.
     if (!isScheduler && !isAdmin && !canAssignApps && view === "setup") {
@@ -1463,7 +315,8 @@ function CallSchedule() {
   // ─── Browser Push & Email Notification Preferences ───
   const [pushPermission, setPushPermission] = useState(() => {
     try {
-      return Notification?.permission || "default";
+      var _Notification;
+      return ((_Notification = Notification) === null || _Notification === void 0 ? void 0 : _Notification.permission) || "default";
     } catch (e) {
       return "unsupported";
     }
@@ -1508,9 +361,10 @@ function CallSchedule() {
     if (isScheduler) return notifications;
     if (!mySurgeon || mySurgeon === "admin") return notifications;
     return notifications.filter(n => {
+      var _n$data, _n$data2, _n$data3;
       if (n.type === "schedule_published" || n.type === "schedule_changed") return true;
-      if (n.data?.surgeon_id === mySurgeon) return true;
-      if (n.data?.from_surgeon_id === mySurgeon || n.data?.to_surgeon_id === mySurgeon) return true;
+      if (((_n$data = n.data) === null || _n$data === void 0 ? void 0 : _n$data.surgeon_id) === mySurgeon) return true;
+      if (((_n$data2 = n.data) === null || _n$data2 === void 0 ? void 0 : _n$data2.from_surgeon_id) === mySurgeon || ((_n$data3 = n.data) === null || _n$data3 === void 0 ? void 0 : _n$data3.to_surgeon_id) === mySurgeon) return true;
       return false;
     });
   }, [notifications, isScheduler, mySurgeon]);
@@ -1528,6 +382,12 @@ function CallSchedule() {
 
   // ─── Auth: Check session on mount ───
   useEffect(() => {
+    // Public mode: skip auth entirely. We render the calendar read-only
+    // using the Supabase anon key, which has SELECT access to the schedule.
+    if (isPublicMode) {
+      setAuthLoading(false);
+      return;
+    }
     (async () => {
       try {
         // Check for password recovery token in URL hash (Supabase sends #access_token=...&type=recovery)
@@ -1636,6 +496,7 @@ function CallSchedule() {
     setAuthBusy(true);
     try {
       if (authMode === "signup") {
+        var _session$user;
         if (!signupPersonId) {
           setAuthError("Please select your name");
           setAuthBusy(false);
@@ -1658,10 +519,11 @@ function CallSchedule() {
           setAuthBusy(false);
           return;
         }
-        const userId = user?.id || session?.user?.id;
+        const userId = (user === null || user === void 0 ? void 0 : user.id) || (session === null || session === void 0 || (_session$user = session.user) === null || _session$user === void 0 ? void 0 : _session$user.id);
         if (userId) {
+          var _allPeople$find;
           // Create profile
-          const personName = allPeople.find(p => p.id === signupPersonId)?.name || signupPersonId;
+          const personName = ((_allPeople$find = allPeople.find(p => p.id === signupPersonId)) === null || _allPeople$find === void 0 ? void 0 : _allPeople$find.name) || signupPersonId;
           const role = signupPersonId === "admin" ? "admin" : "member";
           await dbAuth.upsertProfile({
             id: userId,
@@ -1674,7 +536,7 @@ function CallSchedule() {
             display_name: personName,
             role
           };
-          setAuthUser(user || session?.user);
+          setAuthUser(user || (session === null || session === void 0 ? void 0 : session.user));
           setUserProfile(profile);
           setMySurgeon(signupPersonId);
           setNeedsProfile(false);
@@ -1687,7 +549,7 @@ function CallSchedule() {
               const {
                 data: existingRow
               } = await supabase.from("notification_preferences").select("email").eq("surgeon_id", signupPersonId).maybeSingle();
-              const existingEmail = (existingRow?.email || "").trim();
+              const existingEmail = ((existingRow === null || existingRow === void 0 ? void 0 : existingRow.email) || "").trim();
               if (!existingEmail) {
                 saveNotifPref(signupPersonId, {
                   email: authEmail,
@@ -1739,13 +601,14 @@ function CallSchedule() {
     setAuthBusy(true);
     setAuthError("");
     try {
+      var _allPeople$find2;
       const profiles = await dbAuth.getAllProfiles();
       if (profiles.some(p => p.person_id === signupPersonId && p.id !== authUser.id)) {
         setAuthError("This name is already registered to another account");
         setAuthBusy(false);
         return;
       }
-      const personName = allPeople.find(p => p.id === signupPersonId)?.name || signupPersonId;
+      const personName = ((_allPeople$find2 = allPeople.find(p => p.id === signupPersonId)) === null || _allPeople$find2 === void 0 ? void 0 : _allPeople$find2.name) || signupPersonId;
       const role = signupPersonId === "admin" ? "admin" : "member";
       await dbAuth.upsertProfile({
         id: authUser.id,
@@ -1784,7 +647,7 @@ function CallSchedule() {
         const {
           data: row
         } = await supabase.from("call_schedule_data").select("data,updated_at").eq("id", "main").single();
-        if (row?.data) {
+        if (row !== null && row !== void 0 && row.data) {
           const d = typeof row.data === "string" ? JSON.parse(row.data) : row.data;
           if (row.updated_at) lastSyncRef.current = row.updated_at; // prevent auto-save from re-saving unchanged data
           if (d.surgeons) setSurgeons(d.surgeons);
@@ -1805,8 +668,8 @@ function CallSchedule() {
         const {
           data: cfgRow
         } = await supabase.from("call_schedule_config").select("scheduler_pin,edge_function_url").eq("id", "config").single();
-        if (cfgRow?.scheduler_pin) setSchedulerPin(cfgRow.scheduler_pin);
-        if (cfgRow?.edge_function_url) setEdgeFunctionUrl(cfgRow.edge_function_url);
+        if (cfgRow !== null && cfgRow !== void 0 && cfgRow.scheduler_pin) setSchedulerPin(cfgRow.scheduler_pin);
+        if (cfgRow !== null && cfgRow !== void 0 && cfgRow.edge_function_url) setEdgeFunctionUrl(cfgRow.edge_function_url);
 
         // Load vacation requests
         try {
@@ -1846,8 +709,16 @@ function CallSchedule() {
       // incognito mode) loaded the app — the local seed flag doesn't exist
       // on those fresh profiles, so the merge would run, write hardcoded
       // original values back to Supabase, and propagate the revert via
-      // Realtime to all connected devices. Seed data is already in Supabase;
-      // all devices inherit it via the load code above. No code-side seeding.
+      // Realtime to all connected devices.
+      //
+      // The seed data is ALREADY in Supabase (it was written during initial
+      // population on Apr 20). All devices load from Supabase via the code
+      // above, so they inherit the current state — whether original or edited.
+      // No code-side seeding is needed anymore.
+      //
+      // If a fresh Supabase install is ever needed (very unlikely), an
+      // admin can manually paste the MAY_AUG_VACATIONS / HAND_SCHEDULE data
+      // into the Setup tab, or run a one-time SQL insert.
     })();
 
     // ─── Realtime subscriptions (preferred) with safety-net poll ───
@@ -1864,7 +735,7 @@ function CallSchedule() {
         const {
           data: row
         } = await supabase.from("call_schedule_data").select("data,updated_at").eq("id", "main").single();
-        if (!row?.data) return;
+        if (!(row !== null && row !== void 0 && row.data)) return;
         if (row.updated_at === lastSyncRef.current) return; // nothing new
         lastSyncRef.current = row.updated_at;
         const d = typeof row.data === "string" ? JSON.parse(row.data) : row.data;
@@ -1889,8 +760,8 @@ function CallSchedule() {
         const {
           data: cfgRow2
         } = await supabase.from("call_schedule_config").select("scheduler_pin,edge_function_url").eq("id", "config").single();
-        if (cfgRow2?.scheduler_pin !== undefined) setSchedulerPin(prev => cfgRow2.scheduler_pin !== prev ? cfgRow2.scheduler_pin : prev);
-        if (cfgRow2?.edge_function_url !== undefined) setEdgeFunctionUrl(prev => cfgRow2.edge_function_url !== prev ? cfgRow2.edge_function_url : prev);
+        if ((cfgRow2 === null || cfgRow2 === void 0 ? void 0 : cfgRow2.scheduler_pin) !== undefined) setSchedulerPin(prev => cfgRow2.scheduler_pin !== prev ? cfgRow2.scheduler_pin : prev);
+        if ((cfgRow2 === null || cfgRow2 === void 0 ? void 0 : cfgRow2.edge_function_url) !== undefined) setEdgeFunctionUrl(prev => cfgRow2.edge_function_url !== prev ? cfgRow2.edge_function_url : prev);
       } catch (e) {}
     };
     const refreshVacReqs = async () => {
@@ -1994,10 +865,12 @@ function CallSchedule() {
   // ─── Supabase: Auto-save on changes ───
   useEffect(() => {
     if (!loaded) return;
+    if (isPublicMode) return; // Public viewers never write to the DB
     // Skip auto-save for 3s after initial load — prevents re-saving unchanged data
     // when initial state hydration triggers this effect
     if (loadedAtRef.current && Date.now() - loadedAtRef.current < 3000) return;
-    // Capture payload so visibility/unload handlers can flush it immediately.
+    // Capture the payload so the visibility/unload handlers can flush it
+    // immediately without waiting for the debounce.
     const payload = {
       surgeons,
       apps,
@@ -2024,7 +897,7 @@ function CallSchedule() {
           updated_at: ts
         });
         lastSyncRef.current = ts;
-        pendingSaveRef.current = null;
+        pendingSaveRef.current = null; // Save committed — clear pending
         setSaveError(false);
         setSaveStatus("Saved");
         setTimeout(() => setSaveStatus(""), 2000);
@@ -2038,22 +911,42 @@ function CallSchedule() {
   }, [loaded, surgeons, apps, vacations, backupMondaySet, fierceBackupSet, schedule, appShifts, priorCounts, year1Counts, year2Counts, startMonth, startYear, numWeeks, holidayAssignments]);
 
   // ─── Flush pending save when app is backgrounded or closing ───
-  // Fires the queued payload via fetch keepalive:true so browser completes
-  // the request even if the page is being unloaded.
+  //
+  // The auto-save above has an 800ms debounce. If the user closes the app,
+  // locks the phone, or switches apps within that window, the save is
+  // cancelled and their edit is lost.
+  //
+  // This effect listens for three events that signal "user is leaving" and
+  // fires any pending save immediately, bypassing the debounce.
+  //
+  //   visibilitychange (hidden) — mobile: user switched apps or locked phone
+  //   pagehide                  — page is being unloaded (tab close, navigate)
+  //   beforeunload              — desktop backup for pagehide
+  //
+  // Uses fetch keepalive:true so the request completes even during unload.
+  // Supabase JS's upsert doesn't support keepalive, so we construct the fetch
+  // directly using the stored session token.
   useEffect(() => {
-    const flushPending = (source) => {
+    const flushPending = source => {
+      if (isPublicMode) return; // Public viewers never write to the DB
       const payload = pendingSaveRef.current;
-      if (!payload) return;
-      pendingSaveRef.current = null;
+      if (!payload) return; // Nothing to save
+      pendingSaveRef.current = null; // Clear optimistically — if the flush
+      //                                fails we'll re-save on next edit or
+      //                                via the regular debounce path.
+
       try {
-        const session = (typeof auth !== "undefined" && auth.getSession) ? auth.getSession() : null;
-        const token = session?.access_token || SUPABASE_ANON_KEY;
+        const session = typeof auth !== "undefined" && auth.getSession ? auth.getSession() : null;
+        const token = (session === null || session === void 0 ? void 0 : session.access_token) || SUPABASE_ANON_KEY;
         const ts = new Date().toISOString();
         const body = JSON.stringify({
           id: "main",
           data: payload,
           updated_at: ts
         });
+        // Fire with keepalive so the browser finishes the request even if
+        // the page is being unloaded. Payloads >64KB may still be dropped;
+        // in practice a full schedule payload is well under this.
         fetch(`${SUPABASE_URL}/rest/v1/call_schedule_data?on_conflict=id`, {
           method: "POST",
           headers: {
@@ -2068,6 +961,7 @@ function CallSchedule() {
           lastSyncRef.current = ts;
         }).catch(e => {
           console.warn(`Keepalive save failed (${source}):`, e);
+          // Restore pending so next edit or debounce re-saves
           pendingSaveRef.current = payload;
         });
       } catch (e) {
@@ -2093,6 +987,7 @@ function CallSchedule() {
   // ─── Supabase: Save scheduler PIN + edge function URL ───
   useEffect(() => {
     if (!loaded) return;
+    if (isPublicMode) return; // Public viewers never write config
     const timer = setTimeout(async () => {
       try {
         await supabase.from("call_schedule_config").upsert({
@@ -2133,10 +1028,18 @@ function CallSchedule() {
   };
 
   // ─── Push Notifications — sent via send-push Edge Function ───
-  // deepLinkUrl: Edge Function forwards to OneSignal so push clicks open
-  // the app at the relevant tab/week.
+  // The OneSignal REST API key lives server-side in Supabase secrets.
+  // Client only sends { title, message, targetIds? } to the Edge Function,
+  // which proxies to OneSignal. If targetIds is a non-empty array, only those
+  // person_ids (mapped via OneSignal external_id aliases) receive the push.
+  // Otherwise it broadcasts to all subscribed users.
+  //
+  // deepLinkUrl: if provided, Edge Function forwards to OneSignal as the
+  // click-action URL so tapping the push opens the app at the relevant tab/week.
   const sendPushNotif = useCallback(async (title, message, targetIds = null, deepLinkUrl = null) => {
     if (!edgeFunctionUrl) return;
+    // Derive send-push URL from the configured send-notification URL
+    // (they share the /functions/v1/ base path).
     const pushUrl = edgeFunctionUrl.replace(/\/[^/]+$/, "/send-push");
     try {
       const body = {
@@ -2159,8 +1062,10 @@ function CallSchedule() {
     }
   }, [edgeFunctionUrl]);
 
-  // Build a deep-link URL for a notification so push clicks land on the
-  // relevant tab (and calendar week if applicable).
+  // Build a deep-link URL for a notification. Routes users to the relevant
+  // tab (and calendar week if applicable) when they tap the push.
+  // Returns an absolute URL based on the current origin + pathname so it
+  // works regardless of which host serves the PWA.
   const buildDeepLink = useCallback((type, data) => {
     try {
       const base = window.location.origin + window.location.pathname;
@@ -2171,7 +1076,7 @@ function CallSchedule() {
         case "schedule_published":
         case "shift_reminder":
           tab = "calendar";
-          if (data?.week && /^\d{4}-\d{2}-\d{2}$/.test(data.week)) week = data.week;
+          if (data !== null && data !== void 0 && data.week && /^\d{4}-\d{2}-\d{2}$/.test(data.week)) week = data.week;
           break;
         case "vacation_submitted":
         case "vacation_approved":
@@ -2190,10 +1095,15 @@ function CallSchedule() {
       if (week) params.set("week", week);
       const q = params.toString();
       return q ? `${base}?${q}` : base;
-    } catch (e) { return null; }
+    } catch (e) {
+      return null;
+    }
   }, []);
 
   // ─── Add Notification ───
+  // pushTargetIds: optional array of person_ids to scope the push notification to.
+  // If omitted, the push is a broadcast (useful for group-wide events like
+  // "Schedule Published"). Targeted push is used for manual edits, trades, etc.
   const addNotification = useCallback(async (type, title, message, data = {}, pushTargetIds = null) => {
     try {
       const notif = {
@@ -2207,6 +1117,8 @@ function CallSchedule() {
         data: inserted
       } = await db.insert("notifications", notif);
       if (inserted) setNotifications(prev => [inserted, ...prev].slice(0, 50));
+      // Also send as device push via OneSignal, with a deep-link URL so tap
+      // navigates to the relevant tab/week.
       const deepLinkUrl = buildDeepLink(type, data);
       sendPushNotif(title, message, pushTargetIds, deepLinkUrl);
     } catch (e) {
@@ -2231,7 +1143,7 @@ function CallSchedule() {
         recipients.push({
           email: prefs.email,
           surgeon_id: sid,
-          name: person?.name || sid
+          name: (person === null || person === void 0 ? void 0 : person.name) || sid
         });
       });
       if (recipients.length === 0) return;
@@ -2254,8 +1166,9 @@ function CallSchedule() {
 
   // ─── Vacation Request: Submit ───
   const submitVacRequest = useCallback(async () => {
+    var _surgeons$find, _apps$find;
     if (!vacReqSurgeon || !vacReqStart || !vacReqEnd) return;
-    const surgeonName = surgeons.find(s => s.id === vacReqSurgeon)?.name || apps.find(a => a.id === vacReqSurgeon)?.name || vacReqSurgeon;
+    const surgeonName = ((_surgeons$find = surgeons.find(s => s.id === vacReqSurgeon)) === null || _surgeons$find === void 0 ? void 0 : _surgeons$find.name) || ((_apps$find = apps.find(a => a.id === vacReqSurgeon)) === null || _apps$find === void 0 ? void 0 : _apps$find.name) || vacReqSurgeon;
     try {
       const req = {
         surgeon_id: vacReqSurgeon,
@@ -2368,6 +1281,7 @@ function CallSchedule() {
 
   // ─── Shift Trade Request: Submit ───
   const submitTradeRequest = useCallback(async () => {
+    var _surgeons$find2, _surgeons$find3;
     if (!tradeFrom || !tradeTo || !tradeWeek || !tradeShift) return;
     // Two-way swap required unless scheduler emergency override
     if (!tradeReturnWeek || !tradeReturnShift) {
@@ -2377,8 +1291,8 @@ function CallSchedule() {
       }
       if (!confirm("⚠️ No return swap specified.\n\nOne-way trades should only be used for emergencies (illness, family emergency).\n\nSubmit anyway?")) return;
     }
-    const fromName = surgeons.find(s => s.id === tradeFrom)?.name || tradeFrom;
-    const toName = surgeons.find(s => s.id === tradeTo)?.name || tradeTo;
+    const fromName = ((_surgeons$find2 = surgeons.find(s => s.id === tradeFrom)) === null || _surgeons$find2 === void 0 ? void 0 : _surgeons$find2.name) || tradeFrom;
+    const toName = ((_surgeons$find3 = surgeons.find(s => s.id === tradeTo)) === null || _surgeons$find3 === void 0 ? void 0 : _surgeons$find3.name) || tradeTo;
     const shiftLabel = SHIFT_LABELS[tradeShift] || tradeShift;
     try {
       const req = {
@@ -2425,7 +1339,10 @@ function CallSchedule() {
   const detectCascadeChanges = useCallback((sched, req) => {
     const changes = []; // { week, shiftKey, from, to, reason }
     const ids = surgeons.map(s => s.id);
-    const nameOf = id => surgeons.find(s => s.id === id)?.name || id;
+    const nameOf = id => {
+      var _surgeons$find4;
+      return ((_surgeons$find4 = surgeons.find(s => s.id === id)) === null || _surgeons$find4 === void 0 ? void 0 : _surgeons$find4.name) || id;
+    };
     const nightKeys = ["mon", "tue", "wed", "thu"];
     const applySwap = (s, r) => {
       const n = JSON.parse(JSON.stringify(s));
@@ -2535,19 +1452,21 @@ function CallSchedule() {
 
     // RULE 2: Weekend swap → check Monday night of NEXT week
     const checkWeekendMonday = (weekMon, newWkndSurgeon) => {
+      var _nextWk$nights;
       const mondayStrs = Object.keys(afterSwap).sort();
       const idx = mondayStrs.indexOf(weekMon);
       if (idx < 0 || idx >= mondayStrs.length - 1) return;
       const nextMon = mondayStrs[idx + 1];
       const nextWk = afterSwap[nextMon];
-      if (!nextWk?.nights?.mon) return;
+      if (!(nextWk !== null && nextWk !== void 0 && (_nextWk$nights = nextWk.nights) !== null && _nextWk$nights !== void 0 && _nextWk$nights.mon)) return;
       if (nextWk.nights.mon === newWkndSurgeon) {
+        var _nextWk$nights2;
         // Weekend surgeon has Monday night next week — conflict
         const otherSurgeon = newWkndSurgeon === req.to_surgeon_id ? req.from_surgeon_id : req.to_surgeon_id;
         // Check other surgeon isn't DC next week
         const otherIsDC = otherSurgeon === nextWk.dayCall;
         // Check consecutive night
-        const tueNight = nextWk.nights?.tue;
+        const tueNight = (_nextWk$nights2 = nextWk.nights) === null || _nextWk$nights2 === void 0 ? void 0 : _nextWk$nights2.tue;
         const wouldBeConsecutive = tueNight === otherSurgeon;
         if (!otherIsDC && !wouldBeConsecutive) {
           changes.push({
@@ -2590,7 +1509,10 @@ function CallSchedule() {
     try {
       // Detect cascade changes
       const cascades = detectCascadeChanges(schedule, req);
-      const nameOf = id => surgeons.find(s => s.id === id)?.name || id;
+      const nameOf = id => {
+        var _surgeons$find5;
+        return ((_surgeons$find5 = surgeons.find(s => s.id === id)) === null || _surgeons$find5 === void 0 ? void 0 : _surgeons$find5.name) || id;
+      };
 
       // If cascades exist, show confirmation with details
       if (cascades.length > 0) {
@@ -2823,7 +1745,7 @@ function CallSchedule() {
       } : r));
       // If approved, also update the vacations object
       const req = vacRequests.find(r => r.id === editingVacReq.id);
-      if (req?.status === "approved") {
+      if ((req === null || req === void 0 ? void 0 : req.status) === "approved") {
         setVacations(prev => {
           const n = {
             ...prev
@@ -2893,15 +1815,24 @@ function CallSchedule() {
   // ─── OneSignal Push Notifications ───
   const [oneSignalReady, setOneSignalReady] = useState(false);
   const [oneSignalSubscribed, setOneSignalSubscribed] = useState(false);
-  const [pushDiag, setPushDiag] = useState({ msg: "", loading: false });
+  const [pushDiag, setPushDiag] = useState({
+    msg: "",
+    loading: false
+  });
   const [pushSubscriptionId, setPushSubscriptionId] = useState(null);
   const [pushExternalId, setPushExternalId] = useState(null);
   const [oneSignalInitError, setOneSignalInitError] = useState(null);
 
   // Initialize OneSignal on mount.
-  // OneSignal dashboard Site URL is https://fkhan628.github.io/ and the SW
-  // is served from a sibling user-site repo at the origin root. That matches
-  // OneSignal's defaults, so we don't override serviceWorkerPath here.
+  //
+  // IMPORTANT — service worker path: the OneSignal dashboard's Site URL for
+  // this app is set to https://fkhan628.github.io/ (origin root), and the
+  // OneSignalSDKWorker.js file is served from a separate user-site repo at
+  // https://fkhan628.github.io/OneSignalSDKWorker.js. This matches OneSignal's
+  // defaults exactly, so we do NOT pass serviceWorkerPath/serviceWorkerParam
+  // here — passing them would force the SDK to register the worker at
+  // /Call-Schedule-App/ (project scope) instead, which conflicts with the
+  // dashboard config and breaks subscriptions.
   useEffect(() => {
     try {
       window.OneSignalDeferred = window.OneSignalDeferred || [];
@@ -2921,20 +1852,25 @@ function CallSchedule() {
             setOneSignalSubscribed(granted);
             setPushPermission(granted ? "granted" : "denied");
           });
+          // Listen for subscription-id changes so the panel updates when the
+          // SW finishes registering and the push endpoint becomes available.
           try {
             OneSignal.User.PushSubscription.addEventListener("change", ev => {
-              const id = ev?.current?.id || OneSignal?.User?.PushSubscription?.id || null;
+              var _ev$current, _OneSignal$User;
+              const id = (ev === null || ev === void 0 || (_ev$current = ev.current) === null || _ev$current === void 0 ? void 0 : _ev$current.id) || (OneSignal === null || OneSignal === void 0 || (_OneSignal$User = OneSignal.User) === null || _OneSignal$User === void 0 || (_OneSignal$User = _OneSignal$User.PushSubscription) === null || _OneSignal$User === void 0 ? void 0 : _OneSignal$User.id) || null;
               setPushSubscriptionId(id);
             });
-          } catch (evErr) { console.warn("Subscription change listener:", evErr); }
+          } catch (evErr) {
+            console.warn("Subscription change listener:", evErr);
+          }
         } catch (e) {
           console.error("OneSignal init error:", e);
-          setOneSignalInitError(e?.message || String(e));
+          setOneSignalInitError((e === null || e === void 0 ? void 0 : e.message) || String(e));
         }
       });
     } catch (e) {
       console.error("OneSignal setup error:", e);
-      setOneSignalInitError(e?.message || String(e));
+      setOneSignalInitError((e === null || e === void 0 ? void 0 : e.message) || String(e));
     }
   }, []);
 
@@ -2946,7 +1882,8 @@ function CallSchedule() {
   useEffect(() => {
     if (!oneSignalReady || !mySurgeon || mySurgeon === "admin") return;
     try {
-      if (window.OneSignal?.login) {
+      var _window$OneSignal;
+      if ((_window$OneSignal = window.OneSignal) !== null && _window$OneSignal !== void 0 && _window$OneSignal.login) {
         window.OneSignal.login(mySurgeon).catch(e => console.error("OneSignal.login error:", e));
       }
     } catch (e) {
@@ -2959,18 +1896,34 @@ function CallSchedule() {
   // user gesture lost, subscription didn't register) and surfaces them to the
   // user instead of silently doing nothing.
   const requestPushPermission = useCallback(async () => {
-    setPushDiag({ msg: "Requesting permission…", loading: true });
+    setPushDiag({
+      msg: "Requesting permission…",
+      loading: true
+    });
     try {
+      var _window$matchMedia, _window, _window$OneSignal2, _window$OneSignal3;
+      // iOS Safari requires the app to be installed as a PWA (home screen) for
+      // web push to work. Detect that up front so users aren't left wondering.
       const ua = navigator.userAgent || "";
       const isIOS = /iPad|iPhone|iPod/.test(ua) && !window.MSStream;
-      const isStandalone = window.navigator.standalone === true || window.matchMedia?.("(display-mode: standalone)").matches;
+      const isStandalone = window.navigator.standalone === true || ((_window$matchMedia = (_window = window).matchMedia) === null || _window$matchMedia === void 0 ? void 0 : _window$matchMedia.call(_window, "(display-mode: standalone)").matches);
       if (isIOS && !isStandalone) {
-        setPushDiag({ msg: "On iPhone/iPad, push notifications only work after adding this app to your home screen (Share → Add to Home Screen), then opening it from the home-screen icon.", loading: false });
+        setPushDiag({
+          msg: "On iPhone/iPad, push notifications only work after adding this app to your home screen (Share → Add to Home Screen), then opening it from the home-screen icon.",
+          loading: false
+        });
         setPushPermission("unsupported");
         return;
       }
-      if (!window.OneSignal?.Notifications) {
-        setPushDiag({ msg: "Notification service still loading. Wait a few seconds and tap Enable again.", loading: false });
+
+      // If OneSignal isn't loaded yet, tell the user to wait instead of falling
+      // through to the native API (which wouldn't register with OneSignal and
+      // silently leaves them unable to receive pushes).
+      if (!((_window$OneSignal2 = window.OneSignal) !== null && _window$OneSignal2 !== void 0 && _window$OneSignal2.Notifications)) {
+        setPushDiag({
+          msg: "Notification service still loading. Wait a few seconds and tap Enable again.",
+          loading: false
+        });
         return;
       }
       await window.OneSignal.Notifications.requestPermission();
@@ -2978,78 +1931,130 @@ function CallSchedule() {
       setOneSignalSubscribed(perm);
       setPushPermission(perm ? "granted" : "denied");
       if (!perm) {
-        setPushDiag({ msg: "Permission was not granted. If you didn't see a prompt, notifications may be blocked at the browser or OS level — check your device notification settings for this site.", loading: false });
+        setPushDiag({
+          msg: "Permission was not granted. If you didn't see a prompt, notifications may be blocked at the browser or OS level — check your device notification settings for this site.",
+          loading: false
+        });
         return;
       }
-      if (mySurgeon && mySurgeon !== "admin" && window.OneSignal?.login) {
-        try { await window.OneSignal.login(mySurgeon); } catch (e) { console.error("OneSignal login after permission:", e); }
+
+      // Associate this subscription with the logged-in person_id so targeted
+      // pushes (manual edits, vacation updates, etc.) can reach this device.
+      // Without this, only broadcast pushes arrive.
+      if (mySurgeon && mySurgeon !== "admin" && (_window$OneSignal3 = window.OneSignal) !== null && _window$OneSignal3 !== void 0 && _window$OneSignal3.login) {
+        try {
+          await window.OneSignal.login(mySurgeon);
+        } catch (e) {
+          console.error("OneSignal login after permission:", e);
+        }
       }
+
+      // Read back the subscription ID and external ID so the Settings panel can
+      // prove the device is fully registered.
       setTimeout(() => {
         try {
-          const subId = window.OneSignal?.User?.PushSubscription?.id || null;
-          const extId = window.OneSignal?.User?.externalId || null;
+          var _window$OneSignal4, _window$OneSignal5;
+          const subId = ((_window$OneSignal4 = window.OneSignal) === null || _window$OneSignal4 === void 0 || (_window$OneSignal4 = _window$OneSignal4.User) === null || _window$OneSignal4 === void 0 || (_window$OneSignal4 = _window$OneSignal4.PushSubscription) === null || _window$OneSignal4 === void 0 ? void 0 : _window$OneSignal4.id) || null;
+          const extId = ((_window$OneSignal5 = window.OneSignal) === null || _window$OneSignal5 === void 0 || (_window$OneSignal5 = _window$OneSignal5.User) === null || _window$OneSignal5 === void 0 ? void 0 : _window$OneSignal5.externalId) || null;
           setPushSubscriptionId(subId);
           setPushExternalId(extId);
           if (subId) {
-            setPushDiag({ msg: `✓ Subscribed successfully${extId ? ` (as ${extId})` : ""}.`, loading: false });
+            setPushDiag({
+              msg: `✓ Subscribed successfully${extId ? ` (as ${extId})` : ""}.`,
+              loading: false
+            });
           } else {
-            setPushDiag({ msg: "Permission granted, but subscription ID not yet available. Reload the app and check Settings again — if it still says no ID, the service worker may be blocked.", loading: false });
+            setPushDiag({
+              msg: "Permission granted, but subscription ID not yet available. Reload the app and check Settings again — if it still says no ID, the service worker may be blocked.",
+              loading: false
+            });
           }
-        } catch (e) { console.error("Push diag readback:", e); }
+        } catch (e) {
+          console.error("Push diag readback:", e);
+        }
       }, 1500);
     } catch (e) {
       console.error("Push permission error:", e);
       setPushPermission("unsupported");
-      setPushDiag({ msg: `Error: ${e.message || e}. Check browser console for details.`, loading: false });
+      setPushDiag({
+        msg: `Error: ${e.message || e}. Check browser console for details.`,
+        loading: false
+      });
     }
   }, [mySurgeon]);
 
   // Refresh diagnostic info — useful for debugging why pushes aren't arriving.
   const refreshPushDiag = useCallback(() => {
     try {
-      const subId = window.OneSignal?.User?.PushSubscription?.id || null;
-      const extId = window.OneSignal?.User?.externalId || null;
-      const optedIn = window.OneSignal?.User?.PushSubscription?.optedIn;
+      var _window$OneSignal6, _window$OneSignal7, _window$OneSignal8, _window$OneSignal9;
+      const subId = ((_window$OneSignal6 = window.OneSignal) === null || _window$OneSignal6 === void 0 || (_window$OneSignal6 = _window$OneSignal6.User) === null || _window$OneSignal6 === void 0 || (_window$OneSignal6 = _window$OneSignal6.PushSubscription) === null || _window$OneSignal6 === void 0 ? void 0 : _window$OneSignal6.id) || null;
+      const extId = ((_window$OneSignal7 = window.OneSignal) === null || _window$OneSignal7 === void 0 || (_window$OneSignal7 = _window$OneSignal7.User) === null || _window$OneSignal7 === void 0 ? void 0 : _window$OneSignal7.externalId) || null;
+      const optedIn = (_window$OneSignal8 = window.OneSignal) === null || _window$OneSignal8 === void 0 || (_window$OneSignal8 = _window$OneSignal8.User) === null || _window$OneSignal8 === void 0 || (_window$OneSignal8 = _window$OneSignal8.PushSubscription) === null || _window$OneSignal8 === void 0 ? void 0 : _window$OneSignal8.optedIn;
       setPushSubscriptionId(subId);
       setPushExternalId(extId);
-      const parts = [
-        `SDK: ${window.OneSignal ? "loaded" : "NOT loaded"}`,
-        `Ready: ${oneSignalReady ? "yes" : "no"}`,
-        `Permission: ${window.OneSignal?.Notifications?.permission ? "granted" : "not granted"}`,
-        `Opted in: ${optedIn === true ? "yes" : optedIn === false ? "no" : "unknown"}`,
-        `Subscription ID: ${subId || "none"}`,
-        `External ID: ${extId || "none"}`,
-        `Logged in as: ${mySurgeon || "nobody"}`
-      ];
+      const parts = [`SDK: ${window.OneSignal ? "loaded" : "NOT loaded"}`, `Ready: ${oneSignalReady ? "yes" : "no"}`, `Permission: ${(_window$OneSignal9 = window.OneSignal) !== null && _window$OneSignal9 !== void 0 && (_window$OneSignal9 = _window$OneSignal9.Notifications) !== null && _window$OneSignal9 !== void 0 && _window$OneSignal9.permission ? "granted" : "not granted"}`, `Opted in: ${optedIn === true ? "yes" : optedIn === false ? "no" : "unknown"}`, `Subscription ID: ${subId || "none"}`, `External ID: ${extId || "none"}`, `Logged in as: ${mySurgeon || "nobody"}`];
       if (oneSignalInitError) parts.push(`Init error: ${oneSignalInitError}`);
-      setPushDiag({ msg: parts.join(" · "), loading: false });
+      setPushDiag({
+        msg: parts.join(" · "),
+        loading: false
+      });
     } catch (e) {
-      setPushDiag({ msg: `Diag error: ${e.message || e}`, loading: false });
+      setPushDiag({
+        msg: `Diag error: ${e.message || e}`,
+        loading: false
+      });
     }
   }, [oneSignalReady, mySurgeon, oneSignalInitError]);
 
   // Rescue tool for users stuck in "opted in but no subscription ID" state.
-  // Clears OneSignal service worker + IndexedDB then prompts user to reload.
+  // Clears the OneSignal service worker AND IndexedDB (stale state from prior
+  // OneSignal config changes is a common root cause), logs out, forces a
+  // fresh subscribe, then re-logs-in with the current person_id.
   const resetPushSubscription = useCallback(async () => {
-    setPushDiag({ msg: "Resetting push subscription…", loading: true });
+    setPushDiag({
+      msg: "Resetting push subscription…",
+      loading: true
+    });
     try {
+      // Unregister OneSignal's service worker to force a clean re-registration
       if (navigator.serviceWorker) {
         const regs = await navigator.serviceWorker.getRegistrations();
-        await Promise.all(regs.filter(r => /OneSignalSDK/i.test(r.active?.scriptURL || "")).map(r => r.unregister()));
+        await Promise.all(regs.filter(r => {
+          var _r$active;
+          return /OneSignalSDK/i.test(((_r$active = r.active) === null || _r$active === void 0 ? void 0 : _r$active.scriptURL) || "");
+        }).map(r => r.unregister()));
       }
+      // Clear OneSignal's IndexedDB — stale data here is the most common
+      // cause of "opted in but no subscription ID" state.
       try {
-        if (window.indexedDB?.deleteDatabase) {
+        var _window$indexedDB;
+        if ((_window$indexedDB = window.indexedDB) !== null && _window$indexedDB !== void 0 && _window$indexedDB.deleteDatabase) {
           await new Promise(resolve => {
             const req = indexedDB.deleteDatabase("ONE_SIGNAL_SDK_DB");
             req.onsuccess = req.onerror = req.onblocked = () => resolve();
-            setTimeout(resolve, 2000);
+            setTimeout(resolve, 2000); // safety timeout
           });
         }
-      } catch (e) { console.warn("IndexedDB clear:", e); }
-      try { if (window.OneSignal?.logout) await window.OneSignal.logout(); } catch (e) { console.warn("logout:", e); }
-      setPushDiag({ msg: "✓ Reset complete. Now tap 'Refresh Now' in Settings below (or close and reopen the app), then return here and tap 'Enable Push Notifications'.", loading: false });
+      } catch (e) {
+        console.warn("IndexedDB clear:", e);
+      }
+      // Log out (clears external_id association)
+      try {
+        var _window$OneSignal0;
+        if ((_window$OneSignal0 = window.OneSignal) !== null && _window$OneSignal0 !== void 0 && _window$OneSignal0.logout) await window.OneSignal.logout();
+      } catch (e) {
+        console.warn("logout:", e);
+      }
+      // Tell the user to reload — we can't re-init OneSignal cleanly on the same page
+      setPushDiag({
+        msg: "✓ Reset complete. Now tap 'Refresh Now' in Settings below (or close and reopen the app), then return here and tap 'Enable Push Notifications'.",
+        loading: false
+      });
     } catch (e) {
-      setPushDiag({ msg: `Reset error: ${e.message || e}`, loading: false });
+      setPushDiag({
+        msg: `Reset error: ${e.message || e}`,
+        loading: false
+      });
     }
   }, []);
 
@@ -3057,8 +2062,9 @@ function CallSchedule() {
   useEffect(() => {
     if (!oneSignalReady || !mySurgeon || !window.OneSignal) return;
     try {
+      var _surgeons$find6;
       window.OneSignal.User.addTag("surgeon_id", mySurgeon);
-      const surgeonName = surgeons.find(s => s.id === mySurgeon)?.name || mySurgeon;
+      const surgeonName = ((_surgeons$find6 = surgeons.find(s => s.id === mySurgeon)) === null || _surgeons$find6 === void 0 ? void 0 : _surgeons$find6.name) || mySurgeon;
       window.OneSignal.User.addTag("surgeon_name", surgeonName);
     } catch (e) {
       console.error("OneSignal tag error:", e);
@@ -3095,7 +2101,7 @@ function CallSchedule() {
         const {
           data: cfgRow
         } = await supabase.from("call_schedule_config").select("edge_function_url").eq("id", "config").single();
-        if (cfgRow?.edge_function_url) setEdgeFunctionUrl(cfgRow.edge_function_url);
+        if (cfgRow !== null && cfgRow !== void 0 && cfgRow.edge_function_url) setEdgeFunctionUrl(cfgRow.edge_function_url);
       } catch (e) {
         console.error("Load notif prefs error:", e);
       }
@@ -3105,14 +2111,16 @@ function CallSchedule() {
 
   // ─── Deep-link handler for push notification clicks ───
   // OneSignal push clicks land on the app with ?tab=X or ?tab=X&week=YYYY-MM-DD
-  // query params. Parsed when `loaded` flips true, then URL is cleaned up so a
-  // refresh doesn't re-apply the deep-link.
+  // query params. We parse them on mount (and whenever `loaded` flips to true
+  // so week-focus can resolve against the schedule data), navigate to the tab,
+  // jump the calendar to the week if specified, and clean up the URL so a
+  // refresh doesn't re-trigger old deep-links.
   useEffect(() => {
     if (!loaded) return;
     try {
       const params = new URLSearchParams(window.location.search);
       const tab = params.get("tab");
-      const week = params.get("week");
+      const week = params.get("week"); // YYYY-MM-DD (a Monday)
       const validTabs = ["calendar", "mine", "requests", "stats", "settings", "setup", "totals"];
       if (tab && validTabs.includes(tab)) {
         setView(tab);
@@ -3122,6 +2130,8 @@ function CallSchedule() {
         setCalMonth(m - 1);
         setCalYear(y);
       }
+      // Clean up the URL so a reload doesn't re-apply this deep-link. Keeps
+      // any other query params (e.g. _v version-check) intact.
       if (tab || week) {
         params.delete("tab");
         params.delete("week");
@@ -3129,7 +2139,9 @@ function CallSchedule() {
         const newUrl = window.location.pathname + (newSearch ? "?" + newSearch : "") + window.location.hash;
         window.history.replaceState(null, "", newUrl);
       }
-    } catch (e) { console.error("Deep-link handler error:", e); }
+    } catch (e) {
+      console.error("Deep-link handler error:", e);
+    }
   }, [loaded]);
 
   // ─── Save Notification Preference for a surgeon ───
@@ -3199,8 +2211,9 @@ function CallSchedule() {
       // New notifications arrived — fire browser push for each new one
       const newOnes = notifications.slice(0, notifications.length - lastNotifCountRef.current);
       newOnes.forEach(n => {
+        var _notifPrefs$mySurgeon;
         // Check if the current user has browser_push enabled
-        if (mySurgeon && notifPrefs[mySurgeon]?.browser_push === false) return;
+        if (mySurgeon && ((_notifPrefs$mySurgeon = notifPrefs[mySurgeon]) === null || _notifPrefs$mySurgeon === void 0 ? void 0 : _notifPrefs$mySurgeon.browser_push) === false) return;
         sendBrowserNotif(n.title || "DSG Call Schedule", n.message || "", `dsg-${n.id}`);
       });
     }
@@ -3314,7 +2327,10 @@ function CallSchedule() {
           const headers = lines[0];
           for (let i = 1; i < lines.length; i++) {
             const row = {};
-            headers.forEach((h, j) => row[h] = lines[i]?.[j] || "0");
+            headers.forEach((h, j) => {
+              var _lines$i;
+              return row[h] = ((_lines$i = lines[i]) === null || _lines$i === void 0 ? void 0 : _lines$i[j]) || "0";
+            });
             rows.push(row);
           }
         }
@@ -3372,6 +2388,7 @@ function CallSchedule() {
   // ─── Shared helper: Anthropic API call via Edge Function (used by Unified Schedule Scanner) ───
   const AI_SCAN_URL = `${SUPABASE_URL}/functions/v1/ai-scan`;
   const callApi = useCallback(async (messages, maxTokens = 2000) => {
+    var _data$content;
     const resp = await fetch(AI_SCAN_URL, {
       method: "POST",
       headers: {
@@ -3388,7 +2405,7 @@ function CallSchedule() {
       throw new Error(`API error ${resp.status}: ${err}`);
     }
     const data = await resp.json();
-    return data.content?.map(c => c.text || "").join("") || "";
+    return ((_data$content = data.content) === null || _data$content === void 0 ? void 0 : _data$content.map(c => c.text || "").join("")) || "";
   }, []);
 
   // ─── Unified Schedule Scanner — extracts vacations + Fierce weeks from one file ───
@@ -3527,7 +2544,7 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
 
         // Process vacations
         let fileVac = 0;
-        if (result?.vacations && Array.isArray(result.vacations) && result.vacations.length > 0) {
+        if (result !== null && result !== void 0 && result.vacations && Array.isArray(result.vacations) && result.vacations.length > 0) {
           const nameToId = {};
           surgeons.forEach(s => {
             nameToId[s.name.toUpperCase()] = s.id;
@@ -3538,7 +2555,8 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
               ...prev
             };
             result.vacations.forEach(e => {
-              const id = nameToId[e.surgeon] || nameToId[e.surgeon?.toUpperCase()];
+              var _e$surgeon;
+              const id = nameToId[e.surgeon] || nameToId[(_e$surgeon = e.surgeon) === null || _e$surgeon === void 0 ? void 0 : _e$surgeon.toUpperCase()];
               if (id && e.start && e.end) {
                 const existing = n[id] || [];
                 const isDupe = existing.some(([s, e2]) => s === e.start && e2 === e.end);
@@ -3555,7 +2573,7 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
 
         // Process Fierce weeks
         let fileFierce = 0;
-        if (result?.fierce_weeks && Array.isArray(result.fierce_weeks) && result.fierce_weeks.length > 0) {
+        if (result !== null && result !== void 0 && result.fierce_weeks && Array.isArray(result.fierce_weeks) && result.fierce_weeks.length > 0) {
           const primaryDates = [],
             backupDates = [];
           result.fierce_weeks.forEach(e => {
@@ -3627,7 +2645,7 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
 
   // Map a holiday coverage label (e.g. "July 4th 24h", "Memorial Day Night Before",
   // "New Year's Day 24h") to its specific emoji. Falls back to 📅 if unmatched.
-  const holidayEmoji = (label) => {
+  const holidayEmoji = label => {
     if (!label) return "📅";
     const s = label.toLowerCase();
     if (s.includes("christmas")) return "🎄";
@@ -4110,9 +3128,10 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
       // Sort by fairness: lifetime holiday count → avoid repeat from prior year → random
       const prior = priorByName[hol.name] || {};
       avail.sort((a, b) => {
+        var _lifetimeCt$a, _lifetimeCt$b;
         // Prefer surgeons with fewer lifetime assignments of this type
-        const la = lifetimeCt[a]?.[type] || 0;
-        const lb = lifetimeCt[b]?.[type] || 0;
+        const la = ((_lifetimeCt$a = lifetimeCt[a]) === null || _lifetimeCt$a === void 0 ? void 0 : _lifetimeCt$a[type]) || 0;
+        const lb = ((_lifetimeCt$b = lifetimeCt[b]) === null || _lifetimeCt$b === void 0 ? void 0 : _lifetimeCt$b[type]) || 0;
         if (la !== lb) return la - lb;
         // Avoid repeating the same holiday as last year
         const aRepeat = a === prior.surgeonA || a === prior.surgeonB ? 1 : 0;
@@ -4137,7 +3156,8 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
     }));
     const assignments = [];
     [majorHols, minorHols].forEach(group => {
-      const type = group[0]?.type;
+      var _group$;
+      const type = (_group$ = group[0]) === null || _group$ === void 0 ? void 0 : _group$.type;
       const usedInGroup = new Set(); // surgeons already assigned in this group
 
       // Sort: Christmas first (FAK locked), then by date
@@ -4179,7 +3199,8 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
           if (partnerPool.length === 0) partnerPool = remaining;
           const prior = priorByName["Christmas Day"] || {};
           partnerPool.sort((a, b) => {
-            const la = (lifetimeCt[a]?.[type] || 0) - (lifetimeCt[b]?.[type] || 0);
+            var _lifetimeCt$a2, _lifetimeCt$b2;
+            const la = (((_lifetimeCt$a2 = lifetimeCt[a]) === null || _lifetimeCt$a2 === void 0 ? void 0 : _lifetimeCt$a2[type]) || 0) - (((_lifetimeCt$b2 = lifetimeCt[b]) === null || _lifetimeCt$b2 === void 0 ? void 0 : _lifetimeCt$b2[type]) || 0);
             if (la) return la;
             const aR = a === prior.surgeonB ? 1 : 0;
             const bR = b === prior.surgeonB ? 1 : 0;
@@ -4243,9 +3264,10 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
         usedInGroup.add(h.surgeonB);
       });
       if (usedInGroup.has(newSurgeonId)) {
+        var _surgeons$find7;
         const conflictHol = sameGroup.find(h => h.surgeonA === newSurgeonId || h.surgeonB === newSurgeonId);
-        const surgeonName = surgeons.find(s => s.id === newSurgeonId)?.name || newSurgeonId;
-        if (!confirm(`⚠️ ${surgeonName} is already assigned to ${conflictHol?.name} (${targetHol.type} group).\n\nThis violates the distinct-pairs rule. Assign anyway?`)) return;
+        const surgeonName = ((_surgeons$find7 = surgeons.find(s => s.id === newSurgeonId)) === null || _surgeons$find7 === void 0 ? void 0 : _surgeons$find7.name) || newSurgeonId;
+        if (!confirm(`⚠️ ${surgeonName} is already assigned to ${conflictHol === null || conflictHol === void 0 ? void 0 : conflictHol.name} (${targetHol.type} group).\n\nThis violates the distinct-pairs rule. Assign anyway?`)) return;
       }
     }
     setHolidayAssignments(prev => {
@@ -4279,7 +3301,8 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
     });
   }, [holidayAssignments, surgeons]);
   const swapShift = (mStr, shift, newId) => {
-    const oldId = shift === "dayCall" ? schedule[mStr]?.dayCall : schedule[mStr]?.nights?.[shift];
+    var _schedule$mStr, _schedule$mStr2, _sMap$oldId, _sMap$newId;
+    const oldId = shift === "dayCall" ? (_schedule$mStr = schedule[mStr]) === null || _schedule$mStr === void 0 ? void 0 : _schedule$mStr.dayCall : (_schedule$mStr2 = schedule[mStr]) === null || _schedule$mStr2 === void 0 || (_schedule$mStr2 = _schedule$mStr2.nights) === null || _schedule$mStr2 === void 0 ? void 0 : _schedule$mStr2[shift];
     pushUndo(schedule);
     setSchedule(p => {
       const wk = {
@@ -4301,11 +3324,13 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
     setSwapSuggestions(null);
     setSwapTarget(null);
     // Notify about the change — only the affected surgeons and the scheduler/admin
-    const oldName = sMap[oldId]?.name || "—";
-    const newName = sMap[newId]?.name || "—";
+    const oldName = ((_sMap$oldId = sMap[oldId]) === null || _sMap$oldId === void 0 ? void 0 : _sMap$oldId.name) || "—";
+    const newName = ((_sMap$newId = sMap[newId]) === null || _sMap$newId === void 0 ? void 0 : _sMap$newId.name) || "—";
     const shiftLabel = SHIFT_LABELS[shift] || shift;
     const editTargets = [...new Set([oldId, newId, ...schedulerAdminIds].filter(Boolean))];
-    addNotification("schedule_changed", "Shift Reassigned", `${shiftLabel} (wk of ${mStr}): ${oldName} → ${newName}`, { week: mStr }, editTargets);
+    addNotification("schedule_changed", "Shift Reassigned", `${shiftLabel} (wk of ${mStr}): ${oldName} → ${newName}`, {
+      week: mStr
+    }, editTargets);
     sendEmailNotif("schedule_changed", {
       shift: shiftLabel,
       week: mStr,
@@ -4324,8 +3349,9 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
     setEditWeekPick("");
   }, [calMonth, calYear]);
   const findSwapSuggestions = useCallback((mondayStr, shift, currentSurgeonId) => {
+    var _sMap$currentSurgeonI;
     if (!schedule[mondayStr]) return;
-    const currentName = sMap[currentSurgeonId]?.name || "?";
+    const currentName = ((_sMap$currentSurgeonI = sMap[currentSurgeonId]) === null || _sMap$currentSurgeonI === void 0 ? void 0 : _sMap$currentSurgeonI.name) || "?";
     const mon = parse(mondayStr);
     const ids = surgeons.map(s => s.id).filter(id => id !== currentSurgeonId);
 
@@ -4352,7 +3378,8 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
     // Check each candidate
     const candidates = [];
     ids.forEach(candId => {
-      const candName = sMap[candId]?.name || "?";
+      var _sMap$candId, _sCounts$currentSurge, _sCounts$candId, _sCounts$currentSurge2, _sCounts$candId2;
+      const candName = ((_sMap$candId = sMap[candId]) === null || _sMap$candId === void 0 ? void 0 : _sMap$candId.name) || "?";
       const reasons = [];
       let eligible = true;
 
@@ -4399,15 +3426,15 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
       });
 
       // 4. Calculate fairness score — lower is better (candidate has fewer of this type)
-      const currentCount = sCounts[currentSurgeonId]?.[shiftType] || 0;
-      const candCount = sCounts[candId]?.[shiftType] || 0;
+      const currentCount = ((_sCounts$currentSurge = sCounts[currentSurgeonId]) === null || _sCounts$currentSurge === void 0 ? void 0 : _sCounts$currentSurge[shiftType]) || 0;
+      const candCount = ((_sCounts$candId = sCounts[candId]) === null || _sCounts$candId === void 0 ? void 0 : _sCounts$candId[shiftType]) || 0;
       const countDiff = currentCount - candCount; // positive = current has more → good swap
 
       // Include prior counts for total fairness
       const priorCurr = priorCounts[currentSurgeonId] || {};
       const priorCand = priorCounts[candId] || {};
-      const totalCurrType = (priorCurr[shiftType === "dc" ? "dc" : shiftType === "wknd" ? "wknd" : "nights"] || 0) + (sCounts[currentSurgeonId]?.[shiftType] || 0);
-      const totalCandType = (priorCand[shiftType === "dc" ? "dc" : shiftType === "wknd" ? "wknd" : "nights"] || 0) + (sCounts[candId]?.[shiftType] || 0);
+      const totalCurrType = (priorCurr[shiftType === "dc" ? "dc" : shiftType === "wknd" ? "wknd" : "nights"] || 0) + (((_sCounts$currentSurge2 = sCounts[currentSurgeonId]) === null || _sCounts$currentSurge2 === void 0 ? void 0 : _sCounts$currentSurge2[shiftType]) || 0);
+      const totalCandType = (priorCand[shiftType === "dc" ? "dc" : shiftType === "wknd" ? "wknd" : "nights"] || 0) + (((_sCounts$candId2 = sCounts[candId]) === null || _sCounts$candId2 === void 0 ? void 0 : _sCounts$candId2[shiftType]) || 0);
       const totalDiff = totalCurrType - totalCandType;
       if (countDiff > 0) reasons.push(`${candName} has ${countDiff} fewer ${shiftType === "dc" ? "service weeks" : shiftType === "wknd" ? "weekends" : "nights"} this period`);else if (countDiff === 0) reasons.push(`Equal ${shiftType === "dc" ? "service weeks" : shiftType === "wknd" ? "weekends" : "nights"} this period`);else reasons.push(`${candName} has ${Math.abs(countDiff)} more ${shiftType === "dc" ? "service weeks" : shiftType === "wknd" ? "weekends" : "nights"} — less ideal`);
       if (totalDiff > 1) reasons.push(`${totalDiff} fewer overall (good for balance)`);
@@ -4416,6 +3443,7 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
       // 5. Find possible return swaps — shifts the current surgeon could take from the candidate in another week
       const returnSwaps = [];
       Object.entries(schedule).forEach(([otherMon, otherWk]) => {
+        var _otherWk$nights2;
         if (otherMon === mondayStr) return;
         // Check if candidate has a shift of the same type in another week
         if (shiftType === "dc" && otherWk.dayCall === candId) {
@@ -4436,7 +3464,8 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
         }
         if (shiftType === "nights") {
           NIGHT_KEYS.forEach((sk, i) => {
-            if (otherWk.nights?.[sk] === candId && otherWk.dayCall !== currentSurgeonId) {
+            var _otherWk$nights;
+            if (((_otherWk$nights = otherWk.nights) === null || _otherWk$nights === void 0 ? void 0 : _otherWk$nights[sk]) === candId && otherWk.dayCall !== currentSurgeonId) {
               const otherMonDate = parse(otherMon);
               const sd = fmt(addD(otherMonDate, i));
               const nd = fmt(addD(otherMonDate, i + 1));
@@ -4450,7 +3479,7 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
             }
           });
         }
-        if (shiftType === "wknd" && otherWk.nights?.wknd === candId) {
+        if (shiftType === "wknd" && ((_otherWk$nights2 = otherWk.nights) === null || _otherWk$nights2 === void 0 ? void 0 : _otherWk$nights2.wknd) === candId) {
           const otherMonDate = parse(otherMon);
           const f = fmt(addD(otherMonDate, 4)),
             su = fmt(addD(otherMonDate, 6)),
@@ -4492,6 +3521,7 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
 
   // ─── Execute a two-way swap ───
   const executeTwoWaySwap = useCallback((targetMon, targetShift, targetOldId, candId, returnMon, returnShift) => {
+    var _sMap$targetOldId, _sMap$candId2;
     pushUndo(schedule);
     setSchedule(p => {
       const n = {
@@ -4524,11 +3554,13 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
       }
       return n;
     });
-    const oldName = sMap[targetOldId]?.name || "—";
-    const newName = sMap[candId]?.name || "—";
+    const oldName = ((_sMap$targetOldId = sMap[targetOldId]) === null || _sMap$targetOldId === void 0 ? void 0 : _sMap$targetOldId.name) || "—";
+    const newName = ((_sMap$candId2 = sMap[candId]) === null || _sMap$candId2 === void 0 ? void 0 : _sMap$candId2.name) || "—";
     const shiftLabel = SHIFT_LABELS[targetShift] || targetShift;
     const swapTargets = [...new Set([targetOldId, candId, ...schedulerAdminIds].filter(Boolean))];
-    addNotification("schedule_changed", "Shift Swap", `${shiftLabel} (wk of ${targetMon}): ${oldName} ↔ ${newName}${returnMon ? ` (return: ${SHIFT_LABELS[returnShift] || returnShift} wk of ${returnMon})` : ""}`, { week: targetMon }, swapTargets);
+    addNotification("schedule_changed", "Shift Swap", `${shiftLabel} (wk of ${targetMon}): ${oldName} ↔ ${newName}${returnMon ? ` (return: ${SHIFT_LABELS[returnShift] || returnShift} wk of ${returnMon})` : ""}`, {
+      week: targetMon
+    }, swapTargets);
     sendEmailNotif("schedule_changed", {
       shift: shiftLabel,
       week: targetMon,
@@ -4588,8 +3620,9 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
       });
     }
     ["mon", "tue", "wed", "thu", "wknd"].forEach(nk => {
-      const oldId = oldWk.nights?.[nk] || "";
-      const newId = draft.nights?.[nk] || "";
+      var _oldWk$nights, _draft$nights;
+      const oldId = ((_oldWk$nights = oldWk.nights) === null || _oldWk$nights === void 0 ? void 0 : _oldWk$nights[nk]) || "";
+      const newId = ((_draft$nights = draft.nights) === null || _draft$nights === void 0 ? void 0 : _draft$nights[nk]) || "";
       if (oldId !== newId) {
         changes.push({
           slotLabel: SHIFT_LABELS[nk] || nk,
@@ -4653,34 +3686,61 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
     // Notifications — COALESCED per recipient so a bulk save of 4 shifts
     // produces 1 notification set per affected person instead of 4. Massive
     // reduction in email/push noise on multi-shift edits.
+    //
+    // Email uses the existing schedule_changed template; for n>=2 we pass a
+    // summarized payload that fits the template shape. The in-app title+body
+    // (which we control fully) carries the detailed per-shift breakdown.
     const reasonSuffix = draft.reason ? ` (${draft.reason})` : "";
-    const perPerson = new Map();
-    const enrichedChanges = changes.map(c => ({
-      slotLabel: c.slotLabel,
-      oldId: c.oldId,
-      newId: c.newId,
-      oldName: c.isApp ? aMap[c.oldId]?.name || "—" : sMap[c.oldId]?.name || "—",
-      newName: c.isApp ? aMap[c.newId]?.name || "—" : sMap[c.newId]?.name || "—"
-    }));
+
+    // Build per-person change list: every affected person gets their own set
+    // of changes (filtered to only shifts they're involved in). Scheduler and
+    // admin get the full list across all changes.
+    const perPerson = new Map(); // person_id -> [{slotLabel, oldName, newName}]
+    const enrichedChanges = changes.map(c => {
+      var _aMap$c$oldId, _sMap$c$oldId, _aMap$c$newId, _sMap$c$newId;
+      return {
+        slotLabel: c.slotLabel,
+        oldId: c.oldId,
+        newId: c.newId,
+        oldName: c.isApp ? ((_aMap$c$oldId = aMap[c.oldId]) === null || _aMap$c$oldId === void 0 ? void 0 : _aMap$c$oldId.name) || "—" : ((_sMap$c$oldId = sMap[c.oldId]) === null || _sMap$c$oldId === void 0 ? void 0 : _sMap$c$oldId.name) || "—",
+        newName: c.isApp ? ((_aMap$c$newId = aMap[c.newId]) === null || _aMap$c$newId === void 0 ? void 0 : _aMap$c$newId.name) || "—" : ((_sMap$c$newId = sMap[c.newId]) === null || _sMap$c$newId === void 0 ? void 0 : _sMap$c$newId.name) || "—"
+      };
+    });
     enrichedChanges.forEach(ec => {
       [ec.oldId, ec.newId].filter(Boolean).forEach(pid => {
         if (!perPerson.has(pid)) perPerson.set(pid, []);
-        perPerson.get(pid).push({ slotLabel: ec.slotLabel, oldName: ec.oldName, newName: ec.newName });
+        perPerson.get(pid).push({
+          slotLabel: ec.slotLabel,
+          oldName: ec.oldName,
+          newName: ec.newName
+        });
       });
     });
+    // Scheduler and admin see every change regardless of personal involvement
     schedulerAdminIds.forEach(pid => {
       if (!pid) return;
       if (!perPerson.has(pid)) {
-        perPerson.set(pid, enrichedChanges.map(ec => ({ slotLabel: ec.slotLabel, oldName: ec.oldName, newName: ec.newName })));
+        perPerson.set(pid, enrichedChanges.map(ec => ({
+          slotLabel: ec.slotLabel,
+          oldName: ec.oldName,
+          newName: ec.newName
+        })));
       } else {
+        // Already a direct-affected person; ensure they see ALL changes (not just their own)
         const existingLabels = new Set(perPerson.get(pid).map(x => x.slotLabel));
         enrichedChanges.forEach(ec => {
           if (!existingLabels.has(ec.slotLabel)) {
-            perPerson.get(pid).push({ slotLabel: ec.slotLabel, oldName: ec.oldName, newName: ec.newName });
+            perPerson.get(pid).push({
+              slotLabel: ec.slotLabel,
+              oldName: ec.oldName,
+              newName: ec.newName
+            });
           }
         });
       }
     });
+
+    // Dispatch: one notification per recipient summarizing their changes
     perPerson.forEach((personChanges, pid) => {
       const n = personChanges.length;
       let title, msg, emailPayload;
@@ -4688,11 +3748,19 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
         const c = personChanges[0];
         title = "Schedule Change";
         msg = `${c.slotLabel}: ${c.oldName} → ${c.newName}${reasonSuffix}`;
-        emailPayload = { shift: c.slotLabel, week: mondayStr, old_surgeon: c.oldName, new_surgeon: c.newName };
+        emailPayload = {
+          shift: c.slotLabel,
+          week: mondayStr,
+          old_surgeon: c.oldName,
+          new_surgeon: c.newName
+        };
       } else {
         title = `${n} Shifts Updated`;
         const bullets = personChanges.map(c => `${c.slotLabel}: ${c.oldName} → ${c.newName}`).join("; ");
         msg = `Week of ${mondayStr} — ${bullets}${reasonSuffix}`;
+        // Summarized payload for existing Edge Function template.
+        // TODO: update daily-reminder/notify-shift-update Edge Function to
+        // accept a `changes: [...]` array for cleaner bulk-edit emails.
         emailPayload = {
           shift: `${n} shifts`,
           week: mondayStr,
@@ -4700,7 +3768,9 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
           new_surgeon: "open app for details"
         };
       }
-      addNotification("schedule_changed", title, msg, { week: mondayStr }, [pid]);
+      addNotification("schedule_changed", title, msg, {
+        week: mondayStr
+      }, [pid]);
       sendEmailNotif("schedule_changed", emailPayload, [pid]);
     });
     setEditWeekModal(null);
@@ -4708,12 +3778,15 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
 
   // Generate shareable read-only HTML with calendar grid view
   const generateShareHTML = () => {
-    const colors = surgeons.map((s, i) => ({
-      name: s.name,
-      tx: PAL[i % 7].tx,
-      bg: PAL[i % 7].tg,
-      bd: PAL[i % 7].bd
-    }));
+    const colors = surgeons.map((s, i) => {
+      const c = surgeonColors(s.name, i);
+      return {
+        name: s.name,
+        tx: c.tx,
+        bg: c.tg,
+        bd: c.bd
+      };
+    });
     const colorMap = {};
     surgeons.forEach((s, i) => colorMap[s.id] = colors[i]);
     const appColors = {};
@@ -4733,9 +3806,10 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
     const allEv = [];
     surgeons.forEach(s => allEv.push(...buildICSEvents(schedule, s.id, s.name, appShifts, aMap)));
     Object.entries(appShifts).forEach(([ds, aid]) => {
+      var _aMap$aid;
       const d = parse(ds);
       const nx = addD(d, 1);
-      const an = aMap?.[aid]?.name || aid;
+      const an = (aMap === null || aMap === void 0 || (_aMap$aid = aMap[aid]) === null || _aMap$aid === void 0 ? void 0 : _aMap$aid.name) || aid;
       const dow = d.getDay();
       const isWeekend = dow === 0 || dow === 6;
       const startHour = isWeekend ? 7 : 17;
@@ -4757,6 +3831,7 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
     const buildCalData = () => {
       const d = {};
       Object.entries(schedule).forEach(([mStr, wk]) => {
+        var _wk$nights2;
         const mon = parse(mStr);
         const pfx = wk.isBackup ? "B-" : "";
         if (wk.dayCall) {
@@ -4775,7 +3850,8 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
           }];
         }
         NIGHT_KEYS.forEach((sk, i) => {
-          const sid = wk.nights?.[sk];
+          var _wk$nights;
+          const sid = (_wk$nights = wk.nights) === null || _wk$nights === void 0 ? void 0 : _wk$nights[sk];
           if (!sid) return;
           const ds = fmt(addD(mon, i));
           d[ds] = [...(d[ds] || []), {
@@ -4783,7 +3859,7 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
             sid
           }];
         });
-        const ws = wk.nights?.wknd;
+        const ws = (_wk$nights2 = wk.nights) === null || _wk$nights2 === void 0 ? void 0 : _wk$nights2.wknd;
         if (ws) {
           d[fmt(addD(mon, 4))] = [...(d[fmt(addD(mon, 4))] || []), {
             type: pfx + "Wknd",
@@ -5064,52 +4140,61 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     const mondayStrs = Object.keys(schedule).sort();
     const ids = surgeons.map(s => s.id);
     mondayStrs.forEach((mStr, wkIdx) => {
+      var _wk$nights5;
       const wk = schedule[mStr];
       const mon = parse(mStr);
 
       // Check back-to-back nights within the week
       const nightOrder = ["mon", "tue", "wed", "thu"];
       for (let i = 0; i < nightOrder.length - 1; i++) {
-        const a = wk.nights?.[nightOrder[i]];
-        const b = wk.nights?.[nightOrder[i + 1]];
+        var _wk$nights3, _wk$nights4;
+        const a = (_wk$nights3 = wk.nights) === null || _wk$nights3 === void 0 ? void 0 : _wk$nights3[nightOrder[i]];
+        const b = (_wk$nights4 = wk.nights) === null || _wk$nights4 === void 0 ? void 0 : _wk$nights4[nightOrder[i + 1]];
         if (a && a === b) {
+          var _sMap$a;
           issues.push({
             type: "consecutive",
             severity: "error",
             week: mStr,
-            message: `${sMap[a]?.name} has consecutive nights (${SHIFT_LABELS[nightOrder[i]]} + ${SHIFT_LABELS[nightOrder[i + 1]]})`
+            message: `${(_sMap$a = sMap[a]) === null || _sMap$a === void 0 ? void 0 : _sMap$a.name} has consecutive nights (${SHIFT_LABELS[nightOrder[i]]} + ${SHIFT_LABELS[nightOrder[i + 1]]})`
           });
         }
       }
 
       // Check weekend → Mon night same person (hard rule violation)
-      const wkndSurgeon = wk.nights?.wknd;
+      const wkndSurgeon = (_wk$nights5 = wk.nights) === null || _wk$nights5 === void 0 ? void 0 : _wk$nights5.wknd;
       if (wkIdx < mondayStrs.length - 1) {
+        var _nextWk$nights3, _nextWk$nights4;
         const nextWk = schedule[mondayStrs[wkIdx + 1]];
-        if (wkndSurgeon && nextWk?.nights?.mon === wkndSurgeon) {
+        if (wkndSurgeon && (nextWk === null || nextWk === void 0 || (_nextWk$nights3 = nextWk.nights) === null || _nextWk$nights3 === void 0 ? void 0 : _nextWk$nights3.mon) === wkndSurgeon) {
+          var _sMap$wkndSurgeon;
           issues.push({
             type: "consecutive",
             severity: "error",
             week: mStr,
-            message: `${sMap[wkndSurgeon]?.name} has Weekend then Mon night the next week`
+            message: `${(_sMap$wkndSurgeon = sMap[wkndSurgeon]) === null || _sMap$wkndSurgeon === void 0 ? void 0 : _sMap$wkndSurgeon.name} has Weekend then Mon night the next week`
           });
         }
         // Check service week surgeon → Mon night next week (hard rule)
-        if (wk.dayCall && nextWk?.nights?.mon === wk.dayCall) {
+        if (wk.dayCall && (nextWk === null || nextWk === void 0 || (_nextWk$nights4 = nextWk.nights) === null || _nextWk$nights4 === void 0 ? void 0 : _nextWk$nights4.mon) === wk.dayCall) {
+          var _sMap$wk$dayCall;
           issues.push({
             type: "consecutive",
             severity: "error",
             week: mStr,
-            message: `${sMap[wk.dayCall]?.name} has Service Week then Mon night the next week`
+            message: `${(_sMap$wk$dayCall = sMap[wk.dayCall]) === null || _sMap$wk$dayCall === void 0 ? void 0 : _sMap$wk$dayCall.name} has Service Week then Mon night the next week`
           });
         }
       }
 
       // Check DC surgeon also on night same week (should not happen, unless holiday 24h covers that day)
       if (wk.dayCall) {
+        var _wk$nights7;
         const holCov = wk.holidayCoverage || {};
         nightOrder.forEach(sk => {
-          if (wk.nights?.[sk] === wk.dayCall) {
+          var _wk$nights6;
+          if (((_wk$nights6 = wk.nights) === null || _wk$nights6 === void 0 ? void 0 : _wk$nights6[sk]) === wk.dayCall) {
+            var _sMap$wk$dayCall2;
             const nightDate = fmt(addD(mon, {
               mon: 0,
               tue: 1,
@@ -5122,19 +4207,20 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               type: "double",
               severity: "error",
               week: mStr,
-              message: `${sMap[wk.dayCall]?.name} is on Service Week AND ${SHIFT_LABELS[sk]} (same week)`
+              message: `${(_sMap$wk$dayCall2 = sMap[wk.dayCall]) === null || _sMap$wk$dayCall2 === void 0 ? void 0 : _sMap$wk$dayCall2.name} is on Service Week AND ${SHIFT_LABELS[sk]} (same week)`
             });
           }
         });
-        if (wk.nights?.wknd === wk.dayCall) {
+        if (((_wk$nights7 = wk.nights) === null || _wk$nights7 === void 0 ? void 0 : _wk$nights7.wknd) === wk.dayCall) {
           const friD = fmt(addD(mon, 4));
           const sunD = fmt(addD(mon, 6));
           if (!holCov[friD] && !holCov[sunD]) {
+            var _sMap$wk$dayCall3;
             issues.push({
               type: "double",
               severity: "error",
               week: mStr,
-              message: `${sMap[wk.dayCall]?.name} is on Service Week AND Weekend (same week)`
+              message: `${(_sMap$wk$dayCall3 = sMap[wk.dayCall]) === null || _sMap$wk$dayCall3 === void 0 ? void 0 : _sMap$wk$dayCall3.name} is on Service Week AND Weekend (same week)`
             });
           }
         }
@@ -5225,6 +4311,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
   const calData = useMemo(() => {
     const d = {};
     Object.entries(schedule).forEach(([mStr, wk]) => {
+      var _wk$nights9;
       const mon = parse(mStr);
       const pfx = wk.isBackup ? "B-" : "";
       const cls = wk.isBackup ? "backup" : "primary";
@@ -5249,7 +4336,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         }];
       }
       NIGHT_KEYS.forEach((sk, i) => {
-        const sid = wk.nights?.[sk];
+        var _wk$nights8;
+        const sid = (_wk$nights8 = wk.nights) === null || _wk$nights8 === void 0 ? void 0 : _wk$nights8[sk];
         if (!sid) return;
         const ds = fmt(addD(mon, i));
         if (holCov[ds]) return; // Holiday 24h covers this night
@@ -5259,7 +4347,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           cls
         }];
       });
-      const wkndS = wk.nights?.wknd;
+      const wkndS = (_wk$nights9 = wk.nights) === null || _wk$nights9 === void 0 ? void 0 : _wk$nights9.wknd;
       if (wkndS) {
         const fri = fmt(addD(mon, 4));
         if (!holCov[fri]) d[fri] = [...(d[fri] || []), {
@@ -5347,10 +4435,11 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       fierceBkp: false
     };
     todayEntries.forEach(e => {
-      if (e.type === "Svc" || e.type === "B-Svc") info.dayCall = sMap[e.surgeon]?.name || null;
-      if (e.type === "Ngt" || e.type === "B-Ngt") info.night = sMap[e.surgeon]?.name || null;
-      if (e.type === "Wknd" || e.type === "B-Wknd") info.weekend = sMap[e.surgeon]?.name || null;
-      if (e.type === "APP") info.app = aMap[e.appId]?.name || null;
+      var _sMap$e$surgeon, _sMap$e$surgeon2, _sMap$e$surgeon3, _aMap$e$appId;
+      if (e.type === "Svc" || e.type === "B-Svc") info.dayCall = ((_sMap$e$surgeon = sMap[e.surgeon]) === null || _sMap$e$surgeon === void 0 ? void 0 : _sMap$e$surgeon.name) || null;
+      if (e.type === "Ngt" || e.type === "B-Ngt") info.night = ((_sMap$e$surgeon2 = sMap[e.surgeon]) === null || _sMap$e$surgeon2 === void 0 ? void 0 : _sMap$e$surgeon2.name) || null;
+      if (e.type === "Wknd" || e.type === "B-Wknd") info.weekend = ((_sMap$e$surgeon3 = sMap[e.surgeon]) === null || _sMap$e$surgeon3 === void 0 ? void 0 : _sMap$e$surgeon3.name) || null;
+      if (e.type === "APP") info.app = ((_aMap$e$appId = aMap[e.appId]) === null || _aMap$e$appId === void 0 ? void 0 : _aMap$e$appId.name) || null;
       if (e.type === "Fierce") info.fierce = true;
       if (e.type === "FierceBkp") info.fierceBkp = true;
     });
@@ -5432,7 +4521,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     }, "\u2014");
     return /*#__PURE__*/React.createElement("span", {
       style: {
-        ...css.badge(s.idx),
+        ...css.badge(s.idx, s.name),
         fontSize: small ? 10 : 11,
         padding: small ? "1px 6px" : "2px 9px"
       }
@@ -5545,7 +4634,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       fontSize: 13,
       color: "#7a8a98"
     }
-  }, "Loading\u2026"))) : biometricPending ? /*#__PURE__*/React.createElement("div", {
+  }, "Loading\u2026"))) : biometricPending && !isPublicMode ? /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       justifyContent: "center",
@@ -5626,7 +4715,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       fontFamily: font,
       textDecoration: "underline"
     }
-  }, "Use email & password instead"))) : !authUser ? /*#__PURE__*/React.createElement("div", {
+  }, "Use email & password instead"))) : !authUser && !isPublicMode ? /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       justifyContent: "center",
@@ -6129,9 +5218,19 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     }
   }, "DSG")), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("h1", {
     style: css.h1
-  }, "Davenport Surgical Group"), /*#__PURE__*/React.createElement("p", {
+  }, isPublicMode ? "DSG Call Schedule" : "Davenport Surgical Group"), /*#__PURE__*/React.createElement("p", {
     style: css.sub
-  }, "Call Schedule \xB7 Surgeons + APPs", saveStatus && /*#__PURE__*/React.createElement("span", {
+  }, isPublicMode ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: "#7a8a98"
+    }
+  }, "Read-only view"), lastSyncRef.current && /*#__PURE__*/React.createElement(React.Fragment, null, " \xB7 Last updated: ", new Date(lastSyncRef.current).toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit"
+  })), !lastSyncRef.current && /*#__PURE__*/React.createElement(React.Fragment, null, " \xB7 Loading schedule\u2026")) : /*#__PURE__*/React.createElement(React.Fragment, null, "Call Schedule \xB7 Surgeons + APPs", saveStatus && /*#__PURE__*/React.createElement("span", {
     style: {
       marginLeft: 8,
       color: saveError ? "#c04040" : "#1a8040",
@@ -6150,12 +5249,12 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       color: "#6a7a88",
       fontSize: 10
     }
-  }, "Connecting\u2026")))), /*#__PURE__*/React.createElement("div", {
+  }, "Connecting\u2026"))))), !isPublicMode && /*#__PURE__*/React.createElement("div", {
     style: css.nav
   }, (() => {
     const allTabs = [["setup", "Setup"], ["calendar", "Calendar"], ["myschedule", "Mine"], ["requests", "Requests"], ["stats", "Stats"], ["totals", "Totals"], ["settings", "Settings"]];
-    const isAdmin = userProfile?.person_id === "admin";
-    const canAssignApps = userProfile?.can_assign_apps === true;
+    const isAdmin = (userProfile === null || userProfile === void 0 ? void 0 : userProfile.person_id) === "admin";
+    const canAssignApps = (userProfile === null || userProfile === void 0 ? void 0 : userProfile.can_assign_apps) === true;
     const canSeeSetup = isScheduler || isAdmin || canAssignApps;
     let tabs = canSeeSetup ? allTabs : allTabs.filter(([k]) => k !== "setup");
     if (!isScheduler) tabs = tabs.filter(([k]) => k !== "totals");
@@ -6229,7 +5328,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       padding: "18px 14px 60px",
       position: "relative"
     }
-  }, showNotifs && /*#__PURE__*/React.createElement("div", {
+  }, !isPublicMode && showNotifs && /*#__PURE__*/React.createElement("div", {
     style: {
       position: "absolute",
       top: 0,
@@ -6353,7 +5452,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         display: "inline-block"
       }
     }, "Tap to view \u2192"));
-  })), view === "setup" && /*#__PURE__*/React.createElement(React.Fragment, null, (isScheduler || userProfile?.person_id === "admin") && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+  })), view === "setup" && !isPublicMode && /*#__PURE__*/React.createElement(React.Fragment, null, (isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.person_id) === "admin") && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
     style: css.card
   }, /*#__PURE__*/React.createElement("div", {
     style: {
@@ -6393,7 +5492,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       width: 8,
       height: 8,
       borderRadius: 2,
-      background: PAL[i % 7].tx,
+      background: surgeonColors(s.name, i).tx,
       flexShrink: 0
     }
   }), /*#__PURE__*/React.createElement("input", {
@@ -6576,14 +5675,18 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     accept: ".pdf,.xlsx,.xls,.csv,.docx,.doc,.png,.jpg,.jpeg,.webp,.gif",
     multiple: true,
     onChange: e => {
-      if (e.target.files?.length) handleScheduleScan(e.target.files);
+      var _e$target$files;
+      if ((_e$target$files = e.target.files) !== null && _e$target$files !== void 0 && _e$target$files.length) handleScheduleScan(e.target.files);
     },
     style: {
       display: "none"
     },
     id: "schedScanInput"
   }), /*#__PURE__*/React.createElement("button", {
-    onClick: () => schedFileRef.current?.click(),
+    onClick: () => {
+      var _schedFileRef$current;
+      return (_schedFileRef$current = schedFileRef.current) === null || _schedFileRef$current === void 0 ? void 0 : _schedFileRef$current.click();
+    },
     disabled: schedScanning,
     style: {
       ...css.btn(true),
@@ -6704,11 +5807,12 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     const peopleWithVac = allPeople.filter(p => (vacations[p.id] || []).length > 0);
     if (!peopleWithVac.length) return null;
     const shortRange = (s, e) => {
+      var _MO, _MO2;
       const sp = s.split("-"),
         ep = e.split("-");
-      const sm = MO[parseInt(sp[1]) - 1]?.slice(0, 3),
+      const sm = (_MO = MO[parseInt(sp[1]) - 1]) === null || _MO === void 0 ? void 0 : _MO.slice(0, 3),
         sd = parseInt(sp[2]);
-      const em = MO[parseInt(ep[1]) - 1]?.slice(0, 3),
+      const em = (_MO2 = MO[parseInt(ep[1]) - 1]) === null || _MO2 === void 0 ? void 0 : _MO2.slice(0, 3),
         ed = parseInt(ep[2]);
       if (s === e) return `${sm} ${sd}`;
       if (sp[1] === ep[1]) return `${sm} ${sd}–${ed}`;
@@ -6983,7 +6087,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         fontSize: 11
       }
     }, "\u2715"));
-  })), (isScheduler || userProfile?.person_id === "admin") && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+  })), (isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.person_id) === "admin") && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
     style: css.card
   }, /*#__PURE__*/React.createElement("div", {
     style: css.cardT
@@ -7438,7 +6542,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         style: {
           fontWeight: 700
         }
-      }, ck.ok ? "✓" : "⚠", " ", ck.label, " group:"), " ", ck.ok ? `All ${ck.uniqueCount} surgeons distinct (${ck.freeCount} free)` : ck.dupes.map(d => `${surgeons.find(s => s.id === d.surgeon)?.name || d.surgeon} is on both ${d.hol1} & ${d.hol2}`).join("; "))));
+      }, ck.ok ? "✓" : "⚠", " ", ck.label, " group:"), " ", ck.ok ? `All ${ck.uniqueCount} surgeons distinct (${ck.freeCount} free)` : ck.dupes.map(d => {
+        var _surgeons$find8;
+        return `${((_surgeons$find8 = surgeons.find(s => s.id === d.surgeon)) === null || _surgeons$find8 === void 0 ? void 0 : _surgeons$find8.name) || d.surgeon} is on both ${d.hol1} & ${d.hol2}`;
+      }).join("; "))));
     })(), /*#__PURE__*/React.createElement("div", {
       style: {
         marginTop: 14,
@@ -7459,12 +6566,13 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         flexWrap: "wrap"
       }
     }, surgeons.map(s => {
-      const mc = holCounts[s.id]?.major || 0;
-      const mi = holCounts[s.id]?.minor || 0;
+      var _holCounts$s$id, _holCounts$s$id2, _sMap$s$id, _sMap$s$id2;
+      const mc = ((_holCounts$s$id = holCounts[s.id]) === null || _holCounts$s$id === void 0 ? void 0 : _holCounts$s$id.major) || 0;
+      const mi = ((_holCounts$s$id2 = holCounts[s.id]) === null || _holCounts$s$id2 === void 0 ? void 0 : _holCounts$s$id2.minor) || 0;
       return /*#__PURE__*/React.createElement("div", {
         key: s.id,
         style: {
-          ...css.badge(sMap[s.id]?.idx || 0),
+          ...css.badge(((_sMap$s$id = sMap[s.id]) === null || _sMap$s$id === void 0 ? void 0 : _sMap$s$id.idx) || 0, (_sMap$s$id2 = sMap[s.id]) === null || _sMap$s$id2 === void 0 ? void 0 : _sMap$s$id2.name),
           padding: "4px 10px",
           fontSize: 11
         }
@@ -7525,6 +6633,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     // Build calData from preview schedule
     const pCalData = {};
     Object.entries(previewSchedule).forEach(([mStr, wk]) => {
+      var _wk$nights1;
       const mon = parse(mStr);
       const pfx = wk.isBackup ? "B-" : "";
       const cls = wk.isBackup ? "backup" : "primary";
@@ -7548,7 +6657,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         }];
       }
       NIGHT_KEYS.forEach((sk, i) => {
-        const sid = wk.nights?.[sk];
+        var _wk$nights0;
+        const sid = (_wk$nights0 = wk.nights) === null || _wk$nights0 === void 0 ? void 0 : _wk$nights0[sk];
         if (!sid) return;
         const ds = fmt(addD(mon, i));
         if (holCov[ds]) return;
@@ -7558,7 +6668,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           cls
         }];
       });
-      const wkndS = wk.nights?.wknd;
+      const wkndS = (_wk$nights1 = wk.nights) === null || _wk$nights1 === void 0 ? void 0 : _wk$nights1.wknd;
       if (wkndS) {
         const fri = fmt(addD(mon, 4));
         if (!holCov[fri]) pCalData[fri] = [...(pCalData[fri] || []), {
@@ -7766,6 +6876,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           marginBottom: 1
         }
       }, day), entries.filter(e => e.type !== "APP").map((e, j) => {
+        var _sMap$e$surgeon4, _sMap$e$surgeon5, _sMap$e$surgeon6;
         const isB = e.cls === "backup";
         const isD = e.type.includes("Svc");
         const isW = e.type.includes("Wknd");
@@ -7797,28 +6908,31 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           }
         }, label), " ", /*#__PURE__*/React.createElement("span", {
           style: {
-            color: PAL[sMap[e.surgeon]?.idx % 7]?.tx || "#4a5868",
+            color: surgeonColors((_sMap$e$surgeon4 = sMap[e.surgeon]) === null || _sMap$e$surgeon4 === void 0 ? void 0 : _sMap$e$surgeon4.name, (_sMap$e$surgeon5 = sMap[e.surgeon]) === null || _sMap$e$surgeon5 === void 0 ? void 0 : _sMap$e$surgeon5.idx).tx || "#4a5868",
             fontWeight: 500
           }
-        }, sMap[e.surgeon]?.name || "?"));
-      }), entries.filter(e => e.type === "APP").map((e, j) => /*#__PURE__*/React.createElement("div", {
-        key: "a" + j,
-        style: {
-          fontSize: 9,
-          marginBottom: 1,
-          padding: "0 2px",
-          whiteSpace: "nowrap"
-        }
-      }, /*#__PURE__*/React.createElement("span", {
-        style: {
-          color: "#c08050",
-          fontWeight: 700
-        }
-      }, "A"), " ", /*#__PURE__*/React.createElement("span", {
-        style: {
-          color: "#8a6040"
-        }
-      }, aMap[e.appId]?.name || "?"))), vacList.length > 0 && /*#__PURE__*/React.createElement("div", {
+        }, ((_sMap$e$surgeon6 = sMap[e.surgeon]) === null || _sMap$e$surgeon6 === void 0 ? void 0 : _sMap$e$surgeon6.name) || "?"));
+      }), entries.filter(e => e.type === "APP").map((e, j) => {
+        var _aMap$e$appId2;
+        return /*#__PURE__*/React.createElement("div", {
+          key: "a" + j,
+          style: {
+            fontSize: 9,
+            marginBottom: 1,
+            padding: "0 2px",
+            whiteSpace: "nowrap"
+          }
+        }, /*#__PURE__*/React.createElement("span", {
+          style: {
+            color: "#c08050",
+            fontWeight: 700
+          }
+        }, "A"), " ", /*#__PURE__*/React.createElement("span", {
+          style: {
+            color: "#8a6040"
+          }
+        }, ((_aMap$e$appId2 = aMap[e.appId]) === null || _aMap$e$appId2 === void 0 ? void 0 : _aMap$e$appId2.name) || "?"));
+      }), vacList.length > 0 && /*#__PURE__*/React.createElement("div", {
         style: {
           fontSize: 8,
           color: "#a07070",
@@ -7886,7 +7000,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         marginTop: 8
       }
     }, "Click \"Re-roll\" to generate a different version. Use \u25C0 \u25B6 to browse months. Click \"Accept\" to commit this schedule."));
-  })())), view === "totals" && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+  })())), view === "totals" && !isPublicMode && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
     style: css.card
   }, /*#__PURE__*/React.createElement("div", {
     style: css.cardT
@@ -7948,14 +7062,18 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     type: "file",
     accept: ".csv,.xlsx,.xls",
     onChange: e => {
-      if (e.target.files?.[0]) handleTemplateUpload(e.target.files[0]);
+      var _e$target$files2;
+      if ((_e$target$files2 = e.target.files) !== null && _e$target$files2 !== void 0 && _e$target$files2[0]) handleTemplateUpload(e.target.files[0]);
     },
     style: {
       display: "none"
     },
     id: "templateInput"
   }), /*#__PURE__*/React.createElement("button", {
-    onClick: () => fileRef.current?.click(),
+    onClick: () => {
+      var _fileRef$current;
+      return (_fileRef$current = fileRef.current) === null || _fileRef$current === void 0 ? void 0 : _fileRef$current.click();
+    },
     disabled: scanning,
     style: {
       ...css.btn(true),
@@ -8132,7 +7250,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       fontWeight: 700,
       color: "#1a2a3a"
     }
-  }, "\uD83D\uDCCB On Call Today \u2014 ", ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][todayDow], " ", new Date().getMonth() + 1, "/", new Date().getDate()), /*#__PURE__*/React.createElement("button", {
+  }, "\uD83D\uDCCB On Call Today \u2014 ", ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][todayDow], " ", new Date().getMonth() + 1, "/", new Date().getDate()), !isPublicMode && /*#__PURE__*/React.createElement("button", {
     onClick: shareTonightMsg,
     style: {
       ...css.btn(true),
@@ -8396,7 +7514,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     }
   }, "|"), /*#__PURE__*/React.createElement("select", {
     value: calSurgeonFilter,
-    onChange: e => setCalSurgeonFilter(e.target.value),
+    onChange: e => {
+      setCalSurgeonFilter(e.target.value);
+      if (e.target.value) setCalDeptFilter("");
+    },
     style: {
       ...css.inp,
       padding: "3px 6px",
@@ -8406,10 +7527,45 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     }
   }, /*#__PURE__*/React.createElement("option", {
     value: ""
-  }, "All Surgeons"), surgeons.map(s => /*#__PURE__*/React.createElement("option", {
+  }, "All Surgeons"), surgeons.filter(s => !calDeptFilter || (SURGEON_DEPTS[s.name] || []).includes(calDeptFilter)).map(s => /*#__PURE__*/React.createElement("option", {
     key: s.id,
     value: s.id
-  }, s.name))), (Object.values(calFilters).some(v => !v) || calSurgeonFilter) && /*#__PURE__*/React.createElement("button", {
+  }, s.name))), /*#__PURE__*/React.createElement("select", {
+    value: calAppFilter,
+    onChange: e => setCalAppFilter(e.target.value),
+    style: {
+      ...css.inp,
+      padding: "3px 6px",
+      fontSize: 10,
+      width: 90,
+      ...dkInp
+    }
+  }, /*#__PURE__*/React.createElement("option", {
+    value: "all"
+  }, "All APPs"), /*#__PURE__*/React.createElement("option", {
+    value: "none"
+  }, "No APPs"), apps.map(a => /*#__PURE__*/React.createElement("option", {
+    key: a.id,
+    value: a.id
+  }, a.name))), /*#__PURE__*/React.createElement("select", {
+    value: calDeptFilter,
+    onChange: e => {
+      setCalDeptFilter(e.target.value);
+      if (e.target.value) setCalSurgeonFilter("");
+    },
+    style: {
+      ...css.inp,
+      padding: "3px 6px",
+      fontSize: 10,
+      width: 100,
+      ...dkInp
+    }
+  }, /*#__PURE__*/React.createElement("option", {
+    value: ""
+  }, "All Depts"), Object.entries(DEPT_LABELS).map(([k, v]) => /*#__PURE__*/React.createElement("option", {
+    key: k,
+    value: k
+  }, v))), (Object.values(calFilters).some(v => !v) || calSurgeonFilter || calAppFilter !== "all" || calDeptFilter) && /*#__PURE__*/React.createElement("button", {
     onClick: () => {
       setCalFilters({
         svc: true,
@@ -8420,6 +7576,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         vac: true
       });
       setCalSurgeonFilter("");
+      setCalAppFilter("all");
+      setCalDeptFilter("");
     },
     style: {
       background: "none",
@@ -8525,6 +7683,38 @@ ${"</"}script>${"</"}body>${"</"}html>`;
   }, (() => {
     const now = new Date();
     const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+
+    // Helper: for a given date, find the Monday that starts its week.
+    // Weeks run Monday-Sunday here (calendar grid is Sun-Sat but Fierce
+    // weeks are keyed by their Monday, matching how the schedule works).
+    const getWeekMonday = d => {
+      const day = d.getDay(); // 0=Sun, 1=Mon, ..., 6=Sat
+      const diff = day === 0 ? -6 : 1 - day; // shift back to Monday
+      const m = new Date(d);
+      m.setDate(d.getDate() + diff);
+      return fmt(m);
+    };
+
+    // Helper: is a given surgeon on vacation on a given date?
+    const isSurgeonOnVacDate = (sid, ds) => onVac(sid, ds, vacations);
+
+    // For a given date and surgeon, determine if today is the first
+    // and/or last day of their vacation range (considering that a
+    // range the user entered could span multiple days, but we want
+    // bars to continue across week boundaries too visually).
+    // Simpler: is yesterday NOT vacation for them? Is tomorrow NOT
+    // vacation for them? That determines corner rounding.
+    const getVacBounds = (sid, ds) => {
+      const d = parse(ds);
+      const prev = fmt(addD(d, -1));
+      const next = fmt(addD(d, 1));
+      const isFirst = !isSurgeonOnVacDate(sid, prev);
+      const isLast = !isSurgeonOnVacDate(sid, next);
+      return {
+        isFirst,
+        isLast
+      };
+    };
     return calGrid.map((day, i) => {
       if (!day) return /*#__PURE__*/React.createElement("div", {
         key: `e${i}`,
@@ -8536,21 +7726,55 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       const ds = `${calYear}-${String(calMonth + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
       const isToday = ds === todayStr;
       const entries = calData[ds] || [];
-      const isWknd = [0, 6].includes(new Date(calYear, calMonth, day).getDay());
+      const dObj = new Date(calYear, calMonth, day);
+      const isWknd = [0, 6].includes(dObj.getDay());
       const hasFierce = entries.some(e => e.type === "Fierce");
       const hasFierceBkp = entries.some(e => e.type === "FierceBkp");
-      const onVacList = [...surgeons, ...apps].filter(s => onVac(s.id, ds, vacations));
 
-      // Apply surgeon filter
-      const sf = calSurgeonFilter;
+      // Determine if THIS DAY's WEEK (Mon-Sun) is a Fierce primary or
+      // Fierce backup week. Used to apply bolder/lighter shading to
+      // ALL 7 days of the week, not just the Fierce day itself.
+      const weekMonday = getWeekMonday(dObj);
+      const isFiercePrimaryWeek = backupMondaySet.has(weekMonday);
+      const isFierceBackupWeek = fierceBackupSet.has(weekMonday);
+
+      // Gather surgeons on vacation today, respecting filters
+      const onVacToday = [...surgeons, ...apps].filter(s => {
+        if (!isSurgeonOnVacDate(s.id, ds)) return false;
+        if (sf && s.id !== sf) return false;
+        const isApp = s.id.startsWith("a");
+        if (isApp) return calAppFilter === "all" || calAppFilter === s.id;
+        if (calDeptFilter) return (SURGEON_DEPTS[s.name] || []).includes(calDeptFilter);
+        return true;
+      });
+
+      // Background tint — Fierce primary is bolder, Fierce backup lighter,
+      // regular weekdays/weekends keep their existing soft tints.
+      let cellBg;
+      let cellBorder;
+      if (isFiercePrimaryWeek && calFilters.fierce) {
+        cellBg = "#fef3d0"; // warm gold — bolder, primary
+        cellBorder = "1px solid #e0c870";
+      } else if (isFierceBackupWeek && calFilters.fierce) {
+        cellBg = "#e8f0fc"; // soft blue — lighter, backup
+        cellBorder = "1px solid #c8d8ec";
+      } else if (isWknd) {
+        cellBg = "#edf0f4";
+        cellBorder = "1px solid #e8ecf0";
+      } else {
+        cellBg = "#f8f9fb";
+        cellBorder = "1px solid #e8ecf0";
+      }
       return /*#__PURE__*/React.createElement("div", {
         key: ds,
         style: {
-          background: hasFierce && calFilters.fierce ? "#faf8f0" : hasFierceBkp && calFilters.fierce ? "#f8f9fb" : isWknd ? "#edf0f4" : "#f8f9fb",
-          border: hasFierce && calFilters.fierce ? "1px solid #2a2810" : hasFierceBkp && calFilters.fierce ? "1px solid #d0d8e4" : "1px solid #e8ecf0",
+          background: cellBg,
+          border: cellBorder,
           minHeight: 82,
           padding: "3px 4px",
-          borderRadius: 2
+          borderRadius: 2,
+          display: "flex",
+          flexDirection: "column"
         }
       }, /*#__PURE__*/React.createElement("div", {
         style: {
@@ -8602,6 +7826,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           letterSpacing: 0.5
         }
       }, "F\xB7BKP")), entries.filter(e => {
+        var _sMap$e$surgeon7;
         if (e.type === "Fierce" || e.type === "FierceBkp" || e.type === "APP" || e.type === "Holiday") return false;
         const isD = e.type.includes("Svc");
         const isW = e.type.includes("Wknd");
@@ -8609,8 +7834,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         if (isW && !calFilters.wknd) return false;
         if (!isD && !isW && !calFilters.night) return false;
         if (sf && e.surgeon !== sf) return false;
+        if (calDeptFilter && !(SURGEON_DEPTS[(_sMap$e$surgeon7 = sMap[e.surgeon]) === null || _sMap$e$surgeon7 === void 0 ? void 0 : _sMap$e$surgeon7.name] || []).includes(calDeptFilter)) return false;
         return true;
       }).map((e, j) => {
+        var _sMap$e$surgeon8, _sMap$e$surgeon9, _sMap$e$surgeon0;
         const isB = e.cls === "backup";
         const isD = e.type.includes("Svc");
         const isW = e.type.includes("Wknd");
@@ -8642,63 +7869,72 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           }
         }, label), " ", /*#__PURE__*/React.createElement("span", {
           style: {
-            color: PAL[sMap[e.surgeon]?.idx % 7]?.tx || "#4a5868",
+            color: surgeonColors((_sMap$e$surgeon8 = sMap[e.surgeon]) === null || _sMap$e$surgeon8 === void 0 ? void 0 : _sMap$e$surgeon8.name, (_sMap$e$surgeon9 = sMap[e.surgeon]) === null || _sMap$e$surgeon9 === void 0 ? void 0 : _sMap$e$surgeon9.idx).tx || "#4a5868",
             fontWeight: highlighted ? 700 : 400
           }
-        }, sMap[e.surgeon]?.name || "?"));
-      }), entries.filter(e => e.type === "Holiday").filter(e => !sf || e.surgeon === sf).map((e, j) => /*#__PURE__*/React.createElement("div", {
-        key: "hol" + j,
-        style: {
-          marginBottom: 1,
-          padding: "1px 3px",
-          borderRadius: 3,
-          fontSize: 10,
-          background: "#fef0e8",
-          border: "1px solid #e0a868",
-          fontWeight: 600
-        }
-      }, /*#__PURE__*/React.createElement("span", {
-        style: {
-          color: "#c06020",
-          fontWeight: 700
-        },
-        title: e.holName || ""
-      }, holidayEmoji(e.holName)), " ", /*#__PURE__*/React.createElement("span", {
-        style: {
-          color: PAL[sMap[e.surgeon]?.idx % 7]?.tx || "#4a5868"
-        }
-      }, sMap[e.surgeon]?.name || "?"), /*#__PURE__*/React.createElement("span", {
-        style: {
-          color: "#a07030",
-          fontSize: 8,
-          marginLeft: 2
-        }
-      }, e.hours))), calFilters.app && !sf && entries.filter(e => e.type === "APP").map((e, j) => /*#__PURE__*/React.createElement("div", {
-        key: "app" + j,
-        style: {
-          marginBottom: 1,
-          padding: "1px 3px",
-          borderRadius: 3,
-          fontSize: 10,
-          background: "#fcf4f0",
-          border: "1px solid #281818"
-        }
-      }, /*#__PURE__*/React.createElement("span", {
-        style: {
-          color: "#c08050",
-          fontWeight: 700
-        }
-      }, "A"), " ", /*#__PURE__*/React.createElement("span", {
-        style: {
-          color: APP_PAL[aMap[e.appId]?.idx % 4]?.tx || "#5a6878"
-        }
-      }, aMap[e.appId]?.name || "?"), /*#__PURE__*/React.createElement("span", {
-        style: {
-          color: "#8a94a0",
-          fontSize: 8,
-          marginLeft: 2
-        }
-      }, "5p\u20137a"))), calFilters.fierce && hasFierce && /*#__PURE__*/React.createElement("div", {
+        }, ((_sMap$e$surgeon0 = sMap[e.surgeon]) === null || _sMap$e$surgeon0 === void 0 ? void 0 : _sMap$e$surgeon0.name) || "?"));
+      }), entries.filter(e => e.type === "Holiday").filter(e => !sf || e.surgeon === sf).filter(e => {
+        var _sMap$e$surgeon1;
+        return !calDeptFilter || (SURGEON_DEPTS[(_sMap$e$surgeon1 = sMap[e.surgeon]) === null || _sMap$e$surgeon1 === void 0 ? void 0 : _sMap$e$surgeon1.name] || []).includes(calDeptFilter);
+      }).map((e, j) => {
+        var _sMap$e$surgeon10, _sMap$e$surgeon11, _sMap$e$surgeon12;
+        return /*#__PURE__*/React.createElement("div", {
+          key: "hol" + j,
+          style: {
+            marginBottom: 1,
+            padding: "1px 3px",
+            borderRadius: 3,
+            fontSize: 10,
+            background: "#fef0e8",
+            border: "1px solid #e0a868",
+            fontWeight: 600
+          }
+        }, /*#__PURE__*/React.createElement("span", {
+          style: {
+            color: "#c06020",
+            fontWeight: 700
+          },
+          title: e.holName || ""
+        }, holidayEmoji(e.holName)), " ", /*#__PURE__*/React.createElement("span", {
+          style: {
+            color: surgeonColors((_sMap$e$surgeon10 = sMap[e.surgeon]) === null || _sMap$e$surgeon10 === void 0 ? void 0 : _sMap$e$surgeon10.name, (_sMap$e$surgeon11 = sMap[e.surgeon]) === null || _sMap$e$surgeon11 === void 0 ? void 0 : _sMap$e$surgeon11.idx).tx || "#4a5868"
+          }
+        }, ((_sMap$e$surgeon12 = sMap[e.surgeon]) === null || _sMap$e$surgeon12 === void 0 ? void 0 : _sMap$e$surgeon12.name) || "?"), /*#__PURE__*/React.createElement("span", {
+          style: {
+            color: "#a07030",
+            fontSize: 8,
+            marginLeft: 2
+          }
+        }, e.hours));
+      }), calFilters.app && !sf && calAppFilter !== "none" && !calDeptFilter && entries.filter(e => e.type === "APP").filter(e => calAppFilter === "all" || e.appId === calAppFilter).map((e, j) => {
+        var _APP_PAL, _aMap$e$appId3, _aMap$e$appId4;
+        return /*#__PURE__*/React.createElement("div", {
+          key: "app" + j,
+          style: {
+            marginBottom: 1,
+            padding: "1px 3px",
+            borderRadius: 3,
+            fontSize: 10,
+            background: "#fcf4f0",
+            border: "1px solid #281818"
+          }
+        }, /*#__PURE__*/React.createElement("span", {
+          style: {
+            color: "#c08050",
+            fontWeight: 700
+          }
+        }, "A"), " ", /*#__PURE__*/React.createElement("span", {
+          style: {
+            color: ((_APP_PAL = APP_PAL[((_aMap$e$appId3 = aMap[e.appId]) === null || _aMap$e$appId3 === void 0 ? void 0 : _aMap$e$appId3.idx) % 4]) === null || _APP_PAL === void 0 ? void 0 : _APP_PAL.tx) || "#5a6878"
+          }
+        }, ((_aMap$e$appId4 = aMap[e.appId]) === null || _aMap$e$appId4 === void 0 ? void 0 : _aMap$e$appId4.name) || "?"), /*#__PURE__*/React.createElement("span", {
+          style: {
+            color: "#8a94a0",
+            fontSize: 8,
+            marginLeft: 2
+          }
+        }, "5p\u20137a"));
+      }), calFilters.fierce && hasFierce && /*#__PURE__*/React.createElement("div", {
         style: {
           fontSize: 8,
           color: "#8a6a10",
@@ -8712,14 +7948,57 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           marginTop: 1,
           fontWeight: 600
         }
-      }, "\uD83D\uDEE1 Fierce Backup"), calFilters.vac && onVacList.filter(s => !sf || s.id === sf).map(s => /*#__PURE__*/React.createElement("div", {
-        key: s.id,
-        style: {
-          fontSize: 8,
-          color: "#c04848",
-          marginTop: 1
+      }, "\uD83D\uDEE1 Fierce Backup"), calFilters.vac && onVacToday.length > 0 && (() => {
+        // Determine corner rounding based on the GROUP of vacationers:
+        // Round the left corner only if NONE of today's vacationers
+        // were also on vacation yesterday (i.e., at least one span
+        // starts today). Round right corner if none continue tomorrow.
+        // This matches the "visual continuity when same group continues"
+        // and "split when group changes" behavior the user requested.
+        const prevDs = fmt(addD(dObj, -1));
+        const nextDs = fmt(addD(dObj, 1));
+        // Set of surgeon ids on vacation on each adjacent day
+        const yesterdaySet = new Set(onVacToday.filter(s => isSurgeonOnVacDate(s.id, prevDs)).map(s => s.id));
+        const tomorrowSet = new Set(onVacToday.filter(s => isSurgeonOnVacDate(s.id, nextDs)).map(s => s.id));
+        // If yesterday's vacationer set is IDENTICAL to today's, no
+        // left round (bar continues). Otherwise round left.
+        const todaySet = new Set(onVacToday.map(s => s.id));
+        const setsEqual = (a, b) => a.size === b.size && [...a].every(x => b.has(x));
+        const roundLeft = !setsEqual(yesterdaySet, todaySet);
+        const roundRight = !setsEqual(tomorrowSet, todaySet);
+
+        // Names inside the bar — initials, comma-separated.
+        // If 4+ surgeons, truncate with "+N".
+        let displayNames;
+        if (onVacToday.length <= 3) {
+          displayNames = onVacToday.map(s => s.name).join(", ");
+        } else {
+          displayNames = onVacToday.slice(0, 2).map(s => s.name).join(", ") + ` +${onVacToday.length - 2}`;
         }
-      }, "\uD83C\uDFD6 ", s.name)));
+        return /*#__PURE__*/React.createElement("div", {
+          style: {
+            marginTop: "auto",
+            // push to bottom of cell
+            marginLeft: roundLeft ? 0 : -4,
+            marginRight: roundRight ? 0 : -4,
+            marginBottom: -3,
+            padding: "2px 4px",
+            fontSize: 9,
+            fontWeight: 600,
+            background: "#e4e7ec",
+            color: "#5a6a78",
+            borderTopLeftRadius: roundLeft ? 6 : 0,
+            borderBottomLeftRadius: roundLeft ? 6 : 0,
+            borderTopRightRadius: roundRight ? 6 : 0,
+            borderBottomRightRadius: roundRight ? 6 : 0,
+            whiteSpace: "nowrap",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            letterSpacing: 0.2
+          },
+          title: onVacToday.map(s => s.name).join(", ") + " on vacation"
+        }, "\uD83C\uDFD6 ", displayNames);
+      })());
     });
   })()), /*#__PURE__*/React.createElement("div", {
     style: {
@@ -8767,7 +8046,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     style: {
       color: "#c06020"
     }
-  }, "\uD83D\uDCC5"), " Holiday Coverage")), (isScheduler || userProfile?.person_id === "admin") && /*#__PURE__*/React.createElement("div", {
+  }, "\uD83D\uDCC5"), " Holiday Coverage")), (isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.person_id) === "admin") && /*#__PURE__*/React.createElement("div", {
     style: {
       ...css.card,
       marginTop: 14,
@@ -8871,7 +8150,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       marginBottom: 2
     }
   }, "Week"), /*#__PURE__*/React.createElement("select", {
-    value: swapTarget?.mondayStr || "",
+    value: (swapTarget === null || swapTarget === void 0 ? void 0 : swapTarget.mondayStr) || "",
     onChange: e => {
       setSwapTarget(prev => ({
         ...(prev || {}),
@@ -8896,7 +8175,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       marginBottom: 2
     }
   }, "Shift"), /*#__PURE__*/React.createElement("select", {
-    value: swapTarget?.shift || "",
+    value: (swapTarget === null || swapTarget === void 0 ? void 0 : swapTarget.shift) || "",
     onChange: e => {
       setSwapTarget(prev => ({
         ...(prev || {}),
@@ -8921,12 +8200,13 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       marginBottom: 2
     }
   }, "Current Surgeon"), (() => {
-    const m = swapTarget?.mondayStr;
-    const sh = swapTarget?.shift;
+    const m = swapTarget === null || swapTarget === void 0 ? void 0 : swapTarget.mondayStr;
+    const sh = swapTarget === null || swapTarget === void 0 ? void 0 : swapTarget.shift;
     const wk = m ? schedule[m] : null;
     let currentId = null;
     if (wk && sh) {
-      currentId = sh === "dayCall" ? wk.dayCall : wk.nights?.[sh];
+      var _wk$nights10;
+      currentId = sh === "dayCall" ? wk.dayCall : (_wk$nights10 = wk.nights) === null || _wk$nights10 === void 0 ? void 0 : _wk$nights10[sh];
     }
     return currentId ? /*#__PURE__*/React.createElement("div", {
       style: {
@@ -8954,7 +8234,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       const wk = schedule[m];
       if (!wk) return;
       ALL_SHIFT_KEYS.forEach(sk => {
-        const holder = sk === "dayCall" ? wk.dayCall : wk.nights?.[sk];
+        var _wk$nights11;
+        const holder = sk === "dayCall" ? wk.dayCall : (_wk$nights11 = wk.nights) === null || _wk$nights11 === void 0 ? void 0 : _wk$nights11[sk];
         if (holder === mySurgeon) {
           const d = parse(m);
           const label = `${MO[d.getMonth()].slice(0, 3)} ${d.getDate()} — ${SHIFT_LABELS[sk]}${wk.isBackup ? " (Backup)" : ""}`;
@@ -8965,7 +8246,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         }
       });
     });
-    const curVal = swapTarget?.mondayStr && swapTarget?.shift ? `${swapTarget.mondayStr}|${swapTarget.shift}` : "";
+    const curVal = swapTarget !== null && swapTarget !== void 0 && swapTarget.mondayStr && swapTarget !== null && swapTarget !== void 0 && swapTarget.shift ? `${swapTarget.mondayStr}|${swapTarget.shift}` : "";
     const placeholder = !mySurgeon ? "Select your name in Mine tab first" : opts.length === 0 ? "You have no scheduled shifts" : "Select your shift…";
     return /*#__PURE__*/React.createElement("select", {
       value: curVal,
@@ -8995,19 +8276,20 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     }, o.label)));
   })()), /*#__PURE__*/React.createElement("button", {
     onClick: () => {
-      const m = swapTarget?.mondayStr;
-      const sh = swapTarget?.shift;
+      var _wk$nights12;
+      const m = swapTarget === null || swapTarget === void 0 ? void 0 : swapTarget.mondayStr;
+      const sh = swapTarget === null || swapTarget === void 0 ? void 0 : swapTarget.shift;
       const wk = m ? schedule[m] : null;
       if (!wk || !sh) return;
-      const currentId = sh === "dayCall" ? wk.dayCall : wk.nights?.[sh];
+      const currentId = sh === "dayCall" ? wk.dayCall : (_wk$nights12 = wk.nights) === null || _wk$nights12 === void 0 ? void 0 : _wk$nights12[sh];
       if (!currentId) return;
       findSwapSuggestions(m, sh, currentId);
     },
-    disabled: !swapTarget?.mondayStr || !swapTarget?.shift,
+    disabled: !(swapTarget !== null && swapTarget !== void 0 && swapTarget.mondayStr) || !(swapTarget !== null && swapTarget !== void 0 && swapTarget.shift),
     style: {
       ...css.btn(true),
       padding: "7px 16px",
-      opacity: !swapTarget?.mondayStr || !swapTarget?.shift ? 0.5 : 1,
+      opacity: !(swapTarget !== null && swapTarget !== void 0 && swapTarget.mondayStr) || !(swapTarget !== null && swapTarget !== void 0 && swapTarget.shift) ? 0.5 : 1,
       background: "linear-gradient(135deg,#6030a0,#8050c0)",
       borderColor: "#6030a0"
     }
@@ -9178,20 +8460,23 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       flexWrap: "wrap",
       marginBottom: 10
     }
-  }, surgeons.map(s => /*#__PURE__*/React.createElement("button", {
-    key: s.id,
-    onClick: () => {
-      const events = buildICSEvents(schedule, s.id, s.name, appShifts, aMap);
-      const ics = generateICS(events, `Call Schedule — ${s.name}`);
-      downloadICS(ics, `call-schedule-${s.name.toLowerCase()}.ics`);
-    },
-    style: {
-      ...css.badge(sMap[s.id]?.idx || 0),
-      cursor: "pointer",
-      padding: "5px 12px",
-      fontSize: 12
-    }
-  }, "\u2B07 ", s.name))), /*#__PURE__*/React.createElement("div", {
+  }, surgeons.map(s => {
+    var _sMap$s$id3, _sMap$s$id4;
+    return /*#__PURE__*/React.createElement("button", {
+      key: s.id,
+      onClick: () => {
+        const events = buildICSEvents(schedule, s.id, s.name, appShifts, aMap);
+        const ics = generateICS(events, `Call Schedule — ${s.name}`);
+        downloadICS(ics, `call-schedule-${s.name.toLowerCase()}.ics`);
+      },
+      style: {
+        ...css.badge(((_sMap$s$id3 = sMap[s.id]) === null || _sMap$s$id3 === void 0 ? void 0 : _sMap$s$id3.idx) || 0, (_sMap$s$id4 = sMap[s.id]) === null || _sMap$s$id4 === void 0 ? void 0 : _sMap$s$id4.name),
+        cursor: "pointer",
+        padding: "5px 12px",
+        fontSize: 12
+      }
+    }, "\u2B07 ", s.name);
+  })), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       gap: 6,
@@ -9205,9 +8490,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         allEvents.push(...buildICSEvents(schedule, s.id, s.name, appShifts, aMap));
       });
       Object.entries(appShifts).forEach(([ds, aid]) => {
+        var _aMap$aid2;
         const d = parse(ds);
         const next = addD(d, 1);
-        const appName = aMap?.[aid]?.name || aid;
+        const appName = (aMap === null || aMap === void 0 || (_aMap$aid2 = aMap[aid]) === null || _aMap$aid2 === void 0 ? void 0 : _aMap$aid2.name) || aid;
         const dow = d.getDay();
         const isWeekend = dow === 0 || dow === 6;
         const startHour = isWeekend ? 7 : 17;
@@ -9481,7 +8767,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         padding: "8px 16px"
       }
     }, "\uD83D\uDCBE Save Changes"))));
-  })()), view === "stats" && /*#__PURE__*/React.createElement(React.Fragment, null, isScheduler && /*#__PURE__*/React.createElement("div", {
+  })()), view === "stats" && !isPublicMode && /*#__PURE__*/React.createElement(React.Fragment, null, isScheduler && /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       justifyContent: "flex-end",
@@ -9643,6 +8929,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     const monthlyData = {};
     const allMonths = new Set();
     Object.entries(schedule).forEach(([mStr, wk]) => {
+      var _wk$nights14;
       const mon = parse(mStr);
       // Register every month touched by this week so all surgeons show columns
       for (let i = 0; i < 7; i++) {
@@ -9662,25 +8949,28 @@ ${"</"}script>${"</"}body>${"</"}html>`;
 
       // Service Week = 6 points, attributed to the month containing Monday
       if (wk.dayCall) {
+        var _monthlyData$monMoKey;
         const monMoKey = `${mon.getFullYear()}-${String(mon.getMonth() + 1).padStart(2, "0")}`;
-        if (monthlyData[monMoKey]?.[wk.dayCall]) monthlyData[monMoKey][wk.dayCall][countKey] += 6;
+        if ((_monthlyData$monMoKey = monthlyData[monMoKey]) !== null && _monthlyData$monMoKey !== void 0 && _monthlyData$monMoKey[wk.dayCall]) monthlyData[monMoKey][wk.dayCall][countKey] += 6;
       }
 
       // Week Nights (Mon-Thu) = 1 point each, attributed to the night's own month
       NIGHT_KEYS.forEach((sk, i) => {
-        const sid = wk.nights?.[sk];
+        var _wk$nights13, _monthlyData$moKey;
+        const sid = (_wk$nights13 = wk.nights) === null || _wk$nights13 === void 0 ? void 0 : _wk$nights13[sk];
         if (!sid) return;
         const d = addD(mon, i);
         const moKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
-        if (monthlyData[moKey]?.[sid]) monthlyData[moKey][sid][countKey] += 1;
+        if ((_monthlyData$moKey = monthlyData[moKey]) !== null && _monthlyData$moKey !== void 0 && _monthlyData$moKey[sid]) monthlyData[moKey][sid][countKey] += 1;
       });
 
       // Weekend (Fri night + Sun 24h) = 2 points, attributed to the month containing Friday
-      const wkndSid = wk.nights?.wknd;
+      const wkndSid = (_wk$nights14 = wk.nights) === null || _wk$nights14 === void 0 ? void 0 : _wk$nights14.wknd;
       if (wkndSid) {
+        var _monthlyData$friMo;
         const fri = addD(mon, 4);
         const friMo = `${fri.getFullYear()}-${String(fri.getMonth() + 1).padStart(2, "0")}`;
-        if (monthlyData[friMo]?.[wkndSid]) monthlyData[friMo][wkndSid][countKey] += 2;
+        if ((_monthlyData$friMo = monthlyData[friMo]) !== null && _monthlyData$friMo !== void 0 && _monthlyData$friMo[wkndSid]) monthlyData[friMo][wkndSid][countKey] += 2;
       }
     });
     const sortedMonths = [...allMonths].sort();
@@ -9705,8 +8995,14 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       onClick: () => {
         const header = ["Surgeon", ...moLabels.map(m => m + " 1st"), "Total 1st", ...moLabels.map(m => m + " 2nd"), "Total 2nd", "Grand Total"];
         const rows = surgeons.map(s => {
-          const m1 = sortedMonths.map(m => monthlyData[m]?.[s.id]?.total1st || 0);
-          const m2 = sortedMonths.map(m => monthlyData[m]?.[s.id]?.total2nd || 0);
+          const m1 = sortedMonths.map(m => {
+            var _monthlyData$m;
+            return ((_monthlyData$m = monthlyData[m]) === null || _monthlyData$m === void 0 || (_monthlyData$m = _monthlyData$m[s.id]) === null || _monthlyData$m === void 0 ? void 0 : _monthlyData$m.total1st) || 0;
+          });
+          const m2 = sortedMonths.map(m => {
+            var _monthlyData$m2;
+            return ((_monthlyData$m2 = monthlyData[m]) === null || _monthlyData$m2 === void 0 || (_monthlyData$m2 = _monthlyData$m2[s.id]) === null || _monthlyData$m2 === void 0 ? void 0 : _monthlyData$m2.total2nd) || 0;
+          });
           const t1 = m1.reduce((a, b) => a + b, 0);
           const t2 = m2.reduce((a, b) => a + b, 0);
           return [s.name, ...m1, t1, ...m2, t2, t1 + t2].join(",");
@@ -9772,7 +9068,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         color: "#1a8040"
       }
     }, "Total"))), /*#__PURE__*/React.createElement("tbody", null, surgeons.filter(s => isScheduler || !mySurgeon || mySurgeon === "admin" || s.id === mySurgeon).map(s => {
-      const vals = sortedMonths.map(m => monthlyData[m]?.[s.id]?.total1st || 0);
+      const vals = sortedMonths.map(m => {
+        var _monthlyData$m3;
+        return ((_monthlyData$m3 = monthlyData[m]) === null || _monthlyData$m3 === void 0 || (_monthlyData$m3 = _monthlyData$m3[s.id]) === null || _monthlyData$m3 === void 0 ? void 0 : _monthlyData$m3.total1st) || 0;
+      });
       const total = vals.reduce((a, b) => a + b, 0);
       return /*#__PURE__*/React.createElement("tr", {
         key: s.id,
@@ -9852,7 +9151,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         color: "#8a6a10"
       }
     }, "Total"))), /*#__PURE__*/React.createElement("tbody", null, surgeons.filter(s => isScheduler || !mySurgeon || mySurgeon === "admin" || s.id === mySurgeon).map(s => {
-      const vals = sortedMonths.map(m => monthlyData[m]?.[s.id]?.total2nd || 0);
+      const vals = sortedMonths.map(m => {
+        var _monthlyData$m4;
+        return ((_monthlyData$m4 = monthlyData[m]) === null || _monthlyData$m4 === void 0 || (_monthlyData$m4 = _monthlyData$m4[s.id]) === null || _monthlyData$m4 === void 0 ? void 0 : _monthlyData$m4.total2nd) || 0;
+      });
       const total = vals.reduce((a, b) => a + b, 0);
       return /*#__PURE__*/React.createElement("tr", {
         key: s.id,
@@ -9900,7 +9202,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         color: "#2c5a80"
       }
     }, "Formula:"), " Service Week = 6 \xB7 Week Night = 1 \xB7 Weekend = 2. Multi-day shifts counted in the month they start."));
-  })(), (isScheduler || userProfile?.person_id === "admin") && Object.keys(schedule).length > 0 && (() => {
+  })(), (isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.person_id) === "admin") && Object.keys(schedule).length > 0 && (() => {
     // Compute monthly billing breakdown. 1st-call only (backup weeks excluded).
     // Attribution:
     //   Service Week (dayCall) → month containing Monday (1 shift = 7 call days)
@@ -9909,6 +9211,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     const monthly = {}; // { "2026-05": { s1: { dc: n, nights: n, wknd: n }, ... } }
     const allMonths = new Set();
     Object.entries(schedule).forEach(([mStr, wk]) => {
+      var _wk$nights16;
       const mon = parse(mStr);
       for (let i = 0; i < 7; i++) {
         const d = addD(mon, i);
@@ -9926,21 +9229,24 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       // Skip backup weeks entirely — they're 2nd-call and not billed
       if (wk.isBackup) return;
       if (wk.dayCall) {
+        var _monthly$monMoKey;
         const monMoKey = `${mon.getFullYear()}-${String(mon.getMonth() + 1).padStart(2, "0")}`;
-        if (monthly[monMoKey]?.[wk.dayCall]) monthly[monMoKey][wk.dayCall].dc += 1;
+        if ((_monthly$monMoKey = monthly[monMoKey]) !== null && _monthly$monMoKey !== void 0 && _monthly$monMoKey[wk.dayCall]) monthly[monMoKey][wk.dayCall].dc += 1;
       }
       NIGHT_KEYS.forEach((sk, i) => {
-        const sid = wk.nights?.[sk];
+        var _wk$nights15, _monthly$moKey;
+        const sid = (_wk$nights15 = wk.nights) === null || _wk$nights15 === void 0 ? void 0 : _wk$nights15[sk];
         if (!sid) return;
         const d = addD(mon, i);
         const moKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
-        if (monthly[moKey]?.[sid]) monthly[moKey][sid].nights += 1;
+        if ((_monthly$moKey = monthly[moKey]) !== null && _monthly$moKey !== void 0 && _monthly$moKey[sid]) monthly[moKey][sid].nights += 1;
       });
-      const wkndSid = wk.nights?.wknd;
+      const wkndSid = (_wk$nights16 = wk.nights) === null || _wk$nights16 === void 0 ? void 0 : _wk$nights16.wknd;
       if (wkndSid) {
+        var _monthly$friMo;
         const fri = addD(mon, 4);
         const friMo = `${fri.getFullYear()}-${String(fri.getMonth() + 1).padStart(2, "0")}`;
-        if (monthly[friMo]?.[wkndSid]) monthly[friMo][wkndSid].wknd += 1;
+        if ((_monthly$friMo = monthly[friMo]) !== null && _monthly$friMo !== void 0 && _monthly$friMo[wkndSid]) monthly[friMo][wkndSid].wknd += 1;
       }
     });
     const sortedMonths = [...allMonths].sort();
@@ -10388,7 +9694,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     style: {
       color: "#2c5a80"
     }
-  }, "Total"), " = 1st Call + 2nd Call. Service Week = 6, Week Night = 1, Weekend = 2."))), view === "myschedule" && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+  }, "Total"), " = 1st Call + 2nd Call. Service Week = 6, Week Night = 1, Weekend = 2."))), view === "myschedule" && !isPublicMode && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
     style: css.card
   }, /*#__PURE__*/React.createElement("div", {
     style: css.cardT
@@ -10426,14 +9732,15 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       ...css.btn(true),
       padding: "8px 18px"
     }
-  }, "\uD83D\uDCC5 Download My Calendar (.ics)"))), mySurgeon && Object.keys(schedule).length > 0 && (() => {
+  }, "\uD83D\uDCC5 Download My Calendar (.ics)"))), mySurgeon && Object.keys(schedule).length > 0 && (_sMap$myId => {
     const myId = mySurgeon;
-    const myName = sMap[myId]?.name || "?";
+    const myName = ((_sMap$myId = sMap[myId]) === null || _sMap$myId === void 0 ? void 0 : _sMap$myId.name) || "?";
     const myVacs = vacations[myId] || [];
 
     // Build my shifts
     const myShifts = [];
     Object.entries(schedule).forEach(([mStr, wk]) => {
+      var _wk$nights18;
       const mon = parse(mStr);
       const endStr = fmt(addD(mon, 6));
       const roles = [];
@@ -10445,7 +9752,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         shiftKey: "dayCall"
       });
       NIGHT_KEYS.forEach((sk, i) => {
-        if (wk.nights?.[sk] === myId) roles.push({
+        var _wk$nights17;
+        if (((_wk$nights17 = wk.nights) === null || _wk$nights17 === void 0 ? void 0 : _wk$nights17[sk]) === myId) roles.push({
           type: SHIFT_LABELS[sk],
           icon: "🌙",
           detail: SHIFT_TIMES[sk],
@@ -10453,7 +9761,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           shiftKey: sk
         });
       });
-      if (wk.nights?.wknd === myId) roles.push({
+      if (((_wk$nights18 = wk.nights) === null || _wk$nights18 === void 0 ? void 0 : _wk$nights18.wknd) === myId) roles.push({
         type: "Weekend",
         icon: "🌗",
         detail: SHIFT_TIMES.wknd,
@@ -10606,7 +9914,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       color: "#8a94a0",
       padding: 30
     }
-  }, "Select your name above to view your schedule.")), view === "requests" && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+  }, "Select your name above to view your schedule.")), view === "requests" && !isPublicMode && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
     style: css.card
   }, /*#__PURE__*/React.createElement("div", {
     style: css.cardT
@@ -10665,7 +9973,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       color: "#1a6fa8",
       padding: "6px 0"
     }
-  }, [...surgeons, ...apps].find(p => p.id === mySurgeon)?.name || "—")), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
+  }, ((_find = [...surgeons, ...apps].find(p => p.id === mySurgeon)) === null || _find === void 0 ? void 0 : _find.name) || "—")), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
     style: {
       fontSize: 11,
       color: "#7a8a98",
@@ -10733,11 +10041,12 @@ ${"</"}script>${"</"}body>${"</"}html>`;
 
     // Helper to format date range compactly
     const shortRange = (s, e) => {
+      var _MO3, _MO4;
       const sp = s.split("-"),
         ep = e.split("-");
-      const sm = MO[parseInt(sp[1]) - 1]?.slice(0, 3),
+      const sm = (_MO3 = MO[parseInt(sp[1]) - 1]) === null || _MO3 === void 0 ? void 0 : _MO3.slice(0, 3),
         sd = parseInt(sp[2]);
-      const em = MO[parseInt(ep[1]) - 1]?.slice(0, 3),
+      const em = (_MO4 = MO[parseInt(ep[1]) - 1]) === null || _MO4 === void 0 ? void 0 : _MO4.slice(0, 3),
         ed = parseInt(ep[2]);
       if (s === e) return `${sm} ${sd}`;
       if (sp[1] === ep[1]) return `${sm} ${sd}–${ed}`;
@@ -10838,7 +10147,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           padding: "8px 0",
           borderBottom: "1px solid #f0e8d8"
         }
-      }, editingVacReq?.id === r.id ? /*#__PURE__*/React.createElement("div", {
+      }, (editingVacReq === null || editingVacReq === void 0 ? void 0 : editingVacReq.id) === r.id ? /*#__PURE__*/React.createElement("div", {
         style: {
           display: "flex",
           gap: 6,
@@ -11137,7 +10446,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           padding: "6px 0",
           borderBottom: "1px solid #e8f0e8"
         }
-      }, editingVacReq?.id === r.id ? /*#__PURE__*/React.createElement("div", {
+      }, (editingVacReq === null || editingVacReq === void 0 ? void 0 : editingVacReq.id) === r.id ? /*#__PURE__*/React.createElement("div", {
         style: {
           display: "flex",
           gap: 6,
@@ -11328,7 +10637,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       color: "#6030a0",
       padding: "6px 0"
     }
-  }, surgeons.find(s => s.id === mySurgeon)?.name || "—")), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
+  }, ((_surgeons$find9 = surgeons.find(s => s.id === mySurgeon)) === null || _surgeons$find9 === void 0 ? void 0 : _surgeons$find9.name) || "—")), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
     style: {
       fontSize: 10,
       color: "#7a8a98",
@@ -11398,7 +10707,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       const wk = schedule[m];
       if (!wk) return;
       ALL_SHIFT_KEYS.forEach(sk => {
-        const holder = sk === "dayCall" ? wk.dayCall : wk.nights?.[sk];
+        var _wk$nights19;
+        const holder = sk === "dayCall" ? wk.dayCall : (_wk$nights19 = wk.nights) === null || _wk$nights19 === void 0 ? void 0 : _wk$nights19[sk];
         if (holder === tradeFrom) {
           const d = parse(m);
           const label = `${MO[d.getMonth()].slice(0, 3)} ${d.getDate()} — ${SHIFT_LABELS[sk]}${wk.isBackup ? " (Backup)" : ""}`;
@@ -11493,7 +10803,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         const wk = schedule[m];
         if (!wk) return;
         ALL_SHIFT_KEYS.forEach(sk => {
-          const holder = sk === "dayCall" ? wk.dayCall : wk.nights?.[sk];
+          var _wk$nights20;
+          const holder = sk === "dayCall" ? wk.dayCall : (_wk$nights20 = wk.nights) === null || _wk$nights20 === void 0 ? void 0 : _wk$nights20[sk];
           if (holder === tradeTo) {
             const d = parse(m);
             const label = `${MO[d.getMonth()].slice(0, 3)} ${d.getDate()} — ${SHIFT_LABELS[sk]}${wk.isBackup ? " (Backup)" : ""}`;
@@ -11739,7 +11050,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         marginLeft: "auto"
       }
     }, "\u2715")))));
-  })()), view === "settings" && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+  })()), view === "settings" && !isPublicMode && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
     style: css.card
   }, /*#__PURE__*/React.createElement("div", {
     style: css.cardT
@@ -11884,7 +11195,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       color: "#8a94a0",
       margin: "4px 0 0"
     }
-  }, "Current PIN: ", schedulerPin.replace(/./g, "•"))))), (isScheduler || userProfile?.person_id === "admin") && /*#__PURE__*/React.createElement("div", {
+  }, "Current PIN: ", schedulerPin.replace(/./g, "•"))))), (isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.person_id) === "admin") && /*#__PURE__*/React.createElement("div", {
     style: css.card
   }, /*#__PURE__*/React.createElement("div", {
     style: css.cardT
@@ -11986,7 +11297,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       }
       setAllProfiles(prev => prev.map(x => x.id === p.id ? updated : x));
       // If updating the current user, refresh their own profile too
-      if (p.id === authUser?.id) setUserProfile(updated);
+      if (p.id === (authUser === null || authUser === void 0 ? void 0 : authUser.id)) setUserProfile(updated);
     },
     style: {
       cursor: "pointer",
@@ -12037,7 +11348,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       margin: "0 0 8px",
       lineHeight: 1.5
     }
-  }, "Each partner needs to click \"Enable\" once on their device. Notifications will arrive even when the browser is closed. On iPhone/iPad you must first install the app to the home screen (Share \u2192 Add to Home Screen) and open it from there."), !oneSignalSubscribed && pushPermission !== "denied" && /*#__PURE__*/React.createElement("button", {
+  }, "Each partner needs to click \"Enable\" once on their device. Notifications will arrive even when the browser is closed.", " ", "On iPhone/iPad you must first install the app to the home screen (Share \u2192 Add to Home Screen) and open it from there."), !oneSignalSubscribed && pushPermission !== "denied" && /*#__PURE__*/React.createElement("button", {
     onClick: requestPushPermission,
     disabled: pushDiag.loading,
     style: {
@@ -12046,7 +11357,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       fontSize: 12,
       opacity: pushDiag.loading ? 0.6 : 1
     }
-  }, pushDiag.loading ? "Working\u2026" : "Enable Push Notifications"), pushPermission === "denied" && /*#__PURE__*/React.createElement("p", {
+  }, pushDiag.loading ? "Working…" : "Enable Push Notifications"), pushPermission === "denied" && /*#__PURE__*/React.createElement("p", {
     style: {
       fontSize: 11,
       color: "#c04040",
@@ -12262,7 +11573,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     onChange: e => saveNotifPref(mySurgeon, {
       email: e.target.value
     }),
-    placeholder: authUser?.email || "email@example.com",
+    placeholder: (authUser === null || authUser === void 0 ? void 0 : authUser.email) || "email@example.com",
     type: "email",
     style: {
       ...css.inp,
@@ -12307,7 +11618,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       color: "#8a94a0",
       margin: "0 0 8px"
     }
-  }, "Leave blank to use your signup email (", authUser?.email, "). Or enter a different email."), /*#__PURE__*/React.createElement("div", {
+  }, "Leave blank to use your signup email (", authUser === null || authUser === void 0 ? void 0 : authUser.email, "). Or enter a different email."), /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 11,
       fontWeight: 600,
@@ -12497,13 +11808,13 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     style: {
       color: "#1a6fa8"
     }
-  }, userProfile?.display_name || "—")), /*#__PURE__*/React.createElement("p", {
+  }, (userProfile === null || userProfile === void 0 ? void 0 : userProfile.display_name) || "—")), /*#__PURE__*/React.createElement("p", {
     style: {
       fontSize: 11,
       color: "#7a8a98",
       margin: 0
     }
-  }, authUser?.email)), /*#__PURE__*/React.createElement("button", {
+  }, authUser === null || authUser === void 0 ? void 0 : authUser.email)), /*#__PURE__*/React.createElement("button", {
     onClick: handleSignOut,
     style: {
       ...css.btn(false),
@@ -12567,8 +11878,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       color: "#7a8a98",
       marginBottom: 8
     }
-  }, /*#__PURE__*/React.createElement("strong", null, "How to subscribe:"), " In Google Calendar: Other calendars (+) \u2192 From URL \u2192 paste the link below."), mySurgeon && mySurgeon !== "admin" && (() => {
-    const myName = [...surgeons, ...apps].find(p => p.id === mySurgeon)?.name;
+  }, /*#__PURE__*/React.createElement("strong", null, "How to subscribe:"), " In Google Calendar: Other calendars (+) \u2192 From URL \u2192 paste the link below."), mySurgeon && mySurgeon !== "admin" && (_find2 => {
+    const myName = (_find2 = [...surgeons, ...apps].find(p => p.id === mySurgeon)) === null || _find2 === void 0 ? void 0 : _find2.name;
     if (!myName) return null;
     const myUrl = `${SUPABASE_URL}/functions/v1/calendar-sync?surgeon=${myName}`;
     return /*#__PURE__*/React.createElement("div", {
@@ -12660,17 +11971,20 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       flexWrap: "wrap",
       alignItems: "center"
     }
-  }, surgeons.map(s => /*#__PURE__*/React.createElement("button", {
-    key: s.id,
-    onClick: () => copyText(`${SUPABASE_URL}/functions/v1/calendar-sync?surgeon=${s.name}`, s.id),
-    style: {
-      ...css.badge(sMap[s.id]?.idx || 0),
-      cursor: "pointer",
-      padding: "3px 10px",
-      fontSize: 10,
-      border: copiedUrl === s.id ? "2px solid #1a8040" : undefined
-    }
-  }, copiedUrl === s.id ? "✓ " : "📋 ", s.name)), copiedUrl && copiedUrl !== "full" && copiedUrl !== "my" && /*#__PURE__*/React.createElement("span", {
+  }, surgeons.map(s => {
+    var _sMap$s$id5, _sMap$s$id6;
+    return /*#__PURE__*/React.createElement("button", {
+      key: s.id,
+      onClick: () => copyText(`${SUPABASE_URL}/functions/v1/calendar-sync?surgeon=${s.name}`, s.id),
+      style: {
+        ...css.badge(((_sMap$s$id5 = sMap[s.id]) === null || _sMap$s$id5 === void 0 ? void 0 : _sMap$s$id5.idx) || 0, (_sMap$s$id6 = sMap[s.id]) === null || _sMap$s$id6 === void 0 ? void 0 : _sMap$s$id6.name),
+        cursor: "pointer",
+        padding: "3px 10px",
+        fontSize: 10,
+        border: copiedUrl === s.id ? "2px solid #1a8040" : undefined
+      }
+    }, copiedUrl === s.id ? "✓ " : "📋 ", s.name);
+  }), copiedUrl && copiedUrl !== "full" && copiedUrl !== "my" && /*#__PURE__*/React.createElement("span", {
     style: {
       fontSize: 10,
       color: "#1a8040",
