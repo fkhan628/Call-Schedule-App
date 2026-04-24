@@ -55,7 +55,7 @@
   </script>
   <script>
     // ─── Auto-update: bump this version string each deploy ───
-    var APP_VERSION = "2026.04.24a";
+    var APP_VERSION = "2026.04.24b";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -99,7 +99,7 @@
   <div id="root"></div>
   <script>
     // Cache-bust with version — update this string when deploying changes
-    var _v = "2026.04.24a";
+    var _v = "2026.04.24b";
     ['config.js','helpers.js','generator.js','app-styles.js'].forEach(function(f) {
       document.write('<script src="'+f+'?v='+_v+'"><\/script>');
     });
@@ -137,6 +137,11 @@ function CallSchedule() {
   // relevant today, not on the scheduling period's start month.
   const [calMonth, setCalMonth] = useState(() => new Date().getMonth());
   const [calYear, setCalYear] = useState(() => new Date().getFullYear());
+
+  // ─── Printable Calendar Picker ───
+  const [printStartMonth, setPrintStartMonth] = useState(() => new Date().getMonth());
+  const [printStartYear, setPrintStartYear] = useState(() => new Date().getFullYear());
+  const [printNumMonths, setPrintNumMonths] = useState(1);
 
   // ─── Calendar Filters ───
   const [calFilters, setCalFilters] = useState({ svc: true, night: true, wknd: true, app: true, fierce: true, vac: true });
@@ -5079,6 +5084,67 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                 <button onClick={()=>window.print()} style={{...css.btn(false),padding:"6px 16px"}}>
                   🖨 Print Calendar
                 </button>
+              </div>
+            </div>
+          )}
+
+          {/* ─── Printable Calendar Creator-Style View — available to everyone ─── */}
+          {Object.keys(schedule).length > 0 && (
+            <div style={{...css.card,marginTop:14,background:"linear-gradient(135deg,#fffaf3,#fef3e6)",border:"1px solid #e8c89a"}}>
+              <div style={{...css.cardT,color:"#8a5020"}}>🖨 Print Schedule — Calendar View</div>
+              <p style={{fontSize:12,color:"#5a4a30",margin:"0 0 12px",lineHeight:1.5}}>
+                Open a printable calendar page in the Calendar Creator style. Reflects the current schedule, vacations, and Fierce weeks. Updates automatically whenever the schedule changes.
+              </p>
+              <div style={{display:"flex",gap:10,flexWrap:"wrap",alignItems:"center",marginBottom:10}}>
+                <label style={{fontSize:12,fontWeight:600,color:"#5a4a30",display:"flex",alignItems:"center",gap:6}}>
+                  Start:
+                  <select value={printStartMonth} onChange={e=>setPrintStartMonth(Number(e.target.value))}
+                    style={{...css.inp,padding:"4px 8px",fontSize:12}}>
+                    {MO.map((m,i)=><option key={i} value={i}>{m}</option>)}
+                  </select>
+                  <select value={printStartYear} onChange={e=>setPrintStartYear(Number(e.target.value))}
+                    style={{...css.inp,padding:"4px 8px",fontSize:12}}>
+                    {[calYear-1, calYear, calYear+1, calYear+2].map(y=><option key={y} value={y}>{y}</option>)}
+                  </select>
+                </label>
+                <label style={{fontSize:12,fontWeight:600,color:"#5a4a30",display:"flex",alignItems:"center",gap:6}}>
+                  Months:
+                  <select value={printNumMonths} onChange={e=>setPrintNumMonths(Number(e.target.value))}
+                    style={{...css.inp,padding:"4px 8px",fontSize:12}}>
+                    {[1,2,3,4,5,6,12].map(n=><option key={n} value={n}>{n}</option>)}
+                  </select>
+                </label>
+                <button onClick={()=>{
+                  try {
+                    const html = buildPrintableCalendarHTML({
+                      startYear: printStartYear,
+                      startMonth: printStartMonth,
+                      numMonths: printNumMonths,
+                      schedule,
+                      vacations,
+                      surgeons,
+                      apps,
+                      appShifts,
+                      fierceBackupSet,
+                    });
+                    const w = window.open("", "_blank");
+                    if (!w) {
+                      alert("Popup blocked. Please allow popups for this site and try again.");
+                      return;
+                    }
+                    w.document.open();
+                    w.document.write(html);
+                    w.document.close();
+                  } catch (err) {
+                    console.error("Print generation failed:", err);
+                    alert("Failed to generate printable calendar: " + (err.message || err));
+                  }
+                }} style={{...css.btn(true),padding:"6px 16px",background:"linear-gradient(135deg,#b07030,#d08838)",borderColor:"#b07030"}}>
+                  🖨 Open Printable View
+                </button>
+              </div>
+              <div style={{fontSize:11,color:"#7a6a50",fontStyle:"italic"}}>
+                Opens in a new tab. Use your browser's print dialog to print or save as PDF.
               </div>
             </div>
           )}
