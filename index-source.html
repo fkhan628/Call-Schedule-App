@@ -55,7 +55,7 @@
   </script>
   <script>
     // ─── Auto-update: bump this version string each deploy ───
-    var APP_VERSION = "2026.04.21k";
+    var APP_VERSION = "2026.04.23a";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -99,7 +99,7 @@
   <div id="root"></div>
   <script>
     // Cache-bust with version — update this string when deploying changes
-    var _v = "2026.04.21k";
+    var _v = "2026.04.23a";
     ['config.js','helpers.js','generator.js','app-styles.js'].forEach(function(f) {
       document.write('<script src="'+f+'?v='+_v+'"><\/script>');
     });
@@ -3059,7 +3059,7 @@ body{font-family:'Outfit',sans-serif;background:#f0f2f5;color:#2c3e50;padding:16
 .bdg{display:inline-flex;border-radius:4px;padding:1px 6px;font-size:10px;font-weight:600;border:1px solid}
 .fl{font-size:8px;color:#8a6a10;margin-top:1px;font-weight:600}
 .fbl{font-size:8px;color:#1a6fa8;margin-top:1px;font-weight:600}
-.vl{font-size:8px;color:#c04848;margin-top:1px}
+.vl{font-size:8px;color:#5a6a78;margin-top:1px}
 .lg{display:flex;gap:14px;flex-wrap:wrap;font-size:10px;color:#6a7a88;padding:10px 0;justify-content:center}
 .lg b{font-weight:700;margin-right:2px}
 .footer{text-align:center;margin-top:20px;font-size:10px;color:#a0a8b0}
@@ -4519,7 +4519,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               {key:"wknd",label:"Weekends",color:"#908050",icon:"W"},
               {key:"app",label:"APPs",color:"#985020",icon:"A"},
               {key:"fierce",label:"Fierce",color:"#8a6a10",icon:"⚡"},
-              {key:"vac",label:"Vacations",color:"#c04848",icon:"🏖"},
+              {key:"vac",label:"Vacations",color:"#5a6a78",icon:"🏖"},
             ].map(f=>(
               <button key={f.key} onClick={()=>toggleFilter(f.key)}
                 style={{background:calFilters[f.key]?f.color+"18":"transparent",border:`1px solid ${calFilters[f.key]?f.color:dk?"#3a4a6e":"#d0d8e0"}`,color:calFilters[f.key]?f.color:dkSubtext,borderRadius:5,padding:"3px 8px",fontSize:10,fontWeight:600,cursor:"pointer",fontFamily:font,opacity:calFilters[f.key]?1:0.5}}>
