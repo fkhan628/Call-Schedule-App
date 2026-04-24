@@ -55,7 +55,7 @@
   </script>
   <script>
     // ─── Auto-update: bump this version string each deploy ───
-    var APP_VERSION = "2026.04.23a";
+    var APP_VERSION = "2026.04.24a";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -99,7 +99,7 @@
   <div id="root"></div>
   <script>
     // Cache-bust with version — update this string when deploying changes
-    var _v = "2026.04.23a";
+    var _v = "2026.04.24a";
     ['config.js','helpers.js','generator.js','app-styles.js'].forEach(function(f) {
       document.write('<script src="'+f+'?v='+_v+'"><\/script>');
     });
@@ -4348,6 +4348,37 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     return d;
   }, [schedule, appShifts]);
 
+  // Holiday name labels for the calendar (pure informational labels, independent
+  // of holiday coverage assignments). Uses getHolidays() — only covers the 6
+  // holidays used for call coverage (Memorial Day, July 4th, Labor Day,
+  // Thanksgiving, Christmas, New Year's).
+  const calHolidayLabels = useMemo(() => {
+    const labels = {};
+    // Include current year + previous year (so New Year's Day — Jan 1 —
+    // shows up when viewing January, since it's defined as part of the
+    // PRIOR year's "New Year's" holiday entry ending Jan 1).
+    [calYear - 1, calYear].forEach(y => {
+      try {
+        const h = getHolidays(y);
+        [...h.major, ...h.minor].forEach(hol => {
+          labels[hol.date] = {
+            name: hol.name,
+            emoji: hol.emoji
+          };
+          // New Year's entry has startDate (Dec 31) and endDate (Jan 1).
+          // Label both days.
+          if (hol.endDate && hol.endDate !== hol.date) {
+            labels[hol.endDate] = {
+              name: "New Year's Day",
+              emoji: hol.emoji
+            };
+          }
+        });
+      } catch (e) {/* getHolidays unavailable */}
+    });
+    return labels;
+  }, [calYear]);
+
   // Calendar grid
   const calGrid = useMemo(() => {
     const days = new Date(calYear, calMonth + 1, 0).getDate();
@@ -7856,7 +7887,16 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           marginTop: 1,
           fontWeight: 600
         }
-      }, "\uD83D\uDEE1 Fierce Backup"), calFilters.vac && onVacToday.length > 0 && (() => {
+      }, "\uD83D\uDEE1 Fierce Backup"), calHolidayLabels[ds] && !entries.some(e => e.type === "Holiday") && !sf && !calDeptFilter && /*#__PURE__*/React.createElement("div", {
+        style: {
+          fontSize: 8,
+          color: "#c06020",
+          marginTop: 1,
+          fontStyle: "italic",
+          fontWeight: 600
+        },
+        title: calHolidayLabels[ds].name
+      }, calHolidayLabels[ds].emoji, " ", calHolidayLabels[ds].name), calFilters.vac && onVacToday.length > 0 && (() => {
         // Determine corner rounding based on the GROUP of vacationers:
         // Round the left corner only if NONE of today's vacationers
         // were also on vacation yesterday (i.e., at least one span
