@@ -218,6 +218,17 @@ const HAND_SCHEDULE_MAY_AUG = {
   "2026-08-03": { dayCall:"s7", nights:{mon:"s1",tue:"s4",wed:"s2",thu:"s6",wknd:"s1"}, off:"s3", isBackup:false, isFierceBackup:false },
 };
 
+/* ═══ Scheduling Period Settings ═══
+   SCHEDULE_PERIOD_WEEKS — informational; documents the typical period length.
+     Each period spans Sunday-to-Sunday (14 weeks = 98 days). The Mondays stored
+     in the `schedule` object are the Mondays within that span — so the latest
+     Monday is the start of the FINAL week of the current period, and the next
+     period begins one week later (latest Monday + 7 days).
+   VACATION_DEADLINE_WEEKS_BEFORE — vacation requests are due this many weeks
+     before the next schedule period starts. */
+const SCHEDULE_PERIOD_WEEKS = 14;
+const VACATION_DEADLINE_WEEKS_BEFORE = 6;
+
 /* ═══ 2026 Holiday Assignments (pre-set from handwritten schedule) ═══
    First surgeon = covers the actual holiday day (24h)
    Second surgeon = covers night before (and day after where applicable)

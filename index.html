@@ -55,7 +55,7 @@
   </script>
   <script>
     // ─── Auto-update: bump this version string each deploy ───
-    var APP_VERSION = "2026.04.24c";
+    var APP_VERSION = "2026.04.25a";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -99,7 +99,7 @@
   <div id="root"></div>
   <script>
     // Cache-bust with version — update this string when deploying changes
-    var _v = "2026.04.24c";
+    var _v = "2026.04.25a";
     ['config.js','helpers.js','generator.js','app-styles.js'].forEach(function(f) {
       document.write('<script src="'+f+'?v='+_v+'"><\/script>');
     });
@@ -381,6 +381,36 @@ function CallSchedule() {
     if (!mySurgeon || mySurgeon === "admin") return tradeRequests;
     return tradeRequests.filter(r => r.from_surgeon_id === mySurgeon || r.to_surgeon_id === mySurgeon);
   }, [tradeRequests, isScheduler, mySurgeon]);
+
+  // ─── Vacation Request Deadline (auto-detected) ───
+  // The latest Monday in `schedule` is the FINAL week of the current period.
+  // The next period begins the following Monday (+ 1 week).
+  // Deadline = next period start - VACATION_DEADLINE_WEEKS_BEFORE * 7.
+  const vacationDeadline = useMemo(() => {
+    try {
+      const mondays = Object.keys(schedule || {}).sort();
+      if (mondays.length === 0) return null;
+      const latestMonday = parse(mondays[mondays.length - 1]);
+      const deadlineWeeksBefore = typeof VACATION_DEADLINE_WEEKS_BEFORE !== "undefined" ? VACATION_DEADLINE_WEEKS_BEFORE : 6;
+      // Next period starts the Monday after the latest scheduled Monday's week ends.
+      const nextPeriodStart = addD(latestMonday, 7);
+      const deadline = addD(nextPeriodStart, -deadlineWeeksBefore * 7);
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const msPerDay = 86400000;
+      const daysRemaining = Math.round((deadline - today) / msPerDay);
+      return {
+        nextPeriodStart: fmt(nextPeriodStart),
+        deadline: fmt(deadline),
+        daysRemaining,
+        isPast: daysRemaining < 0,
+        isUpcoming: daysRemaining >= 0 && daysRemaining <= 42 // within 6 weeks
+      };
+    } catch (e) {
+      console.error("vacationDeadline calc error:", e);
+      return null;
+    }
+  }, [schedule]);
 
   // ─── Auth: Check session on mount ───
   useEffect(() => {
@@ -9944,7 +9974,105 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       color: "#8a94a0",
       padding: 30
     }
-  }, "Select your name above to view your schedule.")), view === "requests" && !isPublicMode && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+  }, "Select your name above to view your schedule.")), view === "requests" && !isPublicMode && /*#__PURE__*/React.createElement(React.Fragment, null, vacationDeadline && (() => {
+    const {
+      nextPeriodStart,
+      deadline,
+      daysRemaining,
+      isPast
+    } = vacationDeadline;
+    const deadlineDate = parse(deadline);
+    const periodDate = parse(nextPeriodStart);
+    const fmtPretty = d => {
+      const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+      return `${months[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()}`;
+    };
+    // Color/tone scaling based on urgency
+    let bg, border, accent, label, icon;
+    if (isPast) {
+      bg = "linear-gradient(135deg,#f5f5f5,#eaeaea)";
+      border = "#c0c0c0";
+      accent = "#7a7a7a";
+      label = `Deadline passed (${Math.abs(daysRemaining)} day${Math.abs(daysRemaining) === 1 ? "" : "s"} ago)`;
+      icon = "📅";
+    } else if (daysRemaining <= 7) {
+      bg = "linear-gradient(135deg,#fef0f0,#fde0e0)";
+      border = "#e8a0a0";
+      accent = "#a82828";
+      label = daysRemaining === 0 ? "DEADLINE TODAY" : `${daysRemaining} day${daysRemaining === 1 ? "" : "s"} remaining`;
+      icon = "⚠️";
+    } else if (daysRemaining <= 21) {
+      bg = "linear-gradient(135deg,#fff8e8,#fdf0d0)";
+      border = "#e8c890";
+      accent = "#a8702a";
+      label = `${daysRemaining} days remaining`;
+      icon = "⏰";
+    } else {
+      bg = "linear-gradient(135deg,#f0f8fd,#e0f0fa)";
+      border = "#a8c8e0";
+      accent = "#1a6fa8";
+      label = `${daysRemaining} days remaining`;
+      icon = "🗓";
+    }
+    return /*#__PURE__*/React.createElement("div", {
+      style: {
+        ...css.card,
+        background: bg,
+        border: `1px solid ${border}`,
+        marginBottom: 14
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        alignItems: "flex-start",
+        gap: 14,
+        flexWrap: "wrap"
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 32,
+        lineHeight: 1
+      }
+    }, icon), /*#__PURE__*/React.createElement("div", {
+      style: {
+        flex: 1,
+        minWidth: 240
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 11,
+        fontWeight: 700,
+        color: accent,
+        textTransform: "uppercase",
+        letterSpacing: 1.2,
+        marginBottom: 4
+      }
+    }, "Vacation Request Deadline"), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 18,
+        fontWeight: 700,
+        color: "#2c3e50",
+        marginBottom: 6
+      }
+    }, label), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 13,
+        color: "#5a6a78",
+        lineHeight: 1.5
+      }
+    }, "Submit requests by ", /*#__PURE__*/React.createElement("strong", {
+      style: {
+        color: accent
+      }
+    }, fmtPretty(deadlineDate)), " for the schedule period beginning ", /*#__PURE__*/React.createElement("strong", null, fmtPretty(periodDate)), "."), !isPast && daysRemaining > 7 && /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 11,
+        color: "#7a8a98",
+        marginTop: 6,
+        fontStyle: "italic"
+      }
+    }, "Requests are typically due 6 weeks before each new schedule period."))));
+  })(), /*#__PURE__*/React.createElement("div", {
     style: css.card
   }, /*#__PURE__*/React.createElement("div", {
     style: css.cardT
@@ -11494,7 +11622,31 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       fontSize: 10,
       marginTop: 4
     }
-  }, "Test Push to All Devices"))), /*#__PURE__*/React.createElement("div", {
+  }, "Test Push to All Devices"), edgeFunctionUrl && /*#__PURE__*/React.createElement("button", {
+    onClick: async () => {
+      if (!confirm("This will trigger the vacation deadline reminder Edge Function.\n\nIt will only send a push if today + 2 days = the auto-detected deadline AND no reminder has been sent for that deadline yet.\n\nProceed?")) return;
+      try {
+        const url = edgeFunctionUrl.replace(/\/[^/]+$/, "/vacation-deadline-reminder");
+        const resp = await fetch(url, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          }
+        });
+        const data = await resp.json().catch(() => ({}));
+        alert(`Vacation deadline reminder result:\nStatus: ${resp.status}\n${JSON.stringify(data, null, 2)}`);
+      } catch (e) {
+        alert("Test error: " + e.message);
+      }
+    },
+    style: {
+      ...css.btn(false),
+      padding: "4px 10px",
+      fontSize: 10,
+      marginTop: 4,
+      marginLeft: 6
+    }
+  }, "Test Vacation Deadline Reminder"))), /*#__PURE__*/React.createElement("div", {
     style: {
       background: dk ? "#1a2a3e" : "#f8f9fb",
       border: `1px solid ${dkCardBorder}`,
