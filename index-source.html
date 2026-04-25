@@ -55,7 +55,7 @@
   </script>
   <script>
     // ─── Auto-update: bump this version string each deploy ───
-    var APP_VERSION = "2026.04.24b";
+    var APP_VERSION = "2026.04.24c";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -99,7 +99,7 @@
   <div id="root"></div>
   <script>
     // Cache-bust with version — update this string when deploying changes
-    var _v = "2026.04.24b";
+    var _v = "2026.04.24c";
     ['config.js','helpers.js','generator.js','app-styles.js'].forEach(function(f) {
       document.write('<script src="'+f+'?v='+_v+'"><\/script>');
     });
@@ -5044,12 +5044,12 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             </div>
           )}
 
-          {/* Export & Share */}
+          {/* Calendar App Integration — ICS export */}
           {!isPublicMode && Object.keys(schedule).length > 0 && (
             <div style={{...css.card,marginTop:14,background:"linear-gradient(135deg,#f8f9fb,#f0f2f5)",border:"1px solid #d0d8e4"}}>
-              <div style={css.cardT}>📤 Export & Share</div>
+              <div style={css.cardT}>📅 Calendar App Integration</div>
               <p style={{fontSize:12,color:"#5a6a78",margin:"0 0 12px",lineHeight:1.5}}>
-                Download .ics files for any calendar app, or share a read-only calendar with the group.
+                Download .ics files to import your call shifts into Apple Calendar, Google Calendar, or Outlook. Choose your own name for a personal calendar, or the full schedule for everyone.
               </p>
               <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:10}}>
                 {surgeons.map(s => (
@@ -5077,12 +5077,6 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   downloadICS(ics, "call-schedule-full.ics");
                 }} style={{...css.btn(true),padding:"6px 16px"}}>
                   ⬇ Full Schedule (All Surgeons + APPs)
-                </button>
-                <button onClick={generateShareHTML} style={{...css.btn(true),padding:"6px 16px"}}>
-                  ⬇ Shareable Calendar (HTML)
-                </button>
-                <button onClick={()=>window.print()} style={{...css.btn(false),padding:"6px 16px"}}>
-                  🖨 Print Calendar
                 </button>
               </div>
             </div>

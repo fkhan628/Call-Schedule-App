@@ -439,6 +439,12 @@ function buildPrintableCalendarHTML({
       border: 1px solid #1a6fa8;
       border-radius: 6px;
       cursor: pointer;
+      margin: 0 4px;
+    }
+    .toolbar button.secondary {
+      background: #f0f2f5;
+      color: #5a6a78;
+      border: 1px solid #c8d0d8;
     }
     .toolbar button:hover { opacity: 0.92; }
     .toolbar .hint { color:#5a6a78; font-size:12px; margin-left:10px; }
@@ -648,6 +654,14 @@ function buildPrintableCalendarHTML({
 <body>
 <div class="toolbar">
   <button onclick="window.print()">🖨 Print</button>
+  <button class="secondary" onclick="
+    try { window.close(); } catch(e) {}
+    setTimeout(function() {
+      if (!window.closed) {
+        document.body.innerHTML = '<div style=\\'text-align:center;padding:60px 20px;font-family:Arial,Helvetica,sans-serif;color:#5a6a78\\'>You can close this tab now.</div>';
+      }
+    }, 100);
+  ">✕ Close</button>
   <span class="hint">Use your browser's print dialog. Choose "Letter" portrait, margins: default.</span>
 </div>
 ${pages}
