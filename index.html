@@ -55,7 +55,7 @@
   </script>
   <script>
     // ─── Auto-update: bump this version string each deploy ───
-    var APP_VERSION = "2026.04.25a";
+    var APP_VERSION = "2026.04.25c";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -99,7 +99,7 @@
   <div id="root"></div>
   <script>
     // Cache-bust with version — update this string when deploying changes
-    var _v = "2026.04.25a";
+    var _v = "2026.04.25c";
     ['config.js','helpers.js','generator.js','app-styles.js'].forEach(function(f) {
       document.write('<script src="'+f+'?v='+_v+'"><\/script>');
     });
@@ -11611,7 +11611,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           })
         });
         const data = await resp.json().catch(() => ({}));
-        alert(`Push test result:\nStatus: ${resp.status}\nRecipients: ${data.recipients || 0}\n${data.errors ? "Errors: " + JSON.stringify(data.errors) : data.error || "Success!"}`);
+        alert(`Push test result:\nStatus: ${resp.status}\n${data.errors ? "Errors: " + JSON.stringify(data.errors) : data.error || "Success — check your devices for the test push."}`);
       } catch (e) {
         alert("Push test error: " + e.message);
       }
