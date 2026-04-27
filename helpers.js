@@ -457,10 +457,23 @@ function buildPrintableCalendarHTML({
       box-shadow: 0 2px 12px rgba(0,0,0,0.12);
       position: relative;
     }
+    /* Force browsers to print background colors, gradients, and images.
+       Without this, Chrome/Safari/Edge default to "economy mode" and strip
+       the maroon borders, navy DOW ribbon, vacation bars, and mini calendars. */
+    * {
+      -webkit-print-color-adjust: exact !important;
+      print-color-adjust: exact !important;
+    }
     @media print {
       body { background: white; padding: 0; }
       .toolbar { display: none; }
-      .page { margin: 0 auto; box-shadow: none; page-break-after: always; }
+      .page {
+        margin: 0 auto;
+        box-shadow: none;
+        page-break-after: always;
+        -webkit-print-color-adjust: exact !important;
+        print-color-adjust: exact !important;
+      }
       .page:last-child { page-break-after: auto; }
     }
     .month-title {
@@ -662,7 +675,7 @@ function buildPrintableCalendarHTML({
       }
     }, 100);
   ">✕ Close</button>
-  <span class="hint">Use your browser's print dialog. Choose "Letter" portrait, margins: default.</span>
+  <span class="hint">Use your browser's print dialog. Choose "Letter" portrait, margins: default. If colors don't print, enable "Background graphics" in the More settings.</span>
 </div>
 ${pages}
 </body>

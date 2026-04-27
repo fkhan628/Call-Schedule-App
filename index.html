@@ -55,7 +55,7 @@
   </script>
   <script>
     // ─── Auto-update: bump this version string each deploy ───
-    var APP_VERSION = "2026.04.25c";
+    var APP_VERSION = "2026.04.25d";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -99,7 +99,7 @@
   <div id="root"></div>
   <script>
     // Cache-bust with version — update this string when deploying changes
-    var _v = "2026.04.25c";
+    var _v = "2026.04.25d";
     ['config.js','helpers.js','generator.js','app-styles.js'].forEach(function(f) {
       document.write('<script src="'+f+'?v='+_v+'"><\/script>');
     });
