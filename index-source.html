@@ -55,7 +55,7 @@
   </script>
   <script>
     // ─── Auto-update: bump this version string each deploy ───
-    var APP_VERSION = "2026.04.25d";
+    var APP_VERSION = "2026.04.25e";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -99,7 +99,7 @@
   <div id="root"></div>
   <script>
     // Cache-bust with version — update this string when deploying changes
-    var _v = "2026.04.25d";
+    var _v = "2026.04.25e";
     ['config.js','helpers.js','generator.js','app-styles.js'].forEach(function(f) {
       document.write('<script src="'+f+'?v='+_v+'"><\/script>');
     });
@@ -210,6 +210,7 @@ function CallSchedule() {
   const [vacReqReason, setVacReqReason] = useState("");
   const [expandedVacGroups, setExpandedVacGroups] = useState({}); // { personId: true/false }
   const toggleVacGroup = (id) => setExpandedVacGroups(prev => ({ ...prev, [id]: !prev[id] }));
+  const [showPastVacations, setShowPastVacations] = useState(false); // Setup tab: hide completed vacations by default
 
   // ─── Shift Trade Requests ───
   const [tradeRequests, setTradeRequests] = useState([]);
@@ -3938,6 +3939,16 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               const allPeople = [...surgeons.map(s=>({...s,type:"s"})), ...apps.map(a=>({...a,type:"a"}))];
               const peopleWithVac = allPeople.filter(p=>(vacations[p.id]||[]).length>0);
               if(!peopleWithVac.length) return null;
+
+              // Today's date as YYYY-MM-DD for past/current comparison
+              const todayStr = fmt(new Date());
+
+              // Compute total past-vacation count across everyone for the toggle label
+              let pastCount = 0;
+              peopleWithVac.forEach(p => {
+                (vacations[p.id]||[]).forEach(([,ve]) => { if (ve < todayStr) pastCount++; });
+              });
+
               const shortRange = (s, e) => {
                 const sp = s.split("-"), ep = e.split("-");
                 const sm = MO[parseInt(sp[1])-1]?.slice(0,3), sd = parseInt(sp[2]);
@@ -3946,41 +3957,78 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                 if (sp[1] === ep[1]) return `${sm} ${sd}–${ed}`;
                 return `${sm} ${sd} – ${em} ${ed}`;
               };
-              return peopleWithVac.map(p=>{
-                const v=vacations[p.id]||[];
-                const expanded=expandedVacGroups["sv_"+p.id];
-                return <div key={p.id} style={{marginBottom:5,border:"1px solid #e0e4ea",borderRadius:7,overflow:"hidden",background:"#f8f9fb"}}>
-                  <div onClick={()=>toggleVacGroup("sv_"+p.id)} style={{display:"flex",alignItems:"center",gap:8,padding:"7px 10px",cursor:"pointer",flexWrap:"wrap"}}>
-                    <span style={{fontSize:10,color:"#a0a8b0",transition:"transform 0.15s",transform:expanded?"rotate(90deg)":"rotate(0deg)"}}>▶</span>
-                    {p.type==="s"?<Badge id={p.id}/>:<AppBadge id={p.id}/>}
-                    <span style={{fontSize:11,color:"#6a7a88",fontWeight:600}}>{v.length} date{v.length!==1?"s":""}</span>
-                    <div style={{display:"flex",gap:3,flexWrap:"wrap",marginLeft:"auto"}}>
-                      {v.slice(0,5).map(([vs,ve],i)=><span key={i} style={{fontFamily:mono,fontSize:10,color:"#6a7a88",background:"#eef0f4",padding:"1px 6px",borderRadius:4,border:"1px solid #dce2e8"}}>{shortRange(vs,ve)}</span>)}
-                      {v.length>5&&<span style={{fontSize:10,color:"#a0a8b0"}}>+{v.length-5}</span>}
-                    </div>
+
+              // Filter each person's ranges per the toggle. A range is "past"
+              // when its end date is strictly before today. Anything ongoing
+              // (end >= today) stays visible regardless of the toggle.
+              const visiblePeople = peopleWithVac
+                .map(p => {
+                  const all = vacations[p.id]||[];
+                  const visible = showPastVacations
+                    ? all
+                    : all.filter(([,ve]) => ve >= todayStr);
+                  return { ...p, all, visible };
+                })
+                .filter(p => p.visible.length > 0);
+
+              return <>
+                {pastCount > 0 && (
+                  <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8,padding:"6px 10px",background:"#f8f9fb",border:"1px solid #e0e4ea",borderRadius:6,fontSize:11}}>
+                    <label style={{display:"flex",alignItems:"center",gap:6,cursor:"pointer",color:"#5a6a78"}}>
+                      <input type="checkbox" checked={showPastVacations} onChange={e=>setShowPastVacations(e.target.checked)} style={{margin:0}}/>
+                      <span>Show completed vacations</span>
+                    </label>
+                    <span style={{color:"#8a94a0",fontFamily:mono}}>
+                      ({showPastVacations ? "showing all" : `${pastCount} past hidden`})
+                    </span>
                   </div>
-                  {expanded&&<div style={{borderTop:"1px solid #e0e4ea",padding:"6px 10px"}}>
-                    {v.map(([vs,ve],i)=>(
-                      editVac && editVac.sid===p.id && editVac.idx===i ? (
-                        <div key={i} style={{display:"inline-flex",gap:4,alignItems:"center",background:"#f0f8ff",border:"1px solid #a0c0e0",borderRadius:5,padding:"3px 6px",marginBottom:4,marginRight:4}}>
-                          <input type="date" value={editVac.start} onChange={e=>setEditVac(pr=>({...pr,start:e.target.value}))} style={{...css.inp,width:120,fontSize:11,padding:"2px 4px"}}/>
-                          <span style={{fontSize:11,color:"#7a8a98"}}>→</span>
-                          <input type="date" value={editVac.end} onChange={e=>setEditVac(pr=>({...pr,end:e.target.value}))} style={{...css.inp,width:120,fontSize:11,padding:"2px 4px"}}/>
-                          <button onClick={saveEditVac} style={{background:"none",border:"none",color:"#1a8040",cursor:"pointer",fontSize:13,fontWeight:700}}>✓</button>
-                          <button onClick={()=>setEditVac(null)} style={{background:"none",border:"none",color:"#904040",cursor:"pointer",fontSize:11}}>✕</button>
-                        </div>
-                      ) : (
-                        <span key={i} style={{display:"inline-flex",alignItems:"center",fontFamily:mono,fontSize:11,color:"#5a6a78",cursor:"pointer",padding:"2px 6px",borderRadius:4,border:"1px solid #e8ecf0",background:"#fff",marginBottom:4,marginRight:4}}
-                          onClick={()=>setEditVac({sid:p.id,idx:i,start:vs,end:ve})}
-                          title="Click to edit dates">
-                          {vs} → {ve}
-                          <button onClick={e=>{e.stopPropagation();rmVac(p.id,i);}} style={{background:"none",border:"none",color:"#904040",cursor:"pointer",fontSize:11,marginLeft:4}}>✕</button>
-                        </span>
-                      )
-                    ))}
-                  </div>}
-                </div>;
-              });
+                )}
+                {visiblePeople.length === 0 ? (
+                  <div style={{padding:"12px 10px",fontSize:12,color:"#8a94a0",fontStyle:"italic",textAlign:"center"}}>
+                    No upcoming vacations. {pastCount > 0 && "Toggle 'Show completed vacations' above to view past entries."}
+                  </div>
+                ) : visiblePeople.map(p=>{
+                  const v = p.visible;
+                  const expanded=expandedVacGroups["sv_"+p.id];
+                  return <div key={p.id} style={{marginBottom:5,border:"1px solid #e0e4ea",borderRadius:7,overflow:"hidden",background:"#f8f9fb"}}>
+                    <div onClick={()=>toggleVacGroup("sv_"+p.id)} style={{display:"flex",alignItems:"center",gap:8,padding:"7px 10px",cursor:"pointer",flexWrap:"wrap"}}>
+                      <span style={{fontSize:10,color:"#a0a8b0",transition:"transform 0.15s",transform:expanded?"rotate(90deg)":"rotate(0deg)"}}>▶</span>
+                      {p.type==="s"?<Badge id={p.id}/>:<AppBadge id={p.id}/>}
+                      <span style={{fontSize:11,color:"#6a7a88",fontWeight:600}}>{v.length} date{v.length!==1?"s":""}</span>
+                      <div style={{display:"flex",gap:3,flexWrap:"wrap",marginLeft:"auto"}}>
+                        {v.slice(0,5).map(([vs,ve],i)=>{
+                          const isPast = ve < todayStr;
+                          return <span key={i} style={{fontFamily:mono,fontSize:10,color:isPast?"#a8a8a8":"#6a7a88",background:isPast?"#f4f4f4":"#eef0f4",padding:"1px 6px",borderRadius:4,border:`1px solid ${isPast?"#d8d8d8":"#dce2e8"}`,textDecoration:isPast?"line-through":"none"}}>{shortRange(vs,ve)}</span>;
+                        })}
+                        {v.length>5&&<span style={{fontSize:10,color:"#a0a8b0"}}>+{v.length-5}</span>}
+                      </div>
+                    </div>
+                    {expanded&&<div style={{borderTop:"1px solid #e0e4ea",padding:"6px 10px"}}>
+                      {v.map(([vs,ve],i)=>{
+                        // Look up the original index in the unfiltered list so edit/remove ops still work
+                        const originalIdx = (vacations[p.id]||[]).findIndex(([avs,ave]) => avs===vs && ave===ve);
+                        const isPast = ve < todayStr;
+                        return editVac && editVac.sid===p.id && editVac.idx===originalIdx ? (
+                          <div key={i} style={{display:"inline-flex",gap:4,alignItems:"center",background:"#f0f8ff",border:"1px solid #a0c0e0",borderRadius:5,padding:"3px 6px",marginBottom:4,marginRight:4}}>
+                            <input type="date" value={editVac.start} onChange={e=>setEditVac(pr=>({...pr,start:e.target.value}))} style={{...css.inp,width:120,fontSize:11,padding:"2px 4px"}}/>
+                            <span style={{fontSize:11,color:"#7a8a98"}}>→</span>
+                            <input type="date" value={editVac.end} onChange={e=>setEditVac(pr=>({...pr,end:e.target.value}))} style={{...css.inp,width:120,fontSize:11,padding:"2px 4px"}}/>
+                            <button onClick={saveEditVac} style={{background:"none",border:"none",color:"#1a8040",cursor:"pointer",fontSize:13,fontWeight:700}}>✓</button>
+                            <button onClick={()=>setEditVac(null)} style={{background:"none",border:"none",color:"#904040",cursor:"pointer",fontSize:11}}>✕</button>
+                          </div>
+                        ) : (
+                          <span key={i} style={{display:"inline-flex",alignItems:"center",fontFamily:mono,fontSize:11,color:isPast?"#a8a8a8":"#5a6a78",cursor:"pointer",padding:"2px 6px",borderRadius:4,border:`1px solid ${isPast?"#d8d8d8":"#e8ecf0"}`,background:isPast?"#f8f8f8":"#fff",marginBottom:4,marginRight:4,textDecoration:isPast?"line-through":"none"}}
+                            onClick={()=>setEditVac({sid:p.id,idx:originalIdx,start:vs,end:ve})}
+                            title={isPast?"Past vacation — click to edit":"Click to edit dates"}>
+                            {vs} → {ve}
+                            <button onClick={e=>{e.stopPropagation();rmVac(p.id,originalIdx);}} style={{background:"none",border:"none",color:"#904040",cursor:"pointer",fontSize:11,marginLeft:4}}>✕</button>
+                          </span>
+                        );
+                      })}
+                    </div>}
+                  </div>;
+                })}
+              </>;
             })()}
           </div>
           </>}
