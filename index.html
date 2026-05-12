@@ -55,7 +55,7 @@
   </script>
   <script>
     // ─── Auto-update: bump this version string each deploy ───
-    var APP_VERSION = "2026.04.25e";
+    var APP_VERSION = "2026.05.12a";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -99,7 +99,7 @@
   <div id="root"></div>
   <script>
     // Cache-bust with version — update this string when deploying changes
-    var _v = "2026.04.25e";
+    var _v = "2026.05.12a";
     ['config.js','helpers.js','generator.js','app-styles.js'].forEach(function(f) {
       document.write('<script src="'+f+'?v='+_v+'"><\/script>');
     });
@@ -113,6 +113,7 @@ const {
   useEffect
 } = React;
 function CallSchedule() {
+  var _find, _surgeons$find9;
   // ─── Public mode detection ───
   // When the URL contains ?public=1, render a stripped-down read-only
   // calendar view for external schedulers. Skips auth entirely.
@@ -238,6 +239,15 @@ function CallSchedule() {
   }));
   const [showPastVacations, setShowPastVacations] = useState(false); // Setup tab: hide completed vacations by default
 
+  // ─── Office Notifications ───
+  const [officeContacts, setOfficeContacts] = useState([]);
+  const [newOfficeName, setNewOfficeName] = useState("");
+  const [newOfficeEmail, setNewOfficeEmail] = useState("");
+  const [newOfficeDepts, setNewOfficeDepts] = useState([]); // [] = all, ["CWM"], ["CBH"], or both
+  const [officeNotifBusy, setOfficeNotifBusy] = useState(false);
+  const [showPublishDialog, setShowPublishDialog] = useState(false);
+  const [publishLabel, setPublishLabel] = useState("");
+
   // ─── Shift Trade Requests ───
   const [tradeRequests, setTradeRequests] = useState([]);
   const [tradeFrom, setTradeFrom] = useState("");
@@ -278,7 +288,7 @@ function CallSchedule() {
   const schedulerAdminIds = useMemo(() => {
     const ids = new Set();
     allProfiles.forEach(p => {
-      if (p?.role === "scheduler" || p?.person_id === "admin") ids.add(p.person_id);
+      if ((p === null || p === void 0 ? void 0 : p.role) === "scheduler" || (p === null || p === void 0 ? void 0 : p.person_id) === "admin") ids.add(p.person_id);
     });
     return [...ids];
   }, [allProfiles]);
@@ -291,8 +301,8 @@ function CallSchedule() {
 
   // If non-scheduler ends up on a restricted tab, redirect them
   useEffect(() => {
-    const isAdmin = userProfile?.person_id === "admin";
-    const canAssignApps = userProfile?.can_assign_apps === true;
+    const isAdmin = (userProfile === null || userProfile === void 0 ? void 0 : userProfile.person_id) === "admin";
+    const canAssignApps = (userProfile === null || userProfile === void 0 ? void 0 : userProfile.can_assign_apps) === true;
     // Setup is accessible to: scheduler, admin, or APP-assign-permitted users (for the APP card only).
     // Totals remains scheduler-only.
     if (!isScheduler && !isAdmin && !canAssignApps && view === "setup") {
@@ -320,7 +330,8 @@ function CallSchedule() {
   // ─── Browser Push & Email Notification Preferences ───
   const [pushPermission, setPushPermission] = useState(() => {
     try {
-      return Notification?.permission || "default";
+      var _Notification;
+      return ((_Notification = Notification) === null || _Notification === void 0 ? void 0 : _Notification.permission) || "default";
     } catch (e) {
       return "unsupported";
     }
@@ -365,9 +376,10 @@ function CallSchedule() {
     if (isScheduler) return notifications;
     if (!mySurgeon || mySurgeon === "admin") return notifications;
     return notifications.filter(n => {
+      var _n$data, _n$data2, _n$data3;
       if (n.type === "schedule_published" || n.type === "schedule_changed") return true;
-      if (n.data?.surgeon_id === mySurgeon) return true;
-      if (n.data?.from_surgeon_id === mySurgeon || n.data?.to_surgeon_id === mySurgeon) return true;
+      if (((_n$data = n.data) === null || _n$data === void 0 ? void 0 : _n$data.surgeon_id) === mySurgeon) return true;
+      if (((_n$data2 = n.data) === null || _n$data2 === void 0 ? void 0 : _n$data2.from_surgeon_id) === mySurgeon || ((_n$data3 = n.data) === null || _n$data3 === void 0 ? void 0 : _n$data3.to_surgeon_id) === mySurgeon) return true;
       return false;
     });
   }, [notifications, isScheduler, mySurgeon]);
@@ -529,6 +541,7 @@ function CallSchedule() {
     setAuthBusy(true);
     try {
       if (authMode === "signup") {
+        var _session$user;
         if (!signupPersonId) {
           setAuthError("Please select your name");
           setAuthBusy(false);
@@ -551,10 +564,11 @@ function CallSchedule() {
           setAuthBusy(false);
           return;
         }
-        const userId = user?.id || session?.user?.id;
+        const userId = (user === null || user === void 0 ? void 0 : user.id) || (session === null || session === void 0 || (_session$user = session.user) === null || _session$user === void 0 ? void 0 : _session$user.id);
         if (userId) {
+          var _allPeople$find;
           // Create profile
-          const personName = allPeople.find(p => p.id === signupPersonId)?.name || signupPersonId;
+          const personName = ((_allPeople$find = allPeople.find(p => p.id === signupPersonId)) === null || _allPeople$find === void 0 ? void 0 : _allPeople$find.name) || signupPersonId;
           const role = signupPersonId === "admin" ? "admin" : "member";
           await dbAuth.upsertProfile({
             id: userId,
@@ -567,7 +581,7 @@ function CallSchedule() {
             display_name: personName,
             role
           };
-          setAuthUser(user || session?.user);
+          setAuthUser(user || (session === null || session === void 0 ? void 0 : session.user));
           setUserProfile(profile);
           setMySurgeon(signupPersonId);
           setNeedsProfile(false);
@@ -580,7 +594,7 @@ function CallSchedule() {
               const {
                 data: existingRow
               } = await supabase.from("notification_preferences").select("email").eq("surgeon_id", signupPersonId).maybeSingle();
-              const existingEmail = (existingRow?.email || "").trim();
+              const existingEmail = ((existingRow === null || existingRow === void 0 ? void 0 : existingRow.email) || "").trim();
               if (!existingEmail) {
                 saveNotifPref(signupPersonId, {
                   email: authEmail,
@@ -632,13 +646,14 @@ function CallSchedule() {
     setAuthBusy(true);
     setAuthError("");
     try {
+      var _allPeople$find2;
       const profiles = await dbAuth.getAllProfiles();
       if (profiles.some(p => p.person_id === signupPersonId && p.id !== authUser.id)) {
         setAuthError("This name is already registered to another account");
         setAuthBusy(false);
         return;
       }
-      const personName = allPeople.find(p => p.id === signupPersonId)?.name || signupPersonId;
+      const personName = ((_allPeople$find2 = allPeople.find(p => p.id === signupPersonId)) === null || _allPeople$find2 === void 0 ? void 0 : _allPeople$find2.name) || signupPersonId;
       const role = signupPersonId === "admin" ? "admin" : "member";
       await dbAuth.upsertProfile({
         id: authUser.id,
@@ -677,7 +692,7 @@ function CallSchedule() {
         const {
           data: row
         } = await supabase.from("call_schedule_data").select("data,updated_at").eq("id", "main").single();
-        if (row?.data) {
+        if (row !== null && row !== void 0 && row.data) {
           const d = typeof row.data === "string" ? JSON.parse(row.data) : row.data;
           if (row.updated_at) lastSyncRef.current = row.updated_at; // prevent auto-save from re-saving unchanged data
           if (d.surgeons) setSurgeons(d.surgeons);
@@ -698,8 +713,8 @@ function CallSchedule() {
         const {
           data: cfgRow
         } = await supabase.from("call_schedule_config").select("scheduler_pin,edge_function_url").eq("id", "config").single();
-        if (cfgRow?.scheduler_pin) setSchedulerPin(cfgRow.scheduler_pin);
-        if (cfgRow?.edge_function_url) setEdgeFunctionUrl(cfgRow.edge_function_url);
+        if (cfgRow !== null && cfgRow !== void 0 && cfgRow.scheduler_pin) setSchedulerPin(cfgRow.scheduler_pin);
+        if (cfgRow !== null && cfgRow !== void 0 && cfgRow.edge_function_url) setEdgeFunctionUrl(cfgRow.edge_function_url);
 
         // Load vacation requests
         try {
@@ -765,7 +780,7 @@ function CallSchedule() {
         const {
           data: row
         } = await supabase.from("call_schedule_data").select("data,updated_at").eq("id", "main").single();
-        if (!row?.data) return;
+        if (!(row !== null && row !== void 0 && row.data)) return;
         if (row.updated_at === lastSyncRef.current) return; // nothing new
         lastSyncRef.current = row.updated_at;
         const d = typeof row.data === "string" ? JSON.parse(row.data) : row.data;
@@ -790,8 +805,8 @@ function CallSchedule() {
         const {
           data: cfgRow2
         } = await supabase.from("call_schedule_config").select("scheduler_pin,edge_function_url").eq("id", "config").single();
-        if (cfgRow2?.scheduler_pin !== undefined) setSchedulerPin(prev => cfgRow2.scheduler_pin !== prev ? cfgRow2.scheduler_pin : prev);
-        if (cfgRow2?.edge_function_url !== undefined) setEdgeFunctionUrl(prev => cfgRow2.edge_function_url !== prev ? cfgRow2.edge_function_url : prev);
+        if ((cfgRow2 === null || cfgRow2 === void 0 ? void 0 : cfgRow2.scheduler_pin) !== undefined) setSchedulerPin(prev => cfgRow2.scheduler_pin !== prev ? cfgRow2.scheduler_pin : prev);
+        if ((cfgRow2 === null || cfgRow2 === void 0 ? void 0 : cfgRow2.edge_function_url) !== undefined) setEdgeFunctionUrl(prev => cfgRow2.edge_function_url !== prev ? cfgRow2.edge_function_url : prev);
       } catch (e) {}
     };
     const refreshVacReqs = async () => {
@@ -967,7 +982,7 @@ function CallSchedule() {
 
       try {
         const session = typeof auth !== "undefined" && auth.getSession ? auth.getSession() : null;
-        const token = session?.access_token || SUPABASE_ANON_KEY;
+        const token = (session === null || session === void 0 ? void 0 : session.access_token) || SUPABASE_ANON_KEY;
         const ts = new Date().toISOString();
         const body = JSON.stringify({
           id: "main",
@@ -1106,7 +1121,7 @@ function CallSchedule() {
         case "schedule_published":
         case "shift_reminder":
           tab = "calendar";
-          if (data?.week && /^\d{4}-\d{2}-\d{2}$/.test(data.week)) week = data.week;
+          if (data !== null && data !== void 0 && data.week && /^\d{4}-\d{2}-\d{2}$/.test(data.week)) week = data.week;
           break;
         case "vacation_submitted":
         case "vacation_approved":
@@ -1173,7 +1188,7 @@ function CallSchedule() {
         recipients.push({
           email: prefs.email,
           surgeon_id: sid,
-          name: person?.name || sid
+          name: (person === null || person === void 0 ? void 0 : person.name) || sid
         });
       });
       if (recipients.length === 0) return;
@@ -1196,8 +1211,9 @@ function CallSchedule() {
 
   // ─── Vacation Request: Submit ───
   const submitVacRequest = useCallback(async () => {
+    var _surgeons$find, _apps$find;
     if (!vacReqSurgeon || !vacReqStart || !vacReqEnd) return;
-    const surgeonName = surgeons.find(s => s.id === vacReqSurgeon)?.name || apps.find(a => a.id === vacReqSurgeon)?.name || vacReqSurgeon;
+    const surgeonName = ((_surgeons$find = surgeons.find(s => s.id === vacReqSurgeon)) === null || _surgeons$find === void 0 ? void 0 : _surgeons$find.name) || ((_apps$find = apps.find(a => a.id === vacReqSurgeon)) === null || _apps$find === void 0 ? void 0 : _apps$find.name) || vacReqSurgeon;
     try {
       const req = {
         surgeon_id: vacReqSurgeon,
@@ -1310,6 +1326,7 @@ function CallSchedule() {
 
   // ─── Shift Trade Request: Submit ───
   const submitTradeRequest = useCallback(async () => {
+    var _surgeons$find2, _surgeons$find3;
     if (!tradeFrom || !tradeTo || !tradeWeek || !tradeShift) return;
     // Two-way swap required unless scheduler emergency override
     if (!tradeReturnWeek || !tradeReturnShift) {
@@ -1319,8 +1336,8 @@ function CallSchedule() {
       }
       if (!confirm("⚠️ No return swap specified.\n\nOne-way trades should only be used for emergencies (illness, family emergency).\n\nSubmit anyway?")) return;
     }
-    const fromName = surgeons.find(s => s.id === tradeFrom)?.name || tradeFrom;
-    const toName = surgeons.find(s => s.id === tradeTo)?.name || tradeTo;
+    const fromName = ((_surgeons$find2 = surgeons.find(s => s.id === tradeFrom)) === null || _surgeons$find2 === void 0 ? void 0 : _surgeons$find2.name) || tradeFrom;
+    const toName = ((_surgeons$find3 = surgeons.find(s => s.id === tradeTo)) === null || _surgeons$find3 === void 0 ? void 0 : _surgeons$find3.name) || tradeTo;
     const shiftLabel = SHIFT_LABELS[tradeShift] || tradeShift;
     try {
       const req = {
@@ -1367,7 +1384,10 @@ function CallSchedule() {
   const detectCascadeChanges = useCallback((sched, req) => {
     const changes = []; // { week, shiftKey, from, to, reason }
     const ids = surgeons.map(s => s.id);
-    const nameOf = id => surgeons.find(s => s.id === id)?.name || id;
+    const nameOf = id => {
+      var _surgeons$find4;
+      return ((_surgeons$find4 = surgeons.find(s => s.id === id)) === null || _surgeons$find4 === void 0 ? void 0 : _surgeons$find4.name) || id;
+    };
     const nightKeys = ["mon", "tue", "wed", "thu"];
     const applySwap = (s, r) => {
       const n = JSON.parse(JSON.stringify(s));
@@ -1477,19 +1497,21 @@ function CallSchedule() {
 
     // RULE 2: Weekend swap → check Monday night of NEXT week
     const checkWeekendMonday = (weekMon, newWkndSurgeon) => {
+      var _nextWk$nights;
       const mondayStrs = Object.keys(afterSwap).sort();
       const idx = mondayStrs.indexOf(weekMon);
       if (idx < 0 || idx >= mondayStrs.length - 1) return;
       const nextMon = mondayStrs[idx + 1];
       const nextWk = afterSwap[nextMon];
-      if (!nextWk?.nights?.mon) return;
+      if (!(nextWk !== null && nextWk !== void 0 && (_nextWk$nights = nextWk.nights) !== null && _nextWk$nights !== void 0 && _nextWk$nights.mon)) return;
       if (nextWk.nights.mon === newWkndSurgeon) {
+        var _nextWk$nights2;
         // Weekend surgeon has Monday night next week — conflict
         const otherSurgeon = newWkndSurgeon === req.to_surgeon_id ? req.from_surgeon_id : req.to_surgeon_id;
         // Check other surgeon isn't DC next week
         const otherIsDC = otherSurgeon === nextWk.dayCall;
         // Check consecutive night
-        const tueNight = nextWk.nights?.tue;
+        const tueNight = (_nextWk$nights2 = nextWk.nights) === null || _nextWk$nights2 === void 0 ? void 0 : _nextWk$nights2.tue;
         const wouldBeConsecutive = tueNight === otherSurgeon;
         if (!otherIsDC && !wouldBeConsecutive) {
           changes.push({
@@ -1532,7 +1554,10 @@ function CallSchedule() {
     try {
       // Detect cascade changes
       const cascades = detectCascadeChanges(schedule, req);
-      const nameOf = id => surgeons.find(s => s.id === id)?.name || id;
+      const nameOf = id => {
+        var _surgeons$find5;
+        return ((_surgeons$find5 = surgeons.find(s => s.id === id)) === null || _surgeons$find5 === void 0 ? void 0 : _surgeons$find5.name) || id;
+      };
 
       // If cascades exist, show confirmation with details
       if (cascades.length > 0) {
@@ -1765,7 +1790,7 @@ function CallSchedule() {
       } : r));
       // If approved, also update the vacations object
       const req = vacRequests.find(r => r.id === editingVacReq.id);
-      if (req?.status === "approved") {
+      if ((req === null || req === void 0 ? void 0 : req.status) === "approved") {
         setVacations(prev => {
           const n = {
             ...prev
@@ -1876,7 +1901,8 @@ function CallSchedule() {
           // SW finishes registering and the push endpoint becomes available.
           try {
             OneSignal.User.PushSubscription.addEventListener("change", ev => {
-              const id = ev?.current?.id || OneSignal?.User?.PushSubscription?.id || null;
+              var _ev$current, _OneSignal$User;
+              const id = (ev === null || ev === void 0 || (_ev$current = ev.current) === null || _ev$current === void 0 ? void 0 : _ev$current.id) || (OneSignal === null || OneSignal === void 0 || (_OneSignal$User = OneSignal.User) === null || _OneSignal$User === void 0 || (_OneSignal$User = _OneSignal$User.PushSubscription) === null || _OneSignal$User === void 0 ? void 0 : _OneSignal$User.id) || null;
               setPushSubscriptionId(id);
             });
           } catch (evErr) {
@@ -1884,12 +1910,12 @@ function CallSchedule() {
           }
         } catch (e) {
           console.error("OneSignal init error:", e);
-          setOneSignalInitError(e?.message || String(e));
+          setOneSignalInitError((e === null || e === void 0 ? void 0 : e.message) || String(e));
         }
       });
     } catch (e) {
       console.error("OneSignal setup error:", e);
-      setOneSignalInitError(e?.message || String(e));
+      setOneSignalInitError((e === null || e === void 0 ? void 0 : e.message) || String(e));
     }
   }, []);
 
@@ -1901,7 +1927,8 @@ function CallSchedule() {
   useEffect(() => {
     if (!oneSignalReady || !mySurgeon || mySurgeon === "admin") return;
     try {
-      if (window.OneSignal?.login) {
+      var _window$OneSignal;
+      if ((_window$OneSignal = window.OneSignal) !== null && _window$OneSignal !== void 0 && _window$OneSignal.login) {
         window.OneSignal.login(mySurgeon).catch(e => console.error("OneSignal.login error:", e));
       }
     } catch (e) {
@@ -1919,11 +1946,12 @@ function CallSchedule() {
       loading: true
     });
     try {
+      var _window$matchMedia, _window, _window$OneSignal2, _window$OneSignal3;
       // iOS Safari requires the app to be installed as a PWA (home screen) for
       // web push to work. Detect that up front so users aren't left wondering.
       const ua = navigator.userAgent || "";
       const isIOS = /iPad|iPhone|iPod/.test(ua) && !window.MSStream;
-      const isStandalone = window.navigator.standalone === true || window.matchMedia?.("(display-mode: standalone)").matches;
+      const isStandalone = window.navigator.standalone === true || ((_window$matchMedia = (_window = window).matchMedia) === null || _window$matchMedia === void 0 ? void 0 : _window$matchMedia.call(_window, "(display-mode: standalone)").matches);
       if (isIOS && !isStandalone) {
         setPushDiag({
           msg: "On iPhone/iPad, push notifications only work after adding this app to your home screen (Share → Add to Home Screen), then opening it from the home-screen icon.",
@@ -1936,7 +1964,7 @@ function CallSchedule() {
       // If OneSignal isn't loaded yet, tell the user to wait instead of falling
       // through to the native API (which wouldn't register with OneSignal and
       // silently leaves them unable to receive pushes).
-      if (!window.OneSignal?.Notifications) {
+      if (!((_window$OneSignal2 = window.OneSignal) !== null && _window$OneSignal2 !== void 0 && _window$OneSignal2.Notifications)) {
         setPushDiag({
           msg: "Notification service still loading. Wait a few seconds and tap Enable again.",
           loading: false
@@ -1958,7 +1986,7 @@ function CallSchedule() {
       // Associate this subscription with the logged-in person_id so targeted
       // pushes (manual edits, vacation updates, etc.) can reach this device.
       // Without this, only broadcast pushes arrive.
-      if (mySurgeon && mySurgeon !== "admin" && window.OneSignal?.login) {
+      if (mySurgeon && mySurgeon !== "admin" && (_window$OneSignal3 = window.OneSignal) !== null && _window$OneSignal3 !== void 0 && _window$OneSignal3.login) {
         try {
           await window.OneSignal.login(mySurgeon);
         } catch (e) {
@@ -1970,8 +1998,9 @@ function CallSchedule() {
       // prove the device is fully registered.
       setTimeout(() => {
         try {
-          const subId = window.OneSignal?.User?.PushSubscription?.id || null;
-          const extId = window.OneSignal?.User?.externalId || null;
+          var _window$OneSignal4, _window$OneSignal5;
+          const subId = ((_window$OneSignal4 = window.OneSignal) === null || _window$OneSignal4 === void 0 || (_window$OneSignal4 = _window$OneSignal4.User) === null || _window$OneSignal4 === void 0 || (_window$OneSignal4 = _window$OneSignal4.PushSubscription) === null || _window$OneSignal4 === void 0 ? void 0 : _window$OneSignal4.id) || null;
+          const extId = ((_window$OneSignal5 = window.OneSignal) === null || _window$OneSignal5 === void 0 || (_window$OneSignal5 = _window$OneSignal5.User) === null || _window$OneSignal5 === void 0 ? void 0 : _window$OneSignal5.externalId) || null;
           setPushSubscriptionId(subId);
           setPushExternalId(extId);
           if (subId) {
@@ -2002,12 +2031,13 @@ function CallSchedule() {
   // Refresh diagnostic info — useful for debugging why pushes aren't arriving.
   const refreshPushDiag = useCallback(() => {
     try {
-      const subId = window.OneSignal?.User?.PushSubscription?.id || null;
-      const extId = window.OneSignal?.User?.externalId || null;
-      const optedIn = window.OneSignal?.User?.PushSubscription?.optedIn;
+      var _window$OneSignal6, _window$OneSignal7, _window$OneSignal8, _window$OneSignal9;
+      const subId = ((_window$OneSignal6 = window.OneSignal) === null || _window$OneSignal6 === void 0 || (_window$OneSignal6 = _window$OneSignal6.User) === null || _window$OneSignal6 === void 0 || (_window$OneSignal6 = _window$OneSignal6.PushSubscription) === null || _window$OneSignal6 === void 0 ? void 0 : _window$OneSignal6.id) || null;
+      const extId = ((_window$OneSignal7 = window.OneSignal) === null || _window$OneSignal7 === void 0 || (_window$OneSignal7 = _window$OneSignal7.User) === null || _window$OneSignal7 === void 0 ? void 0 : _window$OneSignal7.externalId) || null;
+      const optedIn = (_window$OneSignal8 = window.OneSignal) === null || _window$OneSignal8 === void 0 || (_window$OneSignal8 = _window$OneSignal8.User) === null || _window$OneSignal8 === void 0 || (_window$OneSignal8 = _window$OneSignal8.PushSubscription) === null || _window$OneSignal8 === void 0 ? void 0 : _window$OneSignal8.optedIn;
       setPushSubscriptionId(subId);
       setPushExternalId(extId);
-      const parts = [`SDK: ${window.OneSignal ? "loaded" : "NOT loaded"}`, `Ready: ${oneSignalReady ? "yes" : "no"}`, `Permission: ${window.OneSignal?.Notifications?.permission ? "granted" : "not granted"}`, `Opted in: ${optedIn === true ? "yes" : optedIn === false ? "no" : "unknown"}`, `Subscription ID: ${subId || "none"}`, `External ID: ${extId || "none"}`, `Logged in as: ${mySurgeon || "nobody"}`];
+      const parts = [`SDK: ${window.OneSignal ? "loaded" : "NOT loaded"}`, `Ready: ${oneSignalReady ? "yes" : "no"}`, `Permission: ${(_window$OneSignal9 = window.OneSignal) !== null && _window$OneSignal9 !== void 0 && (_window$OneSignal9 = _window$OneSignal9.Notifications) !== null && _window$OneSignal9 !== void 0 && _window$OneSignal9.permission ? "granted" : "not granted"}`, `Opted in: ${optedIn === true ? "yes" : optedIn === false ? "no" : "unknown"}`, `Subscription ID: ${subId || "none"}`, `External ID: ${extId || "none"}`, `Logged in as: ${mySurgeon || "nobody"}`];
       if (oneSignalInitError) parts.push(`Init error: ${oneSignalInitError}`);
       setPushDiag({
         msg: parts.join(" · "),
@@ -2034,12 +2064,16 @@ function CallSchedule() {
       // Unregister OneSignal's service worker to force a clean re-registration
       if (navigator.serviceWorker) {
         const regs = await navigator.serviceWorker.getRegistrations();
-        await Promise.all(regs.filter(r => /OneSignalSDK/i.test(r.active?.scriptURL || "")).map(r => r.unregister()));
+        await Promise.all(regs.filter(r => {
+          var _r$active;
+          return /OneSignalSDK/i.test(((_r$active = r.active) === null || _r$active === void 0 ? void 0 : _r$active.scriptURL) || "");
+        }).map(r => r.unregister()));
       }
       // Clear OneSignal's IndexedDB — stale data here is the most common
       // cause of "opted in but no subscription ID" state.
       try {
-        if (window.indexedDB?.deleteDatabase) {
+        var _window$indexedDB;
+        if ((_window$indexedDB = window.indexedDB) !== null && _window$indexedDB !== void 0 && _window$indexedDB.deleteDatabase) {
           await new Promise(resolve => {
             const req = indexedDB.deleteDatabase("ONE_SIGNAL_SDK_DB");
             req.onsuccess = req.onerror = req.onblocked = () => resolve();
@@ -2051,7 +2085,8 @@ function CallSchedule() {
       }
       // Log out (clears external_id association)
       try {
-        if (window.OneSignal?.logout) await window.OneSignal.logout();
+        var _window$OneSignal0;
+        if ((_window$OneSignal0 = window.OneSignal) !== null && _window$OneSignal0 !== void 0 && _window$OneSignal0.logout) await window.OneSignal.logout();
       } catch (e) {
         console.warn("logout:", e);
       }
@@ -2072,8 +2107,9 @@ function CallSchedule() {
   useEffect(() => {
     if (!oneSignalReady || !mySurgeon || !window.OneSignal) return;
     try {
+      var _surgeons$find6;
       window.OneSignal.User.addTag("surgeon_id", mySurgeon);
-      const surgeonName = surgeons.find(s => s.id === mySurgeon)?.name || mySurgeon;
+      const surgeonName = ((_surgeons$find6 = surgeons.find(s => s.id === mySurgeon)) === null || _surgeons$find6 === void 0 ? void 0 : _surgeons$find6.name) || mySurgeon;
       window.OneSignal.User.addTag("surgeon_name", surgeonName);
     } catch (e) {
       console.error("OneSignal tag error:", e);
@@ -2110,13 +2146,31 @@ function CallSchedule() {
         const {
           data: cfgRow
         } = await supabase.from("call_schedule_config").select("edge_function_url").eq("id", "config").single();
-        if (cfgRow?.edge_function_url) setEdgeFunctionUrl(cfgRow.edge_function_url);
+        if (cfgRow !== null && cfgRow !== void 0 && cfgRow.edge_function_url) setEdgeFunctionUrl(cfgRow.edge_function_url);
       } catch (e) {
         console.error("Load notif prefs error:", e);
       }
       setNotifPrefsLoaded(true);
     })();
   }, [loaded]);
+
+  // ─── Load Office Contacts ───
+  // Scheduler/admin-only feature, but contacts table is loaded for everyone
+  // (RLS is permissive; UI gates editing).
+  useEffect(() => {
+    if (!loaded) return;
+    if (!isScheduler && (userProfile === null || userProfile === void 0 ? void 0 : userProfile.person_id) !== "admin") return;
+    (async () => {
+      try {
+        const rows = await db.query("office_contacts", {
+          order: "name.asc"
+        });
+        if (Array.isArray(rows)) setOfficeContacts(rows);
+      } catch (e) {
+        console.error("Load office contacts error:", e);
+      }
+    })();
+  }, [loaded, isScheduler, userProfile]);
 
   // ─── Deep-link handler for push notification clicks ───
   // OneSignal push clicks land on the app with ?tab=X or ?tab=X&week=YYYY-MM-DD
@@ -2220,8 +2274,9 @@ function CallSchedule() {
       // New notifications arrived — fire browser push for each new one
       const newOnes = notifications.slice(0, notifications.length - lastNotifCountRef.current);
       newOnes.forEach(n => {
+        var _notifPrefs$mySurgeon;
         // Check if the current user has browser_push enabled
-        if (mySurgeon && notifPrefs[mySurgeon]?.browser_push === false) return;
+        if (mySurgeon && ((_notifPrefs$mySurgeon = notifPrefs[mySurgeon]) === null || _notifPrefs$mySurgeon === void 0 ? void 0 : _notifPrefs$mySurgeon.browser_push) === false) return;
         sendBrowserNotif(n.title || "DSG Call Schedule", n.message || "", `dsg-${n.id}`);
       });
     }
@@ -2335,7 +2390,10 @@ function CallSchedule() {
           const headers = lines[0];
           for (let i = 1; i < lines.length; i++) {
             const row = {};
-            headers.forEach((h, j) => row[h] = lines[i]?.[j] || "0");
+            headers.forEach((h, j) => {
+              var _lines$i;
+              return row[h] = ((_lines$i = lines[i]) === null || _lines$i === void 0 ? void 0 : _lines$i[j]) || "0";
+            });
             rows.push(row);
           }
         }
@@ -2393,6 +2451,7 @@ function CallSchedule() {
   // ─── Shared helper: Anthropic API call via Edge Function (used by Unified Schedule Scanner) ───
   const AI_SCAN_URL = `${SUPABASE_URL}/functions/v1/ai-scan`;
   const callApi = useCallback(async (messages, maxTokens = 2000) => {
+    var _data$content;
     const resp = await fetch(AI_SCAN_URL, {
       method: "POST",
       headers: {
@@ -2409,7 +2468,7 @@ function CallSchedule() {
       throw new Error(`API error ${resp.status}: ${err}`);
     }
     const data = await resp.json();
-    return data.content?.map(c => c.text || "").join("") || "";
+    return ((_data$content = data.content) === null || _data$content === void 0 ? void 0 : _data$content.map(c => c.text || "").join("")) || "";
   }, []);
 
   // ─── Unified Schedule Scanner — extracts vacations + Fierce weeks from one file ───
@@ -2548,7 +2607,7 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
 
         // Process vacations
         let fileVac = 0;
-        if (result?.vacations && Array.isArray(result.vacations) && result.vacations.length > 0) {
+        if (result !== null && result !== void 0 && result.vacations && Array.isArray(result.vacations) && result.vacations.length > 0) {
           const nameToId = {};
           surgeons.forEach(s => {
             nameToId[s.name.toUpperCase()] = s.id;
@@ -2559,7 +2618,8 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
               ...prev
             };
             result.vacations.forEach(e => {
-              const id = nameToId[e.surgeon] || nameToId[e.surgeon?.toUpperCase()];
+              var _e$surgeon;
+              const id = nameToId[e.surgeon] || nameToId[(_e$surgeon = e.surgeon) === null || _e$surgeon === void 0 ? void 0 : _e$surgeon.toUpperCase()];
               if (id && e.start && e.end) {
                 const existing = n[id] || [];
                 const isDupe = existing.some(([s, e2]) => s === e.start && e2 === e.end);
@@ -2576,7 +2636,7 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
 
         // Process Fierce weeks
         let fileFierce = 0;
-        if (result?.fierce_weeks && Array.isArray(result.fierce_weeks) && result.fierce_weeks.length > 0) {
+        if (result !== null && result !== void 0 && result.fierce_weeks && Array.isArray(result.fierce_weeks) && result.fierce_weeks.length > 0) {
           const primaryDates = [],
             backupDates = [];
           result.fierce_weeks.forEach(e => {
@@ -2696,6 +2756,165 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
     if (!a) return;
     if (!confirm(`Remove APP ${a.name}?`)) return;
     setApps(p => p.filter(x => x.id !== id));
+  };
+
+  // ─── Office Contact Handlers ───
+  const addOfficeContact = async () => {
+    const name = (newOfficeName || "").trim();
+    const email = (newOfficeEmail || "").trim();
+    if (!name || !email) {
+      alert("Name and email are required.");
+      return;
+    }
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+      alert("Please enter a valid email address.");
+      return;
+    }
+    setOfficeNotifBusy(true);
+    try {
+      const {
+        data,
+        error
+      } = await db.insert("office_contacts", {
+        name,
+        email,
+        departments: newOfficeDepts,
+        active: true
+      });
+      if (error) {
+        alert("Failed to add: " + JSON.stringify(error));
+        return;
+      }
+      if (data) setOfficeContacts(prev => [...prev, data].sort((a, b) => (a.name || "").localeCompare(b.name || "")));
+      setNewOfficeName("");
+      setNewOfficeEmail("");
+      setNewOfficeDepts([]);
+    } finally {
+      setOfficeNotifBusy(false);
+    }
+  };
+  const updateOfficeContact = async (id, patch) => {
+    setOfficeContacts(prev => prev.map(c => c.id === id ? {
+      ...c,
+      ...patch
+    } : c));
+    try {
+      const {
+        error
+      } = await db.update("office_contacts", id, {
+        ...patch,
+        updated_at: new Date().toISOString()
+      });
+      if (error) {
+        alert("Failed to update: " + error);
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  };
+  const deleteOfficeContact = async id => {
+    const c = officeContacts.find(x => x.id === id);
+    if (!c) return;
+    if (!confirm(`Remove ${c.name} (${c.email}) from the office distribution list?`)) return;
+    setOfficeContacts(prev => prev.filter(x => x.id !== id));
+    try {
+      await fetch(`${SUPABASE_URL}/rest/v1/office_contacts?id=eq.${id}`, {
+        method: "DELETE",
+        headers: dbHeaders
+      });
+    } catch (e) {
+      console.error("Delete failed:", e);
+    }
+  };
+  const toggleOfficeContactDept = (id, dept) => {
+    const c = officeContacts.find(x => x.id === id);
+    if (!c) return;
+    const cur = Array.isArray(c.departments) ? c.departments : [];
+    const next = cur.includes(dept) ? cur.filter(d => d !== dept) : [...cur, dept];
+    updateOfficeContact(id, {
+      departments: next
+    });
+  };
+  const computePeriodLabel = () => {
+    try {
+      const sched = schedule || {};
+      const weeks = Object.keys(sched).sort();
+      if (weeks.length === 0) return "";
+      const first = weeks[0];
+      const last = weeks[weeks.length - 1];
+      const firstDate = parse(first);
+      const lastDate = parse(last);
+      lastDate.setDate(lastDate.getDate() + 6); // Sunday end of last week
+      const fmtNice = d => `${MO[d.getMonth()].slice(0, 3)} ${d.getDate()}`;
+      return `${fmtNice(firstDate)} – ${fmtNice(lastDate)}`;
+    } catch (e) {
+      return "";
+    }
+  };
+  const openPublishDialog = () => {
+    setPublishLabel(computePeriodLabel());
+    setShowPublishDialog(true);
+  };
+  const triggerPublishNotify = async () => {
+    if (!confirm(`Send a "new schedule published" email to all ${officeContacts.filter(c => c.active).length} active office contact(s)?`)) return;
+    setOfficeNotifBusy(true);
+    try {
+      var _body$sent;
+      const url = `${SUPABASE_URL}/functions/v1/office-notifications`;
+      const res = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+          apikey: SUPABASE_ANON_KEY
+        },
+        body: JSON.stringify({
+          mode: "publish",
+          period_label: publishLabel || ""
+        })
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        alert("Publish failed: " + JSON.stringify(body));
+        return;
+      }
+      alert(`Sent ${(_body$sent = body.sent) !== null && _body$sent !== void 0 ? _body$sent : 0} email(s).`);
+      setShowPublishDialog(false);
+    } catch (e) {
+      alert("Publish error: " + ((e === null || e === void 0 ? void 0 : e.message) || e));
+    } finally {
+      setOfficeNotifBusy(false);
+    }
+  };
+  const triggerDigestTest = async () => {
+    if (!confirm("Manually fire the Saturday digest now? This will send emails if any changes are detected since the last digest snapshot.")) return;
+    setOfficeNotifBusy(true);
+    try {
+      var _body$sent2;
+      const url = `${SUPABASE_URL}/functions/v1/office-notifications`;
+      const res = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+          apikey: SUPABASE_ANON_KEY
+        },
+        body: JSON.stringify({
+          mode: "digest"
+        })
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        alert("Digest failed: " + JSON.stringify(body));
+        return;
+      }
+      const surgeons = (body.affected_surgeons || []).join(", ");
+      alert(`Digest run: ${(_body$sent2 = body.sent) !== null && _body$sent2 !== void 0 ? _body$sent2 : 0} email(s) sent.\nAffected surgeons: ${surgeons || "(none)"}\nApp changed: ${body.app_changed ? "yes" : "no"}`);
+    } catch (e) {
+      alert("Digest error: " + ((e === null || e === void 0 ? void 0 : e.message) || e));
+    } finally {
+      setOfficeNotifBusy(false);
+    }
   };
   const addVac = () => {
     if (!vacSurgeon || !vacStart || !vacEnd) return;
@@ -3131,9 +3350,10 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
       // Sort by fairness: lifetime holiday count → avoid repeat from prior year → random
       const prior = priorByName[hol.name] || {};
       avail.sort((a, b) => {
+        var _lifetimeCt$a, _lifetimeCt$b;
         // Prefer surgeons with fewer lifetime assignments of this type
-        const la = lifetimeCt[a]?.[type] || 0;
-        const lb = lifetimeCt[b]?.[type] || 0;
+        const la = ((_lifetimeCt$a = lifetimeCt[a]) === null || _lifetimeCt$a === void 0 ? void 0 : _lifetimeCt$a[type]) || 0;
+        const lb = ((_lifetimeCt$b = lifetimeCt[b]) === null || _lifetimeCt$b === void 0 ? void 0 : _lifetimeCt$b[type]) || 0;
         if (la !== lb) return la - lb;
         // Avoid repeating the same holiday as last year
         const aRepeat = a === prior.surgeonA || a === prior.surgeonB ? 1 : 0;
@@ -3158,7 +3378,8 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
     }));
     const assignments = [];
     [majorHols, minorHols].forEach(group => {
-      const type = group[0]?.type;
+      var _group$;
+      const type = (_group$ = group[0]) === null || _group$ === void 0 ? void 0 : _group$.type;
       const usedInGroup = new Set(); // surgeons already assigned in this group
 
       // Sort: Christmas first (FAK locked), then by date
@@ -3200,7 +3421,8 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
           if (partnerPool.length === 0) partnerPool = remaining;
           const prior = priorByName["Christmas Day"] || {};
           partnerPool.sort((a, b) => {
-            const la = (lifetimeCt[a]?.[type] || 0) - (lifetimeCt[b]?.[type] || 0);
+            var _lifetimeCt$a2, _lifetimeCt$b2;
+            const la = (((_lifetimeCt$a2 = lifetimeCt[a]) === null || _lifetimeCt$a2 === void 0 ? void 0 : _lifetimeCt$a2[type]) || 0) - (((_lifetimeCt$b2 = lifetimeCt[b]) === null || _lifetimeCt$b2 === void 0 ? void 0 : _lifetimeCt$b2[type]) || 0);
             if (la) return la;
             const aR = a === prior.surgeonB ? 1 : 0;
             const bR = b === prior.surgeonB ? 1 : 0;
@@ -3264,9 +3486,10 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
         usedInGroup.add(h.surgeonB);
       });
       if (usedInGroup.has(newSurgeonId)) {
+        var _surgeons$find7;
         const conflictHol = sameGroup.find(h => h.surgeonA === newSurgeonId || h.surgeonB === newSurgeonId);
-        const surgeonName = surgeons.find(s => s.id === newSurgeonId)?.name || newSurgeonId;
-        if (!confirm(`⚠️ ${surgeonName} is already assigned to ${conflictHol?.name} (${targetHol.type} group).\n\nThis violates the distinct-pairs rule. Assign anyway?`)) return;
+        const surgeonName = ((_surgeons$find7 = surgeons.find(s => s.id === newSurgeonId)) === null || _surgeons$find7 === void 0 ? void 0 : _surgeons$find7.name) || newSurgeonId;
+        if (!confirm(`⚠️ ${surgeonName} is already assigned to ${conflictHol === null || conflictHol === void 0 ? void 0 : conflictHol.name} (${targetHol.type} group).\n\nThis violates the distinct-pairs rule. Assign anyway?`)) return;
       }
     }
     setHolidayAssignments(prev => {
@@ -3300,7 +3523,8 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
     });
   }, [holidayAssignments, surgeons]);
   const swapShift = (mStr, shift, newId) => {
-    const oldId = shift === "dayCall" ? schedule[mStr]?.dayCall : schedule[mStr]?.nights?.[shift];
+    var _schedule$mStr, _schedule$mStr2, _sMap$oldId, _sMap$newId;
+    const oldId = shift === "dayCall" ? (_schedule$mStr = schedule[mStr]) === null || _schedule$mStr === void 0 ? void 0 : _schedule$mStr.dayCall : (_schedule$mStr2 = schedule[mStr]) === null || _schedule$mStr2 === void 0 || (_schedule$mStr2 = _schedule$mStr2.nights) === null || _schedule$mStr2 === void 0 ? void 0 : _schedule$mStr2[shift];
     pushUndo(schedule);
     setSchedule(p => {
       const wk = {
@@ -3322,8 +3546,8 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
     setSwapSuggestions(null);
     setSwapTarget(null);
     // Notify about the change — only the affected surgeons and the scheduler/admin
-    const oldName = sMap[oldId]?.name || "—";
-    const newName = sMap[newId]?.name || "—";
+    const oldName = ((_sMap$oldId = sMap[oldId]) === null || _sMap$oldId === void 0 ? void 0 : _sMap$oldId.name) || "—";
+    const newName = ((_sMap$newId = sMap[newId]) === null || _sMap$newId === void 0 ? void 0 : _sMap$newId.name) || "—";
     const shiftLabel = SHIFT_LABELS[shift] || shift;
     const editTargets = [...new Set([oldId, newId, ...schedulerAdminIds].filter(Boolean))];
     addNotification("schedule_changed", "Shift Reassigned", `${shiftLabel} (wk of ${mStr}): ${oldName} → ${newName}`, {
@@ -3347,8 +3571,9 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
     setEditWeekPick("");
   }, [calMonth, calYear]);
   const findSwapSuggestions = useCallback((mondayStr, shift, currentSurgeonId) => {
+    var _sMap$currentSurgeonI;
     if (!schedule[mondayStr]) return;
-    const currentName = sMap[currentSurgeonId]?.name || "?";
+    const currentName = ((_sMap$currentSurgeonI = sMap[currentSurgeonId]) === null || _sMap$currentSurgeonI === void 0 ? void 0 : _sMap$currentSurgeonI.name) || "?";
     const mon = parse(mondayStr);
     const ids = surgeons.map(s => s.id).filter(id => id !== currentSurgeonId);
 
@@ -3375,7 +3600,8 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
     // Check each candidate
     const candidates = [];
     ids.forEach(candId => {
-      const candName = sMap[candId]?.name || "?";
+      var _sMap$candId, _sCounts$currentSurge, _sCounts$candId, _sCounts$currentSurge2, _sCounts$candId2;
+      const candName = ((_sMap$candId = sMap[candId]) === null || _sMap$candId === void 0 ? void 0 : _sMap$candId.name) || "?";
       const reasons = [];
       let eligible = true;
 
@@ -3422,15 +3648,15 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
       });
 
       // 4. Calculate fairness score — lower is better (candidate has fewer of this type)
-      const currentCount = sCounts[currentSurgeonId]?.[shiftType] || 0;
-      const candCount = sCounts[candId]?.[shiftType] || 0;
+      const currentCount = ((_sCounts$currentSurge = sCounts[currentSurgeonId]) === null || _sCounts$currentSurge === void 0 ? void 0 : _sCounts$currentSurge[shiftType]) || 0;
+      const candCount = ((_sCounts$candId = sCounts[candId]) === null || _sCounts$candId === void 0 ? void 0 : _sCounts$candId[shiftType]) || 0;
       const countDiff = currentCount - candCount; // positive = current has more → good swap
 
       // Include prior counts for total fairness
       const priorCurr = priorCounts[currentSurgeonId] || {};
       const priorCand = priorCounts[candId] || {};
-      const totalCurrType = (priorCurr[shiftType === "dc" ? "dc" : shiftType === "wknd" ? "wknd" : "nights"] || 0) + (sCounts[currentSurgeonId]?.[shiftType] || 0);
-      const totalCandType = (priorCand[shiftType === "dc" ? "dc" : shiftType === "wknd" ? "wknd" : "nights"] || 0) + (sCounts[candId]?.[shiftType] || 0);
+      const totalCurrType = (priorCurr[shiftType === "dc" ? "dc" : shiftType === "wknd" ? "wknd" : "nights"] || 0) + (((_sCounts$currentSurge2 = sCounts[currentSurgeonId]) === null || _sCounts$currentSurge2 === void 0 ? void 0 : _sCounts$currentSurge2[shiftType]) || 0);
+      const totalCandType = (priorCand[shiftType === "dc" ? "dc" : shiftType === "wknd" ? "wknd" : "nights"] || 0) + (((_sCounts$candId2 = sCounts[candId]) === null || _sCounts$candId2 === void 0 ? void 0 : _sCounts$candId2[shiftType]) || 0);
       const totalDiff = totalCurrType - totalCandType;
       if (countDiff > 0) reasons.push(`${candName} has ${countDiff} fewer ${shiftType === "dc" ? "service weeks" : shiftType === "wknd" ? "weekends" : "nights"} this period`);else if (countDiff === 0) reasons.push(`Equal ${shiftType === "dc" ? "service weeks" : shiftType === "wknd" ? "weekends" : "nights"} this period`);else reasons.push(`${candName} has ${Math.abs(countDiff)} more ${shiftType === "dc" ? "service weeks" : shiftType === "wknd" ? "weekends" : "nights"} — less ideal`);
       if (totalDiff > 1) reasons.push(`${totalDiff} fewer overall (good for balance)`);
@@ -3439,6 +3665,7 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
       // 5. Find possible return swaps — shifts the current surgeon could take from the candidate in another week
       const returnSwaps = [];
       Object.entries(schedule).forEach(([otherMon, otherWk]) => {
+        var _otherWk$nights2;
         if (otherMon === mondayStr) return;
         // Check if candidate has a shift of the same type in another week
         if (shiftType === "dc" && otherWk.dayCall === candId) {
@@ -3459,7 +3686,8 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
         }
         if (shiftType === "nights") {
           NIGHT_KEYS.forEach((sk, i) => {
-            if (otherWk.nights?.[sk] === candId && otherWk.dayCall !== currentSurgeonId) {
+            var _otherWk$nights;
+            if (((_otherWk$nights = otherWk.nights) === null || _otherWk$nights === void 0 ? void 0 : _otherWk$nights[sk]) === candId && otherWk.dayCall !== currentSurgeonId) {
               const otherMonDate = parse(otherMon);
               const sd = fmt(addD(otherMonDate, i));
               const nd = fmt(addD(otherMonDate, i + 1));
@@ -3473,7 +3701,7 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
             }
           });
         }
-        if (shiftType === "wknd" && otherWk.nights?.wknd === candId) {
+        if (shiftType === "wknd" && ((_otherWk$nights2 = otherWk.nights) === null || _otherWk$nights2 === void 0 ? void 0 : _otherWk$nights2.wknd) === candId) {
           const otherMonDate = parse(otherMon);
           const f = fmt(addD(otherMonDate, 4)),
             su = fmt(addD(otherMonDate, 6)),
@@ -3515,6 +3743,7 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
 
   // ─── Execute a two-way swap ───
   const executeTwoWaySwap = useCallback((targetMon, targetShift, targetOldId, candId, returnMon, returnShift) => {
+    var _sMap$targetOldId, _sMap$candId2;
     pushUndo(schedule);
     setSchedule(p => {
       const n = {
@@ -3547,8 +3776,8 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
       }
       return n;
     });
-    const oldName = sMap[targetOldId]?.name || "—";
-    const newName = sMap[candId]?.name || "—";
+    const oldName = ((_sMap$targetOldId = sMap[targetOldId]) === null || _sMap$targetOldId === void 0 ? void 0 : _sMap$targetOldId.name) || "—";
+    const newName = ((_sMap$candId2 = sMap[candId]) === null || _sMap$candId2 === void 0 ? void 0 : _sMap$candId2.name) || "—";
     const shiftLabel = SHIFT_LABELS[targetShift] || targetShift;
     const swapTargets = [...new Set([targetOldId, candId, ...schedulerAdminIds].filter(Boolean))];
     addNotification("schedule_changed", "Shift Swap", `${shiftLabel} (wk of ${targetMon}): ${oldName} ↔ ${newName}${returnMon ? ` (return: ${SHIFT_LABELS[returnShift] || returnShift} wk of ${returnMon})` : ""}`, {
@@ -3613,8 +3842,9 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
       });
     }
     ["mon", "tue", "wed", "thu", "wknd"].forEach(nk => {
-      const oldId = oldWk.nights?.[nk] || "";
-      const newId = draft.nights?.[nk] || "";
+      var _oldWk$nights, _draft$nights;
+      const oldId = ((_oldWk$nights = oldWk.nights) === null || _oldWk$nights === void 0 ? void 0 : _oldWk$nights[nk]) || "";
+      const newId = ((_draft$nights = draft.nights) === null || _draft$nights === void 0 ? void 0 : _draft$nights[nk]) || "";
       if (oldId !== newId) {
         changes.push({
           slotLabel: SHIFT_LABELS[nk] || nk,
@@ -3688,13 +3918,16 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
     // of changes (filtered to only shifts they're involved in). Scheduler and
     // admin get the full list across all changes.
     const perPerson = new Map(); // person_id -> [{slotLabel, oldName, newName}]
-    const enrichedChanges = changes.map(c => ({
-      slotLabel: c.slotLabel,
-      oldId: c.oldId,
-      newId: c.newId,
-      oldName: c.isApp ? aMap[c.oldId]?.name || "—" : sMap[c.oldId]?.name || "—",
-      newName: c.isApp ? aMap[c.newId]?.name || "—" : sMap[c.newId]?.name || "—"
-    }));
+    const enrichedChanges = changes.map(c => {
+      var _aMap$c$oldId, _sMap$c$oldId, _aMap$c$newId, _sMap$c$newId;
+      return {
+        slotLabel: c.slotLabel,
+        oldId: c.oldId,
+        newId: c.newId,
+        oldName: c.isApp ? ((_aMap$c$oldId = aMap[c.oldId]) === null || _aMap$c$oldId === void 0 ? void 0 : _aMap$c$oldId.name) || "—" : ((_sMap$c$oldId = sMap[c.oldId]) === null || _sMap$c$oldId === void 0 ? void 0 : _sMap$c$oldId.name) || "—",
+        newName: c.isApp ? ((_aMap$c$newId = aMap[c.newId]) === null || _aMap$c$newId === void 0 ? void 0 : _aMap$c$newId.name) || "—" : ((_sMap$c$newId = sMap[c.newId]) === null || _sMap$c$newId === void 0 ? void 0 : _sMap$c$newId.name) || "—"
+      };
+    });
     enrichedChanges.forEach(ec => {
       [ec.oldId, ec.newId].filter(Boolean).forEach(pid => {
         if (!perPerson.has(pid)) perPerson.set(pid, []);
@@ -3795,9 +4028,10 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
     const allEv = [];
     surgeons.forEach(s => allEv.push(...buildICSEvents(schedule, s.id, s.name, appShifts, aMap)));
     Object.entries(appShifts).forEach(([ds, aid]) => {
+      var _aMap$aid;
       const d = parse(ds);
       const nx = addD(d, 1);
-      const an = aMap?.[aid]?.name || aid;
+      const an = (aMap === null || aMap === void 0 || (_aMap$aid = aMap[aid]) === null || _aMap$aid === void 0 ? void 0 : _aMap$aid.name) || aid;
       const dow = d.getDay();
       const isWeekend = dow === 0 || dow === 6;
       const startHour = isWeekend ? 7 : 17;
@@ -3819,6 +4053,7 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
     const buildCalData = () => {
       const d = {};
       Object.entries(schedule).forEach(([mStr, wk]) => {
+        var _wk$nights2;
         const mon = parse(mStr);
         const pfx = wk.isBackup ? "B-" : "";
         if (wk.dayCall) {
@@ -3837,7 +4072,8 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
           }];
         }
         NIGHT_KEYS.forEach((sk, i) => {
-          const sid = wk.nights?.[sk];
+          var _wk$nights;
+          const sid = (_wk$nights = wk.nights) === null || _wk$nights === void 0 ? void 0 : _wk$nights[sk];
           if (!sid) return;
           const ds = fmt(addD(mon, i));
           d[ds] = [...(d[ds] || []), {
@@ -3845,7 +4081,7 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
             sid
           }];
         });
-        const ws = wk.nights?.wknd;
+        const ws = (_wk$nights2 = wk.nights) === null || _wk$nights2 === void 0 ? void 0 : _wk$nights2.wknd;
         if (ws) {
           d[fmt(addD(mon, 4))] = [...(d[fmt(addD(mon, 4))] || []), {
             type: pfx + "Wknd",
@@ -4126,52 +4362,61 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     const mondayStrs = Object.keys(schedule).sort();
     const ids = surgeons.map(s => s.id);
     mondayStrs.forEach((mStr, wkIdx) => {
+      var _wk$nights5;
       const wk = schedule[mStr];
       const mon = parse(mStr);
 
       // Check back-to-back nights within the week
       const nightOrder = ["mon", "tue", "wed", "thu"];
       for (let i = 0; i < nightOrder.length - 1; i++) {
-        const a = wk.nights?.[nightOrder[i]];
-        const b = wk.nights?.[nightOrder[i + 1]];
+        var _wk$nights3, _wk$nights4;
+        const a = (_wk$nights3 = wk.nights) === null || _wk$nights3 === void 0 ? void 0 : _wk$nights3[nightOrder[i]];
+        const b = (_wk$nights4 = wk.nights) === null || _wk$nights4 === void 0 ? void 0 : _wk$nights4[nightOrder[i + 1]];
         if (a && a === b) {
+          var _sMap$a;
           issues.push({
             type: "consecutive",
             severity: "error",
             week: mStr,
-            message: `${sMap[a]?.name} has consecutive nights (${SHIFT_LABELS[nightOrder[i]]} + ${SHIFT_LABELS[nightOrder[i + 1]]})`
+            message: `${(_sMap$a = sMap[a]) === null || _sMap$a === void 0 ? void 0 : _sMap$a.name} has consecutive nights (${SHIFT_LABELS[nightOrder[i]]} + ${SHIFT_LABELS[nightOrder[i + 1]]})`
           });
         }
       }
 
       // Check weekend → Mon night same person (hard rule violation)
-      const wkndSurgeon = wk.nights?.wknd;
+      const wkndSurgeon = (_wk$nights5 = wk.nights) === null || _wk$nights5 === void 0 ? void 0 : _wk$nights5.wknd;
       if (wkIdx < mondayStrs.length - 1) {
+        var _nextWk$nights3, _nextWk$nights4;
         const nextWk = schedule[mondayStrs[wkIdx + 1]];
-        if (wkndSurgeon && nextWk?.nights?.mon === wkndSurgeon) {
+        if (wkndSurgeon && (nextWk === null || nextWk === void 0 || (_nextWk$nights3 = nextWk.nights) === null || _nextWk$nights3 === void 0 ? void 0 : _nextWk$nights3.mon) === wkndSurgeon) {
+          var _sMap$wkndSurgeon;
           issues.push({
             type: "consecutive",
             severity: "error",
             week: mStr,
-            message: `${sMap[wkndSurgeon]?.name} has Weekend then Mon night the next week`
+            message: `${(_sMap$wkndSurgeon = sMap[wkndSurgeon]) === null || _sMap$wkndSurgeon === void 0 ? void 0 : _sMap$wkndSurgeon.name} has Weekend then Mon night the next week`
           });
         }
         // Check service week surgeon → Mon night next week (hard rule)
-        if (wk.dayCall && nextWk?.nights?.mon === wk.dayCall) {
+        if (wk.dayCall && (nextWk === null || nextWk === void 0 || (_nextWk$nights4 = nextWk.nights) === null || _nextWk$nights4 === void 0 ? void 0 : _nextWk$nights4.mon) === wk.dayCall) {
+          var _sMap$wk$dayCall;
           issues.push({
             type: "consecutive",
             severity: "error",
             week: mStr,
-            message: `${sMap[wk.dayCall]?.name} has Service Week then Mon night the next week`
+            message: `${(_sMap$wk$dayCall = sMap[wk.dayCall]) === null || _sMap$wk$dayCall === void 0 ? void 0 : _sMap$wk$dayCall.name} has Service Week then Mon night the next week`
           });
         }
       }
 
       // Check DC surgeon also on night same week (should not happen, unless holiday 24h covers that day)
       if (wk.dayCall) {
+        var _wk$nights7;
         const holCov = wk.holidayCoverage || {};
         nightOrder.forEach(sk => {
-          if (wk.nights?.[sk] === wk.dayCall) {
+          var _wk$nights6;
+          if (((_wk$nights6 = wk.nights) === null || _wk$nights6 === void 0 ? void 0 : _wk$nights6[sk]) === wk.dayCall) {
+            var _sMap$wk$dayCall2;
             const nightDate = fmt(addD(mon, {
               mon: 0,
               tue: 1,
@@ -4184,19 +4429,20 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               type: "double",
               severity: "error",
               week: mStr,
-              message: `${sMap[wk.dayCall]?.name} is on Service Week AND ${SHIFT_LABELS[sk]} (same week)`
+              message: `${(_sMap$wk$dayCall2 = sMap[wk.dayCall]) === null || _sMap$wk$dayCall2 === void 0 ? void 0 : _sMap$wk$dayCall2.name} is on Service Week AND ${SHIFT_LABELS[sk]} (same week)`
             });
           }
         });
-        if (wk.nights?.wknd === wk.dayCall) {
+        if (((_wk$nights7 = wk.nights) === null || _wk$nights7 === void 0 ? void 0 : _wk$nights7.wknd) === wk.dayCall) {
           const friD = fmt(addD(mon, 4));
           const sunD = fmt(addD(mon, 6));
           if (!holCov[friD] && !holCov[sunD]) {
+            var _sMap$wk$dayCall3;
             issues.push({
               type: "double",
               severity: "error",
               week: mStr,
-              message: `${sMap[wk.dayCall]?.name} is on Service Week AND Weekend (same week)`
+              message: `${(_sMap$wk$dayCall3 = sMap[wk.dayCall]) === null || _sMap$wk$dayCall3 === void 0 ? void 0 : _sMap$wk$dayCall3.name} is on Service Week AND Weekend (same week)`
             });
           }
         }
@@ -4287,6 +4533,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
   const calData = useMemo(() => {
     const d = {};
     Object.entries(schedule).forEach(([mStr, wk]) => {
+      var _wk$nights9;
       const mon = parse(mStr);
       const pfx = wk.isBackup ? "B-" : "";
       const cls = wk.isBackup ? "backup" : "primary";
@@ -4311,7 +4558,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         }];
       }
       NIGHT_KEYS.forEach((sk, i) => {
-        const sid = wk.nights?.[sk];
+        var _wk$nights8;
+        const sid = (_wk$nights8 = wk.nights) === null || _wk$nights8 === void 0 ? void 0 : _wk$nights8[sk];
         if (!sid) return;
         const ds = fmt(addD(mon, i));
         if (holCov[ds]) return; // Holiday 24h covers this night
@@ -4321,7 +4569,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           cls
         }];
       });
-      const wkndS = wk.nights?.wknd;
+      const wkndS = (_wk$nights9 = wk.nights) === null || _wk$nights9 === void 0 ? void 0 : _wk$nights9.wknd;
       if (wkndS) {
         const fri = fmt(addD(mon, 4));
         if (!holCov[fri]) d[fri] = [...(d[fri] || []), {
@@ -4440,10 +4688,11 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       fierceBkp: false
     };
     todayEntries.forEach(e => {
-      if (e.type === "Svc" || e.type === "B-Svc") info.dayCall = sMap[e.surgeon]?.name || null;
-      if (e.type === "Ngt" || e.type === "B-Ngt") info.night = sMap[e.surgeon]?.name || null;
-      if (e.type === "Wknd" || e.type === "B-Wknd") info.weekend = sMap[e.surgeon]?.name || null;
-      if (e.type === "APP") info.app = aMap[e.appId]?.name || null;
+      var _sMap$e$surgeon, _sMap$e$surgeon2, _sMap$e$surgeon3, _aMap$e$appId;
+      if (e.type === "Svc" || e.type === "B-Svc") info.dayCall = ((_sMap$e$surgeon = sMap[e.surgeon]) === null || _sMap$e$surgeon === void 0 ? void 0 : _sMap$e$surgeon.name) || null;
+      if (e.type === "Ngt" || e.type === "B-Ngt") info.night = ((_sMap$e$surgeon2 = sMap[e.surgeon]) === null || _sMap$e$surgeon2 === void 0 ? void 0 : _sMap$e$surgeon2.name) || null;
+      if (e.type === "Wknd" || e.type === "B-Wknd") info.weekend = ((_sMap$e$surgeon3 = sMap[e.surgeon]) === null || _sMap$e$surgeon3 === void 0 ? void 0 : _sMap$e$surgeon3.name) || null;
+      if (e.type === "APP") info.app = ((_aMap$e$appId = aMap[e.appId]) === null || _aMap$e$appId === void 0 ? void 0 : _aMap$e$appId.name) || null;
       if (e.type === "Fierce") info.fierce = true;
       if (e.type === "FierceBkp") info.fierceBkp = true;
     });
@@ -5257,8 +5506,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     style: css.nav
   }, (() => {
     const allTabs = [["setup", "Setup"], ["calendar", "Calendar"], ["myschedule", "Mine"], ["requests", "Requests"], ["stats", "Stats"], ["totals", "Totals"], ["settings", "Settings"]];
-    const isAdmin = userProfile?.person_id === "admin";
-    const canAssignApps = userProfile?.can_assign_apps === true;
+    const isAdmin = (userProfile === null || userProfile === void 0 ? void 0 : userProfile.person_id) === "admin";
+    const canAssignApps = (userProfile === null || userProfile === void 0 ? void 0 : userProfile.can_assign_apps) === true;
     const canSeeSetup = isScheduler || isAdmin || canAssignApps;
     let tabs = canSeeSetup ? allTabs : allTabs.filter(([k]) => k !== "setup");
     if (!isScheduler) tabs = tabs.filter(([k]) => k !== "totals");
@@ -5456,7 +5705,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         display: "inline-block"
       }
     }, "Tap to view \u2192"));
-  })), view === "setup" && !isPublicMode && /*#__PURE__*/React.createElement(React.Fragment, null, (isScheduler || userProfile?.person_id === "admin") && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+  })), view === "setup" && !isPublicMode && /*#__PURE__*/React.createElement(React.Fragment, null, (isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.person_id) === "admin") && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
     style: css.card
   }, /*#__PURE__*/React.createElement("div", {
     style: {
@@ -5679,14 +5928,18 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     accept: ".pdf,.xlsx,.xls,.csv,.docx,.doc,.png,.jpg,.jpeg,.webp,.gif",
     multiple: true,
     onChange: e => {
-      if (e.target.files?.length) handleScheduleScan(e.target.files);
+      var _e$target$files;
+      if ((_e$target$files = e.target.files) !== null && _e$target$files !== void 0 && _e$target$files.length) handleScheduleScan(e.target.files);
     },
     style: {
       display: "none"
     },
     id: "schedScanInput"
   }), /*#__PURE__*/React.createElement("button", {
-    onClick: () => schedFileRef.current?.click(),
+    onClick: () => {
+      var _schedFileRef$current;
+      return (_schedFileRef$current = schedFileRef.current) === null || _schedFileRef$current === void 0 ? void 0 : _schedFileRef$current.click();
+    },
     disabled: schedScanning,
     style: {
       ...css.btn(true),
@@ -5818,11 +6071,12 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       });
     });
     const shortRange = (s, e) => {
+      var _MO, _MO2;
       const sp = s.split("-"),
         ep = e.split("-");
-      const sm = MO[parseInt(sp[1]) - 1]?.slice(0, 3),
+      const sm = (_MO = MO[parseInt(sp[1]) - 1]) === null || _MO === void 0 ? void 0 : _MO.slice(0, 3),
         sd = parseInt(sp[2]);
-      const em = MO[parseInt(ep[1]) - 1]?.slice(0, 3),
+      const em = (_MO2 = MO[parseInt(ep[1]) - 1]) === null || _MO2 === void 0 ? void 0 : _MO2.slice(0, 3),
         ed = parseInt(ep[2]);
       if (s === e) return `${sm} ${sd}`;
       if (sp[1] === ep[1]) return `${sm} ${sd}–${ed}`;
@@ -6160,7 +6414,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         fontSize: 11
       }
     }, "\u2715"));
-  })), (isScheduler || userProfile?.person_id === "admin") && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+  })), (isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.person_id) === "admin") && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
     style: css.card
   }, /*#__PURE__*/React.createElement("div", {
     style: css.cardT
@@ -6615,7 +6869,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         style: {
           fontWeight: 700
         }
-      }, ck.ok ? "✓" : "⚠", " ", ck.label, " group:"), " ", ck.ok ? `All ${ck.uniqueCount} surgeons distinct (${ck.freeCount} free)` : ck.dupes.map(d => `${surgeons.find(s => s.id === d.surgeon)?.name || d.surgeon} is on both ${d.hol1} & ${d.hol2}`).join("; "))));
+      }, ck.ok ? "✓" : "⚠", " ", ck.label, " group:"), " ", ck.ok ? `All ${ck.uniqueCount} surgeons distinct (${ck.freeCount} free)` : ck.dupes.map(d => {
+        var _surgeons$find8;
+        return `${((_surgeons$find8 = surgeons.find(s => s.id === d.surgeon)) === null || _surgeons$find8 === void 0 ? void 0 : _surgeons$find8.name) || d.surgeon} is on both ${d.hol1} & ${d.hol2}`;
+      }).join("; "))));
     })(), /*#__PURE__*/React.createElement("div", {
       style: {
         marginTop: 14,
@@ -6636,12 +6893,13 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         flexWrap: "wrap"
       }
     }, surgeons.map(s => {
-      const mc = holCounts[s.id]?.major || 0;
-      const mi = holCounts[s.id]?.minor || 0;
+      var _holCounts$s$id, _holCounts$s$id2, _sMap$s$id, _sMap$s$id2;
+      const mc = ((_holCounts$s$id = holCounts[s.id]) === null || _holCounts$s$id === void 0 ? void 0 : _holCounts$s$id.major) || 0;
+      const mi = ((_holCounts$s$id2 = holCounts[s.id]) === null || _holCounts$s$id2 === void 0 ? void 0 : _holCounts$s$id2.minor) || 0;
       return /*#__PURE__*/React.createElement("div", {
         key: s.id,
         style: {
-          ...css.badge(sMap[s.id]?.idx || 0, sMap[s.id]?.name),
+          ...css.badge(((_sMap$s$id = sMap[s.id]) === null || _sMap$s$id === void 0 ? void 0 : _sMap$s$id.idx) || 0, (_sMap$s$id2 = sMap[s.id]) === null || _sMap$s$id2 === void 0 ? void 0 : _sMap$s$id2.name),
           padding: "4px 10px",
           fontSize: 11
         }
@@ -6702,6 +6960,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     // Build calData from preview schedule
     const pCalData = {};
     Object.entries(previewSchedule).forEach(([mStr, wk]) => {
+      var _wk$nights1;
       const mon = parse(mStr);
       const pfx = wk.isBackup ? "B-" : "";
       const cls = wk.isBackup ? "backup" : "primary";
@@ -6725,7 +6984,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         }];
       }
       NIGHT_KEYS.forEach((sk, i) => {
-        const sid = wk.nights?.[sk];
+        var _wk$nights0;
+        const sid = (_wk$nights0 = wk.nights) === null || _wk$nights0 === void 0 ? void 0 : _wk$nights0[sk];
         if (!sid) return;
         const ds = fmt(addD(mon, i));
         if (holCov[ds]) return;
@@ -6735,7 +6995,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           cls
         }];
       });
-      const wkndS = wk.nights?.wknd;
+      const wkndS = (_wk$nights1 = wk.nights) === null || _wk$nights1 === void 0 ? void 0 : _wk$nights1.wknd;
       if (wkndS) {
         const fri = fmt(addD(mon, 4));
         if (!holCov[fri]) pCalData[fri] = [...(pCalData[fri] || []), {
@@ -6943,6 +7203,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           marginBottom: 1
         }
       }, day), entries.filter(e => e.type !== "APP").map((e, j) => {
+        var _sMap$e$surgeon4, _sMap$e$surgeon5, _sMap$e$surgeon6;
         const isB = e.cls === "backup";
         const isD = e.type.includes("Svc");
         const isW = e.type.includes("Wknd");
@@ -6974,28 +7235,31 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           }
         }, label), " ", /*#__PURE__*/React.createElement("span", {
           style: {
-            color: surgeonColors(sMap[e.surgeon]?.name, sMap[e.surgeon]?.idx).tx || "#4a5868",
+            color: surgeonColors((_sMap$e$surgeon4 = sMap[e.surgeon]) === null || _sMap$e$surgeon4 === void 0 ? void 0 : _sMap$e$surgeon4.name, (_sMap$e$surgeon5 = sMap[e.surgeon]) === null || _sMap$e$surgeon5 === void 0 ? void 0 : _sMap$e$surgeon5.idx).tx || "#4a5868",
             fontWeight: 500
           }
-        }, sMap[e.surgeon]?.name || "?"));
-      }), entries.filter(e => e.type === "APP").map((e, j) => /*#__PURE__*/React.createElement("div", {
-        key: "a" + j,
-        style: {
-          fontSize: 9,
-          marginBottom: 1,
-          padding: "0 2px",
-          whiteSpace: "nowrap"
-        }
-      }, /*#__PURE__*/React.createElement("span", {
-        style: {
-          color: "#c08050",
-          fontWeight: 700
-        }
-      }, "A"), " ", /*#__PURE__*/React.createElement("span", {
-        style: {
-          color: "#8a6040"
-        }
-      }, aMap[e.appId]?.name || "?"))), vacList.length > 0 && /*#__PURE__*/React.createElement("div", {
+        }, ((_sMap$e$surgeon6 = sMap[e.surgeon]) === null || _sMap$e$surgeon6 === void 0 ? void 0 : _sMap$e$surgeon6.name) || "?"));
+      }), entries.filter(e => e.type === "APP").map((e, j) => {
+        var _aMap$e$appId2;
+        return /*#__PURE__*/React.createElement("div", {
+          key: "a" + j,
+          style: {
+            fontSize: 9,
+            marginBottom: 1,
+            padding: "0 2px",
+            whiteSpace: "nowrap"
+          }
+        }, /*#__PURE__*/React.createElement("span", {
+          style: {
+            color: "#c08050",
+            fontWeight: 700
+          }
+        }, "A"), " ", /*#__PURE__*/React.createElement("span", {
+          style: {
+            color: "#8a6040"
+          }
+        }, ((_aMap$e$appId2 = aMap[e.appId]) === null || _aMap$e$appId2 === void 0 ? void 0 : _aMap$e$appId2.name) || "?"));
+      }), vacList.length > 0 && /*#__PURE__*/React.createElement("div", {
         style: {
           fontSize: 8,
           color: "#a07070",
@@ -7125,14 +7389,18 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     type: "file",
     accept: ".csv,.xlsx,.xls",
     onChange: e => {
-      if (e.target.files?.[0]) handleTemplateUpload(e.target.files[0]);
+      var _e$target$files2;
+      if ((_e$target$files2 = e.target.files) !== null && _e$target$files2 !== void 0 && _e$target$files2[0]) handleTemplateUpload(e.target.files[0]);
     },
     style: {
       display: "none"
     },
     id: "templateInput"
   }), /*#__PURE__*/React.createElement("button", {
-    onClick: () => fileRef.current?.click(),
+    onClick: () => {
+      var _fileRef$current;
+      return (_fileRef$current = fileRef.current) === null || _fileRef$current === void 0 ? void 0 : _fileRef$current.click();
+    },
     disabled: scanning,
     style: {
       ...css.btn(true),
@@ -7886,6 +8154,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           letterSpacing: 0.5
         }
       }, "F\xB7BKP")), entries.filter(e => {
+        var _sMap$e$surgeon7;
         if (e.type === "Fierce" || e.type === "FierceBkp" || e.type === "APP" || e.type === "Holiday") return false;
         const isD = e.type.includes("Svc");
         const isW = e.type.includes("Wknd");
@@ -7893,9 +8162,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         if (isW && !calFilters.wknd) return false;
         if (!isD && !isW && !calFilters.night) return false;
         if (sf && e.surgeon !== sf) return false;
-        if (calDeptFilter && !(SURGEON_DEPTS[sMap[e.surgeon]?.name] || []).includes(calDeptFilter)) return false;
+        if (calDeptFilter && !(SURGEON_DEPTS[(_sMap$e$surgeon7 = sMap[e.surgeon]) === null || _sMap$e$surgeon7 === void 0 ? void 0 : _sMap$e$surgeon7.name] || []).includes(calDeptFilter)) return false;
         return true;
       }).map((e, j) => {
+        var _sMap$e$surgeon8, _sMap$e$surgeon9, _sMap$e$surgeon0;
         const isB = e.cls === "backup";
         const isD = e.type.includes("Svc");
         const isW = e.type.includes("Wknd");
@@ -7927,63 +8197,72 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           }
         }, label), " ", /*#__PURE__*/React.createElement("span", {
           style: {
-            color: surgeonColors(sMap[e.surgeon]?.name, sMap[e.surgeon]?.idx).tx || "#4a5868",
+            color: surgeonColors((_sMap$e$surgeon8 = sMap[e.surgeon]) === null || _sMap$e$surgeon8 === void 0 ? void 0 : _sMap$e$surgeon8.name, (_sMap$e$surgeon9 = sMap[e.surgeon]) === null || _sMap$e$surgeon9 === void 0 ? void 0 : _sMap$e$surgeon9.idx).tx || "#4a5868",
             fontWeight: highlighted ? 700 : 400
           }
-        }, sMap[e.surgeon]?.name || "?"));
-      }), entries.filter(e => e.type === "Holiday").filter(e => !sf || e.surgeon === sf).filter(e => !calDeptFilter || (SURGEON_DEPTS[sMap[e.surgeon]?.name] || []).includes(calDeptFilter)).map((e, j) => /*#__PURE__*/React.createElement("div", {
-        key: "hol" + j,
-        style: {
-          marginBottom: 1,
-          padding: "1px 3px",
-          borderRadius: 3,
-          fontSize: 10,
-          background: "#fef0e8",
-          border: "1px solid #e0a868",
-          fontWeight: 600
-        }
-      }, /*#__PURE__*/React.createElement("span", {
-        style: {
-          color: "#c06020",
-          fontWeight: 700
-        },
-        title: e.holName || ""
-      }, holidayEmoji(e.holName)), " ", /*#__PURE__*/React.createElement("span", {
-        style: {
-          color: surgeonColors(sMap[e.surgeon]?.name, sMap[e.surgeon]?.idx).tx || "#4a5868"
-        }
-      }, sMap[e.surgeon]?.name || "?"), /*#__PURE__*/React.createElement("span", {
-        style: {
-          color: "#a07030",
-          fontSize: 8,
-          marginLeft: 2
-        }
-      }, e.hours))), calFilters.app && !sf && calAppFilter !== "none" && !calDeptFilter && entries.filter(e => e.type === "APP").filter(e => calAppFilter === "all" || e.appId === calAppFilter).map((e, j) => /*#__PURE__*/React.createElement("div", {
-        key: "app" + j,
-        style: {
-          marginBottom: 1,
-          padding: "1px 3px",
-          borderRadius: 3,
-          fontSize: 10,
-          background: "#fcf4f0",
-          border: "1px solid #281818"
-        }
-      }, /*#__PURE__*/React.createElement("span", {
-        style: {
-          color: "#c08050",
-          fontWeight: 700
-        }
-      }, "A"), " ", /*#__PURE__*/React.createElement("span", {
-        style: {
-          color: APP_PAL[aMap[e.appId]?.idx % 4]?.tx || "#5a6878"
-        }
-      }, aMap[e.appId]?.name || "?"), /*#__PURE__*/React.createElement("span", {
-        style: {
-          color: "#8a94a0",
-          fontSize: 8,
-          marginLeft: 2
-        }
-      }, "5p\u20137a"))), calFilters.fierce && hasFierce && /*#__PURE__*/React.createElement("div", {
+        }, ((_sMap$e$surgeon0 = sMap[e.surgeon]) === null || _sMap$e$surgeon0 === void 0 ? void 0 : _sMap$e$surgeon0.name) || "?"));
+      }), entries.filter(e => e.type === "Holiday").filter(e => !sf || e.surgeon === sf).filter(e => {
+        var _sMap$e$surgeon1;
+        return !calDeptFilter || (SURGEON_DEPTS[(_sMap$e$surgeon1 = sMap[e.surgeon]) === null || _sMap$e$surgeon1 === void 0 ? void 0 : _sMap$e$surgeon1.name] || []).includes(calDeptFilter);
+      }).map((e, j) => {
+        var _sMap$e$surgeon10, _sMap$e$surgeon11, _sMap$e$surgeon12;
+        return /*#__PURE__*/React.createElement("div", {
+          key: "hol" + j,
+          style: {
+            marginBottom: 1,
+            padding: "1px 3px",
+            borderRadius: 3,
+            fontSize: 10,
+            background: "#fef0e8",
+            border: "1px solid #e0a868",
+            fontWeight: 600
+          }
+        }, /*#__PURE__*/React.createElement("span", {
+          style: {
+            color: "#c06020",
+            fontWeight: 700
+          },
+          title: e.holName || ""
+        }, holidayEmoji(e.holName)), " ", /*#__PURE__*/React.createElement("span", {
+          style: {
+            color: surgeonColors((_sMap$e$surgeon10 = sMap[e.surgeon]) === null || _sMap$e$surgeon10 === void 0 ? void 0 : _sMap$e$surgeon10.name, (_sMap$e$surgeon11 = sMap[e.surgeon]) === null || _sMap$e$surgeon11 === void 0 ? void 0 : _sMap$e$surgeon11.idx).tx || "#4a5868"
+          }
+        }, ((_sMap$e$surgeon12 = sMap[e.surgeon]) === null || _sMap$e$surgeon12 === void 0 ? void 0 : _sMap$e$surgeon12.name) || "?"), /*#__PURE__*/React.createElement("span", {
+          style: {
+            color: "#a07030",
+            fontSize: 8,
+            marginLeft: 2
+          }
+        }, e.hours));
+      }), calFilters.app && !sf && calAppFilter !== "none" && !calDeptFilter && entries.filter(e => e.type === "APP").filter(e => calAppFilter === "all" || e.appId === calAppFilter).map((e, j) => {
+        var _APP_PAL, _aMap$e$appId3, _aMap$e$appId4;
+        return /*#__PURE__*/React.createElement("div", {
+          key: "app" + j,
+          style: {
+            marginBottom: 1,
+            padding: "1px 3px",
+            borderRadius: 3,
+            fontSize: 10,
+            background: "#fcf4f0",
+            border: "1px solid #281818"
+          }
+        }, /*#__PURE__*/React.createElement("span", {
+          style: {
+            color: "#c08050",
+            fontWeight: 700
+          }
+        }, "A"), " ", /*#__PURE__*/React.createElement("span", {
+          style: {
+            color: ((_APP_PAL = APP_PAL[((_aMap$e$appId3 = aMap[e.appId]) === null || _aMap$e$appId3 === void 0 ? void 0 : _aMap$e$appId3.idx) % 4]) === null || _APP_PAL === void 0 ? void 0 : _APP_PAL.tx) || "#5a6878"
+          }
+        }, ((_aMap$e$appId4 = aMap[e.appId]) === null || _aMap$e$appId4 === void 0 ? void 0 : _aMap$e$appId4.name) || "?"), /*#__PURE__*/React.createElement("span", {
+          style: {
+            color: "#8a94a0",
+            fontSize: 8,
+            marginLeft: 2
+          }
+        }, "5p\u20137a"));
+      }), calFilters.fierce && hasFierce && /*#__PURE__*/React.createElement("div", {
         style: {
           fontSize: 8,
           color: "#8a6a10",
@@ -8105,7 +8384,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     style: {
       color: "#c06020"
     }
-  }, "\uD83D\uDCC5"), " Holiday Coverage")), (isScheduler || userProfile?.person_id === "admin") && /*#__PURE__*/React.createElement("div", {
+  }, "\uD83D\uDCC5"), " Holiday Coverage")), (isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.person_id) === "admin") && /*#__PURE__*/React.createElement("div", {
     style: {
       ...css.card,
       marginTop: 14,
@@ -8209,7 +8488,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       marginBottom: 2
     }
   }, "Week"), /*#__PURE__*/React.createElement("select", {
-    value: swapTarget?.mondayStr || "",
+    value: (swapTarget === null || swapTarget === void 0 ? void 0 : swapTarget.mondayStr) || "",
     onChange: e => {
       setSwapTarget(prev => ({
         ...(prev || {}),
@@ -8234,7 +8513,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       marginBottom: 2
     }
   }, "Shift"), /*#__PURE__*/React.createElement("select", {
-    value: swapTarget?.shift || "",
+    value: (swapTarget === null || swapTarget === void 0 ? void 0 : swapTarget.shift) || "",
     onChange: e => {
       setSwapTarget(prev => ({
         ...(prev || {}),
@@ -8259,12 +8538,13 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       marginBottom: 2
     }
   }, "Current Surgeon"), (() => {
-    const m = swapTarget?.mondayStr;
-    const sh = swapTarget?.shift;
+    const m = swapTarget === null || swapTarget === void 0 ? void 0 : swapTarget.mondayStr;
+    const sh = swapTarget === null || swapTarget === void 0 ? void 0 : swapTarget.shift;
     const wk = m ? schedule[m] : null;
     let currentId = null;
     if (wk && sh) {
-      currentId = sh === "dayCall" ? wk.dayCall : wk.nights?.[sh];
+      var _wk$nights10;
+      currentId = sh === "dayCall" ? wk.dayCall : (_wk$nights10 = wk.nights) === null || _wk$nights10 === void 0 ? void 0 : _wk$nights10[sh];
     }
     return currentId ? /*#__PURE__*/React.createElement("div", {
       style: {
@@ -8292,7 +8572,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       const wk = schedule[m];
       if (!wk) return;
       ALL_SHIFT_KEYS.forEach(sk => {
-        const holder = sk === "dayCall" ? wk.dayCall : wk.nights?.[sk];
+        var _wk$nights11;
+        const holder = sk === "dayCall" ? wk.dayCall : (_wk$nights11 = wk.nights) === null || _wk$nights11 === void 0 ? void 0 : _wk$nights11[sk];
         if (holder === mySurgeon) {
           const d = parse(m);
           const label = `${MO[d.getMonth()].slice(0, 3)} ${d.getDate()} — ${SHIFT_LABELS[sk]}${wk.isBackup ? " (Backup)" : ""}`;
@@ -8303,7 +8584,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         }
       });
     });
-    const curVal = swapTarget?.mondayStr && swapTarget?.shift ? `${swapTarget.mondayStr}|${swapTarget.shift}` : "";
+    const curVal = swapTarget !== null && swapTarget !== void 0 && swapTarget.mondayStr && swapTarget !== null && swapTarget !== void 0 && swapTarget.shift ? `${swapTarget.mondayStr}|${swapTarget.shift}` : "";
     const placeholder = !mySurgeon ? "Select your name in Mine tab first" : opts.length === 0 ? "You have no scheduled shifts" : "Select your shift…";
     return /*#__PURE__*/React.createElement("select", {
       value: curVal,
@@ -8333,19 +8614,20 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     }, o.label)));
   })()), /*#__PURE__*/React.createElement("button", {
     onClick: () => {
-      const m = swapTarget?.mondayStr;
-      const sh = swapTarget?.shift;
+      var _wk$nights12;
+      const m = swapTarget === null || swapTarget === void 0 ? void 0 : swapTarget.mondayStr;
+      const sh = swapTarget === null || swapTarget === void 0 ? void 0 : swapTarget.shift;
       const wk = m ? schedule[m] : null;
       if (!wk || !sh) return;
-      const currentId = sh === "dayCall" ? wk.dayCall : wk.nights?.[sh];
+      const currentId = sh === "dayCall" ? wk.dayCall : (_wk$nights12 = wk.nights) === null || _wk$nights12 === void 0 ? void 0 : _wk$nights12[sh];
       if (!currentId) return;
       findSwapSuggestions(m, sh, currentId);
     },
-    disabled: !swapTarget?.mondayStr || !swapTarget?.shift,
+    disabled: !(swapTarget !== null && swapTarget !== void 0 && swapTarget.mondayStr) || !(swapTarget !== null && swapTarget !== void 0 && swapTarget.shift),
     style: {
       ...css.btn(true),
       padding: "7px 16px",
-      opacity: !swapTarget?.mondayStr || !swapTarget?.shift ? 0.5 : 1,
+      opacity: !(swapTarget !== null && swapTarget !== void 0 && swapTarget.mondayStr) || !(swapTarget !== null && swapTarget !== void 0 && swapTarget.shift) ? 0.5 : 1,
       background: "linear-gradient(135deg,#6030a0,#8050c0)",
       borderColor: "#6030a0"
     }
@@ -8516,20 +8798,23 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       flexWrap: "wrap",
       marginBottom: 10
     }
-  }, surgeons.map(s => /*#__PURE__*/React.createElement("button", {
-    key: s.id,
-    onClick: () => {
-      const events = buildICSEvents(schedule, s.id, s.name, appShifts, aMap);
-      const ics = generateICS(events, `Call Schedule — ${s.name}`);
-      downloadICS(ics, `call-schedule-${s.name.toLowerCase()}.ics`);
-    },
-    style: {
-      ...css.badge(sMap[s.id]?.idx || 0, sMap[s.id]?.name),
-      cursor: "pointer",
-      padding: "5px 12px",
-      fontSize: 12
-    }
-  }, "\u2B07 ", s.name))), /*#__PURE__*/React.createElement("div", {
+  }, surgeons.map(s => {
+    var _sMap$s$id3, _sMap$s$id4;
+    return /*#__PURE__*/React.createElement("button", {
+      key: s.id,
+      onClick: () => {
+        const events = buildICSEvents(schedule, s.id, s.name, appShifts, aMap);
+        const ics = generateICS(events, `Call Schedule — ${s.name}`);
+        downloadICS(ics, `call-schedule-${s.name.toLowerCase()}.ics`);
+      },
+      style: {
+        ...css.badge(((_sMap$s$id3 = sMap[s.id]) === null || _sMap$s$id3 === void 0 ? void 0 : _sMap$s$id3.idx) || 0, (_sMap$s$id4 = sMap[s.id]) === null || _sMap$s$id4 === void 0 ? void 0 : _sMap$s$id4.name),
+        cursor: "pointer",
+        padding: "5px 12px",
+        fontSize: 12
+      }
+    }, "\u2B07 ", s.name);
+  })), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       gap: 6,
@@ -8543,9 +8828,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         allEvents.push(...buildICSEvents(schedule, s.id, s.name, appShifts, aMap));
       });
       Object.entries(appShifts).forEach(([ds, aid]) => {
+        var _aMap$aid2;
         const d = parse(ds);
         const next = addD(d, 1);
-        const appName = aMap?.[aid]?.name || aid;
+        const appName = (aMap === null || aMap === void 0 || (_aMap$aid2 = aMap[aid]) === null || _aMap$aid2 === void 0 ? void 0 : _aMap$aid2.name) || aid;
         const dow = d.getDay();
         const isWeekend = dow === 0 || dow === 6;
         const startHour = isWeekend ? 7 : 17;
@@ -9086,6 +9372,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     const monthlyData = {};
     const allMonths = new Set();
     Object.entries(schedule).forEach(([mStr, wk]) => {
+      var _wk$nights14;
       const mon = parse(mStr);
       // Register every month touched by this week so all surgeons show columns
       for (let i = 0; i < 7; i++) {
@@ -9105,25 +9392,28 @@ ${"</"}script>${"</"}body>${"</"}html>`;
 
       // Service Week = 6 points, attributed to the month containing Monday
       if (wk.dayCall) {
+        var _monthlyData$monMoKey;
         const monMoKey = `${mon.getFullYear()}-${String(mon.getMonth() + 1).padStart(2, "0")}`;
-        if (monthlyData[monMoKey]?.[wk.dayCall]) monthlyData[monMoKey][wk.dayCall][countKey] += 6;
+        if ((_monthlyData$monMoKey = monthlyData[monMoKey]) !== null && _monthlyData$monMoKey !== void 0 && _monthlyData$monMoKey[wk.dayCall]) monthlyData[monMoKey][wk.dayCall][countKey] += 6;
       }
 
       // Week Nights (Mon-Thu) = 1 point each, attributed to the night's own month
       NIGHT_KEYS.forEach((sk, i) => {
-        const sid = wk.nights?.[sk];
+        var _wk$nights13, _monthlyData$moKey;
+        const sid = (_wk$nights13 = wk.nights) === null || _wk$nights13 === void 0 ? void 0 : _wk$nights13[sk];
         if (!sid) return;
         const d = addD(mon, i);
         const moKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
-        if (monthlyData[moKey]?.[sid]) monthlyData[moKey][sid][countKey] += 1;
+        if ((_monthlyData$moKey = monthlyData[moKey]) !== null && _monthlyData$moKey !== void 0 && _monthlyData$moKey[sid]) monthlyData[moKey][sid][countKey] += 1;
       });
 
       // Weekend (Fri night + Sun 24h) = 2 points, attributed to the month containing Friday
-      const wkndSid = wk.nights?.wknd;
+      const wkndSid = (_wk$nights14 = wk.nights) === null || _wk$nights14 === void 0 ? void 0 : _wk$nights14.wknd;
       if (wkndSid) {
+        var _monthlyData$friMo;
         const fri = addD(mon, 4);
         const friMo = `${fri.getFullYear()}-${String(fri.getMonth() + 1).padStart(2, "0")}`;
-        if (monthlyData[friMo]?.[wkndSid]) monthlyData[friMo][wkndSid][countKey] += 2;
+        if ((_monthlyData$friMo = monthlyData[friMo]) !== null && _monthlyData$friMo !== void 0 && _monthlyData$friMo[wkndSid]) monthlyData[friMo][wkndSid][countKey] += 2;
       }
     });
     const sortedMonths = [...allMonths].sort();
@@ -9148,8 +9438,14 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       onClick: () => {
         const header = ["Surgeon", ...moLabels.map(m => m + " 1st"), "Total 1st", ...moLabels.map(m => m + " 2nd"), "Total 2nd", "Grand Total"];
         const rows = surgeons.map(s => {
-          const m1 = sortedMonths.map(m => monthlyData[m]?.[s.id]?.total1st || 0);
-          const m2 = sortedMonths.map(m => monthlyData[m]?.[s.id]?.total2nd || 0);
+          const m1 = sortedMonths.map(m => {
+            var _monthlyData$m;
+            return ((_monthlyData$m = monthlyData[m]) === null || _monthlyData$m === void 0 || (_monthlyData$m = _monthlyData$m[s.id]) === null || _monthlyData$m === void 0 ? void 0 : _monthlyData$m.total1st) || 0;
+          });
+          const m2 = sortedMonths.map(m => {
+            var _monthlyData$m2;
+            return ((_monthlyData$m2 = monthlyData[m]) === null || _monthlyData$m2 === void 0 || (_monthlyData$m2 = _monthlyData$m2[s.id]) === null || _monthlyData$m2 === void 0 ? void 0 : _monthlyData$m2.total2nd) || 0;
+          });
           const t1 = m1.reduce((a, b) => a + b, 0);
           const t2 = m2.reduce((a, b) => a + b, 0);
           return [s.name, ...m1, t1, ...m2, t2, t1 + t2].join(",");
@@ -9215,7 +9511,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         color: "#1a8040"
       }
     }, "Total"))), /*#__PURE__*/React.createElement("tbody", null, surgeons.filter(s => isScheduler || !mySurgeon || mySurgeon === "admin" || s.id === mySurgeon).map(s => {
-      const vals = sortedMonths.map(m => monthlyData[m]?.[s.id]?.total1st || 0);
+      const vals = sortedMonths.map(m => {
+        var _monthlyData$m3;
+        return ((_monthlyData$m3 = monthlyData[m]) === null || _monthlyData$m3 === void 0 || (_monthlyData$m3 = _monthlyData$m3[s.id]) === null || _monthlyData$m3 === void 0 ? void 0 : _monthlyData$m3.total1st) || 0;
+      });
       const total = vals.reduce((a, b) => a + b, 0);
       return /*#__PURE__*/React.createElement("tr", {
         key: s.id,
@@ -9295,7 +9594,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         color: "#8a6a10"
       }
     }, "Total"))), /*#__PURE__*/React.createElement("tbody", null, surgeons.filter(s => isScheduler || !mySurgeon || mySurgeon === "admin" || s.id === mySurgeon).map(s => {
-      const vals = sortedMonths.map(m => monthlyData[m]?.[s.id]?.total2nd || 0);
+      const vals = sortedMonths.map(m => {
+        var _monthlyData$m4;
+        return ((_monthlyData$m4 = monthlyData[m]) === null || _monthlyData$m4 === void 0 || (_monthlyData$m4 = _monthlyData$m4[s.id]) === null || _monthlyData$m4 === void 0 ? void 0 : _monthlyData$m4.total2nd) || 0;
+      });
       const total = vals.reduce((a, b) => a + b, 0);
       return /*#__PURE__*/React.createElement("tr", {
         key: s.id,
@@ -9343,7 +9645,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         color: "#2c5a80"
       }
     }, "Formula:"), " Service Week = 6 \xB7 Week Night = 1 \xB7 Weekend = 2. Multi-day shifts counted in the month they start."));
-  })(), (isScheduler || userProfile?.person_id === "admin") && Object.keys(schedule).length > 0 && (() => {
+  })(), (isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.person_id) === "admin") && Object.keys(schedule).length > 0 && (() => {
     // Compute monthly billing breakdown. 1st-call only (backup weeks excluded).
     // Attribution:
     //   Service Week (dayCall) → month containing Monday (1 shift = 7 call days)
@@ -9352,6 +9654,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     const monthly = {}; // { "2026-05": { s1: { dc: n, nights: n, wknd: n }, ... } }
     const allMonths = new Set();
     Object.entries(schedule).forEach(([mStr, wk]) => {
+      var _wk$nights16;
       const mon = parse(mStr);
       for (let i = 0; i < 7; i++) {
         const d = addD(mon, i);
@@ -9369,21 +9672,24 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       // Skip backup weeks entirely — they're 2nd-call and not billed
       if (wk.isBackup) return;
       if (wk.dayCall) {
+        var _monthly$monMoKey;
         const monMoKey = `${mon.getFullYear()}-${String(mon.getMonth() + 1).padStart(2, "0")}`;
-        if (monthly[monMoKey]?.[wk.dayCall]) monthly[monMoKey][wk.dayCall].dc += 1;
+        if ((_monthly$monMoKey = monthly[monMoKey]) !== null && _monthly$monMoKey !== void 0 && _monthly$monMoKey[wk.dayCall]) monthly[monMoKey][wk.dayCall].dc += 1;
       }
       NIGHT_KEYS.forEach((sk, i) => {
-        const sid = wk.nights?.[sk];
+        var _wk$nights15, _monthly$moKey;
+        const sid = (_wk$nights15 = wk.nights) === null || _wk$nights15 === void 0 ? void 0 : _wk$nights15[sk];
         if (!sid) return;
         const d = addD(mon, i);
         const moKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
-        if (monthly[moKey]?.[sid]) monthly[moKey][sid].nights += 1;
+        if ((_monthly$moKey = monthly[moKey]) !== null && _monthly$moKey !== void 0 && _monthly$moKey[sid]) monthly[moKey][sid].nights += 1;
       });
-      const wkndSid = wk.nights?.wknd;
+      const wkndSid = (_wk$nights16 = wk.nights) === null || _wk$nights16 === void 0 ? void 0 : _wk$nights16.wknd;
       if (wkndSid) {
+        var _monthly$friMo;
         const fri = addD(mon, 4);
         const friMo = `${fri.getFullYear()}-${String(fri.getMonth() + 1).padStart(2, "0")}`;
-        if (monthly[friMo]?.[wkndSid]) monthly[friMo][wkndSid].wknd += 1;
+        if ((_monthly$friMo = monthly[friMo]) !== null && _monthly$friMo !== void 0 && _monthly$friMo[wkndSid]) monthly[friMo][wkndSid].wknd += 1;
       }
     });
     const sortedMonths = [...allMonths].sort();
@@ -9869,14 +10175,15 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       ...css.btn(true),
       padding: "8px 18px"
     }
-  }, "\uD83D\uDCC5 Download My Calendar (.ics)"))), mySurgeon && Object.keys(schedule).length > 0 && (() => {
+  }, "\uD83D\uDCC5 Download My Calendar (.ics)"))), mySurgeon && Object.keys(schedule).length > 0 && (_sMap$myId => {
     const myId = mySurgeon;
-    const myName = sMap[myId]?.name || "?";
+    const myName = ((_sMap$myId = sMap[myId]) === null || _sMap$myId === void 0 ? void 0 : _sMap$myId.name) || "?";
     const myVacs = vacations[myId] || [];
 
     // Build my shifts
     const myShifts = [];
     Object.entries(schedule).forEach(([mStr, wk]) => {
+      var _wk$nights18;
       const mon = parse(mStr);
       const endStr = fmt(addD(mon, 6));
       const roles = [];
@@ -9888,7 +10195,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         shiftKey: "dayCall"
       });
       NIGHT_KEYS.forEach((sk, i) => {
-        if (wk.nights?.[sk] === myId) roles.push({
+        var _wk$nights17;
+        if (((_wk$nights17 = wk.nights) === null || _wk$nights17 === void 0 ? void 0 : _wk$nights17[sk]) === myId) roles.push({
           type: SHIFT_LABELS[sk],
           icon: "🌙",
           detail: SHIFT_TIMES[sk],
@@ -9896,7 +10204,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           shiftKey: sk
         });
       });
-      if (wk.nights?.wknd === myId) roles.push({
+      if (((_wk$nights18 = wk.nights) === null || _wk$nights18 === void 0 ? void 0 : _wk$nights18.wknd) === myId) roles.push({
         type: "Weekend",
         icon: "🌗",
         detail: SHIFT_TIMES.wknd,
@@ -10206,7 +10514,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       color: "#1a6fa8",
       padding: "6px 0"
     }
-  }, [...surgeons, ...apps].find(p => p.id === mySurgeon)?.name || "—")), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
+  }, ((_find = [...surgeons, ...apps].find(p => p.id === mySurgeon)) === null || _find === void 0 ? void 0 : _find.name) || "—")), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
     style: {
       fontSize: 11,
       color: "#7a8a98",
@@ -10274,11 +10582,12 @@ ${"</"}script>${"</"}body>${"</"}html>`;
 
     // Helper to format date range compactly
     const shortRange = (s, e) => {
+      var _MO3, _MO4;
       const sp = s.split("-"),
         ep = e.split("-");
-      const sm = MO[parseInt(sp[1]) - 1]?.slice(0, 3),
+      const sm = (_MO3 = MO[parseInt(sp[1]) - 1]) === null || _MO3 === void 0 ? void 0 : _MO3.slice(0, 3),
         sd = parseInt(sp[2]);
-      const em = MO[parseInt(ep[1]) - 1]?.slice(0, 3),
+      const em = (_MO4 = MO[parseInt(ep[1]) - 1]) === null || _MO4 === void 0 ? void 0 : _MO4.slice(0, 3),
         ed = parseInt(ep[2]);
       if (s === e) return `${sm} ${sd}`;
       if (sp[1] === ep[1]) return `${sm} ${sd}–${ed}`;
@@ -10379,7 +10688,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           padding: "8px 0",
           borderBottom: "1px solid #f0e8d8"
         }
-      }, editingVacReq?.id === r.id ? /*#__PURE__*/React.createElement("div", {
+      }, (editingVacReq === null || editingVacReq === void 0 ? void 0 : editingVacReq.id) === r.id ? /*#__PURE__*/React.createElement("div", {
         style: {
           display: "flex",
           gap: 6,
@@ -10678,7 +10987,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           padding: "6px 0",
           borderBottom: "1px solid #e8f0e8"
         }
-      }, editingVacReq?.id === r.id ? /*#__PURE__*/React.createElement("div", {
+      }, (editingVacReq === null || editingVacReq === void 0 ? void 0 : editingVacReq.id) === r.id ? /*#__PURE__*/React.createElement("div", {
         style: {
           display: "flex",
           gap: 6,
@@ -10869,7 +11178,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       color: "#6030a0",
       padding: "6px 0"
     }
-  }, surgeons.find(s => s.id === mySurgeon)?.name || "—")), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
+  }, ((_surgeons$find9 = surgeons.find(s => s.id === mySurgeon)) === null || _surgeons$find9 === void 0 ? void 0 : _surgeons$find9.name) || "—")), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
     style: {
       fontSize: 10,
       color: "#7a8a98",
@@ -10939,7 +11248,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       const wk = schedule[m];
       if (!wk) return;
       ALL_SHIFT_KEYS.forEach(sk => {
-        const holder = sk === "dayCall" ? wk.dayCall : wk.nights?.[sk];
+        var _wk$nights19;
+        const holder = sk === "dayCall" ? wk.dayCall : (_wk$nights19 = wk.nights) === null || _wk$nights19 === void 0 ? void 0 : _wk$nights19[sk];
         if (holder === tradeFrom) {
           const d = parse(m);
           const label = `${MO[d.getMonth()].slice(0, 3)} ${d.getDate()} — ${SHIFT_LABELS[sk]}${wk.isBackup ? " (Backup)" : ""}`;
@@ -11034,7 +11344,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         const wk = schedule[m];
         if (!wk) return;
         ALL_SHIFT_KEYS.forEach(sk => {
-          const holder = sk === "dayCall" ? wk.dayCall : wk.nights?.[sk];
+          var _wk$nights20;
+          const holder = sk === "dayCall" ? wk.dayCall : (_wk$nights20 = wk.nights) === null || _wk$nights20 === void 0 ? void 0 : _wk$nights20[sk];
           if (holder === tradeTo) {
             const d = parse(m);
             const label = `${MO[d.getMonth()].slice(0, 3)} ${d.getDate()} — ${SHIFT_LABELS[sk]}${wk.isBackup ? " (Backup)" : ""}`;
@@ -11425,7 +11736,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       color: "#8a94a0",
       margin: "4px 0 0"
     }
-  }, "Current PIN: ", schedulerPin.replace(/./g, "•"))))), (isScheduler || userProfile?.person_id === "admin") && /*#__PURE__*/React.createElement("div", {
+  }, "Current PIN: ", schedulerPin.replace(/./g, "•"))))), (isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.person_id) === "admin") && /*#__PURE__*/React.createElement("div", {
     style: css.card
   }, /*#__PURE__*/React.createElement("div", {
     style: css.cardT
@@ -11527,14 +11838,352 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       }
       setAllProfiles(prev => prev.map(x => x.id === p.id ? updated : x));
       // If updating the current user, refresh their own profile too
-      if (p.id === authUser?.id) setUserProfile(updated);
+      if (p.id === (authUser === null || authUser === void 0 ? void 0 : authUser.id)) setUserProfile(updated);
     },
     style: {
       cursor: "pointer",
       width: 16,
       height: 16
     }
-  })))))), /*#__PURE__*/React.createElement("div", {
+  })))))), (isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.person_id) === "admin") && /*#__PURE__*/React.createElement("div", {
+    style: css.card
+  }, /*#__PURE__*/React.createElement("div", {
+    style: css.cardT
+  }, "\uD83D\uDCE7 Office Notifications"), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 12,
+      color: "#7a8a98",
+      margin: "0 0 12px",
+      lineHeight: 1.5
+    }
+  }, "Office staff on this list receive a weekly Saturday email if the schedule changed in the past 7 days, plus a one-time email whenever you publish a new period. Department filter: leave empty to receive all changes, or select Weight Mgmt / Breast Health to only receive changes affecting those surgeons."), /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: "#f8f9fb",
+      border: "1px solid #e0e4ea",
+      borderRadius: 8,
+      padding: "10px 12px",
+      marginBottom: 14
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 8,
+      flexWrap: "wrap",
+      alignItems: "flex-end"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      flex: "1 1 140px"
+    }
+  }, /*#__PURE__*/React.createElement("label", {
+    style: {
+      fontSize: 10,
+      color: "#7a8a98",
+      fontWeight: 600,
+      textTransform: "uppercase",
+      letterSpacing: 0.5,
+      display: "block",
+      marginBottom: 2
+    }
+  }, "Name"), /*#__PURE__*/React.createElement("input", {
+    value: newOfficeName,
+    onChange: e => setNewOfficeName(e.target.value),
+    placeholder: "Jane Doe",
+    style: {
+      ...css.inp,
+      width: "100%"
+    }
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      flex: "1 1 200px"
+    }
+  }, /*#__PURE__*/React.createElement("label", {
+    style: {
+      fontSize: 10,
+      color: "#7a8a98",
+      fontWeight: 600,
+      textTransform: "uppercase",
+      letterSpacing: 0.5,
+      display: "block",
+      marginBottom: 2
+    }
+  }, "Email"), /*#__PURE__*/React.createElement("input", {
+    value: newOfficeEmail,
+    onChange: e => setNewOfficeEmail(e.target.value),
+    placeholder: "jane@example.com",
+    style: {
+      ...css.inp,
+      width: "100%"
+    }
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      flex: "0 0 auto"
+    }
+  }, /*#__PURE__*/React.createElement("label", {
+    style: {
+      fontSize: 10,
+      color: "#7a8a98",
+      fontWeight: 600,
+      textTransform: "uppercase",
+      letterSpacing: 0.5,
+      display: "block",
+      marginBottom: 2
+    }
+  }, "Departments"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 4
+    }
+  }, ["CWM", "CBH"].map(d => /*#__PURE__*/React.createElement("button", {
+    key: d,
+    type: "button",
+    onClick: () => setNewOfficeDepts(prev => prev.includes(d) ? prev.filter(x => x !== d) : [...prev, d]),
+    style: {
+      background: newOfficeDepts.includes(d) ? "#1a6fa8" : "#fff",
+      border: `1px solid ${newOfficeDepts.includes(d) ? "#1a6fa8" : "#c8d0d8"}`,
+      color: newOfficeDepts.includes(d) ? "#fff" : "#5a6a78",
+      borderRadius: 6,
+      padding: "5px 10px",
+      fontSize: 11,
+      fontWeight: 600,
+      cursor: "pointer",
+      fontFamily: font
+    }
+  }, d)))), /*#__PURE__*/React.createElement("button", {
+    onClick: addOfficeContact,
+    disabled: officeNotifBusy,
+    style: {
+      ...css.btn(true),
+      padding: "6px 14px",
+      fontSize: 12,
+      opacity: officeNotifBusy ? 0.6 : 1
+    }
+  }, "+ Add")), newOfficeDepts.length === 0 && /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 10,
+      color: "#7a8a98",
+      margin: "6px 0 0",
+      fontStyle: "italic"
+    }
+  }, "No departments selected = receives all schedule changes.")), officeContacts.length === 0 ? /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 12,
+      color: "#a0a8b0",
+      fontStyle: "italic",
+      margin: "0 0 12px"
+    }
+  }, "No office contacts yet. Add one above.") : /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      flexDirection: "column",
+      gap: 6,
+      marginBottom: 12
+    }
+  }, officeContacts.map(c => /*#__PURE__*/React.createElement("div", {
+    key: c.id,
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 10,
+      padding: "8px 12px",
+      background: c.active ? "#fff" : "#f4f6f8",
+      borderRadius: 6,
+      border: "1px solid #e0e4ea",
+      opacity: c.active ? 1 : 0.6
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      flex: "1 1 auto",
+      minWidth: 0
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      fontWeight: 600,
+      color: "#2c3e50"
+    }
+  }, c.name), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: "#7a8a98",
+      fontFamily: mono,
+      overflow: "hidden",
+      textOverflow: "ellipsis"
+    }
+  }, c.email)), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 4,
+      flexShrink: 0
+    }
+  }, ["CWM", "CBH"].map(d => {
+    const on = (c.departments || []).includes(d);
+    return /*#__PURE__*/React.createElement("button", {
+      key: d,
+      type: "button",
+      onClick: () => toggleOfficeContactDept(c.id, d),
+      style: {
+        background: on ? "#1a6fa8" : "#fff",
+        border: `1px solid ${on ? "#1a6fa8" : "#c8d0d8"}`,
+        color: on ? "#fff" : "#7a8a98",
+        borderRadius: 5,
+        padding: "3px 8px",
+        fontSize: 10,
+        fontWeight: 600,
+        cursor: "pointer",
+        fontFamily: font
+      }
+    }, d);
+  })), /*#__PURE__*/React.createElement("label", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 4,
+      cursor: "pointer",
+      flexShrink: 0
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 10,
+      color: c.active ? "#1a8040" : "#a0a8b0",
+      fontWeight: 600
+    }
+  }, c.active ? "Active" : "Off"), /*#__PURE__*/React.createElement("input", {
+    type: "checkbox",
+    checked: !!c.active,
+    onChange: e => updateOfficeContact(c.id, {
+      active: e.target.checked
+    }),
+    style: {
+      cursor: "pointer",
+      width: 14,
+      height: 14
+    }
+  })), /*#__PURE__*/React.createElement("button", {
+    onClick: () => deleteOfficeContact(c.id),
+    style: {
+      background: "none",
+      border: "none",
+      color: "#c04040",
+      cursor: "pointer",
+      fontSize: 14,
+      flexShrink: 0,
+      padding: "0 4px"
+    }
+  }, "\u2715")))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 8,
+      flexWrap: "wrap",
+      borderTop: "1px solid #e0e4ea",
+      paddingTop: 12
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: openPublishDialog,
+    disabled: officeNotifBusy || officeContacts.filter(c => c.active).length === 0,
+    style: {
+      ...css.btn(true),
+      padding: "7px 16px",
+      fontSize: 12,
+      opacity: officeNotifBusy || officeContacts.filter(c => c.active).length === 0 ? 0.5 : 1
+    }
+  }, "\uD83D\uDCE3 Publish New Period & Notify Office"), /*#__PURE__*/React.createElement("button", {
+    onClick: triggerDigestTest,
+    disabled: officeNotifBusy || officeContacts.filter(c => c.active).length === 0,
+    style: {
+      ...css.btn(false),
+      padding: "7px 14px",
+      fontSize: 12,
+      opacity: officeNotifBusy || officeContacts.filter(c => c.active).length === 0 ? 0.5 : 1
+    }
+  }, "\uD83E\uDDEA Test Saturday Digest Now")), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 10,
+      color: "#a0a8b0",
+      margin: "8px 0 0",
+      lineHeight: 1.5
+    }
+  }, "Saturday digest fires automatically at 8 AM CDT. Public link: ", /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontFamily: mono
+    }
+  }, "fkhan628.github.io/Call-Schedule-App/?public=1")), showPublishDialog && /*#__PURE__*/React.createElement("div", {
+    onClick: () => setShowPublishDialog(false),
+    style: {
+      position: "fixed",
+      inset: 0,
+      background: "rgba(0,0,0,0.45)",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      zIndex: 9999,
+      padding: 20
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    onClick: e => e.stopPropagation(),
+    style: {
+      background: "#fff",
+      borderRadius: 12,
+      padding: 24,
+      maxWidth: 440,
+      width: "100%",
+      boxShadow: "0 8px 32px rgba(0,0,0,0.2)"
+    }
+  }, /*#__PURE__*/React.createElement("h3", {
+    style: {
+      margin: "0 0 8px",
+      fontSize: 16,
+      color: "#1a2a3a"
+    }
+  }, "Publish New Period"), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 13,
+      color: "#5a6a78",
+      margin: "0 0 16px",
+      lineHeight: 1.5
+    }
+  }, "Sends a \"new schedule published\" email to all ", /*#__PURE__*/React.createElement("strong", null, officeContacts.filter(c => c.active).length), " active office contact(s). They'll get a link to the public calendar."), /*#__PURE__*/React.createElement("label", {
+    style: {
+      fontSize: 11,
+      color: "#7a8a98",
+      fontWeight: 600,
+      textTransform: "uppercase",
+      letterSpacing: 0.5,
+      display: "block",
+      marginBottom: 4
+    }
+  }, "Period Label (shown in subject line)"), /*#__PURE__*/React.createElement("input", {
+    value: publishLabel,
+    onChange: e => setPublishLabel(e.target.value),
+    placeholder: "e.g. Aug 11 \u2013 Nov 15",
+    style: {
+      ...css.inp,
+      width: "100%",
+      marginBottom: 16
+    }
+  }), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "flex-end",
+      gap: 8
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: () => setShowPublishDialog(false),
+    style: {
+      ...css.btn(false),
+      padding: "7px 14px",
+      fontSize: 12
+    }
+  }, "Cancel"), /*#__PURE__*/React.createElement("button", {
+    onClick: triggerPublishNotify,
+    disabled: officeNotifBusy,
+    style: {
+      ...css.btn(true),
+      padding: "7px 16px",
+      fontSize: 12,
+      opacity: officeNotifBusy ? 0.6 : 1
+    }
+  }, officeNotifBusy ? "Sending…" : "Send Emails"))))), /*#__PURE__*/React.createElement("div", {
     style: css.card
   }, /*#__PURE__*/React.createElement("div", {
     style: css.cardT
@@ -11827,7 +12476,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     onChange: e => saveNotifPref(mySurgeon, {
       email: e.target.value
     }),
-    placeholder: authUser?.email || "email@example.com",
+    placeholder: (authUser === null || authUser === void 0 ? void 0 : authUser.email) || "email@example.com",
     type: "email",
     style: {
       ...css.inp,
@@ -11872,7 +12521,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       color: "#8a94a0",
       margin: "0 0 8px"
     }
-  }, "Leave blank to use your signup email (", authUser?.email, "). Or enter a different email."), /*#__PURE__*/React.createElement("div", {
+  }, "Leave blank to use your signup email (", authUser === null || authUser === void 0 ? void 0 : authUser.email, "). Or enter a different email."), /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 11,
       fontWeight: 600,
@@ -12062,13 +12711,13 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     style: {
       color: "#1a6fa8"
     }
-  }, userProfile?.display_name || "—")), /*#__PURE__*/React.createElement("p", {
+  }, (userProfile === null || userProfile === void 0 ? void 0 : userProfile.display_name) || "—")), /*#__PURE__*/React.createElement("p", {
     style: {
       fontSize: 11,
       color: "#7a8a98",
       margin: 0
     }
-  }, authUser?.email)), /*#__PURE__*/React.createElement("button", {
+  }, authUser === null || authUser === void 0 ? void 0 : authUser.email)), /*#__PURE__*/React.createElement("button", {
     onClick: handleSignOut,
     style: {
       ...css.btn(false),
@@ -12132,8 +12781,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       color: "#7a8a98",
       marginBottom: 8
     }
-  }, /*#__PURE__*/React.createElement("strong", null, "How to subscribe:"), " In Google Calendar: Other calendars (+) \u2192 From URL \u2192 paste the link below."), mySurgeon && mySurgeon !== "admin" && (() => {
-    const myName = [...surgeons, ...apps].find(p => p.id === mySurgeon)?.name;
+  }, /*#__PURE__*/React.createElement("strong", null, "How to subscribe:"), " In Google Calendar: Other calendars (+) \u2192 From URL \u2192 paste the link below."), mySurgeon && mySurgeon !== "admin" && (_find2 => {
+    const myName = (_find2 = [...surgeons, ...apps].find(p => p.id === mySurgeon)) === null || _find2 === void 0 ? void 0 : _find2.name;
     if (!myName) return null;
     const myUrl = `${SUPABASE_URL}/functions/v1/calendar-sync?surgeon=${myName}`;
     return /*#__PURE__*/React.createElement("div", {
@@ -12225,17 +12874,20 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       flexWrap: "wrap",
       alignItems: "center"
     }
-  }, surgeons.map(s => /*#__PURE__*/React.createElement("button", {
-    key: s.id,
-    onClick: () => copyText(`${SUPABASE_URL}/functions/v1/calendar-sync?surgeon=${s.name}`, s.id),
-    style: {
-      ...css.badge(sMap[s.id]?.idx || 0, sMap[s.id]?.name),
-      cursor: "pointer",
-      padding: "3px 10px",
-      fontSize: 10,
-      border: copiedUrl === s.id ? "2px solid #1a8040" : undefined
-    }
-  }, copiedUrl === s.id ? "✓ " : "📋 ", s.name)), copiedUrl && copiedUrl !== "full" && copiedUrl !== "my" && /*#__PURE__*/React.createElement("span", {
+  }, surgeons.map(s => {
+    var _sMap$s$id5, _sMap$s$id6;
+    return /*#__PURE__*/React.createElement("button", {
+      key: s.id,
+      onClick: () => copyText(`${SUPABASE_URL}/functions/v1/calendar-sync?surgeon=${s.name}`, s.id),
+      style: {
+        ...css.badge(((_sMap$s$id5 = sMap[s.id]) === null || _sMap$s$id5 === void 0 ? void 0 : _sMap$s$id5.idx) || 0, (_sMap$s$id6 = sMap[s.id]) === null || _sMap$s$id6 === void 0 ? void 0 : _sMap$s$id6.name),
+        cursor: "pointer",
+        padding: "3px 10px",
+        fontSize: 10,
+        border: copiedUrl === s.id ? "2px solid #1a8040" : undefined
+      }
+    }, copiedUrl === s.id ? "✓ " : "📋 ", s.name);
+  }), copiedUrl && copiedUrl !== "full" && copiedUrl !== "my" && /*#__PURE__*/React.createElement("span", {
     style: {
       fontSize: 10,
       color: "#1a8040",

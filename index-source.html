@@ -55,7 +55,7 @@
   </script>
   <script>
     // ─── Auto-update: bump this version string each deploy ───
-    var APP_VERSION = "2026.04.25e";
+    var APP_VERSION = "2026.05.12a";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -99,7 +99,7 @@
   <div id="root"></div>
   <script>
     // Cache-bust with version — update this string when deploying changes
-    var _v = "2026.04.25e";
+    var _v = "2026.05.12a";
     ['config.js','helpers.js','generator.js','app-styles.js'].forEach(function(f) {
       document.write('<script src="'+f+'?v='+_v+'"><\/script>');
     });
@@ -211,6 +211,15 @@ function CallSchedule() {
   const [expandedVacGroups, setExpandedVacGroups] = useState({}); // { personId: true/false }
   const toggleVacGroup = (id) => setExpandedVacGroups(prev => ({ ...prev, [id]: !prev[id] }));
   const [showPastVacations, setShowPastVacations] = useState(false); // Setup tab: hide completed vacations by default
+
+  // ─── Office Notifications ───
+  const [officeContacts, setOfficeContacts] = useState([]);
+  const [newOfficeName, setNewOfficeName] = useState("");
+  const [newOfficeEmail, setNewOfficeEmail] = useState("");
+  const [newOfficeDepts, setNewOfficeDepts] = useState([]); // [] = all, ["CWM"], ["CBH"], or both
+  const [officeNotifBusy, setOfficeNotifBusy] = useState(false);
+  const [showPublishDialog, setShowPublishDialog] = useState(false);
+  const [publishLabel, setPublishLabel] = useState("");
 
   // ─── Shift Trade Requests ───
   const [tradeRequests, setTradeRequests] = useState([]);
@@ -1686,6 +1695,20 @@ function CallSchedule() {
     })();
   }, [loaded]);
 
+  // ─── Load Office Contacts ───
+  // Scheduler/admin-only feature, but contacts table is loaded for everyone
+  // (RLS is permissive; UI gates editing).
+  useEffect(() => {
+    if (!loaded) return;
+    if (!isScheduler && userProfile?.person_id !== "admin") return;
+    (async () => {
+      try {
+        const rows = await db.query("office_contacts", { order: "name.asc" });
+        if (Array.isArray(rows)) setOfficeContacts(rows);
+      } catch(e) { console.error("Load office contacts error:", e); }
+    })();
+  }, [loaded, isScheduler, userProfile]);
+
   // ─── Deep-link handler for push notification clicks ───
   // OneSignal push clicks land on the app with ?tab=X or ?tab=X&week=YYYY-MM-DD
   // query params. We parse them on mount (and whenever `loaded` flips to true
@@ -2159,6 +2182,102 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
     if (!a) return;
     if (!confirm(`Remove APP ${a.name}?`)) return;
     setApps(p => p.filter(x => x.id !== id));
+  };
+
+  // ─── Office Contact Handlers ───
+  const addOfficeContact = async () => {
+    const name = (newOfficeName || "").trim();
+    const email = (newOfficeEmail || "").trim();
+    if (!name || !email) { alert("Name and email are required."); return; }
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) { alert("Please enter a valid email address."); return; }
+    setOfficeNotifBusy(true);
+    try {
+      const { data, error } = await db.insert("office_contacts", {
+        name, email,
+        departments: newOfficeDepts,
+        active: true,
+      });
+      if (error) { alert("Failed to add: " + JSON.stringify(error)); return; }
+      if (data) setOfficeContacts(prev => [...prev, data].sort((a,b)=>(a.name||"").localeCompare(b.name||"")));
+      setNewOfficeName(""); setNewOfficeEmail(""); setNewOfficeDepts([]);
+    } finally { setOfficeNotifBusy(false); }
+  };
+  const updateOfficeContact = async (id, patch) => {
+    setOfficeContacts(prev => prev.map(c => c.id === id ? { ...c, ...patch } : c));
+    try {
+      const { error } = await db.update("office_contacts", id, { ...patch, updated_at: new Date().toISOString() });
+      if (error) { alert("Failed to update: " + error); }
+    } catch(e) { console.error(e); }
+  };
+  const deleteOfficeContact = async (id) => {
+    const c = officeContacts.find(x => x.id === id);
+    if (!c) return;
+    if (!confirm(`Remove ${c.name} (${c.email}) from the office distribution list?`)) return;
+    setOfficeContacts(prev => prev.filter(x => x.id !== id));
+    try {
+      await fetch(`${SUPABASE_URL}/rest/v1/office_contacts?id=eq.${id}`, {
+        method: "DELETE", headers: dbHeaders,
+      });
+    } catch(e) { console.error("Delete failed:", e); }
+  };
+  const toggleOfficeContactDept = (id, dept) => {
+    const c = officeContacts.find(x => x.id === id);
+    if (!c) return;
+    const cur = Array.isArray(c.departments) ? c.departments : [];
+    const next = cur.includes(dept) ? cur.filter(d => d !== dept) : [...cur, dept];
+    updateOfficeContact(id, { departments: next });
+  };
+  const computePeriodLabel = () => {
+    try {
+      const sched = schedule || {};
+      const weeks = Object.keys(sched).sort();
+      if (weeks.length === 0) return "";
+      const first = weeks[0];
+      const last = weeks[weeks.length - 1];
+      const firstDate = parse(first);
+      const lastDate = parse(last);
+      lastDate.setDate(lastDate.getDate() + 6); // Sunday end of last week
+      const fmtNice = (d) => `${MO[d.getMonth()].slice(0,3)} ${d.getDate()}`;
+      return `${fmtNice(firstDate)} – ${fmtNice(lastDate)}`;
+    } catch(e) { return ""; }
+  };
+  const openPublishDialog = () => {
+    setPublishLabel(computePeriodLabel());
+    setShowPublishDialog(true);
+  };
+  const triggerPublishNotify = async () => {
+    if (!confirm(`Send a "new schedule published" email to all ${officeContacts.filter(c=>c.active).length} active office contact(s)?`)) return;
+    setOfficeNotifBusy(true);
+    try {
+      const url = `${SUPABASE_URL}/functions/v1/office-notifications`;
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${SUPABASE_ANON_KEY}`, apikey: SUPABASE_ANON_KEY },
+        body: JSON.stringify({ mode: "publish", period_label: publishLabel || "" }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) { alert("Publish failed: " + JSON.stringify(body)); return; }
+      alert(`Sent ${body.sent ?? 0} email(s).`);
+      setShowPublishDialog(false);
+    } catch(e) { alert("Publish error: " + (e?.message || e)); }
+    finally { setOfficeNotifBusy(false); }
+  };
+  const triggerDigestTest = async () => {
+    if (!confirm("Manually fire the Saturday digest now? This will send emails if any changes are detected since the last digest snapshot.")) return;
+    setOfficeNotifBusy(true);
+    try {
+      const url = `${SUPABASE_URL}/functions/v1/office-notifications`;
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${SUPABASE_ANON_KEY}`, apikey: SUPABASE_ANON_KEY },
+        body: JSON.stringify({ mode: "digest" }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) { alert("Digest failed: " + JSON.stringify(body)); return; }
+      const surgeons = (body.affected_surgeons || []).join(", ");
+      alert(`Digest run: ${body.sent ?? 0} email(s) sent.\nAffected surgeons: ${surgeons || "(none)"}\nApp changed: ${body.app_changed ? "yes" : "no"}`);
+    } catch(e) { alert("Digest error: " + (e?.message || e)); }
+    finally { setOfficeNotifBusy(false); }
   };
 
   const addVac = () => {
@@ -6424,6 +6543,118 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                       </label>
                     </div>
                   ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Office Notifications — scheduler/admin only */}
+          {(isScheduler || userProfile?.person_id === "admin") && (
+            <div style={css.card}>
+              <div style={css.cardT}>📧 Office Notifications</div>
+              <p style={{fontSize:12,color:"#7a8a98",margin:"0 0 12px",lineHeight:1.5}}>
+                Office staff on this list receive a weekly Saturday email if the schedule changed in the past 7 days, plus a one-time email whenever you publish a new period. Department filter: leave empty to receive all changes, or select Weight Mgmt / Breast Health to only receive changes affecting those surgeons.
+              </p>
+
+              {/* Add new contact */}
+              <div style={{background:"#f8f9fb",border:"1px solid #e0e4ea",borderRadius:8,padding:"10px 12px",marginBottom:14}}>
+                <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"flex-end"}}>
+                  <div style={{flex:"1 1 140px"}}>
+                    <label style={{fontSize:10,color:"#7a8a98",fontWeight:600,textTransform:"uppercase",letterSpacing:0.5,display:"block",marginBottom:2}}>Name</label>
+                    <input value={newOfficeName} onChange={e=>setNewOfficeName(e.target.value)} placeholder="Jane Doe" style={{...css.inp,width:"100%"}}/>
+                  </div>
+                  <div style={{flex:"1 1 200px"}}>
+                    <label style={{fontSize:10,color:"#7a8a98",fontWeight:600,textTransform:"uppercase",letterSpacing:0.5,display:"block",marginBottom:2}}>Email</label>
+                    <input value={newOfficeEmail} onChange={e=>setNewOfficeEmail(e.target.value)} placeholder="jane@example.com" style={{...css.inp,width:"100%"}}/>
+                  </div>
+                  <div style={{flex:"0 0 auto"}}>
+                    <label style={{fontSize:10,color:"#7a8a98",fontWeight:600,textTransform:"uppercase",letterSpacing:0.5,display:"block",marginBottom:2}}>Departments</label>
+                    <div style={{display:"flex",gap:4}}>
+                      {["CWM","CBH"].map(d => (
+                        <button key={d} type="button" onClick={()=>setNewOfficeDepts(prev=>prev.includes(d)?prev.filter(x=>x!==d):[...prev,d])}
+                          style={{
+                            background: newOfficeDepts.includes(d) ? "#1a6fa8" : "#fff",
+                            border: `1px solid ${newOfficeDepts.includes(d) ? "#1a6fa8" : "#c8d0d8"}`,
+                            color: newOfficeDepts.includes(d) ? "#fff" : "#5a6a78",
+                            borderRadius:6, padding:"5px 10px", fontSize:11, fontWeight:600, cursor:"pointer", fontFamily:font,
+                          }}>{d}</button>
+                      ))}
+                    </div>
+                  </div>
+                  <button onClick={addOfficeContact} disabled={officeNotifBusy} style={{...css.btn(true),padding:"6px 14px",fontSize:12,opacity:officeNotifBusy?0.6:1}}>+ Add</button>
+                </div>
+                {newOfficeDepts.length === 0 && (
+                  <p style={{fontSize:10,color:"#7a8a98",margin:"6px 0 0",fontStyle:"italic"}}>No departments selected = receives all schedule changes.</p>
+                )}
+              </div>
+
+              {/* Contact list */}
+              {officeContacts.length === 0 ? (
+                <p style={{fontSize:12,color:"#a0a8b0",fontStyle:"italic",margin:"0 0 12px"}}>No office contacts yet. Add one above.</p>
+              ) : (
+                <div style={{display:"flex",flexDirection:"column",gap:6,marginBottom:12}}>
+                  {officeContacts.map(c => (
+                    <div key={c.id} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 12px",background:c.active?"#fff":"#f4f6f8",borderRadius:6,border:"1px solid #e0e4ea",opacity:c.active?1:0.6}}>
+                      <div style={{flex:"1 1 auto",minWidth:0}}>
+                        <div style={{fontSize:13,fontWeight:600,color:"#2c3e50"}}>{c.name}</div>
+                        <div style={{fontSize:11,color:"#7a8a98",fontFamily:mono,overflow:"hidden",textOverflow:"ellipsis"}}>{c.email}</div>
+                      </div>
+                      <div style={{display:"flex",gap:4,flexShrink:0}}>
+                        {["CWM","CBH"].map(d => {
+                          const on = (c.departments||[]).includes(d);
+                          return (
+                            <button key={d} type="button" onClick={()=>toggleOfficeContactDept(c.id, d)}
+                              style={{
+                                background: on ? "#1a6fa8" : "#fff",
+                                border: `1px solid ${on ? "#1a6fa8" : "#c8d0d8"}`,
+                                color: on ? "#fff" : "#7a8a98",
+                                borderRadius:5, padding:"3px 8px", fontSize:10, fontWeight:600, cursor:"pointer", fontFamily:font,
+                              }}>{d}</button>
+                          );
+                        })}
+                      </div>
+                      <label style={{display:"flex",alignItems:"center",gap:4,cursor:"pointer",flexShrink:0}}>
+                        <span style={{fontSize:10,color:c.active?"#1a8040":"#a0a8b0",fontWeight:600}}>{c.active?"Active":"Off"}</span>
+                        <input type="checkbox" checked={!!c.active} onChange={e=>updateOfficeContact(c.id,{active:e.target.checked})} style={{cursor:"pointer",width:14,height:14}}/>
+                      </label>
+                      <button onClick={()=>deleteOfficeContact(c.id)} style={{background:"none",border:"none",color:"#c04040",cursor:"pointer",fontSize:14,flexShrink:0,padding:"0 4px"}}>✕</button>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Action buttons */}
+              <div style={{display:"flex",gap:8,flexWrap:"wrap",borderTop:"1px solid #e0e4ea",paddingTop:12}}>
+                <button onClick={openPublishDialog} disabled={officeNotifBusy || officeContacts.filter(c=>c.active).length===0}
+                  style={{...css.btn(true),padding:"7px 16px",fontSize:12,opacity:(officeNotifBusy || officeContacts.filter(c=>c.active).length===0)?0.5:1}}>
+                  📣 Publish New Period & Notify Office
+                </button>
+                <button onClick={triggerDigestTest} disabled={officeNotifBusy || officeContacts.filter(c=>c.active).length===0}
+                  style={{...css.btn(false),padding:"7px 14px",fontSize:12,opacity:(officeNotifBusy || officeContacts.filter(c=>c.active).length===0)?0.5:1}}>
+                  🧪 Test Saturday Digest Now
+                </button>
+              </div>
+              <p style={{fontSize:10,color:"#a0a8b0",margin:"8px 0 0",lineHeight:1.5}}>
+                Saturday digest fires automatically at 8 AM CDT. Public link: <span style={{fontFamily:mono}}>fkhan628.github.io/Call-Schedule-App/?public=1</span>
+              </p>
+
+              {/* Publish dialog */}
+              {showPublishDialog && (
+                <div onClick={()=>setShowPublishDialog(false)} style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.45)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:9999,padding:20}}>
+                  <div onClick={e=>e.stopPropagation()} style={{background:"#fff",borderRadius:12,padding:24,maxWidth:440,width:"100%",boxShadow:"0 8px 32px rgba(0,0,0,0.2)"}}>
+                    <h3 style={{margin:"0 0 8px",fontSize:16,color:"#1a2a3a"}}>Publish New Period</h3>
+                    <p style={{fontSize:13,color:"#5a6a78",margin:"0 0 16px",lineHeight:1.5}}>
+                      Sends a "new schedule published" email to all <strong>{officeContacts.filter(c=>c.active).length}</strong> active office contact(s). They'll get a link to the public calendar.
+                    </p>
+                    <label style={{fontSize:11,color:"#7a8a98",fontWeight:600,textTransform:"uppercase",letterSpacing:0.5,display:"block",marginBottom:4}}>Period Label (shown in subject line)</label>
+                    <input value={publishLabel} onChange={e=>setPublishLabel(e.target.value)} placeholder="e.g. Aug 11 – Nov 15" style={{...css.inp,width:"100%",marginBottom:16}}/>
+                    <div style={{display:"flex",justifyContent:"flex-end",gap:8}}>
+                      <button onClick={()=>setShowPublishDialog(false)} style={{...css.btn(false),padding:"7px 14px",fontSize:12}}>Cancel</button>
+                      <button onClick={triggerPublishNotify} disabled={officeNotifBusy} style={{...css.btn(true),padding:"7px 16px",fontSize:12,opacity:officeNotifBusy?0.6:1}}>
+                        {officeNotifBusy?"Sending…":"Send Emails"}
+                      </button>
+                    </div>
+                  </div>
                 </div>
               )}
             </div>
