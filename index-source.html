@@ -55,7 +55,7 @@
   </script>
   <script>
     // ─── Auto-update: bump this version string each deploy ───
-    var APP_VERSION = "2026.05.12a";
+    var APP_VERSION = "2026.05.12b";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -99,7 +99,7 @@
   <div id="root"></div>
   <script>
     // Cache-bust with version — update this string when deploying changes
-    var _v = "2026.05.12a";
+    var _v = "2026.05.12b";
     ['config.js','helpers.js','generator.js','app-styles.js'].forEach(function(f) {
       document.write('<script src="'+f+'?v='+_v+'"><\/script>');
     });
@@ -2275,7 +2275,7 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
       const body = await res.json().catch(() => ({}));
       if (!res.ok) { alert("Digest failed: " + JSON.stringify(body)); return; }
       const surgeons = (body.affected_surgeons || []).join(", ");
-      alert(`Digest run: ${body.sent ?? 0} email(s) sent.\nAffected surgeons: ${surgeons || "(none)"}\nApp changed: ${body.app_changed ? "yes" : "no"}`);
+      alert(`Digest run: ${body.sent ?? 0} email(s) sent.\nAffected surgeons: ${surgeons || "(none)"}`);
     } catch(e) { alert("Digest error: " + (e?.message || e)); }
     finally { setOfficeNotifBusy(false); }
   };
