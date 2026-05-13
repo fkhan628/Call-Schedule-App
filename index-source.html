@@ -55,7 +55,7 @@
   </script>
   <script>
     // ─── Auto-update: bump this version string each deploy ───
-    var APP_VERSION = "2026.05.12b";
+    var APP_VERSION = "2026.05.12c";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -99,7 +99,7 @@
   <div id="root"></div>
   <script>
     // Cache-bust with version — update this string when deploying changes
-    var _v = "2026.05.12b";
+    var _v = "2026.05.12c";
     ['config.js','helpers.js','generator.js','app-styles.js'].forEach(function(f) {
       document.write('<script src="'+f+'?v='+_v+'"><\/script>');
     });
@@ -976,6 +976,8 @@ function CallSchedule() {
   // pushTargetIds: optional array of person_ids to scope the push notification to.
   // If omitted, the push is a broadcast (useful for group-wide events like
   // "Schedule Published"). Targeted push is used for manual edits, trades, etc.
+  // Per-channel push gating: if pushTargetIds is provided, it's filtered by
+  // each user's per-category push flag before send.
   const addNotification = useCallback(async (type, title, message, data = {}, pushTargetIds = null) => {
     try {
       const notif = { type, title, message, data, created_at: new Date().toISOString() };
@@ -984,26 +986,37 @@ function CallSchedule() {
       // Also send as device push via OneSignal, with a deep-link URL so tap
       // navigates to the relevant tab/week.
       const deepLinkUrl = buildDeepLink(type, data);
-      sendPushNotif(title, message, pushTargetIds, deepLinkUrl);
+      // Filter push targets by per-channel preferences
+      const filteredTargets = pushTargetIds ? filterPushTargetsByType(type, pushTargetIds) : null;
+      // If we filtered and the result is empty, skip push entirely (don't broadcast).
+      if (pushTargetIds && (!filteredTargets || filteredTargets.length === 0)) {
+        console.log(`[push-skip] all ${pushTargetIds.length} target(s) opted out for type=${type}`);
+      } else {
+        sendPushNotif(title, message, filteredTargets, deepLinkUrl);
+      }
     } catch(e) { console.error("Notification error:", e); }
-  }, [sendPushNotif, buildDeepLink]);
+  }, [sendPushNotif, buildDeepLink, filterPushTargetsByType]);
 
   // ─── Email Notifications via Supabase Edge Function ───
   // If targetIds is provided, only those person_ids receive the email (used for
   // targeted notifications like manual edits). Otherwise broadcasts to everyone
   // with matching prefs.
+  //
+  // Per-channel gating: each category has its own *_email flag. The old master
+  // email_notifs flag is no longer used as a gate.
   const sendEmailNotif = useCallback(async (type, data, targetIds = null) => {
     if (!edgeFunctionUrl) return;
     try {
       const currentPrefs = notifPrefsRef.current || {};
       const recipients = [];
       Object.entries(currentPrefs).forEach(([sid, prefs]) => {
-        if (!prefs.email || !prefs.email_notifs) return;
+        if (!prefs.email) return;
         if (targetIds && !targetIds.includes(sid)) return;  // targeted filter
-        if (type === "test") { /* send to all email-enabled */ }
-        else if ((type === "schedule_published" || type === "schedule_changed" || type === "trade_submitted" || type === "trade_accepted" || type === "trade_declined") && !prefs.schedule_changes) return;
-        else if ((type === "vacation_approved" || type === "vacation_denied" || type === "vacation_submitted") && !prefs.vacation_updates) return;
-        else if (type === "shift_reminder" && !prefs.shift_reminders) return;
+        // Per-channel gating by category
+        if (type === "test") { /* send to all with email — no gating */ }
+        else if ((type === "schedule_published" || type === "schedule_changed" || type === "trade_submitted" || type === "trade_accepted" || type === "trade_declined") && prefs.schedule_changes_email === false) return;
+        else if ((type === "vacation_approved" || type === "vacation_denied" || type === "vacation_submitted") && prefs.vacation_updates_email === false) return;
+        else if (type === "shift_reminder" && prefs.shift_reminders_email === false) return;
         const person = surgeons.find(s => s.id === sid) || apps.find(a => a.id === sid);
         recipients.push({ email: prefs.email, surgeon_id: sid, name: person?.name || sid });
       });
@@ -1015,6 +1028,24 @@ function CallSchedule() {
       });
     } catch(e) { console.error("Email notification error:", e); }
   }, [edgeFunctionUrl, surgeons, apps]);
+
+  // ─── Push Notification Filter ───
+  // Filters a list of targetIds down to those whose per-channel push flag is
+  // not disabled for this notification type. Returns null if no filter
+  // is applied (broadcast unchanged), or a (possibly empty) array.
+  const filterPushTargetsByType = useCallback((type, targetIds) => {
+    if (!Array.isArray(targetIds) || targetIds.length === 0) return targetIds;
+    const currentPrefs = notifPrefsRef.current || {};
+    return targetIds.filter(sid => {
+      const prefs = currentPrefs[sid];
+      if (!prefs) return true; // no row = default on
+      if (type === "test") return true;
+      if ((type === "schedule_published" || type === "schedule_changed" || type === "trade_submitted" || type === "trade_accepted" || type === "trade_declined") && prefs.schedule_changes_push === false) return false;
+      if ((type === "vacation_approved" || type === "vacation_denied" || type === "vacation_submitted" || type === "vacation_revoked" || type === "vacation_deadline_reminder") && prefs.vacation_updates_push === false) return false;
+      if (type === "shift_reminder" && prefs.shift_reminders_push === false) return false;
+      return true;
+    });
+  }, []);
 
   // ─── Vacation Request: Submit ───
   const submitVacRequest = useCallback(async () => {
@@ -1747,29 +1778,48 @@ function CallSchedule() {
   const saveNotifPref = useCallback(async (surgeonId, updates) => {
     // Update local state + ref immediately
     setNotifPrefs(prev => {
-      const cur = prev[surgeonId] || { surgeon_id: surgeonId, email: "", browser_push: true, email_notifs: false, schedule_changes: true, vacation_updates: true, shift_reminders: true };
+      const cur = prev[surgeonId] || {
+        surgeon_id: surgeonId, email: "",
+        // Legacy flags (kept for backward compat)
+        browser_push: true, email_notifs: false, schedule_changes: true, vacation_updates: true, shift_reminders: true,
+        // Per-channel flags (default ON)
+        schedule_changes_email: true, schedule_changes_push: true,
+        vacation_updates_email: true, vacation_updates_push: true,
+        shift_reminders_email: true, shift_reminders_push: true,
+        // Per-user reminder hours (Central time)
+        daily_reminder_hour: 8, vac_deadline_hour: 8,
+      };
       const merged = { ...cur, ...updates };
       notifPrefsRef.current = { ...prev, [surgeonId]: merged };
       return { ...prev, [surgeonId]: merged };
     });
-    // Debounce the DB save (500ms) to avoid hammering Supabase on every keystroke
+    // Debounce the DB save (500ms)
     if (notifSaveTimerRef.current) clearTimeout(notifSaveTimerRef.current);
     notifSaveTimerRef.current = setTimeout(async () => {
       setNotifPrefsSaving(true);
       try {
-        // Read from ref to get the LATEST merged values (not stale closure)
         const cur = notifPrefsRef.current[surgeonId] || {};
         const row = {
           surgeon_id: surgeonId,
           email: cur.email || "",
+          // Legacy
           browser_push: cur.browser_push !== false,
           email_notifs: cur.email_notifs || false,
           schedule_changes: cur.schedule_changes !== false,
           vacation_updates: cur.vacation_updates !== false,
           shift_reminders: cur.shift_reminders !== false,
+          // Per-channel (default ON for new accounts)
+          schedule_changes_email: cur.schedule_changes_email !== false,
+          schedule_changes_push: cur.schedule_changes_push !== false,
+          vacation_updates_email: cur.vacation_updates_email !== false,
+          vacation_updates_push: cur.vacation_updates_push !== false,
+          shift_reminders_email: cur.shift_reminders_email !== false,
+          shift_reminders_push: cur.shift_reminders_push !== false,
+          // Hour preferences (default 8 AM Central)
+          daily_reminder_hour: typeof cur.daily_reminder_hour === "number" ? cur.daily_reminder_hour : 8,
+          vac_deadline_hour: typeof cur.vac_deadline_hour === "number" ? cur.vac_deadline_hour : 8,
           updated_at: new Date().toISOString(),
         };
-        // surgeon_id is the PK, so upsert correctly updates existing rows
         await db.upsert("notification_preferences", row);
       } catch(e) { console.error("Save notif pref error:", e); }
       setNotifPrefsSaving(false);
@@ -6775,40 +6825,67 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               </div>
 
               {/* Personal notification settings (shown to everyone) */}
-              {mySurgeon && mySurgeon !== "admin" && (
-                <div style={{marginTop:12,paddingTop:10,borderTop:"1px solid #e8ecf0"}}>
-                  <div style={{fontSize:11,fontWeight:600,color:"#5a6a78",marginBottom:6}}>My Email for Notifications</div>
-                  <div style={{display:"flex",gap:6,alignItems:"center",marginBottom:8,flexWrap:"wrap"}}>
-                    <input value={(notifPrefs[mySurgeon] || {}).email || ""} onChange={e=>saveNotifPref(mySurgeon, {email:e.target.value})}
-                      placeholder={authUser?.email || "email@example.com"} type="email"
-                      style={{...css.inp,width:240,fontSize:11,fontFamily:mono,padding:"4px 8px"}}/>
-                    <label style={{display:"flex",alignItems:"center",gap:3,fontSize:10,color:"#5a6a78",cursor:"pointer"}}>
-                      <input type="checkbox" checked={(notifPrefs[mySurgeon] || {}).email_notifs || false}
-                        onChange={e=>saveNotifPref(mySurgeon, {email_notifs:e.target.checked})}/>
-                      Email
-                    </label>
-                    <label style={{display:"flex",alignItems:"center",gap:3,fontSize:10,color:"#5a6a78",cursor:"pointer"}}>
-                      <input type="checkbox" checked={(notifPrefs[mySurgeon] || {}).browser_push !== false}
-                        onChange={e=>saveNotifPref(mySurgeon, {browser_push:e.target.checked})}/>
-                      Push
-                    </label>
+              {mySurgeon && mySurgeon !== "admin" && (() => {
+                const myPref = notifPrefs[mySurgeon] || {};
+                const HourPicker = ({field, label}) => (
+                  <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}>
+                    <span style={{fontSize:12,color:"#3a4a58",minWidth:180}}>{label}:</span>
+                    <select
+                      value={typeof myPref[field] === "number" ? myPref[field] : 8}
+                      onChange={e=>saveNotifPref(mySurgeon, {[field]:parseInt(e.target.value,10)})}
+                      style={{...css.inp,padding:"4px 8px",fontSize:12,width:100}}>
+                      {Array.from({length:24}, (_,i)=>{
+                        const h12 = i===0?12:i>12?i-12:i;
+                        const ampm = i<12?"AM":"PM";
+                        return <option key={i} value={i}>{h12}:00 {ampm}</option>;
+                      })}
+                    </select>
+                    <span style={{fontSize:10,color:"#8a94a0"}}>Central</span>
                   </div>
-                  <p style={{fontSize:10,color:"#8a94a0",margin:"0 0 8px"}}>Leave blank to use your signup email ({authUser?.email}). Or enter a different email.</p>
+                );
+                return (
+                  <div style={{marginTop:12,paddingTop:10,borderTop:"1px solid #e8ecf0"}}>
+                    <div style={{fontSize:11,fontWeight:600,color:"#5a6a78",marginBottom:6}}>My Email for Notifications</div>
+                    <input value={myPref.email || ""} onChange={e=>saveNotifPref(mySurgeon, {email:e.target.value})}
+                      placeholder={authUser?.email || "email@example.com"} type="email"
+                      style={{...css.inp,width:280,fontSize:11,fontFamily:mono,padding:"4px 8px",marginBottom:4}}/>
+                    <p style={{fontSize:10,color:"#8a94a0",margin:"0 0 12px"}}>Leave blank to use your signup email ({authUser?.email}). Or enter a different email.</p>
 
-                  <div style={{fontSize:11,fontWeight:600,color:"#5a6a78",marginBottom:6}}>Notify me about:</div>
-                  {[
-                    ["schedule_changes", "Schedule changes & shift swaps"],
-                    ["vacation_updates", "Vacation requests & approvals"],
-                    ["shift_reminders", "Shift reminders"],
-                  ].map(([key, label]) => (
-                    <label key={key} style={{display:"flex",alignItems:"center",gap:6,marginBottom:4,fontSize:12,color:"#3a4a58",cursor:"pointer"}}>
-                      <input type="checkbox" checked={(notifPrefs[mySurgeon] || {})[key] !== false}
-                        onChange={e=>saveNotifPref(mySurgeon, {[key]:e.target.checked})}/>
-                      {label}
-                    </label>
-                  ))}
-                </div>
-              )}
+                    <div style={{fontSize:11,fontWeight:600,color:"#5a6a78",marginBottom:6}}>How do you want to be notified?</div>
+                    <div style={{background:"#f8f9fb",border:"1px solid #e0e4ea",borderRadius:6,padding:"8px 10px",marginBottom:12}}>
+                      <div style={{display:"grid",gridTemplateColumns:"1fr 60px 60px",gap:6,alignItems:"center"}}>
+                        <span style={{fontSize:10,color:"#7a8a98",fontWeight:600,textTransform:"uppercase",letterSpacing:0.4}}></span>
+                        <span style={{fontSize:10,color:"#7a8a98",fontWeight:600,textTransform:"uppercase",letterSpacing:0.4,textAlign:"center"}}>Email</span>
+                        <span style={{fontSize:10,color:"#7a8a98",fontWeight:600,textTransform:"uppercase",letterSpacing:0.4,textAlign:"center"}}>Push</span>
+                        {[
+                          ["schedule_changes", "Schedule changes & swaps"],
+                          ["vacation_updates", "Vacation requests & approvals"],
+                          ["shift_reminders", "Shift reminders"],
+                        ].map(([key, label]) => (
+                          <React.Fragment key={key}>
+                            <span style={{fontSize:12,color:"#3a4a58"}}>{label}</span>
+                            <label style={{display:"flex",justifyContent:"center",cursor:"pointer"}}>
+                              <input type="checkbox" checked={myPref[`${key}_email`] !== false}
+                                onChange={e=>saveNotifPref(mySurgeon, {[`${key}_email`]:e.target.checked})}/>
+                            </label>
+                            <label style={{display:"flex",justifyContent:"center",cursor:"pointer"}}>
+                              <input type="checkbox" checked={myPref[`${key}_push`] !== false}
+                                onChange={e=>saveNotifPref(mySurgeon, {[`${key}_push`]:e.target.checked})}/>
+                            </label>
+                          </React.Fragment>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div style={{fontSize:11,fontWeight:600,color:"#5a6a78",marginBottom:6}}>Reminder Times</div>
+                    <HourPicker field="daily_reminder_hour" label="Daily call reminder"/>
+                    <HourPicker field="vac_deadline_hour" label="Vacation deadline reminder"/>
+                    <p style={{fontSize:10,color:"#8a94a0",margin:"4px 0 0",fontStyle:"italic"}}>
+                      Times are in Central time (DST-aware). Reminders fire only on days you're on call (for call reminder) or 2 days before the vacation deadline.
+                    </p>
+                  </div>
+                );
+              })()}
 
               {/* Scheduler-only: all surgeon emails */}
               {isScheduler && (
