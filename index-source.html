@@ -55,7 +55,7 @@
   </script>
   <script>
     // ─── Auto-update: bump this version string each deploy ───
-    var APP_VERSION = "2026.05.12c";
+    var APP_VERSION = "2026.05.12d";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -99,7 +99,7 @@
   <div id="root"></div>
   <script>
     // Cache-bust with version — update this string when deploying changes
-    var _v = "2026.05.12c";
+    var _v = "2026.05.12d";
     ['config.js','helpers.js','generator.js','app-styles.js'].forEach(function(f) {
       document.write('<script src="'+f+'?v='+_v+'"><\/script>');
     });
@@ -972,6 +972,24 @@ function CallSchedule() {
     } catch(e) { return null; }
   }, []);
 
+  // ─── Push Notification Filter ───
+  // Filters a list of targetIds down to those whose per-channel push flag is
+  // not disabled for this notification type. Must be declared BEFORE
+  // addNotification (which references it in its deps).
+  const filterPushTargetsByType = useCallback((type, targetIds) => {
+    if (!Array.isArray(targetIds) || targetIds.length === 0) return targetIds;
+    const currentPrefs = notifPrefsRef.current || {};
+    return targetIds.filter(sid => {
+      const prefs = currentPrefs[sid];
+      if (!prefs) return true; // no row = default on
+      if (type === "test") return true;
+      if ((type === "schedule_published" || type === "schedule_changed" || type === "trade_submitted" || type === "trade_accepted" || type === "trade_declined") && prefs.schedule_changes_push === false) return false;
+      if ((type === "vacation_approved" || type === "vacation_denied" || type === "vacation_submitted" || type === "vacation_revoked" || type === "vacation_deadline_reminder") && prefs.vacation_updates_push === false) return false;
+      if (type === "shift_reminder" && prefs.shift_reminders_push === false) return false;
+      return true;
+    });
+  }, []);
+
   // ─── Add Notification ───
   // pushTargetIds: optional array of person_ids to scope the push notification to.
   // If omitted, the push is a broadcast (useful for group-wide events like
@@ -1028,24 +1046,6 @@ function CallSchedule() {
       });
     } catch(e) { console.error("Email notification error:", e); }
   }, [edgeFunctionUrl, surgeons, apps]);
-
-  // ─── Push Notification Filter ───
-  // Filters a list of targetIds down to those whose per-channel push flag is
-  // not disabled for this notification type. Returns null if no filter
-  // is applied (broadcast unchanged), or a (possibly empty) array.
-  const filterPushTargetsByType = useCallback((type, targetIds) => {
-    if (!Array.isArray(targetIds) || targetIds.length === 0) return targetIds;
-    const currentPrefs = notifPrefsRef.current || {};
-    return targetIds.filter(sid => {
-      const prefs = currentPrefs[sid];
-      if (!prefs) return true; // no row = default on
-      if (type === "test") return true;
-      if ((type === "schedule_published" || type === "schedule_changed" || type === "trade_submitted" || type === "trade_accepted" || type === "trade_declined") && prefs.schedule_changes_push === false) return false;
-      if ((type === "vacation_approved" || type === "vacation_denied" || type === "vacation_submitted" || type === "vacation_revoked" || type === "vacation_deadline_reminder") && prefs.vacation_updates_push === false) return false;
-      if (type === "shift_reminder" && prefs.shift_reminders_push === false) return false;
-      return true;
-    });
-  }, []);
 
   // ─── Vacation Request: Submit ───
   const submitVacRequest = useCallback(async () => {
