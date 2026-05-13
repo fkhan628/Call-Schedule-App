@@ -55,7 +55,7 @@
   </script>
   <script>
     // ─── Auto-update: bump this version string each deploy ───
-    var APP_VERSION = "2026.05.12d";
+    var APP_VERSION = "2026.05.12e";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -99,7 +99,7 @@
   <div id="root"></div>
   <script>
     // Cache-bust with version — update this string when deploying changes
-    var _v = "2026.05.12d";
+    var _v = "2026.05.12e";
     ['config.js','helpers.js','generator.js','app-styles.js'].forEach(function(f) {
       document.write('<script src="'+f+'?v='+_v+'"><\/script>');
     });
@@ -9699,9 +9699,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
   })(), (isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.person_id) === "admin") && Object.keys(schedule).length > 0 && (() => {
     // Compute monthly billing breakdown. 1st-call only (backup weeks excluded).
     // Attribution:
-    //   Service Week (dayCall) → month containing Monday (1 shift = 7 call days)
-    //   Week Nights (Mon-Thu)  → each night's own month (1 shift = 1 call day)
-    //   Weekend (Fri + Sun)    → month containing Friday (1 shift = 3 call days)
+    //   Service Week (dayCall) → each of the 7 days (M-Sun) attributed to its own month
+    //   Week Nights (Mon-Thu)  → each night's own month
+    //   Weekend (Fri+Sat+Sun)  → each of the 3 days attributed to its own month
+    // All three counters now represent BILLING DAYS, so the total formula is just dc + nights + wknd.
     const monthly = {}; // { "2026-05": { s1: { dc: n, nights: n, wknd: n }, ... } }
     const allMonths = new Set();
     Object.entries(schedule).forEach(([mStr, wk]) => {
@@ -9723,9 +9724,13 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       // Skip backup weeks entirely — they're 2nd-call and not billed
       if (wk.isBackup) return;
       if (wk.dayCall) {
-        var _monthly$monMoKey;
-        const monMoKey = `${mon.getFullYear()}-${String(mon.getMonth() + 1).padStart(2, "0")}`;
-        if ((_monthly$monMoKey = monthly[monMoKey]) !== null && _monthly$monMoKey !== void 0 && _monthly$monMoKey[wk.dayCall]) monthly[monMoKey][wk.dayCall].dc += 1;
+        // Each of the 7 service-week days credits its own calendar month
+        for (let i = 0; i < 7; i++) {
+          var _monthly$dMoKey;
+          const d = addD(mon, i);
+          const dMoKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+          if ((_monthly$dMoKey = monthly[dMoKey]) !== null && _monthly$dMoKey !== void 0 && _monthly$dMoKey[wk.dayCall]) monthly[dMoKey][wk.dayCall].dc += 1;
+        }
       }
       NIGHT_KEYS.forEach((sk, i) => {
         var _wk$nights15, _monthly$moKey;
@@ -9737,10 +9742,13 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       });
       const wkndSid = (_wk$nights16 = wk.nights) === null || _wk$nights16 === void 0 ? void 0 : _wk$nights16.wknd;
       if (wkndSid) {
-        var _monthly$friMo;
-        const fri = addD(mon, 4);
-        const friMo = `${fri.getFullYear()}-${String(fri.getMonth() + 1).padStart(2, "0")}`;
-        if ((_monthly$friMo = monthly[friMo]) !== null && _monthly$friMo !== void 0 && _monthly$friMo[wkndSid]) monthly[friMo][wkndSid].wknd += 1;
+        // Weekend covers Fri/Sat/Sun (days 4/5/6 of the week), each crediting its own month
+        for (let i = 4; i <= 6; i++) {
+          var _monthly$dMoKey2;
+          const d = addD(mon, i);
+          const dMoKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+          if ((_monthly$dMoKey2 = monthly[dMoKey]) !== null && _monthly$dMoKey2 !== void 0 && _monthly$dMoKey2[wkndSid]) monthly[dMoKey][wkndSid].wknd += 1;
+        }
       }
     });
     const sortedMonths = [...allMonths].sort();
@@ -9748,7 +9756,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       const [y, mo] = mk.split("-");
       return `${MO[parseInt(mo) - 1]} ${y}`;
     };
-    const billingDays = r => (r.dc || 0) * 7 + (r.nights || 0) + (r.wknd || 0) * 3;
+    const billingDays = r => (r.dc || 0) + (r.nights || 0) + (r.wknd || 0);
     return /*#__PURE__*/React.createElement("div", {
       style: css.card
     }, /*#__PURE__*/React.createElement("div", {
@@ -9766,7 +9774,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         margin: "0 0 14px",
         lineHeight: 1.5
       }
-    }, "Breakdown by calendar month. Backup weeks are excluded \u2014 only 1st-call shifts count toward billing. Shifts that span a month boundary are counted in the month they start (service week \u2192 Monday's month \xB7 weekend \u2192 Friday's month)."), sortedMonths.map(mk => {
+    }, "Breakdown by calendar month. Backup weeks are excluded \u2014 only 1st-call shifts count toward billing. Each call day is counted in the month it actually falls in (a service week or weekend spanning a month boundary is split across both months)."), sortedMonths.map(mk => {
       const monthData = monthly[mk] || {};
       const hasAny = surgeons.some(s => {
         const r = monthData[s.id] || {};
@@ -9810,11 +9818,11 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         }
       }, "Total Days"), /*#__PURE__*/React.createElement("th", {
         style: thS2
-      }, "Svc Wk"), /*#__PURE__*/React.createElement("th", {
+      }, "Svc Days"), /*#__PURE__*/React.createElement("th", {
         style: thS2
       }, "Nights"), /*#__PURE__*/React.createElement("th", {
         style: thS2
-      }, "Wknds"))), /*#__PURE__*/React.createElement("tbody", null, surgeons.map(s => {
+      }, "Wknd Days"))), /*#__PURE__*/React.createElement("tbody", null, surgeons.map(s => {
         const r = monthData[s.id] || {
           dc: 0,
           nights: 0,
@@ -9861,7 +9869,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       style: {
         color: "#2c5a80"
       }
-    }, "Formula:"), " Svc Wk \xD7 7 + Nights \xD7 1 + Weekends \xD7 3 = Total Call Days. Billed monthly."));
+    }, "Formula:"), " Svc Days + Nights + Wknd Days = Total Call Days. Each day counted in the month it falls in. Billed monthly."));
   })(), /*#__PURE__*/React.createElement("div", {
     style: css.card
   }, /*#__PURE__*/React.createElement("div", {

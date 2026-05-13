@@ -55,7 +55,7 @@
   </script>
   <script>
     // ─── Auto-update: bump this version string each deploy ───
-    var APP_VERSION = "2026.05.12d";
+    var APP_VERSION = "2026.05.12e";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -99,7 +99,7 @@
   <div id="root"></div>
   <script>
     // Cache-bust with version — update this string when deploying changes
-    var _v = "2026.05.12d";
+    var _v = "2026.05.12e";
     ['config.js','helpers.js','generator.js','app-styles.js'].forEach(function(f) {
       document.write('<script src="'+f+'?v='+_v+'"><\/script>');
     });
@@ -5661,9 +5661,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           {(isScheduler || userProfile?.person_id === "admin") && Object.keys(schedule).length > 0 && (()=>{
             // Compute monthly billing breakdown. 1st-call only (backup weeks excluded).
             // Attribution:
-            //   Service Week (dayCall) → month containing Monday (1 shift = 7 call days)
-            //   Week Nights (Mon-Thu)  → each night's own month (1 shift = 1 call day)
-            //   Weekend (Fri + Sun)    → month containing Friday (1 shift = 3 call days)
+            //   Service Week (dayCall) → each of the 7 days (M-Sun) attributed to its own month
+            //   Week Nights (Mon-Thu)  → each night's own month
+            //   Weekend (Fri+Sat+Sun)  → each of the 3 days attributed to its own month
+            // All three counters now represent BILLING DAYS, so the total formula is just dc + nights + wknd.
             const monthly = {}; // { "2026-05": { s1: { dc: n, nights: n, wknd: n }, ... } }
             const allMonths = new Set();
             Object.entries(schedule).forEach(([mStr, wk]) => {
@@ -5678,8 +5679,12 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               // Skip backup weeks entirely — they're 2nd-call and not billed
               if (wk.isBackup) return;
               if (wk.dayCall) {
-                const monMoKey = `${mon.getFullYear()}-${String(mon.getMonth()+1).padStart(2,"0")}`;
-                if (monthly[monMoKey]?.[wk.dayCall]) monthly[monMoKey][wk.dayCall].dc += 1;
+                // Each of the 7 service-week days credits its own calendar month
+                for (let i = 0; i < 7; i++) {
+                  const d = addD(mon, i);
+                  const dMoKey = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
+                  if (monthly[dMoKey]?.[wk.dayCall]) monthly[dMoKey][wk.dayCall].dc += 1;
+                }
               }
               NIGHT_KEYS.forEach((sk, i) => {
                 const sid = wk.nights?.[sk];
@@ -5690,19 +5695,22 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               });
               const wkndSid = wk.nights?.wknd;
               if (wkndSid) {
-                const fri = addD(mon, 4);
-                const friMo = `${fri.getFullYear()}-${String(fri.getMonth()+1).padStart(2,"0")}`;
-                if (monthly[friMo]?.[wkndSid]) monthly[friMo][wkndSid].wknd += 1;
+                // Weekend covers Fri/Sat/Sun (days 4/5/6 of the week), each crediting its own month
+                for (let i = 4; i <= 6; i++) {
+                  const d = addD(mon, i);
+                  const dMoKey = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
+                  if (monthly[dMoKey]?.[wkndSid]) monthly[dMoKey][wkndSid].wknd += 1;
+                }
               }
             });
             const sortedMonths = [...allMonths].sort();
             const moLabel = (mk) => { const [y,mo] = mk.split("-"); return `${MO[parseInt(mo)-1]} ${y}`; };
-            const billingDays = (r) => (r.dc||0)*7 + (r.nights||0) + (r.wknd||0)*3;
+            const billingDays = (r) => (r.dc||0) + (r.nights||0) + (r.wknd||0);
             return (
             <div style={css.card}>
               <div style={css.cardT}>💰 Billing Summary <span style={{fontWeight:400,fontSize:11,color:"#7a8a98"}}>— Monthly, 1st Call Only</span></div>
               <p style={{fontSize:11,color:"#7a8a98",margin:"0 0 14px",lineHeight:1.5}}>
-                Breakdown by calendar month. Backup weeks are excluded — only 1st-call shifts count toward billing. Shifts that span a month boundary are counted in the month they start (service week → Monday's month · weekend → Friday's month).
+                Breakdown by calendar month. Backup weeks are excluded — only 1st-call shifts count toward billing. Each call day is counted in the month it actually falls in (a service week or weekend spanning a month boundary is split across both months).
               </p>
               {sortedMonths.map(mk => {
                 const monthData = monthly[mk] || {};
@@ -5720,9 +5728,9 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                           <tr style={{borderBottom:"1px solid #d0d8e0"}}>
                             <th style={thS2}>Surgeon</th>
                             <th style={{...thS2,color:"#1a8040"}}>Total Days</th>
-                            <th style={thS2}>Svc Wk</th>
+                            <th style={thS2}>Svc Days</th>
                             <th style={thS2}>Nights</th>
-                            <th style={thS2}>Wknds</th>
+                            <th style={thS2}>Wknd Days</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -5747,7 +5755,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                 );
               })}
               <div style={{fontSize:11,color:"#7a8a98",lineHeight:1.5,marginTop:6}}>
-                <strong style={{color:"#2c5a80"}}>Formula:</strong> Svc Wk × 7 + Nights × 1 + Weekends × 3 = Total Call Days. Billed monthly.
+                <strong style={{color:"#2c5a80"}}>Formula:</strong> Svc Days + Nights + Wknd Days = Total Call Days. Each day counted in the month it falls in. Billed monthly.
               </div>
             </div>
             );
