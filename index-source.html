@@ -55,7 +55,7 @@
   </script>
   <script>
     // ─── Auto-update: bump this version string each deploy ───
-    var APP_VERSION = "2026.05.13b";
+    var APP_VERSION = "2026.05.13d";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -99,7 +99,7 @@
   <div id="root"></div>
   <script>
     // Cache-bust with version — update this string when deploying changes
-    var _v = "2026.05.13b";
+    var _v = "2026.05.13d";
     ['config.js','helpers.js','generator.js','app-styles.js'].forEach(function(f) {
       document.write('<script src="'+f+'?v='+_v+'"><\/script>');
     });
@@ -3941,11 +3941,13 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         </div>
         {!isPublicMode && <div style={css.nav}>
           {(() => {
-            const allTabs = [["setup","Setup"],["calendar","Calendar"],["myschedule","Mine"],["requests","Requests"],["stats","Stats"],["totals","Totals"],["settings","Settings"]];
+            const allTabs = [["setup","Setup"],["generate","Generate"],["calendar","Calendar"],["myschedule","Mine"],["requests","Requests"],["stats","Stats"],["totals","Totals"],["settings","Settings"]];
             const isAdmin = userProfile?.person_id === "admin";
             const canAssignApps = userProfile?.can_assign_apps === true;
             const canSeeSetup = isScheduler || isAdmin || canAssignApps;
+            const canGenerate = isScheduler || isAdmin;
             let tabs = canSeeSetup ? allTabs : allTabs.filter(([k]) => k !== "setup");
+            if (!canGenerate) tabs = tabs.filter(([k]) => k !== "generate");
             if (!isScheduler) tabs = tabs.filter(([k]) => k !== "totals");
             if (isAdmin) tabs = tabs.filter(([k]) => k !== "myschedule");
             return tabs.map(([k,l]) =>
@@ -4043,71 +4045,6 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   <button onClick={()=>removeApp(a.id)} style={{background:"none",border:"none",color:"#c04040",cursor:"pointer",fontSize:14,flexShrink:0,padding:"0 2px"}}>✕</button>
                 </div>
               ))}
-            </div>
-          </div>
-
-          {/* Period */}
-          <div style={css.card}>
-            <div style={css.cardT}>Schedule Period</div>
-            <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
-              <select value={startMonth} onChange={e=>{setStartMonth(+e.target.value); setStartMondayOverride("");}} style={{...css.inp,width:140}} disabled={!!startMondayOverride}>
-                {MO.map((m,i)=><option key={i} value={i}>{m}</option>)}
-              </select>
-              <select value={startYear} onChange={e=>{setStartYear(+e.target.value); setStartMondayOverride("");}} style={{...css.inp,width:90}} disabled={!!startMondayOverride}>
-                {[2025,2026,2027,2028].map(y=><option key={y} value={y}>{y}</option>)}
-              </select>
-              <select value={numWeeks} onChange={e=>setNumWeeks(+e.target.value)} style={{...css.inp,width:120}}>
-                {[14,28,42,56].map(w=><option key={w} value={w}>{w} weeks</option>)}
-              </select>
-              <span style={{color:"#7a8a98",fontSize:12}}>→ {MO[endMoIdx]} {endYr}</span>
-            </div>
-
-            {/* Override: specific start Monday */}
-            <div style={{marginTop:10,paddingTop:10,borderTop:"1px solid #e8ecf0"}}>
-              <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
-                <label style={{fontSize:11,color:"#7a8a98",fontWeight:600}}>Or start on a specific Monday:</label>
-                <input type="date" value={startMondayOverride}
-                  onChange={e=>{
-                    const v = e.target.value;
-                    if (!v) { setStartMondayOverride(""); return; }
-                    const d = parse(v);
-                    if (d.getDay() !== 1) { alert("Please pick a Monday."); return; }
-                    setStartMondayOverride(v);
-                    // Also sync month/year for downstream displays
-                    setStartMonth(d.getMonth());
-                    setStartYear(d.getFullYear());
-                  }}
-                  style={{...css.inp,width:160}}/>
-                {startMondayOverride && (
-                  <button onClick={()=>setStartMondayOverride("")} style={{...css.btn(false),padding:"4px 10px",fontSize:11}}>
-                    Clear override
-                  </button>
-                )}
-              </div>
-              {Object.keys(schedule).length > 0 && (() => {
-                const existingMondays = Object.keys(schedule).sort();
-                const lastMonday = parse(existingMondays[existingMondays.length - 1]);
-                const nextMonday = addD(lastMonday, 7);
-                const nextMondayStr = fmt(nextMonday);
-                const alreadyAtNext = startMondayOverride === nextMondayStr;
-                return (
-                  <div style={{marginTop:8,display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
-                    <span style={{fontSize:11,color:"#7a8a98"}}>
-                      Last existing week starts: <span style={{fontFamily:mono,color:"#5a6a78"}}>{fmt(lastMonday)}</span>
-                    </span>
-                    <button
-                      onClick={()=>{
-                        setStartMondayOverride(nextMondayStr);
-                        setStartMonth(nextMonday.getMonth());
-                        setStartYear(nextMonday.getFullYear());
-                      }}
-                      disabled={alreadyAtNext}
-                      style={{...css.btn(!alreadyAtNext),padding:"5px 12px",fontSize:11,opacity:alreadyAtNext?0.5:1}}>
-                      {alreadyAtNext ? "✓ Set" : `→ Continue from ${MO[nextMonday.getMonth()].slice(0,3)} ${nextMonday.getDate()}`}
-                    </button>
-                  </div>
-                );
-              })()}
             </div>
           </div>
 
@@ -4508,6 +4445,130 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             })()}
           </div>
 
+          </>}
+
+        </>}
+
+        {/* ════════════════ GENERATE ════════════════ */}
+        {view==="generate" && !isPublicMode && (isScheduler || userProfile?.person_id === "admin") && <>
+
+          {/* Pre-flight checklist */}
+          {(() => {
+            const existingMondays = Object.keys(schedule).sort();
+            const hasSchedule = existingMondays.length > 0;
+            const lastMonday = hasSchedule ? parse(existingMondays[existingMondays.length-1]) : null;
+            const lastSun = lastMonday ? addD(lastMonday, 6) : null;
+            // Count vacations that fall within the next period window (based on mondays)
+            const nextPeriodStart = mondays[0];
+            const nextPeriodEnd = mondays.length > 0 ? addD(mondays[mondays.length-1], 6) : null;
+            let vacInPeriod = 0;
+            if (nextPeriodStart && nextPeriodEnd) {
+              Object.values(vacations || {}).forEach(arr => {
+                (arr || []).forEach(([a,b]) => {
+                  const aDate = parse(a);
+                  const bDate = parse(b);
+                  if (aDate <= nextPeriodEnd && bDate >= nextPeriodStart) vacInPeriod++;
+                });
+              });
+            }
+            // Count fierce/backup weeks that fall in the period
+            let backupInPeriod = 0;
+            mondays.forEach(m => {
+              const ms = fmt(m);
+              if (backupMondaySet.has(ms) || fierceBackupSet.has(ms)) backupInPeriod++;
+            });
+            // Count holiday assignments that fall in the period
+            const holidayCount = mondays.length > 0 ? Object.keys(holidayAssignments || {}).filter(hid => {
+              const ha = holidayAssignments[hid];
+              return ha && ha.date && parse(ha.date) >= nextPeriodStart && parse(ha.date) <= nextPeriodEnd;
+            }).length : 0;
+            const Item = ({ok, label, info}) => (
+              <div style={{display:"flex",alignItems:"center",gap:8,padding:"5px 0",fontSize:12,color:"#3a4a58"}}>
+                <span style={{fontSize:14,color:ok?"#1a8040":"#a08020",minWidth:18,textAlign:"center"}}>{ok?"✓":"ⓘ"}</span>
+                <span style={{flex:1}}>{label}</span>
+                {info && <span style={{fontSize:10,color:"#7a8a98"}}>{info}</span>}
+              </div>
+            );
+            return (
+              <div style={css.card}>
+                <div style={css.cardT}>📋 New Schedule Period</div>
+                {hasSchedule && (
+                  <p style={{fontSize:12,color:"#5a6a78",margin:"0 0 10px",lineHeight:1.5}}>
+                    Current schedule ends <strong style={{fontFamily:mono}}>{fmt(lastSun)}</strong>. Configure the next period below.
+                  </p>
+                )}
+                <div style={{borderTop:"1px solid #e8ecf0",paddingTop:8,marginTop:6}}>
+                  <div style={{fontSize:11,fontWeight:700,color:"#7a8a98",textTransform:"uppercase",letterSpacing:0.8,marginBottom:6}}>Pre-flight checklist</div>
+                  <Item ok={surgeons.length>0} label={`${surgeons.length} surgeons configured`} info="Edit in Setup →"/>
+                  <Item ok={apps.length>0} label={`${apps.length} APPs configured`} info="Edit in Setup →"/>
+                  <Item ok={vacInPeriod>=0} label={`${vacInPeriod} vacation${vacInPeriod===1?"":"s"} in this period`} info="Edit in Setup →"/>
+                  <Item ok={backupInPeriod>=0} label={`${backupInPeriod} backup/Fierce week${backupInPeriod===1?"":"s"} in this period`} info="Edit in Setup →"/>
+                  <Item ok={holidayCount>=0} label={`${holidayCount} holiday assignment${holidayCount===1?"":"s"} in this period`} info="Edit in Setup →"/>
+                </div>
+              </div>
+            );
+          })()}
+
+          {/* Period card */}
+          <div style={css.card}>
+            <div style={css.cardT}>Schedule Period</div>
+            <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+              <select value={startMonth} onChange={e=>{setStartMonth(+e.target.value); setStartMondayOverride("");}} style={{...css.inp,width:140}} disabled={!!startMondayOverride}>
+                {MO.map((m,i)=><option key={i} value={i}>{m}</option>)}
+              </select>
+              <select value={startYear} onChange={e=>{setStartYear(+e.target.value); setStartMondayOverride("");}} style={{...css.inp,width:90}} disabled={!!startMondayOverride}>
+                {[2025,2026,2027,2028].map(y=><option key={y} value={y}>{y}</option>)}
+              </select>
+              <select value={numWeeks} onChange={e=>setNumWeeks(+e.target.value)} style={{...css.inp,width:120}}>
+                {[14,28,42,56].map(w=><option key={w} value={w}>{w} weeks</option>)}
+              </select>
+              <span style={{color:"#7a8a98",fontSize:12}}>→ {MO[endMoIdx]} {endYr}</span>
+            </div>
+            <div style={{marginTop:10,paddingTop:10,borderTop:"1px solid #e8ecf0"}}>
+              <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+                <label style={{fontSize:11,color:"#7a8a98",fontWeight:600}}>Or start on a specific Monday:</label>
+                <input type="date" value={startMondayOverride}
+                  onChange={e=>{
+                    const v = e.target.value;
+                    if (!v) { setStartMondayOverride(""); return; }
+                    const d = parse(v);
+                    if (d.getDay() !== 1) { alert("Please pick a Monday."); return; }
+                    setStartMondayOverride(v);
+                    setStartMonth(d.getMonth());
+                    setStartYear(d.getFullYear());
+                  }}
+                  style={{...css.inp,width:160}}/>
+                {startMondayOverride && (
+                  <button onClick={()=>setStartMondayOverride("")} style={{...css.btn(false),padding:"4px 10px",fontSize:11}}>Clear override</button>
+                )}
+              </div>
+              {Object.keys(schedule).length > 0 && (() => {
+                const existingMondays = Object.keys(schedule).sort();
+                const lastMonday = parse(existingMondays[existingMondays.length - 1]);
+                const nextMonday = addD(lastMonday, 7);
+                const nextMondayStr = fmt(nextMonday);
+                const alreadyAtNext = startMondayOverride === nextMondayStr;
+                return (
+                  <div style={{marginTop:8,display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+                    <span style={{fontSize:11,color:"#7a8a98"}}>
+                      Last existing week starts: <span style={{fontFamily:mono,color:"#5a6a78"}}>{fmt(lastMonday)}</span>
+                    </span>
+                    <button
+                      onClick={()=>{
+                        setStartMondayOverride(nextMondayStr);
+                        setStartMonth(nextMonday.getMonth());
+                        setStartYear(nextMonday.getFullYear());
+                      }}
+                      disabled={alreadyAtNext}
+                      style={{...css.btn(!alreadyAtNext),padding:"5px 12px",fontSize:11,opacity:alreadyAtNext?0.5:1}}>
+                      {alreadyAtNext ? "✓ Set" : `→ Continue from ${MO[nextMonday.getMonth()].slice(0,3)} ${nextMonday.getDate()}`}
+                    </button>
+                  </div>
+                );
+              })()}
+            </div>
+          </div>
+
           <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
             <button onClick={()=>doGenerate(true)} style={{...css.btn(false),padding:"13px 24px",fontSize:14,fontWeight:700,borderRadius:9,letterSpacing:0.3,flex:1}}>
               👁 Preview Schedule
@@ -4519,9 +4580,9 @@ ${"</"}script>${"</"}body>${"</"}html>`;
 
           {/* What-If Preview */}
           {showPreview && previewSchedule && (()=>{
-            // Build preview stats
+            // Build preview stats — both 1st call (regular) and 2nd call (backup)
             const pStats = {};
-            surgeons.forEach(s => { pStats[s.id] = {dc:0,nights:0,wknd:0,off:0}; });
+            surgeons.forEach(s => { pStats[s.id] = {dc:0,nights:0,wknd:0,off:0,dcB:0,nightsB:0,wkndB:0,offB:0}; });
             Object.values(previewSchedule).forEach(wk => {
               if (wk.dayCall && pStats[wk.dayCall]) pStats[wk.dayCall][wk.isBackup?"dcB":"dc"]++;
               if (wk.off && pStats[wk.off]) pStats[wk.off][wk.isBackup?"offB":"off"]++;
@@ -4603,8 +4664,35 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               <div style={{...css.card,marginTop:14,background:dk?"#1a2a1a":"#f0faf0",border:"2px solid #80c080"}}>
                 <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12,flexWrap:"wrap",gap:8}}>
                   <div style={css.cardT}>👁 Schedule Preview</div>
-                  <div style={{display:"flex",gap:6}}>
+                  <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
                     <button onClick={()=>{setPreviewCalMonth(0);doGenerate(true);}} style={{...css.btn(false),padding:"6px 14px",fontSize:12}}>↻ Re-roll</button>
+                    <button onClick={()=>{
+                      try {
+                        // Compute month range from preview schedule
+                        const previewMondays = Object.keys(previewSchedule).sort();
+                        if (previewMondays.length === 0) return;
+                        const firstMon = parse(previewMondays[0]);
+                        const lastMon = parse(previewMondays[previewMondays.length-1]);
+                        const lastSun = addD(lastMon, 6);
+                        const startY = firstMon.getFullYear();
+                        const startM = firstMon.getMonth();
+                        const monthsSpan = (lastSun.getFullYear() - startY) * 12 + (lastSun.getMonth() - startM) + 1;
+                        const html = buildPrintableCalendarHTML({
+                          startYear: startY,
+                          startMonth: startM,
+                          numMonths: monthsSpan,
+                          schedule: previewSchedule,
+                          vacations,
+                          surgeons,
+                          apps,
+                          appShifts,
+                          fierceBackupSet,
+                        });
+                        const w = window.open("", "_blank");
+                        if (!w) { alert("Popup blocked. Please allow popups."); return; }
+                        w.document.write(html); w.document.close();
+                      } catch(e) { alert("Print failed: " + (e?.message||e)); }
+                    }} style={{...css.btn(false),padding:"6px 14px",fontSize:12,background:"#fef3e6",borderColor:"#e8c89a",color:"#8a5020"}}>🖨 Print Calendar</button>
                     <button onClick={acceptPreview} style={{...css.btn(true),padding:"6px 14px",fontSize:12,background:"linear-gradient(135deg,#1a8040,#30a060)",borderColor:"#1a8040"}}>✓ Accept & Publish</button>
                     <button onClick={discardPreview} style={{background:"none",border:"1px solid #e0c0c0",color:"#904040",borderRadius:6,padding:"6px 14px",fontSize:12,cursor:"pointer",fontFamily:font}}>✕ Discard</button>
                   </div>
@@ -4663,39 +4751,62 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   </div>
                 </>}
 
-                {/* Counts Table */}
-                <div style={{fontSize:12,fontWeight:700,color:"#3a6a3a",marginBottom:6}}>Assignment Counts</div>
+                {/* Counts Table — mirrors the "This Period" table */}
+                <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:6,flexWrap:"wrap",gap:6}}>
+                  <div style={{fontSize:12,fontWeight:700,color:"#3a6a3a"}}>Assignment Counts — Preview Period</div>
+                  <button onClick={()=>setShowBackupStats(p=>!p)}
+                    style={{background:showBackupStats?"#fef8e8":"#f4f6f8",border:`1px solid ${showBackupStats?"#d8c880":"#d0d8e0"}`,color:showBackupStats?"#8a6a10":"#5a6a78",borderRadius:6,padding:"3px 10px",fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:font}}>
+                    {showBackupStats ? "Hide 2nd Call" : "Show 2nd Call"}
+                  </button>
+                </div>
                 <div style={{overflowX:"auto"}}>
                   <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
                     <thead>
                       <tr style={{borderBottom:"2px solid #b0d8b0"}}>
                         <th style={thS2}>Surgeon</th>
+                        <th style={thS2}><span style={{color:"#1a8040"}}>Total</span></th>
+                        <th style={thS2} colSpan={4}><span style={{color:"#1a6fa8"}}>{showBackupStats ? "1st Call" : "Regular"}</span></th>
+                        {showBackupStats && <th style={{...thS2,borderLeft:"2px solid #d8c880"}} colSpan={4}><span style={{color:"#8a6a10"}}>2nd Call</span></th>}
+                      </tr>
+                      <tr style={{borderBottom:"1px solid #c0e0c0"}}>
+                        <th style={thS2}></th>
+                        <th style={thS2}><span style={{color:"#1a8040"}}>Shifts</span></th>
                         <th style={thS2}>Svc Wk</th><th style={thS2}>Nights</th><th style={thS2}>Wknds</th><th style={thS2}>Off</th>
+                        {showBackupStats && <><th style={{...thS2,borderLeft:"2px solid #d8c880"}}>Svc Wk</th><th style={thS2}>Nights</th><th style={thS2}>Wknds</th><th style={thS2}>Off</th></>}
                       </tr>
                     </thead>
                     <tbody>
                       {surgeons.map(s => {
                         const ps = pStats[s.id]||{};
+                        const total = calcTotal(ps);
                         return (
                           <tr key={s.id} style={{borderBottom:"1px solid #c0e0c0"}}>
                             <td style={{padding:"5px 6px"}}><Badge id={s.id} small/></td>
+                            <td style={{...tdS,color:"#1a8040",fontWeight:700,fontSize:14}}>{total}</td>
                             <td style={tdS}>{ps.dc||0}</td>
                             <td style={tdS}>{ps.nights||0}</td>
                             <td style={tdS}>{ps.wknd||0}</td>
                             <td style={tdS}>{ps.off||0}</td>
+                            {showBackupStats && <>
+                              <td style={{...tdS,borderLeft:"2px solid #d8c880"}}>{ps.dcB||0}</td>
+                              <td style={tdS}>{ps.nightsB||0}</td>
+                              <td style={tdS}>{ps.wkndB||0}</td>
+                              <td style={tdS}>{ps.offB||0}</td>
+                            </>}
                           </tr>
                         );
                       })}
                     </tbody>
                   </table>
                 </div>
-                <p style={{fontSize:11,color:"#5a8a5a",marginTop:8}}>Click "Re-roll" to generate a different version. Use ◀ ▶ to browse months. Click "Accept" to commit this schedule.</p>
+                <div style={{marginTop:8,fontSize:11,color:"#5a8a5a",lineHeight:1.5}}>
+                  <strong style={{color:"#2c5a80"}}>Total</strong> = 1st Call + 2nd Call. Service Week = 6, Week Night = 1, Weekend = 2.
+                </div>
+                <p style={{fontSize:11,color:"#5a8a5a",marginTop:8}}>Click "Re-roll" to generate a different version. Use ◀ ▶ to browse months. Click "🖨 Print Calendar" for a printable view. Click "Accept" to commit this schedule.</p>
               </div>
             );
           })()}
           </>}
-
-        </>}
 
         {/* ════════════════ TOTALS ════════════════ */}
         {view==="totals" && !isPublicMode && <>
