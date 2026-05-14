@@ -55,7 +55,7 @@
   </script>
   <script>
     // ─── Auto-update: bump this version string each deploy ───
-    var APP_VERSION = "2026.05.12e";
+    var APP_VERSION = "2026.05.13a";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -99,7 +99,7 @@
   <div id="root"></div>
   <script>
     // Cache-bust with version — update this string when deploying changes
-    var _v = "2026.05.12e";
+    var _v = "2026.05.13a";
     ['config.js','helpers.js','generator.js','app-styles.js'].forEach(function(f) {
       document.write('<script src="'+f+'?v='+_v+'"><\/script>');
     });
@@ -211,6 +211,7 @@ function CallSchedule() {
   const [expandedVacGroups, setExpandedVacGroups] = useState({}); // { personId: true/false }
   const toggleVacGroup = (id) => setExpandedVacGroups(prev => ({ ...prev, [id]: !prev[id] }));
   const [showPastVacations, setShowPastVacations] = useState(false); // Setup tab: hide completed vacations by default
+  const [appShiftsListExpanded, setAppShiftsListExpanded] = useState(false); // Setup tab: collapse APP shift list by default to reduce clutter
 
   // ─── Office Notifications ───
   const [officeContacts, setOfficeContacts] = useState([]);
@@ -4222,19 +4223,33 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               </div>
               <button onClick={addAppShift} style={css.btn(true)}>+ Assign</button>
             </div>
-            {Object.entries(appShifts).sort(([a],[b])=>a.localeCompare(b)).map(([ds,aid])=>{
-              const dow = parse(ds).getDay();
-              const timeLabel = (dow === 0 || dow === 6) ? "7a–7a" : "5p–7a";
-              return (
-              <div key={ds} style={{display:"flex",alignItems:"center",gap:8,marginBottom:4}}>
-                <span style={{fontFamily:mono,fontSize:12,color:"#5a6a78"}}>{ds}</span>
-                <span style={{fontSize:11,color:"#5a6a78"}}>{DAY_HDR[parse(ds).getDay()]}</span>
-                <AppBadge id={aid}/>
-                <span style={{fontSize:10,color:"#7a8a98"}}>{timeLabel}</span>
-                <button onClick={()=>rmAppShift(ds)} style={{background:"none",border:"none",color:"#904040",cursor:"pointer",fontSize:11}}>✕</button>
+            {/* Collapsible list of assigned shifts — collapsed by default to reduce clutter */}
+            {Object.keys(appShifts).length > 0 && (
+              <div style={{borderTop:"1px solid #e8ecf0",paddingTop:10}}>
+                <button onClick={()=>setAppShiftsListExpanded(p=>!p)}
+                  style={{background:"none",border:"none",cursor:"pointer",fontSize:12,color:"#5a6a78",display:"flex",alignItems:"center",gap:6,padding:"4px 0",fontFamily:font,fontWeight:600}}>
+                  <span style={{fontSize:10,transition:"transform 0.15s",transform:appShiftsListExpanded?"rotate(90deg)":"rotate(0deg)",display:"inline-block"}}>▶</span>
+                  {appShiftsListExpanded ? "Hide" : "Show"} assigned shifts <span style={{fontWeight:400,color:"#8a94a0"}}>({Object.keys(appShifts).length})</span>
+                </button>
+                {appShiftsListExpanded && (
+                  <div style={{marginTop:8}}>
+                    {Object.entries(appShifts).sort(([a],[b])=>a.localeCompare(b)).map(([ds,aid])=>{
+                      const dow = parse(ds).getDay();
+                      const timeLabel = (dow === 0 || dow === 6) ? "7a–7a" : "5p–7a";
+                      return (
+                      <div key={ds} style={{display:"flex",alignItems:"center",gap:8,marginBottom:4}}>
+                        <span style={{fontFamily:mono,fontSize:12,color:"#5a6a78"}}>{ds}</span>
+                        <span style={{fontSize:11,color:"#5a6a78"}}>{DAY_HDR[parse(ds).getDay()]}</span>
+                        <AppBadge id={aid}/>
+                        <span style={{fontSize:10,color:"#7a8a98"}}>{timeLabel}</span>
+                        <button onClick={()=>rmAppShift(ds)} style={{background:"none",border:"none",color:"#904040",cursor:"pointer",fontSize:11}}>✕</button>
+                      </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
-              );
-            })}
+            )}
           </div>
 
           {(isScheduler || userProfile?.person_id === "admin") && <>
@@ -6848,7 +6863,6 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                         return <option key={i} value={i}>{h12}:00 {ampm}</option>;
                       })}
                     </select>
-                    <span style={{fontSize:10,color:"#8a94a0"}}>Central</span>
                   </div>
                 );
                 return (
@@ -6889,7 +6903,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                     <HourPicker field="daily_reminder_hour" label="Daily call reminder"/>
                     <HourPicker field="vac_deadline_hour" label="Vacation deadline reminder"/>
                     <p style={{fontSize:10,color:"#8a94a0",margin:"4px 0 0",fontStyle:"italic"}}>
-                      Times are in Central time (DST-aware). Reminders fire only on days you're on call (for call reminder) or 2 days before the vacation deadline.
+                      Reminders fire only on days you're on call (for call reminder) or 2 days before the vacation deadline.
                     </p>
                   </div>
                 );
@@ -6952,7 +6966,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           {/* Account */}
           <div style={css.card}>
             <div style={css.cardT}>👤 Account</div>
-            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:8,marginBottom:biometricAvail?12:0}}>
+            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:8,marginBottom:12}}>
               <div>
                 <p style={{fontSize:13,color:dkText,margin:"0 0 2px"}}>
                   Signed in as <strong style={{color:"#1a6fa8"}}>{userProfile?.display_name || "—"}</strong>
@@ -6963,7 +6977,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                 Sign Out
               </button>
             </div>
-            {biometricAvail && (
+            {biometricAvail ? (
               <div style={{paddingTop:12,borderTop:"1px solid #e0e4ea"}}>
                 <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:8}}>
                   <div>
@@ -6981,6 +6995,30 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                       Enable
                     </button>
                   )}
+                </div>
+              </div>
+            ) : (
+              <div style={{paddingTop:12,borderTop:"1px solid #e0e4ea"}}>
+                <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",flexWrap:"wrap",gap:8}}>
+                  <div style={{flex:"1 1 240px",minWidth:0}}>
+                    <p style={{fontSize:12,fontWeight:600,color:dkText,margin:"0 0 2px"}}>🔐 Biometric Login Unavailable</p>
+                    <p style={{fontSize:11,color:"#7a8a98",margin:"0 0 4px",lineHeight:1.4}}>
+                      Face ID / Touch ID isn't detected on this device. On iPhone, this requires Safari (not Chrome/Firefox) and the PWA installed via Safari's Share → Add to Home Screen.
+                    </p>
+                  </div>
+                  <button onClick={async () => {
+                    const bioAvail = await biometric.isAvailable();
+                    setBiometricAvail(bioAvail);
+                    if (bioAvail) {
+                      const bioEnrolled = biometric.isEnrolled();
+                      setBiometricEnrolled(bioEnrolled);
+                      alert("Biometric is now available! Tap Enable to set it up.");
+                    } else {
+                      alert("Still not detected. Make sure:\n• Device has Face ID / Touch ID set up\n• Using Safari (not Chrome/Firefox)\n• PWA installed via Safari's Share → Add to Home Screen");
+                    }
+                  }} style={{...css.btn(false),padding:"6px 14px",fontSize:12,flexShrink:0}}>
+                    🔄 Re-check
+                  </button>
                 </div>
               </div>
             )}

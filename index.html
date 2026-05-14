@@ -55,7 +55,7 @@
   </script>
   <script>
     // ─── Auto-update: bump this version string each deploy ───
-    var APP_VERSION = "2026.05.12e";
+    var APP_VERSION = "2026.05.13a";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -99,7 +99,7 @@
   <div id="root"></div>
   <script>
     // Cache-bust with version — update this string when deploying changes
-    var _v = "2026.05.12e";
+    var _v = "2026.05.13a";
     ['config.js','helpers.js','generator.js','app-styles.js'].forEach(function(f) {
       document.write('<script src="'+f+'?v='+_v+'"><\/script>');
     });
@@ -238,6 +238,7 @@ function CallSchedule() {
     [id]: !prev[id]
   }));
   const [showPastVacations, setShowPastVacations] = useState(false); // Setup tab: hide completed vacations by default
+  const [appShiftsListExpanded, setAppShiftsListExpanded] = useState(false); // Setup tab: collapse APP shift list by default to reduce clutter
 
   // ─── Office Notifications ───
   const [officeContacts, setOfficeContacts] = useState([]);
@@ -6426,7 +6427,43 @@ ${"</"}script>${"</"}body>${"</"}html>`;
   }, a.name)))), /*#__PURE__*/React.createElement("button", {
     onClick: addAppShift,
     style: css.btn(true)
-  }, "+ Assign")), Object.entries(appShifts).sort(([a], [b]) => a.localeCompare(b)).map(([ds, aid]) => {
+  }, "+ Assign")), Object.keys(appShifts).length > 0 && /*#__PURE__*/React.createElement("div", {
+    style: {
+      borderTop: "1px solid #e8ecf0",
+      paddingTop: 10
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: () => setAppShiftsListExpanded(p => !p),
+    style: {
+      background: "none",
+      border: "none",
+      cursor: "pointer",
+      fontSize: 12,
+      color: "#5a6a78",
+      display: "flex",
+      alignItems: "center",
+      gap: 6,
+      padding: "4px 0",
+      fontFamily: font,
+      fontWeight: 600
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 10,
+      transition: "transform 0.15s",
+      transform: appShiftsListExpanded ? "rotate(90deg)" : "rotate(0deg)",
+      display: "inline-block"
+    }
+  }, "\u25B6"), appShiftsListExpanded ? "Hide" : "Show", " assigned shifts ", /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontWeight: 400,
+      color: "#8a94a0"
+    }
+  }, "(", Object.keys(appShifts).length, ")")), appShiftsListExpanded && /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 8
+    }
+  }, Object.entries(appShifts).sort(([a], [b]) => a.localeCompare(b)).map(([ds, aid]) => {
     const dow = parse(ds).getDay();
     const timeLabel = dow === 0 || dow === 6 ? "7a–7a" : "5p–7a";
     return /*#__PURE__*/React.createElement("div", {
@@ -6465,7 +6502,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         fontSize: 11
       }
     }, "\u2715"));
-  })), (isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.person_id) === "admin") && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+  })))), (isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.person_id) === "admin") && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
     style: css.card
   }, /*#__PURE__*/React.createElement("div", {
     style: css.cardT
@@ -12547,12 +12584,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         key: i,
         value: i
       }, h12, ":00 ", ampm);
-    })), /*#__PURE__*/React.createElement("span", {
-      style: {
-        fontSize: 10,
-        color: "#8a94a0"
-      }
-    }, "Central"));
+    })));
     return /*#__PURE__*/React.createElement("div", {
       style: {
         marginTop: 12,
@@ -12686,7 +12718,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         margin: "4px 0 0",
         fontStyle: "italic"
       }
-    }, "Times are in Central time (DST-aware). Reminders fire only on days you're on call (for call reminder) or 2 days before the vacation deadline."));
+    }, "Reminders fire only on days you're on call (for call reminder) or 2 days before the vacation deadline."));
   })(), isScheduler && /*#__PURE__*/React.createElement("div", {
     style: {
       marginTop: 12,
@@ -12841,7 +12873,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       justifyContent: "space-between",
       flexWrap: "wrap",
       gap: 8,
-      marginBottom: biometricAvail ? 12 : 0
+      marginBottom: 12
     }
   }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("p", {
     style: {
@@ -12866,7 +12898,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       padding: "6px 14px",
       fontSize: 12
     }
-  }, "Sign Out")), biometricAvail && /*#__PURE__*/React.createElement("div", {
+  }, "Sign Out")), biometricAvail ? /*#__PURE__*/React.createElement("div", {
     style: {
       paddingTop: 12,
       borderTop: "1px solid #e0e4ea"
@@ -12906,7 +12938,57 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       padding: "6px 14px",
       fontSize: 12
     }
-  }, "Enable")))), /*#__PURE__*/React.createElement("div", {
+  }, "Enable"))) : /*#__PURE__*/React.createElement("div", {
+    style: {
+      paddingTop: 12,
+      borderTop: "1px solid #e0e4ea"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "flex-start",
+      justifyContent: "space-between",
+      flexWrap: "wrap",
+      gap: 8
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      flex: "1 1 240px",
+      minWidth: 0
+    }
+  }, /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 12,
+      fontWeight: 600,
+      color: dkText,
+      margin: "0 0 2px"
+    }
+  }, "\uD83D\uDD10 Biometric Login Unavailable"), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 11,
+      color: "#7a8a98",
+      margin: "0 0 4px",
+      lineHeight: 1.4
+    }
+  }, "Face ID / Touch ID isn't detected on this device. On iPhone, this requires Safari (not Chrome/Firefox) and the PWA installed via Safari's Share \u2192 Add to Home Screen.")), /*#__PURE__*/React.createElement("button", {
+    onClick: async () => {
+      const bioAvail = await biometric.isAvailable();
+      setBiometricAvail(bioAvail);
+      if (bioAvail) {
+        const bioEnrolled = biometric.isEnrolled();
+        setBiometricEnrolled(bioEnrolled);
+        alert("Biometric is now available! Tap Enable to set it up.");
+      } else {
+        alert("Still not detected. Make sure:\n• Device has Face ID / Touch ID set up\n• Using Safari (not Chrome/Firefox)\n• PWA installed via Safari's Share → Add to Home Screen");
+      }
+    },
+    style: {
+      ...css.btn(false),
+      padding: "6px 14px",
+      fontSize: 12,
+      flexShrink: 0
+    }
+  }, "\uD83D\uDD04 Re-check")))), /*#__PURE__*/React.createElement("div", {
     style: css.card
   }, /*#__PURE__*/React.createElement("div", {
     style: css.cardT
