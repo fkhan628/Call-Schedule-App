@@ -201,8 +201,9 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
         if (holDow === 1) {
           // Monday holiday — do NOT force holiday surgeon as DC
           // Instead, prefer someone else for service week
-          // HARD RULE: also exclude previous weekend surgeon from DC (no back-to-back wknd→DC)
-          let nonHolPool = availDC.filter(id => id !== holDcSurgeon && id !== prevWkndSurgeon);
+          // HARD RULE: also exclude previous weekend surgeon and consecutive-DC surgeon
+          let nonHolPool = availDC.filter(id => id !== holDcSurgeon && id !== prevWkndSurgeon && lastDcWeek[id] !== wkIdx - 1);
+          if (nonHolPool.length === 0) nonHolPool = availDC.filter(id => id !== holDcSurgeon && lastDcWeek[id] !== wkIdx - 1);
           if (nonHolPool.length === 0) nonHolPool = availDC.filter(id => id !== holDcSurgeon); // fallback
           if (nonHolPool.length > 0) {
             nonHolPool.sort((a,b) => {
@@ -228,8 +229,11 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
         }
       } else {
         // HARD RULE: exclude previous weekend surgeon from DC (no back-to-back wknd→DC)
+        // HARD RULE: exclude surgeon who just did DC last week (no consecutive service weeks)
         let dcPool = prevWkndSurgeon ? availDC.filter(id => id !== prevWkndSurgeon) : availDC;
         if (dcPool.length === 0) dcPool = availDC; // fallback if no one else
+        const dcPoolNoConsec = dcPool.filter(id => lastDcWeek[id] !== wkIdx - 1);
+        if (dcPoolNoConsec.length > 0) dcPool = dcPoolNoConsec;
         dcPool.sort((a,b) => {
           // PRIMARY: fewer total shifts this period (equality goal)
           const ts = periodShifts[a] - periodShifts[b]; if (ts) return ts;
