@@ -55,7 +55,7 @@
   </script>
   <script>
     // ─── Auto-update: bump this version string each deploy ───
-    var APP_VERSION = "2026.05.13a";
+    var APP_VERSION = "2026.05.13b";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -99,7 +99,7 @@
   <div id="root"></div>
   <script>
     // Cache-bust with version — update this string when deploying changes
-    var _v = "2026.05.13a";
+    var _v = "2026.05.13b";
     ['config.js','helpers.js','generator.js','app-styles.js'].forEach(function(f) {
       document.write('<script src="'+f+'?v='+_v+'"><\/script>');
     });
@@ -133,6 +133,7 @@ function CallSchedule() {
   const [startMonth, setStartMonth] = useState(4);
   const [startYear, setStartYear] = useState(2026);
   const [numWeeks, setNumWeeks] = useState(14);
+  const [startMondayOverride, setStartMondayOverride] = useState(""); // explicit Monday YYYY-MM-DD; overrides startMonth/startYear when set
   // Calendar view defaults to the current month so users land on what's
   // relevant today, not on the scheduling period's start month.
   const [calMonth, setCalMonth] = useState(() => new Date().getMonth());
@@ -600,6 +601,7 @@ function CallSchedule() {
           if (d.startMonth !== undefined) setStartMonth(d.startMonth);
           if (d.startYear !== undefined) setStartYear(d.startYear);
           if (d.numWeeks) setNumWeeks(d.numWeeks);
+          if (d.startMondayOverride !== undefined) setStartMondayOverride(d.startMondayOverride || "");
           if (d.holidayAssignments) setHolidayAssignments(d.holidayAssignments);
         }
         const { data: cfgRow } = await supabase
@@ -680,6 +682,7 @@ function CallSchedule() {
         if (d.startMonth !== undefined) setStartMonth(d.startMonth);
         if (d.startYear !== undefined) setStartYear(d.startYear);
         if (d.numWeeks) setNumWeeks(d.numWeeks);
+        if (d.startMondayOverride !== undefined) setStartMondayOverride(d.startMondayOverride || "");
         if (d.holidayAssignments) setHolidayAssignments(d.holidayAssignments);
       } catch(e) {}
     };
@@ -778,7 +781,7 @@ function CallSchedule() {
       backupMondays: [...backupMondaySet],
       fierceBackup: [...fierceBackupSet],
       schedule, appShifts, priorCounts, year1Counts, year2Counts,
-      startMonth, startYear, numWeeks, holidayAssignments,
+      startMonth, startYear, numWeeks, holidayAssignments, startMondayOverride,
     };
     pendingSaveRef.current = payload;
     const timer = setTimeout(async () => {
@@ -799,7 +802,7 @@ function CallSchedule() {
       }
     }, 800);
     return () => clearTimeout(timer);
-  }, [loaded, surgeons, apps, vacations, backupMondaySet, fierceBackupSet, schedule, appShifts, priorCounts, year1Counts, year2Counts, startMonth, startYear, numWeeks, holidayAssignments]);
+  }, [loaded, surgeons, apps, vacations, backupMondaySet, fierceBackupSet, schedule, appShifts, priorCounts, year1Counts, year2Counts, startMonth, startYear, numWeeks, holidayAssignments, startMondayOverride]);
 
   // ─── Flush pending save when app is backgrounded or closing ───
   //
@@ -2206,7 +2209,17 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
     if (s.includes("labor")) return "🇺🇸";
     return "📅";
   };
-  const mondays = useMemo(() => getMondays(startYear, startMonth, numWeeks), [startYear, startMonth, numWeeks]);
+  const mondays = useMemo(() => {
+    if (startMondayOverride) {
+      // Explicit start Monday — generate numWeeks consecutive Mondays from it
+      const ms = []; let d = parse(startMondayOverride);
+      // Safety: snap to the Monday of that week if not already
+      if (d.getDay() !== 1) d = monOf(d);
+      for (let i = 0; i < numWeeks; i++) { ms.push(new Date(d)); d = addD(d, 7); }
+      return ms;
+    }
+    return getMondays(startYear, startMonth, numWeeks);
+  }, [startYear, startMonth, numWeeks, startMondayOverride]);
   const endDate = mondays.length > 0 ? addD(mondays[mondays.length-1], 6) : null;
   const endMoIdx = endDate ? endDate.getMonth() : (startMonth+2)%12;
   const endYr = endDate ? endDate.getFullYear() : startYear;
@@ -4037,16 +4050,64 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           <div style={css.card}>
             <div style={css.cardT}>Schedule Period</div>
             <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
-              <select value={startMonth} onChange={e=>setStartMonth(+e.target.value)} style={{...css.inp,width:140}}>
+              <select value={startMonth} onChange={e=>{setStartMonth(+e.target.value); setStartMondayOverride("");}} style={{...css.inp,width:140}} disabled={!!startMondayOverride}>
                 {MO.map((m,i)=><option key={i} value={i}>{m}</option>)}
               </select>
-              <select value={startYear} onChange={e=>setStartYear(+e.target.value)} style={{...css.inp,width:90}}>
+              <select value={startYear} onChange={e=>{setStartYear(+e.target.value); setStartMondayOverride("");}} style={{...css.inp,width:90}} disabled={!!startMondayOverride}>
                 {[2025,2026,2027,2028].map(y=><option key={y} value={y}>{y}</option>)}
               </select>
               <select value={numWeeks} onChange={e=>setNumWeeks(+e.target.value)} style={{...css.inp,width:120}}>
                 {[14,28,42,56].map(w=><option key={w} value={w}>{w} weeks</option>)}
               </select>
               <span style={{color:"#7a8a98",fontSize:12}}>→ {MO[endMoIdx]} {endYr}</span>
+            </div>
+
+            {/* Override: specific start Monday */}
+            <div style={{marginTop:10,paddingTop:10,borderTop:"1px solid #e8ecf0"}}>
+              <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+                <label style={{fontSize:11,color:"#7a8a98",fontWeight:600}}>Or start on a specific Monday:</label>
+                <input type="date" value={startMondayOverride}
+                  onChange={e=>{
+                    const v = e.target.value;
+                    if (!v) { setStartMondayOverride(""); return; }
+                    const d = parse(v);
+                    if (d.getDay() !== 1) { alert("Please pick a Monday."); return; }
+                    setStartMondayOverride(v);
+                    // Also sync month/year for downstream displays
+                    setStartMonth(d.getMonth());
+                    setStartYear(d.getFullYear());
+                  }}
+                  style={{...css.inp,width:160}}/>
+                {startMondayOverride && (
+                  <button onClick={()=>setStartMondayOverride("")} style={{...css.btn(false),padding:"4px 10px",fontSize:11}}>
+                    Clear override
+                  </button>
+                )}
+              </div>
+              {Object.keys(schedule).length > 0 && (() => {
+                const existingMondays = Object.keys(schedule).sort();
+                const lastMonday = parse(existingMondays[existingMondays.length - 1]);
+                const nextMonday = addD(lastMonday, 7);
+                const nextMondayStr = fmt(nextMonday);
+                const alreadyAtNext = startMondayOverride === nextMondayStr;
+                return (
+                  <div style={{marginTop:8,display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+                    <span style={{fontSize:11,color:"#7a8a98"}}>
+                      Last existing week starts: <span style={{fontFamily:mono,color:"#5a6a78"}}>{fmt(lastMonday)}</span>
+                    </span>
+                    <button
+                      onClick={()=>{
+                        setStartMondayOverride(nextMondayStr);
+                        setStartMonth(nextMonday.getMonth());
+                        setStartYear(nextMonday.getFullYear());
+                      }}
+                      disabled={alreadyAtNext}
+                      style={{...css.btn(!alreadyAtNext),padding:"5px 12px",fontSize:11,opacity:alreadyAtNext?0.5:1}}>
+                      {alreadyAtNext ? "✓ Set" : `→ Continue from ${MO[nextMonday.getMonth()].slice(0,3)} ${nextMonday.getDate()}`}
+                    </button>
+                  </div>
+                );
+              })()}
             </div>
           </div>
 
