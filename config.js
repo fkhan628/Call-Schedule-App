@@ -444,11 +444,23 @@ const BIOMETRIC_USER_KEY = "dsg-biometric-user";
 
 const biometric = {
   // Check if WebAuthn platform authenticator is available (Face ID, Touch ID, fingerprint)
+  // Returns { available: bool, reason: string } for diagnostics.
   async isAvailable() {
     try {
-      if (!window.PublicKeyCredential) return false;
-      return await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable();
-    } catch(e) { return false; }
+      if (!window.PublicKeyCredential) {
+        return { available: false, reason: "WebAuthn API not present (PublicKeyCredential is undefined). Likely a non-Safari browser or an in-app webview." };
+      }
+      if (typeof PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable !== "function") {
+        return { available: false, reason: "isUserVerifyingPlatformAuthenticatorAvailable is not a function on this browser." };
+      }
+      const result = await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable();
+      if (result) {
+        return { available: true, reason: "Platform authenticator detected." };
+      }
+      return { available: false, reason: "API returned false: no platform authenticator (Face ID / Touch ID) reported as available. On fresh PWA installs this sometimes resolves after a device restart, or by enrolling directly via the Try Anyway button below." };
+    } catch(e) {
+      return { available: false, reason: `API threw: ${e.name || "Error"} — ${e.message || "(no message)"}` };
+    }
   },
 
   // Check if biometric is already enrolled

@@ -57,7 +57,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.05.14a";
+    var APP_VERSION = "2026.05.14b";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -278,6 +278,7 @@ function CallSchedule() {
   const [userProfile, setUserProfile] = useState(null); // { person_id, display_name, role }
   const [needsProfile, setNeedsProfile] = useState(false); // true if logged in but no profile yet
   const [biometricAvail, setBiometricAvail] = useState(false);
+  const [biometricReason, setBiometricReason] = useState(""); // diagnostic string for when biometric isn't available
   const [biometricEnrolled, setBiometricEnrolled] = useState(false);
   const [biometricPending, setBiometricPending] = useState(false); // waiting for biometric prompt
   const [allProfiles, setAllProfiles] = useState([]); // for scheduler to manage per-user flags
@@ -458,8 +459,9 @@ function CallSchedule() {
             return;
           }
         }
-        const bioAvail = await biometric.isAvailable();
-        setBiometricAvail(bioAvail);
+        const bioResult = await biometric.isAvailable();
+        setBiometricAvail(bioResult.available);
+        setBiometricReason(bioResult.reason);
         const bioEnrolled = biometric.isEnrolled();
         setBiometricEnrolled(bioEnrolled);
         const session = auth.getSession();
@@ -533,6 +535,26 @@ function CallSchedule() {
       setBiometricEnrolled(true);
     } else {
       alert(result.error || "Could not enable biometric login");
+    }
+  };
+
+  // "Try Enable Anyway" — bypasses the isAvailable() gate and attempts
+  // enrollment directly. Useful when isUserVerifyingPlatformAuthenticatorAvailable()
+  // returns a false negative (a known iOS quirk on fresh PWA installs).
+  // The browser's response gives a real, specific error if enrollment isn't
+  // possible — far more actionable than "API said no."
+  const handleBiometricForceEnroll = async () => {
+    if (!authUser) {
+      alert("Please log in first.");
+      return;
+    }
+    const result = await biometric.enroll(authUser.id, authUser.email);
+    if (result.success) {
+      setBiometricEnrolled(true);
+      setBiometricAvail(true);
+      setBiometricReason("Enrolled successfully via bypass — the availability check was a false negative.");
+    } else {
+      setBiometricReason(`Enrollment failed: ${result.error || "(unknown error)"}`);
     }
   };
   const handleBiometricUnenroll = () => {
@@ -13643,7 +13665,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       alignItems: "flex-start",
       justifyContent: "space-between",
       flexWrap: "wrap",
-      gap: 8
+      gap: 8,
+      marginBottom: 8
     }
   }, /*#__PURE__*/React.createElement("div", {
     style: {
@@ -13664,16 +13687,14 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       margin: "0 0 4px",
       lineHeight: 1.4
     }
-  }, "Face ID / Touch ID isn't detected on this device. On iPhone, this requires Safari (not Chrome/Firefox) and the PWA installed via Safari's Share \u2192 Add to Home Screen.")), /*#__PURE__*/React.createElement("button", {
+  }, "Face ID / Touch ID isn't being reported as available. On iPhone, this requires Safari and the PWA installed via Safari's Share \u2192 Add to Home Screen.")), /*#__PURE__*/React.createElement("button", {
     onClick: async () => {
-      const bioAvail = await biometric.isAvailable();
-      setBiometricAvail(bioAvail);
-      if (bioAvail) {
+      const r = await biometric.isAvailable();
+      setBiometricAvail(r.available);
+      setBiometricReason(r.reason);
+      if (r.available) {
         const bioEnrolled = biometric.isEnrolled();
         setBiometricEnrolled(bioEnrolled);
-        alert("Biometric is now available! Tap Enable to set it up.");
-      } else {
-        alert("Still not detected. Make sure:\n• Device has Face ID / Touch ID set up\n• Using Safari (not Chrome/Firefox)\n• PWA installed via Safari's Share → Add to Home Screen");
       }
     },
     style: {
@@ -13682,7 +13703,46 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       fontSize: 12,
       flexShrink: 0
     }
-  }, "\uD83D\uDD04 Re-check")))), /*#__PURE__*/React.createElement("div", {
+  }, "\uD83D\uDD04 Re-check")), biometricReason && /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: dk ? "#0f1e30" : "#f4f6f8",
+      border: `1px solid ${dk ? "#2a3a5e" : "#e0e4ea"}`,
+      borderRadius: 6,
+      padding: "6px 10px",
+      fontSize: 11,
+      color: dk ? "#b0b8c0" : "#5a6a78",
+      lineHeight: 1.5,
+      fontFamily: mono,
+      wordBreak: "break-word",
+      marginBottom: 8
+    }
+  }, /*#__PURE__*/React.createElement("strong", {
+    style: {
+      color: dk ? "#d0d4dc" : "#3a4a58"
+    }
+  }, "Diagnostic:"), " ", biometricReason), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 6,
+      flexWrap: "wrap",
+      alignItems: "center"
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: handleBiometricForceEnroll,
+    disabled: !authUser,
+    style: {
+      ...css.btn(true),
+      padding: "6px 14px",
+      fontSize: 12,
+      opacity: authUser ? 1 : 0.5
+    }
+  }, "\uD83D\uDD13 Try Enable Anyway"), /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 10,
+      color: "#7a8a98",
+      fontStyle: "italic"
+    }
+  }, "Bypasses the availability check \u2014 the browser will show a Face ID prompt if it actually works.")))), /*#__PURE__*/React.createElement("div", {
     style: css.card
   }, /*#__PURE__*/React.createElement("div", {
     style: css.cardT
