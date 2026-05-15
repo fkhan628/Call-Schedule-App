@@ -177,6 +177,78 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
   const holidayCt = {}; // { surgeonId: { major: count, minor: count } }
   ids.forEach(id => { holidayCt[id] = { major: 0, minor: 0 }; });
 
+  // ═══ HOLIDAY PRE-ASSIGNMENTS ═══
+  //
+  // Conventions (Faraz, May 2026):
+  //
+  // MONDAY holidays:
+  //   - Surgeon A (holiday-Monday surgeon) takes the PREVIOUS week's
+  //     full Service Week.
+  //   - Surgeon B (second holiday surgeon) takes the holiday week's
+  //     Weekend (Fri 5p–Sat 7a + Sun 7a–Mon 7a).
+  //
+  // FRIDAY holidays:
+  //   - Surgeon A (holiday-Friday surgeon) covers Fri 24h AND Sun 24h.
+  //     Encoded by pre-assigning that week's Weekend slot to Surgeon A.
+  //   - Saturday is covered by whoever ends up as DC (no pre-assignment;
+  //     it falls out of normal service-week assignment).
+  //
+  // Pre-assignments are SOFT: if the target surgeon is on vacation during
+  // their relevant window, the slot falls back to the normal algorithm.
+  // The existing holidayWkndOverride (downstream) still acts as a hard
+  // override for explicit Setup-time holiday coverage.
+  const preAssign = {}; // { mondayStr: { dayCall?: id, wknd?: id } }
+
+  // Helper: surgeon available for a weekend slot (Fri, Sun, next Mon).
+  // Saturday is DC's day, so it's intentionally not checked here.
+  const wkndAvail = (id, weekMonday) => {
+    return !onVac(id, fmt(addD(weekMonday, 4)), vac)  // Fri
+        && !onVac(id, fmt(addD(weekMonday, 6)), vac)  // Sun
+        && !onVac(id, fmt(addD(weekMonday, 7)), vac); // next Mon
+  };
+
+  for (let i = 0; i < mondays.length; i++) {
+    const mStr = fmt(mondays[i]);
+
+    // MONDAY-holiday pattern (Monday itself is a holiday date)
+    if (holByDate[mStr]) {
+      const { surgeonA, surgeonB } = holByDate[mStr];
+
+      // Surgeon A → previous week's Service Week (DC)
+      if (surgeonA && i > 0) {
+        const prevMonday = mondays[i-1];
+        const prevMStr = fmt(prevMonday);
+        let aAvail = true;
+        for (let d = 0; d < 6; d++) {
+          if (onVac(surgeonA, fmt(addD(prevMonday, d)), vac)) { aAvail = false; break; }
+        }
+        if (aAvail) {
+          if (!preAssign[prevMStr]) preAssign[prevMStr] = {};
+          preAssign[prevMStr].dayCall = surgeonA;
+        }
+      }
+
+      // Surgeon B → holiday week's Weekend
+      if (surgeonB && wkndAvail(surgeonB, mondays[i])) {
+        if (!preAssign[mStr]) preAssign[mStr] = {};
+        preAssign[mStr].wknd = surgeonB;
+      }
+    }
+
+    // FRIDAY-holiday pattern (Friday of this week is a holiday date)
+    const friStr = fmt(addD(mondays[i], 4));
+    if (holByDate[friStr]) {
+      const { surgeonA: friSurgeonA } = holByDate[friStr];
+      if (friSurgeonA && wkndAvail(friSurgeonA, mondays[i])) {
+        if (!preAssign[mStr]) preAssign[mStr] = {};
+        // Don't overwrite a Monday-holiday wknd pre-assignment if both
+        // happened to apply (very unlikely — would need a Mon AND Fri holiday
+        // in the same week).
+        if (!preAssign[mStr].wknd) preAssign[mStr].wknd = friSurgeonA;
+      }
+    }
+  }
+
   for (let wkIdx = 0; wkIdx < mondays.length; wkIdx++) {
     const monday = mondays[wkIdx];
     const mStr = fmt(monday);
@@ -200,6 +272,12 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
 
     let dc = null;
     if (availDC.length) {
+      // Monday-holiday convention: prev-week DC pre-assigned to next week's
+      // holiday surgeon A. Apply if the pre-assigned surgeon is available.
+      const preDc = preAssign[mStr]?.dayCall;
+      if (preDc && availDC.includes(preDc)) {
+        dc = preDc;
+      } else {
       // Check for pre-assigned holiday surgeonA for DC this week
       const weekdayHoliday = weekHolidays.find(h => {
         const dow = parse(h.ds).getDay();
@@ -266,6 +344,7 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
         });
         dc = dcPool[0];
       }
+      } // close else block for pre-assignment override
       dcCt[dc]++; burden[dc]+=7; lastDcWeek[dc] = wkIdx;
       periodShifts[dc]++; periodServiceWeeks[dc]++;
 
@@ -291,6 +370,15 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
     const friHoliday = holidayMap[friDate];
     const sunHoliday = holidayMap[sunDate];
 
+    // Monday-holiday convention: holiday week's Weekend pre-assigned to
+    // surgeon B (the second holiday surgeon). Apply if available.
+    const preWknd = preAssign[mStr]?.wknd;
+    if (preWknd && availWknd.includes(preWknd) && preWknd !== dc) {
+      nights.wknd = preWknd; used.add(preWknd); wkndCt[preWknd]++; burden[preWknd]+=3;
+      periodShifts[preWknd]++;
+      if (friHoliday) holidayCt[preWknd][friHoliday.type]++;
+      if (sunHoliday) holidayCt[preWknd][sunHoliday.type]++;
+    } else {
     const prefWknd = availWknd.filter(id => id !== prevWkndSurgeon);
     const wkndPool = prefWknd.length > 0 ? prefWknd : availWknd;
 
@@ -322,6 +410,7 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
       const fb=rem.filter(id=>!used.has(id));
       if(fb.length){nights.wknd=fb[0];used.add(fb[0]);} else nights.wknd=null;
     }
+    } // close else block for wknd pre-assignment override
 
     // ═══ WEEKNIGHT SHIFTS ═══
 
