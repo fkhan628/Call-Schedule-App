@@ -103,17 +103,33 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
     periodServiceWeeks[id] = 0;
     // Past burden = dc*7 + nights + wknd*3 (old formula, used as secondary signal).
     // Note: priorCounts here represents multi-year (see config.js COUNTS_2YR).
-    // If separate 1-year data isn't available, scale multi-year down.
     priorMultiScore[id] = dcCt[id]*7 + nCt[id] + wkndCt[id]*3;
-    // Rough 1-year approximation: take most-recent-year portion.
-    // Without a dedicated 1-year input here, treat priorCounts as the
-    // multi-year and use a proxy (half the multi-year burden) for 1-yr.
-    // The calling app passes priorCounts = multi-year; when the app wants
-    // true 1-year data to factor in, it'd need to pass it in a separate
-    // parameter (deferred — for now this approximation is fine since
-    // priorYearScore is only 10% weight).
-    priorYearScore[id] = priorMultiScore[id] / 2;
     lastDcWeek[id] = -99;
+  });
+
+  // CAP: bound prior-count influence so an anomalous count can't dominate
+  // the priority function. Each surgeon's score is clamped to within ±50%
+  // of the group median. The PRIMARY in-period sort still drives balance;
+  // this cap just prevents the 10%/5% prior tiebreakers from running away
+  // when one surgeon's history looks very different from the rest (e.g.
+  // extended leave, recent hire, or data-entry error in Setup).
+  {
+    const sorted = ids.map(id => priorMultiScore[id]).sort((a,b)=>a-b);
+    const median = sorted.length ? sorted[Math.floor(sorted.length/2)] : 0;
+    if (median > 0) {
+      const lo = median * 0.5;
+      const hi = median * 1.5;
+      ids.forEach(id => {
+        priorMultiScore[id] = Math.max(lo, Math.min(hi, priorMultiScore[id]));
+      });
+    }
+  }
+
+  // Rough 1-year approximation: half the (capped) multi-year burden.
+  // Without dedicated 1-year input, this proxy is fine since priorYearScore
+  // is only 10% weight in the priority function.
+  ids.forEach(id => {
+    priorYearScore[id] = priorMultiScore[id] / 2;
   });
 
   // Composite priority score — LOWER = more deserving of next shift.

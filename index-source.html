@@ -55,7 +55,9 @@
   </script>
   <script>
     // ─── Auto-update: bump this version string each deploy ───
-    var APP_VERSION = "2026.05.13d";
+    // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
+    // below (line ~102) reads APP_VERSION directly — do not duplicate.
+    var APP_VERSION = "2026.05.14a";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -98,8 +100,9 @@
 <body>
   <div id="root"></div>
   <script>
-    // Cache-bust with version — update this string when deploying changes
-    var _v = "2026.05.13d";
+    // Cache-bust uses APP_VERSION (defined at the top of this file).
+    // Only ONE version string to bump per deploy — see line ~58.
+    var _v = APP_VERSION;
     ['config.js','helpers.js','generator.js','app-styles.js'].forEach(function(f) {
       document.write('<script src="'+f+'?v='+_v+'"><\/script>');
     });
@@ -2981,7 +2984,7 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
     });
   }, [schedule, appShifts]);
 
-  const saveWeekEdits = useCallback(() => {
+  const saveWeekEdits = useCallback((openAfter) => {
     if (!editWeekModal) return;
     const { mondayStr, draft } = editWeekModal;
     const oldWk = schedule[mondayStr] || {};
@@ -3008,7 +3011,7 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
     });
 
     if (changes.length === 0) {
-      setEditWeekModal(null);
+      if (openAfter) openWeekEditor(openAfter); else setEditWeekModal(null);
       return;
     }
     // Safety confirmation if many changes at once
@@ -3108,7 +3111,11 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
     });
 
     setEditWeekModal(null);
-  }, [editWeekModal, schedule, appShifts, surgeons, sMap, aMap, addNotification, sendEmailNotif, pushUndo, schedulerAdminIds]);
+    if (openAfter) {
+      // Defer to next tick so state updates flush before re-opening
+      setTimeout(() => openWeekEditor(openAfter), 0);
+    }
+  }, [editWeekModal, schedule, appShifts, surgeons, sMap, aMap, addNotification, sendEmailNotif, pushUndo, schedulerAdminIds, openWeekEditor]);
 
   // Generate shareable read-only HTML with calendar grid view
   const generateShareHTML = () => {
@@ -4012,6 +4019,95 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         {/* ════════════════ SETUP ════════════════ */}
         {view==="setup" && !isPublicMode && <>
           {(isScheduler || userProfile?.person_id === "admin") && <>
+
+          {/* Setup validation panel */}
+          {(() => {
+            const issues = [];
+
+            // 1. Surgeons with missing names
+            surgeons.forEach(s => {
+              if (!s.name || !s.name.trim()) {
+                issues.push({ sev: "error", msg: `Surgeon (id: ${s.id}) has no name` });
+              }
+            });
+
+            // 2. Surgeons with no multi-year counts entered (likely unfilled)
+            surgeons.forEach(s => {
+              const p = priorCounts[s.id] || {};
+              const total = (p.dc||0)+(p.dcB||0) + (p.nights||0)+(p.nightsB||0) + (p.wknd||0)+(p.wkndB||0);
+              if (total === 0) {
+                issues.push({ sev: "warn", msg: `${s.name || s.id} has no multi-year shift counts entered` });
+              }
+            });
+
+            // 3. Surgeon burden score >50% off group median (likely data-entry error)
+            const burdens = surgeons.map(s => {
+              const p = priorCounts[s.id] || {};
+              return {
+                name: s.name,
+                score: ((p.dc||0)+(p.dcB||0))*7 + (p.nights||0)+(p.nightsB||0) + ((p.wknd||0)+(p.wkndB||0))*3
+              };
+            });
+            const nonZero = burdens.map(b => b.score).filter(s => s > 0).sort((a,b) => a-b);
+            const median = nonZero.length ? nonZero[Math.floor(nonZero.length/2)] : 0;
+            if (median > 0) {
+              burdens.forEach(b => {
+                if (b.score > 0 && Math.abs(b.score - median) / median > 0.5) {
+                  issues.push({ sev: "warn", msg: `${b.name} multi-year total is ${b.score < median ? "much lower" : "much higher"} than the rest — verify the entries` });
+                }
+              });
+            }
+
+            // 4. Pending vacation requests
+            const pendingCount = (vacRequests || []).filter(r => r.status === "pending").length;
+            if (pendingCount > 0) {
+              issues.push({ sev: "info", msg: `${pendingCount} pending vacation request${pendingCount === 1 ? "" : "s"} awaiting review` });
+            }
+
+            // 5. Holidays in upcoming period without surgeon assignments
+            if (mondays.length > 0) {
+              const periodStart = mondays[0];
+              const periodEnd = addD(mondays[mondays.length-1], 6);
+              const years = new Set([periodStart.getFullYear()-1, periodStart.getFullYear(), periodEnd.getFullYear()]);
+              years.forEach(y => {
+                let defs = [];
+                try { const h = getHolidays(y); defs = [...h.major, ...h.minor]; } catch(e) {}
+                defs.forEach(hol => {
+                  const hd = parse(hol.date);
+                  if (hd >= periodStart && hd <= periodEnd) {
+                    const yrA = holidayAssignments[String(y)] || [];
+                    const match = yrA.find(a => a.date === hol.date);
+                    if (!match || !match.surgeonA) {
+                      issues.push({ sev: "warn", msg: `${hol.name} (${hol.date}) — no surgeon assigned` });
+                    }
+                  }
+                });
+              });
+            }
+
+            if (issues.length === 0) return null;
+
+            const sevColor = (sev) => sev === "error" ? "#a82020" : sev === "warn" ? "#a05010" : "#506070";
+            const sevIcon = (sev) => sev === "error" ? "❗" : sev === "warn" ? "🚩" : "ℹ️";
+
+            return (
+              <div style={{...css.card, borderLeft:"4px solid #c47a1e"}}>
+                <div style={css.cardT}>Setup Issues ({issues.length})</div>
+                <p style={{fontSize:12,color:"#5a6a78",margin:"0 0 10px",lineHeight:1.5}}>
+                  Review these before generating the next schedule. Warnings won't block generation, but may produce uneven schedules.
+                </p>
+                <ul style={{margin:0,padding:0,listStyle:"none",fontSize:12,lineHeight:1.7}}>
+                  {issues.map((iss, i) => (
+                    <li key={i} style={{padding:"3px 0",color:sevColor(iss.sev),display:"flex",gap:8,alignItems:"flex-start"}}>
+                      <span style={{flexShrink:0}}>{sevIcon(iss.sev)}</span>
+                      <span>{iss.msg}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            );
+          })()}
+
           {/* Surgeons */}
           <div style={css.card}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
@@ -4568,6 +4664,85 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               })()}
             </div>
           </div>
+
+          {/* Pre-generation surgeon summary */}
+          {(() => {
+            const nextPeriodStart = mondays[0];
+            const nextPeriodEnd = mondays.length > 0 ? addD(mondays[mondays.length-1], 6) : null;
+            if (!nextPeriodStart || !nextPeriodEnd) return null;
+
+            const rows = surgeons.map(s => {
+              const p = priorCounts[s.id] || {};
+              const totalShifts = (p.dc||0)+(p.dcB||0) + (p.nights||0)+(p.nightsB||0) + (p.wknd||0)+(p.wkndB||0);
+              const burdenScore = ((p.dc||0)+(p.dcB||0))*7 + (p.nights||0)+(p.nightsB||0) + ((p.wknd||0)+(p.wkndB||0))*3;
+              // Count vacation days overlapping the upcoming period
+              let vacDays = 0;
+              (vacations[s.id] || []).forEach(([a,b]) => {
+                const aDate = parse(a);
+                const bDate = parse(b);
+                const overlapStart = aDate > nextPeriodStart ? aDate : nextPeriodStart;
+                const overlapEnd = bDate < nextPeriodEnd ? bDate : nextPeriodEnd;
+                if (overlapStart <= overlapEnd) {
+                  vacDays += Math.round((overlapEnd - overlapStart) / 86400000) + 1;
+                }
+              });
+              return { id: s.id, name: s.name, totalShifts, burdenScore, vacDays };
+            });
+
+            // Compute median burden for flagging
+            const sortedB = rows.map(r => r.burdenScore).sort((a,b) => a-b);
+            const median = sortedB.length ? sortedB[Math.floor(sortedB.length/2)] : 0;
+
+            rows.forEach(r => {
+              const flags = [];
+              if (r.vacDays > 14) flags.push(`${r.vacDays}d vacation`);
+              if (median > 0 && Math.abs(r.burdenScore - median) / median > 0.25) {
+                flags.push(r.burdenScore < median ? "low prior" : "high prior");
+              }
+              r.flags = flags;
+            });
+
+            const anyFlags = rows.some(r => r.flags.length > 0);
+
+            return (
+              <div style={css.card}>
+                <div style={css.cardT}>👥 Surgeon Pre-Check</div>
+                <p style={{fontSize:12,color:"#5a6a78",margin:"0 0 10px",lineHeight:1.5}}>
+                  Review prior counts and vacation load before generating. Flags indicate likely imbalance — the generator will still produce a schedule, but you may want to re-check Setup data first.
+                </p>
+                <table style={{width:"100%",fontSize:12,borderCollapse:"collapse"}}>
+                  <thead>
+                    <tr style={{textAlign:"left",borderBottom:"1px solid #e0e4ea"}}>
+                      <th style={{padding:"6px 8px",fontWeight:700,color:"#5a6a78"}}>Surgeon</th>
+                      <th style={{padding:"6px 8px",fontWeight:700,color:"#5a6a78",textAlign:"right"}}>Multi-yr total</th>
+                      <th style={{padding:"6px 8px",fontWeight:700,color:"#5a6a78",textAlign:"right"}}>Vac days</th>
+                      <th style={{padding:"6px 8px",fontWeight:700,color:"#5a6a78"}}>Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rows.map(r => (
+                      <tr key={r.id} style={{borderBottom:"1px solid #f0f3f6"}}>
+                        <td style={{padding:"6px 8px",fontWeight:600}}>{r.name}</td>
+                        <td style={{padding:"6px 8px",textAlign:"right",fontFamily:mono}}>{r.totalShifts}</td>
+                        <td style={{padding:"6px 8px",textAlign:"right",fontFamily:mono}}>{r.vacDays}</td>
+                        <td style={{padding:"6px 8px"}}>
+                          {r.flags.length === 0
+                            ? <span style={{color:"#1a8040",fontSize:11}}>✓ ok</span>
+                            : <span style={{color:"#c47a1e",fontSize:11}}>🚩 {r.flags.join(", ")}</span>
+                          }
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {anyFlags && (
+                  <p style={{fontSize:11,color:"#7a8a98",margin:"10px 0 0",fontStyle:"italic",lineHeight:1.4}}>
+                    The prior-count cap (±50% of median) prevents flagged surgeons from dominating the algorithm, but heavy vacation periods may still create uneven distributions.
+                  </p>
+                )}
+              </div>
+            );
+          })()}
 
           <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
             <button onClick={()=>doGenerate(true)} style={{...css.btn(false),padding:"13px 24px",fontSize:14,fontWeight:700,borderRadius:9,letterSpacing:0.3,flex:1}}>
@@ -5586,13 +5761,58 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             const surgeonOpts = [<option key="_empty" value="">— none —</option>, ...surgeons.map(s=><option key={s.id} value={s.id}>{s.name}</option>)];
             const appOpts = [<option key="_none" value="">— none —</option>, ...apps.map(a=><option key={a.id} value={a.id}>{a.name}</option>)];
             const updateDraft = (fn) => setEditWeekModal(em => em ? { ...em, draft: fn(em.draft) } : em);
+
+            // Prev/Next navigation within the existing schedule
+            const allMondays = Object.keys(schedule).sort();
+            const idx = allMondays.indexOf(mondayStr);
+            const prevMonday = idx > 0 ? allMondays[idx-1] : null;
+            const nextMonday = (idx >= 0 && idx < allMondays.length-1) ? allMondays[idx+1] : null;
+
+            // Detect unsaved changes against the current schedule
+            const oldWk = schedule[mondayStr] || {};
+            const hasUnsaved = (
+              (oldWk.dayCall || "") !== (draft.dayCall || "") ||
+              ["mon","tue","wed","thu","wknd"].some(nk => (oldWk.nights?.[nk] || "") !== (draft.nights?.[nk] || "")) ||
+              Object.entries(draft.apps).some(([ds, aid]) => (appShifts[ds] || "") !== (aid || ""))
+            );
+
+            const navigateTo = (target) => {
+              if (!target) return;
+              if (hasUnsaved && !confirm("You have unsaved changes. Discard and switch to a different week?")) return;
+              openWeekEditor(target);
+            };
+
+            const fmtNavLabel = (mStr) => {
+              if (!mStr) return "";
+              const m = parse(mStr);
+              return `${MO[m.getMonth()].slice(0,3)} ${m.getDate()}`;
+            };
+
             return (
               <div onClick={()=>setEditWeekModal(null)} style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.55)",zIndex:9000,display:"flex",alignItems:"flex-start",justifyContent:"center",padding:"20px 10px",overflowY:"auto"}}>
                 <div onClick={e=>e.stopPropagation()} style={{background:dk?"#1a1f2a":"#fff",borderRadius:10,maxWidth:520,width:"100%",padding:20,boxShadow:"0 10px 40px rgba(0,0,0,0.3)"}}>
-                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
                     <div style={{fontSize:16,fontWeight:700,color:dk?"#e8e8f0":"#2c5a80"}}>✏️ Edit Week — {wkLabel}</div>
                     <button onClick={()=>setEditWeekModal(null)} style={{background:"none",border:"none",fontSize:20,cursor:"pointer",color:dk?"#8a94a0":"#5a6a78"}}>×</button>
                   </div>
+
+                  {(prevMonday || nextMonday) && (
+                    <div style={{display:"flex",gap:6,marginBottom:12,paddingBottom:10,borderBottom:`1px solid ${dk?"#2a3a5e":"#e8ecf0"}`}}>
+                      <button onClick={()=>navigateTo(prevMonday)} disabled={!prevMonday}
+                        style={{...css.btn(false),padding:"4px 10px",fontSize:11,opacity:prevMonday?1:0.35,cursor:prevMonday?"pointer":"not-allowed"}}>
+                        ← Prev {prevMonday ? `(${fmtNavLabel(prevMonday)})` : ""}
+                      </button>
+                      <button onClick={()=>navigateTo(nextMonday)} disabled={!nextMonday}
+                        style={{...css.btn(false),padding:"4px 10px",fontSize:11,opacity:nextMonday?1:0.35,cursor:nextMonday?"pointer":"not-allowed"}}>
+                        {nextMonday ? `(${fmtNavLabel(nextMonday)}) ` : ""}Next →
+                      </button>
+                      {hasUnsaved && (
+                        <span style={{fontSize:10,color:"#c47a1e",alignSelf:"center",marginLeft:"auto",fontStyle:"italic"}}>
+                          • unsaved
+                        </span>
+                      )}
+                    </div>
+                  )}
 
                   <div style={{fontSize:11,color:"#7a8a98",marginBottom:14,lineHeight:1.5}}>
                     Changes will be saved immediately. Affected surgeons and APPs will be notified via push and email.
@@ -5639,9 +5859,14 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   </div>
 
                   {/* Buttons */}
-                  <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}>
+                  <div style={{display:"flex",gap:8,justifyContent:"flex-end",flexWrap:"wrap"}}>
                     <button onClick={()=>setEditWeekModal(null)} style={{...css.btn(false),padding:"8px 16px"}}>Cancel</button>
-                    <button onClick={saveWeekEdits} style={{...css.btn(true),padding:"8px 16px"}}>💾 Save Changes</button>
+                    <button onClick={()=>saveWeekEdits()} style={{...css.btn(true),padding:"8px 16px"}}>💾 Save Changes</button>
+                    {nextMonday && (
+                      <button onClick={()=>saveWeekEdits(nextMonday)} style={{...css.btn(true),padding:"8px 16px"}}>
+                        💾 Save & Next →
+                      </button>
+                    )}
                   </div>
                 </div>
               </div>
