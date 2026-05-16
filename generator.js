@@ -601,6 +601,12 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
         const aCanDoB = !onVac(a,friB,vac) && !onVac(a,sunB,vac) && !onVac(a,nMonB,vac) && a !== wkB.dayCall;
         if (!bCanDoA || !aCanDoB) continue;
 
+        // Prevent back-to-back: b can't already be Thursday night in week A
+        // (Thu+wknd is the only forbidden combo — Mon/Tue/Wed + wknd are all
+        // fine, since wknd starts Fri 5p).
+        if (wkA.nights?.thu === b) continue;
+        if (wkB.nights?.thu === a) continue;
+
         // Check weekend→Monday night conflict: new weekend surgeon shouldn't be Monday night next week
         const nextWkA = i + 1 < mondayStrs.length ? sched[mondayStrs[i + 1]] : null;
         const nextWkB = j + 1 < mondayStrs.length ? sched[mondayStrs[j + 1]] : null;
@@ -659,6 +665,14 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
           wk.nights.wknd = wk.off;
           recalcOff(wk);
         }
+      }
+
+      // Fix: Weekend surgeon should not also have Thursday night in same week
+      // (back-to-back: Thu 5p–Fri 7a then wknd starts Fri 5p, no recovery).
+      // Mon/Tue/Wed + wknd are all allowed — enough gap before wknd starts.
+      if (wk.nights?.wknd && wk.nights?.thu === wk.nights?.wknd && wk.off && wk.off !== wk.dayCall) {
+        wk.nights.thu = wk.off;
+        recalcOff(wk);
       }
 
       // Fix: Weekend surgeon should not have Monday night next week
