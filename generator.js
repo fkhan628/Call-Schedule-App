@@ -759,5 +759,173 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
     }
   }
 
+  // ═══ SPREAD REDUCTION PASS ═══
+  //
+  // Goal (Faraz, May 2026): tighten shift-count spread across surgeons.
+  // Vacations create natural imbalance, but the algorithm should push as
+  // close to equality as possible given the constraints.
+  //
+  // Strategy: one-way reassignment. Find the surgeon with the highest total
+  // shifts and the surgeon with the lowest. For each slot the high surgeon
+  // is currently assigned to, check if the low surgeon could take that slot
+  // (vacation, conflicts, rules). If yes, reassign — high count drops by 1,
+  // low count rises by 1, spread tightens. Iterate until no improvement.
+  //
+  // Slot priority: DC first (user explicitly called out service-week
+  // balance), then weekend, then weeknights.
+  //
+  // Preserves: manual locks, holiday-pattern pre-assignments. These are
+  // identified via the preAssign map and skipped.
+
+  // Recalculate counts from the actual schedule state — the earlier weekend
+  // swap optimization has known count-update bugs, so trust the assignments
+  // not the running counters.
+  ids.forEach(id => { dcCt[id] = 0; nCt[id] = 0; wkndCt[id] = 0; });
+  mondayStrs.forEach(mStr => {
+    const wk = sched[mStr];
+    if (wk.dayCall) dcCt[wk.dayCall] = (dcCt[wk.dayCall] || 0) + 1;
+    if (wk.nights?.wknd) wkndCt[wk.nights.wknd] = (wkndCt[wk.nights.wknd] || 0) + 1;
+    ["mon","tue","wed","thu"].forEach(sk => {
+      if (wk.nights?.[sk]) nCt[wk.nights[sk]] = (nCt[wk.nights[sk]] || 0) + 1;
+    });
+  });
+  ids.forEach(id => { periodShifts[id] = (dcCt[id] || 0) + (nCt[id] || 0) + (wkndCt[id] || 0); });
+
+  const isPreAssigned = (mStr, slot, surgeonId) => preAssign[mStr]?.[slot] === surgeonId;
+
+  // Can surgeon Y take this slot in this week without violating any rules?
+  const canTakeSlot = (Y, mStr, monday, slot, wk, wkIdx) => {
+    if (!Y) return false;
+    if (Y === wk.dayCall && slot !== "dayCall") return false;
+
+    // Same-week double assignment rules:
+    if (slot === "dayCall") {
+      if (wk.nights?.wknd === Y) return false;
+      if (["mon","tue","wed","thu"].some(sk => wk.nights?.[sk] === Y)) return false;
+    } else if (slot === "wknd") {
+      if (wk.dayCall === Y) return false;
+      if (wk.nights?.thu === Y) return false; // Thu+wknd forbidden
+      // Mon/Tue/Wed + wknd are allowed
+    } else {
+      // weeknight slot
+      if (wk.dayCall === Y) return false;
+      if (slot === "thu" && wk.nights?.wknd === Y) return false; // Thu+wknd
+      // No double-up on weeknights
+      for (const sk of ["mon","tue","wed","thu"]) {
+        if (sk !== slot && wk.nights?.[sk] === Y) return false;
+      }
+    }
+
+    // Vacation checks scoped to slot's actual hours
+    if (slot === "dayCall") {
+      for (let d = 0; d < 6; d++) if (onVac(Y, fmt(addD(monday, d)), vac)) return false;
+    } else if (slot === "wknd") {
+      if (onVac(Y, fmt(addD(monday, 4)), vac)) return false; // Fri
+      if (onVac(Y, fmt(addD(monday, 6)), vac)) return false; // Sun
+      if (onVac(Y, fmt(addD(monday, 7)), vac)) return false; // next Mon
+    } else {
+      const dayOffset = {mon:0, tue:1, wed:2, thu:3}[slot];
+      if (onVac(Y, fmt(addD(monday, dayOffset)), vac)) return false;
+      if (onVac(Y, fmt(addD(monday, dayOffset + 1)), vac)) return false;
+    }
+
+    // Inter-week constraints
+    const prevWk = wkIdx > 0 ? sched[mondayStrs[wkIdx-1]] : null;
+    const nextWk = wkIdx < mondayStrs.length-1 ? sched[mondayStrs[wkIdx+1]] : null;
+
+    if (slot === "dayCall") {
+      if (prevWk?.nights?.wknd === Y) return false; // wknd → DC forbidden
+      if (prevWk?.dayCall === Y) return false; // consecutive SW forbidden
+      if (nextWk?.nights?.mon === Y) return false; // DC → next Mon forbidden
+    }
+    if (slot === "mon") {
+      if (prevWk?.nights?.wknd === Y) return false; // wknd → next Mon forbidden
+      if (prevWk?.dayCall === Y) return false; // DC → next Mon forbidden
+    }
+    if (slot === "wknd") {
+      if (nextWk?.nights?.mon === Y) return false; // wknd → next Mon forbidden
+    }
+
+    // Back-to-back weeknights within same week
+    if (["tue","wed","thu"].includes(slot)) {
+      const prevSk = {tue:"mon", wed:"tue", thu:"wed"}[slot];
+      if (wk.nights?.[prevSk] === Y) return false;
+    }
+    if (["mon","tue","wed"].includes(slot)) {
+      const nextSk = {mon:"tue", tue:"wed", wed:"thu"}[slot];
+      if (wk.nights?.[nextSk] === Y) return false;
+    }
+
+    return true;
+  };
+
+  const reassign = (mStr, slot, fromId, toId) => {
+    const wk = sched[mStr];
+    if (slot === "dayCall") {
+      wk.dayCall = toId;
+      dcCt[fromId]--; dcCt[toId] = (dcCt[toId]||0) + 1;
+    } else if (slot === "wknd") {
+      wk.nights.wknd = toId;
+      wkndCt[fromId]--; wkndCt[toId] = (wkndCt[toId]||0) + 1;
+    } else {
+      wk.nights[slot] = toId;
+      nCt[fromId]--; nCt[toId] = (nCt[toId]||0) + 1;
+    }
+    periodShifts[fromId]--; periodShifts[toId] = (periodShifts[toId]||0) + 1;
+    const assigned = new Set([wk.dayCall, ...Object.values(wk.nights)].filter(Boolean));
+    wk.off = ids.find(id => !assigned.has(id)) || null;
+  };
+
+  // PHASE 1: DC balance — target service-week equality first
+  for (let iter = 0; iter < 50; iter++) {
+    let maxId = ids[0], minId = ids[0];
+    ids.forEach(id => {
+      if ((dcCt[id]||0) > (dcCt[maxId]||0)) maxId = id;
+      if ((dcCt[id]||0) < (dcCt[minId]||0)) minId = id;
+    });
+    if ((dcCt[maxId]||0) - (dcCt[minId]||0) <= 2) break;
+
+    let found = false;
+    for (let wkIdx = 0; wkIdx < mondayStrs.length; wkIdx++) {
+      const mStr = mondayStrs[wkIdx];
+      const wk = sched[mStr];
+      if (wk.dayCall !== maxId) continue;
+      if (isPreAssigned(mStr, "dayCall", maxId)) continue;
+      if (!canTakeSlot(minId, mStr, parse(mStr), "dayCall", wk, wkIdx)) continue;
+      reassign(mStr, "dayCall", maxId, minId);
+      found = true;
+      break;
+    }
+    if (!found) break;
+  }
+
+  // PHASE 2: Total shift balance — fine-tune across all slot types
+  const slotOrder = ["wknd", "mon", "tue", "wed", "thu"]; // DC excluded (already balanced in phase 1)
+  for (let iter = 0; iter < 100; iter++) {
+    let maxId = ids[0], minId = ids[0];
+    ids.forEach(id => {
+      if ((periodShifts[id]||0) > (periodShifts[maxId]||0)) maxId = id;
+      if ((periodShifts[id]||0) < (periodShifts[minId]||0)) minId = id;
+    });
+    if ((periodShifts[maxId]||0) - (periodShifts[minId]||0) <= 2) break;
+
+    let found = false;
+    for (let wkIdx = 0; wkIdx < mondayStrs.length && !found; wkIdx++) {
+      const mStr = mondayStrs[wkIdx];
+      const wk = sched[mStr];
+      const monday = parse(mStr);
+      for (const slot of slotOrder) {
+        const cur = wk.nights?.[slot];
+        if (cur !== maxId) continue;
+        if (isPreAssigned(mStr, slot, maxId)) continue;
+        if (!canTakeSlot(minId, mStr, monday, slot, wk, wkIdx)) continue;
+        reassign(mStr, slot, maxId, minId);
+        found = true;
+        break;
+      }
+    }
+    if (!found) break;
+  }
+
   return sched;
 }
