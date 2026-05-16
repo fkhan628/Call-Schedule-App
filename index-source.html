@@ -57,7 +57,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.05.14g";
+    var APP_VERSION = "2026.05.15a";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -183,6 +183,10 @@ function CallSchedule() {
 
   // ─── What-If Preview ───
   const [previewSchedule, setPreviewSchedule] = useState(null);
+  const [pendingLocks, setPendingLocks] = useState([]); // [{ mondayStr, slot: "dc"|"mon"|"tue"|"wed"|"thu"|"wknd", surgeonId }]
+  const [newLockWeek, setNewLockWeek] = useState("");
+  const [newLockSlot, setNewLockSlot] = useState("");
+  const [newLockSurgeon, setNewLockSurgeon] = useState("");
   const [showPreview, setShowPreview] = useState(false);
   const [previewCalMonth, setPreviewCalMonth] = useState(0); // index into preview months
 
@@ -625,6 +629,7 @@ function CallSchedule() {
           if (d.numWeeks) setNumWeeks(d.numWeeks);
           if (d.startMondayOverride !== undefined) setStartMondayOverride(d.startMondayOverride || "");
           if (d.holidayAssignments) setHolidayAssignments(d.holidayAssignments);
+          if (Array.isArray(d.pendingLocks)) setPendingLocks(d.pendingLocks);
         }
         const { data: cfgRow } = await supabase
           .from("call_schedule_config")
@@ -706,6 +711,7 @@ function CallSchedule() {
         if (d.numWeeks) setNumWeeks(d.numWeeks);
         if (d.startMondayOverride !== undefined) setStartMondayOverride(d.startMondayOverride || "");
         if (d.holidayAssignments) setHolidayAssignments(d.holidayAssignments);
+        if (Array.isArray(d.pendingLocks)) setPendingLocks(d.pendingLocks);
       } catch(e) {}
     };
 
@@ -804,6 +810,7 @@ function CallSchedule() {
       fierceBackup: [...fierceBackupSet],
       schedule, appShifts, priorCounts, year1Counts, year2Counts,
       startMonth, startYear, numWeeks, holidayAssignments, startMondayOverride,
+      pendingLocks,
     };
     pendingSaveRef.current = payload;
     const timer = setTimeout(async () => {
@@ -824,7 +831,7 @@ function CallSchedule() {
       }
     }, 800);
     return () => clearTimeout(timer);
-  }, [loaded, surgeons, apps, vacations, backupMondaySet, fierceBackupSet, schedule, appShifts, priorCounts, year1Counts, year2Counts, startMonth, startYear, numWeeks, holidayAssignments, startMondayOverride]);
+  }, [loaded, surgeons, apps, vacations, backupMondaySet, fierceBackupSet, schedule, appShifts, priorCounts, year1Counts, year2Counts, startMonth, startYear, numWeeks, holidayAssignments, startMondayOverride, pendingLocks]);
 
   // ─── Flush pending save when app is backgrounded or closing ───
   //
@@ -2406,7 +2413,7 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
 
   const doGenerate = (preview) => {
     const prefs = buildPrefs();
-    const result = generate(surgeons, mondays, vacations, backupMondaySet, priorCounts, prefs, fierceBackupSet, holidayAssignments);
+    const result = generate(surgeons, mondays, vacations, backupMondaySet, priorCounts, prefs, fierceBackupSet, holidayAssignments, pendingLocks);
     if (preview) {
       setPreviewSchedule(result);
       setShowPreview(true);
@@ -4763,6 +4770,88 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             );
           })()}
 
+          {/* Manual Locks — pin specific surgeons to specific slots before generation */}
+          {(() => {
+            const slotLabels = { dc: "Service Week", mon: "Mon Night", tue: "Tue Night", wed: "Wed Night", thu: "Thu Night", wknd: "Weekend" };
+            const slotOrder = ["dc","mon","tue","wed","thu","wknd"];
+
+            const addLock = () => {
+              if (!newLockWeek || !newLockSlot || !newLockSurgeon) return;
+              // Replace any existing lock for this same week+slot
+              setPendingLocks(prev => [
+                ...prev.filter(l => !(l.mondayStr === newLockWeek && l.slot === newLockSlot)),
+                { mondayStr: newLockWeek, slot: newLockSlot, surgeonId: newLockSurgeon }
+              ]);
+              setNewLockWeek(""); setNewLockSlot(""); setNewLockSurgeon("");
+            };
+
+            const removeLock = (i) => setPendingLocks(prev => prev.filter((_, j) => j !== i));
+            const clearAll = () => { if (confirm("Clear all locks?")) setPendingLocks([]); };
+
+            // Sort locks by week, then slot order
+            const sortedLocks = [...pendingLocks].sort((a, b) => {
+              if (a.mondayStr !== b.mondayStr) return a.mondayStr.localeCompare(b.mondayStr);
+              return slotOrder.indexOf(a.slot) - slotOrder.indexOf(b.slot);
+            });
+
+            return (
+              <div style={css.card}>
+                <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:6,flexWrap:"wrap",gap:6}}>
+                  <div style={css.cardT}>🔒 Manual Locks ({pendingLocks.length})</div>
+                  {pendingLocks.length > 0 && (
+                    <button onClick={clearAll} style={{...css.btn(false),padding:"3px 10px",fontSize:11}}>Clear all</button>
+                  )}
+                </div>
+                <p style={{fontSize:12,color:"#5a6a78",margin:"0 0 10px",lineHeight:1.5}}>
+                  Pin specific surgeons to specific slots before generating. Locks override the algorithm and holiday-pattern preferences. Useful when you know "RPC has to be on Service Week of June 15" before previewing.
+                </p>
+
+                {sortedLocks.length > 0 && (
+                  <div style={{marginBottom:10,maxHeight:200,overflowY:"auto",border:`1px solid ${dk?"#2a3a5e":"#e0e4ea"}`,borderRadius:6,padding:6}}>
+                    {sortedLocks.map((lock) => {
+                      const i = pendingLocks.indexOf(lock);
+                      const mon = parse(lock.mondayStr);
+                      const wkLabel = `${MO[mon.getMonth()].slice(0,3)} ${mon.getDate()}`;
+                      return (
+                        <div key={`${lock.mondayStr}_${lock.slot}`} style={{display:"flex",alignItems:"center",gap:6,padding:"3px 4px",fontSize:12}}>
+                          <span style={{minWidth:60,color:dk?"#a0b0c0":"#5a6a78",fontFamily:mono,fontSize:11}}>{wkLabel}</span>
+                          <span style={{minWidth:90,fontWeight:600,color:dk?"#c0c8d0":"#3a4a58"}}>{slotLabels[lock.slot]}</span>
+                          <span style={{flex:1}}>{sMap[lock.surgeonId]?.name || "?"}</span>
+                          <button onClick={() => removeLock(i)} style={{background:"none",border:"none",color:"#a82020",cursor:"pointer",fontSize:14,padding:"0 4px"}}>×</button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+
+                <div style={{display:"flex",gap:6,flexWrap:"wrap",alignItems:"center"}}>
+                  <select value={newLockWeek} onChange={e => setNewLockWeek(e.target.value)}
+                    style={{padding:"5px 8px",fontSize:12,borderRadius:5,border:`1px solid ${dk?"#3a4a5e":"#d0d8e0"}`,background:dk?"#1a1f2a":"#fff",color:dk?"#e8e8f0":"#3a4a58"}}>
+                    <option value="">— Week —</option>
+                    {mondays.map(m => {
+                      const mStr = fmt(m);
+                      return <option key={mStr} value={mStr}>{MO[m.getMonth()].slice(0,3)} {m.getDate()}</option>;
+                    })}
+                  </select>
+                  <select value={newLockSlot} onChange={e => setNewLockSlot(e.target.value)}
+                    style={{padding:"5px 8px",fontSize:12,borderRadius:5,border:`1px solid ${dk?"#3a4a5e":"#d0d8e0"}`,background:dk?"#1a1f2a":"#fff",color:dk?"#e8e8f0":"#3a4a58"}}>
+                    <option value="">— Slot —</option>
+                    {slotOrder.map(k => <option key={k} value={k}>{slotLabels[k]}</option>)}
+                  </select>
+                  <select value={newLockSurgeon} onChange={e => setNewLockSurgeon(e.target.value)}
+                    style={{padding:"5px 8px",fontSize:12,borderRadius:5,border:`1px solid ${dk?"#3a4a5e":"#d0d8e0"}`,background:dk?"#1a1f2a":"#fff",color:dk?"#e8e8f0":"#3a4a58"}}>
+                    <option value="">— Surgeon —</option>
+                    {surgeons.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                  </select>
+                  <button onClick={addLock} disabled={!newLockWeek || !newLockSlot || !newLockSurgeon}
+                    style={{...css.btn(true),padding:"5px 12px",fontSize:12,opacity:(newLockWeek && newLockSlot && newLockSurgeon)?1:0.5}}>
+                    + Add
+                  </button>
+                </div>
+              </div>
+            );
+          })()}
+
           <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
             <button onClick={()=>doGenerate(true)} style={{...css.btn(false),padding:"13px 24px",fontSize:14,fontWeight:700,borderRadius:9,letterSpacing:0.3,flex:1}}>
               👁 Preview Schedule
@@ -4944,6 +5033,92 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                     })}
                   </div>
                 </>}
+
+                {/* Fairness Summary */}
+                {(() => {
+                  const totals = surgeons.map(s => {
+                    const ps = pStats[s.id] || {};
+                    return { id: s.id, name: s.name, total: calcTotal(ps) };
+                  });
+                  if (totals.length === 0) return null;
+                  const sorted = [...totals].sort((a,b) => a.total - b.total);
+                  const minT = sorted[0].total;
+                  const maxT = sorted[sorted.length-1].total;
+                  const median = sorted[Math.floor(sorted.length/2)].total;
+                  const spread = maxT - minT;
+                  const outliersHigh = totals.filter(t => t.total > median + 2);
+                  const outliersLow = totals.filter(t => t.total < median - 2);
+
+                  return (
+                    <div style={{background:dk?"#1a2a1a":"#f4faf4",border:"1px solid #b0d8b0",borderRadius:6,padding:"8px 12px",marginBottom:10}}>
+                      <div style={{fontSize:12,fontWeight:700,color:"#3a6a3a",marginBottom:4}}>📊 Fairness Summary</div>
+                      <div style={{fontSize:11,color:dk?"#a0b0a0":"#5a6a78"}}>
+                        Spread: <strong style={{color:spread<=2?"#1a8040":spread<=4?"#a05010":"#a82020"}}>{spread} shift{spread===1?"":"s"}</strong>
+                        {" "}(min {minT}, median {median}, max {maxT})
+                      </div>
+                      {(outliersHigh.length > 0 || outliersLow.length > 0) && (
+                        <div style={{fontSize:11,color:"#a05010",marginTop:4,lineHeight:1.5}}>
+                          Outliers:
+                          {outliersHigh.map(o => <span key={"h"+o.id}> 🔺 {o.name} ({o.total})</span>)}
+                          {outliersLow.map(o => <span key={"l"+o.id}> 🔻 {o.name} ({o.total})</span>)}
+                        </div>
+                      )}
+                      {spread <= 2 && outliersHigh.length===0 && outliersLow.length===0 && (
+                        <div style={{fontSize:11,color:"#1a8040",marginTop:4}}>✓ Tight distribution</div>
+                      )}
+                    </div>
+                  );
+                })()}
+
+                {/* Diff vs currently-published schedule */}
+                {(() => {
+                  if (Object.keys(schedule).length === 0) return null;
+                  const diffs = [];
+                  Object.keys(previewSchedule).sort().forEach(mStr => {
+                    const newWk = previewSchedule[mStr];
+                    const oldWk = schedule[mStr];
+                    if (!oldWk) return;
+                    const wkChanges = [];
+                    if ((newWk.dayCall || "") !== (oldWk.dayCall || "")) {
+                      wkChanges.push({ slot: "Service Week", oldName: sMap[oldWk.dayCall]?.name || "—", newName: sMap[newWk.dayCall]?.name || "—" });
+                    }
+                    ["mon","tue","wed","thu","wknd"].forEach(sk => {
+                      const o = oldWk.nights?.[sk] || "";
+                      const n = newWk.nights?.[sk] || "";
+                      if (o !== n) {
+                        wkChanges.push({ slot: SHIFT_LABELS[sk] || sk, oldName: sMap[o]?.name || "—", newName: sMap[n]?.name || "—" });
+                      }
+                    });
+                    if (wkChanges.length > 0) diffs.push({ mondayStr: mStr, changes: wkChanges });
+                  });
+
+                  if (diffs.length === 0) return null;
+                  const totalChanges = diffs.reduce((acc, d) => acc + d.changes.length, 0);
+
+                  return (
+                    <details style={{background:dk?"#1a1f2a":"#f4f6f8",border:"1px solid #d0d8e0",borderRadius:6,padding:"6px 10px",marginBottom:10}}>
+                      <summary style={{cursor:"pointer",fontSize:12,fontWeight:700,color:dk?"#a0b0c0":"#5a6a78"}}>
+                        🔄 Changes vs published ({totalChanges} change{totalChanges===1?"":"s"} across {diffs.length} week{diffs.length===1?"":"s"})
+                      </summary>
+                      <div style={{fontSize:11,marginTop:8,lineHeight:1.6}}>
+                        {diffs.map(d => {
+                          const mon = parse(d.mondayStr);
+                          const wkLabel = `${MO[mon.getMonth()].slice(0,3)} ${mon.getDate()}`;
+                          return (
+                            <div key={d.mondayStr} style={{marginBottom:6}}>
+                              <div style={{fontWeight:700,color:dk?"#c0c8d0":"#3a4a58"}}>Week of {wkLabel}</div>
+                              {d.changes.map((c, j) => (
+                                <div key={j} style={{paddingLeft:10,color:dk?"#a0b0c0":"#5a6a78"}}>
+                                  {c.slot}: <span style={{color:"#a05010"}}>{c.oldName}</span> → <span style={{color:"#1a8040"}}>{c.newName}</span>
+                                </div>
+                              ))}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </details>
+                  );
+                })()}
 
                 {/* Counts Table — mirrors the "This Period" table */}
                 <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:6,flexWrap:"wrap",gap:6}}>

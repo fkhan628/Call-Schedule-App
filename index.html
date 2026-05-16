@@ -57,7 +57,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.05.14g";
+    var APP_VERSION = "2026.05.15a";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -205,6 +205,10 @@ function CallSchedule() {
 
   // ─── What-If Preview ───
   const [previewSchedule, setPreviewSchedule] = useState(null);
+  const [pendingLocks, setPendingLocks] = useState([]); // [{ mondayStr, slot: "dc"|"mon"|"tue"|"wed"|"thu"|"wknd", surgeonId }]
+  const [newLockWeek, setNewLockWeek] = useState("");
+  const [newLockSlot, setNewLockSlot] = useState("");
+  const [newLockSurgeon, setNewLockSurgeon] = useState("");
   const [showPreview, setShowPreview] = useState(false);
   const [previewCalMonth, setPreviewCalMonth] = useState(0); // index into preview months
 
@@ -737,6 +741,7 @@ function CallSchedule() {
           if (d.numWeeks) setNumWeeks(d.numWeeks);
           if (d.startMondayOverride !== undefined) setStartMondayOverride(d.startMondayOverride || "");
           if (d.holidayAssignments) setHolidayAssignments(d.holidayAssignments);
+          if (Array.isArray(d.pendingLocks)) setPendingLocks(d.pendingLocks);
         }
         const {
           data: cfgRow
@@ -827,6 +832,7 @@ function CallSchedule() {
         if (d.numWeeks) setNumWeeks(d.numWeeks);
         if (d.startMondayOverride !== undefined) setStartMondayOverride(d.startMondayOverride || "");
         if (d.holidayAssignments) setHolidayAssignments(d.holidayAssignments);
+        if (Array.isArray(d.pendingLocks)) setPendingLocks(d.pendingLocks);
       } catch (e) {}
     };
     const refreshConfigRow = async () => {
@@ -960,7 +966,8 @@ function CallSchedule() {
       startYear,
       numWeeks,
       holidayAssignments,
-      startMondayOverride
+      startMondayOverride,
+      pendingLocks
     };
     pendingSaveRef.current = payload;
     const timer = setTimeout(async () => {
@@ -983,7 +990,7 @@ function CallSchedule() {
       }
     }, 800);
     return () => clearTimeout(timer);
-  }, [loaded, surgeons, apps, vacations, backupMondaySet, fierceBackupSet, schedule, appShifts, priorCounts, year1Counts, year2Counts, startMonth, startYear, numWeeks, holidayAssignments, startMondayOverride]);
+  }, [loaded, surgeons, apps, vacations, backupMondaySet, fierceBackupSet, schedule, appShifts, priorCounts, year1Counts, year2Counts, startMonth, startYear, numWeeks, holidayAssignments, startMondayOverride, pendingLocks]);
 
   // ─── Flush pending save when app is backgrounded or closing ───
   //
@@ -3073,7 +3080,7 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
   };
   const doGenerate = preview => {
     const prefs = buildPrefs();
-    const result = generate(surgeons, mondays, vacations, backupMondaySet, priorCounts, prefs, fierceBackupSet, holidayAssignments);
+    const result = generate(surgeons, mondays, vacations, backupMondaySet, priorCounts, prefs, fierceBackupSet, holidayAssignments, pendingLocks);
     if (preview) {
       setPreviewSchedule(result);
       setShowPreview(true);
@@ -7503,6 +7510,184 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         lineHeight: 1.4
       }
     }, "The prior-count cap (\xB150% of median) prevents flagged surgeons from dominating the algorithm, but heavy vacation periods may still create uneven distributions."));
+  })(), (() => {
+    const slotLabels = {
+      dc: "Service Week",
+      mon: "Mon Night",
+      tue: "Tue Night",
+      wed: "Wed Night",
+      thu: "Thu Night",
+      wknd: "Weekend"
+    };
+    const slotOrder = ["dc", "mon", "tue", "wed", "thu", "wknd"];
+    const addLock = () => {
+      if (!newLockWeek || !newLockSlot || !newLockSurgeon) return;
+      // Replace any existing lock for this same week+slot
+      setPendingLocks(prev => [...prev.filter(l => !(l.mondayStr === newLockWeek && l.slot === newLockSlot)), {
+        mondayStr: newLockWeek,
+        slot: newLockSlot,
+        surgeonId: newLockSurgeon
+      }]);
+      setNewLockWeek("");
+      setNewLockSlot("");
+      setNewLockSurgeon("");
+    };
+    const removeLock = i => setPendingLocks(prev => prev.filter((_, j) => j !== i));
+    const clearAll = () => {
+      if (confirm("Clear all locks?")) setPendingLocks([]);
+    };
+
+    // Sort locks by week, then slot order
+    const sortedLocks = [...pendingLocks].sort((a, b) => {
+      if (a.mondayStr !== b.mondayStr) return a.mondayStr.localeCompare(b.mondayStr);
+      return slotOrder.indexOf(a.slot) - slotOrder.indexOf(b.slot);
+    });
+    return /*#__PURE__*/React.createElement("div", {
+      style: css.card
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        marginBottom: 6,
+        flexWrap: "wrap",
+        gap: 6
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: css.cardT
+    }, "\uD83D\uDD12 Manual Locks (", pendingLocks.length, ")"), pendingLocks.length > 0 && /*#__PURE__*/React.createElement("button", {
+      onClick: clearAll,
+      style: {
+        ...css.btn(false),
+        padding: "3px 10px",
+        fontSize: 11
+      }
+    }, "Clear all")), /*#__PURE__*/React.createElement("p", {
+      style: {
+        fontSize: 12,
+        color: "#5a6a78",
+        margin: "0 0 10px",
+        lineHeight: 1.5
+      }
+    }, "Pin specific surgeons to specific slots before generating. Locks override the algorithm and holiday-pattern preferences. Useful when you know \"RPC has to be on Service Week of June 15\" before previewing."), sortedLocks.length > 0 && /*#__PURE__*/React.createElement("div", {
+      style: {
+        marginBottom: 10,
+        maxHeight: 200,
+        overflowY: "auto",
+        border: `1px solid ${dk ? "#2a3a5e" : "#e0e4ea"}`,
+        borderRadius: 6,
+        padding: 6
+      }
+    }, sortedLocks.map(lock => {
+      var _sMap$lock$surgeonId;
+      const i = pendingLocks.indexOf(lock);
+      const mon = parse(lock.mondayStr);
+      const wkLabel = `${MO[mon.getMonth()].slice(0, 3)} ${mon.getDate()}`;
+      return /*#__PURE__*/React.createElement("div", {
+        key: `${lock.mondayStr}_${lock.slot}`,
+        style: {
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
+          padding: "3px 4px",
+          fontSize: 12
+        }
+      }, /*#__PURE__*/React.createElement("span", {
+        style: {
+          minWidth: 60,
+          color: dk ? "#a0b0c0" : "#5a6a78",
+          fontFamily: mono,
+          fontSize: 11
+        }
+      }, wkLabel), /*#__PURE__*/React.createElement("span", {
+        style: {
+          minWidth: 90,
+          fontWeight: 600,
+          color: dk ? "#c0c8d0" : "#3a4a58"
+        }
+      }, slotLabels[lock.slot]), /*#__PURE__*/React.createElement("span", {
+        style: {
+          flex: 1
+        }
+      }, ((_sMap$lock$surgeonId = sMap[lock.surgeonId]) === null || _sMap$lock$surgeonId === void 0 ? void 0 : _sMap$lock$surgeonId.name) || "?"), /*#__PURE__*/React.createElement("button", {
+        onClick: () => removeLock(i),
+        style: {
+          background: "none",
+          border: "none",
+          color: "#a82020",
+          cursor: "pointer",
+          fontSize: 14,
+          padding: "0 4px"
+        }
+      }, "\xD7"));
+    })), /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        gap: 6,
+        flexWrap: "wrap",
+        alignItems: "center"
+      }
+    }, /*#__PURE__*/React.createElement("select", {
+      value: newLockWeek,
+      onChange: e => setNewLockWeek(e.target.value),
+      style: {
+        padding: "5px 8px",
+        fontSize: 12,
+        borderRadius: 5,
+        border: `1px solid ${dk ? "#3a4a5e" : "#d0d8e0"}`,
+        background: dk ? "#1a1f2a" : "#fff",
+        color: dk ? "#e8e8f0" : "#3a4a58"
+      }
+    }, /*#__PURE__*/React.createElement("option", {
+      value: ""
+    }, "\u2014 Week \u2014"), mondays.map(m => {
+      const mStr = fmt(m);
+      return /*#__PURE__*/React.createElement("option", {
+        key: mStr,
+        value: mStr
+      }, MO[m.getMonth()].slice(0, 3), " ", m.getDate());
+    })), /*#__PURE__*/React.createElement("select", {
+      value: newLockSlot,
+      onChange: e => setNewLockSlot(e.target.value),
+      style: {
+        padding: "5px 8px",
+        fontSize: 12,
+        borderRadius: 5,
+        border: `1px solid ${dk ? "#3a4a5e" : "#d0d8e0"}`,
+        background: dk ? "#1a1f2a" : "#fff",
+        color: dk ? "#e8e8f0" : "#3a4a58"
+      }
+    }, /*#__PURE__*/React.createElement("option", {
+      value: ""
+    }, "\u2014 Slot \u2014"), slotOrder.map(k => /*#__PURE__*/React.createElement("option", {
+      key: k,
+      value: k
+    }, slotLabels[k]))), /*#__PURE__*/React.createElement("select", {
+      value: newLockSurgeon,
+      onChange: e => setNewLockSurgeon(e.target.value),
+      style: {
+        padding: "5px 8px",
+        fontSize: 12,
+        borderRadius: 5,
+        border: `1px solid ${dk ? "#3a4a5e" : "#d0d8e0"}`,
+        background: dk ? "#1a1f2a" : "#fff",
+        color: dk ? "#e8e8f0" : "#3a4a58"
+      }
+    }, /*#__PURE__*/React.createElement("option", {
+      value: ""
+    }, "\u2014 Surgeon \u2014"), surgeons.map(s => /*#__PURE__*/React.createElement("option", {
+      key: s.id,
+      value: s.id
+    }, s.name))), /*#__PURE__*/React.createElement("button", {
+      onClick: addLock,
+      disabled: !newLockWeek || !newLockSlot || !newLockSurgeon,
+      style: {
+        ...css.btn(true),
+        padding: "5px 12px",
+        fontSize: 12,
+        opacity: newLockWeek && newLockSlot && newLockSurgeon ? 1 : 0.5
+      }
+    }, "+ Add")));
   })(), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
@@ -7907,7 +8092,152 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           marginTop: 1
         }
       }, "\uD83C\uDFD6", vacList.map(v => v.name).join(",")));
-    }))), /*#__PURE__*/React.createElement("div", {
+    }))), (() => {
+      const totals = surgeons.map(s => {
+        const ps = pStats[s.id] || {};
+        return {
+          id: s.id,
+          name: s.name,
+          total: calcTotal(ps)
+        };
+      });
+      if (totals.length === 0) return null;
+      const sorted = [...totals].sort((a, b) => a.total - b.total);
+      const minT = sorted[0].total;
+      const maxT = sorted[sorted.length - 1].total;
+      const median = sorted[Math.floor(sorted.length / 2)].total;
+      const spread = maxT - minT;
+      const outliersHigh = totals.filter(t => t.total > median + 2);
+      const outliersLow = totals.filter(t => t.total < median - 2);
+      return /*#__PURE__*/React.createElement("div", {
+        style: {
+          background: dk ? "#1a2a1a" : "#f4faf4",
+          border: "1px solid #b0d8b0",
+          borderRadius: 6,
+          padding: "8px 12px",
+          marginBottom: 10
+        }
+      }, /*#__PURE__*/React.createElement("div", {
+        style: {
+          fontSize: 12,
+          fontWeight: 700,
+          color: "#3a6a3a",
+          marginBottom: 4
+        }
+      }, "\uD83D\uDCCA Fairness Summary"), /*#__PURE__*/React.createElement("div", {
+        style: {
+          fontSize: 11,
+          color: dk ? "#a0b0a0" : "#5a6a78"
+        }
+      }, "Spread: ", /*#__PURE__*/React.createElement("strong", {
+        style: {
+          color: spread <= 2 ? "#1a8040" : spread <= 4 ? "#a05010" : "#a82020"
+        }
+      }, spread, " shift", spread === 1 ? "" : "s"), " ", "(min ", minT, ", median ", median, ", max ", maxT, ")"), (outliersHigh.length > 0 || outliersLow.length > 0) && /*#__PURE__*/React.createElement("div", {
+        style: {
+          fontSize: 11,
+          color: "#a05010",
+          marginTop: 4,
+          lineHeight: 1.5
+        }
+      }, "Outliers:", outliersHigh.map(o => /*#__PURE__*/React.createElement("span", {
+        key: "h" + o.id
+      }, " \uD83D\uDD3A ", o.name, " (", o.total, ")")), outliersLow.map(o => /*#__PURE__*/React.createElement("span", {
+        key: "l" + o.id
+      }, " \uD83D\uDD3B ", o.name, " (", o.total, ")"))), spread <= 2 && outliersHigh.length === 0 && outliersLow.length === 0 && /*#__PURE__*/React.createElement("div", {
+        style: {
+          fontSize: 11,
+          color: "#1a8040",
+          marginTop: 4
+        }
+      }, "\u2713 Tight distribution"));
+    })(), (() => {
+      if (Object.keys(schedule).length === 0) return null;
+      const diffs = [];
+      Object.keys(previewSchedule).sort().forEach(mStr => {
+        const newWk = previewSchedule[mStr];
+        const oldWk = schedule[mStr];
+        if (!oldWk) return;
+        const wkChanges = [];
+        if ((newWk.dayCall || "") !== (oldWk.dayCall || "")) {
+          var _sMap$oldWk$dayCall, _sMap$newWk$dayCall;
+          wkChanges.push({
+            slot: "Service Week",
+            oldName: ((_sMap$oldWk$dayCall = sMap[oldWk.dayCall]) === null || _sMap$oldWk$dayCall === void 0 ? void 0 : _sMap$oldWk$dayCall.name) || "—",
+            newName: ((_sMap$newWk$dayCall = sMap[newWk.dayCall]) === null || _sMap$newWk$dayCall === void 0 ? void 0 : _sMap$newWk$dayCall.name) || "—"
+          });
+        }
+        ["mon", "tue", "wed", "thu", "wknd"].forEach(sk => {
+          var _oldWk$nights2, _newWk$nights;
+          const o = ((_oldWk$nights2 = oldWk.nights) === null || _oldWk$nights2 === void 0 ? void 0 : _oldWk$nights2[sk]) || "";
+          const n = ((_newWk$nights = newWk.nights) === null || _newWk$nights === void 0 ? void 0 : _newWk$nights[sk]) || "";
+          if (o !== n) {
+            var _sMap$o, _sMap$n;
+            wkChanges.push({
+              slot: SHIFT_LABELS[sk] || sk,
+              oldName: ((_sMap$o = sMap[o]) === null || _sMap$o === void 0 ? void 0 : _sMap$o.name) || "—",
+              newName: ((_sMap$n = sMap[n]) === null || _sMap$n === void 0 ? void 0 : _sMap$n.name) || "—"
+            });
+          }
+        });
+        if (wkChanges.length > 0) diffs.push({
+          mondayStr: mStr,
+          changes: wkChanges
+        });
+      });
+      if (diffs.length === 0) return null;
+      const totalChanges = diffs.reduce((acc, d) => acc + d.changes.length, 0);
+      return /*#__PURE__*/React.createElement("details", {
+        style: {
+          background: dk ? "#1a1f2a" : "#f4f6f8",
+          border: "1px solid #d0d8e0",
+          borderRadius: 6,
+          padding: "6px 10px",
+          marginBottom: 10
+        }
+      }, /*#__PURE__*/React.createElement("summary", {
+        style: {
+          cursor: "pointer",
+          fontSize: 12,
+          fontWeight: 700,
+          color: dk ? "#a0b0c0" : "#5a6a78"
+        }
+      }, "\uD83D\uDD04 Changes vs published (", totalChanges, " change", totalChanges === 1 ? "" : "s", " across ", diffs.length, " week", diffs.length === 1 ? "" : "s", ")"), /*#__PURE__*/React.createElement("div", {
+        style: {
+          fontSize: 11,
+          marginTop: 8,
+          lineHeight: 1.6
+        }
+      }, diffs.map(d => {
+        const mon = parse(d.mondayStr);
+        const wkLabel = `${MO[mon.getMonth()].slice(0, 3)} ${mon.getDate()}`;
+        return /*#__PURE__*/React.createElement("div", {
+          key: d.mondayStr,
+          style: {
+            marginBottom: 6
+          }
+        }, /*#__PURE__*/React.createElement("div", {
+          style: {
+            fontWeight: 700,
+            color: dk ? "#c0c8d0" : "#3a4a58"
+          }
+        }, "Week of ", wkLabel), d.changes.map((c, j) => /*#__PURE__*/React.createElement("div", {
+          key: j,
+          style: {
+            paddingLeft: 10,
+            color: dk ? "#a0b0c0" : "#5a6a78"
+          }
+        }, c.slot, ": ", /*#__PURE__*/React.createElement("span", {
+          style: {
+            color: "#a05010"
+          }
+        }, c.oldName), " \u2192 ", /*#__PURE__*/React.createElement("span", {
+          style: {
+            color: "#1a8040"
+          }
+        }, c.newName))));
+      })));
+    })(), /*#__PURE__*/React.createElement("div", {
       style: {
         display: "flex",
         alignItems: "center",
@@ -9741,8 +10071,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     // Detect unsaved changes against the current schedule
     const oldWk = schedule[mondayStr] || {};
     const hasUnsaved = (oldWk.dayCall || "") !== (draft.dayCall || "") || ["mon", "tue", "wed", "thu", "wknd"].some(nk => {
-      var _oldWk$nights2, _draft$nights2;
-      return (((_oldWk$nights2 = oldWk.nights) === null || _oldWk$nights2 === void 0 ? void 0 : _oldWk$nights2[nk]) || "") !== (((_draft$nights2 = draft.nights) === null || _draft$nights2 === void 0 ? void 0 : _draft$nights2[nk]) || "");
+      var _oldWk$nights3, _draft$nights2;
+      return (((_oldWk$nights3 = oldWk.nights) === null || _oldWk$nights3 === void 0 ? void 0 : _oldWk$nights3[nk]) || "") !== (((_draft$nights2 = draft.nights) === null || _draft$nights2 === void 0 ? void 0 : _draft$nights2[nk]) || "");
     }) || Object.entries(draft.apps).some(([ds, aid]) => (appShifts[ds] || "") !== (aid || ""));
     const navigateTo = target => {
       if (!target) return;

@@ -32,7 +32,7 @@ function getHolidays(year) {
   };
 }
 
-function generate(surgeons, mondays, vac, backupMondays, priorCounts, preferences, fierceBackupMondays, holAssignments) {
+function generate(surgeons, mondays, vac, backupMondays, priorCounts, preferences, fierceBackupMondays, holAssignments, locks) {
   const sched = {};
   const ids = surgeons.map(s=>s.id);
   const nameMap = {}; surgeons.forEach(s => nameMap[s.id] = s.name);
@@ -249,6 +249,18 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
     }
   }
 
+  // MANUAL LOCKS override convention-based pre-assignments. These come from
+  // the scheduler explicitly pinning a surgeon to a slot via the UI. They
+  // win over any holiday-pattern preference and bypass vacation checks
+  // (the scheduler took responsibility by setting them).
+  if (Array.isArray(locks)) {
+    locks.forEach(lock => {
+      if (!lock || !lock.mondayStr || !lock.slot || !lock.surgeonId) return;
+      if (!preAssign[lock.mondayStr]) preAssign[lock.mondayStr] = {};
+      preAssign[lock.mondayStr][lock.slot] = lock.surgeonId;
+    });
+  }
+
   for (let wkIdx = 0; wkIdx < mondays.length; wkIdx++) {
     const monday = mondays[wkIdx];
     const mStr = fmt(monday);
@@ -461,6 +473,19 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
     }
 
     for (const sk of shuffledNightKeys) {
+      // Manual lock for this weeknight slot — overrides holiday coverage and
+      // normal selection. The scheduler explicitly pinned this surgeon.
+      const preNight = preAssign[mStr]?.[sk];
+      if (preNight && preNight !== dc && !nightUsed.has(preNight) && !used.has(preNight)) {
+        nightAssignments[sk] = preNight;
+        nightUsed.add(preNight);
+        nCt[preNight]++; burden[preNight]++;
+        periodShifts[preNight]++;
+        const dayOffsetLock = {mon:0,tue:1,wed:2,thu:3}[sk];
+        prevNightSurgeon[preNight] = fmt(addD(monday, dayOffsetLock));
+        lastPos[preNight] = sk;
+        continue;
+      }
       // If this night is overridden by holiday coverage, use the holiday surgeon
       if (holidayNightOverrides[sk]) {
         nightAssignments[sk] = holidayNightOverrides[sk];
