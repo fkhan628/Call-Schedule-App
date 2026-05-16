@@ -57,7 +57,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.05.15a";
+    var APP_VERSION = "2026.05.15b";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -13527,72 +13527,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       color: dkText,
       marginBottom: 6
     }
-  }, "\uD83D\uDCE7 Email Notifications"), /*#__PURE__*/React.createElement("p", {
-    style: {
-      fontSize: 11,
-      color: dkSubtext,
-      margin: "0 0 8px",
-      lineHeight: 1.5
-    }
-  }, "Set up email addresses for each surgeon. Requires a Supabase Edge Function \u2014 see the setup guide below."), /*#__PURE__*/React.createElement("div", {
-    style: {
-      marginBottom: 12
-    }
-  }, /*#__PURE__*/React.createElement("label", {
-    style: {
-      fontSize: 10,
-      color: "#7a8a98",
-      display: "block",
-      marginBottom: 2
-    }
-  }, "Edge Function URL"), /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      gap: 6,
-      alignItems: "center"
-    }
-  }, /*#__PURE__*/React.createElement("input", {
-    value: edgeFunctionUrl,
-    onChange: e => setEdgeFunctionUrl(e.target.value),
-    placeholder: "https://your-project.supabase.co/functions/v1/send-notification",
-    style: {
-      ...css.inp,
-      width: "100%",
-      maxWidth: 420,
-      fontSize: 11,
-      fontFamily: mono
-    }
-  }), /*#__PURE__*/React.createElement("button", {
-    onClick: async () => {
-      try {
-        await supabase.from("call_schedule_config").upsert({
-          id: "config",
-          edge_function_url: edgeFunctionUrl,
-          updated_at: new Date().toISOString()
-        });
-        setSaveStatus("Saved");
-        setTimeout(() => setSaveStatus(""), 2000);
-      } catch (e) {}
-    },
-    style: {
-      ...css.btn(true),
-      padding: "5px 12px",
-      fontSize: 11,
-      whiteSpace: "nowrap"
-    }
-  }, "Save URL")), !edgeFunctionUrl && /*#__PURE__*/React.createElement("p", {
-    style: {
-      fontSize: 10,
-      color: "#c04040",
-      margin: "4px 0 0"
-    }
-  }, "Email notifications require the Edge Function URL. Deploy the function first."), edgeFunctionUrl && /*#__PURE__*/React.createElement("p", {
-    style: {
-      fontSize: 10,
-      color: "#1a8040",
-      margin: "4px 0 0"
-    }
-  }, "\u2713 Edge Function configured")), mySurgeon && mySurgeon !== "admin" && (() => {
+  }, "\uD83D\uDCE7 Email Notifications"), mySurgeon && mySurgeon !== "admin" && (() => {
     const myPref = notifPrefs[mySurgeon] || {};
     const HourPicker = ({
       field,

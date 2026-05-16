@@ -57,7 +57,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.05.15a";
+    var APP_VERSION = "2026.05.15b";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -7418,25 +7418,6 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             {/* Email Notifications */}
             <div style={{background:dk?"#1a2a3e":"#f8f9fb",border:`1px solid ${dkCardBorder}`,borderRadius:8,padding:"12px 14px",marginBottom:12}}>
               <div style={{fontSize:12,fontWeight:600,color:dkText,marginBottom:6}}>📧 Email Notifications</div>
-              <p style={{fontSize:11,color:dkSubtext,margin:"0 0 8px",lineHeight:1.5}}>
-                Set up email addresses for each surgeon. Requires a Supabase Edge Function — see the setup guide below.
-              </p>
-              <div style={{marginBottom:12}}>
-                <label style={{fontSize:10,color:"#7a8a98",display:"block",marginBottom:2}}>Edge Function URL</label>
-                <div style={{display:"flex",gap:6,alignItems:"center"}}>
-                  <input value={edgeFunctionUrl} onChange={e=>setEdgeFunctionUrl(e.target.value)}
-                    placeholder="https://your-project.supabase.co/functions/v1/send-notification"
-                    style={{...css.inp,width:"100%",maxWidth:420,fontSize:11,fontFamily:mono}}/>
-                  <button onClick={async ()=>{
-                    try {
-                      await supabase.from("call_schedule_config").upsert({ id:"config", edge_function_url: edgeFunctionUrl, updated_at: new Date().toISOString() });
-                      setSaveStatus("Saved"); setTimeout(()=>setSaveStatus(""),2000);
-                    } catch(e){}
-                  }} style={{...css.btn(true),padding:"5px 12px",fontSize:11,whiteSpace:"nowrap"}}>Save URL</button>
-                </div>
-                {!edgeFunctionUrl && <p style={{fontSize:10,color:"#c04040",margin:"4px 0 0"}}>Email notifications require the Edge Function URL. Deploy the function first.</p>}
-                {edgeFunctionUrl && <p style={{fontSize:10,color:"#1a8040",margin:"4px 0 0"}}>✓ Edge Function configured</p>}
-              </div>
 
               {/* Personal notification settings (shown to everyone) */}
               {mySurgeon && mySurgeon !== "admin" && (() => {
