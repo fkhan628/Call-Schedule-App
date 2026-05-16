@@ -107,25 +107,15 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
     lastDcWeek[id] = -99;
   });
 
-  // CAP: bound prior-count influence so an anomalous count can't dominate
-  // the priority function. Each surgeon's score is clamped to within ±50%
-  // of the group median. The PRIMARY in-period sort still drives balance;
-  // this cap just prevents the 10%/5% prior tiebreakers from running away
-  // when one surgeon's history looks very different from the rest (e.g.
-  // extended leave, recent hire, or data-entry error in Setup).
-  {
-    const sorted = ids.map(id => priorMultiScore[id]).sort((a,b)=>a-b);
-    const median = sorted.length ? sorted[Math.floor(sorted.length/2)] : 0;
-    if (median > 0) {
-      const lo = median * 0.5;
-      const hi = median * 1.5;
-      ids.forEach(id => {
-        priorMultiScore[id] = Math.max(lo, Math.min(hi, priorMultiScore[id]));
-      });
-    }
-  }
+  // Note: an earlier version capped priorMultiScore to ±50% of group median
+  // to prevent anomalous priors from dominating. That cap has been removed
+  // because the spread-reduction pass at the end equalizes in-period shifts
+  // regardless of prior history, making the cap redundant. The cap was also
+  // actively hurting surgeons whose prior totals were legitimately low (e.g.
+  // joined the group after the data-tracking window started) by raising
+  // their effective prior to match the median.
 
-  // Rough 1-year approximation: half the (capped) multi-year burden.
+  // Rough 1-year approximation: half the multi-year burden.
   // Without dedicated 1-year input, this proxy is fine since priorYearScore
   // is only 10% weight in the priority function.
   ids.forEach(id => {
@@ -876,52 +866,67 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
     wk.off = ids.find(id => !assigned.has(id)) || null;
   };
 
-  // PHASE 1: DC balance — target service-week equality first
-  for (let iter = 0; iter < 50; iter++) {
-    let maxId = ids[0], minId = ids[0];
-    ids.forEach(id => {
-      if ((dcCt[id]||0) > (dcCt[maxId]||0)) maxId = id;
-      if ((dcCt[id]||0) < (dcCt[minId]||0)) minId = id;
-    });
-    if ((dcCt[maxId]||0) - (dcCt[minId]||0) <= 2) break;
+  // PHASE 1: DC balance — target service-week equality first.
+  // Tries all viable high→low pairs each iteration so we don't bail just
+  // because the absolute max↔min pair has a constraint conflict.
+  for (let iter = 0; iter < 100; iter++) {
+    const sorted = [...ids].sort((a,b) => (dcCt[b]||0) - (dcCt[a]||0));
+    if ((dcCt[sorted[0]]||0) - (dcCt[sorted[sorted.length-1]]||0) <= 2) break;
 
     let found = false;
-    for (let wkIdx = 0; wkIdx < mondayStrs.length; wkIdx++) {
-      const mStr = mondayStrs[wkIdx];
-      const wk = sched[mStr];
-      if (wk.dayCall !== maxId) continue;
-      if (isPreAssigned(mStr, "dayCall", maxId)) continue;
-      if (!canTakeSlot(minId, mStr, parse(mStr), "dayCall", wk, wkIdx)) continue;
-      reassign(mStr, "dayCall", maxId, minId);
-      found = true;
-      break;
+    for (let h = 0; h < sorted.length && !found; h++) {
+      const hi = sorted[h];
+      for (let l = sorted.length - 1; l > h && !found; l--) {
+        const lo = sorted[l];
+        if ((dcCt[hi]||0) - (dcCt[lo]||0) <= 1) break;
+        for (let wkIdx = 0; wkIdx < mondayStrs.length && !found; wkIdx++) {
+          const mStr = mondayStrs[wkIdx];
+          const wk = sched[mStr];
+          if (wk.dayCall !== hi) continue;
+          if (isPreAssigned(mStr, "dayCall", hi)) continue;
+          if (!canTakeSlot(lo, mStr, parse(mStr), "dayCall", wk, wkIdx)) continue;
+          reassign(mStr, "dayCall", hi, lo);
+          found = true;
+        }
+      }
     }
     if (!found) break;
   }
 
-  // PHASE 2: Total shift balance — fine-tune across all slot types
-  const slotOrder = ["wknd", "mon", "tue", "wed", "thu"]; // DC excluded (already balanced in phase 1)
-  for (let iter = 0; iter < 100; iter++) {
-    let maxId = ids[0], minId = ids[0];
-    ids.forEach(id => {
-      if ((periodShifts[id]||0) > (periodShifts[maxId]||0)) maxId = id;
-      if ((periodShifts[id]||0) < (periodShifts[minId]||0)) minId = id;
-    });
-    if ((periodShifts[maxId]||0) - (periodShifts[minId]||0) <= 2) break;
+  // PHASE 2: Weighted total balance — matches the displayed Fairness Summary
+  // (SW×6 + Night×1 + Weekend×2). DC is already balanced from Phase 1, so
+  // Phase 2 only moves nights and weekends. Multi-pair fallback like Phase 1.
+  const slotOrder = ["wknd", "mon", "tue", "wed", "thu"];
+  const slotWeight = { wknd: 2, mon: 1, tue: 1, wed: 1, thu: 1 };
+  const weightedTotal = (id) => 6 * (dcCt[id]||0) + (nCt[id]||0) + 2 * (wkndCt[id]||0);
+
+  for (let iter = 0; iter < 200; iter++) {
+    const sorted = [...ids].sort((a,b) => weightedTotal(b) - weightedTotal(a));
+    if (weightedTotal(sorted[0]) - weightedTotal(sorted[sorted.length-1]) <= 2) break;
 
     let found = false;
-    for (let wkIdx = 0; wkIdx < mondayStrs.length && !found; wkIdx++) {
-      const mStr = mondayStrs[wkIdx];
-      const wk = sched[mStr];
-      const monday = parse(mStr);
-      for (const slot of slotOrder) {
-        const cur = wk.nights?.[slot];
-        if (cur !== maxId) continue;
-        if (isPreAssigned(mStr, slot, maxId)) continue;
-        if (!canTakeSlot(minId, mStr, monday, slot, wk, wkIdx)) continue;
-        reassign(mStr, slot, maxId, minId);
-        found = true;
-        break;
+    for (let h = 0; h < sorted.length && !found; h++) {
+      const hi = sorted[h];
+      for (let l = sorted.length - 1; l > h && !found; l--) {
+        const lo = sorted[l];
+        if (weightedTotal(hi) - weightedTotal(lo) <= 2) break;
+        for (let wkIdx = 0; wkIdx < mondayStrs.length && !found; wkIdx++) {
+          const mStr = mondayStrs[wkIdx];
+          const wk = sched[mStr];
+          const monday = parse(mStr);
+          for (const slot of slotOrder) {
+            const cur = wk.nights?.[slot];
+            if (cur !== hi) continue;
+            if (isPreAssigned(mStr, slot, hi)) continue;
+            // Skip moves that would overshoot (flip the pair's direction)
+            const w = slotWeight[slot];
+            if ((weightedTotal(hi) - 2*w) < weightedTotal(lo)) continue;
+            if (!canTakeSlot(lo, mStr, monday, slot, wk, wkIdx)) continue;
+            reassign(mStr, slot, hi, lo);
+            found = true;
+            break;
+          }
+        }
       }
     }
     if (!found) break;
