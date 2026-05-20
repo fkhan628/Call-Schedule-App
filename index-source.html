@@ -57,7 +57,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.05.16a";
+    var APP_VERSION = "2026.05.16c";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -4431,7 +4431,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             </div>
             <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap",marginBottom:12}}>
               <select value={holidayYear} onChange={e=>setHolidayYear(+e.target.value)} style={{...css.inp,width:90}}>
-                {[2025,2026,2027,2028].map(y=><option key={y} value={y}>{y}</option>)}
+                {(() => { const cy = new Date().getFullYear(); return Array.from({length: 17}, (_, i) => cy - 1 + i); })().map(y=><option key={y} value={y}>{y}</option>)}
               </select>
               <button onClick={()=>generateHolidayAssignments(holidayYear)} style={{...css.btn(true),padding:"7px 16px",fontSize:12}}>
                 {holidayAssignments[String(holidayYear)] ? "↻ Re-generate" : "Generate"} {holidayYear} Holidays
@@ -4599,11 +4599,38 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               const ms = fmt(m);
               if (backupMondaySet.has(ms) || fierceBackupSet.has(ms)) backupInPeriod++;
             });
-            // Count holiday assignments that fall in the period
-            const holidayCount = mondays.length > 0 ? Object.keys(holidayAssignments || {}).filter(hid => {
-              const ha = holidayAssignments[hid];
-              return ha && ha.date && parse(ha.date) >= nextPeriodStart && parse(ha.date) <= nextPeriodEnd;
-            }).length : 0;
+            // Count holidays in the period (from getHolidays, not the
+            // assignment store — assignmentsCheck below validates whether
+            // each has a surgeon assigned).
+            const yearsOverlap = new Set();
+            if (nextPeriodStart) {
+              yearsOverlap.add(nextPeriodStart.getFullYear());
+              if (nextPeriodEnd) yearsOverlap.add(nextPeriodEnd.getFullYear());
+            }
+            const holidaysInPeriod = [];
+            yearsOverlap.forEach(y => {
+              try {
+                const h = getHolidays(y);
+                (h.major || []).forEach(hol => {
+                  const hd = parse(hol.date);
+                  if (hd >= nextPeriodStart && hd <= nextPeriodEnd) {
+                    holidaysInPeriod.push(hol);
+                  }
+                });
+              } catch(e) {}
+            });
+            const holidayCount = holidaysInPeriod.length;
+            // How many of those have a surgeonA assigned?
+            const assignedCount = holidaysInPeriod.filter(hol => {
+              const y = String(parse(hol.date).getFullYear());
+              const yrA = holidayAssignments[y] || [];
+              const match = yrA.find(a => a.date === hol.date);
+              return match && match.surgeonA;
+            }).length;
+            const holidaysOk = holidayCount === 0 || assignedCount === holidayCount;
+            const holidayLabel = holidayCount === 0
+              ? "No holidays in this period"
+              : `${assignedCount} of ${holidayCount} holiday${holidayCount===1?"":"s"} assigned`;
             const Item = ({ok, label, info}) => (
               <div style={{display:"flex",alignItems:"center",gap:8,padding:"5px 0",fontSize:12,color:"#3a4a58"}}>
                 <span style={{fontSize:14,color:ok?"#1a8040":"#a08020",minWidth:18,textAlign:"center"}}>{ok?"✓":"ⓘ"}</span>
@@ -4625,7 +4652,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   <Item ok={apps.length>0} label={`${apps.length} APPs configured`} info="Edit in Setup →"/>
                   <Item ok={vacInPeriod>=0} label={`${vacInPeriod} vacation${vacInPeriod===1?"":"s"} in this period`} info="Edit in Setup →"/>
                   <Item ok={backupInPeriod>=0} label={`${backupInPeriod} backup/Fierce week${backupInPeriod===1?"":"s"} in this period`} info="Edit in Setup →"/>
-                  <Item ok={holidayCount>=0} label={`${holidayCount} holiday assignment${holidayCount===1?"":"s"} in this period`} info="Edit in Setup →"/>
+                  <Item ok={holidaysOk} label={holidayLabel} info="Edit in Setup →"/>
                 </div>
               </div>
             );
@@ -4639,7 +4666,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                 {MO.map((m,i)=><option key={i} value={i}>{m}</option>)}
               </select>
               <select value={startYear} onChange={e=>{setStartYear(+e.target.value); setStartMondayOverride("");}} style={{...css.inp,width:90}} disabled={!!startMondayOverride}>
-                {[2025,2026,2027,2028].map(y=><option key={y} value={y}>{y}</option>)}
+                {(() => { const cy = new Date().getFullYear(); return Array.from({length: 17}, (_, i) => cy - 1 + i); })().map(y=><option key={y} value={y}>{y}</option>)}
               </select>
               <select value={numWeeks} onChange={e=>setNumWeeks(+e.target.value)} style={{...css.inp,width:120}}>
                 {[14,28,42,56].map(w=><option key={w} value={w}>{w} weeks</option>)}

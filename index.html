@@ -57,7 +57,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.05.16a";
+    var APP_VERSION = "2026.05.16c";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -6851,7 +6851,12 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       ...css.inp,
       width: 90
     }
-  }, [2025, 2026, 2027, 2028].map(y => /*#__PURE__*/React.createElement("option", {
+  }, (() => {
+    const cy = new Date().getFullYear();
+    return Array.from({
+      length: 17
+    }, (_, i) => cy - 1 + i);
+  })().map(y => /*#__PURE__*/React.createElement("option", {
     key: y,
     value: y
   }, y))), /*#__PURE__*/React.createElement("button", {
@@ -7151,11 +7156,36 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       const ms = fmt(m);
       if (backupMondaySet.has(ms) || fierceBackupSet.has(ms)) backupInPeriod++;
     });
-    // Count holiday assignments that fall in the period
-    const holidayCount = mondays.length > 0 ? Object.keys(holidayAssignments || {}).filter(hid => {
-      const ha = holidayAssignments[hid];
-      return ha && ha.date && parse(ha.date) >= nextPeriodStart && parse(ha.date) <= nextPeriodEnd;
-    }).length : 0;
+    // Count holidays in the period (from getHolidays, not the
+    // assignment store — assignmentsCheck below validates whether
+    // each has a surgeon assigned).
+    const yearsOverlap = new Set();
+    if (nextPeriodStart) {
+      yearsOverlap.add(nextPeriodStart.getFullYear());
+      if (nextPeriodEnd) yearsOverlap.add(nextPeriodEnd.getFullYear());
+    }
+    const holidaysInPeriod = [];
+    yearsOverlap.forEach(y => {
+      try {
+        const h = getHolidays(y);
+        (h.major || []).forEach(hol => {
+          const hd = parse(hol.date);
+          if (hd >= nextPeriodStart && hd <= nextPeriodEnd) {
+            holidaysInPeriod.push(hol);
+          }
+        });
+      } catch (e) {}
+    });
+    const holidayCount = holidaysInPeriod.length;
+    // How many of those have a surgeonA assigned?
+    const assignedCount = holidaysInPeriod.filter(hol => {
+      const y = String(parse(hol.date).getFullYear());
+      const yrA = holidayAssignments[y] || [];
+      const match = yrA.find(a => a.date === hol.date);
+      return match && match.surgeonA;
+    }).length;
+    const holidaysOk = holidayCount === 0 || assignedCount === holidayCount;
+    const holidayLabel = holidayCount === 0 ? "No holidays in this period" : `${assignedCount} of ${holidayCount} holiday${holidayCount === 1 ? "" : "s"} assigned`;
     const Item = ({
       ok,
       label,
@@ -7233,8 +7263,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       label: `${backupInPeriod} backup/Fierce week${backupInPeriod === 1 ? "" : "s"} in this period`,
       info: "Edit in Setup \u2192"
     }), /*#__PURE__*/React.createElement(Item, {
-      ok: holidayCount >= 0,
-      label: `${holidayCount} holiday assignment${holidayCount === 1 ? "" : "s"} in this period`,
+      ok: holidaysOk,
+      label: holidayLabel,
       info: "Edit in Setup \u2192"
     })));
   })(), /*#__PURE__*/React.createElement("div", {
@@ -7273,7 +7303,12 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       width: 90
     },
     disabled: !!startMondayOverride
-  }, [2025, 2026, 2027, 2028].map(y => /*#__PURE__*/React.createElement("option", {
+  }, (() => {
+    const cy = new Date().getFullYear();
+    return Array.from({
+      length: 17
+    }, (_, i) => cy - 1 + i);
+  })().map(y => /*#__PURE__*/React.createElement("option", {
     key: y,
     value: y
   }, y))), /*#__PURE__*/React.createElement("select", {
