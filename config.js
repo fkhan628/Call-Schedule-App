@@ -9,12 +9,24 @@ const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 
 // Lightweight Supabase REST client (no SDK dependency needed)
 const dbHeaders = { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}`, "Content-Type": "application/json" };
+
+// Session-aware headers: returns headers with the logged-in user's JWT when a
+// session is stored in localStorage, else falls back to anon-key headers.
+// This is what every authenticated query MUST use so RLS sees the real user.
+function dbAuthHeaders() {
+  try {
+    const token = localStorage.getItem("dsg-auth-token");
+    if (token) return { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
+  } catch(e) {}
+  return dbHeaders;
+}
+
 const supabase = {
   from: (table) => ({
     select: (cols) => ({
       eq: (col, val) => ({
         single: async () => {
-          const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}?select=${cols}&${col}=eq.${val}`, { headers: dbHeaders });
+          const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}?select=${cols}&${col}=eq.${val}`, { headers: dbAuthHeaders() });
           const rows = await res.json();
           return { data: rows?.[0] || null, error: rows?.error || null };
         }
@@ -22,7 +34,7 @@ const supabase = {
     }),
     upsert: async (row) => {
       const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}`, {
-        method: "POST", headers: { ...dbHeaders, Prefer: "resolution=merge-duplicates" },
+        method: "POST", headers: { ...dbAuthHeaders(), Prefer: "resolution=merge-duplicates" },
         body: JSON.stringify(row),
       });
       return { error: res.ok ? null : await res.text() };
@@ -37,12 +49,12 @@ const db = {
     if (eq) Object.entries(eq).forEach(([k, v]) => { url += `&${k}=eq.${v}`; });
     if (order) url += `&order=${order}`;
     if (limit) url += `&limit=${limit}`;
-    const res = await fetch(url, { headers: dbHeaders });
+    const res = await fetch(url, { headers: dbAuthHeaders() });
     return res.ok ? await res.json() : [];
   },
   async insert(table, row) {
     const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}`, {
-      method: "POST", headers: { ...dbHeaders, Prefer: "return=representation" },
+      method: "POST", headers: { ...dbAuthHeaders(), Prefer: "return=representation" },
       body: JSON.stringify(row),
     });
     const data = await res.json();
@@ -50,7 +62,7 @@ const db = {
   },
   async update(table, id, data) {
     const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}?id=eq.${id}`, {
-      method: "PATCH", headers: { ...dbHeaders, Prefer: "return=representation" },
+      method: "PATCH", headers: { ...dbAuthHeaders(), Prefer: "return=representation" },
       body: JSON.stringify(data),
     });
     return { error: res.ok ? null : await res.text() };
@@ -430,7 +442,7 @@ const dbAuth = {
     return { data: data?.[0] || data, error: null };
   },
   async getAllProfiles() {
-    const res = await fetch(`${SUPABASE_URL}/rest/v1/user_profiles?select=*`, { headers: dbHeaders });
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/user_profiles?select=*`, { headers: dbAuthHeaders() });
     if (!res.ok) return [];
     return await res.json();
   },
