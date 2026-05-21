@@ -300,11 +300,16 @@ function CallSchedule() {
     return [...ids];
   }, [allProfiles]);
 
-  // ─── Scheduler Mode (PIN protected) ───
+  // ─── Scheduler Mode (role-based via user_profiles.role) ───
   const [isScheduler, setIsScheduler] = useState(false);
-  const [schedulerPin, setSchedulerPin] = useState("");
-  const [pinInput, setPinInput] = useState("");
-  const [pinError, setPinError] = useState("");
+
+  // Grant scheduler privileges based on user_profiles.role from DB.
+  // Role-based access via Supabase auth is the sole gate.
+  useEffect(() => {
+    if ((userProfile === null || userProfile === void 0 ? void 0 : userProfile.role) === "scheduler" || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.person_id) === "admin") {
+      setIsScheduler(true);
+    }
+  }, [userProfile]);
 
   // If non-scheduler ends up on a restricted tab, redirect them
   useEffect(() => {
@@ -742,8 +747,7 @@ function CallSchedule() {
         }
         const {
           data: cfgRow
-        } = await supabase.from("call_schedule_config").select("scheduler_pin,edge_function_url").eq("id", "config").single();
-        if (cfgRow !== null && cfgRow !== void 0 && cfgRow.scheduler_pin) setSchedulerPin(cfgRow.scheduler_pin);
+        } = await supabase.from("call_schedule_config").select("edge_function_url").eq("id", "config").single();
         if (cfgRow !== null && cfgRow !== void 0 && cfgRow.edge_function_url) setEdgeFunctionUrl(cfgRow.edge_function_url);
 
         // Load vacation requests
@@ -836,8 +840,7 @@ function CallSchedule() {
       try {
         const {
           data: cfgRow2
-        } = await supabase.from("call_schedule_config").select("scheduler_pin,edge_function_url").eq("id", "config").single();
-        if ((cfgRow2 === null || cfgRow2 === void 0 ? void 0 : cfgRow2.scheduler_pin) !== undefined) setSchedulerPin(prev => cfgRow2.scheduler_pin !== prev ? cfgRow2.scheduler_pin : prev);
+        } = await supabase.from("call_schedule_config").select("edge_function_url").eq("id", "config").single();
         if ((cfgRow2 === null || cfgRow2 === void 0 ? void 0 : cfgRow2.edge_function_url) !== undefined) setEdgeFunctionUrl(prev => cfgRow2.edge_function_url !== prev ? cfgRow2.edge_function_url : prev);
       } catch (e) {}
     };
@@ -1063,7 +1066,7 @@ function CallSchedule() {
     };
   }, []);
 
-  // ─── Supabase: Save scheduler PIN + edge function URL ───
+  // ─── Supabase: Save edge function URL ───
   useEffect(() => {
     if (!loaded) return;
     if (isPublicMode) return; // Public viewers never write config
@@ -1071,14 +1074,13 @@ function CallSchedule() {
       try {
         await supabase.from("call_schedule_config").upsert({
           id: "config",
-          scheduler_pin: schedulerPin || "",
           edge_function_url: edgeFunctionUrl || "",
           updated_at: new Date().toISOString()
         });
       } catch (e) {}
     }, 500);
     return () => clearTimeout(timer);
-  }, [loaded, schedulerPin, edgeFunctionUrl]);
+  }, [loaded, edgeFunctionUrl]);
 
   // ─── Reset all data ───
   const resetAllData = async () => {
@@ -1767,32 +1769,6 @@ function CallSchedule() {
       setTradeRequests(prev => prev.filter(r => r.id !== reqId));
     } catch (e) {}
   }, []);
-
-  // ─── Scheduler PIN Check ───
-  const checkPin = () => {
-    // If no PIN has been set yet, the first entry becomes the PIN
-    if (!schedulerPin) {
-      if (pinInput.length >= 4) {
-        setSchedulerPin(pinInput);
-        setIsScheduler(true);
-        setPinError("");
-        setPinInput("");
-        alert("PIN set! Remember this PIN — you'll need it to unlock scheduler mode in the future.");
-      } else {
-        setPinError("Enter at least 4 characters to set your PIN");
-        setTimeout(() => setPinError(""), 3000);
-      }
-      return;
-    }
-    if (pinInput === schedulerPin) {
-      setIsScheduler(true);
-      setPinError("");
-      setPinInput("");
-    } else {
-      setPinError("Incorrect PIN");
-      setTimeout(() => setPinError(""), 2000);
-    }
-  };
 
   // ─── Mark Notifications as Seen ───
   const markNotifsSeen = () => {
@@ -12794,123 +12770,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       padding: "6px 16px",
       fontSize: 12
     }
-  }, "\uD83C\uDF19 Dark"))), /*#__PURE__*/React.createElement("div", {
-    style: css.card
-  }, /*#__PURE__*/React.createElement("div", {
-    style: css.cardT
-  }, "\uD83D\uDD12 Scheduler Mode"), !isScheduler ? /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("p", {
-    style: {
-      fontSize: 12,
-      color: "#7a8a98",
-      margin: "0 0 8px",
-      lineHeight: 1.5
-    }
-  }, "Enter the scheduler PIN to unlock admin features (approve/deny vacation requests, set PIN)."), /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      gap: 6,
-      alignItems: "center"
-    }
-  }, /*#__PURE__*/React.createElement("input", {
-    type: "password",
-    placeholder: "Enter PIN",
-    value: pinInput,
-    onChange: e => setPinInput(e.target.value),
-    onKeyDown: e => e.key === "Enter" && checkPin(),
-    style: {
-      ...css.inp,
-      width: 140,
-      fontSize: 13,
-      fontFamily: mono
-    }
-  }), /*#__PURE__*/React.createElement("button", {
-    onClick: checkPin,
-    style: {
-      ...css.btn(true),
-      padding: "6px 14px"
-    }
-  }, "Unlock"), pinError && /*#__PURE__*/React.createElement("span", {
-    style: {
-      fontSize: 12,
-      color: "#c04040",
-      fontWeight: 600
-    }
-  }, pinError)), !schedulerPin && /*#__PURE__*/React.createElement("p", {
-    style: {
-      fontSize: 11,
-      color: "#a0a8b0",
-      margin: "6px 0 0"
-    }
-  }, "No PIN set yet. Enter at least 4 characters and click Unlock to set your PIN.")) : /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      alignItems: "center",
-      gap: 8,
-      marginBottom: 8
-    }
-  }, /*#__PURE__*/React.createElement("span", {
-    style: {
-      fontSize: 12,
-      color: "#1a8040",
-      fontWeight: 600
-    }
-  }, "\u2713 Scheduler mode active"), /*#__PURE__*/React.createElement("button", {
-    onClick: () => setIsScheduler(false),
-    style: {
-      background: "none",
-      border: "1px solid #d0d8e0",
-      color: "#6a7a88",
-      borderRadius: 5,
-      padding: "3px 10px",
-      fontSize: 11,
-      cursor: "pointer",
-      fontFamily: font
-    }
-  }, "Lock")), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
-    style: {
-      fontSize: 11,
-      color: "#7a8a98",
-      display: "block",
-      marginBottom: 2
-    }
-  }, "Set or change scheduler PIN"), /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      gap: 6,
-      alignItems: "center"
-    }
-  }, /*#__PURE__*/React.createElement("input", {
-    type: "password",
-    placeholder: "New PIN",
-    value: pinInput,
-    onChange: e => setPinInput(e.target.value),
-    style: {
-      ...css.inp,
-      width: 140,
-      fontSize: 13,
-      fontFamily: mono
-    }
-  }), /*#__PURE__*/React.createElement("button", {
-    onClick: () => {
-      if (pinInput.length >= 4) {
-        setSchedulerPin(pinInput);
-        setPinInput("");
-        alert("PIN updated!");
-      } else {
-        alert("PIN must be at least 4 characters");
-      }
-    },
-    style: {
-      ...css.btn(true),
-      padding: "6px 14px"
-    }
-  }, "Save PIN")), schedulerPin && /*#__PURE__*/React.createElement("p", {
-    style: {
-      fontSize: 11,
-      color: "#8a94a0",
-      margin: "4px 0 0"
-    }
-  }, "Current PIN: ", schedulerPin.replace(/./g, "•"))))), (isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.person_id) === "admin") && /*#__PURE__*/React.createElement("div", {
+  }, "\uD83C\uDF19 Dark"))), (isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.person_id) === "admin") && /*#__PURE__*/React.createElement("div", {
     style: css.card
   }, /*#__PURE__*/React.createElement("div", {
     style: css.cardT

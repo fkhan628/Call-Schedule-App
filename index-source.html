@@ -274,11 +274,16 @@ function CallSchedule() {
     return [...ids];
   }, [allProfiles]);
 
-  // ─── Scheduler Mode (PIN protected) ───
+  // ─── Scheduler Mode (role-based via user_profiles.role) ───
   const [isScheduler, setIsScheduler] = useState(false);
-  const [schedulerPin, setSchedulerPin] = useState("");
-  const [pinInput, setPinInput] = useState("");
-  const [pinError, setPinError] = useState("");
+
+  // Grant scheduler privileges based on user_profiles.role from DB.
+  // Role-based access via Supabase auth is the sole gate.
+  useEffect(() => {
+    if (userProfile?.role === "scheduler" || userProfile?.person_id === "admin") {
+      setIsScheduler(true);
+    }
+  }, [userProfile]);
 
   // If non-scheduler ends up on a restricted tab, redirect them
   useEffect(() => {
@@ -630,10 +635,9 @@ function CallSchedule() {
         }
         const { data: cfgRow } = await supabase
           .from("call_schedule_config")
-          .select("scheduler_pin,edge_function_url")
+          .select("edge_function_url")
           .eq("id", "config")
           .single();
-        if (cfgRow?.scheduler_pin) setSchedulerPin(cfgRow.scheduler_pin);
         if (cfgRow?.edge_function_url) setEdgeFunctionUrl(cfgRow.edge_function_url);
 
         // Load vacation requests
@@ -714,8 +718,7 @@ function CallSchedule() {
 
     const refreshConfigRow = async () => {
       try {
-        const { data: cfgRow2 } = await supabase.from("call_schedule_config").select("scheduler_pin,edge_function_url").eq("id", "config").single();
-        if (cfgRow2?.scheduler_pin !== undefined) setSchedulerPin(prev => cfgRow2.scheduler_pin !== prev ? cfgRow2.scheduler_pin : prev);
+        const { data: cfgRow2 } = await supabase.from("call_schedule_config").select("edge_function_url").eq("id", "config").single();
         if (cfgRow2?.edge_function_url !== undefined) setEdgeFunctionUrl(prev => cfgRow2.edge_function_url !== prev ? cfgRow2.edge_function_url : prev);
       } catch(e) {}
     };
@@ -902,7 +905,7 @@ function CallSchedule() {
     };
   }, []);
 
-  // ─── Supabase: Save scheduler PIN + edge function URL ───
+  // ─── Supabase: Save edge function URL ───
   useEffect(() => {
     if (!loaded) return;
     if (isPublicMode) return;  // Public viewers never write config
@@ -910,11 +913,11 @@ function CallSchedule() {
       try {
         await supabase
           .from("call_schedule_config")
-          .upsert({ id: "config", scheduler_pin: schedulerPin || "", edge_function_url: edgeFunctionUrl || "", updated_at: new Date().toISOString() });
+          .upsert({ id: "config", edge_function_url: edgeFunctionUrl || "", updated_at: new Date().toISOString() });
       } catch(e) {}
     }, 500);
     return () => clearTimeout(timer);
-  }, [loaded, schedulerPin, edgeFunctionUrl]);
+  }, [loaded, edgeFunctionUrl]);
 
   // ─── Reset all data ───
   const resetAllData = async () => {
@@ -1426,26 +1429,6 @@ function CallSchedule() {
       setTradeRequests(prev => prev.filter(r => r.id !== reqId));
     } catch(e) {}
   }, []);
-
-  // ─── Scheduler PIN Check ───
-  const checkPin = () => {
-    // If no PIN has been set yet, the first entry becomes the PIN
-    if (!schedulerPin) {
-      if (pinInput.length >= 4) {
-        setSchedulerPin(pinInput);
-        setIsScheduler(true);
-        setPinError("");
-        setPinInput("");
-        alert("PIN set! Remember this PIN — you'll need it to unlock scheduler mode in the future.");
-      } else {
-        setPinError("Enter at least 4 characters to set your PIN");
-        setTimeout(() => setPinError(""), 3000);
-      }
-      return;
-    }
-    if (pinInput === schedulerPin) { setIsScheduler(true); setPinError(""); setPinInput(""); }
-    else { setPinError("Incorrect PIN"); setTimeout(() => setPinError(""), 2000); }
-  };
 
   // ─── Mark Notifications as Seen ───
   const markNotifsSeen = () => {
@@ -7152,42 +7135,6 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                 🌙 Dark
               </button>
             </div>
-          </div>
-
-          {/* Scheduler Mode */}
-          <div style={css.card}>
-            <div style={css.cardT}>🔒 Scheduler Mode</div>
-            {!isScheduler ? (
-              <div>
-                <p style={{fontSize:12,color:"#7a8a98",margin:"0 0 8px",lineHeight:1.5}}>
-                  Enter the scheduler PIN to unlock admin features (approve/deny vacation requests, set PIN).
-                </p>
-                <div style={{display:"flex",gap:6,alignItems:"center"}}>
-                  <input type="password" placeholder="Enter PIN" value={pinInput} onChange={e=>setPinInput(e.target.value)}
-                    onKeyDown={e=>e.key==="Enter"&&checkPin()}
-                    style={{...css.inp,width:140,fontSize:13,fontFamily:mono}}/>
-                  <button onClick={checkPin} style={{...css.btn(true),padding:"6px 14px"}}>Unlock</button>
-                  {pinError && <span style={{fontSize:12,color:"#c04040",fontWeight:600}}>{pinError}</span>}
-                </div>
-                {!schedulerPin && <p style={{fontSize:11,color:"#a0a8b0",margin:"6px 0 0"}}>No PIN set yet. Enter at least 4 characters and click Unlock to set your PIN.</p>}
-              </div>
-            ) : (
-              <div>
-                <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
-                  <span style={{fontSize:12,color:"#1a8040",fontWeight:600}}>✓ Scheduler mode active</span>
-                  <button onClick={()=>setIsScheduler(false)} style={{background:"none",border:"1px solid #d0d8e0",color:"#6a7a88",borderRadius:5,padding:"3px 10px",fontSize:11,cursor:"pointer",fontFamily:font}}>Lock</button>
-                </div>
-                <div>
-                  <label style={{fontSize:11,color:"#7a8a98",display:"block",marginBottom:2}}>Set or change scheduler PIN</label>
-                  <div style={{display:"flex",gap:6,alignItems:"center"}}>
-                    <input type="password" placeholder="New PIN" value={pinInput} onChange={e=>setPinInput(e.target.value)}
-                      style={{...css.inp,width:140,fontSize:13,fontFamily:mono}}/>
-                    <button onClick={()=>{if(pinInput.length>=4){setSchedulerPin(pinInput);setPinInput("");alert("PIN updated!");}else{alert("PIN must be at least 4 characters");}}} style={{...css.btn(true),padding:"6px 14px"}}>Save PIN</button>
-                  </div>
-                  {schedulerPin && <p style={{fontSize:11,color:"#8a94a0",margin:"4px 0 0"}}>Current PIN: {schedulerPin.replace(/./g,"•")}</p>}
-                </div>
-              </div>
-            )}
           </div>
 
           {/* APP Shift Managers — scheduler/admin only */}
