@@ -464,11 +464,18 @@ function CallSchedule() {
         if (profile) { setUserProfile(profile); setMySurgeon(profile.person_id); }
         else { setNeedsProfile(true); }
         setBiometricPending(false);
+        // Force fresh mount so data-load useEffect runs WITH the session JWT.
+        // Same fix as the password login path.
+        window.location.reload();
+        return;
       } else {
-        // Session expired — fall back to email/password
+        // Session is invalid or refresh failed. Don't unenroll biometric —
+        // preserve the credential so that after the user signs in once
+        // with password, Face ID continues to work next time. Wiping the
+        // enrollment on every transient session failure forces users to
+        // re-enroll repeatedly, which is the bug we're fixing here.
         setBiometricPending(false);
-        biometric.unenroll(); setBiometricEnrolled(false);
-        setAuthError("Session expired. Please sign in again.");
+        setAuthError("Session expired. Please sign in with your password to refresh.");
       }
     } else {
       setAuthError(result.error || "Biometric failed");
@@ -568,6 +575,13 @@ function CallSchedule() {
           setNeedsProfile(false);
           // Auto-elevate admin accounts to scheduler
           if (profile.person_id === "admin") setIsScheduler(true);
+          // Force a fresh mount so the data-load useEffect runs WITH the
+          // session JWT in localStorage. Without this reload, the initial
+          // mount used anon headers (no session existed yet) and pulled
+          // empty results, leaving the UI showing no calendar/preferences
+          // until the user hit refresh manually.
+          window.location.reload();
+          return;
         } else {
           setNeedsProfile(true);
         }
@@ -593,6 +607,10 @@ function CallSchedule() {
       setMySurgeon(signupPersonId);
       setNeedsProfile(false);
       if (signupPersonId === "admin") setIsScheduler(true);
+      // Force a fresh mount so the data-load useEffect runs with the session
+      // JWT now established. Same reasoning as the signIn handler above.
+      window.location.reload();
+      return;
     } catch(e) { setAuthError(e.message); }
     setAuthBusy(false);
   };
