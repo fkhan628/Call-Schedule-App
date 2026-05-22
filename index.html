@@ -220,6 +220,9 @@ function CallSchedule() {
   const [scanning, setScanning] = useState(false);
   const [scanMsg, setScanMsg] = useState("");
   const [loaded, setLoaded] = useState(false);
+  // Bumped after a successful login/biometric-unlock to re-run the data-load
+  // effect WITH the now-stored session JWT, without a full page reload.
+  const [reloadTrigger, setReloadTrigger] = useState(0);
   const [saveStatus, setSaveStatus] = useState("");
   const [saveError, setSaveError] = useState(false); // true = last save failed
   const fileRef = useRef(null);
@@ -520,8 +523,10 @@ function CallSchedule() {
           setNeedsProfile(true);
         }
         setBiometricPending(false);
-        // Force fresh mount so data-load useEffect runs WITH the session JWT.
-        window.location.reload();
+        // Re-run the data-load effect now that the session JWT is available,
+        // WITHOUT reloading the page (a reload loops back to biometric prompt).
+        setReloadTrigger(t => t + 1);
+        setAuthBusy(false);
         return;
       } else {
         // Session is invalid or refresh failed. Don't unenroll biometric —
@@ -666,10 +671,11 @@ function CallSchedule() {
           setNeedsProfile(false);
           // Auto-elevate admin accounts to scheduler
           if (profile.person_id === "admin") setIsScheduler(true);
-          // Force a fresh mount so the data-load useEffect runs WITH the
-          // session JWT in localStorage. Without this reload, the initial
-          // mount used anon headers and pulled empty results.
-          window.location.reload();
+          // Re-run data-load effect with session JWT, no page reload.
+          setReloadTrigger(t => t + 1);
+          setAuthEmail("");
+          setAuthPassword("");
+          setAuthBusy(false);
           return;
         } else {
           setNeedsProfile(true);
@@ -710,9 +716,9 @@ function CallSchedule() {
       setMySurgeon(signupPersonId);
       setNeedsProfile(false);
       if (signupPersonId === "admin") setIsScheduler(true);
-      // Force a fresh mount so the data-load useEffect runs with the session
-      // JWT now established. Same reasoning as signIn handler above.
-      window.location.reload();
+      // Re-run data-load effect with session JWT, no page reload.
+      setReloadTrigger(t => t + 1);
+      setAuthBusy(false);
       return;
     } catch (e) {
       setAuthError(e.message);
@@ -952,7 +958,7 @@ function CallSchedule() {
         } catch (e) {}
       }
     };
-  }, []);
+  }, [reloadTrigger]);
 
   // ─── Supabase: Auto-save on changes ───
   useEffect(() => {
