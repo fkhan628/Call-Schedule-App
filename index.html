@@ -1781,7 +1781,7 @@ function CallSchedule() {
       await fetch(`${SUPABASE_URL}/rest/v1/shift_trade_requests?id=eq.${reqId}`, {
         method: "DELETE",
         headers: {
-          ...dbHeaders,
+          ...dbAuthHeaders(),
           Prefer: "return=minimal"
         }
       });
@@ -1805,7 +1805,7 @@ function CallSchedule() {
       await fetch(`${SUPABASE_URL}/rest/v1/notifications`, {
         method: "DELETE",
         headers: {
-          ...dbHeaders,
+          ...dbAuthHeaders(),
           Prefer: "return=minimal"
         }
       });
@@ -1822,7 +1822,7 @@ function CallSchedule() {
       await fetch(`${SUPABASE_URL}/rest/v1/vacation_requests?id=eq.${reqId}`, {
         method: "DELETE",
         headers: {
-          ...dbHeaders,
+          ...dbAuthHeaders(),
           Prefer: "return=minimal"
         }
       });
@@ -1907,7 +1907,7 @@ function CallSchedule() {
       await fetch(`${SUPABASE_URL}/rest/v1/vacation_requests?status=neq.pending`, {
         method: "DELETE",
         headers: {
-          ...dbHeaders,
+          ...dbAuthHeaders(),
           Prefer: "return=minimal"
         }
       });
@@ -2212,7 +2212,7 @@ function CallSchedule() {
       }
       setNotifPrefsLoaded(true);
     })();
-  }, [loaded]);
+  }, [loaded, reloadTrigger]);
 
   // ─── Load Office Contacts ───
   // Scheduler/admin-only feature, but contacts table is loaded for everyone
@@ -2914,7 +2914,7 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
     try {
       await fetch(`${SUPABASE_URL}/rest/v1/office_contacts?id=eq.${id}`, {
         method: "DELETE",
-        headers: dbHeaders
+        headers: dbAuthHeaders()
       });
     } catch (e) {
       console.error("Delete failed:", e);

@@ -1449,7 +1449,7 @@ function CallSchedule() {
   const deleteTradeRequest = useCallback(async (reqId) => {
     if (!confirm("Delete this trade request?")) return;
     try {
-      await fetch(`${SUPABASE_URL}/rest/v1/shift_trade_requests?id=eq.${reqId}`, { method: "DELETE", headers: { ...dbHeaders, Prefer: "return=minimal" } });
+      await fetch(`${SUPABASE_URL}/rest/v1/shift_trade_requests?id=eq.${reqId}`, { method: "DELETE", headers: { ...dbAuthHeaders(), Prefer: "return=minimal" } });
       setTradeRequests(prev => prev.filter(r => r.id !== reqId));
     } catch(e) {}
   }, []);
@@ -1465,7 +1465,7 @@ function CallSchedule() {
   const clearAllNotifications = useCallback(async () => {
     if (!confirm("Clear all notifications? This cannot be undone.")) return;
     try {
-      await fetch(`${SUPABASE_URL}/rest/v1/notifications`, { method: "DELETE", headers: { ...dbHeaders, Prefer: "return=minimal" } });
+      await fetch(`${SUPABASE_URL}/rest/v1/notifications`, { method: "DELETE", headers: { ...dbAuthHeaders(), Prefer: "return=minimal" } });
       setNotifications([]);
     } catch(e) { console.error("Clear notifications error:", e); }
   }, []);
@@ -1474,7 +1474,7 @@ function CallSchedule() {
   const deleteVacRequest = useCallback(async (reqId) => {
     if (!confirm("Delete this request?")) return;
     try {
-      await fetch(`${SUPABASE_URL}/rest/v1/vacation_requests?id=eq.${reqId}`, { method: "DELETE", headers: { ...dbHeaders, Prefer: "return=minimal" } });
+      await fetch(`${SUPABASE_URL}/rest/v1/vacation_requests?id=eq.${reqId}`, { method: "DELETE", headers: { ...dbAuthHeaders(), Prefer: "return=minimal" } });
       setVacRequests(prev => prev.filter(r => r.id !== reqId));
     } catch(e) { console.error("Delete vacation request error:", e); }
   }, []);
@@ -1532,7 +1532,7 @@ function CallSchedule() {
   const clearReviewedRequests = useCallback(async () => {
     if (!confirm("Clear all reviewed (approved/denied) requests? Pending requests will be kept.")) return;
     try {
-      await fetch(`${SUPABASE_URL}/rest/v1/vacation_requests?status=neq.pending`, { method: "DELETE", headers: { ...dbHeaders, Prefer: "return=minimal" } });
+      await fetch(`${SUPABASE_URL}/rest/v1/vacation_requests?status=neq.pending`, { method: "DELETE", headers: { ...dbAuthHeaders(), Prefer: "return=minimal" } });
       setVacRequests(prev => prev.filter(r => r.status === "pending"));
     } catch(e) { console.error("Clear reviewed requests error:", e); }
   }, []);
@@ -1761,7 +1761,7 @@ function CallSchedule() {
       } catch(e) { console.error("Load notif prefs error:", e); }
       setNotifPrefsLoaded(true);
     })();
-  }, [loaded]);
+  }, [loaded, reloadTrigger]);
 
   // ─── Load Office Contacts ───
   // Scheduler/admin-only feature, but contacts table is loaded for everyone
@@ -2313,7 +2313,7 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
     setOfficeContacts(prev => prev.filter(x => x.id !== id));
     try {
       await fetch(`${SUPABASE_URL}/rest/v1/office_contacts?id=eq.${id}`, {
-        method: "DELETE", headers: dbHeaders,
+        method: "DELETE", headers: dbAuthHeaders(),
       });
     } catch(e) { console.error("Delete failed:", e); }
   };
