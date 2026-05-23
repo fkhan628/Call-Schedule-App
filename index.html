@@ -400,10 +400,9 @@ function CallSchedule() {
   }, [notifications, isScheduler, mySurgeon]);
   const myUnreadCount = useMemo(() => myNotifications.filter(n => n.created_at > notifLastSeen).length, [myNotifications, notifLastSeen]);
   const myVacRequests = useMemo(() => {
-    if (isScheduler) return vacRequests;
-    if (!mySurgeon || mySurgeon === "admin") return vacRequests;
-    return vacRequests.filter(r => r.surgeon_id === mySurgeon);
-  }, [vacRequests, isScheduler, mySurgeon]);
+    // Everyone sees all vacation requests — they're decided as a group.
+    return vacRequests;
+  }, [vacRequests]);
   const myTradeRequests = useMemo(() => {
     if (isScheduler) return tradeRequests;
     if (!mySurgeon || mySurgeon === "admin") return tradeRequests;
@@ -1350,10 +1349,11 @@ function CallSchedule() {
       if (!confirm(`Warning: Approving this would put ${maxOff} surgeons off at the same time (max 4). Approve anyway?`)) return;
     }
     try {
+      const reviewerName = (userProfile === null || userProfile === void 0 ? void 0 : userProfile.display_name) || (surgeons.find(s => s.id === mySurgeon) || {}).name || "A colleague";
       await db.update("vacation_requests", req.id, {
         status: "approved",
         reviewed_at: new Date().toISOString(),
-        reviewed_by: "Scheduler"
+        reviewed_by: reviewerName
       });
       setVacRequests(prev => prev.map(r => r.id === req.id ? {
         ...r,
@@ -1377,15 +1377,16 @@ function CallSchedule() {
     } catch (e) {
       console.error("Approve error:", e);
     }
-  }, [addNotification, sendEmailNotif, schedulerAdminIds]);
+  }, [addNotification, sendEmailNotif, schedulerAdminIds, userProfile, surgeons, mySurgeon, vacations]);
 
   // ─── Vacation Request: Deny ───
   const denyVacRequest = useCallback(async (req, note = "") => {
     try {
+      const reviewerName = (userProfile === null || userProfile === void 0 ? void 0 : userProfile.display_name) || (surgeons.find(s => s.id === mySurgeon) || {}).name || "A colleague";
       await db.update("vacation_requests", req.id, {
         status: "denied",
         reviewed_at: new Date().toISOString(),
-        reviewed_by: "Scheduler",
+        reviewed_by: reviewerName,
         review_note: note
       });
       setVacRequests(prev => prev.map(r => r.id === req.id ? {
@@ -1407,7 +1408,7 @@ function CallSchedule() {
     } catch (e) {
       console.error("Deny error:", e);
     }
-  }, [addNotification, sendEmailNotif, schedulerAdminIds]);
+  }, [addNotification, sendEmailNotif, schedulerAdminIds, userProfile, surgeons, mySurgeon]);
 
   // ─── Shift Trade Request: Submit ───
   const submitTradeRequest = useCallback(async () => {
@@ -11955,7 +11956,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           fontSize: 11,
           color: "#a0a8b0"
         }
-      }, "Submitted ", new Date(r.submitted_at).toLocaleDateString()), isScheduler && /*#__PURE__*/React.createElement("div", {
+      }, "Submitted ", new Date(r.submitted_at).toLocaleDateString()), (r.surgeon_id !== mySurgeon || isScheduler) && /*#__PURE__*/React.createElement("div", {
         style: {
           marginLeft: "auto",
           display: "flex",
@@ -11990,7 +11991,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           cursor: "pointer",
           fontFamily: font
         }
-      }, "\u2715 Deny")), !isScheduler && /*#__PURE__*/React.createElement("span", {
+      }, "\u2715 Deny")), r.surgeon_id === mySurgeon && !isScheduler && /*#__PURE__*/React.createElement("span", {
         style: {
           marginLeft: "auto",
           fontSize: 11,

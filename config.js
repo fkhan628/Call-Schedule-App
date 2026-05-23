@@ -322,20 +322,31 @@ const auth = {
   async getUser() {
     const session = auth.getSession();
     if (!session) return { user: null };
-    const res = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
-      headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${session.access_token}` },
-    });
-    if (!res.ok) {
-      // Token expired — try refresh
-      if (res.status === 401 && session.refresh_token) {
+    try {
+      const res = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
+        headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${session.access_token}` },
+      });
+      if (res.ok) {
+        const user = await res.json();
+        return { user };
+      }
+      // Token rejected. GoTrue may answer 401 OR 403 depending on version/
+      // config — attempt a refresh on ANY auth failure when we hold a refresh
+      // token, not only on 401. (This project returns 403, which the old
+      // 401-only check skipped, silently logging users out on every refresh.)
+      if (session.refresh_token) {
         const refreshed = await auth._refresh(session.refresh_token);
         if (refreshed?.user) return refreshed;
       }
+      // Refresh wasn't possible or genuinely failed — token is dead.
       auth._clearSession();
       return { user: null };
+    } catch (e) {
+      // Network error (offline, transient blip). Do NOT clear the session —
+      // the token may still be valid. Report no user for now; the next
+      // attempt can recover without forcing a fresh login.
+      return { user: null, error: "network" };
     }
-    const user = await res.json();
-    return { user };
   },
 
   // Refresh token

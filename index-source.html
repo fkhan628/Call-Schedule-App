@@ -359,10 +359,9 @@ function CallSchedule() {
   const myUnreadCount = useMemo(() => myNotifications.filter(n => n.created_at > notifLastSeen).length, [myNotifications, notifLastSeen]);
 
   const myVacRequests = useMemo(() => {
-    if (isScheduler) return vacRequests;
-    if (!mySurgeon || mySurgeon === "admin") return vacRequests;
-    return vacRequests.filter(r => r.surgeon_id === mySurgeon);
-  }, [vacRequests, isScheduler, mySurgeon]);
+    // Everyone sees all vacation requests — they're decided as a group.
+    return vacRequests;
+  }, [vacRequests]);
 
   const myTradeRequests = useMemo(() => {
     if (isScheduler) return tradeRequests;
@@ -1142,8 +1141,9 @@ function CallSchedule() {
       if (!confirm(`Warning: Approving this would put ${maxOff} surgeons off at the same time (max 4). Approve anyway?`)) return;
     }
     try {
+      const reviewerName = userProfile?.display_name || surgeons.find(s => s.id === mySurgeon)?.name || "A colleague";
       await db.update("vacation_requests", req.id, {
-        status: "approved", reviewed_at: new Date().toISOString(), reviewed_by: "Scheduler"
+        status: "approved", reviewed_at: new Date().toISOString(), reviewed_by: reviewerName
       });
       setVacRequests(prev => prev.map(r => r.id === req.id ? { ...r, status: "approved" } : r));
       // Auto-add to vacations
@@ -1157,13 +1157,14 @@ function CallSchedule() {
         { surgeon_id: req.surgeon_id }, approveTargets);
       sendEmailNotif("vacation_approved", { surgeon_name: req.surgeon_name, surgeon_id: req.surgeon_id, start_date: req.start_date, end_date: req.end_date }, approveTargets);
     } catch(e) { console.error("Approve error:", e); }
-  }, [addNotification, sendEmailNotif, schedulerAdminIds]);
+  }, [addNotification, sendEmailNotif, schedulerAdminIds, userProfile, surgeons, mySurgeon, vacations]);
 
   // ─── Vacation Request: Deny ───
   const denyVacRequest = useCallback(async (req, note = "") => {
     try {
+      const reviewerName = userProfile?.display_name || surgeons.find(s => s.id === mySurgeon)?.name || "A colleague";
       await db.update("vacation_requests", req.id, {
-        status: "denied", reviewed_at: new Date().toISOString(), reviewed_by: "Scheduler", review_note: note
+        status: "denied", reviewed_at: new Date().toISOString(), reviewed_by: reviewerName, review_note: note
       });
       setVacRequests(prev => prev.map(r => r.id === req.id ? { ...r, status: "denied", review_note: note } : r));
       const denyTargets = [...new Set([req.surgeon_id, ...schedulerAdminIds].filter(Boolean))];
@@ -1172,7 +1173,7 @@ function CallSchedule() {
         { surgeon_id: req.surgeon_id }, denyTargets);
       sendEmailNotif("vacation_denied", { surgeon_name: req.surgeon_name, surgeon_id: req.surgeon_id, start_date: req.start_date, end_date: req.end_date, note }, denyTargets);
     } catch(e) { console.error("Deny error:", e); }
-  }, [addNotification, sendEmailNotif, schedulerAdminIds]);
+  }, [addNotification, sendEmailNotif, schedulerAdminIds, userProfile, surgeons, mySurgeon]);
 
   // ─── Shift Trade Request: Submit ───
   const submitTradeRequest = useCallback(async () => {
@@ -6852,13 +6853,13 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                             <span style={{fontFamily:mono,fontSize:13,color:"#2c3e50",minWidth:130}}>{r.start_date} → {r.end_date}</span>
                             {r.reason && <span style={{fontSize:12,color:"#7a8a98",fontStyle:"italic"}}>"{r.reason}"</span>}
                             <span style={{fontSize:11,color:"#a0a8b0"}}>Submitted {new Date(r.submitted_at).toLocaleDateString()}</span>
-                            {isScheduler && (
+                            {(r.surgeon_id !== mySurgeon || isScheduler) && (
                               <div style={{marginLeft:"auto",display:"flex",gap:6}}>
                                 <button onClick={()=>approveVacRequest(r)} style={{background:"#e8f8e8",border:"1px solid #a0d8a0",color:"#1a8040",borderRadius:6,padding:"4px 12px",fontSize:12,fontWeight:600,cursor:"pointer",fontFamily:font}}>✓ Approve</button>
                                 <button onClick={()=>{const note=prompt("Reason for denial (optional):"); if(note!==null) denyVacRequest(r,note);}} style={{background:"#fce8e8",border:"1px solid #e0b0b0",color:"#c04040",borderRadius:6,padding:"4px 12px",fontSize:12,fontWeight:600,cursor:"pointer",fontFamily:font}}>✕ Deny</button>
                               </div>
                             )}
-                            {!isScheduler && <span style={{marginLeft:"auto",fontSize:11,color:"#c09030",fontWeight:600,background:"#fef8e8",padding:"2px 8px",borderRadius:4,border:"1px solid #e8d090"}}>Pending review</span>}
+                            {r.surgeon_id === mySurgeon && !isScheduler && <span style={{marginLeft:"auto",fontSize:11,color:"#c09030",fontWeight:600,background:"#fef8e8",padding:"2px 8px",borderRadius:4,border:"1px solid #e8d090"}}>Pending review</span>}
                             <button onClick={()=>setEditingVacReq({id:r.id,start_date:r.start_date,end_date:r.end_date,reason:r.reason||""})} style={{background:"none",border:"1px solid #d0d8e0",color:"#5a6a78",borderRadius:5,padding:"2px 8px",fontSize:10,cursor:"pointer",fontFamily:font}}>✎ Edit</button>
                             <button onClick={()=>deleteVacRequest(r.id)} style={{background:"none",border:"1px solid #e0c0c0",color:"#904040",borderRadius:5,padding:"2px 8px",fontSize:10,cursor:"pointer",fontFamily:font}}>Withdraw</button>
                           </div>
