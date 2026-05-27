@@ -3113,32 +3113,31 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
       }
     });
 
-    // Dispatch: one notification per recipient summarizing their changes
-    perPerson.forEach((personChanges, pid) => {
-      const n = personChanges.length;
-      let title, msg, emailPayload;
-      if (n === 1) {
-        const c = personChanges[0];
-        title = "Schedule Change";
-        msg = `${c.slotLabel}: ${c.oldName} → ${c.newName}${reasonSuffix}`;
-        emailPayload = { shift: c.slotLabel, week: mondayStr, old_surgeon: c.oldName, new_surgeon: c.newName };
-      } else {
-        title = `${n} Shifts Updated`;
-        const bullets = personChanges.map(c => `${c.slotLabel}: ${c.oldName} → ${c.newName}`).join("; ");
-        msg = `Week of ${mondayStr} — ${bullets}${reasonSuffix}`;
-        // Summarized payload for existing Edge Function template.
-        // TODO: update daily-reminder/notify-shift-update Edge Function to
-        // accept a `changes: [...]` array for cleaner bulk-edit emails.
-        emailPayload = {
-          shift: `${n} shifts`,
-          week: mondayStr,
-          old_surgeon: "multiple",
-          new_surgeon: "open app for details",
-        };
-      }
-      addNotification("schedule_changed", title, msg, { week: mondayStr }, [pid]);
-      sendEmailNotif("schedule_changed", emailPayload, [pid]);
-    });
+    // One in-app notification + one push/email batch for the whole change set.
+    // (Previously this looped per-person, inserting one identical-looking row
+    // per affected person — a single REH→DJA swap produced two rows in the
+    // shared notification panel. perPerson.keys() already holds every affected
+    // person plus schedulers, so we reuse it for push/email targeting.)
+    const allTargets = [...perPerson.keys()].filter(Boolean);
+    let title, msg, emailPayload;
+    if (enrichedChanges.length === 1) {
+      const c = enrichedChanges[0];
+      title = "Schedule Change";
+      msg = `${c.slotLabel}: ${c.oldName} → ${c.newName}${reasonSuffix}`;
+      emailPayload = { shift: c.slotLabel, week: mondayStr, old_surgeon: c.oldName, new_surgeon: c.newName };
+    } else {
+      title = `${enrichedChanges.length} Shifts Updated`;
+      const bullets = enrichedChanges.map(c => `${c.slotLabel}: ${c.oldName} → ${c.newName}`).join("; ");
+      msg = `Week of ${mondayStr} — ${bullets}${reasonSuffix}`;
+      emailPayload = {
+        shift: `${enrichedChanges.length} shifts`,
+        week: mondayStr,
+        old_surgeon: "multiple",
+        new_surgeon: "open app for details",
+      };
+    }
+    addNotification("schedule_changed", title, msg, { week: mondayStr }, allTargets);
+    sendEmailNotif("schedule_changed", emailPayload, allTargets);
 
     setEditWeekModal(null);
     if (openAfter) {
