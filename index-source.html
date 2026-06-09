@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.06.09b";
+    var APP_VERSION = "2026.06.09c";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -286,7 +286,7 @@ function CallSchedule() {
   const schedulerAdminIds = useMemo(() => {
     const ids = new Set();
     allProfiles.forEach(p => {
-      if (p?.role === "scheduler" || p?.person_id === "admin") ids.add(p.person_id);
+      if (p?.role === "scheduler" || p?.role === "admin") ids.add(p.person_id);
     });
     return [...ids];
   }, [allProfiles]);
@@ -297,14 +297,14 @@ function CallSchedule() {
   // Grant scheduler privileges based on user_profiles.role from DB.
   // Role-based access via Supabase auth is the sole gate.
   useEffect(() => {
-    if (userProfile?.role === "scheduler" || userProfile?.person_id === "admin") {
+    if (userProfile?.role === "scheduler" || userProfile?.role === "admin") {
       setIsScheduler(true);
     }
   }, [userProfile]);
 
   // If non-scheduler ends up on a restricted tab, redirect them
   useEffect(() => {
-    const isAdmin = userProfile?.person_id === "admin";
+    const isAdmin = userProfile?.role === "admin";
     const canAssignApps = userProfile?.can_assign_apps === true;
     // Setup is accessible to: scheduler, admin, or APP-assign-permitted users (for the APP card only).
     // Totals remains scheduler-only.
@@ -592,7 +592,7 @@ function CallSchedule() {
           setMySurgeon(profile.person_id);
           setNeedsProfile(false);
           // Auto-elevate admin accounts to scheduler
-          if (profile.person_id === "admin") setIsScheduler(true);
+          if (profile.role === "scheduler" || profile.role === "admin") setIsScheduler(true);
           // Re-run the data-load effect now that the session JWT is stored,
           // without a page reload (which would re-fire the mount auth-gate).
           setReloadTrigger(t => t + 1);
@@ -1000,7 +1000,7 @@ function CallSchedule() {
   // ─── Reset all data ───
   const resetAllData = async () => {
     // Gate: scheduler or the admin account only.
-    if (!isScheduler && userProfile?.person_id !== "admin") {
+    if (!isScheduler && userProfile?.role !== "admin") {
       alert("Only a scheduler or the admin account can reset all data.");
       return;
     }
@@ -1845,7 +1845,7 @@ function CallSchedule() {
   // (RLS is permissive; UI gates editing).
   useEffect(() => {
     if (!loaded) return;
-    if (!isScheduler && userProfile?.person_id !== "admin") return;
+    if (!isScheduler && userProfile?.role !== "admin") return;
     (async () => {
       try {
         const rows = await db.query("office_contacts", { order: "name.asc" });
@@ -4058,7 +4058,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         {!isPublicMode && <div style={css.nav}>
           {(() => {
             const allTabs = [["setup","Setup"],["generate","Generate"],["calendar","Calendar"],["myschedule","Mine"],["requests","Requests"],["stats","Stats"],["totals","Totals"],["settings","Settings"]];
-            const isAdmin = userProfile?.person_id === "admin";
+            const isAdmin = userProfile?.role === "admin";
             const canAssignApps = userProfile?.can_assign_apps === true;
             const canSeeSetup = isScheduler || isAdmin || canAssignApps;
             const canGenerate = isScheduler || isAdmin;
@@ -4127,7 +4127,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
 
         {/* ════════════════ SETUP ════════════════ */}
         {view==="setup" && !isPublicMode && <>
-          {(isScheduler || userProfile?.person_id === "admin") && <>
+          {(isScheduler || userProfile?.role === "admin") && <>
 
           {/* Setup validation panel */}
           {(() => {
@@ -4455,7 +4455,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             )}
           </div>
 
-          {(isScheduler || userProfile?.person_id === "admin") && <>
+          {(isScheduler || userProfile?.role === "admin") && <>
           {/* Backup Weeks */}
           <div style={css.card}>
             <div style={css.cardT}>Backup Weeks <span style={{fontWeight:400,fontSize:11,color:"#7a8a98"}}>(Fierce = Primary)</span></div>
@@ -4655,7 +4655,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         </>}
 
         {/* ════════════════ GENERATE ════════════════ */}
-        {view==="generate" && !isPublicMode && (isScheduler || userProfile?.person_id === "admin") && <>
+        {view==="generate" && !isPublicMode && (isScheduler || userProfile?.role === "admin") && <>
 
           {/* Pre-flight checklist */}
           {(() => {
@@ -5762,7 +5762,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           </div>
 
           {/* ─── Manual Adjustments (scheduler/admin only) ─── */}
-          {(isScheduler || userProfile?.person_id === "admin") && (
+          {(isScheduler || userProfile?.role === "admin") && (
             <div style={{...css.card,marginTop:14,background:"linear-gradient(135deg,#fff8e8,#fcf4e0)",border:"1px solid #e0c890"}}>
               <div style={css.cardT}>✏️ Manual Adjustments</div>
               <p style={{fontSize:12,color:"#5a6a78",margin:"0 0 12px",lineHeight:1.5}}>
@@ -6374,7 +6374,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           })()}
 
           {/* Billing Summary — Scheduler/ADMIN only, month-by-month */}
-          {(isScheduler || userProfile?.person_id === "admin") && Object.keys(schedule).length > 0 && (()=>{
+          {(isScheduler || userProfile?.role === "admin") && Object.keys(schedule).length > 0 && (()=>{
             // Compute monthly billing breakdown. 1st-call only (backup weeks excluded).
             // Attribution:
             //   Service Week (dayCall) → each of the 7 days (M-Sun) attributed to its own month
@@ -7241,7 +7241,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           </div>
 
           {/* APP Shift Managers — scheduler/admin only */}
-          {(isScheduler || userProfile?.person_id === "admin") && (
+          {(isScheduler || userProfile?.role === "admin") && (
             <div style={css.card}>
               <div style={css.cardT}>👩‍⚕️ APP Shift Managers</div>
               <p style={{fontSize:12,color:"#7a8a98",margin:"0 0 10px",lineHeight:1.5}}>
@@ -7262,7 +7262,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                       <div>
                         <span style={{fontSize:13,fontWeight:600,color:"#2c3e50"}}>{p.display_name}</span>
                         <span style={{fontSize:11,color:"#8a94a0",marginLeft:8}}>{p.person_id}</span>
-                        {p.person_id === "admin" && <span style={{fontSize:10,color:"#6030a0",marginLeft:6,fontWeight:600}}>(admin)</span>}
+                        {p.role === "admin" && <span style={{fontSize:10,color:"#6030a0",marginLeft:6,fontWeight:600}}>(admin)</span>}
                         {p.role === "scheduler" && <span style={{fontSize:10,color:"#1a6fa8",marginLeft:6,fontWeight:600}}>(scheduler)</span>}
                       </div>
                       <label style={{display:"flex",alignItems:"center",gap:6,cursor:"pointer"}}>
@@ -7287,7 +7287,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           )}
 
           {/* Office Notifications — scheduler/admin only */}
-          {(isScheduler || userProfile?.person_id === "admin") && (
+          {(isScheduler || userProfile?.role === "admin") && (
             <div style={css.card}>
               <div style={css.cardT}>📧 Office Notifications</div>
               <p style={{fontSize:12,color:"#7a8a98",margin:"0 0 12px",lineHeight:1.5}}>

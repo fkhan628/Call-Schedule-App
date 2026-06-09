@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.06.09b";
+    var APP_VERSION = "2026.06.09c";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -596,7 +596,7 @@ function CallSchedule() {
   const schedulerAdminIds = useMemo(() => {
     const ids = new Set();
     allProfiles.forEach(p => {
-      if ((p === null || p === void 0 ? void 0 : p.role) === "scheduler" || (p === null || p === void 0 ? void 0 : p.person_id) === "admin") ids.add(p.person_id);
+      if ((p === null || p === void 0 ? void 0 : p.role) === "scheduler" || (p === null || p === void 0 ? void 0 : p.role) === "admin") ids.add(p.person_id);
     });
     return [...ids];
   }, [allProfiles]);
@@ -610,14 +610,14 @@ function CallSchedule() {
   // Grant scheduler privileges based on user_profiles.role from DB.
   // Role-based access via Supabase auth is the sole gate.
   useEffect(() => {
-    if ((userProfile === null || userProfile === void 0 ? void 0 : userProfile.role) === "scheduler" || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.person_id) === "admin") {
+    if ((userProfile === null || userProfile === void 0 ? void 0 : userProfile.role) === "scheduler" || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.role) === "admin") {
       setIsScheduler(true);
     }
   }, [userProfile]);
 
   // If non-scheduler ends up on a restricted tab, redirect them
   useEffect(() => {
-    const isAdmin = (userProfile === null || userProfile === void 0 ? void 0 : userProfile.person_id) === "admin";
+    const isAdmin = (userProfile === null || userProfile === void 0 ? void 0 : userProfile.role) === "admin";
     const canAssignApps = (userProfile === null || userProfile === void 0 ? void 0 : userProfile.can_assign_apps) === true;
     // Setup is accessible to: scheduler, admin, or APP-assign-permitted users (for the APP card only).
     // Totals remains scheduler-only.
@@ -998,7 +998,7 @@ function CallSchedule() {
           setMySurgeon(profile.person_id);
           setNeedsProfile(false);
           // Auto-elevate admin accounts to scheduler
-          if (profile.person_id === "admin") setIsScheduler(true);
+          if (profile.role === "scheduler" || profile.role === "admin") setIsScheduler(true);
           // Re-run the data-load effect now that the session JWT is stored,
           // without a page reload (which would re-fire the mount auth-gate).
           setReloadTrigger(t => t + 1);
@@ -1468,7 +1468,7 @@ function CallSchedule() {
   // ─── Reset all data ───
   const resetAllData = async () => {
     // Gate: scheduler or the admin account only.
-    if (!isScheduler && (userProfile === null || userProfile === void 0 ? void 0 : userProfile.person_id) !== "admin") {
+    if (!isScheduler && (userProfile === null || userProfile === void 0 ? void 0 : userProfile.role) !== "admin") {
       alert("Only a scheduler or the admin account can reset all data.");
       return;
     }
@@ -2606,7 +2606,7 @@ function CallSchedule() {
   // (RLS is permissive; UI gates editing).
   useEffect(() => {
     if (!loaded) return;
-    if (!isScheduler && (userProfile === null || userProfile === void 0 ? void 0 : userProfile.person_id) !== "admin") return;
+    if (!isScheduler && (userProfile === null || userProfile === void 0 ? void 0 : userProfile.role) !== "admin") return;
     (async () => {
       try {
         const rows = await db.query("office_contacts", {
@@ -5870,7 +5870,7 @@ function CallSchedule() {
     style: css.nav
   }, (() => {
     const allTabs = [["setup", "Setup"], ["generate", "Generate"], ["calendar", "Calendar"], ["myschedule", "Mine"], ["requests", "Requests"], ["stats", "Stats"], ["totals", "Totals"], ["settings", "Settings"]];
-    const isAdmin = (userProfile === null || userProfile === void 0 ? void 0 : userProfile.person_id) === "admin";
+    const isAdmin = (userProfile === null || userProfile === void 0 ? void 0 : userProfile.role) === "admin";
     const canAssignApps = (userProfile === null || userProfile === void 0 ? void 0 : userProfile.can_assign_apps) === true;
     const canSeeSetup = isScheduler || isAdmin || canAssignApps;
     const canGenerate = isScheduler || isAdmin;
@@ -6089,7 +6089,7 @@ function CallSchedule() {
         display: "inline-block"
       }
     }, "Tap to view \u2192"));
-  })), view === "setup" && !isPublicMode && /*#__PURE__*/React.createElement(React.Fragment, null, (isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.person_id) === "admin") && /*#__PURE__*/React.createElement(React.Fragment, null, (() => {
+  })), view === "setup" && !isPublicMode && /*#__PURE__*/React.createElement(React.Fragment, null, (isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.role) === "admin") && /*#__PURE__*/React.createElement(React.Fragment, null, (() => {
     const issues = [];
 
     // 1. Surgeons with missing names
@@ -6916,7 +6916,7 @@ function CallSchedule() {
         fontSize: 11
       }
     }, "\u2715"));
-  })))), (isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.person_id) === "admin") && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+  })))), (isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.role) === "admin") && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
     style: css.card
   }, /*#__PURE__*/React.createElement("div", {
     style: css.cardT
@@ -7408,7 +7408,7 @@ function CallSchedule() {
         }
       }, "\u2014 ", mc, " major, ", mi, " minor"));
     }))));
-  })()))), view === "generate" && !isPublicMode && (isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.person_id) === "admin") && /*#__PURE__*/React.createElement(React.Fragment, null, (() => {
+  })()))), view === "generate" && !isPublicMode && (isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.role) === "admin") && /*#__PURE__*/React.createElement(React.Fragment, null, (() => {
     const existingMondays = Object.keys(schedule).sort();
     const hasSchedule = existingMondays.length > 0;
     const lastMonday = hasSchedule ? parse(existingMondays[existingMondays.length - 1]) : null;
@@ -9752,7 +9752,7 @@ function CallSchedule() {
     style: {
       color: "#c06020"
     }
-  }, "\uD83D\uDCC5"), " Holiday Coverage")), (isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.person_id) === "admin") && /*#__PURE__*/React.createElement("div", {
+  }, "\uD83D\uDCC5"), " Holiday Coverage")), (isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.role) === "admin") && /*#__PURE__*/React.createElement("div", {
     style: _objectSpread(_objectSpread({}, css.card), {}, {
       marginTop: 14,
       background: "linear-gradient(135deg,#fff8e8,#fcf4e0)",
@@ -11037,7 +11037,7 @@ function CallSchedule() {
         color: "#2c5a80"
       }
     }, "Formula:"), " Service Week = 6 \xB7 Week Night = 1 \xB7 Weekend = 2. Multi-day shifts counted in the month they start."));
-  })(), (isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.person_id) === "admin") && Object.keys(schedule).length > 0 && (() => {
+  })(), (isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.role) === "admin") && Object.keys(schedule).length > 0 && (() => {
     // Compute monthly billing breakdown. 1st-call only (backup weeks excluded).
     // Attribution:
     //   Service Week (dayCall) → each of the 7 days (M-Sun) attributed to its own month
@@ -13004,7 +13004,7 @@ function CallSchedule() {
       padding: "6px 16px",
       fontSize: 12
     })
-  }, "\uD83C\uDF19 Dark"))), (isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.person_id) === "admin") && /*#__PURE__*/React.createElement("div", {
+  }, "\uD83C\uDF19 Dark"))), (isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.role) === "admin") && /*#__PURE__*/React.createElement("div", {
     style: css.card
   }, /*#__PURE__*/React.createElement("div", {
     style: css.cardT
@@ -13060,7 +13060,7 @@ function CallSchedule() {
       color: "#8a94a0",
       marginLeft: 8
     }
-  }, p.person_id), p.person_id === "admin" && /*#__PURE__*/React.createElement("span", {
+  }, p.person_id), p.role === "admin" && /*#__PURE__*/React.createElement("span", {
     style: {
       fontSize: 10,
       color: "#6030a0",
@@ -13110,7 +13110,7 @@ function CallSchedule() {
       width: 16,
       height: 16
     }
-  })))))), (isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.person_id) === "admin") && /*#__PURE__*/React.createElement("div", {
+  })))))), (isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.role) === "admin") && /*#__PURE__*/React.createElement("div", {
     style: css.card
   }, /*#__PURE__*/React.createElement("div", {
     style: css.cardT
