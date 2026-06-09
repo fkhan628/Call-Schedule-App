@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.06.09a";
+    var APP_VERSION = "2026.06.09b";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -400,6 +400,11 @@ function CallSchedule() {
   // allowWipeSaveRef is a one-shot bypass set by deliberate destructive ops
   // (reset) so their intended empty write isn't blocked by the guard.
   const allowWipeSaveRef = useRef(false);
+  // loadFailedRef is true when the initial read THREW (network/transient error),
+  // as opposed to returning an empty row. A session that couldn't read the row
+  // must not autosave — otherwise a privileged session with degraded state could
+  // overwrite real data (the residual blind-write hole the audit pointed to).
+  const loadFailedRef = useRef(false);
   const scheduleRef = useRef({});
   useEffect(() => {
     scheduleRef.current = schedule;
@@ -1064,6 +1069,7 @@ function CallSchedule() {
   // ─── Supabase: Load on mount + real-time sync ───
   useEffect(() => {
     (async () => {
+      loadFailedRef.current = false; // reset each load attempt
       try {
         const _await$supabase$from$2 = await supabase.from("call_schedule_data").select("data,updated_at").eq("id", "main").single(),
           row = _await$supabase$from$2.data;
@@ -1123,6 +1129,7 @@ function CallSchedule() {
         } catch (e) {}
       } catch (e) {
         console.error("Supabase load error:", e);
+        loadFailedRef.current = true; // read threw — suppress autosave until a read succeeds
       }
       setLoaded(true);
       loadedAtRef.current = Date.now();
@@ -1158,6 +1165,7 @@ function CallSchedule() {
       try {
         const _await$supabase$from$4 = await supabase.from("call_schedule_data").select("data,updated_at").eq("id", "main").single(),
           row = _await$supabase$from$4.data;
+        loadFailedRef.current = false; // a read succeeded — writes are safe again
         if (!(row !== null && row !== void 0 && row.data)) return;
         if (row.updated_at === lastSyncRef.current) return; // nothing new
         lastSyncRef.current = row.updated_at;
@@ -1295,6 +1303,13 @@ function CallSchedule() {
     // Skip auto-save for 3s after initial load — prevents re-saving unchanged data
     // when initial state hydration triggers this effect
     if (loadedAtRef.current && Date.now() - loadedAtRef.current < 3000) return;
+    // If the initial read threw, this session can't trust its own state — don't
+    // let it overwrite the DB (residual blind-write protection).
+    if (loadFailedRef.current) {
+      setSaveError(true);
+      setSaveStatus("⚠ Not saving — schedule failed to load");
+      return;
+    }
     // Capture the payload so the visibility/unload handlers can flush it
     // immediately without waiting for the debounce.
     const payload = {
@@ -1374,6 +1389,7 @@ function CallSchedule() {
       if (isPublicMode) return; // Public viewers never write to the DB
       const payload = pendingSaveRef.current;
       if (!payload) return; // Nothing to save
+      if (loadFailedRef.current) return; // read failed — never flush a possibly-degraded state
       // Empty-save guard (same rule as the debounced autosave). Keep the
       // payload pending rather than firing a wiping keepalive write.
       if (payloadLooksWiped(payload) && everHadRealDataRef.current && !allowWipeSaveRef.current) {
@@ -1470,7 +1486,9 @@ function CallSchedule() {
     try {
       await supabase.from("call_schedule_data").upsert({
         id: "main",
-        data: {},
+        data: {
+          _intentionalClear: true
+        },
         updated_at: new Date().toISOString()
       });
     } catch (e) {}
@@ -3474,7 +3492,8 @@ function CallSchedule() {
           startMonth,
           startYear,
           numWeeks,
-          holidayAssignments
+          holidayAssignments,
+          _intentionalClear: true // tells the server guard this empty schedule is deliberate
         };
         await supabase.from("call_schedule_data").upsert({
           id: "main",
