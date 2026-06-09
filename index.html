@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.05.16c";
+    var APP_VERSION = "2026.06.09a";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -14260,30 +14260,34 @@ function CallSchedule() {
     }
   }, "Download a full JSON backup of the current schedule, vacations, APP shifts, and counts. Grab one before any big change \u2014 it can be re-imported or used to rebuild the database."), /*#__PURE__*/React.createElement("button", {
     onClick: () => {
-      const backup = {
-        _app: "DSG Call Schedule",
-        _exportedAt: new Date().toISOString(),
-        surgeons,
-        apps,
-        vacations,
-        backupMondays: [...backupMondaySet],
-        fierceBackup: [...fierceBackupSet],
-        schedule,
-        appShifts,
-        priorCounts,
-        year1Counts,
-        year2Counts,
-        startMonth,
-        startYear,
-        numWeeks,
-        holidayAssignments,
-        startMondayOverride,
-        pendingLocks
-      };
-      const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
-      downloadJSON(backup, "dsg-call-backup-".concat(stamp, ".json"));
-      setSaveStatus("Backup exported");
-      setTimeout(() => setSaveStatus(""), 2000);
+      try {
+        const backup = {
+          _app: "DSG Call Schedule",
+          _exportedAt: new Date().toISOString(),
+          surgeons,
+          apps,
+          vacations,
+          backupMondays: [...backupMondaySet],
+          fierceBackup: [...fierceBackupSet],
+          schedule,
+          appShifts,
+          priorCounts,
+          year1Counts,
+          year2Counts,
+          startMonth,
+          startYear,
+          numWeeks,
+          holidayAssignments,
+          startMondayOverride,
+          pendingLocks
+        };
+        const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+        const downloaded = downloadJSON(backup, "dsg-call-backup-".concat(stamp, ".json"));
+        setSaveStatus(downloaded ? "Backup exported" : "Backup opened — use Share → Save to Files");
+        setTimeout(() => setSaveStatus(""), 3000);
+      } catch (e) {
+        alert("Export failed: " + (e && e.message ? e.message : String(e)) + "\n\nMake sure helpers.js was deployed and APP_VERSION was bumped so the new code is loaded.");
+      }
     },
     style: _objectSpread(_objectSpread({}, css.btn(true)), {}, {
       padding: "8px 16px",

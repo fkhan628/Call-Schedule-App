@@ -131,12 +131,34 @@ function downloadICS(content, filename) {
 
 // Download an arbitrary object as a pretty-printed JSON file. Used for the
 // manual schedule backup in the Data Management card.
+// Returns true if a real file download was triggered, false if it had to fall
+// back to opening the JSON in a new view (standalone iOS PWAs ignore the
+// <a download> attribute and would otherwise silently do nothing).
 function downloadJSON(obj, filename) {
-  const blob = new Blob([JSON.stringify(obj, null, 2)], { type: "application/json" });
+  const text = JSON.stringify(obj, null, 2);
+  const blob = new Blob([text], { type: "application/json" });
   const url = URL.createObjectURL(blob);
+
+  const isIOS = /iP(hone|ad|od)/.test(navigator.userAgent) ||
+    (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  const isStandalone = window.navigator.standalone === true ||
+    (window.matchMedia && window.matchMedia("(display-mode: standalone)").matches);
+
+  if (isIOS && isStandalone) {
+    // Open in a new view; user saves via Share → Save to Files.
+    const w = window.open(url, "_blank");
+    if (!w) { try { location.href = url; } catch(e) {} }
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+    return false;
+  }
+
   const a = document.createElement("a");
-  a.href = url; a.download = filename; a.click();
-  URL.revokeObjectURL(url);
+  a.href = url; a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  return true;
 }
 
 /* ═══════════════════════════════════════════════════════════════
