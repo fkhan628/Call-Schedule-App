@@ -208,6 +208,14 @@ function CallSchedule() {
   const lastSyncRef = useRef(null);
   const loadedAtRef = useRef(null); // timestamp when initial load completed — prevents auto-save race
   const pendingSaveRef = useRef(null); // payload queued for debounced save; flushed immediately on page hide/unload
+  // ─── Data-loss guard refs ───
+  // everHadRealDataRef arms the empty-save guard: it flips true the first time
+  // we observe real operational data (schedule/vacations/appShifts) from the DB
+  // or build it locally. Once armed, a "wiped" autosave payload is refused.
+  const everHadRealDataRef = useRef(false);
+  // allowWipeSaveRef is a one-shot bypass set by deliberate destructive ops
+  // (reset) so their intended empty write isn't blocked by the guard.
+  const allowWipeSaveRef = useRef(false);
   const scheduleRef = useRef({});
   useEffect(() => { scheduleRef.current = schedule; }, [schedule]);
 
@@ -654,6 +662,12 @@ function CallSchedule() {
           if (d.startMondayOverride !== undefined) setStartMondayOverride(d.startMondayOverride || "");
           if (d.holidayAssignments) setHolidayAssignments(d.holidayAssignments);
           if (Array.isArray(d.pendingLocks)) setPendingLocks(d.pendingLocks);
+          // Arm the empty-save guard if the loaded row already holds real data.
+          if ((d.schedule && Object.keys(d.schedule).length) ||
+              (d.vacations && Object.keys(d.vacations).length) ||
+              (d.appShifts && Object.keys(d.appShifts).length)) {
+            everHadRealDataRef.current = true;
+          }
         }
         const { data: cfgRow } = await supabase
           .from("call_schedule_config")
@@ -735,6 +749,11 @@ function CallSchedule() {
         if (d.startMondayOverride !== undefined) setStartMondayOverride(d.startMondayOverride || "");
         if (d.holidayAssignments) setHolidayAssignments(d.holidayAssignments);
         if (Array.isArray(d.pendingLocks)) setPendingLocks(d.pendingLocks);
+        if ((d.schedule && Object.keys(d.schedule).length) ||
+            (d.vacations && Object.keys(d.vacations).length) ||
+            (d.appShifts && Object.keys(d.appShifts).length)) {
+          everHadRealDataRef.current = true;
+        }
       } catch(e) {}
     };
 
@@ -835,7 +854,22 @@ function CallSchedule() {
       pendingLocks,
     };
     pendingSaveRef.current = payload;
+    // Arm the guard as soon as we hold real data locally, so a later
+    // transient-empty render can't slip an empty blob through before the
+    // guard is otherwise set.
+    if (!payloadLooksWiped(payload)) everHadRealDataRef.current = true;
     const timer = setTimeout(async () => {
+      // ── Empty-save guard ──
+      // Structural fix for the load(permissive)/save(unconditional) asymmetry:
+      // refuse to overwrite known-good data with a wiped payload. Leave
+      // pendingSaveRef intact so a real edit still saves normally afterward.
+      if (payloadLooksWiped(payload) && everHadRealDataRef.current && !allowWipeSaveRef.current) {
+        console.warn("Autosave blocked: refusing to write empty payload over real data.");
+        setSaveError(true);
+        setSaveStatus("⚠ Save blocked — empty data not written");
+        return;
+      }
+      allowWipeSaveRef.current = false; // consume one-shot bypass
       try {
         const ts = new Date().toISOString();
         await supabase
@@ -876,6 +910,12 @@ function CallSchedule() {
       if (isPublicMode) return; // Public viewers never write to the DB
       const payload = pendingSaveRef.current;
       if (!payload) return; // Nothing to save
+      // Empty-save guard (same rule as the debounced autosave). Keep the
+      // payload pending rather than firing a wiping keepalive write.
+      if (payloadLooksWiped(payload) && everHadRealDataRef.current && !allowWipeSaveRef.current) {
+        console.warn(`Keepalive flush blocked (${source}): empty payload over real data.`);
+        return; // leave pendingSaveRef intact
+      }
       pendingSaveRef.current = null; // Clear optimistically — if the flush
       //                                fails we'll re-save on next edit or
       //                                via the regular debounce path.
@@ -943,7 +983,28 @@ function CallSchedule() {
 
   // ─── Reset all data ───
   const resetAllData = async () => {
-    if (!confirm("Clear all saved data and reset to defaults? This cannot be undone.")) return;
+    // Gate: scheduler or the admin account only.
+    if (!isScheduler && userProfile?.person_id !== "admin") {
+      alert("Only a scheduler or the admin account can reset all data.");
+      return;
+    }
+    // Typed confirmation — a single mis-tap can no longer wipe the schedule.
+    const typed = prompt(
+      "⚠ This permanently clears the ENTIRE saved schedule for everyone " +
+      "(schedule, vacations, APP shifts, counts).\n\n" +
+      "A snapshot is saved first so it can be restored, but you should also " +
+      "Export a JSON backup before doing this.\n\n" +
+      'Type  RESET  (all caps) to confirm:'
+    );
+    if (typed !== "RESET") {
+      setSaveStatus("Reset cancelled");
+      setTimeout(() => setSaveStatus(""), 2000);
+      return;
+    }
+    // Snapshot the current persisted row before wiping it.
+    await snapshots.capture("reset_all_data");
+    allowWipeSaveRef.current = true;   // authorize the intended empty write
+    everHadRealDataRef.current = false; // wipe is intentional; re-arm only when real data returns
     try {
       await supabase.from("call_schedule_data").upsert({ id: "main", data: {}, updated_at: new Date().toISOString() });
     } catch(e) {}
@@ -2430,6 +2491,7 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
       // Immediately save to Supabase to prevent polling race condition
       (async () => {
         try {
+          await snapshots.capture("regenerate"); // preserve pre-regenerate state
           const ts = new Date().toISOString();
           lastSyncRef.current = ts; // block poll from overwriting
           const payload = {
@@ -2446,8 +2508,9 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
   };
 
   // ─── Clear / Reset Schedule ───
-  const clearSchedule = () => {
+  const clearSchedule = async () => {
     if (!confirm("Clear the entire generated schedule? Holiday assignments and setup data will be kept.\n\nThis cannot be undone.")) return;
+    await snapshots.capture("clear_schedule"); // preserve pre-clear state
     if (Object.keys(schedule).length > 0) pushUndo(schedule);
     setSchedule({});
     setSaveStatus("Schedule cleared");
@@ -7676,10 +7739,41 @@ ${"</"}script>${"</"}body>${"</"}html>`;
 
           {/* Reset */}
           {isScheduler && <div style={css.card}>
-            <div style={css.cardT}>🗑 Data Management</div>
-            <button onClick={resetAllData} style={{background:"none",border:"1px solid #e8c0c0",color:"#804040",borderRadius:6,padding:"6px 14px",fontSize:12,cursor:"pointer",fontFamily:font}}>
-              Reset All Data
+            <div style={css.cardT}>🛟 Data Management</div>
+
+            {/* Manual JSON backup */}
+            <p style={{fontSize:12,color:"#5a6a78",marginBottom:10,lineHeight:1.4}}>
+              Download a full JSON backup of the current schedule, vacations, APP shifts, and counts. Grab one before any big change — it can be re-imported or used to rebuild the database.
+            </p>
+            <button onClick={()=>{
+              const backup = {
+                _app: "DSG Call Schedule",
+                _exportedAt: new Date().toISOString(),
+                surgeons, apps, vacations,
+                backupMondays: [...backupMondaySet],
+                fierceBackup: [...fierceBackupSet],
+                schedule, appShifts, priorCounts, year1Counts, year2Counts,
+                startMonth, startYear, numWeeks, holidayAssignments,
+                startMondayOverride, pendingLocks,
+              };
+              const stamp = new Date().toISOString().slice(0,19).replace(/[:T]/g,"-");
+              downloadJSON(backup, `dsg-call-backup-${stamp}.json`);
+              setSaveStatus("Backup exported");
+              setTimeout(()=>setSaveStatus(""),2000);
+            }} style={{...css.btn(true),padding:"8px 16px",fontSize:13,borderRadius:7}}>
+              ⬇ Export Backup (JSON)
             </button>
+
+            {/* Danger zone — reset */}
+            <div style={{borderTop:"1px solid #f0d8d8",marginTop:16,paddingTop:12}}>
+              <div style={{fontSize:11,fontWeight:700,color:"#a05050",letterSpacing:1,textTransform:"uppercase",marginBottom:6}}>Danger Zone</div>
+              <p style={{fontSize:11,color:"#a06868",marginBottom:10,lineHeight:1.4}}>
+                Clears the entire saved schedule for everyone. A snapshot is saved automatically, but export a backup above first to be safe. Requires typing <strong>RESET</strong> to confirm.
+              </p>
+              <button onClick={resetAllData} style={{background:"none",border:"1px solid #e8c0c0",color:"#804040",borderRadius:6,padding:"6px 14px",fontSize:12,cursor:"pointer",fontFamily:font}}>
+                Reset All Data
+              </button>
+            </div>
           </div>}
         </>}
       </div>

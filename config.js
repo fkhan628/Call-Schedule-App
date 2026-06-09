@@ -73,6 +73,73 @@ const db = {
 };
 
 /* ═══════════════════════════════════════════════════
+   DATA-LOSS SAFEGUARDS
+   ═══════════════════════════════════════════════════
+   Context: the May/June 2026 wipe happened because LOAD is permissive
+   (only adopts fields that are present) while AUTOSAVE is unconditional
+   (always writes the full blob from current state). Any transiently-empty
+   state therefore decays the DB one-way. These helpers let the component
+   refuse empty-over-real writes and keep recoverable snapshots. */
+
+// A payload "looks wiped" when it carries NONE of the operational data that is
+// expensive to recreate: no schedule weeks, no vacations, no APP shifts.
+// This deliberately ignores historical count config and the surgeon/APP roster
+// (which default to INIT_* and are therefore always "present"). It is true for
+// the literal {} blob that the old Reset button wrote, but FALSE for a normal
+// clearSchedule (which keeps vacations/appShifts) — so legitimate clears still
+// save.
+function payloadLooksWiped(p) {
+  if (!p || typeof p !== "object") return true;
+  const noSchedule = !p.schedule || Object.keys(p.schedule).length === 0;
+  const noVac      = !p.vacations || Object.keys(p.vacations).length === 0;
+  const noApp      = !p.appShifts || Object.keys(p.appShifts).length === 0;
+  return noSchedule && noVac && noApp;
+}
+
+// Snapshot helper. Before any destructive write, copy the row that is CURRENTLY
+// persisted (not local state) into call_schedule_snapshots so it can always be
+// restored by hand. Best-effort: never throws — a snapshot failure must not
+// block the user, but it is surfaced to the console.
+const snapshots = {
+  async capture(reason) {
+    try {
+      const res = await fetch(
+        `${SUPABASE_URL}/rest/v1/call_schedule_data?id=eq.main&select=data,updated_at`,
+        { headers: dbAuthHeaders() }
+      );
+      const rows = res.ok ? await res.json() : [];
+      const current = rows?.[0]?.data ?? null;
+      // Don't bother snapshotting an already-empty row.
+      if (current && !payloadLooksWiped(current)) {
+        const ins = await fetch(`${SUPABASE_URL}/rest/v1/call_schedule_snapshots`, {
+          method: "POST",
+          headers: { ...dbAuthHeaders(), Prefer: "return=minimal" },
+          body: JSON.stringify({
+            reason: reason || "manual",
+            data: current,
+            source_updated_at: rows?.[0]?.updated_at ?? null,
+          }),
+        });
+        return { ok: ins.ok };
+      }
+      return { ok: true, skipped: "empty_or_missing" };
+    } catch (e) {
+      console.warn("Snapshot capture failed:", e);
+      return { ok: false, error: String(e) };
+    }
+  },
+  async list(limit) {
+    try {
+      const res = await fetch(
+        `${SUPABASE_URL}/rest/v1/call_schedule_snapshots?select=id,reason,source_updated_at,created_at&order=created_at.desc&limit=${limit || 25}`,
+        { headers: dbAuthHeaders() }
+      );
+      return res.ok ? await res.json() : [];
+    } catch (e) { return []; }
+  },
+};
+
+/* ═══════════════════════════════════════════════════
    CONSTANTS
    ═══════════════════════════════════════════════════ */
 const NIGHT_KEYS = ["mon","tue","wed","thu"];
