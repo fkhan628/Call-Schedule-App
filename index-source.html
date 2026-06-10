@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.06.09d";
+    var APP_VERSION = "2026.06.09e";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -191,6 +191,12 @@ function CallSchedule() {
   const [vacSurgeon, setVacSurgeon] = useState("");
   const [vacStart, setVacStart] = useState("");
   const [vacEnd, setVacEnd] = useState("");
+  // No-call days: person is working but should NOT be assigned call. Tracked
+  // separately from vacations; the generator treats them the same (block call).
+  const [noCallDays, setNoCallDays] = useState({}); // { personId: [[start,end],...] }
+  const [ncSurgeon, setNcSurgeon] = useState("");
+  const [ncStart, setNcStart] = useState("");
+  const [ncEnd, setNcEnd] = useState("");
   const [editVac, setEditVac] = useState(null); // {sid, idx, start, end}
   const [bkMonday, setBkMonday] = useState("");
   const [appDate, setAppDate] = useState("");
@@ -655,6 +661,7 @@ function CallSchedule() {
           if (d.surgeons) setSurgeons(d.surgeons);
           if (d.apps) setApps(d.apps);
           if (d.vacations) setVacations(d.vacations);
+          if (d.noCallDays) setNoCallDays(d.noCallDays);
           if (d.backupMondays) setBackupMondaySet(new Set(d.backupMondays));
           if (d.fierceBackup) setFierceBackupSet(new Set(d.fierceBackup));
           if (d.schedule) setSchedule(d.schedule);
@@ -754,6 +761,7 @@ function CallSchedule() {
         if (d.surgeons) setSurgeons(d.surgeons);
         if (d.apps) setApps(d.apps);
         if (d.vacations) setVacations(d.vacations);
+        if (d.noCallDays) setNoCallDays(d.noCallDays);
         if (d.backupMondays) setBackupMondaySet(new Set(d.backupMondays));
         if (d.fierceBackup) setFierceBackupSet(new Set(d.fierceBackup));
         if (d.schedule) setSchedule(d.schedule);
@@ -879,7 +887,7 @@ function CallSchedule() {
     // Capture the payload so the visibility/unload handlers can flush it
     // immediately without waiting for the debounce.
     const payload = {
-      surgeons, apps, vacations,
+      surgeons, apps, vacations, noCallDays,
       backupMondays: [...backupMondaySet],
       fierceBackup: [...fierceBackupSet],
       schedule, priorCounts, year1Counts, year2Counts,
@@ -920,7 +928,7 @@ function CallSchedule() {
       }
     }, 800);
     return () => clearTimeout(timer);
-  }, [loaded, surgeons, apps, vacations, backupMondaySet, fierceBackupSet, schedule, priorCounts, year1Counts, year2Counts, startMonth, startYear, numWeeks, holidayAssignments, startMondayOverride, pendingLocks]);
+  }, [loaded, surgeons, apps, vacations, noCallDays, backupMondaySet, fierceBackupSet, schedule, priorCounts, year1Counts, year2Counts, startMonth, startYear, numWeeks, holidayAssignments, startMondayOverride, pendingLocks]);
 
   // ─── Flush pending save when app is backgrounded or closing ───
   //
@@ -1046,6 +1054,7 @@ function CallSchedule() {
     setSurgeons(INIT_SURGEONS);
     setApps(INIT_APPS);
     setVacations({});
+    setNoCallDays({});
     setBackupMondaySet(new Set());
     setFierceBackupSet(new Set());
     setSchedule({});
@@ -2479,6 +2488,12 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
     setVacStart(""); setVacEnd("");
   };
   const rmVac = (sid,idx) => setVacations(p=>({...p,[sid]:(p[sid]||[]).filter((_,i)=>i!==idx)}));
+  const addNoCall = () => {
+    if(!ncSurgeon||!ncStart||!ncEnd) return;
+    setNoCallDays(p=>({...p,[ncSurgeon]:[...(p[ncSurgeon]||[]),[ncStart,ncEnd]]}));
+    setNcStart(""); setNcEnd("");
+  };
+  const rmNoCall = (sid,idx) => setNoCallDays(p=>({...p,[sid]:(p[sid]||[]).filter((_,i)=>i!==idx)}));
   const saveEditVac = () => {
     if (!editVac || !editVac.start || !editVac.end) return;
     setVacations(p => {
@@ -2539,7 +2554,14 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
 
   const doGenerate = (preview) => {
     const prefs = buildPrefs();
-    const result = generate(surgeons, mondays, vacations, backupMondaySet, priorCounts, prefs, fierceBackupSet, holidayAssignments, pendingLocks);
+    // No-call days block call assignment exactly like vacations, so merge them
+    // into a single availability map for the generator (which gates everything
+    // through onVac). This needs no change to generator.js.
+    const availability = {};
+    new Set([...Object.keys(vacations), ...Object.keys(noCallDays)]).forEach(id => {
+      availability[id] = [...(vacations[id]||[]), ...(noCallDays[id]||[])];
+    });
+    const result = generate(surgeons, mondays, availability, backupMondaySet, priorCounts, prefs, fierceBackupSet, holidayAssignments, pendingLocks);
     if (preview) {
       setPreviewSchedule(result);
       setShowPreview(true);
@@ -2556,7 +2578,7 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
           const ts = new Date().toISOString();
           lastSyncRef.current = ts; // block poll from overwriting
           const payload = {
-            surgeons, apps, vacations,
+            surgeons, apps, vacations, noCallDays,
             backupMondays: [...backupMondaySet],
             fierceBackup: [...fierceBackupSet],
             schedule: result, priorCounts, year1Counts, year2Counts,
@@ -2582,7 +2604,7 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
         const ts = new Date().toISOString();
         lastSyncRef.current = ts;
         const payload = {
-          surgeons, apps, vacations,
+          surgeons, apps, vacations, noCallDays,
           backupMondays: [...backupMondaySet],
           fierceBackup: [...fierceBackupSet],
           schedule: {}, priorCounts, year1Counts, year2Counts,
@@ -4451,6 +4473,63 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             })()}
           </div>
           </>}
+
+          {/* No-Call Days */}
+          <div style={css.card}>
+            <div style={css.cardT}>🚫 No-Call Days <span style={{fontWeight:400,fontSize:11,color:"#7a8a98"}}>— working, not on call</span></div>
+            <p style={{fontSize:12,color:"#7a8a98",margin:"0 0 10px",lineHeight:1.5}}>
+              Days a person is at work but should not be assigned call. Tracked separately from vacations; the generator treats them the same as time off and won't assign call on these dates.
+            </p>
+            <div style={{display:"flex",gap:8,alignItems:"flex-end",flexWrap:"wrap",marginBottom:12}}>
+              <div>
+                <label style={{fontSize:10,color:"#7a8a98",display:"block",marginBottom:2}}>Person</label>
+                <select value={ncSurgeon} onChange={e=>setNcSurgeon(e.target.value)} style={{...css.inp,width:150}}>
+                  <option value="">Select…</option>
+                  <optgroup label="Surgeons">
+                    {surgeons.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
+                  </optgroup>
+                  <optgroup label="APPs">
+                    {apps.map(a=><option key={a.id} value={a.id}>{a.name}</option>)}
+                  </optgroup>
+                </select>
+              </div>
+              <div>
+                <label style={{fontSize:10,color:"#7a8a98",display:"block",marginBottom:2}}>Start</label>
+                <input type="date" value={ncStart} onChange={e=>setNcStart(e.target.value)} style={{...css.inp,width:140}}/>
+              </div>
+              <div>
+                <label style={{fontSize:10,color:"#7a8a98",display:"block",marginBottom:2}}>End</label>
+                <input type="date" value={ncEnd} onChange={e=>setNcEnd(e.target.value)} style={{...css.inp,width:140}}/>
+              </div>
+              <button onClick={addNoCall} style={css.btn(true)}>+ Add</button>
+            </div>
+            {(()=>{
+              const allPeople = [...surgeons.map(s=>({...s,type:"s"})), ...apps.map(a=>({...a,type:"a"}))];
+              const withNc = allPeople.filter(p=>(noCallDays[p.id]||[]).length>0);
+              if(!withNc.length) return <div style={{padding:"10px",fontSize:12,color:"#8a94a0",fontStyle:"italic"}}>No no-call days recorded.</div>;
+              const ncRange = (s,e)=>{
+                const sp=s.split("-"), ep=e.split("-");
+                const sm=MO[parseInt(sp[1])-1]?.slice(0,3), sd=parseInt(sp[2]);
+                const em=MO[parseInt(ep[1])-1]?.slice(0,3), ed=parseInt(ep[2]);
+                if(s===e) return `${sm} ${sd}`;
+                if(sp[1]===ep[1]) return `${sm} ${sd}–${ed}`;
+                return `${sm} ${sd} – ${em} ${ed}`;
+              };
+              return withNc.map(p=>(
+                <div key={p.id} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 10px",marginBottom:5,border:"1px solid #e8dcae",borderRadius:7,background:"#fcf9ef",flexWrap:"wrap"}}>
+                  {p.type==="s"?<Badge id={p.id}/>:<AppBadge id={p.id}/>}
+                  <div style={{display:"flex",gap:4,flexWrap:"wrap",marginLeft:"auto",alignItems:"center"}}>
+                    {(noCallDays[p.id]||[]).map(([s,e],i)=>(
+                      <span key={i} style={{display:"inline-flex",alignItems:"center",gap:4,fontFamily:mono,fontSize:10,color:"#6a6030",background:"#fcf6e8",padding:"1px 6px",borderRadius:4,border:"1px solid #e8dcae"}}>
+                        {ncRange(s,e)}
+                        <button onClick={()=>rmNoCall(p.id,i)} style={{background:"none",border:"none",color:"#a08040",cursor:"pointer",fontSize:11,padding:0,lineHeight:1}}>✕</button>
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              ));
+            })()}
+          </div>
 
           {/* APP Shift Assignments */}
           <div style={css.card}>
@@ -7813,7 +7892,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                 const backup = {
                   _app: "DSG Call Schedule",
                   _exportedAt: new Date().toISOString(),
-                  surgeons, apps, vacations,
+                  surgeons, apps, vacations, noCallDays,
                   backupMondays: [...backupMondaySet],
                   fierceBackup: [...fierceBackupSet],
                   schedule, appShifts, priorCounts, year1Counts, year2Counts,

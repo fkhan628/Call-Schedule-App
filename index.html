@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.06.09d";
+    var APP_VERSION = "2026.06.09e";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -345,49 +345,67 @@ function CallSchedule() {
     _useState80 = _slicedToArray(_useState79, 2),
     vacEnd = _useState80[0],
     setVacEnd = _useState80[1];
-  const _useState81 = useState(null),
+  // No-call days: person is working but should NOT be assigned call. Tracked
+  // separately from vacations; the generator treats them the same (block call).
+  const _useState81 = useState({}),
     _useState82 = _slicedToArray(_useState81, 2),
-    editVac = _useState82[0],
-    setEditVac = _useState82[1]; // {sid, idx, start, end}
+    noCallDays = _useState82[0],
+    setNoCallDays = _useState82[1]; // { personId: [[start,end],...] }
   const _useState83 = useState(""),
     _useState84 = _slicedToArray(_useState83, 2),
-    bkMonday = _useState84[0],
-    setBkMonday = _useState84[1];
+    ncSurgeon = _useState84[0],
+    setNcSurgeon = _useState84[1];
   const _useState85 = useState(""),
     _useState86 = _slicedToArray(_useState85, 2),
-    appDate = _useState86[0],
-    setAppDate = _useState86[1];
+    ncStart = _useState86[0],
+    setNcStart = _useState86[1];
   const _useState87 = useState(""),
     _useState88 = _slicedToArray(_useState87, 2),
-    appPerson = _useState88[0],
-    setAppPerson = _useState88[1];
-  const _useState89 = useState(false),
+    ncEnd = _useState88[0],
+    setNcEnd = _useState88[1];
+  const _useState89 = useState(null),
     _useState90 = _slicedToArray(_useState89, 2),
-    scanning = _useState90[0],
-    setScanning = _useState90[1];
+    editVac = _useState90[0],
+    setEditVac = _useState90[1]; // {sid, idx, start, end}
   const _useState91 = useState(""),
     _useState92 = _slicedToArray(_useState91, 2),
-    scanMsg = _useState92[0],
-    setScanMsg = _useState92[1];
-  const _useState93 = useState(false),
+    bkMonday = _useState92[0],
+    setBkMonday = _useState92[1];
+  const _useState93 = useState(""),
     _useState94 = _slicedToArray(_useState93, 2),
-    loaded = _useState94[0],
-    setLoaded = _useState94[1];
+    appDate = _useState94[0],
+    setAppDate = _useState94[1];
+  const _useState95 = useState(""),
+    _useState96 = _slicedToArray(_useState95, 2),
+    appPerson = _useState96[0],
+    setAppPerson = _useState96[1];
+  const _useState97 = useState(false),
+    _useState98 = _slicedToArray(_useState97, 2),
+    scanning = _useState98[0],
+    setScanning = _useState98[1];
+  const _useState99 = useState(""),
+    _useState100 = _slicedToArray(_useState99, 2),
+    scanMsg = _useState100[0],
+    setScanMsg = _useState100[1];
+  const _useState101 = useState(false),
+    _useState102 = _slicedToArray(_useState101, 2),
+    loaded = _useState102[0],
+    setLoaded = _useState102[1];
   // Bumped after a successful login/biometric-unlock to re-run the data-load
   // effect WITH the now-stored session JWT, without a full page reload (a
   // page reload re-triggers the mount auth-gate and loops on biometric).
-  const _useState95 = useState(0),
-    _useState96 = _slicedToArray(_useState95, 2),
-    reloadTrigger = _useState96[0],
-    setReloadTrigger = _useState96[1];
-  const _useState97 = useState(""),
-    _useState98 = _slicedToArray(_useState97, 2),
-    saveStatus = _useState98[0],
-    setSaveStatus = _useState98[1];
-  const _useState99 = useState(false),
-    _useState100 = _slicedToArray(_useState99, 2),
-    saveError = _useState100[0],
-    setSaveError = _useState100[1]; // true = last save failed
+  const _useState103 = useState(0),
+    _useState104 = _slicedToArray(_useState103, 2),
+    reloadTrigger = _useState104[0],
+    setReloadTrigger = _useState104[1];
+  const _useState105 = useState(""),
+    _useState106 = _slicedToArray(_useState105, 2),
+    saveStatus = _useState106[0],
+    setSaveStatus = _useState106[1];
+  const _useState107 = useState(false),
+    _useState108 = _slicedToArray(_useState107, 2),
+    saveError = _useState108[0],
+    setSaveError = _useState108[1]; // true = last save failed
   const fileRef = useRef(null);
   const lastSyncRef = useRef(null);
   const loadedAtRef = useRef(null); // timestamp when initial load completed — prevents auto-save race
@@ -411,179 +429,179 @@ function CallSchedule() {
   }, [schedule]);
 
   // ─── Vacation Requests ───
-  const _useState101 = useState([]),
-    _useState102 = _slicedToArray(_useState101, 2),
-    vacRequests = _useState102[0],
-    setVacRequests = _useState102[1];
-  const _useState103 = useState(""),
-    _useState104 = _slicedToArray(_useState103, 2),
-    vacReqSurgeon = _useState104[0],
-    setVacReqSurgeon = _useState104[1];
-  const _useState105 = useState(""),
-    _useState106 = _slicedToArray(_useState105, 2),
-    vacReqStart = _useState106[0],
-    setVacReqStart = _useState106[1];
-  const _useState107 = useState(""),
-    _useState108 = _slicedToArray(_useState107, 2),
-    vacReqEnd = _useState108[0],
-    setVacReqEnd = _useState108[1];
-  const _useState109 = useState(""),
+  const _useState109 = useState([]),
     _useState110 = _slicedToArray(_useState109, 2),
-    vacReqReason = _useState110[0],
-    setVacReqReason = _useState110[1];
-  const _useState111 = useState({}),
+    vacRequests = _useState110[0],
+    setVacRequests = _useState110[1];
+  const _useState111 = useState(""),
     _useState112 = _slicedToArray(_useState111, 2),
-    expandedVacGroups = _useState112[0],
-    setExpandedVacGroups = _useState112[1]; // { personId: true/false }
+    vacReqSurgeon = _useState112[0],
+    setVacReqSurgeon = _useState112[1];
+  const _useState113 = useState(""),
+    _useState114 = _slicedToArray(_useState113, 2),
+    vacReqStart = _useState114[0],
+    setVacReqStart = _useState114[1];
+  const _useState115 = useState(""),
+    _useState116 = _slicedToArray(_useState115, 2),
+    vacReqEnd = _useState116[0],
+    setVacReqEnd = _useState116[1];
+  const _useState117 = useState(""),
+    _useState118 = _slicedToArray(_useState117, 2),
+    vacReqReason = _useState118[0],
+    setVacReqReason = _useState118[1];
+  const _useState119 = useState({}),
+    _useState120 = _slicedToArray(_useState119, 2),
+    expandedVacGroups = _useState120[0],
+    setExpandedVacGroups = _useState120[1]; // { personId: true/false }
   const toggleVacGroup = id => setExpandedVacGroups(prev => _objectSpread(_objectSpread({}, prev), {}, {
     [id]: !prev[id]
   }));
-  const _useState113 = useState(false),
-    _useState114 = _slicedToArray(_useState113, 2),
-    showPastVacations = _useState114[0],
-    setShowPastVacations = _useState114[1]; // Setup tab: hide completed vacations by default
-  const _useState115 = useState(false),
-    _useState116 = _slicedToArray(_useState115, 2),
-    appShiftsListExpanded = _useState116[0],
-    setAppShiftsListExpanded = _useState116[1]; // Setup tab: collapse APP shift list by default to reduce clutter
+  const _useState121 = useState(false),
+    _useState122 = _slicedToArray(_useState121, 2),
+    showPastVacations = _useState122[0],
+    setShowPastVacations = _useState122[1]; // Setup tab: hide completed vacations by default
+  const _useState123 = useState(false),
+    _useState124 = _slicedToArray(_useState123, 2),
+    appShiftsListExpanded = _useState124[0],
+    setAppShiftsListExpanded = _useState124[1]; // Setup tab: collapse APP shift list by default to reduce clutter
 
   // ─── Office Notifications ───
-  const _useState117 = useState([]),
-    _useState118 = _slicedToArray(_useState117, 2),
-    officeContacts = _useState118[0],
-    setOfficeContacts = _useState118[1];
-  const _useState119 = useState(""),
-    _useState120 = _slicedToArray(_useState119, 2),
-    newOfficeName = _useState120[0],
-    setNewOfficeName = _useState120[1];
-  const _useState121 = useState(""),
-    _useState122 = _slicedToArray(_useState121, 2),
-    newOfficeEmail = _useState122[0],
-    setNewOfficeEmail = _useState122[1];
-  const _useState123 = useState([]),
-    _useState124 = _slicedToArray(_useState123, 2),
-    newOfficeDepts = _useState124[0],
-    setNewOfficeDepts = _useState124[1]; // [] = all, ["CWM"], ["CBH"], or both
-  const _useState125 = useState(false),
+  const _useState125 = useState([]),
     _useState126 = _slicedToArray(_useState125, 2),
-    officeNotifBusy = _useState126[0],
-    setOfficeNotifBusy = _useState126[1];
-  const _useState127 = useState(false),
+    officeContacts = _useState126[0],
+    setOfficeContacts = _useState126[1];
+  const _useState127 = useState(""),
     _useState128 = _slicedToArray(_useState127, 2),
-    showPublishDialog = _useState128[0],
-    setShowPublishDialog = _useState128[1];
+    newOfficeName = _useState128[0],
+    setNewOfficeName = _useState128[1];
   const _useState129 = useState(""),
     _useState130 = _slicedToArray(_useState129, 2),
-    publishLabel = _useState130[0],
-    setPublishLabel = _useState130[1];
-
-  // ─── Shift Trade Requests ───
+    newOfficeEmail = _useState130[0],
+    setNewOfficeEmail = _useState130[1];
   const _useState131 = useState([]),
     _useState132 = _slicedToArray(_useState131, 2),
-    tradeRequests = _useState132[0],
-    setTradeRequests = _useState132[1];
-  const _useState133 = useState(""),
+    newOfficeDepts = _useState132[0],
+    setNewOfficeDepts = _useState132[1]; // [] = all, ["CWM"], ["CBH"], or both
+  const _useState133 = useState(false),
     _useState134 = _slicedToArray(_useState133, 2),
-    tradeFrom = _useState134[0],
-    setTradeFrom = _useState134[1];
-  const _useState135 = useState(""),
+    officeNotifBusy = _useState134[0],
+    setOfficeNotifBusy = _useState134[1];
+  const _useState135 = useState(false),
     _useState136 = _slicedToArray(_useState135, 2),
-    tradeTo = _useState136[0],
-    setTradeTo = _useState136[1];
+    showPublishDialog = _useState136[0],
+    setShowPublishDialog = _useState136[1];
   const _useState137 = useState(""),
     _useState138 = _slicedToArray(_useState137, 2),
-    tradeWeek = _useState138[0],
-    setTradeWeek = _useState138[1];
-  const _useState139 = useState(""),
+    publishLabel = _useState138[0],
+    setPublishLabel = _useState138[1];
+
+  // ─── Shift Trade Requests ───
+  const _useState139 = useState([]),
     _useState140 = _slicedToArray(_useState139, 2),
-    tradeShift = _useState140[0],
-    setTradeShift = _useState140[1];
+    tradeRequests = _useState140[0],
+    setTradeRequests = _useState140[1];
   const _useState141 = useState(""),
     _useState142 = _slicedToArray(_useState141, 2),
-    tradeReturnWeek = _useState142[0],
-    setTradeReturnWeek = _useState142[1];
+    tradeFrom = _useState142[0],
+    setTradeFrom = _useState142[1];
   const _useState143 = useState(""),
     _useState144 = _slicedToArray(_useState143, 2),
-    tradeReturnShift = _useState144[0],
-    setTradeReturnShift = _useState144[1];
-
-  // ─── Authentication ───
-  const _useState145 = useState(null),
+    tradeTo = _useState144[0],
+    setTradeTo = _useState144[1];
+  const _useState145 = useState(""),
     _useState146 = _slicedToArray(_useState145, 2),
-    authUser = _useState146[0],
-    setAuthUser = _useState146[1]; // { id, email, ... }
-  const _useState147 = useState(true),
+    tradeWeek = _useState146[0],
+    setTradeWeek = _useState146[1];
+  const _useState147 = useState(""),
     _useState148 = _slicedToArray(_useState147, 2),
-    authLoading = _useState148[0],
-    setAuthLoading = _useState148[1]; // checking session on mount
+    tradeShift = _useState148[0],
+    setTradeShift = _useState148[1];
   const _useState149 = useState(""),
     _useState150 = _slicedToArray(_useState149, 2),
-    authEmail = _useState150[0],
-    setAuthEmail = _useState150[1];
+    tradeReturnWeek = _useState150[0],
+    setTradeReturnWeek = _useState150[1];
   const _useState151 = useState(""),
     _useState152 = _slicedToArray(_useState151, 2),
-    authPassword = _useState152[0],
-    setAuthPassword = _useState152[1];
-  const _useState153 = useState("login"),
+    tradeReturnShift = _useState152[0],
+    setTradeReturnShift = _useState152[1];
+
+  // ─── Authentication ───
+  const _useState153 = useState(null),
     _useState154 = _slicedToArray(_useState153, 2),
-    authMode = _useState154[0],
-    setAuthMode = _useState154[1]; // "login" | "signup" | "reset" | "newpassword"
-  const _useState155 = useState(""),
+    authUser = _useState154[0],
+    setAuthUser = _useState154[1]; // { id, email, ... }
+  const _useState155 = useState(true),
     _useState156 = _slicedToArray(_useState155, 2),
-    resetEmail = _useState156[0],
-    setResetEmail = _useState156[1];
-  const _useState157 = useState(false),
+    authLoading = _useState156[0],
+    setAuthLoading = _useState156[1]; // checking session on mount
+  const _useState157 = useState(""),
     _useState158 = _slicedToArray(_useState157, 2),
-    resetSent = _useState158[0],
-    setResetSent = _useState158[1];
+    authEmail = _useState158[0],
+    setAuthEmail = _useState158[1];
   const _useState159 = useState(""),
     _useState160 = _slicedToArray(_useState159, 2),
-    newPassword = _useState160[0],
-    setNewPassword = _useState160[1];
-  const _useState161 = useState(""),
+    authPassword = _useState160[0],
+    setAuthPassword = _useState160[1];
+  const _useState161 = useState("login"),
     _useState162 = _slicedToArray(_useState161, 2),
-    newPasswordConfirm = _useState162[0],
-    setNewPasswordConfirm = _useState162[1];
+    authMode = _useState162[0],
+    setAuthMode = _useState162[1]; // "login" | "signup" | "reset" | "newpassword"
   const _useState163 = useState(""),
     _useState164 = _slicedToArray(_useState163, 2),
-    authError = _useState164[0],
-    setAuthError = _useState164[1];
+    resetEmail = _useState164[0],
+    setResetEmail = _useState164[1];
   const _useState165 = useState(false),
     _useState166 = _slicedToArray(_useState165, 2),
-    authBusy = _useState166[0],
-    setAuthBusy = _useState166[1];
+    resetSent = _useState166[0],
+    setResetSent = _useState166[1];
   const _useState167 = useState(""),
     _useState168 = _slicedToArray(_useState167, 2),
-    signupPersonId = _useState168[0],
-    setSignupPersonId = _useState168[1]; // person_id during signup
-  const _useState169 = useState(null),
+    newPassword = _useState168[0],
+    setNewPassword = _useState168[1];
+  const _useState169 = useState(""),
     _useState170 = _slicedToArray(_useState169, 2),
-    userProfile = _useState170[0],
-    setUserProfile = _useState170[1]; // { person_id, display_name, role }
-  const _useState171 = useState(false),
+    newPasswordConfirm = _useState170[0],
+    setNewPasswordConfirm = _useState170[1];
+  const _useState171 = useState(""),
     _useState172 = _slicedToArray(_useState171, 2),
-    needsProfile = _useState172[0],
-    setNeedsProfile = _useState172[1]; // true if logged in but no profile yet
+    authError = _useState172[0],
+    setAuthError = _useState172[1];
   const _useState173 = useState(false),
     _useState174 = _slicedToArray(_useState173, 2),
-    biometricAvail = _useState174[0],
-    setBiometricAvail = _useState174[1];
+    authBusy = _useState174[0],
+    setAuthBusy = _useState174[1];
   const _useState175 = useState(""),
     _useState176 = _slicedToArray(_useState175, 2),
-    biometricReason = _useState176[0],
-    setBiometricReason = _useState176[1]; // diagnostic string for when biometric isn't available
-  const _useState177 = useState(false),
+    signupPersonId = _useState176[0],
+    setSignupPersonId = _useState176[1]; // person_id during signup
+  const _useState177 = useState(null),
     _useState178 = _slicedToArray(_useState177, 2),
-    biometricEnrolled = _useState178[0],
-    setBiometricEnrolled = _useState178[1];
+    userProfile = _useState178[0],
+    setUserProfile = _useState178[1]; // { person_id, display_name, role }
   const _useState179 = useState(false),
     _useState180 = _slicedToArray(_useState179, 2),
-    biometricPending = _useState180[0],
-    setBiometricPending = _useState180[1]; // waiting for biometric prompt
-  const _useState181 = useState([]),
+    needsProfile = _useState180[0],
+    setNeedsProfile = _useState180[1]; // true if logged in but no profile yet
+  const _useState181 = useState(false),
     _useState182 = _slicedToArray(_useState181, 2),
-    allProfiles = _useState182[0],
-    setAllProfiles = _useState182[1]; // for scheduler to manage per-user flags
+    biometricAvail = _useState182[0],
+    setBiometricAvail = _useState182[1];
+  const _useState183 = useState(""),
+    _useState184 = _slicedToArray(_useState183, 2),
+    biometricReason = _useState184[0],
+    setBiometricReason = _useState184[1]; // diagnostic string for when biometric isn't available
+  const _useState185 = useState(false),
+    _useState186 = _slicedToArray(_useState185, 2),
+    biometricEnrolled = _useState186[0],
+    setBiometricEnrolled = _useState186[1];
+  const _useState187 = useState(false),
+    _useState188 = _slicedToArray(_useState187, 2),
+    biometricPending = _useState188[0],
+    setBiometricPending = _useState188[1]; // waiting for biometric prompt
+  const _useState189 = useState([]),
+    _useState190 = _slicedToArray(_useState189, 2),
+    allProfiles = _useState190[0],
+    setAllProfiles = _useState190[1]; // for scheduler to manage per-user flags
   const allPeople = useMemo(() => [...surgeons, ...apps, {
     id: "admin",
     name: "ADMIN (Clinic Manager)"
@@ -602,10 +620,10 @@ function CallSchedule() {
   }, [allProfiles]);
 
   // ─── Scheduler Mode (role-based via user_profiles.role) ───
-  const _useState183 = useState(false),
-    _useState184 = _slicedToArray(_useState183, 2),
-    isScheduler = _useState184[0],
-    setIsScheduler = _useState184[1];
+  const _useState191 = useState(false),
+    _useState192 = _slicedToArray(_useState191, 2),
+    isScheduler = _useState192[0],
+    setIsScheduler = _useState192[1];
 
   // Grant scheduler privileges based on user_profiles.role from DB.
   // Role-based access via Supabase auth is the sole gate.
@@ -633,27 +651,27 @@ function CallSchedule() {
   }, [isScheduler, view, userProfile]);
 
   // ─── Notifications ───
-  const _useState185 = useState([]),
-    _useState186 = _slicedToArray(_useState185, 2),
-    notifications = _useState186[0],
-    setNotifications = _useState186[1];
-  const _useState187 = useState(false),
-    _useState188 = _slicedToArray(_useState187, 2),
-    showNotifs = _useState188[0],
-    setShowNotifs = _useState188[1];
-  const _useState189 = useState(() => {
+  const _useState193 = useState([]),
+    _useState194 = _slicedToArray(_useState193, 2),
+    notifications = _useState194[0],
+    setNotifications = _useState194[1];
+  const _useState195 = useState(false),
+    _useState196 = _slicedToArray(_useState195, 2),
+    showNotifs = _useState196[0],
+    setShowNotifs = _useState196[1];
+  const _useState197 = useState(() => {
       try {
         return localStorage.getItem("dsg-notif-seen") || "2000-01-01T00:00:00Z";
       } catch (e) {
         return "2000-01-01T00:00:00Z";
       }
     }),
-    _useState190 = _slicedToArray(_useState189, 2),
-    notifLastSeen = _useState190[0],
-    setNotifLastSeen = _useState190[1];
+    _useState198 = _slicedToArray(_useState197, 2),
+    notifLastSeen = _useState198[0],
+    setNotifLastSeen = _useState198[1];
 
   // ─── Browser Push & Email Notification Preferences ───
-  const _useState191 = useState(() => {
+  const _useState199 = useState(() => {
       try {
         var _Notification;
         return ((_Notification = Notification) === null || _Notification === void 0 ? void 0 : _Notification.permission) || "default";
@@ -661,46 +679,46 @@ function CallSchedule() {
         return "unsupported";
       }
     }),
-    _useState192 = _slicedToArray(_useState191, 2),
-    pushPermission = _useState192[0],
-    setPushPermission = _useState192[1];
-  const _useState193 = useState({}),
-    _useState194 = _slicedToArray(_useState193, 2),
-    notifPrefs = _useState194[0],
-    setNotifPrefs = _useState194[1]; // { surgeonId: { email, browser_push, email_notifs, schedule_changes, vacation_updates, shift_reminders } }
+    _useState200 = _slicedToArray(_useState199, 2),
+    pushPermission = _useState200[0],
+    setPushPermission = _useState200[1];
+  const _useState201 = useState({}),
+    _useState202 = _slicedToArray(_useState201, 2),
+    notifPrefs = _useState202[0],
+    setNotifPrefs = _useState202[1]; // { surgeonId: { email, browser_push, email_notifs, schedule_changes, vacation_updates, shift_reminders } }
   const notifPrefsRef = useRef(notifPrefs);
   useEffect(() => {
     notifPrefsRef.current = notifPrefs;
   }, [notifPrefs]);
-  const _useState195 = useState(false),
-    _useState196 = _slicedToArray(_useState195, 2),
-    notifPrefsLoaded = _useState196[0],
-    setNotifPrefsLoaded = _useState196[1];
-  const _useState197 = useState(false),
-    _useState198 = _slicedToArray(_useState197, 2),
-    notifPrefsSaving = _useState198[0],
-    setNotifPrefsSaving = _useState198[1];
-  const _useState199 = useState(""),
-    _useState200 = _slicedToArray(_useState199, 2),
-    notifTestSent = _useState200[0],
-    setNotifTestSent = _useState200[1];
+  const _useState203 = useState(false),
+    _useState204 = _slicedToArray(_useState203, 2),
+    notifPrefsLoaded = _useState204[0],
+    setNotifPrefsLoaded = _useState204[1];
+  const _useState205 = useState(false),
+    _useState206 = _slicedToArray(_useState205, 2),
+    notifPrefsSaving = _useState206[0],
+    setNotifPrefsSaving = _useState206[1];
+  const _useState207 = useState(""),
+    _useState208 = _slicedToArray(_useState207, 2),
+    notifTestSent = _useState208[0],
+    setNotifTestSent = _useState208[1];
   const lastNotifCountRef = useRef(null); // track notification count for browser push on new ones
-  const _useState201 = useState(""),
-    _useState202 = _slicedToArray(_useState201, 2),
-    edgeFunctionUrl = _useState202[0],
-    setEdgeFunctionUrl = _useState202[1]; // Supabase Edge Function URL for email
+  const _useState209 = useState(""),
+    _useState210 = _slicedToArray(_useState209, 2),
+    edgeFunctionUrl = _useState210[0],
+    setEdgeFunctionUrl = _useState210[1]; // Supabase Edge Function URL for email
 
   // ─── My Schedule ───
-  const _useState203 = useState(() => {
+  const _useState211 = useState(() => {
       try {
         return localStorage.getItem("dsg-my-surgeon") || "";
       } catch (e) {
         return "";
       }
     }),
-    _useState204 = _slicedToArray(_useState203, 2),
-    mySurgeon = _useState204[0],
-    setMySurgeon = _useState204[1];
+    _useState212 = _slicedToArray(_useState211, 2),
+    mySurgeon = _useState212[0],
+    setMySurgeon = _useState212[1];
 
   // Save My Surgeon choice to localStorage
   useEffect(() => {
@@ -1079,6 +1097,7 @@ function CallSchedule() {
           if (d.surgeons) setSurgeons(d.surgeons);
           if (d.apps) setApps(d.apps);
           if (d.vacations) setVacations(d.vacations);
+          if (d.noCallDays) setNoCallDays(d.noCallDays);
           if (d.backupMondays) setBackupMondaySet(new Set(d.backupMondays));
           if (d.fierceBackup) setFierceBackupSet(new Set(d.fierceBackup));
           if (d.schedule) setSchedule(d.schedule);
@@ -1183,6 +1202,7 @@ function CallSchedule() {
         if (d.surgeons) setSurgeons(d.surgeons);
         if (d.apps) setApps(d.apps);
         if (d.vacations) setVacations(d.vacations);
+        if (d.noCallDays) setNoCallDays(d.noCallDays);
         if (d.backupMondays) setBackupMondaySet(new Set(d.backupMondays));
         if (d.fierceBackup) setFierceBackupSet(new Set(d.fierceBackup));
         if (d.schedule) setSchedule(d.schedule);
@@ -1336,6 +1356,7 @@ function CallSchedule() {
       surgeons,
       apps,
       vacations,
+      noCallDays,
       backupMondays: [...backupMondaySet],
       fierceBackup: [...fierceBackupSet],
       schedule,
@@ -1385,7 +1406,7 @@ function CallSchedule() {
       }
     }, 800);
     return () => clearTimeout(timer);
-  }, [loaded, surgeons, apps, vacations, backupMondaySet, fierceBackupSet, schedule, priorCounts, year1Counts, year2Counts, startMonth, startYear, numWeeks, holidayAssignments, startMondayOverride, pendingLocks]);
+  }, [loaded, surgeons, apps, vacations, noCallDays, backupMondaySet, fierceBackupSet, schedule, priorCounts, year1Counts, year2Counts, startMonth, startYear, numWeeks, holidayAssignments, startMondayOverride, pendingLocks]);
 
   // ─── Flush pending save when app is backgrounded or closing ───
   //
@@ -1519,6 +1540,7 @@ function CallSchedule() {
     setSurgeons(INIT_SURGEONS);
     setApps(INIT_APPS);
     setVacations({});
+    setNoCallDays({});
     setBackupMondaySet(new Set());
     setFierceBackupSet(new Set());
     setSchedule({});
@@ -2223,10 +2245,10 @@ function CallSchedule() {
   }, []);
 
   // ─── Edit Vacation Request ───
-  const _useState205 = useState(null),
-    _useState206 = _slicedToArray(_useState205, 2),
-    editingVacReq = _useState206[0],
-    setEditingVacReq = _useState206[1]; // { id, start_date, end_date, reason }
+  const _useState213 = useState(null),
+    _useState214 = _slicedToArray(_useState213, 2),
+    editingVacReq = _useState214[0],
+    setEditingVacReq = _useState214[1]; // { id, start_date, end_date, reason }
 
   const saveVacRequestEdit = useCallback(async () => {
     if (!editingVacReq) return;
@@ -2312,33 +2334,33 @@ function CallSchedule() {
   }, []);
 
   // ─── OneSignal Push Notifications ───
-  const _useState207 = useState(false),
-    _useState208 = _slicedToArray(_useState207, 2),
-    oneSignalReady = _useState208[0],
-    setOneSignalReady = _useState208[1];
-  const _useState209 = useState(false),
-    _useState210 = _slicedToArray(_useState209, 2),
-    oneSignalSubscribed = _useState210[0],
-    setOneSignalSubscribed = _useState210[1];
-  const _useState211 = useState({
+  const _useState215 = useState(false),
+    _useState216 = _slicedToArray(_useState215, 2),
+    oneSignalReady = _useState216[0],
+    setOneSignalReady = _useState216[1];
+  const _useState217 = useState(false),
+    _useState218 = _slicedToArray(_useState217, 2),
+    oneSignalSubscribed = _useState218[0],
+    setOneSignalSubscribed = _useState218[1];
+  const _useState219 = useState({
       msg: "",
       loading: false
     }),
-    _useState212 = _slicedToArray(_useState211, 2),
-    pushDiag = _useState212[0],
-    setPushDiag = _useState212[1];
-  const _useState213 = useState(null),
-    _useState214 = _slicedToArray(_useState213, 2),
-    pushSubscriptionId = _useState214[0],
-    setPushSubscriptionId = _useState214[1];
-  const _useState215 = useState(null),
-    _useState216 = _slicedToArray(_useState215, 2),
-    pushExternalId = _useState216[0],
-    setPushExternalId = _useState216[1];
-  const _useState217 = useState(null),
-    _useState218 = _slicedToArray(_useState217, 2),
-    oneSignalInitError = _useState218[0],
-    setOneSignalInitError = _useState218[1];
+    _useState220 = _slicedToArray(_useState219, 2),
+    pushDiag = _useState220[0],
+    setPushDiag = _useState220[1];
+  const _useState221 = useState(null),
+    _useState222 = _slicedToArray(_useState221, 2),
+    pushSubscriptionId = _useState222[0],
+    setPushSubscriptionId = _useState222[1];
+  const _useState223 = useState(null),
+    _useState224 = _slicedToArray(_useState223, 2),
+    pushExternalId = _useState224[0],
+    setPushExternalId = _useState224[1];
+  const _useState225 = useState(null),
+    _useState226 = _slicedToArray(_useState225, 2),
+    oneSignalInitError = _useState226[0],
+    setOneSignalInitError = _useState226[1];
 
   // Initialize OneSignal on mount.
   //
@@ -2962,14 +2984,14 @@ function CallSchedule() {
   }, []);
 
   // ─── Unified Schedule Scanner — extracts vacations + Fierce weeks from one file ───
-  const _useState219 = useState(false),
-    _useState220 = _slicedToArray(_useState219, 2),
-    schedScanning = _useState220[0],
-    setSchedScanning = _useState220[1];
-  const _useState221 = useState(""),
-    _useState222 = _slicedToArray(_useState221, 2),
-    schedScanMsg = _useState222[0],
-    setSchedScanMsg = _useState222[1];
+  const _useState227 = useState(false),
+    _useState228 = _slicedToArray(_useState227, 2),
+    schedScanning = _useState228[0],
+    setSchedScanning = _useState228[1];
+  const _useState229 = useState(""),
+    _useState230 = _slicedToArray(_useState229, 2),
+    schedScanMsg = _useState230[0],
+    setSchedScanMsg = _useState230[1];
   const schedFileRef = useRef(null);
   const handleScheduleScan = useCallback(async fileOrFiles => {
     const files = fileOrFiles instanceof FileList ? Array.from(fileOrFiles) : [fileOrFiles];
@@ -3399,6 +3421,17 @@ function CallSchedule() {
   const rmVac = (sid, idx) => setVacations(p => _objectSpread(_objectSpread({}, p), {}, {
     [sid]: (p[sid] || []).filter((_, i) => i !== idx)
   }));
+  const addNoCall = () => {
+    if (!ncSurgeon || !ncStart || !ncEnd) return;
+    setNoCallDays(p => _objectSpread(_objectSpread({}, p), {}, {
+      [ncSurgeon]: [...(p[ncSurgeon] || []), [ncStart, ncEnd]]
+    }));
+    setNcStart("");
+    setNcEnd("");
+  };
+  const rmNoCall = (sid, idx) => setNoCallDays(p => _objectSpread(_objectSpread({}, p), {}, {
+    [sid]: (p[sid] || []).filter((_, i) => i !== idx)
+  }));
   const saveEditVac = () => {
     if (!editVac || !editVac.start || !editVac.end) return;
     setVacations(p => {
@@ -3471,7 +3504,14 @@ function CallSchedule() {
   };
   const doGenerate = preview => {
     const prefs = buildPrefs();
-    const result = generate(surgeons, mondays, vacations, backupMondaySet, priorCounts, prefs, fierceBackupSet, holidayAssignments, pendingLocks);
+    // No-call days block call assignment exactly like vacations, so merge them
+    // into a single availability map for the generator (which gates everything
+    // through onVac). This needs no change to generator.js.
+    const availability = {};
+    new Set([...Object.keys(vacations), ...Object.keys(noCallDays)]).forEach(id => {
+      availability[id] = [...(vacations[id] || []), ...(noCallDays[id] || [])];
+    });
+    const result = generate(surgeons, mondays, availability, backupMondaySet, priorCounts, prefs, fierceBackupSet, holidayAssignments, pendingLocks);
     if (preview) {
       setPreviewSchedule(result);
       setShowPreview(true);
@@ -3492,6 +3532,7 @@ function CallSchedule() {
             surgeons,
             apps,
             vacations,
+            noCallDays,
             backupMondays: [...backupMondaySet],
             fierceBackup: [...fierceBackupSet],
             schedule: result,
@@ -3532,6 +3573,7 @@ function CallSchedule() {
           surgeons,
           apps,
           vacations,
+          noCallDays,
           backupMondays: [...backupMondaySet],
           fierceBackup: [...fierceBackupSet],
           schedule: {},
@@ -4050,22 +4092,22 @@ function CallSchedule() {
   };
 
   // ─── Smart Swap Suggestions ───
-  const _useState223 = useState(null),
-    _useState224 = _slicedToArray(_useState223, 2),
-    swapTarget = _useState224[0],
-    setSwapTarget = _useState224[1]; // { mondayStr, shift, surgeonId }
-  const _useState225 = useState(null),
-    _useState226 = _slicedToArray(_useState225, 2),
-    swapSuggestions = _useState226[0],
-    setSwapSuggestions = _useState226[1]; // [{ candidateId, score, reasons, returnSwaps }]
-  const _useState227 = useState(null),
-    _useState228 = _slicedToArray(_useState227, 2),
-    editWeekModal = _useState228[0],
-    setEditWeekModal = _useState228[1]; // { mondayStr, draft: { dayCall, nights, apps, reason } } or null
-  const _useState229 = useState(""),
-    _useState230 = _slicedToArray(_useState229, 2),
-    editWeekPick = _useState230[0],
-    setEditWeekPick = _useState230[1]; // dropdown selection on the Manual Adjustments card
+  const _useState231 = useState(null),
+    _useState232 = _slicedToArray(_useState231, 2),
+    swapTarget = _useState232[0],
+    setSwapTarget = _useState232[1]; // { mondayStr, shift, surgeonId }
+  const _useState233 = useState(null),
+    _useState234 = _slicedToArray(_useState233, 2),
+    swapSuggestions = _useState234[0],
+    setSwapSuggestions = _useState234[1]; // [{ candidateId, score, reasons, returnSwaps }]
+  const _useState235 = useState(null),
+    _useState236 = _slicedToArray(_useState235, 2),
+    editWeekModal = _useState236[0],
+    setEditWeekModal = _useState236[1]; // { mondayStr, draft: { dayCall, nights, apps, reason } } or null
+  const _useState237 = useState(""),
+    _useState238 = _slicedToArray(_useState237, 2),
+    editWeekPick = _useState238[0],
+    setEditWeekPick = _useState238[1]; // dropdown selection on the Manual Adjustments card
   // Clear stale selection when the user navigates to a different month
   useEffect(() => {
     setEditWeekPick("");
@@ -5193,14 +5235,14 @@ function CallSchedule() {
     msg += "\n\uD83D\uDCCB Full schedule: https://fkhan628.github.io/Call-Schedule-App/";
     return msg;
   };
-  const _useState231 = useState(false),
-    _useState232 = _slicedToArray(_useState231, 2),
-    copied = _useState232[0],
-    setCopied = _useState232[1];
-  const _useState233 = useState(""),
-    _useState234 = _slicedToArray(_useState233, 2),
-    copiedUrl = _useState234[0],
-    setCopiedUrl = _useState234[1]; // tracks which calendar URL was just copied
+  const _useState239 = useState(false),
+    _useState240 = _slicedToArray(_useState239, 2),
+    copied = _useState240[0],
+    setCopied = _useState240[1];
+  const _useState241 = useState(""),
+    _useState242 = _slicedToArray(_useState241, 2),
+    copiedUrl = _useState242[0],
+    setCopiedUrl = _useState242[1]; // tracks which calendar URL was just copied
 
   // Robust copy that works across mobile browsers; falls back to prompt() if clipboard API fails
   const copyText = async (text, label) => {
@@ -6826,6 +6868,170 @@ function CallSchedule() {
     style: css.card
   }, /*#__PURE__*/React.createElement("div", {
     style: css.cardT
+  }, "\uD83D\uDEAB No-Call Days ", /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontWeight: 400,
+      fontSize: 11,
+      color: "#7a8a98"
+    }
+  }, "\u2014 working, not on call")), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 12,
+      color: "#7a8a98",
+      margin: "0 0 10px",
+      lineHeight: 1.5
+    }
+  }, "Days a person is at work but should not be assigned call. Tracked separately from vacations; the generator treats them the same as time off and won't assign call on these dates."), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 8,
+      alignItems: "flex-end",
+      flexWrap: "wrap",
+      marginBottom: 12
+    }
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
+    style: {
+      fontSize: 10,
+      color: "#7a8a98",
+      display: "block",
+      marginBottom: 2
+    }
+  }, "Person"), /*#__PURE__*/React.createElement("select", {
+    value: ncSurgeon,
+    onChange: e => setNcSurgeon(e.target.value),
+    style: _objectSpread(_objectSpread({}, css.inp), {}, {
+      width: 150
+    })
+  }, /*#__PURE__*/React.createElement("option", {
+    value: ""
+  }, "Select\u2026"), /*#__PURE__*/React.createElement("optgroup", {
+    label: "Surgeons"
+  }, surgeons.map(s => /*#__PURE__*/React.createElement("option", {
+    key: s.id,
+    value: s.id
+  }, s.name))), /*#__PURE__*/React.createElement("optgroup", {
+    label: "APPs"
+  }, apps.map(a => /*#__PURE__*/React.createElement("option", {
+    key: a.id,
+    value: a.id
+  }, a.name))))), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
+    style: {
+      fontSize: 10,
+      color: "#7a8a98",
+      display: "block",
+      marginBottom: 2
+    }
+  }, "Start"), /*#__PURE__*/React.createElement("input", {
+    type: "date",
+    value: ncStart,
+    onChange: e => setNcStart(e.target.value),
+    style: _objectSpread(_objectSpread({}, css.inp), {}, {
+      width: 140
+    })
+  })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
+    style: {
+      fontSize: 10,
+      color: "#7a8a98",
+      display: "block",
+      marginBottom: 2
+    }
+  }, "End"), /*#__PURE__*/React.createElement("input", {
+    type: "date",
+    value: ncEnd,
+    onChange: e => setNcEnd(e.target.value),
+    style: _objectSpread(_objectSpread({}, css.inp), {}, {
+      width: 140
+    })
+  })), /*#__PURE__*/React.createElement("button", {
+    onClick: addNoCall,
+    style: css.btn(true)
+  }, "+ Add")), (() => {
+    const allPeople = [...surgeons.map(s => _objectSpread(_objectSpread({}, s), {}, {
+      type: "s"
+    })), ...apps.map(a => _objectSpread(_objectSpread({}, a), {}, {
+      type: "a"
+    }))];
+    const withNc = allPeople.filter(p => (noCallDays[p.id] || []).length > 0);
+    if (!withNc.length) return /*#__PURE__*/React.createElement("div", {
+      style: {
+        padding: "10px",
+        fontSize: 12,
+        color: "#8a94a0",
+        fontStyle: "italic"
+      }
+    }, "No no-call days recorded.");
+    const ncRange = (s, e) => {
+      var _MO3, _MO4;
+      const sp = s.split("-"),
+        ep = e.split("-");
+      const sm = (_MO3 = MO[parseInt(sp[1]) - 1]) === null || _MO3 === void 0 ? void 0 : _MO3.slice(0, 3),
+        sd = parseInt(sp[2]);
+      const em = (_MO4 = MO[parseInt(ep[1]) - 1]) === null || _MO4 === void 0 ? void 0 : _MO4.slice(0, 3),
+        ed = parseInt(ep[2]);
+      if (s === e) return "".concat(sm, " ").concat(sd);
+      if (sp[1] === ep[1]) return "".concat(sm, " ").concat(sd, "\u2013").concat(ed);
+      return "".concat(sm, " ").concat(sd, " \u2013 ").concat(em, " ").concat(ed);
+    };
+    return withNc.map(p => /*#__PURE__*/React.createElement("div", {
+      key: p.id,
+      style: {
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        padding: "6px 10px",
+        marginBottom: 5,
+        border: "1px solid #e8dcae",
+        borderRadius: 7,
+        background: "#fcf9ef",
+        flexWrap: "wrap"
+      }
+    }, p.type === "s" ? /*#__PURE__*/React.createElement(Badge, {
+      id: p.id
+    }) : /*#__PURE__*/React.createElement(AppBadge, {
+      id: p.id
+    }), /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        gap: 4,
+        flexWrap: "wrap",
+        marginLeft: "auto",
+        alignItems: "center"
+      }
+    }, (noCallDays[p.id] || []).map((_ref68, i) => {
+      let _ref69 = _slicedToArray(_ref68, 2),
+        s = _ref69[0],
+        e = _ref69[1];
+      return /*#__PURE__*/React.createElement("span", {
+        key: i,
+        style: {
+          display: "inline-flex",
+          alignItems: "center",
+          gap: 4,
+          fontFamily: mono,
+          fontSize: 10,
+          color: "#6a6030",
+          background: "#fcf6e8",
+          padding: "1px 6px",
+          borderRadius: 4,
+          border: "1px solid #e8dcae"
+        }
+      }, ncRange(s, e), /*#__PURE__*/React.createElement("button", {
+        onClick: () => rmNoCall(p.id, i),
+        style: {
+          background: "none",
+          border: "none",
+          color: "#a08040",
+          cursor: "pointer",
+          fontSize: 11,
+          padding: 0,
+          lineHeight: 1
+        }
+      }, "\u2715"));
+    }))));
+  })()), /*#__PURE__*/React.createElement("div", {
+    style: css.card
+  }, /*#__PURE__*/React.createElement("div", {
+    style: css.cardT
   }, "APP Call Shifts ", /*#__PURE__*/React.createElement("span", {
     style: {
       fontWeight: 400,
@@ -6918,16 +7124,16 @@ function CallSchedule() {
     style: {
       marginTop: 8
     }
-  }, Object.entries(appShifts).sort((_ref68, _ref69) => {
-    let _ref70 = _slicedToArray(_ref68, 1),
-      a = _ref70[0];
-    let _ref71 = _slicedToArray(_ref69, 1),
-      b = _ref71[0];
+  }, Object.entries(appShifts).sort((_ref70, _ref71) => {
+    let _ref72 = _slicedToArray(_ref70, 1),
+      a = _ref72[0];
+    let _ref73 = _slicedToArray(_ref71, 1),
+      b = _ref73[0];
     return a.localeCompare(b);
-  }).map(_ref72 => {
-    let _ref73 = _slicedToArray(_ref72, 2),
-      ds = _ref73[0],
-      aid = _ref73[1];
+  }).map(_ref74 => {
+    let _ref75 = _slicedToArray(_ref74, 2),
+      ds = _ref75[0],
+      aid = _ref75[1];
     const dow = parse(ds).getDay();
     const timeLabel = dow === 0 || dow === 6 ? "7a–7a" : "5p–7a";
     return /*#__PURE__*/React.createElement("div", {
@@ -7469,10 +7675,10 @@ function CallSchedule() {
     let vacInPeriod = 0;
     if (nextPeriodStart && nextPeriodEnd) {
       Object.values(vacations || {}).forEach(arr => {
-        (arr || []).forEach(_ref74 => {
-          let _ref75 = _slicedToArray(_ref74, 2),
-            a = _ref75[0],
-            b = _ref75[1];
+        (arr || []).forEach(_ref76 => {
+          let _ref77 = _slicedToArray(_ref76, 2),
+            a = _ref77[0],
+            b = _ref77[1];
           const aDate = parse(a);
           const bDate = parse(b);
           if (aDate <= nextPeriodEnd && bDate >= nextPeriodStart) vacInPeriod++;
@@ -7515,10 +7721,10 @@ function CallSchedule() {
     }).length;
     const holidaysOk = holidayCount === 0 || assignedCount === holidayCount;
     const holidayLabel = holidayCount === 0 ? "No holidays in this period" : "".concat(assignedCount, " of ").concat(holidayCount, " holiday").concat(holidayCount === 1 ? "" : "s", " assigned");
-    const Item = _ref76 => {
-      let ok = _ref76.ok,
-        label = _ref76.label,
-        info = _ref76.info;
+    const Item = _ref78 => {
+      let ok = _ref78.ok,
+        label = _ref78.label,
+        info = _ref78.info;
       return /*#__PURE__*/React.createElement("div", {
         style: {
           display: "flex",
@@ -7746,10 +7952,10 @@ function CallSchedule() {
       const burdenScore = ((p.dc || 0) + (p.dcB || 0)) * 7 + (p.nights || 0) + (p.nightsB || 0) + ((p.wknd || 0) + (p.wkndB || 0)) * 3;
       // Count vacation days overlapping the upcoming period
       let vacDays = 0;
-      (vacations[s.id] || []).forEach(_ref77 => {
-        let _ref78 = _slicedToArray(_ref77, 2),
-          a = _ref78[0],
-          b = _ref78[1];
+      (vacations[s.id] || []).forEach(_ref79 => {
+        let _ref80 = _slicedToArray(_ref79, 2),
+          a = _ref80[0],
+          b = _ref80[1];
         const aDate = parse(a);
         const bDate = parse(b);
         const overlapStart = aDate > nextPeriodStart ? aDate : nextPeriodStart;
@@ -8092,10 +8298,10 @@ function CallSchedule() {
     Object.values(previewSchedule).forEach(wk => {
       if (wk.dayCall && pStats[wk.dayCall]) pStats[wk.dayCall][wk.isBackup ? "dcB" : "dc"]++;
       if (wk.off && pStats[wk.off]) pStats[wk.off][wk.isBackup ? "offB" : "off"]++;
-      Object.entries(wk.nights || {}).forEach(_ref79 => {
-        let _ref80 = _slicedToArray(_ref79, 2),
-          sh = _ref80[0],
-          sid = _ref80[1];
+      Object.entries(wk.nights || {}).forEach(_ref81 => {
+        let _ref82 = _slicedToArray(_ref81, 2),
+          sh = _ref82[0],
+          sid = _ref82[1];
         if (!sid || !pStats[sid]) return;
         if (sh === "wknd") pStats[sid][wk.isBackup ? "wkndB" : "wknd"]++;else pStats[sid][wk.isBackup ? "nightsB" : "nights"]++;
       });
@@ -8103,11 +8309,11 @@ function CallSchedule() {
 
     // Build calData from preview schedule
     const pCalData = {};
-    Object.entries(previewSchedule).forEach(_ref81 => {
+    Object.entries(previewSchedule).forEach(_ref83 => {
       var _wk$nights1;
-      let _ref82 = _slicedToArray(_ref81, 2),
-        mStr = _ref82[0],
-        wk = _ref82[1];
+      let _ref84 = _slicedToArray(_ref83, 2),
+        mStr = _ref84[0],
+        wk = _ref84[1];
       const mon = parse(mStr);
       const pfx = wk.isBackup ? "B-" : "";
       const cls = wk.isBackup ? "backup" : "primary";
@@ -8160,10 +8366,10 @@ function CallSchedule() {
         }];
       }
       if (wk.holidayCoverage) {
-        Object.entries(wk.holidayCoverage).forEach(_ref83 => {
-          let _ref84 = _slicedToArray(_ref83, 2),
-            ds = _ref84[0],
-            cov = _ref84[1];
+        Object.entries(wk.holidayCoverage).forEach(_ref85 => {
+          let _ref86 = _slicedToArray(_ref85, 2),
+            ds = _ref86[0],
+            cov = _ref86[1];
           pCalData[ds] = [...(pCalData[ds] || []), {
             type: "Holiday",
             surgeon: cov.surgeonId,
@@ -8175,10 +8381,10 @@ function CallSchedule() {
       }
     });
     // APP shifts
-    Object.entries(appShifts).forEach(_ref85 => {
-      let _ref86 = _slicedToArray(_ref85, 2),
-        ds = _ref86[0],
-        aid = _ref86[1];
+    Object.entries(appShifts).forEach(_ref87 => {
+      let _ref88 = _slicedToArray(_ref87, 2),
+        ds = _ref88[0],
+        aid = _ref88[1];
       pCalData[ds] = [...(pCalData[ds] || []), {
         type: "APP",
         appId: aid,
@@ -9303,10 +9509,10 @@ function CallSchedule() {
     }, dkInp)
   }, /*#__PURE__*/React.createElement("option", {
     value: ""
-  }, "All Depts"), Object.entries(DEPT_LABELS).map(_ref87 => {
-    let _ref88 = _slicedToArray(_ref87, 2),
-      k = _ref88[0],
-      v = _ref88[1];
+  }, "All Depts"), Object.entries(DEPT_LABELS).map(_ref89 => {
+    let _ref90 = _slicedToArray(_ref89, 2),
+      k = _ref90[0],
+      v = _ref90[1];
     return /*#__PURE__*/React.createElement("option", {
       key: k,
       value: k
@@ -10235,11 +10441,11 @@ function CallSchedule() {
       surgeons.forEach(s => {
         allEvents.push(...buildICSEvents(schedule, s.id, s.name, appShifts, aMap));
       });
-      Object.entries(appShifts).forEach(_ref89 => {
+      Object.entries(appShifts).forEach(_ref91 => {
         var _aMap$aid2;
-        let _ref90 = _slicedToArray(_ref89, 2),
-          ds = _ref90[0],
-          aid = _ref90[1];
+        let _ref92 = _slicedToArray(_ref91, 2),
+          ds = _ref92[0],
+          aid = _ref92[1];
         const d = parse(ds);
         const next = addD(d, 1);
         const appName = (aMap === null || aMap === void 0 || (_aMap$aid2 = aMap[aid]) === null || _aMap$aid2 === void 0 ? void 0 : _aMap$aid2.name) || aid;
@@ -10406,10 +10612,10 @@ function CallSchedule() {
     const hasUnsaved = (oldWk.dayCall || "") !== (draft.dayCall || "") || ["mon", "tue", "wed", "thu", "wknd"].some(nk => {
       var _oldWk$nights3, _draft$nights2;
       return (((_oldWk$nights3 = oldWk.nights) === null || _oldWk$nights3 === void 0 ? void 0 : _oldWk$nights3[nk]) || "") !== (((_draft$nights2 = draft.nights) === null || _draft$nights2 === void 0 ? void 0 : _draft$nights2[nk]) || "");
-    }) || Object.entries(draft.apps).some(_ref91 => {
-      let _ref92 = _slicedToArray(_ref91, 2),
-        ds = _ref92[0],
-        aid = _ref92[1];
+    }) || Object.entries(draft.apps).some(_ref93 => {
+      let _ref94 = _slicedToArray(_ref93, 2),
+        ds = _ref94[0],
+        aid = _ref94[1];
       return (appShifts[ds] || "") !== (aid || "");
     });
     const navigateTo = target => {
@@ -10818,11 +11024,11 @@ function CallSchedule() {
     // Whole-shift shifts (Svc Wk, Weekend) are attributed to the month the shift STARTS in
     const monthlyData = {};
     const allMonths = new Set();
-    Object.entries(schedule).forEach(_ref93 => {
+    Object.entries(schedule).forEach(_ref95 => {
       var _wk$nights14;
-      let _ref94 = _slicedToArray(_ref93, 2),
-        mStr = _ref94[0],
-        wk = _ref94[1];
+      let _ref96 = _slicedToArray(_ref95, 2),
+        mStr = _ref96[0],
+        wk = _ref96[1];
       const mon = parse(mStr);
       // Register every month touched by this week so all surgeons show columns
       for (let i = 0; i < 7; i++) {
@@ -11096,11 +11302,11 @@ function CallSchedule() {
     // All three counters now represent BILLING DAYS, so the total formula is just dc + nights + wknd.
     const monthly = {}; // { "2026-05": { s1: { dc: n, nights: n, wknd: n }, ... } }
     const allMonths = new Set();
-    Object.entries(schedule).forEach(_ref95 => {
+    Object.entries(schedule).forEach(_ref97 => {
       var _wk$nights16;
-      let _ref96 = _slicedToArray(_ref95, 2),
-        mStr = _ref96[0],
-        wk = _ref96[1];
+      let _ref98 = _slicedToArray(_ref97, 2),
+        mStr = _ref98[0],
+        wk = _ref98[1];
       const mon = parse(mStr);
       for (let i = 0; i < 7; i++) {
         const d = addD(mon, i);
@@ -11361,10 +11567,10 @@ function CallSchedule() {
         color: "#5a6a78",
         fontFamily: mono
       }
-    }, ranges.map((_ref97, i) => {
-      let _ref98 = _slicedToArray(_ref97, 2),
-        vs = _ref98[0],
-        ve = _ref98[1];
+    }, ranges.map((_ref99, i) => {
+      let _ref100 = _slicedToArray(_ref99, 2),
+        vs = _ref100[0],
+        ve = _ref100[1];
       return /*#__PURE__*/React.createElement("span", {
         key: i
       }, i > 0 ? " · " : "", vs, " \u2192 ", ve);
@@ -11401,10 +11607,10 @@ function CallSchedule() {
         color: "#5a6a78",
         fontFamily: mono
       }
-    }, ranges.map((_ref99, i) => {
-      let _ref100 = _slicedToArray(_ref99, 2),
-        vs = _ref100[0],
-        ve = _ref100[1];
+    }, ranges.map((_ref101, i) => {
+      let _ref102 = _slicedToArray(_ref101, 2),
+        vs = _ref102[0],
+        ve = _ref102[1];
       return /*#__PURE__*/React.createElement("span", {
         key: i
       }, i > 0 ? " · " : "", vs, " \u2192 ", ve);
@@ -11453,10 +11659,10 @@ function CallSchedule() {
         fontWeight: 700,
         color: tOk ? "#60e0a0" : "#e0a060"
       }
-    }, "Total Call Days (1yr): spread ", tSp, " (min ", Math.min(...totalArr), ", max ", Math.max(...totalArr), ") \u2014 ", tOk ? "Fair" : "Review recommended")), [["Service Wk (reg)", v(s => s.dc || 0)], ["Nights (reg)", v(s => s.nights || 0)], ["Weekends (reg)", v(s => s.wknd || 0)], ["Service Wk (backup)", v(s => s.dcB || 0)], ["Nights (backup)", v(s => s.nightsB || 0)], ["Weekends (backup)", v(s => s.wkndB || 0)]].map(_ref101 => {
-      let _ref102 = _slicedToArray(_ref101, 2),
-        label = _ref102[0],
-        arr = _ref102[1];
+    }, "Total Call Days (1yr): spread ", tSp, " (min ", Math.min(...totalArr), ", max ", Math.max(...totalArr), ") \u2014 ", tOk ? "Fair" : "Review recommended")), [["Service Wk (reg)", v(s => s.dc || 0)], ["Nights (reg)", v(s => s.nights || 0)], ["Weekends (reg)", v(s => s.wknd || 0)], ["Service Wk (backup)", v(s => s.dcB || 0)], ["Nights (backup)", v(s => s.nightsB || 0)], ["Weekends (backup)", v(s => s.wkndB || 0)]].map(_ref103 => {
+      let _ref104 = _slicedToArray(_ref103, 2),
+        label = _ref104[0],
+        arr = _ref104[1];
       const s = sp(arr);
       const ok = s <= 2;
       return /*#__PURE__*/React.createElement("div", {
@@ -11639,11 +11845,11 @@ function CallSchedule() {
 
     // Build my shifts
     const myShifts = [];
-    Object.entries(schedule).forEach(_ref103 => {
+    Object.entries(schedule).forEach(_ref105 => {
       var _wk$nights18;
-      let _ref104 = _slicedToArray(_ref103, 2),
-        mStr = _ref104[0],
-        wk = _ref104[1];
+      let _ref106 = _slicedToArray(_ref105, 2),
+        mStr = _ref106[0],
+        wk = _ref106[1];
       const mon = parse(mStr);
       const endStr = fmt(addD(mon, 6));
       const roles = [];
@@ -11713,10 +11919,10 @@ function CallSchedule() {
         color: "#8a6a10",
         marginBottom: 6
       }
-    }, "\uD83C\uDFD6 My Vacations"), myVacs.map((_ref105, i) => {
-      let _ref106 = _slicedToArray(_ref105, 2),
-        vs = _ref106[0],
-        ve = _ref106[1];
+    }, "\uD83C\uDFD6 My Vacations"), myVacs.map((_ref107, i) => {
+      let _ref108 = _slicedToArray(_ref107, 2),
+        vs = _ref108[0],
+        ve = _ref108[1];
       return /*#__PURE__*/React.createElement("div", {
         key: i,
         style: {
@@ -12035,12 +12241,12 @@ function CallSchedule() {
 
     // Helper to format date range compactly
     const shortRange = (s, e) => {
-      var _MO3, _MO4;
+      var _MO5, _MO6;
       const sp = s.split("-"),
         ep = e.split("-");
-      const sm = (_MO3 = MO[parseInt(sp[1]) - 1]) === null || _MO3 === void 0 ? void 0 : _MO3.slice(0, 3),
+      const sm = (_MO5 = MO[parseInt(sp[1]) - 1]) === null || _MO5 === void 0 ? void 0 : _MO5.slice(0, 3),
         sd = parseInt(sp[2]);
-      const em = (_MO4 = MO[parseInt(ep[1]) - 1]) === null || _MO4 === void 0 ? void 0 : _MO4.slice(0, 3),
+      const em = (_MO6 = MO[parseInt(ep[1]) - 1]) === null || _MO6 === void 0 ? void 0 : _MO6.slice(0, 3),
         ed = parseInt(ep[2]);
       if (s === e) return "".concat(sm, " ").concat(sd);
       if (sp[1] === ep[1]) return "".concat(sm, " ").concat(sd, "\u2013").concat(ed);
@@ -13688,9 +13894,9 @@ function CallSchedule() {
     }
   }, "\uD83D\uDCE7 Email Notifications"), mySurgeon && mySurgeon !== "admin" && (() => {
     const myPref = notifPrefs[mySurgeon] || {};
-    const HourPicker = _ref107 => {
-      let field = _ref107.field,
-        label = _ref107.label;
+    const HourPicker = _ref109 => {
+      let field = _ref109.field,
+        label = _ref109.label;
       return /*#__PURE__*/React.createElement("div", {
         style: {
           display: "flex",
@@ -13806,10 +14012,10 @@ function CallSchedule() {
         letterSpacing: 0.4,
         textAlign: "center"
       }
-    }, "Push"), [["schedule_changes", "Schedule changes & swaps"], ["vacation_updates", "Vacation requests & approvals"], ["shift_reminders", "Shift reminders"]].map(_ref108 => {
-      let _ref109 = _slicedToArray(_ref108, 2),
-        key = _ref109[0],
-        label = _ref109[1];
+    }, "Push"), [["schedule_changes", "Schedule changes & swaps"], ["vacation_updates", "Vacation requests & approvals"], ["shift_reminders", "Shift reminders"]].map(_ref110 => {
+      let _ref111 = _slicedToArray(_ref110, 2),
+        key = _ref111[0],
+        label = _ref111[1];
       return /*#__PURE__*/React.createElement(React.Fragment, {
         key: key
       }, /*#__PURE__*/React.createElement("span", {
@@ -14336,6 +14542,7 @@ function CallSchedule() {
           surgeons,
           apps,
           vacations,
+          noCallDays,
           backupMondays: [...backupMondaySet],
           fierceBackup: [...fierceBackupSet],
           schedule,
