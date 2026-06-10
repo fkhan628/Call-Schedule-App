@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.06.09c";
+    var APP_VERSION = "2026.06.09d";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -1101,6 +1101,16 @@ function CallSchedule() {
           cfgRow = _await$supabase$from$3.data;
         if (cfgRow !== null && cfgRow !== void 0 && cfgRow.edge_function_url) setEdgeFunctionUrl(cfgRow.edge_function_url);
 
+        // APP shifts now live in their own table (app_shifts_data) so that an
+        // APP-lead with can_assign_apps can write them without touching the
+        // schedule blob. If a row exists it is authoritative; otherwise we keep
+        // whatever the legacy blob set above (migration safety).
+        try {
+          const _await$supabase$from$4 = await supabase.from("app_shifts_data").select("data").eq("id", "main").single(),
+            appRow = _await$supabase$from$4.data;
+          if (appRow !== null && appRow !== void 0 && appRow.data && typeof appRow.data === "object") setAppShifts(appRow.data);
+        } catch (e) {}
+
         // Load vacation requests
         try {
           const reqs = await db.query("vacation_requests", {
@@ -1163,8 +1173,8 @@ function CallSchedule() {
     // Realtime handler and safety-net poll)
     const refreshScheduleRow = async () => {
       try {
-        const _await$supabase$from$4 = await supabase.from("call_schedule_data").select("data,updated_at").eq("id", "main").single(),
-          row = _await$supabase$from$4.data;
+        const _await$supabase$from$5 = await supabase.from("call_schedule_data").select("data,updated_at").eq("id", "main").single(),
+          row = _await$supabase$from$5.data;
         loadFailedRef.current = false; // a read succeeded — writes are safe again
         if (!(row !== null && row !== void 0 && row.data)) return;
         if (row.updated_at === lastSyncRef.current) return; // nothing new
@@ -1176,7 +1186,6 @@ function CallSchedule() {
         if (d.backupMondays) setBackupMondaySet(new Set(d.backupMondays));
         if (d.fierceBackup) setFierceBackupSet(new Set(d.fierceBackup));
         if (d.schedule) setSchedule(d.schedule);
-        if (d.appShifts) setAppShifts(d.appShifts);
         if (d.priorCounts && Object.values(d.priorCounts).some(c => Object.values(c).some(v => v > 0))) setPriorCounts(d.priorCounts);
         if (d.year1Counts && Object.values(d.year1Counts).some(c => Object.values(c).some(v => v > 0))) setYear1Counts(d.year1Counts);
         if (d.year2Counts && Object.values(d.year2Counts).some(c => Object.values(c).some(v => v > 0))) setYear2Counts(d.year2Counts);
@@ -1193,9 +1202,16 @@ function CallSchedule() {
     };
     const refreshConfigRow = async () => {
       try {
-        const _await$supabase$from$5 = await supabase.from("call_schedule_config").select("edge_function_url").eq("id", "config").single(),
-          cfgRow2 = _await$supabase$from$5.data;
+        const _await$supabase$from$6 = await supabase.from("call_schedule_config").select("edge_function_url").eq("id", "config").single(),
+          cfgRow2 = _await$supabase$from$6.data;
         if ((cfgRow2 === null || cfgRow2 === void 0 ? void 0 : cfgRow2.edge_function_url) !== undefined) setEdgeFunctionUrl(prev => cfgRow2.edge_function_url !== prev ? cfgRow2.edge_function_url : prev);
+      } catch (e) {}
+    };
+    const refreshAppShifts = async () => {
+      try {
+        const _await$supabase$from$7 = await supabase.from("app_shifts_data").select("data").eq("id", "main").single(),
+          appRow = _await$supabase$from$7.data;
+        if (appRow !== null && appRow !== void 0 && appRow.data && typeof appRow.data === "object") setAppShifts(appRow.data);
       } catch (e) {}
     };
     const refreshVacReqs = async () => {
@@ -1226,7 +1242,7 @@ function CallSchedule() {
       } catch (e) {}
     };
     const refreshAll = async () => {
-      await Promise.allSettled([refreshScheduleRow(), refreshConfigRow(), refreshVacReqs(), refreshTradeReqs(), refreshNotifs()]);
+      await Promise.allSettled([refreshScheduleRow(), refreshConfigRow(), refreshAppShifts(), refreshVacReqs(), refreshTradeReqs(), refreshNotifs()]);
     };
 
     // Wire up Realtime subscriptions if the SDK is available.
@@ -1246,6 +1262,10 @@ function CallSchedule() {
           schema: "public",
           table: "call_schedule_config"
         }, refreshConfigRow).on("postgres_changes", {
+          event: "*",
+          schema: "public",
+          table: "app_shifts_data"
+        }, refreshAppShifts).on("postgres_changes", {
           event: "*",
           schema: "public",
           table: "vacation_requests"
@@ -1319,7 +1339,6 @@ function CallSchedule() {
       backupMondays: [...backupMondaySet],
       fierceBackup: [...fierceBackupSet],
       schedule,
-      appShifts,
       priorCounts,
       year1Counts,
       year2Counts,
@@ -1366,7 +1385,7 @@ function CallSchedule() {
       }
     }, 800);
     return () => clearTimeout(timer);
-  }, [loaded, surgeons, apps, vacations, backupMondaySet, fierceBackupSet, schedule, appShifts, priorCounts, year1Counts, year2Counts, startMonth, startYear, numWeeks, holidayAssignments, startMondayOverride, pendingLocks]);
+  }, [loaded, surgeons, apps, vacations, backupMondaySet, fierceBackupSet, schedule, priorCounts, year1Counts, year2Counts, startMonth, startYear, numWeeks, holidayAssignments, startMondayOverride, pendingLocks]);
 
   // ─── Flush pending save when app is backgrounded or closing ───
   //
@@ -1489,6 +1508,11 @@ function CallSchedule() {
         data: {
           _intentionalClear: true
         },
+        updated_at: new Date().toISOString()
+      });
+      await supabase.from("app_shifts_data").upsert({
+        id: "main",
+        data: {},
         updated_at: new Date().toISOString()
       });
     } catch (e) {}
@@ -2591,8 +2615,8 @@ function CallSchedule() {
           });
           setNotifPrefs(prefs);
         }
-        const _await$supabase$from$6 = await supabase.from("call_schedule_config").select("edge_function_url").eq("id", "config").single(),
-          cfgRow = _await$supabase$from$6.data;
+        const _await$supabase$from$8 = await supabase.from("call_schedule_config").select("edge_function_url").eq("id", "config").single(),
+          cfgRow = _await$supabase$from$8.data;
         if (cfgRow !== null && cfgRow !== void 0 && cfgRow.edge_function_url) setEdgeFunctionUrl(cfgRow.edge_function_url);
       } catch (e) {
         console.error("Load notif prefs error:", e);
@@ -3390,18 +3414,45 @@ function CallSchedule() {
     if (!confirm("Delete ALL vacations for ALL surgeons and APPs? This cannot be undone.")) return;
     setVacations({});
   };
+
+  // APP shifts persist to their own table (app_shifts_data), gated by
+  // can_assign_apps — so an APP lead can save them without schedule-write
+  // permission, and an APP assigner can never touch the schedule blob.
+  const saveAppShifts = async next => {
+    try {
+      const _await$supabase$from$9 = await supabase.from("app_shifts_data").upsert({
+          id: "main",
+          data: next,
+          updated_at: new Date().toISOString()
+        }),
+        error = _await$supabase$from$9.error;
+      if (error) {
+        setSaveError(true);
+        setSaveStatus("⚠ APP shift save failed");
+      } else {
+        setSaveStatus("APP shifts saved");
+        setTimeout(() => setSaveStatus(""), 1500);
+      }
+    } catch (e) {
+      setSaveError(true);
+      setSaveStatus("⚠ APP shift save failed");
+    }
+  };
   const addAppShift = () => {
     if (!appDate || !appPerson) return;
-    setAppShifts(p => _objectSpread(_objectSpread({}, p), {}, {
+    const next = _objectSpread(_objectSpread({}, appShifts), {}, {
       [appDate]: appPerson
-    }));
+    });
+    setAppShifts(next);
+    saveAppShifts(next);
     setAppDate("");
   };
-  const rmAppShift = ds => setAppShifts(p => {
-    const n = _objectSpread({}, p);
-    delete n[ds];
-    return n;
-  });
+  const rmAppShift = ds => {
+    const next = _objectSpread({}, appShifts);
+    delete next[ds];
+    setAppShifts(next);
+    saveAppShifts(next);
+  };
 
   // Build surgeon preferences map by matching names
   const buildPrefs = () => {
@@ -3444,7 +3495,6 @@ function CallSchedule() {
             backupMondays: [...backupMondaySet],
             fierceBackup: [...fierceBackupSet],
             schedule: result,
-            appShifts,
             priorCounts,
             year1Counts,
             year2Counts,
@@ -3485,7 +3535,6 @@ function CallSchedule() {
           backupMondays: [...backupMondaySet],
           fierceBackup: [...fierceBackupSet],
           schedule: {},
-          appShifts,
           priorCounts,
           year1Counts,
           year2Counts,
@@ -4347,6 +4396,7 @@ function CallSchedule() {
           aid = _ref26[1];
         if (aid) n[ds] = aid;else delete n[ds];
       });
+      saveAppShifts(n); // persist APP changes to their own table
       return n;
     });
 
@@ -4462,9 +4512,9 @@ function CallSchedule() {
     const appColors = {};
     apps.forEach((a, i) => appColors[a.id] = {
       name: a.name,
-      tx: APP_PAL[i % 4].tx,
-      bg: APP_PAL[i % 4].tg,
-      bd: APP_PAL[i % 4].bd
+      tx: APP_PAL[i % APP_PAL.length].tx,
+      bg: APP_PAL[i % APP_PAL.length].tg,
+      bd: APP_PAL[i % APP_PAL.length].bd
     });
 
     // Pre-generate ICS content per surgeon + full
@@ -6310,14 +6360,14 @@ function CallSchedule() {
       background: "#f4f6f8",
       borderRadius: 6,
       padding: "5px 8px",
-      border: "1px solid ".concat(APP_PAL[i % 4].bd)
+      border: "1px solid ".concat(APP_PAL[i % APP_PAL.length].bd)
     }
   }, /*#__PURE__*/React.createElement("div", {
     style: {
       width: 8,
       height: 8,
       borderRadius: 2,
-      background: APP_PAL[i % 4].tx,
+      background: APP_PAL[i % APP_PAL.length].tx,
       flexShrink: 0
     }
   }), /*#__PURE__*/React.createElement("input", {
@@ -9621,7 +9671,7 @@ function CallSchedule() {
           }
         }, "A"), " ", /*#__PURE__*/React.createElement("span", {
           style: {
-            color: ((_APP_PAL = APP_PAL[((_aMap$e$appId3 = aMap[e.appId]) === null || _aMap$e$appId3 === void 0 ? void 0 : _aMap$e$appId3.idx) % 4]) === null || _APP_PAL === void 0 ? void 0 : _APP_PAL.tx) || "#5a6878"
+            color: ((_APP_PAL = APP_PAL[((_aMap$e$appId3 = aMap[e.appId]) === null || _aMap$e$appId3 === void 0 ? void 0 : _aMap$e$appId3.idx) % APP_PAL.length]) === null || _APP_PAL === void 0 ? void 0 : _APP_PAL.tx) || "#5a6878"
           }
         }, ((_aMap$e$appId4 = aMap[e.appId]) === null || _aMap$e$appId4 === void 0 ? void 0 : _aMap$e$appId4.name) || "?"), /*#__PURE__*/React.createElement("span", {
           style: {

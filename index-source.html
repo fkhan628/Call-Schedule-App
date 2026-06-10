@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.06.09c";
+    var APP_VERSION = "2026.06.09d";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -682,6 +682,16 @@ function CallSchedule() {
           .single();
         if (cfgRow?.edge_function_url) setEdgeFunctionUrl(cfgRow.edge_function_url);
 
+        // APP shifts now live in their own table (app_shifts_data) so that an
+        // APP-lead with can_assign_apps can write them without touching the
+        // schedule blob. If a row exists it is authoritative; otherwise we keep
+        // whatever the legacy blob set above (migration safety).
+        try {
+          const { data: appRow } = await supabase
+            .from("app_shifts_data").select("data").eq("id", "main").single();
+          if (appRow?.data && typeof appRow.data === "object") setAppShifts(appRow.data);
+        } catch(e) {}
+
         // Load vacation requests
         try {
           const reqs = await db.query("vacation_requests", { order: "submitted_at.desc", limit: 100 });
@@ -747,7 +757,6 @@ function CallSchedule() {
         if (d.backupMondays) setBackupMondaySet(new Set(d.backupMondays));
         if (d.fierceBackup) setFierceBackupSet(new Set(d.fierceBackup));
         if (d.schedule) setSchedule(d.schedule);
-        if (d.appShifts) setAppShifts(d.appShifts);
         if (d.priorCounts && Object.values(d.priorCounts).some(c => Object.values(c).some(v => v > 0))) setPriorCounts(d.priorCounts);
         if (d.year1Counts && Object.values(d.year1Counts).some(c => Object.values(c).some(v => v > 0))) setYear1Counts(d.year1Counts);
         if (d.year2Counts && Object.values(d.year2Counts).some(c => Object.values(c).some(v => v > 0))) setYear2Counts(d.year2Counts);
@@ -769,6 +778,13 @@ function CallSchedule() {
       try {
         const { data: cfgRow2 } = await supabase.from("call_schedule_config").select("edge_function_url").eq("id", "config").single();
         if (cfgRow2?.edge_function_url !== undefined) setEdgeFunctionUrl(prev => cfgRow2.edge_function_url !== prev ? cfgRow2.edge_function_url : prev);
+      } catch(e) {}
+    };
+
+    const refreshAppShifts = async () => {
+      try {
+        const { data: appRow } = await supabase.from("app_shifts_data").select("data").eq("id", "main").single();
+        if (appRow?.data && typeof appRow.data === "object") setAppShifts(appRow.data);
       } catch(e) {}
     };
 
@@ -797,6 +813,7 @@ function CallSchedule() {
       await Promise.allSettled([
         refreshScheduleRow(),
         refreshConfigRow(),
+        refreshAppShifts(),
         refreshVacReqs(),
         refreshTradeReqs(),
         refreshNotifs(),
@@ -814,6 +831,7 @@ function CallSchedule() {
         rtChannel = rtClient.channel("dsg-schedule-sync")
           .on("postgres_changes", { event: "*", schema: "public", table: "call_schedule_data" }, refreshScheduleRow)
           .on("postgres_changes", { event: "*", schema: "public", table: "call_schedule_config" }, refreshConfigRow)
+          .on("postgres_changes", { event: "*", schema: "public", table: "app_shifts_data" }, refreshAppShifts)
           .on("postgres_changes", { event: "*", schema: "public", table: "vacation_requests" }, refreshVacReqs)
           .on("postgres_changes", { event: "*", schema: "public", table: "shift_trade_requests" }, refreshTradeReqs)
           .on("postgres_changes", { event: "*", schema: "public", table: "notifications" }, refreshNotifs)
@@ -864,7 +882,7 @@ function CallSchedule() {
       surgeons, apps, vacations,
       backupMondays: [...backupMondaySet],
       fierceBackup: [...fierceBackupSet],
-      schedule, appShifts, priorCounts, year1Counts, year2Counts,
+      schedule, priorCounts, year1Counts, year2Counts,
       startMonth, startYear, numWeeks, holidayAssignments, startMondayOverride,
       pendingLocks,
     };
@@ -902,7 +920,7 @@ function CallSchedule() {
       }
     }, 800);
     return () => clearTimeout(timer);
-  }, [loaded, surgeons, apps, vacations, backupMondaySet, fierceBackupSet, schedule, appShifts, priorCounts, year1Counts, year2Counts, startMonth, startYear, numWeeks, holidayAssignments, startMondayOverride, pendingLocks]);
+  }, [loaded, surgeons, apps, vacations, backupMondaySet, fierceBackupSet, schedule, priorCounts, year1Counts, year2Counts, startMonth, startYear, numWeeks, holidayAssignments, startMondayOverride, pendingLocks]);
 
   // ─── Flush pending save when app is backgrounded or closing ───
   //
@@ -1023,6 +1041,7 @@ function CallSchedule() {
     everHadRealDataRef.current = false; // wipe is intentional; re-arm only when real data returns
     try {
       await supabase.from("call_schedule_data").upsert({ id: "main", data: { _intentionalClear: true }, updated_at: new Date().toISOString() });
+      await supabase.from("app_shifts_data").upsert({ id: "main", data: {}, updated_at: new Date().toISOString() });
     } catch(e) {}
     setSurgeons(INIT_SURGEONS);
     setApps(INIT_APPS);
@@ -2474,12 +2493,38 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
     setVacations({});
   };
 
+  // APP shifts persist to their own table (app_shifts_data), gated by
+  // can_assign_apps — so an APP lead can save them without schedule-write
+  // permission, and an APP assigner can never touch the schedule blob.
+  const saveAppShifts = async (next) => {
+    try {
+      const { error } = await supabase.from("app_shifts_data")
+        .upsert({ id: "main", data: next, updated_at: new Date().toISOString() });
+      if (error) {
+        setSaveError(true);
+        setSaveStatus("⚠ APP shift save failed");
+      } else {
+        setSaveStatus("APP shifts saved");
+        setTimeout(() => setSaveStatus(""), 1500);
+      }
+    } catch(e) {
+      setSaveError(true);
+      setSaveStatus("⚠ APP shift save failed");
+    }
+  };
+
   const addAppShift = () => {
     if(!appDate||!appPerson) return;
-    setAppShifts(p=>({...p,[appDate]:appPerson}));
+    const next = {...appShifts,[appDate]:appPerson};
+    setAppShifts(next);
+    saveAppShifts(next);
     setAppDate("");
   };
-  const rmAppShift = (ds) => setAppShifts(p=>{const n={...p};delete n[ds];return n;});
+  const rmAppShift = (ds) => {
+    const next={...appShifts}; delete next[ds];
+    setAppShifts(next);
+    saveAppShifts(next);
+  };
 
   // Build surgeon preferences map by matching names
   const buildPrefs = () => {
@@ -2514,7 +2559,7 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
             surgeons, apps, vacations,
             backupMondays: [...backupMondaySet],
             fierceBackup: [...fierceBackupSet],
-            schedule: result, appShifts, priorCounts, year1Counts, year2Counts,
+            schedule: result, priorCounts, year1Counts, year2Counts,
             startMonth, startYear, numWeeks, holidayAssignments,
           };
           await supabase.from("call_schedule_data").upsert({ id: "main", data: payload, updated_at: ts });
@@ -2540,7 +2585,7 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
           surgeons, apps, vacations,
           backupMondays: [...backupMondaySet],
           fierceBackup: [...fierceBackupSet],
-          schedule: {}, appShifts, priorCounts, year1Counts, year2Counts,
+          schedule: {}, priorCounts, year1Counts, year2Counts,
           startMonth, startYear, numWeeks, holidayAssignments,
           _intentionalClear: true, // tells the server guard this empty schedule is deliberate
         };
@@ -3148,6 +3193,7 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
         if (aid) n[ds] = aid;
         else delete n[ds];
       });
+      saveAppShifts(n); // persist APP changes to their own table
       return n;
     });
 
@@ -3230,7 +3276,7 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
   const generateShareHTML = () => {
     const colors = surgeons.map((s,i) => { const c = surgeonColors(s.name, i); return {name:s.name, tx:c.tx, bg:c.tg, bd:c.bd}; });
     const colorMap = {}; surgeons.forEach((s,i) => colorMap[s.id] = colors[i]);
-    const appColors = {}; apps.forEach((a,i) => appColors[a.id] = {name:a.name, tx:APP_PAL[i%4].tx, bg:APP_PAL[i%4].tg, bd:APP_PAL[i%4].bd});
+    const appColors = {}; apps.forEach((a,i) => appColors[a.id] = {name:a.name, tx:APP_PAL[i%APP_PAL.length].tx, bg:APP_PAL[i%APP_PAL.length].tg, bd:APP_PAL[i%APP_PAL.length].bd});
 
     // Pre-generate ICS content per surgeon + full
     const icsMap = {};
@@ -4243,8 +4289,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             </div>
             <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(160px,1fr))",gap:6}}>
               {apps.map((a,i)=>(
-                <div key={a.id} style={{display:"flex",alignItems:"center",gap:6,background:"#f4f6f8",borderRadius:6,padding:"5px 8px",border:`1px solid ${APP_PAL[i%4].bd}`}}>
-                  <div style={{width:8,height:8,borderRadius:2,background:APP_PAL[i%4].tx,flexShrink:0}}/>
+                <div key={a.id} style={{display:"flex",alignItems:"center",gap:6,background:"#f4f6f8",borderRadius:6,padding:"5px 8px",border:`1px solid ${APP_PAL[i%APP_PAL.length].bd}`}}>
+                  <div style={{width:8,height:8,borderRadius:2,background:APP_PAL[i%APP_PAL.length].tx,flexShrink:0}}/>
                   <input value={a.name} onChange={e=>renameApp(a.id,e.target.value)}
                     style={{...css.inp,border:"none",padding:"3px 4px",background:"transparent",width:"100%",fontWeight:600,letterSpacing:0.5}}/>
                   <button onClick={()=>removeApp(a.id)} style={{background:"none",border:"none",color:"#c04040",cursor:"pointer",fontSize:14,flexShrink:0,padding:"0 2px"}}>✕</button>
@@ -5668,7 +5714,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                       background:"#fcf4f0",border:"1px solid #281818"}}>
                       <span style={{color:"#c08050",fontWeight:700}}>A</span>
                       {" "}
-                      <span style={{color:APP_PAL[aMap[e.appId]?.idx%4]?.tx||"#5a6878"}}>{aMap[e.appId]?.name||"?"}</span>
+                      <span style={{color:APP_PAL[aMap[e.appId]?.idx%APP_PAL.length]?.tx||"#5a6878"}}>{aMap[e.appId]?.name||"?"}</span>
                       <span style={{color:"#8a94a0",fontSize:8,marginLeft:2}}>5p–7a</span>
                     </div>
                   ))}

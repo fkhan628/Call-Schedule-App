@@ -187,6 +187,7 @@ const APP_PAL = [
   { tx:"#883868", bd:"#d8a0c0", tg:"#f8e8f0" },
   { tx:"#487020", bd:"#b8d898", tg:"#f0f8e8" },
   { tx:"#306080", bd:"#a0c8d8", tg:"#e8f4f8" },
+  { tx:"#5a4a90", bd:"#bcb0e0", tg:"#eeeafa" },
 ];
 
 const INIT_SURGEONS = [
@@ -216,6 +217,7 @@ const DEPT_LABELS = {
 
 const INIT_APPS = [
   { id:"a1", name:"MA" }, { id:"a2", name:"SJ" }, { id:"a3", name:"MS" }, { id:"a4", name:"SS" },
+  { id:"a5", name:"JH" },
 ];
 
 /* ═══ Verified Call Counts from Shift Distribution Spreadsheets ═══
