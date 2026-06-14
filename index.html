@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.06.09e";
+    var APP_VERSION = "2026.06.09f";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -9611,7 +9611,7 @@ function CallSchedule() {
   }, "+ more\u2026")), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "grid",
-      gridTemplateColumns: "repeat(7,1fr)",
+      gridTemplateColumns: "repeat(7,minmax(0,1fr))",
       gap: 1,
       marginBottom: 1
     }
@@ -9628,7 +9628,7 @@ function CallSchedule() {
   }, d))), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "grid",
-      gridTemplateColumns: "repeat(7,1fr)",
+      gridTemplateColumns: "repeat(7,minmax(0,1fr))",
       gap: 1
     }
   }, (() => {
@@ -9726,7 +9726,8 @@ function CallSchedule() {
           padding: "3px 4px",
           borderRadius: 2,
           display: "flex",
-          flexDirection: "column"
+          flexDirection: "column",
+          minWidth: 0
         }
       }, /*#__PURE__*/React.createElement("div", {
         style: {
