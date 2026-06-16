@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.06.09f";
+    var APP_VERSION = "2026.06.09g";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -236,6 +236,7 @@ function CallSchedule() {
   const [vacReqStart, setVacReqStart] = useState("");
   const [vacReqEnd, setVacReqEnd] = useState("");
   const [vacReqReason, setVacReqReason] = useState("");
+  const [vacReqType, setVacReqType] = useState("vacation"); // "vacation" | "nocall"
   const [expandedVacGroups, setExpandedVacGroups] = useState({}); // { personId: true/false }
   const toggleVacGroup = (id) => setExpandedVacGroups(prev => ({ ...prev, [id]: !prev[id] }));
   const [showPastVacations, setShowPastVacations] = useState(false); // Setup tab: hide completed vacations by default
@@ -1211,39 +1212,43 @@ function CallSchedule() {
   const submitVacRequest = useCallback(async () => {
     if (!vacReqSurgeon || !vacReqStart || !vacReqEnd) return;
     const surgeonName = surgeons.find(s => s.id === vacReqSurgeon)?.name || apps.find(a => a.id === vacReqSurgeon)?.name || vacReqSurgeon;
+    const isNoCall = vacReqType === "nocall";
+    const kindLabel = isNoCall ? "no-call days" : "vacation";
     try {
       const req = {
         surgeon_id: vacReqSurgeon, surgeon_name: surgeonName,
         start_date: vacReqStart, end_date: vacReqEnd,
         reason: vacReqReason, status: "pending",
+        request_type: vacReqType,
         submitted_at: new Date().toISOString(),
       };
       const { data: inserted } = await db.insert("vacation_requests", req);
       if (inserted) {
         setVacRequests(prev => [inserted, ...prev]);
-        await addNotification("vacation_submitted", "Vacation Request",
-          `${surgeonName} requested ${vacReqStart} to ${vacReqEnd}`, { surgeon_id: vacReqSurgeon }, schedulerAdminIds);
-        sendEmailNotif("vacation_submitted", { surgeon_name: surgeonName, surgeon_id: vacReqSurgeon, start_date: vacReqStart, end_date: vacReqEnd, reason: vacReqReason }, schedulerAdminIds);
+        await addNotification("vacation_submitted", isNoCall ? "No-Call Request" : "Vacation Request",
+          `${surgeonName} requested ${kindLabel} ${vacReqStart} to ${vacReqEnd}`, { surgeon_id: vacReqSurgeon }, schedulerAdminIds);
+        sendEmailNotif("vacation_submitted", { surgeon_name: surgeonName, surgeon_id: vacReqSurgeon, start_date: vacReqStart, end_date: vacReqEnd, reason: vacReqReason, request_type: vacReqType }, schedulerAdminIds);
       }
-      setVacReqStart(""); setVacReqEnd(""); setVacReqReason("");
-    } catch(e) { console.error("Submit vacation error:", e); }
-  }, [vacReqSurgeon, vacReqStart, vacReqEnd, vacReqReason, surgeons, addNotification, sendEmailNotif, schedulerAdminIds]);
+      setVacReqStart(""); setVacReqEnd(""); setVacReqReason(""); setVacReqType("vacation");
+    } catch(e) { console.error("Submit request error:", e); }
+  }, [vacReqSurgeon, vacReqStart, vacReqEnd, vacReqReason, vacReqType, surgeons, apps, addNotification, sendEmailNotif, schedulerAdminIds]);
 
   // ─── Vacation Request: Approve ───
   const approveVacRequest = useCallback(async (req) => {
-    // Check if approving would exceed 4 surgeons off
+    const isNoCall = req.request_type === "nocall";
+    // Check if approving would exceed 4 surgeons off/unavailable
     const reqStart = parse(req.start_date);
     const reqEnd = parse(req.end_date);
     let d = new Date(reqStart);
     let maxOff = 0;
     while (d <= reqEnd) {
       const ds = fmt(d);
-      const alreadyOff = surgeons.filter(s => s.id !== req.surgeon_id && onVac(s.id, ds, vacations)).length + 1; // +1 for this request
+      const alreadyOff = surgeons.filter(s => s.id !== req.surgeon_id && (onVac(s.id, ds, vacations) || onVac(s.id, ds, noCallDays))).length + 1; // +1 for this request
       if (alreadyOff > maxOff) maxOff = alreadyOff;
       d = addD(d, 1);
     }
     if (maxOff > 4) {
-      if (!confirm(`Warning: Approving this would put ${maxOff} surgeons off at the same time (max 4). Approve anyway?`)) return;
+      if (!confirm(`Warning: Approving this would put ${maxOff} surgeons off/unavailable at the same time (max 4). Approve anyway?`)) return;
     }
     try {
       const reviewerName = userProfile?.display_name || surgeons.find(s => s.id === mySurgeon)?.name || "A colleague";
@@ -1251,18 +1256,26 @@ function CallSchedule() {
         status: "approved", reviewed_at: new Date().toISOString(), reviewed_by: reviewerName
       });
       setVacRequests(prev => prev.map(r => r.id === req.id ? { ...r, status: "approved" } : r));
-      // Auto-add to vacations
-      setVacations(prev => ({
-        ...prev,
-        [req.surgeon_id]: [...(prev[req.surgeon_id] || []), [req.start_date, req.end_date]]
-      }));
+      // Auto-add to the right bucket: no-call requests go to noCallDays, vacations to vacations
+      if (isNoCall) {
+        setNoCallDays(prev => ({
+          ...prev,
+          [req.surgeon_id]: [...(prev[req.surgeon_id] || []), [req.start_date, req.end_date]]
+        }));
+      } else {
+        setVacations(prev => ({
+          ...prev,
+          [req.surgeon_id]: [...(prev[req.surgeon_id] || []), [req.start_date, req.end_date]]
+        }));
+      }
+      const kindLabel = isNoCall ? "no-call days" : "vacation";
       const approveTargets = [...new Set([req.surgeon_id, ...schedulerAdminIds].filter(Boolean))];
-      await addNotification("vacation_approved", "Vacation Approved",
-        `${req.surgeon_name}'s vacation ${req.start_date} to ${req.end_date} was approved`,
+      await addNotification("vacation_approved", isNoCall ? "No-Call Approved" : "Vacation Approved",
+        `${req.surgeon_name}'s ${kindLabel} ${req.start_date} to ${req.end_date} was approved`,
         { surgeon_id: req.surgeon_id }, approveTargets);
-      sendEmailNotif("vacation_approved", { surgeon_name: req.surgeon_name, surgeon_id: req.surgeon_id, start_date: req.start_date, end_date: req.end_date }, approveTargets);
+      sendEmailNotif("vacation_approved", { surgeon_name: req.surgeon_name, surgeon_id: req.surgeon_id, start_date: req.start_date, end_date: req.end_date, request_type: req.request_type }, approveTargets);
     } catch(e) { console.error("Approve error:", e); }
-  }, [addNotification, sendEmailNotif, schedulerAdminIds, userProfile, surgeons, mySurgeon, vacations]);
+  }, [addNotification, sendEmailNotif, schedulerAdminIds, userProfile, surgeons, mySurgeon, vacations, noCallDays]);
 
   // ─── Vacation Request: Deny ───
   const denyVacRequest = useCallback(async (req, note = "") => {
@@ -1593,21 +1606,22 @@ function CallSchedule() {
       const updates = { start_date: editingVacReq.start_date, end_date: editingVacReq.end_date, reason: editingVacReq.reason };
       await db.update("vacation_requests", editingVacReq.id, updates);
       setVacRequests(prev => prev.map(r => r.id === editingVacReq.id ? { ...r, ...updates } : r));
-      // If approved, also update the vacations object
+      // If approved, also update the bucket it landed in (vacations or no-call)
       const req = vacRequests.find(r => r.id === editingVacReq.id);
       if (req?.status === "approved") {
-        setVacations(prev => {
+        const applyEdit = (prev) => {
           const n = { ...prev };
           const sid = req.surgeon_id;
           const ranges = n[sid] || [];
-          // Find and update the matching vacation range
           const idx = ranges.findIndex(([s, e]) => s === req.start_date && e === req.end_date);
           if (idx >= 0) {
             n[sid] = [...ranges];
             n[sid][idx] = [editingVacReq.start_date, editingVacReq.end_date];
           }
           return n;
-        });
+        };
+        if (req.request_type === "nocall") setNoCallDays(applyEdit);
+        else setVacations(applyEdit);
       }
       setEditingVacReq(null);
     } catch(e) { console.error("Edit vacation error:", e); }
@@ -1615,20 +1629,24 @@ function CallSchedule() {
 
   // ─── Revoke Approved Vacation (scheduler only) ───
   const revokeApprovedVac = useCallback(async (req) => {
-    if (!confirm(`Revoke ${req.surgeon_name}'s approved vacation ${req.start_date} → ${req.end_date}? This will remove it from the schedule.`)) return;
+    const isNoCall = req.request_type === "nocall";
+    const kindLabel = isNoCall ? "no-call days" : "vacation";
+    if (!confirm(`Revoke ${req.surgeon_name}'s approved ${kindLabel} ${req.start_date} → ${req.end_date}? This will remove it from the schedule.`)) return;
     try {
       await db.update("vacation_requests", req.id, { status: "revoked", reviewed_at: new Date().toISOString() });
       setVacRequests(prev => prev.map(r => r.id === req.id ? { ...r, status: "revoked" } : r));
-      // Remove from vacations
-      setVacations(prev => {
+      // Remove from the bucket it landed in
+      const removeRange = (prev) => {
         const n = { ...prev };
         const sid = req.surgeon_id;
         n[sid] = (n[sid] || []).filter(([s, e]) => !(s === req.start_date && e === req.end_date));
         return n;
-      });
+      };
+      if (isNoCall) setNoCallDays(removeRange);
+      else setVacations(removeRange);
       const revokeTargets = [...new Set([req.surgeon_id, ...schedulerAdminIds].filter(Boolean))];
-      await addNotification("vacation_revoked", "Vacation Revoked",
-        `${req.surgeon_name}'s vacation ${req.start_date} → ${req.end_date} was revoked`,
+      await addNotification("vacation_revoked", isNoCall ? "No-Call Revoked" : "Vacation Revoked",
+        `${req.surgeon_name}'s ${kindLabel} ${req.start_date} → ${req.end_date} was revoked`,
         {}, revokeTargets);
     } catch(e) { console.error("Revoke error:", e); }
   }, [addNotification, schedulerAdminIds]);
@@ -5794,7 +5812,6 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                       <span style={{color:"#c08050",fontWeight:700}}>A</span>
                       {" "}
                       <span style={{color:APP_PAL[aMap[e.appId]?.idx%APP_PAL.length]?.tx||"#5a6878"}}>{aMap[e.appId]?.name||"?"}</span>
-                      <span style={{color:"#8a94a0",fontSize:8,marginLeft:2}}>5p–7a</span>
                     </div>
                   ))}
 
@@ -6940,11 +6957,18 @@ ${"</"}script>${"</"}body>${"</"}html>`;
 
           {/* Submit Vacation Request */}
           <div style={css.card}>
-            <div style={css.cardT}>🏖 Request Vacation</div>
+            <div style={css.cardT}>🏖 Request Time Off</div>
             <p style={{fontSize:13,color:"#5a6a78",margin:"0 0 12px",lineHeight:1.5}}>
-              Submit a vacation request. It will be reviewed at the regular Friday meeting.
+              Submit a vacation or no-call-day request. It will be reviewed at the regular Friday meeting.
             </p>
             <div style={{display:"flex",gap:6,alignItems:"end",flexWrap:"wrap",marginBottom:8}}>
+              <div>
+                <label style={{fontSize:11,color:"#7a8a98",display:"block",marginBottom:2}}>Type</label>
+                <select value={vacReqType} onChange={e=>setVacReqType(e.target.value)} style={{...css.inp,width:135}}>
+                  <option value="vacation">🏖 Vacation</option>
+                  <option value="nocall">🚫 No-Call Day</option>
+                </select>
+              </div>
               {isScheduler ? (
                 <div>
                   <label style={{fontSize:11,color:"#7a8a98",display:"block",marginBottom:2}}>Person</label>
@@ -7055,6 +7079,9 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                         ) : (
                           <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
                             <span style={{fontFamily:mono,fontSize:13,color:"#2c3e50",minWidth:130}}>{r.start_date} → {r.end_date}</span>
+                            {r.request_type === "nocall"
+                              ? <span style={{fontSize:10,fontWeight:700,color:"#8a6a10",background:"#fcf6e8",padding:"1px 7px",borderRadius:10,border:"1px solid #e8dcae",whiteSpace:"nowrap"}}>🚫 No-Call</span>
+                              : <span style={{fontSize:10,fontWeight:700,color:"#5a8aa8",background:"#eef6fb",padding:"1px 7px",borderRadius:10,border:"1px solid #cfe2ee",whiteSpace:"nowrap"}}>🏖 Vacation</span>}
                             {r.reason && <span style={{fontSize:12,color:"#7a8a98",fontStyle:"italic"}}>"{r.reason}"</span>}
                             <span style={{fontSize:11,color:"#a0a8b0"}}>Submitted {new Date(r.submitted_at).toLocaleDateString()}</span>
                             {(r.surgeon_id !== mySurgeon || isScheduler) && (
@@ -7124,6 +7151,9 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                             <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
                               <span style={{fontSize:13,fontWeight:700,color:r.status==="approved"?"#1a8040":r.status==="revoked"?"#8a8a40":"#c04040"}}>{r.status==="approved"?"✓":r.status==="revoked"?"↩":"✕"}</span>
                               <span style={{fontFamily:mono,fontSize:12,color:"#2c3e50"}}>{r.start_date} → {r.end_date}</span>
+                              {r.request_type === "nocall"
+                                ? <span style={{fontSize:9,fontWeight:700,color:"#8a6a10",background:"#fcf6e8",padding:"1px 6px",borderRadius:10,border:"1px solid #e8dcae",whiteSpace:"nowrap"}}>🚫 No-Call</span>
+                                : <span style={{fontSize:9,fontWeight:700,color:"#5a8aa8",background:"#eef6fb",padding:"1px 6px",borderRadius:10,border:"1px solid #cfe2ee",whiteSpace:"nowrap"}}>🏖 Vacation</span>}
                               {r.reason && <span style={{fontSize:11,color:"#8a94a0"}}>"{r.reason}"</span>}
                               {r.review_note && <span style={{fontSize:11,color:"#c04040"}}>Note: {r.review_note}</span>}
                               {r.status==="revoked" && <span style={{fontSize:10,color:"#8a8a40",fontWeight:600}}>Revoked</span>}
