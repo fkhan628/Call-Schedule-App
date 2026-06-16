@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.06.09g";
+    var APP_VERSION = "2026.06.09h";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -1834,6 +1834,8 @@ function CallSchedule() {
   // ─── Vacation Request: Deny ───
   const denyVacRequest = useCallback(async function (req) {
     let note = arguments.length > 1 && arguments[1] !== undefined ? arguments[1] : "";
+    const isNoCall = req.request_type === "nocall";
+    const kindLabel = isNoCall ? "no-call days" : "vacation";
     try {
       var _surgeons$find3;
       const reviewerName = (userProfile === null || userProfile === void 0 ? void 0 : userProfile.display_name) || ((_surgeons$find3 = surgeons.find(s => s.id === mySurgeon)) === null || _surgeons$find3 === void 0 ? void 0 : _surgeons$find3.name) || "A colleague";
@@ -1848,7 +1850,7 @@ function CallSchedule() {
         review_note: note
       }) : r));
       const denyTargets = [...new Set([req.surgeon_id, ...schedulerAdminIds].filter(Boolean))];
-      await addNotification("vacation_denied", "Vacation Denied", "".concat(req.surgeon_name, "'s vacation ").concat(req.start_date, " to ").concat(req.end_date, " was denied").concat(note ? ": " + note : ""), {
+      await addNotification("vacation_denied", isNoCall ? "No-Call Denied" : "Vacation Denied", "".concat(req.surgeon_name, "'s ").concat(kindLabel, " ").concat(req.start_date, " to ").concat(req.end_date, " was denied").concat(note ? ": " + note : ""), {
         surgeon_id: req.surgeon_id
       }, denyTargets);
       sendEmailNotif("vacation_denied", {
@@ -1856,7 +1858,8 @@ function CallSchedule() {
         surgeon_id: req.surgeon_id,
         start_date: req.start_date,
         end_date: req.end_date,
-        note
+        note,
+        request_type: req.request_type
       }, denyTargets);
     } catch (e) {
       console.error("Deny error:", e);

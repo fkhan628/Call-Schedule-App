@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.06.09g";
+    var APP_VERSION = "2026.06.09h";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -1279,6 +1279,8 @@ function CallSchedule() {
 
   // ─── Vacation Request: Deny ───
   const denyVacRequest = useCallback(async (req, note = "") => {
+    const isNoCall = req.request_type === "nocall";
+    const kindLabel = isNoCall ? "no-call days" : "vacation";
     try {
       const reviewerName = userProfile?.display_name || surgeons.find(s => s.id === mySurgeon)?.name || "A colleague";
       await db.update("vacation_requests", req.id, {
@@ -1286,10 +1288,10 @@ function CallSchedule() {
       });
       setVacRequests(prev => prev.map(r => r.id === req.id ? { ...r, status: "denied", review_note: note } : r));
       const denyTargets = [...new Set([req.surgeon_id, ...schedulerAdminIds].filter(Boolean))];
-      await addNotification("vacation_denied", "Vacation Denied",
-        `${req.surgeon_name}'s vacation ${req.start_date} to ${req.end_date} was denied${note ? ": " + note : ""}`,
+      await addNotification("vacation_denied", isNoCall ? "No-Call Denied" : "Vacation Denied",
+        `${req.surgeon_name}'s ${kindLabel} ${req.start_date} to ${req.end_date} was denied${note ? ": " + note : ""}`,
         { surgeon_id: req.surgeon_id }, denyTargets);
-      sendEmailNotif("vacation_denied", { surgeon_name: req.surgeon_name, surgeon_id: req.surgeon_id, start_date: req.start_date, end_date: req.end_date, note }, denyTargets);
+      sendEmailNotif("vacation_denied", { surgeon_name: req.surgeon_name, surgeon_id: req.surgeon_id, start_date: req.start_date, end_date: req.end_date, note, request_type: req.request_type }, denyTargets);
     } catch(e) { console.error("Deny error:", e); }
   }, [addNotification, sendEmailNotif, schedulerAdminIds, userProfile, surgeons, mySurgeon]);
 
