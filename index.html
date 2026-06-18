@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.06.09h";
+    var APP_VERSION = "2026.06.09j";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -7688,99 +7688,14 @@ function CallSchedule() {
         }
       }, "\u2014 ", mc, " major, ", mi, " minor"));
     }))));
-  })()))), view === "generate" && !isPublicMode && (isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.role) === "admin") && /*#__PURE__*/React.createElement(React.Fragment, null, (() => {
-    const existingMondays = Object.keys(schedule).sort();
-    const hasSchedule = existingMondays.length > 0;
-    const lastMonday = hasSchedule ? parse(existingMondays[existingMondays.length - 1]) : null;
-    const lastSun = lastMonday ? addD(lastMonday, 6) : null;
-    // Count vacations that fall within the next period window (based on mondays)
-    const nextPeriodStart = mondays[0];
-    const nextPeriodEnd = mondays.length > 0 ? addD(mondays[mondays.length - 1], 6) : null;
-    let vacInPeriod = 0;
-    if (nextPeriodStart && nextPeriodEnd) {
-      Object.values(vacations || {}).forEach(arr => {
-        (arr || []).forEach(_ref76 => {
-          let _ref77 = _slicedToArray(_ref76, 2),
-            a = _ref77[0],
-            b = _ref77[1];
-          const aDate = parse(a);
-          const bDate = parse(b);
-          if (aDate <= nextPeriodEnd && bDate >= nextPeriodStart) vacInPeriod++;
-        });
-      });
-    }
-    // Count fierce/backup weeks that fall in the period
-    let backupInPeriod = 0;
-    mondays.forEach(m => {
-      const ms = fmt(m);
-      if (backupMondaySet.has(ms) || fierceBackupSet.has(ms)) backupInPeriod++;
-    });
-    // Count holidays in the period (from getHolidays, not the
-    // assignment store — assignmentsCheck below validates whether
-    // each has a surgeon assigned).
-    const yearsOverlap = new Set();
-    if (nextPeriodStart) {
-      yearsOverlap.add(nextPeriodStart.getFullYear());
-      if (nextPeriodEnd) yearsOverlap.add(nextPeriodEnd.getFullYear());
-    }
-    const holidaysInPeriod = [];
-    yearsOverlap.forEach(y => {
-      try {
-        const h = getHolidays(y);
-        (h.major || []).forEach(hol => {
-          const hd = parse(hol.date);
-          if (hd >= nextPeriodStart && hd <= nextPeriodEnd) {
-            holidaysInPeriod.push(hol);
-          }
-        });
-      } catch (e) {}
-    });
-    const holidayCount = holidaysInPeriod.length;
-    // How many of those have a surgeonA assigned?
-    const assignedCount = holidaysInPeriod.filter(hol => {
-      const y = String(parse(hol.date).getFullYear());
-      const yrA = holidayAssignments[y] || [];
-      const match = yrA.find(a => a.date === hol.date);
-      return match && match.surgeonA;
-    }).length;
-    const holidaysOk = holidayCount === 0 || assignedCount === holidayCount;
-    const holidayLabel = holidayCount === 0 ? "No holidays in this period" : "".concat(assignedCount, " of ").concat(holidayCount, " holiday").concat(holidayCount === 1 ? "" : "s", " assigned");
-    const Item = _ref78 => {
-      let ok = _ref78.ok,
-        label = _ref78.label,
-        info = _ref78.info;
-      return /*#__PURE__*/React.createElement("div", {
-        style: {
-          display: "flex",
-          alignItems: "center",
-          gap: 8,
-          padding: "5px 0",
-          fontSize: 12,
-          color: "#3a4a58"
-        }
-      }, /*#__PURE__*/React.createElement("span", {
-        style: {
-          fontSize: 14,
-          color: ok ? "#1a8040" : "#a08020",
-          minWidth: 18,
-          textAlign: "center"
-        }
-      }, ok ? "✓" : "ⓘ"), /*#__PURE__*/React.createElement("span", {
-        style: {
-          flex: 1
-        }
-      }, label), info && /*#__PURE__*/React.createElement("span", {
-        style: {
-          fontSize: 10,
-          color: "#7a8a98"
-        }
-      }, info));
-    };
-    return /*#__PURE__*/React.createElement("div", {
-      style: css.card
-    }, /*#__PURE__*/React.createElement("div", {
-      style: css.cardT
-    }, "\uD83D\uDCCB New Schedule Period"), hasSchedule && /*#__PURE__*/React.createElement("p", {
+  })()))), view === "generate" && !isPublicMode && (isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.role) === "admin") && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+    style: css.card
+  }, /*#__PURE__*/React.createElement("div", {
+    style: css.cardT
+  }, "Schedule Period"), Object.keys(schedule).length > 0 && (() => {
+    const ms = Object.keys(schedule).sort();
+    const lastSun = addD(parse(ms[ms.length - 1]), 6);
+    return /*#__PURE__*/React.createElement("p", {
       style: {
         fontSize: 12,
         color: "#5a6a78",
@@ -7791,47 +7706,8 @@ function CallSchedule() {
       style: {
         fontFamily: mono
       }
-    }, fmt(lastSun)), ". Configure the next period below."), /*#__PURE__*/React.createElement("div", {
-      style: {
-        borderTop: "1px solid #e8ecf0",
-        paddingTop: 8,
-        marginTop: 6
-      }
-    }, /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 11,
-        fontWeight: 700,
-        color: "#7a8a98",
-        textTransform: "uppercase",
-        letterSpacing: 0.8,
-        marginBottom: 6
-      }
-    }, "Pre-flight checklist"), /*#__PURE__*/React.createElement(Item, {
-      ok: surgeons.length > 0,
-      label: "".concat(surgeons.length, " surgeons configured"),
-      info: "Edit in Setup \u2192"
-    }), /*#__PURE__*/React.createElement(Item, {
-      ok: apps.length > 0,
-      label: "".concat(apps.length, " APPs configured"),
-      info: "Edit in Setup \u2192"
-    }), /*#__PURE__*/React.createElement(Item, {
-      ok: vacInPeriod >= 0,
-      label: "".concat(vacInPeriod, " vacation").concat(vacInPeriod === 1 ? "" : "s", " in this period"),
-      info: "Edit in Setup \u2192"
-    }), /*#__PURE__*/React.createElement(Item, {
-      ok: backupInPeriod >= 0,
-      label: "".concat(backupInPeriod, " backup/Fierce week").concat(backupInPeriod === 1 ? "" : "s", " in this period"),
-      info: "Edit in Setup \u2192"
-    }), /*#__PURE__*/React.createElement(Item, {
-      ok: holidaysOk,
-      label: holidayLabel,
-      info: "Edit in Setup \u2192"
-    })));
+    }, fmt(lastSun)), ". Configure the next period below.");
   })(), /*#__PURE__*/React.createElement("div", {
-    style: css.card
-  }, /*#__PURE__*/React.createElement("div", {
-    style: css.cardT
-  }, "Schedule Period"), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       gap: 8,
@@ -7967,142 +7843,6 @@ function CallSchedule() {
       })
     }, alreadyAtNext ? "✓ Set" : "\u2192 Continue from ".concat(MO[nextMonday.getMonth()].slice(0, 3), " ").concat(nextMonday.getDate())));
   })())), (() => {
-    const nextPeriodStart = mondays[0];
-    const nextPeriodEnd = mondays.length > 0 ? addD(mondays[mondays.length - 1], 6) : null;
-    if (!nextPeriodStart || !nextPeriodEnd) return null;
-    const rows = surgeons.map(s => {
-      const p = priorCounts[s.id] || {};
-      const totalShifts = (p.dc || 0) + (p.dcB || 0) + (p.nights || 0) + (p.nightsB || 0) + (p.wknd || 0) + (p.wkndB || 0);
-      const burdenScore = ((p.dc || 0) + (p.dcB || 0)) * 7 + (p.nights || 0) + (p.nightsB || 0) + ((p.wknd || 0) + (p.wkndB || 0)) * 3;
-      // Count vacation days overlapping the upcoming period
-      let vacDays = 0;
-      (vacations[s.id] || []).forEach(_ref79 => {
-        let _ref80 = _slicedToArray(_ref79, 2),
-          a = _ref80[0],
-          b = _ref80[1];
-        const aDate = parse(a);
-        const bDate = parse(b);
-        const overlapStart = aDate > nextPeriodStart ? aDate : nextPeriodStart;
-        const overlapEnd = bDate < nextPeriodEnd ? bDate : nextPeriodEnd;
-        if (overlapStart <= overlapEnd) {
-          vacDays += Math.round((overlapEnd - overlapStart) / 86400000) + 1;
-        }
-      });
-      return {
-        id: s.id,
-        name: s.name,
-        totalShifts,
-        burdenScore,
-        vacDays
-      };
-    });
-
-    // Compute median burden for flagging
-    const sortedB = rows.map(r => r.burdenScore).sort((a, b) => a - b);
-    const median = sortedB.length ? sortedB[Math.floor(sortedB.length / 2)] : 0;
-    rows.forEach(r => {
-      const flags = [];
-      if (r.vacDays > 14) flags.push("".concat(r.vacDays, "d vacation"));
-      if (median > 0 && Math.abs(r.burdenScore - median) / median > 0.25) {
-        flags.push(r.burdenScore < median ? "low prior" : "high prior");
-      }
-      r.flags = flags;
-    });
-    const anyFlags = rows.some(r => r.flags.length > 0);
-    return /*#__PURE__*/React.createElement("div", {
-      style: css.card
-    }, /*#__PURE__*/React.createElement("div", {
-      style: css.cardT
-    }, "\uD83D\uDC65 Surgeon Pre-Check"), /*#__PURE__*/React.createElement("p", {
-      style: {
-        fontSize: 12,
-        color: "#5a6a78",
-        margin: "0 0 10px",
-        lineHeight: 1.5
-      }
-    }, "Review prior counts and vacation load before generating. Flags indicate likely imbalance \u2014 the generator will still produce a schedule, but you may want to re-check Setup data first."), /*#__PURE__*/React.createElement("table", {
-      style: {
-        width: "100%",
-        fontSize: 12,
-        borderCollapse: "collapse"
-      }
-    }, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", {
-      style: {
-        textAlign: "left",
-        borderBottom: "1px solid #e0e4ea"
-      }
-    }, /*#__PURE__*/React.createElement("th", {
-      style: {
-        padding: "6px 8px",
-        fontWeight: 700,
-        color: "#5a6a78"
-      }
-    }, "Surgeon"), /*#__PURE__*/React.createElement("th", {
-      style: {
-        padding: "6px 8px",
-        fontWeight: 700,
-        color: "#5a6a78",
-        textAlign: "right"
-      }
-    }, "Multi-yr total"), /*#__PURE__*/React.createElement("th", {
-      style: {
-        padding: "6px 8px",
-        fontWeight: 700,
-        color: "#5a6a78",
-        textAlign: "right"
-      }
-    }, "Vac days"), /*#__PURE__*/React.createElement("th", {
-      style: {
-        padding: "6px 8px",
-        fontWeight: 700,
-        color: "#5a6a78"
-      }
-    }, "Status"))), /*#__PURE__*/React.createElement("tbody", null, rows.map(r => /*#__PURE__*/React.createElement("tr", {
-      key: r.id,
-      style: {
-        borderBottom: "1px solid #f0f3f6"
-      }
-    }, /*#__PURE__*/React.createElement("td", {
-      style: {
-        padding: "6px 8px",
-        fontWeight: 600
-      }
-    }, r.name), /*#__PURE__*/React.createElement("td", {
-      style: {
-        padding: "6px 8px",
-        textAlign: "right",
-        fontFamily: mono
-      }
-    }, r.totalShifts), /*#__PURE__*/React.createElement("td", {
-      style: {
-        padding: "6px 8px",
-        textAlign: "right",
-        fontFamily: mono
-      }
-    }, r.vacDays), /*#__PURE__*/React.createElement("td", {
-      style: {
-        padding: "6px 8px"
-      }
-    }, r.flags.length === 0 ? /*#__PURE__*/React.createElement("span", {
-      style: {
-        color: "#1a8040",
-        fontSize: 11
-      }
-    }, "\u2713 ok") : /*#__PURE__*/React.createElement("span", {
-      style: {
-        color: "#c47a1e",
-        fontSize: 11
-      }
-    }, "\uD83D\uDEA9 ", r.flags.join(", "))))))), anyFlags && /*#__PURE__*/React.createElement("p", {
-      style: {
-        fontSize: 11,
-        color: "#7a8a98",
-        margin: "10px 0 0",
-        fontStyle: "italic",
-        lineHeight: 1.4
-      }
-    }, "The prior-count cap (\xB150% of median) prevents flagged surgeons from dominating the algorithm, but heavy vacation periods may still create uneven distributions."));
-  })(), (() => {
     const slotLabels = {
       dc: "Service Week",
       mon: "Mon Night",
@@ -8322,10 +8062,10 @@ function CallSchedule() {
     Object.values(previewSchedule).forEach(wk => {
       if (wk.dayCall && pStats[wk.dayCall]) pStats[wk.dayCall][wk.isBackup ? "dcB" : "dc"]++;
       if (wk.off && pStats[wk.off]) pStats[wk.off][wk.isBackup ? "offB" : "off"]++;
-      Object.entries(wk.nights || {}).forEach(_ref81 => {
-        let _ref82 = _slicedToArray(_ref81, 2),
-          sh = _ref82[0],
-          sid = _ref82[1];
+      Object.entries(wk.nights || {}).forEach(_ref76 => {
+        let _ref77 = _slicedToArray(_ref76, 2),
+          sh = _ref77[0],
+          sid = _ref77[1];
         if (!sid || !pStats[sid]) return;
         if (sh === "wknd") pStats[sid][wk.isBackup ? "wkndB" : "wknd"]++;else pStats[sid][wk.isBackup ? "nightsB" : "nights"]++;
       });
@@ -8333,11 +8073,11 @@ function CallSchedule() {
 
     // Build calData from preview schedule
     const pCalData = {};
-    Object.entries(previewSchedule).forEach(_ref83 => {
+    Object.entries(previewSchedule).forEach(_ref78 => {
       var _wk$nights1;
-      let _ref84 = _slicedToArray(_ref83, 2),
-        mStr = _ref84[0],
-        wk = _ref84[1];
+      let _ref79 = _slicedToArray(_ref78, 2),
+        mStr = _ref79[0],
+        wk = _ref79[1];
       const mon = parse(mStr);
       const pfx = wk.isBackup ? "B-" : "";
       const cls = wk.isBackup ? "backup" : "primary";
@@ -8390,10 +8130,10 @@ function CallSchedule() {
         }];
       }
       if (wk.holidayCoverage) {
-        Object.entries(wk.holidayCoverage).forEach(_ref85 => {
-          let _ref86 = _slicedToArray(_ref85, 2),
-            ds = _ref86[0],
-            cov = _ref86[1];
+        Object.entries(wk.holidayCoverage).forEach(_ref80 => {
+          let _ref81 = _slicedToArray(_ref80, 2),
+            ds = _ref81[0],
+            cov = _ref81[1];
           pCalData[ds] = [...(pCalData[ds] || []), {
             type: "Holiday",
             surgeon: cov.surgeonId,
@@ -8405,10 +8145,10 @@ function CallSchedule() {
       }
     });
     // APP shifts
-    Object.entries(appShifts).forEach(_ref87 => {
-      let _ref88 = _slicedToArray(_ref87, 2),
-        ds = _ref88[0],
-        aid = _ref88[1];
+    Object.entries(appShifts).forEach(_ref82 => {
+      let _ref83 = _slicedToArray(_ref82, 2),
+        ds = _ref83[0],
+        aid = _ref83[1];
       pCalData[ds] = [...(pCalData[ds] || []), {
         type: "APP",
         appId: aid,
@@ -9533,10 +9273,10 @@ function CallSchedule() {
     }, dkInp)
   }, /*#__PURE__*/React.createElement("option", {
     value: ""
-  }, "All Depts"), Object.entries(DEPT_LABELS).map(_ref89 => {
-    let _ref90 = _slicedToArray(_ref89, 2),
-      k = _ref90[0],
-      v = _ref90[1];
+  }, "All Depts"), Object.entries(DEPT_LABELS).map(_ref84 => {
+    let _ref85 = _slicedToArray(_ref84, 2),
+      k = _ref85[0],
+      v = _ref85[1];
     return /*#__PURE__*/React.createElement("option", {
       key: k,
       value: k
@@ -10460,11 +10200,11 @@ function CallSchedule() {
       surgeons.forEach(s => {
         allEvents.push(...buildICSEvents(schedule, s.id, s.name, appShifts, aMap));
       });
-      Object.entries(appShifts).forEach(_ref91 => {
+      Object.entries(appShifts).forEach(_ref86 => {
         var _aMap$aid2;
-        let _ref92 = _slicedToArray(_ref91, 2),
-          ds = _ref92[0],
-          aid = _ref92[1];
+        let _ref87 = _slicedToArray(_ref86, 2),
+          ds = _ref87[0],
+          aid = _ref87[1];
         const d = parse(ds);
         const next = addD(d, 1);
         const appName = (aMap === null || aMap === void 0 || (_aMap$aid2 = aMap[aid]) === null || _aMap$aid2 === void 0 ? void 0 : _aMap$aid2.name) || aid;
@@ -10631,10 +10371,10 @@ function CallSchedule() {
     const hasUnsaved = (oldWk.dayCall || "") !== (draft.dayCall || "") || ["mon", "tue", "wed", "thu", "wknd"].some(nk => {
       var _oldWk$nights3, _draft$nights2;
       return (((_oldWk$nights3 = oldWk.nights) === null || _oldWk$nights3 === void 0 ? void 0 : _oldWk$nights3[nk]) || "") !== (((_draft$nights2 = draft.nights) === null || _draft$nights2 === void 0 ? void 0 : _draft$nights2[nk]) || "");
-    }) || Object.entries(draft.apps).some(_ref93 => {
-      let _ref94 = _slicedToArray(_ref93, 2),
-        ds = _ref94[0],
-        aid = _ref94[1];
+    }) || Object.entries(draft.apps).some(_ref88 => {
+      let _ref89 = _slicedToArray(_ref88, 2),
+        ds = _ref89[0],
+        aid = _ref89[1];
       return (appShifts[ds] || "") !== (aid || "");
     });
     const navigateTo = target => {
@@ -11043,11 +10783,11 @@ function CallSchedule() {
     // Whole-shift shifts (Svc Wk, Weekend) are attributed to the month the shift STARTS in
     const monthlyData = {};
     const allMonths = new Set();
-    Object.entries(schedule).forEach(_ref95 => {
+    Object.entries(schedule).forEach(_ref90 => {
       var _wk$nights14;
-      let _ref96 = _slicedToArray(_ref95, 2),
-        mStr = _ref96[0],
-        wk = _ref96[1];
+      let _ref91 = _slicedToArray(_ref90, 2),
+        mStr = _ref91[0],
+        wk = _ref91[1];
       const mon = parse(mStr);
       // Register every month touched by this week so all surgeons show columns
       for (let i = 0; i < 7; i++) {
@@ -11321,11 +11061,11 @@ function CallSchedule() {
     // All three counters now represent BILLING DAYS, so the total formula is just dc + nights + wknd.
     const monthly = {}; // { "2026-05": { s1: { dc: n, nights: n, wknd: n }, ... } }
     const allMonths = new Set();
-    Object.entries(schedule).forEach(_ref97 => {
+    Object.entries(schedule).forEach(_ref92 => {
       var _wk$nights16;
-      let _ref98 = _slicedToArray(_ref97, 2),
-        mStr = _ref98[0],
-        wk = _ref98[1];
+      let _ref93 = _slicedToArray(_ref92, 2),
+        mStr = _ref93[0],
+        wk = _ref93[1];
       const mon = parse(mStr);
       for (let i = 0; i < 7; i++) {
         const d = addD(mon, i);
@@ -11586,10 +11326,10 @@ function CallSchedule() {
         color: "#5a6a78",
         fontFamily: mono
       }
-    }, ranges.map((_ref99, i) => {
-      let _ref100 = _slicedToArray(_ref99, 2),
-        vs = _ref100[0],
-        ve = _ref100[1];
+    }, ranges.map((_ref94, i) => {
+      let _ref95 = _slicedToArray(_ref94, 2),
+        vs = _ref95[0],
+        ve = _ref95[1];
       return /*#__PURE__*/React.createElement("span", {
         key: i
       }, i > 0 ? " · " : "", vs, " \u2192 ", ve);
@@ -11626,10 +11366,10 @@ function CallSchedule() {
         color: "#5a6a78",
         fontFamily: mono
       }
-    }, ranges.map((_ref101, i) => {
-      let _ref102 = _slicedToArray(_ref101, 2),
-        vs = _ref102[0],
-        ve = _ref102[1];
+    }, ranges.map((_ref96, i) => {
+      let _ref97 = _slicedToArray(_ref96, 2),
+        vs = _ref97[0],
+        ve = _ref97[1];
       return /*#__PURE__*/React.createElement("span", {
         key: i
       }, i > 0 ? " · " : "", vs, " \u2192 ", ve);
@@ -11678,10 +11418,10 @@ function CallSchedule() {
         fontWeight: 700,
         color: tOk ? "#60e0a0" : "#e0a060"
       }
-    }, "Total Call Days (1yr): spread ", tSp, " (min ", Math.min(...totalArr), ", max ", Math.max(...totalArr), ") \u2014 ", tOk ? "Fair" : "Review recommended")), [["Service Wk (reg)", v(s => s.dc || 0)], ["Nights (reg)", v(s => s.nights || 0)], ["Weekends (reg)", v(s => s.wknd || 0)], ["Service Wk (backup)", v(s => s.dcB || 0)], ["Nights (backup)", v(s => s.nightsB || 0)], ["Weekends (backup)", v(s => s.wkndB || 0)]].map(_ref103 => {
-      let _ref104 = _slicedToArray(_ref103, 2),
-        label = _ref104[0],
-        arr = _ref104[1];
+    }, "Total Call Days (1yr): spread ", tSp, " (min ", Math.min(...totalArr), ", max ", Math.max(...totalArr), ") \u2014 ", tOk ? "Fair" : "Review recommended")), [["Service Wk (reg)", v(s => s.dc || 0)], ["Nights (reg)", v(s => s.nights || 0)], ["Weekends (reg)", v(s => s.wknd || 0)], ["Service Wk (backup)", v(s => s.dcB || 0)], ["Nights (backup)", v(s => s.nightsB || 0)], ["Weekends (backup)", v(s => s.wkndB || 0)]].map(_ref98 => {
+      let _ref99 = _slicedToArray(_ref98, 2),
+        label = _ref99[0],
+        arr = _ref99[1];
       const s = sp(arr);
       const ok = s <= 2;
       return /*#__PURE__*/React.createElement("div", {
@@ -11864,11 +11604,11 @@ function CallSchedule() {
 
     // Build my shifts
     const myShifts = [];
-    Object.entries(schedule).forEach(_ref105 => {
+    Object.entries(schedule).forEach(_ref100 => {
       var _wk$nights18;
-      let _ref106 = _slicedToArray(_ref105, 2),
-        mStr = _ref106[0],
-        wk = _ref106[1];
+      let _ref101 = _slicedToArray(_ref100, 2),
+        mStr = _ref101[0],
+        wk = _ref101[1];
       const mon = parse(mStr);
       const endStr = fmt(addD(mon, 6));
       const roles = [];
@@ -11938,10 +11678,10 @@ function CallSchedule() {
         color: "#8a6a10",
         marginBottom: 6
       }
-    }, "\uD83C\uDFD6 My Vacations"), myVacs.map((_ref107, i) => {
-      let _ref108 = _slicedToArray(_ref107, 2),
-        vs = _ref108[0],
-        ve = _ref108[1];
+    }, "\uD83C\uDFD6 My Vacations"), myVacs.map((_ref102, i) => {
+      let _ref103 = _slicedToArray(_ref102, 2),
+        vs = _ref103[0],
+        ve = _ref103[1];
       return /*#__PURE__*/React.createElement("div", {
         key: i,
         style: {
@@ -13974,9 +13714,9 @@ function CallSchedule() {
     }
   }, "\uD83D\uDCE7 Email Notifications"), mySurgeon && mySurgeon !== "admin" && (() => {
     const myPref = notifPrefs[mySurgeon] || {};
-    const HourPicker = _ref109 => {
-      let field = _ref109.field,
-        label = _ref109.label;
+    const HourPicker = _ref104 => {
+      let field = _ref104.field,
+        label = _ref104.label;
       return /*#__PURE__*/React.createElement("div", {
         style: {
           display: "flex",
@@ -14092,10 +13832,10 @@ function CallSchedule() {
         letterSpacing: 0.4,
         textAlign: "center"
       }
-    }, "Push"), [["schedule_changes", "Schedule changes & swaps"], ["vacation_updates", "Vacation requests & approvals"], ["shift_reminders", "Shift reminders"]].map(_ref110 => {
-      let _ref111 = _slicedToArray(_ref110, 2),
-        key = _ref111[0],
-        label = _ref111[1];
+    }, "Push"), [["schedule_changes", "Schedule changes & swaps"], ["vacation_updates", "Vacation requests & approvals"], ["shift_reminders", "Shift reminders"]].map(_ref105 => {
+      let _ref106 = _slicedToArray(_ref105, 2),
+        key = _ref106[0],
+        label = _ref106[1];
       return /*#__PURE__*/React.createElement(React.Fragment, {
         key: key
       }, /*#__PURE__*/React.createElement("span", {

@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.06.09h";
+    var APP_VERSION = "2026.06.09j";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -4802,93 +4802,19 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         {/* ════════════════ GENERATE ════════════════ */}
         {view==="generate" && !isPublicMode && (isScheduler || userProfile?.role === "admin") && <>
 
-          {/* Pre-flight checklist */}
-          {(() => {
-            const existingMondays = Object.keys(schedule).sort();
-            const hasSchedule = existingMondays.length > 0;
-            const lastMonday = hasSchedule ? parse(existingMondays[existingMondays.length-1]) : null;
-            const lastSun = lastMonday ? addD(lastMonday, 6) : null;
-            // Count vacations that fall within the next period window (based on mondays)
-            const nextPeriodStart = mondays[0];
-            const nextPeriodEnd = mondays.length > 0 ? addD(mondays[mondays.length-1], 6) : null;
-            let vacInPeriod = 0;
-            if (nextPeriodStart && nextPeriodEnd) {
-              Object.values(vacations || {}).forEach(arr => {
-                (arr || []).forEach(([a,b]) => {
-                  const aDate = parse(a);
-                  const bDate = parse(b);
-                  if (aDate <= nextPeriodEnd && bDate >= nextPeriodStart) vacInPeriod++;
-                });
-              });
-            }
-            // Count fierce/backup weeks that fall in the period
-            let backupInPeriod = 0;
-            mondays.forEach(m => {
-              const ms = fmt(m);
-              if (backupMondaySet.has(ms) || fierceBackupSet.has(ms)) backupInPeriod++;
-            });
-            // Count holidays in the period (from getHolidays, not the
-            // assignment store — assignmentsCheck below validates whether
-            // each has a surgeon assigned).
-            const yearsOverlap = new Set();
-            if (nextPeriodStart) {
-              yearsOverlap.add(nextPeriodStart.getFullYear());
-              if (nextPeriodEnd) yearsOverlap.add(nextPeriodEnd.getFullYear());
-            }
-            const holidaysInPeriod = [];
-            yearsOverlap.forEach(y => {
-              try {
-                const h = getHolidays(y);
-                (h.major || []).forEach(hol => {
-                  const hd = parse(hol.date);
-                  if (hd >= nextPeriodStart && hd <= nextPeriodEnd) {
-                    holidaysInPeriod.push(hol);
-                  }
-                });
-              } catch(e) {}
-            });
-            const holidayCount = holidaysInPeriod.length;
-            // How many of those have a surgeonA assigned?
-            const assignedCount = holidaysInPeriod.filter(hol => {
-              const y = String(parse(hol.date).getFullYear());
-              const yrA = holidayAssignments[y] || [];
-              const match = yrA.find(a => a.date === hol.date);
-              return match && match.surgeonA;
-            }).length;
-            const holidaysOk = holidayCount === 0 || assignedCount === holidayCount;
-            const holidayLabel = holidayCount === 0
-              ? "No holidays in this period"
-              : `${assignedCount} of ${holidayCount} holiday${holidayCount===1?"":"s"} assigned`;
-            const Item = ({ok, label, info}) => (
-              <div style={{display:"flex",alignItems:"center",gap:8,padding:"5px 0",fontSize:12,color:"#3a4a58"}}>
-                <span style={{fontSize:14,color:ok?"#1a8040":"#a08020",minWidth:18,textAlign:"center"}}>{ok?"✓":"ⓘ"}</span>
-                <span style={{flex:1}}>{label}</span>
-                {info && <span style={{fontSize:10,color:"#7a8a98"}}>{info}</span>}
-              </div>
-            );
-            return (
-              <div style={css.card}>
-                <div style={css.cardT}>📋 New Schedule Period</div>
-                {hasSchedule && (
-                  <p style={{fontSize:12,color:"#5a6a78",margin:"0 0 10px",lineHeight:1.5}}>
-                    Current schedule ends <strong style={{fontFamily:mono}}>{fmt(lastSun)}</strong>. Configure the next period below.
-                  </p>
-                )}
-                <div style={{borderTop:"1px solid #e8ecf0",paddingTop:8,marginTop:6}}>
-                  <div style={{fontSize:11,fontWeight:700,color:"#7a8a98",textTransform:"uppercase",letterSpacing:0.8,marginBottom:6}}>Pre-flight checklist</div>
-                  <Item ok={surgeons.length>0} label={`${surgeons.length} surgeons configured`} info="Edit in Setup →"/>
-                  <Item ok={apps.length>0} label={`${apps.length} APPs configured`} info="Edit in Setup →"/>
-                  <Item ok={vacInPeriod>=0} label={`${vacInPeriod} vacation${vacInPeriod===1?"":"s"} in this period`} info="Edit in Setup →"/>
-                  <Item ok={backupInPeriod>=0} label={`${backupInPeriod} backup/Fierce week${backupInPeriod===1?"":"s"} in this period`} info="Edit in Setup →"/>
-                  <Item ok={holidaysOk} label={holidayLabel} info="Edit in Setup →"/>
-                </div>
-              </div>
-            );
-          })()}
 
           {/* Period card */}
           <div style={css.card}>
             <div style={css.cardT}>Schedule Period</div>
+            {Object.keys(schedule).length > 0 && (() => {
+              const ms = Object.keys(schedule).sort();
+              const lastSun = addD(parse(ms[ms.length-1]), 6);
+              return (
+                <p style={{fontSize:12,color:"#5a6a78",margin:"0 0 10px",lineHeight:1.5}}>
+                  Current schedule ends <strong style={{fontFamily:mono}}>{fmt(lastSun)}</strong>. Configure the next period below.
+                </p>
+              );
+            })()}
             <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
               <select value={startMonth} onChange={e=>{setStartMonth(+e.target.value); setStartMondayOverride("");}} style={{...css.inp,width:140}} disabled={!!startMondayOverride}>
                 {MO.map((m,i)=><option key={i} value={i}>{m}</option>)}
@@ -4946,84 +4872,6 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             </div>
           </div>
 
-          {/* Pre-generation surgeon summary */}
-          {(() => {
-            const nextPeriodStart = mondays[0];
-            const nextPeriodEnd = mondays.length > 0 ? addD(mondays[mondays.length-1], 6) : null;
-            if (!nextPeriodStart || !nextPeriodEnd) return null;
-
-            const rows = surgeons.map(s => {
-              const p = priorCounts[s.id] || {};
-              const totalShifts = (p.dc||0)+(p.dcB||0) + (p.nights||0)+(p.nightsB||0) + (p.wknd||0)+(p.wkndB||0);
-              const burdenScore = ((p.dc||0)+(p.dcB||0))*7 + (p.nights||0)+(p.nightsB||0) + ((p.wknd||0)+(p.wkndB||0))*3;
-              // Count vacation days overlapping the upcoming period
-              let vacDays = 0;
-              (vacations[s.id] || []).forEach(([a,b]) => {
-                const aDate = parse(a);
-                const bDate = parse(b);
-                const overlapStart = aDate > nextPeriodStart ? aDate : nextPeriodStart;
-                const overlapEnd = bDate < nextPeriodEnd ? bDate : nextPeriodEnd;
-                if (overlapStart <= overlapEnd) {
-                  vacDays += Math.round((overlapEnd - overlapStart) / 86400000) + 1;
-                }
-              });
-              return { id: s.id, name: s.name, totalShifts, burdenScore, vacDays };
-            });
-
-            // Compute median burden for flagging
-            const sortedB = rows.map(r => r.burdenScore).sort((a,b) => a-b);
-            const median = sortedB.length ? sortedB[Math.floor(sortedB.length/2)] : 0;
-
-            rows.forEach(r => {
-              const flags = [];
-              if (r.vacDays > 14) flags.push(`${r.vacDays}d vacation`);
-              if (median > 0 && Math.abs(r.burdenScore - median) / median > 0.25) {
-                flags.push(r.burdenScore < median ? "low prior" : "high prior");
-              }
-              r.flags = flags;
-            });
-
-            const anyFlags = rows.some(r => r.flags.length > 0);
-
-            return (
-              <div style={css.card}>
-                <div style={css.cardT}>👥 Surgeon Pre-Check</div>
-                <p style={{fontSize:12,color:"#5a6a78",margin:"0 0 10px",lineHeight:1.5}}>
-                  Review prior counts and vacation load before generating. Flags indicate likely imbalance — the generator will still produce a schedule, but you may want to re-check Setup data first.
-                </p>
-                <table style={{width:"100%",fontSize:12,borderCollapse:"collapse"}}>
-                  <thead>
-                    <tr style={{textAlign:"left",borderBottom:"1px solid #e0e4ea"}}>
-                      <th style={{padding:"6px 8px",fontWeight:700,color:"#5a6a78"}}>Surgeon</th>
-                      <th style={{padding:"6px 8px",fontWeight:700,color:"#5a6a78",textAlign:"right"}}>Multi-yr total</th>
-                      <th style={{padding:"6px 8px",fontWeight:700,color:"#5a6a78",textAlign:"right"}}>Vac days</th>
-                      <th style={{padding:"6px 8px",fontWeight:700,color:"#5a6a78"}}>Status</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {rows.map(r => (
-                      <tr key={r.id} style={{borderBottom:"1px solid #f0f3f6"}}>
-                        <td style={{padding:"6px 8px",fontWeight:600}}>{r.name}</td>
-                        <td style={{padding:"6px 8px",textAlign:"right",fontFamily:mono}}>{r.totalShifts}</td>
-                        <td style={{padding:"6px 8px",textAlign:"right",fontFamily:mono}}>{r.vacDays}</td>
-                        <td style={{padding:"6px 8px"}}>
-                          {r.flags.length === 0
-                            ? <span style={{color:"#1a8040",fontSize:11}}>✓ ok</span>
-                            : <span style={{color:"#c47a1e",fontSize:11}}>🚩 {r.flags.join(", ")}</span>
-                          }
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-                {anyFlags && (
-                  <p style={{fontSize:11,color:"#7a8a98",margin:"10px 0 0",fontStyle:"italic",lineHeight:1.4}}>
-                    The prior-count cap (±50% of median) prevents flagged surgeons from dominating the algorithm, but heavy vacation periods may still create uneven distributions.
-                  </p>
-                )}
-              </div>
-            );
-          })()}
 
           {/* Manual Locks — pin specific surgeons to specific slots before generation */}
           {(() => {
