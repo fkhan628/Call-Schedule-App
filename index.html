@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.06.09j";
+    var APP_VERSION = "2026.06.09k";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -3651,7 +3651,7 @@ function CallSchedule() {
       });
     });
     // Compute day totals (dc*7 + nights + wknd*3 = approximation of days worked)
-    const addDays = c => (c.dc || 0) * 7 + (c.nights || 0) + (c.wknd || 0) * 3;
+    const addDays = c => (c.dc || 0) * 7 + (c.nights || 0) + (c.wknd || 0) * 3 + (c.svcAdj7 || 0);
     const addDaysB = c => (c.dcB || 0) * 7 + (c.nightsB || 0) + (c.wkndB || 0) * 3;
     // Merge into priorCounts (Multi-Year — used by generator)
     setPriorCounts(prev => {
@@ -4379,6 +4379,7 @@ function CallSchedule() {
       draft: {
         dayCall: wk.dayCall || "",
         nights: _objectSpread({}, wk.nights || {}),
+        dayCallOverrides: _objectSpread({}, wk.dayCallOverrides || {}),
         apps: appsDraft,
         reason: ""
       }
@@ -4417,10 +4418,35 @@ function CallSchedule() {
         });
       }
     });
-    Object.entries(draft.apps).forEach(_ref23 => {
-      let _ref24 = _slicedToArray(_ref23, 2),
-        ds = _ref24[0],
-        newAppId = _ref24[1];
+    // Single-day service coverage overrides
+    {
+      const oldOv = oldWk.dayCallOverrides || {};
+      const newOv = {};
+      Object.entries(draft.dayCallOverrides || {}).forEach(_ref23 => {
+        let _ref24 = _slicedToArray(_ref23, 2),
+          d2 = _ref24[0],
+          sid = _ref24[1];
+        if (sid && sid !== (draft.dayCall || "")) newOv[d2] = sid;
+      });
+      const ovDates = new Set([...Object.keys(oldOv), ...Object.keys(newOv)]);
+      ovDates.forEach(ds => {
+        const oldId = oldOv[ds] || oldWk.dayCall || "";
+        const newId = newOv[ds] || draft.dayCall || "";
+        if (oldId !== newId) {
+          changes.push({
+            slotLabel: "Service Day ".concat(ds),
+            oldId,
+            newId,
+            isApp: false,
+            date: ds
+          });
+        }
+      });
+    }
+    Object.entries(draft.apps).forEach(_ref25 => {
+      let _ref26 = _slicedToArray(_ref25, 2),
+        ds = _ref26[0],
+        newAppId = _ref26[1];
       const oldAppId = oldApps[ds] || "";
       if ((oldAppId || "") !== (newAppId || "")) {
         changes.push({
@@ -4448,18 +4474,28 @@ function CallSchedule() {
       const wk = _objectSpread({}, n[mondayStr] || {});
       wk.dayCall = draft.dayCall || null;
       wk.nights = _objectSpread(_objectSpread({}, wk.nights || {}), draft.nights);
-      // Recompute 'off' — any surgeon not assigned anywhere this week
-      const assigned = new Set([wk.dayCall, ...Object.values(wk.nights)].filter(Boolean));
+      // Persist single-day service-coverage overrides. Drop any that equal the
+      // week's service surgeon or are blank — those aren't real overrides.
+      const ov = {};
+      Object.entries(draft.dayCallOverrides || {}).forEach(_ref27 => {
+        let _ref28 = _slicedToArray(_ref27, 2),
+          d2 = _ref28[0],
+          sid = _ref28[1];
+        if (sid && sid !== (draft.dayCall || null)) ov[d2] = sid;
+      });
+      if (Object.keys(ov).length) wk.dayCallOverrides = ov;else delete wk.dayCallOverrides;
+      // Recompute 'off' — any surgeon not assigned anywhere this week (incl. coverers)
+      const assigned = new Set([wk.dayCall, ...Object.values(wk.nights), ...Object.values(ov)].filter(Boolean));
       wk.off = surgeons.map(s => s.id).find(id => !assigned.has(id)) || null;
       n[mondayStr] = wk;
       return n;
     });
     setAppShifts(p => {
       const n = _objectSpread({}, p);
-      Object.entries(draft.apps).forEach(_ref25 => {
-        let _ref26 = _slicedToArray(_ref25, 2),
-          ds = _ref26[0],
-          aid = _ref26[1];
+      Object.entries(draft.apps).forEach(_ref29 => {
+        let _ref30 = _slicedToArray(_ref29, 2),
+          ds = _ref30[0],
+          aid = _ref30[1];
         if (aid) n[ds] = aid;else delete n[ds];
       });
       saveAppShifts(n); // persist APP changes to their own table
@@ -4591,11 +4627,11 @@ function CallSchedule() {
     });
     const allEv = [];
     surgeons.forEach(s => allEv.push(...buildICSEvents(schedule, s.id, s.name, appShifts, aMap)));
-    Object.entries(appShifts).forEach(_ref27 => {
+    Object.entries(appShifts).forEach(_ref31 => {
       var _aMap$aid;
-      let _ref28 = _slicedToArray(_ref27, 2),
-        ds = _ref28[0],
-        aid = _ref28[1];
+      let _ref32 = _slicedToArray(_ref31, 2),
+        ds = _ref32[0],
+        aid = _ref32[1];
       const d = parse(ds);
       const nx = addD(d, 1);
       const an = (aMap === null || aMap === void 0 || (_aMap$aid = aMap[aid]) === null || _aMap$aid === void 0 ? void 0 : _aMap$aid.name) || aid;
@@ -4619,11 +4655,11 @@ function CallSchedule() {
     // Build calendar grid data
     const buildCalData = () => {
       const d = {};
-      Object.entries(schedule).forEach(_ref29 => {
+      Object.entries(schedule).forEach(_ref33 => {
         var _wk$nights2;
-        let _ref30 = _slicedToArray(_ref29, 2),
-          mStr = _ref30[0],
-          wk = _ref30[1];
+        let _ref34 = _slicedToArray(_ref33, 2),
+          mStr = _ref34[0],
+          wk = _ref34[1];
         const mon = parse(mStr);
         const pfx = wk.isBackup ? "B-" : "";
         if (wk.dayCall) {
@@ -4631,13 +4667,13 @@ function CallSchedule() {
             const ds = fmt(addD(mon, i));
             d[ds] = [...(d[ds] || []), {
               type: pfx + "Svc",
-              sid: wk.dayCall
+              sid: wk.dayCallOverrides && wk.dayCallOverrides[ds] || wk.dayCall
             }];
           }
           const sat = fmt(addD(mon, 5));
           d[sat] = [...(d[sat] || []), {
             type: pfx + "Wknd",
-            sid: wk.dayCall,
+            sid: wk.dayCallOverrides && wk.dayCallOverrides[sat] || wk.dayCall,
             note: "Sat 7a–7a"
           }];
         }
@@ -4679,10 +4715,10 @@ function CallSchedule() {
           }
         }
       });
-      Object.entries(appShifts).forEach(_ref31 => {
-        let _ref32 = _slicedToArray(_ref31, 2),
-          ds = _ref32[0],
-          aid = _ref32[1];
+      Object.entries(appShifts).forEach(_ref35 => {
+        let _ref36 = _slicedToArray(_ref35, 2),
+          ds = _ref36[0],
+          aid = _ref36[1];
         d[ds] = [...(d[ds] || []), {
           type: "APP",
           aid
@@ -4717,9 +4753,9 @@ function CallSchedule() {
 
     // Build calendar HTML for each month
     let calendarHTML = "";
-    monthsToRender.forEach(_ref33 => {
-      let year = _ref33.year,
-        month = _ref33.month;
+    monthsToRender.forEach(_ref37 => {
+      let year = _ref37.year,
+        month = _ref37.month;
       const days = new Date(year, month + 1, 0).getDate();
       const firstDow = new Date(year, month, 1).getDay();
       calendarHTML += "<div class=\"mo\"><h2 class=\"mh\">".concat(MO[month], " ").concat(year, "</h2>");
@@ -4790,27 +4826,48 @@ function CallSchedule() {
       dcB: 0,
       nightsB: 0,
       wkndB: 0,
-      offB: 0
+      offB: 0,
+      svcAdj6: 0,
+      svcAdj7: 0
     });
     // Only count weeks within the currently-selected Schedule Period.
     // Without this filter, stats would include all weeks ever stored in `schedule`,
     // causing the "This Period" totals to not match the header label when the period changes.
     const periodKeys = new Set(mondays.map(m => fmt(m)));
-    Object.entries(schedule).forEach(_ref34 => {
-      let _ref35 = _slicedToArray(_ref34, 2),
-        mStr = _ref35[0],
-        wk = _ref35[1];
+    Object.entries(schedule).forEach(_ref38 => {
+      let _ref39 = _slicedToArray(_ref38, 2),
+        mStr = _ref39[0],
+        wk = _ref39[1];
       if (!periodKeys.has(mStr)) return;
       const bk = wk.isBackup;
       if (wk.dayCall && s[wk.dayCall]) s[wk.dayCall][bk ? "dcB" : "dc"]++;
       if (wk.off && s[wk.off]) s[wk.off][bk ? "offB" : "off"]++;
-      Object.entries(wk.nights || {}).forEach(_ref36 => {
-        let _ref37 = _slicedToArray(_ref36, 2),
-          sh = _ref37[0],
-          sid = _ref37[1];
+      Object.entries(wk.nights || {}).forEach(_ref40 => {
+        let _ref41 = _slicedToArray(_ref40, 2),
+          sh = _ref41[0],
+          sid = _ref41[1];
         if (!sid || !s[sid]) return;
         if (sh === "wknd") s[sid][bk ? "wkndB" : "wknd"]++;else s[sid][bk ? "nightsB" : "nights"]++;
       });
+      // Single-day service coverage: move that day's weight from the week's
+      // service surgeon to the covering surgeon. Display = 1/day (Mon–Sat);
+      // billing = 1/weekday, 2/Saturday. Zero effect when no overrides exist.
+      const ov = wk.dayCallOverrides;
+      if (ov && wk.dayCall) {
+        const primary = wk.dayCall;
+        for (let i = 0; i < 6; i++) {
+          const ds = fmt(addD(parse(mStr), i));
+          const cov = ov[ds];
+          if (cov && cov !== primary && s[cov] && s[primary]) {
+            const disp = 1,
+              bill = i === 5 ? 2 : 1;
+            s[primary].svcAdj6 -= disp;
+            s[cov].svcAdj6 += disp;
+            s[primary].svcAdj7 -= bill;
+            s[cov].svcAdj7 += bill;
+          }
+        }
+      }
     });
     return s;
   }, [schedule, surgeons, mondays]);
@@ -4831,10 +4888,10 @@ function CallSchedule() {
     const countDays = id => {
       const ranges = vacations[id] || [];
       let total = 0;
-      ranges.forEach(_ref38 => {
-        let _ref39 = _slicedToArray(_ref38, 2),
-          start = _ref39[0],
-          end = _ref39[1];
+      ranges.forEach(_ref42 => {
+        let _ref43 = _slicedToArray(_ref42, 2),
+          start = _ref43[0],
+          end = _ref43[1];
         const s1 = parse(start);
         const s2 = parse(end);
         const diff = Math.round((s2 - s1) / (1000 * 60 * 60 * 24)) + 1;
@@ -4854,7 +4911,7 @@ function CallSchedule() {
   // Cumulative stats: 1-year, 2-year, multi-year (each = prior tier + current schedule)
   const buildCum = prior => {
     const c = {};
-    const estTotal = s => (s.dc || 0) * 6 + (s.nights || 0) + (s.wknd || 0) * 1;
+    const estTotal = s => (s.dc || 0) * 6 + (s.nights || 0) + (s.wknd || 0) * 1 + (s.svcAdj6 || 0);
     surgeons.forEach(s => {
       const p = prior[s.id] || {};
       const cur = stats[s.id] || {};
@@ -4871,6 +4928,8 @@ function CallSchedule() {
         nightsB: (p.nightsB || 0) + (cur.nightsB || 0),
         wkndB: (p.wkndB || 0) + (cur.wkndB || 0),
         offB: (p.offB || 0) + (cur.offB || 0),
+        svcAdj6: (p.svcAdj6 || 0) + (cur.svcAdj6 || 0),
+        svcAdj7: (p.svcAdj7 || 0) + (cur.svcAdj7 || 0),
         totalDays: pTotal + cTotal,
         totalDaysB: pTotalB + cTotalB
       };
@@ -4883,7 +4942,7 @@ function CallSchedule() {
 
   // Total call days — uses stored totalDays from spreadsheet if available, otherwise estimates
   // Formula: Service Week=6, Week Night=1, Weekend=2
-  const calcShifts = s => (s.dc || 0) * 6 + (s.nights || 0) + (s.wknd || 0) * 2;
+  const calcShifts = s => (s.dc || 0) * 6 + (s.nights || 0) + (s.wknd || 0) * 2 + (s.svcAdj6 || 0);
   const calcShiftsB = s => (s.dcB || 0) * 6 + (s.nightsB || 0) + (s.wkndB || 0) * 2;
   const calcTotal = s => calcShifts(s) + calcShiftsB(s);
 
@@ -5063,11 +5122,11 @@ function CallSchedule() {
   // Calendar data
   const calData = useMemo(() => {
     const d = {};
-    Object.entries(schedule).forEach(_ref40 => {
+    Object.entries(schedule).forEach(_ref44 => {
       var _wk$nights9;
-      let _ref41 = _slicedToArray(_ref40, 2),
-        mStr = _ref41[0],
-        wk = _ref41[1];
+      let _ref45 = _slicedToArray(_ref44, 2),
+        mStr = _ref45[0],
+        wk = _ref45[1];
       const mon = parse(mStr);
       const pfx = wk.isBackup ? "B-" : "";
       const cls = wk.isBackup ? "backup" : "primary";
@@ -5079,14 +5138,14 @@ function CallSchedule() {
           if (holCov[ds]) continue;
           d[ds] = [...(d[ds] || []), {
             type: pfx + "Svc",
-            surgeon: wk.dayCall,
+            surgeon: wk.dayCallOverrides && wk.dayCallOverrides[ds] || wk.dayCall,
             cls
           }];
         }
         const sat = fmt(addD(mon, 5));
         if (!holCov[sat]) d[sat] = [...(d[sat] || []), {
           type: pfx + "Wknd",
-          surgeon: wk.dayCall,
+          surgeon: wk.dayCallOverrides && wk.dayCallOverrides[sat] || wk.dayCall,
           cls,
           note: "Sat 7a–7a"
         }];
@@ -5142,10 +5201,10 @@ function CallSchedule() {
       }
       // Holiday coverage
       if (wk.holidayCoverage) {
-        Object.entries(wk.holidayCoverage).forEach(_ref42 => {
-          let _ref43 = _slicedToArray(_ref42, 2),
-            ds = _ref43[0],
-            cov = _ref43[1];
+        Object.entries(wk.holidayCoverage).forEach(_ref46 => {
+          let _ref47 = _slicedToArray(_ref46, 2),
+            ds = _ref47[0],
+            cov = _ref47[1];
           d[ds] = [...(d[ds] || []), {
             type: "Holiday",
             surgeon: cov.surgeonId,
@@ -5159,10 +5218,10 @@ function CallSchedule() {
       }
     });
     // APP shifts
-    Object.entries(appShifts).forEach(_ref44 => {
-      let _ref45 = _slicedToArray(_ref44, 2),
-        ds = _ref45[0],
-        aid = _ref45[1];
+    Object.entries(appShifts).forEach(_ref48 => {
+      let _ref49 = _slicedToArray(_ref48, 2),
+        ds = _ref49[0],
+        aid = _ref49[1];
       d[ds] = [...(d[ds] || []), {
         type: "APP",
         appId: aid,
@@ -5307,9 +5366,9 @@ function CallSchedule() {
       setTimeout(() => setCopied(false), 2000);
     } catch (e) {}
   };
-  const Badge = _ref46 => {
-    let id = _ref46.id,
-      small = _ref46.small;
+  const Badge = _ref50 => {
+    let id = _ref50.id,
+      small = _ref50.small;
     const s = sMap[id];
     if (!s) return /*#__PURE__*/React.createElement("span", {
       style: {
@@ -5324,9 +5383,9 @@ function CallSchedule() {
       })
     }, s.name);
   };
-  const AppBadge = _ref47 => {
-    let id = _ref47.id,
-      small = _ref47.small;
+  const AppBadge = _ref51 => {
+    let id = _ref51.id,
+      small = _ref51.small;
     const a = aMap[id];
     if (!a) return /*#__PURE__*/React.createElement("span", {
       style: {
@@ -5990,30 +6049,30 @@ function CallSchedule() {
     const canAssignApps = (userProfile === null || userProfile === void 0 ? void 0 : userProfile.can_assign_apps) === true;
     const canSeeSetup = isScheduler || isAdmin || canAssignApps;
     const canGenerate = isScheduler || isAdmin;
-    let tabs = canSeeSetup ? allTabs : allTabs.filter(_ref48 => {
-      let _ref49 = _slicedToArray(_ref48, 1),
-        k = _ref49[0];
-      return k !== "setup";
-    });
-    if (!canGenerate) tabs = tabs.filter(_ref50 => {
-      let _ref51 = _slicedToArray(_ref50, 1),
-        k = _ref51[0];
-      return k !== "generate";
-    });
-    if (!isScheduler) tabs = tabs.filter(_ref52 => {
+    let tabs = canSeeSetup ? allTabs : allTabs.filter(_ref52 => {
       let _ref53 = _slicedToArray(_ref52, 1),
         k = _ref53[0];
-      return k !== "totals";
+      return k !== "setup";
     });
-    if (isAdmin) tabs = tabs.filter(_ref54 => {
+    if (!canGenerate) tabs = tabs.filter(_ref54 => {
       let _ref55 = _slicedToArray(_ref54, 1),
         k = _ref55[0];
+      return k !== "generate";
+    });
+    if (!isScheduler) tabs = tabs.filter(_ref56 => {
+      let _ref57 = _slicedToArray(_ref56, 1),
+        k = _ref57[0];
+      return k !== "totals";
+    });
+    if (isAdmin) tabs = tabs.filter(_ref58 => {
+      let _ref59 = _slicedToArray(_ref58, 1),
+        k = _ref59[0];
       return k !== "myschedule";
     });
-    return tabs.map(_ref56 => {
-      let _ref57 = _slicedToArray(_ref56, 2),
-        k = _ref57[0],
-        l = _ref57[1];
+    return tabs.map(_ref60 => {
+      let _ref61 = _slicedToArray(_ref60, 2),
+        k = _ref61[0],
+        l = _ref61[1];
       return /*#__PURE__*/React.createElement("button", {
         key: k,
         style: _objectSpread(_objectSpread({}, css.tab(view === k)), {}, {
@@ -6629,9 +6688,9 @@ function CallSchedule() {
     // Compute total past-vacation count across everyone for the toggle label
     let pastCount = 0;
     peopleWithVac.forEach(p => {
-      (vacations[p.id] || []).forEach(_ref58 => {
-        let _ref59 = _slicedToArray(_ref58, 2),
-          ve = _ref59[1];
+      (vacations[p.id] || []).forEach(_ref62 => {
+        let _ref63 = _slicedToArray(_ref62, 2),
+          ve = _ref63[1];
         if (ve < todayStr) pastCount++;
       });
     });
@@ -6653,9 +6712,9 @@ function CallSchedule() {
     // (end >= today) stays visible regardless of the toggle.
     const visiblePeople = peopleWithVac.map(p => {
       const all = vacations[p.id] || [];
-      const visible = showPastVacations ? all : all.filter(_ref60 => {
-        let _ref61 = _slicedToArray(_ref60, 2),
-          ve = _ref61[1];
+      const visible = showPastVacations ? all : all.filter(_ref64 => {
+        let _ref65 = _slicedToArray(_ref64, 2),
+          ve = _ref65[1];
         return ve >= todayStr;
       });
       return _objectSpread(_objectSpread({}, p), {}, {
@@ -6749,10 +6808,10 @@ function CallSchedule() {
           flexWrap: "wrap",
           marginLeft: "auto"
         }
-      }, v.slice(0, 5).map((_ref62, i) => {
-        let _ref63 = _slicedToArray(_ref62, 2),
-          vs = _ref63[0],
-          ve = _ref63[1];
+      }, v.slice(0, 5).map((_ref66, i) => {
+        let _ref67 = _slicedToArray(_ref66, 2),
+          vs = _ref67[0],
+          ve = _ref67[1];
         const isPast = ve < todayStr;
         return /*#__PURE__*/React.createElement("span", {
           key: i,
@@ -6777,15 +6836,15 @@ function CallSchedule() {
           borderTop: "1px solid #e0e4ea",
           padding: "6px 10px"
         }
-      }, v.map((_ref64, i) => {
-        let _ref65 = _slicedToArray(_ref64, 2),
-          vs = _ref65[0],
-          ve = _ref65[1];
+      }, v.map((_ref68, i) => {
+        let _ref69 = _slicedToArray(_ref68, 2),
+          vs = _ref69[0],
+          ve = _ref69[1];
         // Look up the original index in the unfiltered list so edit/remove ops still work
-        const originalIdx = (vacations[p.id] || []).findIndex(_ref66 => {
-          let _ref67 = _slicedToArray(_ref66, 2),
-            avs = _ref67[0],
-            ave = _ref67[1];
+        const originalIdx = (vacations[p.id] || []).findIndex(_ref70 => {
+          let _ref71 = _slicedToArray(_ref70, 2),
+            avs = _ref71[0],
+            ave = _ref71[1];
           return avs === vs && ave === ve;
         });
         const isPast = ve < todayStr;
@@ -7021,10 +7080,10 @@ function CallSchedule() {
         marginLeft: "auto",
         alignItems: "center"
       }
-    }, (noCallDays[p.id] || []).map((_ref68, i) => {
-      let _ref69 = _slicedToArray(_ref68, 2),
-        s = _ref69[0],
-        e = _ref69[1];
+    }, (noCallDays[p.id] || []).map((_ref72, i) => {
+      let _ref73 = _slicedToArray(_ref72, 2),
+        s = _ref73[0],
+        e = _ref73[1];
       return /*#__PURE__*/React.createElement("span", {
         key: i,
         style: {
@@ -7148,16 +7207,16 @@ function CallSchedule() {
     style: {
       marginTop: 8
     }
-  }, Object.entries(appShifts).sort((_ref70, _ref71) => {
-    let _ref72 = _slicedToArray(_ref70, 1),
-      a = _ref72[0];
-    let _ref73 = _slicedToArray(_ref71, 1),
-      b = _ref73[0];
+  }, Object.entries(appShifts).sort((_ref74, _ref75) => {
+    let _ref76 = _slicedToArray(_ref74, 1),
+      a = _ref76[0];
+    let _ref77 = _slicedToArray(_ref75, 1),
+      b = _ref77[0];
     return a.localeCompare(b);
-  }).map(_ref74 => {
-    let _ref75 = _slicedToArray(_ref74, 2),
-      ds = _ref75[0],
-      aid = _ref75[1];
+  }).map(_ref78 => {
+    let _ref79 = _slicedToArray(_ref78, 2),
+      ds = _ref79[0],
+      aid = _ref79[1];
     const dow = parse(ds).getDay();
     const timeLabel = dow === 0 || dow === 6 ? "7a–7a" : "5p–7a";
     return /*#__PURE__*/React.createElement("div", {
@@ -8062,10 +8121,10 @@ function CallSchedule() {
     Object.values(previewSchedule).forEach(wk => {
       if (wk.dayCall && pStats[wk.dayCall]) pStats[wk.dayCall][wk.isBackup ? "dcB" : "dc"]++;
       if (wk.off && pStats[wk.off]) pStats[wk.off][wk.isBackup ? "offB" : "off"]++;
-      Object.entries(wk.nights || {}).forEach(_ref76 => {
-        let _ref77 = _slicedToArray(_ref76, 2),
-          sh = _ref77[0],
-          sid = _ref77[1];
+      Object.entries(wk.nights || {}).forEach(_ref80 => {
+        let _ref81 = _slicedToArray(_ref80, 2),
+          sh = _ref81[0],
+          sid = _ref81[1];
         if (!sid || !pStats[sid]) return;
         if (sh === "wknd") pStats[sid][wk.isBackup ? "wkndB" : "wknd"]++;else pStats[sid][wk.isBackup ? "nightsB" : "nights"]++;
       });
@@ -8073,11 +8132,11 @@ function CallSchedule() {
 
     // Build calData from preview schedule
     const pCalData = {};
-    Object.entries(previewSchedule).forEach(_ref78 => {
+    Object.entries(previewSchedule).forEach(_ref82 => {
       var _wk$nights1;
-      let _ref79 = _slicedToArray(_ref78, 2),
-        mStr = _ref79[0],
-        wk = _ref79[1];
+      let _ref83 = _slicedToArray(_ref82, 2),
+        mStr = _ref83[0],
+        wk = _ref83[1];
       const mon = parse(mStr);
       const pfx = wk.isBackup ? "B-" : "";
       const cls = wk.isBackup ? "backup" : "primary";
@@ -8088,14 +8147,14 @@ function CallSchedule() {
           if (holCov[ds]) continue;
           pCalData[ds] = [...(pCalData[ds] || []), {
             type: pfx + "Svc",
-            surgeon: wk.dayCall,
+            surgeon: wk.dayCallOverrides && wk.dayCallOverrides[ds] || wk.dayCall,
             cls
           }];
         }
         const sat = fmt(addD(mon, 5));
         if (!holCov[sat]) pCalData[sat] = [...(pCalData[sat] || []), {
           type: pfx + "Wknd",
-          surgeon: wk.dayCall,
+          surgeon: wk.dayCallOverrides && wk.dayCallOverrides[sat] || wk.dayCall,
           cls,
           note: "Sat 7a–7a"
         }];
@@ -8130,10 +8189,10 @@ function CallSchedule() {
         }];
       }
       if (wk.holidayCoverage) {
-        Object.entries(wk.holidayCoverage).forEach(_ref80 => {
-          let _ref81 = _slicedToArray(_ref80, 2),
-            ds = _ref81[0],
-            cov = _ref81[1];
+        Object.entries(wk.holidayCoverage).forEach(_ref84 => {
+          let _ref85 = _slicedToArray(_ref84, 2),
+            ds = _ref85[0],
+            cov = _ref85[1];
           pCalData[ds] = [...(pCalData[ds] || []), {
             type: "Holiday",
             surgeon: cov.surgeonId,
@@ -8145,10 +8204,10 @@ function CallSchedule() {
       }
     });
     // APP shifts
-    Object.entries(appShifts).forEach(_ref82 => {
-      let _ref83 = _slicedToArray(_ref82, 2),
-        ds = _ref83[0],
-        aid = _ref83[1];
+    Object.entries(appShifts).forEach(_ref86 => {
+      let _ref87 = _slicedToArray(_ref86, 2),
+        ds = _ref87[0],
+        aid = _ref87[1];
       pCalData[ds] = [...(pCalData[ds] || []), {
         type: "APP",
         appId: aid,
@@ -9273,10 +9332,10 @@ function CallSchedule() {
     }, dkInp)
   }, /*#__PURE__*/React.createElement("option", {
     value: ""
-  }, "All Depts"), Object.entries(DEPT_LABELS).map(_ref84 => {
-    let _ref85 = _slicedToArray(_ref84, 2),
-      k = _ref85[0],
-      v = _ref85[1];
+  }, "All Depts"), Object.entries(DEPT_LABELS).map(_ref88 => {
+    let _ref89 = _slicedToArray(_ref88, 2),
+      k = _ref89[0],
+      v = _ref89[1];
     return /*#__PURE__*/React.createElement("option", {
       key: k,
       value: k
@@ -10200,11 +10259,11 @@ function CallSchedule() {
       surgeons.forEach(s => {
         allEvents.push(...buildICSEvents(schedule, s.id, s.name, appShifts, aMap));
       });
-      Object.entries(appShifts).forEach(_ref86 => {
+      Object.entries(appShifts).forEach(_ref90 => {
         var _aMap$aid2;
-        let _ref87 = _slicedToArray(_ref86, 2),
-          ds = _ref87[0],
-          aid = _ref87[1];
+        let _ref91 = _slicedToArray(_ref90, 2),
+          ds = _ref91[0],
+          aid = _ref91[1];
         const d = parse(ds);
         const next = addD(d, 1);
         const appName = (aMap === null || aMap === void 0 || (_aMap$aid2 = aMap[aid]) === null || _aMap$aid2 === void 0 ? void 0 : _aMap$aid2.name) || aid;
@@ -10371,12 +10430,17 @@ function CallSchedule() {
     const hasUnsaved = (oldWk.dayCall || "") !== (draft.dayCall || "") || ["mon", "tue", "wed", "thu", "wknd"].some(nk => {
       var _oldWk$nights3, _draft$nights2;
       return (((_oldWk$nights3 = oldWk.nights) === null || _oldWk$nights3 === void 0 ? void 0 : _oldWk$nights3[nk]) || "") !== (((_draft$nights2 = draft.nights) === null || _draft$nights2 === void 0 ? void 0 : _draft$nights2[nk]) || "");
-    }) || Object.entries(draft.apps).some(_ref88 => {
-      let _ref89 = _slicedToArray(_ref88, 2),
-        ds = _ref89[0],
-        aid = _ref89[1];
+    }) || Object.entries(draft.apps).some(_ref92 => {
+      let _ref93 = _slicedToArray(_ref92, 2),
+        ds = _ref93[0],
+        aid = _ref93[1];
       return (appShifts[ds] || "") !== (aid || "");
-    });
+    }) || (() => {
+      const oldOv = oldWk.dayCallOverrides || {};
+      const newOv = draft.dayCallOverrides || {};
+      const keys = new Set([...Object.keys(oldOv), ...Object.keys(newOv)]);
+      return [...keys].some(ds => (oldOv[ds] || oldWk.dayCall || "") !== (newOv[ds] || draft.dayCall || ""));
+    })();
     const navigateTo = target => {
       if (!target) return;
       if (hasUnsaved && !confirm("You have unsaved changes. Discard and switch to a different week?")) return;
@@ -10539,6 +10603,70 @@ function CallSchedule() {
         padding: "6px 8px"
       })
     }, surgeonOpts))), /*#__PURE__*/React.createElement("div", {
+      style: {
+        marginBottom: 14
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 12,
+        fontWeight: 700,
+        color: dk ? "#b0b8c0" : "#5a6a78",
+        marginBottom: 2,
+        textTransform: "uppercase",
+        letterSpacing: 0.5
+      }
+    }, "Service Day Coverage"), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 11,
+        color: "#8a94a0",
+        marginBottom: 6,
+        lineHeight: 1.4
+      }
+    }, "Optional \u2014 if someone covered a single service day, set it here. Leave each day as the service surgeon otherwise. Adjusts shift counts & billing for that day only."), /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "grid",
+        gridTemplateColumns: "110px 1fr",
+        gap: 6,
+        alignItems: "center"
+      }
+    }, ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((dn, i) => {
+      const ds = fmt(addD(parse(mondayStr), i));
+      const mdp = ds.split("-");
+      const lbl = "".concat(dn, " ").concat(parseInt(mdp[1]), "/").concat(parseInt(mdp[2]));
+      const isOv = draft.dayCallOverrides && draft.dayCallOverrides[ds] && draft.dayCallOverrides[ds] !== draft.dayCall;
+      const val = draft.dayCallOverrides && draft.dayCallOverrides[ds] || draft.dayCall || "";
+      return /*#__PURE__*/React.createElement(React.Fragment, {
+        key: ds
+      }, /*#__PURE__*/React.createElement("label", {
+        style: {
+          fontSize: 12,
+          color: dk ? "#b0b8c0" : "#4a5868"
+        }
+      }, lbl, isOv && /*#__PURE__*/React.createElement("span", {
+        style: {
+          color: "#c08030",
+          marginLeft: 4
+        }
+      }, "\u25CF")), /*#__PURE__*/React.createElement("select", {
+        value: val,
+        onChange: e => {
+          const v = e.target.value;
+          updateDraft(d => {
+            const o = _objectSpread({}, d.dayCallOverrides || {});
+            if (!v || v === d.dayCall) delete o[ds];else o[ds] = v;
+            return _objectSpread(_objectSpread({}, d), {}, {
+              dayCallOverrides: o
+            });
+          });
+        },
+        style: _objectSpread(_objectSpread({}, css.inp), {}, {
+          padding: "6px 8px"
+        }, isOv ? {
+          borderColor: "#e0b060",
+          background: dk ? "#3a3020" : "#fcf6e8"
+        } : {})
+      }, surgeonOpts));
+    }))), /*#__PURE__*/React.createElement("div", {
       style: {
         marginBottom: 14
       }
@@ -10783,11 +10911,11 @@ function CallSchedule() {
     // Whole-shift shifts (Svc Wk, Weekend) are attributed to the month the shift STARTS in
     const monthlyData = {};
     const allMonths = new Set();
-    Object.entries(schedule).forEach(_ref90 => {
+    Object.entries(schedule).forEach(_ref94 => {
       var _wk$nights14;
-      let _ref91 = _slicedToArray(_ref90, 2),
-        mStr = _ref91[0],
-        wk = _ref91[1];
+      let _ref95 = _slicedToArray(_ref94, 2),
+        mStr = _ref95[0],
+        wk = _ref95[1];
       const mon = parse(mStr);
       // Register every month touched by this week so all surgeons show columns
       for (let i = 0; i < 7; i++) {
@@ -11061,11 +11189,11 @@ function CallSchedule() {
     // All three counters now represent BILLING DAYS, so the total formula is just dc + nights + wknd.
     const monthly = {}; // { "2026-05": { s1: { dc: n, nights: n, wknd: n }, ... } }
     const allMonths = new Set();
-    Object.entries(schedule).forEach(_ref92 => {
+    Object.entries(schedule).forEach(_ref96 => {
       var _wk$nights16;
-      let _ref93 = _slicedToArray(_ref92, 2),
-        mStr = _ref93[0],
-        wk = _ref93[1];
+      let _ref97 = _slicedToArray(_ref96, 2),
+        mStr = _ref97[0],
+        wk = _ref97[1];
       const mon = parse(mStr);
       for (let i = 0; i < 7; i++) {
         const d = addD(mon, i);
@@ -11326,10 +11454,10 @@ function CallSchedule() {
         color: "#5a6a78",
         fontFamily: mono
       }
-    }, ranges.map((_ref94, i) => {
-      let _ref95 = _slicedToArray(_ref94, 2),
-        vs = _ref95[0],
-        ve = _ref95[1];
+    }, ranges.map((_ref98, i) => {
+      let _ref99 = _slicedToArray(_ref98, 2),
+        vs = _ref99[0],
+        ve = _ref99[1];
       return /*#__PURE__*/React.createElement("span", {
         key: i
       }, i > 0 ? " · " : "", vs, " \u2192 ", ve);
@@ -11366,10 +11494,10 @@ function CallSchedule() {
         color: "#5a6a78",
         fontFamily: mono
       }
-    }, ranges.map((_ref96, i) => {
-      let _ref97 = _slicedToArray(_ref96, 2),
-        vs = _ref97[0],
-        ve = _ref97[1];
+    }, ranges.map((_ref100, i) => {
+      let _ref101 = _slicedToArray(_ref100, 2),
+        vs = _ref101[0],
+        ve = _ref101[1];
       return /*#__PURE__*/React.createElement("span", {
         key: i
       }, i > 0 ? " · " : "", vs, " \u2192 ", ve);
@@ -11418,10 +11546,10 @@ function CallSchedule() {
         fontWeight: 700,
         color: tOk ? "#60e0a0" : "#e0a060"
       }
-    }, "Total Call Days (1yr): spread ", tSp, " (min ", Math.min(...totalArr), ", max ", Math.max(...totalArr), ") \u2014 ", tOk ? "Fair" : "Review recommended")), [["Service Wk (reg)", v(s => s.dc || 0)], ["Nights (reg)", v(s => s.nights || 0)], ["Weekends (reg)", v(s => s.wknd || 0)], ["Service Wk (backup)", v(s => s.dcB || 0)], ["Nights (backup)", v(s => s.nightsB || 0)], ["Weekends (backup)", v(s => s.wkndB || 0)]].map(_ref98 => {
-      let _ref99 = _slicedToArray(_ref98, 2),
-        label = _ref99[0],
-        arr = _ref99[1];
+    }, "Total Call Days (1yr): spread ", tSp, " (min ", Math.min(...totalArr), ", max ", Math.max(...totalArr), ") \u2014 ", tOk ? "Fair" : "Review recommended")), [["Service Wk (reg)", v(s => s.dc || 0)], ["Nights (reg)", v(s => s.nights || 0)], ["Weekends (reg)", v(s => s.wknd || 0)], ["Service Wk (backup)", v(s => s.dcB || 0)], ["Nights (backup)", v(s => s.nightsB || 0)], ["Weekends (backup)", v(s => s.wkndB || 0)]].map(_ref102 => {
+      let _ref103 = _slicedToArray(_ref102, 2),
+        label = _ref103[0],
+        arr = _ref103[1];
       const s = sp(arr);
       const ok = s <= 2;
       return /*#__PURE__*/React.createElement("div", {
@@ -11604,11 +11732,11 @@ function CallSchedule() {
 
     // Build my shifts
     const myShifts = [];
-    Object.entries(schedule).forEach(_ref100 => {
+    Object.entries(schedule).forEach(_ref104 => {
       var _wk$nights18;
-      let _ref101 = _slicedToArray(_ref100, 2),
-        mStr = _ref101[0],
-        wk = _ref101[1];
+      let _ref105 = _slicedToArray(_ref104, 2),
+        mStr = _ref105[0],
+        wk = _ref105[1];
       const mon = parse(mStr);
       const endStr = fmt(addD(mon, 6));
       const roles = [];
@@ -11678,10 +11806,10 @@ function CallSchedule() {
         color: "#8a6a10",
         marginBottom: 6
       }
-    }, "\uD83C\uDFD6 My Vacations"), myVacs.map((_ref102, i) => {
-      let _ref103 = _slicedToArray(_ref102, 2),
-        vs = _ref103[0],
-        ve = _ref103[1];
+    }, "\uD83C\uDFD6 My Vacations"), myVacs.map((_ref106, i) => {
+      let _ref107 = _slicedToArray(_ref106, 2),
+        vs = _ref107[0],
+        ve = _ref107[1];
       return /*#__PURE__*/React.createElement("div", {
         key: i,
         style: {
@@ -13714,9 +13842,9 @@ function CallSchedule() {
     }
   }, "\uD83D\uDCE7 Email Notifications"), mySurgeon && mySurgeon !== "admin" && (() => {
     const myPref = notifPrefs[mySurgeon] || {};
-    const HourPicker = _ref104 => {
-      let field = _ref104.field,
-        label = _ref104.label;
+    const HourPicker = _ref108 => {
+      let field = _ref108.field,
+        label = _ref108.label;
       return /*#__PURE__*/React.createElement("div", {
         style: {
           display: "flex",
@@ -13832,10 +13960,10 @@ function CallSchedule() {
         letterSpacing: 0.4,
         textAlign: "center"
       }
-    }, "Push"), [["schedule_changes", "Schedule changes & swaps"], ["vacation_updates", "Vacation requests & approvals"], ["shift_reminders", "Shift reminders"]].map(_ref105 => {
-      let _ref106 = _slicedToArray(_ref105, 2),
-        key = _ref106[0],
-        label = _ref106[1];
+    }, "Push"), [["schedule_changes", "Schedule changes & swaps"], ["vacation_updates", "Vacation requests & approvals"], ["shift_reminders", "Shift reminders"]].map(_ref109 => {
+      let _ref110 = _slicedToArray(_ref109, 2),
+        key = _ref110[0],
+        label = _ref110[1];
       return /*#__PURE__*/React.createElement(React.Fragment, {
         key: key
       }, /*#__PURE__*/React.createElement("span", {
