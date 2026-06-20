@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.06.09k";
+    var APP_VERSION = "2026.06.09l";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -11211,12 +11211,16 @@ function CallSchedule() {
       // Skip backup weeks entirely — they're 2nd-call and not billed
       if (wk.isBackup) return;
       if (wk.dayCall) {
-        // Each of the 7 service-week days credits its own calendar month
+        // Each of the 7 service-week days credits its own calendar month.
+        // Honor single-day service-coverage overrides so a covered day is
+        // billed to the covering surgeon, not the week's service surgeon.
         for (let i = 0; i < 7; i++) {
           var _monthly$dMoKey;
           const d = addD(mon, i);
+          const ds = fmt(d);
           const dMoKey = "".concat(d.getFullYear(), "-").concat(String(d.getMonth() + 1).padStart(2, "0"));
-          if ((_monthly$dMoKey = monthly[dMoKey]) !== null && _monthly$dMoKey !== void 0 && _monthly$dMoKey[wk.dayCall]) monthly[dMoKey][wk.dayCall].dc += 1;
+          const svcSid = wk.dayCallOverrides && wk.dayCallOverrides[ds] || wk.dayCall;
+          if ((_monthly$dMoKey = monthly[dMoKey]) !== null && _monthly$dMoKey !== void 0 && _monthly$dMoKey[svcSid]) monthly[dMoKey][svcSid].dc += 1;
         }
       }
       NIGHT_KEYS.forEach((sk, i) => {

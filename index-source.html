@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.06.09j";
+    var APP_VERSION = "2026.06.09l";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -2653,7 +2653,7 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
       });
     });
     // Compute day totals (dc*7 + nights + wknd*3 = approximation of days worked)
-    const addDays = (c) => (c.dc||0)*7 + (c.nights||0) + (c.wknd||0)*3;
+    const addDays = (c) => (c.dc||0)*7 + (c.nights||0) + (c.wknd||0)*3 + (c.svcAdj7||0);
     const addDaysB = (c) => (c.dcB||0)*7 + (c.nightsB||0) + (c.wkndB||0)*3;
     // Merge into priorCounts (Multi-Year — used by generator)
     setPriorCounts(prev => {
@@ -3175,6 +3175,7 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
       draft: {
         dayCall: wk.dayCall || "",
         nights: { ...(wk.nights || {}) },
+        dayCallOverrides: { ...(wk.dayCallOverrides || {}) },
         apps: appsDraft,
         reason: "",
       },
@@ -3200,6 +3201,22 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
         changes.push({ slotLabel: SHIFT_LABELS[nk] || nk, oldId, newId, isApp: false });
       }
     });
+    // Single-day service coverage overrides
+    {
+      const oldOv = oldWk.dayCallOverrides || {};
+      const newOv = {};
+      Object.entries(draft.dayCallOverrides || {}).forEach(([d2, sid]) => {
+        if (sid && sid !== (draft.dayCall || "")) newOv[d2] = sid;
+      });
+      const ovDates = new Set([...Object.keys(oldOv), ...Object.keys(newOv)]);
+      ovDates.forEach(ds => {
+        const oldId = oldOv[ds] || (oldWk.dayCall || "");
+        const newId = newOv[ds] || (draft.dayCall || "");
+        if (oldId !== newId) {
+          changes.push({ slotLabel: `Service Day ${ds}`, oldId, newId, isApp: false, date: ds });
+        }
+      });
+    }
     Object.entries(draft.apps).forEach(([ds, newAppId]) => {
       const oldAppId = oldApps[ds] || "";
       if ((oldAppId || "") !== (newAppId || "")) {
@@ -3223,8 +3240,15 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
       const wk = { ...(n[mondayStr] || {}) };
       wk.dayCall = draft.dayCall || null;
       wk.nights = { ...(wk.nights || {}), ...draft.nights };
-      // Recompute 'off' — any surgeon not assigned anywhere this week
-      const assigned = new Set([wk.dayCall, ...Object.values(wk.nights)].filter(Boolean));
+      // Persist single-day service-coverage overrides. Drop any that equal the
+      // week's service surgeon or are blank — those aren't real overrides.
+      const ov = {};
+      Object.entries(draft.dayCallOverrides || {}).forEach(([d2, sid]) => {
+        if (sid && sid !== (draft.dayCall || null)) ov[d2] = sid;
+      });
+      if (Object.keys(ov).length) wk.dayCallOverrides = ov; else delete wk.dayCallOverrides;
+      // Recompute 'off' — any surgeon not assigned anywhere this week (incl. coverers)
+      const assigned = new Set([wk.dayCall, ...Object.values(wk.nights), ...Object.values(ov)].filter(Boolean));
       wk.off = surgeons.map(s => s.id).find(id => !assigned.has(id)) || null;
       n[mondayStr] = wk;
       return n;
@@ -3349,8 +3373,8 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
         const mon = parse(mStr);
         const pfx = wk.isBackup ? "B-" : "";
         if(wk.dayCall){
-          for(let i=0;i<5;i++){ const ds=fmt(addD(mon,i)); d[ds]=[...(d[ds]||[]),{type:pfx+"Svc",sid:wk.dayCall}]; }
-          const sat=fmt(addD(mon,5)); d[sat]=[...(d[sat]||[]),{type:pfx+"Wknd",sid:wk.dayCall,note:"Sat 7a–7a"}];
+          for(let i=0;i<5;i++){ const ds=fmt(addD(mon,i)); d[ds]=[...(d[ds]||[]),{type:pfx+"Svc",sid:(wk.dayCallOverrides&&wk.dayCallOverrides[ds])||wk.dayCall}]; }
+          const sat=fmt(addD(mon,5)); d[sat]=[...(d[sat]||[]),{type:pfx+"Wknd",sid:(wk.dayCallOverrides&&wk.dayCallOverrides[sat])||wk.dayCall,note:"Sat 7a–7a"}];
         }
         NIGHT_KEYS.forEach((sk,i)=>{
           const sid=wk.nights?.[sk]; if(!sid) return;
@@ -3509,7 +3533,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
 
   // Stats
   const stats = useMemo(() => {
-    const s={}; surgeons.forEach(sg=>s[sg.id]={dc:0,nights:0,wknd:0,off:0,dcB:0,nightsB:0,wkndB:0,offB:0});
+    const s={}; surgeons.forEach(sg=>s[sg.id]={dc:0,nights:0,wknd:0,off:0,dcB:0,nightsB:0,wkndB:0,offB:0,svcAdj6:0,svcAdj7:0});
     // Only count weeks within the currently-selected Schedule Period.
     // Without this filter, stats would include all weeks ever stored in `schedule`,
     // causing the "This Period" totals to not match the header label when the period changes.
@@ -3524,6 +3548,22 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         if(sh==="wknd") s[sid][bk?"wkndB":"wknd"]++;
         else s[sid][bk?"nightsB":"nights"]++;
       });
+      // Single-day service coverage: move that day's weight from the week's
+      // service surgeon to the covering surgeon. Display = 1/day (Mon–Sat);
+      // billing = 1/weekday, 2/Saturday. Zero effect when no overrides exist.
+      const ov = wk.dayCallOverrides;
+      if (ov && wk.dayCall) {
+        const primary = wk.dayCall;
+        for (let i=0; i<6; i++) {
+          const ds = fmt(addD(parse(mStr), i));
+          const cov = ov[ds];
+          if (cov && cov !== primary && s[cov] && s[primary]) {
+            const disp = 1, bill = (i===5 ? 2 : 1);
+            s[primary].svcAdj6 -= disp; s[cov].svcAdj6 += disp;
+            s[primary].svcAdj7 -= bill; s[cov].svcAdj7 += bill;
+          }
+        }
+      }
     });
     return s;
   }, [schedule, surgeons, mondays]);
@@ -3557,7 +3597,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
   // Cumulative stats: 1-year, 2-year, multi-year (each = prior tier + current schedule)
   const buildCum = (prior) => {
     const c = {};
-    const estTotal = (s) => (s.dc||0)*6 + (s.nights||0) + (s.wknd||0)*1;
+    const estTotal = (s) => (s.dc||0)*6 + (s.nights||0) + (s.wknd||0)*1 + (s.svcAdj6||0);
     surgeons.forEach(s => {
       const p = prior[s.id] || {};
       const cur = stats[s.id] || {};
@@ -3568,6 +3608,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       c[s.id] = {
         dc: (p.dc||0)+(cur.dc||0), nights: (p.nights||0)+(cur.nights||0), wknd: (p.wknd||0)+(cur.wknd||0), off: (p.off||0)+(cur.off||0),
         dcB: (p.dcB||0)+(cur.dcB||0), nightsB: (p.nightsB||0)+(cur.nightsB||0), wkndB: (p.wkndB||0)+(cur.wkndB||0), offB: (p.offB||0)+(cur.offB||0),
+        svcAdj6: (p.svcAdj6||0)+(cur.svcAdj6||0), svcAdj7: (p.svcAdj7||0)+(cur.svcAdj7||0),
         totalDays: pTotal + cTotal,
         totalDaysB: pTotalB + cTotalB,
       };
@@ -3580,7 +3621,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
 
   // Total call days — uses stored totalDays from spreadsheet if available, otherwise estimates
   // Formula: Service Week=6, Week Night=1, Weekend=2
-  const calcShifts = (s) => (s.dc||0)*6 + (s.nights||0) + (s.wknd||0)*2;
+  const calcShifts = (s) => (s.dc||0)*6 + (s.nights||0) + (s.wknd||0)*2 + (s.svcAdj6||0);
   const calcShiftsB = (s) => (s.dcB||0)*6 + (s.nightsB||0) + (s.wkndB||0)*2;
   const calcTotal = (s) => calcShifts(s) + calcShiftsB(s);
 
@@ -3712,10 +3753,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           const ds=fmt(addD(mon,i));
           // Skip Svc entry on days covered by a holiday 24h surgeon
           if(holCov[ds]) continue;
-          d[ds]=[...(d[ds]||[]),{type:pfx+"Svc",surgeon:wk.dayCall,cls}];
+          d[ds]=[...(d[ds]||[]),{type:pfx+"Svc",surgeon:(wk.dayCallOverrides&&wk.dayCallOverrides[ds])||wk.dayCall,cls}];
         }
         const sat=fmt(addD(mon,5));
-        if(!holCov[sat]) d[sat]=[...(d[sat]||[]),{type:pfx+"Wknd",surgeon:wk.dayCall,cls,note:"Sat 7a–7a"}];
+        if(!holCov[sat]) d[sat]=[...(d[sat]||[]),{type:pfx+"Wknd",surgeon:(wk.dayCallOverrides&&wk.dayCallOverrides[sat])||wk.dayCall,cls,note:"Sat 7a–7a"}];
       }
       NIGHT_KEYS.forEach((sk,i)=>{
         const sid=wk.nights?.[sk]; if(!sid) return;
@@ -4990,10 +5031,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                 for(let i=0;i<5;i++){
                   const ds=fmt(addD(mon,i));
                   if(holCov[ds]) continue;
-                  pCalData[ds]=[...(pCalData[ds]||[]),{type:pfx+"Svc",surgeon:wk.dayCall,cls}];
+                  pCalData[ds]=[...(pCalData[ds]||[]),{type:pfx+"Svc",surgeon:(wk.dayCallOverrides&&wk.dayCallOverrides[ds])||wk.dayCall,cls}];
                 }
                 const sat=fmt(addD(mon,5));
-                if(!holCov[sat]) pCalData[sat]=[...(pCalData[sat]||[]),{type:pfx+"Wknd",surgeon:wk.dayCall,cls,note:"Sat 7a–7a"}];
+                if(!holCov[sat]) pCalData[sat]=[...(pCalData[sat]||[]),{type:pfx+"Wknd",surgeon:(wk.dayCallOverrides&&wk.dayCallOverrides[sat])||wk.dayCall,cls,note:"Sat 7a–7a"}];
               }
               NIGHT_KEYS.forEach((sk,i)=>{
                 const sid=wk.nights?.[sk]; if(!sid) return;
@@ -6069,7 +6110,13 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             const hasUnsaved = (
               (oldWk.dayCall || "") !== (draft.dayCall || "") ||
               ["mon","tue","wed","thu","wknd"].some(nk => (oldWk.nights?.[nk] || "") !== (draft.nights?.[nk] || "")) ||
-              Object.entries(draft.apps).some(([ds, aid]) => (appShifts[ds] || "") !== (aid || ""))
+              Object.entries(draft.apps).some(([ds, aid]) => (appShifts[ds] || "") !== (aid || "")) ||
+              (() => {
+                const oldOv = oldWk.dayCallOverrides || {};
+                const newOv = draft.dayCallOverrides || {};
+                const keys = new Set([...Object.keys(oldOv), ...Object.keys(newOv)]);
+                return [...keys].some(ds => (oldOv[ds] || (oldWk.dayCall||"")) !== (newOv[ds] || (draft.dayCall||"")));
+              })()
             );
 
             const navigateTo = (target) => {
@@ -6128,6 +6175,34 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                       ))}
                       <label style={{fontSize:12,color:dk?"#b0b8c0":"#4a5868"}}>Weekend</label>
                       <select value={draft.nights.wknd||""} onChange={e=>updateDraft(d=>({...d,nights:{...d.nights,wknd:e.target.value}}))} style={{...css.inp,padding:"6px 8px"}}>{surgeonOpts}</select>
+                    </div>
+                  </div>
+
+                  {/* Single-day service coverage */}
+                  <div style={{marginBottom:14}}>
+                    <div style={{fontSize:12,fontWeight:700,color:dk?"#b0b8c0":"#5a6a78",marginBottom:2,textTransform:"uppercase",letterSpacing:0.5}}>Service Day Coverage</div>
+                    <div style={{fontSize:11,color:"#8a94a0",marginBottom:6,lineHeight:1.4}}>Optional — if someone covered a single service day, set it here. Leave each day as the service surgeon otherwise. Adjusts shift counts &amp; billing for that day only.</div>
+                    <div style={{display:"grid",gridTemplateColumns:"110px 1fr",gap:6,alignItems:"center"}}>
+                      {["Mon","Tue","Wed","Thu","Fri","Sat"].map((dn,i)=>{
+                        const ds = fmt(addD(parse(mondayStr), i));
+                        const mdp = ds.split("-");
+                        const lbl = `${dn} ${parseInt(mdp[1])}/${parseInt(mdp[2])}`;
+                        const isOv = draft.dayCallOverrides && draft.dayCallOverrides[ds] && draft.dayCallOverrides[ds] !== draft.dayCall;
+                        const val = (draft.dayCallOverrides && draft.dayCallOverrides[ds]) || draft.dayCall || "";
+                        return (
+                          <React.Fragment key={ds}>
+                            <label style={{fontSize:12,color:dk?"#b0b8c0":"#4a5868"}}>{lbl}{isOv && <span style={{color:"#c08030",marginLeft:4}}>●</span>}</label>
+                            <select value={val} onChange={e=>{
+                              const v=e.target.value;
+                              updateDraft(d=>{
+                                const o={...(d.dayCallOverrides||{})};
+                                if(!v || v===d.dayCall) delete o[ds]; else o[ds]=v;
+                                return {...d,dayCallOverrides:o};
+                              });
+                            }} style={{...css.inp,padding:"6px 8px",...(isOv?{borderColor:"#e0b060",background:dk?"#3a3020":"#fcf6e8"}:{})}}>{surgeonOpts}</select>
+                          </React.Fragment>
+                        );
+                      })}
                     </div>
                   </div>
 
@@ -6387,11 +6462,15 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               // Skip backup weeks entirely — they're 2nd-call and not billed
               if (wk.isBackup) return;
               if (wk.dayCall) {
-                // Each of the 7 service-week days credits its own calendar month
+                // Each of the 7 service-week days credits its own calendar month.
+                // Honor single-day service-coverage overrides so a covered day is
+                // billed to the covering surgeon, not the week's service surgeon.
                 for (let i = 0; i < 7; i++) {
                   const d = addD(mon, i);
+                  const ds = fmt(d);
                   const dMoKey = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
-                  if (monthly[dMoKey]?.[wk.dayCall]) monthly[dMoKey][wk.dayCall].dc += 1;
+                  const svcSid = (wk.dayCallOverrides && wk.dayCallOverrides[ds]) || wk.dayCall;
+                  if (monthly[dMoKey]?.[svcSid]) monthly[dMoKey][svcSid].dc += 1;
                 }
               }
               NIGHT_KEYS.forEach((sk, i) => {
