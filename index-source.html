@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.06.09l";
+    var APP_VERSION = "2026.06.09m";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -350,6 +350,8 @@ function CallSchedule() {
   const [mySurgeon, setMySurgeon] = useState(() => {
     try { return localStorage.getItem("dsg-my-surgeon") || ""; } catch(e) { return ""; }
   });
+  // Inline editor for "My Vacations" — { idx, start, end } | null
+  const [myVacEdit, setMyVacEdit] = useState(null);
 
   // Save My Surgeon choice to localStorage
   useEffect(() => {
@@ -406,8 +408,14 @@ function CallSchedule() {
       today.setHours(0,0,0,0);
       const msPerDay = 86400000;
       const daysRemaining = Math.round((deadline - today) / msPerDay);
+      // Next period spans `numWeeks` weeks; its last covered day is the Sunday
+      // before the following Monday (start + numWeeks*7 - 1 days).
+      const wks = (typeof numWeeks === "number" && numWeeks > 0) ? numWeeks : 14;
+      const nextPeriodEnd = addD(nextPeriodStart, wks * 7 - 1);
       return {
         nextPeriodStart: fmt(nextPeriodStart),
+        nextPeriodEnd: fmt(nextPeriodEnd),
+        periodWeeks: wks,
         deadline: fmt(deadline),
         daysRemaining,
         isPast: daysRemaining < 0,
@@ -417,7 +425,7 @@ function CallSchedule() {
       console.error("vacationDeadline calc error:", e);
       return null;
     }
-  }, [schedule]);
+  }, [schedule, numWeeks]);
 
   // ─── Auth: Check session on mount ───
   useEffect(() => {
@@ -6749,6 +6757,26 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             const myId = mySurgeon;
             const myName = sMap[myId]?.name || "?";
             const myVacs = vacations[myId] || [];
+            const myNoCall = noCallDays[myId] || [];
+            // Only the owner (or a scheduler) may adjust this person's time off.
+            const canEditTimeOff = (userProfile && myId === userProfile.person_id) || isScheduler;
+            const saveMyVacEdit = () => {
+              if (!myVacEdit) return;
+              const { idx, start, end } = myVacEdit;
+              if (!start || !end || start > end) { alert("Please enter a valid date range (start on or before end)."); return; }
+              const next = myVacs.map((r, i) => i === idx ? [start, end] : r);
+              setVacations(prev => ({ ...prev, [myId]: next }));
+              setMyVacEdit(null);
+              try { addNotification("vacation_revoked", "Vacation Adjusted", `${myName} adjusted a vacation to ${start} → ${end}.`, { surgeon_id: myId }, [...schedulerAdminIds]); } catch(e) {}
+            };
+            const removeMyVac = (idx) => {
+              const r = myVacs[idx];
+              if (!confirm(`Remove your vacation ${r[0]} → ${r[1]}? This gives those days back.`)) return;
+              const next = myVacs.filter((_, i) => i !== idx);
+              setVacations(prev => ({ ...prev, [myId]: next }));
+              if (myVacEdit && myVacEdit.idx === idx) setMyVacEdit(null);
+              try { addNotification("vacation_revoked", "Vacation Removed", `${myName} removed their vacation ${r[0]} → ${r[1]} (gave days back).`, { surgeon_id: myId }, [...schedulerAdminIds]); } catch(e) {}
+            };
 
             // Build my shifts
             const myShifts = [];
@@ -6773,13 +6801,46 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   <Badge id={myId}/> <span style={{marginLeft:8}}>{MO[startMonth]} – {MO[endMoIdx]} {startYear}</span>
                 </div>
 
-                {/* My Vacations */}
+                {/* My Vacations — editable: shorten or remove to give days back */}
                 {myVacs.length > 0 && (
                   <div style={{...css.card,background:"#fef8f0",border:"1px solid #e8d8c0"}}>
                     <div style={{fontSize:12,fontWeight:700,color:"#8a6a10",marginBottom:6}}>🏖 My Vacations</div>
-                    {myVacs.map(([vs,ve],i) => (
-                      <div key={i} style={{fontSize:13,color:"#5a5030",marginBottom:3}}>{vs} → {ve}</div>
+                    {myVacs.map(([vs,ve],i) => {
+                      const editing = myVacEdit && myVacEdit.idx === i;
+                      return (
+                        <div key={i} style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap",padding:"4px 0",borderBottom:i<myVacs.length-1?"1px solid #f0e4d0":"none"}}>
+                          {editing ? (
+                            <>
+                              <input type="date" value={myVacEdit.start} max={myVacEdit.end} onChange={e=>setMyVacEdit(p=>({...p,start:e.target.value}))} style={{...css.inp,padding:"3px 6px",fontSize:12,width:148}}/>
+                              <span style={{color:"#8a94a0"}}>→</span>
+                              <input type="date" value={myVacEdit.end} min={myVacEdit.start} onChange={e=>setMyVacEdit(p=>({...p,end:e.target.value}))} style={{...css.inp,padding:"3px 6px",fontSize:12,width:148}}/>
+                              <button onClick={saveMyVacEdit} style={{background:"#2a7a40",color:"#fff",border:"none",borderRadius:5,padding:"3px 12px",fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:font}}>Save</button>
+                              <button onClick={()=>setMyVacEdit(null)} style={{background:"#f0f0f0",color:"#5a6a78",border:"1px solid #d0d8e0",borderRadius:5,padding:"3px 10px",fontSize:11,cursor:"pointer",fontFamily:font}}>Cancel</button>
+                            </>
+                          ) : (
+                            <>
+                              <span style={{fontSize:13,color:"#5a5030",fontFamily:mono,flex:1,minWidth:140}}>{vs} → {ve}</span>
+                              {canEditTimeOff && <>
+                                <button onClick={()=>setMyVacEdit({idx:i,start:vs,end:ve})} style={{background:"#e8f0fc",border:"1px solid #a8c8e0",color:"#1a6fa8",borderRadius:5,padding:"2px 10px",fontSize:10,fontWeight:600,cursor:"pointer",fontFamily:font}}>✏️ Edit</button>
+                                <button onClick={()=>removeMyVac(i)} style={{background:"#fdecec",border:"1px solid #e8a0a0",color:"#a82828",borderRadius:5,padding:"2px 10px",fontSize:10,fontWeight:600,cursor:"pointer",fontFamily:font}}>Remove</button>
+                              </>}
+                            </>
+                          )}
+                        </div>
+                      );
+                    })}
+                    {canEditTimeOff && <div style={{fontSize:10,color:"#a8946a",marginTop:8,lineHeight:1.4}}>Shorten or remove a vacation to give days back. The scheduler is notified; already-generated weeks aren't reassigned automatically.</div>}
+                  </div>
+                )}
+
+                {/* My No-Call Days */}
+                {myNoCall.length > 0 && (
+                  <div style={{...css.card,background:"#f4f0fb",border:"1px solid #d8cdec"}}>
+                    <div style={{fontSize:12,fontWeight:700,color:"#5a3a90",marginBottom:6}}>🚫 My No-Call Days</div>
+                    {myNoCall.map(([ns,ne],i) => (
+                      <div key={i} style={{fontSize:13,color:"#4a3a60",fontFamily:mono,marginBottom:3}}>{ns}{ns!==ne ? ` → ${ne}` : ""}</div>
                     ))}
+                    <div style={{fontSize:10,color:"#8a7aa8",marginTop:6,lineHeight:1.4}}>Days you're working but won't be assigned call.</div>
                   </div>
                 )}
 
@@ -6823,9 +6884,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         {view==="requests" && !isPublicMode && <>
           {/* Vacation Request Deadline — auto-detected from latest schedule period */}
           {vacationDeadline && (() => {
-            const { nextPeriodStart, deadline, daysRemaining, isPast } = vacationDeadline;
+            const { nextPeriodStart, nextPeriodEnd, periodWeeks, deadline, daysRemaining, isPast } = vacationDeadline;
             const deadlineDate = parse(deadline);
             const periodDate = parse(nextPeriodStart);
+            const periodEndDate = nextPeriodEnd ? parse(nextPeriodEnd) : null;
             const fmtPretty = d => {
               const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
               return `${months[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()}`;
@@ -6871,7 +6933,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                       {label}
                     </div>
                     <div style={{fontSize:13,color:"#5a6a78",lineHeight:1.5}}>
-                      Submit requests by <strong style={{color:accent}}>{fmtPretty(deadlineDate)}</strong> for the schedule period beginning <strong>{fmtPretty(periodDate)}</strong>.
+                      Submit requests by <strong style={{color:accent}}>{fmtPretty(deadlineDate)}</strong> for the next schedule period{periodEndDate ? <> — <strong>{fmtPretty(periodDate)}</strong> through <strong>{fmtPretty(periodEndDate)}</strong> ({periodWeeks} weeks)</> : <> beginning <strong>{fmtPretty(periodDate)}</strong></>}.
                     </div>
                     {!isPast && daysRemaining > 7 && (
                       <div style={{fontSize:11,color:"#7a8a98",marginTop:6,fontStyle:"italic"}}>
