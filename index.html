@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.06.25d";
+    var APP_VERSION = "2026.06.25e";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -857,6 +857,34 @@ function CallSchedule() {
       }
     };
   }, [reloadTrigger]);
+  const [toast, setToast] = useState(null);
+  const toastTimerRef = useRef(null);
+  const showToast = (msg, tone) => {
+    setToast({
+      msg: msg,
+      tone: tone || "info"
+    });
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = setTimeout(() => setToast(null), 4000);
+  };
+  const buildPayload = (overrides = {}) => _objectSpread({
+    surgeons,
+    apps,
+    vacations,
+    noCallDays,
+    backupMondays: [...backupMondaySet],
+    fierceBackup: [...fierceBackupSet],
+    schedule,
+    priorCounts,
+    year1Counts,
+    year2Counts,
+    startMonth,
+    startYear,
+    numWeeks,
+    holidayAssignments,
+    startMondayOverride,
+    pendingLocks
+  }, overrides);
   useEffect(() => {
     if (!loaded) return;
     if (isPublicMode) return;
@@ -866,24 +894,7 @@ function CallSchedule() {
       setSaveStatus("⚠ Not saving — schedule failed to load");
       return;
     }
-    const payload = {
-      surgeons,
-      apps,
-      vacations,
-      noCallDays,
-      backupMondays: [...backupMondaySet],
-      fierceBackup: [...fierceBackupSet],
-      schedule,
-      priorCounts,
-      year1Counts,
-      year2Counts,
-      startMonth,
-      startYear,
-      numWeeks,
-      holidayAssignments,
-      startMondayOverride,
-      pendingLocks
-    };
+    const payload = buildPayload();
     pendingSaveRef.current = payload;
     if (!payloadLooksWiped(payload)) everHadRealDataRef.current = true;
     const timer = setTimeout(async () => {
@@ -2606,7 +2617,7 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
         alert("Publish failed: " + JSON.stringify(body));
         return;
       }
-      alert(`Sent ${(_body$sent = body.sent) !== null && _body$sent !== void 0 ? _body$sent : 0} email(s).`);
+      showToast(`Sent ${(_body$sent = body.sent) !== null && _body$sent !== void 0 ? _body$sent : 0} email(s).`, "success");
       setShowPublishDialog(false);
     } catch (e) {
       alert("Publish error: " + ((e === null || e === void 0 ? void 0 : e.message) || e));
@@ -2753,22 +2764,9 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
           await snapshots.capture("regenerate");
           const ts = new Date().toISOString();
           lastSyncRef.current = ts;
-          const payload = {
-            surgeons,
-            apps,
-            vacations,
-            noCallDays,
-            backupMondays: [...backupMondaySet],
-            fierceBackup: [...fierceBackupSet],
-            schedule: result,
-            priorCounts,
-            year1Counts,
-            year2Counts,
-            startMonth,
-            startYear,
-            numWeeks,
-            holidayAssignments
-          };
+          const payload = buildPayload({
+            schedule: result
+          });
           await supabase.from("call_schedule_data").upsert({
             id: "main",
             data: payload,
@@ -2791,23 +2789,10 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
       try {
         const ts = new Date().toISOString();
         lastSyncRef.current = ts;
-        const payload = {
-          surgeons,
-          apps,
-          vacations,
-          noCallDays,
-          backupMondays: [...backupMondaySet],
-          fierceBackup: [...fierceBackupSet],
+        const payload = buildPayload({
           schedule: {},
-          priorCounts,
-          year1Counts,
-          year2Counts,
-          startMonth,
-          startYear,
-          numWeeks,
-          holidayAssignments,
           _intentionalClear: true
-        };
+        });
         await supabase.from("call_schedule_data").upsert({
           id: "main",
           data: payload,
@@ -4409,7 +4394,29 @@ ${"</"}script>${"</"}body>${"</"}html>`;
   }, React.createElement("link", {
     href: "https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap",
     rel: "stylesheet"
-  }), darkMode && React.createElement("style", null, `
+  }), toast && React.createElement("div", {
+    role: "status",
+    "aria-live": "polite",
+    onClick: () => setToast(null),
+    style: {
+      position: "fixed",
+      left: "50%",
+      bottom: 24,
+      transform: "translateX(-50%)",
+      zIndex: 9999,
+      maxWidth: "90vw",
+      background: toast.tone === "success" ? "#1a7a4a" : toast.tone === "error" ? "#a83232" : "#1a2a3a",
+      color: "#fff",
+      borderRadius: 9,
+      padding: "10px 18px",
+      fontSize: 13,
+      fontWeight: 600,
+      fontFamily: font,
+      boxShadow: "0 4px 16px rgba(0,0,0,0.25)",
+      cursor: "pointer",
+      letterSpacing: 0.2
+    }
+  }, toast.tone === "success" ? "✓ " : toast.tone === "error" ? "⚠ " : "", toast.msg), darkMode && React.createElement("style", null, `
         body { background: #1a1a2e !important; color: #e0e0f0 !important; }
         /* Cards and containers */
         div[style*="background: rgb(255, 255, 255)"], div[style*="background:#ffffff"], div[style*="background: #fff"] { background: #16213e !important; border-color: #2a3a5e !important; }
@@ -5063,6 +5070,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     hour: "numeric",
     minute: "2-digit"
   })), !lastSyncRef.current && React.createElement(React.Fragment, null, " · Loading schedule…")) : React.createElement(React.Fragment, null, "Call Schedule · Surgeons + APPs", saveStatus && React.createElement("span", {
+    role: "status",
+    "aria-live": "polite",
     style: {
       marginLeft: 8,
       color: saveError ? "#c04040" : "#1a8040",
@@ -5206,6 +5215,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       fontFamily: font
     }
   }, "Clear All"), React.createElement("button", {
+    "aria-label": "Close notifications",
     onClick: () => setShowNotifs(false),
     style: {
       background: "none",
@@ -8118,6 +8128,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       gap: 10
     }
   }, React.createElement("button", {
+    "aria-label": "Previous month",
     onClick: () => {
       if (calMonth === 0) {
         setCalMonth(11);
@@ -8134,6 +8145,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       textAlign: "center"
     }
   }, MO[calMonth], " ", calYear), React.createElement("button", {
+    "aria-label": "Next month",
     onClick: () => {
       if (calMonth === 11) {
         setCalMonth(0);
@@ -9365,6 +9377,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         color: dk ? "#e8e8f0" : "#2c5a80"
       }
     }, "✏️ Edit Week — ", wkLabel), React.createElement("button", {
+      "aria-label": "Close",
       onClick: () => setEditWeekModal(null),
       style: {
         background: "none",
@@ -13476,27 +13489,11 @@ ${"</"}script>${"</"}body>${"</"}html>`;
   }, "Download a full JSON backup of the current schedule, vacations, APP shifts, and counts. Grab one before any big change — it can be re-imported or used to rebuild the database."), React.createElement("button", {
     onClick: () => {
       try {
-        const backup = {
+        const backup = _objectSpread(_objectSpread({}, buildPayload()), {}, {
           _app: "DSG Call Schedule",
           _exportedAt: new Date().toISOString(),
-          surgeons,
-          apps,
-          vacations,
-          noCallDays,
-          backupMondays: [...backupMondaySet],
-          fierceBackup: [...fierceBackupSet],
-          schedule,
-          appShifts,
-          priorCounts,
-          year1Counts,
-          year2Counts,
-          startMonth,
-          startYear,
-          numWeeks,
-          holidayAssignments,
-          startMondayOverride,
-          pendingLocks
-        };
+          appShifts
+        });
         const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
         const downloaded = downloadJSON(backup, `dsg-call-backup-${stamp}.json`);
         setSaveStatus(downloaded ? "Backup exported" : "Backup opened — use Share → Save to Files");
@@ -13570,8 +13567,104 @@ const tdS = {
   color: "#4a5a68",
   fontSize: 13
 };
+class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = {
+      error: null
+    };
+  }
+  static getDerivedStateFromError(error) {
+    return {
+      error: error
+    };
+  }
+  componentDidCatch(error, info) {
+    try {
+      console.error("App crashed:", error, info);
+    } catch (e) {}
+  }
+  render() {
+    if (this.state.error) {
+      var msg = this.state.error && this.state.error.message ? this.state.error.message : String(this.state.error);
+      return React.createElement("div", {
+        style: {
+          minHeight: "100vh",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          padding: 20,
+          fontFamily: typeof font !== "undefined" ? font : "system-ui, sans-serif",
+          background: "#f0f2f5",
+          boxSizing: "border-box"
+        }
+      }, React.createElement("div", {
+        style: {
+          maxWidth: 460,
+          width: "100%",
+          background: "#fff",
+          border: "1px solid #e0e4ea",
+          borderRadius: 12,
+          padding: 24,
+          boxShadow: "0 2px 12px rgba(0,0,0,0.06)",
+          textAlign: "center"
+        }
+      }, React.createElement("div", {
+        style: {
+          fontSize: 34,
+          marginBottom: 8
+        }
+      }, "⚠️"), React.createElement("div", {
+        style: {
+          fontSize: 18,
+          fontWeight: 700,
+          color: "#1a2a3a",
+          marginBottom: 6
+        }
+      }, "Something went wrong"), React.createElement("div", {
+        style: {
+          fontSize: 13,
+          color: "#5a6a78",
+          lineHeight: 1.5,
+          marginBottom: 16
+        }
+      }, "The app hit an unexpected error and stopped rendering. Your saved schedule is safe — reloading should recover it. If it keeps happening, export a JSON backup from the Settings tab and note what you were doing."), React.createElement("div", {
+        style: {
+          fontFamily: typeof mono !== "undefined" ? mono : "monospace",
+          fontSize: 11,
+          color: "#a04040",
+          background: "#fcecec",
+          border: "1px solid #f0d0d0",
+          borderRadius: 6,
+          padding: "8px 10px",
+          marginBottom: 16,
+          wordBreak: "break-word",
+          textAlign: "left"
+        }
+      }, msg), React.createElement("button", {
+        onClick: function () {
+          try {
+            window.location.reload();
+          } catch (e) {}
+        },
+        style: {
+          background: "linear-gradient(135deg,#1a6fa8,#2488c8)",
+          border: "1px solid #1a6fa8",
+          color: "#fff",
+          borderRadius: 8,
+          padding: "10px 22px",
+          fontSize: 14,
+          fontWeight: 600,
+          cursor: "pointer",
+          fontFamily: typeof font !== "undefined" ? font : "system-ui, sans-serif"
+        }
+      }, "Reload app")));
+    }
+    return this.props.children;
+  }
+}
 const root = ReactDOM.createRoot(document.getElementById('root'));
-root.render(React.createElement(CallSchedule));
+root.render(React.createElement(ErrorBoundary, null, React.createElement(CallSchedule)));
   </script>
 </body>
 </html>

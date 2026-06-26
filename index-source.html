@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.06.25d";
+    var APP_VERSION = "2026.06.25e";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -879,6 +879,35 @@ function CallSchedule() {
     };
   }, [reloadTrigger]);
 
+  // ─── Lightweight toast (non-blocking notifications) ───
+  // For happy-path confirmations that don't need a blocking dialog. Validation
+  // errors and destructive confirms deliberately stay as native dialogs — an
+  // auto-dismissing toast would be the wrong tool for "are you sure?" or "fix
+  // this field". role=status + aria-live announces it to screen readers.
+  const [toast, setToast] = useState(null); // { msg, tone } | null
+  const toastTimerRef = useRef(null);
+  const showToast = (msg, tone) => {
+    setToast({ msg: msg, tone: tone || "info" });
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = setTimeout(() => setToast(null), 4000);
+  };
+
+  // ─── Single source of truth for the persisted call_schedule_data payload ───
+  // Every DB save path builds from this so the shape can't drift. (A prior bug
+  // dropped startMondayOverride/pendingLocks from the regenerate & clear saves
+  // because those two paths hand-rolled their own payload objects.) Note this
+  // intentionally excludes appShifts — those persist in app_shifts_data, not in
+  // this row. The JSON export adds appShifts + metadata on top of this base.
+  const buildPayload = (overrides = {}) => ({
+    surgeons, apps, vacations, noCallDays,
+    backupMondays: [...backupMondaySet],
+    fierceBackup: [...fierceBackupSet],
+    schedule, priorCounts, year1Counts, year2Counts,
+    startMonth, startYear, numWeeks, holidayAssignments, startMondayOverride,
+    pendingLocks,
+    ...overrides,
+  });
+
   // ─── Supabase: Auto-save on changes ───
   useEffect(() => {
     if (!loaded) return;
@@ -895,14 +924,7 @@ function CallSchedule() {
     }
     // Capture the payload so the visibility/unload handlers can flush it
     // immediately without waiting for the debounce.
-    const payload = {
-      surgeons, apps, vacations, noCallDays,
-      backupMondays: [...backupMondaySet],
-      fierceBackup: [...fierceBackupSet],
-      schedule, priorCounts, year1Counts, year2Counts,
-      startMonth, startYear, numWeeks, holidayAssignments, startMondayOverride,
-      pendingLocks,
-    };
+    const payload = buildPayload();
     pendingSaveRef.current = payload;
     // Arm the guard as soon as we hold real data locally, so a later
     // transient-empty render can't slip an empty blob through before the
@@ -2487,7 +2509,7 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) { alert("Publish failed: " + JSON.stringify(body)); return; }
-      alert(`Sent ${body.sent ?? 0} email(s).`);
+      showToast(`Sent ${body.sent ?? 0} email(s).`, "success");
       setShowPublishDialog(false);
     } catch(e) { alert("Publish error: " + (e?.message || e)); }
     finally { setOfficeNotifBusy(false); }
@@ -2605,13 +2627,7 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
           await snapshots.capture("regenerate"); // preserve pre-regenerate state
           const ts = new Date().toISOString();
           lastSyncRef.current = ts; // block poll from overwriting
-          const payload = {
-            surgeons, apps, vacations, noCallDays,
-            backupMondays: [...backupMondaySet],
-            fierceBackup: [...fierceBackupSet],
-            schedule: result, priorCounts, year1Counts, year2Counts,
-            startMonth, startYear, numWeeks, holidayAssignments,
-          };
+          const payload = buildPayload({ schedule: result });
           await supabase.from("call_schedule_data").upsert({ id: "main", data: payload, updated_at: ts });
         } catch(e) { console.error("Immediate save failed:", e); }
       })();
@@ -2631,14 +2647,7 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
       try {
         const ts = new Date().toISOString();
         lastSyncRef.current = ts;
-        const payload = {
-          surgeons, apps, vacations, noCallDays,
-          backupMondays: [...backupMondaySet],
-          fierceBackup: [...fierceBackupSet],
-          schedule: {}, priorCounts, year1Counts, year2Counts,
-          startMonth, startYear, numWeeks, holidayAssignments,
-          _intentionalClear: true, // tells the server guard this empty schedule is deliberate
-        };
+        const payload = buildPayload({ schedule: {}, _intentionalClear: true });
         await supabase.from("call_schedule_data").upsert({ id: "main", data: payload, updated_at: ts });
       } catch(e) { console.error("Immediate save failed:", e); }
     })();
@@ -3949,6 +3958,12 @@ ${"</"}script>${"</"}body>${"</"}html>`;
   return (
     <div style={{...css.root,background:dkBg,color:dkText}}>
       <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet"/>
+      {/* Non-blocking toast */}
+      {toast && (
+        <div role="status" aria-live="polite" onClick={()=>setToast(null)} style={{position:"fixed",left:"50%",bottom:24,transform:"translateX(-50%)",zIndex:9999,maxWidth:"90vw",background:toast.tone==="success"?"#1a7a4a":toast.tone==="error"?"#a83232":"#1a2a3a",color:"#fff",borderRadius:9,padding:"10px 18px",fontSize:13,fontWeight:600,fontFamily:font,boxShadow:"0 4px 16px rgba(0,0,0,0.25)",cursor:"pointer",letterSpacing:0.2}}>
+          {toast.tone==="success"?"✓ ":toast.tone==="error"?"⚠ ":""}{toast.msg}
+        </div>
+      )}
       {darkMode && <style>{`
         body { background: #1a1a2e !important; color: #e0e0f0 !important; }
         /* Cards and containers */
@@ -4211,7 +4226,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               ) : (
                 <>
                   Call Schedule · Surgeons + APPs
-                  {saveStatus && <span style={{marginLeft:8,color:saveError?"#c04040":"#1a8040",fontWeight:600,fontSize:11}}>{saveError?"⚠":"☁"} {saveStatus}</span>}
+                  {saveStatus && <span role="status" aria-live="polite" style={{marginLeft:8,color:saveError?"#c04040":"#1a8040",fontWeight:600,fontSize:11}}>{saveError?"⚠":"☁"} {saveStatus}</span>}
                   {loaded && !saveStatus && <span style={{marginLeft:8,color:"#a0a8b0",fontSize:10}}>☁ Synced</span>}
                   {!loaded && <span style={{marginLeft:8,color:"#6a7a88",fontSize:10}}>Connecting…</span>}
                 </>
@@ -4266,7 +4281,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                 {myNotifications.length > 0 && (
                   <button onClick={clearAllNotifications} style={{background:"none",border:"1px solid #e8c0c0",color:"#904040",borderRadius:5,padding:"2px 8px",fontSize:10,cursor:"pointer",fontFamily:font}}>Clear All</button>
                 )}
-                <button onClick={()=>setShowNotifs(false)} style={{background:"none",border:"none",fontSize:16,cursor:"pointer",color:"#8a94a0"}}>✕</button>
+                <button aria-label="Close notifications" onClick={()=>setShowNotifs(false)} style={{background:"none",border:"none",fontSize:16,cursor:"pointer",color:"#8a94a0"}}>✕</button>
               </div>
             </div>
             {myNotifications.length === 0 ? (
@@ -5509,9 +5524,9 @@ ${"</"}script>${"</"}body>${"</"}html>`;
 
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14,flexWrap:"wrap",gap:8}}>
             <div style={{display:"flex",alignItems:"center",gap:10}}>
-              <button onClick={()=>{if(calMonth===0){setCalMonth(11);setCalYear(y=>y-1);}else setCalMonth(m=>m-1);}} style={css.btn(false)}>◀</button>
+              <button aria-label="Previous month" onClick={()=>{if(calMonth===0){setCalMonth(11);setCalYear(y=>y-1);}else setCalMonth(m=>m-1);}} style={css.btn(false)}>◀</button>
               <span style={{fontSize:15,fontWeight:700,color:"#2c5a80",minWidth:170,textAlign:"center"}}>{MO[calMonth]} {calYear}</span>
-              <button onClick={()=>{if(calMonth===11){setCalMonth(0);setCalYear(y=>y+1);}else setCalMonth(m=>m+1);}} style={css.btn(false)}>▶</button>
+              <button aria-label="Next month" onClick={()=>{if(calMonth===11){setCalMonth(0);setCalYear(y=>y+1);}else setCalMonth(m=>m+1);}} style={css.btn(false)}>▶</button>
             </div>
             <div style={{display:"flex",gap:5}}>
               {isScheduler && <>
@@ -6171,7 +6186,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                 <div onClick={e=>e.stopPropagation()} style={{background:dk?"#1a1f2a":"#fff",borderRadius:10,maxWidth:520,width:"100%",padding:20,boxShadow:"0 10px 40px rgba(0,0,0,0.3)"}}>
                   <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
                     <div style={{fontSize:16,fontWeight:700,color:dk?"#e8e8f0":"#2c5a80"}}>✏️ Edit Week — {wkLabel}</div>
-                    <button onClick={()=>setEditWeekModal(null)} style={{background:"none",border:"none",fontSize:20,cursor:"pointer",color:dk?"#8a94a0":"#5a6a78"}}>×</button>
+                    <button aria-label="Close" onClick={()=>setEditWeekModal(null)} style={{background:"none",border:"none",fontSize:20,cursor:"pointer",color:dk?"#8a94a0":"#5a6a78"}}>×</button>
                   </div>
 
                   {(prevMonday || nextMonday) && (
@@ -7951,14 +7966,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             <button onClick={()=>{
               try {
                 const backup = {
+                  ...buildPayload(),
                   _app: "DSG Call Schedule",
                   _exportedAt: new Date().toISOString(),
-                  surgeons, apps, vacations, noCallDays,
-                  backupMondays: [...backupMondaySet],
-                  fierceBackup: [...fierceBackupSet],
-                  schedule, appShifts, priorCounts, year1Counts, year2Counts,
-                  startMonth, startYear, numWeeks, holidayAssignments,
-                  startMondayOverride, pendingLocks,
+                  appShifts, // included for a full restore (not part of the saved row)
                 };
                 const stamp = new Date().toISOString().slice(0,19).replace(/[:T]/g,"-");
                 const downloaded = downloadJSON(backup, `dsg-call-backup-${stamp}.json`);
@@ -7994,8 +8005,42 @@ const thS = {textAlign:"left",padding:"7px 8px",color:"#5a6a78",fontWeight:600,f
 const thS2 = {textAlign:"left",padding:"4px 8px",color:"#7a8a98",fontWeight:500,fontSize:10,textTransform:"uppercase",letterSpacing:0.3};
 const tdS = {padding:"7px 8px",fontFamily:"'JetBrains Mono',monospace",color:"#4a5a68",fontSize:13};
 
+// ─── Error boundary ───
+// A render exception anywhere in the tree would otherwise white-screen the whole
+// app — the worst possible failure for someone checking who's on call. This
+// catches it, logs it, and shows a recoverable screen. Saved data is untouched:
+// the DB row is only written by deliberate saves, never by a crashed render.
+class ErrorBoundary extends React.Component {
+  constructor(props) { super(props); this.state = { error: null }; }
+  static getDerivedStateFromError(error) { return { error: error }; }
+  componentDidCatch(error, info) { try { console.error("App crashed:", error, info); } catch (e) {} }
+  render() {
+    if (this.state.error) {
+      var msg = (this.state.error && this.state.error.message) ? this.state.error.message : String(this.state.error);
+      return React.createElement(
+        "div",
+        { style: { minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", padding: 20, fontFamily: (typeof font !== "undefined" ? font : "system-ui, sans-serif"), background: "#f0f2f5", boxSizing: "border-box" } },
+        React.createElement(
+          "div",
+          { style: { maxWidth: 460, width: "100%", background: "#fff", border: "1px solid #e0e4ea", borderRadius: 12, padding: 24, boxShadow: "0 2px 12px rgba(0,0,0,0.06)", textAlign: "center" } },
+          React.createElement("div", { style: { fontSize: 34, marginBottom: 8 } }, "⚠️"),
+          React.createElement("div", { style: { fontSize: 18, fontWeight: 700, color: "#1a2a3a", marginBottom: 6 } }, "Something went wrong"),
+          React.createElement("div", { style: { fontSize: 13, color: "#5a6a78", lineHeight: 1.5, marginBottom: 16 } }, "The app hit an unexpected error and stopped rendering. Your saved schedule is safe — reloading should recover it. If it keeps happening, export a JSON backup from the Settings tab and note what you were doing."),
+          React.createElement("div", { style: { fontFamily: (typeof mono !== "undefined" ? mono : "monospace"), fontSize: 11, color: "#a04040", background: "#fcecec", border: "1px solid #f0d0d0", borderRadius: 6, padding: "8px 10px", marginBottom: 16, wordBreak: "break-word", textAlign: "left" } }, msg),
+          React.createElement(
+            "button",
+            { onClick: function () { try { window.location.reload(); } catch (e) {} }, style: { background: "linear-gradient(135deg,#1a6fa8,#2488c8)", border: "1px solid #1a6fa8", color: "#fff", borderRadius: 8, padding: "10px 22px", fontSize: 14, fontWeight: 600, cursor: "pointer", fontFamily: (typeof font !== "undefined" ? font : "system-ui, sans-serif") } },
+            "Reload app"
+          )
+        )
+      );
+    }
+    return this.props.children;
+  }
+}
+
     const root = ReactDOM.createRoot(document.getElementById('root'));
-    root.render(React.createElement(CallSchedule));
+    root.render(React.createElement(ErrorBoundary, null, React.createElement(CallSchedule)));
   </script>
 </body>
 </html>
