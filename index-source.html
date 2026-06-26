@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.06.09m";
+    var APP_VERSION = "2026.06.25d";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -3602,6 +3602,33 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     return d;
   }, [vacations, surgeons, apps]);
 
+  // Vacation days per person, COUNTED ONLY WITHIN THE CURRENT SCHEDULE PERIOD.
+  // Each range is clamped to [period start … period end]; days outside the
+  // 14-week window don't count. Returns { id: { days, ranges:[[s,e],…] } } where
+  // `ranges` are the clamped, in-period spans (for display). If there's no
+  // generated period yet, falls back to all-time counts so the card isn't blank.
+  const vacDaysPeriod = useMemo(() => {
+    const out = {};
+    const pStart = mondays.length > 0 ? fmt(mondays[0]) : null;
+    const pEnd = endDate ? fmt(endDate) : null;
+    const scope = (id) => {
+      const ranges = vacations[id] || [];
+      let days = 0;
+      const inPeriod = [];
+      ranges.forEach(([start, end]) => {
+        // String compare is valid for YYYY-MM-DD; clamp to the period window.
+        const cs = (pStart && start < pStart) ? pStart : start;
+        const ce = (pEnd && end > pEnd) ? pEnd : end;
+        if (cs > ce) return; // range falls entirely outside the period
+        const diff = Math.round((parse(ce) - parse(cs)) / (1000*60*60*24)) + 1;
+        if (diff > 0) { days += diff; inPeriod.push([cs, ce]); }
+      });
+      return { days, ranges: inPeriod };
+    };
+    [...surgeons, ...apps].forEach(p => { out[p.id] = scope(p.id); });
+    return { out, pStart, pEnd, hasPeriod: !!(pStart && pEnd) };
+  }, [vacations, surgeons, apps, mondays, endDate]);
+
   // Cumulative stats: 1-year, 2-year, multi-year (each = prior tier + current schedule)
   const buildCum = (prior) => {
     const c = {};
@@ -6448,8 +6475,14 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             );
           })()}
 
-          {/* Billing Summary — Scheduler/ADMIN only, month-by-month */}
-          {(isScheduler || userProfile?.role === "admin") && Object.keys(schedule).length > 0 && (()=>{
+          {/* Billing Summary — month-by-month. Scheduler/admin see all surgeons;
+              each surgeon sees only their own row (tied to authenticated identity). */}
+          {Object.keys(schedule).length > 0 && (()=>{
+            const canSeeAllBilling = isScheduler || userProfile?.role === "admin";
+            const ownBillId = userProfile?.person_id;
+            // Non-privileged users are restricted to their own row by authenticated
+            // identity (NOT the Mine selector, which is mutable and could leak).
+            const billVisible = canSeeAllBilling ? surgeons : surgeons.filter(s => s.id === ownBillId);
             // Compute monthly billing breakdown. 1st-call only (backup weeks excluded).
             // Attribution:
             //   Service Week (dayCall) → each of the 7 days (M-Sun) attributed to its own month
@@ -6509,7 +6542,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               </p>
               {sortedMonths.map(mk => {
                 const monthData = monthly[mk] || {};
-                const hasAny = surgeons.some(s => {
+                const hasAny = billVisible.some(s => {
                   const r = monthData[s.id] || {};
                   return (r.dc||0) + (r.nights||0) + (r.wknd||0) > 0;
                 });
@@ -6529,7 +6562,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                           </tr>
                         </thead>
                         <tbody>
-                          {surgeons.map(s => {
+                          {billVisible.map(s => {
                             const r = monthData[s.id] || {dc:0,nights:0,wknd:0};
                             const days = billingDays(r);
                             const empty = days === 0;
@@ -6583,11 +6616,18 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             )}
           </div>
 
-          {/* Vacation Days */}
+          {/* Vacation Days — scoped to the current 14-week schedule period */}
           <div style={css.card}>
-            <div style={css.cardT}>Vacation Days Used</div>
-            {!Object.values(vacDays).some(v=>v>0) ? (
-              <p style={{color:"#7a8a98",fontSize:13}}>No vacations entered yet.</p>
+            <div style={css.cardT}>
+              Vacation Days Used
+              {vacDaysPeriod.hasPeriod && (
+                <span style={{fontWeight:400,fontSize:11,color:"#7a8a98",textTransform:"none",letterSpacing:0}}>
+                  {" — This Period ("}{vacDaysPeriod.pStart} → {vacDaysPeriod.pEnd}{")"}
+                </span>
+              )}
+            </div>
+            {!Object.values(vacDaysPeriod.out).some(v=>v.days>0) ? (
+              <p style={{color:"#7a8a98",fontSize:13}}>No vacation days fall within this schedule period.</p>
             ) : (
               <div style={{overflowX:"auto"}}>
                 <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
@@ -6600,8 +6640,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   </thead>
                   <tbody>
                     {surgeons.filter(s => isScheduler || !mySurgeon || mySurgeon === "admin" || s.id === mySurgeon).map(s=>{
-                      const days = vacDays[s.id] || 0;
-                      const ranges = vacations[s.id] || [];
+                      const days = vacDaysPeriod.out[s.id]?.days || 0;
+                      const ranges = vacDaysPeriod.out[s.id]?.ranges || [];
                       return (
                         <tr key={s.id} style={{borderBottom:"1px solid #e8ecf0"}}>
                           <td style={{padding:"7px 8px"}}><Badge id={s.id}/></td>
@@ -6616,8 +6656,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                       );
                     })}
                     {(isScheduler || mySurgeon === "admin" || apps.some(a => a.id === mySurgeon)) && apps.filter(a => isScheduler || mySurgeon === "admin" || a.id === mySurgeon).map(a=>{
-                      const days = vacDays[a.id] || 0;
-                      const ranges = vacations[a.id] || [];
+                      const days = vacDaysPeriod.out[a.id]?.days || 0;
+                      const ranges = vacDaysPeriod.out[a.id]?.ranges || [];
                       if (!days && !ranges.length) return null;
                       return (
                         <tr key={a.id} style={{borderBottom:"1px solid #e8ecf0"}}>
