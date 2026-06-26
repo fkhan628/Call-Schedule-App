@@ -1,0 +1,16 @@
+{
+  "name": "dsg-call-schedule-build",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Build step for the DSG Call Schedule app: transpiles the JSX in index-source.html to classic-runtime React.createElement in index.html.",
+  "scripts": {
+    "bump": "node bump-version.js",
+    "build": "node build.js",
+    "deploy": "node bump-version.js && node build.js"
+  },
+  "devDependencies": {
+    "@babel/core": "8.0.1",
+    "@babel/preset-env": "8.0.2",
+    "@babel/preset-react": "8.0.1"
+  }
+}
