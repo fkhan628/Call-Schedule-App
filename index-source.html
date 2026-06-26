@@ -4516,9 +4516,13 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               const visiblePeople = peopleWithVac
                 .map(p => {
                   const all = vacations[p.id]||[];
-                  const visible = showPastVacations
+                  const base = showPastVacations
                     ? all
                     : all.filter(([,ve]) => ve >= todayStr);
+                  // Sort a COPY by start date so display is chronological without
+                  // mutating the stored array (originalIdx is resolved by date match,
+                  // so reordering the display is safe for edit/remove).
+                  const visible = [...base].sort((a,b) => a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0);
                   return { ...p, all, visible };
                 })
                 .filter(p => p.visible.length > 0);
@@ -6813,6 +6817,14 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             const myName = sMap[myId]?.name || "?";
             const myVacs = vacations[myId] || [];
             const myNoCall = noCallDays[myId] || [];
+            // Mine view hides completed vacations (end before today) and shows the
+            // rest in chronological order. Each row keeps its ORIGINAL array index
+            // so Edit/Remove still target the right entry after sort/filter.
+            const myToday = fmt(new Date());
+            const myVacsView = myVacs
+              .map((r, origIdx) => ({ vs: r[0], ve: r[1], origIdx }))
+              .filter(x => x.ve >= myToday)
+              .sort((a, b) => a.vs < b.vs ? -1 : a.vs > b.vs ? 1 : 0);
             // Only the owner (or a scheduler) may adjust this person's time off.
             const canEditTimeOff = (userProfile && myId === userProfile.person_id) || isScheduler;
             const saveMyVacEdit = () => {
@@ -6856,14 +6868,14 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   <Badge id={myId}/> <span style={{marginLeft:8}}>{MO[startMonth]} – {MO[endMoIdx]} {startYear}</span>
                 </div>
 
-                {/* My Vacations — editable: shorten or remove to give days back */}
-                {myVacs.length > 0 && (
+                {/* My Vacations — completed (past) ones hidden; shown in date order */}
+                {myVacsView.length > 0 && (
                   <div style={{...css.card,background:"#fef8f0",border:"1px solid #e8d8c0"}}>
                     <div style={{fontSize:12,fontWeight:700,color:"#8a6a10",marginBottom:6}}>🏖 My Vacations</div>
-                    {myVacs.map(([vs,ve],i) => {
-                      const editing = myVacEdit && myVacEdit.idx === i;
+                    {myVacsView.map(({vs,ve,origIdx},i) => {
+                      const editing = myVacEdit && myVacEdit.idx === origIdx;
                       return (
-                        <div key={i} style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap",padding:"4px 0",borderBottom:i<myVacs.length-1?"1px solid #f0e4d0":"none"}}>
+                        <div key={origIdx} style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap",padding:"4px 0",borderBottom:i<myVacsView.length-1?"1px solid #f0e4d0":"none"}}>
                           {editing ? (
                             <>
                               <input type="date" value={myVacEdit.start} max={myVacEdit.end} onChange={e=>setMyVacEdit(p=>({...p,start:e.target.value}))} style={{...css.inp,padding:"3px 6px",fontSize:12,width:148}}/>
@@ -6876,8 +6888,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                             <>
                               <span style={{fontSize:13,color:"#5a5030",fontFamily:mono,flex:1,minWidth:140}}>{vs} → {ve}</span>
                               {canEditTimeOff && <>
-                                <button onClick={()=>setMyVacEdit({idx:i,start:vs,end:ve})} style={{background:"#e8f0fc",border:"1px solid #a8c8e0",color:"#1a6fa8",borderRadius:5,padding:"2px 10px",fontSize:10,fontWeight:600,cursor:"pointer",fontFamily:font}}>✏️ Edit</button>
-                                <button onClick={()=>removeMyVac(i)} style={{background:"#fdecec",border:"1px solid #e8a0a0",color:"#a82828",borderRadius:5,padding:"2px 10px",fontSize:10,fontWeight:600,cursor:"pointer",fontFamily:font}}>Remove</button>
+                                <button onClick={()=>setMyVacEdit({idx:origIdx,start:vs,end:ve})} style={{background:"#e8f0fc",border:"1px solid #a8c8e0",color:"#1a6fa8",borderRadius:5,padding:"2px 10px",fontSize:10,fontWeight:600,cursor:"pointer",fontFamily:font}}>✏️ Edit</button>
+                                <button onClick={()=>removeMyVac(origIdx)} style={{background:"#fdecec",border:"1px solid #e8a0a0",color:"#a82828",borderRadius:5,padding:"2px 10px",fontSize:10,fontWeight:600,cursor:"pointer",fontFamily:font}}>Remove</button>
                               </>}
                             </>
                           )}
