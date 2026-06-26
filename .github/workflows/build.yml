@@ -1,0 +1,64 @@
+name: Build & deploy
+
+# When you push a change to the JSX source (or the build tooling), this:
+#   1. bumps APP_VERSION in index-source.html (Central-time date + letter),
+#   2. compiles index.html from it with the same verified Babel settings,
+#   3. commits both back to main.
+# GitHub Pages (serving main) then redeploys automatically. You only ever edit
+# and commit index-source.html — never touch index.html or bump by hand again.
+#
+# A failed build (bad transpile, injected imports, syntax error) exits non-zero
+# and commits nothing, so a broken build can never reach the live site.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "index-source.html"
+      - "build.js"
+      - "bump-version.js"
+      - "package.json"
+  workflow_dispatch: {}   # allow manual runs from the Actions tab
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    # Skip the bot's own build commits (belt-and-suspenders; GITHUB_TOKEN pushes
+    # don't trigger workflows anyway).
+    if: ${{ !contains(github.event.head_commit.message, '[skip ci]') }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install build deps
+        run: npm install --no-audit --no-fund
+
+      - name: Bump APP_VERSION
+        run: node bump-version.js
+
+      - name: Build index.html
+        run: node build.js
+
+      - name: Commit built files
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add index-source.html index.html
+          if git diff --cached --quiet; then
+            echo "Nothing to commit (source unchanged)."
+          else
+            git commit -m "Build: compile index.html + bump version [skip ci]"
+            git push
+          fi
