@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.06.25f";
+    var APP_VERSION = "2026.06.26a";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -5721,7 +5721,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     };
     const visiblePeople = peopleWithVac.map(p => {
       const all = vacations[p.id] || [];
-      const visible = showPastVacations ? all : all.filter(([, ve]) => ve >= todayStr);
+      const base = showPastVacations ? all : all.filter(([, ve]) => ve >= todayStr);
+      const visible = [...base].sort((a, b) => a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0);
       return _objectSpread(_objectSpread({}, p), {}, {
         all,
         visible
@@ -10591,6 +10592,12 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     const myName = ((_sMap$myId = sMap[myId]) === null || _sMap$myId === void 0 ? void 0 : _sMap$myId.name) || "?";
     const myVacs = vacations[myId] || [];
     const myNoCall = noCallDays[myId] || [];
+    const myToday = fmt(new Date());
+    const myVacsView = myVacs.map((r, origIdx) => ({
+      vs: r[0],
+      ve: r[1],
+      origIdx
+    })).filter(x => x.ve >= myToday).sort((a, b) => a.vs < b.vs ? -1 : a.vs > b.vs ? 1 : 0);
     const canEditTimeOff = userProfile && myId === userProfile.person_id || isScheduler;
     const saveMyVacEdit = () => {
       if (!myVacEdit) return;
@@ -10688,7 +10695,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       style: {
         marginLeft: 8
       }
-    }, MO[startMonth], " – ", MO[endMoIdx], " ", startYear)), myVacs.length > 0 && React.createElement("div", {
+    }, MO[startMonth], " – ", MO[endMoIdx], " ", startYear)), myVacsView.length > 0 && React.createElement("div", {
       style: _objectSpread(_objectSpread({}, css.card), {}, {
         background: "#fef8f0",
         border: "1px solid #e8d8c0"
@@ -10700,17 +10707,21 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         color: "#8a6a10",
         marginBottom: 6
       }
-    }, "🏖 My Vacations"), myVacs.map(([vs, ve], i) => {
-      const editing = myVacEdit && myVacEdit.idx === i;
+    }, "🏖 My Vacations"), myVacsView.map(({
+      vs,
+      ve,
+      origIdx
+    }, i) => {
+      const editing = myVacEdit && myVacEdit.idx === origIdx;
       return React.createElement("div", {
-        key: i,
+        key: origIdx,
         style: {
           display: "flex",
           alignItems: "center",
           gap: 8,
           flexWrap: "wrap",
           padding: "4px 0",
-          borderBottom: i < myVacs.length - 1 ? "1px solid #f0e4d0" : "none"
+          borderBottom: i < myVacsView.length - 1 ? "1px solid #f0e4d0" : "none"
         }
       }, editing ? React.createElement(React.Fragment, null, React.createElement("input", {
         type: "date",
@@ -10775,7 +10786,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         }
       }, vs, " → ", ve), canEditTimeOff && React.createElement(React.Fragment, null, React.createElement("button", {
         onClick: () => setMyVacEdit({
-          idx: i,
+          idx: origIdx,
           start: vs,
           end: ve
         }),
@@ -10791,7 +10802,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           fontFamily: font
         }
       }, "✏️ Edit"), React.createElement("button", {
-        onClick: () => removeMyVac(i),
+        onClick: () => removeMyVac(origIdx),
         style: {
           background: "#fdecec",
           border: "1px solid #e8a0a0",
