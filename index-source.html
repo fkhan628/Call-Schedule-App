@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.06.26a";
+    var APP_VERSION = "2026.06.25j";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -658,18 +658,17 @@ function CallSchedule() {
   // TIME-OFF SOURCE (vacations + no-call) — normalized table vs. blob.
   // When ON, vacations/noCallDays are sourced from the `time_off` table and
   // each change writes ONE row, so concurrent edits can't clobber each other.
-  // OFF by default. Per-device override (so it can be tested on specific
-  // devices without affecting other users):
-  //   localStorage.setItem('dsg_use_timeoff','1')  -> on for this device
-  //   localStorage.setItem('dsg_use_timeoff','0')  -> off for this device
-  // Flip the code default below to roll it out to everyone.
+  // ON by default as of the group rollout. Per-device override:
+  //   localStorage.setItem('dsg_use_timeoff','0')  -> force OFF (blob) on this device
+  //   localStorage.setItem('dsg_use_timeoff','1')  -> force ON  on this device
+  //   localStorage.removeItem('dsg_use_timeoff')    -> follow the code default
   const USE_TIME_OFF = useMemo(() => {
     try {
       const v = localStorage.getItem("dsg_use_timeoff");
       if (v === "1") return true;
       if (v === "0") return false;
     } catch (e) {}
-    return false; // <-- code default; change to true when rolling out to all
+    return true; // <-- code default: time_off storage is live for everyone
   }, []);
 
   // Build vacations / noCallDays maps from time_off rows. Ranges carry their
