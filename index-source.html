@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.06.26a";
+    var APP_VERSION = "2026.06.25h";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -4725,10 +4725,13 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                 <div key={p.id} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 10px",marginBottom:5,border:"1px solid #e8dcae",borderRadius:7,background:"#fcf9ef",flexWrap:"wrap"}}>
                   {p.type==="s"?<Badge id={p.id}/>:<AppBadge id={p.id}/>}
                   <div style={{display:"flex",gap:4,flexWrap:"wrap",marginLeft:"auto",alignItems:"center"}}>
-                    {(noCallDays[p.id]||[]).map(([s,e],i)=>(
-                      <span key={i} style={{display:"inline-flex",alignItems:"center",gap:4,fontFamily:mono,fontSize:10,color:"#6a6030",background:"#fcf6e8",padding:"1px 6px",borderRadius:4,border:"1px solid #e8dcae"}}>
+                    {(noCallDays[p.id]||[])
+                      .map((r,origIdx)=>({s:r[0],e:r[1],origIdx}))
+                      .sort((a,b)=>a.s<b.s?-1:a.s>b.s?1:0)
+                      .map(({s,e,origIdx})=>(
+                      <span key={origIdx} style={{display:"inline-flex",alignItems:"center",gap:4,fontFamily:mono,fontSize:10,color:"#6a6030",background:"#fcf6e8",padding:"1px 6px",borderRadius:4,border:"1px solid #e8dcae"}}>
                         {ncRange(s,e)}
-                        <button onClick={()=>rmNoCall(p.id,i)} style={{background:"none",border:"none",color:"#a08040",cursor:"pointer",fontSize:11,padding:0,lineHeight:1}}>✕</button>
+                        <button onClick={()=>rmNoCall(p.id,origIdx)} style={{background:"none",border:"none",color:"#a08040",cursor:"pointer",fontSize:11,padding:0,lineHeight:1}}>✕</button>
                       </span>
                     ))}
                   </div>
@@ -6916,6 +6919,11 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               .map((r, origIdx) => ({ vs: r[0], ve: r[1], origIdx }))
               .filter(x => x.ve >= myToday)
               .sort((a, b) => a.vs < b.vs ? -1 : a.vs > b.vs ? 1 : 0);
+            // No-call days get the same treatment (read-only, so no index needed).
+            const myNoCallView = myNoCall
+              .map(r => ({ ns: r[0], ne: r[1] }))
+              .filter(x => x.ne >= myToday)
+              .sort((a, b) => a.ns < b.ns ? -1 : a.ns > b.ns ? 1 : 0);
             // Only the owner (or a scheduler) may adjust this person's time off.
             const canEditTimeOff = (userProfile && myId === userProfile.person_id) || isScheduler;
             const saveMyVacEdit = () => {
@@ -6990,11 +6998,11 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   </div>
                 )}
 
-                {/* My No-Call Days */}
-                {myNoCall.length > 0 && (
+                {/* My No-Call Days — completed ones hidden; shown in date order */}
+                {myNoCallView.length > 0 && (
                   <div style={{...css.card,background:"#f4f0fb",border:"1px solid #d8cdec"}}>
                     <div style={{fontSize:12,fontWeight:700,color:"#5a3a90",marginBottom:6}}>🚫 My No-Call Days</div>
-                    {myNoCall.map(([ns,ne],i) => (
+                    {myNoCallView.map(({ns,ne},i) => (
                       <div key={i} style={{fontSize:13,color:"#4a3a60",fontFamily:mono,marginBottom:3}}>{ns}{ns!==ne ? ` → ${ne}` : ""}</div>
                     ))}
                     <div style={{fontSize:10,color:"#8a7aa8",marginTop:6,lineHeight:1.4}}>Days you're working but won't be assigned call.</div>
@@ -7542,6 +7550,31 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               </button>
             </div>
           </div>
+
+          {/* New vacation storage (beta) — per-device toggle for the time_off cut-over.
+              Scheduler/admin only so it stays out of the way during testing. */}
+          {(isScheduler || userProfile?.role === "admin") && (
+            <div style={css.card}>
+              <div style={css.cardT}>🧪 New vacation storage · this device</div>
+              <p style={{fontSize:12,color:"#7a8a98",margin:"0 0 10px",lineHeight:1.5}}>
+                Beta: stores vacations &amp; no-call days in the new <code>time_off</code> table so two people editing at the same time can't overwrite each other. Applies to <strong>this device only</strong>. Changing it reloads the app.
+              </p>
+              <label style={{display:"flex",alignItems:"center",gap:10,cursor:"pointer"}}>
+                <input
+                  type="checkbox"
+                  checked={USE_TIME_OFF}
+                  onChange={e=>{
+                    try { localStorage.setItem("dsg_use_timeoff", e.target.checked ? "1" : "0"); } catch(err) {}
+                    location.reload();
+                  }}
+                  style={{width:18,height:18,cursor:"pointer"}}
+                />
+                <span style={{fontSize:13,color:"#5a6a78",fontWeight:600}}>
+                  {USE_TIME_OFF ? "On — loading from the new table" : "Off — using the shared blob (default)"}
+                </span>
+              </label>
+            </div>
+          )}
 
           {/* APP Shift Managers — scheduler/admin only */}
           {(isScheduler || userProfile?.role === "admin") && (
