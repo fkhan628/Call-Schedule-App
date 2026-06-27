@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.06.26a";
+    var APP_VERSION = "2026.06.25k";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -147,6 +147,9 @@ function CallSchedule() {
   // ─── Calendar Filters ───
   const [calFilters, setCalFilters] = useState({ svc: true, night: true, wknd: true, app: true, fierce: true, vac: true });
   const [showBackupStats, setShowBackupStats] = useState(false); // Toggle 2nd call columns in Stats
+  const [statsTab, setStatsTab] = useState("fairness"); // Stats view: which table is shown (fairness|monthly|billing|app)
+  const [showAllMyVacs, setShowAllMyVacs] = useState(false); // Mine: expand vacation list beyond first few
+  const [showAllMyNoCall, setShowAllMyNoCall] = useState(false); // Mine: expand no-call list beyond first few
   const [calSurgeonFilter, setCalSurgeonFilter] = useState(""); // "" = all, or surgeon ID
   const [calAppFilter, setCalAppFilter] = useState("all"); // "all" | "none" | APP id
   const [calDeptFilter, setCalDeptFilter] = useState(""); // "" = no dept filter, "CWM" or "CBH"
@@ -4496,10 +4499,19 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             );
           })()}
 
-          {/* Surgeons */}
-          <div style={css.card}>
-            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
-              <div style={css.cardT}>Surgeons</div>
+          {/* Surgeons — collapsed to colored chips by default; expand to edit */}
+          <Collapsible css={css} ck="setup_surgeons" defaultOpen={false}
+            title={<>Surgeons <span style={{fontWeight:400,fontSize:11,color:"#7a8a98"}}>({surgeons.length})</span></>}
+            summary={
+              <div style={{display:"flex",flexWrap:"wrap",gap:5}}>
+                {surgeons.map((s,i)=>{ const c=surgeonColors(s.name,i); return (
+                  <span key={s.id} style={{display:"inline-flex",alignItems:"center",gap:5,background:c.tg||"#f4f6f8",border:`1px solid ${c.bd||"#e0e4ea"}`,borderRadius:6,padding:"3px 9px",fontSize:12,fontWeight:600,color:c.tx,letterSpacing:0.5}}>
+                    <span style={{width:7,height:7,borderRadius:2,background:c.tx,flexShrink:0}}/>{s.name}
+                  </span>
+                );})}
+              </div>
+            }>
+            <div style={{display:"flex",justifyContent:"flex-end",marginBottom:10}}>
               <button onClick={addSurgeon} style={{...css.btn(true),padding:"4px 12px",fontSize:12}}>+ Add Surgeon</button>
             </div>
             <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(160px,1fr))",gap:6}}>
@@ -4512,12 +4524,21 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                 </div>
               ))}
             </div>
-          </div>
+          </Collapsible>
 
-          {/* APPs */}
-          <div style={css.card}>
-            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
-              <div style={css.cardT}>APPs <span style={{fontWeight:400,fontSize:11,color:"#7a8a98"}}>— Intermittent Call (5p–7a weeknights, 7a–7a weekends)</span></div>
+          {/* APPs — collapsed to colored chips by default; expand to edit */}
+          <Collapsible css={css} ck="setup_apps" defaultOpen={false}
+            title={<>APPs <span style={{fontWeight:400,fontSize:11,color:"#7a8a98"}}>({apps.length}) — Intermittent Call (5p–7a weeknights, 7a–7a weekends)</span></>}
+            summary={
+              <div style={{display:"flex",flexWrap:"wrap",gap:5}}>
+                {apps.map((a,i)=>{ const p=APP_PAL[i%APP_PAL.length]; return (
+                  <span key={a.id} style={{display:"inline-flex",alignItems:"center",gap:5,background:p.tg||"#f4f6f8",border:`1px solid ${p.bd}`,borderRadius:6,padding:"3px 9px",fontSize:12,fontWeight:600,color:p.tx,letterSpacing:0.5}}>
+                    <span style={{width:7,height:7,borderRadius:2,background:p.tx,flexShrink:0}}/>{a.name}
+                  </span>
+                );})}
+              </div>
+            }>
+            <div style={{display:"flex",justifyContent:"flex-end",marginBottom:10}}>
               <button onClick={addApp} style={{...css.btn(true),padding:"4px 12px",fontSize:12}}>+ Add APP</button>
             </div>
             <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(160px,1fr))",gap:6}}>
@@ -4530,7 +4551,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                 </div>
               ))}
             </div>
-          </div>
+          </Collapsible>
 
           {/* Vacations & Fierce Weeks */}
           <div style={css.card}>
@@ -6976,13 +6997,16 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                 </div>
 
                 {/* My Vacations — completed (past) ones hidden; shown in date order */}
-                {myVacsView.length > 0 && (
+                {myVacsView.length > 0 && (() => {
+                  const VAC_LIMIT = 5;
+                  const shown = showAllMyVacs ? myVacsView : myVacsView.slice(0, VAC_LIMIT);
+                  return (
                   <div style={{...css.card,background:"#fef8f0",border:"1px solid #e8d8c0"}}>
-                    <div style={{fontSize:12,fontWeight:700,color:"#8a6a10",marginBottom:6}}>🏖 My Vacations</div>
-                    {myVacsView.map(({vs,ve,origIdx},i) => {
+                    <div style={{fontSize:12,fontWeight:700,color:"#8a6a10",marginBottom:6}}>🏖 My Vacations <span style={{fontWeight:400,color:"#b09860"}}>({myVacsView.length})</span></div>
+                    {shown.map(({vs,ve,origIdx},i) => {
                       const editing = myVacEdit && myVacEdit.idx === origIdx;
                       return (
-                        <div key={origIdx} style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap",padding:"4px 0",borderBottom:i<myVacsView.length-1?"1px solid #f0e4d0":"none"}}>
+                        <div key={origIdx} style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap",padding:"4px 0",borderBottom:i<shown.length-1?"1px solid #f0e4d0":"none"}}>
                           {editing ? (
                             <>
                               <input type="date" value={myVacEdit.start} max={myVacEdit.end} onChange={e=>setMyVacEdit(p=>({...p,start:e.target.value}))} style={{...css.inp,padding:"3px 6px",fontSize:12,width:148}}/>
@@ -7003,20 +7027,35 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                         </div>
                       );
                     })}
+                    {myVacsView.length > VAC_LIMIT && (
+                      <button onClick={()=>setShowAllMyVacs(v=>!v)} style={{background:"none",border:"none",color:"#1a6fa8",fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:font,padding:"6px 0 0",textDecoration:"underline"}}>
+                        {showAllMyVacs ? "Show less" : `Show all ${myVacsView.length} →`}
+                      </button>
+                    )}
                     {canEditTimeOff && <div style={{fontSize:10,color:"#a8946a",marginTop:8,lineHeight:1.4}}>Shorten or remove a vacation to give days back. The scheduler is notified; already-generated weeks aren't reassigned automatically.</div>}
                   </div>
-                )}
+                  );
+                })()}
 
                 {/* My No-Call Days — completed ones hidden; shown in date order */}
-                {myNoCallView.length > 0 && (
+                {myNoCallView.length > 0 && (() => {
+                  const NC_LIMIT = 5;
+                  const shown = showAllMyNoCall ? myNoCallView : myNoCallView.slice(0, NC_LIMIT);
+                  return (
                   <div style={{...css.card,background:"#f4f0fb",border:"1px solid #d8cdec"}}>
-                    <div style={{fontSize:12,fontWeight:700,color:"#5a3a90",marginBottom:6}}>🚫 My No-Call Days</div>
-                    {myNoCallView.map(({ns,ne},i) => (
+                    <div style={{fontSize:12,fontWeight:700,color:"#5a3a90",marginBottom:6}}>🚫 My No-Call Days <span style={{fontWeight:400,color:"#9a82c0"}}>({myNoCallView.length})</span></div>
+                    {shown.map(({ns,ne},i) => (
                       <div key={i} style={{fontSize:13,color:"#4a3a60",fontFamily:mono,marginBottom:3}}>{ns}{ns!==ne ? ` → ${ne}` : ""}</div>
                     ))}
+                    {myNoCallView.length > NC_LIMIT && (
+                      <button onClick={()=>setShowAllMyNoCall(v=>!v)} style={{background:"none",border:"none",color:"#6a4aa0",fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:font,padding:"4px 0 0",textDecoration:"underline"}}>
+                        {showAllMyNoCall ? "Show less" : `Show all ${myNoCallView.length} →`}
+                      </button>
+                    )}
                     <div style={{fontSize:10,color:"#8a7aa8",marginTop:6,lineHeight:1.4}}>Days you're working but won't be assigned call.</div>
                   </div>
-                )}
+                  );
+                })()}
 
                 {/* My Shifts */}
                 {myShifts.map(wk => (
@@ -8154,6 +8193,37 @@ const tdS = {padding:"7px 8px",fontFamily:"'JetBrains Mono',monospace",color:"#4
 // app — the worst possible failure for someone checking who's on call. This
 // catches it, logs it, and shows a recoverable screen. Saved data is untouched:
 // the DB row is only written by deliberate saves, never by a crashed render.
+// Reusable collapsible section. Persists open/closed per-device via localStorage
+// (keyed by `ck`), so a scheduler's layout choices stick across reloads. Defined
+// at module scope so it never remounts on parent re-render. Uses React.* hooks
+// because the destructured hook names live inside CallSchedule, not out here.
+function Collapsible({ title, ck, defaultOpen = false, summary = null, children, css, right = null, style = null }) {
+  const [open, setOpen] = React.useState(() => {
+    try {
+      const v = localStorage.getItem("dsg_collapse_" + ck);
+      if (v === "1") return true;
+      if (v === "0") return false;
+    } catch (e) {}
+    return defaultOpen;
+  });
+  const toggle = () => setOpen(o => {
+    const n = !o;
+    try { localStorage.setItem("dsg_collapse_" + ck, n ? "1" : "0"); } catch (e) {}
+    return n;
+  });
+  return (
+    <div style={style ? { ...css.card, ...style } : css.card}>
+      <div onClick={toggle} style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", userSelect: "none" }}>
+        <span style={{ fontSize: 11, color: "#8a94a0", transition: "transform .15s", transform: open ? "rotate(90deg)" : "rotate(0deg)", display: "inline-block", width: 10, flexShrink: 0 }}>▶</span>
+        <div style={{ ...css.cardT, marginBottom: 0, flex: 1 }}>{title}</div>
+        {right}
+      </div>
+      {!open && summary != null && <div style={{ marginTop: 10 }}>{summary}</div>}
+      {open && <div style={{ marginTop: 12 }}>{children}</div>}
+    </div>
+  );
+}
+
 class ErrorBoundary extends React.Component {
   constructor(props) { super(props); this.state = { error: null }; }
   static getDerivedStateFromError(error) { return { error: error }; }
