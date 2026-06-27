@@ -657,7 +657,7 @@ function CallSchedule() {
       if (v === "1") return true;
       if (v === "0") return false;
     } catch (e) {}
-    return false;
+    return true;
   }, []);
   const buildTimeOffMaps = rows => {
     const vac = {},
