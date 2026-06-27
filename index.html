@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.06.26a";
+    var APP_VERSION = "2026.06.27a";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -156,6 +156,9 @@ function CallSchedule() {
     vac: true
   });
   const [showBackupStats, setShowBackupStats] = useState(false);
+  const [statsTab, setStatsTab] = useState("fairness");
+  const [showAllMyVacs, setShowAllMyVacs] = useState(false);
+  const [showAllMyNoCall, setShowAllMyNoCall] = useState(false);
   const [calSurgeonFilter, setCalSurgeonFilter] = useState("");
   const [calAppFilter, setCalAppFilter] = useState("all");
   const [calDeptFilter, setCalDeptFilter] = useState("");
@@ -5528,18 +5531,57 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         flexShrink: 0
       }
     }, sevIcon(iss.sev)), React.createElement("span", null, iss.msg)))));
-  })(), React.createElement("div", {
-    style: css.card
+  })(), React.createElement(Collapsible, {
+    css: css,
+    ck: "setup_surgeons",
+    defaultOpen: false,
+    title: React.createElement(React.Fragment, null, "Surgeons ", React.createElement("span", {
+      style: {
+        fontWeight: 400,
+        fontSize: 11,
+        color: "#7a8a98"
+      }
+    }, "(", surgeons.length, ")")),
+    summary: React.createElement("div", {
+      style: {
+        display: "flex",
+        flexWrap: "wrap",
+        gap: 5
+      }
+    }, surgeons.map((s, i) => {
+      const c = surgeonColors(s.name, i);
+      return React.createElement("span", {
+        key: s.id,
+        style: {
+          display: "inline-flex",
+          alignItems: "center",
+          gap: 5,
+          background: c.tg || "#f4f6f8",
+          border: `1px solid ${c.bd || "#e0e4ea"}`,
+          borderRadius: 6,
+          padding: "3px 9px",
+          fontSize: 12,
+          fontWeight: 600,
+          color: c.tx,
+          letterSpacing: 0.5
+        }
+      }, React.createElement("span", {
+        style: {
+          width: 7,
+          height: 7,
+          borderRadius: 2,
+          background: c.tx,
+          flexShrink: 0
+        }
+      }), s.name);
+    }))
   }, React.createElement("div", {
     style: {
       display: "flex",
-      justifyContent: "space-between",
-      alignItems: "center",
-      marginBottom: 12
+      justifyContent: "flex-end",
+      marginBottom: 10
     }
-  }, React.createElement("div", {
-    style: css.cardT
-  }, "Surgeons"), React.createElement("button", {
+  }, React.createElement("button", {
     onClick: addSurgeon,
     style: _objectSpread(_objectSpread({}, css.btn(true)), {}, {
       padding: "4px 12px",
@@ -5592,24 +5634,57 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       flexShrink: 0,
       padding: "0 2px"
     }
-  }, "✕"))))), React.createElement("div", {
-    style: css.card
+  }, "✕"))))), React.createElement(Collapsible, {
+    css: css,
+    ck: "setup_apps",
+    defaultOpen: false,
+    title: React.createElement(React.Fragment, null, "APPs ", React.createElement("span", {
+      style: {
+        fontWeight: 400,
+        fontSize: 11,
+        color: "#7a8a98"
+      }
+    }, "(", apps.length, ") — Intermittent Call (5p–7a weeknights, 7a–7a weekends)")),
+    summary: React.createElement("div", {
+      style: {
+        display: "flex",
+        flexWrap: "wrap",
+        gap: 5
+      }
+    }, apps.map((a, i) => {
+      const p = APP_PAL[i % APP_PAL.length];
+      return React.createElement("span", {
+        key: a.id,
+        style: {
+          display: "inline-flex",
+          alignItems: "center",
+          gap: 5,
+          background: p.tg || "#f4f6f8",
+          border: `1px solid ${p.bd}`,
+          borderRadius: 6,
+          padding: "3px 9px",
+          fontSize: 12,
+          fontWeight: 600,
+          color: p.tx,
+          letterSpacing: 0.5
+        }
+      }, React.createElement("span", {
+        style: {
+          width: 7,
+          height: 7,
+          borderRadius: 2,
+          background: p.tx,
+          flexShrink: 0
+        }
+      }), a.name);
+    }))
   }, React.createElement("div", {
     style: {
       display: "flex",
-      justifyContent: "space-between",
-      alignItems: "center",
-      marginBottom: 12
+      justifyContent: "flex-end",
+      marginBottom: 10
     }
-  }, React.createElement("div", {
-    style: css.cardT
-  }, "APPs ", React.createElement("span", {
-    style: {
-      fontWeight: 400,
-      fontSize: 11,
-      color: "#7a8a98"
-    }
-  }, "— Intermittent Call (5p–7a weeknights, 7a–7a weekends)")), React.createElement("button", {
+  }, React.createElement("button", {
     onClick: addApp,
     style: _objectSpread(_objectSpread({}, css.btn(true)), {}, {
       padding: "4px 12px",
@@ -10828,164 +10903,208 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       style: {
         marginLeft: 8
       }
-    }, MO[startMonth], " – ", MO[endMoIdx], " ", startYear)), myVacsView.length > 0 && React.createElement("div", {
-      style: _objectSpread(_objectSpread({}, css.card), {}, {
-        background: "#fef8f0",
-        border: "1px solid #e8d8c0"
-      })
-    }, React.createElement("div", {
-      style: {
-        fontSize: 12,
-        fontWeight: 700,
-        color: "#8a6a10",
-        marginBottom: 6
-      }
-    }, "🏖 My Vacations"), myVacsView.map(({
-      vs,
-      ve,
-      origIdx
-    }, i) => {
-      const editing = myVacEdit && myVacEdit.idx === origIdx;
+    }, MO[startMonth], " – ", MO[endMoIdx], " ", startYear)), myVacsView.length > 0 && (() => {
+      const VAC_LIMIT = 5;
+      const shown = showAllMyVacs ? myVacsView : myVacsView.slice(0, VAC_LIMIT);
       return React.createElement("div", {
-        key: origIdx,
-        style: {
-          display: "flex",
-          alignItems: "center",
-          gap: 8,
-          flexWrap: "wrap",
-          padding: "4px 0",
-          borderBottom: i < myVacsView.length - 1 ? "1px solid #f0e4d0" : "none"
-        }
-      }, editing ? React.createElement(React.Fragment, null, React.createElement("input", {
-        type: "date",
-        value: myVacEdit.start,
-        max: myVacEdit.end,
-        onChange: e => setMyVacEdit(p => _objectSpread(_objectSpread({}, p), {}, {
-          start: e.target.value
-        })),
-        style: _objectSpread(_objectSpread({}, css.inp), {}, {
-          padding: "3px 6px",
-          fontSize: 12,
-          width: 148
+        style: _objectSpread(_objectSpread({}, css.card), {}, {
+          background: "#fef8f0",
+          border: "1px solid #e8d8c0"
         })
-      }), React.createElement("span", {
+      }, React.createElement("div", {
         style: {
-          color: "#8a94a0"
-        }
-      }, "→"), React.createElement("input", {
-        type: "date",
-        value: myVacEdit.end,
-        min: myVacEdit.start,
-        onChange: e => setMyVacEdit(p => _objectSpread(_objectSpread({}, p), {}, {
-          end: e.target.value
-        })),
-        style: _objectSpread(_objectSpread({}, css.inp), {}, {
-          padding: "3px 6px",
           fontSize: 12,
-          width: 148
-        })
-      }), React.createElement("button", {
-        onClick: saveMyVacEdit,
+          fontWeight: 700,
+          color: "#8a6a10",
+          marginBottom: 6
+        }
+      }, "🏖 My Vacations ", React.createElement("span", {
         style: {
-          background: "#2a7a40",
-          color: "#fff",
+          fontWeight: 400,
+          color: "#b09860"
+        }
+      }, "(", myVacsView.length, ")")), shown.map(({
+        vs,
+        ve,
+        origIdx
+      }, i) => {
+        const editing = myVacEdit && myVacEdit.idx === origIdx;
+        return React.createElement("div", {
+          key: origIdx,
+          style: {
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            flexWrap: "wrap",
+            padding: "4px 0",
+            borderBottom: i < shown.length - 1 ? "1px solid #f0e4d0" : "none"
+          }
+        }, editing ? React.createElement(React.Fragment, null, React.createElement("input", {
+          type: "date",
+          value: myVacEdit.start,
+          max: myVacEdit.end,
+          onChange: e => setMyVacEdit(p => _objectSpread(_objectSpread({}, p), {}, {
+            start: e.target.value
+          })),
+          style: _objectSpread(_objectSpread({}, css.inp), {}, {
+            padding: "3px 6px",
+            fontSize: 12,
+            width: 148
+          })
+        }), React.createElement("span", {
+          style: {
+            color: "#8a94a0"
+          }
+        }, "→"), React.createElement("input", {
+          type: "date",
+          value: myVacEdit.end,
+          min: myVacEdit.start,
+          onChange: e => setMyVacEdit(p => _objectSpread(_objectSpread({}, p), {}, {
+            end: e.target.value
+          })),
+          style: _objectSpread(_objectSpread({}, css.inp), {}, {
+            padding: "3px 6px",
+            fontSize: 12,
+            width: 148
+          })
+        }), React.createElement("button", {
+          onClick: saveMyVacEdit,
+          style: {
+            background: "#2a7a40",
+            color: "#fff",
+            border: "none",
+            borderRadius: 5,
+            padding: "3px 12px",
+            fontSize: 11,
+            fontWeight: 600,
+            cursor: "pointer",
+            fontFamily: font
+          }
+        }, "Save"), React.createElement("button", {
+          onClick: () => setMyVacEdit(null),
+          style: {
+            background: "#f0f0f0",
+            color: "#5a6a78",
+            border: "1px solid #d0d8e0",
+            borderRadius: 5,
+            padding: "3px 10px",
+            fontSize: 11,
+            cursor: "pointer",
+            fontFamily: font
+          }
+        }, "Cancel")) : React.createElement(React.Fragment, null, React.createElement("span", {
+          style: {
+            fontSize: 13,
+            color: "#5a5030",
+            fontFamily: mono,
+            flex: 1,
+            minWidth: 140
+          }
+        }, vs, " → ", ve), canEditTimeOff && React.createElement(React.Fragment, null, React.createElement("button", {
+          onClick: () => setMyVacEdit({
+            idx: origIdx,
+            start: vs,
+            end: ve
+          }),
+          style: {
+            background: "#e8f0fc",
+            border: "1px solid #a8c8e0",
+            color: "#1a6fa8",
+            borderRadius: 5,
+            padding: "2px 10px",
+            fontSize: 10,
+            fontWeight: 600,
+            cursor: "pointer",
+            fontFamily: font
+          }
+        }, "✏️ Edit"), React.createElement("button", {
+          onClick: () => removeMyVac(origIdx),
+          style: {
+            background: "#fdecec",
+            border: "1px solid #e8a0a0",
+            color: "#a82828",
+            borderRadius: 5,
+            padding: "2px 10px",
+            fontSize: 10,
+            fontWeight: 600,
+            cursor: "pointer",
+            fontFamily: font
+          }
+        }, "Remove"))));
+      }), myVacsView.length > VAC_LIMIT && React.createElement("button", {
+        onClick: () => setShowAllMyVacs(v => !v),
+        style: {
+          background: "none",
           border: "none",
-          borderRadius: 5,
-          padding: "3px 12px",
+          color: "#1a6fa8",
           fontSize: 11,
           fontWeight: 600,
           cursor: "pointer",
-          fontFamily: font
+          fontFamily: font,
+          padding: "6px 0 0",
+          textDecoration: "underline"
         }
-      }, "Save"), React.createElement("button", {
-        onClick: () => setMyVacEdit(null),
+      }, showAllMyVacs ? "Show less" : `Show all ${myVacsView.length} →`), canEditTimeOff && React.createElement("div", {
         style: {
-          background: "#f0f0f0",
-          color: "#5a6a78",
-          border: "1px solid #d0d8e0",
-          borderRadius: 5,
-          padding: "3px 10px",
-          fontSize: 11,
-          cursor: "pointer",
-          fontFamily: font
+          fontSize: 10,
+          color: "#a8946a",
+          marginTop: 8,
+          lineHeight: 1.4
         }
-      }, "Cancel")) : React.createElement(React.Fragment, null, React.createElement("span", {
+      }, "Shorten or remove a vacation to give days back. The scheduler is notified; already-generated weeks aren't reassigned automatically."));
+    })(), myNoCallView.length > 0 && (() => {
+      const NC_LIMIT = 5;
+      const shown = showAllMyNoCall ? myNoCallView : myNoCallView.slice(0, NC_LIMIT);
+      return React.createElement("div", {
+        style: _objectSpread(_objectSpread({}, css.card), {}, {
+          background: "#f4f0fb",
+          border: "1px solid #d8cdec"
+        })
+      }, React.createElement("div", {
+        style: {
+          fontSize: 12,
+          fontWeight: 700,
+          color: "#5a3a90",
+          marginBottom: 6
+        }
+      }, "🚫 My No-Call Days ", React.createElement("span", {
+        style: {
+          fontWeight: 400,
+          color: "#9a82c0"
+        }
+      }, "(", myNoCallView.length, ")")), shown.map(({
+        ns,
+        ne
+      }, i) => React.createElement("div", {
+        key: i,
         style: {
           fontSize: 13,
-          color: "#5a5030",
+          color: "#4a3a60",
           fontFamily: mono,
-          flex: 1,
-          minWidth: 140
+          marginBottom: 3
         }
-      }, vs, " → ", ve), canEditTimeOff && React.createElement(React.Fragment, null, React.createElement("button", {
-        onClick: () => setMyVacEdit({
-          idx: origIdx,
-          start: vs,
-          end: ve
-        }),
+      }, ns, ns !== ne ? ` → ${ne}` : "")), myNoCallView.length > NC_LIMIT && React.createElement("button", {
+        onClick: () => setShowAllMyNoCall(v => !v),
         style: {
-          background: "#e8f0fc",
-          border: "1px solid #a8c8e0",
-          color: "#1a6fa8",
-          borderRadius: 5,
-          padding: "2px 10px",
-          fontSize: 10,
+          background: "none",
+          border: "none",
+          color: "#6a4aa0",
+          fontSize: 11,
           fontWeight: 600,
           cursor: "pointer",
-          fontFamily: font
+          fontFamily: font,
+          padding: "4px 0 0",
+          textDecoration: "underline"
         }
-      }, "✏️ Edit"), React.createElement("button", {
-        onClick: () => removeMyVac(origIdx),
+      }, showAllMyNoCall ? "Show less" : `Show all ${myNoCallView.length} →`), React.createElement("div", {
         style: {
-          background: "#fdecec",
-          border: "1px solid #e8a0a0",
-          color: "#a82828",
-          borderRadius: 5,
-          padding: "2px 10px",
           fontSize: 10,
-          fontWeight: 600,
-          cursor: "pointer",
-          fontFamily: font
+          color: "#8a7aa8",
+          marginTop: 6,
+          lineHeight: 1.4
         }
-      }, "Remove"))));
-    }), canEditTimeOff && React.createElement("div", {
-      style: {
-        fontSize: 10,
-        color: "#a8946a",
-        marginTop: 8,
-        lineHeight: 1.4
-      }
-    }, "Shorten or remove a vacation to give days back. The scheduler is notified; already-generated weeks aren't reassigned automatically.")), myNoCallView.length > 0 && React.createElement("div", {
-      style: _objectSpread(_objectSpread({}, css.card), {}, {
-        background: "#f4f0fb",
-        border: "1px solid #d8cdec"
-      })
-    }, React.createElement("div", {
-      style: {
-        fontSize: 12,
-        fontWeight: 700,
-        color: "#5a3a90",
-        marginBottom: 6
-      }
-    }, "🚫 My No-Call Days"), myNoCallView.map(({
-      ns,
-      ne
-    }, i) => React.createElement("div", {
-      key: i,
-      style: {
-        fontSize: 13,
-        color: "#4a3a60",
-        fontFamily: mono,
-        marginBottom: 3
-      }
-    }, ns, ns !== ne ? ` → ${ne}` : "")), React.createElement("div", {
-      style: {
-        fontSize: 10,
-        color: "#8a7aa8",
-        marginTop: 6,
-        lineHeight: 1.4
-      }
-    }, "Days you're working but won't be assigned call.")), myShifts.map(wk => React.createElement("div", {
+      }, "Days you're working but won't be assigned call."));
+    })(), myShifts.map(wk => React.createElement("div", {
       key: wk.mStr,
       style: _objectSpread(_objectSpread({}, css.card), {}, {
         padding: 12,
@@ -13752,6 +13871,67 @@ const tdS = {
   color: "#4a5a68",
   fontSize: 13
 };
+function Collapsible({
+  title,
+  ck,
+  defaultOpen = false,
+  summary = null,
+  children,
+  css,
+  right = null,
+  style = null
+}) {
+  const [open, setOpen] = React.useState(() => {
+    try {
+      const v = localStorage.getItem("dsg_collapse_" + ck);
+      if (v === "1") return true;
+      if (v === "0") return false;
+    } catch (e) {}
+    return defaultOpen;
+  });
+  const toggle = () => setOpen(o => {
+    const n = !o;
+    try {
+      localStorage.setItem("dsg_collapse_" + ck, n ? "1" : "0");
+    } catch (e) {}
+    return n;
+  });
+  return React.createElement("div", {
+    style: style ? _objectSpread(_objectSpread({}, css.card), style) : css.card
+  }, React.createElement("div", {
+    onClick: toggle,
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 8,
+      cursor: "pointer",
+      userSelect: "none"
+    }
+  }, React.createElement("span", {
+    style: {
+      fontSize: 11,
+      color: "#8a94a0",
+      transition: "transform .15s",
+      transform: open ? "rotate(90deg)" : "rotate(0deg)",
+      display: "inline-block",
+      width: 10,
+      flexShrink: 0
+    }
+  }, "▶"), React.createElement("div", {
+    style: _objectSpread(_objectSpread({}, css.cardT), {}, {
+      marginBottom: 0,
+      flex: 1
+    })
+  }, title), right), !open && summary != null && React.createElement("div", {
+    style: {
+      marginTop: 10
+    }
+  }, summary), open && React.createElement("div", {
+    style: {
+      marginTop: 12
+    }
+  }, children));
+}
 class ErrorBoundary extends React.Component {
   constructor(props) {
     super(props);
