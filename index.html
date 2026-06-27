@@ -6194,8 +6194,16 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         marginLeft: "auto",
         alignItems: "center"
       }
-    }, (noCallDays[p.id] || []).map(([s, e], i) => React.createElement("span", {
-      key: i,
+    }, (noCallDays[p.id] || []).map((r, origIdx) => ({
+      s: r[0],
+      e: r[1],
+      origIdx
+    })).sort((a, b) => a.s < b.s ? -1 : a.s > b.s ? 1 : 0).map(({
+      s,
+      e,
+      origIdx
+    }) => React.createElement("span", {
+      key: origIdx,
       style: {
         display: "inline-flex",
         alignItems: "center",
@@ -6209,7 +6217,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         border: "1px solid #e8dcae"
       }
     }, ncRange(s, e), React.createElement("button", {
-      onClick: () => rmNoCall(p.id, i),
+      onClick: () => rmNoCall(p.id, origIdx),
       style: {
         background: "none",
         border: "none",
@@ -10718,6 +10726,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       ve: r[1],
       origIdx
     })).filter(x => x.ve >= myToday).sort((a, b) => a.vs < b.vs ? -1 : a.vs > b.vs ? 1 : 0);
+    const myNoCallView = myNoCall.map(r => ({
+      ns: r[0],
+      ne: r[1]
+    })).filter(x => x.ne >= myToday).sort((a, b) => a.ns < b.ns ? -1 : a.ns > b.ns ? 1 : 0);
     const canEditTimeOff = userProfile && myId === userProfile.person_id || isScheduler;
     const saveMyVacEdit = () => {
       if (!myVacEdit) return;
@@ -10937,7 +10949,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         marginTop: 8,
         lineHeight: 1.4
       }
-    }, "Shorten or remove a vacation to give days back. The scheduler is notified; already-generated weeks aren't reassigned automatically.")), myNoCall.length > 0 && React.createElement("div", {
+    }, "Shorten or remove a vacation to give days back. The scheduler is notified; already-generated weeks aren't reassigned automatically.")), myNoCallView.length > 0 && React.createElement("div", {
       style: _objectSpread(_objectSpread({}, css.card), {}, {
         background: "#f4f0fb",
         border: "1px solid #d8cdec"
@@ -10949,7 +10961,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         color: "#5a3a90",
         marginBottom: 6
       }
-    }, "🚫 My No-Call Days"), myNoCall.map(([ns, ne], i) => React.createElement("div", {
+    }, "🚫 My No-Call Days"), myNoCallView.map(({
+      ns,
+      ne
+    }, i) => React.createElement("div", {
       key: i,
       style: {
         fontSize: 13,
@@ -12346,6 +12361,44 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       fontSize: 12
     })
   }, "🌙 Dark"))), (isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.role) === "admin") && React.createElement("div", {
+    style: css.card
+  }, React.createElement("div", {
+    style: css.cardT
+  }, "🧪 New vacation storage · this device"), React.createElement("p", {
+    style: {
+      fontSize: 12,
+      color: "#7a8a98",
+      margin: "0 0 10px",
+      lineHeight: 1.5
+    }
+  }, "Beta: stores vacations & no-call days in the new ", React.createElement("code", null, "time_off"), " table so two people editing at the same time can't overwrite each other. Applies to ", React.createElement("strong", null, "this device only"), ". Changing it reloads the app."), React.createElement("label", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 10,
+      cursor: "pointer"
+    }
+  }, React.createElement("input", {
+    type: "checkbox",
+    checked: USE_TIME_OFF,
+    onChange: e => {
+      try {
+        localStorage.setItem("dsg_use_timeoff", e.target.checked ? "1" : "0");
+      } catch (err) {}
+      location.reload();
+    },
+    style: {
+      width: 18,
+      height: 18,
+      cursor: "pointer"
+    }
+  }), React.createElement("span", {
+    style: {
+      fontSize: 13,
+      color: "#5a6a78",
+      fontWeight: 600
+    }
+  }, USE_TIME_OFF ? "On — loading from the new table" : "Off — using the shared blob (default)"))), (isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.role) === "admin") && React.createElement("div", {
     style: css.card
   }, React.createElement("div", {
     style: css.cardT
