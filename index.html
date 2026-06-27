@@ -651,6 +651,147 @@ function CallSchedule() {
     setBiometricEnrolled(false);
     setBiometricPending(false);
   };
+  const USE_TIME_OFF = useMemo(() => {
+    try {
+      const v = localStorage.getItem("dsg_use_timeoff");
+      if (v === "1") return true;
+      if (v === "0") return false;
+    } catch (e) {}
+    return false;
+  }, []);
+  const buildTimeOffMaps = rows => {
+    const vac = {},
+      nc = {};
+    (rows || []).forEach(r => {
+      const tgt = r.kind === "nocall" ? nc : vac;
+      (tgt[r.person_id] = tgt[r.person_id] || []).push([r.start_date, r.end_date, r.id]);
+    });
+    const byStart = (a, b) => a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0;
+    Object.values(vac).forEach(a => a.sort(byStart));
+    Object.values(nc).forEach(a => a.sort(byStart));
+    return {
+      vac,
+      nc
+    };
+  };
+  const loadTimeOff = async () => {
+    try {
+      const rows = await db.query("time_off", {
+        select: "id,person_id,kind,start_date,end_date"
+      });
+      const {
+        vac,
+        nc
+      } = buildTimeOffMaps(rows || []);
+      setVacations(vac);
+      setNoCallDays(nc);
+    } catch (e) {
+      console.error("time_off load failed", e);
+    }
+  };
+  const setterFor = kind => kind === "nocall" ? setNoCallDays : setVacations;
+  const toAdd = async (personId, kind, start, end) => {
+    if (!personId || !start || !end) return;
+    setterFor(kind)(p => _objectSpread(_objectSpread({}, p), {}, {
+      [personId]: [...(p[personId] || []), [start, end]]
+    }));
+    if (!USE_TIME_OFF) return;
+    try {
+      const {
+        error
+      } = await db.insert("time_off", {
+        person_id: personId,
+        kind,
+        start_date: start,
+        end_date: end,
+        created_by: (userProfile === null || userProfile === void 0 ? void 0 : userProfile.person_id) || null
+      });
+      if (error) console.error("time_off insert error", error);
+    } catch (e) {
+      console.error("time_off insert ex", e);
+    }
+  };
+  const toRemove = async (personId, kind, start, end) => {
+    const map = kind === "nocall" ? noCallDays : vacations;
+    const arr = map[personId] || [];
+    const idx = arr.findIndex(([s, e]) => s === start && e === end);
+    const rowId = idx >= 0 ? arr[idx][2] : null;
+    setterFor(kind)(p => {
+      const a = p[personId] || [];
+      const i = a.findIndex(([s, e]) => s === start && e === end);
+      if (i < 0) return p;
+      const next = [...a];
+      next.splice(i, 1);
+      return _objectSpread(_objectSpread({}, p), {}, {
+        [personId]: next
+      });
+    });
+    if (!USE_TIME_OFF) return;
+    try {
+      let q = supabase.from("time_off").delete();
+      if (rowId) q = q.eq("id", rowId);else q = q.eq("person_id", personId).eq("kind", kind).eq("start_date", start).eq("end_date", end);
+      const {
+        error
+      } = await q;
+      if (error) console.error("time_off delete error", error);
+    } catch (e) {
+      console.error("time_off delete ex", e);
+    }
+  };
+  const toEdit = async (personId, kind, oldStart, oldEnd, newStart, newEnd) => {
+    if (!newStart || !newEnd) return;
+    const map = kind === "nocall" ? noCallDays : vacations;
+    const arr = map[personId] || [];
+    const idx = arr.findIndex(([s, e]) => s === oldStart && e === oldEnd);
+    const rowId = idx >= 0 ? arr[idx][2] : null;
+    setterFor(kind)(p => {
+      const a = [...(p[personId] || [])];
+      const i = a.findIndex(([s, e]) => s === oldStart && e === oldEnd);
+      if (i < 0) return p;
+      a[i] = a[i][2] !== undefined ? [newStart, newEnd, a[i][2]] : [newStart, newEnd];
+      return _objectSpread(_objectSpread({}, p), {}, {
+        [personId]: a
+      });
+    });
+    if (!USE_TIME_OFF) return;
+    try {
+      if (rowId) {
+        const {
+          error
+        } = await db.update("time_off", rowId, {
+          start_date: newStart,
+          end_date: newEnd
+        });
+        if (error) console.error("time_off update error", error);
+      } else {
+        await supabase.from("time_off").delete().eq("person_id", personId).eq("kind", kind).eq("start_date", oldStart).eq("end_date", oldEnd);
+        await db.insert("time_off", {
+          person_id: personId,
+          kind,
+          start_date: newStart,
+          end_date: newEnd,
+          created_by: (userProfile === null || userProfile === void 0 ? void 0 : userProfile.person_id) || null
+        });
+      }
+    } catch (e) {
+      console.error("time_off edit ex", e);
+    }
+  };
+  const toClearAll = async kind => {
+    if (!kind || kind === "vacation") setVacations({});
+    if (!kind || kind === "nocall") setNoCallDays({});
+    if (!USE_TIME_OFF) return;
+    try {
+      let q = supabase.from("time_off").delete().not("id", "is", null);
+      if (kind) q = q.eq("kind", kind);
+      const {
+        error
+      } = await q;
+      if (error) console.error("time_off clear error", error);
+    } catch (e) {
+      console.error("time_off clear ex", e);
+    }
+  };
   useEffect(() => {
     (async () => {
       loadFailedRef.current = false;
@@ -663,8 +804,10 @@ function CallSchedule() {
           if (row.updated_at) lastSyncRef.current = row.updated_at;
           if (d.surgeons) setSurgeons(d.surgeons);
           if (d.apps) setApps(d.apps);
-          if (d.vacations) setVacations(d.vacations);
-          if (d.noCallDays) setNoCallDays(d.noCallDays);
+          if (!USE_TIME_OFF) {
+            if (d.vacations) setVacations(d.vacations);
+            if (d.noCallDays) setNoCallDays(d.noCallDays);
+          }
           if (d.backupMondays) setBackupMondaySet(new Set(d.backupMondays));
           if (d.fierceBackup) setFierceBackupSet(new Set(d.fierceBackup));
           if (d.schedule) setSchedule(d.schedule);
@@ -717,6 +860,9 @@ function CallSchedule() {
         console.error("Supabase load error:", e);
         loadFailedRef.current = true;
       }
+      if (USE_TIME_OFF) {
+        await loadTimeOff();
+      }
       setLoaded(true);
       loadedAtRef.current = Date.now();
     })();
@@ -732,8 +878,10 @@ function CallSchedule() {
         const d = typeof row.data === "string" ? JSON.parse(row.data) : row.data;
         if (d.surgeons) setSurgeons(d.surgeons);
         if (d.apps) setApps(d.apps);
-        if (d.vacations) setVacations(d.vacations);
-        if (d.noCallDays) setNoCallDays(d.noCallDays);
+        if (!USE_TIME_OFF) {
+          if (d.vacations) setVacations(d.vacations);
+          if (d.noCallDays) setNoCallDays(d.noCallDays);
+        }
         if (d.backupMondays) setBackupMondaySet(new Set(d.backupMondays));
         if (d.fierceBackup) setFierceBackupSet(new Set(d.fierceBackup));
         if (d.schedule) setSchedule(d.schedule);
@@ -820,6 +968,12 @@ function CallSchedule() {
           schema: "public",
           table: "vacation_requests"
         }, refreshVacReqs).on("postgres_changes", {
+          event: "*",
+          schema: "public",
+          table: "time_off"
+        }, () => {
+          if (USE_TIME_OFF) loadTimeOff();
+        }).on("postgres_changes", {
           event: "*",
           schema: "public",
           table: "shift_trade_requests"
@@ -1024,8 +1178,7 @@ function CallSchedule() {
     } catch (e) {}
     setSurgeons(INIT_SURGEONS);
     setApps(INIT_APPS);
-    setVacations({});
-    setNoCallDays({});
+    toClearAll();
     setBackupMondaySet(new Set());
     setFierceBackupSet(new Set());
     setSchedule({});
@@ -1232,15 +1385,7 @@ function CallSchedule() {
       setVacRequests(prev => prev.map(r => r.id === req.id ? _objectSpread(_objectSpread({}, r), {}, {
         status: "approved"
       }) : r));
-      if (isNoCall) {
-        setNoCallDays(prev => _objectSpread(_objectSpread({}, prev), {}, {
-          [req.surgeon_id]: [...(prev[req.surgeon_id] || []), [req.start_date, req.end_date]]
-        }));
-      } else {
-        setVacations(prev => _objectSpread(_objectSpread({}, prev), {}, {
-          [req.surgeon_id]: [...(prev[req.surgeon_id] || []), [req.start_date, req.end_date]]
-        }));
-      }
+      toAdd(req.surgeon_id, isNoCall ? "nocall" : "vacation", req.start_date, req.end_date);
       const kindLabel = isNoCall ? "no-call days" : "vacation";
       const approveTargets = [...new Set([req.surgeon_id, ...schedulerAdminIds].filter(Boolean))];
       await addNotification("vacation_approved", isNoCall ? "No-Call Approved" : "Vacation Approved", `${req.surgeon_name}'s ${kindLabel} ${req.start_date} to ${req.end_date} was approved`, {
@@ -1651,18 +1796,7 @@ function CallSchedule() {
       setVacRequests(prev => prev.map(r => r.id === editingVacReq.id ? _objectSpread(_objectSpread({}, r), updates) : r));
       const req = vacRequests.find(r => r.id === editingVacReq.id);
       if ((req === null || req === void 0 ? void 0 : req.status) === "approved") {
-        const applyEdit = prev => {
-          const n = _objectSpread({}, prev);
-          const sid = req.surgeon_id;
-          const ranges = n[sid] || [];
-          const idx = ranges.findIndex(([s, e]) => s === req.start_date && e === req.end_date);
-          if (idx >= 0) {
-            n[sid] = [...ranges];
-            n[sid][idx] = [editingVacReq.start_date, editingVacReq.end_date];
-          }
-          return n;
-        };
-        if (req.request_type === "nocall") setNoCallDays(applyEdit);else setVacations(applyEdit);
+        toEdit(req.surgeon_id, req.request_type === "nocall" ? "nocall" : "vacation", req.start_date, req.end_date, editingVacReq.start_date, editingVacReq.end_date);
       }
       setEditingVacReq(null);
     } catch (e) {
@@ -1681,13 +1815,7 @@ function CallSchedule() {
       setVacRequests(prev => prev.map(r => r.id === req.id ? _objectSpread(_objectSpread({}, r), {}, {
         status: "revoked"
       }) : r));
-      const removeRange = prev => {
-        const n = _objectSpread({}, prev);
-        const sid = req.surgeon_id;
-        n[sid] = (n[sid] || []).filter(([s, e]) => !(s === req.start_date && e === req.end_date));
-        return n;
-      };
-      if (isNoCall) setNoCallDays(removeRange);else setVacations(removeRange);
+      toRemove(req.surgeon_id, isNoCall ? "nocall" : "vacation", req.start_date, req.end_date);
       const revokeTargets = [...new Set([req.surgeon_id, ...schedulerAdminIds].filter(Boolean))];
       await addNotification("vacation_revoked", isNoCall ? "No-Call Revoked" : "Vacation Revoked", `${req.surgeon_name}'s ${kindLabel} ${req.start_date} → ${req.end_date} was revoked`, {}, revokeTargets);
     } catch (e) {
@@ -2359,22 +2487,21 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
             nameToId[s.name.toUpperCase()] = s.id;
             nameToId[s.name] = s.id;
           });
-          setVacations(prev => {
-            const n = _objectSpread({}, prev);
-            result.vacations.forEach(e => {
-              var _e$surgeon;
-              const id = nameToId[e.surgeon] || nameToId[(_e$surgeon = e.surgeon) === null || _e$surgeon === void 0 ? void 0 : _e$surgeon.toUpperCase()];
-              if (id && e.start && e.end) {
-                const existing = n[id] || [];
-                const isDupe = existing.some(([s, e2]) => s === e.start && e2 === e.end);
-                if (!isDupe) {
-                  n[id] = [...existing, [e.start, e.end]];
-                  fileVac++;
-                  totalVac++;
-                }
+          const seenVac = new Set();
+          result.vacations.forEach(e => {
+            var _e$surgeon;
+            const id = nameToId[e.surgeon] || nameToId[(_e$surgeon = e.surgeon) === null || _e$surgeon === void 0 ? void 0 : _e$surgeon.toUpperCase()];
+            if (id && e.start && e.end) {
+              const key = id + "|" + e.start + "|" + e.end;
+              const existing = vacations[id] || [];
+              const isDupe = existing.some(([s, e2]) => s === e.start && e2 === e.end) || seenVac.has(key);
+              if (!isDupe) {
+                seenVac.add(key);
+                toAdd(id, "vacation", e.start, e.end);
+                fileVac++;
+                totalVac++;
               }
-            });
-            return n;
+            }
           });
         }
         let fileFierce = 0;
@@ -2657,40 +2784,33 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
   };
   const addVac = () => {
     if (!vacSurgeon || !vacStart || !vacEnd) return;
-    setVacations(p => _objectSpread(_objectSpread({}, p), {}, {
-      [vacSurgeon]: [...(p[vacSurgeon] || []), [vacStart, vacEnd]]
-    }));
+    toAdd(vacSurgeon, "vacation", vacStart, vacEnd);
     setVacStart("");
     setVacEnd("");
   };
-  const rmVac = (sid, idx) => setVacations(p => _objectSpread(_objectSpread({}, p), {}, {
-    [sid]: (p[sid] || []).filter((_, i) => i !== idx)
-  }));
+  const rmVac = (sid, idx) => {
+    const r = (vacations[sid] || [])[idx];
+    if (r) toRemove(sid, "vacation", r[0], r[1]);
+  };
   const addNoCall = () => {
     if (!ncSurgeon || !ncStart || !ncEnd) return;
-    setNoCallDays(p => _objectSpread(_objectSpread({}, p), {}, {
-      [ncSurgeon]: [...(p[ncSurgeon] || []), [ncStart, ncEnd]]
-    }));
+    toAdd(ncSurgeon, "nocall", ncStart, ncEnd);
     setNcStart("");
     setNcEnd("");
   };
-  const rmNoCall = (sid, idx) => setNoCallDays(p => _objectSpread(_objectSpread({}, p), {}, {
-    [sid]: (p[sid] || []).filter((_, i) => i !== idx)
-  }));
+  const rmNoCall = (sid, idx) => {
+    const r = (noCallDays[sid] || [])[idx];
+    if (r) toRemove(sid, "nocall", r[0], r[1]);
+  };
   const saveEditVac = () => {
     if (!editVac || !editVac.start || !editVac.end) return;
-    setVacations(p => {
-      const ranges = [...(p[editVac.sid] || [])];
-      ranges[editVac.idx] = [editVac.start, editVac.end];
-      return _objectSpread(_objectSpread({}, p), {}, {
-        [editVac.sid]: ranges
-      });
-    });
+    const old = (vacations[editVac.sid] || [])[editVac.idx];
+    if (old) toEdit(editVac.sid, "vacation", old[0], old[1], editVac.start, editVac.end);
     setEditVac(null);
   };
   const clearAllVacations = () => {
     if (!confirm("Delete ALL vacations for ALL surgeons and APPs? This cannot be undone.")) return;
-    setVacations({});
+    toClearAll("vacation");
   };
   const saveAppShifts = async next => {
     try {
@@ -10610,10 +10730,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         alert("Please enter a valid date range (start on or before end).");
         return;
       }
-      const next = myVacs.map((r, i) => i === idx ? [start, end] : r);
-      setVacations(prev => _objectSpread(_objectSpread({}, prev), {}, {
-        [myId]: next
-      }));
+      const old = myVacs[idx];
+      if (old) toEdit(myId, "vacation", old[0], old[1], start, end);
       setMyVacEdit(null);
       try {
         addNotification("vacation_revoked", "Vacation Adjusted", `${myName} adjusted a vacation to ${start} → ${end}.`, {
@@ -10624,10 +10742,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     const removeMyVac = idx => {
       const r = myVacs[idx];
       if (!confirm(`Remove your vacation ${r[0]} → ${r[1]}? This gives those days back.`)) return;
-      const next = myVacs.filter((_, i) => i !== idx);
-      setVacations(prev => _objectSpread(_objectSpread({}, prev), {}, {
-        [myId]: next
-      }));
+      toRemove(myId, "vacation", r[0], r[1]);
       if (myVacEdit && myVacEdit.idx === idx) setMyVacEdit(null);
       try {
         addNotification("vacation_revoked", "Vacation Removed", `${myName} removed their vacation ${r[0]} → ${r[1]} (gave days back).`, {
