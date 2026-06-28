@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.06.27a";
+    var APP_VERSION = "2026.06.25p";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -148,6 +148,8 @@ function CallSchedule() {
   const [calFilters, setCalFilters] = useState({ svc: true, night: true, wknd: true, app: true, fierce: true, vac: true });
   const [showBackupStats, setShowBackupStats] = useState(false); // Toggle 2nd call columns in Stats
   const [statsTab, setStatsTab] = useState("fairness"); // Stats view: which table is shown (fairness|monthly|billing|app)
+  const [auditEntries, setAuditEntries] = useState([]); // Activity log rows (scheduler/admin viewer)
+  const [auditLoading, setAuditLoading] = useState(false);
   const [showAllMyVacs, setShowAllMyVacs] = useState(false); // Mine: expand vacation list beyond first few
   const [showAllMyNoCall, setShowAllMyNoCall] = useState(false); // Mine: expand no-call list beyond first few
   const [calSurgeonFilter, setCalSurgeonFilter] = useState(""); // "" = all, or surgeon ID
@@ -674,6 +676,41 @@ function CallSchedule() {
     return true; // <-- code default: time_off storage is live for everyone
   }, []);
 
+  // ─── Audit log ───
+  // Append-only record of who changed what. Fire-and-forget + try/catch so it
+  // never blocks or breaks an action; if the table doesn't exist yet, the insert
+  // just fails quietly. Called from the mutation choke points below.
+  const nameOf = (id) => surgeons.find(s => s.id === id)?.name || apps.find(a => a.id === id)?.name || id || "?";
+  const logAudit = (action, summary, details) => {
+    (async () => {
+      try {
+        await db.insert("audit_log", {
+          actor_id: userProfile?.person_id || null,
+          actor_name: userProfile?.display_name || surgeons.find(s => s.id === userProfile?.person_id)?.name || mySurgeon || "Unknown",
+          action: action,
+          summary: summary,
+          details: details || null,
+        });
+      } catch (e) { console.error("audit log failed", e); }
+    })();
+  };
+  // Load recent activity for the viewer (scheduler/admin only).
+  const loadAudit = async () => {
+    setAuditLoading(true);
+    try {
+      const rows = await db.query("audit_log", { order: "created_at.desc", limit: 150 });
+      setAuditEntries(Array.isArray(rows) ? rows : []);
+    } catch (e) { console.error("audit load failed", e); }
+    setAuditLoading(false);
+  };
+  const fmtAuditTime = (iso) => {
+    try { return new Date(iso).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }); }
+    catch (e) { return iso; }
+  };
+  useEffect(() => {
+    if (view === "settings" && (isScheduler || userProfile?.role === "admin")) loadAudit();
+  }, [view]);
+
   // Build vacations / noCallDays maps from time_off rows. Ranges carry their
   // row id as a 3rd element [start, end, id] — every reader destructures
   // [vs, ve] and ignores the id, so existing UI is unaffected.
@@ -712,10 +749,11 @@ function CallSchedule() {
       if (!res.ok) {
         const t = await res.text().catch(() => "");
         console.error("time_off delete failed", res.status, t);
+        showToast("Couldn't remove that — check your connection and try again.", "error");
         return { ok: false };
       }
       return { ok: true };
-    } catch (e) { console.error("time_off delete ex", e); return { ok: false }; }
+    } catch (e) { console.error("time_off delete ex", e); showToast("Couldn't remove that — check your connection and try again.", "error"); return { ok: false }; }
   };
 
   // ─── Write helpers (the ONLY paths that mutate time_off) ───
@@ -726,15 +764,16 @@ function CallSchedule() {
   const toAdd = async (personId, kind, start, end) => {
     if (!personId || !start || !end) return;
     setterFor(kind)(p => ({ ...p, [personId]: [...(p[personId] || []), [start, end]] }));
+    logAudit(kind + ".add", `Added ${kind === "nocall" ? "no-call" : "vacation"} for ${nameOf(personId)}: ${start}${start !== end ? " → " + end : ""}`, { person_id: personId, kind, start, end });
     if (!USE_TIME_OFF) return;
     try {
       const { error } = await db.insert("time_off", {
         person_id: personId, kind, start_date: start, end_date: end,
         created_by: userProfile?.person_id || null,
       });
-      if (error) console.error("time_off insert error", error);
+      if (error) { console.error("time_off insert error", error); showToast("Couldn't save that — check your connection and try again.", "error"); }
       // realtime reload canonicalizes the optimistic entry (adds its id)
-    } catch (e) { console.error("time_off insert ex", e); }
+    } catch (e) { console.error("time_off insert ex", e); showToast("Couldn't save that — check your connection and try again.", "error"); }
   };
 
   const toRemove = async (personId, kind, start, end) => {
@@ -749,6 +788,7 @@ function CallSchedule() {
       const next = [...a]; next.splice(i, 1);
       return { ...p, [personId]: next };
     });
+    logAudit(kind + ".remove", `Removed ${kind === "nocall" ? "no-call" : "vacation"} for ${nameOf(personId)}: ${start}${start !== end ? " → " + end : ""}`, { person_id: personId, kind, start, end });
     if (!USE_TIME_OFF) return;
     const q = rowId
       ? `id=eq.${rowId}`
@@ -769,17 +809,18 @@ function CallSchedule() {
       a[i] = a[i][2] !== undefined ? [newStart, newEnd, a[i][2]] : [newStart, newEnd];
       return { ...p, [personId]: a };
     });
+    logAudit(kind + ".edit", `Changed ${kind === "nocall" ? "no-call" : "vacation"} for ${nameOf(personId)}: ${oldStart}→${oldEnd} to ${newStart}→${newEnd}`, { person_id: personId, kind, oldStart, oldEnd, newStart, newEnd });
     if (!USE_TIME_OFF) return;
     try {
       if (rowId) {
         const { error } = await db.update("time_off", rowId, { start_date: newStart, end_date: newEnd });
-        if (error) console.error("time_off update error", error);
+        if (error) { console.error("time_off update error", error); showToast("Couldn't save that change — check your connection and try again.", "error"); }
       } else {
-        // No id yet (optimistic): fall back to delete-old + insert-new
+        // No id yet (optimistic): fall back to delete-old + insert-new (delete toasts on its own failure)
         await deleteTimeOff(`person_id=eq.${encodeURIComponent(personId)}&kind=eq.${kind}&start_date=eq.${oldStart}&end_date=eq.${oldEnd}`);
         await db.insert("time_off", { person_id: personId, kind, start_date: newStart, end_date: newEnd, created_by: userProfile?.person_id || null });
       }
-    } catch (e) { console.error("time_off edit ex", e); }
+    } catch (e) { console.error("time_off edit ex", e); showToast("Couldn't save that change — check your connection and try again.", "error"); }
   };
 
   // Wipe time_off rows + clear local maps. kind omitted = both; else just that
@@ -787,6 +828,7 @@ function CallSchedule() {
   const toClearAll = async (kind) => {
     if (!kind || kind === "vacation") setVacations({});
     if (!kind || kind === "nocall") setNoCallDays({});
+    logAudit("timeoff.clearall", `Cleared ALL ${kind ? (kind === "nocall" ? "no-call days" : "vacations") : "vacations and no-call days"} for everyone`, { kind: kind || "both" });
     if (!USE_TIME_OFF) return;
     await deleteTimeOff(`id=not.is.null${kind ? `&kind=eq.${kind}` : ""}`);
   };
@@ -1093,6 +1135,7 @@ function CallSchedule() {
         console.error("Save failed:", e);
         setSaveError(true);
         setSaveStatus("Save failed — retrying…");
+        showToast("Changes aren't saving — check your connection.", "error");
       }
     }, 800);
     return () => clearTimeout(timer);
@@ -1213,6 +1256,7 @@ function CallSchedule() {
     }
     // Snapshot the current persisted row before wiping it.
     await snapshots.capture("reset_all_data");
+    logAudit("system.factory_reset", "⚠ FACTORY RESET — wiped all schedule data back to defaults");
     allowWipeSaveRef.current = true;   // authorize the intended empty write
     everHadRealDataRef.current = false; // wipe is intentional; re-arm only when real data returns
     try {
@@ -1424,6 +1468,7 @@ function CallSchedule() {
       setVacRequests(prev => prev.map(r => r.id === req.id ? { ...r, status: "approved" } : r));
       // Auto-add to the right bucket: no-call requests go to noCallDays, vacations to vacations
       toAdd(req.surgeon_id, isNoCall ? "nocall" : "vacation", req.start_date, req.end_date);
+      logAudit("request.approve", `Approved ${req.surgeon_name}'s ${isNoCall ? "no-call" : "vacation"} request: ${req.start_date} → ${req.end_date}`, { request_id: req.id, surgeon_id: req.surgeon_id });
       const kindLabel = isNoCall ? "no-call days" : "vacation";
       const approveTargets = [...new Set([req.surgeon_id, ...schedulerAdminIds].filter(Boolean))];
       await addNotification("vacation_approved", isNoCall ? "No-Call Approved" : "Vacation Approved",
@@ -1443,6 +1488,7 @@ function CallSchedule() {
         status: "denied", reviewed_at: new Date().toISOString(), reviewed_by: reviewerName, review_note: note
       });
       setVacRequests(prev => prev.map(r => r.id === req.id ? { ...r, status: "denied", review_note: note } : r));
+      logAudit("request.deny", `Denied ${req.surgeon_name}'s ${isNoCall ? "no-call" : "vacation"} request: ${req.start_date} → ${req.end_date}${note ? " (" + note + ")" : ""}`, { request_id: req.id, surgeon_id: req.surgeon_id });
       const denyTargets = [...new Set([req.surgeon_id, ...schedulerAdminIds].filter(Boolean))];
       await addNotification("vacation_denied", isNoCall ? "No-Call Denied" : "Vacation Denied",
         `${req.surgeon_name}'s ${kindLabel} ${req.start_date} to ${req.end_date} was denied${note ? ": " + note : ""}`,
@@ -1477,6 +1523,7 @@ function CallSchedule() {
       const { data: inserted } = await db.insert("shift_trade_requests", req);
       if (inserted) {
         setTradeRequests(prev => [inserted, ...prev]);
+        logAudit("trade.propose", `Proposed trade: ${fromName}'s ${shiftLabel} (${tradeWeek}) → ${toName}${tradeReturnShift ? ` for ${SHIFT_LABELS[tradeReturnShift]||tradeReturnShift} (${tradeReturnWeek})` : ""}`, { from: tradeFrom, to: tradeTo, shift: tradeShift, week: tradeWeek });
         await addNotification("trade_submitted", "Shift Trade Proposed",
           `${fromName} wants to trade ${shiftLabel} (${tradeWeek}) with ${toName}`,
           { from_surgeon_id: tradeFrom, to_surgeon_id: tradeTo },
@@ -1649,6 +1696,7 @@ function CallSchedule() {
 
       await db.update("shift_trade_requests", req.id, { status: "accepted", reviewed_at: new Date().toISOString() });
       setTradeRequests(prev => prev.map(r => r.id === req.id ? { ...r, status: "accepted" } : r));
+      logAudit("trade.accept", `Accepted trade: ${req.from_surgeon_name}'s ${req.shift_label} (${req.week_monday}) ↔ ${req.to_surgeon_name}${cascades.length ? ` (+${cascades.length} cascade change${cascades.length === 1 ? "" : "s"})` : ""}`, { request_id: req.id, cascades: cascades.length });
       pushUndo(schedule);
       setSchedule(p => {
         const n = { ...p };
@@ -1713,6 +1761,7 @@ function CallSchedule() {
     try {
       await db.update("shift_trade_requests", req.id, { status: "declined", reviewed_at: new Date().toISOString() });
       setTradeRequests(prev => prev.map(r => r.id === req.id ? { ...r, status: "declined" } : r));
+      logAudit("trade.decline", `Declined trade: ${req.from_surgeon_name}'s ${req.shift_label} (${req.week_monday}) → ${req.to_surgeon_name}`, { request_id: req.id });
       await addNotification("trade_declined", "Shift Trade Declined",
         `${req.to_surgeon_name} declined: ${req.shift_label} (${req.week_monday})`,
         { from_surgeon_id: req.from_surgeon_id, to_surgeon_id: req.to_surgeon_id },
@@ -2524,22 +2573,26 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
   const addSurgeon = () => {
     const id = "s" + Date.now();
     setSurgeons(p => [...p, { id, name: "NEW" }]);
+    logAudit("roster.surgeon.add", "Added a new surgeon slot");
   };
   const removeSurgeon = (id) => {
     const s = surgeons.find(x => x.id === id);
     if (!s) return;
     if (!confirm(`Remove surgeon ${s.name}? This will not remove their past data from totals.`)) return;
     setSurgeons(p => p.filter(x => x.id !== id));
+    logAudit("roster.surgeon.remove", `Removed surgeon ${s.name}`, { id, name: s.name });
   };
   const addApp = () => {
     const id = "a" + Date.now();
     setApps(p => [...p, { id, name: "NEW" }]);
+    logAudit("roster.app.add", "Added a new APP slot");
   };
   const removeApp = (id) => {
     const a = apps.find(x => x.id === id);
     if (!a) return;
     if (!confirm(`Remove APP ${a.name}?`)) return;
     setApps(p => p.filter(x => x.id !== id));
+    logAudit("roster.app.remove", `Removed APP ${a.name}`, { id, name: a.name });
   };
 
   // ─── Office Contact Handlers ───
@@ -2686,12 +2739,15 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
     const next = {...appShifts,[appDate]:appPerson};
     setAppShifts(next);
     saveAppShifts(next);
+    logAudit("app_shift.assign", `Assigned APP ${nameOf(appPerson)} to ${appDate}`, { date: appDate, app_id: appPerson });
     setAppDate("");
   };
   const rmAppShift = (ds) => {
+    const prevId = appShifts[ds];
     const next={...appShifts}; delete next[ds];
     setAppShifts(next);
     saveAppShifts(next);
+    logAudit("app_shift.remove", `Removed APP assignment on ${ds}${prevId ? " (" + nameOf(prevId) + ")" : ""}`, { date: ds });
   };
 
   // Build surgeon preferences map by matching names
@@ -2851,6 +2907,7 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
       setView("calendar");
       setSaveStatus("Published — totals updated");
       setTimeout(() => setSaveStatus(""), 3000);
+      logAudit("schedule.publish", `Published schedule (${numWeeks} weeks from ${MO[startMonth]} ${startYear})`, { startMonth, startYear, numWeeks, weeks: Object.keys(previewSchedule).length });
     }
   };
 
@@ -3045,6 +3102,7 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
     // Sort final assignments by date for display
     assignments.sort((a, b) => a.date.localeCompare(b.date));
     setHolidayAssignments(prev => ({ ...prev, [String(year)]: assignments }));
+    logAudit("holiday.generate", `Generated holiday assignments for ${year} (${assignments.length} holidays)`, { year, count: assignments.length });
   }, [surgeons, vacations, holidayAssignments]);
 
   // ─── Swap a holiday surgeon ───
@@ -3062,6 +3120,7 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
         if (!confirm(`⚠️ ${surgeonName} is already assigned to ${conflictHol?.name} (${targetHol.type} group).\n\nThis violates the distinct-pairs rule. Assign anyway?`)) return;
       }
     }
+    logAudit("holiday.swap", `Changed ${targetHol?.name || "holiday"} ${slot === "surgeonA" ? "surgeon A" : "surgeon B"} to ${nameOf(newSurgeonId)} (${year})`, { year, holiday: targetHol?.name, slot, newSurgeonId });
     setHolidayAssignments(prev => {
       const n = { ...prev };
       const arr = [...(n[String(year)] || [])];
@@ -3382,6 +3441,8 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
       saveAppShifts(n); // persist APP changes to their own table
       return n;
     });
+
+    logAudit("schedule.week_edit", `Edited ${changes.length} shift${changes.length === 1 ? "" : "s"} in week of ${mondayStr}${draft.reason ? " (" + draft.reason + ")" : ""}`, { mondayStr, changes: changes.map(c => ({ slot: c.slotLabel, from: nameOf(c.oldId), to: nameOf(c.newId) })) });
 
     // Notifications — COALESCED per recipient so a bulk save of 4 shifts
     // produces 1 notification set per affected person instead of 4. Massive
@@ -5972,6 +6033,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             <span><span style={{color:"#c06020"}}>📅</span> Holiday Coverage</span>
           </div>
 
+          {/* Calendar tools — collapsed by default so the calendar itself stays front and center */}
+          <Collapsible css={css} ck="cal_tools" defaultOpen={false} title="🔧 Schedule Tools & Export" style={{background:"transparent",border:"none",boxShadow:"none",padding:"4px 2px",marginTop:8}}>
           {/* ─── Manual Adjustments (scheduler/admin only) ─── */}
           {(isScheduler || userProfile?.role === "admin") && (
             <div style={{...css.card,marginTop:14,background:"linear-gradient(135deg,#fff8e8,#fcf4e0)",border:"1px solid #e0c890"}}>
@@ -6266,6 +6329,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               </div>
             </div>
           )}
+          </Collapsible>
 
           {/* ─── Edit Week Modal (scheduler/admin) ─── */}
           {editWeekModal && (()=>{
@@ -6425,6 +6489,13 @@ ${"</"}script>${"</"}body>${"</"}html>`;
 
         {/* ════════════════ STATS ════════════════ */}
         {view==="stats" && !isPublicMode && <>
+          {/* Segmented switcher — show one table at a time instead of stacking all */}
+          <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:12}}>
+            {[["counts","Counts"],["fairness","Fairness"],["monthly","Monthly"],["billing","Billing"],["app","APP"]].map(([k,lbl])=>(
+              <button key={k} onClick={()=>setStatsTab(k)} style={{background: statsTab===k ? "linear-gradient(135deg,#1a6fa8,#2488c8)" : (dk?"#1e2a36":"#f4f6f8"), color: statsTab===k ? "#fff" : "#5a6a78", border: `1px solid ${statsTab===k ? "#1a6fa8" : (dk?"#2a3a48":"#d0d8e0")}`, borderRadius: 7, padding: "6px 14px", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: font}}>{lbl}</button>
+            ))}
+          </div>
+          {statsTab==="counts" && (<>
           {/* Export — scheduler only */}
           {isScheduler && (
             <div style={{display:"flex",justifyContent:"flex-end",marginBottom:10}}>
@@ -6487,9 +6558,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               </div>
             )}
           </div>
+          </>)}
 
           {/* Monthly Call Summary */}
-          {Object.keys(schedule).length > 0 && (()=>{
+          {statsTab==="monthly" && Object.keys(schedule).length > 0 && (()=>{
             // Compute monthly breakdown
             // Formula: Service Week = 6, Week Night = 1, Weekend = 2
             // Whole-shift shifts (Svc Wk, Weekend) are attributed to the month the shift STARTS in
@@ -6620,7 +6692,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
 
           {/* Billing Summary — month-by-month. Scheduler/admin see all surgeons;
               each surgeon sees only their own row (tied to authenticated identity). */}
-          {Object.keys(schedule).length > 0 && (()=>{
+          {statsTab==="billing" && Object.keys(schedule).length > 0 && (()=>{
             const canSeeAllBilling = isScheduler || userProfile?.role === "admin";
             const ownBillId = userProfile?.person_id;
             // Non-privileged users are restricted to their own row by authenticated
@@ -6733,6 +6805,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           })()}
 
           {/* APP stats */}
+          {statsTab==="app" && (
           <div style={css.card}>
             <div style={css.cardT}>APP Distribution</div>
             {!Object.values(appStats).some(v=>v>0) ? (
@@ -6758,7 +6831,9 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               </div>
             )}
           </div>
+          )}
 
+          {statsTab==="fairness" && (<>
           {/* Vacation Days — scoped to the current 14-week schedule period */}
           <div style={css.card}>
             <div style={css.cardT}>
@@ -6913,6 +6988,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               </div>
             </div>
           )}
+          </>)}
         </>}
 
         {/* ════════════════ MY SCHEDULE ════════════════ */}
@@ -7622,6 +7698,35 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                 </span>
               </label>
             </div>
+          )}
+
+          {/* Activity Log — scheduler/admin: append-only record of who changed what */}
+          {(isScheduler || userProfile?.role === "admin") && (
+            <Collapsible css={css} ck="settings_audit" defaultOpen={false}
+              title={<>📋 Activity Log <span style={{fontWeight:400,fontSize:11,color:"#7a8a98"}}>— who changed what</span></>}
+              right={<button onClick={(e)=>{e.stopPropagation(); loadAudit();}} title="Refresh" style={{background:"none",border:"1px solid #d0d8e0",borderRadius:6,color:"#5a6a78",cursor:"pointer",fontSize:13,padding:"2px 8px",fontFamily:font}}>↻</button>}>
+              {auditLoading ? (
+                <div style={{fontSize:12,color:"#8a94a0",padding:"6px 0"}}>Loading…</div>
+              ) : auditEntries.length === 0 ? (
+                <div style={{fontSize:12,color:"#8a94a0",padding:"6px 0"}}>No activity recorded yet. Changes from here on will appear here.</div>
+              ) : (
+                <div style={{maxHeight:420,overflowY:"auto",margin:"-2px -2px 0"}}>
+                  {auditEntries.map(en => {
+                    const si = surgeons.findIndex(s => s.id === en.actor_id);
+                    const c = si >= 0 ? surgeonColors(surgeons[si].name, si) : null;
+                    return (
+                      <div key={en.id} style={{display:"flex",gap:8,alignItems:"flex-start",padding:"7px 2px",borderBottom:"1px solid "+(dk?"#243240":"#eef1f4")}}>
+                        <span style={{flexShrink:0,fontSize:10,fontWeight:700,letterSpacing:0.4,padding:"2px 7px",borderRadius:5,background:c?c.tg:(dk?"#243240":"#eef1f4"),color:c?c.tx:"#5a6a78",border:`1px solid ${c?c.bd:(dk?"#2a3a48":"#e0e4ea")}`,minWidth:38,textAlign:"center"}}>{en.actor_name}</span>
+                        <div style={{flex:1,minWidth:0}}>
+                          <div style={{fontSize:12.5,color:dk?"#c8d2dc":"#3a4a58",lineHeight:1.35}}>{en.summary}</div>
+                          <div style={{fontSize:10,color:"#9aa4ae",marginTop:1,fontFamily:mono}}>{fmtAuditTime(en.created_at)} · {en.action}</div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </Collapsible>
           )}
 
           {/* APP Shift Managers — scheduler/admin only */}
