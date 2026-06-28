@@ -118,7 +118,7 @@ const {
   useEffect
 } = React;
 function CallSchedule() {
-  var _find, _surgeons$find1;
+  var _find, _surgeons$find11;
   const isPublicMode = useMemo(() => {
     try {
       const params = new URLSearchParams(window.location.search);
@@ -157,6 +157,8 @@ function CallSchedule() {
   });
   const [showBackupStats, setShowBackupStats] = useState(false);
   const [statsTab, setStatsTab] = useState("fairness");
+  const [auditEntries, setAuditEntries] = useState([]);
+  const [auditLoading, setAuditLoading] = useState(false);
   const [showAllMyVacs, setShowAllMyVacs] = useState(false);
   const [showAllMyNoCall, setShowAllMyNoCall] = useState(false);
   const [calSurgeonFilter, setCalSurgeonFilter] = useState("");
@@ -662,6 +664,54 @@ function CallSchedule() {
     } catch (e) {}
     return true;
   }, []);
+  const nameOf = id => {
+    var _surgeons$find, _apps$find;
+    return ((_surgeons$find = surgeons.find(s => s.id === id)) === null || _surgeons$find === void 0 ? void 0 : _surgeons$find.name) || ((_apps$find = apps.find(a => a.id === id)) === null || _apps$find === void 0 ? void 0 : _apps$find.name) || id || "?";
+  };
+  const logAudit = (action, summary, details) => {
+    (async () => {
+      try {
+        var _surgeons$find2;
+        await db.insert("audit_log", {
+          actor_id: (userProfile === null || userProfile === void 0 ? void 0 : userProfile.person_id) || null,
+          actor_name: (userProfile === null || userProfile === void 0 ? void 0 : userProfile.display_name) || ((_surgeons$find2 = surgeons.find(s => s.id === (userProfile === null || userProfile === void 0 ? void 0 : userProfile.person_id))) === null || _surgeons$find2 === void 0 ? void 0 : _surgeons$find2.name) || mySurgeon || "Unknown",
+          action: action,
+          summary: summary,
+          details: details || null
+        });
+      } catch (e) {
+        console.error("audit log failed", e);
+      }
+    })();
+  };
+  const loadAudit = async () => {
+    setAuditLoading(true);
+    try {
+      const rows = await db.query("audit_log", {
+        order: "created_at.desc",
+        limit: 150
+      });
+      setAuditEntries(Array.isArray(rows) ? rows : []);
+    } catch (e) {
+      console.error("audit load failed", e);
+    }
+    setAuditLoading(false);
+  };
+  const fmtAuditTime = iso => {
+    try {
+      return new Date(iso).toLocaleString(undefined, {
+        month: "short",
+        day: "numeric",
+        hour: "numeric",
+        minute: "2-digit"
+      });
+    } catch (e) {
+      return iso;
+    }
+  };
+  useEffect(() => {
+    if (view === "settings" && (isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.role) === "admin")) loadAudit();
+  }, [view]);
   const buildTimeOffMaps = rows => {
     const vac = {},
       nc = {};
@@ -701,6 +751,7 @@ function CallSchedule() {
       if (!res.ok) {
         const t = await res.text().catch(() => "");
         console.error("time_off delete failed", res.status, t);
+        showToast("Couldn't remove that — check your connection and try again.", "error");
         return {
           ok: false
         };
@@ -710,6 +761,7 @@ function CallSchedule() {
       };
     } catch (e) {
       console.error("time_off delete ex", e);
+      showToast("Couldn't remove that — check your connection and try again.", "error");
       return {
         ok: false
       };
@@ -721,6 +773,12 @@ function CallSchedule() {
     setterFor(kind)(p => _objectSpread(_objectSpread({}, p), {}, {
       [personId]: [...(p[personId] || []), [start, end]]
     }));
+    logAudit(kind + ".add", `Added ${kind === "nocall" ? "no-call" : "vacation"} for ${nameOf(personId)}: ${start}${start !== end ? " → " + end : ""}`, {
+      person_id: personId,
+      kind,
+      start,
+      end
+    });
     if (!USE_TIME_OFF) return;
     try {
       const {
@@ -732,9 +790,13 @@ function CallSchedule() {
         end_date: end,
         created_by: (userProfile === null || userProfile === void 0 ? void 0 : userProfile.person_id) || null
       });
-      if (error) console.error("time_off insert error", error);
+      if (error) {
+        console.error("time_off insert error", error);
+        showToast("Couldn't save that — check your connection and try again.", "error");
+      }
     } catch (e) {
       console.error("time_off insert ex", e);
+      showToast("Couldn't save that — check your connection and try again.", "error");
     }
   };
   const toRemove = async (personId, kind, start, end) => {
@@ -751,6 +813,12 @@ function CallSchedule() {
       return _objectSpread(_objectSpread({}, p), {}, {
         [personId]: next
       });
+    });
+    logAudit(kind + ".remove", `Removed ${kind === "nocall" ? "no-call" : "vacation"} for ${nameOf(personId)}: ${start}${start !== end ? " → " + end : ""}`, {
+      person_id: personId,
+      kind,
+      start,
+      end
     });
     if (!USE_TIME_OFF) return;
     const q = rowId ? `id=eq.${rowId}` : `person_id=eq.${encodeURIComponent(personId)}&kind=eq.${kind}&start_date=eq.${start}&end_date=eq.${end}`;
@@ -771,6 +839,14 @@ function CallSchedule() {
         [personId]: a
       });
     });
+    logAudit(kind + ".edit", `Changed ${kind === "nocall" ? "no-call" : "vacation"} for ${nameOf(personId)}: ${oldStart}→${oldEnd} to ${newStart}→${newEnd}`, {
+      person_id: personId,
+      kind,
+      oldStart,
+      oldEnd,
+      newStart,
+      newEnd
+    });
     if (!USE_TIME_OFF) return;
     try {
       if (rowId) {
@@ -780,7 +856,10 @@ function CallSchedule() {
           start_date: newStart,
           end_date: newEnd
         });
-        if (error) console.error("time_off update error", error);
+        if (error) {
+          console.error("time_off update error", error);
+          showToast("Couldn't save that change — check your connection and try again.", "error");
+        }
       } else {
         await deleteTimeOff(`person_id=eq.${encodeURIComponent(personId)}&kind=eq.${kind}&start_date=eq.${oldStart}&end_date=eq.${oldEnd}`);
         await db.insert("time_off", {
@@ -793,11 +872,15 @@ function CallSchedule() {
       }
     } catch (e) {
       console.error("time_off edit ex", e);
+      showToast("Couldn't save that change — check your connection and try again.", "error");
     }
   };
   const toClearAll = async kind => {
     if (!kind || kind === "vacation") setVacations({});
     if (!kind || kind === "nocall") setNoCallDays({});
+    logAudit("timeoff.clearall", `Cleared ALL ${kind ? kind === "nocall" ? "no-call days" : "vacations" : "vacations and no-call days"} for everyone`, {
+      kind: kind || "both"
+    });
     if (!USE_TIME_OFF) return;
     await deleteTimeOff(`id=not.is.null${kind ? `&kind=eq.${kind}` : ""}`);
   };
@@ -1084,6 +1167,7 @@ function CallSchedule() {
         console.error("Save failed:", e);
         setSaveError(true);
         setSaveStatus("Save failed — retrying…");
+        showToast("Changes aren't saving — check your connection.", "error");
       }
     }, 800);
     return () => clearTimeout(timer);
@@ -1169,6 +1253,7 @@ function CallSchedule() {
       return;
     }
     await snapshots.capture("reset_all_data");
+    logAudit("system.factory_reset", "⚠ FACTORY RESET — wiped all schedule data back to defaults");
     allowWipeSaveRef.current = true;
     everHadRealDataRef.current = false;
     try {
@@ -1327,9 +1412,9 @@ function CallSchedule() {
     }
   }, [edgeFunctionUrl, surgeons, apps]);
   const submitVacRequest = useCallback(async () => {
-    var _surgeons$find, _apps$find;
+    var _surgeons$find3, _apps$find2;
     if (!vacReqSurgeon || !vacReqStart || !vacReqEnd) return;
-    const surgeonName = ((_surgeons$find = surgeons.find(s => s.id === vacReqSurgeon)) === null || _surgeons$find === void 0 ? void 0 : _surgeons$find.name) || ((_apps$find = apps.find(a => a.id === vacReqSurgeon)) === null || _apps$find === void 0 ? void 0 : _apps$find.name) || vacReqSurgeon;
+    const surgeonName = ((_surgeons$find3 = surgeons.find(s => s.id === vacReqSurgeon)) === null || _surgeons$find3 === void 0 ? void 0 : _surgeons$find3.name) || ((_apps$find2 = apps.find(a => a.id === vacReqSurgeon)) === null || _apps$find2 === void 0 ? void 0 : _apps$find2.name) || vacReqSurgeon;
     const isNoCall = vacReqType === "nocall";
     const kindLabel = isNoCall ? "no-call days" : "vacation";
     try {
@@ -1384,8 +1469,8 @@ function CallSchedule() {
       if (!confirm(`Warning: Approving this would put ${maxOff} surgeons off/unavailable at the same time (max 4). Approve anyway?`)) return;
     }
     try {
-      var _surgeons$find2;
-      const reviewerName = (userProfile === null || userProfile === void 0 ? void 0 : userProfile.display_name) || ((_surgeons$find2 = surgeons.find(s => s.id === mySurgeon)) === null || _surgeons$find2 === void 0 ? void 0 : _surgeons$find2.name) || "A colleague";
+      var _surgeons$find4;
+      const reviewerName = (userProfile === null || userProfile === void 0 ? void 0 : userProfile.display_name) || ((_surgeons$find4 = surgeons.find(s => s.id === mySurgeon)) === null || _surgeons$find4 === void 0 ? void 0 : _surgeons$find4.name) || "A colleague";
       await db.update("vacation_requests", req.id, {
         status: "approved",
         reviewed_at: new Date().toISOString(),
@@ -1395,6 +1480,10 @@ function CallSchedule() {
         status: "approved"
       }) : r));
       toAdd(req.surgeon_id, isNoCall ? "nocall" : "vacation", req.start_date, req.end_date);
+      logAudit("request.approve", `Approved ${req.surgeon_name}'s ${isNoCall ? "no-call" : "vacation"} request: ${req.start_date} → ${req.end_date}`, {
+        request_id: req.id,
+        surgeon_id: req.surgeon_id
+      });
       const kindLabel = isNoCall ? "no-call days" : "vacation";
       const approveTargets = [...new Set([req.surgeon_id, ...schedulerAdminIds].filter(Boolean))];
       await addNotification("vacation_approved", isNoCall ? "No-Call Approved" : "Vacation Approved", `${req.surgeon_name}'s ${kindLabel} ${req.start_date} to ${req.end_date} was approved`, {
@@ -1415,8 +1504,8 @@ function CallSchedule() {
     const isNoCall = req.request_type === "nocall";
     const kindLabel = isNoCall ? "no-call days" : "vacation";
     try {
-      var _surgeons$find3;
-      const reviewerName = (userProfile === null || userProfile === void 0 ? void 0 : userProfile.display_name) || ((_surgeons$find3 = surgeons.find(s => s.id === mySurgeon)) === null || _surgeons$find3 === void 0 ? void 0 : _surgeons$find3.name) || "A colleague";
+      var _surgeons$find5;
+      const reviewerName = (userProfile === null || userProfile === void 0 ? void 0 : userProfile.display_name) || ((_surgeons$find5 = surgeons.find(s => s.id === mySurgeon)) === null || _surgeons$find5 === void 0 ? void 0 : _surgeons$find5.name) || "A colleague";
       await db.update("vacation_requests", req.id, {
         status: "denied",
         reviewed_at: new Date().toISOString(),
@@ -1427,6 +1516,10 @@ function CallSchedule() {
         status: "denied",
         review_note: note
       }) : r));
+      logAudit("request.deny", `Denied ${req.surgeon_name}'s ${isNoCall ? "no-call" : "vacation"} request: ${req.start_date} → ${req.end_date}${note ? " (" + note + ")" : ""}`, {
+        request_id: req.id,
+        surgeon_id: req.surgeon_id
+      });
       const denyTargets = [...new Set([req.surgeon_id, ...schedulerAdminIds].filter(Boolean))];
       await addNotification("vacation_denied", isNoCall ? "No-Call Denied" : "Vacation Denied", `${req.surgeon_name}'s ${kindLabel} ${req.start_date} to ${req.end_date} was denied${note ? ": " + note : ""}`, {
         surgeon_id: req.surgeon_id
@@ -1444,7 +1537,7 @@ function CallSchedule() {
     }
   }, [addNotification, sendEmailNotif, schedulerAdminIds, userProfile, surgeons, mySurgeon]);
   const submitTradeRequest = useCallback(async () => {
-    var _surgeons$find4, _surgeons$find5;
+    var _surgeons$find6, _surgeons$find7;
     if (!tradeFrom || !tradeTo || !tradeWeek || !tradeShift) return;
     if (!tradeReturnWeek || !tradeReturnShift) {
       if (!isScheduler) {
@@ -1453,8 +1546,8 @@ function CallSchedule() {
       }
       if (!confirm("⚠️ No return swap specified.\n\nOne-way trades should only be used for emergencies (illness, family emergency).\n\nSubmit anyway?")) return;
     }
-    const fromName = ((_surgeons$find4 = surgeons.find(s => s.id === tradeFrom)) === null || _surgeons$find4 === void 0 ? void 0 : _surgeons$find4.name) || tradeFrom;
-    const toName = ((_surgeons$find5 = surgeons.find(s => s.id === tradeTo)) === null || _surgeons$find5 === void 0 ? void 0 : _surgeons$find5.name) || tradeTo;
+    const fromName = ((_surgeons$find6 = surgeons.find(s => s.id === tradeFrom)) === null || _surgeons$find6 === void 0 ? void 0 : _surgeons$find6.name) || tradeFrom;
+    const toName = ((_surgeons$find7 = surgeons.find(s => s.id === tradeTo)) === null || _surgeons$find7 === void 0 ? void 0 : _surgeons$find7.name) || tradeTo;
     const shiftLabel = SHIFT_LABELS[tradeShift] || tradeShift;
     try {
       const req = {
@@ -1476,6 +1569,12 @@ function CallSchedule() {
       } = await db.insert("shift_trade_requests", req);
       if (inserted) {
         setTradeRequests(prev => [inserted, ...prev]);
+        logAudit("trade.propose", `Proposed trade: ${fromName}'s ${shiftLabel} (${tradeWeek}) → ${toName}${tradeReturnShift ? ` for ${SHIFT_LABELS[tradeReturnShift] || tradeReturnShift} (${tradeReturnWeek})` : ""}`, {
+          from: tradeFrom,
+          to: tradeTo,
+          shift: tradeShift,
+          week: tradeWeek
+        });
         await addNotification("trade_submitted", "Shift Trade Proposed", `${fromName} wants to trade ${shiftLabel} (${tradeWeek}) with ${toName}`, {
           from_surgeon_id: tradeFrom,
           to_surgeon_id: tradeTo
@@ -1499,8 +1598,8 @@ function CallSchedule() {
     const changes = [];
     const ids = surgeons.map(s => s.id);
     const nameOf = id => {
-      var _surgeons$find6;
-      return ((_surgeons$find6 = surgeons.find(s => s.id === id)) === null || _surgeons$find6 === void 0 ? void 0 : _surgeons$find6.name) || id;
+      var _surgeons$find8;
+      return ((_surgeons$find8 = surgeons.find(s => s.id === id)) === null || _surgeons$find8 === void 0 ? void 0 : _surgeons$find8.name) || id;
     };
     const nightKeys = ["mon", "tue", "wed", "thu"];
     const applySwap = (s, r) => {
@@ -1645,8 +1744,8 @@ function CallSchedule() {
     try {
       const cascades = detectCascadeChanges(schedule, req);
       const nameOf = id => {
-        var _surgeons$find7;
-        return ((_surgeons$find7 = surgeons.find(s => s.id === id)) === null || _surgeons$find7 === void 0 ? void 0 : _surgeons$find7.name) || id;
+        var _surgeons$find9;
+        return ((_surgeons$find9 = surgeons.find(s => s.id === id)) === null || _surgeons$find9 === void 0 ? void 0 : _surgeons$find9.name) || id;
       };
       if (cascades.length > 0) {
         const cascadeDesc = cascades.map(c => `  • ${c.reason}`).join("\n");
@@ -1665,6 +1764,10 @@ function CallSchedule() {
       setTradeRequests(prev => prev.map(r => r.id === req.id ? _objectSpread(_objectSpread({}, r), {}, {
         status: "accepted"
       }) : r));
+      logAudit("trade.accept", `Accepted trade: ${req.from_surgeon_name}'s ${req.shift_label} (${req.week_monday}) ↔ ${req.to_surgeon_name}${cascades.length ? ` (+${cascades.length} cascade change${cascades.length === 1 ? "" : "s"})` : ""}`, {
+        request_id: req.id,
+        cascades: cascades.length
+      });
       pushUndo(schedule);
       setSchedule(p => {
         const n = _objectSpread({}, p);
@@ -1731,6 +1834,9 @@ function CallSchedule() {
       setTradeRequests(prev => prev.map(r => r.id === req.id ? _objectSpread(_objectSpread({}, r), {}, {
         status: "declined"
       }) : r));
+      logAudit("trade.decline", `Declined trade: ${req.from_surgeon_name}'s ${req.shift_label} (${req.week_monday}) → ${req.to_surgeon_name}`, {
+        request_id: req.id
+      });
       await addNotification("trade_declined", "Shift Trade Declined", `${req.to_surgeon_name} declined: ${req.shift_label} (${req.week_monday})`, {
         from_surgeon_id: req.from_surgeon_id,
         to_surgeon_id: req.to_surgeon_id
@@ -2041,9 +2147,9 @@ function CallSchedule() {
   useEffect(() => {
     if (!oneSignalReady || !mySurgeon || !window.OneSignal) return;
     try {
-      var _surgeons$find8;
+      var _surgeons$find0;
       window.OneSignal.User.addTag("surgeon_id", mySurgeon);
-      const surgeonName = ((_surgeons$find8 = surgeons.find(s => s.id === mySurgeon)) === null || _surgeons$find8 === void 0 ? void 0 : _surgeons$find8.name) || mySurgeon;
+      const surgeonName = ((_surgeons$find0 = surgeons.find(s => s.id === mySurgeon)) === null || _surgeons$find0 === void 0 ? void 0 : _surgeons$find0.name) || mySurgeon;
       window.OneSignal.User.addTag("surgeon_name", surgeonName);
     } catch (e) {
       console.error("OneSignal tag error:", e);
@@ -2618,12 +2724,17 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
       id,
       name: "NEW"
     }]);
+    logAudit("roster.surgeon.add", "Added a new surgeon slot");
   };
   const removeSurgeon = id => {
     const s = surgeons.find(x => x.id === id);
     if (!s) return;
     if (!confirm(`Remove surgeon ${s.name}? This will not remove their past data from totals.`)) return;
     setSurgeons(p => p.filter(x => x.id !== id));
+    logAudit("roster.surgeon.remove", `Removed surgeon ${s.name}`, {
+      id,
+      name: s.name
+    });
   };
   const addApp = () => {
     const id = "a" + Date.now();
@@ -2631,12 +2742,17 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
       id,
       name: "NEW"
     }]);
+    logAudit("roster.app.add", "Added a new APP slot");
   };
   const removeApp = id => {
     const a = apps.find(x => x.id === id);
     if (!a) return;
     if (!confirm(`Remove APP ${a.name}?`)) return;
     setApps(p => p.filter(x => x.id !== id));
+    logAudit("roster.app.remove", `Removed APP ${a.name}`, {
+      id,
+      name: a.name
+    });
   };
   const addOfficeContact = async () => {
     const name = (newOfficeName || "").trim();
@@ -2849,13 +2965,21 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
     });
     setAppShifts(next);
     saveAppShifts(next);
+    logAudit("app_shift.assign", `Assigned APP ${nameOf(appPerson)} to ${appDate}`, {
+      date: appDate,
+      app_id: appPerson
+    });
     setAppDate("");
   };
   const rmAppShift = ds => {
+    const prevId = appShifts[ds];
     const next = _objectSpread({}, appShifts);
     delete next[ds];
     setAppShifts(next);
     saveAppShifts(next);
+    logAudit("app_shift.remove", `Removed APP assignment on ${ds}${prevId ? " (" + nameOf(prevId) + ")" : ""}`, {
+      date: ds
+    });
   };
   const buildPrefs = () => {
     const p = {};
@@ -3055,6 +3179,12 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
       setView("calendar");
       setSaveStatus("Published — totals updated");
       setTimeout(() => setSaveStatus(""), 3000);
+      logAudit("schedule.publish", `Published schedule (${numWeeks} weeks from ${MO[startMonth]} ${startYear})`, {
+        startMonth,
+        startYear,
+        numWeeks,
+        weeks: Object.keys(previewSchedule).length
+      });
     }
   };
   const discardPreview = () => {
@@ -3275,6 +3405,10 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
     setHolidayAssignments(prev => _objectSpread(_objectSpread({}, prev), {}, {
       [String(year)]: assignments
     }));
+    logAudit("holiday.generate", `Generated holiday assignments for ${year} (${assignments.length} holidays)`, {
+      year,
+      count: assignments.length
+    });
   }, [surgeons, vacations, holidayAssignments]);
   const swapHolidaySurgeon = useCallback((year, holidayIdx, slot, newSurgeonId) => {
     const arr = holidayAssignments[String(year)] || [];
@@ -3287,12 +3421,18 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
         usedInGroup.add(h.surgeonB);
       });
       if (usedInGroup.has(newSurgeonId)) {
-        var _surgeons$find9;
+        var _surgeons$find1;
         const conflictHol = sameGroup.find(h => h.surgeonA === newSurgeonId || h.surgeonB === newSurgeonId);
-        const surgeonName = ((_surgeons$find9 = surgeons.find(s => s.id === newSurgeonId)) === null || _surgeons$find9 === void 0 ? void 0 : _surgeons$find9.name) || newSurgeonId;
+        const surgeonName = ((_surgeons$find1 = surgeons.find(s => s.id === newSurgeonId)) === null || _surgeons$find1 === void 0 ? void 0 : _surgeons$find1.name) || newSurgeonId;
         if (!confirm(`⚠️ ${surgeonName} is already assigned to ${conflictHol === null || conflictHol === void 0 ? void 0 : conflictHol.name} (${targetHol.type} group).\n\nThis violates the distinct-pairs rule. Assign anyway?`)) return;
       }
     }
+    logAudit("holiday.swap", `Changed ${(targetHol === null || targetHol === void 0 ? void 0 : targetHol.name) || "holiday"} ${slot === "surgeonA" ? "surgeon A" : "surgeon B"} to ${nameOf(newSurgeonId)} (${year})`, {
+      year,
+      holiday: targetHol === null || targetHol === void 0 ? void 0 : targetHol.name,
+      slot,
+      newSurgeonId
+    });
     setHolidayAssignments(prev => {
       const n = _objectSpread({}, prev);
       const arr = [...(n[String(year)] || [])];
@@ -3658,6 +3798,14 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
       });
       saveAppShifts(n);
       return n;
+    });
+    logAudit("schedule.week_edit", `Edited ${changes.length} shift${changes.length === 1 ? "" : "s"} in week of ${mondayStr}${draft.reason ? " (" + draft.reason + ")" : ""}`, {
+      mondayStr,
+      changes: changes.map(c => ({
+        slot: c.slotLabel,
+        from: nameOf(c.oldId),
+        to: nameOf(c.newId)
+      }))
     });
     const reasonSuffix = draft.reason ? ` (${draft.reason})` : "";
     const perPerson = new Map();
@@ -6891,8 +7039,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           fontWeight: 700
         }
       }, ck.ok ? "✓" : "⚠", " ", ck.label, " group:"), " ", ck.ok ? `All ${ck.uniqueCount} surgeons distinct (${ck.freeCount} free)` : ck.dupes.map(d => {
-        var _surgeons$find0;
-        return `${((_surgeons$find0 = surgeons.find(s => s.id === d.surgeon)) === null || _surgeons$find0 === void 0 ? void 0 : _surgeons$find0.name) || d.surgeon} is on both ${d.hol1} & ${d.hol2}`;
+        var _surgeons$find10;
+        return `${((_surgeons$find10 = surgeons.find(s => s.id === d.surgeon)) === null || _surgeons$find10 === void 0 ? void 0 : _surgeons$find10.name) || d.surgeon} is on both ${d.hol1} & ${d.hol2}`;
       }).join("; "))));
     })(), React.createElement("div", {
       style: {
@@ -8942,7 +9090,19 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     style: {
       color: "#c06020"
     }
-  }, "📅"), " Holiday Coverage")), (isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.role) === "admin") && React.createElement("div", {
+  }, "📅"), " Holiday Coverage")), React.createElement(Collapsible, {
+    css: css,
+    ck: "cal_tools",
+    defaultOpen: false,
+    title: "🔧 Schedule Tools & Export",
+    style: {
+      background: "transparent",
+      border: "none",
+      boxShadow: "none",
+      padding: "4px 2px",
+      marginTop: 8
+    }
+  }, (isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.role) === "admin") && React.createElement("div", {
     style: _objectSpread(_objectSpread({}, css.card), {}, {
       marginTop: 14,
       background: "linear-gradient(135deg,#fff8e8,#fcf4e0)",
@@ -9501,7 +9661,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       color: "#7a6a50",
       fontStyle: "italic"
     }
-  }, "Opens in a new tab. Use your browser's print dialog to print or save as PDF.")), editWeekModal && (() => {
+  }, "Opens in a new tab. Use your browser's print dialog to print or save as PDF."))), editWeekModal && (() => {
     const {
       mondayStr,
       draft
@@ -9857,7 +10017,28 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         padding: "8px 16px"
       })
     }, "💾 Save & Next →"))));
-  })()), view === "stats" && !isPublicMode && React.createElement(React.Fragment, null, isScheduler && React.createElement("div", {
+  })()), view === "stats" && !isPublicMode && React.createElement(React.Fragment, null, React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 6,
+      flexWrap: "wrap",
+      marginBottom: 12
+    }
+  }, [["counts", "Counts"], ["fairness", "Fairness"], ["monthly", "Monthly"], ["billing", "Billing"], ["app", "APP"]].map(([k, lbl]) => React.createElement("button", {
+    key: k,
+    onClick: () => setStatsTab(k),
+    style: {
+      background: statsTab === k ? "linear-gradient(135deg,#1a6fa8,#2488c8)" : dk ? "#1e2a36" : "#f4f6f8",
+      color: statsTab === k ? "#fff" : "#5a6a78",
+      border: `1px solid ${statsTab === k ? "#1a6fa8" : dk ? "#2a3a48" : "#d0d8e0"}`,
+      borderRadius: 7,
+      padding: "6px 14px",
+      fontSize: 12,
+      fontWeight: 700,
+      cursor: "pointer",
+      fontFamily: font
+    }
+  }, lbl))), statsTab === "counts" && React.createElement(React.Fragment, null, isScheduler && React.createElement("div", {
     style: {
       display: "flex",
       justifyContent: "flex-end",
@@ -10005,7 +10186,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     style: {
       color: "#2c5a80"
     }
-  }, "Total"), " = 1st Call + 2nd Call. Service Week = 6, Week Night = 1, Weekend = 2."))), Object.keys(schedule).length > 0 && (() => {
+  }, "Total"), " = 1st Call + 2nd Call. Service Week = 6, Week Night = 1, Weekend = 2.")))), statsTab === "monthly" && Object.keys(schedule).length > 0 && (() => {
     const monthlyData = {};
     const allMonths = new Set();
     Object.entries(schedule).forEach(([mStr, wk]) => {
@@ -10264,7 +10445,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         color: "#2c5a80"
       }
     }, "Formula:"), " Service Week = 6 · Week Night = 1 · Weekend = 2. Multi-day shifts counted in the month they start."));
-  })(), Object.keys(schedule).length > 0 && (() => {
+  })(), statsTab === "billing" && Object.keys(schedule).length > 0 && (() => {
     const canSeeAllBilling = isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.role) === "admin";
     const ownBillId = userProfile === null || userProfile === void 0 ? void 0 : userProfile.person_id;
     const billVisible = canSeeAllBilling ? surgeons : surgeons.filter(s => s.id === ownBillId);
@@ -10432,7 +10613,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         color: "#2c5a80"
       }
     }, "Formula:"), " Svc Days + Nights + Wknd Days = Total Call Days. Each day counted in the month it falls in. Billed monthly."));
-  })(), React.createElement("div", {
+  })(), statsTab === "app" && React.createElement("div", {
     style: css.card
   }, React.createElement("div", {
     style: css.cardT
@@ -10472,7 +10653,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     id: a.id
   })), React.createElement("td", {
     style: tdS
-  }, appStats[a.id] || 0))))))), React.createElement("div", {
+  }, appStats[a.id] || 0))))))), statsTab === "fairness" && React.createElement(React.Fragment, null, React.createElement("div", {
     style: css.card
   }, React.createElement("div", {
     style: css.cardT
@@ -10760,7 +10941,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     style: {
       color: "#2c5a80"
     }
-  }, "Total"), " = 1st Call + 2nd Call. Service Week = 6, Week Night = 1, Weekend = 2."))), view === "myschedule" && !isPublicMode && React.createElement(React.Fragment, null, React.createElement("div", {
+  }, "Total"), " = 1st Call + 2nd Call. Service Week = 6, Week Night = 1, Weekend = 2.")))), view === "myschedule" && !isPublicMode && React.createElement(React.Fragment, null, React.createElement("div", {
     style: css.card
   }, React.createElement("div", {
     style: css.cardT
@@ -12053,7 +12234,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       color: "#6030a0",
       padding: "6px 0"
     }
-  }, ((_surgeons$find1 = surgeons.find(s => s.id === mySurgeon)) === null || _surgeons$find1 === void 0 ? void 0 : _surgeons$find1.name) || "—")), React.createElement("div", null, React.createElement("label", {
+  }, ((_surgeons$find11 = surgeons.find(s => s.id === mySurgeon)) === null || _surgeons$find11 === void 0 ? void 0 : _surgeons$find11.name) || "—")), React.createElement("div", null, React.createElement("label", {
     style: {
       fontSize: 10,
       color: "#7a8a98",
@@ -12523,7 +12704,98 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       color: "#5a6a78",
       fontWeight: 600
     }
-  }, USE_TIME_OFF ? "On — loading from the new table" : "Off — using the shared blob (default)"))), (isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.role) === "admin") && React.createElement("div", {
+  }, USE_TIME_OFF ? "On — loading from the new table" : "Off — using the shared blob (default)"))), (isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.role) === "admin") && React.createElement(Collapsible, {
+    css: css,
+    ck: "settings_audit",
+    defaultOpen: false,
+    title: React.createElement(React.Fragment, null, "📋 Activity Log ", React.createElement("span", {
+      style: {
+        fontWeight: 400,
+        fontSize: 11,
+        color: "#7a8a98"
+      }
+    }, "— who changed what")),
+    right: React.createElement("button", {
+      onClick: e => {
+        e.stopPropagation();
+        loadAudit();
+      },
+      title: "Refresh",
+      style: {
+        background: "none",
+        border: "1px solid #d0d8e0",
+        borderRadius: 6,
+        color: "#5a6a78",
+        cursor: "pointer",
+        fontSize: 13,
+        padding: "2px 8px",
+        fontFamily: font
+      }
+    }, "↻")
+  }, auditLoading ? React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: "#8a94a0",
+      padding: "6px 0"
+    }
+  }, "Loading…") : auditEntries.length === 0 ? React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: "#8a94a0",
+      padding: "6px 0"
+    }
+  }, "No activity recorded yet. Changes from here on will appear here.") : React.createElement("div", {
+    style: {
+      maxHeight: 420,
+      overflowY: "auto",
+      margin: "-2px -2px 0"
+    }
+  }, auditEntries.map(en => {
+    const si = surgeons.findIndex(s => s.id === en.actor_id);
+    const c = si >= 0 ? surgeonColors(surgeons[si].name, si) : null;
+    return React.createElement("div", {
+      key: en.id,
+      style: {
+        display: "flex",
+        gap: 8,
+        alignItems: "flex-start",
+        padding: "7px 2px",
+        borderBottom: "1px solid " + (dk ? "#243240" : "#eef1f4")
+      }
+    }, React.createElement("span", {
+      style: {
+        flexShrink: 0,
+        fontSize: 10,
+        fontWeight: 700,
+        letterSpacing: 0.4,
+        padding: "2px 7px",
+        borderRadius: 5,
+        background: c ? c.tg : dk ? "#243240" : "#eef1f4",
+        color: c ? c.tx : "#5a6a78",
+        border: `1px solid ${c ? c.bd : dk ? "#2a3a48" : "#e0e4ea"}`,
+        minWidth: 38,
+        textAlign: "center"
+      }
+    }, en.actor_name), React.createElement("div", {
+      style: {
+        flex: 1,
+        minWidth: 0
+      }
+    }, React.createElement("div", {
+      style: {
+        fontSize: 12.5,
+        color: dk ? "#c8d2dc" : "#3a4a58",
+        lineHeight: 1.35
+      }
+    }, en.summary), React.createElement("div", {
+      style: {
+        fontSize: 10,
+        color: "#9aa4ae",
+        marginTop: 1,
+        fontFamily: mono
+      }
+    }, fmtAuditTime(en.created_at), " · ", en.action)));
+  }))), (isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.role) === "admin") && React.createElement("div", {
     style: css.card
   }, React.createElement("div", {
     style: css.cardT
