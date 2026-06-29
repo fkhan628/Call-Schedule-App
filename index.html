@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.06.27a";
+    var APP_VERSION = "2026.06.28a";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -3001,7 +3001,24 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
     new Set([...Object.keys(vacations), ...Object.keys(noCallDays)]).forEach(id => {
       availability[id] = [...(vacations[id] || []), ...(noCallDays[id] || [])];
     });
-    const result = generate(surgeons, mondays, availability, backupMondaySet, priorCounts, prefs, fierceBackupSet, holidayAssignments, pendingLocks);
+    const prevWeekSeed = (() => {
+      if (!mondays.length) return null;
+      const first = mondays[0];
+      const prevWk = schedule[fmt(addD(first, -7))];
+      const recentDc = {};
+      for (let k = 1; k <= 60; k++) {
+        const wk = schedule[fmt(addD(first, -7 * k))];
+        if (!wk) continue;
+        const dc = wk.dayCall;
+        if (dc && recentDc[dc] === undefined) recentDc[dc] = -k;
+      }
+      return {
+        dayCall: prevWk && prevWk.dayCall || null,
+        wknd: prevWk && prevWk.nights && prevWk.nights.wknd || null,
+        recentDc
+      };
+    })();
+    const result = generate(surgeons, mondays, availability, backupMondaySet, priorCounts, prefs, fierceBackupSet, holidayAssignments, pendingLocks, prevWeekSeed);
     if (preview) {
       setPreviewSchedule(result);
       setShowPreview(true);
