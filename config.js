@@ -108,7 +108,25 @@ const snapshots = {
         { headers: dbAuthHeaders() }
       );
       const rows = res.ok ? await res.json() : [];
-      const current = rows?.[0]?.data ?? null;
+      let current = rows?.[0]?.data ?? null;
+      // The schedule now lives in the schedule_weeks table, not the blob, so
+      // fold it back in here — otherwise the snapshot would have no schedule and
+      // couldn't restore one. Best-effort: if this fetch fails we still snapshot
+      // whatever the blob has.
+      try {
+        const wres = await fetch(
+          `${SUPABASE_URL}/rest/v1/schedule_weeks?select=week_monday,data&order=week_monday.asc`,
+          { headers: dbAuthHeaders() }
+        );
+        if (wres.ok) {
+          const wrows = await wres.json();
+          if (Array.isArray(wrows) && wrows.length) {
+            const sched = {};
+            wrows.forEach(r => { sched[r.week_monday] = r.data; });
+            current = { ...(current || {}), schedule: sched };
+          }
+        }
+      } catch (e) { console.warn("Snapshot: schedule_weeks fetch failed:", e); }
       // Don't bother snapshotting an already-empty row.
       if (current && !payloadLooksWiped(current)) {
         const ins = await fetch(`${SUPABASE_URL}/rest/v1/call_schedule_snapshots`, {

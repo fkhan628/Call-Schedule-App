@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.06.28a";
+    var APP_VERSION = "2026.06.25z";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -2977,7 +2977,11 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
       setShowPreview(true);
     } else {
       if (Object.keys(schedule).length > 0) pushUndo(schedule);
-      setSchedule(result);
+      // Accumulate: merge the new period into the existing schedule so prior
+      // periods are preserved. Regenerating the same weeks cleanly overwrites
+      // just those keys; a different period coexists alongside.
+      const merged = { ...schedule, ...result };
+      setSchedule(merged);
       setPreviewSchedule(null); setShowPreview(false);
       setSaveStatus("Regenerated!");
       setTimeout(() => setSaveStatus(""), 2000);
@@ -2988,9 +2992,9 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
           const ts = new Date().toISOString();
           lastSyncRef.current = ts; // block poll from overwriting
           // Stage 6: schedule goes to schedule_weeks, not the blob.
-          const blobData = buildPayload({ schedule: result }); delete blobData.schedule;
+          const blobData = buildPayload({ schedule: merged }); delete blobData.schedule;
           await supabase.from("call_schedule_data").upsert({ id: "main", data: blobData, updated_at: ts });
-          syncSchedWeeks(result); // persist the regenerated schedule to the table promptly
+          syncSchedWeeks(merged); // persist the merged schedule (no spurious deletes)
         } catch(e) { console.error("Immediate save failed:", e); }
       })();
     }
@@ -3105,7 +3109,9 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
     if (previewSchedule) {
       if (Object.keys(schedule).length > 0) pushUndo(schedule);
       rollForwardCounts(previewSchedule);
-      setSchedule(previewSchedule);
+      // Accumulate: merge the published period into the existing schedule so
+      // prior periods are preserved (the autosave then syncs without deletes).
+      setSchedule(prev => ({ ...prev, ...previewSchedule }));
       setPreviewSchedule(null); setShowPreview(false);
       setCalMonth(startMonth);
       setCalYear(startYear);
