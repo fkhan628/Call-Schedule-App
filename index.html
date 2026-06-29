@@ -679,7 +679,7 @@ function CallSchedule() {
       if (o === "1") return true;
       if (o === "0") return false;
     } catch (e) {}
-    return false;
+    return true;
   }, []);
   const schedWeeksSyncRef = useRef(null);
   const schedWeekVersionsRef = useRef({});
