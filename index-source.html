@@ -5325,11 +5325,15 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   onChange={e=>{
                     const v = e.target.value;
                     if (!v) { setStartMondayOverride(""); return; }
-                    const d = parse(v);
-                    if (d.getDay() !== 1) { alert("Please pick a Monday."); return; }
-                    setStartMondayOverride(v);
-                    setStartMonth(d.getMonth());
-                    setStartYear(d.getFullYear());
+                    // Snap whatever day was picked to the Monday of that week, so
+                    // a stray non-Monday selection (common while navigating the
+                    // date picker) just lands on the right Monday instead of
+                    // throwing a blocking alert that traps the picker.
+                    const mon = monOf(parse(v));
+                    const monStr = fmt(mon);
+                    setStartMondayOverride(monStr);
+                    setStartMonth(mon.getMonth());
+                    setStartYear(mon.getFullYear());
                   }}
                   style={{...css.inp,width:160}}/>
                 {startMondayOverride && (
