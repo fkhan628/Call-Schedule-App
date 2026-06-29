@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.06.28a";
+    var APP_VERSION = "2026.06.25y";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -661,39 +661,25 @@ function CallSchedule() {
   };
 
   // ════════════════════════════════════════════════════════════════
-  // TIME-OFF SOURCE (vacations + no-call) — normalized table vs. blob.
-  // When ON, vacations/noCallDays are sourced from the `time_off` table and
-  // each change writes ONE row, so concurrent edits can't clobber each other.
-  // ON by default as of the group rollout. Per-device override:
-  //   localStorage.setItem('dsg_use_timeoff','0')  -> force OFF (blob) on this device
-  //   localStorage.setItem('dsg_use_timeoff','1')  -> force ON  on this device
-  //   localStorage.removeItem('dsg_use_timeoff')    -> follow the code default
-  const USE_TIME_OFF = useMemo(() => {
-    try {
-      const v = localStorage.getItem("dsg_use_timeoff");
-      if (v === "1") return true;
-      if (v === "0") return false;
-    } catch (e) {}
-    return true; // <-- code default: time_off storage is live for everyone
-  }, []);
+  // TIME-OFF SOURCE (vacations + no-call): the normalized `time_off` table.
+  // Each change writes ONE row, so concurrent edits can't clobber each other.
+  // This is now the permanent source for everyone — the old per-device blob
+  // opt-out has been retired (a stale 'off' would split-brain vacations against
+  // the rest of the group), so the flag is hard-wired on.
+  const USE_TIME_OFF = true;
 
-  // ─── schedule_weeks: dual-write (Stage 2) + read/CAS (Stage 3) ───
-  // Stage 2 (default ON, kill-switch 'dsg_sched_dualwrite'): every schedule save
-  // also mirrors changed week rows into schedule_weeks alongside the blob.
-  // Stage 3 (per-device flag 'dsg_sched_read_table', default OFF): reads come
-  // from schedule_weeks and writes use per-row compare-and-swap on `version`,
-  // so a concurrent edit to the same week is refused instead of silently
-  // clobbered. The blob is still written throughout (rollback + the .ics edge
-  // function until Stage 4). Reads fall back to the blob if the table is
-  // empty/unavailable.
+  // ─── schedule storage: schedule_weeks is now the sole source ───
+  // Every schedule write goes to the per-week schedule_weeks table with
+  // compare-and-swap on `version`, so a concurrent edit to the same week is
+  // refused instead of silently clobbered. The blob no longer carries the
+  // schedule at all (the mirror was retired), so reading from the table is the
+  // only option — the old per-device opt-out is gone and the flag is hard-wired
+  // on. (SCHED_DUAL_WRITE remains as a no-op kill-switch for the table write.)
   const SCHED_DUAL_WRITE = useMemo(() => {
     try { const o = localStorage.getItem("dsg_sched_dualwrite"); if (o === "1") return true; if (o === "0") return false; } catch (e) {}
     return true;
   }, []);
-  const SCHED_READ_TABLE = useMemo(() => {
-    try { const o = localStorage.getItem("dsg_sched_read_table"); if (o === "1") return true; if (o === "0") return false; } catch (e) {}
-    return true; // <-- Stage 5: group reads schedule_weeks with CAS (blob still written; per-device '0' to opt out)
-  }, []);
+  const SCHED_READ_TABLE = true;
   // Snapshot of the schedule as last mirrored to schedule_weeks, for diffing.
   const schedWeeksSyncRef = useRef(null);
   // Per-week version last seen from the table, for compare-and-swap writes.
@@ -1271,15 +1257,20 @@ function CallSchedule() {
       allowWipeSaveRef.current = false; // consume one-shot bypass
       try {
         const ts = new Date().toISOString();
+        // Stage 6: the schedule lives in schedule_weeks now. Write everything
+        // else to the blob, but omit the schedule (syncSchedWeeks below persists
+        // it to the table with CAS). `payload` itself keeps the schedule so the
+        // empty-save guard above still sees real data and syncSchedWeeks works.
+        const blobData = { ...payload }; delete blobData.schedule;
         await supabase
           .from("call_schedule_data")
-          .upsert({ id: "main", data: payload, updated_at: ts });
+          .upsert({ id: "main", data: blobData, updated_at: ts });
         lastSyncRef.current = ts;
         pendingSaveRef.current = null; // Save committed — clear pending
         setSaveError(false);
         setSaveStatus("Saved");
         setTimeout(() => setSaveStatus(""), 2000);
-        syncSchedWeeks(payload.schedule); // Stage 2 dual-write (fire-and-forget)
+        syncSchedWeeks(payload.schedule); // schedule_weeks write with CAS (fire-and-forget)
       } catch (e) {
         console.error("Save failed:", e);
         setSaveError(true);
@@ -1326,10 +1317,33 @@ function CallSchedule() {
         const session = (typeof auth !== "undefined" && auth.getSession) ? auth.getSession() : null;
         const token = session?.access_token || SUPABASE_ANON_KEY;
         const ts = new Date().toISOString();
-        const body = JSON.stringify({ id: "main", data: payload, updated_at: ts });
+        // Stage 6: keep the schedule out of the blob (it lives in schedule_weeks).
+        const blobData = { ...payload }; delete blobData.schedule;
+        const body = JSON.stringify({ id: "main", data: blobData, updated_at: ts });
+        // Because this is the last-ditch save on unload and syncSchedWeeks (CAS)
+        // can't finish mid-unload, blind-upsert any changed weeks to
+        // schedule_weeks with keepalive so an edit made right before closing
+        // isn't lost. (Blind, not CAS — acceptable for this rare unload path.)
+        try {
+          const cur = payload.schedule || {};
+          const base = schedWeeksSyncRef.current || {};
+          const wkRows = [];
+          for (const k in cur) {
+            if (!base[k] || JSON.stringify(base[k]) !== JSON.stringify(cur[k])) {
+              wkRows.push({ week_monday: k, data: cur[k], updated_by: userProfile?.person_id || null, updated_at: ts });
+            }
+          }
+          if (wkRows.length) {
+            fetch(`${SUPABASE_URL}/rest/v1/schedule_weeks?on_conflict=week_monday`, {
+              method: "POST", keepalive: true,
+              headers: { "Content-Type": "application/json", "apikey": SUPABASE_ANON_KEY, "Authorization": `Bearer ${token}`, "Prefer": "resolution=merge-duplicates,return=minimal" },
+              body: JSON.stringify(wkRows),
+            }).catch(() => {});
+          }
+        } catch (e) {}
         // Fire with keepalive so the browser finishes the request even if
         // the page is being unloaded. Payloads >64KB may still be dropped;
-        // in practice a full schedule payload is well under this.
+        // in practice the blob (now schedule-less) is well under this.
         fetch(`${SUPABASE_URL}/rest/v1/call_schedule_data?on_conflict=id`, {
           method: "POST",
           headers: {
@@ -2973,8 +2987,10 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
           await snapshots.capture("regenerate"); // preserve pre-regenerate state
           const ts = new Date().toISOString();
           lastSyncRef.current = ts; // block poll from overwriting
-          const payload = buildPayload({ schedule: result });
-          await supabase.from("call_schedule_data").upsert({ id: "main", data: payload, updated_at: ts });
+          // Stage 6: schedule goes to schedule_weeks, not the blob.
+          const blobData = buildPayload({ schedule: result }); delete blobData.schedule;
+          await supabase.from("call_schedule_data").upsert({ id: "main", data: blobData, updated_at: ts });
+          syncSchedWeeks(result); // persist the regenerated schedule to the table promptly
         } catch(e) { console.error("Immediate save failed:", e); }
       })();
     }
@@ -2994,8 +3010,9 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
       try {
         const ts = new Date().toISOString();
         lastSyncRef.current = ts;
-        const payload = buildPayload({ schedule: {}, _intentionalClear: true });
-        await supabase.from("call_schedule_data").upsert({ id: "main", data: payload, updated_at: ts });
+        // Stage 6: schedule lives in schedule_weeks (already wiped via syncSchedWeeks({}) above).
+        const blobData = buildPayload({ schedule: {}, _intentionalClear: true }); delete blobData.schedule;
+        await supabase.from("call_schedule_data").upsert({ id: "main", data: blobData, updated_at: ts });
       } catch(e) { console.error("Immediate save failed:", e); }
     })();
   };
@@ -7944,54 +7961,6 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             </div>
           </div>
 
-          {/* New vacation storage (beta) — per-device toggle for the time_off cut-over.
-              Scheduler/admin only so it stays out of the way during testing. */}
-          {(isScheduler || userProfile?.role === "admin") && (
-            <div style={css.card}>
-              <div style={css.cardT}>🧪 New vacation storage · this device</div>
-              <p style={{fontSize:12,color:"#7a8a98",margin:"0 0 10px",lineHeight:1.5}}>
-                Beta: stores vacations &amp; no-call days in the new <code>time_off</code> table so two people editing at the same time can't overwrite each other. Applies to <strong>this device only</strong>. Changing it reloads the app.
-              </p>
-              <label style={{display:"flex",alignItems:"center",gap:10,cursor:"pointer"}}>
-                <input
-                  type="checkbox"
-                  checked={USE_TIME_OFF}
-                  onChange={e=>{
-                    try { localStorage.setItem("dsg_use_timeoff", e.target.checked ? "1" : "0"); } catch(err) {}
-                    location.reload();
-                  }}
-                  style={{width:18,height:18,cursor:"pointer"}}
-                />
-                <span style={{fontSize:13,color:"#5a6a78",fontWeight:600}}>
-                  {USE_TIME_OFF ? "On — loading from the new table" : "Off — using the shared blob (default)"}
-                </span>
-              </label>
-            </div>
-          )}
-
-          {/* New schedule storage (beta) — per-device toggle for the Stage 3 read cut-over. */}
-          {(isScheduler || userProfile?.role === "admin") && (
-            <div style={css.card}>
-              <div style={css.cardT}>🧪 New schedule storage · this device</div>
-              <p style={{fontSize:12,color:"#7a8a98",margin:"0 0 10px",lineHeight:1.5}}>
-                Beta: reads the schedule from the new per-week <code>schedule_weeks</code> table and protects each week with a version check, so two people editing the <strong>same week</strong> can't silently overwrite each other. The shared blob is still written as a backup. Applies to <strong>this device only</strong>. Changing it reloads the app.
-              </p>
-              <label style={{display:"flex",alignItems:"center",gap:10,cursor:"pointer"}}>
-                <input
-                  type="checkbox"
-                  checked={SCHED_READ_TABLE}
-                  onChange={e=>{
-                    try { localStorage.setItem("dsg_sched_read_table", e.target.checked ? "1" : "0"); } catch(err) {}
-                    location.reload();
-                  }}
-                  style={{width:18,height:18,cursor:"pointer"}}
-                />
-                <span style={{fontSize:13,color:"#5a6a78",fontWeight:600}}>
-                  {SCHED_READ_TABLE ? "On — reading per-week table with version checks" : "Off — using the shared blob (default)"}
-                </span>
-              </label>
-            </div>
-          )}
           {(isScheduler || userProfile?.role === "admin") && (
             <Collapsible css={css} ck="settings_audit" defaultOpen={false}
               title={<>📋 Activity Log <span style={{fontWeight:400,fontSize:11,color:"#7a8a98"}}>— who changed what</span></>}
