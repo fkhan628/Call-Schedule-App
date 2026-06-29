@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.06.28a";
+    var APP_VERSION = "2026.06.25t";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -159,6 +159,7 @@ function CallSchedule() {
   const [statsTab, setStatsTab] = useState("fairness");
   const [auditEntries, setAuditEntries] = useState([]);
   const [auditLoading, setAuditLoading] = useState(false);
+  const [seedDebug, setSeedDebug] = useState(null);
   const [showAllMyVacs, setShowAllMyVacs] = useState(false);
   const [showAllMyNoCall, setShowAllMyNoCall] = useState(false);
   const [calSurgeonFilter, setCalSurgeonFilter] = useState("");
@@ -3018,6 +3019,22 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
         recentDc
       };
     })();
+    try {
+      const _first = mondays[0];
+      const _prevKey = _first ? fmt(addD(_first, -7)) : "(no mondays)";
+      setSeedDebug({
+        first: _first ? fmt(_first) : "(none)",
+        prevKey: _prevKey,
+        prevFound: !!schedule[_prevKey],
+        seedDayCall: prevWeekSeed && prevWeekSeed.dayCall ? nameOf(prevWeekSeed.dayCall) : "(none)",
+        recentDcCount: prevWeekSeed ? Object.keys(prevWeekSeed.recentDc || {}).length : 0,
+        scheduleWeeks: Object.keys(schedule).length
+      });
+    } catch (e) {
+      setSeedDebug({
+        error: String(e)
+      });
+    }
     const result = generate(surgeons, mondays, availability, backupMondaySet, priorCounts, prefs, fierceBackupSet, holidayAssignments, pendingLocks, prevWeekSeed);
     if (preview) {
       setPreviewSchedule(result);
@@ -7809,7 +7826,23 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           marginTop: 1
         }
       }, "🏖", vacList.map(v => v.name).join(",")));
-    }))), (() => {
+    }))), (isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.role) === "admin") && seedDebug && React.createElement("div", {
+      style: {
+        background: dk ? "#2a2410" : "#fffbe8",
+        border: "1px solid #e0c870",
+        borderRadius: 6,
+        padding: "8px 12px",
+        marginBottom: 10,
+        fontFamily: mono,
+        fontSize: 11,
+        color: dk ? "#d8c890" : "#7a5a10"
+      }
+    }, React.createElement("div", {
+      style: {
+        fontWeight: 700,
+        marginBottom: 3
+      }
+    }, "🔧 boundary seed (debug)"), seedDebug.error ? React.createElement("div", null, "error: ", seedDebug.error) : React.createElement(React.Fragment, null, React.createElement("div", null, "first week generated: ", React.createElement("strong", null, seedDebug.first)), React.createElement("div", null, "looked up prior week: ", React.createElement("strong", null, seedDebug.prevKey), " → ", seedDebug.prevFound ? "FOUND ✓" : "NOT in schedule ✗"), React.createElement("div", null, "prior service-week surgeon: ", React.createElement("strong", null, seedDebug.seedDayCall)), React.createElement("div", null, "recentDc surgeons captured: ", seedDebug.recentDcCount, " · schedule has ", seedDebug.scheduleWeeks, " weeks"))), (() => {
       const totals = surgeons.map(s => {
         const ps = pStats[s.id] || {};
         return {

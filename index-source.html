@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.06.28a";
+    var APP_VERSION = "2026.06.25t";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -150,6 +150,7 @@ function CallSchedule() {
   const [statsTab, setStatsTab] = useState("fairness"); // Stats view: which table is shown (fairness|monthly|billing|app)
   const [auditEntries, setAuditEntries] = useState([]); // Activity log rows (scheduler/admin viewer)
   const [auditLoading, setAuditLoading] = useState(false);
+  const [seedDebug, setSeedDebug] = useState(null); // boundary-seed diagnostic shown in preview
   const [showAllMyVacs, setShowAllMyVacs] = useState(false); // Mine: expand vacation list beyond first few
   const [showAllMyNoCall, setShowAllMyNoCall] = useState(false); // Mine: expand no-call list beyond first few
   const [calSurgeonFilter, setCalSurgeonFilter] = useState(""); // "" = all, or surgeon ID
@@ -2794,6 +2795,19 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
         recentDc,
       };
     })();
+    // Diagnostic: capture exactly what the seed saw, so the preview can show it.
+    try {
+      const _first = mondays[0];
+      const _prevKey = _first ? fmt(addD(_first, -7)) : "(no mondays)";
+      setSeedDebug({
+        first: _first ? fmt(_first) : "(none)",
+        prevKey: _prevKey,
+        prevFound: !!(schedule[_prevKey]),
+        seedDayCall: prevWeekSeed && prevWeekSeed.dayCall ? nameOf(prevWeekSeed.dayCall) : "(none)",
+        recentDcCount: prevWeekSeed ? Object.keys(prevWeekSeed.recentDc || {}).length : 0,
+        scheduleWeeks: Object.keys(schedule).length,
+      });
+    } catch (e) { setSeedDebug({ error: String(e) }); }
     const result = generate(surgeons, mondays, availability, backupMondaySet, priorCounts, prefs, fierceBackupSet, holidayAssignments, pendingLocks, prevWeekSeed);
     if (preview) {
       setPreviewSchedule(result);
@@ -5440,6 +5454,19 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                     })}
                   </div>
                 </>}
+
+                {/* Boundary-seed diagnostic (scheduler/admin) — temporary */}
+                {(isScheduler || userProfile?.role === "admin") && seedDebug && (
+                  <div style={{background:dk?"#2a2410":"#fffbe8",border:"1px solid #e0c870",borderRadius:6,padding:"8px 12px",marginBottom:10,fontFamily:mono,fontSize:11,color:dk?"#d8c890":"#7a5a10"}}>
+                    <div style={{fontWeight:700,marginBottom:3}}>🔧 boundary seed (debug)</div>
+                    {seedDebug.error ? <div>error: {seedDebug.error}</div> : <>
+                      <div>first week generated: <strong>{seedDebug.first}</strong></div>
+                      <div>looked up prior week: <strong>{seedDebug.prevKey}</strong> → {seedDebug.prevFound ? "FOUND ✓" : "NOT in schedule ✗"}</div>
+                      <div>prior service-week surgeon: <strong>{seedDebug.seedDayCall}</strong></div>
+                      <div>recentDc surgeons captured: {seedDebug.recentDcCount} · schedule has {seedDebug.scheduleWeeks} weeks</div>
+                    </>}
+                  </div>
+                )}
 
                 {/* Fairness Summary */}
                 {(() => {

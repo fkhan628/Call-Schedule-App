@@ -239,10 +239,17 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
         }
       }
 
-      // Surgeon B → holiday week's Weekend
-      if (surgeonB && wkndAvail(surgeonB, mondays[i])) {
-        if (!preAssign[mStr]) preAssign[mStr] = {};
-        preAssign[mStr].wknd = surgeonB;
+      // Surgeon B → the weekend that leads INTO the Monday holiday, which
+      // belongs to the PREVIOUS week (Fri 5p–Sat 7a + Sun 7a–Mon-holiday 7a) —
+      // NOT the holiday week's own trailing weekend. Mirrors surgeon A's use of
+      // the previous week. (e.g. Labor Day Mon → surgeon B covers that Sat/Sun.)
+      if (surgeonB && i > 0) {
+        const prevMondayB = mondays[i - 1];
+        const prevMStrB = fmt(prevMondayB);
+        if (wkndAvail(surgeonB, prevMondayB)) {
+          if (!preAssign[prevMStrB]) preAssign[prevMStrB] = {};
+          preAssign[prevMStrB].wknd = surgeonB;
+        }
       }
     }
 
@@ -402,7 +409,13 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
       if (friHoliday) holidayCt[preWknd][friHoliday.type]++;
       if (sunHoliday) holidayCt[preWknd][sunHoliday.type]++;
     } else {
-    const prefWknd = availWknd.filter(id => id !== prevWkndSurgeon);
+    // Avoid back-to-back weekends (last week's weekend surgeon) AND service-week
+    // → weekend (last week's service-week/DC surgeon worked through Saturday).
+    // Both soft: prefer excluding both, then fall back to just the weekend rule,
+    // then to anyone available. Across the period boundary these use the seeded
+    // prevWkndSurgeon / prevDcSurgeon so the seam obeys the same rules.
+    let prefWknd = availWknd.filter(id => id !== prevWkndSurgeon && id !== prevDcSurgeon);
+    if (prefWknd.length === 0) prefWknd = availWknd.filter(id => id !== prevWkndSurgeon);
     const wkndPool = prefWknd.length > 0 ? prefWknd : availWknd;
 
     if (wkndPool.length) {
@@ -618,6 +631,17 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
   const mondayStrs = mondays.map(m => fmt(m));
   const calcSpread = (ct) => { const vals = Object.values(ct); return Math.max(...vals)-Math.min(...vals); };
 
+  // Guard so spread-reducing weekend swaps don't reintroduce service-week(Sat)→
+  // weekend or back-to-back weekends. (weekend→next-Mon-night is checked inline.)
+  const wkndAdjOk = (X, idx) => {
+    const prev = idx > 0 ? sched[mondayStrs[idx-1]] : null;
+    const next = idx < mondayStrs.length-1 ? sched[mondayStrs[idx+1]] : null;
+    if (prev && prev.dayCall === X) return false;       // service week → weekend
+    if (prev && prev.nights?.wknd === X) return false;  // back-to-back weekend
+    if (next && next.nights?.wknd === X) return false;  // back-to-back weekend
+    return true;
+  };
+
   for (let pass = 0; pass < 50; pass++) {
     let improved = false;
 
@@ -648,6 +672,12 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
         const nextWkB = j + 1 < mondayStrs.length ? sched[mondayStrs[j + 1]] : null;
         if (nextWkA?.nights?.mon === b) continue; // b doing weekend in A would conflict with Mon night
         if (nextWkB?.nights?.mon === a) continue; // a doing weekend in B would conflict with Mon night
+
+        // Don't reintroduce service-week→weekend or back-to-back weekends.
+        // Adjacent weeks share a neighbor, so the pre-swap adjacency check is
+        // unreliable there — skip those (a minor spread optimization at worst).
+        if (Math.abs(i - j) <= 1) continue;
+        if (!wkndAdjOk(b, i) || !wkndAdjOk(a, j)) continue;
 
         if (wkndCt[a] > wkndCt[b] + 1) {
           wkndCt[a]--; wkndCt[b]++;
@@ -855,6 +885,9 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
     }
     if (slot === "wknd") {
       if (nextWk?.nights?.mon === Y) return false; // wknd → next Mon forbidden
+      if (prevWk?.dayCall === Y) return false; // service week (Sat) → next weekend forbidden
+      if (prevWk?.nights?.wknd === Y) return false; // back-to-back weekend forbidden
+      if (nextWk?.nights?.wknd === Y) return false; // back-to-back weekend forbidden
     }
 
     // Back-to-back weeknights within same week
