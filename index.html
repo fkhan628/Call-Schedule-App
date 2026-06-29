@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.06.29f";
+    var APP_VERSION = "2026.06.29g";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -4566,13 +4566,17 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           });
         }
         if (wk.dayCall && (nextWk === null || nextWk === void 0 || (_nextWk$nights4 = nextWk.nights) === null || _nextWk$nights4 === void 0 ? void 0 : _nextWk$nights4.mon) === wk.dayCall) {
-          var _sMap$wk$dayCall;
-          issues.push({
-            type: "consecutive",
-            severity: "error",
-            week: mStr,
-            message: `${(_sMap$wk$dayCall = sMap[wk.dayCall]) === null || _sMap$wk$dayCall === void 0 ? void 0 : _sMap$wk$dayCall.name} has Service Week then Mon night the next week`
-          });
+          const nextMonStr = mondayStrs[wkIdx + 1];
+          const nextHolCov = nextWk.holidayCoverage || {};
+          if (!nextHolCov[nextMonStr]) {
+            var _sMap$wk$dayCall;
+            issues.push({
+              type: "consecutive",
+              severity: "error",
+              week: mStr,
+              message: `${(_sMap$wk$dayCall = sMap[wk.dayCall]) === null || _sMap$wk$dayCall === void 0 ? void 0 : _sMap$wk$dayCall.name} has Service Week then Mon night the next week`
+            });
+          }
         }
       }
       if (wk.dayCall) {
