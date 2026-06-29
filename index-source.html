@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.06.28a";
+    var APP_VERSION = "2026.06.25w";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -692,7 +692,7 @@ function CallSchedule() {
   }, []);
   const SCHED_READ_TABLE = useMemo(() => {
     try { const o = localStorage.getItem("dsg_sched_read_table"); if (o === "1") return true; if (o === "0") return false; } catch (e) {}
-    return false;
+    return true; // <-- Stage 5: group reads schedule_weeks with CAS (blob still written; per-device '0' to opt out)
   }, []);
   // Snapshot of the schedule as last mirrored to schedule_weeks, for diffing.
   const schedWeeksSyncRef = useRef(null);
