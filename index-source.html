@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.06.29d";
+    var APP_VERSION = "2026.06.29e";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -233,6 +233,15 @@ function CallSchedule() {
   // must not autosave — otherwise a privileged session with degraded state could
   // overwrite real data (the residual blind-write hole the audit pointed to).
   const loadFailedRef = useRef(false);
+  // intentionalScheduleWipeRef is a one-shot set by clearSchedule / factory
+  // reset immediately before they call syncSchedWeeks({}). It authorizes the
+  // single legitimate "delete every week" operation. Any OTHER attempt to
+  // delete all (or most) weeks — an empty/near-empty in-memory schedule vs a
+  // populated schedule_weeks table — is treated as an accidental wipe (failed
+  // load, transient render, or stale tab) and refused. This is the table-side
+  // mirror of the blob's payloadLooksWiped protection; its absence is how the
+  // schedule got wiped twice.
+  const intentionalScheduleWipeRef = useRef(false);
   const scheduleRef = useRef({});
   useEffect(() => { scheduleRef.current = schedule; }, [schedule]);
 
@@ -710,6 +719,26 @@ function CallSchedule() {
       }
       const deletes = [];
       for (const key in prev) if (!(key in currentSchedule)) deletes.push(key);
+
+      // ── Accidental-wipe guard (schedule_weeks) ──────────────────────────
+      // An empty (or drastically reduced) in-memory schedule must never DELETE
+      // a populated table. That state only arises from a transient-empty
+      // render, a failed/empty load, or a stale tab — never a real edit. The
+      // ONLY legitimate "delete all" is clearSchedule / factory reset, which
+      // arm intentionalScheduleWipeRef just before calling syncSchedWeeks({}).
+      const curCount  = Object.keys(currentSchedule).length;
+      const baseCount = Object.keys(prev).length;
+      const wipingAll  = curCount === 0 && baseCount > 0;
+      const wipingMost = baseCount >= 4 && curCount < baseCount &&
+                         deletes.length >= Math.ceil(baseCount / 2);
+      if ((wipingAll || wipingMost) && !intentionalScheduleWipeRef.current) {
+        console.warn(`schedule_weeks wipe BLOCKED: in-memory ${curCount} wk vs table baseline ${baseCount} wk would delete ${deletes.length}. Refusing — not an intentional clear.`);
+        setSaveError(true);
+        setSaveStatus("⚠ Wipe blocked — schedule not deleted");
+        showToast("Blocked an unexpected schedule wipe — your saved schedule is safe. Reload to resync.", "error");
+        return; // leave schedWeeksSyncRef untouched; perform no deletes or upserts
+      }
+      if (wipingAll || wipingMost) intentionalScheduleWipeRef.current = false; // consume the one-shot authorization
 
       if (SCHED_READ_TABLE) {
         // ── Stage 3: per-week compare-and-swap ──
@@ -1432,6 +1461,7 @@ function CallSchedule() {
     setBackupMondaySet(new Set());
     setFierceBackupSet(new Set());
     setSchedule({});
+    intentionalScheduleWipeRef.current = true; // authorize the one legitimate full wipe
     syncSchedWeeks({}); // mirror the wipe to schedule_weeks
     setAppShifts({});
     setPriorCounts({});
@@ -3006,6 +3036,7 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
     await snapshots.capture("clear_schedule"); // preserve pre-clear state
     if (Object.keys(schedule).length > 0) pushUndo(schedule);
     setSchedule({});
+    intentionalScheduleWipeRef.current = true; // authorize the one legitimate full wipe
     syncSchedWeeks({}); // mirror the wipe to schedule_weeks
     setSaveStatus("Schedule cleared");
     setTimeout(() => setSaveStatus(""), 2000);
