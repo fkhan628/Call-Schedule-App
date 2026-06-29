@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.06.28a";
+    var APP_VERSION = "2026.06.29a";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -3252,7 +3252,8 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
       setShowPreview(true);
     } else {
       if (Object.keys(schedule).length > 0) pushUndo(schedule);
-      setSchedule(result);
+      const merged = _objectSpread(_objectSpread({}, schedule), result);
+      setSchedule(merged);
       setPreviewSchedule(null);
       setShowPreview(false);
       setSaveStatus("Regenerated!");
@@ -3263,7 +3264,7 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
           const ts = new Date().toISOString();
           lastSyncRef.current = ts;
           const blobData = buildPayload({
-            schedule: result
+            schedule: merged
           });
           delete blobData.schedule;
           await supabase.from("call_schedule_data").upsert({
@@ -3271,7 +3272,7 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
             data: blobData,
             updated_at: ts
           });
-          syncSchedWeeks(result);
+          syncSchedWeeks(merged);
         } catch (e) {
           console.error("Immediate save failed:", e);
         }
@@ -3420,7 +3421,7 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
     if (previewSchedule) {
       if (Object.keys(schedule).length > 0) pushUndo(schedule);
       rollForwardCounts(previewSchedule);
-      setSchedule(previewSchedule);
+      setSchedule(prev => _objectSpread(_objectSpread({}, prev), previewSchedule));
       setPreviewSchedule(null);
       setShowPreview(false);
       setCalMonth(startMonth);
