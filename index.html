@@ -673,51 +673,147 @@ function CallSchedule() {
     } catch (e) {}
     return true;
   }, []);
+  const SCHED_READ_TABLE = useMemo(() => {
+    try {
+      const o = localStorage.getItem("dsg_sched_read_table");
+      if (o === "1") return true;
+      if (o === "0") return false;
+    } catch (e) {}
+    return false;
+  }, []);
   const schedWeeksSyncRef = useRef(null);
+  const schedWeekVersionsRef = useRef({});
+  const loadSchedFromTable = async () => {
+    try {
+      const rows = await db.query("schedule_weeks", {
+        order: "week_monday.asc",
+        limit: 1000
+      });
+      if (!Array.isArray(rows) || rows.length === 0) return null;
+      const sched = {},
+        vers = {};
+      rows.forEach(r => {
+        sched[r.week_monday] = r.data;
+        vers[r.week_monday] = r.version;
+      });
+      return {
+        sched,
+        vers
+      };
+    } catch (e) {
+      console.error("schedule_weeks load failed — falling back to blob", e);
+      return null;
+    }
+  };
   const syncSchedWeeks = async currentSchedule => {
-    if (!SCHED_DUAL_WRITE || !currentSchedule) return;
+    if (!currentSchedule) return;
+    if (!SCHED_DUAL_WRITE && !SCHED_READ_TABLE) return;
     try {
       const prev = schedWeeksSyncRef.current || {};
       const ts = new Date().toISOString();
       const by = (userProfile === null || userProfile === void 0 ? void 0 : userProfile.person_id) || null;
-      const upserts = [];
+      const changed = [];
       for (const key in currentSchedule) {
-        if (!prev[key] || JSON.stringify(prev[key]) !== JSON.stringify(currentSchedule[key])) {
-          upserts.push({
-            week_monday: key,
-            data: currentSchedule[key],
-            updated_by: by,
-            updated_at: ts
-          });
-        }
+        if (!prev[key] || JSON.stringify(prev[key]) !== JSON.stringify(currentSchedule[key])) changed.push(key);
       }
       const deletes = [];
       for (const key in prev) if (!(key in currentSchedule)) deletes.push(key);
-      if (upserts.length) {
-        const r = await fetch(`${SUPABASE_URL}/rest/v1/schedule_weeks?on_conflict=week_monday`, {
-          method: "POST",
-          headers: _objectSpread(_objectSpread({}, dbAuthHeaders()), {}, {
-            "Content-Type": "application/json",
-            "Prefer": "resolution=merge-duplicates"
-          }),
-          body: JSON.stringify(upserts)
-        });
-        if (!r.ok) {
-          console.error("schedule_weeks upsert failed", r.status, await r.text().catch(() => ""));
-          return;
+      if (SCHED_READ_TABLE) {
+        let conflict = false;
+        for (const key of changed) {
+          const ver = schedWeekVersionsRef.current[key];
+          if (ver === undefined) {
+            const r = await fetch(`${SUPABASE_URL}/rest/v1/schedule_weeks`, {
+              method: "POST",
+              headers: _objectSpread(_objectSpread({}, dbAuthHeaders()), {}, {
+                "Content-Type": "application/json",
+                "Prefer": "return=representation"
+              }),
+              body: JSON.stringify({
+                week_monday: key,
+                data: currentSchedule[key],
+                version: 1,
+                updated_by: by,
+                updated_at: ts
+              })
+            });
+            if (r.ok) {
+              const a = await r.json().catch(() => []);
+              if (a[0]) schedWeekVersionsRef.current[key] = a[0].version;
+            } else console.error("schedule_weeks insert failed", r.status, await r.text().catch(() => ""));
+          } else {
+            const r = await fetch(`${SUPABASE_URL}/rest/v1/schedule_weeks?week_monday=eq.${key}&version=eq.${ver}`, {
+              method: "PATCH",
+              headers: _objectSpread(_objectSpread({}, dbAuthHeaders()), {}, {
+                "Content-Type": "application/json",
+                "Prefer": "return=representation"
+              }),
+              body: JSON.stringify({
+                data: currentSchedule[key],
+                version: ver + 1,
+                updated_by: by,
+                updated_at: ts
+              })
+            });
+            if (!r.ok) {
+              console.error("schedule_weeks CAS error", r.status, await r.text().catch(() => ""));
+              continue;
+            }
+            const a = await r.json().catch(() => []);
+            if (a.length === 0) conflict = true;else schedWeekVersionsRef.current[key] = a[0].version;
+          }
         }
-      }
-      if (deletes.length) {
-        const r = await fetch(`${SUPABASE_URL}/rest/v1/schedule_weeks?week_monday=in.(${deletes.join(",")})`, {
-          method: "DELETE",
-          headers: dbAuthHeaders()
-        });
-        if (!r.ok) {
-          console.error("schedule_weeks delete failed", r.status, await r.text().catch(() => ""));
-          return;
+        for (const key of deletes) {
+          await fetch(`${SUPABASE_URL}/rest/v1/schedule_weeks?week_monday=eq.${key}`, {
+            method: "DELETE",
+            headers: dbAuthHeaders()
+          });
+          delete schedWeekVersionsRef.current[key];
         }
+        if (conflict) {
+          const fresh = await loadSchedFromTable();
+          if (fresh) {
+            setSchedule(fresh.sched);
+            schedWeekVersionsRef.current = fresh.vers;
+            schedWeeksSyncRef.current = JSON.parse(JSON.stringify(fresh.sched));
+            showToast("A week was just changed by someone else — reloaded the latest. Reapply your change if needed.", "error");
+            return;
+          }
+        }
+        schedWeeksSyncRef.current = JSON.parse(JSON.stringify(currentSchedule));
+      } else {
+        const upserts = changed.map(key => ({
+          week_monday: key,
+          data: currentSchedule[key],
+          updated_by: by,
+          updated_at: ts
+        }));
+        if (upserts.length) {
+          const r = await fetch(`${SUPABASE_URL}/rest/v1/schedule_weeks?on_conflict=week_monday`, {
+            method: "POST",
+            headers: _objectSpread(_objectSpread({}, dbAuthHeaders()), {}, {
+              "Content-Type": "application/json",
+              "Prefer": "resolution=merge-duplicates"
+            }),
+            body: JSON.stringify(upserts)
+          });
+          if (!r.ok) {
+            console.error("schedule_weeks upsert failed", r.status, await r.text().catch(() => ""));
+            return;
+          }
+        }
+        if (deletes.length) {
+          const r = await fetch(`${SUPABASE_URL}/rest/v1/schedule_weeks?week_monday=in.(${deletes.join(",")})`, {
+            method: "DELETE",
+            headers: dbAuthHeaders()
+          });
+          if (!r.ok) {
+            console.error("schedule_weeks delete failed", r.status, await r.text().catch(() => ""));
+            return;
+          }
+        }
+        schedWeeksSyncRef.current = JSON.parse(JSON.stringify(currentSchedule));
       }
-      schedWeeksSyncRef.current = JSON.parse(JSON.stringify(currentSchedule));
     } catch (e) {
       console.error("schedule_weeks dual-write error", e);
     }
@@ -960,8 +1056,20 @@ function CallSchedule() {
           }
           if (d.backupMondays) setBackupMondaySet(new Set(d.backupMondays));
           if (d.fierceBackup) setFierceBackupSet(new Set(d.fierceBackup));
-          if (d.schedule) setSchedule(d.schedule);
-          schedWeeksSyncRef.current = d.schedule ? JSON.parse(JSON.stringify(d.schedule)) : {};
+          if (SCHED_READ_TABLE) {
+            const fromTable = await loadSchedFromTable();
+            if (fromTable) {
+              setSchedule(fromTable.sched);
+              schedWeekVersionsRef.current = fromTable.vers;
+              schedWeeksSyncRef.current = JSON.parse(JSON.stringify(fromTable.sched));
+            } else {
+              if (d.schedule) setSchedule(d.schedule);
+              schedWeeksSyncRef.current = d.schedule ? JSON.parse(JSON.stringify(d.schedule)) : {};
+            }
+          } else {
+            if (d.schedule) setSchedule(d.schedule);
+            schedWeeksSyncRef.current = d.schedule ? JSON.parse(JSON.stringify(d.schedule)) : {};
+          }
           if (d.appShifts) setAppShifts(d.appShifts);
           if (d.priorCounts && Object.values(d.priorCounts).some(c => Object.values(c).some(v => v > 0))) setPriorCounts(d.priorCounts);
           if (d.year1Counts && Object.values(d.year1Counts).some(c => Object.values(c).some(v => v > 0))) setYear1Counts(d.year1Counts);
@@ -1035,7 +1143,7 @@ function CallSchedule() {
         }
         if (d.backupMondays) setBackupMondaySet(new Set(d.backupMondays));
         if (d.fierceBackup) setFierceBackupSet(new Set(d.fierceBackup));
-        if (d.schedule) setSchedule(d.schedule);
+        if (d.schedule && !SCHED_READ_TABLE) setSchedule(d.schedule);
         if (d.priorCounts && Object.values(d.priorCounts).some(c => Object.values(c).some(v => v > 0))) setPriorCounts(d.priorCounts);
         if (d.year1Counts && Object.values(d.year1Counts).some(c => Object.values(c).some(v => v > 0))) setYear1Counts(d.year1Counts);
         if (d.year2Counts && Object.values(d.year2Counts).some(c => Object.values(c).some(v => v > 0))) setYear2Counts(d.year2Counts);
@@ -1124,6 +1232,31 @@ function CallSchedule() {
           table: "time_off"
         }, () => {
           if (USE_TIME_OFF) loadTimeOff();
+        }).on("postgres_changes", {
+          event: "*",
+          schema: "public",
+          table: "schedule_weeks"
+        }, payload => {
+          if (!SCHED_READ_TABLE) return;
+          const nw = payload.new,
+            od = payload.old;
+          const key = nw && nw.week_monday || od && od.week_monday;
+          if (!key) return;
+          if (payload.eventType === "DELETE") {
+            setSchedule(p => {
+              const n = _objectSpread({}, p);
+              delete n[key];
+              return n;
+            });
+            delete schedWeekVersionsRef.current[key];
+            if (schedWeeksSyncRef.current) delete schedWeeksSyncRef.current[key];
+          } else if (nw) {
+            setSchedule(p => _objectSpread(_objectSpread({}, p), {}, {
+              [key]: nw.data
+            }));
+            schedWeekVersionsRef.current[key] = nw.version;
+            if (schedWeeksSyncRef.current) schedWeeksSyncRef.current[key] = JSON.parse(JSON.stringify(nw.data));
+          }
         }).on("postgres_changes", {
           event: "*",
           schema: "public",
@@ -12999,7 +13132,45 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       color: "#5a6a78",
       fontWeight: 600
     }
-  }, USE_TIME_OFF ? "On — loading from the new table" : "Off — using the shared blob (default)"))), (isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.role) === "admin") && React.createElement(Collapsible, {
+  }, USE_TIME_OFF ? "On — loading from the new table" : "Off — using the shared blob (default)"))), (isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.role) === "admin") && React.createElement("div", {
+    style: css.card
+  }, React.createElement("div", {
+    style: css.cardT
+  }, "🧪 New schedule storage · this device"), React.createElement("p", {
+    style: {
+      fontSize: 12,
+      color: "#7a8a98",
+      margin: "0 0 10px",
+      lineHeight: 1.5
+    }
+  }, "Beta: reads the schedule from the new per-week ", React.createElement("code", null, "schedule_weeks"), " table and protects each week with a version check, so two people editing the ", React.createElement("strong", null, "same week"), " can't silently overwrite each other. The shared blob is still written as a backup. Applies to ", React.createElement("strong", null, "this device only"), ". Changing it reloads the app."), React.createElement("label", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 10,
+      cursor: "pointer"
+    }
+  }, React.createElement("input", {
+    type: "checkbox",
+    checked: SCHED_READ_TABLE,
+    onChange: e => {
+      try {
+        localStorage.setItem("dsg_sched_read_table", e.target.checked ? "1" : "0");
+      } catch (err) {}
+      location.reload();
+    },
+    style: {
+      width: 18,
+      height: 18,
+      cursor: "pointer"
+    }
+  }), React.createElement("span", {
+    style: {
+      fontSize: 13,
+      color: "#5a6a78",
+      fontWeight: 600
+    }
+  }, SCHED_READ_TABLE ? "On — reading per-week table with version checks" : "Off — using the shared blob (default)"))), (isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.role) === "admin") && React.createElement(Collapsible, {
     css: css,
     ck: "settings_audit",
     defaultOpen: false,
