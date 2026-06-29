@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.06.28a";
+    var APP_VERSION = "2026.06.25u";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -677,6 +677,51 @@ function CallSchedule() {
     return true; // <-- code default: time_off storage is live for everyone
   }, []);
 
+  // ─── schedule_weeks dual-write (Stage 2 of schedule decomposition) ───
+  // When on, every schedule save also syncs the changed week rows into the
+  // schedule_weeks table (alongside the existing blob). Nothing READS that table
+  // yet, so this is safe: it's flag-gated, diff-based (only changed weeks), and
+  // fire-and-forget with its own try/catch — it can never affect the blob save or
+  // the running app. Per-device kill-switch: localStorage 'dsg_sched_dualwrite'.
+  const SCHED_DUAL_WRITE = useMemo(() => {
+    try { const o = localStorage.getItem("dsg_sched_dualwrite"); if (o === "1") return true; if (o === "0") return false; } catch (e) {}
+    return true;
+  }, []);
+  // Snapshot of the schedule as last mirrored to schedule_weeks, for diffing.
+  const schedWeeksSyncRef = useRef(null);
+  const syncSchedWeeks = async (currentSchedule) => {
+    if (!SCHED_DUAL_WRITE || !currentSchedule) return;
+    try {
+      const prev = schedWeeksSyncRef.current || {};
+      const ts = new Date().toISOString();
+      const by = userProfile?.person_id || null;
+      const upserts = [];
+      for (const key in currentSchedule) {
+        if (!prev[key] || JSON.stringify(prev[key]) !== JSON.stringify(currentSchedule[key])) {
+          upserts.push({ week_monday: key, data: currentSchedule[key], updated_by: by, updated_at: ts });
+        }
+      }
+      const deletes = [];
+      for (const key in prev) if (!(key in currentSchedule)) deletes.push(key);
+      if (upserts.length) {
+        const r = await fetch(`${SUPABASE_URL}/rest/v1/schedule_weeks?on_conflict=week_monday`, {
+          method: "POST",
+          headers: { ...dbAuthHeaders(), "Content-Type": "application/json", "Prefer": "resolution=merge-duplicates" },
+          body: JSON.stringify(upserts),
+        });
+        if (!r.ok) { console.error("schedule_weeks upsert failed", r.status, await r.text().catch(() => "")); return; }
+      }
+      if (deletes.length) {
+        const r = await fetch(`${SUPABASE_URL}/rest/v1/schedule_weeks?week_monday=in.(${deletes.join(",")})`, {
+          method: "DELETE", headers: dbAuthHeaders(),
+        });
+        if (!r.ok) { console.error("schedule_weeks delete failed", r.status, await r.text().catch(() => "")); return; }
+      }
+      // Only advance the baseline after writes succeed, so a failure retries next save.
+      schedWeeksSyncRef.current = JSON.parse(JSON.stringify(currentSchedule));
+    } catch (e) { console.error("schedule_weeks dual-write error", e); }
+  };
+
   // ─── Audit log ───
   // Append-only record of who changed what. Fire-and-forget + try/catch so it
   // never blocks or breaks an action; if the table doesn't exist yet, the insert
@@ -853,6 +898,7 @@ function CallSchedule() {
           if (d.backupMondays) setBackupMondaySet(new Set(d.backupMondays));
           if (d.fierceBackup) setFierceBackupSet(new Set(d.fierceBackup));
           if (d.schedule) setSchedule(d.schedule);
+          schedWeeksSyncRef.current = d.schedule ? JSON.parse(JSON.stringify(d.schedule)) : {}; // dual-write baseline
           if (d.appShifts) setAppShifts(d.appShifts);
           if (d.priorCounts && Object.values(d.priorCounts).some(c => Object.values(c).some(v => v > 0))) setPriorCounts(d.priorCounts);
           if (d.year1Counts && Object.values(d.year1Counts).some(c => Object.values(c).some(v => v > 0))) setYear1Counts(d.year1Counts);
@@ -1132,6 +1178,7 @@ function CallSchedule() {
         setSaveError(false);
         setSaveStatus("Saved");
         setTimeout(() => setSaveStatus(""), 2000);
+        syncSchedWeeks(payload.schedule); // Stage 2 dual-write (fire-and-forget)
       } catch (e) {
         console.error("Save failed:", e);
         setSaveError(true);
@@ -1270,6 +1317,7 @@ function CallSchedule() {
     setBackupMondaySet(new Set());
     setFierceBackupSet(new Set());
     setSchedule({});
+    syncSchedWeeks({}); // mirror the wipe to schedule_weeks
     setAppShifts({});
     setPriorCounts({});
     setYear1Counts({});
@@ -2837,6 +2885,7 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
     await snapshots.capture("clear_schedule"); // preserve pre-clear state
     if (Object.keys(schedule).length > 0) pushUndo(schedule);
     setSchedule({});
+    syncSchedWeeks({}); // mirror the wipe to schedule_weeks
     setSaveStatus("Schedule cleared");
     setTimeout(() => setSaveStatus(""), 2000);
     // Immediately save to prevent polling race condition
