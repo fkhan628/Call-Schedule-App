@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.06.29d";
+    var APP_VERSION = "2026.06.29f";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -225,6 +225,7 @@ function CallSchedule() {
   const everHadRealDataRef = useRef(false);
   const allowWipeSaveRef = useRef(false);
   const loadFailedRef = useRef(false);
+  const intentionalScheduleWipeRef = useRef(false);
   const scheduleRef = useRef({});
   useEffect(() => {
     scheduleRef.current = schedule;
@@ -704,6 +705,18 @@ function CallSchedule() {
       }
       const deletes = [];
       for (const key in prev) if (!(key in currentSchedule)) deletes.push(key);
+      const curCount = Object.keys(currentSchedule).length;
+      const baseCount = Object.keys(prev).length;
+      const wipingAll = curCount === 0 && baseCount > 0;
+      const wipingMost = baseCount >= 4 && curCount < baseCount && deletes.length >= Math.ceil(baseCount / 2);
+      if ((wipingAll || wipingMost) && !intentionalScheduleWipeRef.current) {
+        console.warn(`schedule_weeks wipe BLOCKED: in-memory ${curCount} wk vs table baseline ${baseCount} wk would delete ${deletes.length}. Refusing — not an intentional clear.`);
+        setSaveError(true);
+        setSaveStatus("⚠ Wipe blocked — schedule not deleted");
+        showToast("Blocked an unexpected schedule wipe — your saved schedule is safe. Reload to resync.", "error");
+        return;
+      }
+      if (wipingAll || wipingMost) intentionalScheduleWipeRef.current = false;
       if (SCHED_READ_TABLE) {
         let conflict = false;
         for (const key of changed) {
@@ -1487,6 +1500,7 @@ function CallSchedule() {
     setBackupMondaySet(new Set());
     setFierceBackupSet(new Set());
     setSchedule({});
+    intentionalScheduleWipeRef.current = true;
     syncSchedWeeks({});
     setAppShifts({});
     setPriorCounts({});
@@ -3284,6 +3298,7 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
     await snapshots.capture("clear_schedule");
     if (Object.keys(schedule).length > 0) pushUndo(schedule);
     setSchedule({});
+    intentionalScheduleWipeRef.current = true;
     syncSchedWeeks({});
     setSaveStatus("Schedule cleared");
     setTimeout(() => setSaveStatus(""), 2000);
