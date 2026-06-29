@@ -657,14 +657,7 @@ function CallSchedule() {
     setBiometricEnrolled(false);
     setBiometricPending(false);
   };
-  const USE_TIME_OFF = useMemo(() => {
-    try {
-      const v = localStorage.getItem("dsg_use_timeoff");
-      if (v === "1") return true;
-      if (v === "0") return false;
-    } catch (e) {}
-    return true;
-  }, []);
+  const USE_TIME_OFF = true;
   const SCHED_DUAL_WRITE = useMemo(() => {
     try {
       const o = localStorage.getItem("dsg_sched_dualwrite");
@@ -673,14 +666,7 @@ function CallSchedule() {
     } catch (e) {}
     return true;
   }, []);
-  const SCHED_READ_TABLE = useMemo(() => {
-    try {
-      const o = localStorage.getItem("dsg_sched_read_table");
-      if (o === "1") return true;
-      if (o === "0") return false;
-    } catch (e) {}
-    return true;
-  }, []);
+  const SCHED_READ_TABLE = true;
   const schedWeeksSyncRef = useRef(null);
   const schedWeekVersionsRef = useRef({});
   const loadSchedFromTable = async () => {
@@ -1345,9 +1331,11 @@ function CallSchedule() {
       allowWipeSaveRef.current = false;
       try {
         const ts = new Date().toISOString();
+        const blobData = _objectSpread({}, payload);
+        delete blobData.schedule;
         await supabase.from("call_schedule_data").upsert({
           id: "main",
-          data: payload,
+          data: blobData,
           updated_at: ts
         });
         lastSyncRef.current = ts;
@@ -1380,11 +1368,41 @@ function CallSchedule() {
         const session = typeof auth !== "undefined" && auth.getSession ? auth.getSession() : null;
         const token = (session === null || session === void 0 ? void 0 : session.access_token) || SUPABASE_ANON_KEY;
         const ts = new Date().toISOString();
+        const blobData = _objectSpread({}, payload);
+        delete blobData.schedule;
         const body = JSON.stringify({
           id: "main",
-          data: payload,
+          data: blobData,
           updated_at: ts
         });
+        try {
+          const cur = payload.schedule || {};
+          const base = schedWeeksSyncRef.current || {};
+          const wkRows = [];
+          for (const k in cur) {
+            if (!base[k] || JSON.stringify(base[k]) !== JSON.stringify(cur[k])) {
+              wkRows.push({
+                week_monday: k,
+                data: cur[k],
+                updated_by: (userProfile === null || userProfile === void 0 ? void 0 : userProfile.person_id) || null,
+                updated_at: ts
+              });
+            }
+          }
+          if (wkRows.length) {
+            fetch(`${SUPABASE_URL}/rest/v1/schedule_weeks?on_conflict=week_monday`, {
+              method: "POST",
+              keepalive: true,
+              headers: {
+                "Content-Type": "application/json",
+                "apikey": SUPABASE_ANON_KEY,
+                "Authorization": `Bearer ${token}`,
+                "Prefer": "resolution=merge-duplicates,return=minimal"
+              },
+              body: JSON.stringify(wkRows)
+            }).catch(() => {});
+          }
+        } catch (e) {}
         fetch(`${SUPABASE_URL}/rest/v1/call_schedule_data?on_conflict=id`, {
           method: "POST",
           headers: {
@@ -3244,14 +3262,16 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
           await snapshots.capture("regenerate");
           const ts = new Date().toISOString();
           lastSyncRef.current = ts;
-          const payload = buildPayload({
+          const blobData = buildPayload({
             schedule: result
           });
+          delete blobData.schedule;
           await supabase.from("call_schedule_data").upsert({
             id: "main",
-            data: payload,
+            data: blobData,
             updated_at: ts
           });
+          syncSchedWeeks(result);
         } catch (e) {
           console.error("Immediate save failed:", e);
         }
@@ -3270,13 +3290,14 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
       try {
         const ts = new Date().toISOString();
         lastSyncRef.current = ts;
-        const payload = buildPayload({
+        const blobData = buildPayload({
           schedule: {},
           _intentionalClear: true
         });
+        delete blobData.schedule;
         await supabase.from("call_schedule_data").upsert({
           id: "main",
-          data: payload,
+          data: blobData,
           updated_at: ts
         });
       } catch (e) {
@@ -13094,83 +13115,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       padding: "6px 16px",
       fontSize: 12
     })
-  }, "🌙 Dark"))), (isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.role) === "admin") && React.createElement("div", {
-    style: css.card
-  }, React.createElement("div", {
-    style: css.cardT
-  }, "🧪 New vacation storage · this device"), React.createElement("p", {
-    style: {
-      fontSize: 12,
-      color: "#7a8a98",
-      margin: "0 0 10px",
-      lineHeight: 1.5
-    }
-  }, "Beta: stores vacations & no-call days in the new ", React.createElement("code", null, "time_off"), " table so two people editing at the same time can't overwrite each other. Applies to ", React.createElement("strong", null, "this device only"), ". Changing it reloads the app."), React.createElement("label", {
-    style: {
-      display: "flex",
-      alignItems: "center",
-      gap: 10,
-      cursor: "pointer"
-    }
-  }, React.createElement("input", {
-    type: "checkbox",
-    checked: USE_TIME_OFF,
-    onChange: e => {
-      try {
-        localStorage.setItem("dsg_use_timeoff", e.target.checked ? "1" : "0");
-      } catch (err) {}
-      location.reload();
-    },
-    style: {
-      width: 18,
-      height: 18,
-      cursor: "pointer"
-    }
-  }), React.createElement("span", {
-    style: {
-      fontSize: 13,
-      color: "#5a6a78",
-      fontWeight: 600
-    }
-  }, USE_TIME_OFF ? "On — loading from the new table" : "Off — using the shared blob (default)"))), (isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.role) === "admin") && React.createElement("div", {
-    style: css.card
-  }, React.createElement("div", {
-    style: css.cardT
-  }, "🧪 New schedule storage · this device"), React.createElement("p", {
-    style: {
-      fontSize: 12,
-      color: "#7a8a98",
-      margin: "0 0 10px",
-      lineHeight: 1.5
-    }
-  }, "Beta: reads the schedule from the new per-week ", React.createElement("code", null, "schedule_weeks"), " table and protects each week with a version check, so two people editing the ", React.createElement("strong", null, "same week"), " can't silently overwrite each other. The shared blob is still written as a backup. Applies to ", React.createElement("strong", null, "this device only"), ". Changing it reloads the app."), React.createElement("label", {
-    style: {
-      display: "flex",
-      alignItems: "center",
-      gap: 10,
-      cursor: "pointer"
-    }
-  }, React.createElement("input", {
-    type: "checkbox",
-    checked: SCHED_READ_TABLE,
-    onChange: e => {
-      try {
-        localStorage.setItem("dsg_sched_read_table", e.target.checked ? "1" : "0");
-      } catch (err) {}
-      location.reload();
-    },
-    style: {
-      width: 18,
-      height: 18,
-      cursor: "pointer"
-    }
-  }), React.createElement("span", {
-    style: {
-      fontSize: 13,
-      color: "#5a6a78",
-      fontWeight: 600
-    }
-  }, SCHED_READ_TABLE ? "On — reading per-week table with version checks" : "Off — using the shared blob (default)"))), (isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.role) === "admin") && React.createElement(Collapsible, {
+  }, "🌙 Dark"))), (isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.role) === "admin") && React.createElement(Collapsible, {
     css: css,
     ck: "settings_audit",
     defaultOpen: false,
