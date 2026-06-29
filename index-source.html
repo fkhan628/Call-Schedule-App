@@ -4102,9 +4102,19 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         if (wkndSurgeon && nextWk?.nights?.mon === wkndSurgeon) {
           issues.push({ type: "consecutive", severity: "error", week: mStr, message: `${sMap[wkndSurgeon]?.name} has Weekend then Mon night the next week` });
         }
-        // Check service week surgeon → Mon night next week (hard rule)
+        // Check service week surgeon → Mon night next week (hard rule).
+        // Exempt the Monday-holiday convention: Surgeon A legitimately holds
+        // the service week the week BEFORE a Monday holiday AND covers that
+        // holiday's 24h shift (with a full Sunday of rest in between). When
+        // next week's Monday is holiday-24h-covered, nextWk.nights.mon is the
+        // holiday surgeon — not a real Monday-night assignment — so this isn't
+        // a service-week→Mon-night violation. (e.g. RPC before Labor Day.)
         if (wk.dayCall && nextWk?.nights?.mon === wk.dayCall) {
-          issues.push({ type: "consecutive", severity: "error", week: mStr, message: `${sMap[wk.dayCall]?.name} has Service Week then Mon night the next week` });
+          const nextMonStr = mondayStrs[wkIdx + 1];
+          const nextHolCov = nextWk.holidayCoverage || {};
+          if (!nextHolCov[nextMonStr]) {
+            issues.push({ type: "consecutive", severity: "error", week: mStr, message: `${sMap[wk.dayCall]?.name} has Service Week then Mon night the next week` });
+          }
         }
       }
 
