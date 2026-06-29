@@ -32,7 +32,7 @@ function getHolidays(year) {
   };
 }
 
-function generate(surgeons, mondays, vac, backupMondays, priorCounts, preferences, fierceBackupMondays, holAssignments, locks) {
+function generate(surgeons, mondays, vac, backupMondays, priorCounts, preferences, fierceBackupMondays, holAssignments, locks, prevWeekSeed) {
   const sched = {};
   const ids = surgeons.map(s=>s.id);
   const nameMap = {}; surgeons.forEach(s => nameMap[s.id] = s.name);
@@ -107,6 +107,27 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
     lastDcWeek[id] = -99;
   });
 
+  // ─── Cross-boundary seeding ───
+  // When this generation continues from an existing schedule, seed the
+  // "previous week" trackers from the real week immediately before mondays[0]
+  // so the period seam obeys the same consecutive-shift rules as mid-block
+  // weeks: no same surgeon on service two weeks running, no weekend→DC, and
+  // no DC→Mon-night across the boundary. Without this, week 0 has no
+  // predecessor and can repeat the prior schedule's last service-week surgeon.
+  if (prevWeekSeed) {
+    // Recent DC history → spacing continuity (negative week offsets, e.g. the
+    // week before mondays[0] is -1, two weeks before is -2, ...).
+    if (prevWeekSeed.recentDc) {
+      for (const id in prevWeekSeed.recentDc) {
+        if (lastDcWeek[id] !== undefined) lastDcWeek[id] = prevWeekSeed.recentDc[id];
+      }
+    }
+    // Immediate prior week's DC is hard-excluded from week 0 (wkIdx-1 === -1).
+    if (prevWeekSeed.dayCall && lastDcWeek[prevWeekSeed.dayCall] !== undefined) {
+      lastDcWeek[prevWeekSeed.dayCall] = -1;
+    }
+  }
+
   // Note: an earlier version capped priorMultiScore to ±50% of group median
   // to prevent anomalous priors from dominating. That cap has been removed
   // because the spread-reduction pass at the end equalizes in-period shifts
@@ -136,8 +157,8 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
   // reason about weekend swaps via delta comparisons.
   const burden = {};
   ids.forEach(id => { burden[id] = priorMultiScore[id]; });
-  let prevWkndSurgeon = null;
-  let prevDcSurgeon = null;
+  let prevWkndSurgeon = (prevWeekSeed && prevWeekSeed.wknd) || null;
+  let prevDcSurgeon = (prevWeekSeed && prevWeekSeed.dayCall) || null;
 
   // Random jitter per surgeon — ensures Regenerate produces visibly different schedules
   // by perturbing sort order among closely-scored candidates
