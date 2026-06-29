@@ -472,6 +472,11 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
         holidayNightOverrides[sk] = cov.surgeonId;
       }
     });
+    // Reserve the holiday-coverage surgeons up front. The per-slot override below
+    // only fires when its slot is reached in the SHUFFLED order, so without this
+    // a holiday surgeon could be handed an earlier weeknight first and end up
+    // double-booked (covering the holiday 24h AND another night that week).
+    Object.values(holidayNightOverrides).forEach(hid => nightUsed.add(hid));
 
     // Also check weekend for holiday coverage
     const holFriDate = fmt(addD(monday, 4));
@@ -527,8 +532,10 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
       let avail = rem.filter(id => !used.has(id) && !nightUsed.has(id) && !onVac(id,sd,vac));
       avail = avail.filter(id => !onVac(id, nextDayStr, vac));
 
-      // HARD RULE: Weekend surgeon cannot take Monday night the following week
-      if (sk === "mon" && prevWkndSurgeon) {
+      // HARD RULE: Weekend surgeon needs recovery after Fri–Sun — no Monday OR
+      // Tuesday night the following week. One day of rest (Mon only) isn't
+      // enough; first eligible weeknight is Wednesday.
+      if ((sk === "mon" || sk === "tue") && prevWkndSurgeon) {
         const nonWknd = avail.filter(id => id !== prevWkndSurgeon);
         if (nonWknd.length > 0) avail = nonWknd;
       }
@@ -639,6 +646,7 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
     if (prev && prev.dayCall === X) return false;       // service week → weekend
     if (prev && prev.nights?.wknd === X) return false;  // back-to-back weekend
     if (next && next.nights?.wknd === X) return false;  // back-to-back weekend
+    if (next && next.dayCall === X) return false;       // weekend → next service week
     return true;
   };
 
@@ -667,11 +675,12 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
         if (wkA.nights?.thu === b) continue;
         if (wkB.nights?.thu === a) continue;
 
-        // Check weekend→Monday night conflict: new weekend surgeon shouldn't be Monday night next week
+        // Check weekend→Monday/Tuesday night conflict: new weekend surgeon
+        // shouldn't be Mon or Tue night next week (needs recovery after Fri–Sun).
         const nextWkA = i + 1 < mondayStrs.length ? sched[mondayStrs[i + 1]] : null;
         const nextWkB = j + 1 < mondayStrs.length ? sched[mondayStrs[j + 1]] : null;
-        if (nextWkA?.nights?.mon === b) continue; // b doing weekend in A would conflict with Mon night
-        if (nextWkB?.nights?.mon === a) continue; // a doing weekend in B would conflict with Mon night
+        if (nextWkA?.nights?.mon === b || nextWkA?.nights?.tue === b) continue;
+        if (nextWkB?.nights?.mon === a || nextWkB?.nights?.tue === a) continue;
 
         // Don't reintroduce service-week→weekend or back-to-back weekends.
         // Adjacent weeks share a neighbor, so the pre-swap adjacency check is
@@ -709,6 +718,16 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
   }
 
   // ═══ VALIDATION PASS — fix any remaining hard-rule violations via swaps ═══
+  // A night covered by a holiday 24h shift is intentional — the holiday surgeon
+  // covers it (and for Monday holidays that surgeon also holds the prior service
+  // week by design). These slots must be exempt from "fix" swaps and rebalancing,
+  // or the coverage gets torn out and the surgeon freed for an adjacent night.
+  const isHolCoveredNight = (mStr, sk) => {
+    const off = {mon:0,tue:1,wed:2,thu:3}[sk];
+    if (off === undefined) return false;
+    const d = fmt(addD(parse(mStr), off));
+    return !!(holCoverage[d] && holCoverage[d].role === "holiday_24h");
+  };
   for (let pass = 0; pass < 3; pass++) {
     for (let i = 0; i < mondayStrs.length; i++) {
       const wk = sched[mondayStrs[i]];
@@ -744,7 +763,7 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
       // Fix: Weekend surgeon should not have Monday night next week
       if (i < mondayStrs.length - 1 && wk.nights?.wknd) {
         const nextWk = sched[mondayStrs[i + 1]];
-        if (nextWk?.nights?.mon === wk.nights.wknd) {
+        if (nextWk?.nights?.mon === wk.nights.wknd && !isHolCoveredNight(mondayStrs[i + 1], "mon")) {
           // Try swapping Monday night with off surgeon of next week
           if (nextWk.off && nextWk.off !== nextWk.dayCall) {
             nextWk.nights.mon = nextWk.off;
@@ -764,7 +783,7 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
       // Fix: Service week surgeon should not have Monday night next week
       if (i < mondayStrs.length - 1 && wk.dayCall) {
         const nextWk = sched[mondayStrs[i + 1]];
-        if (nextWk?.nights?.mon === wk.dayCall) {
+        if (nextWk?.nights?.mon === wk.dayCall && !isHolCoveredNight(mondayStrs[i + 1], "mon")) {
           if (nextWk.off && nextWk.off !== nextWk.dayCall && nextWk.off !== sched[mondayStrs[i]]?.nights?.wknd) {
             nextWk.nights.mon = nextWk.off;
             recalcOff(nextWk);
@@ -785,7 +804,7 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
         const s1 = wk.nights?.[sk1], s2 = wk.nights?.[sk2];
         if (s1 && s1 === s2) {
           // Try swapping sk2 with another night that doesn't create a new consecutive pair
-          const swapCandidate = nightOrder.find(sk => sk !== sk1 && sk !== sk2 && wk.nights?.[sk] && wk.nights[sk] !== s1 && wk.nights[sk] !== wk.dayCall);
+          const swapCandidate = nightOrder.find(sk => sk !== sk1 && sk !== sk2 && wk.nights?.[sk] && wk.nights[sk] !== s1 && wk.nights[sk] !== wk.dayCall && !isHolCoveredNight(mondayStrs[i], sk));
           if (swapCandidate) {
             const temp = wk.nights[sk2];
             wk.nights[sk2] = wk.nights[swapCandidate];
@@ -883,11 +902,16 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
       if (prevWk?.nights?.wknd === Y) return false; // wknd → next Mon forbidden
       if (prevWk?.dayCall === Y) return false; // DC → next Mon forbidden
     }
+    if (slot === "tue") {
+      if (prevWk?.nights?.wknd === Y) return false; // wknd → next Tue forbidden (recovery)
+    }
     if (slot === "wknd") {
       if (nextWk?.nights?.mon === Y) return false; // wknd → next Mon forbidden
+      if (nextWk?.nights?.tue === Y) return false; // wknd → next Tue forbidden (recovery)
       if (prevWk?.dayCall === Y) return false; // service week (Sat) → next weekend forbidden
       if (prevWk?.nights?.wknd === Y) return false; // back-to-back weekend forbidden
       if (nextWk?.nights?.wknd === Y) return false; // back-to-back weekend forbidden
+      if (nextWk?.dayCall === Y) return false; // weekend → next service week forbidden
     }
 
     // Back-to-back weeknights within same week
@@ -972,6 +996,7 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
             const cur = wk.nights?.[slot];
             if (cur !== hi) continue;
             if (isPreAssigned(mStr, slot, hi)) continue;
+            if (isHolCoveredNight(mStr, slot)) continue; // holiday 24h coverage is fixed — don't rebalance it away
             // Skip moves that would overshoot (flip the pair's direction)
             const w = slotWeight[slot];
             if ((weightedTotal(hi) - 2*w) < weightedTotal(lo)) continue;
