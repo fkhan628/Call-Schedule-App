@@ -944,12 +944,14 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
     wk.off = ids.find(id => !assigned.has(id)) || null;
   };
 
-  // PHASE 1: DC balance — target service-week equality first.
+  // PHASE 1: DC balance — drive service weeks to even (2 each over 14 weeks).
   // Tries all viable high→low pairs each iteration so we don't bail just
-  // because the absolute max↔min pair has a constraint conflict.
+  // because the absolute max↔min pair has a constraint conflict. Targets spread
+  // ≤ 1 (for a multiple-of-7 period that means exactly even); vacations may force
+  // a wider spread, in which case the !found break stops at the best achievable.
   for (let iter = 0; iter < 100; iter++) {
     const sorted = [...ids].sort((a,b) => (dcCt[b]||0) - (dcCt[a]||0));
-    if ((dcCt[sorted[0]]||0) - (dcCt[sorted[sorted.length-1]]||0) <= 2) break;
+    if ((dcCt[sorted[0]]||0) - (dcCt[sorted[sorted.length-1]]||0) <= 1) break;
 
     let found = false;
     for (let h = 0; h < sorted.length && !found; h++) {
@@ -971,10 +973,40 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
     if (!found) break;
   }
 
-  // PHASE 2: Weighted total balance — matches the displayed Fairness Summary
-  // (SW×6 + Night×1 + Weekend×2). DC is already balanced from Phase 1, so
-  // Phase 2 only moves nights and weekends. Multi-pair fallback like Phase 1.
-  const slotOrder = ["wknd", "mon", "tue", "wed", "thu"];
+  // PHASE 1B: Weekend balance — drive weekends to even (2 each over 14 weeks),
+  // same one-way high→low reassignment as DC. Weekends were previously only
+  // balanced indirectly via the weighted total, which left ~half of schedules
+  // with someone on 3 and someone on 1. Runs before the weighted-total pass so
+  // weekend equality is locked in; the group asked for exactly 2 each.
+  for (let iter = 0; iter < 100; iter++) {
+    const sorted = [...ids].sort((a,b) => (wkndCt[b]||0) - (wkndCt[a]||0));
+    if ((wkndCt[sorted[0]]||0) - (wkndCt[sorted[sorted.length-1]]||0) <= 1) break;
+
+    let found = false;
+    for (let h = 0; h < sorted.length && !found; h++) {
+      const hi = sorted[h];
+      for (let l = sorted.length - 1; l > h && !found; l--) {
+        const lo = sorted[l];
+        if ((wkndCt[hi]||0) - (wkndCt[lo]||0) <= 1) break;
+        for (let wkIdx = 0; wkIdx < mondayStrs.length && !found; wkIdx++) {
+          const mStr = mondayStrs[wkIdx];
+          const wk = sched[mStr];
+          if (wk.nights?.wknd !== hi) continue;
+          if (isPreAssigned(mStr, "wknd", hi)) continue;
+          if (isHolCoveredNight(mStr, "wknd")) continue;
+          if (!canTakeSlot(lo, mStr, parse(mStr), "wknd", wk, wkIdx)) continue;
+          reassign(mStr, "wknd", hi, lo);
+          found = true;
+        }
+      }
+    }
+    if (!found) break;
+  }
+  // PHASE 2: Weighted total balance (SW×6 + Night×1 + Weekend×2). DC and
+  // weekends are already balanced (Phases 1 and 1B), so Phase 2 only moves
+  // weeknights — weekends are deliberately excluded from slotOrder so this pass
+  // can't undo the 2-each weekend distribution.
+  const slotOrder = ["mon", "tue", "wed", "thu"];
   const slotWeight = { wknd: 2, mon: 1, tue: 1, wed: 1, thu: 1 };
   const weightedTotal = (id) => 6 * (dcCt[id]||0) + (nCt[id]||0) + 2 * (wkndCt[id]||0);
 
