@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.06.28a";
+    var APP_VERSION = "2026.06.25r";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -7090,10 +7090,78 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               }
             });
 
+            // ─── Next call at-a-glance ───
+            // Flatten each upcoming role to a concrete start date (a night lands on
+            // its weekday; service week + weekend run Mon→Sun), drop anything fully
+            // past, sort soonest-first. OFF weeks aren't call, so they're excluded.
+            const _today0 = new Date(); _today0.setHours(0, 0, 0, 0);
+            const _DAY = 86400000;
+            const _startOff = { dayCall: 0, mon: 0, tue: 1, wed: 2, thu: 3, wknd: 4 };
+            const _nice = (d) => d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+            const _whenTxt = (d) => d > 1 ? `in ${d} days` : d === 1 ? "tomorrow" : d === 0 ? "today" : "in progress";
+            const _whenTone = (d) => d <= 0 ? "#1a8040" : d <= 2 ? "#c0392b" : d <= 7 ? "#b9770e" : "#5a6a78";
+            const _nextUp = [];
+            myShifts.forEach(s => {
+              const mon = parse(s.mStr);
+              s.roles.forEach(r => {
+                if (!r.shiftKey) return; // OFF isn't a call shift
+                const span = (r.shiftKey === "dayCall" || r.shiftKey === "wknd");
+                const start = addD(mon, _startOff[r.shiftKey] ?? 0);
+                const end = span ? addD(mon, 6) : start;
+                if (end < _today0) return; // fully in the past
+                const days = Math.round((start - _today0) / _DAY);
+                _nextUp.push({ ...r, start, end, days, span, isBackup: s.isBackup, isFierceBackup: s.isFierceBackup });
+              });
+            });
+            _nextUp.sort((a, b) => a.start - b.start);
+            const _upNext = _nextUp.slice(0, 3);
+
             return (
               <>
                 <div style={{fontSize:15,fontWeight:700,color:"#1a2a3a",marginBottom:12}}>
                   <Badge id={myId}/> <span style={{marginLeft:8}}>{MO[startMonth]} – {MO[endMoIdx]} {startYear}</span>
+                </div>
+
+                {/* Next call at-a-glance — pinned summary of upcoming assignments */}
+                <div style={{...css.card, padding:0, overflow:"hidden", marginBottom:16, border:"1px solid "+(dk?"#2a3a48":"#dfe6ec")}}>
+                  <div style={{background:dk?"linear-gradient(135deg,#16202c,#1b2735)":"linear-gradient(135deg,#f3f7fb,#e9f1f8)", padding:"9px 14px", borderBottom:"1px solid "+(dk?"#243240":"#e4ebf1"), fontSize:11, fontWeight:800, letterSpacing:0.6, color:dk?"#9fb4c8":"#3a5a78", textTransform:"uppercase"}}>
+                    🗓 Next Call
+                  </div>
+                  {_upNext.length === 0 ? (
+                    <div style={{padding:"16px 14px", fontSize:13, color:"#8a94a0"}}>No upcoming call shifts in the current schedule.</div>
+                  ) : (
+                    <div style={{padding:"13px 14px"}}>
+                      {(() => {
+                        const e = _upNext[0];
+                        return (
+                          <div style={{display:"flex", alignItems:"center", gap:12}}>
+                            <div style={{fontSize:30, lineHeight:1}}>{e.icon}</div>
+                            <div style={{flex:1, minWidth:0}}>
+                              <div style={{display:"flex", alignItems:"center", gap:8, flexWrap:"wrap"}}>
+                                <span style={{fontSize:16, fontWeight:800, color:dk?"#dde6ef":"#1a2a3a"}}>{e.type}</span>
+                                {e.isBackup && <span style={{fontSize:9, fontWeight:800, letterSpacing:0.5, padding:"2px 6px", borderRadius:4, background:"#efe3c8", color:"#8a6a10"}}>BACKUP</span>}
+                                <span style={{fontSize:12, fontWeight:800, padding:"2px 9px", borderRadius:20, background:_whenTone(e.days)+"1f", color:_whenTone(e.days)}}>{_whenTxt(e.days)}</span>
+                              </div>
+                              <div style={{fontSize:13, color:dk?"#9aa8b6":"#4a5a68", marginTop:3}}>{e.span ? `${_nice(e.start)} – ${_nice(e.end)}` : _nice(e.start)}</div>
+                              <div style={{fontSize:11, color:"#9aa4ae", marginTop:1}}>{e.detail}</div>
+                            </div>
+                          </div>
+                        );
+                      })()}
+                      {_upNext.length > 1 && (
+                        <div style={{marginTop:12, paddingTop:10, borderTop:"1px dashed "+(dk?"#2a3a48":"#e4ebf1"), display:"flex", flexDirection:"column", gap:9}}>
+                          {_upNext.slice(1).map((e, i) => (
+                            <div key={i} style={{display:"flex", alignItems:"center", gap:10}}>
+                              <span style={{fontSize:16}}>{e.icon}</span>
+                              <span style={{flex:1, minWidth:0, fontSize:13, fontWeight:600, color:dk?"#c8d2dc":"#3a4a58", whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis"}}>{e.type}{e.isBackup && <span style={{fontSize:9, fontWeight:700, color:"#8a6a10", marginLeft:6}}>· backup</span>}</span>
+                              <span style={{fontSize:12, color:dk?"#9aa8b6":"#5a6a78", whiteSpace:"nowrap"}}>{e.span ? `${_nice(e.start)} – ${_nice(e.end)}` : _nice(e.start)}</span>
+                              <span style={{fontSize:11, fontWeight:700, color:_whenTone(e.days), minWidth:60, textAlign:"right"}}>{_whenTxt(e.days)}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 {/* My Vacations — completed (past) ones hidden; shown in date order */}

@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.06.28a";
+    var APP_VERSION = "2026.06.25r";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -11088,6 +11088,47 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         });
       }
     });
+    const _today0 = new Date();
+    _today0.setHours(0, 0, 0, 0);
+    const _DAY = 86400000;
+    const _startOff = {
+      dayCall: 0,
+      mon: 0,
+      tue: 1,
+      wed: 2,
+      thu: 3,
+      wknd: 4
+    };
+    const _nice = d => d.toLocaleDateString(undefined, {
+      weekday: "short",
+      month: "short",
+      day: "numeric"
+    });
+    const _whenTxt = d => d > 1 ? `in ${d} days` : d === 1 ? "tomorrow" : d === 0 ? "today" : "in progress";
+    const _whenTone = d => d <= 0 ? "#1a8040" : d <= 2 ? "#c0392b" : d <= 7 ? "#b9770e" : "#5a6a78";
+    const _nextUp = [];
+    myShifts.forEach(s => {
+      const mon = parse(s.mStr);
+      s.roles.forEach(r => {
+        var _startOff$r$shiftKey;
+        if (!r.shiftKey) return;
+        const span = r.shiftKey === "dayCall" || r.shiftKey === "wknd";
+        const start = addD(mon, (_startOff$r$shiftKey = _startOff[r.shiftKey]) !== null && _startOff$r$shiftKey !== void 0 ? _startOff$r$shiftKey : 0);
+        const end = span ? addD(mon, 6) : start;
+        if (end < _today0) return;
+        const days = Math.round((start - _today0) / _DAY);
+        _nextUp.push(_objectSpread(_objectSpread({}, r), {}, {
+          start,
+          end,
+          days,
+          span,
+          isBackup: s.isBackup,
+          isFierceBackup: s.isFierceBackup
+        }));
+      });
+    });
+    _nextUp.sort((a, b) => a.start - b.start);
+    const _upNext = _nextUp.slice(0, 3);
     return React.createElement(React.Fragment, null, React.createElement("div", {
       style: {
         fontSize: 15,
@@ -11101,7 +11142,150 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       style: {
         marginLeft: 8
       }
-    }, MO[startMonth], " – ", MO[endMoIdx], " ", startYear)), myVacsView.length > 0 && (() => {
+    }, MO[startMonth], " – ", MO[endMoIdx], " ", startYear)), React.createElement("div", {
+      style: _objectSpread(_objectSpread({}, css.card), {}, {
+        padding: 0,
+        overflow: "hidden",
+        marginBottom: 16,
+        border: "1px solid " + (dk ? "#2a3a48" : "#dfe6ec")
+      })
+    }, React.createElement("div", {
+      style: {
+        background: dk ? "linear-gradient(135deg,#16202c,#1b2735)" : "linear-gradient(135deg,#f3f7fb,#e9f1f8)",
+        padding: "9px 14px",
+        borderBottom: "1px solid " + (dk ? "#243240" : "#e4ebf1"),
+        fontSize: 11,
+        fontWeight: 800,
+        letterSpacing: 0.6,
+        color: dk ? "#9fb4c8" : "#3a5a78",
+        textTransform: "uppercase"
+      }
+    }, "🗓 Next Call"), _upNext.length === 0 ? React.createElement("div", {
+      style: {
+        padding: "16px 14px",
+        fontSize: 13,
+        color: "#8a94a0"
+      }
+    }, "No upcoming call shifts in the current schedule.") : React.createElement("div", {
+      style: {
+        padding: "13px 14px"
+      }
+    }, (() => {
+      const e = _upNext[0];
+      return React.createElement("div", {
+        style: {
+          display: "flex",
+          alignItems: "center",
+          gap: 12
+        }
+      }, React.createElement("div", {
+        style: {
+          fontSize: 30,
+          lineHeight: 1
+        }
+      }, e.icon), React.createElement("div", {
+        style: {
+          flex: 1,
+          minWidth: 0
+        }
+      }, React.createElement("div", {
+        style: {
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          flexWrap: "wrap"
+        }
+      }, React.createElement("span", {
+        style: {
+          fontSize: 16,
+          fontWeight: 800,
+          color: dk ? "#dde6ef" : "#1a2a3a"
+        }
+      }, e.type), e.isBackup && React.createElement("span", {
+        style: {
+          fontSize: 9,
+          fontWeight: 800,
+          letterSpacing: 0.5,
+          padding: "2px 6px",
+          borderRadius: 4,
+          background: "#efe3c8",
+          color: "#8a6a10"
+        }
+      }, "BACKUP"), React.createElement("span", {
+        style: {
+          fontSize: 12,
+          fontWeight: 800,
+          padding: "2px 9px",
+          borderRadius: 20,
+          background: _whenTone(e.days) + "1f",
+          color: _whenTone(e.days)
+        }
+      }, _whenTxt(e.days))), React.createElement("div", {
+        style: {
+          fontSize: 13,
+          color: dk ? "#9aa8b6" : "#4a5a68",
+          marginTop: 3
+        }
+      }, e.span ? `${_nice(e.start)} – ${_nice(e.end)}` : _nice(e.start)), React.createElement("div", {
+        style: {
+          fontSize: 11,
+          color: "#9aa4ae",
+          marginTop: 1
+        }
+      }, e.detail)));
+    })(), _upNext.length > 1 && React.createElement("div", {
+      style: {
+        marginTop: 12,
+        paddingTop: 10,
+        borderTop: "1px dashed " + (dk ? "#2a3a48" : "#e4ebf1"),
+        display: "flex",
+        flexDirection: "column",
+        gap: 9
+      }
+    }, _upNext.slice(1).map((e, i) => React.createElement("div", {
+      key: i,
+      style: {
+        display: "flex",
+        alignItems: "center",
+        gap: 10
+      }
+    }, React.createElement("span", {
+      style: {
+        fontSize: 16
+      }
+    }, e.icon), React.createElement("span", {
+      style: {
+        flex: 1,
+        minWidth: 0,
+        fontSize: 13,
+        fontWeight: 600,
+        color: dk ? "#c8d2dc" : "#3a4a58",
+        whiteSpace: "nowrap",
+        overflow: "hidden",
+        textOverflow: "ellipsis"
+      }
+    }, e.type, e.isBackup && React.createElement("span", {
+      style: {
+        fontSize: 9,
+        fontWeight: 700,
+        color: "#8a6a10",
+        marginLeft: 6
+      }
+    }, "· backup")), React.createElement("span", {
+      style: {
+        fontSize: 12,
+        color: dk ? "#9aa8b6" : "#5a6a78",
+        whiteSpace: "nowrap"
+      }
+    }, e.span ? `${_nice(e.start)} – ${_nice(e.end)}` : _nice(e.start)), React.createElement("span", {
+      style: {
+        fontSize: 11,
+        fontWeight: 700,
+        color: _whenTone(e.days),
+        minWidth: 60,
+        textAlign: "right"
+      }
+    }, _whenTxt(e.days))))))), myVacsView.length > 0 && (() => {
       const VAC_LIMIT = 5;
       const shown = showAllMyVacs ? myVacsView : myVacsView.slice(0, VAC_LIMIT);
       return React.createElement("div", {
