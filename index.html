@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.06.29a";
+    var APP_VERSION = "2026.06.29b";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -7426,14 +7426,11 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         setStartMondayOverride("");
         return;
       }
-      const d = parse(v);
-      if (d.getDay() !== 1) {
-        alert("Please pick a Monday.");
-        return;
-      }
-      setStartMondayOverride(v);
-      setStartMonth(d.getMonth());
-      setStartYear(d.getFullYear());
+      const mon = monOf(parse(v));
+      const monStr = fmt(mon);
+      setStartMondayOverride(monStr);
+      setStartMonth(mon.getMonth());
+      setStartYear(mon.getFullYear());
     },
     style: _objectSpread(_objectSpread({}, css.inp), {}, {
       width: 160
