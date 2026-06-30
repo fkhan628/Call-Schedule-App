@@ -32,7 +32,7 @@ function getHolidays(year) {
   };
 }
 
-function generate(surgeons, mondays, vac, backupMondays, priorCounts, preferences, fierceBackupMondays, holAssignments, locks, prevWeekSeed, vacationsOnly) {
+function generateOnce(surgeons, mondays, vac, backupMondays, priorCounts, preferences, fierceBackupMondays, holAssignments, locks, prevWeekSeed, vacationsOnly) {
   // vacOnly = vacation-only ranges (no no-call). Used for "trailing edge" checks:
   // the night or weekend that ENDS the morning of an off day. Group rule (Jun
   // 2026): a surgeon may be on call the night before a NO-CALL day, but NOT the
@@ -1089,4 +1089,71 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
   }
 
   return sched;
+}
+
+// ═══ BEST-OF-N WRAPPER ═══
+//
+// A single generateOnce() pass is always rule-legal, but its greedy assignment
+// plus local one-way swaps only land a perfectly even SERVICE-WEEK split in a
+// minority of runs. (For a 14-week period, 14 service weeks ÷ 7 = exactly 2 each
+// IS achievable — only a few surgeons have any vacation conflict — but the local
+// search doesn't reliably find it; weekends and total already come out tight.)
+//
+// Rather than chase service-week balance with ever-more-complex swap machinery,
+// we run several independent attempts and keep the one whose distribution is
+// tightest, scored on the metrics the group actually perceives. A single attempt
+// is ~3-4 ms, so even 50 attempts stay well under a fifth of a second. This is
+// NOT "regenerate 200 times hoping to stumble onto it": it is automatic, runs on
+// one click, and is keyed on the exact fairness metrics — so every generation
+// comes out tight, not as a lucky draw. The user can still re-roll for variety;
+// every re-roll is now tight too.
+function generate(surgeons, mondays, vac, backupMondays, priorCounts, preferences, fierceBackupMondays, holAssignments, locks, prevWeekSeed, vacationsOnly) {
+  const ATTEMPTS = 50;
+  const ids = surgeons.map(s => s.id);
+
+  // Spread (max − min) of a per-surgeon count map.
+  const spreadOf = (counts) => {
+    let mn = Infinity, mx = -Infinity;
+    for (const id of ids) { const v = counts[id] || 0; if (v < mn) mn = v; if (v > mx) mx = v; }
+    return mx - mn;
+  };
+
+  // Score a candidate schedule — LOWER is fairer. The weights encode a strict
+  // priority order: combined service weeks (1st + 2nd call, the group's headline
+  // fairness number) dominate, then weekends, then total raw shift count, then
+  // the 1st-call-only splits as a final tiebreak. The 1st-call-only splits can't
+  // beat Δ1 when the regular-week count doesn't divide evenly by 7, but among
+  // otherwise-equal schedules we still prefer the tighter split. Every candidate
+  // is rule-legal, so this only ever chooses among valid schedules.
+  const scoreOf = (sched) => {
+    const svc = {}, wknd = {}, night = {}, svcReg = {}, wkndReg = {};
+    ids.forEach(id => { svc[id]=0; wknd[id]=0; night[id]=0; svcReg[id]=0; wkndReg[id]=0; });
+    for (const mStr in sched) {
+      const wk = sched[mStr];
+      if (!wk) continue;
+      if (wk.dayCall) { svc[wk.dayCall] = (svc[wk.dayCall]||0) + 1; if (!wk.isBackup) svcReg[wk.dayCall] = (svcReg[wk.dayCall]||0) + 1; }
+      if (wk.nights && wk.nights.wknd) { wknd[wk.nights.wknd] = (wknd[wk.nights.wknd]||0) + 1; if (!wk.isBackup) wkndReg[wk.nights.wknd] = (wkndReg[wk.nights.wknd]||0) + 1; }
+      if (wk.nights) ["mon","tue","wed","thu"].forEach(sk => { if (wk.nights[sk]) night[wk.nights[sk]] = (night[wk.nights[sk]]||0) + 1; });
+    }
+    const tot = {}; ids.forEach(id => tot[id] = (svc[id]||0) + (wknd[id]||0) + (night[id]||0));
+    return spreadOf(svc)    * 10000
+         + spreadOf(wknd)   * 1000
+         + spreadOf(tot)    * 100
+         + spreadOf(svcReg) * 10
+         + spreadOf(wkndReg);
+  };
+
+  let best = null, bestScore = Infinity;
+  for (let i = 0; i < ATTEMPTS; i++) {
+    const cand = generateOnce(surgeons, mondays, vac, backupMondays, priorCounts, preferences, fierceBackupMondays, holAssignments, locks, prevWeekSeed, vacationsOnly);
+    if (!cand) continue;
+    const s = scoreOf(cand);
+    if (s < bestScore) { bestScore = s; best = cand; }
+    // Combined service weeks, weekends, and total all even (score < 100 means
+    // those three tiers are all Δ0) — only the unavoidable 1st-call split remains.
+    // Good enough to stop; further attempts can't improve the tiers that matter.
+    if (bestScore < 100) break;
+  }
+  // Fallback: if every attempt somehow scored Infinity (shouldn't happen), return a fresh pass.
+  return best || generateOnce(surgeons, mondays, vac, backupMondays, priorCounts, preferences, fierceBackupMondays, holAssignments, locks, prevWeekSeed, vacationsOnly);
 }

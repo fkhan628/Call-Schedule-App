@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.06.30a";
+    var APP_VERSION = "2026.06.29l";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -5722,6 +5722,18 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   const maxT = sorted[sorted.length-1].total;
                   const median = sorted[Math.floor(sorted.length/2)].total;
                   const spread = maxT - minT;
+                  // Per-type COMBINED spread (1st + 2nd call) — the per-category
+                  // balance the group actually perceives. The REGULAR columns in
+                  // the table below show 1st-call only, which can't beat Δ1 when a
+                  // category's regular-week count doesn't divide evenly by 7, so
+                  // these combined figures are the honest measure of per-type fairness.
+                  const perTypeSpread = (regKey, bkKey) => {
+                    const vals = surgeons.map(s => { const ps = pStats[s.id] || {}; return (ps[regKey]||0) + (ps[bkKey]||0); });
+                    return vals.length ? (Math.max(...vals) - Math.min(...vals)) : 0;
+                  };
+                  const svcSpread = perTypeSpread("dc","dcB");
+                  const wkndSpread = perTypeSpread("wknd","wkndB");
+                  const typeColor = v => v<=1?"#1a8040":v<=2?"#a05010":"#a82020";
                   const outliersHigh = totals.filter(t => t.total > median + 2);
                   const outliersLow = totals.filter(t => t.total < median - 2);
 
@@ -5731,6 +5743,11 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                       <div style={{fontSize:11,color:dk?"#a0b0a0":"#5a6a78"}}>
                         Spread: <strong style={{color:spread<=2?"#1a8040":spread<=4?"#a05010":"#a82020"}}>{spread} shift{spread===1?"":"s"}</strong>
                         {" "}(min {minT}, median {median}, max {maxT})
+                      </div>
+                      <div style={{fontSize:11,color:dk?"#a0b0a0":"#5a6a78",marginTop:3}}>
+                        Service weeks <strong style={{color:typeColor(svcSpread)}}>Δ{svcSpread}</strong>
+                        {"  ·  "}Weekends <strong style={{color:typeColor(wkndSpread)}}>Δ{wkndSpread}</strong>
+                        {"  "}<span style={{opacity:0.65}}>(1st + 2nd call combined)</span>
                       </div>
                       {(outliersHigh.length > 0 || outliersLow.length > 0) && (
                         <div style={{fontSize:11,color:"#a05010",marginTop:4,lineHeight:1.5}}>
@@ -5845,7 +5862,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   </table>
                 </div>
                 <div style={{marginTop:8,fontSize:11,color:"#5a8a5a",lineHeight:1.5}}>
-                  <strong style={{color:"#2c5a80"}}>Total</strong> = 1st Call + 2nd Call. Service Week = 6, Week Night = 1, Weekend = 2.
+                  <strong style={{color:"#2c5a80"}}>Total</strong> = every assignment counts once — service weeks + week nights + weekends, 1st + 2nd call. The REGULAR columns show 1st call only.
                 </div>
                 <p style={{fontSize:11,color:"#5a8a5a",marginTop:8}}>Click "Re-roll" to generate a different version. Use ◀ ▶ to browse months. Click "🖨 Print Calendar" for a printable view. Click "Accept" to commit this schedule.</p>
               </div>
@@ -6846,7 +6863,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   </tbody>
                 </table>
                 <div style={{marginTop:8,fontSize:11,color:"#7a8a98",lineHeight:1.5}}>
-                  <strong style={{color:"#2c5a80"}}>Total</strong> = 1st Call + 2nd Call. Service Week = 6, Week Night = 1, Weekend = 2.
+                  <strong style={{color:"#2c5a80"}}>Total</strong> = every assignment counts once — service weeks + week nights + weekends, 1st + 2nd call. The REGULAR columns show 1st call only.
                 </div>
               </div>
             )}
