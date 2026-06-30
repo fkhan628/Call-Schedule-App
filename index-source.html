@@ -4074,6 +4074,13 @@ ${"</"}script>${"</"}body>${"</"}html>`;
   const calcShifts = (s) => (s.dc||0)*6 + (s.nights||0) + (s.wknd||0)*2 + (s.svcAdj6||0);
   const calcShiftsB = (s) => (s.dcB||0)*6 + (s.nightsB||0) + (s.wkndB||0)*2;
   const calcTotal = (s) => calcShifts(s) + calcShiftsB(s);
+  // Raw shift HEADCOUNT — every shift counts once, no weighting, 1st + 2nd call
+  // combined. This is what surgeons actually tally when they eyeball the calendar
+  // ("I'm on 12, he's on 14"), so it drives the Fairness Summary and the stats
+  // Total column. (calcTotal above stays weighted for billing/RVU/cumulative
+  // views, where service-week heaviness genuinely matters.)
+  const calcRawCount = (s) => (s.dc||0) + (s.nights||0) + (s.wknd||0) + (s.dcB||0) + (s.nightsB||0) + (s.wkndB||0);
+
 
   // ─── Conflict Detection ───
   const conflicts = useMemo(() => {
@@ -5707,7 +5714,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                 {(() => {
                   const totals = surgeons.map(s => {
                     const ps = pStats[s.id] || {};
-                    return { id: s.id, name: s.name, total: calcTotal(ps) };
+                    return { id: s.id, name: s.name, total: calcRawCount(ps) };
                   });
                   if (totals.length === 0) return null;
                   const sorted = [...totals].sort((a,b) => a.total - b.total);
@@ -5816,7 +5823,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                     <tbody>
                       {surgeons.map(s => {
                         const ps = pStats[s.id]||{};
-                        const total = calcTotal(ps);
+                        const total = calcRawCount(ps);
                         return (
                           <tr key={s.id} style={{borderBottom:"1px solid #c0e0c0"}}>
                             <td style={{padding:"5px 6px"}}><Badge id={s.id} small/></td>
@@ -6822,7 +6829,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   <tbody>
                     {surgeons.filter(s => isScheduler || !mySurgeon || mySurgeon === "admin" || s.id === mySurgeon).map(s=>{
                       const st=stats[s.id]||{};
-                      const total = calcTotal(st);
+                      const total = calcRawCount(st);
                       return (
                         <tr key={s.id} style={{borderBottom:"1px solid #e8ecf0"}}>
                           <td style={{padding:"7px 8px"}}><Badge id={s.id}/></td>
