@@ -966,6 +966,47 @@ function generateOnce(surgeons, mondays, vac, backupMondays, priorCounts, prefer
     wk.off = ids.find(id => !assigned.has(id)) || null;
   };
 
+  // 2-hop chain swap: when a direct hi→lo handoff of `slot` is blocked by a
+  // constraint, route it through a middle surgeon — hi hands one week to mid, mid
+  // hands a different week to lo, so mid nets zero and the spread still tightens
+  // by one. This is what reliably gets WEEKENDS (and, less often, service weeks)
+  // to an even split when the one-way swaps stall on a constrained period. With
+  // the best-of-N wrapper, any rare attempt where a chain made another tier worse
+  // is simply discarded, so the chain only ever helps.
+  const slotHolder = (wk, slot) => slot === "dayCall" ? wk.dayCall : (wk.nights ? wk.nights.wknd : null);
+  const tryChainSwap = (slot, hi, lo) => {
+    for (let mi = 0; mi < ids.length; mi++) {
+      const mid = ids[mi];
+      if (mid === hi || mid === lo) continue;
+      // leg 2: a week `mid` holds that `lo` can legally take
+      for (let i2 = 0; i2 < mondayStrs.length; i2++) {
+        const m2 = mondayStrs[i2];
+        const wk2 = sched[m2];
+        if (slotHolder(wk2, slot) !== mid) continue;
+        if (isPreAssigned(m2, slot, mid)) continue;
+        if (slot === "wknd" && isHolCoveredNight(m2, "wknd")) continue;
+        if (!canTakeSlot(lo, m2, parse(m2), slot, wk2, i2)) continue;
+        reassign(m2, slot, mid, lo);                 // tentatively take leg 2
+        let done = false;
+        // leg 1: a week `hi` holds that `mid` can now take
+        for (let i1 = 0; i1 < mondayStrs.length && !done; i1++) {
+          const m1 = mondayStrs[i1];
+          if (m1 === m2) continue;
+          const wk1 = sched[m1];
+          if (slotHolder(wk1, slot) !== hi) continue;
+          if (isPreAssigned(m1, slot, hi)) continue;
+          if (slot === "wknd" && isHolCoveredNight(m1, "wknd")) continue;
+          if (!canTakeSlot(mid, m1, parse(m1), slot, wk1, i1)) continue;
+          reassign(m1, slot, hi, mid);
+          done = true;
+        }
+        if (done) return true;
+        reassign(m2, slot, lo, mid);                 // undo leg 2 if leg 1 failed
+      }
+    }
+    return false;
+  };
+
   // PHASE 1: DC balance — drive service weeks to even (2 each over 14 weeks).
   // Tries all viable high→low pairs each iteration so we don't bail just
   // because the absolute max↔min pair has a constraint conflict. Targets spread
@@ -989,6 +1030,15 @@ function generateOnce(surgeons, mondays, vac, backupMondays, priorCounts, prefer
           if (!canTakeSlot(lo, mStr, parse(mStr), "dayCall", wk, wkIdx)) continue;
           reassign(mStr, "dayCall", hi, lo);
           found = true;
+        }
+      }
+    }
+    if (!found) {
+      // direct swaps stalled — try routing through a middle surgeon
+      for (let h = 0; h < sorted.length && !found; h++) {
+        for (let l = sorted.length - 1; l > h && !found; l--) {
+          if ((dcCt[sorted[h]]||0) - (dcCt[sorted[l]]||0) <= 1) break;
+          if (tryChainSwap("dayCall", sorted[h], sorted[l])) found = true;
         }
       }
     }
@@ -1019,6 +1069,17 @@ function generateOnce(surgeons, mondays, vac, backupMondays, priorCounts, prefer
           if (!canTakeSlot(lo, mStr, parse(mStr), "wknd", wk, wkIdx)) continue;
           reassign(mStr, "wknd", hi, lo);
           found = true;
+        }
+      }
+    }
+    if (!found) {
+      // direct swaps stalled — try routing through a middle surgeon. This is the
+      // path that fixes the "someone on 3 weekends, someone on 1" case that
+      // one-way swaps + best-of-N alone left behind on constrained live data.
+      for (let h = 0; h < sorted.length && !found; h++) {
+        for (let l = sorted.length - 1; l > h && !found; l--) {
+          if ((wkndCt[sorted[h]]||0) - (wkndCt[sorted[l]]||0) <= 1) break;
+          if (tryChainSwap("wknd", sorted[h], sorted[l])) found = true;
         }
       }
     }
