@@ -959,6 +959,42 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
     wk.off = ids.find(id => !assigned.has(id)) || null;
   };
 
+  // 3-way chain swap: shift one unit of `slot` from over-loaded `hi` to
+  // under-loaded `lo` via a middle surgeon — hi hands a week to mid, mid hands a
+  // different week to lo, so mid nets zero. Used when a direct hi→lo handoff is
+  // blocked by a vacation/recovery constraint but a two-hop route exists. Applies
+  // the mid→lo hop first so mid has already shed its week before being tested for
+  // hi's week (prevents a false self-conflict when the two weeks are adjacent).
+  // Same skip guards (manual locks, holiday coverage) as the direct pass.
+  const tryChainSwap = (slot, hi, lo) => {
+    const holder = (wk) => slot === "dayCall" ? wk.dayCall : wk.nights?.wknd;
+    const blockedHol = (mStr) => slot === "wknd" && isHolCoveredNight(mStr, "wknd");
+    for (let mi = 0; mi < ids.length; mi++) {
+      const mid = ids[mi];
+      if (mid === hi || mid === lo) continue;
+      for (let i2 = 0; i2 < mondayStrs.length; i2++) {
+        const m2 = mondayStrs[i2];
+        const wk2 = sched[m2];
+        if (holder(wk2) !== mid) continue;
+        if (isPreAssigned(m2, slot, mid) || blockedHol(m2)) continue;
+        if (!canTakeSlot(lo, m2, parse(m2), slot, wk2, i2)) continue;
+        reassign(m2, slot, mid, lo);                 // hop 2: mid → lo
+        for (let i1 = 0; i1 < mondayStrs.length; i1++) {
+          const m1 = mondayStrs[i1];
+          if (m1 === m2) continue;
+          const wk1 = sched[m1];
+          if (holder(wk1) !== hi) continue;
+          if (isPreAssigned(m1, slot, hi) || blockedHol(m1)) continue;
+          if (!canTakeSlot(mid, m1, parse(m1), slot, wk1, i1)) continue;
+          reassign(m1, slot, hi, mid);               // hop 1: hi → mid
+          return true;
+        }
+        reassign(m2, slot, lo, mid);                 // revert hop 2 if no hop 1 found
+      }
+    }
+    return false;
+  };
+
   // PHASE 1: DC balance — drive service weeks to even (2 each over 14 weeks).
   // Tries all viable high→low pairs each iteration so we don't bail just
   // because the absolute max↔min pair has a constraint conflict. Targets spread
@@ -983,6 +1019,7 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
           reassign(mStr, "dayCall", hi, lo);
           found = true;
         }
+        if (!found) found = tryChainSwap("dayCall", hi, lo); // direct blocked → try hi→mid→lo
       }
     }
     if (!found) break;
@@ -1015,18 +1052,19 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
           reassign(mStr, "wknd", hi, lo);
           found = true;
         }
+        if (!found) found = tryChainSwap("wknd", hi, lo); // direct blocked → try hi→mid→lo
       }
     }
     if (!found) break;
   }
   // PHASE 2: Weighted total balance (SW×6 + Night×1 + Weekend×2). Service weeks
-  // stay pinned (Phase 1). Weeknights are the primary lever, but a weekend may
-  // ALSO move here as a last resort: a forced service-week imbalance is a 6-pt
-  // gap that 1-pt weeknights often can't absorb, which is what left the Fairness
-  // Summary "Spread" wide. Weekend moves are bounded by a guardrail (in the loop
-  // below) so the weekend distribution never spreads past 2 — the group's
-  // "exactly 2 each" softened to "≤2 apart" in exchange for a tighter burden.
-  const slotOrder = ["mon", "tue", "wed", "thu", "wknd"]; // weeknights first; weekend is a capped last-resort lever
+  // (Phase 1) and weekends (Phase 1B) are already equalized — now including via
+  // the 3-way chain swaps — so Phase 2 only fine-tunes via WEEKNIGHTS. Weekends
+  // are deliberately excluded so this pass can't undo Phase 1B's weekend balance.
+  // (The earlier "weekend lever" that moved weekends here to flatten the Total
+  // was retired: it fought weekend equality, and equalizing service weeks
+  // upstream removes the imbalance it was there to compensate for.)
+  const slotOrder = ["mon", "tue", "wed", "thu"];
   const slotWeight = { wknd: 2, mon: 1, tue: 1, wed: 1, thu: 1 };
   const weightedTotal = (id) => 6 * (dcCt[id]||0) + (nCt[id]||0) + 2 * (wkndCt[id]||0);
 
@@ -1049,20 +1087,6 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
             if (cur !== hi) continue;
             if (isPreAssigned(mStr, slot, hi)) continue;
             if (isHolCoveredNight(mStr, slot)) continue; // holiday 24h coverage is fixed — don't rebalance it away
-            // Weekend guardrail: a weekend may move here to offset the weighted
-            // burden (a 6-pt service-week imbalance can't be closed by 1-pt
-            // weeknights alone), but only while the weekend distribution itself
-            // stays within 2 — the group's "exactly 2 each" softened to "≤2 apart".
-            if (slot === "wknd") {
-              const hiW = (wkndCt[hi]||0) - 1, loW = (wkndCt[lo]||0) + 1;
-              let mx = -Infinity, mn = Infinity;
-              for (const id of ids) {
-                const wc = id === hi ? hiW : (id === lo ? loW : (wkndCt[id]||0));
-                if (wc > mx) mx = wc;
-                if (wc < mn) mn = wc;
-              }
-              if (mx - mn > 2) continue;
-            }
             // Skip moves that would overshoot (flip the pair's direction)
             const w = slotWeight[slot];
             if ((weightedTotal(hi) - 2*w) < weightedTotal(lo)) continue;
