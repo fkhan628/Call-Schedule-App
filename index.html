@@ -8106,6 +8106,16 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       const maxT = sorted[sorted.length - 1].total;
       const median = sorted[Math.floor(sorted.length / 2)].total;
       const spread = maxT - minT;
+      const perTypeSpread = (regKey, bkKey) => {
+        const vals = surgeons.map(s => {
+          const ps = pStats[s.id] || {};
+          return (ps[regKey] || 0) + (ps[bkKey] || 0);
+        });
+        return vals.length ? Math.max(...vals) - Math.min(...vals) : 0;
+      };
+      const svcSpread = perTypeSpread("dc", "dcB");
+      const wkndSpread = perTypeSpread("wknd", "wkndB");
+      const typeColor = v => v <= 1 ? "#1a8040" : v <= 2 ? "#a05010" : "#a82020";
       const outliersHigh = totals.filter(t => t.total > median + 2);
       const outliersLow = totals.filter(t => t.total < median - 2);
       return React.createElement("div", {
@@ -8132,7 +8142,25 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         style: {
           color: spread <= 2 ? "#1a8040" : spread <= 4 ? "#a05010" : "#a82020"
         }
-      }, spread, " shift", spread === 1 ? "" : "s"), " ", "(min ", minT, ", median ", median, ", max ", maxT, ")"), (outliersHigh.length > 0 || outliersLow.length > 0) && React.createElement("div", {
+      }, spread, " shift", spread === 1 ? "" : "s"), " ", "(min ", minT, ", median ", median, ", max ", maxT, ")"), React.createElement("div", {
+        style: {
+          fontSize: 11,
+          color: dk ? "#a0b0a0" : "#5a6a78",
+          marginTop: 3
+        }
+      }, "Service weeks ", React.createElement("strong", {
+        style: {
+          color: typeColor(svcSpread)
+        }
+      }, "Δ", svcSpread), "  ·  ", "Weekends ", React.createElement("strong", {
+        style: {
+          color: typeColor(wkndSpread)
+        }
+      }, "Δ", wkndSpread), "  ", React.createElement("span", {
+        style: {
+          opacity: 0.65
+        }
+      }, "(1st + 2nd call combined)")), (outliersHigh.length > 0 || outliersLow.length > 0) && React.createElement("div", {
         style: {
           fontSize: 11,
           color: "#a05010",
@@ -8383,7 +8411,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       style: {
         color: "#2c5a80"
       }
-    }, "Total"), " = 1st Call + 2nd Call. Service Week = 6, Week Night = 1, Weekend = 2."), React.createElement("p", {
+    }, "Total"), " = every assignment counts once — service weeks + week nights + weekends, 1st + 2nd call. The REGULAR columns show 1st call only."), React.createElement("p", {
       style: {
         fontSize: 11,
         color: "#5a8a5a",
@@ -10485,7 +10513,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     style: {
       color: "#2c5a80"
     }
-  }, "Total"), " = 1st Call + 2nd Call. Service Week = 6, Week Night = 1, Weekend = 2.")))), statsTab === "monthly" && Object.keys(schedule).length > 0 && (() => {
+  }, "Total"), " = every assignment counts once — service weeks + week nights + weekends, 1st + 2nd call. The REGULAR columns show 1st call only.")))), statsTab === "monthly" && Object.keys(schedule).length > 0 && (() => {
     const monthlyData = {};
     const allMonths = new Set();
     Object.entries(schedule).forEach(([mStr, wk]) => {
