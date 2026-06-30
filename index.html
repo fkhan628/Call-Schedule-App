@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.06.29l";
+    var APP_VERSION = "2026.06.30a";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -4529,6 +4529,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
   const calcShifts = s => (s.dc || 0) * 6 + (s.nights || 0) + (s.wknd || 0) * 2 + (s.svcAdj6 || 0);
   const calcShiftsB = s => (s.dcB || 0) * 6 + (s.nightsB || 0) + (s.wkndB || 0) * 2;
   const calcTotal = s => calcShifts(s) + calcShiftsB(s);
+  const calcRawCount = s => (s.dc || 0) + (s.nights || 0) + (s.wknd || 0) + (s.dcB || 0) + (s.nightsB || 0) + (s.wkndB || 0);
   const conflicts = useMemo(() => {
     const issues = [];
     const mondayStrs = Object.keys(schedule).sort();
@@ -8096,7 +8097,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         return {
           id: s.id,
           name: s.name,
-          total: calcTotal(ps)
+          total: calcRawCount(ps)
         };
       });
       if (totals.length === 0) return null;
@@ -8333,7 +8334,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       style: thS2
     }, "Off")))), React.createElement("tbody", null, surgeons.map(s => {
       const ps = pStats[s.id] || {};
-      const total = calcTotal(ps);
+      const total = calcRawCount(ps);
       return React.createElement("tr", {
         key: s.id,
         style: {
@@ -10446,7 +10447,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     style: thS2
   }, "Off")))), React.createElement("tbody", null, surgeons.filter(s => isScheduler || !mySurgeon || mySurgeon === "admin" || s.id === mySurgeon).map(s => {
     const st = stats[s.id] || {};
-    const total = calcTotal(st);
+    const total = calcRawCount(st);
     return React.createElement("tr", {
       key: s.id,
       style: {
