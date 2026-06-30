@@ -992,7 +992,9 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
   // same one-way high→low reassignment as DC. Weekends were previously only
   // balanced indirectly via the weighted total, which left ~half of schedules
   // with someone on 3 and someone on 1. Runs before the weighted-total pass so
-  // weekend equality is locked in; the group asked for exactly 2 each.
+  // weekend equality is established here; Phase 2 may then relax it to ≤2 apart
+  // where that tightens the overall weighted burden (group's "exactly 2 each"
+  // softened to "≤2 apart").
   for (let iter = 0; iter < 100; iter++) {
     const sorted = [...ids].sort((a,b) => (wkndCt[b]||0) - (wkndCt[a]||0));
     if ((wkndCt[sorted[0]]||0) - (wkndCt[sorted[sorted.length-1]]||0) <= 1) break;
@@ -1017,11 +1019,14 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
     }
     if (!found) break;
   }
-  // PHASE 2: Weighted total balance (SW×6 + Night×1 + Weekend×2). DC and
-  // weekends are already balanced (Phases 1 and 1B), so Phase 2 only moves
-  // weeknights — weekends are deliberately excluded from slotOrder so this pass
-  // can't undo the 2-each weekend distribution.
-  const slotOrder = ["mon", "tue", "wed", "thu"];
+  // PHASE 2: Weighted total balance (SW×6 + Night×1 + Weekend×2). Service weeks
+  // stay pinned (Phase 1). Weeknights are the primary lever, but a weekend may
+  // ALSO move here as a last resort: a forced service-week imbalance is a 6-pt
+  // gap that 1-pt weeknights often can't absorb, which is what left the Fairness
+  // Summary "Spread" wide. Weekend moves are bounded by a guardrail (in the loop
+  // below) so the weekend distribution never spreads past 2 — the group's
+  // "exactly 2 each" softened to "≤2 apart" in exchange for a tighter burden.
+  const slotOrder = ["mon", "tue", "wed", "thu", "wknd"]; // weeknights first; weekend is a capped last-resort lever
   const slotWeight = { wknd: 2, mon: 1, tue: 1, wed: 1, thu: 1 };
   const weightedTotal = (id) => 6 * (dcCt[id]||0) + (nCt[id]||0) + 2 * (wkndCt[id]||0);
 
@@ -1044,6 +1049,20 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
             if (cur !== hi) continue;
             if (isPreAssigned(mStr, slot, hi)) continue;
             if (isHolCoveredNight(mStr, slot)) continue; // holiday 24h coverage is fixed — don't rebalance it away
+            // Weekend guardrail: a weekend may move here to offset the weighted
+            // burden (a 6-pt service-week imbalance can't be closed by 1-pt
+            // weeknights alone), but only while the weekend distribution itself
+            // stays within 2 — the group's "exactly 2 each" softened to "≤2 apart".
+            if (slot === "wknd") {
+              const hiW = (wkndCt[hi]||0) - 1, loW = (wkndCt[lo]||0) + 1;
+              let mx = -Infinity, mn = Infinity;
+              for (const id of ids) {
+                const wc = id === hi ? hiW : (id === lo ? loW : (wkndCt[id]||0));
+                if (wc > mx) mx = wc;
+                if (wc < mn) mn = wc;
+              }
+              if (mx - mn > 2) continue;
+            }
             // Skip moves that would overshoot (flip the pair's direction)
             const w = slotWeight[slot];
             if ((weightedTotal(hi) - 2*w) < weightedTotal(lo)) continue;
