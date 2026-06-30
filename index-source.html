@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.06.29g";
+    var APP_VERSION = "2026.06.29i";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -3001,7 +3001,7 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
         scheduleWeeks: Object.keys(schedule).length,
       });
     } catch (e) { setSeedDebug({ error: String(e) }); }
-    const result = generate(surgeons, mondays, availability, backupMondaySet, priorCounts, prefs, fierceBackupSet, holidayAssignments, pendingLocks, prevWeekSeed);
+    const result = generate(surgeons, mondays, availability, backupMondaySet, priorCounts, prefs, fierceBackupSet, holidayAssignments, pendingLocks, prevWeekSeed, vacations);
     if (preview) {
       setPreviewSchedule(result);
       setShowPreview(true);
@@ -4164,8 +4164,25 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       }
       d = addD(d, 1);
     }
+
+    // Holiday-coverage vs vacation conflict (group rule: a holiday's assigned
+    // Surgeon A/B should not be on vacation during the holiday they cover).
+    // Each coverage entry names the surgeon responsible for that date; if that
+    // surgeon has vacation then, flag it at setup time.
+    Object.values(holidayAssignments || {}).forEach(arr => {
+      if (!Array.isArray(arr)) return;
+      arr.forEach(h => {
+        (h.coverage || []).forEach(c => {
+          if (!c.surgeon || !c.date) return;
+          if (onVac(c.surgeon, c.date, vacations)) {
+            warnings.push({ date: c.date, severity: "error", message: `${sMap[c.surgeon]?.name || c.surgeon} is assigned ${h.name} coverage (${c.date}) but has vacation then — holiday surgeons can't be on vacation during their holiday` });
+          }
+        });
+      });
+    });
+
     return warnings;
-  }, [mondays, surgeons, apps, vacations]);
+  }, [mondays, surgeons, apps, vacations, holidayAssignments, sMap]);
 
   // ─── Yearly Summary Export ───
   const exportYearlySummary = useCallback(() => {

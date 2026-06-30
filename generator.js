@@ -32,7 +32,13 @@ function getHolidays(year) {
   };
 }
 
-function generate(surgeons, mondays, vac, backupMondays, priorCounts, preferences, fierceBackupMondays, holAssignments, locks, prevWeekSeed) {
+function generate(surgeons, mondays, vac, backupMondays, priorCounts, preferences, fierceBackupMondays, holAssignments, locks, prevWeekSeed, vacationsOnly) {
+  // vacOnly = vacation-only ranges (no no-call). Used for "trailing edge" checks:
+  // the night or weekend that ENDS the morning of an off day. Group rule (Jun
+  // 2026): a surgeon may be on call the night before a NO-CALL day, but NOT the
+  // night before VACATION. The merged `vac` (vacation + no-call) still gates the
+  // shift's OWN day(s) — you can't be on call during your no-call day itself.
+  const vacOnly = vacationsOnly || vac;
   const sched = {};
   const ids = surgeons.map(s=>s.id);
   const nameMap = {}; surgeons.forEach(s => nameMap[s.id] = s.name);
@@ -274,8 +280,13 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
   if (Array.isArray(locks)) {
     locks.forEach(lock => {
       if (!lock || !lock.mondayStr || !lock.slot || !lock.surgeonId) return;
+      // The UI stores the service-week slot as "dc"; the generator keys day-call
+      // pre-assignments as "dayCall" (see preAssign[mStr].dayCall and
+      // isPreAssigned(...,"dayCall",...)). Normalize so a Service Week lock is
+      // actually honored instead of silently dropped.
+      const slot = lock.slot === "dc" ? "dayCall" : lock.slot;
       if (!preAssign[lock.mondayStr]) preAssign[lock.mondayStr] = {};
-      preAssign[lock.mondayStr][lock.slot] = lock.surgeonId;
+      preAssign[lock.mondayStr][slot] = lock.surgeonId;
     });
   }
 
@@ -394,7 +405,7 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
     const nextMonDate = fmt(addD(monday,7));
 
     let availWknd = rem.filter(id => !onVac(id,friDate,vac) && !onVac(id,sunDate,vac));
-    availWknd = availWknd.filter(id => !onVac(id, nextMonDate, vac));
+    availWknd = availWknd.filter(id => !onVac(id, nextMonDate, vacOnly)); // weekend ends Mon 7a — OK if Mon is no-call, blocked only if Mon is vacation
 
     // Check if Friday or Sunday is a holiday — special handling
     const friHoliday = holidayMap[friDate];
@@ -530,7 +541,7 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
       const nextDayHoliday = holidayMap[nextDayStr]; // is tomorrow a holiday?
 
       let avail = rem.filter(id => !used.has(id) && !nightUsed.has(id) && !onVac(id,sd,vac));
-      avail = avail.filter(id => !onVac(id, nextDayStr, vac));
+      avail = avail.filter(id => !onVac(id, nextDayStr, vacOnly)); // night ends next-day 7a — OK before a no-call day, blocked only before vacation
 
       // HARD RULE: Weekend surgeon needs recovery after Fri–Sun — no Monday OR
       // Tuesday night the following week. One day of rest (Mon only) isn't
@@ -882,11 +893,11 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
     } else if (slot === "wknd") {
       if (onVac(Y, fmt(addD(monday, 4)), vac)) return false; // Fri
       if (onVac(Y, fmt(addD(monday, 6)), vac)) return false; // Sun
-      if (onVac(Y, fmt(addD(monday, 7)), vac)) return false; // next Mon
+      if (onVac(Y, fmt(addD(monday, 7)), vacOnly)) return false; // next Mon (trailing edge — vacation only; no-call Mon is OK)
     } else {
       const dayOffset = {mon:0, tue:1, wed:2, thu:3}[slot];
       if (onVac(Y, fmt(addD(monday, dayOffset)), vac)) return false;
-      if (onVac(Y, fmt(addD(monday, dayOffset + 1)), vac)) return false;
+      if (onVac(Y, fmt(addD(monday, dayOffset + 1)), vacOnly)) return false; // next day (trailing edge — vacation only; no-call next day is OK)
     }
 
     // Inter-week constraints
@@ -906,12 +917,16 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
       if (prevWk?.nights?.wknd === Y) return false; // wknd → next Tue forbidden (recovery)
     }
     if (slot === "wknd") {
-      if (nextWk?.nights?.mon === Y) return false; // wknd → next Mon forbidden
-      if (nextWk?.nights?.tue === Y) return false; // wknd → next Tue forbidden (recovery)
-      if (prevWk?.dayCall === Y) return false; // service week (Sat) → next weekend forbidden
-      if (prevWk?.nights?.wknd === Y) return false; // back-to-back weekend forbidden
-      if (nextWk?.nights?.wknd === Y) return false; // back-to-back weekend forbidden
-      if (nextWk?.dayCall === Y) return false; // weekend → next service week forbidden
+      if (nextWk?.nights?.mon === Y) return false; // wknd → next Mon forbidden (recovery, HARD)
+      if (nextWk?.nights?.tue === Y) return false; // wknd → next Tue forbidden (recovery, HARD)
+      if (nextWk?.dayCall === Y) return false; // weekend → next service week forbidden (HARD)
+      // SOFT (group rule, Jun 2026): "service week → next weekend" and
+      // "back-to-back weekends" are discouraged but ALLOWED. The initial weekend
+      // pass still prefers to avoid them (prefWknd above), so they only appear
+      // when the fairness passes need them to even out the load. Formerly hard:
+      //   prevWk?.dayCall === Y          — service week (Sat) → next weekend
+      //   prevWk?.nights?.wknd === Y     — back-to-back weekend (with prior week)
+      //   nextWk?.nights?.wknd === Y     — back-to-back weekend (with next week)
     }
 
     // Back-to-back weeknights within same week
