@@ -155,6 +155,57 @@ const snapshots = {
       return res.ok ? await res.json() : [];
     } catch (e) { return []; }
   },
+  // Periodic safety net: capture at most once per maxAgeHours (default 6), so
+  // corruption that never passes through a destructive button still has a
+  // recent restore point without flooding the table.
+  async captureIfStale(reason, maxAgeHours) {
+    try {
+      const hours = maxAgeHours || 6;
+      const recent = await this.list(1);
+      const newest = recent?.[0]?.created_at ? new Date(recent[0].created_at).getTime() : 0;
+      if (Date.now() - newest < hours * 3600 * 1000) return { ok: true, skipped: "fresh" };
+      return await this.capture(reason || "periodic");
+    } catch (e) { return { ok: false, error: String(e) }; }
+  },
+  // Restore a snapshot: roster/config back into the call_schedule_data blob,
+  // schedule back into schedule_weeks. The schedule leg MUST go through the
+  // app's own sync (syncSchedWeeks: per-week compare-and-swap + wipe guard),
+  // which lives in the component — the caller passes it in as applySchedule.
+  // A restore is itself destructive, so the CURRENT state is snapshotted
+  // first and the restore aborts if that capture fails.
+  async restore(snapshotId, applySchedule) {
+    if (!snapshotId) return { ok: false, error: "No snapshot id" };
+    if (typeof applySchedule !== "function") {
+      return { ok: false, error: "restore() requires the app's schedule applier (the CAS sync path) — refusing to bypass it" };
+    }
+    try {
+      const res = await fetch(
+        `${SUPABASE_URL}/rest/v1/call_schedule_snapshots?id=eq.${encodeURIComponent(snapshotId)}&select=id,reason,created_at,data`,
+        { headers: dbAuthHeaders() }
+      );
+      if (!res.ok) return { ok: false, error: `Snapshot fetch failed (${res.status})` };
+      const rows = await res.json();
+      const snap = rows?.[0];
+      const payload = snap && (typeof snap.data === "string" ? JSON.parse(snap.data) : snap.data);
+      if (!payload) return { ok: false, error: "Snapshot not found or has no data" };
+      if (payloadLooksWiped(payload)) return { ok: false, error: "Snapshot looks empty — refusing to restore it" };
+      const pre = await this.capture("before_restore");
+      if (!pre.ok) return { ok: false, error: "Couldn't snapshot the current state first — restore aborted, nothing changed" };
+      const schedule = payload.schedule || {};
+      const blob = { ...payload }; delete blob.schedule;
+      const ts = new Date().toISOString();
+      const up = await db.upsert("call_schedule_data", { id: "main", data: blob, updated_at: ts });
+      if (up && up.error) return { ok: false, error: "Config write failed: " + up.error };
+      const applied = await applySchedule(schedule);
+      if (applied && applied.ok === false) {
+        return { ok: false, error: applied.error || "Schedule apply failed", blobRestored: true };
+      }
+      return { ok: true, blob, schedule, ts, reason: snap.reason, created_at: snap.created_at };
+    } catch (e) {
+      console.warn("Snapshot restore failed:", e);
+      return { ok: false, error: String(e) };
+    }
+  },
 };
 
 /* ═══════════════════════════════════════════════════
