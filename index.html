@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.06.30a";
+    var APP_VERSION = "2026.07.01a";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -863,7 +863,10 @@ function CallSchedule() {
     }
   };
   useEffect(() => {
-    if (view === "settings" && (isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.role) === "admin")) loadAudit();
+    if (view === "settings" && (isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.role) === "admin")) {
+      loadAudit();
+      loadSnapshots();
+    }
   }, [view]);
   const buildTimeOffMaps = rows => {
     const vac = {},
@@ -1465,6 +1468,13 @@ function CallSchedule() {
     }, 500);
     return () => clearTimeout(timer);
   }, [loaded, edgeFunctionUrl]);
+  const sessionSnapRef = useRef(false);
+  useEffect(() => {
+    if (!loaded || sessionSnapRef.current) return;
+    if (!(isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.role) === "admin")) return;
+    sessionSnapRef.current = true;
+    snapshots.captureIfStale("periodic_session", 6);
+  }, [loaded, isScheduler, userProfile]);
   const resetAllData = async () => {
     if (!isScheduler && (userProfile === null || userProfile === void 0 ? void 0 : userProfile.role) !== "admin") {
       alert("Only a scheduler or the admin account can reset all data.");
@@ -1476,7 +1486,13 @@ function CallSchedule() {
       setTimeout(() => setSaveStatus(""), 2000);
       return;
     }
-    await snapshots.capture("reset_all_data");
+    const resetSnap = await snapshots.capture("reset_all_data");
+    if (!resetSnap.ok) {
+      showToast("Couldn't save a backup snapshot — reset cancelled. Nothing was deleted.", "error");
+      setSaveStatus("Reset cancelled");
+      setTimeout(() => setSaveStatus(""), 2000);
+      return;
+    }
     logAudit("system.factory_reset", "⚠ FACTORY RESET — wiped all schedule data back to defaults");
     allowWipeSaveRef.current = true;
     everHadRealDataRef.current = false;
@@ -3265,16 +3281,22 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
       setPreviewSchedule(result);
       setShowPreview(true);
     } else {
-      if (Object.keys(schedule).length > 0) pushUndo(schedule);
-      const merged = _objectSpread(_objectSpread({}, schedule), result);
-      setSchedule(merged);
-      setPreviewSchedule(null);
-      setShowPreview(false);
-      setSaveStatus("Regenerated!");
-      setTimeout(() => setSaveStatus(""), 2000);
       (async () => {
+        setSaveStatus("Saving backup snapshot…");
+        const snap = await snapshots.capture("regenerate");
+        if (!snap.ok) {
+          showToast("Couldn't save a backup snapshot — regenerate cancelled. Schedule unchanged.", "error");
+          setSaveStatus("");
+          return;
+        }
+        if (Object.keys(schedule).length > 0) pushUndo(schedule);
+        const merged = _objectSpread(_objectSpread({}, schedule), result);
+        setSchedule(merged);
+        setPreviewSchedule(null);
+        setShowPreview(false);
+        setSaveStatus("Regenerated!");
+        setTimeout(() => setSaveStatus(""), 2000);
         try {
-          await snapshots.capture("regenerate");
           const ts = new Date().toISOString();
           lastSyncRef.current = ts;
           const blobData = buildPayload({
@@ -3295,7 +3317,11 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
   };
   const clearSchedule = async () => {
     if (!confirm("Clear the entire generated schedule? Holiday assignments and setup data will be kept.\n\nThis cannot be undone.")) return;
-    await snapshots.capture("clear_schedule");
+    const clearSnap = await snapshots.capture("clear_schedule");
+    if (!clearSnap.ok) {
+      showToast("Couldn't save a backup snapshot — clear cancelled. Schedule unchanged.", "error");
+      return;
+    }
     if (Object.keys(schedule).length > 0) pushUndo(schedule);
     setSchedule({});
     intentionalScheduleWipeRef.current = true;
@@ -3320,6 +3346,82 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
         console.error("Immediate save failed:", e);
       }
     })();
+  };
+  const [snapshotList, setSnapshotList] = useState(null);
+  const [snapshotsLoading, setSnapshotsLoading] = useState(false);
+  const [restoreBusyId, setRestoreBusyId] = useState(null);
+  const loadSnapshots = async () => {
+    setSnapshotsLoading(true);
+    try {
+      setSnapshotList(await snapshots.list(15));
+    } finally {
+      setSnapshotsLoading(false);
+    }
+  };
+  const snapshotReasonLabel = r => ({
+    reset_all_data: "Before factory reset",
+    regenerate: "Before regenerate",
+    clear_schedule: "Before schedule clear",
+    before_restore: "Before restore",
+    periodic_session: "Periodic (session start)"
+  })[r] || r || "manual";
+  const restoreSnapshot = async snap => {
+    if (!(isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.role) === "admin")) return;
+    const when = new Date(snap.created_at).toLocaleString(undefined, {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+      hour: "numeric",
+      minute: "2-digit"
+    });
+    if (!confirm(`Restore the "${snapshotReasonLabel(snap.reason)}" snapshot from ${when}?\n\nThis replaces the CURRENT schedule and setup for everyone with that saved copy. A fresh snapshot of the current state is saved first, so this restore can itself be undone.`)) return;
+    setRestoreBusyId(snap.id);
+    setSaveStatus("Restoring snapshot…");
+    const r = await snapshots.restore(snap.id, async sched => {
+      if (Object.keys(schedule).length > 0) pushUndo(schedule);
+      setSchedule(sched);
+      intentionalScheduleWipeRef.current = true;
+      try {
+        await syncSchedWeeks(sched);
+      } finally {
+        intentionalScheduleWipeRef.current = false;
+      }
+      return {
+        ok: true
+      };
+    });
+    setRestoreBusyId(null);
+    if (!r.ok) {
+      showToast("Restore failed: " + (r.error || "unknown error"), "error");
+      setSaveStatus("");
+      return;
+    }
+    const d = r.blob || {};
+    if (d.surgeons) setSurgeons(d.surgeons);
+    if (d.apps) setApps(d.apps);
+    if (d.backupMondays) setBackupMondaySet(new Set(d.backupMondays));
+    if (d.fierceBackup) setFierceBackupSet(new Set(d.fierceBackup));
+    if (d.appShifts) setAppShifts(d.appShifts);
+    if (d.priorCounts) setPriorCounts(d.priorCounts);
+    if (d.year1Counts) setYear1Counts(d.year1Counts);
+    if (d.year2Counts) setYear2Counts(d.year2Counts);
+    if (d.startMonth !== undefined) setStartMonth(d.startMonth);
+    if (d.startYear !== undefined) setStartYear(d.startYear);
+    if (d.numWeeks) setNumWeeks(d.numWeeks);
+    if (d.startMondayOverride !== undefined) setStartMondayOverride(d.startMondayOverride || "");
+    if (d.holidayAssignments) setHolidayAssignments(d.holidayAssignments);
+    if (Array.isArray(d.pendingLocks)) setPendingLocks(d.pendingLocks);
+    lastSyncRef.current = r.ts;
+    everHadRealDataRef.current = true;
+    logAudit("system.restore_snapshot", `Restored snapshot "${snapshotReasonLabel(snap.reason)}" from ${when}`, {
+      snapshot_id: snap.id,
+      reason: snap.reason,
+      created_at: snap.created_at
+    });
+    loadSnapshots();
+    setSaveStatus("Snapshot restored");
+    setTimeout(() => setSaveStatus(""), 3000);
+    showToast("Snapshot restored — other devices will pick it up on their next sync.", "success");
   };
   const rollForwardCounts = useCallback(sched => {
     if (!sched || Object.keys(sched).length === 0) return;
@@ -14590,7 +14692,87 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       cursor: "pointer",
       fontFamily: font
     }
-  }, "Reset All Data")))))));
+  }, "Reset All Data"))), (isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.role) === "admin") && React.createElement("div", {
+    style: css.card
+  }, React.createElement("div", {
+    style: css.cardT
+  }, "📼 Restore from Snapshot"), React.createElement("p", {
+    style: {
+      fontSize: 12,
+      color: "#5a6a78",
+      marginBottom: 10,
+      lineHeight: 1.4
+    }
+  }, "Snapshots are saved automatically before destructive actions and periodically. Restoring replaces the current schedule and setup for everyone with the selected copy. A fresh snapshot of the current state is saved first, so a restore can itself be undone."), snapshotsLoading && React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: "#7a8a98"
+    }
+  }, "Loading snapshots…"), !snapshotsLoading && (!snapshotList || snapshotList.length === 0) && React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: "#7a8a98"
+    }
+  }, "No snapshots yet."), !snapshotsLoading && snapshotList && snapshotList.map(sn => React.createElement("div", {
+    key: sn.id,
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 8,
+      padding: "7px 0",
+      borderBottom: "1px solid #f0f2f4"
+    }
+  }, React.createElement("div", {
+    style: {
+      flex: 1,
+      minWidth: 0
+    }
+  }, React.createElement("div", {
+    style: {
+      fontSize: 12,
+      fontWeight: 600,
+      color: "#3a4a58"
+    }
+  }, snapshotReasonLabel(sn.reason)), React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: "#8a94a0",
+      fontFamily: mono
+    }
+  }, new Date(sn.created_at).toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit"
+  }))), React.createElement("button", {
+    disabled: !!restoreBusyId,
+    onClick: () => restoreSnapshot(sn),
+    style: {
+      background: "none",
+      border: "1px solid #b8cfe0",
+      color: restoreBusyId ? "#a8b4c0" : "#1a6fa8",
+      borderRadius: 6,
+      padding: "5px 12px",
+      fontSize: 11,
+      fontWeight: 600,
+      cursor: restoreBusyId ? "default" : "pointer",
+      fontFamily: font
+    }
+  }, restoreBusyId === sn.id ? "Restoring…" : "Restore"))), React.createElement("button", {
+    onClick: loadSnapshots,
+    disabled: snapshotsLoading,
+    style: {
+      background: "none",
+      border: "none",
+      color: "#1a6fa8",
+      fontSize: 11,
+      cursor: "pointer",
+      fontFamily: font,
+      padding: "8px 0 0",
+      fontWeight: 600
+    }
+  }, "↻ Refresh list"))))));
 }
 const thS = {
   textAlign: "left",
