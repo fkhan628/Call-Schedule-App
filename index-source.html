@@ -3091,6 +3091,10 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
   const [snapshotList, setSnapshotList] = useState(null);   // null = not loaded yet
   const [snapshotsLoading, setSnapshotsLoading] = useState(false);
   const [restoreBusyId, setRestoreBusyId] = useState(null);
+  // Collapsible Settings cards — collapsed by default so Settings stays
+  // compact; tapping a card's title row expands it.
+  const [openSettingsCards, setOpenSettingsCards] = useState({});
+  const toggleSettingsCard = (key) => setOpenSettingsCards(p => ({ ...p, [key]: !p[key] }));
   const loadSnapshots = async () => {
     setSnapshotsLoading(true);
     try { setSnapshotList(await snapshots.list(15)); }
@@ -8235,7 +8239,11 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           {/* Office Notifications — scheduler/admin only */}
           {(isScheduler || userProfile?.role === "admin") && (
             <div style={css.card}>
-              <div style={css.cardT}>📧 Office Notifications</div>
+              <div onClick={()=>toggleSettingsCard("officeNotif")} style={{...css.cardT,margin:openSettingsCards.officeNotif?"0 0 12px":0,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"space-between",userSelect:"none"}}>
+                <span>📧 Office Notifications</span>
+                <span style={{fontSize:12,color:"#7a8a98"}}>{openSettingsCards.officeNotif ? "▾" : "▸"}</span>
+              </div>
+              {openSettingsCards.officeNotif && <>
               <p style={{fontSize:12,color:"#7a8a98",margin:"0 0 12px",lineHeight:1.5}}>
                 Office staff on this list receive a weekly Saturday email if the schedule changed in the past 7 days, plus a one-time email whenever you publish a new period. Department filter: leave empty to receive all changes, or select Weight Mgmt / Breast Health to only receive changes affecting those surgeons.
               </p>
@@ -8341,12 +8349,17 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   </div>
                 </div>
               )}
+              </>}
             </div>
           )}
 
           {/* Notifications */}
           <div style={css.card}>
-            <div style={css.cardT}>🔔 Notification Settings</div>
+            <div onClick={()=>toggleSettingsCard("notifSettings")} style={{...css.cardT,margin:openSettingsCards.notifSettings?"0 0 12px":0,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"space-between",userSelect:"none"}}>
+              <span>🔔 Notification Settings</span>
+              <span style={{fontSize:12,color:"#7a8a98"}}>{openSettingsCards.notifSettings ? "▾" : "▸"}</span>
+            </div>
+            {openSettingsCards.notifSettings && <>
 
             {/* Push Notifications via OneSignal */}
             <div style={{background:dk?"#1a2a3e":"#f8f9fb",border:`1px solid ${dkCardBorder}`,borderRadius:8,padding:"12px 14px",marginBottom:12}}>
@@ -8553,6 +8566,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                 </div>
               )}
             </div>
+            </>}
           </div>
 
           {/* Account */}
@@ -8742,7 +8756,11 @@ ${"</"}script>${"</"}body>${"</"}html>`;
 
           {/* Restore from snapshot — scheduler/admin only */}
           {(isScheduler || userProfile?.role === "admin") && <div style={css.card}>
-            <div style={css.cardT}>📼 Restore from Snapshot</div>
+            <div onClick={()=>toggleSettingsCard("restoreSnap")} style={{...css.cardT,margin:openSettingsCards.restoreSnap?"0 0 12px":0,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"space-between",userSelect:"none"}}>
+              <span>📼 Restore from Snapshot</span>
+              <span style={{fontSize:12,color:"#7a8a98"}}>{openSettingsCards.restoreSnap ? "▾" : "▸"}</span>
+            </div>
+            {openSettingsCards.restoreSnap && <>
             <p style={{fontSize:12,color:"#5a6a78",marginBottom:10,lineHeight:1.4}}>
               Snapshots are saved automatically before destructive actions and periodically. Restoring replaces the current schedule and setup for everyone with the selected copy. A fresh snapshot of the current state is saved first, so a restore can itself be undone.
             </p>
@@ -8765,6 +8783,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             <button onClick={loadSnapshots} disabled={snapshotsLoading} style={{background:"none",border:"none",color:"#1a6fa8",fontSize:11,cursor:"pointer",fontFamily:font,padding:"8px 0 0",fontWeight:600}}>
               ↻ Refresh list
             </button>
+            </>}
           </div>}
         </>}
       </div>
