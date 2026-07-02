@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.07.01a";
+    var APP_VERSION = "2026.07.01b";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -3350,6 +3350,10 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
   const [snapshotList, setSnapshotList] = useState(null);
   const [snapshotsLoading, setSnapshotsLoading] = useState(false);
   const [restoreBusyId, setRestoreBusyId] = useState(null);
+  const [openSettingsCards, setOpenSettingsCards] = useState({});
+  const toggleSettingsCard = key => setOpenSettingsCards(p => _objectSpread(_objectSpread({}, p), {}, {
+    [key]: !p[key]
+  }));
   const loadSnapshots = async () => {
     setSnapshotsLoading(true);
     try {
@@ -13479,8 +13483,21 @@ ${"</"}script>${"</"}body>${"</"}html>`;
   })))))), (isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.role) === "admin") && React.createElement("div", {
     style: css.card
   }, React.createElement("div", {
-    style: css.cardT
-  }, "📧 Office Notifications"), React.createElement("p", {
+    onClick: () => toggleSettingsCard("officeNotif"),
+    style: _objectSpread(_objectSpread({}, css.cardT), {}, {
+      margin: openSettingsCards.officeNotif ? "0 0 12px" : 0,
+      cursor: "pointer",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "space-between",
+      userSelect: "none"
+    })
+  }, React.createElement("span", null, "📧 Office Notifications"), React.createElement("span", {
+    style: {
+      fontSize: 12,
+      color: "#7a8a98"
+    }
+  }, openSettingsCards.officeNotif ? "▾" : "▸")), openSettingsCards.officeNotif && React.createElement(React.Fragment, null, React.createElement("p", {
     style: {
       fontSize: 12,
       color: "#7a8a98",
@@ -13806,11 +13823,24 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       fontSize: 12,
       opacity: officeNotifBusy ? 0.6 : 1
     })
-  }, officeNotifBusy ? "Sending…" : "Send Emails"))))), React.createElement("div", {
+  }, officeNotifBusy ? "Sending…" : "Send Emails")))))), React.createElement("div", {
     style: css.card
   }, React.createElement("div", {
-    style: css.cardT
-  }, "🔔 Notification Settings"), React.createElement("div", {
+    onClick: () => toggleSettingsCard("notifSettings"),
+    style: _objectSpread(_objectSpread({}, css.cardT), {}, {
+      margin: openSettingsCards.notifSettings ? "0 0 12px" : 0,
+      cursor: "pointer",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "space-between",
+      userSelect: "none"
+    })
+  }, React.createElement("span", null, "🔔 Notification Settings"), React.createElement("span", {
+    style: {
+      fontSize: 12,
+      color: "#7a8a98"
+    }
+  }, openSettingsCards.notifSettings ? "▾" : "▸")), openSettingsCards.notifSettings && React.createElement(React.Fragment, null, React.createElement("div", {
     style: {
       background: dk ? "#1a2a3e" : "#f8f9fb",
       border: `1px solid ${dkCardBorder}`,
@@ -14314,7 +14344,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       fontSize: 10,
       color: "#1a8040"
     }
-  }, "Saving…")))), React.createElement("div", {
+  }, "Saving…"))))), React.createElement("div", {
     style: css.card
   }, React.createElement("div", {
     style: css.cardT
@@ -14695,8 +14725,21 @@ ${"</"}script>${"</"}body>${"</"}html>`;
   }, "Reset All Data"))), (isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.role) === "admin") && React.createElement("div", {
     style: css.card
   }, React.createElement("div", {
-    style: css.cardT
-  }, "📼 Restore from Snapshot"), React.createElement("p", {
+    onClick: () => toggleSettingsCard("restoreSnap"),
+    style: _objectSpread(_objectSpread({}, css.cardT), {}, {
+      margin: openSettingsCards.restoreSnap ? "0 0 12px" : 0,
+      cursor: "pointer",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "space-between",
+      userSelect: "none"
+    })
+  }, React.createElement("span", null, "📼 Restore from Snapshot"), React.createElement("span", {
+    style: {
+      fontSize: 12,
+      color: "#7a8a98"
+    }
+  }, openSettingsCards.restoreSnap ? "▾" : "▸")), openSettingsCards.restoreSnap && React.createElement(React.Fragment, null, React.createElement("p", {
     style: {
       fontSize: 12,
       color: "#5a6a78",
@@ -14772,7 +14815,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       padding: "8px 0 0",
       fontWeight: 600
     }
-  }, "↻ Refresh list"))))));
+  }, "↻ Refresh list")))))));
 }
 const thS = {
   textAlign: "left",
