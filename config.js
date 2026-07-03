@@ -17,7 +17,7 @@ function dbAuthHeaders() {
   try {
     const token = localStorage.getItem("dsg-auth-token");
     if (token) return { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
-  } catch(e) {}
+  } catch(e) { console.warn("dbAuthHeaders: session read failed, using anon:", e); }
   return dbHeaders;
 }
 
@@ -419,7 +419,7 @@ const auth = {
         localStorage.setItem(AUTH_TOKEN_KEY, data.access_token);
         if (data.refresh_token) localStorage.setItem(AUTH_REFRESH_KEY, data.refresh_token);
       }
-    } catch(e) {}
+    } catch(e) { console.warn("Couldn't store session (you may be signed out on reload):", e); }
   },
 
   // Clear session
@@ -427,7 +427,7 @@ const auth = {
     try {
       localStorage.removeItem(AUTH_TOKEN_KEY);
       localStorage.removeItem(AUTH_REFRESH_KEY);
-    } catch(e) {}
+    } catch(e) { console.warn("Couldn't clear stored session:", e); }
   },
 
   // Sign up with email & password
@@ -511,7 +511,7 @@ const auth = {
           method: "POST",
           headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${session.access_token}` },
         });
-      } catch(e) {}
+      } catch(e) { console.warn("Server-side logout failed (session cleared locally anyway):", e); }
     }
     auth._clearSession();
   },
@@ -701,6 +701,6 @@ const biometric = {
     try {
       localStorage.removeItem(BIOMETRIC_CRED_KEY);
       localStorage.removeItem(BIOMETRIC_USER_KEY);
-    } catch(e) {}
+    } catch(e) { console.warn("Couldn't remove biometric enrollment keys:", e); }
   },
 };
