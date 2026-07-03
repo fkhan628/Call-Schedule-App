@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.07.02a";
+    var APP_VERSION = "2026.07.02b";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -1624,37 +1624,29 @@ function CallSchedule() {
   }, [sendPushNotif, buildDeepLink, filterPushTargetsByType]);
   const sendEmailNotif = useCallback(async (type, data, targetIds = null) => {
     if (!edgeFunctionUrl) return;
+    if (Array.isArray(targetIds) && targetIds.length === 0) return;
     try {
-      const currentPrefs = notifPrefsRef.current || {};
-      const recipients = [];
-      Object.entries(currentPrefs).forEach(([sid, prefs]) => {
-        if (!prefs.email) return;
-        if (targetIds && !targetIds.includes(sid)) return;
-        if (type === "test") {} else if ((type === "schedule_published" || type === "schedule_changed" || type === "trade_submitted" || type === "trade_accepted" || type === "trade_declined") && prefs.schedule_changes_email === false) return;else if ((type === "vacation_approved" || type === "vacation_denied" || type === "vacation_submitted") && prefs.vacation_updates_email === false) return;else if (type === "shift_reminder" && prefs.shift_reminders_email === false) return;
-        const person = surgeons.find(s => s.id === sid) || apps.find(a => a.id === sid);
-        recipients.push({
-          email: prefs.email,
-          surgeon_id: sid,
-          name: (person === null || person === void 0 ? void 0 : person.name) || sid
-        });
-      });
-      if (recipients.length === 0) return;
-      await fetch(edgeFunctionUrl, {
+      const body = {
+        type,
+        data
+      };
+      if (Array.isArray(targetIds)) body.targetIds = targetIds;
+      const res = await fetch(edgeFunctionUrl, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${SUPABASE_ANON_KEY}`
         },
-        body: JSON.stringify({
-          type,
-          data,
-          recipients
-        })
+        body: JSON.stringify(body)
       });
+      const result = await res.json().catch(() => null);
+      if (!res.ok || result && result.failed > 0) {
+        console.warn("Email notification issue:", type, res.status, JSON.stringify(result));
+      }
     } catch (e) {
       console.error("Email notification error:", e);
     }
-  }, [edgeFunctionUrl, surgeons, apps]);
+  }, [edgeFunctionUrl]);
   const submitVacRequest = useCallback(async () => {
     var _surgeons$find3, _apps$find2;
     if (!vacReqSurgeon || !vacReqStart || !vacReqEnd) return;
@@ -2548,21 +2540,21 @@ function CallSchedule() {
     lastNotifCountRef.current = notifications.length;
   }, [loaded, notifications, sendBrowserNotif, mySurgeon, notifPrefs]);
   const sendTestNotification = useCallback(async () => {
+    var _notifPrefs$mySurgeon2;
     sendBrowserNotif("DSG Call Schedule", "This is a test notification. Browser push is working!", "dsg-test", true);
     setNotifTestSent("Browser notification sent!");
-    const hasEmailRecipients = Object.values(notifPrefs).some(p => p.email && p.email_notifs);
-    if (edgeFunctionUrl && hasEmailRecipients) {
+    if (edgeFunctionUrl && mySurgeon && (_notifPrefs$mySurgeon2 = notifPrefs[mySurgeon]) !== null && _notifPrefs$mySurgeon2 !== void 0 && _notifPrefs$mySurgeon2.email) {
       try {
         await sendEmailNotif("test", {
           message: "This is a test email from DSG Call Schedule."
-        });
+        }, [mySurgeon]);
         setNotifTestSent("Browser + email notifications sent!");
       } catch (e) {
         setNotifTestSent("Browser sent! Email failed — check Edge Function URL.");
       }
     }
     setTimeout(() => setNotifTestSent(""), 3000);
-  }, [sendBrowserNotif, sendEmailNotif, edgeFunctionUrl, notifPrefs]);
+  }, [sendBrowserNotif, sendEmailNotif, edgeFunctionUrl, notifPrefs, mySurgeon]);
   const doGenerateAndNotify = async () => {
     const hadExistingSchedule = Object.keys(schedule).length > 0;
     doGenerate(false);
