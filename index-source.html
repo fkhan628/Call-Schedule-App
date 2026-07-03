@@ -1117,7 +1117,10 @@ function CallSchedule() {
     const refreshConfigRow = async () => {
       try {
         const { data: cfgRow2 } = await supabase.from("call_schedule_config").select("edge_function_url").eq("id", "config").single();
-        if (cfgRow2?.edge_function_url !== undefined) setEdgeFunctionUrl(prev => cfgRow2.edge_function_url !== prev ? cfgRow2.edge_function_url : prev);
+        // Truthy guard (not just "defined"): a blank stored row must never
+        // blank a working session's in-memory URL mid-flight. Non-empty
+        // updates still propagate to live sessions within one poll cycle.
+        if (cfgRow2?.edge_function_url) setEdgeFunctionUrl(prev => cfgRow2.edge_function_url !== prev ? cfgRow2.edge_function_url : prev);
       } catch(e) {}
     };
 
@@ -1416,11 +1419,21 @@ function CallSchedule() {
   useEffect(() => {
     if (!loaded) return;
     if (isPublicMode) return;  // Public viewers never write config
+    // Never persist an empty URL. A failed load leaves the in-memory value ""
+    // (the loader's config read shares one try/catch with all the other load
+    // reads, and setLoaded(true) runs even after a caught failure) — this
+    // effect then wrote "" over the stored URL 500ms later, which is how
+    // client email + push dispatch silently died (2026-07-02). The blob
+    // autosave already checks loadFailedRef for exactly this reason; config
+    // now gets the same check plus a hard non-empty requirement (clearing the
+    // URL is not a supported app action — do it in SQL if ever needed).
+    if (loadFailedRef.current) return;
+    if (!edgeFunctionUrl || !edgeFunctionUrl.trim()) return;
     const timer = setTimeout(async () => {
       try {
         await supabase
           .from("call_schedule_config")
-          .upsert({ id: "config", edge_function_url: edgeFunctionUrl || "", updated_at: new Date().toISOString() });
+          .upsert({ id: "config", edge_function_url: edgeFunctionUrl.trim(), updated_at: new Date().toISOString() });
       } catch(e) {}
     }, 500);
     return () => clearTimeout(timer);
@@ -8401,13 +8414,22 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                 )}
                 {notifTestSent && <span style={{fontSize:11,color:"#1a8040",fontWeight:600,alignSelf:"center"}}>{notifTestSent}</span>}
               </div>
-              {isScheduler && (
+              {(isScheduler || userProfile?.role === "admin") && (
                 <div style={{marginTop:8,paddingTop:8,borderTop:"1px dashed #e0e4ea"}}>
                   <div style={{fontSize:11,color:dkSubtext,lineHeight:1.5,marginBottom:6}}>
                     <strong style={{color:dkText}}>🔒 Push sending is configured server-side.</strong>
                     <br/>
                     The OneSignal REST API key lives in Supabase secrets and is accessed via the <code style={{fontFamily:mono,fontSize:10}}>send-push</code> Edge Function.
-                    {!edgeFunctionUrl && <span style={{color:"#b85020",display:"block",marginTop:4}}>⚠ Set the Edge Function URL below — the push sender derives its URL from it.</span>}
+                    {!edgeFunctionUrl && <span style={{color:"#b85020",display:"block",marginTop:4}}>⚠ Email and push sending are OFF — enter the Edge Function URL in the field below to enable them.</span>}
+                  </div>
+                  <div style={{marginBottom:8}}>
+                    <label style={{fontSize:10,color:"#7a8a98",fontWeight:600,textTransform:"uppercase",letterSpacing:0.5,display:"block",marginBottom:2}}>Edge Function URL (send-notification)</label>
+                    <input value={edgeFunctionUrl} onChange={e=>setEdgeFunctionUrl(e.target.value)}
+                      placeholder="https://…supabase.co/functions/v1/send-notification"
+                      style={{...css.inp,width:"100%",maxWidth:420,fontSize:11,fontFamily:mono,padding:"5px 8px"}}/>
+                    <p style={{fontSize:10,color:"#8a94a0",margin:"3px 0 0",lineHeight:1.4}}>
+                      Email sending posts here; push and the test buttons derive their URLs from it. Saves automatically — only a non-empty value is ever persisted, so this can't be blanked by accident.
+                    </p>
                   </div>
                   {edgeFunctionUrl && (
                     <button onClick={async ()=>{
