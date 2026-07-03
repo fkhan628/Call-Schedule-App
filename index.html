@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.07.01b";
+    var APP_VERSION = "2026.07.02a";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -1165,7 +1165,7 @@ function CallSchedule() {
         const {
           data: cfgRow2
         } = await supabase.from("call_schedule_config").select("edge_function_url").eq("id", "config").single();
-        if ((cfgRow2 === null || cfgRow2 === void 0 ? void 0 : cfgRow2.edge_function_url) !== undefined) setEdgeFunctionUrl(prev => cfgRow2.edge_function_url !== prev ? cfgRow2.edge_function_url : prev);
+        if (cfgRow2 !== null && cfgRow2 !== void 0 && cfgRow2.edge_function_url) setEdgeFunctionUrl(prev => cfgRow2.edge_function_url !== prev ? cfgRow2.edge_function_url : prev);
       } catch (e) {}
     };
     const refreshAppShifts = async () => {
@@ -1457,11 +1457,13 @@ function CallSchedule() {
   useEffect(() => {
     if (!loaded) return;
     if (isPublicMode) return;
+    if (loadFailedRef.current) return;
+    if (!edgeFunctionUrl || !edgeFunctionUrl.trim()) return;
     const timer = setTimeout(async () => {
       try {
         await supabase.from("call_schedule_config").upsert({
           id: "config",
-          edge_function_url: edgeFunctionUrl || "",
+          edge_function_url: edgeFunctionUrl.trim(),
           updated_at: new Date().toISOString()
         });
       } catch (e) {}
@@ -13941,7 +13943,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       fontWeight: 600,
       alignSelf: "center"
     }
-  }, notifTestSent)), isScheduler && React.createElement("div", {
+  }, notifTestSent)), (isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.role) === "admin") && React.createElement("div", {
     style: {
       marginTop: 8,
       paddingTop: 8,
@@ -13969,7 +13971,39 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       display: "block",
       marginTop: 4
     }
-  }, "⚠ Set the Edge Function URL below — the push sender derives its URL from it.")), edgeFunctionUrl && React.createElement("button", {
+  }, "⚠ Email and push sending are OFF — enter the Edge Function URL in the field below to enable them.")), React.createElement("div", {
+    style: {
+      marginBottom: 8
+    }
+  }, React.createElement("label", {
+    style: {
+      fontSize: 10,
+      color: "#7a8a98",
+      fontWeight: 600,
+      textTransform: "uppercase",
+      letterSpacing: 0.5,
+      display: "block",
+      marginBottom: 2
+    }
+  }, "Edge Function URL (send-notification)"), React.createElement("input", {
+    value: edgeFunctionUrl,
+    onChange: e => setEdgeFunctionUrl(e.target.value),
+    placeholder: "https://…supabase.co/functions/v1/send-notification",
+    style: _objectSpread(_objectSpread({}, css.inp), {}, {
+      width: "100%",
+      maxWidth: 420,
+      fontSize: 11,
+      fontFamily: mono,
+      padding: "5px 8px"
+    })
+  }), React.createElement("p", {
+    style: {
+      fontSize: 10,
+      color: "#8a94a0",
+      margin: "3px 0 0",
+      lineHeight: 1.4
+    }
+  }, "Email sending posts here; push and the test buttons derive their URLs from it. Saves automatically — only a non-empty value is ever persisted, so this can't be blanked by accident.")), edgeFunctionUrl && React.createElement("button", {
     onClick: async () => {
       try {
         const pushUrl = edgeFunctionUrl.replace(/\/[^/]+$/, "/send-push");
