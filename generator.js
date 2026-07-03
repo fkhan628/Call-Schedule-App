@@ -743,131 +743,14 @@ function generateOnce(surgeons, mondays, vac, backupMondays, priorCounts, prefer
     const d = fmt(addD(parse(mStr), off));
     return !!(holCoverage[d] && holCoverage[d].role === "holiday_24h");
   };
-  for (let pass = 0; pass < 3; pass++) {
-    for (let i = 0; i < mondayStrs.length; i++) {
-      const wk = sched[mondayStrs[i]];
-      const recalcOff = (w) => {
-        const a = new Set([w.dayCall, ...Object.values(w.nights)].filter(Boolean));
-        w.off = ids.find(id => !a.has(id)) || null;
-      };
-
-      // Fix: DC surgeon should not also have a night in same week
-      if (wk.dayCall) {
-        NIGHT_KEYS.forEach(sk => {
-          if (wk.nights?.[sk] === wk.dayCall && wk.off) {
-            // Swap the conflicting night with the off surgeon
-            wk.nights[sk] = wk.off;
-            recalcOff(wk);
-          }
-        });
-        // Fix: DC surgeon should not have weekend in same week
-        if (wk.nights?.wknd === wk.dayCall && wk.off) {
-          wk.nights.wknd = wk.off;
-          recalcOff(wk);
-        }
-      }
-
-      // Fix: Weekend surgeon should not also have Thursday night in same week
-      // (back-to-back: Thu 5p–Fri 7a then wknd starts Fri 5p, no recovery).
-      // Mon/Tue/Wed + wknd are all allowed — enough gap before wknd starts.
-      if (wk.nights?.wknd && wk.nights?.thu === wk.nights?.wknd && wk.off && wk.off !== wk.dayCall) {
-        wk.nights.thu = wk.off;
-        recalcOff(wk);
-      }
-
-      // Fix: Weekend surgeon should not have Monday night next week
-      if (i < mondayStrs.length - 1 && wk.nights?.wknd) {
-        const nextWk = sched[mondayStrs[i + 1]];
-        if (nextWk?.nights?.mon === wk.nights.wknd && !isHolCoveredNight(mondayStrs[i + 1], "mon")) {
-          // Try swapping Monday night with off surgeon of next week
-          if (nextWk.off && nextWk.off !== nextWk.dayCall) {
-            nextWk.nights.mon = nextWk.off;
-            recalcOff(nextWk);
-          } else {
-            // Try swapping Monday night with another night surgeon in next week
-            const otherNight = NIGHT_KEYS.find(sk => sk !== "mon" && nextWk.nights?.[sk] && nextWk.nights[sk] !== nextWk.dayCall && nextWk.nights[sk] !== wk.nights.wknd);
-            if (otherNight) {
-              const temp = nextWk.nights.mon;
-              nextWk.nights.mon = nextWk.nights[otherNight];
-              nextWk.nights[otherNight] = temp;
-            }
-          }
-        }
-      }
-
-      // Fix: Service week surgeon should not have Monday night next week
-      if (i < mondayStrs.length - 1 && wk.dayCall) {
-        const nextWk = sched[mondayStrs[i + 1]];
-        if (nextWk?.nights?.mon === wk.dayCall && !isHolCoveredNight(mondayStrs[i + 1], "mon")) {
-          if (nextWk.off && nextWk.off !== nextWk.dayCall && nextWk.off !== sched[mondayStrs[i]]?.nights?.wknd) {
-            nextWk.nights.mon = nextWk.off;
-            recalcOff(nextWk);
-          } else {
-            const otherNight = NIGHT_KEYS.find(sk => sk !== "mon" && nextWk.nights?.[sk] && nextWk.nights[sk] !== nextWk.dayCall && nextWk.nights[sk] !== wk.dayCall);
-            if (otherNight) {
-              const temp = nextWk.nights.mon;
-              nextWk.nights.mon = nextWk.nights[otherNight];
-              nextWk.nights[otherNight] = temp;
-            }
-          }
-        }
-      }
-      // Fix: No back-to-back nights within the same week
-      const nightOrder = ["mon","tue","wed","thu"];
-      for (let ni = 0; ni < nightOrder.length - 1; ni++) {
-        const sk1 = nightOrder[ni], sk2 = nightOrder[ni + 1];
-        const s1 = wk.nights?.[sk1], s2 = wk.nights?.[sk2];
-        if (s1 && s1 === s2) {
-          // Try swapping sk2 with another night that doesn't create a new consecutive pair
-          const swapCandidate = nightOrder.find(sk => sk !== sk1 && sk !== sk2 && wk.nights?.[sk] && wk.nights[sk] !== s1 && wk.nights[sk] !== wk.dayCall && !isHolCoveredNight(mondayStrs[i], sk));
-          if (swapCandidate) {
-            const temp = wk.nights[sk2];
-            wk.nights[sk2] = wk.nights[swapCandidate];
-            wk.nights[swapCandidate] = temp;
-            recalcOff(wk);
-          } else if (wk.off && wk.off !== wk.dayCall) {
-            wk.nights[sk2] = wk.off;
-            recalcOff(wk);
-          }
-        }
-      }
-    }
-  }
-
-  // ═══ SPREAD REDUCTION PASS ═══
-  //
-  // Goal (Faraz, May 2026): tighten shift-count spread across surgeons.
-  // Vacations create natural imbalance, but the algorithm should push as
-  // close to equality as possible given the constraints.
-  //
-  // Strategy: one-way reassignment. Find the surgeon with the highest total
-  // shifts and the surgeon with the lowest. For each slot the high surgeon
-  // is currently assigned to, check if the low surgeon could take that slot
-  // (vacation, conflicts, rules). If yes, reassign — high count drops by 1,
-  // low count rises by 1, spread tightens. Iterate until no improvement.
-  //
-  // Slot priority: DC first (user explicitly called out service-week
-  // balance), then weekend, then weeknights.
-  //
-  // Preserves: manual locks, holiday-pattern pre-assignments. These are
-  // identified via the preAssign map and skipped.
-
-  // Recalculate counts from the actual schedule state — the earlier weekend
-  // swap optimization has known count-update bugs, so trust the assignments
-  // not the running counters.
-  ids.forEach(id => { dcCt[id] = 0; nCt[id] = 0; wkndCt[id] = 0; });
-  mondayStrs.forEach(mStr => {
-    const wk = sched[mStr];
-    if (wk.dayCall) dcCt[wk.dayCall] = (dcCt[wk.dayCall] || 0) + 1;
-    if (wk.nights?.wknd) wkndCt[wk.nights.wknd] = (wkndCt[wk.nights.wknd] || 0) + 1;
-    ["mon","tue","wed","thu"].forEach(sk => {
-      if (wk.nights?.[sk]) nCt[wk.nights[sk]] = (nCt[wk.nights[sk]] || 0) + 1;
-    });
-  });
-  ids.forEach(id => { periodShifts[id] = (dcCt[id] || 0) + (nCt[id] || 0) + (wkndCt[id] || 0); });
-
-  const isPreAssigned = (mStr, slot, surgeonId) => preAssign[mStr]?.[slot] === surgeonId;
-
+  // N10 (Jul 2026): a repair must never hand a shift to someone who can't
+  // legally take it. This pass previously assigned the week's `off` surgeon
+  // or raw-swapped nights with NO vacation/rule check — and in a vacation
+  // week the off surgeon IS the vacationer, so ~15% of vacation-week rolls
+  // put a surgeon on the Mon/Tue night of their own vacation. Every repair
+  // candidate now clears canTakeSlot — the same chokepoint the fairness
+  // passes use. Its definition moved here (above first use); the fairness
+  // passes further down share this single definition.
   // Can surgeon Y take this slot in this week without violating any rules?
   const canTakeSlot = (Y, mStr, monday, slot, wk, wkIdx) => {
     if (!Y) return false;
@@ -948,6 +831,163 @@ function generateOnce(surgeons, mondays, vac, backupMondays, priorCounts, prefer
 
     return true;
   };
+  // Swap the holders of two night slots (same or different weeks), only if
+  // BOTH movers clear canTakeSlot for their NEW slot. The two slots are
+  // vacated during the check because canTakeSlot treats a mover's own
+  // current assignment as a conflict. Commits on success, restores on
+  // failure.
+  const trySwapNights = (mA, iA, skA, mB, iB, skB) => {
+    const wkA = sched[mA], wkB = sched[mB];
+    const a = wkA?.nights?.[skA], b = wkB?.nights?.[skB];
+    if (!a || !b) return false;
+    wkA.nights[skA] = null; wkB.nights[skB] = null;
+    const ok = canTakeSlot(b, mA, parse(mA), skA, wkA, iA) && canTakeSlot(a, mB, parse(mB), skB, wkB, iB);
+    wkA.nights[skA] = ok ? b : a;
+    wkB.nights[skB] = ok ? a : b;
+    return ok;
+  };
+  for (let pass = 0; pass < 3; pass++) {
+    for (let i = 0; i < mondayStrs.length; i++) {
+      const wk = sched[mondayStrs[i]];
+      const recalcOff = (w) => {
+        const a = new Set([w.dayCall, ...Object.values(w.nights)].filter(Boolean));
+        w.off = ids.find(id => !a.has(id)) || null;
+      };
+
+      // Fix: DC surgeon should not also have a night in same week
+      if (wk.dayCall) {
+        NIGHT_KEYS.forEach(sk => {
+          if (wk.nights?.[sk] === wk.dayCall) {
+            if (wk.off && canTakeSlot(wk.off, mondayStrs[i], parse(mondayStrs[i]), sk, wk, i)) {
+              // Swap the conflicting night with the off surgeon
+              wk.nights[sk] = wk.off;
+              recalcOff(wk);
+            } else if (pass === 2) {
+              console.warn(`[validation] UNRESOLVED: ${wk.dayCall} has Service Week AND ${sk} night, week ${mondayStrs[i]} (no legal repair candidate)`);
+            }
+          }
+        });
+        // Fix: DC surgeon should not have weekend in same week
+        if (wk.nights?.wknd === wk.dayCall) {
+          if (wk.off && canTakeSlot(wk.off, mondayStrs[i], parse(mondayStrs[i]), "wknd", wk, i)) {
+            wk.nights.wknd = wk.off;
+            recalcOff(wk);
+          } else if (pass === 2) {
+            console.warn(`[validation] UNRESOLVED: ${wk.dayCall} has Service Week AND weekend, week ${mondayStrs[i]} (no legal repair candidate)`);
+          }
+        }
+      }
+
+      // Fix: Weekend surgeon should not also have Thursday night in same week
+      // (back-to-back: Thu 5p–Fri 7a then wknd starts Fri 5p, no recovery).
+      // Mon/Tue/Wed + wknd are all allowed — enough gap before wknd starts.
+      if (wk.nights?.wknd && wk.nights?.thu === wk.nights?.wknd) {
+        if (wk.off && canTakeSlot(wk.off, mondayStrs[i], parse(mondayStrs[i]), "thu", wk, i)) {
+          wk.nights.thu = wk.off;
+          recalcOff(wk);
+        } else if (pass === 2) {
+          console.warn(`[validation] UNRESOLVED: ${wk.nights.wknd} has Thu night AND weekend, week ${mondayStrs[i]} (no legal repair candidate)`);
+        }
+      }
+
+      // Fix: Weekend surgeon should not have Monday night next week
+      if (i < mondayStrs.length - 1 && wk.nights?.wknd) {
+        const nextWk = sched[mondayStrs[i + 1]];
+        if (nextWk?.nights?.mon === wk.nights.wknd && !isHolCoveredNight(mondayStrs[i + 1], "mon")) {
+          // Try swapping Monday night with off surgeon of next week
+          if (nextWk.off && canTakeSlot(nextWk.off, mondayStrs[i + 1], parse(mondayStrs[i + 1]), "mon", nextWk, i + 1)) {
+            nextWk.nights.mon = nextWk.off;
+            recalcOff(nextWk);
+          } else {
+            // Try swapping Monday night with another night surgeon in next
+            // week — trySwapNights commits only if BOTH movers clear
+            // canTakeSlot for their new slot.
+            const otherNight = NIGHT_KEYS.find(sk => sk !== "mon" && nextWk.nights?.[sk] && nextWk.nights[sk] !== nextWk.dayCall && nextWk.nights[sk] !== wk.nights.wknd
+              && trySwapNights(mondayStrs[i + 1], i + 1, "mon", mondayStrs[i + 1], i + 1, sk));
+            if (!otherNight && pass === 2) {
+              console.warn(`[validation] UNRESOLVED: ${wk.nights.wknd} has weekend then next Monday night, weeks ${mondayStrs[i]}→${mondayStrs[i + 1]} (no legal repair candidate)`);
+            }
+          }
+        }
+      }
+
+      // Fix: Service week surgeon should not have Monday night next week
+      if (i < mondayStrs.length - 1 && wk.dayCall) {
+        const nextWk = sched[mondayStrs[i + 1]];
+        if (nextWk?.nights?.mon === wk.dayCall && !isHolCoveredNight(mondayStrs[i + 1], "mon")) {
+          if (nextWk.off && canTakeSlot(nextWk.off, mondayStrs[i + 1], parse(mondayStrs[i + 1]), "mon", nextWk, i + 1)) {
+            nextWk.nights.mon = nextWk.off;
+            recalcOff(nextWk);
+          } else {
+            const otherNight = NIGHT_KEYS.find(sk => sk !== "mon" && nextWk.nights?.[sk] && nextWk.nights[sk] !== nextWk.dayCall && nextWk.nights[sk] !== wk.dayCall
+              && trySwapNights(mondayStrs[i + 1], i + 1, "mon", mondayStrs[i + 1], i + 1, sk));
+            if (!otherNight && pass === 2) {
+              console.warn(`[validation] UNRESOLVED: ${wk.dayCall} has Service Week then next Monday night, weeks ${mondayStrs[i]}→${mondayStrs[i + 1]} (no legal repair candidate)`);
+            }
+          }
+        }
+      }
+      // Fix: No back-to-back nights within the same week
+      const nightOrder = ["mon","tue","wed","thu"];
+      for (let ni = 0; ni < nightOrder.length - 1; ni++) {
+        const sk1 = nightOrder[ni], sk2 = nightOrder[ni + 1];
+        const s1 = wk.nights?.[sk1], s2 = wk.nights?.[sk2];
+        if (s1 && s1 === s2) {
+          // Try swapping sk2 with another night that doesn't create a new
+          // consecutive pair — trySwapNights commits only if BOTH movers
+          // clear canTakeSlot for their new slot.
+          const swapCandidate = nightOrder.find(sk => sk !== sk1 && sk !== sk2 && wk.nights?.[sk] && wk.nights[sk] !== s1 && wk.nights[sk] !== wk.dayCall && !isHolCoveredNight(mondayStrs[i], sk)
+            && trySwapNights(mondayStrs[i], i, sk2, mondayStrs[i], i, sk));
+          if (swapCandidate) {
+            recalcOff(wk);
+          } else if (wk.off && canTakeSlot(wk.off, mondayStrs[i], parse(mondayStrs[i]), sk2, wk, i)) {
+            wk.nights[sk2] = wk.off;
+            recalcOff(wk);
+          } else if (pass === 2) {
+            console.warn(`[validation] UNRESOLVED: ${s1} has back-to-back ${sk1}+${sk2} nights, week ${mondayStrs[i]} (no legal repair candidate)`);
+          }
+        }
+      }
+    }
+  }
+
+  // ═══ SPREAD REDUCTION PASS ═══
+  //
+  // Goal (Faraz, May 2026): tighten shift-count spread across surgeons.
+  // Vacations create natural imbalance, but the algorithm should push as
+  // close to equality as possible given the constraints.
+  //
+  // Strategy: one-way reassignment. Find the surgeon with the highest total
+  // shifts and the surgeon with the lowest. For each slot the high surgeon
+  // is currently assigned to, check if the low surgeon could take that slot
+  // (vacation, conflicts, rules). If yes, reassign — high count drops by 1,
+  // low count rises by 1, spread tightens. Iterate until no improvement.
+  //
+  // Slot priority: DC first (user explicitly called out service-week
+  // balance), then weekend, then weeknights.
+  //
+  // Preserves: manual locks, holiday-pattern pre-assignments. These are
+  // identified via the preAssign map and skipped.
+
+  // Recalculate counts from the actual schedule state — the earlier weekend
+  // swap optimization has known count-update bugs, so trust the assignments
+  // not the running counters.
+  ids.forEach(id => { dcCt[id] = 0; nCt[id] = 0; wkndCt[id] = 0; });
+  mondayStrs.forEach(mStr => {
+    const wk = sched[mStr];
+    if (wk.dayCall) dcCt[wk.dayCall] = (dcCt[wk.dayCall] || 0) + 1;
+    if (wk.nights?.wknd) wkndCt[wk.nights.wknd] = (wkndCt[wk.nights.wknd] || 0) + 1;
+    ["mon","tue","wed","thu"].forEach(sk => {
+      if (wk.nights?.[sk]) nCt[wk.nights[sk]] = (nCt[wk.nights[sk]] || 0) + 1;
+    });
+  });
+  ids.forEach(id => { periodShifts[id] = (dcCt[id] || 0) + (nCt[id] || 0) + (wkndCt[id] || 0); });
+
+  const isPreAssigned = (mStr, slot, surgeonId) => preAssign[mStr]?.[slot] === surgeonId;
+
+  // canTakeSlot — the single eligibility chokepoint — is defined ABOVE the
+  // validation pass (moved there in N10, Jul 2026) so the hard-rule repairs
+  // and these fairness passes share one definition.
 
   const reassign = (mStr, slot, fromId, toId) => {
     const wk = sched[mStr];

@@ -192,21 +192,19 @@ const clean = runScenario("clean", {}, {
 });
 
 // B: realistic vacations — three surgeons, one week each, spread out.
-//    Hard rules must hold and fairness stays within off-by-one bounds.
-//    KNOWN BUG (2026-07-02, REMAINING-WORK N10, awaiting approval to fix):
-//    the VALIDATION PASS (generator.js ~746-834) repairs hard-rule conflicts
-//    by assigning the week's `off` surgeon or raw-swapping nights WITHOUT a
-//    vacation check — in a vacation week the `off` surgeon IS the vacationer,
-//    so ~15% of rolls put them on the Mon/Tue night of their own vacation.
-//    Until that fix lands, vacation overlaps here are counted and printed but
-//    do NOT fail CI. When N10 is fixed, flip assertVacations to true.
+//    Hard rules must hold, fairness stays within off-by-one bounds, and NO
+//    vacation overlaps are tolerated. (History: before the N10 fix of
+//    2026-07-02, the validation pass repaired hard-rule conflicts without a
+//    vacation check and ~15% of rolls put a surgeon on the Mon/Tue night of
+//    their own vacation. The freeForNight/freeForWknd guard in generator.js
+//    is what this assertion locks in place. Do not flip it back off.)
 const LIGHT_VACATIONS = {
   s1: [["2026-01-12", "2026-01-18"]],
   s3: [["2026-02-16", "2026-02-22"]],
   s5: [["2026-03-23", "2026-03-29"]],
 };
 const light = runScenario("vacation", LIGHT_VACATIONS, {
-  assertVacations: false, // ← flip to true when N10 (validation-pass vacation guard) ships
+  assertVacations: true, // locked since the N10 validation-pass vacation guard
   maxSpread: { dc: 2, wknd: 2, total: 3 },
 });
 
@@ -230,5 +228,5 @@ if (failures.length) {
   if (failures.length > 25) console.error(`  … and ${failures.length - 25} more`);
   process.exit(1);
 }
-console.log("PASS — Δ0 fairness on clean periods, zero hard-rule violations. (Vacation overlaps are informational until N10 lands — see header.)");
+console.log("PASS — Δ0 fairness on clean periods, zero hard-rule violations, zero vacation overlaps (squeeze scenario stays informational).");
 process.exit(0);
