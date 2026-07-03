@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.07.02b";
+    var APP_VERSION = "2026.07.02c";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -182,7 +182,9 @@ function CallSchedule() {
   useEffect(() => {
     try {
       localStorage.setItem("dsg-dark-mode", darkMode);
-    } catch (e) {}
+    } catch (e) {
+      console.warn("Couldn't persist dark-mode setting:", e);
+    }
   }, [darkMode]);
   const [scheduleHistory, setScheduleHistory] = useState([]);
   const pushUndo = useCallback(sched => {
@@ -343,7 +345,9 @@ function CallSchedule() {
   useEffect(() => {
     try {
       if (mySurgeon) localStorage.setItem("dsg-my-surgeon", mySurgeon);
-    } catch (e) {}
+    } catch (e) {
+      console.warn("Couldn't persist selected surgeon:", e);
+    }
   }, [mySurgeon]);
   useEffect(() => {
     if (mySurgeon && mySurgeon !== "admin" && !isScheduler) {
@@ -664,7 +668,9 @@ function CallSchedule() {
       const o = localStorage.getItem("dsg_sched_dualwrite");
       if (o === "1") return true;
       if (o === "0") return false;
-    } catch (e) {}
+    } catch (e) {
+      console.warn("Couldn't read dual-write override flag:", e);
+    }
     return true;
   }, []);
   const SCHED_READ_TABLE = true;
@@ -739,7 +745,10 @@ function CallSchedule() {
             if (r.ok) {
               const a = await r.json().catch(() => []);
               if (a[0]) schedWeekVersionsRef.current[key] = a[0].version;
-            } else console.error("schedule_weeks insert failed", r.status, await r.text().catch(() => ""));
+            } else {
+              console.error("schedule_weeks insert failed", r.status, await r.text().catch(() => ""));
+              showToast("Couldn't save schedule changes — check your connection.", "error");
+            }
           } else {
             const r = await fetch(`${SUPABASE_URL}/rest/v1/schedule_weeks?week_monday=eq.${key}&version=eq.${ver}`, {
               method: "PATCH",
@@ -756,6 +765,7 @@ function CallSchedule() {
             });
             if (!r.ok) {
               console.error("schedule_weeks CAS error", r.status, await r.text().catch(() => ""));
+              showToast("Couldn't save schedule changes — check your connection.", "error");
               continue;
             }
             const a = await r.json().catch(() => []);
@@ -798,6 +808,7 @@ function CallSchedule() {
           });
           if (!r.ok) {
             console.error("schedule_weeks upsert failed", r.status, await r.text().catch(() => ""));
+            showToast("Couldn't save schedule changes — check your connection.", "error");
             return;
           }
         }
@@ -808,6 +819,7 @@ function CallSchedule() {
           });
           if (!r.ok) {
             console.error("schedule_weeks delete failed", r.status, await r.text().catch(() => ""));
+            showToast("Couldn't save schedule changes — check your connection.", "error");
             return;
           }
         }
@@ -815,6 +827,7 @@ function CallSchedule() {
       }
     } catch (e) {
       console.error("schedule_weeks dual-write error", e);
+      showToast("Couldn't save schedule changes — check your connection.", "error");
     }
   };
   const nameOf = id => {
@@ -896,6 +909,7 @@ function CallSchedule() {
       setNoCallDays(nc);
     } catch (e) {
       console.error("time_off load failed", e);
+      showToast("Couldn't load vacations — data shown may be incomplete.", "error");
     }
   };
   const deleteTimeOff = async filter => {
@@ -1095,31 +1109,40 @@ function CallSchedule() {
             data: appRow
           } = await supabase.from("app_shifts_data").select("data").eq("id", "main").single();
           if (appRow !== null && appRow !== void 0 && appRow.data && typeof appRow.data === "object") setAppShifts(appRow.data);
-        } catch (e) {}
+        } catch (e) {
+          console.error("APP shifts load failed:", e);
+        }
         try {
           const reqs = await db.query("vacation_requests", {
             order: "submitted_at.desc",
             limit: 100
           });
           if (Array.isArray(reqs)) setVacRequests(reqs);
-        } catch (e) {}
+        } catch (e) {
+          console.error("Vacation requests load failed:", e);
+        }
         try {
           const trades = await db.query("shift_trade_requests", {
             order: "submitted_at.desc",
             limit: 100
           });
           if (Array.isArray(trades)) setTradeRequests(trades);
-        } catch (e) {}
+        } catch (e) {
+          console.error("Trade requests load failed:", e);
+        }
         try {
           const notifs = await db.query("notifications", {
             order: "created_at.desc",
             limit: 50
           });
           if (Array.isArray(notifs)) setNotifications(notifs);
-        } catch (e) {}
+        } catch (e) {
+          console.error("Notifications load failed:", e);
+        }
       } catch (e) {
         console.error("Supabase load error:", e);
         loadFailedRef.current = true;
+        showToast("Couldn't load the latest data — check your connection and reload.", "error");
       }
       if (USE_TIME_OFF) {
         await loadTimeOff();
@@ -1158,7 +1181,9 @@ function CallSchedule() {
         if (d.schedule && Object.keys(d.schedule).length || d.vacations && Object.keys(d.vacations).length || d.appShifts && Object.keys(d.appShifts).length) {
           everHadRealDataRef.current = true;
         }
-      } catch (e) {}
+      } catch (e) {
+        console.warn("Background schedule refresh failed:", e);
+      }
     };
     const refreshConfigRow = async () => {
       try {
@@ -1166,7 +1191,9 @@ function CallSchedule() {
           data: cfgRow2
         } = await supabase.from("call_schedule_config").select("edge_function_url").eq("id", "config").single();
         if (cfgRow2 !== null && cfgRow2 !== void 0 && cfgRow2.edge_function_url) setEdgeFunctionUrl(prev => cfgRow2.edge_function_url !== prev ? cfgRow2.edge_function_url : prev);
-      } catch (e) {}
+      } catch (e) {
+        console.warn("Background config refresh failed:", e);
+      }
     };
     const refreshAppShifts = async () => {
       try {
@@ -1174,7 +1201,9 @@ function CallSchedule() {
           data: appRow
         } = await supabase.from("app_shifts_data").select("data").eq("id", "main").single();
         if (appRow !== null && appRow !== void 0 && appRow.data && typeof appRow.data === "object") setAppShifts(appRow.data);
-      } catch (e) {}
+      } catch (e) {
+        console.warn("Background APP-shifts refresh failed:", e);
+      }
     };
     const refreshVacReqs = async () => {
       try {
@@ -1183,7 +1212,9 @@ function CallSchedule() {
           limit: 100
         });
         if (Array.isArray(reqs)) setVacRequests(reqs);
-      } catch (e) {}
+      } catch (e) {
+        console.warn("Background vacation-requests refresh failed:", e);
+      }
     };
     const refreshTradeReqs = async () => {
       try {
@@ -1192,7 +1223,9 @@ function CallSchedule() {
           limit: 100
         });
         if (Array.isArray(trades)) setTradeRequests(trades);
-      } catch (e) {}
+      } catch (e) {
+        console.warn("Background trade-requests refresh failed:", e);
+      }
     };
     const refreshNotifs = async () => {
       try {
@@ -1201,7 +1234,9 @@ function CallSchedule() {
           limit: 50
         });
         if (Array.isArray(notifs)) setNotifications(notifs);
-      } catch (e) {}
+      } catch (e) {
+        console.warn("Background notifications refresh failed:", e);
+      }
     };
     const refreshAll = async () => {
       await Promise.allSettled([refreshScheduleRow(), refreshConfigRow(), refreshAppShifts(), refreshVacReqs(), refreshTradeReqs(), refreshNotifs()]);
@@ -1293,7 +1328,9 @@ function CallSchedule() {
       if (rtChannel && rtClient) {
         try {
           rtClient.removeChannel(rtChannel);
-        } catch (e) {}
+        } catch (e) {
+          console.warn("Realtime channel cleanup failed:", e);
+        }
       }
     };
   }, [reloadTrigger]);
@@ -1418,7 +1455,9 @@ function CallSchedule() {
               body: JSON.stringify(wkRows)
             }).catch(() => {});
           }
-        } catch (e) {}
+        } catch (e) {
+          console.warn("Unload flush (schedule_weeks) failed:", e);
+        }
         fetch(`${SUPABASE_URL}/rest/v1/call_schedule_data?on_conflict=id`, {
           method: "POST",
           headers: {
@@ -1466,7 +1505,10 @@ function CallSchedule() {
           edge_function_url: edgeFunctionUrl.trim(),
           updated_at: new Date().toISOString()
         });
-      } catch (e) {}
+      } catch (e) {
+        console.error("Edge Function URL save failed:", e);
+        showToast("Couldn't save the Edge Function URL — check your connection.", "error");
+      }
     }, 500);
     return () => clearTimeout(timer);
   }, [loaded, edgeFunctionUrl]);
@@ -1511,7 +1553,10 @@ function CallSchedule() {
         data: {},
         updated_at: new Date().toISOString()
       });
-    } catch (e) {}
+    } catch (e) {
+      console.error("Factory reset: clearing stored data failed:", e);
+      showToast("Couldn't clear the stored data — check your connection and retry the reset.", "error");
+    }
     setSurgeons(INIT_SURGEONS);
     setApps(INIT_APPS);
     toClearAll();
@@ -1550,6 +1595,7 @@ function CallSchedule() {
       });
     } catch (e) {
       console.error("Push notification error:", e);
+      showToast("Couldn't send the push notification — check your connection.", "error");
     }
   }, [edgeFunctionUrl]);
   const buildDeepLink = useCallback((type, data) => {
@@ -1620,6 +1666,7 @@ function CallSchedule() {
       }
     } catch (e) {
       console.error("Notification error:", e);
+      showToast("Couldn't send the notification — check your connection.", "error");
     }
   }, [sendPushNotif, buildDeepLink, filterPushTargetsByType]);
   const sendEmailNotif = useCallback(async (type, data, targetIds = null) => {
@@ -1642,9 +1689,11 @@ function CallSchedule() {
       const result = await res.json().catch(() => null);
       if (!res.ok || result && result.failed > 0) {
         console.warn("Email notification issue:", type, res.status, JSON.stringify(result));
+        showToast("Some notification emails didn't send.", "error");
       }
     } catch (e) {
       console.error("Email notification error:", e);
+      showToast("Couldn't send email notifications — check your connection.", "error");
     }
   }, [edgeFunctionUrl]);
   const submitVacRequest = useCallback(async () => {
@@ -1687,6 +1736,7 @@ function CallSchedule() {
       setVacReqType("vacation");
     } catch (e) {
       console.error("Submit request error:", e);
+      showToast("Couldn't submit your request — check your connection and try again.", "error");
     }
   }, [vacReqSurgeon, vacReqStart, vacReqEnd, vacReqReason, vacReqType, surgeons, apps, addNotification, sendEmailNotif, schedulerAdminIds]);
   const approveVacRequest = useCallback(async req => {
@@ -1734,6 +1784,7 @@ function CallSchedule() {
       }, approveTargets);
     } catch (e) {
       console.error("Approve error:", e);
+      showToast("Couldn't approve the request — check your connection and try again.", "error");
     }
   }, [addNotification, sendEmailNotif, schedulerAdminIds, userProfile, surgeons, mySurgeon, vacations, noCallDays]);
   const denyVacRequest = useCallback(async (req, note = "") => {
@@ -1770,6 +1821,7 @@ function CallSchedule() {
       }, denyTargets);
     } catch (e) {
       console.error("Deny error:", e);
+      showToast("Couldn't deny the request — check your connection and try again.", "error");
     }
   }, [addNotification, sendEmailNotif, schedulerAdminIds, userProfile, surgeons, mySurgeon]);
   const submitTradeRequest = useCallback(async () => {
@@ -1828,6 +1880,7 @@ function CallSchedule() {
       setTradeReturnShift("");
     } catch (e) {
       console.error("Submit trade error:", e);
+      showToast("Couldn't submit the trade — check your connection and try again.", "error");
     }
   }, [tradeFrom, tradeTo, tradeWeek, tradeShift, tradeReturnWeek, tradeReturnShift, surgeons, addNotification, sendEmailNotif, isScheduler]);
   const detectCascadeChanges = useCallback((sched, req) => {
@@ -2059,6 +2112,7 @@ function CallSchedule() {
       }
     } catch (e) {
       console.error("Accept trade error:", e);
+      showToast("Couldn't accept the trade — check your connection and try again.", "error");
     }
   }, [schedule, surgeons, pushUndo, addNotification, sendEmailNotif, detectCascadeChanges, schedulerAdminIds]);
   const declineTradeRequest = useCallback(async req => {
@@ -2085,53 +2139,73 @@ function CallSchedule() {
       }, [req.from_surgeon_id, req.to_surgeon_id]);
     } catch (e) {
       console.error("Decline trade error:", e);
+      showToast("Couldn't decline the trade — check your connection and try again.", "error");
     }
   }, [addNotification, sendEmailNotif]);
   const deleteTradeRequest = useCallback(async reqId => {
     if (!confirm("Delete this trade request?")) return;
     try {
-      await fetch(`${SUPABASE_URL}/rest/v1/shift_trade_requests?id=eq.${reqId}`, {
+      const res = await fetch(`${SUPABASE_URL}/rest/v1/shift_trade_requests?id=eq.${reqId}`, {
         method: "DELETE",
         headers: _objectSpread(_objectSpread({}, dbAuthHeaders()), {}, {
           Prefer: "return=minimal"
         })
       });
+      if (!res.ok) {
+        console.error("Delete trade request failed:", res.status);
+        showToast("Couldn't delete the trade request — check your connection and try again.", "error");
+      }
       setTradeRequests(prev => prev.filter(r => r.id !== reqId));
-    } catch (e) {}
+    } catch (e) {
+      console.error("Delete trade request failed:", e);
+      showToast("Couldn't delete the trade request — check your connection and try again.", "error");
+    }
   }, []);
   const markNotifsSeen = () => {
     const now = new Date().toISOString();
     setNotifLastSeen(now);
     try {
       localStorage.setItem("dsg-notif-seen", now);
-    } catch (e) {}
+    } catch (e) {
+      console.warn("Couldn't persist notifications-seen marker:", e);
+    }
   };
   const clearAllNotifications = useCallback(async () => {
     if (!confirm("Clear all notifications? This cannot be undone.")) return;
     try {
-      await fetch(`${SUPABASE_URL}/rest/v1/notifications`, {
+      const res = await fetch(`${SUPABASE_URL}/rest/v1/notifications`, {
         method: "DELETE",
         headers: _objectSpread(_objectSpread({}, dbAuthHeaders()), {}, {
           Prefer: "return=minimal"
         })
       });
+      if (!res.ok) {
+        console.error("Clear notifications failed:", res.status);
+        showToast("Couldn't clear notifications — check your connection and try again.", "error");
+      }
       setNotifications([]);
     } catch (e) {
       console.error("Clear notifications error:", e);
+      showToast("Couldn't clear notifications — check your connection and try again.", "error");
     }
   }, []);
   const deleteVacRequest = useCallback(async reqId => {
     if (!confirm("Delete this request?")) return;
     try {
-      await fetch(`${SUPABASE_URL}/rest/v1/vacation_requests?id=eq.${reqId}`, {
+      const res = await fetch(`${SUPABASE_URL}/rest/v1/vacation_requests?id=eq.${reqId}`, {
         method: "DELETE",
         headers: _objectSpread(_objectSpread({}, dbAuthHeaders()), {}, {
           Prefer: "return=minimal"
         })
       });
+      if (!res.ok) {
+        console.error("Delete vacation request failed:", res.status);
+        showToast("Couldn't delete the request — check your connection and try again.", "error");
+      }
       setVacRequests(prev => prev.filter(r => r.id !== reqId));
     } catch (e) {
       console.error("Delete vacation request error:", e);
+      showToast("Couldn't delete the request — check your connection and try again.", "error");
     }
   }, []);
   const [editingVacReq, setEditingVacReq] = useState(null);
@@ -2152,6 +2226,7 @@ function CallSchedule() {
       setEditingVacReq(null);
     } catch (e) {
       console.error("Edit vacation error:", e);
+      showToast("Couldn't save the changes — check your connection and try again.", "error");
     }
   }, [editingVacReq, vacRequests]);
   const revokeApprovedVac = useCallback(async req => {
@@ -2171,20 +2246,26 @@ function CallSchedule() {
       await addNotification("vacation_revoked", isNoCall ? "No-Call Revoked" : "Vacation Revoked", `${req.surgeon_name}'s ${kindLabel} ${req.start_date} → ${req.end_date} was revoked`, {}, revokeTargets);
     } catch (e) {
       console.error("Revoke error:", e);
+      showToast("Couldn't revoke the vacation — check your connection and try again.", "error");
     }
   }, [addNotification, schedulerAdminIds]);
   const clearReviewedRequests = useCallback(async () => {
     if (!confirm("Clear all reviewed (approved/denied) requests? Pending requests will be kept.")) return;
     try {
-      await fetch(`${SUPABASE_URL}/rest/v1/vacation_requests?status=neq.pending`, {
+      const res = await fetch(`${SUPABASE_URL}/rest/v1/vacation_requests?status=neq.pending`, {
         method: "DELETE",
         headers: _objectSpread(_objectSpread({}, dbAuthHeaders()), {}, {
           Prefer: "return=minimal"
         })
       });
+      if (!res.ok) {
+        console.error("Clear reviewed requests failed:", res.status);
+        showToast("Couldn't clear reviewed requests — check your connection and try again.", "error");
+      }
       setVacRequests(prev => prev.filter(r => r.status === "pending"));
     } catch (e) {
       console.error("Clear reviewed requests error:", e);
+      showToast("Couldn't clear reviewed requests — check your connection and try again.", "error");
     }
   }, []);
   const [oneSignalReady, setOneSignalReady] = useState(false);
@@ -2436,6 +2517,7 @@ function CallSchedule() {
         if (Array.isArray(rows)) setOfficeContacts(rows);
       } catch (e) {
         console.error("Load office contacts error:", e);
+        showToast("Couldn't load office contacts — the list shown may be incomplete.", "error");
       }
     })();
   }, [loaded, isScheduler, userProfile]);
@@ -2519,6 +2601,7 @@ function CallSchedule() {
         await db.upsert("notification_preferences", row);
       } catch (e) {
         console.error("Save notif pref error:", e);
+        showToast("Couldn't save notification settings — check your connection and try again.", "error");
       }
       setNotifPrefsSaving(false);
     }, 500);
@@ -3036,7 +3119,8 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
         alert("Failed to update: " + error);
       }
     } catch (e) {
-      console.error(e);
+      console.error("Office contact update failed:", e);
+      showToast("Couldn't update the contact — check your connection and try again.", "error");
     }
   };
   const deleteOfficeContact = async id => {
@@ -3045,12 +3129,17 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
     if (!confirm(`Remove ${c.name} (${c.email}) from the office distribution list?`)) return;
     setOfficeContacts(prev => prev.filter(x => x.id !== id));
     try {
-      await fetch(`${SUPABASE_URL}/rest/v1/office_contacts?id=eq.${id}`, {
+      const res = await fetch(`${SUPABASE_URL}/rest/v1/office_contacts?id=eq.${id}`, {
         method: "DELETE",
         headers: dbAuthHeaders()
       });
+      if (!res.ok) {
+        console.error("Office contact delete failed:", res.status);
+        showToast("Couldn't remove the contact — check your connection and try again.", "error");
+      }
     } catch (e) {
-      console.error("Delete failed:", e);
+      console.error("Office contact delete failed:", e);
+      showToast("Couldn't remove the contact — check your connection and try again.", "error");
     }
   };
   const toggleOfficeContactDept = (id, dept) => {
@@ -3305,6 +3394,7 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
           syncSchedWeeks(merged);
         } catch (e) {
           console.error("Immediate save failed:", e);
+          showToast("Couldn't save the regenerated schedule — check your connection.", "error");
         }
       })();
     }
@@ -3338,6 +3428,7 @@ If you cannot find vacations, return an empty array. Same for fierce_weeks. Matc
         });
       } catch (e) {
         console.error("Immediate save failed:", e);
+        showToast("Couldn't save the cleared state — check your connection.", "error");
       }
     })();
   };
@@ -5005,13 +5096,18 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           text: msg
         });
         return;
-      } catch (e) {}
+      } catch (e) {
+        console.debug("Share dismissed or unavailable (falling back to copy):", e);
+      }
     }
     try {
       await navigator.clipboard.writeText(msg);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
-    } catch (e) {}
+    } catch (e) {
+      console.error("Copy to clipboard failed:", e);
+      showToast("Couldn't copy — long-press the message to copy it manually.", "error");
+    }
   };
   const Badge = ({
     id,
@@ -6011,7 +6107,9 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         try {
           const h = getHolidays(y);
           defs = [...h.major, ...h.minor];
-        } catch (e) {}
+        } catch (e) {
+          console.warn("Holiday preset lookup failed:", e);
+        }
         defs.forEach(hol => {
           const hd = parse(hol.date);
           if (hd >= periodStart && hd <= periodEnd) {
@@ -11438,7 +11536,9 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         addNotification("vacation_revoked", "Vacation Adjusted", `${myName} adjusted a vacation to ${start} → ${end}.`, {
           surgeon_id: myId
         }, [...schedulerAdminIds]);
-      } catch (e) {}
+      } catch (e) {
+        console.error("Vacation-adjust notification failed:", e);
+      }
     };
     const removeMyVac = idx => {
       const r = myVacs[idx];
@@ -11449,7 +11549,9 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         addNotification("vacation_revoked", "Vacation Removed", `${myName} removed their vacation ${r[0]} → ${r[1]} (gave days back).`, {
           surgeon_id: myId
         }, [...schedulerAdminIds]);
-      } catch (e) {}
+      } catch (e) {
+        console.error("Vacation-removal notification failed:", e);
+      }
     };
     const myShifts = [];
     Object.entries(schedule).forEach(([mStr, wk]) => {
@@ -14882,14 +14984,18 @@ function Collapsible({
       const v = localStorage.getItem("dsg_collapse_" + ck);
       if (v === "1") return true;
       if (v === "0") return false;
-    } catch (e) {}
+    } catch (e) {
+      console.warn("Couldn't read panel collapse state:", e);
+    }
     return defaultOpen;
   });
   const toggle = () => setOpen(o => {
     const n = !o;
     try {
       localStorage.setItem("dsg_collapse_" + ck, n ? "1" : "0");
-    } catch (e) {}
+    } catch (e) {
+      console.warn("Couldn't persist panel collapse state:", e);
+    }
     return n;
   });
   return React.createElement("div", {
