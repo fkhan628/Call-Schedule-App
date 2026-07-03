@@ -147,7 +147,7 @@ function downloadJSON(obj, filename) {
   if (isIOS && isStandalone) {
     // Open in a new view; user saves via Share → Save to Files.
     const w = window.open(url, "_blank");
-    if (!w) { try { location.href = url; } catch(e) {} }
+    if (!w) { try { location.href = url; } catch(e) { console.warn("Couldn't open download (popup blocked and redirect failed):", e); } }
     setTimeout(() => URL.revokeObjectURL(url), 10000);
     return false;
   }
