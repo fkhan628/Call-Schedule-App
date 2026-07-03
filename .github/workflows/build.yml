@@ -18,6 +18,15 @@ on:
       - "build.js"
       - "bump-version.js"
       - "package.json"
+      # Runtime modules: changing these must (a) run the generator regression
+      # test and (b) bump APP_VERSION so cache-busted clients refetch them —
+      # previously a module-only push skipped CI and stale clients kept the
+      # old file indefinitely.
+      - "generator.js"
+      - "config.js"
+      - "helpers.js"
+      - "app-styles.js"
+      - "test/generator-regression.js"
   workflow_dispatch: {}   # allow manual runs from the Actions tab
 
 permissions:
@@ -44,6 +53,12 @@ jobs:
 
       - name: Install build deps
         run: npm install --no-audit --no-fund
+
+      # Guard the generator's Δ0 fairness + hard rules BEFORE anything is
+      # bumped or committed — a regression here fails the build and nothing
+      # reaches the live site.
+      - name: Generator regression test
+        run: node test/generator-regression.js
 
       - name: Bump APP_VERSION
         run: node bump-version.js
