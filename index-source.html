@@ -1606,7 +1606,8 @@ function CallSchedule() {
   const addNotification = useCallback(async (type, title, message, data = {}, pushTargetIds = null) => {
     try {
       const notif = { type, title, message, data, created_at: new Date().toISOString() };
-      const { data: inserted } = await db.insert("notifications", notif);
+      const { data: inserted, error: insertErr } = await db.insert("notifications", notif);
+      if (insertErr) { console.error("Notification insert failed:", insertErr); showToast("Couldn't save that notification.", "error"); }
       if (inserted) setNotifications(prev => [inserted, ...prev].slice(0, 50));
       // Also send as device push via OneSignal, with a deep-link URL so tap
       // navigates to the relevant tab/week.

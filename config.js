@@ -58,7 +58,11 @@ const db = {
       body: JSON.stringify(row),
     });
     const data = await res.json();
-    return { data: Array.isArray(data) ? data[0] : data, error: res.ok ? null : data };
+    // On failure, return data:null (NOT the PostgREST error body) so callers'
+    // `if (data)` success-guards can't mis-fire on the error object — that
+    // false-success masked the RLS-blocked notifications insert. `error` still
+    // carries the failure detail for callers that check it.
+    return { data: res.ok ? (Array.isArray(data) ? data[0] : data) : null, error: res.ok ? null : data };
   },
   async update(table, id, data) {
     const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}?id=eq.${id}`, {
