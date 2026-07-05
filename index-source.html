@@ -8252,7 +8252,11 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                           }),
                         });
                         const data = await resp.json().catch(()=>({}));
-                        alert(`Push test result:\nStatus: ${resp.status}\n${data.errors ? "Errors: " + JSON.stringify(data.errors) : (data.error || "Success — check your devices for the test push.")}`);
+                        // Key success off resp.ok — a gateway 401 body is {code,message}
+                        // (no `errors`/`error`), so the old fallthrough reported "Success" on failure.
+                        alert(resp.ok
+                          ? `Push test result:\nStatus: ${resp.status}\nSuccess — check your devices for the test push.`
+                          : `Push test FAILED\nStatus: ${resp.status}\n${data.error || data.message || (data.errors ? "Errors: " + JSON.stringify(data.errors) : "unknown error")}`);
                       } catch(e) { alert("Push test error: " + e.message); }
                     }} style={{...css.btn(false),padding:"4px 10px",fontSize:10,marginTop:4}}>
                       Test Push to All Devices
