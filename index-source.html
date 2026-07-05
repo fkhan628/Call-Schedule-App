@@ -1537,7 +1537,7 @@ function CallSchedule() {
       if (deepLinkUrl) body.url = deepLinkUrl;
       await fetch(pushUrl, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: dbAuthHeaders(), // send the user's JWT (or anon fallback) — send-push gateway is verify_jwt=true and rejects no-auth
         body: JSON.stringify(body),
       });
     } catch(e) { console.error("Push notification error:", e); showToast("Couldn't send the push notification — check your connection.", "error"); }
@@ -8245,7 +8245,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                         const pushUrl = edgeFunctionUrl.replace(/\/[^/]+$/, "/send-push");
                         const resp = await fetch(pushUrl, {
                           method: "POST",
-                          headers: { "Content-Type": "application/json" },
+                          headers: dbAuthHeaders(), // JWT (or anon fallback) so the verify_jwt=true gateway accepts the call
                           body: JSON.stringify({
                             title: "DSG Call Schedule",
                             message: "Test push notification — if you see this, push is working!",
