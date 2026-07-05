@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.07.03a";
+    var APP_VERSION = "2026.07.04a";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -1654,8 +1654,13 @@ function CallSchedule() {
         created_at: new Date().toISOString()
       };
       const {
-        data: inserted
+        data: inserted,
+        error: insertErr
       } = await db.insert("notifications", notif);
+      if (insertErr) {
+        console.error("Notification insert failed:", insertErr);
+        showToast("Couldn't save that notification.", "error");
+      }
       if (inserted) setNotifications(prev => [inserted, ...prev].slice(0, 50));
       const deepLinkUrl = buildDeepLink(type, data);
       const filteredTargets = pushTargetIds ? filterPushTargetsByType(type, pushTargetIds) : null;
