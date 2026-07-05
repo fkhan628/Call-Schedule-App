@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.07.04b";
+    var APP_VERSION = "2026.07.04c";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -1588,9 +1588,7 @@ function CallSchedule() {
       if (deepLinkUrl) body.url = deepLinkUrl;
       await fetch(pushUrl, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
+        headers: dbAuthHeaders(),
         body: JSON.stringify(body)
       });
     } catch (e) {
@@ -13810,9 +13808,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         const pushUrl = edgeFunctionUrl.replace(/\/[^/]+$/, "/send-push");
         const resp = await fetch(pushUrl, {
           method: "POST",
-          headers: {
-            "Content-Type": "application/json"
-          },
+          headers: dbAuthHeaders(),
           body: JSON.stringify({
             title: "DSG Call Schedule",
             message: "Test push notification — if you see this, push is working!"
