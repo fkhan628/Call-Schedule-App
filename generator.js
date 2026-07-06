@@ -1,5 +1,42 @@
 // DSG Call Schedule — Schedule Generator & Holiday Logic
 
+/* ─── WEIGHTING & SCORING SCHEMES — one catalog so no future reader has to
+   reverse-engineer which number governs what. FOUR distinct weightings live in
+   this file (a fifth — billing — lives in the app UI, not here). They are
+   INTENTIONALLY different; each answers a different question. Anchors are the
+   function/variable names; line numbers are approximate and will drift.
+
+   1. ASSIGNMENT PRIORITY — `priority(id)` (~line 191, inside generateOnce).
+      Greedy "who gets the next shift". LOWER = more deserving.
+        0.85·periodShifts  +  0.10·(priorYearScore/20)  +  0.05·(priorMultiScore/40)
+      (within-period count is the primary goal; past-year 10%; multi-year 5%)
+
+   2. HISTORICAL BURDEN — `priorMultiScore[id]` = dc·7 + nights·1 + wknd·3
+      (~line 149, inside generateOnce). The "old formula." Feeds the 5% term
+      of #1 and seeds the mutable `burden` map that the weekend-swap post-pass
+      increments (7/3/1) to reason about swaps via delta comparisons.
+      Same 7/1/3 numbers as the UI billing scheme, DIFFERENT purpose.
+
+   3. RAW-COUNT PRIMARY + WEIGHTED TIEBREAK — the Phase-2 rebalance pass:
+      `rawCount(id)` / `weightedTotal(id)` (~line 1187, inside generateOnce).
+        rawCount(id)      = dc + nights + wknd           (PRIMARY — driven tight)
+        weightedTotal(id) = dc·6 + nights·1 + wknd·2     (SW×6/wknd×2/night×1;
+                                                          TIEBREAK among equal raw)
+      Surgeons perceive raw headcount; weighted only breaks ties so nobody
+      quietly carries the heaviest mix while looking even on count.
+
+   4. BEST-OF-N CANDIDATE SCORE — `scoreOf(sched)` (~line 1266, inside the
+      generate() best-of-50 wrapper). Picks the fairest candidate schedule.
+      Lexicographic via powers of ten (LOWER = fairer):
+        spread(combinedServiceWeeks)·10000  (dominates)
+        + spread(weekends)·1000  + spread(total)·100
+        + spread(1stCallServiceWeeks)·10  + spread(1stCallWeekends)·1
+
+   NOT here: BILLING (SW=7 / night=1 / wknd=3), used only for the pay/'$'
+   display in the app UI. Equal weights to #2 but computed and shown
+   separately — don't unify them.
+   ─── */
+
 /* ═══ Schedule Generator (surgeons only — APPs are manual) ═══ */
 
 // Holiday definitions — returns holidays for a given year
