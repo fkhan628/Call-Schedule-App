@@ -21,6 +21,21 @@ function dbAuthHeaders() {
   return dbHeaders;
 }
 
+// The `supabase` wrapper is DELIBERATELY MINIMAL — it implements ONLY the two
+// chains the app actually uses:
+//   • supabase.from(t).select(cols).eq(col,val).single()  → { data, error }
+//       .single() returns the FIRST row or null and never errors on zero rows
+//       (maybeSingle semantics) — there is NO .maybeSingle(); use .single().
+//   • supabase.from(t).upsert(row)                         → { error }
+// For insert/update/delete/order/limit/multiple-filters use db.* (below),
+// dbAuth.*, or a raw fetch (see the time_off deletes in index-source.html).
+// Any unsupported method throws a clear "not implemented" error. Previously an
+// absent method threw a bare "x is not a function" TypeError, which callers'
+// catch blocks swallowed — that silence masked a broken delete and a dead
+// .maybeSingle() call in the signup path.
+const _notImpl = (sig, hint) => () => {
+  throw new Error(`supabase wrapper: ${sig} is not implemented — ${hint || "use db.*, dbAuth.*, or a raw fetch."}`);
+};
 const supabase = {
   from: (table) => ({
     select: (cols) => ({
@@ -29,8 +44,17 @@ const supabase = {
           const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}?select=${cols}&${col}=eq.${val}`, { headers: dbAuthHeaders() });
           const rows = await res.json();
           return { data: rows?.[0] || null, error: rows?.error || null };
-        }
-      })
+        },
+        maybeSingle: _notImpl(".eq().maybeSingle()", "use .single(), which already has maybeSingle semantics (first row or null, no error on zero rows)."),
+        order: _notImpl(".eq().order()"),
+        limit: _notImpl(".eq().limit()"),
+        eq: _notImpl("chained .eq().eq()"),
+      }),
+      single: _notImpl(".select().single() without .eq()"),
+      maybeSingle: _notImpl(".select().maybeSingle()"),
+      order: _notImpl(".select().order()"),
+      limit: _notImpl(".select().limit()"),
+      in: _notImpl(".select().in()"),
     }),
     upsert: async (row) => {
       const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}`, {
@@ -39,6 +63,10 @@ const supabase = {
       });
       return { error: res.ok ? null : await res.text() };
     },
+    insert: _notImpl("from().insert()", "use db.insert()."),
+    update: _notImpl("from().update()", "use db.update()."),
+    delete: _notImpl("from().delete()", "use a raw fetch (see the time_off deletes in index-source.html)."),
+    eq: _notImpl("from().eq() without .select()"),
   }),
 };
 
