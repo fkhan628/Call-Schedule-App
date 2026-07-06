@@ -347,6 +347,13 @@ function CallSchedule() {
   const [notifLastSeen, setNotifLastSeen] = useState(() => {
     try { return localStorage.getItem("dsg-notif-seen") || "2000-01-01T00:00:00Z"; } catch(e) { return "2000-01-01T00:00:00Z"; }
   });
+  // Per-device "cleared" watermark. "Clear notifications" is a local-view op
+  // (notifications is a shared feed with no per-user rows), so instead of a DB
+  // delete we hide everything at/before this timestamp. Persisted so it survives
+  // reload and the 60s poll re-populating `notifications` from the DB.
+  const [notifClearedBefore, setNotifClearedBefore] = useState(() => {
+    try { return localStorage.getItem("dsg-notif-cleared") || "2000-01-01T00:00:00Z"; } catch(e) { return "2000-01-01T00:00:00Z"; }
+  });
 
   // ─── Browser Push & Email Notification Preferences ───
   const [pushPermission, setPushPermission] = useState(() => {
@@ -383,15 +390,17 @@ function CallSchedule() {
 
   // ─── Person-specific filtering (non-schedulers see only their own data) ───
   const myNotifications = useMemo(() => {
-    if (isScheduler) return notifications;
-    if (!mySurgeon || mySurgeon === "admin") return notifications;
-    return notifications.filter(n => {
-      if (n.type === "schedule_published" || n.type === "schedule_changed") return true;
-      if (n.data?.surgeon_id === mySurgeon) return true;
-      if (n.data?.from_surgeon_id === mySurgeon || n.data?.to_surgeon_id === mySurgeon) return true;
-      return false;
-    });
-  }, [notifications, isScheduler, mySurgeon]);
+    const base = (isScheduler || !mySurgeon || mySurgeon === "admin")
+      ? notifications
+      : notifications.filter(n => {
+          if (n.type === "schedule_published" || n.type === "schedule_changed") return true;
+          if (n.data?.surgeon_id === mySurgeon) return true;
+          if (n.data?.from_surgeon_id === mySurgeon || n.data?.to_surgeon_id === mySurgeon) return true;
+          return false;
+        });
+    // Hide notifications the user "cleared" on this device (local view only).
+    return base.filter(n => n.created_at > notifClearedBefore);
+  }, [notifications, isScheduler, mySurgeon, notifClearedBefore]);
 
   const myUnreadCount = useMemo(() => myNotifications.filter(n => n.created_at > notifLastSeen).length, [myNotifications, notifLastSeen]);
 
@@ -2024,14 +2033,22 @@ function CallSchedule() {
     try { localStorage.setItem("dsg-notif-seen", now); } catch(e) { console.warn("Couldn't persist notifications-seen marker:", e); }
   };
 
-  // ─── Clear All Notifications ───
-  const clearAllNotifications = useCallback(async () => {
-    if (!confirm("Clear all notifications? This cannot be undone.")) return;
+  // ─── Clear Notifications (local view, this device only) ───
+  // notifications is a SHARED group feed with no per-user rows — a DB delete
+  // would wipe everyone's feed, and PostgREST refuses the unfiltered DELETE
+  // anyway (400 "DELETE requires a WHERE clause"). So "Clear" is purely local:
+  // advance the per-device cleared/seen watermarks (persisted), which hides the
+  // current notifications on this device and survives reload. Actual DB
+  // housekeeping is handled by the 14-day cron (job 6). No network, no failure path.
+  const clearAllNotifications = useCallback(() => {
+    if (!confirm("Clear notifications from this view? Only this device is affected — the shared feed and other devices are untouched.")) return;
+    const now = new Date().toISOString();
+    setNotifClearedBefore(now);
+    setNotifLastSeen(now);
     try {
-      const res = await fetch(`${SUPABASE_URL}/rest/v1/notifications`, { method: "DELETE", headers: { ...dbAuthHeaders(), Prefer: "return=minimal" } });
-      if (!res.ok) { console.error("Clear notifications failed:", res.status); showToast("Couldn't clear notifications — check your connection and try again.", "error"); }
-      setNotifications([]);
-    } catch(e) { console.error("Clear notifications error:", e); showToast("Couldn't clear notifications — check your connection and try again.", "error"); }
+      localStorage.setItem("dsg-notif-cleared", now);
+      localStorage.setItem("dsg-notif-seen", now);
+    } catch(e) { console.warn("Couldn't persist notifications-cleared marker:", e); }
   }, []);
 
   // ─── Delete a Single Vacation Request ───
@@ -8338,6 +8355,12 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                       </div>
                     </div>
 
+                    <label style={{display:"flex",alignItems:"flex-start",gap:8,marginBottom:12,cursor:"pointer"}}>
+                      <input type="checkbox" checked={myPref.browser_push !== false}
+                        onChange={e=>saveNotifPref(mySurgeon, {browser_push:e.target.checked})} style={{marginTop:2}}/>
+                      <span style={{fontSize:12,color:"#3a4a58"}}>Show pop-up alerts on <strong>this device</strong> <span style={{color:"#8a94a0"}}>— the in-app/browser notification banner while the app is open. Separate from the cross-device Push and Email categories above.</span></span>
+                    </label>
+
                     <div style={{fontSize:11,fontWeight:600,color:"#5a6a78",marginBottom:6}}>Reminder Times</div>
                     <HourPicker field="daily_reminder_hour" label="Daily call reminder"/>
                     <HourPicker field="vac_deadline_hour" label="Vacation deadline reminder"/>
@@ -8360,16 +8383,6 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                         <input value={pref.email || ""} onChange={e=>saveNotifPref(s.id, {email:e.target.value})}
                           placeholder="email@example.com" type="email"
                           style={{...css.inp,width:200,fontSize:11,fontFamily:mono,padding:"4px 8px"}}/>
-                        <label style={{display:"flex",alignItems:"center",gap:3,fontSize:10,color:"#5a6a78",cursor:"pointer"}}>
-                          <input type="checkbox" checked={pref.email_notifs || false}
-                            onChange={e=>saveNotifPref(s.id, {email_notifs:e.target.checked})}/>
-                          Email
-                        </label>
-                        <label style={{display:"flex",alignItems:"center",gap:3,fontSize:10,color:"#5a6a78",cursor:"pointer"}}>
-                          <input type="checkbox" checked={pref.browser_push !== false}
-                            onChange={e=>saveNotifPref(s.id, {browser_push:e.target.checked})}/>
-                          Push
-                        </label>
                       </div>
                     );
                   })}
@@ -8383,16 +8396,6 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                         <input value={pref.email || ""} onChange={e=>saveNotifPref(a.id, {email:e.target.value})}
                           placeholder="email@example.com" type="email"
                           style={{...css.inp,width:200,fontSize:11,fontFamily:mono,padding:"4px 8px"}}/>
-                        <label style={{display:"flex",alignItems:"center",gap:3,fontSize:10,color:"#5a6a78",cursor:"pointer"}}>
-                          <input type="checkbox" checked={pref.email_notifs || false}
-                            onChange={e=>saveNotifPref(a.id, {email_notifs:e.target.checked})}/>
-                          Email
-                        </label>
-                        <label style={{display:"flex",alignItems:"center",gap:3,fontSize:10,color:"#5a6a78",cursor:"pointer"}}>
-                          <input type="checkbox" checked={pref.browser_push !== false}
-                            onChange={e=>saveNotifPref(a.id, {browser_push:e.target.checked})}/>
-                          Push
-                        </label>
                       </div>
                     );
                   })}
