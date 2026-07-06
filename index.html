@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.07.04c";
+    var APP_VERSION = "2026.07.05a";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -316,6 +316,13 @@ function CallSchedule() {
       return "2000-01-01T00:00:00Z";
     }
   });
+  const [notifClearedBefore, setNotifClearedBefore] = useState(() => {
+    try {
+      return localStorage.getItem("dsg-notif-cleared") || "2000-01-01T00:00:00Z";
+    } catch (e) {
+      return "2000-01-01T00:00:00Z";
+    }
+  });
   const [pushPermission, setPushPermission] = useState(() => {
     try {
       var _Notification;
@@ -356,16 +363,15 @@ function CallSchedule() {
     }
   }, [mySurgeon, isScheduler]);
   const myNotifications = useMemo(() => {
-    if (isScheduler) return notifications;
-    if (!mySurgeon || mySurgeon === "admin") return notifications;
-    return notifications.filter(n => {
+    const base = isScheduler || !mySurgeon || mySurgeon === "admin" ? notifications : notifications.filter(n => {
       var _n$data, _n$data2, _n$data3;
       if (n.type === "schedule_published" || n.type === "schedule_changed") return true;
       if (((_n$data = n.data) === null || _n$data === void 0 ? void 0 : _n$data.surgeon_id) === mySurgeon) return true;
       if (((_n$data2 = n.data) === null || _n$data2 === void 0 ? void 0 : _n$data2.from_surgeon_id) === mySurgeon || ((_n$data3 = n.data) === null || _n$data3 === void 0 ? void 0 : _n$data3.to_surgeon_id) === mySurgeon) return true;
       return false;
     });
-  }, [notifications, isScheduler, mySurgeon]);
+    return base.filter(n => n.created_at > notifClearedBefore);
+  }, [notifications, isScheduler, mySurgeon, notifClearedBefore]);
   const myUnreadCount = useMemo(() => myNotifications.filter(n => n.created_at > notifLastSeen).length, [myNotifications, notifLastSeen]);
   const myVacRequests = useMemo(() => {
     return vacRequests;
@@ -2173,23 +2179,16 @@ function CallSchedule() {
       console.warn("Couldn't persist notifications-seen marker:", e);
     }
   };
-  const clearAllNotifications = useCallback(async () => {
-    if (!confirm("Clear all notifications? This cannot be undone.")) return;
+  const clearAllNotifications = useCallback(() => {
+    if (!confirm("Clear notifications from this view? Only this device is affected — the shared feed and other devices are untouched.")) return;
+    const now = new Date().toISOString();
+    setNotifClearedBefore(now);
+    setNotifLastSeen(now);
     try {
-      const res = await fetch(`${SUPABASE_URL}/rest/v1/notifications`, {
-        method: "DELETE",
-        headers: _objectSpread(_objectSpread({}, dbAuthHeaders()), {}, {
-          Prefer: "return=minimal"
-        })
-      });
-      if (!res.ok) {
-        console.error("Clear notifications failed:", res.status);
-        showToast("Couldn't clear notifications — check your connection and try again.", "error");
-      }
-      setNotifications([]);
+      localStorage.setItem("dsg-notif-cleared", now);
+      localStorage.setItem("dsg-notif-seen", now);
     } catch (e) {
-      console.error("Clear notifications error:", e);
-      showToast("Couldn't clear notifications — check your connection and try again.", "error");
+      console.warn("Couldn't persist notifications-cleared marker:", e);
     }
   }, []);
   const deleteVacRequest = useCallback(async reqId => {
@@ -14013,7 +14012,33 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       onChange: e => saveNotifPref(mySurgeon, {
         [`${key}_push`]: e.target.checked
       })
-    })))))), React.createElement("div", {
+    })))))), React.createElement("label", {
+      style: {
+        display: "flex",
+        alignItems: "flex-start",
+        gap: 8,
+        marginBottom: 12,
+        cursor: "pointer"
+      }
+    }, React.createElement("input", {
+      type: "checkbox",
+      checked: myPref.browser_push !== false,
+      onChange: e => saveNotifPref(mySurgeon, {
+        browser_push: e.target.checked
+      }),
+      style: {
+        marginTop: 2
+      }
+    }), React.createElement("span", {
+      style: {
+        fontSize: 12,
+        color: "#3a4a58"
+      }
+    }, "Show pop-up alerts on ", React.createElement("strong", null, "this device"), " ", React.createElement("span", {
+      style: {
+        color: "#8a94a0"
+      }
+    }, "— the in-app/browser notification banner while the app is open. Separate from the cross-device Push and Email categories above."))), React.createElement("div", {
       style: {
         fontSize: 11,
         fontWeight: 600,
@@ -14074,37 +14099,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         fontFamily: mono,
         padding: "4px 8px"
       })
-    }), React.createElement("label", {
-      style: {
-        display: "flex",
-        alignItems: "center",
-        gap: 3,
-        fontSize: 10,
-        color: "#5a6a78",
-        cursor: "pointer"
-      }
-    }, React.createElement("input", {
-      type: "checkbox",
-      checked: pref.email_notifs || false,
-      onChange: e => saveNotifPref(s.id, {
-        email_notifs: e.target.checked
-      })
-    }), "Email"), React.createElement("label", {
-      style: {
-        display: "flex",
-        alignItems: "center",
-        gap: 3,
-        fontSize: 10,
-        color: "#5a6a78",
-        cursor: "pointer"
-      }
-    }, React.createElement("input", {
-      type: "checkbox",
-      checked: pref.browser_push !== false,
-      onChange: e => saveNotifPref(s.id, {
-        browser_push: e.target.checked
-      })
-    }), "Push"));
+    }));
   }), React.createElement("div", {
     style: {
       fontSize: 11,
@@ -14139,37 +14134,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         fontFamily: mono,
         padding: "4px 8px"
       })
-    }), React.createElement("label", {
-      style: {
-        display: "flex",
-        alignItems: "center",
-        gap: 3,
-        fontSize: 10,
-        color: "#5a6a78",
-        cursor: "pointer"
-      }
-    }, React.createElement("input", {
-      type: "checkbox",
-      checked: pref.email_notifs || false,
-      onChange: e => saveNotifPref(a.id, {
-        email_notifs: e.target.checked
-      })
-    }), "Email"), React.createElement("label", {
-      style: {
-        display: "flex",
-        alignItems: "center",
-        gap: 3,
-        fontSize: 10,
-        color: "#5a6a78",
-        cursor: "pointer"
-      }
-    }, React.createElement("input", {
-      type: "checkbox",
-      checked: pref.browser_push !== false,
-      onChange: e => saveNotifPref(a.id, {
-        browser_push: e.target.checked
-      })
-    }), "Push"));
+    }));
   }), notifPrefsSaving && React.createElement("span", {
     style: {
       fontSize: 10,
