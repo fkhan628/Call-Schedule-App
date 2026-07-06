@@ -608,7 +608,12 @@ function CallSchedule() {
                 .from("notification_preferences")
                 .select("email")
                 .eq("surgeon_id", signupPersonId)
-                .maybeSingle();
+                .single();
+                // ^ .single(), NOT .maybeSingle() — the wrapper never implemented
+                // maybeSingle, so this call threw on every signup and the catch
+                // below silently overwrote instead of checking first. The
+                // wrapper's .single() already returns first-row-or-null with no
+                // error on zero rows (maybeSingle semantics).
               const existingEmail = (existingRow?.email || "").trim();
               if (!existingEmail) {
                 saveNotifPref(signupPersonId, { email: authEmail, email_notifs: true });
