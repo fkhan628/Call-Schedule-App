@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.07.05a";
+    var APP_VERSION = "2026.07.06a";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -573,7 +573,7 @@ function CallSchedule() {
             try {
               const {
                 data: existingRow
-              } = await supabase.from("notification_preferences").select("email").eq("surgeon_id", signupPersonId).maybeSingle();
+              } = await supabase.from("notification_preferences").select("email").eq("surgeon_id", signupPersonId).single();
               const existingEmail = ((existingRow === null || existingRow === void 0 ? void 0 : existingRow.email) || "").trim();
               if (!existingEmail) {
                 saveNotifPref(signupPersonId, {
