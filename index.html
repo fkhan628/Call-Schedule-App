@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.07.06a";
+    var APP_VERSION = "2026.07.18a";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -2055,10 +2055,27 @@ function CallSchedule() {
         msg += "\n\nProceed with all changes?";
         if (!confirm(msg)) return;
       }
-      await db.update("shift_trade_requests", req.id, {
-        status: "accepted",
-        reviewed_at: new Date().toISOString()
+      const acceptRes = await fetch(`${SUPABASE_URL}/rest/v1/shift_trade_requests?id=eq.${req.id}&status=eq.pending`, {
+        method: "PATCH",
+        headers: _objectSpread(_objectSpread({}, dbAuthHeaders()), {}, {
+          "Content-Type": "application/json",
+          Prefer: "return=representation"
+        }),
+        body: JSON.stringify({
+          status: "accepted",
+          reviewed_at: new Date().toISOString()
+        })
       });
+      if (!acceptRes.ok) {
+        console.error("Trade accept status write failed:", acceptRes.status, await acceptRes.text().catch(() => ""));
+        showToast("Couldn't accept the trade — nothing was changed. Check your connection and try again.", "error");
+        return;
+      }
+      const acceptRows = await acceptRes.json().catch(() => []);
+      if (!Array.isArray(acceptRows) || acceptRows.length === 0) {
+        showToast("This trade was already handled or withdrawn — nothing was changed.", "error");
+        return;
+      }
       setTradeRequests(prev => prev.map(r => r.id === req.id ? _objectSpread(_objectSpread({}, r), {}, {
         status: "accepted"
       }) : r));
@@ -2126,10 +2143,27 @@ function CallSchedule() {
   }, [schedule, surgeons, pushUndo, addNotification, sendEmailNotif, detectCascadeChanges, schedulerAdminIds]);
   const declineTradeRequest = useCallback(async req => {
     try {
-      await db.update("shift_trade_requests", req.id, {
-        status: "declined",
-        reviewed_at: new Date().toISOString()
+      const declineRes = await fetch(`${SUPABASE_URL}/rest/v1/shift_trade_requests?id=eq.${req.id}&status=eq.pending`, {
+        method: "PATCH",
+        headers: _objectSpread(_objectSpread({}, dbAuthHeaders()), {}, {
+          "Content-Type": "application/json",
+          Prefer: "return=representation"
+        }),
+        body: JSON.stringify({
+          status: "declined",
+          reviewed_at: new Date().toISOString()
+        })
       });
+      if (!declineRes.ok) {
+        console.error("Trade decline status write failed:", declineRes.status, await declineRes.text().catch(() => ""));
+        showToast("Couldn't decline the trade — nothing was changed. Check your connection and try again.", "error");
+        return;
+      }
+      const declineRows = await declineRes.json().catch(() => []);
+      if (!Array.isArray(declineRows) || declineRows.length === 0) {
+        showToast("This trade was already handled or withdrawn — nothing was changed.", "error");
+        return;
+      }
       setTradeRequests(prev => prev.map(r => r.id === req.id ? _objectSpread(_objectSpread({}, r), {}, {
         status: "declined"
       }) : r));
