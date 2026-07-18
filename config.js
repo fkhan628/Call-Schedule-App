@@ -78,7 +78,19 @@ const db = {
     if (order) url += `&order=${order}`;
     if (limit) url += `&limit=${limit}`;
     const res = await fetch(url, { headers: dbAuthHeaders() });
-    return res.ok ? await res.json() : [];
+    // HTTP failure THROWS, exactly like a network failure already does — a
+    // failed read must never be indistinguishable from an empty table. (An
+    // RLS-filtered read is HTTP 200 + [] — that's data, not an error, and
+    // still returns [].) Every call site already try/catches (the network
+    // path has exercised those catches for years); on failure they now keep
+    // prior state instead of adopting a wrongly-empty []. The old silent-[]
+    // contract let a failed time_off read wipe the vacations state and
+    // poison the blob mirror (the 2026-07-18 office-digest incident).
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      throw new Error(`db.query(${table}) failed: HTTP ${res.status} ${body.slice(0, 200)}`);
+    }
+    return await res.json();
   },
   async insert(table, row) {
     const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}`, {
