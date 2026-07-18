@@ -1942,7 +1942,29 @@ function CallSchedule() {
         if (!confirm(msg)) return;
       }
 
-      await db.update("shift_trade_requests", req.id, { status: "accepted", reviewed_at: new Date().toISOString() });
+      // Fail-closed status write with a status precondition. The old
+      // db.update call returned {error} on HTTP failure without throwing and
+      // was never checked — so a 401/5xx/RLS failure applied the swap while
+      // the row stayed "pending" (re-actionable ≤60s later; a later decline
+      // would leave the swap live with no record of it). The ?status=eq.pending
+      // filter + rows-affected check also no-op the two-device race (both
+      // parties accepting the same trade) and accept-after-withdraw, which
+      // return 200 with zero rows matched.
+      const acceptRes = await fetch(`${SUPABASE_URL}/rest/v1/shift_trade_requests?id=eq.${req.id}&status=eq.pending`, {
+        method: "PATCH",
+        headers: { ...dbAuthHeaders(), "Content-Type": "application/json", Prefer: "return=representation" },
+        body: JSON.stringify({ status: "accepted", reviewed_at: new Date().toISOString() }),
+      });
+      if (!acceptRes.ok) {
+        console.error("Trade accept status write failed:", acceptRes.status, await acceptRes.text().catch(() => ""));
+        showToast("Couldn't accept the trade — nothing was changed. Check your connection and try again.", "error");
+        return; // fail closed: no swap, no cascades, no undo, no notifications
+      }
+      const acceptRows = await acceptRes.json().catch(() => []);
+      if (!Array.isArray(acceptRows) || acceptRows.length === 0) {
+        showToast("This trade was already handled or withdrawn — nothing was changed.", "error");
+        return; // realtime/60s poll will refresh the visible status
+      }
       setTradeRequests(prev => prev.map(r => r.id === req.id ? { ...r, status: "accepted" } : r));
       logAudit("trade.accept", `Accepted trade: ${req.from_surgeon_name}'s ${req.shift_label} (${req.week_monday}) ↔ ${req.to_surgeon_name}${cascades.length ? ` (+${cascades.length} cascade change${cascades.length === 1 ? "" : "s"})` : ""}`, { request_id: req.id, cascades: cascades.length });
       pushUndo(schedule);
@@ -2007,7 +2029,25 @@ function CallSchedule() {
   // ─── Shift Trade Request: Decline ───
   const declineTradeRequest = useCallback(async (req) => {
     try {
-      await db.update("shift_trade_requests", req.id, { status: "declined", reviewed_at: new Date().toISOString() });
+      // Fail-closed status write with a status precondition — same pattern
+      // (and same reasons) as acceptTradeRequest above: HTTP failure must not
+      // proceed to notifications with the row still "pending", and a trade
+      // already handled elsewhere (race/withdraw) must no-op cleanly.
+      const declineRes = await fetch(`${SUPABASE_URL}/rest/v1/shift_trade_requests?id=eq.${req.id}&status=eq.pending`, {
+        method: "PATCH",
+        headers: { ...dbAuthHeaders(), "Content-Type": "application/json", Prefer: "return=representation" },
+        body: JSON.stringify({ status: "declined", reviewed_at: new Date().toISOString() }),
+      });
+      if (!declineRes.ok) {
+        console.error("Trade decline status write failed:", declineRes.status, await declineRes.text().catch(() => ""));
+        showToast("Couldn't decline the trade — nothing was changed. Check your connection and try again.", "error");
+        return;
+      }
+      const declineRows = await declineRes.json().catch(() => []);
+      if (!Array.isArray(declineRows) || declineRows.length === 0) {
+        showToast("This trade was already handled or withdrawn — nothing was changed.", "error");
+        return; // realtime/60s poll will refresh the visible status
+      }
       setTradeRequests(prev => prev.map(r => r.id === req.id ? { ...r, status: "declined" } : r));
       logAudit("trade.decline", `Declined trade: ${req.from_surgeon_name}'s ${req.shift_label} (${req.week_monday}) → ${req.to_surgeon_name}`, { request_id: req.id });
       await addNotification("trade_declined", "Shift Trade Declined",
