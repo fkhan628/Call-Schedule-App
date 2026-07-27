@@ -147,6 +147,7 @@ function CallSchedule() {
   // ─── Calendar Filters ───
   const [calFilters, setCalFilters] = useState({ svc: true, night: true, wknd: true, app: true, fierce: true, vac: true });
   const [showBackupStats, setShowBackupStats] = useState(false); // Toggle 2nd call columns in Stats
+  const [statsScope, setStatsScope] = useState("period"); // "period" | "ytd" — shared by the Counts and Vacation Days cards
   const [statsTab, setStatsTab] = useState("fairness"); // Stats view: which table is shown (fairness|monthly|billing|app)
   const [auditEntries, setAuditEntries] = useState([]); // Activity log rows (scheduler/admin viewer)
   const [auditLoading, setAuditLoading] = useState(false);
@@ -3968,14 +3969,14 @@ ${"</"}script>${"</"}body>${"</"}html>`;
   };
 
   // Stats
-  const stats = useMemo(() => {
+  // ONE tally implementation for any subset of schedule weeks — the per-period
+  // and year-to-date tables must never drift apart in counting rules, so both
+  // call this with a different week filter. Includes the dayCallOverrides
+  // single-day coverage adjustment.
+  const tallySchedule = (includeWeek) => {
     const s={}; surgeons.forEach(sg=>s[sg.id]={dc:0,nights:0,wknd:0,off:0,dcB:0,nightsB:0,wkndB:0,offB:0,svcAdj6:0,svcAdj7:0});
-    // Only count weeks within the currently-selected Schedule Period.
-    // Without this filter, stats would include all weeks ever stored in `schedule`,
-    // causing the "This Period" totals to not match the header label when the period changes.
-    const periodKeys = new Set(mondays.map(m => fmt(m)));
     Object.entries(schedule).forEach(([mStr, wk]) => {
-      if (!periodKeys.has(mStr)) return;
+      if (!includeWeek(mStr)) return;
       const bk = wk.isBackup;
       if(wk.dayCall&&s[wk.dayCall]) s[wk.dayCall][bk?"dcB":"dc"]++;
       if(wk.off&&s[wk.off]) s[wk.off][bk?"offB":"off"]++;
@@ -4002,7 +4003,34 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       }
     });
     return s;
+  };
+  const stats = useMemo(() => {
+    // Only count weeks within the currently-selected Schedule Period.
+    // Without this filter, stats would include all weeks ever stored in
+    // `schedule`, causing the "This Period" totals to not match the header
+    // label when the period changes.
+    const periodKeys = new Set(mondays.map(m => fmt(m)));
+    return tallySchedule(mStr => periodKeys.has(mStr));
   }, [schedule, surgeons, mondays]);
+  // Year view (FAK-resolved 2026-07-18): ALL scheduled weeks whose Monday
+  // falls in the CURRENT CALENDAR YEAR — including future weeks through the
+  // end of the last scheduled period ("count the full period as scheduled",
+  // overriding the earlier through-today default). Same counting rules as
+  // `stats` by construction (shared tallySchedule).
+  const statsYTD = useMemo(() => {
+    const yr = new Date().getFullYear();
+    return tallySchedule(mStr => mStr >= `${yr}-01-01` && mStr <= `${yr}-12-31`);
+  }, [schedule, surgeons]);
+  // The year view's display range — BOTH ends DERIVED from the schedule
+  // (never hardcoded): first in-year scheduled Monday → Sunday of the last
+  // in-year scheduled week. Rolls forward automatically when the next period
+  // is generated. For 2026 this derives to 2026-05-04 (where the data begins).
+  const ytdRange = useMemo(() => {
+    const yr = new Date().getFullYear();
+    const inYear = Object.keys(schedule).filter(m => m >= `${yr}-01-01` && m <= `${yr}-12-31`).sort();
+    if (inYear.length === 0) return { start: `${yr}-01-01`, end: `${yr}-12-31`, hasData: false };
+    return { start: inYear[0], end: fmt(addD(parse(inYear[inYear.length - 1]), 6)), hasData: true };
+  }, [schedule]);
 
   // APP stats
   const appStats = useMemo(() => {
@@ -4035,27 +4063,119 @@ ${"</"}script>${"</"}body>${"</"}html>`;
   // 14-week window don't count. Returns { id: { days, ranges:[[s,e],…] } } where
   // `ranges` are the clamped, in-period spans (for display). If there's no
   // generated period yet, falls back to all-time counts so the card isn't blank.
-  const vacDaysPeriod = useMemo(() => {
+  // Shared window-clamped vacation-day counter: clamp each range to
+  // [winStart … winEnd] (null bound = unclamped) and count inclusive days.
+  // Used by BOTH the per-period and year-to-date tables so the day-counting
+  // rules can't drift apart. Returns { id: { days, ranges } }.
+  const countVacDaysInWindow = (winStart, winEnd) => {
     const out = {};
+    [...surgeons, ...apps].forEach(p => {
+      const ranges = vacations[p.id] || [];
+      let days = 0;
+      const inWin = [];
+      ranges.forEach(([start, end]) => {
+        // String compare is valid for YYYY-MM-DD; clamp to the window.
+        const cs = (winStart && start < winStart) ? winStart : start;
+        const ce = (winEnd && end > winEnd) ? winEnd : end;
+        if (cs > ce) return; // range falls entirely outside the window
+        const diff = Math.round((parse(ce) - parse(cs)) / (1000*60*60*24)) + 1;
+        if (diff > 0) { days += diff; inWin.push([cs, ce]); }
+      });
+      out[p.id] = { days, ranges: inWin };
+    });
+    return out;
+  };
+  const vacDaysPeriod = useMemo(() => {
     const pStart = mondays.length > 0 ? fmt(mondays[0]) : null;
     const pEnd = endDate ? fmt(endDate) : null;
-    const scope = (id) => {
-      const ranges = vacations[id] || [];
-      let days = 0;
-      const inPeriod = [];
-      ranges.forEach(([start, end]) => {
-        // String compare is valid for YYYY-MM-DD; clamp to the period window.
-        const cs = (pStart && start < pStart) ? pStart : start;
-        const ce = (pEnd && end > pEnd) ? pEnd : end;
-        if (cs > ce) return; // range falls entirely outside the period
-        const diff = Math.round((parse(ce) - parse(cs)) / (1000*60*60*24)) + 1;
-        if (diff > 0) { days += diff; inPeriod.push([cs, ce]); }
-      });
-      return { days, ranges: inPeriod };
-    };
-    [...surgeons, ...apps].forEach(p => { out[p.id] = scope(p.id); });
-    return { out, pStart, pEnd, hasPeriod: !!(pStart && pEnd) };
+    return { out: countVacDaysInWindow(pStart, pEnd), pStart, pEnd, hasPeriod: !!(pStart && pEnd) };
   }, [vacations, surgeons, apps, mondays, endDate]);
+  // Day-level "this person actually WORKED this calendar day" set — used ONLY
+  // by the year vacation table to exclude worked-vacation days. Mapping:
+  // Service Week covers Mon–Sat (a per-day dayCallOverride moves that day to
+  // the covering surgeon); each weeknight covers its own day; Weekend covers
+  // Fri/Sat/Sun; an APP works a day when appShifts assigns it to them.
+  const workedDaySet = useMemo(() => {
+    const set = new Set();
+    Object.entries(schedule).forEach(([mStr, wk]) => {
+      const mon = parse(mStr);
+      const dayOf = (i) => fmt(addD(mon, i)); // 0=Mon … 6=Sun
+      const ov = wk.dayCallOverrides || {};
+      if (wk.dayCall) for (let i = 0; i <= 5; i++) { const ds = dayOf(i); set.add((ov[ds] || wk.dayCall) + "|" + ds); }
+      const n = wk.nights || {};
+      ["mon","tue","wed","thu"].forEach((sk, i) => { if (n[sk]) set.add(n[sk] + "|" + dayOf(i)); });
+      if (n.wknd) [4,5,6].forEach(i => set.add(n.wknd + "|" + dayOf(i)));
+    });
+    Object.entries(appShifts).forEach(([ds, aid]) => { if (aid) set.add(aid + "|" + ds); });
+    return set;
+  }, [schedule, appShifts]);
+  // Year vacation days (FAK-resolved 2026-07-18): window = the DERIVED
+  // in-year schedule span (ytdRange), and — INTENTIONALLY UNLIKE the period
+  // table — days where the person actually WORKED a call/APP shift while on
+  // vacation status (the documented in-town pattern) are EXCLUDED: this table
+  // answers "days actually taken off". The period table's raw count and this
+  // one legitimately differ by exactly those worked days; that is not drift.
+  const vacDaysYTD = useMemo(() => {
+    const base = countVacDaysInWindow(ytdRange.start, ytdRange.end);
+    const out = {};
+    Object.entries(base).forEach(([id, rec]) => {
+      let worked = 0;
+      rec.ranges.forEach(([cs, ce]) => {
+        for (let d = parse(cs), e = parse(ce); d <= e; d = addD(d, 1)) {
+          if (workedDaySet.has(id + "|" + fmt(d))) worked++;
+        }
+      });
+      out[id] = { days: rec.days - worked, worked, ranges: rec.ranges };
+    });
+    return { out, start: ytdRange.start, end: ytdRange.end };
+  }, [vacations, surgeons, apps, workedDaySet, ytdRange]);
+
+  // ── Vacation-request coverage check (Requests tab) ──
+  // Per-day, because a range can be fine on day 1 and violate on day 3 as
+  // different vacations overlap. ASSUMPTIONS (flagged for review):
+  //   • "Available" = surgeon not on a vacation entry (time_off) that day.
+  //     No-call days do NOT reduce availability, and existing on-call
+  //     assignments are not considered. Surgeons only — APP requests return
+  //     null (an APP's absence doesn't change the surgeon floor).
+  //   • Occupying = APPROVED vacations (the vacations state = time_off).
+  //     Overlapping PENDING requests are listed informationally, NOT counted
+  //     against the floor.
+  //   • The requester is excluded from the available count (out by definition
+  //     if approved). The floor-breach flag applies to vacation requests
+  //     only — no-call requests still show the overlap info.
+  const vacRequestCoverage = (req) => {
+    if (!req?.start_date || !req?.end_date || req.start_date > req.end_date) return null;
+    if (!sMap[req.surgeon_id]) return null; // APP request — surgeon floor unaffected
+    const surgeonIds = surgeons.map(s => s.id);
+    const onVac = (id, ds) => (vacations[id] || []).some(([s, e]) => s <= ds && ds <= e);
+    const conflictIds = new Set();
+    let worst = null; // the day with the fewest available surgeons
+    for (let d = parse(req.start_date), end = parse(req.end_date); d <= end; d = addD(d, 1)) {
+      const ds = fmt(d);
+      const outToday = surgeonIds.filter(id => id !== req.surgeon_id && onVac(id, ds));
+      outToday.forEach(id => conflictIds.add(id));
+      const available = surgeonIds.length - outToday.length - 1; // -1 = the requester
+      if (!worst || available < worst.available) worst = { date: ds, available };
+    }
+    // Who else is on vacation in this window (with their overlapping spans,
+    // clamped to the request range for display).
+    const conflicts = [...conflictIds].map(id => ({
+      id,
+      ranges: (vacations[id] || [])
+        .filter(([s, e]) => s <= req.end_date && req.start_date <= e)
+        .map(([s, e]) => [s < req.start_date ? req.start_date : s, e > req.end_date ? req.end_date : e]),
+    }));
+    const pendingOverlaps = vacRequests.filter(o =>
+      o.id !== req.id && o.status === "pending" && o.request_type !== "nocall" &&
+      o.surgeon_id !== req.surgeon_id && sMap[o.surgeon_id] &&
+      o.start_date <= req.end_date && req.start_date <= o.end_date);
+    return {
+      worst,
+      conflicts,
+      pendingOverlaps,
+      breach: req.request_type !== "nocall" && !!worst && worst.available < MIN_AVAILABLE_SURGEONS,
+    };
+  };
 
   // Cumulative stats: 1-year, 2-year, multi-year (each = prior tier + current schedule)
   const buildCum = (prior) => {
@@ -6806,17 +6926,25 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               </button>
             </div>
           )}
-          {/* Backup toggle */}
-          <div style={{display:"flex",justifyContent:"flex-end",marginBottom:8}}>
+          {/* Scope (This Period / Year to Date) + backup toggles */}
+          <div style={{display:"flex",justifyContent:"flex-end",gap:6,marginBottom:8,flexWrap:"wrap"}}>
+            <button onClick={()=>setStatsScope("period")}
+              style={{background:statsScope==="period"?"#eaf4fb":"#f4f6f8",border:`1px solid ${statsScope==="period"?"#a8cce8":"#d0d8e0"}`,color:statsScope==="period"?"#1a6fa8":"#5a6a78",borderRadius:6,padding:"4px 12px",fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:font}}>
+              This Period
+            </button>
+            <button onClick={()=>setStatsScope("ytd")}
+              style={{background:statsScope==="ytd"?"#eaf4fb":"#f4f6f8",border:`1px solid ${statsScope==="ytd"?"#a8cce8":"#d0d8e0"}`,color:statsScope==="ytd"?"#1a6fa8":"#5a6a78",borderRadius:6,padding:"4px 12px",fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:font}}>
+              Year to Date
+            </button>
             <button onClick={()=>setShowBackupStats(p=>!p)}
               style={{background:showBackupStats?"#fef8e8":"#f4f6f8",border:`1px solid ${showBackupStats?"#d8c880":"#d0d8e0"}`,color:showBackupStats?"#8a6a10":"#5a6a78",borderRadius:6,padding:"4px 12px",fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:font}}>
               {showBackupStats ? "Hide 2nd Call" : "Show 2nd Call"}
             </button>
           </div>
-          {/* Surgeon stats */}
+          {/* Surgeon stats — This Period or Year to Date (statsScope) */}
           <div style={css.card}>
-            <div style={css.cardT}>This Period — {MO[startMonth]} to {MO[endMoIdx]} {startYear}</div>
-            {!Object.values(stats).some(s=>s.dc>0||s.nights>0) ? (
+            <div style={css.cardT}>{statsScope==="ytd" ? <>Current Period — {ytdRange.start} → {ytdRange.end}</> : <>This Period — {MO[startMonth]} to {MO[endMoIdx]} {startYear}</>}</div>
+            {!Object.values(statsScope==="ytd"?statsYTD:stats).some(s=>s.dc>0||s.nights>0) ? (
               <p style={{color:"#7a8a98",fontSize:13}}>Generate a schedule first.</p>
             ) : (
               <div style={{overflowX:"auto"}}>
@@ -6837,7 +6965,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   </thead>
                   <tbody>
                     {surgeons.filter(s => isScheduler || !mySurgeon || mySurgeon === "admin" || s.id === mySurgeon).map(s=>{
-                      const st=stats[s.id]||{};
+                      const st=(statsScope==="ytd"?statsYTD:stats)[s.id]||{};
                       const total = calcRawCount(st);
                       return (
                         <tr key={s.id} style={{borderBottom:"1px solid #e8ecf0"}}>
@@ -7140,14 +7268,22 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           <div style={css.card}>
             <div style={css.cardT}>
               Vacation Days Used
-              {vacDaysPeriod.hasPeriod && (
+              {statsScope==="ytd" ? (
+                <span style={{fontWeight:400,fontSize:11,color:"#7a8a98",textTransform:"none",letterSpacing:0}}>
+                  {" — Current Period ("}{vacDaysYTD.start} → {vacDaysYTD.end}{") · days actually taken off — worked-vacation days excluded"}
+                </span>
+              ) : vacDaysPeriod.hasPeriod && (
                 <span style={{fontWeight:400,fontSize:11,color:"#7a8a98",textTransform:"none",letterSpacing:0}}>
                   {" — This Period ("}{vacDaysPeriod.pStart} → {vacDaysPeriod.pEnd}{")"}
                 </span>
               )}
+              <span style={{marginLeft:8,display:"inline-flex",gap:5,verticalAlign:"middle"}}>
+                <button onClick={()=>setStatsScope("period")} style={{background:statsScope==="period"?"#eaf4fb":"#f4f6f8",border:`1px solid ${statsScope==="period"?"#a8cce8":"#d0d8e0"}`,color:statsScope==="period"?"#1a6fa8":"#5a6a78",borderRadius:5,padding:"1px 8px",fontSize:10,fontWeight:600,cursor:"pointer",fontFamily:font,textTransform:"none",letterSpacing:0}}>Period</button>
+                <button onClick={()=>setStatsScope("ytd")} style={{background:statsScope==="ytd"?"#eaf4fb":"#f4f6f8",border:`1px solid ${statsScope==="ytd"?"#a8cce8":"#d0d8e0"}`,color:statsScope==="ytd"?"#1a6fa8":"#5a6a78",borderRadius:5,padding:"1px 8px",fontSize:10,fontWeight:600,cursor:"pointer",fontFamily:font,textTransform:"none",letterSpacing:0}}>YTD</button>
+              </span>
             </div>
-            {!Object.values(vacDaysPeriod.out).some(v=>v.days>0) ? (
-              <p style={{color:"#7a8a98",fontSize:13}}>No vacation days fall within this schedule period.</p>
+            {!Object.values((statsScope==="ytd"?vacDaysYTD:vacDaysPeriod).out).some(v=>v.days>0) ? (
+              <p style={{color:"#7a8a98",fontSize:13}}>{statsScope==="ytd" ? "No vacation days in this year's scheduled span." : "No vacation days fall within this schedule period."}</p>
             ) : (
               <div style={{overflowX:"auto"}}>
                 <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
@@ -7160,8 +7296,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   </thead>
                   <tbody>
                     {surgeons.filter(s => isScheduler || !mySurgeon || mySurgeon === "admin" || s.id === mySurgeon).map(s=>{
-                      const days = vacDaysPeriod.out[s.id]?.days || 0;
-                      const ranges = vacDaysPeriod.out[s.id]?.ranges || [];
+                      const vSrc = (statsScope==="ytd"?vacDaysYTD:vacDaysPeriod).out;
+                      const days = vSrc[s.id]?.days || 0;
+                      const ranges = vSrc[s.id]?.ranges || [];
+                      const workedD = vSrc[s.id]?.worked || 0;
                       return (
                         <tr key={s.id} style={{borderBottom:"1px solid #e8ecf0"}}>
                           <td style={{padding:"7px 8px"}}><Badge id={s.id}/></td>
@@ -7171,13 +7309,16 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                               <span key={i}>{i>0?" · ":""}{vs} → {ve}</span>
                             ))}
                             {ranges.length===0 && <span style={{color:"#8a94a0"}}>—</span>}
+                            {workedD>0 && <span style={{color:"#8a94a0"}}>{" · "}{workedD}d worked (excluded)</span>}
                           </td>
                         </tr>
                       );
                     })}
                     {(isScheduler || mySurgeon === "admin" || apps.some(a => a.id === mySurgeon)) && apps.filter(a => isScheduler || mySurgeon === "admin" || a.id === mySurgeon).map(a=>{
-                      const days = vacDaysPeriod.out[a.id]?.days || 0;
-                      const ranges = vacDaysPeriod.out[a.id]?.ranges || [];
+                      const vSrcA = (statsScope==="ytd"?vacDaysYTD:vacDaysPeriod).out;
+                      const days = vSrcA[a.id]?.days || 0;
+                      const ranges = vSrcA[a.id]?.ranges || [];
+                      const workedDA = vSrcA[a.id]?.worked || 0;
                       if (!days && !ranges.length) return null;
                       return (
                         <tr key={a.id} style={{borderBottom:"1px solid #e8ecf0"}}>
@@ -7187,6 +7328,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                             {ranges.map(([vs,ve],i)=>(
                               <span key={i}>{i>0?" · ":""}{vs} → {ve}</span>
                             ))}
+                            {workedDA>0 && <span style={{color:"#8a94a0"}}>{" · "}{workedDA}d worked (excluded)</span>}
                           </td>
                         </tr>
                       );
@@ -7745,6 +7887,34 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                             <button onClick={()=>deleteVacRequest(r.id)} style={{background:"none",border:"1px solid #e0c0c0",color:"#904040",borderRadius:5,padding:"2px 8px",fontSize:10,cursor:"pointer",fontFamily:font}}>Withdraw</button>
                           </div>
                         )}
+                        {/* Coverage-floor check + vacation-overlap context (per-day) */}
+                        {(() => {
+                          const cov = vacRequestCoverage(r);
+                          if (!cov || (!cov.breach && cov.conflicts.length === 0 && cov.pendingOverlaps.length === 0)) return null;
+                          return <div style={{marginTop:6}}>
+                            {cov.breach && (
+                              <div style={{fontSize:11,fontWeight:700,color:"#a02020",background:"#fce8e8",border:"1px solid #e0a8a8",borderRadius:6,padding:"4px 9px",marginBottom:4}}>
+                                ⚠ Coverage below minimum — only {cov.worst.available} of {surgeons.length} surgeons available on {cov.worst.date} if approved (floor: {MIN_AVAILABLE_SURGEONS})
+                              </div>
+                            )}
+                            {cov.conflicts.length > 0 && (
+                              <div style={{fontSize:11,color:"#8a6a10",marginBottom:2}}>
+                                🏖 Also on vacation in this window:{" "}
+                                {cov.conflicts.map((c,i)=>(
+                                  <span key={c.id}>{i>0?" · ":""}<strong>{sMap[c.id]?.name || c.id}</strong>{" ("}{c.ranges.map(([cs,ce])=>cs===ce?cs:`${cs}→${ce}`).join(", ")}{")"}</span>
+                                ))}
+                              </div>
+                            )}
+                            {cov.pendingOverlaps.length > 0 && (
+                              <div style={{fontSize:11,color:"#7a6a98"}}>
+                                ⏳ Overlapping pending requests:{" "}
+                                {cov.pendingOverlaps.map((o,i)=>(
+                                  <span key={o.id}>{i>0?" · ":""}<strong>{sMap[o.surgeon_id]?.name || o.surgeon_id}</strong>{" ("}{o.start_date}→{o.end_date}{")"}</span>
+                                ))}
+                              </div>
+                            )}
+                          </div>;
+                        })()}
                       </div>)}
                     </div>}
                   </div>;
