@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.07.27a";
+    var APP_VERSION = "2026.07.27b";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -156,6 +156,7 @@ function CallSchedule() {
     vac: true
   });
   const [showBackupStats, setShowBackupStats] = useState(false);
+  const [statsScope, setStatsScope] = useState("period");
   const [statsTab, setStatsTab] = useState("fairness");
   const [auditEntries, setAuditEntries] = useState([]);
   const [auditLoading, setAuditLoading] = useState(false);
@@ -4390,7 +4391,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     a.click();
     URL.revokeObjectURL(url);
   };
-  const stats = useMemo(() => {
+  const tallySchedule = includeWeek => {
     const s = {};
     surgeons.forEach(sg => s[sg.id] = {
       dc: 0,
@@ -4404,9 +4405,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       svcAdj6: 0,
       svcAdj7: 0
     });
-    const periodKeys = new Set(mondays.map(m => fmt(m)));
     Object.entries(schedule).forEach(([mStr, wk]) => {
-      if (!periodKeys.has(mStr)) return;
+      if (!includeWeek(mStr)) return;
       const bk = wk.isBackup;
       if (wk.dayCall && s[wk.dayCall]) s[wk.dayCall][bk ? "dcB" : "dc"]++;
       if (wk.off && s[wk.off]) s[wk.off][bk ? "offB" : "off"]++;
@@ -4432,7 +4432,29 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       }
     });
     return s;
+  };
+  const stats = useMemo(() => {
+    const periodKeys = new Set(mondays.map(m => fmt(m)));
+    return tallySchedule(mStr => periodKeys.has(mStr));
   }, [schedule, surgeons, mondays]);
+  const statsYTD = useMemo(() => {
+    const yr = new Date().getFullYear();
+    return tallySchedule(mStr => mStr >= `${yr}-01-01` && mStr <= `${yr}-12-31`);
+  }, [schedule, surgeons]);
+  const ytdRange = useMemo(() => {
+    const yr = new Date().getFullYear();
+    const inYear = Object.keys(schedule).filter(m => m >= `${yr}-01-01` && m <= `${yr}-12-31`).sort();
+    if (inYear.length === 0) return {
+      start: `${yr}-01-01`,
+      end: `${yr}-12-31`,
+      hasData: false
+    };
+    return {
+      start: inYear[0],
+      end: fmt(addD(parse(inYear[inYear.length - 1]), 6)),
+      hasData: true
+    };
+  }, [schedule]);
   const appStats = useMemo(() => {
     const s = {};
     apps.forEach(a => s[a.id] = 0);
@@ -4462,39 +4484,111 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     });
     return d;
   }, [vacations, surgeons, apps]);
-  const vacDaysPeriod = useMemo(() => {
+  const countVacDaysInWindow = (winStart, winEnd) => {
     const out = {};
-    const pStart = mondays.length > 0 ? fmt(mondays[0]) : null;
-    const pEnd = endDate ? fmt(endDate) : null;
-    const scope = id => {
-      const ranges = vacations[id] || [];
+    [...surgeons, ...apps].forEach(p => {
+      const ranges = vacations[p.id] || [];
       let days = 0;
-      const inPeriod = [];
+      const inWin = [];
       ranges.forEach(([start, end]) => {
-        const cs = pStart && start < pStart ? pStart : start;
-        const ce = pEnd && end > pEnd ? pEnd : end;
+        const cs = winStart && start < winStart ? winStart : start;
+        const ce = winEnd && end > winEnd ? winEnd : end;
         if (cs > ce) return;
         const diff = Math.round((parse(ce) - parse(cs)) / (1000 * 60 * 60 * 24)) + 1;
         if (diff > 0) {
           days += diff;
-          inPeriod.push([cs, ce]);
+          inWin.push([cs, ce]);
         }
       });
-      return {
+      out[p.id] = {
         days,
-        ranges: inPeriod
+        ranges: inWin
       };
-    };
-    [...surgeons, ...apps].forEach(p => {
-      out[p.id] = scope(p.id);
     });
+    return out;
+  };
+  const vacDaysPeriod = useMemo(() => {
+    const pStart = mondays.length > 0 ? fmt(mondays[0]) : null;
+    const pEnd = endDate ? fmt(endDate) : null;
     return {
-      out,
+      out: countVacDaysInWindow(pStart, pEnd),
       pStart,
       pEnd,
       hasPeriod: !!(pStart && pEnd)
     };
   }, [vacations, surgeons, apps, mondays, endDate]);
+  const workedDaySet = useMemo(() => {
+    const set = new Set();
+    Object.entries(schedule).forEach(([mStr, wk]) => {
+      const mon = parse(mStr);
+      const dayOf = i => fmt(addD(mon, i));
+      const ov = wk.dayCallOverrides || {};
+      if (wk.dayCall) for (let i = 0; i <= 5; i++) {
+        const ds = dayOf(i);
+        set.add((ov[ds] || wk.dayCall) + "|" + ds);
+      }
+      const n = wk.nights || {};
+      ["mon", "tue", "wed", "thu"].forEach((sk, i) => {
+        if (n[sk]) set.add(n[sk] + "|" + dayOf(i));
+      });
+      if (n.wknd) [4, 5, 6].forEach(i => set.add(n.wknd + "|" + dayOf(i)));
+    });
+    Object.entries(appShifts).forEach(([ds, aid]) => {
+      if (aid) set.add(aid + "|" + ds);
+    });
+    return set;
+  }, [schedule, appShifts]);
+  const vacDaysYTD = useMemo(() => {
+    const base = countVacDaysInWindow(ytdRange.start, ytdRange.end);
+    const out = {};
+    Object.entries(base).forEach(([id, rec]) => {
+      let worked = 0;
+      rec.ranges.forEach(([cs, ce]) => {
+        for (let d = parse(cs), e = parse(ce); d <= e; d = addD(d, 1)) {
+          if (workedDaySet.has(id + "|" + fmt(d))) worked++;
+        }
+      });
+      out[id] = {
+        days: rec.days - worked,
+        worked,
+        ranges: rec.ranges
+      };
+    });
+    return {
+      out,
+      start: ytdRange.start,
+      end: ytdRange.end
+    };
+  }, [vacations, surgeons, apps, workedDaySet, ytdRange]);
+  const vacRequestCoverage = req => {
+    if (!(req !== null && req !== void 0 && req.start_date) || !(req !== null && req !== void 0 && req.end_date) || req.start_date > req.end_date) return null;
+    if (!sMap[req.surgeon_id]) return null;
+    const surgeonIds = surgeons.map(s => s.id);
+    const onVac = (id, ds) => (vacations[id] || []).some(([s, e]) => s <= ds && ds <= e);
+    const conflictIds = new Set();
+    let worst = null;
+    for (let d = parse(req.start_date), end = parse(req.end_date); d <= end; d = addD(d, 1)) {
+      const ds = fmt(d);
+      const outToday = surgeonIds.filter(id => id !== req.surgeon_id && onVac(id, ds));
+      outToday.forEach(id => conflictIds.add(id));
+      const available = surgeonIds.length - outToday.length - 1;
+      if (!worst || available < worst.available) worst = {
+        date: ds,
+        available
+      };
+    }
+    const conflicts = [...conflictIds].map(id => ({
+      id,
+      ranges: (vacations[id] || []).filter(([s, e]) => s <= req.end_date && req.start_date <= e).map(([s, e]) => [s < req.start_date ? req.start_date : s, e > req.end_date ? req.end_date : e])
+    }));
+    const pendingOverlaps = vacRequests.filter(o => o.id !== req.id && o.status === "pending" && o.request_type !== "nocall" && o.surgeon_id !== req.surgeon_id && sMap[o.surgeon_id] && o.start_date <= req.end_date && req.start_date <= o.end_date);
+    return {
+      worst,
+      conflicts,
+      pendingOverlaps,
+      breach: req.request_type !== "nocall" && !!worst && worst.available < MIN_AVAILABLE_SURGEONS
+    };
+  };
   const buildCum = prior => {
     const c = {};
     const estTotal = s => (s.dc || 0) * 6 + (s.nights || 0) + (s.wknd || 0) * 1 + (s.svcAdj6 || 0);
@@ -10318,9 +10412,37 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     style: {
       display: "flex",
       justifyContent: "flex-end",
-      marginBottom: 8
+      gap: 6,
+      marginBottom: 8,
+      flexWrap: "wrap"
     }
   }, React.createElement("button", {
+    onClick: () => setStatsScope("period"),
+    style: {
+      background: statsScope === "period" ? "#eaf4fb" : "#f4f6f8",
+      border: `1px solid ${statsScope === "period" ? "#a8cce8" : "#d0d8e0"}`,
+      color: statsScope === "period" ? "#1a6fa8" : "#5a6a78",
+      borderRadius: 6,
+      padding: "4px 12px",
+      fontSize: 11,
+      fontWeight: 600,
+      cursor: "pointer",
+      fontFamily: font
+    }
+  }, "This Period"), React.createElement("button", {
+    onClick: () => setStatsScope("ytd"),
+    style: {
+      background: statsScope === "ytd" ? "#eaf4fb" : "#f4f6f8",
+      border: `1px solid ${statsScope === "ytd" ? "#a8cce8" : "#d0d8e0"}`,
+      color: statsScope === "ytd" ? "#1a6fa8" : "#5a6a78",
+      borderRadius: 6,
+      padding: "4px 12px",
+      fontSize: 11,
+      fontWeight: 600,
+      cursor: "pointer",
+      fontFamily: font
+    }
+  }, "Year to Date"), React.createElement("button", {
     onClick: () => setShowBackupStats(p => !p),
     style: {
       background: showBackupStats ? "#fef8e8" : "#f4f6f8",
@@ -10337,7 +10459,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     style: css.card
   }, React.createElement("div", {
     style: css.cardT
-  }, "This Period — ", MO[startMonth], " to ", MO[endMoIdx], " ", startYear), !Object.values(stats).some(s => s.dc > 0 || s.nights > 0) ? React.createElement("p", {
+  }, statsScope === "ytd" ? React.createElement(React.Fragment, null, "Current Period — ", ytdRange.start, " → ", ytdRange.end) : React.createElement(React.Fragment, null, "This Period — ", MO[startMonth], " to ", MO[endMoIdx], " ", startYear)), !Object.values(statsScope === "ytd" ? statsYTD : stats).some(s => s.dc > 0 || s.nights > 0) ? React.createElement("p", {
     style: {
       color: "#7a8a98",
       fontSize: 13
@@ -10411,7 +10533,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
   }, "Wknds"), React.createElement("th", {
     style: thS2
   }, "Off")))), React.createElement("tbody", null, surgeons.filter(s => isScheduler || !mySurgeon || mySurgeon === "admin" || s.id === mySurgeon).map(s => {
-    const st = stats[s.id] || {};
+    const st = (statsScope === "ytd" ? statsYTD : stats)[s.id] || {};
     const total = calcRawCount(st);
     return React.createElement("tr", {
       key: s.id,
@@ -10921,7 +11043,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     style: css.card
   }, React.createElement("div", {
     style: css.cardT
-  }, "Vacation Days Used", vacDaysPeriod.hasPeriod && React.createElement("span", {
+  }, "Vacation Days Used", statsScope === "ytd" ? React.createElement("span", {
     style: {
       fontWeight: 400,
       fontSize: 11,
@@ -10929,12 +11051,57 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       textTransform: "none",
       letterSpacing: 0
     }
-  }, " — This Period (", vacDaysPeriod.pStart, " → ", vacDaysPeriod.pEnd, ")")), !Object.values(vacDaysPeriod.out).some(v => v.days > 0) ? React.createElement("p", {
+  }, " — Current Period (", vacDaysYTD.start, " → ", vacDaysYTD.end, ") · days actually taken off — worked-vacation days excluded") : vacDaysPeriod.hasPeriod && React.createElement("span", {
+    style: {
+      fontWeight: 400,
+      fontSize: 11,
+      color: "#7a8a98",
+      textTransform: "none",
+      letterSpacing: 0
+    }
+  }, " — This Period (", vacDaysPeriod.pStart, " → ", vacDaysPeriod.pEnd, ")"), React.createElement("span", {
+    style: {
+      marginLeft: 8,
+      display: "inline-flex",
+      gap: 5,
+      verticalAlign: "middle"
+    }
+  }, React.createElement("button", {
+    onClick: () => setStatsScope("period"),
+    style: {
+      background: statsScope === "period" ? "#eaf4fb" : "#f4f6f8",
+      border: `1px solid ${statsScope === "period" ? "#a8cce8" : "#d0d8e0"}`,
+      color: statsScope === "period" ? "#1a6fa8" : "#5a6a78",
+      borderRadius: 5,
+      padding: "1px 8px",
+      fontSize: 10,
+      fontWeight: 600,
+      cursor: "pointer",
+      fontFamily: font,
+      textTransform: "none",
+      letterSpacing: 0
+    }
+  }, "Period"), React.createElement("button", {
+    onClick: () => setStatsScope("ytd"),
+    style: {
+      background: statsScope === "ytd" ? "#eaf4fb" : "#f4f6f8",
+      border: `1px solid ${statsScope === "ytd" ? "#a8cce8" : "#d0d8e0"}`,
+      color: statsScope === "ytd" ? "#1a6fa8" : "#5a6a78",
+      borderRadius: 5,
+      padding: "1px 8px",
+      fontSize: 10,
+      fontWeight: 600,
+      cursor: "pointer",
+      fontFamily: font,
+      textTransform: "none",
+      letterSpacing: 0
+    }
+  }, "YTD"))), !Object.values((statsScope === "ytd" ? vacDaysYTD : vacDaysPeriod).out).some(v => v.days > 0) ? React.createElement("p", {
     style: {
       color: "#7a8a98",
       fontSize: 13
     }
-  }, "No vacation days fall within this schedule period.") : React.createElement("div", {
+  }, statsScope === "ytd" ? "No vacation days in this year's scheduled span." : "No vacation days fall within this schedule period.") : React.createElement("div", {
     style: {
       overflowX: "auto"
     }
@@ -10955,9 +11122,11 @@ ${"</"}script>${"</"}body>${"</"}html>`;
   }, "Days Used"), React.createElement("th", {
     style: thS
   }, "Vacation Periods"))), React.createElement("tbody", null, surgeons.filter(s => isScheduler || !mySurgeon || mySurgeon === "admin" || s.id === mySurgeon).map(s => {
-    var _vacDaysPeriod$out$s$, _vacDaysPeriod$out$s$2;
-    const days = ((_vacDaysPeriod$out$s$ = vacDaysPeriod.out[s.id]) === null || _vacDaysPeriod$out$s$ === void 0 ? void 0 : _vacDaysPeriod$out$s$.days) || 0;
-    const ranges = ((_vacDaysPeriod$out$s$2 = vacDaysPeriod.out[s.id]) === null || _vacDaysPeriod$out$s$2 === void 0 ? void 0 : _vacDaysPeriod$out$s$2.ranges) || [];
+    var _vSrc$s$id, _vSrc$s$id2, _vSrc$s$id3;
+    const vSrc = (statsScope === "ytd" ? vacDaysYTD : vacDaysPeriod).out;
+    const days = ((_vSrc$s$id = vSrc[s.id]) === null || _vSrc$s$id === void 0 ? void 0 : _vSrc$s$id.days) || 0;
+    const ranges = ((_vSrc$s$id2 = vSrc[s.id]) === null || _vSrc$s$id2 === void 0 ? void 0 : _vSrc$s$id2.ranges) || [];
+    const workedD = ((_vSrc$s$id3 = vSrc[s.id]) === null || _vSrc$s$id3 === void 0 ? void 0 : _vSrc$s$id3.worked) || 0;
     return React.createElement("tr", {
       key: s.id,
       style: {
@@ -10988,11 +11157,17 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       style: {
         color: "#8a94a0"
       }
-    }, "—")));
+    }, "—"), workedD > 0 && React.createElement("span", {
+      style: {
+        color: "#8a94a0"
+      }
+    }, " · ", workedD, "d worked (excluded)")));
   }), (isScheduler || mySurgeon === "admin" || apps.some(a => a.id === mySurgeon)) && apps.filter(a => isScheduler || mySurgeon === "admin" || a.id === mySurgeon).map(a => {
-    var _vacDaysPeriod$out$a$, _vacDaysPeriod$out$a$2;
-    const days = ((_vacDaysPeriod$out$a$ = vacDaysPeriod.out[a.id]) === null || _vacDaysPeriod$out$a$ === void 0 ? void 0 : _vacDaysPeriod$out$a$.days) || 0;
-    const ranges = ((_vacDaysPeriod$out$a$2 = vacDaysPeriod.out[a.id]) === null || _vacDaysPeriod$out$a$2 === void 0 ? void 0 : _vacDaysPeriod$out$a$2.ranges) || [];
+    var _vSrcA$a$id, _vSrcA$a$id2, _vSrcA$a$id3;
+    const vSrcA = (statsScope === "ytd" ? vacDaysYTD : vacDaysPeriod).out;
+    const days = ((_vSrcA$a$id = vSrcA[a.id]) === null || _vSrcA$a$id === void 0 ? void 0 : _vSrcA$a$id.days) || 0;
+    const ranges = ((_vSrcA$a$id2 = vSrcA[a.id]) === null || _vSrcA$a$id2 === void 0 ? void 0 : _vSrcA$a$id2.ranges) || [];
+    const workedDA = ((_vSrcA$a$id3 = vSrcA[a.id]) === null || _vSrcA$a$id3 === void 0 ? void 0 : _vSrcA$a$id3.worked) || 0;
     if (!days && !ranges.length) return null;
     return React.createElement("tr", {
       key: a.id,
@@ -11020,7 +11195,11 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       }
     }, ranges.map(([vs, ve], i) => React.createElement("span", {
       key: i
-    }, i > 0 ? " · " : "", vs, " → ", ve))));
+    }, i > 0 ? " · " : "", vs, " → ", ve)), workedDA > 0 && React.createElement("span", {
+      style: {
+        color: "#8a94a0"
+      }
+    }, " · ", workedDA, "d worked (excluded)")));
   }))))), (isScheduler || mySurgeon === "admin") && Object.values(stats).some(s => s.dc > 0) && React.createElement("div", {
     style: css.card
   }, React.createElement("div", {
@@ -12355,7 +12534,47 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           cursor: "pointer",
           fontFamily: font
         }
-      }, "Withdraw"))))));
+      }, "Withdraw")), (() => {
+        const cov = vacRequestCoverage(r);
+        if (!cov || !cov.breach && cov.conflicts.length === 0 && cov.pendingOverlaps.length === 0) return null;
+        return React.createElement("div", {
+          style: {
+            marginTop: 6
+          }
+        }, cov.breach && React.createElement("div", {
+          style: {
+            fontSize: 11,
+            fontWeight: 700,
+            color: "#a02020",
+            background: "#fce8e8",
+            border: "1px solid #e0a8a8",
+            borderRadius: 6,
+            padding: "4px 9px",
+            marginBottom: 4
+          }
+        }, "⚠ Coverage below minimum — only ", cov.worst.available, " of ", surgeons.length, " surgeons available on ", cov.worst.date, " if approved (floor: ", MIN_AVAILABLE_SURGEONS, ")"), cov.conflicts.length > 0 && React.createElement("div", {
+          style: {
+            fontSize: 11,
+            color: "#8a6a10",
+            marginBottom: 2
+          }
+        }, "🏖 Also on vacation in this window:", " ", cov.conflicts.map((c, i) => {
+          var _sMap$c$id;
+          return React.createElement("span", {
+            key: c.id
+          }, i > 0 ? " · " : "", React.createElement("strong", null, ((_sMap$c$id = sMap[c.id]) === null || _sMap$c$id === void 0 ? void 0 : _sMap$c$id.name) || c.id), " (", c.ranges.map(([cs, ce]) => cs === ce ? cs : `${cs}→${ce}`).join(", "), ")");
+        })), cov.pendingOverlaps.length > 0 && React.createElement("div", {
+          style: {
+            fontSize: 11,
+            color: "#7a6a98"
+          }
+        }, "⏳ Overlapping pending requests:", " ", cov.pendingOverlaps.map((o, i) => {
+          var _sMap$o$surgeon_id;
+          return React.createElement("span", {
+            key: o.id
+          }, i > 0 ? " · " : "", React.createElement("strong", null, ((_sMap$o$surgeon_id = sMap[o.surgeon_id]) === null || _sMap$o$surgeon_id === void 0 ? void 0 : _sMap$o$surgeon_id.name) || o.surgeon_id), " (", o.start_date, "→", o.end_date, ")");
+        })));
+      })()))));
     }), pending.length > 0 && !isScheduler && React.createElement("p", {
       style: {
         fontSize: 12,
