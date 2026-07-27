@@ -12,12 +12,43 @@ const dbHeaders = { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE
 
 // Session-aware headers: returns headers with the logged-in user's JWT when a
 // session is stored in localStorage, else falls back to anon-key headers.
-// This is what every authenticated query MUST use so RLS sees the real user.
+// This is what every authenticated WRITE must use so RLS sees the real user.
+// NOTE: this deliberately sends the stored token even if it is EXPIRED — an
+// expired-token write must fail loudly (401) through each write's error
+// contract, never silently degrade to an anon attempt. Reads use
+// dbReadHeaders() below, which IS expiry-aware.
 function dbAuthHeaders() {
   try {
     const token = localStorage.getItem("dsg-auth-token");
     if (token) return { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
   } catch(e) { console.warn("dbAuthHeaders: session read failed, using anon:", e); }
+  return dbHeaders;
+}
+
+// True when the stored JWT is present, decodable, and not within 30s of its
+// exp. Defensive by design: ANY parse failure counts as stale (never throws).
+function jwtIsFresh(token) {
+  try {
+    const payload = JSON.parse(atob(token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/")));
+    return typeof payload.exp === "number" && payload.exp * 1000 > Date.now() + 30000;
+  } catch (e) { return false; }
+}
+
+// READ headers: like dbAuthHeaders(), but if the stored token is expired or
+// undecodable, fall back to ANON for this request instead of sending a dead
+// token. Root fix for the cold-open race (2026-07-18): the data-load effect's
+// first pass runs before the auth path refreshes a >1h-old token, so every
+// read 401'd — wiping vacations state pre-PR#14 (the blob-mirror poison behind
+// the office-digest incident) and toasting after it. The synced tables are
+// anon-readable, so an anon first pass succeeds; reads that DO need identity
+// (RLS-filtered rows) return [] and are repaired by the reloadTrigger second
+// pass. WRITES must never use this — see dbAuthHeaders above.
+function dbReadHeaders() {
+  try {
+    const token = localStorage.getItem("dsg-auth-token");
+    if (token && jwtIsFresh(token)) return { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
+    if (token) console.warn("dbReadHeaders: stored token is expired/undecodable — reading as anon (auth refresh will restore it).");
+  } catch(e) { console.warn("dbReadHeaders: session read failed, using anon:", e); }
   return dbHeaders;
 }
 
@@ -41,7 +72,8 @@ const supabase = {
     select: (cols) => ({
       eq: (col, val) => ({
         single: async () => {
-          const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}?select=${cols}&${col}=eq.${val}`, { headers: dbAuthHeaders() });
+          // Read path → expiry-aware headers (anon fallback on a dead token).
+          const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}?select=${cols}&${col}=eq.${val}`, { headers: dbReadHeaders() });
           const rows = await res.json();
           return { data: rows?.[0] || null, error: rows?.error || null };
         },
@@ -77,7 +109,8 @@ const db = {
     if (eq) Object.entries(eq).forEach(([k, v]) => { url += `&${k}=eq.${v}`; });
     if (order) url += `&order=${order}`;
     if (limit) url += `&limit=${limit}`;
-    const res = await fetch(url, { headers: dbAuthHeaders() });
+    // Read path → expiry-aware headers (anon fallback on a dead token).
+    const res = await fetch(url, { headers: dbReadHeaders() });
     // HTTP failure THROWS, exactly like a network failure already does — a
     // failed read must never be indistinguishable from an empty table. (An
     // RLS-filtered read is HTTP 200 + [] — that's data, not an error, and
