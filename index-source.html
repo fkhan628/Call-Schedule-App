@@ -724,6 +724,10 @@ function CallSchedule() {
       if (!Array.isArray(rows) || rows.length === 0) return null;
       const sched = {}, vers = {};
       rows.forEach(r => { sched[r.week_monday] = r.data; vers[r.week_monday] = r.version; });
+      // Real data confirmed in the table → arm the empty-save wipe guard. This
+      // arming used to piggyback on the blob's vacations mirror at load; with
+      // the mirror retired, the real sources arm it directly.
+      everHadRealDataRef.current = true;
       return { sched, vers };
     } catch (e) { console.error("schedule_weeks load failed — falling back to blob", e); return null; }
   };
@@ -887,6 +891,9 @@ function CallSchedule() {
       const { vac, nc } = buildTimeOffMaps(rows || []);
       setVacations(vac);
       setNoCallDays(nc);
+      // Real vacation data confirmed → arm the empty-save wipe guard (the
+      // blob-mirror arming path is retired; the real source arms it now).
+      if (Array.isArray(rows) && rows.length > 0) everHadRealDataRef.current = true;
     } catch (e) {
       console.error("time_off load failed", e);
       if (!quiet) showToast("Couldn't load vacations — data shown may be incomplete.", "error");
@@ -1327,9 +1334,22 @@ function CallSchedule() {
         // it to the table with CAS). `payload` itself keeps the schedule so the
         // empty-save guard above still sees real data and syncSchedWeeks works.
         const blobData = { ...payload }; delete blobData.schedule;
-        await supabase
+        // Vacations/no-call live in time_off (single source since the
+        // migration); the blob copy was a dead mirror with no data readers —
+        // and the poisonable structure behind the 2026-07-18 digest incident —
+        // so it is no longer written. (payload keeps them for the empty-save
+        // guard and the JSON export; guard ARMING now comes from the real
+        // sources — see loadSchedFromTable/loadTimeOff.)
+        delete blobData.vacations; delete blobData.noCallDays;
+        const { error: saveErr } = await supabase
           .from("call_schedule_data")
           .upsert({ id: "main", data: blobData, updated_at: ts });
+        // HTTP failures return {error} WITHOUT throwing — the catch below only
+        // sees network rejections. Unchecked, this showed a false "Saved" and
+        // cleared pendingSaveRef (disarming the unload-flush retry). It matters
+        // most for the stale-token 401 that the PR#16 header split makes writes
+        // produce BY DESIGN — that failure must surface, not be lied about.
+        if (saveErr) throw new Error(`blob save failed: ${String(saveErr).slice(0, 200)}`);
         lastSyncRef.current = ts;
         pendingSaveRef.current = null; // Save committed — clear pending
         setSaveError(false);
@@ -1340,7 +1360,10 @@ function CallSchedule() {
         console.error("Save failed:", e);
         setSaveError(true);
         setSaveStatus("Save failed — retrying…");
-        showToast("Changes aren't saving — check your connection.", "error");
+        const failMsg = String(e?.message || e);
+        showToast(/401|JWT|expired/i.test(failMsg)
+          ? "Changes aren't saving — your session expired. Reload or sign in again."
+          : "Changes aren't saving — check your connection.", "error");
       }
     }, 800);
     return () => clearTimeout(timer);
@@ -1384,6 +1407,7 @@ function CallSchedule() {
         const ts = new Date().toISOString();
         // Stage 6: keep the schedule out of the blob (it lives in schedule_weeks).
         const blobData = { ...payload }; delete blobData.schedule;
+        delete blobData.vacations; delete blobData.noCallDays; // retired mirror — time_off is the source
         const body = JSON.stringify({ id: "main", data: blobData, updated_at: ts });
         // Because this is the last-ditch save on unload and syncSchedWeeks (CAS)
         // can't finish mid-unload, blind-upsert any changed weeks to
@@ -2975,6 +2999,7 @@ function CallSchedule() {
           lastSyncRef.current = ts; // block poll from overwriting
           // Stage 6: schedule goes to schedule_weeks, not the blob.
           const blobData = buildPayload({ schedule: merged }); delete blobData.schedule;
+          delete blobData.vacations; delete blobData.noCallDays; // retired mirror — time_off is the source
           await supabase.from("call_schedule_data").upsert({ id: "main", data: blobData, updated_at: ts });
           syncSchedWeeks(merged); // persist the merged schedule (no spurious deletes)
         } catch(e) { console.error("Immediate save failed:", e); showToast("Couldn't save the regenerated schedule — check your connection.", "error"); }
@@ -3004,6 +3029,7 @@ function CallSchedule() {
         lastSyncRef.current = ts;
         // Stage 6: schedule lives in schedule_weeks (already wiped via syncSchedWeeks({}) above).
         const blobData = buildPayload({ schedule: {}, _intentionalClear: true }); delete blobData.schedule;
+        delete blobData.vacations; delete blobData.noCallDays; // retired mirror — time_off is the source
         await supabase.from("call_schedule_data").upsert({ id: "main", data: blobData, updated_at: ts });
       } catch(e) { console.error("Immediate save failed:", e); showToast("Couldn't save the cleared state — check your connection.", "error"); }
     })();
