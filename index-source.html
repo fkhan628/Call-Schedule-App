@@ -499,6 +499,13 @@ function CallSchedule() {
             const profile = await dbAuth.getProfile(user.id);
             if (profile) { setUserProfile(profile); setMySurgeon(profile.person_id); }
             else { setNeedsProfile(true); }
+            // Same second-pass reload the biometric path gets (line ~525):
+            // getUser() may have just REFRESHED a >1h-stale token AFTER the
+            // mount data-load already ran with the dead one. Without this
+            // bump, auto-login sessions never re-read — vacations stayed
+            // empty all session and (pre-PR#14) the first edit autosaved the
+            // wiped state into the blob mirror (the digest-poison vector).
+            setReloadTrigger(t => t + 1);
           }
         }
       } catch(e) { console.error("Auth check error:", e); }
@@ -871,13 +878,18 @@ function CallSchedule() {
   };
 
   // Load the whole time_off table and project it into the two maps.
-  const loadTimeOff = async () => {
+  // quiet=true (the 60s poll) logs failures console-only — a transient outage
+  // must not toast once a minute; the initial load and realtime path stay loud.
+  const loadTimeOff = async (quiet) => {
     try {
       const rows = await db.query("time_off", { select: "id,person_id,kind,start_date,end_date" });
       const { vac, nc } = buildTimeOffMaps(rows || []);
       setVacations(vac);
       setNoCallDays(nc);
-    } catch (e) { console.error("time_off load failed", e); showToast("Couldn't load vacations — data shown may be incomplete.", "error"); }
+    } catch (e) {
+      console.error("time_off load failed", e);
+      if (!quiet) showToast("Couldn't load vacations — data shown may be incomplete.", "error");
+    }
   };
 
   // DELETE against time_off. The app's `supabase` object is a hand-rolled fetch
@@ -1175,6 +1187,11 @@ function CallSchedule() {
         refreshVacReqs(),
         refreshTradeReqs(),
         refreshNotifs(),
+        // time_off was the ONLY synced table with no poll refresher — a missed
+        // initial load stayed missed all session. quiet: poll failures must
+        // not toast once a minute (loadTimeOff already catches internally, so
+        // allSettled never sees a rejection from it).
+        USE_TIME_OFF ? loadTimeOff(true) : Promise.resolve(),
       ]);
     };
 
