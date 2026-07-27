@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.07.18a";
+    var APP_VERSION = "2026.07.27a";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -456,6 +456,7 @@ function CallSchedule() {
             } else {
               setNeedsProfile(true);
             }
+            setReloadTrigger(t => t + 1);
           }
         }
       } catch (e) {
@@ -902,7 +903,7 @@ function CallSchedule() {
       nc
     };
   };
-  const loadTimeOff = async () => {
+  const loadTimeOff = async quiet => {
     try {
       const rows = await db.query("time_off", {
         select: "id,person_id,kind,start_date,end_date"
@@ -915,7 +916,7 @@ function CallSchedule() {
       setNoCallDays(nc);
     } catch (e) {
       console.error("time_off load failed", e);
-      showToast("Couldn't load vacations — data shown may be incomplete.", "error");
+      if (!quiet) showToast("Couldn't load vacations — data shown may be incomplete.", "error");
     }
   };
   const deleteTimeOff = async filter => {
@@ -1245,7 +1246,7 @@ function CallSchedule() {
       }
     };
     const refreshAll = async () => {
-      await Promise.allSettled([refreshScheduleRow(), refreshConfigRow(), refreshAppShifts(), refreshVacReqs(), refreshTradeReqs(), refreshNotifs()]);
+      await Promise.allSettled([refreshScheduleRow(), refreshConfigRow(), refreshAppShifts(), refreshVacReqs(), refreshTradeReqs(), refreshNotifs(), USE_TIME_OFF ? loadTimeOff(true) : Promise.resolve()]);
     };
     let rtChannel = null;
     let rtClient = null;
