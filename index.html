@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.07.27b";
+    var APP_VERSION = "2026.07.27c";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -697,6 +697,7 @@ function CallSchedule() {
         sched[r.week_monday] = r.data;
         vers[r.week_monday] = r.version;
       });
+      everHadRealDataRef.current = true;
       return {
         sched,
         vers
@@ -915,6 +916,7 @@ function CallSchedule() {
       } = buildTimeOffMaps(rows || []);
       setVacations(vac);
       setNoCallDays(nc);
+      if (Array.isArray(rows) && rows.length > 0) everHadRealDataRef.current = true;
     } catch (e) {
       console.error("time_off load failed", e);
       if (!quiet) showToast("Couldn't load vacations — data shown may be incomplete.", "error");
@@ -1394,11 +1396,16 @@ function CallSchedule() {
         const ts = new Date().toISOString();
         const blobData = _objectSpread({}, payload);
         delete blobData.schedule;
-        await supabase.from("call_schedule_data").upsert({
+        delete blobData.vacations;
+        delete blobData.noCallDays;
+        const {
+          error: saveErr
+        } = await supabase.from("call_schedule_data").upsert({
           id: "main",
           data: blobData,
           updated_at: ts
         });
+        if (saveErr) throw new Error(`blob save failed: ${String(saveErr).slice(0, 200)}`);
         lastSyncRef.current = ts;
         pendingSaveRef.current = null;
         setSaveError(false);
@@ -1409,7 +1416,8 @@ function CallSchedule() {
         console.error("Save failed:", e);
         setSaveError(true);
         setSaveStatus("Save failed — retrying…");
-        showToast("Changes aren't saving — check your connection.", "error");
+        const failMsg = String((e === null || e === void 0 ? void 0 : e.message) || e);
+        showToast(/401|JWT|expired/i.test(failMsg) ? "Changes aren't saving — your session expired. Reload or sign in again." : "Changes aren't saving — check your connection.", "error");
       }
     }, 800);
     return () => clearTimeout(timer);
@@ -1431,6 +1439,8 @@ function CallSchedule() {
         const ts = new Date().toISOString();
         const blobData = _objectSpread({}, payload);
         delete blobData.schedule;
+        delete blobData.vacations;
+        delete blobData.noCallDays;
         const body = JSON.stringify({
           id: "main",
           data: blobData,
@@ -3195,6 +3205,8 @@ function CallSchedule() {
             schedule: merged
           });
           delete blobData.schedule;
+          delete blobData.vacations;
+          delete blobData.noCallDays;
           await supabase.from("call_schedule_data").upsert({
             id: "main",
             data: blobData,
@@ -3230,6 +3242,8 @@ function CallSchedule() {
           _intentionalClear: true
         });
         delete blobData.schedule;
+        delete blobData.vacations;
+        delete blobData.noCallDays;
         await supabase.from("call_schedule_data").upsert({
           id: "main",
           data: blobData,
