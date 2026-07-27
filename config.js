@@ -456,6 +456,12 @@ const HAND_SCHEDULE_MAY_AUG = {
 const SCHEDULE_PERIOD_WEEKS = 14;
 const VACATION_DEADLINE_WEEKS_BEFORE = 6;
 
+/* ═══ Coverage floor ═══
+   Group rule: at least this many surgeons must be AVAILABLE (not on vacation)
+   on every day of any period. The Requests tab flags a vacation request when
+   approving it would drop any day in its range below this floor. */
+const MIN_AVAILABLE_SURGEONS = 3;
+
 /* ═══ 2026 Holiday Assignments (pre-set from handwritten schedule) ═══
    First surgeon = covers the actual holiday day (24h)
    Second surgeon = covers night before (and day after where applicable)
