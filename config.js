@@ -74,6 +74,22 @@ const supabase = {
         single: async () => {
           // Read path → expiry-aware headers (anon fallback on a dead token).
           const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}?select=${cols}&${col}=eq.${val}`, { headers: dbReadHeaders() });
+          // THROW on HTTP failure, exactly like db.query. Previously a failed
+          // read returned {data:null, error:null}: a PostgREST error body is an
+          // object with message/code and NO `error` key, so rows?.error was
+          // undefined and rows?.[0] was undefined — failure was byte-identical
+          // to "no such row", AND error:null actively claimed success. Every
+          // caller reads only {data}, so a transient 5xx/429 (or a revoked
+          // token, or an RLS-blocked read under the anon fallback) silently
+          // meant "row absent". At the mount blob read that skipped the whole
+          // load block WITHOUT arming loadFailedRef, so a later time_off
+          // refresh autosaved default roster/counts/holidays over the real
+          // blob and showed "Saved". A genuine empty result is HTTP 200 + []
+          // and still returns {data:null} without throwing.
+          if (!res.ok) {
+            const body = await res.text().catch(() => "");
+            throw new Error(`supabase.${table}.single() failed: HTTP ${res.status} ${body.slice(0, 200)}`);
+          }
           const rows = await res.json();
           return { data: rows?.[0] || null, error: rows?.error || null };
         },
