@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.07.30a";
+    var APP_VERSION = "2026.07.30b";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -278,10 +278,7 @@ function CallSchedule() {
   const [biometricEnrolled, setBiometricEnrolled] = useState(false);
   const [biometricPending, setBiometricPending] = useState(false);
   const [allProfiles, setAllProfiles] = useState([]);
-  const allPeople = useMemo(() => [...surgeons, ...apps, {
-    id: "admin",
-    name: "ADMIN (Clinic Manager)"
-  }], [surgeons, apps]);
+  const allPeople = useMemo(() => [...surgeons, ...apps], [surgeons, apps]);
   const schedulerAdminIds = useMemo(() => {
     const ids = new Set();
     allProfiles.forEach(p => {
@@ -554,23 +551,28 @@ function CallSchedule() {
         if (userId) {
           var _allPeople$find;
           const personName = ((_allPeople$find = allPeople.find(p => p.id === signupPersonId)) === null || _allPeople$find === void 0 ? void 0 : _allPeople$find.name) || signupPersonId;
-          const role = signupPersonId === "admin" ? "admin" : "member";
-          await dbAuth.upsertProfile({
+          const {
+            error: profileErr
+          } = await dbAuth.upsertProfile({
             id: userId,
             person_id: signupPersonId,
-            display_name: personName,
-            role
+            display_name: personName
           });
+          if (profileErr) {
+            console.error("Signup profile save failed:", profileErr);
+            setAuthError("Couldn't finish setting up your account — that name may already be registered. Try again or contact the scheduler.");
+            setAuthBusy(false);
+            return;
+          }
           const profile = {
             person_id: signupPersonId,
             display_name: personName,
-            role
+            role: "member"
           };
           setAuthUser(user || (session === null || session === void 0 ? void 0 : session.user));
           setUserProfile(profile);
           setMySurgeon(signupPersonId);
           setNeedsProfile(false);
-          if (signupPersonId === "admin") setIsScheduler(true);
           if (signupPersonId !== "admin" && authEmail) {
             try {
               const {
@@ -637,21 +639,29 @@ function CallSchedule() {
         return;
       }
       const personName = ((_allPeople$find2 = allPeople.find(p => p.id === signupPersonId)) === null || _allPeople$find2 === void 0 ? void 0 : _allPeople$find2.name) || signupPersonId;
-      const role = signupPersonId === "admin" ? "admin" : "member";
-      await dbAuth.upsertProfile({
+      const {
+        data: savedProfile,
+        error: profileErr
+      } = await dbAuth.upsertProfile({
         id: authUser.id,
         person_id: signupPersonId,
-        display_name: personName,
-        role
+        display_name: personName
       });
-      setUserProfile({
+      if (profileErr) {
+        console.error("Profile save failed:", profileErr);
+        setAuthError("Couldn't save your profile — please try again.");
+        setAuthBusy(false);
+        return;
+      }
+      const savedRole = (savedProfile === null || savedProfile === void 0 ? void 0 : savedProfile.role) || "member";
+      setUserProfile(savedProfile || {
         person_id: signupPersonId,
         display_name: personName,
-        role
+        role: savedRole
       });
       setMySurgeon(signupPersonId);
       setNeedsProfile(false);
-      if (signupPersonId === "admin") setIsScheduler(true);
+      if (savedRole === "admin" || savedRole === "scheduler") setIsScheduler(true);
       setReloadTrigger(t => t + 1);
       setAuthBusy(false);
       return;
@@ -3325,6 +3335,7 @@ function CallSchedule() {
   };
   const [snapshotList, setSnapshotList] = useState(null);
   const [snapshotsLoading, setSnapshotsLoading] = useState(false);
+  const [snapshotLoadFailed, setSnapshotLoadFailed] = useState(false);
   const [restoreBusyId, setRestoreBusyId] = useState(null);
   const [openSettingsCards, setOpenSettingsCards] = useState({});
   const toggleSettingsCard = key => setOpenSettingsCards(p => _objectSpread(_objectSpread({}, p), {}, {
@@ -3333,7 +3344,9 @@ function CallSchedule() {
   const loadSnapshots = async () => {
     setSnapshotsLoading(true);
     try {
-      setSnapshotList(await snapshots.list(15));
+      const rows = await snapshots.list(15);
+      setSnapshotLoadFailed(rows === null);
+      if (rows !== null) setSnapshotList(rows);
     } finally {
       setSnapshotsLoading(false);
     }
@@ -5624,9 +5637,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     })
   }, React.createElement("option", {
     value: ""
-  }, "Select your name…"), React.createElement("option", {
-    value: "admin"
-  }, "ADMIN (Clinic Manager)"), React.createElement("optgroup", {
+  }, "Select your name…"), React.createElement("optgroup", {
     label: "Surgeons"
   }, surgeons.map(s => React.createElement("option", {
     key: s.id,
@@ -5735,9 +5746,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     })
   }, React.createElement("option", {
     value: ""
-  }, "Select your name…"), React.createElement("option", {
-    value: "admin"
-  }, "ADMIN (Clinic Manager)"), React.createElement("optgroup", {
+  }, "Select your name…"), React.createElement("optgroup", {
     label: "Surgeons"
   }, surgeons.map(s => React.createElement("option", {
     key: s.id,
@@ -14883,7 +14892,17 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       fontSize: 12,
       color: "#7a8a98"
     }
-  }, "Loading snapshots…"), !snapshotsLoading && (!snapshotList || snapshotList.length === 0) && React.createElement("div", {
+  }, "Loading snapshots…"), !snapshotsLoading && snapshotLoadFailed && React.createElement("div", {
+    style: {
+      fontSize: 12,
+      fontWeight: 600,
+      color: "#a02020",
+      background: "#fce8e8",
+      border: "1px solid #e0a8a8",
+      borderRadius: 6,
+      padding: "6px 10px"
+    }
+  }, "⚠ Couldn't load your backups — this does NOT mean none exist. Tap Refresh; if it keeps failing, reload the app (your session may have expired)."), !snapshotsLoading && !snapshotLoadFailed && (!snapshotList || snapshotList.length === 0) && React.createElement("div", {
     style: {
       fontSize: 12,
       color: "#7a8a98"
