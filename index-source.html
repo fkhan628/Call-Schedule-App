@@ -296,10 +296,13 @@ function CallSchedule() {
   const [biometricEnrolled, setBiometricEnrolled] = useState(false);
   const [biometricPending, setBiometricPending] = useState(false); // waiting for biometric prompt
   const [allProfiles, setAllProfiles] = useState([]); // for scheduler to manage per-user flags
+  // Selectable identities for the signup / profile-setup name pickers. "admin"
+  // is intentionally absent: it is not self-claimable (see those screens).
+  // Existing admin accounts are unaffected — their identity comes from their
+  // stored user_profiles row, never from this list.
   const allPeople = useMemo(() => [
     ...surgeons,
     ...apps,
-    { id: "admin", name: "ADMIN (Clinic Manager)" }
   ], [surgeons, apps]);
 
   // Person IDs that should receive notifications for scheduler-relevant events
@@ -599,15 +602,24 @@ function CallSchedule() {
         if (userId) {
           // Create profile
           const personName = allPeople.find(p=>p.id===signupPersonId)?.name || signupPersonId;
-          const role = signupPersonId === "admin" ? "admin" : "member";
-          await dbAuth.upsertProfile({ id: userId, person_id: signupPersonId, display_name: personName, role });
-          const profile = { person_id: signupPersonId, display_name: personName, role };
+          // The client NEVER writes a privileged role. Removing "admin" from
+          // the picker is UI-only — a hostile user can re-add an <option> in
+          // devtools — so signup must be incapable of granting itself anything
+          // regardless of what person_id it submits. `role` is omitted; the
+          // column defaults to 'member'. Admin/scheduler roles are provisioned
+          // in the DB, and the DB's unique index on person_id blocks
+          // double-claiming even if this path is called directly.
+          const { error: profileErr } = await dbAuth.upsertProfile({ id: userId, person_id: signupPersonId, display_name: personName });
+          if (profileErr) {
+            console.error("Signup profile save failed:", profileErr);
+            setAuthError("Couldn't finish setting up your account — that name may already be registered. Try again or contact the scheduler.");
+            setAuthBusy(false); return;
+          }
+          const profile = { person_id: signupPersonId, display_name: personName, role: "member" };
           setAuthUser(user || session?.user);
           setUserProfile(profile);
           setMySurgeon(signupPersonId);
           setNeedsProfile(false);
-          // Auto-elevate admin accounts to scheduler
-          if (signupPersonId === "admin") setIsScheduler(true);
           // Auto-populate "All Surgeon Email Addresses" only if slot is empty in DB —
           // don't clobber an email the scheduler already entered manually.
           if (signupPersonId !== "admin" && authEmail) {
@@ -669,12 +681,27 @@ function CallSchedule() {
         setAuthBusy(false); return;
       }
       const personName = allPeople.find(p=>p.id===signupPersonId)?.name || signupPersonId;
-      const role = signupPersonId === "admin" ? "admin" : "member";
-      await dbAuth.upsertProfile({ id: authUser.id, person_id: signupPersonId, display_name: personName, role });
-      setUserProfile({ person_id: signupPersonId, display_name: personName, role });
+      // `role` is deliberately NOT in this payload. merge-duplicates leaves
+      // unlisted columns untouched on conflict (and the column defaults to
+      // 'member' on a fresh insert), so re-claiming your own name can no longer
+      // rewrite a scheduler/admin row to "member" — the silent downgrade that
+      // needed only one transient getProfile failure (which drops an existing
+      // user onto this screen) plus one tap, and could only be undone in SQL.
+      // Adopt the row the DB returns so local state matches persisted truth,
+      // and check the previously-discarded error instead of assuming success.
+      const { data: savedProfile, error: profileErr } = await dbAuth.upsertProfile({
+        id: authUser.id, person_id: signupPersonId, display_name: personName,
+      });
+      if (profileErr) {
+        console.error("Profile save failed:", profileErr);
+        setAuthError("Couldn't save your profile — please try again.");
+        setAuthBusy(false); return;
+      }
+      const savedRole = savedProfile?.role || "member";
+      setUserProfile(savedProfile || { person_id: signupPersonId, display_name: personName, role: savedRole });
       setMySurgeon(signupPersonId);
       setNeedsProfile(false);
-      if (signupPersonId === "admin") setIsScheduler(true);
+      if (savedRole === "admin" || savedRole === "scheduler") setIsScheduler(true);
       // Re-run the data-load effect now that the session JWT is established,
       // without a page reload.
       setReloadTrigger(t => t + 1);
@@ -4849,7 +4876,12 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                 <select value={signupPersonId} onChange={e=>setSignupPersonId(e.target.value)}
                   style={{...css.inp,width:"100%",padding:"10px 12px",fontSize:14}}>
                   <option value="">Select your name…</option>
-                  <option value="admin">ADMIN (Clinic Manager)</option>
+                  {/* ADMIN is deliberately NOT self-selectable — signup is open
+                      to anyone with the public URL, and the duplicate-claim
+                      check cannot work client-side (anon can't read
+                      user_profiles), so this option was an unauthenticated
+                      route to role:"admin". Admin accounts are provisioned in
+                      the DB. */}
                   <optgroup label="Surgeons">
                     {surgeons.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
                   </optgroup>
@@ -4891,7 +4923,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             <select value={signupPersonId} onChange={e=>setSignupPersonId(e.target.value)}
               style={{...css.inp,width:"100%",padding:"10px 12px",fontSize:14,marginBottom:10}}>
               <option value="">Select your name…</option>
-              <option value="admin">ADMIN (Clinic Manager)</option>
+              {/* ADMIN not self-selectable here either — see the signup screen. */}
               <optgroup label="Surgeons">
                 {surgeons.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
               </optgroup>
