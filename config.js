@@ -184,7 +184,20 @@ const snapshots = {
         `${SUPABASE_URL}/rest/v1/call_schedule_data?id=eq.main&select=data,updated_at`,
         { headers: dbAuthHeaders() }
       );
-      const rows = res.ok ? await res.json() : [];
+      // A FAILED READ MUST NOT LOOK LIKE AN EMPTY ROW. This previously did
+      // `res.ok ? json : []` → current=null → the "nothing to snapshot" exit
+      // below → {ok:true}. Callers gate destructive actions on .ok, so factory
+      // reset / regenerate / clearSchedule all proceeded believing a backup
+      // existed when none had been written — the capture-failure-BLOCKS-the-
+      // action safeguard (built after two wipe incidents) was hollow. A stale
+      // mid-session token guarantees this path: these reads use dbAuthHeaders,
+      // which sends the token as-is with no expiry check.
+      if (!res.ok) {
+        const body = await res.text().catch(() => "");
+        console.warn(`Snapshot capture: source read failed (HTTP ${res.status})`, body.slice(0, 200));
+        return { ok: false, error: `source read failed: HTTP ${res.status}` };
+      }
+      const rows = await res.json();
       let current = rows?.[0]?.data ?? null;
       // The schedule now lives in the schedule_weeks table, not the blob, so
       // fold it back in here — otherwise the snapshot would have no schedule and
@@ -204,7 +217,10 @@ const snapshots = {
           }
         }
       } catch (e) { console.warn("Snapshot: schedule_weeks fetch failed:", e); }
-      // Don't bother snapshotting an already-empty row.
+      // Don't bother snapshotting an already-empty row. This exit is now
+      // reached ONLY on a genuine 200 with nothing worth keeping — a real
+      // failure returned above — so an empty DB still doesn't block a
+      // legitimate reset.
       if (current && !payloadLooksWiped(current)) {
         const ins = await fetch(`${SUPABASE_URL}/rest/v1/call_schedule_snapshots`, {
           method: "POST",
@@ -215,7 +231,12 @@ const snapshots = {
             source_updated_at: rows?.[0]?.updated_at ?? null,
           }),
         });
-        return { ok: ins.ok };
+        if (!ins.ok) {
+          const body = await ins.text().catch(() => "");
+          console.warn(`Snapshot capture: insert failed (HTTP ${ins.status})`, body.slice(0, 200));
+          return { ok: false, error: `snapshot insert failed: HTTP ${ins.status}` };
+        }
+        return { ok: true };
       }
       return { ok: true, skipped: "empty_or_missing" };
     } catch (e) {
@@ -223,14 +244,26 @@ const snapshots = {
       return { ok: false, error: String(e) };
     }
   },
+  // Returns an ARRAY on success, or NULL when the list could not be loaded.
+  // Never [] on failure: the restore UI renders the same "No snapshots yet."
+  // for an empty array, so a transient failure read as "you have no backups"
+  // in exactly the moment someone is trying to recover. Callers must treat
+  // null as "couldn't load" and offer a retry. (Deliberately keeps
+  // dbAuthHeaders rather than the expiry-aware read headers: this table is
+  // RLS-filtered to [] for anon, so an anon fallback would turn a detectable
+  // 401 into an undetectable empty list.)
   async list(limit) {
     try {
       const res = await fetch(
         `${SUPABASE_URL}/rest/v1/call_schedule_snapshots?select=id,reason,source_updated_at,created_at&order=created_at.desc&limit=${limit || 25}`,
         { headers: dbAuthHeaders() }
       );
-      return res.ok ? await res.json() : [];
-    } catch (e) { return []; }
+      if (!res.ok) {
+        console.warn(`Snapshot list failed (HTTP ${res.status})`);
+        return null;
+      }
+      return await res.json();
+    } catch (e) { console.warn("Snapshot list failed:", e); return null; }
   },
   // Periodic safety net: capture at most once per maxAgeHours (default 6), so
   // corruption that never passes through a destructive button still has a
