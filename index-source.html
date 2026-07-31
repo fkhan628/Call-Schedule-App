@@ -821,7 +821,14 @@ function CallSchedule() {
           }
         }
         for (const key of deletes) {
-          await fetch(`${SUPABASE_URL}/rest/v1/schedule_weeks?week_monday=eq.${key}`, { method: "DELETE", headers: dbAuthHeaders() });
+          // The DELETE leg was the only unchecked write in this function
+          // (insert/CAS/bulk legs all check r.ok). A silent HTTP-failed
+          // delete left the row in the table while the local version ref was
+          // dropped — the week reappeared on the next poll, and a later write
+          // took the version-undefined insert path and 409'd against the
+          // surviving row. On failure: keep the version ref and toast.
+          const r = await fetch(`${SUPABASE_URL}/rest/v1/schedule_weeks?week_monday=eq.${key}`, { method: "DELETE", headers: dbAuthHeaders() });
+          if (!r.ok) { console.error("schedule_weeks delete failed", r.status, await r.text().catch(() => "")); showToast("Couldn't save schedule changes — check your connection.", "error"); continue; }
           delete schedWeekVersionsRef.current[key];
         }
         if (conflict) {
@@ -1515,9 +1522,13 @@ function CallSchedule() {
     if (!edgeFunctionUrl || !edgeFunctionUrl.trim()) return;
     const timer = setTimeout(async () => {
       try {
-        await supabase
+        const { error: cfgErr } = await supabase
           .from("call_schedule_config")
           .upsert({ id: "config", edge_function_url: edgeFunctionUrl.trim(), updated_at: new Date().toISOString() });
+        // {error} was discarded — an HTTP-failed save of a REAL URL was
+        // invisible (the catch only sees network throws): the field showed
+        // the typed URL, nothing persisted, dispatch kept using the old one.
+        if (cfgErr) throw new Error(`edge fn url save failed: ${String(cfgErr).slice(0, 200)}`);
       } catch(e) {
         console.error("Edge Function URL save failed:", e);
         showToast("Couldn't save the Edge Function URL — check your connection.", "error");
@@ -1574,11 +1585,29 @@ function CallSchedule() {
     allowWipeSaveRef.current = true;   // authorize the intended empty write
     everHadRealDataRef.current = false; // wipe is intentional; re-arm only when real data returns
     try {
-      await supabase.from("call_schedule_data").upsert({ id: "main", data: { _intentionalClear: true }, updated_at: new Date().toISOString() });
-      await supabase.from("app_shifts_data").upsert({ id: "main", data: {}, updated_at: new Date().toISOString() });
+      // Both clears fail-closed. upsert returns {error} on HTTP failure
+      // WITHOUT throwing, so the old catch only saw network rejections and
+      // the reset ran to "Reset complete" even when nothing was cleared.
+      // The app_shifts_data clear is the critical one: NOTHING retries it
+      // (the autosave never writes that table), so a silent failure meant
+      // old APP shifts resurrected after a "successful" reset.
+      const { error: blobClearErr } = await supabase.from("call_schedule_data").upsert({ id: "main", data: { _intentionalClear: true }, updated_at: new Date().toISOString() });
+      const { error: appClearErr } = await supabase.from("app_shifts_data").upsert({ id: "main", data: {}, updated_at: new Date().toISOString() });
+      if (blobClearErr || appClearErr) throw new Error(`stored-data clear failed: ${String(blobClearErr || appClearErr).slice(0, 200)}`);
     } catch(e) {
       console.error("Factory reset: clearing stored data failed:", e);
-      showToast("Couldn't clear the stored data — check your connection and retry the reset.", "error");
+      // ABORT the reset: local state stays real and "Reset complete" is not
+      // shown. CRITICAL — restore the two guard refs armed above. Leaving
+      // allowWipeSaveRef=true would hand the next autosave a live one-shot
+      // empty-write authorization, and everHadRealDataRef=false would disarm
+      // the empty-save guard — exactly the transient-empty race the guard
+      // exists to close.
+      allowWipeSaveRef.current = false;
+      everHadRealDataRef.current = true;
+      showToast("Couldn't clear the stored data — reset cancelled. Nothing was changed.", "error");
+      setSaveStatus("Reset cancelled");
+      setTimeout(() => setSaveStatus(""), 2000);
+      return;
     }
     setSurgeons(INIT_SURGEONS);
     setApps(INIT_APPS);
@@ -2568,7 +2597,12 @@ function CallSchedule() {
   }, [loaded]);
 
   // ─── Save Notification Preference for a surgeon ───
-  const notifSaveTimerRef = useRef(null);
+  // PER-ID timer map, not one shared timer: a single timer meant that editing
+  // surgeon A's email then surgeon B's within 500ms cancelled A's pending
+  // write entirely — A's change lived only in local state (the optimistic
+  // merge hides the loss until reload). Reachable from the scheduler's
+  // per-person email inputs; one mechanism behind the N8 cross-user quirk.
+  const notifSaveTimerRef = useRef({});
   const saveNotifPref = useCallback(async (surgeonId, updates) => {
     // Update local state + ref immediately
     setNotifPrefs(prev => {
@@ -2587,9 +2621,10 @@ function CallSchedule() {
       notifPrefsRef.current = { ...prev, [surgeonId]: merged };
       return { ...prev, [surgeonId]: merged };
     });
-    // Debounce the DB save (500ms)
-    if (notifSaveTimerRef.current) clearTimeout(notifSaveTimerRef.current);
-    notifSaveTimerRef.current = setTimeout(async () => {
+    // Debounce the DB save (500ms) — per surgeonId, so concurrent edits to
+    // different people's rows can't cancel each other's pending writes.
+    if (notifSaveTimerRef.current[surgeonId]) clearTimeout(notifSaveTimerRef.current[surgeonId]);
+    notifSaveTimerRef.current[surgeonId] = setTimeout(async () => {
       setNotifPrefsSaving(true);
       try {
         const cur = notifPrefsRef.current[surgeonId] || {};
@@ -2614,7 +2649,12 @@ function CallSchedule() {
           vac_deadline_hour: typeof cur.vac_deadline_hour === "number" ? cur.vac_deadline_hour : 8,
           updated_at: new Date().toISOString(),
         };
-        await db.upsert("notification_preferences", row);
+        // db.upsert returns {error} on HTTP failure WITHOUT throwing — the
+        // catch below only saw network rejections, so a 401 (stale token) or
+        // RLS-denied write vanished: the optimistic merge above kept the
+        // toggle/email showing the new value while the DB never got it.
+        const { error: prefErr } = await db.upsert("notification_preferences", row);
+        if (prefErr) throw new Error(`notif pref save failed: ${String(prefErr).slice(0, 200)}`);
       } catch(e) { console.error("Save notif pref error:", e); showToast("Couldn't save notification settings — check your connection and try again.", "error"); }
       setNotifPrefsSaving(false);
     }, 500);
@@ -3100,7 +3140,8 @@ function CallSchedule() {
           // Stage 6: schedule goes to schedule_weeks, not the blob.
           const blobData = buildPayload({ schedule: merged }); delete blobData.schedule;
           delete blobData.vacations; delete blobData.noCallDays; // retired mirror — time_off is the source
-          await supabase.from("call_schedule_data").upsert({ id: "main", data: blobData, updated_at: ts });
+          const { error: regenErr } = await supabase.from("call_schedule_data").upsert({ id: "main", data: blobData, updated_at: ts });
+          if (regenErr) throw new Error(`regenerate blob save failed: ${String(regenErr).slice(0, 200)}`); // catch toasts; checked autosave retries
           syncSchedWeeks(merged); // persist the merged schedule (no spurious deletes)
         } catch(e) { console.error("Immediate save failed:", e); showToast("Couldn't save the regenerated schedule — check your connection.", "error"); }
       })();
@@ -3130,7 +3171,8 @@ function CallSchedule() {
         // Stage 6: schedule lives in schedule_weeks (already wiped via syncSchedWeeks({}) above).
         const blobData = buildPayload({ schedule: {}, _intentionalClear: true }); delete blobData.schedule;
         delete blobData.vacations; delete blobData.noCallDays; // retired mirror — time_off is the source
-        await supabase.from("call_schedule_data").upsert({ id: "main", data: blobData, updated_at: ts });
+        const { error: clearErr } = await supabase.from("call_schedule_data").upsert({ id: "main", data: blobData, updated_at: ts });
+        if (clearErr) throw new Error(`clear-schedule blob save failed: ${String(clearErr).slice(0, 200)}`); // catch toasts; checked autosave retries
       } catch(e) { console.error("Immediate save failed:", e); showToast("Couldn't save the cleared state — check your connection.", "error"); }
     })();
   };
