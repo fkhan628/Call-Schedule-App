@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.07.30b";
+    var APP_VERSION = "2026.07.31a";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -792,10 +792,15 @@ function CallSchedule() {
           }
         }
         for (const key of deletes) {
-          await fetch(`${SUPABASE_URL}/rest/v1/schedule_weeks?week_monday=eq.${key}`, {
+          const r = await fetch(`${SUPABASE_URL}/rest/v1/schedule_weeks?week_monday=eq.${key}`, {
             method: "DELETE",
             headers: dbAuthHeaders()
           });
+          if (!r.ok) {
+            console.error("schedule_weeks delete failed", r.status, await r.text().catch(() => ""));
+            showToast("Couldn't save schedule changes — check your connection.", "error");
+            continue;
+          }
           delete schedWeekVersionsRef.current[key];
         }
         if (conflict) {
@@ -1120,10 +1125,14 @@ function CallSchedule() {
             everHadRealDataRef.current = true;
           }
         }
-        const {
-          data: cfgRow
-        } = await supabase.from("call_schedule_config").select("edge_function_url").eq("id", "config").single();
-        if (cfgRow !== null && cfgRow !== void 0 && cfgRow.edge_function_url) setEdgeFunctionUrl(cfgRow.edge_function_url);
+        try {
+          const {
+            data: cfgRow
+          } = await supabase.from("call_schedule_config").select("edge_function_url").eq("id", "config").single();
+          if (cfgRow !== null && cfgRow !== void 0 && cfgRow.edge_function_url) setEdgeFunctionUrl(cfgRow.edge_function_url);
+        } catch (e) {
+          console.error("Edge-function URL load failed:", e);
+        }
         try {
           const {
             data: appRow
@@ -1528,11 +1537,14 @@ function CallSchedule() {
     if (!edgeFunctionUrl || !edgeFunctionUrl.trim()) return;
     const timer = setTimeout(async () => {
       try {
-        await supabase.from("call_schedule_config").upsert({
+        const {
+          error: cfgErr
+        } = await supabase.from("call_schedule_config").upsert({
           id: "config",
           edge_function_url: edgeFunctionUrl.trim(),
           updated_at: new Date().toISOString()
         });
+        if (cfgErr) throw new Error(`edge fn url save failed: ${String(cfgErr).slice(0, 200)}`);
       } catch (e) {
         console.error("Edge Function URL save failed:", e);
         showToast("Couldn't save the Edge Function URL — check your connection.", "error");
@@ -1569,21 +1581,31 @@ function CallSchedule() {
     allowWipeSaveRef.current = true;
     everHadRealDataRef.current = false;
     try {
-      await supabase.from("call_schedule_data").upsert({
+      const {
+        error: blobClearErr
+      } = await supabase.from("call_schedule_data").upsert({
         id: "main",
         data: {
           _intentionalClear: true
         },
         updated_at: new Date().toISOString()
       });
-      await supabase.from("app_shifts_data").upsert({
+      const {
+        error: appClearErr
+      } = await supabase.from("app_shifts_data").upsert({
         id: "main",
         data: {},
         updated_at: new Date().toISOString()
       });
+      if (blobClearErr || appClearErr) throw new Error(`stored-data clear failed: ${String(blobClearErr || appClearErr).slice(0, 200)}`);
     } catch (e) {
       console.error("Factory reset: clearing stored data failed:", e);
-      showToast("Couldn't clear the stored data — check your connection and retry the reset.", "error");
+      allowWipeSaveRef.current = false;
+      everHadRealDataRef.current = true;
+      showToast("Couldn't clear the stored data — reset cancelled. Nothing was changed.", "error");
+      setSaveStatus("Reset cancelled");
+      setTimeout(() => setSaveStatus(""), 2000);
+      return;
     }
     setSurgeons(INIT_SURGEONS);
     setApps(INIT_APPS);
@@ -2673,7 +2695,7 @@ function CallSchedule() {
       console.error("Deep-link handler error:", e);
     }
   }, [loaded]);
-  const notifSaveTimerRef = useRef(null);
+  const notifSaveTimerRef = useRef({});
   const saveNotifPref = useCallback(async (surgeonId, updates) => {
     setNotifPrefs(prev => {
       const cur = prev[surgeonId] || {
@@ -2701,8 +2723,8 @@ function CallSchedule() {
         [surgeonId]: merged
       });
     });
-    if (notifSaveTimerRef.current) clearTimeout(notifSaveTimerRef.current);
-    notifSaveTimerRef.current = setTimeout(async () => {
+    if (notifSaveTimerRef.current[surgeonId]) clearTimeout(notifSaveTimerRef.current[surgeonId]);
+    notifSaveTimerRef.current[surgeonId] = setTimeout(async () => {
       setNotifPrefsSaving(true);
       try {
         const cur = notifPrefsRef.current[surgeonId] || {};
@@ -2724,7 +2746,10 @@ function CallSchedule() {
           vac_deadline_hour: typeof cur.vac_deadline_hour === "number" ? cur.vac_deadline_hour : 8,
           updated_at: new Date().toISOString()
         };
-        await db.upsert("notification_preferences", row);
+        const {
+          error: prefErr
+        } = await db.upsert("notification_preferences", row);
+        if (prefErr) throw new Error(`notif pref save failed: ${String(prefErr).slice(0, 200)}`);
       } catch (e) {
         console.error("Save notif pref error:", e);
         showToast("Couldn't save notification settings — check your connection and try again.", "error");
@@ -3285,11 +3310,14 @@ function CallSchedule() {
           delete blobData.schedule;
           delete blobData.vacations;
           delete blobData.noCallDays;
-          await supabase.from("call_schedule_data").upsert({
+          const {
+            error: regenErr
+          } = await supabase.from("call_schedule_data").upsert({
             id: "main",
             data: blobData,
             updated_at: ts
           });
+          if (regenErr) throw new Error(`regenerate blob save failed: ${String(regenErr).slice(0, 200)}`);
           syncSchedWeeks(merged);
         } catch (e) {
           console.error("Immediate save failed:", e);
@@ -3322,11 +3350,14 @@ function CallSchedule() {
         delete blobData.schedule;
         delete blobData.vacations;
         delete blobData.noCallDays;
-        await supabase.from("call_schedule_data").upsert({
+        const {
+          error: clearErr
+        } = await supabase.from("call_schedule_data").upsert({
           id: "main",
           data: blobData,
           updated_at: ts
         });
+        if (clearErr) throw new Error(`clear-schedule blob save failed: ${String(clearErr).slice(0, 200)}`);
       } catch (e) {
         console.error("Immediate save failed:", e);
         showToast("Couldn't save the cleared state — check your connection.", "error");
