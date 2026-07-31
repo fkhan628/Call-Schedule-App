@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.07.27c";
+    var APP_VERSION = "2026.07.30a";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -1778,11 +1778,28 @@ function CallSchedule() {
     try {
       var _surgeons$find4;
       const reviewerName = (userProfile === null || userProfile === void 0 ? void 0 : userProfile.display_name) || ((_surgeons$find4 = surgeons.find(s => s.id === mySurgeon)) === null || _surgeons$find4 === void 0 ? void 0 : _surgeons$find4.name) || "A colleague";
-      await db.update("vacation_requests", req.id, {
-        status: "approved",
-        reviewed_at: new Date().toISOString(),
-        reviewed_by: reviewerName
+      const approveRes = await fetch(`${SUPABASE_URL}/rest/v1/vacation_requests?id=eq.${req.id}&status=eq.pending`, {
+        method: "PATCH",
+        headers: _objectSpread(_objectSpread({}, dbAuthHeaders()), {}, {
+          "Content-Type": "application/json",
+          Prefer: "return=representation"
+        }),
+        body: JSON.stringify({
+          status: "approved",
+          reviewed_at: new Date().toISOString(),
+          reviewed_by: reviewerName
+        })
       });
+      if (!approveRes.ok) {
+        console.error("Vacation approve status write failed:", approveRes.status, await approveRes.text().catch(() => ""));
+        showToast("Couldn't approve the request — nothing was changed. Check your connection and try again.", "error");
+        return;
+      }
+      const approveRows = await approveRes.json().catch(() => []);
+      if (!Array.isArray(approveRows) || approveRows.length === 0) {
+        showToast("This request was already handled or withdrawn — nothing was changed.", "error");
+        return;
+      }
       setVacRequests(prev => prev.map(r => r.id === req.id ? _objectSpread(_objectSpread({}, r), {}, {
         status: "approved"
       }) : r));
@@ -1814,12 +1831,29 @@ function CallSchedule() {
     try {
       var _surgeons$find5;
       const reviewerName = (userProfile === null || userProfile === void 0 ? void 0 : userProfile.display_name) || ((_surgeons$find5 = surgeons.find(s => s.id === mySurgeon)) === null || _surgeons$find5 === void 0 ? void 0 : _surgeons$find5.name) || "A colleague";
-      await db.update("vacation_requests", req.id, {
-        status: "denied",
-        reviewed_at: new Date().toISOString(),
-        reviewed_by: reviewerName,
-        review_note: note
+      const denyRes = await fetch(`${SUPABASE_URL}/rest/v1/vacation_requests?id=eq.${req.id}&status=eq.pending`, {
+        method: "PATCH",
+        headers: _objectSpread(_objectSpread({}, dbAuthHeaders()), {}, {
+          "Content-Type": "application/json",
+          Prefer: "return=representation"
+        }),
+        body: JSON.stringify({
+          status: "denied",
+          reviewed_at: new Date().toISOString(),
+          reviewed_by: reviewerName,
+          review_note: note
+        })
       });
+      if (!denyRes.ok) {
+        console.error("Vacation deny status write failed:", denyRes.status, await denyRes.text().catch(() => ""));
+        showToast("Couldn't deny the request — nothing was changed. Check your connection and try again.", "error");
+        return;
+      }
+      const denyRows = await denyRes.json().catch(() => []);
+      if (!Array.isArray(denyRows) || denyRows.length === 0) {
+        showToast("This request was already handled or withdrawn — nothing was changed.", "error");
+        return;
+      }
       setVacRequests(prev => prev.map(r => r.id === req.id ? _objectSpread(_objectSpread({}, r), {}, {
         status: "denied",
         review_note: note
@@ -2265,7 +2299,24 @@ function CallSchedule() {
         end_date: editingVacReq.end_date,
         reason: editingVacReq.reason
       };
-      await db.update("vacation_requests", editingVacReq.id, updates);
+      const editRes = await fetch(`${SUPABASE_URL}/rest/v1/vacation_requests?id=eq.${editingVacReq.id}`, {
+        method: "PATCH",
+        headers: _objectSpread(_objectSpread({}, dbAuthHeaders()), {}, {
+          "Content-Type": "application/json",
+          Prefer: "return=representation"
+        }),
+        body: JSON.stringify(updates)
+      });
+      if (!editRes.ok) {
+        console.error("Vacation edit write failed:", editRes.status, await editRes.text().catch(() => ""));
+        showToast("Couldn't save the changes — nothing was changed. Check your connection and try again.", "error");
+        return;
+      }
+      const editRows = await editRes.json().catch(() => []);
+      if (!Array.isArray(editRows) || editRows.length === 0) {
+        showToast("This request no longer exists — nothing was changed.", "error");
+        return;
+      }
       setVacRequests(prev => prev.map(r => r.id === editingVacReq.id ? _objectSpread(_objectSpread({}, r), updates) : r));
       const req = vacRequests.find(r => r.id === editingVacReq.id);
       if ((req === null || req === void 0 ? void 0 : req.status) === "approved") {
@@ -2282,10 +2333,27 @@ function CallSchedule() {
     const kindLabel = isNoCall ? "no-call days" : "vacation";
     if (!confirm(`Revoke ${req.surgeon_name}'s approved ${kindLabel} ${req.start_date} → ${req.end_date}? This will remove it from the schedule.`)) return;
     try {
-      await db.update("vacation_requests", req.id, {
-        status: "revoked",
-        reviewed_at: new Date().toISOString()
+      const revokeRes = await fetch(`${SUPABASE_URL}/rest/v1/vacation_requests?id=eq.${req.id}&status=eq.approved`, {
+        method: "PATCH",
+        headers: _objectSpread(_objectSpread({}, dbAuthHeaders()), {}, {
+          "Content-Type": "application/json",
+          Prefer: "return=representation"
+        }),
+        body: JSON.stringify({
+          status: "revoked",
+          reviewed_at: new Date().toISOString()
+        })
       });
+      if (!revokeRes.ok) {
+        console.error("Vacation revoke status write failed:", revokeRes.status, await revokeRes.text().catch(() => ""));
+        showToast("Couldn't revoke the vacation — nothing was changed. Check your connection and try again.", "error");
+        return;
+      }
+      const revokeRows = await revokeRes.json().catch(() => []);
+      if (!Array.isArray(revokeRows) || revokeRows.length === 0) {
+        showToast("This vacation is no longer approved (already revoked or changed) — nothing was changed.", "error");
+        return;
+      }
       setVacRequests(prev => prev.map(r => r.id === req.id ? _objectSpread(_objectSpread({}, r), {}, {
         status: "revoked"
       }) : r));
