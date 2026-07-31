@@ -1752,9 +1752,27 @@ function CallSchedule() {
     }
     try {
       const reviewerName = userProfile?.display_name || surgeons.find(s => s.id === mySurgeon)?.name || "A colleague";
-      await db.update("vacation_requests", req.id, {
-        status: "approved", reviewed_at: new Date().toISOString(), reviewed_by: reviewerName
+      // Fail-closed status write with a pending precondition — same pattern
+      // (and same reasons) as acceptTradeRequest: the old unchecked db.update
+      // let a 401/5xx/RLS failure write the vacation into time_off while the
+      // row stayed "pending" (re-approvable ≤60s later — and toAdd is a plain
+      // INSERT, so a re-approve created DUPLICATE time_off rows). Zero rows
+      // matched = already handled elsewhere (two-device race / withdrawn).
+      const approveRes = await fetch(`${SUPABASE_URL}/rest/v1/vacation_requests?id=eq.${req.id}&status=eq.pending`, {
+        method: "PATCH",
+        headers: { ...dbAuthHeaders(), "Content-Type": "application/json", Prefer: "return=representation" },
+        body: JSON.stringify({ status: "approved", reviewed_at: new Date().toISOString(), reviewed_by: reviewerName }),
       });
+      if (!approveRes.ok) {
+        console.error("Vacation approve status write failed:", approveRes.status, await approveRes.text().catch(() => ""));
+        showToast("Couldn't approve the request — nothing was changed. Check your connection and try again.", "error");
+        return; // fail closed: no time_off write, no audit, no notifications
+      }
+      const approveRows = await approveRes.json().catch(() => []);
+      if (!Array.isArray(approveRows) || approveRows.length === 0) {
+        showToast("This request was already handled or withdrawn — nothing was changed.", "error");
+        return; // realtime/60s poll will refresh the visible status
+      }
       setVacRequests(prev => prev.map(r => r.id === req.id ? { ...r, status: "approved" } : r));
       // Auto-add to the right bucket: no-call requests go to noCallDays, vacations to vacations
       toAdd(req.surgeon_id, isNoCall ? "nocall" : "vacation", req.start_date, req.end_date);
@@ -1774,9 +1792,24 @@ function CallSchedule() {
     const kindLabel = isNoCall ? "no-call days" : "vacation";
     try {
       const reviewerName = userProfile?.display_name || surgeons.find(s => s.id === mySurgeon)?.name || "A colleague";
-      await db.update("vacation_requests", req.id, {
-        status: "denied", reviewed_at: new Date().toISOString(), reviewed_by: reviewerName, review_note: note
+      // Fail-closed status write — same pattern as approve above (no bucket
+      // write on this path, but an unchecked failure still left the row
+      // pending: re-actionable, duplicate notifications/emails on re-deny).
+      const denyRes = await fetch(`${SUPABASE_URL}/rest/v1/vacation_requests?id=eq.${req.id}&status=eq.pending`, {
+        method: "PATCH",
+        headers: { ...dbAuthHeaders(), "Content-Type": "application/json", Prefer: "return=representation" },
+        body: JSON.stringify({ status: "denied", reviewed_at: new Date().toISOString(), reviewed_by: reviewerName, review_note: note }),
       });
+      if (!denyRes.ok) {
+        console.error("Vacation deny status write failed:", denyRes.status, await denyRes.text().catch(() => ""));
+        showToast("Couldn't deny the request — nothing was changed. Check your connection and try again.", "error");
+        return;
+      }
+      const denyRows = await denyRes.json().catch(() => []);
+      if (!Array.isArray(denyRows) || denyRows.length === 0) {
+        showToast("This request was already handled or withdrawn — nothing was changed.", "error");
+        return;
+      }
       setVacRequests(prev => prev.map(r => r.id === req.id ? { ...r, status: "denied", review_note: note } : r));
       logAudit("request.deny", `Denied ${req.surgeon_name}'s ${isNoCall ? "no-call" : "vacation"} request: ${req.start_date} → ${req.end_date}${note ? " (" + note + ")" : ""}`, { request_id: req.id, surgeon_id: req.surgeon_id });
       const denyTargets = [...new Set([req.surgeon_id, ...schedulerAdminIds].filter(Boolean))];
@@ -2155,7 +2188,26 @@ function CallSchedule() {
     if (!editingVacReq) return;
     try {
       const updates = { start_date: editingVacReq.start_date, end_date: editingVacReq.end_date, reason: editingVacReq.reason };
-      await db.update("vacation_requests", editingVacReq.id, updates);
+      // Fail-closed row update. Id-only precondition — edits are valid on both
+      // pending and approved rows, so no status filter; the rows-affected check
+      // still catches a request withdrawn/deleted meanwhile (and RLS zero-row
+      // no-ops). Abort BEFORE touching the time_off bucket, else the bucket
+      // carries new dates while the request records the old ones.
+      const editRes = await fetch(`${SUPABASE_URL}/rest/v1/vacation_requests?id=eq.${editingVacReq.id}`, {
+        method: "PATCH",
+        headers: { ...dbAuthHeaders(), "Content-Type": "application/json", Prefer: "return=representation" },
+        body: JSON.stringify(updates),
+      });
+      if (!editRes.ok) {
+        console.error("Vacation edit write failed:", editRes.status, await editRes.text().catch(() => ""));
+        showToast("Couldn't save the changes — nothing was changed. Check your connection and try again.", "error");
+        return;
+      }
+      const editRows = await editRes.json().catch(() => []);
+      if (!Array.isArray(editRows) || editRows.length === 0) {
+        showToast("This request no longer exists — nothing was changed.", "error");
+        return;
+      }
       setVacRequests(prev => prev.map(r => r.id === editingVacReq.id ? { ...r, ...updates } : r));
       // If approved, also update the bucket it landed in (vacations or no-call)
       const req = vacRequests.find(r => r.id === editingVacReq.id);
@@ -2173,7 +2225,28 @@ function CallSchedule() {
     const kindLabel = isNoCall ? "no-call days" : "vacation";
     if (!confirm(`Revoke ${req.surgeon_name}'s approved ${kindLabel} ${req.start_date} → ${req.end_date}? This will remove it from the schedule.`)) return;
     try {
-      await db.update("vacation_requests", req.id, { status: "revoked", reviewed_at: new Date().toISOString() });
+      // Fail-closed status write with an APPROVED precondition. The most
+      // consequential of the four: unchecked, a failed status write here still
+      // DELETED the time_off entry while the row kept saying "approved" — the
+      // record shows an approved vacation that no longer exists, and the
+      // generator (which reads time_off) will schedule that surgeon during a
+      // vacation they believe is approved. The N10 failure mode by another
+      // road — and it lands on a person, not just a table.
+      const revokeRes = await fetch(`${SUPABASE_URL}/rest/v1/vacation_requests?id=eq.${req.id}&status=eq.approved`, {
+        method: "PATCH",
+        headers: { ...dbAuthHeaders(), "Content-Type": "application/json", Prefer: "return=representation" },
+        body: JSON.stringify({ status: "revoked", reviewed_at: new Date().toISOString() }),
+      });
+      if (!revokeRes.ok) {
+        console.error("Vacation revoke status write failed:", revokeRes.status, await revokeRes.text().catch(() => ""));
+        showToast("Couldn't revoke the vacation — nothing was changed. Check your connection and try again.", "error");
+        return; // fail closed: the time_off entry stays; record and reality agree
+      }
+      const revokeRows = await revokeRes.json().catch(() => []);
+      if (!Array.isArray(revokeRows) || revokeRows.length === 0) {
+        showToast("This vacation is no longer approved (already revoked or changed) — nothing was changed.", "error");
+        return;
+      }
       setVacRequests(prev => prev.map(r => r.id === req.id ? { ...r, status: "revoked" } : r));
       // Remove from the bucket it landed in
       toRemove(req.surgeon_id, isNoCall ? "nocall" : "vacation", req.start_date, req.end_date);
