@@ -1075,12 +1075,23 @@ function CallSchedule() {
             everHadRealDataRef.current = true;
           }
         }
-        const { data: cfgRow } = await supabase
-          .from("call_schedule_config")
-          .select("edge_function_url")
-          .eq("id", "config")
-          .single();
-        if (cfgRow?.edge_function_url) setEdgeFunctionUrl(cfgRow.edge_function_url);
+        // Own try/catch (like the app_shifts read below): .single() now throws
+        // on HTTP failure, and this read sits mid-way through the outer try —
+        // without this, a config-only failure would abort the app_shifts,
+        // vacation-request, trade and notification loads that follow. It also
+        // must NOT reach the outer catch: this table is authenticated-only, so
+        // a stale token's anon fallback is RLS-filtered to an empty result, and
+        // a failure here only means "no dispatch URL yet" (the Settings banner
+        // says so, the poll repairs it) — not a degraded session that should
+        // arm loadFailedRef and suppress saving.
+        try {
+          const { data: cfgRow } = await supabase
+            .from("call_schedule_config")
+            .select("edge_function_url")
+            .eq("id", "config")
+            .single();
+          if (cfgRow?.edge_function_url) setEdgeFunctionUrl(cfgRow.edge_function_url);
+        } catch(e) { console.error("Edge-function URL load failed:", e); }
 
         // APP shifts now live in their own table (app_shifts_data) so that an
         // APP-lead with can_assign_apps can write them without touching the
