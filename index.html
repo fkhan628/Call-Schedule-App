@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.07.31d";
+    var APP_VERSION = "2026.07.31e";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -79,7 +79,9 @@
         }
         Promise.all(promises).then(function() {
           var url = new URL(window.location.href);
-          url.searchParams.set("_v", APP_VERSION);
+          // Unique per reload: reusing the bare APP_VERSION could hit the very
+          // cache entry that served THIS (stale) build within max-age.
+          url.searchParams.set("_v", APP_VERSION + "-" + Date.now());
           window.location.replace(url.toString());
         }).catch(function() { window.location.reload(true); });
       }
@@ -316,6 +318,37 @@ function CallSchedule() {
       }
     })();
   }, [authUser, userProfile]);
+  const [updateAvailable, setUpdateAvailable] = useState(null);
+  const updateDismissedRef = useRef("");
+  const lastUpdateCheckRef = useRef(0);
+  useEffect(() => {
+    const check = async () => {
+      lastUpdateCheckRef.current = Date.now();
+      try {
+        const res = await fetch(`version.json?t=${Date.now()}`, {
+          cache: "no-store"
+        });
+        if (!res.ok) return;
+        const j = await res.json();
+        const v = j && j.version;
+        if (typeof v !== "string" || !/^\d{4}\.\d{2}\.\d{2}[a-z]*$/.test(v)) return;
+        if (versionCmp(APP_VERSION, v) < 0 && v !== updateDismissedRef.current) {
+          setUpdateAvailable(v);
+        }
+      } catch (e) {
+        console.warn("version check failed (ignored):", e);
+      }
+    };
+    const t = setTimeout(check, 5000);
+    const onVisible = () => {
+      if (document.visibilityState === "visible" && Date.now() - lastUpdateCheckRef.current > 10 * 60 * 1000) check();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      clearTimeout(t);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, []);
   useEffect(() => {
     const isAdmin = (userProfile === null || userProfile === void 0 ? void 0 : userProfile.role) === "admin";
     const canAssignApps = (userProfile === null || userProfile === void 0 ? void 0 : userProfile.can_assign_apps) === true;
@@ -5277,7 +5310,58 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       cursor: "pointer",
       letterSpacing: 0.2
     }
-  }, toast.tone === "success" ? "✓ " : toast.tone === "error" ? "⚠ " : "", toast.msg), darkMode && React.createElement("style", null, `
+  }, toast.tone === "success" ? "✓ " : toast.tone === "error" ? "⚠ " : "", toast.msg), updateAvailable && React.createElement("div", {
+    role: "status",
+    "aria-live": "polite",
+    style: {
+      position: "fixed",
+      left: 0,
+      right: 0,
+      bottom: 0,
+      zIndex: 9998,
+      background: "#1a2a3a",
+      color: "#fff",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      flexWrap: "wrap",
+      gap: 10,
+      padding: "9px 14px",
+      fontSize: 12.5,
+      fontWeight: 600,
+      fontFamily: font,
+      boxShadow: "0 -2px 12px rgba(0,0,0,0.25)"
+    }
+  }, React.createElement("span", null, "⬆ New version available (", updateAvailable, ")"), React.createElement("button", {
+    onClick: () => {
+      if (window.__dsgHardReset) window.__dsgHardReset();else window.location.reload();
+    },
+    style: {
+      background: "#2a8a5a",
+      border: "none",
+      color: "#fff",
+      borderRadius: 6,
+      padding: "5px 14px",
+      fontSize: 12,
+      fontWeight: 700,
+      cursor: "pointer",
+      fontFamily: font
+    }
+  }, "Tap to reload"), React.createElement("button", {
+    "aria-label": "Dismiss",
+    onClick: () => {
+      updateDismissedRef.current = updateAvailable;
+      setUpdateAvailable(null);
+    },
+    style: {
+      background: "none",
+      border: "none",
+      color: "#8a9aa8",
+      cursor: "pointer",
+      fontSize: 14,
+      padding: "2px 6px"
+    }
+  }, "✕")), darkMode && React.createElement("style", null, `
         body { background: #1a1a2e !important; color: #e0e0f0 !important; }
         /* Cards and containers */
         div[style*="background: rgb(255, 255, 255)"], div[style*="background:#ffffff"], div[style*="background: #fff"] { background: #16213e !important; border-color: #2a3a5e !important; }
