@@ -49,4 +49,10 @@ const newVer = (oldDate === today) ? (today + nextSuffix(oldSuffix)) : (today + 
 const out = src.replace(VER_RE, `$1${newVer}$4`);
 fs.writeFileSync(FILE, out, "utf8");
 
+// The update-available banner polls this tiny file with cache:"no-store" to
+// learn the currently-deployed version without refetching index.html. Written
+// here (not build.js) so there is still exactly ONE place that knows the new
+// version. CI must `git add version.json` alongside the built files.
+fs.writeFileSync("version.json", JSON.stringify({ version: newVer }) + "\n", "utf8");
+
 console.log(`APP_VERSION: ${oldDate}${oldSuffix} -> ${newVer}`);
