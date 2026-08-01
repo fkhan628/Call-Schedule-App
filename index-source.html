@@ -300,6 +300,11 @@ function CallSchedule() {
   // failed load must stay distinguishable from "no rows" (failure ≠ empty).
   const [clientVersions, setClientVersions] = useState(null);
   const [clientVersionsErr, setClientVersionsErr] = useState("");
+  // Profiles snapshot for the panel's "never signed up" labels. null = unknown
+  // (this load's fetch hasn't succeeded) — labels must come from the current
+  // load only, never a stale cache, or a person WITH an account could be
+  // confidently branded "Never signed up" after a silent refresh failure.
+  const [cvProfiles, setCvProfiles] = useState(null);
   // Selectable identities for the signup / profile-setup name pickers. "admin"
   // is intentionally absent: it is not self-claimable (see those screens).
   // Existing admin accounts are unaffected — their identity comes from their
@@ -934,20 +939,52 @@ function CallSchedule() {
   // "nobody has ever signed in" — instead of a visible failure.
   const loadClientVersions = async () => {
     setClientVersionsErr("");
+    let rows;
     try {
       const res = await fetch(`${SUPABASE_URL}/rest/v1/client_versions?select=*&order=last_seen.desc`, { headers: dbAuthHeaders() });
       if (!res.ok) throw new Error(`HTTP ${res.status} ${(await res.text().catch(() => "")).slice(0, 200)}`);
-      const rows = await res.json();
-      setClientVersions(Array.isArray(rows) ? rows : []);
-      // Cross-reference profiles so the panel can tell "signed up but no
-      // heartbeat yet" apart from "never signed up at all".
-      const profiles = await dbAuth.getAllProfiles();
-      if (profiles?.length) setAllProfiles(profiles);
+      const body = await res.json();
+      rows = Array.isArray(body) ? body : [];
     } catch (e) {
       console.error("client_versions load failed", e);
       // Failure ≠ empty: keep any previously loaded list on screen and say so.
       setClientVersionsErr("Couldn't load client versions — this does NOT mean nobody has signed in. Retry (↻).");
+      return;
     }
+    // Profiles cross-reference ("never signed up" vs "signed up, no heartbeat
+    // yet") in its OWN try: its failure must not claim the version list failed
+    // (review finding: a shared catch painted the couldn't-load banner over a
+    // correctly loaded list). Labels only ever come from THIS load's
+    // successful fetch — never a stale cache — and getAllProfiles is NOT used
+    // because it silently returns [] on HTTP failure; this raw fetch throws.
+    let profiles = null;
+    try {
+      const pres = await fetch(`${SUPABASE_URL}/rest/v1/user_profiles?select=*`, { headers: dbAuthHeaders() });
+      if (!pres.ok) throw new Error(`HTTP ${pres.status} ${(await pres.text().catch(() => "")).slice(0, 200)}`);
+      const pbody = await pres.json();
+      if (Array.isArray(pbody)) profiles = pbody;
+    } catch (e) {
+      // profiles stays null → the panel says it couldn't check, instead of
+      // guessing. Console-only: the version list itself loaded fine.
+      console.warn("client_versions profiles cross-reference failed", e);
+    }
+    // Both states land together so the "couldn't check accounts" note never
+    // flashes during the normal two-fetch gap.
+    setCvProfiles(profiles);
+    if (profiles?.length) setAllProfiles(profiles);
+    setClientVersions(rows);
+  };
+  // Compare two APP_VERSION strings ("YYYY.MM.DD" + lowercase suffix that
+  // rolls z→aa on the 27th same-day push, per bump-version.js). Plain string
+  // compare inverts at that rollover ("…z" > "…aa" lexically — review
+  // finding); the date part is fixed-width so it compares clean, and suffixes
+  // order by length THEN lexically, restoring monotonicity.
+  const versionCmp = (a, b) => {
+    const da = String(a).slice(0, 10), db2 = String(b).slice(0, 10);
+    if (da !== db2) return da < db2 ? -1 : 1;
+    const sa = String(a).slice(10), sb = String(b).slice(10);
+    if (sa.length !== sb.length) return sa.length - sb.length;
+    return sa === sb ? 0 : (sa < sb ? -1 : 1);
   };
   // Condense a user-agent to its "phone or desktop" signal; raw UA is in the DB.
   const uaLabel = (ua) => {
@@ -8524,20 +8561,26 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               {clientVersionsErr && (
                 <div style={{fontSize:12,color:"#c04040",padding:"6px 0",fontWeight:600}}>⚠ {clientVersionsErr}</div>
               )}
+              {clientVersions !== null && cvProfiles === null && !clientVersionsErr && (
+                <div style={{fontSize:11,color:"#c09030",padding:"0 0 6px",fontWeight:600}}>⚠ Couldn't check who has an account — "Never signed up" labels are unavailable this load (versions below are still correct).</div>
+              )}
               {clientVersions === null && !clientVersionsErr ? (
                 <div style={{fontSize:12,color:"#8a94a0",padding:"6px 0"}}>Loading…</div>
               ) : clientVersions !== null && (
                 <div style={{display:"flex",flexDirection:"column"}}>
                   {(() => {
                     const roster = [...surgeons, ...apps];
-                    const profilesKnown = allProfiles.length > 0;
+                    // Labels come ONLY from this load's own profiles fetch —
+                    // null means "couldn't check"; never guess from a cache.
+                    const profilesKnown = cvProfiles !== null;
                     // Roster people first, then any heartbeat rows from ids
                     // outside the roster (e.g. an admin account).
                     const extras = clientVersions.filter(r => !roster.some(p => p.id === r.person_id));
                     const line = (key, name, id, row, hasProfile) => {
                       let status;
                       if (row) {
-                        const cmp = row.app_version === APP_VERSION ? "current" : (row.app_version < APP_VERSION ? "behind" : "newer");
+                        const vc = versionCmp(row.app_version, APP_VERSION);
+                        const cmp = vc === 0 ? "current" : (vc < 0 ? "behind" : "newer");
                         const bs = cmp === "current" ? {background:"#e8f6ec",color:"#1a8040",border:"1px solid #b8e0c4"}
                                  : cmp === "behind"  ? {background:"#fef8e8",color:"#c09030",border:"1px solid #e8d090"}
                                                      : {background:"#e8f0fa",color:"#1a6fa8",border:"1px solid #b8d4ec"};
@@ -8562,7 +8605,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                       );
                     };
                     return <>
-                      {roster.map(p => line(p.id, p.name, p.id, clientVersions.find(r => r.person_id === p.id), allProfiles.some(pr => pr.person_id === p.id)))}
+                      {roster.map(p => line(p.id, p.name, p.id, clientVersions.find(r => r.person_id === p.id), (cvProfiles || []).some(pr => pr.person_id === p.id)))}
                       {extras.map(r => line(r.person_id, r.person_id, "", r, true))}
                     </>;
                   })()}
