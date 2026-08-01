@@ -624,17 +624,24 @@ function CallSchedule() {
           // don't clobber an email the scheduler already entered manually.
           if (signupPersonId !== "admin" && authEmail) {
             try {
-              const { data: existingRow } = await supabase
-                .from("notification_preferences")
-                .select("email")
-                .eq("surgeon_id", signupPersonId)
-                .single();
-                // ^ .single(), NOT .maybeSingle() — the wrapper never implemented
-                // maybeSingle, so this call threw on every signup and the catch
-                // below silently overwrote instead of checking first. The
-                // wrapper's .single() already returns first-row-or-null with no
-                // error on zero rows (maybeSingle semantics).
-              const existingEmail = (existingRow?.email || "").trim();
+              // The guard read carries the SAME identity the write will use
+              // (dbAuthHeaders), NOT the wrapper's expiry-aware dbReadHeaders:
+              // under a fast client clock dbReadHeaders judges the just-issued
+              // token stale and falls back to anon, and an anon read of this
+              // RLS-locked table is HTTP 200 + [] — byte-identical to "slot
+              // genuinely empty" — while the debounced write would still go out
+              // authenticated (the server's clock, not ours, validates it) and
+              // clobber a scheduler-entered address with the catch never
+              // firing. Same-identity read + throw on !res.ok closes that
+              // split: an auth/RLS failure lands in the fail-loud catch below
+              // instead of masquerading as emptiness. (Same reasoning as
+              // snapshots.list keeping dbAuthHeaders in PR #21.) If no session
+              // is stored at all, both legs are anon and RLS blocks the WRITE —
+              // still no clobber path.
+              const gres = await fetch(`${SUPABASE_URL}/rest/v1/notification_preferences?select=email&surgeon_id=eq.${signupPersonId}`, { headers: dbAuthHeaders() });
+              if (!gres.ok) throw new Error(`signup email check: HTTP ${gres.status} ${(await gres.text().catch(() => "")).slice(0, 200)}`);
+              const grows = await gres.json();
+              const existingEmail = ((grows?.[0]?.email) || "").trim();
               if (!existingEmail) {
                 saveNotifPref(signupPersonId, { email: authEmail, email_notifs: true });
               }
@@ -648,7 +655,8 @@ function CallSchedule() {
               // unpopulated email plus a toast is visible to the person at the
               // screen and fixable in Settings in seconds. So a failed check
               // writes NOTHING — populate happens only when the read succeeded
-              // and found the slot genuinely empty (success path, unchanged).
+              // under the writer's own identity and found the slot genuinely
+              // empty (the populate-on-empty logic itself is unchanged).
               console.warn("Signup email check failed — not auto-populating:", e);
               showToast("Couldn't verify your notification email — open Settings → Notification Settings and enter it there.", "error");
             }
