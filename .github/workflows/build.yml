@@ -27,6 +27,7 @@ on:
       - "helpers.js"
       - "app-styles.js"
       - "test/generator-regression.js"
+      - "test/sync-guards.js"
   workflow_dispatch: {}   # allow manual runs from the Actions tab
 
 permissions:
@@ -59,6 +60,14 @@ jobs:
       # reaches the live site.
       - name: Generator regression test
         run: node test/generator-regression.js
+
+      # Guard the data-loss safeguards the same way: payloadLooksWiped vs the
+      # historical wipe shapes, snapshot capture/restore failure contracts,
+      # and the one-shot wipe-authorization tripwires. The sync/wipe-guard
+      # path had two hollow-guard incidents found only by manual reading —
+      # this fails the build before a third can ship.
+      - name: Sync/snapshot guard test
+        run: node test/sync-guards.js
 
       - name: Bump APP_VERSION
         run: node bump-version.js
