@@ -2037,7 +2037,12 @@ function CallSchedule() {
       if (Array.isArray(targetIds)) body.targetIds = targetIds;
       const res = await fetch(edgeFunctionUrl, {
         method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${SUPABASE_ANON_KEY}` },
+        // dbAuthHeaders, not the bare anon key: send-notification is moving to
+        // require a verified user JWT (it emails through our Resend account on
+        // request). Same broadening PR #10 did for send-push. Deliberately NOT
+        // the expiry-aware read headers — a send with a dead token must 401
+        // into the failure toast below, never silently degrade to anon.
+        headers: dbAuthHeaders(),
         body: JSON.stringify(body),
       });
       const result = await res.json().catch(() => null);
@@ -3249,7 +3254,11 @@ function CallSchedule() {
       const url = `${SUPABASE_URL}/functions/v1/office-notifications`;
       const res = await fetch(url, {
         method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${SUPABASE_ANON_KEY}`, apikey: SUPABASE_ANON_KEY },
+        // dbAuthHeaders (scheduler JWT), not the bare anon key — groundwork
+        // for office-notifications' dual-auth (cron secret OR scheduler JWT);
+        // the function accepts either header today, so this is a no-op until
+        // it tightens.
+        headers: dbAuthHeaders(),
         body: JSON.stringify({ mode: "publish", period_label: publishLabel || "" }),
       });
       const body = await res.json().catch(() => ({}));
@@ -3266,7 +3275,8 @@ function CallSchedule() {
       const url = `${SUPABASE_URL}/functions/v1/office-notifications`;
       const res = await fetch(url, {
         method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${SUPABASE_ANON_KEY}`, apikey: SUPABASE_ANON_KEY },
+        // dbAuthHeaders (scheduler JWT) — same groundwork as the publish button.
+        headers: dbAuthHeaders(),
         body: JSON.stringify({ mode: "digest" }),
       });
       const body = await res.json().catch(() => ({}));
