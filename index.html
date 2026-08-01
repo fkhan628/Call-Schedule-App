@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.07.31b";
+    var APP_VERSION = "2026.07.31c";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -278,6 +278,9 @@ function CallSchedule() {
   const [biometricEnrolled, setBiometricEnrolled] = useState(false);
   const [biometricPending, setBiometricPending] = useState(false);
   const [allProfiles, setAllProfiles] = useState([]);
+  const [clientVersions, setClientVersions] = useState(null);
+  const [clientVersionsErr, setClientVersionsErr] = useState("");
+  const [cvProfiles, setCvProfiles] = useState(null);
   const allPeople = useMemo(() => [...surgeons, ...apps], [surgeons, apps]);
   const schedulerAdminIds = useMemo(() => {
     const ids = new Set();
@@ -292,6 +295,27 @@ function CallSchedule() {
       setIsScheduler(true);
     }
   }, [userProfile]);
+  const versionBeatRef = useRef("");
+  useEffect(() => {
+    const pid = userProfile === null || userProfile === void 0 ? void 0 : userProfile.person_id;
+    if (!authUser || !pid || versionBeatRef.current === pid) return;
+    versionBeatRef.current = pid;
+    (async () => {
+      try {
+        const {
+          error
+        } = await supabase.from("client_versions").upsert({
+          person_id: pid,
+          app_version: APP_VERSION,
+          last_seen: new Date().toISOString(),
+          user_agent: (navigator.userAgent || "").slice(0, 300)
+        });
+        if (error) console.warn("client_versions heartbeat failed:", error);
+      } catch (e) {
+        console.warn("client_versions heartbeat failed:", e);
+      }
+    })();
+  }, [authUser, userProfile]);
   useEffect(() => {
     const isAdmin = (userProfile === null || userProfile === void 0 ? void 0 : userProfile.role) === "admin";
     const canAssignApps = (userProfile === null || userProfile === void 0 ? void 0 : userProfile.can_assign_apps) === true;
@@ -900,10 +924,59 @@ function CallSchedule() {
       return iso;
     }
   };
+  const loadClientVersions = async () => {
+    var _profiles;
+    setClientVersionsErr("");
+    let rows;
+    try {
+      const res = await fetch(`${SUPABASE_URL}/rest/v1/client_versions?select=*&order=last_seen.desc`, {
+        headers: dbAuthHeaders()
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status} ${(await res.text().catch(() => "")).slice(0, 200)}`);
+      const body = await res.json();
+      rows = Array.isArray(body) ? body : [];
+    } catch (e) {
+      console.error("client_versions load failed", e);
+      setClientVersionsErr("Couldn't load client versions — this does NOT mean nobody has signed in. Retry (↻).");
+      return;
+    }
+    let profiles = null;
+    try {
+      const pres = await fetch(`${SUPABASE_URL}/rest/v1/user_profiles?select=*`, {
+        headers: dbAuthHeaders()
+      });
+      if (!pres.ok) throw new Error(`HTTP ${pres.status} ${(await pres.text().catch(() => "")).slice(0, 200)}`);
+      const pbody = await pres.json();
+      if (Array.isArray(pbody)) profiles = pbody;
+    } catch (e) {
+      console.warn("client_versions profiles cross-reference failed", e);
+    }
+    setCvProfiles(profiles);
+    if ((_profiles = profiles) !== null && _profiles !== void 0 && _profiles.length) setAllProfiles(profiles);
+    setClientVersions(rows);
+  };
+  const versionCmp = (a, b) => {
+    const da = String(a).slice(0, 10),
+      db2 = String(b).slice(0, 10);
+    if (da !== db2) return da < db2 ? -1 : 1;
+    const sa = String(a).slice(10),
+      sb = String(b).slice(10);
+    if (sa.length !== sb.length) return sa.length - sb.length;
+    return sa === sb ? 0 : sa < sb ? -1 : 1;
+  };
+  const uaLabel = ua => {
+    if (!ua) return "";
+    if (/iPhone|iPad|iPod/i.test(ua)) return "iOS";
+    if (/Android/i.test(ua)) return "Android";
+    if (/Windows/i.test(ua)) return "Windows";
+    if (/Mac/i.test(ua)) return "Mac";
+    return "other";
+  };
   useEffect(() => {
     if (view === "settings" && (isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.role) === "admin")) {
       loadAudit();
       loadSnapshots();
+      loadClientVersions();
     }
   }, [view]);
   const buildTimeOffMaps = rows => {
@@ -13551,7 +13624,175 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         fontFamily: mono
       }
     }, fmtAuditTime(en.created_at), " · ", en.action)));
-  }))), (isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.role) === "admin") && React.createElement("div", {
+  }))), (isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.role) === "admin") && React.createElement(Collapsible, {
+    css: css,
+    ck: "settings_client_versions",
+    defaultOpen: false,
+    title: React.createElement(React.Fragment, null, "📱 Client Versions ", React.createElement("span", {
+      style: {
+        fontWeight: 400,
+        fontSize: 11,
+        color: "#7a8a98"
+      }
+    }, "— who's on which build")),
+    right: React.createElement("button", {
+      onClick: e => {
+        e.stopPropagation();
+        loadClientVersions();
+      },
+      title: "Refresh",
+      style: {
+        background: "none",
+        border: "1px solid #d0d8e0",
+        borderRadius: 6,
+        color: "#5a6a78",
+        cursor: "pointer",
+        fontSize: 13,
+        padding: "2px 8px",
+        fontFamily: font
+      }
+    }, "↻")
+  }, React.createElement("p", {
+    style: {
+      fontSize: 11.5,
+      color: "#7a8a98",
+      margin: "0 0 8px",
+      lineHeight: 1.5
+    }
+  }, "Updated each time a signed-in user opens the app. \"Current\"/\"Behind\" compare against THIS device's build (", APP_VERSION, ") — reload your own app before trusting the comparison."), clientVersionsErr && React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: "#c04040",
+      padding: "6px 0",
+      fontWeight: 600
+    }
+  }, "⚠ ", clientVersionsErr), clientVersions !== null && cvProfiles === null && !clientVersionsErr && React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: "#c09030",
+      padding: "0 0 6px",
+      fontWeight: 600
+    }
+  }, "⚠ Couldn't check who has an account — \"Never signed up\" labels are unavailable this load (versions below are still correct)."), clientVersions === null && !clientVersionsErr ? React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: "#8a94a0",
+      padding: "6px 0"
+    }
+  }, "Loading…") : clientVersions !== null && React.createElement("div", {
+    style: {
+      display: "flex",
+      flexDirection: "column"
+    }
+  }, (() => {
+    const roster = [...surgeons, ...apps];
+    const profilesKnown = cvProfiles !== null;
+    const extras = clientVersions.filter(r => !roster.some(p => p.id === r.person_id));
+    const line = (key, name, id, row, hasProfile) => {
+      let status;
+      if (row) {
+        const vc = versionCmp(row.app_version, APP_VERSION);
+        const cmp = vc === 0 ? "current" : vc < 0 ? "behind" : "newer";
+        const bs = cmp === "current" ? {
+          background: "#e8f6ec",
+          color: "#1a8040",
+          border: "1px solid #b8e0c4"
+        } : cmp === "behind" ? {
+          background: "#fef8e8",
+          color: "#c09030",
+          border: "1px solid #e8d090"
+        } : {
+          background: "#e8f0fa",
+          color: "#1a6fa8",
+          border: "1px solid #b8d4ec"
+        };
+        status = React.createElement(React.Fragment, null, React.createElement("span", {
+          style: _objectSpread({
+            fontSize: 10,
+            fontWeight: 700,
+            padding: "2px 7px",
+            borderRadius: 5
+          }, bs)
+        }, cmp === "current" ? "Current" : cmp === "behind" ? "Behind" : "Newer than you"), React.createElement("span", {
+          style: {
+            fontSize: 11,
+            fontFamily: mono,
+            color: dk ? "#c8d2dc" : "#3a4a58"
+          }
+        }, row.app_version), React.createElement("span", {
+          style: {
+            fontSize: 11,
+            color: "#8a94a0"
+          }
+        }, fmtAuditTime(row.last_seen), uaLabel(row.user_agent) ? ` · ${uaLabel(row.user_agent)}` : ""));
+      } else if (profilesKnown && !hasProfile) {
+        status = React.createElement("span", {
+          style: {
+            fontSize: 10,
+            fontWeight: 700,
+            padding: "2px 7px",
+            borderRadius: 5,
+            background: "#faeaea",
+            color: "#c04040",
+            border: "1px solid #eabcbc"
+          }
+        }, "Never signed up");
+      } else if (profilesKnown) {
+        status = React.createElement("span", {
+          style: {
+            fontSize: 10,
+            fontWeight: 700,
+            padding: "2px 7px",
+            borderRadius: 5,
+            background: dk ? "#243240" : "#eef1f4",
+            color: "#7a8a98",
+            border: "1px solid " + (dk ? "#2a3a48" : "#e0e4ea")
+          }
+        }, "Signed up · no heartbeat yet");
+      } else {
+        status = React.createElement("span", {
+          style: {
+            fontSize: 11,
+            color: "#8a94a0"
+          }
+        }, "no heartbeat recorded");
+      }
+      return React.createElement("div", {
+        key: key,
+        style: {
+          display: "flex",
+          gap: 8,
+          alignItems: "center",
+          padding: "7px 2px",
+          borderBottom: "1px solid " + (dk ? "#243240" : "#eef1f4")
+        }
+      }, React.createElement("span", {
+        style: {
+          flexShrink: 0,
+          fontSize: 12,
+          fontWeight: 600,
+          color: dk ? "#c8d2dc" : "#2c3e50",
+          minWidth: 52
+        }
+      }, name), React.createElement("span", {
+        style: {
+          flexShrink: 0,
+          fontSize: 10,
+          color: "#9aa4ae",
+          fontFamily: mono,
+          minWidth: 22
+        }
+      }, id), React.createElement("div", {
+        style: {
+          display: "flex",
+          gap: 8,
+          alignItems: "center",
+          flexWrap: "wrap"
+        }
+      }, status));
+    };
+    return React.createElement(React.Fragment, null, roster.map(p => line(p.id, p.name, p.id, clientVersions.find(r => r.person_id === p.id), (cvProfiles || []).some(pr => pr.person_id === p.id))), extras.map(r => line(r.person_id, r.person_id, "", r, true)));
+  })())), (isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.role) === "admin") && React.createElement("div", {
     style: css.card
   }, React.createElement("div", {
     style: css.cardT
