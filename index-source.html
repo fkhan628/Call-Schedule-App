@@ -639,9 +639,18 @@ function CallSchedule() {
                 saveNotifPref(signupPersonId, { email: authEmail, email_notifs: true });
               }
             } catch(e) {
-              // If the check fails for any reason, fall back to populating —
-              // better to risk clobbering (rare) than to fail silently.
-              saveNotifPref(signupPersonId, { email: authEmail, email_notifs: true });
+              // REVERSED 2026-07-31 (was populate-on-failure, unchanged from the
+              // original April upload; PR #13 only resurrected the dead success-
+              // path check above and never touched this branch). The old comment
+              // framed "risk clobbering (rare)" vs "fail silently" — the third
+              // option is to fail LOUDLY: a clobber silently replaces a
+              // scheduler-entered address with no signal to anyone, while an
+              // unpopulated email plus a toast is visible to the person at the
+              // screen and fixable in Settings in seconds. So a failed check
+              // writes NOTHING — populate happens only when the read succeeded
+              // and found the slot genuinely empty (success path, unchanged).
+              console.warn("Signup email check failed — not auto-populating:", e);
+              showToast("Couldn't verify your notification email — open Settings → Notification Settings and enter it there.", "error");
             }
           }
         }
