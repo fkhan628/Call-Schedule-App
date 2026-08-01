@@ -296,6 +296,15 @@ function CallSchedule() {
   const [biometricEnrolled, setBiometricEnrolled] = useState(false);
   const [biometricPending, setBiometricPending] = useState(false); // waiting for biometric prompt
   const [allProfiles, setAllProfiles] = useState([]); // for scheduler to manage per-user flags
+  // Client-version heartbeats (scheduler display). null = never loaded — a
+  // failed load must stay distinguishable from "no rows" (failure ≠ empty).
+  const [clientVersions, setClientVersions] = useState(null);
+  const [clientVersionsErr, setClientVersionsErr] = useState("");
+  // Profiles snapshot for the panel's "never signed up" labels. null = unknown
+  // (this load's fetch hasn't succeeded) — labels must come from the current
+  // load only, never a stale cache, or a person WITH an account could be
+  // confidently branded "Never signed up" after a silent refresh failure.
+  const [cvProfiles, setCvProfiles] = useState(null);
   // Selectable identities for the signup / profile-setup name pickers. "admin"
   // is intentionally absent: it is not self-claimable (see those screens).
   // Existing admin accounts are unaffected — their identity comes from their
@@ -327,6 +336,33 @@ function CallSchedule() {
       setIsScheduler(true);
     }
   }, [userProfile]);
+
+  // ─── Client version heartbeat (client_versions table) ───
+  // Best-effort: record this person's build + last-open so the scheduler can
+  // see who is on a stale client before flipping anything server-side that
+  // assumes updated clients. Fire-and-forget BY DESIGN: nothing reads its
+  // result, no state is set, and failure is console-only — a user can't act
+  // on "version tracking failed", and the app must load identically whether
+  // this succeeds, fails, or the table doesn't exist yet.
+  const versionBeatRef = useRef("");
+  useEffect(() => {
+    const pid = userProfile?.person_id;
+    if (!authUser || !pid || versionBeatRef.current === pid) return;
+    versionBeatRef.current = pid; // one beat per person per app load
+    (async () => {
+      try {
+        const { error } = await supabase.from("client_versions").upsert({
+          person_id: pid,
+          app_version: APP_VERSION,
+          last_seen: new Date().toISOString(),
+          user_agent: (navigator.userAgent || "").slice(0, 300),
+        });
+        if (error) console.warn("client_versions heartbeat failed:", error);
+      } catch (e) {
+        console.warn("client_versions heartbeat failed:", e);
+      }
+    })();
+  }, [authUser, userProfile]);
 
   // If non-scheduler ends up on a restricted tab, redirect them
   useEffect(() => {
@@ -914,8 +950,70 @@ function CallSchedule() {
     try { return new Date(iso).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }); }
     catch (e) { return iso; }
   };
+  // Load client-version heartbeats (scheduler/admin only). dbAuthHeaders, NOT
+  // the expiry-aware read headers: this table is scheduler-read via RLS, so
+  // the anon fallback would turn an expired session into HTTP 200 + [] —
+  // "nobody has ever signed in" — instead of a visible failure.
+  const loadClientVersions = async () => {
+    setClientVersionsErr("");
+    let rows;
+    try {
+      const res = await fetch(`${SUPABASE_URL}/rest/v1/client_versions?select=*&order=last_seen.desc`, { headers: dbAuthHeaders() });
+      if (!res.ok) throw new Error(`HTTP ${res.status} ${(await res.text().catch(() => "")).slice(0, 200)}`);
+      const body = await res.json();
+      rows = Array.isArray(body) ? body : [];
+    } catch (e) {
+      console.error("client_versions load failed", e);
+      // Failure ≠ empty: keep any previously loaded list on screen and say so.
+      setClientVersionsErr("Couldn't load client versions — this does NOT mean nobody has signed in. Retry (↻).");
+      return;
+    }
+    // Profiles cross-reference ("never signed up" vs "signed up, no heartbeat
+    // yet") in its OWN try: its failure must not claim the version list failed
+    // (review finding: a shared catch painted the couldn't-load banner over a
+    // correctly loaded list). Labels only ever come from THIS load's
+    // successful fetch — never a stale cache — and getAllProfiles is NOT used
+    // because it silently returns [] on HTTP failure; this raw fetch throws.
+    let profiles = null;
+    try {
+      const pres = await fetch(`${SUPABASE_URL}/rest/v1/user_profiles?select=*`, { headers: dbAuthHeaders() });
+      if (!pres.ok) throw new Error(`HTTP ${pres.status} ${(await pres.text().catch(() => "")).slice(0, 200)}`);
+      const pbody = await pres.json();
+      if (Array.isArray(pbody)) profiles = pbody;
+    } catch (e) {
+      // profiles stays null → the panel says it couldn't check, instead of
+      // guessing. Console-only: the version list itself loaded fine.
+      console.warn("client_versions profiles cross-reference failed", e);
+    }
+    // Both states land together so the "couldn't check accounts" note never
+    // flashes during the normal two-fetch gap.
+    setCvProfiles(profiles);
+    if (profiles?.length) setAllProfiles(profiles);
+    setClientVersions(rows);
+  };
+  // Compare two APP_VERSION strings ("YYYY.MM.DD" + lowercase suffix that
+  // rolls z→aa on the 27th same-day push, per bump-version.js). Plain string
+  // compare inverts at that rollover ("…z" > "…aa" lexically — review
+  // finding); the date part is fixed-width so it compares clean, and suffixes
+  // order by length THEN lexically, restoring monotonicity.
+  const versionCmp = (a, b) => {
+    const da = String(a).slice(0, 10), db2 = String(b).slice(0, 10);
+    if (da !== db2) return da < db2 ? -1 : 1;
+    const sa = String(a).slice(10), sb = String(b).slice(10);
+    if (sa.length !== sb.length) return sa.length - sb.length;
+    return sa === sb ? 0 : (sa < sb ? -1 : 1);
+  };
+  // Condense a user-agent to its "phone or desktop" signal; raw UA is in the DB.
+  const uaLabel = (ua) => {
+    if (!ua) return "";
+    if (/iPhone|iPad|iPod/i.test(ua)) return "iOS";
+    if (/Android/i.test(ua)) return "Android";
+    if (/Windows/i.test(ua)) return "Windows";
+    if (/Mac/i.test(ua)) return "Mac";
+    return "other";
+  };
   useEffect(() => {
-    if (view === "settings" && (isScheduler || userProfile?.role === "admin")) { loadAudit(); loadSnapshots(); }
+    if (view === "settings" && (isScheduler || userProfile?.role === "admin")) { loadAudit(); loadSnapshots(); loadClientVersions(); }
   }, [view]);
 
   // Build vacations / noCallDays maps from time_off rows. Ranges carry their
@@ -8464,6 +8562,70 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                       </div>
                     );
                   })}
+                </div>
+              )}
+            </Collapsible>
+          )}
+
+          {/* Client versions — scheduler/admin, read-only */}
+          {(isScheduler || userProfile?.role === "admin") && (
+            <Collapsible css={css} ck="settings_client_versions" defaultOpen={false}
+              title={<>📱 Client Versions <span style={{fontWeight:400,fontSize:11,color:"#7a8a98"}}>— who's on which build</span></>}
+              right={<button onClick={(e)=>{e.stopPropagation(); loadClientVersions();}} title="Refresh" style={{background:"none",border:"1px solid #d0d8e0",borderRadius:6,color:"#5a6a78",cursor:"pointer",fontSize:13,padding:"2px 8px",fontFamily:font}}>↻</button>}>
+              <p style={{fontSize:11.5,color:"#7a8a98",margin:"0 0 8px",lineHeight:1.5}}>
+                Updated each time a signed-in user opens the app. "Current"/"Behind" compare against THIS device's build ({APP_VERSION}) — reload your own app before trusting the comparison.
+              </p>
+              {clientVersionsErr && (
+                <div style={{fontSize:12,color:"#c04040",padding:"6px 0",fontWeight:600}}>⚠ {clientVersionsErr}</div>
+              )}
+              {clientVersions !== null && cvProfiles === null && !clientVersionsErr && (
+                <div style={{fontSize:11,color:"#c09030",padding:"0 0 6px",fontWeight:600}}>⚠ Couldn't check who has an account — "Never signed up" labels are unavailable this load (versions below are still correct).</div>
+              )}
+              {clientVersions === null && !clientVersionsErr ? (
+                <div style={{fontSize:12,color:"#8a94a0",padding:"6px 0"}}>Loading…</div>
+              ) : clientVersions !== null && (
+                <div style={{display:"flex",flexDirection:"column"}}>
+                  {(() => {
+                    const roster = [...surgeons, ...apps];
+                    // Labels come ONLY from this load's own profiles fetch —
+                    // null means "couldn't check"; never guess from a cache.
+                    const profilesKnown = cvProfiles !== null;
+                    // Roster people first, then any heartbeat rows from ids
+                    // outside the roster (e.g. an admin account).
+                    const extras = clientVersions.filter(r => !roster.some(p => p.id === r.person_id));
+                    const line = (key, name, id, row, hasProfile) => {
+                      let status;
+                      if (row) {
+                        const vc = versionCmp(row.app_version, APP_VERSION);
+                        const cmp = vc === 0 ? "current" : (vc < 0 ? "behind" : "newer");
+                        const bs = cmp === "current" ? {background:"#e8f6ec",color:"#1a8040",border:"1px solid #b8e0c4"}
+                                 : cmp === "behind"  ? {background:"#fef8e8",color:"#c09030",border:"1px solid #e8d090"}
+                                                     : {background:"#e8f0fa",color:"#1a6fa8",border:"1px solid #b8d4ec"};
+                        status = <>
+                          <span style={{fontSize:10,fontWeight:700,padding:"2px 7px",borderRadius:5,...bs}}>{cmp === "current" ? "Current" : cmp === "behind" ? "Behind" : "Newer than you"}</span>
+                          <span style={{fontSize:11,fontFamily:mono,color:dk?"#c8d2dc":"#3a4a58"}}>{row.app_version}</span>
+                          <span style={{fontSize:11,color:"#8a94a0"}}>{fmtAuditTime(row.last_seen)}{uaLabel(row.user_agent) ? ` · ${uaLabel(row.user_agent)}` : ""}</span>
+                        </>;
+                      } else if (profilesKnown && !hasProfile) {
+                        status = <span style={{fontSize:10,fontWeight:700,padding:"2px 7px",borderRadius:5,background:"#faeaea",color:"#c04040",border:"1px solid #eabcbc"}}>Never signed up</span>;
+                      } else if (profilesKnown) {
+                        status = <span style={{fontSize:10,fontWeight:700,padding:"2px 7px",borderRadius:5,background:dk?"#243240":"#eef1f4",color:"#7a8a98",border:"1px solid "+(dk?"#2a3a48":"#e0e4ea")}}>Signed up · no heartbeat yet</span>;
+                      } else {
+                        status = <span style={{fontSize:11,color:"#8a94a0"}}>no heartbeat recorded</span>;
+                      }
+                      return (
+                        <div key={key} style={{display:"flex",gap:8,alignItems:"center",padding:"7px 2px",borderBottom:"1px solid "+(dk?"#243240":"#eef1f4")}}>
+                          <span style={{flexShrink:0,fontSize:12,fontWeight:600,color:dk?"#c8d2dc":"#2c3e50",minWidth:52}}>{name}</span>
+                          <span style={{flexShrink:0,fontSize:10,color:"#9aa4ae",fontFamily:mono,minWidth:22}}>{id}</span>
+                          <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>{status}</div>
+                        </div>
+                      );
+                    };
+                    return <>
+                      {roster.map(p => line(p.id, p.name, p.id, clientVersions.find(r => r.person_id === p.id), (cvProfiles || []).some(pr => pr.person_id === p.id)))}
+                      {extras.map(r => line(r.person_id, r.person_id, "", r, true))}
+                    </>;
+                  })()}
                 </div>
               )}
             </Collapsible>
