@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.07.31a";
+    var APP_VERSION = "2026.07.31b";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -575,10 +575,13 @@ function CallSchedule() {
           setNeedsProfile(false);
           if (signupPersonId !== "admin" && authEmail) {
             try {
-              const {
-                data: existingRow
-              } = await supabase.from("notification_preferences").select("email").eq("surgeon_id", signupPersonId).single();
-              const existingEmail = ((existingRow === null || existingRow === void 0 ? void 0 : existingRow.email) || "").trim();
+              var _grows$;
+              const gres = await fetch(`${SUPABASE_URL}/rest/v1/notification_preferences?select=email&surgeon_id=eq.${signupPersonId}`, {
+                headers: dbAuthHeaders()
+              });
+              if (!gres.ok) throw new Error(`signup email check: HTTP ${gres.status} ${(await gres.text().catch(() => "")).slice(0, 200)}`);
+              const grows = await gres.json();
+              const existingEmail = ((grows === null || grows === void 0 || (_grows$ = grows[0]) === null || _grows$ === void 0 ? void 0 : _grows$.email) || "").trim();
               if (!existingEmail) {
                 saveNotifPref(signupPersonId, {
                   email: authEmail,
@@ -586,10 +589,8 @@ function CallSchedule() {
                 });
               }
             } catch (e) {
-              saveNotifPref(signupPersonId, {
-                email: authEmail,
-                email_notifs: true
-              });
+              console.warn("Signup email check failed — not auto-populating:", e);
+              showToast("Couldn't verify your notification email — open Settings → Notification Settings and enter it there.", "error");
             }
           }
         }
