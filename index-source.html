@@ -8681,10 +8681,31 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             </Collapsible>
           )}
 
-          {/* APP Shift Managers — scheduler/admin only */}
+          {/* APP Shift Managers — scheduler/admin only. Collapsible (like
+              Activity Log / Client Versions above); the collapsed summary
+              keeps the panel's core value — who can assign — visible at a
+              glance. Everything inside is unchanged. */}
           {(isScheduler || userProfile?.role === "admin") && (
-            <div style={css.card}>
-              <div style={css.cardT}>👩‍⚕️ APP Shift Managers</div>
+            <Collapsible css={css} ck="settings_app_managers" defaultOpen={false}
+              title={<>👩‍⚕️ APP Shift Managers <span style={{fontWeight:400,fontSize:11,color:"#7a8a98"}}>— who can assign APP shifts</span></>}
+              summary={(() => {
+                // allProfiles === [] means NOT LOADED (a loaded list always
+                // contains at least the viewing scheduler), never "nobody" —
+                // don't render a confident empty claim from an unloaded list.
+                if (allProfiles.length === 0) return <div style={{fontSize:12,color:"#8a94a0"}}>Expand to load users and see who has access.</div>;
+                const grantees = allProfiles.filter(p => p.can_assign_apps);
+                if (grantees.length === 0) return <div style={{fontSize:12,color:"#8a94a0"}}>No one has APP-assign access.</div>;
+                return (
+                  <div style={{display:"flex",flexWrap:"wrap",gap:5,alignItems:"center"}}>
+                    <span style={{fontSize:11,color:"#7a8a98"}}>Can assign APPs:</span>
+                    {grantees.map(p => (
+                      <span key={p.id} style={{fontSize:10,fontWeight:700,padding:"2px 8px",borderRadius:5,background:"#e8f6ec",color:"#1a8040",border:"1px solid #b8e0c4"}}>
+                        {[...surgeons, ...apps].find(x => x.id === p.person_id)?.name || p.display_name || p.person_id}
+                      </span>
+                    ))}
+                  </div>
+                );
+              })()}>
               <p style={{fontSize:12,color:"#7a8a98",margin:"0 0 10px",lineHeight:1.5}}>
                 Users listed here can assign APP shifts on the Setup tab (but have no other scheduler access). Toggle the switch to grant or revoke permission.
               </p>
@@ -8724,7 +8745,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   ))}
                 </div>
               )}
-            </div>
+            </Collapsible>
           )}
 
           {/* Office Notifications — scheduler/admin only */}
