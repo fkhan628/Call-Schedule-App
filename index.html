@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.07.31e";
+    var APP_VERSION = "2026.08.01a";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -13876,11 +13876,60 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       }, status));
     };
     return React.createElement(React.Fragment, null, roster.map(p => line(p.id, p.name, p.id, clientVersions.find(r => r.person_id === p.id), (cvProfiles || []).some(pr => pr.person_id === p.id))), extras.map(r => line(r.person_id, r.person_id, "", r, true)));
-  })())), (isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.role) === "admin") && React.createElement("div", {
-    style: css.card
-  }, React.createElement("div", {
-    style: css.cardT
-  }, "👩‍⚕️ APP Shift Managers"), React.createElement("p", {
+  })())), (isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.role) === "admin") && React.createElement(Collapsible, {
+    css: css,
+    ck: "settings_app_managers",
+    defaultOpen: false,
+    title: React.createElement(React.Fragment, null, "👩‍⚕️ APP Shift Managers ", React.createElement("span", {
+      style: {
+        fontWeight: 400,
+        fontSize: 11,
+        color: "#7a8a98"
+      }
+    }, "— who can assign APP shifts")),
+    summary: (() => {
+      if (allProfiles.length === 0) return React.createElement("div", {
+        style: {
+          fontSize: 12,
+          color: "#8a94a0"
+        }
+      }, "Expand to load users and see who has access.");
+      const grantees = allProfiles.filter(p => p.can_assign_apps);
+      if (grantees.length === 0) return React.createElement("div", {
+        style: {
+          fontSize: 12,
+          color: "#8a94a0"
+        }
+      }, "No one has APP-assign access.");
+      return React.createElement("div", {
+        style: {
+          display: "flex",
+          flexWrap: "wrap",
+          gap: 5,
+          alignItems: "center"
+        }
+      }, React.createElement("span", {
+        style: {
+          fontSize: 11,
+          color: "#7a8a98"
+        }
+      }, "Can assign APPs:"), grantees.map(p => {
+        var _find2;
+        return React.createElement("span", {
+          key: p.id,
+          style: {
+            fontSize: 10,
+            fontWeight: 700,
+            padding: "2px 8px",
+            borderRadius: 5,
+            background: "#e8f6ec",
+            color: "#1a8040",
+            border: "1px solid #b8e0c4"
+          }
+        }, ((_find2 = [...surgeons, ...apps].find(x => x.id === p.person_id)) === null || _find2 === void 0 ? void 0 : _find2.name) || p.display_name || p.person_id);
+      }));
+    })()
+  }, React.createElement("p", {
     style: {
       fontSize: 12,
       color: "#7a8a98",
@@ -15018,8 +15067,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       color: "#7a8a98",
       marginBottom: 8
     }
-  }, React.createElement("strong", null, "How to subscribe:"), " In Google Calendar: Other calendars (+) → From URL → paste the link below."), mySurgeon && mySurgeon !== "admin" && (_find2 => {
-    const myName = (_find2 = [...surgeons, ...apps].find(p => p.id === mySurgeon)) === null || _find2 === void 0 ? void 0 : _find2.name;
+  }, React.createElement("strong", null, "How to subscribe:"), " In Google Calendar: Other calendars (+) → From URL → paste the link below."), mySurgeon && mySurgeon !== "admin" && (_find3 => {
+    const myName = (_find3 = [...surgeons, ...apps].find(p => p.id === mySurgeon)) === null || _find3 === void 0 ? void 0 : _find3.name;
     if (!myName) return null;
     const myUrl = `${SUPABASE_URL}/functions/v1/calendar-sync?surgeon=${myName}`;
     return React.createElement("div", {
