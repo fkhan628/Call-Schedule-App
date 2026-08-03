@@ -129,6 +129,13 @@ function CallSchedule() {
   const [fierceBackupSet, setFierceBackupSet] = useState(new Set()); // Fierce backs up our group, regular schedule unchanged
   const [schedule, setSchedule] = useState({});
   const [appShifts, setAppShifts] = useState({}); // { "2026-05-06": "a1", ... }
+  // APP weekday day-offs — DISPLAY-ONLY (never read by assignment/generation;
+  // an APP can be off during the day and still take call that night). Stored
+  // in app_shifts_data row id="dayoff" as { "2026-05-06": ["a1", ...] } —
+  // array per date: the 5-person rotation may put more than one APP off.
+  // Entries are APP ids today; readers must tolerate {id, note} objects later
+  // (the planned v2 partial-day shape) — treat non-strings as e.id.
+  const [appDayOff, setAppDayOff] = useState({});
   const [priorCounts, setPriorCounts] = useState(COUNTS_2YR); // Multi-year totals (used by generator)
   const [year1Counts, setYear1Counts] = useState(COUNTS_1YR); // Current year totals
   const [year2Counts, setYear2Counts] = useState(COUNTS_2YR); // 2-year totals
@@ -147,7 +154,7 @@ function CallSchedule() {
   const [printNumMonths, setPrintNumMonths] = useState(1);
 
   // ─── Calendar Filters ───
-  const [calFilters, setCalFilters] = useState({ svc: true, night: true, wknd: true, app: true, fierce: true, vac: true });
+  const [calFilters, setCalFilters] = useState({ svc: true, night: true, wknd: true, app: true, fierce: true, vac: true, appOff: true });
   const [showBackupStats, setShowBackupStats] = useState(false); // Toggle 2nd call columns in Stats
   const [statsScope, setStatsScope] = useState("period"); // "period" | "ytd" — shared by the Counts and Vacation Days cards
   const [statsTab, setStatsTab] = useState("fairness"); // Stats view: which table is shown (fairness|monthly|billing|app)
@@ -259,6 +266,7 @@ function CallSchedule() {
   const toggleVacGroup = (id) => setExpandedVacGroups(prev => ({ ...prev, [id]: !prev[id] }));
   const [showPastVacations, setShowPastVacations] = useState(false); // Setup tab: hide completed vacations by default
   const [appShiftsListExpanded, setAppShiftsListExpanded] = useState(false); // Setup tab: collapse APP shift list by default to reduce clutter
+  const [dayOffMonth, setDayOffMonth] = useState(() => { const n = new Date(); return { y: n.getFullYear(), m: n.getMonth() }; }); // APP Days Off entry grid month
 
   // ─── Office Notifications ───
   const [officeContacts, setOfficeContacts] = useState([]);
@@ -1266,6 +1274,15 @@ function CallSchedule() {
           if (appRow?.data && typeof appRow.data === "object") setAppShifts(appRow.data);
         } catch(e) { console.error("APP shifts load failed:", e); }
 
+        // APP day-offs (display-only) — second row of the same table
+        // (id="dayoff") so they inherit the can_assign_apps write gate with
+        // no schema change. A missing row is the normal starting state.
+        try {
+          const { data: offRow } = await supabase
+            .from("app_shifts_data").select("data").eq("id", "dayoff").single();
+          if (offRow?.data && typeof offRow.data === "object") setAppDayOff(offRow.data);
+        } catch(e) { console.error("APP day-off load failed:", e); }
+
         // Load vacation requests
         try {
           const reqs = await db.query("vacation_requests", { order: "submitted_at.desc", limit: 100 });
@@ -1364,6 +1381,10 @@ function CallSchedule() {
       try {
         const { data: appRow } = await supabase.from("app_shifts_data").select("data").eq("id", "main").single();
         if (appRow?.data && typeof appRow.data === "object") setAppShifts(appRow.data);
+        // Same table, second row: the realtime subscription and poll both land
+        // here, so day-off edits propagate on the same channel.
+        const { data: offRow } = await supabase.from("app_shifts_data").select("data").eq("id", "dayoff").single();
+        if (offRow?.data && typeof offRow.data === "object") setAppDayOff(offRow.data);
       } catch(e) { console.warn("Background APP-shifts refresh failed:", e); }
     };
 
@@ -3217,6 +3238,37 @@ function CallSchedule() {
     setAppShifts(next);
     saveAppShifts(next);
     logAudit("app_shift.remove", `Removed APP assignment on ${ds}${prevId ? " (" + nameOf(prevId) + ")" : ""}`, { date: ds });
+  };
+
+  // APP day-offs (display-only) — row id="dayoff" of app_shifts_data; same
+  // checked-write pattern and can_assign_apps gate as saveAppShifts above.
+  // NEVER read by the generator, canTakeSlot, or any assignment path.
+  const saveAppDayOff = async (next) => {
+    try {
+      const { error } = await supabase.from("app_shifts_data")
+        .upsert({ id: "dayoff", data: next, updated_at: new Date().toISOString() });
+      if (error) {
+        setSaveError(true);
+        setSaveStatus("⚠ APP day-off save failed");
+      } else {
+        setSaveStatus("APP day-offs saved");
+        setTimeout(() => setSaveStatus(""), 1500);
+      }
+    } catch(e) {
+      setSaveError(true);
+      setSaveStatus("⚠ APP day-off save failed");
+    }
+  };
+  const toggleAppDayOff = (ds, aid) => {
+    const cur = appDayOff[ds] || [];
+    const has = cur.includes(aid);
+    const nextList = has ? cur.filter(x => x !== aid) : [...cur, aid];
+    const next = { ...appDayOff };
+    if (nextList.length) next[ds] = nextList; else delete next[ds]; // no empty arrays in the stored map
+    setAppDayOff(next);
+    saveAppDayOff(next);
+    logAudit(has ? "app_dayoff.remove" : "app_dayoff.add",
+      `${has ? "Removed" : "Marked"} APP ${nameOf(aid)} day off ${ds}`, { date: ds, app_id: aid });
   };
 
   // Build surgeon preferences map by matching names
@@ -5642,6 +5694,72 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             )}
           </div>
 
+          {/* APP Days Off — display-only weekday-off tracking (paper-calendar
+              replacement). NOT a constraint: never read by the generator,
+              canTakeSlot, validation, or any assignment path — an APP can be
+              off during the day and still take call that night. Same
+              visibility zone as the APP Call Shifts card above (scheduler /
+              admin / can_assign_apps via Setup access). */}
+          <Collapsible css={css} ck="setup_app_dayoff" defaultOpen={false}
+            title={<>🗓 APP Days Off <span style={{fontWeight:400,fontSize:11,color:"#7a8a98"}}>— weekday off rotation (display-only)</span></>}>
+            <p style={{fontSize:12,color:"#7a8a98",margin:"0 0 10px",lineHeight:1.5}}>
+              Tap an APP's chip to mark them off that weekday (tap again to undo). Doesn't affect call assignment, and never appears on the public calendar. Weekends aren't tracked — a weekend APP name is a call assignment, entered above.
+            </p>
+            <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10}}>
+              <button onClick={()=>setDayOffMonth(p=>{ const m=p.m-1; return m<0?{y:p.y-1,m:11}:{y:p.y,m}; })} style={{...css.btn(false),padding:"3px 10px",fontSize:12}}>‹</button>
+              <span style={{fontSize:13,fontWeight:700,color:"#2c3e50",minWidth:130,textAlign:"center"}}>{MO[dayOffMonth.m]} {dayOffMonth.y}</span>
+              <button onClick={()=>setDayOffMonth(p=>{ const m=p.m+1; return m>11?{y:p.y+1,m:0}:{y:p.y,m}; })} style={{...css.btn(false),padding:"3px 10px",fontSize:12}}>›</button>
+            </div>
+            <div style={{overflowX:"auto"}}>
+              <div style={{display:"grid",gridTemplateColumns:"repeat(5, minmax(96px, 1fr))",gap:4,minWidth:500}}>
+                {["Mon","Tue","Wed","Thu","Fri"].map(h=>(
+                  <div key={h} style={{fontSize:10,fontWeight:700,color:"#7a8a98",textAlign:"center",textTransform:"uppercase",letterSpacing:0.5}}>{h}</div>
+                ))}
+                {(() => {
+                  // Weekday cells only, padded so each row starts on Monday.
+                  // Chips come from the LIVE roster (apps state) — a roster
+                  // change needs no code change here.
+                  const cells = [];
+                  const first = new Date(dayOffMonth.y, dayOffMonth.m, 1);
+                  const daysIn = new Date(dayOffMonth.y, dayOffMonth.m + 1, 0).getDate();
+                  const firstDow = first.getDay();
+                  const lead = (firstDow === 0 || firstDow === 6) ? 0 : firstDow - 1;
+                  for (let i = 0; i < lead; i++) cells.push(null);
+                  for (let day = 1; day <= daysIn; day++) {
+                    const d = new Date(dayOffMonth.y, dayOffMonth.m, day);
+                    if (d.getDay() === 0 || d.getDay() === 6) continue;
+                    cells.push(d);
+                  }
+                  return cells.map((d, i) => {
+                    if (!d) return <div key={"pad" + i}/>;
+                    const ds = fmt(d);
+                    const offList = appDayOff[ds] || [];
+                    return (
+                      <div key={ds} style={{border:"1px solid #e0e4ea",borderRadius:6,padding:"4px 5px",background:"#fbfcfd",minHeight:52}}>
+                        <div style={{fontSize:10,fontWeight:700,color:"#8a94a0",marginBottom:3}}>{d.getDate()}</div>
+                        <div style={{display:"flex",flexWrap:"wrap",gap:3}}>
+                          {apps.map((a, ai) => {
+                            const pal = APP_PAL[ai % APP_PAL.length];
+                            const on = offList.includes(a.id);
+                            return (
+                              <button key={a.id} onClick={()=>toggleAppDayOff(ds, a.id)}
+                                title={`${a.name} ${on ? "is" : "not"} off ${ds} — tap to toggle`}
+                                style={{fontSize:9,fontWeight:700,padding:"1px 6px",borderRadius:4,cursor:"pointer",fontFamily:font,
+                                  background:on?pal.tx:"transparent",color:on?"#fff":pal.tx,
+                                  border:`1px solid ${on?pal.tx:pal.bd}`,opacity:on?1:0.6}}>
+                                {a.name}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    );
+                  });
+                })()}
+              </div>
+            </div>
+          </Collapsible>
+
           {(isScheduler || userProfile?.role === "admin") && <>
           {/* Backup Weeks */}
           <div style={css.card}>
@@ -6532,6 +6650,11 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               {key:"app",label:"APPs",color:"#985020",icon:"A"},
               {key:"fierce",label:"Fierce",color:"#8a6a10",icon:"⚡"},
               {key:"vac",label:"Vacations",color:"#5a6a78",icon:"🏖"},
+              // APP day-offs are INTERNAL-ONLY — the toggle (like the data's
+              // render below) never exists in the ?public=1 view. This is a
+              // deliberate NEW gate: vacations are public by design, day-offs
+              // are not.
+              ...(!isPublicMode ? [{key:"appOff",label:"APP Off",color:"#7a8a98",icon:"☕"}] : []),
             ].map(f=>(
               <button key={f.key} onClick={()=>toggleFilter(f.key)}
                 style={{background:calFilters[f.key]?f.color+"18":"transparent",border:`1px solid ${calFilters[f.key]?f.color:dk?"#3a4a6e":"#d0d8e0"}`,color:calFilters[f.key]?f.color:dkSubtext,borderRadius:5,padding:"3px 8px",fontSize:10,fontWeight:600,cursor:"pointer",fontFamily:font,opacity:calFilters[f.key]?1:0.5}}>
@@ -6558,7 +6681,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               {Object.entries(DEPT_LABELS).map(([k,v])=><option key={k} value={k}>{v}</option>)}
             </select>
             {(Object.values(calFilters).some(v=>!v) || calSurgeonFilter || calAppFilter!=="all" || calDeptFilter) && (
-              <button onClick={()=>{setCalFilters({svc:true,night:true,wknd:true,app:true,fierce:true,vac:true});setCalSurgeonFilter("");setCalAppFilter("all");setCalDeptFilter("");}}
+              <button onClick={()=>{setCalFilters({svc:true,night:true,wknd:true,app:true,fierce:true,vac:true,appOff:true});setCalSurgeonFilter("");setCalAppFilter("all");setCalDeptFilter("");}}
                 style={{background:"none",border:"1px solid #d0d8e0",color:"#8a94a0",borderRadius:5,padding:"3px 8px",fontSize:10,cursor:"pointer",fontFamily:font}}>
                 Reset
               </button>
@@ -6738,6 +6861,21 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                       <span style={{color:"#c08050",fontWeight:700}}>A</span>
                       {" "}
                       <span style={{color:APP_PAL[aMap[e.appId]?.idx%APP_PAL.length]?.tx||"#5a6878"}}>{aMap[e.appId]?.name||"?"}</span>
+                    </div>
+                  ))}
+
+                  {/* APP day-offs — display-only, INTERNAL ONLY (a deliberate
+                      NEW gate: never rendered in ?public=1, unlike vacations
+                      which are public by design). Gray dashed outline keeps it
+                      visually distinct from filled APP call chips and from the
+                      🏖 vacation bar; both can appear the same day — an APP
+                      off during the day can still take call that night.
+                      Entries tolerate the planned v2 {id, note} shape. */}
+                  {!isPublicMode && calFilters.appOff && !sf && calAppFilter!=="none" && !calDeptFilter &&
+                    (appDayOff[ds]||[]).map(x => (typeof x === "string" ? x : x?.id)).filter(aid => aid && (calAppFilter==="all"||aid===calAppFilter)).map(aid=>(
+                    <div key={"off"+aid} style={{marginBottom:1,padding:"0 3px",borderRadius:3,fontSize:9,
+                      border:"1px dashed #b8c0c8",color:"#7a8a98",background:"transparent"}}>
+                      ◌ {aMap[aid]?.name||aid} <span style={{fontSize:8}}>off</span>
                     </div>
                   ))}
 
@@ -9240,6 +9378,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   _app: "DSG Call Schedule",
                   _exportedAt: new Date().toISOString(),
                   appShifts, // included for a full restore (not part of the saved row)
+                  appDayOff, // APP weekday day-offs (app_shifts_data row id="dayoff")
                 };
                 const stamp = new Date().toISOString().slice(0,19).replace(/[:T]/g,"-");
                 const downloaded = downloadJSON(backup, `dsg-call-backup-${stamp}.json`);
