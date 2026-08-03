@@ -145,10 +145,42 @@ function CallSchedule() {
   // arms the gate; only failures leave it disarmed, and the 60s poll re-arms
   // on its next successful read.
   const [appDayOffLoaded, setAppDayOffLoaded] = useState(false);
+  // ── Day-off sync core: LOCAL-TRUTH model ──
+  // Rebuilt after a second adversarial round: timer/in-flight boolean guards
+  // raced in ways a point-in-time check can't express. Invariants instead:
+  //   • dayOffDirtyRef — set on every tap, cleared ONLY when a confirmed save
+  //     commits with nothing further queued. While dirty, server adoption is
+  //     skipped everywhere (unsaved local edits are the truth) and a failed
+  //     save AUTO-retries — recovery never depends on the user re-tapping.
+  //   • dayOffLastWriteTsRef — updated_at of our last confirmed write; a
+  //     fetched row is adopted only when STRICTLY NEWER (refreshScheduleRow's
+  //     staleness pattern), so a GET that left before our commit can't
+  //     resurrect the pre-commit map after dirty clears.
+  //   • dayOffSaveChainRef — saves serialize on a promise chain; two upserts
+  //     can never be in flight together, so commits can't reorder.
+  //   • Audits queue per tap, logged only when the save that CARRIED them
+  //     commits. Page-death keepalive flushes are best-effort: the data write
+  //     usually lands, its audit entries die with the page (accepted — an
+  //     honest gap beats fabricated entries).
   const appDayOffRef = useRef({});          // current-map mirror: toggles compute from this, never a stale render closure
-  const dayOffSaveTimerRef = useRef(null);  // debounce: one write per tap burst, not one per tap
-  const dayOffSaveInFlightRef = useRef(false);
+  const dayOffDirtyRef = useRef(false);
+  const dayOffLastWriteTsRef = useRef(null);
+  const dayOffSaveChainRef = useRef(Promise.resolve());
+  const dayOffSaveTimerRef = useRef(null);  // debounce: one enqueue per tap burst
+  const dayOffRetryTimerRef = useRef(null); // auto-retry for failed/unconfirmed saves
   const dayOffPendingAuditRef = useRef([]); // audit entries logged only after their save COMMITS
+  // Shared adoption rule for the mount load AND background refresh (a prior
+  // hole: the mount path lacked the guard the refresh had, and reloadTrigger
+  // re-runs the mount load seconds into an interactive session).
+  const adoptDayOffRow = (offRow) => {
+    setAppDayOffLoaded(true); // ANY successful read arms the edit gate — missing row included
+    if (!offRow?.data || typeof offRow.data !== "object") return;
+    if (dayOffDirtyRef.current) return; // unsaved local edits win
+    const ts = offRow.updated_at || null;
+    if (dayOffLastWriteTsRef.current && ts && ts <= dayOffLastWriteTsRef.current) return; // stale or our own echo
+    appDayOffRef.current = offRow.data;
+    setAppDayOff(offRow.data);
+  };
   const [priorCounts, setPriorCounts] = useState(COUNTS_2YR); // Multi-year totals (used by generator)
   const [year1Counts, setYear1Counts] = useState(COUNTS_1YR); // Current year totals
   const [year2Counts, setYear2Counts] = useState(COUNTS_2YR); // 2-year totals
@@ -1295,12 +1327,8 @@ function CallSchedule() {
         // never renders or edits day-offs, so it skips the fetch entirely.
         if (!isPublicMode) try {
           const { data: offRow } = await supabase
-            .from("app_shifts_data").select("data").eq("id", "dayoff").single();
-          if (offRow?.data && typeof offRow.data === "object") {
-            appDayOffRef.current = offRow.data;
-            setAppDayOff(offRow.data);
-          }
-          setAppDayOffLoaded(true);
+            .from("app_shifts_data").select("data,updated_at").eq("id", "dayoff").single();
+          adoptDayOffRow(offRow); // shared guard: dirty-skip + staleness check + gate arming
         } catch(e) { console.error("APP day-off load failed (editing stays disabled):", e); }
 
         // Load vacation requests
@@ -1403,22 +1431,13 @@ function CallSchedule() {
         if (appRow?.data && typeof appRow.data === "object") setAppShifts(appRow.data);
         // Same table, second row: the realtime subscription and poll both land
         // here, so day-off edits propagate on the same channel. Public mode
-        // never renders day-offs — skip the fetch.
+        // never renders day-offs — skip the fetch. Adoption goes through the
+        // shared adoptDayOffRow guard: local-dirty edits win, and a response
+        // older than our last confirmed write is discarded (a slow GET that
+        // left before our commit must not resurrect the pre-commit map).
         if (!isPublicMode) {
-          const { data: offRow } = await supabase.from("app_shifts_data").select("data").eq("id", "dayoff").single();
-          // ECHO GUARD (review finding): a refresh triggered by our own save's
-          // realtime echo — or the 60s poll landing mid-tap-burst — must not
-          // overwrite local state with the pre-burst map, silently unchecking
-          // chips the user just tapped (whose re-tap would then persist the
-          // loss). While a burst debounce or save is in flight, local state is
-          // the truth; skip the adoption but still ARM the edit gate — the
-          // read itself succeeded.
-          const burstActive = dayOffSaveTimerRef.current || dayOffSaveInFlightRef.current;
-          if (!burstActive && offRow?.data && typeof offRow.data === "object") {
-            appDayOffRef.current = offRow.data;
-            setAppDayOff(offRow.data);
-          }
-          setAppDayOffLoaded(true);
+          const { data: offRow } = await supabase.from("app_shifts_data").select("data,updated_at").eq("id", "dayoff").single();
+          adoptDayOffRow(offRow);
         }
       } catch(e) { console.warn("Background APP-shifts refresh failed:", e); }
     };
@@ -1713,16 +1732,21 @@ function CallSchedule() {
       }
     };
 
-    // Day-off burst flush: the tap-to-toggle grid debounces one write per
-    // burst (600ms); switching apps or closing the tab inside that window
-    // would silently drop the whole burst. Same keepalive pattern as the
-    // blob flush above. Pending audit entries stay queued — they're logged
-    // only when a confirmable (non-keepalive) save commits.
+    // Day-off flush: anything UNCONFIRMED (pending burst OR failed save
+    // awaiting retry — the dirty flag covers both) gets a best-effort
+    // keepalive write at page-hide. Deliberately does NOT clear dirty, touch
+    // dayOffLastWriteTsRef, or log audits: keepalive outcomes are unknowable
+    // (HTTP errors resolve the fetch), so confirmation stays with the normal
+    // serialized save — if the page survives, the retry below re-saves
+    // confirmably (idempotent duplicate) and audits flush then; if the page
+    // dies, the data write usually lands and its audit entries are lost
+    // (accepted — an honest gap beats fabricated entries). dirty staying set
+    // means no refresh can adopt stale server state over the flushed map
+    // either way.
     const flushDayOff = (source) => {
       if (isPublicMode) return;
-      if (!dayOffSaveTimerRef.current) return; // no pending burst
-      clearTimeout(dayOffSaveTimerRef.current);
-      dayOffSaveTimerRef.current = null;
+      if (!dayOffDirtyRef.current) return; // nothing unconfirmed
+      if (dayOffSaveTimerRef.current) { clearTimeout(dayOffSaveTimerRef.current); dayOffSaveTimerRef.current = null; }
       try {
         const session = (typeof auth !== "undefined" && auth.getSession) ? auth.getSession() : null;
         const token = session?.access_token || SUPABASE_ANON_KEY;
@@ -1731,6 +1755,7 @@ function CallSchedule() {
           headers: { "Content-Type": "application/json", "apikey": SUPABASE_ANON_KEY, "Authorization": `Bearer ${token}`, "Prefer": "resolution=merge-duplicates,return=minimal" },
           body: JSON.stringify({ id: "dayoff", data: appDayOffRef.current, updated_at: new Date().toISOString() }),
         }).catch(e => console.warn(`Day-off keepalive flush failed (${source}):`, e));
+        scheduleDayOffRetry(3000); // page survived? confirm via the serialized chain
       } catch (e) { console.warn(`Day-off flush (${source}) error:`, e); }
     };
 
@@ -3304,33 +3329,50 @@ function CallSchedule() {
   // Every reader/writer goes through dayOffId so stored entries may be plain
   // id strings (v1) or {id, note} objects (planned v2) interchangeably.
   const dayOffId = (x) => typeof x === "string" ? x : ((x && x.id) || "");
-  const saveAppDayOff = async () => {
-    dayOffSaveInFlightRef.current = true;
-    try {
-      // Always writes the CURRENT map (appDayOffRef), so the one debounced
-      // write per tap burst carries every tap in the burst.
-      const { error } = await supabase.from("app_shifts_data")
-        .upsert({ id: "dayoff", data: appDayOffRef.current, updated_at: new Date().toISOString() });
-      if (error) throw new Error(String(error).slice(0, 200));
-      // Audit only what actually COMMITTED (review finding: logging before the
-      // save made the audit trail assert changes that never persisted).
-      dayOffPendingAuditRef.current.forEach(a =>
-        logAudit(a.was ? "app_dayoff.remove" : "app_dayoff.add",
-          `${a.was ? "Removed" : "Marked"} APP ${a.name} day off ${a.ds}`, { date: a.ds, app_id: a.aid }));
-      dayOffPendingAuditRef.current = [];
-      setSaveStatus("APP day-offs saved");
-      setTimeout(() => setSaveStatus(""), 1500);
-    } catch(e) {
-      console.error("APP day-off save failed:", e);
-      // Chips stay as tapped (state is the user's intent); the failure is
-      // loud, and the next tap's burst-save retries the full current map.
-      // Pending audit entries are kept for that retry.
-      setSaveError(true);
-      setSaveStatus("⚠ APP day-off save failed — will retry on your next tap");
-      showToast("Couldn't save APP day-offs — check your connection and tap any chip to retry.", "error");
-    } finally {
-      dayOffSaveInFlightRef.current = false;
-    }
+  // Saves are SERIALIZED on a promise chain (two upserts can never be in
+  // flight, so commits can't reorder) and each save sends the map as it is at
+  // execution time — one debounced enqueue per tap burst carries everything.
+  const enqueueDayOffSave = () => {
+    dayOffSaveChainRef.current = dayOffSaveChainRef.current.then(async () => {
+      if (!dayOffDirtyRef.current) return; // an earlier chained save already confirmed everything
+      const auditCount = dayOffPendingAuditRef.current.length;
+      const ts = new Date().toISOString();
+      try {
+        const { error } = await supabase.from("app_shifts_data")
+          .upsert({ id: "dayoff", data: appDayOffRef.current, updated_at: ts });
+        if (error) throw new Error(String(error).slice(0, 200));
+        dayOffLastWriteTsRef.current = ts;
+        // Audit only what this save actually CARRIED and COMMITTED; entries
+        // queued by taps landing mid-save wait for the next confirmed save.
+        dayOffPendingAuditRef.current.splice(0, auditCount).forEach(a =>
+          logAudit(a.was ? "app_dayoff.remove" : "app_dayoff.add",
+            `${a.was ? "Removed" : "Marked"} APP ${a.name} day off ${a.ds}`, { date: a.ds, app_id: a.aid }));
+        if (dayOffPendingAuditRef.current.length === 0) {
+          dayOffDirtyRef.current = false; // fully confirmed — server adoption may resume
+        } else {
+          scheduleDayOffRetry(600); // mid-save taps still need a confirming save
+        }
+        setSaveError(false);
+        setSaveStatus("APP day-offs saved");
+        setTimeout(() => setSaveStatus(""), 1500);
+      } catch(e) {
+        // Chips stay as tapped (dirty local state IS the user's intent, and
+        // dirty blocks any refresh from reverting it). Loud + AUTO-retried —
+        // recovery must not depend on the user tapping again.
+        console.error("APP day-off save failed (auto-retry in 5s):", e);
+        setSaveError(true);
+        setSaveStatus("⚠ APP day-off save failed — retrying…");
+        showToast("Couldn't save APP day-offs — retrying automatically. Check your connection if this persists.", "error");
+        scheduleDayOffRetry(5000);
+      }
+    });
+  };
+  const scheduleDayOffRetry = (ms) => {
+    if (dayOffRetryTimerRef.current) clearTimeout(dayOffRetryTimerRef.current);
+    dayOffRetryTimerRef.current = setTimeout(() => {
+      dayOffRetryTimerRef.current = null;
+      if (dayOffDirtyRef.current) enqueueDayOffSave();
+    }, ms);
   };
   const toggleAppDayOff = (ds, aid) => {
     // WIPE GUARD: never write before a successful read this session — a tap
@@ -3348,15 +3390,14 @@ function CallSchedule() {
     if (nextList.length) next[ds] = nextList; else delete next[ds]; // no empty arrays in the stored map
     appDayOffRef.current = next;
     setAppDayOff(next);
+    dayOffDirtyRef.current = true; // from here until a confirmed commit, local state is the truth
     dayOffPendingAuditRef.current.push({ was, aid, ds, name: nameOf(aid) });
-    // One write per tap burst: a month's rotation is ~20 rapid taps, and per-
-    // tap fire-and-forget upserts raced each other (review finding — out-of-
-    // order commits kept an older map). 600ms after the last tap, a single
-    // save carries the whole burst; the refresh echo guard covers the window.
+    // One enqueue per tap burst (600ms after the last tap); the chain
+    // serializes it behind any in-flight save.
     if (dayOffSaveTimerRef.current) clearTimeout(dayOffSaveTimerRef.current);
     dayOffSaveTimerRef.current = setTimeout(() => {
       dayOffSaveTimerRef.current = null;
-      saveAppDayOff();
+      enqueueDayOffSave();
     }, 600);
   };
 
