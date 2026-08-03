@@ -133,9 +133,22 @@ function CallSchedule() {
   // an APP can be off during the day and still take call that night). Stored
   // in app_shifts_data row id="dayoff" as { "2026-05-06": ["a1", ...] } —
   // array per date: the 5-person rotation may put more than one APP off.
-  // Entries are APP ids today; readers must tolerate {id, note} objects later
-  // (the planned v2 partial-day shape) — treat non-strings as e.id.
+  // Entries are APP ids today; ALL readers tolerate {id, note} objects (the
+  // planned v2 partial-day shape) via dayOffId() — treat non-strings as x.id.
   const [appDayOff, setAppDayOff] = useState({});
+  // WIPE GUARD (review finding, the app's signature decay class): editing is
+  // disabled until a dayoff READ has succeeded this session. Without this, a
+  // failed mount read leaves state {} — indistinguishable from a genuinely
+  // empty grid — and one tap would upsert that near-empty map over months of
+  // saved entries (no CAS, no snapshot coverage, no restore path for this
+  // row). A genuine missing row IS a successful read (200+[] → data:null) and
+  // arms the gate; only failures leave it disarmed, and the 60s poll re-arms
+  // on its next successful read.
+  const [appDayOffLoaded, setAppDayOffLoaded] = useState(false);
+  const appDayOffRef = useRef({});          // current-map mirror: toggles compute from this, never a stale render closure
+  const dayOffSaveTimerRef = useRef(null);  // debounce: one write per tap burst, not one per tap
+  const dayOffSaveInFlightRef = useRef(false);
+  const dayOffPendingAuditRef = useRef([]); // audit entries logged only after their save COMMITS
   const [priorCounts, setPriorCounts] = useState(COUNTS_2YR); // Multi-year totals (used by generator)
   const [year1Counts, setYear1Counts] = useState(COUNTS_1YR); // Current year totals
   const [year2Counts, setYear2Counts] = useState(COUNTS_2YR); // 2-year totals
@@ -1276,12 +1289,19 @@ function CallSchedule() {
 
         // APP day-offs (display-only) — second row of the same table
         // (id="dayoff") so they inherit the can_assign_apps write gate with
-        // no schema change. A missing row is the normal starting state.
-        try {
+        // no schema change. A missing row is the normal starting state and a
+        // SUCCESSFUL read — it arms the edit gate; a thrown read leaves the
+        // gate disarmed so a tap can't overwrite unloaded data. Public mode
+        // never renders or edits day-offs, so it skips the fetch entirely.
+        if (!isPublicMode) try {
           const { data: offRow } = await supabase
             .from("app_shifts_data").select("data").eq("id", "dayoff").single();
-          if (offRow?.data && typeof offRow.data === "object") setAppDayOff(offRow.data);
-        } catch(e) { console.error("APP day-off load failed:", e); }
+          if (offRow?.data && typeof offRow.data === "object") {
+            appDayOffRef.current = offRow.data;
+            setAppDayOff(offRow.data);
+          }
+          setAppDayOffLoaded(true);
+        } catch(e) { console.error("APP day-off load failed (editing stays disabled):", e); }
 
         // Load vacation requests
         try {
@@ -1382,9 +1402,24 @@ function CallSchedule() {
         const { data: appRow } = await supabase.from("app_shifts_data").select("data").eq("id", "main").single();
         if (appRow?.data && typeof appRow.data === "object") setAppShifts(appRow.data);
         // Same table, second row: the realtime subscription and poll both land
-        // here, so day-off edits propagate on the same channel.
-        const { data: offRow } = await supabase.from("app_shifts_data").select("data").eq("id", "dayoff").single();
-        if (offRow?.data && typeof offRow.data === "object") setAppDayOff(offRow.data);
+        // here, so day-off edits propagate on the same channel. Public mode
+        // never renders day-offs — skip the fetch.
+        if (!isPublicMode) {
+          const { data: offRow } = await supabase.from("app_shifts_data").select("data").eq("id", "dayoff").single();
+          // ECHO GUARD (review finding): a refresh triggered by our own save's
+          // realtime echo — or the 60s poll landing mid-tap-burst — must not
+          // overwrite local state with the pre-burst map, silently unchecking
+          // chips the user just tapped (whose re-tap would then persist the
+          // loss). While a burst debounce or save is in flight, local state is
+          // the truth; skip the adoption but still ARM the edit gate — the
+          // read itself succeeded.
+          const burstActive = dayOffSaveTimerRef.current || dayOffSaveInFlightRef.current;
+          if (!burstActive && offRow?.data && typeof offRow.data === "object") {
+            appDayOffRef.current = offRow.data;
+            setAppDayOff(offRow.data);
+          }
+          setAppDayOffLoaded(true);
+        }
       } catch(e) { console.warn("Background APP-shifts refresh failed:", e); }
     };
 
@@ -1678,11 +1713,32 @@ function CallSchedule() {
       }
     };
 
-    const onVisibilityChange = () => {
-      if (document.hidden) flushPending("visibilitychange");
+    // Day-off burst flush: the tap-to-toggle grid debounces one write per
+    // burst (600ms); switching apps or closing the tab inside that window
+    // would silently drop the whole burst. Same keepalive pattern as the
+    // blob flush above. Pending audit entries stay queued — they're logged
+    // only when a confirmable (non-keepalive) save commits.
+    const flushDayOff = (source) => {
+      if (isPublicMode) return;
+      if (!dayOffSaveTimerRef.current) return; // no pending burst
+      clearTimeout(dayOffSaveTimerRef.current);
+      dayOffSaveTimerRef.current = null;
+      try {
+        const session = (typeof auth !== "undefined" && auth.getSession) ? auth.getSession() : null;
+        const token = session?.access_token || SUPABASE_ANON_KEY;
+        fetch(`${SUPABASE_URL}/rest/v1/app_shifts_data?on_conflict=id`, {
+          method: "POST", keepalive: true,
+          headers: { "Content-Type": "application/json", "apikey": SUPABASE_ANON_KEY, "Authorization": `Bearer ${token}`, "Prefer": "resolution=merge-duplicates,return=minimal" },
+          body: JSON.stringify({ id: "dayoff", data: appDayOffRef.current, updated_at: new Date().toISOString() }),
+        }).catch(e => console.warn(`Day-off keepalive flush failed (${source}):`, e));
+      } catch (e) { console.warn(`Day-off flush (${source}) error:`, e); }
     };
-    const onPageHide = () => flushPending("pagehide");
-    const onBeforeUnload = () => flushPending("beforeunload");
+
+    const onVisibilityChange = () => {
+      if (document.hidden) { flushPending("visibilitychange"); flushDayOff("visibilitychange"); }
+    };
+    const onPageHide = () => { flushPending("pagehide"); flushDayOff("pagehide"); };
+    const onBeforeUnload = () => { flushPending("beforeunload"); flushDayOff("beforeunload"); };
 
     document.addEventListener("visibilitychange", onVisibilityChange);
     window.addEventListener("pagehide", onPageHide);
@@ -1751,6 +1807,8 @@ function CallSchedule() {
     const typed = prompt(
       "⚠ This permanently clears the ENTIRE saved schedule for everyone " +
       "(schedule, vacations, APP shifts, counts).\n\n" +
+      "APP day-off entries are KEPT (by design — transcribed reference data " +
+      "a schedule reset shouldn't eat); clear them chip-by-chip if needed.\n\n" +
       "A snapshot is saved first so it can be restored, but you should also " +
       "Export a JSON backup before doing this.\n\n" +
       'Type  RESET  (all caps) to confirm:'
@@ -3243,32 +3301,63 @@ function CallSchedule() {
   // APP day-offs (display-only) — row id="dayoff" of app_shifts_data; same
   // checked-write pattern and can_assign_apps gate as saveAppShifts above.
   // NEVER read by the generator, canTakeSlot, or any assignment path.
-  const saveAppDayOff = async (next) => {
+  // Every reader/writer goes through dayOffId so stored entries may be plain
+  // id strings (v1) or {id, note} objects (planned v2) interchangeably.
+  const dayOffId = (x) => typeof x === "string" ? x : ((x && x.id) || "");
+  const saveAppDayOff = async () => {
+    dayOffSaveInFlightRef.current = true;
     try {
+      // Always writes the CURRENT map (appDayOffRef), so the one debounced
+      // write per tap burst carries every tap in the burst.
       const { error } = await supabase.from("app_shifts_data")
-        .upsert({ id: "dayoff", data: next, updated_at: new Date().toISOString() });
-      if (error) {
-        setSaveError(true);
-        setSaveStatus("⚠ APP day-off save failed");
-      } else {
-        setSaveStatus("APP day-offs saved");
-        setTimeout(() => setSaveStatus(""), 1500);
-      }
+        .upsert({ id: "dayoff", data: appDayOffRef.current, updated_at: new Date().toISOString() });
+      if (error) throw new Error(String(error).slice(0, 200));
+      // Audit only what actually COMMITTED (review finding: logging before the
+      // save made the audit trail assert changes that never persisted).
+      dayOffPendingAuditRef.current.forEach(a =>
+        logAudit(a.was ? "app_dayoff.remove" : "app_dayoff.add",
+          `${a.was ? "Removed" : "Marked"} APP ${a.name} day off ${a.ds}`, { date: a.ds, app_id: a.aid }));
+      dayOffPendingAuditRef.current = [];
+      setSaveStatus("APP day-offs saved");
+      setTimeout(() => setSaveStatus(""), 1500);
     } catch(e) {
+      console.error("APP day-off save failed:", e);
+      // Chips stay as tapped (state is the user's intent); the failure is
+      // loud, and the next tap's burst-save retries the full current map.
+      // Pending audit entries are kept for that retry.
       setSaveError(true);
-      setSaveStatus("⚠ APP day-off save failed");
+      setSaveStatus("⚠ APP day-off save failed — will retry on your next tap");
+      showToast("Couldn't save APP day-offs — check your connection and tap any chip to retry.", "error");
+    } finally {
+      dayOffSaveInFlightRef.current = false;
     }
   };
   const toggleAppDayOff = (ds, aid) => {
-    const cur = appDayOff[ds] || [];
-    const has = cur.includes(aid);
-    const nextList = has ? cur.filter(x => x !== aid) : [...cur, aid];
-    const next = { ...appDayOff };
+    // WIPE GUARD: never write before a successful read this session — a tap
+    // from unverified-empty state would replace the entire stored map.
+    if (!appDayOffLoaded) {
+      showToast("Day-offs haven't loaded yet — editing is disabled so saved entries can't be overwritten.", "error");
+      return;
+    }
+    // Compute from the ref (current truth), not the render closure: mid-burst
+    // renders can lag the taps, and a stale closure would drop earlier taps.
+    const cur = appDayOffRef.current[ds] || [];
+    const was = cur.some(x => dayOffId(x) === aid);
+    const nextList = was ? cur.filter(x => dayOffId(x) !== aid) : [...cur, aid];
+    const next = { ...appDayOffRef.current };
     if (nextList.length) next[ds] = nextList; else delete next[ds]; // no empty arrays in the stored map
+    appDayOffRef.current = next;
     setAppDayOff(next);
-    saveAppDayOff(next);
-    logAudit(has ? "app_dayoff.remove" : "app_dayoff.add",
-      `${has ? "Removed" : "Marked"} APP ${nameOf(aid)} day off ${ds}`, { date: ds, app_id: aid });
+    dayOffPendingAuditRef.current.push({ was, aid, ds, name: nameOf(aid) });
+    // One write per tap burst: a month's rotation is ~20 rapid taps, and per-
+    // tap fire-and-forget upserts raced each other (review finding — out-of-
+    // order commits kept an older map). 600ms after the last tap, a single
+    // save carries the whole burst; the refresh echo guard covers the window.
+    if (dayOffSaveTimerRef.current) clearTimeout(dayOffSaveTimerRef.current);
+    dayOffSaveTimerRef.current = setTimeout(() => {
+      dayOffSaveTimerRef.current = null;
+      saveAppDayOff();
+    }, 600);
   };
 
   // Build surgeon preferences map by matching names
@@ -5705,6 +5794,11 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             <p style={{fontSize:12,color:"#7a8a98",margin:"0 0 10px",lineHeight:1.5}}>
               Tap an APP's chip to mark them off that weekday (tap again to undo). Doesn't affect call assignment, and never appears on the public calendar. Weekends aren't tracked — a weekend APP name is a call assignment, entered above.
             </p>
+            {!appDayOffLoaded && (
+              <div style={{fontSize:12,color:"#c04040",fontWeight:600,margin:"0 0 10px"}}>
+                ⚠ Day-offs haven't loaded — editing is disabled so saved entries can't be overwritten. Retries automatically (~1 min); reload if it persists.
+              </div>
+            )}
             <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10}}>
               <button onClick={()=>setDayOffMonth(p=>{ const m=p.m-1; return m<0?{y:p.y-1,m:11}:{y:p.y,m}; })} style={{...css.btn(false),padding:"3px 10px",fontSize:12}}>‹</button>
               <span style={{fontSize:13,fontWeight:700,color:"#2c3e50",minWidth:130,textAlign:"center"}}>{MO[dayOffMonth.m]} {dayOffMonth.y}</span>
@@ -5740,13 +5834,13 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                         <div style={{display:"flex",flexWrap:"wrap",gap:3}}>
                           {apps.map((a, ai) => {
                             const pal = APP_PAL[ai % APP_PAL.length];
-                            const on = offList.includes(a.id);
+                            const on = offList.some(x => dayOffId(x) === a.id);
                             return (
-                              <button key={a.id} onClick={()=>toggleAppDayOff(ds, a.id)}
-                                title={`${a.name} ${on ? "is" : "not"} off ${ds} — tap to toggle`}
-                                style={{fontSize:9,fontWeight:700,padding:"1px 6px",borderRadius:4,cursor:"pointer",fontFamily:font,
+                              <button key={a.id} onClick={()=>toggleAppDayOff(ds, a.id)} disabled={!appDayOffLoaded}
+                                title={appDayOffLoaded ? `${a.name} ${on ? "is" : "not"} off ${ds} — tap to toggle` : "Editing disabled until day-offs load"}
+                                style={{fontSize:9,fontWeight:700,padding:"1px 6px",borderRadius:4,cursor:appDayOffLoaded?"pointer":"not-allowed",fontFamily:font,
                                   background:on?pal.tx:"transparent",color:on?"#fff":pal.tx,
-                                  border:`1px solid ${on?pal.tx:pal.bd}`,opacity:on?1:0.6}}>
+                                  border:`1px solid ${on?pal.tx:pal.bd}`,opacity:!appDayOffLoaded?0.35:on?1:0.6}}>
                                 {a.name}
                               </button>
                             );
@@ -6872,7 +6966,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                       off during the day can still take call that night.
                       Entries tolerate the planned v2 {id, note} shape. */}
                   {!isPublicMode && calFilters.appOff && !sf && calAppFilter!=="none" && !calDeptFilter &&
-                    (appDayOff[ds]||[]).map(x => (typeof x === "string" ? x : x?.id)).filter(aid => aid && (calAppFilter==="all"||aid===calAppFilter)).map(aid=>(
+                    (appDayOff[ds]||[]).map(dayOffId).filter(aid => aid && (calAppFilter==="all"||aid===calAppFilter)).map(aid=>(
                     <div key={"off"+aid} style={{marginBottom:1,padding:"0 3px",borderRadius:3,fontSize:9,
                       border:"1px dashed #b8c0c8",color:"#7a8a98",background:"transparent"}}>
                       ◌ {aMap[aid]?.name||aid} <span style={{fontSize:8}}>off</span>
