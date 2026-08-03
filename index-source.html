@@ -169,6 +169,12 @@ function CallSchedule() {
   const dayOffSaveTimerRef = useRef(null);  // debounce: one enqueue per tap burst
   const dayOffRetryTimerRef = useRef(null); // auto-retry for failed/unconfirmed saves
   const dayOffPendingAuditRef = useRef([]); // audit entries logged only after their save COMMITS
+  // Latest-closure bridge for the []-deps unload effect (review round 3): the
+  // effect pins first-render closures, so calling enqueueDayOffSave directly
+  // from it would log audits through a logAudit that captured userProfile at
+  // its initial null — misattributing the actor. The ref always holds the
+  // CURRENT render's enqueue closure.
+  const dayOffEnqueueRef = useRef(() => {});
   // Shared adoption rule for the mount load AND background refresh (a prior
   // hole: the mount path lacked the guard the refresh had, and reloadTrigger
   // re-runs the mount load seconds into an interactive session).
@@ -180,6 +186,14 @@ function CallSchedule() {
     if (dayOffLastWriteTsRef.current && ts && ts <= dayOffLastWriteTsRef.current) return; // stale or our own echo
     appDayOffRef.current = offRow.data;
     setAppDayOff(offRow.data);
+    // Record the ADOPTED row's ts as the watermark too (the full
+    // refreshScheduleRow pattern — review round 3): without this, two foreign
+    // commits F1<F2 fetched by unserialized GETs resolving out of order would
+    // re-adopt the older F1 over the already-adopted F2. Client-stamped
+    // timestamps mean cross-device clock skew can delay adoption of a
+    // genuinely-newer foreign row — same accepted semantics as lastSyncRef
+    // everywhere else in this app.
+    if (ts) dayOffLastWriteTsRef.current = ts;
   };
   const [priorCounts, setPriorCounts] = useState(COUNTS_2YR); // Multi-year totals (used by generator)
   const [year1Counts, setYear1Counts] = useState(COUNTS_1YR); // Current year totals
@@ -1733,30 +1747,24 @@ function CallSchedule() {
     };
 
     // Day-off flush: anything UNCONFIRMED (pending burst OR failed save
-    // awaiting retry — the dirty flag covers both) gets a best-effort
-    // keepalive write at page-hide. Deliberately does NOT clear dirty, touch
-    // dayOffLastWriteTsRef, or log audits: keepalive outcomes are unknowable
-    // (HTTP errors resolve the fetch), so confirmation stays with the normal
-    // serialized save — if the page survives, the retry below re-saves
-    // confirmably (idempotent duplicate) and audits flush then; if the page
-    // dies, the data write usually lands and its audit entries are lost
-    // (accepted — an honest gap beats fabricated entries). dirty staying set
-    // means no refresh can adopt stale server state over the flushed map
-    // either way.
+    // awaiting retry — the dirty flag covers both) is pushed through the
+    // NORMAL serialized save chain immediately, via the latest-closure
+    // bridge (correct audit attribution). Deliberately NOT a keepalive
+    // side-write: review round 3 showed an un-chained keepalive can stall
+    // in the radio, land AFTER a later confirmed save, and silently regress
+    // the server to an older map that the staleness check then makes
+    // undetectable. A chained save can't reorder. The cost: on true page
+    // DEATH (tab close) the in-flight fetch may die and lose the last
+    // ≤600ms of taps — bounded, visible next session (chips absent, dirty
+    // state dies with the page, DB stays consistent), and re-enterable.
+    // On mere backgrounding (visibilitychange — the common mobile case)
+    // the page survives and the chain confirms normally.
     const flushDayOff = (source) => {
       if (isPublicMode) return;
       if (!dayOffDirtyRef.current) return; // nothing unconfirmed
       if (dayOffSaveTimerRef.current) { clearTimeout(dayOffSaveTimerRef.current); dayOffSaveTimerRef.current = null; }
-      try {
-        const session = (typeof auth !== "undefined" && auth.getSession) ? auth.getSession() : null;
-        const token = session?.access_token || SUPABASE_ANON_KEY;
-        fetch(`${SUPABASE_URL}/rest/v1/app_shifts_data?on_conflict=id`, {
-          method: "POST", keepalive: true,
-          headers: { "Content-Type": "application/json", "apikey": SUPABASE_ANON_KEY, "Authorization": `Bearer ${token}`, "Prefer": "resolution=merge-duplicates,return=minimal" },
-          body: JSON.stringify({ id: "dayoff", data: appDayOffRef.current, updated_at: new Date().toISOString() }),
-        }).catch(e => console.warn(`Day-off keepalive flush failed (${source}):`, e));
-        scheduleDayOffRetry(3000); // page survived? confirm via the serialized chain
-      } catch (e) { console.warn(`Day-off flush (${source}) error:`, e); }
+      try { dayOffEnqueueRef.current(); }
+      catch (e) { console.warn(`Day-off flush (${source}) error:`, e); }
     };
 
     const onVisibilityChange = () => {
@@ -3374,6 +3382,9 @@ function CallSchedule() {
       if (dayOffDirtyRef.current) enqueueDayOffSave();
     }, ms);
   };
+  // Keep the unload-effect bridge pointing at THIS render's closure (see the
+  // ref's declaration comment). No-deps effect: reassigns every render.
+  useEffect(() => { dayOffEnqueueRef.current = enqueueDayOffSave; });
   const toggleAppDayOff = (ds, aid) => {
     // WIPE GUARD: never write before a successful read this session — a tap
     // from unverified-empty state would replace the entire stored map.
