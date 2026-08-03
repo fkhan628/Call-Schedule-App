@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.08.01a";
+    var APP_VERSION = "2026.08.02a";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -137,6 +137,26 @@ function CallSchedule() {
   const [fierceBackupSet, setFierceBackupSet] = useState(new Set());
   const [schedule, setSchedule] = useState({});
   const [appShifts, setAppShifts] = useState({});
+  const [appDayOff, setAppDayOff] = useState({});
+  const [appDayOffLoaded, setAppDayOffLoaded] = useState(false);
+  const appDayOffRef = useRef({});
+  const dayOffDirtyRef = useRef(false);
+  const dayOffLastWriteTsRef = useRef(null);
+  const dayOffSaveChainRef = useRef(Promise.resolve());
+  const dayOffSaveTimerRef = useRef(null);
+  const dayOffRetryTimerRef = useRef(null);
+  const dayOffPendingAuditRef = useRef([]);
+  const dayOffEnqueueRef = useRef(() => {});
+  const adoptDayOffRow = offRow => {
+    setAppDayOffLoaded(true);
+    if (!(offRow !== null && offRow !== void 0 && offRow.data) || typeof offRow.data !== "object") return;
+    if (dayOffDirtyRef.current) return;
+    const ts = offRow.updated_at || null;
+    if (dayOffLastWriteTsRef.current && ts && ts <= dayOffLastWriteTsRef.current) return;
+    appDayOffRef.current = offRow.data;
+    setAppDayOff(offRow.data);
+    if (ts) dayOffLastWriteTsRef.current = ts;
+  };
   const [priorCounts, setPriorCounts] = useState(COUNTS_2YR);
   const [year1Counts, setYear1Counts] = useState(COUNTS_1YR);
   const [year2Counts, setYear2Counts] = useState(COUNTS_2YR);
@@ -155,7 +175,8 @@ function CallSchedule() {
     wknd: true,
     app: true,
     fierce: true,
-    vac: true
+    vac: true,
+    appOff: true
   });
   const [showBackupStats, setShowBackupStats] = useState(false);
   const [statsScope, setStatsScope] = useState("period");
@@ -247,6 +268,13 @@ function CallSchedule() {
   }));
   const [showPastVacations, setShowPastVacations] = useState(false);
   const [appShiftsListExpanded, setAppShiftsListExpanded] = useState(false);
+  const [dayOffMonth, setDayOffMonth] = useState(() => {
+    const n = new Date();
+    return {
+      y: n.getFullYear(),
+      m: n.getMonth()
+    };
+  });
   const [officeContacts, setOfficeContacts] = useState([]);
   const [newOfficeName, setNewOfficeName] = useState("");
   const [newOfficeEmail, setNewOfficeEmail] = useState("");
@@ -1248,6 +1276,14 @@ function CallSchedule() {
         } catch (e) {
           console.error("APP shifts load failed:", e);
         }
+        if (!isPublicMode) try {
+          const {
+            data: offRow
+          } = await supabase.from("app_shifts_data").select("data,updated_at").eq("id", "dayoff").single();
+          adoptDayOffRow(offRow);
+        } catch (e) {
+          console.error("APP day-off load failed (editing stays disabled):", e);
+        }
         try {
           const reqs = await db.query("vacation_requests", {
             order: "submitted_at.desc",
@@ -1337,6 +1373,12 @@ function CallSchedule() {
           data: appRow
         } = await supabase.from("app_shifts_data").select("data").eq("id", "main").single();
         if (appRow !== null && appRow !== void 0 && appRow.data && typeof appRow.data === "object") setAppShifts(appRow.data);
+        if (!isPublicMode) {
+          const {
+            data: offRow
+          } = await supabase.from("app_shifts_data").select("data,updated_at").eq("id", "dayoff").single();
+          adoptDayOffRow(offRow);
+        }
       } catch (e) {
         console.warn("Background APP-shifts refresh failed:", e);
       }
@@ -1623,11 +1665,33 @@ function CallSchedule() {
         pendingSaveRef.current = payload;
       }
     };
-    const onVisibilityChange = () => {
-      if (document.hidden) flushPending("visibilitychange");
+    const flushDayOff = source => {
+      if (isPublicMode) return;
+      if (!dayOffDirtyRef.current) return;
+      if (dayOffSaveTimerRef.current) {
+        clearTimeout(dayOffSaveTimerRef.current);
+        dayOffSaveTimerRef.current = null;
+      }
+      try {
+        dayOffEnqueueRef.current();
+      } catch (e) {
+        console.warn(`Day-off flush (${source}) error:`, e);
+      }
     };
-    const onPageHide = () => flushPending("pagehide");
-    const onBeforeUnload = () => flushPending("beforeunload");
+    const onVisibilityChange = () => {
+      if (document.hidden) {
+        flushPending("visibilitychange");
+        flushDayOff("visibilitychange");
+      }
+    };
+    const onPageHide = () => {
+      flushPending("pagehide");
+      flushDayOff("pagehide");
+    };
+    const onBeforeUnload = () => {
+      flushPending("beforeunload");
+      flushDayOff("beforeunload");
+    };
     document.addEventListener("visibilitychange", onVisibilityChange);
     window.addEventListener("pagehide", onPageHide);
     window.addEventListener("beforeunload", onBeforeUnload);
@@ -1671,7 +1735,7 @@ function CallSchedule() {
       alert("Only a scheduler or the admin account can reset all data.");
       return;
     }
-    const typed = prompt("⚠ This permanently clears the ENTIRE saved schedule for everyone " + "(schedule, vacations, APP shifts, counts).\n\n" + "A snapshot is saved first so it can be restored, but you should also " + "Export a JSON backup before doing this.\n\n" + 'Type  RESET  (all caps) to confirm:');
+    const typed = prompt("⚠ This permanently clears the ENTIRE saved schedule for everyone " + "(schedule, vacations, APP shifts, counts).\n\n" + "APP day-off entries are KEPT (by design — transcribed reference data " + "a schedule reset shouldn't eat); clear them chip-by-chip if needed.\n\n" + "A snapshot is saved first so it can be restored, but you should also " + "Export a JSON backup before doing this.\n\n" + 'Type  RESET  (all caps) to confirm:');
     if (typed !== "RESET") {
       setSaveStatus("Reset cancelled");
       setTimeout(() => setSaveStatus(""), 2000);
@@ -3334,6 +3398,78 @@ function CallSchedule() {
     logAudit("app_shift.remove", `Removed APP assignment on ${ds}${prevId ? " (" + nameOf(prevId) + ")" : ""}`, {
       date: ds
     });
+  };
+  const dayOffId = x => typeof x === "string" ? x : x && x.id || "";
+  const enqueueDayOffSave = () => {
+    dayOffSaveChainRef.current = dayOffSaveChainRef.current.then(async () => {
+      if (!dayOffDirtyRef.current) return;
+      const auditCount = dayOffPendingAuditRef.current.length;
+      const ts = new Date().toISOString();
+      try {
+        const {
+          error
+        } = await supabase.from("app_shifts_data").upsert({
+          id: "dayoff",
+          data: appDayOffRef.current,
+          updated_at: ts
+        });
+        if (error) throw new Error(String(error).slice(0, 200));
+        dayOffLastWriteTsRef.current = ts;
+        dayOffPendingAuditRef.current.splice(0, auditCount).forEach(a => logAudit(a.was ? "app_dayoff.remove" : "app_dayoff.add", `${a.was ? "Removed" : "Marked"} APP ${a.name} day off ${a.ds}`, {
+          date: a.ds,
+          app_id: a.aid
+        }));
+        if (dayOffPendingAuditRef.current.length === 0) {
+          dayOffDirtyRef.current = false;
+        } else {
+          scheduleDayOffRetry(600);
+        }
+        setSaveError(false);
+        setSaveStatus("APP day-offs saved");
+        setTimeout(() => setSaveStatus(""), 1500);
+      } catch (e) {
+        console.error("APP day-off save failed (auto-retry in 5s):", e);
+        setSaveError(true);
+        setSaveStatus("⚠ APP day-off save failed — retrying…");
+        showToast("Couldn't save APP day-offs — retrying automatically. Check your connection if this persists.", "error");
+        scheduleDayOffRetry(5000);
+      }
+    });
+  };
+  const scheduleDayOffRetry = ms => {
+    if (dayOffRetryTimerRef.current) clearTimeout(dayOffRetryTimerRef.current);
+    dayOffRetryTimerRef.current = setTimeout(() => {
+      dayOffRetryTimerRef.current = null;
+      if (dayOffDirtyRef.current) enqueueDayOffSave();
+    }, ms);
+  };
+  useEffect(() => {
+    dayOffEnqueueRef.current = enqueueDayOffSave;
+  });
+  const toggleAppDayOff = (ds, aid) => {
+    if (!appDayOffLoaded) {
+      showToast("Day-offs haven't loaded yet — editing is disabled so saved entries can't be overwritten.", "error");
+      return;
+    }
+    const cur = appDayOffRef.current[ds] || [];
+    const was = cur.some(x => dayOffId(x) === aid);
+    const nextList = was ? cur.filter(x => dayOffId(x) !== aid) : [...cur, aid];
+    const next = _objectSpread({}, appDayOffRef.current);
+    if (nextList.length) next[ds] = nextList;else delete next[ds];
+    appDayOffRef.current = next;
+    setAppDayOff(next);
+    dayOffDirtyRef.current = true;
+    dayOffPendingAuditRef.current.push({
+      was,
+      aid,
+      ds,
+      name: nameOf(aid)
+    });
+    if (dayOffSaveTimerRef.current) clearTimeout(dayOffSaveTimerRef.current);
+    dayOffSaveTimerRef.current = setTimeout(() => {
+      dayOffSaveTimerRef.current = null;
+      enqueueDayOffSave();
+    }, 600);
   };
   const buildPrefs = () => {
     const p = {};
@@ -7189,7 +7325,161 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         fontSize: 11
       }
     }, "✕"));
-  })))), (isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.role) === "admin") && React.createElement(React.Fragment, null, React.createElement("div", {
+  })))), React.createElement(Collapsible, {
+    css: css,
+    ck: "setup_app_dayoff",
+    defaultOpen: false,
+    title: React.createElement(React.Fragment, null, "🗓 APP Days Off ", React.createElement("span", {
+      style: {
+        fontWeight: 400,
+        fontSize: 11,
+        color: "#7a8a98"
+      }
+    }, "— weekday off rotation (display-only)"))
+  }, React.createElement("p", {
+    style: {
+      fontSize: 12,
+      color: "#7a8a98",
+      margin: "0 0 10px",
+      lineHeight: 1.5
+    }
+  }, "Tap an APP's chip to mark them off that weekday (tap again to undo). Doesn't affect call assignment, and never appears on the public calendar. Weekends aren't tracked — a weekend APP name is a call assignment, entered above."), !appDayOffLoaded && React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: "#c04040",
+      fontWeight: 600,
+      margin: "0 0 10px"
+    }
+  }, "⚠ Day-offs haven't loaded — editing is disabled so saved entries can't be overwritten. Retries automatically (~1 min); reload if it persists."), React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 10,
+      marginBottom: 10
+    }
+  }, React.createElement("button", {
+    onClick: () => setDayOffMonth(p => {
+      const m = p.m - 1;
+      return m < 0 ? {
+        y: p.y - 1,
+        m: 11
+      } : {
+        y: p.y,
+        m
+      };
+    }),
+    style: _objectSpread(_objectSpread({}, css.btn(false)), {}, {
+      padding: "3px 10px",
+      fontSize: 12
+    })
+  }, "‹"), React.createElement("span", {
+    style: {
+      fontSize: 13,
+      fontWeight: 700,
+      color: "#2c3e50",
+      minWidth: 130,
+      textAlign: "center"
+    }
+  }, MO[dayOffMonth.m], " ", dayOffMonth.y), React.createElement("button", {
+    onClick: () => setDayOffMonth(p => {
+      const m = p.m + 1;
+      return m > 11 ? {
+        y: p.y + 1,
+        m: 0
+      } : {
+        y: p.y,
+        m
+      };
+    }),
+    style: _objectSpread(_objectSpread({}, css.btn(false)), {}, {
+      padding: "3px 10px",
+      fontSize: 12
+    })
+  }, "›")), React.createElement("div", {
+    style: {
+      overflowX: "auto"
+    }
+  }, React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: "repeat(5, minmax(96px, 1fr))",
+      gap: 4,
+      minWidth: 500
+    }
+  }, ["Mon", "Tue", "Wed", "Thu", "Fri"].map(h => React.createElement("div", {
+    key: h,
+    style: {
+      fontSize: 10,
+      fontWeight: 700,
+      color: "#7a8a98",
+      textAlign: "center",
+      textTransform: "uppercase",
+      letterSpacing: 0.5
+    }
+  }, h)), (() => {
+    const cells = [];
+    const first = new Date(dayOffMonth.y, dayOffMonth.m, 1);
+    const daysIn = new Date(dayOffMonth.y, dayOffMonth.m + 1, 0).getDate();
+    const firstDow = first.getDay();
+    const lead = firstDow === 0 || firstDow === 6 ? 0 : firstDow - 1;
+    for (let i = 0; i < lead; i++) cells.push(null);
+    for (let day = 1; day <= daysIn; day++) {
+      const d = new Date(dayOffMonth.y, dayOffMonth.m, day);
+      if (d.getDay() === 0 || d.getDay() === 6) continue;
+      cells.push(d);
+    }
+    return cells.map((d, i) => {
+      if (!d) return React.createElement("div", {
+        key: "pad" + i
+      });
+      const ds = fmt(d);
+      const offList = appDayOff[ds] || [];
+      return React.createElement("div", {
+        key: ds,
+        style: {
+          border: "1px solid #e0e4ea",
+          borderRadius: 6,
+          padding: "4px 5px",
+          background: "#fbfcfd",
+          minHeight: 52
+        }
+      }, React.createElement("div", {
+        style: {
+          fontSize: 10,
+          fontWeight: 700,
+          color: "#8a94a0",
+          marginBottom: 3
+        }
+      }, d.getDate()), React.createElement("div", {
+        style: {
+          display: "flex",
+          flexWrap: "wrap",
+          gap: 3
+        }
+      }, apps.map((a, ai) => {
+        const pal = APP_PAL[ai % APP_PAL.length];
+        const on = offList.some(x => dayOffId(x) === a.id);
+        return React.createElement("button", {
+          key: a.id,
+          onClick: () => toggleAppDayOff(ds, a.id),
+          disabled: !appDayOffLoaded,
+          title: appDayOffLoaded ? `${a.name} ${on ? "is" : "not"} off ${ds} — tap to toggle` : "Editing disabled until day-offs load",
+          style: {
+            fontSize: 9,
+            fontWeight: 700,
+            padding: "1px 6px",
+            borderRadius: 4,
+            cursor: appDayOffLoaded ? "pointer" : "not-allowed",
+            fontFamily: font,
+            background: on ? pal.tx : "transparent",
+            color: on ? "#fff" : pal.tx,
+            border: `1px solid ${on ? pal.tx : pal.bd}`,
+            opacity: !appDayOffLoaded ? 0.35 : on ? 1 : 0.6
+          }
+        }, a.name);
+      })));
+    });
+  })()))), (isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.role) === "admin") && React.createElement(React.Fragment, null, React.createElement("div", {
     style: css.card
   }, React.createElement("div", {
     style: css.cardT
@@ -9215,7 +9505,12 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     label: "Vacations",
     color: "#5a6a78",
     icon: "🏖"
-  }].map(f => React.createElement("button", {
+  }, ...(!isPublicMode ? [{
+    key: "appOff",
+    label: "APP Off",
+    color: "#7a8a98",
+    icon: "☕"
+  }] : [])].map(f => React.createElement("button", {
     key: f.key,
     onClick: () => toggleFilter(f.key),
     style: {
@@ -9290,7 +9585,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         wknd: true,
         app: true,
         fierce: true,
-        vac: true
+        vac: true,
+        appOff: true
       });
       setCalSurgeonFilter("");
       setCalAppFilter("all");
@@ -9624,6 +9920,24 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             color: ((_APP_PAL = APP_PAL[((_aMap$e$appId3 = aMap[e.appId]) === null || _aMap$e$appId3 === void 0 ? void 0 : _aMap$e$appId3.idx) % APP_PAL.length]) === null || _APP_PAL === void 0 ? void 0 : _APP_PAL.tx) || "#5a6878"
           }
         }, ((_aMap$e$appId4 = aMap[e.appId]) === null || _aMap$e$appId4 === void 0 ? void 0 : _aMap$e$appId4.name) || "?"));
+      }), !isPublicMode && calFilters.appOff && !sf && calAppFilter !== "none" && !calDeptFilter && (appDayOff[ds] || []).map(dayOffId).filter(aid => aid && (calAppFilter === "all" || aid === calAppFilter)).map(aid => {
+        var _aMap$aid2;
+        return React.createElement("div", {
+          key: "off" + aid,
+          style: {
+            marginBottom: 1,
+            padding: "0 3px",
+            borderRadius: 3,
+            fontSize: 9,
+            border: "1px dashed #b8c0c8",
+            color: "#7a8a98",
+            background: "transparent"
+          }
+        }, "◌ ", ((_aMap$aid2 = aMap[aid]) === null || _aMap$aid2 === void 0 ? void 0 : _aMap$aid2.name) || aid, " ", React.createElement("span", {
+          style: {
+            fontSize: 8
+          }
+        }, "off"));
       }), calFilters.fierce && hasFierce && React.createElement("div", {
         style: {
           fontSize: 8,
@@ -10167,10 +10481,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         allEvents.push(...buildICSEvents(schedule, s.id, s.name, appShifts, aMap));
       });
       Object.entries(appShifts).forEach(([ds, aid]) => {
-        var _aMap$aid2;
+        var _aMap$aid3;
         const d = parse(ds);
         const next = addD(d, 1);
-        const appName = (aMap === null || aMap === void 0 || (_aMap$aid2 = aMap[aid]) === null || _aMap$aid2 === void 0 ? void 0 : _aMap$aid2.name) || aid;
+        const appName = (aMap === null || aMap === void 0 || (_aMap$aid3 = aMap[aid]) === null || _aMap$aid3 === void 0 ? void 0 : _aMap$aid3.name) || aid;
         const dow = d.getDay();
         const isWeekend = dow === 0 || dow === 6;
         const startHour = isWeekend ? 7 : 17;
@@ -15220,7 +15534,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         const backup = _objectSpread(_objectSpread({}, buildPayload()), {}, {
           _app: "DSG Call Schedule",
           _exportedAt: new Date().toISOString(),
-          appShifts
+          appShifts,
+          appDayOff
         });
         const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
         const downloaded = downloadJSON(backup, `dsg-call-backup-${stamp}.json`);
