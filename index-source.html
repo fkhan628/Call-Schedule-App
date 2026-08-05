@@ -7014,18 +7014,23 @@ ${"</"}script>${"</"}body>${"</"}html>`;
 
                   {/* APP day-offs — display-only, INTERNAL ONLY (a deliberate
                       NEW gate: never rendered in ?public=1, unlike vacations
-                      which are public by design). Gray dashed outline keeps it
-                      visually distinct from filled APP call chips and from the
-                      🏖 vacation bar; both can appear the same day — an APP
-                      off during the day can still take call that night.
+                      which are public by design). ONE quiet muted line per
+                      day, all off-APPs comma-joined — the 🏖 vacation-row
+                      pattern, with ☕ matching the filter toggle so the icon
+                      is self-teaching. Deliberately the least-loud element in
+                      the cell (it's the least important); an APP off during
+                      the day can still take call that night — both render.
                       Entries tolerate the planned v2 {id, note} shape. */}
-                  {!isPublicMode && calFilters.appOff && !sf && calAppFilter!=="none" && !calDeptFilter &&
-                    (appDayOff[ds]||[]).map(dayOffId).filter(aid => aid && (calAppFilter==="all"||aid===calAppFilter)).map(aid=>(
-                    <div key={"off"+aid} style={{marginBottom:1,padding:"0 3px",borderRadius:3,fontSize:9,
-                      border:"1px dashed #b8c0c8",color:"#7a8a98",background:"transparent"}}>
-                      ◌ {aMap[aid]?.name||aid} <span style={{fontSize:8}}>off</span>
-                    </div>
-                  ))}
+                  {!isPublicMode && calFilters.appOff && !sf && calAppFilter!=="none" && !calDeptFilter && (() => {
+                    const offNames = (appDayOff[ds]||[]).map(dayOffId)
+                      .filter(aid => aid && (calAppFilter==="all"||aid===calAppFilter))
+                      .map(aid => aMap[aid]?.name||aid);
+                    return offNames.length ? (
+                      <div style={{marginTop:1,fontSize:8.5,color:"#8a94a0",whiteSpace:"nowrap"}}>
+                        ☕ {offNames.join(", ")}
+                      </div>
+                    ) : null;
+                  })()}
 
                   {calFilters.fierce && hasFierce && <div style={{fontSize:8,color:"#8a6a10",marginTop:1,fontWeight:600}}>⚡ Fierce Primary</div>}
                   {calFilters.fierce && hasFierceBkp && !hasFierce && <div style={{fontSize:8,color:"#1a6fa8",marginTop:1,fontWeight:600}}>🛡 Fierce Backup</div>}
