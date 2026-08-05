@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.08.02a";
+    var APP_VERSION = "2026.08.04a";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -9920,25 +9920,20 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             color: ((_APP_PAL = APP_PAL[((_aMap$e$appId3 = aMap[e.appId]) === null || _aMap$e$appId3 === void 0 ? void 0 : _aMap$e$appId3.idx) % APP_PAL.length]) === null || _APP_PAL === void 0 ? void 0 : _APP_PAL.tx) || "#5a6878"
           }
         }, ((_aMap$e$appId4 = aMap[e.appId]) === null || _aMap$e$appId4 === void 0 ? void 0 : _aMap$e$appId4.name) || "?"));
-      }), !isPublicMode && calFilters.appOff && !sf && calAppFilter !== "none" && !calDeptFilter && (appDayOff[ds] || []).map(dayOffId).filter(aid => aid && (calAppFilter === "all" || aid === calAppFilter)).map(aid => {
-        var _aMap$aid2;
-        return React.createElement("div", {
-          key: "off" + aid,
+      }), !isPublicMode && calFilters.appOff && !sf && calAppFilter !== "none" && !calDeptFilter && (() => {
+        const offNames = (appDayOff[ds] || []).map(dayOffId).filter(aid => aid && (calAppFilter === "all" || aid === calAppFilter)).map(aid => {
+          var _aMap$aid2;
+          return ((_aMap$aid2 = aMap[aid]) === null || _aMap$aid2 === void 0 ? void 0 : _aMap$aid2.name) || aid;
+        });
+        return offNames.length ? React.createElement("div", {
           style: {
-            marginBottom: 1,
-            padding: "0 3px",
-            borderRadius: 3,
-            fontSize: 9,
-            border: "1px dashed #b8c0c8",
-            color: "#7a8a98",
-            background: "transparent"
+            marginTop: 1,
+            fontSize: 8.5,
+            color: "#8a94a0",
+            whiteSpace: "nowrap"
           }
-        }, "◌ ", ((_aMap$aid2 = aMap[aid]) === null || _aMap$aid2 === void 0 ? void 0 : _aMap$aid2.name) || aid, " ", React.createElement("span", {
-          style: {
-            fontSize: 8
-          }
-        }, "off"));
-      }), calFilters.fierce && hasFierce && React.createElement("div", {
+        }, "☕ ", offNames.join(", ")) : null;
+      })(), calFilters.fierce && hasFierce && React.createElement("div", {
         style: {
           fontSize: 8,
           color: "#8a6a10",
