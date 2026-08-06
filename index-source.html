@@ -195,9 +195,12 @@ function CallSchedule() {
     // everywhere else in this app.
     if (ts) dayOffLastWriteTsRef.current = ts;
   };
-  const [priorCounts, setPriorCounts] = useState(COUNTS_2YR); // Multi-year totals (used by generator)
-  const [year1Counts, setYear1Counts] = useState(COUNTS_1YR); // Current year totals
-  const [year2Counts, setYear2Counts] = useState(COUNTS_2YR); // 2-year totals
+  const [priorCounts, setPriorCounts] = useState(COUNTS_MULTIYEAR); // Multi-year totals (used by generator)
+  const [year1Counts, setYear1Counts] = useState(COUNTS_1YR); // 1-year totals (also feeds the generator's 10% past-year term)
+  // NOTE: year2Counts is a LEGACY MIRROR of priorCounts — rollForwardCounts
+  // merges identical deltas into both, and the live blob's two objects are
+  // byte-identical. Retiring the tier is a tracked follow-up candidate.
+  const [year2Counts, setYear2Counts] = useState(COUNTS_MULTIYEAR);
   const [startMonth, setStartMonth] = useState(4);
   const [startYear, setStartYear] = useState(2026);
   const [numWeeks, setNumWeeks] = useState(14);
@@ -3471,7 +3474,9 @@ function CallSchedule() {
         scheduleWeeks: Object.keys(schedule).length,
       });
     } catch (e) { setSeedDebug({ error: String(e) }); }
-    const result = generate(surgeons, mondays, availability, backupMondaySet, priorCounts, prefs, fierceBackupSet, holidayAssignments, pendingLocks, prevWeekSeed, vacations);
+    // year1Counts feeds the generator's 10% past-year priority term (wired
+    // 2026-08-06 — previously an unused-input proxy of the multi-year number).
+    const result = generate(surgeons, mondays, availability, backupMondaySet, priorCounts, prefs, fierceBackupSet, holidayAssignments, pendingLocks, prevWeekSeed, vacations, year1Counts);
     if (preview) {
       setPreviewSchedule(result);
       setShowPreview(true);
@@ -3625,6 +3630,15 @@ function CallSchedule() {
   // Called on Accept & Publish so the next generation uses up-to-date totals
   const rollForwardCounts = useCallback((sched) => {
     if (!sched || Object.keys(sched).length === 0) return;
+    // COUNTS FLOOR: everything through April 2026 is already inside the
+    // multi-year aggregates (the 45-month PDF-parse era) AND, since the
+    // 2026-08 historical import, also in schedule_weeks. Rolling a
+    // (re)published historical range forward would double-count those months
+    // into counts that already contain them. Nobody publishes the past on
+    // purpose — this makes sure an accidental publish can't.
+    const COUNTS_FLOOR = "2026-05-04";
+    sched = Object.fromEntries(Object.entries(sched).filter(([mStr]) => mStr >= COUNTS_FLOOR));
+    if (Object.keys(sched).length === 0) return;
     const delta = {};
     surgeons.forEach(s => { delta[s.id] = { dc:0, nights:0, wknd:0, off:0, dcB:0, nightsB:0, wkndB:0, offB:0 }; });
     Object.values(sched).forEach(wk => {
@@ -3661,7 +3675,8 @@ function CallSchedule() {
       });
       return next;
     });
-    // Also merge into year2Counts (2-Year)
+    // Also merge into year2Counts (legacy mirror of priorCounts — see the
+    // state declaration note)
     setYear2Counts(prev => {
       const next = { ...prev };
       Object.keys(delta).forEach(id => {
@@ -6637,7 +6652,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         {/* ════════════════ TOTALS ════════════════ */}
         {view==="totals" && !isPublicMode && <>
           <div style={css.card}>
-            <div style={css.cardT}>Running Totals <span style={{fontWeight:400,fontSize:11,color:"#7a8a98"}}>— 1-Year, 2-Year, and Multi-Year</span></div>
+            <div style={css.cardT}>Running Totals <span style={{fontWeight:400,fontSize:11,color:"#7a8a98"}}>— 1-Year and Multi-Year (Aug 2022 – present)</span></div>
             <p style={{fontSize:12,color:"#7a8a98",margin:"0 0 10px",lineHeight:1.5}}>
               Enter shift counts across three time frames. The generator uses the <strong style={{color:"#7030a8"}}>multi-year</strong> totals for balancing assignments. All three are shown in Stats for tracking.
             </p>
@@ -6670,7 +6685,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             {/* Helper to render an editable totals table */}
             {[
               {label:"1-Year (Current Year)",color:"#1a6fa8",counts:year1Counts,setter:setYear1Counts},
-              {label:"2-Year",color:"#8a6a10",counts:year2Counts,setter:setYear2Counts},
+              {label:"Multi-Year (Legacy Mirror)",color:"#8a6a10",counts:year2Counts,setter:setYear2Counts},
               {label:"Multi-Year (Used by Generator)",color:"#7030a8",counts:priorCounts,setter:setPriorCounts},
             ].map(tier=>(
               <div key={tier.label} style={{marginBottom:16}}>
@@ -8066,7 +8081,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
 
               {[
                 {label:"1-Year", color:"#1a6fa8", data:cum1yr},
-                {label:"2-Year", color:"#8a6a10", data:cum2yr},
+                {label:"Multi-Year (Legacy Mirror)", color:"#8a6a10", data:cum2yr},
                 {label:"Multi-Year", color:"#7030a8", data:cumStats},
               ].map(tier=>(
                 <div key={tier.label} style={{marginBottom:16}}>
