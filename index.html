@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.08.04a";
+    var APP_VERSION = "2026.08.05a";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -4994,7 +4994,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
   const calcRawCount = s => (s.dc || 0) + (s.nights || 0) + (s.wknd || 0) + (s.dcB || 0) + (s.nightsB || 0) + (s.wkndB || 0);
   const conflicts = useMemo(() => {
     const issues = [];
-    const mondayStrs = Object.keys(schedule).sort();
+    const todayStr = fmt(new Date());
+    const mondayStrs = Object.keys(schedule).sort().filter(mStr => fmt(addD(parse(mStr), 6)) >= todayStr);
     const ids = surgeons.map(s => s.id);
     mondayStrs.forEach((mStr, wkIdx) => {
       var _wk$nights5;
