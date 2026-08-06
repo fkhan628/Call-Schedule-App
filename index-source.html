@@ -4773,7 +4773,19 @@ ${"</"}script>${"</"}body>${"</"}html>`;
   // ─── Conflict Detection ───
   const conflicts = useMemo(() => {
     const issues = [];
-    const mondayStrs = Object.keys(schedule).sort();
+    // PAST-WEEK EXEMPTION (pre-import blocker 3): warnings exist to prompt
+    // fixes, and the past is unactionable — hand-lived history (trades,
+    // holiday coverage, real-life swaps) legitimately violates generator
+    // hard rules and must not light up warning cards, which render for
+    // EVERY viewer including ?public=1. Scan only weeks still in progress
+    // or ahead (the week's Sunday is today or later). Dropping past weeks
+    // also drops the past→current boundary check, whose Monday night is
+    // already tonight-or-gone by then — equally unactionable. today is
+    // computed when the memo re-runs (any schedule change); a session left
+    // open across midnight re-floors on its next recompute, which is fine
+    // for a warnings display.
+    const todayStr = fmt(new Date());
+    const mondayStrs = Object.keys(schedule).sort().filter(mStr => fmt(addD(parse(mStr), 6)) >= todayStr);
     const ids = surgeons.map(s => s.id);
 
     mondayStrs.forEach((mStr, wkIdx) => {
