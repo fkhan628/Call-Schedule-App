@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.08.05a";
+    var APP_VERSION = "2026.08.05b";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -157,9 +157,9 @@ function CallSchedule() {
     setAppDayOff(offRow.data);
     if (ts) dayOffLastWriteTsRef.current = ts;
   };
-  const [priorCounts, setPriorCounts] = useState(COUNTS_2YR);
+  const [priorCounts, setPriorCounts] = useState(COUNTS_MULTIYEAR);
   const [year1Counts, setYear1Counts] = useState(COUNTS_1YR);
-  const [year2Counts, setYear2Counts] = useState(COUNTS_2YR);
+  const [year2Counts, setYear2Counts] = useState(COUNTS_MULTIYEAR);
   const [startMonth, setStartMonth] = useState(4);
   const [startYear, setStartYear] = useState(2026);
   const [numWeeks, setNumWeeks] = useState(14);
@@ -3524,7 +3524,7 @@ function CallSchedule() {
         error: String(e)
       });
     }
-    const result = generate(surgeons, mondays, availability, backupMondaySet, priorCounts, prefs, fierceBackupSet, holidayAssignments, pendingLocks, prevWeekSeed, vacations);
+    const result = generate(surgeons, mondays, availability, backupMondaySet, priorCounts, prefs, fierceBackupSet, holidayAssignments, pendingLocks, prevWeekSeed, vacations, year1Counts);
     if (preview) {
       setPreviewSchedule(result);
       setShowPreview(true);
@@ -3692,6 +3692,9 @@ function CallSchedule() {
   };
   const rollForwardCounts = useCallback(sched => {
     if (!sched || Object.keys(sched).length === 0) return;
+    const COUNTS_FLOOR = "2026-05-04";
+    sched = Object.fromEntries(Object.entries(sched).filter(([mStr]) => mStr >= COUNTS_FLOOR));
+    if (Object.keys(sched).length === 0) return;
     const delta = {};
     surgeons.forEach(s => {
       delta[s.id] = {
@@ -9030,7 +9033,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       fontSize: 11,
       color: "#7a8a98"
     }
-  }, "— 1-Year, 2-Year, and Multi-Year")), React.createElement("p", {
+  }, "— 1-Year and Multi-Year (Aug 2022 – present)")), React.createElement("p", {
     style: {
       fontSize: 12,
       color: "#7a8a98",
@@ -9115,7 +9118,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     counts: year1Counts,
     setter: setYear1Counts
   }, {
-    label: "2-Year",
+    label: "Multi-Year (Legacy Mirror)",
     color: "#8a6a10",
     counts: year2Counts,
     setter: setYear2Counts
@@ -11871,7 +11874,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     color: "#1a6fa8",
     data: cum1yr
   }, {
-    label: "2-Year",
+    label: "Multi-Year (Legacy Mirror)",
     color: "#8a6a10",
     data: cum2yr
   }, {
