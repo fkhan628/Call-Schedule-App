@@ -53,8 +53,8 @@ for (const f of ["helpers.js", "config.js", "generator.js"]) {
 }
 // Top-level const/let live in the context's global lexical scope, not on the
 // sandbox object — pull what we need out with one last script.
-const app = vm.runInContext("({ generate, INIT_SURGEONS, fmt, addD, parse })", sandbox);
-const { generate, INIT_SURGEONS, fmt, addD, parse } = app;
+const app = vm.runInContext("({ generate, INIT_SURGEONS, COUNTS_1YR, fmt, addD, parse })", sandbox);
+const { generate, INIT_SURGEONS, COUNTS_1YR, fmt, addD, parse } = app;
 if (typeof generate !== "function") { console.error("FAIL: generate() not found after loading modules"); process.exit(1); }
 
 const SURGEONS = INIT_SURGEONS;
@@ -160,11 +160,11 @@ function spread(counts, key) {
   return Math.max(...vals) - Math.min(...vals);
 }
 
-function runScenario(name, vac, opts) {
+function runScenario(name, vac, opts, yearCounts) {
   const failures = [];
   const stats = { wkndThenTue: 0, vacationHits: 0, maxSpread: { dc: 0, wknd: 0, total: 0 } };
   for (let roll = 0; roll < ROLLS; roll++) {
-    const sched = generate(SURGEONS, MONDAYS, vac, new Set(), {}, {}, new Set(), null, [], null, vac);
+    const sched = generate(SURGEONS, MONDAYS, vac, new Set(), {}, {}, new Set(), null, [], null, vac, yearCounts);
     const label = `${name} roll ${roll}`;
     checkWeekComplete(sched, failures, label);
     checkHardRules(sched, failures, stats, label);
@@ -185,9 +185,20 @@ function runScenario(name, vac, opts) {
 }
 
 // ─── Scenarios ───
-// A: clean period — the Δ0 guarantee plus all hard rules.
+// A: clean period — the Δ0 guarantee plus all hard rules, run BOTH WAYS
+//    around the 2026-08-06 priorYearScore wiring:
+//      clean      — WITH real 1-year priors (COUNTS_1YR, genuinely skewed:
+//                   nights range 37–50). Δ0 must hold even when the 10%
+//                   past-year term differentiates surgeons — the
+//                   spread-reduction pass owns in-period fairness.
+//      cleanProxy — WITHOUT yearCounts (the pre-wiring proxy fallback path,
+//                   priorYearScore = multi-year/2). Locks the fallback.
 const clean = runScenario("clean", {}, {
   assertVacations: true, // vacuously true (no vacations) — kept for symmetry
+  maxSpread: { dc: 0, wknd: 0, total: 0 },
+}, COUNTS_1YR);
+const cleanProxy = runScenario("cleanProxy", {}, {
+  assertVacations: true,
   maxSpread: { dc: 0, wknd: 0, total: 0 },
 });
 
@@ -206,22 +217,22 @@ const LIGHT_VACATIONS = {
 const light = runScenario("vacation", LIGHT_VACATIONS, {
   assertVacations: true, // locked since the N10 validation-pass vacation guard
   maxSpread: { dc: 2, wknd: 2, total: 3 },
-});
+}, COUNTS_1YR);
 
 // C: SQUEEZE (informational, never fails CI) — a 2-week vacation. Known
 //    behavior: the last fallback layer (generator.js:570) may schedule the
 //    vacationing surgeon rather than leave a night uncovered.
 const SQUEEZE_VACATIONS = { s5: [["2026-03-23", "2026-04-05"]] };
-const squeeze = runScenario("squeeze", SQUEEZE_VACATIONS, { assertVacations: false, maxSpread: null });
+const squeeze = runScenario("squeeze", SQUEEZE_VACATIONS, { assertVacations: false, maxSpread: null }, COUNTS_1YR);
 
 // ─── Report ───
-for (const r of [clean, light, squeeze]) {
+for (const r of [clean, cleanProxy, light, squeeze]) {
   const s = r.stats;
   console.log(`${r.name.padEnd(9)} ${ROLLS} rolls — max spreads dc=${s.maxSpread.dc} wknd=${s.maxSpread.wknd} total=${s.maxSpread.total}; ` +
     `wknd→Tue (soft) ×${s.wkndThenTue}; vacation-day assignments ×${s.vacationHits}${r.name === "squeeze" ? " (informational — see header)" : ""}`);
 }
 
-const failures = [...clean.failures, ...light.failures];
+const failures = [...clean.failures, ...cleanProxy.failures, ...light.failures];
 if (failures.length) {
   console.error(`\nFAIL — ${failures.length} violation(s):`);
   failures.slice(0, 25).forEach(f => console.error("  • " + f));

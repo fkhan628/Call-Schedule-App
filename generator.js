@@ -10,6 +10,10 @@
       Greedy "who gets the next shift". LOWER = more deserving.
         0.85·periodShifts  +  0.10·(priorYearScore/20)  +  0.05·(priorMultiScore/40)
       (within-period count is the primary goal; past-year 10%; multi-year 5%)
+      The 10% term reads DEDICATED 1-year input (yearCounts — wired
+      2026-08-06; the app passes live year1Counts). Without it the old
+      multi-year/2 proxy applies, under which the 10% term was the
+      multi-year signal again and no real recency weighting existed.
 
    2. HISTORICAL BURDEN — `priorMultiScore[id]` = dc·7 + nights·1 + wknd·3
       (~line 149, inside generateOnce). The "old formula." Feeds the 5% term
@@ -69,7 +73,7 @@ function getHolidays(year) {
   };
 }
 
-function generateOnce(surgeons, mondays, vac, backupMondays, priorCounts, preferences, fierceBackupMondays, holAssignments, locks, prevWeekSeed, vacationsOnly) {
+function generateOnce(surgeons, mondays, vac, backupMondays, priorCounts, preferences, fierceBackupMondays, holAssignments, locks, prevWeekSeed, vacationsOnly, yearCounts) {
   // vacOnly = vacation-only ranges (no no-call). Used for "trailing edge" checks:
   // the night or weekend that ENDS the morning of an off day. Group rule (Jun
   // 2026): a surgeon may be on call the night before a NO-CALL day, but NOT the
@@ -111,8 +115,8 @@ function generateOnce(surgeons, mondays, vac, backupMondays, priorCounts, prefer
   //   periodShifts[id]   — shifts assigned in THIS period only. This drives
   //                        the primary balance — everyone should end near the
   //                        same value. Starts at 0.
-  //   priorYear[id]      — 1-year prior totals from priorCounts (if 1-yr data
-  //                        is separate, fall back to multi-year / 2).
+  //   priorYear[id]      — 1-year burden from the dedicated yearCounts input
+  //                        (falls back to multi-year / 2 when absent).
   //   priorMulti[id]     — multi-year totals (what the old code called burden).
   //                        Now used only as a tertiary tiebreaker.
   //
@@ -145,7 +149,8 @@ function generateOnce(surgeons, mondays, vac, backupMondays, priorCounts, prefer
     periodShifts[id] = 0;
     periodServiceWeeks[id] = 0;
     // Past burden = dc*7 + nights + wknd*3 (old formula, used as secondary signal).
-    // Note: priorCounts here represents multi-year (see config.js COUNTS_2YR).
+    // Note: priorCounts here represents multi-year (seeded from config.js
+    // COUNTS_MULTIYEAR; live values accrete in the call_schedule_data blob).
     priorMultiScore[id] = dcCt[id]*7 + nCt[id] + wkndCt[id]*3;
     lastDcWeek[id] = -99;
   });
@@ -179,11 +184,19 @@ function generateOnce(surgeons, mondays, vac, backupMondays, priorCounts, prefer
   // joined the group after the data-tracking window started) by raising
   // their effective prior to match the median.
 
-  // Rough 1-year approximation: half the multi-year burden.
-  // Without dedicated 1-year input, this proxy is fine since priorYearScore
-  // is only 10% weight in the priority function.
+  // 1-year burden from DEDICATED input (yearCounts — the app passes its live
+  // year1Counts, rolled forward on publish and editable in Setup), same 7/1/3
+  // burden formula as the multi-year term, backup splits included. Wired
+  // 2026-08-06: under the old proxy (multi-year / 2) the 10% "past-year" term
+  // was just the multi-year signal again at half scale — both prior terms
+  // were one number wearing two hats, so the intended recency weighting
+  // didn't exist. Fallback to the proxy only when no yearCounts is passed
+  // (older callers), keeping the old behavior rather than zeroing the term.
   ids.forEach(id => {
-    priorYearScore[id] = priorMultiScore[id] / 2;
+    const y = yearCounts && yearCounts[id];
+    priorYearScore[id] = y
+      ? ((y.dc||0)+(y.dcB||0))*7 + ((y.nights||0)+(y.nightsB||0)) + ((y.wknd||0)+(y.wkndB||0))*3
+      : priorMultiScore[id] / 2;
   });
 
   // Composite priority score — LOWER = more deserving of next shift.
@@ -1245,7 +1258,7 @@ function generateOnce(surgeons, mondays, vac, backupMondays, priorCounts, prefer
 // one click, and is keyed on the exact fairness metrics — so every generation
 // comes out tight, not as a lucky draw. The user can still re-roll for variety;
 // every re-roll is now tight too.
-function generate(surgeons, mondays, vac, backupMondays, priorCounts, preferences, fierceBackupMondays, holAssignments, locks, prevWeekSeed, vacationsOnly) {
+function generate(surgeons, mondays, vac, backupMondays, priorCounts, preferences, fierceBackupMondays, holAssignments, locks, prevWeekSeed, vacationsOnly, yearCounts) {
   const ATTEMPTS = 50;
   const ids = surgeons.map(s => s.id);
 
@@ -1283,7 +1296,7 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
 
   let best = null, bestScore = Infinity;
   for (let i = 0; i < ATTEMPTS; i++) {
-    const cand = generateOnce(surgeons, mondays, vac, backupMondays, priorCounts, preferences, fierceBackupMondays, holAssignments, locks, prevWeekSeed, vacationsOnly);
+    const cand = generateOnce(surgeons, mondays, vac, backupMondays, priorCounts, preferences, fierceBackupMondays, holAssignments, locks, prevWeekSeed, vacationsOnly, yearCounts);
     if (!cand) continue;
     const s = scoreOf(cand);
     if (s < bestScore) { bestScore = s; best = cand; }
@@ -1293,5 +1306,5 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
     if (bestScore < 100) break;
   }
   // Fallback: if every attempt somehow scored Infinity (shouldn't happen), return a fresh pass.
-  return best || generateOnce(surgeons, mondays, vac, backupMondays, priorCounts, preferences, fierceBackupMondays, holAssignments, locks, prevWeekSeed, vacationsOnly);
+  return best || generateOnce(surgeons, mondays, vac, backupMondays, priorCounts, preferences, fierceBackupMondays, holAssignments, locks, prevWeekSeed, vacationsOnly, yearCounts);
 }

@@ -419,7 +419,12 @@ const INIT_APPS = [
    Regular vs backup split derived from 1st/2nd call ratios in monthly totals.
    totalDays/totalDaysB = actual call day counts from main sheets (used for pay). */
 
-// 2025 only (1-Year)
+// 2025 only (1-Year). FRESH-INSTALL SEED for year1Counts — the live values
+// accrete in the call_schedule_data blob (rolled forward on publish, editable
+// in Setup) and override this constant on load; editing it does not change a
+// live installation. Wired into the generator 2026-08-06: the app passes its
+// live year1Counts as generate()'s yearCounts, feeding the 10% past-year
+// priority term (previously a multi-year/2 proxy — no real recency signal).
 const COUNTS_1YR = {
   s1: { dc:7, nights:49, wknd:7, off:0, dcB:1, nightsB:5, wkndB:1, offB:0, totalDays:100, totalDaysB:10 },  // DJA
   s2: { dc:6, nights:45, wknd:7, off:0, dcB:1, nightsB:6, wkndB:1, offB:0, totalDays:89,  totalDaysB:12 },  // MCC
@@ -430,20 +435,31 @@ const COUNTS_1YR = {
   s7: { dc:6, nights:50, wknd:6, off:0, dcB:1, nightsB:4, wkndB:0, offB:0, totalDays:99,  totalDaysB:8 },   // ARW
 };
 
-// Multi-Year totals — August 2022 through April 2026 (45 months of historical data)
-// Extracted from Calendar Creator PDF via coordinate-based parser, verified against source.
-// KJH normalized to peer average (of DJA/MCC/RPC/REH/FAK) to neutralize the
-// effect of his 6-week surgical absence. Raw values were dc:27, nights:141,
-// wknd:27 — adjusted up to peer-mean so the generator doesn't "catch him up"
-// by over-loading future weeks for non-voluntary time off.
+// Multi-Year totals — August 2022 through April 2026 (45 months, ~3.75 years;
+// renamed from COUNTS_2YR 2026-08-06, which misled about the window).
+// Extracted from Calendar Creator PDF via coordinate-based parser, verified
+// against source. FRESH-INSTALL SEED for priorCounts AND year2Counts — the
+// live values accrete in the call_schedule_data blob (rolled forward on
+// publish) and override this constant on load; editing it does not change a
+// live installation.
+// KJH is the ACTUAL raw count. An earlier version normalized him up to
+// peer-mean (dc:29, nights:147, wknd:29) to neutralize a 6-week surgical
+// absence; REVERTED 2026-08-06 by decision: stored history must be true —
+// fairness correction belongs in the generator, not in falsified counts.
+// (The revert shifts his priority by ~0.098 ≈ 11% of one shift: the multi
+// number feeds both prior terms — 15% combined weight.) The matching live-
+// blob fix was applied separately the same day. NOTE: s4 totalDays STILL
+// CONTAINS the normalization delta — the raw day-count was never recorded;
+// correct it from the pay sheets if the raw ever surfaces. totalDays is
+// display-only (cumulative table); the generator never reads it.
 // ARW lower due to joining September 2023 (partial tenure — intentional, not
 // adjusted because the generator balances per-week load going forward).
 // Generator uses burden = dc*7 + nights + wknd*3 for fairness balancing.
-const COUNTS_2YR = {
+const COUNTS_MULTIYEAR = {
   s1: { dc:30, nights:149, wknd:32, off:0, dcB:0, nightsB:0, wkndB:0, offB:0, totalDays:394, totalDaysB:0 },  // DJA
   s2: { dc:28, nights:147, wknd:27, off:0, dcB:0, nightsB:0, wkndB:0, offB:0, totalDays:367, totalDaysB:0 },  // MCC
   s3: { dc:28, nights:147, wknd:28, off:0, dcB:0, nightsB:0, wkndB:0, offB:0, totalDays:369, totalDaysB:0 },  // RPC
-  s4: { dc:29, nights:147, wknd:29, off:0, dcB:0, nightsB:0, wkndB:0, offB:0, totalDays:381, totalDaysB:0 },  // KJH (normalized — see note)
+  s4: { dc:27, nights:141, wknd:27, off:0, dcB:0, nightsB:0, wkndB:0, offB:0, totalDays:381, totalDaysB:0 },  // KJH (ACTUAL — totalDays still carries the old delta, see note)
   s5: { dc:29, nights:146, wknd:29, off:0, dcB:0, nightsB:0, wkndB:0, offB:0, totalDays:379, totalDaysB:0 },  // REH
   s6: { dc:29, nights:148, wknd:30, off:0, dcB:0, nightsB:0, wkndB:0, offB:0, totalDays:381, totalDaysB:0 },  // FAK
   s7: { dc:19, nights:80,  wknd:19, off:0, dcB:0, nightsB:0, wkndB:0, offB:0, totalDays:234, totalDaysB:0 },  // ARW (joined Sept 2023)
