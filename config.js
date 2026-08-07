@@ -538,7 +538,7 @@ const HOLIDAY_PRESETS = {
     "July 4th":        ["s6", "s5"],  // FAK | REH
     "Labor Day":       ["s3", "s7"],  // RPC | ARW
     "Thanksgiving":    ["s2", "s3"],  // MCC | RPC
-    "Christmas Day":   ["s6", "s4"],  // FAK | KJH
+    "Christmas Day":   ["s6", "s6"],  // FAK | FAK — standing rule 2026-08-06: FAK covers BOTH Eve and Day, every year (coverage capped to those two days)
     "New Year's":      ["s5", "s1"],  // REH | DJA
   }
 };
