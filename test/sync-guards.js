@@ -129,7 +129,7 @@ const transientEmptyAutosave = {
   surgeons: INIT_SURGEONS, apps: INIT_APPS,
   vacations: {}, noCallDays: {},
   backupMondays: [], fierceBackup: [],
-  schedule: {}, priorCounts: {}, year1Counts: {}, year2Counts: {},
+  schedule: {}, priorCounts: {}, year1Counts: {},
   startMonth: 4, startYear: 2026, numWeeks: 14,
   holidayAssignments: {}, startMondayOverride: null, pendingLocks: {},
 };
