@@ -129,7 +129,7 @@ const transientEmptyAutosave = {
   surgeons: INIT_SURGEONS, apps: INIT_APPS,
   vacations: {}, noCallDays: {},
   backupMondays: [], fierceBackup: [],
-  schedule: {}, priorCounts: {}, year1Counts: {}, year2Counts: {},
+  schedule: {}, priorCounts: {}, year1Counts: {},
   startMonth: 4, startYear: 2026, numWeeks: 14,
   holidayAssignments: {}, startMondayOverride: null, pendingLocks: {},
 };
@@ -390,6 +390,13 @@ const grantIdx = src.indexOf("allowWipeSaveRef.current = true");
 const restorePair = /allowWipeSaveRef\.current = false;[\s\S]{0,200}everHadRealDataRef\.current = true;/;
 check("factory-reset failure path restores the guard refs (adjacent pair)",
   restorePair.test(src.slice(grantIdx)), "expected `= false` then everHadRealDataRef `= true` after the grant");
+
+// year2Counts stays retired (2026-08-06): the setter must never be
+// reintroduced. Deliberately counts `setYear2Counts` — NOT the bare
+// `year2Counts` substring — so the retirement tombstone COMMENTS (which
+// name the identifier for future readers) can never flip this check.
+check("year2Counts stays retired (no setYear2Counts in source)",
+  count("setYear2Counts") === 0, `found ${count("setYear2Counts")}`);
 
 // intentionalScheduleWipeRef (the schedule_weeks full-delete authorization):
 // gate present, 3 known grant sites (clearSchedule, factory reset, restore

@@ -438,10 +438,11 @@ const COUNTS_1YR = {
 // Multi-Year totals — August 2022 through April 2026 (45 months, ~3.75 years;
 // renamed from COUNTS_2YR 2026-08-06, which misled about the window).
 // Extracted from Calendar Creator PDF via coordinate-based parser, verified
-// against source. FRESH-INSTALL SEED for priorCounts AND year2Counts — the
-// live values accrete in the call_schedule_data blob (rolled forward on
-// publish) and override this constant on load; editing it does not change a
-// live installation.
+// against source. FRESH-INSTALL SEED for priorCounts — the live values
+// accrete in the call_schedule_data blob (rolled forward on publish) and
+// override this constant on load; editing it does not change a live
+// installation. (Also seeded year2Counts until that legacy mirror tier was
+// retired 2026-08-06; the orphaned key in stored blobs is a harmless fossil.)
 // KJH is the ACTUAL raw count. An earlier version normalized him up to
 // peer-mean (dc:29, nights:147, wknd:29) to neutralize a 6-week surgical
 // absence; REVERTED 2026-08-06 by decision: stored history must be true —
