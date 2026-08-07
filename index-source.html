@@ -3745,9 +3745,26 @@ function CallSchedule() {
     const priorByName = {}; // { "Christmas Day": { surgeonA, surgeonB }, ... }
     priorYear.forEach(h => { priorByName[h.name] = { surgeonA: h.surgeonA, surgeonB: h.surgeonB }; });
 
-    // Lifetime holiday counts across all stored years for overall fairness
+    // Lifetime holiday counts across all stored years for overall fairness,
+    // plus TENURE ELIGIBILITY (2026-08-07): eligibleCt[id][type] = stored
+    // holidays of that type dated on/after the surgeon's start date. Start
+    // dates come from INIT_SURGEONS (the live blob roster doesn't carry
+    // them); no start = predates the seeded window = eligible for all.
+    // Absorbed holidays (no assignment stored — July 4 2023/2024) are absent
+    // from the arrays, so they're out of the DENOMINATOR by construction:
+    // nobody was eligible for a holiday that didn't exist. Same
+    // skip-the-current-year rule as the counts, and the comparison is
+    // against each holiday's actual DATE, so a mid-year start (ARW,
+    // 2023-09-01: missed Memorial Day, eligible for Labor Day) counts
+    // correctly — a per-year divisor can't see that.
+    const startOf = {};
+    ids.forEach(id => {
+      const rosterStart = surgeons.find(s => s.id === id)?.start;
+      startOf[id] = rosterStart || INIT_SURGEONS.find(s => s.id === id)?.start || null;
+    });
     const lifetimeCt = {};
-    ids.forEach(id => { lifetimeCt[id] = { major: 0, minor: 0 }; });
+    const eligibleCt = {};
+    ids.forEach(id => { lifetimeCt[id] = { major: 0, minor: 0 }; eligibleCt[id] = { major: 0, minor: 0 }; });
     Object.entries(holidayAssignments).forEach(([yr, arr]) => {
       if (String(yr) === String(year)) return; // skip current year (we're regenerating it)
       if (!Array.isArray(arr)) return;
@@ -3759,6 +3776,11 @@ function CallSchedule() {
         // surgeon double for the same days while a normal two-surgeon holiday
         // charged each one.
         if (h.surgeonB && h.surgeonB !== h.surgeonA && lifetimeCt[h.surgeonB]) lifetimeCt[h.surgeonB][h.type]++;
+        if (h.date && (h.type === "major" || h.type === "minor")) {
+          ids.forEach(id => {
+            if (!startOf[id] || h.date >= startOf[id]) eligibleCt[id][h.type]++;
+          });
+        }
       });
     });
 
@@ -3839,9 +3861,14 @@ function CallSchedule() {
       // Sort by fairness: lifetime holiday count → avoid repeat from prior year → random
       const prior = priorByName[hol.name] || {};
       avail.sort((a, b) => {
-        // Prefer surgeons with fewer lifetime assignments of this type
-        const la = (lifetimeCt[a]?.[type] || 0);
-        const lb = (lifetimeCt[b]?.[type] || 0);
+        // Prefer surgeons with the lower lifetime RATE of this type —
+        // assignments ÷ holidays they were eligible for (tenure-normalized,
+        // 2026-08-07). Raw counts under-served partial tenure: ARW's 1 major
+        // from 9 eligible read as "less burdened" than MCC's 2 from 12.
+        // holidayRate (config.js) guards the zero-eligible new hire: rate 0,
+        // never 0/0 = NaN — a NaN comparator silently randomizes the sort.
+        const la = holidayRate(lifetimeCt[a]?.[type] || 0, eligibleCt[a]?.[type] || 0);
+        const lb = holidayRate(lifetimeCt[b]?.[type] || 0, eligibleCt[b]?.[type] || 0);
         if (la !== lb) return la - lb;
         // Avoid repeating the same holiday as last year
         const aRepeat = (a === prior.surgeonA || a === prior.surgeonB) ? 1 : 0;

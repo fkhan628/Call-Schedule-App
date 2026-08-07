@@ -66,8 +66,8 @@ vm.createContext(sandbox);
 for (const f of ["helpers.js", "config.js"]) {
   vm.runInContext(fs.readFileSync(path.join(ROOT, f), "utf8"), sandbox, { filename: f });
 }
-const app = vm.runInContext("({ payloadLooksWiped, snapshots, INIT_SURGEONS, INIT_APPS })", sandbox);
-const { payloadLooksWiped, snapshots, INIT_SURGEONS, INIT_APPS } = app;
+const app = vm.runInContext("({ payloadLooksWiped, snapshots, INIT_SURGEONS, INIT_APPS, holidayRate })", sandbox);
+const { payloadLooksWiped, snapshots, INIT_SURGEONS, INIT_APPS, holidayRate } = app;
 if (typeof payloadLooksWiped !== "function" || !snapshots) {
   console.error("FAIL: guards not found after loading config.js");
   process.exit(1);
@@ -455,6 +455,32 @@ check("lifetimeCt dedupes collapsed pairs",
   const normal = buildCoverage({ name: "Christmas Day", date: "2029-12-25" }, "s6", "s4");
   check("cap does not fire for a two-surgeon pair (2029 Tue > 2 days)", normal.length > 2, `got ${normal.length}`);
 })();
+
+// ══════════════════════════════════════════════════════════════
+// G. Holiday tenure normalization (2026-08-07): rate, never NaN
+// ══════════════════════════════════════════════════════════════
+console.log("\nG. holiday tenure normalization");
+
+// The zero-eligible new hire is the trap: 0/0 = NaN, and a NaN-returning
+// comparator makes Array.sort produce ARBITRARY order with no error — firing
+// precisely when a new partner joins. Executed directly (holidayRate is a
+// pure config.js function, loaded in this sandbox).
+check("holidayRate(0, 0) is 0 — zero-tenure new hire sorts first",
+  holidayRate(0, 0) === 0 && !Number.isNaN(holidayRate(0, 0)));
+check("holidayRate(5, 0) is 0 — never Infinity on a defensive weird input",
+  holidayRate(5, 0) === 0);
+check("holidayRate(3, 12) = 0.25 — normal rate math intact",
+  holidayRate(3, 12) === 0.25);
+check("comparator delta for zero-tenure vs veteran is finite (sort-safe)",
+  Number.isFinite(holidayRate(0, 0) - holidayRate(3, 12)));
+// Wiring tripwires: pickPair compares RATES (both operands), and ARW's
+// start date exists where the eligibility code reads it (INIT_SURGEONS).
+check("pickPair compares tenure-normalized rates (2 holidayRate operands)",
+  count("holidayRate(lifetimeCt") === 2, `found ${count("holidayRate(lifetimeCt")}`);
+check("ARW start date present in INIT_SURGEONS (2023-09-01)",
+  INIT_SURGEONS.find(s => s.id === "s7")?.start === "2023-09-01");
+check("eligibility loop present (eligibleCt built from holiday dates)",
+  count("eligibleCt[id][h.type]++") === 1);
 
 // ─── Verdict ───
 console.log(`\n${checks} checks, ${failures.length} failure(s)`);

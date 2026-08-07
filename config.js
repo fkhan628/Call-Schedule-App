@@ -385,11 +385,30 @@ const APP_PAL = [
   { tx:"#5a4a90", bd:"#bcb0e0", tg:"#eeeafa" },
 ];
 
+// `start` = first day on staff, used by the holiday-fairness tenure
+// normalization (eligible-holidays denominator). Omitted/null = predates the
+// seeded history window (Aug 2022) = eligible for every stored holiday.
+// NOTE: the live roster loads from the blob and does NOT carry `start` —
+// holiday code reads start dates from THIS constant (INIT fallback), so a
+// new hire needs their start date added here.
 const INIT_SURGEONS = [
   { id:"s1", name:"DJA" }, { id:"s2", name:"MCC" }, { id:"s3", name:"RPC" },
   { id:"s4", name:"KJH" }, { id:"s5", name:"REH" }, { id:"s6", name:"FAK" },
-  { id:"s7", name:"ARW" },
+  { id:"s7", name:"ARW", start:"2023-09-01" },
 ];
+
+// Holiday fairness rate: lifetime assignments ÷ holidays the surgeon was
+// eligible for (stored, assigned holidays dated on/after their start date).
+// ZERO ELIGIBLE — any new hire in their first year — MUST resolve to 0, not
+// 0/0 = NaN: a NaN-returning comparator makes Array.sort produce ARBITRARY
+// order with no error thrown (the silent-failure class this codebase keeps
+// eliminating), and it would fire precisely when a new partner joins — when
+// the fairness logic most needs to work. A new surgeon has taken nothing and
+// should sort FIRST: rate 0 is correct, never NaN or Infinity.
+function holidayRate(count, eligible) {
+  if (!eligible || eligible <= 0) return 0;
+  return count / eligible;
+}
 
 // Department membership — used by the calendar filter to quickly show
 // only surgeons from a specific center. Name-based so it survives re-ordering.
