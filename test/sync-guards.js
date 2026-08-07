@@ -391,6 +391,13 @@ const restorePair = /allowWipeSaveRef\.current = false;[\s\S]{0,200}everHadRealD
 check("factory-reset failure path restores the guard refs (adjacent pair)",
   restorePair.test(src.slice(grantIdx)), "expected `= false` then everHadRealDataRef `= true` after the grant");
 
+// year2Counts stays retired (2026-08-06): the setter must never be
+// reintroduced. Deliberately counts `setYear2Counts` — NOT the bare
+// `year2Counts` substring — so the retirement tombstone COMMENTS (which
+// name the identifier for future readers) can never flip this check.
+check("year2Counts stays retired (no setYear2Counts in source)",
+  count("setYear2Counts") === 0, `found ${count("setYear2Counts")}`);
+
 // intentionalScheduleWipeRef (the schedule_weeks full-delete authorization):
 // gate present, 3 known grant sites (clearSchedule, factory reset, restore
 // applier), 2 consume sites (post-wipe consume + restore's finally).
