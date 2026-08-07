@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.08.05b";
+    var APP_VERSION = "2026.08.06a";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -159,7 +159,6 @@ function CallSchedule() {
   };
   const [priorCounts, setPriorCounts] = useState(COUNTS_MULTIYEAR);
   const [year1Counts, setYear1Counts] = useState(COUNTS_1YR);
-  const [year2Counts, setYear2Counts] = useState(COUNTS_MULTIYEAR);
   const [startMonth, setStartMonth] = useState(4);
   const [startYear, setStartYear] = useState(2026);
   const [numWeeks, setNumWeeks] = useState(14);
@@ -1249,7 +1248,6 @@ function CallSchedule() {
           if (d.appShifts) setAppShifts(d.appShifts);
           if (d.priorCounts && Object.values(d.priorCounts).some(c => Object.values(c).some(v => v > 0))) setPriorCounts(d.priorCounts);
           if (d.year1Counts && Object.values(d.year1Counts).some(c => Object.values(c).some(v => v > 0))) setYear1Counts(d.year1Counts);
-          if (d.year2Counts && Object.values(d.year2Counts).some(c => Object.values(c).some(v => v > 0))) setYear2Counts(d.year2Counts);
           if (d.startMonth !== undefined) setStartMonth(d.startMonth);
           if (d.startYear !== undefined) setStartYear(d.startYear);
           if (d.numWeeks) setNumWeeks(d.numWeeks);
@@ -1343,7 +1341,6 @@ function CallSchedule() {
         if (d.schedule && !SCHED_READ_TABLE) setSchedule(d.schedule);
         if (d.priorCounts && Object.values(d.priorCounts).some(c => Object.values(c).some(v => v > 0))) setPriorCounts(d.priorCounts);
         if (d.year1Counts && Object.values(d.year1Counts).some(c => Object.values(c).some(v => v > 0))) setYear1Counts(d.year1Counts);
-        if (d.year2Counts && Object.values(d.year2Counts).some(c => Object.values(c).some(v => v > 0))) setYear2Counts(d.year2Counts);
         if (d.startMonth !== undefined) setStartMonth(d.startMonth);
         if (d.startYear !== undefined) setStartYear(d.startYear);
         if (d.numWeeks) setNumWeeks(d.numWeeks);
@@ -1532,7 +1529,6 @@ function CallSchedule() {
     schedule,
     priorCounts,
     year1Counts,
-    year2Counts,
     startMonth,
     startYear,
     numWeeks,
@@ -1589,7 +1585,7 @@ function CallSchedule() {
       }
     }, 800);
     return () => clearTimeout(timer);
-  }, [loaded, surgeons, apps, vacations, noCallDays, backupMondaySet, fierceBackupSet, schedule, priorCounts, year1Counts, year2Counts, startMonth, startYear, numWeeks, holidayAssignments, startMondayOverride, pendingLocks]);
+  }, [loaded, surgeons, apps, vacations, noCallDays, backupMondaySet, fierceBackupSet, schedule, priorCounts, year1Counts, startMonth, startYear, numWeeks, holidayAssignments, startMondayOverride, pendingLocks]);
   useEffect(() => {
     const flushPending = source => {
       if (isPublicMode) return;
@@ -1789,7 +1785,6 @@ function CallSchedule() {
     setAppShifts({});
     setPriorCounts({});
     setYear1Counts({});
-    setYear2Counts({});
     setStartMonth(4);
     setStartYear(2026);
     setSaveStatus("Reset complete");
@@ -3671,7 +3666,6 @@ function CallSchedule() {
     if (d.appShifts) setAppShifts(d.appShifts);
     if (d.priorCounts) setPriorCounts(d.priorCounts);
     if (d.year1Counts) setYear1Counts(d.year1Counts);
-    if (d.year2Counts) setYear2Counts(d.year2Counts);
     if (d.startMonth !== undefined) setStartMonth(d.startMonth);
     if (d.startYear !== undefined) setStartYear(d.startYear);
     if (d.numWeeks) setNumWeeks(d.numWeeks);
@@ -3720,26 +3714,6 @@ function CallSchedule() {
     const addDays = c => (c.dc || 0) * 7 + (c.nights || 0) + (c.wknd || 0) * 3 + (c.svcAdj7 || 0);
     const addDaysB = c => (c.dcB || 0) * 7 + (c.nightsB || 0) + (c.wkndB || 0) * 3;
     setPriorCounts(prev => {
-      const next = _objectSpread({}, prev);
-      Object.keys(delta).forEach(id => {
-        const p = next[id] || {};
-        const d = delta[id];
-        next[id] = {
-          dc: (p.dc || 0) + d.dc,
-          nights: (p.nights || 0) + d.nights,
-          wknd: (p.wknd || 0) + d.wknd,
-          off: (p.off || 0) + d.off,
-          dcB: (p.dcB || 0) + d.dcB,
-          nightsB: (p.nightsB || 0) + d.nightsB,
-          wkndB: (p.wkndB || 0) + d.wkndB,
-          offB: (p.offB || 0) + d.offB,
-          totalDays: (p.totalDays || 0) + addDays(d),
-          totalDaysB: (p.totalDaysB || 0) + addDaysB(d)
-        };
-      });
-      return next;
-    });
-    setYear2Counts(prev => {
       const next = _objectSpread({}, prev);
       Object.keys(delta).forEach(id => {
         const p = next[id] || {};
@@ -4989,7 +4963,6 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     return c;
   };
   const cum1yr = useMemo(() => buildCum(year1Counts), [stats, year1Counts, surgeons]);
-  const cum2yr = useMemo(() => buildCum(year2Counts), [stats, year2Counts, surgeons]);
   const cumStats = useMemo(() => buildCum(priorCounts), [stats, priorCounts, surgeons]);
   const calcShifts = s => (s.dc || 0) * 6 + (s.nights || 0) + (s.wknd || 0) * 2 + (s.svcAdj6 || 0);
   const calcShiftsB = s => (s.dcB || 0) * 6 + (s.nightsB || 0) + (s.wkndB || 0) * 2;
@@ -9118,12 +9091,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     counts: year1Counts,
     setter: setYear1Counts
   }, {
-    label: "Multi-Year (Legacy Mirror)",
-    color: "#8a6a10",
-    counts: year2Counts,
-    setter: setYear2Counts
-  }, {
-    label: "Multi-Year (Used by Generator)",
+    label: "Multi-Year",
     color: "#7030a8",
     counts: priorCounts,
     setter: setPriorCounts
@@ -11873,10 +11841,6 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     label: "1-Year",
     color: "#1a6fa8",
     data: cum1yr
-  }, {
-    label: "Multi-Year (Legacy Mirror)",
-    color: "#8a6a10",
-    data: cum2yr
   }, {
     label: "Multi-Year",
     color: "#7030a8",
