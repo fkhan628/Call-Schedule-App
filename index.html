@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.08.06b";
+    var APP_VERSION = "2026.08.06c";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -120,7 +120,7 @@ const {
   useEffect
 } = React;
 function CallSchedule() {
-  var _find, _surgeons$find11;
+  var _find, _surgeons$find12;
   const isPublicMode = useMemo(() => {
     try {
       const params = new URLSearchParams(window.location.search);
@@ -3818,9 +3818,20 @@ function CallSchedule() {
         surgeonB: h.surgeonB
       };
     });
+    const startOf = {};
+    ids.forEach(id => {
+      var _surgeons$find1, _INIT_SURGEONS$find;
+      const rosterStart = (_surgeons$find1 = surgeons.find(s => s.id === id)) === null || _surgeons$find1 === void 0 ? void 0 : _surgeons$find1.start;
+      startOf[id] = rosterStart || ((_INIT_SURGEONS$find = INIT_SURGEONS.find(s => s.id === id)) === null || _INIT_SURGEONS$find === void 0 ? void 0 : _INIT_SURGEONS$find.start) || null;
+    });
     const lifetimeCt = {};
+    const eligibleCt = {};
     ids.forEach(id => {
       lifetimeCt[id] = {
+        major: 0,
+        minor: 0
+      };
+      eligibleCt[id] = {
         major: 0,
         minor: 0
       };
@@ -3831,6 +3842,11 @@ function CallSchedule() {
       arr.forEach(h => {
         if (h.surgeonA && lifetimeCt[h.surgeonA]) lifetimeCt[h.surgeonA][h.type]++;
         if (h.surgeonB && h.surgeonB !== h.surgeonA && lifetimeCt[h.surgeonB]) lifetimeCt[h.surgeonB][h.type]++;
+        if (h.date && (h.type === "major" || h.type === "minor")) {
+          ids.forEach(id => {
+            if (!startOf[id] || h.date >= startOf[id]) eligibleCt[id][h.type]++;
+          });
+        }
       });
     });
     const fakId = ids.find(id => (nameMap[id] || "").toUpperCase() === "FAK") || null;
@@ -3918,9 +3934,9 @@ function CallSchedule() {
       if (avail.length < 2) avail = [...pool];
       const prior = priorByName[hol.name] || {};
       avail.sort((a, b) => {
-        var _lifetimeCt$a, _lifetimeCt$b;
-        const la = ((_lifetimeCt$a = lifetimeCt[a]) === null || _lifetimeCt$a === void 0 ? void 0 : _lifetimeCt$a[type]) || 0;
-        const lb = ((_lifetimeCt$b = lifetimeCt[b]) === null || _lifetimeCt$b === void 0 ? void 0 : _lifetimeCt$b[type]) || 0;
+        var _lifetimeCt$a, _eligibleCt$a, _lifetimeCt$b, _eligibleCt$b;
+        const la = holidayRate(((_lifetimeCt$a = lifetimeCt[a]) === null || _lifetimeCt$a === void 0 ? void 0 : _lifetimeCt$a[type]) || 0, ((_eligibleCt$a = eligibleCt[a]) === null || _eligibleCt$a === void 0 ? void 0 : _eligibleCt$a[type]) || 0);
+        const lb = holidayRate(((_lifetimeCt$b = lifetimeCt[b]) === null || _lifetimeCt$b === void 0 ? void 0 : _lifetimeCt$b[type]) || 0, ((_eligibleCt$b = eligibleCt[b]) === null || _eligibleCt$b === void 0 ? void 0 : _eligibleCt$b[type]) || 0);
         if (la !== lb) return la - lb;
         const aRepeat = a === prior.surgeonA || a === prior.surgeonB ? 1 : 0;
         const bRepeat = b === prior.surgeonA || b === prior.surgeonB ? 1 : 0;
@@ -4023,9 +4039,9 @@ function CallSchedule() {
         usedInGroup.add(h.surgeonB);
       });
       if (usedInGroup.has(newSurgeonId)) {
-        var _surgeons$find1;
+        var _surgeons$find10;
         const conflictHol = sameGroup.find(h => h.surgeonA === newSurgeonId || h.surgeonB === newSurgeonId);
-        const surgeonName = ((_surgeons$find1 = surgeons.find(s => s.id === newSurgeonId)) === null || _surgeons$find1 === void 0 ? void 0 : _surgeons$find1.name) || newSurgeonId;
+        const surgeonName = ((_surgeons$find10 = surgeons.find(s => s.id === newSurgeonId)) === null || _surgeons$find10 === void 0 ? void 0 : _surgeons$find10.name) || newSurgeonId;
         if (!confirm(`⚠️ ${surgeonName} is already assigned to ${conflictHol === null || conflictHol === void 0 ? void 0 : conflictHol.name} (${targetHol.type} group).\n\nThis violates the distinct-pairs rule. Assign anyway?`)) return;
       }
     }
@@ -7905,8 +7921,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           fontWeight: 700
         }
       }, ck.ok ? "✓" : "⚠", " ", ck.label, " group:"), " ", ck.ok ? `All ${ck.uniqueCount} surgeons distinct (${ck.freeCount} free)` : ck.dupes.map(d => {
-        var _surgeons$find10;
-        return `${((_surgeons$find10 = surgeons.find(s => s.id === d.surgeon)) === null || _surgeons$find10 === void 0 ? void 0 : _surgeons$find10.name) || d.surgeon} is on both ${d.hol1} & ${d.hol2}`;
+        var _surgeons$find11;
+        return `${((_surgeons$find11 = surgeons.find(s => s.id === d.surgeon)) === null || _surgeons$find11 === void 0 ? void 0 : _surgeons$find11.name) || d.surgeon} is on both ${d.hol1} & ${d.hol2}`;
       }).join("; "))));
     })(), React.createElement("div", {
       style: {
@@ -13464,7 +13480,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       color: "#6030a0",
       padding: "6px 0"
     }
-  }, ((_surgeons$find11 = surgeons.find(s => s.id === mySurgeon)) === null || _surgeons$find11 === void 0 ? void 0 : _surgeons$find11.name) || "—")), React.createElement("div", null, React.createElement("label", {
+  }, ((_surgeons$find12 = surgeons.find(s => s.id === mySurgeon)) === null || _surgeons$find12 === void 0 ? void 0 : _surgeons$find12.name) || "—")), React.createElement("div", null, React.createElement("label", {
     style: {
       fontSize: 10,
       color: "#7a8a98",
