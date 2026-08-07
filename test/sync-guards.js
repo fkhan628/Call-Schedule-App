@@ -407,6 +407,55 @@ check("intentionalScheduleWipeRef granted at exactly 3 sites",
 check("intentionalScheduleWipeRef consumed at exactly 2 sites",
   count("intentionalScheduleWipeRef.current = false") === 2, `found ${count("intentionalScheduleWipeRef.current = false")}`);
 
+// ══════════════════════════════════════════════════════════════
+// F. Christmas standing rule (2026-08-06): FAK covers Eve + Day, capped
+// ══════════════════════════════════════════════════════════════
+console.log("\nF. Christmas standing rule");
+
+// Tripwires: the lock and its LOUD failure branch must exist. The old code
+// was gated `&& fakId` — a failed name lookup silently dissolved the lock
+// into the normal rotation (the wipe-guard silent-degradation shape).
+check("Christmas lock block present", count('if (hol.name === "Christmas Day") {') >= 1);
+check("Christmas lock has a loud failure branch (unresolvable designated surgeon)",
+  count('Christmas lock: designated surgeon') >= 1);
+check("two-day coverage cap present",
+  count('if (hol.name === "Christmas Day" && sA === sB) return coverage;') === 1);
+check("lifetimeCt dedupes collapsed pairs",
+  count("h.surgeonB && h.surgeonB !== h.surgeonA") === 1);
+
+// BEHAVIOR: extract the REAL buildCoverage from the component source and
+// execute it (helpers' parse/addD/fmt are already in this sandbox). The cap
+// must yield EXACTLY 2 coverage days for every Christmas weekday placement —
+// without it, a Tuesday Christmas (2029) walks to Saturday: six solo days.
+(() => {
+  // CRLF-normalize before extraction: the working copy uses \r\n and the end
+  // anchor spans a line break (learned the hard way — indexOf missed).
+  const nsrc = src.replace(/\r\n/g, "\n");
+  const START = "const buildCoverage = (hol, sA, sB) => {";
+  const END = "return coverage;\n    };";
+  const s = nsrc.indexOf(START), e = nsrc.indexOf(END);
+  if (s === -1 || e === -1) { check("buildCoverage extractable for execution", false, "anchors not found"); return; }
+  const fnSrc = nsrc.slice(s, e + END.length);
+  let buildCoverage;
+  try {
+    buildCoverage = vm.runInContext(
+      `(function(){ const DAYNAMES = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"]; ${fnSrc} return buildCoverage; })()`,
+      sandbox
+    );
+  } catch (ex) { check("buildCoverage compiles standalone", false, String(ex)); return; }
+  // Dec 25 weekday walk: 2026 Fri, 2027 Sat, 2028 Mon, 2029 Tue (the six-day
+  // trap), 2030 Wed, 2031 Thu — every shape must cap at 2.
+  for (let y = 2026; y <= 2031; y++) {
+    const cov = buildCoverage({ name: "Christmas Day", date: `${y}-12-25` }, "s6", "s6");
+    check(`Christmas ${y} coverage is exactly 2 days (got ${cov.length})`, cov.length === 2,
+      cov.map(c => `${c.date}:${c.surgeon}`).join(", "));
+  }
+  // Regression guard the other way: a NORMAL two-surgeon mid-week holiday
+  // must still walk past the pair (the cap must not leak beyond sA === sB).
+  const normal = buildCoverage({ name: "Christmas Day", date: "2029-12-25" }, "s6", "s4");
+  check("cap does not fire for a two-surgeon pair (2029 Tue > 2 days)", normal.length > 2, `got ${normal.length}`);
+})();
+
 // ─── Verdict ───
 console.log(`\n${checks} checks, ${failures.length} failure(s)`);
 if (failures.length) {

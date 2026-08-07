@@ -232,6 +232,10 @@ function CallSchedule() {
   // ─── Holiday Assignments ───
   const [holidayAssignments, setHolidayAssignments] = useState({}); // { "2026": [ { name, date, type, surgeonA, surgeonB, coverage } ] }
   const [holidayYear, setHolidayYear] = useState(2026);
+  // Set when the Christmas standing-rule lock cannot resolve its designated
+  // surgeon (renamed/departed) — the lock must degrade LOUDLY, never silently
+  // dissolve into the normal rotation. Cleared at the start of each generation.
+  const [holidayLockWarning, setHolidayLockWarning] = useState("");
   const [editingWeek, setEditingWeek] = useState(null);
   const [editShift, setEditShift] = useState(null);
 
@@ -3730,6 +3734,7 @@ function CallSchedule() {
   // Minor = Memorial Day, July 4th, Labor Day    (3 holidays × 2 = 6 of 7 surgeons)
   // FAK is always locked to Christmas.
   const generateHolidayAssignments = useCallback((year) => {
+    setHolidayLockWarning(""); // a healthy run clears any stale lock warning
     const holidays = getHolidays(year);
     const ids = surgeons.map(s => s.id);
     const nameMap = {}; surgeons.forEach(s => nameMap[s.id] = s.name);
@@ -3748,7 +3753,12 @@ function CallSchedule() {
       if (!Array.isArray(arr)) return;
       arr.forEach(h => {
         if (h.surgeonA && lifetimeCt[h.surgeonA]) lifetimeCt[h.surgeonA][h.type]++;
-        if (h.surgeonB && lifetimeCt[h.surgeonB]) lifetimeCt[h.surgeonB][h.type]++;
+        // Dedupe collapsed pairs (2026-08-06): sA === sB — the Christmas
+        // standing rule, or pickPair's `avail[1] || avail[0]` fallback — is
+        // ONE assignment, not two. Counting both halves charged the collapsed
+        // surgeon double for the same days while a normal two-surgeon holiday
+        // charged each one.
+        if (h.surgeonB && h.surgeonB !== h.surgeonA && lifetimeCt[h.surgeonB]) lifetimeCt[h.surgeonB][h.type]++;
       });
     });
 
@@ -3768,6 +3778,15 @@ function CallSchedule() {
 
       // Holiday day — Surgeon A
       coverage.push({ date: hol.date, surgeon: sA, label: hol.name + " 24h", day: DAYNAMES[holDow] });
+
+      // CHRISTMAS TWO-DAY CAP (standing rule 2026-08-06): when one surgeon
+      // holds both halves (the FAK Eve+Day rule), coverage is Eve + the day
+      // itself and NOTHING more. Without this cap the mid-week walk below
+      // alternates sB/sA through Saturday, and with sA === sB that collapses
+      // into one name: a Tuesday Christmas (2029) would print SIX consecutive
+      // solo days, 2030 five, 2031 four. Days after Christmas revert to the
+      // normal service-week doctor — which is how 2024/2025 actually ran.
+      if (hol.name === "Christmas Day" && sA === sB) return coverage;
 
       if (hol.endDate && hol.endDate !== hol.date) {
         // New Year's: Dec 31 (A) + Jan 1 (B), then continue alternating
@@ -3866,29 +3885,27 @@ function CallSchedule() {
         // Build available pool: all surgeons NOT yet used in this group
         let pool = ids.filter(id => !usedInGroup.has(id));
 
-        // FAK locked to Christmas
-        if (hol.name === "Christmas Day" && fakId) {
+        // CHRISTMAS STANDING RULE (2026-08-06): FAK covers BOTH Christmas Eve
+        // and Christmas Day, every year — formalizing what the 2024 and 2025
+        // schedules already did. No partner is selected; coverage is capped
+        // to the two days in buildCoverage, and the lifetimeCt dedupe counts
+        // the collapsed pair as ONE assignment.
+        if (hol.name === "Christmas Day") {
+          if (!fakId) {
+            // FAIL LOUDLY (wipe-guard doctrine): if the designated Christmas
+            // surgeon can't be resolved (renamed, departed), the lock must
+            // not silently dissolve into the normal rotation with nobody
+            // told. Surface it and leave Christmas UNASSIGNED for the
+            // scheduler to fill by hand.
+            console.error(`Christmas lock: designated surgeon "FAK" not found in the roster — Christmas ${year} left unassigned.`);
+            setHolidayLockWarning(`⚠ Christmas ${year} was NOT auto-assigned: the designated surgeon (FAK) isn't in the roster. Assign it manually via the swap controls.`);
+            return;
+          }
           const sA = fakId;
-          const remaining = pool.filter(id => id !== fakId);
-          // Pick best partner from remaining pool
-          const holDate = parse(hol.date);
-          const dayAfterStr = fmt(addD(holDate, 1));
-          let partnerPool = remaining.filter(id => !onVac(id, hol.date, vacations) && !onVac(id, dayAfterStr, vacations));
-          if (partnerPool.length === 0) partnerPool = remaining;
-          const prior = priorByName["Christmas Day"] || {};
-          partnerPool.sort((a, b) => {
-            const la = (lifetimeCt[a]?.[type] || 0) - (lifetimeCt[b]?.[type] || 0);
-            if (la) return la;
-            const aR = (a === prior.surgeonB) ? 1 : 0;
-            const bR = (b === prior.surgeonB) ? 1 : 0;
-            if (aR !== bR) return aR - bR;
-            return Math.random() - 0.5;
-          });
-          const sB = partnerPool[0] || remaining[0];
-          usedInGroup.add(sA); usedInGroup.add(sB);
+          usedInGroup.add(sA);
           assignments.push({
             name: hol.name, date: hol.date, type, emoji: hol.emoji || "📅",
-            surgeonA: sA, surgeonB: sB, coverage: buildCoverage(hol, sA, sB),
+            surgeonA: sA, surgeonB: sA, coverage: buildCoverage(hol, sA, sA),
           });
           return;
         }
@@ -5970,9 +5987,14 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               <strong>Pattern:</strong> Surgeon A → Eve + Holiday 24h · Surgeon B → Day After 24h · alternating through Sat<br/>
               <strong>Monday holidays (Memorial Day, Labor Day):</strong> Surgeon A covers Monday 24h, Surgeon B covers night before (Sun). Service week doctor starts Tuesday — no day-after override.<br/>
               <strong>Friday holidays:</strong> Fri (A) + Sat (B)<br/>
-              <strong>Exception:</strong> FAK always covers Christmas Day<br/>
+              <strong>Exception:</strong> FAK covers BOTH Christmas Eve and Christmas Day (standing rule) — two days exactly, then the regular service-week doctor resumes<br/>
               <strong style={{color:"#8a4010"}}>Distinct-pair rule:</strong> Within each group (major / minor), every holiday must have a completely different surgeon pair — no surgeon appears on two holidays in the same group.
             </div>
+            {holidayLockWarning && (
+              <div style={{fontSize:12,fontWeight:700,color:"#a8342a",background:"#fdeaea",border:"1px solid #e8b8b4",borderRadius:6,padding:"8px 12px",marginBottom:12}}>
+                {holidayLockWarning}
+              </div>
+            )}
             <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap",marginBottom:12}}>
               <select value={holidayYear} onChange={e=>setHolidayYear(+e.target.value)} style={{...css.inp,width:90}}>
                 {(() => { const cy = new Date().getFullYear(); return Array.from({length: 17}, (_, i) => cy - 1 + i); })().map(y=><option key={y} value={y}>{y}</option>)}
