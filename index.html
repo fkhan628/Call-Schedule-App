@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.08.06a";
+    var APP_VERSION = "2026.08.06b";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -193,6 +193,7 @@ function CallSchedule() {
   }));
   const [holidayAssignments, setHolidayAssignments] = useState({});
   const [holidayYear, setHolidayYear] = useState(2026);
+  const [holidayLockWarning, setHolidayLockWarning] = useState("");
   const [editingWeek, setEditingWeek] = useState(null);
   const [editShift, setEditShift] = useState(null);
   const [darkMode, setDarkMode] = useState(() => {
@@ -3803,6 +3804,7 @@ function CallSchedule() {
     setShowPreview(false);
   };
   const generateHolidayAssignments = useCallback(year => {
+    setHolidayLockWarning("");
     const holidays = getHolidays(year);
     const ids = surgeons.map(s => s.id);
     const nameMap = {};
@@ -3828,7 +3830,7 @@ function CallSchedule() {
       if (!Array.isArray(arr)) return;
       arr.forEach(h => {
         if (h.surgeonA && lifetimeCt[h.surgeonA]) lifetimeCt[h.surgeonA][h.type]++;
-        if (h.surgeonB && lifetimeCt[h.surgeonB]) lifetimeCt[h.surgeonB][h.type]++;
+        if (h.surgeonB && h.surgeonB !== h.surgeonA && lifetimeCt[h.surgeonB]) lifetimeCt[h.surgeonB][h.type]++;
       });
     });
     const fakId = ids.find(id => (nameMap[id] || "").toUpperCase() === "FAK") || null;
@@ -3850,6 +3852,7 @@ function CallSchedule() {
         label: hol.name + " 24h",
         day: DAYNAMES[holDow]
       });
+      if (hol.name === "Christmas Day" && sA === sB) return coverage;
       if (hol.endDate && hol.endDate !== hol.date) {
         coverage.push({
           date: hol.endDate,
@@ -3963,34 +3966,22 @@ function CallSchedule() {
           return;
         }
         let pool = ids.filter(id => !usedInGroup.has(id));
-        if (hol.name === "Christmas Day" && fakId) {
+        if (hol.name === "Christmas Day") {
+          if (!fakId) {
+            console.error(`Christmas lock: designated surgeon "FAK" not found in the roster — Christmas ${year} left unassigned.`);
+            setHolidayLockWarning(`⚠ Christmas ${year} was NOT auto-assigned: the designated surgeon (FAK) isn't in the roster. Assign it manually via the swap controls.`);
+            return;
+          }
           const sA = fakId;
-          const remaining = pool.filter(id => id !== fakId);
-          const holDate = parse(hol.date);
-          const dayAfterStr = fmt(addD(holDate, 1));
-          let partnerPool = remaining.filter(id => !onVac(id, hol.date, vacations) && !onVac(id, dayAfterStr, vacations));
-          if (partnerPool.length === 0) partnerPool = remaining;
-          const prior = priorByName["Christmas Day"] || {};
-          partnerPool.sort((a, b) => {
-            var _lifetimeCt$a2, _lifetimeCt$b2;
-            const la = (((_lifetimeCt$a2 = lifetimeCt[a]) === null || _lifetimeCt$a2 === void 0 ? void 0 : _lifetimeCt$a2[type]) || 0) - (((_lifetimeCt$b2 = lifetimeCt[b]) === null || _lifetimeCt$b2 === void 0 ? void 0 : _lifetimeCt$b2[type]) || 0);
-            if (la) return la;
-            const aR = a === prior.surgeonB ? 1 : 0;
-            const bR = b === prior.surgeonB ? 1 : 0;
-            if (aR !== bR) return aR - bR;
-            return Math.random() - 0.5;
-          });
-          const sB = partnerPool[0] || remaining[0];
           usedInGroup.add(sA);
-          usedInGroup.add(sB);
           assignments.push({
             name: hol.name,
             date: hol.date,
             type,
             emoji: hol.emoji || "📅",
             surgeonA: sA,
-            surgeonB: sB,
-            coverage: buildCoverage(hol, sA, sB)
+            surgeonB: sA,
+            coverage: buildCoverage(hol, sA, sA)
           });
           return;
         }
@@ -7653,11 +7644,22 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       marginBottom: 12,
       lineHeight: 1.7
     }
-  }, React.createElement("strong", null, "Pattern:"), " Surgeon A → Eve + Holiday 24h · Surgeon B → Day After 24h · alternating through Sat", React.createElement("br", null), React.createElement("strong", null, "Monday holidays (Memorial Day, Labor Day):"), " Surgeon A covers Monday 24h, Surgeon B covers night before (Sun). Service week doctor starts Tuesday — no day-after override.", React.createElement("br", null), React.createElement("strong", null, "Friday holidays:"), " Fri (A) + Sat (B)", React.createElement("br", null), React.createElement("strong", null, "Exception:"), " FAK always covers Christmas Day", React.createElement("br", null), React.createElement("strong", {
+  }, React.createElement("strong", null, "Pattern:"), " Surgeon A → Eve + Holiday 24h · Surgeon B → Day After 24h · alternating through Sat", React.createElement("br", null), React.createElement("strong", null, "Monday holidays (Memorial Day, Labor Day):"), " Surgeon A covers Monday 24h, Surgeon B covers night before (Sun). Service week doctor starts Tuesday — no day-after override.", React.createElement("br", null), React.createElement("strong", null, "Friday holidays:"), " Fri (A) + Sat (B)", React.createElement("br", null), React.createElement("strong", null, "Exception:"), " FAK covers BOTH Christmas Eve and Christmas Day (standing rule) — two days exactly, then the regular service-week doctor resumes", React.createElement("br", null), React.createElement("strong", {
     style: {
       color: "#8a4010"
     }
-  }, "Distinct-pair rule:"), " Within each group (major / minor), every holiday must have a completely different surgeon pair — no surgeon appears on two holidays in the same group."), React.createElement("div", {
+  }, "Distinct-pair rule:"), " Within each group (major / minor), every holiday must have a completely different surgeon pair — no surgeon appears on two holidays in the same group."), holidayLockWarning && React.createElement("div", {
+    style: {
+      fontSize: 12,
+      fontWeight: 700,
+      color: "#a8342a",
+      background: "#fdeaea",
+      border: "1px solid #e8b8b4",
+      borderRadius: 6,
+      padding: "8px 12px",
+      marginBottom: 12
+    }
+  }, holidayLockWarning), React.createElement("div", {
     style: {
       display: "flex",
       gap: 8,
