@@ -2982,11 +2982,20 @@ function CallSchedule() {
         // phantom change). Via the latest-closure bridge — this callback's []
         // deps would otherwise attribute every entry to the first render's
         // null userProfile ("Unknown").
+        // The email is deliberately MASKED: notification_preferences reads are
+        // owner-or-scheduler scoped (RLS), but audit_log's SELECT policy is
+        // USING(true) for ALL authenticated users (verified live 2026-08-08) —
+        // logging the plaintext would copy owner-scoped contact data into a
+        // broader table. Person + timestamp + source answer the audit
+        // question; the mask keeps the shape without the value.
         const src = source || "settings";
+        const em = row.email || "";
+        const at = em.indexOf("@");
+        const emailMasked = !em ? "(empty)" : (at > 0 ? `${em[0]}***@${em[at + 1] || ""}***` : "***");
         auditRef.current.logAudit(
           src === "signup" ? "prefs.signup_populate" : "prefs.save",
-          `${src === "signup" ? "Signup filled" : "Saved"} notification prefs for ${auditRef.current.nameOf(surgeonId)} — email: ${row.email || "(empty)"}`,
-          { surgeon_id: surgeonId, email: row.email, source: src });
+          `${src === "signup" ? "Signup filled" : "Saved"} notification prefs for ${auditRef.current.nameOf(surgeonId)} — email: ${emailMasked}`,
+          { surgeon_id: surgeonId, email_masked: emailMasked, source: src });
       } catch(e) { console.error("Save notif pref error:", e); showToast("Couldn't save notification settings — check your connection and try again.", "error"); }
       setNotifPrefsSaving(false);
     }, 500);
