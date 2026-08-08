@@ -28,6 +28,7 @@ on:
       - "app-styles.js"
       - "test/generator-regression.js"
       - "test/sync-guards.js"
+      - "test/consistency-checks.js"
   workflow_dispatch: {}   # allow manual runs from the Actions tab
 
 permissions:

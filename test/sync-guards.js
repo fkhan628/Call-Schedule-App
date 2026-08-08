@@ -482,6 +482,68 @@ check("ARW start date present in INIT_SURGEONS (2023-09-01)",
 check("eligibility loop present (eligibleCt built from holiday dates)",
   count("eligibleCt[id][h.type]++") === 1);
 
+// ══════════════════════════════════════════════════════════════
+// H. Backup-flag consistency (blob lists vs per-week isBackup/isFierceBackup)
+// ══════════════════════════════════════════════════════════════
+console.log("\nH. backup-flag consistency");
+const { checkBackupFlagConsistency } = require("./consistency-checks");
+
+// Vacuous green: the empty payload fixture is self-consistent.
+check("empty payload → no violations",
+  checkBackupFlagConsistency(transientEmptyAutosave.schedule, transientEmptyAutosave.backupMondays, transientEmptyAutosave.fierceBackup).violations.length === 0);
+
+// Real green: one backup + one fierce week, lists agree with flags.
+const H_WEEKS = {
+  "2026-05-18": { ...WEEK, isBackup: false, isFierceBackup: false },
+  "2026-05-25": { ...WEEK, isBackup: true, isFierceBackup: false },
+  "2026-06-22": { ...WEEK, isBackup: false, isFierceBackup: true },
+};
+const hOK = checkBackupFlagConsistency(H_WEEKS, ["2026-05-25"], ["2026-06-22"]);
+check("consistent schedule/lists → no violations", hOK.violations.length === 0, hOK.violations.join("; "));
+
+// Red proofs — one per direction per flag; each must name the exact Monday.
+const hA = checkBackupFlagConsistency(
+  { ...H_WEEKS, "2026-05-25": { ...WEEK, isBackup: false, isFierceBackup: false } },
+  ["2026-05-25"], ["2026-06-22"]);
+check("listed backup Monday with isBackup:false → 1 violation naming it",
+  hA.violations.length === 1 && hA.violations[0].includes("2026-05-25"), hA.violations.join("; "));
+const hB = checkBackupFlagConsistency(H_WEEKS, [], ["2026-06-22"]);
+check("isBackup:true week missing from backupMondays → 1 violation naming it",
+  hB.violations.length === 1 && hB.violations[0].includes("2026-05-25"), hB.violations.join("; "));
+const hC = checkBackupFlagConsistency(
+  { ...H_WEEKS, "2026-06-22": { ...WEEK, isBackup: false, isFierceBackup: false } },
+  ["2026-05-25"], ["2026-06-22"]);
+check("listed fierce Monday with isFierceBackup:false → 1 violation naming it",
+  hC.violations.length === 1 && hC.violations[0].includes("2026-06-22"), hC.violations.join("; "));
+const hD = checkBackupFlagConsistency(H_WEEKS, ["2026-05-25"], []);
+check("isFierceBackup:true week missing from fierceBackup → 1 violation naming it",
+  hD.violations.length === 1 && hD.violations[0].includes("2026-06-22"), hD.violations.join("; "));
+
+// The live 2026-08 trade shape itself: set moved 9/14→9/28, flags frozen —
+// both directions of the divergence must surface at once.
+const hTrade = checkBackupFlagConsistency(
+  { "2026-09-14": { ...WEEK, isBackup: true, isFierceBackup: false },
+    "2026-09-28": { ...WEEK, isBackup: false, isFierceBackup: false } },
+  ["2026-09-28"], []);
+check("the live trade divergence shape → exactly 2 violations",
+  hTrade.violations.length === 2, hTrade.violations.join("; "));
+
+// Pin the deliberate NON-violation: a listed Monday with no week is PENDING
+// ("marked, applies at next generation") — live lists legitimately extend
+// past the generated window (e.g. fierceBackup 2026-12-07 as of 2026-08).
+// Flagging it would poison every live audit with false positives.
+const hPend = checkBackupFlagConsistency(H_WEEKS, ["2026-05-25", "2027-01-04"], ["2026-06-22"]);
+check("listed Monday with no week → pending, NOT a violation",
+  hPend.violations.length === 0 && hPend.pending.length === 1 && hPend.pending[0].includes("2027-01-04"),
+  hPend.violations.concat(hPend.pending).join("; "));
+
+// Source tripwire: the four Settings handlers keep BOTH representations in
+// step via setWeekFlag (mark/unmark × backup/fierce). If the flag half is
+// ever removed, this goes red; a legitimate new call site updates the count
+// in the same PR.
+check("setWeekFlag wired at exactly 4 handler sites",
+  count("setWeekFlag(") === 4, `found ${count("setWeekFlag(")}`);
+
 // ─── Verdict ───
 console.log(`\n${checks} checks, ${failures.length} failure(s)`);
 if (failures.length) {
