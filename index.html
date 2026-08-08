@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.08.07b";
+    var APP_VERSION = "2026.08.07c";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -1520,7 +1520,7 @@ function CallSchedule() {
     if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
     toastTimerRef.current = setTimeout(() => setToast(null), 4000);
   };
-  const buildPayload = (overrides = {}) => _objectSpread({
+  const buildStateBundle = (overrides = {}) => _objectSpread({
     surgeons,
     apps,
     vacations,
@@ -1546,7 +1546,7 @@ function CallSchedule() {
       setSaveStatus("⚠ Not saving — schedule failed to load");
       return;
     }
-    const payload = buildPayload();
+    const payload = buildStateBundle();
     pendingSaveRef.current = payload;
     if (!payloadLooksWiped(payload)) everHadRealDataRef.current = true;
     const timer = setTimeout(async () => {
@@ -3532,7 +3532,7 @@ function CallSchedule() {
         try {
           const ts = new Date().toISOString();
           lastSyncRef.current = ts;
-          const blobData = buildPayload({
+          const blobData = buildStateBundle({
             schedule: merged
           });
           delete blobData.schedule;
@@ -3571,7 +3571,7 @@ function CallSchedule() {
       try {
         const ts = new Date().toISOString();
         lastSyncRef.current = ts;
-        const blobData = buildPayload({
+        const blobData = buildStateBundle({
           schedule: {},
           _intentionalClear: true
         });
@@ -3618,6 +3618,7 @@ function CallSchedule() {
     periodic_session: "Periodic (session start)"
   })[r] || r || "manual";
   const restoreSnapshot = async snap => {
+    var _r$blob, _r$blob2;
     if (!(isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.role) === "admin")) return;
     const when = new Date(snap.created_at).toLocaleString(undefined, {
       month: "short",
@@ -3626,7 +3627,7 @@ function CallSchedule() {
       hour: "numeric",
       minute: "2-digit"
     });
-    if (!confirm(`Restore the "${snapshotReasonLabel(snap.reason)}" snapshot from ${when}?\n\nThis replaces the CURRENT schedule and setup for everyone with that saved copy. A fresh snapshot of the current state is saved first, so this restore can itself be undone.`)) return;
+    if (!confirm(`Restore the "${snapshotReasonLabel(snap.reason)}" snapshot from ${when}?\n\nThis replaces the CURRENT schedule and setup for everyone with that saved copy. A fresh snapshot of the current state is saved first, so this restore can itself be undone.\n\nNOTE: Vacations and no-call days are NOT restored automatically — they live in their own table. If they need recovery, they must be re-entered or recovered manually from the snapshot.`)) return;
     setRestoreBusyId(snap.id);
     setSaveStatus("Restoring snapshot…");
     const r = await snapshots.restore(snap.id, async sched => {
@@ -3672,6 +3673,11 @@ function CallSchedule() {
     loadSnapshots();
     setSaveStatus("Snapshot restored");
     setTimeout(() => setSaveStatus(""), 3000);
+    const weekCt = Object.keys(r.schedule || {}).length;
+    const toCount = m => Object.values(m || {}).reduce((n, arr) => n + (Array.isArray(arr) ? arr.length : 0), 0);
+    const vacCt = toCount((_r$blob = r.blob) === null || _r$blob === void 0 ? void 0 : _r$blob.vacations);
+    const ncCt = toCount((_r$blob2 = r.blob) === null || _r$blob2 === void 0 ? void 0 : _r$blob2.noCallDays);
+    alert(`Snapshot restored.\n\n` + `RESTORED: ${weekCt} schedule week${weekCt === 1 ? "" : "s"}, roster, and setup.\n\n` + `NOT RESTORED: vacations and no-call days — restore never changes them (they live in their own table). ` + (vacCt || ncCt ? `This snapshot holds ${vacCt} vacation entr${vacCt === 1 ? "y" : "ies"} and ${ncCt} no-call entr${ncCt === 1 ? "y" : "ies"}; if time off needs recovery it must be re-entered or recovered manually from the snapshot.` : `This snapshot predates time-off capture and holds none; current time off was left untouched.`));
     showToast("Snapshot restored — other devices will pick it up on their next sync.", "success");
   };
   const rollForwardCounts = useCallback(sched => {
@@ -15539,7 +15545,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
   }, "Download a full JSON backup of the current schedule, vacations, APP shifts, and counts. Grab one before any big change — it can be re-imported or used to rebuild the database."), React.createElement("button", {
     onClick: () => {
       try {
-        const backup = _objectSpread(_objectSpread({}, buildPayload()), {}, {
+        const backup = _objectSpread(_objectSpread({}, buildStateBundle()), {}, {
           _app: "DSG Call Schedule",
           _exportedAt: new Date().toISOString(),
           appShifts,
