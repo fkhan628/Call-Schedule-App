@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.08.07c";
+    var APP_VERSION = "2026.08.08a";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -827,7 +827,7 @@ function CallSchedule() {
         showToast("Blocked an unexpected schedule wipe — your saved schedule is safe. Reload to resync.", "error");
         return;
       }
-      if (wipingAll || wipingMost) intentionalScheduleWipeRef.current = false;
+      intentionalScheduleWipeRef.current = false;
       if (SCHED_READ_TABLE) {
         let conflict = false;
         for (const key of changed) {
