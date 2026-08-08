@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.08.08a";
+    var APP_VERSION = "2026.08.08b";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -671,7 +671,7 @@ function CallSchedule() {
                 saveNotifPref(signupPersonId, {
                   email: authEmail,
                   email_notifs: true
-                });
+                }, "signup");
               }
             } catch (e) {
               console.warn("Signup email check failed — not auto-populating:", e);
@@ -959,6 +959,14 @@ function CallSchedule() {
         console.error("audit log failed", e);
       }
     })();
+  };
+  const auditRef = useRef({
+    logAudit,
+    nameOf
+  });
+  auditRef.current = {
+    logAudit,
+    nameOf
   };
   const loadAudit = async () => {
     setAuditLoading(true);
@@ -2860,7 +2868,7 @@ function CallSchedule() {
     }
   }, [loaded]);
   const notifSaveTimerRef = useRef({});
-  const saveNotifPref = useCallback(async (surgeonId, updates) => {
+  const saveNotifPref = useCallback(async (surgeonId, updates, source) => {
     setNotifPrefs(prev => {
       const cur = prev[surgeonId] || {
         surgeon_id: surgeonId,
@@ -2914,6 +2922,12 @@ function CallSchedule() {
           error: prefErr
         } = await db.upsert("notification_preferences", row);
         if (prefErr) throw new Error(`notif pref save failed: ${String(prefErr).slice(0, 200)}`);
+        const src = source || "settings";
+        auditRef.current.logAudit(src === "signup" ? "prefs.signup_populate" : "prefs.save", `${src === "signup" ? "Signup filled" : "Saved"} notification prefs for ${auditRef.current.nameOf(surgeonId)} — email: ${row.email || "(empty)"}`, {
+          surgeon_id: surgeonId,
+          email: row.email,
+          source: src
+        });
       } catch (e) {
         console.error("Save notif pref error:", e);
         showToast("Couldn't save notification settings — check your connection and try again.", "error");
