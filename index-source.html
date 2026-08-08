@@ -958,7 +958,17 @@ function CallSchedule() {
         showToast("Blocked an unexpected schedule wipe — your saved schedule is safe. Reload to resync.", "error");
         return; // leave schedWeeksSyncRef untouched; perform no deletes or upserts
       }
-      if (wipingAll || wipingMost) intentionalScheduleWipeRef.current = false; // consume the one-shot authorization
+      // Consume the one-shot authorization UNCONDITIONALLY. It used to be
+      // consumed only on a wipe shape — so a reset/clear against an
+      // ALREADY-EMPTY schedule (baseCount 0: neither wipingAll nor
+      // wipingMost) left the ref armed indefinitely, pre-authorizing the
+      // next accidental wipe-shaped call — exactly the transient-empty wipe
+      // this guard exists to block. Reaching this line means the grant's
+      // window is over, wipe or no wipe. (The blocked path above returns
+      // earlier, and only ever fires with the ref already false.) Behavior-
+      // pinned in sync-guards section E: adding an early return above this
+      // line that skips the consume goes red there.
+      intentionalScheduleWipeRef.current = false;
 
       if (SCHED_READ_TABLE) {
         // ── Stage 3: per-week compare-and-swap ──
