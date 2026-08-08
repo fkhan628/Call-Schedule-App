@@ -793,7 +793,7 @@ function CallSchedule() {
               const grows = await gres.json();
               const existingEmail = ((grows?.[0]?.email) || "").trim();
               if (!existingEmail) {
-                saveNotifPref(signupPersonId, { email: authEmail, email_notifs: true });
+                saveNotifPref(signupPersonId, { email: authEmail, email_notifs: true }, "signup");
               }
             } catch(e) {
               // REVERSED 2026-07-31 (was populate-on-failure, unchanged from the
@@ -1061,6 +1061,12 @@ function CallSchedule() {
       } catch (e) { console.error("audit log failed", e); }
     })();
   };
+  // Latest-closure bridge for callbacks memoized with [] deps (saveNotifPref):
+  // logAudit/nameOf capture userProfile/surgeons per render, so calling them
+  // through a first-render closure would attribute every audit to "Unknown".
+  // Same idiom as the day-off flush's latest-closure bridge (PR #30).
+  const auditRef = useRef({ logAudit, nameOf });
+  auditRef.current = { logAudit, nameOf };
   // Load recent activity for the viewer (scheduler/admin only).
   const loadAudit = async () => {
     setAuditLoading(true);
@@ -2916,7 +2922,11 @@ function CallSchedule() {
   // merge hides the loss until reload). Reachable from the scheduler's
   // per-person email inputs; one mechanism behind the N8 cross-user quirk.
   const notifSaveTimerRef = useRef({});
-  const saveNotifPref = useCallback(async (surgeonId, updates) => {
+  // `source` labels the writer for the audit trail: "settings" (default — the
+  // Settings-tab editors) or "signup" (the auto-populate on account creation).
+  // Contact data is user-visible state with two writers; before 2026-08-08
+  // nothing recorded who changed it beyond a bare updated_at.
+  const saveNotifPref = useCallback(async (surgeonId, updates, source) => {
     // Update local state + ref immediately
     setNotifPrefs(prev => {
       const cur = prev[surgeonId] || {
@@ -2968,6 +2978,15 @@ function CallSchedule() {
         // toggle/email showing the new value while the DB never got it.
         const { error: prefErr } = await db.upsert("notification_preferences", row);
         if (prefErr) throw new Error(`notif pref save failed: ${String(prefErr).slice(0, 200)}`);
+        // Audit AFTER the write is known-good (a failed save must not log a
+        // phantom change). Via the latest-closure bridge — this callback's []
+        // deps would otherwise attribute every entry to the first render's
+        // null userProfile ("Unknown").
+        const src = source || "settings";
+        auditRef.current.logAudit(
+          src === "signup" ? "prefs.signup_populate" : "prefs.save",
+          `${src === "signup" ? "Signup filled" : "Saved"} notification prefs for ${auditRef.current.nameOf(surgeonId)} — email: ${row.email || "(empty)"}`,
+          { surgeon_id: surgeonId, email: row.email, source: src });
       } catch(e) { console.error("Save notif pref error:", e); showToast("Couldn't save notification settings — check your connection and try again.", "error"); }
       setNotifPrefsSaving(false);
     }, 500);
