@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.08.08b";
+    var APP_VERSION = "2026.08.08c";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -2923,9 +2923,12 @@ function CallSchedule() {
         } = await db.upsert("notification_preferences", row);
         if (prefErr) throw new Error(`notif pref save failed: ${String(prefErr).slice(0, 200)}`);
         const src = source || "settings";
-        auditRef.current.logAudit(src === "signup" ? "prefs.signup_populate" : "prefs.save", `${src === "signup" ? "Signup filled" : "Saved"} notification prefs for ${auditRef.current.nameOf(surgeonId)} — email: ${row.email || "(empty)"}`, {
+        const em = row.email || "";
+        const at = em.indexOf("@");
+        const emailMasked = !em ? "(empty)" : at > 0 ? `${em[0]}***@${em[at + 1] || ""}***` : "***";
+        auditRef.current.logAudit(src === "signup" ? "prefs.signup_populate" : "prefs.save", `${src === "signup" ? "Signup filled" : "Saved"} notification prefs for ${auditRef.current.nameOf(surgeonId)} — email: ${emailMasked}`, {
           surgeon_id: surgeonId,
-          email: row.email,
+          email_masked: emailMasked,
           source: src
         });
       } catch (e) {
