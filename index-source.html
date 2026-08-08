@@ -1571,13 +1571,27 @@ function CallSchedule() {
     toastTimerRef.current = setTimeout(() => setToast(null), 4000);
   };
 
-  // ─── Single source of truth for the persisted call_schedule_data payload ───
-  // Every DB save path builds from this so the shape can't drift. (A prior bug
-  // dropped startMondayOverride/pendingLocks from the regenerate & clear saves
-  // because those two paths hand-rolled their own payload objects.) Note this
-  // intentionally excludes appShifts — those persist in app_shifts_data, not in
-  // this row. The JSON export adds appShifts + metadata on top of this base.
-  const buildPayload = (overrides = {}) => ({
+  // ─── Current-state bundle (NOT "the thing we persist") ───
+  // A snapshot of live component state in one object. Every save path builds
+  // from this so the shape can't drift (a prior bug dropped
+  // startMondayOverride/pendingLocks from the regenerate & clear saves, which
+  // hand-rolled their own objects). Excludes appShifts (own table).
+  //
+  // schedule / vacations / noCallDays are IN the bundle but NOT in the blob —
+  // every blob write strips them before the upsert. They are ARGUMENTS to
+  // exactly four consumers, not a persistence duplication:
+  //   1. payloadLooksWiped — the empty-save guard reads bundle.schedule /
+  //      .vacations to tell a wipe from a legitimate save.
+  //   2. syncSchedWeeks(bundle.schedule) — the schedule_weeks CAS leg of the
+  //      autosave.
+  //   3. The keepalive unload flush — blind-upserts changed weeks from
+  //      bundle.schedule and re-runs the wipe guard on the pending bundle.
+  //   4. The JSON export — the spread of this bundle is what puts the
+  //      schedule and time off into the user's backup file.
+  // Removing them was evaluated and CANCELLED 2026-08-08 (buys zero blob
+  // bytes — already stripped — and each consumer fails SILENTLY without its
+  // argument). See REMAINING-WORK for the full record.
+  const buildStateBundle = (overrides = {}) => ({
     surgeons, apps, vacations, noCallDays,
     backupMondays: [...backupMondaySet],
     fierceBackup: [...fierceBackupSet],
@@ -1603,7 +1617,7 @@ function CallSchedule() {
     }
     // Capture the payload so the visibility/unload handlers can flush it
     // immediately without waiting for the debounce.
-    const payload = buildPayload();
+    const payload = buildStateBundle();
     pendingSaveRef.current = payload;
     // Arm the guard as soon as we hold real data locally, so a later
     // transient-empty render can't slip an empty blob through before the
@@ -3515,7 +3529,7 @@ function CallSchedule() {
           const ts = new Date().toISOString();
           lastSyncRef.current = ts; // block poll from overwriting
           // Stage 6: schedule goes to schedule_weeks, not the blob.
-          const blobData = buildPayload({ schedule: merged }); delete blobData.schedule;
+          const blobData = buildStateBundle({ schedule: merged }); delete blobData.schedule;
           delete blobData.vacations; delete blobData.noCallDays; // retired mirror — time_off is the source
           const { error: regenErr } = await supabase.from("call_schedule_data").upsert({ id: "main", data: blobData, updated_at: ts });
           if (regenErr) throw new Error(`regenerate blob save failed: ${String(regenErr).slice(0, 200)}`); // catch toasts; checked autosave retries
@@ -3546,7 +3560,7 @@ function CallSchedule() {
         const ts = new Date().toISOString();
         lastSyncRef.current = ts;
         // Stage 6: schedule lives in schedule_weeks (already wiped via syncSchedWeeks({}) above).
-        const blobData = buildPayload({ schedule: {}, _intentionalClear: true }); delete blobData.schedule;
+        const blobData = buildStateBundle({ schedule: {}, _intentionalClear: true }); delete blobData.schedule;
         delete blobData.vacations; delete blobData.noCallDays; // retired mirror — time_off is the source
         const { error: clearErr } = await supabase.from("call_schedule_data").upsert({ id: "main", data: blobData, updated_at: ts });
         if (clearErr) throw new Error(`clear-schedule blob save failed: ${String(clearErr).slice(0, 200)}`); // catch toasts; checked autosave retries
@@ -3585,7 +3599,7 @@ function CallSchedule() {
   const restoreSnapshot = async (snap) => {
     if (!(isScheduler || userProfile?.role === "admin")) return;
     const when = new Date(snap.created_at).toLocaleString(undefined, { month:"short", day:"numeric", year:"numeric", hour:"numeric", minute:"2-digit" });
-    if (!confirm(`Restore the "${snapshotReasonLabel(snap.reason)}" snapshot from ${when}?\n\nThis replaces the CURRENT schedule and setup for everyone with that saved copy. A fresh snapshot of the current state is saved first, so this restore can itself be undone.`)) return;
+    if (!confirm(`Restore the "${snapshotReasonLabel(snap.reason)}" snapshot from ${when}?\n\nThis replaces the CURRENT schedule and setup for everyone with that saved copy. A fresh snapshot of the current state is saved first, so this restore can itself be undone.\n\nNOTE: Vacations and no-call days are NOT restored automatically — they live in their own table. If they need recovery, they must be re-entered or recovered manually from the snapshot.`)) return;
     setRestoreBusyId(snap.id);
     setSaveStatus("Restoring snapshot…");
     const r = await snapshots.restore(snap.id, async (sched) => {
@@ -3632,6 +3646,23 @@ function CallSchedule() {
     loadSnapshots(); // refresh — the just-added before_restore row should appear
     setSaveStatus("Snapshot restored");
     setTimeout(() => setSaveStatus(""), 3000);
+    // Post-restore report — say plainly what came back and what didn't.
+    // Snapshots now CONTAIN vacations/no-call (the capture time_off fold),
+    // but restore deliberately does not write them back to time_off (see the
+    // adoption comment above). Whoever reaches for restore on a bad day must
+    // hear that HERE, not discover it when vacations are missing a week later.
+    const weekCt = Object.keys(r.schedule || {}).length;
+    const toCount = (m) => Object.values(m || {}).reduce((n, arr) => n + (Array.isArray(arr) ? arr.length : 0), 0);
+    const vacCt = toCount(r.blob?.vacations);
+    const ncCt = toCount(r.blob?.noCallDays);
+    alert(
+      `Snapshot restored.\n\n` +
+      `RESTORED: ${weekCt} schedule week${weekCt === 1 ? "" : "s"}, roster, and setup.\n\n` +
+      `NOT RESTORED: vacations and no-call days — restore never changes them (they live in their own table). ` +
+      (vacCt || ncCt
+        ? `This snapshot holds ${vacCt} vacation entr${vacCt === 1 ? "y" : "ies"} and ${ncCt} no-call entr${ncCt === 1 ? "y" : "ies"}; if time off needs recovery it must be re-entered or recovered manually from the snapshot.`
+        : `This snapshot predates time-off capture and holds none; current time off was left untouched.`)
+    );
     showToast("Snapshot restored — other devices will pick it up on their next sync.", "success");
   };
 
@@ -9649,7 +9680,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             <button onClick={()=>{
               try {
                 const backup = {
-                  ...buildPayload(),
+                  ...buildStateBundle(),
                   _app: "DSG Call Schedule",
                   _exportedAt: new Date().toISOString(),
                   appShifts, // included for a full restore (not part of the saved row)

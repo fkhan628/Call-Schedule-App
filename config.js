@@ -181,6 +181,11 @@ const db = {
 // the literal {} blob that the old Reset button wrote, but FALSE for a normal
 // clearSchedule (which keeps vacations/appShifts) — so legitimate clears still
 // save.
+// NOTE: p.schedule/p.vacations here are the reason buildStateBundle keeps
+// those keys in the in-memory bundle even though blob writes strip them —
+// this predicate IS their consumer. (A dataCounts-marker variant that would
+// free the bundle of them was built, verified, and PARKED 2026-08-08 with the
+// mirror-retirement cancellation — see REMAINING-WORK.)
 function payloadLooksWiped(p) {
   if (!p || typeof p !== "object") return true;
   const noSchedule = !p.schedule || Object.keys(p.schedule).length === 0;
@@ -188,6 +193,23 @@ function payloadLooksWiped(p) {
   const noApp      = !p.appShifts || Object.keys(p.appShifts).length === 0;
   return noSchedule && noVac && noApp;
 }
+
+// Build vacations / noCallDays maps from time_off rows — the same shape the
+// app's loadTimeOff produces ({ person_id: [[start, end, id], ...] }, sorted
+// by start). Top-level copy so snapshots.capture below can fold time_off;
+// the component keeps its own identical local const for now (it shadows this
+// one harmlessly — dedupe rides a later refactor, not a data-safety PR).
+const buildTimeOffMaps = (rows) => {
+  const vac = {}, nc = {};
+  (rows || []).forEach(r => {
+    const tgt = r.kind === "nocall" ? nc : vac;
+    (tgt[r.person_id] = tgt[r.person_id] || []).push([r.start_date, r.end_date, r.id]);
+  });
+  const byStart = (a, b) => a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0;
+  Object.values(vac).forEach(a => a.sort(byStart));
+  Object.values(nc).forEach(a => a.sort(byStart));
+  return { vac, nc };
+};
 
 // Snapshot helper. Before any destructive write, copy the row that is CURRENTLY
 // persisted (not local state) into call_schedule_snapshots so it can always be
@@ -233,6 +255,24 @@ const snapshots = {
           }
         }
       } catch (e) { console.warn("Snapshot: schedule_weeks fetch failed:", e); }
+      // Vacations/no-call live in the time_off table (the blob mirror was
+      // retired in PR #18), so fold them back in under the old mirror keys —
+      // without this, snapshots carry NO vacations and a time_off wipe would
+      // be unrecoverable. Best-effort like the schedule_weeks fold above; the
+      // explicit order makes consecutive snapshots byte-stable on ties.
+      try {
+        const tres = await fetch(
+          `${SUPABASE_URL}/rest/v1/time_off?select=id,person_id,kind,start_date,end_date&order=start_date.asc`,
+          { headers: dbAuthHeaders() }
+        );
+        if (tres.ok) {
+          const trows = await tres.json();
+          if (Array.isArray(trows) && trows.length) {
+            const { vac, nc } = buildTimeOffMaps(trows);
+            current = { ...(current || {}), vacations: vac, noCallDays: nc };
+          }
+        }
+      } catch (e) { console.warn("Snapshot: time_off fetch failed:", e); }
       // Don't bother snapshotting an already-empty row. This exit is now
       // reached ONLY on a genuine 200 with nothing worth keeping — a real
       // failure returned above — so an empty DB still doesn't block a

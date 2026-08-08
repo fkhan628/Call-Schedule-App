@@ -11,7 +11,7 @@
 //        shape 2 — the May/June 2026 decay class (config.js "DATA-LOSS
 //                  SAFEGUARDS" header): LOAD is permissive, AUTOSAVE was
 //                  unconditional, so a transiently-empty render autosaved a
-//                  buildPayload() full of INIT_* defaults with empty
+//                  buildStateBundle() full of INIT_* defaults with empty
 //                  schedule/vacations/appShifts over the real blob.
 //      Plus the documented MUST-SAVE boundaries (clearSchedule keeps
 //      vacations/appShifts; the 2026-07-18 digest payload had a real
@@ -121,9 +121,9 @@ console.log("\nA. payloadLooksWiped");
 check("shape 1: literal {} (old Reset button blob) → wiped", payloadLooksWiped({}) === true);
 
 // Historical shape 2 — May/June 2026 transient-empty autosave: a full
-// buildPayload() where the defaults are all "present" (roster, counts,
+// buildStateBundle() where the defaults are all "present" (roster, counts,
 // period settings) but every piece of operational data is empty. Mirrors
-// index-source.html buildPayload()'s keys — if that shape changes, update
+// index-source.html buildStateBundle()'s keys — if that shape changes, update
 // this mirror in the same PR.
 const transientEmptyAutosave = {
   surgeons: INIT_SURGEONS, apps: INIT_APPS,
@@ -156,6 +156,24 @@ check("appShifts-only payload → NOT wiped",
 check("digest-incident shape (real schedule, empty vacations) → NOT wiped",
   payloadLooksWiped({ ...transientEmptyAutosave, schedule: { "2026-07-13": WEEK } }) === false);
 
+// ── Why the state bundle KEEPS schedule/vacations/noCallDays ──
+// The blob write paths strip all three before the upsert, which makes them
+// look like removable write-only mirrors. They are not: this predicate reads
+// bundle.schedule/.vacations, so a bundle stripped of them classifies as
+// wiped — real data may sit safely in schedule_weeks/time_off, but every
+// autosave would hit the empty-save gate and ALL saves (blob AND
+// schedule_weeks, whose sync call sits behind the same gate) would block,
+// silently, forever. This check pins that failure by construction — it is
+// the recorded reason the 2026-08-08 mirror-retirement idea was cancelled.
+// (A dataCounts-marker guard that lifts this dependency was built, verified,
+// and PARKED with that cancellation — see REMAINING-WORK.)
+const mirrorStripped = { ...transientEmptyAutosave };
+delete mirrorStripped.schedule;
+delete mirrorStripped.vacations;
+delete mirrorStripped.noCallDays;
+check("bundle stripped of the mirror keys → wiped (why the keys must stay in the bundle)",
+  payloadLooksWiped(mirrorStripped) === true);
+
 // Sections B–E are async (stubbed fetch); a harness crash is a FAILURE, not
 // a silent exit — the catch at the bottom exits 1.
 (async function main() {
@@ -167,6 +185,13 @@ console.log("\nB. snapshots.capture");
 const REAL_BLOB = { surgeons: INIT_SURGEONS, vacations: { s5: [["2026-09-12", "2026-09-21"]] } };
 const BLOB_ROW = [{ data: REAL_BLOB, updated_at: "2026-07-30T12:00:00Z" }];
 const WEEK_ROWS = [{ week_monday: "2026-01-05", data: WEEK }];
+// Real time_off columns (person_id/kind/start_date/end_date/id — NOT
+// surgeon_id/type): a wrong-column fixture here would fail the fold-content
+// assertion against CORRECT code.
+const TIME_OFF_ROWS = [
+  { id: 11, person_id: "s5", kind: "vacation", start_date: "2026-09-12", end_date: "2026-09-21" },
+  { id: 12, person_id: "s3", kind: "nocall",   start_date: "2026-09-14", end_date: "2026-09-14" },
+];
 
 await (async () => {
   // 1. Failed source read → ok:false. Pre-PR#21 this returned {ok:true,
@@ -181,21 +206,23 @@ await (async () => {
   r = await snapshots.capture("test");
   check("source read network throw → ok:false", r.ok === false);
 
-  // 3. Genuine empty (200 + no row, schedule_weeks empty) → ok:true skipped —
-  //    an empty DB must NOT block a legitimate reset.
+  // 3. Genuine empty (200 + no row, schedule_weeks AND time_off empty) →
+  //    ok:true skipped — an empty DB must NOT block a legitimate reset.
   f = stubFetch([
     { m: "GET", url: "call_schedule_data", json: [] },
     { m: "GET", url: "schedule_weeks", json: [] },
+    { m: "GET", url: "time_off", json: [] },
   ]);
   r = await snapshots.capture("test");
   check("genuine empty (200+[]) → ok:true, skipped", r.ok === true && r.skipped === "empty_or_missing", JSON.stringify(r));
   check("genuine empty → nothing written", writesIn(f).length === 0);
 
-  // 4. Success: real blob + schedule_weeks → insert carries reason, folded
-  //    schedule, and source_updated_at.
+  // 4. Success: real blob + schedule_weeks + time_off → insert carries
+  //    reason, BOTH folds, and source_updated_at.
   f = stubFetch([
     { m: "GET", url: "call_schedule_data", json: BLOB_ROW },
     { m: "GET", url: "schedule_weeks", json: WEEK_ROWS },
+    { m: "GET", url: "time_off", json: TIME_OFF_ROWS },
     { m: "POST", url: "call_schedule_snapshots", status: 201, json: [] },
   ]);
   r = await snapshots.capture("unit_test");
@@ -206,26 +233,53 @@ await (async () => {
     insBody && insBody.reason === "unit_test" && insBody.source_updated_at === "2026-07-30T12:00:00Z");
   check("snapshot insert body: schedule_weeks folded into data.schedule",
     insBody && insBody.data && insBody.data.schedule && insBody.data.schedule["2026-01-05"] && insBody.data.schedule["2026-01-05"].dayCall === "s1");
+  // Request-log proof the time_off fetch actually FIRED: the fold is
+  // best-effort, so a broken wiring (e.g. buildTimeOffMaps missing at
+  // config.js top level) would be swallowed by its catch and every other
+  // check would still pass — this is the assertion that catches it.
+  check("capture fetched time_off (request log)",
+    f.calls.some(c => c.method === "GET" && c.url.includes("time_off")));
+  check("snapshot insert body: time_off folded into data.vacations/noCallDays",
+    insBody && insBody.data &&
+    insBody.data.vacations && Array.isArray(insBody.data.vacations.s5) &&
+    insBody.data.vacations.s5[0] && insBody.data.vacations.s5[0][0] === "2026-09-12" && insBody.data.vacations.s5[0][1] === "2026-09-21" &&
+    insBody.data.noCallDays && Array.isArray(insBody.data.noCallDays.s3) &&
+    insBody.data.noCallDays.s3[0] && insBody.data.noCallDays.s3[0][0] === "2026-09-14",
+    ins ? ins.body.slice(0, 300) : "no insert");
 
   // 5. Insert failure → ok:false (a snapshot that wasn't written must not
   //    report ok — that's the same hollow-gate class as FINDING B).
   stubFetch([
     { m: "GET", url: "call_schedule_data", json: BLOB_ROW },
     { m: "GET", url: "schedule_weeks", json: WEEK_ROWS },
+    { m: "GET", url: "time_off", json: TIME_OFF_ROWS },
     { m: "POST", url: "call_schedule_snapshots", status: 401, text: "jwt expired" },
   ]);
   r = await snapshots.capture("test");
   check("failed insert (401) → ok:false", r.ok === false, JSON.stringify(r));
 
   // 6. schedule_weeks read fails but blob is real → best-effort: still
-  //    snapshots the blob (documented behavior).
+  //    snapshots the blob (documented behavior). time_off succeeds here so
+  //    the check isolates the schedule_weeks failure.
   f = stubFetch([
     { m: "GET", url: "call_schedule_data", json: BLOB_ROW },
     { m: "GET", url: "schedule_weeks", status: 500, text: "boom" },
+    { m: "GET", url: "time_off", json: [] },
     { m: "POST", url: "call_schedule_snapshots", status: 201, json: [] },
   ]);
   r = await snapshots.capture("test");
   check("schedule_weeks fetch fails, blob real → still ok:true (best-effort)", r.ok === true);
+
+  // 7. time_off read fails but blob is real → same best-effort contract,
+  //    symmetric with 6.
+  f = stubFetch([
+    { m: "GET", url: "call_schedule_data", json: BLOB_ROW },
+    { m: "GET", url: "schedule_weeks", json: WEEK_ROWS },
+    { m: "GET", url: "time_off", status: 500, text: "boom" },
+    { m: "POST", url: "call_schedule_snapshots", status: 201, json: [] },
+  ]);
+  r = await snapshots.capture("test");
+  check("time_off fetch fails, blob real → still ok:true (best-effort)", r.ok === true, JSON.stringify(r));
 })();
 
 // ══════════════════════════════════════════════════════════════
@@ -279,11 +333,25 @@ await (async () => {
     writesIn(f).length === 0 && applied === 0,
     `writes=${JSON.stringify(writesIn(f).map(c => c.url))} applied=${applied}`);
 
+  // Fold-failed snapshot (a capture whose table folds BOTH failed is
+  // blob-only: config keys, no schedule, no vacations). Nothing restorable
+  // is inside — restore must REFUSE on content, or the applier would run
+  // with wipe authorization armed on an empty schedule and delete every
+  // schedule_weeks row.
+  f = stubFetch([{ m: "GET", url: snapUrl, json: [{ id: 7, reason: "x", created_at: "c",
+    data: { surgeons: INIT_SURGEONS, backupMondays: ["2026-05-25"], numWeeks: 14 } }] }]);
+  applied = 0;
+  r = await snapshots.restore(7, async () => { applied++; return { ok: true }; });
+  check("fold-failed (blob-only) snapshot → REFUSED on content",
+    r.ok === false && /looks empty/.test(r.error || "") && applied === 0 && writesIn(f).length === 0,
+    JSON.stringify(r));
+
   // Blob write fails → ok:false and the schedule applier is never reached.
   f = stubFetch([
     { m: "GET", url: snapUrl, json: GOOD_SNAP },
     { m: "GET", url: "call_schedule_data", json: BLOB_ROW },
     { m: "GET", url: "schedule_weeks", json: WEEK_ROWS },
+    { m: "GET", url: "time_off", json: [] },
     { m: "POST", url: "call_schedule_snapshots", status: 201, json: [] },
     { m: "POST", url: "call_schedule_data", status: 401, text: "jwt expired" },
   ]);
@@ -296,6 +364,7 @@ await (async () => {
     { m: "GET", url: snapUrl, json: GOOD_SNAP },
     { m: "GET", url: "call_schedule_data", json: BLOB_ROW },
     { m: "GET", url: "schedule_weeks", json: WEEK_ROWS },
+    { m: "GET", url: "time_off", json: [] },
     { m: "POST", url: "call_schedule_snapshots", status: 201, json: [] },
     { m: "POST", url: "call_schedule_data", status: 201, json: [] },
   ]);
@@ -309,6 +378,7 @@ await (async () => {
     { m: "GET", url: snapUrl, json: GOOD_SNAP },
     { m: "GET", url: "call_schedule_data", json: BLOB_ROW },
     { m: "GET", url: "schedule_weeks", json: WEEK_ROWS },
+    { m: "GET", url: "time_off", json: [] },
     { m: "POST", url: "call_schedule_snapshots", status: 201, json: [] },
     { m: "POST", url: "call_schedule_data", status: 201, json: [] },
   ]);
@@ -341,6 +411,7 @@ await (async () => {
     { m: "GET", url: "call_schedule_snapshots?select=", json: [{ created_at: "2026-01-01T00:00:00Z" }] },
     { m: "GET", url: "call_schedule_data", json: BLOB_ROW },
     { m: "GET", url: "schedule_weeks", json: WEEK_ROWS },
+    { m: "GET", url: "time_off", json: [] },
     { m: "POST", url: "call_schedule_snapshots", status: 201, json: [] },
   ]);
   r = await snapshots.captureIfStale("periodic", 6);
@@ -352,6 +423,7 @@ await (async () => {
     { m: "GET", url: "call_schedule_snapshots?select=", status: 500, text: "boom" },
     { m: "GET", url: "call_schedule_data", json: BLOB_ROW },
     { m: "GET", url: "schedule_weeks", json: WEEK_ROWS },
+    { m: "GET", url: "time_off", json: [] },
     { m: "POST", url: "call_schedule_snapshots", status: 201, json: [] },
   ]);
   r = await snapshots.captureIfStale("periodic", 6);
@@ -397,6 +469,14 @@ check("factory-reset failure path restores the guard refs (adjacent pair)",
 // name the identifier for future readers) can never flip this check.
 check("year2Counts stays retired (no setYear2Counts in source)",
   count("setYear2Counts") === 0, `found ${count("setYear2Counts")}`);
+
+// Restore honesty (2026-08-08): snapshots now CONTAIN vacations/no-call
+// (the capture time_off fold) but restore deliberately does NOT write them
+// back to time_off. That half-capability must be stated to the person
+// restoring — in the confirm dialog AND the post-restore report — never
+// discovered later. Pins the exact caveat phrase at both surfaces.
+check("restore states the time-off caveat at both surfaces (confirm + report)",
+  count("re-entered or recovered manually") === 2, `found ${count("re-entered or recovered manually")}`);
 
 // intentionalScheduleWipeRef (the schedule_weeks full-delete authorization):
 // gate present, 3 known grant sites (clearSchedule, factory reset, restore
