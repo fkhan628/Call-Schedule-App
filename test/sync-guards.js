@@ -697,6 +697,13 @@ check("signup populate passes the 'signup' audit source (1 site)",
   count(', "signup");') === 1, `found ${count(', "signup");')}`);
 check("latest-closure bridge assignment present",
   count("auditRef.current = { logAudit, nameOf };") === 1, `found ${count("auditRef.current = { logAudit, nameOf };")}`);
+// audit_log's SELECT policy is USING(true) for all authenticated users
+// (verified live 2026-08-08) while notification_preferences reads are
+// owner-or-scheduler scoped — the audit payload must therefore never carry
+// the plaintext address. Pins the masked-only contract.
+check("prefs audit never logs the plaintext email (masked only)",
+  count("email: row.email") === 0 && count("email_masked") >= 1,
+  `plaintext sites=${count("email: row.email")} masked sites=${count("email_masked")}`);
 
 // ─── Verdict ───
 console.log(`\n${checks} checks, ${failures.length} failure(s)`);
