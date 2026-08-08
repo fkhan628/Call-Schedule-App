@@ -4268,7 +4268,16 @@ function CallSchedule() {
     pushUndo(schedule);
     setSchedule(p => {
       const n = { ...p };
+      const creating = !n[mondayStr];
       const wk = { ...(n[mondayStr] || {}) };
+      // A brand-new hand-created week inherits its backup/fierce flags from
+      // the sets (exactly what the generator stamps at generation time) —
+      // without this, creating a week for a marked Monday births it
+      // flag-stale. Existing weeks keep their flags via the spread.
+      if (creating) {
+        wk.isBackup = backupMondaySet.has(mondayStr);
+        wk.isFierceBackup = fierceBackupSet.has(mondayStr);
+      }
       wk.dayCall = draft.dayCall || null;
       wk.nights = { ...(wk.nights || {}), ...draft.nights };
       // Persist single-day service-coverage overrides. Drop any that equal the
@@ -4369,7 +4378,55 @@ function CallSchedule() {
       // Defer to next tick so state updates flush before re-opening
       setTimeout(() => openWeekEditor(openAfter), 0);
     }
-  }, [editWeekModal, schedule, appShifts, surgeons, sMap, aMap, addNotification, sendEmailNotif, pushUndo, schedulerAdminIds, openWeekEditor]);
+  }, [editWeekModal, schedule, appShifts, surgeons, sMap, aMap, addNotification, sendEmailNotif, pushUndo, schedulerAdminIds, openWeekEditor, backupMondaySet, fierceBackupSet]);
+
+  // ─── Backup / Fierce week marking (Settings card) ───
+  // backupMondaySet/fierceBackupSet (persisted as blob arrays) and the
+  // per-week schedule[m].isBackup/isFierceBackup flags (persisted per-row in
+  // schedule_weeks) are two representations of one fact. Until 2026-08 these
+  // handlers wrote only the sets, so already-generated weeks kept their
+  // generation-time flags forever (the 9/14→9/28 trade divergence). They now
+  // write both in the same action. Constraints that are easy to break:
+  //  - Only flip EXISTING weeks. A set Monday with no generated week is a
+  //    legitimate "pending" state (the generator stamps flags from the sets,
+  //    generator.js:346/698); creating a flag-only week here would INSERT a
+  //    real phantom schedule_weeks row on every device.
+  //  - No pushUndo: Undo snapshots only `schedule`, so undoing would revert
+  //    the flag but not the set — manufacturing the exact divergence this
+  //    code exists to prevent. (The set edit was never undoable.)
+  //  - No direct sync call, no wipe-ref touches: the plain state set rides
+  //    the normal autosave → syncSchedWeeks CAS path like any shift edit.
+  const setWeekFlag = (monday, flagKey, val) => {
+    setSchedule(p => {
+      const wk = p[monday];
+      if (!wk || wk[flagKey] === val) return p;
+      return { ...p, [monday]: { ...wk, [flagKey]: val } };
+    });
+  };
+  const markBackupWeek = () => {
+    if (!bkMonday) return;
+    setBackupMondaySet(p => { const n = new Set(p); n.add(bkMonday); return n; });
+    setWeekFlag(bkMonday, "isBackup", true);
+    logAudit("schedule.backup_mark", `Marked week of ${bkMonday} as Backup (Fierce primary)`, { week: bkMonday });
+    setBkMonday("");
+  };
+  const unmarkBackupWeek = (m) => {
+    setBackupMondaySet(p => { const n = new Set(p); n.delete(m); return n; });
+    setWeekFlag(m, "isBackup", false);
+    logAudit("schedule.backup_unmark", `Removed Backup mark from week of ${m}`, { week: m });
+  };
+  const markFierceBackupWeek = () => {
+    if (!bkMonday) return;
+    setFierceBackupSet(p => { const n = new Set(p); n.add(bkMonday); return n; });
+    setWeekFlag(bkMonday, "isFierceBackup", true);
+    logAudit("schedule.fierce_mark", `Marked week of ${bkMonday} as Fierce Backup`, { week: bkMonday });
+    setBkMonday("");
+  };
+  const unmarkFierceBackupWeek = (m) => {
+    setFierceBackupSet(p => { const n = new Set(p); n.delete(m); return n; });
+    setWeekFlag(m, "isFierceBackup", false);
+    logAudit("schedule.fierce_unmark", `Removed Fierce Backup mark from week of ${m}`, { week: m });
+  };
 
   // Generate shareable read-only HTML with calendar grid view
   const generateShareHTML = () => {
@@ -5965,7 +6022,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           <div style={css.card}>
             <div style={css.cardT}>Backup Weeks <span style={{fontWeight:400,fontSize:11,color:"#7a8a98"}}>(Fierce = Primary)</span></div>
             <p style={{fontSize:12,color:"#5a6a78",margin:"0 0 10px",lineHeight:1.5}}>
-              Fierce weeks are auto-imported from the schedule file above. You can also add them manually below.
+              Marking a week here updates the stored schedule too — an already-generated week flips immediately; a week not yet generated picks the mark up when it's generated.
             </p>
 
             <div style={{display:"flex",gap:6,alignItems:"end",flexWrap:"wrap",marginBottom:12}}>
@@ -5973,13 +6030,13 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                 <label style={{fontSize:10,color:"#7a8a98",display:"block",marginBottom:2}}>Add manually — Week Starting (Monday)</label>
                 <input type="date" value={bkMonday} onChange={e=>setBkMonday(e.target.value)} style={{...css.inp,width:160}}/>
               </div>
-              <button onClick={()=>{ if(bkMonday){ setBackupMondaySet(p=>{const n=new Set(p);n.add(bkMonday);return n;}); setBkMonday(""); }}} style={css.btn(true)}>+ Mark Backup</button>
+              <button onClick={markBackupWeek} style={css.btn(true)}>+ Mark Backup</button>
             </div>
             {[...backupMondaySet].sort().map(m=>(
               <div key={m} style={{display:"flex",alignItems:"center",gap:8,marginBottom:5}}>
                 <span style={{fontFamily:mono,fontSize:12,color:"#5a6a78"}}>Wk of {m}</span>
                 <span style={css.backupBanner}>⚡ BACKUP — Fierce Primary</span>
-                <button onClick={()=>setBackupMondaySet(p=>{const n=new Set(p);n.delete(m);return n;})} style={{background:"none",border:"none",color:"#904040",cursor:"pointer",fontSize:12}}>✕</button>
+                <button onClick={()=>unmarkBackupWeek(m)} style={{background:"none",border:"none",color:"#904040",cursor:"pointer",fontSize:12}}>✕</button>
               </div>
             ))}
 
@@ -5991,13 +6048,13 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   <label style={{fontSize:10,color:"#7a8a98",display:"block",marginBottom:2}}>Week Starting (Monday)</label>
                   <input type="date" value={bkMonday} onChange={e=>setBkMonday(e.target.value)} style={{...css.inp,width:160}}/>
                 </div>
-                <button onClick={()=>{ if(bkMonday){ setFierceBackupSet(p=>{const n=new Set(p);n.add(bkMonday);return n;}); setBkMonday(""); }}} style={{...css.btn(true),background:"linear-gradient(135deg,#e0ecf8,#d0e0f0)",borderColor:"#a0c0e0",color:"#1a6fa8",padding:"7px 16px",fontSize:12}}>+ Mark Fierce Backup</button>
+                <button onClick={markFierceBackupWeek} style={{...css.btn(true),background:"linear-gradient(135deg,#e0ecf8,#d0e0f0)",borderColor:"#a0c0e0",color:"#1a6fa8",padding:"7px 16px",fontSize:12}}>+ Mark Fierce Backup</button>
               </div>
               {[...fierceBackupSet].sort().map(m=>(
                 <div key={m} style={{display:"flex",alignItems:"center",gap:8,marginBottom:5}}>
                   <span style={{fontFamily:mono,fontSize:12,color:"#5a6a78"}}>Wk of {m}</span>
                   <span style={{fontSize:11,color:"#1a6fa8",background:"#e8f0fc",border:"1px solid #a8c8e0",borderRadius:6,padding:"3px 8px",fontWeight:600}}>🛡 Fierce Backup</span>
-                  <button onClick={()=>setFierceBackupSet(p=>{const n=new Set(p);n.delete(m);return n;})} style={{background:"none",border:"none",color:"#904040",cursor:"pointer",fontSize:12}}>✕</button>
+                  <button onClick={()=>unmarkFierceBackupWeek(m)} style={{background:"none",border:"none",color:"#904040",cursor:"pointer",fontSize:12}}>✕</button>
                 </div>
               ))}
             </div>
