@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.08.07a";
+    var APP_VERSION = "2026.08.07b";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -4385,7 +4385,12 @@ function CallSchedule() {
     pushUndo(schedule);
     setSchedule(p => {
       const n = _objectSpread({}, p);
+      const creating = !n[mondayStr];
       const wk = _objectSpread({}, n[mondayStr] || {});
+      if (creating) {
+        wk.isBackup = backupMondaySet.has(mondayStr);
+        wk.isFierceBackup = fierceBackupSet.has(mondayStr);
+      }
       wk.dayCall = draft.dayCall || null;
       wk.nights = _objectSpread(_objectSpread({}, wk.nights || {}), draft.nights);
       const ov = {};
@@ -4488,7 +4493,66 @@ function CallSchedule() {
     if (openAfter) {
       setTimeout(() => openWeekEditor(openAfter), 0);
     }
-  }, [editWeekModal, schedule, appShifts, surgeons, sMap, aMap, addNotification, sendEmailNotif, pushUndo, schedulerAdminIds, openWeekEditor]);
+  }, [editWeekModal, schedule, appShifts, surgeons, sMap, aMap, addNotification, sendEmailNotif, pushUndo, schedulerAdminIds, openWeekEditor, backupMondaySet, fierceBackupSet]);
+  const setWeekFlag = (monday, flagKey, val) => {
+    setSchedule(p => {
+      const wk = p[monday];
+      if (!wk || wk[flagKey] === val) return p;
+      return _objectSpread(_objectSpread({}, p), {}, {
+        [monday]: _objectSpread(_objectSpread({}, wk), {}, {
+          [flagKey]: val
+        })
+      });
+    });
+  };
+  const markBackupWeek = () => {
+    if (!bkMonday) return;
+    setBackupMondaySet(p => {
+      const n = new Set(p);
+      n.add(bkMonday);
+      return n;
+    });
+    setWeekFlag(bkMonday, "isBackup", true);
+    logAudit("schedule.backup_mark", `Marked week of ${bkMonday} as Backup (Fierce primary)`, {
+      week: bkMonday
+    });
+    setBkMonday("");
+  };
+  const unmarkBackupWeek = m => {
+    setBackupMondaySet(p => {
+      const n = new Set(p);
+      n.delete(m);
+      return n;
+    });
+    setWeekFlag(m, "isBackup", false);
+    logAudit("schedule.backup_unmark", `Removed Backup mark from week of ${m}`, {
+      week: m
+    });
+  };
+  const markFierceBackupWeek = () => {
+    if (!bkMonday) return;
+    setFierceBackupSet(p => {
+      const n = new Set(p);
+      n.add(bkMonday);
+      return n;
+    });
+    setWeekFlag(bkMonday, "isFierceBackup", true);
+    logAudit("schedule.fierce_mark", `Marked week of ${bkMonday} as Fierce Backup`, {
+      week: bkMonday
+    });
+    setBkMonday("");
+  };
+  const unmarkFierceBackupWeek = m => {
+    setFierceBackupSet(p => {
+      const n = new Set(p);
+      n.delete(m);
+      return n;
+    });
+    setWeekFlag(m, "isFierceBackup", false);
+    logAudit("schedule.fierce_unmark", `Removed Fierce Backup mark from week of ${m}`, {
+      week: m
+    });
+  };
   const generateShareHTML = () => {
     const colors = surgeons.map((s, i) => {
       const c = surgeonColors(s.name, i);
@@ -7469,7 +7533,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       margin: "0 0 10px",
       lineHeight: 1.5
     }
-  }, "Fierce weeks are auto-imported from the schedule file above. You can also add them manually below."), React.createElement("div", {
+  }, "Marking a week here updates the stored schedule too — an already-generated week flips immediately; a week not yet generated picks the mark up when it's generated."), React.createElement("div", {
     style: {
       display: "flex",
       gap: 6,
@@ -7492,16 +7556,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       width: 160
     })
   })), React.createElement("button", {
-    onClick: () => {
-      if (bkMonday) {
-        setBackupMondaySet(p => {
-          const n = new Set(p);
-          n.add(bkMonday);
-          return n;
-        });
-        setBkMonday("");
-      }
-    },
+    onClick: markBackupWeek,
     style: css.btn(true)
   }, "+ Mark Backup")), [...backupMondaySet].sort().map(m => React.createElement("div", {
     key: m,
@@ -7520,11 +7575,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
   }, "Wk of ", m), React.createElement("span", {
     style: css.backupBanner
   }, "⚡ BACKUP — Fierce Primary"), React.createElement("button", {
-    onClick: () => setBackupMondaySet(p => {
-      const n = new Set(p);
-      n.delete(m);
-      return n;
-    }),
+    onClick: () => unmarkBackupWeek(m),
     style: {
       background: "none",
       border: "none",
@@ -7573,16 +7624,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       width: 160
     })
   })), React.createElement("button", {
-    onClick: () => {
-      if (bkMonday) {
-        setFierceBackupSet(p => {
-          const n = new Set(p);
-          n.add(bkMonday);
-          return n;
-        });
-        setBkMonday("");
-      }
-    },
+    onClick: markFierceBackupWeek,
     style: _objectSpread(_objectSpread({}, css.btn(true)), {}, {
       background: "linear-gradient(135deg,#e0ecf8,#d0e0f0)",
       borderColor: "#a0c0e0",
@@ -7615,11 +7657,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       fontWeight: 600
     }
   }, "🛡 Fierce Backup"), React.createElement("button", {
-    onClick: () => setFierceBackupSet(p => {
-      const n = new Set(p);
-      n.delete(m);
-      return n;
-    }),
+    onClick: () => unmarkFierceBackupWeek(m),
     style: {
       background: "none",
       border: "none",
