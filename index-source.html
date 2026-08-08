@@ -1304,9 +1304,13 @@ function CallSchedule() {
           if (d.holidayAssignments) setHolidayAssignments(d.holidayAssignments);
           if (Array.isArray(d.pendingLocks)) setPendingLocks(d.pendingLocks);
           // Arm the empty-save guard if the loaded row already holds real data.
+          // The legacy mirror keys are gone from post-retirement blobs, so the
+          // marker (stamped by every save) is the live signal here; the key
+          // checks still cover pre-marker blobs and snapshots.
           if ((d.schedule && Object.keys(d.schedule).length) ||
               (d.vacations && Object.keys(d.vacations).length) ||
-              (d.appShifts && Object.keys(d.appShifts).length)) {
+              (d.appShifts && Object.keys(d.appShifts).length) ||
+              (d.dataCounts && ["schedule", "vacations", "noCallDays", "appShifts"].some(k => d.dataCounts[k] > 0))) {
             everHadRealDataRef.current = true;
           }
         }
@@ -1427,7 +1431,8 @@ function CallSchedule() {
         if (Array.isArray(d.pendingLocks)) setPendingLocks(d.pendingLocks);
         if ((d.schedule && Object.keys(d.schedule).length) ||
             (d.vacations && Object.keys(d.vacations).length) ||
-            (d.appShifts && Object.keys(d.appShifts).length)) {
+            (d.appShifts && Object.keys(d.appShifts).length) ||
+            (d.dataCounts && ["schedule", "vacations", "noCallDays", "appShifts"].some(k => d.dataCounts[k] > 0))) {
           everHadRealDataRef.current = true;
         }
       } catch(e) { console.warn("Background schedule refresh failed:", e); }
@@ -1577,15 +1582,32 @@ function CallSchedule() {
   // because those two paths hand-rolled their own payload objects.) Note this
   // intentionally excludes appShifts — those persist in app_shifts_data, not in
   // this row. The JSON export adds appShifts + metadata on top of this base.
-  const buildPayload = (overrides = {}) => ({
-    surgeons, apps, vacations, noCallDays,
-    backupMondays: [...backupMondaySet],
-    fierceBackup: [...fierceBackupSet],
-    schedule, priorCounts, year1Counts,
-    startMonth, startYear, numWeeks, holidayAssignments, startMondayOverride,
-    pendingLocks,
-    ...overrides,
-  });
+  const buildPayload = (overrides = {}) => {
+    const p = {
+      surgeons, apps, vacations, noCallDays,
+      backupMondays: [...backupMondaySet],
+      fierceBackup: [...fierceBackupSet],
+      schedule, priorCounts, year1Counts,
+      startMonth, startYear, numWeeks, holidayAssignments, startMondayOverride,
+      pendingLocks,
+      ...overrides,
+    };
+    // Wipe-guard marker: real-data counts stamped from the finished payload's
+    // key WHEN PRESENT (so clearSchedule's schedule:{} override counts 0),
+    // else from state (so the guard keeps working once the mirror keys leave
+    // this payload — payload-only derivation would read every post-retirement
+    // save as wiped and block ALL saves). appShifts lives in its own table and
+    // isn't in the autosave deps, so its count can lag one render; acceptable —
+    // schedule/vacations dominate the wipe shapes and syncSchedWeeks carries
+    // its own wipe guard.
+    p.dataCounts = {
+      schedule:   Object.keys(("schedule"   in p ? p.schedule   : schedule)   || {}).length,
+      vacations:  Object.keys(("vacations"  in p ? p.vacations  : vacations)  || {}).length,
+      noCallDays: Object.keys(("noCallDays" in p ? p.noCallDays : noCallDays) || {}).length,
+      appShifts:  Object.keys(appShifts || {}).length,
+    };
+    return p;
+  };
 
   // ─── Supabase: Auto-save on changes ───
   useEffect(() => {

@@ -181,13 +181,60 @@ const db = {
 // the literal {} blob that the old Reset button wrote, but FALSE for a normal
 // clearSchedule (which keeps vacations/appShifts) — so legitimate clears still
 // save.
+//
+// Two signals, either one proves real data:
+//  1. The data keys themselves (schedule/vacations/appShifts) — how every
+//     pre-2026-08 payload/blob/snapshot is judged; unchanged.
+//  2. The dataCounts marker buildPayload stamps from the REAL sources — added
+//     so this guard survives the mirror retirement (the schedule/vacations
+//     keys are write-only mirrors headed for removal from buildPayload; once
+//     they go, signal 1 alone would classify EVERY autosave as wiped and
+//     permanently block all saves).
+// A malformed or all-zero marker adds nothing (falls through to signal 1), so
+// uncertainty still reads as wiped at the save gate. Snapshot payloads carry
+// real folded keys, so capture/restore never depend on the marker alone —
+// and restore deliberately IGNORES the marker (see snapshotHasRestorableData).
 function payloadLooksWiped(p) {
   if (!p || typeof p !== "object") return true;
   const noSchedule = !p.schedule || Object.keys(p.schedule).length === 0;
   const noVac      = !p.vacations || Object.keys(p.vacations).length === 0;
   const noApp      = !p.appShifts || Object.keys(p.appShifts).length === 0;
-  return noSchedule && noVac && noApp;
+  const c = p.dataCounts;
+  const markerSaysData = !!c && typeof c === "object" &&
+    ["schedule", "vacations", "noCallDays", "appShifts"].some(k => typeof c[k] === "number" && c[k] > 0);
+  return noSchedule && noVac && noApp && !markerSaysData;
 }
+
+// Restore-side gate: a snapshot is only worth restoring if it carries ACTUAL
+// restorable content. Deliberately IGNORES the dataCounts marker: a capture
+// whose table folds both failed produces a blob-only snapshot whose marker
+// still says "data existed" — accepting it on the marker would restore an
+// EMPTY schedule over a real one (the applier runs with wipe authorization
+// armed). payloadLooksWiped is the SAVE-side guard and may trust the marker;
+// this one must never.
+function snapshotHasRestorableData(p) {
+  if (!p || typeof p !== "object") return false;
+  return ["schedule", "vacations", "noCallDays", "appShifts"].some(
+    k => p[k] && typeof p[k] === "object" && Object.keys(p[k]).length > 0
+  );
+}
+
+// Build vacations / noCallDays maps from time_off rows — the same shape the
+// app's loadTimeOff produces ({ person_id: [[start, end, id], ...] }, sorted
+// by start). Top-level copy so snapshots.capture below can fold time_off;
+// the component keeps its own identical local const for now (it shadows this
+// one harmlessly — dedupe rides a later refactor, not a data-safety PR).
+const buildTimeOffMaps = (rows) => {
+  const vac = {}, nc = {};
+  (rows || []).forEach(r => {
+    const tgt = r.kind === "nocall" ? nc : vac;
+    (tgt[r.person_id] = tgt[r.person_id] || []).push([r.start_date, r.end_date, r.id]);
+  });
+  const byStart = (a, b) => a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0;
+  Object.values(vac).forEach(a => a.sort(byStart));
+  Object.values(nc).forEach(a => a.sort(byStart));
+  return { vac, nc };
+};
 
 // Snapshot helper. Before any destructive write, copy the row that is CURRENTLY
 // persisted (not local state) into call_schedule_snapshots so it can always be
@@ -233,6 +280,24 @@ const snapshots = {
           }
         }
       } catch (e) { console.warn("Snapshot: schedule_weeks fetch failed:", e); }
+      // Vacations/no-call live in the time_off table (the blob mirror was
+      // retired in PR #18), so fold them back in under the old mirror keys —
+      // without this, snapshots carry NO vacations and a time_off wipe would
+      // be unrecoverable. Best-effort like the schedule_weeks fold above; the
+      // explicit order makes consecutive snapshots byte-stable on ties.
+      try {
+        const tres = await fetch(
+          `${SUPABASE_URL}/rest/v1/time_off?select=id,person_id,kind,start_date,end_date&order=start_date.asc`,
+          { headers: dbAuthHeaders() }
+        );
+        if (tres.ok) {
+          const trows = await tres.json();
+          if (Array.isArray(trows) && trows.length) {
+            const { vac, nc } = buildTimeOffMaps(trows);
+            current = { ...(current || {}), vacations: vac, noCallDays: nc };
+          }
+        }
+      } catch (e) { console.warn("Snapshot: time_off fetch failed:", e); }
       // Don't bother snapshotting an already-empty row. This exit is now
       // reached ONLY on a genuine 200 with nothing worth keeping — a real
       // failure returned above — so an empty DB still doesn't block a
@@ -314,7 +379,7 @@ const snapshots = {
       const snap = rows?.[0];
       const payload = snap && (typeof snap.data === "string" ? JSON.parse(snap.data) : snap.data);
       if (!payload) return { ok: false, error: "Snapshot not found or has no data" };
-      if (payloadLooksWiped(payload)) return { ok: false, error: "Snapshot looks empty — refusing to restore it" };
+      if (!snapshotHasRestorableData(payload)) return { ok: false, error: "Snapshot looks empty — refusing to restore it" };
       const pre = await this.capture("before_restore");
       if (!pre.ok) return { ok: false, error: "Couldn't snapshot the current state first — restore aborted, nothing changed" };
       const schedule = payload.schedule || {};
