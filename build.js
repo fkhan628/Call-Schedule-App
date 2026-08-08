@@ -24,6 +24,49 @@ const babel = require("@babel/core");
 const SRC = process.argv[2] || "index-source.html";
 const OUT = process.argv[3] || "index.html";
 
+// ── Mojibake gate ───────────────────────────────────────────────────────
+// Twice now a PowerShell 5.1 text round-trip has double-encoded a source
+// file's UTF-8 (em-dashes/checkmarks corrupted). A blanket non-ASCII check
+// can't work — this source legitimately carries thousands of non-ASCII
+// characters (em-dashes, box-drawing rules, arrows, emoji) — but the three
+// corruption signatures below never occur here legitimately. The needles
+// are built from code points so this file never contains them literally
+// and can be scanned like everything else.
+const seq = (...cps) => String.fromCharCode(...cps);
+const MOJIBAKE = [
+  ["a-circumflex + euro (U+00E2 U+20AC)", seq(0xE2, 0x20AC)],   // UTF-8 punctuation read as cp1252
+  ["replacement-char triplet (U+00EF U+00BF U+00BD)", seq(0xEF, 0xBF, 0xBD)],
+  ["A-circumflex + space (U+00C2 U+0020)", seq(0xC2, 0x20)],    // NBSP second-byte artifact
+];
+const SCAN = [
+  "index-source.html", "config.js", "generator.js", "helpers.js",
+  "app-styles.js", "build.js", "bump-version.js",
+  "test/generator-regression.js", "test/sync-guards.js",
+  "test/consistency-checks.js", "test/audit-live-backup-flags.js",
+  ".github/workflows/build.yml",
+];
+{
+  const hits = [];
+  for (const f of SCAN) {
+    if (!fs.existsSync(f)) continue;
+    const text = fs.readFileSync(f, "utf8");
+    for (const [label, needle] of MOJIBAKE) {
+      let idx = text.indexOf(needle);
+      while (idx !== -1) {
+        const line = text.slice(0, idx).split("\n").length;
+        hits.push(`${f}:${line} — ${label}`);
+        idx = text.indexOf(needle, idx + 1);
+      }
+    }
+  }
+  if (hits.length) {
+    console.error("FAIL: mojibake byte sequences in tracked source (a text round-trip corrupted UTF-8):");
+    hits.forEach(h => console.error("  " + h));
+    console.error("Restore the affected file(s) from git and redo the edit with a UTF-8-safe tool.");
+    process.exit(1);
+  }
+}
+
 const html = fs.readFileSync(SRC, "utf8");
 
 // Locate the babel block (tolerant of attribute spacing).

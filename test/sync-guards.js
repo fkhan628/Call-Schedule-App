@@ -479,13 +479,55 @@ check("restore states the time-off caveat at both surfaces (confirm + report)",
   count("re-entered or recovered manually") === 2, `found ${count("re-entered or recovered manually")}`);
 
 // intentionalScheduleWipeRef (the schedule_weeks full-delete authorization):
-// gate present, 3 known grant sites (clearSchedule, factory reset, restore
-// applier), 2 consume sites (post-wipe consume + restore's finally).
+// gate present; the grant census NAMES its three sites so a future fourth
+// grant without a matching disarm fails loudly rather than arithmetically.
 check("schedule-wipe gate present", count("!intentionalScheduleWipeRef.current") >= 1);
-check("intentionalScheduleWipeRef granted at exactly 3 sites",
+check("intentionalScheduleWipeRef granted at exactly the 3 known sites: clearSchedule, factory reset, restore applier — a 4th grant needs its own disarm story AND this census updated",
   count("intentionalScheduleWipeRef.current = true") === 3, `found ${count("intentionalScheduleWipeRef.current = true")}`);
-check("intentionalScheduleWipeRef consumed at exactly 2 sites",
+check("intentionalScheduleWipeRef consumed at exactly 2 sites (unconditional syncSchedWeeks consume + restore's finally)",
   count("intentionalScheduleWipeRef.current = false") === 2, `found ${count("intentionalScheduleWipeRef.current = false")}`);
+
+// BEHAVIOR: the empty-reset dangle (fixed 2026-08-08). The consume used to be
+// conditional on (wipingAll || wipingMost); wipingAll needs baseCount > 0, so
+// reset/clear against an ALREADY-EMPTY schedule left the ref armed — silently
+// pre-authorizing the next accidental wipe-shaped call. Extract the REAL
+// syncSchedWeeks from the component source and drive that exact case:
+// prev = {}, currentSchedule = {}, ref armed → the ref must read false after,
+// with zero network traffic. A source pin cannot catch a future early return
+// added above the consume; executing the function catches it by construction.
+await (async () => {
+  const nsrc = src.replace(/\r\n/g, "\n");
+  const START = "const syncSchedWeeks = async (currentSchedule) => {";
+  const END = `catch (e) { console.error("schedule_weeks dual-write error", e); showToast("Couldn't save schedule changes — check your connection.", "error"); }
+  };`;
+  const s = nsrc.indexOf(START), e = nsrc.indexOf(END);
+  if (s === -1 || e === -1) { check("syncSchedWeeks extractable for execution", false, "anchors not found"); return; }
+  const fnSrc = nsrc.slice(s, e + END.length);
+  let h;
+  try {
+    h = vm.runInContext(`(function(){
+      const SCHED_DUAL_WRITE = false, SCHED_READ_TABLE = true;
+      const SUPABASE_URL = "https://stub.invalid";
+      const dbAuthHeaders = () => ({});
+      const schedWeeksSyncRef = { current: {} };          // prev = {} (empty table baseline)
+      const schedWeekVersionsRef = { current: {} };
+      const intentionalScheduleWipeRef = { current: true }; // ARMED — the dangle setup
+      const userProfile = null;
+      const netCalls = [];
+      const fetch = (...a) => { netCalls.push(a); throw new Error("unexpected network in {}->{} scenario"); };
+      const setSaveError = () => {}, setSaveStatus = () => {}, setSchedule = () => {}, showToast = () => {};
+      const loadSchedFromTable = async () => null;
+      ${fnSrc}
+      return { syncSchedWeeks, intentionalScheduleWipeRef, netCalls };
+    })()`, sandbox);
+  } catch (ex) { check("syncSchedWeeks compiles standalone", false, String(ex)); return; }
+  await h.syncSchedWeeks({});
+  check("empty reset consumes the wipe authorization (prev {} → current {}, ref armed → false)",
+    h.intentionalScheduleWipeRef.current === false,
+    `ref still ${JSON.stringify(h.intentionalScheduleWipeRef.current)} after syncSchedWeeks({}) on an empty baseline`);
+  check("the {}→{} scenario issues ZERO network calls", h.netCalls.length === 0,
+    `unexpected calls: ${h.netCalls.length}`);
+})();
 
 // ══════════════════════════════════════════════════════════════
 // F. Christmas standing rule (2026-08-06): FAK covers Eve + Day, capped
