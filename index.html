@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.08.06c";
+    var APP_VERSION = "2026.08.07a";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -1900,10 +1900,7 @@ function CallSchedule() {
       if (Array.isArray(targetIds)) body.targetIds = targetIds;
       const res = await fetch(edgeFunctionUrl, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${SUPABASE_ANON_KEY}`
-        },
+        headers: dbAuthHeaders(),
         body: JSON.stringify(body)
       });
       const result = await res.json().catch(() => null);
@@ -3268,11 +3265,7 @@ function CallSchedule() {
       const url = `${SUPABASE_URL}/functions/v1/office-notifications`;
       const res = await fetch(url, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
-          apikey: SUPABASE_ANON_KEY
-        },
+        headers: dbAuthHeaders(),
         body: JSON.stringify({
           mode: "publish",
           period_label: publishLabel || ""
@@ -3299,11 +3292,7 @@ function CallSchedule() {
       const url = `${SUPABASE_URL}/functions/v1/office-notifications`;
       const res = await fetch(url, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
-          apikey: SUPABASE_ANON_KEY
-        },
+        headers: dbAuthHeaders(),
         body: JSON.stringify({
           mode: "digest"
         })
