@@ -624,6 +624,80 @@ check("listed Monday with no week → pending, NOT a violation",
 check("setWeekFlag wired at exactly 4 handler sites",
   count("setWeekFlag(") === 4, `found ${count("setWeekFlag(")}`);
 
+// ══════════════════════════════════════════════════════════════
+// I. Signup email guard (PR #24) — the PROTECTIVE branch, finally exercised
+// ══════════════════════════════════════════════════════════════
+// JH's 2026-08-08 signup only proved the benign populate-on-empty path; the
+// branch PR #24 exists for (an email the scheduler already entered survives
+// a fresh signup) had never executed anywhere. Extract the REAL guard block
+// from the component source and drive all its branches.
+console.log("\nI. signup email guard (PR #24)");
+await (async () => {
+  const nsrc = src.replace(/\r\n/g, "\n");
+  const START = 'if (signupPersonId !== "admin" && authEmail) {';
+  const END = `showToast("Couldn't verify your notification email — open Settings → Notification Settings and enter it there.", "error");
+            }
+          }`;
+  const s = nsrc.indexOf(START), e = nsrc.indexOf(END);
+  if (s === -1 || e === -1) { check("signup guard extractable for execution", false, "anchors not found"); return; }
+  if (nsrc.indexOf(START, s + 1) !== -1) { check("signup guard START anchor unique", false, "multiple matches"); return; }
+  const guardSrc = nsrc.slice(s, e + END.length);
+  let runGuard;
+  try {
+    runGuard = vm.runInContext(`(async function(signupPersonId, authEmail, fetch){
+      const SUPABASE_URL = "https://stub.invalid";
+      const dbAuthHeaders = () => ({});
+      const saved = [], toasts = [], fetches = [];
+      const wrappedFetch = fetch; // capture; re-alias below so the block's bare fetch logs
+      const saveNotifPref = (sid, updates, source) => { saved.push({ sid, updates, source }); };
+      const showToast = (m, t) => { toasts.push(String(m)); };
+      fetch = async (...a) => { fetches.push(a[0]); return wrappedFetch(...a); };
+      ${guardSrc}
+      return { saved, toasts, fetches };
+    })`, sandbox);
+  } catch (ex) { check("signup guard compiles standalone", false, String(ex)); return; }
+
+  const ok200 = (rows) => async () => ({ ok: true, status: 200, json: async () => rows, text: async () => JSON.stringify(rows) });
+  const fail500 = async () => ({ ok: false, status: 500, json: async () => null, text: async () => "boom" });
+
+  // 1. PROTECTIVE branch: scheduler-entered email exists → the guard must
+  //    write NOTHING (zero saveNotifPref calls, only the one guard GET) —
+  //    which is what "the stored email survives byte-identical" means.
+  let r = await runGuard("s5", "reh.new@example.test", ok200([{ email: "scheduler.entered@example.test" }]));
+  check("existing email → ZERO writes (stored address survives byte-identical)",
+    r.saved.length === 0 && r.toasts.length === 0 && r.fetches.length === 1,
+    `saved=${JSON.stringify(r.saved)} toasts=${r.toasts.length} fetches=${r.fetches.length}`);
+
+  // 2. POPULATE branch (the benign path JH's signup proved live): genuinely
+  //    empty slot → exactly one populate carrying the signup email + the
+  //    "signup" audit source.
+  r = await runGuard("a5", "jh.signup@example.test", ok200([]));
+  check("empty slot → exactly one populate with the signup email + source 'signup'",
+    r.saved.length === 1 && r.saved[0].sid === "a5" &&
+    r.saved[0].updates.email === "jh.signup@example.test" && r.saved[0].updates.email_notifs === true &&
+    r.saved[0].source === "signup",
+    JSON.stringify(r.saved));
+
+  // 3. FAIL-LOUD branch (the PR #24 reversal): a failed guard read writes
+  //    NOTHING and surfaces a toast — never populate-on-failure.
+  r = await runGuard("s5", "reh.new@example.test", fail500);
+  check("failed guard read → zero writes + loud toast (never populate-on-failure)",
+    r.saved.length === 0 && r.toasts.length === 1, `saved=${r.saved.length} toasts=${r.toasts.length}`);
+
+  // 4. Admin accounts skip the guard entirely (no read, no write).
+  r = await runGuard("admin", "admin@example.test", ok200([]));
+  check("admin signup → guard skipped entirely", r.saved.length === 0 && r.fetches.length === 0);
+})();
+
+// Audit wiring pins (2026-08-08): notification_preferences now audits both
+// writers. Comment-immune code needles.
+check("prefs save audits via the latest-closure bridge (1 site)",
+  count("auditRef.current.logAudit(") === 1, `found ${count("auditRef.current.logAudit(")}`);
+check("signup populate passes the 'signup' audit source (1 site)",
+  count(', "signup");') === 1, `found ${count(', "signup");')}`);
+check("latest-closure bridge assignment present",
+  count("auditRef.current = { logAudit, nameOf };") === 1, `found ${count("auditRef.current = { logAudit, nameOf };")}`);
+
 // ─── Verdict ───
 console.log(`\n${checks} checks, ${failures.length} failure(s)`);
 if (failures.length) {
