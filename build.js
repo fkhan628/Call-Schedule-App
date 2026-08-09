@@ -38,13 +38,23 @@ const MOJIBAKE = [
   ["replacement-char triplet (U+00EF U+00BF U+00BD)", seq(0xEF, 0xBF, 0xBD)],
   ["A-circumflex + space (U+00C2 U+0020)", seq(0xC2, 0x20)],    // NBSP second-byte artifact
 ];
-const SCAN = [
-  "index-source.html", "config.js", "generator.js", "helpers.js",
-  "app-styles.js", "build.js", "bump-version.js",
-  "test/generator-regression.js", "test/sync-guards.js",
-  "test/consistency-checks.js", "test/audit-live-backup-flags.js",
-  ".github/workflows/build.yml",
-];
+// Sweep EVERY tracked text file (git ls-files minus binary extensions), not
+// an allowlist: with a list, a newly tracked file isn't covered until someone
+// remembers to add its name; with the sweep it's covered the moment it's
+// committed. Fail-closed — if enumeration fails, an empty scan must not pass
+// silently as "no mojibake".
+const SCAN = (() => {
+  try {
+    const out = require("child_process").execSync("git ls-files", { encoding: "utf8" });
+    const BINARY = /\.(png|jpg|jpeg|gif|ico|webp|svg|woff2?|ttf|eot|otf|pdf|zip|mp3|mp4)$/i;
+    const files = out.split("\n").map(s => s.trim()).filter(Boolean).filter(f => !BINARY.test(f));
+    if (files.length === 0) throw new Error("git ls-files returned no files");
+    return files;
+  } catch (e) {
+    console.error("FAIL: mojibake sweep could not enumerate tracked files: " + (e && e.message ? e.message : e));
+    process.exit(1);
+  }
+})();
 {
   const hits = [];
   for (const f of SCAN) {
