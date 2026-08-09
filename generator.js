@@ -1,5 +1,71 @@
 // DSG Call Schedule — Schedule Generator & Holiday Logic
 
+/* ─── PIPELINE & RULES MAP — the one top-level narrative (distilled from the
+   retired CALL-SCHEDULE-APP-REFERENCE.md §8, 2026-08-08; archived in the
+   private repo's docs/ history). Per-phase detail lives at each phase's own
+   comment; the hard rules are ALSO pinned executably in
+   test/generator-regression.js, which re-states them independently so a
+   generator bug can't hide in shared code.
+
+   ENTRY: generate(surgeons, mondays, vac, backupMondays, priorCounts,
+   preferences, fierceBackupMondays, holAssignments, locks, prevWeekSeed,
+   vacationsOnly, yearCounts). Deterministic per run, randomized across runs;
+   a BEST-OF-50 wrapper generates candidates and keeps the fairest by the
+   tiered score (catalog #4 below), early-exiting on a perfect score.
+
+   PIPELINE (one candidate, generateOnce):
+     initial deal (soft prefs applied; holiday surgeons reserved via preAssign)
+     → fixup passes (repair hard-rule violations the deal created)
+     → VALIDATION PASS (~line 785: remaining hard-rule conflicts fixed via
+       swaps, every repair through canTakeSlot — the 2026-07 vacation-overlap
+       fix lives here)
+     → PHASE 1 (service weeks driven to ≤1 apart, high→low reassignment)
+     → PHASE 1B (weekends ≤1 apart via 2-hop chain swaps; FINAL — Phase 2
+       moves weeknights only, so it can never un-spread weekends)
+     → PHASE 2 (raw headcount PRIMARY, weighted burden tiebreak only).
+
+   canTakeSlot(...) is the single eligibility chokepoint — every assignment
+   and every rebalancing move passes through it.
+
+   HARD RULES (enforced; bend only if a week otherwise can't be covered):
+     - No Service Week + a weeknight for the same surgeon in one week.
+     - No back-to-back weeknights (Mon then Tue, etc.).
+     - Recovery: weekend surgeon doesn't get the following Mon/Tue night;
+       Thu night + that same weekend is blocked (Mon/Tue/Wed + weekend OK).
+     - Holiday coverage is 24h by one surgeon, reserved across that week and
+       never moved by a rebalancing pass.
+     - Never schedule over VACATION (matched to each shift's real hours).
+       NO-CALL differs on the trailing edge only: on call the night BEFORE a
+       no-call day is allowed; before a vacation day it is not — that is why
+       the separate vacationsOnly map is threaded through generate().
+     - Manual locks are honored exactly and skipped by every pass — even
+       over a listed vacation. (The lock UI's "dc" slot key is normalized to
+       "dayCall" on application.)
+
+   SOFT RULES (preferred against at the deal; fairness passes may override):
+     Service week (its Saturday) → next weekend; back-to-back weekends;
+     weekend → next Tuesday night.
+
+   FAIRNESS OBJECTIVE: raw shift count is PRIMARY — the metric people
+   actually perceive by tallying the calendar. Per-type tightness first
+   (service weeks ≤1, weekends ≤1), then total ≤1; weighted burden ONLY
+   breaks ties among equal raw counts and can never widen a raw spread. A
+   clean 14-week period (14 SW / 14 wknd / 56 nights ÷ 7 = 2/2/8) can hit
+   every goal at once; uneven periods keep SW/weekends tightest and absorb
+   the off-by-one in weeknights.
+
+   HOLIDAYS (getHolidays + the app's holidayAssignments): each holiday has
+   surgeon A (the 24h holiday day) and B (the surrounding day-after/night —
+   collapsed pairs allowed, surgeonB:null). Monday holidays: A covers the
+   Monday 24h, B the night before; the service-week doctor starts Tuesday.
+   Friday holidays: Fri (A) + Sat (B). CHRISTMAS STANDING RULE (2026-08):
+   FAK covers BOTH Eve and Day, capped at exactly two days, with a fail-LOUD
+   lock — an unresolvable designated surgeon leaves Christmas unassigned and
+   warns, never silently rotates. Major/minor pools are tracked separately;
+   pair fairness is tenure-normalized by dated ELIGIBLE holidays
+   (holidayRate in config.js; zero-eligible → 0, never NaN).
+   ─── */
+
 /* ─── WEIGHTING & SCORING SCHEMES — one catalog so no future reader has to
    reverse-engineer which number governs what. FOUR distinct weightings live in
    this file (a fifth — billing — lives in the app UI, not here). They are

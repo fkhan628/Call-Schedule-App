@@ -2,11 +2,14 @@
 
 *Rewritten 2026-07-02. Supersedes the earlier CLAUDE.md (which had an identity-model
 error, listed six edge functions instead of seven, and predated the backup/restore
-system). Architecture deep-dive: `CALL-SCHEDULE-APP-REFERENCE.md`. Task queue +
-state docs (SESSION-HANDOFF-STATE, PROTECTIONS, FACT-OWNERSHIP): canonical in the
-PRIVATE repo `Call-Schedule-App-server/docs/` since 2026-08-08 — edit there,
-commit, sync out; OneDrive copies are working copies. Edge-function
-versions/state: the private repo's README version table.*
+system). The old architecture deep-dive (CALL-SCHEDULE-APP-REFERENCE) was retired
+2026-08-08 after a fact-ownership census — its only unowned content, the generator
+pipeline/rules narrative, now lives at the top of `generator.js`; the archived
+file is in the private repo's docs/ git history. Task queue + state docs
+(SESSION-HANDOFF-STATE, PROTECTIONS, FACT-OWNERSHIP): canonical in the PRIVATE
+repo `Call-Schedule-App-server/docs/` since 2026-08-08 — edit there, commit, sync
+out; OneDrive copies are working copies. Edge-function versions/state: the
+private repo's README version table.*
 
 On-call schedule generator (React PWA) for a 7-surgeon general surgery group (DSG).
 Frontend on GitHub Pages, backend on Supabase (project ref `xqongyahdnkozqunpwmu`).
