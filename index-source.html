@@ -107,6 +107,55 @@
     });
   </script>
   <script type="text/babel">
+    /* ═══════════════════════════════════════════════════════════════════
+       IN-FILE CONVENTIONS — read before editing (Babel strips this from the
+       build; it exists for the next person editing THIS file).
+
+       1. REF-BRIDGE for []-memoized callbacks. Any useCallback with [] deps
+          captures its FIRST render's closure forever. Calling a per-render
+          helper (logAudit, nameOf, anything reading userProfile/surgeons)
+          from inside one silently uses stale state — audit entries
+          attributed to "Unknown", decisions made on day-one data. The fix
+          is a ref updated every render (auditRef; the day-off flush bridge)
+          and calling through ref.current. This idiom was independently
+          rediscovered TWICE (PR #30, PR #40); both failure modes were
+          silent. If your callback has [] deps and calls anything that isn't
+          a setState or a ref, route it through a bridge.
+
+       2. TWO SOURCES OF TRUTH need a same-action writer and a tripwire.
+          Before adding any mirror/duplicate of existing state, check
+          FACT-OWNERSHIP.md (untracked, repo root). Three drifted copies
+          have been found by accident already (year2Counts, the backup-week
+          flags, the blob mirrors); each cost a session to unwind.
+
+       3. FAIL LOUD. Every write checks its result and toasts on failure;
+          every read distinguishes "failed" from "empty" (an RLS-blocked
+          read is HTTP 200 + [] — silent). db.query and .single() THROW on
+          HTTP failure. Never add an empty catch; never return [] for a
+          failed load. This app's entire incident history is silent
+          failures.
+
+       4. GUARD REFS are one-shot grant/consume. everHadRealDataRef,
+          allowWipeSaveRef, intentionalScheduleWipeRef each have pinned
+          grant/consume site COUNTS in test/sync-guards.js section E. A new
+          site means updating the pinned count in the same PR — the red
+          check is the review prompt, not an obstacle.
+
+       5. SOURCE PINS scan this file for exact substrings. Comments count
+          too — write prose in comments, not code patterns, or a comment
+          can silently satisfy (or break) a pin. Verify the live build by
+          IDENTIFIERS and string literals, never comments (Babel strips
+          them).
+
+       6. THE STATE BUNDLE (buildStateBundle) is arguments, not persistence.
+          Its schedule/vacations/noCallDays keys feed four consumers and are
+          stripped from every blob write — see the comment on the function
+          before "simplifying" it.
+
+       7. NEVER round-trip this file through PowerShell 5.1 text cmdlets
+          (Get-Content/Set-Content) — it double-encodes UTF-8. build.js
+          fails the build on the corruption signatures (the mojibake gate).
+       ═══════════════════════════════════════════════════════════════════ */
     const { useState, useMemo, useCallback, useRef, useEffect } = React;
 
 function CallSchedule() {
