@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.08.17b";
+    var APP_VERSION = "2026.08.17c";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -129,6 +129,15 @@ function CallSchedule() {
       return false;
     }
   }, []);
+  const isOrView = useMemo(() => {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      return params.get("public") === "1" && params.get("view") === "or";
+    } catch (e) {
+      return false;
+    }
+  }, []);
+  const appOffVisible = !isPublicMode || isOrView;
   const [view, setView] = useState("calendar");
   const [surgeons, setSurgeons] = useState(INIT_SURGEONS);
   const [apps, setApps] = useState(INIT_APPS);
@@ -1283,7 +1292,7 @@ function CallSchedule() {
         } catch (e) {
           console.error("APP shifts load failed:", e);
         }
-        if (!isPublicMode) try {
+        if (appOffVisible) try {
           const {
             data: offRow
           } = await supabase.from("app_shifts_data").select("data,updated_at").eq("id", "dayoff").single();
@@ -1379,7 +1388,7 @@ function CallSchedule() {
           data: appRow
         } = await supabase.from("app_shifts_data").select("data").eq("id", "main").single();
         if (appRow !== null && appRow !== void 0 && appRow.data && typeof appRow.data === "object") setAppShifts(appRow.data);
-        if (!isPublicMode) {
+        if (appOffVisible) {
           const {
             data: offRow
           } = await supabase.from("app_shifts_data").select("data,updated_at").eq("id", "dayoff").single();
@@ -6295,7 +6304,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     style: {
       color: "#7a8a98"
     }
-  }, "Read-only view"), lastSyncRef.current && React.createElement(React.Fragment, null, " · Last updated: ", new Date(lastSyncRef.current).toLocaleString(undefined, {
+  }, isOrView ? "OR board · read-only" : "Read-only view"), lastSyncRef.current && React.createElement(React.Fragment, null, " · Last updated: ", new Date(lastSyncRef.current).toLocaleString(undefined, {
     month: "short",
     day: "numeric",
     year: "numeric",
@@ -7508,7 +7517,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       margin: "0 0 10px",
       lineHeight: 1.5
     }
-  }, "Tap an APP's chip to mark them off that weekday (tap again to undo). Doesn't affect call assignment, and never appears on the public calendar. Weekends aren't tracked — a weekend APP name is a call assignment, entered above."), !appDayOffLoaded && React.createElement("div", {
+  }, "Tap an APP's chip to mark them off that weekday (tap again to undo). Doesn't affect call assignment. Hidden from the plain public calendar; visible on the OR board link shared with the charge nurses. Weekends aren't tracked — a weekend APP name is a call assignment, entered above."), !appDayOffLoaded && React.createElement("div", {
     style: {
       fontSize: 12,
       color: "#c04040",
@@ -9650,7 +9659,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     label: "Vacations",
     color: "#5a6a78",
     icon: "🏖"
-  }, ...(!isPublicMode ? [{
+  }, ...(appOffVisible ? [{
     key: "appOff",
     label: "APP Off",
     color: "#7a8a98",
@@ -10065,7 +10074,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             color: ((_APP_PAL = APP_PAL[((_aMap$e$appId3 = aMap[e.appId]) === null || _aMap$e$appId3 === void 0 ? void 0 : _aMap$e$appId3.idx) % APP_PAL.length]) === null || _APP_PAL === void 0 ? void 0 : _APP_PAL.tx) || "#5a6878"
           }
         }, ((_aMap$e$appId4 = aMap[e.appId]) === null || _aMap$e$appId4 === void 0 ? void 0 : _aMap$e$appId4.name) || "?"));
-      }), !isPublicMode && calFilters.appOff && !sf && calAppFilter !== "none" && !calDeptFilter && (() => {
+      }), appOffVisible && calFilters.appOff && !sf && calAppFilter !== "none" && !calDeptFilter && (() => {
         const offNames = (appDayOff[ds] || []).map(dayOffId).filter(aid => aid && (calAppFilter === "all" || aid === calAppFilter)).map(aid => {
           var _aMap$aid2;
           return ((_aMap$aid2 = aMap[aid]) === null || _aMap$aid2 === void 0 ? void 0 : _aMap$aid2.name) || aid;
