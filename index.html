@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.08.08g";
+    var APP_VERSION = "2026.08.17a";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -1545,6 +1545,7 @@ function CallSchedule() {
     startMondayOverride,
     pendingLocks
   }, overrides);
+  const canWriteBlob = isScheduler;
   useEffect(() => {
     if (!loaded) return;
     if (isPublicMode) return;
@@ -1565,6 +1566,8 @@ function CallSchedule() {
         return;
       }
       allowWipeSaveRef.current = false;
+      syncSchedWeeks(payload.schedule);
+      if (!canWriteBlob) return;
       try {
         const ts = new Date().toISOString();
         const blobData = _objectSpread({}, payload);
@@ -1584,13 +1587,13 @@ function CallSchedule() {
         setSaveError(false);
         setSaveStatus("Saved");
         setTimeout(() => setSaveStatus(""), 2000);
-        syncSchedWeeks(payload.schedule);
       } catch (e) {
         console.error("Save failed:", e);
         setSaveError(true);
-        setSaveStatus("Save failed — retrying…");
         const failMsg = String((e === null || e === void 0 ? void 0 : e.message) || e);
-        showToast(/401|JWT|expired/i.test(failMsg) ? "Changes aren't saving — your session expired. Reload or sign in again." : "Changes aren't saving — check your connection.", "error");
+        const denied = /42501|row-level security|\b403\b/i.test(failMsg);
+        setSaveStatus(denied ? "⚠ Not saved — no permission" : "Save failed — retrying…");
+        showToast(denied ? "Couldn't save the shared setup — your account doesn't have permission. Ask the scheduler." : /401|JWT|expired/i.test(failMsg) ? "Changes aren't saving — your session expired. Reload or sign in again." : "Changes aren't saving — check your connection.", "error");
       }
     }, 800);
     return () => clearTimeout(timer);
@@ -1649,6 +1652,7 @@ function CallSchedule() {
         } catch (e) {
           console.warn("Unload flush (schedule_weeks) failed:", e);
         }
+        if (!canWriteBlob) return;
         fetch(`${SUPABASE_URL}/rest/v1/call_schedule_data?on_conflict=id`, {
           method: "POST",
           headers: {
@@ -1711,6 +1715,7 @@ function CallSchedule() {
     if (isPublicMode) return;
     if (loadFailedRef.current) return;
     if (!edgeFunctionUrl || !edgeFunctionUrl.trim()) return;
+    if (!canWriteBlob) return;
     const timer = setTimeout(async () => {
       try {
         const {
@@ -1723,11 +1728,12 @@ function CallSchedule() {
         if (cfgErr) throw new Error(`edge fn url save failed: ${String(cfgErr).slice(0, 200)}`);
       } catch (e) {
         console.error("Edge Function URL save failed:", e);
-        showToast("Couldn't save the Edge Function URL — check your connection.", "error");
+        const m = String((e === null || e === void 0 ? void 0 : e.message) || e);
+        showToast(/42501|row-level security|\b403\b/i.test(m) ? "Couldn't save the Edge Function URL — your account doesn't have permission." : "Couldn't save the Edge Function URL — check your connection.", "error");
       }
     }, 500);
     return () => clearTimeout(timer);
-  }, [loaded, edgeFunctionUrl]);
+  }, [loaded, edgeFunctionUrl, canWriteBlob]);
   const sessionSnapRef = useRef(false);
   useEffect(() => {
     if (!loaded || sessionSnapRef.current) return;
