@@ -1666,6 +1666,14 @@ function CallSchedule() {
     ...overrides,
   });
 
+  // Mirrors the DB predicate these shared-config tables actually enforce:
+  // is_scheduler_or_admin() = role IN ('scheduler','admin'). `isScheduler` is
+  // set from exactly that (role === "scheduler" || role === "admin"), so it is
+  // the honest client-side twin. NOTE this is NOT the user_profiles predicate
+  // (role='scheduler' OR person_id='admin') — different tables, different
+  // rule; verified against pg_proc 2026-08-17.
+  const canWriteBlob = isScheduler;
+
   // ─── Supabase: Auto-save on changes ───
   useEffect(() => {
     if (!loaded) return;
@@ -1700,12 +1708,36 @@ function CallSchedule() {
         return;
       }
       allowWipeSaveRef.current = false; // consume one-shot bypass
+      // ── The two legs are INDEPENDENT (2026-08-17) ──
+      // They used to be sequential inside one try: the blob upsert threw on
+      // failure, so `syncSchedWeeks` below never ran. That silently DISCARDED
+      // the schedule change — for members permanently (RLS denies them the
+      // blob, see canWriteBlob) and for schedulers on any transient blob 5xx.
+      // A member's two-way swap or trade acceptance showed in the UI, said
+      // "Save failed", and never reached schedule_weeks. Now: the weeks leg
+      // ALWAYS runs, for everyone, regardless of the blob's outcome.
+
+      // Leg 1 — schedule_weeks (CAS). Every session, every role: members are
+      // intended users of the swap/trade paths, and this is the only
+      // steady-state writer of the table. Its own error handling is loud
+      // (toasts inside syncSchedWeeks), so member failures still surface.
+      syncSchedWeeks(payload.schedule);
+
+      // Leg 2 — the config blob. RLS restricts call_schedule_data writes to
+      // scheduler/admin (is_scheduler_or_admin() = role IN ('scheduler',
+      // 'admin')); `isScheduler` mirrors that exactly. A member has nothing
+      // to write here — every member-owned fact lives in its own table
+      // (time_off, notification_preferences, client_versions, …), and the
+      // dep array only goes dirty for them via ADOPTION of other people's
+      // changes. So they must not attempt it: attempting produced a 403 on a
+      // 60s cadence and a permanent red "Save failed" header.
+      if (!canWriteBlob) return;
       try {
         const ts = new Date().toISOString();
         // Stage 6: the schedule lives in schedule_weeks now. Write everything
-        // else to the blob, but omit the schedule (syncSchedWeeks below persists
-        // it to the table with CAS). `payload` itself keeps the schedule so the
-        // empty-save guard above still sees real data and syncSchedWeeks works.
+        // else to the blob, but omit the schedule (leg 1 above persists it to
+        // the table with CAS). `payload` itself keeps the schedule so the
+        // empty-save guard above still sees real data and leg 1 works.
         const blobData = { ...payload }; delete blobData.schedule;
         // Vacations/no-call live in time_off (single source since the
         // migration); the blob copy was a dead mirror with no data readers —
@@ -1728,15 +1760,22 @@ function CallSchedule() {
         setSaveError(false);
         setSaveStatus("Saved");
         setTimeout(() => setSaveStatus(""), 2000);
-        syncSchedWeeks(payload.schedule); // schedule_weeks write with CAS (fire-and-forget)
       } catch (e) {
         console.error("Save failed:", e);
         setSaveError(true);
-        setSaveStatus("Save failed — retrying…");
         const failMsg = String(e?.message || e);
-        showToast(/401|JWT|expired/i.test(failMsg)
-          ? "Changes aren't saving — your session expired. Reload or sign in again."
-          : "Changes aren't saving — check your connection.", "error");
+        // Classify on the RESPONSE BODY, not the status code: PostgREST
+        // answers 401 for an anonymous RLS denial and 403 for an
+        // authenticated one, so the status alone is unreliable — but the body
+        // always carries code 42501 / "row-level security". A permissions
+        // failure is NOT retrying into success, so it must not claim to be.
+        const denied = /42501|row-level security|\b403\b/i.test(failMsg);
+        setSaveStatus(denied ? "⚠ Not saved — no permission" : "Save failed — retrying…");
+        showToast(denied
+          ? "Couldn't save the shared setup — your account doesn't have permission. Ask the scheduler."
+          : /401|JWT|expired/i.test(failMsg)
+            ? "Changes aren't saving — your session expired. Reload or sign in again."
+            : "Changes aren't saving — check your connection.", "error");
       }
     }, 800);
     return () => clearTimeout(timer);
@@ -1773,6 +1812,9 @@ function CallSchedule() {
       pendingSaveRef.current = null; // Clear optimistically — if the flush
       //                                fails we'll re-save on next edit or
       //                                via the regular debounce path.
+      //                                For members the only leg is the weeks
+      //                                blind-upsert below, so "pending" here
+      //                                means exactly that leg for them.
 
       try {
         const session = (typeof auth !== "undefined" && auth.getSession) ? auth.getSession() : null;
@@ -1803,6 +1845,13 @@ function CallSchedule() {
             }).catch(() => {});
           }
         } catch (e) { console.warn("Unload flush (schedule_weeks) failed:", e); }
+        // Blob leg — same RLS reality as the debounced autosave: members are
+        // denied, so they must not fire it. They keep the weeks leg above
+        // (their swaps/trades still land on unload); only this half is
+        // scheduler/admin. Previously this 4xx'd into the keepalive catch and
+        // vanished — silent, but still a guaranteed-failing request on every
+        // backgrounding of every member's phone.
+        if (!canWriteBlob) return;
         // Fire with keepalive so the browser finishes the request even if
         // the page is being unloaded. Payloads >64KB may still be dropped;
         // in practice the blob (now schedule-less) is well under this.
@@ -1882,6 +1931,15 @@ function CallSchedule() {
     // URL is not a supported app action — do it in SQL if ever needed).
     if (loadFailedRef.current) return;
     if (!edgeFunctionUrl || !edgeFunctionUrl.trim()) return;
+    // call_schedule_config writes are scheduler/admin per RLS, and the value
+    // being written here is one the session just LOADED — so for a member
+    // this effect could only ever echo a value back and be denied. It fired
+    // on every load in every signed-in session since 2026-05-15, silently
+    // until the 2026-07-02 toast made it a red "check your connection" on a
+    // member's screen. Only a session that can actually write it may try.
+    // (The Settings field that legitimately EDITS this is already
+    // scheduler/admin-gated; this effect is just its persist-back.)
+    if (!canWriteBlob) return;
     const timer = setTimeout(async () => {
       try {
         const { error: cfgErr } = await supabase
@@ -1893,11 +1951,16 @@ function CallSchedule() {
         if (cfgErr) throw new Error(`edge fn url save failed: ${String(cfgErr).slice(0, 200)}`);
       } catch(e) {
         console.error("Edge Function URL save failed:", e);
-        showToast("Couldn't save the Edge Function URL — check your connection.", "error");
+        // Same body-based classification as the autosave — a permissions
+        // denial is not a connectivity problem.
+        const m = String(e?.message || e);
+        showToast(/42501|row-level security|\b403\b/i.test(m)
+          ? "Couldn't save the Edge Function URL — your account doesn't have permission."
+          : "Couldn't save the Edge Function URL — check your connection.", "error");
       }
     }, 500);
     return () => clearTimeout(timer);
-  }, [loaded, edgeFunctionUrl]);
+  }, [loaded, edgeFunctionUrl, canWriteBlob]);
 
   // ─── Periodic snapshot safety net ───
   // The destructive buttons snapshot on their own, but corruption can also
