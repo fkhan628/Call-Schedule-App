@@ -530,6 +530,139 @@ await (async () => {
 })();
 
 // ══════════════════════════════════════════════════════════════
+// E2. Member session: blob leg gated, weeks leg NEVER coupled to it
+// ══════════════════════════════════════════════════════════════
+// The 2026-08-17 incident. call_schedule_data / call_schedule_config are
+// scheduler-only at the DB (is_scheduler_or_admin() = role IN
+// ('scheduler','admin')); the client attempted both from every session.
+// Members got a 403 every 60s (loadTimeOff allocates fresh maps on each poll,
+// dirtying the autosave deps in a session where the user touched nothing).
+// WORSE: the blob upsert THREW, so syncSchedWeeks — the only steady-state
+// writer of schedule_weeks — never ran. A member's two-way swap or trade
+// acceptance was applied in the UI, reported "Save failed", and never reached
+// the database. These checks pin BOTH halves of the fix.
+console.log("\nE2. member blob gating + leg decoupling");
+
+// ── The headline regression test, executed on the REAL autosave body ──
+// Extract the debounced save callback and run it with a member context whose
+// blob write is denied. The weeks leg MUST still fire.
+await (async () => {
+  const nsrc = src.replace(/\r\n/g, "\n");
+  const START = "      allowWipeSaveRef.current = false; // consume one-shot bypass";
+  const END = "    }, 800);";
+  const s = nsrc.indexOf(START), e = nsrc.indexOf(END, s);
+  if (s === -1 || e === -1) { check("autosave save-body extractable", false, "anchors not found"); return; }
+  const bodySrc = nsrc.slice(s, e);
+
+  const run = async (canWrite, blobOutcome) => {
+    const harness = vm.runInContext(`(function(){
+      return async function(canWriteBlob, blobOutcome){
+        const calls = { weeks: 0, blob: 0, toasts: [], status: [] };
+        const payload = { schedule: { "2026-08-17": { dayCall: "s1" } }, surgeons: [1] };
+        const allowWipeSaveRef = { current: false };
+        const everHadRealDataRef = { current: true };
+        const pendingSaveRef = { current: payload };
+        const lastSyncRef = { current: null };
+        const payloadLooksWiped = () => false;
+        const syncSchedWeeks = () => { calls.weeks++; };
+        const supabase = { from: () => ({ upsert: async () => { calls.blob++; return blobOutcome; } }) };
+        const setSaveError = () => {};
+        const setSaveStatus = (s) => { calls.status.push(s); };
+        const showToast = (m) => { calls.toasts.push(String(m)); };
+        // The extracted body contains bare \`return\` statements (empty-save
+        // guard, the blob gate). Run it inside its own function so those exit
+        // only the body, and the recorder still comes back.
+        await (async () => {
+          ${bodySrc}
+        })();
+        return calls;
+      };
+    })()`, sandbox);
+    return harness(canWrite, blobOutcome);
+  };
+
+  const denial = { error: '{"code":"42501","message":"new row violates row-level security policy for table \\"call_schedule_data\\""}' };
+
+  // 1. MEMBER: blob leg must not be attempted at all; weeks leg must fire.
+  const member = await run(false, denial);
+  check("member: schedule_weeks write STILL happens (the data-loss regression test)",
+    member.weeks === 1, `weeks writes = ${member.weeks}`);
+  check("member: ZERO blob write attempts", member.blob === 0);
+  check("member: no save-failure toast, no red status churn",
+    member.toasts.length === 0 && member.status.length === 0,
+    `toasts=${JSON.stringify(member.toasts)} status=${JSON.stringify(member.status)}`);
+
+  // 2. SCHEDULER whose blob write FAILS: weeks leg must STILL fire (the
+  //    coupling also bit schedulers on any transient 5xx).
+  const schedFail = await run(true, { error: "500 upstream boom" });
+  check("scheduler + failed blob: weeks leg still fired (decoupled both directions)",
+    schedFail.weeks === 1, `weeks writes = ${schedFail.weeks}`);
+  check("scheduler + failed blob: connection toast (not a permissions one)",
+    schedFail.toasts.some(t => /check your connection/.test(t)));
+
+  // 3. SCHEDULER, blob DENIED by RLS: must read as permissions, never as
+  //    "retrying" (nothing retries on a timer) and never as connectivity.
+  const schedDenied = await run(true, denial);
+  check("RLS denial classified as permissions (body 42501, not status code)",
+    schedDenied.toasts.some(t => /permission/i.test(t)) &&
+    !schedDenied.toasts.some(t => /check your connection/.test(t)),
+    JSON.stringify(schedDenied.toasts));
+  check("RLS denial never renders 'Save failed — retrying…'",
+    !schedDenied.status.some(s => /retrying/.test(s)), JSON.stringify(schedDenied.status));
+
+  // 4. SCHEDULER, blob OK: unchanged happy path.
+  const schedOk = await run(true, { error: null });
+  check("scheduler + blob OK: both legs fire, status 'Saved'",
+    schedOk.weeks === 1 && schedOk.status.includes("Saved"));
+})();
+
+// ── Baseline-ref invariant: now load-bearing ──
+// With syncSchedWeeks running in member sessions, the only thing stopping
+// every member's phone from echo-writing the table on every adopted foreign
+// change is that the adoption sites update schedWeeksSyncRef alongside
+// setSchedule. Execute the REAL syncSchedWeeks with state == baseline.
+await (async () => {
+  const nsrc = src.replace(/\r\n/g, "\n");
+  const START = "const syncSchedWeeks = async (currentSchedule) => {";
+  const END = `catch (e) { console.error("schedule_weeks dual-write error", e); showToast("Couldn't save schedule changes — check your connection.", "error"); }
+  };`;
+  const s = nsrc.indexOf(START), e = nsrc.indexOf(END);
+  if (s === -1 || e === -1) { check("syncSchedWeeks extractable (adoption test)", false, "anchors not found"); return; }
+  const fnSrc = nsrc.slice(s, e + END.length);
+  const adopted = { "2026-08-17": { dayCall: "s1", nights: { mon: "s2" } } };
+  const h = vm.runInContext(`(function(){
+    const SCHED_DUAL_WRITE = false, SCHED_READ_TABLE = true;
+    const SUPABASE_URL = "https://stub.invalid";
+    const dbAuthHeaders = () => ({});
+    const adopted = ${JSON.stringify(adopted)};
+    // Exactly what the realtime handler does: state AND baseline updated together.
+    const schedWeeksSyncRef = { current: JSON.parse(JSON.stringify(adopted)) };
+    const schedWeekVersionsRef = { current: { "2026-08-17": 3 } };
+    const intentionalScheduleWipeRef = { current: false };
+    const userProfile = { person_id: "s7" };   // a MEMBER
+    const netCalls = [];
+    const fetch = (...a) => { netCalls.push(a[0]); throw new Error("no network expected"); };
+    const setSaveError = () => {}, setSaveStatus = () => {}, setSchedule = () => {}, showToast = () => {};
+    const loadSchedFromTable = async () => null;
+    ${fnSrc}
+    return { syncSchedWeeks, netCalls, adopted };
+  })()`, sandbox);
+  await h.syncSchedWeeks(h.adopted);
+  check("adopted foreign schedule state produces ZERO schedule_weeks writes in a member session",
+    h.netCalls.length === 0, `unexpected requests: ${JSON.stringify(h.netCalls)}`);
+})();
+
+// Source pins: the gate exists, mirrors the DB predicate, and is applied at
+// all three write sites (autosave blob leg, keepalive blob leg, edge-URL).
+check("canWriteBlob defined once, mirroring is_scheduler_or_admin()",
+  count("const canWriteBlob = isScheduler;") === 1);
+check("blob gate applied at exactly 3 sites (autosave, keepalive flush, edge-URL)",
+  count("if (!canWriteBlob) return;") === 3, `found ${count("if (!canWriteBlob) return;")}`);
+check("weeks leg runs BEFORE the blob gate (decoupling is structural, not incidental)",
+  src.replace(/\r\n/g, "\n").indexOf("syncSchedWeeks(payload.schedule);") <
+  src.replace(/\r\n/g, "\n").indexOf("if (!canWriteBlob) return;"));
+
+// ══════════════════════════════════════════════════════════════
 // F. Christmas standing rule (2026-08-06): FAK covers Eve + Day, capped
 // ══════════════════════════════════════════════════════════════
 console.log("\nF. Christmas standing rule");
