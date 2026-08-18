@@ -186,6 +186,30 @@ function CallSchedule() {
     } catch(e) { return false; }
   }, []);
 
+  // ─── OR board (?public=1&view=or) — a LAYER on public mode, never a mode ───
+  // For the OR charge nurses. It is public mode in every respect — it inherits
+  // all four write guards and every render/tab gate automatically, because
+  // those key on isPublicMode and this const can only ever ADD to it (note the
+  // `isPublicMode &&`: view=or without public=1 is nothing at all). Its ONLY
+  // delta is the APP day-off layer, which plain public mode deliberately
+  // suppresses for external schedulers. NB APP call shifts (the "A ..."
+  // entries) already render under plain ?public=1 — verified live — so they
+  // need no flag; day-offs are the whole difference.
+  // Access control is link obscurity, identical in kind to the existing public
+  // URL: everything shown here is ALREADY anon-readable at the API layer
+  // (app_shifts_data SELECT is anon per the pg_policies audit), so this
+  // changes DISPLAY, not ACCESS. Accepted by the owner for two named OR
+  // charge nurses.
+  const isOrView = useMemo(() => {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      return params.get("public") === "1" && params.get("view") === "or";
+    } catch(e) { return false; }
+  }, []);
+  // One predicate, four call sites (2 fetch, 2 render). Internal sessions are
+  // unaffected (!isPublicMode is true for them).
+  const appOffVisible = !isPublicMode || isOrView;
+
   const [view, setView] = useState("calendar");
 
   const [surgeons, setSurgeons] = useState(INIT_SURGEONS);
@@ -1424,9 +1448,11 @@ function CallSchedule() {
         // (id="dayoff") so they inherit the can_assign_apps write gate with
         // no schema change. A missing row is the normal starting state and a
         // SUCCESSFUL read — it arms the edit gate; a thrown read leaves the
-        // gate disarmed so a tap can't overwrite unloaded data. Public mode
-        // never renders or edits day-offs, so it skips the fetch entirely.
-        if (!isPublicMode) try {
+        // gate disarmed so a tap can't overwrite unloaded data. Plain public
+        // mode never renders day-offs, so it skips the fetch entirely; the OR
+        // board (?public=1&view=or) does render them, so it fetches. Read-only
+        // either way — no public path reaches enqueueDayOffSave.
+        if (appOffVisible) try {
           const { data: offRow } = await supabase
             .from("app_shifts_data").select("data,updated_at").eq("id", "dayoff").single();
           adoptDayOffRow(offRow); // shared guard: dirty-skip + staleness check + gate arming
@@ -1530,12 +1556,15 @@ function CallSchedule() {
         const { data: appRow } = await supabase.from("app_shifts_data").select("data").eq("id", "main").single();
         if (appRow?.data && typeof appRow.data === "object") setAppShifts(appRow.data);
         // Same table, second row: the realtime subscription and poll both land
-        // here, so day-off edits propagate on the same channel. Public mode
-        // never renders day-offs — skip the fetch. Adoption goes through the
-        // shared adoptDayOffRow guard: local-dirty edits win, and a response
-        // older than our last confirmed write is discarded (a slow GET that
-        // left before our commit must not resurrect the pre-commit map).
-        if (!isPublicMode) {
+        // here, so day-off edits propagate on the same channel. Plain public
+        // mode never renders day-offs — skip the fetch; the OR board does.
+        // MUST stay in step with the mount fetch above: flipping only one
+        // leaves the OR board either blank for 60s or frozen at load state.
+        // Adoption goes through the shared adoptDayOffRow guard: local-dirty
+        // edits win, and a response older than our last confirmed write is
+        // discarded (a slow GET that left before our commit must not
+        // resurrect the pre-commit map).
+        if (appOffVisible) {
           const { data: offRow } = await supabase.from("app_shifts_data").select("data,updated_at").eq("id", "dayoff").single();
           adoptDayOffRow(offRow);
         }
@@ -5757,7 +5786,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             <p style={css.sub}>
               {isPublicMode ? (
                 <>
-                  <span style={{color:"#7a8a98"}}>Read-only view</span>
+                  <span style={{color:"#7a8a98"}}>{isOrView ? "OR board · read-only" : "Read-only view"}</span>
                   {lastSyncRef.current && <> · Last updated: {new Date(lastSyncRef.current).toLocaleString(undefined, {month:"short",day:"numeric",year:"numeric",hour:"numeric",minute:"2-digit"})}</>}
                   {!lastSyncRef.current && <> · Loading schedule…</>}
                 </>
@@ -6241,7 +6270,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           <Collapsible css={css} ck="setup_app_dayoff" defaultOpen={false}
             title={<>🗓 APP Days Off <span style={{fontWeight:400,fontSize:11,color:"#7a8a98"}}>— weekday off rotation (display-only)</span></>}>
             <p style={{fontSize:12,color:"#7a8a98",margin:"0 0 10px",lineHeight:1.5}}>
-              Tap an APP's chip to mark them off that weekday (tap again to undo). Doesn't affect call assignment, and never appears on the public calendar. Weekends aren't tracked — a weekend APP name is a call assignment, entered above.
+              Tap an APP's chip to mark them off that weekday (tap again to undo). Doesn't affect call assignment. Hidden from the plain public calendar; visible on the OR board link shared with the charge nurses. Weekends aren't tracked — a weekend APP name is a call assignment, entered above.
             </p>
             {!appDayOffLoaded && (
               <div style={{fontSize:12,color:"#c04040",fontWeight:600,margin:"0 0 10px"}}>
@@ -7201,7 +7230,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               // render below) never exists in the ?public=1 view. This is a
               // deliberate NEW gate: vacations are public by design, day-offs
               // are not.
-              ...(!isPublicMode ? [{key:"appOff",label:"APP Off",color:"#7a8a98",icon:"☕"}] : []),
+              ...(appOffVisible ? [{key:"appOff",label:"APP Off",color:"#7a8a98",icon:"☕"}] : []),
             ].map(f=>(
               <button key={f.key} onClick={()=>toggleFilter(f.key)}
                 style={{background:calFilters[f.key]?f.color+"18":"transparent",border:`1px solid ${calFilters[f.key]?f.color:dk?"#3a4a6e":"#d0d8e0"}`,color:calFilters[f.key]?f.color:dkSubtext,borderRadius:5,padding:"3px 8px",fontSize:10,fontWeight:600,cursor:"pointer",fontFamily:font,opacity:calFilters[f.key]?1:0.5}}>
@@ -7411,16 +7440,18 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                     </div>
                   ))}
 
-                  {/* APP day-offs — display-only, INTERNAL ONLY (a deliberate
-                      NEW gate: never rendered in ?public=1, unlike vacations
-                      which are public by design). ONE quiet muted line per
+                  {/* APP day-offs — display-only. NOT rendered in plain
+                      ?public=1 (a deliberate gate: vacations are public by
+                      design, day-offs are not) but DO render on the OR board
+                      ?public=1&view=or, which the charge nurses use to
+                      coordinate. ONE quiet muted line per
                       day, all off-APPs comma-joined — the 🏖 vacation-row
                       pattern, with ☕ matching the filter toggle so the icon
                       is self-teaching. Deliberately the least-loud element in
                       the cell (it's the least important); an APP off during
                       the day can still take call that night — both render.
                       Entries tolerate the planned v2 {id, note} shape. */}
-                  {!isPublicMode && calFilters.appOff && !sf && calAppFilter!=="none" && !calDeptFilter && (() => {
+                  {appOffVisible && calFilters.appOff && !sf && calAppFilter!=="none" && !calDeptFilter && (() => {
                     const offNames = (appDayOff[ds]||[]).map(dayOffId)
                       .filter(aid => aid && (calAppFilter==="all"||aid===calAppFilter))
                       .map(aid => aMap[aid]?.name||aid);

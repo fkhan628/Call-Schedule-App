@@ -663,6 +663,35 @@ check("weeks leg runs BEFORE the blob gate (decoupling is structural, not incide
   src.replace(/\r\n/g, "\n").indexOf("if (!canWriteBlob) return;"));
 
 // ══════════════════════════════════════════════════════════════
+// E3. OR board (?public=1&view=or) is a LAYER on public mode, not a mode
+// ══════════════════════════════════════════════════════════════
+// The charge-nurse view must inherit every public-mode gate — above all the
+// write guards. These pins fail if someone ever gives it an independent
+// identity (e.g. `view === "or"` without `public === "1"`, or an isOrView
+// branch on a write path).
+console.log("\nE3. OR board layering");
+
+check("isOrView requires public=1 (cannot be entered without public mode)",
+  /params\.get\("public"\)\s*===\s*"1"\s*&&\s*params\.get\("view"\)\s*===\s*"or"/.test(src),
+  "isOrView must AND public=1 with view=or");
+check("appOffVisible derives from isPublicMode/isOrView only (1 definition)",
+  count("const appOffVisible = !isPublicMode || isOrView;") === 1,
+  `found ${count("const appOffVisible = !isPublicMode || isOrView;")}`);
+check("appOffVisible used at exactly 4 sites (2 fetch, 2 render)",
+  count("appOffVisible") === 5, // 1 definition + 4 uses
+  `found ${count("appOffVisible")} occurrences (expect 5 = 1 def + 4 uses)`);
+
+// The four write guards must still key on isPublicMode ALONE — never on the
+// OR flag, which would let a nurse's link write.
+check("all 4 public-mode write guards remain `if (isPublicMode) return;`",
+  count("if (isPublicMode) return;") === 4, `found ${count("if (isPublicMode) return;")}`);
+check("isOrView never appears on a write path (no isOrView in any write guard)",
+  !/isOrView[^\n]*\breturn;/.test(src) && !/if\s*\(\s*!?\s*isOrView\s*\)\s*\{?\s*(await|supabase|fetch)/.test(src));
+// The day-off SAVE path stays internal regardless of the flag.
+check("day-off save still gated on appDayOffLoaded (edit gate untouched)",
+  count("if (!appDayOffLoaded)") >= 1);
+
+// ══════════════════════════════════════════════════════════════
 // F. Christmas standing rule (2026-08-06): FAK covers Eve + Day, capped
 // ══════════════════════════════════════════════════════════════
 console.log("\nF. Christmas standing rule");
