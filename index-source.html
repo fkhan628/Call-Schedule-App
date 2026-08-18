@@ -135,6 +135,23 @@
           failed load. This app's entire incident history is silent
           failures.
 
+          3a. A LOUD-FAILURE CONVERSION MUST NOT GATE AN INDEPENDENT
+          DOWNSTREAM WRITE BEHIND ITS THROW. When you turn a discarded
+          result into a `throw`, look at what follows it in the same `try`:
+          anything that was merely SEQUENTIAL becomes CONDITIONAL, and a
+          previously-independent write silently stops happening.
+          WORKED EXAMPLE (2026-07-27 → found by field report 2026-08-17):
+          the autosave's blob result became `if (saveErr) throw`, and the
+          very next statement was `syncSchedWeeks(payload.schedule)` — the
+          only steady-state writer of schedule_weeks. For members (whom RLS
+          denies the blob) every two-way swap, trade acceptance and undo was
+          then applied in the UI, reported "Save failed", and NEVER reached
+          the database; schedulers lost the same writes on any transient
+          blob 5xx. The hardening was correct; its blast radius was not
+          considered. The fix was to run the independent leg FIRST and
+          unconditionally. Sequential ≠ dependent — if two writes target
+          different tables, neither may sit inside the other's failure path.
+
        4. GUARD REFS are one-shot grant/consume. everHadRealDataRef,
           allowWipeSaveRef, intentionalScheduleWipeRef each have pinned
           grant/consume site COUNTS in test/sync-guards.js section E. A new
