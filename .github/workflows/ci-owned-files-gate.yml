@@ -1,0 +1,25 @@
+# CI-owned files gate — index.html and version.json are written by build.yml
+# AFTER merge to main. A PR that carries either file regresses main with a
+# stale copy on merge, or hand-bumps into a collision with CI's own
+# sequencing. The rule ("never touch them by hand") has been violated once in
+# each direction since it was written — a memory problem no document fixes,
+# so this check exists (the mojibake-gate move applied here). build.yml's
+# push-to-main filters are why PR branches see no other CI; that is a filter
+# choice, not a platform limit — this gate runs on every PR.
+name: CI-owned files gate
+on: pull_request
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail if the PR touches index.html or version.json
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          files=$(gh api "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/files" --paginate --jq '.[].filename')
+          printf 'PR changed files:\n%s\n' "$files"
+          if printf '%s\n' "$files" | grep -qxE 'index\.html|version\.json'; then
+            echo "::error::index.html / version.json are CI-owned (build.yml commits them to main post-merge). Reset them to main's content and re-push."
+            exit 1
+          fi
+          echo "clean — no CI-owned files in this PR"
