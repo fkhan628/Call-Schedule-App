@@ -909,6 +909,31 @@ check("prefs audit never logs the plaintext email (masked only)",
   count("email: row.email") === 0 && count("email_masked") >= 1,
   `plaintext sites=${count("email: row.email")} masked sites=${count("email_masked")}`);
 
+// ─── J. Spacing-exception disclosure (2026-08-31, follows PR #46) ───
+// The preview modal lists any same-surgeon service-week pair ≤ MIN_DC_GAP
+// that survived the generator's soft floor, so the scheduler publishes
+// knowingly. Cross-file dependency: the babel bundle reads generator.js's
+// top-level MIN_DC_GAP global — these pins fail the build if either side
+// drifts. Behavior itself is exercised extraction-executed in the PR's
+// verification (MCC seam pair + Thanksgiving attribution + loud-failure
+// path); these are the wiring pins.
+{
+  const gensrc = fs.readFileSync(path.join(ROOT, "generator.js"), "utf8");
+  check("generator.js still defines the MIN_DC_GAP global the client reads",
+    /const MIN_DC_GAP = 2;/.test(gensrc));
+  check("disclosure computation keys on MIN_DC_GAP (no copied constant)",
+    /w - last\[id\]\.w <= MIN_DC_GAP/.test(src));
+  const compIdx = src.indexOf("const spacingNotes = (() => {");
+  const rendIdx = src.indexOf("spacingNotes.length > 0 && (");
+  const acceptIdx = src.indexOf("<button onClick={acceptPreview}");
+  check("disclosure computed and rendered inside the preview modal, above the calendar grid",
+    compIdx !== -1 && rendIdx !== -1 && acceptIdx !== -1 && compIdx < acceptIdx && rendIdx > acceptIdx
+      && rendIdx < src.indexOf("{/* Preview Calendar Grid */}"),
+    `comp=${compIdx} accept=${acceptIdx} render=${rendIdx}`);
+  check("disclosure failure path pushes a visible warning, never returns silence",
+    /spacing check itself failed/.test(src));
+}
+
 // ─── Verdict ───
 console.log(`\n${checks} checks, ${failures.length} failure(s)`);
 if (failures.length) {

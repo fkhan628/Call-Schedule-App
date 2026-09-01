@@ -6787,6 +6787,66 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             for(let d=1;d<=pmDays;d++) pmGrid.push(d);
             while(pmGrid.length%7) pmGrid.push(null);
 
+            // ─── Spacing-exception disclosure (owner request 2026-08-31,
+            // follows PR #46). The generator's spacing floor is SOFT by
+            // design: a same-surgeon service-week pair ≤ MIN_DC_GAP apart can
+            // survive when vacations empty the pool or a holiday
+            // pre-assignment / lock claims a week. DISCLOSURE ONLY, no
+            // behavior change: list each surviving pair here so the scheduler
+            // publishes knowingly. Seam-aware — walks the EXISTING schedule
+            // back from the preview's first week (same 60-week reach as the
+            // generator seed), so a pair straddling the period boundary (the
+            // accepted MCC 11-09→11-23 case) shows too. MIN_DC_GAP is the
+            // generator.js global — single source, no copied constant.
+            const spacingNotes = (() => {
+              try {
+                const keys = Object.keys(previewSchedule).sort();
+                if (!keys.length) return [];
+                const t0 = parse(keys[0]).getTime();
+                const last = {}; // id -> { w: week index (negative = before preview), mStr }
+                for (let k = 1; k <= 60; k++) {
+                  const mStr = fmt(addD(parse(keys[0]), -7 * k));
+                  const wk = schedule[mStr];
+                  if (wk && wk.dayCall && last[wk.dayCall] === undefined) last[wk.dayCall] = { w: -k, mStr };
+                }
+                const holA = {}; // holiday date -> assignment (for attribution)
+                Object.values(holidayAssignments || {}).forEach(list => (list || []).forEach(h => { if (h && h.date) holA[h.date] = h; }));
+                const nice = (mStr) => { const d = parse(mStr); return `${MO[d.getMonth()].slice(0,3)} ${d.getDate()}`; };
+                // Why was this week un-free for this surgeon? Mirrors the
+                // generator's claim logic: manual lock, Monday-holiday
+                // convention (surgeon A owns the PRECEDING week's service),
+                // or a Tue–Fri holiday week handed to its surgeon A.
+                const reasonFor = (id, mStr) => {
+                  if ((pendingLocks || []).some(l => l && l.mondayStr === mStr && (l.slot === "dc" || l.slot === "dayCall") && l.surgeonId === id)) return "a manual lock";
+                  const monAfter = holA[fmt(addD(parse(mStr), 7))];
+                  if (monAfter && monAfter.surgeonA === id) return `the ${monAfter.name} pre-assignment`;
+                  for (let d = 1; d <= 4; d++) {
+                    const h = holA[fmt(addD(parse(mStr), d))];
+                    if (h && h.surgeonA === id) return `the ${h.name} week`;
+                  }
+                  return null; // no claim — pool congestion (vacations/no-call)
+                };
+                const notes = [];
+                for (const mStr of keys) {
+                  const wk = previewSchedule[mStr];
+                  const id = wk && wk.dayCall;
+                  if (!id) continue;
+                  const w = Math.round((parse(mStr).getTime() - t0) / 604800000);
+                  if (last[id] !== undefined && w - last[id].w <= MIN_DC_GAP) {
+                    const reason = reasonFor(id, mStr) || reasonFor(id, last[id].mStr) || "vacations that week";
+                    notes.push(`${nameOf(id)}: service weeks ${nice(last[id].mStr)} and ${nice(mStr)}, forced by ${reason}`);
+                  }
+                  last[id] = { w, mStr };
+                }
+                return notes;
+              } catch (e) {
+                // Fail LOUD in the UI, not just the console — a disclosure
+                // that silently vanishes defeats its purpose (conventions #1).
+                console.error("spacing disclosure failed:", e);
+                return [`⚠ The spacing check itself failed (${e?.message || e}) — verify service-week gaps manually before publishing.`];
+              }
+            })();
+
             return (
               <div style={{...css.card,marginTop:14,background:dk?"#1a2a1a":"#f0faf0",border:"2px solid #80c080"}}>
                 <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12,flexWrap:"wrap",gap:8}}>
@@ -6824,6 +6884,15 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                     <button onClick={discardPreview} style={{background:"none",border:"1px solid #e0c0c0",color:"#904040",borderRadius:6,padding:"6px 14px",fontSize:12,cursor:"pointer",fontFamily:font}}>✕ Discard</button>
                   </div>
                 </div>
+
+                {/* Spacing-exception disclosure — publish knowingly (see computation above) */}
+                {spacingNotes.length > 0 && (
+                  <div style={{background:dk?"#3a3010":"#fdf6e3",border:"1px solid #d0b050",borderRadius:8,padding:"8px 12px",marginBottom:12,fontSize:12,color:dk?"#e8d080":"#7a5c10"}}>
+                    <div style={{fontWeight:700,marginBottom:2}}>⚠ Service-week spacing exception{spacingNotes.length===1?"":"s"}</div>
+                    {spacingNotes.map((n,i)=><div key={i} style={{marginTop:3}}>• {n}</div>)}
+                    <div style={{marginTop:5,fontSize:11,opacity:0.85}}>The generator couldn't space these apart. Accepting publishes them as shown — consider warning the surgeon, or adjust and re-roll.</div>
+                  </div>
+                )}
 
                 {/* Preview Calendar Grid */}
                 {pm && <>
