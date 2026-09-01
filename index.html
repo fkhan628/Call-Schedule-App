@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.08.31a";
+    var APP_VERSION = "2026.08.31b";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -8594,6 +8594,59 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     for (let i = 0; i < pmFirst; i++) pmGrid.push(null);
     for (let d = 1; d <= pmDays; d++) pmGrid.push(d);
     while (pmGrid.length % 7) pmGrid.push(null);
+    const spacingNotes = (() => {
+      try {
+        const keys = Object.keys(previewSchedule).sort();
+        if (!keys.length) return [];
+        const t0 = parse(keys[0]).getTime();
+        const last = {};
+        for (let k = 1; k <= 60; k++) {
+          const mStr = fmt(addD(parse(keys[0]), -7 * k));
+          const wk = schedule[mStr];
+          if (wk && wk.dayCall && last[wk.dayCall] === undefined) last[wk.dayCall] = {
+            w: -k,
+            mStr
+          };
+        }
+        const holA = {};
+        Object.values(holidayAssignments || {}).forEach(list => (list || []).forEach(h => {
+          if (h && h.date) holA[h.date] = h;
+        }));
+        const nice = mStr => {
+          const d = parse(mStr);
+          return `${MO[d.getMonth()].slice(0, 3)} ${d.getDate()}`;
+        };
+        const reasonFor = (id, mStr) => {
+          if ((pendingLocks || []).some(l => l && l.mondayStr === mStr && (l.slot === "dc" || l.slot === "dayCall") && l.surgeonId === id)) return "a manual lock";
+          const monAfter = holA[fmt(addD(parse(mStr), 7))];
+          if (monAfter && monAfter.surgeonA === id) return `the ${monAfter.name} pre-assignment`;
+          for (let d = 1; d <= 4; d++) {
+            const h = holA[fmt(addD(parse(mStr), d))];
+            if (h && h.surgeonA === id) return `the ${h.name} week`;
+          }
+          return null;
+        };
+        const notes = [];
+        for (const mStr of keys) {
+          const wk = previewSchedule[mStr];
+          const id = wk && wk.dayCall;
+          if (!id) continue;
+          const w = Math.round((parse(mStr).getTime() - t0) / 604800000);
+          if (last[id] !== undefined && w - last[id].w <= MIN_DC_GAP) {
+            const reason = reasonFor(id, mStr) || reasonFor(id, last[id].mStr) || "vacations that week";
+            notes.push(`${nameOf(id)}: service weeks ${nice(last[id].mStr)} and ${nice(mStr)}, forced by ${reason}`);
+          }
+          last[id] = {
+            w,
+            mStr
+          };
+        }
+        return notes;
+      } catch (e) {
+        console.error("spacing disclosure failed:", e);
+        return [`⚠ The spacing check itself failed (${(e === null || e === void 0 ? void 0 : e.message) || e}) — verify service-week gaps manually before publishing.`];
+      }
+    })();
     return React.createElement("div", {
       style: _objectSpread(_objectSpread({}, css.card), {}, {
         marginTop: 14,
@@ -8686,7 +8739,33 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         cursor: "pointer",
         fontFamily: font
       }
-    }, "✕ Discard"))), pm && React.createElement(React.Fragment, null, React.createElement("div", {
+    }, "✕ Discard"))), spacingNotes.length > 0 && React.createElement("div", {
+      style: {
+        background: dk ? "#3a3010" : "#fdf6e3",
+        border: "1px solid #d0b050",
+        borderRadius: 8,
+        padding: "8px 12px",
+        marginBottom: 12,
+        fontSize: 12,
+        color: dk ? "#e8d080" : "#7a5c10"
+      }
+    }, React.createElement("div", {
+      style: {
+        fontWeight: 700,
+        marginBottom: 2
+      }
+    }, "⚠ Service-week spacing exception", spacingNotes.length === 1 ? "" : "s"), spacingNotes.map((n, i) => React.createElement("div", {
+      key: i,
+      style: {
+        marginTop: 3
+      }
+    }, "• ", n)), React.createElement("div", {
+      style: {
+        marginTop: 5,
+        fontSize: 11,
+        opacity: 0.85
+      }
+    }, "The generator couldn't space these apart. Accepting publishes them as shown — consider warning the surgeon, or adjust and re-roll.")), pm && React.createElement(React.Fragment, null, React.createElement("div", {
       style: {
         display: "flex",
         alignItems: "center",
