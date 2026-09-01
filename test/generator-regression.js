@@ -28,6 +28,19 @@
 // CI runs this on every push that touches the generator or its data files.
 // Do NOT weaken the assertions to make a failing generator change pass.
 
+// SERVICE-WEEK SPACING (2026-08-31): the soft floor (generator.js MIN_DC_GAP)
+// is pinned by BEHAVIOR, not by source text:
+//   - every scenario's report includes a same-surgeon service-week gap
+//     histogram and a spacing-violation stat (pairs with gap <= MIN_DC_GAP,
+//     seam-aware) so a regression is visible at a glance;
+//   - a two-sided STRESS fixture (scenario D) engineers a week where count
+//     logic WANTS the tight pick and a spaced alternative exists: the real
+//     generator must produce ZERO tight pairs across all rolls, and the same
+//     fixture run against a floor-stripped copy of the source must produce at
+//     least one — proving the fixture bites and the floor is what stops it.
+//     If the strip-patterns no longer match the source, the test fails loudly
+//     rather than passing vacuously.
+
 "use strict";
 const fs = require("fs");
 const path = require("path");
@@ -35,6 +48,7 @@ const vm = require("vm");
 
 const ROOT = path.join(__dirname, "..");
 const ROLLS = 120;
+const MIN_DC_GAP = 2; // keep in lockstep with generator.js
 
 // ─── Load the real app modules as browser globals ───
 const sandbox = {
@@ -56,6 +70,39 @@ for (const f of ["helpers.js", "config.js", "generator.js"]) {
 const app = vm.runInContext("({ generate, INIT_SURGEONS, COUNTS_1YR, fmt, addD, parse })", sandbox);
 const { generate, INIT_SURGEONS, COUNTS_1YR, fmt, addD, parse } = app;
 if (typeof generate !== "function") { console.error("FAIL: generate() not found after loading modules"); process.exit(1); }
+
+// Second context for scenario D's red side: same modules, but the generator
+// source with the spacing floor stripped and the scoreOf gap term zeroed.
+// Every strip must match, or the fixture would silently test nothing.
+function loadFloorStripped() {
+  const src = fs.readFileSync(path.join(ROOT, "generator.js"), "utf8");
+  const strips = [
+    [/const nonHolSpaced = nonHolPool\.filter\([^\n]*\n\s*if \(nonHolSpaced\.length > 0\) nonHolPool = nonHolSpaced;\r?\n/, ""],
+    [/const dcPoolSpaced = dcPool\.filter\([^\n]*\n\s*if \(dcPoolSpaced\.length > 0\) dcPool = dcPoolSpaced;\r?\n/, ""],
+    [/\+ gapViolations    \* 50/, "+ gapViolations    * 0"],
+  ];
+  let out = src;
+  for (const [re, rep] of strips) {
+    const next = out.replace(re, rep);
+    if (next === out) { console.error(`FAIL: floor-strip pattern did not match generator.js — ${re}`); process.exit(1); }
+    out = next;
+  }
+  const sandbox = {
+    console: { ...console, warn: () => {} }, // strip repairs may warn; irrelevant here
+    window: {}, document: undefined,
+    localStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {} },
+    fetch: () => { throw new Error("fetch called during generation — generator must be pure"); },
+    navigator: { userAgent: "node-test" },
+    setTimeout, clearTimeout,
+  };
+  sandbox.globalThis = sandbox;
+  vm.createContext(sandbox);
+  for (const f of ["helpers.js", "config.js"]) {
+    vm.runInContext(fs.readFileSync(path.join(ROOT, f), "utf8"), sandbox, { filename: f });
+  }
+  vm.runInContext(out, sandbox, { filename: "generator-floor-stripped.js" });
+  return vm.runInContext("({ generate })", sandbox);
+}
 
 const SURGEONS = INIT_SURGEONS;
 const IDS = SURGEONS.map(s => s.id);
@@ -143,6 +190,29 @@ function collectVacationHits(sched, vac) {
   return hits;
 }
 
+// Same-surgeon service-week gap histogram + spacing violations (gap <=
+// MIN_DC_GAP), seam-aware when a prevWeekSeed is provided (recentDc uses
+// negative week offsets, mirroring generator.js scoreOf).
+function gapStatsOf(sched, mondayKeys, seed) {
+  const lastIdx = {};
+  if (seed && seed.recentDc) for (const id in seed.recentDc) lastIdx[id] = seed.recentDc[id];
+  if (seed && seed.dayCall) lastIdx[seed.dayCall] = -1;
+  const hist = {};
+  let violations = 0;
+  for (let i = 0; i < mondayKeys.length; i++) {
+    const wk = sched[mondayKeys[i]];
+    const dc = wk && wk.dayCall;
+    if (!dc) continue;
+    if (lastIdx[dc] !== undefined) {
+      const g = i - lastIdx[dc];
+      hist[g] = (hist[g] || 0) + 1;
+      if (g <= MIN_DC_GAP) violations++;
+    }
+    lastIdx[dc] = i;
+  }
+  return { hist, violations };
+}
+
 function countShifts(sched) {
   const c = {};
   IDS.forEach(id => c[id] = { dc: 0, wknd: 0, nights: 0, total: 0 });
@@ -162,10 +232,13 @@ function spread(counts, key) {
 
 function runScenario(name, vac, opts, yearCounts) {
   const failures = [];
-  const stats = { wkndThenTue: 0, vacationHits: 0, maxSpread: { dc: 0, wknd: 0, total: 0 } };
+  const stats = { wkndThenTue: 0, vacationHits: 0, maxSpread: { dc: 0, wknd: 0, total: 0 }, gapHist: {}, spacingViolations: 0 };
   for (let roll = 0; roll < ROLLS; roll++) {
     const sched = generate(SURGEONS, MONDAYS, vac, new Set(), {}, {}, new Set(), null, [], null, vac, yearCounts);
     const label = `${name} roll ${roll}`;
+    const gs = gapStatsOf(sched, MONDAY_KEYS, null);
+    for (const g in gs.hist) stats.gapHist[g] = (stats.gapHist[g] || 0) + gs.hist[g];
+    stats.spacingViolations += gs.violations;
     checkWeekComplete(sched, failures, label);
     checkHardRules(sched, failures, stats, label);
     const vacHits = collectVacationHits(sched, vac);
@@ -225,14 +298,56 @@ const light = runScenario("vacation", LIGHT_VACATIONS, {
 const SQUEEZE_VACATIONS = { s5: [["2026-03-23", "2026-04-05"]] };
 const squeeze = runScenario("squeeze", SQUEEZE_VACATIONS, { assertVacations: false, maxSpread: null }, COUNTS_1YR);
 
+// D: SPACING STRESS (two-sided) — a week-0 DC pool of exactly two surgeons
+//    (the other five are vacation-blocked via that week's Saturday, which
+//    kills DC eligibility but nothing else), where the seed says X's last
+//    service week was 2 weeks back (gap 2 — the "service, one week off,
+//    service" pattern the floor bans) and Z is fully rested. Counts are all
+//    zero at week 0, so the comparator falls through to the jittered priority
+//    composite, which picks X roughly half the time — meaning:
+//      GREEN (real generator): the soft floor filters X, so Z must take
+//        week 0 in EVERY roll and no schedule may contain a gap<=MIN_DC_GAP
+//        pair (6 weeks / 7 surgeons — Phase 1 drives DC to <=1 each, so the
+//        seeded X is the only surgeon who could ever pair tightly).
+//      RED (floor-stripped generator): X must take week 0 in AT LEAST one
+//        roll — proving the fixture actually tempts the pick and that the
+//        floor, not luck, is what keeps green clean. If red never fires, the
+//        fixture is vacuous and the test fails.
+function runStress() {
+  const X = "s4", Z = "s5";
+  const D_MONDAYS = buildMondays("2026-01-05", 6);
+  const D_KEYS = D_MONDAYS.map(fmt);
+  const seed = { dayCall: null, wknd: null, recentDc: { [X]: -2 } };
+  const vac = {};
+  for (const id of IDS) if (id !== X && id !== Z) vac[id] = [["2026-01-10", "2026-01-10"]]; // Sat of week 0
+  const stripped = loadFloorStripped();
+  const failures = [];
+  let redFired = 0;
+  for (let roll = 0; roll < ROLLS; roll++) {
+    const g = generate(SURGEONS, D_MONDAYS, vac, new Set(), {}, {}, new Set(), null, [], seed, vac, COUNTS_1YR);
+    if (!g[D_KEYS[0]] || g[D_KEYS[0]].dayCall !== Z) failures.push(`stress roll ${roll}: week 0 DC is ${g[D_KEYS[0]] && g[D_KEYS[0]].dayCall} — floor should have left only ${Z}`);
+    const gv = gapStatsOf(g, D_KEYS, seed).violations;
+    if (gv > 0) failures.push(`stress roll ${roll}: ${gv} gap<=${MIN_DC_GAP} pair(s) with the floor active`);
+    const r = stripped.generate(SURGEONS, D_MONDAYS, vac, new Set(), {}, {}, new Set(), null, [], seed, vac, COUNTS_1YR);
+    if (r[D_KEYS[0]] && r[D_KEYS[0]].dayCall === X) redFired++;
+    if (failures.length > 25) break;
+  }
+  if (redFired === 0) failures.push(`stress: floor-stripped generator NEVER picked ${X} at week 0 in ${ROLLS} rolls — fixture is vacuous, tighten it`);
+  return { name: "stress", failures, redFired };
+}
+const stress = runStress();
+
 // ─── Report ───
 for (const r of [clean, cleanProxy, light, squeeze]) {
   const s = r.stats;
+  const gaps = Object.keys(s.gapHist).map(Number).sort((a, b) => a - b).map(g => `${g}:${s.gapHist[g]}`).join(" ");
   console.log(`${r.name.padEnd(9)} ${ROLLS} rolls — max spreads dc=${s.maxSpread.dc} wknd=${s.maxSpread.wknd} total=${s.maxSpread.total}; ` +
-    `wknd→Tue (soft) ×${s.wkndThenTue}; vacation-day assignments ×${s.vacationHits}${r.name === "squeeze" ? " (informational — see header)" : ""}`);
+    `wknd→Tue (soft) ×${s.wkndThenTue}; vacation-day assignments ×${s.vacationHits}${r.name === "squeeze" ? " (informational — see header)" : ""}; ` +
+    `SW gap histogram {${gaps || "no repeats"}}; spacing violations (gap<=${MIN_DC_GAP}, soft) ×${s.spacingViolations}`);
 }
+console.log(`stress    ${ROLLS} rolls — floor held every roll; floor-stripped control picked the gap-2 surgeon in ${stress.redFired}/${ROLLS} rolls`);
 
-const failures = [...clean.failures, ...cleanProxy.failures, ...light.failures];
+const failures = [...clean.failures, ...cleanProxy.failures, ...light.failures, ...stress.failures];
 if (failures.length) {
   console.error(`\nFAIL — ${failures.length} violation(s):`);
   failures.slice(0, 25).forEach(f => console.error("  • " + f));

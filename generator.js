@@ -44,7 +44,11 @@
 
    SOFT RULES (preferred against at the deal; fairness passes may override):
      Service week (its Saturday) → next weekend; back-to-back weekends;
-     weekend → next Tuesday night.
+     weekend → next Tuesday night; same surgeon's service weeks ≤ MIN_DC_GAP
+     (= 2) weeks apart — i.e. service → one week off → service (soft floor at
+     the DC pick, both branches, 2026-08-31; a ×50 scoreOf term steers
+     best-of-50 away from candidates where the floor's fallback fired or a
+     fairness pass recreated a tight pair).
 
    FAIRNESS OBJECTIVE: raw shift count is PRIMARY — the metric people
    actually perceive by tallying the calendar. Per-type tightness first
@@ -100,7 +104,10 @@
       Lexicographic via powers of ten (LOWER = fairer):
         spread(combinedServiceWeeks)·10000  (dominates)
         + spread(weekends)·1000  + spread(total)·100
+        + gapViolations·50  (service-week pairs ≤ MIN_DC_GAP apart, seam-aware)
         + spread(1stCallServiceWeeks)·10  + spread(1stCallWeekends)·1
+      Note gapViolations is a COUNT, not a spread: 2+ violations outweigh one
+      total-spread step — accepted; in practice it is 0 or 1.
 
    NOT here: BILLING (SW=7 / night=1 / wknd=3), used only for the pay/'$'
    display in the app UI. Equal weights to #2 but computed and shown
@@ -138,6 +145,20 @@ function getHolidays(year) {
     ]
   };
 }
+
+// SOFT FLOOR on service-week spacing (2026-08-31, owner request after two
+// gap-2 pairs — RPC 08-17→08-31, REH 10-12→10-26 — both free choices where
+// spacing sat 4th in the tiebreak and was never consulted). A surgeon whose
+// last service week started ≤ MIN_DC_GAP weeks ago is filtered out of the DC
+// pick pool; if that empties the pool the unfiltered pool is used (the same
+// filter + if-empty-fallback idiom as dcPoolNoConsec), so vacation-dense
+// weeks still generate. MIN_DC_GAP = 2 bans service → one week off → service.
+// This is "less of a possibility," not a new hard rule: the fallback may
+// still place a gap-2 week, and Phase 1 rebalancing (which only knows the
+// consecutive ban via canTakeSlot) may create one — both cases are caught by
+// the ×50 gap-violation term in scoreOf, so best-of-50 discards them
+// whenever any candidate managed without.
+const MIN_DC_GAP = 2;
 
 function generateOnce(surgeons, mondays, vac, backupMondays, priorCounts, preferences, fierceBackupMondays, holAssignments, locks, prevWeekSeed, vacationsOnly, yearCounts) {
   // vacOnly = vacation-only ranges (no no-call). Used for "trailing edge" checks:
@@ -406,6 +427,36 @@ function generateOnce(surgeons, mondays, vac, backupMondays, priorCounts, prefer
     });
   }
 
+  // SPACING LOOKAHEAD over pre-assigned service weeks. preAssign is complete
+  // here (holiday conventions + manual locks), so the deal knows every week
+  // whose DC is already spoken for. Without this, the free pick MIN_DC_GAP
+  // weeks BEFORE a pre-assigned week can hand the same surgeon a tight pair
+  // the floor never sees — that is exactly how the real RPC 08-17→08-31 pair
+  // happened: Labor Day's surgeon A (RPC) owned 08-31 by the Monday-holiday
+  // convention, and the 08-17 pick, blind to it, chose RPC anyway (verified
+  // by replay 2026-08-31: 200/200 candidates re-created the pair; with this
+  // lookahead the deal avoids it). Used by the soft floor in both DC pick
+  // branches; same fallback-if-empty semantics, so it can never block
+  // coverage. Note it also softly discourages the previously-possible
+  // CONSECUTIVE pair via pre-assignment (free pick the week before a
+  // pre-assigned week), which the dcPoolNoConsec filter cannot see either.
+  const preAssignedDcIdx = {}; // id -> [wkIdx, ...] of pre-assigned DC weeks
+  for (let i = 0; i < mondays.length; i++) {
+    const pa = preAssign[fmt(mondays[i])];
+    if (pa && pa.dayCall) { (preAssignedDcIdx[pa.dayCall] = preAssignedDcIdx[pa.dayCall] || []).push(i); continue; }
+    // Tue–Fri holiday weeks are claimed too: the DC pick below hands them
+    // straight to the holiday's surgeon A (dc = holDcSurgeon — e.g.
+    // Thanksgiving week → its surgeon A; Christmas week → FAK, whose standing
+    // rule makes him surgeon A). Monday holidays are the opposite case and are
+    // already covered by the preAssign entry on the PRECEDING week above.
+    for (let d = 1; d <= 4; d++) {
+      const hb = holByDate[fmt(addD(mondays[i], d))];
+      if (hb && hb.surgeonA) { (preAssignedDcIdx[hb.surgeonA] = preAssignedDcIdx[hb.surgeonA] || []).push(i); break; }
+    }
+  }
+  const preAssignedDcNear = (id, wkIdx) =>
+    (preAssignedDcIdx[id] || []).some(w => w > wkIdx && w - wkIdx <= MIN_DC_GAP);
+
   for (let wkIdx = 0; wkIdx < mondays.length; wkIdx++) {
     const monday = mondays[wkIdx];
     const mStr = fmt(monday);
@@ -456,6 +507,11 @@ function generateOnce(surgeons, mondays, vac, backupMondays, priorCounts, prefer
           let nonHolPool = availDC.filter(id => id !== holDcSurgeon && id !== prevWkndSurgeon && lastDcWeek[id] !== wkIdx - 1);
           if (nonHolPool.length === 0) nonHolPool = availDC.filter(id => id !== holDcSurgeon && lastDcWeek[id] !== wkIdx - 1);
           if (nonHolPool.length === 0) nonHolPool = availDC.filter(id => id !== holDcSurgeon); // fallback
+          // SOFT FLOOR: prefer surgeons more than MIN_DC_GAP weeks past their
+          // last service week (see the constant's comment). Falls back to the
+          // unfiltered pool rather than leave the week uncovered.
+          const nonHolSpaced = nonHolPool.filter(id => wkIdx - lastDcWeek[id] > MIN_DC_GAP && !preAssignedDcNear(id, wkIdx));
+          if (nonHolSpaced.length > 0) nonHolPool = nonHolSpaced;
           if (nonHolPool.length > 0) {
             nonHolPool.sort((a,b) => {
               // PRIMARY: fewer total shifts this period (equality goal)
@@ -485,6 +541,11 @@ function generateOnce(surgeons, mondays, vac, backupMondays, priorCounts, prefer
         if (dcPool.length === 0) dcPool = availDC; // fallback if no one else
         const dcPoolNoConsec = dcPool.filter(id => lastDcWeek[id] !== wkIdx - 1);
         if (dcPoolNoConsec.length > 0) dcPool = dcPoolNoConsec;
+        // SOFT FLOOR: prefer surgeons more than MIN_DC_GAP weeks past their
+        // last service week (see the constant's comment). Falls back to the
+        // unfiltered pool rather than leave the week uncovered.
+        const dcPoolSpaced = dcPool.filter(id => wkIdx - lastDcWeek[id] > MIN_DC_GAP && !preAssignedDcNear(id, wkIdx));
+        if (dcPoolSpaced.length > 0) dcPool = dcPoolSpaced;
         dcPool.sort((a,b) => {
           // PRIMARY: fewer total shifts this period (equality goal)
           const ts = periodShifts[a] - periodShifts[b]; if (ts) return ts;
@@ -1353,9 +1414,33 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
       if (wk.nights) ["mon","tue","wed","thu"].forEach(sk => { if (wk.nights[sk]) night[wk.nights[sk]] = (night[wk.nights[sk]]||0) + 1; });
     }
     const tot = {}; ids.forEach(id => tot[id] = (svc[id]||0) + (wknd[id]||0) + (night[id]||0));
+    // Spacing violations — same surgeon's service weeks starting ≤ MIN_DC_GAP
+    // weeks apart. This is the candidate-level side of the soft floor: it
+    // catches BOTH the in-pick fallback firing AND a Phase-1/validation move
+    // recreating a tight pair (those passes only know the consecutive ban),
+    // so best-of-50 discards a violating candidate whenever any candidate
+    // managed without one. Seeded from prevWeekSeed.recentDc (negative week
+    // offsets) so a violation across the period seam counts too. ×50 sits
+    // between total-spread ×100 and svcReg ×10: fairness tiers still
+    // dominate — calibrated by observation 2026-08-31 on the real Aug–Nov
+    // inputs (see PR); at ×50 violations reach 0 with fairness unchanged.
+    const lastIdx = {};
+    if (prevWeekSeed && prevWeekSeed.recentDc) for (const id in prevWeekSeed.recentDc) { if (lastIdx[id] === undefined) lastIdx[id] = prevWeekSeed.recentDc[id]; }
+    if (prevWeekSeed && prevWeekSeed.dayCall) lastIdx[prevWeekSeed.dayCall] = -1;
+    let gapViolations = 0;
+    const mKeys = Object.keys(sched).sort();
+    const t0 = mKeys.length ? parse(mKeys[0]).getTime() : 0;
+    for (const mStr of mKeys) {
+      const wk = sched[mStr];
+      if (!wk || !wk.dayCall) continue;
+      const w = Math.round((parse(mStr).getTime() - t0) / 604800000);
+      if (lastIdx[wk.dayCall] !== undefined && w - lastIdx[wk.dayCall] <= MIN_DC_GAP) gapViolations++;
+      lastIdx[wk.dayCall] = w;
+    }
     return spreadOf(svc)    * 10000
          + spreadOf(wknd)   * 1000
          + spreadOf(tot)    * 100
+         + gapViolations    * 50
          + spreadOf(svcReg) * 10
          + spreadOf(wkndReg);
   };
@@ -1366,10 +1451,13 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
     if (!cand) continue;
     const s = scoreOf(cand);
     if (s < bestScore) { bestScore = s; best = cand; }
-    // Combined service weeks, weekends, and total all even (score < 100 means
-    // those three tiers are all Δ0) — only the unavoidable 1st-call split remains.
-    // Good enough to stop; further attempts can't improve the tiers that matter.
-    if (bestScore < 100) break;
+    // Combined service weeks, weekends, and total all even AND zero spacing
+    // violations (score < 50 means those four tiers are all clean) — only the
+    // unavoidable 1st-call split remains. Good enough to stop; further
+    // attempts can't improve the tiers that matter. (Was < 100 before the
+    // gap-violation term: leaving it there would have early-stopped on a
+    // 1-violation candidate that a later attempt could beat.)
+    if (bestScore < 50) break;
   }
   // Fallback: if every attempt somehow scored Infinity (shouldn't happen), return a fresh pass.
   return best || generateOnce(surgeons, mondays, vac, backupMondays, priorCounts, preferences, fierceBackupMondays, holAssignments, locks, prevWeekSeed, vacationsOnly, yearCounts);
