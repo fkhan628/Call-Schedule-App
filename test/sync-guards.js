@@ -1014,6 +1014,102 @@ check("prefs audit never logs the plaintext email (masked only)",
     }
   }
 }
+// ─── L. Dated slot labels (2026-09-06): one owner for the date ───
+// slotLabel() composes every dated shift label THROUGH shiftStartDate, so a
+// rendered date can never disagree with the validation gating that slot.
+// Two-sided: the behavior checks pin the exact composition (and a
+// deliberately Monday-dated hand-roll must NOT match), and the source pins
+// go red if a converted render site regresses to bare SHIFT_LABELS or a
+// future site hand-rolls its own date math.
+{
+  const { slotLabel: SL, shiftStartDate: SSD } = vm.runInContext("({ slotLabel, shiftStartDate })", sandbox);
+  check("slotLabel + shiftStartDate exported from helpers", typeof SL === "function" && typeof SSD === "function");
+  if (typeof SL === "function") {
+    // 2026-09-14 is a Monday. Expected labels are EXACT.
+    const M = "2026-09-14";
+    const expected = {
+      dayCall: "Service Wk of Sep 14",
+      mon: "Mon Sep 14 — Night", tue: "Tue Sep 15 — Night",
+      wed: "Wed Sep 16 — Night", thu: "Thu Sep 17 — Night",
+      wknd: "Wknd — Fri Sep 18",
+    };
+    for (const [sk, want] of Object.entries(expected)) {
+      check(`slotLabel(${sk}) = "${want}"`, SL(M, sk) === want, `got "${SL(M, sk)}"`);
+    }
+    check("slotLabel accepts the lock UI's legacy 'dc' key", SL(M, "dc") === expected.dayCall, SL(M, "dc"));
+    // Each label's date must be shiftStartDate's date — checked structurally,
+    // not just via the table above (guards a future edit to either side).
+    for (const sk of ["mon", "tue", "wed", "thu", "wknd"]) {
+      const d = new Date(SSD(M, sk) + "T12:00:00");
+      check(`slotLabel(${sk}) carries shiftStartDate's day-of-month (${d.getDate()})`,
+        SL(M, sk).includes(` ${d.getDate()}`), SL(M, sk));
+    }
+    // NEGATIVE control: the pre-#51 hand-roll (week-Monday-dated "Sep 14 —
+    // Thu Night") must NOT equal the composed label — proves these checks
+    // can actually tell a hand-rolled label from the real one.
+    check("Monday-dated hand-roll for thu does NOT match slotLabel",
+      SL(M, "thu") !== "Sep 14 — Thu Night" && SL(M, "thu").includes("17"));
+  }
+  // Source pins on the converted render sites.
+  check("no bare SHIFT_LABELS option lists remain in shift dropdowns",
+    count("{SHIFT_LABELS[sk]}</option>") === 0, `found ${count("{SHIFT_LABELS[sk]}</option>")}`);
+  check("week editor slot rows label via slotLabel, not SHIFT_LABELS",
+    count("{SHIFT_LABELS[nk]||nk}</label>") === 0 && count('slotLabel(mondayStr, nk)') === 1);
+  check("slotLabel used at exactly the 12 converted sites",
+    count("slotLabel(") === 12, `found ${count("slotLabel(")}`);
+  // The member opts builders were the LAST hand-rolled date math: their old
+  // label dated a night by the week's MONDAY ("Sep 7 — Thu Night" for a
+  // Thursday shift on Sep 10), which actively misled on the member-facing
+  // trade surface. Both their label AND their upcoming-only filter now go
+  // through the helpers, so no weekday-offset map should remain anywhere.
+  check("no inline weekday-offset date math remains in the app source",
+    count("{mon:0,tue:1,wed:2,thu:3,wknd:4}") === 0, `found ${count("{mon:0,tue:1,wed:2,thu:3,wknd:4}")}`);
+  check("member opts builders filter via shiftStartDate (3 sites)",
+    count("shiftStartDate(m, sk)") === 3, `found ${count("shiftStartDate(m, sk)")}`);
+  check("member opts builders label via slotLabel (3 sites)",
+    count("slotLabel(m, sk)") === 3, `found ${count("slotLabel(m, sk)")}`);
+
+  // BEHAVIOR: extraction-execute the real member opts builder ("Your shift to
+  // swap") against a synthetic week and assert the rendered strings.
+  const bStart = src.indexOf("const opts = [];", src.indexOf("Your shift to swap"));
+  const bEnd = src.indexOf("const curVal", bStart);
+  if (bStart === -1 || bEnd === -1) { check("member opts builder extractable", false, "anchors not found"); }
+  else {
+    const body = src.slice(bStart, bEnd).split("mySurgeon").join("WHO");
+    let optsFn;
+    try {
+      optsFn = vm.runInContext(`(function (schedule, WHO, todayStr) { ${body}; return opts; })`, sandbox, { filename: "member-opts-extract.js" });
+      check("member opts builder compiles standalone", true);
+    } catch (ex) { check("member opts builder compiles standalone", false, String(ex)); }
+    if (optsFn) {
+      // Week of Mon 2026-09-07; the member holds every slot in it.
+      const M = "2026-09-07";
+      const sched = { [M]: { dayCall: "sX", nights: { mon: "sX", tue: "sX", wed: "sX", thu: "sX", wknd: "sX" } } };
+      const byKey = {};
+      optsFn(sched, "sX", "2026-09-01").forEach(o => { byKey[o.value.split("|")[1]] = o.label; });
+      check('member opts: Thursday night reads "Thu Sep 10 — Night" (was the misleading "Sep 7 — Thu Night")',
+        byKey.thu === "Thu Sep 10 — Night", `got "${byKey.thu}"`);
+      check('member opts: weekend reads "Wknd — Fri Sep 11"', byKey.wknd === "Wknd — Fri Sep 11", `got "${byKey.wknd}"`);
+      check('member opts: service week reads "Service Wk of Sep 7"', byKey.dayCall === "Service Wk of Sep 7", `got "${byKey.dayCall}"`);
+      // NEGATIVE control: no non-Monday slot may carry the week's Monday date.
+      check("member opts: no night/weekend label carries the week's Monday date",
+        ["tue", "wed", "thu", "wknd"].every(sk => byKey[sk] && !byKey[sk].includes("Sep 7")),
+        JSON.stringify(byKey));
+      // Suffixes survive the conversion (backup + current-week markers).
+      // today === the Monday itself: the service week has NOT started
+      // elapsing (shiftStartDate is not < today), so it survives the filter
+      // and carries "(this week)". One day later it is correctly gone —
+      // the partially-elapsed rule from #49.
+      const sched2 = { [M]: { isBackup: true, dayCall: "sX", nights: {} } };
+      check("member opts: a service week is dropped once it has started (today = Mon+1)",
+        optsFn(sched2, "sX", "2026-09-08").length === 0);
+      const bk = optsFn(sched2, "sX", M)[0];
+      check("member opts: (Backup) and (this week) suffixes survive",
+        bk && bk.label === "Service Wk of Sep 7 (Backup) (this week)", bk && bk.label);
+    }
+  }
+}
+
 // Source pins for the two sibling accept paths + the shared helper.
 {
   const helpersSrc = fs.readFileSync(path.join(ROOT, "helpers.js"), "utf8");

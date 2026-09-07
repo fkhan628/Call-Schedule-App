@@ -25,6 +25,25 @@ function shiftStartDate(mondayStr, shiftKey) {
   return off === undefined ? mondayStr : fmt(addD(parse(mondayStr), off));
 }
 
+// Dated slot label for pickers and rows where the WEEK is known (2026-09-06):
+// composed THROUGH shiftStartDate, so a rendered date can never disagree with
+// the validation that gates the same slot. SHIFT_LABELS stays context-free —
+// this composes at the point a week is known, never mutates it.
+//   dayCall  → "Service Wk of Sep 14"   (a week, not a single day)
+//   mon..thu → "Thu Sep 17 — Night"
+//   wknd     → "Wknd — Fri Sep 18"      (shift start, per shiftStartDate)
+// Accepts the lock UI's legacy "dc" key (same normalization the lock
+// applier does).
+function slotLabel(mondayStr, shiftKey) {
+  if (shiftKey === "dc") shiftKey = "dayCall";
+  const DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  const d = parse(shiftStartDate(mondayStr, shiftKey));
+  const md = `${MO[d.getMonth()].slice(0, 3)} ${d.getDate()}`;
+  if (shiftKey === "dayCall") return `Service Wk of ${md}`;
+  if (shiftKey === "wknd") return `Wknd — ${DOW[d.getDay()]} ${md}`;
+  return `${DOW[d.getDay()]} ${md} — Night`;
+}
+
 /* ═══ ICS Calendar Generation ═══ */
 function icsDate(y,m,d,h,min) {
   return `${y}${String(m).padStart(2,"0")}${String(d).padStart(2,"0")}T${String(h).padStart(2,"0")}${String(min||0).padStart(2,"0")}00`;
