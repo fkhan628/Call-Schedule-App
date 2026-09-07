@@ -15,6 +15,16 @@ function getMondays(yr,mo,numWeeks) {
 
 function onVac(id,ds,v){ return (v[id]||[]).some(([a,b])=>ds>=a&&ds<=b); }
 
+// Start date of a shift, for time-based gating (nav cleanup 2026-09-06):
+// a night = its own date, the weekend = its Friday, a service week = its
+// Monday — once a shift has STARTED it is history and trade/swap paths
+// refuse it. The picker builders in index-source.html inline the same rule.
+function shiftStartDate(mondayStr, shiftKey) {
+  if (shiftKey === "dayCall") return mondayStr;
+  const off = { mon: 0, tue: 1, wed: 2, thu: 3, wknd: 4 }[shiftKey];
+  return off === undefined ? mondayStr : fmt(addD(parse(mondayStr), off));
+}
+
 /* ═══ ICS Calendar Generation ═══ */
 function icsDate(y,m,d,h,min) {
   return `${y}${String(m).padStart(2,"0")}${String(d).padStart(2,"0")}T${String(h).padStart(2,"0")}${String(min||0).padStart(2,"0")}00`;
