@@ -7814,10 +7814,9 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                             // dayCall (no dayCallOverrides), which would rewrite
                             // the already-worked days — mid-week splits are the
                             // scheduler's week editor's job.
-                            const startDs = sk === "dayCall" ? m : fmt(addD(parse(m), {mon:0,tue:1,wed:2,thu:3,wknd:4}[sk]));
-                            if (startDs < todayStr) return;
-                            const d = parse(m);
-                            const label = `${MO[d.getMonth()].slice(0,3)} ${d.getDate()} — ${SHIFT_LABELS[sk]}${wk.isBackup ? " (Backup)" : ""}${m <= todayStr ? " (this week)" : ""}`;
+                            // Filter AND label both go through the helpers (one owner for the date):
+                            if (shiftStartDate(m, sk) < todayStr) return;
+                            const label = `${slotLabel(m, sk)}${wk.isBackup ? " (Backup)" : ""}${m <= todayStr ? " (this week)" : ""}`;
                             opts.push({ value: `${m}|${sk}`, label });
                           }
                         });
@@ -9342,10 +9341,9 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                           // partially-elapsed-service-week exclusion as the
                           // swap tool (see its comment; acceptTradeRequest
                           // also reassigns the WHOLE week's dayCall).
-                          const startDs = sk === "dayCall" ? m : fmt(addD(parse(m), {mon:0,tue:1,wed:2,thu:3,wknd:4}[sk]));
-                          if (startDs < todayStr) return;
-                          const d = parse(m);
-                          const label = `${MO[d.getMonth()].slice(0,3)} ${d.getDate()} — ${SHIFT_LABELS[sk]}${wk.isBackup ? " (Backup)" : ""}${m <= todayStr ? " (this week)" : ""}`;
+                          // Filter AND label both go through the helpers (one owner for the date):
+                          if (shiftStartDate(m, sk) < todayStr) return;
+                          const label = `${slotLabel(m, sk)}${wk.isBackup ? " (Backup)" : ""}${m <= todayStr ? " (this week)" : ""}`;
                           opts.push({ value: `${m}|${sk}`, label });
                         }
                       });
@@ -9394,10 +9392,9 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                           const holder = sk === "dayCall" ? wk.dayCall : wk.nights?.[sk];
                           if (holder === tradeTo) {
                             // Upcoming only — same rules as "Shift to give".
-                            const startDs = sk === "dayCall" ? m : fmt(addD(parse(m), {mon:0,tue:1,wed:2,thu:3,wknd:4}[sk]));
-                            if (startDs < todayStr) return;
-                            const d = parse(m);
-                            const label = `${MO[d.getMonth()].slice(0,3)} ${d.getDate()} — ${SHIFT_LABELS[sk]}${wk.isBackup ? " (Backup)" : ""}${m <= todayStr ? " (this week)" : ""}`;
+                            // Filter AND label both go through the helpers (one owner for the date):
+                            if (shiftStartDate(m, sk) < todayStr) return;
+                            const label = `${slotLabel(m, sk)}${wk.isBackup ? " (Backup)" : ""}${m <= todayStr ? " (this week)" : ""}`;
                             opts.push({ value: `${m}|${sk}`, label });
                           }
                         });
