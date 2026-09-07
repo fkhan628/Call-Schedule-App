@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.08.31b";
+    var APP_VERSION = "2026.09.06a";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -1942,6 +1942,11 @@ function CallSchedule() {
     const surgeonName = ((_surgeons$find3 = surgeons.find(s => s.id === vacReqSurgeon)) === null || _surgeons$find3 === void 0 ? void 0 : _surgeons$find3.name) || ((_apps$find2 = apps.find(a => a.id === vacReqSurgeon)) === null || _apps$find2 === void 0 ? void 0 : _apps$find2.name) || vacReqSurgeon;
     const isNoCall = vacReqType === "nocall";
     const kindLabel = isNoCall ? "no-call days" : "vacation";
+    const reqTodayStr = fmt(new Date());
+    if (vacReqStart < reqTodayStr || vacReqEnd < reqTodayStr) {
+      showToast(`Requests are for upcoming time off — ${vacReqStart < reqTodayStr ? "the start date" : "the end date"} is in the past. If a past ${kindLabel} record needs correcting, ask the scheduler to enter it directly in Setup.`, "error");
+      return;
+    }
     try {
       const req = {
         surgeon_id: vacReqSurgeon,
@@ -4292,6 +4297,7 @@ function CallSchedule() {
       if (countDiff > 0) reasons.push(`${candName} has ${countDiff} fewer ${shiftType === "dc" ? "service weeks" : shiftType === "wknd" ? "weekends" : "nights"} this period`);else if (countDiff === 0) reasons.push(`Equal ${shiftType === "dc" ? "service weeks" : shiftType === "wknd" ? "weekends" : "nights"} this period`);else reasons.push(`${candName} has ${Math.abs(countDiff)} more ${shiftType === "dc" ? "service weeks" : shiftType === "wknd" ? "weekends" : "nights"} — less ideal`);
       if (totalDiff > 1) reasons.push(`${totalDiff} fewer overall (good for balance)`);
       if (candShiftsThisWeek.length > 0) reasons.push(`Already assigned: ${candShiftsThisWeek.join(", ")}`);
+      const rsTodayStr = fmt(new Date());
       const returnSwaps = [];
       Object.entries(schedule).forEach(([otherMon, otherWk]) => {
         var _otherWk$nights2;
@@ -4305,7 +4311,7 @@ function CallSchedule() {
               break;
             }
           }
-          if (canDo) returnSwaps.push({
+          if (canDo && otherMon >= rsTodayStr) returnSwaps.push({
             mondayStr: otherMon,
             shift: "dayCall",
             label: `Svc Wk (${otherMon})`
@@ -4318,7 +4324,7 @@ function CallSchedule() {
               const otherMonDate = parse(otherMon);
               const sd = fmt(addD(otherMonDate, i));
               const nd = fmt(addD(otherMonDate, i + 1));
-              if (!onVac(currentSurgeonId, sd, vacations) && !onVac(currentSurgeonId, nd, vacations)) {
+              if (sd >= rsTodayStr && !onVac(currentSurgeonId, sd, vacations) && !onVac(currentSurgeonId, nd, vacations)) {
                 returnSwaps.push({
                   mondayStr: otherMon,
                   shift: sk,
@@ -4333,7 +4339,7 @@ function CallSchedule() {
           const f = fmt(addD(otherMonDate, 4)),
             su = fmt(addD(otherMonDate, 6)),
             nm = fmt(addD(otherMonDate, 7));
-          if (!onVac(currentSurgeonId, f, vacations) && !onVac(currentSurgeonId, su, vacations) && !onVac(currentSurgeonId, nm, vacations) && otherWk.dayCall !== currentSurgeonId) {
+          if (f >= rsTodayStr && !onVac(currentSurgeonId, f, vacations) && !onVac(currentSurgeonId, su, vacations) && !onVac(currentSurgeonId, nm, vacations) && otherWk.dayCall !== currentSurgeonId) {
             returnSwaps.push({
               mondayStr: otherMon,
               shift: "wknd",
@@ -10390,10 +10396,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     })
   }, React.createElement("option", {
     value: ""
-  }, "Select week…"), Object.keys(schedule).sort().map(m => React.createElement("option", {
+  }, "Select week…"), Object.keys(schedule).sort().filter(m => fmt(addD(parse(m), 6)) >= todayStr).map(m => React.createElement("option", {
     key: m,
     value: m
-  }, "Wk of ", m)))), React.createElement("div", null, React.createElement("label", {
+  }, "Wk of ", m, m <= todayStr ? " (this week)" : "")))), React.createElement("div", null, React.createElement("label", {
     style: {
       fontSize: 10,
       color: "#7a8a98",
@@ -10461,8 +10467,16 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         var _wk$nights11;
         const holder = sk === "dayCall" ? wk.dayCall : (_wk$nights11 = wk.nights) === null || _wk$nights11 === void 0 ? void 0 : _wk$nights11[sk];
         if (holder === mySurgeon) {
+          const startDs = sk === "dayCall" ? m : fmt(addD(parse(m), {
+            mon: 0,
+            tue: 1,
+            wed: 2,
+            thu: 3,
+            wknd: 4
+          }[sk]));
+          if (startDs < todayStr) return;
           const d = parse(m);
-          const label = `${MO[d.getMonth()].slice(0, 3)} ${d.getDate()} — ${SHIFT_LABELS[sk]}${wk.isBackup ? " (Backup)" : ""}`;
+          const label = `${MO[d.getMonth()].slice(0, 3)} ${d.getDate()} — ${SHIFT_LABELS[sk]}${wk.isBackup ? " (Backup)" : ""}${m <= todayStr ? " (this week)" : ""}`;
           opts.push({
             value: `${m}|${sk}`,
             label
@@ -10471,7 +10485,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       });
     });
     const curVal = swapTarget !== null && swapTarget !== void 0 && swapTarget.mondayStr && swapTarget !== null && swapTarget !== void 0 && swapTarget.shift ? `${swapTarget.mondayStr}|${swapTarget.shift}` : "";
-    const placeholder = !mySurgeon ? "Select your name in Mine tab first" : opts.length === 0 ? "You have no scheduled shifts" : "Select your shift…";
+    const placeholder = !mySurgeon ? "Select your name in Mine tab first" : opts.length === 0 ? "You have no upcoming shifts" : "Select your shift…";
     return React.createElement("select", {
       value: curVal,
       onChange: e => {
@@ -13010,6 +13024,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     }
   }, "Start Date"), React.createElement("input", {
     type: "date",
+    min: todayStr,
     value: vacReqStart,
     onChange: e => setVacReqStart(e.target.value),
     style: _objectSpread(_objectSpread({}, css.inp), {}, {
@@ -13024,6 +13039,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     }
   }, "End Date"), React.createElement("input", {
     type: "date",
+    min: todayStr,
     value: vacReqEnd,
     onChange: e => setVacReqEnd(e.target.value),
     style: _objectSpread(_objectSpread({}, css.inp), {}, {
@@ -13756,10 +13772,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     })
   }, React.createElement("option", {
     value: ""
-  }, "Select…"), Object.keys(schedule).sort().map(m => React.createElement("option", {
+  }, "Select…"), Object.keys(schedule).sort().filter(m => fmt(addD(parse(m), 6)) >= todayStr).map(m => React.createElement("option", {
     key: m,
     value: m
-  }, m)))), React.createElement("div", null, React.createElement("label", {
+  }, m, m <= todayStr ? " (this week)" : "")))), React.createElement("div", null, React.createElement("label", {
     style: {
       fontSize: 10,
       color: "#7a8a98",
@@ -13793,8 +13809,16 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         var _wk$nights19;
         const holder = sk === "dayCall" ? wk.dayCall : (_wk$nights19 = wk.nights) === null || _wk$nights19 === void 0 ? void 0 : _wk$nights19[sk];
         if (holder === tradeFrom) {
+          const startDs = sk === "dayCall" ? m : fmt(addD(parse(m), {
+            mon: 0,
+            tue: 1,
+            wed: 2,
+            thu: 3,
+            wknd: 4
+          }[sk]));
+          if (startDs < todayStr) return;
           const d = parse(m);
-          const label = `${MO[d.getMonth()].slice(0, 3)} ${d.getDate()} — ${SHIFT_LABELS[sk]}${wk.isBackup ? " (Backup)" : ""}`;
+          const label = `${MO[d.getMonth()].slice(0, 3)} ${d.getDate()} — ${SHIFT_LABELS[sk]}${wk.isBackup ? " (Backup)" : ""}${m <= todayStr ? " (this week)" : ""}`;
           opts.push({
             value: `${m}|${sk}`,
             label
@@ -13821,7 +13845,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       })
     }, React.createElement("option", {
       value: ""
-    }, opts.length === 0 ? "No shifts scheduled" : "Select your shift…"), opts.map(o => React.createElement("option", {
+    }, opts.length === 0 ? "No upcoming shifts" : "Select your shift…"), opts.map(o => React.createElement("option", {
       key: o.value,
       value: o.value
     }, o.label)));
@@ -13848,10 +13872,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     })
   }, React.createElement("option", {
     value: ""
-  }, "Select…"), Object.keys(schedule).sort().map(m => React.createElement("option", {
+  }, "Select…"), Object.keys(schedule).sort().filter(m => fmt(addD(parse(m), 6)) >= todayStr).map(m => React.createElement("option", {
     key: m,
     value: m
-  }, m)))), React.createElement("div", null, React.createElement("label", {
+  }, m, m <= todayStr ? " (this week)" : "")))), React.createElement("div", null, React.createElement("label", {
     style: {
       fontSize: 10,
       color: "#7a8a98",
@@ -13886,8 +13910,16 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           var _wk$nights20;
           const holder = sk === "dayCall" ? wk.dayCall : (_wk$nights20 = wk.nights) === null || _wk$nights20 === void 0 ? void 0 : _wk$nights20[sk];
           if (holder === tradeTo) {
+            const startDs = sk === "dayCall" ? m : fmt(addD(parse(m), {
+              mon: 0,
+              tue: 1,
+              wed: 2,
+              thu: 3,
+              wknd: 4
+            }[sk]));
+            if (startDs < todayStr) return;
             const d = parse(m);
-            const label = `${MO[d.getMonth()].slice(0, 3)} ${d.getDate()} — ${SHIFT_LABELS[sk]}${wk.isBackup ? " (Backup)" : ""}`;
+            const label = `${MO[d.getMonth()].slice(0, 3)} ${d.getDate()} — ${SHIFT_LABELS[sk]}${wk.isBackup ? " (Backup)" : ""}${m <= todayStr ? " (this week)" : ""}`;
             opts.push({
               value: `${m}|${sk}`,
               label
@@ -13897,7 +13929,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       });
     }
     const curVal = tradeReturnWeek && tradeReturnShift ? `${tradeReturnWeek}|${tradeReturnShift}` : "";
-    const placeholder = !tradeTo ? "Pick trade partner first" : opts.length === 0 ? "They have no scheduled shifts" : "Select their shift…";
+    const placeholder = !tradeTo ? "Pick trade partner first" : opts.length === 0 ? "They have no upcoming shifts" : "Select their shift…";
     return React.createElement("select", {
       value: curVal,
       onChange: e => {
