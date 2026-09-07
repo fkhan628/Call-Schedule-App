@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.09.07a";
+    var APP_VERSION = "2026.09.07b";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -2141,13 +2141,14 @@ function CallSchedule() {
       } = await db.insert("shift_trade_requests", req);
       if (inserted) {
         setTradeRequests(prev => [inserted, ...prev]);
-        logAudit("trade.propose", `Proposed trade: ${fromName}'s ${shiftLabel} (${tradeWeek}) → ${toName}${tradeReturnShift ? ` for ${SHIFT_LABELS[tradeReturnShift] || tradeReturnShift} (${tradeReturnWeek})` : ""}`, {
+        const proposeMsg = tradeProposeMsg(req);
+        logAudit("trade.propose", `Proposed trade — ${proposeMsg}`, {
           from: tradeFrom,
           to: tradeTo,
           shift: tradeShift,
           week: tradeWeek
         });
-        await addNotification("trade_submitted", "Shift Trade Proposed", `${fromName} wants to trade ${shiftLabel} (${tradeWeek}) with ${toName}`, {
+        await addNotification("trade_submitted", "Shift Trade Proposed", proposeMsg, {
           from_surgeon_id: tradeFrom,
           to_surgeon_id: tradeTo
         }, [tradeFrom, tradeTo]);
@@ -2155,7 +2156,8 @@ function CallSchedule() {
           from_name: fromName,
           to_name: toName,
           shift: shiftLabel,
-          week: tradeWeek
+          week: tradeWeek,
+          detail: proposeMsg
         }, [tradeFrom, tradeTo]);
       }
       setTradeWeek("");
@@ -2359,7 +2361,7 @@ function CallSchedule() {
       setTradeRequests(prev => prev.map(r => r.id === req.id ? _objectSpread(_objectSpread({}, r), {}, {
         status: "accepted"
       }) : r));
-      logAudit("trade.accept", `Accepted trade: ${req.from_surgeon_name}'s ${req.shift_label} (${req.week_monday}) ↔ ${req.to_surgeon_name}${cascades.length ? ` (+${cascades.length} cascade change${cascades.length === 1 ? "" : "s"})` : ""}`, {
+      logAudit("trade.accept", `Accepted trade — ${tradeAcceptMsg(req)}${cascades.length ? ` (+${cascades.length} cascade change${cascades.length === 1 ? "" : "s"})` : ""}`, {
         request_id: req.id,
         cascades: cascades.length
       });
@@ -2395,7 +2397,8 @@ function CallSchedule() {
         });
         return n;
       });
-      await addNotification("trade_accepted", "Shift Trade Accepted", `${req.to_surgeon_name} accepted: ${req.shift_label} (${req.week_monday}) with ${req.from_surgeon_name}`, {
+      const acceptMsg = tradeAcceptMsg(req);
+      await addNotification("trade_accepted", "Shift Trade Accepted", acceptMsg, {
         from_surgeon_id: req.from_surgeon_id,
         to_surgeon_id: req.to_surgeon_id
       }, [req.from_surgeon_id, req.to_surgeon_id]);
@@ -2403,7 +2406,8 @@ function CallSchedule() {
         from_name: req.from_surgeon_name,
         to_name: req.to_surgeon_name,
         shift: req.shift_label,
-        week: req.week_monday
+        week: req.week_monday,
+        detail: acceptMsg
       }, [req.from_surgeon_id, req.to_surgeon_id]);
       for (const ch of cascades) {
         const fromName = nameOf(ch.from);
@@ -2447,10 +2451,11 @@ function CallSchedule() {
       setTradeRequests(prev => prev.map(r => r.id === req.id ? _objectSpread(_objectSpread({}, r), {}, {
         status: "declined"
       }) : r));
-      logAudit("trade.decline", `Declined trade: ${req.from_surgeon_name}'s ${req.shift_label} (${req.week_monday}) → ${req.to_surgeon_name}`, {
+      const declineMsg = tradeDeclineMsg(req);
+      logAudit("trade.decline", `Declined trade — ${declineMsg}`, {
         request_id: req.id
       });
-      await addNotification("trade_declined", "Shift Trade Declined", `${req.to_surgeon_name} declined: ${req.shift_label} (${req.week_monday})`, {
+      await addNotification("trade_declined", "Shift Trade Declined", declineMsg, {
         from_surgeon_id: req.from_surgeon_id,
         to_surgeon_id: req.to_surgeon_id
       }, [req.from_surgeon_id, req.to_surgeon_id]);
@@ -2458,7 +2463,8 @@ function CallSchedule() {
         from_name: req.from_surgeon_name,
         to_name: req.to_surgeon_name,
         shift: req.shift_label,
-        week: req.week_monday
+        week: req.week_monday,
+        detail: declineMsg
       }, [req.from_surgeon_id, req.to_surgeon_id]);
     } catch (e) {
       console.error("Decline trade error:", e);
@@ -14099,12 +14105,17 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         fontSize: 12,
         color: "#2c3e50"
       }
-    }, r.shift_label, " (", r.week_monday, ")"), r.return_shift_label && React.createElement("span", {
+    }, slotLabel(r.week_monday, r.shift_key)), r.return_shift && r.return_week ? React.createElement("span", {
       style: {
         fontSize: 11,
         color: "#8a94a0"
       }
-    }, "↔ ", r.return_shift_label, " (", r.return_week, ")")), React.createElement("div", {
+    }, "↔ ", slotLabel(r.return_week, r.return_shift)) : React.createElement("span", {
+      style: {
+        fontSize: 11,
+        color: "#a08040"
+      }
+    }, "(one-way — no return shift)")), React.createElement("div", {
       style: {
         display: "flex",
         gap: 6,
@@ -14206,7 +14217,17 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         fontSize: 11,
         color: "#5a6a78"
       }
-    }, r.shift_label, " (", r.week_monday, ")"), isScheduler && React.createElement("button", {
+    }, slotLabel(r.week_monday, r.shift_key)), r.return_shift && r.return_week ? React.createElement("span", {
+      style: {
+        fontSize: 10,
+        color: "#8a94a0"
+      }
+    }, "↔ ", slotLabel(r.return_week, r.return_shift)) : React.createElement("span", {
+      style: {
+        fontSize: 10,
+        color: "#a08040"
+      }
+    }, "(one-way)"), isScheduler && React.createElement("button", {
       onClick: () => deleteTradeRequest(r.id),
       style: {
         background: "none",
