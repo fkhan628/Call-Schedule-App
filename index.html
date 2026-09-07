@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.09.06a";
+    var APP_VERSION = "2026.09.06b";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -237,15 +237,19 @@ function CallSchedule() {
   const [showPreview, setShowPreview] = useState(false);
   const [previewCalMonth, setPreviewCalMonth] = useState(0);
   const [vacSurgeon, setVacSurgeon] = useState("");
-  const [vacStart, setVacStart] = useState("");
-  const [vacEnd, setVacEnd] = useState("");
+  const [vacStart, setVacStart] = useState(() => fmt(new Date()));
+  const [vacEnd, setVacEnd] = useState(() => fmt(new Date()));
   const [noCallDays, setNoCallDays] = useState({});
   const [ncSurgeon, setNcSurgeon] = useState("");
-  const [ncStart, setNcStart] = useState("");
-  const [ncEnd, setNcEnd] = useState("");
+  const [ncStart, setNcStart] = useState(() => fmt(new Date()));
+  const [ncEnd, setNcEnd] = useState(() => fmt(new Date()));
   const [editVac, setEditVac] = useState(null);
-  const [bkMonday, setBkMonday] = useState("");
-  const [appDate, setAppDate] = useState("");
+  const mondayOfToday = () => {
+    const t = new Date();
+    return fmt(addD(t, t.getDay() === 0 ? -6 : 1 - t.getDay()));
+  };
+  const [bkMonday, setBkMonday] = useState(mondayOfToday);
+  const [appDate, setAppDate] = useState(() => fmt(new Date()));
   const [appPerson, setAppPerson] = useState("");
   const [scanning, setScanning] = useState(false);
   const [scanMsg, setScanMsg] = useState("");
@@ -276,6 +280,7 @@ function CallSchedule() {
     [id]: !prev[id]
   }));
   const [showPastVacations, setShowPastVacations] = useState(false);
+  const [showPastNoCall, setShowPastNoCall] = useState(false);
   const [appShiftsListExpanded, setAppShiftsListExpanded] = useState(false);
   const [dayOffMonth, setDayOffMonth] = useState(() => {
     const n = new Date();
@@ -2310,6 +2315,11 @@ function CallSchedule() {
   }, [surgeons]);
   const acceptTradeRequest = useCallback(async req => {
     try {
+      const accToday = fmt(new Date());
+      if (shiftStartDate(req.week_monday, req.shift_key) < accToday || req.return_week && req.return_shift && shiftStartDate(req.return_week, req.return_shift) < accToday) {
+        showToast("This trade's shift has already passed — propose a new one.", "error");
+        return;
+      }
       const cascades = detectCascadeChanges(schedule, req);
       const nameOf = id => {
         var _surgeons$find9;
@@ -2517,6 +2527,13 @@ function CallSchedule() {
   const [editingVacReq, setEditingVacReq] = useState(null);
   const saveVacRequestEdit = useCallback(async () => {
     if (!editingVacReq) return;
+    if (!isScheduler) {
+      const editTodayStr = fmt(new Date());
+      if (editingVacReq.start_date < editTodayStr || editingVacReq.end_date < editTodayStr) {
+        showToast(`Requests are for upcoming time off — ${editingVacReq.start_date < editTodayStr ? "the start date" : "the end date"} is in the past. If a past record needs correcting, ask the scheduler to enter it directly in Setup.`, "error");
+        return;
+      }
+    }
     try {
       const updates = {
         start_date: editingVacReq.start_date,
@@ -2551,7 +2568,7 @@ function CallSchedule() {
       console.error("Edit vacation error:", e);
       showToast("Couldn't save the changes — check your connection and try again.", "error");
     }
-  }, [editingVacReq, vacRequests]);
+  }, [editingVacReq, vacRequests, isScheduler]);
   const revokeApprovedVac = useCallback(async req => {
     const isNoCall = req.request_type === "nocall";
     const kindLabel = isNoCall ? "no-call days" : "vacation";
@@ -3350,8 +3367,8 @@ function CallSchedule() {
   const addVac = () => {
     if (!vacSurgeon || !vacStart || !vacEnd) return;
     toAdd(vacSurgeon, "vacation", vacStart, vacEnd);
-    setVacStart("");
-    setVacEnd("");
+    setVacStart(fmt(new Date()));
+    setVacEnd(fmt(new Date()));
   };
   const rmVac = (sid, idx) => {
     const r = (vacations[sid] || [])[idx];
@@ -3360,8 +3377,8 @@ function CallSchedule() {
   const addNoCall = () => {
     if (!ncSurgeon || !ncStart || !ncEnd) return;
     toAdd(ncSurgeon, "nocall", ncStart, ncEnd);
-    setNcStart("");
-    setNcEnd("");
+    setNcStart(fmt(new Date()));
+    setNcEnd(fmt(new Date()));
   };
   const rmNoCall = (sid, idx) => {
     const r = (noCallDays[sid] || [])[idx];
@@ -3409,7 +3426,7 @@ function CallSchedule() {
       date: appDate,
       app_id: appPerson
     });
-    setAppDate("");
+    setAppDate(fmt(new Date()));
   };
   const rmAppShift = ds => {
     const prevId = appShifts[ds];
@@ -4371,6 +4388,11 @@ function CallSchedule() {
   }, [schedule, surgeons, sMap, vacations, priorCounts]);
   const executeTwoWaySwap = useCallback((targetMon, targetShift, targetOldId, candId, returnMon, returnShift) => {
     var _sMap$targetOldId, _sMap$candId2;
+    const swapToday = fmt(new Date());
+    if (shiftStartDate(targetMon, targetShift) < swapToday || returnMon && returnShift && shiftStartDate(returnMon, returnShift) < swapToday) {
+      showToast("This trade's shift has already passed — propose a new one.", "error");
+      return;
+    }
     pushUndo(schedule);
     setSchedule(p => {
       const n = _objectSpread({}, p);
@@ -4635,7 +4657,7 @@ function CallSchedule() {
     logAudit("schedule.backup_mark", `Marked week of ${bkMonday} as Backup (Fierce primary)`, {
       week: bkMonday
     });
-    setBkMonday("");
+    setBkMonday(mondayOfToday());
   };
   const unmarkBackupWeek = m => {
     setBackupMondaySet(p => {
@@ -4659,7 +4681,7 @@ function CallSchedule() {
     logAudit("schedule.fierce_mark", `Marked week of ${bkMonday} as Fierce Backup`, {
       week: bkMonday
     });
-    setBkMonday("");
+    setBkMonday(mondayOfToday());
   };
   const unmarkFierceBackupWeek = m => {
     setFierceBackupSet(p => {
@@ -7294,6 +7316,13 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         fontStyle: "italic"
       }
     }, "No no-call days recorded.");
+    const ncTodayStr = fmt(new Date());
+    let ncPastCount = 0;
+    withNc.forEach(p => {
+      (noCallDays[p.id] || []).forEach(([, e]) => {
+        if (e < ncTodayStr) ncPastCount++;
+      });
+    });
     const ncRange = (s, e) => {
       var _MO3, _MO4;
       const sp = s.split("-"),
@@ -7306,7 +7335,48 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       if (sp[1] === ep[1]) return `${sm} ${sd}–${ed}`;
       return `${sm} ${sd} – ${em} ${ed}`;
     };
-    return withNc.map(p => React.createElement("div", {
+    const ncVisible = withNc.map(p => _objectSpread(_objectSpread({}, p), {}, {
+      rows: (noCallDays[p.id] || []).map((r, origIdx) => ({
+        s: r[0],
+        e: r[1],
+        origIdx
+      })).filter(({
+        e
+      }) => showPastNoCall || e >= ncTodayStr).sort((a, b) => a.s < b.s ? -1 : a.s > b.s ? 1 : 0)
+    })).filter(p => p.rows.length > 0);
+    return React.createElement(React.Fragment, null, ncPastCount > 0 && React.createElement("div", {
+      style: {
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        marginBottom: 8,
+        padding: "6px 10px",
+        background: "#f8f9fb",
+        border: "1px solid #e0e4ea",
+        borderRadius: 6,
+        fontSize: 11
+      }
+    }, React.createElement("label", {
+      style: {
+        display: "flex",
+        alignItems: "center",
+        gap: 6,
+        cursor: "pointer",
+        color: "#5a6a78"
+      }
+    }, React.createElement("input", {
+      type: "checkbox",
+      checked: showPastNoCall,
+      onChange: e => setShowPastNoCall(e.target.checked),
+      style: {
+        margin: 0
+      }
+    }), React.createElement("span", null, "Show completed no-call days")), React.createElement("span", {
+      style: {
+        color: "#8a94a0",
+        fontFamily: mono
+      }
+    }, "(", showPastNoCall ? "showing all" : `${ncPastCount} past hidden`, ")")), ncVisible.map(p => React.createElement("div", {
       key: p.id,
       style: {
         display: "flex",
@@ -7331,11 +7401,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         marginLeft: "auto",
         alignItems: "center"
       }
-    }, (noCallDays[p.id] || []).map((r, origIdx) => ({
-      s: r[0],
-      e: r[1],
-      origIdx
-    })).sort((a, b) => a.s < b.s ? -1 : a.s > b.s ? 1 : 0).map(({
+    }, p.rows.map(({
       s,
       e,
       origIdx
@@ -7364,7 +7430,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         padding: 0,
         lineHeight: 1
       }
-    }, "✕"))))));
+    }, "✕")))))));
   })()), React.createElement("div", {
     style: css.card
   }, React.createElement("div", {
@@ -10649,6 +10715,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     }
   }, React.createElement("button", {
     onClick: () => {
+      if (shiftStartDate(swapTarget.mondayStr, swapTarget.shift) < fmt(new Date())) {
+        showToast("This trade's shift has already passed — propose a new one.", "error");
+        return;
+      }
       if (!confirm(`⚠️ Emergency one-way swap\n\nThis will reassign ${SHIFT_LABELS[swapTarget.shift]} to ${s.candidateName} WITHOUT a return swap.\n\nOne-way swaps should only be used for illness, family emergency, or other acute circumstances.\n\nProceed?`)) return;
       swapShift(swapTarget.mondayStr, swapTarget.shift, s.candidateId);
     },
@@ -12280,6 +12350,11 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         return;
       }
       const old = myVacs[idx];
+      if (old && old[1] < fmt(new Date()) && !isScheduler) {
+        showToast("This vacation has already ended — past records are corrected by the scheduler in Setup.", "error");
+        setMyVacEdit(null);
+        return;
+      }
       if (old) toEdit(myId, "vacation", old[0], old[1], start, end);
       setMyVacEdit(null);
       try {
@@ -12292,6 +12367,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     };
     const removeMyVac = idx => {
       const r = myVacs[idx];
+      if (r && r[1] < fmt(new Date()) && !isScheduler) {
+        showToast("This vacation has already ended — past records are corrected by the scheduler in Setup.", "error");
+        return;
+      }
       if (!confirm(`Remove your vacation ${r[0]} → ${r[1]}? This gives those days back.`)) return;
       toRemove(myId, "vacation", r[0], r[1]);
       if (myVacEdit && myVacEdit.idx === idx) setMyVacEdit(null);
@@ -12695,7 +12774,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           marginTop: 8,
           lineHeight: 1.4
         }
-      }, "Shorten or remove a vacation to give days back. The scheduler is notified; already-generated weeks aren't reassigned automatically."));
+      }, "Shorten or remove a vacation to give days back. The scheduler is notified; already-generated weeks aren't reassigned automatically. Past records are corrected by the scheduler in Setup."));
     })(), myNoCallView.length > 0 && (() => {
       const NC_LIMIT = 5;
       const shown = showAllMyNoCall ? myNoCallView : myNoCallView.slice(0, NC_LIMIT);
@@ -13195,6 +13274,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         }
       }, "Start"), React.createElement("input", {
         type: "date",
+        min: isScheduler ? undefined : fmt(new Date()),
         value: editingVacReq.start_date,
         onChange: e => setEditingVacReq(p => _objectSpread(_objectSpread({}, p), {}, {
           start_date: e.target.value
@@ -13211,6 +13291,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         }
       }, "End"), React.createElement("input", {
         type: "date",
+        min: isScheduler ? undefined : fmt(new Date()),
         value: editingVacReq.end_date,
         onChange: e => setEditingVacReq(p => _objectSpread(_objectSpread({}, p), {}, {
           end_date: e.target.value
