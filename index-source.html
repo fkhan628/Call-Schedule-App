@@ -360,17 +360,23 @@ function CallSchedule() {
 
   // Form states
   const [vacSurgeon, setVacSurgeon] = useState("");
-  const [vacStart, setVacStart] = useState("");
-  const [vacEnd, setVacEnd] = useState("");
+  // Setup date inputs default to TODAY (nav cleanup Bucket B, owner-approved
+  // 2026-09-06): entry starts at now, but the past stays freely reachable —
+  // these are the scheduler's record-keeping fields and back-dating corrects
+  // history (the KJH counts precedent). No min attributes here, ever.
+  const [vacStart, setVacStart] = useState(() => fmt(new Date()));
+  const [vacEnd, setVacEnd] = useState(() => fmt(new Date()));
   // No-call days: person is working but should NOT be assigned call. Tracked
   // separately from vacations; the generator treats them the same (block call).
   const [noCallDays, setNoCallDays] = useState({}); // { personId: [[start,end],...] }
   const [ncSurgeon, setNcSurgeon] = useState("");
-  const [ncStart, setNcStart] = useState("");
-  const [ncEnd, setNcEnd] = useState("");
+  const [ncStart, setNcStart] = useState(() => fmt(new Date()));
+  const [ncEnd, setNcEnd] = useState(() => fmt(new Date()));
   const [editVac, setEditVac] = useState(null); // {sid, idx, start, end}
-  const [bkMonday, setBkMonday] = useState("");
-  const [appDate, setAppDate] = useState("");
+  // Backup Monday defaults to the CURRENT week's Monday (same Bucket-B rule).
+  const mondayOfToday = () => { const t = new Date(); return fmt(addD(t, t.getDay() === 0 ? -6 : 1 - t.getDay())); };
+  const [bkMonday, setBkMonday] = useState(mondayOfToday);
+  const [appDate, setAppDate] = useState(() => fmt(new Date()));
   const [appPerson, setAppPerson] = useState("");
   const [scanning, setScanning] = useState(false);
   const [scanMsg, setScanMsg] = useState("");
@@ -420,6 +426,7 @@ function CallSchedule() {
   const [expandedVacGroups, setExpandedVacGroups] = useState({}); // { personId: true/false }
   const toggleVacGroup = (id) => setExpandedVacGroups(prev => ({ ...prev, [id]: !prev[id] }));
   const [showPastVacations, setShowPastVacations] = useState(false); // Setup tab: hide completed vacations by default
+  const [showPastNoCall, setShowPastNoCall] = useState(false); // Setup tab: same idiom for the no-call list (Bucket B, 2026-09-06)
   const [appShiftsListExpanded, setAppShiftsListExpanded] = useState(false); // Setup tab: collapse APP shift list by default to reduce clutter
   const [dayOffMonth, setDayOffMonth] = useState(() => { const n = new Date(); return { y: n.getFullYear(), m: n.getMonth() }; }); // APP Days Off entry grid month
 
@@ -2543,6 +2550,17 @@ function CallSchedule() {
   // ─── Shift Trade Request: Accept (with cascade) ───
   const acceptTradeRequest = useCallback(async (req) => {
     try {
+      // TIME-MOVED RE-VALIDATION (owner ruling 2026-09-06, item 4): a trade
+      // can be accepted days after it was proposed — the pickers filter at
+      // PROPOSE time (#49), this is the same rule at ACCEPT time, checked
+      // before any write. Either leg elapsed (shiftStartDate < today; for
+      // dayCall that is the week's Monday) refuses loudly with zero writes.
+      const accToday = fmt(new Date());
+      if (shiftStartDate(req.week_monday, req.shift_key) < accToday
+        || (req.return_week && req.return_shift && shiftStartDate(req.return_week, req.return_shift) < accToday)) {
+        showToast("This trade's shift has already passed — propose a new one.", "error");
+        return;
+      }
       // Detect cascade changes
       const cascades = detectCascadeChanges(schedule, req);
       const nameOf = (id) => surgeons.find(s => s.id === id)?.name || id;
@@ -2728,6 +2746,19 @@ function CallSchedule() {
 
   const saveVacRequestEdit = useCallback(async () => {
     if (!editingVacReq) return;
+    // MEMBER PATH GATE (owner ruling 2026-09-06, item 3): the same two-layer
+    // rule as submitVacRequest — the pending-list editor's inputs carry
+    // min={today} for members, and this is the real gate behind it (min is
+    // UI-only; a typed date bypasses it). The reviewed-list editor is
+    // scheduler-only and schedulers are exempt here, so their record
+    // corrections stay unrestricted.
+    if (!isScheduler) {
+      const editTodayStr = fmt(new Date());
+      if (editingVacReq.start_date < editTodayStr || editingVacReq.end_date < editTodayStr) {
+        showToast(`Requests are for upcoming time off — ${editingVacReq.start_date < editTodayStr ? "the start date" : "the end date"} is in the past. If a past record needs correcting, ask the scheduler to enter it directly in Setup.`, "error");
+        return;
+      }
+    }
     try {
       const updates = { start_date: editingVacReq.start_date, end_date: editingVacReq.end_date, reason: editingVacReq.reason };
       // Fail-closed row update. Id-only precondition — edits are valid on both
@@ -2759,7 +2790,7 @@ function CallSchedule() {
       }
       setEditingVacReq(null);
     } catch(e) { console.error("Edit vacation error:", e); showToast("Couldn't save the changes — check your connection and try again.", "error"); }
-  }, [editingVacReq, vacRequests]);
+  }, [editingVacReq, vacRequests, isScheduler]);
 
   // ─── Revoke Approved Vacation (scheduler only) ───
   const revokeApprovedVac = useCallback(async (req) => {
@@ -3509,13 +3540,13 @@ function CallSchedule() {
   const addVac = () => {
     if(!vacSurgeon||!vacStart||!vacEnd) return;
     toAdd(vacSurgeon, "vacation", vacStart, vacEnd);
-    setVacStart(""); setVacEnd("");
+    setVacStart(fmt(new Date())); setVacEnd(fmt(new Date()));
   };
   const rmVac = (sid,idx) => { const r=(vacations[sid]||[])[idx]; if(r) toRemove(sid,"vacation",r[0],r[1]); };
   const addNoCall = () => {
     if(!ncSurgeon||!ncStart||!ncEnd) return;
     toAdd(ncSurgeon, "nocall", ncStart, ncEnd);
-    setNcStart(""); setNcEnd("");
+    setNcStart(fmt(new Date())); setNcEnd(fmt(new Date()));
   };
   const rmNoCall = (sid,idx) => { const r=(noCallDays[sid]||[])[idx]; if(r) toRemove(sid,"nocall",r[0],r[1]); };
   const saveEditVac = () => {
@@ -3555,7 +3586,7 @@ function CallSchedule() {
     setAppShifts(next);
     saveAppShifts(next);
     logAudit("app_shift.assign", `Assigned APP ${nameOf(appPerson)} to ${appDate}`, { date: appDate, app_id: appPerson });
-    setAppDate("");
+    setAppDate(fmt(new Date()));
   };
   const rmAppShift = (ds) => {
     const prevId = appShifts[ds];
@@ -4462,6 +4493,16 @@ function CallSchedule() {
 
   // ─── Execute a two-way swap ───
   const executeTwoWaySwap = useCallback((targetMon, targetShift, targetOldId, candId, returnMon, returnShift) => {
+    // Same accept-time re-validation as acceptTradeRequest: suggestions can
+    // sit in a stale tab past midnight (or longer). Either leg elapsed →
+    // refuse loudly, zero writes. Record corrections are the week editor's
+    // job, not the swap tool's.
+    const swapToday = fmt(new Date());
+    if (shiftStartDate(targetMon, targetShift) < swapToday
+      || (returnMon && returnShift && shiftStartDate(returnMon, returnShift) < swapToday)) {
+      showToast("This trade's shift has already passed — propose a new one.", "error");
+      return;
+    }
     pushUndo(schedule);
     setSchedule(p => {
       const n = { ...p };
@@ -4717,7 +4758,7 @@ function CallSchedule() {
     setBackupMondaySet(p => { const n = new Set(p); n.add(bkMonday); return n; });
     setWeekFlag(bkMonday, "isBackup", true);
     logAudit("schedule.backup_mark", `Marked week of ${bkMonday} as Backup (Fierce primary)`, { week: bkMonday });
-    setBkMonday("");
+    setBkMonday(mondayOfToday());
   };
   const unmarkBackupWeek = (m) => {
     setBackupMondaySet(p => { const n = new Set(p); n.delete(m); return n; });
@@ -4729,7 +4770,7 @@ function CallSchedule() {
     setFierceBackupSet(p => { const n = new Set(p); n.add(bkMonday); return n; });
     setWeekFlag(bkMonday, "isFierceBackup", true);
     logAudit("schedule.fierce_mark", `Marked week of ${bkMonday} as Fierce Backup`, { week: bkMonday });
-    setBkMonday("");
+    setBkMonday(mondayOfToday());
   };
   const unmarkFierceBackupWeek = (m) => {
     setFierceBackupSet(p => { const n = new Set(p); n.delete(m); return n; });
@@ -6199,6 +6240,13 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               const allPeople = [...surgeons.map(s=>({...s,type:"s"})), ...apps.map(a=>({...a,type:"a"}))];
               const withNc = allPeople.filter(p=>(noCallDays[p.id]||[]).length>0);
               if(!withNc.length) return <div style={{padding:"10px",fontSize:12,color:"#8a94a0",fontStyle:"italic"}}>No no-call days recorded.</div>;
+              // Same show-past idiom as the vacations list above: completed
+              // entries (end < today) hide by default, a toggle brings them
+              // back, and NOTHING is deleted — origIdx keeps ✕ targeting the
+              // stored array even when the display is filtered/sorted.
+              const ncTodayStr = fmt(new Date());
+              let ncPastCount = 0;
+              withNc.forEach(p => { (noCallDays[p.id]||[]).forEach(([,e]) => { if (e < ncTodayStr) ncPastCount++; }); });
               const ncRange = (s,e)=>{
                 const sp=s.split("-"), ep=e.split("-");
                 const sm=MO[parseInt(sp[1])-1]?.slice(0,3), sd=parseInt(sp[2]);
@@ -6207,13 +6255,29 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                 if(sp[1]===ep[1]) return `${sm} ${sd}–${ed}`;
                 return `${sm} ${sd} – ${em} ${ed}`;
               };
-              return withNc.map(p=>(
+              const ncVisible = withNc
+                .map(p => ({ ...p, rows: (noCallDays[p.id]||[])
+                  .map((r,origIdx)=>({s:r[0],e:r[1],origIdx}))
+                  .filter(({e}) => showPastNoCall || e >= ncTodayStr)
+                  .sort((a,b)=>a.s<b.s?-1:a.s>b.s?1:0) }))
+                .filter(p => p.rows.length > 0);
+              return <>
+                {ncPastCount > 0 && (
+                  <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8,padding:"6px 10px",background:"#f8f9fb",border:"1px solid #e0e4ea",borderRadius:6,fontSize:11}}>
+                    <label style={{display:"flex",alignItems:"center",gap:6,cursor:"pointer",color:"#5a6a78"}}>
+                      <input type="checkbox" checked={showPastNoCall} onChange={e=>setShowPastNoCall(e.target.checked)} style={{margin:0}}/>
+                      <span>Show completed no-call days</span>
+                    </label>
+                    <span style={{color:"#8a94a0",fontFamily:mono}}>
+                      ({showPastNoCall ? "showing all" : `${ncPastCount} past hidden`})
+                    </span>
+                  </div>
+                )}
+                {ncVisible.map(p=>(
                 <div key={p.id} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 10px",marginBottom:5,border:"1px solid #e8dcae",borderRadius:7,background:"#fcf9ef",flexWrap:"wrap"}}>
                   {p.type==="s"?<Badge id={p.id}/>:<AppBadge id={p.id}/>}
                   <div style={{display:"flex",gap:4,flexWrap:"wrap",marginLeft:"auto",alignItems:"center"}}>
-                    {(noCallDays[p.id]||[])
-                      .map((r,origIdx)=>({s:r[0],e:r[1],origIdx}))
-                      .sort((a,b)=>a.s<b.s?-1:a.s>b.s?1:0)
+                    {p.rows
                       .map(({s,e,origIdx})=>(
                       <span key={origIdx} style={{display:"inline-flex",alignItems:"center",gap:4,fontFamily:mono,fontSize:10,color:"#6a6030",background:"#fcf6e8",padding:"1px 6px",borderRadius:4,border:"1px solid #e8dcae"}}>
                         {ncRange(s,e)}
@@ -6222,7 +6286,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                     ))}
                   </div>
                 </div>
-              ));
+                ))}
+              </>;
             })()}
           </div>
 
@@ -7830,6 +7895,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                       {isScheduler && (
                         <div style={{marginTop:6,paddingTop:6,borderTop:"1px dashed #e0d0c0"}}>
                           <button onClick={()=>{
+                            // Guarded at the CALL SITE, not inside swapShift —
+                            // swapShift also serves record corrections, which
+                            // must keep full past access (the Bucket-B caveat).
+                            if (shiftStartDate(swapTarget.mondayStr, swapTarget.shift) < fmt(new Date())) { showToast("This trade's shift has already passed — propose a new one.", "error"); return; }
                             if (!confirm(`⚠️ Emergency one-way swap\n\nThis will reassign ${SHIFT_LABELS[swapTarget.shift]} to ${s.candidateName} WITHOUT a return swap.\n\nOne-way swaps should only be used for illness, family emergency, or other acute circumstances.\n\nProceed?`)) return;
                             swapShift(swapTarget.mondayStr, swapTarget.shift, s.candidateId);
                           }}
@@ -8673,12 +8742,33 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               const { idx, start, end } = myVacEdit;
               if (!start || !end || start > end) { alert("Please enter a valid date range (start on or before end)."); return; }
               const old = myVacs[idx];
+              // BOUNDED SELF-SERVE (owner ruling 2026-09-06): members may edit
+              // their own entry only while it is ongoing or upcoming (original
+              // end >= today) — trimming an ONGOING vacation, even to an end
+              // date in the past ("came home early"), stays allowed because
+              // the gate is on the ORIGINAL entry, not the new values. A fully
+              // elapsed entry is history, and the #49 request gate just told
+              // members past corrections go through the scheduler — this path
+              // saying otherwise would contradict that in the same release.
+              // Schedulers keep full past access. The Mine list already hides
+              // elapsed rows, so this is the belt to that suspender.
+              if (old && old[1] < fmt(new Date()) && !isScheduler) {
+                showToast("This vacation has already ended — past records are corrected by the scheduler in Setup.", "error");
+                setMyVacEdit(null);
+                return;
+              }
               if (old) toEdit(myId, "vacation", old[0], old[1], start, end);
               setMyVacEdit(null);
               try { addNotification("vacation_revoked", "Vacation Adjusted", `${myName} adjusted a vacation to ${start} → ${end}.`, { surgeon_id: myId }, [...schedulerAdminIds]); } catch(e) { console.error("Vacation-adjust notification failed:", e); }
             };
             const removeMyVac = (idx) => {
               const r = myVacs[idx];
+              // Same bound as saveMyVacEdit: deleting an elapsed entry erases
+              // history — member removals only while end >= today.
+              if (r && r[1] < fmt(new Date()) && !isScheduler) {
+                showToast("This vacation has already ended — past records are corrected by the scheduler in Setup.", "error");
+                return;
+              }
               if (!confirm(`Remove your vacation ${r[0]} → ${r[1]}? This gives those days back.`)) return;
               toRemove(myId, "vacation", r[0], r[1]);
               if (myVacEdit && myVacEdit.idx === idx) setMyVacEdit(null);
@@ -8812,7 +8902,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                         {showAllMyVacs ? "Show less" : `Show all ${myVacsView.length} →`}
                       </button>
                     )}
-                    {canEditTimeOff && <div style={{fontSize:10,color:"#a8946a",marginTop:8,lineHeight:1.4}}>Shorten or remove a vacation to give days back. The scheduler is notified; already-generated weeks aren't reassigned automatically.</div>}
+                    {canEditTimeOff && <div style={{fontSize:10,color:"#a8946a",marginTop:8,lineHeight:1.4}}>Shorten or remove a vacation to give days back. The scheduler is notified; already-generated weeks aren't reassigned automatically. Past records are corrected by the scheduler in Setup.</div>}
                   </div>
                   );
                 })()}
@@ -9049,11 +9139,11 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                           <div style={{display:"flex",gap:6,alignItems:"end",flexWrap:"wrap"}}>
                             <div>
                               <label style={{fontSize:10,color:"#7a8a98",display:"block"}}>Start</label>
-                              <input type="date" value={editingVacReq.start_date} onChange={e=>setEditingVacReq(p=>({...p,start_date:e.target.value}))} style={{...css.inp,width:140,fontSize:12}}/>
+                              <input type="date" min={isScheduler ? undefined : fmt(new Date())} value={editingVacReq.start_date} onChange={e=>setEditingVacReq(p=>({...p,start_date:e.target.value}))} style={{...css.inp,width:140,fontSize:12}}/>
                             </div>
                             <div>
                               <label style={{fontSize:10,color:"#7a8a98",display:"block"}}>End</label>
-                              <input type="date" value={editingVacReq.end_date} onChange={e=>setEditingVacReq(p=>({...p,end_date:e.target.value}))} style={{...css.inp,width:140,fontSize:12}}/>
+                              <input type="date" min={isScheduler ? undefined : fmt(new Date())} value={editingVacReq.end_date} onChange={e=>setEditingVacReq(p=>({...p,end_date:e.target.value}))} style={{...css.inp,width:140,fontSize:12}}/>
                             </div>
                             <div>
                               <label style={{fontSize:10,color:"#7a8a98",display:"block"}}>Reason</label>

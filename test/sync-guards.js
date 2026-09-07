@@ -934,6 +934,98 @@ check("prefs audit never logs the plaintext email (masked only)",
     /spacing check itself failed/.test(src));
 }
 
+// ─── K. Trade-acceptance time re-validation (owner ruling 2026-09-06) ───
+// A trade can be accepted days after it was proposed; the pickers filter at
+// PROPOSE time (#49) and acceptTradeRequest re-validates at ACCEPT time.
+// TWO-SIDED, extraction-executed: the real handler body is sliced from
+// index-source.html and run with a recording fetch — a stale acceptance must
+// refuse loudly with ZERO writes, and a valid one must still land (the
+// status PATCH is attempted and the swap is applied). Companion source pins
+// cover the other two accept paths (executeTwoWaySwap, the emergency
+// one-way call site), which share the same message and helper.
+{
+  const START = "const acceptTradeRequest = useCallback(async (req) => {";
+  const END = "}, [schedule, surgeons, pushUndo, addNotification, sendEmailNotif, detectCascadeChanges, schedulerAdminIds]);";
+  const s0 = src.indexOf(START), e0 = src.indexOf(END, s0);
+  if (s0 === -1 || e0 === -1) { check("accept-trade handler extractable for execution", false, "anchors not found"); }
+  else if (src.indexOf(START, s0 + 1) !== -1) { check("accept-trade START anchor unique", false, "multiple matches"); }
+  else {
+    const body = src.slice(s0 + START.length, e0);
+    let acceptFn;
+    try {
+      acceptFn = vm.runInContext(`(function (env) {
+        const { schedule, surgeons, showToast, detectCascadeChanges, setTradeRequests, logAudit,
+                pushUndo, setSchedule, addNotification, sendEmailNotif, schedulerAdminIds, confirm } = env;
+        return (async (req) => {${body}});
+      })`, sandbox, { filename: "accept-trade-extract.js" });
+      check("accept-trade handler compiles standalone", true);
+    } catch (ex) { check("accept-trade handler compiles standalone", false, String(ex)); }
+    if (acceptFn) {
+      const { fmt: F, addD: A } = vm.runInContext("({ fmt, addD })", sandbox);
+      const mkEnv = () => {
+        const log = { toasts: [], schedWrites: 0, undo: 0 };
+        return { log, env: {
+          schedule: {},
+          surgeons: [{ id: "s1", name: "AAA" }, { id: "s2", name: "BBB" }],
+          showToast: (msg, kind) => log.toasts.push({ msg, kind }),
+          detectCascadeChanges: () => [],
+          setTradeRequests: () => {},
+          logAudit: () => {},
+          pushUndo: () => { log.undo++; },
+          setSchedule: () => { log.schedWrites++; },
+          addNotification: async () => {},
+          sendEmailNotif: () => {},
+          schedulerAdminIds: [],
+          confirm: () => true,
+        } };
+      };
+      const baseReq = (weekMon, retWeek) => ({
+        id: 9, from_surgeon_id: "s1", to_surgeon_id: "s2",
+        from_surgeon_name: "AAA", to_surgeon_name: "BBB",
+        week_monday: weekMon, shift_key: "tue", shift_label: "Tue Night",
+        return_week: retWeek || null, return_shift: retWeek ? "wed" : null,
+      });
+      const pastMon = F(A(new Date(), -21));
+      const futureMon = F(A(new Date(), 14));
+      // RED: stale primary leg → loud refusal, zero writes of any kind
+      let t = mkEnv();
+      let fetchStub = stubFetch([]); // any fetch would throw "unmatched" — none may happen
+      await acceptFn(t.env)(baseReq(pastMon));
+      check("stale trade (primary leg elapsed) → refused with ZERO writes",
+        writesIn(fetchStub).length === 0 && fetchStub.calls.length === 0 && t.log.schedWrites === 0 && t.log.undo === 0
+        && t.log.toasts.length === 1 && /already passed/.test(t.log.toasts[0].msg),
+        JSON.stringify(t.log.toasts));
+      // RED: stale RETURN leg with a valid primary → same refusal
+      t = mkEnv();
+      fetchStub = stubFetch([]);
+      await acceptFn(t.env)(baseReq(futureMon, pastMon));
+      check("stale trade (return leg elapsed) → refused with ZERO writes",
+        fetchStub.calls.length === 0 && t.log.schedWrites === 0
+        && t.log.toasts.length === 1 && /already passed/.test(t.log.toasts[0].msg));
+      // GREEN: valid future trade → status PATCH attempted and swap applied
+      t = mkEnv();
+      t.env.schedule = { [futureMon]: { dayCall: "s9", nights: { tue: "s1", wed: "s2" }, off: null } };
+      fetchStub = stubFetch([{ m: "PATCH", url: "shift_trade_requests", json: [{ id: 9 }] }]);
+      await acceptFn(t.env)(baseReq(futureMon));
+      check("valid future trade → status PATCH attempted and swap applied",
+        writesIn(fetchStub).length === 1 && t.log.schedWrites === 1 && t.log.undo === 1
+        && !t.log.toasts.some(x => /already passed/.test(x.msg)),
+        `writes=${writesIn(fetchStub).length} sched=${t.log.schedWrites} toasts=${JSON.stringify(t.log.toasts)}`);
+    }
+  }
+}
+// Source pins for the two sibling accept paths + the shared helper.
+{
+  const helpersSrc = fs.readFileSync(path.join(ROOT, "helpers.js"), "utf8");
+  check("shiftStartDate helper defined once in helpers.js",
+    (helpersSrc.match(/function shiftStartDate\(/g) || []).length === 1);
+  check("the elapsed-trade message appears at exactly 3 accept paths",
+    count('"This trade\'s shift has already passed — propose a new one."') === 3,
+    `found ${count('"This trade\'s shift has already passed — propose a new one."')}`);
+  check("executeTwoWaySwap re-validates before pushUndo",
+    /executeTwoWaySwap = useCallback\(\(targetMon[\s\S]{0,900}shiftStartDate\(targetMon, targetShift\)[\s\S]{0,400}pushUndo\(schedule\);/.test(src));
+}
+
 // ─── Verdict ───
 console.log(`\n${checks} checks, ${failures.length} failure(s)`);
 if (failures.length) {
