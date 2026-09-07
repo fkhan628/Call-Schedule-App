@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.09.06b";
+    var APP_VERSION = "2026.09.07a";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -8494,7 +8494,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     }, "— Slot —"), slotOrder.map(k => React.createElement("option", {
       key: k,
       value: k
-    }, slotLabels[k]))), React.createElement("select", {
+    }, newLockWeek ? slotLabel(newLockWeek, k) : slotLabels[k]))), React.createElement("select", {
       value: newLockSurgeon,
       onChange: e => setNewLockSurgeon(e.target.value),
       style: {
@@ -10488,7 +10488,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
   }, "Select shift…"), ALL_SHIFT_KEYS.map(sk => React.createElement("option", {
     key: sk,
     value: sk
-  }, SHIFT_LABELS[sk])))), React.createElement("div", null, React.createElement("label", {
+  }, swapTarget !== null && swapTarget !== void 0 && swapTarget.mondayStr ? slotLabel(swapTarget.mondayStr, sk) : SHIFT_LABELS[sk])))), React.createElement("div", null, React.createElement("label", {
     style: {
       fontSize: 10,
       color: "#7a8a98",
@@ -10533,16 +10533,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         var _wk$nights11;
         const holder = sk === "dayCall" ? wk.dayCall : (_wk$nights11 = wk.nights) === null || _wk$nights11 === void 0 ? void 0 : _wk$nights11[sk];
         if (holder === mySurgeon) {
-          const startDs = sk === "dayCall" ? m : fmt(addD(parse(m), {
-            mon: 0,
-            tue: 1,
-            wed: 2,
-            thu: 3,
-            wknd: 4
-          }[sk]));
-          if (startDs < todayStr) return;
-          const d = parse(m);
-          const label = `${MO[d.getMonth()].slice(0, 3)} ${d.getDate()} — ${SHIFT_LABELS[sk]}${wk.isBackup ? " (Backup)" : ""}${m <= todayStr ? " (this week)" : ""}`;
+          if (shiftStartDate(m, sk) < todayStr) return;
+          const label = `${slotLabel(m, sk)}${wk.isBackup ? " (Backup)" : ""}${m <= todayStr ? " (this week)" : ""}`;
           opts.push({
             value: `${m}|${sk}`,
             label
@@ -10608,7 +10600,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     }
   }, "Swap options for ", React.createElement(Badge, {
     id: swapTarget.surgeonId
-  }), " — ", SHIFT_LABELS[swapTarget.shift], " (wk of ", swapTarget.mondayStr, ")"), swapSuggestions.length === 0 ? React.createElement("p", {
+  }), " — ", slotLabel(swapTarget.mondayStr, swapTarget.shift)), swapSuggestions.length === 0 ? React.createElement("p", {
     style: {
       color: "#8a94a0",
       fontSize: 13,
@@ -10719,7 +10711,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         showToast("This trade's shift has already passed — propose a new one.", "error");
         return;
       }
-      if (!confirm(`⚠️ Emergency one-way swap\n\nThis will reassign ${SHIFT_LABELS[swapTarget.shift]} to ${s.candidateName} WITHOUT a return swap.\n\nOne-way swaps should only be used for illness, family emergency, or other acute circumstances.\n\nProceed?`)) return;
+      if (!confirm(`⚠️ Emergency one-way swap\n\nThis will reassign ${slotLabel(swapTarget.mondayStr, swapTarget.shift)} to ${s.candidateName} WITHOUT a return swap.\n\nOne-way swaps should only be used for illness, family emergency, or other acute circumstances.\n\nProceed?`)) return;
       swapShift(swapTarget.mondayStr, swapTarget.shift, s.candidateId);
     },
     style: {
@@ -11077,7 +11069,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     }, "Surgeon Shifts"), React.createElement("div", {
       style: {
         display: "grid",
-        gridTemplateColumns: "110px 1fr",
+        gridTemplateColumns: "150px 1fr",
         gap: 6,
         alignItems: "center"
       }
@@ -11086,7 +11078,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         fontSize: 12,
         color: dk ? "#b0b8c0" : "#4a5868"
       }
-    }, "Service Week"), React.createElement("select", {
+    }, slotLabel(mondayStr, "dayCall")), React.createElement("select", {
       value: draft.dayCall,
       onChange: e => updateDraft(d => _objectSpread(_objectSpread({}, d), {}, {
         dayCall: e.target.value
@@ -11101,7 +11093,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         fontSize: 12,
         color: dk ? "#b0b8c0" : "#4a5868"
       }
-    }, SHIFT_LABELS[nk] || nk), React.createElement("select", {
+    }, slotLabel(mondayStr, nk)), React.createElement("select", {
       value: draft.nights[nk] || "",
       onChange: e => updateDraft(d => _objectSpread(_objectSpread({}, d), {}, {
         nights: _objectSpread(_objectSpread({}, d.nights), {}, {
@@ -11116,7 +11108,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         fontSize: 12,
         color: dk ? "#b0b8c0" : "#4a5868"
       }
-    }, "Weekend"), React.createElement("select", {
+    }, slotLabel(mondayStr, "wknd")), React.createElement("select", {
       value: draft.nights.wknd || "",
       onChange: e => updateDraft(d => _objectSpread(_objectSpread({}, d), {}, {
         nights: _objectSpread(_objectSpread({}, d.nights), {}, {
@@ -11149,7 +11141,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     }, "Optional — if someone covered a single service day, set it here. Leave each day as the service surgeon otherwise. Adjusts shift counts & billing for that day only."), React.createElement("div", {
       style: {
         display: "grid",
-        gridTemplateColumns: "110px 1fr",
+        gridTemplateColumns: "150px 1fr",
         gap: 6,
         alignItems: "center"
       }
@@ -11206,7 +11198,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     }, "APP Shifts"), React.createElement("div", {
       style: {
         display: "grid",
-        gridTemplateColumns: "110px 1fr",
+        gridTemplateColumns: "150px 1fr",
         gap: 6,
         alignItems: "center"
       }
@@ -13874,7 +13866,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
   }, "Select…"), ALL_SHIFT_KEYS.map(sk => React.createElement("option", {
     key: sk,
     value: sk
-  }, SHIFT_LABELS[sk]))))) : React.createElement("div", null, React.createElement("label", {
+  }, tradeWeek ? slotLabel(tradeWeek, sk) : SHIFT_LABELS[sk]))))) : React.createElement("div", null, React.createElement("label", {
     style: {
       fontSize: 10,
       color: "#7a8a98",
@@ -13890,16 +13882,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         var _wk$nights19;
         const holder = sk === "dayCall" ? wk.dayCall : (_wk$nights19 = wk.nights) === null || _wk$nights19 === void 0 ? void 0 : _wk$nights19[sk];
         if (holder === tradeFrom) {
-          const startDs = sk === "dayCall" ? m : fmt(addD(parse(m), {
-            mon: 0,
-            tue: 1,
-            wed: 2,
-            thu: 3,
-            wknd: 4
-          }[sk]));
-          if (startDs < todayStr) return;
-          const d = parse(m);
-          const label = `${MO[d.getMonth()].slice(0, 3)} ${d.getDate()} — ${SHIFT_LABELS[sk]}${wk.isBackup ? " (Backup)" : ""}${m <= todayStr ? " (this week)" : ""}`;
+          if (shiftStartDate(m, sk) < todayStr) return;
+          const label = `${slotLabel(m, sk)}${wk.isBackup ? " (Backup)" : ""}${m <= todayStr ? " (this week)" : ""}`;
           opts.push({
             value: `${m}|${sk}`,
             label
@@ -13974,7 +13958,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
   }, "Select…"), ALL_SHIFT_KEYS.map(sk => React.createElement("option", {
     key: sk,
     value: sk
-  }, SHIFT_LABELS[sk]))))) : React.createElement("div", null, React.createElement("label", {
+  }, tradeReturnWeek ? slotLabel(tradeReturnWeek, sk) : SHIFT_LABELS[sk]))))) : React.createElement("div", null, React.createElement("label", {
     style: {
       fontSize: 10,
       color: "#7a8a98",
@@ -13991,16 +13975,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           var _wk$nights20;
           const holder = sk === "dayCall" ? wk.dayCall : (_wk$nights20 = wk.nights) === null || _wk$nights20 === void 0 ? void 0 : _wk$nights20[sk];
           if (holder === tradeTo) {
-            const startDs = sk === "dayCall" ? m : fmt(addD(parse(m), {
-              mon: 0,
-              tue: 1,
-              wed: 2,
-              thu: 3,
-              wknd: 4
-            }[sk]));
-            if (startDs < todayStr) return;
-            const d = parse(m);
-            const label = `${MO[d.getMonth()].slice(0, 3)} ${d.getDate()} — ${SHIFT_LABELS[sk]}${wk.isBackup ? " (Backup)" : ""}${m <= todayStr ? " (this week)" : ""}`;
+            if (shiftStartDate(m, sk) < todayStr) return;
+            const label = `${slotLabel(m, sk)}${wk.isBackup ? " (Backup)" : ""}${m <= todayStr ? " (this week)" : ""}`;
             opts.push({
               value: `${m}|${sk}`,
               label
