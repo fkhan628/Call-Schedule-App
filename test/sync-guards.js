@@ -1055,8 +1055,10 @@ check("prefs audit never logs the plaintext email (masked only)",
     count("{SHIFT_LABELS[sk]}</option>") === 0, `found ${count("{SHIFT_LABELS[sk]}</option>")}`);
   check("week editor slot rows label via slotLabel, not SHIFT_LABELS",
     count("{SHIFT_LABELS[nk]||nk}</label>") === 0 && count('slotLabel(mondayStr, nk)') === 1);
-  check("slotLabel used at exactly the 12 converted sites",
-    count("slotLabel(") === 12, `found ${count("slotLabel(")}`);
+  // 12 from PR #51 + 4 added 2026-09-07 by the trade-string fix (both
+  // request cards: primary leg + return leg, Pending and Completed).
+  check("slotLabel used at exactly the 16 converted sites",
+    count("slotLabel(") === 16, `found ${count("slotLabel(")}`);
   // The member opts builders were the LAST hand-rolled date math: their old
   // label dated a night by the week's MONDAY ("Sep 7 — Thu Night" for a
   // Thursday shift on Sep 10), which actively misled on the member-facing
@@ -1107,6 +1109,72 @@ check("prefs audit never logs the plaintext email (masked only)",
       check("member opts: (Backup) and (this week) suffixes survive",
         bk && bk.label === "Service Wk of Sep 7 (Backup) (this week)", bk && bk.label);
     }
+  }
+}
+
+// ─── M. Trade message composers (2026-09-07) ───
+// One composition per trade event, shared by in-app + push + email, with
+// every date routed through slotLabel → shiftStartDate. Fixtures are trade
+// #5's REAL data (the first member accept, verified end to end) plus a
+// one-way trade. The negative control is the whole point: for a night or
+// weekend leg the composed string must NOT contain the week-Monday date
+// literal — that was the defect (a Thursday shift printed as its Monday).
+{
+  const { tradeProposeMsg: PM, tradeAcceptMsg: AM, tradeDeclineMsg: DM } =
+    vm.runInContext("({ tradeProposeMsg, tradeAcceptMsg, tradeDeclineMsg })", sandbox);
+  check("all three trade composers exported from helpers",
+    [PM, AM, DM].every(f => typeof f === "function"));
+  if (typeof AM === "function") {
+    // Trade #5 exactly as the row records it: FAK (from) gives Thu of week
+    // 2026-09-14 to KJH (to); FAK takes KJH's Wed of the same week.
+    const T5 = {
+      from_surgeon_name: "FAK", to_surgeon_name: "KJH",
+      week_monday: "2026-09-14", shift_key: "thu",
+      return_week: "2026-09-14", return_shift: "wed",
+    };
+    const ONEWAY = { ...T5, return_week: null, return_shift: null };
+
+    check("accept names BOTH legs, each dated to its own shift",
+      AM(T5) === "KJH accepted the trade: KJH takes Thu Sep 17 — Night; FAK takes Wed Sep 16 — Night",
+      AM(T5));
+    check("propose names both legs in proposal tense",
+      PM(T5) === "FAK proposed a trade: KJH would take Thu Sep 17 — Night; FAK would take Wed Sep 16 — Night",
+      PM(T5));
+    check("decline names both legs in counterfactual tense",
+      DM(T5) === "KJH declined the trade: KJH would have taken Thu Sep 17 — Night; FAK would have taken Wed Sep 16 — Night",
+      DM(T5));
+
+    // NEGATIVE CONTROL — the defect this replaces. Week-Monday is Sep 14;
+    // neither leg (Thu Sep 17, Wed Sep 16) may print it.
+    for (const [name, msg] of [["propose", PM(T5)], ["accept", AM(T5)], ["decline", DM(T5)]]) {
+      check(`${name}: no leg carries the week-Monday date ("Sep 14")`,
+        !msg.includes("Sep 14"), msg);
+      check(`${name}: no raw ISO week-Monday leaks ("2026-09-14")`,
+        !msg.includes("2026-09-14"), msg);
+    }
+
+    // One-way trades degrade EXPLICITLY, never back into the old one-leg look.
+    for (const [name, msg] of [["propose", PM(ONEWAY)], ["accept", AM(ONEWAY)], ["decline", DM(ONEWAY)]]) {
+      check(`${name}: one-way says so explicitly`,
+        msg.includes("(one-way — no return shift)"), msg);
+      check(`${name}: one-way still dates its single leg correctly`,
+        msg.includes("Thu Sep 17 — Night") && !msg.includes("Sep 14"), msg);
+    }
+
+    // Channel parity: the composed string is what in-app/push carry AND what
+    // the email payload sends as `detail`, at all three sites.
+    check("each event composes ONCE and reuses it (3 named consts)",
+      count("const proposeMsg = tradeProposeMsg(req);") === 1
+      && count("const acceptMsg = tradeAcceptMsg(req);") === 1
+      && count("const declineMsg = tradeDeclineMsg(req);") === 1);
+    check("all three email payloads carry detail: <composed>",
+      count("detail: proposeMsg }") === 1 && count("detail: acceptMsg }") === 1
+      && count("detail: declineMsg }") === 1);
+    check("no trade string still interpolates shift_label with a week date",
+      count("${req.shift_label} (${req.week_monday})") === 0,
+      `found ${count("${req.shift_label} (${req.week_monday})")}`);
+    check("both request cards render the return leg (or say one-way)",
+      count("(one-way — no return shift)") >= 1 && count("(one-way)") >= 1);
   }
 }
 

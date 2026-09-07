@@ -2395,12 +2395,16 @@ function CallSchedule() {
       const { data: inserted } = await db.insert("shift_trade_requests", req);
       if (inserted) {
         setTradeRequests(prev => [inserted, ...prev]);
-        logAudit("trade.propose", `Proposed trade: ${fromName}'s ${shiftLabel} (${tradeWeek}) → ${toName}${tradeReturnShift ? ` for ${SHIFT_LABELS[tradeReturnShift]||tradeReturnShift} (${tradeReturnWeek})` : ""}`, { from: tradeFrom, to: tradeTo, shift: tradeShift, week: tradeWeek });
+        // ONE composition for audit + in-app + push + email (helpers.js):
+        // names BOTH legs, every date via slotLabel. `detail` is the new
+        // email field; the legacy fields stay for deploy-order safety.
+        const proposeMsg = tradeProposeMsg(req);
+        logAudit("trade.propose", `Proposed trade — ${proposeMsg}`, { from: tradeFrom, to: tradeTo, shift: tradeShift, week: tradeWeek });
         await addNotification("trade_submitted", "Shift Trade Proposed",
-          `${fromName} wants to trade ${shiftLabel} (${tradeWeek}) with ${toName}`,
+          proposeMsg,
           { from_surgeon_id: tradeFrom, to_surgeon_id: tradeTo },
           [tradeFrom, tradeTo]);
-        sendEmailNotif("trade_submitted", { from_name: fromName, to_name: toName, shift: shiftLabel, week: tradeWeek }, [tradeFrom, tradeTo]);
+        sendEmailNotif("trade_submitted", { from_name: fromName, to_name: toName, shift: shiftLabel, week: tradeWeek, detail: proposeMsg }, [tradeFrom, tradeTo]);
       }
       setTradeWeek(""); setTradeShift(""); setTradeReturnWeek(""); setTradeReturnShift("");
     } catch(e) { console.error("Submit trade error:", e); showToast("Couldn't submit the trade — check your connection and try again.", "error"); }
@@ -2601,7 +2605,7 @@ function CallSchedule() {
         return; // realtime/60s poll will refresh the visible status
       }
       setTradeRequests(prev => prev.map(r => r.id === req.id ? { ...r, status: "accepted" } : r));
-      logAudit("trade.accept", `Accepted trade: ${req.from_surgeon_name}'s ${req.shift_label} (${req.week_monday}) ↔ ${req.to_surgeon_name}${cascades.length ? ` (+${cascades.length} cascade change${cascades.length === 1 ? "" : "s"})` : ""}`, { request_id: req.id, cascades: cascades.length });
+      logAudit("trade.accept", `Accepted trade — ${tradeAcceptMsg(req)}${cascades.length ? ` (+${cascades.length} cascade change${cascades.length === 1 ? "" : "s"})` : ""}`, { request_id: req.id, cascades: cascades.length });
       pushUndo(schedule);
       setSchedule(p => {
         const n = { ...p };
@@ -2642,11 +2646,13 @@ function CallSchedule() {
       });
 
       // Notify about the primary trade
+      // ONE composition for audit + in-app + push + email (helpers.js).
+      const acceptMsg = tradeAcceptMsg(req);
       await addNotification("trade_accepted", "Shift Trade Accepted",
-        `${req.to_surgeon_name} accepted: ${req.shift_label} (${req.week_monday}) with ${req.from_surgeon_name}`,
+        acceptMsg,
         { from_surgeon_id: req.from_surgeon_id, to_surgeon_id: req.to_surgeon_id },
         [req.from_surgeon_id, req.to_surgeon_id]);
-      sendEmailNotif("trade_accepted", { from_name: req.from_surgeon_name, to_name: req.to_surgeon_name, shift: req.shift_label, week: req.week_monday }, [req.from_surgeon_id, req.to_surgeon_id]);
+      sendEmailNotif("trade_accepted", { from_name: req.from_surgeon_name, to_name: req.to_surgeon_name, shift: req.shift_label, week: req.week_monday, detail: acceptMsg }, [req.from_surgeon_id, req.to_surgeon_id]);
 
       // Notify about each cascade change — affected surgeons + scheduler/admin
       for (const ch of cascades) {
@@ -2684,12 +2690,13 @@ function CallSchedule() {
         return; // realtime/60s poll will refresh the visible status
       }
       setTradeRequests(prev => prev.map(r => r.id === req.id ? { ...r, status: "declined" } : r));
-      logAudit("trade.decline", `Declined trade: ${req.from_surgeon_name}'s ${req.shift_label} (${req.week_monday}) → ${req.to_surgeon_name}`, { request_id: req.id });
+      const declineMsg = tradeDeclineMsg(req);
+      logAudit("trade.decline", `Declined trade — ${declineMsg}`, { request_id: req.id });
       await addNotification("trade_declined", "Shift Trade Declined",
-        `${req.to_surgeon_name} declined: ${req.shift_label} (${req.week_monday})`,
+        declineMsg,
         { from_surgeon_id: req.from_surgeon_id, to_surgeon_id: req.to_surgeon_id },
         [req.from_surgeon_id, req.to_surgeon_id]);
-      sendEmailNotif("trade_declined", { from_name: req.from_surgeon_name, to_name: req.to_surgeon_name, shift: req.shift_label, week: req.week_monday }, [req.from_surgeon_id, req.to_surgeon_id]);
+      sendEmailNotif("trade_declined", { from_name: req.from_surgeon_name, to_name: req.to_surgeon_name, shift: req.shift_label, week: req.week_monday, detail: declineMsg }, [req.from_surgeon_id, req.to_surgeon_id]);
     } catch(e) { console.error("Decline trade error:", e); showToast("Couldn't decline the trade — check your connection and try again.", "error"); }
   }, [addNotification, sendEmailNotif]);
 
@@ -9453,8 +9460,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                         <Badge id={r.from_surgeon_id}/>
                         <span style={{fontSize:12,color:"#6030a0",fontWeight:600}}>→</span>
                         <Badge id={r.to_surgeon_id}/>
-                        <span style={{fontFamily:mono,fontSize:12,color:"#2c3e50"}}>{r.shift_label} ({r.week_monday})</span>
-                        {r.return_shift_label && <span style={{fontSize:11,color:"#8a94a0"}}>↔ {r.return_shift_label} ({r.return_week})</span>}
+                        <span style={{fontFamily:mono,fontSize:12,color:"#2c3e50"}}>{slotLabel(r.week_monday, r.shift_key)}</span>
+                        {r.return_shift && r.return_week
+                          ? <span style={{fontSize:11,color:"#8a94a0"}}>↔ {slotLabel(r.return_week, r.return_shift)}</span>
+                          : <span style={{fontSize:11,color:"#a08040"}}>(one-way — no return shift)</span>}
                       </div>
                       <div style={{display:"flex",gap:6,alignItems:"center",flexWrap:"wrap"}}>
                         <span style={{fontSize:10,color:"#a0a8b0"}}>Proposed {new Date(r.submitted_at).toLocaleDateString()}</span>
@@ -9481,7 +9490,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                     <div key={r.id} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 10px",marginBottom:3,background:r.status==="accepted"?"#f0faf0":"#faf0f0",border:`1px solid ${r.status==="accepted"?"#c0e0c0":"#e0c0c0"}`,borderRadius:5,flexWrap:"wrap"}}>
                       <span style={{fontSize:12,fontWeight:700,color:r.status==="accepted"?"#1a8040":"#c04040"}}>{r.status==="accepted"?"✓":"✕"}</span>
                       <Badge id={r.from_surgeon_id} small/><span style={{fontSize:10,color:"#6030a0"}}>↔</span><Badge id={r.to_surgeon_id} small/>
-                      <span style={{fontFamily:mono,fontSize:11,color:"#5a6a78"}}>{r.shift_label} ({r.week_monday})</span>
+                      <span style={{fontFamily:mono,fontSize:11,color:"#5a6a78"}}>{slotLabel(r.week_monday, r.shift_key)}</span>
+                      {r.return_shift && r.return_week
+                        ? <span style={{fontSize:10,color:"#8a94a0"}}>↔ {slotLabel(r.return_week, r.return_shift)}</span>
+                        : <span style={{fontSize:10,color:"#a08040"}}>(one-way)</span>}
                       {isScheduler && <button onClick={()=>deleteTradeRequest(r.id)} style={{background:"none",border:"none",color:"#c04040",cursor:"pointer",fontSize:11,marginLeft:"auto"}}>✕</button>}
                     </div>
                   ))}

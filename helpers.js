@@ -25,6 +25,42 @@ function shiftStartDate(mondayStr, shiftKey) {
   return off === undefined ? mondayStr : fmt(addD(parse(mondayStr), off));
 }
 
+/* ═══ TRADE MESSAGE COMPOSERS (2026-09-07) ═══
+   ONE composition per trade event, shared by in-app, push, and email — so
+   the three channels cannot drift (push reuses addNotification's message
+   verbatim; email carries the composed string as data.detail).
+
+   WHO GETS WHAT, proven at the accept-time apply (index-source.html
+   ~2610-2616) AND confirmed against the first real member accept (trade #5,
+   2026-09-07: the schedule_weeks row came back thu=s4 wed=s6):
+     to_surgeon   receives  shift_key  @ week_monday
+     from_surgeon receives  return_shift @ return_week
+   Every date is composed through slotLabel → shiftStartDate, so a trade
+   message can never print the week-Monday for a Thursday night (the defect
+   these replace, and the same class PR #51 removed from the pickers).
+
+   One-way trades are legitimate (scheduler emergency override) and carry
+   null return fields — they degrade EXPLICITLY, never silently back into
+   the old one-leg shape. */
+function tradeLegsText(req, tense) {
+  // tense: "takes" (accepted) | "would take" (proposed) | "would have taken" (declined)
+  const gets = slotLabel(req.week_monday, req.shift_key);
+  if (!req.return_week || !req.return_shift) {
+    return `${req.to_surgeon_name} ${tense} ${gets} (one-way — no return shift)`;
+  }
+  const back = slotLabel(req.return_week, req.return_shift);
+  return `${req.to_surgeon_name} ${tense} ${gets}; ${req.from_surgeon_name} ${tense} ${back}`;
+}
+function tradeProposeMsg(req) {
+  return `${req.from_surgeon_name} proposed a trade: ${tradeLegsText(req, "would take")}`;
+}
+function tradeAcceptMsg(req) {
+  return `${req.to_surgeon_name} accepted the trade: ${tradeLegsText(req, "takes")}`;
+}
+function tradeDeclineMsg(req) {
+  return `${req.to_surgeon_name} declined the trade: ${tradeLegsText(req, "would have taken")}`;
+}
+
 // Dated slot label for pickers and rows where the WEEK is known (2026-09-06):
 // composed THROUGH shiftStartDate, so a rendered date can never disagree with
 // the validation that gates the same slot. SHIFT_LABELS stays context-free —
