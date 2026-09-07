@@ -2247,6 +2247,15 @@ function CallSchedule() {
     const surgeonName = surgeons.find(s => s.id === vacReqSurgeon)?.name || apps.find(a => a.id === vacReqSurgeon)?.name || vacReqSurgeon;
     const isNoCall = vacReqType === "nocall";
     const kindLabel = isNoCall ? "no-call days" : "vacation";
+    // The date inputs carry min={today}, but min is UI-only — a typed date
+    // sails past it. This is the real gate, and it says WHY (fail-loud
+    // contract): requests are forward-looking; past records are scheduler
+    // record-keeping in Setup, where back-dating stays allowed on purpose.
+    const reqTodayStr = fmt(new Date());
+    if (vacReqStart < reqTodayStr || vacReqEnd < reqTodayStr) {
+      showToast(`Requests are for upcoming time off — ${vacReqStart < reqTodayStr ? "the start date" : "the end date"} is in the past. If a past ${kindLabel} record needs correcting, ask the scheduler to enter it directly in Setup.`, "error");
+      return;
+    }
     try {
       const req = {
         surgeon_id: vacReqSurgeon, surgeon_name: surgeonName,
@@ -4401,6 +4410,12 @@ function CallSchedule() {
       if (candShiftsThisWeek.length > 0) reasons.push(`Already assigned: ${candShiftsThisWeek.join(", ")}`);
 
       // 5. Find possible return swaps — shifts the current surgeon could take from the candidate in another week
+      // Upcoming only (2026-08-31 nav cleanup): a return shift in the past is
+      // a dead offer — nobody can take back a night that already happened.
+      // Same start-date rules as the picker builders: night = its own date,
+      // weekend = its Friday, service week = its Monday (a partially-elapsed
+      // week is excluded — the swap writes the WHOLE week's dayCall).
+      const rsTodayStr = fmt(new Date());
       const returnSwaps = [];
       Object.entries(schedule).forEach(([otherMon, otherWk]) => {
         if (otherMon === mondayStr) return;
@@ -4410,7 +4425,7 @@ function CallSchedule() {
           const otherMonDate = parse(otherMon);
           let canDo = true;
           for (let i = 0; i < 6; i++) { if (onVac(currentSurgeonId, fmt(addD(otherMonDate, i)), vacations)) { canDo = false; break; } }
-          if (canDo) returnSwaps.push({ mondayStr: otherMon, shift: "dayCall", label: `Svc Wk (${otherMon})` });
+          if (canDo && otherMon >= rsTodayStr) returnSwaps.push({ mondayStr: otherMon, shift: "dayCall", label: `Svc Wk (${otherMon})` });
         }
         if (shiftType === "nights") {
           NIGHT_KEYS.forEach((sk, i) => {
@@ -4418,7 +4433,7 @@ function CallSchedule() {
               const otherMonDate = parse(otherMon);
               const sd = fmt(addD(otherMonDate, i));
               const nd = fmt(addD(otherMonDate, i + 1));
-              if (!onVac(currentSurgeonId, sd, vacations) && !onVac(currentSurgeonId, nd, vacations)) {
+              if (sd >= rsTodayStr && !onVac(currentSurgeonId, sd, vacations) && !onVac(currentSurgeonId, nd, vacations)) {
                 returnSwaps.push({ mondayStr: otherMon, shift: sk, label: `${SHIFT_LABELS[sk]} (${otherMon})` });
               }
             }
@@ -4427,7 +4442,7 @@ function CallSchedule() {
         if (shiftType === "wknd" && otherWk.nights?.wknd === candId) {
           const otherMonDate = parse(otherMon);
           const f = fmt(addD(otherMonDate, 4)), su = fmt(addD(otherMonDate, 6)), nm = fmt(addD(otherMonDate, 7));
-          if (!onVac(currentSurgeonId, f, vacations) && !onVac(currentSurgeonId, su, vacations) && !onVac(currentSurgeonId, nm, vacations) && otherWk.dayCall !== currentSurgeonId) {
+          if (f >= rsTodayStr && !onVac(currentSurgeonId, f, vacations) && !onVac(currentSurgeonId, su, vacations) && !onVac(currentSurgeonId, nm, vacations) && otherWk.dayCall !== currentSurgeonId) {
             returnSwaps.push({ mondayStr: otherMon, shift: "wknd", label: `Weekend (${otherMon})` });
           }
         }
@@ -7683,7 +7698,11 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                     <label style={{fontSize:10,color:"#7a8a98",display:"block",marginBottom:2}}>Week</label>
                     <select value={swapTarget?.mondayStr||""} onChange={e=>{setSwapTarget(prev=>({...(prev||{}),mondayStr:e.target.value}));setSwapSuggestions(null);}} style={{...css.inp,width:160}}>
                       <option value="">Select week…</option>
-                      {Object.keys(schedule).sort().map(m=><option key={m} value={m}>Wk of {m}</option>)}
+                      {/* Swaps act on upcoming shifts — fully past weeks are dead
+                          entries here (record corrections go through Manual
+                          Adjustments, not swaps). Current week stays listed: a
+                          Thursday night is swappable on Tuesday. */}
+                      {Object.keys(schedule).sort().filter(m => fmt(addD(parse(m), 6)) >= todayStr).map(m=><option key={m} value={m}>Wk of {m}{m <= todayStr ? " (this week)" : ""}</option>)}
                     </select>
                   </div>
                   <div>
@@ -7721,15 +7740,25 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                         ALL_SHIFT_KEYS.forEach(sk => {
                           const holder = sk === "dayCall" ? wk.dayCall : wk.nights?.[sk];
                           if (holder === mySurgeon) {
+                            // Upcoming shifts only; start-date rule per kind:
+                            // a night = its own date, weekend = its Friday,
+                            // service week = its Monday. A partially-elapsed
+                            // service week is EXCLUDED on purpose: the swap and
+                            // trade-accept paths reassign the whole week's
+                            // dayCall (no dayCallOverrides), which would rewrite
+                            // the already-worked days — mid-week splits are the
+                            // scheduler's week editor's job.
+                            const startDs = sk === "dayCall" ? m : fmt(addD(parse(m), {mon:0,tue:1,wed:2,thu:3,wknd:4}[sk]));
+                            if (startDs < todayStr) return;
                             const d = parse(m);
-                            const label = `${MO[d.getMonth()].slice(0,3)} ${d.getDate()} — ${SHIFT_LABELS[sk]}${wk.isBackup ? " (Backup)" : ""}`;
+                            const label = `${MO[d.getMonth()].slice(0,3)} ${d.getDate()} — ${SHIFT_LABELS[sk]}${wk.isBackup ? " (Backup)" : ""}${m <= todayStr ? " (this week)" : ""}`;
                             opts.push({ value: `${m}|${sk}`, label });
                           }
                         });
                       });
                       const curVal = swapTarget?.mondayStr && swapTarget?.shift ? `${swapTarget.mondayStr}|${swapTarget.shift}` : "";
                       const placeholder = !mySurgeon ? "Select your name in Mine tab first"
-                        : (opts.length === 0 ? "You have no scheduled shifts" : "Select your shift…");
+                        : (opts.length === 0 ? "You have no upcoming shifts" : "Select your shift…");
                       return (
                         <select value={curVal} onChange={e=>{
                           const v = e.target.value;
@@ -8945,11 +8974,13 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               )}
               <div>
                 <label style={{fontSize:11,color:"#7a8a98",display:"block",marginBottom:2}}>Start Date</label>
-                <input type="date" value={vacReqStart} onChange={e=>setVacReqStart(e.target.value)} style={{...css.inp,width:150}}/>
+                {/* min is UI-only (a typed date bypasses it) — submitVacRequest
+                    carries the real gate and its rejection message. */}
+                <input type="date" min={todayStr} value={vacReqStart} onChange={e=>setVacReqStart(e.target.value)} style={{...css.inp,width:150}}/>
               </div>
               <div>
                 <label style={{fontSize:11,color:"#7a8a98",display:"block",marginBottom:2}}>End Date</label>
-                <input type="date" value={vacReqEnd} onChange={e=>setVacReqEnd(e.target.value)} style={{...css.inp,width:150}}/>
+                <input type="date" min={todayStr} value={vacReqEnd} onChange={e=>setVacReqEnd(e.target.value)} style={{...css.inp,width:150}}/>
               </div>
               <button onClick={submitVacRequest} style={{...css.btn(true),padding:"7px 18px"}}>Submit Request</button>
             </div>
@@ -9194,7 +9225,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   <label style={{fontSize:10,color:"#7a8a98",display:"block",marginBottom:2}}>Week</label>
                   <select value={tradeWeek} onChange={e=>setTradeWeek(e.target.value)} style={{...css.inp,width:140}}>
                     <option value="">Select…</option>
-                    {Object.keys(schedule).sort().map(m=><option key={m} value={m}>{m}</option>)}
+                    {Object.keys(schedule).sort().filter(m => fmt(addD(parse(m), 6)) >= todayStr).map(m=><option key={m} value={m}>{m}{m <= todayStr ? " (this week)" : ""}</option>)}
                   </select>
                 </div>
                 <div>
@@ -9215,8 +9246,14 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                       ALL_SHIFT_KEYS.forEach(sk => {
                         const holder = sk === "dayCall" ? wk.dayCall : wk.nights?.[sk];
                         if (holder === tradeFrom) {
+                          // Upcoming only — same start-date rule and same
+                          // partially-elapsed-service-week exclusion as the
+                          // swap tool (see its comment; acceptTradeRequest
+                          // also reassigns the WHOLE week's dayCall).
+                          const startDs = sk === "dayCall" ? m : fmt(addD(parse(m), {mon:0,tue:1,wed:2,thu:3,wknd:4}[sk]));
+                          if (startDs < todayStr) return;
                           const d = parse(m);
-                          const label = `${MO[d.getMonth()].slice(0,3)} ${d.getDate()} — ${SHIFT_LABELS[sk]}${wk.isBackup ? " (Backup)" : ""}`;
+                          const label = `${MO[d.getMonth()].slice(0,3)} ${d.getDate()} — ${SHIFT_LABELS[sk]}${wk.isBackup ? " (Backup)" : ""}${m <= todayStr ? " (this week)" : ""}`;
                           opts.push({ value: `${m}|${sk}`, label });
                         }
                       });
@@ -9228,7 +9265,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                         if (!v) { setTradeWeek(""); setTradeShift(""); }
                         else { const [w, s] = v.split("|"); setTradeWeek(w); setTradeShift(s); }
                       }} style={{...css.inp,minWidth:240}}>
-                        <option value="">{opts.length === 0 ? "No shifts scheduled" : "Select your shift…"}</option>
+                        <option value="">{opts.length === 0 ? "No upcoming shifts" : "Select your shift…"}</option>
                         {opts.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
                       </select>
                     );
@@ -9242,7 +9279,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   <label style={{fontSize:10,color:"#7a8a98",display:"block",marginBottom:2}}>Return week</label>
                   <select value={tradeReturnWeek} onChange={e=>setTradeReturnWeek(e.target.value)} style={{...css.inp,width:140}}>
                     <option value="">Select…</option>
-                    {Object.keys(schedule).sort().map(m=><option key={m} value={m}>{m}</option>)}
+                    {Object.keys(schedule).sort().filter(m => fmt(addD(parse(m), 6)) >= todayStr).map(m=><option key={m} value={m}>{m}{m <= todayStr ? " (this week)" : ""}</option>)}
                   </select>
                 </div>
                 <div>
@@ -9264,15 +9301,18 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                         ALL_SHIFT_KEYS.forEach(sk => {
                           const holder = sk === "dayCall" ? wk.dayCall : wk.nights?.[sk];
                           if (holder === tradeTo) {
+                            // Upcoming only — same rules as "Shift to give".
+                            const startDs = sk === "dayCall" ? m : fmt(addD(parse(m), {mon:0,tue:1,wed:2,thu:3,wknd:4}[sk]));
+                            if (startDs < todayStr) return;
                             const d = parse(m);
-                            const label = `${MO[d.getMonth()].slice(0,3)} ${d.getDate()} — ${SHIFT_LABELS[sk]}${wk.isBackup ? " (Backup)" : ""}`;
+                            const label = `${MO[d.getMonth()].slice(0,3)} ${d.getDate()} — ${SHIFT_LABELS[sk]}${wk.isBackup ? " (Backup)" : ""}${m <= todayStr ? " (this week)" : ""}`;
                             opts.push({ value: `${m}|${sk}`, label });
                           }
                         });
                       });
                     }
                     const curVal = tradeReturnWeek && tradeReturnShift ? `${tradeReturnWeek}|${tradeReturnShift}` : "";
-                    const placeholder = !tradeTo ? "Pick trade partner first" : (opts.length === 0 ? "They have no scheduled shifts" : "Select their shift…");
+                    const placeholder = !tradeTo ? "Pick trade partner first" : (opts.length === 0 ? "They have no upcoming shifts" : "Select their shift…");
                     return (
                       <select value={curVal} onChange={e=>{
                         const v = e.target.value;
