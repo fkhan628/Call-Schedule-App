@@ -1014,6 +1014,51 @@ check("prefs audit never logs the plaintext email (masked only)",
     }
   }
 }
+// ─── L. Dated slot labels (2026-09-06): one owner for the date ───
+// slotLabel() composes every dated shift label THROUGH shiftStartDate, so a
+// rendered date can never disagree with the validation gating that slot.
+// Two-sided: the behavior checks pin the exact composition (and a
+// deliberately Monday-dated hand-roll must NOT match), and the source pins
+// go red if a converted render site regresses to bare SHIFT_LABELS or a
+// future site hand-rolls its own date math.
+{
+  const { slotLabel: SL, shiftStartDate: SSD } = vm.runInContext("({ slotLabel, shiftStartDate })", sandbox);
+  check("slotLabel + shiftStartDate exported from helpers", typeof SL === "function" && typeof SSD === "function");
+  if (typeof SL === "function") {
+    // 2026-09-14 is a Monday. Expected labels are EXACT.
+    const M = "2026-09-14";
+    const expected = {
+      dayCall: "Service Wk of Sep 14",
+      mon: "Mon Sep 14 — Night", tue: "Tue Sep 15 — Night",
+      wed: "Wed Sep 16 — Night", thu: "Thu Sep 17 — Night",
+      wknd: "Wknd — Fri Sep 18",
+    };
+    for (const [sk, want] of Object.entries(expected)) {
+      check(`slotLabel(${sk}) = "${want}"`, SL(M, sk) === want, `got "${SL(M, sk)}"`);
+    }
+    check("slotLabel accepts the lock UI's legacy 'dc' key", SL(M, "dc") === expected.dayCall, SL(M, "dc"));
+    // Each label's date must be shiftStartDate's date — checked structurally,
+    // not just via the table above (guards a future edit to either side).
+    for (const sk of ["mon", "tue", "wed", "thu", "wknd"]) {
+      const d = new Date(SSD(M, sk) + "T12:00:00");
+      check(`slotLabel(${sk}) carries shiftStartDate's day-of-month (${d.getDate()})`,
+        SL(M, sk).includes(` ${d.getDate()}`), SL(M, sk));
+    }
+    // NEGATIVE control: the pre-#51 hand-roll (week-Monday-dated "Sep 14 —
+    // Thu Night") must NOT equal the composed label — proves these checks
+    // can actually tell a hand-rolled label from the real one.
+    check("Monday-dated hand-roll for thu does NOT match slotLabel",
+      SL(M, "thu") !== "Sep 14 — Thu Night" && SL(M, "thu").includes("17"));
+  }
+  // Source pins on the converted render sites.
+  check("no bare SHIFT_LABELS option lists remain in shift dropdowns",
+    count("{SHIFT_LABELS[sk]}</option>") === 0, `found ${count("{SHIFT_LABELS[sk]}</option>")}`);
+  check("week editor slot rows label via slotLabel, not SHIFT_LABELS",
+    count("{SHIFT_LABELS[nk]||nk}</label>") === 0 && count('slotLabel(mondayStr, nk)') === 1);
+  check("slotLabel used at exactly the 9 converted sites",
+    count("slotLabel(") === 9, `found ${count("slotLabel(")}`);
+}
+
 // Source pins for the two sibling accept paths + the shared helper.
 {
   const helpersSrc = fs.readFileSync(path.join(ROOT, "helpers.js"), "utf8");

@@ -6760,7 +6760,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   <select value={newLockSlot} onChange={e => setNewLockSlot(e.target.value)}
                     style={{padding:"5px 8px",fontSize:12,borderRadius:5,border:`1px solid ${dk?"#3a4a5e":"#d0d8e0"}`,background:dk?"#1a1f2a":"#fff",color:dk?"#e8e8f0":"#3a4a58"}}>
                     <option value="">— Slot —</option>
-                    {slotOrder.map(k => <option key={k} value={k}>{slotLabels[k]}</option>)}
+                    {/* Dated via slotLabel once a week is chosen (it accepts the "dc" key) */}
+                    {slotOrder.map(k => <option key={k} value={k}>{newLockWeek ? slotLabel(newLockWeek, k) : slotLabels[k]}</option>)}
                   </select>
                   <select value={newLockSurgeon} onChange={e => setNewLockSurgeon(e.target.value)}
                     style={{padding:"5px 8px",fontSize:12,borderRadius:5,border:`1px solid ${dk?"#3a4a5e":"#d0d8e0"}`,background:dk?"#1a1f2a":"#fff",color:dk?"#e8e8f0":"#3a4a58"}}>
@@ -7774,7 +7775,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                     <label style={{fontSize:10,color:"#7a8a98",display:"block",marginBottom:2}}>Shift</label>
                     <select value={swapTarget?.shift||""} onChange={e=>{setSwapTarget(prev=>({...(prev||{}),shift:e.target.value}));setSwapSuggestions(null);}} style={{...css.inp,width:140}}>
                       <option value="">Select shift…</option>
-                      {ALL_SHIFT_KEYS.map(sk=><option key={sk} value={sk}>{SHIFT_LABELS[sk]}</option>)}
+                      {ALL_SHIFT_KEYS.map(sk=><option key={sk} value={sk}>{swapTarget?.mondayStr ? slotLabel(swapTarget.mondayStr, sk) : SHIFT_LABELS[sk]}</option>)}
                     </select>
                   </div>
                   <div>
@@ -7856,7 +7857,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               {swapSuggestions && (
                 <div style={{marginTop:12}}>
                   <div style={{fontSize:12,fontWeight:700,color:"#6030a0",marginBottom:8}}>
-                    Swap options for <Badge id={swapTarget.surgeonId}/> — {SHIFT_LABELS[swapTarget.shift]} (wk of {swapTarget.mondayStr})
+                    Swap options for <Badge id={swapTarget.surgeonId}/> — {slotLabel(swapTarget.mondayStr, swapTarget.shift)}
                   </div>
                   {swapSuggestions.length === 0 ? (
                     <p style={{color:"#8a94a0",fontSize:13,padding:10}}>No eligible swap candidates found. All surgeons are either on vacation or have conflicts.</p>
@@ -7899,7 +7900,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                             // swapShift also serves record corrections, which
                             // must keep full past access (the Bucket-B caveat).
                             if (shiftStartDate(swapTarget.mondayStr, swapTarget.shift) < fmt(new Date())) { showToast("This trade's shift has already passed — propose a new one.", "error"); return; }
-                            if (!confirm(`⚠️ Emergency one-way swap\n\nThis will reassign ${SHIFT_LABELS[swapTarget.shift]} to ${s.candidateName} WITHOUT a return swap.\n\nOne-way swaps should only be used for illness, family emergency, or other acute circumstances.\n\nProceed?`)) return;
+                            if (!confirm(`⚠️ Emergency one-way swap\n\nThis will reassign ${slotLabel(swapTarget.mondayStr, swapTarget.shift)} to ${s.candidateName} WITHOUT a return swap.\n\nOne-way swaps should only be used for illness, family emergency, or other acute circumstances.\n\nProceed?`)) return;
                             swapShift(swapTarget.mondayStr, swapTarget.shift, s.candidateId);
                           }}
                             style={{background:"none",border:"1px solid #e0c0a0",color:"#a08040",borderRadius:5,padding:"3px 10px",fontSize:10,cursor:"pointer",fontFamily:font}}>
@@ -8090,16 +8091,17 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   {/* Surgeon shifts */}
                   <div style={{marginBottom:14}}>
                     <div style={{fontSize:12,fontWeight:700,color:dk?"#b0b8c0":"#5a6a78",marginBottom:6,textTransform:"uppercase",letterSpacing:0.5}}>Surgeon Shifts</div>
-                    <div style={{display:"grid",gridTemplateColumns:"110px 1fr",gap:6,alignItems:"center"}}>
-                      <label style={{fontSize:12,color:dk?"#b0b8c0":"#4a5868"}}>Service Week</label>
+                    <div style={{display:"grid",gridTemplateColumns:"150px 1fr",gap:6,alignItems:"center"}}>
+                      {/* Slot labels dated via slotLabel (single owner: shiftStartDate) — no local date math */}
+                      <label style={{fontSize:12,color:dk?"#b0b8c0":"#4a5868"}}>{slotLabel(mondayStr, "dayCall")}</label>
                       <select value={draft.dayCall} onChange={e=>updateDraft(d=>({...d,dayCall:e.target.value}))} style={{...css.inp,padding:"6px 8px"}}>{surgeonOpts}</select>
                       {["mon","tue","wed","thu"].map(nk => (
                         <React.Fragment key={nk}>
-                          <label style={{fontSize:12,color:dk?"#b0b8c0":"#4a5868"}}>{SHIFT_LABELS[nk]||nk}</label>
+                          <label style={{fontSize:12,color:dk?"#b0b8c0":"#4a5868"}}>{slotLabel(mondayStr, nk)}</label>
                           <select value={draft.nights[nk]||""} onChange={e=>updateDraft(d=>({...d,nights:{...d.nights,[nk]:e.target.value}}))} style={{...css.inp,padding:"6px 8px"}}>{surgeonOpts}</select>
                         </React.Fragment>
                       ))}
-                      <label style={{fontSize:12,color:dk?"#b0b8c0":"#4a5868"}}>Weekend</label>
+                      <label style={{fontSize:12,color:dk?"#b0b8c0":"#4a5868"}}>{slotLabel(mondayStr, "wknd")}</label>
                       <select value={draft.nights.wknd||""} onChange={e=>updateDraft(d=>({...d,nights:{...d.nights,wknd:e.target.value}}))} style={{...css.inp,padding:"6px 8px"}}>{surgeonOpts}</select>
                     </div>
                   </div>
@@ -8108,7 +8110,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   <div style={{marginBottom:14}}>
                     <div style={{fontSize:12,fontWeight:700,color:dk?"#b0b8c0":"#5a6a78",marginBottom:2,textTransform:"uppercase",letterSpacing:0.5}}>Service Day Coverage</div>
                     <div style={{fontSize:11,color:"#8a94a0",marginBottom:6,lineHeight:1.4}}>Optional — if someone covered a single service day, set it here. Leave each day as the service surgeon otherwise. Adjusts shift counts &amp; billing for that day only.</div>
-                    <div style={{display:"grid",gridTemplateColumns:"110px 1fr",gap:6,alignItems:"center"}}>
+                    <div style={{display:"grid",gridTemplateColumns:"150px 1fr",gap:6,alignItems:"center"}}>
                       {["Mon","Tue","Wed","Thu","Fri","Sat"].map((dn,i)=>{
                         const ds = fmt(addD(parse(mondayStr), i));
                         const mdp = ds.split("-");
@@ -8135,7 +8137,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   {/* APP shifts */}
                   <div style={{marginBottom:14}}>
                     <div style={{fontSize:12,fontWeight:700,color:dk?"#b0b8c0":"#5a6a78",marginBottom:6,textTransform:"uppercase",letterSpacing:0.5}}>APP Shifts</div>
-                    <div style={{display:"grid",gridTemplateColumns:"110px 1fr",gap:6,alignItems:"center"}}>
+                    <div style={{display:"grid",gridTemplateColumns:"150px 1fr",gap:6,alignItems:"center"}}>
                       {Array.from({length:7}).map((_,i) => {
                         const d = addD(mon, i);
                         const ds = fmt(d);
@@ -9322,7 +9324,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   <label style={{fontSize:10,color:"#7a8a98",display:"block",marginBottom:2}}>Shift to give</label>
                   <select value={tradeShift} onChange={e=>setTradeShift(e.target.value)} style={{...css.inp,width:130}}>
                     <option value="">Select…</option>
-                    {ALL_SHIFT_KEYS.map(sk=><option key={sk} value={sk}>{SHIFT_LABELS[sk]}</option>)}
+                    {ALL_SHIFT_KEYS.map(sk=><option key={sk} value={sk}>{tradeWeek ? slotLabel(tradeWeek, sk) : SHIFT_LABELS[sk]}</option>)}
                   </select>
                 </div>
               </> : (
@@ -9376,7 +9378,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   <label style={{fontSize:10,color:"#7a8a98",display:"block",marginBottom:2}}>Return shift</label>
                   <select value={tradeReturnShift} onChange={e=>setTradeReturnShift(e.target.value)} style={{...css.inp,width:130}}>
                     <option value="">Select…</option>
-                    {ALL_SHIFT_KEYS.map(sk=><option key={sk} value={sk}>{SHIFT_LABELS[sk]}</option>)}
+                    {ALL_SHIFT_KEYS.map(sk=><option key={sk} value={sk}>{tradeReturnWeek ? slotLabel(tradeReturnWeek, sk) : SHIFT_LABELS[sk]}</option>)}
                   </select>
                 </div>
               </> : (
