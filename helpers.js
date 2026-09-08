@@ -51,6 +51,30 @@ function tradeLegsText(req, tense) {
   const back = slotLabel(req.return_week, req.return_shift);
   return `${req.to_surgeon_name} ${tense} ${gets}; ${req.from_surgeon_name} ${tense} ${back}`;
 }
+/* The SWAP family (2026-09-07), same doctrine as the trade composers above.
+   executeTwoWaySwap's semantics, read off its own apply:
+     the CANDIDATE (newName) takes targetShift @ targetMon
+     the ORIGINAL holder (oldName) takes returnShift @ returnMon
+   One-way swaps are a first-class feature here (the scheduler's emergency
+   override), so they degrade explicitly rather than looking two-way.
+   No leading "Shift swap —" label: the in-app title is already "Shift Swap"
+   and the email header is "Schedule Change" — a label here would stutter
+   against both, the defect caught in v16 by rendering the email body. */
+function swapMsg(s) {
+  const gets = slotLabel(s.targetMon, s.targetShift);
+  if (!s.returnMon || !s.returnShift) {
+    return `${s.newName} takes ${gets} (one-way — no return shift)`;
+  }
+  return `${s.newName} takes ${gets}; ${s.oldName} takes ${slotLabel(s.returnMon, s.returnShift)}`;
+}
+/* Cascade = the knock-on reassignment a trade forces on someone who was not
+   party to it. Composed once and used for BOTH the in-app notification and
+   the email that this PR adds (previously there was no email at all — the
+   person with the least warning got the weakest notice). */
+function cascadeMsg(c) {
+  return `${slotLabel(c.week, c.shiftKey)} moved from ${c.fromName} to ${c.toName} due to a trade`;
+}
+
 function tradeProposeMsg(req) {
   return `${req.from_surgeon_name} proposed a trade: ${tradeLegsText(req, "would take")}`;
 }
