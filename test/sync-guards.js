@@ -1055,10 +1055,16 @@ check("prefs audit never logs the plaintext email (masked only)",
     count("{SHIFT_LABELS[sk]}</option>") === 0, `found ${count("{SHIFT_LABELS[sk]}</option>")}`);
   check("week editor slot rows label via slotLabel, not SHIFT_LABELS",
     count("{SHIFT_LABELS[nk]||nk}</label>") === 0 && count('slotLabel(mondayStr, nk)') === 1);
-  // 12 from PR #51 + 4 added 2026-09-07 by the trade-string fix (both
-  // request cards: primary leg + return leg, Pending and Completed).
-  check("slotLabel used at exactly the 16 converted sites",
-    count("slotLabel(") === 16, `found ${count("slotLabel(")}`);
+  // LEDGER — every slotLabel call site in index-source.html, by the PR that
+  // added it. Update BOTH the number and this comment when a PR adds more.
+  //   12  PR #51  pickers, week-editor rows, suggestions header, lock picker
+  //  + 4  PR #53  both request cards: primary leg + return leg
+  //  + 5  this PR swap family: 2 candidate-card pushes + 3 return-swap labels
+  //  ---
+  //   21  (swapMsg/cascadeMsg call slotLabel INSIDE helpers.js, so they add
+  //        no call sites here — that is the point of composing them there)
+  check("slotLabel used at exactly the 21 converted sites",
+    count("slotLabel(") === 21, `found ${count("slotLabel(")}`);
   // The member opts builders were the LAST hand-rolled date math: their old
   // label dated a night by the week's MONDAY ("Sep 7 — Thu Night" for a
   // Thursday shift on Sep 10), which actively misled on the member-facing
@@ -1176,6 +1182,77 @@ check("prefs audit never logs the plaintext email (masked only)",
     check("both request cards render the return leg (or say one-way)",
       count("(one-way — no return shift)") >= 1 && count("(one-way)") >= 1);
   }
+}
+
+// ─── N. Swap family: swapMsg / cascadeMsg (2026-09-07) ───
+// The swap-suggestion tool was the last surface speaking in undated labels
+// and week-Monday dates, and the cascade path gave the least notice to the
+// one person who was not party to the trade. Same doctrine as section M.
+// NOTE on the negative control: dayCall legs are EXEMPT because the
+// week-Monday IS the correct date for a whole-week shift ("Service Wk of
+// Oct 19"); only night/weekend legs must never show it.
+{
+  const { swapMsg: SM, cascadeMsg: CM } = vm.runInContext("({ swapMsg, cascadeMsg })", sandbox);
+  check("swap-family composers exported from helpers",
+    typeof SM === "function" && typeof CM === "function");
+  if (typeof SM === "function") {
+    // Week of Mon 2026-10-19: Tue = Oct 20, Thu = Oct 22, Fri(wknd) = Oct 23.
+    const TWO = { targetMon: "2026-10-19", targetShift: "tue", oldName: "FAK", newName: "REH",
+                  returnMon: "2026-10-19", returnShift: "thu" };
+    const ONE = { ...TWO, returnMon: null, returnShift: null };
+    const WKND = { ...TWO, targetShift: "wknd", returnShift: "thu" };
+    const DC = { ...TWO, targetShift: "dayCall", returnMon: null, returnShift: null };
+
+    check("swap two-way names both legs, each dated to its own shift",
+      SM(TWO) === "REH takes Tue Oct 20 — Night; FAK takes Thu Oct 22 — Night", SM(TWO));
+    check("swap one-way degrades explicitly",
+      SM(ONE) === "REH takes Tue Oct 20 — Night (one-way — no return shift)", SM(ONE));
+    check("swap weekend leg dates to its Friday",
+      SM(WKND).startsWith("REH takes Wknd — Fri Oct 23"), SM(WKND));
+    check("swap dayCall leg names the WEEK (Monday is correct here)",
+      SM(DC).startsWith("REH takes Service Wk of Oct 19"), SM(DC));
+
+    // NEGATIVE CONTROL — night/weekend legs only; dayCall exempt by design.
+    for (const [name, msg] of [["two-way", SM(TWO)], ["one-way", SM(ONE)], ["weekend", SM(WKND)]]) {
+      check(`swap ${name}: no night/weekend leg carries the week-Monday ("Oct 19")`,
+        !msg.includes("Oct 19"), msg);
+      check(`swap ${name}: no raw ISO week-Monday leaks`,
+        !msg.includes("2026-10-19"), msg);
+    }
+
+    check("cascade string is dated and reads as a sentence",
+      CM({ week: "2026-10-19", shiftKey: "tue", fromName: "REH", toName: "FAK" })
+        === "Tue Oct 20 — Night moved from REH to FAK due to a trade",
+      CM({ week: "2026-10-19", shiftKey: "tue", fromName: "REH", toName: "FAK" }));
+    check("cascade: no week-Monday on a night leg",
+      !CM({ week: "2026-10-19", shiftKey: "thu", fromName: "A", toName: "B" }).includes("Oct 19"));
+  }
+
+  // The old forms must be GONE.
+  check("no '(wk of ${targetMon})' swap form remains",
+    count("(wk of ${targetMon})") === 0, `found ${count("(wk of ${targetMon})")}`);
+  check("no '(${otherMon})' return-swap label form remains",
+    count("(${otherMon})`") === 0, `found ${count("(${otherMon})`")}`);
+  check("candidate cards push dated labels, not bare ones",
+    count('candShiftsThisWeek.push("Service Week")') === 0
+    && count("candShiftsThisWeek.push(SHIFT_LABELS[sk])") === 0
+    && count('candShiftsThisWeek.push(slotLabel(mondayStr, "dayCall"))') === 1
+    && count("candShiftsThisWeek.push(slotLabel(mondayStr, sk))") === 1);
+  check("cascade path now sends an email (it previously sent none)",
+    count("detail: cascadeDetail }") === 1);
+  check("executeSwap composes once and reuses it for in-app + email",
+    count("const swapDetail = swapMsg({") === 1 && count("detail: swapDetail }") === 1);
+  // ABSENCE pin — the effect-unobservable write must not come back silently.
+  check('the discarded reasons.push("Already on service week") is gone',
+    count('reasons.push("Already on service week")') === 0);
+  check("its removal is documented where it sat (hard-exclusion comment)",
+    /No reason push here ON PURPOSE/.test(src));
+  // Polish: one composition per event at all three trade sites.
+  check("accept composes exactly once (matching propose/decline)",
+    count("tradeAcceptMsg(req)") === 1, `found ${count("tradeAcceptMsg(req)")}`);
+  check("audit lines are the composed sentence alone (no stuttering prefix)",
+    count("`Proposed trade — ") === 0 && count("`Declined trade — ") === 0
+    && count("`Accepted trade — ") === 0);
 }
 
 // Source pins for the two sibling accept paths + the shared helper.
