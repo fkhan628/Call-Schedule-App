@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.09.07b";
+    var APP_VERSION = "2026.09.07c";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -2142,7 +2142,7 @@ function CallSchedule() {
       if (inserted) {
         setTradeRequests(prev => [inserted, ...prev]);
         const proposeMsg = tradeProposeMsg(req);
-        logAudit("trade.propose", `Proposed trade — ${proposeMsg}`, {
+        logAudit("trade.propose", proposeMsg, {
           from: tradeFrom,
           to: tradeTo,
           shift: tradeShift,
@@ -2361,7 +2361,8 @@ function CallSchedule() {
       setTradeRequests(prev => prev.map(r => r.id === req.id ? _objectSpread(_objectSpread({}, r), {}, {
         status: "accepted"
       }) : r));
-      logAudit("trade.accept", `Accepted trade — ${tradeAcceptMsg(req)}${cascades.length ? ` (+${cascades.length} cascade change${cascades.length === 1 ? "" : "s"})` : ""}`, {
+      const acceptMsg = tradeAcceptMsg(req);
+      logAudit("trade.accept", `${acceptMsg}${cascades.length ? ` (+${cascades.length} cascade change${cascades.length === 1 ? "" : "s"})` : ""}`, {
         request_id: req.id,
         cascades: cascades.length
       });
@@ -2397,7 +2398,6 @@ function CallSchedule() {
         });
         return n;
       });
-      const acceptMsg = tradeAcceptMsg(req);
       await addNotification("trade_accepted", "Shift Trade Accepted", acceptMsg, {
         from_surgeon_id: req.from_surgeon_id,
         to_surgeon_id: req.to_surgeon_id
@@ -2413,11 +2413,24 @@ function CallSchedule() {
         const fromName = nameOf(ch.from);
         const toName = nameOf(ch.to);
         const cascadeTargets = [...new Set([ch.from, ch.to, ...schedulerAdminIds].filter(Boolean))];
-        await addNotification("schedule_changed", "Shift Reassigned", `${SHIFT_LABELS[ch.shiftKey]} (${ch.week}) moved from ${fromName} to ${toName} due to trade`, {
+        const cascadeDetail = cascadeMsg({
+          week: ch.week,
+          shiftKey: ch.shiftKey,
+          fromName,
+          toName
+        });
+        await addNotification("schedule_changed", "Shift Reassigned", cascadeDetail, {
           from_surgeon_id: ch.from,
           to_surgeon_id: ch.to,
           surgeon_id: ch.to,
           week: ch.week
+        }, cascadeTargets);
+        sendEmailNotif("schedule_changed", {
+          shift: SHIFT_LABELS[ch.shiftKey] || ch.shiftKey,
+          week: ch.week,
+          old_surgeon: fromName,
+          new_surgeon: toName,
+          detail: cascadeDetail
         }, cascadeTargets);
       }
     } catch (e) {
@@ -2452,7 +2465,7 @@ function CallSchedule() {
         status: "declined"
       }) : r));
       const declineMsg = tradeDeclineMsg(req);
-      logAudit("trade.decline", `Declined trade — ${declineMsg}`, {
+      logAudit("trade.decline", declineMsg, {
         request_id: req.id
       });
       await addNotification("trade_declined", "Shift Trade Declined", declineMsg, {
@@ -4301,13 +4314,12 @@ function CallSchedule() {
       if (!eligible) return;
       const wk = schedule[mondayStr];
       if (shift !== "dayCall" && wk.dayCall === candId) {
-        reasons.push("Already on service week");
         return;
       }
       const candShiftsThisWeek = [];
-      if (wk.dayCall === candId) candShiftsThisWeek.push("Service Week");
+      if (wk.dayCall === candId) candShiftsThisWeek.push(slotLabel(mondayStr, "dayCall"));
       Object.entries(wk.nights || {}).forEach(([sk, sid]) => {
-        if (sid === candId) candShiftsThisWeek.push(SHIFT_LABELS[sk]);
+        if (sid === candId) candShiftsThisWeek.push(slotLabel(mondayStr, sk));
       });
       const currentCount = ((_sCounts$currentSurge = sCounts[currentSurgeonId]) === null || _sCounts$currentSurge === void 0 ? void 0 : _sCounts$currentSurge[shiftType]) || 0;
       const candCount = ((_sCounts$candId = sCounts[candId]) === null || _sCounts$candId === void 0 ? void 0 : _sCounts$candId[shiftType]) || 0;
@@ -4337,7 +4349,7 @@ function CallSchedule() {
           if (canDo && otherMon >= rsTodayStr) returnSwaps.push({
             mondayStr: otherMon,
             shift: "dayCall",
-            label: `Svc Wk (${otherMon})`
+            label: slotLabel(otherMon, "dayCall")
           });
         }
         if (shiftType === "nights") {
@@ -4351,7 +4363,7 @@ function CallSchedule() {
                 returnSwaps.push({
                   mondayStr: otherMon,
                   shift: sk,
-                  label: `${SHIFT_LABELS[sk]} (${otherMon})`
+                  label: slotLabel(otherMon, sk)
                 });
               }
             }
@@ -4366,7 +4378,7 @@ function CallSchedule() {
             returnSwaps.push({
               mondayStr: otherMon,
               shift: "wknd",
-              label: `Weekend (${otherMon})`
+              label: slotLabel(otherMon, "wknd")
             });
           }
         }
@@ -4424,14 +4436,23 @@ function CallSchedule() {
     const newName = ((_sMap$candId2 = sMap[candId]) === null || _sMap$candId2 === void 0 ? void 0 : _sMap$candId2.name) || "—";
     const shiftLabel = SHIFT_LABELS[targetShift] || targetShift;
     const swapTargets = [...new Set([targetOldId, candId, ...schedulerAdminIds].filter(Boolean))];
-    addNotification("schedule_changed", "Shift Swap", `${shiftLabel} (wk of ${targetMon}): ${oldName} ↔ ${newName}${returnMon ? ` (return: ${SHIFT_LABELS[returnShift] || returnShift} wk of ${returnMon})` : ""}`, {
+    const swapDetail = swapMsg({
+      targetMon,
+      targetShift,
+      oldName,
+      newName,
+      returnMon,
+      returnShift
+    });
+    addNotification("schedule_changed", "Shift Swap", swapDetail, {
       week: targetMon
     }, swapTargets);
     sendEmailNotif("schedule_changed", {
       shift: shiftLabel,
       week: targetMon,
       old_surgeon: oldName,
-      new_surgeon: newName
+      new_surgeon: newName,
+      detail: swapDetail
     }, swapTargets);
     setSwapSuggestions(null);
     setSwapTarget(null);
