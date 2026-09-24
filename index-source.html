@@ -5619,15 +5619,15 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     Object.entries(appShifts).forEach(([ds,aid])=>{
       d[ds]=[...(d[ds]||[]),{type:"APP",appId:aid,cls:"app"}];
     });
-    // Silvis (trauma) days for FAK — rule silvisBusy: P = primary (hard block
-    // 07:00→07:00), B = backup (standby, soft note). Dates may lie beyond the
-    // published weeks; calData is keyed by date so that is fine.
-    if (silvisFakId) {
-      silvisDays.primary.forEach(ds => { d[ds]=[...(d[ds]||[]),{type:"Silvis",surgeon:silvisFakId,cls:"silvis",role:"P"}]; });
-      silvisDays.backup.forEach(ds => { d[ds]=[...(d[ds]||[]),{type:"Silvis",surgeon:silvisFakId,cls:"silvis",role:"B"}]; });
-    }
+    // DAVENPORT CALL TYPES ONLY. Owner decision 2026-09-24: FAK's Silvis days
+    // come OFF the calendar (a Silvis tab + his Mine section follow). #55 had
+    // pushed {type:"Silvis"} rows here, and the cell's generic S/N/W predicate
+    // — a deny-list that treats anything not Svc/Wknd as a NIGHT — drew every
+    // one of them as a phantom "N FAK" chip (live 2026.09.24a → this fix), on
+    // the public link and the OR board too. Pinned behaviorally in
+    // test/sync-guards.js §O4 (the memo runs on a fixture).
     return d;
-  }, [schedule, appShifts, silvisDays, silvisFakId]);
+  }, [schedule, appShifts]);
 
   // Holiday name labels for the calendar (pure informational labels, independent
   // of holiday coverage assignments). Uses getHolidays() — only covers the 6
@@ -7753,6 +7753,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                     {calFilters.fierce && hasFierceBkp && !hasFierce && <span style={{fontSize:8,fontWeight:700,color:"#1a6fa8",background:"#e8f0fc",borderRadius:3,padding:"0 4px",letterSpacing:0.5}}>F·BKP</span>}
                   </div>
 
+                  {/* DENY-LIST: any calData type not excluded here renders as a chip,
+                      and anything that is not Svc/Wknd renders as a NIGHT ("N").
+                      So only Davenport call types may ever be pushed into calData
+                      (see the calData memo) — a foreign type here is a phantom shift. */}
                   {entries.filter(e=>{
                     if(e.type==="Fierce"||e.type==="FierceBkp"||e.type==="APP"||e.type==="Holiday") return false;
                     const isD = e.type.includes("Svc");
@@ -7792,17 +7796,6 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                       {" "}
                       <span style={{color:surgeonColors(sMap[e.surgeon]?.name, sMap[e.surgeon]?.idx).tx||"#4a5868"}}>{sMap[e.surgeon]?.name||"?"}</span>
                       <span style={{color:"#a07030",fontSize:8,marginLeft:2}}>{e.hours}</span>
-                    </div>
-                  ))}
-
-                  {/* Silvis (trauma) days — rule silvisBusy: P = primary (hard), B = backup (soft) */}
-                  {!isPublicMode && entries.filter(e=>e.type==="Silvis").filter(e=>!sf||e.surgeon===sf).map((e,j)=>(
-                    <div key={"sil"+j} title={e.role==="P"?"Silvis PRIMARY 07:00 → 07:00 next day — no Davenport call may overlap":"Silvis backup (standby) — no block"}
-                      style={{marginBottom:1,padding:"1px 3px",borderRadius:3,fontSize:10,fontWeight:600,
-                        background:e.role==="P"?(dk?"#1a2a4a":"#e8f0fc"):(dk?"#1e2430":"#f4f6fa"),border:`1px solid ${e.role==="P"?"#7a9ad0":"#c8d0dc"}`}}>
-                      <span style={{color:e.role==="P"?"#1a4a9a":"#7a8a98",fontWeight:700}}>Silvis {e.role}</span>
-                      {" "}
-                      <span style={{color:surgeonColors(sMap[e.surgeon]?.name, sMap[e.surgeon]?.idx).tx||"#4a5868"}}>{sMap[e.surgeon]?.name||"?"}</span>
                     </div>
                   ))}
 
@@ -7920,7 +7913,6 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             <span><span style={{color:"#908050",fontWeight:700}}>W</span> Weekend</span>
             <span><span style={{color:"#c08050",fontWeight:700}}>A</span> APP</span>
             <span><span style={{color:"#8a6a10",fontWeight:700}}>B</span> Backup</span>
-            <span title="FAK's Silvis (trauma) days: P = primary, hard block 07:00→07:00; B = backup, standby only"><span style={{color:"#1a4a9a",fontWeight:700}}>Silvis P</span> Silvis primary</span>
             <span><span style={{color:"#8a6a10"}}>⚡</span> Fierce Primary</span>
             <span><span style={{color:"#1a6fa8"}}>🛡</span> Fierce Backup</span>
             <span>🏖 Vacation</span>
