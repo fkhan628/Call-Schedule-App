@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.09.24d";
+    var APP_VERSION = "2026.09.24e";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -5725,26 +5725,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         cls: "app"
       }];
     });
-    if (silvisActive && !isPublicMode) {
-      silvisDays.primary.forEach(ds => {
-        d[ds] = [...(d[ds] || []), {
-          type: "Silvis",
-          surgeon: silvisFakId,
-          cls: "silvis",
-          role: "P"
-        }];
-      });
-      silvisDays.backup.forEach(ds => {
-        d[ds] = [...(d[ds] || []), {
-          type: "Silvis",
-          surgeon: silvisFakId,
-          cls: "silvis",
-          role: "B"
-        }];
-      });
-    }
     return d;
-  }, [schedule, appShifts, silvisDays, silvisFakId, silvisActive, isPublicMode]);
+  }, [schedule, appShifts]);
   const calHolidayLabels = useMemo(() => {
     const labels = {};
     [calYear - 1, calYear].forEach(y => {
@@ -10540,33 +10522,6 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             marginLeft: 2
           }
         }, e.hours));
-      }), !isPublicMode && entries.filter(e => e.type === "Silvis").filter(e => !sf || e.surgeon === sf).filter(e => {
-        var _sMap$e$surgeon13;
-        return !calDeptFilter || (SURGEON_DEPTS[(_sMap$e$surgeon13 = sMap[e.surgeon]) === null || _sMap$e$surgeon13 === void 0 ? void 0 : _sMap$e$surgeon13.name] || []).includes(calDeptFilter);
-      }).map((e, j) => {
-        var _sMap$e$surgeon14, _sMap$e$surgeon15, _sMap$e$surgeon16;
-        return React.createElement("div", {
-          key: "sil" + j,
-          title: e.role === "P" ? "Silvis PRIMARY 07:00 → 07:00 next day — no Davenport call may overlap" : "Silvis backup (standby) — no block",
-          style: {
-            marginBottom: 1,
-            padding: "1px 3px",
-            borderRadius: 3,
-            fontSize: 10,
-            fontWeight: 600,
-            background: e.role === "P" ? dk ? "#1a2a4a" : "#e8f0fc" : dk ? "#1e2430" : "#f4f6fa",
-            border: `1px solid ${e.role === "P" ? "#7a9ad0" : "#c8d0dc"}`
-          }
-        }, React.createElement("span", {
-          style: {
-            color: e.role === "P" ? "#1a4a9a" : "#7a8a98",
-            fontWeight: 700
-          }
-        }, "Silvis ", e.role), " ", React.createElement("span", {
-          style: {
-            color: surgeonColors((_sMap$e$surgeon14 = sMap[e.surgeon]) === null || _sMap$e$surgeon14 === void 0 ? void 0 : _sMap$e$surgeon14.name, (_sMap$e$surgeon15 = sMap[e.surgeon]) === null || _sMap$e$surgeon15 === void 0 ? void 0 : _sMap$e$surgeon15.idx).tx || "#4a5868"
-          }
-        }, ((_sMap$e$surgeon16 = sMap[e.surgeon]) === null || _sMap$e$surgeon16 === void 0 ? void 0 : _sMap$e$surgeon16.name) || "?"));
       }), calFilters.app && !sf && calAppFilter !== "none" && !calDeptFilter && entries.filter(e => e.type === "APP").filter(e => calAppFilter === "all" || e.appId === calAppFilter).map((e, j) => {
         var _APP_PAL, _aMap$e$appId3, _aMap$e$appId4;
         return React.createElement("div", {
@@ -10694,21 +10649,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       color: "#8a6a10",
       fontWeight: 700
     }
-  }, "B"), " Backup"), !isPublicMode && silvisActive && React.createElement("span", {
-    title: "FAK's Silvis (trauma) days: P = primary, hard block 07:00→07:00 next day"
-  }, React.createElement("span", {
-    style: {
-      color: "#1a4a9a",
-      fontWeight: 700
-    }
-  }, "Silvis P"), " Silvis primary"), !isPublicMode && silvisActive && React.createElement("span", {
-    title: "Silvis backup = standby only — never a block, never a warning"
-  }, React.createElement("span", {
-    style: {
-      color: "#7a8a98",
-      fontWeight: 700
-    }
-  }, "Silvis B"), " Silvis backup (standby)"), React.createElement("span", null, React.createElement("span", {
+  }, "B"), " Backup"), React.createElement("span", null, React.createElement("span", {
     style: {
       color: "#8a6a10"
     }
