@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.09.24a";
+    var APP_VERSION = "2026.09.24b";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -2352,6 +2352,27 @@ function CallSchedule() {
     }
     return changes;
   }, [surgeons]);
+  const silvisFakId = useMemo(() => {
+    var _surgeons$find9;
+    const want = String(silvisRule.code || "").toUpperCase();
+    return want ? ((_surgeons$find9 = surgeons.find(s => (s.name || "").toUpperCase() === want)) === null || _surgeons$find9 === void 0 ? void 0 : _surgeons$find9.id) || null : null;
+  }, [surgeons, silvisRule.code]);
+  const silvisDays = useMemo(() => sfDaysFromRows(silvisRows, silvisRule.code), [silvisRows, silvisRule.code]);
+  const silvisActive = sfRuleActive(silvisRule) && !!silvisFakId;
+  const silvisBlock = useCallback((id, mondayStr, slotKey) => {
+    if (!silvisActive || id !== silvisFakId) return null;
+    const d = sfConflict(silvisDays.primary, mondayStr, slotKey);
+    return d ? `${nameOf(id)} is Silvis PRIMARY on ${d} (07:00 → 07:00 next day), which overlaps ${slotLabel(mondayStr, slotKey)}` : null;
+  }, [silvisActive, silvisFakId, silvisDays]);
+  const silvisRefuse = useCallback(reasons => {
+    if (!reasons.length) return false;
+    const canOverride = isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.role) === "admin";
+    if (!canOverride) {
+      showToast("Blocked — " + reasons[0] + ". A Silvis primary day cannot take Davenport call.", "error");
+      return true;
+    }
+    return !confirm(`⚠️ Silvis conflict (rule silvisBusy)\n\n${reasons.map(r => "• " + r).join("\n")}\n\nThis is a HARD rule: a Silvis primary day (07:00 → 07:00) cannot hold Davenport call. Override anyway?`);
+  }, [isScheduler, userProfile]);
   const acceptTradeRequest = useCallback(async req => {
     try {
       const accToday = fmt(new Date());
@@ -2361,8 +2382,8 @@ function CallSchedule() {
       }
       const cascades = detectCascadeChanges(schedule, req);
       const nameOf = id => {
-        var _surgeons$find9;
-        return ((_surgeons$find9 = surgeons.find(s => s.id === id)) === null || _surgeons$find9 === void 0 ? void 0 : _surgeons$find9.name) || id;
+        var _surgeons$find0;
+        return ((_surgeons$find0 = surgeons.find(s => s.id === id)) === null || _surgeons$find0 === void 0 ? void 0 : _surgeons$find0.name) || id;
       };
       if (silvisActive) {
         const hits = [];
@@ -2891,9 +2912,9 @@ function CallSchedule() {
   useEffect(() => {
     if (!oneSignalReady || !mySurgeon || !window.OneSignal) return;
     try {
-      var _surgeons$find0;
+      var _surgeons$find1;
       window.OneSignal.User.addTag("surgeon_id", mySurgeon);
-      const surgeonName = ((_surgeons$find0 = surgeons.find(s => s.id === mySurgeon)) === null || _surgeons$find0 === void 0 ? void 0 : _surgeons$find0.name) || mySurgeon;
+      const surgeonName = ((_surgeons$find1 = surgeons.find(s => s.id === mySurgeon)) === null || _surgeons$find1 === void 0 ? void 0 : _surgeons$find1.name) || mySurgeon;
       window.OneSignal.User.addTag("surgeon_name", surgeonName);
     } catch (e) {
       console.error("OneSignal tag error:", e);
@@ -3669,27 +3690,6 @@ function CallSchedule() {
     });
     return p;
   };
-  const silvisFakId = useMemo(() => {
-    var _surgeons$find1;
-    const want = String(silvisRule.code || "").toUpperCase();
-    return want ? ((_surgeons$find1 = surgeons.find(s => (s.name || "").toUpperCase() === want)) === null || _surgeons$find1 === void 0 ? void 0 : _surgeons$find1.id) || null : null;
-  }, [surgeons, silvisRule.code]);
-  const silvisDays = useMemo(() => sfDaysFromRows(silvisRows, silvisRule.code), [silvisRows, silvisRule.code]);
-  const silvisActive = sfRuleActive(silvisRule) && !!silvisFakId;
-  const silvisBlock = useCallback((id, mondayStr, slotKey) => {
-    if (!silvisActive || id !== silvisFakId) return null;
-    const d = sfConflict(silvisDays.primary, mondayStr, slotKey);
-    return d ? `${nameOf(id)} is Silvis PRIMARY on ${d} (07:00 → 07:00 next day), which overlaps ${slotLabel(mondayStr, slotKey)}` : null;
-  }, [silvisActive, silvisFakId, silvisDays]);
-  const silvisRefuse = useCallback(reasons => {
-    if (!reasons.length) return false;
-    const canOverride = isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.role) === "admin";
-    if (!canOverride) {
-      showToast("Blocked — " + reasons[0] + ". A Silvis primary day cannot take Davenport call.", "error");
-      return true;
-    }
-    return !confirm(`⚠️ Silvis conflict (rule silvisBusy)\n\n${reasons.map(r => "• " + r).join("\n")}\n\nThis is a HARD rule: a Silvis primary day (07:00 → 07:00) cannot hold Davenport call. Override anyway?`);
-  }, [isScheduler, userProfile]);
   const doGenerate = preview => {
     const prefs = buildPrefs();
     const availability = {};
