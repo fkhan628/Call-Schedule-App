@@ -1952,7 +1952,8 @@ check("prefs audit never logs the plaintext email (masked only)",
     }
   }
   check("Q4 controls render only for canWriteBlob: the ✕ per line and the 'N dismissed · show' bar",
-    count("const dismissBtn = (x) => (canWriteBlob && x.key) ? (") === 1 && count("const dismissedBar = (canWriteBlob && warnShown.hidden.length > 0) ? (") === 1
+    // (2026-09-24: the ✕ also requires a dismissable line — section S owns that half)
+    count("const dismissBtn = (x) => (canWriteBlob && x.key && x.dismissable !== false) ? (") === 1 && count("const dismissedBar = (canWriteBlob && warnShown.hidden.length > 0) ? (") === 1
     && count("{dismissBtn(c)}") === 2 && count("{dismissBtn(w)}") === 1);
 
   // Q5 / Q6 — the panel
@@ -2119,6 +2120,86 @@ check("prefs audit never logs the plaintext email (masked only)",
   check("R8 Settings → Office Notifications offers the office link ?public=1&silvis=1, labeled as opening with Silvis on",
     count("Office link (opens with 🚑 Silvis on): <span style={{fontFamily:mono}}>fkhan628.github.io/Call-Schedule-App/?public=1&silvis=1</span>") === 1
     && count("Public link: <span style={{fontFamily:mono}}>fkhan628.github.io/Call-Schedule-App/?public=1</span>") === 1);
+}
+
+// ─── S. Silvis feed-health warnings cannot be dismissed (owner decision 2026-09-24) ───
+// "feed EMPTY", "last read FAILED" and "STALE" describe the DATA SOURCE and
+// clear themselves once the feed is healthy; hiding one lets trades and edits
+// go through against missing/old Silvis days unnoticed (an empty feed blocks
+// nothing), and "silvis-feed|empty" is a STATIC key — one dismissal would hide
+// every future outage. The horizon note stays dismissable (its key moves).
+//   S1 the real silvisConflicts memo, executed: empty/failed/stale carry
+//      dismissable:false; the horizon note does not
+//   S2 the real warnShown filter: a STORED dismissal of a feed-health key is
+//      inert (line still shown, not listed as hidden); a dismissable line
+//      still hides (positive control)
+//   S3 the ✕ and the handler both refuse a dismissable:false line
+{
+  const memoOf = (START) => {
+    const s0 = src.indexOf(START);
+    if (s0 === -1 || src.indexOf(START, s0 + 1) !== -1) return null;
+    const e0 = src.indexOf("\n  }, [", s0);
+    return e0 === -1 ? null : src.slice(s0 + START.length, e0);
+  };
+  const scBody = memoOf("  const silvisConflicts = useMemo(() => {");
+  const wsBody = memoOf("  const warnShown = useMemo(() => {");
+  let runSC = null, runWS = null;
+  try {
+    runSC = vm.runInContext("(function (env) { const { schedule, silvisActive, isPublicMode, nameOf, silvisFakId, silvisRows, silvisLoadError, silvisDays } = env; return (() => {" + scBody + "})(); })", sandbox, { filename: "s-silvisconflicts.js" });
+    runWS = vm.runInContext("(function (env) { const { silvisConflicts, conflicts, vacOverlapWarnings, dismissedWarnings } = env; return (() => {" + wsBody + "})(); })", sandbox, { filename: "s-warnshown.js" });
+    check("S silvisConflicts + warnShown memos extract and compile", !!scBody && !!wsBody);
+  } catch (ex) { check("S silvisConflicts + warnShown memos extract and compile", false, String(ex)); }
+  if (runSC && runWS) {
+    const { fmt: F, addD: A } = vm.runInContext("({ fmt, addD })", sandbox);
+    const base = { silvisActive: true, isPublicMode: false, nameOf: () => "FAK", silvisFakId: "s6", schedule: {} };
+    const noDays = { primary: new Set(), backup: new Set(), fetchedAt: null, from: null, to: null };
+    const freshTs = new Date(Date.now() - 3600e3).toISOString(), staleTs = new Date(Date.now() - 72 * 3600e3).toISOString();
+    const ROWS = [{ day: "2026-10-24" }];
+    const empty = runSC(Object.assign({}, base, { silvisRows: [], silvisLoadError: null, silvisDays: noDays }));
+    const failed = runSC(Object.assign({}, base, { silvisRows: ROWS, silvisLoadError: "HTTP 500", silvisDays: Object.assign({}, noDays, { fetchedAt: freshTs }) }));
+    const stale = runSC(Object.assign({}, base, { silvisRows: ROWS, silvisLoadError: null, silvisDays: Object.assign({}, noDays, { fetchedAt: staleTs }) }));
+    let mon = A(new Date(), 7); while (mon.getDay() !== 1) mon = A(mon, 1);
+    const M = F(mon);
+    const horizon = runSC(Object.assign({}, base, { schedule: { [M]: { dayCall: "s1", nights: {} } }, silvisRows: ROWS, silvisLoadError: null, silvisDays: Object.assign({}, noDays, { fetchedAt: freshTs, to: F(A(mon, -7)) }) }));
+    const one = (arr, re) => arr.filter(x => re.test(x.key));
+    const e = one(empty, /^silvis-feed\|empty$/), f = one(failed, /^silvis-feed\|failed\|/), st = one(stale, /^silvis-feed\|stale\|/), h = one(horizon, /^silvis-horizon\|/);
+    check("S1 feed EMPTY line is produced and carries dismissable:false", e.length === 1 && e[0].dismissable === false, JSON.stringify(empty));
+    check("S1 last read FAILED line is produced and carries dismissable:false", f.length === 1 && f[0].dismissable === false, JSON.stringify(failed));
+    check("S1 STALE line is produced and carries dismissable:false", st.length === 1 && st[0].dismissable === false, JSON.stringify(stale));
+    check("S1 the horizon note is produced and stays DISMISSABLE (no dismissable:false)", h.length === 1 && h[0].dismissable !== false, JSON.stringify(horizon));
+    // S2 — a stored dismissal of the static empty key is inert
+    const s2 = runWS({ silvisConflicts: empty, conflicts: [], vacOverlapWarnings: [], dismissedWarnings: [{ key: "silvis-feed|empty", text: "Silvis feed is EMPTY", by: "FAK", at: "x" }] });
+    check("S2 dismissedWarnings = [{key:'silvis-feed|empty'}] while the empty line is produced → the line is STILL SHOWN and NOT listed as hidden",
+      s2.silvis.some(x => x.key === "silvis-feed|empty") && !s2.hidden.some(d => d.key === "silvis-feed|empty"), JSON.stringify(s2));
+    const s2f = runWS({ silvisConflicts: failed.concat(stale), conflicts: [], vacOverlapWarnings: [], dismissedWarnings: [{ key: f[0].key }, { key: st[0].key }] });
+    check("S2 stored dismissals of the FAILED and STALE keys are inert too", s2f.silvis.length === 2 && s2f.hidden.length === 0, JSON.stringify(s2f));
+    const s2h = runWS({ silvisConflicts: horizon, conflicts: [], vacOverlapWarnings: [], dismissedWarnings: [{ key: h[0].key, text: "h", by: "FAK", at: "x" }] });
+    check("S2 POSITIVE CONTROL: the dismissable horizon note still hides and is listed as hidden", s2h.silvis.length === 0 && s2h.hidden.length === 1, JSON.stringify(s2h));
+  }
+  // S3 — the control and the handler
+  check("S3 the ✕ renders only for a dismissable line", count("const dismissBtn = (x) => (canWriteBlob && x.key && x.dismissable !== false) ? (") === 1);
+  {
+    const s0 = src.indexOf("  const dismissWarning = (x) => {"), e0 = s0 === -1 ? -1 : src.indexOf("\n  };", s0);
+    const body = s0 === -1 || e0 === -1 ? null : src.slice(s0 + "  const dismissWarning = (x) => {".length, e0);
+    const lineTextSrc = (src.match(/  const warnLineText = \(x\) => [^\n]*;/) || [])[0];
+    const actorSrc = (src.match(/  const warnActor = \(\) => [^\n]*;/) || [])[0];
+    let mk = null;
+    try {
+      mk = vm.runInContext(`(function (env) { const { canWriteBlob, confirm, setDismissedWarnings, logAudit, userProfile, surgeons } = env; ${lineTextSrc} ${actorSrc} return (x) => {${body}
+        }; })`, sandbox, { filename: "s-dismiss.js" });
+    } catch (ex) { check("S3 dismissWarning extractable", false, String(ex)); }
+    if (mk) {
+      const run = (x) => {
+        const log = [];
+        mk({ canWriteBlob: true, confirm: (m) => { log.push("confirm"); return true; }, setDismissedWarnings: () => log.push("set"), logAudit: () => log.push("audit"), userProfile: { display_name: "FAK" }, surgeons: [] })(x);
+        return log;
+      };
+      const blocked = run({ key: "silvis-feed|empty", dismissable: false, week: "feed", severity: "error", message: "Silvis feed is EMPTY" });
+      const allowed = run({ key: "consecutive|2026-09-21|s6|mon+tue", week: "2026-09-21", severity: "error", message: "FAK has consecutive nights (Mon Night + Tue Night)" });
+      check("S3 dismissWarning refuses a dismissable:false line even for a scheduler (no confirm, no write, no audit); a normal line still goes through",
+        blocked.length === 0 && allowed.join(">") === "confirm>set>audit", JSON.stringify({ blocked, allowed }));
+    }
+  }
 }
 
 // ─── Verdict ───
