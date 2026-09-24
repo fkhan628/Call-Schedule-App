@@ -1783,6 +1783,194 @@ check("prefs audit never logs the plaintext email (masked only)",
   }
 }
 
+// ─── Q. Dismissable Schedule Warnings (owner request 2026-09-24) ───
+// A scheduler/admin can dismiss one exact warning for EVERYONE (blob field
+// dismissedWarnings [{key, text, by, at}]); every viewer's panel is filtered;
+// the panel no longer renders on ?public=1 / the OR board. Keys are built
+// from FACTS, never from the message: a copy edit must neither resurrect nor
+// hide anything, and a changed fact must produce a new key.
+//   Q1 every producer object carries a key; no key reads message/label copy
+//   Q2 extraction-executed: the real conflicts / vacOverlap memos + the real
+//      warnShown filter on fixtures (dismiss hides; changed fact reappears;
+//      copy edits keep the key)
+//   Q3 storage wired in all five places (the autosave-deps trap included)
+//   Q4 the real dismiss/restore handlers: scheduler-only, confirm BEFORE the
+//      write, audited both ways
+//   Q5 the panel reads only the filtered lists; Q6 it is internal-only
+{
+  const memoOf = (START) => {
+    const s0 = src.indexOf(START);
+    if (s0 === -1 || src.indexOf(START, s0 + 1) !== -1) return null;
+    const e0 = src.indexOf("\n  }, [", s0);
+    if (e0 === -1) return null;
+    return { body: src.slice(s0 + START.length, e0), deps: src.slice(e0, src.indexOf("]);", e0) + 3) };
+  };
+  const PRODUCERS = [
+    ["silvisConflicts", "  const silvisConflicts = useMemo(() => {", 5],
+    ["conflicts", "  const conflicts = useMemo(() => {", 5],
+    ["vacOverlapWarnings", "  const vacOverlapWarnings = useMemo(() => {", 3],
+  ];
+  // Q1
+  const FORBIDDEN_IN_KEY = /message|sMap|SHIFT_LABELS|\.name\b|\bwho\b|\bmd\(/;
+  for (const [name, START, want] of PRODUCERS) {
+    const m = memoOf(START);
+    if (!m) { check(`Q1 ${name} memo extractable`, false, "anchor"); continue; }
+    const lines = m.body.split(/\r?\n/).filter(l => /severity: "/.test(l));
+    const keyed = lines.filter(l => /\{ key: (`[^`]*`|"[^"]*"), /.test(l));
+    check(`Q1 ${name}: all ${want} warning objects carry a key (found ${lines.length} objects, ${keyed.length} keyed)`, lines.length === want && keyed.length === want, lines.filter(l => !keyed.includes(l)).map(l => l.trim().slice(0, 90)).join(" | "));
+    const exprs = keyed.map(l => l.match(/\{ key: (`[^`]*`|"[^"]*"), /)[1]);
+    const bad = exprs.filter(e => FORBIDDEN_IN_KEY.test(e));
+    check(`Q1 ${name}: no key is built from the message or display copy (names, labels)`, bad.length === 0, bad.join(" | "));
+  }
+
+  // Q2 — executed on fixtures
+  const warnMemo = memoOf("  const warnShown = useMemo(() => {");
+  check("Q2 warnShown filter memo extractable; deps = the three producers + dismissedWarnings", !!warnMemo && warnMemo.deps.replace(/\s+/g, " ").trim() === "}, [silvisConflicts, conflicts, vacOverlapWarnings, dismissedWarnings]);", warnMemo && warnMemo.deps);
+  const confMemo = memoOf("  const conflicts = useMemo(() => {");
+  const vacMemo = memoOf("  const vacOverlapWarnings = useMemo(() => {");
+  if (warnMemo && confMemo && vacMemo) {
+    let runConf, runVac, runShown;
+    try {
+      runConf = vm.runInContext("(function (env) { const { schedule, surgeons, sMap, SHIFT_LABELS } = env; return (() => {" + confMemo.body + "})(); })", sandbox, { filename: "q-conflicts.js" });
+      runVac = vm.runInContext("(function (env) { const { mondays, surgeons, apps, vacations, holidayAssignments, sMap } = env; return (() => {" + vacMemo.body + "})(); })", sandbox, { filename: "q-vac.js" });
+      runShown = vm.runInContext("(function (env) { const { silvisConflicts, conflicts, vacOverlapWarnings, dismissedWarnings } = env; return (() => {" + warnMemo.body + "})(); })", sandbox, { filename: "q-shown.js" });
+      check("Q2 conflicts / vacOverlap / warnShown memos compile standalone", true);
+    } catch (ex) { check("Q2 conflicts / vacOverlap / warnShown memos compile standalone", false, String(ex)); }
+    if (runConf && runVac && runShown) {
+      const { fmt: F, addD: A, parse: P } = vm.runInContext("({ fmt, addD, parse })", sandbox);
+      let mon = A(new Date(), 7); while (mon.getDay() !== 1) mon = A(mon, 1);
+      const M = F(mon);
+      const LABELS = vm.runInContext("SHIFT_LABELS", sandbox);
+      const surgeons = [{ id: "s1", name: "DJA" }, { id: "s2", name: "MCC" }, { id: "s3", name: "RPC" }, { id: "s4", name: "KJH" }, { id: "s5", name: "REH" }, { id: "s6", name: "FAK" }, { id: "s7", name: "ARW" }];
+      const sMap = Object.fromEntries(surgeons.map((s, i) => [s.id, { name: s.name, idx: i }]));
+      const wk = (nights) => ({ [M]: { dayCall: "s1", nights: Object.assign({ mon: "s2", tue: "s3", wed: "s4", thu: "s5", wknd: "s7" }, nights) } });
+      const monTue = runConf({ schedule: wk({ mon: "s6", tue: "s6" }), surgeons, sMap, SHIFT_LABELS: LABELS });
+      const K = `consecutive|${M}|s6|mon+tue`;
+      check("Q2 fixture FAK Mon+Tue nights → exactly one line, key built from facts", monTue.length === 1 && monTue[0].key === K, JSON.stringify(monTue.map(x => x.key)));
+      const renamed = runConf({ schedule: wk({ mon: "s6", tue: "s6" }), surgeons, sMap: Object.assign({}, sMap, { s6: { name: "ZZZ", idx: 5 } }), SHIFT_LABELS: Object.assign({}, LABELS, { mon: "MONDAY (copy edit)", tue: "TUESDAY (copy edit)" }) });
+      check("Q2 a COPY edit (label text, display name) changes the message but NOT the key", renamed.length === 1 && renamed[0].key === K && renamed[0].message !== monTue[0].message, JSON.stringify(renamed));
+      const dismissed = [{ key: K, text: M + " · " + monTue[0].message, by: "FAK", at: "2026-09-24T00:00:00Z" }];
+      const s1 = runShown({ silvisConflicts: [], conflicts: monTue, vacOverlapWarnings: [], dismissedWarnings: dismissed });
+      check("Q2 dismissed {K} → filtered out of the shown list, listed as hidden (the 'N dismissed · show' list)", s1.conflicts.length === 0 && s1.hidden.length === 1 && s1.hidden[0].key === K, JSON.stringify(s1));
+      const tueWed = runConf({ schedule: wk({ mon: "s2", tue: "s6", wed: "s6" }), surgeons, sMap, SHIFT_LABELS: LABELS });
+      const s2 = runShown({ silvisConflicts: [], conflicts: tueWed, vacOverlapWarnings: [], dismissedWarnings: dismissed });
+      check("Q2 the nights CHANGE to Tue+Wed → a different key → shown despite the old dismissal; the stale dismissal is not counted as hidden",
+        tueWed.length === 1 && tueWed[0].key === `consecutive|${M}|s6|tue+wed` && s2.conflicts.length === 1 && s2.hidden.length === 0, JSON.stringify({ keys: tueWed.map(x => x.key), s2 }));
+      const s3 = runShown({ silvisConflicts: [], conflicts: monTue, vacOverlapWarnings: [], dismissedWarnings: [] });
+      check("Q2 nothing dismissed → the line is shown (the filter is not vacuous)", s3.conflicts.length === 1 && s3.hidden.length === 0);
+      // vacOverlap: surgeons-off key is the SORTED id set — order of the roster never changes it
+      const day = F(A(mon, 2));
+      const vacs = {}; ["s5", "s1", "s4", "s2", "s3"].forEach(id => { vacs[id] = [[day, day]]; });
+      const v1 = runVac({ mondays: [mon], surgeons, apps: [], vacations: vacs, holidayAssignments: {}, sMap });
+      const v2 = runVac({ mondays: [mon], surgeons: [...surgeons].reverse(), apps: [], vacations: vacs, holidayAssignments: {}, sMap });
+      const vk = `surgeons-off|${day}|s1+s2+s3+s4+s5`;
+      check("Q2 surgeons-off key = date + SORTED ids; roster order does not change it (the message's name order does)",
+        v1.length === 1 && v1[0].key === vk && v2.length === 1 && v2[0].key === vk && v1[0].message !== v2[0].message, JSON.stringify([v1, v2].map(v => v.map(x => [x.key, x.message]))));
+    }
+  }
+
+  // Q3 — storage wiring (a missing site fails silently in production)
+  check("Q3 state declared once, beside silvisRule (above every hook that lists it — §P)", count("const [dismissedWarnings, setDismissedWarnings] = useState([]);") === 1
+    && src.indexOf("const [dismissedWarnings, setDismissedWarnings]") > src.indexOf("const [silvisRule, setSilvisRule]") && src.indexOf("const [dismissedWarnings, setDismissedWarnings]") - src.indexOf("const [silvisRule, setSilvisRule]") < 1500);
+  check("Q3 buildStateBundle carries dismissedWarnings", /\n\s*silvisRule,\r?\n\s*dismissedWarnings,\r?\n\s*\.\.\.overrides,/.test(src));
+  {
+    const ADOPT = "if (Array.isArray(d.dismissedWarnings)) setDismissedWarnings(d.dismissedWarnings);";
+    const poll = src.indexOf("const refreshScheduleRow = async () => {");
+    const first = src.indexOf(ADOPT), second = src.indexOf(ADOPT, first + 1);
+    check("Q3 adopted on the INITIAL blob load (before refreshScheduleRow) and in refreshScheduleRow (poll / realtime)",
+      poll !== -1 && first !== -1 && first < poll && second > poll && second - poll < 3500 && src.indexOf(ADOPT, second + 1) === -1, `first=${first} poll=${poll} second=${second}`);
+  }
+  {
+    const a = src.indexOf("// ─── Supabase: Auto-save on changes ───");
+    const e0 = a === -1 ? -1 : src.indexOf("\n  }, [", a);
+    const deps = e0 === -1 ? "" : src.slice(e0, src.indexOf("]);", e0) + 3);
+    check("Q3 the AUTOSAVE effect's deps list dismissedWarnings (the effect only fires for listed fields — the trap)", /[\[,\s]dismissedWarnings[,\]]/.test(deps), deps.slice(0, 260));
+  }
+  check("Q3 the snapshot-restore adopter resets dismissals from the snapshot",
+    count("setDismissedWarnings(Array.isArray(d.dismissedWarnings) ? d.dismissedWarnings : []);") === 1);
+
+  // Q4 — the real handlers, executed
+  const bodyOf = (START) => { const s0 = src.indexOf(START); if (s0 === -1 || src.indexOf(START, s0 + 1) !== -1) return null; const e0 = src.indexOf("\n  };", s0); return e0 === -1 ? null : src.slice(s0 + START.length, e0); };
+  const dismissBody = bodyOf("  const dismissWarning = (x) => {");
+  const restoreBody = bodyOf("  const restoreWarning = (d) => {");
+  const lineTextSrc = (src.match(/  const warnLineText = \(x\) => [^\n]*;/) || [])[0];
+  const actorSrc = (src.match(/  const warnActor = \(\) => [^\n]*;/) || [])[0];
+  check("Q4 dismiss / restore handlers + line-text + actor helpers extractable", !!dismissBody && !!restoreBody && !!lineTextSrc && !!actorSrc);
+  if (dismissBody && restoreBody && lineTextSrc && actorSrc) {
+    let mk;
+    try {
+      mk = vm.runInContext(`(function (env) {
+        const { canWriteBlob, confirm, setDismissedWarnings, logAudit, userProfile, surgeons } = env;
+        ${lineTextSrc}
+        ${actorSrc}
+        const dismissWarning = (x) => {${dismissBody}
+        };
+        const restoreWarning = (d) => {${restoreBody}
+        };
+        return { dismissWarning, restoreWarning };
+      })`, sandbox, { filename: "q-handlers.js" });
+      check("Q4 handlers compile standalone", true);
+    } catch (ex) { check("Q4 handlers compile standalone", false, String(ex)); }
+    if (mk) {
+      const LINE = { key: "consecutive|2026-09-21|s6|mon+tue", week: "2026-09-21", severity: "error", message: "FAK has consecutive nights (Mon Night + Tue Night)" };
+      const TEXT = "2026-09-21 · FAK has consecutive nights (Mon Night + Tue Night)";
+      const rig = (opts) => {
+        const log = [];
+        let state = opts.initial || [];
+        const env = {
+          canWriteBlob: opts.canWriteBlob !== false,
+          confirm: (m) => { log.push(["confirm", m]); return !!opts.yes; },
+          setDismissedWarnings: (f) => { state = typeof f === "function" ? f(state) : f; log.push(["set", state]); },
+          logAudit: (action, summary, details) => log.push(["audit", action, summary, details]),
+          userProfile: { display_name: "FAK", person_id: "s6" }, surgeons: [{ id: "s6", name: "FAK" }],
+        };
+        return { h: mk(env), log, state: () => state };
+      };
+      let r = rig({ canWriteBlob: false, yes: true });
+      r.h.dismissWarning(LINE);
+      check("Q4 a MEMBER (canWriteBlob false) cannot dismiss: no confirm, no write, no audit", r.log.length === 0, JSON.stringify(r.log));
+      r = rig({ yes: false });
+      r.h.dismissWarning(LINE);
+      check("Q4 scheduler declines the confirm → nothing written, nothing audited; the confirm QUOTES the line",
+        r.log.length === 1 && r.log[0][0] === "confirm" && r.log[0][1].includes(TEXT) && /EVERYONE/.test(r.log[0][1]), JSON.stringify(r.log));
+      r = rig({ yes: true });
+      r.h.dismissWarning(LINE);
+      const st = r.state();
+      check("Q4 scheduler confirms → confirm FIRST, then the write {key,text,by,at}, then the audit row warning_dismissed \"<name> dismissed: <line>\" {key}",
+        r.log.map(x => x[0]).join(">") === "confirm>set>audit" && st.length === 1 && st[0].key === LINE.key && st[0].text === TEXT && st[0].by === "FAK" && typeof st[0].at === "string"
+        && r.log[2][1] === "warning_dismissed" && r.log[2][2] === "FAK dismissed: " + TEXT && JSON.stringify(r.log[2][3]) === JSON.stringify({ key: LINE.key }), JSON.stringify(r.log));
+      r = rig({ yes: true, initial: [{ key: LINE.key, text: TEXT, by: "FAK", at: "x" }, { key: "other", text: "o", by: "FAK", at: "x" }] });
+      r.h.dismissWarning(LINE);
+      check("Q4 dismissing an already-dismissed key replaces it (no duplicates)", r.state().filter(d => d.key === LINE.key).length === 1 && r.state().length === 2);
+      r = rig({ initial: [{ key: LINE.key, text: TEXT, by: "FAK", at: "x" }, { key: "other", text: "o", by: "FAK", at: "x" }] });
+      r.h.restoreWarning({ key: LINE.key, text: TEXT });
+      check("Q4 restore → the key leaves the list (others kept) and the audit row warning_restored \"<name> restored: <line>\" {key} is written",
+        r.state().length === 1 && r.state()[0].key === "other" && r.log.some(x => x[0] === "audit" && x[1] === "warning_restored" && x[2] === "FAK restored: " + TEXT && JSON.stringify(x[3]) === JSON.stringify({ key: LINE.key })), JSON.stringify(r.log));
+      r = rig({ canWriteBlob: false, initial: [{ key: LINE.key, text: TEXT }] });
+      r.h.restoreWarning({ key: LINE.key, text: TEXT });
+      check("Q4 a MEMBER cannot restore either", r.log.length === 0 && r.state().length === 1);
+    }
+  }
+  check("Q4 controls render only for canWriteBlob: the ✕ per line and the 'N dismissed · show' bar",
+    count("const dismissBtn = (x) => (canWriteBlob && x.key) ? (") === 1 && count("const dismissedBar = (canWriteBlob && warnShown.hidden.length > 0) ? (") === 1
+    && count("{dismissBtn(c)}") === 2 && count("{dismissBtn(w)}") === 1);
+
+  // Q5 / Q6 — the panel
+  {
+    const a = src.indexOf("Schedule Warnings — INTERNAL ONLY");
+    const b = a === -1 ? -1 : src.indexOf("{dismissedBar}", src.indexOf("+ more…", a));
+    const panel = a !== -1 && b !== -1 ? src.slice(a, b) : "";
+    check("Q5 panel region found", panel.length > 0);
+    check("Q5 the panel reads ONLY the filtered lists — header count, lines and both '+ more' notes (no raw producer reference)",
+      panel.length > 0 && !/(^|[^.\w])(conflicts|silvisConflicts|vacOverlapWarnings)\b/.test(panel)
+      && /const shownTotal = warnShown\.silvis\.length \+ warnShown\.conflicts\.length \+ warnShown\.vac\.length;/.test(panel)
+      && panel.includes("⚠️ Schedule Warnings — {shownTotal}") && panel.includes("warnShown.silvis.length > 10") && panel.includes("(warnShown.conflicts.length + warnShown.vac.length) > 20"));
+    check("Q5 nothing undismissed → no panel (only a scheduler's small dismissed bar)", panel.includes("if (shownTotal === 0) return dismissedBar ? <div style={{marginBottom:10}}>{dismissedBar}</div> : null;"));
+    check("Q6 the panel is gated OFF ?public=1 and the OR board (owner decision 2026-09-24)",
+      /\{!isPublicMode && \(\(\)=>\{\s*const shownTotal = warnShown\.silvis\.length/.test(src) && count("Schedule Warnings — {") === 1);
+  }
+}
+
 // ─── Verdict ───
 console.log(`\n${checks} checks, ${failures.length} failure(s)`);
 if (failures.length) {

@@ -362,6 +362,16 @@ function CallSchedule() {
   // in the config blob (silvisRule: { enabled, code }).
   const [silvisRows, setSilvisRows] = useState([]);           // silvis_feed cache rows (kept on load failure)
   const [silvisRule, setSilvisRule] = useState(SF_RULE_DEFAULT); // from the blob; defaults on
+  // Schedule Warnings DISMISSALS (owner request 2026-09-24): a scheduler/admin
+  // may hide one exact warning for EVERYONE — every session, every device.
+  // Blob field [{ key, text, by, at }]. Keys are built from FACTS (type | week
+  // or date | person id(s) | slot(s)), never from the message: a copy edit can
+  // neither resurrect nor hide anything, and a changed fact is a NEW warning.
+  // Wired in: state, buildStateBundle, the initial blob load,
+  // refreshScheduleRow (poll/realtime), the autosave effect's deps (the effect
+  // only fires for fields in that list), and the snapshot-restore adopter.
+  const [dismissedWarnings, setDismissedWarnings] = useState([]);
+  const [showDismissedWarnings, setShowDismissedWarnings] = useState(false);
   const [silvisRefreshing, setSilvisRefreshing] = useState(false);
   const [silvisLoadError, setSilvisLoadError] = useState(null);
   const silvisRowsRef = useRef([]);     // last adopted rows — the empty-read tripwire (probe rule)
@@ -1524,6 +1534,7 @@ function CallSchedule() {
           if (d.holidayAssignments) setHolidayAssignments(d.holidayAssignments);
           if (Array.isArray(d.pendingLocks)) setPendingLocks(d.pendingLocks);
           if (d.silvisRule) setSilvisRule(sfRule(d.silvisRule));
+          if (Array.isArray(d.dismissedWarnings)) setDismissedWarnings(d.dismissedWarnings);
           // Arm the empty-save guard if the loaded row already holds real data.
           if ((d.schedule && Object.keys(d.schedule).length) ||
               (d.vacations && Object.keys(d.vacations).length) ||
@@ -1651,6 +1662,7 @@ function CallSchedule() {
         if (d.holidayAssignments) setHolidayAssignments(d.holidayAssignments);
         if (Array.isArray(d.pendingLocks)) setPendingLocks(d.pendingLocks);
         if (d.silvisRule) setSilvisRule(sfRule(d.silvisRule)); // rule-as-data follows the blob (poll / realtime)
+        if (Array.isArray(d.dismissedWarnings)) setDismissedWarnings(d.dismissedWarnings); // a dismissal reaches every open session within one poll
         if ((d.schedule && Object.keys(d.schedule).length) ||
             (d.vacations && Object.keys(d.vacations).length) ||
             (d.appShifts && Object.keys(d.appShifts).length)) {
@@ -1829,6 +1841,7 @@ function CallSchedule() {
     startMonth, startYear, numWeeks, holidayAssignments, startMondayOverride,
     pendingLocks,
     silvisRule,
+    dismissedWarnings,
     ...overrides,
   });
 
@@ -1945,7 +1958,7 @@ function CallSchedule() {
       }
     }, 800);
     return () => clearTimeout(timer);
-  }, [loaded, surgeons, apps, vacations, noCallDays, backupMondaySet, fierceBackupSet, schedule, priorCounts, year1Counts, startMonth, startYear, numWeeks, holidayAssignments, startMondayOverride, pendingLocks]);
+  }, [loaded, surgeons, apps, vacations, noCallDays, backupMondaySet, fierceBackupSet, schedule, priorCounts, year1Counts, startMonth, startYear, numWeeks, holidayAssignments, startMondayOverride, pendingLocks, dismissedWarnings]);
 
   // ─── Flush pending save when app is backgrounded or closing ───
   //
@@ -4115,6 +4128,7 @@ function CallSchedule() {
     if (d.holidayAssignments) setHolidayAssignments(d.holidayAssignments);
     if (Array.isArray(d.pendingLocks)) setPendingLocks(d.pendingLocks);
     setSilvisRule(d.silvisRule ? sfRule(d.silvisRule) : SF_RULE_DEFAULT); // a pre-Silvis snapshot resets the rule to its default
+    setDismissedWarnings(Array.isArray(d.dismissedWarnings) ? d.dismissedWarnings : []); // a snapshot's dismissals come back with it
     lastSyncRef.current = r.ts;        // our own write — don't let the poll treat it as foreign
     everHadRealDataRef.current = true; // restored data is real data
     logAudit("system.restore_snapshot", `Restored snapshot "${snapshotReasonLabel(snap.reason)}" from ${when}`, { snapshot_id: snap.id, reason: snap.reason, created_at: snap.created_at });
@@ -5519,15 +5533,15 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     // beyond the feed's horizon (Silvis publishes rolling 3-month periods;
     // the function caches [today-7, today+120]).
     const health = [];
-    if (silvisRows.length === 0) health.push({ severity: "error", week: "feed", message: `Silvis feed is EMPTY${silvisLoadError ? " — " + silvisLoadError : ""} — rule silvisBusy cannot see ${who}'s Silvis call (sign in and refresh from Settings)` });
-    else if (silvisLoadError) health.push({ severity: "error", week: "feed", message: `Silvis feed: last read FAILED (${silvisLoadError}) — using the previous cache` });
-    else { const st = sfStatus(silvisDays.fetchedAt); if (st.stale) health.push({ severity: "warning", week: "feed", message: `Silvis feed is STALE (fetched ${st.ageHours === null ? "?" : st.ageHours + "h"} ago) — refresh from Settings` }); }
+    if (silvisRows.length === 0) health.push({ key: "silvis-feed|empty", severity: "error", week: "feed", message: `Silvis feed is EMPTY${silvisLoadError ? " — " + silvisLoadError : ""} — rule silvisBusy cannot see ${who}'s Silvis call (sign in and refresh from Settings)` });
+    else if (silvisLoadError) health.push({ key: `silvis-feed|failed|${silvisDays.fetchedAt || "none"}`, severity: "error", week: "feed", message: `Silvis feed: last read FAILED (${silvisLoadError}) — using the previous cache` });
+    else { const st = sfStatus(silvisDays.fetchedAt); if (st.stale) health.push({ key: `silvis-feed|stale|${silvisDays.fetchedAt || "none"}`, severity: "warning", week: "feed", message: `Silvis feed is STALE (fetched ${st.ageHours === null ? "?" : st.ageHours + "h"} ago) — refresh from Settings` }); }
     if (silvisRows.length > 0 && silvisDays.to) {
       const beyond = Object.keys(schedule).filter(m => /^\d{4}-\d{2}-\d{2}$/.test(m) && m > silvisDays.to && inScope({ mondayStr: m })).sort();
-      if (beyond.length) health.push({ severity: "info", week: beyond[0], message: `${beyond.length} published week${beyond.length === 1 ? "" : "s"} from ${beyond[0]} lie beyond the Silvis feed horizon (${silvisDays.to}) — no Silvis data there yet; re-check after Silvis publishes` });
+      if (beyond.length) health.push({ key: `silvis-horizon|${silvisDays.to}|${beyond[0]}|${beyond.length}`, severity: "info", week: beyond[0], message: `${beyond.length} published week${beyond.length === 1 ? "" : "s"} from ${beyond[0]} lie beyond the Silvis feed horizon (${silvisDays.to}) — no Silvis data there yet; re-check after Silvis publishes` });
     }
     const hard = sfOverlaps(schedule, silvisDays.primary, silvisFakId).filter(inScope)
-      .map(o => ({ severity: "error", week: o.mondayStr, message: `${who}: Silvis primary + Davenport ${o.label}, ${md(o.day)}` }));
+      .map(o => ({ key: `silvis|${silvisFakId}|${o.mondayStr}|${o.slot}|${o.day}`, severity: "error", week: o.mondayStr, message: `${who}: Silvis primary + Davenport ${o.label}, ${md(o.day)}` }));
     return health.concat(hard);
   }, [schedule, silvisActive, silvisDays, silvisFakId, surgeons, isPublicMode, silvisRows, silvisLoadError]);
   // Silvis BACKUP touches — standby, never a block, never a warning: shown
@@ -5545,8 +5559,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     // PAST-WEEK EXEMPTION (pre-import blocker 3): warnings exist to prompt
     // fixes, and the past is unactionable — hand-lived history (trades,
     // holiday coverage, real-life swaps) legitimately violates generator
-    // hard rules and must not light up warning cards, which render for
-    // EVERY viewer including ?public=1. Scan only weeks still in progress
+    // hard rules and must not light up warning cards. (Until 2026-09-24 the
+    // cards rendered for EVERY viewer including ?public=1; the panel is now
+    // internal-only — owner decision — and lines can be dismissed for
+    // everyone by a scheduler, see dismissedWarnings.) Scan only weeks still in progress
     // or ahead (the week's Sunday is today or later). Dropping past weeks
     // also drops the past→current boundary check, whose Monday night is
     // already tonight-or-gone by then — equally unactionable. today is
@@ -5567,7 +5583,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         const a = wk.nights?.[nightOrder[i]];
         const b = wk.nights?.[nightOrder[i+1]];
         if (a && a === b) {
-          issues.push({ type: "consecutive", severity: "error", week: mStr, message: `${sMap[a]?.name} has consecutive nights (${SHIFT_LABELS[nightOrder[i]]} + ${SHIFT_LABELS[nightOrder[i+1]]})` });
+          issues.push({ key: `consecutive|${mStr}|${a}|${nightOrder[i]}+${nightOrder[i+1]}`, type: "consecutive", severity: "error", week: mStr, message: `${sMap[a]?.name} has consecutive nights (${SHIFT_LABELS[nightOrder[i]]} + ${SHIFT_LABELS[nightOrder[i+1]]})` });
         }
       }
 
@@ -5576,7 +5592,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       if (wkIdx < mondayStrs.length - 1) {
         const nextWk = schedule[mondayStrs[wkIdx + 1]];
         if (wkndSurgeon && nextWk?.nights?.mon === wkndSurgeon) {
-          issues.push({ type: "consecutive", severity: "error", week: mStr, message: `${sMap[wkndSurgeon]?.name} has Weekend then Mon night the next week` });
+          issues.push({ key: `wknd-mon|${mStr}|${mondayStrs[wkIdx + 1]}|${wkndSurgeon}`, type: "consecutive", severity: "error", week: mStr, message: `${sMap[wkndSurgeon]?.name} has Weekend then Mon night the next week` });
         }
         // Check service week surgeon → Mon night next week (hard rule).
         // Exempt the Monday-holiday convention: Surgeon A legitimately holds
@@ -5589,7 +5605,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           const nextMonStr = mondayStrs[wkIdx + 1];
           const nextHolCov = nextWk.holidayCoverage || {};
           if (!nextHolCov[nextMonStr]) {
-            issues.push({ type: "consecutive", severity: "error", week: mStr, message: `${sMap[wk.dayCall]?.name} has Service Week then Mon night the next week` });
+            issues.push({ key: `svc-mon|${mStr}|${nextMonStr}|${wk.dayCall}`, type: "consecutive", severity: "error", week: mStr, message: `${sMap[wk.dayCall]?.name} has Service Week then Mon night the next week` });
           }
         }
       }
@@ -5602,14 +5618,14 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             const nightDate = fmt(addD(mon, {mon:0,tue:1,wed:2,thu:3}[sk]));
             // Skip if this day is covered by holiday 24h (the same surgeon covering both is intentional)
             if (holCov[nightDate]) return;
-            issues.push({ type: "double", severity: "error", week: mStr, message: `${sMap[wk.dayCall]?.name} is on Service Week AND ${SHIFT_LABELS[sk]} (same week)` });
+            issues.push({ key: `svc-night|${mStr}|${wk.dayCall}|${sk}`, type: "double", severity: "error", week: mStr, message: `${sMap[wk.dayCall]?.name} is on Service Week AND ${SHIFT_LABELS[sk]} (same week)` });
           }
         });
         if (wk.nights?.wknd === wk.dayCall) {
           const friD = fmt(addD(mon, 4));
           const sunD = fmt(addD(mon, 6));
           if (!holCov[friD] && !holCov[sunD]) {
-            issues.push({ type: "double", severity: "error", week: mStr, message: `${sMap[wk.dayCall]?.name} is on Service Week AND Weekend (same week)` });
+            issues.push({ key: `svc-wknd|${mStr}|${wk.dayCall}`, type: "double", severity: "error", week: mStr, message: `${sMap[wk.dayCall]?.name} is on Service Week AND Weekend (same week)` });
           }
         }
       }
@@ -5633,10 +5649,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       const appsOff = apps.filter(a => onVac(a.id, ds, vacations));
 
       if (surgeonsOff.length > 4) {
-        warnings.push({ date: ds, severity: "error", message: `${surgeonsOff.length} surgeons off on ${ds} (max 4): ${surgeonsOff.map(s=>s.name).join(", ")}` });
+        warnings.push({ key: `surgeons-off|${ds}|${surgeonsOff.map(s => s.id).sort().join("+")}`, date: ds, severity: "error", message: `${surgeonsOff.length} surgeons off on ${ds} (max 4): ${surgeonsOff.map(s=>s.name).join(", ")}` });
       }
       if (appsOff.length > 2) {
-        warnings.push({ date: ds, severity: "info", message: `${appsOff.length} APPs off on ${ds} (prefer ≤2): ${appsOff.map(a=>a.name).join(", ")}` });
+        warnings.push({ key: `apps-off|${ds}|${appsOff.map(a => a.id).sort().join("+")}`, date: ds, severity: "info", message: `${appsOff.length} APPs off on ${ds} (prefer ≤2): ${appsOff.map(a=>a.name).join(", ")}` });
       }
       d = addD(d, 1);
     }
@@ -5651,7 +5667,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         (h.coverage || []).forEach(c => {
           if (!c.surgeon || !c.date) return;
           if (onVac(c.surgeon, c.date, vacations)) {
-            warnings.push({ date: c.date, severity: "error", message: `${sMap[c.surgeon]?.name || c.surgeon} is assigned ${h.name} coverage (${c.date}) but has vacation then — holiday surgeons can't be on vacation during their holiday` });
+            warnings.push({ key: `holiday-vac|${h.date || ""}|${c.date}|${c.surgeon}`, date: c.date, severity: "error", message: `${sMap[c.surgeon]?.name || c.surgeon} is assigned ${h.name} coverage (${c.date}) but has vacation then — holiday surgeons can't be on vacation during their holiday` });
           }
         });
       });
@@ -5659,6 +5675,40 @@ ${"</"}script>${"</"}body>${"</"}html>`;
 
     return warnings;
   }, [mondays, surgeons, apps, vacations, holidayAssignments, sMap]);
+
+  // ─── Schedule Warnings: dismissals applied ───
+  // Every viewer's panel reads THESE lists (header count and "+ more" too);
+  // `hidden` = dismissed entries whose warning is still being produced — the
+  // scheduler's "N dismissed · show" review list.
+  const warnShown = useMemo(() => {
+    const hid = new Set((dismissedWarnings || []).map(d => d && d.key).filter(Boolean));
+    const keep = (arr) => arr.filter(x => !(x.key && hid.has(x.key)));
+    const live = new Set([...silvisConflicts, ...conflicts, ...vacOverlapWarnings].map(x => x.key).filter(Boolean));
+    return {
+      silvis: keep(silvisConflicts), conflicts: keep(conflicts), vac: keep(vacOverlapWarnings),
+      hidden: (dismissedWarnings || []).filter(d => d && d.key && live.has(d.key)),
+    };
+  }, [silvisConflicts, conflicts, vacOverlapWarnings, dismissedWarnings]);
+  // The line as the panel shows it (week prefix where the line carries one).
+  const warnLineText = (x) => (x.week && x.week !== "feed" ? x.week + " · " : "") + x.message;
+  const warnActor = () => userProfile?.display_name || surgeons.find(s => s.id === userProfile?.person_id)?.name || "a scheduler";
+  // Dismiss for EVERYONE — schedulers/admins only (canWriteBlob: the blob is
+  // where the dismissal lives). confirm() quoting the line comes BEFORE the
+  // write; the audit row is the group's record of what was hidden and by whom.
+  const dismissWarning = (x) => {
+    if (!canWriteBlob || !x || !x.key) return;
+    const text = warnLineText(x);
+    if (!confirm(`Dismiss this warning for EVERYONE?\n\n"${text}"\n\nIt stays hidden on every device until a scheduler restores it. If the underlying facts change, it comes back as a new warning.`)) return;
+    const by = warnActor();
+    setDismissedWarnings(prev => [...(prev || []).filter(d => d && d.key !== x.key), { key: x.key, text, by, at: new Date().toISOString() }]);
+    logAudit("warning_dismissed", `${by} dismissed: ${text}`, { key: x.key });
+  };
+  const restoreWarning = (d) => {
+    if (!canWriteBlob || !d || !d.key) return;
+    const by = warnActor();
+    setDismissedWarnings(prev => (prev || []).filter(e => e && e.key !== d.key));
+    logAudit("warning_restored", `${by} restored: ${d.text || d.key}`, { key: d.key });
+  };
 
   // ─── Yearly Summary Export ───
   const exportYearlySummary = useCallback(() => {
@@ -7757,37 +7807,67 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             )}
           </div>
 
-          {/* Conflict Warnings */}
-          {(conflicts.length > 0 || vacOverlapWarnings.length > 0 || silvisConflicts.length > 0) && (
+          {/* Schedule Warnings — INTERNAL ONLY (owner decision 2026-09-24: outsiders on
+              ?public=1 / the OR board can't act on warnings). Everything here reads
+              the DISMISSAL-FILTERED lists (warnShown) — header count and "+ more"
+              included. Scheduler/admin: a dismiss control per line (confirm quoting
+              the line, audited) and "N dismissed · show" to review and Restore. */}
+          {!isPublicMode && (()=>{
+            const shownTotal = warnShown.silvis.length + warnShown.conflicts.length + warnShown.vac.length;
+            const dismissBtn = (x) => (canWriteBlob && x.key) ? (
+              <button onClick={()=>dismissWarning(x)} title="Dismiss for everyone" aria-label="Dismiss this warning for everyone"
+                style={{marginLeft:"auto",minWidth:36,minHeight:36,padding:"4px 10px",border:"1px solid #e0c0a8",borderRadius:6,background:"transparent",color:"#a06020",fontSize:14,fontWeight:700,cursor:"pointer",fontFamily:font,flexShrink:0}}>✕</button>
+            ) : null;
+            const dismissedBar = (canWriteBlob && warnShown.hidden.length > 0) ? (
+              <div style={{fontSize:11,color:"#8a94a0",marginTop:shownTotal ? 6 : 0}}>
+                {warnShown.hidden.length} dismissed · <button onClick={()=>setShowDismissedWarnings(v=>!v)}
+                  style={{border:"none",background:"none",color:"#1a6fa8",textDecoration:"underline",cursor:"pointer",fontSize:11,padding:"8px 4px",fontFamily:font}}>{showDismissedWarnings ? "hide" : "show"}</button>
+                {showDismissedWarnings && warnShown.hidden.map(d => (
+                  <div key={d.key} style={{display:"flex",alignItems:"center",gap:8,padding:"4px 8px",marginTop:3,fontSize:12,color:"#7a8a98",background:dk?"#1e2430":"#f4f6fa",borderRadius:6,border:"1px solid #d8dee6"}}>
+                    <span style={{textDecoration:"line-through"}}>{d.text}</span>
+                    <span style={{fontSize:10,whiteSpace:"nowrap"}}>— {d.by}{d.at ? ", " + new Date(d.at).toLocaleDateString() : ""}</span>
+                    <button onClick={()=>restoreWarning(d)}
+                      style={{marginLeft:"auto",minHeight:36,padding:"4px 12px",border:"1px solid #c8d0dc",borderRadius:6,background:"transparent",color:"#1a6fa8",fontSize:12,fontWeight:600,cursor:"pointer",fontFamily:font,flexShrink:0}}>Restore</button>
+                  </div>
+                ))}
+              </div>
+            ) : null;
+            if (shownTotal === 0) return dismissedBar ? <div style={{marginBottom:10}}>{dismissedBar}</div> : null;
+            return (
             <div style={{...css.card,marginBottom:14,background:dk?"#2a1a1a":"#fef8f0",border:"1px solid #e8c0a0"}}>
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
-                <div style={{fontSize:13,fontWeight:700,color:"#c06020"}}>⚠️ Schedule Warnings — {conflicts.length + vacOverlapWarnings.length + silvisConflicts.length}</div>
+                <div style={{fontSize:13,fontWeight:700,color:"#c06020"}}>⚠️ Schedule Warnings — {shownTotal}</div>
               </div>
-              {/* silvisBusy overlaps — hard (🔴) and the soft backup notes (🔵) */}
-              {silvisConflicts.slice(0,10).map((c,i) => (
-                <div key={`s${i}`} style={{display:"flex",alignItems:"center",gap:8,padding:"4px 8px",marginBottom:3,fontSize:12,color:c.severity==="error"?"#c04040":"#5a6a78",background:c.severity==="error"?(dk?"#2a0a0a":"#fce8e8"):dk?"#1a1a2a":"#f0f8ff",borderRadius:4,border:`1px solid ${c.severity==="error"?"#e0b0b0":"#c0d8f0"}`}}>
+              {/* silvisBusy — feed health + hard overlaps (🔴) */}
+              {warnShown.silvis.slice(0,10).map((c,i) => (
+                <div key={c.key || `s${i}`} style={{display:"flex",alignItems:"center",gap:8,padding:"4px 8px",marginBottom:3,fontSize:12,color:c.severity==="error"?"#c04040":"#5a6a78",background:c.severity==="error"?(dk?"#2a0a0a":"#fce8e8"):dk?"#1a1a2a":"#f0f8ff",borderRadius:4,border:`1px solid ${c.severity==="error"?"#e0b0b0":"#c0d8f0"}`}}>
                   <span style={{fontWeight:700}}>{c.severity==="error"?"🔴":"🔵"}</span>
                   <span style={{fontFamily:mono,fontSize:11,color:dkSubtext}}>{c.week}</span>
                   <span>{c.message}</span>
+                  {dismissBtn(c)}
                 </div>
               ))}
-              {conflicts.slice(0,10).map((c,i) => (
-                <div key={`c${i}`} style={{display:"flex",alignItems:"center",gap:8,padding:"4px 8px",marginBottom:3,fontSize:12,color:c.severity==="error"?"#c04040":c.severity==="warning"?"#a06020":"#5a6a78",background:c.severity==="error"?(dk?"#2a0a0a":"#fce8e8"):dk?"#2a1a0a":"#fef8e8",borderRadius:4,border:`1px solid ${c.severity==="error"?"#e0b0b0":"#e8d0b0"}`}}>
+              {warnShown.conflicts.slice(0,10).map((c,i) => (
+                <div key={c.key || `c${i}`} style={{display:"flex",alignItems:"center",gap:8,padding:"4px 8px",marginBottom:3,fontSize:12,color:c.severity==="error"?"#c04040":c.severity==="warning"?"#a06020":"#5a6a78",background:c.severity==="error"?(dk?"#2a0a0a":"#fce8e8"):dk?"#2a1a0a":"#fef8e8",borderRadius:4,border:`1px solid ${c.severity==="error"?"#e0b0b0":"#e8d0b0"}`}}>
                   <span style={{fontWeight:700}}>{c.severity==="error"?"🔴":c.severity==="warning"?"🟡":"🔵"}</span>
                   <span style={{fontFamily:mono,fontSize:11,color:dkSubtext}}>{c.week}</span>
                   <span>{c.message}</span>
+                  {dismissBtn(c)}
                 </div>
               ))}
-              {vacOverlapWarnings.slice(0,10).map((w,i) => (
-                <div key={`v${i}`} style={{display:"flex",alignItems:"center",gap:8,padding:"4px 8px",marginBottom:3,fontSize:12,color:w.severity==="error"?"#c04040":"#5a6a78",background:w.severity==="error"?(dk?"#2a0a0a":"#fce8e8"):dk?"#1a1a2a":"#f0f8ff",borderRadius:4,border:`1px solid ${w.severity==="error"?"#e0b0b0":"#c0d8f0"}`}}>
+              {warnShown.vac.slice(0,10).map((w,i) => (
+                <div key={w.key || `v${i}`} style={{display:"flex",alignItems:"center",gap:8,padding:"4px 8px",marginBottom:3,fontSize:12,color:w.severity==="error"?"#c04040":"#5a6a78",background:w.severity==="error"?(dk?"#2a0a0a":"#fce8e8"):dk?"#1a1a2a":"#f0f8ff",borderRadius:4,border:`1px solid ${w.severity==="error"?"#e0b0b0":"#c0d8f0"}`}}>
                   <span style={{fontWeight:700}}>{w.severity==="error"?"🔴":"🔵"}</span>
                   <span>{w.message}</span>
+                  {dismissBtn(w)}
                 </div>
               ))}
-              {silvisConflicts.length > 10 && <p style={{fontSize:11,color:"#8a94a0",marginTop:4}}>+ {silvisConflicts.length - 10} more Silvis line{silvisConflicts.length - 10 === 1 ? "" : "s"}…</p>}
-              {(conflicts.length + vacOverlapWarnings.length) > 20 && <p style={{fontSize:11,color:"#8a94a0",marginTop:4}}>+ more…</p>}
+              {warnShown.silvis.length > 10 && <p style={{fontSize:11,color:"#8a94a0",marginTop:4}}>+ {warnShown.silvis.length - 10} more Silvis line{warnShown.silvis.length - 10 === 1 ? "" : "s"}…</p>}
+              {(warnShown.conflicts.length + warnShown.vac.length) > 20 && <p style={{fontSize:11,color:"#8a94a0",marginTop:4}}>+ more…</p>}
+              {dismissedBar}
             </div>
-          )}
+            );
+          })()}
 
           <div style={{display:"grid",gridTemplateColumns:"repeat(7,minmax(0,1fr))",gap:1,marginBottom:1}}>
             {DAY_HDR.map(d=><div key={d} style={{textAlign:"center",fontSize:10,fontWeight:700,color:"#8a94a0",padding:"5px 0",letterSpacing:1}}>{d}</div>)}
