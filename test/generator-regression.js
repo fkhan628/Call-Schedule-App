@@ -346,9 +346,18 @@ const stress = runStress();
 //    ONLY, never `vacationsOnly` (the trailing-edge map). Zero generator
 //    change — so this fixture pins that the EXISTING pools honor such a range
 //    exactly as the 07:00→07:00 contract requires. SIX Silvis primary days,
-//    one of every kind that matters, all inside MONDAYS (2026-01-05 … 04-06):
-//      2026-01-12  Mon  — DC of 01-12's week and Mon night blocked; the
-//                         weekend BEFORE (Sun 01-11 ends 07:00 Mon) allowed
+//    one of every kind that matters, all inside MONDAYS (2026-01-05 … 04-06)
+//    and each in a week where NO OTHER surgeon is blocked (see the Monday note):
+//      2026-03-02  Mon  — DC of 03-02's week and Mon night blocked; the
+//                         weekend BEFORE (Sun 03-01 ends 07:00 Mon) allowed.
+//                         (Was 01-12 until 2026-09-24: that is the ONE week
+//                         where s1 vacations all week, so with Mon dealt last
+//                         both remaining candidates were blocked and the
+//                         deal's last-resort layer — coverage over rules, the
+//                         accepted squeezed-week behavior — placed FAK in
+//                         ~1-2 of 120 rolls. Every Silvis day here must sit
+//                         in a week with NO other blocked surgeon, or the
+//                         fixture tests the fallback, not the rule.)
 //      2026-01-20  Tue  — a SERVICE-WEEK Tuesday (Mon 01-19's week) → FAK may
 //                         not be DC that week, and not Tue night
 //      2026-02-11  Wed  — a plain weeknight → FAK may not be Wed night that
@@ -393,13 +402,13 @@ function runSilvis() {
   const FAK = SURGEONS.find(s => (s.name || "").toUpperCase() === "FAK")?.id;
   const failures = [];
   if (!FAK) { failures.push("silvis: no roster entry with name FAK — the fixture cannot run"); return { name: "silvis", failures, redFired: 0, trailingAllowed: 0 }; }
-  const SILVIS_DAYS = ["2026-01-12", "2026-01-20", "2026-02-11", "2026-02-22", "2026-03-13", "2026-03-28"];
+  const SILVIS_DAYS = ["2026-01-20", "2026-02-11", "2026-02-22", "2026-03-02", "2026-03-13", "2026-03-28"];
   const withSilvis = { ...LIGHT_VACATIONS, [FAK]: [...(LIGHT_VACATIONS[FAK] || []), ...SILVIS_DAYS.map(d => [d, d])] };
   const without = { ...LIGHT_VACATIONS };
   // Neighbor slots the contract leaves OPEN — each must be given to FAK in
   // at least one roll (an over-block on any leg fails on its own line):
   const openNeighbors = [
-    ["2026-01-05", "wknd", "weekend before a Silvis Monday (Sun night ends 07:00 Mon)"],
+    ["2026-02-23", "wknd", "weekend before a Silvis Monday (Sun night ends 07:00 Mon)"],
     ["2026-01-19", "mon", "Mon night before a Silvis Tuesday"],
     ["2026-02-09", "tue", "Tue night before a Silvis Wednesday"],
     ["2026-02-16", "dayCall", "service week (Mon..Sat) around a Silvis Sunday"],
