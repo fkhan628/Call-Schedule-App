@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.09.24f";
+    var APP_VERSION = "2026.09.24g";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -119,6 +119,17 @@ const {
   useRef,
   useEffect
 } = React;
+const CAL_FILTER_DEFAULTS = Object.freeze({
+  svc: true,
+  night: true,
+  wknd: true,
+  app: true,
+  fierce: true,
+  vac: true,
+  appOff: true,
+  silvis: false
+});
+const CAL_SILVIS_STORE_KEY = "dsg-cal-silvis";
 function CallSchedule() {
   var _find, _surgeons$find14;
   const isPublicMode = useMemo(() => {
@@ -177,14 +188,18 @@ function CallSchedule() {
   const [printStartMonth, setPrintStartMonth] = useState(() => new Date().getMonth());
   const [printStartYear, setPrintStartYear] = useState(() => new Date().getFullYear());
   const [printNumMonths, setPrintNumMonths] = useState(1);
-  const [calFilters, setCalFilters] = useState({
-    svc: true,
-    night: true,
-    wknd: true,
-    app: true,
-    fierce: true,
-    vac: true,
-    appOff: true
+  const [calFilters, setCalFilters] = useState(() => {
+    let param = null,
+      stored = null;
+    try {
+      param = new URLSearchParams(window.location.search).get("silvis");
+    } catch (e) {}
+    try {
+      stored = localStorage.getItem(CAL_SILVIS_STORE_KEY);
+    } catch (e) {}
+    return _objectSpread(_objectSpread({}, CAL_FILTER_DEFAULTS), {}, {
+      silvis: sfResolveToggle(param, stored)
+    });
   });
   const [showBackupStats, setShowBackupStats] = useState(false);
   const [statsScope, setStatsScope] = useState("period");
@@ -194,12 +209,25 @@ function CallSchedule() {
   const [seedDebug, setSeedDebug] = useState(null);
   const [showAllMyVacs, setShowAllMyVacs] = useState(false);
   const [showAllMyNoCall, setShowAllMyNoCall] = useState(false);
+  const [showAllMySilvis, setShowAllMySilvis] = useState(false);
   const [calSurgeonFilter, setCalSurgeonFilter] = useState("");
   const [calAppFilter, setCalAppFilter] = useState("all");
   const [calDeptFilter, setCalDeptFilter] = useState("");
-  const toggleFilter = key => setCalFilters(p => _objectSpread(_objectSpread({}, p), {}, {
-    [key]: !p[key]
-  }));
+  const rememberSilvisToggle = v => {
+    try {
+      if (v === null) localStorage.removeItem(CAL_SILVIS_STORE_KEY);else localStorage.setItem(CAL_SILVIS_STORE_KEY, String(v));
+    } catch (e) {
+      console.warn("Couldn't remember the Silvis calendar switch:", e);
+    }
+  };
+  const toggleFilter = key => {
+    const v = !calFilters[key];
+    setCalFilters(p => _objectSpread(_objectSpread({}, p), {}, {
+      [key]: v
+    }));
+    if (key === "silvis") rememberSilvisToggle(v);
+  };
+  const calFiltersDiffer = Object.keys(CAL_FILTER_DEFAULTS).some(k => calFilters[k] !== CAL_FILTER_DEFAULTS[k]);
   const [holidayAssignments, setHolidayAssignments] = useState({});
   const [holidayYear, setHolidayYear] = useState(2026);
   const [holidayLockWarning, setHolidayLockWarning] = useState("");
@@ -10157,6 +10185,11 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     label: "Vacations",
     color: "#5a6a78",
     icon: "🏖"
+  }, {
+    key: "silvis",
+    label: "Silvis",
+    color: "#1a4a9a",
+    icon: "🚑"
   }, ...(appOffVisible ? [{
     key: "appOff",
     label: "APP Off",
@@ -10229,17 +10262,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
   }, "All Depts"), Object.entries(DEPT_LABELS).map(([k, v]) => React.createElement("option", {
     key: k,
     value: k
-  }, v))), (Object.values(calFilters).some(v => !v) || calSurgeonFilter || calAppFilter !== "all" || calDeptFilter) && React.createElement("button", {
+  }, v))), (calFiltersDiffer || calSurgeonFilter || calAppFilter !== "all" || calDeptFilter) && React.createElement("button", {
     onClick: () => {
-      setCalFilters({
-        svc: true,
-        night: true,
-        wknd: true,
-        app: true,
-        fierce: true,
-        vac: true,
-        appOff: true
-      });
+      setCalFilters(_objectSpread({}, CAL_FILTER_DEFAULTS));
+      rememberSilvisToggle(null);
       setCalSurgeonFilter("");
       setCalAppFilter("all");
       setCalDeptFilter("");
@@ -10254,7 +10280,26 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       cursor: "pointer",
       fontFamily: font
     }
-  }, "Reset")), !isPublicMode && (() => {
+  }, "Reset")), calFilters.silvis && (() => {
+    const note = !silvisFakId ? {
+      kind: "noroster",
+      text: `Silvis days unavailable — "${silvisRule.code}" is not on the roster.`
+    } : sfNotice(silvisRows.length, silvisLoadError, silvisDays.fetchedAt);
+    return note ? React.createElement("div", {
+      role: "status",
+      style: {
+        marginTop: -4,
+        marginBottom: 10,
+        padding: "5px 12px",
+        fontSize: 11,
+        fontWeight: 600,
+        color: note.kind === "stale" ? "#a06020" : "#c04040",
+        background: dk ? "#2a1a1a" : "#fdf3ec",
+        border: "1px solid #e8c8b0",
+        borderRadius: 6
+      }
+    }, "🚑 ", note.text) : null;
+  })(), !isPublicMode && (() => {
     const shownTotal = warnShown.silvis.length + warnShown.conflicts.length + warnShown.vac.length;
     const dismissBtn = x => canWriteBlob && x.key ? React.createElement("button", {
       onClick: () => dismissWarning(x),
@@ -10666,7 +10711,36 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             marginLeft: 2
           }
         }, e.hours));
-      }), calFilters.app && !sf && calAppFilter !== "none" && !calDeptFilter && entries.filter(e => e.type === "APP").filter(e => calAppFilter === "all" || e.appId === calAppFilter).map((e, j) => {
+      }), ((_sMap$silvisFakId, _sMap$silvisFakId2) => {
+        const chip = sfCellChip(silvisDays, ds, silvisFakId, {
+          on: calFilters.silvis,
+          sf,
+          fakName: (_sMap$silvisFakId = sMap[silvisFakId]) === null || _sMap$silvisFakId === void 0 ? void 0 : _sMap$silvisFakId.name,
+          ruleOn: silvisActive,
+          deptOk: !calDeptFilter || (SURGEON_DEPTS[(_sMap$silvisFakId2 = sMap[silvisFakId]) === null || _sMap$silvisFakId2 === void 0 ? void 0 : _sMap$silvisFakId2.name] || []).includes(calDeptFilter)
+        });
+        if (!chip) return null;
+        const P = chip.role === "P";
+        return React.createElement("div", {
+          key: "silvis",
+          title: chip.title,
+          style: {
+            marginBottom: 1,
+            padding: "1px 3px",
+            borderRadius: 3,
+            fontSize: 10,
+            fontWeight: 600,
+            background: P ? dk ? "#1a2a4a" : "#e8f0fc" : dk ? "#1e2430" : "#f4f6fa",
+            border: `1px solid ${P ? "#7a9ad0" : "#c8d0dc"}`,
+            opacity: P ? 1 : 0.85
+          }
+        }, React.createElement("span", {
+          style: {
+            color: P ? "#1a4a9a" : "#7a8a98",
+            fontWeight: 700
+          }
+        }, chip.label));
+      })(), calFilters.app && !sf && calAppFilter !== "none" && !calDeptFilter && entries.filter(e => e.type === "APP").filter(e => calAppFilter === "all" || e.appId === calAppFilter).map((e, j) => {
         var _APP_PAL, _aMap$e$appId3, _aMap$e$appId4;
         return React.createElement("div", {
           key: "app" + j,
@@ -13156,7 +13230,66 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         minWidth: 60,
         textAlign: "right"
       }
-    }, _whenTxt(e.days))))))), myVacsView.length > 0 && (() => {
+    }, _whenTxt(e.days))))))), myId && silvisFakId && myId === silvisFakId && (() => {
+      const up = sfUpcoming(silvisDays, fmt(new Date()));
+      const note = sfNotice(silvisRows.length, silvisLoadError, silvisDays.fetchedAt);
+      const LIMIT = 5;
+      const shownS = showAllMySilvis ? up : up.slice(0, LIMIT);
+      return React.createElement("div", {
+        style: _objectSpread(_objectSpread({}, css.card), {}, {
+          background: dk ? "#16223a" : "#f3f6fd",
+          border: "1px solid " + (dk ? "#2a3a58" : "#c8d4ec")
+        })
+      }, React.createElement("div", {
+        style: {
+          fontSize: 12,
+          fontWeight: 700,
+          color: "#1a4a9a",
+          marginBottom: 6
+        }
+      }, "🚑 Silvis ", React.createElement("span", {
+        style: {
+          fontWeight: 400,
+          color: "#7a8aa8"
+        }
+      }, "(", up.length, " upcoming)")), silvisRows.length === 0 ? React.createElement("div", {
+        style: {
+          fontSize: 12,
+          color: "#c04040"
+        }
+      }, note ? note.text : "No Silvis days cached.", " Check Calendar → 🔧 Schedule Tools & Export.") : React.createElement(React.Fragment, null, note && React.createElement("div", {
+        style: {
+          fontSize: 11,
+          color: note.kind === "stale" ? "#a06020" : "#c04040",
+          marginBottom: 4
+        }
+      }, note.text), up.length === 0 && React.createElement("div", {
+        style: {
+          fontSize: 12,
+          color: "#8a94a0"
+        }
+      }, "No upcoming Silvis days."), shownS.map(it => React.createElement("div", {
+        key: it.day,
+        style: {
+          fontSize: 12,
+          padding: "3px 0",
+          color: it.role === "P" ? dk ? "#c8d8f0" : "#1a2a4a" : "#7a8a98",
+          fontWeight: it.role === "P" ? 600 : 400
+        }
+      }, sfRowLabel(it))), up.length > LIMIT && React.createElement("button", {
+        onClick: () => setShowAllMySilvis(v => !v),
+        style: {
+          marginTop: 4,
+          background: "none",
+          border: "none",
+          color: "#1a6fa8",
+          fontSize: 11,
+          cursor: "pointer",
+          padding: "6px 0",
+          fontFamily: font
+        }
+      }, showAllMySilvis ? "Show fewer" : `Show all ${up.length}`)));
+    })(), myVacsView.length > 0 && (() => {
       const VAC_LIMIT = 5;
       const shown = showAllMyVacs ? myVacsView : myVacsView.slice(0, VAC_LIMIT);
       return React.createElement("div", {
@@ -15551,7 +15684,11 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     style: {
       fontFamily: mono
     }
-  }, "fkhan628.github.io/Call-Schedule-App/?public=1")), showPublishDialog && React.createElement("div", {
+  }, "fkhan628.github.io/Call-Schedule-App/?public=1"), " · ", "Office link (opens with 🚑 Silvis on): ", React.createElement("span", {
+    style: {
+      fontFamily: mono
+    }
+  }, "fkhan628.github.io/Call-Schedule-App/?public=1&silvis=1")), showPublishDialog && React.createElement("div", {
     onClick: () => setShowPublishDialog(false),
     style: {
       position: "fixed",
