@@ -1619,12 +1619,69 @@ check("prefs audit never logs the plaintext email (masked only)",
     (src.match(/silvisBlock\([^)]*\)/g) || []).filter(c => !/schedule\[|, oldWk\)|slotKey, wk\)/.test(c)).join(" | "));
   check("the generic calendar cell renderer skips Silvis rows (they drew as a bogus 'N FAK' night)",
     count('||e.type==="Holiday"||e.type==="Silvis") return false;') === 1);
-  check("Silvis rows enter calData only when the rule is ON and never in public mode; the dedicated marker branch is gated and honors the department filter",
-    count("if (silvisActive && !isPublicMode) {") === 1
-    && count('{!isPublicMode && entries.filter(e=>e.type==="Silvis").filter(e=>!sf||e.surgeon===sf).filter(e=>!calDeptFilter||') === 1);
-  check("legend (P and B) and the Silvis feed card are internal-only; refresh only when signed in",
-    count("Silvis B</span> Silvis backup (standby)") === 1 && count("{!isPublicMode && silvisActive && <span title=") === 2
-    && count("rule silvisBusy (internal views only)") === 1 && count("sign in to refresh") === 1);
+  // calData holds DAVENPORT call types only (owner decision 2026-09-24: Silvis
+  // days come OFF the calendar; a Show-bar toggle + FAK's Mine section follow
+  // and must read silvisDays directly, never through calData). #55 pushed
+  // {type:"Silvis"} rows into calData; the cell's generic S/N/W predicate is a
+  // DENY-list that renders anything not Svc/Wknd as a NIGHT, so every Silvis
+  // day ALSO drew as a purple "N FAK" chip — a Davenport night he did not
+  // hold — live 2026.09.24a → 24d, on ?public=1 and the OR board too. The
+  // original pin counted a gated marker STRING: true as text, false as
+  // behavior. BEHAVIORAL pin: the real calData memo body runs on a fixture
+  // and must emit no foreign type and no FAK row on a Silvis date; the
+  // positive control runs the VERBATIM generic predicate + label logic on his
+  // real Mon night and must render "N FAK" — so the pin cannot pass vacuously.
+  {
+    const START = "  const calData = useMemo(() => {";
+    const s0 = src.indexOf(START), e0 = s0 === -1 ? -1 : src.indexOf("\n  }, [", s0);
+    const depsLine = e0 === -1 ? "" : src.slice(e0, src.indexOf("]);", e0) + 3).replace(/\s+/g, " ").trim();
+    check("calData memo extractable", s0 !== -1 && e0 !== -1 && src.indexOf(START, s0 + 1) === -1, s0 + ".." + e0);
+    check("calData deps are exactly [schedule, appShifts] — no silvis input feeds the calendar data", depsLine === "}, [schedule, appShifts]);", depsLine);
+    const P0 = "{entries.filter(e=>{", P1 = "}).map((e,j)=>{";
+    const p0 = src.indexOf(P0), p1 = p0 === -1 ? -1 : src.indexOf(P1, p0);
+    const LABEL = 'const label = isD?"S":isW?"W":"N";';
+    check("generic S/N/W cell predicate extractable and still a DENY-list (Fierce, FierceBkp, APP, Holiday[, Silvis]) with the N-by-default label",
+      p0 !== -1 && p1 !== -1 && src.indexOf(LABEL, p1) !== -1 && src.indexOf(LABEL, p1) - p1 < 400
+      && /if\(e\.type==="Fierce"\|\|e\.type==="FierceBkp"\|\|e\.type==="APP"\|\|e\.type==="Holiday"(\|\|e\.type==="Silvis")?\) return false;/.test(src.slice(p0, p1)));
+    if (s0 !== -1 && e0 !== -1 && p0 !== -1 && p1 !== -1) {
+      let built = null, pred = null;
+      try {
+        built = vm.runInContext("(function (env) { const { schedule, appShifts, silvisDays, silvisFakId, silvisActive, isPublicMode } = env; return (() => {" + src.slice(s0 + START.length, e0) + "})(); })", sandbox, { filename: "caldata-extract.js" });
+        pred = vm.runInContext("(function (env) { const { calFilters, sf, calDeptFilter, SURGEON_DEPTS, sMap } = env; return (e=>{" + src.slice(p0 + P0.length, p1) + "}); })", sandbox, { filename: "cell-predicate-extract.js" });
+        check("calData memo + generic predicate compile standalone", true);
+      } catch (ex) { check("calData memo + generic predicate compile standalone", false, String(ex)); }
+      if (built && pred) {
+        const FAK = "s6";
+        // one week: FAK holds a REAL Mon night; Silvis PRIMARY = that week's Saturday; BACKUP = a Wednesday he does not hold.
+        // silvisActive:true + isPublicMode:false = the most permissive state #56's gate allowed — nothing may leak even here.
+        const fixture = { "2026-10-19": { dayCall: "s1", nights: { mon: FAK, tue: "s2", wed: "s3", thu: "s4", wknd: "s5" } } };
+        const d = built({ schedule: fixture, appShifts: {}, silvisDays: { primary: new Set(["2026-10-24"]), backup: new Set(["2026-10-21"]), fetchedAt: null, from: "2026-09-17", to: "2027-01-03" }, silvisFakId: FAK, silvisActive: true, isPublicMode: false });
+        const all = Object.values(d).flat();
+        check("calData carries NO Silvis-type entry anywhere (Davenport call types only), even internal with the rule ON", !all.some(e => e.type === "Silvis"), JSON.stringify([...new Set(all.map(e => e.type))]));
+        check("no FAK entry on his Silvis PRIMARY Saturday (10-24) nor his BACKUP Wednesday (10-21) — he holds no Davenport call there",
+          !(d["2026-10-24"] || []).some(e => e.surgeon === FAK) && !(d["2026-10-21"] || []).some(e => e.surgeon === FAK), JSON.stringify({ sat: d["2026-10-24"], wed: d["2026-10-21"] }));
+        check("every calData type is one the cell renderer knows (Svc/Wknd/Ngt, B- variants, Fierce, FierceBkp, Holiday, APP)",
+          all.every(e => /^(B-)?(Svc|Wknd|Ngt)$|^(Fierce|FierceBkp|Holiday|APP)$/.test(e.type)), JSON.stringify([...new Set(all.map(e => e.type))]));
+        // POSITIVE CONTROL — the pin must not pass vacuously
+        const monNight = (d["2026-10-19"] || []).find(e => e.type === "Ngt" && e.surgeon === FAK);
+        const env = { calFilters: { svc: true, wknd: true, night: true, app: true, fierce: true }, sf: "", calDeptFilter: "", SURGEON_DEPTS: {}, sMap: { s6: { name: "FAK", idx: 5 } } };
+        const label = (e) => { const isD = e.type.includes("Svc"); const isW = e.type.includes("Wknd"); return isD ? "S" : isW ? "W" : "N"; };
+        check("POSITIVE CONTROL: his real Mon night (10-19) IS in calData and the verbatim predicate renders it \"N FAK\"",
+          !!monNight && pred(env)(monNight) === true && label(monNight) === "N" && env.sMap[monNight.surgeon].name === "FAK", JSON.stringify(monNight));
+        check("MECHANISM: the deny-list predicate renders any foreign type as a NIGHT chip — why a non-Davenport row in calData is a phantom \"N\"",
+          pred(env)({ type: "Foreign", surgeon: FAK }) === true && label({ type: "Foreign" }) === "N");
+        check("controls behave: Night filter off hides it; a surgeon filter to someone else hides it; Holiday and a stray Silvis row are excluded",
+          pred(Object.assign({}, env, { calFilters: Object.assign({}, env.calFilters, { night: false }) }))(monNight) === false
+          && pred(Object.assign({}, env, { sf: "s4" }))(monNight) === false
+          && pred(env)({ type: "Holiday", surgeon: FAK }) === false && pred(env)({ type: "Silvis", surgeon: FAK }) === false);
+      }
+    }
+  }
+  check("no Silvis marker in the cell renderer and no Silvis in the legend (owner decision 2026-09-24)",
+    count('entries.filter(e=>e.type==="Silvis")') === 0 && count("Silvis P</span>") === 0 && count("Silvis B</span>") === 0
+    && (() => { const k = src.indexOf("</span> Holiday Coverage</span>"); return k !== -1 && !/Silvis/.test(src.slice(Math.max(0, k - 2500), k + 300)); })());
+  check("the Silvis feed card stays internal-only; refresh only when signed in (the card moves in the next PR)",
+    count("rule silvisBusy (internal views only)") === 1 && count("sign in to refresh") === 1);
   check("the warnings memo and the marker list are gated OFF public mode",
     count("if (!silvisActive || isPublicMode) return [];") === 2);
   check("accept path: the silvisBusy check sits BEFORE the fail-closed status PATCH (a refused trade stays pending)", (() => {
