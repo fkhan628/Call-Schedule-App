@@ -345,20 +345,39 @@ const stress = runStress();
 //    blocked, the night BEFORE D (ends 07:00 D) stays allowed. Into `vac`
 //    ONLY, never `vacationsOnly` (the trailing-edge map). Zero generator
 //    change — so this fixture pins that the EXISTING pools honor such a range
-//    exactly as the 07:00→07:00 contract requires. Three Silvis primary days
-//    of three kinds, all inside MONDAYS (2026-01-05 … 04-06):
+//    exactly as the 07:00→07:00 contract requires. SIX Silvis primary days,
+//    one of every kind that matters, all inside MONDAYS (2026-01-05 … 04-06)
+//    and each in a week where NO OTHER surgeon is blocked (see the Monday note):
+//      2026-03-02  Mon  — DC of 03-02's week and Mon night blocked; the
+//                         weekend BEFORE (Sun 03-01 ends 07:00 Mon) allowed.
+//                         (Was 01-12 until 2026-09-24: that is the ONE week
+//                         where s1 vacations all week, so with Mon dealt last
+//                         both remaining candidates were blocked and the
+//                         deal's last-resort layer — coverage over rules, the
+//                         accepted squeezed-week behavior — placed FAK in
+//                         ~1-2 of 120 rolls. Every Silvis day here must sit
+//                         in a week with NO other blocked surgeon, or the
+//                         fixture tests the fallback, not the rule.)
 //      2026-01-20  Tue  — a SERVICE-WEEK Tuesday (Mon 01-19's week) → FAK may
 //                         not be DC that week, and not Tue night
 //      2026-02-11  Wed  — a plain weeknight → FAK may not be Wed night that
 //                         week (and not DC that week: Wed is a service day)
+//      2026-02-22  Sun  — the weekend of 02-16 blocked (Sun 07:00→Mon 07:00
+//                         is its second leg); DC of 02-16 (Mon..Sat) allowed
 //      2026-03-13  Fri  — a Friday → FAK may not be the weekend of 03-09's week
 //                         (Fri night is the weekend's first leg) nor DC
+//      2026-03-28  Sat  — DC of 03-23 blocked (Sat 07:00→Sun 07:00 is the
+//                         service week's); the weekend of 03-23 ALLOWED —
+//                         a Saturday must never over-block the weekend
 //    The overlap table is RE-STATED here on purpose (not canTakeSlot, not the
 //    conservative shiftDays above — that one includes Saturday for wknd, which
 //    would over-assert: a Silvis SATURDAY blocks only the service week).
 //    GREEN: with the days in `vac`, FAK holds none of the overlapping slots in
-//    any of ROLLS rolls, AND the night before each day is still allowed to
-//    him at least once across the rolls (the trailing edge is not over-blocked).
+//    any of ROLLS rolls, AND every NEIGHBOR slot that the contract leaves open
+//    (the night before a Silvis day, the weekend before a Silvis Monday, the
+//    service week around a Silvis Sunday, the weekend around a Silvis
+//    Saturday) is still given to him at least once across the rolls — each
+//    one separately, so an over-block on any single leg fails.
 //    RED: the identical fixture WITHOUT the Silvis days must put FAK on at
 //    least one overlapping slot in ≥1 roll — proving the fixture bites.
 function silvisOverlapSlots(sched, days, id) {
@@ -383,26 +402,35 @@ function runSilvis() {
   const FAK = SURGEONS.find(s => (s.name || "").toUpperCase() === "FAK")?.id;
   const failures = [];
   if (!FAK) { failures.push("silvis: no roster entry with name FAK — the fixture cannot run"); return { name: "silvis", failures, redFired: 0, trailingAllowed: 0 }; }
-  const SILVIS_DAYS = ["2026-01-20", "2026-02-11", "2026-03-13"];
+  const SILVIS_DAYS = ["2026-01-20", "2026-02-11", "2026-02-22", "2026-03-02", "2026-03-13", "2026-03-28"];
   const withSilvis = { ...LIGHT_VACATIONS, [FAK]: [...(LIGHT_VACATIONS[FAK] || []), ...SILVIS_DAYS.map(d => [d, d])] };
   const without = { ...LIGHT_VACATIONS };
-  // the night BEFORE each Silvis day (ends 07:00 D — allowed): the weeknight slot dated D-1
-  const nightBefore = { "2026-01-20": ["2026-01-19", "mon"], "2026-02-11": ["2026-02-09", "tue"], "2026-03-13": ["2026-03-09", "thu"] };
+  // Neighbor slots the contract leaves OPEN — each must be given to FAK in
+  // at least one roll (an over-block on any leg fails on its own line):
+  const openNeighbors = [
+    ["2026-02-23", "wknd", "weekend before a Silvis Monday (Sun night ends 07:00 Mon)"],
+    ["2026-01-19", "mon", "Mon night before a Silvis Tuesday"],
+    ["2026-02-09", "tue", "Tue night before a Silvis Wednesday"],
+    ["2026-02-16", "dayCall", "service week (Mon..Sat) around a Silvis Sunday"],
+    ["2026-03-09", "thu", "Thu night before a Silvis Friday"],
+    ["2026-03-23", "wknd", "weekend (Fri + Sun) around a Silvis Saturday"],
+  ];
+  const given = openNeighbors.map(() => 0);
   let redFired = 0, trailingAllowed = 0;
   for (let roll = 0; roll < ROLLS; roll++) {
     // GREEN — vac = vacations ∪ Silvis days; vacationsOnly = vacations ONLY
     const g = generate(SURGEONS, MONDAYS, withSilvis, new Set(), {}, {}, new Set(), null, [], null, LIGHT_VACATIONS, COUNTS_1YR);
     const hits = silvisOverlapSlots(g, SILVIS_DAYS, FAK);
     if (hits.length) failures.push(`silvis roll ${roll}: FAK on ${hits.map(h => h.slot + "@" + h.mondayStr + " (Silvis " + h.day + ")").join(", ")}`);
-    for (const D of SILVIS_DAYS) { const [m, k] = nightBefore[D]; if (g[m]?.nights?.[k] === FAK) trailingAllowed++; }
+    openNeighbors.forEach(([m, k], i) => { const holder = k === "dayCall" ? g[m]?.dayCall : g[m]?.nights?.[k]; if (holder === FAK) { given[i]++; trailingAllowed++; } });
     // RED — same fixture, no Silvis days
     const r = generate(SURGEONS, MONDAYS, without, new Set(), {}, {}, new Set(), null, [], null, LIGHT_VACATIONS, COUNTS_1YR);
     if (silvisOverlapSlots(r, SILVIS_DAYS, FAK).length) redFired++;
     if (failures.length > 25) break;
   }
   if (redFired === 0) failures.push(`silvis: WITHOUT the Silvis days FAK never landed on an overlapping slot in ${ROLLS} rolls — the fixture is vacuous, tighten it`);
-  if (trailingAllowed === 0) failures.push("silvis: the night BEFORE a Silvis day was never given to FAK in any roll — the trailing edge is over-blocked (a Silvis day must have no-call semantics, not vacation semantics)");
-  return { name: "silvis", failures, redFired, trailingAllowed };
+  openNeighbors.forEach(([m, k, why], i) => { if (given[i] === 0) failures.push(`silvis: ${k}@${m} (${why}) was NEVER given to FAK in ${ROLLS} rolls — that leg is over-blocked (a Silvis day must have no-call semantics on its own day only)`); });
+  return { name: "silvis", failures, redFired, trailingAllowed, given: openNeighbors.map(([m, k], i) => `${k}@${m}=${given[i]}`).join(" ") };
 }
 const silvis = runSilvis();
 
@@ -415,7 +443,7 @@ for (const r of [clean, cleanProxy, light, squeeze]) {
     `SW gap histogram {${gaps || "no repeats"}}; spacing violations (gap<=${MIN_DC_GAP}, soft) ×${s.spacingViolations}`);
 }
 console.log(`stress    ${ROLLS} rolls — floor held every roll; floor-stripped control picked the gap-2 surgeon in ${stress.redFired}/${ROLLS} rolls`);
-console.log(`silvis    ${ROLLS} rolls — FAK off every overlapping slot; control without the Silvis days put him on one in ${silvis.redFired}/${ROLLS} rolls; night-before-a-Silvis-day given to him ×${silvis.trailingAllowed}`);
+console.log(`silvis    ${ROLLS} rolls — FAK off every overlapping slot (6 Silvis days: Mon/Tue/Wed/Sun/Fri/Sat); control without them put him on one in ${silvis.redFired}/${ROLLS} rolls; open neighbor legs given to him: ${silvis.given}`);
 
 const failures = [...clean.failures, ...cleanProxy.failures, ...light.failures, ...stress.failures, ...silvis.failures];
 if (failures.length) {

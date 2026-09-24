@@ -42,24 +42,38 @@ function sfIsDateStr(s) { return typeof s === "string" && /^\d{4}-\d{2}-\d{2}$/.
 // roster at runtime (the generator's own idiom — the Davenport code IS the
 // roster name), so a roster edit can never strand a stale id in the blob.
 const SF_RULE_DEFAULT = { enabled: true, code: "FAK" };
-function sfRule(blobRule) { return Object.assign({}, SF_RULE_DEFAULT, blobRule || {}); }
+// Tolerates a malformed blob value: a non-object is ignored (defaults), and
+// enabled:"false" / 0 / "0" / "off" all read as OFF — a stringly-typed flag
+// must never keep a hard rule silently ON; code is always a trimmed string.
+function sfRule(blobRule) {
+  const src = (blobRule && typeof blobRule === "object" && !Array.isArray(blobRule)) ? blobRule : {};
+  const r = Object.assign({}, SF_RULE_DEFAULT, src);
+  const e = r.enabled;
+  r.enabled = !(e === false || e === 0 || e === "0" || (typeof e === "string" && /^(false|off|no)$/i.test(e.trim())));
+  r.code = typeof r.code === "string" ? r.code.trim() : "";
+  return r;
+}
 function sfRuleActive(blobRule) { const r = sfRule(blobRule); return r.enabled !== false && !!r.code; }
 
 // ---- derive day sets from cache rows ----
-// sfDaysFromRows(rows, code) -> { primary:Set<'YYYY-MM-DD'>, backup:Set, fetchedAt:string|null }
+// sfDaysFromRows(rows, code) -> { primary:Set<'YYYY-MM-DD'>, backup:Set, fetchedAt:string|null, from, to }
+//   from/to: the first and last cached day (the feed's coverage horizon) — a
+//   period generated beyond `to` has NO Silvis data, and the app must say so.
 //   rows: silvis_feed rows [{ day, primary_code, backup_code, fetched_at }]
 //   Codes compare case-insensitively. Malformed rows are ignored.
 function sfDaysFromRows(rows, code) {
   const want = String(code || "").toUpperCase();
   const primary = new Set(), backup = new Set();
-  let fetchedAt = null;
+  let fetchedAt = null, from = null, to = null;
   (rows || []).forEach(r => {
     if (!r || !sfIsDateStr(r.day)) return;
+    if (!from || r.day < from) from = r.day;
+    if (!to || r.day > to) to = r.day;
     if (want && String(r.primary_code || "").toUpperCase() === want) primary.add(r.day);
     if (want && String(r.backup_code || "").toUpperCase() === want) backup.add(r.day);
     if (r.fetched_at && (!fetchedAt || r.fetched_at > fetchedAt)) fetchedAt = r.fetched_at;
   });
-  return { primary, backup, fetchedAt };
+  return { primary, backup, fetchedAt, from, to };
 }
 
 // sfBusyRanges(daySet) -> [[D, D], ...] sorted — the shape the generator's
@@ -94,6 +108,21 @@ function sfSlotDays(mondayStr, slotKey) {
   const m = sfParse(mondayStr);
   return offs.map(o => sfFmt(sfAddD(m, o)));
 }
+// sfHeldDays(wk, mondayStr, slotKey, id) -> the days of sfSlotDays that the
+// holder `id` would ACTUALLY be on call for in week row `wk` (may be
+// undefined): minus any day whose holiday 24h coverage is held by someone
+// else, and — for the service week — minus any Service Day overridden to
+// someone else. The ONE precedence rule (holiday > override > slot) shared by
+// sfOverlaps (the Warnings net) and every per-path refusal, so a refusal can
+// never fire where the net would show nothing (and vice versa).
+function sfHeldDays(wk, mondayStr, slotKey, id) {
+  const days = sfSlotDays(mondayStr, slotKey);
+  if (!wk) return days;
+  const hc = wk.holidayCoverage || {}, ov = wk.dayCallOverrides || {};
+  const heldByOther = (ds) => { const c = hc[ds]; return !!(c && c.surgeonId && id && c.surgeonId !== id); };
+  const dc = slotKey === "dayCall" || slotKey === "dc";
+  return days.filter(ds => !heldByOther(ds) && !(dc && ov[ds] != null && ov[ds] !== "" && ov[ds] !== id));
+}
 // sfConflictDay(primarySet, days) -> the first day in `days` that is a Silvis
 // primary day, or null.
 function sfConflictDay(primarySet, days) {
@@ -127,14 +156,17 @@ function sfOverlaps(schedule, primarySet, davenportId) {
     const n = wk.nights || {}, ov = wk.dayCallOverrides || {}, hc = wk.holidayCoverage || {};
     const heldByOther = (ds) => { const c = hc[ds]; return !!(c && c.surgeonId && c.surgeonId !== davenportId); };
     const push = (ds, slot, label) => { if (primarySet.has(ds)) out.push({ day: ds, mondayStr: mStr, slot, label }); };
-    // service week, per-day overrides, holiday held by someone else
+    // service week: the days he EFFECTIVELY holds — dayCall minus days
+    // overridden away, plus days overridden TO him — minus holidays held by
+    // someone else (same precedence as sfHeldDays; overrides TO him are the
+    // one case sfHeldDays cannot express, hence the explicit walk here)
     sfSlotDays(mStr, "dayCall").forEach(ds => {
       if (heldByOther(ds)) return;
-      const overridden = Object.prototype.hasOwnProperty.call(ov, ds) && ov[ds] != null && ov[ds] !== "";
+      const overridden = ov[ds] != null && ov[ds] !== "";
       if (overridden ? ov[ds] === davenportId : wk.dayCall === davenportId) push(ds, "dayCall", "service");
     });
-    ["mon", "tue", "wed", "thu"].forEach(k => { if (n[k] === davenportId) sfSlotDays(mStr, k).forEach(ds => { if (!heldByOther(ds)) push(ds, k, "night"); }); });
-    if (n.wknd === davenportId) sfSlotDays(mStr, "wknd").forEach(ds => { if (!heldByOther(ds)) push(ds, "wknd", "weekend"); });
+    ["mon", "tue", "wed", "thu"].forEach(k => { if (n[k] === davenportId) sfHeldDays(wk, mStr, k, davenportId).forEach(ds => push(ds, k, "night")); });
+    if (n.wknd === davenportId) sfHeldDays(wk, mStr, "wknd", davenportId).forEach(ds => push(ds, "wknd", "weekend"));
     Object.keys(hc).forEach(ds => { if (hc[ds] && hc[ds].surgeonId === davenportId && sfIsDateStr(ds)) push(ds, "holiday", "holiday 24h"); });
   });
   return out;
@@ -148,6 +180,7 @@ const SF_STALE_HOURS = 36;
 function sfStatus(fetchedAt, nowMs) {
   if (!fetchedAt) return { fetchedAt: null, ageHours: null, stale: true };
   const age = ((nowMs || Date.now()) - Date.parse(fetchedAt)) / 36e5;
+  if (!Number.isFinite(age)) return { fetchedAt, ageHours: null, stale: true }; // an unreadable timestamp fails toward STALE, never fresh
   return { fetchedAt, ageHours: Math.round(age * 10) / 10, stale: age > SF_STALE_HOURS };
 }
 
@@ -181,5 +214,5 @@ async function sfRefreshFeed(supabaseUrl, authHeaders, force) {
 
 // Node export for the harness; a no-op in the browser (classic script).
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { SF_RULE_DEFAULT, sfRule, sfRuleActive, sfDaysFromRows, sfBusyRanges, sfSlotDays, sfConflictDay, sfConflict, sfBackupNote, sfOverlaps, sfStatus, sfLoadFeed, sfRefreshFeed, SF_STALE_HOURS };
+  module.exports = { SF_RULE_DEFAULT, sfRule, sfRuleActive, sfDaysFromRows, sfBusyRanges, sfSlotDays, sfHeldDays, sfConflictDay, sfConflict, sfBackupNote, sfOverlaps, sfStatus, sfLoadFeed, sfRefreshFeed, SF_STALE_HOURS };
 }

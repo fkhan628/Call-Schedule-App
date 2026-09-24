@@ -51,14 +51,23 @@ param matches the code against `name` (or id).
 - Branch + PR for anything touching destructive paths, sync/state, or many call
   sites; trivial/cosmetic changes may go straight to main. **A push to main is a
   live deploy to 7 users.**
-- CI runs NO tests — only the transpile. (A generator regression harness is
-  planned: REMAINING-WORK.md N3.)
+- CI on push to main runs the transpile PLUS `node test/generator-regression.js`
+  and `node test/sync-guards.js` (~285 checks). PR branches get only the
+  CI-owned-files gate — run both harnesses locally before pushing. Neither
+  RENDERS the app: after any client merge, load the live app and confirm the
+  root renders without the error boundary (the 2026.09.24a TDZ crash class —
+  a hook deps array naming a const declared later; sync-guards §P now pins
+  declaration order). Before merging a client change, serve the local build
+  and load it once (`?public=1` needs no sign-in).
 
-## Deploy path 2 — edge functions (6 of them)
+## Deploy path 2 — edge functions (7 of them)
 
 `calendar-sync`, `daily-reminder`, `send-notification`, `send-push`,
-`office-notifications`, `vacation-deadline-reminder`.
-(A seventh, `ai-scan`, was decommissioned 2026-07-03 — unused schedule-scanner
+`office-notifications`, `vacation-deadline-reminder`, `silvis-feed`
+(2026-09-24: mirrors FAK's Silvis trauma-call days into `silvis_feed`;
+POST-only, user-JWT gated, 15-min freshness gate, `x-force-refresh: 1`
+forces; fail-LOUD — any Silvis fetch failure leaves the cache untouched).
+(`ai-scan` was decommissioned 2026-07-03 — unused schedule-scanner
 proxy; function deleted, `ANTHROPIC_API_KEY` unset, client removed in PR #7.)
 
 - Supabase CLI is installed (scoop) and logged in; its linked workdir is
@@ -87,6 +96,14 @@ proxy; function deleted, `ANTHROPIC_API_KEY` unset, client removed in PR #7.)
 - **Roster/config → `call_schedule_data`** row `id="main"` (blob). Vacations/no-call
   → `time_off` table (normalized, the generator's source). APP shifts →
   `app_shifts_data`.
+- **Silvis cache → `silvis_feed`** (day, primary_code, backup_code,
+  fetched_at): a COPY of the Silvis project's public `schedule_days`,
+  anon-readable BY POLICY (one SELECT policy, no write policy), written ONLY
+  by the `silvis-feed` function (service role). The client (`silvis-feed.js`)
+  reads it with the anon key and REFUSES to adopt a 200+[] read (the
+  RLS-denied shape) — a zero-row read keeps the cache and flags the rule as
+  blind. Rule flag `silvisRule {enabled, code}` lives in the blob (adopted on
+  load, poll and restore); FAK is resolved by roster CODE, never id.
 - Two client auth paths in `config.js`: `dbHeaders` (anon) vs `dbAuthHeaders()`
   (user JWT when logged in). Mutations must use `dbAuthHeaders()`.
 - **RLS:** RLS-blocked reads return `[]` with HTTP 200 — **silent**. Reads
