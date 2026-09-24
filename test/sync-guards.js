@@ -1272,7 +1272,7 @@ check("prefs audit never logs the plaintext email (masked only)",
     /executeTwoWaySwap = useCallback\(\(targetMon[\s\S]{0,900}shiftStartDate\(targetMon, targetShift\)[\s\S]{0,900}pushUndo\(schedule\);/.test(src)); // window 400→900 for the silvisBusy block (2026-09-24); order unchanged
 }
 
-// ─── O. silvisBusy (2026-09-24): FAK's Silvis primary days block Davenport call ───
+// ─── O. silvisBusy (2026-09-24, revised after the post-merge review): FAK's Silvis primary days block Davenport call ───
 // FAK is also primary trauma call at Silvis (separate app + Supabase project).
 // On a Silvis PRIMARY day D (one 24h shift, 07:00 D → 07:00 D+1) no Davenport
 // call of his may overlap. The GENERATOR side is pinned two-sided in
@@ -1280,30 +1280,37 @@ check("prefs audit never logs the plaintext email (masked only)",
 //   O1. the pure feed helpers (silvis-feed.js, loaded into the sandbox as the
 //       classic script it is): the 07:00→07:00 slot table (weekend = Fri +
 //       Sun, NOT Saturday — Sat 07:00→Sun 07:00 is the service week's), the
-//       [D,D] no-call range shape, overlap detection with holiday > override
-//       > dayCall precedence, malformed-row tolerance, staleness;
+//       [D,D] no-call range shape, sfHeldDays precedence (holiday > override
+//       > slot) shared by the Warnings net and every refusal, coverage
+//       horizon, malformed-row / malformed-rule tolerance, NaN-safe staleness;
 //   O2. EXTRACTION-EXECUTED editor refusal: the real saveWeekEdits silvisBusy
 //       block plus the real silvisBlock/silvisRefuse bodies run against a
-//       fixture — a MEMBER placing FAK on a Silvis day is refused with no
-//       confirm; a SCHEDULER/ADMIN is asked with the reason on screen and may
-//       override; the night BEFORE (ends 07:00 D) passes; overriding the
-//       Silvis day to someone else releases the service week; an unchanged
-//       pre-existing placement never re-triggers;
+//       fixture — a MEMBER placing FAK on a Silvis day is refused with a
+//       modal (every reason, what to do next) and no confirm; a SCHEDULER/
+//       ADMIN is asked and may override (audited); the night BEFORE (ends
+//       07:00 D) passes; overriding the Silvis day to someone else releases
+//       the service week and REMOVING that override re-triggers; a holiday
+//       24h held by someone else releases the night; an unchanged placement
+//       never re-triggers;
 //   O3. FEED FAILURE KEEPS THE CACHE (the contract shared with the Silvis
-//       side's east-feed.js): sfLoadFeed rejects on 500 / non-array, and the
-//       real loadSilvisFeed body never calls the rows setter on failure;
+//       side's east-feed.js): sfLoadFeed rejects on 500 / non-array; the real
+//       loadSilvisFeed body never adopts a 200 + [] read (the RLS-denied
+//       shape — probe rule) and never calls the rows setter on failure;
 //   O4. source pins: the fold goes into `availability` ONLY (never the
 //       trailing-edge vacations map), every memoized mutation callback lists
-//       the silvis deps (the stale-closure class), marker + warnings are off
-//       in public mode, the accept path checks BEFORE the status PATCH, FAK
-//       is resolved by roster CODE, exactly 6 refusal sites.
+//       the silvis deps (the stale-closure class), marker + card + legend are
+//       off in public mode and the generic cell renderer skips Silvis rows,
+//       the accept path checks BEFORE the status PATCH, FAK is resolved by
+//       roster CODE, exactly 7 refusal sites, feed-health gate + dropped-lock
+//       toast in doGenerate, holiday dates via holDatesFor, rule-as-data
+//       adopted on poll and restore.
 {
   try {
     vm.runInContext(fs.readFileSync(path.join(ROOT, "silvis-feed.js"), "utf8"), sandbox, { filename: "silvis-feed.js" });
     check("silvis-feed.js loads as a classic script after helpers/config (no name collisions)",
       vm.runInContext("typeof fmt === 'function' && typeof parse === 'function' && typeof sfConflict === 'function'", sandbox));
   } catch (ex) { check("silvis-feed.js loads as a classic script after helpers/config", false, String(ex)); }
-  const sf = vm.runInContext("({ sfRule, sfRuleActive, sfDaysFromRows, sfBusyRanges, sfSlotDays, sfConflictDay, sfConflict, sfBackupNote, sfOverlaps, sfStatus, sfLoadFeed, sfRefreshFeed })", sandbox);
+  const sf = vm.runInContext("({ sfRule, sfRuleActive, sfDaysFromRows, sfBusyRanges, sfSlotDays, sfHeldDays, sfConflictDay, sfConflict, sfBackupNote, sfOverlaps, sfStatus, sfLoadFeed, sfRefreshFeed })", sandbox);
   const SIL = ["2026-01-20", "2026-02-11", "2026-03-13"]; // Tue of a service week, a Wed night, a Fri (weekend)
   const P = new Set(SIL);
   const J = (x) => JSON.stringify(x);
@@ -1324,6 +1331,14 @@ check("prefs audit never logs the plaintext email (masked only)",
   check("sfBackupNote: soft — same table, separate set", sf.sfBackupNote(new Set(["2026-03-15"]), "2026-03-09", "wknd") === "2026-03-15");
   check("sfBusyRanges: sorted single-day [D,D] pairs (the no-call shape), junk dropped",
     J(sf.sfBusyRanges(new Set(["2026-03-13", "2026-01-20", "bad"]))) === J([["2026-01-20", "2026-01-20"], ["2026-03-13", "2026-03-13"]]));
+  // sfHeldDays — the one precedence rule
+  const wkHol = { dayCall: "s6", nights: { tue: "s6" }, holidayCoverage: { "2026-01-20": { surgeonId: "s3" } }, dayCallOverrides: { "2026-01-22": "s2" } };
+  check("sfHeldDays: no week row → the plain slot days", J(sf.sfHeldDays(undefined, "2026-01-19", "tue", "s6")) === J(["2026-01-20"]));
+  check("sfHeldDays: a holiday 24h held by someone else removes that day (night and service week)",
+    sf.sfHeldDays(wkHol, "2026-01-19", "tue", "s6").length === 0 && !sf.sfHeldDays(wkHol, "2026-01-19", "dayCall", "s6").includes("2026-01-20"));
+  check("sfHeldDays: a Service Day overridden to someone else is not his; one overridden TO him stays",
+    !sf.sfHeldDays(wkHol, "2026-01-19", "dayCall", "s6").includes("2026-01-22") && sf.sfHeldDays({ dayCallOverrides: { "2026-01-22": "s6" } }, "2026-01-19", "dayCall", "s6").includes("2026-01-22"));
+  check("sfHeldDays: a holiday held by HIM does not release the day", sf.sfHeldDays({ holidayCoverage: { "2026-01-20": { surgeonId: "s6" } } }, "2026-01-19", "tue", "s6").length === 1);
   const feedRows = [
     { day: "2026-01-20", primary_code: "fak", backup_code: "XYZ", fetched_at: "2026-09-24T10:00:00Z" },
     { day: "2026-02-11", primary_code: "FAK", backup_code: null, fetched_at: "2026-09-24T11:00:00Z" },
@@ -1334,9 +1349,14 @@ check("prefs audit never logs the plaintext email (masked only)",
   check("sfDaysFromRows: codes case-insensitive, malformed rows ignored, newest fetched_at wins",
     [...dsx.primary].join() === "2026-01-20,2026-02-11" && [...dsx.backup].join() === "2026-02-12" && dsx.fetchedAt === "2026-09-24T11:00:00Z",
     J({ p: [...dsx.primary], b: [...dsx.backup], f: dsx.fetchedAt }));
-  check("sfDaysFromRows: no code → nothing matches; no rows → empty sets", sf.sfDaysFromRows(feedRows, "").primary.size === 0 && sf.sfDaysFromRows(null, "FAK").primary.size === 0);
+  check("sfDaysFromRows: coverage horizon from/to = first/last cached day", dsx.from === "2026-01-20" && dsx.to === "2026-02-12", J([dsx.from, dsx.to]));
+  check("sfDaysFromRows: no code → nothing matches; no rows → empty sets and no horizon",
+    sf.sfDaysFromRows(feedRows, "").primary.size === 0 && sf.sfDaysFromRows(null, "FAK").primary.size === 0 && sf.sfDaysFromRows(null, "FAK").to === null);
   check("sfRuleActive: default on with code FAK; enabled:false or empty code → off",
     sf.sfRuleActive(undefined) && sf.sfRule(undefined).code === "FAK" && sf.sfRuleActive({ code: "FAK" }) && !sf.sfRuleActive({ enabled: false }) && !sf.sfRuleActive({ code: "" }));
+  check("sfRule: malformed blob values fail toward OFF / defaults (enabled:\"false\", 0, \"off\"; a string or array rule; a non-string code)",
+    !sf.sfRuleActive({ enabled: "false" }) && !sf.sfRuleActive({ enabled: 0 }) && !sf.sfRuleActive({ enabled: "off" })
+    && sf.sfRule("garbage").code === "FAK" && sf.sfRule(["x"]).enabled === true && sf.sfRule({ code: { nested: 1 } }).code === "" && sf.sfRule({ code: " fak " }).code === "fak");
   const pub = {
     "2026-01-19": { dayCall: "s6", nights: { mon: "s6", tue: "s1", wed: "s2", thu: "s3", wknd: "s4" }, dayCallOverrides: { "2026-01-20": "s2" } },
     "2026-02-09": { dayCall: "s1", nights: { mon: "s2", tue: "s3", wed: "s6", thu: "s4", wknd: "s5" }, holidayCoverage: { "2026-02-11": { surgeonId: "s1" } } },
@@ -1354,6 +1374,7 @@ check("prefs audit never logs the plaintext email (masked only)",
   check("sfStatus: 36h threshold; a missing fetched_at is stale",
     !sf.sfStatus("2026-09-24T00:00:00Z", Date.parse("2026-09-25T00:00:00Z")).stale
     && sf.sfStatus("2026-09-24T00:00:00Z", Date.parse("2026-09-26T00:00:00Z")).stale && sf.sfStatus(null).stale);
+  check("sfStatus: an unparseable fetched_at fails toward STALE (never NaN-fresh)", sf.sfStatus("not-a-date").stale === true && sf.sfStatus("not-a-date").ageHours === null);
 
   // O2 — extraction-executed editor refusal (real bodies, fixture data)
   const cut = (START, END, label) => {
@@ -1362,15 +1383,15 @@ check("prefs audit never logs the plaintext email (masked only)",
     if (src.indexOf(START, s0 + 1) !== -1) { check(`${label} START anchor unique`, false, "multiple matches"); return null; }
     return src.slice(s0 + START.length, e0);
   };
-  const blockBody = cut("const silvisBlock = useCallback((id, mondayStr, slotKey) => {", "}, [silvisActive, silvisFakId, silvisDays]);", "silvisBlock");
+  const blockBody = cut("const silvisBlock = useCallback((id, mondayStr, slotKey, wk) => {", "}, [silvisActive, silvisFakId, silvisDays]);", "silvisBlock");
   const refuseBody = cut("const silvisRefuse = useCallback((reasons) => {", "}, [isScheduler, userProfile]);", "silvisRefuse");
   const editorBody = cut("    // silvisBusy: any change that puts FAK on a Silvis primary day is refused", "    // Safety confirmation if many changes at once", "saveWeekEdits silvisBusy block");
   if (blockBody && refuseBody && editorBody) {
     let mk;
     try {
       mk = vm.runInContext(`(function (env) {
-        const { silvisActive, silvisFakId, silvisDays, nameOf, isScheduler, userProfile, showToast, confirm } = env;
-        const silvisBlock = (id, mondayStr, slotKey) => {${blockBody}};
+        const { silvisActive, silvisFakId, silvisDays, nameOf, isScheduler, userProfile, showToast, confirm, alert, logAudit } = env;
+        const silvisBlock = (id, mondayStr, slotKey, wk) => {${blockBody}};
         const silvisRefuse = (reasons) => {${refuseBody}};
         return (draft, oldWk, mondayStr) => {${editorBody}
           return "CONTINUED"; };
@@ -1382,12 +1403,14 @@ check("prefs audit never logs the plaintext email (masked only)",
       const nameOf = (id) => (id === FAK ? "FAK" : id);
       const days = { primary: P, backup: new Set(), fetchedAt: null };
       const run = (draft, oldWk, mondayStr, opts = {}) => {
-        const log = { toasts: [], confirms: [] };
+        const log = { toasts: [], confirms: [], alerts: [], audits: [] };
         const env = Object.assign({
           silvisActive: true, silvisFakId: FAK, silvisDays: days, nameOf,
           isScheduler: !!opts.scheduler, userProfile: { role: opts.admin ? "admin" : "member" },
           showToast: (m, k) => log.toasts.push({ m, k }),
           confirm: (m) => { log.confirms.push(m); return !!opts.confirmYes; },
+          alert: (m) => log.alerts.push(m),
+          logAudit: (action, summary, details) => log.audits.push({ action, summary, details }),
         }, opts.env || {});
         let out, threw = null;
         try { out = mk(env)(draft, oldWk, mondayStr); } catch (ex) { threw = String(ex); }
@@ -1396,43 +1419,57 @@ check("prefs audit never logs the plaintext email (masked only)",
       const wk = (o) => Object.assign({ dayCall: "s1", nights: { mon: "s2", tue: "s3", wed: "s4", thu: "s5", wknd: "s7" }, dayCallOverrides: {}, apps: {} }, o || {});
       const base = wk();
       const N = (o) => Object.assign({}, base.nights, o);
+      const quiet = (r) => r.log.toasts.length === 0 && r.log.alerts.length === 0 && r.log.confirms.length === 0;
       let r = run(wk({ nights: N({ tue: FAK }) }), base, "2026-01-19");
-      check("editor: MEMBER placing FAK on Tue night of a Silvis Tuesday → REFUSED (error toast, no confirm, no save)",
-        !r.threw && r.out === undefined && r.log.confirms.length === 0 && r.log.toasts.length === 1
-        && /Silvis PRIMARY on 2026-01-20/.test(r.log.toasts[0].m) && r.log.toasts[0].k === "error", r.threw || J(r.log));
+      check("editor: MEMBER placing FAK on Tue night of a Silvis Tuesday → REFUSED with a modal naming the day and what to do; no confirm, no toast, no save",
+        !r.threw && r.out === undefined && r.log.confirms.length === 0 && r.log.toasts.length === 0 && r.log.alerts.length === 1
+        && /Silvis PRIMARY on 2026-01-20/.test(r.log.alerts[0]) && /ask the scheduler/.test(r.log.alerts[0]) && r.log.audits.length === 0, r.threw || J(r.log));
       r = run(wk({ nights: N({ tue: FAK }) }), base, "2026-01-19", { scheduler: true });
-      check("editor: SCHEDULER is asked with the reason (rule name + day) on screen; declining stops the save",
-        !r.threw && r.out === undefined && r.log.confirms.length === 1 && /silvisBusy/.test(r.log.confirms[0]) && /2026-01-20/.test(r.log.confirms[0]) && r.log.toasts.length === 0, r.threw || J(r.log));
+      check("editor: SCHEDULER is asked with the reason (rule name + day) on screen; declining stops the save and logs nothing",
+        !r.threw && r.out === undefined && r.log.confirms.length === 1 && /silvisBusy/.test(r.log.confirms[0]) && /2026-01-20/.test(r.log.confirms[0]) && r.log.alerts.length === 0 && r.log.audits.length === 0, r.threw || J(r.log));
       r = run(wk({ nights: N({ tue: FAK }) }), base, "2026-01-19", { scheduler: true, confirmYes: true });
-      check("editor: scheduler override → the save continues", r.out === "CONTINUED" && r.log.confirms.length === 1, r.threw || J(r.log));
+      check("editor: scheduler override → the save continues and the override is AUDITED (silvis.override)",
+        r.out === "CONTINUED" && r.log.confirms.length === 1 && r.log.audits.length === 1 && r.log.audits[0].action === "silvis.override" && /2026-01-20/.test(r.log.audits[0].summary), r.threw || J(r.log));
       r = run(wk({ nights: N({ tue: FAK }) }), base, "2026-01-19", { admin: true, confirmYes: true });
       check("editor: an ADMIN may override too", r.out === "CONTINUED" && r.log.confirms.length === 1, r.threw || J(r.log));
       r = run(wk({ dayCall: FAK }), base, "2026-01-19");
       check("editor: FAK as Service Week over a week holding a Silvis Tuesday → REFUSED",
-        r.out === undefined && r.log.toasts.length === 1 && /Silvis PRIMARY on 2026-01-20/.test(r.log.toasts[0].m), r.threw || J(r.log));
+        r.out === undefined && r.log.alerts.length === 1 && /Silvis PRIMARY on 2026-01-20/.test(r.log.alerts[0]), r.threw || J(r.log));
       r = run(wk({ dayCall: FAK, dayCallOverrides: { "2026-01-20": "s2" } }), base, "2026-01-19");
       check("editor: the same service week with the Silvis day overridden to someone else → allowed (override-aware)",
-        r.out === "CONTINUED" && r.log.toasts.length === 0, r.threw || J(r.log));
+        r.out === "CONTINUED" && quiet(r), r.threw || J(r.log));
+      const released = wk({ dayCall: FAK, dayCallOverrides: { "2026-01-20": "s2" } });
+      r = run(wk({ dayCall: FAK, dayCallOverrides: {} }), released, "2026-01-19");
+      check("editor: REMOVING the override that had released the Silvis day (dayCall unchanged) → REFUSED (the covered-days diff, not a 'did dayCall change' test)",
+        r.out === undefined && r.log.alerts.length === 1 && /Service Day 2026-01-20/.test(r.log.alerts[0]), r.threw || J(r.log));
+      r = run(released, released, "2026-01-19");
+      check("editor: the released state re-saved unchanged → allowed", r.out === "CONTINUED" && quiet(r), r.threw || J(r.log));
       r = run(wk({ dayCallOverrides: { "2026-01-20": FAK } }), base, "2026-01-19");
       check("editor: a Service Day override TO FAK on a Silvis day → REFUSED",
-        r.out === undefined && r.log.toasts.length === 1 && /Service Day 2026-01-20/.test(r.log.toasts[0].m), r.threw || J(r.log));
+        r.out === undefined && r.log.alerts.length === 1 && /Service Day 2026-01-20/.test(r.log.alerts[0]), r.threw || J(r.log));
       r = run(wk({ nights: N({ mon: FAK }) }), base, "2026-01-19");
       check("editor: Mon night BEFORE a Silvis Tuesday (ends 07:00 Tue) → allowed — no-call semantics, not vacation semantics",
-        r.out === "CONTINUED" && r.log.toasts.length === 0, r.threw || J(r.log));
+        r.out === "CONTINUED" && quiet(r), r.threw || J(r.log));
+      const holOther = wk({ holidayCoverage: { "2026-01-20": { surgeonId: "s3" } } });
+      r = run(wk({ nights: N({ tue: FAK }), holidayCoverage: holOther.holidayCoverage }), holOther, "2026-01-19");
+      check("editor: Tue night when the Silvis day is a holiday 24h held by SOMEONE ELSE → allowed (no false refusal; same precedence as the Warnings net)",
+        r.out === "CONTINUED" && quiet(r), r.threw || J(r.log));
+      r = run(wk({ dayCall: FAK, holidayCoverage: holOther.holidayCoverage }), holOther, "2026-01-19");
+      check("editor: Service Week when the Silvis day is a holiday held by someone else → allowed", r.out === "CONTINUED" && quiet(r), r.threw || J(r.log));
       r = run(wk({ nights: N({ wknd: FAK }) }), base, "2026-03-09");
-      check("editor: FAK's weekend over a Silvis Friday → REFUSED", r.out === undefined && /2026-03-13/.test(r.log.toasts[0] && r.log.toasts[0].m), r.threw || J(r.log));
+      check("editor: FAK's weekend over a Silvis Friday → REFUSED", r.out === undefined && r.log.alerts.length === 1 && /2026-03-13/.test(r.log.alerts[0]), r.threw || J(r.log));
       r = run(wk({ nights: N({ wknd: FAK }) }), base, "2026-03-09", { env: { silvisDays: { primary: new Set(["2026-03-14"]), backup: new Set(), fetchedAt: null } } });
       check("editor: the weekend when Silvis is only the SATURDAY → allowed (Sat 07:00→Sun 07:00 is the service week's, not the weekend's)",
-        r.out === "CONTINUED" && r.log.toasts.length === 0, r.threw || J(r.log));
+        r.out === "CONTINUED" && quiet(r), r.threw || J(r.log));
       const had = wk({ nights: N({ tue: FAK }) });
       r = run(had, had, "2026-01-19");
-      check("editor: an unchanged pre-existing FAK placement does not re-trigger (only NEW placements)", r.out === "CONTINUED" && r.log.toasts.length === 0, r.threw || J(r.log));
+      check("editor: an unchanged pre-existing FAK placement does not re-trigger (only NEW placements)", r.out === "CONTINUED" && quiet(r), r.threw || J(r.log));
       r = run(wk({ nights: N({ tue: FAK }) }), base, "2026-01-19", { env: { silvisActive: false } });
-      check("editor: rule inactive (silvisRule.enabled=false / code off roster) → no gate", r.out === "CONTINUED" && r.log.toasts.length === 0, r.threw || J(r.log));
+      check("editor: rule inactive (silvisRule.enabled=false / code off roster) → no gate", r.out === "CONTINUED" && quiet(r), r.threw || J(r.log));
       r = run(wk({ nights: N({ tue: "s2" }) }), base, "2026-01-19");
-      check("editor: another surgeon on FAK's Silvis day → allowed", r.out === "CONTINUED" && r.log.toasts.length === 0, r.threw || J(r.log));
+      check("editor: another surgeon on FAK's Silvis day → allowed", r.out === "CONTINUED" && quiet(r), r.threw || J(r.log));
       r = run(wk({ nights: N({ tue: FAK }) }), base, "2026-01-19", { env: { silvisDays: { primary: new Set(), backup: new Set(), fetchedAt: null } } });
-      check("editor: an EMPTY feed blocks nothing (the feed card says so; the probe rule is why silvis_feed is anon-readable by policy)", r.out === "CONTINUED" && r.log.toasts.length === 0, r.threw || J(r.log));
+      check("editor: an empty primary SET blocks nothing at the editor (feed HEALTH is a separate, always-visible signal: Warnings line + doGenerate gate)", r.out === "CONTINUED" && quiet(r), r.threw || J(r.log));
     }
   }
 
@@ -1474,35 +1511,58 @@ check("prefs audit never logs the plaintext email (masked only)",
     if (loadBody !== null) {
       try {
         loadFeed = vm.runInContext(`(function (env) {
-          const { SUPABASE_URL, dbHeaders, setSilvisRows, setSilvisLoadError, showToast, console } = env;
+          const { SUPABASE_URL, dbHeaders, setSilvisRows, setSilvisLoadError, showToast, console, silvisRowsRef, silvisLoadSeqRef } = env;
           return (async (quiet) => {${loadBody}});
         })`, sandbox, { filename: "load-silvis-feed-extract.js" });
         check("loadSilvisFeed compiles standalone", true);
       } catch (ex) { check("loadSilvisFeed compiles standalone", false, String(ex)); }
     }
     if (loadFeed) {
-      const mkEnv = () => {
+      const ONE = [{ day: "2026-01-20", primary_code: "FAK", backup_code: null, fetched_at: "2026-09-24T10:00:00Z" }];
+      const mkEnv = (prior) => {
         const log = { rows: [], errs: [], toasts: [] };
         return { log, env: {
           SUPABASE_URL: "https://x.supabase.co", dbHeaders: {},
           setSilvisRows: (r) => log.rows.push(r), setSilvisLoadError: (e) => log.errs.push(e),
           showToast: (m, k) => log.toasts.push({ m, k }), console: { error: () => {}, warn: () => {}, log: () => {} },
+          silvisRowsRef: { current: prior || [] }, silvisLoadSeqRef: { current: 0 },
         } };
       };
       let t = mkEnv();
       setFetch(async () => ({ ok: false, status: 500, json: async () => ({}) }));
-      await loadFeed(t.env)(false);
-      check("loadSilvisFeed: failed read → rows setter NEVER called (cache kept), error recorded, loud toast says 'kept'",
-        t.log.rows.length === 0 && t.log.errs.length === 1 && typeof t.log.errs[0] === "string" && t.log.toasts.length === 1 && /kept/.test(t.log.toasts[0].m) && t.log.toasts[0].k === "error", J(t.log));
+      let ret = await loadFeed(t.env)(false);
+      check("loadSilvisFeed: failed read → rows setter NEVER called (cache kept), error recorded, loud toast says 'kept', returns false",
+        ret === false && t.log.rows.length === 0 && t.log.errs.length === 1 && typeof t.log.errs[0] === "string" && t.log.toasts.length === 1 && /kept/.test(t.log.toasts[0].m) && t.log.toasts[0].k === "error", J(t.log));
       t = mkEnv();
       setFetch(async () => { throw new Error("network down"); });
-      await loadFeed(t.env)(true);
-      check("loadSilvisFeed: quiet network failure → still no rows write, no toast, error recorded", t.log.rows.length === 0 && t.log.toasts.length === 0 && t.log.errs.length === 1, J(t.log));
+      ret = await loadFeed(t.env)(true);
+      check("loadSilvisFeed: quiet network failure → still no rows write, no toast, error recorded, returns false", ret === false && t.log.rows.length === 0 && t.log.toasts.length === 0 && t.log.errs.length === 1, J(t.log));
       t = mkEnv();
-      setFetch(async () => ({ ok: true, status: 200, json: async () => [{ day: "2026-01-20", primary_code: "FAK", backup_code: null, fetched_at: "2026-09-24T10:00:00Z" }] }));
-      await loadFeed(t.env)(true);
-      check("loadSilvisFeed: successful read → rows set once, error cleared to null",
-        t.log.rows.length === 1 && t.log.rows[0].length === 1 && t.log.errs.length === 1 && t.log.errs[0] === null, J(t.log));
+      setFetch(async () => ({ ok: true, status: 200, json: async () => ONE }));
+      ret = await loadFeed(t.env)(true);
+      check("loadSilvisFeed: successful read → rows set once, error cleared to null, ref updated, returns true",
+        ret === true && t.log.rows.length === 1 && t.log.rows[0].length === 1 && t.log.errs.length === 1 && t.log.errs[0] === null && t.env.silvisRowsRef.current.length === 1, J(t.log));
+      t = mkEnv(ONE);
+      setFetch(async () => ({ ok: true, status: 200, json: async () => [] }));
+      ret = await loadFeed(t.env)(true);
+      check("loadSilvisFeed: 200 + [] with a populated cache (the RLS-denied shape — probe rule) → NOT adopted: rows setter never called, error names '0 rows', returns false",
+        ret === false && t.log.rows.length === 0 && t.log.errs.length === 1 && /0 rows/.test(String(t.log.errs[0])) && t.env.silvisRowsRef.current.length === 1, J(t.log));
+      t = mkEnv([]);
+      setFetch(async () => ({ ok: true, status: 200, json: async () => [] }));
+      ret = await loadFeed(t.env)(false);
+      check("loadSilvisFeed: 200 + [] on a fresh device → still a FAILED read (error set, loud toast), never a silent 'no Silvis call'",
+        ret === false && t.log.rows.length === 0 && t.log.errs.length === 1 && t.log.toasts.length === 1, J(t.log));
+      // superseded response: a slow read that resolves after a newer one must not win
+      t = mkEnv(ONE);
+      let resolveSlow;
+      const slow = new Promise(res => { resolveSlow = res; });
+      setFetch(async () => ({ ok: true, status: 200, json: async () => { await slow; return [{ day: "2026-01-01", primary_code: "OLD", backup_code: null, fetched_at: "2026-09-01T00:00:00Z" }]; } }));
+      const p1 = loadFeed(t.env)(true);
+      setFetch(async () => ({ ok: true, status: 200, json: async () => ONE }));
+      const p2 = loadFeed(t.env)(true);
+      await p2; resolveSlow(); await p1;
+      check("loadSilvisFeed: a slower, older read that resolves AFTER a newer one is dropped (newest read wins)",
+        t.log.rows.length === 1 && t.log.rows[0][0].day === "2026-01-20", J(t.log.rows.map(r => r.map(x => x.day))));
     }
   }
 
@@ -1514,14 +1574,17 @@ check("prefs audit never logs the plaintext email (masked only)",
   check("…and generate() still receives the untouched `vacations` map as its trailing-edge (vacationsOnly) argument",
     count("generate(surgeons, mondays, availability, backupMondaySet, priorCounts, prefs, fierceBackupSet, holidayAssignments, pendingLocks, prevWeekSeed, vacations, year1Counts)") === 1
     && count("vacations[silvisFakId]") === 0);
+  check("doGenerate: feed-health + coverage gate confirms BEFORE generating; dropped locks are toasted AFTER",
+    count("Rule silvisBusy is BLIND for part or all of this period") === 1 && count("NOT honored by the generator") === 1
+    && src.indexOf("Rule silvisBusy is BLIND") < src.indexOf("const result = generate(surgeons, mondays, availability") && src.indexOf("const result = generate(surgeons, mondays, availability") < src.indexOf("NOT honored by the generator"));
   check("FAK is resolved by roster CODE (name), never a literal id",
     count('surgeons.find(s => (s.name || "").toUpperCase() === want)') === 1 && !/silvisFakId\s*=\s*["']s\d+["']/.test(src));
-  check("the rule is DATA: read from the blob (silvisRule) and saved back in the bundle",
-    count("if (d.silvisRule) setSilvisRule(sfRule(d.silvisRule));") === 1 && /\n\s*silvisRule,\r?\n/.test(src));
+  check("the rule is DATA: read from the blob on load AND on poll/realtime, reset on restore, saved back in the bundle",
+    count("if (d.silvisRule) setSilvisRule(sfRule(d.silvisRule));") === 2 && count("setSilvisRule(d.silvisRule ? sfRule(d.silvisRule) : SF_RULE_DEFAULT);") === 1 && /\n\s*silvisRule,\r?\n/.test(src));
   // Every memoized mutation callback that consults the rule must list the
   // silvis values in its deps — otherwise its closure freezes on the first
   // render's "feed empty / rule inactive" values and the gate silently never
-  // fires (the stale-closure class).
+  // fires (the stale-closure class). Declaration ORDER is §P's job.
   const depsOf = (decl) => {
     const i = src.indexOf(decl); if (i === -1) return null;
     const j = src.indexOf("\n  }, [", i); if (j === -1) return null;
@@ -1534,37 +1597,74 @@ check("prefs audit never logs the plaintext email (masked only)",
     ["const saveWeekEdits = useCallback(", ["silvisActive", "silvisFakId", "silvisDays", "silvisBlock", "silvisRefuse"]],
     ["const swapHolidaySurgeon = useCallback(", ["silvisActive", "silvisFakId", "silvisDays", "silvisRefuse"]],
     ["const generateHolidayAssignments = useCallback(", ["silvisActive", "silvisFakId", "silvisDays"]],
+    ["const submitTradeRequest = useCallback(", ["schedule", "silvisActive", "silvisBlock", "silvisRefuse"]],
   ]) {
     const d = depsOf(decl);
     check(`${decl.split(" ")[1]} lists its silvis deps (${need.join(", ")})`, !!d && need.every(n => new RegExp("[\\[, ]" + n + "[,\\]]").test(d)), d || "deps not found");
   }
   check("silvisBlock/silvisRefuse are stable useCallbacks with their own deps",
     count("}, [silvisActive, silvisFakId, silvisDays]);") >= 1 && count("}, [isScheduler, userProfile]);") === 1);
-  check("marker rows and the warnings list are gated OFF public mode (OR board / public calendar never show Silvis)",
-    count('{!isPublicMode && entries.filter(e=>e.type==="Silvis")') === 1 && count("if (!silvisActive || isPublicMode) return [];") === 1);
+  check("every refusal call site hands silvisBlock the week row (holiday/override precedence): accept ×3, two-way ×2, one-way, lock, pending rows, propose ×2, submit ×2",
+    count("silvisBlock(req.to_surgeon_id, req.week_monday, req.shift_key, schedule[req.week_monday])") === 1
+    && count("silvisBlock(req.from_surgeon_id, req.return_week, req.return_shift, schedule[req.return_week])") === 1
+    && count("silvisBlock(ch.to, ch.week, ch.shiftKey, schedule[ch.week])") === 3
+    && count("silvisBlock(candId, targetMon, targetShift, schedule[targetMon])") === 1
+    && count("silvisBlock(targetOldId, returnMon, returnShift, schedule[returnMon])") === 1
+    && count("silvisBlock(newId, mStr, shift, schedule[mStr])") === 1
+    && count("silvisBlock(newLockSurgeon, newLockWeek, newLockSlot, schedule[newLockWeek])") === 1
+    && count("silvisBlock(tradeTo, tradeWeek, tradeShift, schedule[tradeWeek])") === 2
+    && count("silvisBlock(tradeFrom, tradeReturnWeek, tradeReturnShift, schedule[tradeReturnWeek])") === 2
+    && count("silvisBlock(r.to_surgeon_id, r.week_monday, r.shift_key, schedule[r.week_monday])") === 1
+    && (src.match(/silvisBlock\([^)]*\)/g) || []).every(c => /schedule\[|, oldWk\)/.test(c) || /silvisBlock\(id, mondayStr, slotKey, wk\)/.test(c)),
+    (src.match(/silvisBlock\([^)]*\)/g) || []).filter(c => !/schedule\[|, oldWk\)|slotKey, wk\)/.test(c)).join(" | "));
+  check("the generic calendar cell renderer skips Silvis rows (they drew as a bogus 'N FAK' night)",
+    count('||e.type==="Holiday"||e.type==="Silvis") return false;') === 1);
+  check("Silvis rows enter calData only when the rule is ON and never in public mode; the dedicated marker branch is gated and honors the department filter",
+    count("if (silvisActive && !isPublicMode) {") === 1
+    && count('{!isPublicMode && entries.filter(e=>e.type==="Silvis").filter(e=>!sf||e.surgeon===sf).filter(e=>!calDeptFilter||') === 1);
+  check("legend (P and B) and the Silvis feed card are internal-only; refresh only when signed in",
+    count("Silvis B</span> Silvis backup (standby)") === 1 && count("{!isPublicMode && silvisActive && <span title=") === 2
+    && count("rule silvisBusy (internal views only)") === 1 && count("sign in to refresh") === 1);
+  check("the warnings memo and the marker list are gated OFF public mode",
+    count("if (!silvisActive || isPublicMode) return [];") === 2);
   check("accept path: the silvisBusy check sits BEFORE the fail-closed status PATCH (a refused trade stays pending)", (() => {
     const i = src.indexOf("const acceptTradeRequest = useCallback(");
     const a = src.indexOf("if (silvisRefuse(hits)) return;", i), b = src.indexOf("Fail-closed status write", i);
     return i !== -1 && a !== -1 && b !== -1 && a < b;
   })());
-  check("accept path checks BOTH legs and every cascade reassignment",
-    count("silvisBlock(req.to_surgeon_id, req.week_monday, req.shift_key)") === 1
-    && count("silvisBlock(req.from_surgeon_id, req.return_week, req.return_shift)") === 1
-    && count('hits.push("cascade: " + rc)') === 1);
-  check("member branch refuses without confirm (error toast, return true)",
-    /if \(!canOverride\) \{\s*showToast\("Blocked — " \+ reasons\[0\][^\n]*"error"\);\s*return true;/.test(src));
-  check("exactly 6 refusal sites: editor, trade accept, two-way swap, one-way swapShift, holiday swap, manual lock",
-    count("silvisRefuse(") === 6, `found ${count("silvisRefuse(")}`);
-  check("swap suggestions never offer FAK a slot on a Silvis primary day",
-    count("candId === silvisFakId && sfConflict(silvisDays.primary, mondayStr, shift)) eligible = false;") === 1);
-  check("holiday pool + holiday swap honor the 24h leg (date and day-after)",
-    count("silvisDays.primary.has(hol.date) || silvisDays.primary.has(dayAfterStr)") === 1 && count("overlaps ${targetHol.name} 24h coverage") === 1);
-  check("Schedule Warnings: one dated line per overlap, hard for primary, soft note for backup",
-    count("Silvis primary + Davenport ${o.label}, ${md(o.day)}") === 1 && count("Silvis backup + Davenport ${o.label}, ${md(o.day)} (backup is standby — no block)") === 1);
-  check("feed card: refresh is signed-in only and the failure copy says the cache is kept",
-    count("Sign in to refresh the Silvis feed") === 1 && count("Silvis feed refresh FAILED — the cached Silvis days are kept") === 1);
-  check("Refresh button forces a re-pull (force = !quiet); a skipped answer never toasts undefined counts",
-    count("sfRefreshFeed(SUPABASE_URL, h, !quiet)") === 1 && count("r && r.skipped") === 1);
+  check("propose path: refused BEFORE the shift_trade_requests insert; the card previews the conflict (legs + cascades); pending rows carry the badge",
+    (() => { const i = src.indexOf("const submitTradeRequest = useCallback("); const a = src.indexOf("if (silvisRefuse(hits)) return;", i); const b = src.indexOf('db.insert("shift_trade_requests"', i); return a !== -1 && b !== -1 && a < b; })()
+    && count("this trade {(isScheduler || userProfile?.role === \"admin\") ? \"needs a scheduler override to be accepted\" : \"cannot be accepted\"}") === 1
+    && count("🔴 Silvis conflict — {(isScheduler || userProfile?.role === \"admin\") ? \"scheduler override only\" : \"cannot be accepted\"}") === 1);
+  check("member branch refuses with a MODAL (alert: every reason + what to do), never a toast; a scheduler override is audited",
+    /if \(!canOverride\) \{[\s\S]{0,400}alert\(`⛔ Blocked by rule silvisBusy[\s\S]{0,500}return true;/.test(src)
+    && count('logAudit("silvis.override"') === 1 && count('showToast("Blocked — "') === 0);
+  check("exactly 7 refusal sites: editor, trade accept, trade propose, two-way swap, one-way swapShift, holiday swap, manual lock",
+    count("silvisRefuse(") === 7, `found ${count("silvisRefuse(")}`);
+  check("swap suggestions: candidates never get FAK's Silvis slot AND FAK is never offered a return leg on his Silvis day (3 legs)",
+    count("candId === silvisFakId && sfConflict(silvisDays.primary, mondayStr, shift)) eligible = false;") === 1 && count("!silvisRet(") === 3);
+  check("holidays: pool + Christmas + presets + swap all test the dates the role REALLY holds (holDatesFor / slot parity), incl. the Fri/Sun weekend leg",
+    count("holDatesFor(hol, id, \"A\")") === 1 && count("holDatesFor(hol, id, \"B\")") === 1 && count('holDatesFor(hol, fakId, "both")') === 1
+    && count('holDatesFor(hol, sA, "A")') === 1 && count('holDatesFor(hol, sB, "B")') === 1
+    && count('(slot === "surgeonA" ? i % 2 === 0 : i % 2 === 1)') === 1 && count("if (dow === 5) days.add(") === 2 && count("if (dow === 0) days.add(") === 2);
+  check("Christmas: a Silvis primary hit leaves Christmas UNASSIGNED with a loud warning (mirrors the missing-roster path)",
+    count("was NOT auto-assigned: ${nameMap[fakId]} is Silvis PRIMARY on") === 1);
+  check("Schedule Warnings: feed HEALTH lines (empty / failed / stale / beyond horizon) + one dated hard line per overlap; backup touches are NOT warnings (card only)",
+    count('week: "feed"') === 3 && count("lie beyond the Silvis feed horizon") === 1
+    && count("Silvis primary + Davenport ${o.label}, ${md(o.day)}") === 1
+    && count("Silvis backup + Davenport") === 0 && count("Backup touches (standby — no action needed)") === 1
+    && count("more Silvis line") === 1);
+  check("lock UI tells the truth per slot: a Service Week / Weekend lock on a Silvis-blocked day only records intent",
+    count("this lock only records intent") === 1 && count("a weeknight lock overrides the rule for this generation") === 1);
+  check("feed card: refresh is signed-in only, the failure copy says the cache is kept, the empty copy says the rule is BLIND, OFF vs code-not-on-roster are distinct, coverage is shown",
+    count("Sign in to refresh the Silvis feed") === 1 && count("Silvis feed refresh FAILED — the cached Silvis days are kept") === 1
+    && count("Rule silvisBusy is BLIND until") === 1 && count("rule silvisBusy is OFF (silvisRule.enabled = false in the config blob)") === 1
+    && count("is not on the roster — rule silvisBusy is inactive") === 1 && count("covers {silvisDays.from} → {silvisDays.to}") === 1);
+  check("Refresh button forces a re-pull (force = !quiet); success is toasted only when the re-read succeeded; a skipped answer never toasts undefined counts; the code comes from the rule",
+    count("sfRefreshFeed(SUPABASE_URL, h, !quiet)") === 1 && count("const ok = await loadSilvisFeed(quiet);") === 1
+    && count("could not re-read the cache") === 1 && count("r && r.skipped") === 1 && count("${silvisRule.code} primary on ${r.fak_primary}") === 1);
+  check("loadSilvisFeed: the empty-read tripwire and the newest-read-wins sequence are wired to refs",
+    count("silvisRowsRef.current = rows;") === 1 && count("++silvisLoadSeqRef.current") === 1 && count("seq !== silvisLoadSeqRef.current") === 2);
   check("app load: cached read first, then a quiet background refresh; poll re-reads quietly",
     count("await loadSilvisFeed();") === 1 && count("refreshSilvisFeed(true);") === 1 && count("loadSilvisFeed(true),") === 1);
 }
