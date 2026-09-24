@@ -184,6 +184,76 @@ function sfStatus(fetchedAt, nowMs) {
   return { fetchedAt, ageHours: Math.round(age * 10) / 10, stale: age > SF_STALE_HOURS };
 }
 
+// ---- ON-DEMAND DISPLAY (owner decision 2026-09-24) ----
+// FAK's Silvis days are OFF the calendar by default; a "🚑 Silvis" Show-bar
+// switch turns them on (partners, and office staff on ?public=1&silvis=1),
+// and his Mine tab lists them. Everything here reads the derived silvisDays
+// sets — which hold the watched code's days ONLY (sfDaysFromRows) — never
+// calData (a non-Davenport row there renders as a phantom "N" night: #57),
+// and never another Silvis surgeon's code. Dates parse LOCAL (sfParse):
+// new Date("YYYY-MM-DD") is UTC midnight and renders the PREVIOUS day in
+// America/Chicago.
+const SF_DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const SF_MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+// sfDayLabel("2026-10-24") -> "Sat Oct 24"
+function sfDayLabel(ds) { const d = sfParse(ds); return SF_DOW[d.getDay()] + " " + SF_MON[d.getMonth()] + " " + d.getDate(); }
+// sfUpcoming(silvisDays, todayStr) -> [{ day, role:"P"|"B" }], today onward,
+// soonest first. A day that is both primary and backup lists once, as P.
+function sfUpcoming(days, todayStr) {
+  const p = (days && days.primary) || new Set(), b = (days && days.backup) || new Set();
+  const out = [];
+  p.forEach(d => { if (sfIsDateStr(d) && d >= todayStr) out.push({ day: d, role: "P" }); });
+  b.forEach(d => { if (sfIsDateStr(d) && d >= todayStr && !p.has(d)) out.push({ day: d, role: "B" }); });
+  return out.sort((x, y) => (x.day < y.day ? -1 : x.day > y.day ? 1 : 0));
+}
+// sfRowLabel({day, role}) -> the Mine row, e.g.
+//   "Sat Oct 24 · PRIMARY · 07:00 → Sun 07:00" / "Sat Oct 10 · backup · standby, no block"
+function sfRowLabel(it) {
+  if (!it || !sfIsDateStr(it.day)) return "";
+  if (it.role === "P") return sfDayLabel(it.day) + " · PRIMARY · 07:00 → " + SF_DOW[sfAddD(sfParse(it.day), 1).getDay()] + " 07:00";
+  return sfDayLabel(it.day) + " · backup · standby, no block";
+}
+// sfCellChip(silvisDays, ds, fakId, opts) -> null | { role, label, title }
+//   The ONE decision for the calendar cell: nothing unless the switch is on,
+//   FAK resolves, the surgeon/department filters admit him, and ds is one of
+//   his Silvis days. opts: { on, sf (surgeon filter id or ""), deptOk, fakName, ruleOn }.
+function sfCellChip(days, ds, fakId, opts) {
+  const o = opts || {};
+  if (!o.on || !fakId || !days || !sfIsDateStr(ds)) return null;
+  if (o.sf && o.sf !== fakId) return null;
+  if (o.deptOk === false) return null;
+  const isP = !!(days.primary && days.primary.has(ds));
+  const isB = !isP && !!(days.backup && days.backup.has(ds));
+  if (!isP && !isB) return null;
+  const who = o.fakName || "?";
+  return isP
+    ? { role: "P", label: "🚑 Silvis P · " + who, title: "Silvis PRIMARY 07:00 → 07:00 next day" + (o.ruleOn === false ? " (rule silvisBusy is OFF)" : " — no Davenport call may overlap") }
+    : { role: "B", label: "🚑 Silvis B · " + who, title: "Silvis backup — standby, no block" };
+}
+// sfNotice(rowCount, loadError, fetchedAt, nowMs) -> null | { kind, text }
+//   When the switch is ON but the data can't be trusted — never silence (a
+//   failed feed must not look like "no Silvis days"). Healthy -> null.
+function sfNotice(rowCount, loadError, fetchedAt, nowMs) {
+  if (!rowCount) return loadError
+    ? { kind: "failed", text: "Silvis feed unavailable — last load failed; Silvis days may be missing." }
+    : { kind: "empty", text: "No Silvis days cached." };
+  if (loadError) return { kind: "failed-kept", text: "Silvis feed: last load failed — showing the previous cache; recent changes may be missing." };
+  const st = sfStatus(fetchedAt, nowMs);
+  if (st.stale) return { kind: "stale", text: "Silvis data is stale — fetched " + (st.ageHours === null ? "?" : st.ageHours + "h") + " ago." };
+  return null;
+}
+// sfResolveToggle(param, stored) -> boolean. Precedence: the URL param
+// (?silvis=1 / 0) → the device's remembered choice → default OFF.
+function sfResolveToggle(param, stored) {
+  const p = param == null ? "" : String(param).trim().toLowerCase();
+  if (/^(1|true|on|yes)$/.test(p)) return true;
+  if (/^(0|false|off|no)$/.test(p)) return false;
+  const st = stored == null ? "" : String(stored).trim().toLowerCase();
+  if (st === "true") return true;
+  if (st === "false") return false;
+  return false;
+}
+
 // ---- browser I/O (this project only; the Silvis project is never touched
 //      from the client — the edge function does that with its own read) ----
 // sfLoadFeed(supabaseUrl, headers) -> rows. Throws on non-2xx / non-array.
@@ -214,5 +284,5 @@ async function sfRefreshFeed(supabaseUrl, authHeaders, force) {
 
 // Node export for the harness; a no-op in the browser (classic script).
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { SF_RULE_DEFAULT, sfRule, sfRuleActive, sfDaysFromRows, sfBusyRanges, sfSlotDays, sfHeldDays, sfConflictDay, sfConflict, sfBackupNote, sfOverlaps, sfStatus, sfLoadFeed, sfRefreshFeed, SF_STALE_HOURS };
+  module.exports = { SF_RULE_DEFAULT, sfRule, sfRuleActive, sfDaysFromRows, sfBusyRanges, sfSlotDays, sfHeldDays, sfConflictDay, sfConflict, sfBackupNote, sfOverlaps, sfStatus, sfLoadFeed, sfRefreshFeed, SF_STALE_HOURS, sfDayLabel, sfUpcoming, sfRowLabel, sfCellChip, sfNotice, sfResolveToggle };
 }

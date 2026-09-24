@@ -175,6 +175,14 @@
        ═══════════════════════════════════════════════════════════════════ */
     const { useState, useMemo, useCallback, useRef, useEffect } = React;
 
+// Calendar Show-bar defaults — the ONE source for the initial state, the Reset
+// button and its "differs from defaults" check. Module level on purpose (see
+// above). silvis is OFF by default — owner decision 2026-09-24: FAK's Silvis
+// days appear only on demand (the 🚑 switch, ?silvis=1, or the device's
+// remembered choice — silvis-feed.js sfResolveToggle).
+const CAL_FILTER_DEFAULTS = Object.freeze({ svc: true, night: true, wknd: true, app: true, fierce: true, vac: true, appOff: true, silvis: false });
+const CAL_SILVIS_STORE_KEY = "dsg-cal-silvis";
+
 function CallSchedule() {
   // ─── Public mode detection ───
   // When the URL contains ?public=1, render a stripped-down read-only
@@ -305,7 +313,12 @@ function CallSchedule() {
   const [printNumMonths, setPrintNumMonths] = useState(1);
 
   // ─── Calendar Filters ───
-  const [calFilters, setCalFilters] = useState({ svc: true, night: true, wknd: true, app: true, fierce: true, vac: true, appOff: true });
+  const [calFilters, setCalFilters] = useState(() => {
+    let param = null, stored = null;
+    try { param = new URLSearchParams(window.location.search).get("silvis"); } catch (e) { /* no URL — default */ }
+    try { stored = localStorage.getItem(CAL_SILVIS_STORE_KEY); } catch (e) { /* private mode — default */ }
+    return { ...CAL_FILTER_DEFAULTS, silvis: sfResolveToggle(param, stored) };
+  });
   const [showBackupStats, setShowBackupStats] = useState(false); // Toggle 2nd call columns in Stats
   const [statsScope, setStatsScope] = useState("period"); // "period" | "ytd" — shared by the Counts and Vacation Days cards
   const [statsTab, setStatsTab] = useState("fairness"); // Stats view: which table is shown (fairness|monthly|billing|app)
@@ -314,10 +327,20 @@ function CallSchedule() {
   const [seedDebug, setSeedDebug] = useState(null); // boundary-seed diagnostic shown in preview
   const [showAllMyVacs, setShowAllMyVacs] = useState(false); // Mine: expand vacation list beyond first few
   const [showAllMyNoCall, setShowAllMyNoCall] = useState(false); // Mine: expand no-call list beyond first few
+  const [showAllMySilvis, setShowAllMySilvis] = useState(false); // Mine (FAK): expand the Silvis list beyond the first few
   const [calSurgeonFilter, setCalSurgeonFilter] = useState(""); // "" = all, or surgeon ID
   const [calAppFilter, setCalAppFilter] = useState("all"); // "all" | "none" | APP id
   const [calDeptFilter, setCalDeptFilter] = useState(""); // "" = no dept filter, "CWM" or "CBH"
-  const toggleFilter = (key) => setCalFilters(p => ({ ...p, [key]: !p[key] }));
+  const rememberSilvisToggle = (v) => {
+    try { if (v === null) localStorage.removeItem(CAL_SILVIS_STORE_KEY); else localStorage.setItem(CAL_SILVIS_STORE_KEY, String(v)); }
+    catch (e) { console.warn("Couldn't remember the Silvis calendar switch:", e); }
+  };
+  const toggleFilter = (key) => {
+    const v = !calFilters[key];
+    setCalFilters(p => ({ ...p, [key]: v }));
+    if (key === "silvis") rememberSilvisToggle(v);
+  };
+  const calFiltersDiffer = Object.keys(CAL_FILTER_DEFAULTS).some(k => calFilters[k] !== CAL_FILTER_DEFAULTS[k]);
 
   // ─── Holiday Assignments ───
   const [holidayAssignments, setHolidayAssignments] = useState({}); // { "2026": [ { name, date, type, surgeonA, surgeonB, coverage } ] }
@@ -7769,6 +7792,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               {key:"app",label:"APPs",color:"#985020",icon:"A"},
               {key:"fierce",label:"Fierce",color:"#8a6a10",icon:"⚡"},
               {key:"vac",label:"Vacations",color:"#5a6a78",icon:"🏖"},
+              // FAK's Silvis (trauma) days — ON DEMAND, in every view including
+              // ?public=1 and the OR board (owner decision 2026-09-24: viewers
+              // see Silvis only when THEY turn it on; ?silvis=1 = the office link).
+              {key:"silvis",label:"Silvis",color:"#1a4a9a",icon:"🚑"},
               // APP day-offs are INTERNAL-ONLY — the toggle (like the data's
               // render below) never exists in the ?public=1 view. This is a
               // deliberate NEW gate: vacations are public by design, day-offs
@@ -7799,13 +7826,22 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               <option value="">All Depts</option>
               {Object.entries(DEPT_LABELS).map(([k,v])=><option key={k} value={k}>{v}</option>)}
             </select>
-            {(Object.values(calFilters).some(v=>!v) || calSurgeonFilter || calAppFilter!=="all" || calDeptFilter) && (
-              <button onClick={()=>{setCalFilters({svc:true,night:true,wknd:true,app:true,fierce:true,vac:true,appOff:true});setCalSurgeonFilter("");setCalAppFilter("all");setCalDeptFilter("");}}
+            {(calFiltersDiffer || calSurgeonFilter || calAppFilter!=="all" || calDeptFilter) && (
+              <button onClick={()=>{setCalFilters({ ...CAL_FILTER_DEFAULTS });rememberSilvisToggle(null);setCalSurgeonFilter("");setCalAppFilter("all");setCalDeptFilter("");}}
                 style={{background:"none",border:"1px solid #d0d8e0",color:"#8a94a0",borderRadius:5,padding:"3px 8px",fontSize:10,cursor:"pointer",fontFamily:font}}>
                 Reset
               </button>
             )}
           </div>
+
+          {/* Silvis switch ON but the data can't be trusted → say so; a failed
+              feed must never look like "no Silvis days". */}
+          {calFilters.silvis && (() => {
+            const note = !silvisFakId
+              ? { kind: "noroster", text: `Silvis days unavailable — "${silvisRule.code}" is not on the roster.` }
+              : sfNotice(silvisRows.length, silvisLoadError, silvisDays.fetchedAt);
+            return note ? <div role="status" style={{marginTop:-4,marginBottom:10,padding:"5px 12px",fontSize:11,fontWeight:600,color:note.kind==="stale"?"#a06020":"#c04040",background:dk?"#2a1a1a":"#fdf3ec",border:"1px solid #e8c8b0",borderRadius:6}}>🚑 {note.text}</div> : null;
+          })()}
 
           {/* Schedule Warnings — INTERNAL ONLY (owner decision 2026-09-24: outsiders on
               ?public=1 / the OR board can't act on warnings). Everything here reads
@@ -8017,6 +8053,25 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                       <span style={{color:"#a07030",fontSize:8,marginLeft:2}}>{e.hours}</span>
                     </div>
                   ))}
+
+                  {/* Silvis (trauma) day — ON DEMAND (🚑 switch). Reads silvisDays
+                      DIRECTLY via sfCellChip — never a calData row (a non-Davenport
+                      row there renders as a phantom "N" night: #57). FAK only. */}
+                  {(() => {
+                    const chip = sfCellChip(silvisDays, ds, silvisFakId, {
+                      on: calFilters.silvis, sf, fakName: sMap[silvisFakId]?.name, ruleOn: silvisActive,
+                      deptOk: !calDeptFilter || (SURGEON_DEPTS[sMap[silvisFakId]?.name]||[]).includes(calDeptFilter),
+                    });
+                    if (!chip) return null;
+                    const P = chip.role === "P";
+                    return (
+                      <div key="silvis" title={chip.title}
+                        style={{marginBottom:1,padding:"1px 3px",borderRadius:3,fontSize:10,fontWeight:600,
+                          background:P?(dk?"#1a2a4a":"#e8f0fc"):(dk?"#1e2430":"#f4f6fa"),border:`1px solid ${P?"#7a9ad0":"#c8d0dc"}`,opacity:P?1:0.85}}>
+                        <span style={{color:P?"#1a4a9a":"#7a8a98",fontWeight:700}}>{chip.label}</span>
+                      </div>
+                    );
+                  })()}
 
                   {/* APP entries — hidden when filtering to a specific surgeon */}
                   {calFilters.app && !sf && calAppFilter!=="none" && !calDeptFilter && entries.filter(e=>e.type==="APP").filter(e=>calAppFilter==="all"||e.appId===calAppFilter).map((e,j)=>(
@@ -9334,6 +9389,33 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   )}
                 </div>
 
+                {/* 🚑 Silvis — FAK only: his upcoming Silvis days, soonest first */}
+                {myId && silvisFakId && myId === silvisFakId && (() => {
+                  const up = sfUpcoming(silvisDays, fmt(new Date()));
+                  const note = sfNotice(silvisRows.length, silvisLoadError, silvisDays.fetchedAt);
+                  const LIMIT = 5;
+                  const shownS = showAllMySilvis ? up : up.slice(0, LIMIT);
+                  return (
+                  <div style={{...css.card,background:dk?"#16223a":"#f3f6fd",border:"1px solid "+(dk?"#2a3a58":"#c8d4ec")}}>
+                    <div style={{fontSize:12,fontWeight:700,color:"#1a4a9a",marginBottom:6}}>🚑 Silvis <span style={{fontWeight:400,color:"#7a8aa8"}}>({up.length} upcoming)</span></div>
+                    {silvisRows.length === 0 ? (
+                      <div style={{fontSize:12,color:"#c04040"}}>{note ? note.text : "No Silvis days cached."} Check Calendar → 🔧 Schedule Tools & Export.</div>
+                    ) : (<>
+                      {note && <div style={{fontSize:11,color:note.kind==="stale"?"#a06020":"#c04040",marginBottom:4}}>{note.text}</div>}
+                      {up.length === 0 && <div style={{fontSize:12,color:"#8a94a0"}}>No upcoming Silvis days.</div>}
+                      {shownS.map(it => (
+                        <div key={it.day} style={{fontSize:12,padding:"3px 0",color:it.role==="P"?(dk?"#c8d8f0":"#1a2a4a"):"#7a8a98",fontWeight:it.role==="P"?600:400}}>{sfRowLabel(it)}</div>
+                      ))}
+                      {up.length > LIMIT && (
+                        <button onClick={()=>setShowAllMySilvis(v=>!v)} style={{marginTop:4,background:"none",border:"none",color:"#1a6fa8",fontSize:11,cursor:"pointer",padding:"6px 0",fontFamily:font}}>
+                          {showAllMySilvis ? "Show fewer" : `Show all ${up.length}`}
+                        </button>
+                      )}
+                    </>)}
+                  </div>
+                  );
+                })()}
+
                 {/* My Vacations — completed (past) ones hidden; shown in date order */}
                 {myVacsView.length > 0 && (() => {
                   const VAC_LIMIT = 5;
@@ -10254,6 +10336,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               </div>
               <p style={{fontSize:10,color:"#a0a8b0",margin:"8px 0 0",lineHeight:1.5}}>
                 Saturday digest fires automatically at 8 AM CDT. Public link: <span style={{fontFamily:mono}}>fkhan628.github.io/Call-Schedule-App/?public=1</span>
+                {" · "}Office link (opens with 🚑 Silvis on): <span style={{fontFamily:mono}}>fkhan628.github.io/Call-Schedule-App/?public=1&silvis=1</span>
               </p>
 
               {/* Publish dialog */}

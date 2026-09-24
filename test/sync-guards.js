@@ -1971,6 +1971,156 @@ check("prefs audit never logs the plaintext email (masked only)",
   }
 }
 
+// ─── R. Silvis on demand: the 🚑 calendar switch + FAK's Mine section (2026-09-24) ───
+// Owner decision: FAK's Silvis days stay OFF the calendar by default for
+// everyone; a "🚑 Silvis" Show-bar switch turns them on (partners, and office
+// staff on ?public=1 — deliberately reversing #55's "public never shows
+// Silvis": public/OR viewers see it only when THEY turn it on), ?silvis=1
+// forces it on at load, the device remembers an explicit choice, and FAK's
+// Mine tab lists his days. INVARIANT from #57: calData stays Davenport-only —
+// the chip reads silvisDays via sfCellChip, never a calData row.
+{
+  const R = vm.runInContext("({ sfUpcoming, sfRowLabel, sfDayLabel, sfCellChip, sfNotice, sfResolveToggle, sfDaysFromRows })", sandbox);
+  // R1 — one source of defaults, module level, silvis:false
+  {
+    const line = (src.match(/\nconst CAL_FILTER_DEFAULTS = Object\.freeze\(\{[^\n]*\}\);/) || [])[0];
+    const decl = src.indexOf("const CAL_FILTER_DEFAULTS"), comp = src.indexOf("function CallSchedule() {");
+    check("R1 CAL_FILTER_DEFAULTS is declared at MODULE level, before the component (a const read before its declaration = the 24a crash class)", !!line && decl !== -1 && comp !== -1 && decl < comp);
+    let D = null;
+    try { D = vm.runInContext("(() => {" + (line || "") + "\n return CAL_FILTER_DEFAULTS; })()", sandbox); } catch (ex) { /* reported below */ }
+    check("R1 defaults: silvis:false, every other layer on", !!D && D.silvis === false && ["svc", "night", "wknd", "app", "fierce", "vac", "appOff"].every(k => D[k] === true) && Object.isFrozen(D), JSON.stringify(D));
+    check("R1 the single source feeds useState (via the resolver), the Reset handler and the differs-check; no hard-coded filter literal remains",
+      count("return { ...CAL_FILTER_DEFAULTS, silvis: sfResolveToggle(param, stored) };") === 1
+      && count("setCalFilters({ ...CAL_FILTER_DEFAULTS });") === 1
+      && count("const calFiltersDiffer = Object.keys(CAL_FILTER_DEFAULTS).some(k => calFilters[k] !== CAL_FILTER_DEFAULTS[k]);") === 1
+      && count("(calFiltersDiffer || calSurgeonFilter ||") === 1
+      && count("setCalFilters({svc:") === 0 && count("useState({ svc: true") === 0 && count("Object.values(calFilters).some(v=>!v)") === 0);
+    const dl = (src.match(/  const calFiltersDiffer = [^\n]*;/) || [])[0];
+    let differ = null;
+    try { differ = vm.runInContext("(function (CAL_FILTER_DEFAULTS, calFilters) {" + dl + " return calFiltersDiffer; })", sandbox); } catch (ex) { /* below */ }
+    check("R1 Reset hidden at defaults; shown with Silvis ON or any layer off (the default-OFF filter no longer pins Reset on forever)",
+      !!differ && !!D && differ(D, Object.assign({}, D)) === false && differ(D, Object.assign({}, D, { silvis: true })) === true && differ(D, Object.assign({}, D, { night: false })) === true);
+  }
+  // R2 — the resolver: param → stored → off
+  check("R2 resolver: nothing set → OFF", R.sfResolveToggle(null, null) === false && R.sfResolveToggle("", "") === false && R.sfResolveToggle(null, "garbage") === false);
+  check("R2 resolver: ?silvis=1 wins over a stored 'false'; ?silvis=0 wins over a stored 'true'", R.sfResolveToggle("1", "false") === true && R.sfResolveToggle("0", "true") === false && R.sfResolveToggle("on", null) === true);
+  check("R2 resolver: no param → the device's remembered choice", R.sfResolveToggle(null, "true") === true && R.sfResolveToggle(null, "false") === false);
+  check("R2 only an EXPLICIT toggle is remembered (the ?silvis=1 load never writes the device default); Reset forgets it",
+    count("localStorage.setItem(CAL_SILVIS_STORE_KEY") === 1 && count("if (key === \"silvis\") rememberSilvisToggle(v);") === 1 && count("rememberSilvisToggle(null);") === 1
+    && /const rememberSilvisToggle = \(v\) => \{\s*try \{/.test(src));
+  // R3 — the chip: its own block over silvisDays, never calData; P → one chip, zero "N FAK"
+  {
+    check("R3 the cell's Silvis block goes through sfCellChip over silvisDays, gated by calFilters.silvis; calData still carries no Silvis type",
+      count("const chip = sfCellChip(silvisDays, ds, silvisFakId, {") === 1 && count("on: calFilters.silvis, sf,") === 1 && count("sfCellChip(") === 1
+      // CODE only — the calData memo's comment names the retired {type:"Silvis"} row on purpose
+      && src.split(/\r?\n/).filter(l => !/^\s*\/\//.test(l)).join("\n").split('type:"Silvis"').length - 1 === 0);
+    const START = "  const calData = useMemo(() => {";
+    const s0 = src.indexOf(START), e0 = s0 === -1 ? -1 : src.indexOf("\n  }, [", s0);
+    const P0 = "{entries.filter(e=>{", P1 = "}).map((e,j)=>{";
+    const p0 = src.indexOf(P0), p1 = p0 === -1 ? -1 : src.indexOf(P1, p0);
+    let built = null, pred = null;
+    try {
+      built = vm.runInContext("(function (env) { const { schedule, appShifts } = env; return (() => {" + src.slice(s0 + START.length, e0) + "})(); })", sandbox, { filename: "r-caldata.js" });
+      pred = vm.runInContext("(function (env) { const { calFilters, sf, calDeptFilter, SURGEON_DEPTS, sMap } = env; return (e=>{" + src.slice(p0 + P0.length, p1) + "}); })", sandbox, { filename: "r-pred.js" });
+    } catch (ex) { check("R3 calData memo + predicate extractable", false, String(ex)); }
+    if (built && pred) {
+      const FAK = "s6";
+      // week 10/05: FAK is service week (his real Davenport Sat 10/10 → a "W" chip); week 10/19: FAK holds no call on Sat 10/24
+      const sched = {
+        "2026-10-05": { dayCall: FAK, nights: { mon: "s1", tue: "s2", wed: "s3", thu: "s4", wknd: "s5" } },
+        "2026-10-19": { dayCall: "s7", nights: { mon: "s1", tue: "s2", wed: "s3", thu: "s4", wknd: "s5" } },
+      };
+      const rows = [
+        { day: "2026-10-24", primary_code: "FAK", backup_code: "ABC", fetched_at: "2026-09-24T10:00:00Z" },
+        { day: "2026-10-10", primary_code: "ABC", backup_code: "FAK", fetched_at: "2026-09-24T10:00:00Z" },
+        { day: "2026-10-17", primary_code: "ABC", backup_code: "XYZ", fetched_at: "2026-09-24T10:00:00Z" },
+      ];
+      const days = R.sfDaysFromRows(rows, "FAK");
+      const d = built({ schedule: sched, appShifts: {} });
+      const env = { calFilters: { svc: true, wknd: true, night: true, app: true, fierce: true, silvis: true }, sf: "", calDeptFilter: "", SURGEON_DEPTS: {}, sMap: { s5: { name: "REH" }, s6: { name: "FAK" }, s7: { name: "ARW" } } };
+      const lab = (e) => (e.type.includes("Svc") ? "S" : e.type.includes("Wknd") ? "W" : "N") + " " + (env.sMap[e.surgeon] ? env.sMap[e.surgeon].name : "?");
+      const render = (ds, on) => {
+        const generic = (d[ds] || []).filter(pred(env)).map(lab);
+        const chip = R.sfCellChip(days, ds, FAK, { on, sf: "", deptOk: true, fakName: "FAK", ruleOn: true });
+        return { generic, chips: chip ? [chip.label] : [] };
+      };
+      const onP = render("2026-10-24", true), offP = render("2026-10-24", false);
+      check("R3 Silvis PRIMARY Sat 10/24, switch ON → exactly one '🚑 Silvis P · FAK' chip and ZERO 'N FAK'",
+        onP.chips.length === 1 && onP.chips[0] === "🚑 Silvis P · FAK" && !onP.generic.includes("N FAK") && !onP.generic.some(x => /FAK/.test(x)), JSON.stringify(onP));
+      check("R3 switch OFF → zero Silvis chips, and still no FAK entry that day", offP.chips.length === 0 && !offP.generic.some(x => /FAK/.test(x)), JSON.stringify(offP));
+      const onB = render("2026-10-10", true);
+      check("R3 Silvis BACKUP Sat 10/10 → his REAL Davenport chip 'W FAK' + a muted '🚑 Silvis B · FAK'; never an N chip",
+        onB.generic.includes("W FAK") && onB.chips.length === 1 && onB.chips[0] === "🚑 Silvis B · FAK" && !onB.generic.includes("N FAK"), JSON.stringify(onB));
+      const other = render("2026-10-17", true);
+      check("R3 a day where ANOTHER Silvis code is primary/backup never renders (FAK's days only)", other.chips.length === 0, JSON.stringify(other));
+      const pChip = R.sfCellChip(days, "2026-10-24", FAK, { on: true, fakName: "FAK", ruleOn: true });
+      const bChip = R.sfCellChip(days, "2026-10-10", FAK, { on: true, fakName: "FAK" });
+      check("R3 tooltips: P = 07:00 → 07:00 next day, no Davenport call may overlap; B = standby, no block; rule OFF says so",
+        /07:00 → 07:00 next day — no Davenport call may overlap/.test(pChip.title) && /standby, no block/.test(bChip.title)
+        && /rule silvisBusy is OFF/.test(R.sfCellChip(days, "2026-10-24", FAK, { on: true, ruleOn: false }).title));
+      check("R3 the chip respects the surgeon filter and the department filter like every other entry",
+        R.sfCellChip(days, "2026-10-24", FAK, { on: true, sf: "s4" }) === null && R.sfCellChip(days, "2026-10-24", FAK, { on: true, sf: FAK }) !== null
+        && R.sfCellChip(days, "2026-10-24", FAK, { on: true, deptOk: false }) === null && R.sfCellChip(days, "2026-10-24", null, { on: true }) === null);
+    }
+  }
+  // R4 — the switch exists in public mode (NOT appOffVisible-gated)
+  {
+    const sw = src.indexOf('{key:"silvis",label:"Silvis",color:"#1a4a9a",icon:"🚑"},');
+    const gate = src.indexOf("...(appOffVisible ? [{key:\"appOff\"");
+    const gateLine = gate === -1 ? "" : src.slice(gate, src.indexOf("\n", gate));
+    check("R4 the 🚑 switch is in the Show bar for EVERY view — before, and outside, the appOffVisible-gated entry",
+      sw !== -1 && gate !== -1 && sw < gate && gate - sw < 800 && !/silvis/.test(gateLine) && count('{key:"silvis",label:"Silvis"') === 1);
+  }
+  // R5 — the notice selector: distinct copy per untrustworthy state, silence only when healthy
+  {
+    const now = Date.parse("2026-09-24T12:00:00Z");
+    const failed = R.sfNotice(0, "HTTP 500", null, now), empty = R.sfNotice(0, null, null, now);
+    const kept = R.sfNotice(109, "HTTP 500", "2026-09-24T11:00:00Z", now);
+    const stale = R.sfNotice(109, null, "2026-09-22T11:00:00Z", now), healthy = R.sfNotice(109, null, "2026-09-24T11:00:00Z", now);
+    check("R5 no rows + load error → 'Silvis feed unavailable — last load failed; Silvis days may be missing.'", !!failed && failed.text === "Silvis feed unavailable — last load failed; Silvis days may be missing.");
+    check("R5 no rows, no error → 'No Silvis days cached.'", !!empty && empty.text === "No Silvis days cached.");
+    check("R5 stale → 'Silvis data is stale — fetched Xh ago.'", !!stale && /^Silvis data is stale — fetched 49h ago\.$/.test(stale.text), stale && stale.text);
+    check("R5 rows kept after a failed read → its own warning (never silence); healthy → none; all copies distinct",
+      !!kept && kept.kind === "failed-kept" && healthy === null && new Set([failed.text, empty.text, stale.text, kept.text]).size === 4);
+    check("R5 the notice renders under the Show bar whenever the switch is on (and names a missing roster code)",
+      count(": sfNotice(silvisRows.length, silvisLoadError, silvisDays.fetchedAt);") === 1 && count("{calFilters.silvis && (() => {") === 1 && count('kind: "noroster"') === 1);
+  }
+  // R6 — sfUpcoming
+  {
+    const rows = [
+      { day: "2026-09-20", primary_code: "FAK", backup_code: null, fetched_at: "x" },
+      { day: "2026-10-24", primary_code: "FAK", backup_code: null, fetched_at: "x" },
+      { day: "2026-10-10", primary_code: "ABC", backup_code: "FAK", fetched_at: "x" },
+      { day: "2026-09-24", primary_code: "FAK", backup_code: "FAK", fetched_at: "x" },
+      { day: "2026-10-01", primary_code: "ABC", backup_code: "XYZ", fetched_at: "x" },
+    ];
+    const up = R.sfUpcoming(R.sfDaysFromRows(rows, "FAK"), "2026-09-24");
+    check("R6 sfUpcoming: today onward (past dropped), soonest first, P and B, a P+B day listed once as P, FAK's days only",
+      JSON.stringify(up) === JSON.stringify([{ day: "2026-09-24", role: "P" }, { day: "2026-10-10", role: "B" }, { day: "2026-10-24", role: "P" }]), JSON.stringify(up));
+    check("R6 Mine section: FAK only, sfUpcoming + sfRowLabel, the empty/failed line points to Calendar → 🔧 Schedule Tools",
+      count("{myId && silvisFakId && myId === silvisFakId && (() => {") === 1 && count("const up = sfUpcoming(silvisDays, fmt(new Date()));") === 1
+      && count("{sfRowLabel(it)}") === 1 && count("Check Calendar → 🔧 Schedule Tools & Export.") === 1);
+  }
+  // R7 — labels under TZ=America/Chicago (a UTC run cannot see the defect)
+  {
+    const { execFileSync } = require("child_process");
+    const code = `const sf = require(${JSON.stringify(path.join(ROOT, "silvis-feed.js"))});
+      const off = new Date(2026, 9, 24).getTimezoneOffset();
+      const naive = new Date("2026-10-24").getDay();
+      process.stdout.write(JSON.stringify({ off, naive, p: sf.sfRowLabel({ day: "2026-10-24", role: "P" }), b: sf.sfRowLabel({ day: "2026-10-10", role: "B" }), l: sf.sfDayLabel("2026-10-24") }));`;
+    let out = null;
+    try { out = JSON.parse(execFileSync(process.execPath, ["-e", code], { env: Object.assign({}, process.env, { TZ: "America/Chicago" }), encoding: "utf8" })); } catch (ex) { out = { err: String(ex) }; }
+    check("R7 the child really runs in America/Chicago (CDT offset 300) and there the NAIVE new Date('2026-10-24') is FRIDAY — the defect is visible",
+      !!out && out.off === 300 && out.naive === 5, JSON.stringify(out));
+    check("R7 under TZ=America/Chicago the labels read 'Sat Oct 24 · PRIMARY · 07:00 → Sun 07:00' and 'Sat Oct 10 · backup · standby, no block'",
+      !!out && out.p === "Sat Oct 24 · PRIMARY · 07:00 → Sun 07:00" && out.b === "Sat Oct 10 · backup · standby, no block" && out.l === "Sat Oct 24", JSON.stringify(out));
+  }
+  // R8 — the office link is offered (the plain public link unchanged)
+  check("R8 Settings → Office Notifications offers the office link ?public=1&silvis=1, labeled as opening with Silvis on",
+    count("Office link (opens with 🚑 Silvis on): <span style={{fontFamily:mono}}>fkhan628.github.io/Call-Schedule-App/?public=1&silvis=1</span>") === 1
+    && count("Public link: <span style={{fontFamily:mono}}>fkhan628.github.io/Call-Schedule-App/?public=1</span>") === 1);
+}
+
 // ─── Verdict ───
 console.log(`\n${checks} checks, ${failures.length} failure(s)`);
 if (failures.length) {
