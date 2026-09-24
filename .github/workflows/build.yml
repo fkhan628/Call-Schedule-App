@@ -26,6 +26,7 @@ on:
       - "config.js"
       - "helpers.js"
       - "app-styles.js"
+      - "silvis-feed.js"
       - "test/generator-regression.js"
       - "test/sync-guards.js"
       - "test/consistency-checks.js"
