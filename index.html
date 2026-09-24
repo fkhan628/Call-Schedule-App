@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.09.24e";
+    var APP_VERSION = "2026.09.24f";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -120,7 +120,7 @@ const {
   useEffect
 } = React;
 function CallSchedule() {
-  var _find, _surgeons$find13;
+  var _find, _surgeons$find14;
   const isPublicMode = useMemo(() => {
     try {
       const params = new URLSearchParams(window.location.search);
@@ -233,6 +233,8 @@ function CallSchedule() {
   const [pendingLocks, setPendingLocks] = useState([]);
   const [silvisRows, setSilvisRows] = useState([]);
   const [silvisRule, setSilvisRule] = useState(SF_RULE_DEFAULT);
+  const [dismissedWarnings, setDismissedWarnings] = useState([]);
+  const [showDismissedWarnings, setShowDismissedWarnings] = useState(false);
   const [silvisRefreshing, setSilvisRefreshing] = useState(false);
   const [silvisLoadError, setSilvisLoadError] = useState(null);
   const silvisRowsRef = useRef([]);
@@ -1345,6 +1347,7 @@ function CallSchedule() {
           if (d.holidayAssignments) setHolidayAssignments(d.holidayAssignments);
           if (Array.isArray(d.pendingLocks)) setPendingLocks(d.pendingLocks);
           if (d.silvisRule) setSilvisRule(sfRule(d.silvisRule));
+          if (Array.isArray(d.dismissedWarnings)) setDismissedWarnings(d.dismissedWarnings);
           if (d.schedule && Object.keys(d.schedule).length || d.vacations && Object.keys(d.vacations).length || d.appShifts && Object.keys(d.appShifts).length) {
             everHadRealDataRef.current = true;
           }
@@ -1441,6 +1444,7 @@ function CallSchedule() {
         if (d.holidayAssignments) setHolidayAssignments(d.holidayAssignments);
         if (Array.isArray(d.pendingLocks)) setPendingLocks(d.pendingLocks);
         if (d.silvisRule) setSilvisRule(sfRule(d.silvisRule));
+        if (Array.isArray(d.dismissedWarnings)) setDismissedWarnings(d.dismissedWarnings);
         if (d.schedule && Object.keys(d.schedule).length || d.vacations && Object.keys(d.vacations).length || d.appShifts && Object.keys(d.appShifts).length) {
           everHadRealDataRef.current = true;
         }
@@ -1629,7 +1633,8 @@ function CallSchedule() {
     holidayAssignments,
     startMondayOverride,
     pendingLocks,
-    silvisRule
+    silvisRule,
+    dismissedWarnings
   }, overrides);
   const canWriteBlob = isScheduler;
   useEffect(() => {
@@ -1683,7 +1688,7 @@ function CallSchedule() {
       }
     }, 800);
     return () => clearTimeout(timer);
-  }, [loaded, surgeons, apps, vacations, noCallDays, backupMondaySet, fierceBackupSet, schedule, priorCounts, year1Counts, startMonth, startYear, numWeeks, holidayAssignments, startMondayOverride, pendingLocks]);
+  }, [loaded, surgeons, apps, vacations, noCallDays, backupMondaySet, fierceBackupSet, schedule, priorCounts, year1Counts, startMonth, startYear, numWeeks, holidayAssignments, startMondayOverride, pendingLocks, dismissedWarnings]);
   useEffect(() => {
     const flushPending = source => {
       if (isPublicMode) return;
@@ -3929,6 +3934,7 @@ function CallSchedule() {
     if (d.holidayAssignments) setHolidayAssignments(d.holidayAssignments);
     if (Array.isArray(d.pendingLocks)) setPendingLocks(d.pendingLocks);
     setSilvisRule(d.silvisRule ? sfRule(d.silvisRule) : SF_RULE_DEFAULT);
+    setDismissedWarnings(Array.isArray(d.dismissedWarnings) ? d.dismissedWarnings : []);
     lastSyncRef.current = r.ts;
     everHadRealDataRef.current = true;
     logAudit("system.restore_snapshot", `Restored snapshot "${snapshotReasonLabel(snap.reason)}" from ${when}`, {
@@ -5409,16 +5415,19 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     const who = nameOf(silvisFakId);
     const health = [];
     if (silvisRows.length === 0) health.push({
+      key: "silvis-feed|empty",
       severity: "error",
       week: "feed",
       message: `Silvis feed is EMPTY${silvisLoadError ? " — " + silvisLoadError : ""} — rule silvisBusy cannot see ${who}'s Silvis call (sign in and refresh from Settings)`
     });else if (silvisLoadError) health.push({
+      key: `silvis-feed|failed|${silvisDays.fetchedAt || "none"}`,
       severity: "error",
       week: "feed",
       message: `Silvis feed: last read FAILED (${silvisLoadError}) — using the previous cache`
     });else {
       const st = sfStatus(silvisDays.fetchedAt);
       if (st.stale) health.push({
+        key: `silvis-feed|stale|${silvisDays.fetchedAt || "none"}`,
         severity: "warning",
         week: "feed",
         message: `Silvis feed is STALE (fetched ${st.ageHours === null ? "?" : st.ageHours + "h"} ago) — refresh from Settings`
@@ -5429,12 +5438,14 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         mondayStr: m
       })).sort();
       if (beyond.length) health.push({
+        key: `silvis-horizon|${silvisDays.to}|${beyond[0]}|${beyond.length}`,
         severity: "info",
         week: beyond[0],
         message: `${beyond.length} published week${beyond.length === 1 ? "" : "s"} from ${beyond[0]} lie beyond the Silvis feed horizon (${silvisDays.to}) — no Silvis data there yet; re-check after Silvis publishes`
       });
     }
     const hard = sfOverlaps(schedule, silvisDays.primary, silvisFakId).filter(inScope).map(o => ({
+      key: `silvis|${silvisFakId}|${o.mondayStr}|${o.slot}|${o.day}`,
       severity: "error",
       week: o.mondayStr,
       message: `${who}: Silvis primary + Davenport ${o.label}, ${md(o.day)}`
@@ -5470,6 +5481,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         if (a && a === b) {
           var _sMap$a;
           issues.push({
+            key: `consecutive|${mStr}|${a}|${nightOrder[i]}+${nightOrder[i + 1]}`,
             type: "consecutive",
             severity: "error",
             week: mStr,
@@ -5484,6 +5496,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         if (wkndSurgeon && (nextWk === null || nextWk === void 0 || (_nextWk$nights3 = nextWk.nights) === null || _nextWk$nights3 === void 0 ? void 0 : _nextWk$nights3.mon) === wkndSurgeon) {
           var _sMap$wkndSurgeon;
           issues.push({
+            key: `wknd-mon|${mStr}|${mondayStrs[wkIdx + 1]}|${wkndSurgeon}`,
             type: "consecutive",
             severity: "error",
             week: mStr,
@@ -5496,6 +5509,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           if (!nextHolCov[nextMonStr]) {
             var _sMap$wk$dayCall;
             issues.push({
+              key: `svc-mon|${mStr}|${nextMonStr}|${wk.dayCall}`,
               type: "consecutive",
               severity: "error",
               week: mStr,
@@ -5519,6 +5533,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             }[sk]));
             if (holCov[nightDate]) return;
             issues.push({
+              key: `svc-night|${mStr}|${wk.dayCall}|${sk}`,
               type: "double",
               severity: "error",
               week: mStr,
@@ -5532,6 +5547,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           if (!holCov[friD] && !holCov[sunD]) {
             var _sMap$wk$dayCall3;
             issues.push({
+              key: `svc-wknd|${mStr}|${wk.dayCall}`,
               type: "double",
               severity: "error",
               week: mStr,
@@ -5555,6 +5571,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       const appsOff = apps.filter(a => onVac(a.id, ds, vacations));
       if (surgeonsOff.length > 4) {
         warnings.push({
+          key: `surgeons-off|${ds}|${surgeonsOff.map(s => s.id).sort().join("+")}`,
           date: ds,
           severity: "error",
           message: `${surgeonsOff.length} surgeons off on ${ds} (max 4): ${surgeonsOff.map(s => s.name).join(", ")}`
@@ -5562,6 +5579,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       }
       if (appsOff.length > 2) {
         warnings.push({
+          key: `apps-off|${ds}|${appsOff.map(a => a.id).sort().join("+")}`,
           date: ds,
           severity: "info",
           message: `${appsOff.length} APPs off on ${ds} (prefer ≤2): ${appsOff.map(a => a.name).join(", ")}`
@@ -5577,6 +5595,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           if (onVac(c.surgeon, c.date, vacations)) {
             var _sMap$c$surgeon;
             warnings.push({
+              key: `holiday-vac|${h.date || ""}|${c.date}|${c.surgeon}`,
               date: c.date,
               severity: "error",
               message: `${((_sMap$c$surgeon = sMap[c.surgeon]) === null || _sMap$c$surgeon === void 0 ? void 0 : _sMap$c$surgeon.name) || c.surgeon} is assigned ${h.name} coverage (${c.date}) but has vacation then — holiday surgeons can't be on vacation during their holiday`
@@ -5587,6 +5606,45 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     });
     return warnings;
   }, [mondays, surgeons, apps, vacations, holidayAssignments, sMap]);
+  const warnShown = useMemo(() => {
+    const hid = new Set((dismissedWarnings || []).map(d => d && d.key).filter(Boolean));
+    const keep = arr => arr.filter(x => !(x.key && hid.has(x.key)));
+    const live = new Set([...silvisConflicts, ...conflicts, ...vacOverlapWarnings].map(x => x.key).filter(Boolean));
+    return {
+      silvis: keep(silvisConflicts),
+      conflicts: keep(conflicts),
+      vac: keep(vacOverlapWarnings),
+      hidden: (dismissedWarnings || []).filter(d => d && d.key && live.has(d.key))
+    };
+  }, [silvisConflicts, conflicts, vacOverlapWarnings, dismissedWarnings]);
+  const warnLineText = x => (x.week && x.week !== "feed" ? x.week + " · " : "") + x.message;
+  const warnActor = () => {
+    var _surgeons$find12;
+    return (userProfile === null || userProfile === void 0 ? void 0 : userProfile.display_name) || ((_surgeons$find12 = surgeons.find(s => s.id === (userProfile === null || userProfile === void 0 ? void 0 : userProfile.person_id))) === null || _surgeons$find12 === void 0 ? void 0 : _surgeons$find12.name) || "a scheduler";
+  };
+  const dismissWarning = x => {
+    if (!canWriteBlob || !x || !x.key) return;
+    const text = warnLineText(x);
+    if (!confirm(`Dismiss this warning for EVERYONE?\n\n"${text}"\n\nIt stays hidden on every device until a scheduler restores it. If the underlying facts change, it comes back as a new warning.`)) return;
+    const by = warnActor();
+    setDismissedWarnings(prev => [...(prev || []).filter(d => d && d.key !== x.key), {
+      key: x.key,
+      text,
+      by,
+      at: new Date().toISOString()
+    }]);
+    logAudit("warning_dismissed", `${by} dismissed: ${text}`, {
+      key: x.key
+    });
+  };
+  const restoreWarning = d => {
+    if (!canWriteBlob || !d || !d.key) return;
+    const by = warnActor();
+    setDismissedWarnings(prev => (prev || []).filter(e => e && e.key !== d.key));
+    logAudit("warning_restored", `${by} restored: ${d.text || d.key}`, {
+      key: d.key
+    });
+  };
   const exportYearlySummary = useCallback(() => {
     const header = ["Surgeon", "Svc Wk", "Nights", "Wknds", "B-SW", "B-Nights", "B-Wknds", "Total"];
     const rows = surgeons.map(s => {
@@ -8441,8 +8499,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           fontWeight: 700
         }
       }, ck.ok ? "✓" : "⚠", " ", ck.label, " group:"), " ", ck.ok ? `All ${ck.uniqueCount} surgeons distinct (${ck.freeCount} free)` : ck.dupes.map(d => {
-        var _surgeons$find12;
-        return `${((_surgeons$find12 = surgeons.find(s => s.id === d.surgeon)) === null || _surgeons$find12 === void 0 ? void 0 : _surgeons$find12.name) || d.surgeon} is on both ${d.hol1} & ${d.hol2}`;
+        var _surgeons$find13;
+        return `${((_surgeons$find13 = surgeons.find(s => s.id === d.surgeon)) === null || _surgeons$find13 === void 0 ? void 0 : _surgeons$find13.name) || d.surgeon} is on both ${d.hol1} & ${d.hol2}`;
       }).join("; "))));
     })(), React.createElement("div", {
       style: {
@@ -10196,104 +10254,190 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       cursor: "pointer",
       fontFamily: font
     }
-  }, "Reset")), (conflicts.length > 0 || vacOverlapWarnings.length > 0 || silvisConflicts.length > 0) && React.createElement("div", {
-    style: _objectSpread(_objectSpread({}, css.card), {}, {
-      marginBottom: 14,
-      background: dk ? "#2a1a1a" : "#fef8f0",
-      border: "1px solid #e8c0a0"
-    })
-  }, React.createElement("div", {
-    style: {
-      display: "flex",
-      justifyContent: "space-between",
-      alignItems: "center",
-      marginBottom: 8
-    }
-  }, React.createElement("div", {
-    style: {
-      fontSize: 13,
-      fontWeight: 700,
-      color: "#c06020"
-    }
-  }, "⚠️ Schedule Warnings — ", conflicts.length + vacOverlapWarnings.length + silvisConflicts.length)), silvisConflicts.slice(0, 10).map((c, i) => React.createElement("div", {
-    key: `s${i}`,
-    style: {
-      display: "flex",
-      alignItems: "center",
-      gap: 8,
-      padding: "4px 8px",
-      marginBottom: 3,
-      fontSize: 12,
-      color: c.severity === "error" ? "#c04040" : "#5a6a78",
-      background: c.severity === "error" ? dk ? "#2a0a0a" : "#fce8e8" : dk ? "#1a1a2a" : "#f0f8ff",
-      borderRadius: 4,
-      border: `1px solid ${c.severity === "error" ? "#e0b0b0" : "#c0d8f0"}`
-    }
-  }, React.createElement("span", {
-    style: {
-      fontWeight: 700
-    }
-  }, c.severity === "error" ? "🔴" : "🔵"), React.createElement("span", {
-    style: {
-      fontFamily: mono,
-      fontSize: 11,
-      color: dkSubtext
-    }
-  }, c.week), React.createElement("span", null, c.message))), conflicts.slice(0, 10).map((c, i) => React.createElement("div", {
-    key: `c${i}`,
-    style: {
-      display: "flex",
-      alignItems: "center",
-      gap: 8,
-      padding: "4px 8px",
-      marginBottom: 3,
-      fontSize: 12,
-      color: c.severity === "error" ? "#c04040" : c.severity === "warning" ? "#a06020" : "#5a6a78",
-      background: c.severity === "error" ? dk ? "#2a0a0a" : "#fce8e8" : dk ? "#2a1a0a" : "#fef8e8",
-      borderRadius: 4,
-      border: `1px solid ${c.severity === "error" ? "#e0b0b0" : "#e8d0b0"}`
-    }
-  }, React.createElement("span", {
-    style: {
-      fontWeight: 700
-    }
-  }, c.severity === "error" ? "🔴" : c.severity === "warning" ? "🟡" : "🔵"), React.createElement("span", {
-    style: {
-      fontFamily: mono,
-      fontSize: 11,
-      color: dkSubtext
-    }
-  }, c.week), React.createElement("span", null, c.message))), vacOverlapWarnings.slice(0, 10).map((w, i) => React.createElement("div", {
-    key: `v${i}`,
-    style: {
-      display: "flex",
-      alignItems: "center",
-      gap: 8,
-      padding: "4px 8px",
-      marginBottom: 3,
-      fontSize: 12,
-      color: w.severity === "error" ? "#c04040" : "#5a6a78",
-      background: w.severity === "error" ? dk ? "#2a0a0a" : "#fce8e8" : dk ? "#1a1a2a" : "#f0f8ff",
-      borderRadius: 4,
-      border: `1px solid ${w.severity === "error" ? "#e0b0b0" : "#c0d8f0"}`
-    }
-  }, React.createElement("span", {
-    style: {
-      fontWeight: 700
-    }
-  }, w.severity === "error" ? "🔴" : "🔵"), React.createElement("span", null, w.message))), silvisConflicts.length > 10 && React.createElement("p", {
-    style: {
-      fontSize: 11,
-      color: "#8a94a0",
-      marginTop: 4
-    }
-  }, "+ ", silvisConflicts.length - 10, " more Silvis line", silvisConflicts.length - 10 === 1 ? "" : "s", "…"), conflicts.length + vacOverlapWarnings.length > 20 && React.createElement("p", {
-    style: {
-      fontSize: 11,
-      color: "#8a94a0",
-      marginTop: 4
-    }
-  }, "+ more…")), React.createElement("div", {
+  }, "Reset")), !isPublicMode && (() => {
+    const shownTotal = warnShown.silvis.length + warnShown.conflicts.length + warnShown.vac.length;
+    const dismissBtn = x => canWriteBlob && x.key ? React.createElement("button", {
+      onClick: () => dismissWarning(x),
+      title: "Dismiss for everyone",
+      "aria-label": "Dismiss this warning for everyone",
+      style: {
+        marginLeft: "auto",
+        minWidth: 36,
+        minHeight: 36,
+        padding: "4px 10px",
+        border: "1px solid #e0c0a8",
+        borderRadius: 6,
+        background: "transparent",
+        color: "#a06020",
+        fontSize: 14,
+        fontWeight: 700,
+        cursor: "pointer",
+        fontFamily: font,
+        flexShrink: 0
+      }
+    }, "✕") : null;
+    const dismissedBar = canWriteBlob && warnShown.hidden.length > 0 ? React.createElement("div", {
+      style: {
+        fontSize: 11,
+        color: "#8a94a0",
+        marginTop: shownTotal ? 6 : 0
+      }
+    }, warnShown.hidden.length, " dismissed · ", React.createElement("button", {
+      onClick: () => setShowDismissedWarnings(v => !v),
+      style: {
+        border: "none",
+        background: "none",
+        color: "#1a6fa8",
+        textDecoration: "underline",
+        cursor: "pointer",
+        fontSize: 11,
+        padding: "8px 4px",
+        fontFamily: font
+      }
+    }, showDismissedWarnings ? "hide" : "show"), showDismissedWarnings && warnShown.hidden.map(d => React.createElement("div", {
+      key: d.key,
+      style: {
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        padding: "4px 8px",
+        marginTop: 3,
+        fontSize: 12,
+        color: "#7a8a98",
+        background: dk ? "#1e2430" : "#f4f6fa",
+        borderRadius: 6,
+        border: "1px solid #d8dee6"
+      }
+    }, React.createElement("span", {
+      style: {
+        textDecoration: "line-through"
+      }
+    }, d.text), React.createElement("span", {
+      style: {
+        fontSize: 10,
+        whiteSpace: "nowrap"
+      }
+    }, "— ", d.by, d.at ? ", " + new Date(d.at).toLocaleDateString() : ""), React.createElement("button", {
+      onClick: () => restoreWarning(d),
+      style: {
+        marginLeft: "auto",
+        minHeight: 36,
+        padding: "4px 12px",
+        border: "1px solid #c8d0dc",
+        borderRadius: 6,
+        background: "transparent",
+        color: "#1a6fa8",
+        fontSize: 12,
+        fontWeight: 600,
+        cursor: "pointer",
+        fontFamily: font,
+        flexShrink: 0
+      }
+    }, "Restore")))) : null;
+    if (shownTotal === 0) return dismissedBar ? React.createElement("div", {
+      style: {
+        marginBottom: 10
+      }
+    }, dismissedBar) : null;
+    return React.createElement("div", {
+      style: _objectSpread(_objectSpread({}, css.card), {}, {
+        marginBottom: 14,
+        background: dk ? "#2a1a1a" : "#fef8f0",
+        border: "1px solid #e8c0a0"
+      })
+    }, React.createElement("div", {
+      style: {
+        display: "flex",
+        justifyContent: "space-between",
+        alignItems: "center",
+        marginBottom: 8
+      }
+    }, React.createElement("div", {
+      style: {
+        fontSize: 13,
+        fontWeight: 700,
+        color: "#c06020"
+      }
+    }, "⚠️ Schedule Warnings — ", shownTotal)), warnShown.silvis.slice(0, 10).map((c, i) => React.createElement("div", {
+      key: c.key || `s${i}`,
+      style: {
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        padding: "4px 8px",
+        marginBottom: 3,
+        fontSize: 12,
+        color: c.severity === "error" ? "#c04040" : "#5a6a78",
+        background: c.severity === "error" ? dk ? "#2a0a0a" : "#fce8e8" : dk ? "#1a1a2a" : "#f0f8ff",
+        borderRadius: 4,
+        border: `1px solid ${c.severity === "error" ? "#e0b0b0" : "#c0d8f0"}`
+      }
+    }, React.createElement("span", {
+      style: {
+        fontWeight: 700
+      }
+    }, c.severity === "error" ? "🔴" : "🔵"), React.createElement("span", {
+      style: {
+        fontFamily: mono,
+        fontSize: 11,
+        color: dkSubtext
+      }
+    }, c.week), React.createElement("span", null, c.message), dismissBtn(c))), warnShown.conflicts.slice(0, 10).map((c, i) => React.createElement("div", {
+      key: c.key || `c${i}`,
+      style: {
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        padding: "4px 8px",
+        marginBottom: 3,
+        fontSize: 12,
+        color: c.severity === "error" ? "#c04040" : c.severity === "warning" ? "#a06020" : "#5a6a78",
+        background: c.severity === "error" ? dk ? "#2a0a0a" : "#fce8e8" : dk ? "#2a1a0a" : "#fef8e8",
+        borderRadius: 4,
+        border: `1px solid ${c.severity === "error" ? "#e0b0b0" : "#e8d0b0"}`
+      }
+    }, React.createElement("span", {
+      style: {
+        fontWeight: 700
+      }
+    }, c.severity === "error" ? "🔴" : c.severity === "warning" ? "🟡" : "🔵"), React.createElement("span", {
+      style: {
+        fontFamily: mono,
+        fontSize: 11,
+        color: dkSubtext
+      }
+    }, c.week), React.createElement("span", null, c.message), dismissBtn(c))), warnShown.vac.slice(0, 10).map((w, i) => React.createElement("div", {
+      key: w.key || `v${i}`,
+      style: {
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        padding: "4px 8px",
+        marginBottom: 3,
+        fontSize: 12,
+        color: w.severity === "error" ? "#c04040" : "#5a6a78",
+        background: w.severity === "error" ? dk ? "#2a0a0a" : "#fce8e8" : dk ? "#1a1a2a" : "#f0f8ff",
+        borderRadius: 4,
+        border: `1px solid ${w.severity === "error" ? "#e0b0b0" : "#c0d8f0"}`
+      }
+    }, React.createElement("span", {
+      style: {
+        fontWeight: 700
+      }
+    }, w.severity === "error" ? "🔴" : "🔵"), React.createElement("span", null, w.message), dismissBtn(w))), warnShown.silvis.length > 10 && React.createElement("p", {
+      style: {
+        fontSize: 11,
+        color: "#8a94a0",
+        marginTop: 4
+      }
+    }, "+ ", warnShown.silvis.length - 10, " more Silvis line", warnShown.silvis.length - 10 === 1 ? "" : "s", "…"), warnShown.conflicts.length + warnShown.vac.length > 20 && React.createElement("p", {
+      style: {
+        fontSize: 11,
+        color: "#8a94a0",
+        marginTop: 4
+      }
+    }, "+ more…"), dismissedBar);
+  })(), React.createElement("div", {
     style: {
       display: "grid",
       gridTemplateColumns: "repeat(7,minmax(0,1fr))",
@@ -14206,7 +14350,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       color: "#6030a0",
       padding: "6px 0"
     }
-  }, ((_surgeons$find13 = surgeons.find(s => s.id === mySurgeon)) === null || _surgeons$find13 === void 0 ? void 0 : _surgeons$find13.name) || "—")), React.createElement("div", null, React.createElement("label", {
+  }, ((_surgeons$find14 = surgeons.find(s => s.id === mySurgeon)) === null || _surgeons$find14 === void 0 ? void 0 : _surgeons$find14.name) || "—")), React.createElement("div", null, React.createElement("label", {
     style: {
       fontSize: 10,
       color: "#7a8a98",
