@@ -38,9 +38,14 @@
        NO-CALL differs on the trailing edge only: on call the night BEFORE a
        no-call day is allowed; before a vacation day it is not — that is why
        the separate vacationsOnly map is threaded through generate().
-     - Manual locks are honored exactly and skipped by every pass — even
-       over a listed vacation. (The lock UI's "dc" slot key is normalized to
-       "dayCall" on application.)
+     - Manual locks are honored exactly and skipped by every pass. A
+       WEEKNIGHT lock bypasses availability (honored even over a listed
+       vacation / no-call / Silvis day); a Service-Week or Weekend lock on a
+       surgeon the availability map blocks that week is DROPPED silently by
+       the pre-assignment step — the app's lock UI says so at lock time and
+       doGenerate toasts every lock the result did not honor (2026-09-24).
+       (The lock UI's "dc" slot key is normalized to "dayCall" on
+       application.)
      - silvisBusy (2026-09-24, rule as DATA — config blob silvisRule
        { enabled, code:"FAK" }): FAK is also primary trauma call at Silvis
        (separate app + Supabase project). On a Silvis PRIMARY day D (one 24h
@@ -53,7 +58,8 @@
        the `vac` availability map as single-day [D,D] ranges, which is
        exactly NO-CALL semantics (the night BEFORE D, ending 07:00 D, stays
        allowed; never into vacationsOnly). Like a vacation, the squeezed-
-       week last-resort fallback (~line 570) can still place him — the
+       week last-resort fallbacks (weekend ~line 658, weeknights ~line 770)
+       can still place him — the
        app's Schedule Warnings line per overlap is the net. Silvis BACKUP
        days are standby and never block (soft note only). Pinned two-sided
        in test/generator-regression.js scenario E; the app-side refusals
