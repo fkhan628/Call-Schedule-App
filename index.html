@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.09.24g";
+    var APP_VERSION = "2026.09.24h";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -5444,11 +5444,13 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     const health = [];
     if (silvisRows.length === 0) health.push({
       key: "silvis-feed|empty",
+      dismissable: false,
       severity: "error",
       week: "feed",
       message: `Silvis feed is EMPTY${silvisLoadError ? " — " + silvisLoadError : ""} — rule silvisBusy cannot see ${who}'s Silvis call (sign in and refresh from Settings)`
     });else if (silvisLoadError) health.push({
       key: `silvis-feed|failed|${silvisDays.fetchedAt || "none"}`,
+      dismissable: false,
       severity: "error",
       week: "feed",
       message: `Silvis feed: last read FAILED (${silvisLoadError}) — using the previous cache`
@@ -5456,6 +5458,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       const st = sfStatus(silvisDays.fetchedAt);
       if (st.stale) health.push({
         key: `silvis-feed|stale|${silvisDays.fetchedAt || "none"}`,
+        dismissable: false,
         severity: "warning",
         week: "feed",
         message: `Silvis feed is STALE (fetched ${st.ageHours === null ? "?" : st.ageHours + "h"} ago) — refresh from Settings`
@@ -5636,8 +5639,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
   }, [mondays, surgeons, apps, vacations, holidayAssignments, sMap]);
   const warnShown = useMemo(() => {
     const hid = new Set((dismissedWarnings || []).map(d => d && d.key).filter(Boolean));
-    const keep = arr => arr.filter(x => !(x.key && hid.has(x.key)));
-    const live = new Set([...silvisConflicts, ...conflicts, ...vacOverlapWarnings].map(x => x.key).filter(Boolean));
+    const keep = arr => arr.filter(x => x.dismissable === false || !(x.key && hid.has(x.key)));
+    const live = new Set([...silvisConflicts, ...conflicts, ...vacOverlapWarnings].filter(x => x.dismissable !== false).map(x => x.key).filter(Boolean));
     return {
       silvis: keep(silvisConflicts),
       conflicts: keep(conflicts),
@@ -5651,7 +5654,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     return (userProfile === null || userProfile === void 0 ? void 0 : userProfile.display_name) || ((_surgeons$find12 = surgeons.find(s => s.id === (userProfile === null || userProfile === void 0 ? void 0 : userProfile.person_id))) === null || _surgeons$find12 === void 0 ? void 0 : _surgeons$find12.name) || "a scheduler";
   };
   const dismissWarning = x => {
-    if (!canWriteBlob || !x || !x.key) return;
+    if (!canWriteBlob || !x || !x.key || x.dismissable === false) return;
     const text = warnLineText(x);
     if (!confirm(`Dismiss this warning for EVERYONE?\n\n"${text}"\n\nIt stays hidden on every device until a scheduler restores it. If the underlying facts change, it comes back as a new warning.`)) return;
     const by = warnActor();
@@ -10301,7 +10304,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     }, "🚑 ", note.text) : null;
   })(), !isPublicMode && (() => {
     const shownTotal = warnShown.silvis.length + warnShown.conflicts.length + warnShown.vac.length;
-    const dismissBtn = x => canWriteBlob && x.key ? React.createElement("button", {
+    const dismissBtn = x => canWriteBlob && x.key && x.dismissable !== false ? React.createElement("button", {
       onClick: () => dismissWarning(x),
       title: "Dismiss for everyone",
       "aria-label": "Dismiss this warning for everyone",
