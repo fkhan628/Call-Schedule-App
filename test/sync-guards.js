@@ -1569,6 +1569,63 @@ check("prefs audit never logs the plaintext email (masked only)",
     count("await loadSilvisFeed();") === 1 && count("refreshSilvisFeed(true);") === 1 && count("loadSilvisFeed(true),") === 1);
 }
 
+// ─── P. Hook deps are declared BEFORE the hook that lists them (TDZ) ───
+// 2026-09-24: build 2026.09.24a crashed for every user at render —
+// "Cannot access 'silvisActive' before initialization". acceptTradeRequest's
+// useCallback deps array named three consts declared ~1200 lines LATER in
+// the CallSchedule body; a deps array is evaluated at render, so a later
+// const/let is a temporal-dead-zone read. Babel keeps const (checked in the
+// transpiled bundle), and nothing else — not the extraction tests, not the
+// deps-text pins — could see it. GENERIC pin: for every useCallback/useMemo/
+// useEffect deps array in the component, every identifier that has a simple
+// const/let/var/function/useState declaration in the component must be
+// declared at an EARLIER offset than the deps array. Names without a simple
+// declaration (props, globals, destructured) are skipped, so this cannot
+// false-positive on them; it CAN miss a name shadowed by an earlier local of
+// the same name — acceptable (no false alarms).
+{
+  const c0 = src.indexOf("function CallSchedule() {");
+  const c1 = src.indexOf("\nfunction ", c0 + 1); // next top-level function = end of the component
+  check("CallSchedule component bounds found for the deps-order scan", c0 !== -1 && c1 > c0, c0 + ".." + c1);
+  if (c0 !== -1 && c1 > c0) {
+    const comp = src.slice(c0, c1);
+    const declIndex = new Map();
+    const declRe = /(?:^|[\s;(])(?:const|let|var)\s+(?:\[\s*)?([A-Za-z_$][\w$]*)|(?:^|\s)function\s+([A-Za-z_$][\w$]*)\s*\(/g;
+    let m;
+    while ((m = declRe.exec(comp)) !== null) {
+      const name = m[1] || m[2];
+      if (!declIndex.has(name)) declIndex.set(name, m.index);
+    }
+    const depsRe = /\}\s*,\s*\[([^\]]*)\]\s*\)/g; // the closing of useCallback/useMemo/useEffect(..., [deps])
+    const violations = [];
+    let depsCount = 0, namesChecked = 0;
+    while ((m = depsRe.exec(comp)) !== null) {
+      const names = m[1].split(",").map(x => x.trim()).filter(Boolean).map(x => x.split(/[.?[]/)[0].trim()).filter(x => /^[A-Za-z_$][\w$]*$/.test(x));
+      if (!names.length) continue;
+      depsCount++;
+      for (const n of names) {
+        if (!declIndex.has(n)) continue;
+        namesChecked++;
+        if (declIndex.get(n) > m.index) {
+          const line = comp.slice(0, m.index).split(/\r?\n/).length;
+          const dline = comp.slice(0, declIndex.get(n)).split(/\r?\n/).length;
+          violations.push(n + ": deps at component line " + line + ", declared at line " + dline);
+        }
+      }
+    }
+    check("deps-order scan covered a meaningful surface (" + depsCount + " deps arrays, " + namesChecked + " declared names)", depsCount >= 40 && namesChecked >= 100, depsCount + "/" + namesChecked);
+    check("no hook deps array names a const/let/function declared LATER in the component (TDZ at render)", violations.length === 0, violations.join("; "));
+    // Two-sided: the same scan over the 2026.09.24a shape must flag it.
+    const bad = "  const a = useCallback(() => {}, [zzz]);\n  const zzz = 1;";
+    const d = /(?:^|[\s;(])(?:const|let|var)\s+(?:\[\s*)?zzz/.exec(bad), u = /\}\s*,\s*\[([^\]]*)\]\s*\)/.exec(bad);
+    check("deps-order scan: the crash shape (dep declared after its deps array) is detectable", !!d && !!u && d.index > u.index);
+    // And the concrete fix: the silvisBusy block precedes every hook that lists it.
+    const sb = comp.indexOf("const silvisBlock = useCallback(");
+    const firstUse = comp.search(/\[[^\]]*\bsilvisBlock\b[^\]]*\]\s*\)/);
+    check("silvisBusy derived state is declared before the first hook that lists silvisBlock in its deps", sb !== -1 && firstUse !== -1 && sb < firstUse, "decl " + sb + ", first deps use " + firstUse);
+  }
+}
+
 // ─── Verdict ───
 console.log(`\n${checks} checks, ${failures.length} failure(s)`);
 if (failures.length) {
