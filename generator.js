@@ -41,6 +41,30 @@
      - Manual locks are honored exactly and skipped by every pass — even
        over a listed vacation. (The lock UI's "dc" slot key is normalized to
        "dayCall" on application.)
+     - silvisBusy (2026-09-24, rule as DATA — config blob silvisRule
+       { enabled, code:"FAK" }): FAK is also primary trauma call at Silvis
+       (separate app + Supabase project). On a Silvis PRIMARY day D (one 24h
+       shift, 07:00 D → 07:00 D+1) no Davenport call of his may overlap:
+       the night OF D, the service week containing D (Mon..Sat), the
+       weekend when D is its Friday or Sunday, a holiday 24h on D. NOTHING
+       in this file implements it: the app (index-source.html doGenerate)
+       folds his Silvis primary days — from the silvis_feed cache this
+       project keeps, written only by the silvis-feed edge function — into
+       the `vac` availability map as single-day [D,D] ranges, which is
+       exactly NO-CALL semantics (the night BEFORE D, ending 07:00 D, stays
+       allowed; never into vacationsOnly). Like a vacation, the squeezed-
+       week last-resort fallback (~line 570) can still place him — the
+       app's Schedule Warnings line per overlap is the net. Silvis BACKUP
+       days are standby and never block (soft note only). Pinned two-sided
+       in test/generator-regression.js scenario E; the app-side refusals
+       (editor, trade accept, swaps, locks) in test/sync-guards.js §O.
+       GENERATION ORDER across the two apps: whichever app generates first
+       wins the day — the second respects the other's feed (Silvis reads
+       this project's schedule_weeks the same way). Silvis generates rolling
+       3-month periods (next: Feb–Apr 2027, offers close 12/21); Silvis
+       days also move by trade/claim after publish, so the mechanism is
+       the continuous feed refresh (app load + Refresh button) plus the
+       Warnings line, not a one-time check at generation.
 
    SOFT RULES (preferred against at the deal; fairness passes may override):
      Service week (its Saturday) → next weekend; back-to-back weekends;

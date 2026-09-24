@@ -41,7 +41,7 @@ param matches the code against `name` (or id).
 
 - Edit **only** `index-source.html` (one big `<script type="text/babel">` JSX
   block) and the plain-JS modules (`config.js`, `generator.js`, `helpers.js`,
-  `app-styles.js`).
+  `app-styles.js`, `silvis-feed.js`).
 - **NEVER hand-edit `index.html` or `APP_VERSION`** — CI transpiles and bumps on
   push to main, commits back with `[skip ci]`, Pages redeploys.
 - Before ANY push: `node build.js` locally; all gates must pass (one babel block,

@@ -102,7 +102,7 @@
     // Cache-bust uses APP_VERSION (defined at the top of this file).
     // Only ONE version string to bump per deploy — see line ~58.
     var _v = APP_VERSION;
-    ['config.js','helpers.js','generator.js','app-styles.js'].forEach(function(f) {
+    ['config.js','helpers.js','generator.js','app-styles.js','silvis-feed.js'].forEach(function(f) {
       document.write('<script src="'+f+'?v='+_v+'"><\/script>');
     });
   </script>
@@ -352,6 +352,18 @@ function CallSchedule() {
   // ─── What-If Preview ───
   const [previewSchedule, setPreviewSchedule] = useState(null);
   const [pendingLocks, setPendingLocks] = useState([]); // [{ mondayStr, slot: "dc"|"mon"|"tue"|"wed"|"thu"|"wknd", surgeonId }]
+
+  // ─── Silvis (trauma) feed — rule silvisBusy (silvis-feed.js) ───
+  // FAK is also primary trauma call at Silvis. The Silvis app already refuses
+  // him Silvis primary on his Davenport call days; this is the mirror: on a
+  // Silvis PRIMARY day D he cannot hold Davenport call overlapping
+  // 07:00 D → 07:00 D+1. Rows come from THIS project's silvis_feed cache
+  // (written only by the silvis-feed edge function); the rule itself is DATA
+  // in the config blob (silvisRule: { enabled, code }).
+  const [silvisRows, setSilvisRows] = useState([]);           // silvis_feed cache rows (kept on load failure)
+  const [silvisRule, setSilvisRule] = useState(SF_RULE_DEFAULT); // from the blob; defaults on
+  const [silvisRefreshing, setSilvisRefreshing] = useState(false);
+  const [silvisLoadError, setSilvisLoadError] = useState(null);
   const [newLockWeek, setNewLockWeek] = useState("");
   const [newLockSlot, setNewLockSlot] = useState("");
   const [newLockSurgeon, setNewLockSurgeon] = useState("");
@@ -1276,6 +1288,45 @@ function CallSchedule() {
     }
   };
 
+  // Silvis feed cache read (anon-readable). Same contract as loadTimeOff: a
+  // failed read keeps the prior rows and warns — it never becomes "no Silvis
+  // call". quiet=true on the 60s poll.
+  const loadSilvisFeed = async (quiet) => {
+    try {
+      const rows = await sfLoadFeed(SUPABASE_URL, dbHeaders);
+      setSilvisRows(rows);
+      setSilvisLoadError(null);
+    } catch (e) {
+      console.error("silvis_feed load failed — cached Silvis days kept", e);
+      setSilvisLoadError(String(e?.message || e));
+      if (!quiet) showToast("Couldn't load the Silvis feed — the last cached Silvis days are kept (a failed load never means 'no Silvis call').", "error");
+    }
+  };
+  // Refresh = ask the silvis-feed edge function to re-pull Silvis (it writes
+  // the cache with the service role; the client cannot), then re-read. Needs
+  // a signed-in session (the function 401s the anon key). Runs quietly on
+  // app load; loudly from the Refresh button.
+  const refreshSilvisFeed = async (quiet) => {
+    const h = dbAuthHeaders();
+    if (!h.Authorization || h.Authorization === `Bearer ${SUPABASE_ANON_KEY}`) {
+      if (!quiet) showToast("Sign in to refresh the Silvis feed (the cached days are still shown).", "error");
+      return;
+    }
+    setSilvisRefreshing(true);
+    try {
+      // quiet (app load / poll) rides the function's 15-min freshness gate;
+      // the Refresh button forces a real re-pull.
+      const r = await sfRefreshFeed(SUPABASE_URL, h, !quiet);
+      await loadSilvisFeed(quiet);
+      if (!quiet) showToast(r && r.skipped
+        ? `Silvis feed is already fresh (${r.reason || "cache < 15 min old"}) — cache re-read, nothing re-pulled.`
+        : `Silvis feed refreshed — ${r.days} days cached, FAK primary on ${r.fak_primary}, backup on ${r.fak_backup}.`, "success");
+    } catch (e) {
+      console.warn("Silvis feed refresh failed — cache kept", e);
+      if (!quiet) showToast("Silvis feed refresh FAILED — the cached Silvis days are kept and nothing changed (a failed fetch never means 'no Silvis call'). " + String(e?.message || e).slice(0, 120), "error");
+    } finally { setSilvisRefreshing(false); }
+  };
+
   // DELETE against time_off. The app's `supabase` object is a hand-rolled fetch
   // wrapper that implements only select/upsert (no .delete()), so we issue the
   // DELETE directly with the same authenticated headers the db.* helpers use —
@@ -1416,6 +1467,7 @@ function CallSchedule() {
           if (d.startMondayOverride !== undefined) setStartMondayOverride(d.startMondayOverride || "");
           if (d.holidayAssignments) setHolidayAssignments(d.holidayAssignments);
           if (Array.isArray(d.pendingLocks)) setPendingLocks(d.pendingLocks);
+          if (d.silvisRule) setSilvisRule(sfRule(d.silvisRule));
           // Arm the empty-save guard if the loaded row already holds real data.
           if ((d.schedule && Object.keys(d.schedule).length) ||
               (d.vacations && Object.keys(d.vacations).length) ||
@@ -1488,6 +1540,8 @@ function CallSchedule() {
         showToast("Couldn't load the latest data — check your connection and reload.", "error");
       }
       if (USE_TIME_OFF) { await loadTimeOff(); } // vacations/no-call come from time_off, not the blob
+      await loadSilvisFeed();      // cached Silvis days (anon read) — the generator/editor gates read these
+      refreshSilvisFeed(true);     // and ask the function to re-pull Silvis in the background (signed-in only)
       setLoaded(true);
       loadedAtRef.current = Date.now();
 
@@ -1612,6 +1666,7 @@ function CallSchedule() {
         // not toast once a minute (loadTimeOff already catches internally, so
         // allSettled never sees a rejection from it).
         USE_TIME_OFF ? loadTimeOff(true) : Promise.resolve(),
+        loadSilvisFeed(true),
       ]);
     };
 
@@ -1716,6 +1771,7 @@ function CallSchedule() {
     schedule, priorCounts, year1Counts,
     startMonth, startYear, numWeeks, holidayAssignments, startMondayOverride,
     pendingLocks,
+    silvisRule,
     ...overrides,
   });
 
@@ -2568,6 +2624,17 @@ function CallSchedule() {
       // Detect cascade changes
       const cascades = detectCascadeChanges(schedule, req);
       const nameOf = (id) => surgeons.find(s => s.id === id)?.name || id;
+      // silvisBusy: neither leg — nor any cascade reassignment — may land FAK
+      // on a Silvis primary day. Checked HERE, before the status PATCH: a
+      // refused trade must stay 'pending', never 'accepted' with no swap
+      // applied. Member → refused outright; scheduler/admin → confirm override.
+      if (silvisActive) {
+        const hits = [];
+        const r1 = silvisBlock(req.to_surgeon_id, req.week_monday, req.shift_key); if (r1) hits.push(r1);
+        if (req.return_week && req.return_shift) { const r2 = silvisBlock(req.from_surgeon_id, req.return_week, req.return_shift); if (r2) hits.push(r2); }
+        for (const ch of cascades) { const rc = silvisBlock(ch.to, ch.week, ch.shiftKey); if (rc) hits.push("cascade: " + rc); }
+        if (silvisRefuse(hits)) return;
+      }
 
       // If cascades exist, show confirmation with details
       if (cascades.length > 0) {
@@ -2671,7 +2738,7 @@ function CallSchedule() {
         sendEmailNotif("schedule_changed", { shift: SHIFT_LABELS[ch.shiftKey] || ch.shiftKey, week: ch.week, old_surgeon: fromName, new_surgeon: toName, detail: cascadeDetail }, cascadeTargets);
       }
     } catch(e) { console.error("Accept trade error:", e); showToast("Couldn't accept the trade — check your connection and try again.", "error"); }
-  }, [schedule, surgeons, pushUndo, addNotification, sendEmailNotif, detectCascadeChanges, schedulerAdminIds]);
+  }, [schedule, surgeons, pushUndo, addNotification, sendEmailNotif, detectCascadeChanges, schedulerAdminIds, silvisActive, silvisBlock, silvisRefuse]);
 
   // ─── Shift Trade Request: Decline ───
   const declineTradeRequest = useCallback(async (req) => {
@@ -3758,6 +3825,34 @@ function CallSchedule() {
     return p;
   };
 
+  // silvisBusy derived state. FAK is resolved by roster CODE (the generator's
+  // own idiom — never a literal id): the Davenport code IS the roster name.
+  const silvisFakId = useMemo(() => {
+    const want = String(silvisRule.code || "").toUpperCase();
+    return want ? (surgeons.find(s => (s.name || "").toUpperCase() === want)?.id || null) : null;
+  }, [surgeons, silvisRule.code]);
+  const silvisDays = useMemo(() => sfDaysFromRows(silvisRows, silvisRule.code), [silvisRows, silvisRule.code]);
+  const silvisActive = sfRuleActive(silvisRule) && !!silvisFakId;
+  // The one overlap check every app-side mutation point calls (editor, trade
+  // accept, two-way swap, one-way swapShift, suggestions). Reason string or null.
+  const silvisBlock = useCallback((id, mondayStr, slotKey) => {
+    if (!silvisActive || id !== silvisFakId) return null;
+    const d = sfConflict(silvisDays.primary, mondayStr, slotKey);
+    return d ? `${nameOf(id)} is Silvis PRIMARY on ${d} (07:00 → 07:00 next day), which overlaps ${slotLabel(mondayStr, slotKey)}` : null;
+  }, [silvisActive, silvisFakId, silvisDays]);
+  // Refuse-with-override. Returns true when the caller must STOP. Schedulers
+  // and admins may override with the reason on screen (as for other hard
+  // rules); a member is refused outright — zero writes.
+  const silvisRefuse = useCallback((reasons) => {
+    if (!reasons.length) return false;
+    const canOverride = isScheduler || userProfile?.role === "admin";
+    if (!canOverride) {
+      showToast("Blocked — " + reasons[0] + ". A Silvis primary day cannot take Davenport call.", "error");
+      return true;
+    }
+    return !confirm(`⚠️ Silvis conflict (rule silvisBusy)\n\n${reasons.map(r => "• " + r).join("\n")}\n\nThis is a HARD rule: a Silvis primary day (07:00 → 07:00) cannot hold Davenport call. Override anyway?`);
+  }, [isScheduler, userProfile]);
+
   const doGenerate = (preview) => {
     const prefs = buildPrefs();
     // No-call days block call assignment exactly like vacations, so merge them
@@ -3767,6 +3862,17 @@ function CallSchedule() {
     new Set([...Object.keys(vacations), ...Object.keys(noCallDays)]).forEach(id => {
       availability[id] = [...(vacations[id]||[]), ...(noCallDays[id]||[])];
     });
+    // silvisBusy (rule as data): FAK's Silvis PRIMARY days fold in as single-day
+    // [D,D] ranges — exactly NO-CALL semantics: they block the shift's OWN
+    // day(s) and the night before D (which ends 07:00 D) stays allowed. Into
+    // `availability` ONLY, never the vacations (trailing-edge) map below.
+    // Zero generator change: availDC (Mon..Sat), every weeknight (its day),
+    // the weekend (Fri, Sun) and the holiday pre-assignments all already gate
+    // through onVac. Like a vacation, a squeezed week's last-resort fallback
+    // can still violate it — the Schedule Warnings line is the net.
+    if (silvisActive) {
+      availability[silvisFakId] = [...(availability[silvisFakId] || []), ...sfBusyRanges(silvisDays.primary)];
+    }
     // Seed the generator with the week immediately preceding the new start so
     // rotation continuity carries across the period boundary — without this,
     // generating the next period can repeat the prior schedule's last
@@ -4202,7 +4308,13 @@ function CallSchedule() {
       const type = hol.type;
 
       // Filter by vacation availability; fall back to full pool if too few
-      let avail = pool.filter(id => !onVac(id, hol.date, vacations) && !onVac(id, dayAfterStr, vacations));
+      // silvisBusy: a holiday 24h on a Silvis primary day (or its day-after
+      // half) is the one leg the generator cannot gate via availability —
+      // holiday coverage is applied verbatim from these assignments — so it
+      // is enforced HERE, where surgeon A/B are chosen.
+      const silvisHol = (id) => silvisActive && id === silvisFakId && (silvisDays.primary.has(hol.date) || silvisDays.primary.has(dayAfterStr));
+      let avail = pool.filter(id => !onVac(id, hol.date, vacations) && !onVac(id, dayAfterStr, vacations) && !silvisHol(id));
+      if (avail.length < 2) avail = [...pool].filter(id => !silvisHol(id));
       if (avail.length < 2) avail = [...pool];
 
       // Sort by fairness: lifetime holiday count → avoid repeat from prior year → random
@@ -4302,7 +4414,7 @@ function CallSchedule() {
     assignments.sort((a, b) => a.date.localeCompare(b.date));
     setHolidayAssignments(prev => ({ ...prev, [String(year)]: assignments }));
     logAudit("holiday.generate", `Generated holiday assignments for ${year} (${assignments.length} holidays)`, { year, count: assignments.length });
-  }, [surgeons, vacations, holidayAssignments]);
+  }, [surgeons, vacations, holidayAssignments, silvisActive, silvisFakId, silvisDays]);
 
   // ─── Swap a holiday surgeon ───
   const swapHolidaySurgeon = useCallback((year, holidayIdx, slot, newSurgeonId) => {
@@ -4317,6 +4429,12 @@ function CallSchedule() {
         const conflictHol = sameGroup.find(h => h.surgeonA === newSurgeonId || h.surgeonB === newSurgeonId);
         const surgeonName = surgeons.find(s => s.id === newSurgeonId)?.name || newSurgeonId;
         if (!confirm(`⚠️ ${surgeonName} is already assigned to ${conflictHol?.name} (${targetHol.type} group).\n\nThis violates the distinct-pairs rule. Assign anyway?`)) return;
+      }
+      // silvisBusy: holiday 24h on a Silvis primary day — same confirm-to-override idiom.
+      if (silvisActive && newSurgeonId === silvisFakId) {
+        const dayAfter = fmt(addD(parse(targetHol.date), 1));
+        const hit = silvisDays.primary.has(targetHol.date) ? targetHol.date : (silvisDays.primary.has(dayAfter) ? dayAfter : null);
+        if (hit && silvisRefuse([`${nameOf(newSurgeonId)} is Silvis PRIMARY on ${hit}, which overlaps ${targetHol.name} 24h coverage`])) return;
       }
     }
     logAudit("holiday.swap", `Changed ${targetHol?.name || "holiday"} ${slot === "surgeonA" ? "surgeon A" : "surgeon B"} to ${nameOf(newSurgeonId)} (${year})`, { year, holiday: targetHol?.name, slot, newSurgeonId });
@@ -4339,10 +4457,13 @@ function CallSchedule() {
       n[String(year)] = arr;
       return n;
     });
-  }, [holidayAssignments, surgeons]);
+  }, [holidayAssignments, surgeons, silvisActive, silvisFakId, silvisDays, silvisRefuse]);
 
   const swapShift = (mStr, shift, newId) => {
     const oldId = shift === "dayCall" ? schedule[mStr]?.dayCall : schedule[mStr]?.nights?.[shift];
+    // silvisBusy (see acceptTradeRequest). swapShift is a manual edit path, so
+    // the scheduler override applies.
+    if (silvisActive) { const r = silvisBlock(newId, mStr, shift); if (silvisRefuse(r ? [r] : [])) return; }
     pushUndo(schedule);
     setSchedule(p => {
       const wk = {...p[mStr]};
@@ -4417,6 +4538,8 @@ function CallSchedule() {
         const nextDay = fmt(addD(mon, dayOffset + 1));
         if (onVac(candId, shiftDate, vacations) || onVac(candId, nextDay, vacations)) eligible = false;
       }
+      // silvisBusy: never even suggest FAK for a slot on a Silvis primary day.
+      if (eligible && silvisActive && candId === silvisFakId && sfConflict(silvisDays.primary, mondayStr, shift)) eligible = false;
       if (!eligible) return;
 
       // 2. Check if candidate is already assigned DC that week (can't do night + DC)
@@ -4508,7 +4631,7 @@ function CallSchedule() {
     candidates.sort((a, b) => b.score - a.score);
     setSwapTarget({ mondayStr, shift, surgeonId: currentSurgeonId, surgeonName: currentName });
     setSwapSuggestions(candidates);
-  }, [schedule, surgeons, sMap, vacations, priorCounts]);
+  }, [schedule, surgeons, sMap, vacations, priorCounts, silvisActive, silvisFakId, silvisDays]);
 
   // ─── Execute a two-way swap ───
   const executeTwoWaySwap = useCallback((targetMon, targetShift, targetOldId, candId, returnMon, returnShift) => {
@@ -4521,6 +4644,13 @@ function CallSchedule() {
       || (returnMon && returnShift && shiftStartDate(returnMon, returnShift) < swapToday)) {
       showToast("This trade's shift has already passed — propose a new one.", "error");
       return;
+    }
+    // silvisBusy on both legs (see acceptTradeRequest).
+    if (silvisActive) {
+      const hits = [];
+      const r1 = silvisBlock(candId, targetMon, targetShift); if (r1) hits.push(r1);
+      if (returnMon && returnShift) { const r2 = silvisBlock(targetOldId, returnMon, returnShift); if (r2) hits.push(r2); }
+      if (silvisRefuse(hits)) return;
     }
     pushUndo(schedule);
     setSchedule(p => {
@@ -4555,7 +4685,7 @@ function CallSchedule() {
     addNotification("schedule_changed", "Shift Swap", swapDetail, { week: targetMon }, swapTargets);
     sendEmailNotif("schedule_changed", { shift: shiftLabel, week: targetMon, old_surgeon: oldName, new_surgeon: newName, detail: swapDetail }, swapTargets);
     setSwapSuggestions(null); setSwapTarget(null);
-  }, [surgeons, sMap, addNotification, sendEmailNotif, schedulerAdminIds]);
+  }, [surgeons, sMap, addNotification, sendEmailNotif, schedulerAdminIds, silvisActive, silvisBlock, silvisRefuse]);
 
   // ─── Manual Weekly Edit (scheduler/admin) ───
   const openWeekEditor = useCallback((mondayStr) => {
@@ -4628,6 +4758,27 @@ function CallSchedule() {
     if (changes.length === 0) {
       if (openAfter) openWeekEditor(openAfter); else setEditWeekModal(null);
       return;
+    }
+    // silvisBusy: any change that puts FAK on a Silvis primary day is refused
+    // (scheduler override with the reason on screen). Checked from the draft
+    // vs the old week so only NEW placements trigger it.
+    if (silvisActive) {
+      const hits = [];
+      if (draft.dayCall === silvisFakId && oldWk.dayCall !== silvisFakId) {
+        // Service week = Mon..Sat, MINUS any day overridden to someone else in
+        // this same draft (that day is theirs, not FAK's).
+        const ov = draft.dayCallOverrides || {};
+        const days = sfSlotDays(mondayStr, "dayCall").filter(ds => !(ov[ds] && ov[ds] !== silvisFakId));
+        const d = sfConflictDay(silvisDays.primary, days);
+        if (d) hits.push(`${nameOf(silvisFakId)} is Silvis PRIMARY on ${d} (07:00 → 07:00 next day), which overlaps ${slotLabel(mondayStr, "dayCall")}`);
+      }
+      ["mon","tue","wed","thu","wknd"].forEach(nk => {
+        if (draft.nights?.[nk] === silvisFakId && oldWk.nights?.[nk] !== silvisFakId) { const r = silvisBlock(silvisFakId, mondayStr, nk); if (r) hits.push(r); }
+      });
+      Object.entries(draft.dayCallOverrides || {}).forEach(([ds, sid]) => {
+        if (sid === silvisFakId && (oldWk.dayCallOverrides || {})[ds] !== silvisFakId && silvisDays.primary.has(ds)) hits.push(`${nameOf(silvisFakId)} is Silvis PRIMARY on ${ds}, which overlaps Service Day ${ds}`);
+      });
+      if (silvisRefuse(hits)) return;
     }
     // Safety confirmation if many changes at once
     if (changes.length >= 3) {
@@ -4748,7 +4899,7 @@ function CallSchedule() {
       // Defer to next tick so state updates flush before re-opening
       setTimeout(() => openWeekEditor(openAfter), 0);
     }
-  }, [editWeekModal, schedule, appShifts, surgeons, sMap, aMap, addNotification, sendEmailNotif, pushUndo, schedulerAdminIds, openWeekEditor, backupMondaySet, fierceBackupSet]);
+  }, [editWeekModal, schedule, appShifts, surgeons, sMap, aMap, addNotification, sendEmailNotif, pushUndo, schedulerAdminIds, openWeekEditor, backupMondaySet, fierceBackupSet, silvisActive, silvisFakId, silvisDays, silvisBlock, silvisRefuse]);
 
   // ─── Backup / Fierce week marking (Settings card) ───
   // backupMondaySet/fierceBackupSet (persisted as blob arrays) and the
@@ -5238,6 +5389,24 @@ ${"</"}script>${"</"}body>${"</"}html>`;
 
 
   // ─── Conflict Detection ───
+  // silvisBusy overlaps in the PUBLISHED schedule — every (week, slot) FAK
+  // holds whose window touches a Silvis PRIMARY day (hard, 🔴), plus Silvis
+  // BACKUP touches as a soft note (🔵, never a block). Same future-week scope
+  // as `conflicts` below. Honors dayCallOverrides and holiday precedence
+  // exactly as the Silvis side's deriveKhanBusyDays does (sfOverlaps).
+  const silvisConflicts = useMemo(() => {
+    if (!silvisActive || isPublicMode) return [];
+    const todayStr = fmt(new Date());
+    const inScope = (o) => fmt(addD(parse(o.mondayStr), 6)) >= todayStr;
+    const md = (ds) => { const d = parse(ds); return `${d.getMonth() + 1}/${d.getDate()}`; };
+    const who = nameOf(silvisFakId);
+    const hard = sfOverlaps(schedule, silvisDays.primary, silvisFakId).filter(inScope)
+      .map(o => ({ severity: "error", week: o.mondayStr, message: `${who}: Silvis primary + Davenport ${o.label}, ${md(o.day)}` }));
+    const soft = sfOverlaps(schedule, silvisDays.backup, silvisFakId).filter(inScope)
+      .map(o => ({ severity: "info", week: o.mondayStr, message: `${who}: Silvis backup + Davenport ${o.label}, ${md(o.day)} (backup is standby — no block)` }));
+    return hard.concat(soft);
+  }, [schedule, silvisActive, silvisDays, silvisFakId, surgeons, isPublicMode]);
+
   const conflicts = useMemo(() => {
     const issues = [];
     // PAST-WEEK EXEMPTION (pre-import blocker 3): warnings exist to prompt
@@ -5445,8 +5614,15 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     Object.entries(appShifts).forEach(([ds,aid])=>{
       d[ds]=[...(d[ds]||[]),{type:"APP",appId:aid,cls:"app"}];
     });
+    // Silvis (trauma) days for FAK — rule silvisBusy: P = primary (hard block
+    // 07:00→07:00), B = backup (standby, soft note). Dates may lie beyond the
+    // published weeks; calData is keyed by date so that is fine.
+    if (silvisFakId) {
+      silvisDays.primary.forEach(ds => { d[ds]=[...(d[ds]||[]),{type:"Silvis",surgeon:silvisFakId,cls:"silvis",role:"P"}]; });
+      silvisDays.backup.forEach(ds => { d[ds]=[...(d[ds]||[]),{type:"Silvis",surgeon:silvisFakId,cls:"silvis",role:"B"}]; });
+    }
     return d;
-  }, [schedule, appShifts]);
+  }, [schedule, appShifts, silvisDays, silvisFakId]);
 
   // Holiday name labels for the calendar (pure informational labels, independent
   // of holiday coverage assignments). Uses getHolidays() — only covers the 6
@@ -6721,6 +6897,12 @@ ${"</"}script>${"</"}body>${"</"}html>`;
 
             const addLock = () => {
               if (!newLockWeek || !newLockSlot || !newLockSurgeon) return;
+              // silvisBusy: a lock on FAK for a slot that overlaps a Silvis
+              // primary day is the generator-side override (a weeknight lock
+              // bypasses availability there; a DC/wknd lock is silently
+              // dropped when he is blocked) — confirm with the reason on
+              // screen, as for the other hard rules.
+              if (silvisActive) { const r = silvisBlock(newLockSurgeon, newLockWeek, newLockSlot); if (silvisRefuse(r ? [r + " — a lock here overrides the rule for this generation"] : [])) return; }
               // Replace any existing lock for this same week+slot
               setPendingLocks(prev => [
                 ...prev.filter(l => !(l.mondayStr === newLockWeek && l.slot === newLockSlot)),
@@ -7435,11 +7617,19 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           </div>
 
           {/* Conflict Warnings */}
-          {(conflicts.length > 0 || vacOverlapWarnings.length > 0) && (
+          {(conflicts.length > 0 || vacOverlapWarnings.length > 0 || silvisConflicts.length > 0) && (
             <div style={{...css.card,marginBottom:14,background:dk?"#2a1a1a":"#fef8f0",border:"1px solid #e8c0a0"}}>
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
-                <div style={{fontSize:13,fontWeight:700,color:"#c06020"}}>⚠️ Schedule Warnings — {conflicts.length + vacOverlapWarnings.length}</div>
+                <div style={{fontSize:13,fontWeight:700,color:"#c06020"}}>⚠️ Schedule Warnings — {conflicts.length + vacOverlapWarnings.length + silvisConflicts.length}</div>
               </div>
+              {/* silvisBusy overlaps — hard (🔴) and the soft backup notes (🔵) */}
+              {silvisConflicts.slice(0,10).map((c,i) => (
+                <div key={`s${i}`} style={{display:"flex",alignItems:"center",gap:8,padding:"4px 8px",marginBottom:3,fontSize:12,color:c.severity==="error"?"#c04040":"#5a6a78",background:c.severity==="error"?(dk?"#2a0a0a":"#fce8e8"):dk?"#1a1a2a":"#f0f8ff",borderRadius:4,border:`1px solid ${c.severity==="error"?"#e0b0b0":"#c0d8f0"}`}}>
+                  <span style={{fontWeight:700}}>{c.severity==="error"?"🔴":"🔵"}</span>
+                  <span style={{fontFamily:mono,fontSize:11,color:dkSubtext}}>{c.week}</span>
+                  <span>{c.message}</span>
+                </div>
+              ))}
               {conflicts.slice(0,10).map((c,i) => (
                 <div key={`c${i}`} style={{display:"flex",alignItems:"center",gap:8,padding:"4px 8px",marginBottom:3,fontSize:12,color:c.severity==="error"?"#c04040":c.severity==="warning"?"#a06020":"#5a6a78",background:c.severity==="error"?(dk?"#2a0a0a":"#fce8e8"):dk?"#2a1a0a":"#fef8e8",borderRadius:4,border:`1px solid ${c.severity==="error"?"#e0b0b0":"#e8d0b0"}`}}>
                   <span style={{fontWeight:700}}>{c.severity==="error"?"🔴":c.severity==="warning"?"🟡":"🔵"}</span>
@@ -7600,6 +7790,17 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                     </div>
                   ))}
 
+                  {/* Silvis (trauma) days — rule silvisBusy: P = primary (hard), B = backup (soft) */}
+                  {!isPublicMode && entries.filter(e=>e.type==="Silvis").filter(e=>!sf||e.surgeon===sf).map((e,j)=>(
+                    <div key={"sil"+j} title={e.role==="P"?"Silvis PRIMARY 07:00 → 07:00 next day — no Davenport call may overlap":"Silvis backup (standby) — no block"}
+                      style={{marginBottom:1,padding:"1px 3px",borderRadius:3,fontSize:10,fontWeight:600,
+                        background:e.role==="P"?(dk?"#1a2a4a":"#e8f0fc"):(dk?"#1e2430":"#f4f6fa"),border:`1px solid ${e.role==="P"?"#7a9ad0":"#c8d0dc"}`}}>
+                      <span style={{color:e.role==="P"?"#1a4a9a":"#7a8a98",fontWeight:700}}>Silvis {e.role}</span>
+                      {" "}
+                      <span style={{color:surgeonColors(sMap[e.surgeon]?.name, sMap[e.surgeon]?.idx).tx||"#4a5868"}}>{sMap[e.surgeon]?.name||"?"}</span>
+                    </div>
+                  ))}
+
                   {/* APP entries — hidden when filtering to a specific surgeon */}
                   {calFilters.app && !sf && calAppFilter!=="none" && !calDeptFilter && entries.filter(e=>e.type==="APP").filter(e=>calAppFilter==="all"||e.appId===calAppFilter).map((e,j)=>(
                     <div key={"app"+j} style={{marginBottom:1,padding:"1px 3px",borderRadius:3,fontSize:10,
@@ -7714,6 +7915,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             <span><span style={{color:"#908050",fontWeight:700}}>W</span> Weekend</span>
             <span><span style={{color:"#c08050",fontWeight:700}}>A</span> APP</span>
             <span><span style={{color:"#8a6a10",fontWeight:700}}>B</span> Backup</span>
+            <span title="FAK's Silvis (trauma) days: P = primary, hard block 07:00→07:00; B = backup, standby only"><span style={{color:"#1a4a9a",fontWeight:700}}>Silvis P</span> Silvis primary</span>
             <span><span style={{color:"#8a6a10"}}>⚡</span> Fierce Primary</span>
             <span><span style={{color:"#1a6fa8"}}>🛡</span> Fierce Backup</span>
             <span>🏖 Vacation</span>
@@ -7722,6 +7924,31 @@ ${"</"}script>${"</"}body>${"</"}html>`;
 
           {/* Calendar tools — collapsed by default so the calendar itself stays front and center */}
           <Collapsible css={css} ck="cal_tools" defaultOpen={false} title="🔧 Schedule Tools & Export" style={{background:"transparent",border:"none",boxShadow:"none",padding:"4px 2px",marginTop:8}}>
+          {/* ─── Silvis (trauma) feed — read-only mirror; rule silvisBusy ─── */}
+          {(()=>{
+            const st = sfStatus(silvisDays.fetchedAt);
+            return (
+              <div style={{...css.card,marginTop:14,background:dk?"#16223a":"linear-gradient(135deg,#eef3fc,#e8eefa)",border:"1px solid #b8c8e8"}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8}}>
+                  <div style={css.cardT}>🚑 Silvis feed <span style={{fontWeight:400,fontSize:11,color:"#7a8a98"}}>— read-only mirror of FAK's Silvis trauma call</span></div>
+                  <button onClick={()=>refreshSilvisFeed(false)} disabled={silvisRefreshing}
+                    style={{...css.btn(false),padding:"6px 14px",fontSize:12,opacity:silvisRefreshing?0.6:1}}>{silvisRefreshing ? "Refreshing…" : "↻ Refresh from Silvis"}</button>
+                </div>
+                <div style={{fontSize:12,color:"#5a6a78",marginTop:6,lineHeight:1.6}}>
+                  {silvisRows.length === 0
+                    ? <span style={{color:"#c04040",fontWeight:600}}>No cached Silvis days{silvisLoadError ? " — last load FAILED: " + silvisLoadError : ""}. Until a refresh succeeds the rule cannot see Silvis call.</span>
+                    : <>
+                        <b>{silvisRows.length}</b> days cached · FAK Silvis <b>primary</b> on <b>{silvisDays.primary.size}</b>, backup on {silvisDays.backup.size}
+                        {" · "}fetched {st.ageHours === null ? "?" : st.ageHours + "h ago"}{st.stale && <span style={{color:"#c06020",fontWeight:700}}> · STALE</span>}
+                        {silvisLoadError && <span style={{color:"#c04040"}}> · last load failed ({silvisLoadError}) — showing the previous cache</span>}
+                        {!silvisActive && <span style={{color:"#a06020",fontWeight:700}}> · rule silvisBusy is OFF (silvisRule.enabled) or code "{silvisRule.code}" is not on the roster</span>}
+                      </>}
+                </div>
+                <div style={{fontSize:11,color:"#8a94a0",marginTop:4}}>Rule silvisBusy: on a Silvis PRIMARY day (07:00 → 07:00 next day) FAK cannot hold any overlapping Davenport call — the generator never assigns it; a manual edit or trade acceptance is refused (scheduler override with the reason shown). Backup days are standby and never block. Whichever app generates a period first wins those days; the other respects the feed.</div>
+              </div>
+            );
+          })()}
+
           {/* ─── Manual Adjustments (scheduler/admin only) ─── */}
           {(isScheduler || userProfile?.role === "admin") && (
             <div style={{...css.card,marginTop:14,background:"linear-gradient(135deg,#fff8e8,#fcf4e0)",border:"1px solid #e0c890"}}>
