@@ -2607,6 +2607,39 @@ function CallSchedule() {
     return changes;
   }, [surgeons]);
 
+  // NOTE (hotfix 2026-09-24, live crash in 2026.09.24a): this block MUST sit
+  // above every useCallback/useMemo whose deps name silvisActive/silvisBlock/
+  // silvisRefuse — a deps array is evaluated at render, so a later `const`
+  // is a temporal-dead-zone read ("Cannot access ... before initialization").
+  // Pinned generically in test/sync-guards.js §P (deps declared before use).
+  // silvisBusy derived state. FAK is resolved by roster CODE (the generator's
+  // own idiom — never a literal id): the Davenport code IS the roster name.
+  const silvisFakId = useMemo(() => {
+    const want = String(silvisRule.code || "").toUpperCase();
+    return want ? (surgeons.find(s => (s.name || "").toUpperCase() === want)?.id || null) : null;
+  }, [surgeons, silvisRule.code]);
+  const silvisDays = useMemo(() => sfDaysFromRows(silvisRows, silvisRule.code), [silvisRows, silvisRule.code]);
+  const silvisActive = sfRuleActive(silvisRule) && !!silvisFakId;
+  // The one overlap check every app-side mutation point calls (editor, trade
+  // accept, two-way swap, one-way swapShift, suggestions). Reason string or null.
+  const silvisBlock = useCallback((id, mondayStr, slotKey) => {
+    if (!silvisActive || id !== silvisFakId) return null;
+    const d = sfConflict(silvisDays.primary, mondayStr, slotKey);
+    return d ? `${nameOf(id)} is Silvis PRIMARY on ${d} (07:00 → 07:00 next day), which overlaps ${slotLabel(mondayStr, slotKey)}` : null;
+  }, [silvisActive, silvisFakId, silvisDays]);
+  // Refuse-with-override. Returns true when the caller must STOP. Schedulers
+  // and admins may override with the reason on screen (as for other hard
+  // rules); a member is refused outright — zero writes.
+  const silvisRefuse = useCallback((reasons) => {
+    if (!reasons.length) return false;
+    const canOverride = isScheduler || userProfile?.role === "admin";
+    if (!canOverride) {
+      showToast("Blocked — " + reasons[0] + ". A Silvis primary day cannot take Davenport call.", "error");
+      return true;
+    }
+    return !confirm(`⚠️ Silvis conflict (rule silvisBusy)\n\n${reasons.map(r => "• " + r).join("\n")}\n\nThis is a HARD rule: a Silvis primary day (07:00 → 07:00) cannot hold Davenport call. Override anyway?`);
+  }, [isScheduler, userProfile]);
+
   // ─── Shift Trade Request: Accept (with cascade) ───
   const acceptTradeRequest = useCallback(async (req) => {
     try {
@@ -3824,34 +3857,6 @@ function CallSchedule() {
     });
     return p;
   };
-
-  // silvisBusy derived state. FAK is resolved by roster CODE (the generator's
-  // own idiom — never a literal id): the Davenport code IS the roster name.
-  const silvisFakId = useMemo(() => {
-    const want = String(silvisRule.code || "").toUpperCase();
-    return want ? (surgeons.find(s => (s.name || "").toUpperCase() === want)?.id || null) : null;
-  }, [surgeons, silvisRule.code]);
-  const silvisDays = useMemo(() => sfDaysFromRows(silvisRows, silvisRule.code), [silvisRows, silvisRule.code]);
-  const silvisActive = sfRuleActive(silvisRule) && !!silvisFakId;
-  // The one overlap check every app-side mutation point calls (editor, trade
-  // accept, two-way swap, one-way swapShift, suggestions). Reason string or null.
-  const silvisBlock = useCallback((id, mondayStr, slotKey) => {
-    if (!silvisActive || id !== silvisFakId) return null;
-    const d = sfConflict(silvisDays.primary, mondayStr, slotKey);
-    return d ? `${nameOf(id)} is Silvis PRIMARY on ${d} (07:00 → 07:00 next day), which overlaps ${slotLabel(mondayStr, slotKey)}` : null;
-  }, [silvisActive, silvisFakId, silvisDays]);
-  // Refuse-with-override. Returns true when the caller must STOP. Schedulers
-  // and admins may override with the reason on screen (as for other hard
-  // rules); a member is refused outright — zero writes.
-  const silvisRefuse = useCallback((reasons) => {
-    if (!reasons.length) return false;
-    const canOverride = isScheduler || userProfile?.role === "admin";
-    if (!canOverride) {
-      showToast("Blocked — " + reasons[0] + ". A Silvis primary day cannot take Davenport call.", "error");
-      return true;
-    }
-    return !confirm(`⚠️ Silvis conflict (rule silvisBusy)\n\n${reasons.map(r => "• " + r).join("\n")}\n\nThis is a HARD rule: a Silvis primary day (07:00 → 07:00) cannot hold Davenport call. Override anyway?`);
-  }, [isScheduler, userProfile]);
 
   const doGenerate = (preview) => {
     const prefs = buildPrefs();
