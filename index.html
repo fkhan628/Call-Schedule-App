@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.09.07c";
+    var APP_VERSION = "2026.09.24a";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -102,7 +102,7 @@
     // Cache-bust uses APP_VERSION (defined at the top of this file).
     // Only ONE version string to bump per deploy — see line ~58.
     var _v = APP_VERSION;
-    ['config.js','helpers.js','generator.js','app-styles.js'].forEach(function(f) {
+    ['config.js','helpers.js','generator.js','app-styles.js','silvis-feed.js'].forEach(function(f) {
       document.write('<script src="'+f+'?v='+_v+'"><\/script>');
     });
   </script>
@@ -120,7 +120,7 @@ const {
   useEffect
 } = React;
 function CallSchedule() {
-  var _find, _surgeons$find12;
+  var _find, _surgeons$find13;
   const isPublicMode = useMemo(() => {
     try {
       const params = new URLSearchParams(window.location.search);
@@ -231,6 +231,10 @@ function CallSchedule() {
   }, [scheduleHistory]);
   const [previewSchedule, setPreviewSchedule] = useState(null);
   const [pendingLocks, setPendingLocks] = useState([]);
+  const [silvisRows, setSilvisRows] = useState([]);
+  const [silvisRule, setSilvisRule] = useState(SF_RULE_DEFAULT);
+  const [silvisRefreshing, setSilvisRefreshing] = useState(false);
+  const [silvisLoadError, setSilvisLoadError] = useState(null);
   const [newLockWeek, setNewLockWeek] = useState("");
   const [newLockSlot, setNewLockSlot] = useState("");
   const [newLockSurgeon, setNewLockSurgeon] = useState("");
@@ -1094,6 +1098,35 @@ function CallSchedule() {
       if (!quiet) showToast("Couldn't load vacations — data shown may be incomplete.", "error");
     }
   };
+  const loadSilvisFeed = async quiet => {
+    try {
+      const rows = await sfLoadFeed(SUPABASE_URL, dbHeaders);
+      setSilvisRows(rows);
+      setSilvisLoadError(null);
+    } catch (e) {
+      console.error("silvis_feed load failed — cached Silvis days kept", e);
+      setSilvisLoadError(String((e === null || e === void 0 ? void 0 : e.message) || e));
+      if (!quiet) showToast("Couldn't load the Silvis feed — the last cached Silvis days are kept (a failed load never means 'no Silvis call').", "error");
+    }
+  };
+  const refreshSilvisFeed = async quiet => {
+    const h = dbAuthHeaders();
+    if (!h.Authorization || h.Authorization === `Bearer ${SUPABASE_ANON_KEY}`) {
+      if (!quiet) showToast("Sign in to refresh the Silvis feed (the cached days are still shown).", "error");
+      return;
+    }
+    setSilvisRefreshing(true);
+    try {
+      const r = await sfRefreshFeed(SUPABASE_URL, h, !quiet);
+      await loadSilvisFeed(quiet);
+      if (!quiet) showToast(r && r.skipped ? `Silvis feed is already fresh (${r.reason || "cache < 15 min old"}) — cache re-read, nothing re-pulled.` : `Silvis feed refreshed — ${r.days} days cached, FAK primary on ${r.fak_primary}, backup on ${r.fak_backup}.`, "success");
+    } catch (e) {
+      console.warn("Silvis feed refresh failed — cache kept", e);
+      if (!quiet) showToast("Silvis feed refresh FAILED — the cached Silvis days are kept and nothing changed (a failed fetch never means 'no Silvis call'). " + String((e === null || e === void 0 ? void 0 : e.message) || e).slice(0, 120), "error");
+    } finally {
+      setSilvisRefreshing(false);
+    }
+  };
   const deleteTimeOff = async filter => {
     try {
       const res = await fetch(`${SUPABASE_URL}/rest/v1/time_off?${filter}`, {
@@ -1277,6 +1310,7 @@ function CallSchedule() {
           if (d.startMondayOverride !== undefined) setStartMondayOverride(d.startMondayOverride || "");
           if (d.holidayAssignments) setHolidayAssignments(d.holidayAssignments);
           if (Array.isArray(d.pendingLocks)) setPendingLocks(d.pendingLocks);
+          if (d.silvisRule) setSilvisRule(sfRule(d.silvisRule));
           if (d.schedule && Object.keys(d.schedule).length || d.vacations && Object.keys(d.vacations).length || d.appShifts && Object.keys(d.appShifts).length) {
             everHadRealDataRef.current = true;
           }
@@ -1340,6 +1374,8 @@ function CallSchedule() {
       if (USE_TIME_OFF) {
         await loadTimeOff();
       }
+      await loadSilvisFeed();
+      refreshSilvisFeed(true);
       setLoaded(true);
       loadedAtRef.current = Date.now();
     })();
@@ -1437,7 +1473,7 @@ function CallSchedule() {
       }
     };
     const refreshAll = async () => {
-      await Promise.allSettled([refreshScheduleRow(), refreshConfigRow(), refreshAppShifts(), refreshVacReqs(), refreshTradeReqs(), refreshNotifs(), USE_TIME_OFF ? loadTimeOff(true) : Promise.resolve()]);
+      await Promise.allSettled([refreshScheduleRow(), refreshConfigRow(), refreshAppShifts(), refreshVacReqs(), refreshTradeReqs(), refreshNotifs(), USE_TIME_OFF ? loadTimeOff(true) : Promise.resolve(), loadSilvisFeed(true)]);
     };
     let rtChannel = null;
     let rtClient = null;
@@ -1557,7 +1593,8 @@ function CallSchedule() {
     numWeeks,
     holidayAssignments,
     startMondayOverride,
-    pendingLocks
+    pendingLocks,
+    silvisRule
   }, overrides);
   const canWriteBlob = isScheduler;
   useEffect(() => {
@@ -2327,6 +2364,20 @@ function CallSchedule() {
         var _surgeons$find9;
         return ((_surgeons$find9 = surgeons.find(s => s.id === id)) === null || _surgeons$find9 === void 0 ? void 0 : _surgeons$find9.name) || id;
       };
+      if (silvisActive) {
+        const hits = [];
+        const r1 = silvisBlock(req.to_surgeon_id, req.week_monday, req.shift_key);
+        if (r1) hits.push(r1);
+        if (req.return_week && req.return_shift) {
+          const r2 = silvisBlock(req.from_surgeon_id, req.return_week, req.return_shift);
+          if (r2) hits.push(r2);
+        }
+        for (const ch of cascades) {
+          const rc = silvisBlock(ch.to, ch.week, ch.shiftKey);
+          if (rc) hits.push("cascade: " + rc);
+        }
+        if (silvisRefuse(hits)) return;
+      }
       if (cascades.length > 0) {
         const cascadeDesc = cascades.map(c => `  • ${c.reason}`).join("\n");
         const needsApproval = cascades.filter(c => c.requiresApproval);
@@ -2437,7 +2488,7 @@ function CallSchedule() {
       console.error("Accept trade error:", e);
       showToast("Couldn't accept the trade — check your connection and try again.", "error");
     }
-  }, [schedule, surgeons, pushUndo, addNotification, sendEmailNotif, detectCascadeChanges, schedulerAdminIds]);
+  }, [schedule, surgeons, pushUndo, addNotification, sendEmailNotif, detectCascadeChanges, schedulerAdminIds, silvisActive, silvisBlock, silvisRefuse]);
   const declineTradeRequest = useCallback(async req => {
     try {
       const declineRes = await fetch(`${SUPABASE_URL}/rest/v1/shift_trade_requests?id=eq.${req.id}&status=eq.pending`, {
@@ -3618,12 +3669,36 @@ function CallSchedule() {
     });
     return p;
   };
+  const silvisFakId = useMemo(() => {
+    var _surgeons$find1;
+    const want = String(silvisRule.code || "").toUpperCase();
+    return want ? ((_surgeons$find1 = surgeons.find(s => (s.name || "").toUpperCase() === want)) === null || _surgeons$find1 === void 0 ? void 0 : _surgeons$find1.id) || null : null;
+  }, [surgeons, silvisRule.code]);
+  const silvisDays = useMemo(() => sfDaysFromRows(silvisRows, silvisRule.code), [silvisRows, silvisRule.code]);
+  const silvisActive = sfRuleActive(silvisRule) && !!silvisFakId;
+  const silvisBlock = useCallback((id, mondayStr, slotKey) => {
+    if (!silvisActive || id !== silvisFakId) return null;
+    const d = sfConflict(silvisDays.primary, mondayStr, slotKey);
+    return d ? `${nameOf(id)} is Silvis PRIMARY on ${d} (07:00 → 07:00 next day), which overlaps ${slotLabel(mondayStr, slotKey)}` : null;
+  }, [silvisActive, silvisFakId, silvisDays]);
+  const silvisRefuse = useCallback(reasons => {
+    if (!reasons.length) return false;
+    const canOverride = isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.role) === "admin";
+    if (!canOverride) {
+      showToast("Blocked — " + reasons[0] + ". A Silvis primary day cannot take Davenport call.", "error");
+      return true;
+    }
+    return !confirm(`⚠️ Silvis conflict (rule silvisBusy)\n\n${reasons.map(r => "• " + r).join("\n")}\n\nThis is a HARD rule: a Silvis primary day (07:00 → 07:00) cannot hold Davenport call. Override anyway?`);
+  }, [isScheduler, userProfile]);
   const doGenerate = preview => {
     const prefs = buildPrefs();
     const availability = {};
     new Set([...Object.keys(vacations), ...Object.keys(noCallDays)]).forEach(id => {
       availability[id] = [...(vacations[id] || []), ...(noCallDays[id] || [])];
     });
+    if (silvisActive) {
+      availability[silvisFakId] = [...(availability[silvisFakId] || []), ...sfBusyRanges(silvisDays.primary)];
+    }
     const prevWeekSeed = (() => {
       if (!mondays.length) return null;
       const first = mondays[0];
@@ -3963,8 +4038,8 @@ function CallSchedule() {
     });
     const startOf = {};
     ids.forEach(id => {
-      var _surgeons$find1, _INIT_SURGEONS$find;
-      const rosterStart = (_surgeons$find1 = surgeons.find(s => s.id === id)) === null || _surgeons$find1 === void 0 ? void 0 : _surgeons$find1.start;
+      var _surgeons$find10, _INIT_SURGEONS$find;
+      const rosterStart = (_surgeons$find10 = surgeons.find(s => s.id === id)) === null || _surgeons$find10 === void 0 ? void 0 : _surgeons$find10.start;
       startOf[id] = rosterStart || ((_INIT_SURGEONS$find = INIT_SURGEONS.find(s => s.id === id)) === null || _INIT_SURGEONS$find === void 0 ? void 0 : _INIT_SURGEONS$find.start) || null;
     });
     const lifetimeCt = {};
@@ -4073,7 +4148,9 @@ function CallSchedule() {
       const holDate = parse(hol.date);
       const dayAfterStr = fmt(addD(holDate, 1));
       const type = hol.type;
-      let avail = pool.filter(id => !onVac(id, hol.date, vacations) && !onVac(id, dayAfterStr, vacations));
+      const silvisHol = id => silvisActive && id === silvisFakId && (silvisDays.primary.has(hol.date) || silvisDays.primary.has(dayAfterStr));
+      let avail = pool.filter(id => !onVac(id, hol.date, vacations) && !onVac(id, dayAfterStr, vacations) && !silvisHol(id));
+      if (avail.length < 2) avail = [...pool].filter(id => !silvisHol(id));
       if (avail.length < 2) avail = [...pool];
       const prior = priorByName[hol.name] || {};
       avail.sort((a, b) => {
@@ -4170,7 +4247,7 @@ function CallSchedule() {
       year,
       count: assignments.length
     });
-  }, [surgeons, vacations, holidayAssignments]);
+  }, [surgeons, vacations, holidayAssignments, silvisActive, silvisFakId, silvisDays]);
   const swapHolidaySurgeon = useCallback((year, holidayIdx, slot, newSurgeonId) => {
     const arr = holidayAssignments[String(year)] || [];
     const targetHol = arr[holidayIdx];
@@ -4182,10 +4259,15 @@ function CallSchedule() {
         usedInGroup.add(h.surgeonB);
       });
       if (usedInGroup.has(newSurgeonId)) {
-        var _surgeons$find10;
+        var _surgeons$find11;
         const conflictHol = sameGroup.find(h => h.surgeonA === newSurgeonId || h.surgeonB === newSurgeonId);
-        const surgeonName = ((_surgeons$find10 = surgeons.find(s => s.id === newSurgeonId)) === null || _surgeons$find10 === void 0 ? void 0 : _surgeons$find10.name) || newSurgeonId;
+        const surgeonName = ((_surgeons$find11 = surgeons.find(s => s.id === newSurgeonId)) === null || _surgeons$find11 === void 0 ? void 0 : _surgeons$find11.name) || newSurgeonId;
         if (!confirm(`⚠️ ${surgeonName} is already assigned to ${conflictHol === null || conflictHol === void 0 ? void 0 : conflictHol.name} (${targetHol.type} group).\n\nThis violates the distinct-pairs rule. Assign anyway?`)) return;
+      }
+      if (silvisActive && newSurgeonId === silvisFakId) {
+        const dayAfter = fmt(addD(parse(targetHol.date), 1));
+        const hit = silvisDays.primary.has(targetHol.date) ? targetHol.date : silvisDays.primary.has(dayAfter) ? dayAfter : null;
+        if (hit && silvisRefuse([`${nameOf(newSurgeonId)} is Silvis PRIMARY on ${hit}, which overlaps ${targetHol.name} 24h coverage`])) return;
       }
     }
     logAudit("holiday.swap", `Changed ${(targetHol === null || targetHol === void 0 ? void 0 : targetHol.name) || "holiday"} ${slot === "surgeonA" ? "surgeon A" : "surgeon B"} to ${nameOf(newSurgeonId)} (${year})`, {
@@ -4217,10 +4299,14 @@ function CallSchedule() {
       n[String(year)] = arr;
       return n;
     });
-  }, [holidayAssignments, surgeons]);
+  }, [holidayAssignments, surgeons, silvisActive, silvisFakId, silvisDays, silvisRefuse]);
   const swapShift = (mStr, shift, newId) => {
     var _schedule$mStr, _schedule$mStr2, _sMap$oldId, _sMap$newId;
     const oldId = shift === "dayCall" ? (_schedule$mStr = schedule[mStr]) === null || _schedule$mStr === void 0 ? void 0 : _schedule$mStr.dayCall : (_schedule$mStr2 = schedule[mStr]) === null || _schedule$mStr2 === void 0 || (_schedule$mStr2 = _schedule$mStr2.nights) === null || _schedule$mStr2 === void 0 ? void 0 : _schedule$mStr2[shift];
+    if (silvisActive) {
+      const r = silvisBlock(newId, mStr, shift);
+      if (silvisRefuse(r ? [r] : [])) return;
+    }
     pushUndo(schedule);
     setSchedule(p => {
       const wk = _objectSpread({}, p[mStr]);
@@ -4311,6 +4397,7 @@ function CallSchedule() {
         const nextDay = fmt(addD(mon, dayOffset + 1));
         if (onVac(candId, shiftDate, vacations) || onVac(candId, nextDay, vacations)) eligible = false;
       }
+      if (eligible && silvisActive && candId === silvisFakId && sfConflict(silvisDays.primary, mondayStr, shift)) eligible = false;
       if (!eligible) return;
       const wk = schedule[mondayStr];
       if (shift !== "dayCall" && wk.dayCall === candId) {
@@ -4403,13 +4490,23 @@ function CallSchedule() {
       surgeonName: currentName
     });
     setSwapSuggestions(candidates);
-  }, [schedule, surgeons, sMap, vacations, priorCounts]);
+  }, [schedule, surgeons, sMap, vacations, priorCounts, silvisActive, silvisFakId, silvisDays]);
   const executeTwoWaySwap = useCallback((targetMon, targetShift, targetOldId, candId, returnMon, returnShift) => {
     var _sMap$targetOldId, _sMap$candId2;
     const swapToday = fmt(new Date());
     if (shiftStartDate(targetMon, targetShift) < swapToday || returnMon && returnShift && shiftStartDate(returnMon, returnShift) < swapToday) {
       showToast("This trade's shift has already passed — propose a new one.", "error");
       return;
+    }
+    if (silvisActive) {
+      const hits = [];
+      const r1 = silvisBlock(candId, targetMon, targetShift);
+      if (r1) hits.push(r1);
+      if (returnMon && returnShift) {
+        const r2 = silvisBlock(targetOldId, returnMon, returnShift);
+        if (r2) hits.push(r2);
+      }
+      if (silvisRefuse(hits)) return;
     }
     pushUndo(schedule);
     setSchedule(p => {
@@ -4456,7 +4553,7 @@ function CallSchedule() {
     }, swapTargets);
     setSwapSuggestions(null);
     setSwapTarget(null);
-  }, [surgeons, sMap, addNotification, sendEmailNotif, schedulerAdminIds]);
+  }, [surgeons, sMap, addNotification, sendEmailNotif, schedulerAdminIds, silvisActive, silvisBlock, silvisRefuse]);
   const openWeekEditor = useCallback(mondayStr => {
     const wk = schedule[mondayStr] || {};
     const mon = parse(mondayStr);
@@ -4546,6 +4643,26 @@ function CallSchedule() {
     if (changes.length === 0) {
       if (openAfter) openWeekEditor(openAfter);else setEditWeekModal(null);
       return;
+    }
+    if (silvisActive) {
+      const hits = [];
+      if (draft.dayCall === silvisFakId && oldWk.dayCall !== silvisFakId) {
+        const ov = draft.dayCallOverrides || {};
+        const days = sfSlotDays(mondayStr, "dayCall").filter(ds => !(ov[ds] && ov[ds] !== silvisFakId));
+        const d = sfConflictDay(silvisDays.primary, days);
+        if (d) hits.push(`${nameOf(silvisFakId)} is Silvis PRIMARY on ${d} (07:00 → 07:00 next day), which overlaps ${slotLabel(mondayStr, "dayCall")}`);
+      }
+      ["mon", "tue", "wed", "thu", "wknd"].forEach(nk => {
+        var _draft$nights2, _oldWk$nights2;
+        if (((_draft$nights2 = draft.nights) === null || _draft$nights2 === void 0 ? void 0 : _draft$nights2[nk]) === silvisFakId && ((_oldWk$nights2 = oldWk.nights) === null || _oldWk$nights2 === void 0 ? void 0 : _oldWk$nights2[nk]) !== silvisFakId) {
+          const r = silvisBlock(silvisFakId, mondayStr, nk);
+          if (r) hits.push(r);
+        }
+      });
+      Object.entries(draft.dayCallOverrides || {}).forEach(([ds, sid]) => {
+        if (sid === silvisFakId && (oldWk.dayCallOverrides || {})[ds] !== silvisFakId && silvisDays.primary.has(ds)) hits.push(`${nameOf(silvisFakId)} is Silvis PRIMARY on ${ds}, which overlaps Service Day ${ds}`);
+      });
+      if (silvisRefuse(hits)) return;
     }
     if (changes.length >= 3) {
       if (!confirm(`You are changing ${changes.length} shifts in the week of ${mondayStr}. Continue?`)) return;
@@ -4661,7 +4778,7 @@ function CallSchedule() {
     if (openAfter) {
       setTimeout(() => openWeekEditor(openAfter), 0);
     }
-  }, [editWeekModal, schedule, appShifts, surgeons, sMap, aMap, addNotification, sendEmailNotif, pushUndo, schedulerAdminIds, openWeekEditor, backupMondaySet, fierceBackupSet]);
+  }, [editWeekModal, schedule, appShifts, surgeons, sMap, aMap, addNotification, sendEmailNotif, pushUndo, schedulerAdminIds, openWeekEditor, backupMondaySet, fierceBackupSet, silvisActive, silvisFakId, silvisDays, silvisBlock, silvisRefuse]);
   const setWeekFlag = (monday, flagKey, val) => {
     setSchedule(p => {
       const wk = p[monday];
@@ -5196,6 +5313,27 @@ ${"</"}script>${"</"}body>${"</"}html>`;
   const calcShiftsB = s => (s.dcB || 0) * 6 + (s.nightsB || 0) + (s.wkndB || 0) * 2;
   const calcTotal = s => calcShifts(s) + calcShiftsB(s);
   const calcRawCount = s => (s.dc || 0) + (s.nights || 0) + (s.wknd || 0) + (s.dcB || 0) + (s.nightsB || 0) + (s.wkndB || 0);
+  const silvisConflicts = useMemo(() => {
+    if (!silvisActive || isPublicMode) return [];
+    const todayStr = fmt(new Date());
+    const inScope = o => fmt(addD(parse(o.mondayStr), 6)) >= todayStr;
+    const md = ds => {
+      const d = parse(ds);
+      return `${d.getMonth() + 1}/${d.getDate()}`;
+    };
+    const who = nameOf(silvisFakId);
+    const hard = sfOverlaps(schedule, silvisDays.primary, silvisFakId).filter(inScope).map(o => ({
+      severity: "error",
+      week: o.mondayStr,
+      message: `${who}: Silvis primary + Davenport ${o.label}, ${md(o.day)}`
+    }));
+    const soft = sfOverlaps(schedule, silvisDays.backup, silvisFakId).filter(inScope).map(o => ({
+      severity: "info",
+      week: o.mondayStr,
+      message: `${who}: Silvis backup + Davenport ${o.label}, ${md(o.day)} (backup is standby — no block)`
+    }));
+    return hard.concat(soft);
+  }, [schedule, silvisActive, silvisDays, silvisFakId, surgeons, isPublicMode]);
   const conflicts = useMemo(() => {
     const issues = [];
     const todayStr = fmt(new Date());
@@ -5468,8 +5606,26 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         cls: "app"
       }];
     });
+    if (silvisFakId) {
+      silvisDays.primary.forEach(ds => {
+        d[ds] = [...(d[ds] || []), {
+          type: "Silvis",
+          surgeon: silvisFakId,
+          cls: "silvis",
+          role: "P"
+        }];
+      });
+      silvisDays.backup.forEach(ds => {
+        d[ds] = [...(d[ds] || []), {
+          type: "Silvis",
+          surgeon: silvisFakId,
+          cls: "silvis",
+          role: "B"
+        }];
+      });
+    }
     return d;
-  }, [schedule, appShifts]);
+  }, [schedule, appShifts, silvisDays, silvisFakId]);
   const calHolidayLabels = useMemo(() => {
     const labels = {};
     [calYear - 1, calYear].forEach(y => {
@@ -8184,8 +8340,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           fontWeight: 700
         }
       }, ck.ok ? "✓" : "⚠", " ", ck.label, " group:"), " ", ck.ok ? `All ${ck.uniqueCount} surgeons distinct (${ck.freeCount} free)` : ck.dupes.map(d => {
-        var _surgeons$find11;
-        return `${((_surgeons$find11 = surgeons.find(s => s.id === d.surgeon)) === null || _surgeons$find11 === void 0 ? void 0 : _surgeons$find11.name) || d.surgeon} is on both ${d.hol1} & ${d.hol2}`;
+        var _surgeons$find12;
+        return `${((_surgeons$find12 = surgeons.find(s => s.id === d.surgeon)) === null || _surgeons$find12 === void 0 ? void 0 : _surgeons$find12.name) || d.surgeon} is on both ${d.hol1} & ${d.hol2}`;
       }).join("; "))));
     })(), React.createElement("div", {
       style: {
@@ -8385,6 +8541,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     const slotOrder = ["dc", "mon", "tue", "wed", "thu", "wknd"];
     const addLock = () => {
       if (!newLockWeek || !newLockSlot || !newLockSurgeon) return;
+      if (silvisActive) {
+        const r = silvisBlock(newLockSurgeon, newLockWeek, newLockSlot);
+        if (silvisRefuse(r ? [r + " — a lock here overrides the rule for this generation"] : [])) return;
+      }
       setPendingLocks(prev => [...prev.filter(l => !(l.mondayStr === newLockWeek && l.slot === newLockSlot)), {
         mondayStr: newLockWeek,
         slot: newLockSlot,
@@ -9133,8 +9293,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           });
         }
         ["mon", "tue", "wed", "thu", "wknd"].forEach(sk => {
-          var _oldWk$nights2, _newWk$nights;
-          const o = ((_oldWk$nights2 = oldWk.nights) === null || _oldWk$nights2 === void 0 ? void 0 : _oldWk$nights2[sk]) || "";
+          var _oldWk$nights3, _newWk$nights;
+          const o = ((_oldWk$nights3 = oldWk.nights) === null || _oldWk$nights3 === void 0 ? void 0 : _oldWk$nights3[sk]) || "";
           const n = ((_newWk$nights = newWk.nights) === null || _newWk$nights === void 0 ? void 0 : _newWk$nights[sk]) || "";
           if (o !== n) {
             var _sMap$o, _sMap$n;
@@ -9934,7 +10094,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       cursor: "pointer",
       fontFamily: font
     }
-  }, "Reset")), (conflicts.length > 0 || vacOverlapWarnings.length > 0) && React.createElement("div", {
+  }, "Reset")), (conflicts.length > 0 || vacOverlapWarnings.length > 0 || silvisConflicts.length > 0) && React.createElement("div", {
     style: _objectSpread(_objectSpread({}, css.card), {}, {
       marginBottom: 14,
       background: dk ? "#2a1a1a" : "#fef8f0",
@@ -9953,7 +10113,31 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       fontWeight: 700,
       color: "#c06020"
     }
-  }, "⚠️ Schedule Warnings — ", conflicts.length + vacOverlapWarnings.length)), conflicts.slice(0, 10).map((c, i) => React.createElement("div", {
+  }, "⚠️ Schedule Warnings — ", conflicts.length + vacOverlapWarnings.length + silvisConflicts.length)), silvisConflicts.slice(0, 10).map((c, i) => React.createElement("div", {
+    key: `s${i}`,
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 8,
+      padding: "4px 8px",
+      marginBottom: 3,
+      fontSize: 12,
+      color: c.severity === "error" ? "#c04040" : "#5a6a78",
+      background: c.severity === "error" ? dk ? "#2a0a0a" : "#fce8e8" : dk ? "#1a1a2a" : "#f0f8ff",
+      borderRadius: 4,
+      border: `1px solid ${c.severity === "error" ? "#e0b0b0" : "#c0d8f0"}`
+    }
+  }, React.createElement("span", {
+    style: {
+      fontWeight: 700
+    }
+  }, c.severity === "error" ? "🔴" : "🔵"), React.createElement("span", {
+    style: {
+      fontFamily: mono,
+      fontSize: 11,
+      color: dkSubtext
+    }
+  }, c.week), React.createElement("span", null, c.message))), conflicts.slice(0, 10).map((c, i) => React.createElement("div", {
     key: `c${i}`,
     style: {
       display: "flex",
@@ -10230,6 +10414,30 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             marginLeft: 2
           }
         }, e.hours));
+      }), !isPublicMode && entries.filter(e => e.type === "Silvis").filter(e => !sf || e.surgeon === sf).map((e, j) => {
+        var _sMap$e$surgeon13, _sMap$e$surgeon14, _sMap$e$surgeon15;
+        return React.createElement("div", {
+          key: "sil" + j,
+          title: e.role === "P" ? "Silvis PRIMARY 07:00 → 07:00 next day — no Davenport call may overlap" : "Silvis backup (standby) — no block",
+          style: {
+            marginBottom: 1,
+            padding: "1px 3px",
+            borderRadius: 3,
+            fontSize: 10,
+            fontWeight: 600,
+            background: e.role === "P" ? dk ? "#1a2a4a" : "#e8f0fc" : dk ? "#1e2430" : "#f4f6fa",
+            border: `1px solid ${e.role === "P" ? "#7a9ad0" : "#c8d0dc"}`
+          }
+        }, React.createElement("span", {
+          style: {
+            color: e.role === "P" ? "#1a4a9a" : "#7a8a98",
+            fontWeight: 700
+          }
+        }, "Silvis ", e.role), " ", React.createElement("span", {
+          style: {
+            color: surgeonColors((_sMap$e$surgeon13 = sMap[e.surgeon]) === null || _sMap$e$surgeon13 === void 0 ? void 0 : _sMap$e$surgeon13.name, (_sMap$e$surgeon14 = sMap[e.surgeon]) === null || _sMap$e$surgeon14 === void 0 ? void 0 : _sMap$e$surgeon14.idx).tx || "#4a5868"
+          }
+        }, ((_sMap$e$surgeon15 = sMap[e.surgeon]) === null || _sMap$e$surgeon15 === void 0 ? void 0 : _sMap$e$surgeon15.name) || "?"));
       }), calFilters.app && !sf && calAppFilter !== "none" && !calDeptFilter && entries.filter(e => e.type === "APP").filter(e => calAppFilter === "all" || e.appId === calAppFilter).map((e, j) => {
         var _APP_PAL, _aMap$e$appId3, _aMap$e$appId4;
         return React.createElement("div", {
@@ -10357,7 +10565,14 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       color: "#8a6a10",
       fontWeight: 700
     }
-  }, "B"), " Backup"), React.createElement("span", null, React.createElement("span", {
+  }, "B"), " Backup"), React.createElement("span", {
+    title: "FAK's Silvis (trauma) days: P = primary, hard block 07:00→07:00; B = backup, standby only"
+  }, React.createElement("span", {
+    style: {
+      color: "#1a4a9a",
+      fontWeight: 700
+    }
+  }, "Silvis P"), " Silvis primary"), React.createElement("span", null, React.createElement("span", {
     style: {
       color: "#8a6a10"
     }
@@ -10381,7 +10596,72 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       padding: "4px 2px",
       marginTop: 8
     }
-  }, (isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.role) === "admin") && React.createElement("div", {
+  }, (() => {
+    const st = sfStatus(silvisDays.fetchedAt);
+    return React.createElement("div", {
+      style: _objectSpread(_objectSpread({}, css.card), {}, {
+        marginTop: 14,
+        background: dk ? "#16223a" : "linear-gradient(135deg,#eef3fc,#e8eefa)",
+        border: "1px solid #b8c8e8"
+      })
+    }, React.createElement("div", {
+      style: {
+        display: "flex",
+        justifyContent: "space-between",
+        alignItems: "center",
+        flexWrap: "wrap",
+        gap: 8
+      }
+    }, React.createElement("div", {
+      style: css.cardT
+    }, "🚑 Silvis feed ", React.createElement("span", {
+      style: {
+        fontWeight: 400,
+        fontSize: 11,
+        color: "#7a8a98"
+      }
+    }, "— read-only mirror of FAK's Silvis trauma call")), React.createElement("button", {
+      onClick: () => refreshSilvisFeed(false),
+      disabled: silvisRefreshing,
+      style: _objectSpread(_objectSpread({}, css.btn(false)), {}, {
+        padding: "6px 14px",
+        fontSize: 12,
+        opacity: silvisRefreshing ? 0.6 : 1
+      })
+    }, silvisRefreshing ? "Refreshing…" : "↻ Refresh from Silvis")), React.createElement("div", {
+      style: {
+        fontSize: 12,
+        color: "#5a6a78",
+        marginTop: 6,
+        lineHeight: 1.6
+      }
+    }, silvisRows.length === 0 ? React.createElement("span", {
+      style: {
+        color: "#c04040",
+        fontWeight: 600
+      }
+    }, "No cached Silvis days", silvisLoadError ? " — last load FAILED: " + silvisLoadError : "", ". Until a refresh succeeds the rule cannot see Silvis call.") : React.createElement(React.Fragment, null, React.createElement("b", null, silvisRows.length), " days cached · FAK Silvis ", React.createElement("b", null, "primary"), " on ", React.createElement("b", null, silvisDays.primary.size), ", backup on ", silvisDays.backup.size, " · ", "fetched ", st.ageHours === null ? "?" : st.ageHours + "h ago", st.stale && React.createElement("span", {
+      style: {
+        color: "#c06020",
+        fontWeight: 700
+      }
+    }, " · STALE"), silvisLoadError && React.createElement("span", {
+      style: {
+        color: "#c04040"
+      }
+    }, " · last load failed (", silvisLoadError, ") — showing the previous cache"), !silvisActive && React.createElement("span", {
+      style: {
+        color: "#a06020",
+        fontWeight: 700
+      }
+    }, " · rule silvisBusy is OFF (silvisRule.enabled) or code \"", silvisRule.code, "\" is not on the roster"))), React.createElement("div", {
+      style: {
+        fontSize: 11,
+        color: "#8a94a0",
+        marginTop: 4
+      }
+    }, "Rule silvisBusy: on a Silvis PRIMARY day (07:00 → 07:00 next day) FAK cannot hold any overlapping Davenport call — the generator never assigns it; a manual edit or trade acceptance is refused (scheduler override with the reason shown). Backup days are standby and never block. Whichever app generates a period first wins those days; the other respects the feed."));
+  })(), (isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.role) === "admin") && React.createElement("div", {
     style: _objectSpread(_objectSpread({}, css.card), {}, {
       marginTop: 14,
       background: "linear-gradient(135deg,#fff8e8,#fcf4e0)",
@@ -10975,8 +11255,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     const nextMonday = idx >= 0 && idx < allMondays.length - 1 ? allMondays[idx + 1] : null;
     const oldWk = schedule[mondayStr] || {};
     const hasUnsaved = (oldWk.dayCall || "") !== (draft.dayCall || "") || ["mon", "tue", "wed", "thu", "wknd"].some(nk => {
-      var _oldWk$nights3, _draft$nights2;
-      return (((_oldWk$nights3 = oldWk.nights) === null || _oldWk$nights3 === void 0 ? void 0 : _oldWk$nights3[nk]) || "") !== (((_draft$nights2 = draft.nights) === null || _draft$nights2 === void 0 ? void 0 : _draft$nights2[nk]) || "");
+      var _oldWk$nights4, _draft$nights3;
+      return (((_oldWk$nights4 = oldWk.nights) === null || _oldWk$nights4 === void 0 ? void 0 : _oldWk$nights4[nk]) || "") !== (((_draft$nights3 = draft.nights) === null || _draft$nights3 === void 0 ? void 0 : _draft$nights3[nk]) || "");
     }) || Object.entries(draft.apps).some(([ds, aid]) => (appShifts[ds] || "") !== (aid || "")) || (() => {
       const oldOv = oldWk.dayCallOverrides || {};
       const newOv = draft.dayCallOverrides || {};
@@ -13839,7 +14119,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       color: "#6030a0",
       padding: "6px 0"
     }
-  }, ((_surgeons$find12 = surgeons.find(s => s.id === mySurgeon)) === null || _surgeons$find12 === void 0 ? void 0 : _surgeons$find12.name) || "—")), React.createElement("div", null, React.createElement("label", {
+  }, ((_surgeons$find13 = surgeons.find(s => s.id === mySurgeon)) === null || _surgeons$find13 === void 0 ? void 0 : _surgeons$find13.name) || "—")), React.createElement("div", null, React.createElement("label", {
     style: {
       fontSize: 10,
       color: "#7a8a98",
