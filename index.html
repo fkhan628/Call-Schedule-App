@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.09.24h";
+    var APP_VERSION = "2026.09.25a";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -3172,16 +3172,14 @@ function CallSchedule() {
   const downloadMyCal = surgeonId => {
     const s = surgeons.find(x => x.id === surgeonId);
     if (!s) return;
-    const events = buildICSEvents(schedule, s.id, s.name, {}, {});
+    const events = buildICSEvents(schedule, s.id, s.name);
     const vacRanges = vacations[s.id] || [];
     vacRanges.forEach(([vs, ve]) => {
-      const sd = parse(vs),
-        ed = parse(ve);
-      const edNext = addD(ed, 1);
       events.push({
-        start: icsDate(sd.getFullYear(), sd.getMonth() + 1, sd.getDate(), 0),
-        end: icsDate(edNext.getFullYear(), edNext.getMonth() + 1, edNext.getDate(), 0),
-        summary: `VACATION — ${s.name}`,
+        allDay: true,
+        start: icsDay(parse(vs)),
+        end: icsDay(addD(parse(ve), 1)),
+        summary: "DSG Vacation",
         desc: `${vs} to ${ve}`
       });
     });
@@ -4978,27 +4976,14 @@ function CallSchedule() {
     });
     const icsMap = {};
     surgeons.forEach(s => {
-      const ev = buildICSEvents(schedule, s.id, s.name, appShifts, aMap);
+      const ev = buildICSEvents(schedule, s.id, s.name);
       icsMap[s.name] = generateICS(ev, "Call Schedule - " + s.name);
     });
     const allEv = [];
-    surgeons.forEach(s => allEv.push(...buildICSEvents(schedule, s.id, s.name, appShifts, aMap)));
-    Object.entries(appShifts).forEach(([ds, aid]) => {
-      var _aMap$aid;
-      const d = parse(ds);
-      const nx = addD(d, 1);
-      const an = (aMap === null || aMap === void 0 || (_aMap$aid = aMap[aid]) === null || _aMap$aid === void 0 ? void 0 : _aMap$aid.name) || aid;
-      const dow = d.getDay();
-      const isWeekend = dow === 0 || dow === 6;
-      const startHour = isWeekend ? 7 : 17;
-      const timeLabel = isWeekend ? "7:00 AM - 7:00 AM" : "5:00 PM - 7:00 AM";
-      allEv.push({
-        start: icsDate(d.getFullYear(), d.getMonth() + 1, d.getDate(), startHour),
-        end: icsDate(nx.getFullYear(), nx.getMonth() + 1, nx.getDate(), 7),
-        summary: "APP Call - " + an,
-        desc: "APP Call " + timeLabel
-      });
-    });
+    surgeons.forEach(s => allEv.push(...buildICSEvents(schedule, s.id, s.name, {
+      withCode: true
+    })));
+    allEv.push(...buildAppICSEvents(appShifts, aMap));
     icsMap["__full__"] = generateICS(allEv, "Full Call Schedule");
     let calBtns = surgeons.map(s => {
       const c = colorMap[s.id];
@@ -10767,8 +10752,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         }, ((_aMap$e$appId4 = aMap[e.appId]) === null || _aMap$e$appId4 === void 0 ? void 0 : _aMap$e$appId4.name) || "?"));
       }), appOffVisible && calFilters.appOff && !sf && calAppFilter !== "none" && !calDeptFilter && (() => {
         const offNames = (appDayOff[ds] || []).map(dayOffId).filter(aid => aid && (calAppFilter === "all" || aid === calAppFilter)).map(aid => {
-          var _aMap$aid2;
-          return ((_aMap$aid2 = aMap[aid]) === null || _aMap$aid2 === void 0 ? void 0 : _aMap$aid2.name) || aid;
+          var _aMap$aid;
+          return ((_aMap$aid = aMap[aid]) === null || _aMap$aid === void 0 ? void 0 : _aMap$aid.name) || aid;
         });
         return offNames.length ? React.createElement("div", {
           style: {
@@ -11376,7 +11361,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     return React.createElement("button", {
       key: s.id,
       onClick: () => {
-        const events = buildICSEvents(schedule, s.id, s.name, appShifts, aMap);
+        const events = buildICSEvents(schedule, s.id, s.name);
         const ics = generateICS(events, `Call Schedule — ${s.name}`);
         downloadICS(ics, `call-schedule-${s.name.toLowerCase()}.ics`);
       },
@@ -11397,24 +11382,11 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     onClick: () => {
       const allEvents = [];
       surgeons.forEach(s => {
-        allEvents.push(...buildICSEvents(schedule, s.id, s.name, appShifts, aMap));
+        allEvents.push(...buildICSEvents(schedule, s.id, s.name, {
+          withCode: true
+        }));
       });
-      Object.entries(appShifts).forEach(([ds, aid]) => {
-        var _aMap$aid3;
-        const d = parse(ds);
-        const next = addD(d, 1);
-        const appName = (aMap === null || aMap === void 0 || (_aMap$aid3 = aMap[aid]) === null || _aMap$aid3 === void 0 ? void 0 : _aMap$aid3.name) || aid;
-        const dow = d.getDay();
-        const isWeekend = dow === 0 || dow === 6;
-        const startHour = isWeekend ? 7 : 17;
-        const timeLabel = isWeekend ? "7:00 AM – 7:00 AM" : "5:00 PM – 7:00 AM";
-        allEvents.push({
-          start: icsDate(d.getFullYear(), d.getMonth() + 1, d.getDate(), startHour),
-          end: icsDate(next.getFullYear(), next.getMonth() + 1, next.getDate(), 7),
-          summary: `APP Call — ${appName}`,
-          desc: `APP Call ${timeLabel}`
-        });
-      });
+      allEvents.push(...buildAppICSEvents(appShifts, aMap));
       const ics = generateICS(allEvents, "Full Call Schedule");
       downloadICS(ics, "call-schedule-full.ics");
     },
