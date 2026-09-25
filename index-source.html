@@ -9307,6 +9307,9 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                 myShifts.push({ mStr, endStr, roles, isBackup: wk.isBackup, isFierceBackup: wk.isFierceBackup });
               }
             });
+            // The My Shifts list shows only shifts not yet done, and offers Find Swap only before a
+            // shift starts (the helper owns both rules). The full list stays for the Next call card.
+            const myShiftsView = mineUpcoming(myShifts, myToday);
 
             // ─── Next call at-a-glance ───
             // Flatten each upcoming role to a concrete start date (a night lands on
@@ -9471,7 +9474,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                 })()}
 
                 {/* My Shifts */}
-                {myShifts.map(wk => (
+                {myShiftsView.map(wk => (
                   <div key={wk.mStr} style={{...css.card,padding:12,marginBottom:8,border:wk.isBackup?"1px solid #e8d090":"1px solid #e0e4ea"}}>
                     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6,flexWrap:"wrap",gap:4}}>
                       <span style={{fontFamily:mono,fontSize:13,color:wk.isBackup?"#8a6a10":"#1a6fa8",fontWeight:600}}>{wk.mStr} → {wk.endStr}</span>
@@ -9483,12 +9486,14 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                         <span style={{fontSize:14}}>{r.icon}</span>
                         <span style={{fontSize:13,fontWeight:600,color:r.color}}>{r.type}</span>
                         <span style={{fontSize:11,color:"#8a94a0",fontFamily:mono}}>{r.detail}</span>
-                        {r.shiftKey && (
+                        {r.canSwap ? (
                           <button onClick={()=>{findSwapSuggestions(wk.mStr, r.shiftKey, myId); setView("calendar");}}
                             style={{marginLeft:"auto",background:"#f0e8fc",border:"1px solid #c8b0e0",color:"#6030a0",borderRadius:5,padding:"2px 10px",fontSize:10,fontWeight:600,cursor:"pointer",fontFamily:font}}>
                             🔄 Find Swap
                           </button>
-                        )}
+                        ) : r.shiftKey ? (
+                          <span style={{marginLeft:"auto",background:"#e8f5ec",border:"1px solid #b0d8bc",color:"#1a8040",borderRadius:5,padding:"2px 8px",fontSize:10,fontWeight:600,fontFamily:font}}>in progress</span>
+                        ) : null}
                       </div>
                     ))}
                   </div>
@@ -9496,6 +9501,9 @@ ${"</"}script>${"</"}body>${"</"}html>`;
 
                 {myShifts.length === 0 && (
                   <div style={{...css.card,textAlign:"center",color:"#8a94a0",padding:30}}>No shifts assigned yet. Generate a schedule first.</div>
+                )}
+                {myShifts.length > 0 && myShiftsView.length === 0 && (
+                  <div style={{...css.card,textAlign:"center",color:"#8a94a0",padding:30}}>No upcoming shifts in the current schedule.</div>
                 )}
               </>
             );
