@@ -2202,6 +2202,73 @@ check("prefs audit never logs the plaintext email (masked only)",
   }
 }
 
+// ─── T. The app's .ics exports are ALL-DAY (owner request 2026-09-25) ───
+// Same format as the calendar-sync v15 feed. A service week is one Mon–Sat
+// event, each weeknight one event, the weekend two events (Friday night and
+// Sunday, so Saturday stays with the service-week holder), APP shifts and
+// vacations one all-day event each. The exact hours live in the description.
+//   T1 the real buildICSEvents: spans, weekdays, short vs coded titles,
+//      month and year rollover
+//   T2 the real generateICS: VALUE=DATE only, lines of at most 75 octets,
+//      text escaping that unfolds back to the description
+//   T3 the real buildAppICSEvents: weekday vs weekend hours
+//   T4 the three export sites: the full exports name the surgeon and carry
+//      APP shifts, personal exports do not; vacations are all-day; the timed
+//      builder is gone
+{
+  // A missing builder resolves to a stub that returns nothing, so its checks FAIL by name instead of crashing the run
+  const T = vm.runInContext(`({ ${["buildICSEvents", "buildAppICSEvents", "generateICS"].map((f) => `${f}: typeof ${f} === "function" ? ${f} : () => []`).join(", ")} })`, sandbox);
+  check("T0 buildICSEvents, buildAppICSEvents and generateICS are defined in helpers.js",
+    vm.runInContext('typeof buildICSEvents + typeof buildAppICSEvents + typeof generateICS', sandbox) === "functionfunctionfunction");
+  const sched = {
+    "2026-11-30": { dayCall: "s6", nights: { mon: "s1", tue: "s6", thu: "s6", wknd: "s1" } },
+    "2026-12-28": { dayCall: "s1", isBackup: true, nights: { wed: "s6", wknd: "s6" } },
+  };
+  const mine = JSON.parse(JSON.stringify(T.buildICSEvents(sched, "s6", "FAK")));
+  const key = (e) => `${e.start}-${e.end} ${e.summary}`;
+  const want = [
+    "20261130-20261206 DSG Service Week",
+    "20261201-20261202 DSG Night",
+    "20261203-20261204 DSG Night",
+    "20261230-20261231 DSG Night [BACKUP]",
+    "20270101-20270102 DSG Weekend — Fri night [BACKUP]",
+    "20270103-20270104 DSG Weekend — Sun [BACKUP]",
+  ];
+  check("T1 personal export: one Mon–Sat service week, one event per night, Fri + Sun weekend events, short titles, month and year rollover",
+    mine.every((e) => e.allDay === true) && JSON.stringify(mine.map(key)) === JSON.stringify(want), JSON.stringify(mine.map(key)));
+  const full = JSON.parse(JSON.stringify(T.buildICSEvents(sched, "s6", "FAK", { withCode: true })));
+  check("T1 full export: the same events, each title ending with the surgeon code",
+    full.length === want.length && full.every((e, i) => e.summary === mine[i].summary + " — FAK" && e.start === mine[i].start), JSON.stringify(full.map(key)));
+  check("T1 descriptions carry the exact Central hours",
+    /Mon–Fri 7:00 AM – 5:00 PM/.test(mine[0].desc) && /Sat 7:00 AM – Sun 7:00 AM/.test(mine[0].desc) && /Tue 5:00 PM – Wed 7:00 AM/.test(mine[1].desc) && /Central/.test(mine[5].desc), mine.map((e) => e.desc).join(" | "));
+
+  const apps = JSON.parse(JSON.stringify(T.buildAppICSEvents({ "2026-12-02": "a1", "2026-12-05": "a2" }, { a1: { name: "MA" }, a2: { name: "SJ" } })));
+  check("T3 APP shifts: one all-day event each, weekday 5 PM–7 AM, weekend 24h",
+    apps.length === 2 && apps.every((e) => e.allDay) && key(apps[0]) === "20261202-20261203 DSG APP Call — MA" && /5:00 PM – 7:00 AM/.test(apps[0].desc)
+    && key(apps[1]) === "20261205-20261206 DSG APP Call — SJ" && /7:00 AM – 7:00 AM next day \(24h\)/.test(apps[1].desc), JSON.stringify(apps.map(key)));
+
+  const ics = String(T.generateICS([...full, ...apps, { allDay: true, start: "20261201", end: "20261204", summary: "DSG Vacation", desc: "a, b; c\\d" }], "Full Call Schedule"));
+  const lines = ics.split("\r\n");
+  const octets = (l) => Buffer.byteLength(l, "utf8");
+  const unfolded = ics.replace(/\r\n /g, "");
+  check("T2 generateICS: every event all-day (VALUE=DATE), no timed DTSTART/DTEND",
+    (unfolded.match(/^DTSTART;VALUE=DATE:\d{8}$/gm) || []).length === 9 && (unfolded.match(/^DTEND;VALUE=DATE:\d{8}$/gm) || []).length === 9 && !/^DT(START|END):/m.test(unfolded));
+  check("T2 generateICS: every line at most 75 octets, folded lines exist, CRLF throughout",
+    lines.every((l) => octets(l) <= 75) && /\r\n /.test(ics) && !/[^\r]\n/.test(ics) && ics.endsWith("END:VCALENDAR\r\n"), lines.find((l) => octets(l) > 75));
+  check("T2 generateICS: text escaped (newline, comma, semicolon, backslash) and unfolds back intact",
+    unfolded.includes("DESCRIPTION:Mon–Fri 7:00 AM – 5:00 PM daytime call\\nSat 7:00 AM – Sun 7:00 AM (24h)\\nTimes are Central.") && unfolded.includes("DESCRIPTION:a\\, b\\; c\\\\d"));
+
+  const isrc = fs.readFileSync(path.join(ROOT, "helpers.js"), "utf8");
+  check("T4 personal exports (Download My Calendar, exported page, Settings) call the builder without the code",
+    count("buildICSEvents(schedule, s.id, s.name);") === 3);
+  check("T4 both full exports name the surgeon and add APP shifts through the shared builder",
+    count("buildICSEvents(schedule, s.id, s.name, { withCode: true })") === 2 && count("buildAppICSEvents(appShifts, aMap)") === 2);
+  check("T4 Download My Calendar writes vacations as all-day events",
+    count('allDay: true, start: icsDay(parse(vs)), end: icsDay(addD(parse(ve), 1)),') === 1 && count('summary: "DSG Vacation",') === 1);
+  check("T4 the timed builder is gone from both files (no icsDate helper, no hand-built APP events)",
+    !src.includes("icsDate(") && !isrc.includes("icsDate(") && !src.includes("APP Call - "));
+}
+
 // ─── Verdict ───
 console.log(`\n${checks} checks, ${failures.length} failure(s)`);
 if (failures.length) {
