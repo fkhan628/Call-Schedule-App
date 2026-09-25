@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.09.25b";
+    var APP_VERSION = "2026.09.25c";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -13008,6 +13008,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         });
       }
     });
+    const myShiftsView = mineUpcoming(myShifts, myToday);
     const _today0 = new Date();
     _today0.setHours(0, 0, 0, 0);
     const _DAY = 86400000;
@@ -13465,7 +13466,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           lineHeight: 1.4
         }
       }, "Days you're working but won't be assigned call."));
-    })(), myShifts.map(wk => React.createElement("div", {
+    })(), myShiftsView.map(wk => React.createElement("div", {
       key: wk.mStr,
       style: _objectSpread(_objectSpread({}, css.card), {}, {
         padding: 12,
@@ -13528,7 +13529,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         color: "#8a94a0",
         fontFamily: mono
       }
-    }, r.detail), r.shiftKey && React.createElement("button", {
+    }, r.detail), r.canSwap ? React.createElement("button", {
       onClick: () => {
         findSwapSuggestions(wk.mStr, r.shiftKey, myId);
         setView("calendar");
@@ -13545,13 +13546,31 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         cursor: "pointer",
         fontFamily: font
       }
-    }, "🔄 Find Swap"))))), myShifts.length === 0 && React.createElement("div", {
+    }, "🔄 Find Swap") : r.shiftKey ? React.createElement("span", {
+      style: {
+        marginLeft: "auto",
+        background: "#e8f5ec",
+        border: "1px solid #b0d8bc",
+        color: "#1a8040",
+        borderRadius: 5,
+        padding: "2px 8px",
+        fontSize: 10,
+        fontWeight: 600,
+        fontFamily: font
+      }
+    }, "in progress") : null)))), myShifts.length === 0 && React.createElement("div", {
       style: _objectSpread(_objectSpread({}, css.card), {}, {
         textAlign: "center",
         color: "#8a94a0",
         padding: 30
       })
-    }, "No shifts assigned yet. Generate a schedule first."));
+    }, "No shifts assigned yet. Generate a schedule first."), myShifts.length > 0 && myShiftsView.length === 0 && React.createElement("div", {
+      style: _objectSpread(_objectSpread({}, css.card), {}, {
+        textAlign: "center",
+        color: "#8a94a0",
+        padding: 30
+      })
+    }, "No upcoming shifts in the current schedule."));
   })(), !mySurgeon && React.createElement("div", {
     style: _objectSpread(_objectSpread({}, css.card), {}, {
       textAlign: "center",
