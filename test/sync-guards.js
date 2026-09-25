@@ -2291,6 +2291,132 @@ check("prefs audit never logs the plaintext email (masked only)",
     !src.includes("icsDate(") && !isrc.includes("icsDate(") && !src.includes("APP Call - "));
 }
 
+// ─── U. Mine tab "My Shifts" lists only shifts not yet done (owner request 2026-09-25) ───
+// A role is DONE once its last day is before today: a Mon–Thu night ends on
+// its own date; the service week, the weekend and an OFF week run to the
+// week's Sunday (the Next call card's rule). A started-but-not-done role stays
+// without Find Swap. canSwap uses shiftStartDate, the exact rule every swap
+// and trade path refuses on. Weeks with no roles left drop out.
+//   U1 shiftLastDay for every key, plus the DST week
+//   U2 mineUpcoming on FAK's live weeks at pinned todays: exact kept roles
+//      and canSwap
+//   U3 purity: input untouched, an all-done week disappears, OFF runs to
+//      Sunday with no swap, the other role and week fields pass through
+//   U4 source: My Shifts renders mineUpcoming's output, the button is gated
+//      on canSwap (and the branches are in that order), both empty states
+//      exist, the Next call card still reads the unfiltered list
+//   U5 U1 and U2 rerun in a child pinned to TZ=America/Chicago, because a
+//      UTC run (CI's) cannot see a new Date("YYYY-MM-DD") slip
+// Every check carries a positive assertion, so a missing helper fails by
+// name instead of passing on an empty result.
+{
+  const U = vm.runInContext(`({ ${["shiftLastDay", "mineUpcoming"].map((f) => `${f}: typeof ${f} === "function" ? ${f} : () => null`).join(", ")} })`, sandbox);
+  const last = (m, k) => U.shiftLastDay(m, k);
+  const lastWant = { dayCall: "2026-09-27", mon: "2026-09-21", tue: "2026-09-22", wed: "2026-09-23", thu: "2026-09-24", wknd: "2026-09-27" };
+  const lastGot = Object.fromEntries(Object.keys(lastWant).map((k) => [k, last("2026-09-21", k)]));
+  check("U1 shiftLastDay on wk 2026-09-21: nights end on their own date, service week and weekend on Sunday",
+    JSON.stringify(lastGot) === JSON.stringify(lastWant), JSON.stringify(lastGot));
+  check("U1 shiftLastDay: an OFF week (null key) runs to Sunday",
+    last("2026-09-21", null) === "2026-09-27", last("2026-09-21", null));
+  check("U1 shiftLastDay across the fall-back week 2026-10-26: weekend and service week end 2026-11-01, Thursday night 2026-10-29",
+    last("2026-10-26", "wknd") === "2026-11-01" && last("2026-10-26", "dayCall") === "2026-11-01" && last("2026-10-26", "thu") === "2026-10-29",
+    [last("2026-10-26", "wknd"), last("2026-10-26", "dayCall"), last("2026-10-26", "thu")].join(" "));
+
+  // FAK's live weeks on 2026-09-25 (schedule_weeks, anon read), in the builder's role shape, plus one long-past week
+  const role = (shiftKey) => shiftKey === "dayCall" ? { type: "Service Week (incl. Sat)", icon: "🏥", detail: "M–F 7a–5p + Sat 7a–Sun 7a", color: "#1a6fa8", shiftKey }
+    : shiftKey === "wknd" ? { type: "Weekend", icon: "🌗", detail: "Fri 5p–Sat 7a + Sun 7a–Mon 7a", color: "#7a6030", shiftKey }
+    : shiftKey ? { type: shiftKey + " Night", icon: "🌙", detail: "5p–7a", color: "#6030a0", shiftKey }
+    : { type: "OFF", icon: "✅", detail: "No call this week", color: "#2a7a40", shiftKey: null };
+  const wk = (mStr, keys, extra) => ({ mStr, endStr: vm.runInContext(`fmt(addD(parse("${mStr}"), 6))`, sandbox), roles: keys.map(role), isBackup: false, isFierceBackup: false, ...extra });
+  const fx = [
+    wk("2026-05-04", ["dayCall", "thu"]),
+    wk("2026-09-14", ["wed"]),
+    wk("2026-09-21", ["mon", "tue", "wknd"]),
+    wk("2026-09-28", ["wed"], { isBackup: true }),
+    wk("2026-10-05", ["dayCall"]),
+    wk("2026-10-12", ["tue"], { isFierceBackup: true }),
+    wk("2026-10-19", ["tue"]),
+    wk("2026-10-26", ["mon"]),
+    wk("2026-11-02", [null]),
+    wk("2026-11-09", [null], { isBackup: true }),
+  ];
+  const fxBefore = JSON.stringify(fx);
+  const view = (today) => { const r = U.mineUpcoming(fx, today); return Array.isArray(r) ? JSON.parse(JSON.stringify(r)) : null; };
+  const sig = (today) => { const v = view(today); return v ? v.map((w) => `${w.mStr.slice(5)}:${w.roles.map((r) => `${r.shiftKey || "OFF"}${r.canSwap ? "+" : "-"}`).join(",")}`).join(" ") : "null"; };
+  const U2 = [
+    ["2026-09-25", "09-21:wknd+ 09-28:wed+ 10-05:dayCall+ 10-12:tue+ 10-19:tue+ 10-26:mon+ 11-02:OFF- 11-09:OFF-", "today 09-25: wk 9/21 keeps ONLY the weekend, still swappable (it starts today); nothing before it"],
+    ["2026-09-26", "09-21:wknd- 09-28:wed+ 10-05:dayCall+ 10-12:tue+ 10-19:tue+ 10-26:mon+ 11-02:OFF- 11-09:OFF-", "today 09-26: the weekend is in progress, no swap"],
+    ["2026-09-28", "09-28:wed+ 10-05:dayCall+ 10-12:tue+ 10-19:tue+ 10-26:mon+ 11-02:OFF- 11-09:OFF-", "today 09-28: wk 9/21 is gone"],
+    ["2026-10-01", "10-05:dayCall+ 10-12:tue+ 10-19:tue+ 10-26:mon+ 11-02:OFF- 11-09:OFF-", "today 10-01 (Thu): wk 9/28 is gone although its Sunday is still ahead (a week drops when its ROLES are done, not when the week ends)"],
+    ["2026-10-07", "10-05:dayCall- 10-12:tue+ 10-19:tue+ 10-26:mon+ 11-02:OFF- 11-09:OFF-", "today 10-07: the 10/5 service week is in progress, no swap"],
+    ["2026-10-11", "10-05:dayCall- 10-12:tue+ 10-19:tue+ 10-26:mon+ 11-02:OFF- 11-09:OFF-", "today 10-11 (its Sunday): the service week is still listed"],
+    ["2026-10-12", "10-12:tue+ 10-19:tue+ 10-26:mon+ 11-02:OFF- 11-09:OFF-", "today 10-12: the 10/5 service week is gone"],
+  ];
+  for (const [today, want, name] of U2) check(`U2 ${name}`, sig(today) === want, sig(today));
+
+  const v25 = view("2026-09-25");
+  const w0 = v25 && v25[0], src25 = fx[2];
+  check("U3 input untouched (no role removed, no canSwap written) while the output does filter",
+    JSON.stringify(fx) === fxBefore && !!v25 && v25.length === 8 && fx.length === 10 && fx[2].roles.length === 3 && fx[2].roles.every((r) => !("canSwap" in r)));
+  check("U3 a week whose roles are all done disappears (5/4 and 9/14 at 09-25)",
+    !!v25 && v25.length > 0 && !v25.some((w) => w.mStr === "2026-05-04" || w.mStr === "2026-09-14"));
+  check("U3 an OFF week stays through its Sunday with canSwap false, then drops",
+    sig("2026-11-08").includes("11-02:OFF-") && !sig("2026-11-09").includes("11-02") && sig("2026-11-09").includes("11-09:OFF-"), sig("2026-11-08") + " | " + sig("2026-11-09"));
+  check("U3 week and role fields pass through unchanged (endStr, badges, type, icon, detail, color)",
+    !!w0 && w0.endStr === src25.endStr && w0.isBackup === false && v25[1].isBackup === true && v25[3].isFierceBackup === true
+    && ["type", "icon", "detail", "color", "shiftKey"].every((f) => w0.roles[0][f] === src25.roles[2][f]), JSON.stringify(w0));
+
+  check("U4 My Shifts renders mineUpcoming's output; the unfiltered map is gone",
+    count("const myShiftsView = mineUpcoming(myShifts, myToday);") === 1 && count("{myShiftsView.map(wk => (") === 1 && count("{myShifts.map(wk => (") === 0);
+  check("U4 Find Swap renders only when canSwap; a started role shows the in-progress tag instead",
+    count("{r.canSwap ? (") === 1 && count("findSwapSuggestions(wk.mStr, r.shiftKey, myId); setView(\"calendar\");") === 1 && count(") : r.shiftKey ? (") === 1 && count(">in progress</span>") === 1);
+  {
+    // Order, not just presence: swapping the two branches keeps every string above exactly once
+    const mapAt = src.indexOf("{myShiftsView.map(wk => (");
+    const seq = ["{r.canSwap ? (", 'findSwapSuggestions(wk.mStr, r.shiftKey, myId); setView("calendar");', "🔄 Find Swap", ") : r.shiftKey ? (", ">in progress</span>", ") : null}"];
+    let pos = mapAt, ordered = mapAt >= 0;
+    for (const s of seq) { const i = src.indexOf(s, pos); if (i < 0 || i - mapAt > 2500) { ordered = false; break; } pos = i + s.length; }
+    check("U4 inside the My Shifts map, in order: canSwap → the Find Swap button, else a shift → the in-progress tag, else nothing", ordered);
+  }
+  check("U4 both empty states: nothing assigned vs nothing left",
+    count("{myShifts.length === 0 && (") === 1 && count("No shifts assigned yet. Generate a schedule first.") === 1
+    && count("{myShifts.length > 0 && myShiftsView.length === 0 && (") === 1 && count("No upcoming shifts in the current schedule.") === 1);
+  check("U4 the Next call card still reads the unfiltered list",
+    count("myShifts.forEach(s => {") === 1 && count("const myShiftsView = mineUpcoming(") === 1);
+
+  // U5 — U1 and U2 again under TZ=America/Chicago. The named trap, new Date("YYYY-MM-DD"), parses as UTC
+  // midnight, which is the PREVIOUS day in Central, so a UTC run (CI's) cannot see it. Like R7, a child
+  // process pins the zone and proves the pin, then reruns the same expectations.
+  {
+    const { execFileSync } = require("child_process");
+    const todays = U2.map(([t]) => t).concat(["2026-11-08", "2026-11-09"]);
+    const code = [
+      'const vm = require("vm"), fs = require("fs"), path = require("path");',
+      'const sb = { console, window: {}, document: undefined, navigator: { userAgent: "node-test" }, localStorage: { getItem: () => null, setItem() {}, removeItem() {} }, fetch: () => { throw new Error("no fetch"); }, setTimeout, clearTimeout };',
+      "sb.globalThis = sb; vm.createContext(sb);",
+      `for (const f of ["helpers.js", "config.js"]) vm.runInContext(fs.readFileSync(path.join(${JSON.stringify(ROOT)}, f), "utf8"), sb, { filename: f });`,
+      'const h = vm.runInContext("({ shiftLastDay, mineUpcoming })", sb);',
+      `const fx = ${JSON.stringify(fx)};`,
+      'const sig = (t) => h.mineUpcoming(fx, t).map((w) => w.mStr.slice(5) + ":" + w.roles.map((r) => (r.shiftKey || "OFF") + (r.canSwap ? "+" : "-")).join(",")).join(" ");',
+      'const keys = ["dayCall", "mon", "tue", "wed", "thu", "wknd"];',
+      "process.stdout.write(JSON.stringify({ off: new Date(2026, 9, 24).getTimezoneOffset(), naive: new Date(\"2026-10-11\").getDay(),",
+      '  last: Object.fromEntries(keys.map((k) => [k, h.shiftLastDay("2026-09-21", k)])), lastOff: h.shiftLastDay("2026-09-21", null),',
+      '  dst: [h.shiftLastDay("2026-10-26", "wknd"), h.shiftLastDay("2026-10-26", "dayCall"), h.shiftLastDay("2026-10-26", "thu")].join(" "),',
+      `  sigs: Object.fromEntries(${JSON.stringify(todays)}.map((t) => [t, sig(t)])) }));`,
+    ].join("\n");
+    let out = null;
+    try { out = JSON.parse(execFileSync(process.execPath, ["-e", code], { env: Object.assign({}, process.env, { TZ: "America/Chicago" }), encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })); } catch (ex) { out = { err: String(ex).slice(0, 300) }; }
+    check("U5 the child really runs in America/Chicago (CDT offset 300) and there the NAIVE new Date('2026-10-11') is SATURDAY — the trap is visible",
+      !!out && out.off === 300 && out.naive === 6, JSON.stringify(out).slice(0, 300));
+    check("U5 under TZ=America/Chicago shiftLastDay matches U1 (every key, OFF, and the fall-back week)",
+      !!out && JSON.stringify(out.last) === JSON.stringify(lastWant) && out.lastOff === "2026-09-27" && out.dst === "2026-11-01 2026-11-01 2026-10-29", JSON.stringify(out).slice(0, 300));
+    const tzWant = Object.fromEntries(U2.map(([t, w]) => [t, w]).concat([["2026-11-08", sig("2026-11-08")], ["2026-11-09", sig("2026-11-09")]]));
+    const tzBad = out && out.sigs ? Object.keys(tzWant).filter((t) => out.sigs[t] !== tzWant[t]) : ["no output"];
+    check("U5 under TZ=America/Chicago mineUpcoming gives every U2 row's exact roles and canSwap, and the OFF week still runs to Sunday",
+      !!out && !!out.sigs && tzBad.length === 0 && tzWant["2026-11-08"].includes("11-02:OFF-") && !tzWant["2026-11-09"].includes("11-02"), tzBad.map((t) => `${t}: ${out && out.sigs ? out.sigs[t] : ""}`).join(" | "));
+  }
+}
+
 // ─── Verdict ───
 console.log(`\n${checks} checks, ${failures.length} failure(s)`);
 if (failures.length) {

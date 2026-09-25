@@ -25,6 +25,32 @@ function shiftStartDate(mondayStr, shiftKey) {
   return off === undefined ? mondayStr : fmt(addD(parse(mondayStr), off));
 }
 
+// Last day of a shift, the partner of shiftStartDate (Mine tab, 2026-09-25):
+// a Mon–Thu night ends on its own date; the service week, the weekend and an
+// OFF week (null key) run to the week's Sunday. Same rule as the Next call
+// card. A role is DONE once this date is before today.
+function shiftLastDay(mondayStr, shiftKey) {
+  return NIGHT_KEYS.includes(shiftKey) ? shiftStartDate(mondayStr, shiftKey) : fmt(addD(parse(mondayStr), 6));
+}
+
+// The Mine tab's "My Shifts" list: only shifts not yet done. Keeps each role
+// whose last day is today or later and marks canSwap only while the shift has
+// not started, the exact rule every swap and trade path refuses on, so the
+// button never opens a swap that would be refused. Weeks with no roles left
+// drop out. Returns new objects and never touches its input (the Next call
+// card reads the unfiltered list). todayStr is passed in, so there is no clock
+// here and the harness can pin the date.
+function mineUpcoming(myShifts, todayStr) {
+  return myShifts
+    .map(w => ({
+      ...w,
+      roles: w.roles
+        .filter(r => shiftLastDay(w.mStr, r.shiftKey) >= todayStr)
+        .map(r => ({ ...r, canSwap: !!r.shiftKey && shiftStartDate(w.mStr, r.shiftKey) >= todayStr })),
+    }))
+    .filter(w => w.roles.length > 0);
+}
+
 /* ═══ TRADE MESSAGE COMPOSERS (2026-09-07) ═══
    ONE composition per trade event, shared by in-app, push, and email — so
    the three channels cannot drift (push reuses addNotification's message
