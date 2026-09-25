@@ -3445,16 +3445,13 @@ function CallSchedule() {
   const downloadMyCal = (surgeonId) => {
     const s = surgeons.find(x => x.id === surgeonId);
     if (!s) return;
-    const events = buildICSEvents(schedule, s.id, s.name, {}, {});
-    // Add vacation events
+    const events = buildICSEvents(schedule, s.id, s.name);
+    // Vacations as all-day events; the end date is exclusive, so the day after the last vacation day
     const vacRanges = vacations[s.id] || [];
     vacRanges.forEach(([vs, ve]) => {
-      const sd = parse(vs), ed = parse(ve);
-      const edNext = addD(ed, 1);
       events.push({
-        start: icsDate(sd.getFullYear(), sd.getMonth()+1, sd.getDate(), 0),
-        end: icsDate(edNext.getFullYear(), edNext.getMonth()+1, edNext.getDate(), 0),
-        summary: `VACATION — ${s.name}`,
+        allDay: true, start: icsDay(parse(vs)), end: icsDay(addD(parse(ve), 1)),
+        summary: "DSG Vacation",
         desc: `${vs} to ${ve}`
       });
     });
@@ -5109,18 +5106,12 @@ function CallSchedule() {
     // Pre-generate ICS content per surgeon + full
     const icsMap = {};
     surgeons.forEach(s => {
-      const ev = buildICSEvents(schedule, s.id, s.name, appShifts, aMap);
+      const ev = buildICSEvents(schedule, s.id, s.name);
       icsMap[s.name] = generateICS(ev, "Call Schedule - " + s.name);
     });
     const allEv = [];
-    surgeons.forEach(s => allEv.push(...buildICSEvents(schedule, s.id, s.name, appShifts, aMap)));
-    Object.entries(appShifts).forEach(([ds, aid]) => {
-      const d = parse(ds); const nx = addD(d, 1); const an = aMap?.[aid]?.name || aid;
-      const dow = d.getDay(); const isWeekend = dow === 0 || dow === 6;
-      const startHour = isWeekend ? 7 : 17;
-      const timeLabel = isWeekend ? "7:00 AM - 7:00 AM" : "5:00 PM - 7:00 AM";
-      allEv.push({ start: icsDate(d.getFullYear(),d.getMonth()+1,d.getDate(),startHour), end: icsDate(nx.getFullYear(),nx.getMonth()+1,nx.getDate(),7), summary: "APP Call - " + an, desc: "APP Call " + timeLabel });
-    });
+    surgeons.forEach(s => allEv.push(...buildICSEvents(schedule, s.id, s.name, { withCode: true })));
+    allEv.push(...buildAppICSEvents(appShifts, aMap));
     icsMap["__full__"] = generateICS(allEv, "Full Call Schedule");
 
     let calBtns = surgeons.map(s => {
@@ -8455,7 +8446,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:10}}>
                 {surgeons.map(s => (
                   <button key={s.id} onClick={() => {
-                    const events = buildICSEvents(schedule, s.id, s.name, appShifts, aMap);
+                    const events = buildICSEvents(schedule, s.id, s.name);
                     const ics = generateICS(events, `Call Schedule — ${s.name}`);
                     downloadICS(ics, `call-schedule-${s.name.toLowerCase()}.ics`);
                   }} style={{...css.badge(sMap[s.id]?.idx||0, sMap[s.id]?.name),cursor:"pointer",padding:"5px 12px",fontSize:12}}>
@@ -8466,14 +8457,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:12}}>
                 <button onClick={() => {
                   const allEvents = [];
-                  surgeons.forEach(s => { allEvents.push(...buildICSEvents(schedule, s.id, s.name, appShifts, aMap)); });
-                  Object.entries(appShifts).forEach(([ds, aid]) => {
-                    const d = parse(ds); const next = addD(d, 1); const appName = aMap?.[aid]?.name || aid;
-                    const dow = d.getDay(); const isWeekend = dow === 0 || dow === 6;
-                    const startHour = isWeekend ? 7 : 17;
-                    const timeLabel = isWeekend ? "7:00 AM – 7:00 AM" : "5:00 PM – 7:00 AM";
-                    allEvents.push({ start: icsDate(d.getFullYear(),d.getMonth()+1,d.getDate(),startHour), end: icsDate(next.getFullYear(),next.getMonth()+1,next.getDate(),7), summary: `APP Call — ${appName}`, desc: `APP Call ${timeLabel}` });
-                  });
+                  surgeons.forEach(s => { allEvents.push(...buildICSEvents(schedule, s.id, s.name, { withCode: true })); });
+                  allEvents.push(...buildAppICSEvents(appShifts, aMap));
                   const ics = generateICS(allEvents, "Full Call Schedule");
                   downloadICS(ics, "call-schedule-full.ics");
                 }} style={{...css.btn(true),padding:"6px 16px"}}>

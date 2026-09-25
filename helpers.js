@@ -105,109 +105,96 @@ function slotLabel(mondayStr, shiftKey) {
 }
 
 /* ═══ ICS Calendar Generation ═══ */
-function icsDate(y,m,d,h,min) {
-  return `${y}${String(m).padStart(2,"0")}${String(d).padStart(2,"0")}T${String(h).padStart(2,"0")}${String(min||0).padStart(2,"0")}00`;
-}
+// ALL-DAY events (2026-09-25, same format as the calendar-sync v15 feed): a
+// service week is one Mon–Sat event, each weeknight one event on its date, the
+// weekend two events (Friday night, Sunday) so Saturday stays with the
+// service-week holder. The exact Central hours go in the description. Personal
+// exports use the short titles; the full export passes withCode so each title
+// names the surgeon. DTEND is exclusive, so an event's end is the day AFTER
+// its last day. There is no timed variant here; the live feed keeps one.
+const icsDay = d => `${d.getFullYear()}${String(d.getMonth()+1).padStart(2,"0")}${String(d.getDate()).padStart(2,"0")}`;
+const ICS_TZ_NOTE = "Times are Central.";
 
-function buildICSEvents(schedule, surgeonId, surgeonName, appShifts, aMap) {
+function buildICSEvents(schedule, surgeonId, surgeonName, opts) {
   const events = [];
-  const uid = () => `${Date.now()}-${Math.random().toString(36).slice(2,9)}@callsched`;
+  const who = opts?.withCode ? ` — ${surgeonName}` : "";
+  const add = (first, endExclusive, title, bkLabel, hours) => events.push({
+    allDay: true, start: icsDay(first), end: icsDay(endExclusive),
+    summary: `${title}${bkLabel}${who}`,
+    desc: `${hours}${bkLabel}\n${ICS_TZ_NOTE}`
+  });
 
   Object.entries(schedule).forEach(([mondayStr, wk]) => {
     const mon = parse(mondayStr);
     const bkLabel = wk.isBackup ? " [BACKUP]" : "";
 
-    // Day Call
     if (wk.dayCall === surgeonId) {
-      // Mon-Fri 7a-5p
-      for (let i = 0; i < 5; i++) {
-        const d = addD(mon, i);
-        const y=d.getFullYear(), m=d.getMonth()+1, day=d.getDate();
-        events.push({
-          start: icsDate(y,m,day,7), end: icsDate(y,m,day,17),
-          summary: `Service Week${bkLabel} — ${surgeonName}`,
-          desc: `Service Week 7:00 AM – 5:00 PM${bkLabel}`
-        });
-      }
-      // Sat 7a - Sun 7a (24h)
-      const sat = addD(mon, 5);
-      const sunD = addD(mon, 6);
-      events.push({
-        start: icsDate(sat.getFullYear(),sat.getMonth()+1,sat.getDate(),7),
-        end: icsDate(sunD.getFullYear(),sunD.getMonth()+1,sunD.getDate(),7),
-        summary: `Weekend Saturday 24h${bkLabel} — ${surgeonName}`,
-        desc: `Weekend Saturday 7:00 AM – Sunday 7:00 AM${bkLabel}`
-      });
+      add(mon, addD(mon, 6), "DSG Service Week", bkLabel,
+        "Mon–Fri 7:00 AM – 5:00 PM daytime call\nSat 7:00 AM – Sun 7:00 AM (24h)");
     }
 
-    // Night shifts (Mon-Thu)
-    const nightKeys = ["mon","tue","wed","thu"];
-    nightKeys.forEach((sk, i) => {
+    const nightDays = [["mon", "Mon", "Tue"], ["tue", "Tue", "Wed"], ["wed", "Wed", "Thu"], ["thu", "Thu", "Fri"]];
+    nightDays.forEach(([sk, today, tomorrow], i) => {
       if (wk.nights?.[sk] === surgeonId) {
         const d = addD(mon, i);
-        const next = addD(mon, i + 1);
-        events.push({
-          start: icsDate(d.getFullYear(),d.getMonth()+1,d.getDate(),17),
-          end: icsDate(next.getFullYear(),next.getMonth()+1,next.getDate(),7),
-          summary: `Night Call${bkLabel} — ${surgeonName}`,
-          desc: `${SHIFT_LABELS[sk]} 5:00 PM – 7:00 AM${bkLabel}`
-        });
+        add(d, addD(d, 1), "DSG Night", bkLabel, `${today} 5:00 PM – ${tomorrow} 7:00 AM`);
       }
     });
 
-    // Weekend (Fri night + Sunday)
     if (wk.nights?.wknd === surgeonId) {
-      // Fri 5p - Sat 7a
-      const fri = addD(mon, 4);
-      const sat = addD(mon, 5);
-      events.push({
-        start: icsDate(fri.getFullYear(),fri.getMonth()+1,fri.getDate(),17),
-        end: icsDate(sat.getFullYear(),sat.getMonth()+1,sat.getDate(),7),
-        summary: `Weekend Call (Fri Night)${bkLabel} — ${surgeonName}`,
-        desc: `Friday 5:00 PM – Saturday 7:00 AM${bkLabel}`
-      });
-      // Sun 7a - Mon 7a
-      const sunD = addD(mon, 6);
-      const nextMon = addD(mon, 7);
-      events.push({
-        start: icsDate(sunD.getFullYear(),sunD.getMonth()+1,sunD.getDate(),7),
-        end: icsDate(nextMon.getFullYear(),nextMon.getMonth()+1,nextMon.getDate(),7),
-        summary: `Weekend Call (Sunday 24h)${bkLabel} — ${surgeonName}`,
-        desc: `Sunday 7:00 AM – Monday 7:00 AM${bkLabel}`
-      });
+      add(addD(mon, 4), addD(mon, 5), "DSG Weekend — Fri night", bkLabel, "Fri 5:00 PM – Sat 7:00 AM");
+      add(addD(mon, 6), addD(mon, 7), "DSG Weekend — Sun", bkLabel, "Sun 7:00 AM – Mon 7:00 AM (24h)");
     }
   });
-
-  // APP shifts (only if surgeonId is null = export all, or for APP-specific export)
-  if (!surgeonId) {
-    Object.entries(appShifts).forEach(([ds, aid]) => {
-      const d = parse(ds);
-      const next = addD(d, 1);
-      const appName = aMap?.[aid]?.name || aid;
-      const dow = d.getDay(); // 0=Sun, 6=Sat
-      const isWeekend = dow === 0 || dow === 6;
-      const startHour = isWeekend ? 7 : 17;
-      const timeLabel = isWeekend ? "7:00 AM – 7:00 AM" : "5:00 PM – 7:00 AM";
-      events.push({
-        start: icsDate(d.getFullYear(),d.getMonth()+1,d.getDate(),startHour),
-        end: icsDate(next.getFullYear(),next.getMonth()+1,next.getDate(),7),
-        summary: `APP Call — ${appName}`,
-        desc: `APP Call ${timeLabel}`
-      });
-    });
-  }
 
   return events;
 }
 
+// APP shifts for the FULL export: one all-day event per shift date. A weekend
+// APP shift runs 7 AM to 7 AM; a weekday one runs 5 PM to 7 AM.
+function buildAppICSEvents(appShifts, aMap) {
+  return Object.entries(appShifts || {}).map(([ds, aid]) => {
+    const d = parse(ds);
+    const isWeekend = d.getDay() === 0 || d.getDay() === 6;
+    return {
+      allDay: true, start: icsDay(d), end: icsDay(addD(d, 1)),
+      summary: `DSG APP Call — ${aMap?.[aid]?.name || aid}`,
+      desc: `${isWeekend ? "7:00 AM – 7:00 AM next day (24h)" : "5:00 PM – 7:00 AM next day"}\n${ICS_TZ_NOTE}`
+    };
+  });
+}
+
+// RFC 5545 TEXT escaping, and folding of content lines longer than 75 octets
+// (a CRLF plus one space; the continuation's space counts toward its 75).
+// Counts UTF-8 octets so a multi-byte character is never split.
+const icsEsc = t => String(t).replace(/\\/g, "\\\\").replace(/;/g, "\\;").replace(/,/g, "\\,").replace(/\n/g, "\\n");
+const icsOctets = ch => { const cp = ch.codePointAt(0); return cp < 0x80 ? 1 : cp < 0x800 ? 2 : cp < 0x10000 ? 3 : 4; };
+function icsFold(line) {
+  let total = 0;
+  for (const ch of line) total += icsOctets(ch);
+  if (total <= 75) return line;
+  const parts = [];
+  let cur = "", bytes = 0, limit = 75;
+  for (const ch of line) {
+    const n = icsOctets(ch);
+    if (bytes + n > limit) { parts.push(cur); cur = ""; bytes = 0; limit = 74; }
+    cur += ch; bytes += n;
+  }
+  parts.push(cur);
+  return parts.join("\r\n ");
+}
+
 function generateICS(events, calName) {
   const uid = () => `${Date.now()}-${Math.random().toString(36).slice(2,9)}@callsched`;
-  let ics = `BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//DSG Call Schedule//EN\r\nCALSCALE:GREGORIAN\r\nX-WR-CALNAME:${calName}\r\n`;
+  const lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//DSG Call Schedule//EN", "CALSCALE:GREGORIAN", `X-WR-CALNAME:${icsEsc(calName)}`];
   events.forEach(e => {
-    ics += `BEGIN:VEVENT\r\nUID:${uid()}\r\nDTSTART:${e.start}\r\nDTEND:${e.end}\r\nSUMMARY:${e.summary}\r\nDESCRIPTION:${e.desc}\r\nEND:VEVENT\r\n`;
+    lines.push("BEGIN:VEVENT", `UID:${uid()}`,
+      e.allDay ? `DTSTART;VALUE=DATE:${e.start}` : `DTSTART:${e.start}`,
+      e.allDay ? `DTEND;VALUE=DATE:${e.end}` : `DTEND:${e.end}`,
+      `SUMMARY:${icsEsc(e.summary)}`, `DESCRIPTION:${icsEsc(e.desc)}`, "END:VEVENT");
   });
-  ics += `END:VCALENDAR\r\n`;
-  return ics;
+  lines.push("END:VCALENDAR");
+  return lines.map(icsFold).join("\r\n") + "\r\n";
 }
 
 function downloadICS(content, filename) {
