@@ -2215,6 +2215,12 @@ check("prefs audit never logs the plaintext email (masked only)",
 //   T4 the three export sites: the full exports name the surgeon and carry
 //      APP shifts, personal exports do not; vacations are all-day; the timed
 //      builder is gone
+//   T5 call events show as FREE (owner decision 2026-09-25): an all-day event
+//      defaults to busy, so without this an imported file blocks the whole
+//      day on every call day. Every call and APP event carries transparent,
+//      and generateICS writes TRANSP:TRANSPARENT (RFC 5545) plus Outlook's
+//      X-MICROSOFT-CDO-BUSYSTATUS:FREE right after DTEND. Vacations carry no
+//      flag and stay busy, since they are real unavailability.
 {
   // A missing builder resolves to a stub that returns nothing, so its checks FAIL by name instead of crashing the run
   const T = vm.runInContext(`({ ${["buildICSEvents", "buildAppICSEvents", "generateICS"].map((f) => `${f}: typeof ${f} === "function" ? ${f} : () => []`).join(", ")} })`, sandbox);
@@ -2258,6 +2264,20 @@ check("prefs audit never logs the plaintext email (masked only)",
   check("T2 generateICS: text escaped (newline, comma, semicolon, backslash) and unfolds back intact",
     unfolded.includes("DESCRIPTION:Mon–Fri 7:00 AM – 5:00 PM daytime call\\nSat 7:00 AM – Sun 7:00 AM (24h)\\nTimes are Central.") && unfolded.includes("DESCRIPTION:a\\, b\\; c\\\\d"));
 
+  check("T5 every buildICSEvents event (personal and full) and every buildAppICSEvents event carries transparent: true",
+    mine.length === 6 && full.length === 6 && apps.length === 2 && [...mine, ...full, ...apps].every((e) => e.transparent === true),
+    JSON.stringify([...mine, ...full, ...apps].map((e) => e.transparent)));
+  const nOf = (re) => (unfolded.match(re) || []).length;
+  check("T5 generateICS: TRANSP:TRANSPARENT and X-MICROSOFT-CDO-BUSYSTATUS:FREE each appear exactly 8 times, once per flagged event, right after DTEND",
+    nOf(/^TRANSP:TRANSPARENT$/gm) === 8 && nOf(/^X-MICROSOFT-CDO-BUSYSTATUS:FREE$/gm) === 8
+    && nOf(/^DTEND;VALUE=DATE:\d{8}\r\nTRANSP:TRANSPARENT\r\nX-MICROSOFT-CDO-BUSYSTATUS:FREE\r\nSUMMARY:/gm) === 8,
+    `TRANSP ${nOf(/^TRANSP:TRANSPARENT$/gm)}, BUSYSTATUS ${nOf(/^X-MICROSOFT-CDO-BUSYSTATUS:FREE$/gm)}`);
+  const vacEv = unfolded.split("BEGIN:VEVENT").find((e) => e.includes("SUMMARY:DSG Vacation")) || "";
+  const flaggedEvs = unfolded.split("BEGIN:VEVENT").slice(1).filter((e) => !e.includes("SUMMARY:DSG Vacation"));
+  check("T5 the DSG Vacation event is the only one without the lines (it stays busy; the other 8 are free)",
+    vacEv.includes("DTEND;VALUE=DATE:20261204") && !vacEv.includes("TRANSP") && !vacEv.includes("BUSYSTATUS")
+    && flaggedEvs.length === 8 && flaggedEvs.every((e) => e.includes("\r\nTRANSP:TRANSPARENT\r\n") && e.includes("\r\nX-MICROSOFT-CDO-BUSYSTATUS:FREE\r\n")), vacEv.replace(/\r\n/g, " | "));
+
   const isrc = fs.readFileSync(path.join(ROOT, "helpers.js"), "utf8");
   check("T4 personal exports (Download My Calendar, exported page, Settings) call the builder without the code",
     count("buildICSEvents(schedule, s.id, s.name);") === 3);
@@ -2265,6 +2285,8 @@ check("prefs audit never logs the plaintext email (masked only)",
     count("buildICSEvents(schedule, s.id, s.name, { withCode: true })") === 2 && count("buildAppICSEvents(appShifts, aMap)") === 2);
   check("T4 Download My Calendar writes vacations as all-day events",
     count('allDay: true, start: icsDay(parse(vs)), end: icsDay(addD(parse(ve), 1)),') === 1 && count('summary: "DSG Vacation",') === 1);
+  check("T5 transparency is set only inside helpers.js: index-source.html (the vacation events) never sets it",
+    !/transparent\s*:\s*true/.test(src) && (isrc.match(/transparent: true/g) || []).length === 2);
   check("T4 the timed builder is gone from both files (no icsDate helper, no hand-built APP events)",
     !src.includes("icsDate(") && !isrc.includes("icsDate(") && !src.includes("APP Call - "));
 }

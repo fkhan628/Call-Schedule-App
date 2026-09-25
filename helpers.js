@@ -112,6 +112,11 @@ function slotLabel(mondayStr, shiftKey) {
 // exports use the short titles; the full export passes withCode so each title
 // names the surgeon. DTEND is exclusive, so an event's end is the day AFTER
 // its last day. There is no timed variant here; the live feed keeps one.
+// Call events are marked transparent (owner decision 2026-09-25): an all-day
+// event counts as busy by default, so an imported file would block the whole
+// day on every call day. Vacations are built elsewhere without the flag and
+// stay busy, because they are real unavailability. The live feed needs none
+// of this, since a subscribed calendar never counts toward free/busy.
 const icsDay = d => `${d.getFullYear()}${String(d.getMonth()+1).padStart(2,"0")}${String(d.getDate()).padStart(2,"0")}`;
 const ICS_TZ_NOTE = "Times are Central.";
 
@@ -119,7 +124,7 @@ function buildICSEvents(schedule, surgeonId, surgeonName, opts) {
   const events = [];
   const who = opts?.withCode ? ` — ${surgeonName}` : "";
   const add = (first, endExclusive, title, bkLabel, hours) => events.push({
-    allDay: true, start: icsDay(first), end: icsDay(endExclusive),
+    allDay: true, transparent: true, start: icsDay(first), end: icsDay(endExclusive),
     summary: `${title}${bkLabel}${who}`,
     desc: `${hours}${bkLabel}\n${ICS_TZ_NOTE}`
   });
@@ -157,7 +162,7 @@ function buildAppICSEvents(appShifts, aMap) {
     const d = parse(ds);
     const isWeekend = d.getDay() === 0 || d.getDay() === 6;
     return {
-      allDay: true, start: icsDay(d), end: icsDay(addD(d, 1)),
+      allDay: true, transparent: true, start: icsDay(d), end: icsDay(addD(d, 1)),
       summary: `DSG APP Call — ${aMap?.[aid]?.name || aid}`,
       desc: `${isWeekend ? "7:00 AM – 7:00 AM next day (24h)" : "5:00 PM – 7:00 AM next day"}\n${ICS_TZ_NOTE}`
     };
@@ -191,6 +196,8 @@ function generateICS(events, calName) {
     lines.push("BEGIN:VEVENT", `UID:${uid()}`,
       e.allDay ? `DTSTART;VALUE=DATE:${e.start}` : `DTSTART:${e.start}`,
       e.allDay ? `DTEND;VALUE=DATE:${e.end}` : `DTEND:${e.end}`,
+      // Free, not busy: TRANSP is the RFC 5545 property; Outlook reads its own for Show-as on import
+      ...(e.transparent ? ["TRANSP:TRANSPARENT", "X-MICROSOFT-CDO-BUSYSTATUS:FREE"] : []),
       `SUMMARY:${icsEsc(e.summary)}`, `DESCRIPTION:${icsEsc(e.desc)}`, "END:VEVENT");
   });
   lines.push("END:VCALENDAR");
