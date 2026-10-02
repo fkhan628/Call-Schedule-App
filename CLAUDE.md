@@ -122,7 +122,11 @@ proxy; function deleted, `ANTHROPIC_API_KEY` unset, client removed in PR #7.)
 
 - Three DIFFERENT weighting schemes exist on purpose: generator fairness tiebreak
   (SW×6 / wknd×2 / night×1), historical burden (dc*7 + nights + wknd*3), billing
-  (SW=7 / night=1 / wknd=3). They are not meant to match.
+  (Stats → Billing, `weekBillingCredits` in helpers.js, #64): one day per call
+  day (SW=7 / night=1 / wknd=3, each day in its own month), plus a covered
+  holiday = 2 days to the coverer with that date's regular credits dropped;
+  "swap" coverage entries and backup weeks are excluded. They are not meant
+  to match.
 - Failures across the app are mostly console-only (~28 empty catch blocks) —
   systemic fix planned: REMAINING-WORK N2.
 
