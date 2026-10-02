@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.09.25c";
+    var APP_VERSION = "2026.10.01a";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -12323,7 +12323,6 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     const monthly = {};
     const allMonths = new Set();
     Object.entries(schedule).forEach(([mStr, wk]) => {
-      var _wk$nights17;
       const mon = parse(mStr);
       for (let i = 0; i < 7; i++) {
         const d = addD(mon, i);
@@ -12334,45 +12333,24 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           if (!monthly[moKey][s.id]) monthly[moKey][s.id] = {
             dc: 0,
             nights: 0,
-            wknd: 0
+            wknd: 0,
+            hol: 0
           };
         });
       }
-      if (wk.isBackup) return;
-      if (wk.dayCall) {
-        for (let i = 0; i < 7; i++) {
-          var _monthly$dMoKey;
-          const d = addD(mon, i);
-          const ds = fmt(d);
-          const dMoKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
-          const svcSid = wk.dayCallOverrides && wk.dayCallOverrides[ds] || wk.dayCall;
-          if ((_monthly$dMoKey = monthly[dMoKey]) !== null && _monthly$dMoKey !== void 0 && _monthly$dMoKey[svcSid]) monthly[dMoKey][svcSid].dc += 1;
-        }
-      }
-      NIGHT_KEYS.forEach((sk, i) => {
-        var _wk$nights16, _monthly$moKey;
-        const sid = (_wk$nights16 = wk.nights) === null || _wk$nights16 === void 0 ? void 0 : _wk$nights16[sk];
-        if (!sid) return;
-        const d = addD(mon, i);
+      weekBillingCredits(mStr, wk).forEach(c => {
+        var _monthly$moKey;
+        const d = parse(c.ds);
         const moKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
-        if ((_monthly$moKey = monthly[moKey]) !== null && _monthly$moKey !== void 0 && _monthly$moKey[sid]) monthly[moKey][sid].nights += 1;
+        if ((_monthly$moKey = monthly[moKey]) !== null && _monthly$moKey !== void 0 && _monthly$moKey[c.sid]) monthly[moKey][c.sid][c.kind] += c.n;
       });
-      const wkndSid = (_wk$nights17 = wk.nights) === null || _wk$nights17 === void 0 ? void 0 : _wk$nights17.wknd;
-      if (wkndSid) {
-        for (let i = 4; i <= 6; i++) {
-          var _monthly$dMoKey2;
-          const d = addD(mon, i);
-          const dMoKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
-          if ((_monthly$dMoKey2 = monthly[dMoKey]) !== null && _monthly$dMoKey2 !== void 0 && _monthly$dMoKey2[wkndSid]) monthly[dMoKey][wkndSid].wknd += 1;
-        }
-      }
     });
     const sortedMonths = [...allMonths].sort();
     const moLabel = mk => {
       const [y, mo] = mk.split("-");
       return `${MO[parseInt(mo) - 1]} ${y}`;
     };
-    const billingDays = r => (r.dc || 0) + (r.nights || 0) + (r.wknd || 0);
+    const billingDays = r => (r.dc || 0) + (r.nights || 0) + (r.wknd || 0) + (r.hol || 0);
     return React.createElement("div", {
       style: css.card
     }, React.createElement("div", {
@@ -12390,11 +12368,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         margin: "0 0 14px",
         lineHeight: 1.5
       }
-    }, "Breakdown by calendar month. Backup weeks are excluded — only 1st-call shifts count toward billing. Each call day is counted in the month it actually falls in (a service week or weekend spanning a month boundary is split across both months)."), sortedMonths.map(mk => {
+    }, "Breakdown by calendar month. Backup weeks are excluded — only 1st-call shifts count toward billing. Each call day is counted in the month it actually falls in (a service week or weekend spanning a month boundary is split across both months). A covered holiday bills 2 days (the day and the night) to the surgeon who covers it, and that date's regular credits don't count."), sortedMonths.map(mk => {
       const monthData = monthly[mk] || {};
       const hasAny = billVisible.some(s => {
-        const r = monthData[s.id] || {};
-        return (r.dc || 0) + (r.nights || 0) + (r.wknd || 0) > 0;
+        return billingDays(monthData[s.id] || {}) > 0;
       });
       if (!hasAny) return null;
       return React.createElement("div", {
@@ -12437,11 +12414,14 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         style: thS2
       }, "Nights"), React.createElement("th", {
         style: thS2
-      }, "Wknd Days"))), React.createElement("tbody", null, billVisible.map(s => {
+      }, "Wknd Days"), React.createElement("th", {
+        style: thS2
+      }, "Holiday"))), React.createElement("tbody", null, billVisible.map(s => {
         const r = monthData[s.id] || {
           dc: 0,
           nights: 0,
-          wknd: 0
+          wknd: 0,
+          hol: 0
         };
         const days = billingDays(r);
         const empty = days === 0;
@@ -12470,7 +12450,9 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           style: tdS
         }, r.nights || "–"), React.createElement("td", {
           style: tdS
-        }, r.wknd || "–"));
+        }, r.wknd || "–"), React.createElement("td", {
+          style: tdS
+        }, r.hol || "–"));
       })))));
     }), React.createElement("div", {
       style: {
@@ -12483,7 +12465,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       style: {
         color: "#2c5a80"
       }
-    }, "Formula:"), " Svc Days + Nights + Wknd Days = Total Call Days. Each day counted in the month it falls in. Billed monthly."));
+    }, "Formula:"), " Svc Days + Nights + Wknd Days + Holiday Days = Total Call Days. Each day counted in the month it falls in. Billed monthly."));
   })(), statsTab === "app" && React.createElement("div", {
     style: css.card
   }, React.createElement("div", {
@@ -12963,7 +12945,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     };
     const myShifts = [];
     Object.entries(schedule).forEach(([mStr, wk]) => {
-      var _wk$nights19;
+      var _wk$nights17;
       const mon = parse(mStr);
       const endStr = fmt(addD(mon, 6));
       const roles = [];
@@ -12975,8 +12957,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         shiftKey: "dayCall"
       });
       NIGHT_KEYS.forEach((sk, i) => {
-        var _wk$nights18;
-        if (((_wk$nights18 = wk.nights) === null || _wk$nights18 === void 0 ? void 0 : _wk$nights18[sk]) === myId) roles.push({
+        var _wk$nights16;
+        if (((_wk$nights16 = wk.nights) === null || _wk$nights16 === void 0 ? void 0 : _wk$nights16[sk]) === myId) roles.push({
           type: SHIFT_LABELS[sk],
           icon: "🌙",
           detail: SHIFT_TIMES[sk],
@@ -12984,7 +12966,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           shiftKey: sk
         });
       });
-      if (((_wk$nights19 = wk.nights) === null || _wk$nights19 === void 0 ? void 0 : _wk$nights19.wknd) === myId) roles.push({
+      if (((_wk$nights17 = wk.nights) === null || _wk$nights17 === void 0 ? void 0 : _wk$nights17.wknd) === myId) roles.push({
         type: "Weekend",
         icon: "🌗",
         detail: SHIFT_TIMES.wknd,
@@ -14544,8 +14526,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       const wk = schedule[m];
       if (!wk) return;
       ALL_SHIFT_KEYS.forEach(sk => {
-        var _wk$nights20;
-        const holder = sk === "dayCall" ? wk.dayCall : (_wk$nights20 = wk.nights) === null || _wk$nights20 === void 0 ? void 0 : _wk$nights20[sk];
+        var _wk$nights18;
+        const holder = sk === "dayCall" ? wk.dayCall : (_wk$nights18 = wk.nights) === null || _wk$nights18 === void 0 ? void 0 : _wk$nights18[sk];
         if (holder === tradeFrom) {
           if (shiftStartDate(m, sk) < todayStr) return;
           const label = `${slotLabel(m, sk)}${wk.isBackup ? " (Backup)" : ""}${m <= todayStr ? " (this week)" : ""}`;
@@ -14637,8 +14619,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         const wk = schedule[m];
         if (!wk) return;
         ALL_SHIFT_KEYS.forEach(sk => {
-          var _wk$nights21;
-          const holder = sk === "dayCall" ? wk.dayCall : (_wk$nights21 = wk.nights) === null || _wk$nights21 === void 0 ? void 0 : _wk$nights21[sk];
+          var _wk$nights19;
+          const holder = sk === "dayCall" ? wk.dayCall : (_wk$nights19 = wk.nights) === null || _wk$nights19 === void 0 ? void 0 : _wk$nights19[sk];
           if (holder === tradeTo) {
             if (shiftStartDate(m, sk) < todayStr) return;
             const label = `${slotLabel(m, sk)}${wk.isBackup ? " (Backup)" : ""}${m <= todayStr ? " (this week)" : ""}`;
