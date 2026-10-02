@@ -8907,12 +8907,14 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             // identity (NOT the Mine selector, which is mutable and could leak).
             const billVisible = canSeeAllBilling ? surgeons : surgeons.filter(s => s.id === ownBillId);
             // Compute monthly billing breakdown. 1st-call only (backup weeks excluded).
-            // Attribution:
+            // Attribution (the credits come from weekBillingCredits in helpers.js):
             //   Service Week (dayCall) → each of the 7 days (M-Sun) attributed to its own month
             //   Week Nights (Mon-Thu)  → each night's own month
             //   Weekend (Fri+Sat+Sun)  → each of the 3 days attributed to its own month
-            // All three counters now represent BILLING DAYS, so the total formula is just dc + nights + wknd.
-            const monthly = {}; // { "2026-05": { s1: { dc: n, nights: n, wknd: n }, ... } }
+            //   Holiday 24h            → 2 days to the covering surgeon on the holiday's date;
+            //                            that date's regular credits drop
+            // Every counter is in BILLING DAYS, so the total is dc + nights + wknd + hol.
+            const monthly = {}; // { "2026-05": { s1: { dc: n, nights: n, wknd: n, hol: n }, ... } }
             const allMonths = new Set();
             Object.entries(schedule).forEach(([mStr, wk]) => {
               const mon = parse(mStr);
@@ -8921,53 +8923,29 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                 const moKey = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
                 allMonths.add(moKey);
                 if (!monthly[moKey]) monthly[moKey] = {};
-                surgeons.forEach(s => { if (!monthly[moKey][s.id]) monthly[moKey][s.id] = { dc:0, nights:0, wknd:0 }; });
+                surgeons.forEach(s => { if (!monthly[moKey][s.id]) monthly[moKey][s.id] = { dc:0, nights:0, wknd:0, hol:0 }; });
               }
-              // Skip backup weeks entirely — they're 2nd-call and not billed
-              if (wk.isBackup) return;
-              if (wk.dayCall) {
-                // Each of the 7 service-week days credits its own calendar month.
-                // Honor single-day service-coverage overrides so a covered day is
-                // billed to the covering surgeon, not the week's service surgeon.
-                for (let i = 0; i < 7; i++) {
-                  const d = addD(mon, i);
-                  const ds = fmt(d);
-                  const dMoKey = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
-                  const svcSid = (wk.dayCallOverrides && wk.dayCallOverrides[ds]) || wk.dayCall;
-                  if (monthly[dMoKey]?.[svcSid]) monthly[dMoKey][svcSid].dc += 1;
-                }
-              }
-              NIGHT_KEYS.forEach((sk, i) => {
-                const sid = wk.nights?.[sk];
-                if (!sid) return;
-                const d = addD(mon, i);
+              // Backup weeks are 2nd-call and not billed: the helper returns no credits for them.
+              // Each credit lands in its own date's calendar month.
+              weekBillingCredits(mStr, wk).forEach(c => {
+                const d = parse(c.ds);
                 const moKey = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
-                if (monthly[moKey]?.[sid]) monthly[moKey][sid].nights += 1;
+                if (monthly[moKey]?.[c.sid]) monthly[moKey][c.sid][c.kind] += c.n;
               });
-              const wkndSid = wk.nights?.wknd;
-              if (wkndSid) {
-                // Weekend covers Fri/Sat/Sun (days 4/5/6 of the week), each crediting its own month
-                for (let i = 4; i <= 6; i++) {
-                  const d = addD(mon, i);
-                  const dMoKey = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
-                  if (monthly[dMoKey]?.[wkndSid]) monthly[dMoKey][wkndSid].wknd += 1;
-                }
-              }
             });
             const sortedMonths = [...allMonths].sort();
             const moLabel = (mk) => { const [y,mo] = mk.split("-"); return `${MO[parseInt(mo)-1]} ${y}`; };
-            const billingDays = (r) => (r.dc||0) + (r.nights||0) + (r.wknd||0);
+            const billingDays = (r) => (r.dc||0) + (r.nights||0) + (r.wknd||0) + (r.hol||0);
             return (
             <div style={css.card}>
               <div style={css.cardT}>💰 Billing Summary <span style={{fontWeight:400,fontSize:11,color:"#7a8a98"}}>— Monthly, 1st Call Only</span></div>
               <p style={{fontSize:11,color:"#7a8a98",margin:"0 0 14px",lineHeight:1.5}}>
-                Breakdown by calendar month. Backup weeks are excluded — only 1st-call shifts count toward billing. Each call day is counted in the month it actually falls in (a service week or weekend spanning a month boundary is split across both months).
+                Breakdown by calendar month. Backup weeks are excluded — only 1st-call shifts count toward billing. Each call day is counted in the month it actually falls in (a service week or weekend spanning a month boundary is split across both months). A covered holiday bills 2 days (the day and the night) to the surgeon who covers it, and that date's regular credits don't count.
               </p>
               {sortedMonths.map(mk => {
                 const monthData = monthly[mk] || {};
                 const hasAny = billVisible.some(s => {
-                  const r = monthData[s.id] || {};
-                  return (r.dc||0) + (r.nights||0) + (r.wknd||0) > 0;
+                  return billingDays(monthData[s.id] || {}) > 0;
                 });
                 if (!hasAny) return null;
                 return (
@@ -8982,11 +8960,12 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                             <th style={thS2}>Svc Days</th>
                             <th style={thS2}>Nights</th>
                             <th style={thS2}>Wknd Days</th>
+                            <th style={thS2}>Holiday</th>
                           </tr>
                         </thead>
                         <tbody>
                           {billVisible.map(s => {
-                            const r = monthData[s.id] || {dc:0,nights:0,wknd:0};
+                            const r = monthData[s.id] || {dc:0,nights:0,wknd:0,hol:0};
                             const days = billingDays(r);
                             const empty = days === 0;
                             return (
@@ -8996,6 +8975,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                                 <td style={tdS}>{r.dc||"–"}</td>
                                 <td style={tdS}>{r.nights||"–"}</td>
                                 <td style={tdS}>{r.wknd||"–"}</td>
+                                <td style={tdS}>{r.hol||"–"}</td>
                               </tr>
                             );
                           })}
@@ -9006,7 +8986,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                 );
               })}
               <div style={{fontSize:11,color:"#7a8a98",lineHeight:1.5,marginTop:6}}>
-                <strong style={{color:"#2c5a80"}}>Formula:</strong> Svc Days + Nights + Wknd Days = Total Call Days. Each day counted in the month it falls in. Billed monthly.
+                <strong style={{color:"#2c5a80"}}>Formula:</strong> Svc Days + Nights + Wknd Days + Holiday Days = Total Call Days. Each day counted in the month it falls in. Billed monthly.
               </div>
             </div>
             );
