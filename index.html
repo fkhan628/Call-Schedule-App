@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.10.01a";
+    var APP_VERSION = "2026.10.01b";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -4372,7 +4372,7 @@ function CallSchedule() {
         if (!confirm(`⚠️ ${surgeonName} is already assigned to ${conflictHol === null || conflictHol === void 0 ? void 0 : conflictHol.name} (${targetHol.type} group).\n\nThis violates the distinct-pairs rule. Assign anyway?`)) return;
       }
       if (silvisActive && newSurgeonId === silvisFakId) {
-        const nonEve = (targetHol.coverage || []).filter(c => !c.isEve);
+        const nonEve = effectiveHolidayCoverage(targetHol).filter(c => !c.isEve);
         const mine = nonEve.filter((c, i) => slot === "surgeonA" ? i % 2 === 0 : i % 2 === 1).map(c => c.date);
         const days = new Set(mine);
         mine.forEach(ds => {
@@ -5606,7 +5606,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     Object.values(holidayAssignments || {}).forEach(arr => {
       if (!Array.isArray(arr)) return;
       arr.forEach(h => {
-        (h.coverage || []).forEach(c => {
+        effectiveHolidayCoverage(h).forEach(c => {
           if (!c.surgeon || !c.date) return;
           if (onVac(c.surgeon, c.date, vacations)) {
             var _sMap$c$surgeon;
@@ -8419,7 +8419,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           gap: 4,
           flexWrap: "wrap"
         }
-      }, (hol.coverage || []).map((c, j) => {
+      }, effectiveHolidayCoverage(hol).map((c, j) => {
         const isEve = c.isEve;
         const displaySurgeon = isEve ? hol.surgeonB || c.surgeon : c.surgeon;
         const isSurgA = !isEve && c.surgeon === hol.surgeonA;
