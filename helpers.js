@@ -44,9 +44,11 @@ function mineUpcoming(myShifts, todayStr) {
   return myShifts
     .map(w => ({
       ...w,
+      // A role with a date (a holiday 24h or a single service day, 2026-10-02)
+      // ends on that date and never offers a swap; every other role is as before.
       roles: w.roles
-        .filter(r => shiftLastDay(w.mStr, r.shiftKey) >= todayStr)
-        .map(r => ({ ...r, canSwap: !!r.shiftKey && shiftStartDate(w.mStr, r.shiftKey) >= todayStr })),
+        .filter(r => (r.date || shiftLastDay(w.mStr, r.shiftKey)) >= todayStr)
+        .map(r => ({ ...r, canSwap: !r.date && !!r.shiftKey && shiftStartDate(w.mStr, r.shiftKey) >= todayStr })),
     }))
     .filter(w => w.roles.length > 0);
 }
@@ -92,6 +94,65 @@ function effectiveHolidayCoverage(h) {
     return rows.filter(c => c.isEve || c.date === h.date);
   }
   return rows;
+}
+
+// Who actually holds each date of one week, slot by slot (2026-10-02). This
+// is the calendar's rule: calData in index-source.html is the reference, and
+// sync-guards section X proves the two agree on every live week. For each of
+// the 7 dates:
+//   svc      Mon–Fri daytime service: the date's override, else the dayCall
+//   sat      the service Saturday 24h, by the same rule
+//   night    the Mon–Thu night holder (nightKey "mon".."thu")
+//   wkndFri  the weekend's Friday night; wkndSun its Sunday 24h
+//   cover    the holidayCoverage entry on that date, if any
+// A date with ANY holidayCoverage entry (any type, swaps and backup weeks
+// included) drops every regular slot, and the entry's surgeon holds it 7a–7a.
+// Billing's exclusions (swaps, backup weeks) are billing-only and live in
+// weekBillingCredits. covers lists every entry, including one dated outside
+// the week, because the calendar draws those too. Service slots exist only
+// when the week has a dayCall, as on the calendar. Pure: no clock, no state.
+function weekHolders(mondayStr, wk) {
+  const w = wk || {};
+  const hc = w.holidayCoverage || {};
+  const ovr = w.dayCallOverrides || {};
+  const n = w.nights || {};
+  const mon = parse(mondayStr);
+  const covers = Object.entries(hc).filter(([, c]) => !!c).map(([ds, c]) => ({
+    ds, sid: c.surgeonId || null, label: c.name || "", type: c.type || null, holiday: c.holiday || null,
+  }));
+  const days = [0, 1, 2, 3, 4, 5, 6].map(i => {
+    const ds = fmt(addD(mon, i));
+    const day = { ds, i, svc: null, sat: null, night: null, nightKey: null, wkndFri: null, wkndSun: null, cover: covers.find(c => c.ds === ds) || null };
+    if (hc[ds]) return day;
+    if (w.dayCall && i <= 4) day.svc = ovr[ds] || w.dayCall;
+    if (w.dayCall && i === 5) day.sat = ovr[ds] || w.dayCall;
+    if (i <= 3 && n[NIGHT_KEYS[i]]) { day.night = n[NIGHT_KEYS[i]]; day.nightKey = NIGHT_KEYS[i]; }
+    if (n.wknd && i === 4) day.wkndFri = n.wknd;
+    if (n.wknd && i === 6) day.wkndSun = n.wknd;
+    return day;
+  });
+  return { mondayStr, isBackup: !!w.isBackup, days, covers };
+}
+
+// A covered date's holiday name: the generator's own holiday field when it
+// stored one, else the label without its trailing "24h" ("Labor Day 24h" → "Labor Day").
+function holidayTitleName(cover) {
+  return (cover && cover.holiday) || String((cover && cover.label) || "").replace(/\s*\(?24h\)?\s*$/i, "").trim() || "Holiday";
+}
+
+// "Mon 9/7" for a YYYY-MM-DD date (local, via parse).
+function dayMonthLabel(ds) {
+  const d = parse(ds);
+  return `${["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][d.getDay()]} ${d.getMonth() + 1}/${d.getDate()}`;
+}
+
+// The line a service week or weekend carries for a date someone else holds,
+// e.g. "Mon 9/7 covered by RPC (Labor Day)". holderSid is who holds it; a swap
+// names its own label; a single-day override has no parenthesis.
+function coverNote(day, holderSid, nameOf) {
+  const name = holderSid ? (typeof nameOf === "function" ? nameOf(holderSid) : holderSid) : "someone else";
+  const why = day.cover ? ` (${day.cover.type === "swap" ? (day.cover.label || "coverage") : holidayTitleName(day.cover)})` : "";
+  return `${dayMonthLabel(day.ds)} covered by ${name}${why}`;
 }
 
 /* ═══ TRADE MESSAGE COMPOSERS (2026-09-07) ═══
@@ -189,36 +250,67 @@ function slotLabel(mondayStr, shiftKey) {
 const icsDay = d => `${d.getFullYear()}${String(d.getMonth()+1).padStart(2,"0")}${String(d.getDate()).padStart(2,"0")}`;
 const ICS_TZ_NOTE = "Times are Central.";
 
+// Holidays and single-day coverage (2026-10-02): who holds each date comes
+// from weekHolders, the calendar's rule. A service week is one event per
+// contiguous run of the days its surgeon actually holds (Mon–Sat), and each
+// day someone else took adds a line such as "Mon 9/7 covered by RPC (Labor Day)".
+// A night or weekend leg on a covered date drops. The surgeon covering a
+// holiday gets an all-day event on its date ("DSG Holiday — <name>", or
+// "DSG <label>" for a swap), and the surgeon covering a single service day
+// gets "DSG Service Day". In a backup week every event carries " [BACKUP]".
+// opts.nameOf maps an id to its code for those lines (the id itself without it).
 function buildICSEvents(schedule, surgeonId, surgeonName, opts) {
   const events = [];
   const who = opts?.withCode ? ` — ${surgeonName}` : "";
-  const add = (first, endExclusive, title, bkLabel, hours) => events.push({
+  const nameOf = typeof opts?.nameOf === "function" ? opts.nameOf : (sid => sid);
+  const add = (first, endExclusive, title, bkLabel, hours, notes) => events.push({
     allDay: true, transparent: true, start: icsDay(first), end: icsDay(endExclusive),
     summary: `${title}${bkLabel}${who}`,
-    desc: `${hours}${bkLabel}\n${ICS_TZ_NOTE}`
+    desc: `${hours}${bkLabel}${notes && notes.length ? "\n" + notes.join("\n") : ""}\n${ICS_TZ_NOTE}`
   });
 
   Object.entries(schedule).forEach(([mondayStr, wk]) => {
     const mon = parse(mondayStr);
     const bkLabel = wk.isBackup ? " [BACKUP]" : "";
+    const H = weekHolders(mondayStr, wk);
+    const svcDays = H.days.slice(0, 6); // Mon–Fri daytime + the service Saturday
+    const svcHolder = (d) => (d.i <= 4 ? d.svc : d.sat);
 
     if (wk.dayCall === surgeonId) {
-      add(mon, addD(mon, 6), "DSG Service Week", bkLabel,
-        "Mon–Fri 7:00 AM – 5:00 PM daytime call\nSat 7:00 AM – Sun 7:00 AM (24h)");
+      // A day the surgeon still holds as its holiday coverer was not given away: no note
+      const notes = svcDays.filter(d => svcHolder(d) !== surgeonId && !(d.cover && d.cover.sid === surgeonId))
+        .map(d => coverNote(d, d.cover ? d.cover.sid : svcHolder(d), nameOf));
+      const runs = [];
+      svcDays.forEach(d => {
+        if (svcHolder(d) !== surgeonId) return;
+        const last = runs[runs.length - 1];
+        if (last && last.last === d.i - 1) last.last = d.i; else runs.push({ first: d.i, last: d.i });
+      });
+      runs.forEach(r => add(addD(mon, r.first), addD(mon, r.last + 1), "DSG Service Week", bkLabel,
+        "Mon–Fri 7:00 AM – 5:00 PM daytime call\nSat 7:00 AM – Sun 7:00 AM (24h)", notes));
     }
 
-    const nightDays = [["mon", "Mon", "Tue"], ["tue", "Tue", "Wed"], ["wed", "Wed", "Thu"], ["thu", "Thu", "Fri"]];
-    nightDays.forEach(([sk, today, tomorrow], i) => {
-      if (wk.nights?.[sk] === surgeonId) {
-        const d = addD(mon, i);
-        add(d, addD(d, 1), "DSG Night", bkLabel, `${today} 5:00 PM – ${tomorrow} 7:00 AM`);
-      }
+    // A single service day held by someone other than the week's service surgeon
+    svcDays.forEach(d => {
+      if (wk.dayCall === surgeonId || svcHolder(d) !== surgeonId) return;
+      add(addD(mon, d.i), addD(mon, d.i + 1), "DSG Service Day", bkLabel,
+        d.i === 5 ? "Sat 7:00 AM – Sun 7:00 AM (24h)" : "7:00 AM – 5:00 PM daytime call");
     });
 
-    if (wk.nights?.wknd === surgeonId) {
-      add(addD(mon, 4), addD(mon, 5), "DSG Weekend — Fri night", bkLabel, "Fri 5:00 PM – Sat 7:00 AM");
-      add(addD(mon, 6), addD(mon, 7), "DSG Weekend — Sun", bkLabel, "Sun 7:00 AM – Mon 7:00 AM (24h)");
-    }
+    const nightDays = [["Mon", "Tue"], ["Tue", "Wed"], ["Wed", "Thu"], ["Thu", "Fri"]];
+    H.days.slice(0, 4).forEach((d, i) => {
+      if (d.night === surgeonId) add(addD(mon, i), addD(mon, i + 1), "DSG Night", bkLabel, `${nightDays[i][0]} 5:00 PM – ${nightDays[i][1]} 7:00 AM`);
+    });
+
+    if (H.days[4].wkndFri === surgeonId) add(addD(mon, 4), addD(mon, 5), "DSG Weekend — Fri night", bkLabel, "Fri 5:00 PM – Sat 7:00 AM");
+    if (H.days[6].wkndSun === surgeonId) add(addD(mon, 6), addD(mon, 7), "DSG Weekend — Sun", bkLabel, "Sun 7:00 AM – Mon 7:00 AM (24h)");
+
+    H.covers.forEach(c => {
+      if (c.sid !== surgeonId) return;
+      const d = parse(c.ds);
+      add(d, addD(d, 1), c.type === "swap" ? `DSG ${c.label || "Coverage"}` : `DSG Holiday — ${holidayTitleName(c)}`, bkLabel,
+        `${c.label || holidayTitleName(c)}: 7:00 AM – 7:00 AM next day (24h)`);
+    });
   });
 
   return events;

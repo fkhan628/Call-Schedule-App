@@ -1,0 +1,34 @@
+function buildICSEvents(schedule, surgeonId, surgeonName, opts) {
+  const events = [];
+  const who = opts?.withCode ? ` — ${surgeonName}` : "";
+  const add = (first, endExclusive, title, bkLabel, hours) => events.push({
+    allDay: true, transparent: true, start: icsDay(first), end: icsDay(endExclusive),
+    summary: `${title}${bkLabel}${who}`,
+    desc: `${hours}${bkLabel}\n${ICS_TZ_NOTE}`
+  });
+
+  Object.entries(schedule).forEach(([mondayStr, wk]) => {
+    const mon = parse(mondayStr);
+    const bkLabel = wk.isBackup ? " [BACKUP]" : "";
+
+    if (wk.dayCall === surgeonId) {
+      add(mon, addD(mon, 6), "DSG Service Week", bkLabel,
+        "Mon–Fri 7:00 AM – 5:00 PM daytime call\nSat 7:00 AM – Sun 7:00 AM (24h)");
+    }
+
+    const nightDays = [["mon", "Mon", "Tue"], ["tue", "Tue", "Wed"], ["wed", "Wed", "Thu"], ["thu", "Thu", "Fri"]];
+    nightDays.forEach(([sk, today, tomorrow], i) => {
+      if (wk.nights?.[sk] === surgeonId) {
+        const d = addD(mon, i);
+        add(d, addD(d, 1), "DSG Night", bkLabel, `${today} 5:00 PM – ${tomorrow} 7:00 AM`);
+      }
+    });
+
+    if (wk.nights?.wknd === surgeonId) {
+      add(addD(mon, 4), addD(mon, 5), "DSG Weekend — Fri night", bkLabel, "Fri 5:00 PM – Sat 7:00 AM");
+      add(addD(mon, 6), addD(mon, 7), "DSG Weekend — Sun", bkLabel, "Sun 7:00 AM – Mon 7:00 AM (24h)");
+    }
+  });
+
+  return events;
+}

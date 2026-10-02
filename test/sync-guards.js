@@ -2279,10 +2279,11 @@ check("prefs audit never logs the plaintext email (masked only)",
     && flaggedEvs.length === 8 && flaggedEvs.every((e) => e.includes("\r\nTRANSP:TRANSPARENT\r\n") && e.includes("\r\nX-MICROSOFT-CDO-BUSYSTATUS:FREE\r\n")), vacEv.replace(/\r\n/g, " | "));
 
   const isrc = fs.readFileSync(path.join(ROOT, "helpers.js"), "utf8");
+  // (2026-10-02: every site also passes nameOf, so a "covered by" line names the surgeon by code — section X)
   check("T4 personal exports (Download My Calendar, exported page, Settings) call the builder without the code",
-    count("buildICSEvents(schedule, s.id, s.name);") === 3);
+    count("buildICSEvents(schedule, s.id, s.name, { nameOf });") === 3);
   check("T4 both full exports name the surgeon and add APP shifts through the shared builder",
-    count("buildICSEvents(schedule, s.id, s.name, { withCode: true })") === 2 && count("buildAppICSEvents(appShifts, aMap)") === 2);
+    count("buildICSEvents(schedule, s.id, s.name, { withCode: true, nameOf })") === 2 && count("buildAppICSEvents(appShifts, aMap)") === 2);
   check("T4 Download My Calendar writes vacations as all-day events",
     count('allDay: true, start: icsDay(parse(vs)), end: icsDay(addD(parse(ve), 1)),') === 1 && count('summary: "DSG Vacation",') === 1);
   check("T5 transparency is set only inside helpers.js: index-source.html (the vacation events) never sets it",
@@ -2711,6 +2712,300 @@ check("prefs audit never logs the plaintext email (masked only)",
     !!effFn && rowsOf(solo) === storedOf(solo) && rowsOf(noB) === storedOf(noB) && JSON.stringify(effFn({ name: "Christmas Day", date: "2026-12-25", surgeonA: "s6", surgeonB: "s6" })) === "[]"
     && JSON.stringify(effFn({ name: "Christmas Day", date: "2026-12-25", surgeonA: "s6", surgeonB: "s6", coverage: "bad" })) === "[]"
     && JSON.stringify(liveXmas) === before && liveXmas.coverage.length === 3);
+}
+
+// ─── X. Holidays + single-day coverage in the downloads and the Mine tab (2 of 3, 2026-10-02) ───
+// The calendar (calData) already shows who really holds each date: a
+// holidayCoverage entry (any type, backup weeks included) replaces that date's
+// regular slots, and a dayCallOverrides entry replaces the service holder for
+// its date. weekHolders (helpers.js) is that rule as a pure function; the
+// downloads (buildICSEvents) and the Mine tab now read it.
+//   X1 weekHolders == calData, per date and slot, on all 46 live weeks + synthetic shapes
+//   X2 the downloads on the worked examples (Labor Day, the 7/3 override, the 1/24
+//      swap, the 5/25 backup week); one event per covered date
+//   X3 the Mine roles (real builder) + mineUpcoming for dated roles
+//   X4 no holiday / no override → the downloads and the Mine roles equal main's (frozen copies)
+//   X5 the Next call card: a dated role is its day; a role starts on its first held day
+//   X6 the real generator stores the holiday's name; Thanksgiving / New Year's titles use it
+//   X7 X1 + the Labor Day events again under TZ=America/Chicago and Asia/Tokyo
+// Fixtures: schedule-weeks-live-2026-10-02.json (all 46 live weeks, anon-readable by
+// design); buildICSEvents-main-2b8cd39.txt and mine-builder-main-2b8cd39.txt (main's
+// code, byte-for-byte, the "old" reference); holiday-assignments-2026-live.json (section W).
+{
+  const FIXD = path.join(ROOT, "test", "fixtures");
+  const LIVE = JSON.parse(fs.readFileSync(path.join(FIXD, "schedule-weeks-live-2026-10-02.json"), "utf8"));
+  const clone = (o) => JSON.parse(JSON.stringify(o));
+  const fnOr = (name) => vm.runInContext(`typeof ${name} === "function" ? ${name} : null`, sandbox);
+  const weekHoldersFn = fnOr("weekHolders"), icsFn = fnOr("buildICSEvents"), upFn = fnOr("mineUpcoming");
+  const SURG = ["DJA", "MCC", "RPC", "KJH", "REH", "FAK", "ARW"].map((name, i) => ({ id: "s" + (i + 1), name }));
+  const nameOf = (id) => (SURG.find((s) => s.id === id) || {}).name || id || "?";
+
+  // X1 — the calendar's own memo body, sliced verbatim, vs the helper
+  const ci = src.indexOf("const calData = useMemo(() => {");
+  const da = ci < 0 ? -1 : src.indexOf("const d={};", ci), db = da < 0 ? -1 : src.indexOf("// APP shifts", da);
+  const calRun = da > 0 && db > 0 ? vm.runInContext(`(function (schedule) { ${src.slice(da, db)}\n return d; })`, sandbox) : null;
+  const calMap = (sched) => {
+    const out = {};
+    Object.entries(calRun(sched)).forEach(([ds, list]) => list.forEach((e) => {
+      const t = String(e.type).replace(/^B-/, "");
+      const slot = t === "Svc" ? "svc" : t === "Ngt" ? "night" : t === "Holiday" ? "cover"
+        : t === "Wknd" ? (e.note === "Sat 7a–7a" ? "sat" : e.note === "5p–7a" ? "wkndFri" : e.note === "7a–7a" ? "wkndSun" : "wknd?") : null;
+      if (slot) (out[ds] = out[ds] || []).push(`${slot}:${e.surgeon || ""}`);
+    }));
+    Object.values(out).forEach((l) => l.sort());
+    return out;
+  };
+  const helperMap = (sched) => {
+    const out = {};
+    const put = (ds, s) => (out[ds] = out[ds] || []).push(s);
+    Object.entries(sched).forEach(([m, wk]) => {
+      const h = weekHoldersFn(m, wk);
+      h.days.forEach((d) => ["svc", "sat", "night", "wkndFri", "wkndSun"].forEach((k) => { if (d[k]) put(d.ds, `${k}:${d[k]}`); }));
+      h.covers.forEach((c) => put(c.ds, `cover:${c.sid || ""}`));
+    });
+    Object.values(out).forEach((l) => l.sort());
+    return out;
+  };
+  const mapDiff = (a, b) => [...new Set([...Object.keys(a), ...Object.keys(b)])].sort().filter((ds) => JSON.stringify(a[ds] || []) !== JSON.stringify(b[ds] || []))
+    .map((ds) => `${ds}: calendar ${JSON.stringify(a[ds] || [])} vs helper ${JSON.stringify(b[ds] || [])}`);
+  const SYN = {
+    "2026-11-02": { dayCall: "s1", dayCallOverrides: { "2026-11-02": "s2", "2026-11-04": "s3", "2026-11-07": "s4" }, nights: { mon: "s5", tue: "s6", wed: "s7", thu: "s2", wknd: "s3" }, holidayCoverage: { "2026-11-02": { surgeonId: "s4", type: "minor", name: "Mon 24h" } } },
+    "2026-11-16": { dayCall: null, dayCallOverrides: { "2026-11-17": "s2" }, nights: { mon: "s1", tue: "s3" } },
+    "2026-11-23": { dayCall: "s2", nights: { wknd: "s5" }, holidayCoverage: { "2026-11-22": { surgeonId: "s6", type: "minor", name: "Eve stored in the wrong week" } } },
+    "2026-11-30": { dayCall: "s3", isBackup: true, nights: { mon: "s1", wknd: "s2" }, holidayCoverage: { "2026-12-05": { surgeonId: "s7", type: "swap", name: "Saturday swap coverage" } } },
+    "2027-03-08": { dayCall: "s4", nights: { mon: "s1", tue: "s2", wed: "s3", thu: "s5", wknd: "s6" }, holidayCoverage: { "2027-03-14": { surgeonId: "s7", type: "major", name: "Sun 24h", holiday: "Test Sunday" } } },
+    "2027-03-15": { dayCall: "s5", nights: { wknd: "s1" }, holidayCoverage: { "2027-03-19": { surgeonId: "s2", type: "major", name: "Fri 24h", holiday: "Test Friday" }, "2027-03-20": { surgeonId: "s3", type: "major", name: "Sat 24h", holiday: "Test Friday" } } },
+  };
+  const x1live = weekHoldersFn && calRun ? mapDiff(calMap(LIVE), helperMap(LIVE)) : ["helper or calendar slice missing"];
+  const x1syn = weekHoldersFn && calRun ? mapDiff(calMap(SYN), helperMap(SYN)) : ["helper or calendar slice missing"];
+  check(`X1 weekHolders matches the calendar (calData, sliced verbatim) on every date and slot of all ${Object.keys(LIVE).length} live weeks`,
+    Object.keys(LIVE).length === 46 && x1live.length === 0, x1live.slice(0, 3).join(" | "));
+  check("X1 …and on synthetic shapes: a holiday over an override, overrides with no dayCall, an entry dated outside its week, a backup-week swap, the spring-forward week, a Fri + Sat holiday pair",
+    x1syn.length === 0, x1syn.slice(0, 3).join(" | "));
+
+  // X2 — the downloads (personal unless noted), on the live weeks
+  const evs = (sid, opts) => (icsFn ? clone(icsFn(LIVE, sid, nameOf(sid), { nameOf, ...(opts || {}) })) : []);
+  const inRange = (list, a, b) => list.filter((e) => e.start >= a && e.start <= b);
+  const sig = (e) => `${e.start}-${e.end} ${e.summary}`;
+  const FAK = evs("s6"), RPC = evs("s3"), REH = evs("s5"), KJH = evs("s4"), ARW = evs("s7"), DJA = evs("s1");
+  const fak97 = inRange(FAK, "20260907", "20260913").filter((e) => /Service Week/.test(e.summary));
+  check("X2 Labor Day week: FAK's service event is 9/8–9/12 (DTEND 20260913) with the line \"Mon 9/7 covered by RPC (Labor Day)\"",
+    fak97.length === 1 && fak97[0].start === "20260908" && fak97[0].end === "20260913" && fak97[0].desc.includes("\nMon 9/7 covered by RPC (Labor Day)\n"), JSON.stringify(fak97));
+  const rpc97 = RPC.filter((e) => e.start === "20260907");
+  check("X2 Labor Day: RPC has exactly one event on 9/7, \"DSG Holiday — Labor Day\" in the feed's v15 format, and no 9/7 night",
+    rpc97.length === 1 && rpc97[0].summary === "DSG Holiday — Labor Day" && rpc97[0].end === "20260908"
+    && rpc97[0].desc === "Labor Day 24h: 7:00 AM – 7:00 AM next day (24h)\nTimes are Central." && rpc97[0].transparent === true, JSON.stringify(rpc97));
+  const reh629 = inRange(REH, "20260629", "20260705").filter((e) => /Service Week/.test(e.summary));
+  const fak629 = inRange(FAK, "20260629", "20260705").map(sig);
+  check("X2 the 7/3 override: REH's service runs are Mon 6/29–Thu 7/2 and Sat 7/4 (each noting \"Fri 7/3 covered by FAK\"); FAK gets \"DSG Service Day\" on 7/3 beside his Mon night, Fri night and Sun",
+    JSON.stringify(reh629.map((e) => `${e.start}-${e.end}`)) === JSON.stringify(["20260629-20260703", "20260704-20260705"]) && reh629.every((e) => e.desc.includes("\nFri 7/3 covered by FAK\n"))
+    && JSON.stringify(fak629.sort()) === JSON.stringify(["20260629-20260630 DSG Night", "20260703-20260704 DSG Service Day", "20260703-20260704 DSG Weekend — Fri night", "20260705-20260706 DSG Weekend — Sun"].sort())
+    && inRange(FAK, "20260703", "20260703").some((e) => e.summary === "DSG Service Day" && e.desc === "7:00 AM – 5:00 PM daytime call\nTimes are Central."),
+    JSON.stringify({ reh: reh629.map((e) => `${e.start}-${e.end}`), fak: fak629 }));
+  const kjh119 = inRange(KJH, "20260119", "20260125").filter((e) => /Service Week/.test(e.summary));
+  const arw124 = ARW.filter((e) => e.start === "20260124");
+  check("X2 the 1/24 swap: KJH's service event ends Fri 1/23 (noting ARW), ARW gets \"DSG Saturday swap coverage\" on 1/24, DJA's weekend is unchanged",
+    kjh119.length === 1 && `${kjh119[0].start}-${kjh119[0].end}` === "20260119-20260124" && kjh119[0].desc.includes("\nSat 1/24 covered by ARW (Saturday swap coverage)\n")
+    && arw124.length === 1 && arw124[0].summary === "DSG Saturday swap coverage" && arw124[0].desc.startsWith("Saturday swap coverage: 7:00 AM – 7:00 AM next day (24h)")
+    && JSON.stringify(inRange(DJA, "20260119", "20260125").map(sig)) === JSON.stringify(["20260123-20260124 DSG Weekend — Fri night", "20260125-20260126 DSG Weekend — Sun"]),
+    JSON.stringify({ kjh: kjh119.map(sig), arw: arw124.map(sig), dja: inRange(DJA, "20260119", "20260125").map(sig) }));
+  const rpc525 = inRange(RPC, "20260525", "20260531").filter((e) => /Service Week/.test(e.summary));
+  const dja525 = DJA.filter((e) => e.start === "20260525");
+  check("X2 the 5/25 backup week: RPC's service event is 5/26–5/30 [BACKUP]; DJA gets \"DSG Holiday — Memorial Day [BACKUP]\"",
+    rpc525.length === 1 && `${rpc525[0].start}-${rpc525[0].end}` === "20260526-20260531" && rpc525[0].summary === "DSG Service Week [BACKUP]"
+    && dja525.length === 1 && dja525[0].summary === "DSG Holiday — Memorial Day [BACKUP]", JSON.stringify({ rpc: rpc525.map(sig), dja: dja525.map(sig) }));
+  const fullRPC = evs("s3", { withCode: true }).filter((e) => e.start === "20260907");
+  check("X2 full export: the holiday title ends with the coverer's code; every call event is transparent (free)",
+    fullRPC.length === 1 && fullRPC[0].summary === "DSG Holiday — Labor Day — RPC" && [FAK, RPC, REH, KJH, ARW, DJA].every((l) => l.length > 0 && l.every((e) => e.transparent === true && e.allDay === true)),
+    JSON.stringify(fullRPC));
+
+  // X3 — the Mine roles from the REAL builder (sliced) + mineUpcoming
+  const MA = "            const myShifts = [];", MB = "            const myShiftsView = mineUpcoming(myShifts, myToday);";
+  const ma = src.indexOf(MA), mb = ma < 0 ? -1 : src.indexOf(MB, ma);
+  const ha = src.indexOf("const holidayEmoji = (label) => {"), hb = ha < 0 ? -1 : src.indexOf("\n  };", ha);
+  const holidayEmoji = ha > 0 && hb > 0 ? vm.runInContext(`(function () { ${src.slice(ha, hb + 4)}\n return holidayEmoji; })()`, sandbox) : null;
+  const mineRun = ma > 0 && mb > 0 ? vm.runInContext(`(function (schedule, myId, nameOf, holidayEmoji, myToday) { ${src.slice(ma, mb + MB.length)}\n return { myShifts, myShiftsView }; })`, sandbox) : null;
+  const mine = (sid, today, sched) => (mineRun ? clone(mineRun(sched || LIVE, sid, nameOf, holidayEmoji, today)) : null);
+  const wkOf = (res, m, which) => (res ? (res[which].find((w) => w.mStr === m) || { roles: [] }).roles : []);
+  const rpcM = mine("s3", "2026-09-01"), fakM = mine("s6", "2026-09-01");
+  const rpcLabor = wkOf(rpcM, "2026-09-07", "myShiftsView");
+  check("X3 Mine (today 9/1): RPC sees \"Labor Day 24h · Mon 9/7\" (dated, no swap, 🇺🇸) and no Mon night that week",
+    rpcLabor.some((r) => r.type === "Labor Day 24h" && r.detail === "Mon 9/7 · 7a–7a" && r.date === "2026-09-07" && r.canSwap === false && r.icon === "🇺🇸" && r.shiftKey === null)
+    && !rpcLabor.some((r) => r.shiftKey === "mon"), JSON.stringify(rpcLabor));
+  const fakSvc = wkOf(fakM, "2026-09-07", "myShiftsView").find((r) => r.shiftKey === "dayCall");
+  check("X3 Mine: FAK's 9/7 service role keeps its swap and carries the note; it starts on 9/8 (the first day he holds)",
+    !!fakSvc && fakSvc.detail === "M–F 7a–5p + Sat 7a–Sun 7a · Mon 9/7 covered by RPC (Labor Day)" && fakSvc.canSwap === true && (fakSvc.held || [])[0] === "2026-09-08", JSON.stringify(fakSvc));
+  const fak629M = wkOf(mine("s6", "2026-06-01"), "2026-06-29", "myShiftsView");
+  check("X3 Mine: FAK's 6/29 week lists the Mon night, the Weekend and a dated \"Service Day\" (Fri 7/3 · 7a–5p, no swap)",
+    JSON.stringify(fak629M.map((r) => r.type).sort()) === JSON.stringify(["Mon Night", "Service Day", "Weekend"]) && fak629M.some((r) => r.type === "Service Day" && r.detail === "Fri 7/3 · 7a–5p" && r.date === "2026-07-03" && r.canSwap === false),
+    JSON.stringify(fak629M));
+  const arw119 = wkOf(mine("s7", "2026-01-01"), "2026-01-19", "myShiftsView"), kjh119M = wkOf(mine("s4", "2026-01-01"), "2026-01-19", "myShiftsView");
+  check("X3 Mine: ARW gets \"Saturday swap coverage 24h\" on 1/24; KJH's service role notes it",
+    arw119.some((r) => r.type === "Saturday swap coverage 24h" && r.date === "2026-01-24") && kjh119M.some((r) => r.shiftKey === "dayCall" && r.detail.endsWith("Sat 1/24 covered by ARW (Saturday swap coverage)")),
+    JSON.stringify({ arw119, kjh: kjh119M.map((r) => r.detail) }));
+  const onDay = wkOf(mine("s3", "2026-09-07"), "2026-09-07", "myShiftsView"), after = wkOf(mine("s3", "2026-09-08"), "2026-09-07", "myShiftsView");
+  check("X3 mineUpcoming: a dated role is listed through its own date (no swap, no in-progress tag) and gone the day after",
+    onDay.some((r) => r.date === "2026-09-07" && r.canSwap === false) && !after.some((r) => r.date === "2026-09-07")
+    && !!upFn && JSON.stringify(clone(upFn([{ mStr: "2026-09-07", roles: [{ shiftKey: null, date: "2026-09-07" }, { shiftKey: "tue" }] }], "2026-09-08"))[0].roles.map((r) => r.shiftKey)) === JSON.stringify(["tue"])
+    // a dated role never offers a swap, even one that also carries a shift key
+    && clone(upFn([{ mStr: "2026-09-07", roles: [{ shiftKey: "wed", date: "2026-09-09" }] }], "2026-09-01"))[0].roles[0].canSwap === false,
+    JSON.stringify({ onDay: onDay.map((r) => r.type), after: after.map((r) => r.type) }));
+
+  // X4 — nothing changes without a holiday or an override (main's code, frozen)
+  const oldIcs = vm.runInContext(`(function () { ${fs.readFileSync(path.join(FIXD, "buildICSEvents-main-2b8cd39.txt"), "utf8")}\n return buildICSEvents; })()`, sandbox);
+  const oldMine = vm.runInContext(`(function (schedule, myId) { ${fs.readFileSync(path.join(FIXD, "mine-builder-main-2b8cd39.txt"), "utf8")}\n return myShifts; })`, sandbox);
+  const plain = {}; Object.entries(LIVE).forEach(([m, w]) => { if (!w.holidayCoverage && !w.dayCallOverrides) plain[m] = w; });
+  let seed = 20261002;
+  const rnd = () => { seed = (seed + 0x6D2B79F5) | 0; let t = Math.imul(seed ^ (seed >>> 15), 1 | seed); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+  const pick = (a) => a[Math.floor(rnd() * a.length)];
+  const IDS = SURG.map((s) => s.id);
+  const maybe = (p) => (rnd() < p ? pick(IDS) : null);
+  const randW = {};
+  for (let k = 0; k < 520; k++) randW[vm.runInContext(`fmt(addD(parse("2016-01-04"), ${7 * k}))`, sandbox)] = { dayCall: maybe(0.9), off: maybe(0.6), isBackup: rnd() < 0.12, isFierceBackup: rnd() < 0.1, nights: { mon: maybe(0.85), tue: maybe(0.85), wed: maybe(0.85), thu: maybe(0.85), wknd: maybe(0.9) } };
+  const visible = (ws) => ws.map((w) => ({ mStr: w.mStr, endStr: w.endStr, isBackup: w.isBackup, isFierceBackup: w.isFierceBackup, roles: w.roles.map((r) => ({ type: r.type, icon: r.icon, detail: r.detail, color: r.color, shiftKey: r.shiftKey, date: r.date })) }));
+  const x4bad = [];
+  if (!mineRun || !icsFn || !weekHoldersFn || !src.includes("const hw = weekHolders(mStr, wk);")) x4bad.push("the new builder (weekHolders) is not in place");
+  else for (const [label, sched] of [["live weeks without holiday/override", plain], ["520 random weeks", randW]]) {
+    for (const s of SURG) {
+      for (const opts of [{}, { withCode: true }]) {
+        const a = JSON.stringify(clone(oldIcs(sched, s.id, s.name, opts))), b = JSON.stringify(clone(icsFn(sched, s.id, s.name, { ...opts, nameOf })));
+        if (a !== b) x4bad.push(`${label} ${s.name} ics${opts.withCode ? " full" : ""}`);
+      }
+      const om = JSON.stringify(visible(clone(oldMine(sched, s.id)))), nm = JSON.stringify(visible(clone(mineRun(sched, s.id, nameOf, holidayEmoji, "2016-01-01").myShifts)));
+      if (om !== nm.replace(/,"date":undefined/g, "")) x4bad.push(`${label} ${s.name} mine`);
+    }
+  }
+  check(`X4 with no holiday and no override, the downloads (personal + full) and the Mine roles equal main's, for every surgeon, on the ${Object.keys(plain).length} plain live weeks and 520 random weeks`,
+    Object.keys(plain).length >= 40 && x4bad.length === 0, x4bad.slice(0, 4).join(" | "));
+
+  // X5 — the Next call card
+  check("X5 the Next call card lists dated roles as their one day and starts a role on its first held day",
+    count("if (!r.shiftKey && !r.date) return; // OFF isn't a call shift") === 1
+    && count("const start = r.held && r.held.length ? parse(r.held[0]) : addD(mon, _startOff[r.shiftKey] ?? 0);") === 1
+    && count("_nextUp.push({ ...r, start: day, end: day, days: Math.round((day - _today0) / _DAY), span: false, isBackup: s.isBackup, isFierceBackup: s.isFierceBackup });") === 1);
+
+  // X6 — the real generator stores the holiday's name; the titles use it
+  const gsb2 = { console: { ...console, warn: () => {} }, window: {}, document: undefined, navigator: { userAgent: "node-test" },
+    localStorage: { getItem: () => null, setItem() {}, removeItem() {} }, fetch: () => { throw new Error("fetch during generation"); }, setTimeout, clearTimeout };
+  gsb2.globalThis = gsb2; vm.createContext(gsb2);
+  for (const f of ["helpers.js", "config.js", "generator.js"]) vm.runInContext(fs.readFileSync(path.join(ROOT, f), "utf8"), gsb2, { filename: f });
+  const G2 = vm.runInContext("({ generate, COUNTS_1YR, parse, addD, buildICSEvents: typeof buildICSEvents === 'function' ? buildICSEvents : null })", gsb2);
+  const HA26 = JSON.parse(fs.readFileSync(path.join(FIXD, "holiday-assignments-2026-live.json"), "utf8"));
+  const genSched = clone(G2.generate(SURG, Array.from({ length: 8 }, (_, k) => G2.addD(G2.parse("2026-11-16"), 7 * k)), {}, new Set(), {}, {}, new Set(), HA26, [], null, {}, G2.COUNTS_1YR));
+  const genCov = {}; Object.values(genSched).forEach((w) => Object.entries((w && w.holidayCoverage) || {}).forEach(([ds, c]) => { genCov[ds] = c; }));
+  const WANT_HOL = { "2026-11-26": ["s2", "Thanksgiving"], "2026-11-27": ["s3", "Thanksgiving"], "2026-11-28": ["s2", "Thanksgiving"], "2026-12-25": ["s6", "Christmas Day"], "2026-12-31": ["s5", "New Year's"], "2027-01-01": ["s1", "New Year's"], "2027-01-02": ["s5", "New Year's"] };
+  check("X6 the generator stores each coverage day's holiday name (Thanksgiving's \"Fri 24h\" / \"Sat 24h\" days carry \"Thanksgiving\"; New Year's 1/1–1/2 carry \"New Year's\")",
+    JSON.stringify(Object.keys(genCov).sort()) === JSON.stringify(Object.keys(WANT_HOL).sort()) && Object.entries(WANT_HOL).every(([ds, [sid, hol]]) => genCov[ds].surgeonId === sid && genCov[ds].holiday === hol)
+    && genCov["2026-11-27"].name === "Fri 24h", JSON.stringify(genCov));
+  const genEvents = SURG.flatMap((s) => clone(icsFn ? icsFn(genSched, s.id, s.name, { nameOf }) : []).map((e) => ({ ...e, sid: s.id })));
+  const genBad = Object.entries(WANT_HOL).filter(([ds, [sid, hol]]) => {
+    const day = ds.replace(/-/g, "");
+    const onDay = genEvents.filter((e) => e.start === day);
+    const regular = genEvents.filter((e) => e.start <= day && day < e.end && !/^DSG Holiday/.test(e.summary));
+    return !(onDay.filter((e) => /^DSG Holiday/.test(e.summary)).length === 1 && onDay.some((e) => e.sid === sid && e.summary === `DSG Holiday — ${hol}`) && regular.length === 0);
+  });
+  check("X6 downloads from the generated period: one \"DSG Holiday — <holiday name>\" per covered date, on the coverer, and no regular event of anyone's spans a covered date",
+    !!icsFn && genBad.length === 0, genBad.map(([ds]) => `${ds}: ${genEvents.filter((e) => e.start <= ds.replace(/-/g, "") && ds.replace(/-/g, "") < e.end).map((e) => `${e.sid} ${e.summary}`).join(", ")}`).join(" | "));
+
+  // X8 — the Next call card's own code (sliced verbatim), run on real roles
+  const na = src.indexOf("            const _nextUp = [];"), nb = na < 0 ? -1 : src.indexOf("_nextUp.sort((a, b) => a.start - b.start);", na);
+  const nextRun = na > 0 && nb > 0 ? vm.runInContext(`(function (myShifts, _today0, _DAY, _startOff) { ${src.slice(na, nb + "_nextUp.sort((a, b) => a.start - b.start);".length)}\n return _nextUp; })`, sandbox) : null;
+  const P = (ds) => vm.runInContext(`parse("${ds}")`, sandbox);
+  const nextOf = (sid, today, sched) => (nextRun && mineRun ? nextRun(mineRun(sched || LIVE, sid, nameOf, holidayEmoji, today).myShifts, P(today), 86400000, { dayCall: 0, mon: 0, tue: 1, wed: 2, thu: 3, wknd: 4 })
+    .map((e) => ({ type: e.type, start: vm.runInContext(`fmt`, sandbox)(e.start), end: vm.runInContext(`fmt`, sandbox)(e.end), span: e.span, days: e.days })) : []);
+  const rpcNext = nextOf("s3", "2026-09-01").filter((e) => e.start <= "2026-09-13");
+  const fakNext = nextOf("s6", "2026-09-01").filter((e) => e.start <= "2026-09-13");
+  const tgWk = { "2026-11-23": { dayCall: "s1", nights: { mon: "s2", wknd: "s7" }, holidayCoverage: { "2026-11-26": { surgeonId: "s1", type: "major", name: "Thanksgiving 24h", holiday: "Thanksgiving" }, "2026-11-27": { surgeonId: "s3", type: "major", name: "Fri 24h", holiday: "Thanksgiving" } } } };
+  const arwNext = nextOf("s7", "2026-11-01", tgWk);
+  check("X8 the Next call card (its real code): a dated role is its one day; a service week starts on its first held day (FAK 9/8); a weekend whose Friday is covered starts on Sunday",
+    rpcNext.some((e) => e.type === "Labor Day 24h" && e.start === "2026-09-07" && e.end === "2026-09-07" && e.span === false && e.days === 6)
+    && fakNext.some((e) => e.type === "Service Week (incl. Sat)" && e.start === "2026-09-08")
+    && arwNext.some((e) => e.type === "Weekend" && e.start === "2026-11-29"),
+    JSON.stringify({ rpcNext, fakNext, arwNext }));
+
+  // X9 — the generated holiday period (X6's real generator output)
+  const codeOf = Object.fromEntries(SURG.map((s) => [s.id, s.name]));
+  const selfNotes = [];
+  for (const s of SURG) {
+    for (const e of (icsFn ? clone(icsFn(genSched, s.id, s.name, { nameOf })) : [])) if (e.desc.includes(`covered by ${s.name}`)) selfNotes.push(`ics ${s.name} ${e.start} ${e.summary}`);
+    for (const w of (mineRun ? clone(mineRun(genSched, s.id, nameOf, holidayEmoji, "2026-11-01")).myShifts : [])) for (const r of w.roles) if (String(r.detail).includes(`covered by ${s.name}`)) selfNotes.push(`mine ${s.name} ${w.mStr} ${r.type}`);
+  }
+  check("X9 the generated holiday period: no download description and no Mine role ever says a day was \"covered by\" its own surgeon (the coverer still holds it)",
+    !!weekHoldersFn && !!icsFn && !!mineRun && selfNotes.length === 0 && genEvents.some((e) => / covered by /.test(e.desc)), selfNotes.slice(0, 4).join(" | "));
+  const ICON = { Thanksgiving: "🦃", "Christmas Day": "🎄", "New Year's": "🎆" };
+  const genRoleBad = [], offWithDated = [];
+  for (const [ds, [sid, hol]] of Object.entries(WANT_HOL)) {
+    const roles = mineRun ? clone(mineRun(genSched, sid, nameOf, holidayEmoji, "2026-11-01")).myShifts.flatMap((w) => w.roles) : [];
+    const r = roles.find((x) => x.date === ds);
+    if (!r || r.type !== `${hol} 24h` || r.icon !== ICON[hol] || r.canSwap !== undefined) genRoleBad.push(`${ds} ${codeOf[sid]} ${JSON.stringify(r)}`);
+  }
+  for (const s of SURG) for (const w of (mineRun ? clone(mineRun(genSched, s.id, nameOf, holidayEmoji, "2026-11-01")).myShifts : [])) if (w.roles.some((r) => r.type === "OFF") && w.roles.some((r) => r.date)) offWithDated.push(`${s.name} ${w.mStr}`);
+  const offSyn = mineRun ? clone(mineRun({ "2026-11-23": { dayCall: "s1", off: "s2", nights: {}, holidayCoverage: { "2026-11-27": { surgeonId: "s2", type: "major", name: "Fri 24h", holiday: "Thanksgiving" } } } }, "s2", nameOf, holidayEmoji, "2026-11-01")).myShifts : [];
+  check("X9 Mine on the generated period: every covered date gives its coverer one dated role titled with the holiday's name and its icon (🦃 🎄 🎆); an OFF surgeon who covers a holiday is not also told \"No call this week\"",
+    !!mineRun && genRoleBad.length === 0 && offWithDated.length === 0 && offSyn.length === 1 && JSON.stringify(offSyn[0].roles.map((r) => r.type)) === JSON.stringify(["Thanksgiving 24h"]),
+    `${genRoleBad.slice(0, 2).join(" | ")} ${offWithDated.join(",")} ${JSON.stringify(offSyn)}`);
+
+  // X10 — override and cover variants (synthetic)
+  const VAR = {
+    "2026-07-27": { dayCall: "s5", dayCallOverrides: { "2026-08-01": "s6" }, nights: {} },                                  // Saturday override
+    "2026-08-03": { dayCall: "s1", isBackup: true, dayCallOverrides: { "2026-08-05": "s2" }, nights: {} },                   // backup-week override
+    "2026-08-10": { dayCall: "s3", dayCallOverrides: { "2026-08-11": "s3" }, nights: {} },                                  // override equal to the dayCall
+    "2026-08-17": { dayCall: "s2", nights: { wknd: "s4" }, holidayCoverage: { "2026-08-23": { surgeonId: "s6", type: "major", name: "Sun 24h", holiday: "Test Sunday" } } }, // covered Sunday
+    "2026-08-24": { dayCall: "s5", isBackup: true, nights: {}, holidayCoverage: { "2026-08-26": { surgeonId: "s2", type: "major", name: "Test Wed 24h" } } },            // backup-week holiday
+    "2026-08-31": { dayCall: "s1", nights: {}, holidayCoverage: { "2026-08-30": { surgeonId: "s7", type: "minor", name: "Prior Sunday 24h" } } },                      // cover dated outside its week
+  };
+  const vEv = (sid, opts) => (icsFn ? clone(icsFn(VAR, sid, nameOf(sid), { nameOf, ...(opts || {}) })) : []);
+  const vMine = (sid) => (mineRun ? clone(mineRun(VAR, sid, nameOf, holidayEmoji, "2026-07-01")).myShifts.flatMap((w) => w.roles.map((r) => ({ ...r, mStr: w.mStr }))) : []);
+  const sv = (l) => l.map((e) => `${e.start}-${e.end} ${e.summary}`).sort();
+  const reh = vEv("s5"), fakV = vEv("s6"), mcc = vEv("s2"), mccFull = vEv("s2", { withCode: true }), djaV = vEv("s1"), rpcV = vEv("s3"), kjhV = vEv("s4"), arwV = vEv("s7");
+  const x10 = {
+    satOverride: sv(reh.filter((e) => e.start < "20260803")).join() === "20260727-20260801 DSG Service Week" && reh[0].desc.includes("\nSat 8/1 covered by FAK\n")
+      && fakV.some((e) => e.start === "20260801" && e.summary === "DSG Service Day" && e.desc === "Sat 7:00 AM – Sun 7:00 AM (24h)\nTimes are Central.")
+      && vMine("s6").some((r) => r.type === "Service Day" && r.detail === "Sat 8/1 · 7a–7a" && r.date === "2026-08-01")
+      && vMine("s5").some((r) => r.mStr === "2026-07-27" && r.detail === "M–F 7a–5p + Sat 7a–Sun 7a · Sat 8/1 covered by FAK"),
+    backupOverride: sv(djaV.filter((e) => e.start >= "20260803" && e.start < "20260810")).join() === "20260803-20260805 DSG Service Week [BACKUP],20260806-20260809 DSG Service Week [BACKUP]"
+      && mcc.some((e) => e.start === "20260805" && e.summary === "DSG Service Day [BACKUP]") && mccFull.some((e) => e.start === "20260805" && e.summary === "DSG Service Day [BACKUP] — MCC"),
+    overrideIsDayCall: sv(rpcV).join() === "20260810-20260816 DSG Service Week" && !rpcV[0].desc.includes("covered by") && !rpcV.some((e) => /Service Day/.test(e.summary))
+      && vMine("s3").filter((r) => r.mStr === "2026-08-10").map((r) => r.type).join() === "Service Week (incl. Sat)",
+    coveredSunday: sv(kjhV).join() === "20260821-20260822 DSG Weekend — Fri night" && fakV.some((e) => e.start === "20260823" && e.summary === "DSG Holiday — Test Sunday")
+      && vMine("s4").some((r) => r.type === "Weekend" && JSON.stringify(r.held) === JSON.stringify(["2026-08-21"]) && r.detail.endsWith("· Sun 8/23 covered by FAK (Test Sunday)")),
+    backupHolidayFull: mccFull.some((e) => e.start === "20260826" && e.summary === "DSG Holiday — Test Wed [BACKUP] — MCC"),
+    outOfWeekCover: arwV.some((e) => e.start === "20260830" && e.end === "20260831" && e.summary === "DSG Holiday — Prior Sunday")
+      && vMine("s7").some((r) => r.date === "2026-08-30" && r.type === "Prior Sunday 24h" && r.mStr === "2026-08-31")
+      && sv(djaV.filter((e) => e.start >= "20260831")).join() === "20260831-20260906 DSG Service Week",
+  };
+  check("X10 variants: a Saturday override (24h hours, the note, Mine \"Sat 8/1 · 7a–7a\"); a backup-week override ([BACKUP], full title order); an override equal to the dayCall (no change); a covered Sunday (the leg drops, Mine keeps Fri with a note); a backup-week holiday in the full export; a cover dated outside its week (downloads + Mine)",
+    Object.values(x10).every(Boolean), JSON.stringify(x10));
+
+  // X7 — X1 and the Labor Day events again in two time zones
+  {
+    const { execFileSync } = require("child_process");
+    const code = [
+      'const vm = require("vm"), fs = require("fs"), path = require("path");',
+      'const sb = { console, window: {}, document: undefined, navigator: { userAgent: "node-test" }, localStorage: { getItem: () => null, setItem() {}, removeItem() {} }, fetch: () => { throw new Error("no fetch"); }, setTimeout, clearTimeout };',
+      "sb.globalThis = sb; vm.createContext(sb);",
+      `for (const f of ["helpers.js", "config.js"]) vm.runInContext(fs.readFileSync(path.join(${JSON.stringify(ROOT)}, f), "utf8"), sb, { filename: f });`,
+      `const LIVE = JSON.parse(fs.readFileSync(${JSON.stringify(path.join(FIXD, "schedule-weeks-live-2026-10-02.json"))}, "utf8"));`,
+      `const cal = vm.runInContext("(function (schedule) { " + ${JSON.stringify(da > 0 && db > 0 ? src.slice(da, db) : "")} + "\\n return d; })", sb);`,
+      'const wh = vm.runInContext("weekHolders", sb), ics = vm.runInContext("buildICSEvents", sb);',
+      "let mism = 0; const cm = {}, hm = {};",
+      'Object.entries(cal(LIVE)).forEach(([ds, l]) => l.forEach((e) => { if (/Svc|Ngt|Wknd|Holiday/.test(e.type)) (cm[ds] = cm[ds] || []).push(String(e.surgeon || "")); }));',
+      'Object.entries(LIVE).forEach(([m, w]) => { const h = wh(m, w); h.days.forEach((d) => ["svc", "sat", "night", "wkndFri", "wkndSun"].forEach((k) => { if (d[k]) (hm[d.ds] = hm[d.ds] || []).push(d[k]); })); h.covers.forEach((c) => (hm[c.ds] = hm[c.ds] || []).push(c.sid || "")); });',
+      "for (const ds of new Set([...Object.keys(cm), ...Object.keys(hm)])) if (JSON.stringify((cm[ds] || []).sort()) !== JSON.stringify((hm[ds] || []).sort())) mism++;",
+      'const fak = ics(LIVE, "s6", "FAK", {}).filter((e) => e.start >= "20260907" && e.start <= "20260913").map((e) => e.start + "-" + e.end + " " + e.summary);',
+      'const rpc = ics(LIVE, "s3", "RPC", {}).filter((e) => e.start === "20260907").map((e) => e.summary);',
+      'process.stdout.write(JSON.stringify({ off: new Date(2026, 9, 24).getTimezoneOffset(), mism, fak, rpc }));',
+    ].join("\n");
+    const inZone = (TZ) => { try { return JSON.parse(execFileSync(process.execPath, ["-e", code], { env: Object.assign({}, process.env, { TZ }), encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })); } catch (ex) { return { err: String(ex).slice(0, 300) }; } };
+    const FAK97 = JSON.stringify(["20260908-20260913 DSG Service Week", "20260911-20260912 DSG Weekend — Fri night"].sort());
+    for (const [TZ, off] of [["America/Chicago", 300], ["Asia/Tokyo", -540]]) {
+      const o = inZone(TZ);
+      const fakNoNight = o && o.fak ? JSON.stringify(o.fak.filter((s) => /Service Week/.test(s))) : "";
+      check(`X7 under TZ=${TZ} (offset ${off}, proven): the helper still matches the calendar on all live weeks, FAK's service event is 9/8–9/12, RPC's 9/7 is only the holiday`,
+        !!o && o.off === off && o.mism === 0 && fakNoNight === JSON.stringify(["20260908-20260913 DSG Service Week"]) && JSON.stringify(o.rpc) === JSON.stringify(["DSG Holiday — Labor Day"]),
+        JSON.stringify(o).slice(0, 300) + " " + FAK97.slice(0, 0));
+    }
+  }
 }
 
 // ─── Verdict ───

@@ -1,0 +1,15 @@
+            const myShifts = [];
+            Object.entries(schedule).forEach(([mStr, wk]) => {
+              const mon = parse(mStr);
+              const endStr = fmt(addD(mon, 6));
+              const roles = [];
+              if (wk.dayCall === myId) roles.push({type: "Service Week (incl. Sat)", icon: "🏥", detail: "M–F 7a–5p + Sat 7a–Sun 7a", color: "#1a6fa8", shiftKey: "dayCall"});
+              NIGHT_KEYS.forEach((sk, i) => {
+                if (wk.nights?.[sk] === myId) roles.push({type: SHIFT_LABELS[sk], icon: "🌙", detail: SHIFT_TIMES[sk], color: "#6030a0", shiftKey: sk});
+              });
+              if (wk.nights?.wknd === myId) roles.push({type: "Weekend", icon: "🌗", detail: SHIFT_TIMES.wknd, color: "#7a6030", shiftKey: "wknd"});
+              if (wk.off === myId) roles.push({type: "OFF", icon: "✅", detail: "No call this week", color: "#2a7a40", shiftKey: null});
+              if (roles.length > 0) {
+                myShifts.push({ mStr, endStr, roles, isBackup: wk.isBackup, isFierceBackup: wk.isFierceBackup });
+              }
+            });
