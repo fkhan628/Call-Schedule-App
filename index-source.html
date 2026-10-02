@@ -3445,7 +3445,7 @@ function CallSchedule() {
   const downloadMyCal = (surgeonId) => {
     const s = surgeons.find(x => x.id === surgeonId);
     if (!s) return;
-    const events = buildICSEvents(schedule, s.id, s.name);
+    const events = buildICSEvents(schedule, s.id, s.name, { nameOf });
     // Vacations as all-day events; the end date is exclusive, so the day after the last vacation day
     const vacRanges = vacations[s.id] || [];
     vacRanges.forEach(([vs, ve]) => {
@@ -5106,11 +5106,11 @@ function CallSchedule() {
     // Pre-generate ICS content per surgeon + full
     const icsMap = {};
     surgeons.forEach(s => {
-      const ev = buildICSEvents(schedule, s.id, s.name);
+      const ev = buildICSEvents(schedule, s.id, s.name, { nameOf });
       icsMap[s.name] = generateICS(ev, "Call Schedule - " + s.name);
     });
     const allEv = [];
-    surgeons.forEach(s => allEv.push(...buildICSEvents(schedule, s.id, s.name, { withCode: true })));
+    surgeons.forEach(s => allEv.push(...buildICSEvents(schedule, s.id, s.name, { withCode: true, nameOf })));
     allEv.push(...buildAppICSEvents(appShifts, aMap));
     icsMap["__full__"] = generateICS(allEv, "Full Call Schedule");
 
@@ -8446,7 +8446,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:10}}>
                 {surgeons.map(s => (
                   <button key={s.id} onClick={() => {
-                    const events = buildICSEvents(schedule, s.id, s.name);
+                    const events = buildICSEvents(schedule, s.id, s.name, { nameOf });
                     const ics = generateICS(events, `Call Schedule — ${s.name}`);
                     downloadICS(ics, `call-schedule-${s.name.toLowerCase()}.ics`);
                   }} style={{...css.badge(sMap[s.id]?.idx||0, sMap[s.id]?.name),cursor:"pointer",padding:"5px 12px",fontSize:12}}>
@@ -8457,7 +8457,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:12}}>
                 <button onClick={() => {
                   const allEvents = [];
-                  surgeons.forEach(s => { allEvents.push(...buildICSEvents(schedule, s.id, s.name, { withCode: true })); });
+                  surgeons.forEach(s => { allEvents.push(...buildICSEvents(schedule, s.id, s.name, { withCode: true, nameOf })); });
                   allEvents.push(...buildAppICSEvents(appShifts, aMap));
                   const ics = generateICS(allEvents, "Full Call Schedule");
                   downloadICS(ics, "call-schedule-full.ics");
@@ -9271,18 +9271,45 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               try { addNotification("vacation_revoked", "Vacation Removed", `${myName} removed their vacation ${r[0]} → ${r[1]} (gave days back).`, { surgeon_id: myId }, [...schedulerAdminIds]); } catch(e) { console.error("Vacation-removal notification failed:", e); }
             };
 
-            // Build my shifts
+            // Build my shifts. Who holds each date comes from weekHolders (helpers.js), the
+            // calendar's rule: a covered holiday or a single-day override takes that date from
+            // its regular holder. A service week or weekend that lost a day keeps its role with
+            // a note; a night on a covered date is not listed; the surgeon covering a holiday or
+            // a single service day gets a role with a date (it ends that day, no swap).
             const myShifts = [];
             Object.entries(schedule).forEach(([mStr, wk]) => {
               const mon = parse(mStr);
               const endStr = fmt(addD(mon, 6));
+              const hw = weekHolders(mStr, wk);
+              const svcOf = (d) => (d.i <= 4 ? d.svc : d.sat);
+              const svcDays = hw.days.slice(0, 6);
               const roles = [];
-              if (wk.dayCall === myId) roles.push({type: "Service Week (incl. Sat)", icon: "🏥", detail: "M–F 7a–5p + Sat 7a–Sun 7a", color: "#1a6fa8", shiftKey: "dayCall"});
+              if (wk.dayCall === myId) {
+                // A day this surgeon still holds as its holiday coverer was not given away: no note
+                const notes = svcDays.filter(d => svcOf(d) !== myId && !(d.cover && d.cover.sid === myId)).map(d => coverNote(d, d.cover ? d.cover.sid : svcOf(d), nameOf));
+                roles.push({type: "Service Week (incl. Sat)", icon: "🏥", detail: ["M–F 7a–5p + Sat 7a–Sun 7a", ...notes].join(" · "), color: "#1a6fa8", shiftKey: "dayCall",
+                  held: svcDays.filter(d => svcOf(d) === myId).map(d => d.ds)});
+              }
               NIGHT_KEYS.forEach((sk, i) => {
-                if (wk.nights?.[sk] === myId) roles.push({type: SHIFT_LABELS[sk], icon: "🌙", detail: SHIFT_TIMES[sk], color: "#6030a0", shiftKey: sk});
+                if (hw.days[i].night === myId) roles.push({type: SHIFT_LABELS[sk], icon: "🌙", detail: SHIFT_TIMES[sk], color: "#6030a0", shiftKey: sk});
               });
-              if (wk.nights?.wknd === myId) roles.push({type: "Weekend", icon: "🌗", detail: SHIFT_TIMES.wknd, color: "#7a6030", shiftKey: "wknd"});
-              if (wk.off === myId) roles.push({type: "OFF", icon: "✅", detail: "No call this week", color: "#2a7a40", shiftKey: null});
+              if (wk.nights?.wknd === myId) {
+                const legs = [hw.days[4], hw.days[6]];
+                const mine = (d) => (d.i === 4 ? d.wkndFri : d.wkndSun) === myId;
+                const notes = legs.filter(d => !mine(d) && !(d.cover && d.cover.sid === myId)).map(d => coverNote(d, d.cover ? d.cover.sid : null, nameOf));
+                roles.push({type: "Weekend", icon: "🌗", detail: [SHIFT_TIMES.wknd, ...notes].join(" · "), color: "#7a6030", shiftKey: "wknd",
+                  held: legs.filter(mine).map(d => d.ds)});
+              }
+              svcDays.forEach(d => {
+                if (wk.dayCall === myId || svcOf(d) !== myId) return;
+                roles.push({type: "Service Day", icon: "🏥", detail: `${dayMonthLabel(d.ds)} · ${d.i === 5 ? "7a–7a" : "7a–5p"}`, color: "#1a6fa8", shiftKey: null, date: d.ds});
+              });
+              hw.covers.forEach(c => {
+                if (c.sid !== myId) return;
+                roles.push({type: `${c.type === "swap" ? (c.label || "Coverage") : holidayTitleName(c)} 24h`, icon: holidayEmoji(c.holiday || c.label), detail: `${dayMonthLabel(c.ds)} · 7a–7a`, color: "#c06020", shiftKey: null, date: c.ds});
+              });
+              // "No call this week" would contradict a holiday 24h or a service day this surgeon holds
+              if (wk.off === myId && !roles.some(r => r.date)) roles.push({type: "OFF", icon: "✅", detail: "No call this week", color: "#2a7a40", shiftKey: null});
               if (roles.length > 0) {
                 myShifts.push({ mStr, endStr, roles, isBackup: wk.isBackup, isFierceBackup: wk.isFierceBackup });
               }
@@ -9293,8 +9320,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
 
             // ─── Next call at-a-glance ───
             // Flatten each upcoming role to a concrete start date (a night lands on
-            // its weekday; service week + weekend run Mon→Sun), drop anything fully
-            // past, sort soonest-first. OFF weeks aren't call, so they're excluded.
+            // its weekday; service week + weekend run Mon→Sun, starting on the first
+            // day the surgeon actually holds; a dated role is that one day), drop
+            // anything fully past, sort soonest-first. OFF weeks aren't call, so
+            // they're excluded.
             const _today0 = new Date(); _today0.setHours(0, 0, 0, 0);
             const _DAY = 86400000;
             const _startOff = { dayCall: 0, mon: 0, tue: 1, wed: 2, thu: 3, wknd: 4 };
@@ -9305,9 +9334,15 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             myShifts.forEach(s => {
               const mon = parse(s.mStr);
               s.roles.forEach(r => {
-                if (!r.shiftKey) return; // OFF isn't a call shift
+                if (!r.shiftKey && !r.date) return; // OFF isn't a call shift
+                if (r.date) {
+                  const day = parse(r.date);
+                  if (day < _today0) return;
+                  _nextUp.push({ ...r, start: day, end: day, days: Math.round((day - _today0) / _DAY), span: false, isBackup: s.isBackup, isFierceBackup: s.isFierceBackup });
+                  return;
+                }
                 const span = (r.shiftKey === "dayCall" || r.shiftKey === "wknd");
-                const start = addD(mon, _startOff[r.shiftKey] ?? 0);
+                const start = r.held && r.held.length ? parse(r.held[0]) : addD(mon, _startOff[r.shiftKey] ?? 0);
                 const end = span ? addD(mon, 6) : start;
                 if (end < _today0) return; // fully in the past
                 const days = Math.round((start - _today0) / _DAY);

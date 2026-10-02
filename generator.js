@@ -216,7 +216,8 @@ function generateOnce(surgeons, mondays, vac, backupMondays, priorCounts, prefer
         // two-day cap to assignments saved before it.
         effectiveHolidayCoverage(h).forEach(c => {
           if (c.isEve) return; // Eve is informational only — regular schedule stays
-          holCoverage[c.date] = { surgeonId: c.surgeon, role: "holiday_24h", hours: "7a–7a", name: c.label, type: h.type };
+          // holiday: the holiday's own name — a multi-day label is only "Fri 24h" / "Sat 24h"
+          holCoverage[c.date] = { surgeonId: c.surgeon, role: "holiday_24h", hours: "7a–7a", name: c.label, type: h.type, holiday: h.name };
         });
       });
     });
