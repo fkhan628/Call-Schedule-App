@@ -2417,6 +2417,228 @@ check("prefs audit never logs the plaintext email (masked only)",
   }
 }
 
+// ─── V. Stats → Billing honors holiday coverage (owner rule + decisions 2026-10-01) ───
+// A holiday 24h bills the COVERING surgeon 2 days (the day and the night) on
+// the holiday's date, in a "Holiday" column, and every regular credit on that
+// date drops: service day (override included), week night, weekend day. Which
+// entries count: any holidayCoverage entry that names a coverer, sits inside
+// its own week, and whose type is not "swap" (an unexpected type bills as a
+// holiday). A backup week bills nothing, holiday included. The two imported
+// "swap" Saturdays (1/24, 2/14) keep today's billing.
+//   V1 the real Labor Day week          V2 an empty Monday night (non-backup)
+//   V3 Friday, Saturday, Sunday holidays V4 a holiday beats an override
+//   V5 backup weeks, no coverer, outside the week, swap, the live types
+//   V6 regression: no-holiday weeks bill exactly as main's block (frozen copy)
+//   V7 live September / May / January / February end to end, before and after
+//   V8 source pins                       V9 V1/V3/V7 under TZ=America/Chicago
+// Fixtures: test/fixtures/billing-live-weeks-2026-10-01.json (19 live weeks,
+// anon-readable by design) and billing-block-main-591391f.txt (main's billing
+// block, byte-for-byte, the "old code" reference).
+{
+  const FIX = path.join(ROOT, "test", "fixtures");
+  const live = JSON.parse(fs.readFileSync(path.join(FIX, "billing-live-weeks-2026-10-01.json"), "utf8"));
+  const oldBlock = fs.readFileSync(path.join(FIX, "billing-block-main-591391f.txt"), "utf8");
+  const H = vm.runInContext('({ wbc: typeof weekBillingCredits === "function" ? weekBillingCredits : null, fmt, parse, addD })', sandbox);
+  const credits = (m, wk) => (H.wbc ? JSON.parse(JSON.stringify(H.wbc(m, wk))) : null);
+  const sig = (cs) => (cs ? cs.map((c) => `${c.ds.slice(5)} ${c.sid} ${c.kind}${c.n}`).sort().join(" | ") : "null");
+  const want = (lines) => lines.slice().sort().join(" | ");
+  const days = (m, offs) => offs.map((i) => H.fmt(H.addD(H.parse(m), i)).slice(5));
+  const clone = (o) => JSON.parse(JSON.stringify(o));
+
+  // V1 — the real Labor Day week: FAK service, RPC Mon night + the 24h coverage
+  const w97 = live["2026-09-07"];
+  const want97 = want([
+    ...days("2026-09-07", [1, 2, 3, 4, 5, 6]).map((d) => `${d} s6 dc1`),
+    "09-08 s5 nights1", "09-09 s7 nights1", "09-10 s1 nights1",
+    "09-11 s4 wknd1", "09-12 s4 wknd1", "09-13 s4 wknd1",
+    "09-07 s3 hol2",
+  ]);
+  check("V1 Labor Day week: FAK service 9/8–9/13 only, no 9/7 night credit, RPC Holiday 2 on 9/7, REH/ARW/DJA nights 9/8–9/10, KJH weekend 9/11–9/13",
+    sig(credits("2026-09-07", w97)) === want97, sig(credits("2026-09-07", w97)));
+
+  // V2 — Memorial Day's shape (empty Monday night) as a NON-backup week
+  const w525 = { ...clone(live["2026-05-25"]), isBackup: false };
+  check("V2 empty Monday night, non-backup: DJA Holiday 2 on 5/25, RPC service 5/26–5/31 only, nothing else on 5/25",
+    sig(credits("2026-05-25", w525)) === want([
+      ...days("2026-05-25", [1, 2, 3, 4, 5, 6]).map((d) => `${d} s3 dc1`),
+      "05-26 s5 nights1", "05-27 s2 nights1", "05-28 s7 nights1",
+      "05-29 s4 wknd1", "05-30 s4 wknd1", "05-31 s4 wknd1", "05-25 s1 hol2",
+    ]), sig(credits("2026-05-25", w525)));
+
+  // V3 — the week of 12/21: service MCC, weekend REH, nights DJA/RPC/KJH/ARW; FAK covers one day
+  const xmas = (dsCov) => ({ dayCall: "s2", isBackup: false, nights: { mon: "s1", tue: "s3", wed: "s4", thu: "s7", wknd: "s5" },
+    holidayCoverage: { [dsCov]: { surgeonId: "s6", role: "holiday_24h", type: "major", hours: "7a–7a", name: "Holiday" } } });
+  const xmasWant = (covOff) => want([
+    ...days("2026-12-21", [0, 1, 2, 3, 4, 5, 6].filter((i) => i !== covOff)).map((d) => `${d} s2 dc1`),
+    "12-21 s1 nights1", "12-22 s3 nights1", "12-23 s4 nights1", "12-24 s7 nights1",
+    ...days("2026-12-21", [4, 5, 6].filter((i) => i !== covOff)).map((d) => `${d} s5 wknd1`),
+    `${days("2026-12-21", [covOff])[0]} s6 hol2`,
+  ]);
+  check("V3 Friday holiday (Christmas 12/25): MCC loses only Fri service, REH keeps Sat + Sun, FAK Holiday 2, Christmas Eve bills normally",
+    sig(credits("2026-12-21", xmas("2026-12-25"))) === xmasWant(4), sig(credits("2026-12-21", xmas("2026-12-25"))));
+  check("V3 Saturday holiday: the service Saturday and the weekend Saturday both drop",
+    sig(credits("2026-12-21", xmas("2026-12-26"))) === xmasWant(5), sig(credits("2026-12-21", xmas("2026-12-26"))));
+  check("V3 Sunday holiday: the service Sunday and the weekend Sunday both drop",
+    sig(credits("2026-12-21", xmas("2026-12-27"))) === xmasWant(6), sig(credits("2026-12-21", xmas("2026-12-27"))));
+  // The generator's real shapes put SEVERAL covered dates in one week: Thanksgiving Thu (A), Fri (B), Sat (A);
+  // New Year's 12/31 (A), 1/1 (B), 1/2 (A), in a week that crosses into January. Every one of them counts.
+  const cov = (map) => Object.fromEntries(Object.entries(map).map(([ds, sid]) => [ds, { surgeonId: sid, role: "holiday_24h", type: "major", hours: "7a–7a", name: "Holiday" }]));
+  const tgiving = { dayCall: "s1", isBackup: false, nights: { mon: "s4", tue: "s5", wed: "s6", thu: "s4", wknd: "s7" },
+    holidayCoverage: cov({ "2026-11-26": "s2", "2026-11-27": "s3", "2026-11-28": "s2" }) };
+  const newYear = { dayCall: "s4", isBackup: false, nights: { mon: "s1", tue: "s2", wed: "s3", thu: "s6", wknd: "s7" },
+    holidayCoverage: cov({ "2026-12-31": "s5", "2027-01-01": "s1", "2027-01-02": "s5" }) };
+  check("V3 three covered dates in one week (Thanksgiving): each bills its coverer Holiday 2 and drops that date's service, night and weekend credits",
+    sig(credits("2026-11-23", tgiving)) === want([
+      "11-23 s1 dc1", "11-24 s1 dc1", "11-25 s1 dc1", "11-29 s1 dc1",
+      "11-23 s4 nights1", "11-24 s5 nights1", "11-25 s6 nights1", "11-29 s7 wknd1",
+      "11-26 s2 hol2", "11-27 s3 hol2", "11-28 s2 hol2",
+    ]) && sig(credits("2026-12-28", newYear)) === want([
+      "12-28 s4 dc1", "12-29 s4 dc1", "12-30 s4 dc1", "01-03 s4 dc1",
+      "12-28 s1 nights1", "12-29 s2 nights1", "12-30 s3 nights1", "01-03 s7 wknd1",
+      "12-31 s5 hol2", "01-01 s1 hol2", "01-02 s5 hol2",
+    ]), sig(credits("2026-11-23", tgiving)) + " || " + sig(credits("2026-12-28", newYear)));
+
+  // V4 — overrides
+  const w97o = { ...clone(w97), dayCallOverrides: { "2026-09-07": "s2", "2026-09-09": "s4" } };
+  const w97oWant = want([
+    ...days("2026-09-07", [1, 3, 4, 5, 6]).map((d) => `${d} s6 dc1`), "09-09 s4 dc1",
+    "09-08 s5 nights1", "09-09 s7 nights1", "09-10 s1 nights1",
+    "09-11 s4 wknd1", "09-12 s4 wknd1", "09-13 s4 wknd1", "09-07 s3 hol2",
+  ]);
+  check("V4 a holiday beats an override on its date (the 9/7 override bills nothing); an override on a normal date bills the covering surgeon (9/9 → KJH)",
+    sig(credits("2026-09-07", w97o)) === w97oWant, sig(credits("2026-09-07", w97o)));
+
+  // V5 — what changes nothing
+  const noCov = (wk) => { const c = clone(wk); delete c.holidayCoverage; return c; };
+  const base97 = sig(credits("2026-09-07", noCov(w97)));
+  check("V5 the real 5/25 week (backup + Memorial Day) bills nothing at all; a backup Labor Day week bills nothing",
+    !!H.wbc && credits("2026-05-25", live["2026-05-25"]).length === 0 && credits("2026-09-07", { ...clone(w97), isBackup: true }).length === 0);
+  const w97noSid = { ...clone(w97), holidayCoverage: { "2026-09-07": { name: "Labor Day 24h", role: "holiday_24h", type: "minor" } } };
+  const w97out = { ...clone(w97), holidayCoverage: { "2026-09-14": { surgeonId: "s3", role: "holiday_24h", type: "minor", name: "Next week" } } };
+  // Before Monday too: the seed itself stores Memorial Day Eve (Sun 5/24) inside the 5/25 week
+  const w525eve = { ...clone(w525), holidayCoverage: { "2026-05-24": { surgeonId: "s2", role: "holiday_24h", type: "minor", name: "Memorial Day Eve" } } };
+  check("V5 an entry with no coverer, or dated outside its week (the Monday after, or the Sunday before), changes nothing (equals the week with no coverage at all)",
+    !!H.wbc && base97.includes("09-07 s6 dc1") && sig(credits("2026-09-07", w97noSid)) === base97 && sig(credits("2026-09-07", w97out)) === base97
+    && sig(credits("2026-05-25", w525eve)) === sig(credits("2026-05-25", noCov(w525))) && sig(credits("2026-05-25", w525eve)).includes("05-25 s3 dc1"),
+    `${sig(credits("2026-09-07", w97noSid))} || ${sig(credits("2026-05-25", w525eve))}`);
+  check("V5 a \"swap\" entry changes nothing: the live 1/24 (ARW) and 2/14 (FAK) Saturdays bill exactly as without the entry",
+    !!H.wbc && ["2026-01-19", "2026-02-09"].every((m) => sig(credits(m, live[m])) === sig(credits(m, noCov(live[m])))) && sig(credits("2026-01-19", live["2026-01-19"])).includes("01-24 s4 dc1"),
+    ["2026-01-19", "2026-02-09"].map((m) => sig(credits(m, live[m]))).join(" || "));
+  const liveTypes = [...new Set(Object.values(live).flatMap((w) => Object.values((w && w.holidayCoverage) || {}).map((c) => String(c.type))))].sort();
+  const w97odd = { ...clone(w97), holidayCoverage: { "2026-09-07": { surgeonId: "s3", name: "Odd" } } };
+  const w97type = (type) => ({ ...clone(w97), holidayCoverage: { "2026-09-07": { surgeonId: "s3", name: "Odd", type } } });
+  const oddTypes = ["Holiday", "Swap", "religious", "major", ""];
+  const oddBad = oddTypes.filter((t) => sig(credits("2026-09-07", w97type(t))) !== want97);
+  check(`V5 the live types are exactly ${JSON.stringify(["holiday", "minor", "swap"])}; only the exact "swap" is excluded — a missing type and ${JSON.stringify(oddTypes)} all bill as a holiday`,
+    JSON.stringify(liveTypes) === JSON.stringify(["holiday", "minor", "swap"]) && sig(credits("2026-09-07", w97odd)) === want97 && oddBad.length === 0,
+    `types ${JSON.stringify(liveTypes)}; missing → ${sig(credits("2026-09-07", w97odd)).slice(0, 60)}; wrong for ${JSON.stringify(oddBad)}`);
+
+  // The real billing blocks: main's (frozen copy) and this file's
+  const slice = (text) => { const a = text.indexOf("const monthly = {};"); const b = a < 0 ? -1 : text.indexOf("const sortedMonths = [...allMonths].sort();", a); return a < 0 || b < 0 ? null : text.slice(a, b); };
+  const newBlock = slice(src);
+  const runner = (block) => vm.runInContext(`(function (schedule, surgeons) { ${block}\n return monthly; })`, sandbox);
+  const runOld = runner(oldBlock), runNew = newBlock ? runner(newBlock) : null;
+  const usesHelper = !!newBlock && newBlock.includes("weekBillingCredits(");
+  const SURG = ["DJA", "MCC", "RPC", "KJH", "REH", "FAK", "ARW"].map((name, i) => ({ id: "s" + (i + 1), name }));
+  const sameExceptHol = (o, n) => {
+    const om = Object.keys(o).sort(), nm = Object.keys(n).sort();
+    if (JSON.stringify(om) !== JSON.stringify(nm)) return `months differ: ${om.length} vs ${nm.length}`;
+    for (const mk of om) for (const id of Object.keys(o[mk])) {
+      const a = o[mk][id], b = n[mk][id] || {};
+      for (const k of ["dc", "nights", "wknd"]) if ((a[k] || 0) !== (b[k] || 0)) return `${mk} ${id} ${k}: old ${a[k]} new ${b[k]}`;
+      if ((b.hol || 0) !== 0) return `${mk} ${id} hol ${b.hol} on a no-holiday schedule`;
+    }
+    return "";
+  };
+
+  // V6 — regression on weeks with no holiday coverage
+  const septNoHol = {}; for (const [m, w] of Object.entries(live)) septNoHol[m] = noCov(w);
+  const v6a = usesHelper ? sameExceptHol(clone(runOld(septNoHol, SURG)), clone(runNew(septNoHol, SURG))) : "the billing block does not use weekBillingCredits";
+  let seed = 20261001;
+  const rnd = () => { seed = (seed + 0x6D2B79F5) | 0; let t = Math.imul(seed ^ (seed >>> 15), 1 | seed); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+  const SIDS = ["s1", "s2", "s3", "s4", "s5", "s6", "s7"];
+  const pick = (a) => a[Math.floor(rnd() * a.length)];
+  const maybe = (p, v) => (rnd() < p ? v : null);
+  const randWeeks = {}; let nRand = 0;
+  for (let k = 0; k < 520; k++) {
+    const m = H.fmt(H.addD(H.parse("2016-01-04"), 7 * k));
+    const wk = { dayCall: maybe(0.9, pick(SIDS)), isBackup: rnd() < 0.12,
+      nights: { mon: maybe(0.85, pick(SIDS)), tue: maybe(0.85, pick(SIDS)), wed: maybe(0.85, pick(SIDS)), thu: maybe(0.85, pick([...SIDS, "s99"])), wknd: maybe(0.9, pick(SIDS)) } };
+    if (rnd() < 0.45) { wk.dayCallOverrides = {}; const n = 1 + Math.floor(rnd() * 3); for (let j = 0; j < n; j++) wk.dayCallOverrides[H.fmt(H.addD(H.parse(m), Math.floor(rnd() * 9) - 1))] = pick([...SIDS, "s99"]); }
+    randWeeks[m] = wk; nRand++;
+  }
+  const v6b = usesHelper ? sameExceptHol(clone(runOld(randWeeks, SURG)), clone(runNew(randWeeks, SURG))) : "the billing block does not use weekBillingCredits";
+  check(`V6 no-holiday weeks bill exactly as main's block: the live fixture with coverage stripped, and ${nRand} random weeks (overrides, backups, out-of-week overrides, an unknown id) — every month, surgeon and column`,
+    usesHelper && nRand >= 500 && v6a === "" && v6b === "", v6a || v6b);
+
+  // V7 — live months end to end
+  const table = (monthly, mk) => SURG.map((s) => { const r = monthly[mk][s.id]; const v = (k) => (r[k] ? String(r[k]) : "–"); return `${s.name} ${v("dc")}/${v("nights")}/${v("wknd")}/${v("hol")} ${(r.dc || 0) + (r.nights || 0) + (r.wknd || 0) + (r.hol || 0)}`; }).join(" · ");
+  const before = clone(runOld(live, SURG)), after = usesHelper ? clone(runNew(live, SURG)) : null;
+  const SEP_BEFORE = "DJA 7/2/–/– 9 · MCC –/1/3/– 4 · RPC 6/2/–/– 8 · KJH –/2/3/– 5 · REH –/2/–/– 2 · FAK 7/4/3/– 14 · ARW 7/2/3/– 12";
+  const SEP_AFTER = "DJA 7/2/–/– 9 · MCC –/1/3/– 4 · RPC 6/1/–/2 9 · KJH –/2/3/– 5 · REH –/2/–/– 2 · FAK 6/4/3/– 13 · ARW 7/2/3/– 12";
+  check("V7 September: before (main's block on the live weeks) is the live table (FAK 14, RPC 8); after, FAK 6/4/3 = 13 and RPC 6/1/–/2 = 9, everyone else unchanged",
+    table(before, "2026-09") === SEP_BEFORE && !!after && table(after, "2026-09") === SEP_AFTER, `before ${table(before, "2026-09")} | after ${after ? table(after, "2026-09") : "no new block"}`);
+  // Several holidays in one week, through the real block: each credit lands in its OWN date's month
+  const multi = usesHelper ? clone(runNew({ "2026-11-23": tgiving, "2026-12-28": newYear }, SURG)) : null;
+  const MULTI_WANT = {
+    "2026-11": "DJA 4/–/–/– 4 · MCC –/–/–/4 4 · RPC –/–/–/2 2 · KJH –/1/–/– 1 · REH –/1/–/– 1 · FAK –/1/–/– 1 · ARW –/–/1/– 1",
+    "2026-12": "DJA –/1/–/– 1 · MCC –/1/–/– 1 · RPC –/1/–/– 1 · KJH 3/–/–/– 3 · REH –/–/–/2 2 · FAK –/–/–/– 0 · ARW –/–/–/– 0",
+    "2027-01": "DJA –/–/–/2 2 · MCC –/–/–/– 0 · RPC –/–/–/– 0 · KJH 1/–/–/– 1 · REH –/–/–/2 2 · FAK –/–/–/– 0 · ARW –/–/1/– 1",
+  };
+  check("V7 Thanksgiving (3 holidays) and New Year's (3 holidays, Dec → Jan) through the billing block: Nov MCC Holiday 4 + RPC 2; Dec REH Holiday 2 (12/31); Jan DJA 2 (1/1) + REH 2 (1/2)",
+    !!multi && Object.entries(MULTI_WANT).every(([mk, w]) => table(multi, mk) === w),
+    multi ? Object.keys(MULTI_WANT).filter((mk) => table(multi, mk) !== MULTI_WANT[mk]).map((mk) => `${mk}: ${table(multi, mk)}`).join(" | ") : "no new block");
+  check("V7 May (Memorial Day in a backup week), January and February (the swap Saturdays) are unchanged in every column",
+    !!after && ["2026-05", "2026-01", "2026-02"].every((mk) => table(after, mk) === table(before, mk)),
+    after ? ["2026-05", "2026-01", "2026-02"].filter((mk) => table(after, mk) !== table(before, mk)).map((mk) => `${mk}: ${table(before, mk)} → ${table(after, mk)}`).join(" | ") : "no new block");
+
+  // V8 — source
+  const hsrc = fs.readFileSync(path.join(ROOT, "helpers.js"), "utf8");
+  check("V8 weekBillingCredits is defined once in helpers.js and the billing block aggregates its credits (the old inline loops are gone)",
+    (hsrc.match(/^function weekBillingCredits\(mondayStr, wk\) \{/gm) || []).length === 1 && count("weekBillingCredits(mStr, wk).forEach(c => {") === 1
+    && !src.includes("const svcSid = (wk.dayCallOverrides && wk.dayCallOverrides[ds]) || wk.dayCall;") && !/\]\.(dc|nights|wknd) \+= 1;/.test(newBlock || "x].dc += 1;"));
+  check("V8 Holiday header + cell after Wknd Days; rows default hol to 0",
+    // \r?\n: a Windows checkout has CRLF, CI's has LF
+    (src.match(/<th style=\{thS2\}>Wknd Days<\/th>\r?\n[ \t]*<th style=\{thS2\}>Holiday<\/th>/g) || []).length === 1
+    && (src.match(/<td style=\{tdS\}>\{r\.wknd\|\|"–"\}<\/td>\r?\n[ \t]*<td style=\{tdS\}>\{r\.hol\|\|"–"\}<\/td>/g) || []).length === 1
+    && count("{dc:0,nights:0,wknd:0,hol:0}") === 1 && count("{ dc:0, nights:0, wknd:0, hol:0 }") === 1);
+  check("V8 billingDays includes Holiday and feeds both the Total Days cell and hasAny; the formula note and explainer name it; row visibility by authenticated identity and the month loop are unchanged",
+    count("const billingDays = (r) => (r.dc||0) + (r.nights||0) + (r.wknd||0) + (r.hol||0);") === 1 && count("return billingDays(monthData[s.id] || {}) > 0;") === 1
+    && /const days = billingDays\(r\);[\s\S]{0,700}\{days\|\|"–"\}/.test(src) && count("const days = billingDays(r);") === 1
+    && count("const billVisible = canSeeAllBilling ? surgeons : surgeons.filter(s => s.id === ownBillId);") === 1 && count("{sortedMonths.map(mk => {") === 1
+    && count("Svc Days + Nights + Wknd Days + Holiday Days = Total Call Days.") === 1
+    && count("A covered holiday bills 2 days (the day and the night) to the surgeon who covers it, and that date's regular credits don't count.") === 1);
+
+  // V9 — V1, V3 and V7 again under TZ=America/Chicago (a UTC run cannot see a new Date("YYYY-MM-DD") slip)
+  {
+    const { execFileSync } = require("child_process");
+    const code = [
+      'const vm = require("vm"), fs = require("fs"), path = require("path");',
+      'const sb = { console, window: {}, document: undefined, navigator: { userAgent: "node-test" }, localStorage: { getItem: () => null, setItem() {}, removeItem() {} }, fetch: () => { throw new Error("no fetch"); }, setTimeout, clearTimeout };',
+      "sb.globalThis = sb; vm.createContext(sb);",
+      `for (const f of ["helpers.js", "config.js"]) vm.runInContext(fs.readFileSync(path.join(${JSON.stringify(ROOT)}, f), "utf8"), sb, { filename: f });`,
+      'const wbc = vm.runInContext("weekBillingCredits", sb);',
+      'const sig = (cs) => cs.map((c) => c.ds.slice(5) + " " + c.sid + " " + c.kind + c.n).sort().join(" | ");',
+      `const live = ${JSON.stringify(live)}; const xmas = ${JSON.stringify(xmas("2026-12-25"))};`,
+      `const run = vm.runInContext("(function (schedule, surgeons) { " + ${JSON.stringify(newBlock || "")} + "\\n return monthly; })", sb);`,
+      `const surg = ${JSON.stringify(SURG)};`,
+      "const m = run(live, surg); const r = (id) => m[\"2026-09\"][id];",
+      "process.stdout.write(JSON.stringify({ off: new Date(2026, 9, 24).getTimezoneOffset(), naive: new Date(\"2026-09-07\").getDay(),",
+      '  v1: sig(wbc("2026-09-07", live["2026-09-07"])), v3: sig(wbc("2026-12-21", xmas)),',
+      '  sep: surg.map((s) => s.name + " " + [r(s.id).dc, r(s.id).nights, r(s.id).wknd, r(s.id).hol].map((v) => v || "–").join("/") + " " + ((r(s.id).dc||0) + (r(s.id).nights||0) + (r(s.id).wknd||0) + (r(s.id).hol||0))).join(" · ") }));',
+    ].join("\n");
+    const inZone = (TZ) => { try { return JSON.parse(execFileSync(process.execPath, ["-e", code], { env: Object.assign({}, process.env, { TZ }), encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })); } catch (ex) { return { err: String(ex).slice(0, 300) }; } };
+    const out = inZone("America/Chicago"), tokyo = inZone("Asia/Tokyo");
+    check("V9 the child really runs in America/Chicago (CDT offset 300) and there the NAIVE new Date('2026-09-07') is SUNDAY — the trap is visible",
+      !!out && out.off === 300 && out.naive === 0, JSON.stringify(out).slice(0, 300));
+    check("V9 under TZ=America/Chicago: the Labor Day week, the Christmas week and the September table match V1 / V3 / V7",
+      !!out && out.v1 === want97 && out.v3 === xmasWant(4) && out.sep === SEP_AFTER, JSON.stringify(out).slice(0, 400));
+    // A positive offset catches the opposite slip (a date read back through UTC lands a day EARLY east of Greenwich)
+    check("V9 under TZ=Asia/Tokyo (offset −540, proven): the same Labor Day week, Christmas week and September table",
+      !!tokyo && tokyo.off === -540 && tokyo.v1 === want97 && tokyo.v3 === xmasWant(4) && tokyo.sep === SEP_AFTER, JSON.stringify(tokyo).slice(0, 400));
+  }
+}
+
 // ─── Verdict ───
 console.log(`\n${checks} checks, ${failures.length} failure(s)`);
 if (failures.length) {

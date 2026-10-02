@@ -1,0 +1,43 @@
+const monthly = {}; // { "2026-05": { s1: { dc: n, nights: n, wknd: n }, ... } }
+            const allMonths = new Set();
+            Object.entries(schedule).forEach(([mStr, wk]) => {
+              const mon = parse(mStr);
+              for (let i = 0; i < 7; i++) {
+                const d = addD(mon, i);
+                const moKey = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
+                allMonths.add(moKey);
+                if (!monthly[moKey]) monthly[moKey] = {};
+                surgeons.forEach(s => { if (!monthly[moKey][s.id]) monthly[moKey][s.id] = { dc:0, nights:0, wknd:0 }; });
+              }
+              // Skip backup weeks entirely — they're 2nd-call and not billed
+              if (wk.isBackup) return;
+              if (wk.dayCall) {
+                // Each of the 7 service-week days credits its own calendar month.
+                // Honor single-day service-coverage overrides so a covered day is
+                // billed to the covering surgeon, not the week's service surgeon.
+                for (let i = 0; i < 7; i++) {
+                  const d = addD(mon, i);
+                  const ds = fmt(d);
+                  const dMoKey = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
+                  const svcSid = (wk.dayCallOverrides && wk.dayCallOverrides[ds]) || wk.dayCall;
+                  if (monthly[dMoKey]?.[svcSid]) monthly[dMoKey][svcSid].dc += 1;
+                }
+              }
+              NIGHT_KEYS.forEach((sk, i) => {
+                const sid = wk.nights?.[sk];
+                if (!sid) return;
+                const d = addD(mon, i);
+                const moKey = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
+                if (monthly[moKey]?.[sid]) monthly[moKey][sid].nights += 1;
+              });
+              const wkndSid = wk.nights?.wknd;
+              if (wkndSid) {
+                // Weekend covers Fri/Sat/Sun (days 4/5/6 of the week), each crediting its own month
+                for (let i = 4; i <= 6; i++) {
+                  const d = addD(mon, i);
+                  const dMoKey = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
+                  if (monthly[dMoKey]?.[wkndSid]) monthly[dMoKey][wkndSid].wknd += 1;
+                }
+              }
+            });
+            

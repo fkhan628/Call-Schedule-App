@@ -51,6 +51,33 @@ function mineUpcoming(myShifts, todayStr) {
     .filter(w => w.roles.length > 0);
 }
 
+// Billing credits for one week (Stats → Billing, owner rule 2026-10-01). Each
+// credit is { ds, sid, kind, n }: kind "dc" for a service day (each of the 7
+// days Mon–Sun, a single-day override winning its date), "nights" for a Mon–Thu
+// night, "wknd" for Fri, Sat and Sun, all n = 1; and "hol" with n = 2 (the day
+// and the night) for the surgeon who covers a holiday. On a covered date every
+// regular credit drops, whoever held it. A covered date is a holidayCoverage
+// entry that names a coverer, falls inside this week, and is not type "swap"
+// (the imported swap Saturdays keep their regular billing; any other type,
+// spelled however it was entered, counts as a holiday). A backup week bills
+// nothing, holiday included. Pure: no clock, no state.
+function weekBillingCredits(mondayStr, wk) {
+  if (!wk || wk.isBackup) return [];
+  const mon = parse(mondayStr);
+  const days = [0, 1, 2, 3, 4, 5, 6].map(i => fmt(addD(mon, i)));
+  const covered = {};
+  Object.entries(wk.holidayCoverage || {}).forEach(([ds, cov]) => {
+    if (cov && cov.surgeonId && cov.type !== "swap" && days.includes(ds)) covered[ds] = cov.surgeonId;
+  });
+  const credits = [];
+  const add = (ds, sid, kind) => { if (sid && !covered[ds]) credits.push({ ds, sid, kind, n: 1 }); };
+  if (wk.dayCall) days.forEach(ds => add(ds, (wk.dayCallOverrides && wk.dayCallOverrides[ds]) || wk.dayCall, "dc"));
+  NIGHT_KEYS.forEach((sk, i) => add(days[i], wk.nights?.[sk], "nights"));
+  if (wk.nights?.wknd) [4, 5, 6].forEach(i => add(days[i], wk.nights.wknd, "wknd"));
+  Object.entries(covered).forEach(([ds, sid]) => credits.push({ ds, sid, kind: "hol", n: 2 }));
+  return credits;
+}
+
 /* ═══ TRADE MESSAGE COMPOSERS (2026-09-07) ═══
    ONE composition per trade event, shared by in-app, push, and email — so
    the three channels cannot drift (push reuses addNotification's message
