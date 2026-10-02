@@ -4568,7 +4568,7 @@ function CallSchedule() {
       // non-Eve coverage rows this role maps to, plus the weekend leg the
       // generator implies for a Fri/Sun 24h holder).
       if (silvisActive && newSurgeonId === silvisFakId) {
-        const nonEve = (targetHol.coverage || []).filter(c => !c.isEve);
+        const nonEve = effectiveHolidayCoverage(targetHol).filter(c => !c.isEve);
         const mine = nonEve.filter((c, i) => (slot === "surgeonA" ? i % 2 === 0 : i % 2 === 1)).map(c => c.date);
         const days = new Set(mine);
         mine.forEach(ds => { const dow = parse(ds).getDay(); if (dow === 5) days.add(fmt(addD(parse(ds), 2))); if (dow === 0) days.add(fmt(addD(parse(ds), -2))); });
@@ -5684,7 +5684,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     Object.values(holidayAssignments || {}).forEach(arr => {
       if (!Array.isArray(arr)) return;
       arr.forEach(h => {
-        (h.coverage || []).forEach(c => {
+        effectiveHolidayCoverage(h).forEach(c => {
           if (!c.surgeon || !c.date) return;
           if (onVac(c.surgeon, c.date, vacations)) {
             warnings.push({ key: `holiday-vac|${h.date || ""}|${c.date}|${c.surgeon}`, date: c.date, severity: "error", message: `${sMap[c.surgeon]?.name || c.surgeon} is assigned ${h.name} coverage (${c.date}) but has vacation then — holiday surgeons can't be on vacation during their holiday` });
@@ -6934,7 +6934,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                     </div>
                   </div>
                   <div style={{display:"flex",gap:4,flexWrap:"wrap"}}>
-                    {(hol.coverage||[]).map((c,j)=>{
+                    {effectiveHolidayCoverage(hol).map((c,j)=>{
                       const isEve = c.isEve;
                       // Eve tag shows Surgeon B (the "Day After / Eve" dropdown value).
                       // Non-eve tag shows whoever that specific coverage row is assigned to.

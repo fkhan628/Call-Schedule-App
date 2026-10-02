@@ -78,6 +78,22 @@ function weekBillingCredits(mondayStr, wk) {
   return credits;
 }
 
+// The coverage rows a stored holiday assignment actually means (2026-10-02).
+// The standing Christmas two-day cap (2026-08-06, buildCoverage): when one
+// surgeon holds both halves of Christmas, coverage is the Eve + the day itself
+// and nothing more; the days after go back to the service-week doctor. An
+// assignment saved before the cap can still carry later rows (2026 stored Sat
+// 12/26), so every READ of stored rows goes through here instead of the data
+// being rewritten. Any other assignment comes back unchanged. The swap remap
+// in index-source.html still works on the stored rows. Pure; never mutates.
+function effectiveHolidayCoverage(h) {
+  const rows = h && Array.isArray(h.coverage) ? h.coverage : [];
+  if (h && h.name === "Christmas Day" && h.surgeonA && h.surgeonA === h.surgeonB) {
+    return rows.filter(c => c.isEve || c.date === h.date);
+  }
+  return rows;
+}
+
 /* ═══ TRADE MESSAGE COMPOSERS (2026-09-07) ═══
    ONE composition per trade event, shared by in-app, push, and email — so
    the three channels cannot drift (push reuses addNotification's message

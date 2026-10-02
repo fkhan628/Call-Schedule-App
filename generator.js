@@ -211,13 +211,13 @@ function generateOnce(surgeons, mondays, vac, backupMondays, priorCounts, prefer
       yearArr.forEach(h => {
         // Store the holiday metadata by date
         holByDate[h.date] = { surgeonA: h.surgeonA, surgeonB: h.surgeonB, name: h.name, type: h.type };
-        // Store each coverage day (skip Eve entries — those are display-only, not schedule overrides)
-        if (h.coverage && Array.isArray(h.coverage)) {
-          h.coverage.forEach(c => {
-            if (c.isEve) return; // Eve is informational only — regular schedule stays
-            holCoverage[c.date] = { surgeonId: c.surgeon, role: "holiday_24h", hours: "7a–7a", name: c.label, type: h.type };
-          });
-        }
+        // Store each coverage day (skip Eve entries — those are display-only, not schedule overrides).
+        // The rows come through effectiveHolidayCoverage (helpers.js), which applies the Christmas
+        // two-day cap to assignments saved before it.
+        effectiveHolidayCoverage(h).forEach(c => {
+          if (c.isEve) return; // Eve is informational only — regular schedule stays
+          holCoverage[c.date] = { surgeonId: c.surgeon, role: "holiday_24h", hours: "7a–7a", name: c.label, type: h.type };
+        });
       });
     });
   }

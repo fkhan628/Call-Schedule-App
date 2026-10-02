@@ -2639,6 +2639,80 @@ check("prefs audit never logs the plaintext email (masked only)",
   }
 }
 
+// ─── W. Christmas two-day cap on STORED holiday assignments (2026-10-02) ───
+// The standing cap (2026-08-06, buildCoverage): when one surgeon holds both
+// halves of Christmas, coverage is the Eve + the day itself and nothing more.
+// The live 2026 Christmas (A = B = FAK) was SAVED before the cap and still
+// carries Sat 12/26. No data is changed: every READ of stored rows goes through
+// effectiveHolidayCoverage, which applies the cap; the swap remap keeps
+// working on the stored rows.
+//   W1 the real generator on the live 2026 assignments: 12/25 FAK, nothing on 12/26
+//   W2 a Christmas with A ≠ B keeps its Saturday row
+//   W3 Thanksgiving and New Year's 2026 are unchanged
+//   W4 the Setup display rows for 2026 Christmas are the Eve + the day
+//   W5 every read of stored rows uses the helper; the swap remap does not
+//   W6 the helper alone: only a same-surgeon Christmas changes; pure
+// Fixture: test/fixtures/holiday-assignments-2026-live.json (the blob's 2026
+// holidayAssignments, anon-readable by design).
+{
+  const HA = JSON.parse(fs.readFileSync(path.join(ROOT, "test", "fixtures", "holiday-assignments-2026-live.json"), "utf8"));
+  const liveXmas = HA["2026"].find((h) => h.name === "Christmas Day");
+  const effFn = vm.runInContext('typeof effectiveHolidayCoverage === "function" ? effectiveHolidayCoverage : null', sandbox);
+  const rowsOf = (h) => (effFn ? JSON.parse(JSON.stringify(effFn(h))).map((c) => `${c.date.slice(5)}${c.isEve ? "eve" : ""}:${c.surgeon}`).join(" ") : "null");
+  const storedOf = (h) => (h.coverage || []).map((c) => `${c.date.slice(5)}${c.isEve ? "eve" : ""}:${c.surgeon}`).join(" ");
+  // The real generator, in its own context (sync-guards' sandbox does not load generator.js)
+  const gsb = { console: { ...console, warn: () => {} }, window: {}, document: undefined, navigator: { userAgent: "node-test" },
+    localStorage: { getItem: () => null, setItem() {}, removeItem() {} }, fetch: () => { throw new Error("fetch during generation"); }, setTimeout, clearTimeout };
+  gsb.globalThis = gsb; vm.createContext(gsb);
+  for (const f of ["helpers.js", "config.js", "generator.js"]) vm.runInContext(fs.readFileSync(path.join(ROOT, f), "utf8"), gsb, { filename: f });
+  const G = vm.runInContext("({ generate, COUNTS_1YR, parse, addD })", gsb);
+  const SURG7 = ["DJA", "MCC", "RPC", "KJH", "REH", "FAK", "ARW"].map((name, i) => ({ id: "s" + (i + 1), name }));
+  const MONS = Array.from({ length: 8 }, (_, k) => G.addD(G.parse("2026-11-16"), 7 * k)); // 11/16 → week of 1/4
+  const generatedCover = (assignments) => {
+    const sched = G.generate(SURG7, MONS, {}, new Set(), {}, {}, new Set(), assignments, [], null, {}, G.COUNTS_1YR);
+    const out = {};
+    for (const wk of Object.values(sched)) Object.entries((wk && wk.holidayCoverage) || {}).forEach(([ds, c]) => { out[ds] = c.surgeonId; });
+    return out;
+  };
+  const liveCover = generatedCover({ "2026": JSON.parse(JSON.stringify(HA["2026"])) });
+
+  check("W1 the real generator on the live 2026 assignments: Christmas 12/25 → FAK and NOTHING on Sat 12/26 (it stays with the service-week doctor); the helper gives Eve + Day",
+    liveCover["2026-12-25"] === "s6" && !("2026-12-26" in liveCover) && rowsOf(liveXmas) === "12-24eve:s6 12-25:s6",
+    `12/25 ${liveCover["2026-12-25"]}, 12/26 ${liveCover["2026-12-26"]}; helper rows ${rowsOf(liveXmas)}`);
+
+  const twoXmas = { ...JSON.parse(JSON.stringify(liveXmas)), surgeonA: "s6", surgeonB: "s1",
+    coverage: [{ date: "2026-12-24", surgeon: "s1", label: "Christmas Day Night Before", isEve: true }, { date: "2026-12-25", surgeon: "s6", label: "Christmas Day 24h" }, { date: "2026-12-26", surgeon: "s1", label: "Sat 24h" }] };
+  const twoCover = generatedCover({ "2026": [twoXmas] });
+  check("W2 a Christmas with A ≠ B keeps its Saturday row (helper returns all three rows; the generator puts Sat 12/26 on surgeon B)",
+    rowsOf(twoXmas) === storedOf(twoXmas) && rowsOf(twoXmas).includes("12-26:s1") && twoCover["2026-12-26"] === "s1" && twoCover["2026-12-25"] === "s6",
+    `helper ${rowsOf(twoXmas)}; generated 12/25 ${twoCover["2026-12-25"]} 12/26 ${twoCover["2026-12-26"]}`);
+
+  const tg = HA["2026"].find((h) => h.name === "Thanksgiving"), ny = HA["2026"].find((h) => h.name === "New Year's");
+  check("W3 Thanksgiving (MCC 11/26, RPC 11/27, MCC 11/28) and New Year's (REH 12/31, DJA 1/1, REH 1/2) are unchanged — by the helper and in the generated schedule",
+    !!effFn && rowsOf(tg) === storedOf(tg) && rowsOf(ny) === storedOf(ny)
+    && JSON.stringify(["2026-11-26", "2026-11-27", "2026-11-28", "2026-12-31", "2027-01-01", "2027-01-02"].map((d) => liveCover[d])) === JSON.stringify(["s2", "s3", "s2", "s5", "s1", "s5"]),
+    `helper TG ${rowsOf(tg)} / NY ${rowsOf(ny)}; generated ${JSON.stringify(liveCover)}`);
+
+  check("W4 Setup → Holidays shows the 2026 Christmas as the Eve + the day (the display maps the helper's rows, not the stored ones)",
+    rowsOf(liveXmas) === "12-24eve:s6 12-25:s6" && count("{effectiveHolidayCoverage(hol).map((c,j)=>{") === 1 && count("{(hol.coverage||[]).map((c,j)=>{") === 0);
+
+  const gsrc = fs.readFileSync(path.join(ROOT, "generator.js"), "utf8"), hsrc = fs.readFileSync(path.join(ROOT, "helpers.js"), "utf8");
+  check("W5 every read of stored rows goes through the helper (generator, holiday-vs-vacation warnings, the swap's Silvis check, the display); the swap remap alone still works on the stored rows",
+    (hsrc.match(/^function effectiveHolidayCoverage\(h\) \{/gm) || []).length === 1
+    && count("effectiveHolidayCoverage(targetHol).filter(c => !c.isEve)") === 1 && count("effectiveHolidayCoverage(h).forEach(c => {") === 1
+    && (src.match(/\.coverage\b/g) || []).length === 2 && count("hol.coverage = hol.coverage.map((c) => {") === 1
+    && (gsrc.match(/effectiveHolidayCoverage\(h\)\.forEach\(c => \{/g) || []).length === 1 && !/\bh\.coverage\b/.test(gsrc));
+
+  const cloneH = (h) => JSON.parse(JSON.stringify(h));
+  const solo = { name: "Thanksgiving", date: "2026-11-26", surgeonA: "s2", surgeonB: "s2", coverage: [{ date: "2026-11-25", surgeon: "s2", isEve: true }, { date: "2026-11-26", surgeon: "s2" }, { date: "2026-11-27", surgeon: "s2" }] };
+  const noB = { ...cloneH(liveXmas), surgeonB: null };
+  const before = JSON.stringify(liveXmas);
+  check("W6 the helper changes ONLY a same-surgeon Christmas: a same-surgeon Thanksgiving, a Christmas with no surgeon B, and missing coverage pass through; the input is never mutated",
+    !!effFn && rowsOf(solo) === storedOf(solo) && rowsOf(noB) === storedOf(noB) && JSON.stringify(effFn({ name: "Christmas Day", date: "2026-12-25", surgeonA: "s6", surgeonB: "s6" })) === "[]"
+    && JSON.stringify(effFn({ name: "Christmas Day", date: "2026-12-25", surgeonA: "s6", surgeonB: "s6", coverage: "bad" })) === "[]"
+    && JSON.stringify(liveXmas) === before && liveXmas.coverage.length === 3);
+}
+
 // ─── Verdict ───
 console.log(`\n${checks} checks, ${failures.length} failure(s)`);
 if (failures.length) {
