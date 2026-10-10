@@ -26,7 +26,7 @@ param matches the code against `name` (or id).
 
 ## Working locations — three, don't mix them up
 
-1. **Git clone: `C:\Users\sofia\projects\Call-Schedule-App`** — the ONLY place to
+1. **Git clone: `C:\Users\faraz\projects\Call-Schedule-App`** — the ONLY place to
    edit repo files. Git identity is configured repo-locally.
 2. **OneDrive folder: `...\Life\Faraz\Genesis\Schedules\Call Schedule App`** —
    read-only mirror + non-repo material (Backups\, edge-functions\, xlsx/PDFs).
@@ -71,8 +71,8 @@ forces; fail-LOUD — any Silvis fetch failure leaves the cache untouched).
 proxy; function deleted, `ANTHROPIC_API_KEY` unset, client removed in PR #7.)
 
 - Supabase CLI is installed (scoop) and logged in; its linked workdir is
-  `C:\Users\sofia` (NOT the project). Deploy:
-  copy the file to `C:\Users\sofia\supabase\functions\<slug>\index.ts`, then
+  `C:\Users\faraz` (NOT the project). Deploy:
+  copy the file to `C:\Users\faraz\supabase\functions\<slug>\index.ts`, then
   `supabase functions deploy <slug> --project-ref xqongyahdnkozqunpwmu --no-verify-jwt`.
 - `--no-verify-jwt` preserves each function's gateway state (all are
   verify_jwt=false except `send-push`, which is true — keep it that way).
