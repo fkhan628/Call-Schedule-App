@@ -3577,6 +3577,20 @@ check("prefs audit never logs the plaintext email (masked only)",
   }
 }
 
+// ─── AD. Month grids fit a phone (2026-10-11, Generate preview overflow) ───
+// A bare `repeat(7,1fr)` column can't shrink below its content: in the Generate
+// preview a long vacation list ("🏖DJA,FAK,JH", no spaces) widened its column and
+// pushed the week past a 390-px screen (page 506 px wide; observed in a local
+// scheduler harness). Every 7-day grid uses minmax(0,1fr) like the Calendar tab,
+// and the preview's cells clip / wrap instead of widening (checked at 320–1280 px).
+{
+  check("AD every 7-day month grid uses repeat(7,minmax(0,1fr)) — no bare repeat(7,1fr) column can widen past the screen",
+    (src.match(/gridTemplateColumns:\s*"repeat\(7,\s*1fr\)"/g) || []).length === 0 && count('gridTemplateColumns:"repeat(7,minmax(0,1fr))"') >= 4);
+  check("AD the Generate preview's day cells can shrink (minWidth 0, overflow hidden) and its vacation list wraps (', ' + overflowWrap)",
+    count('minHeight:70,padding:"2px 2px",borderRadius:2,minWidth:0,overflow:"hidden"}}>') === 1
+      && count('{vacList.length>0&&<div style={{fontSize:8,color:"#a07070",marginTop:1,overflowWrap:"anywhere"}}>🏖{vacList.map(v=>v.name).join(", ")}</div>}') === 1);
+}
+
 // ─── Verdict ───
 console.log(`\n${checks} checks, ${failures.length} failure(s)`);
 if (failures.length) {

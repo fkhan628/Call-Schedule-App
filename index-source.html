@@ -7484,10 +7484,14 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                     <button onClick={()=>setPreviewCalMonth(Math.min(previewMonths.length-1,pmi+1))} disabled={pmi>=previewMonths.length-1}
                       style={{...css.btn(false),padding:"4px 10px",fontSize:14,opacity:pmi>=previewMonths.length-1?0.3:1}}>▶</button>
                   </div>
-                  <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:1,marginBottom:1}}>
+                  {/* minmax(0,1fr), like the Calendar tab: a bare 1fr column can't shrink
+                      below its content, so on a phone a long vacation list widened its
+                      column and pushed the week past the screen edge (2026-10-11). Rows
+                      wrap at their space instead of clipping on the narrowest phones. */}
+                  <div style={{display:"grid",gridTemplateColumns:"repeat(7,minmax(0,1fr))",gap:1,marginBottom:1}}>
                     {DAY_HDR.map(d=><div key={d} style={{textAlign:"center",fontSize:10,fontWeight:700,color:"#8a94a0",padding:"4px 0",letterSpacing:1}}>{d}</div>)}
                   </div>
-                  <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:1,marginBottom:14}}>
+                  <div style={{display:"grid",gridTemplateColumns:"repeat(7,minmax(0,1fr))",gap:1,marginBottom:14}}>
                     {pmGrid.map((day,i)=>{
                       if(!day) return <div key={`e${i}`} style={{background:dk?"#162016":"#f0faf0",minHeight:70}}/>;
                       const ds=`${pm.year}-${String(pm.month+1).padStart(2,"0")}-${String(day).padStart(2,"0")}`;
@@ -7495,7 +7499,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                       const isWknd=[0,6].includes(new Date(pm.year,pm.month,day).getDay());
                       const vacList = pvOnVac(ds);
                       return (
-                        <div key={ds} style={{background:dk?"#162016":isWknd?"#e8f0e8":"#f4faf4",border:"1px solid #a0d0a0",minHeight:70,padding:"2px 3px",borderRadius:2}}>
+                        <div key={ds} style={{background:dk?"#162016":isWknd?"#e8f0e8":"#f4faf4",border:"1px solid #a0d0a0",minHeight:70,padding:"2px 2px",borderRadius:2,minWidth:0,overflow:"hidden"}}>
                           <div style={{fontSize:10,fontWeight:600,color:isWknd?"#5a8a5a":"#3a6a3a",fontFamily:mono,marginBottom:1}}>{day}</div>
                           {entries.filter(e=>e.type!=="APP").map((e,j)=>{
                             const isB = e.cls==="backup";
@@ -7505,8 +7509,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                             const label = isH?"H":isD?"S":isW?"W":"N";
                             const color = isH?"#c06020":isD?"#3080a8":isW?"#908050":"#6850a0";
                             return (
-                              <div key={j} style={{fontSize:9,marginBottom:1,padding:"0 2px",borderRadius:2,
-                                background:isH?"#fef0e8":isB?"#fef8e8":"transparent",whiteSpace:"nowrap",overflow:"hidden"}}>
+                              <div key={j} style={{fontSize:9,marginBottom:1,padding:"0 1px",borderRadius:2,
+                                background:isH?"#fef0e8":isB?"#fef8e8":"transparent",overflowWrap:"anywhere"}}>
                                 {isB&&<span style={{color:"#8a6a10",fontWeight:700,fontSize:7,marginRight:1}}>B</span>}
                                 <span style={{color,fontWeight:700}}>{label}</span>
                                 {" "}
@@ -7515,13 +7519,13 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                             );
                           })}
                           {entries.filter(e=>e.type==="APP").map((e,j)=>(
-                            <div key={"a"+j} style={{fontSize:9,marginBottom:1,padding:"0 2px",whiteSpace:"nowrap"}}>
+                            <div key={"a"+j} style={{fontSize:9,marginBottom:1,padding:"0 1px",overflowWrap:"anywhere"}}>
                               <span style={{color:"#c08050",fontWeight:700}}>A</span>
                               {" "}
                               <span style={{color:"#8a6040"}}>{aMap[e.appId]?.name||"?"}</span>
                             </div>
                           ))}
-                          {vacList.length>0&&<div style={{fontSize:8,color:"#a07070",marginTop:1}}>🏖{vacList.map(v=>v.name).join(",")}</div>}
+                          {vacList.length>0&&<div style={{fontSize:8,color:"#a07070",marginTop:1,overflowWrap:"anywhere"}}>🏖{vacList.map(v=>v.name).join(", ")}</div>}
                         </div>
                       );
                     })}
