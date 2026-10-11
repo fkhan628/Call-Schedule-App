@@ -76,6 +76,43 @@ function sfDaysFromRows(rows, code) {
   return { primary, backup, fetchedAt, from, to };
 }
 
+// ---- the rule's window (2026-10-11: the cache now keeps Silvis history) ----
+// silvis-feed v7 keeps up to 12 months of past Silvis days (and pulls up to
+// today + 400) for FAK's totals card. Everything else — the silvisBusy rule
+// at every mutation point, the generator fold, the 🚑 chips (the office link
+// too), the feed card, the generate gate and the horizon note — must keep
+// seeing exactly the rows v6 cached: [today − 7, today + 120] in Central time
+// on the day of the pull. Every row of one pull carries that pull's
+// fetched_at, so the window is rebuilt from the newest one. FROZEN: these are
+// v6's WINDOW_BACK_DAYS / WINDOW_FWD_DAYS — do not "sync" them with v7's.
+const SF_RULE_BACK_DAYS = 7;
+const SF_RULE_FWD_DAYS = 120;
+// sfCentralDay(iso) -> 'YYYY-MM-DD' in America/Chicago, or null when unreadable.
+// formatToParts, not a locale's date string (en-CA spells it differently in
+// some engines); the device's own time zone never matters.
+function sfCentralDay(iso) {
+  const t = Date.parse(iso);
+  if (!Number.isFinite(t)) return null;
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", { timeZone: "America/Chicago", year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(new Date(t));
+    const get = (k) => (parts.find(p => p.type === k) || {}).value;
+    const s = get("year") + "-" + get("month") + "-" + get("day");
+    return sfIsDateStr(s) ? s : null;
+  } catch (e) { return null; }
+}
+// sfRuleRows(rows) -> the rows inside [Central date of the newest fetched_at − 7, + 120].
+// With no readable fetched_at the rows come back unchanged: the rule would
+// rather over-block than go blind.
+function sfRuleRows(rows) {
+  const list = Array.isArray(rows) ? rows : [];
+  let newest = null;
+  list.forEach(r => { if (r && r.fetched_at && (!newest || r.fetched_at > newest)) newest = r.fetched_at; });
+  const c = newest ? sfCentralDay(newest) : null;
+  if (!c) return list;
+  const from = sfFmt(sfAddD(sfParse(c), -SF_RULE_BACK_DAYS)), to = sfFmt(sfAddD(sfParse(c), SF_RULE_FWD_DAYS));
+  return list.filter(r => r && sfIsDateStr(r.day) && r.day >= from && r.day <= to);
+}
+
 // sfBusyRanges(daySet) -> [[D, D], ...] sorted — the shape the generator's
 // availability map already uses for vacations/no-call ([start,end] pairs).
 // Folding FAK's Silvis primary days in as single-day ranges gives EXACTLY
@@ -284,5 +321,5 @@ async function sfRefreshFeed(supabaseUrl, authHeaders, force) {
 
 // Node export for the harness; a no-op in the browser (classic script).
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { SF_RULE_DEFAULT, sfRule, sfRuleActive, sfDaysFromRows, sfBusyRanges, sfSlotDays, sfHeldDays, sfConflictDay, sfConflict, sfBackupNote, sfOverlaps, sfStatus, sfLoadFeed, sfRefreshFeed, SF_STALE_HOURS, sfDayLabel, sfUpcoming, sfRowLabel, sfCellChip, sfNotice, sfResolveToggle };
+  module.exports = { SF_RULE_DEFAULT, sfRule, sfRuleActive, sfDaysFromRows, sfRuleRows, sfCentralDay, SF_RULE_BACK_DAYS, SF_RULE_FWD_DAYS, sfBusyRanges, sfSlotDays, sfHeldDays, sfConflictDay, sfConflict, sfBackupNote, sfOverlaps, sfStatus, sfLoadFeed, sfRefreshFeed, SF_STALE_HOURS, sfDayLabel, sfUpcoming, sfRowLabel, sfCellChip, sfNotice, sfResolveToggle };
 }

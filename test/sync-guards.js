@@ -3008,6 +3008,305 @@ check("prefs audit never logs the plaintext email (masked only)",
   }
 }
 
+// ─── Y. DSG + Silvis personal totals card: the ONE counting function (Faraz 10/9; decisions 2026-10-11) ───
+// callTotalsFor({ weeks, roster, silvisRows, code, today }) in helpers.js — pure, no clock — is the only
+// counter behind FAK's totals card here AND the Silvis app's copy of the card (Silvis Prompt 31 ports it
+// verbatim with callTotalPeriods, weekBillingCredits, fmt, parse, addD and NIGHT_KEYS, then runs the
+// fixture below). DSG lines are Stats → Billing's own weekBillingCredits credits — no second definition;
+// a backup week is counted by the SAME function as backup roles (dcB/nightsB/wkndB/holB). Silvis:
+// primary_code / backup_code = code, one 07:00–07:00 day = 1. Weighted total: every backup role 0.5.
+// A day on or before `today` is worked, after it scheduled. Everything is keyed by the roster CODE.
+//   Y1 the synthetic fixture end to end (test/fixtures/call-totals-card-synthetic-2026-10-14.json — the
+//      file the Silvis session copies; its numbers are hand-tallied, see its _hand_tally_FAK)
+//   Y2 invariants on every period and month (sums, weights, months add up to the year and to YTD)
+//   Y3 no second definition: on the 19 live weeks, every surgeon's DSG month (worked + scheduled,
+//      dc/nights/wknd/hol) equals the real Stats → Billing block's month
+//   Y4 a backup week = weekBillingCredits of the same week counted as 1st call (the live 5/25 Memorial
+//      Day backup week: DJA holB 2, RPC dcB 6), which Billing itself skips
+//   Y5 the periods (rolling-12, YTD, month, leap day, year turn); a bad date → null
+//   Y6 fail loud: unknown/empty code and impossible dates refuse; codes compare case-insensitively;
+//      empty data is ok with null ranges; malformed rows and non-date week keys are ignored
+//   Y7 source: each function defined once; pure (no clock, React, DOM, storage, fetch); the DSG rules
+//      are only weekBillingCredits' (no overrides / holidays / nights logic of its own)
+//   Y8 Y1 again under TZ=America/Chicago and TZ=Asia/Tokyo (offsets proven)
+{
+  const FIX = path.join(ROOT, "test", "fixtures");
+  const fx = JSON.parse(fs.readFileSync(path.join(FIX, "call-totals-card-synthetic-2026-10-14.json"), "utf8"));
+  const live = JSON.parse(fs.readFileSync(path.join(FIX, "billing-live-weeks-2026-10-01.json"), "utf8"));
+  const Y = vm.runInContext('({ ctf: typeof callTotalsFor === "function" ? callTotalsFor : null, ctp: typeof callTotalPeriods === "function" ? callTotalPeriods : null, wbc: weekBillingCredits })', sandbox);
+  const sortKeys = (x) => (x && typeof x === "object" && !Array.isArray(x)) ? Object.fromEntries(Object.keys(x).sort().map((k) => [k, x[k]])) : x;
+  const canon = (v) => JSON.stringify(v, (k, x) => sortKeys(x));
+  const firstDiff = (a, b, p = "$") => {
+    if (canon(a) === canon(b)) return "";
+    if (a && b && typeof a === "object" && typeof b === "object") {
+      for (const k of [...new Set([...Object.keys(a), ...Object.keys(b)])].sort()) { const d = firstDiff(a[k], b[k], `${p}.${k}`); if (d) return d; }
+    }
+    return `${p}: got ${JSON.stringify(a)} want ${JSON.stringify(b)}`.slice(0, 300);
+  };
+  const copy = (o) => JSON.parse(JSON.stringify(o));
+  const ct = (input) => { if (!Y.ctf) return null; try { return copy(Y.ctf(copy(input))); } catch (ex) { return { threw: String(ex).slice(0, 200) }; } };
+  const NONE = "callTotalsFor is not defined in helpers.js";
+  const KINDS = ["dc", "nights", "wknd", "hol", "dcB", "nightsB", "wkndB", "holB", "silvisP", "silvisB", "dsg", "dsgB", "total", "weighted"];
+  const SURG = ["DJA", "MCC", "RPC", "KJH", "REH", "FAK", "ARW"].map((name, i) => ({ id: "s" + (i + 1), name }));
+
+  // Y1 — the fixture, end to end
+  const out = ct(fx.input);
+  check("Y1 the synthetic fixture: callTotalsFor gives exactly the hand-tallied card (5 periods × worked/scheduled, 12 months, data range)",
+    !!out && canon(out) === canon(fx.expected), out ? firstDiff(out, fx.expected) : NONE);
+  const oct = out && out.periods && out.periods.month;
+  check("Y1 headline: October worked 3 dc + 1 night + 3 backup weekend days + Silvis 1 P / 2 B = 10 (weighted 7.5); scheduled 4 dc + 1 P = 5; today's 10/14 counts as worked",
+    !!oct && oct.worked && oct.worked.total === 10 && oct.worked.weighted === 7.5 && oct.scheduled.total === 5 && oct.worked.dc === 3 && oct.scheduled.dc === 4 && oct.worked.silvisB === 2,
+    oct ? JSON.stringify(oct).slice(0, 300) : NONE);
+
+  // Y2 — invariants (also run on Y3's live outputs below)
+  const invariantErrors = (o, label) => {
+    if (!o || !o.ok || !o.periods || !Array.isArray(o.months)) return [`${label}: no output`];
+    const errs = [];
+    const cOk = (c, w) => {
+      if (!c || KINDS.some((k) => typeof c[k] !== "number")) { errs.push(`${w}: missing fields`); return; }
+      const dsg = c.dc + c.nights + c.wknd + c.hol, dsgB = c.dcB + c.nightsB + c.wkndB + c.holB;
+      if (c.dsg !== dsg || c.dsgB !== dsgB || c.total !== dsg + dsgB + c.silvisP + c.silvisB || c.weighted !== dsg + c.silvisP + 0.5 * (dsgB + c.silvisB)) errs.push(`${w}: sums`);
+    };
+    ["month", "ytd", "year", "rolling12"].forEach((p) => { cOk(o.periods[p] && o.periods[p].worked, `${label} ${p}.worked`); cOk(o.periods[p] && o.periods[p].scheduled, `${label} ${p}.scheduled`); });
+    o.months.forEach((m) => { cOk(m.worked, `${label} ${m.month}.worked`); cOk(m.scheduled, `${label} ${m.month}.scheduled`); });
+    if (o.months.length !== 12) errs.push(`${label}: ${o.months.length} months`);
+    const sum = (ms, part) => Object.fromEntries(KINDS.map((k) => [k, ms.reduce((a, m) => a + ((m[part] || {})[k] || 0), 0)]));
+    if (errs.length) return errs;
+    if (canon(sum(o.months, "worked")) !== canon(sortKeys(o.periods.year.worked)) || canon(sum(o.months, "scheduled")) !== canon(sortKeys(o.periods.year.scheduled))) errs.push(`${label}: months ≠ year`);
+    const mi = Number(o.today.slice(5, 7));
+    if (canon(sum(o.months.slice(0, mi), "worked")) !== canon(sortKeys(o.periods.ytd.worked))) errs.push(`${label}: Jan..this month worked ≠ YTD`);
+    if (KINDS.some((k) => o.periods.ytd.scheduled[k] !== 0 || o.periods.rolling12.scheduled[k] !== 0)) errs.push(`${label}: YTD / rolling-12 must have nothing scheduled`);
+    if (canon(o.periods.month) !== canon({ from: o.months[mi - 1].from, to: o.months[mi - 1].to, worked: o.months[mi - 1].worked, scheduled: o.months[mi - 1].scheduled })) errs.push(`${label}: this month ≠ its row in the month list`);
+    return errs;
+  };
+  const y2 = invariantErrors(out, "fixture");
+  check("Y2 invariants on the fixture: dsg/dsgB/total/weighted are their sums on every period and month; the months add up to the year; Jan..October worked = YTD; YTD and rolling-12 hold nothing scheduled",
+    y2.length === 0, y2.join(" | "));
+
+  // Y3 — no second definition: the live weeks through the real Stats → Billing block
+  const billSlice = (() => { const a = src.indexOf("const monthly = {};"); const b = a < 0 ? -1 : src.indexOf("const sortedMonths = [...allMonths].sort();", a); return a < 0 || b < 0 ? null : src.slice(a, b); })();
+  const billing = billSlice ? copy(vm.runInContext(`(function (schedule, surgeons) { ${billSlice}\n return monthly; })`, sandbox)(copy(live), SURG)) : null;
+  let y3n = 0, y3bad = [], y3inv = [];
+  const y3 = {};
+  SURG.forEach((s) => {
+    const o = ct({ weeks: live, roster: SURG, silvisRows: [], code: s.name, today: "2026-10-14" });
+    y3[s.name] = o;
+    y3inv.push(...invariantErrors(o, s.name));
+    if (!o || !o.ok || !billing) return;
+    o.months.forEach((m) => {
+      const b = (billing[m.month] && billing[m.month][s.id]) || { dc: 0, nights: 0, wknd: 0, hol: 0 };
+      ["dc", "nights", "wknd", "hol"].forEach((k) => { y3n++; if (m.worked[k] + m.scheduled[k] !== (b[k] || 0)) y3bad.push(`${s.name} ${m.month} ${k}: card ${m.worked[k] + m.scheduled[k]} billing ${b[k] || 0}`); });
+    });
+  });
+  const sepOf = (code) => { const m = y3[code] && y3[code].months && y3[code].months[8]; return m ? ["dc", "nights", "wknd", "hol"].map((k) => m.worked[k] + m.scheduled[k]).join("/") : "?"; };
+  check(`Y3 no second definition: on the 19 live weeks every surgeon's DSG month (dc/nights/wknd/hol, worked + scheduled) equals the real Stats → Billing block (${y3n} cells; September FAK 6/4/3/0, RPC 6/1/0/2)`,
+    !!billing && y3n === 7 * 12 * 4 && y3bad.length === 0 && sepOf("FAK") === "6/4/3/0" && sepOf("RPC") === "6/1/0/2",
+    !billing ? "billing block not found" : (y3bad.slice(0, 4).join(" | ") || `cells ${y3n}; Sep FAK ${sepOf("FAK")} RPC ${sepOf("RPC")}`));
+  check("Y3 invariants hold on all seven live outputs", y3inv.length === 0, y3inv.slice(0, 4).join(" | "));
+
+  // Y4 — backup weeks: the same function, counted as backup roles
+  const w525 = live["2026-05-25"];
+  const asFirst = (w) => Object.assign(copy(w), { isBackup: false });
+  const byKind = (cs, sid) => cs.filter((c) => c.sid === sid).reduce((a, c) => { a[c.kind] = (a[c.kind] || 0) + c.n; return a; }, {});
+  let y4bad = [];
+  const y4 = {};
+  SURG.forEach((s) => {
+    const o = ct({ weeks: { "2026-05-25": w525 }, roster: SURG, silvisRows: [], code: s.name, today: "2026-10-14" });
+    y4[s.name] = o;
+    const may = o && o.months && o.months[4], w = byKind(copy(Y.wbc("2026-05-25", asFirst(w525))), s.id);
+    if (!may) { y4bad.push(`${s.name}: no output`); return; }
+    ["dc", "nights", "wknd", "hol"].forEach((k) => {
+      if (may.worked[k + "B"] + may.scheduled[k + "B"] !== (w[k] || 0)) y4bad.push(`${s.name} ${k}B ${may.worked[k + "B"]} vs ${w[k] || 0}`);
+      if (may.worked[k] + may.scheduled[k] !== 0) y4bad.push(`${s.name} ${k} ${may.worked[k]} (a backup week must not count as 1st call)`);
+    });
+  });
+  const dja = y4.DJA && y4.DJA.months && y4.DJA.months[4], rpc = y4.RPC && y4.RPC.months && y4.RPC.months[4];
+  check("Y4 a backup week counts as backup roles, exactly weekBillingCredits of the same week as 1st call: the live 5/25 week (Memorial Day, a real backup week Billing skips) gives DJA holB 2 and RPC dcB 6, and no 1st-call credit to anyone",
+    !!w525 && w525.isBackup === true && Y.wbc("2026-05-25", w525).length === 0 && y4bad.length === 0
+      && !!dja && dja.worked.holB === 2 && dja.worked.dc === 0 && !!rpc && rpc.worked.dcB === 6,
+    y4bad.slice(0, 4).join(" | ") || JSON.stringify({ dja: dja && dja.worked, rpc: rpc && rpc.worked }).slice(0, 300));
+
+  // Y5 — the periods
+  const P = (t) => (Y.ctp ? copy(Y.ctp(t)) : null);
+  const span = (p) => (p ? `${p.from}..${p.to}` : "null");
+  const p1 = P("2026-10-14"), pLeap = P("2028-02-29"), pJan1 = P("2027-01-01"), pMar31 = P("2026-03-31"), pDec31 = P("2026-12-31");
+  check("Y5 today 2026-10-14: month 10-01..10-31, YTD 01-01..10-14, year 01-01..12-31, rolling-12 2025-10-15..2026-10-14, 12 months Jan..Dec (Feb 2026 ends the 28th)",
+    !!p1 && span(p1.month) === "2026-10-01..2026-10-31" && span(p1.ytd) === "2026-01-01..2026-10-14" && span(p1.year) === "2026-01-01..2026-12-31"
+      && span(p1.rolling12) === "2025-10-15..2026-10-14" && p1.months.length === 12 && p1.months[0].month === "2026-01" && span(p1.months[1]) === "2026-02-01..2026-02-28" && p1.months[11].month === "2026-12",
+    p1 ? JSON.stringify(p1).slice(0, 300) : "callTotalPeriods is not defined in helpers.js");
+  check("Y5 edges: leap day 2028-02-29 → rolling-12 from 2027-03-01 (Feb 29 → Feb 28, + 1 day) and February ends the 29th; 2027-01-01 → YTD is that one day, rolling-12 from 2026-01-02; 2026-03-31 → from 2025-04-01; 2026-12-31 → rolling-12 = the calendar year",
+    !!pLeap && span(pLeap.rolling12) === "2027-03-01..2028-02-29" && span(pLeap.month) === "2028-02-01..2028-02-29" && span(pLeap.months[1]) === "2028-02-01..2028-02-29"
+      && !!pJan1 && span(pJan1.ytd) === "2027-01-01..2027-01-01" && span(pJan1.rolling12) === "2026-01-02..2027-01-01"
+      && !!pMar31 && pMar31.rolling12.from === "2025-04-01" && !!pDec31 && span(pDec31.rolling12) === "2026-01-01..2026-12-31",
+    [pLeap, pJan1, pMar31, pDec31].map((p) => (p ? span(p.rolling12) : "null")).join(" | "));
+  check("Y5 a bad date gives null (never a guessed period): '2026-13-01', '2026-02-30', '', 'today', null",
+    !!Y.ctp && ["2026-13-01", "2026-02-30", "", "today", null].every((t) => Y.ctp(t) === null));
+
+  // Y6 — fail loud
+  const base = copy(fx.input);
+  const oUnknown = ct({ ...base, code: "ZZZ" }), oEmpty = ct({ ...base, code: "  " }), oBadDay = ct({ ...base, today: "2026-02-30" });
+  check("Y6 an unknown code, an empty code and an impossible today all refuse (ok:false, the reason names the problem) — never zeros that look like 'no call'",
+    !!oUnknown && oUnknown.ok === false && /ZZZ/.test(String(oUnknown.error)) && !!oEmpty && oEmpty.ok === false && !!oBadDay && oBadDay.ok === false && /2026-02-30/.test(String(oBadDay.error)),
+    JSON.stringify([oUnknown, oEmpty, oBadDay]).slice(0, 300));
+  const oLower = ct({ ...base, code: "fak", silvisRows: base.silvisRows.map((r) => ({ ...r, primary_code: r.primary_code && r.primary_code.toLowerCase(), backup_code: r.backup_code && r.backup_code.toLowerCase() })) });
+  check("Y6 codes compare case-insensitively on both sides (the app's resolver and sfDaysFromRows do): 'fak' + lower-case Silvis codes give the fixture's numbers",
+    !!oLower && oLower.ok === true && oLower.sid === "s6" && canon(oLower.periods) === canon(fx.expected.periods), oLower ? firstDiff(oLower.periods, fx.expected.periods) : NONE);
+  const oNone = ct({ weeks: {}, roster: SURG, silvisRows: [], code: "FAK", today: "2026-10-14" });
+  check("Y6 no data at all is ok with null ranges and zeros (the card, not the counter, says the data is missing)",
+    !!oNone && oNone.ok === true && oNone.range && oNone.range.dsgFrom === null && oNone.range.dsgTo === null && oNone.range.silvisFrom === null && oNone.range.silvisTo === null
+      && oNone.periods && oNone.periods.year.worked.total === 0, JSON.stringify(oNone).slice(0, 300));
+  const noisy = copy(base);
+  noisy.weeks.notes = { dayCall: "s6" }; noisy.weeks["2026-13-02"] = { dayCall: "s6" }; noisy.weeks["2026-07-06"] = null;
+  noisy.silvisRows.push(null, { day: "2026-10-1", primary_code: "FAK" }, { primary_code: "FAK" }, { day: "garbage", backup_code: "FAK" });
+  const oNoisy = ct(noisy);
+  check("Y6 malformed Silvis rows, non-date week keys and empty weeks are ignored (same card as the clean fixture)",
+    !!oNoisy && canon(oNoisy) === canon(fx.expected), oNoisy ? firstDiff(oNoisy, fx.expected) : NONE);
+
+  // Y7 — source
+  const hsrcY = fs.readFileSync(path.join(ROOT, "helpers.js"), "utf8");
+  const bodyOf = (name) => { const a = hsrcY.search(new RegExp(`^function ${name}\\(`, "m")); if (a < 0) return null; const b = hsrcY.slice(a + 1).search(/^function |^const |^var |^let /m); return b < 0 ? hsrcY.slice(a) : hsrcY.slice(a, a + 1 + b); };
+  const bCT = bodyOf("callTotalsFor"), bCP = bodyOf("callTotalPeriods");
+  const banned = ["new Date()", "Date.now", "useState", "useMemo", "useEffect", "window.", "document.", "localStorage", "fetch(", "previewSchedule", "Math.random"];
+  check("Y7 helpers.js defines callTotalsFor(input) and callTotalPeriods(today) exactly once each",
+    (hsrcY.match(/^function callTotalsFor\(input\) \{/gm) || []).length === 1 && (hsrcY.match(/^function callTotalPeriods\(today\) \{/gm) || []).length === 1);
+  check(`Y7 both are pure — no clock, React, DOM, storage, fetch or draft state: none of ${JSON.stringify(banned)}`,
+    !!bCT && !!bCP && banned.every((t) => !bCT.includes(t) && !bCP.includes(t)),
+    !bCT || !bCP ? "function not found" : banned.filter((t) => bCT.includes(t) || bCP.includes(t)).join(", "));
+  // A week row's slots are read as <row>.nights.<slot> / .nights?.<slot> / .nights[...] and <row>.dayCall;
+  // the function's own bucket sums (o.nights) are not slot reads.
+  const SECOND_DEF = /dayCallOverrides|holidayCoverage|NIGHT_KEYS|\.nights\??\.|\.nights\??\[|\.dayCall\b/;
+  check("Y7 no second definition in the source: callTotalsFor delegates every DSG rule to weekBillingCredits (it never reads dayCallOverrides, holidayCoverage, the nights slots or NIGHT_KEYS itself)",
+    !!bCT && bCT.includes("weekBillingCredits(") && !SECOND_DEF.test(bCT),
+    bCT ? (bCT.match(SECOND_DEF) || ["delegation missing"])[0] : "function not found");
+
+  // Y8 — Y1 under America/Chicago and Asia/Tokyo
+  {
+    const { execFileSync } = require("child_process");
+    const code = [
+      'const vm = require("vm"), fs = require("fs"), path = require("path");',
+      'const sb = { console, window: {}, document: undefined, navigator: { userAgent: "node-test" }, localStorage: { getItem: () => null, setItem() {}, removeItem() {} }, fetch: () => { throw new Error("no fetch"); }, setTimeout, clearTimeout };',
+      "sb.globalThis = sb; vm.createContext(sb);",
+      `for (const f of ["helpers.js", "config.js"]) vm.runInContext(fs.readFileSync(path.join(${JSON.stringify(ROOT)}, f), "utf8"), sb, { filename: f });`,
+      'const ctf = vm.runInContext("typeof callTotalsFor === \\"function\\" ? callTotalsFor : null", sb);',
+      `const input = ${JSON.stringify(fx.input)};`,
+      'process.stdout.write(JSON.stringify({ off: new Date(2026, 9, 24).getTimezoneOffset(), naive: new Date("2026-10-14").getDate(), out: ctf ? ctf(input) : null }));',
+    ].join("\n");
+    const inZone = (TZ) => { try { return JSON.parse(execFileSync(process.execPath, ["-e", code], { env: Object.assign({}, process.env, { TZ }), encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })); } catch (ex) { return { err: String(ex).slice(0, 300) }; } };
+    const chi = inZone("America/Chicago"), tok = inZone("Asia/Tokyo");
+    check("Y8 the children really run in America/Chicago (offset 300; the naive new Date('2026-10-14') is the 13th there) and Asia/Tokyo (offset −540)",
+      !!chi && chi.off === 300 && chi.naive === 13 && !!tok && tok.off === -540, JSON.stringify({ chi: chi && { off: chi.off, naive: chi.naive, err: chi.err }, tok: tok && { off: tok.off, err: tok.err } }));
+    check("Y8 under TZ=America/Chicago and TZ=Asia/Tokyo the fixture gives exactly the same card",
+      !!chi && !!chi.out && canon(chi.out) === canon(fx.expected) && !!tok && !!tok.out && canon(tok.out) === canon(fx.expected),
+      chi && chi.out ? firstDiff(chi.out, fx.expected) || (tok && tok.out ? firstDiff(tok.out, fx.expected) : "tokyo: no output") : NONE);
+  }
+
+  // Y9 — the card's wiring in index-source.html
+  const GATE = "{!isPublicMode && !!userProfile?.person_id && !!silvisFakId && userProfile.person_id === silvisFakId && myId === silvisFakId && (";
+  let gateFn = null;
+  try { gateFn = count(GATE) === 1 ? vm.runInContext(`(function (env) { const { isPublicMode, userProfile, silvisFakId, myId } = env; return !!(${GATE.slice(1, -4)}); })`, sandbox) : null; } catch (ex) { gateFn = null; }
+  const G = (isPublicMode, person, fakId, myId) => gateFn({ isPublicMode, userProfile: person === null ? null : { person_id: person }, silvisFakId: fakId, myId });
+  const gateCases = gateFn ? [
+    ["FAK signed in, on his own Mine page", G(false, "s6", "s6", "s6"), true],
+    ["FAK signed in, viewing another surgeon's Mine (scheduler)", G(false, "s6", "s6", "s2"), false],
+    ["another surgeon signed in, Mine selector set to FAK", G(false, "s2", "s6", "s6"), false],
+    ["the office account (person_id 'admin'), selector on FAK", G(false, "admin", "s6", "s6"), false],
+    ["signed out, selector on FAK", G(false, null, "s6", "s6"), false],
+    ["public mode", G(true, "s6", "s6", "s6"), false],
+    ["the code resolves to nobody", G(false, "s6", null, "s6"), false],
+  ] : [];
+  check("Y9 the card shows ONLY for the signed-in account whose code is silvisRule.code, on its own Mine page — the gate, run as written, refuses the scheduler viewing someone else, another surgeon with the selector on FAK, the office account, signed-out, public mode and an unresolved code",
+    gateCases.length === 7 && gateCases.every(([, got, want]) => got === want), gateFn ? gateCases.filter(([, got, want]) => got !== want).map(([w]) => w).join(" | ") : "gate literal not found exactly once");
+  const iSilvis = src.indexOf("{myId && silvisFakId && myId === silvisFakId && (() => {"), iCard = src.indexOf(GATE), iVac = src.indexOf("{/* My Vacations — completed (past) ones hidden; shown in date order */}");
+  const callAt = iCard < 0 ? "" : src.slice(iCard, src.indexOf("/>", iCard));
+  check("Y9 placed in Mine after the 🚑 Silvis section and before My Vacations; it counts the PUBLISHED weeks (schedule) — never the generator preview — and the full Silvis cache, guarded against an old cached helpers.js",
+    iSilvis > 0 && iCard > iSilvis && iVac > iCard && count("<CallTotalsCard") === 1
+      && callAt.includes('typeof callTotalsFor === "function" ? callTotalsFor({ weeks: schedule, roster: surgeons, silvisRows, code: silvisRule.code, today: fmt(new Date()) }) : null')
+      && !callAt.includes("previewSchedule") && !callAt.includes("mySurgeon"), `${iSilvis} < ${iCard} < ${iVac}; ${callAt.slice(0, 160)}`);
+  const cardSrc = (() => { const a = src.indexOf("function CallTotalsCard({ totals, silvisNote, css, dk }) {"); const b = a < 0 ? -1 : src.indexOf("// Reusable collapsible section.", a); return a < 0 || b < 0 ? "" : src.slice(a, b); })();
+  check("Y9 CallTotalsCard is defined once at module scope and only renders: no fetch, Supabase client, storage or app write path; a refused or missing count shows as text, not zeros",
+    count("function CallTotalsCard({ totals, silvisNote, css, dk }) {") === 1 && !!cardSrc
+      && !/fetch\(|supabase|localStorage|dbAuthHeaders|dbHeaders|setSchedule|syncSchedWeeks/.test(cardSrc)
+      && cardSrc.includes('if (!totals || totals.ok !== true) {') && cardSrc.includes("Totals unavailable — "),
+    cardSrc ? (cardSrc.match(/fetch\(|supabase|localStorage|dbAuthHeaders|dbHeaders|setSchedule|syncSchedWeeks/) || ["fail-loud branch missing"])[0] : "component not found");
+}
+
+// ─── Z. silvisBusy keeps reading v6's rows (spec item 1; decisions 2026-10-11) ───
+// silvis-feed v7 keeps up to 12 months of Silvis history in silvis_feed and pulls up to today + 400, for
+// the totals card only. Every EXISTING Silvis consumer — the rule (editor, swaps, trades, holidays,
+// suggestions, generator fold), the 🚑 chips (the office link too), the feed card, the generate gate and
+// the horizon note — must keep seeing exactly the rows v6 cached. sfRuleRows(rows) keeps the rows inside
+// [Central date of the newest fetched_at − 7, + 120]: v6's WINDOW_BACK_DAYS / WINDOW_FWD_DAYS around
+// the pull that wrote them (every row of one pull carries that pull's fetched_at).
+//   Z1 a v6-shaped cache passes through unchanged
+//   Z2 a v7-shaped cache (history from 9/14 + days past +120) gives exactly v6's rows and silvisDays
+//   Z3 the Central date decides, not UTC: 23:30 vs 00:30 CDT, and CST after DST ends
+//   Z4 no or unreadable fetched_at → rows unchanged (over-block, never go blind); empty → []
+//   Z5 Z3 again with the DEVICE in Asia/Tokyo and America/Chicago: the same window
+//   Z6 exported for Node
+{
+  const Z = vm.runInContext('({ rr: typeof sfRuleRows === "function" ? sfRuleRows : null, dfr: sfDaysFromRows })', sandbox);
+  const NONE = "sfRuleRows is not defined in silvis-feed.js";
+  const zAdd = (ds, n) => { const d = new Date(ds + "T12:00:00Z"); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
+  const daysFrom = (a, b) => { const out = []; for (let d = a; d <= b; d = zAdd(d, 1)) out.push(d); return out; };
+  const FETCHED = "2026-10-10T20:06:11.589+00:00"; // the live cache's newest fetched_at on 2026-10-11 (Central 10/10)
+  const rowFor = (day, i, fetched) => ({ day, primary_code: i % 7 === 0 ? "FAK" : "MAB", backup_code: i % 7 === 3 ? "FAK" : "BDA", fetched_at: fetched });
+  const silvisAll = daysFrom("2026-09-14", "2027-03-10").map((d, i) => rowFor(d, i, FETCHED));
+  const v6rows = silvisAll.filter((r) => r.day >= "2026-10-03" && r.day <= "2027-02-07");
+  const rr = (rows) => (Z.rr ? Z.rr(rows) : null);
+  const daysSig = (d) => JSON.stringify({ p: [...d.primary].sort(), b: [...d.backup].sort(), from: d.from, to: d.to, f: d.fetchedAt });
+
+  const z1 = rr(v6rows);
+  check("Z1 a v6-shaped cache (10/03..02/07, fetched 10/10 Central) passes through unchanged — same rows, same order",
+    !!z1 && z1.length === v6rows.length && z1.every((r, i) => r === v6rows[i]), z1 ? `${z1.length} of ${v6rows.length}` : NONE);
+  const z2 = rr(silvisAll);
+  check(`Z2 a v7-shaped cache (${silvisAll.length} rows, 9/14..3/10) keeps exactly v6's ${v6rows.length} rows (10/03..02/07) and gives the same silvisDays (FAK primary/backup sets, from, to, fetchedAt)`,
+    !!z2 && JSON.stringify(z2) === JSON.stringify(v6rows) && daysSig(Z.dfr(z2, "FAK")) === daysSig(Z.dfr(v6rows, "FAK")) && Z.dfr(z2, "FAK").from === "2026-10-03" && Z.dfr(z2, "FAK").to === "2027-02-07",
+    z2 ? `${z2.length} rows ${z2[0] && z2[0].day}..${z2[z2.length - 1] && z2[z2.length - 1].day}` : NONE);
+
+  const wide = daysFrom("2026-08-01", "2027-06-30");
+  const windowAt = (fetched) => { const k = rr(wide.map((d, i) => rowFor(d, i, fetched))); return k && k.length ? `${k[0].day}..${k[k.length - 1].day}` : "none"; };
+  const Z3 = [
+    ["2026-10-11T04:30:00Z", "2026-10-03..2027-02-07"], // 23:30 CDT Sat 10/10
+    ["2026-10-11T05:30:00Z", "2026-10-04..2027-02-08"], // 00:30 CDT Sun 10/11
+    ["2026-12-01T05:30:00Z", "2026-11-23..2027-03-30"], // 23:30 CST Mon 11/30 (DST ended 11/1)
+    ["2026-12-01T06:30:00Z", "2026-11-24..2027-03-31"], // 00:30 CST Tue 12/1
+  ];
+  const z3got = Z3.map(([f]) => windowAt(f));
+  check("Z3 the window follows the CENTRAL date of the pull: 04:30Z on 10/11 is still 10/10 (CDT), 05:30Z is 10/11; after DST ends 05:30Z on 12/1 is still 11/30 (CST), 06:30Z is 12/1",
+    Z3.every(([, want], i) => z3got[i] === want), z3got.join(" | "));
+
+  const noStamp = silvisAll.map(({ fetched_at, ...r }) => r), badStamp = silvisAll.map((r) => ({ ...r, fetched_at: "garbage" }));
+  const z4a = rr(noStamp), z4b = rr(badStamp);
+  check("Z4 rows with no fetched_at, or an unreadable one, come back unchanged (the rule over-blocks rather than going blind); [] and null give []",
+    !!z4a && z4a.length === noStamp.length && !!z4b && z4b.length === badStamp.length && Array.isArray(rr([])) && rr([]).length === 0 && Array.isArray(rr(null)) && rr(null).length === 0,
+    z4a ? `${z4a.length}/${noStamp.length} ${z4b && z4b.length}/${badStamp.length}` : NONE);
+
+  {
+    const { execFileSync } = require("child_process");
+    const code = `const sf = require(${JSON.stringify(path.join(ROOT, "silvis-feed.js"))});
+      const add = ${zAdd.toString()};
+      const wide = []; for (let d = "2026-08-01"; d <= "2027-06-30"; d = add(d, 1)) wide.push(d);
+      const at = (f) => { if (typeof sf.sfRuleRows !== "function") return "missing"; const k = sf.sfRuleRows(wide.map((d) => ({ day: d, primary_code: "FAK", backup_code: null, fetched_at: f }))); return k.length ? k[0].day + ".." + k[k.length - 1].day : "none"; };
+      process.stdout.write(JSON.stringify({ off: new Date(2026, 9, 24).getTimezoneOffset(), w: ${JSON.stringify(Z3.map(([f]) => f))}.map(at) }));`;
+    const inZone = (TZ) => { try { return JSON.parse(execFileSync(process.execPath, ["-e", code], { env: Object.assign({}, process.env, { TZ }), encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })); } catch (ex) { return { err: String(ex).slice(0, 300) }; } };
+    const tok = inZone("Asia/Tokyo"), chi = inZone("America/Chicago");
+    check("Z5 with the DEVICE in Asia/Tokyo (offset −540) and America/Chicago (300) the window is the same Central one as Z3",
+      !!tok && tok.off === -540 && JSON.stringify(tok.w) === JSON.stringify(Z3.map(([, w]) => w)) && !!chi && chi.off === 300 && JSON.stringify(chi.w) === JSON.stringify(Z3.map(([, w]) => w)),
+      JSON.stringify({ tok, chi }).slice(0, 300));
+  }
+  let zExp = null; try { zExp = require(path.join(ROOT, "silvis-feed.js")); } catch (ex) { zExp = null; }
+  check("Z6 sfRuleRows is exported from silvis-feed.js for Node (the sf-prefixed classic-script convention)",
+    !!zExp && typeof zExp.sfRuleRows === "function");
+
+  // Z7 — the app wires every existing reader through the window
+  check("Z7 the app derives silvisDays from sfRuleRows(silvisRows), and nothing derives day sets from the full cache",
+    count("const silvisRuleRows = useMemo(() => sfRuleRows(silvisRows), [silvisRows]);") === 1
+      && count("const silvisDays = useMemo(() => sfDaysFromRows(silvisRuleRows, silvisRule.code), [silvisRuleRows, silvisRule.code]);") === 1
+      && count("sfDaysFromRows(silvisRows") === 0 && count("sfDaysFromRows(") === 1);
+  check("Z7 the feed card's 'days cached' counts the rule's window (same number as before v7), next to the unchanged covers line",
+    count("<b>{silvisRuleRows.length}</b> days cached") === 1 && count("<b>{silvisRows.length}</b> days cached") === 0 && count("covers {silvisDays.from} → {silvisDays.to}") === 1);
+}
+
 // ─── Verdict ───
 console.log(`\n${checks} checks, ${failures.length} failure(s)`);
 if (failures.length) {
