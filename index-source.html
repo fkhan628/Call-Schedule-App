@@ -2403,8 +2403,11 @@ function CallSchedule() {
   }, [edgeFunctionUrl]);
 
   // ─── Vacation Request: Submit ───
+  // In-flight guards for the two request submits (a double tap files once).
+  const vacSubmitBusyRef = useRef(false);
+  const tradeSubmitBusyRef = useRef(false);
   const submitVacRequest = useCallback(async () => {
-    if (!vacReqSurgeon || !vacReqStart || !vacReqEnd) return;
+    if (!vacReqSurgeon || !vacReqStart || !vacReqEnd) { showToast("Pick who it's for and both dates first.", "error"); return; }
     const surgeonName = surgeons.find(s => s.id === vacReqSurgeon)?.name || apps.find(a => a.id === vacReqSurgeon)?.name || vacReqSurgeon;
     const isNoCall = vacReqType === "nocall";
     const kindLabel = isNoCall ? "no-call days" : "vacation";
@@ -2417,6 +2420,10 @@ function CallSchedule() {
       showToast(`Requests are for upcoming time off — ${vacReqStart < reqTodayStr ? "the start date" : "the end date"} is in the past. If a past ${kindLabel} record needs correcting, ask the scheduler to enter it directly in Setup.`, "error");
       return;
     }
+    if (vacReqEnd < vacReqStart) { showToast("The end date is before the start date.", "error"); return; }
+    // A double tap must not file the request twice (2026-10-11).
+    if (vacSubmitBusyRef.current) return;
+    vacSubmitBusyRef.current = true;
     try {
       const req = {
         surgeon_id: vacReqSurgeon, surgeon_name: surgeonName,
@@ -2425,15 +2432,23 @@ function CallSchedule() {
         request_type: vacReqType,
         submitted_at: new Date().toISOString(),
       };
-      const { data: inserted } = await db.insert("vacation_requests", req);
-      if (inserted) {
-        setVacRequests(prev => [inserted, ...prev]);
-        await addNotification("vacation_submitted", isNoCall ? "No-Call Request" : "Vacation Request",
-          `${surgeonName} requested ${kindLabel} ${vacReqStart} to ${vacReqEnd}`, { surgeon_id: vacReqSurgeon }, schedulerAdminIds);
-        sendEmailNotif("vacation_submitted", { surgeon_name: surgeonName, surgeon_id: vacReqSurgeon, start_date: vacReqStart, end_date: vacReqEnd, reason: vacReqReason, request_type: vacReqType }, schedulerAdminIds);
+      // db.insert returns { data:null, error } on an HTTP failure (it does not
+      // throw): a 401 / 403 / RLS refusal used to clear the form and say
+      // nothing (fail-loud contract, 2026-10-11). Now it says why and keeps it.
+      const { data: inserted, error: insertErr } = await db.insert("vacation_requests", req);
+      if (!inserted) {
+        console.error("vacation request insert failed:", insertErr);
+        showToast(`Couldn't send your ${kindLabel} request — ${writeFailReason(insertErr)}. Nothing was sent; your entries are still here.`, "error");
+        return;
       }
+      setVacRequests(prev => [inserted, ...prev]);
+      await addNotification("vacation_submitted", isNoCall ? "No-Call Request" : "Vacation Request",
+        `${surgeonName} requested ${kindLabel} ${vacReqStart} to ${vacReqEnd}`, { surgeon_id: vacReqSurgeon }, schedulerAdminIds);
+      sendEmailNotif("vacation_submitted", { surgeon_name: surgeonName, surgeon_id: vacReqSurgeon, start_date: vacReqStart, end_date: vacReqEnd, reason: vacReqReason, request_type: vacReqType }, schedulerAdminIds);
       setVacReqStart(""); setVacReqEnd(""); setVacReqReason(""); setVacReqType("vacation");
+      showToast(`${isNoCall ? "No-call" : "Vacation"} request sent — the scheduler has been notified.`, "success");
     } catch(e) { console.error("Submit request error:", e); showToast("Couldn't submit your request — check your connection and try again.", "error"); }
+    finally { vacSubmitBusyRef.current = false; }
   }, [vacReqSurgeon, vacReqStart, vacReqEnd, vacReqReason, vacReqType, surgeons, apps, addNotification, sendEmailNotif, schedulerAdminIds]);
 
   // ─── Vacation Request: Approve ───
@@ -2525,7 +2540,7 @@ function CallSchedule() {
 
   // ─── Shift Trade Request: Submit ───
   const submitTradeRequest = useCallback(async () => {
-    if (!tradeFrom || !tradeTo || !tradeWeek || !tradeShift) return;
+    if (!tradeFrom || !tradeTo || !tradeWeek || !tradeShift) { showToast("Pick both people, the week and the shift first.", "error"); return; }
     // Two-way swap required unless scheduler emergency override
     if (!tradeReturnWeek || !tradeReturnShift) {
       if (!isScheduler) {
@@ -2547,6 +2562,9 @@ function CallSchedule() {
     const fromName = surgeons.find(s => s.id === tradeFrom)?.name || tradeFrom;
     const toName = surgeons.find(s => s.id === tradeTo)?.name || tradeTo;
     const shiftLabel = SHIFT_LABELS[tradeShift] || tradeShift;
+    // A double tap must not propose the trade twice (2026-10-11).
+    if (tradeSubmitBusyRef.current) return;
+    tradeSubmitBusyRef.current = true;
     try {
       const req = {
         from_surgeon_id: tradeFrom, from_surgeon_name: fromName,
@@ -2556,8 +2574,15 @@ function CallSchedule() {
         return_shift_label: tradeReturnShift ? (SHIFT_LABELS[tradeReturnShift]||tradeReturnShift) : null,
         status: "pending", submitted_at: new Date().toISOString(),
       };
-      const { data: inserted } = await db.insert("shift_trade_requests", req);
-      if (inserted) {
+      // HTTP failures come back as { data:null, error } (fail-loud, 2026-10-11):
+      // say why and keep the form, never clear it silently.
+      const { data: inserted, error: insertErr } = await db.insert("shift_trade_requests", req);
+      if (!inserted) {
+        console.error("trade request insert failed:", insertErr);
+        showToast(`Couldn't propose the trade — ${writeFailReason(insertErr)}. Nothing was sent; your choices are still here.`, "error");
+        return;
+      }
+      {
         setTradeRequests(prev => [inserted, ...prev]);
         // ONE composition for audit + in-app + push + email (helpers.js):
         // names BOTH legs, every date via slotLabel. `detail` is the new
@@ -2571,7 +2596,9 @@ function CallSchedule() {
         sendEmailNotif("trade_submitted", { from_name: fromName, to_name: toName, shift: shiftLabel, week: tradeWeek, detail: proposeMsg }, [tradeFrom, tradeTo]);
       }
       setTradeWeek(""); setTradeShift(""); setTradeReturnWeek(""); setTradeReturnShift("");
+      showToast(`Trade proposed — ${toName} will be asked to accept or decline.`, "success");
     } catch(e) { console.error("Submit trade error:", e); showToast("Couldn't submit the trade — check your connection and try again.", "error"); }
+    finally { tradeSubmitBusyRef.current = false; }
   }, [tradeFrom, tradeTo, tradeWeek, tradeShift, tradeReturnWeek, tradeReturnShift, surgeons, addNotification, sendEmailNotif, isScheduler, schedule, silvisActive, silvisBlock, silvisRefuse]);
 
   // ─── Shift Trade: Cascade Detection ───
@@ -11165,6 +11192,17 @@ function MonthPainterSheet({ mode, css, dk, surgeons, apps, appShifts, vacations
       </div>
     </div>
   );
+}
+
+// writeFailReason(error) -> a plain-language reason for a failed write, from the
+// error BODY (db.insert / PostgREST), the same classification the autosave uses:
+// an RLS / 403 refusal is a permission problem, an expired JWT / 401 is the
+// sign-in, anything else is the connection. Module scope: pure, no state.
+function writeFailReason(err) {
+  const s = typeof err === "string" ? err : (() => { try { return JSON.stringify(err || ""); } catch (e) { return String(err); } })();
+  if (/42501|row-level security|\b403\b/i.test(s)) return "you don't have permission to do that (ask the scheduler)";
+  if (/JWT expired|PGRST30[0-3]|\b401\b/i.test(s)) return "your sign-in has expired — sign in again";
+  return "check your connection and try again";
 }
 
 // 📊 My call totals — DSG + Silvis (owner request 2026-10-09; decisions 2026-10-11).

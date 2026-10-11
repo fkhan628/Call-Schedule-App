@@ -3327,6 +3327,104 @@ check("prefs audit never logs the plaintext email (masked only)",
     count("<b>{silvisRuleRows.length}</b> days cached") === 1 && count("<b>{silvisRows.length}</b> days cached") === 0 && count("covers {silvisDays.from} → {silvisDays.to}") === 1);
 }
 
+// ─── AA. Request submits fail loud (2026-10-11, audit QW7) ───
+// db.insert returns { data:null, error } on an HTTP failure — it does not throw.
+// submitVacRequest / submitTradeRequest read only `data`, so a 401 / 403 / RLS
+// refusal cleared the form and said NOTHING (IN-FILE CONVENTION 3). Now each
+// says why (writeFailReason), keeps the form, confirms success, refuses an end
+// date before the start and a double tap. Executed on the REAL handler bodies.
+//   AA1 vacation: RLS refusal / expired sign-in / success / double tap / bad dates / empty form
+//   AA2 trade:    RLS refusal / success / double tap / empty form; the Silvis refusal still precedes the insert
+{
+  const nsrcAA = src.replace(/\r\n/g, "\n");   // a Windows checkout is CRLF, CI's is LF
+  const bodyOf = (decl, depsHead) => {
+    const i = nsrcAA.indexOf(decl); if (i < 0) return null;
+    const a = nsrcAA.indexOf("async () => {", i), b = nsrcAA.indexOf("\n  }, [" + depsHead, i);
+    return a < 0 || b < 0 ? null : nsrcAA.slice(a, b) + "\n  }";
+  };
+  const wfrSrc = (() => { const a = nsrcAA.indexOf("function writeFailReason(err) {"); const b = a < 0 ? -1 : nsrcAA.indexOf("\n}\n", a); return a < 0 || b < 0 ? null : nsrcAA.slice(a, b + 2); })();
+  const vacSrc = bodyOf("const submitVacRequest = useCallback(", "vacReqSurgeon, vacReqStart");
+  const tradeSrc = bodyOf("const submitTradeRequest = useCallback(", "tradeFrom, tradeTo");
+  const ENV_V = "vacReqSurgeon, vacReqStart, vacReqEnd, vacReqReason, vacReqType, surgeons, apps, showToast, db, setVacRequests, addNotification, schedulerAdminIds, sendEmailNotif, setVacReqStart, setVacReqEnd, setVacReqReason, setVacReqType, vacSubmitBusyRef";
+  const ENV_T = "tradeFrom, tradeTo, tradeWeek, tradeShift, tradeReturnWeek, tradeReturnShift, isScheduler, silvisActive, silvisBlock, silvisRefuse, surgeons, schedule, logAudit, addNotification, sendEmailNotif, setTradeRequests, setTradeWeek, setTradeShift, setTradeReturnWeek, setTradeReturnShift, tradeSubmitBusyRef, showToast, db, alert, confirm";
+  let mkV = null, mkT = null;
+  try {
+    if (wfrSrc && vacSrc) mkV = vm.runInContext(`(function () { ${wfrSrc}\n return function (env) { const { ${ENV_V} } = env; return (${vacSrc}); }; })()`, sandbox);
+    if (wfrSrc && tradeSrc) mkT = vm.runInContext(`(function () { ${wfrSrc}\n return function (env) { const { ${ENV_T} } = env; return (${tradeSrc}); }; })()`, sandbox);
+  } catch (ex) { console.log("  (AA compile error) " + String(ex).slice(0, 200)); }
+  const NONE = "handler body or writeFailReason not extractable";
+  const SURG = [{ id: "s1", name: "DJA" }, { id: "s6", name: "FAK" }];
+  const vEnv = (insertResult, over = {}) => {
+    const rec = { inserts: 0, toasts: [], cleared: 0, added: 0, notifs: 0 };
+    let release; const gate = new Promise(r => (release = r));
+    const env = Object.assign({
+      vacReqSurgeon: "s6", vacReqStart: "2099-01-05", vacReqEnd: "2099-01-09", vacReqReason: "", vacReqType: "vacation",
+      surgeons: SURG, apps: [], schedulerAdminIds: ["s6"],
+      showToast: (m, t) => rec.toasts.push((t || "info") + ": " + m),
+      db: { insert: async () => { rec.inserts++; if (over.slowInsert) await gate; return insertResult; } },
+      setVacRequests: () => { rec.added++; }, addNotification: async () => { rec.notifs++; }, sendEmailNotif: () => {},
+      setVacReqStart: () => { rec.cleared++; }, setVacReqEnd: () => {}, setVacReqReason: () => {}, setVacReqType: () => {},
+      vacSubmitBusyRef: { current: false },
+    }, over.env || {});
+    return { run: mkV ? mkV(env) : null, rec, env, release };
+  };
+  const RLS = { data: null, error: { code: "42501", message: "new row violates row-level security policy for table \"vacation_requests\"" } };
+  const EXPIRED = { data: null, error: { code: "PGRST303", message: "JWT expired" } };
+  const OK_V = { data: { id: 7, surgeon_id: "s6" }, error: null };
+  {
+    const a = vEnv(RLS); if (a.run) await a.run();
+    const b = vEnv(EXPIRED); if (b.run) await b.run();
+    const c = vEnv(OK_V); if (c.run) await c.run();
+    check("AA1 vacation: an RLS refusal says it is a permission problem, keeps the form, adds nothing — never a silent clear",
+      !!a.run && a.rec.inserts === 1 && a.rec.cleared === 0 && a.rec.added === 0 && a.rec.toasts.length === 1 && /^error: Couldn't send your vacation request — you don't have permission/.test(a.rec.toasts[0]) && a.env.vacSubmitBusyRef.current === false,
+      a.run ? JSON.stringify(a.rec) : NONE);
+    check("AA1 vacation: an expired sign-in says so",
+      !!b.run && b.rec.cleared === 0 && /sign-in has expired/.test(b.rec.toasts.join(" ")), b.run ? JSON.stringify(b.rec.toasts) : NONE);
+    check("AA1 vacation: success adds the request, notifies, clears the form and confirms",
+      !!c.run && c.rec.added === 1 && c.rec.notifs === 1 && c.rec.cleared === 1 && c.rec.toasts.length === 1 && /^success: Vacation request sent/.test(c.rec.toasts[0]),
+      c.run ? JSON.stringify(c.rec) : NONE);
+    const d = vEnv(OK_V, { slowInsert: true });
+    if (d.run) { const p1 = d.run(), p2 = d.run(); d.release(); await Promise.all([p1, p2]); }
+    check("AA1 vacation: a double tap files ONE request", !!d.run && d.rec.inserts === 1 && d.rec.added === 1, d.run ? JSON.stringify(d.rec) : NONE);
+    const e = vEnv(OK_V, { env: { vacReqStart: "2099-01-09", vacReqEnd: "2099-01-05" } }); if (e.run) await e.run();
+    const f = vEnv(OK_V, { env: { vacReqEnd: "" } }); if (f.run) await f.run();
+    check("AA1 vacation: an end date before the start, or an empty field, is explained and nothing is inserted",
+      !!e.run && e.rec.inserts === 0 && /end date is before the start/.test(e.rec.toasts.join(" ")) && f.rec.inserts === 0 && /both dates first/.test(f.rec.toasts.join(" ")),
+      e.run ? JSON.stringify([e.rec.toasts, f.rec.toasts]) : NONE);
+  }
+  const tEnv = (insertResult, over = {}) => {
+    const rec = { inserts: 0, toasts: [], cleared: 0, added: 0, notifs: 0 };
+    let release; const gate = new Promise(r => (release = r));
+    const env = Object.assign({
+      tradeFrom: "s6", tradeTo: "s1", tradeWeek: "2099-01-05", tradeShift: "mon", tradeReturnWeek: "2099-01-12", tradeReturnShift: "tue",
+      isScheduler: false, silvisActive: false, silvisBlock: () => null, silvisRefuse: () => false,
+      surgeons: SURG, schedule: {}, logAudit: () => {}, addNotification: async () => { rec.notifs++; }, sendEmailNotif: () => {},
+      setTradeRequests: () => { rec.added++; }, setTradeWeek: () => { rec.cleared++; }, setTradeShift: () => {}, setTradeReturnWeek: () => {}, setTradeReturnShift: () => {},
+      tradeSubmitBusyRef: { current: false },
+      showToast: (m, t) => rec.toasts.push((t || "info") + ": " + m),
+      db: { insert: async () => { rec.inserts++; if (over.slowInsert) await gate; return insertResult; } },
+      alert: () => {}, confirm: () => true,
+    }, over.env || {});
+    return { run: mkT ? mkT(env) : null, rec, env, release };
+  };
+  {
+    const a = tEnv({ data: null, error: { message: "permission denied", code: "42501" } }); if (a.run) await a.run();
+    const b = tEnv({ data: { id: 9 }, error: null }); if (b.run) await b.run();
+    const c = tEnv({ data: { id: 9 }, error: null }, { slowInsert: true });
+    if (c.run) { const p1 = c.run(), p2 = c.run(); c.release(); await Promise.all([p1, p2]); }
+    const e = tEnv({ data: { id: 9 }, error: null }, { env: { tradeShift: "" } }); if (e.run) await e.run();
+    check("AA2 trade: an RLS refusal is explained and the choices are kept (nothing added, no notification)",
+      !!a.run && a.rec.inserts === 1 && a.rec.cleared === 0 && a.rec.added === 0 && a.rec.notifs === 0 && /^error: Couldn't propose the trade — you don't have permission/.test(a.rec.toasts.join(" ")) && a.env.tradeSubmitBusyRef.current === false,
+      a.run ? JSON.stringify(a.rec) : NONE);
+    check("AA2 trade: success adds, notifies, clears and confirms who will be asked",
+      !!b.run && b.rec.added === 1 && b.rec.notifs === 1 && b.rec.cleared === 1 && /^success: Trade proposed — DJA will be asked/.test(b.rec.toasts.join(" ")), b.run ? JSON.stringify(b.rec) : NONE);
+    check("AA2 trade: a double tap proposes ONCE; an empty field is explained",
+      !!c.run && c.rec.inserts === 1 && c.rec.added === 1 && e.rec.inserts === 0 && /Pick both people/.test(e.rec.toasts.join(" ")), c.run ? JSON.stringify([c.rec, e.rec.toasts]) : NONE);
+  }
+  check("AA writeFailReason is defined once at module scope and both submits use it",
+    count("function writeFailReason(err) {") === 1 && count("writeFailReason(insertErr)") === 2);
+}
+
 // ─── Verdict ───
 console.log(`\n${checks} checks, ${failures.length} failure(s)`);
 if (failures.length) {
