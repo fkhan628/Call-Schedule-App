@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.10.11c";
+    var APP_VERSION = "2026.10.11d";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -9320,7 +9320,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     }, "▶")), React.createElement("div", {
       style: {
         display: "grid",
-        gridTemplateColumns: "repeat(7,1fr)",
+        gridTemplateColumns: "repeat(7,minmax(0,1fr))",
         gap: 1,
         marginBottom: 1
       }
@@ -9337,7 +9337,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     }, d))), React.createElement("div", {
       style: {
         display: "grid",
-        gridTemplateColumns: "repeat(7,1fr)",
+        gridTemplateColumns: "repeat(7,minmax(0,1fr))",
         gap: 1,
         marginBottom: 14
       }
@@ -9359,8 +9359,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           background: dk ? "#162016" : isWknd ? "#e8f0e8" : "#f4faf4",
           border: "1px solid #a0d0a0",
           minHeight: 70,
-          padding: "2px 3px",
-          borderRadius: 2
+          padding: "2px 2px",
+          borderRadius: 2,
+          minWidth: 0,
+          overflow: "hidden"
         }
       }, React.createElement("div", {
         style: {
@@ -9383,11 +9385,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           style: {
             fontSize: 9,
             marginBottom: 1,
-            padding: "0 2px",
+            padding: "0 1px",
             borderRadius: 2,
             background: isH ? "#fef0e8" : isB ? "#fef8e8" : "transparent",
-            whiteSpace: "nowrap",
-            overflow: "hidden"
+            overflowWrap: "anywhere"
           }
         }, isB && React.createElement("span", {
           style: {
@@ -9414,8 +9415,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           style: {
             fontSize: 9,
             marginBottom: 1,
-            padding: "0 2px",
-            whiteSpace: "nowrap"
+            padding: "0 1px",
+            overflowWrap: "anywhere"
           }
         }, React.createElement("span", {
           style: {
@@ -9431,9 +9432,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         style: {
           fontSize: 8,
           color: "#a07070",
-          marginTop: 1
+          marginTop: 1,
+          overflowWrap: "anywhere"
         }
-      }, "🏖", vacList.map(v => v.name).join(",")));
+      }, "🏖", vacList.map(v => v.name).join(", ")));
     }))), (isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.role) === "admin") && seedDebug && React.createElement("div", {
       style: {
         background: dk ? "#2a2410" : "#fffbe8",
