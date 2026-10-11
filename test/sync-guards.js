@@ -3327,6 +3327,76 @@ check("prefs audit never logs the plaintext email (masked only)",
     count("<b>{silvisRuleRows.length}</b> days cached") === 1 && count("<b>{silvisRows.length}</b> days cached") === 0 && count("covers {silvisDays.from} → {silvisDays.to}") === 1);
 }
 
+// ─── AB. APP call-shift edits wait for the APP-shift row (2026-10-11, audit QW4) ───
+// Every APP write upserts the WHOLE app_shifts_data 'main' map (no CAS, no
+// snapshot, no restore path). If the read failed, appShifts stayed at its
+// initial {} and the next tap — or ANY week-editor save, which wrote its 7-day
+// APP draft back unconditionally — replaced every APP's assignments. The
+// day-off row already had this guard; now the call-shift row does too.
+//   AB1 add / remove / paint refuse before a successful read, write after it
+//   AB2 the week editor writes APP changes only when they change something, and never unloaded
+//   AB3 both reads arm the guard; the card disables its buttons and says why
+{
+  const nsrcAB = src.replace(/\r\n/g, "\n");
+  const arrowBody = (decl) => { const i = nsrcAB.indexOf(decl); if (i < 0) return null; const e = nsrcAB.indexOf("\n  };\n", i); return e < 0 ? null : nsrcAB.slice(i + decl.length - "() => {".length, e) + "\n  }"; };
+  const addSrc = arrowBody("const addAppShift = () => {");
+  const rmBody = (() => { const i = nsrcAB.indexOf("const rmAppShift = (ds) => {"); const e = i < 0 ? -1 : nsrcAB.indexOf("\n  };\n", i); return i < 0 || e < 0 ? null : "(ds) => {" + nsrcAB.slice(i + "const rmAppShift = (ds) => {".length, e) + "\n  }"; })();
+  const paintBody = (() => { const i = nsrcAB.indexOf("const commitAppPaint = async (draft) => {"); const e = i < 0 ? -1 : nsrcAB.indexOf("\n  };\n", i); return i < 0 || e < 0 ? null : "async (draft) => {" + nsrcAB.slice(i + "const commitAppPaint = async (draft) => {".length, e) + "\n  }"; })();
+  const ENV = "appShiftsLoaded, appShifts, appDate, appPerson, showToast, setAppShifts, saveAppShifts, logAudit, nameOf, setAppDate, supabase, APP_SHIFTS_NOT_LOADED";
+  const mk = (body) => { try { return body ? vm.runInContext(`(function (env) { const { ${ENV} } = env; return (${body}); })`, sandbox) : null; } catch (ex) { return null; } };
+  const mkAdd = mk(addSrc), mkRm = mk(rmBody), mkPaint = mk(paintBody);
+  const envAB = (loaded) => {
+    const rec = { toasts: [], sets: [], saves: [], upserts: 0 };
+    return { rec, env: {
+      appShiftsLoaded: loaded, appShifts: { "2026-10-12": "a1", "2026-10-13": "a2" }, appDate: "2026-10-14", appPerson: "a3",
+      showToast: (m) => rec.toasts.push(String(m)), setAppShifts: (x) => rec.sets.push(x), saveAppShifts: (x) => rec.saves.push(x),
+      logAudit: () => {}, nameOf: (x) => x, setAppDate: () => {},
+      supabase: { from: () => ({ upsert: async () => { rec.upserts++; return { error: null }; } }) },
+      APP_SHIFTS_NOT_LOADED: "APP shifts haven't loaded yet",
+    } };
+  };
+  {
+    const a0 = envAB(false), a1 = envAB(true), r0 = envAB(false), r1 = envAB(true), p0 = envAB(false), p1 = envAB(true);
+    if (mkAdd) { mkAdd(a0.env)(); mkAdd(a1.env)(); }
+    if (mkRm) { mkRm(r0.env)("2026-10-12"); mkRm(r1.env)("2026-10-12"); }
+    const pr0 = mkPaint ? await mkPaint(p0.env)({ "2026-10-20": "a1" }) : null, pr1 = mkPaint ? await mkPaint(p1.env)({ "2026-10-20": "a1" }) : null;
+    check("AB1 before a successful read, add / remove refuse with the reason and write nothing; the paint sheet gets {ok:false} and keeps its draft",
+      !!mkAdd && !!mkRm && !!mkPaint && a0.rec.sets.length === 0 && a0.rec.saves.length === 0 && /haven't loaded/.test(a0.rec.toasts.join(" "))
+        && r0.rec.sets.length === 0 && r0.rec.saves.length === 0 && /haven't loaded/.test(r0.rec.toasts.join(" "))
+        && pr0 && pr0.ok === false && /haven't loaded/.test(pr0.error) && p0.rec.upserts === 0,
+      JSON.stringify({ a0: a0.rec, r0: r0.rec, pr0, mk: [!!mkAdd, !!mkRm, !!mkPaint] }).slice(0, 300));
+    check("AB1 after a successful read the same three write (add merges, remove drops, paint upserts once)",
+      a1.rec.saves.length === 1 && a1.rec.saves[0]["2026-10-14"] === "a3" && a1.rec.saves[0]["2026-10-12"] === "a1"
+        && r1.rec.saves.length === 1 && !("2026-10-12" in r1.rec.saves[0]) && r1.rec.saves[0]["2026-10-13"] === "a2"
+        && pr1 && pr1.ok === true && p1.rec.upserts === 1,
+      JSON.stringify({ a1: a1.rec.saves, r1: r1.rec.saves, pr1 }).slice(0, 300));
+  }
+  {
+    const i = nsrcAB.indexOf("    const appChanged = "), e = i < 0 ? -1 : nsrcAB.indexOf('    logAudit("schedule.week_edit"', i);
+    const part = i < 0 || e < 0 ? null : nsrcAB.slice(i, e);
+    const run = (loaded, draftApps) => {
+      if (!part) return null;
+      const { rec, env } = envAB(loaded);
+      vm.runInContext(`(function (env, draft) { const { ${ENV} } = env; ${part} })`, sandbox)(env, { apps: draftApps });
+      // run the updater the way React would
+      const merged = rec.sets.length ? rec.sets[0](env.appShifts) : null;
+      return { rec, merged };
+    };
+    const same = run(true, { "2026-10-12": "a1", "2026-10-13": "a2" });
+    const changedNotLoaded = run(false, { "2026-10-12": "a3" });
+    const changedLoaded = run(true, { "2026-10-12": "a3", "2026-10-13": "" });
+    check("AB2 the week editor writes APP changes only when there are some; unloaded it saves the surgeons, refuses the APPs and says so",
+      !!same && same.rec.sets.length === 0 && same.rec.saves.length === 0
+        && changedNotLoaded.rec.sets.length === 0 && changedNotLoaded.rec.saves.length === 0 && /APP changes were NOT saved/.test(changedNotLoaded.rec.toasts.join(" "))
+        && changedLoaded.rec.sets.length === 1 && JSON.stringify(changedLoaded.merged) === JSON.stringify({ "2026-10-12": "a3" }) && changedLoaded.rec.saves.length === 1,
+      part ? JSON.stringify({ same: same.rec, cnl: changedNotLoaded.rec, cl: changedLoaded.merged }).slice(0, 300) : "editor APP part not found");
+  }
+  check("AB3 both reads of the main row arm the guard right after .single() (mount + poll); nothing else arms it",
+    (src.match(/\.eq\("id", "main"\)\.single\(\);\r?\n\s*setAppShiftsLoaded\(true\);/g) || []).length === 2 && count("setAppShiftsLoaded(true)") === 2);
+  check("AB3 the APP card disables + Assign and Paint Month until the row loads, and says why",
+    count("disabled={!appShiftsLoaded}") === 2 && count("⚠ {APP_SHIFTS_NOT_LOADED}") === 1);
+}
+
 // ─── Verdict ───
 console.log(`\n${checks} checks, ${failures.length} failure(s)`);
 if (failures.length) {
