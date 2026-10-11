@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.10.01c";
+    var APP_VERSION = "2026.10.11a";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -111,7 +111,7 @@ function ownKeys(e, r) { var t = Object.keys(e); if (Object.getOwnPropertySymbol
 function _objectSpread(e) { for (var r = 1; r < arguments.length; r++) { var t = null != arguments[r] ? arguments[r] : {}; r % 2 ? ownKeys(Object(t), !0).forEach(function (r) { _defineProperty(e, r, t[r]); }) : Object.getOwnPropertyDescriptors ? Object.defineProperties(e, Object.getOwnPropertyDescriptors(t)) : ownKeys(Object(t)).forEach(function (r) { Object.defineProperty(e, r, Object.getOwnPropertyDescriptor(t, r)); }); } return e; }
 function _defineProperty(e, r, t) { return (r = _toPropertyKey(r)) in e ? Object.defineProperty(e, r, { value: t, enumerable: !0, configurable: !0, writable: !0 }) : e[r] = t, e; }
 function _toPropertyKey(t) { var i = _toPrimitive(t, "string"); return "symbol" == typeof i ? i : i + ""; }
-function _toPrimitive(t, r) { if ("object" != typeof t || !t) return t; var e = t[Symbol.toPrimitive]; if (void 0 !== e) { var i = e.call(t, r || "default"); if ("object" != typeof i) return i; throw new TypeError("@@toPrimitive must return a primitive value."); } return ("string" === r ? String : Number)(t); }
+function _toPrimitive(t, e) { if ("object" != typeof t || !t) return t; var r; if ("undefined" != typeof Symbol && void 0 !== (r = t[Symbol.toPrimitive])) { var i = r.call(t, e || "default"); if ("object" != typeof i) return i; throw new TypeError("@@toPrimitive must return a primitive value."); } return ("string" === e ? String : Number)(t); }
 const {
   useState,
   useMemo,
@@ -1171,7 +1171,8 @@ function CallSchedule() {
     const want = String(silvisRule.code || "").toUpperCase();
     return want ? ((_surgeons$find3 = surgeons.find(s => (s.name || "").toUpperCase() === want)) === null || _surgeons$find3 === void 0 ? void 0 : _surgeons$find3.id) || null : null;
   }, [surgeons, silvisRule.code]);
-  const silvisDays = useMemo(() => sfDaysFromRows(silvisRows, silvisRule.code), [silvisRows, silvisRule.code]);
+  const silvisRuleRows = useMemo(() => sfRuleRows(silvisRows), [silvisRows]);
+  const silvisDays = useMemo(() => sfDaysFromRows(silvisRuleRows, silvisRule.code), [silvisRuleRows, silvisRule.code]);
   const silvisActive = sfRuleActive(silvisRule) && !!silvisFakId;
   const silvisBlock = useCallback((id, mondayStr, slotKey, wk) => {
     if (!silvisActive || id !== silvisFakId) return null;
@@ -10933,7 +10934,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         color: "#c04040",
         fontWeight: 600
       }
-    }, "No cached Silvis days", silvisLoadError ? " — last read: " + silvisLoadError : "", ". Rule silvisBusy is BLIND until ", authUser ? "a refresh succeeds (↻ above)" : "a signed-in user refreshes", ".") : React.createElement(React.Fragment, null, React.createElement("b", null, silvisRows.length), " days cached · FAK Silvis ", React.createElement("b", null, "primary"), " on ", React.createElement("b", null, silvisDays.primary.size), ", backup on ", silvisDays.backup.size, " · ", "fetched ", st.ageHours === null ? "?" : st.ageHours + "h ago", st.stale && React.createElement("span", {
+    }, "No cached Silvis days", silvisLoadError ? " — last read: " + silvisLoadError : "", ". Rule silvisBusy is BLIND until ", authUser ? "a refresh succeeds (↻ above)" : "a signed-in user refreshes", ".") : React.createElement(React.Fragment, null, React.createElement("b", null, silvisRuleRows.length), " days cached · FAK Silvis ", React.createElement("b", null, "primary"), " on ", React.createElement("b", null, silvisDays.primary.size), ", backup on ", silvisDays.backup.size, " · ", "fetched ", st.ageHours === null ? "?" : st.ageHours + "h ago", st.stale && React.createElement("span", {
       style: {
         color: "#c06020",
         fontWeight: 700
@@ -13302,7 +13303,18 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           fontFamily: font
         }
       }, showAllMySilvis ? "Show fewer" : `Show all ${up.length}`)));
-    })(), myVacsView.length > 0 && (() => {
+    })(), !isPublicMode && !!(userProfile !== null && userProfile !== void 0 && userProfile.person_id) && !!silvisFakId && userProfile.person_id === silvisFakId && myId === silvisFakId && React.createElement(CallTotalsCard, {
+      totals: typeof callTotalsFor === "function" ? callTotalsFor({
+        weeks: schedule,
+        roster: surgeons,
+        silvisRows,
+        code: silvisRule.code,
+        today: fmt(new Date())
+      }) : null,
+      silvisNote: sfNotice(silvisRows.length, silvisLoadError, silvisDays.fetchedAt),
+      css: css,
+      dk: dk
+    }), myVacsView.length > 0 && (() => {
       const VAC_LIMIT = 5;
       const shown = showAllMyVacs ? myVacsView : myVacsView.slice(0, VAC_LIMIT);
       return React.createElement("div", {
@@ -17431,6 +17443,304 @@ function MonthPainterSheet({
       opacity: dirtyCount && !busy ? 1 : 0.55
     })
   }, busy ? "Saving…" : `Save${dirtyCount ? ` (${dirtyCount})` : ""}`))));
+}
+function CallTotalsCard({
+  totals,
+  silvisNote,
+  css,
+  dk
+}) {
+  const [pick, setPick] = React.useState("month");
+  const [showMonths, setShowMonths] = React.useState(false);
+  const C = {
+    bg: dk ? "#16213e" : "#ffffff",
+    border: dk ? "#2a3a5e" : "#dfe6ec",
+    text: dk ? "#e0e0f0" : "#1a2a3a",
+    sub: dk ? "#8a8aaa" : "#5a6a78",
+    faint: dk ? "#6a6a8a" : "#9aa4ae",
+    rule: dk ? "#2a3a5e" : "#e4ebf1",
+    accent: dk ? "#7ab8ea" : "#1a6fa8",
+    warn: dk ? "#f0a060" : "#a06020",
+    err: dk ? "#ff8a8a" : "#c04040",
+    chipOn: dk ? "#1a4a7a" : "#1a6fa8",
+    chipOff: dk ? "#0f1a30" : "#f0f2f5"
+  };
+  const num = v => Number.isInteger(v) ? String(v) : v.toFixed(1);
+  const cell = v => v ? num(v) : "–";
+  const mdy = ds => ds ? Number(ds.slice(5, 7)) + "/" + Number(ds.slice(8, 10)) + "/" + ds.slice(0, 4) : "?";
+  const box = _objectSpread(_objectSpread({}, css.card), {}, {
+    background: C.bg,
+    border: "1px solid " + C.border
+  });
+  const title = React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "baseline",
+      gap: 6,
+      flexWrap: "wrap",
+      marginBottom: 8
+    }
+  }, React.createElement("span", {
+    style: {
+      fontSize: 12,
+      fontWeight: 800,
+      letterSpacing: 0.5,
+      color: C.accent
+    }
+  }, "📊 MY CALL TOTALS · DSG + SILVIS"), React.createElement("span", {
+    style: {
+      fontSize: 11,
+      color: C.faint
+    }
+  }, "only you see this"));
+  if (!totals || totals.ok !== true) {
+    return React.createElement("div", {
+      style: box
+    }, title, React.createElement("div", {
+      style: {
+        fontSize: 12,
+        color: C.err
+      }
+    }, "Totals unavailable — ", totals ? String(totals.error || "the count was refused") : "this page is older than its helpers (reload the app)", "."));
+  }
+  const PERIODS = [["month", "This month"], ["ytd", "YTD"], ["year", "Full year"], ["rolling12", "12 months"]];
+  const per = totals.periods[pick] || totals.periods.month;
+  const w = per.worked,
+    s = per.scheduled;
+  const all = k => w[k] + s[k];
+  const silvisOut = !!silvisNote && (silvisNote.kind === "failed" || silvisNote.kind === "empty");
+  const SILVIS_KEYS = {
+    silvisP: 1,
+    silvisB: 1,
+    total: 1,
+    weighted: 1
+  };
+  const show = (k, v) => silvisOut && SILVIS_KEYS[k] ? "?" : cell(v);
+  const ROWS = [{
+    k: "dc",
+    label: "DSG day-call days"
+  }, {
+    k: "nights",
+    label: "DSG weeknights"
+  }, {
+    k: "wknd",
+    label: "DSG weekend days"
+  }, {
+    k: "hol",
+    label: "DSG holiday days"
+  }, {
+    k: "dsgB",
+    label: "DSG backup-week days",
+    strong: true
+  }, ...(all("dsgB") > 0 ? [{
+    k: "dcB",
+    label: "day call",
+    sub: true
+  }, {
+    k: "nightsB",
+    label: "weeknights",
+    sub: true
+  }, {
+    k: "wkndB",
+    label: "weekend days",
+    sub: true
+  }, {
+    k: "holB",
+    label: "holiday days",
+    sub: true
+  }] : []), {
+    k: "silvisP",
+    label: "Silvis primary days"
+  }, {
+    k: "silvisB",
+    label: "Silvis backup days"
+  }, {
+    k: "total",
+    label: "Total call days",
+    strong: true,
+    top: true
+  }, {
+    k: "weighted",
+    label: "Weighted (backup ½)",
+    strong: true
+  }];
+  const th = {
+    padding: "5px 4px",
+    fontSize: 10,
+    fontWeight: 700,
+    color: C.sub,
+    textAlign: "right",
+    whiteSpace: "nowrap"
+  };
+  const td = {
+    padding: "4px 4px",
+    fontSize: 13,
+    textAlign: "right",
+    color: C.text,
+    fontVariantNumeric: "tabular-nums"
+  };
+  const range = totals.range || {};
+  const dsgLine = range.dsgFrom ? "DSG " + mdy(range.dsgFrom) + " – " + mdy(range.dsgTo) : "DSG: no published weeks";
+  const silLine = range.silvisFrom ? "Silvis " + mdy(range.silvisFrom) + " – " + mdy(range.silvisTo) : "Silvis: no days cached";
+  return React.createElement("div", {
+    style: box
+  }, title, React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 6,
+      flexWrap: "wrap",
+      marginBottom: 8
+    }
+  }, PERIODS.map(([k, label]) => React.createElement("button", {
+    key: k,
+    onClick: () => setPick(k),
+    style: _objectSpread(_objectSpread({}, css.tab(pick === k)), {}, {
+      padding: "5px 9px",
+      background: pick === k ? C.chipOn : C.chipOff,
+      border: "1px solid " + (pick === k ? C.chipOn : C.border),
+      color: pick === k ? "#ffffff" : C.sub
+    })
+  }, label))), React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: C.faint,
+      marginBottom: 6
+    }
+  }, mdy(per.from), " – ", mdy(per.to)), silvisNote && React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: silvisNote.kind === "stale" ? C.warn : C.err,
+      marginBottom: 6
+    }
+  }, "Silvis: ", silvisNote.text), React.createElement("table", {
+    style: {
+      width: "100%",
+      borderCollapse: "collapse"
+    }
+  }, React.createElement("thead", null, React.createElement("tr", {
+    style: {
+      borderBottom: "1px solid " + C.rule
+    }
+  }, React.createElement("th", {
+    style: _objectSpread(_objectSpread({}, th), {}, {
+      textAlign: "left"
+    })
+  }), React.createElement("th", {
+    style: th
+  }, "Worked"), React.createElement("th", {
+    style: th
+  }, "Scheduled"), React.createElement("th", {
+    style: th
+  }, "Total"))), React.createElement("tbody", null, ROWS.map(r => React.createElement("tr", {
+    key: r.k,
+    style: {
+      borderTop: r.top ? "1px solid " + C.rule : "none"
+    }
+  }, React.createElement("td", {
+    style: _objectSpread(_objectSpread({}, td), {}, {
+      textAlign: "left",
+      fontSize: r.sub ? 11 : 12,
+      paddingLeft: r.sub ? 14 : 4,
+      color: r.sub ? C.sub : C.text,
+      fontWeight: r.strong ? 700 : 400
+    })
+  }, r.sub ? "↳ " + r.label : r.label), React.createElement("td", {
+    style: _objectSpread(_objectSpread({}, td), {}, {
+      fontWeight: r.strong ? 700 : 400
+    })
+  }, show(r.k, w[r.k])), React.createElement("td", {
+    style: _objectSpread(_objectSpread({}, td), {}, {
+      color: C.sub,
+      fontWeight: r.strong ? 700 : 400
+    })
+  }, show(r.k, s[r.k])), React.createElement("td", {
+    style: _objectSpread(_objectSpread({}, td), {}, {
+      fontWeight: 700
+    })
+  }, show(r.k, all(r.k))))))), React.createElement("button", {
+    onClick: () => setShowMonths(v => !v),
+    style: {
+      marginTop: 8,
+      background: "none",
+      border: "none",
+      color: C.accent,
+      fontSize: 12,
+      cursor: "pointer",
+      padding: "6px 0",
+      fontFamily: font
+    }
+  }, showMonths ? "▾" : "▸", " Month by month (", totals.today.slice(0, 4), ")"), showMonths && React.createElement("div", {
+    style: {
+      overflowX: "auto"
+    }
+  }, React.createElement("table", {
+    style: {
+      width: "100%",
+      borderCollapse: "collapse",
+      minWidth: 300
+    }
+  }, React.createElement("thead", null, React.createElement("tr", {
+    style: {
+      borderBottom: "1px solid " + C.rule
+    }
+  }, React.createElement("th", {
+    style: _objectSpread(_objectSpread({}, th), {}, {
+      textAlign: "left",
+      position: "sticky",
+      left: 0,
+      background: C.bg
+    })
+  }, "Month"), React.createElement("th", {
+    style: th
+  }, "DSG"), React.createElement("th", {
+    style: th
+  }, "DSG B"), React.createElement("th", {
+    style: th
+  }, "Silvis P"), React.createElement("th", {
+    style: th
+  }, "Silvis B"), React.createElement("th", {
+    style: th
+  }, "Total"), React.createElement("th", {
+    style: th
+  }, "Wtd"))), React.createElement("tbody", null, totals.months.map(m => {
+    const pending = m.scheduled.total > 0;
+    const v = k => m.worked[k] + m.scheduled[k];
+    return React.createElement("tr", {
+      key: m.month,
+      style: {
+        borderBottom: "1px solid " + C.rule
+      }
+    }, React.createElement("td", {
+      style: _objectSpread(_objectSpread({}, td), {}, {
+        textAlign: "left",
+        fontSize: 12,
+        position: "sticky",
+        left: 0,
+        background: C.bg
+      })
+    }, MO[Number(m.month.slice(5, 7)) - 1].slice(0, 3), pending ? " *" : ""), ["dsg", "dsgB", "silvisP", "silvisB", "total", "weighted"].map(k => React.createElement("td", {
+      key: k,
+      style: _objectSpread(_objectSpread({}, td), {}, {
+        fontSize: 12,
+        color: v(k) ? pending ? C.sub : C.text : C.faint,
+        fontStyle: pending ? "italic" : "normal",
+        fontWeight: k === "total" ? 700 : 400
+      })
+    }, show(k, v(k)))));
+  }))), React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: C.faint,
+      marginTop: 4
+    }
+  }, "* includes scheduled days (after today)")), React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: C.faint,
+      marginTop: 8,
+      lineHeight: 1.5
+    }
+  }, "Data: ", dsgLine, " · ", silLine, ". Worked = through today; scheduled = after today. DSG days are counted the way Stats → Billing counts them (a covered holiday = 2 days); backup-week roles are listed apart. Every number is a count of role-days, so one date can count more than once (a service day and a night, or a DSG day and a Silvis day). Weighted: every backup role (DSG backup-week days, Silvis backup days) counts ½.", silvisOut ? " ? = Silvis data missing — the totals would undercount." : ""));
 }
 function Collapsible({
   title,
