@@ -1053,6 +1053,11 @@ function CallSchedule() {
   const schedWeeksSyncRef = useRef(null);
   // Per-week version last seen from the table, for compare-and-swap writes.
   const schedWeekVersionsRef = useRef({});
+  // When the last schedule-save failure toast was shown (2026-10-11): a failed
+  // week is re-sent on every autosave until it lands, so the toast is capped to
+  // one per SCHED_SAVE_TOAST_MS instead of one per week per minute.
+  const schedSaveToastRef = useRef(0);
+  const SCHED_SAVE_TOAST_MS = 5 * 60 * 1000;
 
   // Load the schedule from schedule_weeks (Stage 3 read). Returns {sched, vers}
   // or null to signal "fall back to the blob".
@@ -1117,6 +1122,19 @@ function CallSchedule() {
       if (SCHED_READ_TABLE) {
         // ── Stage 3: per-week compare-and-swap ──
         let conflict = false;
+        // A week whose write FAILED stays pending (2026-10-11): it keeps its
+        // previous baseline below, so the next autosave — and the unload
+        // keepalive flush, which diffs against the same baseline — re-sends
+        // exactly that week. Before, the baseline jumped to the whole in-memory
+        // schedule even after a failure: the edit stayed on screen, was never
+        // re-sent, and was gone after a reload.
+        const failed = new Set();
+        let authFailed = false;
+        const writeFailed = (key, r, what) => {
+          failed.add(key);
+          if (r.status === 401) authFailed = true;
+          r.text().catch(() => "").then(t => console.error(`schedule_weeks ${what} failed`, key, r.status, t));
+        };
         for (const key of changed) {
           const ver = schedWeekVersionsRef.current[key];
           if (ver === undefined) {
@@ -1127,7 +1145,11 @@ function CallSchedule() {
               body: JSON.stringify({ week_monday: key, data: currentSchedule[key], version: 1, updated_by: by, updated_at: ts }),
             });
             if (r.ok) { const a = await r.json().catch(() => []); if (a[0]) schedWeekVersionsRef.current[key] = a[0].version; }
-            else { console.error("schedule_weeks insert failed", r.status, await r.text().catch(() => "")); showToast("Couldn't save schedule changes — check your connection.", "error"); }
+            // 409: the week already exists (someone else inserted it) — reload
+            // the latest, exactly like a CAS conflict, rather than re-sending an
+            // insert that can never succeed.
+            else if (r.status === 409) conflict = true;
+            else writeFailed(key, r, "insert");
           } else {
             // Existing week → update only if version still matches (CAS).
             const r = await fetch(`${SUPABASE_URL}/rest/v1/schedule_weeks?week_monday=eq.${key}&version=eq.${ver}`, {
@@ -1135,7 +1157,7 @@ function CallSchedule() {
               headers: { ...dbAuthHeaders(), "Content-Type": "application/json", "Prefer": "return=representation" },
               body: JSON.stringify({ data: currentSchedule[key], version: ver + 1, updated_by: by, updated_at: ts }),
             });
-            if (!r.ok) { console.error("schedule_weeks CAS error", r.status, await r.text().catch(() => "")); showToast("Couldn't save schedule changes — check your connection.", "error"); continue; }
+            if (!r.ok) { writeFailed(key, r, "CAS update"); continue; }
             const a = await r.json().catch(() => []);
             if (a.length === 0) conflict = true;            // version moved underneath us
             else schedWeekVersionsRef.current[key] = a[0].version;
@@ -1149,8 +1171,14 @@ function CallSchedule() {
           // took the version-undefined insert path and 409'd against the
           // surviving row. On failure: keep the version ref and toast.
           const r = await fetch(`${SUPABASE_URL}/rest/v1/schedule_weeks?week_monday=eq.${key}`, { method: "DELETE", headers: dbAuthHeaders() });
-          if (!r.ok) { console.error("schedule_weeks delete failed", r.status, await r.text().catch(() => "")); showToast("Couldn't save schedule changes — check your connection.", "error"); continue; }
+          if (!r.ok) { writeFailed(key, r, "delete"); continue; }
           delete schedWeekVersionsRef.current[key];
+        }
+        if (failed.size && Date.now() - schedSaveToastRef.current >= SCHED_SAVE_TOAST_MS) {
+          schedSaveToastRef.current = Date.now();
+          showToast(authFailed
+            ? "Couldn't save your schedule change — your sign-in has expired. Sign in again, then check the change is still there."
+            : "Couldn't save schedule changes — they'll be re-sent automatically; check your connection and don't close the app yet.", "error");
         }
         if (conflict) {
           // Someone else wrote one of these weeks first. Pull the authoritative
@@ -1164,7 +1192,12 @@ function CallSchedule() {
             return;
           }
         }
-        schedWeeksSyncRef.current = JSON.parse(JSON.stringify(currentSchedule));
+        const base = JSON.parse(JSON.stringify(currentSchedule));
+        for (const key of failed) {
+          if (key in prev) base[key] = JSON.parse(JSON.stringify(prev[key])); // a failed update / delete: back to what the table holds
+          else delete base[key];                                              // a failed insert: still "new" next time
+        }
+        schedWeeksSyncRef.current = base;
       } else {
         // ── Stage 2: blind diff-based upsert (no CAS, table not yet read) ──
         const upserts = changed.map(key => ({ week_monday: key, data: currentSchedule[key], updated_by: by, updated_at: ts }));

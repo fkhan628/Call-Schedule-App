@@ -652,6 +652,132 @@ await (async () => {
     h.netCalls.length === 0, `unexpected requests: ${JSON.stringify(h.netCalls)}`);
 })();
 
+// ══════════════════════════════════════════════════════════════
+// E4. A FAILED week write stays pending (2026-10-11, audit QW1)
+// ══════════════════════════════════════════════════════════════
+// syncSchedWeeks used to set its baseline to the whole in-memory schedule
+// even after a week's insert / PATCH / DELETE failed: the failed edit was
+// never re-sent (the next diff saw nothing) and vanished on reload — a member's
+// swap or trade accept in a long-open PWA (expired token → 401) was exactly
+// that case. Now a failed week keeps its previous baseline and is re-sent by
+// the next call; an insert that 409s reloads like a CAS conflict; the failure
+// toast is capped. Executed on the REAL function with a scripted network.
+console.log("\nE4. failed week writes stay pending");
+await (async () => {
+  const nsrc = src.replace(/\r\n/g, "\n");
+  const START = "const syncSchedWeeks = async (currentSchedule) => {";
+  const END = `catch (e) { console.error("schedule_weeks dual-write error", e); showToast("Couldn't save schedule changes — check your connection.", "error"); }
+  };`;
+  const s = nsrc.indexOf(START), e = nsrc.indexOf(END);
+  if (s === -1 || e === -1) { check("E4 syncSchedWeeks extractable", false, "anchors not found"); return; }
+  const fnSrc = nsrc.slice(s, e + END.length);
+  const W1 = "2026-09-07", W2 = "2026-09-14", W3 = "2026-09-21", W4 = "2026-09-28", W5 = "2026-10-05";
+  const mk = (prev, vers) => vm.runInContext(`(function(){
+    const SCHED_DUAL_WRITE = false, SCHED_READ_TABLE = true;
+    const SUPABASE_URL = "https://stub.invalid";
+    const dbAuthHeaders = () => ({});
+    const schedWeeksSyncRef = { current: ${JSON.stringify(prev)} };
+    const schedWeekVersionsRef = { current: ${JSON.stringify(vers)} };
+    const intentionalScheduleWipeRef = { current: false };
+    const schedSaveToastRef = { current: 0 };
+    const SCHED_SAVE_TOAST_MS = 5 * 60 * 1000;
+    const userProfile = { person_id: "s7" };
+    const log = [], toasts = [], adopted = [];
+    let responder = () => ({ status: 500 });
+    const fetch = async (url, opts) => {
+      const m = (opts && opts.method) || "GET";
+      const wk = (String(url).match(/week_monday=eq\\.([0-9-]+)/) || [])[1] || (opts && opts.body ? JSON.parse(opts.body).week_monday : "?");
+      log.push(m + " " + wk);
+      const r = responder(m, wk) || { status: 500 };
+      const st = r.status;
+      return { ok: st >= 200 && st < 300, status: st, json: async () => r.json || [], text: async () => "" };
+    };
+    const setSaveError = () => {}, setSaveStatus = () => {};
+    const setSchedule = (x) => { adopted.push(x); };
+    const showToast = (msg) => { toasts.push(String(msg)); };
+    const loadSchedFromTable = async () => ({ sched: { "${W1}": { dayCall: "s9" } }, vers: { "${W1}": 9 } });
+    ${fnSrc}
+    return { syncSchedWeeks, log, toasts, adopted, respond: (f) => { responder = f; },
+      base: () => JSON.parse(JSON.stringify(schedWeeksSyncRef.current)), vers: () => JSON.parse(JSON.stringify(schedWeekVersionsRef.current)) };
+  })()`, sandbox);
+  const ok = (v) => ({ status: 200, json: [{ version: v }] });
+  const J = (o) => JSON.stringify(o);
+
+  // 1. PATCH fails (500) for W1, succeeds for W2 → W1 keeps its old baseline; the next call re-sends W1 ONLY
+  {
+    const h = mk({ [W1]: { dayCall: "s1" }, [W2]: { dayCall: "s2" } }, { [W1]: 3, [W2]: 4 });
+    const cur = { [W1]: { dayCall: "s5" }, [W2]: { dayCall: "s6" } };
+    h.respond((m, wk) => (wk === W1 ? { status: 500 } : ok(5)));
+    await h.syncSchedWeeks(cur);
+    const b1 = h.base(), l1 = h.log.slice();
+    h.respond((m, wk) => ok(wk === W1 ? 4 : 6));
+    await h.syncSchedWeeks(cur);
+    const l2 = h.log.slice(l1.length);
+    check("E4 a failed PATCH keeps that week's old baseline (the success beside it advances)",
+      J(b1[W1]) === J({ dayCall: "s1" }) && J(b1[W2]) === J({ dayCall: "s6" }), J(b1));
+    check("E4 the next call re-sends EXACTLY the failed week, and then the baseline catches up",
+      J(l2) === J([`PATCH ${W1}`]) && J(h.base()) === J(cur) && h.vers()[W1] === 4, `second call sent ${J(l2)}; base ${J(h.base())}`);
+    check("E4 one 'will be re-sent' toast for the failure, none for the retry that landed",
+      h.toasts.length === 1 && /re-sent automatically/.test(h.toasts[0]), J(h.toasts));
+  }
+  // 2. 401 (expired sign-in) → the session message, and the week stays pending
+  {
+    const h = mk({ [W1]: { dayCall: "s1" } }, { [W1]: 3 });
+    h.respond(() => ({ status: 401 }));
+    await h.syncSchedWeeks({ [W1]: { dayCall: "s5" } });
+    check("E4 a 401 says the sign-in expired (not 'check your connection') and the week stays pending",
+      h.toasts.length === 1 && /sign-in has expired/.test(h.toasts[0]) && J(h.base()[W1]) === J({ dayCall: "s1" }), J(h.toasts));
+  }
+  // 3. a failed INSERT (no version yet) stays "new": the next call inserts it again
+  {
+    const h = mk({ [W1]: { dayCall: "s1" } }, { [W1]: 3 });
+    h.respond(() => ({ status: 503 }));
+    await h.syncSchedWeeks({ [W1]: { dayCall: "s1" }, [W2]: { dayCall: "s2" } });
+    const b1 = h.base(), n1 = h.log.length;
+    h.respond(() => ({ status: 201, json: [{ version: 1 }] }));
+    await h.syncSchedWeeks({ [W1]: { dayCall: "s1" }, [W2]: { dayCall: "s2" } });
+    check("E4 a failed insert is not in the baseline, so the next call inserts it again (version 1 recorded)",
+      !(W2 in b1) && J(h.log.slice(n1)) === J([`POST ${W2}`]) && h.vers()[W2] === 1, `base ${J(b1)}; then ${J(h.log.slice(n1))}`);
+  }
+  // 4. an insert that 409s (the week exists already) reloads like a CAS conflict
+  {
+    const h = mk({}, {});
+    h.respond(() => ({ status: 409 }));
+    await h.syncSchedWeeks({ [W1]: { dayCall: "s1" } });
+    check("E4 an insert 409 reloads the table (adopts it, versions + baseline) and says so — never retried blind",
+      h.adopted.length === 1 && J(h.base()) === J({ [W1]: { dayCall: "s9" } }) && h.vers()[W1] === 9 && h.toasts.some(t => /changed by someone else/.test(t)), J({ adopted: h.adopted, toasts: h.toasts }));
+  }
+  // 5. a failed DELETE keeps the week in the baseline, so the next call deletes it again
+  {
+    const prev = { [W1]: { a: 1 }, [W2]: { a: 2 }, [W3]: { a: 3 }, [W4]: { a: 4 }, [W5]: { a: 5 } };
+    const h = mk(prev, { [W1]: 1, [W2]: 1, [W3]: 1, [W4]: 1, [W5]: 1 });
+    const cur = { [W1]: { a: 1 }, [W2]: { a: 2 }, [W3]: { a: 3 }, [W4]: { a: 4 } };
+    h.respond(() => ({ status: 500 }));
+    await h.syncSchedWeeks(cur);
+    const b1 = h.base(), n1 = h.log.length;
+    h.respond(() => ({ status: 204 }));
+    await h.syncSchedWeeks(cur);
+    check("E4 a failed DELETE stays pending: the next call deletes the week again, then the baseline drops it",
+      W5 in b1 && J(h.log.slice(n1)) === J([`DELETE ${W5}`]) && !(W5 in h.base()) && !(W5 in h.vers()), `then ${J(h.log.slice(n1))}`);
+  }
+  // 6. the toast is capped: three failing calls in a row → one toast
+  {
+    const h = mk({ [W1]: { dayCall: "s1" } }, { [W1]: 3 });
+    h.respond(() => ({ status: 500 }));
+    for (let i = 0; i < 3; i++) await h.syncSchedWeeks({ [W1]: { dayCall: "s5" } });
+    check("E4 three failing autosaves → three re-sends, ONE toast (capped)",
+      h.log.filter(x => x === `PATCH ${W1}`).length === 3 && h.toasts.length === 1, `sends ${h.log.length}, toasts ${h.toasts.length}`);
+  }
+  // 7. the happy path is unchanged: baseline == state, versions bumped, no toast
+  {
+    const h = mk({ [W1]: { dayCall: "s1" } }, { [W1]: 3 });
+    h.respond(() => ok(4));
+    await h.syncSchedWeeks({ [W1]: { dayCall: "s5" } });
+    check("E4 all writes succeed: baseline = the schedule, version bumped, no toast",
+      J(h.base()) === J({ [W1]: { dayCall: "s5" } }) && h.vers()[W1] === 4 && h.toasts.length === 0);
+  }
+})();
+
 // Source pins: the gate exists, mirrors the DB predicate, and is applied at
 // all three write sites (autosave blob leg, keepalive blob leg, edge-URL).
 check("canWriteBlob defined once, mirroring is_scheduler_or_admin()",
