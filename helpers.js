@@ -82,11 +82,21 @@ function weekBillingCredits(mondayStr, wk) {
 
 /* ═══ Personal call totals: DSG + Silvis (owner request 2026-10-09; decisions 2026-10-11) ═══
    The ONE counter behind the FAK-only totals card in the Mine tab AND the Silvis
-   app's copy of that card: Silvis Prompt 31 ports callTotalPeriods + callTotalsFor
-   verbatim (with weekBillingCredits, fmt, parse, addD and config.js NIGHT_KEYS) and
-   must reproduce test/fixtures/call-totals-card-synthetic-2026-10-14.json, so both
-   apps show the same numbers for the same period. Pure: no clock (`today` is passed
-   in), no state, nothing read but the arguments. Keyed by the roster CODE. */
+   app's copy of that card, so both apps show the same numbers for the same period.
+   Pure: no clock (`today` is passed in), no state, nothing read but the arguments.
+   Keyed by the roster CODE.
+   PARITY CONTRACT for the Silvis port (Silvis Prompt 31):
+   - copy weekBillingCredits, callTotalPeriods and callTotalsFor VERBATIM, plus this
+     app's NIGHT_KEYS value (["mon","tue","wed","thu"], config.js), into a NEW
+     classic-script module loaded after Silvis's helpers.js, with its own Node export
+     guard. Reuse Silvis's own fmt / parse / addD (byte-identical to the ones at the top
+     of this file) - declaring them a second time is a SyntaxError. Not in Silvis
+     helpers.js or config.js: Silvis's data-layer test bans these names there.
+   - `today` is the DEVICE date, fmt(new Date()), in BOTH apps (decision 2026-10-11) -
+     not Silvis's todayCentral(), or the cards disagree on the month and on worked vs
+     scheduled whenever the device is not on Central time.
+   - the port must give test/fixtures/call-totals-card-synthetic-2026-10-14.json's
+     `expected` from its `input`, exactly. */
 
 // callTotalPeriods(today) -> { month, ytd, year, rolling12, months:[12] } | null
 //   month     = today's calendar month         ytd    = Jan 1 .. today

@@ -1753,7 +1753,9 @@ check("prefs audit never logs the plaintext email (masked only)",
       const name = m[1] || m[2];
       if (!declIndex.has(name)) declIndex.set(name, m.index);
     }
-    const depsRe = /\}\s*,\s*\[([^\]]*)\]\s*\)/g; // the closing of useCallback/useMemo/useEffect(..., [deps])
+    // the closing of useCallback/useMemo/useEffect(..., [deps]) — after a block body "}" OR an
+    // expression body ")" (2026-10-11: useMemo(() => f(x), [x]) shapes were invisible before)
+    const depsRe = /[})]\s*,\s*\[([^\]]*)\]\s*\)/g;
     const violations = [];
     let depsCount = 0, namesChecked = 0;
     while ((m = depsRe.exec(comp)) !== null) {
@@ -1774,8 +1776,12 @@ check("prefs audit never logs the plaintext email (masked only)",
     check("no hook deps array names a const/let/function declared LATER in the component (TDZ at render)", violations.length === 0, violations.join("; "));
     // Two-sided: the same scan over the 2026.09.24a shape must flag it.
     const bad = "  const a = useCallback(() => {}, [zzz]);\n  const zzz = 1;";
-    const d = /(?:^|[\s;(])(?:const|let|var)\s+(?:\[\s*)?zzz/.exec(bad), u = /\}\s*,\s*\[([^\]]*)\]\s*\)/.exec(bad);
+    const d = /(?:^|[\s;(])(?:const|let|var)\s+(?:\[\s*)?zzz/.exec(bad), u = /[})]\s*,\s*\[([^\]]*)\]\s*\)/.exec(bad);
     check("deps-order scan: the crash shape (dep declared after its deps array) is detectable", !!d && !!u && d.index > u.index);
+    // The expression-bodied shape too (useMemo(() => f(zzz), [zzz]) before `const zzz`), which the old "}"-only scan missed
+    const bad2 = "  const a = useMemo(() => f(zzz), [zzz]);\n  const zzz = 1;";
+    const d2 = /(?:^|[\s;(])(?:const|let|var)\s+(?:\[\s*)?zzz/.exec(bad2), u2 = /[})]\s*,\s*\[([^\]]*)\]\s*\)/.exec(bad2), uOld = /\}\s*,\s*\[([^\]]*)\]\s*\)/.exec(bad2);
+    check("deps-order scan: the expression-bodied crash shape is detectable now (the old \"}\"-only pattern missed it)", !!d2 && !!u2 && d2.index > u2.index && !uOld);
     // And the concrete fix: the silvisBusy block precedes every hook that lists it.
     const sb = comp.indexOf("const silvisBlock = useCallback(");
     const firstUse = comp.search(/\[[^\]]*\bsilvisBlock\b[^\]]*\]\s*\)/);
@@ -3010,8 +3016,9 @@ check("prefs audit never logs the plaintext email (masked only)",
 
 // ─── Y. DSG + Silvis personal totals card: the ONE counting function (Faraz 10/9; decisions 2026-10-11) ───
 // callTotalsFor({ weeks, roster, silvisRows, code, today }) in helpers.js — pure, no clock — is the only
-// counter behind FAK's totals card here AND the Silvis app's copy of the card (Silvis Prompt 31 ports it
-// verbatim with callTotalPeriods, weekBillingCredits, fmt, parse, addD and NIGHT_KEYS, then runs the
+// counter behind FAK's totals card here AND the Silvis app's copy of the card (Silvis Prompt 31 copies
+// weekBillingCredits + callTotalPeriods + callTotalsFor verbatim and NIGHT_KEYS' value into a new module,
+// reusing its own identical fmt/parse/addD — see the PARITY CONTRACT in helpers.js — then runs the
 // fixture below). DSG lines are Stats → Billing's own weekBillingCredits credits — no second definition;
 // a backup week is counted by the SAME function as backup roles (dcB/nightsB/wkndB/holB). Silvis:
 // primary_code / backup_code = code, one 07:00–07:00 day = 1. Weighted total: every backup role 0.5.
@@ -3218,6 +3225,11 @@ check("prefs audit never logs the plaintext email (masked only)",
     gateCases.length === 7 && gateCases.every(([, got, want]) => got === want), gateFn ? gateCases.filter(([, got, want]) => got !== want).map(([w]) => w).join(" | ") : "gate literal not found exactly once");
   const iSilvis = src.indexOf("{myId && silvisFakId && myId === silvisFakId && (() => {"), iCard = src.indexOf(GATE), iVac = src.indexOf("{/* My Vacations — completed (past) ones hidden; shown in date order */}");
   const callAt = iCard < 0 ? "" : src.slice(iCard, src.indexOf("/>", iCard));
+  // The card must BE the gate's last && operand (a card placed after the gate's closing parenthesis
+  // would still leave the literal and the call text in place — a privacy leak the checks above miss).
+  const GATED_CARD = /\{!isPublicMode && !!userProfile\?\.person_id && !!silvisFakId && userProfile\.person_id === silvisFakId && myId === silvisFakId && \(\s*<CallTotalsCard\b[^]*?\/>\s*\)\}/g;
+  check("Y9 the card is the gate's own operand: {GATE && ( <CallTotalsCard …/> )} is the only card in the file",
+    (src.match(GATED_CARD) || []).length === 1 && count("<CallTotalsCard") === 1, `gated ${(src.match(GATED_CARD) || []).length}, cards ${count("<CallTotalsCard")}`);
   check("Y9 placed in Mine after the 🚑 Silvis section and before My Vacations; it counts the PUBLISHED weeks (schedule) — never the generator preview — and the full Silvis cache, guarded against an old cached helpers.js",
     iSilvis > 0 && iCard > iSilvis && iVac > iCard && count("<CallTotalsCard") === 1
       && callAt.includes('typeof callTotalsFor === "function" ? callTotalsFor({ weeks: schedule, roster: surgeons, silvisRows, code: silvisRule.code, today: fmt(new Date()) }) : null')
@@ -3228,6 +3240,13 @@ check("prefs audit never logs the plaintext email (masked only)",
       && !/fetch\(|supabase|localStorage|dbAuthHeaders|dbHeaders|setSchedule|syncSchedWeeks/.test(cardSrc)
       && cardSrc.includes('if (!totals || totals.ok !== true) {') && cardSrc.includes("Totals unavailable — "),
     cardSrc ? (cardSrc.match(/fetch\(|supabase|localStorage|dbAuthHeaders|dbHeaders|setSchedule|syncSchedWeeks/) || ["fail-loud branch missing"])[0] : "component not found");
+  // An EMPTY Silvis feed (sfNotice failed / empty) shows "?" in the Silvis cells and both two-site totals —
+  // never "–" and DSG-only totals that read as "no Silvis call". Every number cell goes through show().
+  check("Y9 an empty Silvis feed shows \"?\" in the Silvis and total cells (show()), never zeros or DSG-only totals",
+    cardSrc.includes('const silvisOut = !!silvisNote && (silvisNote.kind === "failed" || silvisNote.kind === "empty");')
+      && cardSrc.includes("const SILVIS_KEYS = { silvisP: 1, silvisB: 1, total: 1, weighted: 1 };")
+      && (cardSrc.match(/\{show\(r\.k, /g) || []).length === 3 && cardSrc.includes("{show(k, v(k))}") && !/\{cell\(/.test(cardSrc),
+    cardSrc ? `show(r.k ×${(cardSrc.match(/\{show\(r\.k, /g) || []).length}; raw cell( in JSX: ${/\{cell\(/.test(cardSrc)}` : "component not found");
 }
 
 // ─── Z. silvisBusy keeps reading v6's rows (spec item 1; decisions 2026-10-11) ───
@@ -3302,7 +3321,8 @@ check("prefs audit never logs the plaintext email (masked only)",
   check("Z7 the app derives silvisDays from sfRuleRows(silvisRows), and nothing derives day sets from the full cache",
     count("const silvisRuleRows = useMemo(() => sfRuleRows(silvisRows), [silvisRows]);") === 1
       && count("const silvisDays = useMemo(() => sfDaysFromRows(silvisRuleRows, silvisRule.code), [silvisRuleRows, silvisRule.code]);") === 1
-      && count("sfDaysFromRows(silvisRows") === 0 && count("sfDaysFromRows(") === 1);
+      && count("sfDaysFromRows(silvisRows") === 0 && count("sfDaysFromRows(") === 1
+      && src.indexOf("const silvisRuleRows = useMemo(") < src.indexOf("const silvisDays = useMemo("));
   check("Z7 the feed card's 'days cached' counts the rule's window (same number as before v7), next to the unchanged covers line",
     count("<b>{silvisRuleRows.length}</b> days cached") === 1 && count("<b>{silvisRows.length}</b> days cached") === 0 && count("covers {silvisDays.from} → {silvisDays.to}") === 1);
 }

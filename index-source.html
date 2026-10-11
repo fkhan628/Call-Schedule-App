@@ -11206,12 +11206,18 @@ function CallTotalsCard({ totals, silvisNote, css, dk }) {
   const per = totals.periods[pick] || totals.periods.month;
   const w = per.worked, s = per.scheduled;
   const all = (k) => w[k] + s[k];
+  // An EMPTY Silvis feed (failed or not loaded: sfNotice kinds failed / empty) must never read
+  // as "no Silvis call": its cells and the two-site totals show "?" instead of numbers.
+  const silvisOut = !!silvisNote && (silvisNote.kind === "failed" || silvisNote.kind === "empty");
+  const SILVIS_KEYS = { silvisP: 1, silvisB: 1, total: 1, weighted: 1 };
+  const show = (k, v) => (silvisOut && SILVIS_KEYS[k] ? "?" : cell(v));
+  // Every number is a count of DAYS (Stats → Billing's units), so the labels say days.
   const ROWS = [
-    { k: "dc", label: "DSG day call" }, { k: "nights", label: "DSG weeknights" }, { k: "wknd", label: "DSG weekends" },
-    { k: "hol", label: "DSG holidays" },
-    { k: "dsgB", label: "DSG backup weeks", strong: true },
-    ...(all("dsgB") > 0 ? [{ k: "dcB", label: "day call", sub: true }, { k: "nightsB", label: "weeknights", sub: true }, { k: "wkndB", label: "weekends", sub: true }, { k: "holB", label: "holidays", sub: true }] : []),
-    { k: "silvisP", label: "Silvis primary" }, { k: "silvisB", label: "Silvis backup" },
+    { k: "dc", label: "DSG day-call days" }, { k: "nights", label: "DSG weeknights" }, { k: "wknd", label: "DSG weekend days" },
+    { k: "hol", label: "DSG holiday days" },
+    { k: "dsgB", label: "DSG backup-week days", strong: true },
+    ...(all("dsgB") > 0 ? [{ k: "dcB", label: "day call", sub: true }, { k: "nightsB", label: "weeknights", sub: true }, { k: "wkndB", label: "weekend days", sub: true }, { k: "holB", label: "holiday days", sub: true }] : []),
+    { k: "silvisP", label: "Silvis primary days" }, { k: "silvisB", label: "Silvis backup days" },
     { k: "total", label: "Total call days", strong: true, top: true }, { k: "weighted", label: "Weighted (backup ½)", strong: true },
   ];
   const th = { padding: "5px 4px", fontSize: 10, fontWeight: 700, color: C.sub, textAlign: "right", whiteSpace: "nowrap" };
@@ -11240,9 +11246,9 @@ function CallTotalsCard({ totals, silvisNote, css, dk }) {
           {ROWS.map((r) => (
             <tr key={r.k} style={{ borderTop: r.top ? "1px solid " + C.rule : "none" }}>
               <td style={{ ...td, textAlign: "left", fontSize: r.sub ? 11 : 12, paddingLeft: r.sub ? 14 : 4, color: r.sub ? C.sub : C.text, fontWeight: r.strong ? 700 : 400 }}>{r.sub ? "↳ " + r.label : r.label}</td>
-              <td style={{ ...td, fontWeight: r.strong ? 700 : 400 }}>{cell(w[r.k])}</td>
-              <td style={{ ...td, color: C.sub, fontWeight: r.strong ? 700 : 400 }}>{cell(s[r.k])}</td>
-              <td style={{ ...td, fontWeight: 700 }}>{cell(all(r.k))}</td>
+              <td style={{ ...td, fontWeight: r.strong ? 700 : 400 }}>{show(r.k, w[r.k])}</td>
+              <td style={{ ...td, color: C.sub, fontWeight: r.strong ? 700 : 400 }}>{show(r.k, s[r.k])}</td>
+              <td style={{ ...td, fontWeight: 700 }}>{show(r.k, all(r.k))}</td>
             </tr>
           ))}
         </tbody>
@@ -11267,7 +11273,7 @@ function CallTotalsCard({ totals, silvisNote, css, dk }) {
                   <tr key={m.month} style={{ borderBottom: "1px solid " + C.rule }}>
                     <td style={{ ...td, textAlign: "left", fontSize: 12, position: "sticky", left: 0, background: C.bg }}>{MO[Number(m.month.slice(5, 7)) - 1].slice(0, 3)}{pending ? " *" : ""}</td>
                     {["dsg", "dsgB", "silvisP", "silvisB", "total", "weighted"].map((k) => (
-                      <td key={k} style={{ ...td, fontSize: 12, color: v(k) ? (pending ? C.sub : C.text) : C.faint, fontStyle: pending ? "italic" : "normal", fontWeight: k === "total" ? 700 : 400 }}>{cell(v(k))}</td>
+                      <td key={k} style={{ ...td, fontSize: 12, color: v(k) ? (pending ? C.sub : C.text) : C.faint, fontStyle: pending ? "italic" : "normal", fontWeight: k === "total" ? 700 : 400 }}>{show(k, v(k))}</td>
                     ))}
                   </tr>
                 );
@@ -11278,7 +11284,7 @@ function CallTotalsCard({ totals, silvisNote, css, dk }) {
         </div>
       )}
       <div style={{ fontSize: 10, color: C.faint, marginTop: 8, lineHeight: 1.5 }}>
-        Data: {dsgLine} · {silLine}. Worked = through today; scheduled = after today. DSG days are counted the way Stats → Billing counts them (a covered holiday = 2 days); backup-week roles are listed apart. Weighted: every backup role (DSG backup weeks, Silvis backup) counts ½.
+        Data: {dsgLine} · {silLine}. Worked = through today; scheduled = after today. DSG days are counted the way Stats → Billing counts them (a covered holiday = 2 days); backup-week roles are listed apart. Every number is a count of role-days, so one date can count more than once (a service day and a night, or a DSG day and a Silvis day). Weighted: every backup role (DSG backup-week days, Silvis backup days) counts ½.{silvisOut ? " ? = Silvis data missing — the totals would undercount." : ""}
       </div>
     </div>
   );
