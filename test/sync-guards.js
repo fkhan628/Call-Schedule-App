@@ -3327,33 +3327,37 @@ check("prefs audit never logs the plaintext email (masked only)",
     count("<b>{silvisRuleRows.length}</b> days cached") === 1 && count("<b>{silvisRows.length}</b> days cached") === 0 && count("covers {silvisDays.from} → {silvisDays.to}") === 1);
 }
 
-// ─── AB. APP call-shift edits wait for the APP-shift row (2026-10-11, audit QW4) ───
+// ─── AB. APP call-shift edits wait for the APP-shift row (2026-10-11, audit QW4 + its review) ───
 // Every APP write upserts the WHOLE app_shifts_data 'main' map (no CAS, no
 // snapshot, no restore path). If the read failed, appShifts stayed at its
 // initial {} and the next tap — or ANY week-editor save, which wrote its 7-day
 // APP draft back unconditionally — replaced every APP's assignments. The
-// day-off row already had this guard; now the call-shift row does too.
-//   AB1 add / remove / paint refuse before a successful read, write after it
-//   AB2 the week editor writes APP changes only when they change something, and never unloaded
-//   AB3 both reads arm the guard; the card disables its buttons and says why
+// day-off row already had this guard; now the call-shift row does too, and the
+// week editor writes only the APP days edited against what it showed on open.
+//   AB1 add / remove / paint refuse before a successful read, write the right map after it
+//   AB2 the REAL saveWeekEdits: an editor opened before the row loaded never clears assignments;
+//       only edited days are written, onto the latest map; refused APP edits stay out of the
+//       audit and the notifications; surgeon edits always save; an APP-only refusal keeps the editor open
+//   AB3 both reads arm the guard; the card disables its buttons and says why; a failed APP save toasts
 {
   const nsrcAB = src.replace(/\r\n/g, "\n");
-  const arrowBody = (decl) => { const i = nsrcAB.indexOf(decl); if (i < 0) return null; const e = nsrcAB.indexOf("\n  };\n", i); return e < 0 ? null : nsrcAB.slice(i + decl.length - "() => {".length, e) + "\n  }"; };
-  const addSrc = arrowBody("const addAppShift = () => {");
-  const rmBody = (() => { const i = nsrcAB.indexOf("const rmAppShift = (ds) => {"); const e = i < 0 ? -1 : nsrcAB.indexOf("\n  };\n", i); return i < 0 || e < 0 ? null : "(ds) => {" + nsrcAB.slice(i + "const rmAppShift = (ds) => {".length, e) + "\n  }"; })();
-  const paintBody = (() => { const i = nsrcAB.indexOf("const commitAppPaint = async (draft) => {"); const e = i < 0 ? -1 : nsrcAB.indexOf("\n  };\n", i); return i < 0 || e < 0 ? null : "async (draft) => {" + nsrcAB.slice(i + "const commitAppPaint = async (draft) => {".length, e) + "\n  }"; })();
-  const ENV = "appShiftsLoaded, appShifts, appDate, appPerson, showToast, setAppShifts, saveAppShifts, logAudit, nameOf, setAppDate, supabase, APP_SHIFTS_NOT_LOADED";
+  const arrowBody = (decl, head) => { const i = nsrcAB.indexOf(decl); if (i < 0) return null; const e = nsrcAB.indexOf("\n  };\n", i); return e < 0 ? null : head + nsrcAB.slice(i + decl.length, e) + "\n  }"; };
+  const addSrc = arrowBody("const addAppShift = () => {", "() => {");
+  const rmBody = arrowBody("const rmAppShift = (ds) => {", "(ds) => {");
+  const paintBody = arrowBody("const commitAppPaint = async (draft) => {", "async (draft) => {");
+  const saveBody = arrowBody("const saveAppShifts = async (next) => {", "async (next) => {");
+  const ENV = "appShiftsLoaded, appShifts, appDate, appPerson, showToast, setAppShifts, saveAppShifts, logAudit, nameOf, setAppDate, supabase, APP_SHIFTS_NOT_LOADED, setSaveError, setSaveStatus";
   const mk = (body) => { try { return body ? vm.runInContext(`(function (env) { const { ${ENV} } = env; return (${body}); })`, sandbox) : null; } catch (ex) { return null; } };
-  const mkAdd = mk(addSrc), mkRm = mk(rmBody), mkPaint = mk(paintBody);
-  const envAB = (loaded) => {
-    const rec = { toasts: [], sets: [], saves: [], upserts: 0 };
-    return { rec, env: {
+  const mkAdd = mk(addSrc), mkRm = mk(rmBody), mkPaint = mk(paintBody), mkSave = mk(saveBody);
+  const envAB = (loaded, over = {}) => {
+    const rec = { toasts: [], sets: [], saves: [], upserts: 0, rows: [] };
+    return { rec, env: Object.assign({
       appShiftsLoaded: loaded, appShifts: { "2026-10-12": "a1", "2026-10-13": "a2" }, appDate: "2026-10-14", appPerson: "a3",
       showToast: (m) => rec.toasts.push(String(m)), setAppShifts: (x) => rec.sets.push(x), saveAppShifts: (x) => rec.saves.push(x),
-      logAudit: () => {}, nameOf: (x) => x, setAppDate: () => {},
-      supabase: { from: () => ({ upsert: async () => { rec.upserts++; return { error: null }; } }) },
+      logAudit: () => {}, nameOf: (x) => x, setAppDate: () => {}, setSaveError: () => {}, setSaveStatus: () => {},
+      supabase: { from: () => ({ upsert: async (row) => { rec.upserts++; rec.rows.push(row); return { error: null }; } }) },
       APP_SHIFTS_NOT_LOADED: "APP shifts haven't loaded yet",
-    } };
+    }, over) };
   };
   {
     const a0 = envAB(false), a1 = envAB(true), r0 = envAB(false), r1 = envAB(true), p0 = envAB(false), p1 = envAB(true);
@@ -3365,36 +3369,75 @@ check("prefs audit never logs the plaintext email (masked only)",
         && r0.rec.sets.length === 0 && r0.rec.saves.length === 0 && /haven't loaded/.test(r0.rec.toasts.join(" "))
         && pr0 && pr0.ok === false && /haven't loaded/.test(pr0.error) && p0.rec.upserts === 0,
       JSON.stringify({ a0: a0.rec, r0: r0.rec, pr0, mk: [!!mkAdd, !!mkRm, !!mkPaint] }).slice(0, 300));
-    check("AB1 after a successful read the same three write (add merges, remove drops, paint upserts once)",
+    check("AB1 after a successful read the same three write the right map (add merges, remove drops, paint upserts main once with the old days kept)",
       a1.rec.saves.length === 1 && a1.rec.saves[0]["2026-10-14"] === "a3" && a1.rec.saves[0]["2026-10-12"] === "a1"
         && r1.rec.saves.length === 1 && !("2026-10-12" in r1.rec.saves[0]) && r1.rec.saves[0]["2026-10-13"] === "a2"
-        && pr1 && pr1.ok === true && p1.rec.upserts === 1,
-      JSON.stringify({ a1: a1.rec.saves, r1: r1.rec.saves, pr1 }).slice(0, 300));
+        && pr1 && pr1.ok === true && p1.rec.upserts === 1 && p1.rec.rows[0].id === "main" && p1.rec.rows[0].data["2026-10-20"] === "a1" && p1.rec.rows[0].data["2026-10-12"] === "a1" && p1.rec.rows[0].data["2026-10-13"] === "a2",
+      JSON.stringify({ a1: a1.rec.saves, r1: r1.rec.saves, pr1, rows: p1.rec.rows }).slice(0, 300));
   }
+  // AB2 — the REAL saveWeekEdits
   {
-    const i = nsrcAB.indexOf("    const appChanged = "), e = i < 0 ? -1 : nsrcAB.indexOf('    logAudit("schedule.week_edit"', i);
-    const part = i < 0 || e < 0 ? null : nsrcAB.slice(i, e);
-    const run = (loaded, draftApps) => {
-      if (!part) return null;
-      const { rec, env } = envAB(loaded);
-      vm.runInContext(`(function (env, draft) { const { ${ENV} } = env; ${part} })`, sandbox)(env, { apps: draftApps });
-      // run the updater the way React would
-      const merged = rec.sets.length ? rec.sets[0](env.appShifts) : null;
+    const i = nsrcAB.indexOf("const saveWeekEdits = useCallback((openAfter) => {"), e = i < 0 ? -1 : nsrcAB.indexOf("\n  }, [editWeekModal,", i);
+    const weBody = i < 0 || e < 0 ? null : "(openAfter) => {" + nsrcAB.slice(i + "const saveWeekEdits = useCallback((openAfter) => {".length, e) + "\n  }";
+    const WE_ENV = "editWeekModal, schedule, appShifts, appShiftsLoaded, openWeekEditor, setEditWeekModal, silvisActive, silvisFakId, silvisDays, silvisBlock, silvisRefuse, sfSlotDays, confirm, pushUndo, setSchedule, backupMondaySet, fierceBackupSet, surgeons, showToast, APP_SHIFTS_NOT_LOADED, setAppShifts, saveAppShifts, logAudit, nameOf, aMap, sMap, schedulerAdminIds, addNotification, sendEmailNotif, setTimeout";
+    let mkWE = null; try { mkWE = weBody ? vm.runInContext(`(function (env) { const { ${WE_ENV} } = env; return (${weBody}); })`, sandbox) : null; } catch (ex) { mkWE = null; }
+    const MON = "2026-10-12", DAYS = ["2026-10-12", "2026-10-13", "2026-10-14", "2026-10-15", "2026-10-16", "2026-10-17", "2026-10-18"];
+    const blanks = Object.fromEntries(DAYS.map(d => [d, ""]));
+    const real = { "2026-10-12": "a1", "2026-10-13": "a2", "2026-10-20": "a4" };   // the stored map (incl. a day outside this week)
+    const realWk = Object.fromEntries(DAYS.map(d => [d, real[d] || ""]));
+    const runWE = ({ loaded, appsBase, draftApps, surgeonChange }) => {
+      const rec = { toasts: [], appSets: [], saves: [], schedSets: 0, closed: 0, audits: [], notifs: [] };
+      const wk = { dayCall: "s1", nights: { mon: "s2", tue: "s3", wed: "s4", thu: "s5", wknd: "s6" } };
+      const env = {
+        editWeekModal: { mondayStr: MON, appsBase, draft: { dayCall: surgeonChange ? "s7" : "s1", nights: { ...wk.nights }, dayCallOverrides: {}, apps: draftApps, reason: "" } },
+        schedule: { [MON]: wk }, appShifts: real, appShiftsLoaded: loaded, openWeekEditor: () => {}, setEditWeekModal: (x) => { if (x === null) rec.closed++; },
+        silvisActive: false, silvisFakId: null, silvisDays: { primary: new Set() }, silvisBlock: () => null, silvisRefuse: () => false, sfSlotDays: () => [],
+        confirm: () => true, pushUndo: () => {}, setSchedule: () => { rec.schedSets++; }, backupMondaySet: new Set(), fierceBackupSet: new Set(),
+        surgeons: ["s1", "s2", "s3", "s4", "s5", "s6", "s7"].map(id => ({ id, name: id.toUpperCase() })),
+        showToast: (m) => rec.toasts.push(String(m)), APP_SHIFTS_NOT_LOADED: "APP shifts haven't loaded yet",
+        setAppShifts: (u) => rec.appSets.push(u), saveAppShifts: (x) => rec.saves.push(x),
+        logAudit: (a, msg, meta) => rec.audits.push(meta), nameOf: (x) => x, aMap: {}, sMap: {}, schedulerAdminIds: ["s6"],
+        addNotification: (t, title, msg) => rec.notifs.push(msg), sendEmailNotif: () => {}, setTimeout: () => {},
+      };
+      mkWE(env)(null);
+      const merged = rec.appSets.length ? rec.appSets[0]({ ...real, "2026-10-15": "a6", "2026-10-21": "a5" }) : null;   // the updater runs on the LATEST map (two days assigned elsewhere meanwhile)
       return { rec, merged };
     };
-    const same = run(true, { "2026-10-12": "a1", "2026-10-13": "a2" });
-    const changedNotLoaded = run(false, { "2026-10-12": "a3" });
-    const changedLoaded = run(true, { "2026-10-12": "a3", "2026-10-13": "" });
-    check("AB2 the week editor writes APP changes only when there are some; unloaded it saves the surgeons, refuses the APPs and says so",
-      !!same && same.rec.sets.length === 0 && same.rec.saves.length === 0
-        && changedNotLoaded.rec.sets.length === 0 && changedNotLoaded.rec.saves.length === 0 && /APP changes were NOT saved/.test(changedNotLoaded.rec.toasts.join(" "))
-        && changedLoaded.rec.sets.length === 1 && JSON.stringify(changedLoaded.merged) === JSON.stringify({ "2026-10-12": "a3" }) && changedLoaded.rec.saves.length === 1,
-      part ? JSON.stringify({ same: same.rec, cnl: changedNotLoaded.rec, cl: changedLoaded.merged }).slice(0, 300) : "editor APP part not found");
+    const sortedJSON = (o) => JSON.stringify(o && Object.keys(o).sort().map(k => [k, o[k]]));
+    if (mkWE) {
+      const opened = runWE({ loaded: true, appsBase: blanks, draftApps: { ...blanks }, surgeonChange: true });
+      check("AB2 an editor OPENED before the APP row loaded (all blanks), saved after it loaded, writes NO APP change — the week's real assignments stay (the review's data-loss case)",
+        opened.rec.appSets.length === 0 && opened.rec.saves.length === 0 && opened.rec.schedSets === 1, JSON.stringify(opened.rec).slice(0, 300));
+      const edited = runWE({ loaded: true, appsBase: realWk, draftApps: { ...realWk, "2026-10-14": "a3", "2026-10-13": "" }, surgeonChange: false });
+      check("AB2 only the days edited in the editor are written, onto the LATEST map (days assigned elsewhere meanwhile survive — inside this week too), and saved once",
+        edited.rec.appSets.length === 1 && sortedJSON(edited.merged) === sortedJSON({ "2026-10-12": "a1", "2026-10-14": "a3", "2026-10-15": "a6", "2026-10-20": "a4", "2026-10-21": "a5" })
+          && edited.rec.saves.length === 1 && JSON.stringify(edited.rec.saves[0]) === JSON.stringify(edited.merged), JSON.stringify(edited.merged));
+      const refusedMix = runWE({ loaded: false, appsBase: blanks, draftApps: { ...blanks, "2026-10-14": "a3" }, surgeonChange: true });
+      const auditSlots = refusedMix.rec.audits.length ? refusedMix.rec.audits[0].changes.map(c => c.slot) : [];
+      check("AB2 unloaded: the surgeon change saves, the APP change is refused with the reason — and it stays OUT of the audit and the notification",
+        refusedMix.rec.schedSets === 1 && refusedMix.rec.appSets.length === 0 && /APP changes were NOT saved/.test(refusedMix.rec.toasts.join(" "))
+          && auditSlots.length === 1 && !auditSlots.some(s => /^APP /.test(s)) && !refusedMix.rec.notifs.some(m => /APP /.test(m)), JSON.stringify({ auditSlots, notifs: refusedMix.rec.notifs, toasts: refusedMix.rec.toasts }));
+      const appOnly = runWE({ loaded: false, appsBase: blanks, draftApps: { ...blanks, "2026-10-14": "a3" }, surgeonChange: false });
+      check("AB2 unloaded with ONLY an APP change: refused with the reason, nothing written or audited, and the editor stays open",
+        appOnly.rec.schedSets === 0 && appOnly.rec.appSets.length === 0 && appOnly.rec.audits.length === 0 && appOnly.rec.closed === 0 && /APP changes were NOT saved/.test(appOnly.rec.toasts.join(" ")), JSON.stringify(appOnly.rec));
+      const none = runWE({ loaded: false, appsBase: realWk, draftApps: { ...realWk }, surgeonChange: false });
+      check("AB2 no edits at all closes the editor quietly — even unloaded (no toast, no write)",
+        none.rec.closed === 1 && none.rec.toasts.length === 0 && none.rec.appSets.length === 0 && none.rec.schedSets === 0, JSON.stringify(none.rec));
+    } else check("AB2 saveWeekEdits extractable for execution", false, "anchors not found");
+    check("AB2 the editor keeps a COPY of what its APP rows showed on open (the base the save diffs against), and it is the only place a week editor is created",
+      count('appsDraft[ds] = appShifts[ds] || "";') === 1 && count("appsBase: { ...appsDraft },") === 1 && count("setEditWeekModal({") === 1);
   }
   check("AB3 both reads of the main row arm the guard right after .single() (mount + poll); nothing else arms it",
     (src.match(/\.eq\("id", "main"\)\.single\(\);\r?\n\s*setAppShiftsLoaded\(true\);/g) || []).length === 2 && count("setAppShiftsLoaded(true)") === 2);
   check("AB3 the APP card disables + Assign and Paint Month until the row loads, and says why",
     count("disabled={!appShiftsLoaded}") === 2 && count("⚠ {APP_SHIFTS_NOT_LOADED}") === 1);
+  {
+    const s1 = envAB(true, { supabase: { from: () => ({ upsert: async () => ({ error: { code: "42501", message: "denied" } }) }) } });
+    const s2 = envAB(true, { supabase: { from: () => ({ upsert: async () => { throw new TypeError("Failed to fetch"); } }) } });
+    if (mkSave) { await mkSave(s1.env)({}); await mkSave(s2.env)({}); }
+    check("AB3 a failed APP save toasts (it only set a status line before) — for an error result and for a thrown request",
+      !!mkSave && /Couldn't save APP shifts/.test(s1.rec.toasts.join(" ")) && /Couldn't save APP shifts/.test(s2.rec.toasts.join(" ")), JSON.stringify([s1.rec.toasts, s2.rec.toasts]));
+  }
 }
 
 // ─── Verdict ───

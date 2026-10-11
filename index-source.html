@@ -4866,6 +4866,10 @@ function CallSchedule() {
     }
     setEditWeekModal({
       mondayStr,
+      // What the APP rows showed when the editor OPENED (2026-10-11): saving
+      // writes only the days edited against this, so an editor opened before
+      // the APP-shift row loaded (all blanks) can never clear real assignments.
+      appsBase: { ...appsDraft },
       draft: {
         dayCall: wk.dayCall || "",
         nights: { ...(wk.nights || {}) },
@@ -4880,8 +4884,13 @@ function CallSchedule() {
     if (!editWeekModal) return;
     const { mondayStr, draft } = editWeekModal;
     const oldWk = schedule[mondayStr] || {};
-    const oldApps = {};
-    Object.keys(draft.apps).forEach(ds => { oldApps[ds] = appShifts[ds] || ""; });
+    // APP days the user actually edited in THIS editor, against what it showed
+    // when it opened (2026-10-11) — only these are written. Before the APP-shift
+    // row has loaded this session the whole map can't be trusted: the APP part
+    // is refused, with the reason, while the surgeon edits still save (3a).
+    const appsBase = editWeekModal.appsBase || {};
+    const appEdits = Object.entries(draft.apps).filter(([ds, aid]) => (aid || "") !== (appsBase[ds] || ""));
+    const appRefused = appEdits.length > 0 && !appShiftsLoaded;
 
     // Build diff list of changes
     const changes = []; // { slotLabel, oldId, newId, isApp, date }
@@ -4911,14 +4920,17 @@ function CallSchedule() {
         }
       });
     }
-    Object.entries(draft.apps).forEach(([ds, newAppId]) => {
-      const oldAppId = oldApps[ds] || "";
-      if ((oldAppId || "") !== (newAppId || "")) {
+    // Refused APP edits never reach the confirm, the audit or the notifications.
+    if (!appRefused) appEdits.forEach(([ds, newAppId]) => {
+      const oldAppId = appShifts[ds] || "";
+      if (oldAppId !== (newAppId || "")) {
         changes.push({ slotLabel: `APP ${ds}`, oldId: oldAppId, newId: newAppId, isApp: true, date: ds });
       }
     });
 
     if (changes.length === 0) {
+      // Only refused APP edits: say so and keep the editor open.
+      if (appRefused) { showToast("The APP changes were NOT saved: " + APP_SHIFTS_NOT_LOADED, "error"); return; }
       if (openAfter) openWeekEditor(openAfter); else setEditWeekModal(null);
       return;
     }
@@ -4983,17 +4995,16 @@ function CallSchedule() {
       n[mondayStr] = wk;
       return n;
     });
-    // APP changes (2026-10-11): written only when the editor actually changed
-    // one, and never before the APP-shift row has loaded this session — the
-    // whole map is upserted, so a write from a failed load would replace every
-    // APP's assignments. The surgeon edits above save either way (convention 3a).
-    const appChanged = Object.entries(draft.apps).some(([ds, aid]) => (aid || "") !== (appShifts[ds] || ""));
-    if (appChanged && !appShiftsLoaded) {
+    // APP changes (2026-10-11): only the days edited in this editor, applied to
+    // the LATEST map; never before the APP-shift row has loaded this session —
+    // the whole map is upserted, so a write from a failed load would replace
+    // every APP's assignments. The surgeon edits above save either way (3a).
+    if (appRefused) {
       showToast("Saved the surgeon changes — the APP changes were NOT saved: " + APP_SHIFTS_NOT_LOADED, "error");
-    } else if (appChanged) {
+    } else if (appEdits.length) {
       setAppShifts(p => {
         const n = { ...p };
-        Object.entries(draft.apps).forEach(([ds, aid]) => {
+        appEdits.forEach(([ds, aid]) => {
           if (aid) n[ds] = aid;
           else delete n[ds];
         });
