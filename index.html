@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.10.11b";
+    var APP_VERSION = "2026.10.11c";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -157,6 +157,7 @@ function CallSchedule() {
   const [fierceBackupSet, setFierceBackupSet] = useState(new Set());
   const [schedule, setSchedule] = useState({});
   const [appShifts, setAppShifts] = useState({});
+  const [appShiftsLoaded, setAppShiftsLoaded] = useState(false);
   const [appDayOff, setAppDayOff] = useState({});
   const [appDayOffLoaded, setAppDayOffLoaded] = useState(false);
   const appDayOffRef = useRef({});
@@ -1393,6 +1394,7 @@ function CallSchedule() {
           const {
             data: appRow
           } = await supabase.from("app_shifts_data").select("data").eq("id", "main").single();
+          setAppShiftsLoaded(true);
           if (appRow !== null && appRow !== void 0 && appRow.data && typeof appRow.data === "object") setAppShifts(appRow.data);
         } catch (e) {
           console.error("APP shifts load failed:", e);
@@ -1496,6 +1498,7 @@ function CallSchedule() {
         const {
           data: appRow
         } = await supabase.from("app_shifts_data").select("data").eq("id", "main").single();
+        setAppShiftsLoaded(true);
         if (appRow !== null && appRow !== void 0 && appRow.data && typeof appRow.data === "object") setAppShifts(appRow.data);
         if (appOffVisible) {
           const {
@@ -3593,6 +3596,7 @@ function CallSchedule() {
       if (error) {
         setSaveError(true);
         setSaveStatus("⚠ APP shift save failed");
+        showToast("Couldn't save APP shifts — check your connection (or your permission to assign APPs) and try again.", "error");
       } else {
         setSaveStatus("APP shifts saved");
         setTimeout(() => setSaveStatus(""), 1500);
@@ -3600,9 +3604,15 @@ function CallSchedule() {
     } catch (e) {
       setSaveError(true);
       setSaveStatus("⚠ APP shift save failed");
+      showToast("Couldn't save APP shifts — check your connection and try again.", "error");
     }
   };
+  const APP_SHIFTS_NOT_LOADED = "APP shifts haven't loaded yet — editing is disabled so saved assignments can't be overwritten. Retries automatically (~1 min); reload if it persists.";
   const addAppShift = () => {
+    if (!appShiftsLoaded) {
+      showToast(APP_SHIFTS_NOT_LOADED, "error");
+      return;
+    }
     if (!appDate || !appPerson) return;
     const next = _objectSpread(_objectSpread({}, appShifts), {}, {
       [appDate]: appPerson
@@ -3616,6 +3626,10 @@ function CallSchedule() {
     setAppDate(fmt(new Date()));
   };
   const rmAppShift = ds => {
+    if (!appShiftsLoaded) {
+      showToast(APP_SHIFTS_NOT_LOADED, "error");
+      return;
+    }
     const prevId = appShifts[ds];
     const next = _objectSpread({}, appShifts);
     delete next[ds];
@@ -3627,6 +3641,10 @@ function CallSchedule() {
   };
   const [paintSheet, setPaintSheet] = useState(null);
   const commitAppPaint = async draft => {
+    if (!appShiftsLoaded) return {
+      ok: false,
+      error: APP_SHIFTS_NOT_LOADED
+    };
     const next = _objectSpread({}, appShifts);
     let assigns = 0,
       clears = 0;
@@ -4721,6 +4739,8 @@ function CallSchedule() {
     }
     setEditWeekModal({
       mondayStr,
+      appsBase: _objectSpread({}, appsDraft),
+      appsLoaded: appShiftsLoaded,
       draft: {
         dayCall: wk.dayCall || "",
         nights: _objectSpread({}, wk.nights || {}),
@@ -4729,7 +4749,7 @@ function CallSchedule() {
         reason: ""
       }
     });
-  }, [schedule, appShifts]);
+  }, [schedule, appShifts, appShiftsLoaded]);
   const saveWeekEdits = useCallback(openAfter => {
     if (!editWeekModal) return;
     const {
@@ -4737,10 +4757,9 @@ function CallSchedule() {
       draft
     } = editWeekModal;
     const oldWk = schedule[mondayStr] || {};
-    const oldApps = {};
-    Object.keys(draft.apps).forEach(ds => {
-      oldApps[ds] = appShifts[ds] || "";
-    });
+    const appsBase = editWeekModal.appsBase || {};
+    const appEdits = Object.entries(draft.apps).filter(([ds, aid]) => (aid || "") !== (appsBase[ds] || ""));
+    const appRefused = appEdits.length > 0 && !appShiftsLoaded;
     const changes = [];
     if ((oldWk.dayCall || "") !== draft.dayCall) {
       changes.push({
@@ -4784,9 +4803,9 @@ function CallSchedule() {
         }
       });
     }
-    Object.entries(draft.apps).forEach(([ds, newAppId]) => {
-      const oldAppId = oldApps[ds] || "";
-      if ((oldAppId || "") !== (newAppId || "")) {
+    if (!appRefused) appEdits.forEach(([ds, newAppId]) => {
+      const oldAppId = appShifts[ds] || "";
+      if (oldAppId !== (newAppId || "")) {
         changes.push({
           slotLabel: `APP ${ds}`,
           oldId: oldAppId,
@@ -4797,6 +4816,10 @@ function CallSchedule() {
       }
     });
     if (changes.length === 0) {
+      if (appRefused) {
+        showToast("The APP changes were NOT saved: " + APP_SHIFTS_NOT_LOADED, "error");
+        return;
+      }
       if (openAfter) openWeekEditor(openAfter);else setEditWeekModal(null);
       return;
     }
@@ -4846,14 +4869,18 @@ function CallSchedule() {
       n[mondayStr] = wk;
       return n;
     });
-    setAppShifts(p => {
-      const n = _objectSpread({}, p);
-      Object.entries(draft.apps).forEach(([ds, aid]) => {
-        if (aid) n[ds] = aid;else delete n[ds];
+    if (appRefused) {
+      showToast("The surgeon changes went through, but the APP changes were NOT saved: " + APP_SHIFTS_NOT_LOADED, "error");
+    } else if (appEdits.length) {
+      setAppShifts(p => {
+        const n = _objectSpread({}, p);
+        appEdits.forEach(([ds, aid]) => {
+          if (aid) n[ds] = aid;else delete n[ds];
+        });
+        saveAppShifts(n);
+        return n;
       });
-      saveAppShifts(n);
-      return n;
-    });
+    }
     logAudit("schedule.week_edit", `Edited ${changes.length} shift${changes.length === 1 ? "" : "s"} in week of ${mondayStr}${draft.reason ? " (" + draft.reason + ")" : ""}`, {
       mondayStr,
       changes: changes.map(c => ({
@@ -4936,7 +4963,7 @@ function CallSchedule() {
     if (openAfter) {
       setTimeout(() => openWeekEditor(openAfter), 0);
     }
-  }, [editWeekModal, schedule, appShifts, surgeons, sMap, aMap, addNotification, sendEmailNotif, pushUndo, schedulerAdminIds, openWeekEditor, backupMondaySet, fierceBackupSet, silvisActive, silvisFakId, silvisDays, silvisBlock, silvisRefuse]);
+  }, [editWeekModal, schedule, appShifts, appShiftsLoaded, surgeons, sMap, aMap, addNotification, sendEmailNotif, pushUndo, schedulerAdminIds, openWeekEditor, backupMondaySet, fierceBackupSet, silvisActive, silvisFakId, silvisDays, silvisBlock, silvisRefuse]);
   const setWeekFlag = (monday, flagKey, val) => {
     setSchedule(p => {
       const wk = p[monday];
@@ -7892,13 +7919,27 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     value: a.id
   }, a.name)))), React.createElement("button", {
     onClick: addAppShift,
-    style: css.btn(true)
+    disabled: !appShiftsLoaded,
+    style: _objectSpread(_objectSpread({}, css.btn(true)), {}, {
+      opacity: appShiftsLoaded ? 1 : 0.4,
+      cursor: appShiftsLoaded ? "pointer" : "not-allowed"
+    })
   }, "+ Assign"), React.createElement("button", {
     onClick: () => setPaintSheet("app"),
+    disabled: !appShiftsLoaded,
     style: _objectSpread(_objectSpread({}, css.btn(false)), {}, {
-      fontWeight: 700
+      fontWeight: 700,
+      opacity: appShiftsLoaded ? 1 : 0.4,
+      cursor: appShiftsLoaded ? "pointer" : "not-allowed"
     })
-  }, "🖌 Paint Month")), Object.keys(appShifts).length > 0 && React.createElement("div", {
+  }, "🖌 Paint Month")), !appShiftsLoaded && React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: "#c04040",
+      fontWeight: 600,
+      margin: "0 0 10px"
+    }
+  }, "⚠ ", APP_SHIFTS_NOT_LOADED), Object.keys(appShifts).length > 0 && React.createElement("div", {
     style: {
       borderTop: "1px solid #e8ecf0",
       paddingTop: 10
@@ -11581,10 +11622,12 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     const prevMonday = idx > 0 ? allMondays[idx - 1] : null;
     const nextMonday = idx >= 0 && idx < allMondays.length - 1 ? allMondays[idx + 1] : null;
     const oldWk = schedule[mondayStr] || {};
+    const appsBase = editWeekModal.appsBase || {};
+    const appsLocked = !editWeekModal.appsLoaded;
     const hasUnsaved = (oldWk.dayCall || "") !== (draft.dayCall || "") || ["mon", "tue", "wed", "thu", "wknd"].some(nk => {
       var _oldWk$nights4, _draft$nights3;
       return (((_oldWk$nights4 = oldWk.nights) === null || _oldWk$nights4 === void 0 ? void 0 : _oldWk$nights4[nk]) || "") !== (((_draft$nights3 = draft.nights) === null || _draft$nights3 === void 0 ? void 0 : _draft$nights3[nk]) || "");
-    }) || Object.entries(draft.apps).some(([ds, aid]) => (appShifts[ds] || "") !== (aid || "")) || (() => {
+    }) || Object.entries(draft.apps).some(([ds, aid]) => (appsBase[ds] || "") !== (aid || "")) || (() => {
       const oldOv = oldWk.dayCallOverrides || {};
       const newOv = draft.dayCallOverrides || {};
       const keys = new Set([...Object.keys(oldOv), ...Object.keys(newOv)]);
@@ -11829,7 +11872,14 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         textTransform: "uppercase",
         letterSpacing: 0.5
       }
-    }, "APP Shifts"), React.createElement("div", {
+    }, "APP Shifts"), appsLocked && React.createElement("div", {
+      style: {
+        fontSize: 12,
+        color: dk ? "#f0b0a0" : "#a33",
+        marginBottom: 6,
+        lineHeight: 1.4
+      }
+    }, "⚠ APP shifts hadn't loaded when this editor opened, so these rows may be wrong and are locked. Close and reopen the editor to change APP days."), React.createElement("div", {
       style: {
         display: "grid",
         gridTemplateColumns: "150px 1fr",
@@ -11850,13 +11900,15 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         }
       }, dayLabels[d.getDay()], " ", d.getMonth() + 1, "/", d.getDate()), React.createElement("select", {
         value: draft.apps[ds] || "",
+        disabled: appsLocked,
         onChange: e => updateDraft(dr => _objectSpread(_objectSpread({}, dr), {}, {
           apps: _objectSpread(_objectSpread({}, dr.apps), {}, {
             [ds]: e.target.value
           })
         })),
         style: _objectSpread(_objectSpread({}, css.inp), {}, {
-          padding: "6px 8px"
+          padding: "6px 8px",
+          opacity: appsLocked ? 0.5 : 1
         })
       }, appOpts));
     }))), React.createElement("div", {
