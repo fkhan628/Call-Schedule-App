@@ -80,6 +80,116 @@ function weekBillingCredits(mondayStr, wk) {
   return credits;
 }
 
+/* ═══ Personal call totals: DSG + Silvis (owner request 2026-10-09; decisions 2026-10-11) ═══
+   The ONE counter behind the FAK-only totals card in the Mine tab AND the Silvis
+   app's copy of that card, so both apps show the same numbers for the same period.
+   Pure: no clock (`today` is passed in), no state, nothing read but the arguments.
+   Keyed by the roster CODE.
+   PARITY CONTRACT for the Silvis port (Silvis Prompt 31):
+   - copy weekBillingCredits, callTotalPeriods and callTotalsFor VERBATIM, plus this
+     app's NIGHT_KEYS value (["mon","tue","wed","thu"], config.js), into a NEW
+     classic-script module loaded after Silvis's helpers.js, with its own Node export
+     guard. Reuse Silvis's own fmt / parse / addD (byte-identical to the ones at the top
+     of this file) - declaring them a second time is a SyntaxError. Not in Silvis
+     helpers.js or config.js: Silvis's data-layer test bans these names there.
+   - `today` is the DEVICE date, fmt(new Date()), in BOTH apps (decision 2026-10-11) -
+     not Silvis's todayCentral(), or the cards disagree on the month and on worked vs
+     scheduled whenever the device is not on Central time.
+   - the port must give test/fixtures/call-totals-card-synthetic-2026-10-14.json's
+     `expected` from its `input`, exactly. */
+
+// callTotalPeriods(today) -> { month, ytd, year, rolling12, months:[12] } | null
+//   month     = today's calendar month         ytd    = Jan 1 .. today
+//   year      = Jan 1 .. Dec 31                 months = Jan .. Dec of today's year
+//   rolling12 = the day after (today minus 12 months; Feb 29 -> Feb 28) .. today
+//   Each is { from, to } ('YYYY-MM-DD', both inclusive); months[i] also has month:'YYYY-MM'.
+//   A malformed or impossible date gives null, never a guessed period.
+function callTotalPeriods(today) {
+  if (typeof today !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(today) || fmt(parse(today)) !== today) return null;
+  const y = Number(today.slice(0, 4)), m = Number(today.slice(5, 7)), d = Number(today.slice(8, 10));
+  const p2 = (n) => String(n).padStart(2, "0");
+  const lastDay = (yy, mm) => new Date(yy, mm, 0).getDate(); // mm is 1-based: day 0 of the next month
+  const months = [];
+  for (let mm = 1; mm <= 12; mm++) months.push({ month: `${y}-${p2(mm)}`, from: `${y}-${p2(mm)}-01`, to: `${y}-${p2(mm)}-${p2(lastDay(y, mm))}` });
+  const back = `${y - 1}-${p2(m)}-${p2(Math.min(d, lastDay(y - 1, m)))}`;
+  return {
+    month: { from: months[m - 1].from, to: months[m - 1].to },
+    ytd: { from: `${y}-01-01`, to: today },
+    year: { from: `${y}-01-01`, to: `${y}-12-31` },
+    rolling12: { from: fmt(addD(parse(back), 1)), to: today },
+    months,
+  };
+}
+
+// callTotalsFor({ weeks, roster, silvisRows, code, today })
+//   -> { ok:true, code, sid, today, range:{ dsgFrom, dsgTo, silvisFrom, silvisTo },
+//        periods:{ month, ytd, year, rolling12 }, months:[12] }   (each { from, to, worked, scheduled })
+//   -> { ok:false, error }   for a missing/unknown code or a bad date — never zeros that look like "no call"
+//   weeks      the PUBLISHED schedule { 'YYYY-MM-DD' Monday: week row } — never a draft or preview
+//   roster     [{ id, name }]; the Davenport code IS the roster name (compared case-insensitively)
+//   silvisRows silvis_feed rows [{ day, primary_code, backup_code }]
+//   code       the roster CODE counted (silvisRule.code — FAK)
+//   today      'YYYY-MM-DD'; a day on or before it is worked, after it scheduled
+// worked / scheduled: { dc, nights, wknd, hol, dcB, nightsB, wkndB, holB, silvisP, silvisB, dsg, dsgB, total, weighted }
+//   DSG = Stats → Billing's own credits (weekBillingCredits; no second definition). A backup
+//   week is counted by the SAME function as if it were 1st call and lands in the ...B kinds.
+//   Silvis: one 07:00–07:00 day = 1, primary (silvisP) or backup (silvisB).
+//   dsg = dc+nights+wknd+hol   dsgB = dcB+nightsB+wkndB+holB   total = dsg+dsgB+silvisP+silvisB
+//   weighted = dsg + silvisP + ½ (dsgB + silvisB) — every backup role counts half (Faraz 10/9)
+//   range: first published Monday .. the last published week's Sunday; first .. last Silvis
+//   row; null when there is none.
+function callTotalsFor(input) {
+  const inp = input || {};
+  const want = String(inp.code || "").trim().toUpperCase();
+  if (!want) return { ok: false, error: "no roster code to count" };
+  const periods = callTotalPeriods(inp.today);
+  if (!periods) return { ok: false, error: `not a date: ${JSON.stringify(inp.today)}` };
+  const who = (inp.roster || []).find(s => s && String(s.name || "").toUpperCase() === want);
+  if (!who || !who.id) return { ok: false, error: `no roster entry for code ${want}` };
+  const isDay = (s) => typeof s === "string" && /^\d{4}-\d{2}-\d{2}$/.test(s) && fmt(parse(s)) === s;
+  const items = []; // every dated credit of this person: { ds, kind, n }
+  let dsgFrom = null, dsgTo = null, silvisFrom = null, silvisTo = null;
+  Object.keys(inp.weeks || {}).sort().forEach(mStr => {
+    const wk = inp.weeks[mStr];
+    if (!wk || typeof wk !== "object" || !isDay(mStr)) return;
+    if (!dsgFrom) dsgFrom = mStr;
+    dsgTo = fmt(addD(parse(mStr), 6));
+    const backup = !!wk.isBackup;
+    weekBillingCredits(mStr, backup ? Object.assign({}, wk, { isBackup: false }) : wk).forEach(c => {
+      if (c.sid === who.id) items.push({ ds: c.ds, kind: backup ? c.kind + "B" : c.kind, n: c.n });
+    });
+  });
+  const seenP = {}, seenB = {};
+  (inp.silvisRows || []).forEach(r => {
+    if (!r || !isDay(r.day)) return;
+    if (!silvisFrom || r.day < silvisFrom) silvisFrom = r.day;
+    if (!silvisTo || r.day > silvisTo) silvisTo = r.day;
+    if (!seenP[r.day] && String(r.primary_code || "").toUpperCase() === want) { seenP[r.day] = true; items.push({ ds: r.day, kind: "silvisP", n: 1 }); }
+    if (!seenB[r.day] && String(r.backup_code || "").toUpperCase() === want) { seenB[r.day] = true; items.push({ ds: r.day, kind: "silvisB", n: 1 }); }
+  });
+  const KINDS = ["dc", "nights", "wknd", "hol", "dcB", "nightsB", "wkndB", "holB", "silvisP", "silvisB"];
+  const tally = (from, to) => {
+    const zero = () => { const o = {}; KINDS.forEach(k => { o[k] = 0; }); return o; };
+    const worked = zero(), scheduled = zero();
+    items.forEach(it => { if (it.ds >= from && it.ds <= to) (it.ds <= inp.today ? worked : scheduled)[it.kind] += it.n; });
+    const sums = (o) => {
+      o.dsg = o.dc + o.nights + o.wknd + o.hol;
+      o.dsgB = o.dcB + o.nightsB + o.wkndB + o.holB;
+      o.total = o.dsg + o.dsgB + o.silvisP + o.silvisB;
+      o.weighted = o.dsg + o.silvisP + (o.dsgB + o.silvisB) / 2;
+      return o;
+    };
+    return { from, to, worked: sums(worked), scheduled: sums(scheduled) };
+  };
+  const P = periods;
+  return {
+    ok: true, code: want, sid: who.id, today: inp.today,
+    range: { dsgFrom, dsgTo, silvisFrom, silvisTo },
+    periods: { month: tally(P.month.from, P.month.to), ytd: tally(P.ytd.from, P.ytd.to), year: tally(P.year.from, P.year.to), rolling12: tally(P.rolling12.from, P.rolling12.to) },
+    months: P.months.map(p => Object.assign({ month: p.month }, tally(p.from, p.to))),
+  };
+}
+
 // The coverage rows a stored holiday assignment actually means (2026-10-02).
 // The standing Christmas two-day cap (2026-08-06, buildCoverage): when one
 // surgeon holds both halves of Christmas, coverage is the Eve + the day itself

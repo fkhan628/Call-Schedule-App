@@ -1386,7 +1386,12 @@ function CallSchedule() {
     const want = String(silvisRule.code || "").toUpperCase();
     return want ? (surgeons.find(s => (s.name || "").toUpperCase() === want)?.id || null) : null;
   }, [surgeons, silvisRule.code]);
-  const silvisDays = useMemo(() => sfDaysFromRows(silvisRows, silvisRule.code), [silvisRows, silvisRule.code]);
+  // The rule's view (2026-10-11): silvis_feed now keeps Silvis history for the
+  // totals card, so every existing reader — the rule, chips, feed card, generate
+  // gate, horizon note — goes through sfRuleRows: exactly the rows v6 cached.
+  // Only the 📊 totals card reads the full silvisRows.
+  const silvisRuleRows = useMemo(() => sfRuleRows(silvisRows), [silvisRows]);
+  const silvisDays = useMemo(() => sfDaysFromRows(silvisRuleRows, silvisRule.code), [silvisRuleRows, silvisRule.code]);
   const silvisActive = sfRuleActive(silvisRule) && !!silvisFakId;
   // The one overlap check every app-side mutation point calls (editor, trade
   // accept, two-way swap, one-way swapShift, suggestions). Reason string or null.
@@ -8210,7 +8215,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   {silvisRows.length === 0
                     ? <span style={{color:"#c04040",fontWeight:600}}>No cached Silvis days{silvisLoadError ? " — last read: " + silvisLoadError : ""}. Rule silvisBusy is BLIND until {authUser ? "a refresh succeeds (↻ above)" : "a signed-in user refreshes"}.</span>
                     : <>
-                        <b>{silvisRows.length}</b> days cached · FAK Silvis <b>primary</b> on <b>{silvisDays.primary.size}</b>, backup on {silvisDays.backup.size}
+                        <b>{silvisRuleRows.length}</b> days cached · FAK Silvis <b>primary</b> on <b>{silvisDays.primary.size}</b>, backup on {silvisDays.backup.size}
                         {" · "}fetched {st.ageHours === null ? "?" : st.ageHours + "h ago"}{st.stale && <span style={{color:"#c06020",fontWeight:700}}> · STALE</span>}
                         {silvisLoadError && <span style={{color:"#c04040"}}> · last load failed ({silvisLoadError}) — showing the previous cache</span>}
                         {silvisDays.from && silvisDays.to && <span> · covers {silvisDays.from} → {silvisDays.to}</span>}
@@ -9426,6 +9431,17 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   </div>
                   );
                 })()}
+
+                {/* 📊 My call totals — DSG + Silvis (2026-10-11). ONLY the signed-in account whose
+                    roster code is silvisRule.code, on its own Mine page — never the Mine selector
+                    alone (any viewer can pick a name there; Billing's rule). Published weeks only
+                    (schedule, never the generator preview); the full Silvis cache, not the rule's window. */}
+                {!isPublicMode && !!userProfile?.person_id && !!silvisFakId && userProfile.person_id === silvisFakId && myId === silvisFakId && (
+                  <CallTotalsCard
+                    totals={typeof callTotalsFor === "function" ? callTotalsFor({ weeks: schedule, roster: surgeons, silvisRows, code: silvisRule.code, today: fmt(new Date()) }) : null}
+                    silvisNote={sfNotice(silvisRows.length, silvisLoadError, silvisDays.fetchedAt)}
+                    css={css} dk={dk} />
+                )}
 
                 {/* My Vacations — completed (past) ones hidden; shown in date order */}
                 {myVacsView.length > 0 && (() => {
@@ -11146,6 +11162,129 @@ function MonthPainterSheet({ mode, css, dk, surgeons, apps, appShifts, vacations
             {busy ? "Saving…" : `Save${dirtyCount ? ` (${dirtyCount})` : ""}`}
           </button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+// 📊 My call totals — DSG + Silvis (owner request 2026-10-09; decisions 2026-10-11).
+// FAK only: the Mine tab renders this only for the signed-in account whose roster
+// code is silvisRule.code, on its own Mine page. It shows the output of helpers.js
+// callTotalsFor — the ONE counter the Silvis app's copy of this card runs too — and
+// nothing else: no fetch, no write, no state but what is open. Fail loud: a missing
+// helper (an old cached helpers.js), a refused count (ok:false) or a Silvis feed
+// problem shows as text, never as zeros. Module scope with React.* hooks, like
+// Collapsible below; every color has its own dark-mode branch.
+function CallTotalsCard({ totals, silvisNote, css, dk }) {
+  const [pick, setPick] = React.useState("month");
+  const [showMonths, setShowMonths] = React.useState(false);
+  const C = {
+    bg: dk ? "#16213e" : "#ffffff", border: dk ? "#2a3a5e" : "#dfe6ec", text: dk ? "#e0e0f0" : "#1a2a3a",
+    sub: dk ? "#8a8aaa" : "#5a6a78", faint: dk ? "#6a6a8a" : "#9aa4ae", rule: dk ? "#2a3a5e" : "#e4ebf1",
+    accent: dk ? "#7ab8ea" : "#1a6fa8", warn: dk ? "#f0a060" : "#a06020", err: dk ? "#ff8a8a" : "#c04040",
+    chipOn: dk ? "#1a4a7a" : "#1a6fa8", chipOff: dk ? "#0f1a30" : "#f0f2f5",
+  };
+  const num = (v) => (Number.isInteger(v) ? String(v) : v.toFixed(1));
+  const cell = (v) => (v ? num(v) : "–");
+  const mdy = (ds) => (ds ? Number(ds.slice(5, 7)) + "/" + Number(ds.slice(8, 10)) + "/" + ds.slice(0, 4) : "?");
+  const box = { ...css.card, background: C.bg, border: "1px solid " + C.border };
+  const title = (
+    <div style={{ display: "flex", alignItems: "baseline", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
+      <span style={{ fontSize: 12, fontWeight: 800, letterSpacing: 0.5, color: C.accent }}>📊 MY CALL TOTALS · DSG + SILVIS</span>
+      <span style={{ fontSize: 11, color: C.faint }}>only you see this</span>
+    </div>
+  );
+  if (!totals || totals.ok !== true) {
+    return (
+      <div style={box}>
+        {title}
+        <div style={{ fontSize: 12, color: C.err }}>Totals unavailable — {totals ? String(totals.error || "the count was refused") : "this page is older than its helpers (reload the app)"}.</div>
+      </div>
+    );
+  }
+  const PERIODS = [["month", "This month"], ["ytd", "YTD"], ["year", "Full year"], ["rolling12", "12 months"]];
+  const per = totals.periods[pick] || totals.periods.month;
+  const w = per.worked, s = per.scheduled;
+  const all = (k) => w[k] + s[k];
+  // An EMPTY Silvis feed (failed or not loaded: sfNotice kinds failed / empty) must never read
+  // as "no Silvis call": its cells and the two-site totals show "?" instead of numbers.
+  const silvisOut = !!silvisNote && (silvisNote.kind === "failed" || silvisNote.kind === "empty");
+  const SILVIS_KEYS = { silvisP: 1, silvisB: 1, total: 1, weighted: 1 };
+  const show = (k, v) => (silvisOut && SILVIS_KEYS[k] ? "?" : cell(v));
+  // Every number is a count of DAYS (Stats → Billing's units), so the labels say days.
+  const ROWS = [
+    { k: "dc", label: "DSG day-call days" }, { k: "nights", label: "DSG weeknights" }, { k: "wknd", label: "DSG weekend days" },
+    { k: "hol", label: "DSG holiday days" },
+    { k: "dsgB", label: "DSG backup-week days", strong: true },
+    ...(all("dsgB") > 0 ? [{ k: "dcB", label: "day call", sub: true }, { k: "nightsB", label: "weeknights", sub: true }, { k: "wkndB", label: "weekend days", sub: true }, { k: "holB", label: "holiday days", sub: true }] : []),
+    { k: "silvisP", label: "Silvis primary days" }, { k: "silvisB", label: "Silvis backup days" },
+    { k: "total", label: "Total call days", strong: true, top: true }, { k: "weighted", label: "Weighted (backup ½)", strong: true },
+  ];
+  const th = { padding: "5px 4px", fontSize: 10, fontWeight: 700, color: C.sub, textAlign: "right", whiteSpace: "nowrap" };
+  const td = { padding: "4px 4px", fontSize: 13, textAlign: "right", color: C.text, fontVariantNumeric: "tabular-nums" };
+  const range = totals.range || {};
+  const dsgLine = range.dsgFrom ? "DSG " + mdy(range.dsgFrom) + " – " + mdy(range.dsgTo) : "DSG: no published weeks";
+  const silLine = range.silvisFrom ? "Silvis " + mdy(range.silvisFrom) + " – " + mdy(range.silvisTo) : "Silvis: no days cached";
+  return (
+    <div style={box}>
+      {title}
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
+        {PERIODS.map(([k, label]) => (
+          <button key={k} onClick={() => setPick(k)} style={{ ...css.tab(pick === k), padding: "5px 9px", background: pick === k ? C.chipOn : C.chipOff, border: "1px solid " + (pick === k ? C.chipOn : C.border), color: pick === k ? "#ffffff" : C.sub }}>{label}</button>
+        ))}
+      </div>
+      <div style={{ fontSize: 11, color: C.faint, marginBottom: 6 }}>{mdy(per.from)} – {mdy(per.to)}</div>
+      {silvisNote && <div style={{ fontSize: 11, color: silvisNote.kind === "stale" ? C.warn : C.err, marginBottom: 6 }}>Silvis: {silvisNote.text}</div>}
+      <table style={{ width: "100%", borderCollapse: "collapse" }}>
+        <thead>
+          <tr style={{ borderBottom: "1px solid " + C.rule }}>
+            <th style={{ ...th, textAlign: "left" }}></th>
+            <th style={th}>Worked</th><th style={th}>Scheduled</th><th style={th}>Total</th>
+          </tr>
+        </thead>
+        <tbody>
+          {ROWS.map((r) => (
+            <tr key={r.k} style={{ borderTop: r.top ? "1px solid " + C.rule : "none" }}>
+              <td style={{ ...td, textAlign: "left", fontSize: r.sub ? 11 : 12, paddingLeft: r.sub ? 14 : 4, color: r.sub ? C.sub : C.text, fontWeight: r.strong ? 700 : 400 }}>{r.sub ? "↳ " + r.label : r.label}</td>
+              <td style={{ ...td, fontWeight: r.strong ? 700 : 400 }}>{show(r.k, w[r.k])}</td>
+              <td style={{ ...td, color: C.sub, fontWeight: r.strong ? 700 : 400 }}>{show(r.k, s[r.k])}</td>
+              <td style={{ ...td, fontWeight: 700 }}>{show(r.k, all(r.k))}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <button onClick={() => setShowMonths(v => !v)} style={{ marginTop: 8, background: "none", border: "none", color: C.accent, fontSize: 12, cursor: "pointer", padding: "6px 0", fontFamily: font }}>
+        {showMonths ? "▾" : "▸"} Month by month ({totals.today.slice(0, 4)})
+      </button>
+      {showMonths && (
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 300 }}>
+            <thead>
+              <tr style={{ borderBottom: "1px solid " + C.rule }}>
+                <th style={{ ...th, textAlign: "left", position: "sticky", left: 0, background: C.bg }}>Month</th>
+                <th style={th}>DSG</th><th style={th}>DSG B</th><th style={th}>Silvis P</th><th style={th}>Silvis B</th><th style={th}>Total</th><th style={th}>Wtd</th>
+              </tr>
+            </thead>
+            <tbody>
+              {totals.months.map((m) => {
+                const pending = m.scheduled.total > 0;
+                const v = (k) => m.worked[k] + m.scheduled[k];
+                return (
+                  <tr key={m.month} style={{ borderBottom: "1px solid " + C.rule }}>
+                    <td style={{ ...td, textAlign: "left", fontSize: 12, position: "sticky", left: 0, background: C.bg }}>{MO[Number(m.month.slice(5, 7)) - 1].slice(0, 3)}{pending ? " *" : ""}</td>
+                    {["dsg", "dsgB", "silvisP", "silvisB", "total", "weighted"].map((k) => (
+                      <td key={k} style={{ ...td, fontSize: 12, color: v(k) ? (pending ? C.sub : C.text) : C.faint, fontStyle: pending ? "italic" : "normal", fontWeight: k === "total" ? 700 : 400 }}>{show(k, v(k))}</td>
+                    ))}
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          <div style={{ fontSize: 10, color: C.faint, marginTop: 4 }}>* includes scheduled days (after today)</div>
+        </div>
+      )}
+      <div style={{ fontSize: 10, color: C.faint, marginTop: 8, lineHeight: 1.5 }}>
+        Data: {dsgLine} · {silLine}. Worked = through today; scheduled = after today. DSG days are counted the way Stats → Billing counts them (a covered holiday = 2 days); backup-week roles are listed apart. Every number is a count of role-days, so one date can count more than once (a service day and a night, or a DSG day and a Silvis day). Weighted: every backup role (DSG backup-week days, Silvis backup days) counts ½.{silvisOut ? " ? = Silvis data missing — the totals would undercount." : ""}
       </div>
     </div>
   );
