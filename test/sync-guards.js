@@ -3335,6 +3335,7 @@ check("prefs audit never logs the plaintext email (masked only)",
 // date before the start and a double tap. Executed on the REAL handler bodies.
 //   AA1 vacation: RLS refusal / expired sign-in / success / double tap / bad dates / empty form
 //   AA2 trade:    RLS refusal / success / double tap / empty form; the Silvis refusal still precedes the insert
+//   AA3 success toasts before notifying (a notification failure is the last word); thrown insert; tap while busy
 {
   const nsrcAA = src.replace(/\r\n/g, "\n");   // a Windows checkout is CRLF, CI's is LF
   const bodyOf = (decl, depsHead) => {
@@ -3420,6 +3421,35 @@ check("prefs audit never logs the plaintext email (masked only)",
       !!b.run && b.rec.added === 1 && b.rec.notifs === 1 && b.rec.cleared === 1 && /^success: Trade proposed — DJA will be asked/.test(b.rec.toasts.join(" ")), b.run ? JSON.stringify(b.rec) : NONE);
     check("AA2 trade: a double tap proposes ONCE; an empty field is explained",
       !!c.run && c.rec.inserts === 1 && c.rec.added === 1 && e.rec.inserts === 0 && /Pick both people/.test(e.rec.toasts.join(" ")), c.run ? JSON.stringify([c.rec, e.rec.toasts]) : NONE);
+  }
+  // AA3 (review of 7cd289c): the success toast goes up BEFORE notifying — addNotification
+  // toasts its own failure, and that must be the message left on screen (the old order
+  // overwrote it with "the scheduler has been notified"). A thrown insert releases the
+  // guard and keeps the form; a tap while a submit is in flight shows nothing at all.
+  {
+    // the handler destructures env when it is built, so the failing stub goes in up front
+    const notifFails = (box) => ({ env: { addNotification: async () => { box.it.rec.notifs++; box.it.env.showToast("Couldn't save that notification.", "error"); } } });
+    const vBox = {}, tBox = {};
+    const v = (vBox.it = vEnv(OK_V, notifFails(vBox))); if (v.run) await v.run();
+    const t = (tBox.it = tEnv({ data: { id: 9 }, error: null }, notifFails(tBox))); if (t.run) await t.run();
+    check("AA3 a notification failure is the LAST toast after a successful submit (vacation + trade); nothing claims the scheduler was notified",
+      !!v.run && !!t.run && v.rec.toasts.length === 2 && /^success: Vacation request sent\.$/.test(v.rec.toasts[0]) && /^error: Couldn't save that notification/.test(v.rec.toasts[1])
+        && t.rec.toasts.length === 2 && /^success: Trade proposed/.test(t.rec.toasts[0]) && /^error: Couldn't save that notification/.test(t.rec.toasts[1])
+        && v.rec.cleared === 1 && t.rec.cleared === 1 && count("has been notified") === 0,
+      JSON.stringify([v.rec.toasts, t.rec.toasts]));
+    const throwIns = { insert: async () => { throw new TypeError("Failed to fetch"); } };
+    const vt = vEnv(OK_V, { env: { db: throwIns } }); if (vt.run) await vt.run();
+    const tt = tEnv({ data: { id: 9 }, error: null }, { env: { db: throwIns } }); if (tt.run) await tt.run();
+    check("AA3 a THROWN insert (network) says so, keeps the form and releases the double-tap guard (vacation + trade)",
+      !!vt.run && !!tt.run && vt.rec.cleared === 0 && tt.rec.cleared === 0 && vt.env.vacSubmitBusyRef.current === false && tt.env.tradeSubmitBusyRef.current === false
+        && /^error: Couldn't submit your request/.test(vt.rec.toasts.join(" ")) && /^error: Couldn't submit the trade/.test(tt.rec.toasts.join(" ")),
+      JSON.stringify([vt.rec.toasts, tt.rec.toasts]));
+    let alerts = 0, confirms = 0;
+    const vb = vEnv(OK_V, { env: { vacReqEnd: "", vacSubmitBusyRef: { current: true } } }); if (vb.run) await vb.run();
+    const tb = tEnv({ data: { id: 9 }, error: null }, { env: { tradeReturnWeek: "", tradeSubmitBusyRef: { current: true }, alert: () => { alerts++; }, confirm: () => { confirms++; return true; } } }); if (tb.run) await tb.run();
+    check("AA3 a tap while a submit is in flight does nothing visible — no validation toast, no one-way-trade prompt, no insert",
+      !!vb.run && !!tb.run && vb.rec.toasts.length === 0 && vb.rec.inserts === 0 && tb.rec.toasts.length === 0 && tb.rec.inserts === 0 && alerts === 0 && confirms === 0,
+      JSON.stringify({ v: vb.rec, t: tb.rec, alerts, confirms }));
   }
   check("AA writeFailReason is defined once at module scope and both submits use it",
     count("function writeFailReason(err) {") === 1 && count("writeFailReason(insertErr)") === 2);

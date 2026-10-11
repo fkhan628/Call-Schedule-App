@@ -2407,6 +2407,9 @@ function CallSchedule() {
   const vacSubmitBusyRef = useRef(false);
   const tradeSubmitBusyRef = useRef(false);
   const submitVacRequest = useCallback(async () => {
+    // A double tap must not file the request twice (2026-10-11) — checked
+    // first, so a tap during the insert shows no validation toast either.
+    if (vacSubmitBusyRef.current) return;
     if (!vacReqSurgeon || !vacReqStart || !vacReqEnd) { showToast("Pick who it's for and both dates first.", "error"); return; }
     const surgeonName = surgeons.find(s => s.id === vacReqSurgeon)?.name || apps.find(a => a.id === vacReqSurgeon)?.name || vacReqSurgeon;
     const isNoCall = vacReqType === "nocall";
@@ -2421,8 +2424,6 @@ function CallSchedule() {
       return;
     }
     if (vacReqEnd < vacReqStart) { showToast("The end date is before the start date.", "error"); return; }
-    // A double tap must not file the request twice (2026-10-11).
-    if (vacSubmitBusyRef.current) return;
     vacSubmitBusyRef.current = true;
     try {
       const req = {
@@ -2442,11 +2443,13 @@ function CallSchedule() {
         return;
       }
       setVacRequests(prev => [inserted, ...prev]);
+      // Filed: clear the form and say so BEFORE notifying — a notification
+      // failure toasts after this, so it is the message left on screen.
+      setVacReqStart(""); setVacReqEnd(""); setVacReqReason(""); setVacReqType("vacation");
+      showToast(`${isNoCall ? "No-call" : "Vacation"} request sent.`, "success");
       await addNotification("vacation_submitted", isNoCall ? "No-Call Request" : "Vacation Request",
         `${surgeonName} requested ${kindLabel} ${vacReqStart} to ${vacReqEnd}`, { surgeon_id: vacReqSurgeon }, schedulerAdminIds);
       sendEmailNotif("vacation_submitted", { surgeon_name: surgeonName, surgeon_id: vacReqSurgeon, start_date: vacReqStart, end_date: vacReqEnd, reason: vacReqReason, request_type: vacReqType }, schedulerAdminIds);
-      setVacReqStart(""); setVacReqEnd(""); setVacReqReason(""); setVacReqType("vacation");
-      showToast(`${isNoCall ? "No-call" : "Vacation"} request sent — the scheduler has been notified.`, "success");
     } catch(e) { console.error("Submit request error:", e); showToast("Couldn't submit your request — check your connection and try again.", "error"); }
     finally { vacSubmitBusyRef.current = false; }
   }, [vacReqSurgeon, vacReqStart, vacReqEnd, vacReqReason, vacReqType, surgeons, apps, addNotification, sendEmailNotif, schedulerAdminIds]);
@@ -2540,6 +2543,9 @@ function CallSchedule() {
 
   // ─── Shift Trade Request: Submit ───
   const submitTradeRequest = useCallback(async () => {
+    // A double tap must not propose the trade twice (2026-10-11) — checked
+    // first, so a tap during the insert never re-runs the one-way / Silvis prompts.
+    if (tradeSubmitBusyRef.current) return;
     if (!tradeFrom || !tradeTo || !tradeWeek || !tradeShift) { showToast("Pick both people, the week and the shift first.", "error"); return; }
     // Two-way swap required unless scheduler emergency override
     if (!tradeReturnWeek || !tradeReturnShift) {
@@ -2562,8 +2568,6 @@ function CallSchedule() {
     const fromName = surgeons.find(s => s.id === tradeFrom)?.name || tradeFrom;
     const toName = surgeons.find(s => s.id === tradeTo)?.name || tradeTo;
     const shiftLabel = SHIFT_LABELS[tradeShift] || tradeShift;
-    // A double tap must not propose the trade twice (2026-10-11).
-    if (tradeSubmitBusyRef.current) return;
     tradeSubmitBusyRef.current = true;
     try {
       const req = {
@@ -2584,6 +2588,10 @@ function CallSchedule() {
       }
       {
         setTradeRequests(prev => [inserted, ...prev]);
+        // Filed: clear the form and say so BEFORE notifying (same reason as
+        // the vacation submit — a notification failure is the last toast).
+        setTradeWeek(""); setTradeShift(""); setTradeReturnWeek(""); setTradeReturnShift("");
+        showToast(`Trade proposed — ${toName} will be asked to accept or decline.`, "success");
         // ONE composition for audit + in-app + push + email (helpers.js):
         // names BOTH legs, every date via slotLabel. `detail` is the new
         // email field; the legacy fields stay for deploy-order safety.
@@ -2595,8 +2603,6 @@ function CallSchedule() {
           [tradeFrom, tradeTo]);
         sendEmailNotif("trade_submitted", { from_name: fromName, to_name: toName, shift: shiftLabel, week: tradeWeek, detail: proposeMsg }, [tradeFrom, tradeTo]);
       }
-      setTradeWeek(""); setTradeShift(""); setTradeReturnWeek(""); setTradeReturnShift("");
-      showToast(`Trade proposed — ${toName} will be asked to accept or decline.`, "success");
     } catch(e) { console.error("Submit trade error:", e); showToast("Couldn't submit the trade — check your connection and try again.", "error"); }
     finally { tradeSubmitBusyRef.current = false; }
   }, [tradeFrom, tradeTo, tradeWeek, tradeShift, tradeReturnWeek, tradeReturnShift, surgeons, addNotification, sendEmailNotif, isScheduler, schedule, silvisActive, silvisBlock, silvisRefuse]);
