@@ -511,6 +511,8 @@ await (async () => {
       const dbAuthHeaders = () => ({});
       const schedWeeksSyncRef = { current: {} };          // prev = {} (empty table baseline)
       const schedWeekVersionsRef = { current: {} };
+      const schedWeeksFailedRef = { current: new Set() };
+      const schedSaveToastRef = { current: 0 }, SCHED_SAVE_TOAST_MS = 5 * 60 * 1000;
       const intentionalScheduleWipeRef = { current: true }; // ARMED — the dangle setup
       const userProfile = null;
       const netCalls = [];
@@ -638,6 +640,8 @@ await (async () => {
     // Exactly what the realtime handler does: state AND baseline updated together.
     const schedWeeksSyncRef = { current: JSON.parse(JSON.stringify(adopted)) };
     const schedWeekVersionsRef = { current: { "2026-08-17": 3 } };
+    const schedWeeksFailedRef = { current: new Set() };
+    const schedSaveToastRef = { current: 0 }, SCHED_SAVE_TOAST_MS = 5 * 60 * 1000;
     const intentionalScheduleWipeRef = { current: false };
     const userProfile = { person_id: "s7" };   // a MEMBER
     const netCalls = [];
@@ -653,15 +657,20 @@ await (async () => {
 })();
 
 // ══════════════════════════════════════════════════════════════
-// E4. A FAILED week write stays pending (2026-10-11, audit QW1)
+// E4. A FAILED week write stays pending (2026-10-11, audit QW1 + its review)
 // ══════════════════════════════════════════════════════════════
 // syncSchedWeeks used to set its baseline to the whole in-memory schedule
 // even after a week's insert / PATCH / DELETE failed: the failed edit was
 // never re-sent (the next diff saw nothing) and vanished on reload — a member's
 // swap or trade accept in a long-open PWA (expired token → 401) was exactly
 // that case. Now a failed week keeps its previous baseline and is re-sent by
-// the next call; an insert that 409s reloads like a CAS conflict; the failure
-// toast is capped. Executed on the REAL function with a scripted network.
+// the next autosave through the CAS path ONLY (the blind unload keepalive skips
+// it); an insert 409 / a CAS 0-row reloads, and if that reload fails the week
+// stays pending with a toast; the DELETE is compare-and-swap too; an authorized
+// clear's failed delete is reported as partial (never kept pending against a
+// spent wipe grant); the toast is capped and resets once everything lands.
+// Executed on the REAL syncSchedWeeks / flushPending with a scripted network
+// that records every URL and body.
 console.log("\nE4. failed week writes stay pending");
 await (async () => {
   const nsrc = src.replace(/\r\n/g, "\n");
@@ -671,110 +680,183 @@ await (async () => {
   const s = nsrc.indexOf(START), e = nsrc.indexOf(END);
   if (s === -1 || e === -1) { check("E4 syncSchedWeeks extractable", false, "anchors not found"); return; }
   const fnSrc = nsrc.slice(s, e + END.length);
+  const fp0 = nsrc.indexOf("const flushPending = (source) => {"), fp1 = fp0 < 0 ? -1 : nsrc.indexOf("\n    };\n\n    // Day-off flush", fp0);
+  const flushSrc = fp0 < 0 || fp1 < 0 ? null : nsrc.slice(fp0 + "const flushPending = ".length, fp1) + "\n    }";
   const W1 = "2026-09-07", W2 = "2026-09-14", W3 = "2026-09-21", W4 = "2026-09-28", W5 = "2026-10-05";
-  const mk = (prev, vers) => vm.runInContext(`(function(){
+  const mk = (prev, vers, opts = {}) => vm.runInContext(`(function(){
     const SCHED_DUAL_WRITE = false, SCHED_READ_TABLE = true;
-    const SUPABASE_URL = "https://stub.invalid";
+    const SUPABASE_URL = "https://stub.invalid", SUPABASE_ANON_KEY = "anon";
     const dbAuthHeaders = () => ({});
     const schedWeeksSyncRef = { current: ${JSON.stringify(prev)} };
     const schedWeekVersionsRef = { current: ${JSON.stringify(vers)} };
-    const intentionalScheduleWipeRef = { current: false };
+    const schedWeeksFailedRef = { current: new Set() };
+    const intentionalScheduleWipeRef = { current: ${opts.armed ? "true" : "false"} };
     const schedSaveToastRef = { current: 0 };
     const SCHED_SAVE_TOAST_MS = 5 * 60 * 1000;
     const userProfile = { person_id: "s7" };
-    const log = [], toasts = [], adopted = [];
+    const log = [], calls = [], toasts = [], adopted = [];
     let responder = () => ({ status: 500 });
+    let reloadOk = ${opts.reloadFails ? "false" : "true"};
     const fetch = async (url, opts) => {
       const m = (opts && opts.method) || "GET";
-      const wk = (String(url).match(/week_monday=eq\\.([0-9-]+)/) || [])[1] || (opts && opts.body ? JSON.parse(opts.body).week_monday : "?");
-      log.push(m + " " + wk);
+      const body = opts && opts.body ? JSON.parse(opts.body) : null;
+      const wk = (String(url).match(/week_monday=eq\\.([0-9-]+)/) || [])[1] || (body && !Array.isArray(body) && body.week_monday) || (Array.isArray(body) ? body.map(r => r.week_monday).join(",") : "?");
+      log.push(m + " " + wk); calls.push({ m, wk, url: String(url), body, keepalive: !!(opts && opts.keepalive) });
       const r = responder(m, wk) || { status: 500 };
+      if (r.throw) throw new TypeError("Failed to fetch");
       const st = r.status;
-      return { ok: st >= 200 && st < 300, status: st, json: async () => r.json || [], text: async () => "" };
+      return { ok: st >= 200 && st < 300, status: st, json: async () => (r.json !== undefined ? r.json : []), text: async () => "" };
     };
     const setSaveError = () => {}, setSaveStatus = () => {};
     const setSchedule = (x) => { adopted.push(x); };
     const showToast = (msg) => { toasts.push(String(msg)); };
-    const loadSchedFromTable = async () => ({ sched: { "${W1}": { dayCall: "s9" } }, vers: { "${W1}": 9 } });
+    const loadSchedFromTable = async () => (reloadOk ? { sched: { "${W1}": { dayCall: "s9" } }, vers: { "${W1}": 9 } } : null);
     ${fnSrc}
-    return { syncSchedWeeks, log, toasts, adopted, respond: (f) => { responder = f; },
-      base: () => JSON.parse(JSON.stringify(schedWeeksSyncRef.current)), vers: () => JSON.parse(JSON.stringify(schedWeekVersionsRef.current)) };
+    // flushPending's own world (the unload keepalive): a member session (no blob leg)
+    const isPublicMode = false, canWriteBlob = false;
+    const pendingSaveRef = { current: null }, loadFailedRef = { current: false }, everHadRealDataRef = { current: true }, allowWipeSaveRef = { current: false }, lastSyncRef = { current: null };
+    const payloadLooksWiped = () => false;
+    const auth = { getSession: () => ({ access_token: "tok" }) };
+    const flushPending = ${flushSrc || "null"};
+    return { syncSchedWeeks, flushPending, log, calls, toasts, adopted, respond: (f) => { responder = f; }, setReload: (v) => { reloadOk = v; },
+      flush: (schedule) => { pendingSaveRef.current = { schedule }; flushPending("visibilitychange"); },
+      base: () => JSON.parse(JSON.stringify(schedWeeksSyncRef.current)), vers: () => JSON.parse(JSON.stringify(schedWeekVersionsRef.current)),
+      pending: () => [...schedWeeksFailedRef.current].sort() };
   })()`, sandbox);
   const ok = (v) => ({ status: 200, json: [{ version: v }] });
   const J = (o) => JSON.stringify(o);
 
-  // 1. PATCH fails (500) for W1, succeeds for W2 → W1 keeps its old baseline; the next call re-sends W1 ONLY
+  // 1. PATCH fails (500) for W1, succeeds for W2 → W1 keeps its old baseline; the next call re-sends W1 ONLY, as a correct CAS write
   {
     const h = mk({ [W1]: { dayCall: "s1" }, [W2]: { dayCall: "s2" } }, { [W1]: 3, [W2]: 4 });
     const cur = { [W1]: { dayCall: "s5" }, [W2]: { dayCall: "s6" } };
     h.respond((m, wk) => (wk === W1 ? { status: 500 } : ok(5)));
     await h.syncSchedWeeks(cur);
-    const b1 = h.base(), l1 = h.log.slice();
+    const b1 = h.base(), p1 = h.pending(), v1 = h.vers(), n1 = h.calls.length;
     h.respond((m, wk) => ok(wk === W1 ? 4 : 6));
     await h.syncSchedWeeks(cur);
-    const l2 = h.log.slice(l1.length);
-    check("E4 a failed PATCH keeps that week's old baseline (the success beside it advances)",
-      J(b1[W1]) === J({ dayCall: "s1" }) && J(b1[W2]) === J({ dayCall: "s6" }), J(b1));
-    check("E4 the next call re-sends EXACTLY the failed week, and then the baseline catches up",
-      J(l2) === J([`PATCH ${W1}`]) && J(h.base()) === J(cur) && h.vers()[W1] === 4, `second call sent ${J(l2)}; base ${J(h.base())}`);
-    check("E4 one 'will be re-sent' toast for the failure, none for the retry that landed",
+    const retry = h.calls.slice(n1);
+    check("E4 a failed PATCH keeps that week's old baseline and version, and lists it as pending (the success beside it advances)",
+      J(b1[W1]) === J({ dayCall: "s1" }) && J(b1[W2]) === J({ dayCall: "s6" }) && v1[W1] === 3 && J(p1) === J([W1]), J({ b1, v1, p1 }));
+    check("E4 the next call re-sends EXACTLY the failed week as a CAS write (version=eq.3 → 4, the current data), then nothing is pending",
+      retry.length === 1 && retry[0].m === "PATCH" && /week_monday=eq\.2026-09-07&version=eq\.3$/.test(retry[0].url) && retry[0].body.version === 4 && J(retry[0].body.data) === J(cur[W1])
+        && J(h.base()) === J(cur) && h.vers()[W1] === 4 && h.pending().length === 0, J(retry));
+    check("E4 one 're-sent automatically' toast for the failure, none for the retry that landed",
       h.toasts.length === 1 && /re-sent automatically/.test(h.toasts[0]), J(h.toasts));
   }
-  // 2. 401 (expired sign-in) → the session message, and the week stays pending
+  // 2. 401 (expired sign-in) → the session message; the week stays pending at its version
   {
     const h = mk({ [W1]: { dayCall: "s1" } }, { [W1]: 3 });
     h.respond(() => ({ status: 401 }));
     await h.syncSchedWeeks({ [W1]: { dayCall: "s5" } });
-    check("E4 a 401 says the sign-in expired (not 'check your connection') and the week stays pending",
-      h.toasts.length === 1 && /sign-in has expired/.test(h.toasts[0]) && J(h.base()[W1]) === J({ dayCall: "s1" }), J(h.toasts));
+    check("E4 a 401 says the sign-in expired and the week stays pending at its old version",
+      h.toasts.length === 1 && /sign-in has expired/.test(h.toasts[0]) && J(h.base()[W1]) === J({ dayCall: "s1" }) && h.vers()[W1] === 3 && J(h.pending()) === J([W1]), J(h.toasts));
   }
-  // 3. a failed INSERT (no version yet) stays "new": the next call inserts it again
+  // 3. a failed INSERT stays "new": the next call inserts it again; one toast
   {
     const h = mk({ [W1]: { dayCall: "s1" } }, { [W1]: 3 });
     h.respond(() => ({ status: 503 }));
     await h.syncSchedWeeks({ [W1]: { dayCall: "s1" }, [W2]: { dayCall: "s2" } });
-    const b1 = h.base(), n1 = h.log.length;
+    const b1 = h.base(), n1 = h.calls.length;
     h.respond(() => ({ status: 201, json: [{ version: 1 }] }));
     await h.syncSchedWeeks({ [W1]: { dayCall: "s1" }, [W2]: { dayCall: "s2" } });
-    check("E4 a failed insert is not in the baseline, so the next call inserts it again (version 1 recorded)",
-      !(W2 in b1) && J(h.log.slice(n1)) === J([`POST ${W2}`]) && h.vers()[W2] === 1, `base ${J(b1)}; then ${J(h.log.slice(n1))}`);
+    check("E4 a failed insert is not in the baseline, so the next call inserts it again (version 1 recorded); one toast",
+      !(W2 in b1) && h.calls.slice(n1).length === 1 && h.calls[n1].m === "POST" && h.calls[n1].body.week_monday === W2 && h.vers()[W2] === 1 && h.toasts.length === 1, J(h.calls.slice(n1)));
   }
-  // 4. an insert that 409s (the week exists already) reloads like a CAS conflict
+  // 4. insert 409 → reload (adopted); if the reload FAILS, the week stays pending with a toast — never marked saved
   {
     const h = mk({}, {});
     h.respond(() => ({ status: 409 }));
     await h.syncSchedWeeks({ [W1]: { dayCall: "s1" } });
-    check("E4 an insert 409 reloads the table (adopts it, versions + baseline) and says so — never retried blind",
-      h.adopted.length === 1 && J(h.base()) === J({ [W1]: { dayCall: "s9" } }) && h.vers()[W1] === 9 && h.toasts.some(t => /changed by someone else/.test(t)), J({ adopted: h.adopted, toasts: h.toasts }));
+    check("E4 an insert 409 reloads the table (adopts it, versions + baseline) with ONE toast — never retried blind",
+      h.adopted.length === 1 && J(h.base()) === J({ [W1]: { dayCall: "s9" } }) && h.vers()[W1] === 9 && h.toasts.length === 1 && /changed by someone else/.test(h.toasts[0]), J({ adopted: h.adopted, toasts: h.toasts }));
+    const f = mk({}, {}, { reloadFails: true });
+    f.respond(() => ({ status: 409 }));
+    await f.syncSchedWeeks({ [W1]: { dayCall: "s1" } });
+    const n1 = f.calls.length;
+    f.respond(() => ({ status: 201, json: [{ version: 1 }] }));
+    await f.syncSchedWeeks({ [W1]: { dayCall: "s1" } });
+    check("E4 an insert 409 whose reload FAILS stays pending (not in the baseline) and says so; the next call tries again",
+      f.adopted.length === 0 && /changed elsewhere and the latest couldn't be loaded/.test(f.toasts.join(" ")) && f.calls.slice(n1).some(c => c.m === "POST" && c.body.week_monday === W1), J({ toasts: f.toasts, then: f.calls.slice(n1).map(c => c.m + " " + c.wk) }));
+    const c = mk({ [W1]: { dayCall: "s1" } }, { [W1]: 3 }, { reloadFails: true });
+    c.respond(() => ({ status: 200, json: [] }));   // CAS PATCH matched no row
+    await c.syncSchedWeeks({ [W1]: { dayCall: "s5" } });
+    check("E4 a CAS conflict whose reload fails keeps the week at its old baseline and says so (it used to be marked saved silently)",
+      J(c.base()[W1]) === J({ dayCall: "s1" }) && J(c.pending()) === J([W1]) && c.toasts.length === 1, J({ base: c.base(), toasts: c.toasts }));
   }
-  // 5. a failed DELETE keeps the week in the baseline, so the next call deletes it again
+  // 5. the DELETE is compare-and-swap; a failed one (not a clear) stays pending; a moved row reloads
   {
     const prev = { [W1]: { a: 1 }, [W2]: { a: 2 }, [W3]: { a: 3 }, [W4]: { a: 4 }, [W5]: { a: 5 } };
-    const h = mk(prev, { [W1]: 1, [W2]: 1, [W3]: 1, [W4]: 1, [W5]: 1 });
+    const h = mk(prev, { [W1]: 1, [W2]: 1, [W3]: 1, [W4]: 1, [W5]: 7 });
     const cur = { [W1]: { a: 1 }, [W2]: { a: 2 }, [W3]: { a: 3 }, [W4]: { a: 4 } };
     h.respond(() => ({ status: 500 }));
     await h.syncSchedWeeks(cur);
-    const b1 = h.base(), n1 = h.log.length;
-    h.respond(() => ({ status: 204 }));
+    const b1 = h.base(), n1 = h.calls.length;
+    h.respond(() => ({ status: 200, json: [{ week_monday: W5 }] }));
     await h.syncSchedWeeks(cur);
-    check("E4 a failed DELETE stays pending: the next call deletes the week again, then the baseline drops it",
-      W5 in b1 && J(h.log.slice(n1)) === J([`DELETE ${W5}`]) && !(W5 in h.base()) && !(W5 in h.vers()), `then ${J(h.log.slice(n1))}`);
+    const del = h.calls.slice(n1);
+    check("E4 a failed DELETE stays pending; the retry is a CAS delete (version=eq.7) and then the week leaves state, version and baseline",
+      W5 in b1 && del.length === 1 && del[0].m === "DELETE" && /week_monday=eq\.2026-10-05&version=eq\.7$/.test(del[0].url) && !(W5 in h.base()) && !(W5 in h.vers()) && h.pending().length === 0, J(del));
+    const g = mk(prev, { [W1]: 1, [W2]: 1, [W3]: 1, [W4]: 1, [W5]: 7 });
+    g.respond(() => ({ status: 200, json: [] }));   // the row moved (or is already gone): 0 rows deleted
+    await g.syncSchedWeeks(cur);
+    check("E4 a CAS DELETE that matches no row (someone changed or removed the week) reloads instead of deleting blind",
+      g.adopted.length === 1 && /changed by someone else/.test(g.toasts.join(" ")), J({ adopted: g.adopted.length, toasts: g.toasts }));
   }
-  // 6. the toast is capped: three failing calls in a row → one toast
+  // 6. an AUTHORIZED clear with a failed delete: reported as partial, NOT kept pending (no false wipe alarm afterwards)
+  {
+    const prev = { [W1]: { a: 1 }, [W2]: { a: 2 }, [W3]: { a: 3 }, [W4]: { a: 4 }, [W5]: { a: 5 } };
+    const h = mk(prev, { [W1]: 1, [W2]: 1, [W3]: 1, [W4]: 1, [W5]: 1 }, { armed: true });
+    h.respond((m, wk) => (wk === W3 ? { status: 500 } : { status: 200, json: [{ week_monday: wk }] }));
+    await h.syncSchedWeeks({});
+    const t1 = h.toasts.slice(), b1 = h.base();
+    await h.syncSchedWeeks({});
+    check("E4 an authorized clear whose delete fails says the clear was partial; the week is not kept pending, so the next autosave sees no 'wipe' and stays quiet",
+      t1.length === 1 && /clear was partial — 1 week/.test(t1[0]) && J(b1) === J({}) && h.toasts.length === 1 && !h.toasts.some(t => /wipe/i.test(t)) && h.pending().length === 0, J({ t1, b1, toasts: h.toasts }));
+  }
+  // 7. the toast is capped while failures continue, and resets once everything lands
   {
     const h = mk({ [W1]: { dayCall: "s1" } }, { [W1]: 3 });
     h.respond(() => ({ status: 500 }));
     for (let i = 0; i < 3; i++) await h.syncSchedWeeks({ [W1]: { dayCall: "s5" } });
-    check("E4 three failing autosaves → three re-sends, ONE toast (capped)",
-      h.log.filter(x => x === `PATCH ${W1}`).length === 3 && h.toasts.length === 1, `sends ${h.log.length}, toasts ${h.toasts.length}`);
+    const capped = h.toasts.length, sends = h.log.filter(x => x === `PATCH ${W1}`).length;
+    h.respond(() => ok(4)); await h.syncSchedWeeks({ [W1]: { dayCall: "s5" } });
+    h.respond(() => ({ status: 500 })); await h.syncSchedWeeks({ [W1]: { dayCall: "s6" } });
+    check("E4 three failing autosaves → three CAS re-sends, ONE toast; after a clean pass the next failure toasts at once",
+      sends === 3 && capped === 1 && h.toasts.length === 2, `sends ${sends}, toasts ${capped} then ${h.toasts.length}`);
   }
-  // 7. the happy path is unchanged: baseline == state, versions bumped, no toast
+  // 8. a thrown fetch (offline) leaves the baseline alone (as on main): the week is re-sent next time
+  {
+    const h = mk({ [W1]: { dayCall: "s1" } }, { [W1]: 3 });
+    h.respond(() => ({ throw: true }));
+    await h.syncSchedWeeks({ [W1]: { dayCall: "s5" } });
+    const b1 = h.base(), n1 = h.calls.length;
+    h.respond(() => ok(4));
+    await h.syncSchedWeeks({ [W1]: { dayCall: "s5" } });
+    check("E4 a thrown fetch (offline) keeps the week at its old baseline and the next call re-sends it",
+      J(b1[W1]) === J({ dayCall: "s1" }) && h.calls.slice(n1).some(c => c.m === "PATCH" && c.wk === W1) && J(h.base()[W1]) === J({ dayCall: "s5" }), J(h.calls.slice(n1)));
+  }
+  // 9. the unload keepalive (a BLIND upsert) never re-sends a week whose CAS write failed — other changed weeks still go
+  {
+    const h = mk({ [W1]: { dayCall: "s1" }, [W2]: { dayCall: "s2" } }, { [W1]: 3, [W2]: 4 });
+    h.respond(() => ({ status: 503 }));
+    await h.syncSchedWeeks({ [W1]: { dayCall: "s5" }, [W2]: { dayCall: "s2" } });
+    const n1 = h.calls.length;
+    h.respond(() => ({ status: 201 }));
+    if (h.flushPending) h.flush({ [W1]: { dayCall: "s5" }, [W2]: { dayCall: "s2" }, [W3]: { dayCall: "s3" } });
+    await new Promise(r => setTimeout(r, 0));
+    const kept = h.calls.slice(n1).filter(c => c.keepalive);
+    const rows = kept.length ? kept[0].body.map(r => r.week_monday) : [];
+    check("E4 the unload keepalive skips the CAS-pending week (W1) but still carries a new unsaved week (W3) — a blind re-send can't clobber a newer edit",
+      !!h.flushPending && kept.length === 1 && J(rows) === J([W3]), h.flushPending ? J(kept.map(c => c.body)) : "flushPending not extractable");
+  }
+  // 10. the happy path is unchanged: baseline == state, versions bumped, no toast, nothing pending
   {
     const h = mk({ [W1]: { dayCall: "s1" } }, { [W1]: 3 });
     h.respond(() => ok(4));
     await h.syncSchedWeeks({ [W1]: { dayCall: "s5" } });
-    check("E4 all writes succeed: baseline = the schedule, version bumped, no toast",
-      J(h.base()) === J({ [W1]: { dayCall: "s5" } }) && h.vers()[W1] === 4 && h.toasts.length === 0);
+    check("E4 all writes succeed: baseline = the schedule, version bumped, no toast, nothing pending",
+      J(h.base()) === J({ [W1]: { dayCall: "s5" } }) && h.vers()[W1] === 4 && h.toasts.length === 0 && h.pending().length === 0);
   }
 })();
 
