@@ -1709,6 +1709,74 @@ function CallSchedule() {
       } catch(e) { console.warn("Background config refresh failed:", e); }
     };
 
+    // ── Schedule weeks: keep an OPEN session current (2026-10-11) ──
+    // Realtime has never run on this build (getSupabaseRT is not shipped), and
+    // the blob no longer carries the schedule, so an open session — the OR
+    // board, the scheduler's tab, a PWA left open — saw another user's swap,
+    // trade, week edit or publish only after a reload (or its own CAS conflict).
+    // Each poll reads the tiny version column and fetches only the weeks whose
+    // version moved. A week is ADOPTED only where this session has NO unsaved
+    // change to it (its state equals the baseline last mirrored to the table) —
+    // checked inside the state updater, against the newest state — so a pending
+    // edit or a failed write awaiting its retry is never overwritten; its own CAS
+    // write later meets the newer version and reloads, as it always has. State,
+    // versions and baseline move together, so the autosave writes nothing back.
+    // A read that fails throws (allSettled swallows it: nothing changes); an
+    // EMPTY version list is never read as "every week deleted" (an RLS-blocked
+    // read looks the same), and a deletion of half the weeks or more is not
+    // adopted (the wipe guard's shape) — a reload shows it if it was real.
+    const refreshSchedWeeks = async () => {
+      if (!SCHED_READ_TABLE || !schedWeeksSyncRef.current) return; // the mount load has not set a baseline yet
+      const vrows = await db.query("schedule_weeks", { select: "week_monday,version", order: "week_monday.asc", limit: 1000 });
+      if (!Array.isArray(vrows) || vrows.length === 0) return;
+      const known = schedWeekVersionsRef.current || {};
+      const remote = {};
+      vrows.forEach(r => { if (r && r.week_monday) remote[r.week_monday] = r.version; });
+      const moved = Object.keys(remote).filter(k => known[k] !== remote[k]);
+      const gone = Object.keys(known).filter(k => !(k in remote));
+      const dropOk = gone.length > 0 && gone.length < Math.ceil(Object.keys(known).length / 2);
+      if (!moved.length && !dropOk) return;
+      let fresh = [];
+      if (moved.length) {
+        const res = await fetch(`${SUPABASE_URL}/rest/v1/schedule_weeks?select=week_monday,data,version&week_monday=in.(${moved.join(",")})`, { headers: dbReadHeaders() });
+        if (!res.ok) throw new Error("schedule_weeks refresh failed: HTTP " + res.status);
+        fresh = await res.json();
+        if (!Array.isArray(fresh)) throw new Error("schedule_weeks refresh: non-array body");
+      }
+      const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+      // Each week is decided ONCE: if React ever re-ran this updater it reaches
+      // the same state (refs and state can never disagree, which would make the
+      // next autosave write stale data). This app uses no transitions and no
+      // StrictMode, so in practice it runs once.
+      const decided = new Map();
+      setSchedule(p => {
+        // The baseline is read HERE, at update time: a save that finished while
+        // the reads were in flight may have replaced it.
+        const base = schedWeeksSyncRef.current || {};
+        const n = { ...p };
+        let touched = false;
+        fresh.forEach(r => {
+          const k = r.week_monday;
+          if (!k) return;
+          if (!decided.has(k)) {
+            const adopt = same(p[k], base[k]);                // an unsaved local change to this week wins
+            decided.set(k, adopt);
+            if (adopt) { schedWeekVersionsRef.current[k] = r.version; base[k] = JSON.parse(JSON.stringify(r.data)); }
+          }
+          if (decided.get(k)) { n[k] = r.data; touched = true; }
+        });
+        if (dropOk) gone.forEach(k => {
+          const dk = "-" + k;
+          if (!decided.has(dk)) {
+            const drop = (k in p) && same(p[k], base[k]);
+            decided.set(dk, drop);
+            if (drop) { delete schedWeekVersionsRef.current[k]; delete base[k]; }
+          }
+          if (decided.get(dk)) { delete n[k]; touched = true; }
+        });
+        return touched ? n : p;
+      });
+    };
     const refreshAppShifts = async () => {
       try {
         const { data: appRow } = await supabase.from("app_shifts_data").select("data").eq("id", "main").single();
@@ -1753,6 +1821,7 @@ function CallSchedule() {
     const refreshAll = async () => {
       await Promise.allSettled([
         refreshScheduleRow(),
+        refreshSchedWeeks(),
         refreshConfigRow(),
         refreshAppShifts(),
         refreshVacReqs(),

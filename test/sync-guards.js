@@ -3327,6 +3327,115 @@ check("prefs audit never logs the plaintext email (masked only)",
     count("<b>{silvisRuleRows.length}</b> days cached") === 1 && count("<b>{silvisRows.length}</b> days cached") === 0 && count("covers {silvisDays.from} → {silvisDays.to}") === 1);
 }
 
+// ─── AC. Open sessions pick up other people's week changes (2026-10-11, audit B1) ───
+// Realtime has never run on this build (getSupabaseRT is not shipped) and the
+// blob no longer carries the schedule, so the 60-s poll never refreshed the
+// weeks: an open session (the OR board, the scheduler's tab, a PWA left open)
+// saw another user's swap / trade / week edit / publish only after a reload.
+// refreshSchedWeeks reads the version column, fetches the weeks that moved and
+// adopts them ONLY where this session has no unsaved change. Executed on the
+// REAL poll function, then the REAL syncSchedWeeks on the result.
+//   AC1 a remote change is adopted (state + versions + baseline) and the autosave then writes NOTHING
+//   AC2 an unsaved local change wins: not adopted, and its own CAS write still meets the newer version
+//   AC3 nothing moved → no week fetch, state untouched; an empty version list is ignored; a failed fetch changes nothing
+//   AC4 a remote deletion is adopted, but a wipe-shaped one (half the weeks or more) is not
+//   AC5 a re-run of the updater reaches the same state; refreshAll polls the weeks
+{
+  const nsrcAC = src.replace(/\r\n/g, "\n");
+  const pollSrc = (() => { const a = nsrcAC.indexOf("const refreshSchedWeeks = async () => {"); const b = a < 0 ? -1 : nsrcAC.indexOf("\n    const refreshAppShifts = async () => {", a); return a < 0 || b < 0 ? null : nsrcAC.slice(a + "const refreshSchedWeeks = ".length, b).replace(/;\s*$/, ""); })();
+  const syncSrc = (() => { const START = "const syncSchedWeeks = async (currentSchedule) => {"; const END = `catch (e) { console.error("schedule_weeks dual-write error", e); showToast("Couldn't save schedule changes — check your connection.", "error"); }\n  };`; const s = nsrcAC.indexOf(START), e = nsrcAC.indexOf(END); return s < 0 || e < 0 ? null : nsrcAC.slice(s, e + END.length); })();
+  const W = ["2026-09-07", "2026-09-14", "2026-09-21", "2026-09-28", "2026-10-05"];
+  const mk = (state0, vers0, remoteVers, remoteData, opts = {}) => {
+    if (!pollSrc || !syncSrc) return null;
+    return vm.runInContext(`(function () {
+      const SCHED_READ_TABLE = true, SCHED_DUAL_WRITE = false, SUPABASE_URL = "https://stub.invalid";
+      let state = ${JSON.stringify(state0)};
+      const schedWeeksSyncRef = { current: ${JSON.stringify(opts.base || state0)} };
+      const schedWeekVersionsRef = { current: ${JSON.stringify(vers0)} };
+      const intentionalScheduleWipeRef = { current: false };
+      const schedSaveToastRef = { current: 0 }; const SCHED_SAVE_TOAST_MS = 300000;
+      const userProfile = { person_id: "s7" };
+      const net = [], updaters = [];
+      const dbReadHeaders = () => ({}), dbAuthHeaders = () => ({});
+      const db = { query: async (t, o) => { net.push("GET versions"); ${opts.versionsFail ? 'throw new Error("HTTP 500");' : ""} return ${JSON.stringify(remoteVers)}; } };
+      const fetch = async (url, o) => {
+        const m = (o && o.method) || "GET"; net.push(m + " " + String(url).replace("https://stub.invalid/rest/v1/", ""));
+        if (m === "GET") return ${opts.weeksFail ? '{ ok: false, status: 500, json: async () => ({}) }' : `{ ok: true, status: 200, json: async () => ${JSON.stringify(remoteData)} }`};
+        return { ok: true, status: 200, json: async () => [], text: async () => "" };   // a CAS PATCH that matches no row = a conflict
+      };
+      const setSchedule = (u) => { updaters.push(u); state = typeof u === "function" ? u(state) : u; };
+      const setSaveError = () => {}, setSaveStatus = () => {}, showToast = () => {};
+      const loadSchedFromTable = async () => null;
+      const refreshSchedWeeks = ${pollSrc};
+      ${syncSrc}
+      return { refreshSchedWeeks, syncSchedWeeks, net, updaters,
+        state: () => state, base: () => schedWeeksSyncRef.current, vers: () => schedWeekVersionsRef.current };
+    })()`, sandbox);
+  };
+  const J = (o) => JSON.stringify(o);
+  const S0 = { [W[0]]: { dayCall: "s1" }, [W[1]]: { dayCall: "s2" } };
+  // AC1
+  {
+    const h = mk(S0, { [W[0]]: 3, [W[1]]: 4 }, [{ week_monday: W[0], version: 3 }, { week_monday: W[1], version: 5 }], [{ week_monday: W[1], data: { dayCall: "s9" }, version: 5 }]);
+    if (h) { await h.refreshSchedWeeks(); }
+    const n1 = h ? h.net.length : 0;
+    if (h) await h.syncSchedWeeks(h.state());
+    check("AC1 a week another user changed is adopted — state, version and baseline together — and only the moved week is fetched",
+      !!h && J(h.state()[W[1]]) === J({ dayCall: "s9" }) && h.vers()[W[1]] === 5 && J(h.base()[W[1]]) === J({ dayCall: "s9" }) && J(h.state()[W[0]]) === J({ dayCall: "s1" })
+        && h.net.slice(0, n1).filter(x => x.startsWith("GET schedule_weeks?")).length === 1 && h.net.slice(0, n1).some(x => x.includes("in.(" + W[1] + ")")),
+      h ? J({ state: h.state(), vers: h.vers(), net: h.net }) : "poll or sync function not extractable");
+    check("AC1 …and the autosave then writes NOTHING back (adoption is not an edit)", !!h && h.net.slice(n1).length === 0, h ? J(h.net.slice(n1)) : "");
+  }
+  // AC2
+  {
+    const local = { [W[0]]: { dayCall: "s1" }, [W[1]]: { dayCall: "LOCAL-EDIT" } };
+    const h = mk(local, { [W[0]]: 3, [W[1]]: 4 }, [{ week_monday: W[0], version: 3 }, { week_monday: W[1], version: 5 }], [{ week_monday: W[1], data: { dayCall: "s9" }, version: 5 }], { base: S0 });
+    if (h) await h.refreshSchedWeeks();
+    const afterPoll = h ? J({ s: h.state()[W[1]], v: h.vers()[W[1]], b: h.base()[W[1]] }) : "";
+    const n1 = h ? h.net.length : 0;
+    if (h) await h.syncSchedWeeks(h.state());
+    check("AC2 an unsaved local change to that week wins: not adopted, version and baseline untouched",
+      !!h && afterPoll === J({ s: { dayCall: "LOCAL-EDIT" }, v: 4, b: { dayCall: "s2" } }), afterPoll);
+    check("AC2 …and its own write still goes out at the OLD version (so CAS meets the newer one and reloads, as before)",
+      !!h && h.net.slice(n1).some(x => x.startsWith("PATCH schedule_weeks?week_monday=eq." + W[1] + "&version=eq.4")), h ? J(h.net.slice(n1)) : "");
+  }
+  // AC3
+  {
+    const same = mk(S0, { [W[0]]: 3, [W[1]]: 4 }, [{ week_monday: W[0], version: 3 }, { week_monday: W[1], version: 4 }], []);
+    if (same) await same.refreshSchedWeeks();
+    const empty = mk(S0, { [W[0]]: 3, [W[1]]: 4 }, [], []);
+    if (empty) await empty.refreshSchedWeeks();
+    const failW = mk(S0, { [W[0]]: 3, [W[1]]: 4 }, [{ week_monday: W[0], version: 3 }, { week_monday: W[1], version: 5 }], [], { weeksFail: true });
+    let threw = false; if (failW) { try { await failW.refreshSchedWeeks(); } catch (e) { threw = true; } }
+    check("AC3 nothing moved → one version read, no week fetch, state untouched; an EMPTY version list is never read as 'all deleted'",
+      !!same && J(same.net) === J(["GET versions"]) && same.updaters.length === 0 && !!empty && empty.updaters.length === 0 && J(empty.state()) === J(S0), J([same && same.net, empty && empty.updaters.length]));
+    check("AC3 a failed week fetch throws (refreshAll's allSettled swallows it) and changes nothing", threw && failW.updaters.length === 0 && failW.vers()[W[1]] === 4);
+  }
+  // AC4
+  {
+    const five = Object.fromEntries(W.map((w, i) => [w, { dayCall: "s" + (i + 1) }])), v5 = Object.fromEntries(W.map(w => [w, 1]));
+    const one = mk(five, v5, W.slice(0, 4).map(w => ({ week_monday: w, version: 1 })), []);
+    if (one) await one.refreshSchedWeeks();
+    const three = mk(five, v5, W.slice(0, 2).map(w => ({ week_monday: w, version: 1 })), []);
+    if (three) await three.refreshSchedWeeks();
+    check("AC4 a week another user deleted is dropped (state, version, baseline); a wipe-shaped loss (3 of 5) is NOT adopted",
+      !!one && !(W[4] in one.state()) && !(W[4] in one.vers()) && !(W[4] in one.base()) && Object.keys(one.state()).length === 4
+        && !!three && Object.keys(three.state()).length === 5 && three.updaters.length === 0, J([one && Object.keys(one.state()), three && Object.keys(three.state())]));
+  }
+  // AC5
+  {
+    const h = mk(S0, { [W[0]]: 3, [W[1]]: 4 }, [{ week_monday: W[0], version: 3 }, { week_monday: W[1], version: 5 }], [{ week_monday: W[1], data: { dayCall: "s9" }, version: 5 }]);
+    if (h) await h.refreshSchedWeeks();
+    const u = h && h.updaters[0];
+    const again = u ? u(S0) : null;   // React re-running the same updater on the same input
+    check("AC5 re-running the poll's updater reaches the same state (decided once — refs and state never disagree)",
+      !!u && J(again) === J(h.state()) && J(h.base()[W[1]]) === J(again[W[1]]), u ? J({ again, state: h.state() }) : "");
+    const ra = nsrcAC.indexOf("const refreshAll = async () => {"), rb = nsrcAC.indexOf("]);", ra);
+    check("AC5 refreshAll polls the weeks (refreshSchedWeeks), right after the blob row",
+      ra > 0 && /refreshScheduleRow\(\),\s*\n\s*refreshSchedWeeks\(\),/.test(nsrcAC.slice(ra, rb)) && count("refreshSchedWeeks()") === 1);
+  }
+}
+
 // ─── Verdict ───
 console.log(`\n${checks} checks, ${failures.length} failure(s)`);
 if (failures.length) {
