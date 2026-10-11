@@ -227,6 +227,14 @@ function CallSchedule() {
   const [fierceBackupSet, setFierceBackupSet] = useState(new Set()); // Fierce backs up our group, regular schedule unchanged
   const [schedule, setSchedule] = useState({});
   const [appShifts, setAppShifts] = useState({}); // { "2026-05-06": "a1", ... }
+  // WIPE GUARD for the APP call-shift row (2026-10-11, the day-off guard's
+  // twin): every APP write upserts the WHOLE map (no CAS, no snapshot, no
+  // restore path), so a write from a session whose read FAILED would replace
+  // every APP's assignments with the near-empty initial map — and the week
+  // editor writes its APP draft back on every save. Any successful read of the
+  // main row arms it (a missing row included); only failures leave it disarmed,
+  // and the 60-s poll re-arms on its next successful read.
+  const [appShiftsLoaded, setAppShiftsLoaded] = useState(false);
   // APP weekday day-offs — DISPLAY-ONLY (never read by assignment/generation;
   // an APP can be off during the day and still take call that night). Stored
   // in app_shifts_data row id="dayoff" as { "2026-05-06": ["a1", ...] } —
@@ -1595,6 +1603,7 @@ function CallSchedule() {
         try {
           const { data: appRow } = await supabase
             .from("app_shifts_data").select("data").eq("id", "main").single();
+          setAppShiftsLoaded(true); // .single() throws on failure: reaching here IS a successful read
           if (appRow?.data && typeof appRow.data === "object") setAppShifts(appRow.data);
         } catch(e) { console.error("APP shifts load failed:", e); }
 
@@ -1712,6 +1721,7 @@ function CallSchedule() {
     const refreshAppShifts = async () => {
       try {
         const { data: appRow } = await supabase.from("app_shifts_data").select("data").eq("id", "main").single();
+        setAppShiftsLoaded(true); // a successful read (re-)arms the APP wipe guard
         if (appRow?.data && typeof appRow.data === "object") setAppShifts(appRow.data);
         // Same table, second row: the realtime subscription and poll both land
         // here, so day-off edits propagate on the same channel. Plain public
@@ -3791,6 +3801,7 @@ function CallSchedule() {
       if (error) {
         setSaveError(true);
         setSaveStatus("⚠ APP shift save failed");
+        showToast("Couldn't save APP shifts — check your connection (or your permission to assign APPs) and try again.", "error");
       } else {
         setSaveStatus("APP shifts saved");
         setTimeout(() => setSaveStatus(""), 1500);
@@ -3798,10 +3809,13 @@ function CallSchedule() {
     } catch(e) {
       setSaveError(true);
       setSaveStatus("⚠ APP shift save failed");
+      showToast("Couldn't save APP shifts — check your connection and try again.", "error");
     }
   };
+  const APP_SHIFTS_NOT_LOADED = "APP shifts haven't loaded yet — editing is disabled so saved assignments can't be overwritten. Retries automatically (~1 min); reload if it persists.";
 
   const addAppShift = () => {
+    if (!appShiftsLoaded) { showToast(APP_SHIFTS_NOT_LOADED, "error"); return; }
     if(!appDate||!appPerson) return;
     const next = {...appShifts,[appDate]:appPerson};
     setAppShifts(next);
@@ -3810,6 +3824,7 @@ function CallSchedule() {
     setAppDate(fmt(new Date()));
   };
   const rmAppShift = (ds) => {
+    if (!appShiftsLoaded) { showToast(APP_SHIFTS_NOT_LOADED, "error"); return; }
     const prevId = appShifts[ds];
     const next={...appShifts}; delete next[ds];
     setAppShifts(next);
@@ -3834,6 +3849,7 @@ function CallSchedule() {
     // is whole-map last-writer-wins with unconditional realtime adoption, so
     // basing on current state (not a sheet-open-time snapshot) keeps the
     // clobber window no wider than the existing per-tap path's.
+    if (!appShiftsLoaded) return { ok: false, error: APP_SHIFTS_NOT_LOADED }; // the sheet keeps its draft
     const next = { ...appShifts };
     let assigns = 0, clears = 0;
     for (const [ds, aid] of Object.entries(draft)) {
@@ -4886,6 +4902,13 @@ function CallSchedule() {
     }
     setEditWeekModal({
       mondayStr,
+      // What the APP rows showed when the editor OPENED (2026-10-11): saving
+      // writes only the days edited against this, so an editor opened before
+      // the APP-shift row loaded (all blanks) can never clear real assignments.
+      appsBase: { ...appsDraft },
+      // Opened before the row loaded: the APP rows show blanks that may not be
+      // blank — they are locked (re-review 2026-10-11); reopening picks up the map.
+      appsLoaded: appShiftsLoaded,
       draft: {
         dayCall: wk.dayCall || "",
         nights: { ...(wk.nights || {}) },
@@ -4894,14 +4917,19 @@ function CallSchedule() {
         reason: "",
       },
     });
-  }, [schedule, appShifts]);
+  }, [schedule, appShifts, appShiftsLoaded]);
 
   const saveWeekEdits = useCallback((openAfter) => {
     if (!editWeekModal) return;
     const { mondayStr, draft } = editWeekModal;
     const oldWk = schedule[mondayStr] || {};
-    const oldApps = {};
-    Object.keys(draft.apps).forEach(ds => { oldApps[ds] = appShifts[ds] || ""; });
+    // APP days the user actually edited in THIS editor, against what it showed
+    // when it opened (2026-10-11) — only these are written. Before the APP-shift
+    // row has loaded this session the whole map can't be trusted: the APP part
+    // is refused, with the reason, while the surgeon edits still save (3a).
+    const appsBase = editWeekModal.appsBase || {};
+    const appEdits = Object.entries(draft.apps).filter(([ds, aid]) => (aid || "") !== (appsBase[ds] || ""));
+    const appRefused = appEdits.length > 0 && !appShiftsLoaded;
 
     // Build diff list of changes
     const changes = []; // { slotLabel, oldId, newId, isApp, date }
@@ -4931,14 +4959,17 @@ function CallSchedule() {
         }
       });
     }
-    Object.entries(draft.apps).forEach(([ds, newAppId]) => {
-      const oldAppId = oldApps[ds] || "";
-      if ((oldAppId || "") !== (newAppId || "")) {
+    // Refused APP edits never reach the confirm, the audit or the notifications.
+    if (!appRefused) appEdits.forEach(([ds, newAppId]) => {
+      const oldAppId = appShifts[ds] || "";
+      if (oldAppId !== (newAppId || "")) {
         changes.push({ slotLabel: `APP ${ds}`, oldId: oldAppId, newId: newAppId, isApp: true, date: ds });
       }
     });
 
     if (changes.length === 0) {
+      // Only refused APP edits: say so and keep the editor open.
+      if (appRefused) { showToast("The APP changes were NOT saved: " + APP_SHIFTS_NOT_LOADED, "error"); return; }
       if (openAfter) openWeekEditor(openAfter); else setEditWeekModal(null);
       return;
     }
@@ -5003,15 +5034,23 @@ function CallSchedule() {
       n[mondayStr] = wk;
       return n;
     });
-    setAppShifts(p => {
-      const n = { ...p };
-      Object.entries(draft.apps).forEach(([ds, aid]) => {
-        if (aid) n[ds] = aid;
-        else delete n[ds];
+    // APP changes (2026-10-11): only the days edited in this editor, applied to
+    // the LATEST map; never before the APP-shift row has loaded this session —
+    // the whole map is upserted, so a write from a failed load would replace
+    // every APP's assignments. The surgeon edits above save either way (3a).
+    if (appRefused) {
+      showToast("The surgeon changes went through, but the APP changes were NOT saved: " + APP_SHIFTS_NOT_LOADED, "error");
+    } else if (appEdits.length) {
+      setAppShifts(p => {
+        const n = { ...p };
+        appEdits.forEach(([ds, aid]) => {
+          if (aid) n[ds] = aid;
+          else delete n[ds];
+        });
+        saveAppShifts(n); // persist APP changes to their own table
+        return n;
       });
-      saveAppShifts(n); // persist APP changes to their own table
-      return n;
-    });
+    }
 
     logAudit("schedule.week_edit", `Edited ${changes.length} shift${changes.length === 1 ? "" : "s"} in week of ${mondayStr}${draft.reason ? " (" + draft.reason + ")" : ""}`, { mondayStr, changes: changes.map(c => ({ slot: c.slotLabel, from: nameOf(c.oldId), to: nameOf(c.newId) })) });
 
@@ -5088,7 +5127,7 @@ function CallSchedule() {
       // Defer to next tick so state updates flush before re-opening
       setTimeout(() => openWeekEditor(openAfter), 0);
     }
-  }, [editWeekModal, schedule, appShifts, surgeons, sMap, aMap, addNotification, sendEmailNotif, pushUndo, schedulerAdminIds, openWeekEditor, backupMondaySet, fierceBackupSet, silvisActive, silvisFakId, silvisDays, silvisBlock, silvisRefuse]);
+  }, [editWeekModal, schedule, appShifts, appShiftsLoaded, surgeons, sMap, aMap, addNotification, sendEmailNotif, pushUndo, schedulerAdminIds, openWeekEditor, backupMondaySet, fierceBackupSet, silvisActive, silvisFakId, silvisDays, silvisBlock, silvisRefuse]);
 
   // ─── Backup / Fierce week marking (Settings card) ───
   // backupMondaySet/fierceBackupSet (persisted as blob arrays) and the
@@ -6752,9 +6791,14 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   {apps.map(a=><option key={a.id} value={a.id}>{a.name}</option>)}
                 </select>
               </div>
-              <button onClick={addAppShift} style={css.btn(true)}>+ Assign</button>
-              <button onClick={()=>setPaintSheet("app")} style={{...css.btn(false),fontWeight:700}}>🖌 Paint Month</button>
+              <button onClick={addAppShift} disabled={!appShiftsLoaded} style={{...css.btn(true),opacity:appShiftsLoaded?1:0.4,cursor:appShiftsLoaded?"pointer":"not-allowed"}}>+ Assign</button>
+              <button onClick={()=>setPaintSheet("app")} disabled={!appShiftsLoaded} style={{...css.btn(false),fontWeight:700,opacity:appShiftsLoaded?1:0.4,cursor:appShiftsLoaded?"pointer":"not-allowed"}}>🖌 Paint Month</button>
             </div>
+            {!appShiftsLoaded && (
+              <div style={{fontSize:12,color:"#c04040",fontWeight:600,margin:"0 0 10px"}}>
+                ⚠ {APP_SHIFTS_NOT_LOADED}
+              </div>
+            )}
             {/* Collapsible list of assigned shifts — collapsed by default to reduce clutter */}
             {Object.keys(appShifts).length > 0 && (
               <div style={{borderTop:"1px solid #e8ecf0",paddingTop:10}}>
@@ -8587,12 +8631,15 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             const prevMonday = idx > 0 ? allMondays[idx-1] : null;
             const nextMonday = (idx >= 0 && idx < allMondays.length-1) ? allMondays[idx+1] : null;
 
-            // Detect unsaved changes against the current schedule
+            // Detect unsaved changes against the current schedule (APP days:
+            // against what the editor showed when it opened — appsBase)
             const oldWk = schedule[mondayStr] || {};
+            const appsBase = editWeekModal.appsBase || {};
+            const appsLocked = !editWeekModal.appsLoaded;
             const hasUnsaved = (
               (oldWk.dayCall || "") !== (draft.dayCall || "") ||
               ["mon","tue","wed","thu","wknd"].some(nk => (oldWk.nights?.[nk] || "") !== (draft.nights?.[nk] || "")) ||
-              Object.entries(draft.apps).some(([ds, aid]) => (appShifts[ds] || "") !== (aid || "")) ||
+              Object.entries(draft.apps).some(([ds, aid]) => (appsBase[ds] || "") !== (aid || "")) ||
               (() => {
                 const oldOv = oldWk.dayCallOverrides || {};
                 const newOv = draft.dayCallOverrides || {};
@@ -8692,6 +8739,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   {/* APP shifts */}
                   <div style={{marginBottom:14}}>
                     <div style={{fontSize:12,fontWeight:700,color:dk?"#b0b8c0":"#5a6a78",marginBottom:6,textTransform:"uppercase",letterSpacing:0.5}}>APP Shifts</div>
+                    {appsLocked && <div style={{fontSize:12,color:dk?"#f0b0a0":"#a33",marginBottom:6,lineHeight:1.4}}>⚠ APP shifts hadn't loaded when this editor opened, so these rows may be wrong and are locked. Close and reopen the editor to change APP days.</div>}
                     <div style={{display:"grid",gridTemplateColumns:"150px 1fr",gap:6,alignItems:"center"}}>
                       {Array.from({length:7}).map((_,i) => {
                         const d = addD(mon, i);
@@ -8699,7 +8747,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                         return (
                           <React.Fragment key={ds}>
                             <label style={{fontSize:12,color:dk?"#b0b8c0":"#4a5868"}}>{dayLabels[d.getDay()]} {d.getMonth()+1}/{d.getDate()}</label>
-                            <select value={draft.apps[ds]||""} onChange={e=>updateDraft(dr=>({...dr,apps:{...dr.apps,[ds]:e.target.value}}))} style={{...css.inp,padding:"6px 8px"}}>{appOpts}</select>
+                            <select value={draft.apps[ds]||""} disabled={appsLocked} onChange={e=>updateDraft(dr=>({...dr,apps:{...dr.apps,[ds]:e.target.value}}))} style={{...css.inp,padding:"6px 8px",opacity:appsLocked?0.5:1}}>{appOpts}</select>
                           </React.Fragment>
                         );
                       })}
