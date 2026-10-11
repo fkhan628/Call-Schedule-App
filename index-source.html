@@ -2408,8 +2408,10 @@ function CallSchedule() {
   const tradeSubmitBusyRef = useRef(false);
   const submitVacRequest = useCallback(async () => {
     // A double tap must not file the request twice (2026-10-11) — checked
-    // first, so a tap during the insert shows no validation toast either.
-    if (vacSubmitBusyRef.current) return;
+    // first, so a tap during the insert runs no validation; it says it is
+    // still sending (the button has no busy state, and on bad wifi a silent
+    // no-op looks like a dead button).
+    if (vacSubmitBusyRef.current) { showToast("Still sending your last request — one moment.", "info"); return; }
     if (!vacReqSurgeon || !vacReqStart || !vacReqEnd) { showToast("Pick who it's for and both dates first.", "error"); return; }
     const surgeonName = surgeons.find(s => s.id === vacReqSurgeon)?.name || apps.find(a => a.id === vacReqSurgeon)?.name || vacReqSurgeon;
     const isNoCall = vacReqType === "nocall";
@@ -2544,8 +2546,9 @@ function CallSchedule() {
   // ─── Shift Trade Request: Submit ───
   const submitTradeRequest = useCallback(async () => {
     // A double tap must not propose the trade twice (2026-10-11) — checked
-    // first, so a tap during the insert never re-runs the one-way / Silvis prompts.
-    if (tradeSubmitBusyRef.current) return;
+    // first, so a tap during the insert never re-runs the one-way / Silvis
+    // prompts; it says it is still sending (same reason as the vacation submit).
+    if (tradeSubmitBusyRef.current) { showToast("Still sending your last trade proposal — one moment.", "info"); return; }
     if (!tradeFrom || !tradeTo || !tradeWeek || !tradeShift) { showToast("Pick both people, the week and the shift first.", "error"); return; }
     // Two-way swap required unless scheduler emergency override
     if (!tradeReturnWeek || !tradeReturnShift) {

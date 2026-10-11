@@ -3335,7 +3335,7 @@ check("prefs audit never logs the plaintext email (masked only)",
 // date before the start and a double tap. Executed on the REAL handler bodies.
 //   AA1 vacation: RLS refusal / expired sign-in / success / double tap / bad dates / empty form
 //   AA2 trade:    RLS refusal / success / double tap / empty form; the Silvis refusal still precedes the insert
-//   AA3 success toasts before notifying (a notification failure is the last word); thrown insert; tap while busy
+//   AA3 success toasts before notifying (a notification failure is the last word); thrown insert; tap while busy says so
 {
   const nsrcAA = src.replace(/\r\n/g, "\n");   // a Windows checkout is CRLF, CI's is LF
   const bodyOf = (decl, depsHead) => {
@@ -3447,8 +3447,10 @@ check("prefs audit never logs the plaintext email (masked only)",
     let alerts = 0, confirms = 0;
     const vb = vEnv(OK_V, { env: { vacReqEnd: "", vacSubmitBusyRef: { current: true } } }); if (vb.run) await vb.run();
     const tb = tEnv({ data: { id: 9 }, error: null }, { env: { tradeReturnWeek: "", tradeSubmitBusyRef: { current: true }, alert: () => { alerts++; }, confirm: () => { confirms++; return true; } } }); if (tb.run) await tb.run();
-    check("AA3 a tap while a submit is in flight does nothing visible — no validation toast, no one-way-trade prompt, no insert",
-      !!vb.run && !!tb.run && vb.rec.toasts.length === 0 && vb.rec.inserts === 0 && tb.rec.toasts.length === 0 && tb.rec.inserts === 0 && alerts === 0 && confirms === 0,
+    check("AA3 a tap while a submit is in flight only says it is still sending — no validation toast, no one-way-trade prompt, no insert",
+      !!vb.run && !!tb.run && vb.rec.inserts === 0 && tb.rec.inserts === 0 && alerts === 0 && confirms === 0
+        && JSON.stringify(vb.rec.toasts) === JSON.stringify(["info: Still sending your last request — one moment."])
+        && JSON.stringify(tb.rec.toasts) === JSON.stringify(["info: Still sending your last trade proposal — one moment."]),
       JSON.stringify({ v: vb.rec, t: tb.rec, alerts, confirms }));
   }
   check("AA writeFailReason is defined once at module scope and both submits use it",
