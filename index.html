@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.10.11a";
+    var APP_VERSION = "2026.10.11b";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -2047,9 +2047,18 @@ function CallSchedule() {
       showToast("Couldn't send email notifications — check your connection.", "error");
     }
   }, [edgeFunctionUrl]);
+  const vacSubmitBusyRef = useRef(false);
+  const tradeSubmitBusyRef = useRef(false);
   const submitVacRequest = useCallback(async () => {
     var _surgeons$find4, _apps$find2;
-    if (!vacReqSurgeon || !vacReqStart || !vacReqEnd) return;
+    if (vacSubmitBusyRef.current) {
+      showToast("Still sending your last request — one moment.", "info");
+      return;
+    }
+    if (!vacReqSurgeon || !vacReqStart || !vacReqEnd) {
+      showToast("Pick who it's for and both dates first.", "error");
+      return;
+    }
     const surgeonName = ((_surgeons$find4 = surgeons.find(s => s.id === vacReqSurgeon)) === null || _surgeons$find4 === void 0 ? void 0 : _surgeons$find4.name) || ((_apps$find2 = apps.find(a => a.id === vacReqSurgeon)) === null || _apps$find2 === void 0 ? void 0 : _apps$find2.name) || vacReqSurgeon;
     const isNoCall = vacReqType === "nocall";
     const kindLabel = isNoCall ? "no-call days" : "vacation";
@@ -2058,6 +2067,11 @@ function CallSchedule() {
       showToast(`Requests are for upcoming time off — ${vacReqStart < reqTodayStr ? "the start date" : "the end date"} is in the past. If a past ${kindLabel} record needs correcting, ask the scheduler to enter it directly in Setup.`, "error");
       return;
     }
+    if (vacReqEnd < vacReqStart) {
+      showToast("The end date is before the start date.", "error");
+      return;
+    }
+    vacSubmitBusyRef.current = true;
     try {
       const req = {
         surgeon_id: vacReqSurgeon,
@@ -2070,29 +2084,36 @@ function CallSchedule() {
         submitted_at: new Date().toISOString()
       };
       const {
-        data: inserted
+        data: inserted,
+        error: insertErr
       } = await db.insert("vacation_requests", req);
-      if (inserted) {
-        setVacRequests(prev => [inserted, ...prev]);
-        await addNotification("vacation_submitted", isNoCall ? "No-Call Request" : "Vacation Request", `${surgeonName} requested ${kindLabel} ${vacReqStart} to ${vacReqEnd}`, {
-          surgeon_id: vacReqSurgeon
-        }, schedulerAdminIds);
-        sendEmailNotif("vacation_submitted", {
-          surgeon_name: surgeonName,
-          surgeon_id: vacReqSurgeon,
-          start_date: vacReqStart,
-          end_date: vacReqEnd,
-          reason: vacReqReason,
-          request_type: vacReqType
-        }, schedulerAdminIds);
+      if (!inserted) {
+        console.error("vacation request insert failed:", insertErr);
+        showToast(`Couldn't send your ${kindLabel} request — ${writeFailReason(insertErr)}. Nothing was sent; your entries are still here.`, "error");
+        return;
       }
+      setVacRequests(prev => [inserted, ...prev]);
       setVacReqStart("");
       setVacReqEnd("");
       setVacReqReason("");
       setVacReqType("vacation");
+      showToast(`${isNoCall ? "No-call" : "Vacation"} request sent.`, "success");
+      await addNotification("vacation_submitted", isNoCall ? "No-Call Request" : "Vacation Request", `${surgeonName} requested ${kindLabel} ${vacReqStart} to ${vacReqEnd}`, {
+        surgeon_id: vacReqSurgeon
+      }, schedulerAdminIds);
+      sendEmailNotif("vacation_submitted", {
+        surgeon_name: surgeonName,
+        surgeon_id: vacReqSurgeon,
+        start_date: vacReqStart,
+        end_date: vacReqEnd,
+        reason: vacReqReason,
+        request_type: vacReqType
+      }, schedulerAdminIds);
     } catch (e) {
       console.error("Submit request error:", e);
       showToast("Couldn't submit your request — check your connection and try again.", "error");
+    } finally {
+      vacSubmitBusyRef.current = false;
     }
   }, [vacReqSurgeon, vacReqStart, vacReqEnd, vacReqReason, vacReqType, surgeons, apps, addNotification, sendEmailNotif, schedulerAdminIds]);
   const approveVacRequest = useCallback(async req => {
@@ -2216,7 +2237,14 @@ function CallSchedule() {
   }, [addNotification, sendEmailNotif, schedulerAdminIds, userProfile, surgeons, mySurgeon]);
   const submitTradeRequest = useCallback(async () => {
     var _surgeons$find7, _surgeons$find8;
-    if (!tradeFrom || !tradeTo || !tradeWeek || !tradeShift) return;
+    if (tradeSubmitBusyRef.current) {
+      showToast("Still sending your last trade proposal — one moment.", "info");
+      return;
+    }
+    if (!tradeFrom || !tradeTo || !tradeWeek || !tradeShift) {
+      showToast("Pick both people, the week and the shift first.", "error");
+      return;
+    }
     if (!tradeReturnWeek || !tradeReturnShift) {
       if (!isScheduler) {
         alert("A return swap is required. All trades must be two-way — select the week and shift you'll take in return.");
@@ -2237,6 +2265,7 @@ function CallSchedule() {
     const fromName = ((_surgeons$find7 = surgeons.find(s => s.id === tradeFrom)) === null || _surgeons$find7 === void 0 ? void 0 : _surgeons$find7.name) || tradeFrom;
     const toName = ((_surgeons$find8 = surgeons.find(s => s.id === tradeTo)) === null || _surgeons$find8 === void 0 ? void 0 : _surgeons$find8.name) || tradeTo;
     const shiftLabel = SHIFT_LABELS[tradeShift] || tradeShift;
+    tradeSubmitBusyRef.current = true;
     try {
       const req = {
         from_surgeon_id: tradeFrom,
@@ -2253,10 +2282,21 @@ function CallSchedule() {
         submitted_at: new Date().toISOString()
       };
       const {
-        data: inserted
+        data: inserted,
+        error: insertErr
       } = await db.insert("shift_trade_requests", req);
-      if (inserted) {
+      if (!inserted) {
+        console.error("trade request insert failed:", insertErr);
+        showToast(`Couldn't propose the trade — ${writeFailReason(insertErr)}. Nothing was sent; your choices are still here.`, "error");
+        return;
+      }
+      {
         setTradeRequests(prev => [inserted, ...prev]);
+        setTradeWeek("");
+        setTradeShift("");
+        setTradeReturnWeek("");
+        setTradeReturnShift("");
+        showToast(`Trade proposed — ${toName} will be asked to accept or decline.`, "success");
         const proposeMsg = tradeProposeMsg(req);
         logAudit("trade.propose", proposeMsg, {
           from: tradeFrom,
@@ -2276,13 +2316,11 @@ function CallSchedule() {
           detail: proposeMsg
         }, [tradeFrom, tradeTo]);
       }
-      setTradeWeek("");
-      setTradeShift("");
-      setTradeReturnWeek("");
-      setTradeReturnShift("");
     } catch (e) {
       console.error("Submit trade error:", e);
       showToast("Couldn't submit the trade — check your connection and try again.", "error");
+    } finally {
+      tradeSubmitBusyRef.current = false;
     }
   }, [tradeFrom, tradeTo, tradeWeek, tradeShift, tradeReturnWeek, tradeReturnShift, surgeons, addNotification, sendEmailNotif, isScheduler, schedule, silvisActive, silvisBlock, silvisRefuse]);
   const detectCascadeChanges = useCallback((sched, req) => {
@@ -17443,6 +17481,18 @@ function MonthPainterSheet({
       opacity: dirtyCount && !busy ? 1 : 0.55
     })
   }, busy ? "Saving…" : `Save${dirtyCount ? ` (${dirtyCount})` : ""}`))));
+}
+function writeFailReason(err) {
+  const s = typeof err === "string" ? err : (() => {
+    try {
+      return JSON.stringify(err || "");
+    } catch (e) {
+      return String(err);
+    }
+  })();
+  if (/42501|row-level security|\b403\b/i.test(s)) return "you don't have permission to do that (ask the scheduler)";
+  if (/JWT expired|PGRST30[0-3]|\b401\b/i.test(s)) return "your sign-in has expired — sign in again";
+  return "check your connection and try again";
 }
 function CallTotalsCard({
   totals,
