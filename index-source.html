@@ -4870,6 +4870,9 @@ function CallSchedule() {
       // writes only the days edited against this, so an editor opened before
       // the APP-shift row loaded (all blanks) can never clear real assignments.
       appsBase: { ...appsDraft },
+      // Opened before the row loaded: the APP rows show blanks that may not be
+      // blank — they are locked (re-review 2026-10-11); reopening picks up the map.
+      appsLoaded: appShiftsLoaded,
       draft: {
         dayCall: wk.dayCall || "",
         nights: { ...(wk.nights || {}) },
@@ -4878,7 +4881,7 @@ function CallSchedule() {
         reason: "",
       },
     });
-  }, [schedule, appShifts]);
+  }, [schedule, appShifts, appShiftsLoaded]);
 
   const saveWeekEdits = useCallback((openAfter) => {
     if (!editWeekModal) return;
@@ -5000,7 +5003,7 @@ function CallSchedule() {
     // the whole map is upserted, so a write from a failed load would replace
     // every APP's assignments. The surgeon edits above save either way (3a).
     if (appRefused) {
-      showToast("Saved the surgeon changes — the APP changes were NOT saved: " + APP_SHIFTS_NOT_LOADED, "error");
+      showToast("The surgeon changes went through, but the APP changes were NOT saved: " + APP_SHIFTS_NOT_LOADED, "error");
     } else if (appEdits.length) {
       setAppShifts(p => {
         const n = { ...p };
@@ -8592,12 +8595,15 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             const prevMonday = idx > 0 ? allMondays[idx-1] : null;
             const nextMonday = (idx >= 0 && idx < allMondays.length-1) ? allMondays[idx+1] : null;
 
-            // Detect unsaved changes against the current schedule
+            // Detect unsaved changes against the current schedule (APP days:
+            // against what the editor showed when it opened — appsBase)
             const oldWk = schedule[mondayStr] || {};
+            const appsBase = editWeekModal.appsBase || {};
+            const appsLocked = !editWeekModal.appsLoaded;
             const hasUnsaved = (
               (oldWk.dayCall || "") !== (draft.dayCall || "") ||
               ["mon","tue","wed","thu","wknd"].some(nk => (oldWk.nights?.[nk] || "") !== (draft.nights?.[nk] || "")) ||
-              Object.entries(draft.apps).some(([ds, aid]) => (appShifts[ds] || "") !== (aid || "")) ||
+              Object.entries(draft.apps).some(([ds, aid]) => (appsBase[ds] || "") !== (aid || "")) ||
               (() => {
                 const oldOv = oldWk.dayCallOverrides || {};
                 const newOv = draft.dayCallOverrides || {};
@@ -8697,6 +8703,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   {/* APP shifts */}
                   <div style={{marginBottom:14}}>
                     <div style={{fontSize:12,fontWeight:700,color:dk?"#b0b8c0":"#5a6a78",marginBottom:6,textTransform:"uppercase",letterSpacing:0.5}}>APP Shifts</div>
+                    {appsLocked && <div style={{fontSize:12,color:dk?"#f0b0a0":"#a33",marginBottom:6,lineHeight:1.4}}>⚠ APP shifts hadn't loaded when this editor opened, so these rows may be wrong and are locked. Close and reopen the editor to change APP days.</div>}
                     <div style={{display:"grid",gridTemplateColumns:"150px 1fr",gap:6,alignItems:"center"}}>
                       {Array.from({length:7}).map((_,i) => {
                         const d = addD(mon, i);
@@ -8704,7 +8711,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                         return (
                           <React.Fragment key={ds}>
                             <label style={{fontSize:12,color:dk?"#b0b8c0":"#4a5868"}}>{dayLabels[d.getDay()]} {d.getMonth()+1}/{d.getDate()}</label>
-                            <select value={draft.apps[ds]||""} onChange={e=>updateDraft(dr=>({...dr,apps:{...dr.apps,[ds]:e.target.value}}))} style={{...css.inp,padding:"6px 8px"}}>{appOpts}</select>
+                            <select value={draft.apps[ds]||""} disabled={appsLocked} onChange={e=>updateDraft(dr=>({...dr,apps:{...dr.apps,[ds]:e.target.value}}))} style={{...css.inp,padding:"6px 8px",opacity:appsLocked?0.5:1}}>{appOpts}</select>
                           </React.Fragment>
                         );
                       })}

@@ -3426,6 +3426,13 @@ check("prefs audit never logs the plaintext email (masked only)",
     } else check("AB2 saveWeekEdits extractable for execution", false, "anchors not found");
     check("AB2 the editor keeps a COPY of what its APP rows showed on open (the base the save diffs against), and it is the only place a week editor is created",
       count('appsDraft[ds] = appShifts[ds] || "";') === 1 && count("appsBase: { ...appsDraft },") === 1 && count("setEditWeekModal({") === 1);
+    check("AB2 an editor opened before the row loaded LOCKS its APP selects and says why (records appsLoaded, in the deps); '• unsaved' diffs the APP days against appsBase, not the live map",
+      count("appsLoaded: appShiftsLoaded,") === 1 && count("}, [schedule, appShifts, appShiftsLoaded]);") === 1
+        && count("const appsLocked = !editWeekModal.appsLoaded;") === 1 && count("disabled={appsLocked}") === 1 && count("{appsLocked && <div") === 1
+        && count('Object.entries(draft.apps).some(([ds, aid]) => (appsBase[ds] || "") !== (aid || ""))') === 1
+        && count('Object.entries(draft.apps).some(([ds, aid]) => (appShifts[ds] || "") !== (aid || ""))') === 0);
+    check("AB2 the mixed-refusal toast never claims the surgeon changes were SAVED (the autosave may still refuse after a failed load)",
+      count("Saved the surgeon changes") === 0 && count("The surgeon changes went through, but the APP changes were NOT saved") === 1);
   }
   check("AB3 both reads of the main row arm the guard right after .single() (mount + poll); nothing else arms it",
     (src.match(/\.eq\("id", "main"\)\.single\(\);\r?\n\s*setAppShiftsLoaded\(true\);/g) || []).length === 2 && count("setAppShiftsLoaded(true)") === 2);
