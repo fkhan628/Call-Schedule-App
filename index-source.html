@@ -411,6 +411,10 @@ function CallSchedule() {
   const [newLockSlot, setNewLockSlot] = useState("");
   const [newLockSurgeon, setNewLockSurgeon] = useState("");
   const [showPreview, setShowPreview] = useState(false);
+  // "I've reviewed these N items" on the preview's Needs-your-OK box (2026-10-11).
+  // Reset whenever a new preview is generated.
+  const [previewAck, setPreviewAck] = useState(false);
+  useEffect(() => { setPreviewAck(false); }, [previewSchedule]);
   const [previewCalMonth, setPreviewCalMonth] = useState(0); // index into preview months
 
   // Form states
@@ -3476,7 +3480,10 @@ function CallSchedule() {
   // ─── Publish Schedule (with notification) ───
   const doGenerateAndNotify = async () => {
     const hadExistingSchedule = Object.keys(schedule).length > 0;
-    doGenerate(false);
+    // Notify only when something was actually published — not when the Silvis
+    // confirm was cancelled, and not when the result went to the preview for
+    // "Needs your OK" review (2026-10-11).
+    if (doGenerate(false) !== "published") return;
     // If this is a brand new schedule period (no existing schedule),
     // roll the generated counts forward into the running totals.
     // When regenerating an existing period, do not roll forward (same period, not a new one).
@@ -3982,8 +3989,11 @@ function CallSchedule() {
     return p;
   };
 
-  const doGenerate = (preview) => {
-    const prefs = buildPrefs();
+  // The generator's availability map — vacations ∪ no-call days ∪ (rule
+  // silvisBusy) FAK's Silvis primary days. ONE builder, shared by doGenerate
+  // and the preview's "Needs your OK" box, so the box judges the preview with
+  // exactly what the generator used. (Was inline in doGenerate.)
+  const buildGenAvailability = () => {
     // No-call days block call assignment exactly like vacations, so merge them
     // into a single availability map for the generator (which gates everything
     // through onVac). This needs no change to generator.js.
@@ -3991,17 +4001,24 @@ function CallSchedule() {
     new Set([...Object.keys(vacations), ...Object.keys(noCallDays)]).forEach(id => {
       availability[id] = [...(vacations[id]||[]), ...(noCallDays[id]||[])];
     });
+
     // silvisBusy (rule as data): FAK's Silvis PRIMARY days fold in as single-day
     // [D,D] ranges — exactly NO-CALL semantics: they block the shift's OWN
     // day(s) and the night before D (which ends 07:00 D) stays allowed. Into
     // `availability` ONLY, never the vacations (trailing-edge) map below.
     // Zero generator change: availDC (Mon..Sat), every weeknight (its day),
     // the weekend (Fri, Sun) and the holiday pre-assignments all already gate
-    // through onVac. Like a vacation, a squeezed week's last-resort fallback
-    // can still violate it — the Schedule Warnings line is the net.
+    // through onVac. Since 2026-10-11 the generator never places anyone below
+    // this floor (generator.js slotFloorOk) — a squeezed week bends a softer
+    // rule instead, and the preview's "Needs your OK" box lists it.
     if (silvisActive) {
       availability[silvisFakId] = [...(availability[silvisFakId] || []), ...sfBusyRanges(silvisDays.primary)];
     }
+    return availability;
+  };
+  const doGenerate = (preview) => {
+    const prefs = buildPrefs();
+    const availability = buildGenAvailability();
     // Seed the generator with the week immediately preceding the new start so
     // rotation continuity carries across the period boundary — without this,
     // generating the next period can repeat the prior schedule's last
@@ -4052,7 +4069,7 @@ function CallSchedule() {
       else if (silvisLoadError) problems.push("the last Silvis read FAILED (" + silvisLoadError + ") — the previous cache is being used");
       if (silvisRows.length > 0 && st.stale) problems.push(`the Silvis cache is STALE (fetched ${st.ageHours === null ? "?" : st.ageHours + "h"} ago)`);
       if (silvisRows.length > 0 && periodEnd && silvisDays.to && periodEnd > silvisDays.to) problems.push(`the Silvis feed only covers through ${silvisDays.to} — weeks after that will be generated as if ${nameOf(silvisFakId)} had NO Silvis call (Silvis publishes rolling 3-month periods; check Schedule Warnings again after it publishes)`);
-      if (problems.length && !confirm(`⚠️ Rule silvisBusy is BLIND for part or all of this period:\n\n${problems.map(p => "• " + p).join("\n")}\n\nGenerate anyway?`)) return;
+      if (problems.length && !confirm(`⚠️ Rule silvisBusy is BLIND for part or all of this period:\n\n${problems.map(p => "• " + p).join("\n")}\n\nGenerate anyway?`)) return "cancelled";
     }
     const result = generate(surgeons, mondays, availability, backupMondaySet, priorCounts, prefs, fierceBackupSet, holidayAssignments, pendingLocks, prevWeekSeed, vacations, year1Counts);
     // Locks the generator could not honor (a Service-Week / Weekend lock on a
@@ -4068,7 +4085,23 @@ function CallSchedule() {
     if (preview) {
       setPreviewSchedule(result);
       setShowPreview(true);
-    } else {
+      return "preview";
+    }
+    // Generate & Publish skips the preview — unless the result has anything in
+    // "Needs your OK" (2026-10-11): then it opens the preview instead, so no
+    // bend, empty slot or time-off placement is ever published unseen.
+    const needsOkN = (() => {
+      try {
+        return listScheduleBends(result, { surgeons, mondays, vac: availability, vacationsOnly: vacations, holAssignments: holidayAssignments, prevWeekSeed }).items.length;
+      } catch (e) { console.error("Needs-your-OK check failed:", e); return 1; } // fail closed: review by hand
+    })();
+    if (needsOkN > 0) {
+      setPreviewSchedule(result);
+      setShowPreview(true);
+      showToast(`${needsOkN} item${needsOkN === 1 ? " needs" : "s need"} your OK before publishing — review them in the preview below, then ✓ Accept & Publish.`, "error");
+      return "review";
+    }
+    {
       (async () => {
         // Snapshot the persisted state BEFORE any mutation; if the snapshot
         // can't be written there is no backup, so the regenerate is refused.
@@ -4101,6 +4134,7 @@ function CallSchedule() {
         } catch(e) { console.error("Immediate save failed:", e); showToast("Couldn't save the regenerated schedule — check your connection.", "error"); }
       })();
     }
+    return "published";
   };
 
   // ─── Clear / Reset Schedule ───
@@ -4313,7 +4347,31 @@ function CallSchedule() {
     });
   }, [surgeons]);
 
+  // "Needs your OK" (owner decision 2026-10-11): every bend, empty slot,
+  // time-off placement and crowded day in the preview, from generator.js
+  // listScheduleBends — the same function scoreOf ranks candidates with —
+  // judged with the generator's own availability map. Designed holiday
+  // patterns are never listed. Non-empty → Accept & Publish needs the
+  // checkbox, and the publish audit entry records the count.
+  const previewNeedsOk = useMemo(() => {
+    if (!previewSchedule) return { cost: 0, items: [] };
+    try {
+      const keys = Object.keys(previewSchedule).sort();
+      const prevWk = keys.length ? schedule[fmt(addD(parse(keys[0]), -7))] : null;
+      return listScheduleBends(previewSchedule, {
+        surgeons, mondays: keys, vac: buildGenAvailability(), vacationsOnly: vacations,
+        holAssignments: holidayAssignments,
+        prevWeekSeed: prevWk ? { dayCall: prevWk.dayCall || null, wknd: (prevWk.nights && prevWk.nights.wknd) || null } : null,
+      });
+    } catch (e) {
+      // Fail LOUD: a preview whose check failed must never look clean.
+      console.error("Needs-your-OK list failed:", e);
+      return { cost: 0, items: [{ kind: "error", key: "error", cost: 0, text: "⚠ The bend check itself failed (" + ((e && e.message) || e) + ") — review the calendar by hand before publishing." }] };
+    }
+  }, [previewSchedule, schedule, surgeons, vacations, noCallDays, holidayAssignments, silvisActive, silvisFakId, silvisDays]);
   const acceptPreview = () => {
+    // The checkbox is the gate (the button is disabled too; this is the backstop).
+    if (previewSchedule && previewNeedsOk.items.length > 0 && !previewAck) { showToast("Tick \"I've reviewed these items\" first.", "error"); return; }
     if (previewSchedule) {
       if (Object.keys(schedule).length > 0) pushUndo(schedule);
       rollForwardCounts(previewSchedule);
@@ -4326,7 +4384,8 @@ function CallSchedule() {
       setView("calendar");
       setSaveStatus("Published — totals updated");
       setTimeout(() => setSaveStatus(""), 3000);
-      logAudit("schedule.publish", `Published schedule (${numWeeks} weeks from ${MO[startMonth]} ${startYear})`, { startMonth, startYear, numWeeks, weeks: Object.keys(previewSchedule).length });
+      const needsOkN = previewNeedsOk.items.length;
+      logAudit("schedule.publish", `Published schedule (${numWeeks} weeks from ${MO[startMonth]} ${startYear})${needsOkN ? ` — ${needsOkN} item${needsOkN === 1 ? "" : "s"} reviewed in Needs your OK` : ""}`, { startMonth, startYear, numWeeks, weeks: Object.keys(previewSchedule).length, needsOk: needsOkN, bendCost: previewNeedsOk.cost });
     }
   };
 
@@ -6947,13 +7006,13 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             <div style={css.cardT}>📅 Holiday Call Assignments</div>
             <p style={{fontSize:12,color:"#5a6a78",margin:"0 0 10px",lineHeight:1.5}}>
               Generate yearly holiday assignments. Each holiday gets 2 surgeons who alternate 24h blocks.
-              Eves stay on the regular schedule — only the holiday day and days after switch to 24h.
+              The eve is a regular night shift worked by the card's "Night Before" surgeon; the holiday day and days after switch to 24h.
             </p>
             <div style={{fontSize:11,color:"#5a6a78",background:"#fef8f0",border:"1px solid #e8d8c0",borderRadius:6,padding:"8px 12px",marginBottom:12,lineHeight:1.7}}>
-              <strong>Pattern:</strong> Surgeon A → Eve + Holiday 24h · Surgeon B → Day After 24h · alternating through Sat<br/>
+              <strong>Pattern:</strong> Surgeon B → Night Before (the eve night shift) + Day After 24h · Surgeon A → Holiday 24h · alternating through Sat<br/>
               <strong>Monday holidays (Memorial Day, Labor Day):</strong> Surgeon A covers Monday 24h, Surgeon B covers night before (Sun). Service week doctor starts Tuesday — no day-after override.<br/>
               <strong>Friday holidays:</strong> Fri (A) + Sat (B)<br/>
-              <strong>Exception:</strong> FAK covers BOTH Christmas Eve and Christmas Day (standing rule) — two days exactly, then the regular service-week doctor resumes<br/>
+              <strong>Exception:</strong> FAK covers Christmas Eve night and Christmas Day (standing rule), and the generator also gives FAK that week's service week and weekend<br/>
               <strong style={{color:"#8a4010"}}>Distinct-pair rule:</strong> Within each group (major / minor), every holiday must have a completely different surgeon pair — no surgeon appears on two holidays in the same group.
             </div>
             {holidayLockWarning && (
@@ -7461,10 +7520,25 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                         w.document.write(html); w.document.close();
                       } catch(e) { alert("Print failed: " + (e?.message||e)); }
                     }} style={{...css.btn(false),padding:"6px 14px",fontSize:12,background:"#fef3e6",borderColor:"#e8c89a",color:"#8a5020"}}>🖨 Print Calendar</button>
-                    <button onClick={acceptPreview} style={{...css.btn(true),padding:"6px 14px",fontSize:12,background:"linear-gradient(135deg,#1a8040,#30a060)",borderColor:"#1a8040"}}>✓ Accept & Publish</button>
+                    <button onClick={acceptPreview} disabled={previewNeedsOk.items.length > 0 && !previewAck} title={previewNeedsOk.items.length > 0 && !previewAck ? "Review the Needs your OK items below first" : undefined} style={{...css.btn(true),padding:"6px 14px",fontSize:12,background:"linear-gradient(135deg,#1a8040,#30a060)",borderColor:"#1a8040",opacity:previewNeedsOk.items.length > 0 && !previewAck ? 0.45 : 1,cursor:previewNeedsOk.items.length > 0 && !previewAck ? "not-allowed" : "pointer"}}>✓ Accept & Publish</button>
                     <button onClick={discardPreview} style={{background:"none",border:"1px solid #e0c0c0",color:"#904040",borderRadius:6,padding:"6px 14px",fontSize:12,cursor:"pointer",fontFamily:font}}>✕ Discard</button>
                   </div>
                 </div>
+
+                {/* Needs your OK (2026-10-11) — every bend, empty slot, time-off
+                    placement and crowded day, in plain words (generator.js
+                    listScheduleBends). Publishing waits for the checkbox. */}
+                {previewNeedsOk.items.length > 0 && (
+                  <div style={{background:dk?"#3a2410":"#fdf0e3",border:"1px solid #d09050",borderRadius:8,padding:"8px 12px",marginBottom:12,fontSize:12,color:dk?"#f0c890":"#7a4010",overflowWrap:"anywhere"}}>
+                    <div style={{fontWeight:700,marginBottom:2}}>⚠ Needs your OK — {previewNeedsOk.items.length} item{previewNeedsOk.items.length===1?"":"s"}</div>
+                    {previewNeedsOk.items.map((it,i)=><div key={i} style={{marginTop:3}}>• {it.text}</div>)}
+                    <div style={{marginTop:5,fontSize:11,opacity:0.85}}>Vacation, no-call and Silvis days are never broken — when a week can't be covered by the usual rules, the generator takes the mildest bend and lists it here. Re-roll for different names; the bends themselves are the minimum the calendar allows.</div>
+                    <label style={{display:"flex",alignItems:"center",gap:8,marginTop:8,fontWeight:700,cursor:"pointer"}}>
+                      <input type="checkbox" checked={previewAck} onChange={e=>setPreviewAck(e.target.checked)} style={{width:18,height:18,flexShrink:0}}/>
+                      I've reviewed these {previewNeedsOk.items.length} item{previewNeedsOk.items.length===1?"":"s"}
+                    </label>
+                  </div>
+                )}
 
                 {/* Spacing-exception disclosure — publish knowingly (see computation above) */}
                 {spacingNotes.length > 0 && (

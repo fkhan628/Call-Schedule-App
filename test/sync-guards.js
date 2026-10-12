@@ -3591,6 +3591,71 @@ check("prefs audit never logs the plaintext email (masked only)",
       && count('{vacList.length>0&&<div style={{fontSize:8,color:"#a07070",marginTop:1,overflowWrap:"anywhere"}}>🏖{vacList.map(v=>v.name).join(", ")}</div>}') === 1);
 }
 
+// ─── AE. Generator: "Needs your OK" before publish + Setup holiday text (2026-10-11) ───
+// Owner decisions 2026-10-11: time off is a hard stop, card eves are night
+// shifts, Christmas week is FAK's, and a squeezed week takes the mildest bend.
+// generator.js listScheduleBends lists every bend / empty slot / time-off
+// placement / crowded day; the preview shows them in a "Needs your OK" box and
+// publishing waits for "I've reviewed these N items". (The generator itself
+// is pinned by test/generator-regression.js — live scenario + oracle.)
+//   AE1 the REAL acceptPreview: box non-empty + unticked → nothing published;
+//       ticked → publishes, the audit records N; empty box → publishes as before
+//   AE2 the button is disabled until ticked; the checkbox, its reset on a new
+//       preview, and the box sit where the scheduler sees them
+//   AE3 Generate & Publish never publishes a result with items: it opens the
+//       preview instead, and only a real publish sends the notice
+//   AE4 the box judges with the generator's own availability (one builder)
+//   AE5 Setup → Holidays says eves are night shifts and Christmas week is FAK's
+{
+  const nsrcAE = src.replace(/\r\n/g, "\n");
+  const i = nsrcAE.indexOf("  const acceptPreview = () => {"), e = i < 0 ? -1 : nsrcAE.indexOf("\n  };\n", i);
+  const body = i < 0 || e < 0 ? null : "() => {" + nsrcAE.slice(i + "  const acceptPreview = () => {".length, e) + "\n  }";
+  const ENV = "previewSchedule, previewNeedsOk, previewAck, showToast, schedule, pushUndo, rollForwardCounts, setSchedule, setPreviewSchedule, setShowPreview, setCalMonth, setCalYear, setView, setSaveStatus, setTimeout, logAudit, numWeeks, MO, startMonth, startYear";
+  let mk = null; try { mk = body ? vm.runInContext(`(function (env) { const { ${ENV} } = env; return (${body}); })`, sandbox) : null; } catch (ex) { mk = null; }
+  const run = (items, ack) => {
+    const rec = { published: 0, toasts: [], audits: [] };
+    mk({
+      previewSchedule: { "2026-11-16": { dayCall: "s1", nights: {} } }, previewNeedsOk: { cost: items.length * 6, items }, previewAck: ack,
+      showToast: (m) => rec.toasts.push(String(m)), schedule: {}, pushUndo: () => {}, rollForwardCounts: () => {},
+      setSchedule: () => { rec.published++; }, setPreviewSchedule: () => {}, setShowPreview: () => {}, setCalMonth: () => {}, setCalYear: () => {},
+      setView: () => {}, setSaveStatus: () => {}, setTimeout: () => {}, logAudit: (a, msg, meta) => rec.audits.push({ a, msg, meta }),
+      numWeeks: 14, MO: ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"], startMonth: 10, startYear: 2026,
+    })();
+    return rec;
+  };
+  if (mk) {
+    const two = [{ kind: "bend", text: "a" }, { kind: "crowded", text: "b" }];
+    const blocked = run(two, false), ticked = run(two, true), clean = run([], false);
+    check("AE1 the REAL acceptPreview: with items and the box unticked nothing is published (and it says why)",
+      blocked.published === 0 && blocked.audits.length === 0 && /reviewed/.test(blocked.toasts.join(" ")), JSON.stringify(blocked));
+    check("AE1 ticked: it publishes, and the publish audit entry records N (and the bend cost)",
+      ticked.published === 1 && ticked.audits.length === 1 && ticked.audits[0].meta.needsOk === 2 && ticked.audits[0].meta.bendCost === 12 && /2 items reviewed/.test(ticked.audits[0].msg), JSON.stringify(ticked.audits));
+    check("AE1 an empty box publishes exactly as before — no checkbox needed, needsOk 0, no extra wording",
+      clean.published === 1 && clean.toasts.length === 0 && clean.audits[0].meta.needsOk === 0 && !/reviewed/.test(clean.audits[0].msg), JSON.stringify(clean.audits));
+  } else check("AE1 acceptPreview extractable for execution", false, "anchors not found");
+  check("AE2 ✓ Accept & Publish is disabled while the box has items and is unticked; the checkbox drives previewAck; a new preview resets it",
+    count("<button onClick={acceptPreview} disabled={previewNeedsOk.items.length > 0 && !previewAck}") === 1
+      && count("checked={previewAck} onChange={e=>setPreviewAck(e.target.checked)}") === 1
+      && count("useEffect(() => { setPreviewAck(false); }, [previewSchedule]);") === 1
+      && count("{previewNeedsOk.items.length > 0 && (") === 1
+      && /I've reviewed these \{previewNeedsOk\.items\.length\} item/.test(src));
+  check("AE2 the box sits above the preview calendar and the spacing box, and wraps at phone width (#72)",
+    nsrcAE.indexOf("⚠ Needs your OK —") > 0 && nsrcAE.indexOf("⚠ Needs your OK —") < nsrcAE.indexOf("{/* Spacing-exception disclosure")
+      && nsrcAE.indexOf("{/* Spacing-exception disclosure") < nsrcAE.indexOf("{/* Preview Calendar Grid */}")
+      && count('color:dk?"#f0c890":"#7a4010",overflowWrap:"anywhere"}}>') === 1);
+  check("AE3 Generate & Publish: a result with items opens the preview (\"review\") instead of saving; only \"published\" sends the notice; a cancelled Silvis confirm sends nothing",
+    count('    if (needsOkN > 0) {\n      setPreviewSchedule(result);\n      setShowPreview(true);'.replace(/\n/g, src.includes("\r\n") ? "\r\n" : "\n")) === 1
+      && count('return "review";') === 1 && count('return "published";') === 1 && count('return "cancelled";') === 1
+      && count('if (doGenerate(false) !== "published") return;') === 1);
+  check("AE4 the box and the generator share ONE availability builder (vacations ∪ no-call ∪ Silvis), and the box reads the bends from generator.js",
+    count("const availability = buildGenAvailability();") === 1 && count("vac: buildGenAvailability(), vacationsOnly: vacations,") === 1
+      && count("return listScheduleBends(previewSchedule, {") === 1 && count("const availability = {};") === 1);
+  check("AE5 Setup → Holidays: eves are night shifts for the card's Night Before surgeon; Christmas week is FAK's; the stale sentences are gone",
+    count("The eve is a regular night shift worked by the card's \"Night Before\" surgeon") === 1
+      && count("FAK covers Christmas Eve night and Christmas Day (standing rule), and the generator also gives FAK that week's service week and weekend") === 1
+      && count("Eves stay on the regular schedule") === 0 && count("two days exactly, then the regular service-week doctor resumes") === 0);
+}
+
 // ─── Verdict ───
 console.log(`\n${checks} checks, ${failures.length} failure(s)`);
 if (failures.length) {

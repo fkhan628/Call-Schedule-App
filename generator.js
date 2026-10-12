@@ -38,6 +38,12 @@
        NO-CALL differs on the trailing edge only: on call the night BEFORE a
        no-call day is allowed; before a vacation day it is not — that is why
        the separate vacationsOnly map is threaded through generate().
+       Since 2026-10-11 this is the FLOOR (slotFloorOk), never bent: when a
+       week can't be covered under the hard rules above, the generator takes
+       the MILDEST bend of them by the BEND_COST table (an exact search over
+       the squeezed weeks) and listScheduleBends lists it for the preview's
+       "Needs your OK" box. Card eves on Mon–Thu are pinned regular nights;
+       Christmas week is FAK's (service week, Eve night, Day, weekend).
      - Manual locks are honored exactly and skipped by every pass. A
        WEEKNIGHT lock bypasses availability (honored even over a listed
        vacation / no-call / Silvis day); a Service-Week or Weekend lock on a
@@ -57,10 +63,9 @@
        project keeps, written only by the silvis-feed edge function — into
        the `vac` availability map as single-day [D,D] ranges, which is
        exactly NO-CALL semantics (the night BEFORE D, ending 07:00 D, stays
-       allowed; never into vacationsOnly). Like a vacation, the squeezed-
-       week last-resort fallbacks (weekend ~line 658, weeknights ~line 770)
-       can still place him — the
-       app's Schedule Warnings line per overlap is the net. Silvis BACKUP
+       allowed; never into vacationsOnly). Like a vacation it is part of the
+       FLOOR (slotFloorOk, 2026-10-11): nothing in this file places him on
+       it — a squeezed week bends a softer rule instead (BEND_COST). Silvis BACKUP
        days are standby and never block (soft note only). Pinned two-sided
        in test/generator-regression.js scenario E; the app-side refusals
        (editor, trade accept, swaps, locks) in test/sync-guards.js §O.
@@ -129,10 +134,12 @@
       Surgeons perceive raw headcount; weighted only breaks ties so nobody
       quietly carries the heaviest mix while looking even on count.
 
-   4. BEST-OF-N CANDIDATE SCORE — `scoreOf(sched)` (~line 1266, inside the
+   4. BEST-OF-N CANDIDATE SCORE — `scoreOf(sched)` (inside the
       generate() best-of-50 wrapper). Picks the fairest candidate schedule.
       Lexicographic via powers of ten (LOWER = fairer):
-        spread(combinedServiceWeeks)·10000  (dominates)
+        droppedLocks·1e9  +  bendCost·1e6   (2026-10-11: never trade a lock
+                                             or a bend for fairness)
+        + spread(combinedServiceWeeks)·10000
         + spread(weekends)·1000  + spread(total)·100
         + gapViolations·50  (service-week pairs ≤ MIN_DC_GAP apart, seam-aware)
         + spread(1stCallServiceWeeks)·10  + spread(1stCallWeekends)·1
@@ -190,7 +197,235 @@ function getHolidays(year) {
 // whenever any candidate managed without.
 const MIN_DC_GAP = 2;
 
-function generateOnce(surgeons, mondays, vac, backupMondays, priorCounts, preferences, fierceBackupMondays, holAssignments, locks, prevWeekSeed, vacationsOnly, yearCounts) {
+/* ═══ TIME OFF, HOLIDAY EVES, BENDS (owner decisions 2026-10-11) ═══
+   1. Vacation is a hard stop — the FLOOR (slotFloorOk): no shift on a
+      vacation / no-call / Silvis-primary day (the merged `vac` map), and no
+      overnight ending on a VACATION morning (vacationsOnly): a weeknight is
+      blocked if the next day is vacation, the weekend if the next Monday is.
+      The service week is checked Mon–Sat (its Saturday 24h is not checked
+      against a Sunday vacation start). Nothing in this file may place a
+      surgeon below the floor; a slot nobody can take stays EMPTY (null).
+      Only a manual lock can (today's lock semantics) — it is then listed.
+   2. Holiday eves are real night assignments: a card's "Night Before" row on
+      a Mon–Thu night pins that night to the card's eve surgeon (a REGULAR
+      night, never a holidayCoverage row — that would take the whole date).
+   3. Christmas week = FAK's whole week + Eve (service week, Eve night,
+      Christmas Day 24h, Saturday, the weekend).
+   When a week can't be covered under the hard rules, the generator takes
+   the MILDEST bend by this one table (lowest total wins; ties go to the
+   fairness order). Designed holiday patterns (holidayDesign below) are not
+   bends. listScheduleBends() lists the bends of ANY schedule — it is
+   scoreOf's first tier, the preview's "Needs your OK" box and the tests'. */
+const BEND_COST = {
+  monWknd: 6,       // weekend surgeon also takes that week's Mon night ("double duty")
+  tueWknd: 8,       // a Tue night + that same weekend
+  wedWknd: 10,      // a Wed night + that same weekend
+  nightsApart: 12,  // two non-consecutive weeknights in one week
+  svcThenMon: 30,   // service week → the next Mon night
+  wkndThenMon: 40,  // weekend → the next Mon night
+  wkndThenSvc: 45,  // weekend → straight into the next service week
+  svcThenSvc: 45,   // two service weeks in a row
+  backToBack: 50,   // back-to-back weeknights
+  thuWknd: 50,      // a Thu night + that same weekend
+  svcPlus: 60,      // service-week surgeon also on a weeknight or the weekend
+  empty: 400,       // nobody can take the slot
+};
+const BEND_TEXT = {
+  monWknd: "weekend + that week's Mon night (double duty)",
+  tueWknd: "Tue night + that same weekend",
+  wedWknd: "Wed night + that same weekend",
+  nightsApart: "two weeknights in one week",
+  svcThenMon: "service week → the next Mon night",
+  wkndThenMon: "weekend → the next Mon night",
+  wkndThenSvc: "weekend → straight into the next service week",
+  svcThenSvc: "two service weeks in a row",
+  backToBack: "back-to-back nights",
+  thuWknd: "Thu night + that same weekend",
+  svcPlus: "service week + a shift the same week",
+  empty: "nobody can take it",
+};
+const BEND_NIGHT_OFF = { mon: 0, tue: 1, wed: 2, thu: 3 };
+const BEND_SLOTS = ["dayCall", "mon", "tue", "wed", "thu", "wknd"];
+
+// The FLOOR (decision 1) for one slot. monday: a Date or "YYYY-MM-DD".
+function slotFloorOk(id, monday, slot, vac, vacOnly) {
+  if (!id) return false;
+  const mon = typeof monday === "string" ? parse(monday) : monday;
+  const d = (o) => fmt(addD(mon, o));
+  const v = vac || {}, vo = vacOnly || v;
+  if (slot === "dayCall") { for (let o = 0; o < 6; o++) if (onVac(id, d(o), v)) return false; return true; }
+  if (slot === "wknd") return !onVac(id, d(4), v) && !onVac(id, d(6), v) && !onVac(id, d(7), vo);
+  const o = BEND_NIGHT_OFF[slot];
+  if (o === undefined) return true;
+  return !onVac(id, d(o), v) && !onVac(id, d(o + 1), vo);
+}
+
+// Same surgeon on two slots of ONE week → its BEND_COST key (null = no bend).
+function sameWeekBendKey(a, b) {
+  if (a === b) return null;
+  if (a === "dayCall" || b === "dayCall") return "svcPlus";
+  if (a === "wknd" || b === "wknd") {
+    const n = a === "wknd" ? b : a;
+    return { mon: "monWknd", tue: "tueWknd", wed: "wedWknd", thu: "thuWknd" }[n] || null;
+  }
+  return Math.abs(BEND_NIGHT_OFF[a] - BEND_NIGHT_OFF[b]) === 1 ? "backToBack" : "nightsApart";
+}
+// Same surgeon on slot `a` of week w and slot `b` of week w+1 → BEND_COST key.
+function crossWeekBendKey(a, b) {
+  if (a === "dayCall" && b === "mon") return "svcThenMon";
+  if (a === "wknd" && b === "mon") return "wkndThenMon";
+  if (a === "wknd" && b === "dayCall") return "wkndThenSvc";
+  if (a === "dayCall" && b === "dayCall") return "svcThenSvc";
+  return null;
+}
+
+// Designed holiday patterns, from the holiday cards (effectiveHolidayCoverage
+// rows): { pins: {mondayStr: {slot: id}}, eves: {mondayStr: {nightKey: id}},
+// coverOff: [...] }. A pair of slots both pinned here to the same surgeon is a
+// DESIGNED pattern — never a bend, never repaired, never rebalanced:
+//   - a Mon–Thu "Night Before" row → that night (decision 2)
+//   - a non-eve 24h row on a Mon–Thu → that night; on a Fri (else Sun) → the weekend
+//   - a Tue–Fri holiday week's service week → the card's surgeon A
+//     (Christmas week → christmasDcId, FAK by the standing rule — decision 3)
+//   - a Monday holiday: the PREVIOUS week's service week → A, its weekend → B
+// Eves on a Fri or Sun (the weekend slot) keep today's handling (not pinned).
+function holidayDesign(holAssignments, mondayStrs, christmasDcId) {
+  const pins = {}, eves = {};
+  const inPeriod = new Set(mondayStrs || []);
+  const mondayOf = (ds) => { const d = parse(ds); const dow = d.getDay(); return fmt(addD(d, dow === 0 ? -6 : 1 - dow)); };
+  const pin = (m, slot, id) => { if (!id || !inPeriod.has(m)) return; (pins[m] = pins[m] || {})[slot] = id; };
+  if (!holAssignments) return { pins, eves };
+  Object.values(holAssignments).forEach(arr => {
+    if (!Array.isArray(arr)) return;
+    arr.forEach(h => {
+      if (!h || !h.date) return;
+      const rows = effectiveHolidayCoverage(h) || []; // helpers.js — the Christmas cap applies here too (sync-guards W5)
+      const hDow = parse(h.date).getDay();
+      const hMon = mondayOf(h.date);
+      let wkndRow = null;
+      rows.forEach(c => {
+        if (!c || !c.date || !c.surgeon) return;
+        const dow = parse(c.date).getDay();
+        const m = mondayOf(c.date);
+        if (c.isEve) {
+          if (dow >= 1 && dow <= 4 && inPeriod.has(m)) { pin(m, NIGHT_KEYS[dow - 1], c.surgeon); (eves[m] = eves[m] || {})[NIGHT_KEYS[dow - 1]] = c.surgeon; }
+          return;
+        }
+        if (dow >= 1 && dow <= 4) pin(m, NIGHT_KEYS[dow - 1], c.surgeon);
+        else if (dow === 5) wkndRow = { m, id: c.surgeon, fri: true };
+        else if (dow === 0 && !(wkndRow && wkndRow.m === m && wkndRow.fri)) wkndRow = wkndRow && wkndRow.m === m ? wkndRow : { m, id: c.surgeon, fri: false };
+      });
+      if (wkndRow) pin(wkndRow.m, "wknd", wkndRow.id);
+      if (hDow >= 2 && hDow <= 5) {
+        const dcId = h.name === "Christmas Day" && christmasDcId ? christmasDcId : h.surgeonA;
+        pin(hMon, "dayCall", dcId);
+      } else if (hDow === 1) {
+        const prevM = fmt(addD(parse(hMon), -7));
+        pin(prevM, "dayCall", h.surgeonA);
+        pin(prevM, "wknd", h.surgeonB);
+      }
+    });
+  });
+  return { pins, eves };
+}
+
+// Every bend of a schedule — generated or hand-edited. Pure (no clock, no
+// state). ctx = { surgeons, mondays (Dates or "YYYY-MM-DD"), vac,
+// vacationsOnly, holAssignments, prevWeekSeed, christmasDcId? }. Returns
+// { cost, items } — items are { kind: "bend"|"empty"|"timeoff"|"crowded",
+// key, cost, who, mondayStr, slots, free, text }. "timeoff" (a lock or a hand
+// edit below the floor) and "crowded" (a day with more than 4 surgeons off)
+// cost nothing here; they are listed so the scheduler sees them.
+function listScheduleBends(sched, ctx) {
+  const c = ctx || {};
+  const surgeons = c.surgeons || [];
+  const ids = surgeons.map(s => s.id);
+  const nameOf = (id) => { const s = surgeons.find(x => x.id === id); return s ? s.name : id; };
+  const vac = c.vac || {}, vacOnly = c.vacationsOnly || vac;
+  const mondayStrs = (c.mondays || Object.keys(sched || {}).sort()).map(m => typeof m === "string" ? m : fmt(m)).filter(m => sched && sched[m]);
+  const fakId = c.christmasDcId || (surgeons.find(s => (s.name || "").toUpperCase() === "FAK") || {}).id || null;
+  // The design depends only on the cards + the period: cached on ctx (scoreOf reuses one ctx for every candidate).
+  const dKey = mondayStrs.join(",");
+  if (!c._design || c._designKey !== dKey) { c._design = holidayDesign(c.holAssignments, mondayStrs, fakId); c._designKey = dKey; }
+  const design = c._design;
+  const pinned = (m, slot, id) => !!(design.pins[m] && design.pins[m][slot] === id);
+  const designed = (m1, s1, m2, s2, id) => pinned(m1, s1, id) && pinned(m2, s2, id);
+  const holder = (wk, slot) => !wk ? null : slot === "dayCall" ? (wk.dayCall || null) : ((wk.nights && wk.nights[slot]) || null);
+  const slotName = (m, slot) => {
+    const mon = parse(m);
+    const md = (o) => { const d = addD(mon, o); return (d.getMonth() + 1) + "/" + d.getDate(); };
+    if (slot === "dayCall") return "service week of " + md(0);
+    if (slot === "wknd") return "weekend " + md(4) + "–" + md(6);
+    return ["Mon", "Tue", "Wed", "Thu"][BEND_NIGHT_OFF[slot]] + " night " + md(BEND_NIGHT_OFF[slot]);
+  };
+  const costOnly = !!c.costOnly; // scoreOf / the search: cost + week attribution only
+  const freeFor = (m, slot) => costOnly ? [] : ids.filter(id => slotFloorOk(id, m, slot, vac, vacOnly)).map(nameOf);
+  const slotType = (slot) => slot === "dayCall" ? "service week" : slot === "wknd" ? "weekend" : ["Mon", "Tue", "Wed", "Thu"][BEND_NIGHT_OFF[slot]] + " night";
+  // "(only FAK is free for the service week; also free for the weekend: DJA — any other choice bends more)"
+  const whoElse = (who, parts) => {
+    if (costOnly) return "";
+    const bits = parts.map(([m, slot]) => {
+      const others = freeFor(m, slot).filter(n => n !== nameOf(who));
+      return others.length ? "also free for the " + slotType(slot) + ": " + others.join(", ") : "only " + nameOf(who) + " is free for the " + slotType(slot);
+    });
+    const anyOther = parts.some(([m, slot]) => freeFor(m, slot).some(n => n !== nameOf(who)));
+    return " (" + bits.join("; ") + (anyOther ? " — any other choice bends more" : "") + ")";
+  };
+  const items = [];
+  const seed = c.prevWeekSeed || null;
+  for (let i = 0; i < mondayStrs.length; i++) {
+    const m = mondayStrs[i], wk = sched[m];
+    // empty slots
+    BEND_SLOTS.forEach(slot => {
+      if (holder(wk, slot)) return;
+      const free = freeFor(m, slot);
+      items.push({ kind: "empty", key: "empty", cost: BEND_COST.empty, who: null, mondayStr: m, slots: [slot], free,
+        text: costOnly ? "" : `${slotName(m, slot)} is EMPTY — ${free.length ? "everyone free for it is blocked by a harder rule (free: " + free.join(", ") + ")" : "nobody is free for it"}` });
+    });
+    // below the floor (only a lock or a hand edit can do this) — listed, never costed
+    if (!costOnly) BEND_SLOTS.forEach(slot => {
+      const id = holder(wk, slot);
+      if (id && !slotFloorOk(id, m, slot, vac, vacOnly)) items.push({ kind: "timeoff", key: "timeoff", cost: 0, who: id, mondayStr: m, slots: [slot],
+        text: costOnly ? "" : `${nameOf(id)}: ${slotName(m, slot)} — on time off (or the night before a vacation)` });
+    });
+    // same-week pairs
+    for (let a = 0; a < BEND_SLOTS.length; a++) for (let b = a + 1; b < BEND_SLOTS.length; b++) {
+      const sa = BEND_SLOTS[a], sb = BEND_SLOTS[b], id = holder(wk, sa);
+      if (!id || id !== holder(wk, sb)) continue;
+      const key = sameWeekBendKey(sa, sb);
+      if (!key || designed(m, sa, m, sb, id)) continue;
+      const free = freeFor(m, sb).filter(n => n !== nameOf(id));
+      items.push({ kind: "bend", key, cost: BEND_COST[key], who: id, mondayStr: m, slots: [sa, sb], free,
+        text: costOnly ? "" : `${nameOf(id)}: ${slotName(m, sa)} + ${slotName(m, sb)} — ${BEND_TEXT[key]}${whoElse(id, [[m, sa], [m, sb]])}` });
+    }
+    // cross-week pairs (week i-1 → i; the seed stands in for the week before the period)
+    const prevM = i > 0 ? mondayStrs[i - 1] : null;
+    const prevWk = i > 0 ? sched[prevM] : (seed ? { dayCall: seed.dayCall || null, nights: { wknd: seed.wknd || null } } : null);
+    if (prevWk && (i === 0 || Math.round((parse(m) - parse(prevM)) / 864e5) === 7)) { // consecutive weeks only (DST-safe)
+      [["dayCall", "mon"], ["wknd", "mon"], ["wknd", "dayCall"], ["dayCall", "dayCall"]].forEach(([sa, sb]) => {
+        const id = holder(prevWk, sa);
+        if (!id || id !== holder(wk, sb)) return;
+        const key = crossWeekBendKey(sa, sb);
+        if (!key || (prevM && designed(prevM, sa, m, sb, id))) return;
+        items.push({ kind: "bend", key, cost: BEND_COST[key], who: id, mondayStr: m, slots: [sa, sb], prevMondayStr: prevM, free: freeFor(m, sb).filter(n => n !== nameOf(id)),
+          text: costOnly ? "" : `${nameOf(id)}: ${prevM ? slotName(prevM, sa) : "the " + (sa === "wknd" ? "weekend" : "service week") + " before the period"} → ${slotName(m, sb)} — ${BEND_TEXT[key]}${whoElse(id, [[m, sb]])}` });
+      });
+    }
+  }
+  // days with more than 4 surgeons off
+  if (mondayStrs.length && !costOnly) {
+    const first = parse(mondayStrs[0]), last = addD(parse(mondayStrs[mondayStrs.length - 1]), 6);
+    for (let d = first; d <= last; d = addD(d, 1)) {
+      const ds = fmt(d);
+      const offIds = ids.filter(id => onVac(id, ds, vac));
+      if (offIds.length > 4) items.push({ kind: "crowded", key: "crowded", cost: 0, who: null, mondayStr: null, date: ds, slots: [], free: ids.filter(id => !offIds.includes(id)).map(nameOf),
+        text: `${(d.getMonth() + 1) + "/" + d.getDate()}: ${offIds.length} of ${ids.length} surgeons are off (${offIds.map(nameOf).join(", ")})` });
+    }
+  }
+  return { cost: items.reduce((s, it) => s + (it.cost || 0), 0), items };
+}
+
+function generateOnce(surgeons, mondays, vac, backupMondays, priorCounts, preferences, fierceBackupMondays, holAssignments, locks, prevWeekSeed, vacationsOnly, yearCounts, floorMemo) {
   // vacOnly = vacation-only ranges (no no-call). Used for "trailing edge" checks:
   // the night or weekend that ENDS the morning of an off day. Group rule (Jun
   // 2026): a surgeon may be on call the night before a NO-CALL day, but NOT the
@@ -357,6 +592,25 @@ function generateOnce(surgeons, mondays, vac, backupMondays, priorCounts, prefer
 
   // Find FAK's ID for Christmas exception
   const fakId = ids.find(id => (nameMap[id]||"").toUpperCase() === "FAK") || null;
+
+  // Designed holiday patterns (holidayDesign, top of file): card eves on
+  // Mon–Thu are pinned nights (decision 2); holiday weeks' service weeks,
+  // 24h nights and weekends are pinned to their card surgeons (Christmas
+  // week → FAK, decision 3). Pins are skipped by the validation and fairness
+  // passes exactly like locks. The FLOOR applies to them too: an eve surgeon
+  // who is off is not pinned (the night is filled normally and listed).
+  const design = holidayDesign(holAssignments, mondays.map(m => fmt(m)), fakId);
+  const isDesignPin = (m, slot, id) => !!(id && design.pins[m] && design.pins[m][slot] === id);
+  const isDesignedPair = (m1, s1, m2, s2, id) => isDesignPin(m1, s1, id) && isDesignPin(m2, s2, id);
+  // floorMemo: one Map per generate() call (its inputs never change across the
+  // best-of-N attempts), so each (surgeon, week, slot) is checked once, not 50×.
+  const floorOk = (id, monday, slot) => {
+    if (!floorMemo) return slotFloorOk(id, monday, slot, vac, vacOnly);
+    const k = id + "|" + (typeof monday === "string" ? monday : monday.getTime()) + "|" + slot;
+    let v = floorMemo.get(k);
+    if (v === undefined) { v = slotFloorOk(id, monday, slot, vac, vacOnly); floorMemo.set(k, v); }
+    return v;
+  };
 
   // Track holiday assignments this period for fairness
   const holidayCt = {}; // { surgeonId: { major: count, minor: count } }
@@ -662,8 +916,14 @@ function generateOnce(surgeons, mondays, vac, backupMondays, priorCounts, prefer
       if (friHoliday) holidayCt[wkndPool[0]][friHoliday.type]++;
       if (sunHoliday) holidayCt[wkndPool[0]][sunHoliday.type]++;
     } else {
-      const fb=rem.filter(id=>!used.has(id));
-      if(fb.length){nights.wknd=fb[0];used.add(fb[0]);} else nights.wknd=null;
+      // Nobody but the service-week surgeon is free for the weekend (the pool
+      // above is everyone else who clears the FLOOR). The mildest bend is the
+      // service doctor taking it too (svcPlus); below the floor nobody is
+      // ever placed — the slot stays EMPTY and the preview lists it.
+      // (Was: rem.filter(id => !used.has(id))[0] — anyone, vacation or not.)
+      if (dc && floorOk(dc, monday, "wknd")) {
+        nights.wknd = dc; used.add(dc); wkndCt[dc]++; burden[dc] += 3; periodShifts[dc]++;
+      } else nights.wknd = null;
     }
     } // close else block for wknd pre-assignment override
 
@@ -686,16 +946,26 @@ function generateOnce(surgeons, mondays, vac, backupMondays, priorCounts, prefer
       const dayOffset = {mon:0,tue:1,wed:2,thu:3}[sk];
       const nightDate = fmt(addD(monday, dayOffset));
       const cov = holCoverage[nightDate];
-      if (cov && cov.role === "holiday_24h") {
-        // Mark this night as covered by the holiday surgeon (suppresses separate assignment)
+      if (cov && cov.role === "holiday_24h" && floorOk(cov.surgeonId, monday, sk)) {
+        // Mark this night as covered by the holiday surgeon (suppresses separate assignment).
+        // A card surgeon below the FLOOR is not placed (the night is filled normally; listed).
         holidayNightOverrides[sk] = cov.surgeonId;
       }
     });
-    // Reserve the holiday-coverage surgeons up front. The per-slot override below
+    // Card eves on a Mon–Thu night (decision 2): a REGULAR night for the card's
+    // "Night Before" surgeon, pinned like a lock — not dropped because that
+    // surgeon holds the Friday 24h / weekend or (Christmas) the service week.
+    // Below the FLOOR the pin is skipped and the night is filled normally.
+    const evePins = {};
+    Object.entries(design.eves[mStr] || {}).forEach(([sk, eid]) => {
+      if (!holidayNightOverrides[sk] && floorOk(eid, monday, sk)) evePins[sk] = eid;
+    });
+    // Reserve the holiday-coverage and eve surgeons up front. The per-slot override below
     // only fires when its slot is reached in the SHUFFLED order, so without this
     // a holiday surgeon could be handed an earlier weeknight first and end up
     // double-booked (covering the holiday 24h AND another night that week).
     Object.values(holidayNightOverrides).forEach(hid => nightUsed.add(hid));
+    Object.values(evePins).forEach(eid => nightUsed.add(eid));
 
     // Also check weekend for holiday coverage
     const holFriDate = fmt(addD(monday, 4));
@@ -710,7 +980,10 @@ function generateOnce(surgeons, mondays, vac, backupMondays, priorCounts, prefer
     }
 
     // If weekend has holiday override, use it instead of normal weekend assignment
-    if (holidayWkndOverride && nights.wknd) {
+    // — unless its surgeon is below the FLOOR for the weekend (then the normal
+    // pick stands and the preview lists the card surgeon as off). Applies even
+    // when the normal pass left the weekend empty.
+    if (holidayWkndOverride && floorOk(holidayWkndOverride, monday, "wknd")) {
       // Undo the normal weekend assignment counts
       if (nights.wknd) { wkndCt[nights.wknd]--; burden[nights.wknd]-=3; used.delete(nights.wknd); periodShifts[nights.wknd]--; }
       nights.wknd = holidayWkndOverride;
@@ -742,49 +1015,58 @@ function generateOnce(surgeons, mondays, vac, backupMondays, priorCounts, prefer
         periodShifts[holidayNightOverrides[sk]]++;
         continue;
       }
+      // Card eve (decision 2) — pinned above the hard rules, never below the floor.
+      if (evePins[sk]) {
+        const eid = evePins[sk];
+        nightAssignments[sk] = eid;
+        nCt[eid]++; burden[eid]++; periodShifts[eid]++;
+        prevNightSurgeon[eid] = fmt(addD(monday, {mon:0,tue:1,wed:2,thu:3}[sk]));
+        const eveNext = holidayMap[fmt(addD(monday, {mon:0,tue:1,wed:2,thu:3}[sk] + 1))];
+        if (eveNext) holidayCt[eid][eveNext.type]++;
+        continue;
+      }
       const dayOffset = {mon:0,tue:1,wed:2,thu:3}[sk];
       const sd = fmt(addD(monday, dayOffset));
       const nextDayStr = fmt(addD(monday, dayOffset + 1));
       const nightHoliday = holidayMap[sd]; // is this night a holiday?
       const nextDayHoliday = holidayMap[nextDayStr]; // is tomorrow a holiday?
 
-      let avail = rem.filter(id => !used.has(id) && !nightUsed.has(id) && !onVac(id,sd,vac));
-      avail = avail.filter(id => !onVac(id, nextDayStr, vacOnly)); // night ends next-day 7a — OK before a no-call day, blocked only before vacation
+      // FLOOR (decision 1): never this night's own day off, never the night
+      // before a VACATION day (a no-call next day is fine). Nobody below it is
+      // ever a candidate — not even as a last resort.
+      const floorPool = ids.filter(id => floorOk(id, monday, sk));
+      // HARD rules (each one is a bend in BEND_COST): not the service doctor,
+      // not the weekend surgeon, at most one weeknight a week (so never back to
+      // back), and not last week's weekend / service surgeon on Monday.
+      let avail = floorPool.filter(id => id !== dc && !used.has(id) && !nightUsed.has(id));
+      if (sk === "mon") avail = avail.filter(id => id !== prevWkndSurgeon && id !== prevDcSurgeon);
 
-      // Weekend surgeon needs recovery after Fri–Sun. Monday night next week is
-      // HARD-forbidden (enforced in canTakeSlot + repaired by the wknd→Mon fixup
-      // pass below). Tuesday is SOFT (group rule, Jun 2026): preferred-avoided
-      // here so clean schedules skip it, but allowed by the fairness passes when
-      // needed to even the count. We still avoid BOTH here when a non-weekend
-      // surgeon is available; only Monday is later repaired if it's forced.
-      if ((sk === "mon" || sk === "tue") && prevWkndSurgeon) {
+      // SOFT: weekend → the next Tuesday night (group rule, Jun 2026) — avoided
+      // here when anyone else is free; the fairness passes may still use it.
+      if (sk === "tue" && prevWkndSurgeon) {
         const nonWknd = avail.filter(id => id !== prevWkndSurgeon);
         if (nonWknd.length > 0) avail = nonWknd;
       }
 
-      // HARD RULE: Service week surgeon cannot take Monday night the following week
-      if (sk === "mon" && prevDcSurgeon) {
-        const nonDc = avail.filter(id => id !== prevDcSurgeon);
-        if (nonDc.length > 0) avail = nonDc;
-      }
-
-      // HARD RULE: No back-to-back nights — filter out anyone who had a night yesterday
-      const yesterdayStr = fmt(addD(monday, dayOffset - 1));
-      const nonConsec = avail.filter(id => prevNightSurgeon[id] !== yesterdayStr);
-      if (nonConsec.length > 0) avail = nonConsec;
-
-      // Fallback layers
-      if(!avail.length) avail = rem.filter(id => !used.has(id) && !nightUsed.has(id) && !onVac(id,sd,vac));
-      if(!avail.length) avail = rem.filter(id => !used.has(id) && !nightUsed.has(id));
-
-      // DOUBLE DUTY: Allow weekend surgeon to also take Monday night when pool is short
-      // Matches hand-schedule pattern: Mon night (5p-7a) then Tue-Thu off then Fri night (5p-7a)
-      // Safe because there's a 3-day gap between the two assignments
-      if (!avail.length && sk === "mon" && nights.wknd) {
-        const wkndId = nights.wknd;
-        if (!onVac(wkndId, sd, vac) && !onVac(wkndId, nextDayStr, vac)) {
-          avail = [wkndId];
-        }
+      // MILDEST BEND (decision E): nobody clears the hard rules, so rank every
+      // surgeon who clears the FLOOR by the bend cost this placement adds
+      // (BEND_COST, top of file) and keep the cheapest; the fairness order
+      // below breaks ties. E.g. the weekend surgeon taking this week's Monday
+      // (6) beats two weeknights (12) beats the service doctor (60). Replaces
+      // the old fallback layers, which dropped the vacation checks entirely.
+      if (!avail.length) {
+        const bendOf = (id) => {
+          let cst = 0;
+          if (id === dc) cst += BEND_COST.svcPlus;
+          if (id === nights.wknd) cst += BEND_COST[sameWeekBendKey(sk, "wknd")];
+          for (const k of NIGHT_KEYS) if (k !== sk && nightAssignments[k] === id) cst += BEND_COST[sameWeekBendKey(sk, k)];
+          if (sk === "mon" && id === prevDcSurgeon) cst += BEND_COST.svcThenMon;
+          if (sk === "mon" && id === prevWkndSurgeon) cst += BEND_COST.wkndThenMon;
+          return cst;
+        };
+        const costs = floorPool.map(id => bendOf(id));
+        const minCost = Math.min(...costs);
+        avail = floorPool.filter((id, i) => costs[i] === minCost);
       }
 
       if(!avail.length){ nightAssignments[sk]=null; continue; }
@@ -856,6 +1138,125 @@ function generateOnce(surgeons, mondays, vac, backupMondays, priorCounts, prefer
     sched[mStr] = { dayCall:dc, nights, off, isBackup, isFierceBackup, holidayCoverage: Object.keys(weekHolCoverage).length > 0 ? weekHolCoverage : null };
   }
 
+  // ═══ MILDEST BEND — exact search over the squeezed weeks (decision E) ═══
+  // The deal fills week by week, so a bend it takes can't see the weeks after
+  // it. Here every run of consecutive weeks that holds a bend or an empty slot
+  // is re-solved TOGETHER: all their slots except pins (locks, holiday
+  // conventions, designed holiday pins, holiday 24h nights) are searched
+  // exactly (branch and bound) for the lowest total BEND_COST, including the
+  // rules that link them to the fixed weeks before and after. Candidates per
+  // slot are only surgeons who clear the FLOOR (or EMPTY at 400), tried in the
+  // fairness order (fewest shifts so far, jittered), so the first optimum
+  // found is the fairest one among them. Bounded at SEARCH_NODE_LIMIT nodes
+  // per run — far above what a real squeezed run needs.
+  {
+    const SEARCH_NODE_LIMIT = 400000;
+    const mStrs = mondays.map(m => fmt(m));
+    const holderOf = (wk, slot) => !wk ? null : slot === "dayCall" ? (wk.dayCall || null) : ((wk.nights && wk.nights[slot]) || null);
+    const coveredNight = (m, slot) => {
+      const o = BEND_NIGHT_OFF[slot]; if (o === undefined) return null;
+      const cv = holCoverage[fmt(addD(parse(m), o))]; return cv && cv.role === "holiday_24h" ? cv.surgeonId : null;
+    };
+    const isFixed = (m, slot, id) => !!id && (preAssign[m]?.[slot] === id || isDesignPin(m, slot, id) || coveredNight(m, slot) === id);
+    const dealt = listScheduleBends(sched, { surgeons, mondays, vac, vacationsOnly: vacOnly, holAssignments, prevWeekSeed, costOnly: true });
+    const bent = new Set();
+    dealt.items.forEach(it => {
+      if (it.kind !== "bend" && it.kind !== "empty") return;
+      const w = mStrs.indexOf(it.mondayStr); if (w >= 0) bent.add(w);
+      const pw = it.prevMondayStr ? mStrs.indexOf(it.prevMondayStr) : -1; if (pw >= 0) bent.add(pw);
+    });
+    const runs = [];
+    [...bent].sort((a, b) => a - b).forEach(w => { const r = runs[runs.length - 1]; if (r && r[r.length - 1] === w - 1) r.push(w); else runs.push([w]); });
+    const LINKS = [["dayCall", "mon"], ["wknd", "mon"], ["wknd", "dayCall"], ["dayCall", "dayCall"]];
+    for (const run of runs) {
+      const inRun = new Set(run);
+      const cur = {}; // w -> {slot: id|null|undefined}  (undefined = not yet assigned in the search)
+      const vars = [];
+      run.forEach(w => {
+        const m = mStrs[w], wk = sched[m]; cur[w] = {};
+        BEND_SLOTS.forEach(slot => {
+          const id = holderOf(wk, slot); cur[w][slot] = id;
+          if (isFixed(m, slot, id)) return;
+          // Fairness order, per slot type: the service week goes first to whoever has
+          // the fewest service weeks, the weekend to the fewest weekends, then total.
+          const typeCt = slot === "dayCall" ? periodServiceWeeks : slot === "wknd" ? wkndCt : nCt;
+          const dom = ids.filter(x => floorOk(x, mondays[w], slot))
+            .sort((a, b) => ((typeCt[a] || 0) - (typeCt[b] || 0)) || ((periodShifts[a] + jitter[a] * 0.1) - (periodShifts[b] + jitter[b] * 0.1)));
+          dom.push(null);
+          vars.push({ w, m, slot, dom });
+        });
+      });
+      if (!vars.length) continue;
+      const at = (w, slot) => {
+        if (inRun.has(w)) return cur[w][slot];
+        if (w === -1) return prevWeekSeed ? (slot === "dayCall" ? prevWeekSeed.dayCall || null : slot === "wknd" ? prevWeekSeed.wknd || null : null) : null;
+        if (w < 0 || w >= mStrs.length) return null;
+        return holderOf(sched[mStrs[w]], slot);
+      };
+      // Cost a slot's current holder adds against every OTHER slot already
+      // holding a value (fixed, or assigned earlier in the search).
+      const addCost = (w, slot, id) => {
+        if (!id) return BEND_COST.empty;
+        const m = mStrs[w]; let c = 0;
+        for (const s2 of BEND_SLOTS) {
+          if (s2 === slot || at(w, s2) !== id) continue;
+          const key = sameWeekBendKey(slot, s2);
+          if (key && !isDesignedPair(m, slot, m, s2, id)) c += BEND_COST[key];
+        }
+        for (const [a, b] of LINKS) {
+          if (a === slot && at(w + 1, b) === id && !isDesignedPair(m, a, mStrs[w + 1], b, id)) c += BEND_COST[crossWeekBendKey(a, b)];
+          if (b === slot && at(w - 1, a) === id && !(w > 0 && isDesignedPair(mStrs[w - 1], a, m, b, id))) c += BEND_COST[crossWeekBendKey(a, b)];
+        }
+        return c;
+      };
+      // Most constrained slot first; the incumbent (the deal's own assignment)
+      // is the first bound, so the search only ever replaces it with cheaper.
+      vars.sort((x, y) => x.dom.length - y.dom.length);
+      const incumbent = vars.map(v => cur[v.w][v.slot]);
+      vars.forEach(v => { cur[v.w][v.slot] = undefined; });
+      let best = 0;
+      vars.forEach((v, k) => { cur[v.w][v.slot] = incumbent[k]; best += addCost(v.w, v.slot, incumbent[k]); });
+      vars.forEach(v => { cur[v.w][v.slot] = undefined; });
+      let bestAssign = incumbent.slice();
+      let nodes = 0;
+      const pick = new Array(vars.length);
+      // Each pair of slots is costed once: when the LATER of the two is set.
+      const dfs = (k, cost) => {
+        if (cost >= best || nodes > SEARCH_NODE_LIMIT) return;
+        if (k === vars.length) { best = cost; bestAssign = pick.slice(); return; }
+        const v = vars[k];
+        for (const id of v.dom) {
+          nodes++;
+          cur[v.w][v.slot] = id; pick[k] = id;
+          dfs(k + 1, cost + addCost(v.w, v.slot, id));
+          cur[v.w][v.slot] = undefined;
+        }
+      };
+      dfs(0, 0);
+      // Write the best assignment back (vars are in the search order here).
+      vars.forEach((v, k) => {
+        const wk = sched[v.m], id = bestAssign[k];
+        if (v.slot === "dayCall") wk.dayCall = id; else wk.nights[v.slot] = id;
+      });
+      run.forEach(w => {
+        const wk = sched[mStrs[w]];
+        const a = new Set([wk.dayCall, ...Object.values(wk.nights)].filter(Boolean));
+        wk.off = ids.find(id => !a.has(id)) || null;
+      });
+    }
+    if (runs.length) {
+      // Recount from the schedule (the passes below read these running counters).
+      ids.forEach(id => { dcCt[id] = 0; nCt[id] = 0; wkndCt[id] = 0; });
+      mStrs.forEach(m => {
+        const wk = sched[m];
+        if (wk.dayCall) dcCt[wk.dayCall]++;
+        if (wk.nights?.wknd) wkndCt[wk.nights.wknd]++;
+        NIGHT_KEYS.forEach(sk => { if (wk.nights?.[sk]) nCt[wk.nights[sk]]++; });
+      });
+      ids.forEach(id => { periodShifts[id] = dcCt[id] + nCt[id] + wkndCt[id]; });
+    }
+  }
+
   // ═══ POST-OPTIMIZATION PASS ═══
   const mondayStrs = mondays.map(m => fmt(m));
   const calcSpread = (ct) => { const vals = Object.values(ct); return Math.max(...vals)-Math.min(...vals); };
@@ -891,11 +1292,12 @@ function generateOnce(surgeons, mondays, vac, backupMondays, priorCounts, prefer
         const aCanDoB = !onVac(a,friB,vac) && !onVac(a,sunB,vac) && !onVac(a,nMonB,vac) && a !== wkB.dayCall;
         if (!bCanDoA || !aCanDoB) continue;
 
-        // Prevent back-to-back: b can't already be Thursday night in week A
-        // (Thu+wknd is the only forbidden combo — Mon/Tue/Wed + wknd are all
-        // fine, since wknd starts Fri 5p).
-        if (wkA.nights?.thu === b) continue;
-        if (wkB.nights?.thu === a) continue;
+        // No weeknight + that same weekend (all four are bends since
+        // 2026-10-11; Thu was the only one before), and never move a designed
+        // holiday weekend.
+        if (["mon","tue","wed","thu"].some(sk => wkA.nights?.[sk] === b)) continue;
+        if (["mon","tue","wed","thu"].some(sk => wkB.nights?.[sk] === a)) continue;
+        if (isDesignPin(mondayStrs[i], "wknd", a) || isDesignPin(mondayStrs[j], "wknd", b)) continue;
 
         // Check weekend→Monday night conflict: new weekend surgeon shouldn't be
         // Mon night next week (needs recovery after Fri–Sun). Monday is HARD;
@@ -970,12 +1372,14 @@ function generateOnce(surgeons, mondays, vac, backupMondays, priorCounts, prefer
       if (["mon","tue","wed","thu"].some(sk => wk.nights?.[sk] === Y)) return false;
     } else if (slot === "wknd") {
       if (wk.dayCall === Y) return false;
-      if (wk.nights?.thu === Y) return false; // Thu+wknd forbidden
-      // Mon/Tue/Wed + wknd are allowed
+      // Any weeknight + that weekend is a BEND (2026-10-11 table: Mon 6, Tue 8,
+      // Wed 10, Thu 50) — only the deal's mildest-bend step may create one,
+      // never a fairness move. (Was: Thu only; Mon/Tue/Wed + wknd allowed.)
+      if (["mon","tue","wed","thu"].some(sk => wk.nights?.[sk] === Y)) return false;
     } else {
       // weeknight slot
       if (wk.dayCall === Y) return false;
-      if (slot === "thu" && wk.nights?.wknd === Y) return false; // Thu+wknd
+      if (wk.nights?.wknd === Y) return false; // weeknight + that weekend — a bend (see above)
       // No double-up on weeknights
       for (const sk of ["mon","tue","wed","thu"]) {
         if (sk !== slot && wk.nights?.[sk] === Y) return false;
@@ -1002,6 +1406,7 @@ function generateOnce(surgeons, mondays, vac, backupMondays, priorCounts, prefer
     if (slot === "dayCall") {
       if (prevWk?.nights?.wknd === Y) return false; // wknd → DC forbidden
       if (prevWk?.dayCall === Y) return false; // consecutive SW forbidden
+      if (nextWk?.dayCall === Y) return false; // consecutive SW forbidden (forward — a bend since 2026-10-11)
       if (nextWk?.nights?.mon === Y) return false; // DC → next Mon forbidden
     }
     if (slot === "mon") {
@@ -1054,6 +1459,10 @@ function generateOnce(surgeons, mondays, vac, backupMondays, priorCounts, prefer
     wkB.nights[skB] = ok ? a : b;
     return ok;
   };
+  // A violation no legal swap can repair is a deliberate BEND now (the deal's
+  // mildest-bend step) — listed by listScheduleBends in the preview's "Needs
+  // your OK" box, so it is no longer a console warning (was console.warn).
+  const unresolvedNote = () => {};
   for (let pass = 0; pass < 3; pass++) {
     for (let i = 0; i < mondayStrs.length; i++) {
       const wk = sched[mondayStrs[i]];
@@ -1065,23 +1474,23 @@ function generateOnce(surgeons, mondays, vac, backupMondays, priorCounts, prefer
       // Fix: DC surgeon should not also have a night in same week
       if (wk.dayCall) {
         NIGHT_KEYS.forEach(sk => {
-          if (wk.nights?.[sk] === wk.dayCall) {
+          if (wk.nights?.[sk] === wk.dayCall && !isDesignedPair(mondayStrs[i], "dayCall", mondayStrs[i], sk, wk.dayCall)) {
             if (wk.off && canTakeSlot(wk.off, mondayStrs[i], parse(mondayStrs[i]), sk, wk, i)) {
               // Swap the conflicting night with the off surgeon
               wk.nights[sk] = wk.off;
               recalcOff(wk);
             } else if (pass === 2) {
-              console.warn(`[validation] UNRESOLVED: ${wk.dayCall} has Service Week AND ${sk} night, week ${mondayStrs[i]} (no legal repair candidate)`);
+              unresolvedNote(`[validation] UNRESOLVED: ${wk.dayCall} has Service Week AND ${sk} night, week ${mondayStrs[i]} (no legal repair candidate)`);
             }
           }
         });
         // Fix: DC surgeon should not have weekend in same week
-        if (wk.nights?.wknd === wk.dayCall) {
+        if (wk.nights?.wknd === wk.dayCall && !isDesignedPair(mondayStrs[i], "dayCall", mondayStrs[i], "wknd", wk.dayCall)) {
           if (wk.off && canTakeSlot(wk.off, mondayStrs[i], parse(mondayStrs[i]), "wknd", wk, i)) {
             wk.nights.wknd = wk.off;
             recalcOff(wk);
           } else if (pass === 2) {
-            console.warn(`[validation] UNRESOLVED: ${wk.dayCall} has Service Week AND weekend, week ${mondayStrs[i]} (no legal repair candidate)`);
+            unresolvedNote(`[validation] UNRESOLVED: ${wk.dayCall} has Service Week AND weekend, week ${mondayStrs[i]} (no legal repair candidate)`);
           }
         }
       }
@@ -1089,19 +1498,19 @@ function generateOnce(surgeons, mondays, vac, backupMondays, priorCounts, prefer
       // Fix: Weekend surgeon should not also have Thursday night in same week
       // (back-to-back: Thu 5p–Fri 7a then wknd starts Fri 5p, no recovery).
       // Mon/Tue/Wed + wknd are all allowed — enough gap before wknd starts.
-      if (wk.nights?.wknd && wk.nights?.thu === wk.nights?.wknd) {
+      if (wk.nights?.wknd && wk.nights?.thu === wk.nights?.wknd && !isDesignedPair(mondayStrs[i], "thu", mondayStrs[i], "wknd", wk.nights.wknd) && !isDesignPin(mondayStrs[i], "thu", wk.nights.thu)) {
         if (wk.off && canTakeSlot(wk.off, mondayStrs[i], parse(mondayStrs[i]), "thu", wk, i)) {
           wk.nights.thu = wk.off;
           recalcOff(wk);
         } else if (pass === 2) {
-          console.warn(`[validation] UNRESOLVED: ${wk.nights.wknd} has Thu night AND weekend, week ${mondayStrs[i]} (no legal repair candidate)`);
+          unresolvedNote(`[validation] UNRESOLVED: ${wk.nights.wknd} has Thu night AND weekend, week ${mondayStrs[i]} (no legal repair candidate)`);
         }
       }
 
       // Fix: Weekend surgeon should not have Monday night next week
       if (i < mondayStrs.length - 1 && wk.nights?.wknd) {
         const nextWk = sched[mondayStrs[i + 1]];
-        if (nextWk?.nights?.mon === wk.nights.wknd && !isHolCoveredNight(mondayStrs[i + 1], "mon")) {
+        if (nextWk?.nights?.mon === wk.nights.wknd && !isHolCoveredNight(mondayStrs[i + 1], "mon") && !isDesignPin(mondayStrs[i + 1], "mon", nextWk.nights.mon)) {
           // Try swapping Monday night with off surgeon of next week
           if (nextWk.off && canTakeSlot(nextWk.off, mondayStrs[i + 1], parse(mondayStrs[i + 1]), "mon", nextWk, i + 1)) {
             nextWk.nights.mon = nextWk.off;
@@ -1110,10 +1519,10 @@ function generateOnce(surgeons, mondays, vac, backupMondays, priorCounts, prefer
             // Try swapping Monday night with another night surgeon in next
             // week — trySwapNights commits only if BOTH movers clear
             // canTakeSlot for their new slot.
-            const otherNight = NIGHT_KEYS.find(sk => sk !== "mon" && nextWk.nights?.[sk] && nextWk.nights[sk] !== nextWk.dayCall && nextWk.nights[sk] !== wk.nights.wknd
+            const otherNight = NIGHT_KEYS.find(sk => sk !== "mon" && nextWk.nights?.[sk] && !isDesignPin(mondayStrs[i + 1], sk, nextWk.nights[sk]) && preAssign[mondayStrs[i + 1]]?.[sk] !== nextWk.nights[sk] && nextWk.nights[sk] !== nextWk.dayCall && nextWk.nights[sk] !== wk.nights.wknd
               && trySwapNights(mondayStrs[i + 1], i + 1, "mon", mondayStrs[i + 1], i + 1, sk));
             if (!otherNight && pass === 2) {
-              console.warn(`[validation] UNRESOLVED: ${wk.nights.wknd} has weekend then next Monday night, weeks ${mondayStrs[i]}→${mondayStrs[i + 1]} (no legal repair candidate)`);
+              unresolvedNote(`[validation] UNRESOLVED: ${wk.nights.wknd} has weekend then next Monday night, weeks ${mondayStrs[i]}→${mondayStrs[i + 1]} (no legal repair candidate)`);
             }
           }
         }
@@ -1122,15 +1531,15 @@ function generateOnce(surgeons, mondays, vac, backupMondays, priorCounts, prefer
       // Fix: Service week surgeon should not have Monday night next week
       if (i < mondayStrs.length - 1 && wk.dayCall) {
         const nextWk = sched[mondayStrs[i + 1]];
-        if (nextWk?.nights?.mon === wk.dayCall && !isHolCoveredNight(mondayStrs[i + 1], "mon")) {
+        if (nextWk?.nights?.mon === wk.dayCall && !isHolCoveredNight(mondayStrs[i + 1], "mon") && !isDesignPin(mondayStrs[i + 1], "mon", nextWk.nights.mon)) {
           if (nextWk.off && canTakeSlot(nextWk.off, mondayStrs[i + 1], parse(mondayStrs[i + 1]), "mon", nextWk, i + 1)) {
             nextWk.nights.mon = nextWk.off;
             recalcOff(nextWk);
           } else {
-            const otherNight = NIGHT_KEYS.find(sk => sk !== "mon" && nextWk.nights?.[sk] && nextWk.nights[sk] !== nextWk.dayCall && nextWk.nights[sk] !== wk.dayCall
+            const otherNight = NIGHT_KEYS.find(sk => sk !== "mon" && nextWk.nights?.[sk] && !isDesignPin(mondayStrs[i + 1], sk, nextWk.nights[sk]) && preAssign[mondayStrs[i + 1]]?.[sk] !== nextWk.nights[sk] && nextWk.nights[sk] !== nextWk.dayCall && nextWk.nights[sk] !== wk.dayCall
               && trySwapNights(mondayStrs[i + 1], i + 1, "mon", mondayStrs[i + 1], i + 1, sk));
             if (!otherNight && pass === 2) {
-              console.warn(`[validation] UNRESOLVED: ${wk.dayCall} has Service Week then next Monday night, weeks ${mondayStrs[i]}→${mondayStrs[i + 1]} (no legal repair candidate)`);
+              unresolvedNote(`[validation] UNRESOLVED: ${wk.dayCall} has Service Week then next Monday night, weeks ${mondayStrs[i]}→${mondayStrs[i + 1]} (no legal repair candidate)`);
             }
           }
         }
@@ -1140,11 +1549,11 @@ function generateOnce(surgeons, mondays, vac, backupMondays, priorCounts, prefer
       for (let ni = 0; ni < nightOrder.length - 1; ni++) {
         const sk1 = nightOrder[ni], sk2 = nightOrder[ni + 1];
         const s1 = wk.nights?.[sk1], s2 = wk.nights?.[sk2];
-        if (s1 && s1 === s2) {
+        if (s1 && s1 === s2 && !isDesignedPair(mondayStrs[i], sk1, mondayStrs[i], sk2, s1) && !isDesignPin(mondayStrs[i], sk2, s2)) {
           // Try swapping sk2 with another night that doesn't create a new
           // consecutive pair — trySwapNights commits only if BOTH movers
           // clear canTakeSlot for their new slot.
-          const swapCandidate = nightOrder.find(sk => sk !== sk1 && sk !== sk2 && wk.nights?.[sk] && wk.nights[sk] !== s1 && wk.nights[sk] !== wk.dayCall && !isHolCoveredNight(mondayStrs[i], sk)
+          const swapCandidate = nightOrder.find(sk => sk !== sk1 && sk !== sk2 && wk.nights?.[sk] && !isDesignPin(mondayStrs[i], sk, wk.nights[sk]) && preAssign[mondayStrs[i]]?.[sk] !== wk.nights[sk] && wk.nights[sk] !== s1 && wk.nights[sk] !== wk.dayCall && !isHolCoveredNight(mondayStrs[i], sk)
             && trySwapNights(mondayStrs[i], i, sk2, mondayStrs[i], i, sk));
           if (swapCandidate) {
             recalcOff(wk);
@@ -1152,7 +1561,7 @@ function generateOnce(surgeons, mondays, vac, backupMondays, priorCounts, prefer
             wk.nights[sk2] = wk.off;
             recalcOff(wk);
           } else if (pass === 2) {
-            console.warn(`[validation] UNRESOLVED: ${s1} has back-to-back ${sk1}+${sk2} nights, week ${mondayStrs[i]} (no legal repair candidate)`);
+            unresolvedNote(`[validation] UNRESOLVED: ${s1} has back-to-back ${sk1}+${sk2} nights, week ${mondayStrs[i]} (no legal repair candidate)`);
           }
         }
       }
@@ -1191,7 +1600,9 @@ function generateOnce(surgeons, mondays, vac, backupMondays, priorCounts, prefer
   });
   ids.forEach(id => { periodShifts[id] = (dcCt[id] || 0) + (nCt[id] || 0) + (wkndCt[id] || 0); });
 
-  const isPreAssigned = (mStr, slot, surgeonId) => preAssign[mStr]?.[slot] === surgeonId;
+  // Locks / holiday-convention pre-assignments AND designed holiday pins (card
+  // eves, holiday weeks' service weeks, 24h nights and weekends) are untouchable.
+  const isPreAssigned = (mStr, slot, surgeonId) => preAssign[mStr]?.[slot] === surgeonId || isDesignPin(mStr, slot, surgeonId);
 
   // canTakeSlot — the single eligibility chokepoint — is defined ABOVE the
   // validation pass (moved there in N10, Jul 2026) so the hard-rule repairs
@@ -1468,7 +1879,22 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
       if (lastIdx[wk.dayCall] !== undefined && w - lastIdx[wk.dayCall] <= MIN_DC_GAP) gapViolations++;
       lastIdx[wk.dayCall] = w;
     }
-    return spreadOf(svc)    * 10000
+    // FIRST tier (2026-10-11): total BEND cost of the FINAL schedule (every
+    // pass done) — best-of-N never trades a bend for fairness. Bend costs are
+    // integers ≥ 6 apart from 0, and every fairness tier below sums to < 1e6.
+    const bends = listScheduleBends(sched, bendCtx).cost;
+    // Above even the bends: a manual lock the candidate did NOT honor (the deal
+    // still skips a weeknight lock whose surgeon was dealt another night that
+    // week). Any attempt that honored every lock wins; the app toasts the rest.
+    let droppedLocks = 0;
+    (Array.isArray(locks) ? locks : []).forEach(l => {
+      if (!l || !l.mondayStr || !l.slot || !l.surgeonId || !sched[l.mondayStr]) return;
+      const slot = l.slot === "dc" ? "dayCall" : l.slot, wk = sched[l.mondayStr];
+      if ((slot === "dayCall" ? wk.dayCall : wk.nights && wk.nights[slot]) !== l.surgeonId) droppedLocks++;
+    });
+    return droppedLocks     * 1e9
+         + bends            * 1e6
+         + spreadOf(svc)    * 10000
          + spreadOf(wknd)   * 1000
          + spreadOf(tot)    * 100
          + gapViolations    * 50
@@ -1476,9 +1902,11 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
          + spreadOf(wkndReg);
   };
 
+  const bendCtx = { surgeons, mondays, vac, vacationsOnly, holAssignments, prevWeekSeed, costOnly: true };
+  const floorMemo = new Map();
   let best = null, bestScore = Infinity;
   for (let i = 0; i < ATTEMPTS; i++) {
-    const cand = generateOnce(surgeons, mondays, vac, backupMondays, priorCounts, preferences, fierceBackupMondays, holAssignments, locks, prevWeekSeed, vacationsOnly, yearCounts);
+    const cand = generateOnce(surgeons, mondays, vac, backupMondays, priorCounts, preferences, fierceBackupMondays, holAssignments, locks, prevWeekSeed, vacationsOnly, yearCounts, floorMemo);
     if (!cand) continue;
     const s = scoreOf(cand);
     if (s < bestScore) { bestScore = s; best = cand; }

@@ -17,12 +17,14 @@
 //      (group rule, Jun 2026)"): weekend → next Tuesday night. It is
 //      counted and printed as a stat instead.
 //
-// A third scenario (SQUEEZE) is INFORMATIONAL ONLY: a 2-week vacation can
-// exhaust a night's candidate pool, and generator.js's last fallback layer
-// (generator.js:570) deliberately prefers covering the night over honoring
-// the vacation. That behavior predates this test; it is reported in the
-// output but does not fail CI. If the squeeze counts change materially,
-// investigate before shipping.
+// TIME OFF IS A HARD STOP (owner decision 2026-10-11): in EVERY roll of EVERY
+// scenario nobody is on a shift on their vacation / no-call / Silvis day, and
+// nobody works an overnight that ends on a VACATION morning (a weeknight
+// before a vacation day, the weekend before a vacation Monday) — re-stated
+// below in floorHits, independently of generator.js. The SQUEEZE scenario (a
+// 2-week vacation) used to be informational because the old last-resort
+// fallback covered nights with the vacationer; it is a hard assertion now
+// (the generator bends a softer rule instead, and lists it).
 //
 // Run: node test/generator-regression.js   (exit 0 = pass, 1 = regression)
 // CI runs this on every push that touches the generator or its data files.
@@ -174,6 +176,29 @@ function shiftDays(mondayIso, slot) {
   return [fmt(addD(mon, NIGHT_OFFSET[slot]))];
 }
 function onVacDay(vac, id, ds) { return (vac[id] || []).some(([a, b]) => ds >= a && ds <= b); }
+// The FLOOR, exactly (2026-10-11): own days from `vac` (vacation ∪ no-call ∪
+// Silvis), the overnight's trailing edge from `vacOnly` (vacation only).
+//   service week: Mon..Sat · a night on d: d, and d+1 not vacation ·
+//   weekend: Fri and Sun, and the next Monday not vacation.
+function floorHits(sched, mondayKeys, vac, vacOnly) {
+  const hits = [];
+  for (const m of mondayKeys) {
+    const wk = sched[m]; if (!wk) continue;
+    const mon = parse(m), d = (o) => fmt(addD(mon, o));
+    if (wk.dayCall) for (let o = 0; o <= 5; o++) if (onVacDay(vac, wk.dayCall, d(o))) { hits.push(`${m} — ${wk.dayCall} service week over time off ${d(o)}`); break; }
+    WEEKNIGHTS.forEach((k, o) => {
+      const id = wk.nights && wk.nights[k]; if (!id) return;
+      if (onVacDay(vac, id, d(o))) hits.push(`${m} — ${id} ${k} night on time off ${d(o)}`);
+      else if (onVacDay(vacOnly, id, d(o + 1))) hits.push(`${m} — ${id} ${k} night runs into vacation ${d(o + 1)}`);
+    });
+    const w = wk.nights && wk.nights.wknd;
+    if (w) {
+      if (onVacDay(vac, w, d(4)) || onVacDay(vac, w, d(6))) hits.push(`${m} — ${w} weekend on time off`);
+      else if (onVacDay(vacOnly, w, d(7))) hits.push(`${m} — ${w} weekend runs into vacation ${d(7)}`);
+    }
+  }
+  return hits;
+}
 function collectVacationHits(sched, vac) {
   const hits = [];
   for (const m of MONDAY_KEYS) {
@@ -240,10 +265,13 @@ function runScenario(name, vac, opts, yearCounts) {
     for (const g in gs.hist) stats.gapHist[g] = (stats.gapHist[g] || 0) + gs.hist[g];
     stats.spacingViolations += gs.violations;
     checkWeekComplete(sched, failures, label);
-    checkHardRules(sched, failures, stats, label);
+    if (!opts.bendsAllowed) checkHardRules(sched, failures, stats, label);
     const vacHits = collectVacationHits(sched, vac);
     stats.vacationHits += vacHits.length;
     if (opts.assertVacations) vacHits.forEach(h => failures.push(`${label}: ${h}`));
+    const fl = floorHits(sched, MONDAY_KEYS, vac, vac); // runScenario passes vac as vacationsOnly too
+    stats.floorHits = (stats.floorHits || 0) + fl.length;
+    fl.forEach(h => failures.push(`${label}: FLOOR ${h}`)); // every scenario, always (decision 1)
     const counts = countShifts(sched);
     for (const key of ["dc", "wknd", "total"]) {
       const s = spread(counts, key);
@@ -292,11 +320,11 @@ const light = runScenario("vacation", LIGHT_VACATIONS, {
   maxSpread: { dc: 2, wknd: 2, total: 3 },
 }, COUNTS_1YR);
 
-// C: SQUEEZE (informational, never fails CI) — a 2-week vacation. Known
-//    behavior: the last fallback layer (generator.js:570) may schedule the
-//    vacationing surgeon rather than leave a night uncovered.
+// C: SQUEEZE (hard since 2026-10-11) — a 2-week vacation. Nobody on time off
+//    or on the night before it, every slot covered; the hard rules may bend
+//    here (bendsAllowed — the generator takes the mildest bend and lists it).
 const SQUEEZE_VACATIONS = { s5: [["2026-03-23", "2026-04-05"]] };
-const squeeze = runScenario("squeeze", SQUEEZE_VACATIONS, { assertVacations: false, maxSpread: null }, COUNTS_1YR);
+const squeeze = runScenario("squeeze", SQUEEZE_VACATIONS, { assertVacations: true, bendsAllowed: true, maxSpread: null }, COUNTS_1YR);
 
 // D: SPACING STRESS (two-sided) — a week-0 DC pool of exactly two surgeons
 //    (the other five are vacation-blocked via that week's Saturday, which
@@ -434,23 +462,118 @@ function runSilvis() {
 }
 const silvis = runSilvis();
 
+// F: LIVE PERIOD (2026-10-11, owner decisions 1–3 + the bend table) — the
+//    real next period (14 weeks from 2026-11-16) on its live inputs
+//    (test/fixtures/generator-live-2026-11-16.json: codes + dates only).
+//    Every roll must:
+//      - put NOBODY on time off or on the night before a vacation (the
+//        independent floor check above), and leave NO slot empty;
+//      - give the card eves as regular nights: Thanksgiving Wed 11/25 → RPC,
+//        Christmas Eve Thu 12/24 → FAK, New Year's Eve Wed 12/30 → DJA, with
+//        no holidayCoverage row on an eve date;
+//      - give FAK Christmas week whole: service week, Thu (Eve) night, weekend;
+//      - list exactly its own bends: the test re-derives every bend with the
+//        oracle's tables and LIVE_PINS (restated here from the cards, not
+//        generator.js) and compares with listScheduleBends — both ways, and
+//        no designed pattern may appear;
+//      - cost exactly the minimum computed by test/bend-oracle.js, an
+//        independent exact solver written from the spec by a separate agent
+//        that never read generator.js (live minimum 96 = wk 1/4: 6,
+//        wk 2/8: 72, wk 2/15: 18). Do NOT loosen this without the owner.
+function runLive() {
+  const oracle = require("./bend-oracle.js");
+  const L = JSON.parse(fs.readFileSync(path.join(__dirname, "fixtures", "generator-live-2026-11-16.json"), "utf8"));
+  const lsb = vm.runInContext("typeof listScheduleBends === 'function' ? listScheduleBends : null", sandbox);
+  const failures = [];
+  if (!lsb) failures.push("live: listScheduleBends() not found in generator.js"); // keep going: the other stats still matter (red runs)
+  const S = L.surgeons, ids = S.map(s => s.id), code = Object.fromEntries(S.map(s => [s.id, s.name])), byCode = Object.fromEntries(S.map(s => [s.name, s.id]));
+  const keys = L.mondays, mondays = keys.map(parse);
+  const args = [S, mondays, L.avail, new Set(L.backupMondays), L.priorCounts, L.prefs, new Set(L.fierceBackupMondays), L.holAssignments, L.locks, L.prevWeekSeed, L.vacationsOnly, L.yearCounts];
+  // The designed holiday patterns, restated from the 2026 cards (Thanksgiving A=MCC B=RPC eve RPC;
+  // Christmas FAK; New Year's A=REH B=DJA eve DJA) — a pair of these is never a bend.
+  const P = byCode;
+  const LIVE_PINS = {
+    "2026-11-23": { dayCall: P.MCC, thu: P.MCC, wed: P.RPC, wknd: P.RPC },
+    "2026-12-21": { dayCall: P.FAK, thu: P.FAK, wknd: P.FAK },
+    "2026-12-28": { dayCall: P.REH, thu: P.REH, wed: P.DJA, wknd: P.DJA },
+  };
+  const t0 = Date.now();
+  const best = oracle.minBendCost({ ids, mondays: keys, avail: L.avail, vacOnly: L.vacationsOnly, pins: LIVE_PINS, seed: { dayCall: L.prevWeekSeed.dayCall, wknd: L.prevWeekSeed.wknd } });
+  const oracleMs = Date.now() - t0;
+  if (best.cost !== 96) failures.push(`live: the oracle's minimum is ${best.cost}, expected 96 — the fixture or the oracle changed`);
+  const SL = oracle.SLOTS; // ["dayCall","mon","tue","wed","thu","wknd"]
+  const holder = (wk, s) => !wk ? null : s === "dayCall" ? (wk.dayCall || null) : ((wk.nights && wk.nights[s]) || null);
+  const pinned = (m, s, id) => !!(LIVE_PINS[m] && LIVE_PINS[m][s] === id);
+  // The test's own bend list: oracle tables, LIVE_PINS waive same-week pin pairs.
+  const ownBends = (sched) => {
+    const out = [];
+    keys.forEach((m, w) => {
+      const wk = sched[m];
+      SL.forEach(s => { if (!holder(wk, s)) out.push(`${m}|EMPTY|${s}|${oracle.EMPTY_COST}`); });
+      for (let a = 0; a < 6; a++) for (let b = a + 1; b < 6; b++) {
+        const id = holder(wk, SL[a]); if (!id || id !== holder(wk, SL[b])) continue;
+        const c = oracle.PAIR[a][b]; if (!c || (pinned(m, SL[a], id) && pinned(m, SL[b], id))) continue;
+        out.push(`${m}|${code[id]}|${SL[a]}+${SL[b]}|${c}`);
+      }
+      const prev = w > 0 ? sched[keys[w - 1]] : { dayCall: L.prevWeekSeed.dayCall, nights: { wknd: L.prevWeekSeed.wknd } };
+      [["dayCall", "mon", oracle.CROSS.dcMon], ["wknd", "mon", oracle.CROSS.wkMon], ["wknd", "dayCall", oracle.CROSS.wkDc], ["dayCall", "dayCall", oracle.CROSS.dcDc]].forEach(([a, b, c]) => {
+        const id = holder(prev, a);
+        if (id && id === holder(wk, b) && !(w > 0 && pinned(keys[w - 1], a, id) && pinned(m, b, id))) out.push(`${m}|${code[id]}|${a}+${b}|${c}`);
+      });
+    });
+    return out.sort();
+  };
+  const listed = (sched) => lsb(sched, { surgeons: S, mondays, vac: L.avail, vacationsOnly: L.vacationsOnly, holAssignments: L.holAssignments, prevWeekSeed: L.prevWeekSeed }).items
+    .filter(it => it.kind === "bend" || it.kind === "empty")
+    .map(it => `${it.mondayStr}|${it.who ? code[it.who] : "EMPTY"}|${it.slots.join("+")}|${it.cost}`).sort();
+  const EVES = [["2026-11-23", "wed", "RPC", "2026-11-25"], ["2026-12-21", "thu", "FAK", "2026-12-24"], ["2026-12-28", "wed", "DJA", "2026-12-30"]];
+  const stats = { timeOff: 0, empty: 0, eves: EVES.map(() => 0), xmas: 0, costHist: {}, ms: 0 };
+  const LIVE_ROLLS = ROLLS;
+  for (let roll = 0; roll < LIVE_ROLLS; roll++) {
+    const t = Date.now();
+    const sched = generate(...args);
+    stats.ms += Date.now() - t;
+    const label = `live roll ${roll}`;
+    const hits = floorHits(sched, keys, L.avail, L.vacationsOnly);
+    stats.timeOff += hits.length; hits.forEach(h => failures.push(`${label}: ${h.replace(/\bs\d\b/g, x => code[x] || x)}`));
+    keys.forEach(m => SL.forEach(s => { if (!holder(sched[m], s)) { stats.empty++; failures.push(`${label}: ${m} ${s} EMPTY`); } }));
+    EVES.forEach(([m, k, c, d], i) => {
+      if (code[sched[m]?.nights?.[k]] === c) stats.eves[i]++; else failures.push(`${label}: eve ${d} (${k} of ${m}) is ${code[sched[m]?.nights?.[k]] || "empty"}, the card says ${c}`);
+      keys.forEach(mm => { if (sched[mm]?.holidayCoverage && sched[mm].holidayCoverage[d]) failures.push(`${label}: a holidayCoverage row sits on the eve ${d}`); });
+    });
+    const x = sched["2026-12-21"];
+    if (x && code[x.dayCall] === "FAK" && code[x.nights?.thu] === "FAK" && code[x.nights?.wknd] === "FAK") stats.xmas++;
+    else failures.push(`${label}: Christmas week is ${code[x?.dayCall]}/${code[x?.nights?.thu]}/${code[x?.nights?.wknd]} (service/Thu/weekend), not FAK's`);
+    const own = ownBends(sched), lst = lsb ? listed(sched) : own;
+    if (lsb && JSON.stringify(own) !== JSON.stringify(lst)) failures.push(`${label}: listScheduleBends disagrees with the test — test ${JSON.stringify(own)} vs list ${JSON.stringify(lst)}`);
+    lst.forEach(k => { const [m, who, slots] = k.split("|"); const [a, b] = slots.split("+"); if (who !== "EMPTY" && pinned(m, a, byCode[who]) && pinned(m, b, byCode[who])) failures.push(`${label}: a designed pattern was listed as a bend: ${k}`); });
+    const cost = own.reduce((t, k) => t + Number(k.split("|")[3]), 0);
+    stats.costHist[cost] = (stats.costHist[cost] || 0) + 1;
+    if (cost !== best.cost) failures.push(`${label}: bend cost ${cost}, the exact minimum is ${best.cost} — ${own.join(", ")}`);
+    if (failures.length > 25 && !process.env.LIVE_ALL_ROLLS) break;
+  }
+  return { name: "live", failures, stats, rolls: LIVE_ROLLS, oracleCost: best.cost, oracleMs };
+}
+const live = runLive();
+
 // ─── Report ───
 for (const r of [clean, cleanProxy, light, squeeze]) {
   const s = r.stats;
   const gaps = Object.keys(s.gapHist).map(Number).sort((a, b) => a - b).map(g => `${g}:${s.gapHist[g]}`).join(" ");
   console.log(`${r.name.padEnd(9)} ${ROLLS} rolls — max spreads dc=${s.maxSpread.dc} wknd=${s.maxSpread.wknd} total=${s.maxSpread.total}; ` +
-    `wknd→Tue (soft) ×${s.wkndThenTue}; vacation-day assignments ×${s.vacationHits}${r.name === "squeeze" ? " (informational — see header)" : ""}; ` +
+    `wknd→Tue (soft) ×${s.wkndThenTue}; vacation-day assignments ×${s.vacationHits}; time-off placements (floor) ×${s.floorHits || 0}; ` +
     `SW gap histogram {${gaps || "no repeats"}}; spacing violations (gap<=${MIN_DC_GAP}, soft) ×${s.spacingViolations}`);
 }
 console.log(`stress    ${ROLLS} rolls — floor held every roll; floor-stripped control picked the gap-2 surgeon in ${stress.redFired}/${ROLLS} rolls`);
+console.log(`live      ${live.rolls || 0} rolls — time-off placements ×${live.stats ? live.stats.timeOff : "?"}; empty slots ×${live.stats ? live.stats.empty : "?"}; eves RPC/FAK/DJA ${live.stats ? live.stats.eves.join("/") : "?"} of ${live.rolls}; Christmas week FAK ${live.stats ? live.stats.xmas : "?"}/${live.rolls}; bend cost ${live.stats ? JSON.stringify(live.stats.costHist) : "?"} vs the oracle's exact minimum ${live.oracleCost} (oracle ${live.oracleMs} ms); generate() ${live.stats ? Math.round(live.stats.ms / live.rolls) : "?"} ms/roll`);
 console.log(`silvis    ${ROLLS} rolls — FAK off every overlapping slot (6 Silvis days: Mon/Tue/Wed/Sun/Fri/Sat); control without them put him on one in ${silvis.redFired}/${ROLLS} rolls; open neighbor legs given to him: ${silvis.given}`);
 
-const failures = [...clean.failures, ...cleanProxy.failures, ...light.failures, ...stress.failures, ...silvis.failures];
+const failures = [...clean.failures, ...cleanProxy.failures, ...light.failures, ...squeeze.failures, ...stress.failures, ...silvis.failures, ...live.failures];
 if (failures.length) {
   console.error(`\nFAIL — ${failures.length} violation(s):`);
   failures.slice(0, 25).forEach(f => console.error("  • " + f));
   if (failures.length > 25) console.error(`  … and ${failures.length - 25} more`);
   process.exit(1);
 }
-console.log("PASS — Δ0 fairness on clean periods, zero hard-rule violations, zero vacation overlaps (squeeze scenario stays informational).");
+console.log("PASS — Δ0 fairness on clean periods, zero hard-rule violations outside squeezed weeks, nobody on time off in any scenario, the live period at its exact minimum bend cost.");
 process.exit(0);
