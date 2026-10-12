@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.10.11f";
+    var APP_VERSION = "2026.10.11g";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -5627,6 +5627,26 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     const todayStr = fmt(new Date());
     const mondayStrs = Object.keys(schedule).sort().filter(mStr => fmt(addD(parse(mStr), 6)) >= todayStr);
     const ids = surgeons.map(s => s.id);
+    const fakW = (surgeons.find(s => (s.name || "").toUpperCase() === "FAK") || {}).id || null;
+    const design = typeof holidayDesign === "function" ? holidayDesign(holidayAssignments, mondayStrs, fakW) : {
+      pins: {},
+      eves: {}
+    };
+    const designed = (m1, s1, m2, s2, id) => !!(id && design.pins[m1] && design.pins[m1][s1] === id && design.pins[m2] && design.pins[m2][s2] === id);
+    const cardRows = new Set();
+    Object.values(holidayAssignments || {}).forEach(arr => (Array.isArray(arr) ? arr : []).forEach(h => {
+      (effectiveHolidayCoverage(h) || []).forEach(c => {
+        if (c && c.date && c.surgeon) cardRows.add(c.date + "|" + c.surgeon);
+      });
+    }));
+    const md = ds => {
+      const d = parse(ds);
+      return `${d.getMonth() + 1}/${d.getDate()}`;
+    };
+    const codeOf = id => {
+      var _sMap$id;
+      return ((_sMap$id = sMap[id]) === null || _sMap$id === void 0 ? void 0 : _sMap$id.name) || id;
+    };
     mondayStrs.forEach((mStr, wkIdx) => {
       var _wk$nights6;
       const wk = schedule[mStr];
@@ -5636,7 +5656,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         var _wk$nights4, _wk$nights5;
         const a = (_wk$nights4 = wk.nights) === null || _wk$nights4 === void 0 ? void 0 : _wk$nights4[nightOrder[i]];
         const b = (_wk$nights5 = wk.nights) === null || _wk$nights5 === void 0 ? void 0 : _wk$nights5[nightOrder[i + 1]];
-        if (a && a === b) {
+        if (a && a === b && !designed(mStr, nightOrder[i], mStr, nightOrder[i + 1], a)) {
           var _sMap$a;
           issues.push({
             key: `consecutive|${mStr}|${a}|${nightOrder[i]}+${nightOrder[i + 1]}`,
@@ -5651,7 +5671,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       if (wkIdx < mondayStrs.length - 1) {
         var _nextWk$nights3, _nextWk$nights4;
         const nextWk = schedule[mondayStrs[wkIdx + 1]];
-        if (wkndSurgeon && (nextWk === null || nextWk === void 0 || (_nextWk$nights3 = nextWk.nights) === null || _nextWk$nights3 === void 0 ? void 0 : _nextWk$nights3.mon) === wkndSurgeon) {
+        if (wkndSurgeon && (nextWk === null || nextWk === void 0 || (_nextWk$nights3 = nextWk.nights) === null || _nextWk$nights3 === void 0 ? void 0 : _nextWk$nights3.mon) === wkndSurgeon && !designed(mStr, "wknd", mondayStrs[wkIdx + 1], "mon", wkndSurgeon)) {
           var _sMap$wkndSurgeon;
           issues.push({
             key: `wknd-mon|${mStr}|${mondayStrs[wkIdx + 1]}|${wkndSurgeon}`,
@@ -5664,7 +5684,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         if (wk.dayCall && (nextWk === null || nextWk === void 0 || (_nextWk$nights4 = nextWk.nights) === null || _nextWk$nights4 === void 0 ? void 0 : _nextWk$nights4.mon) === wk.dayCall) {
           const nextMonStr = mondayStrs[wkIdx + 1];
           const nextHolCov = nextWk.holidayCoverage || {};
-          if (!nextHolCov[nextMonStr]) {
+          if (!nextHolCov[nextMonStr] && !designed(mStr, "dayCall", nextMonStr, "mon", wk.dayCall)) {
             var _sMap$wk$dayCall;
             issues.push({
               key: `svc-mon|${mStr}|${nextMonStr}|${wk.dayCall}`,
@@ -5690,6 +5710,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               thu: 3
             }[sk]));
             if (holCov[nightDate]) return;
+            if (designed(mStr, "dayCall", mStr, sk, wk.dayCall)) return;
             issues.push({
               key: `svc-night|${mStr}|${wk.dayCall}|${sk}`,
               type: "double",
@@ -5702,7 +5723,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         if (((_wk$nights8 = wk.nights) === null || _wk$nights8 === void 0 ? void 0 : _wk$nights8.wknd) === wk.dayCall) {
           const friD = fmt(addD(mon, 4));
           const sunD = fmt(addD(mon, 6));
-          if (!holCov[friD] && !holCov[sunD]) {
+          if (!holCov[friD] && !holCov[sunD] && !designed(mStr, "dayCall", mStr, "wknd", wk.dayCall)) {
             var _sMap$wk$dayCall3;
             issues.push({
               key: `svc-wknd|${mStr}|${wk.dayCall}`,
@@ -5714,9 +5735,100 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           }
         }
       }
+      const hw = weekHolders(mStr, wk);
+      const offKind = (id, ds) => onVac(id, ds, vacations || {}) ? "vacation" : onVac(id, ds, noCallDays || {}) ? "no-call" : null;
+      const DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+      const dayLbl = ds => `${DOW[parse(ds).getDay()]} ${md(ds)}`;
+      const legs = [];
+      hw.days.forEach(day => {
+        if (day.cover && day.cover.sid) legs.push({
+          sid: day.cover.sid,
+          fam: "cover|" + day.ds,
+          label: `${holidayTitleName(day.cover)} 24h`,
+          ds: day.ds,
+          overnight: true
+        });
+        const svcId = day.svc || day.sat;
+        if (svcId) legs.push({
+          sid: svcId,
+          fam: svcId === wk.dayCall ? "svc" : "svcday",
+          label: svcId === wk.dayCall ? "service week" : "service day",
+          ds: day.ds,
+          overnight: false
+        });
+        if (day.night) legs.push({
+          sid: day.night,
+          fam: day.nightKey,
+          label: `${DOW[parse(day.ds).getDay()]} night`,
+          ds: day.ds,
+          overnight: true
+        });
+        if (day.wkndFri) legs.push({
+          sid: day.wkndFri,
+          fam: "wknd",
+          label: "weekend",
+          ds: day.ds,
+          overnight: false
+        });
+        if (day.wkndSun) legs.push({
+          sid: day.wkndSun,
+          fam: "wknd",
+          label: "weekend",
+          ds: day.ds,
+          overnight: true
+        });
+      });
+      const runs = [];
+      legs.forEach(l => {
+        const kind = offKind(l.sid, l.ds);
+        if (!kind) return;
+        if (kind === "vacation" && cardRows.has(l.ds + "|" + l.sid)) return;
+        const last = runs[runs.length - 1];
+        const next = r => fmt(addD(parse(r.to), r.fam === "wknd" && parse(r.to).getDay() === 5 ? 2 : 1));
+        if (last && last.sid === l.sid && last.fam === l.fam && last.kind === kind && next(last) >= l.ds && last.to <= l.ds) {
+          last.to = l.ds;
+          return;
+        }
+        const same = runs.find(r => r.sid === l.sid && r.fam === l.fam && r.kind === kind && next(r) === l.ds);
+        if (same) {
+          same.to = l.ds;
+          return;
+        }
+        runs.push({
+          sid: l.sid,
+          fam: l.fam,
+          label: l.label,
+          kind,
+          from: l.ds,
+          to: l.ds
+        });
+      });
+      runs.filter(r => r.to >= todayStr).forEach(r => {
+        issues.push({
+          key: `on-off|${mStr}|${r.sid}|${r.fam}|${r.from}|${r.to}|${r.kind}`,
+          type: "timeoff",
+          severity: "error",
+          week: mStr,
+          message: `${codeOf(r.sid)} is on call ${r.fam === "svcday" && r.from !== r.to ? "service days" : r.label} ${NIGHT_KEYS.includes(r.fam) ? md(r.from) : r.from === r.to ? dayLbl(r.from) : dayLbl(r.from) + "–" + dayLbl(r.to)} but is off (${r.kind})`
+        });
+      });
+      legs.forEach(l => {
+        if (l.ds < todayStr || !l.overnight || offKind(l.sid, l.ds)) return;
+        const next = fmt(addD(parse(l.ds), 1));
+        if (!onVac(l.sid, next, vacations || {})) return;
+        const fri = fmt(addD(parse(l.ds), -2));
+        const shown = l.fam === "wknd" ? legs.some(x => x.fam === "wknd" && x.sid === l.sid && x.ds === fri) ? `weekend ${md(fri)}–${md(l.ds)}` : `weekend (Sun ${md(l.ds)})` : `${l.label} ${md(l.ds)}`;
+        issues.push({
+          key: `into-vac|${mStr}|${l.sid}|${l.fam}|${l.ds}`,
+          type: "timeoff",
+          severity: "error",
+          week: mStr,
+          message: `${codeOf(l.sid)}'s ${shown} runs into their vacation starting ${dayLbl(next)}`
+        });
+      });
     });
     return issues;
-  }, [schedule, surgeons, sMap]);
+  }, [schedule, surgeons, sMap, vacations, noCallDays, holidayAssignments]);
   const vacOverlapWarnings = useMemo(() => {
     const warnings = [];
     if (!mondays.length) return warnings;
@@ -10670,13 +10782,19 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         color: "#8a94a0",
         marginTop: 4
       }
-    }, "+ ", warnShown.silvis.length - 10, " more Silvis line", warnShown.silvis.length - 10 === 1 ? "" : "s", "…"), warnShown.conflicts.length + warnShown.vac.length > 20 && React.createElement("p", {
+    }, "+ ", warnShown.silvis.length - 10, " more Silvis line", warnShown.silvis.length - 10 === 1 ? "" : "s", "…"), warnShown.conflicts.length > 10 && React.createElement("p", {
       style: {
         fontSize: 11,
         color: "#8a94a0",
         marginTop: 4
       }
-    }, "+ more…"), dismissedBar);
+    }, "+ ", warnShown.conflicts.length - 10, " more schedule line", warnShown.conflicts.length - 10 === 1 ? "" : "s", "…"), warnShown.vac.length > 10 && React.createElement("p", {
+      style: {
+        fontSize: 11,
+        color: "#8a94a0",
+        marginTop: 4
+      }
+    }, "+ ", warnShown.vac.length - 10, " more vacation-overlap line", warnShown.vac.length - 10 === 1 ? "" : "s", "…"), dismissedBar);
   })(), React.createElement("div", {
     style: {
       display: "grid",
