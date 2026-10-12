@@ -955,7 +955,7 @@ check("prefs audit never logs the plaintext email (masked only)",
     try {
       acceptFn = vm.runInContext(`(function (env) {
         const { schedule, surgeons, showToast, detectCascadeChanges, setTradeRequests, logAudit,
-                pushUndo, setSchedule, addNotification, sendEmailNotif, schedulerAdminIds, confirm,
+                pushUndo, updateSchedule, scheduleRef, addNotification, sendEmailNotif, schedulerAdminIds, confirm,
                 silvisActive, silvisBlock, silvisRefuse } = env;
         return (async (req) => {${body}});
       })`, sandbox, { filename: "accept-trade-extract.js" });
@@ -973,7 +973,7 @@ check("prefs audit never logs the plaintext email (masked only)",
           setTradeRequests: () => {},
           logAudit: () => {},
           pushUndo: () => { log.undo++; },
-          setSchedule: () => { log.schedWrites++; },
+          updateSchedule: () => { log.schedWrites++; }, scheduleRef: { current: {} },
           addNotification: async () => {},
           sendEmailNotif: () => {},
           schedulerAdminIds: [],
@@ -1269,7 +1269,7 @@ check("prefs audit never logs the plaintext email (masked only)",
     count('"This trade\'s shift has already passed — propose a new one."') === 3,
     `found ${count('"This trade\'s shift has already passed — propose a new one."')}`);
   check("executeTwoWaySwap re-validates before pushUndo",
-    /executeTwoWaySwap = useCallback\(\(targetMon[\s\S]{0,900}shiftStartDate\(targetMon, targetShift\)[\s\S]{0,900}pushUndo\(schedule\);/.test(src)); // window 400→900 for the silvisBusy block (2026-09-24); order unchanged
+    /executeTwoWaySwap = useCallback\(\(targetMon[\s\S]{0,900}shiftStartDate\(targetMon, targetShift\)[\s\S]{0,900}pushUndo\(\);/.test(src)); // window 400→900 for the silvisBusy block (2026-09-24); order unchanged
 }
 
 // ─── O. silvisBusy (2026-09-24, revised after the post-merge review): FAK's Silvis primary days block Davenport call ───
@@ -1608,15 +1608,15 @@ check("prefs audit never logs the plaintext email (masked only)",
     count("silvisBlock(req.to_surgeon_id, req.week_monday, req.shift_key, schedule[req.week_monday])") === 1
     && count("silvisBlock(req.from_surgeon_id, req.return_week, req.return_shift, schedule[req.return_week])") === 1
     && count("silvisBlock(ch.to, ch.week, ch.shiftKey, schedule[ch.week])") === 3
-    && count("silvisBlock(candId, targetMon, targetShift, schedule[targetMon])") === 1
-    && count("silvisBlock(targetOldId, returnMon, returnShift, schedule[returnMon])") === 1
+    && count("silvisBlock(candId, targetMon, targetShift, cur[targetMon])") === 1
+    && count("silvisBlock(targetOldId, returnMon, returnShift, cur[returnMon])") === 1
     && count("silvisBlock(newId, mStr, shift, schedule[mStr])") === 1
     && count("silvisBlock(newLockSurgeon, newLockWeek, newLockSlot, schedule[newLockWeek])") === 1
     && count("silvisBlock(tradeTo, tradeWeek, tradeShift, schedule[tradeWeek])") === 2
     && count("silvisBlock(tradeFrom, tradeReturnWeek, tradeReturnShift, schedule[tradeReturnWeek])") === 2
     && count("silvisBlock(r.to_surgeon_id, r.week_monday, r.shift_key, schedule[r.week_monday])") === 1
-    && (src.match(/silvisBlock\([^)]*\)/g) || []).every(c => /schedule\[|, oldWk\)/.test(c) || /silvisBlock\(id, mondayStr, slotKey, wk\)/.test(c)),
-    (src.match(/silvisBlock\([^)]*\)/g) || []).filter(c => !/schedule\[|, oldWk\)|slotKey, wk\)/.test(c)).join(" | "));
+    && (src.match(/silvisBlock\([^)]*\)/g) || []).every(c => /schedule\[|cur\[|, oldWk\)/.test(c) || /silvisBlock\(id, mondayStr, slotKey, wk\)/.test(c)),
+    (src.match(/silvisBlock\([^)]*\)/g) || []).filter(c => !/schedule\[|cur\[|, oldWk\)|slotKey, wk\)/.test(c)).join(" | "));
   check("the generic calendar cell renderer skips Silvis rows (they drew as a bogus 'N FAK' night)",
     count('||e.type==="Holiday"||e.type==="Silvis") return false;') === 1);
   // calData holds DAVENPORT call types only (owner decision 2026-09-24: Silvis
@@ -3509,7 +3509,7 @@ check("prefs audit never logs the plaintext email (masked only)",
   {
     const i = nsrcAB.indexOf("const saveWeekEdits = useCallback((openAfter) => {"), e = i < 0 ? -1 : nsrcAB.indexOf("\n  }, [editWeekModal,", i);
     const weBody = i < 0 || e < 0 ? null : "(openAfter) => {" + nsrcAB.slice(i + "const saveWeekEdits = useCallback((openAfter) => {".length, e) + "\n  }";
-    const WE_ENV = "editWeekModal, schedule, appShifts, appShiftsLoaded, openWeekEditor, setEditWeekModal, silvisActive, silvisFakId, silvisDays, silvisBlock, silvisRefuse, sfSlotDays, confirm, pushUndo, setSchedule, backupMondaySet, fierceBackupSet, surgeons, showToast, APP_SHIFTS_NOT_LOADED, setAppShifts, saveAppShifts, logAudit, nameOf, aMap, sMap, schedulerAdminIds, addNotification, sendEmailNotif, setTimeout";
+    const WE_ENV = "editWeekModal, schedule, appShifts, appShiftsLoaded, openWeekEditor, setEditWeekModal, silvisActive, silvisFakId, silvisDays, silvisBlock, silvisRefuse, sfSlotDays, confirm, pushUndo, updateSchedule, scheduleRef, backupMondaySet, fierceBackupSet, surgeons, showToast, APP_SHIFTS_NOT_LOADED, setAppShifts, saveAppShifts, logAudit, nameOf, aMap, sMap, schedulerAdminIds, addNotification, sendEmailNotif, setTimeout";
     let mkWE = null; try { mkWE = weBody ? vm.runInContext(`(function (env) { const { ${WE_ENV} } = env; return (${weBody}); })`, sandbox) : null; } catch (ex) { mkWE = null; }
     const MON = "2026-10-12", DAYS = ["2026-10-12", "2026-10-13", "2026-10-14", "2026-10-15", "2026-10-16", "2026-10-17", "2026-10-18"];
     const blanks = Object.fromEntries(DAYS.map(d => [d, ""]));
@@ -3522,7 +3522,7 @@ check("prefs audit never logs the plaintext email (masked only)",
         editWeekModal: { mondayStr: MON, appsBase, draft: { dayCall: surgeonChange ? "s7" : "s1", nights: { ...wk.nights }, dayCallOverrides: {}, apps: draftApps, reason: "" } },
         schedule: { [MON]: wk }, appShifts: real, appShiftsLoaded: loaded, openWeekEditor: () => {}, setEditWeekModal: (x) => { if (x === null) rec.closed++; },
         silvisActive: false, silvisFakId: null, silvisDays: { primary: new Set() }, silvisBlock: () => null, silvisRefuse: () => false, sfSlotDays: () => [],
-        confirm: () => true, pushUndo: () => {}, setSchedule: () => { rec.schedSets++; }, backupMondaySet: new Set(), fierceBackupSet: new Set(),
+        confirm: () => true, pushUndo: () => {}, updateSchedule: () => { rec.schedSets++; }, scheduleRef: { current: { [MON]: wk } }, backupMondaySet: new Set(), fierceBackupSet: new Set(),
         surgeons: ["s1", "s2", "s3", "s4", "s5", "s6", "s7"].map(id => ({ id, name: id.toUpperCase() })),
         showToast: (m) => rec.toasts.push(String(m)), APP_SHIFTS_NOT_LOADED: "APP shifts haven't loaded yet",
         setAppShifts: (u) => rec.appSets.push(u), saveAppShifts: (x) => rec.saves.push(x),
@@ -3610,14 +3610,14 @@ check("prefs audit never logs the plaintext email (masked only)",
   const nsrcAE = src.replace(/\r\n/g, "\n");
   const i = nsrcAE.indexOf("  const acceptPreview = () => {"), e = i < 0 ? -1 : nsrcAE.indexOf("\n  };\n", i);
   const body = i < 0 || e < 0 ? null : "() => {" + nsrcAE.slice(i + "  const acceptPreview = () => {".length, e) + "\n  }";
-  const ENV = "previewSchedule, previewNeedsOk, previewAck, showToast, schedule, pushUndo, rollForwardCounts, setSchedule, setPreviewSchedule, setShowPreview, setCalMonth, setCalYear, setView, setSaveStatus, setTimeout, logAudit, numWeeks, MO, startMonth, startYear";
+  const ENV = "previewSchedule, previewNeedsOk, previewAck, showToast, schedule, scheduleRef, pushUndo, rollForwardCounts, updateSchedule, setPreviewSchedule, setShowPreview, setCalMonth, setCalYear, setView, setSaveStatus, setTimeout, logAudit, numWeeks, MO, startMonth, startYear";
   let mk = null; try { mk = body ? vm.runInContext(`(function (env) { const { ${ENV} } = env; return (${body}); })`, sandbox) : null; } catch (ex) { mk = null; }
   const run = (items, ack) => {
     const rec = { published: 0, toasts: [], audits: [] };
     mk({
       previewSchedule: { "2026-11-16": { dayCall: "s1", nights: {} } }, previewNeedsOk: { cost: items.length * 6, items }, previewAck: ack,
       showToast: (m) => rec.toasts.push(String(m)), schedule: {}, pushUndo: () => {}, rollForwardCounts: () => {},
-      setSchedule: () => { rec.published++; }, setPreviewSchedule: () => {}, setShowPreview: () => {}, setCalMonth: () => {}, setCalYear: () => {},
+      scheduleRef: { current: {} }, updateSchedule: () => { rec.published++; }, setPreviewSchedule: () => {}, setShowPreview: () => {}, setCalMonth: () => {}, setCalYear: () => {},
       setView: () => {}, setSaveStatus: () => {}, setTimeout: () => {}, logAudit: (a, msg, meta) => rec.audits.push({ a, msg, meta }),
       numWeeks: 14, MO: ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"], startMonth: 10, startYear: 2026,
     })();

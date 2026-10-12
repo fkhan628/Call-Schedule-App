@@ -226,6 +226,21 @@ function CallSchedule() {
   const [backupMondaySet, setBackupMondaySet] = useState(new Set());
   const [fierceBackupSet, setFierceBackupSet] = useState(new Set()); // Fierce backs up our group, regular schedule unchanged
   const [schedule, setSchedule] = useState({});
+  // THE SCHEDULE MIRROR (sync engine v2, design §2.1). scheduleRef.current is
+  // the latest schedule and commitSchedule is its ONLY writer: the mirror
+  // first (synchronously), then React state BY VALUE. Every decision about the
+  // schedule reads the mirror, never a render closure, and never runs inside a
+  // state updater (React 18 may run an updater twice or late). updateSchedule
+  // keeps the updater shape for convenience, but runs fn NOW, on the mirror.
+  // The sync engine reads the same mirror, so what it saves is always the
+  // latest edit. sync-guards SE pins that setSchedule has no other caller.
+  const scheduleRef = useRef({});
+  const commitSchedule = useCallback((next) => { scheduleRef.current = next; setSchedule(next); }, []);
+  const updateSchedule = useCallback((fn) => {
+    const cur = scheduleRef.current, next = fn(cur);
+    if (next !== cur) commitSchedule(next);
+    return next;
+  }, [commitSchedule]);
   const [appShifts, setAppShifts] = useState({}); // { "2026-05-06": "a1", ... }
   // WIPE GUARD for the APP call-shift row (2026-10-11, the day-off guard's
   // twin): every APP write upserts the WHOLE map (no CAS, no snapshot, no
@@ -370,15 +385,16 @@ function CallSchedule() {
 
   // ─── Undo History ───
   const [scheduleHistory, setScheduleHistory] = useState([]);
-  const pushUndo = useCallback((sched) => {
-    setScheduleHistory(prev => [...prev.slice(-9), JSON.parse(JSON.stringify(sched))]);
+  const pushUndo = useCallback(() => {
+    const snap = JSON.parse(JSON.stringify(scheduleRef.current));
+    setScheduleHistory(prev => [...prev.slice(-9), snap]);
   }, []);
   const undoLastChange = useCallback(() => {
     if (scheduleHistory.length === 0) return;
     const prev = scheduleHistory[scheduleHistory.length - 1];
-    setSchedule(prev);
+    commitSchedule(prev);
     setScheduleHistory(h => h.slice(0, -1));
-  }, [scheduleHistory]);
+  }, [scheduleHistory, commitSchedule]);
 
   // ─── What-If Preview ───
   const [previewSchedule, setPreviewSchedule] = useState(null);
@@ -472,8 +488,6 @@ function CallSchedule() {
   // mirror of the blob's payloadLooksWiped protection; its absence is how the
   // schedule got wiped twice.
   const intentionalScheduleWipeRef = useRef(false);
-  const scheduleRef = useRef({});
-  useEffect(() => { scheduleRef.current = schedule; }, [schedule]);
 
   // ─── Vacation Requests ───
   const [vacRequests, setVacRequests] = useState([]);
@@ -1169,7 +1183,7 @@ function CallSchedule() {
           // latest, notify, and let the user reapply — never a silent clobber.
           const fresh = await loadSchedFromTable();
           if (fresh) {
-            setSchedule(fresh.sched);
+            commitSchedule(fresh.sched);
             schedWeekVersionsRef.current = fresh.vers;
             schedWeeksSyncRef.current = JSON.parse(JSON.stringify(fresh.sched));
             showToast("A week was just changed by someone else — reloaded the latest. Reapply your change if needed.", "error");
@@ -1553,15 +1567,15 @@ function CallSchedule() {
             // the blob if the table is empty/unavailable so we're never blank.
             const fromTable = await loadSchedFromTable();
             if (fromTable) {
-              setSchedule(fromTable.sched);
+              commitSchedule(fromTable.sched);
               schedWeekVersionsRef.current = fromTable.vers;
               schedWeeksSyncRef.current = JSON.parse(JSON.stringify(fromTable.sched));
             } else {
-              if (d.schedule) setSchedule(d.schedule);
+              if (d.schedule) commitSchedule(d.schedule);
               schedWeeksSyncRef.current = d.schedule ? JSON.parse(JSON.stringify(d.schedule)) : {};
             }
           } else {
-            if (d.schedule) setSchedule(d.schedule);
+            if (d.schedule) commitSchedule(d.schedule);
             schedWeeksSyncRef.current = d.schedule ? JSON.parse(JSON.stringify(d.schedule)) : {}; // dual-write baseline
           }
           if (d.appShifts) setAppShifts(d.appShifts);
@@ -1693,7 +1707,7 @@ function CallSchedule() {
         if (!USE_TIME_OFF) { if (d.vacations) setVacations(d.vacations); if (d.noCallDays) setNoCallDays(d.noCallDays); }
         if (d.backupMondays) setBackupMondaySet(new Set(d.backupMondays));
         if (d.fierceBackup) setFierceBackupSet(new Set(d.fierceBackup));
-        if (d.schedule && !SCHED_READ_TABLE) setSchedule(d.schedule); // table is the source when Stage 3 read is on
+        if (d.schedule && !SCHED_READ_TABLE) commitSchedule(d.schedule); // table is the source when Stage 3 read is on
         if (d.priorCounts && Object.values(d.priorCounts).some(c => Object.values(c).some(v => v > 0))) setPriorCounts(d.priorCounts);
         if (d.year1Counts && Object.values(d.year1Counts).some(c => Object.values(c).some(v => v > 0))) setYear1Counts(d.year1Counts);
         if (d.startMonth !== undefined) setStartMonth(d.startMonth);
@@ -1804,11 +1818,11 @@ function CallSchedule() {
             const key = (nw && nw.week_monday) || (od && od.week_monday);
             if (!key) return;
             if (payload.eventType === "DELETE") {
-              setSchedule(p => { const n = { ...p }; delete n[key]; return n; });
+              updateSchedule(p => { const n = { ...p }; delete n[key]; return n; });
               delete schedWeekVersionsRef.current[key];
               if (schedWeeksSyncRef.current) delete schedWeeksSyncRef.current[key];
             } else if (nw) {
-              setSchedule(p => ({ ...p, [key]: nw.data }));
+              updateSchedule(p => ({ ...p, [key]: nw.data }));
               schedWeekVersionsRef.current[key] = nw.version;
               if (schedWeeksSyncRef.current) schedWeeksSyncRef.current[key] = JSON.parse(JSON.stringify(nw.data));
             }
@@ -2262,7 +2276,7 @@ function CallSchedule() {
     toClearAll(); // clears vacations + no-call locally, and the time_off table when on
     setBackupMondaySet(new Set());
     setFierceBackupSet(new Set());
-    setSchedule({});
+    commitSchedule({});
     intentionalScheduleWipeRef.current = true; // authorize the one legitimate full wipe
     syncSchedWeeks({}); // mirror the wipe to schedule_weeks
     setAppShifts({});
@@ -2834,8 +2848,8 @@ function CallSchedule() {
       // matching the propose/decline siblings (was composed twice).
       const acceptMsg = tradeAcceptMsg(req);
       logAudit("trade.accept", `${acceptMsg}${cascades.length ? ` (+${cascades.length} cascade change${cascades.length === 1 ? "" : "s"})` : ""}`, { request_id: req.id, cascades: cascades.length });
-      pushUndo(schedule);
-      setSchedule(p => {
+      pushUndo();
+      updateSchedule(p => {
         const n = { ...p };
 
         // Apply the primary swap
@@ -4112,12 +4126,12 @@ function CallSchedule() {
           setSaveStatus("");
           return;
         }
-        if (Object.keys(schedule).length > 0) pushUndo(schedule);
+        if (Object.keys(scheduleRef.current).length > 0) pushUndo();
         // Accumulate: merge the new period into the existing schedule so prior
         // periods are preserved. Regenerating the same weeks cleanly overwrites
         // just those keys; a different period coexists alongside.
-        const merged = { ...schedule, ...result };
-        setSchedule(merged);
+        const merged = { ...scheduleRef.current, ...result }; // the LATEST schedule, not the click-time closure
+        commitSchedule(merged);
         setPreviewSchedule(null); setShowPreview(false);
         setSaveStatus("Regenerated!");
         setTimeout(() => setSaveStatus(""), 2000);
@@ -4146,8 +4160,8 @@ function CallSchedule() {
       showToast("Couldn't save a backup snapshot — clear cancelled. Schedule unchanged.", "error");
       return;
     }
-    if (Object.keys(schedule).length > 0) pushUndo(schedule);
-    setSchedule({});
+    if (Object.keys(scheduleRef.current).length > 0) pushUndo();
+    commitSchedule({});
     intentionalScheduleWipeRef.current = true; // authorize the one legitimate full wipe
     syncSchedWeeks({}); // mirror the wipe to schedule_weeks
     setSaveStatus("Schedule cleared");
@@ -4204,8 +4218,8 @@ function CallSchedule() {
       // The schedule leg of the restore — the SAME CAS path every schedule
       // write uses (per-week compare-and-swap + wipe guard). Mirrors the
       // regenerate flow: state first, then syncSchedWeeks persists it.
-      if (Object.keys(schedule).length > 0) pushUndo(schedule);
-      setSchedule(sched);
+      if (Object.keys(scheduleRef.current).length > 0) pushUndo();
+      commitSchedule(sched);
       // A confirmed restore may legitimately shrink or clear the table, so
       // arm the one-shot wipe authorization — and ALWAYS disarm it after, so
       // a later accidental wipe can't ride on a leftover authorization.
@@ -4373,11 +4387,11 @@ function CallSchedule() {
     // The checkbox is the gate (the button is disabled too; this is the backstop).
     if (previewSchedule && previewNeedsOk.items.length > 0 && !previewAck) { showToast("Tick \"I've reviewed these items\" first.", "error"); return; }
     if (previewSchedule) {
-      if (Object.keys(schedule).length > 0) pushUndo(schedule);
+      if (Object.keys(scheduleRef.current).length > 0) pushUndo();
       rollForwardCounts(previewSchedule);
       // Accumulate: merge the published period into the existing schedule so
       // prior periods are preserved (the autosave then syncs without deletes).
-      setSchedule(prev => ({ ...prev, ...previewSchedule }));
+      updateSchedule(prev => ({ ...prev, ...previewSchedule }));
       setPreviewSchedule(null); setShowPreview(false);
       setCalMonth(startMonth);
       setCalYear(startYear);
@@ -4719,8 +4733,8 @@ function CallSchedule() {
     // silvisBusy (see acceptTradeRequest). swapShift is a manual edit path, so
     // the scheduler override applies.
     if (silvisActive) { const r = silvisBlock(newId, mStr, shift, schedule[mStr]); if (silvisRefuse(r ? [r] : [])) return; }
-    pushUndo(schedule);
-    setSchedule(p => {
+    pushUndo();
+    updateSchedule(p => {
       const wk = {...p[mStr]};
       if(shift==="dayCall") wk.dayCall=newId;
       else wk.nights={...wk.nights,[shift]:newId};
@@ -4903,15 +4917,16 @@ function CallSchedule() {
       showToast("This trade's shift has already passed — propose a new one.", "error");
       return;
     }
-    // silvisBusy on both legs (see acceptTradeRequest).
+    // silvisBusy on both legs (see acceptTradeRequest). The mirror, not
+    // `schedule`: this callback's deps omit schedule, so its closure is stale.
     if (silvisActive) {
-      const hits = [];
-      const r1 = silvisBlock(candId, targetMon, targetShift, schedule[targetMon]); if (r1) hits.push(r1);
-      if (returnMon && returnShift) { const r2 = silvisBlock(targetOldId, returnMon, returnShift, schedule[returnMon]); if (r2) hits.push(r2); }
+      const hits = [], cur = scheduleRef.current;
+      const r1 = silvisBlock(candId, targetMon, targetShift, cur[targetMon]); if (r1) hits.push(r1);
+      if (returnMon && returnShift) { const r2 = silvisBlock(targetOldId, returnMon, returnShift, cur[returnMon]); if (r2) hits.push(r2); }
       if (silvisRefuse(hits)) return;
     }
-    pushUndo(schedule);
-    setSchedule(p => {
+    pushUndo();
+    updateSchedule(p => {
       const n = { ...p };
       // Swap 1: candidate takes the target shift
       const wk1 = { ...n[targetMon] };
@@ -5065,8 +5080,8 @@ function CallSchedule() {
     }
 
     // Commit
-    pushUndo(schedule);
-    setSchedule(p => {
+    pushUndo();
+    updateSchedule(p => {
       const n = { ...p };
       const creating = !n[mondayStr];
       const wk = { ...(n[mondayStr] || {}) };
@@ -5205,7 +5220,7 @@ function CallSchedule() {
   //  - No direct sync call, no wipe-ref touches: the plain state set rides
   //    the normal autosave → syncSchedWeeks CAS path like any shift edit.
   const setWeekFlag = (monday, flagKey, val) => {
-    setSchedule(p => {
+    updateSchedule(p => {
       const wk = p[monday];
       if (!wk || wk[flagKey] === val) return p;
       return { ...p, [monday]: { ...wk, [flagKey]: val } };
