@@ -1813,7 +1813,7 @@ check("prefs audit never logs the plaintext email (masked only)",
   };
   const PRODUCERS = [
     ["silvisConflicts", "  const silvisConflicts = useMemo(() => {", 5],
-    ["conflicts", "  const conflicts = useMemo(() => {", 5],
+    ["conflicts", "  const conflicts = useMemo(() => {", 7], // +2 time-off lines (2026-10-11)
     ["vacOverlapWarnings", "  const vacOverlapWarnings = useMemo(() => {", 3],
   ];
   // Q1
@@ -1837,7 +1837,7 @@ check("prefs audit never logs the plaintext email (masked only)",
   if (warnMemo && confMemo && vacMemo) {
     let runConf, runVac, runShown;
     try {
-      runConf = vm.runInContext("(function (env) { const { schedule, surgeons, sMap, SHIFT_LABELS } = env; return (() => {" + confMemo.body + "})(); })", sandbox, { filename: "q-conflicts.js" });
+      runConf = vm.runInContext("(function (env) { const { schedule, surgeons, sMap, SHIFT_LABELS, holidayAssignments, vacations, noCallDays } = env; return (() => {" + confMemo.body + "})(); })", sandbox, { filename: "q-conflicts.js" });
       runVac = vm.runInContext("(function (env) { const { mondays, surgeons, apps, vacations, holidayAssignments, sMap } = env; return (() => {" + vacMemo.body + "})(); })", sandbox, { filename: "q-vac.js" });
       runShown = vm.runInContext("(function (env) { const { silvisConflicts, conflicts, vacOverlapWarnings, dismissedWarnings } = env; return (() => {" + warnMemo.body + "})(); })", sandbox, { filename: "q-shown.js" });
       check("Q2 conflicts / vacOverlap / warnShown memos compile standalone", true);
@@ -1965,13 +1965,13 @@ check("prefs audit never logs the plaintext email (masked only)",
   // Q5 / Q6 — the panel
   {
     const a = src.indexOf("Schedule Warnings — INTERNAL ONLY");
-    const b = a === -1 ? -1 : src.indexOf("{dismissedBar}", src.indexOf("+ more…", a));
+    const b = a === -1 ? -1 : src.indexOf("{dismissedBar}", src.indexOf("more vacation-overlap line", a));
     const panel = a !== -1 && b !== -1 ? src.slice(a, b) : "";
     check("Q5 panel region found", panel.length > 0);
     check("Q5 the panel reads ONLY the filtered lists — header count, lines and both '+ more' notes (no raw producer reference)",
       panel.length > 0 && !/(^|[^.\w])(conflicts|silvisConflicts|vacOverlapWarnings)\b/.test(panel)
       && /const shownTotal = warnShown\.silvis\.length \+ warnShown\.conflicts\.length \+ warnShown\.vac\.length;/.test(panel)
-      && panel.includes("⚠️ Schedule Warnings — {shownTotal}") && panel.includes("warnShown.silvis.length > 10") && panel.includes("(warnShown.conflicts.length + warnShown.vac.length) > 20"));
+      && panel.includes("⚠️ Schedule Warnings — {shownTotal}") && panel.includes("warnShown.silvis.length > 10") && panel.includes("warnShown.conflicts.length > 10") && panel.includes("warnShown.vac.length > 10"));
     check("Q5 nothing undismissed → no panel (only a scheduler's small dismissed bar)", panel.includes("if (shownTotal === 0) return dismissedBar ? <div style={{marginBottom:10}}>{dismissedBar}</div> : null;"));
     check("Q6 the panel is gated OFF ?public=1 and the OR board (owner decision 2026-09-24)",
       /\{!isPublicMode && \(\(\)=>\{\s*const shownTotal = warnShown\.silvis\.length/.test(src) && count("Schedule Warnings — {") === 1);
@@ -3654,6 +3654,116 @@ check("prefs audit never logs the plaintext email (masked only)",
     count("The eve is a regular night shift worked by the card's \"Night Before\" surgeon") === 1
       && count("FAK covers Christmas Eve night and Christmas Day (standing rule), and the generator also gives FAK that week's service week and weekend") === 1
       && count("Eves stay on the regular schedule") === 0 && count("two days exactly, then the regular service-week doctor resumes") === 0);
+}
+
+// ─── AF. Schedule Warnings: on call while off (2026-10-11, owner decision G) ───
+// Time off entered AFTER publishing lands under existing shifts. The real
+// `conflicts` memo now adds, per DATE by weekHolders (a holiday-covered date
+// credits its coverer):
+//   "<CODE> is on call <shift> <date> but is off (vacation | no-call)"
+//   "<CODE>'s <shift> <date> runs into their vacation starting <date>"
+// (a weeknight before a vacation day, the weekend before a vacation Monday,
+// a holiday 24h before a vacation day; a no-call next day is fine). Silvis
+// primary days keep their own lines. And a card eve held by its card surgeon
+// is not a "service week + night" conflict (Christmas: FAK's week + Eve).
+//   AF1 own-day vacation / no-call → one line each, keyed from facts
+//   AF2 overnights into a vacation (night, weekend); not into a no-call day
+//   AF3 a holiday-covered date credits the coverer, not the dropped night holder
+//   AF4 card eve + service week by the card surgeon → no svc-night line (control: a non-eve night is flagged)
+//   AF5 the lines read vacations ∪ no-call only (Silvis has its own), skip past dates, and stay dismissable
+{
+  const nsrcAF = src.replace(/\r\n/g, "\n");
+  if (!vm.runInContext("typeof holidayDesign === 'function'", sandbox)) vm.runInContext(fs.readFileSync(path.join(ROOT, "generator.js"), "utf8"), sandbox, { filename: "generator.js" }); // the page loads it before the app
+  const START = "  const conflicts = useMemo(() => {";
+  const s0 = nsrcAF.indexOf(START), e0 = s0 < 0 ? -1 : nsrcAF.indexOf("\n  }, [", s0);
+  const body = s0 < 0 || e0 < 0 ? null : nsrcAF.slice(s0 + START.length, e0);
+  let runC = null;
+  try { runC = body ? vm.runInContext("(function (env) { const { schedule, surgeons, sMap, SHIFT_LABELS, holidayAssignments, vacations, noCallDays } = env; return (() => {" + body + "})(); })", sandbox, { filename: "af-conflicts.js" }) : null; } catch (ex) { runC = null; }
+  if (!runC) check("AF conflicts memo extractable for execution", false, "anchor / compile");
+  else {
+    const { fmt: F, addD: A, parse: P } = vm.runInContext("({ fmt, addD, parse })", sandbox);
+    let mon = P("2099-03-01"); while (mon.getDay() !== 1) mon = A(mon, 1);
+    const M = F(mon), d = (o) => F(A(mon, o)), md = (o) => { const x = A(mon, o); return `${x.getMonth() + 1}/${x.getDate()}`; };
+    const surgeons = [{ id: "s1", name: "DJA" }, { id: "s2", name: "MCC" }, { id: "s3", name: "RPC" }, { id: "s4", name: "KJH" }, { id: "s5", name: "REH" }, { id: "s6", name: "FAK" }, { id: "s7", name: "ARW" }];
+    const sMap = Object.fromEntries(surgeons.map((s, i) => [s.id, { name: s.name, idx: i }]));
+    const LABELS = vm.runInContext("SHIFT_LABELS", sandbox);
+    const base = (over) => ({ [M]: Object.assign({ dayCall: "s1", nights: { mon: "s2", tue: "s3", wed: "s4", thu: "s5", wknd: "s7" } }, over || {}) });
+    const run = (env) => runC(Object.assign({ schedule: base(), surgeons, sMap, SHIFT_LABELS: LABELS, holidayAssignments: {}, vacations: {}, noCallDays: {} }, env));
+    const off = (lines) => lines.filter(l => l.type === "timeoff");
+
+    const a = off(run({ vacations: { s3: [[d(1), d(1)]] }, noCallDays: { s4: [[d(2), d(2)]] } }));
+    check("AF1 a vacation on a night's own day and a no-call on another → exactly those two lines, keyed from facts (who, slot, date, kind)",
+      a.length === 2
+        && a.some(l => l.key === `on-off|${M}|s3|tue|${d(1)}|${d(1)}|vacation` && l.message === `RPC is on call Tue night ${md(1)} but is off (vacation)`)
+        && a.some(l => l.key === `on-off|${M}|s4|wed|${d(2)}|${d(2)}|no-call` && l.message === `KJH is on call Wed night ${md(2)} but is off (no-call)`),
+      JSON.stringify(a));
+    const sw = off(run({ vacations: { s1: [[d(5), d(5)]] } }));
+    check("AF1 the service week's Saturday on vacation → a service-week line for that day",
+      sw.length === 1 && sw[0].key === `on-off|${M}|s1|svc|${d(5)}|${d(5)}|vacation` && sw[0].message === `DJA is on call service week Sat ${md(5)} but is off (vacation)`, JSON.stringify(sw));
+    const run6 = off(run({ vacations: { s1: [[d(0), d(5)]] } }));
+    check("AF1 a 6-day vacation under the service week is ONE line (Mon–Sat), keyed by its first and last day",
+      run6.length === 1 && run6[0].key === `on-off|${M}|s1|svc|${d(0)}|${d(5)}|vacation` && run6[0].message === `DJA is on call service week Mon ${md(0)}–Sat ${md(5)} but is off (vacation)`, JSON.stringify(run6));
+    const ovr = off(run({ schedule: base({ dayCallOverrides: { [d(1)]: "s5" } }), vacations: { s5: [[d(1), d(1)]] } }));
+    check("AF1 a single-day override holder on time off is a 'service day' line, not 'service week'",
+      ovr.length === 1 && ovr[0].key === `on-off|${M}|s5|svcday|${d(1)}|${d(1)}|vacation` && /^REH is on call service day Tue /.test(ovr[0].message), JSON.stringify(ovr));
+
+    const b = off(run({ vacations: { s2: [[d(1), d(3)]], s7: [[d(7), d(9)]] }, noCallDays: { s5: [[d(4), d(4)]] } }));
+    check("AF2 a Mon night before a vacation Tuesday and a weekend before a vacation Monday → 'runs into their vacation'; a Thu night before a NO-CALL Friday → nothing",
+      b.length === 2
+        && b.some(l => l.key === `into-vac|${M}|s2|mon|${d(0)}` && l.message === `MCC's Mon night ${md(0)} runs into their vacation starting Tue ${md(1)}`)
+        && b.some(l => l.key === `into-vac|${M}|s7|wknd|${d(6)}` && l.message === `ARW's weekend ${md(4)}–${md(6)} runs into their vacation starting Mon ${md(7)}`)
+        && !b.some(l => /REH/.test(l.message)),
+      JSON.stringify(b));
+
+    const covered = base({ holidayCoverage: { [d(2)]: { surgeonId: "s6", name: "Test Day 24h", holiday: "Test Day" } } });
+    const c1 = off(run({ schedule: covered, vacations: { s4: [[d(2), d(2)]] } }));
+    const c2 = off(run({ schedule: covered, vacations: { s6: [[d(2), d(2)]] } }));
+    check("AF3 a holiday-covered date credits the COVERER: the dropped Wed-night holder on vacation → no line; the coverer on vacation → '… on call Test Day 24h …'",
+      c1.length === 0 && c2.length === 1 && c2[0].key === `on-off|${M}|s6|cover|${d(2)}|${d(2)}|${d(2)}|vacation` && c2[0].message === `FAK is on call Test Day 24h Wed ${md(2)} but is off (vacation)`,
+      JSON.stringify([c1, c2]));
+
+    const fakWeek = base({ dayCall: "s6", nights: { mon: "s2", tue: "s3", wed: "s4", thu: "s6", wknd: "s7" } });
+    const card = { "2099": [{ name: "Test Holiday", date: d(4), type: "major", surgeonA: "s6", surgeonB: "s6", coverage: [{ date: d(3), surgeon: "s6", label: "Test Holiday Night Before", isEve: true }] }] };
+    const withEve = run({ schedule: fakWeek, holidayAssignments: card }).filter(l => l.type === "double");
+    const noEve = run({ schedule: fakWeek, holidayAssignments: {} }).filter(l => l.type === "double");
+    check("AF4 a card eve held by its card surgeon who also holds the service week is NOT flagged; the same week without the card IS (control)",
+      withEve.length === 0 && noEve.length === 1 && noEve[0].key === `svc-night|${M}|s6|thu`, JSON.stringify([withEve, noEve]));
+    const cardAB = { "2099": [{ name: "Test Holiday", date: d(4), type: "major", surgeonA: "s2", surgeonB: "s6", coverage: [{ date: d(3), surgeon: "s6", label: "Test Holiday Night Before", isEve: true }, { date: d(4), surgeon: "s2", label: "Test Holiday 24h" }] }] };
+    const notDesigned = run({ schedule: fakWeek, holidayAssignments: cardAB }).filter(l => l.type === "double");
+    check("AF4 the card's eve surgeon (B) on the service week + the eve is NOT designed (A holds the designed service week) — still flagged, like listScheduleBends",
+      notDesigned.length === 1 && notDesigned[0].key === `svc-night|${M}|s6|thu`, JSON.stringify(notDesigned));
+    const rowVac = off(run({ schedule: covered, holidayAssignments: { "2099": [{ name: "Test Day", date: d(2), type: "minor", surgeonA: "s6", surgeonB: null, coverage: [{ date: d(2), surgeon: "s6", label: "Test Day 24h" }] }] }, vacations: { s6: [[d(2), d(2)]] } }));
+    const rowNoCall = off(run({ schedule: covered, holidayAssignments: { "2099": [{ name: "Test Day", date: d(2), type: "minor", surgeonA: "s6", surgeonB: null, coverage: [{ date: d(2), surgeon: "s6", label: "Test Day 24h" }] }] }, noCallDays: { s6: [[d(2), d(2)]] } }));
+    check("AF4 one fact, one line: a VACATION on a holiday card's own row is the existing holiday-vac line (none here); a NO-CALL there (holiday-vac doesn't see it) is shown",
+      rowVac.length === 0 && rowNoCall.length === 1 && /but is off \(no-call\)$/.test(rowNoCall[0].message), JSON.stringify([rowVac, rowNoCall]));
+
+    {
+    // AF6 — a dismissal must hold while a run is in progress (only the clock moves)
+    const { fmt: F2, addD: A2, parse: P2 } = vm.runInContext("({ fmt, addD, parse })", sandbox);
+    let mon2 = P2("2099-03-01"); while (mon2.getDay() !== 1) mon2 = A2(mon2, 1);
+    const M2 = F2(mon2), dd = (o) => F2(A2(mon2, o));
+    const clockAt = (o) => { const fixed = A2(mon2, o).getTime(); const RealDate = vm.runInContext("Date", sandbox); return class extends RealDate { constructor(...a) { if (a.length) super(...a); else super(fixed); } }; };
+    let runAt = null;
+    try { runAt = body ? vm.runInContext("(function (env) { const { schedule, surgeons, sMap, SHIFT_LABELS, holidayAssignments, vacations, noCallDays, Date } = env; return (() => {" + body + "})(); })", sandbox, { filename: "af6-conflicts.js" }) : null; } catch (ex) { runAt = null; }
+    const sur = [{ id: "s1", name: "DJA" }, { id: "s2", name: "MCC" }, { id: "s3", name: "RPC" }, { id: "s4", name: "KJH" }, { id: "s5", name: "REH" }, { id: "s6", name: "FAK" }, { id: "s7", name: "ARW" }];
+    const sm = Object.fromEntries(sur.map((s, i) => [s.id, { name: s.name, idx: i }]));
+    const sch = { [M2]: { dayCall: "s1", nights: { mon: "s2", tue: "s3", wed: "s4", thu: "s5", wknd: "s7" } } };
+    const env = (o, extra) => Object.assign({ schedule: sch, surgeons: sur, sMap: sm, SHIFT_LABELS: vm.runInContext("SHIFT_LABELS", sandbox), holidayAssignments: {}, vacations: { s1: [[dd(0), dd(5)]], s7: [[dd(4), dd(6)]] }, noCallDays: {}, Date: clockAt(o) }, extra || {});
+    const k1 = runAt ? runAt(env(0)).filter(l => l.type === "timeoff").map(l => l.key).sort() : [];
+    const k3 = runAt ? runAt(env(2)).filter(l => l.type === "timeoff").map(l => l.key).sort() : [];
+    const past = runAt ? runAt(env(6)).filter(l => l.type === "timeoff" && l.key.includes("|s1|")) : [];
+    check("AF6 a multi-day line keeps ONE key while the run is in progress (day 1 = day 3), so a dismissal holds; a weekend vacation Fri–Sun is ONE line; a run wholly past is dropped",
+      !!runAt && k1.length === 2 && JSON.stringify(k1) === JSON.stringify(k3)
+        && k1.includes(`on-off|${M2}|s1|svc|${dd(0)}|${dd(5)}|vacation`) && k1.includes(`on-off|${M2}|s7|wknd|${dd(4)}|${dd(6)}|vacation`) && past.length === 0,
+      JSON.stringify({ k1, k3, past: past.map(l => l.key) }));
+  }
+  check("AF5 the time-off lines read vacations ∪ no-call only (Silvis keeps its own lines), drop only runs wholly past (overnights skip past dates), and carry factual keys (dismissable)",
+      /onVac\(id, ds, vacations \|\| \{\}\) \? "vacation" : onVac\(id, ds, noCallDays \|\| \{\}\) \? "no-call"/.test(body)
+        && !/silvisDays|sfBusyRanges|silvisFakId/.test(body.slice(body.indexOf("ON CALL WHILE OFF")))
+        && body.includes("runs.filter(r => r.to >= todayStr)") && body.includes("if (l.ds < todayStr || !l.overnight")
+        && body.includes("key: `on-off|${mStr}|${r.sid}|${r.fam}|${r.from}|${r.to}|${r.kind}`") && body.includes("key: `into-vac|${mStr}|${l.sid}|${l.fam}|${l.ds}`")
+        && !/dismissable:\s*false/.test(body));
+  }
 }
 
 // ─── Verdict ───
