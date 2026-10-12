@@ -77,6 +77,12 @@ const setFetch = (fn) => { sandbox.fetch = fn; };
 // ─── Tiny check harness (mirrors generator-regression.js conventions) ───
 const failures = [];
 let checks = 0;
+// An await that never settles empties the event loop and Node exits 0 —
+// a hung test would read as a PASS. No verdict printed = failure.
+let verdictReached = false;
+process.on("exit", (code) => {
+  if (!verdictReached && code === 0) { console.error("\nFAIL — sync-guards ended without a verdict (a hung await)"); process.exitCode = 1; }
+});
 function check(name, cond, detail) {
   checks++;
   if (cond) { console.log(`  ✓ ${name}`); }
@@ -3766,7 +3772,23 @@ check("prefs audit never logs the plaintext email (masked only)",
   }
 }
 
+// ══════════════════════════════════════════════════════════════
+// SE. Sync engine v2 — test/sync-engine-se.js (the real createSchedSync on an
+// emulated schedule_weeks table, plus its mutant battery), and the emulated
+// table's own contract tests, so a drift in the fake can't hide a bug.
+// ══════════════════════════════════════════════════════════════
+await require("./sync-engine-se.js")({ src, check });
+{
+  const { spawnSync } = require("child_process");
+  const r = spawnSync(process.execPath, [path.join(__dirname, "fake-weeks-table.test.js")], { encoding: "utf8" });
+  const m = /(\d+)\/(\d+) tests passed/.exec(r.stdout || "");
+  check("SE-T the emulated schedule_weeks table passes its own contract tests",
+    r.status === 0 && !!m && m[1] === m[2] && Number(m[2]) >= 36,
+    ((r.stdout || "").split("\n").filter(l => /^FAIL/.test(l)).join(" | ") || r.stderr || "no verdict").slice(0, 300));
+}
+
 // ─── Verdict ───
+verdictReached = true;
 console.log(`\n${checks} checks, ${failures.length} failure(s)`);
 if (failures.length) {
   console.error("\nFAIL — sync/snapshot guard regression:");

@@ -11434,6 +11434,387 @@ function MonthPainterSheet({ mode, css, dk, surgeons, apps, appShifts, vacations
   );
 }
 
+// ═══ SYNC ENGINE v2 — schedule_weeks (design rev 1, docs/sync-v2) ═══
+// One instance per session, held in a ref. It knows nothing about React: it
+// reads the schedule through deps.getState() (the synchronous mirror,
+// scheduleRef.current) and changes it only through deps.commit(next), BY
+// VALUE. It alone owns what the table holds as last confirmed (`known`), so no
+// other code keeps a baseline or a version map.
+//
+// Guarantees (design §1):
+//   I1 an edit that doesn't land stays pending (and visible) until it does;
+//   I2 a write never overwrites a row this session hasn't seen at the version
+//      it writes against (PATCH/DELETE carry version=eq.V; a new week is a
+//      plain INSERT);
+//   I3 one job at a time (push, pull, load, authoritative), on one chain;
+//   I4 an unknown outcome (0 rows, 409, 5xx, thrown) is READ BACK, never
+//      guessed; no token / an expired token / a 401 means "sign in again",
+//      never "refused";
+//   I6 clear / reset / restore read the whole table first and fail closed.
+//
+// deps: getState, commit(next), fetch(url, init), url, writeHeaders(),
+//   readHeaders(), canWrite() (false for public / OR-board sessions),
+//   tokenState() → "ok" | "none" | "expired", userId(), now() (ISO),
+//   nowMs(), onStatus(s), onToast(msg, kind), onWipeBlocked(info),
+//   onAdopted(keys), log(...).
+function createSchedSync(deps) {
+  const d = deps;
+  // ── canonical JSON: recursively sorted keys. jsonb hands keys back in its
+  // own order, so plain JSON.stringify equality misfires (critic, R-jsonb).
+  const sortDeep = (x) => {
+    if (Array.isArray(x)) return x.map(sortDeep);
+    if (x && typeof x === "object") { const o = {}; Object.keys(x).sort().forEach(k => { if (x[k] !== undefined) o[k] = sortDeep(x[k]); }); return o; }
+    return x;
+  };
+  const canon = (x) => JSON.stringify(sortDeep(x === undefined ? null : x));
+  const clone = (x) => (x === undefined ? undefined : JSON.parse(JSON.stringify(x)));
+  const log = (...a) => { try { if (d.log) d.log(...a); } catch (e) { /* logging never breaks a job */ } };
+
+  let known = {};                  // K -> { data, canon, version, updated_at } as last confirmed
+  let seeded = false;              // a whole-table read has succeeded this session
+  let gen = 0;                     // bumped by reset(): a job from an older generation lands nothing
+  const uncertain = new Set();     // write outcome unknown AND the read-back failed: re-read before writing K
+  const approvedDeletes = new Set(); // deletes that already passed the wipe guard once (R7, R9)
+  const noPermission = new Set();  // K whose writes match 0 rows while the row is unchanged (RLS)
+  const adoptEpoch = {}; let epoch = 0;
+  let chain = Promise.resolve();
+  let queuedPush = null;           // a push not yet started: later requests join it
+  let authoritativeQueued = 0;     // clear/reset/restore waiting: normal pushes defer to them
+  let auth = "ok";                 // "ok" | "none" | "expired" — from the last attempt
+  let lastError = null;            // "net" | "auth" | "not-loaded" | "refused" | null
+  const lastFail = { keys: "", kind: "", at: 0 };
+
+  const fromRow = (r) => ({ data: clone(r.data), canon: canon(r.data), version: r.version, updated_at: r.updated_at || null });
+  const enqueue = (fn) => { const p = chain.then(fn, fn); chain = p.then(() => {}, () => {}); return p; };
+  const base = () => d.url + "/rest/v1/schedule_weeks";
+  const wh = (extra) => Object.assign({}, d.writeHeaders(), { "Content-Type": "application/json" }, extra || {});
+  const rh = () => Object.assign({}, d.readHeaders());
+  const req = async (url, init) => { try { return await d.fetch(url, init); } catch (e) { return { thrown: e }; } };
+  const json = async (r) => { try { return await r.json(); } catch (e) { return null; } };
+  const weekLabel = (k) => { try { const [y, m, dd] = k.split("-").map(Number); return new Date(y, m - 1, dd).toLocaleDateString(undefined, { month: "short", day: "numeric" }); } catch (e) { return k; } };
+
+  // Which weeks the target differs on from what the table holds.
+  const diff = (target) => {
+    const changed = [], deletes = [];
+    Object.keys(target).sort().forEach(k => { if (!known[k] || canon(target[k]) !== known[k].canon) changed.push(k); });
+    Object.keys(known).sort().forEach(k => { if (!(k in target)) deletes.push(k); });
+    return { changed, deletes };
+  };
+  const pendingKeys = () => {
+    if (!seeded) return [];
+    const { changed, deletes } = diff(d.getState() || {});
+    return [...new Set([...changed, ...deletes, ...uncertain])].sort();
+  };
+  const status = () => {
+    const p = pendingKeys();
+    return { seeded, pending: p.length, pendingKeys: p, auth, lastError: p.length ? lastError : null,
+      uncertain: uncertain.size, noPermission: [...noPermission].filter(k => p.includes(k)) };
+  };
+  const report = () => { try { d.onStatus(status()); } catch (e) { log("onStatus threw", e); } };
+
+  // GET one week (read-back). → { ok, row|null }
+  const readBack = async (k) => {
+    const r = await req(`${base()}?week_monday=eq.${k}&select=week_monday,data,version,updated_at`, { method: "GET", headers: rh() });
+    if (r.thrown || !r.ok) return { ok: false };
+    const a = await json(r);
+    if (!Array.isArray(a)) return { ok: false };
+    return { ok: true, row: a[0] || null };
+  };
+  // GET the whole table (load, authoritative jobs). → rows | null
+  const readAll = async () => {
+    const r = await req(`${base()}?select=week_monday,data,version,updated_at&order=week_monday.asc&limit=5000`, { method: "GET", headers: rh() });
+    if (r.thrown || !r.ok) return null;
+    const a = await json(r);
+    return Array.isArray(a) ? a : null;
+  };
+
+  // Put the server's copy of these weeks into the mirror — ONE commit, by
+  // value, built from the LATEST mirror so no other week moves.
+  const adoptInto = (rowsByKey) => {
+    const keys = Object.keys(rowsByKey); if (!keys.length) return;
+    const next = Object.assign({}, d.getState() || {});
+    keys.forEach(k => {
+      const r = rowsByKey[k];
+      if (r) { known[k] = fromRow(r); next[k] = clone(r.data); } else { delete known[k]; delete next[k]; }
+      approvedDeletes.delete(k); uncertain.delete(k); noPermission.delete(k);
+      adoptEpoch[k] = ++epoch;
+    });
+    d.commit(next);
+    try { if (d.onAdopted) d.onAdopted(keys); } catch (e) { log("onAdopted threw", e); }
+  };
+
+  // Settle an unknown outcome for week k by reading it back. `target` is what
+  // we tried to store (undefined = delete). → "saved" | "pending" |
+  // "uncertain" | { conflict: row|null }
+  const resolve = async (k, target) => {
+    const rb = await readBack(k);
+    if (!rb.ok) { uncertain.add(k); return "uncertain"; }
+    uncertain.delete(k);
+    const row = rb.row;
+    const landed = target === undefined ? !row : (!!row && canon(row.data) === canon(target));
+    if (landed) { if (row) known[k] = fromRow(row); else delete known[k]; noPermission.delete(k); return "saved"; }
+    const kn = known[k];
+    const unchanged = kn ? (!!row && row.version === kn.version && canon(row.data) === kn.canon) : !row;
+    if (unchanged) return "pending"; // not written; retried on the next push
+    return { conflict: row };
+  };
+
+  const patchOrInsert = (k, data, by, ts) => {
+    const kn = known[k];
+    const body = { data, updated_by: by, updated_at: ts };
+    return kn
+      ? req(`${base()}?week_monday=eq.${k}&version=eq.${kn.version}`, { method: "PATCH", headers: wh({ Prefer: "return=representation" }), body: JSON.stringify(Object.assign(body, { version: kn.version + 1 })) })
+      : req(base(), { method: "POST", headers: wh({ Prefer: "return=representation" }), body: JSON.stringify(Object.assign({ week_monday: k, version: 1 }, body)) });
+  };
+  // Classify a non-2xx HTTP answer to a write. 401 = the token is dead
+  // (sign in again); 400/403/422 = the server refused this content.
+  const httpKind = (r) => r.thrown ? "unknown" : r.status === 401 ? "auth" : [400, 403, 422].includes(r.status) ? "refused" : "unknown";
+
+  // Write one week. force: a conflict is rewritten once at the server's version.
+  const writeWeek = async (k, data, mode, by) => {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const ts = d.now();
+      const r = await patchOrInsert(k, data, by, ts);
+      if (!r.thrown && r.ok) {
+        const a = await json(r);
+        if (Array.isArray(a) && a.length === 1) { known[k] = fromRow(a[0]); noPermission.delete(k); return { k, outcome: "saved" }; }
+      } else {
+        const kind = httpKind(r);
+        if (kind === "auth") return { k, outcome: "auth" };
+        if (kind === "refused") { const rb = await readBack(k); return { k, outcome: "refused", status: r.status, row: rb.ok ? rb.row : undefined }; }
+      }
+      const res = await resolve(k, data);
+      if (res === "pending" && !r.thrown && r.ok) noPermission.add(k); // 2xx, 0 rows, row unchanged: RLS filtered it
+      if (typeof res === "string") return { k, outcome: res };
+      if (mode !== "force" || attempt === 1) return { k, outcome: "conflict", row: res.conflict };
+      if (res.conflict) known[k] = fromRow(res.conflict); else delete known[k]; // force: retry at the server's version
+    }
+    return { k, outcome: "pending" };
+  };
+  const deleteWeek = async (k, mode) => {
+    const kn = known[k];
+    const q = mode === "force" || !kn ? `week_monday=eq.${k}` : `week_monday=eq.${k}&version=eq.${kn.version}`;
+    const r = await req(`${base()}?${q}`, { method: "DELETE", headers: wh({ Prefer: "return=representation" }) });
+    if (!r.thrown && r.ok) {
+      const a = await json(r);
+      if (Array.isArray(a) && a.length === 1) { delete known[k]; approvedDeletes.delete(k); noPermission.delete(k); return { k, outcome: "saved" }; }
+    } else {
+      const kind = httpKind(r);
+      if (kind === "auth") return { k, outcome: "auth" };
+      if (kind === "refused") { const rb = await readBack(k); return { k, outcome: "refused", status: r.status, row: rb.ok ? rb.row : undefined }; }
+    }
+    const res = await resolve(k, undefined);
+    if (res === "saved") { approvedDeletes.delete(k); return { k, outcome: "saved" }; }
+    if (res === "pending" && !r.thrown && r.ok) noPermission.add(k);
+    if (typeof res === "string") return { k, outcome: res };
+    if (mode === "force") { // the row moved under a clear/restore: delete whatever is there now
+      const r2 = await req(`${base()}?week_monday=eq.${k}`, { method: "DELETE", headers: wh({ Prefer: "return=representation" }) });
+      if (!r2.thrown && r2.status === 401) return { k, outcome: "auth" };
+      const res2 = await resolve(k, undefined);
+      if (res2 === "saved") { approvedDeletes.delete(k); return { k, outcome: "saved" }; }
+      return typeof res2 === "string" ? { k, outcome: res2 } : { k, outcome: "conflict", row: res2.conflict };
+    }
+    return { k, outcome: "conflict", row: res.conflict };
+  };
+
+  // ── PUSH: send every week the mirror (or an authoritative target) differs on ──
+  const runPush = async (job) => {
+    const g = gen;
+    if (!seeded) { lastError = "not-loaded"; report(); return { ok: false, skipped: "not-loaded" }; }
+    if (!d.canWrite()) { report(); return { ok: false, skipped: "read-only" }; }
+    if (job.mode !== "force" && authoritativeQueued > 0) return { ok: false, skipped: "authoritative-queued" };
+    const tok = d.tokenState();
+    if (tok !== "ok") {
+      auth = tok; lastError = "auth";
+      // (an authoritative job reports to its caller instead)
+      if (job.target === undefined && pendingKeys().length) toasts(pendingKeys().map(k => ({ k, outcome: "auth" })));
+      report(); return { ok: false, skipped: "auth" };
+    }
+    auth = "ok";
+    const target = job.target !== undefined ? job.target : (d.getState() || {});
+    const by = d.userId ? d.userId() : null;
+    // Re-read uncertain weeks first: what the table holds for them is unknown.
+    for (const k of [...uncertain]) {
+      const rb = await readBack(k);
+      if (gen !== g) return { ok: false, skipped: "reset" };
+      if (rb.ok) { uncertain.delete(k); if (rb.row) known[k] = fromRow(rb.row); else delete known[k]; }
+    }
+    const { changed, deletes } = diff(target);
+    // Wipe guard on NEW deletes only (R7, R9, R10). An authoritative job
+    // carries its own grant; a delete that passed once isn't counted again.
+    Object.keys(target).forEach(k => approvedDeletes.delete(k));
+    const newDeletes = deletes.filter(k => !approvedDeletes.has(k));
+    const baseCount = Object.keys(known).length, curCount = Object.keys(target).length;
+    const wipingAll = curCount === 0 && baseCount > 0 && newDeletes.length > 0;
+    const wipingMost = baseCount >= 4 && newDeletes.length >= Math.ceil(baseCount / 2);
+    if ((wipingAll || wipingMost) && !job.grant) {
+      lastError = "wipe-blocked";
+      try { d.onWipeBlocked({ curCount, baseCount, deletes: newDeletes.length }); } catch (e) { log("onWipeBlocked threw", e); }
+      report(); return { ok: false, blocked: true };
+    }
+    deletes.forEach(k => approvedDeletes.add(k));
+    const results = [];
+    for (const k of changed) {
+      if (gen !== g) return { ok: false, skipped: "reset" };
+      const x = await writeWeek(k, clone(target[k]), job.mode, by);
+      results.push(x);
+      if (x.outcome === "auth") break; // the token is dead for every week
+    }
+    if (!results.some(x => x.outcome === "auth")) for (const k of deletes) {
+      if (gen !== g) return { ok: false, skipped: "reset" };
+      const x = await deleteWeek(k, job.mode);
+      results.push(x);
+      if (x.outcome === "auth") break;
+    }
+    if (gen !== g) return { ok: false, skipped: "reset" };
+    // A conflict or a refusal adopts the server copy of THAT week only (R13).
+    const adopt = {};
+    results.forEach(x => { if ((x.outcome === "conflict" || x.outcome === "refused") && x.row !== undefined) adopt[x.k] = x.row; });
+    if (Object.keys(adopt).length) adoptInto(adopt);
+    if (results.some(x => x.outcome === "auth")) { auth = "expired"; lastError = "auth"; }
+    else if (results.some(x => x.outcome === "pending" || x.outcome === "uncertain")) lastError = "net";
+    else lastError = null;
+    toasts(results);
+    report();
+    const ok = results.every(x => x.outcome === "saved");
+    return { ok, results };
+  };
+
+  const toasts = (results) => {
+    const say = (m, k) => { try { d.onToast(m, k); } catch (e) { log("onToast threw", e); } };
+    results.filter(x => x.outcome === "conflict").forEach(x => say(`The week of ${weekLabel(x.k)} was changed by someone else — showing the latest. Reapply your change if it's still needed.`, "error"));
+    results.filter(x => x.outcome === "refused").forEach(x => say(`The server refused the change to the week of ${weekLabel(x.k)} (HTTP ${x.status}) — showing what is saved.`, "error"));
+    const failing = pendingKeys();
+    if (!failing.length) { lastFail.keys = ""; lastFail.kind = ""; lastFail.at = 0; return; }
+    if (!results.some(x => ["pending", "uncertain", "auth"].includes(x.outcome))) return;
+    const kind = results.some(x => x.outcome === "auth") ? "auth" : failing.every(k => noPermission.has(k)) ? "perm" : "net";
+    const keys = failing.join(",");
+    const fresh = keys !== lastFail.keys || kind !== lastFail.kind || d.nowMs() - lastFail.at > 5 * 60 * 1000;
+    if (!fresh) return;
+    lastFail.keys = keys; lastFail.kind = kind; lastFail.at = d.nowMs();
+    const n = failing.length, wk = `${n} week${n === 1 ? "" : "s"}`;
+    say(kind === "auth" ? `Your sign-in has expired — ${wk} not saved. Sign in again and they'll be sent.`
+      : kind === "perm" ? `${wk} not saved — your account isn't allowed to change ${n === 1 ? "it" : "them"}.`
+      : `Couldn't save ${wk} yet — retrying every minute while the app is open.`, "error");
+  };
+
+  // ── PULL: adopt other people's changes to weeks this session hasn't edited ──
+  const runPull = async () => {
+    const g = gen;
+    if (!seeded) return runLoad();
+    const r = await req(`${base()}?select=week_monday,version,updated_at&order=week_monday.asc&limit=5000`, { method: "GET", headers: rh() });
+    if (r.thrown || !r.ok) { log("schedule pull: version list failed", r.thrown || r.status); return { ok: false }; }
+    const list = await json(r);
+    if (!Array.isArray(list)) return { ok: false };
+    if (gen !== g) return { ok: false, skipped: "reset" };
+    if (!list.length && Object.keys(known).length) { log("schedule pull: 0 rows while weeks are known — the RLS/anon shape; ignored"); return { ok: false, suspicious: true }; }
+    const remote = {}; list.forEach(x => { remote[x.week_monday] = x; });
+    // The change token is (version, updated_at): old builds' keepalive upserts
+    // change data and updated_at but not version, and a delete + re-insert
+    // starts again at v1 (R18).
+    const moved = list.filter(x => !known[x.week_monday] || known[x.week_monday].version !== x.version || known[x.week_monday].updated_at !== (x.updated_at || null)).map(x => x.week_monday);
+    const removed = Object.keys(known).filter(k => !remote[k]);
+    const adopt = {};
+    for (let i = 0; i < moved.length; i += 60) {
+      const chunk = moved.slice(i, i + 60);
+      const fr = await req(`${base()}?week_monday=in.(${chunk.join(",")})&select=week_monday,data,version,updated_at`, { method: "GET", headers: rh() });
+      if (fr.thrown || !fr.ok) return { ok: false };
+      const rows = await json(fr); if (!Array.isArray(rows)) return { ok: false };
+      if (gen !== g) return { ok: false, skipped: "reset" };
+      const state = d.getState() || {};
+      rows.forEach(x => {
+        const k = x.week_monday;
+        if ((k in state) && canon(state[k]) === canon(x.data)) { known[k] = fromRow(x); uncertain.delete(k); return; } // already what we show (our own write, confirmed)
+        const dirty = known[k] ? (!(k in state) || canon(state[k]) !== known[k].canon) : (k in state);
+        if (dirty) return; // an unsaved local edit wins here; the next push settles it by read-back (R21)
+        adopt[k] = x;
+      });
+    }
+    const state = d.getState() || {};
+    const wipeShaped = removed.length >= 4 && removed.length >= Math.ceil(Object.keys(known).length / 2);
+    if (wipeShaped) log(`schedule pull: ${removed.length} weeks missing remotely — wipe-shaped, not adopted (R20)`);
+    else removed.forEach(k => { if ((k in state) && canon(state[k]) === known[k].canon) adopt[k] = null; else if (!(k in state)) delete known[k]; });
+    if (Object.keys(adopt).length) adoptInto(adopt);
+    report();
+    return { ok: true, adopted: Object.keys(adopt) };
+  };
+
+  // ── LOAD: the whole table. First time: seed the mirror. Later (sign-in
+  // again, a failed first read repaired): a pull, so unsaved edits survive.
+  const runLoad = async () => {
+    const g = gen;
+    const rows = await readAll();
+    if (gen !== g) return { ok: false, skipped: "reset" };
+    if (!rows) { report(); return { ok: false }; }
+    if (seeded) return runPull();
+    known = {}; const next = {};
+    rows.forEach(x => { known[x.week_monday] = fromRow(x); next[x.week_monday] = clone(x.data); });
+    seeded = true; uncertain.clear(); approvedDeletes.clear(); noPermission.clear();
+    d.commit(next);
+    report();
+    return { ok: true, seeded: true, weeks: rows.length };
+  };
+
+  // ── AUTHORITATIVE (clear / reset / restore): re-read the whole table, then
+  // make it equal `target` — deletes carry no version, conflicts are
+  // rewritten. Fails closed: if the table can't be read, nothing is written.
+  const runAuthoritative = async (target, grant) => {
+    const g = gen;
+    const rows = await readAll();
+    if (gen !== g) return { ok: false, skipped: "reset" };
+    if (!rows) { report(); return { ok: false, error: "Couldn't read the saved schedule — nothing was changed." }; }
+    known = {}; rows.forEach(x => { known[x.week_monday] = fromRow(x); });
+    seeded = true; uncertain.clear();
+    const res = await runPush({ target, grant, mode: "force" });
+    if (res.skipped === "auth") return { ok: false, error: "Your sign-in has expired — sign in again, then retry." };
+    return res;
+  };
+
+  // ── keepalive (page hide / unload): CAS writes for unsaved weeks, from the
+  // latest mirror and known versions. A conflicted, uncertain or already-saved
+  // week matches 0 rows and changes nothing. No deletes (as before).
+  const keepaliveRequests = () => {
+    if (!seeded || !d.canWrite() || d.tokenState() !== "ok") return [];
+    const target = d.getState() || {}, by = d.userId ? d.userId() : null, ts = d.now();
+    return diff(target).changed.filter(k => !uncertain.has(k)).map(k => {
+      const kn = known[k];
+      return kn
+        ? { url: `${base()}?week_monday=eq.${k}&version=eq.${kn.version}`, init: { method: "PATCH", keepalive: true, headers: wh({ Prefer: "return=minimal" }), body: JSON.stringify({ data: target[k], version: kn.version + 1, updated_by: by, updated_at: ts }) } }
+        : { url: base(), init: { method: "POST", keepalive: true, headers: wh({ Prefer: "return=minimal" }), body: JSON.stringify({ week_monday: k, data: target[k], version: 1, updated_by: by, updated_at: ts }) } };
+    });
+  };
+
+  return {
+    canon,
+    load() { return enqueue(() => runLoad()); },
+    push() {
+      if (queuedPush) return queuedPush;
+      const p = enqueue(async () => { queuedPush = null; return runPush({ mode: "normal" }); });
+      queuedPush = p;
+      return p;
+    },
+    pull() { return enqueue(async () => { const r = await runPull(); if (seeded && pendingKeys().length) await runPush({ mode: "normal" }); return r; }); },
+    authoritative(target, grant) {
+      const t = clone(target || {});
+      authoritativeQueued++;
+      return enqueue(async () => { try { return await runAuthoritative(t, !!grant); } finally { authoritativeQueued--; } });
+    },
+    // Sign-out / user switch: forget everything; in-flight jobs land nothing.
+    reset() { gen++; known = {}; seeded = false; uncertain.clear(); approvedDeletes.clear(); noPermission.clear(); auth = "ok"; lastError = null; report(); },
+    isSeeded: () => seeded,
+    pending: () => pendingKeys(),
+    status,
+    report,
+    epochOf: (k) => adoptEpoch[k] || 0,
+    epochNow: () => epoch,
+    knownData: (k) => (known[k] ? clone(known[k].data) : undefined),
+    knownVersion: (k) => (known[k] ? known[k].version : undefined),
+    keepaliveRequests,
+    idle: () => chain,
+  };
+}
+// ═══ END SYNC ENGINE v2 ═══
+
 // writeFailReason(error) -> a plain-language reason for a failed write, from the
 // error BODY (db.insert / PostgREST), the same classification the autosave uses:
 // an RLS / 403 refusal is a permission problem, an expired JWT / 401 is the
