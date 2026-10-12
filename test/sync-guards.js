@@ -529,56 +529,25 @@ check("year2Counts stays retired (no setYear2Counts in source)",
 check("restore states the time-off caveat at both surfaces (confirm + report)",
   count("re-entered or recovered manually") === 2, `found ${count("re-entered or recovered manually")}`);
 
-// intentionalScheduleWipeRef (the schedule_weeks full-delete authorization):
-// gate present; the grant census NAMES its three sites so a future fourth
-// grant without a matching disarm fails loudly rather than arithmetically.
-check("schedule-wipe gate present", count("!intentionalScheduleWipeRef.current") >= 1);
-check("intentionalScheduleWipeRef granted at exactly the 3 known sites: clearSchedule, factory reset, restore applier — a 4th grant needs its own disarm story AND this census updated",
-  count("intentionalScheduleWipeRef.current = true") === 3, `found ${count("intentionalScheduleWipeRef.current = true")}`);
-check("intentionalScheduleWipeRef consumed at exactly 2 sites (unconditional syncSchedWeeks consume + restore's finally)",
-  count("intentionalScheduleWipeRef.current = false") === 2, `found ${count("intentionalScheduleWipeRef.current = false")}`);
-
-// BEHAVIOR: the empty-reset dangle (fixed 2026-08-08). The consume used to be
-// conditional on (wipingAll || wipingMost); wipingAll needs baseCount > 0, so
-// reset/clear against an ALREADY-EMPTY schedule left the ref armed — silently
-// pre-authorizing the next accidental wipe-shaped call. Extract the REAL
-// syncSchedWeeks from the component source and drive that exact case:
-// prev = {}, currentSchedule = {}, ref armed → the ref must read false after,
-// with zero network traffic. A source pin cannot catch a future early return
-// added above the consume; executing the function catches it by construction.
-await (async () => {
-  const nsrc = src.replace(/\r\n/g, "\n");
-  const START = "const syncSchedWeeks = async (currentSchedule) => {";
-  const END = `catch (e) { console.error("schedule_weeks dual-write error", e); showToast("Couldn't save schedule changes — check your connection.", "error"); }
-  };`;
-  const s = nsrc.indexOf(START), e = nsrc.indexOf(END);
-  if (s === -1 || e === -1) { check("syncSchedWeeks extractable for execution", false, "anchors not found"); return; }
-  const fnSrc = nsrc.slice(s, e + END.length);
-  let h;
-  try {
-    h = vm.runInContext(`(function(){
-      const SCHED_DUAL_WRITE = false, SCHED_READ_TABLE = true;
-      const SUPABASE_URL = "https://stub.invalid";
-      const dbAuthHeaders = () => ({});
-      const schedWeeksSyncRef = { current: {} };          // prev = {} (empty table baseline)
-      const schedWeekVersionsRef = { current: {} };
-      const intentionalScheduleWipeRef = { current: true }; // ARMED — the dangle setup
-      const userProfile = null;
-      const netCalls = [];
-      const fetch = (...a) => { netCalls.push(a); throw new Error("unexpected network in {}->{} scenario"); };
-      const setSaveError = () => {}, setSaveStatus = () => {}, setSchedule = () => {}, showToast = () => {};
-      const loadSchedFromTable = async () => null;
-      ${fnSrc}
-      return { syncSchedWeeks, intentionalScheduleWipeRef, netCalls };
-    })()`, sandbox);
-  } catch (ex) { check("syncSchedWeeks compiles standalone", false, String(ex)); return; }
-  await h.syncSchedWeeks({});
-  check("empty reset consumes the wipe authorization (prev {} → current {}, ref armed → false)",
-    h.intentionalScheduleWipeRef.current === false,
-    `ref still ${JSON.stringify(h.intentionalScheduleWipeRef.current)} after syncSchedWeeks({}) on an empty baseline`);
-  check("the {}→{} scenario issues ZERO network calls", h.netCalls.length === 0,
-    `unexpected calls: ${h.netCalls.length}`);
-})();
+// The schedule_weeks full-delete authorization (sync v2). It used to be a
+// shared one-shot ref (intentionalScheduleWipeRef) granted at 3 sites and
+// consumed at 2 — and a path that skipped the consume left it ARMED (the
+// 2026-08-08 empty-reset dangle). Now the grant travels WITH the engine's
+// authoritative request (clear, factory reset, restore), so there is nothing
+// to leave armed. Behaviour is executed in section SE against the emulated
+// table: SE19 (a wipe-shaped push without the grant deletes nothing), SE19b
+// (a push queued before a clear defers to it — no false block), SE19c (the
+// grant never lingers: after clear + regenerate a wipe is blocked again —
+// the dangle's equivalent), SE19e, SE20, SE22. These pins keep the call
+// sites honest: one place starts authoritative jobs, three call it.
+check("the shared armed wipe grant is gone (no intentionalScheduleWipeRef anywhere)",
+  count("intentionalScheduleWipeRef") === 0, `found ${count("intentionalScheduleWipeRef")}`);
+check("the engine's wipe guard: a wipe-shaped push WITHOUT the request's grant is blocked (one guard)",
+  count("if ((wipingAll || wipingMost) && !job.grant) {") === 1);
+check("authoritative jobs (the only grant holders) start at exactly 1 site, called from exactly 3: clear, factory reset, restore — a 4th caller needs this census updated",
+  count(".authoritative(") === 1 && count("runAuthoritativeSchedule(") === 3
+    && count('runAuthoritativeSchedule({}, "clear")') === 1 && count('runAuthoritativeSchedule({}, "reset")') === 1 && count('runAuthoritativeSchedule(sched, "restore")') === 1,
+  `.authoritative( ×${count(".authoritative(")}, runAuthoritativeSchedule( ×${count("runAuthoritativeSchedule(")}`);
 
 // ══════════════════════════════════════════════════════════════
 // E2. Member session: blob leg gated, weeks leg NEVER coupled to it
@@ -634,10 +603,11 @@ await (async () => {
 
   const denial = { error: '{"code":"42501","message":"new row violates row-level security policy for table \\"call_schedule_data\\""}' };
 
-  // 1. MEMBER: blob leg must not be attempted at all; weeks leg must fire.
+  // 1. MEMBER: blob leg must not be attempted at all. The weeks are no longer
+  //    in this body at all (sync v2): their own effect is executed below.
   const member = await run(false, denial);
-  check("member: schedule_weeks write STILL happens (the data-loss regression test)",
-    member.weeks === 1, `weeks writes = ${member.weeks}`);
+  check("member: the blob autosave body carries NO schedule_weeks write (the weeks have their own effect, executed below)",
+    member.weeks === 0 && !/schedSyncRef|syncSchedWeeks\(/.test(bodySrc), `weeks writes = ${member.weeks}`);
   check("member: ZERO blob write attempts", member.blob === 0);
   check("member: no save-failure toast, no red status churn",
     member.toasts.length === 0 && member.status.length === 0,
@@ -646,8 +616,6 @@ await (async () => {
   // 2. SCHEDULER whose blob write FAILS: weeks leg must STILL fire (the
   //    coupling also bit schedulers on any transient 5xx).
   const schedFail = await run(true, { error: "500 upstream boom" });
-  check("scheduler + failed blob: weeks leg still fired (decoupled both directions)",
-    schedFail.weeks === 1, `weeks writes = ${schedFail.weeks}`);
   check("scheduler + failed blob: connection toast (not a permissions one)",
     schedFail.toasts.some(t => /check your connection/.test(t)));
 
@@ -663,45 +631,35 @@ await (async () => {
 
   // 4. SCHEDULER, blob OK: unchanged happy path.
   const schedOk = await run(true, { error: null });
-  check("scheduler + blob OK: both legs fire, status 'Saved'",
-    schedOk.weeks === 1 && schedOk.status.includes("Saved"));
+  check("scheduler + blob OK: the blob leg fires, status 'Saved'",
+    schedOk.blob === 1 && schedOk.status.includes("Saved"));
 })();
 
-// ── Baseline-ref invariant: now load-bearing ──
-// With syncSchedWeeks running in member sessions, the only thing stopping
-// every member's phone from echo-writing the table on every adopted foreign
-// change is that the adoption sites update schedWeeksSyncRef alongside
-// setSchedule. Execute the REAL syncSchedWeeks with state == baseline.
+// ── The weeks push (sync v2): its OWN effect — the 2026-08-17 regression
+// test's successor, executed: a loaded member or scheduler session pushes
+// whatever the blob does (it isn't consulted), public / OR board never do. ──
 await (async () => {
   const nsrc = src.replace(/\r\n/g, "\n");
-  const START = "const syncSchedWeeks = async (currentSchedule) => {";
-  const END = `catch (e) { console.error("schedule_weeks dual-write error", e); showToast("Couldn't save schedule changes — check your connection.", "error"); }
-  };`;
-  const s = nsrc.indexOf(START), e = nsrc.indexOf(END);
-  if (s === -1 || e === -1) { check("syncSchedWeeks extractable (adoption test)", false, "anchors not found"); return; }
-  const fnSrc = nsrc.slice(s, e + END.length);
-  const adopted = { "2026-08-17": { dayCall: "s1", nights: { mon: "s2" } } };
-  const h = vm.runInContext(`(function(){
-    const SCHED_DUAL_WRITE = false, SCHED_READ_TABLE = true;
-    const SUPABASE_URL = "https://stub.invalid";
-    const dbAuthHeaders = () => ({});
-    const adopted = ${JSON.stringify(adopted)};
-    // Exactly what the realtime handler does: state AND baseline updated together.
-    const schedWeeksSyncRef = { current: JSON.parse(JSON.stringify(adopted)) };
-    const schedWeekVersionsRef = { current: { "2026-08-17": 3 } };
-    const intentionalScheduleWipeRef = { current: false };
-    const userProfile = { person_id: "s7" };   // a MEMBER
-    const netCalls = [];
-    const fetch = (...a) => { netCalls.push(a[0]); throw new Error("no network expected"); };
-    const setSaveError = () => {}, setSaveStatus = () => {}, setSchedule = () => {}, showToast = () => {};
-    const loadSchedFromTable = async () => null;
-    ${fnSrc}
-    return { syncSchedWeeks, netCalls, adopted };
-  })()`, sandbox);
-  await h.syncSchedWeeks(h.adopted);
-  check("adopted foreign schedule state produces ZERO schedule_weeks writes in a member session",
-    h.netCalls.length === 0, `unexpected requests: ${JSON.stringify(h.netCalls)}`);
+  const START = "  useEffect(() => {\n    if (!loaded || isPublicMode) return;\n    const t = setTimeout(() => { schedSyncRef.current.push(); }, 800);";
+  const i = nsrc.indexOf(START), e = i < 0 ? -1 : nsrc.indexOf("  }, [loaded, schedule]);", i);
+  if (i < 0 || e < 0 || nsrc.indexOf(START, i + 1) !== -1) { check("weeks push effect extractable (exactly one)", false, "anchors not found"); return; }
+  const body = nsrc.slice(i + "  useEffect(() => {".length, e);
+  const mk = vm.runInContext(`(function (env) { const { loaded, isPublicMode, schedSyncRef, setTimeout, clearTimeout } = env; return (() => {${body}}); })`, sandbox);
+  const go = (loaded, pub) => { let pushes = 0; const timers = []; const fx = mk({ loaded, isPublicMode: pub, schedSyncRef: { current: { push: () => { pushes++; } } }, setTimeout: (f) => { timers.push(f); return timers.length; }, clearTimeout: () => {} }); fx(); timers.forEach(f => f()); return pushes; };
+  check("weeks push effect: a loaded member / scheduler session pushes (member AND failed-blob cases: the blob isn't consulted)", go(true, false) === 1);
+  check("weeks push effect: public / OR board never pushes; nothing before the load", go(true, true) === 0 && go(false, false) === 0);
+  check("weeks push effect has none of the blob leg's gates (canWriteBlob, isScheduler, loadFailedRef, payloadLooksWiped, the 3-s skip)",
+    !/canWriteBlob|isScheduler|loadFailedRef|payloadLooksWiped|loadedAtRef/.test(body), body.slice(0, 200));
 })();
+
+// ── Adopted foreign weeks produce ZERO echo writes (the old baseline-ref
+// invariant). Since sync v2 the engine is the ONE adopter (the pull), and
+// what it adopts becomes what it knows in the same step — executed in SE13
+// ("the adopted W1 caused ZERO echo writes") and SE36 (two writers converge).
+// This pin keeps it the only adopter: no realtime schedule_weeks handler.
+check("schedule_weeks has no second adopter (no realtime handler; the engine's pull is the one)",
+  count('table: "schedule_weeks" }') === 0 && count("schedSyncRef.current.pull()") === 3,
+  `realtime: ${count('table: "schedule_weeks" }')}, pull triggers: ${count("schedSyncRef.current.pull()")}`);
 
 // Source pins: the gate exists, mirrors the DB predicate, and is applied at
 // all three write sites (autosave blob leg, keepalive blob leg, edge-URL).
@@ -709,9 +667,8 @@ check("canWriteBlob defined once, mirroring is_scheduler_or_admin()",
   count("const canWriteBlob = isScheduler;") === 1);
 check("blob gate applied at exactly 3 sites (autosave, keepalive flush, edge-URL)",
   count("if (!canWriteBlob) return;") === 3, `found ${count("if (!canWriteBlob) return;")}`);
-check("weeks leg runs BEFORE the blob gate (decoupling is structural, not incidental)",
-  src.replace(/\r\n/g, "\n").indexOf("syncSchedWeeks(payload.schedule);") <
-  src.replace(/\r\n/g, "\n").indexOf("if (!canWriteBlob) return;"));
+check("the weeks are pushed from exactly one effect, never from inside the blob autosave (decoupling is structural, not incidental)",
+  count("schedSyncRef.current.push(); }, 800);") === 1 && count("const syncSchedWeeks") === 0);
 
 // ══════════════════════════════════════════════════════════════
 // E3. OR board (?public=1&view=or) is a LAYER on public mode, not a mode
@@ -734,8 +691,10 @@ check("appOffVisible used at exactly 4 sites (2 fetch, 2 render)",
 
 // The four write guards must still key on isPublicMode ALONE — never on the
 // OR flag, which would let a nurse's link write.
-check("all 4 public-mode write guards remain `if (isPublicMode) return;`",
-  count("if (isPublicMode) return;") === 4, `found ${count("if (isPublicMode) return;")}`);
+check("all 5 public-mode write guards remain `if (isPublicMode) return;` (the 4 before sync v2 + the schedule_weeks flush)",
+  count("if (isPublicMode) return;") === 5, `found ${count("if (isPublicMode) return;")}`);
+check("the sync engine's write gate keys on isPublicMode ALONE (never the OR flag); its push effect too",
+  count("canWrite: !isPublicMode,") === 1 && count("if (!loaded || isPublicMode) return;") === 1);
 check("isOrView never appears on a write path (no isOrView in any write guard)",
   !/isOrView[^\n]*\breturn;/.test(src) && !/if\s*\(\s*!?\s*isOrView\s*\)\s*\{?\s*(await|supabase|fetch)/.test(src));
 // The day-off SAVE path stays internal regardless of the flag.
@@ -1006,7 +965,7 @@ check("prefs audit never logs the plaintext email (masked only)",
     try {
       acceptFn = vm.runInContext(`(function (env) {
         const { schedule, surgeons, showToast, detectCascadeChanges, setTradeRequests, logAudit,
-                pushUndo, updateSchedule, scheduleRef, addNotification, sendEmailNotif, schedulerAdminIds, confirm,
+                pushUndo, updateSchedule, scheduleRef, schedEditable, addNotification, sendEmailNotif, schedulerAdminIds, confirm,
                 silvisActive, silvisBlock, silvisRefuse } = env;
         return (async (req) => {${body}});
       })`, sandbox, { filename: "accept-trade-extract.js" });
@@ -1024,7 +983,7 @@ check("prefs audit never logs the plaintext email (masked only)",
           setTradeRequests: () => {},
           logAudit: () => {},
           pushUndo: () => { log.undo++; },
-          updateSchedule: () => { log.schedWrites++; }, scheduleRef: { current: {} },
+          updateSchedule: () => { log.schedWrites++; }, scheduleRef: { current: {} }, schedEditable: () => true,
           addNotification: async () => {},
           sendEmailNotif: () => {},
           schedulerAdminIds: [],
@@ -1059,12 +1018,31 @@ check("prefs audit never logs the plaintext email (masked only)",
       // GREEN: valid future trade → status PATCH attempted and swap applied
       t = mkEnv();
       t.env.schedule = { [futureMon]: { dayCall: "s9", nights: { tue: "s1", wed: "s2" }, off: null } };
+      t.env.scheduleRef = { current: t.env.schedule };
       fetchStub = stubFetch([{ m: "PATCH", url: "shift_trade_requests", json: [{ id: 9 }] }]);
       await acceptFn(t.env)(baseReq(futureMon));
       check("valid future trade → status PATCH attempted and swap applied",
         writesIn(fetchStub).length === 1 && t.log.schedWrites === 1 && t.log.undo === 1
         && !t.log.toasts.some(x => /already passed/.test(x.msg)),
         `writes=${writesIn(fetchStub).length} sched=${t.log.schedWrites} toasts=${JSON.stringify(t.log.toasts)}`);
+      // RED (sync v2, stale intents): the proposer no longer holds the shift —
+      // someone changed the week since the trade was proposed (v2's pull now
+      // shows that here). Refused BEFORE the status PATCH: the trade stays
+      // pending, zero writes, zero notifications.
+      t = mkEnv();
+      t.env.schedule = { [futureMon]: { dayCall: "s9", nights: { tue: "s7", wed: "s2" }, off: null } };
+      t.env.scheduleRef = { current: t.env.schedule };
+      fetchStub = stubFetch([]);
+      await acceptFn(t.env)(baseReq(futureMon));
+      check("out-of-date trade (the proposer no longer holds the shift) → refused with ZERO writes, before the status PATCH",
+        fetchStub.calls.length === 0 && t.log.schedWrites === 0 && t.log.undo === 0 && t.log.toasts.length === 1 && /out of date/.test(t.log.toasts[0].msg), JSON.stringify(t.log.toasts));
+      // RED: the sign-in / load gate refuses before anything (nothing pending can be lost).
+      t = mkEnv();
+      t.env.schedule = { [futureMon]: { dayCall: "s9", nights: { tue: "s1", wed: "s2" }, off: null } };
+      t.env.scheduleRef = { current: t.env.schedule }; t.env.schedEditable = () => false;
+      fetchStub = stubFetch([]);
+      await acceptFn(t.env)(baseReq(futureMon));
+      check("the edit gate (not loaded / sign-in expired) refuses the accept before the status PATCH", fetchStub.calls.length === 0 && t.log.schedWrites === 0);
     }
   }
 }
@@ -1320,7 +1298,7 @@ check("prefs audit never logs the plaintext email (masked only)",
     count('"This trade\'s shift has already passed — propose a new one."') === 3,
     `found ${count('"This trade\'s shift has already passed — propose a new one."')}`);
   check("executeTwoWaySwap re-validates before pushUndo",
-    /executeTwoWaySwap = useCallback\(\(targetMon[\s\S]{0,900}shiftStartDate\(targetMon, targetShift\)[\s\S]{0,900}pushUndo\(\);/.test(src)); // window 400→900 for the silvisBusy block (2026-09-24); order unchanged
+    /executeTwoWaySwap = useCallback\(\(targetMon[\s\S]{0,900}shiftStartDate\(targetMon, targetShift\)[\s\S]{0,2600}pushUndo\(\);/.test(src) && /executeTwoWaySwap = useCallback\(\(targetMon[\s\S]{0,2600}if \(!schedEditable\(\)\) return;[\s\S]{0,900}out of date[\s\S]{0,1200}pushUndo\(\);/.test(src)); // window 400→900→2600 (sync v2: the edit gate + the holder precondition sit between); order unchanged for the silvisBusy block (2026-09-24); order unchanged
 }
 
 // ─── O. silvisBusy (2026-09-24, revised after the post-merge review): FAK's Silvis primary days block Davenport call ───
@@ -3560,20 +3538,21 @@ check("prefs audit never logs the plaintext email (masked only)",
   {
     const i = nsrcAB.indexOf("const saveWeekEdits = useCallback((openAfter) => {"), e = i < 0 ? -1 : nsrcAB.indexOf("\n  }, [editWeekModal,", i);
     const weBody = i < 0 || e < 0 ? null : "(openAfter) => {" + nsrcAB.slice(i + "const saveWeekEdits = useCallback((openAfter) => {".length, e) + "\n  }";
-    const WE_ENV = "editWeekModal, schedule, appShifts, appShiftsLoaded, openWeekEditor, setEditWeekModal, silvisActive, silvisFakId, silvisDays, silvisBlock, silvisRefuse, sfSlotDays, confirm, pushUndo, updateSchedule, scheduleRef, backupMondaySet, fierceBackupSet, surgeons, showToast, APP_SHIFTS_NOT_LOADED, setAppShifts, saveAppShifts, logAudit, nameOf, aMap, sMap, schedulerAdminIds, addNotification, sendEmailNotif, setTimeout";
+    const WE_ENV = "editWeekModal, schedule, appShifts, appShiftsLoaded, openWeekEditor, setEditWeekModal, silvisActive, silvisFakId, silvisDays, silvisBlock, silvisRefuse, sfSlotDays, confirm, pushUndo, updateSchedule, scheduleRef, schedEditable, schedSyncRef, backupMondaySet, fierceBackupSet, surgeons, showToast, APP_SHIFTS_NOT_LOADED, setAppShifts, saveAppShifts, logAudit, nameOf, aMap, sMap, schedulerAdminIds, addNotification, sendEmailNotif, setTimeout";
     let mkWE = null; try { mkWE = weBody ? vm.runInContext(`(function (env) { const { ${WE_ENV} } = env; return (${weBody}); })`, sandbox) : null; } catch (ex) { mkWE = null; }
     const MON = "2026-10-12", DAYS = ["2026-10-12", "2026-10-13", "2026-10-14", "2026-10-15", "2026-10-16", "2026-10-17", "2026-10-18"];
     const blanks = Object.fromEntries(DAYS.map(d => [d, ""]));
     const real = { "2026-10-12": "a1", "2026-10-13": "a2", "2026-10-20": "a4" };   // the stored map (incl. a day outside this week)
     const realWk = Object.fromEntries(DAYS.map(d => [d, real[d] || ""]));
-    const runWE = ({ loaded, appsBase, draftApps, surgeonChange }) => {
+    const runWE = ({ loaded, appsBase, draftApps, surgeonChange, movedUnderneath }) => {
       const rec = { toasts: [], appSets: [], saves: [], schedSets: 0, closed: 0, audits: [], notifs: [] };
       const wk = { dayCall: "s1", nights: { mon: "s2", tue: "s3", wed: "s4", thu: "s5", wknd: "s6" } };
       const env = {
         editWeekModal: { mondayStr: MON, appsBase, draft: { dayCall: surgeonChange ? "s7" : "s1", nights: { ...wk.nights }, dayCallOverrides: {}, apps: draftApps, reason: "" } },
         schedule: { [MON]: wk }, appShifts: real, appShiftsLoaded: loaded, openWeekEditor: () => {}, setEditWeekModal: (x) => { if (x === null) rec.closed++; },
         silvisActive: false, silvisFakId: null, silvisDays: { primary: new Set() }, silvisBlock: () => null, silvisRefuse: () => false, sfSlotDays: () => [],
-        confirm: () => true, pushUndo: () => {}, updateSchedule: () => { rec.schedSets++; }, scheduleRef: { current: { [MON]: wk } }, backupMondaySet: new Set(), fierceBackupSet: new Set(),
+        confirm: () => true, pushUndo: () => {}, updateSchedule: () => { rec.schedSets++; }, scheduleRef: { current: { [MON]: wk } }, schedEditable: () => true,
+        schedSyncRef: { current: { changedSince: (keys) => movedUnderneath ? keys.slice() : [] } }, backupMondaySet: new Set(), fierceBackupSet: new Set(),
         surgeons: ["s1", "s2", "s3", "s4", "s5", "s6", "s7"].map(id => ({ id, name: id.toUpperCase() })),
         showToast: (m) => rec.toasts.push(String(m)), APP_SHIFTS_NOT_LOADED: "APP shifts haven't loaded yet",
         setAppShifts: (u) => rec.appSets.push(u), saveAppShifts: (x) => rec.saves.push(x),
@@ -3601,6 +3580,9 @@ check("prefs audit never logs the plaintext email (masked only)",
       const appOnly = runWE({ loaded: false, appsBase: blanks, draftApps: { ...blanks, "2026-10-14": "a3" }, surgeonChange: false });
       check("AB2 unloaded with ONLY an APP change: refused with the reason, nothing written or audited, and the editor stays open",
         appOnly.rec.schedSets === 0 && appOnly.rec.appSets.length === 0 && appOnly.rec.audits.length === 0 && appOnly.rec.closed === 0 && /APP changes were NOT saved/.test(appOnly.rec.toasts.join(" ")), JSON.stringify(appOnly.rec));
+      const moved = runWE({ loaded: true, appsBase: realWk, draftApps: { ...realWk, "2026-10-14": "a3" }, surgeonChange: true, movedUnderneath: true });
+      check("AB2 sync v2 (R15): the week was changed by someone else while the editor was open → NOTHING is saved (surgeon slots or APP days), the editor stays open, and it says why",
+        moved.rec.schedSets === 0 && moved.rec.appSets.length === 0 && moved.rec.saves.length === 0 && moved.rec.closed === 0 && /changed by someone else while the editor was open/.test(moved.rec.toasts.join(" ")), JSON.stringify(moved.rec));
       const none = runWE({ loaded: false, appsBase: realWk, draftApps: { ...realWk }, surgeonChange: false });
       check("AB2 no edits at all closes the editor quietly — even unloaded (no toast, no write)",
         none.rec.closed === 1 && none.rec.toasts.length === 0 && none.rec.appSets.length === 0 && none.rec.schedSets === 0, JSON.stringify(none.rec));
@@ -3608,7 +3590,7 @@ check("prefs audit never logs the plaintext email (masked only)",
     check("AB2 the editor keeps a COPY of what its APP rows showed on open (the base the save diffs against), and it is the only place a week editor is created",
       count('appsDraft[ds] = appShifts[ds] || "";') === 1 && count("appsBase: { ...appsDraft },") === 1 && count("setEditWeekModal({") === 1);
     check("AB2 an editor opened before the row loaded LOCKS its APP selects and says why (records appsLoaded, in the deps); '• unsaved' diffs the APP days against appsBase, not the live map",
-      count("appsLoaded: appShiftsLoaded,") === 1 && count("}, [schedule, appShifts, appShiftsLoaded]);") === 1
+      count("appsLoaded: appShiftsLoaded,") === 1 && count("}, [appShifts, appShiftsLoaded]);") === 1 && count("openEpoch: schedSyncRef.current.epochNow(),") === 1
         && count("const appsLocked = !editWeekModal.appsLoaded;") === 1 && count("disabled={appsLocked}") === 1 && count("{appsLocked && <div") === 1
         && count('Object.entries(draft.apps).some(([ds, aid]) => (appsBase[ds] || "") !== (aid || ""))') === 1
         && count('Object.entries(draft.apps).some(([ds, aid]) => (appShifts[ds] || "") !== (aid || ""))') === 0);
@@ -3661,11 +3643,13 @@ check("prefs audit never logs the plaintext email (masked only)",
   const nsrcAE = src.replace(/\r\n/g, "\n");
   const i = nsrcAE.indexOf("  const acceptPreview = () => {"), e = i < 0 ? -1 : nsrcAE.indexOf("\n  };\n", i);
   const body = i < 0 || e < 0 ? null : "() => {" + nsrcAE.slice(i + "  const acceptPreview = () => {".length, e) + "\n  }";
-  const ENV = "previewSchedule, previewNeedsOk, previewAck, showToast, schedule, scheduleRef, pushUndo, rollForwardCounts, updateSchedule, setPreviewSchedule, setShowPreview, setCalMonth, setCalYear, setView, setSaveStatus, setTimeout, logAudit, numWeeks, MO, startMonth, startYear";
+  const ENV = "previewSchedule, previewNeedsOk, previewAck, showToast, schedule, scheduleRef, schedEditable, schedSyncRef, previewEpochRef, pushUndo, rollForwardCounts, updateSchedule, setPreviewSchedule, setShowPreview, setCalMonth, setCalYear, setView, setSaveStatus, setTimeout, logAudit, numWeeks, MO, startMonth, startYear";
   let mk = null; try { mk = body ? vm.runInContext(`(function (env) { const { ${ENV} } = env; return (${body}); })`, sandbox) : null; } catch (ex) { mk = null; }
-  const run = (items, ack) => {
+  const run = (items, ack, movedSincePreview) => {
     const rec = { published: 0, toasts: [], audits: [] };
     mk({
+      schedEditable: () => true, previewEpochRef: { current: 0 },
+      schedSyncRef: { current: { changedSince: (keys) => movedSincePreview ? keys.slice(0, 1) : [] } },
       previewSchedule: { "2026-11-16": { dayCall: "s1", nights: {} } }, previewNeedsOk: { cost: items.length * 6, items }, previewAck: ack,
       showToast: (m) => rec.toasts.push(String(m)), schedule: {}, pushUndo: () => {}, rollForwardCounts: () => {},
       scheduleRef: { current: {} }, updateSchedule: () => { rec.published++; }, setPreviewSchedule: () => {}, setShowPreview: () => {}, setCalMonth: () => {}, setCalYear: () => {},
@@ -3681,6 +3665,9 @@ check("prefs audit never logs the plaintext email (masked only)",
       blocked.published === 0 && blocked.audits.length === 0 && /reviewed/.test(blocked.toasts.join(" ")), JSON.stringify(blocked));
     check("AE1 ticked: it publishes, and the publish audit entry records N (and the bend cost)",
       ticked.published === 1 && ticked.audits.length === 1 && ticked.audits[0].meta.needsOk === 2 && ticked.audits[0].meta.bendCost === 12 && /2 items reviewed/.test(ticked.audits[0].msg), JSON.stringify(ticked.audits));
+    const stale = run([], false, true);
+    check("AE1 sync v2: a preview whose week someone else changed since it was generated is NOT published (it would overwrite that change) — and it says so",
+      stale.published === 0 && stale.audits.length === 0 && /changed since this preview was generated/.test(stale.toasts.join(" ")), JSON.stringify(stale));
     check("AE1 an empty box publishes exactly as before — no checkbox needed, needsOk 0, no extra wording",
       clean.published === 1 && clean.toasts.length === 0 && clean.audits[0].meta.needsOk === 0 && !/reviewed/.test(clean.audits[0].msg), JSON.stringify(clean.audits));
   } else check("AE1 acceptPreview extractable for execution", false, "anchors not found");
@@ -3695,7 +3682,7 @@ check("prefs audit never logs the plaintext email (masked only)",
       && nsrcAE.indexOf("{/* Spacing-exception disclosure") < nsrcAE.indexOf("{/* Preview Calendar Grid */}")
       && count('color:dk?"#f0c890":"#7a4010",overflowWrap:"anywhere"}}>') === 1);
   check("AE3 Generate & Publish: a result with items opens the preview (\"review\") instead of saving; only \"published\" sends the notice; a cancelled Silvis confirm sends nothing",
-    count('    if (needsOkN > 0) {\n      setPreviewSchedule(result);\n      setShowPreview(true);'.replace(/\n/g, src.includes("\r\n") ? "\r\n" : "\n")) === 1
+    count('    if (needsOkN > 0) {\n      setPreviewSchedule(result); previewEpochRef.current = genEpoch;\n      setShowPreview(true);'.replace(/\n/g, src.includes("\r\n") ? "\r\n" : "\n")) === 1
       && count('return "review";') === 1 && count('return "published";') === 1 && count('return "cancelled";') === 1
       && count('if (doGenerate(false) !== "published") return;') === 1);
   check("AE4 the box and the generator share ONE availability builder (vacations ∪ no-call ∪ Silvis), and the box reads the bends from generator.js",
@@ -3823,6 +3810,44 @@ check("prefs audit never logs the plaintext email (masked only)",
 // table's own contract tests, so a drift in the fake can't hide a bug.
 // ══════════════════════════════════════════════════════════════
 await require("./sync-engine-se.js")({ src, check });
+
+// SE-W. The engine's wiring in the component. The behaviour is executed in SE
+// (the engine) and E2 (the push effect); these pins keep the integration the
+// design depends on from drifting quietly.
+{
+  const nsrcW = src.replace(/\r\n/g, "\n");
+  const bodyOf = (decl, endMark) => { const i = nsrcW.indexOf(decl); if (i < 0) return ""; const e = nsrcW.indexOf(endMark, i); return e < 0 ? "" : nsrcW.slice(i, e); };
+  check("SE-W the schedule mirror has ONE writer: setSchedule( appears only inside commitSchedule, and scheduleRef.current is assigned only there (no passive-effect writer)",
+    count("setSchedule(") === 1 && count("scheduleRef.current =") === 1 && count("const commitSchedule = useCallback((next) => { scheduleRef.current = next; setSchedule(next); }, []);") === 1,
+    `setSchedule( ×${count("setSchedule(")}, scheduleRef.current = ×${count("scheduleRef.current =")}`);
+  check("SE-W one engine per session (created once, in a ref), with reads that fall back to anon and writes that never do",
+    count("createSchedSync({") === 1 && count("if (!schedSyncRef.current) schedSyncRef.current = createSchedSync({") === 1
+      && count("writeHeaders: () => dbAuthHeaders(),") === 1 && count("readHeaders: () => dbReadHeaders(),") === 1);
+  // The edit gate sits at the START of every user-initiated schedule action,
+  // before its first side effect (status PATCH, undo step, schedule write).
+  const gateBefore = (decl, endMark, firstEffect) => { const b = bodyOf(decl, endMark); const g = b.indexOf("schedEditable()"), f = b.indexOf(firstEffect); return g !== -1 && f !== -1 && g < f; };
+  check("SE-W the edit gate (load + sign-in) runs before the first side effect in: undo, trade accept, one-way swap, two-way swap, week editor, accept-preview, generate",
+    gateBefore("  const undoLastChange = () => {", "\n  };\n", "commitSchedule(")
+      && gateBefore("  const acceptTradeRequest = useCallback(", "\n  }, [", "Fail-closed status write")
+      && gateBefore("  const swapShift = (mStr, shift, newId, expectOldId) => {", "\n  };\n", "pushUndo();")
+      && gateBefore("  const executeTwoWaySwap = useCallback(", "\n  }, [", "pushUndo();")
+      && gateBefore("  const saveWeekEdits = useCallback(", "\n  }, [", "pushUndo();")
+      && gateBefore("  const acceptPreview = () => {", "\n  };\n", "pushUndo();")
+      && gateBefore("  const doGenerate = (preview) => {", "\n  };\n", "buildPrefs()"));
+  check("SE-W stale intents carry preconditions: trade accept + both swaps check the slot holder; preview / publish / editor check the engine epoch",
+    count("This trade is out of date") === 1 && count("This swap is out of date") === 2
+      && count("changedSince(Object.keys(previewSchedule), previewEpochRef.current)") === 1 && count("changedSince(Object.keys(result), genEpoch)") === 1
+      && count("changedSince([mondayStr], editWeekModal.openEpoch || 0)") === 1 && count("swapShift(swapTarget.mondayStr, swapTarget.shift, s.candidateId, swapTarget.surgeonId)") === 1);
+  check("SE-W unload: the weeks keepalive comes ONLY from the engine (CAS, no insert, no delete) and only on pagehide/beforeunload; hide pushes through the chain",
+    count("keepaliveRequests()") === 1 && count('if (source === "visibilitychange") { schedSyncRef.current.push(); return; }') === 1 && count("on_conflict=week_monday") === 0);
+  check("SE-W reload / sign-out guards: both reload buttons ask while weeks are unsaved; sign-out asks, then resets the engine (mirror too), undo and editor BEFORE signing out",
+    count("confirmReloadWithPending(") === 2
+      && /const handleSignOut = async \(\) => \{[\s\S]{0,900}schedSyncRef\.current\.reset\(\);\s*setScheduleHistory\(\[\]\); setEditWeekModal\(null\);[\s\S]{0,120}await auth\.signOut\(\);/.test(nsrcW));
+  check("SE-W Undo is all-or-nothing through the engine's undoPlan (each step carries its epoch)",
+    count("const plan = schedSyncRef.current.undoPlan(step.sched, step.epoch);") === 1 && count("epoch: schedSyncRef.current ? schedSyncRef.current.epochNow() : 0") === 1);
+  check("SE-W destructive snapshots pass minWeeks (an RLS-empty schedule read fails the capture): clear, regenerate, reset, restore",
+    count("{ minWeeks: Object.keys(schedSyncRef.current.knownSchedule()).length ? 1 : 0 }") === 4);
+}
 {
   const { spawnSync } = require("child_process");
   const r = spawnSync(process.execPath, [path.join(__dirname, "fake-weeks-table.test.js")], { encoding: "utf8" });

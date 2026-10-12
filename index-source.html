@@ -153,10 +153,12 @@
           different tables, neither may sit inside the other's failure path.
 
        4. GUARD REFS are one-shot grant/consume. everHadRealDataRef,
-          allowWipeSaveRef, intentionalScheduleWipeRef each have pinned
-          grant/consume site COUNTS in test/sync-guards.js section E. A new
-          site means updating the pinned count in the same PR — the red
-          check is the review prompt, not an obstacle.
+          allowWipeSaveRef each have pinned grant/consume site COUNTS in
+          test/sync-guards.js section E. A new site means updating the
+          pinned count in the same PR — the red check is the review prompt,
+          not an obstacle. (The schedule_weeks wipe grant is no longer a ref:
+          since sync v2 it travels with the engine's authoritative request,
+          and section SE pins the authoritative call sites instead.)
 
        5. SOURCE PINS scan this file for exact substrings. Comments count
           too — write prose in comments, not code patterns, or a comment
@@ -385,19 +387,31 @@ function CallSchedule() {
 
   // ─── Undo History ───
   const [scheduleHistory, setScheduleHistory] = useState([]);
+  // Each step remembers the sync engine's epoch when it was taken. Undo is
+  // all-or-nothing (sync v2, R15): if restoring the snapshot would also revert
+  // a week someone else changed since (adopted by a pull or a conflict), it
+  // is refused and says which week — it never half-applies, and it never
+  // silently reverts the other person's change.
   const pushUndo = useCallback(() => {
-    const snap = JSON.parse(JSON.stringify(scheduleRef.current));
+    const snap = { sched: JSON.parse(JSON.stringify(scheduleRef.current)), epoch: schedSyncRef.current ? schedSyncRef.current.epochNow() : 0 };
     setScheduleHistory(prev => [...prev.slice(-9), snap]);
   }, []);
-  const undoLastChange = useCallback(() => {
+  const undoLastChange = () => {
     if (scheduleHistory.length === 0) return;
-    const prev = scheduleHistory[scheduleHistory.length - 1];
-    commitSchedule(prev);
+    if (!schedEditable()) return;
+    const step = scheduleHistory[scheduleHistory.length - 1];
+    const plan = schedSyncRef.current.undoPlan(step.sched, step.epoch);
+    if (plan.blocked.length) {
+      showToast(`Can't undo — the week${plan.blocked.length === 1 ? "" : "s"} of ${plan.blocked.join(", ")} ${plan.blocked.length === 1 ? "was" : "were"} changed by someone else since. Nothing was changed.`, "error");
+      return;
+    }
+    commitSchedule(plan.next);
     setScheduleHistory(h => h.slice(0, -1));
-  }, [scheduleHistory, commitSchedule]);
+  };
 
   // ─── What-If Preview ───
   const [previewSchedule, setPreviewSchedule] = useState(null);
+  const previewEpochRef = useRef(0); // the sync engine's epoch the preview was computed at
   const [pendingLocks, setPendingLocks] = useState([]); // [{ mondayStr, slot: "dc"|"mon"|"tue"|"wed"|"thu"|"wknd", surgeonId }]
 
   // ─── Silvis (trauma) feed — rule silvisBusy (silvis-feed.js) ───
@@ -479,15 +493,9 @@ function CallSchedule() {
   // must not autosave — otherwise a privileged session with degraded state could
   // overwrite real data (the residual blind-write hole the audit pointed to).
   const loadFailedRef = useRef(false);
-  // intentionalScheduleWipeRef is a one-shot set by clearSchedule / factory
-  // reset immediately before they call syncSchedWeeks({}). It authorizes the
-  // single legitimate "delete every week" operation. Any OTHER attempt to
-  // delete all (or most) weeks — an empty/near-empty in-memory schedule vs a
-  // populated schedule_weeks table — is treated as an accidental wipe (failed
-  // load, transient render, or stale tab) and refused. This is the table-side
-  // mirror of the blob's payloadLooksWiped protection; its absence is how the
-  // schedule got wiped twice.
-  const intentionalScheduleWipeRef = useRef(false);
+  // (The schedule_weeks wipe authorization is no longer a shared armed ref:
+  // clear / factory reset / restore are authoritative engine jobs that carry
+  // their own grant, so nothing can ride on a leftover authorization.)
 
   // ─── Vacation Requests ───
   const [vacRequests, setVacRequests] = useState([]);
@@ -1049,6 +1057,14 @@ function CallSchedule() {
   };
 
   const handleSignOut = async () => {
+    // Sign-out is a boundary (sync v2): weeks not saved can't be sent without
+    // this user's token, so say so first; then forget the session's schedule
+    // state — the mirror, what the engine knows, the undo steps and an open
+    // editor — so nothing of it can be sent as the next user.
+    const unsaved = schedSyncRef.current.pending().length;
+    if (unsaved && !confirm(`${unsaved} week${unsaved === 1 ? "" : "s"} of the schedule ${unsaved === 1 ? "isn't" : "aren't"} saved yet — signing out loses ${unsaved === 1 ? "it" : "them"}.\n\nSign out anyway?`)) return;
+    schedSyncRef.current.reset();
+    setScheduleHistory([]); setEditWeekModal(null); setReauthNeeded(false);
     await auth.signOut();
     biometric.unenroll();
     setAuthUser(null); setUserProfile(null); setNeedsProfile(false); setMySurgeon("");
@@ -1063,155 +1079,14 @@ function CallSchedule() {
   // the rest of the group), so the flag is hard-wired on.
   const USE_TIME_OFF = true;
 
-  // ─── schedule storage: schedule_weeks is now the sole source ───
-  // Every schedule write goes to the per-week schedule_weeks table with
-  // compare-and-swap on `version`, so a concurrent edit to the same week is
-  // refused instead of silently clobbered. The blob no longer carries the
-  // schedule at all (the mirror was retired), so reading from the table is the
-  // only option — the old per-device opt-out is gone and the flag is hard-wired
-  // on. (SCHED_DUAL_WRITE remains as a no-op kill-switch for the table write.)
-  const SCHED_DUAL_WRITE = useMemo(() => {
-    try { const o = localStorage.getItem("dsg_sched_dualwrite"); if (o === "1") return true; if (o === "0") return false; } catch (e) { console.warn("Couldn't read dual-write override flag:", e); }
-    return true;
-  }, []);
-  const SCHED_READ_TABLE = true;
-  // Snapshot of the schedule as last mirrored to schedule_weeks, for diffing.
-  const schedWeeksSyncRef = useRef(null);
-  // Per-week version last seen from the table, for compare-and-swap writes.
-  const schedWeekVersionsRef = useRef({});
-
-  // Load the schedule from schedule_weeks (Stage 3 read). Returns {sched, vers}
-  // or null to signal "fall back to the blob".
-  const loadSchedFromTable = async () => {
-    try {
-      const rows = await db.query("schedule_weeks", { order: "week_monday.asc", limit: 1000 });
-      if (!Array.isArray(rows) || rows.length === 0) return null;
-      const sched = {}, vers = {};
-      rows.forEach(r => { sched[r.week_monday] = r.data; vers[r.week_monday] = r.version; });
-      // Real data confirmed in the table → arm the empty-save wipe guard. This
-      // arming used to piggyback on the blob's vacations mirror at load; with
-      // the mirror retired, the real sources arm it directly.
-      everHadRealDataRef.current = true;
-      return { sched, vers };
-    } catch (e) { console.error("schedule_weeks load failed — falling back to blob", e); return null; }
-  };
-
-  const syncSchedWeeks = async (currentSchedule) => {
-    if (!currentSchedule) return;
-    if (!SCHED_DUAL_WRITE && !SCHED_READ_TABLE) return;
-    try {
-      const prev = schedWeeksSyncRef.current || {};
-      const ts = new Date().toISOString();
-      const by = userProfile?.person_id || null;
-      const changed = [];
-      for (const key in currentSchedule) {
-        if (!prev[key] || JSON.stringify(prev[key]) !== JSON.stringify(currentSchedule[key])) changed.push(key);
-      }
-      const deletes = [];
-      for (const key in prev) if (!(key in currentSchedule)) deletes.push(key);
-
-      // ── Accidental-wipe guard (schedule_weeks) ──────────────────────────
-      // An empty (or drastically reduced) in-memory schedule must never DELETE
-      // a populated table. That state only arises from a transient-empty
-      // render, a failed/empty load, or a stale tab — never a real edit. The
-      // ONLY legitimate "delete all" is clearSchedule / factory reset, which
-      // arm intentionalScheduleWipeRef just before calling syncSchedWeeks({}).
-      const curCount  = Object.keys(currentSchedule).length;
-      const baseCount = Object.keys(prev).length;
-      const wipingAll  = curCount === 0 && baseCount > 0;
-      const wipingMost = baseCount >= 4 && curCount < baseCount &&
-                         deletes.length >= Math.ceil(baseCount / 2);
-      if ((wipingAll || wipingMost) && !intentionalScheduleWipeRef.current) {
-        console.warn(`schedule_weeks wipe BLOCKED: in-memory ${curCount} wk vs table baseline ${baseCount} wk would delete ${deletes.length}. Refusing — not an intentional clear.`);
-        setSaveError(true);
-        setSaveStatus("⚠ Wipe blocked — schedule not deleted");
-        showToast("Blocked an unexpected schedule wipe — your saved schedule is safe. Reload to resync.", "error");
-        return; // leave schedWeeksSyncRef untouched; perform no deletes or upserts
-      }
-      // Consume the one-shot authorization UNCONDITIONALLY. It used to be
-      // consumed only on a wipe shape — so a reset/clear against an
-      // ALREADY-EMPTY schedule (baseCount 0: neither wipingAll nor
-      // wipingMost) left the ref armed indefinitely, pre-authorizing the
-      // next accidental wipe-shaped call — exactly the transient-empty wipe
-      // this guard exists to block. Reaching this line means the grant's
-      // window is over, wipe or no wipe. (The blocked path above returns
-      // earlier, and only ever fires with the ref already false.) Behavior-
-      // pinned in sync-guards section E: adding an early return above this
-      // line that skips the consume goes red there.
-      intentionalScheduleWipeRef.current = false;
-
-      if (SCHED_READ_TABLE) {
-        // ── Stage 3: per-week compare-and-swap ──
-        let conflict = false;
-        for (const key of changed) {
-          const ver = schedWeekVersionsRef.current[key];
-          if (ver === undefined) {
-            // Brand-new week → insert at version 1.
-            const r = await fetch(`${SUPABASE_URL}/rest/v1/schedule_weeks`, {
-              method: "POST",
-              headers: { ...dbAuthHeaders(), "Content-Type": "application/json", "Prefer": "return=representation" },
-              body: JSON.stringify({ week_monday: key, data: currentSchedule[key], version: 1, updated_by: by, updated_at: ts }),
-            });
-            if (r.ok) { const a = await r.json().catch(() => []); if (a[0]) schedWeekVersionsRef.current[key] = a[0].version; }
-            else { console.error("schedule_weeks insert failed", r.status, await r.text().catch(() => "")); showToast("Couldn't save schedule changes — check your connection.", "error"); }
-          } else {
-            // Existing week → update only if version still matches (CAS).
-            const r = await fetch(`${SUPABASE_URL}/rest/v1/schedule_weeks?week_monday=eq.${key}&version=eq.${ver}`, {
-              method: "PATCH",
-              headers: { ...dbAuthHeaders(), "Content-Type": "application/json", "Prefer": "return=representation" },
-              body: JSON.stringify({ data: currentSchedule[key], version: ver + 1, updated_by: by, updated_at: ts }),
-            });
-            if (!r.ok) { console.error("schedule_weeks CAS error", r.status, await r.text().catch(() => "")); showToast("Couldn't save schedule changes — check your connection.", "error"); continue; }
-            const a = await r.json().catch(() => []);
-            if (a.length === 0) conflict = true;            // version moved underneath us
-            else schedWeekVersionsRef.current[key] = a[0].version;
-          }
-        }
-        for (const key of deletes) {
-          // The DELETE leg was the only unchecked write in this function
-          // (insert/CAS/bulk legs all check r.ok). A silent HTTP-failed
-          // delete left the row in the table while the local version ref was
-          // dropped — the week reappeared on the next poll, and a later write
-          // took the version-undefined insert path and 409'd against the
-          // surviving row. On failure: keep the version ref and toast.
-          const r = await fetch(`${SUPABASE_URL}/rest/v1/schedule_weeks?week_monday=eq.${key}`, { method: "DELETE", headers: dbAuthHeaders() });
-          if (!r.ok) { console.error("schedule_weeks delete failed", r.status, await r.text().catch(() => "")); showToast("Couldn't save schedule changes — check your connection.", "error"); continue; }
-          delete schedWeekVersionsRef.current[key];
-        }
-        if (conflict) {
-          // Someone else wrote one of these weeks first. Pull the authoritative
-          // latest, notify, and let the user reapply — never a silent clobber.
-          const fresh = await loadSchedFromTable();
-          if (fresh) {
-            commitSchedule(fresh.sched);
-            schedWeekVersionsRef.current = fresh.vers;
-            schedWeeksSyncRef.current = JSON.parse(JSON.stringify(fresh.sched));
-            showToast("A week was just changed by someone else — reloaded the latest. Reapply your change if needed.", "error");
-            return;
-          }
-        }
-        schedWeeksSyncRef.current = JSON.parse(JSON.stringify(currentSchedule));
-      } else {
-        // ── Stage 2: blind diff-based upsert (no CAS, table not yet read) ──
-        const upserts = changed.map(key => ({ week_monday: key, data: currentSchedule[key], updated_by: by, updated_at: ts }));
-        if (upserts.length) {
-          const r = await fetch(`${SUPABASE_URL}/rest/v1/schedule_weeks?on_conflict=week_monday`, {
-            method: "POST",
-            headers: { ...dbAuthHeaders(), "Content-Type": "application/json", "Prefer": "resolution=merge-duplicates" },
-            body: JSON.stringify(upserts),
-          });
-          if (!r.ok) { console.error("schedule_weeks upsert failed", r.status, await r.text().catch(() => "")); showToast("Couldn't save schedule changes — check your connection.", "error"); return; }
-        }
-        if (deletes.length) {
-          const r = await fetch(`${SUPABASE_URL}/rest/v1/schedule_weeks?week_monday=in.(${deletes.join(",")})`, {
-            method: "DELETE", headers: dbAuthHeaders(),
-          });
-          if (!r.ok) { console.error("schedule_weeks delete failed", r.status, await r.text().catch(() => "")); showToast("Couldn't save schedule changes — check your connection.", "error"); return; }
-        }
-        schedWeeksSyncRef.current = JSON.parse(JSON.stringify(currentSchedule));
-      }
-    } catch (e) { console.error("schedule_weeks dual-write error", e); showToast("Couldn't save schedule changes — check your connection.", "error"); }
-  };
+  // ─── schedule storage: schedule_weeks, through the sync engine (v2) ───
+  // The schedule lives ONLY in the per-week schedule_weeks table, and every
+  // read and write of it goes through ONE engine instance (createSchedSync,
+  // module scope; wired up below showToast): compare-and-swap writes with
+  // read-back, one job at a time, the pull of other people's changes, the
+  // wipe guard and the unload keepalive. Nothing else touches the table —
+  // except snapshots (config.js), whose capture reads it and whose restore
+  // hands its schedule to the engine as an authoritative job.
 
   // ─── Audit log ───
   // Append-only record of who changed what. Fire-and-forget + try/catch so it
@@ -1562,22 +1437,6 @@ function CallSchedule() {
           if (!USE_TIME_OFF) { if (d.vacations) setVacations(d.vacations); if (d.noCallDays) setNoCallDays(d.noCallDays); }
           if (d.backupMondays) setBackupMondaySet(new Set(d.backupMondays));
           if (d.fierceBackup) setFierceBackupSet(new Set(d.fierceBackup));
-          if (SCHED_READ_TABLE) {
-            // Stage 3: assemble the schedule from schedule_weeks; fall back to
-            // the blob if the table is empty/unavailable so we're never blank.
-            const fromTable = await loadSchedFromTable();
-            if (fromTable) {
-              commitSchedule(fromTable.sched);
-              schedWeekVersionsRef.current = fromTable.vers;
-              schedWeeksSyncRef.current = JSON.parse(JSON.stringify(fromTable.sched));
-            } else {
-              if (d.schedule) commitSchedule(d.schedule);
-              schedWeeksSyncRef.current = d.schedule ? JSON.parse(JSON.stringify(d.schedule)) : {};
-            }
-          } else {
-            if (d.schedule) commitSchedule(d.schedule);
-            schedWeeksSyncRef.current = d.schedule ? JSON.parse(JSON.stringify(d.schedule)) : {}; // dual-write baseline
-          }
           if (d.appShifts) setAppShifts(d.appShifts);
           if (d.priorCounts && Object.values(d.priorCounts).some(c => Object.values(c).some(v => v > 0))) setPriorCounts(d.priorCounts);
           if (d.year1Counts && Object.values(d.year1Counts).some(c => Object.values(c).some(v => v > 0))) setYear1Counts(d.year1Counts);
@@ -1661,6 +1520,18 @@ function CallSchedule() {
         loadFailedRef.current = true; // read threw — suppress autosave until a read succeeds
         showToast("Couldn't load the latest data — check your connection and reload.", "error");
       }
+      // The schedule: schedule_weeks, read by the sync engine — its own read,
+      // independent of the blob above (a blob failure no longer leaves the
+      // schedule unread). First pass: seeds the mirror. A later pass (sign-in,
+      // biometric unlock, the auto-login bump) is a PULL in the engine's chain,
+      // so an edit made in between survives it and is then sent. A failed read
+      // leaves the engine unloaded: edits are refused with a reason and the
+      // 60-s pull repairs it — never a blank schedule that could be saved over
+      // the table.
+      {
+        const sr = await schedSyncRef.current.load();
+        if (sr.ok && Object.keys(scheduleRef.current).length) everHadRealDataRef.current = true;
+      }
       if (USE_TIME_OFF) { await loadTimeOff(); } // vacations/no-call come from time_off, not the blob
       await loadSilvisFeed();      // cached Silvis days (anon read) — the generator/editor gates read these
       refreshSilvisFeed(true);     // and ask the function to re-pull Silvis in the background (signed-in only)
@@ -1707,7 +1578,6 @@ function CallSchedule() {
         if (!USE_TIME_OFF) { if (d.vacations) setVacations(d.vacations); if (d.noCallDays) setNoCallDays(d.noCallDays); }
         if (d.backupMondays) setBackupMondaySet(new Set(d.backupMondays));
         if (d.fierceBackup) setFierceBackupSet(new Set(d.fierceBackup));
-        if (d.schedule && !SCHED_READ_TABLE) commitSchedule(d.schedule); // table is the source when Stage 3 read is on
         if (d.priorCounts && Object.values(d.priorCounts).some(c => Object.values(c).some(v => v > 0))) setPriorCounts(d.priorCounts);
         if (d.year1Counts && Object.values(d.year1Counts).some(c => Object.values(c).some(v => v > 0))) setYear1Counts(d.year1Counts);
         if (d.startMonth !== undefined) setStartMonth(d.startMonth);
@@ -1780,6 +1650,10 @@ function CallSchedule() {
 
     const refreshAll = async () => {
       await Promise.allSettled([
+        // Other people's week changes (#69's goal): the engine adopts weeks
+        // this session hasn't edited, then sends anything pending — so a
+        // failed save retries every minute even when nothing else changes.
+        schedSyncRef.current.pull(),
         refreshScheduleRow(),
         refreshConfigRow(),
         refreshAppShifts(),
@@ -1809,24 +1683,8 @@ function CallSchedule() {
           .on("postgres_changes", { event: "*", schema: "public", table: "app_shifts_data" }, refreshAppShifts)
           .on("postgres_changes", { event: "*", schema: "public", table: "vacation_requests" }, refreshVacReqs)
           .on("postgres_changes", { event: "*", schema: "public", table: "time_off" }, () => { if (USE_TIME_OFF) loadTimeOff(); })
-          .on("postgres_changes", { event: "*", schema: "public", table: "schedule_weeks" }, (payload) => {
-            // Stage 3: apply per-week changes from other devices live, and keep
-            // the version map fresh (this also harmlessly self-confirms our own
-            // writes). Only active when reading from the table.
-            if (!SCHED_READ_TABLE) return;
-            const nw = payload.new, od = payload.old;
-            const key = (nw && nw.week_monday) || (od && od.week_monday);
-            if (!key) return;
-            if (payload.eventType === "DELETE") {
-              updateSchedule(p => { const n = { ...p }; delete n[key]; return n; });
-              delete schedWeekVersionsRef.current[key];
-              if (schedWeeksSyncRef.current) delete schedWeeksSyncRef.current[key];
-            } else if (nw) {
-              updateSchedule(p => ({ ...p, [key]: nw.data }));
-              schedWeekVersionsRef.current[key] = nw.version;
-              if (schedWeeksSyncRef.current) schedWeeksSyncRef.current[key] = JSON.parse(JSON.stringify(nw.data));
-            }
-          })
+          // (schedule_weeks has no realtime handler: the sync engine's pull is
+          // the one adopter, so adoption can't race a save. Revival = D1.)
           .on("postgres_changes", { event: "*", schema: "public", table: "shift_trade_requests" }, refreshTradeReqs)
           .on("postgres_changes", { event: "*", schema: "public", table: "notifications" }, refreshNotifs)
           .subscribe((status) => {
@@ -1869,6 +1727,97 @@ function CallSchedule() {
     toastTimerRef.current = setTimeout(() => setToast(null), 4000);
   };
 
+  // ─── Sync engine v2: the ONE reader/writer of schedule_weeks ───
+  // Created once (a ref), so its job chain and what it knows of the table
+  // survive re-renders. Everything per-render reaches it through
+  // schedSyncBridgeRef (the latest-closure bridge, as for the day-off flush),
+  // so nothing it calls is stale. Its status drives the header, the load and
+  // sign-in gates, and the reload / sign-out guards.
+  const [schedSync, setSchedSync] = useState({ seeded: false, loadFailed: false, pending: 0, pendingKeys: [], saving: 0, failing: 0, auth: "ok", authNeeded: false, rejected: [], noPermission: [], blockedDeletes: 0, conflicts: [], busy: null });
+  const schedSyncBridgeRef = useRef(null);
+  schedSyncBridgeRef.current = { canWrite: !isPublicMode, userId: userProfile?.person_id || null, showToast };
+  const schedSyncRef = useRef(null);
+  if (!schedSyncRef.current) schedSyncRef.current = createSchedSync({
+    getState: () => scheduleRef.current,
+    commit: (next) => commitSchedule(next),
+    fetch: (u, i) => fetch(u, i),
+    url: SUPABASE_URL,
+    writeHeaders: () => dbAuthHeaders(),   // writes send the stored token as-is (an expired one 401s — never anon)
+    readHeaders: () => dbReadHeaders(),    // reads fall back to anon when the token is stale (the table is anon-readable)
+    canWrite: () => schedSyncBridgeRef.current.canWrite,
+    tokenState: () => { const t = auth.getSession()?.access_token; return !t ? "none" : jwtIsFresh(t) ? "ok" : "expired"; },
+    userId: () => schedSyncBridgeRef.current.userId,
+    now: () => new Date().toISOString(),
+    nowMs: () => Date.now(),
+    onStatus: (st) => setSchedSync(prev => JSON.stringify(prev) === JSON.stringify(st) ? prev : st),
+    onToast: (m, tone) => schedSyncBridgeRef.current.showToast(m, tone),
+    onWipeBlocked: ({ curCount, baseCount, deletes }) => {
+      console.warn(`schedule_weeks wipe BLOCKED: in-memory ${curCount} wk vs table ${baseCount} wk would delete ${deletes}. Refusing — not an intentional clear.`);
+      schedSyncBridgeRef.current.showToast("Blocked an unexpected schedule wipe — your saved schedule is safe. Reload to resync.", "error");
+    },
+    onInternalError: (e) => console.error("schedule sync: internal error (a bug, not the network):", e),
+    log: (...a) => console.warn(...a),
+  });
+
+  // The edit gates, checked at the START of every user-initiated schedule
+  // action, before any side effect (a trade's status PATCH, a notification):
+  //  - the LOAD gate: until the schedule has been read from the table this
+  //    session, an edit would be made against a blank or partial schedule;
+  //  - the SIGN-IN gate: with an expired token the edit could only be held in
+  //    memory until a reload drops it. Refuse it up front instead, with the
+  //    way out ("Sign in again" at the top) — nothing becomes pending.
+  const [reauthNeeded, setReauthNeeded] = useState(false);
+  const [reauthBusy, setReauthBusy] = useState(false);
+  const schedEditable = () => {
+    if (!schedSyncRef.current.isSeeded()) {
+      showToast("The schedule hasn't loaded yet — nothing was changed. It retries every minute; try again shortly.", "error");
+      return false;
+    }
+    const t = auth.getSession()?.access_token;
+    if (!t || !jwtIsFresh(t)) {
+      setReauthNeeded(true);
+      showToast("Your sign-in has expired — nothing was changed. Tap \"Sign in again\" at the top, then redo this.", "error");
+      return false;
+    }
+    return true;
+  };
+  // "Sign in again": renew the session IN PLACE with the stored refresh
+  // token — the same auth.getUser() refresh every app open does — so nothing
+  // in memory is lost (a reload or a sign-out would drop unsaved weeks).
+  const reauthForSync = async () => {
+    if (reauthBusy) return;
+    setReauthBusy(true);
+    try {
+      const { user, error } = await auth.getUser();
+      if (user) {
+        setReauthNeeded(false);
+        showToast(schedSyncRef.current.pending().length ? "Signed in again — sending what wasn't saved." : "Signed in again.", "info");
+        schedSyncRef.current.push();
+        return;
+      }
+      showToast(error === "network"
+        ? "Couldn't reach the server — check the connection and try again."
+        : "This sign-in can't be renewed here. Reload the app and sign in" + (schedSyncRef.current.pending().length ? " — the weeks not saved yet will be lost (the reload asks first)." : "."), "error");
+    } finally { setReauthBusy(false); }
+  };
+  // The reload guard: any path that reloads the page while weeks aren't
+  // saved asks first ("No data is lost" is only true when nothing is pending).
+  const confirmReloadWithPending = (base) => {
+    const n = schedSyncRef.current.pending().length;
+    if (!n) return base ? confirm(base) : true;
+    return confirm(`${n} week${n === 1 ? "" : "s"} of the schedule ${n === 1 ? "isn't" : "aren't"} saved yet — reloading now loses ${n === 1 ? "it" : "them"}.\n\nReload anyway?`);
+  };
+  // Clear / factory reset / restore: an authoritative engine job — its own
+  // grant, a fresh whole-table read first, fail closed. When it could write
+  // nothing (the read failed, signed out…), the screen goes back to what the
+  // table holds, so it never shows a clear that didn't happen.
+  const runAuthoritativeSchedule = async (target, what) => {
+    const eng = schedSyncRef.current;
+    const r = await eng.authoritative(target, true, what);
+    if (!r.ok && !r.wrote) commitSchedule(eng.knownSchedule());
+    return r;
+  };
+
   // ─── Current-state bundle (NOT "the thing we persist") ───
   // A snapshot of live component state in one object. Every save path builds
   // from this so the shape can't drift (a prior bug dropped
@@ -1877,15 +1826,14 @@ function CallSchedule() {
   //
   // schedule / vacations / noCallDays are IN the bundle but NOT in the blob —
   // every blob write strips them before the upsert. They are ARGUMENTS to
-  // exactly four consumers, not a persistence duplication:
+  // these consumers, not a persistence duplication:
   //   1. payloadLooksWiped — the empty-save guard reads bundle.schedule /
-  //      .vacations to tell a wipe from a legitimate save.
-  //   2. syncSchedWeeks(bundle.schedule) — the schedule_weeks CAS leg of the
-  //      autosave.
-  //   3. The keepalive unload flush — blind-upserts changed weeks from
-  //      bundle.schedule and re-runs the wipe guard on the pending bundle.
-  //   4. The JSON export — the spread of this bundle is what puts the
+  //      .vacations to tell a wipe from a legitimate save (the autosave and
+  //      the blob keepalive both run it on the pending bundle).
+  //   2. The JSON export — the spread of this bundle is what puts the
   //      schedule and time off into the user's backup file.
+  // (Until sync v2 the schedule_weeks writes also read bundle.schedule; the
+  // sync engine now reads the schedule mirror itself.)
   // Removing them was evaluated and CANCELLED 2026-08-08 (buys zero blob
   // bytes — already stripped — and each consumer fails SILENTLY without its
   // argument). See REMAINING-WORK for the full record.
@@ -1943,22 +1891,14 @@ function CallSchedule() {
         return;
       }
       allowWipeSaveRef.current = false; // consume one-shot bypass
-      // ── The two legs are INDEPENDENT (2026-08-17) ──
-      // They used to be sequential inside one try: the blob upsert threw on
-      // failure, so `syncSchedWeeks` below never ran. That silently DISCARDED
-      // the schedule change — for members permanently (RLS denies them the
-      // blob, see canWriteBlob) and for schedulers on any transient blob 5xx.
-      // A member's two-way swap or trade acceptance showed in the UI, said
-      // "Save failed", and never reached schedule_weeks. Now: the weeks leg
-      // ALWAYS runs, for everyone, regardless of the blob's outcome.
+      // ── The schedule is NOT saved here (2026-08-17, then sync v2) ──
+      // The weeks used to be leg 1 of this timer, and before 2026-08-17 they
+      // sat behind the blob upsert, which threw — silently DISCARDING a
+      // member's swap or trade (RLS denies members the blob). Since sync v2
+      // the weeks have their OWN effect (below), for every non-public session
+      // and every role, with none of this effect's gates in its way.
 
-      // Leg 1 — schedule_weeks (CAS). Every session, every role: members are
-      // intended users of the swap/trade paths, and this is the only
-      // steady-state writer of the table. Its own error handling is loud
-      // (toasts inside syncSchedWeeks), so member failures still surface.
-      syncSchedWeeks(payload.schedule);
-
-      // Leg 2 — the config blob. RLS restricts call_schedule_data writes to
+      // The config blob. RLS restricts call_schedule_data writes to
       // scheduler/admin (is_scheduler_or_admin() = role IN ('scheduler',
       // 'admin')); `isScheduler` mirrors that exactly. A member has nothing
       // to write here — every member-owned fact lives in its own table
@@ -1979,7 +1919,7 @@ function CallSchedule() {
         // and the poisonable structure behind the 2026-07-18 digest incident —
         // so it is no longer written. (payload keeps them for the empty-save
         // guard and the JSON export; guard ARMING now comes from the real
-        // sources — see loadSchedFromTable/loadTimeOff.)
+        // sources — the sync engine's schedule load and loadTimeOff.)
         delete blobData.vacations; delete blobData.noCallDays;
         const { error: saveErr } = await supabase
           .from("call_schedule_data")
@@ -2015,6 +1955,32 @@ function CallSchedule() {
     }, 800);
     return () => clearTimeout(timer);
   }, [loaded, surgeons, apps, vacations, noCallDays, backupMondaySet, fierceBackupSet, schedule, priorCounts, year1Counts, startMonth, startYear, numWeeks, holidayAssignments, startMondayOverride, pendingLocks, dismissedWarnings]);
+
+  // ─── schedule_weeks: push every schedule change (sync engine v2) ───
+  // Its own effect, for every non-public session and every role — members
+  // are intended writers (swaps, trades) — and independent of the blob leg
+  // above and of its guards (the engine has its own load gate, wipe guard and
+  // sign-in handling). 800 ms debounce, like the blob; pushes coalesce.
+  // commitSchedule never pushes by itself: this effect is the one trigger
+  // for edits (the pull and the authoritative jobs request their own).
+  useEffect(() => {
+    if (!loaded || isPublicMode) return;
+    const t = setTimeout(() => { schedSyncRef.current.push(); }, 800);
+    return () => clearTimeout(t);
+  }, [loaded, schedule]);
+
+  // Pull on resume and on reconnect (I5): a phone that slept for an hour
+  // shows other people's changes the moment it's opened, not a minute later,
+  // and anything pending is retried as soon as the network is back. Public
+  // and OR-board sessions pull too (the engine never writes from them).
+  useEffect(() => {
+    if (!loaded) return;
+    const onVisible = () => { if (!document.hidden) schedSyncRef.current.pull(); };
+    const onOnline = () => schedSyncRef.current.pull();
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("online", onOnline);
+    return () => { document.removeEventListener("visibilitychange", onVisible); window.removeEventListener("online", onOnline); };
+  }, [loaded]);
 
   // ─── Flush pending save when app is backgrounded or closing ───
   //
@@ -2059,29 +2025,10 @@ function CallSchedule() {
         const blobData = { ...payload }; delete blobData.schedule;
         delete blobData.vacations; delete blobData.noCallDays; // retired mirror — time_off is the source
         const body = JSON.stringify({ id: "main", data: blobData, updated_at: ts });
-        // Because this is the last-ditch save on unload and syncSchedWeeks (CAS)
-        // can't finish mid-unload, blind-upsert any changed weeks to
-        // schedule_weeks with keepalive so an edit made right before closing
-        // isn't lost. (Blind, not CAS — acceptable for this rare unload path.)
-        try {
-          const cur = payload.schedule || {};
-          const base = schedWeeksSyncRef.current || {};
-          const wkRows = [];
-          for (const k in cur) {
-            if (!base[k] || JSON.stringify(base[k]) !== JSON.stringify(cur[k])) {
-              wkRows.push({ week_monday: k, data: cur[k], updated_by: userProfile?.person_id || null, updated_at: ts });
-            }
-          }
-          if (wkRows.length) {
-            fetch(`${SUPABASE_URL}/rest/v1/schedule_weeks?on_conflict=week_monday`, {
-              method: "POST", keepalive: true,
-              headers: { "Content-Type": "application/json", "apikey": SUPABASE_ANON_KEY, "Authorization": `Bearer ${token}`, "Prefer": "resolution=merge-duplicates,return=minimal" },
-              body: JSON.stringify(wkRows),
-            }).catch(() => {});
-          }
-        } catch (e) { console.warn("Unload flush (schedule_weeks) failed:", e); }
+        // (schedule_weeks is not flushed here — see flushSchedWeeks below: it
+        // doesn't depend on this blob payload being pending.)
         // Blob leg — same RLS reality as the debounced autosave: members are
-        // denied, so they must not fire it. They keep the weeks leg above
+        // denied, so they must not fire it. They keep the weeks flush
         // (their swaps/trades still land on unload); only this half is
         // scheduler/admin. Previously this 4xx'd into the keepalive catch and
         // vanished — silent, but still a guaranteed-failing request on every
@@ -2136,11 +2083,33 @@ function CallSchedule() {
       catch (e) { console.warn(`Day-off flush (${source}) error:`, e); }
     };
 
-    const onVisibilityChange = () => {
-      if (document.hidden) { flushPending("visibilitychange"); flushDayOff("visibilitychange"); }
+    // schedule_weeks (sync engine v2). On HIDE (the common mobile case, the
+    // page survives) the weeks go through the engine's normal chain — never a
+    // side-write that could stall and land after a later save (the day-off
+    // lesson, review round 3). On real UNLOAD (pagehide / beforeunload) the
+    // chain can't finish, so the engine builds CAS keepalive PATCHes for the
+    // unsaved weeks the table already has, from the LATEST mirror and its
+    // known (version, updated_at) — through refs, so this []-closure is never
+    // stale (R6). A week someone else changed matches 0 rows and changes
+    // nothing; no INSERT and no delete is ever sent this way (R1, R2, R4).
+    const flushSchedWeeks = (source) => {
+      if (isPublicMode) return;
+      try {
+        if (source === "visibilitychange") { schedSyncRef.current.push(); return; }
+        schedSyncRef.current.keepaliveRequests().forEach(x => { fetch(x.url, x.init).catch(() => {}); });
+      } catch (e) { console.warn(`schedule_weeks flush (${source}) failed:`, e); }
     };
-    const onPageHide = () => { flushPending("pagehide"); flushDayOff("pagehide"); };
-    const onBeforeUnload = () => { flushPending("beforeunload"); flushDayOff("beforeunload"); };
+
+    const onVisibilityChange = () => {
+      if (document.hidden) { flushPending("visibilitychange"); flushDayOff("visibilitychange"); flushSchedWeeks("visibilitychange"); }
+    };
+    const onPageHide = () => { flushPending("pagehide"); flushDayOff("pagehide"); flushSchedWeeks("pagehide"); };
+    // beforeunload also asks the browser to confirm leaving while weeks are
+    // unsaved (desktop shows its own "Leave site?" prompt; ignored on mobile).
+    const onBeforeUnload = (ev) => {
+      flushPending("beforeunload"); flushDayOff("beforeunload"); flushSchedWeeks("beforeunload");
+      try { if (!isPublicMode && schedSyncRef.current.pending().length) { ev.preventDefault(); ev.returnValue = ""; } } catch (e) { /* never block unload on an error */ }
+    };
 
     document.addEventListener("visibilitychange", onVisibilityChange);
     window.addEventListener("pagehide", onPageHide);
@@ -2236,7 +2205,7 @@ function CallSchedule() {
     }
     // Snapshot the current persisted row before wiping it. If the snapshot
     // can't be written there is no way back, so the reset is refused.
-    const resetSnap = await snapshots.capture("reset_all_data");
+    const resetSnap = await snapshots.capture("reset_all_data", { minWeeks: Object.keys(schedSyncRef.current.knownSchedule()).length ? 1 : 0 });
     if (!resetSnap.ok) {
       showToast("Couldn't save a backup snapshot — reset cancelled. Nothing was deleted.", "error");
       setSaveStatus("Reset cancelled");
@@ -2277,8 +2246,10 @@ function CallSchedule() {
     setBackupMondaySet(new Set());
     setFierceBackupSet(new Set());
     commitSchedule({});
-    intentionalScheduleWipeRef.current = true; // authorize the one legitimate full wipe
-    syncSchedWeeks({}); // mirror the wipe to schedule_weeks
+    // Every week deleted: an authoritative engine job with its own grant. If
+    // it can't write (table unreadable, signed out) the schedule on screen goes
+    // back to what is saved and the reason is shown.
+    runAuthoritativeSchedule({}, "reset").then(r => { if (!r.ok) showToast(r.error ? "Factory reset: the schedule was NOT cleared — " + r.error : `Factory reset: ${schedSyncRef.current.pending().length} week(s) not deleted yet — retrying automatically.`, "error"); });
     setAppShifts({});
     setPriorCounts({});
     setYear1Counts({});
@@ -2792,6 +2763,22 @@ function CallSchedule() {
         || (req.return_week && req.return_shift && shiftStartDate(req.return_week, req.return_shift) < accToday)) {
         showToast("This trade's shift has already passed — propose a new one.", "error");
         return;
+      }
+      if (!schedEditable()) return;
+      // The trade must still describe the schedule (sync v2, stale intents):
+      // the proposer still holds the shift and the other side the return
+      // shift. Someone else may have changed the week since it was proposed —
+      // and v2's pull shows that change here, so a blind accept would now
+      // overwrite it. Checked before the status PATCH: a refused trade stays
+      // pending.
+      {
+        const cur = scheduleRef.current;
+        const holder = (w, k) => (k === "dayCall" ? cur[w]?.dayCall : cur[w]?.nights?.[k]) || "";
+        if (holder(req.week_monday, req.shift_key) !== (req.from_surgeon_id || "")
+          || (req.return_week && req.return_shift && holder(req.return_week, req.return_shift) !== (req.to_surgeon_id || ""))) {
+          showToast("This trade is out of date — the schedule for those shifts changed since it was proposed. Nothing was changed; propose it again if it's still wanted.", "error");
+          return;
+        }
       }
       // Detect cascade changes
       const cascades = detectCascadeChanges(schedule, req);
@@ -4031,6 +4018,10 @@ function CallSchedule() {
     return availability;
   };
   const doGenerate = (preview) => {
+    if (!schedEditable()) return "refused";
+    // The engine epoch this result is computed at: a preview or a publish is
+    // refused if someone else changes one of its weeks before it lands.
+    const genEpoch = schedSyncRef.current.epochNow();
     const prefs = buildPrefs();
     const availability = buildGenAvailability();
     // Seed the generator with the week immediately preceding the new start so
@@ -4097,7 +4088,7 @@ function CallSchedule() {
     });
     if (droppedLocks.length) showToast(`⚠ ${droppedLocks.length} lock${droppedLocks.length === 1 ? " was" : "s were"} NOT honored by the generator: ${droppedLocks.map(l => `${nameOf(l.surgeonId)} — ${slotLabel(l.mondayStr, l.slot === "dc" ? "dayCall" : l.slot)}`).join("; ")} (the surgeon is unavailable there — vacation, no-call or Silvis).`, "error");
     if (preview) {
-      setPreviewSchedule(result);
+      setPreviewSchedule(result); previewEpochRef.current = genEpoch;
       setShowPreview(true);
       return "preview";
     }
@@ -4110,7 +4101,7 @@ function CallSchedule() {
       } catch (e) { console.error("Needs-your-OK check failed:", e); return 1; } // fail closed: review by hand
     })();
     if (needsOkN > 0) {
-      setPreviewSchedule(result);
+      setPreviewSchedule(result); previewEpochRef.current = genEpoch;
       setShowPreview(true);
       showToast(`${needsOkN} item${needsOkN === 1 ? " needs" : "s need"} your OK before publishing — review them in the preview below, then ✓ Accept & Publish.`, "error");
       return "review";
@@ -4120,9 +4111,18 @@ function CallSchedule() {
         // Snapshot the persisted state BEFORE any mutation; if the snapshot
         // can't be written there is no backup, so the regenerate is refused.
         setSaveStatus("Saving backup snapshot…");
-        const snap = await snapshots.capture("regenerate");
+        const snap = await snapshots.capture("regenerate", { minWeeks: Object.keys(schedSyncRef.current.knownSchedule()).length ? 1 : 0 });
         if (!snap.ok) {
           showToast("Couldn't save a backup snapshot — regenerate cancelled. Schedule unchanged.", "error");
+          setSaveStatus("");
+          return;
+        }
+        // Someone else changed a week of this period while the snapshot was
+        // being saved: the result was computed from the old copy — refuse
+        // rather than overwrite their change (sync v2, stale intents).
+        const movedWeeks = schedSyncRef.current.changedSince(Object.keys(result), genEpoch);
+        if (movedWeeks.length) {
+          showToast(`The week${movedWeeks.length === 1 ? "" : "s"} of ${movedWeeks.join(", ")} changed while generating — nothing was published. Generate again.`, "error");
           setSaveStatus("");
           return;
         }
@@ -4144,7 +4144,7 @@ function CallSchedule() {
           delete blobData.vacations; delete blobData.noCallDays; // retired mirror — time_off is the source
           const { error: regenErr } = await supabase.from("call_schedule_data").upsert({ id: "main", data: blobData, updated_at: ts });
           if (regenErr) throw new Error(`regenerate blob save failed: ${String(regenErr).slice(0, 200)}`); // catch toasts; checked autosave retries
-          syncSchedWeeks(merged); // persist the merged schedule (no spurious deletes)
+          schedSyncRef.current.push(); // send the weeks now (the weeks effect would too; pushes coalesce)
         } catch(e) { console.error("Immediate save failed:", e); showToast("Couldn't save the regenerated schedule — check your connection.", "error"); }
       })();
     }
@@ -4155,23 +4155,30 @@ function CallSchedule() {
   const clearSchedule = async () => {
     if (!confirm("Clear the entire generated schedule? Holiday assignments and setup data will be kept.\n\nThis cannot be undone.")) return;
     // Preserve pre-clear state; if the snapshot can't be written, refuse to clear.
-    const clearSnap = await snapshots.capture("clear_schedule");
+    const clearSnap = await snapshots.capture("clear_schedule", { minWeeks: Object.keys(schedSyncRef.current.knownSchedule()).length ? 1 : 0 });
     if (!clearSnap.ok) {
       showToast("Couldn't save a backup snapshot — clear cancelled. Schedule unchanged.", "error");
       return;
     }
     if (Object.keys(scheduleRef.current).length > 0) pushUndo();
     commitSchedule({});
-    intentionalScheduleWipeRef.current = true; // authorize the one legitimate full wipe
-    syncSchedWeeks({}); // mirror the wipe to schedule_weeks
-    setSaveStatus("Schedule cleared");
+    // Every week deleted: an authoritative engine job with its own grant (the
+    // re-read of the whole table comes first, so weeks added elsewhere since
+    // the last pull go too). "Schedule cleared" only once it has happened.
+    setSaveStatus("Clearing… keep the app open");
+    const cr = await runAuthoritativeSchedule({}, "clear");
+    if (!cr.ok) {
+      showToast(cr.error ? "The schedule was NOT cleared — " + cr.error : `${schedSyncRef.current.pending().length} week(s) not deleted yet — retrying automatically.`, "error");
+      setSaveStatus("");
+      if (cr.error) return;
+    } else setSaveStatus("Schedule cleared");
     setTimeout(() => setSaveStatus(""), 2000);
     // Immediately save to prevent polling race condition
     (async () => {
       try {
         const ts = new Date().toISOString();
         lastSyncRef.current = ts;
-        // Stage 6: schedule lives in schedule_weeks (already wiped via syncSchedWeeks({}) above).
+        // Stage 6: schedule lives in schedule_weeks (cleared by the authoritative engine job above).
         const blobData = buildStateBundle({ schedule: {}, _intentionalClear: true }); delete blobData.schedule;
         delete blobData.vacations; delete blobData.noCallDays; // retired mirror — time_off is the source
         const { error: clearErr } = await supabase.from("call_schedule_data").upsert({ id: "main", data: blobData, updated_at: ts });
@@ -4215,19 +4222,15 @@ function CallSchedule() {
     setRestoreBusyId(snap.id);
     setSaveStatus("Restoring snapshot…");
     const r = await snapshots.restore(snap.id, async (sched) => {
-      // The schedule leg of the restore — the SAME CAS path every schedule
-      // write uses (per-week compare-and-swap + wipe guard). Mirrors the
-      // regenerate flow: state first, then syncSchedWeeks persists it.
+      // The schedule leg of the restore: an authoritative engine job — its
+      // own grant (a confirmed restore may shrink or clear the table), a fresh
+      // whole-table read first, the outcome reported honestly.
       if (Object.keys(scheduleRef.current).length > 0) pushUndo();
       commitSchedule(sched);
-      // A confirmed restore may legitimately shrink or clear the table, so
-      // arm the one-shot wipe authorization — and ALWAYS disarm it after, so
-      // a later accidental wipe can't ride on a leftover authorization.
-      intentionalScheduleWipeRef.current = true;
-      try { await syncSchedWeeks(sched); }
-      finally { intentionalScheduleWipeRef.current = false; }
-      return { ok: true };
-    });
+      const ar = await runAuthoritativeSchedule(sched, "restore");
+      if (ar.ok) return { ok: true };
+      return { ok: false, error: ar.error || `${schedSyncRef.current.pending().length} week(s) of the schedule aren't saved yet — they retry automatically` };
+    }, { minWeeks: Object.keys(schedSyncRef.current.knownSchedule()).length ? 1 : 0 });
     setRestoreBusyId(null);
     if (!r.ok) {
       showToast("Restore failed: " + (r.error || "unknown error"), "error");
@@ -4387,6 +4390,12 @@ function CallSchedule() {
     // The checkbox is the gate (the button is disabled too; this is the backstop).
     if (previewSchedule && previewNeedsOk.items.length > 0 && !previewAck) { showToast("Tick \"I've reviewed these items\" first.", "error"); return; }
     if (previewSchedule) {
+      if (!schedEditable()) return;
+      // A preview can sit for minutes: if someone else changed one of its
+      // weeks since it was generated, publishing it would overwrite that
+      // change with a copy made before it (sync v2, stale intents). Refuse.
+      const moved = schedSyncRef.current.changedSince(Object.keys(previewSchedule), previewEpochRef.current);
+      if (moved.length) { showToast(`The week${moved.length === 1 ? "" : "s"} of ${moved.join(", ")} changed since this preview was generated — nothing was published. Generate the preview again.`, "error"); return; }
       if (Object.keys(scheduleRef.current).length > 0) pushUndo();
       rollForwardCounts(previewSchedule);
       // Accumulate: merge the published period into the existing schedule so
@@ -4728,8 +4737,18 @@ function CallSchedule() {
     });
   }, [holidayAssignments, surgeons, silvisActive, silvisFakId, silvisDays, silvisRefuse]);
 
-  const swapShift = (mStr, shift, newId) => {
+  const swapShift = (mStr, shift, newId, expectOldId) => {
+    if (!schedEditable()) return;
     const oldId = shift === "dayCall" ? schedule[mStr]?.dayCall : schedule[mStr]?.nights?.[shift];
+    // A swap chosen from suggestions made earlier: the slot must still hold
+    // the surgeon it was suggested for (sync v2, stale intents).
+    if (expectOldId !== undefined) {
+      const cw = scheduleRef.current[mStr];
+      if (((shift === "dayCall" ? cw?.dayCall : cw?.nights?.[shift]) || "") !== (expectOldId || "")) {
+        showToast("This swap is out of date — that shift changed since the suggestions were made. Nothing was changed; find swaps again.", "error");
+        return;
+      }
+    }
     // silvisBusy (see acceptTradeRequest). swapShift is a manual edit path, so
     // the scheduler override applies.
     if (silvisActive) { const r = silvisBlock(newId, mStr, shift, schedule[mStr]); if (silvisRefuse(r ? [r] : [])) return; }
@@ -4917,6 +4936,18 @@ function CallSchedule() {
       showToast("This trade's shift has already passed — propose a new one.", "error");
       return;
     }
+    if (!schedEditable()) return;
+    // The suggestion must still describe the schedule (sync v2, stale
+    // intents): the target slot still held by the surgeon it was made for,
+    // the return slot still the candidate's. Otherwise refuse, zero writes.
+    {
+      const cur = scheduleRef.current;
+      const holder = (w, k) => (k === "dayCall" ? cur[w]?.dayCall : cur[w]?.nights?.[k]) || "";
+      if (holder(targetMon, targetShift) !== (targetOldId || "") || (returnMon && returnShift && holder(returnMon, returnShift) !== (candId || ""))) {
+        showToast("This swap is out of date — those shifts changed since the suggestions were made. Nothing was changed; find swaps again.", "error");
+        return;
+      }
+    }
     // silvisBusy on both legs (see acceptTradeRequest). The mirror, not
     // `schedule`: this callback's deps omit schedule, so its closure is stale.
     if (silvisActive) {
@@ -4965,7 +4996,7 @@ function CallSchedule() {
     // wk may be undefined — that's OK. We're allowing the scheduler to create
     // a brand-new week entry (for ad-hoc coverage in periods the algorithm
     // doesn't cover, e.g. before the hand-written schedule starts).
-    const wk = schedule[mondayStr] || {};
+    const wk = scheduleRef.current[mondayStr] || {};
     const mon = parse(mondayStr);
     // Snapshot current APP assignments for each day of this week
     const appsDraft = {};
@@ -4983,6 +5014,10 @@ function CallSchedule() {
       // Opened before the row loaded: the APP rows show blanks that may not be
       // blank — they are locked (re-review 2026-10-11); reopening picks up the map.
       appsLoaded: appShiftsLoaded,
+      // The sync engine's epoch when the editor opened (sync v2, R15): if
+      // someone else's change to this week is adopted while it's open, saving
+      // the draft would overwrite it — so the save is refused instead.
+      openEpoch: schedSyncRef.current.epochNow(),
       draft: {
         dayCall: wk.dayCall || "",
         nights: { ...(wk.nights || {}) },
@@ -4991,12 +5026,17 @@ function CallSchedule() {
         reason: "",
       },
     });
-  }, [schedule, appShifts, appShiftsLoaded]);
+  }, [appShifts, appShiftsLoaded]);
 
   const saveWeekEdits = useCallback((openAfter) => {
     if (!editWeekModal) return;
+    if (!schedEditable()) return;
     const { mondayStr, draft } = editWeekModal;
-    const oldWk = schedule[mondayStr] || {};
+    if (schedSyncRef.current.changedSince([mondayStr], editWeekModal.openEpoch || 0).length) {
+      showToast("This week was changed by someone else while the editor was open — nothing was saved (surgeon slots or APP days). Close the editor and reopen it to start from the latest.", "error");
+      return; // the editor stays open, so the draft can still be read
+    }
+    const oldWk = scheduleRef.current[mondayStr] || {};
     // APP days the user actually edited in THIS editor, against what it showed
     // when it opened (2026-10-11) — only these are written. Before the APP-shift
     // row has loaded this session the whole map can't be trusted: the APP part
@@ -5218,7 +5258,7 @@ function CallSchedule() {
   //    the flag but not the set — manufacturing the exact divergence this
   //    code exists to prevent. (The set edit was never undoable.)
   //  - No direct sync call, no wipe-ref touches: the plain state set rides
-  //    the normal autosave → syncSchedWeeks CAS path like any shift edit.
+  //    the schedule_weeks push (sync engine v2) like any shift edit.
   const setWeekFlag = (monday, flagKey, val) => {
     updateSchedule(p => {
       const wk = p[monday];
@@ -6223,7 +6263,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       {updateAvailable && !paintSheet && (
         <div role="status" aria-live="polite" style={{position:"fixed",left:0,right:0,bottom:0,zIndex:9998,background:"#1a2a3a",color:"#fff",display:"flex",alignItems:"center",justifyContent:"center",flexWrap:"wrap",gap:10,padding:"9px 14px",fontSize:12.5,fontWeight:600,fontFamily:font,boxShadow:"0 -2px 12px rgba(0,0,0,0.25)"}}>
           <span>⬆ New version available ({updateAvailable})</span>
-          <button onClick={()=>{ if (window.__dsgHardReset) window.__dsgHardReset(); else window.location.reload(); }} style={{background:"#2a8a5a",border:"none",color:"#fff",borderRadius:6,padding:"5px 14px",fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:font}}>Tap to reload</button>
+          <button onClick={()=>{ if (!confirmReloadWithPending()) return; if (window.__dsgHardReset) window.__dsgHardReset(); else window.location.reload(); }} style={{background:"#2a8a5a",border:"none",color:"#fff",borderRadius:6,padding:"5px 14px",fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:font}}>Tap to reload</button>
           <button aria-label="Dismiss" onClick={()=>{ updateDismissedRef.current = updateAvailable; setUpdateAvailable(null); }} style={{background:"none",border:"none",color:"#8a9aa8",cursor:"pointer",fontSize:14,padding:"2px 6px"}}>✕</button>
         </div>
       )}
@@ -6490,12 +6530,24 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   <span style={{color:"#7a8a98"}}>{isOrView ? "OR board · read-only" : "Read-only view"}</span>
                   {lastSyncRef.current && <> · Last updated: {new Date(lastSyncRef.current).toLocaleString(undefined, {month:"short",day:"numeric",year:"numeric",hour:"numeric",minute:"2-digit"})}</>}
                   {!lastSyncRef.current && <> · Loading schedule…</>}
+                  {loaded && schedSync.loadFailed && <span style={{color:"#c04040",fontWeight:700}}> · ⚠ The schedule didn't load — retrying. What's shown may be incomplete.</span>}
                 </>
               ) : (
                 <>
                   Call Schedule · Surgeons + APPs
                   {saveStatus && <span role="status" aria-live="polite" style={{marginLeft:8,color:saveError?"#c04040":"#1a8040",fontWeight:600,fontSize:11}}>{saveError?"⚠":"☁"} {saveStatus}</span>}
-                  {loaded && !saveStatus && <span style={{marginLeft:8,color:"#a0a8b0",fontSize:10}}>☁ Synced</span>}
+                  {/* The schedule's own save state (sync v2). "Saving" is neutral —
+                      every edit is pending for a moment; red only when an attempt
+                      failed, sign-in is needed, deletes are blocked, or the
+                      schedule never loaded. */}
+                  {loaded && schedSync.loadFailed && <span role="status" style={{marginLeft:8,color:"#c04040",fontWeight:700,fontSize:11}}>⚠ Schedule didn't load — retrying (edits paused)</span>}
+                  {loaded && schedSync.busy && <span role="status" style={{marginLeft:8,color:"#8a6a10",fontWeight:600,fontSize:11}}>{schedSync.busy === "restore" ? "Restoring…" : schedSync.busy === "clear" || schedSync.busy === "reset" ? "Clearing…" : "Saving…"} keep the app open</span>}
+                  {loaded && !schedSync.busy && schedSync.failing > 0 && <span role="status" aria-live="polite" style={{marginLeft:8,color:"#c04040",fontWeight:700,fontSize:11}}>⚠ {schedSync.failing} week{schedSync.failing === 1 ? "" : "s"} not saved — {schedSync.authNeeded ? "sign in again" : schedSync.noPermission.length === schedSync.failing ? "no permission" : schedSync.rejected.length === schedSync.failing ? "rejected by the server" : "retrying"}</span>}
+                  {loaded && !schedSync.busy && schedSync.failing === 0 && schedSync.saving > 0 && <span style={{marginLeft:8,color:"#6a7a88",fontSize:10}}>Saving {schedSync.saving} week{schedSync.saving === 1 ? "" : "s"}…</span>}
+                  {loaded && schedSync.blockedDeletes > 0 && <span role="status" style={{marginLeft:8,color:"#c04040",fontWeight:700,fontSize:11}}>⚠ {schedSync.blockedDeletes} week deletion{schedSync.blockedDeletes === 1 ? "" : "s"} blocked — reload to resync</span>}
+                  {(schedSync.authNeeded || reauthNeeded) && <button onClick={reauthForSync} disabled={reauthBusy} style={{marginLeft:8,background:"#c04040",border:"none",color:"#fff",borderRadius:5,padding:"2px 9px",fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:font}}>{reauthBusy ? "Signing in…" : "Sign in again"}</button>}
+                  {schedSync.conflicts.length > 0 && <button onClick={()=>{ showToast(`Changed by someone else (your edit was replaced — reapply it if it's still needed): week${schedSync.conflicts.length === 1 ? "" : "s"} of ${schedSync.conflicts.map(c => c.k).join(", ")}.`, "error"); schedSyncRef.current.dismissConflicts(); }} style={{marginLeft:8,background:"#fdf0e0",border:"1px solid #e0b070",color:"#8a5a10",borderRadius:5,padding:"1px 8px",fontSize:10.5,fontWeight:700,cursor:"pointer",fontFamily:font}}>⚠ {schedSync.conflicts.length} change{schedSync.conflicts.length === 1 ? "" : "s"} replaced — see</button>}
+                  {loaded && !saveStatus && schedSync.seeded && schedSync.pending === 0 && !schedSync.busy && <span style={{marginLeft:8,color:"#a0a8b0",fontSize:10}}>☁ Synced</span>}
                   {!loaded && <span style={{marginLeft:8,color:"#6a7a88",fontSize:10}}>Connecting…</span>}
                 </>
               )}
@@ -8689,7 +8741,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                             // must keep full past access (the Bucket-B caveat).
                             if (shiftStartDate(swapTarget.mondayStr, swapTarget.shift) < fmt(new Date())) { showToast("This trade's shift has already passed — propose a new one.", "error"); return; }
                             if (!confirm(`⚠️ Emergency one-way swap\n\nThis will reassign ${slotLabel(swapTarget.mondayStr, swapTarget.shift)} to ${s.candidateName} WITHOUT a return swap.\n\nOne-way swaps should only be used for illness, family emergency, or other acute circumstances.\n\nProceed?`)) return;
-                            swapShift(swapTarget.mondayStr, swapTarget.shift, s.candidateId);
+                            swapShift(swapTarget.mondayStr, swapTarget.shift, s.candidateId, swapTarget.surgeonId);
                           }}
                             style={{background:"none",border:"1px solid #e0c0a0",color:"#a08040",borderRadius:5,padding:"3px 10px",fontSize:10,cursor:"pointer",fontFamily:font}}>
                             ⚠ Emergency one-way (scheduler only)
@@ -11012,7 +11064,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             <div style={css.cardT}>🔄 Refresh App</div>
             <p style={{fontSize:12,color:"#5a6a78",marginBottom:10,lineHeight:1.4}}>If the app seems stuck on an old version or the schedule looks wrong, tap below to clear the cache and reload fresh.</p>
             <button onClick={()=>{
-              if (confirm("Refresh the app? This clears the local cache and reloads the latest version. No data is lost.")) {
+              if (confirmReloadWithPending("Refresh the app? This clears the local cache and reloads the latest version. No data is lost.")) {
                 if (typeof window.__dsgHardReset === "function") window.__dsgHardReset();
                 else window.location.reload();
               }
