@@ -82,6 +82,7 @@ function loadFloorStripped() {
     [/const nonHolSpaced = nonHolPool\.filter\([^\n]*\n\s*if \(nonHolSpaced\.length > 0\) nonHolPool = nonHolSpaced;\r?\n/, ""],
     [/const dcPoolSpaced = dcPool\.filter\([^\n]*\n\s*if \(dcPoolSpaced\.length > 0\) dcPool = dcPoolSpaced;\r?\n/, ""],
     [/\+ gapViolations    \* 50/, "+ gapViolations    * 0"],
+    [/\+ gapC \* 50 \+/, "+ gapC * 0 +"], // the type-balance polish's spacing tier too (2026-10-11)
   ];
   let out = src;
   for (const [re, rep] of strips) {
@@ -476,6 +477,11 @@ const silvis = runSilvis();
 //        oracle's tables and LIVE_PINS (restated here from the cards, not
 //        generator.js) and compares with listScheduleBends — both ways, and
 //        no designed pattern may appear;
+//      - (follow-up, 2026-10-11) be as EVEN per type as the calendar allows:
+//        a Δ0 service-week AND Δ0 weekend schedule exists at the same bend
+//        cost (owner's existence proof), and the type-balance polish must
+//        reach service weeks Δ0 in ≥ 95% and weekends Δ0 in ≥ 90% of rolls
+//        (observed: 200/200 and ~193/200 — the rest are Δ2 on one pair);
 //      - cost exactly the minimum computed by test/bend-oracle.js, an
 //        independent exact solver written from the spec by a separate agent
 //        that never read generator.js (live minimum 96 = wk 1/4: 6,
@@ -527,7 +533,7 @@ function runLive() {
     .filter(it => it.kind === "bend" || it.kind === "empty")
     .map(it => `${it.mondayStr}|${it.who ? code[it.who] : "EMPTY"}|${it.slots.join("+")}|${it.cost}`).sort();
   const EVES = [["2026-11-23", "wed", "RPC", "2026-11-25"], ["2026-12-21", "thu", "FAK", "2026-12-24"], ["2026-12-28", "wed", "DJA", "2026-12-30"]];
-  const stats = { timeOff: 0, empty: 0, eves: EVES.map(() => 0), xmas: 0, costHist: {}, ms: 0 };
+  const stats = { timeOff: 0, empty: 0, eves: EVES.map(() => 0), xmas: 0, costHist: {}, ms: 0, svcHist: {}, wkndHist: {} };
   const LIVE_ROLLS = ROLLS;
   for (let roll = 0; roll < LIVE_ROLLS; roll++) {
     const t = Date.now();
@@ -547,10 +553,19 @@ function runLive() {
     const own = ownBends(sched), lst = lsb ? listed(sched) : own;
     if (lsb && JSON.stringify(own) !== JSON.stringify(lst)) failures.push(`${label}: listScheduleBends disagrees with the test — test ${JSON.stringify(own)} vs list ${JSON.stringify(lst)}`);
     lst.forEach(k => { const [m, who, slots] = k.split("|"); const [a, b] = slots.split("+"); if (who !== "EMPTY" && pinned(m, a, byCode[who]) && pinned(m, b, byCode[who])) failures.push(`${label}: a designed pattern was listed as a bend: ${k}`); });
+    const svcC = {}, wkC = {}; ids.forEach(id => { svcC[id] = 0; wkC[id] = 0; });
+    keys.forEach(m => { const wk = sched[m]; if (wk && wk.dayCall) svcC[wk.dayCall]++; if (wk && wk.nights && wk.nights.wknd) wkC[wk.nights.wknd]++; });
+    const spr = (o) => Math.max(...Object.values(o)) - Math.min(...Object.values(o));
+    stats.svcHist[spr(svcC)] = (stats.svcHist[spr(svcC)] || 0) + 1; stats.wkndHist[spr(wkC)] = (stats.wkndHist[spr(wkC)] || 0) + 1;
     const cost = own.reduce((t, k) => t + Number(k.split("|")[3]), 0);
     stats.costHist[cost] = (stats.costHist[cost] || 0) + 1;
     if (cost !== best.cost) failures.push(`${label}: bend cost ${cost}, the exact minimum is ${best.cost} — ${own.join(", ")}`);
     if (failures.length > 25 && !process.env.LIVE_ALL_ROLLS) break;
+  }
+  const rolled = Object.values(stats.svcHist).reduce((a, b) => a + b, 0);
+  if (rolled === LIVE_ROLLS) {
+    if ((stats.svcHist[0] || 0) < Math.ceil(0.95 * LIVE_ROLLS)) failures.push(`live: service weeks Δ0 in only ${stats.svcHist[0] || 0}/${LIVE_ROLLS} rolls (need ≥ 95%) — ${JSON.stringify(stats.svcHist)}`);
+    if ((stats.wkndHist[0] || 0) < Math.ceil(0.90 * LIVE_ROLLS)) failures.push(`live: weekends Δ0 in only ${stats.wkndHist[0] || 0}/${LIVE_ROLLS} rolls (need ≥ 90%) — ${JSON.stringify(stats.wkndHist)}`);
   }
   return { name: "live", failures, stats, rolls: LIVE_ROLLS, oracleCost: best.cost, oracleMs };
 }
@@ -565,7 +580,7 @@ for (const r of [clean, cleanProxy, light, squeeze]) {
     `SW gap histogram {${gaps || "no repeats"}}; spacing violations (gap<=${MIN_DC_GAP}, soft) ×${s.spacingViolations}`);
 }
 console.log(`stress    ${ROLLS} rolls — floor held every roll; floor-stripped control picked the gap-2 surgeon in ${stress.redFired}/${ROLLS} rolls`);
-console.log(`live      ${live.rolls || 0} rolls — time-off placements ×${live.stats ? live.stats.timeOff : "?"}; empty slots ×${live.stats ? live.stats.empty : "?"}; eves RPC/FAK/DJA ${live.stats ? live.stats.eves.join("/") : "?"} of ${live.rolls}; Christmas week FAK ${live.stats ? live.stats.xmas : "?"}/${live.rolls}; bend cost ${live.stats ? JSON.stringify(live.stats.costHist) : "?"} vs the oracle's exact minimum ${live.oracleCost} (oracle ${live.oracleMs} ms); generate() ${live.stats ? Math.round(live.stats.ms / live.rolls) : "?"} ms/roll`);
+console.log(`live      ${live.rolls || 0} rolls — time-off placements ×${live.stats ? live.stats.timeOff : "?"}; empty slots ×${live.stats ? live.stats.empty : "?"}; eves RPC/FAK/DJA ${live.stats ? live.stats.eves.join("/") : "?"} of ${live.rolls}; Christmas week FAK ${live.stats ? live.stats.xmas : "?"}/${live.rolls}; bend cost ${live.stats ? JSON.stringify(live.stats.costHist) : "?"} vs the oracle's exact minimum ${live.oracleCost} (oracle ${live.oracleMs} ms); generate() ${live.stats ? Math.round(live.stats.ms / live.rolls) : "?"} ms/roll; service-week spread ${live.stats ? JSON.stringify(live.stats.svcHist) : "?"}; weekend spread ${live.stats ? JSON.stringify(live.stats.wkndHist) : "?"}`);
 console.log(`silvis    ${ROLLS} rolls — FAK off every overlapping slot (6 Silvis days: Mon/Tue/Wed/Sun/Fri/Sat); control without them put him on one in ${silvis.redFired}/${ROLLS} rolls; open neighbor legs given to him: ${silvis.given}`);
 
 const failures = [...clean.failures, ...cleanProxy.failures, ...light.failures, ...squeeze.failures, ...stress.failures, ...silvis.failures, ...live.failures];

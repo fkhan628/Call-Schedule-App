@@ -1399,8 +1399,12 @@ function generateOnce(surgeons, mondays, vac, backupMondays, priorCounts, prefer
       if (onVac(Y, fmt(addD(monday, dayOffset + 1)), vacOnly)) return false; // next day (trailing edge — vacation only; no-call next day is OK)
     }
 
-    // Inter-week constraints
-    const prevWk = wkIdx > 0 ? sched[mondayStrs[wkIdx-1]] : null;
+    // Inter-week constraints. Week 0's "previous week" is the SEED (the real week
+    // before the period: its service week and weekend) — without it, a move
+    // could hand week 0's service week to the seed weekend surgeon or the
+    // first Monday night to the seed service doctor (2026-10-11).
+    const prevWk = wkIdx > 0 ? sched[mondayStrs[wkIdx-1]]
+      : (prevWeekSeed ? { dayCall: prevWeekSeed.dayCall || null, nights: { wknd: prevWeekSeed.wknd || null } } : null);
     const nextWk = wkIdx < mondayStrs.length-1 ? sched[mondayStrs[wkIdx+1]] : null;
 
     if (slot === "dayCall") {
@@ -1808,6 +1812,341 @@ function generateOnce(surgeons, mondays, vac, backupMondays, priorCounts, prefer
     if (!found) break;
   }
 
+  // ═══ TYPE-BALANCE POLISH (follow-up to #73, 2026-10-11) ═══
+  // Phases 1/1B move one slot type at a time, so a weekend surplus can only
+  // shed by finding someone with NO shift that week — on a squeezed period
+  // (pinned holiday weekends, bends) that stalls at Δ2–4 weekends although a
+  // Δ0 / Δ0 schedule exists at the same bend cost. This local search swaps
+  // the holders of ANY two slots (a weekend for a weeknight keeps both
+  // totals) or hands one slot to another surgeon, scored on the fairness
+  // tiers of scoreOf. Every move passes canTakeSlot for the receiver(s) — the
+  // FLOOR and every hard rule (so no new bend), and pinned slots (locks,
+  // holiday conventions, designed holiday pins) never move — so bend cost,
+  // time off and pins can only stay as they are. Sideways moves (equal score)
+  // are taken sometimes to cross plateaus; the best state found is kept.
+  // generate() runs it on its best candidates only (it is attached, not run
+  // here, so the 50 attempts stay cheap).
+  const polishTypeBalance = (budget, target) => {
+    const tSvc = target ? target.svc : 0, tWk = target ? target.wknd : 0;
+    const W = mondayStrs.length;
+    if (!W) return;
+    const SLOTS = ["dayCall", "mon", "tue", "wed", "thu", "wknd"];
+    const monDates = mondayStrs.map(m => parse(m));
+    const get = (i, s) => { const wk = sched[mondayStrs[i]]; return s === "dayCall" ? wk.dayCall : (wk.nights ? wk.nights[s] : null); };
+    const put = (i, s, id) => { const wk = sched[mondayStrs[i]]; if (s === "dayCall") wk.dayCall = id; else wk.nights[s] = id; };
+    const svc = {}, wkd = {}, nts = {}, svcR = {}, wkdR = {};
+    ids.forEach(id => { svc[id] = 0; wkd[id] = 0; nts[id] = 0; svcR[id] = 0; wkdR[id] = 0; });
+    const bump = (i, s, id, d) => {
+      if (!id || svc[id] === undefined) return;
+      const reg = !sched[mondayStrs[i]].isBackup;
+      if (s === "dayCall") { svc[id] += d; if (reg) svcR[id] += d; }
+      else if (s === "wknd") { wkd[id] += d; if (reg) wkdR[id] += d; }
+      else nts[id] += d;
+    };
+    for (let i = 0; i < W; i++) SLOTS.forEach(s => bump(i, s, get(i, s), 1));
+    const spread = (m) => { let mn = Infinity, mx = -Infinity; for (const id of ids) { const v = m[id]; if (v < mn) mn = v; if (v > mx) mx = v; } return mx - mn; };
+    // Same seam-aware spacing count as scoreOf (gap ≤ MIN_DC_GAP).
+    const gapViol = () => {
+      const last = {};
+      if (prevWeekSeed && prevWeekSeed.recentDc) for (const id in prevWeekSeed.recentDc) last[id] = prevWeekSeed.recentDc[id];
+      if (prevWeekSeed && prevWeekSeed.dayCall) last[prevWeekSeed.dayCall] = -1;
+      let v = 0;
+      for (let i = 0; i < W; i++) { const id = get(i, "dayCall"); if (!id) continue; if (last[id] !== undefined && i - last[id] <= MIN_DC_GAP) v++; last[id] = i; }
+      return v;
+    };
+    // Soft rules (never forbidden, but not added for nothing): service week →
+    // next weekend, back-to-back weekends, weekend → next Tuesday.
+    const softCt = () => {
+      let v = 0;
+      for (let i = 0; i + 1 < W; i++) {
+        const dc = get(i, "dayCall"), we = get(i, "wknd"), ndc = get(i + 1, "wknd"), ntue = get(i + 1, "tue");
+        if (dc && dc === ndc) v++;
+        if (we && we === ndc) v++;
+        if (we && we === ntue) v++;
+      }
+      return v;
+    };
+    // Integer part = scoreOf's fairness tiers exactly (so the polish can never
+    // trade one away); the fraction (< 1) only GUIDES the search: sums of
+    // squares per type (moving a weekend from a 3-holder to a 1-holder leaves
+    // the spread at 2 until the last 3 is gone — the squares see the progress),
+    // then the soft-rule count.
+    const sq = (m) => { let t = 0; for (const id of ids) t += m[id] * m[id]; return t; };
+    // gapViol / softCt read only service weeks, weekends and Tuesday nights:
+    // cached, and recounted only when a move touches one of those slots.
+    let gapC = gapViol(), softC = softCt();
+    const recount = (...slots) => { if (slots.some(t => t === "dayCall" || t === "wknd" || t === "tue")) { gapC = gapViol(); softC = softCt(); } };
+    const tot = {};
+    const score = () => {
+      for (const id of ids) tot[id] = svc[id] + wkd[id] + nts[id];
+      const tiers = spread(svc) * 10000 + spread(wkd) * 1000 + spread(tot) * 100 + gapC * 50 + spread(svcR) * 10 + spread(wkdR);
+      const guide = (sq(svc) * 1e4 + sq(wkd) * 1e2 + sq(tot) + softC * 1e-2) / 1e8;
+      return tiers + guide;
+    };
+    // Done once service weeks AND weekends are even with no spacing violation —
+    // the remaining tiers (totals) are Phase 2's job, not this polish's.
+    // "Even" = the best the slot count allows: Δ0 when the period's service weeks
+    // (weekends) divide by the surgeon count, Δ1 otherwise (8 weeks / 7 surgeons).
+    const done = () => spread(svc) <= tSvc && spread(wkd) <= tWk && gapC === 0;
+    const free = [];
+    for (let i = 0; i < W; i++) SLOTS.forEach(s => { const id = get(i, s); if (id && !isPreAssigned(mondayStrs[i], s, id)) free.push([i, s]); });
+    if (free.length < 2) return;
+    const snap = () => { const a = []; for (let i = 0; i < W; i++) SLOTS.forEach(s => a.push(get(i, s))); return a; };
+    let cur = score(), best = cur, bestSnap = snap();
+    const can = (id, i, s) => canTakeSlot(id, mondayStrs[i], monDates[i], s, sched[mondayStrs[i]], i);
+    const pick = () => free[Math.floor(Math.random() * free.length)];
+    // TARGETED proposal: a service week / weekend held by a surgeon with the
+    // MOST of that type, paired with a slot of a surgeon with the FEWEST —
+    // usually in the same week (a weekend ↔ weeknight swap there is the move
+    // that is most often legal and keeps both totals).
+    const freeOfType = { wknd: free.filter(([, s]) => s === "wknd"), dayCall: free.filter(([, s]) => s === "dayCall") };
+    const freeOfWeek = []; for (let i = 0; i < W; i++) freeOfWeek.push(free.filter(([j]) => j === i));
+    const any = (arr) => arr[Math.floor(Math.random() * arr.length)];
+    const targeted = () => {
+      const type = Math.random() < 0.5 ? "wknd" : "dayCall";
+      const m = type === "wknd" ? wkd : svc;
+      let mx = -Infinity, mn = Infinity; for (const id of ids) { if (m[id] > mx) mx = m[id]; if (m[id] < mn) mn = m[id]; }
+      if (mx - mn < 1) return null;
+      const from = freeOfType[type].filter(([i, s]) => m[get(i, s)] === mx);
+      if (!from.length) return null;
+      const A = any(from);
+      const lows = ids.filter(id => m[id] === mn);
+      const y = any(lows);
+      const sameWeek = Math.random() < 0.6;
+      const to = (sameWeek ? freeOfWeek[A[0]] : free).filter(([j, t]) => get(j, t) === y);
+      return { A, B: to.length ? any(to) : null, y };
+    };
+    // 3-way rotation y→A, z→B, x→C (x held A, y held B, z held C): when y can
+    // take x's slot only after shedding the slot B that blocks it (e.g. its
+    // own Monday night in the weekend's week).
+    const rotate3 = (A, B, C, strict) => {
+      const [i, s] = A, [j, t] = B, [k, u] = C;
+      const x = get(i, s), y = get(j, t), z = get(k, u);
+      if (!x || !y || !z || x === y || y === z || x === z) return false;
+      if ((i === j && s === t) || (j === k && t === u) || (i === k && s === u)) return false;
+      put(i, s, null); put(j, t, null); put(k, u, null);
+      if (!(can(y, i, s) && can(z, j, t) && can(x, k, u))) { put(i, s, x); put(j, t, y); put(k, u, z); return false; }
+      put(i, s, y); put(j, t, z); put(k, u, x);
+      bump(i, s, x, -1); bump(i, s, y, 1); bump(j, t, y, -1); bump(j, t, z, 1); bump(k, u, z, -1); bump(k, u, x, 1);
+      recount(s, t, u);
+      const nxt = score();
+      if (nxt < cur || (!strict && nxt === cur && Math.random() < 0.5)) { cur = nxt; return true; }
+      put(i, s, x); put(j, t, y); put(k, u, z);
+      bump(i, s, y, -1); bump(i, s, x, 1); bump(j, t, z, -1); bump(j, t, y, 1); bump(k, u, x, -1); bump(k, u, z, 1);
+      recount(s, t, u);
+      return false;
+    };
+    // Bend cost that week w takes part in: its same-week pairs plus the links
+    // to weeks w-1 and w+1 (BEND_COST; designed pairs waived; the seed stands
+    // in for the week before the period) — the same rules as listScheduleBends.
+    const weekBend = (w) => {
+      let c = 0;
+      const m = mondayStrs[w];
+      for (let a = 0; a < SLOTS.length; a++) for (let b = a + 1; b < SLOTS.length; b++) {
+        const id = get(w, SLOTS[a]);
+        if (!id || id !== get(w, SLOTS[b])) continue;
+        const key = sameWeekBendKey(SLOTS[a], SLOTS[b]);
+        if (key && !isDesignedPair(m, SLOTS[a], m, SLOTS[b], id)) c += BEND_COST[key];
+      }
+      const link = (pw, nw) => {
+        const LK = [["dayCall", "mon"], ["wknd", "mon"], ["wknd", "dayCall"], ["dayCall", "dayCall"]];
+        for (const [a, b] of LK) {
+          const id = pw < 0 ? (prevWeekSeed ? (a === "dayCall" ? prevWeekSeed.dayCall : prevWeekSeed.wknd) : null) : get(pw, a);
+          if (!id || nw >= W || id !== get(nw, b)) continue;
+          if (pw >= 0 && isDesignedPair(mondayStrs[pw], a, mondayStrs[nw], b, id)) continue;
+          c += BEND_COST[crossWeekBendKey(a, b)];
+        }
+      };
+      link(w - 1, w); if (w + 1 < W) link(w, w + 1);
+      return c;
+    };
+    // WEEK SWAP: surgeons p and q trade EVERYTHING they hold in week w (pinned
+    // slots stay). This is the only move that can hand a bend — e.g. a weekend
+    // + that week's Monday night ("double duty") — from one surgeon to another;
+    // single-slot moves can't (canTakeSlot refuses half a bend). Legal when
+    // every moved slot clears the FLOOR and the bend cost around week w does
+    // not go up.
+    const weekSwap = (w, p, q, strict) => {
+      if (!p || !q || p === q) return false;
+      const mv = SLOTS.filter(t => { const h = get(w, t); return (h === p || h === q) && !isPreAssigned(mondayStrs[w], t, h); });
+      if (!mv.length) return false;
+      const was = mv.map(t => get(w, t));
+      for (let k = 0; k < mv.length; k++) if (!floorOk(was[k] === p ? q : p, monDates[w], mv[k])) return false;
+      const bendBefore = weekBend(w);
+      mv.forEach((t, k) => { const h = was[k], n = h === p ? q : p; put(w, t, n); bump(w, t, h, -1); bump(w, t, n, 1); });
+      recount(...mv);
+      let keep = weekBend(w) <= bendBefore;
+      if (keep) { const nxt = score(); keep = nxt < cur || (!strict && nxt === cur && Math.random() < 0.5); if (keep) cur = nxt; }
+      if (!keep) { mv.forEach((t, k) => { const h = was[k], n = h === p ? q : p; put(w, t, h); bump(w, t, n, -1); bump(w, t, h, 1); }); recount(...mv); }
+      return keep;
+    };
+    // Stop the random phase after STALL proposals without a new best (Δ0 may
+    // simply not exist on a vacation-heavy period — don't burn the budget).
+    const STALL = 8000;
+    let lastGain = 0;
+    for (let it = 0; it < budget && !done() && it - lastGain < STALL; it++) {
+      if (Math.random() < 0.12) { // week swap between two random surgeons
+        weekSwap(Math.floor(Math.random() * W), ids[Math.floor(Math.random() * ids.length)], ids[Math.floor(Math.random() * ids.length)], false);
+        if (cur < best) { best = cur; bestSnap = snap(); lastGain = it; }
+        continue;
+      }
+      let A = null, B = null, mode = Math.random();
+      if (mode < 0.5) { const tg = targeted(); if (tg) { A = tg.A; B = tg.B; if (!B) { mode = 0.99; } } }
+      // a targeted pair can also try the 3-way rotation through a random third slot
+      if (A && B && Math.random() < 0.4) { rotate3(A, B, Math.random() < 0.6 ? any(freeOfWeek[B[0]]) : pick()); if (cur < best) { best = cur; bestSnap = snap(); lastGain = it; } continue; }
+      if (!A) A = pick();
+      const [i, s] = A; const x = get(i, s); if (!x) continue;
+      if (B || mode < 0.8) {
+        const [j, t] = B || pick(); const y = get(j, t);
+        if (!y || y === x || (i === j && s === t)) continue;
+        put(i, s, null); put(j, t, null);
+        if (!(can(y, i, s) && can(x, j, t))) { put(i, s, x); put(j, t, y); continue; }
+        put(i, s, y); put(j, t, x);
+        bump(i, s, x, -1); bump(i, s, y, 1); bump(j, t, y, -1); bump(j, t, x, 1);
+        recount(s, t);
+        const nxt = score();
+        if (nxt < cur || (nxt === cur && Math.random() < 0.5)) cur = nxt;
+        else { put(i, s, x); put(j, t, y); bump(i, s, y, -1); bump(i, s, x, 1); bump(j, t, x, -1); bump(j, t, y, 1); recount(s, t); }
+      } else {
+        const y = ids[Math.floor(Math.random() * ids.length)];
+        if (y === x) continue;
+        put(i, s, null);
+        if (!can(y, i, s)) { put(i, s, x); continue; }
+        put(i, s, y); bump(i, s, x, -1); bump(i, s, y, 1);
+        recount(s);
+        const nxt = score();
+        if (nxt < cur || (nxt === cur && Math.random() < 0.5)) cur = nxt;
+        else { put(i, s, x); bump(i, s, y, -1); bump(i, s, x, 1); recount(s); }
+      }
+      if (cur < best) { best = cur; bestSnap = snap(); lastGain = it; }
+    }
+    let k = 0;
+    for (let i = 0; i < W; i++) SLOTS.forEach(s => { put(i, s, bestSnap[k++]); });
+    // FINISHER — deterministic. From the best state, enumerate EVERY 2-swap
+    // and 3-way rotation that starts at a service week / weekend of a surgeon
+    // holding the MOST of that type and gives it to one holding the FEWEST;
+    // take the first strict improvement; repeat. Random search is luck-limited
+    // on the last step; this is not (a few thousand legality checks).
+    ids.forEach(id => { svc[id] = 0; wkd[id] = 0; nts[id] = 0; svcR[id] = 0; wkdR[id] = 0; });
+    for (let i = 0; i < W; i++) SLOTS.forEach(s => bump(i, s, get(i, s), 1));
+    recount("dayCall"); cur = score();
+    for (let round = 0; round < 6 && !done(); round++) {
+      let improved = false;
+      for (const type of ["dayCall", "wknd"]) {
+        const m = type === "wknd" ? wkd : svc;
+        let mx = -Infinity, mn = Infinity; for (const id of ids) { if (m[id] > mx) mx = m[id]; if (m[id] < mn) mn = m[id]; }
+        if (mx - mn < 1) continue;
+        const As = freeOfType[type].filter(([i, s]) => m[get(i, s)] === mx);
+        const lows = new Set(ids.filter(id => m[id] === mn));
+        const Bs = free.filter(([j, t]) => lows.has(get(j, t)));
+        for (const A of As) {
+          for (const B of Bs) {
+            // 2-swap A↔B
+            const [i, s] = A, [j, t] = B, x = get(i, s), y = get(j, t);
+            if (x && y && x !== y) {
+              put(i, s, null); put(j, t, null);
+              if (can(y, i, s) && can(x, j, t)) {
+                put(i, s, y); put(j, t, x); bump(i, s, x, -1); bump(i, s, y, 1); bump(j, t, y, -1); bump(j, t, x, 1); recount(s, t);
+                const nxt = score();
+                if (nxt < cur) { cur = nxt; improved = true; break; }
+                put(i, s, x); put(j, t, y); bump(i, s, y, -1); bump(i, s, x, 1); bump(j, t, x, -1); bump(j, t, y, 1); recount(s, t);
+              } else { put(i, s, x); put(j, t, y); }
+            }
+            // 3-way rotations through every other free slot
+            const before = cur;
+            for (const C of free) { if (rotate3(A, B, C, true)) { improved = true; break; } }
+            if (improved) break;
+          }
+          if (improved) break;
+        }
+        if (improved) break;
+      }
+      if (!improved) break;
+    }
+    // EJECTION (depth 2): the low surgeon y often can't take the surplus slot A
+    // only because of its OWN slots — that week's shifts, or (for a weekend)
+    // next week's Monday night / service week. Move each such blocker to
+    // someone else by a SAME-TYPE swap (y takes their slot elsewhere — no
+    // count changes), then retry the improving 2-swap / rotation. The whole
+    // sequence is kept only if it strictly beats the score it started from.
+    const swapIn = (j, t, k, u) => { // holders of (j,t) and (k,u) trade places, counts kept in step
+      const p = get(j, t), q = get(k, u);
+      put(j, t, q); put(k, u, p); bump(j, t, p, -1); bump(j, t, q, 1); bump(k, u, q, -1); bump(k, u, p, 1); recount(t, u);
+    };
+    const nightSlots = free.filter(([, u]) => u !== "dayCall" && u !== "wknd");
+    for (let round = 0; round < 4 && !done(); round++) {
+      let improved = false;
+      for (const type of ["wknd", "dayCall"]) {
+        if (improved) break;
+        const m = type === "wknd" ? wkd : svc;
+        let mx = -Infinity, mn = Infinity; for (const id of ids) { if (m[id] > mx) mx = m[id]; if (m[id] < mn) mn = m[id]; }
+        if (mx - mn < 1) continue;
+        const As = freeOfType[type].filter(([i, s]) => m[get(i, s)] === mx);
+        const lows = ids.filter(id => m[id] === mn);
+        for (const A of As) {
+          if (improved) break;
+          const [i, s] = A, x = get(i, s);
+          for (const y of lows) {
+            if (improved) break;
+            const blockers = free.filter(([j, t]) => get(j, t) === y && (j === i || (j === i + 1 && (t === "mon" || t === "dayCall")) || (type === "dayCall" && j === i - 1 && (t === "wknd" || t === "dayCall"))));
+            if (!blockers.length || blockers.length > 3) continue;
+            // would y be free for A without them?
+            const saved = blockers.map(([j, t]) => get(j, t));
+            blockers.forEach(([j, t]) => put(j, t, null)); put(i, s, null);
+            const freed = can(y, i, s);
+            put(i, s, x); blockers.forEach(([j, t], q) => put(j, t, saved[q]));
+            if (!freed) continue;
+            const start = cur;
+            const improve = () => { // y takes A; x takes one of y's slots (2-swap) or a rotation via that week
+              const ys = free.filter(([j, t]) => get(j, t) === y);
+              for (const B of ys) {
+                const [j, t] = B; if (j === i && t === s) continue;
+                put(i, s, null); put(j, t, null);
+                if (can(y, i, s) && can(x, j, t)) {
+                  put(i, s, y); put(j, t, x); bump(i, s, x, -1); bump(i, s, y, 1); bump(j, t, y, -1); bump(j, t, x, 1); recount(s, t);
+                  if (score() < start) return true;
+                  put(i, s, x); put(j, t, y); bump(i, s, y, -1); bump(i, s, x, 1); bump(j, t, x, -1); bump(j, t, y, 1); recount(s, t);
+                } else { put(i, s, x); put(j, t, y); }
+                cur = start;
+                for (const C of freeOfWeek[j]) if (rotate3(A, B, C, true)) return true;
+              }
+              return false;
+            };
+            const rehome = (q) => {
+              if (q === blockers.length) return improve();
+              const [j, t] = blockers[q];
+              if (get(j, t) !== y) return rehome(q + 1);
+              const pool2 = t === "dayCall" || t === "wknd" ? freeOfType[t] : nightSlots;
+              let tries = 0;
+              for (const [k, u] of pool2) {
+                if (tries >= 6) break;
+                const z = get(k, u);
+                if (!z || z === y || z === x || k === i || (k === j && u === t)) continue;
+                put(j, t, null); put(k, u, null);
+                const ok = can(z, j, t) && can(y, k, u);
+                put(j, t, y); put(k, u, z);
+                if (!ok) continue;
+                tries++;
+                swapIn(j, t, k, u);
+                if (rehome(q + 1)) return true;
+                swapIn(j, t, k, u); // undo
+              }
+              return false;
+            };
+            if (rehome(0)) { cur = score(); improved = true; } else cur = start;
+          }
+        }
+      }
+      if (!improved) break;
+    }
+    mondayStrs.forEach(m => {
+      const wk = sched[m];
+      const a = new Set([wk.dayCall, ...Object.values(wk.nights)].filter(Boolean));
+      wk.off = ids.find(id => !a.has(id)) || null;
+    });
+  };
+  Object.defineProperty(sched, "__polish", { value: polishTypeBalance, enumerable: false, configurable: true, writable: true });
+
   return sched;
 }
 
@@ -1905,10 +2244,12 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
   const bendCtx = { surgeons, mondays, vac, vacationsOnly, holAssignments, prevWeekSeed, costOnly: true };
   const floorMemo = new Map();
   let best = null, bestScore = Infinity;
+  const pool = []; // every candidate with its score, for the type-balance polish below
   for (let i = 0; i < ATTEMPTS; i++) {
     const cand = generateOnce(surgeons, mondays, vac, backupMondays, priorCounts, preferences, fierceBackupMondays, holAssignments, locks, prevWeekSeed, vacationsOnly, yearCounts, floorMemo);
     if (!cand) continue;
     const s = scoreOf(cand);
+    pool.push({ cand, s });
     if (s < bestScore) { bestScore = s; best = cand; }
     // Combined service weeks, weekends, and total all even AND zero spacing
     // violations (score < 50 means those four tiers are all clean) — only the
@@ -1918,6 +2259,28 @@ function generate(surgeons, mondays, vac, backupMondays, priorCounts, preference
     // 1-violation candidate that a later attempt could beat.)
     if (bestScore < 50) break;
   }
+  // TYPE-BALANCE POLISH (follow-up to #73): the POLISH_TOP best candidates get
+  // generateOnce's polishTypeBalance local search (every move through
+  // canTakeSlot, pins untouched — locks, bends, the floor can't get worse),
+  // then are re-scored by the same scoreOf. Skipped when the best is already
+  // clean (score < 1: every fairness tier at 0).
+  const POLISH_TOP = 8, POLISH_BUDGET = 15000;
+  // Target spreads: 0 when the slots divide evenly among the surgeons, else 1.
+  const slotTarget = (sched, which) => { let n = 0; for (const m in sched) { const wk = sched[m]; if (wk && (which === "dayCall" ? wk.dayCall : wk.nights && wk.nights.wknd)) n++; } return n % ids.length === 0 ? 0 : 1; };
+  const target = best ? { svc: slotTarget(best, "dayCall"), wknd: slotTarget(best, "wknd") } : { svc: 0, wknd: 0 };
+  const atTarget = (sc) => { const fair = sc % 1e6; return Math.floor(fair / 1e4) <= target.svc && Math.floor((fair % 1e4) / 1e3) <= target.wknd; };
+  if (bestScore % 1e6 >= 1 && !atTarget(bestScore)) {
+    pool.sort((a, b) => a.s - b.s);
+    for (let k = 0; k < Math.min(POLISH_TOP, pool.length); k++) {
+      const c = pool[k].cand;
+      if (typeof c.__polish !== "function") continue;
+      c.__polish(POLISH_BUDGET, target);
+      const s = scoreOf(c);
+      if (s < bestScore) { bestScore = s; best = c; }
+      if (atTarget(bestScore)) break; // service weeks and weekends as even as the slot count allows
+    }
+  }
+  pool.forEach(p => { delete p.cand.__polish; });
   // Fallback: if every attempt somehow scored Infinity (shouldn't happen), return a fresh pass.
   return best || generateOnce(surgeons, mondays, vac, backupMondays, priorCounts, preferences, fierceBackupMondays, holAssignments, locks, prevWeekSeed, vacationsOnly, yearCounts);
 }
