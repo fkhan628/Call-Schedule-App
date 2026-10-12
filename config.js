@@ -213,10 +213,22 @@ const buildTimeOffMaps = (rows) => {
 
 // Snapshot helper. Before any destructive write, copy the row that is CURRENTLY
 // persisted (not local state) into call_schedule_snapshots so it can always be
-// restored by hand. Best-effort: never throws — a snapshot failure must not
-// block the user, but it is surfaced to the console.
+// restored by hand. Never throws; callers gate destructive actions on .ok.
+//
+// The schedule (schedule_weeks) fold is REQUIRED when the capture comes right
+// before a destructive operation (sync v2, 2026-10-12): clear, regenerate,
+// factory reset, and the restore's own before_restore. A snapshot without the
+// schedule can't put it back — and restoring such a snapshot used to delete
+// every week. A genuine empty table is recorded as schedule: {}. opts.minWeeks
+// (the caller's count of weeks it knows exist) turns an EMPTY read into a
+// failure too: schedule_weeks is anon-readable, so 200 + [] while weeks exist
+// is the RLS/anon shape, not an empty schedule. Periodic captures stay
+// best-effort (a schedule-less one simply can't be restored — see restore).
+const SNAPSHOT_STRICT_REASONS = ["clear_schedule", "regenerate", "reset_all_data", "before_restore"];
 const snapshots = {
-  async capture(reason) {
+  async capture(reason, opts) {
+    const strict = SNAPSHOT_STRICT_REASONS.includes(reason);
+    const minWeeks = (opts && opts.minWeeks) || 0;
     try {
       const res = await fetch(
         `${SUPABASE_URL}/rest/v1/call_schedule_data?id=eq.main&select=data,updated_at`,
@@ -237,24 +249,31 @@ const snapshots = {
       }
       const rows = await res.json();
       let current = rows?.[0]?.data ?? null;
-      // The schedule now lives in the schedule_weeks table, not the blob, so
-      // fold it back in here — otherwise the snapshot would have no schedule and
-      // couldn't restore one. Best-effort: if this fetch fails we still snapshot
-      // whatever the blob has.
+      // The schedule lives in the schedule_weeks table, not the blob, so fold
+      // it back in here — otherwise the snapshot would have no schedule and
+      // couldn't restore one. Required for a destructive reason (see above);
+      // best-effort otherwise.
+      let foldErr = null;
       try {
         const wres = await fetch(
-          `${SUPABASE_URL}/rest/v1/schedule_weeks?select=week_monday,data&order=week_monday.asc`,
+          `${SUPABASE_URL}/rest/v1/schedule_weeks?select=week_monday,data&order=week_monday.asc&limit=5000`,
           { headers: dbAuthHeaders() }
         );
         if (wres.ok) {
           const wrows = await wres.json();
-          if (Array.isArray(wrows) && wrows.length) {
+          if (!Array.isArray(wrows)) foldErr = "schedule read returned no list";
+          else if (wrows.length < minWeeks) foldErr = `schedule read came back with ${wrows.length} weeks while ${minWeeks}+ exist (an anon/RLS-filtered read?)`;
+          else {
             const sched = {};
             wrows.forEach(r => { sched[r.week_monday] = r.data; });
-            current = { ...(current || {}), schedule: sched };
+            current = { ...(current || {}), schedule: sched }; // {} for a genuinely empty table
           }
-        }
-      } catch (e) { console.warn("Snapshot: schedule_weeks fetch failed:", e); }
+        } else foldErr = `schedule read failed: HTTP ${wres.status}`;
+      } catch (e) { foldErr = "schedule read failed: " + String(e); }
+      if (foldErr) {
+        console.warn("Snapshot: schedule_weeks fold failed:", foldErr);
+        if (strict) return { ok: false, error: foldErr };
+      }
       // Vacations/no-call live in the time_off table (the blob mirror was
       // retired in PR #18), so fold them back in under the old mirror keys —
       // without this, snapshots carry NO vacations and a time_off wipe would
@@ -339,7 +358,7 @@ const snapshots = {
   // which lives in the component — the caller passes it in as applySchedule.
   // A restore is itself destructive, so the CURRENT state is snapshotted
   // first and the restore aborts if that capture fails.
-  async restore(snapshotId, applySchedule) {
+  async restore(snapshotId, applySchedule, opts) {
     if (!snapshotId) return { ok: false, error: "No snapshot id" };
     if (typeof applySchedule !== "function") {
       return { ok: false, error: "restore() requires the app's schedule applier (the CAS sync path) — refusing to bypass it" };
@@ -355,9 +374,14 @@ const snapshots = {
       const payload = snap && (typeof snap.data === "string" ? JSON.parse(snap.data) : snap.data);
       if (!payload) return { ok: false, error: "Snapshot not found or has no data" };
       if (payloadLooksWiped(payload)) return { ok: false, error: "Snapshot looks empty — refusing to restore it" };
-      const pre = await this.capture("before_restore");
+      // A snapshot taken while the schedule couldn't be read has no schedule
+      // key. Restoring it would mean "make the schedule empty" — every week
+      // deleted. Refuse it (sync v2, I6); {} (a genuinely empty schedule) is a
+      // real value and is allowed.
+      if (!payload.schedule || typeof payload.schedule !== "object") return { ok: false, error: "This snapshot has no schedule in it (the schedule couldn't be read when it was taken) — restoring it would delete every week, so it was refused. Nothing was changed." };
+      const pre = await this.capture("before_restore", opts && opts.minWeeks ? { minWeeks: opts.minWeeks } : undefined);
       if (!pre.ok) return { ok: false, error: "Couldn't snapshot the current state first — restore aborted, nothing changed" };
-      const schedule = payload.schedule || {};
+      const schedule = payload.schedule;
       const blob = { ...payload }; delete blob.schedule;
       const ts = new Date().toISOString();
       const up = await db.upsert("call_schedule_data", { id: "main", data: blob, updated_at: ts });

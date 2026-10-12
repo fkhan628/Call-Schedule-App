@@ -275,6 +275,40 @@ await (async () => {
   ]);
   r = await snapshots.capture("test");
   check("schedule_weeks fetch fails, blob real → still ok:true (best-effort)", r.ok === true);
+  // 6b. …but NOT for a capture that precedes a destructive operation (sync
+  //     v2, I6): the schedule fold is required there, or the snapshot can't
+  //     put the schedule back. Every strict reason, and nothing inserted.
+  for (const reason of ["clear_schedule", "regenerate", "reset_all_data", "before_restore"]) {
+    f = stubFetch([
+      { m: "GET", url: "call_schedule_data", json: BLOB_ROW },
+      { m: "GET", url: "schedule_weeks", status: 503, text: "boom" },
+      { m: "GET", url: "time_off", json: TIME_OFF_ROWS },
+      { m: "POST", url: "call_schedule_snapshots", status: 201, json: [] },
+    ]);
+    r = await snapshots.capture(reason);
+    check(`strict capture (${reason}): schedule_weeks fold fails → ok:false, nothing inserted`, r.ok === false && writesIn(f).length === 0, JSON.stringify(r));
+  }
+  // 6c. A strict capture whose schedule read is EMPTY while the caller knows
+  //     weeks exist (the anon/RLS shape) fails too; a genuinely empty table
+  //     (minWeeks 0) is recorded as schedule: {}.
+  f = stubFetch([
+    { m: "GET", url: "call_schedule_data", json: BLOB_ROW },
+    { m: "GET", url: "schedule_weeks", json: [] },
+    { m: "GET", url: "time_off", json: TIME_OFF_ROWS },
+    { m: "POST", url: "call_schedule_snapshots", status: 201, json: [] },
+  ]);
+  r = await snapshots.capture("clear_schedule", { minWeeks: 3 });
+  check("strict capture: 200 + [] while 3 weeks are known → ok:false (RLS-empty shape), nothing inserted", r.ok === false && writesIn(f).length === 0, JSON.stringify(r));
+  f = stubFetch([
+    { m: "GET", url: "call_schedule_data", json: BLOB_ROW },
+    { m: "GET", url: "schedule_weeks", json: [] },
+    { m: "GET", url: "time_off", json: TIME_OFF_ROWS },
+    { m: "POST", url: "call_schedule_snapshots", status: 201, json: [] },
+  ]);
+  r = await snapshots.capture("clear_schedule");
+  const emptyIns = writesIn(f)[0];
+  check("strict capture of a genuinely empty table records schedule: {} (restorable, not 'missing')",
+    r.ok === true && !!emptyIns && JSON.parse(emptyIns.body).data.schedule && Object.keys(JSON.parse(emptyIns.body).data.schedule).length === 0, JSON.stringify(r));
 
   // 7. time_off read fails but blob is real → same best-effort contract,
   //    symmetric with 6.
@@ -351,6 +385,17 @@ await (async () => {
   check("fold-failed (blob-only) snapshot → REFUSED on content",
     r.ok === false && /looks empty/.test(r.error || "") && applied === 0 && writesIn(f).length === 0,
     JSON.stringify(r));
+
+  // A snapshot whose schedule fold had failed but whose time_off fold
+  // worked: vacations make it NOT look empty, so payloadLooksWiped let it
+  // through — and the applier ran with schedule {} and the grant: every
+  // week deleted (critic, live on main). Refused on the missing key now.
+  f = stubFetch([{ m: "GET", url: snapUrl, json: [{ id: 7, reason: "periodic_session", created_at: "c",
+    data: { surgeons: INIT_SURGEONS, vacations: { s5: [["2026-09-12", "2026-09-21"]] } } }] }]);
+  applied = 0;
+  r = await snapshots.restore(7, async () => { applied++; return { ok: true }; });
+  check("snapshot with vacations but NO schedule key → REFUSED (would delete every week), zero writes, applier never called",
+    r.ok === false && /no schedule/.test(r.error || "") && applied === 0 && writesIn(f).length === 0, JSON.stringify(r));
 
   // Blob write fails → ok:false and the schedule applier is never reached.
   f = stubFetch([
