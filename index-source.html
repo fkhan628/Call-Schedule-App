@@ -5731,6 +5731,24 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     const todayStr = fmt(new Date());
     const mondayStrs = Object.keys(schedule).sort().filter(mStr => fmt(addD(parse(mStr), 6)) >= todayStr);
     const ids = surgeons.map(s => s.id);
+    // DESIGNED holiday patterns (2026-10-11): exactly the pairs generator.js
+    // holidayDesign pins to ONE surgeon — e.g. Christmas week (FAK's service
+    // week + the Eve night + the weekend), a holiday's surgeon A on the
+    // service week + the holiday 24h night. They are never conflicts, the same
+    // rule listScheduleBends uses. (A card eve held by a surgeon who is NOT the
+    // card's service-week holder is a real conflict and is still shown.) If
+    // generator.js isn't loaded, nothing is waived — more lines, never fewer.
+    const fakW = (surgeons.find(s => (s.name || "").toUpperCase() === "FAK") || {}).id || null;
+    const design = typeof holidayDesign === "function" ? holidayDesign(holidayAssignments, mondayStrs, fakW) : { pins: {}, eves: {} };
+    const designed = (m1, s1, m2, s2, id) => !!(id && design.pins[m1] && design.pins[m1][s1] === id && design.pins[m2] && design.pins[m2][s2] === id);
+    // Card coverage rows (date|surgeon, eve or not): a VACATION on one of these is
+    // already the vacOverlapWarnings "holiday-vac" line — one fact, one line.
+    const cardRows = new Set();
+    Object.values(holidayAssignments || {}).forEach(arr => (Array.isArray(arr) ? arr : []).forEach(h => {
+      (effectiveHolidayCoverage(h) || []).forEach(c => { if (c && c.date && c.surgeon) cardRows.add(c.date + "|" + c.surgeon); });
+    }));
+    const md = (ds) => { const d = parse(ds); return `${d.getMonth() + 1}/${d.getDate()}`; };
+    const codeOf = (id) => sMap[id]?.name || id;
 
     mondayStrs.forEach((mStr, wkIdx) => {
       const wk = schedule[mStr];
@@ -5741,7 +5759,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       for (let i = 0; i < nightOrder.length - 1; i++) {
         const a = wk.nights?.[nightOrder[i]];
         const b = wk.nights?.[nightOrder[i+1]];
-        if (a && a === b) {
+        if (a && a === b && !designed(mStr, nightOrder[i], mStr, nightOrder[i+1], a)) {
           issues.push({ key: `consecutive|${mStr}|${a}|${nightOrder[i]}+${nightOrder[i+1]}`, type: "consecutive", severity: "error", week: mStr, message: `${sMap[a]?.name} has consecutive nights (${SHIFT_LABELS[nightOrder[i]]} + ${SHIFT_LABELS[nightOrder[i+1]]})` });
         }
       }
@@ -5750,7 +5768,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       const wkndSurgeon = wk.nights?.wknd;
       if (wkIdx < mondayStrs.length - 1) {
         const nextWk = schedule[mondayStrs[wkIdx + 1]];
-        if (wkndSurgeon && nextWk?.nights?.mon === wkndSurgeon) {
+        if (wkndSurgeon && nextWk?.nights?.mon === wkndSurgeon && !designed(mStr, "wknd", mondayStrs[wkIdx + 1], "mon", wkndSurgeon)) {
           issues.push({ key: `wknd-mon|${mStr}|${mondayStrs[wkIdx + 1]}|${wkndSurgeon}`, type: "consecutive", severity: "error", week: mStr, message: `${sMap[wkndSurgeon]?.name} has Weekend then Mon night the next week` });
         }
         // Check service week surgeon → Mon night next week (hard rule).
@@ -5763,7 +5781,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         if (wk.dayCall && nextWk?.nights?.mon === wk.dayCall) {
           const nextMonStr = mondayStrs[wkIdx + 1];
           const nextHolCov = nextWk.holidayCoverage || {};
-          if (!nextHolCov[nextMonStr]) {
+          if (!nextHolCov[nextMonStr] && !designed(mStr, "dayCall", nextMonStr, "mon", wk.dayCall)) {
             issues.push({ key: `svc-mon|${mStr}|${nextMonStr}|${wk.dayCall}`, type: "consecutive", severity: "error", week: mStr, message: `${sMap[wk.dayCall]?.name} has Service Week then Mon night the next week` });
           }
         }
@@ -5777,21 +5795,92 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             const nightDate = fmt(addD(mon, {mon:0,tue:1,wed:2,thu:3}[sk]));
             // Skip if this day is covered by holiday 24h (the same surgeon covering both is intentional)
             if (holCov[nightDate]) return;
+            // …or if the cards DESIGN this pair (e.g. Christmas: FAK's service week + the Eve night)
+            if (designed(mStr, "dayCall", mStr, sk, wk.dayCall)) return;
             issues.push({ key: `svc-night|${mStr}|${wk.dayCall}|${sk}`, type: "double", severity: "error", week: mStr, message: `${sMap[wk.dayCall]?.name} is on Service Week AND ${SHIFT_LABELS[sk]} (same week)` });
           }
         });
         if (wk.nights?.wknd === wk.dayCall) {
           const friD = fmt(addD(mon, 4));
           const sunD = fmt(addD(mon, 6));
-          if (!holCov[friD] && !holCov[sunD]) {
+          if (!holCov[friD] && !holCov[sunD] && !designed(mStr, "dayCall", mStr, "wknd", wk.dayCall)) {
             issues.push({ key: `svc-wknd|${mStr}|${wk.dayCall}`, type: "double", severity: "error", week: mStr, message: `${sMap[wk.dayCall]?.name} is on Service Week AND Weekend (same week)` });
           }
         }
       }
+
+      // ON CALL WHILE OFF (owner decision 2026-10-11: vacation is a hard stop).
+      // Time off entered AFTER publishing lands under existing shifts — the
+      // generator can't see those. Per DATE, by weekHolders (helpers.js — the
+      // calendar's own rule: a holiday-covered date credits its coverer, a
+      // single-day override its override surgeon). Two kinds of line:
+      //   - "<CODE> is on call <shift> <date> but is off (vacation | no-call)"
+      //     — a shift whose own date is vacation or no-call;
+      //   - "<CODE>'s <shift> <date> runs into their vacation starting <date>"
+      //     — an overnight ending on a VACATION morning: a weeknight before a
+      //     vacation day, the weekend before a vacation Monday, a holiday 24h
+      //     before a vacation day. (A no-call next day is fine; the service
+      //     week's Saturday is not checked against a Sunday start — the
+      //     generator floor's rule.) Silvis primary days keep their own lines.
+      // A run is dropped only once it is wholly past (a run in progress keeps its
+      // full range, so its key — and any dismissal — stays the same); the
+      // overnight "runs into" lines skip past dates. Dismissable like the rest.
+      const hw = weekHolders(mStr, wk);
+      const offKind = (id, ds) => onVac(id, ds, vacations || {}) ? "vacation" : onVac(id, ds, noCallDays || {}) ? "no-call" : null;
+      const DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+      const dayLbl = (ds) => `${DOW[parse(ds).getDay()]} ${md(ds)}`;
+      // One leg = one (surgeon, shift FAMILY) on one date. Families: the
+      // service week (Mon–Sat, incl. the Sat 24h) — "service day" when a
+      // single-day override holder, not the week's service doctor; one weeknight;
+      // the weekend (Fri night + Sun); one holiday 24h.
+      const legs = [];
+      hw.days.forEach(day => {
+        if (day.cover && day.cover.sid) legs.push({ sid: day.cover.sid, fam: "cover|" + day.ds, label: `${holidayTitleName(day.cover)} 24h`, ds: day.ds, overnight: true });
+        const svcId = day.svc || day.sat;
+        if (svcId) legs.push({ sid: svcId, fam: svcId === wk.dayCall ? "svc" : "svcday", label: svcId === wk.dayCall ? "service week" : "service day", ds: day.ds, overnight: false });
+        if (day.night) legs.push({ sid: day.night, fam: day.nightKey, label: `${DOW[parse(day.ds).getDay()]} night`, ds: day.ds, overnight: true });
+        if (day.wkndFri) legs.push({ sid: day.wkndFri, fam: "wknd", label: "weekend", ds: day.ds, overnight: false });
+        if (day.wkndSun) legs.push({ sid: day.wkndSun, fam: "wknd", label: "weekend", ds: day.ds, overnight: true });
+      });
+      // (a) ON its own off day — consecutive dates of one (surgeon, family, kind)
+      // collapse into ONE line ("DJA is on call service week Mon 10/26–Sat 10/31
+      // but is off (vacation)"); the key holds the facts, so a longer or shorter
+      // run comes back as a new line. A vacation on a holiday card's own row is
+      // the vacOverlapWarnings "holiday-vac" line already — not repeated here.
+      const runs = [];
+      legs.forEach(l => {
+        const kind = offKind(l.sid, l.ds);
+        if (!kind) return;
+        if (kind === "vacation" && cardRows.has(l.ds + "|" + l.sid)) return;
+        const last = runs[runs.length - 1];
+        const next = (r) => fmt(addD(parse(r.to), r.fam === "wknd" && parse(r.to).getDay() === 5 ? 2 : 1)); // a weekend's Fri → Sun is one run
+        if (last && last.sid === l.sid && last.fam === l.fam && last.kind === kind && next(last) >= l.ds && last.to <= l.ds) { last.to = l.ds; return; }
+        const same = runs.find(r => r.sid === l.sid && r.fam === l.fam && r.kind === kind && next(r) === l.ds);
+        if (same) { same.to = l.ds; return; }
+        runs.push({ sid: l.sid, fam: l.fam, label: l.label, kind, from: l.ds, to: l.ds });
+      });
+      // A run is built from the WHOLE week, so its key (first..last day) stays the
+      // same while it is in progress — a dismissal holds; only a run wholly in
+      // the past is dropped (unactionable).
+      runs.filter(r => r.to >= todayStr).forEach(r => {
+        issues.push({ key: `on-off|${mStr}|${r.sid}|${r.fam}|${r.from}|${r.to}|${r.kind}`, type: "timeoff", severity: "error", week: mStr, message: `${codeOf(r.sid)} is on call ${r.fam === "svcday" && r.from !== r.to ? "service days" : r.label} ${NIGHT_KEYS.includes(r.fam) ? md(r.from) : r.from === r.to ? dayLbl(r.from) : dayLbl(r.from) + "–" + dayLbl(r.to)} but is off (${r.kind})` });
+      });
+      // (b) an overnight ending on a VACATION morning (not an off day itself):
+      // a weeknight before a vacation day, the weekend's Sunday before a
+      // vacation Monday (named by the weekend days that surgeon holds), a
+      // holiday 24h before a vacation day. A no-call next day is fine.
+      legs.forEach(l => {
+        if (l.ds < todayStr || !l.overnight || offKind(l.sid, l.ds)) return;
+        const next = fmt(addD(parse(l.ds), 1));
+        if (!onVac(l.sid, next, vacations || {})) return;
+        const fri = fmt(addD(parse(l.ds), -2));
+        const shown = l.fam === "wknd" ? (legs.some(x => x.fam === "wknd" && x.sid === l.sid && x.ds === fri) ? `weekend ${md(fri)}–${md(l.ds)}` : `weekend (Sun ${md(l.ds)})`) : `${l.label} ${md(l.ds)}`;
+        issues.push({ key: `into-vac|${mStr}|${l.sid}|${l.fam}|${l.ds}`, type: "timeoff", severity: "error", week: mStr, message: `${codeOf(l.sid)}'s ${shown} runs into their vacation starting ${dayLbl(next)}` });
+      });
     });
 
     return issues;
-  }, [schedule, surgeons, sMap]);
+  }, [schedule, surgeons, sMap, vacations, noCallDays, holidayAssignments]);
 
   // ─── Vacation Overlap Warnings ───
   const vacOverlapWarnings = useMemo(() => {
@@ -8061,7 +8150,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                 </div>
               ))}
               {warnShown.silvis.length > 10 && <p style={{fontSize:11,color:"#8a94a0",marginTop:4}}>+ {warnShown.silvis.length - 10} more Silvis line{warnShown.silvis.length - 10 === 1 ? "" : "s"}…</p>}
-              {(warnShown.conflicts.length + warnShown.vac.length) > 20 && <p style={{fontSize:11,color:"#8a94a0",marginTop:4}}>+ more…</p>}
+              {warnShown.conflicts.length > 10 && <p style={{fontSize:11,color:"#8a94a0",marginTop:4}}>+ {warnShown.conflicts.length - 10} more schedule line{warnShown.conflicts.length - 10 === 1 ? "" : "s"}…</p>}
+              {warnShown.vac.length > 10 && <p style={{fontSize:11,color:"#8a94a0",marginTop:4}}>+ {warnShown.vac.length - 10} more vacation-overlap line{warnShown.vac.length - 10 === 1 ? "" : "s"}…</p>}
               {dismissedBar}
             </div>
             );
