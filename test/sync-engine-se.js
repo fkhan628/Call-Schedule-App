@@ -66,17 +66,17 @@ const MUTANTS = [
   { id: "M1", what: "PATCH without any CAS filter (blind overwrite, R14/R28)",
     from: "else if (kn) { url = `${base()}?week_monday=eq.${k}&${cas(kn)}`;", to: "else if (kn) { url = `${base()}?week_monday=eq.${k}`;" },
   { id: "M1b", what: "CAS on version alone (clear + regenerate restarts at v1; old builds keep the version — D)",
-    from: 'const cas = (kn) => `version=eq.${kn.version}&updated_at=${kn.updated_at === null ? "is.null" : "eq." + encodeURIComponent(kn.updated_at)}`;',
+    from: 'const cas = (kn) => `version=${kn.version === null ? "is.null" : "eq." + kn.version}&updated_at=${kn.updated_at === null ? "is.null" : "eq." + encodeURIComponent(kn.updated_at)}`;',
     to: "const cas = (kn) => `version=eq.${kn.version}`;" },
   { id: "M2", what: "no read-back: an unknown outcome is guessed as someone else's (R8, R12, R23, R24)",
-    from: '      const how = classify(k, rb.row);\n      if (how === "mirror") { confirm(k, rb.row); if (del)', to: '      const how = "theirs";\n      if (how === "mirror") { confirm(k, rb.row); if (del)' },
+    from: '      const how = classify(k, rb.row);\n      if (how === "mirror") { confirm(k, rb.row); return { k, outcome: "saved" }; }', to: '      const how = "theirs";\n      if (how === "mirror") { confirm(k, rb.row); return { k, outcome: "saved" }; }' },
   { id: "M2b", what: "the sent-ledger is ignored: our own lost-response write reads as someone else's (D: own writes)",
     from: '    if (sent[k] && sent[k].includes(c)) return "ours";\n', to: "" },
   { id: "M3", what: "plain JSON equality (jsonb key order reads as an edit)",
     from: 'const canon = (x) => x === undefined ? "∅" : JSON.stringify(x, (k, v) => (v && typeof v === "object" && !Array.isArray(v)) ? Object.keys(v).sort().reduce((o, kk) => (o[kk] = v[kk], o), {}) : v);',
     to: 'const canon = (x) => x === undefined ? "∅" : JSON.stringify(x);' },
   { id: "M4", what: "pull adopts over an unsaved local edit (R21)",
-    from: "        if (dirty) return; // an unsaved", to: "        if (false) return; // an unsaved" },
+    from: "      if (dirty) return; // an unsaved", to: "      if (false) return; // an unsaved" },
   { id: "M5", what: "the wipe guard counts deletes that already passed it (R7, R9)",
     from: "const newDeletes = deletes.filter(k => !approvedDeletes.has(k));", to: "const newDeletes = deletes;" },
   { id: "M6", what: "reset() doesn't fence jobs in flight (sign-out boundary)",
@@ -87,9 +87,9 @@ const MUTANTS = [
   { id: "M8", what: "a push queued before a clear doesn't defer to it (R10 false wipe block)",
     from: 'if (job.mode !== "force" && authoritativeQueued > 0) return', to: 'if (false) return' },
   { id: "M9", what: "writes without a live token (anon / expired)",
-    from: '    if (tok !== "ok") {', to: '    if (false) {' },
+    from: '    if (authState() !== "ok") {\n      const p = pendingKeys();', to: '    if (false) {\n      const p = pendingKeys();' },
   { id: "M10", what: "a 401 is treated as a refusal (adopts the server copy, drops the edit)",
-    from: 'r.status === 401 ? "auth" :', to: 'r.status === 401 ? "refused" :' },
+    from: 'if (r.status === 401 || /^PGRST30[123]$/.test(code) || /JWT expired/i.test(msg)) return "auth";', to: 'if (r.status === 401 || /^PGRST30[123]$/.test(code) || /JWT expired/i.test(msg)) return "refused";' },
   { id: "M11", what: "the change token ignores updated_at (R18)",
     from: " || known[x.week_monday].updated_at !== (x.updated_at || null)", to: "" },
   { id: "M12", what: "unconfirmed weeks are not re-read before writing",
@@ -106,14 +106,14 @@ const MUTANTS = [
     from: 'else { url = base(); init = { method: "POST", headers: wh({ Prefer: "return=representation" })',
     to: 'else { url = base() + "?on_conflict=week_monday"; init = { method: "POST", headers: wh({ Prefer: "resolution=merge-duplicates,return=representation" })' },
   { id: "M18", what: "clear/restore act on the last-known weeks instead of re-reading the table (I6)",
-    from: "      known = {}; rows.forEach(x => { known[x.week_monday] = fromRow(x); });\n      seeded = true; loadFailed = false;\n", to: "" },
+    from: "        known = {}; rows.forEach(x => { known[x.week_monday] = fromRow(x); });\n", to: "" },
   { id: "M19", what: "clear/restore write even when the table can't be read (I6 fail closed)",
-    from: '      if (!rows) return { ok: false, wrote: false, error: "Couldn\'t read the saved schedule — nothing was changed." };\n',
-    to: '      if (!rows) return Object.assign({ wrote: true }, await runPush({ target, grant, mode: "force" }));\n' },
+    from: '        if (!rows) return { ok: false, wrote: false, error: "Couldn\'t read the saved schedule — nothing was changed." };\n',
+    to: '        if (!rows) return Object.assign({ wrote: true }, await runPush({ target, grant, mode: "force" }));\n' },
   { id: "M20", what: "adoption rebuilds the whole schedule from the server copy (R15: reverts other unsaved edits)",
-    from: "    const next = Object.assign({}, cur);\n    const changed = [];", to: "    const next = Object.keys(known).reduce((o, k) => (o[k] = clone(known[k].data), o), {});\n    const changed = [];" },
+    from: "    const next = Object.assign({}, cur);\n    const changed = [], taken = [];", to: "    const next = Object.keys(known).reduce((o, k) => (o[k] = clone(known[k].data), o), {});\n    const changed = [], taken = [];" },
   { id: "M21", what: "no request timeout (one hung request wedges every job — D)",
-    from: "if (ctl && ms) timer = setTimeout(", to: "if (false) timer = setTimeout(" },
+    from: "if (ctl && ms) { timer = setTimeout(", to: "if (false) { timer = setTimeout(" },
   { id: "M22", what: "the keepalive's bodies are not recorded (a landed keepalive reads as someone else's)",
     from: "      addSent(k, canon(target[k]));\n      return { url:", to: "      return { url:" },
   { id: "M23", what: "Undo is not all-or-nothing across a week someone else changed (R15)",
@@ -124,11 +124,24 @@ const MUTANTS = [
   { id: "M25", what: "a wipe-blocked push holds back every other week's save too (D)",
     from: "      sendDeletes = deletes.filter(k => approvedDeletes.has(k));", to: "      sendDeletes = []; sendable.length = 0;" },
   { id: "M26", what: "a body the server rejected (400) is re-sent every minute forever",
-    from: "const sendable = changed.filter(k => !(rejected[k] && rejected[k] === canon(target[k])));", to: "const sendable = changed;" },
+    from: "const sendable = changed.filter(k => !(rejected[k] && rejected[k].canon === canon(target[k])));", to: "const sendable = changed;" },
   { id: "M27", what: "a 400 is treated as a refusal (adopts the server copy, discarding the edit — D)",
-    from: '(r.status === 400 || r.status === 422) ? "rejected"', to: '(r.status === 400 || r.status === 422) ? "refused"' },
-  { id: "M28", what: "approvedDeletes outlive a re-created week (a later wipe of it isn't blocked — D)",
-    from: "    Object.keys(target).forEach(k => approvedDeletes.delete(k));\n", to: "" },
+    from: 'return code ? "rejected" : "unknown";', to: 'return code ? "refused" : "unknown";' },
+  { id: "M28", what: "approvedDeletes are never pruned (a re-created week's old approval exempts a later wipe — A12)",
+    from: "    [...approvedDeletes.keys()].forEach(k => { if (!deletes.includes(k) || !known[k] || approvedDeletes.get(k) !== known[k].version) approvedDeletes.delete(k); });\n", to: "" },
+  { id: "M30", what: "a gateway's HTML 403 is taken as a permission refusal (adopts the server copy, drops the edit — A4)",
+    from: 'if (r.status === 403) return code === "42501" ? "refused" : "unknown";', to: 'if (r.status === 403) return "refused";' },
+  { id: "M31", what: "a push walks every week into a timeout instead of stopping at the first dead request (A5)",
+    from: "      const x = await writeWeek(k, clone(target[k]), job.mode, by);\n      results.push(x);\n      if (x.outcome === \"auth\" || x.thrown) stop = true;",
+    to: "      const x = await writeWeek(k, clone(target[k]), job.mode, by);\n      results.push(x);\n      if (x.outcome === \"auth\") stop = true;" },
+  { id: "M32", what: "a pull running when a clear/restore is requested still adopts (A11)",
+    from: "    if (authoritativeQueued > 0) return { ok: false, skipped: \"authoritative-queued\" };\n    const cur0", to: "    const cur0" },
+  { id: "M33", what: "adoption ignores an edit made while the request was out (A3)",
+    from: "      if (expect && k in expect && expect[k] !== shown) return;\n", to: "" },
+  { id: "M34", what: "a clear/restore re-commits weeks whose write FAILED (they'd stop being retried — R7)",
+    from: "Object.keys(startShown).filter(k => saved.has(k)).forEach(k => {", to: "Object.keys(startShown).forEach(k => {" },
+  { id: "M35", what: "a re-send after recognising our own earlier body ignores that the screen moved on (re-sends an undone edit — A3)",
+    from: "if (mode !== \"force\" && canon((d.getState() || {})[k]) !== c) return { k, outcome: \"superseded\" }; ", to: "" },
 ];
 
 async function scenarios(createSchedSync, check) {
@@ -140,8 +153,8 @@ async function scenarios(createSchedSync, check) {
   const internal = [];
   const mkSession = (table, o) => {
     o = o || {};
-    const s = { mirror: {}, toasts: [], statuses: [], wipeBlocked: [], commits: 0,
-      token: o.token === undefined ? "TOK_A" : o.token, tokenState: o.tokenState || "ok", canWrite: o.canWrite !== false, user: o.user || "user-a" };
+    const s = { mirror: {}, toasts: [], statuses: [], wipeBlocked: [], commits: 0, readAsAnon: false,
+      token: o.token === undefined ? "TOK_A" : o.token, canWrite: o.canWrite !== false, user: o.user || "user-a" };
     const hdr = (tok) => tok ? { apikey: "ANON", Authorization: "Bearer " + tok } : { apikey: "ANON", Authorization: "Bearer ANON" };
     s.engine = createSchedSync({
       getState: () => s.mirror,
@@ -149,9 +162,9 @@ async function scenarios(createSchedSync, check) {
       fetch: (u, i) => table.fetch(u, i),
       url: BASE,
       writeHeaders: () => hdr(s.token),
-      readHeaders: () => hdr(s.tokenState === "ok" ? s.token : null),
+      readHeaders: () => hdr(s.readAsAnon ? null : s.token),   // the app's dbReadHeaders falls back to anon for a stale token
       canWrite: () => s.canWrite,
-      tokenState: () => s.tokenState,
+      token: () => s.token,
       userId: () => { if (s.userThrows) throw new Error("boom"); return s.user; },
       now: clockIso,
       nowMs: () => ms,
@@ -574,7 +587,7 @@ async function scenarios(createSchedSync, check) {
     const c = await A.engine.authoritative({}, true, "clear");
     check("SE23 I6: the whole-table read fails → the clear is refused with a reason, wrote:false, ZERO writes",
       !c.ok && c.wrote === false && /nothing was changed/.test(c.error || "") && writes(t, from).length === 0 && t.rows().length === 4, JSON.stringify(c));
-    A.tokenState = "expired";
+    A.token = null;
     const c2 = await A.engine.authoritative({}, true, "clear");
     check("SE23 an expired sign-in refuses the clear up front (wrote:false, says sign in)", !c2.ok && c2.wrote === false && /sign in/i.test(c2.error || "") && t.rows().length === 4);
   });
@@ -599,16 +612,25 @@ async function scenarios(createSchedSync, check) {
   // SE25/SE26 — auth (R27, I4).
   await run("SE25", async () => {
     const t = mkTable(seedRows(3));
-    const A = mkSession(t); await A.engine.load();
-    A.tokenState = "expired";
+    const A = mkSession(t), B = mkSession(t, { token: "TOK_B", user: "user-b" });
+    await A.engine.load(); await B.engine.load();
+    t.control.expiredTokens.add("TOK_A");
     A.edit(W[0], w => (w.dayCall = "s9", w));
-    const from = t.log.length;
     const r = await A.engine.push();
-    check("SE25 expired token → no request at all; status authNeeded; one 'sign-in has expired' toast pointing at 'Sign in again'",
-      r.skipped === "auth" && t.log.length === from && A.st().authNeeded === true && A.toasts.length === 1 && /sign-in has expired/i.test(A.toasts[0]) && /Sign in again/.test(A.toasts[0]), JSON.stringify({ r, toasts: A.toasts }));
-    A.tokenState = "ok";
+    check("SE25 a write answered 401 → auth-needed for THAT token: status authNeeded, one 'sign-in has expired' toast pointing at 'Sign in again', the edit kept",
+      !r.ok && A.st().authNeeded === true && A.engine.authBlocked() && A.toasts.length === 1 && /sign-in has expired/i.test(A.toasts[0]) && /Sign in again/.test(A.toasts[0]) && A.mirror[W[0]].dayCall === "s9", JSON.stringify({ r: r.results, toasts: A.toasts }));
+    const from = t.log.length;
+    await A.engine.push();
+    check("SE25 the dead token is not sent again (no request until it changes)", t.log.length === from);
+    A.readAsAnon = true; // the app reads with dbReadHeaders: anon once the token is stale
+    B.edit(W[1], w => (w.dayCall = "sB", w)); await B.engine.push();
+    await A.engine.pull();
+    check("SE25 A7: while signed out of writes, the pull still works (anon read) and adopts B's change", A.mirror[W[1]].dayCall === "sB" && A.mirror[W[0]].dayCall === "s9");
+    t.control.users.TOK_A2 = "user-a"; A.token = "TOK_A2"; A.readAsAnon = false; // "Sign in again" stored a new token
     const r2 = await A.engine.push();
-    check("SE25 R27: after signing in again the pending week lands (no reload, no re-edit)", r2.ok && t.get(W[0]).data.dayCall === "s9" && A.st().authNeeded === false);
+    check("SE25 R27: after signing in again the pending week lands (no reload, no re-edit)", r2.ok && t.get(W[0]).data.dayCall === "s9" && A.st().authNeeded === false && !A.engine.authBlocked());
+    A.token = null;
+    check("SE25 no stored token at all → authBlocked, and nothing is written", A.engine.authBlocked());
   });
   await run("SE26", async () => {
     const t = mkTable(seedRows(3));
@@ -653,7 +675,7 @@ async function scenarios(createSchedSync, check) {
   // SE28 — RLS: a write filtered to 0 rows (row unchanged) is NOT a conflict.
   await run("SE28", async () => {
     const t = mkTable(seedRows(2));
-    const A = mkSession(t, { token: null }); await A.engine.load();
+    const A = mkSession(t, { token: "ANON" }); await A.engine.load(); // the anon key as the bearer (the server's anon role)
     A.edit(W[0], w => (w.dayCall = "s9", w));
     await A.engine.push();
     check("SE28 an RLS-filtered PATCH (0 rows, row unchanged) → pending + 'isn't allowed', never adopted as a conflict",
@@ -705,8 +727,8 @@ async function scenarios(createSchedSync, check) {
     await A.engine.pull(); await A.engine.idle();
     check("SE30 the page survived: the landed keepalive reads as OURS (no conflict for W1); the stale W2 is the only conflict",
       A.st().conflicts.length === 1 && A.st().conflicts[0].k === W[1] && t.get(W[5]) && !t.get(W[2]), JSON.stringify(A.st().conflicts));
-    A.tokenState = "expired";
-    check("SE30 no live token → no keepalive requests (an expired token would only 401)", A.engine.keepaliveRequests().length === 0);
+    A.token = null;
+    check("SE30 no token → no keepalive requests", A.engine.keepaliveRequests().length === 0);
   });
 
   // SE30b — the keepalive's bodies are in the ledger: its PATCH lands, the
@@ -744,10 +766,11 @@ async function scenarios(createSchedSync, check) {
     B.edit(W[0], w => (w.dayCall = "sB", w)); await B.engine.push();
     const hold = t.control.pause({ method: "GET", count: 1, when: "after" });
     const pl = A.engine.pull(); await hold.arrived;
+    t.control.fail({ method: "GET", kind: "5xx-before" }); // the reload reset() queues fails: the engine stays unloaded
     A.engine.reset();
     check("SE32 reset clears the mirror too (nothing of the old user stays on screen) and closes the load gate", JSON.stringify(A.mirror) === "{}" && !A.engine.isSeeded());
     const before = A.commits;
-    hold.release(); await pl;
+    hold.release(); await pl; await A.engine.idle();
     check("SE32 a pull in flight when the session resets adopts nothing, learns nothing, and the engine stays unloaded",
       A.commits === before && !A.engine.isSeeded() && A.engine.pending().length === 0 && A.engine.knownVersion(W[1]) === undefined && A.engine.knownVersion(W[0]) === undefined,
       JSON.stringify({ commits: A.commits - before, kv: [A.engine.knownVersion(W[0]), A.engine.knownVersion(W[1])] }));
@@ -758,14 +781,21 @@ async function scenarios(createSchedSync, check) {
     const h2 = t2.control.pause({ method: "PATCH", count: 1, when: "after" });
     C.edit(W[0], w => (w.dayCall = "sC", w));
     const pu = C.engine.push(); await h2.arrived;
+    t2.control.fail({ method: "GET", kind: "5xx-before" });
     C.engine.reset(); C.mirror = { next: "user" };
     const from = t2.log.length;
-    h2.release(); await pu;
+    h2.release(); await pu; await C.engine.idle();
     check("SE32 a push in flight across the reset sends nothing more and leaves the next user's mirror alone",
       JSON.stringify(C.mirror) === JSON.stringify({ next: "user" }) && C.toasts.length === 0 && writes(t2, from).length === 0, JSON.stringify({ mirror: C.mirror, toasts: C.toasts }));
     const from2 = t2.log.length;
     await C.engine.push();
     check("SE32 after a reset nothing is pushed until the next load (the old mirror can't be re-sent as the new user)", writes(t2, from2).length === 0 && C.engine.keepaliveRequests().length === 0);
+    const t3 = mkTable(seedRows(3));
+    const E = mkSession(t3); await E.engine.load();
+    E.edit(W[0], w => (w.dayCall = "unsaved", w));
+    await E.engine.reset();
+    check("SE32 A8: reset() reads the table again (public / OR views refill) — the fresh table, not the old user's unsaved edit",
+      E.engine.isSeeded() && sameData(E.mirror, tableSched(t3)) && E.engine.pending().length === 0);
   });
 
   // SE33 — not loaded: pushes are refused (load gate), a pull repairs it.
@@ -788,9 +818,9 @@ async function scenarios(createSchedSync, check) {
   await run("SE34", async () => {
     const t = mkTable(seedRows(2));
     const A = mkSession(t); await A.engine.load();
-    A.tokenState = "expired";
+    A.token = null;
     A.edit(W[0], w => (w.dayCall = "unsaved", w)); await A.engine.push();
-    A.tokenState = "ok";
+    A.token = "TOK_A";
     const B = mkSession(t, { token: "TOK_B", user: "user-b" }); await B.engine.load();
     B.edit(W[1], w => (w.dayCall = "sB", w)); await B.engine.push();
     await A.engine.load();
@@ -929,6 +959,18 @@ async function scenarios(createSchedSync, check) {
       r && !r.ok && pendingAfterTimeout === 1 && failingAfterTimeout === 1 && t.log.some(e => e.method === "GET" && /select=week_monday,version,updated_at/.test(e.url))
         && t.get(W[0]).data.dayCall === "x" && A.st().pending === 0, JSON.stringify({ r: r && r.results, pendingAfterTimeout, failingAfterTimeout }));
     hang.release();
+    // A5(b): a request started before the page was suspended (timers frozen)
+    // is aborted on resume when it's older than its timeout.
+    const t2 = mkTable(seedRows(2));
+    const R = mkSession(t2, { timeouts: { read: 100000, write: 100000 } }); await R.engine.load();
+    const hang2 = t2.control.pause({ method: "PATCH", week: W[0], count: 1 });
+    R.edit(W[0], w => (w.dayCall = "y", w));
+    const p2 = R.engine.push(); await hang2.arrived;
+    ms += 200000; R.engine.onResume();
+    const r2 = await p2;
+    check("SE43 A5(b): onResume aborts a request older than its timeout — the job settles (pending), the chain moves on",
+      r2 && !r2.ok && R.st().pending === 1, JSON.stringify(r2 && r2.results));
+    hang2.release();
   });
 
   // SE44 — Undo is all-or-nothing (D): a snapshot that would revert a week
@@ -984,6 +1026,149 @@ async function scenarios(createSchedSync, check) {
     check("SE46 a throwing dependency → onInternalError, the job returns internal, the next job runs and lands",
       r.internal && A.internal === 1 && r2.ok && t.get(W[0]).data.dayCall === "x", JSON.stringify({ r, r2 }));
     internal.length = 0; // expected here — not counted against SE-I
+  });
+
+  // SE47 — A4: classification on the BODY. A gateway's HTML 403, a 429 / 408 /
+  // 413 are unknown (read back, kept, retried); a PostgREST 4xx with a code is
+  // a rejection (kept, not re-sent unchanged); a 23505 duplicate on an insert
+  // is read back (someone inserted it first → conflict). Only JSON 403 42501
+  // adopts the server copy (SE27).
+  await run("SE47", async () => {
+    for (const kind of ["html-403", "429", "408", "413"]) {
+      const t = mkTable(seedRows(2));
+      const A = mkSession(t); await A.engine.load();
+      t.control.fail({ method: "PATCH", week: W[0], kind });
+      A.edit(W[0], w => (w.dayCall = "s9", w));
+      await A.engine.push();
+      const kept = A.mirror[W[0]].dayCall === "s9" && A.st().failing === 1 && A.st().conflicts.length === 0 && !A.toasts.some(m => /refused|rejected/.test(m));
+      await A.engine.push();
+      check(`SE47 ${kind} → unknown: read back, the edit kept and pending (never adopted, never 'refused'), and the retry lands`, kept && t.get(W[0]).data.dayCall === "s9" && A.st().pending === 0, JSON.stringify({ kind, toasts: A.toasts }));
+    }
+    const t = mkTable(seedRows(2));
+    const A = mkSession(t); await A.engine.load();
+    t.control.fail({ method: "PATCH", week: W[0], kind: "400-schema" });
+    A.edit(W[0], w => (w.dayCall = "s9", w));
+    await A.engine.push();
+    check("SE47 a PostgREST 400 PGRST204 (schema) → rejected: kept on screen, pending, the code named, never adopted",
+      A.mirror[W[0]].dayCall === "s9" && A.st().rejected.join() === W[0] && A.toasts.some(m => /PGRST204/.test(m)) && A.st().conflicts.length === 0, JSON.stringify(A.toasts));
+    const t2 = mkTable(seedRows(1));
+    const P = mkSession(t2), Q = mkSession(t2, { token: "TOK_B", user: "user-b" });
+    await P.engine.load(); await Q.engine.load();
+    Q.edit(W[4], () => wk("theirs")); await Q.engine.push();
+    P.edit(W[4], () => wk("mine")); await P.engine.push();
+    check("SE47 a 409 duplicate on an insert (someone created the week first) → read back → a loud conflict, theirs shown", P.mirror[W[4]].dayCall === "theirs" && P.st().conflicts.length === 1);
+  });
+
+  // SE48 — A3: Undo while the read-back is in flight. The PATCH committed
+  // behind a 504; during its read-back the user undoes. The read-back finds
+  // OUR body: the Undo stays on screen, the week stays pending, and the next
+  // write goes out at the NEW version — no re-send of the undone edit.
+  await run("SE48", async () => {
+    const t = mkTable(seedRows(2));
+    const A = mkSession(t); await A.engine.load();
+    const old = clone(A.mirror[W[0]]);
+    t.control.fail({ method: "PATCH", week: W[0], kind: "5xx-after" });
+    const hold = t.control.pause({ method: "GET", week: W[0], count: 1 });
+    A.edit(W[0], w => (w.dayCall = "E", w));
+    const p = A.engine.push(); await hold.arrived;
+    A.mirror = Object.assign({}, A.mirror, { [W[0]]: old }); // Undo
+    hold.release(); await p;
+    const patches = t.log.filter(e => e.method === "PATCH").length;
+    check("SE48 the read-back's own body is recognised; the undone edit is NOT sent again; the Undo is still on screen and pending",
+      patches === 1 && A.mirror[W[0]].dayCall === old.dayCall && A.engine.pending().join() === W[0] && A.st().conflicts.length === 0, JSON.stringify({ patches, pending: A.engine.pending() }));
+    const from = t.log.length;
+    await A.engine.push();
+    const w = writes(t, from);
+    check("SE48 …the next push writes the Undo at version 4 and the table ends at the pre-edit week", w.length === 1 && /version=eq\.4/.test(w[0].url) && t.get(W[0]).data.dayCall === old.dayCall);
+  });
+
+  // SE49 — A3: an edit made while a pull's week GET is in flight survives
+  // the pull and later settles as a loud conflict.
+  await run("SE49", async () => {
+    const t = mkTable(seedRows(3));
+    const A = mkSession(t), B = mkSession(t, { token: "TOK_B", user: "user-b" });
+    await A.engine.load(); await B.engine.load();
+    B.edit(W[0], w => (w.dayCall = "sB", w)); await B.engine.push();
+    A.canWrite = false;
+    const hold = t.control.pause({ method: "GET", week: W[0], count: 1, when: "after" });
+    const pl = A.engine.pull(); await hold.arrived;
+    A.edit(W[0], w => (w.dayCall = "sA", w));
+    hold.release(); await pl;
+    check("SE49 the pull did NOT adopt over the edit made while it was out", A.mirror[W[0]].dayCall === "sA");
+    A.canWrite = true; await A.engine.push();
+    check("SE49 …and the push settles it loudly as a conflict (theirs shown, a toast, a conflict entry)", A.mirror[W[0]].dayCall === "sB" && A.toasts.some(m => /someone else/.test(m)) && A.st().conflicts.length === 1);
+  });
+
+  // SE50 — A11: a pull that is running when a restore is requested adopts
+  // nothing (the restore owns the weeks); the table and the screen end at
+  // the snapshot; no "changed by someone else" mid-restore; the follow-up
+  // push writes nothing.
+  await run("SE50", async () => {
+    const t = mkTable(seedRows(4));
+    const A = mkSession(t), B = mkSession(t, { token: "TOK_B", user: "user-b" });
+    await A.engine.load(); await B.engine.load();
+    const snap = clone(A.mirror); snap[W[0]] = wk("snap"); delete snap[W[3]];
+    B.edit(W[1], w => (w.dayCall = "peer", w)); await B.engine.push();
+    const hold = t.control.pause({ method: "GET", count: 1, when: "after" });
+    const pl = A.engine.pull(); await hold.arrived;
+    A.mirror = clone(snap);
+    const rp = A.engine.authoritative(snap, true, "restore");
+    hold.release(); await pl; const r = await rp; await A.engine.idle();
+    const from = t.log.length; await A.engine.push();
+    check("SE50 the running pull deferred; restore wins: table = screen = snapshot, no conflict toast, the next push writes nothing",
+      r.ok && sameData(tableSched(t), snap) && sameData(A.mirror, snap) && A.st().conflicts.length === 0 && !A.toasts.some(m => /someone else/.test(m)) && writes(t, from).length === 0,
+      JSON.stringify({ ok: r.ok, w1: A.mirror[W[1]] && A.mirror[W[1]].dayCall, toasts: A.toasts }));
+  });
+
+  // SE51 — A14: a phone that never adopted a full clear made elsewhere (the
+  // empty list is never adopted) says so, and its Regenerate still works: the
+  // publish job re-reads just the period's weeks and re-inserts them; weeks
+  // outside the period (and their pending edits) are untouched.
+  await run("SE51", async () => {
+    const t = mkTable(seedRows(6));
+    const A = mkSession(t), B = mkSession(t, { token: "TOK_B", user: "user-b" });
+    await A.engine.load(); await B.engine.load();
+    A.mirror = {}; await A.engine.authoritative({}, true, "clear");
+    await B.engine.pull();
+    check("SE51 B's pull sees an empty table while it knows 6 weeks: not adopted, and the status says the screen is out of date", B.st().staleRemovals === 6 && Object.keys(B.mirror).length === 6);
+    t.control.fail({ method: "POST", week: W[8], kind: "5xx-before", count: 1 });
+    B.edit(W[8], () => wk("outside")); await B.engine.push(); // a pending NEW week outside the period
+    const period = [W[0], W[1], W[2]];
+    const gen = {}; period.forEach(k => { gen[k] = wk("regen"); });
+    B.mirror = Object.assign({}, B.mirror, gen);
+    const r = await B.engine.authoritative(B.mirror, false, "publish", period);
+    check("SE51 publish: the 3 period weeks are inserted (absent → re-inserted, not 'changed by someone else'), nothing else written or deleted",
+      r.ok && period.every(k => t.get(k) && t.get(k).data.dayCall === "regen") && t.rows().length === 3 && B.st().conflicts.length === 0, JSON.stringify({ r: r.results, rows: t.rows().map(x => x.week_monday) }));
+    check("SE51 the pending edit outside the period is still on screen and pending (not reverted by the publish)", B.mirror[W[8]] && B.mirror[W[8]].dayCall === "outside" && B.engine.pending().includes(W[8]));
+  });
+
+  // SE52 — A16: one push with 3 conflicts and 1 failing week → exactly ONE toast
+  // naming the 3 weeks AND the failing count; 3 persistent conflict entries.
+  await run("SE52", async () => {
+    const t = mkTable(seedRows(4));
+    const A = mkSession(t), B = mkSession(t, { token: "TOK_B", user: "user-b" });
+    await A.engine.load(); await B.engine.load();
+    [0, 1, 2].forEach(i => B.edit(W[i], w => (w.dayCall = "sB", w))); await B.engine.push();
+    [0, 1, 2, 3].forEach(i => A.edit(W[i], w => (w.dayCall = "sA", w)));
+    t.control.fail({ method: "PATCH", week: W[3], kind: "5xx-before" });
+    await A.engine.push();
+    check("SE52 exactly one toast: the 3 replaced weeks and the 1 not saved; 3 conflict entries",
+      A.toasts.length === 1 && /weeks of/.test(A.toasts[0]) && /Couldn't save 1 week/.test(A.toasts[0]) && A.st().conflicts.length === 3, JSON.stringify(A.toasts));
+  });
+
+  // SE53 — A5: a push stops at the first request that never answered (the
+  // network is likely gone) instead of walking every week into a timeout;
+  // the next push sends them all.
+  await run("SE53", async () => {
+    const t = mkTable(seedRows(3));
+    const A = mkSession(t); await A.engine.load();
+    t.control.fail({ week: W[0], kind: "throw", count: 2 }); // the PATCH and its read-back
+    [0, 1, 2].forEach(i => A.edit(W[i], w => (w.dayCall = "x" + i, w)));
+    await A.engine.push();
+    const patches1 = t.log.filter(e => e.method === "PATCH").length;
+    await A.engine.push();
+    check("SE53 one dead request stops the job (1 PATCH, not 3); the next push lands all three",
+      patches1 === 1 && [0, 1, 2].every(i => t.get(W[i]).data.dayCall === "x" + i) && A.st().pending === 0, JSON.stringify({ patches1 }));
   });
 
   // SE-I — no scenario above produced an internal error.

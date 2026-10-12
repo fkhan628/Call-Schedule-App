@@ -36,11 +36,11 @@
   const TABLE = 'schedule_weeks';
   const COLS = ['week_monday', 'data', 'version', 'updated_by', 'updated_at'];
   const RESERVED_PARAMS = ['select', 'order', 'limit', 'offset', 'on_conflict', 'columns', 'apikey'];
-  const FAIL_KINDS = ['5xx-before', '5xx-after', 'throw', 'throw-after', '409', '401', '403', '400'];
-  const BEFORE_KINDS = ['5xx-before', 'throw', '409', '401', '403', '400'];
+  const FAIL_KINDS = ['5xx-before', '5xx-after', 'throw', 'throw-after', '409', '401', '403', '400', 'html-403', '429', '408', '413', '400-schema'];
+  const BEFORE_KINDS = ['5xx-before', 'throw', '409', '401', '403', '400', 'html-403', '429', '408', '413', '400-schema'];
   const STATUS_TEXT = {
     200: 'OK', 201: 'Created', 204: 'No Content', 400: 'Bad Request', 401: 'Unauthorized',
-    403: 'Forbidden', 404: 'Not Found', 406: 'Not Acceptable', 409: 'Conflict',
+    403: 'Forbidden', 404: 'Not Found', 406: 'Not Acceptable', 408: 'Request Timeout', 409: 'Conflict', 413: 'Payload Too Large', 429: 'Too Many Requests',
     415: 'Unsupported Media Type', 500: 'Internal Server Error', 502: 'Bad Gateway',
     503: 'Service Unavailable', 504: 'Gateway Timeout',
   };
@@ -778,6 +778,13 @@
         case '401': return jwtError('PGRST303', 'JWT expired').pgResult;
         case '403': return PgError(403, '42501', 'permission denied for table ' + TABLE).pgResult;
         case '400': return PgError(400, 'PGRST100', 'injected bad request (control.fail)').pgResult;
+        // Not PostgREST JSON: a gateway / WAF answering instead of the API.
+        case 'html-403': return { status: 403, text: '<html><head><title>403 Forbidden</title></head><body><center><h1>403 Forbidden</h1></center></body></html>', headers: { 'content-type': 'text/html' } };
+        case '429': return { status: 429, text: 'Too Many Requests', headers: { 'content-type': 'text/plain', 'retry-after': '1' } };
+        case '408': return { status: 408, text: 'Request Timeout', headers: { 'content-type': 'text/plain' } };
+        case '413': return { status: 413, text: 'Payload Too Large', headers: { 'content-type': 'text/plain' } };
+        // A schema-cache miss: the client sent a column the table lacks.
+        case '400-schema': return PgError(400, 'PGRST204', "Could not find the 'extra' column of 'schedule_weeks' in the schema cache").pgResult;
       }
       throw new Error('unreachable');
     }
