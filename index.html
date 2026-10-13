@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.10.11g";
+    var APP_VERSION = "2026.10.12a";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -249,16 +249,28 @@ function CallSchedule() {
     }
   }, [darkMode]);
   const [scheduleHistory, setScheduleHistory] = useState([]);
-  const pushUndo = useCallback(sched => {
-    setScheduleHistory(prev => [...prev.slice(-9), JSON.parse(JSON.stringify(sched))]);
+  const pushUndo = useCallback((sched, counts) => {
+    const step = {
+      sched: JSON.parse(JSON.stringify(sched)),
+      counts: counts ? JSON.parse(JSON.stringify(counts)) : null
+    };
+    setScheduleHistory(prev => [...prev.slice(-9), step]);
   }, []);
   const undoLastChange = useCallback(() => {
     if (scheduleHistory.length === 0) return;
-    const prev = scheduleHistory[scheduleHistory.length - 1];
-    setSchedule(prev);
+    const step = scheduleHistory[scheduleHistory.length - 1];
+    setSchedule(step.sched);
+    if (step.counts) {
+      setPriorCounts(step.counts.prior || {});
+      setYear1Counts(step.counts.y1 || {});
+    }
     setScheduleHistory(h => h.slice(0, -1));
   }, [scheduleHistory]);
   const [previewSchedule, setPreviewSchedule] = useState(null);
+  const [previewOrigin, setPreviewOrigin] = useState("generated");
+  const loadJsonInputRef = useRef(null);
+  const publishingRef = useRef(false);
+  const [publishing, setPublishing] = useState(false);
   const [pendingLocks, setPendingLocks] = useState([]);
   const [silvisRows, setSilvisRows] = useState([]);
   const [silvisRule, setSilvisRule] = useState(SF_RULE_DEFAULT);
@@ -3202,14 +3214,7 @@ function CallSchedule() {
     setTimeout(() => setNotifTestSent(""), 3000);
   }, [sendBrowserNotif, sendEmailNotif, edgeFunctionUrl, notifPrefs, mySurgeon]);
   const doGenerateAndNotify = async () => {
-    const hadExistingSchedule = Object.keys(schedule).length > 0;
     if (doGenerate(false) !== "published") return;
-    if (!hadExistingSchedule) {
-      setTimeout(() => {
-        const latest = scheduleRef.current;
-        if (latest && Object.keys(latest).length > 0) rollForwardCounts(latest);
-      }, 100);
-    }
     await addNotification("schedule_published", "Schedule Published", "A new call schedule has been generated. Check the Schedule or Calendar tab.");
     sendEmailNotif("schedule_published", {
       period: `${MO[startMonth]} – ${MO[endMoIdx]} ${startYear}`
@@ -3875,6 +3880,7 @@ function CallSchedule() {
     if (droppedLocks.length) showToast(`⚠ ${droppedLocks.length} lock${droppedLocks.length === 1 ? " was" : "s were"} NOT honored by the generator: ${droppedLocks.map(l => `${nameOf(l.surgeonId)} — ${slotLabel(l.mondayStr, l.slot === "dc" ? "dayCall" : l.slot)}`).join("; ")} (the surgeon is unavailable there — vacation, no-call or Silvis).`, "error");
     if (preview) {
       setPreviewSchedule(result);
+      setPreviewOrigin("generated");
       setShowPreview(true);
       return "preview";
     }
@@ -3895,47 +3901,71 @@ function CallSchedule() {
     })();
     if (needsOkN > 0) {
       setPreviewSchedule(result);
+      setPreviewOrigin("generated");
       setShowPreview(true);
       showToast(`${needsOkN} item${needsOkN === 1 ? " needs" : "s need"} your OK before publishing — review them in the preview below, then ✓ Accept & Publish.`, "error");
       return "review";
     }
+    if (publishingRef.current) {
+      showToast("A publish is already in progress — wait for it to finish.", "error");
+      return "busy";
+    }
+    publishingRef.current = true;
+    setPublishing(true);
     {
       (async () => {
-        setSaveStatus("Saving backup snapshot…");
-        const snap = await snapshots.capture("regenerate");
-        if (!snap.ok) {
-          showToast("Couldn't save a backup snapshot — regenerate cancelled. Schedule unchanged.", "error");
-          setSaveStatus("");
-          return;
-        }
-        if (Object.keys(schedule).length > 0) pushUndo(schedule);
-        const merged = _objectSpread(_objectSpread({}, schedule), result);
-        setSchedule(merged);
-        setPreviewSchedule(null);
-        setShowPreview(false);
-        setSaveStatus("Regenerated!");
-        setTimeout(() => setSaveStatus(""), 2000);
         try {
-          const ts = new Date().toISOString();
-          lastSyncRef.current = ts;
-          const blobData = buildStateBundle({
-            schedule: merged
-          });
-          delete blobData.schedule;
-          delete blobData.vacations;
-          delete blobData.noCallDays;
+          setSaveStatus("Saving backup snapshot…");
+          const snap = await snapshots.capture("regenerate");
+          if (!snap.ok) {
+            showToast("Couldn't save a backup snapshot — regenerate cancelled. Schedule unchanged.", "error");
+            setSaveStatus("");
+            return;
+          }
           const {
-            error: regenErr
-          } = await supabase.from("call_schedule_data").upsert({
-            id: "main",
-            data: blobData,
-            updated_at: ts
+            merged,
+            prior,
+            y1
+          } = publishWeeks(result, {
+            label: `${numWeeks} weeks from ${MO[startMonth]} ${startYear}, Generate & Publish`,
+            meta: {
+              startMonth,
+              startYear,
+              numWeeks,
+              origin: "generated"
+            }
           });
-          if (regenErr) throw new Error(`regenerate blob save failed: ${String(regenErr).slice(0, 200)}`);
-          syncSchedWeeks(merged);
-        } catch (e) {
-          console.error("Immediate save failed:", e);
-          showToast("Couldn't save the regenerated schedule — check your connection.", "error");
+          setPreviewSchedule(null);
+          setShowPreview(false);
+          setSaveStatus("Regenerated!");
+          setTimeout(() => setSaveStatus(""), 2000);
+          try {
+            const ts = new Date().toISOString();
+            lastSyncRef.current = ts;
+            const blobData = buildStateBundle({
+              schedule: merged,
+              priorCounts: prior,
+              year1Counts: y1
+            });
+            delete blobData.schedule;
+            delete blobData.vacations;
+            delete blobData.noCallDays;
+            const {
+              error: regenErr
+            } = await supabase.from("call_schedule_data").upsert({
+              id: "main",
+              data: blobData,
+              updated_at: ts
+            });
+            if (regenErr) throw new Error(`regenerate blob save failed: ${String(regenErr).slice(0, 200)}`);
+            syncSchedWeeks(merged);
+          } catch (e) {
+            console.error("Immediate save failed:", e);
+            showToast("Couldn't save the regenerated schedule — check your connection.", "error");
+          }
+        } finally {
+          publishingRef.current = false;
+          setPublishing(false);
         }
       })();
     }
@@ -4069,14 +4099,10 @@ function CallSchedule() {
     alert(`Snapshot restored.\n\n` + `RESTORED: ${weekCt} schedule week${weekCt === 1 ? "" : "s"}, roster, and setup.\n\n` + `NOT RESTORED: vacations and no-call days — restore never changes them (they live in their own table). ` + (vacCt || ncCt ? `This snapshot holds ${vacCt} vacation entr${vacCt === 1 ? "y" : "ies"} and ${ncCt} no-call entr${ncCt === 1 ? "y" : "ies"}; if time off needs recovery it must be re-entered or recovered manually from the snapshot.` : `This snapshot predates time-off capture and holds none; current time off was left untouched.`));
     showToast("Snapshot restored — other devices will pick it up on their next sync.", "success");
   };
-  const rollForwardCounts = useCallback(sched => {
-    if (!sched || Object.keys(sched).length === 0) return;
-    const COUNTS_FLOOR = "2026-05-04";
-    sched = Object.fromEntries(Object.entries(sched).filter(([mStr]) => mStr >= COUNTS_FLOOR));
-    if (Object.keys(sched).length === 0) return;
-    const delta = {};
+  const countsOfWeeks = (weeks, pick) => {
+    const c = {};
     surgeons.forEach(s => {
-      delta[s.id] = {
+      c[s.id] = {
         dc: 0,
         nights: 0,
         wknd: 0,
@@ -4087,81 +4113,67 @@ function CallSchedule() {
         offB: 0
       };
     });
-    Object.values(sched).forEach(wk => {
+    Object.entries(weeks || {}).forEach(([mStr, wk]) => {
+      if (!wk || pick && !pick(mStr)) return;
       const bk = wk.isBackup;
-      if (wk.dayCall && delta[wk.dayCall]) delta[wk.dayCall][bk ? "dcB" : "dc"]++;
-      if (wk.off && delta[wk.off]) delta[wk.off][bk ? "offB" : "off"]++;
+      if (wk.dayCall && c[wk.dayCall]) c[wk.dayCall][bk ? "dcB" : "dc"]++;
+      if (wk.off && c[wk.off]) c[wk.off][bk ? "offB" : "off"]++;
       Object.entries(wk.nights || {}).forEach(([sh, sid]) => {
-        if (!sid || !delta[sid]) return;
-        if (sh === "wknd") delta[sid][bk ? "wkndB" : "wknd"]++;else delta[sid][bk ? "nightsB" : "nights"]++;
+        if (!sid || !c[sid]) return;
+        if (sh === "wknd") c[sid][bk ? "wkndB" : "wknd"]++;else c[sid][bk ? "nightsB" : "nights"]++;
       });
     });
+    return c;
+  };
+  const applyCountsDelta = (prev, delta) => {
     const addDays = c => (c.dc || 0) * 7 + (c.nights || 0) + (c.wknd || 0) * 3 + (c.svcAdj7 || 0);
     const addDaysB = c => (c.dcB || 0) * 7 + (c.nightsB || 0) + (c.wkndB || 0) * 3;
-    setPriorCounts(prev => {
-      const next = _objectSpread({}, prev);
-      Object.keys(delta).forEach(id => {
-        const p = next[id] || {};
-        const d = delta[id];
-        next[id] = {
-          dc: (p.dc || 0) + d.dc,
-          nights: (p.nights || 0) + d.nights,
-          wknd: (p.wknd || 0) + d.wknd,
-          off: (p.off || 0) + d.off,
-          dcB: (p.dcB || 0) + d.dcB,
-          nightsB: (p.nightsB || 0) + d.nightsB,
-          wkndB: (p.wkndB || 0) + d.wkndB,
-          offB: (p.offB || 0) + d.offB,
-          totalDays: (p.totalDays || 0) + addDays(d),
-          totalDaysB: (p.totalDaysB || 0) + addDaysB(d)
-        };
+    const next = _objectSpread({}, prev || {});
+    Object.keys(delta || {}).forEach(id => {
+      const p = next[id] || {},
+        d = delta[id];
+      next[id] = _objectSpread(_objectSpread({}, p), {}, {
+        dc: (p.dc || 0) + d.dc,
+        nights: (p.nights || 0) + d.nights,
+        wknd: (p.wknd || 0) + d.wknd,
+        off: (p.off || 0) + d.off,
+        dcB: (p.dcB || 0) + d.dcB,
+        nightsB: (p.nightsB || 0) + d.nightsB,
+        wkndB: (p.wkndB || 0) + d.wkndB,
+        offB: (p.offB || 0) + d.offB,
+        totalDays: (p.totalDays || 0) + addDays(d),
+        totalDaysB: (p.totalDaysB || 0) + addDaysB(d)
       });
-      return next;
     });
+    return next;
+  };
+  const netCounts = (add, sub) => {
+    const out = {};
+    Object.keys(add).forEach(id => {
+      out[id] = {};
+      Object.keys(add[id]).forEach(k => {
+        out[id][k] = add[id][k] - ((sub[id] || {})[k] || 0);
+      });
+    });
+    return out;
+  };
+  const rollForwardCounts = useCallback((sched, replaced) => {
+    if (!sched || Object.keys(sched).length === 0) return null;
+    const COUNTS_FLOOR = "2026-05-04";
+    sched = Object.fromEntries(Object.entries(sched).filter(([mStr]) => mStr >= COUNTS_FLOOR));
+    if (Object.keys(sched).length === 0) return null;
+    const old = Object.fromEntries(Object.entries(replaced || {}).filter(([mStr]) => mStr >= COUNTS_FLOOR && sched[mStr]));
+    const delta = netCounts(countsOfWeeks(sched), countsOfWeeks(old));
+    setPriorCounts(prev => applyCountsDelta(prev, delta));
     const currentYear = new Date().getFullYear();
-    const delta1yr = {};
-    surgeons.forEach(s => {
-      delta1yr[s.id] = {
-        dc: 0,
-        nights: 0,
-        wknd: 0,
-        off: 0,
-        dcB: 0,
-        nightsB: 0,
-        wkndB: 0,
-        offB: 0
-      };
-    });
-    Object.entries(sched).forEach(([mStr, wk]) => {
-      if (parse(mStr).getFullYear() !== currentYear) return;
-      const bk = wk.isBackup;
-      if (wk.dayCall && delta1yr[wk.dayCall]) delta1yr[wk.dayCall][bk ? "dcB" : "dc"]++;
-      if (wk.off && delta1yr[wk.off]) delta1yr[wk.off][bk ? "offB" : "off"]++;
-      Object.entries(wk.nights || {}).forEach(([sh, sid]) => {
-        if (!sid || !delta1yr[sid]) return;
-        if (sh === "wknd") delta1yr[sid][bk ? "wkndB" : "wknd"]++;else delta1yr[sid][bk ? "nightsB" : "nights"]++;
-      });
-    });
-    setYear1Counts(prev => {
-      const next = _objectSpread({}, prev);
-      Object.keys(delta1yr).forEach(id => {
-        const p = next[id] || {};
-        const d = delta1yr[id];
-        next[id] = {
-          dc: (p.dc || 0) + d.dc,
-          nights: (p.nights || 0) + d.nights,
-          wknd: (p.wknd || 0) + d.wknd,
-          off: (p.off || 0) + d.off,
-          dcB: (p.dcB || 0) + d.dcB,
-          nightsB: (p.nightsB || 0) + d.nightsB,
-          wkndB: (p.wkndB || 0) + d.wkndB,
-          offB: (p.offB || 0) + d.offB,
-          totalDays: (p.totalDays || 0) + addDays(d),
-          totalDaysB: (p.totalDaysB || 0) + addDaysB(d)
-        };
-      });
-      return next;
-    });
+    const inYear = mStr => parse(mStr).getFullYear() === currentYear;
+    const delta1yr = netCounts(countsOfWeeks(sched, inYear), countsOfWeeks(old, inYear));
+    setYear1Counts(prev => applyCountsDelta(prev, delta1yr));
+    return {
+      delta,
+      delta1yr,
+      replacedCounted: Object.keys(old).length
+    };
   }, [surgeons]);
   const previewNeedsOk = useMemo(() => {
     if (!previewSchedule) return {
@@ -4201,9 +4213,23 @@ function CallSchedule() {
       return;
     }
     if (previewSchedule) {
-      if (Object.keys(schedule).length > 0) pushUndo(schedule);
-      rollForwardCounts(previewSchedule);
-      setSchedule(prev => _objectSpread(_objectSpread({}, prev), previewSchedule));
+      if (publishingRef.current) {
+        showToast("A publish is already in progress — wait for it to finish.", "error");
+        return;
+      }
+      const needsOkN = previewNeedsOk.items.length;
+      publishWeeks(previewSchedule, {
+        label: `${numWeeks} weeks from ${MO[startMonth]} ${startYear}${previewOrigin === "json" ? ", loaded from JSON" : ""}`,
+        extra: needsOkN ? ` — ${needsOkN} item${needsOkN === 1 ? "" : "s"} reviewed in Needs your OK` : "",
+        meta: {
+          startMonth,
+          startYear,
+          numWeeks,
+          needsOk: needsOkN,
+          bendCost: previewNeedsOk.cost,
+          origin: previewOrigin
+        }
+      });
       setPreviewSchedule(null);
       setShowPreview(false);
       setCalMonth(startMonth);
@@ -4211,20 +4237,84 @@ function CallSchedule() {
       setView("calendar");
       setSaveStatus("Published — totals updated");
       setTimeout(() => setSaveStatus(""), 3000);
-      const needsOkN = previewNeedsOk.items.length;
-      logAudit("schedule.publish", `Published schedule (${numWeeks} weeks from ${MO[startMonth]} ${startYear})${needsOkN ? ` — ${needsOkN} item${needsOkN === 1 ? "" : "s"} reviewed in Needs your OK` : ""}`, {
-        startMonth,
-        startYear,
-        numWeeks,
-        weeks: Object.keys(previewSchedule).length,
-        needsOk: needsOkN,
-        bendCost: previewNeedsOk.cost
-      });
     }
   };
   const discardPreview = () => {
     setPreviewSchedule(null);
     setShowPreview(false);
+  };
+  const publishWeeks = (newWeeks, how) => {
+    const cur = scheduleRef.current || {};
+    const replacedWeeks = Object.fromEntries(Object.keys(newWeeks).filter(m => cur[m]).map(m => [m, cur[m]]));
+    if (Object.keys(cur).length > 0) pushUndo(cur, {
+      prior: priorCounts,
+      y1: year1Counts
+    });
+    const r = rollForwardCounts(newWeeks, replacedWeeks);
+    const merged = _objectSpread(_objectSpread({}, cur), newWeeks);
+    scheduleRef.current = merged;
+    setSchedule(merged);
+    const nRep = r ? r.replacedCounted : 0;
+    const t1 = r ? netCountsText(r.delta1yr) : "no change",
+      tAll = r ? netCountsText(r.delta) : "no change";
+    logAudit("schedule.publish", `Published schedule (${how.label})${how.extra || ""}${nRep ? ` — ${nRep} week${nRep === 1 ? "" : "s"} replaced a published version` : ""} — counts net: ${tAll}${t1 !== tAll ? ` (this year's tally: ${t1})` : ""}`, Object.assign({}, how.meta || {}, {
+      weeks: Object.keys(newWeeks).length,
+      replaced: nRep,
+      net: r ? r.delta : null,
+      net1yr: r ? r.delta1yr : null
+    }));
+    return {
+      merged,
+      prior: r ? applyCountsDelta(priorCounts, r.delta) : priorCounts,
+      y1: r ? applyCountsDelta(year1Counts, r.delta1yr) : year1Counts
+    };
+  };
+  const netCountsText = net => {
+    if (!net) return "no change";
+    const parts = [];
+    surgeons.forEach(sg => {
+      const d = net[sg.id];
+      if (!d) return;
+      const bits = [["dc", "service"], ["nights", "nights"], ["wknd", "weekends"], ["off", "off"], ["dcB", "backup service"], ["nightsB", "backup nights"], ["wkndB", "backup weekends"], ["offB", "backup off"]].filter(([k]) => d[k]).map(([k, l]) => `${l} ${d[k] > 0 ? "+" : "−"}${Math.abs(d[k])}`);
+      if (bits.length) parts.push(`${sg.name} ${bits.join(", ")}`);
+    });
+    return parts.length ? parts.join("; ") : "no change";
+  };
+  const loadScheduleJson = (text, fileName) => {
+    const refuse = why => {
+      showToast(`Not loaded — ${why}. Nothing was changed.`, "error");
+      return false;
+    };
+    let o;
+    try {
+      o = JSON.parse(String(text).replace(/^﻿/, ""));
+    } catch (e) {
+      return refuse("the file isn't valid JSON");
+    }
+    let v, shaped;
+    try {
+      v = validateScheduleJson(o, mondays.map(fmt), surgeons.map(sg => sg.id), Object.fromEntries(surgeons.map(sg => [sg.id, sg.name])));
+      if (!v.ok) return refuse(v.error);
+      shaped = shapeScheduleWeeks(v.weeks, surgeons, backupMondaySet, fierceBackupSet, holidayAssignments);
+    } catch (e) {
+      console.error("schedule JSON load failed:", e);
+      return refuse(`the file could not be checked (${e && e.message || e})`);
+    }
+    setPreviewSchedule(shaped);
+    setPreviewOrigin("json");
+    setPreviewCalMonth(0);
+    setShowPreview(true);
+    showToast(`Loaded ${fileName || "the file"} into the preview (${Object.keys(shaped).length} weeks) — nothing is published until ✓ Accept & Publish.`, "success");
+    return true;
+  };
+  const onLoadJsonFile = e => {
+    const f = e.target.files && e.target.files[0];
+    e.target.value = "";
+    if (!f) return;
+    const r = new FileReader();
+    r.onload = () => loadScheduleJson(String(r.result || ""), f.name);
+    r.onerror = () => showToast("Couldn't read that file — nothing was changed.", "error");
+    r.readAsText(f);
   };
   const generateHolidayAssignments = useCallback(year => {
     setHolidayLockWarning("");
@@ -9166,17 +9256,38 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       letterSpacing: 0.3,
       flex: 1
     })
-  }, "👁 Preview Schedule"), React.createElement("button", {
+  }, "👁 Preview Schedule"), (isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.role) === "admin") && React.createElement(React.Fragment, null, React.createElement("button", {
+    onClick: () => loadJsonInputRef.current && loadJsonInputRef.current.click(),
+    title: `Load a schedule for ${mondays.length ? fmt(mondays[0]) + " × " + mondays.length + " weeks" : "the Generate settings"} into the preview (JSON) — it is checked, not published`,
+    style: _objectSpread(_objectSpread({}, css.btn(false)), {}, {
+      padding: "13px 18px",
+      fontSize: 14,
+      fontWeight: 700,
+      borderRadius: 9,
+      letterSpacing: 0.3
+    })
+  }, "📋 Load schedule (JSON)"), React.createElement("input", {
+    ref: loadJsonInputRef,
+    type: "file",
+    accept: ".json,application/json",
+    onChange: onLoadJsonFile,
+    style: {
+      display: "none"
+    },
+    "aria-label": "Load schedule (JSON)"
+  })), React.createElement("button", {
     onClick: doGenerateAndNotify,
+    disabled: publishing,
     style: _objectSpread(_objectSpread({}, css.btn(true)), {}, {
       padding: "13px 24px",
       fontSize: 14,
       fontWeight: 700,
       borderRadius: 9,
       letterSpacing: 0.3,
-      flex: 1
+      flex: 1,
+      opacity: publishing ? 0.55 : 1
     })
-  }, "Generate & Publish →")), showPreview && previewSchedule && (() => {
+  }, publishing ? "Publishing…" : "Generate & Publish →")), showPreview && previewSchedule && (() => {
     const pStats = {};
     surgeons.forEach(s => {
       pStats[s.id] = {
@@ -9337,7 +9448,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           const w = Math.round((parse(mStr).getTime() - t0) / 604800000);
           if (last[id] !== undefined && w - last[id].w <= MIN_DC_GAP) {
             const reason = reasonFor(id, mStr) || reasonFor(id, last[id].mStr) || "vacations that week";
-            notes.push(`${nameOf(id)}: service weeks ${nice(last[id].mStr)} and ${nice(mStr)}, forced by ${reason}`);
+            notes.push(previewOrigin === "json" ? `${nameOf(id)}: service weeks ${nice(last[id].mStr)} and ${nice(mStr)} (as in the loaded file)` : `${nameOf(id)}: service weeks ${nice(last[id].mStr)} and ${nice(mStr)}, forced by ${reason}`);
           }
           last[id] = {
             w,
@@ -9367,7 +9478,18 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       }
     }, React.createElement("div", {
       style: css.cardT
-    }, "👁 Schedule Preview"), React.createElement("div", {
+    }, "👁 Schedule Preview", previewOrigin === "json" && React.createElement("span", {
+      style: {
+        marginLeft: 8,
+        fontSize: 11,
+        fontWeight: 700,
+        color: dk ? "#f0c890" : "#8a5020",
+        background: dk ? "#3a2a10" : "#fef3e6",
+        border: "1px solid #e8c89a",
+        borderRadius: 5,
+        padding: "2px 7px"
+      }
+    }, "Loaded from JSON — not generated")), React.createElement("div", {
       style: {
         display: "flex",
         gap: 6,
@@ -9424,7 +9546,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       })
     }, "🖨 Print Calendar"), React.createElement("button", {
       onClick: acceptPreview,
-      disabled: previewNeedsOk.items.length > 0 && !previewAck,
+      disabled: publishing || previewNeedsOk.items.length > 0 && !previewAck,
       title: previewNeedsOk.items.length > 0 && !previewAck ? "Review the Needs your OK items below first" : undefined,
       style: _objectSpread(_objectSpread({}, css.btn(true)), {}, {
         padding: "6px 14px",
@@ -9473,7 +9595,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         fontSize: 11,
         opacity: 0.85
       }
-    }, "Vacation, no-call and Silvis days are never broken — when a week can't be covered by the usual rules, the generator takes the mildest bend and lists it here. Re-roll for different names; the bends themselves are the minimum the calendar allows."), React.createElement("label", {
+    }, previewOrigin === "json" ? "These are in the loaded file — the generator didn't choose them. Every bend, empty slot, time-off placement and crowded day in it is listed here; review each before publishing. Re-roll replaces the file with a generated schedule." : "Vacation, no-call and Silvis days are never broken — when a week can't be covered by the usual rules, the generator takes the mildest bend and lists it here. Re-roll for different names; the bends themselves are the minimum the calendar allows."), React.createElement("label", {
       style: {
         display: "flex",
         alignItems: "center",
@@ -9517,7 +9639,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         fontSize: 11,
         opacity: 0.85
       }
-    }, "The generator couldn't space these apart. Accepting publishes them as shown — consider warning the surgeon, or adjust and re-roll.")), pm && React.createElement(React.Fragment, null, React.createElement("div", {
+    }, previewOrigin === "json" ? "These are in the loaded file. Accepting publishes them as shown — consider warning the surgeon." : "The generator couldn't space these apart. Accepting publishes them as shown — consider warning the surgeon, or adjust and re-roll.")), pm && React.createElement(React.Fragment, null, React.createElement("div", {
       style: {
         display: "flex",
         alignItems: "center",
@@ -9668,7 +9790,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           overflowWrap: "anywhere"
         }
       }, "🏖", vacList.map(v => v.name).join(", ")));
-    }))), (isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.role) === "admin") && seedDebug && React.createElement("div", {
+    }))), (isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.role) === "admin") && seedDebug && previewOrigin !== "json" && React.createElement("div", {
       style: {
         background: dk ? "#2a2410" : "#fffbe8",
         border: "1px solid #e0c870",
