@@ -56,8 +56,13 @@ const MIN_DC_GAP = 2; // keep in lockstep with generator.js
 const FLEX_CODES = ["FAK"]; // the brief's FLEX list, restated (generator.js FLEX)
 const FLEX_STRAIN_COST = 10; // restated: a FLEX strain unit in the bend tier
 // The live scenario's search budget per roll, in schedules: about what the
-// app's 10-second search checks on a phone (a desktop checks ~400k/s).
+// app's 10-second search checks on a phone. A desktop checks ~400–600k/s
+// (4–6 million in the 10 s); this assumes a phone at least 4–6× slower still
+// reaches ~1 million (the preview says "N schedules checked in X s" — check it
+// on the phone). At half this budget the strain distribution sits at the
+// threshold; at a quarter it fails.
 const LIVE_ROLLS = 30, LIVE_PROPOSALS = 1000000;
+const FUZZ_N = 2000; // broken copies of a live schedule for the agreement fuzz (scenario H)
 
 // ─── Load the real app modules as browser globals ───
 function loadApp(transform, label) {
@@ -209,6 +214,10 @@ function overnights(sched, keys, seed, pins) {
     WEEKNIGHTS.forEach((k, o) => { if (n[k]) H[at(o - 7)] = { id: n[k], f: 2 }; });
     if (seed.wknd) { H[at(-3)] = { id: seed.wknd, f: 2 }; H[at(-1)] = { id: seed.wknd, f: 2 }; }
     if (seed.dayCall) H[at(-2)] = { id: seed.dayCall, f: 2 };
+    // who actually held them (the calendar's rule): an override holds the service Saturday, a holiday / swap row its date
+    const ov = seed.dayCallOverrides || {}, hcS = seed.holidayCoverage || {};
+    if (seed.dayCall && ov[at(-2)]) H[at(-2)] = { id: ov[at(-2)], f: 2 };
+    for (let o = -7; o < 0; o++) { const c = hcS[at(o)]; if (c) { if (c.surgeonId) H[at(o)] = { id: c.surgeonId, f: 2 }; else delete H[at(o)]; } }
   }
   keys.forEach(m => {
     const wk = sched[m]; if (!wk) return;
@@ -228,9 +237,13 @@ const oracle = require("./bend-oracle.js");
 function ruleFindings(sched, keys, { seed, pins, designedRuns, flexIds }) {
   const H = overnights(sched, keys, seed, pins);
   const first = keys[0], flex = new Set(flexIds || []);
-  const out = { hard: [], lastResort: [], partner: 0, flex: 0, ladder: 0, items: [] };
+  const out = { hard: [], lastResort: [], partner: 0, flex: 0, ladder: 0, items: [], bendKeys: [], strainBy: {} };
   const next = (ds, n) => fmt(addD(parse(ds), n));
-  const unit = (id, what) => { if (flex.has(id)) out.flex++; else out.partner++; out.items.push(`${flex.has(id) ? "flex" : "strain"}|${id}|${what}`); };
+  const unit = (id, what, key) => {
+    if (flex.has(id)) out.flex++; else out.partner++;
+    out.items.push(`${flex.has(id) ? "flex" : "strain"}|${id}|${what}`);
+    const k = `${flex.has(id) ? "flex" : "strain"}|${id}|${key}`; out.strainBy[k] = (out.strainBy[k] || 0) + 1;
+  };
   // rule 2 — every two consecutive dates, the second in the period
   const lrWeeks = new Set();
   Object.keys(H).sort().forEach(ds => {
@@ -249,7 +262,7 @@ function ruleFindings(sched, keys, { seed, pins, designedRuns, flexIds }) {
   const worked = weeks.map(m => { const w = {}; [4, 5, 6].forEach(o => { const x = H[fmt(addD(parse(m), o))]; if (x) { const r = w[x.id] || (w[x.id] = { fixed: true }); if (!x.f) r.fixed = false; } }); return w; });
   for (let i = 1; i < weeks.length; i++) for (const id of IDS_OF(sched, seed)) {
     const p = worked[i - 1][id], c = worked[i][id];
-    if (p && c && !(p.fixed && c.fixed)) unit(id, `wknd ${weeks[i - 1]}+${weeks[i]}`);
+    if (p && c && !(p.fixed && c.fixed)) unit(id, `wknd ${weeks[i - 1]}+${weeks[i]}`, "wkndRun");
   }
   // strain b — service weeks ≤ MIN_DC_GAP apart (history: the seed's recentDc, its dayCall at -1)
   const last = {};
@@ -258,7 +271,7 @@ function ruleFindings(sched, keys, { seed, pins, designedRuns, flexIds }) {
   keys.forEach((m, w) => {
     const id = sched[m] && sched[m].dayCall; if (!id) return;
     const fixedNow = !!(pins && pins[m] && pins[m].dayCall === id);
-    if (last[id] && w - last[id].w <= MIN_DC_GAP && !(last[id].fixed && fixedNow)) unit(id, `svc ${last[id].w}+${w}`);
+    if (last[id] && w - last[id].w <= MIN_DC_GAP && !(last[id].fixed && fixedNow)) unit(id, `svc ${last[id].w}+${w}`, "svcGap");
     last[id] = { w, fixed: fixedNow };
   });
   // strain c — three overnights each two dates apart, the last in the period
@@ -267,22 +280,29 @@ function ruleFindings(sched, keys, { seed, pins, designedRuns, flexIds }) {
     const a = H[next(ds, -4)], b = H[next(ds, -2)], c = H[ds];
     if (!a || !b || a.id !== c.id || b.id !== c.id) return;
     if (a.f && b.f && c.f) return;
-    unit(c.id, `eon ${next(ds, -4)},${next(ds, -2)},${ds}`);
+    unit(c.id, `eon ${next(ds, -4)},${next(ds, -2)},${ds}`, "everyOther");
   });
   // bends — the oracle's tables, rule-2 pairs excluded (they are the floor), designed pairs waived
   const SL = oracle.SLOTS, holder = (wk, s) => !wk ? null : s === "dayCall" ? (wk.dayCall || null) : ((wk.nights && wk.nights[s]) || null);
   const pinned = (m, s, id) => !!(pins && pins[m] && pins[m][s] === id);
+  // service week + that weekend when someone else's holiday 24h holds the Saturday: no two nights in a
+  // row, but still the week's heaviest pair — the old svcPlus price, 60 (not FAK's last resort, not a pinned pair)
+  keys.forEach(m => {
+    const wk = sched[m], id = wk && wk.dayCall; if (!id || !wk.nights || wk.nights.wknd !== id) return;
+    const hs = H[fmt(addD(parse(m), 5))];
+    if ((!hs || hs.id !== id) && !lrWeeks.has(m) && !(pinned(m, "dayCall", id) && pinned(m, "wknd", id))) { out.ladder += 60; out.items.push(`bend|${id}|${m}|dayCall+wknd(split)`); out.bendKeys.push(`${id}|${m}|dayCall+wknd|60`); }
+  });
   keys.forEach((m, w) => {
     const wk = sched[m];
     for (let a = 0; a < 6; a++) for (let b = a + 1; b < 6; b++) {
       const id = holder(wk, SL[a]); if (!id || id !== holder(wk, SL[b]) || oracle.isHardPair(a, b)) continue;
       if (pinned(m, SL[a], id) && pinned(m, SL[b], id)) continue;
-      out.ladder += oracle.PAIR[a][b]; out.items.push(`bend|${id}|${m}|${SL[a]}+${SL[b]}`);
+      out.ladder += oracle.PAIR[a][b]; out.items.push(`bend|${id}|${m}|${SL[a]}+${SL[b]}`); out.bendKeys.push(`${id}|${m}|${SL[a]}+${SL[b]}|${oracle.PAIR[a][b]}`);
     }
     const prev = w > 0 ? sched[keys[w - 1]] : (seed ? { dayCall: seed.dayCall, nights: { wknd: seed.wknd } } : null);
     [["dayCall", "mon", oracle.CROSS.dcMon], ["wknd", "dayCall", oracle.CROSS.wkDc], ["dayCall", "dayCall", oracle.CROSS.dcDc]].forEach(([a, b, c]) => {
       const id = holder(prev, a);
-      if (id && id === holder(wk, b) && !(w > 0 && pinned(keys[w - 1], a, id) && pinned(m, b, id))) { out.ladder += c; out.items.push(`bend|${id}|${m}|${a}>${b}`); }
+      if (id && id === holder(wk, b) && !(w > 0 && pinned(keys[w - 1], a, id) && pinned(m, b, id))) { out.ladder += c; out.items.push(`bend|${id}|${m}|${a}>${b}`); out.bendKeys.push(`${id}|${m}|${a}+${b}|${c}`); }
     });
   });
   out.bend = out.ladder + FLEX_STRAIN_COST * out.flex;
@@ -351,7 +371,8 @@ function runScenario(name, vac, opts, yearCounts) {
 //      cleanProxy — WITHOUT yearCounts (the pre-wiring proxy fallback path,
 //                   priorYearScore = multi-year/2). Locks the fallback.
 //    Since 2026-10-12 a clean period must also have NO strain and NO bend
-//    (the search stops on a perfect schedule — clean periods are unchanged).
+//    (the search stops on a perfect schedule — clean periods are unchanged);
+//    the vacation and squeeze scenarios below reach the same (perfect, Δ0).
 const clean = runScenario("clean", {}, { perfect: true, maxSpread: { dc: 0, wknd: 0, total: 0 } }, COUNTS_1YR);
 const cleanProxy = runScenario("cleanProxy", {}, { perfect: true, maxSpread: { dc: 0, wknd: 0, total: 0 } });
 
@@ -365,13 +386,13 @@ const LIGHT_VACATIONS = {
   s3: [["2026-02-16", "2026-02-22"]],
   s5: [["2026-03-23", "2026-03-29"]],
 };
-const light = runScenario("vacation", LIGHT_VACATIONS, { maxSpread: { dc: 2, wknd: 2, total: 3 } }, COUNTS_1YR);
+const light = runScenario("vacation", LIGHT_VACATIONS, { perfect: true, maxSpread: { dc: 0, wknd: 0, total: 0 } }, COUNTS_1YR); // perfect since 2026-10-12 (was Δ ≤ 2/2/3)
 
 // C: SQUEEZE (hard since 2026-10-11) — a 2-week vacation. Nobody on time off
 //    or on the night before it, every slot covered, and rule 2 holds (since
 //    2026-10-12 two overnights in a row are the floor, not a bend).
 const SQUEEZE_VACATIONS = { s5: [["2026-03-23", "2026-04-05"]] };
-const squeeze = runScenario("squeeze", SQUEEZE_VACATIONS, { maxSpread: null }, COUNTS_1YR);
+const squeeze = runScenario("squeeze", SQUEEZE_VACATIONS, { perfect: true, maxSpread: { dc: 0, wknd: 0, total: 0 } }, COUNTS_1YR); // perfect since 2026-10-12
 
 // D: SPACING STRESS (two-sided) — a week-0 DC pool of exactly two surgeons
 //    (the other five are vacation-blocked via that week's Saturday, which
@@ -515,7 +536,7 @@ const silvis = runSilvis();
 //      - cost at least the oracle's exact minimum ladder (test/bend-oracle.js,
 //        rules 1–2 restated there) — a lower cost means a miscount.
 //    And over all rolls (the brief's distributions):
-//      - service weeks 2 each (Δ0) and weekends 2 each (Δ0) in ≥ 90%;
+//      - service weeks 2 each (Δ0) and weekends 2 each (Δ0) in ≥ 90% (the brief's own figure);
 //      - partner strain ≤ 1 (the minimum — the CP-SAT benchmark has 1) in ≥ 90%;
 //      - bends no worse than the BENCHMARK's (CP-SAT v3, owner 2026-10-12:
 //        test/fixtures/benchmark-2026-11-16-v3.json), scored by the app's own
@@ -570,7 +591,7 @@ function runLive() {
     if (broken.length) failures.push(`live: the benchmark breaks a rule in Needs your OK — ${broken.map(it => it.text).join(" | ")}`);
     const strain = kinds("strain").map(it => it.text);
     if (JSON.stringify(strain) !== JSON.stringify(["KJH: service weeks two weeks apart, 11/2 & 11/16"])) failures.push(`live: the benchmark's partner strain should be KJH's 11/2 & 11/16 only — ${JSON.stringify(strain)}`);
-    if (kinds("flexStrain").some(it => it.who !== P.FAK) || !kinds("flexStrain").length) failures.push(`live: the benchmark's flexible strain should be FAK's (back-to-back weekends 2/5–7 and 2/13) — ${JSON.stringify(kinds("flexStrain").map(it => it.text))}`);
+    if (JSON.stringify(kinds("flexStrain").map(it => it.text)) !== JSON.stringify(["FAK: 2 weekends in a row, 2/5–2/13"])) failures.push(`live: the benchmark's flexible strain should be FAK's (back-to-back weekends 2/5–7 and 2/13) — ${JSON.stringify(kinds("flexStrain").map(it => it.text))}`);
     const bends = kinds("bend").map(it => `${code[it.who]} ${it.key} ${it.mondayStr}`).sort();
     const WANT = ["ARW svcPlus 2027-02-15", "FAK nightsApart 2027-02-15", "FAK svcPlus 2027-02-08", "FAK wkndThenSvc 2027-02-08", "KJH monWknd 2027-01-04", "MCC nightsApart 2027-02-08"];
     if (JSON.stringify(bends) !== JSON.stringify(WANT)) failures.push(`live: the benchmark's bends should be the owner's six (195) — ${JSON.stringify(bends)}`);
@@ -607,6 +628,12 @@ function runLive() {
     own.hard.forEach(h => failures.push(`${label}: RULE 2 two overnights in a row — ${h.replace(/\bs\d\b/g, x => code[x] || x)}`));
     if (own.lastResort.length) failures.push(`${label}: FAK's last resort used (${own.lastResort.join(", ")}) — the oracle covers this period without it`);
     const lst = listScheduleBends(sched, lsbCtx);
+    // item by item, both ways: every bend (who, week, slots, cost) and every strain item's units per surgeon and kind
+    const engBends = lst.items.filter(i => i.kind === "bend").map(i => `${i.who}|${i.mondayStr}|${i.slots.join("+")}|${i.cost}`).sort();
+    const engStrain = {}; lst.items.filter(i => i.kind === "strain" || i.kind === "flexStrain").forEach(i => { const k = `${i.kind === "flexStrain" ? "flex" : "strain"}|${i.who}|${i.key}`; engStrain[k] = (engStrain[k] || 0) + i.units; });
+    const sortObj = (o) => JSON.stringify(Object.keys(o).sort().map(k => [k, o[k]]));
+    if (JSON.stringify(engBends) !== JSON.stringify(own.bendKeys.slice().sort())) failures.push(`${label}: the bends listed differ from the test's — list ${JSON.stringify(engBends)} vs test ${JSON.stringify(own.bendKeys.slice().sort())}`);
+    if (sortObj(engStrain) !== sortObj(own.strainBy)) failures.push(`${label}: the strain items differ from the test's — list ${sortObj(engStrain)} vs test ${sortObj(own.strainBy)}`);
     if (lst.tiers.strain !== own.partner || lst.cost !== own.bend || lst.counts.hard !== own.hard.length || lst.counts.lastRes !== own.lastResort.length)
       failures.push(`${label}: listScheduleBends disagrees with the test — strain ${lst.tiers.strain} vs ${own.partner}, bend ${lst.cost} vs ${own.bend} (${own.items.join(", ")}), hard ${lst.counts.hard} vs ${own.hard.length}`);
     if (own.ladder < best.cost) failures.push(`${label}: ladder cost ${own.ladder} is BELOW the oracle's exact minimum ${best.cost} — a bend is being missed`);
@@ -619,7 +646,7 @@ function runLive() {
   const rolled = Object.values(stats.svcHist).reduce((a, b) => a + b, 0);
   if (rolled === LIVE_ROLLS) {
     const need = Math.ceil(0.90 * LIVE_ROLLS), sum = (h, ok) => Object.entries(h).filter(([k]) => ok(Number(k))).reduce((a, [, n]) => a + n, 0);
-    if ((stats.svcHist[0] || 0) < need) failures.push(`live: service weeks 2 each (Δ0) in only ${stats.svcHist[0] || 0}/${LIVE_ROLLS} rolls (need ≥ 90%) — ${JSON.stringify(stats.svcHist)}`);
+    if ((stats.svcHist[0] || 0) < need) failures.push(`live: service weeks 2 each (Δ0) in only ${stats.svcHist[0] || 0}/${LIVE_ROLLS} rolls (need ≥ 90%, the brief's figure) — ${JSON.stringify(stats.svcHist)}`);
     if ((stats.wkndHist[0] || 0) < need) failures.push(`live: weekends 2 each (Δ0) in only ${stats.wkndHist[0] || 0}/${LIVE_ROLLS} rolls (need ≥ 90%) — ${JSON.stringify(stats.wkndHist)}`);
     if (sum(stats.strainHist, k => k <= 1) < need) failures.push(`live: partner strain ≤ 1 in only ${sum(stats.strainHist, k => k <= 1)}/${LIVE_ROLLS} rolls (need ≥ 90%) — ${JSON.stringify(stats.strainHist)}`);
     if (sum(stats.bendHist, k => k <= benchBend) < need) failures.push(`live: bends no worse than the benchmark's ${benchBend} in only ${sum(stats.bendHist, k => k <= benchBend)}/${LIVE_ROLLS} rolls (need ≥ 90%) — ${JSON.stringify(stats.bendHist)}`);
@@ -657,6 +684,88 @@ function runSundayControl() {
 }
 const sunday = runSundayControl();
 
+// H: AGREEMENT FUZZ (2026-10-12) — the live scenario's per-roll check compares
+//    listScheduleBends with the test's own re-derivation only on GENERATED
+//    schedules, which are clean (no hard pair, no time off, no empty slot).
+//    Here the same comparison runs on FUZZ_N deliberately broken copies of a
+//    live schedule — random swaps, hand-overs and emptied slots, with three
+//    seeds (the fixture's, one with weeknights, none) — so every finding kind
+//    is exercised: two overnights in a row, time off (incl. the Sunday), empty
+//    slots, FAK's last resort, partner and FAK strain, bends. Both readings
+//    must agree on every count, and every kind must actually occur (coverage),
+//    or the fuzz proves nothing.
+function runFuzz() {
+  const L = JSON.parse(fs.readFileSync(path.join(__dirname, "fixtures", "generator-live-2026-11-16.json"), "utf8"));
+  const P = Object.fromEntries(L.surgeons.map(s => [s.name, s.id])), keys = L.mondays, ids = L.surgeons.map(s => s.id);
+  const LIVE_PINS = {
+    "2026-11-23": { dayCall: P.MCC, thu: P.MCC, wed: P.RPC, wknd: P.RPC },
+    "2026-12-21": { dayCall: P.FAK, thu: P.FAK, wknd: P.FAK },
+    "2026-12-28": { dayCall: P.REH, thu: P.REH, wed: P.DJA, wknd: P.DJA },
+  };
+  const DESIGNED_RUNS = new Set(["2026-12-24", "2026-12-25", "2026-12-26"].map(d => d + "|" + P.FAK));
+  const seeds = [L.prevWeekSeed, { ...L.prevWeekSeed, nights: { mon: P.FAK, tue: P.DJA, wed: P.RPC, thu: P.KJH } }, null,
+    { ...L.prevWeekSeed, nights: { mon: P.FAK, tue: P.DJA, wed: P.RPC, thu: P.KJH }, holidayCoverage: { "2026-11-15": { surgeonId: P.ARW } }, dayCallOverrides: { "2026-11-14": P.KJH } }];
+  const base = generate(L.surgeons, keys.map(parse), L.avail, new Set(L.backupMondays), L.priorCounts, L.prefs, new Set(L.fierceBackupMondays), L.holAssignments, [], L.prevWeekSeed, L.vacationsOnly, L.yearCounts, { proposals: 30000 });
+  const SL = oracle.SLOTS;
+  const get = (s, m, k) => k === "dayCall" ? s[m].dayCall : s[m].nights[k];
+  const put = (s, m, k, v) => { if (k === "dayCall") s[m].dayCall = v; else s[m].nights[k] = v; };
+  let seedR = 20261012; const R = () => { seedR = (seedR * 1103515245 + 12345) & 0x7fffffff; return seedR / 0x7fffffff; }; // fixed: reproducible
+  const failures = [], cover = {};
+  for (let it = 0; it < FUZZ_N; it++) {
+    const s = JSON.parse(JSON.stringify(base));
+    for (let j = 0, k = 1 + Math.floor(R() * 8); j < k; j++) {
+      const m = keys[Math.floor(R() * keys.length)], sl = SL[Math.floor(R() * 6)], r = R();
+      if (r < 0.45) { const m2 = keys[Math.floor(R() * keys.length)], s2 = SL[Math.floor(R() * 6)]; const a = get(s, m, sl), b = get(s, m2, s2); put(s, m, sl, b); put(s, m2, s2, a); }
+      else if (r < 0.9) put(s, m, sl, ids[Math.floor(R() * ids.length)]);
+      else put(s, m, sl, null);
+    }
+    const seed = seeds[it % seeds.length];
+    const own = ruleFindings(s, keys, { seed, pins: LIVE_PINS, designedRuns: DESIGNED_RUNS, flexIds: [P.FAK] });
+    const lst = listScheduleBends(s, { surgeons: L.surgeons, mondays: keys, vac: L.avail, vacationsOnly: L.vacationsOnly, holAssignments: L.holAssignments, prevWeekSeed: seed });
+    const mine = { strain: own.partner, bend: own.bend, hard: own.hard.length, lastResort: own.lastResort.length, timeoff: floorHits(s, keys, L.avail, L.vacationsOnly).length, empty: keys.reduce((t, m) => t + SL.filter(x => !get(s, m, x)).length, 0) };
+    const eng = { strain: lst.tiers.strain, bend: lst.cost, hard: lst.counts.hard, lastResort: lst.counts.lastRes, timeoff: lst.counts.timeoff, empty: lst.counts.empty };
+    for (const k in eng) if (eng[k] > 0) cover[k] = (cover[k] || 0) + 1;
+    if (own.flex > 0) cover.flex = (cover.flex || 0) + 1;
+    if (JSON.stringify(mine) !== JSON.stringify(eng) && failures.length < 10) failures.push(`fuzz #${it}: the test ${JSON.stringify(mine)} vs listScheduleBends ${JSON.stringify(eng)} — ${own.items.join(", ")} | ${own.hard.join(", ")}`);
+  }
+  ["strain", "bend", "hard", "lastResort", "timeoff", "empty", "flex"].forEach(k => { if (!cover[k]) failures.push(`fuzz: no schedule exercised '${k}' — the fuzz is vacuous for it`); });
+  return { name: "fuzz", failures, cover };
+}
+const fuzz = runFuzz();
+
+// I: FAK'S LAST RESORT (rule 2's exception, two-sided) — a week where every
+//    surgeon but X is off on its Friday (no-call days, so the Thursday night
+//    stays open): only X is free for the service week (Mon–Sun) and only X for
+//    the weekend. With X = FAK the search must give FAK both — Fri → Sat → Sun,
+//    the brief's last resort — and list it as such (no rule-2 item). With X a
+//    partner, X must NOT take both — nobody else may ever take service week +
+//    weekend — so one of the two stays EMPTY (either: both are one empty slot
+//    on the floor) and is listed as empty, with no rule-2 or last-resort item.
+function runLastResort() {
+  const LR_MONDAYS = buildMondays("2026-01-05", 3), LR_KEYS = LR_MONDAYS.map(fmt), FRI = fmt(addD(LR_MONDAYS[1], 4));
+  const failures = [];
+  const ROLLS_I = 20;
+  const one_ = (X, flexCase) => {
+    const vac = {}; for (const id of IDS) if (id !== X) vac[id] = [[FRI, FRI]];
+    const hist = {};
+    for (let roll = 0; roll < ROLLS_I; roll++) {
+      const g = generate(SURGEONS, LR_MONDAYS, vac, new Set(), {}, {}, new Set(), null, [], null, {}, COUNTS_1YR);
+      const wk = g[LR_KEYS[1]];
+      const lst = listScheduleBends(g, { surgeons: SURGEONS, mondays: LR_MONDAYS, vac, vacationsOnly: {}, holAssignments: null, prevWeekSeed: null });
+      const lr = lst.items.filter(i => i.kind === "lastResort"), hard = lst.items.filter(i => i.kind === "hard"), empty = lst.items.filter(i => i.kind === "empty");
+      const k = flexCase ? (wk.dayCall === X && wk.nights.wknd === X && lr.length === 1 && hard.length === 0 && empty.length === 0)
+                         : (((wk.dayCall === X && !wk.nights.wknd) || (!wk.dayCall && wk.nights.wknd === X)) && empty.length === 1 && (empty[0].slots[0] === "wknd" || empty[0].slots[0] === "dayCall") && lr.length === 0 && hard.length === 0);
+      hist[k] = (hist[k] || 0) + 1;
+      if (!k && failures.length < 10) failures.push(`lastResort ${flexCase ? "FAK" : "partner"} roll ${roll}: service ${wk.dayCall}, weekend ${wk.nights.wknd}; items ${JSON.stringify(lst.items.filter(i => i.kind !== "bend").map(i => i.kind + " " + i.text))}`);
+    }
+    return hist;
+  };
+  const FAKID = SURGEONS.find(s => (s.name || "").toUpperCase() === "FAK").id;
+  const fak = one_(FAKID, true), partner = one_("s2", false);
+  return { name: "lastResort", failures, fak, partner, rolls: ROLLS_I };
+}
+const lastResort = runLastResort();
+
 // ─── Report ───
 for (const r of [clean, cleanProxy, light, squeeze]) {
   const s = r.stats;
@@ -674,9 +783,11 @@ if (live.stats) {
   if (live.bench) console.log(`          benchmark (loaded through the PR 1 loader): bend cost ${live.bench.cost} = ladder ${live.bench.counts.ladder} + FAK strain; partner strain ${live.bench.tiers.strain}; items: ${live.bench.items.filter(i => i.kind !== "crowded").map(i => i.kind + " " + i.text.split(" (")[0]).join(" | ")}`);
 }
 console.log(`sunday    ${sunday.rolls} rolls — the Sunday-off surgeon never held the service week; the Mon–Sat-only control gave it to them in ${sunday.fired}/${sunday.rolls} rolls`);
+console.log(`lastResort ${lastResort.rolls} + ${lastResort.rolls} rolls — FAK took service week + weekend as his listed last resort in ${lastResort.fak.true || 0}/${lastResort.rolls}; with a partner nobody took both (one stayed empty, listed) in ${lastResort.partner.true || 0}/${lastResort.rolls}`);
+console.log(`fuzz      ${FUZZ_N} broken copies of a live schedule — listScheduleBends and the test agree on every count; schedules with each finding: ${JSON.stringify(fuzz.cover)}`);
 console.log(`silvis    ${ROLLS} rolls — FAK off every overlapping slot (6 Silvis days: Mon/Tue/Wed/Sun/Fri/Sat); control without them put him on one in ${silvis.redFired}/${ROLLS} rolls; open neighbor legs given to him: ${silvis.given}`);
 
-const failures = [...clean.failures, ...cleanProxy.failures, ...light.failures, ...squeeze.failures, ...stress.failures, ...silvis.failures, ...live.failures, ...sunday.failures];
+const failures = [...clean.failures, ...cleanProxy.failures, ...light.failures, ...squeeze.failures, ...stress.failures, ...silvis.failures, ...live.failures, ...sunday.failures, ...fuzz.failures, ...lastResort.failures];
 if (failures.length) {
   console.error(`\nFAIL — ${failures.length} violation(s):`);
   failures.slice(0, 25).forEach(f => console.error("  • " + f));

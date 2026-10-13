@@ -230,6 +230,7 @@ const BEND_COST = {
   thuWknd: 50,      // a Thu night + that same weekend            } (rule 2 — never priced;
   svcWknd: 60,      // service week + that weekend (Fri→Sat→Sun)  }  see HARD_BEND_KEYS)
   svcPlus: 60,      // service-week surgeon also on a weeknight
+  svcWkndSplit: 60, // service week + that weekend when a holiday 24h row (someone else's) holds the Saturday
   empty: 400,       // nobody can take the slot
 };
 // Rule 2 (owner 2026-10-12): nobody works two overnight shifts in a row —
@@ -252,6 +253,7 @@ const BEND_TEXT = {
   thuWknd: "Thu night + that same weekend",
   svcWknd: "service week + that weekend (Fri → Sat → Sun in a row)",
   svcPlus: "service week + a weeknight the same week",
+  svcWkndSplit: "service week + that weekend (a holiday 24h holds the Saturday)",
   empty: "nobody can take it",
 };
 const BEND_NIGHT_OFF = { mon: 0, tue: 1, wed: 2, thu: 3 };
@@ -330,7 +332,7 @@ function holidayDesign(holAssignments, mondayStrs, christmasDcId) {
         else if (dow === 0 && !(wkndRow && wkndRow.m === m && wkndRow.fri)) wkndRow = wkndRow && wkndRow.m === m ? wkndRow : { m, id: c.surgeon, fri: false };
       });
       if (wkndRow) pin(wkndRow.m, "wknd", wkndRow.id);
-      if (hDow >= 2 && hDow <= 5) {
+      if ((hDow >= 2 && hDow <= 5) || (h.name === "Christmas Day" && christmasDcId && (hDow === 6 || hDow === 0))) { // decision 3: Christmas week (Sat / Sun Christmas included) is FAK's
         const dcId = h.name === "Christmas Day" && christmasDcId ? christmasDcId : h.surgeonA;
         pin(hMon, "dayCall", dcId);
       } else if (hDow === 1) {
@@ -381,10 +383,10 @@ const FLEX = ["FAK"];           // codes whose strain is allowed (at a cost) —
 const FLEX_STRAIN_COST = 10;    // per FLEX strain unit, in the bend tier
 const RULE_TIERS = ["floor", "lastResort", "svc", "wknd", "strain", "bend", "total", "soft", "prefs"];
 const RULE_SLOT_OF_DAY = [1, 2, 3, 4, 5, 0, 5]; // Mon..Sun → the slot whose overnight the date is
-const RULE_LADDER = ["monWknd", "tueWknd", "wedWknd", "nightsApart", "svcPlus", "svcThenMon", "wkndThenSvc", "svcThenSvc"];
+const RULE_LADDER = ["monWknd", "tueWknd", "wedWknd", "nightsApart", "svcPlus", "svcThenMon", "wkndThenSvc", "svcThenSvc", "svcWkndSplit"];
 
 // ctx = { surgeons, mondays (consecutive), vac, vacationsOnly, holAssignments,
-// prevWeekSeed {dayCall, wknd, nights?, recentDc?}, locks?, preferences?,
+// prevWeekSeed {dayCall, wknd, nights?, holidayCoverage?, dayCallOverrides?, recentDc?}, locks?, preferences?,
 // backupMondays?, christmasDcId?, sched? } — sched (optional) supplies each
 // week's stored holidayCoverage and isBackup, and marks absent weeks.
 function scheduleRules(ctx) {
@@ -439,10 +441,18 @@ function scheduleRules(ctx) {
   const nextRow = holCoverage[dayStr[ND]];
   const nextOwn = nextRow && nextRow.surgeonId && pOf.has(nextRow.surgeonId) ? pOf.get(nextRow.surgeonId) : -1;
   // Rule 2's DESIGNED runs, exactly the brief's: a card's Night Before → its
-  // own 24h the next date, and the Christmas card's run when one surgeon holds
-  // it (FAK's standing rule) — its eve through that week's Sunday. A pair is
-  // exempt only when both dates are fixed by the cards (fix 1) AND marked here.
+  // own 24h the next date, and FAK's Christmas week — when one surgeon holds
+  // the Christmas card (the standing rule), the overnights decision 3 gives
+  // them: the eve, Christmas Day, and the Friday night, service Saturday and
+  // Sunday of the Christmas DESIGN week (the week holding Christmas; the week
+  // before when Christmas is a Monday — the Monday-holiday convention). Read
+  // from the card by date, for every weekday Christmas can fall on (the slot
+  // pins only cover some). Those dates count as fixed by the cards when that
+  // surgeon holds them (christOwner), and that week is never their "last
+  // resort". A pair is exempt only when both dates are fixed by the cards
+  // (fix 1) AND marked here — another night they take that week is not.
   const designedPair = new Uint8Array(ND + 1);
+  const christOwner = new Int8Array(ND + 1).fill(-1), christWeekP = new Int8Array(W).fill(-1);
   const dIdx = new Map(dayStr.map((ds, d) => [ds, d]));
   Object.values(c.holAssignments || {}).forEach(arr => (Array.isArray(arr) ? arr : []).forEach(h => {
     if (!h || !h.date) return;
@@ -452,11 +462,15 @@ function scheduleRules(ctx) {
       const d = dIdx.get(r.date);
       if (rows.some(q => q && !q.isEve && q.date === dayStr[d + 1] && q.surgeon === r.surgeon)) designedPair[d] = 1;
     });
-    if (h.name === "Christmas Day" && h.surgeonA && h.surgeonA === h.surgeonB && dIdx.has(h.date)) {
-      const eve = rows.find(r => r && r.isEve && r.date && dIdx.has(r.date));
-      const start = eve ? dIdx.get(eve.date) : dIdx.get(h.date), xd = parse(h.date);
-      const end = dIdx.get(h.date) + ((7 - xd.getDay()) % 7); // that week's Sunday
-      for (let d = start; d < end && d < ND; d++) designedPair[d] = 1;
+    if (h.name === "Christmas Day" && h.surgeonA && h.surgeonA === h.surgeonB && sp(h.surgeonA) >= 0) {
+      const p = sp(h.surgeonA), xd = parse(h.date), dow = xd.getDay();
+      const desMon = addD(xd, dow === 0 ? -6 : dow === 1 ? -7 : 1 - dow);
+      const eve = rows.find(r => r && r.isEve && r.date);
+      const desDays = new Set([h.date, fmt(addD(desMon, 4)), fmt(addD(desMon, 5)), fmt(addD(desMon, 6))]);
+      if (eve) desDays.add(eve.date);
+      desDays.forEach(ds => { if (dIdx.has(ds)) christOwner[dIdx.get(ds)] = p; });
+      desDays.forEach(ds => { const nx = fmt(addD(parse(ds), 1)); if (desDays.has(nx) && dIdx.has(ds)) designedPair[dIdx.get(ds)] = 1; });
+      const w = mStrs.indexOf(fmt(desMon)); if (w >= 0) christWeekP[w] = p;
     }
   }));
   // The week before the period (prevWeekSeed): its overnights, and service-week history.
@@ -466,6 +480,12 @@ function scheduleRules(ctx) {
     const n = seed.nights || {};
     ["mon", "tue", "wed", "thu"].forEach((k, i) => { seedOwn[i] = sp(n[k]); });
     seedOwn[4] = sp(seed.wknd); seedOwn[6] = sp(seed.wknd); seedOwn[5] = sp(seed.dayCall);
+    // who really held those dates (weekHolders' rule, helpers.js): a single-day
+    // override holds the service Saturday; any holidayCoverage row (holiday,
+    // swap) holds its date instead of the regular slot
+    const ovr = seed.dayCallOverrides || {}, hc = seed.holidayCoverage || {};
+    if (seed.dayCall && ovr[dayStr[5]]) seedOwn[5] = sp(ovr[dayStr[5]]);
+    for (let k = 0; k < 7; k++) { const cv = hc[dayStr[k]]; if (cv) seedOwn[k] = sp(cv.surgeonId); }
   }
   const seedDc = seed ? sp(seed.dayCall) : -1, seedWk = seed ? sp(seed.wknd) : -1;
   const lastSvc0 = new Int16Array(P).fill(-999);
@@ -495,7 +515,7 @@ function scheduleRules(ctx) {
     if (key && !HARD_BEND_KEYS.includes(key)) swKey[s1 * 6 + s2] = RULE_LADDER.indexOf(key);
   }
   const ladderCost = RULE_LADDER.map(k => BEND_COST[k]);
-  const K_SVCMON = RULE_LADDER.indexOf("svcThenMon"), K_WKSVC = RULE_LADDER.indexOf("wkndThenSvc"), K_SVCSVC = RULE_LADDER.indexOf("svcThenSvc");
+  const K_SVCMON = RULE_LADDER.indexOf("svcThenMon"), K_WKSVC = RULE_LADDER.indexOf("wkndThenSvc"), K_SVCSVC = RULE_LADDER.indexOf("svcThenSvc"), K_SPLIT = RULE_LADDER.indexOf("svcWkndSplit");
 
   // scratch
   const svc = new Int16Array(P), wkc = new Int16Array(P), ntc = new Int16Array(P), svcR = new Int16Array(P), wkR = new Int16Array(P), tot = new Int16Array(P);
@@ -532,11 +552,12 @@ function scheduleRules(ctx) {
       own[d] = p; fix[d] = p >= 0 && pin[x] === p ? 1 : 0;
     }
     own[ND] = nextOwn; fix[ND] = 1;
+    for (let d = 7; d <= ND; d++) if (christOwner[d] >= 0 && own[d] === christOwner[d]) fix[d] = 1;
     // rule 2 (+ FLEX's last resort: service week + that weekend)
     let lastRes = 0, hard = 0;
     for (let w = 0; w < W; w++) {
       const p = a[w * 6];
-      lrWeek[w] = present[w] && p >= 0 && flex[p] && a[w * 6 + 5] === p && !(pin[w * 6] === p && pin[w * 6 + 5] === p) ? 1 : 0;
+      lrWeek[w] = present[w] && p >= 0 && flex[p] && a[w * 6 + 5] === p && christWeekP[w] !== p ? 1 : 0;
       if (lrWeek[w]) { lastRes++; if (out) out.lastResort.push(w); }
     }
     for (let d = 6; d < ND; d++) {
@@ -593,6 +614,15 @@ function scheduleRules(ctx) {
           bend += ladderCost[ki]; if (out) out.bend.push([ki, w, s1, s2, p, -1]);
         }
       }
+      // Service week + that weekend is rule 2 (Fri → Sat → Sun) — unless someone
+      // else's holiday 24h holds that Saturday: then no two nights are in a row,
+      // but it is still the week's heaviest pair (the Warnings line says so), so
+      // it is priced like the old svcPlus bend. Not for FAK's last resort or his
+      // Christmas design week, not for a pair the cards pin.
+      { const p = a[b];
+        if (p >= 0 && a[b + 5] === p && own[7 + 7 * w + 5] !== p && !lrWeek[w] && christWeekP[w] !== p && !(pin[b] === p && pin[b + 5] === p)) {
+          bend += ladderCost[K_SPLIT]; if (out) out.bend.push([K_SPLIT, w, 0, 5, p, -1]);
+        } }
       const pd = w === 0 ? seedDc : (present[w - 1] ? a[b - 6] : -1), pk = w === 0 ? seedWk : (present[w - 1] ? a[b - 1] : -1);
       const des = (s1, s2, p) => w > 0 && pin[b - 6 + s1] === p && pin[b + s2] === p;
       if (pd >= 0 && a[b + 1] === pd && !des(0, 1, pd)) { bend += ladderCost[K_SVCMON]; if (out) out.bend.push([K_SVCMON, w, 0, 1, pd, w - 1]); }
@@ -684,8 +714,8 @@ function scheduleRules(ctx) {
         while (F.hard.includes(d1) && own[d1] === p) { seen.add(d1); d1++; }
         seen.add(d0);
         const days = []; for (let d = d0; d <= d1; d++) days.push(d);
-        const w = wOfDay(d1), wp = wOfDay(d0);
-        push({ kind: "hard", key: "consecutive", cost: 0, who: ids[p], mondayStr: mOf(Math.max(w, 0)), prevMondayStr: wp !== w ? mOf(wp) : undefined, date: dayStr[d0], slots: [],
+        const w = Math.min(Math.max(wOfDay(d1), 0), W - 1), wp = wOfDay(d0);
+        push({ kind: "hard", key: "consecutive", cost: 0, who: ids[p], mondayStr: mOf(w), prevMondayStr: wp !== w ? mOf(wp) : undefined, date: dayStr[d0], slots: [],
           text: `${code(p)}: ${days.map(dml).join(" → ")} — overnight shifts back to back (nobody works two nights in a row)` });
       }); }
     F.lastResort.forEach(w => { const p = a[w * 6], b = 7 + 7 * w;
@@ -719,7 +749,7 @@ function scheduleRules(ctx) {
         if (done.has(p + ":" + s0)) return; done.add(p + ":" + s0);
         let e = d; while (e + 2 < ND && own[e + 2] === p) e += 2;
         const chain = []; for (let x = s0; x <= e; x += 2) chain.push(x);
-        const units = F.triple.filter(t => own[t] === p && t >= s0 + 4 && t <= e).length;
+        const units = F.triple.filter(t => own[t] === p && t >= s0 + 4 && t <= e && (t - s0) % 2 === 0).length;
         strainItem(p, "everyOther", units, wOfDay(e), `${code(p)}: every other night ×${chain.length}, ${chain.map(dml).join(" → ")}`);
       }); }
     F.bend.forEach(([ki, w, s1, s2, p, pw]) => {
@@ -743,7 +773,7 @@ function scheduleRules(ctx) {
     return { cost: T[5], items, tiers, counts: F.n };
   }
 
-  return { W, X, P, TN, ids, mStrs, floorTab, fixedHolder, present, flex, pin, encode, decode, evaluate, list, tiersOf, scan };
+  return { W, X, P, TN, ids, mStrs, floorTab, fixedHolder, present, flex, pin, isBackup, encode, decode, evaluate, list, tiersOf, scan };
 }
 
 // Every finding of ANY schedule — generated, loaded or hand-edited — for the
@@ -2268,6 +2298,7 @@ function ruleCompare(A, B) {
 const SEARCH_MS = 10000;          // one Generate / one "Search more", in the app
 const SEARCH_KICK_AFTER = 4000;   // proposals without a new best → kick
 const SEARCH_START_KICKS = 8;     // kicks without a new best → a fresh start
+const SEARCH_PREFS_POLISH = 3000; // schedules more once every other tier is at its floor (preferences)
 
 function createImprover(R, a0, rnd) {
   const X = R.X, P = R.P, TN = R.TN, ft = R.floorTab;
@@ -2348,9 +2379,11 @@ function createImprover(R, a0, rnd) {
 // The search behind Generate / Preview and "🔍 Search more". Same inputs as
 // generate(); opts { random, now }. step(ms) works for about ms and returns;
 // run({ ms, proposals }) loops step until a limit or until the schedule is
-// perfect (floor, last resort, strain and bends 0; service weeks, weekends
-// and totals as even as the slot counts allow). best() is a fresh schedule
-// object; status() { checked, starts, tiers, perfect }.
+// perfect (floor, last resort, strain and bends 0; service weeks, weekends,
+// totals and the 1st-call splits as even as the slot counts allow) and the
+// preferences have had SEARCH_PREFS_POLISH more schedules. best() is a fresh
+// schedule object; status() { checked, starts, tiers, perfect (= done),
+// improved }.
 function createScheduleSearch(surgeons, mondays, vac, backupMondays, priorCounts, preferences, fierceBackupMondays, holAssignments, locks, prevWeekSeed, vacationsOnly, yearCounts, opts) {
   const o = opts || {};
   const rnd = o.random || Math.random;
@@ -2360,8 +2393,14 @@ function createScheduleSearch(surgeons, mondays, vac, backupMondays, priorCounts
   const P = R.P, W = R.W;
   const tgt = (n) => (P && n % P) ? 1 : 0;
   const tgtSvc = tgt(W), tgtTot = tgt(6 * W);
-  let bestA = null, bestBase = null, bestT = null, seedT = null, checked = 0, starts = 0, cur = null, curBase = null, curEvals = 0;
-  const isPerfect = (T) => !!T && T[0] === 0 && T[1] === 0 && Math.floor(T[2] / 1e5) <= tgtSvc && Math.floor(T[3] / 1e5) <= tgtSvc && T[4] === 0 && T[5] === 0 && Math.floor(T[6] / 1e5) <= tgtTot;
+  const nReg = R.mStrs.filter((m, w) => R.present[w] && !R.isBackup[w]).length, tgtReg = tgt(nReg);
+  let bestA = null, bestBase = null, bestT = null, seedT = null, checked = 0, starts = 0, cur = null, curBase = null, curEvals = 0, perfectAt = null;
+  // Every tier with a known floor at it: the floor, last resort, strain and
+  // bends 0; service weeks, weekends, totals and the 1st-call splits as even
+  // as the slot counts allow. Preferences have no known floor, so the search
+  // then polishes for SEARCH_PREFS_POLISH more schedules and stops (done()).
+  const isPerfect = (T) => !!T && T[0] === 0 && T[1] === 0 && Math.floor(T[2] / 1e5) <= tgtSvc && Math.floor(T[3] / 1e5) <= tgtSvc && T[4] === 0 && T[5] === 0 && Math.floor(T[6] / 1e5) <= tgtTot && T[7] <= tgtReg * 11;
+  const done = () => { if (!isPerfect(bestT)) { perfectAt = null; return false; } if (perfectAt === null) perfectAt = checked; return checked - perfectAt >= SEARCH_PREFS_POLISH; };
   const newStart = () => {
     starts++;
     if (bestA && rnd() < 0.3) { cur = createImprover(R, bestA, rnd); curBase = bestBase; }  // intensify around the best
@@ -2381,17 +2420,24 @@ function createScheduleSearch(surgeons, mondays, vac, backupMondays, priorCounts
     return false;
   };
   const self = {
-    // Work for about `ms` (a time slice); true when the best got better.
+    // Work for about `ms` (a time slice); true when the best got better. A
+    // fresh start (a whole generateOnce, up to ~0.2 s on a squeezed period)
+    // only ever opens a slice — it never runs on after other work (page
+    // responsiveness).
     step(ms) {
-      const end = now() + (ms || 0); let better = false;
-      do { if (isPerfect(bestT)) break; if (work(400)) better = true; } while (now() < end);
+      const t0 = now(), end = t0 + (ms || 0); let better = false;
+      do {
+        if (done()) break;
+        if ((!cur || cur.spent) && now() > t0) break;
+        if (work(400)) better = true;
+      } while (now() < end);
       return better;
     },
     run(lim) {
       const l = lim || {}, end = l.ms ? now() + l.ms : Infinity, cap = l.proposals || Infinity;
       const c0 = checked;
       if (!bestT) newStart();
-      while (!isPerfect(bestT) && now() < end && checked - c0 < cap) work(400);
+      while (!done() && now() < end && checked - c0 < cap) work(400);
       return self;
     },
     // Start from an existing schedule ("🔍 Search more"): it is the best so
@@ -2403,7 +2449,7 @@ function createScheduleSearch(surgeons, mondays, vac, backupMondays, priorCounts
       return self;
     },
     best() { return bestA ? R.decode(bestA, bestBase) : null; },
-    status() { return { checked, starts, tiers: bestT ? R.tiersOf(bestT) : null, perfect: isPerfect(bestT), improved: !!bestT && (!seedT || ruleCompare(bestT, seedT) < 0) }; },
+    status() { return { checked, starts, tiers: bestT ? R.tiersOf(bestT) : null, perfect: done(), improved: !!bestT && (!seedT || ruleCompare(bestT, seedT) < 0) }; },
     rules: R,
   };
   return self;
