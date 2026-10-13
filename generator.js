@@ -295,6 +295,25 @@ function crossWeekBendKey(a, b) {
   return null;
 }
 
+// Decision 3's Christmas DESIGN week for one holiday card: null unless it is a
+// Christmas card wholly the Christmas surgeon's (A = B = christmasDcId — FAK by
+// the standing rule); else { mon, whole }. mon = the Monday of the week holding
+// Christmas (the week before for a Monday Christmas — the Monday-holiday
+// convention). whole = that week is really theirs: no OTHER card dated on the
+// Monday right after it claims it by the Monday-holiday convention. Only a
+// Tuesday Christmas meets that (New Year's card on Mon 12/31 — 2029, 2035…):
+// New Year's A / B keep the week, as generateOnce's preDc always gave them;
+// the surgeon keeps the eve and Christmas Day. Read by holidayDesign, the rules
+// engine and generateOnce alike.
+function christmasDesignWeek(h, christmasDcId, holAssignments) {
+  if (!h || h.name !== "Christmas Day" || !h.date || !christmasDcId || h.surgeonA !== christmasDcId || h.surgeonB !== christmasDcId) return null;
+  const x = parse(h.date), dow = x.getDay();
+  const mon = addD(x, dow === 0 ? -6 : dow === 1 ? -7 : 1 - dow), nextMon = fmt(addD(mon, 7));
+  const claimed = Object.values(holAssignments || {}).some(arr => Array.isArray(arr) && arr.some(o =>
+    o && o !== h && o.date === nextMon && o.name !== "Christmas Day" && (o.surgeonA || o.surgeonB)));
+  return { mon: fmt(mon), whole: !claimed };
+}
+
 // Designed holiday patterns, from the holiday cards (effectiveHolidayCoverage
 // rows): { pins: {mondayStr: {slot: id}}, eves: {mondayStr: {nightKey: id}},
 // coverOff: [...] }. A pair of slots both pinned here to the same surgeon is a
@@ -304,6 +323,10 @@ function crossWeekBendKey(a, b) {
 //   - a Tue–Fri holiday week's service week → the card's surgeon A
 //     (Christmas week → christmasDcId, FAK by the standing rule — decision 3)
 //   - a Monday holiday: the PREVIOUS week's service week → A, its weekend → B
+//     (applied last: it wins a week a Tue–Fri pin also claims, in either card
+//     order — generateOnce's preDc does too)
+//   - decision 3: FAK's whole Christmas design week → its weekend too
+//     (christmasDesignWeek)
 // Eves on a Fri or Sun (the weekend slot) keep today's handling (not pinned).
 function holidayDesign(holAssignments, mondayStrs, christmasDcId) {
   const pins = {}, eves = {};
@@ -311,6 +334,7 @@ function holidayDesign(holAssignments, mondayStrs, christmasDcId) {
   const mondayOf = (ds) => { const d = parse(ds); const dow = d.getDay(); return fmt(addD(d, dow === 0 ? -6 : 1 - dow)); };
   const pin = (m, slot, id) => { if (!id || !inPeriod.has(m)) return; (pins[m] = pins[m] || {})[slot] = id; };
   if (!holAssignments) return { pins, eves };
+  const monConv = [], christWeeks = [];
   Object.values(holAssignments).forEach(arr => {
     if (!Array.isArray(arr)) return;
     arr.forEach(h => {
@@ -337,16 +361,18 @@ function holidayDesign(holAssignments, mondayStrs, christmasDcId) {
         pin(hMon, "dayCall", dcId);
       } else if (hDow === 1) {
         const prevM = fmt(addD(parse(hMon), -7));
-        pin(prevM, "dayCall", h.surgeonA);
-        pin(prevM, "wknd", h.surgeonB);
+        monConv.push([prevM, "dayCall", h.surgeonA], [prevM, "wknd", h.surgeonB]);
       }
-      // Decision 3: when one surgeon holds the Christmas card (FAK, the standing
-      // rule), Christmas week is their whole week + Eve — the design week's
+      // Decision 3: when FAK holds the Christmas card (A = B, the standing
+      // rule), Christmas week is his whole week + Eve — the design week's
       // WEEKEND too, whatever weekday Christmas falls on. (A Fri / Sun row or the
       // Monday convention already pinned it; this covers Tue–Thu and Saturday.)
-      if (h.name === "Christmas Day" && h.surgeonA && h.surgeonA === h.surgeonB) pin(hDow === 1 ? fmt(addD(parse(hMon), -7)) : hMon, "wknd", h.surgeonA);
+      const cw = christmasDesignWeek(h, christmasDcId, holAssignments);
+      if (cw && cw.whole) christWeeks.push(cw.mon);
     });
   });
+  monConv.forEach(([m, slot, id]) => pin(m, slot, id));
+  christWeeks.forEach(m => pin(m, "wknd", christmasDcId));
   return { pins, eves };
 }
 
@@ -446,16 +472,17 @@ function scheduleRules(ctx) {
   const nextRow = holCoverage[dayStr[ND]];
   const nextOwn = nextRow && nextRow.surgeonId && pOf.has(nextRow.surgeonId) ? pOf.get(nextRow.surgeonId) : -1;
   // Rule 2's DESIGNED runs, exactly the brief's: a card's Night Before → its
-  // own 24h the next date, and FAK's Christmas week — when one surgeon holds
-  // the Christmas card (the standing rule), the overnights decision 3 gives
-  // them: the eve, Christmas Day, and the Friday night, service Saturday and
-  // Sunday of the Christmas DESIGN week (the week holding Christmas; the week
-  // before when Christmas is a Monday — the Monday-holiday convention). Read
-  // from the card by date, for every weekday Christmas can fall on (the slot
-  // pins only cover some). Those dates count as fixed by the cards when that
-  // surgeon holds them (christOwner), and that week is never their "last
-  // resort". A pair is exempt only when both dates are fixed by the cards
-  // (fix 1) AND marked here — another night they take that week is not.
+  // own 24h the next date, and FAK's Christmas week — when FAK holds the
+  // Christmas card (A = B, the standing rule), the overnights decision 3 gives
+  // him: the eve, Christmas Day, and the Friday night, service Saturday and
+  // Sunday of the Christmas DESIGN week (christmasDesignWeek: the week holding
+  // Christmas; the week before when Christmas is a Monday). Read from the card
+  // by date, for every weekday Christmas can fall on. Those dates count as
+  // fixed by the cards when he holds them (christOwner), and that week is never
+  // his "last resort" — the Fri–Sun and the week only when the week is wholly
+  // his (a Tuesday Christmas's week is New Year's, by its Monday convention).
+  // A pair is exempt only when both dates are fixed by the cards (fix 1) AND
+  // marked here — another night he takes that week is not.
   const designedPair = new Uint8Array(ND + 1);
   const christOwner = new Int8Array(ND + 1).fill(-1), christWeekP = new Int8Array(W).fill(-1);
   const dIdx = new Map(dayStr.map((ds, d) => [ds, d]));
@@ -467,15 +494,16 @@ function scheduleRules(ctx) {
       const d = dIdx.get(r.date);
       if (rows.some(q => q && !q.isEve && q.date === dayStr[d + 1] && q.surgeon === r.surgeon)) designedPair[d] = 1;
     });
-    if (h.name === "Christmas Day" && h.surgeonA && h.surgeonA === h.surgeonB && sp(h.surgeonA) >= 0) {
-      const p = sp(h.surgeonA), xd = parse(h.date), dow = xd.getDay();
-      const desMon = addD(xd, dow === 0 ? -6 : dow === 1 ? -7 : 1 - dow);
+    const cw = christmasDesignWeek(h, fakId, c.holAssignments);
+    if (cw && sp(fakId) >= 0) {
+      const p = sp(fakId), desMon = parse(cw.mon);
       const eve = rows.find(r => r && r.isEve && r.date);
-      const desDays = new Set([h.date, fmt(addD(desMon, 4)), fmt(addD(desMon, 5)), fmt(addD(desMon, 6))]);
+      const desDays = new Set([h.date]);
+      if (cw.whole) [4, 5, 6].forEach(o => desDays.add(fmt(addD(desMon, o))));
       if (eve) desDays.add(eve.date);
       desDays.forEach(ds => { if (dIdx.has(ds)) christOwner[dIdx.get(ds)] = p; });
       desDays.forEach(ds => { const nx = fmt(addD(parse(ds), 1)); if (desDays.has(nx) && dIdx.has(ds)) designedPair[dIdx.get(ds)] = 1; });
-      const w = mStrs.indexOf(fmt(desMon)); if (w >= 0) christWeekP[w] = p;
+      const w = mStrs.indexOf(cw.mon); if (w >= 0 && cw.whole) christWeekP[w] = p;
     }
   }));
   // The week before the period (prevWeekSeed): its overnights, and service-week history.
@@ -1154,19 +1182,18 @@ function generateOnce(surgeons, mondays, vac, backupMondays, priorCounts, prefer
     }
   }
 
-  // Decision 3: the Christmas card's surgeon (A = B — FAK, the standing rule)
+  // Decision 3: FAK, holding the Christmas card (A = B, the standing rule),
   // also holds the Christmas DESIGN week's weekend (holidayDesign pins it): the
   // week holding Christmas, the week before for a Monday Christmas — dealt to
-  // them below although they are that week's service doctor.
+  // him below although he is that week's service doctor. Not when another
+  // card's Monday-holiday convention claims that week (christmasDesignWeek).
   const christWkndWeeks = new Set();
-  Object.keys(holByDate).forEach(ds => {
-    const hb = holByDate[ds];
-    if (!hb || hb.name !== "Christmas Day" || !hb.surgeonA || hb.surgeonA !== hb.surgeonB) return;
-    const x = parse(ds), dow = x.getDay(), des = fmt(addD(x, dow === 0 ? -6 : dow === 1 ? -7 : 1 - dow));
-    if (!mondays.some(m => fmt(m) === des)) return;
-    christWkndWeeks.add(des);
-    if (!(preAssign[des] && preAssign[des].wknd)) (preAssign[des] = preAssign[des] || {}).wknd = hb.surgeonA;
-  });
+  Object.values(holAssignments || {}).forEach(arr => (Array.isArray(arr) ? arr : []).forEach(h => {
+    const cw = christmasDesignWeek(h, fakId, holAssignments);
+    if (!cw || !cw.whole || !mondays.some(m => fmt(m) === cw.mon)) return;
+    christWkndWeeks.add(cw.mon);
+    if (!(preAssign[cw.mon] && preAssign[cw.mon].wknd)) (preAssign[cw.mon] = preAssign[cw.mon] || {}).wknd = fakId;
+  }));
 
   // A Monday holiday right AFTER the period still claims the period's last
   // week by the same convention (A → its service week, B → its weekend) —

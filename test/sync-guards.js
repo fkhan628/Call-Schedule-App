@@ -4304,6 +4304,52 @@ await (async () => {
       check("AH8 …the generator gives FAK that service week AND that weekend (2029 Tue, 2027 Sat, 2028 Mon Christmas — the week before it — every roll), and Needs your OK lists nothing for his Christmas week",
         g29.concat(g27, g28).every(o => o.svc === "s6" && o.wknd === "s6" && o.fakItems.length === 0), JSON.stringify({ g29, g27, g28 }));
     }
+    // (e0) a Tuesday Christmas WITH the New Year's card (Mon 12/31, A = REH s5, B = DJA s1): New Year's Monday
+    // convention keeps the Christmas design week — the generator's preDc always did — and every reader agrees,
+    // in either card order; FAK keeps the eve + Christmas Day. Other years are unchanged by the New Year's card.
+    {
+      const H = vm.runInContext("holidayDesign", sandbox);
+      const xmas = (y) => { const x = G.parse(`${y}-12-25`); return { name: "Christmas Day", date: `${y}-12-25`, surgeonA: "s6", surgeonB: "s6", type: "major", coverage: [{ date: G.fmt(G.addD(x, -1)), surgeon: "s6", isEve: true }, { date: `${y}-12-25`, surgeon: "s6" }] }; };
+      const ny = (y) => { const x = G.parse(`${y}-12-31`); return { name: "New Year's", date: `${y}-12-31`, surgeonA: "s5", surgeonB: "s1", type: "major", coverage: [{ date: `${y}-12-31`, surgeon: "s5" }, { date: G.fmt(G.addD(x, 1)), surgeon: "s1" }] }; };
+      const desOf = (y) => { const x = G.parse(`${y}-12-25`), dow = x.getDay(); return G.fmt(G.addD(x, dow === 0 ? -6 : dow === 1 ? -7 : 1 - dow)); };
+      const pinsY = (y, cards) => { const p = H({ [y]: cards }, [desOf(y)], "s6").pins[desOf(y)] || {}; return p.dayCall + "/" + p.wknd; };
+      const both = ["2029", "2035"].map(y => [y, pinsY(y, [xmas(y), ny(y)]), pinsY(y, [ny(y), xmas(y)])]);
+      const others = ["2026", "2027", "2028", "2030", "2031", "2033"].map(y => [y, pinsY(y, [ny(y), xmas(y)]), pinsY(y, [xmas(y), ny(y)])]);
+      check("AH8 decision 3 vs New Year's (a Tuesday Christmas, 2029 / 2035): New Year's Monday convention keeps the Christmas design week — the cards pin REH / DJA its service week / weekend in EITHER card order; every other year FAK's whole week stands with the New Year's card present",
+        both.every(r => r[1] === "s5/s1" && r[2] === "s5/s1") && others.every(r => r[1] === "s6/s6" && r[2] === "s6/s6"), JSON.stringify({ both, others }));
+      const x = G.parse("2029-12-25"), des = G.addD(x, -1), ms4 = [-7, 0, 7, 14].map(o => G.addD(des, o)), K = ms4.map(G.fmt);
+      const S7g = ["DJA", "MCC", "RPC", "KJH", "REH", "FAK", "ARW"].map((n, k) => ({ id: "s" + (k + 1), name: n }));
+      const out = [];
+      for (const order of [0, 1]) for (let r = 0; r < 3; r++) {
+        const hol = { 2029: order ? [ny(2029), xmas(2029)] : [xmas(2029), ny(2029)] };
+        const g = G.generate(S7g, ms4, {}, new Set(), {}, {}, new Set(), hol, [], null, {}, null, { proposals: 20000 });
+        const wk = g[K[1]], lst = G.listScheduleBends(g, { surgeons: S7g, mondays: ms4, vac: {}, vacationsOnly: {}, holAssignments: hol, prevWeekSeed: null });
+        out.push({ svc: wk.dayCall, wknd: wk.nights.wknd, eve: wk.nights.mon, hard: lst.counts.hard, lastRes: lst.counts.lastRes, fakItems: lst.items.filter(i => i.who === "s6" && i.kind !== "crowded").map(i => i.kind + ":" + i.key) });
+      }
+      check("AH8 …and the generator deals it so (2029 + the New Year's card, both card orders, every roll): REH service week, DJA weekend, FAK the eve; nothing breaks a rule and nothing is listed for FAK",
+        out.every(o => o.svc === "s5" && o.wknd === "s1" && o.eve === "s6" && o.hard === 0 && o.lastRes === 0 && o.fakItems.length === 0), JSON.stringify(out));
+      // the rules engine agrees: FAK's eve → Christmas Day is still designed; his hand-made service week + weekend there is NOT his Christmas week (his last resort, and the cards' pins are REH / DJA)
+      const hol = { 2029: [xmas(2029), ny(2029)] };
+      const base = { [K[0]]: W("s1", "s2", "s3", "s4", "s7", "s2"), [K[1]]: W("s5", "s6", "s6", "s2", "s3", "s1"), [K[2]]: W("s7", "s5", "s1", "s3", "s4", "s3"), [K[3]]: W("s2", "s5", "s4", "s7", "s1", "s4") };
+      const fakWeek = JSON.parse(JSON.stringify(base)); fakWeek[K[1]].dayCall = "s6"; fakWeek[K[1]].nights.wknd = "s6"; fakWeek[K[1]].nights.tue = "s2"; fakWeek[K[1]].nights.wed = "s3"; fakWeek[K[1]].nights.thu = "s1";
+      const rb = run8(base, ms4, hol), rf = run8(fakWeek, ms4, hol);
+      check("AH8 …the rules engine reads the same week the same way: FAK's eve → Christmas 24h stays designed (nothing listed); FAK on that week's service + weekend is his last resort, not his Christmas design",
+        rb.counts.hard === 0 && !rb.items.some(i => i.who === "s6" && i.kind !== "crowded") && rf.counts.lastRes === 1 && rf.items.some(i => i.kind === "lastResort" && i.who === "s6" && i.mondayStr === K[1]),
+        JSON.stringify([rb.counts, rb.items.filter(i => i.who === "s6").map(i => i.text), rf.counts, rf.items.filter(i => i.who === "s6").map(i => i.text)]));
+    }
+    // (e1) decision 3 is FAK's (christmasDcId), not whoever holds an A = B Christmas card: ARW (s7) on both slots of a Wednesday
+    // Christmas (2030) gets the eve + Christmas Day, FAK the service week, and no weekend pin, no designated Fri / Sun for ARW
+    {
+      const H = vm.runInContext("holidayDesign", sandbox);
+      const x = G.parse("2030-12-25"), des = G.addD(x, -2), K = [-7, 0, 7].map(o => G.fmt(G.addD(des, o)));
+      const hol = { 2030: [{ name: "Christmas Day", date: "2030-12-25", surgeonA: "s7", surgeonB: "s7", type: "major", coverage: [{ date: "2030-12-24", surgeon: "s7", isEve: true }, { date: "2030-12-25", surgeon: "s7" }] }] };
+      const p = H(hol, [K[1]], "s6").pins[K[1]] || {};
+      // ARW: eve Tue, Christmas Wed (row), then the design week's weekend Fri + Sun → Wed → Fri → Sun is every other night ×3, a free choice: strain
+      const weeks = { [K[0]]: W("s1", "s2", "s3", "s4", "s5", "s2"), [K[1]]: W("s6", "s1", "s7", "s7", "s2", "s7"), [K[2]]: W("s3", "s4", "s5", "s1", "s2", "s4") };
+      const r = run8(weeks, K.map(G.parse), hol);
+      check("AH8 decision 3 is FAK's alone: an A = B Christmas card held by ARW pins FAK the service week and NO weekend for ARW; ARW's Wed 24h → Fri → Sun is strain (every other night ×3), not exempted as a designed Christmas week",
+        p.dayCall === "s6" && !p.wknd && r.items.some(i => i.kind === "strain" && i.who === "s7"), JSON.stringify([p, r.tiers, r.items.filter(i => i.who === "s7").map(i => i.kind + ":" + i.text)]));
+    }
     // (e) FAK's Christmas week in EVERY year — the card's own pattern is never "two nights in a row" nor a last resort (2026 Fri, 2027 Sat, 2028 Mon, 2029 Tue, 2031 Thu, 2033 Sun)
     {
       const res = [], adj = []; let adjN = 0;
