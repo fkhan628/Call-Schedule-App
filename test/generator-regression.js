@@ -688,22 +688,34 @@ const sunday = runSundayControl();
 
 // J: THE LAST TIERS (2026-10-12) — a clean 14-week period with two backup
 //    weeks and the owner's preferences (DJA avoids Thu, MCC prefers Tue). The
-//    search must not stop before the 1st-call-only splits are as even as 12
-//    regular weeks allow (soft ≤ 11: service weeks and weekends each Δ ≤ 1) —
-//    in every roll — and then polishes the preferences (avoided − preferred
-//    nights ≤ −4 in ≥ 90% of rolls; without the polish it is about 1 in 10).
+//    search must never STOP before the 1st-call-only splits are as even as 12
+//    regular weeks allow (soft ≤ 11: service weeks and weekends each Δ ≤ 1):
+//    every roll that ends before its budget is there (exact). Within generate()'s
+//    budget (GENERATE_PROPOSALS, 60,000 — the app checks millions) it gets
+//    there in ≥ 90% of rolls (main CI 2026-10-13: 39/40), then polishes the
+//    preferences (avoided − preferred nights ≤ −4 in ≥ 90% of rolls; without
+//    the polish it is about 1 in 10).
 function runSoft() {
   const PREFS = { s1: { avoidShift: "thu" }, s2: { preferShift: "tue" } }, BK = new Set([MONDAY_KEYS[3], MONDAY_KEYS[9]]);
-  const ROLLS_J = 40, soft = {}, prefs = {}, failures = [];
+  const ROLLS_J = 40, BUDGET = 60000, soft = {}, prefs = {}, failures = [];
+  let early = 0, atSoft = 0;
   for (let r = 0; r < ROLLS_J; r++) {
-    const g = generate(SURGEONS, MONDAYS, {}, BK, {}, PREFS, new Set(), null, [], null, {}, COUNTS_1YR);
+    const search = createScheduleSearch(SURGEONS, MONDAYS, {}, BK, {}, PREFS, new Set(), null, [], null, {}, COUNTS_1YR, {});
+    search.run({ proposals: BUDGET });
+    const st = search.status(), g = search.best();
     const t = listScheduleBends(g, { surgeons: SURGEONS, mondays: MONDAYS, vac: {}, vacationsOnly: {}, holAssignments: null, prevWeekSeed: null, preferences: PREFS }).tiers;
     soft[t.soft] = (soft[t.soft] || 0) + 1; prefs[t.prefs] = (prefs[t.prefs] || 0) + 1;
-    if (t.soft > 11 && failures.length < 5) failures.push(`soft roll ${r}: the 1st-call splits are left at ${t.soft} (> 11 — the search stopped before them)`);
+    if (t.soft <= 11) atSoft++;
+    if (st.checked < BUDGET) {
+      early++;
+      if (t.soft > 11 && failures.length < 5) failures.push(`soft roll ${r}: the search STOPPED after ${st.checked} of ${BUDGET} schedules with the 1st-call splits at ${t.soft} (> 11 — it stopped before them)`);
+    }
   }
+  if (atSoft < Math.ceil(0.9 * ROLLS_J)) failures.push(`soft: the 1st-call splits reached ≤ 11 in only ${atSoft}/${ROLLS_J} rolls — ${JSON.stringify(soft)}`);
+  if (early < Math.ceil(0.5 * ROLLS_J)) failures.push(`soft: only ${early}/${ROLLS_J} rolls ended before the budget — the stop rule is barely exercised; loosen the fixture`);
   const good = Object.entries(prefs).filter(([k]) => Number(k) <= -4).reduce((a, [, n]) => a + n, 0);
   if (good < Math.ceil(0.9 * ROLLS_J)) failures.push(`soft: preferences ≤ −4 in only ${good}/${ROLLS_J} rolls — ${JSON.stringify(prefs)} (the polish didn't run?)`);
-  return { name: "soft", failures, soft, prefs, rolls: ROLLS_J };
+  return { name: "soft", failures, soft, prefs, early, rolls: ROLLS_J };
 }
 const softJ = runSoft();
 
@@ -810,7 +822,7 @@ if (live.stats) {
 }
 console.log(`sunday    ${sunday.rolls} rolls — the Sunday-off surgeon never held the service week; the Mon–Sat-only control gave it to them in ${sunday.fired}/${sunday.rolls} rolls`);
 console.log(`lastResort ${lastResort.rolls} + ${lastResort.rolls} rolls — FAK took service week + weekend as his listed last resort in ${lastResort.fak.true || 0}/${lastResort.rolls}; with a partner nobody took both (one stayed empty, listed) in ${lastResort.partner.true || 0}/${lastResort.rolls}`);
-console.log(`soft      ${softJ.rolls} rolls (2 backup weeks + DJA avoids Thu, MCC prefers Tue) — 1st-call splits ${JSON.stringify(softJ.soft)}; preferences (avoided − preferred) ${JSON.stringify(softJ.prefs)}`);
+console.log(`soft      ${softJ.rolls} rolls (2 backup weeks + DJA avoids Thu, MCC prefers Tue) — ${softJ.early} ended before the budget; 1st-call splits ${JSON.stringify(softJ.soft)}; preferences (avoided − preferred) ${JSON.stringify(softJ.prefs)}`);
 console.log(`fuzz      ${FUZZ_N} broken copies of a live schedule — listScheduleBends and the test agree on every count; schedules with each finding: ${JSON.stringify(fuzz.cover)}`);
 console.log(`silvis    ${ROLLS} rolls — FAK off every overlapping slot (6 Silvis days: Mon/Tue/Wed/Sun/Fri/Sat); control without them put him on one in ${silvis.redFired}/${ROLLS} rolls; open neighbor legs given to him: ${silvis.given}`);
 
