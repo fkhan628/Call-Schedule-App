@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.10.12a";
+    var APP_VERSION = "2026.10.13a";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -268,6 +268,13 @@ function CallSchedule() {
   }, [scheduleHistory]);
   const [previewSchedule, setPreviewSchedule] = useState(null);
   const [previewOrigin, setPreviewOrigin] = useState("generated");
+  const searchRef = useRef(null);
+  const [searching, setSearching] = useState(null);
+  const genFinishRef = useRef(null),
+    genCommitRef = useRef(null);
+  const [searchStats, setSearchStats] = useState(null);
+  const previewSchedRef = useRef(null);
+  previewSchedRef.current = previewSchedule;
   const loadJsonInputRef = useRef(null);
   const publishingRef = useRef(false);
   const [publishing, setPublishing] = useState(false);
@@ -3214,7 +3221,7 @@ function CallSchedule() {
     setTimeout(() => setNotifTestSent(""), 3000);
   }, [sendBrowserNotif, sendEmailNotif, edgeFunctionUrl, notifPrefs, mySurgeon]);
   const doGenerateAndNotify = async () => {
-    if (doGenerate(false) !== "published") return;
+    if ((await doGenerate(false)) !== "published") return;
     await addNotification("schedule_published", "Schedule Published", "A new call schedule has been generated. Check the Schedule or Calendar tab.");
     sendEmailNotif("schedule_published", {
       period: `${MO[startMonth]} – ${MO[endMoIdx]} ${startYear}`
@@ -3823,26 +3830,87 @@ function CallSchedule() {
     }
     return availability;
   };
-  const doGenerate = preview => {
+  const buildPrevWeekSeed = first => {
+    const f = first || mondays[0];
+    if (!f) return null;
+    const prevWk = schedule[fmt(addD(f, -7))];
+    const recentDc = {};
+    for (let k = 1; k <= 60; k++) {
+      const wk = schedule[fmt(addD(f, -7 * k))];
+      if (!wk) continue;
+      const dc = wk.dayCall;
+      if (dc && recentDc[dc] === undefined) recentDc[dc] = -k;
+    }
+    const pn = prevWk && prevWk.nights || {};
+    return {
+      dayCall: prevWk && prevWk.dayCall || null,
+      wknd: pn.wknd || null,
+      nights: {
+        mon: pn.mon || null,
+        tue: pn.tue || null,
+        wed: pn.wed || null,
+        thu: pn.thu || null
+      },
+      holidayCoverage: prevWk && prevWk.holidayCoverage || null,
+      dayCallOverrides: prevWk && prevWk.dayCallOverrides || null,
+      recentDc
+    };
+  };
+  const genInputsSig = () => JSON.stringify([mondays.map(fmt), pendingLocks, holidayAssignments, buildGenAvailability(), vacations, surgeons.map(s => s.id), [...backupMondaySet].sort(), [...fierceBackupSet].sort(), priorCounts, year1Counts]);
+  const runSearch = (session, purpose, budgetMs) => new Promise(resolve => {
+    const token = {};
+    searchRef.current = {
+      session,
+      token,
+      purpose,
+      activeMs: 0,
+      budgetMs
+    };
+    setSearching(purpose);
+    const tick = () => {
+      const sr = searchRef.current;
+      if (!sr || sr.token !== token) {
+        resolve(null);
+        return;
+      }
+      const t0 = Date.now();
+      let failed = false;
+      try {
+        session.step(40);
+      } catch (e) {
+        console.error("Schedule search failed:", e);
+        failed = true;
+      }
+      sr.activeMs += Date.now() - t0;
+      if (failed || sr.activeMs >= budgetMs || session.status().perfect) {
+        searchRef.current = null;
+        setSearching(null);
+        resolve({
+          session,
+          ms: sr.activeMs
+        });
+        return;
+      }
+      setTimeout(tick, 0);
+    };
+    setTimeout(tick, 0);
+  });
+  const cancelSearch = () => {
+    const sr = searchRef.current;
+    if (sr && sr.purpose !== "publish") {
+      searchRef.current = null;
+      setSearching(null);
+    }
+  };
+  const publishSearchRunning = () => !!(searchRef.current && searchRef.current.purpose === "publish");
+  const doGenerate = async preview => {
+    if (searchRef.current) {
+      showToast("A schedule search is already running — wait for it to finish.", "error");
+      return "busy";
+    }
     const prefs = buildPrefs();
     const availability = buildGenAvailability();
-    const prevWeekSeed = (() => {
-      if (!mondays.length) return null;
-      const first = mondays[0];
-      const prevWk = schedule[fmt(addD(first, -7))];
-      const recentDc = {};
-      for (let k = 1; k <= 60; k++) {
-        const wk = schedule[fmt(addD(first, -7 * k))];
-        if (!wk) continue;
-        const dc = wk.dayCall;
-        if (dc && recentDc[dc] === undefined) recentDc[dc] = -k;
-      }
-      return {
-        dayCall: prevWk && prevWk.dayCall || null,
-        wknd: prevWk && prevWk.nights && prevWk.nights.wknd || null,
-        recentDc
-      };
-    })();
+    const prevWeekSeed = buildPrevWeekSeed();
     try {
       const _first = mondays[0];
       const _prevKey = _first ? fmt(addD(_first, -7)) : "(no mondays)";
@@ -3868,8 +3936,28 @@ function CallSchedule() {
       if (silvisRows.length > 0 && periodEnd && silvisDays.to && periodEnd > silvisDays.to) problems.push(`the Silvis feed only covers through ${silvisDays.to} — weeks after that will be generated as if ${nameOf(silvisFakId)} had NO Silvis call (Silvis publishes rolling 3-month periods; check Schedule Warnings again after it publishes)`);
       if (problems.length && !confirm(`⚠️ Rule silvisBusy is BLIND for part or all of this period:\n\n${problems.map(p => "• " + p).join("\n")}\n\nGenerate anyway?`)) return "cancelled";
     }
-    const result = generate(surgeons, mondays, availability, backupMondaySet, priorCounts, prefs, fierceBackupSet, holidayAssignments, pendingLocks, prevWeekSeed, vacations, year1Counts);
-    const droppedLocks = (pendingLocks || []).filter(l => {
+    const search = createScheduleSearch(surgeons, mondays, availability, backupMondaySet, priorCounts, prefs, fierceBackupSet, holidayAssignments, pendingLocks, prevWeekSeed, vacations, year1Counts);
+    const clickSig = genInputsSig();
+    const done = await runSearch(search, preview ? "generate" : "publish", SEARCH_MS);
+    const result = done && done.session.best();
+    if (!result) {
+      if (done) showToast("The schedule search found nothing — try again.", "error");
+      return "cancelled";
+    }
+    {
+      const st = done.session.status();
+      setSearchStats({
+        checked: st.checked,
+        starts: st.starts,
+        ms: done.ms,
+        purpose: "generate",
+        improved: true
+      });
+    }
+    return genFinishRef.current(result, preview, clickSig, pendingLocks);
+  };
+  const finishGenerate = (result, preview, clickSig, clickLocks) => {
+    const droppedLocks = (clickLocks || []).filter(l => {
       var _wk$nights;
       const wk = result[l.mondayStr];
       if (!wk) return false;
@@ -3882,17 +3970,26 @@ function CallSchedule() {
       setPreviewSchedule(result);
       setPreviewOrigin("generated");
       setShowPreview(true);
+      if (JSON.stringify(clickLocks || []) !== JSON.stringify(pendingLocks || [])) showToast("The locks changed during the search — this preview used the earlier ones. Re-roll to use the new ones.", "error");
       return "preview";
+    }
+    if (genInputsSig() !== clickSig) {
+      setPreviewSchedule(result);
+      setPreviewOrigin("generated");
+      setShowPreview(true);
+      showToast("Time off, a lock, a holiday card or the Generate settings changed during the search — review the result in the preview below before publishing.", "error");
+      return "review";
     }
     const needsOkN = (() => {
       try {
         return listScheduleBends(result, {
           surgeons,
           mondays,
-          vac: availability,
+          vac: buildGenAvailability(),
           vacationsOnly: vacations,
           holAssignments: holidayAssignments,
-          prevWeekSeed
+          prevWeekSeed: buildPrevWeekSeed(),
+          locks: pendingLocks
         }).items.length;
       } catch (e) {
         console.error("Needs-your-OK check failed:", e);
@@ -3922,47 +4019,7 @@ function CallSchedule() {
             setSaveStatus("");
             return;
           }
-          const {
-            merged,
-            prior,
-            y1
-          } = publishWeeks(result, {
-            label: `${numWeeks} weeks from ${MO[startMonth]} ${startYear}, Generate & Publish`,
-            meta: {
-              startMonth,
-              startYear,
-              numWeeks,
-              origin: "generated"
-            }
-          });
-          setPreviewSchedule(null);
-          setShowPreview(false);
-          setSaveStatus("Regenerated!");
-          setTimeout(() => setSaveStatus(""), 2000);
-          try {
-            const ts = new Date().toISOString();
-            lastSyncRef.current = ts;
-            const blobData = buildStateBundle({
-              schedule: merged,
-              priorCounts: prior,
-              year1Counts: y1
-            });
-            delete blobData.schedule;
-            delete blobData.vacations;
-            delete blobData.noCallDays;
-            const {
-              error: regenErr
-            } = await supabase.from("call_schedule_data").upsert({
-              id: "main",
-              data: blobData,
-              updated_at: ts
-            });
-            if (regenErr) throw new Error(`regenerate blob save failed: ${String(regenErr).slice(0, 200)}`);
-            syncSchedWeeks(merged);
-          } catch (e) {
-            console.error("Immediate save failed:", e);
-            showToast("Couldn't save the regenerated schedule — check your connection.", "error");
-          }
+          await genCommitRef.current(result);
         } finally {
           publishingRef.current = false;
           setPublishing(false);
@@ -3971,6 +4028,51 @@ function CallSchedule() {
     }
     return "published";
   };
+  const commitGenerated = async result => {
+    const {
+      merged,
+      prior,
+      y1
+    } = publishWeeks(result, {
+      label: `${numWeeks} weeks from ${MO[startMonth]} ${startYear}, Generate & Publish`,
+      meta: {
+        startMonth,
+        startYear,
+        numWeeks,
+        origin: "generated"
+      }
+    });
+    setPreviewSchedule(null);
+    setShowPreview(false);
+    setSaveStatus("Regenerated!");
+    setTimeout(() => setSaveStatus(""), 2000);
+    try {
+      const ts = new Date().toISOString();
+      lastSyncRef.current = ts;
+      const blobData = buildStateBundle({
+        schedule: merged,
+        priorCounts: prior,
+        year1Counts: y1
+      });
+      delete blobData.schedule;
+      delete blobData.vacations;
+      delete blobData.noCallDays;
+      const {
+        error: regenErr
+      } = await supabase.from("call_schedule_data").upsert({
+        id: "main",
+        data: blobData,
+        updated_at: ts
+      });
+      if (regenErr) throw new Error(`regenerate blob save failed: ${String(regenErr).slice(0, 200)}`);
+      syncSchedWeeks(merged);
+    } catch (e) {
+      console.error("Immediate save failed:", e);
+      showToast("Couldn't save the regenerated schedule — check your connection.", "error");
+    }
+  };
+  genFinishRef.current = finishGenerate;
+  genCommitRef.current = commitGenerated;
   const clearSchedule = async () => {
     if (!confirm("Clear the entire generated schedule? Holiday assignments and setup data will be kept.\n\nThis cannot be undone.")) return;
     const clearSnap = await snapshots.capture("clear_schedule");
@@ -4182,17 +4284,14 @@ function CallSchedule() {
     };
     try {
       const keys = Object.keys(previewSchedule).sort();
-      const prevWk = keys.length ? schedule[fmt(addD(parse(keys[0]), -7))] : null;
       return listScheduleBends(previewSchedule, {
         surgeons,
         mondays: keys,
         vac: buildGenAvailability(),
         vacationsOnly: vacations,
         holAssignments: holidayAssignments,
-        prevWeekSeed: prevWk ? {
-          dayCall: prevWk.dayCall || null,
-          wknd: prevWk.nights && prevWk.nights.wknd || null
-        } : null
+        prevWeekSeed: keys.length ? buildPrevWeekSeed(parse(keys[0])) : null,
+        locks: pendingLocks
       });
     } catch (e) {
       console.error("Needs-your-OK list failed:", e);
@@ -4206,8 +4305,13 @@ function CallSchedule() {
         }]
       };
     }
-  }, [previewSchedule, schedule, surgeons, vacations, noCallDays, holidayAssignments, silvisActive, silvisFakId, silvisDays]);
+  }, [previewSchedule, schedule, surgeons, vacations, noCallDays, holidayAssignments, silvisActive, silvisFakId, silvisDays, pendingLocks]);
   const acceptPreview = () => {
+    if (publishSearchRunning()) {
+      showToast("Generate & Publish is still searching — wait for it to finish.", "error");
+      return;
+    }
+    cancelSearch();
     if (previewSchedule && previewNeedsOk.items.length > 0 && !previewAck) {
       showToast("Tick \"I've reviewed these items\" first.", "error");
       return;
@@ -4240,8 +4344,35 @@ function CallSchedule() {
     }
   };
   const discardPreview = () => {
+    cancelSearch();
+    setSearchStats(null);
     setPreviewSchedule(null);
     setShowPreview(false);
+  };
+  const searchMore = async () => {
+    const base = previewSchedRef.current;
+    if (!base || searchRef.current || publishingRef.current) return;
+    const keys = Object.keys(base).sort();
+    if (!keys.length) return;
+    const ms = keys.map(parse);
+    const search = createScheduleSearch(surgeons, ms, buildGenAvailability(), backupMondaySet, priorCounts, buildPrefs(), fierceBackupSet, holidayAssignments, pendingLocks, buildPrevWeekSeed(ms[0]), vacations, year1Counts);
+    search.seed(base);
+    const done = await runSearch(search, "more", SEARCH_MS);
+    if (!done || previewSchedRef.current !== base) return;
+    const st = done.session.status();
+    setSearchStats({
+      checked: st.checked,
+      starts: st.starts,
+      ms: done.ms,
+      purpose: "more",
+      improved: st.improved
+    });
+    if (st.improved) {
+      const better = done.session.best();
+      setPreviewSchedule(better);
+      setPreviewOrigin("generated");
+      showToast(`Found a better schedule — ${st.checked.toLocaleString()} more schedules checked.`);
+    } else showToast(`No better schedule in ${st.checked.toLocaleString()} more checked — this one stays.`);
   };
   const publishWeeks = (newWeeks, how) => {
     const cur = scheduleRef.current || {};
@@ -4281,6 +4412,12 @@ function CallSchedule() {
     return parts.length ? parts.join("; ") : "no change";
   };
   const loadScheduleJson = (text, fileName) => {
+    if (publishSearchRunning()) {
+      showToast("Generate & Publish is still searching — wait for it to finish, then load the file.", "error");
+      return false;
+    }
+    cancelSearch();
+    setSearchStats(null);
     const refuse = why => {
       showToast(`Not loaded — ${why}. Nothing was changed.`, "error");
       return false;
@@ -5698,7 +5835,18 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       week: o.mondayStr,
       message: `${who}: Silvis primary + Davenport ${o.label}, ${md(o.day)}`
     }));
-    return health.concat(hard);
+    const sunday = Object.keys(schedule).filter(m => /^\d{4}-\d{2}-\d{2}$/.test(m) && schedule[m] && schedule[m].dayCall === silvisFakId && inScope({
+      mondayStr: m
+    })).filter(m => silvisDays.primary && silvisDays.primary.has(fmt(addD(parse(m), 6)))).map(m => {
+      const sun = fmt(addD(parse(m), 6));
+      return {
+        key: `silvis-sun|${silvisFakId}|${m}|${sun}`,
+        severity: "error",
+        week: m,
+        message: `${who}: Silvis primary Sun ${md(sun)} — the Sunday of the Davenport service week of ${md(m)}`
+      };
+    });
+    return health.concat(hard, sunday);
   }, [schedule, silvisActive, silvisDays, silvisFakId, surgeons, isPublicMode, silvisRows, silvisLoadError]);
   const silvisSoftNotes = useMemo(() => {
     if (!silvisActive || isPublicMode) return [];
@@ -5738,7 +5886,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       return ((_sMap$id = sMap[id]) === null || _sMap$id === void 0 ? void 0 : _sMap$id.name) || id;
     };
     mondayStrs.forEach((mStr, wkIdx) => {
-      var _wk$nights6;
+      var _wk$nights6, _wk$nights9, _wk$nights0;
       const wk = schedule[mStr];
       const mon = parse(mStr);
       const nightOrder = ["mon", "tue", "wed", "thu"];
@@ -5823,6 +5971,27 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               message: `${(_sMap$wk$dayCall3 = sMap[wk.dayCall]) === null || _sMap$wk$dayCall3 === void 0 ? void 0 : _sMap$wk$dayCall3.name} is on Service Week AND Weekend (same week)`
             });
           }
+        }
+        const sunS = fmt(addD(mon, 6));
+        const sunKind = sunS >= todayStr ? onVac(wk.dayCall, sunS, vacations || {}) ? "vacation" : onVac(wk.dayCall, sunS, noCallDays || {}) ? "no-call" : null : null;
+        if (sunKind) issues.push({
+          key: `svc-sun|${mStr}|${wk.dayCall}|${sunS}|${sunKind}`,
+          type: "timeoff",
+          severity: "error",
+          week: mStr,
+          message: `${codeOf(wk.dayCall)} is on Service Week ${md(mStr)} but is off Sun ${md(sunS)} (${sunKind}) — the service-week surgeon must be free that Sunday`
+        });
+      }
+      if ((_wk$nights9 = wk.nights) !== null && _wk$nights9 !== void 0 && _wk$nights9.thu && wk.nights.thu === ((_wk$nights0 = wk.nights) === null || _wk$nights0 === void 0 ? void 0 : _wk$nights0.wknd)) {
+        const friT = fmt(addD(mon, 4));
+        if (!(wk.holidayCoverage || {})[friT] && !designed(mStr, "thu", mStr, "wknd", wk.nights.thu)) {
+          issues.push({
+            key: `thu-wknd|${mStr}|${wk.nights.thu}`,
+            type: "consecutive",
+            severity: "error",
+            week: mStr,
+            message: `${codeOf(wk.nights.thu)} has Thu night then the Weekend (Fri night) — two nights in a row`
+          });
         }
       }
       const hw = weekHolders(mStr, wk);
@@ -6050,7 +6219,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
   const calData = useMemo(() => {
     const d = {};
     Object.entries(schedule).forEach(([mStr, wk]) => {
-      var _wk$nights0;
+      var _wk$nights10;
       const mon = parse(mStr);
       const pfx = wk.isBackup ? "B-" : "";
       const cls = wk.isBackup ? "backup" : "primary";
@@ -6074,8 +6243,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         }];
       }
       NIGHT_KEYS.forEach((sk, i) => {
-        var _wk$nights9;
-        const sid = (_wk$nights9 = wk.nights) === null || _wk$nights9 === void 0 ? void 0 : _wk$nights9[sk];
+        var _wk$nights1;
+        const sid = (_wk$nights1 = wk.nights) === null || _wk$nights1 === void 0 ? void 0 : _wk$nights1[sk];
         if (!sid) return;
         const ds = fmt(addD(mon, i));
         if (holCov[ds]) return;
@@ -6085,7 +6254,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           cls
         }];
       });
-      const wkndS = (_wk$nights0 = wk.nights) === null || _wk$nights0 === void 0 ? void 0 : _wk$nights0.wknd;
+      const wkndS = (_wk$nights10 = wk.nights) === null || _wk$nights10 === void 0 ? void 0 : _wk$nights10.wknd;
       if (wkndS) {
         const fri = fmt(addD(mon, 4));
         if (!holCov[fri]) d[fri] = [...(d[fri] || []), {
@@ -9248,16 +9417,19 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     }
   }, React.createElement("button", {
     onClick: () => doGenerate(true),
+    disabled: !!searching,
     style: _objectSpread(_objectSpread({}, css.btn(false)), {}, {
       padding: "13px 24px",
       fontSize: 14,
       fontWeight: 700,
       borderRadius: 9,
       letterSpacing: 0.3,
-      flex: 1
+      flex: 1,
+      opacity: searching ? 0.55 : 1
     })
-  }, "👁 Preview Schedule"), (isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.role) === "admin") && React.createElement(React.Fragment, null, React.createElement("button", {
+  }, searching === "generate" ? "🔍 Searching…" : "👁 Preview Schedule"), (isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.role) === "admin") && React.createElement(React.Fragment, null, React.createElement("button", {
     onClick: () => loadJsonInputRef.current && loadJsonInputRef.current.click(),
+    disabled: searching === "publish",
     title: `Load a schedule for ${mondays.length ? fmt(mondays[0]) + " × " + mondays.length + " weeks" : "the Generate settings"} into the preview (JSON) — it is checked, not published`,
     style: _objectSpread(_objectSpread({}, css.btn(false)), {}, {
       padding: "13px 18px",
@@ -9277,7 +9449,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     "aria-label": "Load schedule (JSON)"
   })), React.createElement("button", {
     onClick: doGenerateAndNotify,
-    disabled: publishing,
+    disabled: publishing || !!searching,
     style: _objectSpread(_objectSpread({}, css.btn(true)), {}, {
       padding: "13px 24px",
       fontSize: 14,
@@ -9285,9 +9457,12 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       borderRadius: 9,
       letterSpacing: 0.3,
       flex: 1,
-      opacity: publishing ? 0.55 : 1
+      opacity: publishing || searching ? 0.55 : 1
     })
-  }, publishing ? "Publishing…" : "Generate & Publish →")), showPreview && previewSchedule && (() => {
+  }, publishing ? "Publishing…" : searching === "publish" ? "🔍 Searching…" : "Generate & Publish →")), (searching === "generate" || searching === "publish") && React.createElement(SearchProgress, {
+    searchRef: searchRef,
+    dk: dk
+  }), showPreview && previewSchedule && (() => {
     const pStats = {};
     surgeons.forEach(s => {
       pStats[s.id] = {
@@ -9311,7 +9486,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     });
     const pCalData = {};
     Object.entries(previewSchedule).forEach(([mStr, wk]) => {
-      var _wk$nights10;
+      var _wk$nights12;
       const mon = parse(mStr);
       const pfx = wk.isBackup ? "B-" : "";
       const cls = wk.isBackup ? "backup" : "primary";
@@ -9335,8 +9510,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         }];
       }
       NIGHT_KEYS.forEach((sk, i) => {
-        var _wk$nights1;
-        const sid = (_wk$nights1 = wk.nights) === null || _wk$nights1 === void 0 ? void 0 : _wk$nights1[sk];
+        var _wk$nights11;
+        const sid = (_wk$nights11 = wk.nights) === null || _wk$nights11 === void 0 ? void 0 : _wk$nights11[sk];
         if (!sid) return;
         const ds = fmt(addD(mon, i));
         if (holCov[ds]) return;
@@ -9346,7 +9521,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           cls
         }];
       });
-      const wkndS = (_wk$nights10 = wk.nights) === null || _wk$nights10 === void 0 ? void 0 : _wk$nights10.wknd;
+      const wkndS = (_wk$nights12 = wk.nights) === null || _wk$nights12 === void 0 ? void 0 : _wk$nights12.wknd;
       if (wkndS) {
         const fri = fmt(addD(mon, 4));
         if (!holCov[fri]) pCalData[fri] = [...(pCalData[fri] || []), {
@@ -9500,11 +9675,22 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         setPreviewCalMonth(0);
         doGenerate(true);
       },
+      disabled: !!searching,
       style: _objectSpread(_objectSpread({}, css.btn(false)), {}, {
         padding: "6px 14px",
-        fontSize: 12
+        fontSize: 12,
+        opacity: searching ? 0.55 : 1
       })
     }, "↻ Re-roll"), React.createElement("button", {
+      onClick: searchMore,
+      disabled: !!searching || publishing,
+      title: "Keep searching from this schedule — it is replaced only by a better one",
+      style: _objectSpread(_objectSpread({}, css.btn(false)), {}, {
+        padding: "6px 14px",
+        fontSize: 12,
+        opacity: searching || publishing ? 0.55 : 1
+      })
+    }, searching === "more" ? "🔍 Searching…" : "🔍 Search more"), React.createElement("button", {
       onClick: () => {
         try {
           const previewMondays = Object.keys(previewSchedule).sort();
@@ -9546,7 +9732,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       })
     }, "🖨 Print Calendar"), React.createElement("button", {
       onClick: acceptPreview,
-      disabled: publishing || previewNeedsOk.items.length > 0 && !previewAck,
+      disabled: publishing || searching === "publish" || previewNeedsOk.items.length > 0 && !previewAck,
       title: previewNeedsOk.items.length > 0 && !previewAck ? "Review the Needs your OK items below first" : undefined,
       style: _objectSpread(_objectSpread({}, css.btn(true)), {}, {
         padding: "6px 14px",
@@ -9568,7 +9754,16 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         cursor: "pointer",
         fontFamily: font
       }
-    }, "✕ Discard"))), previewNeedsOk.items.length > 0 && React.createElement("div", {
+    }, "✕ Discard"))), searching === "more" && React.createElement(SearchProgress, {
+      searchRef: searchRef,
+      dk: dk
+    }), searchStats && !searching && React.createElement("div", {
+      style: {
+        fontSize: 11,
+        color: dk ? "#a0c8a0" : "#4a7a4a",
+        margin: "-6px 0 10px"
+      }
+    }, searchStats.purpose === "more" ? `Search more ${searchStats.improved ? "found a better schedule" : "found nothing better — this one stays"}: ${searchStats.checked.toLocaleString()} more schedules checked in ${(searchStats.ms / 1000).toFixed(1)} s` : `The best of ${searchStats.checked.toLocaleString()} schedules checked in ${(searchStats.ms / 1000).toFixed(1)} s (${searchStats.starts.toLocaleString()} fresh start${searchStats.starts === 1 ? "" : "s"})`), previewNeedsOk.items.length > 0 && React.createElement("div", {
       style: {
         background: dk ? "#3a2410" : "#fdf0e3",
         border: "1px solid #d09050",
@@ -9584,18 +9779,34 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         fontWeight: 700,
         marginBottom: 2
       }
-    }, "⚠ Needs your OK — ", previewNeedsOk.items.length, " item", previewNeedsOk.items.length === 1 ? "" : "s"), previewNeedsOk.items.map((it, i) => React.createElement("div", {
-      key: i,
-      style: {
-        marginTop: 3
-      }
-    }, "• ", it.text)), React.createElement("div", {
+    }, "⚠ Needs your OK — ", previewNeedsOk.items.length, " item", previewNeedsOk.items.length === 1 ? "" : "s"), NEEDS_OK_GROUPS.map(g => {
+      const its = previewNeedsOk.items.filter(it => g.kinds.includes(it.kind));
+      return its.length ? React.createElement("div", {
+        key: g.title,
+        style: {
+          marginTop: 6
+        }
+      }, React.createElement("div", {
+        style: {
+          fontWeight: 700,
+          fontSize: 11,
+          textTransform: "uppercase",
+          letterSpacing: 0.4,
+          opacity: 0.8
+        }
+      }, g.title), its.map((it, i) => React.createElement("div", {
+        key: i,
+        style: {
+          marginTop: 3
+        }
+      }, "• ", it.text))) : null;
+    }), React.createElement("div", {
       style: {
         marginTop: 5,
         fontSize: 11,
         opacity: 0.85
       }
-    }, previewOrigin === "json" ? "These are in the loaded file — the generator didn't choose them. Every bend, empty slot, time-off placement and crowded day in it is listed here; review each before publishing. Re-roll replaces the file with a generated schedule." : "Vacation, no-call and Silvis days are never broken — when a week can't be covered by the usual rules, the generator takes the mildest bend and lists it here. Re-roll for different names; the bends themselves are the minimum the calendar allows."), React.createElement("label", {
+    }, previewOrigin === "json" ? "These are in the loaded file — the generator didn't choose them. Everything the ranking looks at is listed here; review each before publishing. Re-roll replaces the file with a generated schedule; Search more keeps it unless it finds a better one." : "The search ranks schedules in this order: no time off and no two nights in a row (designed holiday runs aside — anything left breaking them is under Must fix), FAK's last resort, service weeks even, weekends even, the least strain, the mildest bends, totals even — this is the best it found. Search more looks further; Re-roll starts over."), React.createElement("label", {
       style: {
         display: "flex",
         alignItems: "center",
@@ -10558,14 +10769,20 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     style: css.btn(false)
   }, "← Setup"), React.createElement("button", {
     onClick: () => doGenerate(false),
-    style: css.btn(true)
-  }, "↻ Regenerate"), React.createElement("button", {
+    disabled: !!searching,
+    style: _objectSpread(_objectSpread({}, css.btn(true)), {}, {
+      opacity: searching ? 0.55 : 1
+    })
+  }, searching === "publish" ? "🔍 Searching…" : "↻ Regenerate"), React.createElement("button", {
     onClick: clearSchedule,
     style: _objectSpread(_objectSpread({}, css.btn(false)), {}, {
       color: "#c04040",
       borderColor: "#e0a0a0"
     })
-  }, "✕ Clear")))), React.createElement("div", {
+  }, "✕ Clear")))), searching && searching !== "more" && view === "calendar" && React.createElement(SearchProgress, {
+    searchRef: searchRef,
+    dk: dk
+  }), React.createElement("div", {
     style: {
       display: "flex",
       gap: 4,
@@ -11548,8 +11765,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     const wk = m ? schedule[m] : null;
     let currentId = null;
     if (wk && sh) {
-      var _wk$nights11;
-      currentId = sh === "dayCall" ? wk.dayCall : (_wk$nights11 = wk.nights) === null || _wk$nights11 === void 0 ? void 0 : _wk$nights11[sh];
+      var _wk$nights13;
+      currentId = sh === "dayCall" ? wk.dayCall : (_wk$nights13 = wk.nights) === null || _wk$nights13 === void 0 ? void 0 : _wk$nights13[sh];
     }
     return currentId ? React.createElement("div", {
       style: {
@@ -11577,8 +11794,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       const wk = schedule[m];
       if (!wk) return;
       ALL_SHIFT_KEYS.forEach(sk => {
-        var _wk$nights12;
-        const holder = sk === "dayCall" ? wk.dayCall : (_wk$nights12 = wk.nights) === null || _wk$nights12 === void 0 ? void 0 : _wk$nights12[sk];
+        var _wk$nights14;
+        const holder = sk === "dayCall" ? wk.dayCall : (_wk$nights14 = wk.nights) === null || _wk$nights14 === void 0 ? void 0 : _wk$nights14[sk];
         if (holder === mySurgeon) {
           if (shiftStartDate(m, sk) < todayStr) return;
           const label = `${slotLabel(m, sk)}${wk.isBackup ? " (Backup)" : ""}${m <= todayStr ? " (this week)" : ""}`;
@@ -11618,12 +11835,12 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     }, o.label)));
   })()), React.createElement("button", {
     onClick: () => {
-      var _wk$nights13;
+      var _wk$nights15;
       const m = swapTarget === null || swapTarget === void 0 ? void 0 : swapTarget.mondayStr;
       const sh = swapTarget === null || swapTarget === void 0 ? void 0 : swapTarget.shift;
       const wk = m ? schedule[m] : null;
       if (!wk || !sh) return;
-      const currentId = sh === "dayCall" ? wk.dayCall : (_wk$nights13 = wk.nights) === null || _wk$nights13 === void 0 ? void 0 : _wk$nights13[sh];
+      const currentId = sh === "dayCall" ? wk.dayCall : (_wk$nights15 = wk.nights) === null || _wk$nights15 === void 0 ? void 0 : _wk$nights15[sh];
       if (!currentId) return;
       findSwapSuggestions(m, sh, currentId);
     },
@@ -12522,7 +12739,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     const monthlyData = {};
     const allMonths = new Set();
     Object.entries(schedule).forEach(([mStr, wk]) => {
-      var _wk$nights15;
+      var _wk$nights17;
       const mon = parse(mStr);
       for (let i = 0; i < 7; i++) {
         const d = addD(mon, i);
@@ -12544,14 +12761,14 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         if ((_monthlyData$monMoKey = monthlyData[monMoKey]) !== null && _monthlyData$monMoKey !== void 0 && _monthlyData$monMoKey[wk.dayCall]) monthlyData[monMoKey][wk.dayCall][countKey] += 6;
       }
       NIGHT_KEYS.forEach((sk, i) => {
-        var _wk$nights14, _monthlyData$moKey;
-        const sid = (_wk$nights14 = wk.nights) === null || _wk$nights14 === void 0 ? void 0 : _wk$nights14[sk];
+        var _wk$nights16, _monthlyData$moKey;
+        const sid = (_wk$nights16 = wk.nights) === null || _wk$nights16 === void 0 ? void 0 : _wk$nights16[sk];
         if (!sid) return;
         const d = addD(mon, i);
         const moKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
         if ((_monthlyData$moKey = monthlyData[moKey]) !== null && _monthlyData$moKey !== void 0 && _monthlyData$moKey[sid]) monthlyData[moKey][sid][countKey] += 1;
       });
-      const wkndSid = (_wk$nights15 = wk.nights) === null || _wk$nights15 === void 0 ? void 0 : _wk$nights15.wknd;
+      const wkndSid = (_wk$nights17 = wk.nights) === null || _wk$nights17 === void 0 ? void 0 : _wk$nights17.wknd;
       if (wkndSid) {
         var _monthlyData$friMo;
         const fri = addD(mon, 4);
@@ -13406,7 +13623,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     };
     const myShifts = [];
     Object.entries(schedule).forEach(([mStr, wk]) => {
-      var _wk$nights16;
+      var _wk$nights18;
       const mon = parse(mStr);
       const endStr = fmt(addD(mon, 6));
       const hw = weekHolders(mStr, wk);
@@ -13433,7 +13650,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           shiftKey: sk
         });
       });
-      if (((_wk$nights16 = wk.nights) === null || _wk$nights16 === void 0 ? void 0 : _wk$nights16.wknd) === myId) {
+      if (((_wk$nights18 = wk.nights) === null || _wk$nights18 === void 0 ? void 0 : _wk$nights18.wknd) === myId) {
         const legs = [hw.days[4], hw.days[6]];
         const mine = d => (d.i === 4 ? d.wkndFri : d.wkndSun) === myId;
         const notes = legs.filter(d => !mine(d) && !(d.cover && d.cover.sid === myId)).map(d => coverNote(d, d.cover ? d.cover.sid : null, nameOf));
@@ -15045,8 +15262,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       const wk = schedule[m];
       if (!wk) return;
       ALL_SHIFT_KEYS.forEach(sk => {
-        var _wk$nights17;
-        const holder = sk === "dayCall" ? wk.dayCall : (_wk$nights17 = wk.nights) === null || _wk$nights17 === void 0 ? void 0 : _wk$nights17[sk];
+        var _wk$nights19;
+        const holder = sk === "dayCall" ? wk.dayCall : (_wk$nights19 = wk.nights) === null || _wk$nights19 === void 0 ? void 0 : _wk$nights19[sk];
         if (holder === tradeFrom) {
           if (shiftStartDate(m, sk) < todayStr) return;
           const label = `${slotLabel(m, sk)}${wk.isBackup ? " (Backup)" : ""}${m <= todayStr ? " (this week)" : ""}`;
@@ -15138,8 +15355,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         const wk = schedule[m];
         if (!wk) return;
         ALL_SHIFT_KEYS.forEach(sk => {
-          var _wk$nights18;
-          const holder = sk === "dayCall" ? wk.dayCall : (_wk$nights18 = wk.nights) === null || _wk$nights18 === void 0 ? void 0 : _wk$nights18[sk];
+          var _wk$nights20;
+          const holder = sk === "dayCall" ? wk.dayCall : (_wk$nights20 = wk.nights) === null || _wk$nights20 === void 0 ? void 0 : _wk$nights20[sk];
           if (holder === tradeTo) {
             if (shiftStartDate(m, sk) < todayStr) return;
             const label = `${slotLabel(m, sk)}${wk.isBackup ? " (Backup)" : ""}${m <= todayStr ? " (this week)" : ""}`;
@@ -17907,6 +18124,58 @@ function writeFailReason(err) {
   if (/42501|row-level security|\b403\b/i.test(s)) return "you don't have permission to do that (ask the scheduler)";
   if (/JWT expired|PGRST30[0-3]|\b401\b/i.test(s)) return "your sign-in has expired — sign in again";
   return "check your connection and try again";
+}
+const NEEDS_OK_GROUPS = [{
+  title: "Must fix — breaks a rule",
+  kinds: ["error", "lock", "empty", "timeoff", "hard"]
+}, {
+  title: "Last resort",
+  kinds: ["lastResort"]
+}, {
+  title: "Strain",
+  kinds: ["strain"]
+}, {
+  title: "Bends",
+  kinds: ["bend"]
+}, {
+  title: "FAK — flexible (allowed, costs a little)",
+  kinds: ["flexStrain"]
+}, {
+  title: "Crowded days (information)",
+  kinds: ["crowded"]
+}];
+function SearchProgress({
+  searchRef,
+  dk
+}) {
+  const [, setTick] = React.useState(0);
+  React.useEffect(() => {
+    const t = setInterval(() => setTick(n => n + 1), 250);
+    return () => clearInterval(t);
+  }, []);
+  const sr = searchRef.current;
+  if (!sr || !sr.session) return null;
+  let st = null;
+  try {
+    st = sr.session.status();
+  } catch (e) {
+    return null;
+  }
+  const t = st.tiers;
+  const best = t ? t.floor ? "best so far still breaks a rule" : `best so far: service weeks Δ${t.svcSpread} · weekends Δ${t.wkndSpread} · strain ${t.strain} · bends ${t.bend}` : "";
+  return React.createElement("div", {
+    role: "status",
+    style: {
+      fontSize: 12,
+      color: dk ? "#a0c8a0" : "#2a6a3a",
+      background: dk ? "#16261a" : "#eef8ee",
+      border: "1px solid #a0d0a0",
+      borderRadius: 7,
+      padding: "6px 10px",
+      margin: "8px 0",
+      overflowWrap: "anywhere"
+    }
+  }, "🔍 Searching… ", (sr.activeMs / 1000).toFixed(1), " s of ", (sr.budgetMs / 1000).toFixed(0), " · ", st.checked.toLocaleString(), " schedules checked", best ? " · " + best : "");
 }
 function CallTotalsCard({
   totals,
