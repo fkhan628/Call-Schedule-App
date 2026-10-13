@@ -3660,7 +3660,7 @@ check("prefs audit never logs the plaintext email (masked only)",
       && count('color:dk?"#f0c890":"#7a4010",overflowWrap:"anywhere"}}>') === 1);
   check("AE3 Generate & Publish: a result with items opens the preview (\"review\") instead of saving; only \"published\" sends the notice; a cancelled Silvis confirm sends nothing",
     count('    if (needsOkN > 0) {\n      setPreviewSchedule(result); setPreviewOrigin("generated");\n      setShowPreview(true);'.replace(/\n/g, src.includes("\r\n") ? "\r\n" : "\n")) === 1
-      && count('return "review";') === 2 && count('return "published";') === 1 // + inputs changed during the search (2026-10-12) && count('return "cancelled";') === 2 // the Silvis confirm; a cancelled / empty search (2026-10-12)
+      && count('return "review";') === 2 && count('return "published";') === 1 && count('return "cancelled";') === 2 // review: + inputs changed during the search (2026-10-12) — // the Silvis confirm; a cancelled / empty search (2026-10-12)
       && count('if ((await doGenerate(false)) !== "published") return;') === 1);
   check("AE4 the box and the generator share ONE availability builder (vacations ∪ no-call ∪ Silvis), and the box reads the bends from generator.js",
     count("const availability = buildGenAvailability();") === 1 && count("vac: buildGenAvailability(), vacationsOnly: vacations,") === 2 // the box + Generate & Publish's gate (today's inputs, 2026-10-12)
@@ -3918,7 +3918,7 @@ await (async () => {
       && count("hadExistingSchedule") === 0 && !/rollForwardCounts\(latest\)/.test(nsrc));
   {
     // since 2026-10-12 the publish runs after the search, in finishGenerate → commitGenerated (with the latest state)
-    const g = nsrc.indexOf("  const finishGenerate = (result, preview, clickSig) => {"), ge = nsrc.indexOf("\n  genFinishRef.current = finishGenerate; genCommitRef.current = commitGenerated;", g), body = g < 0 || ge < 0 ? "" : nsrc.slice(g, ge);
+    const g = nsrc.indexOf("  const finishGenerate = (result, preview, clickSig, clickLocks) => {"), ge = nsrc.indexOf("\n  genFinishRef.current = finishGenerate; genCommitRef.current = commitGenerated;", g), body = g < 0 || ge < 0 ? "" : nsrc.slice(g, ge);
     const busy = body.indexOf("if (publishingRef.current) {"), arm = body.indexOf("publishingRef.current = true; setPublishing(true);"), iife = body.indexOf("(async () => {", arm);
     const snapOk = body.indexOf("if (!snap.ok) {"), commit = body.indexOf("await genCommitRef.current(result);"), fin = body.indexOf("} finally { publishingRef.current = false; setPublishing(false); }"), pub = body.indexOf("publishWeeks(result, {");
     check("AG4 Generate & Publish: refused while a publish is in progress, armed BEFORE the snapshot's await, released in finally; the counts move only AFTER a good snapshot (a refused publish moves nothing), in commitGenerated — with the state as it is after the await",
@@ -4144,7 +4144,10 @@ await (async () => {
       if (!mkAll) check("AH5 the real cancelSearch / publishSearchRunning extractable with runSearch", false, "anchor / compile");
       else {
         const E1 = mkEnv(), f1 = mkAll(E1.env), s1 = fake(1e9); const p1 = f1.runSearch(s1, "generate", 60000);
-        await new Promise(r => setTimeout(r, 5)); f1.cancelSearch(); const r1 = await p1; const n1 = s1.n; await new Promise(r => setTimeout(r, 20));
+        await new Promise(r => setTimeout(r, 5)); f1.cancelSearch();
+        const r1 = await Promise.race([p1, new Promise(r => setTimeout(() => r("TIMEOUT"), 3000))]); // a cancel that doesn't cancel fails here, it doesn't hang the suite
+        if (r1 === "TIMEOUT") E1.env.searchRef.current = null;
+        const n1 = s1.n; await new Promise(r => setTimeout(r, 20));
         check("AH5 the REAL cancelSearch stops a preview-bound search: it resolves null, the ref is cleared, and the session gets no more slices", r1 === null && E1.env.searchRef.current === null && s1.n === n1 && JSON.stringify(E1.flags) === JSON.stringify(["generate", null]), JSON.stringify([r1, n1, s1.n, E1.flags]));
         const E2 = mkEnv(), f2 = mkAll(E2.env), s2 = { n: 0, step() { this.n++; const t = Date.now(); while (Date.now() - t < 1) {} }, status() { return { perfect: false }; } }; const p2 = f2.runSearch(s2, "publish", 30);
         await new Promise(r => setTimeout(r, 5)); f2.cancelSearch(); const running = f2.publishSearchRunning(); const r2 = await p2;
@@ -4154,6 +4157,11 @@ await (async () => {
         const s3 = { n: 0, step() { this.n++; const t = Date.now(); while (Date.now() - t < 2) {} }, status() { return { perfect: false }; } };
         const r3 = await mkAll(E3.env).runSearch(s3, "generate", 30);
         check("AH5 the budget is ACTIVE search time: slow gaps between slices (a hidden, throttled tab) don't use it up", !!r3 && s3.n >= 10 && r3.ms >= 30, JSON.stringify([s3.n, r3 && r3.ms]));
+        const S7r = ["DJA", "MCC", "RPC", "KJH", "REH", "FAK", "ARW"].map((n, k) => ({ id: "s" + (k + 1), name: n }));
+        const msr = [0, 7, 14, 21, 28, 35, 42].map(o => G.addD(G.parse("2099-03-02"), o));
+        const real = G.createScheduleSearch(S7r, msr, {}, new Set(), {}, {}, new Set(), null, [], null, {}, null);
+        const E4 = mkEnv(), r4 = await mkAll(E4.env).runSearch(real, "generate", 2000);
+        check("AH5 a REAL search session through the REAL runSearch: it ends (perfect, or the budget) with a schedule and schedules checked", !!r4 && r4.session === real && !!real.best() && real.status().checked > 0, JSON.stringify(real.status()));
       }
     }
   }
@@ -4161,7 +4169,7 @@ await (async () => {
   {
     const dg = nsrcAH.indexOf("  const doGenerate = async (preview) => {"), dge = nsrcAH.indexOf("\n  };\n", dg), dgb = dg < 0 ? "" : nsrcAH.slice(dg, dge);
     check("AH6 Generate goes through the search for SEARCH_MS and refuses a second search while one runs",
-      dgb.indexOf('if (searchRef.current) { showToast("A schedule search is already running') > 0 && dgb.indexOf('const done = await runSearch(search, preview ? "generate" : "publish", SEARCH_MS);') > dgb.indexOf("const search = createScheduleSearch(") && dgb.indexOf("return genFinishRef.current(result, preview, clickSig);") > 0 && dgb.indexOf("const result = done && done.session.best();") > 0);
+      dgb.indexOf('if (searchRef.current) { showToast("A schedule search is already running') > 0 && dgb.indexOf('const done = await runSearch(search, preview ? "generate" : "publish", SEARCH_MS);') > dgb.indexOf("const search = createScheduleSearch(") && dgb.indexOf("return genFinishRef.current(result, preview, clickSig, pendingLocks);") > 0 && dgb.indexOf("const result = done && done.session.best();") > 0);
     check("AH6 Accept, Discard and a JSON load cancel a running search first (Discard and a load also clear the last search's count, which no longer applies)",
       /const acceptPreview = \(\) => \{\n[^]*?if \(publishSearchRunning\(\)\) \{[^\n]*return; \}\n    cancelSearch\(\);/.test(nsrcAH) && /const discardPreview = \(\) => \{\n    cancelSearch\(\); setSearchStats\(null\);/.test(nsrcAH)
         && /const loadScheduleJson = \(text, fileName\) => \{\n    if \(publishSearchRunning\(\)\) \{[^\n]*return false; \}\n    cancelSearch\(\); setSearchStats\(null\);/.test(nsrcAH)
@@ -4182,8 +4190,10 @@ await (async () => {
   // ── AH7 ──
   {
     const gsrc = fs.readFileSync(path.join(ROOT, "generator.js"), "utf8");
-    check("AH7 generator.js: ONE FLEX list (by code), the app's 10-second search budget",
-      (gsrc.match(/const FLEX = \["FAK"\];/g) || []).length === 1 && (gsrc.match(/const SEARCH_MS = 10000;/g) || []).length === 1);
+    check("AH7 generator.js: ONE FLEX list (by code), the app's 10-second search budget, the preferences polish's size, and the brief's tier order (floor > last resort > service weeks > weekends > strain > bends > totals > soft > preferences), compared in that order",
+      (gsrc.match(/const FLEX = \["FAK"\];/g) || []).length === 1 && (gsrc.match(/const SEARCH_MS = 10000;/g) || []).length === 1 && (gsrc.match(/const SEARCH_PREFS_POLISH = 3000;/g) || []).length === 1
+        && gsrc.includes('const RULE_TIERS = ["floor", "lastResort", "svc", "wknd", "strain", "bend", "total", "soft", "prefs"];')
+        && gsrc.includes("  for (let i = 0; i < RULE_TIERS.length; i++) { if (A[i] < B[i]) return -1; if (A[i] > B[i]) return 1; }"));
     const S7 = ["DJA", "MCC", "RPC", "KJH", "REH", "FAK", "ARW"].map((n, i) => ({ id: "s" + (i + 1), name: n }));
     const ms = [0, 7, 14, 21, 28, 35, 42].map(o => G.addD(G.parse("2099-03-02"), o));
     const r = G.generate(S7, ms, {}, new Set(), {}, {}, new Set(), null, [], null, {}, null);
@@ -4195,11 +4205,14 @@ await (async () => {
     const POLISH = vm.runInContext("SEARCH_PREFS_POLISH", sandbox);
     check("AH7 Search more from a schedule that is already perfect: only the short preferences polish (SEARCH_PREFS_POLISH schedules), then the same schedule back, 'not improved'",
       se.status().checked >= POLISH && se.status().checked <= POLISH + 1000 && se.status().improved === false && se.status().perfect === true && JSON.stringify(se.best()) === JSON.stringify(r), JSON.stringify(se.status()));
-    // a fresh start (a whole generateOnce) only ever opens a slice: with a clock that jumps 1 ms per read, one step() runs at most one start
-    { let t = 0; const tick = () => (t += 1);
-      const sl = G.createScheduleSearch(S7, ms, { s1: [[G.fmt(ms[1]), G.fmt(ms[1])]] }, new Set(), {}, {}, new Set(), null, [], null, {}, null, { now: tick });
-      const st0 = sl.status().starts; sl.step(1000); const st1 = sl.status().starts;
-      check("AH7 a slice never runs a fresh start after other work (a whole generateOnce can take ~0.2 s on a squeezed period): at most one start per step()", st1 - st0 <= 1, JSON.stringify([st0, st1])); }
+    // step() — the app's ONLY way into the search — does work every slice, and a fresh start (a whole
+    // generateOnce, up to ~0.2 s on a squeezed period) only ever OPENS a slice: on the live period (never
+    // perfect, its improvers are used up in well under a second) one long step() opens exactly one start
+    { const LF = JSON.parse(fs.readFileSync(path.join(ROOT, "test", "fixtures", "generator-live-2026-11-16.json"), "utf8"));
+      const sl = G.createScheduleSearch(LF.surgeons, LF.mondays.map(G.parse), LF.avail, new Set(LF.backupMondays), LF.priorCounts, LF.prefs, new Set(LF.fierceBackupMondays), LF.holAssignments, [], LF.prevWeekSeed, LF.vacationsOnly, LF.yearCounts);
+      const a0 = sl.status(); sl.step(1500); const a1 = sl.status(); sl.step(1500); const a2 = sl.status();
+      check("AH7 step() does work (schedules checked, a best found) and opens exactly ONE fresh start per slice, however long the slice",
+        a1.starts - a0.starts === 1 && a2.starts - a1.starts <= 1 && a1.checked > 1000 && a2.checked > a1.checked && !!sl.best(), JSON.stringify([a0, a1, a2].map(x => [x.starts, x.checked]))); }
     const broken = JSON.parse(JSON.stringify(r)); const m0 = ms.map(G.fmt)[2];
     broken[m0].nights.tue = broken[m0].nights.mon; // two nights in a row (rule 2) for that surgeon
     const ctx7 = { surgeons: S7, mondays: ms, vac: {}, vacationsOnly: {}, holAssignments: null, prevWeekSeed: null };
@@ -4253,9 +4266,20 @@ await (async () => {
       const m = monOf(2099, "07", "01"), M = G.fmt(m), d = (o) => G.fmt(G.addD(m, o));
       const hol = { 2099: [{ name: "July 4th", date: d(5), surgeonA: "s3", surgeonB: null, type: "minor", coverage: [{ date: d(5), surgeon: "s3" }] }] };
       const part = run8({ [M]: W("s2", "s4", "s5", "s1", "s7", "s2") }, [M], hol), fak = run8({ [M]: W("s6", "s4", "s5", "s1", "s7", "s6") }, [M], hol);
-      check("AH8 service week + that weekend split by someone else's Saturday holiday 24h: not two nights in a row, but listed and priced as a bend (60) for a partner; FAK's last resort for FAK",
-        part.counts.hard === 0 && part.items.some(i => i.kind === "bend" && i.key === "svcWkndSplit" && i.cost === 60 && i.who === "s2") && fak.counts.lastRes === 1 && !fak.items.some(i => i.key === "svcWkndSplit"),
-        JSON.stringify([part.counts, part.items.map(i => i.kind + ":" + i.key), fak.counts]));
+      check("AH8 service week + that weekend split by someone else's Saturday holiday 24h: not two nights in a row (no Fri → Sat → Sun), but listed and priced as a bend (60) — for a partner and for FAK alike (no last resort: nothing runs in a row)",
+        part.counts.hard === 0 && part.items.some(i => i.kind === "bend" && i.key === "svcWkndSplit" && i.cost === 60 && i.who === "s2")
+          && fak.counts.hard === 0 && fak.counts.lastRes === 0 && fak.items.some(i => i.kind === "bend" && i.key === "svcWkndSplit" && i.who === "s6"),
+        JSON.stringify([part.counts, part.items.map(i => i.kind + ":" + i.key), fak.counts, fak.items.map(i => i.kind + ":" + i.key)]));
+      // FAK as surgeon A of a Friday holiday: the cards pin him the service week AND the weekend (B holds the Saturday 24h) — designed, nothing listed
+      const holA = { 2099: [{ name: "July 4th", date: d(4), surgeonA: "s6", surgeonB: "s3", type: "minor", coverage: [{ date: d(4), surgeon: "s6" }, { date: d(5), surgeon: "s3" }] }] };
+      const des = run8({ [M]: W("s6", "s4", "s5", "s1", "s7", "s6") }, [M], holA);
+      check("AH8 FAK as surgeon A of a Friday holiday — the cards give him that week's service week and weekend: designed, so not his last resort and not a bend (nothing listed for it)",
+        des.counts.lastRes === 0 && des.counts.hard === 0 && !des.items.some(i => i.key === "svcWkndSplit" || i.kind === "lastResort"), JSON.stringify([des.counts, des.items.map(i => i.kind + ":" + i.key)]));
+      // a real Fri → Sat → Sun for FAK (no rows) — the last resort, and its text names the nights he holds
+      const realLR = run8({ [M]: W("s6", "s4", "s5", "s1", "s7", "s6") }, [M], null);
+      check("AH8 FAK on a service week + that weekend with no holiday in it: Fri → Sat → Sun, his listed LAST RESORT (with those three nights named), not two-in-a-row",
+        realLR.counts.lastRes === 1 && realLR.counts.hard === 0 && realLR.items.some(i => i.kind === "lastResort" && new RegExp("Fri " + md(G.addD(m, 4)) + " → Sat " + md(G.addD(m, 5)) + " → Sun " + md(G.addD(m, 6)) + " in a row").test(i.text)),
+        JSON.stringify([realLR.counts, realLR.items.filter(i => i.kind === "lastResort").map(i => i.text)]));
     }
     // FAK's Christmas service week is pinned for a Saturday / Sunday Christmas too (decision 3), like Tue–Fri
     {
@@ -4268,7 +4292,7 @@ await (async () => {
     }
     // (e) FAK's Christmas week in EVERY year — the card's own pattern is never "two nights in a row" nor a last resort (2026 Fri, 2027 Sat, 2028 Mon, 2029 Tue, 2031 Thu, 2033 Sun)
     {
-      const res = [];
+      const res = [], adj = []; let adjN = 0;
       for (const y of [2026, 2027, 2028, 2029, 2031, 2033]) {
         const x = G.parse(`${y}-12-25`), dow = x.getDay();
         const des = G.addD(x, dow === 0 ? -6 : dow === 1 ? -7 : 1 - dow), prev = G.addD(des, -7), next = G.addD(des, 7), after = G.addD(des, 14);
@@ -4285,9 +4309,22 @@ await (async () => {
         [eve, xs].forEach(dt => { const k = nightKey(dt), wi = K.findIndex(m => m <= dt && dt < G.fmt(G.addD(G.parse(m), 7))); if (k && wi >= 0) weeks[K[wi]].nights[k] = "s6"; });
         const r = run8(weeks, mons, hol);
         res.push({ y, hard: r.counts.hard, lastRes: r.counts.lastRes, items: r.items.filter(i => i.kind === "hard" || i.kind === "lastResort").map(i => i.text) });
+        // each Mon–Thu night of the design week (and the Monday after) that is NOT in decision 3's set but touches it: FAK there → two in a row
+        const D = new Set([eve, xs, G.fmt(G.addD(des, 4)), G.fmt(G.addD(des, 5)), G.fmt(G.addD(des, 6))]);
+        [0, 1, 2, 3, 7].map(o => G.fmt(G.addD(des, o))).forEach(n => {
+          if (D.has(n) || !(D.has(G.fmt(G.addD(G.parse(n), -1))) || D.has(G.fmt(G.addD(G.parse(n), 1))))) return;
+          const k = ["mon", "tue", "wed", "thu"][G.parse(n).getDay() - 1], wi = K.findIndex(mm => mm <= n && n < G.fmt(G.addD(G.parse(mm), 7)));
+          if (!k || wi < 0) return;
+          const w2 = JSON.parse(JSON.stringify(weeks)); w2[K[wi]].nights[k] = "s6";
+          const r2 = run8(w2, mons, hol);
+          if (r2.counts.hard < 1) adj.push(`${y}: FAK on ${n} (next to his designed Christmas nights) is not listed as two in a row`);
+          adjN++;
+        });
       }
       check("AH8 FAK's Christmas week is the card's design in EVERY year (Fri 2026, Sat 2027, Mon 2028, Tue 2029, Thu 2031, Sun 2033): never two nights in a row, never his last resort",
         res.every(x => x.hard === 0 && x.lastRes === 0), JSON.stringify(res));
+      check(`AH8 …and exactly that set: every free night touching it (${adjN} cases across the six years — e.g. Thu before a Friday-night weekend, the Monday after the Christmas Sunday) is still two nights in a row`,
+        adj.length === 0 && adjN >= 6, JSON.stringify(adj));
       // control: the same 2029 week with FAK also on the Wednesday after his Tuesday Christmas 24h — not designed
       const x = G.parse("2029-12-25"), des = G.addD(x, -1), K = [G.addD(des, -7), des, G.addD(des, 7)].map(G.fmt);
       const hol = { 2029: [{ name: "Christmas Day", date: "2029-12-25", surgeonA: "s6", surgeonB: "s6", type: "major", coverage: [{ date: "2029-12-24", surgeon: "s6", isEve: true }, { date: "2029-12-25", surgeon: "s6" }] }] };
@@ -4299,6 +4336,40 @@ await (async () => {
         r.counts.hard === 1 && plain.counts.lastRes === 1 && plain.counts.hard === 0, JSON.stringify([r.counts, plain.counts]));
     }
   }
+})();
+
+// ─── AH9. The REAL finishGenerate: Generate's end, with the LATEST state (2026-10-13) ───
+await (async () => {
+  const nsrcF = src.replace(/\r\n/g, "\n");
+  const i = nsrcF.indexOf("  const finishGenerate = (result, preview, clickSig, clickLocks) => {"), e = i < 0 ? -1 : nsrcF.indexOf("\n  };\n", i);
+  const ENV = "pendingLocks, nameOf, slotLabel, showToast, setPreviewSchedule, setPreviewOrigin, setShowPreview, genInputsSig, listScheduleBends, surgeons, mondays, buildGenAvailability, vacations, holidayAssignments, buildPrevWeekSeed, publishingRef, setPublishing, setSaveStatus, snapshots, genCommitRef";
+  let mk = null; try { mk = i < 0 ? null : vm.runInContext("(function (env) { const { " + ENV + " } = env; return (" + nsrcF.slice(i + "  const finishGenerate = ".length, e) + "\n  }); })", sandbox); } catch (ex) { mk = null; }
+  if (!mk) { check("AH9 finishGenerate extractable for execution", false, "anchor / compile"); return; }
+  const RES = { "2099-03-02": { dayCall: "s1", nights: {} } };
+  const go = async (o) => {
+    const rec = { toasts: [], preview: null, shown: false, captured: 0, committed: 0 }, pub = { current: false };
+    const fn = mk({ pendingLocks: o.locksNow || [], nameOf: (x) => x, slotLabel: () => "slot", showToast: (m) => rec.toasts.push(String(m)), setPreviewSchedule: (x) => { rec.preview = x; }, setPreviewOrigin: () => {}, setShowPreview: (x) => { rec.shown = x; },
+      genInputsSig: () => o.sigNow, listScheduleBends: () => ({ items: o.items || [] }), surgeons: [], mondays: [], buildGenAvailability: () => ({}), vacations: {}, holidayAssignments: {}, buildPrevWeekSeed: () => null,
+      publishingRef: pub, setPublishing: () => {}, setSaveStatus: () => {}, snapshots: { capture: async () => { rec.captured++; return { ok: true }; } }, genCommitRef: { current: async () => { rec.committed++; } } });
+    rec.ret = fn(RES, !!o.preview, "SIG0", o.locksAtClick || []);
+    await new Promise(r => setTimeout(r, 30)); // let a publish run through its snapshot
+    rec.armed = pub.current;
+    return rec;
+  };
+  const changed = await go({ sigNow: "SIG1" });
+  check("AH9 the REAL finishGenerate: when what the schedule depends on changed during the search, Generate & Publish sends the result to the preview, says why, and publishes NOTHING (no snapshot, no commit)",
+    changed.ret === "review" && changed.preview === RES && changed.shown === true && /changed during the search/.test(changed.toasts.join(" ")) && changed.captured === 0 && changed.committed === 0, JSON.stringify(changed));
+  const items = await go({ sigNow: "SIG0", items: [{ kind: "bend" }] });
+  check("AH9 …unchanged inputs but Needs-your-OK items (judged on today's inputs) → the preview, nothing published", items.ret === "review" && items.preview === RES && items.captured === 0 && items.committed === 0, JSON.stringify(items));
+  const clean = await go({ sigNow: "SIG0" });
+  check("AH9 …unchanged and clean → published: the snapshot first, then the commit through genCommitRef (the state after the snapshot's await), and the publish flag released",
+    clean.ret === "published" && clean.captured === 1 && clean.committed === 1 && clean.armed === false, JSON.stringify(clean));
+  const lk = [{ mondayStr: "2099-03-02", slot: "dc", surgeonId: "s1" }];
+  const prev = await go({ preview: true, sigNow: "SIGx", locksAtClick: lk, locksNow: lk.concat([{ mondayStr: "2099-03-02", slot: "mon", surgeonId: "s2" }]) });
+  check("AH9 …a Preview: it opens; a lock ADDED during the search is not blamed on time off ('NOT honored') — the scheduler is told the preview used the earlier locks",
+    prev.ret === "preview" && prev.preview === RES && !/NOT honored/.test(prev.toasts.join(" ")) && /locks changed during the search/.test(prev.toasts.join(" ")), JSON.stringify(prev.toasts));
+  check("AH9 the finish and commit refs are set on EVERY render, at the component's top level (not once, not conditionally)",
+    /\n  \};\n  genFinishRef\.current = finishGenerate; genCommitRef\.current = commitGenerated;\n/.test(nsrcF) && (nsrcF.match(/genFinishRef\.current = /g) || []).length === 1);
 })();
 
 // ─── AI. NEVER RE-APPLY (owner rule, 2026-10-12/13) ───
@@ -4353,12 +4424,17 @@ await (async () => {
       catch (ex) { return { ok: false, broken: true, why: "not executable: " + ex.message }; }
       const keys = Object.keys(out).filter(k => /preview/i.test(k));
       const holds = Object.values(out).some(v => v === PREV || v === ORIGIN || (v && typeof v === "object" && JSON.stringify(v) === JSON.stringify(PREV)));
-      return { ok: keys.length === 0 && !holds && !PREVIEW.test(body), why: JSON.stringify({ keys, holds }) };
+      // an ALLOWLIST: the bundle holds exactly these keys — any new one (an alias of the preview, the search's session…) must be reviewed here first
+      const BUNDLE_KEYS = ["apps", "backupMondays", "dismissedWarnings", "fierceBackup", "holidayAssignments", "noCallDays", "numWeeks", "pendingLocks", "priorCounts", "schedule", "silvisRule", "startMondayOverride", "startMonth", "startYear", "surgeons", "vacations", "year1Counts"];
+      const exact = JSON.stringify(Object.keys(out).sort()) === JSON.stringify(BUNDLE_KEYS);
+      return { ok: keys.length === 0 && !holds && !PREVIEW.test(body) && exact, why: JSON.stringify({ keys, holds, extra: Object.keys(out).filter(k => !BUNDLE_KEYS.includes(k)) }) };
     };
     twoSided("AI1 the REAL buildStateBundle (blob, snapshots, unload flush, export) never carries the preview",
       guard, src0, plant(src0, "    startMonth, startYear, numWeeks, holidayAssignments, startMondayOverride,\n    pendingLocks,\n    silvisRule,\n", "    startMonth, startYear, numWeeks, holidayAssignments, startMondayOverride,\n    pendingLocks,\n    previewSchedule, previewOrigin,\n    silvisRule,\n", "AI1"));
     twoSided("AI1 …nor the preview under another name (previewSchedRef, the ref that mirrors it every render)",
       guard, src0, plant(src0, "    startMonth, startYear, numWeeks, holidayAssignments, startMondayOverride,\n    pendingLocks,\n    silvisRule,\n", "    startMonth, startYear, numWeeks, holidayAssignments, startMondayOverride,\n    pendingLocks,\n    draft: previewSchedRef.current,\n    silvisRule,\n", "AI1b"));
+    twoSided("AI1 …nor anything else new, under any name (the bundle's keys are an allowlist — e.g. the search's best schedule)",
+      guard, src0, plant(src0, "    startMonth, startYear, numWeeks, holidayAssignments, startMondayOverride,\n    pendingLocks,\n    silvisRule,\n", "    startMonth, startYear, numWeeks, holidayAssignments, startMondayOverride,\n    pendingLocks,\n    lastSearch: searchRef.current && searchRef.current.session.best(),\n    silvisRule,\n", "AI1c"));
   }
   // ── AI2 ──
   {
@@ -4387,20 +4463,27 @@ await (async () => {
       return out;
     };
     // …and ANY storage write inside the paths that hold the preview or the search's result under another name
-    const PREVIEW_PATHS = ["  const doGenerate = async (preview) => {", "  const finishGenerate = (result, preview, clickSig) => {", "  const commitGenerated = async (result) => {", "  const searchMore = async () => {", "  const acceptPreview = () => {", "  const discardPreview = () => {", "  const loadScheduleJson = (text, fileName) => {", "  const onLoadJsonFile = (e) => {"];
+    const PREVIEW_PATHS = ["  const runSearch = (session, purpose, budgetMs) => new Promise(resolve => {", "  const doGenerate = async (preview) => {", "  const finishGenerate = (result, preview, clickSig, clickLocks) => {", "  const commitGenerated = async (result) => {", "  const searchMore = async () => {", "  const acceptPreview = () => {", "  const discardPreview = () => {", "  const loadScheduleJson = (text, fileName) => {", "  const onLoadJsonFile = (e) => {"];
     const pathBodies = (text) => PREVIEW_PATHS.map(a => { const i = text.indexOf(a); if (i < 0) return ""; const e = text.indexOf("\n  };\n", i); return text.slice(i, e < 0 ? i : e); });
     const guardStore = (fs_) => {
       const bad = [];
       for (const f in fs_) writes(fs_[f]).forEach(w => { if (/preview|\b(result|better|shaped|base)\b/i.test(w)) bad.push(f + ": " + w.slice(0, 120)); });
       pathBodies(fs_["index-source.html"]).forEach(b => writes(b).forEach(w => bad.push("in a preview path: " + w.slice(0, 120))));
       if (pathBodies(fs_["index-source.html"]).some(b => !b)) bad.push("a preview path was not found");
+      // an ALLOWLIST of the keys the app may write (anything else — a helper that stashes "a value", a new key — must be reviewed here first)
+      const STORE_KEYS = ["AUTH_TOKEN_KEY", "AUTH_REFRESH_KEY", "BIOMETRIC_CRED_KEY", "BIOMETRIC_USER_KEY", '"dsg_collapse_" + ck', '"dsg-notif-seen"', '"dsg-notif-cleared"', "CAL_SILVIS_STORE_KEY", '"dsg-dark-mode"', '"dsg-my-surgeon"', '"dsg_app_version"'];
+      for (const f in fs_) writes(fs_[f]).filter(w => /Storage\.setItem/.test(w)).forEach(w => { const k = w.slice(w.indexOf("(") + 1).split(",")[0].trim(); if (!STORE_KEYS.includes(k)) bad.push(`${f}: a storage key not on the allowlist — ${k}`); });
       const n = Object.values(fs_).reduce((t, x) => t + writes(x).length, 0);
       return { ok: bad.length === 0 && n > 0, why: bad.join(" | ") || `${n} storage writes scanned` };
     };
     twoSided("AI3 no localStorage / sessionStorage / IndexedDB write in any app file mentions the preview",
       guardStore, files, Object.assign({}, files, { "index-source.html": plant(src0, "  const discardPreview = () => {\n", "  const discardPreview = () => {\n    try { localStorage.setItem(\"dsg-last-preview\", JSON.stringify(previewSchedule)); } catch (e) {}\n", "AI3a") }));
     twoSided("AI3 …nor one that keeps the search's result under its own name (result / better / shaped) in a preview path",
-      guardStore, files, Object.assign({}, files, { "index-source.html": plant(src0, "  const finishGenerate = (result, preview, clickSig) => {\n", "  const finishGenerate = (result, preview, clickSig) => {\n    try { localStorage.setItem(\"dsg-gen\", JSON.stringify(result)); } catch (e) {}\n", "AI3d") }));
+      guardStore, files, Object.assign({}, files, { "index-source.html": plant(src0, "  const finishGenerate = (result, preview, clickSig, clickLocks) => {\n", "  const finishGenerate = (result, preview, clickSig, clickLocks) => {\n    try { localStorage.setItem(\"dsg-gen\", JSON.stringify(result)); } catch (e) {}\n", "AI3d") }));
+    twoSided("AI3 …nor a helper that stores something under its own key (the storage keys are an allowlist)",
+      guardStore, files, Object.assign({}, files, { "index-source.html": plant(src0, "  const discardPreview = () => {\n", "  const stash = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} };\n  const discardPreview = () => {\n", "AI3e") }));
+    twoSided("AI3 …nor one inside the search runner",
+      guardStore, files, Object.assign({}, files, { "index-source.html": plant(src0, "      sr.activeMs += Date.now() - t0;\n", "      sr.activeMs += Date.now() - t0;\n      try { sessionStorage.setItem(\"dsg-run\", \"x\"); } catch (e) {}\n", "AI3f") }));
     const guardSet = (text) => {
       const args = [];
       const re = /\bsetPreviewSchedule\(/g; let m;

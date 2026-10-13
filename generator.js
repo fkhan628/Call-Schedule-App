@@ -552,13 +552,17 @@ function scheduleRules(ctx) {
       own[d] = p; fix[d] = p >= 0 && pin[x] === p ? 1 : 0;
     }
     own[ND] = nextOwn; fix[ND] = 1;
-    for (let d = 7; d <= ND; d++) if (christOwner[d] >= 0 && own[d] === christOwner[d]) fix[d] = 1;
+    for (let d = 0; d <= ND; d++) if (christOwner[d] >= 0 && own[d] === christOwner[d]) fix[d] = 1; // the seed week too (a period starting on Christmas Monday)
     // rule 2 (+ FLEX's last resort: service week + that weekend)
     let lastRes = 0, hard = 0;
+    // FLEX on a service week + that weekend that really runs Fri → Sat → Sun
+    // (the Saturday is theirs, not someone's holiday row): those pairs are
+    // never "two nights in a row" for them — it is their LAST RESORT, unless
+    // the cards pin both slots (designed) or it is their Christmas design week.
     for (let w = 0; w < W; w++) {
       const p = a[w * 6];
-      lrWeek[w] = present[w] && p >= 0 && flex[p] && a[w * 6 + 5] === p && christWeekP[w] !== p ? 1 : 0;
-      if (lrWeek[w]) { lastRes++; if (out) out.lastResort.push(w); }
+      lrWeek[w] = present[w] && p >= 0 && flex[p] && a[w * 6 + 5] === p && own[7 + 7 * w + 5] === p && christWeekP[w] !== p ? 1 : 0;
+      if (lrWeek[w] && !(pin[w * 6] === p && pin[w * 6 + 5] === p)) { lastRes++; if (out) out.lastResort.push(w); }
     }
     for (let d = 6; d < ND; d++) {
       const p = own[d];
@@ -719,8 +723,9 @@ function scheduleRules(ctx) {
           text: `${code(p)}: ${days.map(dml).join(" → ")} — overnight shifts back to back (nobody works two nights in a row)` });
       }); }
     F.lastResort.forEach(w => { const p = a[w * 6], b = 7 + 7 * w;
+      const run = [4, 5, 6].filter(k => own[b + k] === p).map(k => dml(b + k)).join(" → "); // only the nights they really hold
       push({ kind: "lastResort", key: "svcWknd", cost: 0, who: ids[p], mondayStr: mStrs[w], slots: ["dayCall", "wknd"],
-        text: `${code(p)}: ${slotName(w, 0)} + ${slotName(w, 5)} — Fri ${md(b + 4)} → Sat ${md(b + 5)} → Sun ${md(b + 6)} in a row, the last resort${whoElse(p, [[w, 5]])}` }); });
+        text: `${code(p)}: ${slotName(w, 0)} + ${slotName(w, 5)} — ${run} in a row, the last resort${whoElse(p, [[w, 5]])}` }); });
     const strainItem = (p, key, units, w, text) => push({ kind: flex[p] ? "flexStrain" : "strain", key, cost: flex[p] ? FLEX_STRAIN_COST * units : 0, units, who: ids[p], mondayStr: mOf(w), slots: [], text });
     // a: runs of weekends worked — one item per run (every worked weekend in a
     // row, exempt pairs included in the span), units = its non-exempt pairs.
@@ -2425,11 +2430,12 @@ function createScheduleSearch(surgeons, mondays, vac, backupMondays, priorCounts
     // only ever opens a slice — it never runs on after other work (page
     // responsiveness).
     step(ms) {
-      const t0 = now(), end = t0 + (ms || 0); let better = false;
+      const end = now() + (ms || 0); let better = false, worked = false;
       do {
         if (done()) break;
-        if ((!cur || cur.spent) && now() > t0) break;
+        if ((!cur || cur.spent) && worked) break; // a fresh start only ever OPENS a slice
         if (work(400)) better = true;
+        worked = true;
       } while (now() < end);
       return better;
     },

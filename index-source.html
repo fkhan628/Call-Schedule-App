@@ -4145,15 +4145,16 @@ function CallSchedule() {
     const result = done && done.session.best();
     if (!result) { if (done) showToast("The schedule search found nothing — try again.", "error"); return "cancelled"; }
     { const st = done.session.status(); setSearchStats({ checked: st.checked, starts: st.starts, ms: done.ms, purpose: "generate", improved: true }); }
-    return genFinishRef.current(result, preview, clickSig);
+    return genFinishRef.current(result, preview, clickSig, pendingLocks); // the locks this search used
   };
   // The rest of Generate, run with the LATEST state (genFinishRef, set every
   // render): what changed during the search counts.
-  const finishGenerate = (result, preview, clickSig) => {
+  const finishGenerate = (result, preview, clickSig, clickLocks) => {
     // Locks the generator could not honor (a Service-Week / Weekend lock on a
     // surgeon the availability map blocks that week is dropped silently in
     // generator.js) — say so; a confirmed lock must never vanish unnoticed.
-    const droppedLocks = (pendingLocks || []).filter(l => {
+    // judged against the locks the SEARCH used (one added since was never seen — said below, not blamed on time off)
+    const droppedLocks = (clickLocks || []).filter(l => {
       const wk = result[l.mondayStr]; if (!wk) return false;
       const slot = l.slot === "dc" ? "dayCall" : l.slot;
       const holder = slot === "dayCall" ? wk.dayCall : wk.nights?.[slot];
@@ -4163,6 +4164,7 @@ function CallSchedule() {
     if (preview) {
       setPreviewSchedule(result); setPreviewOrigin("generated");
       setShowPreview(true);
+      if (JSON.stringify(clickLocks || []) !== JSON.stringify(pendingLocks || [])) showToast("The locks changed during the search — this preview used the earlier ones. Re-roll to use the new ones.", "error");
       return "preview";
     }
     // Generate & Publish skips the preview — unless something it depends on

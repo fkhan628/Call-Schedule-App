@@ -244,19 +244,21 @@ function ruleFindings(sched, keys, { seed, pins, designedRuns, flexIds }) {
     out.items.push(`${flex.has(id) ? "flex" : "strain"}|${id}|${what}`);
     const k = `${flex.has(id) ? "flex" : "strain"}|${id}|${key}`; out.strainBy[k] = (out.strainBy[k] || 0) + 1;
   };
-  // rule 2 — every two consecutive dates, the second in the period
+  // FLEX (FAK) on a service week + that weekend whose Saturday is really his (no one else's holiday row):
+  // its Fri→Sat / Sat→Sun pairs are his LAST RESORT, not "two nights in a row" — counted unless the cards pin both slots
   const lrWeeks = new Set();
+  keys.forEach(m => { const wk = sched[m], id = wk && wk.dayCall, hs = H[fmt(addD(parse(m), 5))];
+    if (id && flex.has(id) && wk.nights && wk.nights.wknd === id && hs && hs.id === id) lrWeeks.add(m); });
+  // rule 2 — every two consecutive dates, the second in the period
   Object.keys(H).sort().forEach(ds => {
     const a = H[ds], nd = next(ds, 1), b = H[nd];
     if (!b || a.id !== b.id || nd < first) return;
     if (a.f === 1 && b.f === 1 && designedRuns && designedRuns.has(ds + "|" + a.id)) return;
     const dow = parse(ds).getDay();
-    const wk = a.m && sched[a.m];
-    if (flex.has(a.id) && a.m && a.m === b.m && (dow === 5 || dow === 6) && wk && wk.dayCall === a.id && wk.nights && wk.nights.wknd === a.id) { lrWeeks.add(a.m); return; }
+    if (a.m && a.m === b.m && (dow === 5 || dow === 6) && lrWeeks.has(a.m)) return;
     out.hard.push(`${a.id} ${ds}→${nd}`);
   });
-  keys.forEach(m => { const wk = sched[m]; if (wk && wk.dayCall && flex.has(wk.dayCall) && wk.nights && wk.nights.wknd === wk.dayCall && !(pins && pins[m] && pins[m].dayCall === wk.dayCall && pins[m].wknd === wk.dayCall)) lrWeeks.add(m); });
-  out.lastResort = [...lrWeeks].sort();
+  out.lastResort = [...lrWeeks].filter(m => !(pins && pins[m] && pins[m].dayCall === sched[m].dayCall && pins[m].wknd === sched[m].dayCall)).sort();
   // strain a — weekends worked (Fri, Sat, Sun overnights), the seed week included
   const weeks = [fmt(addD(parse(first), -7)), ...keys];
   const worked = weeks.map(m => { const w = {}; [4, 5, 6].forEach(o => { const x = H[fmt(addD(parse(m), o))]; if (x) { const r = w[x.id] || (w[x.id] = { fixed: true }); if (!x.f) r.fixed = false; } }); return w; });
@@ -684,6 +686,27 @@ function runSundayControl() {
 }
 const sunday = runSundayControl();
 
+// J: THE LAST TIERS (2026-10-12) — a clean 14-week period with two backup
+//    weeks and the owner's preferences (DJA avoids Thu, MCC prefers Tue). The
+//    search must not stop before the 1st-call-only splits are as even as 12
+//    regular weeks allow (soft ≤ 11: service weeks and weekends each Δ ≤ 1) —
+//    in every roll — and then polishes the preferences (avoided − preferred
+//    nights ≤ −4 in ≥ 90% of rolls; without the polish it is about 1 in 10).
+function runSoft() {
+  const PREFS = { s1: { avoidShift: "thu" }, s2: { preferShift: "tue" } }, BK = new Set([MONDAY_KEYS[3], MONDAY_KEYS[9]]);
+  const ROLLS_J = 40, soft = {}, prefs = {}, failures = [];
+  for (let r = 0; r < ROLLS_J; r++) {
+    const g = generate(SURGEONS, MONDAYS, {}, BK, {}, PREFS, new Set(), null, [], null, {}, COUNTS_1YR);
+    const t = listScheduleBends(g, { surgeons: SURGEONS, mondays: MONDAYS, vac: {}, vacationsOnly: {}, holAssignments: null, prevWeekSeed: null, preferences: PREFS }).tiers;
+    soft[t.soft] = (soft[t.soft] || 0) + 1; prefs[t.prefs] = (prefs[t.prefs] || 0) + 1;
+    if (t.soft > 11 && failures.length < 5) failures.push(`soft roll ${r}: the 1st-call splits are left at ${t.soft} (> 11 — the search stopped before them)`);
+  }
+  const good = Object.entries(prefs).filter(([k]) => Number(k) <= -4).reduce((a, [, n]) => a + n, 0);
+  if (good < Math.ceil(0.9 * ROLLS_J)) failures.push(`soft: preferences ≤ −4 in only ${good}/${ROLLS_J} rolls — ${JSON.stringify(prefs)} (the polish didn't run?)`);
+  return { name: "soft", failures, soft, prefs, rolls: ROLLS_J };
+}
+const softJ = runSoft();
+
 // H: AGREEMENT FUZZ (2026-10-12) — the live scenario's per-roll check compares
 //    listScheduleBends with the test's own re-derivation only on GENERATED
 //    schedules, which are clean (no hard pair, no time off, no empty slot).
@@ -726,6 +749,9 @@ function runFuzz() {
     const eng = { strain: lst.tiers.strain, bend: lst.cost, hard: lst.counts.hard, lastResort: lst.counts.lastRes, timeoff: lst.counts.timeoff, empty: lst.counts.empty };
     for (const k in eng) if (eng[k] > 0) cover[k] = (cover[k] || 0) + 1;
     if (own.flex > 0) cover.flex = (cover.flex || 0) + 1;
+    const engStrain = {}; lst.items.filter(i => i.kind === "strain" || i.kind === "flexStrain").forEach(i => { const k = `${i.kind === "flexStrain" ? "flex" : "strain"}|${i.who}|${i.key}`; engStrain[k] = (engStrain[k] || 0) + i.units; });
+    const so = (o) => JSON.stringify(Object.keys(o).sort().map(k => [k, o[k]]));
+    if (so(engStrain) !== so(own.strainBy) && failures.length < 10) failures.push(`fuzz #${it}: strain items list ${so(engStrain)} vs the test ${so(own.strainBy)}`);
     if (JSON.stringify(mine) !== JSON.stringify(eng) && failures.length < 10) failures.push(`fuzz #${it}: the test ${JSON.stringify(mine)} vs listScheduleBends ${JSON.stringify(eng)} — ${own.items.join(", ")} | ${own.hard.join(", ")}`);
   }
   ["strain", "bend", "hard", "lastResort", "timeoff", "empty", "flex"].forEach(k => { if (!cover[k]) failures.push(`fuzz: no schedule exercised '${k}' — the fuzz is vacuous for it`); });
@@ -784,10 +810,11 @@ if (live.stats) {
 }
 console.log(`sunday    ${sunday.rolls} rolls — the Sunday-off surgeon never held the service week; the Mon–Sat-only control gave it to them in ${sunday.fired}/${sunday.rolls} rolls`);
 console.log(`lastResort ${lastResort.rolls} + ${lastResort.rolls} rolls — FAK took service week + weekend as his listed last resort in ${lastResort.fak.true || 0}/${lastResort.rolls}; with a partner nobody took both (one stayed empty, listed) in ${lastResort.partner.true || 0}/${lastResort.rolls}`);
+console.log(`soft      ${softJ.rolls} rolls (2 backup weeks + DJA avoids Thu, MCC prefers Tue) — 1st-call splits ${JSON.stringify(softJ.soft)}; preferences (avoided − preferred) ${JSON.stringify(softJ.prefs)}`);
 console.log(`fuzz      ${FUZZ_N} broken copies of a live schedule — listScheduleBends and the test agree on every count; schedules with each finding: ${JSON.stringify(fuzz.cover)}`);
 console.log(`silvis    ${ROLLS} rolls — FAK off every overlapping slot (6 Silvis days: Mon/Tue/Wed/Sun/Fri/Sat); control without them put him on one in ${silvis.redFired}/${ROLLS} rolls; open neighbor legs given to him: ${silvis.given}`);
 
-const failures = [...clean.failures, ...cleanProxy.failures, ...light.failures, ...squeeze.failures, ...stress.failures, ...silvis.failures, ...live.failures, ...sunday.failures, ...fuzz.failures, ...lastResort.failures];
+const failures = [...clean.failures, ...cleanProxy.failures, ...light.failures, ...squeeze.failures, ...stress.failures, ...silvis.failures, ...live.failures, ...sunday.failures, ...fuzz.failures, ...lastResort.failures, ...softJ.failures];
 if (failures.length) {
   console.error(`\nFAIL — ${failures.length} violation(s):`);
   failures.slice(0, 25).forEach(f => console.error("  • " + f));
