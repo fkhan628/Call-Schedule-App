@@ -477,12 +477,14 @@ function validateScheduleJson(o, mondayStrs, rosterIds, nameOf) {
   const want = (mondayStrs || []).slice();
   if (!want.length) return bad("the Generate settings have no weeks");
   if (o.startMonday !== want[0]) return bad(`the file starts on ${o.startMonday === undefined ? "(no startMonday)" : JSON.stringify(o.startMonday)}, but Generate is set to start on ${want[0]}`);
+  if (o.numWeeks === undefined) return bad(`the file has no numWeeks (Generate is set to ${want.length} weeks)`);
+  if (typeof o.numWeeks !== "number") return bad(`numWeeks must be the number ${want.length} (the file has ${JSON.stringify(o.numWeeks)}, which is ${typeof o.numWeeks === "string" ? "text" : "not a number"})`);
   if (o.numWeeks !== want.length) return bad(`the file has numWeeks ${JSON.stringify(o.numWeeks)}, but Generate is set to ${want.length} weeks`);
   if (!o.weeks || typeof o.weeks !== "object" || Array.isArray(o.weeks)) return bad("the file has no \"weeks\" object");
   const got = Object.keys(o.weeks).sort();
   const missing = want.filter(m => !(m in o.weeks)), extra = got.filter(m => !want.includes(m));
   if (missing.length || extra.length) {
-    const list = (a) => a.slice(0, 4).join(", ") + (a.length > 4 ? ` and ${a.length - 4} more` : "");
+    const list = (a) => a.slice(0, 4).map(k => JSON.stringify(k)).join(", ") + (a.length > 4 ? ` and ${a.length - 4} more` : "");
     return bad(`the file's weeks don't match the Generate settings (${want[0]} × ${want.length})${missing.length ? " — missing " + list(missing) : ""}${extra.length ? " — not in the settings: " + list(extra) : ""}`);
   }
   const roster = new Set(rosterIds || []), computed = ["off", "isBackup", "isFierceBackup", "holidayCoverage"];
@@ -493,7 +495,7 @@ function validateScheduleJson(o, mondayStrs, rosterIds, nameOf) {
     const w = o.weeks[m];
     if (!w || typeof w !== "object" || Array.isArray(w)) return bad(`week ${m} is not an object`);
     const unknown = Object.keys(w).filter(k => k !== "dayCall" && k !== "nights" && !computed.includes(k));
-    if (unknown.length) return bad(`week ${m} has an unknown field "${unknown[0]}" (allowed: dayCall, nights)`);
+    if (unknown.length) return bad(`week ${m} has an unknown field "${unknown[0]}" (allowed: dayCall, nights; off, isBackup, isFierceBackup and holidayCoverage are ignored and recomputed)`);
     if (!okId(w.dayCall)) return bad(`week ${m}: dayCall ${JSON.stringify(w.dayCall)} is not a roster id (${rosterList})`);
     const n = w.nights === undefined || w.nights === null ? {} : w.nights;
     if (typeof n !== "object" || Array.isArray(n)) return bad(`week ${m}: nights must be an object`);

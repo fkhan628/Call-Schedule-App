@@ -370,13 +370,19 @@ function CallSchedule() {
 
   // ─── Undo History ───
   const [scheduleHistory, setScheduleHistory] = useState([]);
-  const pushUndo = useCallback((sched) => {
-    setScheduleHistory(prev => [...prev.slice(-9), JSON.parse(JSON.stringify(sched))]);
+  // Each step is { sched, counts }. A PUBLISH step also carries the counts as
+  // they were before it (owner 2026-10-12: publish → ↩ Undo → publish used to
+  // count the period twice — Undo put the schedule back but not the counts).
+  // Other steps carry none and leave the counts alone.
+  const pushUndo = useCallback((sched, counts) => {
+    const step = { sched: JSON.parse(JSON.stringify(sched)), counts: counts ? JSON.parse(JSON.stringify(counts)) : null };
+    setScheduleHistory(prev => [...prev.slice(-9), step]);
   }, []);
   const undoLastChange = useCallback(() => {
     if (scheduleHistory.length === 0) return;
-    const prev = scheduleHistory[scheduleHistory.length - 1];
-    setSchedule(prev);
+    const step = scheduleHistory[scheduleHistory.length - 1];
+    setSchedule(step.sched);
+    if (step.counts) { setPriorCounts(step.counts.prior || {}); setYear1Counts(step.counts.y1 || {}); }
     setScheduleHistory(h => h.slice(0, -1));
   }, [scheduleHistory]);
 
@@ -386,6 +392,12 @@ function CallSchedule() {
   // benchmark loader, 2026-10-12) — the preview header says which.
   const [previewOrigin, setPreviewOrigin] = useState("generated");
   const loadJsonInputRef = useRef(null);
+  // A publish in progress: Generate & Publish waits 1–3 s for its backup
+  // snapshot before it commits. A second publish in that window would net
+  // against the same old weeks and count the period twice — refused while
+  // this is set (both publish buttons are disabled too).
+  const publishingRef = useRef(false);
+  const [publishing, setPublishing] = useState(false);
   const [pendingLocks, setPendingLocks] = useState([]); // [{ mondayStr, slot: "dc"|"mon"|"tue"|"wed"|"thu"|"wknd", surgeonId }]
 
   // ─── Silvis (trauma) feed — rule silvisBusy (silvis-feed.js) ───
@@ -4096,8 +4108,11 @@ function CallSchedule() {
       showToast(`${needsOkN} item${needsOkN === 1 ? " needs" : "s need"} your OK before publishing — review them in the preview below, then ✓ Accept & Publish.`, "error");
       return "review";
     }
+    if (publishingRef.current) { showToast("A publish is already in progress — wait for it to finish.", "error"); return "busy"; }
+    publishingRef.current = true; setPublishing(true);
     {
       (async () => {
+       try {
         // Snapshot the persisted state BEFORE any mutation; if the snapshot
         // can't be written there is no backup, so the regenerate is refused.
         setSaveStatus("Saving backup snapshot…");
@@ -4107,19 +4122,18 @@ function CallSchedule() {
           setSaveStatus("");
           return;
         }
-        if (Object.keys(schedule).length > 0) pushUndo(schedule);
         // Counts move by the NET change, here at commit (owner 2026-10-12):
-        // the new weeks, minus the published versions they replace. This used
-        // to be skipped whenever ANY schedule existed (so a new period added
+        // the new weeks, minus the published versions they replace (read from
+        // the LATEST schedule, after the snapshot's await). This used to be
+        // skipped whenever ANY schedule existed (so a new period added
         // nothing), and otherwise ran on a 100 ms timer after the click.
-        const replacedWeeks = Object.fromEntries(Object.keys(result).filter(m => schedule[m]).map(m => [m, schedule[m]]));
-        const net = rollForwardCounts(result, replacedWeeks);
-        logAudit("schedule.publish", `Published schedule (${numWeeks} weeks from ${MO[startMonth]} ${startYear}, Generate & Publish)${Object.keys(replacedWeeks).length ? ` — ${Object.keys(replacedWeeks).length} week${Object.keys(replacedWeeks).length === 1 ? "" : "s"} replaced a published version` : ""} — counts net: ${netCountsText(net)}`, { startMonth, startYear, numWeeks, weeks: Object.keys(result).length, replaced: Object.keys(replacedWeeks).length, net: net || null, origin: "generated" });
-        // Accumulate: merge the new period into the existing schedule so prior
-        // periods are preserved. Regenerating the same weeks cleanly overwrites
-        // just those keys; a different period coexists alongside.
-        const merged = { ...schedule, ...result };
-        setSchedule(merged);
+        // Accumulate: the new period merges into the existing schedule so
+        // prior periods are preserved; regenerating the same weeks cleanly
+        // overwrites just those keys.
+        const { merged, prior, y1 } = publishWeeks(result, {
+          label: `${numWeeks} weeks from ${MO[startMonth]} ${startYear}, Generate & Publish`,
+          meta: { startMonth, startYear, numWeeks, origin: "generated" },
+        });
         setPreviewSchedule(null); setShowPreview(false);
         setSaveStatus("Regenerated!");
         setTimeout(() => setSaveStatus(""), 2000);
@@ -4128,12 +4142,13 @@ function CallSchedule() {
           const ts = new Date().toISOString();
           lastSyncRef.current = ts; // block poll from overwriting
           // Stage 6: schedule goes to schedule_weeks, not the blob.
-          const blobData = buildStateBundle({ schedule: merged }); delete blobData.schedule;
+          const blobData = buildStateBundle({ schedule: merged, priorCounts: prior, year1Counts: y1 }); delete blobData.schedule; // the counts AFTER this publish
           delete blobData.vacations; delete blobData.noCallDays; // retired mirror — time_off is the source
           const { error: regenErr } = await supabase.from("call_schedule_data").upsert({ id: "main", data: blobData, updated_at: ts });
           if (regenErr) throw new Error(`regenerate blob save failed: ${String(regenErr).slice(0, 200)}`); // catch toasts; checked autosave retries
           syncSchedWeeks(merged); // persist the merged schedule (no spurious deletes)
         } catch(e) { console.error("Immediate save failed:", e); showToast("Couldn't save the regenerated schedule — check your connection.", "error"); }
+       } finally { publishingRef.current = false; setPublishing(false); }
       })();
     }
     return "published";
@@ -4274,7 +4289,11 @@ function CallSchedule() {
   // the currently published version of any week being published again; its
   // counts come OFF before the new week's go on, so publishing a period twice
   // counts it once (re-publishing used to add the whole period again). Returns
-  // the net change per surgeon (after the floor) for the audit line.
+  // { delta, delta1yr, replacedCounted } — the net per surgeon after the
+  // floor, and how many replaced weeks came off — or null (nothing above the
+  // floor). The weeks are replaced as they are stored NOW (the owner's rule):
+  // swaps, edits and flag changes never move the counts, so a week edited
+  // after its first publish nets against the edited version.
   const countsOfWeeks = (weeks, pick) => {
     const c = {};
     surgeons.forEach(s => { c[s.id] = { dc:0, nights:0, wknd:0, off:0, dcB:0, nightsB:0, wkndB:0, offB:0 }; });
@@ -4290,6 +4309,24 @@ function CallSchedule() {
       });
     });
     return c;
+  };
+  // counts + a delta → the new counts (day totals: dc*7 + nights + wknd*3 —
+  // the approximation of days worked). One function for the state update and
+  // for the immediate save, so they can't disagree.
+  const applyCountsDelta = (prev, delta) => {
+    const addDays = (c) => (c.dc||0)*7 + (c.nights||0) + (c.wknd||0)*3 + (c.svcAdj7||0);
+    const addDaysB = (c) => (c.dcB||0)*7 + (c.nightsB||0) + (c.wkndB||0)*3;
+    const next = { ...(prev || {}) };
+    Object.keys(delta || {}).forEach(id => {
+      const p = next[id] || {}, d = delta[id];
+      next[id] = {
+        ...p,
+        dc: (p.dc||0) + d.dc, nights: (p.nights||0) + d.nights, wknd: (p.wknd||0) + d.wknd, off: (p.off||0) + d.off,
+        dcB: (p.dcB||0) + d.dcB, nightsB: (p.nightsB||0) + d.nightsB, wkndB: (p.wkndB||0) + d.wkndB, offB: (p.offB||0) + d.offB,
+        totalDays: (p.totalDays||0) + addDays(d), totalDaysB: (p.totalDaysB||0) + addDaysB(d),
+      };
+    });
+    return next;
   };
   const netCounts = (add, sub) => {
     const out = {};
@@ -4311,50 +4348,16 @@ function CallSchedule() {
     // (and only above the floor, like the new weeks).
     const old = Object.fromEntries(Object.entries(replaced || {}).filter(([mStr]) => mStr >= COUNTS_FLOOR && sched[mStr]));
     const delta = netCounts(countsOfWeeks(sched), countsOfWeeks(old));
-    // Compute day totals (dc*7 + nights + wknd*3 = approximation of days worked)
-    const addDays = (c) => (c.dc||0)*7 + (c.nights||0) + (c.wknd||0)*3 + (c.svcAdj7||0);
-    const addDaysB = (c) => (c.dcB||0)*7 + (c.nightsB||0) + (c.wkndB||0)*3;
-    // Merge into priorCounts (Multi-Year — used by generator)
-    setPriorCounts(prev => {
-      const next = { ...prev };
-      Object.keys(delta).forEach(id => {
-        const p = next[id] || {};
-        const d = delta[id];
-        next[id] = {
-          dc: (p.dc||0) + d.dc,
-          nights: (p.nights||0) + d.nights,
-          wknd: (p.wknd||0) + d.wknd,
-          off: (p.off||0) + d.off,
-          dcB: (p.dcB||0) + d.dcB,
-          nightsB: (p.nightsB||0) + d.nightsB,
-          wkndB: (p.wkndB||0) + d.wkndB,
-          offB: (p.offB||0) + d.offB,
-          totalDays: (p.totalDays||0) + addDays(d),
-          totalDaysB: (p.totalDaysB||0) + addDaysB(d),
-        };
-      });
-      return next;
-    });
+    // Merge into priorCounts (Multi-Year — used by generator).
     // (The year2Counts mirror-merge that used to sit here was retired
     // 2026-08-06 with the tier itself.)
+    setPriorCounts(prev => applyCountsDelta(prev, delta));
     // And into year1Counts (1-Year) — only for shifts in the current year
     const currentYear = new Date().getFullYear();
     const inYear = (mStr) => parse(mStr).getFullYear() === currentYear;
     const delta1yr = netCounts(countsOfWeeks(sched, inYear), countsOfWeeks(old, inYear));
-    setYear1Counts(prev => {
-      const next = { ...prev };
-      Object.keys(delta1yr).forEach(id => {
-        const p = next[id] || {};
-        const d = delta1yr[id];
-        next[id] = {
-          dc: (p.dc||0) + d.dc, nights: (p.nights||0) + d.nights, wknd: (p.wknd||0) + d.wknd, off: (p.off||0) + d.off,
-          dcB: (p.dcB||0) + d.dcB, nightsB: (p.nightsB||0) + d.nightsB, wkndB: (p.wkndB||0) + d.wkndB, offB: (p.offB||0) + d.offB,
-          totalDays: (p.totalDays||0) + addDays(d), totalDaysB: (p.totalDaysB||0) + addDaysB(d),
-        };
-      });
-      return next;
-    });
-    return delta;
+    setYear1Counts(prev => applyCountsDelta(prev, delta1yr));
+    return { delta, delta1yr, replacedCounted: Object.keys(old).length };
   }, [surgeons]);
 
   // "Needs your OK" (owner decision 2026-10-11): every bend, empty slot,
@@ -4383,27 +4386,49 @@ function CallSchedule() {
     // The checkbox is the gate (the button is disabled too; this is the backstop).
     if (previewSchedule && previewNeedsOk.items.length > 0 && !previewAck) { showToast("Tick \"I've reviewed these items\" first.", "error"); return; }
     if (previewSchedule) {
-      if (Object.keys(schedule).length > 0) pushUndo(schedule);
-      // Weeks already published get their counts replaced, not added again.
-      const replacedWeeks = Object.fromEntries(Object.keys(previewSchedule).filter(m => schedule[m]).map(m => [m, schedule[m]]));
-      const net = rollForwardCounts(previewSchedule, replacedWeeks);
-      // Accumulate: merge the published period into the existing schedule so
-      // prior periods are preserved (the autosave then syncs without deletes).
-      setSchedule(prev => ({ ...prev, ...previewSchedule }));
+      if (publishingRef.current) { showToast("A publish is already in progress — wait for it to finish.", "error"); return; }
+      const needsOkN = previewNeedsOk.items.length;
+      // Weeks already published get their counts replaced, not added again;
+      // the published period merges into the existing schedule so prior
+      // periods are preserved (the autosave then syncs without deletes).
+      publishWeeks(previewSchedule, {
+        label: `${numWeeks} weeks from ${MO[startMonth]} ${startYear}${previewOrigin === "json" ? ", loaded from JSON" : ""}`,
+        extra: needsOkN ? ` — ${needsOkN} item${needsOkN === 1 ? "" : "s"} reviewed in Needs your OK` : "",
+        meta: { startMonth, startYear, numWeeks, needsOk: needsOkN, bendCost: previewNeedsOk.cost, origin: previewOrigin },
+      });
       setPreviewSchedule(null); setShowPreview(false);
       setCalMonth(startMonth);
       setCalYear(startYear);
       setView("calendar");
       setSaveStatus("Published — totals updated");
       setTimeout(() => setSaveStatus(""), 3000);
-      const needsOkN = previewNeedsOk.items.length;
-      const replacedN = Object.keys(replacedWeeks).length;
-      logAudit("schedule.publish", `Published schedule (${numWeeks} weeks from ${MO[startMonth]} ${startYear}${previewOrigin === "json" ? ", loaded from JSON" : ""})${needsOkN ? ` — ${needsOkN} item${needsOkN === 1 ? "" : "s"} reviewed in Needs your OK` : ""}${replacedN ? ` — ${replacedN} week${replacedN === 1 ? "" : "s"} replaced a published version` : ""} — counts net: ${netCountsText(net)}`, { startMonth, startYear, numWeeks, weeks: Object.keys(previewSchedule).length, needsOk: needsOkN, bendCost: previewNeedsOk.cost, replaced: replacedN, net: net || null, origin: previewOrigin });
     }
   };
 
   const discardPreview = () => {
     setPreviewSchedule(null); setShowPreview(false);
+  };
+
+  // ONE publish step for both publish paths (owner 2026-10-12). Reads the
+  // weeks it replaces from the LATEST schedule (scheduleRef — never a copy
+  // taken at the click, before an await); puts the counts as they were on the
+  // undo step (↩ Undo of a publish takes its counts back off); rolls the
+  // counts forward by the net change; writes the audit line; commits the
+  // merged schedule. Returns { merged, prior, y1 }: the schedule and the
+  // counts after, for an immediate save.
+  const publishWeeks = (newWeeks, how) => {
+    const cur = scheduleRef.current || {};
+    const replacedWeeks = Object.fromEntries(Object.keys(newWeeks).filter(m => cur[m]).map(m => [m, cur[m]]));
+    if (Object.keys(cur).length > 0) pushUndo(cur, { prior: priorCounts, y1: year1Counts });
+    const r = rollForwardCounts(newWeeks, replacedWeeks);
+    const merged = { ...cur, ...newWeeks };
+    scheduleRef.current = merged; // a publish right after this one sees it before the next render
+    setSchedule(merged);
+    const nRep = r ? r.replacedCounted : 0;
+    const t1 = r ? netCountsText(r.delta1yr) : "no change", tAll = r ? netCountsText(r.delta) : "no change";
+    logAudit("schedule.publish", `Published schedule (${how.label})${how.extra || ""}${nRep ? ` — ${nRep} week${nRep === 1 ? "" : "s"} replaced a published version` : ""} — counts net: ${tAll}${t1 !== tAll ? ` (this year's tally: ${t1})` : ""}`,
+      Object.assign({}, how.meta || {}, { weeks: Object.keys(newWeeks).length, replaced: nRep, net: r ? r.delta : null, net1yr: r ? r.delta1yr : null }));
+    return { merged, prior: r ? applyCountsDelta(priorCounts, r.delta) : priorCounts, y1: r ? applyCountsDelta(year1Counts, r.delta1yr) : year1Counts };
   };
 
   // The net count change of a publish, in plain words: "DJA service +1,
@@ -4413,7 +4438,7 @@ function CallSchedule() {
     const parts = [];
     surgeons.forEach(sg => {
       const d = net[sg.id]; if (!d) return;
-      const bits = [["dc", "service"], ["nights", "nights"], ["wknd", "weekends"], ["dcB", "backup service"], ["nightsB", "backup nights"], ["wkndB", "backup weekends"]]
+      const bits = [["dc", "service"], ["nights", "nights"], ["wknd", "weekends"], ["off", "off"], ["dcB", "backup service"], ["nightsB", "backup nights"], ["wkndB", "backup weekends"], ["offB", "backup off"]]
         .filter(([k]) => d[k]).map(([k, l]) => `${l} ${d[k] > 0 ? "+" : "−"}${Math.abs(d[k])}`);
       if (bits.length) parts.push(`${sg.name} ${bits.join(", ")}`);
     });
@@ -4431,10 +4456,14 @@ function CallSchedule() {
   const loadScheduleJson = (text, fileName) => {
     const refuse = (why) => { showToast(`Not loaded — ${why}. Nothing was changed.`, "error"); return false; };
     let o;
-    try { o = JSON.parse(text); } catch (e) { return refuse("the file isn't valid JSON"); }
-    const v = validateScheduleJson(o, mondays.map(fmt), surgeons.map(sg => sg.id), Object.fromEntries(surgeons.map(sg => [sg.id, sg.name])));
-    if (!v.ok) return refuse(v.error);
-    const shaped = shapeScheduleWeeks(v.weeks, surgeons, backupMondaySet, fierceBackupSet, holidayAssignments);
+    // (a byte-order mark, which Windows editors often write, is not JSON)
+    try { o = JSON.parse(String(text).replace(/^﻿/, "")); } catch (e) { return refuse("the file isn't valid JSON"); }
+    let v, shaped;
+    try {
+      v = validateScheduleJson(o, mondays.map(fmt), surgeons.map(sg => sg.id), Object.fromEntries(surgeons.map(sg => [sg.id, sg.name])));
+      if (!v.ok) return refuse(v.error);
+      shaped = shapeScheduleWeeks(v.weeks, surgeons, backupMondaySet, fierceBackupSet, holidayAssignments);
+    } catch (e) { console.error("schedule JSON load failed:", e); return refuse(`the file could not be checked (${(e && e.message) || e})`); }
     setPreviewSchedule(shaped); setPreviewOrigin("json"); setPreviewCalMonth(0); setShowPreview(true);
     showToast(`Loaded ${fileName || "the file"} into the preview (${Object.keys(shaped).length} weeks) — nothing is published until ✓ Accept & Publish.`, "success");
     return true;
@@ -7491,8 +7520,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               </button>
               <input ref={loadJsonInputRef} type="file" accept=".json,application/json" onChange={onLoadJsonFile} style={{display:"none"}} aria-label="Load schedule (JSON)" />
             </>}
-            <button onClick={doGenerateAndNotify} style={{...css.btn(true),padding:"13px 24px",fontSize:14,fontWeight:700,borderRadius:9,letterSpacing:0.3,flex:1}}>
-              Generate & Publish →
+            <button onClick={doGenerateAndNotify} disabled={publishing} style={{...css.btn(true),padding:"13px 24px",fontSize:14,fontWeight:700,borderRadius:9,letterSpacing:0.3,flex:1,opacity:publishing?0.55:1}}>
+              {publishing ? "Publishing…" : "Generate & Publish →"}
             </button>
           </div>
 
@@ -7625,7 +7654,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   const w = Math.round((parse(mStr).getTime() - t0) / 604800000);
                   if (last[id] !== undefined && w - last[id].w <= MIN_DC_GAP) {
                     const reason = reasonFor(id, mStr) || reasonFor(id, last[id].mStr) || "vacations that week";
-                    notes.push(`${nameOf(id)}: service weeks ${nice(last[id].mStr)} and ${nice(mStr)}, forced by ${reason}`);
+                    notes.push(previewOrigin === "json" ? `${nameOf(id)}: service weeks ${nice(last[id].mStr)} and ${nice(mStr)} (as in the loaded file)` : `${nameOf(id)}: service weeks ${nice(last[id].mStr)} and ${nice(mStr)}, forced by ${reason}`);
                   }
                   last[id] = { w, mStr };
                 }
@@ -7671,7 +7700,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                         w.document.write(html); w.document.close();
                       } catch(e) { alert("Print failed: " + (e?.message||e)); }
                     }} style={{...css.btn(false),padding:"6px 14px",fontSize:12,background:"#fef3e6",borderColor:"#e8c89a",color:"#8a5020"}}>🖨 Print Calendar</button>
-                    <button onClick={acceptPreview} disabled={previewNeedsOk.items.length > 0 && !previewAck} title={previewNeedsOk.items.length > 0 && !previewAck ? "Review the Needs your OK items below first" : undefined} style={{...css.btn(true),padding:"6px 14px",fontSize:12,background:"linear-gradient(135deg,#1a8040,#30a060)",borderColor:"#1a8040",opacity:previewNeedsOk.items.length > 0 && !previewAck ? 0.45 : 1,cursor:previewNeedsOk.items.length > 0 && !previewAck ? "not-allowed" : "pointer"}}>✓ Accept & Publish</button>
+                    <button onClick={acceptPreview} disabled={publishing || (previewNeedsOk.items.length > 0 && !previewAck)} title={previewNeedsOk.items.length > 0 && !previewAck ? "Review the Needs your OK items below first" : undefined} style={{...css.btn(true),padding:"6px 14px",fontSize:12,background:"linear-gradient(135deg,#1a8040,#30a060)",borderColor:"#1a8040",opacity:previewNeedsOk.items.length > 0 && !previewAck ? 0.45 : 1,cursor:previewNeedsOk.items.length > 0 && !previewAck ? "not-allowed" : "pointer"}}>✓ Accept & Publish</button>
                     <button onClick={discardPreview} style={{background:"none",border:"1px solid #e0c0c0",color:"#904040",borderRadius:6,padding:"6px 14px",fontSize:12,cursor:"pointer",fontFamily:font}}>✕ Discard</button>
                   </div>
                 </div>
@@ -7683,7 +7712,9 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   <div style={{background:dk?"#3a2410":"#fdf0e3",border:"1px solid #d09050",borderRadius:8,padding:"8px 12px",marginBottom:12,fontSize:12,color:dk?"#f0c890":"#7a4010",overflowWrap:"anywhere"}}>
                     <div style={{fontWeight:700,marginBottom:2}}>⚠ Needs your OK — {previewNeedsOk.items.length} item{previewNeedsOk.items.length===1?"":"s"}</div>
                     {previewNeedsOk.items.map((it,i)=><div key={i} style={{marginTop:3}}>• {it.text}</div>)}
-                    <div style={{marginTop:5,fontSize:11,opacity:0.85}}>Vacation, no-call and Silvis days are never broken — when a week can't be covered by the usual rules, the generator takes the mildest bend and lists it here. Re-roll for different names; the bends themselves are the minimum the calendar allows.</div>
+                    <div style={{marginTop:5,fontSize:11,opacity:0.85}}>{previewOrigin === "json"
+                      ? "These are in the loaded file — the generator didn't choose them. Every bend, empty slot, time-off placement and crowded day in it is listed here; review each before publishing. Re-roll replaces the file with a generated schedule."
+                      : "Vacation, no-call and Silvis days are never broken — when a week can't be covered by the usual rules, the generator takes the mildest bend and lists it here. Re-roll for different names; the bends themselves are the minimum the calendar allows."}</div>
                     <label style={{display:"flex",alignItems:"center",gap:8,marginTop:8,fontWeight:700,cursor:"pointer"}}>
                       <input type="checkbox" checked={previewAck} onChange={e=>setPreviewAck(e.target.checked)} style={{width:18,height:18,flexShrink:0}}/>
                       I've reviewed these {previewNeedsOk.items.length} item{previewNeedsOk.items.length===1?"":"s"}
@@ -7696,7 +7727,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   <div style={{background:dk?"#3a3010":"#fdf6e3",border:"1px solid #d0b050",borderRadius:8,padding:"8px 12px",marginBottom:12,fontSize:12,color:dk?"#e8d080":"#7a5c10"}}>
                     <div style={{fontWeight:700,marginBottom:2}}>⚠ Service-week spacing exception{spacingNotes.length===1?"":"s"}</div>
                     {spacingNotes.map((n,i)=><div key={i} style={{marginTop:3}}>• {n}</div>)}
-                    <div style={{marginTop:5,fontSize:11,opacity:0.85}}>The generator couldn't space these apart. Accepting publishes them as shown — consider warning the surgeon, or adjust and re-roll.</div>
+                    <div style={{marginTop:5,fontSize:11,opacity:0.85}}>{previewOrigin === "json" ? "These are in the loaded file. Accepting publishes them as shown — consider warning the surgeon." : "The generator couldn't space these apart. Accepting publishes them as shown — consider warning the surgeon, or adjust and re-roll."}</div>
                   </div>
                 )}
 
@@ -7758,7 +7789,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                 </>}
 
                 {/* Boundary-seed diagnostic (scheduler/admin) — temporary */}
-                {(isScheduler || userProfile?.role === "admin") && seedDebug && (
+                {(isScheduler || userProfile?.role === "admin") && seedDebug && previewOrigin !== "json" && (
                   <div style={{background:dk?"#2a2410":"#fffbe8",border:"1px solid #e0c870",borderRadius:6,padding:"8px 12px",marginBottom:10,fontFamily:mono,fontSize:11,color:dk?"#d8c890":"#7a5a10"}}>
                     <div style={{fontWeight:700,marginBottom:3}}>🔧 boundary seed (debug)</div>
                     {seedDebug.error ? <div>error: {seedDebug.error}</div> : <>
