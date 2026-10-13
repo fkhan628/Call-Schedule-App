@@ -382,6 +382,10 @@ function CallSchedule() {
 
   // ─── What-If Preview ───
   const [previewSchedule, setPreviewSchedule] = useState(null);
+  // Where the preview came from: "generated" (doGenerate) or "json" (the
+  // benchmark loader, 2026-10-12) — the preview header says which.
+  const [previewOrigin, setPreviewOrigin] = useState("generated");
+  const loadJsonInputRef = useRef(null);
   const [pendingLocks, setPendingLocks] = useState([]); // [{ mondayStr, slot: "dc"|"mon"|"tue"|"wed"|"thu"|"wknd", surgeonId }]
 
   // ─── Silvis (trauma) feed — rule silvisBusy (silvis-feed.js) ───
@@ -3479,21 +3483,12 @@ function CallSchedule() {
 
   // ─── Publish Schedule (with notification) ───
   const doGenerateAndNotify = async () => {
-    const hadExistingSchedule = Object.keys(schedule).length > 0;
     // Notify only when something was actually published — not when the Silvis
     // confirm was cancelled, and not when the result went to the preview for
     // "Needs your OK" review (2026-10-11).
     if (doGenerate(false) !== "published") return;
-    // If this is a brand new schedule period (no existing schedule),
-    // roll the generated counts forward into the running totals.
-    // When regenerating an existing period, do not roll forward (same period, not a new one).
-    if (!hadExistingSchedule) {
-      // Give doGenerate's setSchedule a tick to flush, then roll forward
-      setTimeout(() => {
-        const latest = scheduleRef.current;
-        if (latest && Object.keys(latest).length > 0) rollForwardCounts(latest);
-      }, 100);
-    }
+    // (The counts roll forward inside doGenerate's publish, at commit — net
+    // of any weeks it replaced.)
     await addNotification("schedule_published", "Schedule Published",
       "A new call schedule has been generated. Check the Schedule or Calendar tab.");
     sendEmailNotif("schedule_published", { period: `${MO[startMonth]} – ${MO[endMoIdx]} ${startYear}` });
@@ -4083,7 +4078,7 @@ function CallSchedule() {
     });
     if (droppedLocks.length) showToast(`⚠ ${droppedLocks.length} lock${droppedLocks.length === 1 ? " was" : "s were"} NOT honored by the generator: ${droppedLocks.map(l => `${nameOf(l.surgeonId)} — ${slotLabel(l.mondayStr, l.slot === "dc" ? "dayCall" : l.slot)}`).join("; ")} (the surgeon is unavailable there — vacation, no-call or Silvis).`, "error");
     if (preview) {
-      setPreviewSchedule(result);
+      setPreviewSchedule(result); setPreviewOrigin("generated");
       setShowPreview(true);
       return "preview";
     }
@@ -4096,7 +4091,7 @@ function CallSchedule() {
       } catch (e) { console.error("Needs-your-OK check failed:", e); return 1; } // fail closed: review by hand
     })();
     if (needsOkN > 0) {
-      setPreviewSchedule(result);
+      setPreviewSchedule(result); setPreviewOrigin("generated");
       setShowPreview(true);
       showToast(`${needsOkN} item${needsOkN === 1 ? " needs" : "s need"} your OK before publishing — review them in the preview below, then ✓ Accept & Publish.`, "error");
       return "review";
@@ -4113,6 +4108,13 @@ function CallSchedule() {
           return;
         }
         if (Object.keys(schedule).length > 0) pushUndo(schedule);
+        // Counts move by the NET change, here at commit (owner 2026-10-12):
+        // the new weeks, minus the published versions they replace. This used
+        // to be skipped whenever ANY schedule existed (so a new period added
+        // nothing), and otherwise ran on a 100 ms timer after the click.
+        const replacedWeeks = Object.fromEntries(Object.keys(result).filter(m => schedule[m]).map(m => [m, schedule[m]]));
+        const net = rollForwardCounts(result, replacedWeeks);
+        logAudit("schedule.publish", `Published schedule (${numWeeks} weeks from ${MO[startMonth]} ${startYear}, Generate & Publish)${Object.keys(replacedWeeks).length ? ` — ${Object.keys(replacedWeeks).length} week${Object.keys(replacedWeeks).length === 1 ? "" : "s"} replaced a published version` : ""} — counts net: ${netCountsText(net)}`, { startMonth, startYear, numWeeks, weeks: Object.keys(result).length, replaced: Object.keys(replacedWeeks).length, net: net || null, origin: "generated" });
         // Accumulate: merge the new period into the existing schedule so prior
         // periods are preserved. Regenerating the same weeks cleanly overwrites
         // just those keys; a different period coexists alongside.
@@ -4266,10 +4268,36 @@ function CallSchedule() {
     showToast("Snapshot restored — other devices will pick it up on their next sync.", "success");
   };
 
-  // ─── Roll forward counts: sum up a schedule's shifts and add them to priorCounts ───
-  // Called on Accept & Publish so the next generation uses up-to-date totals
-  const rollForwardCounts = useCallback((sched) => {
-    if (!sched || Object.keys(sched).length === 0) return;
+  // ─── Roll forward counts: a published period's shifts into priorCounts ───
+  // Called on every publish (Accept & Publish, Generate & Publish) so the next
+  // generation uses up-to-date totals. NET (owner 2026-10-12): `replaced` is
+  // the currently published version of any week being published again; its
+  // counts come OFF before the new week's go on, so publishing a period twice
+  // counts it once (re-publishing used to add the whole period again). Returns
+  // the net change per surgeon (after the floor) for the audit line.
+  const countsOfWeeks = (weeks, pick) => {
+    const c = {};
+    surgeons.forEach(s => { c[s.id] = { dc:0, nights:0, wknd:0, off:0, dcB:0, nightsB:0, wkndB:0, offB:0 }; });
+    Object.entries(weeks || {}).forEach(([mStr, wk]) => {
+      if (!wk || (pick && !pick(mStr))) return;
+      const bk = wk.isBackup;
+      if (wk.dayCall && c[wk.dayCall]) c[wk.dayCall][bk?"dcB":"dc"]++;
+      if (wk.off && c[wk.off]) c[wk.off][bk?"offB":"off"]++;
+      Object.entries(wk.nights||{}).forEach(([sh, sid]) => {
+        if (!sid || !c[sid]) return;
+        if (sh === "wknd") c[sid][bk?"wkndB":"wknd"]++;
+        else c[sid][bk?"nightsB":"nights"]++;
+      });
+    });
+    return c;
+  };
+  const netCounts = (add, sub) => {
+    const out = {};
+    Object.keys(add).forEach(id => { out[id] = {}; Object.keys(add[id]).forEach(k => { out[id][k] = add[id][k] - ((sub[id] || {})[k] || 0); }); });
+    return out;
+  };
+  const rollForwardCounts = useCallback((sched, replaced) => {
+    if (!sched || Object.keys(sched).length === 0) return null;
     // COUNTS FLOOR: everything through April 2026 is already inside the
     // multi-year aggregates (the 45-month PDF-parse era) AND, since the
     // 2026-08 historical import, also in schedule_weeks. Rolling a
@@ -4278,19 +4306,11 @@ function CallSchedule() {
     // purpose — this makes sure an accidental publish can't.
     const COUNTS_FLOOR = "2026-05-04";
     sched = Object.fromEntries(Object.entries(sched).filter(([mStr]) => mStr >= COUNTS_FLOOR));
-    if (Object.keys(sched).length === 0) return;
-    const delta = {};
-    surgeons.forEach(s => { delta[s.id] = { dc:0, nights:0, wknd:0, off:0, dcB:0, nightsB:0, wkndB:0, offB:0 }; });
-    Object.values(sched).forEach(wk => {
-      const bk = wk.isBackup;
-      if (wk.dayCall && delta[wk.dayCall]) delta[wk.dayCall][bk?"dcB":"dc"]++;
-      if (wk.off && delta[wk.off]) delta[wk.off][bk?"offB":"off"]++;
-      Object.entries(wk.nights||{}).forEach(([sh, sid]) => {
-        if (!sid || !delta[sid]) return;
-        if (sh === "wknd") delta[sid][bk?"wkndB":"wknd"]++;
-        else delta[sid][bk?"nightsB":"nights"]++;
-      });
-    });
+    if (Object.keys(sched).length === 0) return null;
+    // Only a replaced week that is itself being published again comes off
+    // (and only above the floor, like the new weeks).
+    const old = Object.fromEntries(Object.entries(replaced || {}).filter(([mStr]) => mStr >= COUNTS_FLOOR && sched[mStr]));
+    const delta = netCounts(countsOfWeeks(sched), countsOfWeeks(old));
     // Compute day totals (dc*7 + nights + wknd*3 = approximation of days worked)
     const addDays = (c) => (c.dc||0)*7 + (c.nights||0) + (c.wknd||0)*3 + (c.svcAdj7||0);
     const addDaysB = (c) => (c.dcB||0)*7 + (c.nightsB||0) + (c.wkndB||0)*3;
@@ -4319,19 +4339,8 @@ function CallSchedule() {
     // 2026-08-06 with the tier itself.)
     // And into year1Counts (1-Year) — only for shifts in the current year
     const currentYear = new Date().getFullYear();
-    const delta1yr = {};
-    surgeons.forEach(s => { delta1yr[s.id] = { dc:0, nights:0, wknd:0, off:0, dcB:0, nightsB:0, wkndB:0, offB:0 }; });
-    Object.entries(sched).forEach(([mStr, wk]) => {
-      if (parse(mStr).getFullYear() !== currentYear) return;
-      const bk = wk.isBackup;
-      if (wk.dayCall && delta1yr[wk.dayCall]) delta1yr[wk.dayCall][bk?"dcB":"dc"]++;
-      if (wk.off && delta1yr[wk.off]) delta1yr[wk.off][bk?"offB":"off"]++;
-      Object.entries(wk.nights||{}).forEach(([sh, sid]) => {
-        if (!sid || !delta1yr[sid]) return;
-        if (sh === "wknd") delta1yr[sid][bk?"wkndB":"wknd"]++;
-        else delta1yr[sid][bk?"nightsB":"nights"]++;
-      });
-    });
+    const inYear = (mStr) => parse(mStr).getFullYear() === currentYear;
+    const delta1yr = netCounts(countsOfWeeks(sched, inYear), countsOfWeeks(old, inYear));
     setYear1Counts(prev => {
       const next = { ...prev };
       Object.keys(delta1yr).forEach(id => {
@@ -4345,6 +4354,7 @@ function CallSchedule() {
       });
       return next;
     });
+    return delta;
   }, [surgeons]);
 
   // "Needs your OK" (owner decision 2026-10-11): every bend, empty slot,
@@ -4374,7 +4384,9 @@ function CallSchedule() {
     if (previewSchedule && previewNeedsOk.items.length > 0 && !previewAck) { showToast("Tick \"I've reviewed these items\" first.", "error"); return; }
     if (previewSchedule) {
       if (Object.keys(schedule).length > 0) pushUndo(schedule);
-      rollForwardCounts(previewSchedule);
+      // Weeks already published get their counts replaced, not added again.
+      const replacedWeeks = Object.fromEntries(Object.keys(previewSchedule).filter(m => schedule[m]).map(m => [m, schedule[m]]));
+      const net = rollForwardCounts(previewSchedule, replacedWeeks);
       // Accumulate: merge the published period into the existing schedule so
       // prior periods are preserved (the autosave then syncs without deletes).
       setSchedule(prev => ({ ...prev, ...previewSchedule }));
@@ -4385,12 +4397,56 @@ function CallSchedule() {
       setSaveStatus("Published — totals updated");
       setTimeout(() => setSaveStatus(""), 3000);
       const needsOkN = previewNeedsOk.items.length;
-      logAudit("schedule.publish", `Published schedule (${numWeeks} weeks from ${MO[startMonth]} ${startYear})${needsOkN ? ` — ${needsOkN} item${needsOkN === 1 ? "" : "s"} reviewed in Needs your OK` : ""}`, { startMonth, startYear, numWeeks, weeks: Object.keys(previewSchedule).length, needsOk: needsOkN, bendCost: previewNeedsOk.cost });
+      const replacedN = Object.keys(replacedWeeks).length;
+      logAudit("schedule.publish", `Published schedule (${numWeeks} weeks from ${MO[startMonth]} ${startYear}${previewOrigin === "json" ? ", loaded from JSON" : ""})${needsOkN ? ` — ${needsOkN} item${needsOkN === 1 ? "" : "s"} reviewed in Needs your OK` : ""}${replacedN ? ` — ${replacedN} week${replacedN === 1 ? "" : "s"} replaced a published version` : ""} — counts net: ${netCountsText(net)}`, { startMonth, startYear, numWeeks, weeks: Object.keys(previewSchedule).length, needsOk: needsOkN, bendCost: previewNeedsOk.cost, replaced: replacedN, net: net || null, origin: previewOrigin });
     }
   };
 
   const discardPreview = () => {
     setPreviewSchedule(null); setShowPreview(false);
+  };
+
+  // The net count change of a publish, in plain words: "DJA service +1,
+  // nights −1; KJH weekends +1" — or "no change" (the same assignments again).
+  const netCountsText = (net) => {
+    if (!net) return "no change";
+    const parts = [];
+    surgeons.forEach(sg => {
+      const d = net[sg.id]; if (!d) return;
+      const bits = [["dc", "service"], ["nights", "nights"], ["wknd", "weekends"], ["dcB", "backup service"], ["nightsB", "backup nights"], ["wkndB", "backup weekends"]]
+        .filter(([k]) => d[k]).map(([k, l]) => `${l} ${d[k] > 0 ? "+" : "−"}${Math.abs(d[k])}`);
+      if (bits.length) parts.push(`${sg.name} ${bits.join(", ")}`);
+    });
+    return parts.length ? parts.join("; ") : "no change";
+  };
+
+  // ─── Load a schedule from JSON into the preview (benchmark loader, owner 2026-10-12) ───
+  // Scheduler-only. The file's weeks must be EXACTLY the Mondays of the
+  // current Generate settings and every id a roster id, or the whole load is
+  // refused with the reason (validateScheduleJson, generator.js). Each week is
+  // then shaped by generator.js's own shapeScheduleWeeks — off, the backup
+  // flags from the sets, holiday coverage from the holiday cards — so Needs
+  // your OK, the Fairness Summary and Accept & Publish treat it exactly like
+  // a generated preview. Nothing is written until ✓ Accept & Publish.
+  const loadScheduleJson = (text, fileName) => {
+    const refuse = (why) => { showToast(`Not loaded — ${why}. Nothing was changed.`, "error"); return false; };
+    let o;
+    try { o = JSON.parse(text); } catch (e) { return refuse("the file isn't valid JSON"); }
+    const v = validateScheduleJson(o, mondays.map(fmt), surgeons.map(sg => sg.id), Object.fromEntries(surgeons.map(sg => [sg.id, sg.name])));
+    if (!v.ok) return refuse(v.error);
+    const shaped = shapeScheduleWeeks(v.weeks, surgeons, backupMondaySet, fierceBackupSet, holidayAssignments);
+    setPreviewSchedule(shaped); setPreviewOrigin("json"); setPreviewCalMonth(0); setShowPreview(true);
+    showToast(`Loaded ${fileName || "the file"} into the preview (${Object.keys(shaped).length} weeks) — nothing is published until ✓ Accept & Publish.`, "success");
+    return true;
+  };
+  const onLoadJsonFile = (e) => {
+    const f = e.target.files && e.target.files[0];
+    e.target.value = ""; // the same file can be chosen again
+    if (!f) return;
+    const r = new FileReader();
+    r.onload = () => loadScheduleJson(String(r.result || ""), f.name);
+    r.onerror = () => showToast("Couldn't read that file — nothing was changed.", "error");
+    r.readAsText(f);
   };
 
   // ─── Holiday Assignment Generator ───
@@ -7429,6 +7485,12 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             <button onClick={()=>doGenerate(true)} style={{...css.btn(false),padding:"13px 24px",fontSize:14,fontWeight:700,borderRadius:9,letterSpacing:0.3,flex:1}}>
               👁 Preview Schedule
             </button>
+            {(isScheduler || userProfile?.role === "admin") && <>
+              <button onClick={()=>loadJsonInputRef.current && loadJsonInputRef.current.click()} title={`Load a schedule for ${mondays.length ? fmt(mondays[0]) + " × " + mondays.length + " weeks" : "the Generate settings"} into the preview (JSON) — it is checked, not published`} style={{...css.btn(false),padding:"13px 18px",fontSize:14,fontWeight:700,borderRadius:9,letterSpacing:0.3}}>
+                📋 Load schedule (JSON)
+              </button>
+              <input ref={loadJsonInputRef} type="file" accept=".json,application/json" onChange={onLoadJsonFile} style={{display:"none"}} aria-label="Load schedule (JSON)" />
+            </>}
             <button onClick={doGenerateAndNotify} style={{...css.btn(true),padding:"13px 24px",fontSize:14,fontWeight:700,borderRadius:9,letterSpacing:0.3,flex:1}}>
               Generate & Publish →
             </button>
@@ -7579,7 +7641,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             return (
               <div style={{...css.card,marginTop:14,background:dk?"#1a2a1a":"#f0faf0",border:"2px solid #80c080"}}>
                 <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12,flexWrap:"wrap",gap:8}}>
-                  <div style={css.cardT}>👁 Schedule Preview</div>
+                  <div style={css.cardT}>👁 Schedule Preview{previewOrigin === "json" && <span style={{marginLeft:8,fontSize:11,fontWeight:700,color:dk?"#f0c890":"#8a5020",background:dk?"#3a2a10":"#fef3e6",border:"1px solid #e8c89a",borderRadius:5,padding:"2px 7px"}}>Loaded from JSON — not generated</span>}</div>
                   <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
                     <button onClick={()=>{setPreviewCalMonth(0);doGenerate(true);}} style={{...css.btn(false),padding:"6px 14px",fontSize:12}}>↻ Re-roll</button>
                     <button onClick={()=>{

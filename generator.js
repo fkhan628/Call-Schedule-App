@@ -425,6 +425,104 @@ function listScheduleBends(sched, ctx) {
   return { cost: items.reduce((s, it) => s + (it.cost || 0), 0), items };
 }
 
+// ═══ HOLIDAY COVERAGE — one definition (generateOnce and the JSON loader) ═══
+// The holiday cards' coverage rows as a map by date:
+//   holCoverage { "YYYY-MM-DD": { surgeonId, role: "holiday_24h", hours, name, type, holiday } }
+//   holByDate   { "YYYY-MM-DD": { surgeonA, surgeonB, name, type } }
+// Rows come through effectiveHolidayCoverage (helpers.js), which applies the
+// Christmas two-day cap to assignments saved before it. Eve rows are skipped:
+// the eve is informational only — the regular schedule stays.
+function holidayCoverageMap(holAssignments) {
+  const holCoverage = {}, holByDate = {};
+  if (holAssignments) {
+    Object.values(holAssignments).forEach(yearArr => {
+      if (!Array.isArray(yearArr)) return;
+      yearArr.forEach(h => {
+        holByDate[h.date] = { surgeonA: h.surgeonA, surgeonB: h.surgeonB, name: h.name, type: h.type };
+        effectiveHolidayCoverage(h).forEach(c => {
+          if (c.isEve) return;
+          // holiday: the holiday's own name — a multi-day label is only "Fri 24h" / "Sat 24h"
+          holCoverage[c.date] = { surgeonId: c.surgeon, role: "holiday_24h", hours: "7a–7a", name: c.label, type: h.type, holiday: h.name };
+        });
+      });
+    });
+  }
+  return { holCoverage, holByDate };
+}
+// The coverage rows that fall in the week starting `monday` (a Date), or null.
+function weekHolidayCoverage(holCoverage, monday) {
+  const out = {};
+  for (let i = 0; i < 7; i++) {
+    const ds = fmt(addD(monday, i));
+    if (holCoverage[ds]) out[ds] = holCoverage[ds];
+  }
+  return Object.keys(out).length > 0 ? out : null;
+}
+
+// ═══ JSON LOADER (benchmark loader, owner 2026-10-12) ═══
+// The app's "📋 Load schedule (JSON)" reads
+//   { "startMonday": "YYYY-MM-DD", "numWeeks": N,
+//     "weeks": { "YYYY-MM-DD": { "dayCall": "sN", "nights": { "mon", "tue", "wed", "thu", "wknd" } } } }
+// into the preview. validateScheduleJson refuses the WHOLE file, with the
+// reason, unless its Mondays are exactly the current Generate settings'
+// (mondayStrs) and every id is a roster id. A week may also carry the fields
+// the app computes itself (off, isBackup, isFierceBackup, holidayCoverage —
+// an exported schedule has them); they are ignored and recomputed. Anything
+// else is refused, so a typo can't be mistaken for an empty slot.
+// → { ok: true, weeks: { mStr: { dayCall, nights } } } | { ok: false, error }
+const LOADER_NIGHT_KEYS = ["mon", "tue", "wed", "thu", "wknd"];
+function validateScheduleJson(o, mondayStrs, rosterIds, nameOf) {
+  const bad = (error) => ({ ok: false, error });
+  if (!o || typeof o !== "object" || Array.isArray(o)) return bad("the file must be one JSON object with startMonday, numWeeks and weeks");
+  const want = (mondayStrs || []).slice();
+  if (!want.length) return bad("the Generate settings have no weeks");
+  if (o.startMonday !== want[0]) return bad(`the file starts on ${o.startMonday === undefined ? "(no startMonday)" : JSON.stringify(o.startMonday)}, but Generate is set to start on ${want[0]}`);
+  if (o.numWeeks !== want.length) return bad(`the file has numWeeks ${JSON.stringify(o.numWeeks)}, but Generate is set to ${want.length} weeks`);
+  if (!o.weeks || typeof o.weeks !== "object" || Array.isArray(o.weeks)) return bad("the file has no \"weeks\" object");
+  const got = Object.keys(o.weeks).sort();
+  const missing = want.filter(m => !(m in o.weeks)), extra = got.filter(m => !want.includes(m));
+  if (missing.length || extra.length) {
+    const list = (a) => a.slice(0, 4).join(", ") + (a.length > 4 ? ` and ${a.length - 4} more` : "");
+    return bad(`the file's weeks don't match the Generate settings (${want[0]} × ${want.length})${missing.length ? " — missing " + list(missing) : ""}${extra.length ? " — not in the settings: " + list(extra) : ""}`);
+  }
+  const roster = new Set(rosterIds || []), computed = ["off", "isBackup", "isFierceBackup", "holidayCoverage"];
+  const rosterList = [...roster].map(id => nameOf && nameOf[id] ? id + " " + nameOf[id] : id).join(", ");
+  const okId = (v) => v === null || v === undefined || v === "" || (typeof v === "string" && roster.has(v));
+  const weeks = {};
+  for (const m of want) {
+    const w = o.weeks[m];
+    if (!w || typeof w !== "object" || Array.isArray(w)) return bad(`week ${m} is not an object`);
+    const unknown = Object.keys(w).filter(k => k !== "dayCall" && k !== "nights" && !computed.includes(k));
+    if (unknown.length) return bad(`week ${m} has an unknown field "${unknown[0]}" (allowed: dayCall, nights)`);
+    if (!okId(w.dayCall)) return bad(`week ${m}: dayCall ${JSON.stringify(w.dayCall)} is not a roster id (${rosterList})`);
+    const n = w.nights === undefined || w.nights === null ? {} : w.nights;
+    if (typeof n !== "object" || Array.isArray(n)) return bad(`week ${m}: nights must be an object`);
+    const unknownN = Object.keys(n).filter(k => !LOADER_NIGHT_KEYS.includes(k));
+    if (unknownN.length) return bad(`week ${m}: unknown night "${unknownN[0]}" (allowed: ${LOADER_NIGHT_KEYS.join(", ")})`);
+    for (const k of LOADER_NIGHT_KEYS) if (!okId(n[k])) return bad(`week ${m}: ${k} ${JSON.stringify(n[k])} is not a roster id (${rosterList})`);
+    weeks[m] = { dayCall: w.dayCall || null, nights: Object.fromEntries(LOADER_NIGHT_KEYS.map(k => [k, n[k] || null])) };
+  }
+  return { ok: true, weeks };
+}
+// Shape validated weeks EXACTLY as generateOnce stores a week: the nights in
+// its key order, off = the first roster surgeon not on the week, the backup
+// flags from the Monday sets, holiday coverage from the holiday cards.
+function shapeScheduleWeeks(weeks, surgeons, backupMondays, fierceBackupMondays, holAssignments) {
+  const ids = surgeons.map(s => s.id);
+  const has = (set, m) => !!set && (typeof set.has === "function" ? set.has(m) : Array.isArray(set) && set.includes(m));
+  const { holCoverage } = holidayCoverageMap(holAssignments);
+  const out = {};
+  Object.keys(weeks || {}).sort().forEach(mStr => {
+    const w = weeks[mStr] || {}, wn = w.nights || {};
+    const dc = w.dayCall || null;
+    const nights = { wknd: wn.wknd || null, mon: wn.mon || null, tue: wn.tue || null, wed: wn.wed || null, thu: wn.thu || null };
+    const assigned = new Set([dc, ...Object.values(nights)].filter(Boolean));
+    const off = ids.find(id => !assigned.has(id)) || null;
+    out[mStr] = { dayCall: dc, nights, off, isBackup: has(backupMondays, mStr), isFierceBackup: has(fierceBackupMondays, mStr), holidayCoverage: weekHolidayCoverage(holCoverage, parse(mStr)) };
+  });
+  return out;
+}
+
 function generateOnce(surgeons, mondays, vac, backupMondays, priorCounts, preferences, fierceBackupMondays, holAssignments, locks, prevWeekSeed, vacationsOnly, yearCounts, floorMemo) {
   // vacOnly = vacation-only ranges (no no-call). Used for "trailing edge" checks:
   // the night or weekend that ENDS the morning of an off day. Group rule (Jun
@@ -437,26 +535,9 @@ function generateOnce(surgeons, mondays, vac, backupMondays, priorCounts, prefer
   const nameMap = {}; surgeons.forEach(s => nameMap[s.id] = s.name);
 
   // Build holiday coverage map from pre-computed coverage arrays
-  // { "YYYY-MM-DD": { surgeonId, role, name, type } }
-  const holCoverage = {};
-  const holByDate = {}; // { "YYYY-MM-DD": { surgeonA, surgeonB, name, type } }
-  if (holAssignments) {
-    Object.values(holAssignments).forEach(yearArr => {
-      if (!Array.isArray(yearArr)) return;
-      yearArr.forEach(h => {
-        // Store the holiday metadata by date
-        holByDate[h.date] = { surgeonA: h.surgeonA, surgeonB: h.surgeonB, name: h.name, type: h.type };
-        // Store each coverage day (skip Eve entries — those are display-only, not schedule overrides).
-        // The rows come through effectiveHolidayCoverage (helpers.js), which applies the Christmas
-        // two-day cap to assignments saved before it.
-        effectiveHolidayCoverage(h).forEach(c => {
-          if (c.isEve) return; // Eve is informational only — regular schedule stays
-          // holiday: the holiday's own name — a multi-day label is only "Fri 24h" / "Sat 24h"
-          holCoverage[c.date] = { surgeonId: c.surgeon, role: "holiday_24h", hours: "7a–7a", name: c.label, type: h.type, holiday: h.name };
-        });
-      });
-    });
-  }
+  // { "YYYY-MM-DD": { surgeonId, role, name, type } } — holidayCoverageMap
+  // (below), shared with the JSON loader so a loaded week is shaped the same.
+  const { holCoverage, holByDate } = holidayCoverageMap(holAssignments);
 
   // ═══ FAIRNESS TRACKING ═══
   //
@@ -1128,14 +1209,8 @@ function generateOnce(surgeons, mondays, vac, backupMondays, priorCounts, prefer
     const off = ids.find(id => !assigned.has(id)) || null;
     if(off) offCt[off]++;
 
-    // Collect holiday coverage for this week
-    const weekHolCoverage = {};
-    for (let i = 0; i < 7; i++) {
-      const ds = fmt(addD(monday, i));
-      if (holCoverage[ds]) weekHolCoverage[ds] = holCoverage[ds];
-    }
-
-    sched[mStr] = { dayCall:dc, nights, off, isBackup, isFierceBackup, holidayCoverage: Object.keys(weekHolCoverage).length > 0 ? weekHolCoverage : null };
+    // Collect holiday coverage for this week (weekHolidayCoverage, below — shared with the JSON loader)
+    sched[mStr] = { dayCall:dc, nights, off, isBackup, isFierceBackup, holidayCoverage: weekHolidayCoverage(holCoverage, monday) };
   }
 
   // ═══ MILDEST BEND — exact search over the squeezed weeks (decision E) ═══

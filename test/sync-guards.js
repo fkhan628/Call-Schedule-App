@@ -3610,13 +3610,14 @@ check("prefs audit never logs the plaintext email (masked only)",
   const nsrcAE = src.replace(/\r\n/g, "\n");
   const i = nsrcAE.indexOf("  const acceptPreview = () => {"), e = i < 0 ? -1 : nsrcAE.indexOf("\n  };\n", i);
   const body = i < 0 || e < 0 ? null : "() => {" + nsrcAE.slice(i + "  const acceptPreview = () => {".length, e) + "\n  }";
-  const ENV = "previewSchedule, previewNeedsOk, previewAck, showToast, schedule, pushUndo, rollForwardCounts, setSchedule, setPreviewSchedule, setShowPreview, setCalMonth, setCalYear, setView, setSaveStatus, setTimeout, logAudit, numWeeks, MO, startMonth, startYear";
+  const ENV = "previewSchedule, previewNeedsOk, previewAck, previewOrigin, netCountsText, showToast, schedule, pushUndo, rollForwardCounts, setSchedule, setPreviewSchedule, setShowPreview, setCalMonth, setCalYear, setView, setSaveStatus, setTimeout, logAudit, numWeeks, MO, startMonth, startYear";
   let mk = null; try { mk = body ? vm.runInContext(`(function (env) { const { ${ENV} } = env; return (${body}); })`, sandbox) : null; } catch (ex) { mk = null; }
-  const run = (items, ack) => {
-    const rec = { published: 0, toasts: [], audits: [] };
+  const run = (items, ack, published) => {
+    const rec = { published: 0, toasts: [], audits: [], rolled: [] };
     mk({
-      previewSchedule: { "2026-11-16": { dayCall: "s1", nights: {} } }, previewNeedsOk: { cost: items.length * 6, items }, previewAck: ack,
-      showToast: (m) => rec.toasts.push(String(m)), schedule: {}, pushUndo: () => {}, rollForwardCounts: () => {},
+      previewSchedule: { "2026-11-16": { dayCall: "s1", nights: {} }, "2026-11-23": { dayCall: "s2", nights: {} } }, previewNeedsOk: { cost: items.length * 6, items }, previewAck: ack,
+      previewOrigin: "generated", netCountsText: (n) => n ? "NET" : "no change",
+      showToast: (m) => rec.toasts.push(String(m)), schedule: published || {}, pushUndo: () => {}, rollForwardCounts: (a, b) => { rec.rolled.push([a, b]); return { s1: {} }; },
       setSchedule: () => { rec.published++; }, setPreviewSchedule: () => {}, setShowPreview: () => {}, setCalMonth: () => {}, setCalYear: () => {},
       setView: () => {}, setSaveStatus: () => {}, setTimeout: () => {}, logAudit: (a, msg, meta) => rec.audits.push({ a, msg, meta }),
       numWeeks: 14, MO: ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"], startMonth: 10, startYear: 2026,
@@ -3632,6 +3633,13 @@ check("prefs audit never logs the plaintext email (masked only)",
       ticked.published === 1 && ticked.audits.length === 1 && ticked.audits[0].meta.needsOk === 2 && ticked.audits[0].meta.bendCost === 12 && /2 items reviewed/.test(ticked.audits[0].msg), JSON.stringify(ticked.audits));
     check("AE1 an empty box publishes exactly as before — no checkbox needed, needsOk 0, no extra wording",
       clean.published === 1 && clean.toasts.length === 0 && clean.audits[0].meta.needsOk === 0 && !/reviewed/.test(clean.audits[0].msg), JSON.stringify(clean.audits));
+    // PR 1 (owner 2026-10-12): re-publishing replaces counts, never adds them twice.
+    const again = run([], false, { "2026-11-16": { dayCall: "s7", nights: {} }, "2026-11-09": { dayCall: "s3", nights: {} } });
+    const [rolledNew, rolledOld] = again.rolled[0] || [];
+    check("AE1 Accept & Publish hands rollForwardCounts the published version of exactly the weeks it re-publishes (11/16 — not 11/09, not the new 11/23), and the audit names the replaced weeks and the net",
+      again.published === 1 && again.rolled.length === 1 && Object.keys(rolledNew || {}).length === 2 && JSON.stringify(Object.keys(rolledOld || {})) === JSON.stringify(["2026-11-16"]) && rolledOld["2026-11-16"].dayCall === "s7"
+        && /1 week replaced a published version/.test(again.audits[0].msg) && /counts net: NET/.test(again.audits[0].msg) && again.audits[0].meta.replaced === 1,
+      JSON.stringify({ rolled: again.rolled, audit: again.audits[0] }));
   } else check("AE1 acceptPreview extractable for execution", false, "anchors not found");
   check("AE2 ✓ Accept & Publish is disabled while the box has items and is unticked; the checkbox drives previewAck; a new preview resets it",
     count("<button onClick={acceptPreview} disabled={previewNeedsOk.items.length > 0 && !previewAck}") === 1
@@ -3644,7 +3652,7 @@ check("prefs audit never logs the plaintext email (masked only)",
       && nsrcAE.indexOf("{/* Spacing-exception disclosure") < nsrcAE.indexOf("{/* Preview Calendar Grid */}")
       && count('color:dk?"#f0c890":"#7a4010",overflowWrap:"anywhere"}}>') === 1);
   check("AE3 Generate & Publish: a result with items opens the preview (\"review\") instead of saving; only \"published\" sends the notice; a cancelled Silvis confirm sends nothing",
-    count('    if (needsOkN > 0) {\n      setPreviewSchedule(result);\n      setShowPreview(true);'.replace(/\n/g, src.includes("\r\n") ? "\r\n" : "\n")) === 1
+    count('    if (needsOkN > 0) {\n      setPreviewSchedule(result); setPreviewOrigin("generated");\n      setShowPreview(true);'.replace(/\n/g, src.includes("\r\n") ? "\r\n" : "\n")) === 1
       && count('return "review";') === 1 && count('return "published";') === 1 && count('return "cancelled";') === 1
       && count('if (doGenerate(false) !== "published") return;') === 1);
   check("AE4 the box and the generator share ONE availability builder (vacations ∪ no-call ∪ Silvis), and the box reads the bends from generator.js",
@@ -3765,6 +3773,123 @@ check("prefs audit never logs the plaintext email (masked only)",
         && !/dismissable:\s*false/.test(body));
   }
 }
+
+// ══════════════════════════════════════════════════════════════
+// AG. Benchmark loader + safe re-publish (owner 2026-10-12, PR 1)
+// ══════════════════════════════════════════════════════════════
+//   AG1 the REAL rollForwardCounts: publishing a period twice counts it once;
+//       re-publishing a corrected version moves the counts by the difference
+//   AG2 validateScheduleJson / shapeScheduleWeeks (generator.js): a real
+//       generate() result written out in the loader's format loads back
+//       IDENTICAL to what the generator stored; every refusal names its reason
+//   AG3 the REAL loadScheduleJson: a good file fills the preview (origin
+//       "json"); a bad one changes nothing and says why
+//   AG4 wiring pins: the button (scheduler only), the header label, both
+//       publish paths net, no 100 ms timer
+console.log("\nAG. benchmark loader + safe re-publish");
+await (async () => {
+  const nsrc = src.replace(/\r\n/g, "\n");
+  // ── AG1 ──
+  {
+    const i = nsrc.indexOf("  const countsOfWeeks = (weeks, pick) => {");
+    const j = i < 0 ? -1 : nsrc.indexOf("\n  }, [", nsrc.indexOf("  const rollForwardCounts = useCallback((sched, replaced) => {", i));
+    if (i < 0 || j < 0) check("AG1 rollForwardCounts extractable", false, "anchors not found");
+    else {
+      const body = nsrc.slice(i, j) + "\n  });";
+      const mk = vm.runInContext(`(function (env) { const { surgeons, parse, useCallback, setPriorCounts, setYear1Counts } = env; ${body}; return rollForwardCounts; })`, sandbox);
+      const sur = ["s1", "s2", "s3", "s4", "s5", "s6", "s7"].map(id => ({ id, name: id.toUpperCase() }));
+      const state = { prior: { s1: { dc: 10, nights: 40, wknd: 12, off: 5, dcB: 1, nightsB: 2, wkndB: 1, offB: 0, totalDays: 150, totalDaysB: 12 } }, y1: {} };
+      const roll = mk({ surgeons: sur, parse: vm.runInContext("parse", sandbox), useCallback: (f) => f,
+        setPriorCounts: (fn) => { state.prior = fn(state.prior); }, setYear1Counts: (fn) => { state.y1 = fn(state.y1); } });
+      const wk = (dc, n, bk) => ({ dayCall: dc, nights: { wknd: n[4], mon: n[0], tue: n[1], wed: n[2], thu: n[3] }, off: "s7", isBackup: !!bk, isFierceBackup: false, holidayCoverage: null });
+      const P = { "2026-11-16": wk("s1", ["s2", "s3", "s4", "s5", "s6"]), "2026-11-23": wk("s2", ["s1", "s4", "s3", "s6", "s5"], true) };
+      const P2 = { "2026-11-16": wk("s3", ["s2", "s1", "s4", "s5", "s6"]), "2026-11-23": wk("s2", ["s1", "s4", "s3", "s6", "s5"], true) };
+      const snap = () => JSON.stringify({ p: state.prior, y: state.y1 });
+      const base = snap();
+      roll(P, {}); const once = snap();
+      roll(P, P); const twice = snap();
+      check("AG1 publish a period, publish it AGAIN (replacing itself) → counts equal ONE publish (multi-year and 1-year, totalDays too)", once !== base && twice === once, twice === once ? "" : `once=${once}\ntwice=${twice}`);
+      roll(P2, P); const corrected = snap();
+      state.prior = JSON.parse(base).p; state.y1 = JSON.parse(base).y; roll(P2, {}); const p2once = snap();
+      check("AG1 re-publishing a CORRECTED version replaces the old one: counts = one publish of the corrected period", corrected === p2once, `corrected=${corrected}\nfresh=${p2once}`);
+      state.prior = JSON.parse(base).p; state.y1 = JSON.parse(base).y;
+      const net = roll(P, { "2026-11-16": P["2026-11-16"], "2026-11-09": wk("s5", ["s1", "s2", "s3", "s4", "s6"]) });
+      check("AG1 only a replaced week that is itself being published comes off (11/09 isn't in this publish): net = the new week 11/23 alone",
+        net && net.s2.dc === 0 && net.s2.dcB === 1 && net.s1.dc === 0 && net.s1.nightsB === 1 && net.s5.dc === 0, JSON.stringify(net && { s1: net.s1, s2: net.s2, s5: net.s5 }));
+      const floorNet = roll({ "2026-04-27": wk("s1", ["s2", "s3", "s4", "s5", "s6"]) }, {});
+      check("AG1 the counts floor still holds (a week before 2026-05-04 never rolls forward)", floorNet === null);
+    }
+  }
+  // ── AG2 ──
+  const gsb2 = { console: { ...console, warn: () => {} }, window: {}, document: undefined, navigator: { userAgent: "node-test" }, localStorage: { getItem: () => null, setItem() {}, removeItem() {} }, fetch: () => { throw new Error("fetch during generation"); }, setTimeout, clearTimeout };
+  gsb2.globalThis = gsb2; vm.createContext(gsb2);
+  for (const f of ["helpers.js", "config.js", "generator.js"]) vm.runInContext(fs.readFileSync(path.join(ROOT, f), "utf8"), gsb2, { filename: f });
+  const G = vm.runInContext("({ generate, validateScheduleJson, shapeScheduleWeeks, fmt, addD, parse })", gsb2);
+  const SUR = vm.runInContext("INIT_SURGEONS", gsb2).map(x => ({ id: x.id, name: x.name }));
+  const ids = SUR.map(x => x.id);
+  const MON = Array.from({ length: 6 }, (_, k) => G.addD(G.parse("2026-11-16"), 7 * k));
+  const mStrs = MON.map(G.fmt);
+  const HOL = JSON.parse(fs.readFileSync(path.join(ROOT, "test", "fixtures", "holiday-assignments-2026-live.json"), "utf8"));
+  const BK = new Set([mStrs[2]]), FB = new Set([mStrs[4]]);
+  const gen = G.generate(SUR, MON, {}, BK, {}, {}, FB, HOL, [], null, {}, {});
+  const asFile = { startMonday: mStrs[0], numWeeks: mStrs.length, weeks: Object.fromEntries(mStrs.map(m => [m, { dayCall: gen[m].dayCall, nights: { mon: gen[m].nights.mon, tue: gen[m].nights.tue, wed: gen[m].nights.wed, thu: gen[m].nights.thu, wknd: gen[m].nights.wknd } }])) };
+  const v = G.validateScheduleJson(JSON.parse(JSON.stringify(asFile)), mStrs, ids);
+  const shaped = v.ok ? G.shapeScheduleWeeks(v.weeks, SUR, BK, FB, HOL) : null;
+  const hasHol = mStrs.some(m => gen[m].holidayCoverage);
+  check("AG2 a real generate() result, written out in the loader's format and loaded back, is IDENTICAL to what the generator stored (off, backup flags, holiday coverage, key order)",
+    v.ok && hasHol && JSON.stringify(shaped) === JSON.stringify(Object.fromEntries(mStrs.map(m => [m, gen[m]]))),
+    v.ok ? (hasHol ? "differs: " + JSON.stringify(shaped).slice(0, 200) : "fixture has no holiday week") : v.error);
+  const wkOk = asFile.weeks[mStrs[0]];
+  const refusals = [
+    ["a JSON array", [], /one JSON object/],
+    ["a different start Monday", Object.assign({}, asFile, { startMonday: mStrs[1] }), /starts on "2026-11-23", but Generate is set to start on 2026-11-16/],
+    ["a different week count", Object.assign({}, asFile, { numWeeks: 5 }), /numWeeks 5, but Generate is set to 6 weeks/],
+    ["a missing week", Object.assign({}, asFile, { weeks: Object.fromEntries(mStrs.slice(0, 5).map(m => [m, asFile.weeks[m]])) }), /missing 2026-12-21/],
+    ["an extra week", Object.assign({}, asFile, { weeks: Object.assign({}, asFile.weeks, { "2026-12-28": wkOk }) }), /not in the settings: 2026-12-28/],
+    ["an id not on the roster", Object.assign({}, asFile, { weeks: Object.assign({}, asFile.weeks, { [mStrs[1]]: { dayCall: "s9", nights: wkOk.nights } }) }), /dayCall "s9" is not a roster id/],
+    ["a night id not on the roster", Object.assign({}, asFile, { weeks: Object.assign({}, asFile.weeks, { [mStrs[1]]: { dayCall: "s1", nights: Object.assign({}, wkOk.nights, { thu: "DJA" }) } }) }), /thu "DJA" is not a roster id/],
+    ["an unknown night", Object.assign({}, asFile, { weeks: Object.assign({}, asFile.weeks, { [mStrs[1]]: { dayCall: "s1", nights: Object.assign({}, wkOk.nights, { fri: "s2" }) } }) }), /unknown night "fri"/],
+    ["an unknown field (typo)", Object.assign({}, asFile, { weeks: Object.assign({}, asFile.weeks, { [mStrs[1]]: { daycall: "s1", nights: wkOk.nights } }) }), /unknown field "daycall"/],
+  ];
+  const wrong = refusals.filter(([, o, re]) => { const r = G.validateScheduleJson(o, mStrs, ids); return r.ok || !re.test(r.error); }).map(([n]) => n);
+  check("AG2 the whole load is refused, with the reason, for: " + refusals.map(r => r[0]).join(", "), wrong.length === 0, "not refused / wrong reason: " + wrong.join(", "));
+  const exported = Object.assign({}, asFile, { weeks: Object.fromEntries(mStrs.map(m => [m, gen[m]])) });
+  const ve = G.validateScheduleJson(JSON.parse(JSON.stringify(exported)), mStrs, ids);
+  check("AG2 an exported week (with off / isBackup / holidayCoverage) loads: those fields are ignored and recomputed", ve.ok && JSON.stringify(G.shapeScheduleWeeks(ve.weeks, SUR, BK, FB, HOL)) === JSON.stringify(shaped));
+  const blank = G.validateScheduleJson({ startMonday: mStrs[0], numWeeks: 6, weeks: Object.fromEntries(mStrs.map(m => [m, { dayCall: "s1", nights: { mon: null, tue: "" } }])) }, mStrs, ids);
+  check("AG2 an empty slot (null / \"\" / missing) loads as empty — it shows in Needs your OK as an EMPTY slot, like a generated one", blank.ok && blank.weeks[mStrs[0]].nights.mon === null && blank.weeks[mStrs[0]].nights.wknd === null);
+  // ── AG3 ──
+  {
+    const i = nsrc.indexOf("  const loadScheduleJson = (text, fileName) => {"), e = i < 0 ? -1 : nsrc.indexOf("\n  };\n", i);
+    if (i < 0 || e < 0) check("AG3 loadScheduleJson extractable", false, "anchors not found");
+    else {
+      const body = nsrc.slice(i, e) + "\n  };";
+      const mk = vm.runInContext(`(function (env) { const { showToast, validateScheduleJson, shapeScheduleWeeks, mondays, fmt, surgeons, backupMondaySet, fierceBackupSet, holidayAssignments, setPreviewSchedule, setPreviewOrigin, setPreviewCalMonth, setShowPreview } = env; ${body}; return loadScheduleJson; })`, sandbox);
+      const go = (text) => {
+        const rec = { toasts: [], preview: null, origin: null, shown: false };
+        const load = mk({ showToast: (m, t) => rec.toasts.push([String(m), t]), validateScheduleJson: G.validateScheduleJson, shapeScheduleWeeks: G.shapeScheduleWeeks, mondays: MON, fmt: G.fmt, surgeons: SUR,
+          backupMondaySet: BK, fierceBackupSet: FB, holidayAssignments: HOL, setPreviewSchedule: (x) => { rec.preview = x; }, setPreviewOrigin: (x) => { rec.origin = x; }, setPreviewCalMonth: () => {}, setShowPreview: (x) => { rec.shown = x; } });
+        rec.ret = load(text, "bench.json");
+        return rec;
+      };
+      const good = go(JSON.stringify(asFile)), bad = go(JSON.stringify(Object.assign({}, asFile, { numWeeks: 9 }))), junk = go("{not json");
+      check("AG3 the REAL loader: a good file fills the preview with the shaped weeks, origin \"json\", shown, and says nothing is published yet",
+        good.ret === true && JSON.stringify(good.preview) === JSON.stringify(shaped) && good.origin === "json" && good.shown === true && /nothing is published until/.test(good.toasts[0][0]), JSON.stringify(good.toasts));
+      check("AG3 a refused file (wrong week count) or a non-JSON file changes NOTHING and says why",
+        bad.ret === false && bad.preview === null && bad.origin === null && /Not loaded — the file has numWeeks 9/.test(bad.toasts[0][0]) && bad.toasts[0][1] === "error"
+          && junk.ret === false && junk.preview === null && /isn't valid JSON/.test(junk.toasts[0][0]), JSON.stringify([bad.toasts, junk.toasts]));
+    }
+  }
+  // ── AG4 ──
+  check("AG4 the button sits next to 👁 Preview Schedule, scheduler/admin only, with a hidden .json file input; the header says where the preview came from",
+    /👁 Preview Schedule\n\s*<\/button>\n\s*\{\(isScheduler \|\| userProfile\?\.role === "admin"\) && <>[\s\S]{0,600}📋 Load schedule \(JSON\)[\s\S]{0,200}<input ref=\{loadJsonInputRef\} type="file" accept="\.json,application\/json" onChange=\{onLoadJsonFile\}/.test(nsrc)
+      && count('{previewOrigin === "json" && <span') === 1 && count("Loaded from JSON — not generated") === 1
+      && count('setPreviewSchedule(result); setPreviewOrigin("generated");') === 2 && count('setPreviewOrigin("json")') === 1);
+  check("AG4 both publish paths roll forward NET of the weeks they replace (Accept & Publish; Generate & Publish at commit) — no 100 ms timer, no 'skip if any schedule exists'",
+    count("const net = rollForwardCounts(previewSchedule, replacedWeeks);") === 1 && count("const net = rollForwardCounts(result, replacedWeeks);") === 1
+      && count("rollForwardCounts(") === 2 && count("hadExistingSchedule") === 0 && !/rollForwardCounts\(latest\)/.test(nsrc)
+      && count("— counts net: ${netCountsText(net)}") === 2);
+})();
 
 // ─── Verdict ───
 console.log(`\n${checks} checks, ${failures.length} failure(s)`);
