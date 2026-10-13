@@ -30,6 +30,10 @@ on:
       - "test/generator-regression.js"
       - "test/sync-guards.js"
       - "test/consistency-checks.js"
+      # the regression's independent oracle and its fixtures (live inputs,
+      # the owner's CP-SAT benchmark) — a change there must re-run it too
+      - "test/bend-oracle.js"
+      - "test/fixtures/**"
   workflow_dispatch: {}   # allow manual runs from the Actions tab
 
 permissions:

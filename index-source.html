@@ -391,6 +391,21 @@ function CallSchedule() {
   // Where the preview came from: "generated" (doGenerate) or "json" (the
   // benchmark loader, 2026-10-12) — the preview header says which.
   const [previewOrigin, setPreviewOrigin] = useState("generated");
+  // The schedule SEARCH (owner 2026-10-12, item 5): Preview / Generate &
+  // Publish / Re-roll / Regenerate / "🔍 Search more" run generator.js
+  // createScheduleSearch in time slices — SEARCH_MS of ACTIVE search time (a
+  // hidden tab's throttled slices don't use up the budget) — so the page
+  // stays responsive. searchRef holds the live run; `searching` is only the
+  // flag the buttons read ("generate" | "more"); the progress line polls the
+  // ref and re-renders itself (SearchProgress), not the whole app.
+  const searchRef = useRef(null);
+  const [searching, setSearching] = useState(null); // null | "generate" (→ the preview) | "publish" (Generate & Publish / Regenerate) | "more"
+  // After a search (≥ SEARCH_MS, minutes in a hidden tab) the finish and the
+  // commit run through these refs, i.e. with the LATEST render's state —
+  // never the click's (in-file convention 1). Set every render below.
+  const genFinishRef = useRef(null), genCommitRef = useRef(null);
+  const [searchStats, setSearchStats] = useState(null); // the last finished search: { checked, starts, ms, purpose, improved }
+  const previewSchedRef = useRef(null); previewSchedRef.current = previewSchedule;
   const loadJsonInputRef = useRef(null);
   // A publish in progress: Generate & Publish waits 1–3 s for its backup
   // snapshot before it commits. A second publish in that window would net
@@ -3498,7 +3513,7 @@ function CallSchedule() {
     // Notify only when something was actually published — not when the Silvis
     // confirm was cancelled, and not when the result went to the preview for
     // "Needs your OK" review (2026-10-11).
-    if (doGenerate(false) !== "published") return;
+    if ((await doGenerate(false)) !== "published") return;
     // (The counts roll forward inside doGenerate's publish, at commit — net
     // of any weeks it replaced.)
     await addNotification("schedule_published", "Schedule Published",
@@ -4013,7 +4028,7 @@ function CallSchedule() {
     // [D,D] ranges — exactly NO-CALL semantics: they block the shift's OWN
     // day(s) and the night before D (which ends 07:00 D) stays allowed. Into
     // `availability` ONLY, never the vacations (trailing-edge) map below.
-    // Zero generator change: availDC (Mon..Sat), every weeknight (its day),
+    // Zero generator change: availDC (Mon..Sun since 2026-10-12), every weeknight (its day),
     // the weekend (Fri, Sun) and the holiday pre-assignments all already gate
     // through onVac. Since 2026-10-11 the generator never places anyone below
     // this floor (generator.js slotFloorOk) — a squeezed week bends a softer
@@ -4023,33 +4038,76 @@ function CallSchedule() {
     }
     return availability;
   };
-  const doGenerate = (preview) => {
+  // Seed the generator with the week immediately preceding the new start so
+  // rotation continuity carries across the period boundary — without this,
+  // generating the next period can repeat the prior schedule's last
+  // service-week surgeon (no predecessor is visible to week 0). Uses fmt/addD
+  // (the same helpers that key the schedule) so lookups match exactly. ONE
+  // builder (2026-10-12) for doGenerate, "Search more" and the preview's
+  // Needs your OK — which used to get only {dayCall, wknd} and so missed
+  // spacing across the seam — now with that week's weeknights too (rule 2 and
+  // every-other-night strain across the seam). first: the period's first
+  // Monday (a Date; default the Generate settings').
+  const buildPrevWeekSeed = (first) => {
+    const f = first || mondays[0];
+    if (!f) return null;
+    const prevWk = schedule[fmt(addD(f, -7))]; // contiguous prior week, if any
+    // Walk back up to ~60 weeks to capture each surgeon's most-recent DC week
+    // as a negative offset, for spacing continuity across the seam.
+    const recentDc = {};
+    for (let k = 1; k <= 60; k++) {
+      const wk = schedule[fmt(addD(f, -7 * k))];
+      if (!wk) continue;
+      const dc = wk.dayCall;
+      if (dc && recentDc[dc] === undefined) recentDc[dc] = -k; // nearest hit wins
+    }
+    const pn = (prevWk && prevWk.nights) || {};
+    return {
+      dayCall: (prevWk && prevWk.dayCall) || null,
+      wknd: pn.wknd || null,
+      nights: { mon: pn.mon || null, tue: pn.tue || null, wed: pn.wed || null, thu: pn.thu || null },
+      // who actually held those dates (weekHolders' rule): a holiday / swap row
+      // holds its date, a single-day override the service Saturday
+      holidayCoverage: (prevWk && prevWk.holidayCoverage) || null,
+      dayCallOverrides: (prevWk && prevWk.dayCallOverrides) || null,
+      recentDc,
+    };
+  };
+  // Everything the generated schedule depends on, as one string: a search's
+  // result is published straight away only if this is unchanged since the click.
+  const genInputsSig = () => JSON.stringify([mondays.map(fmt), pendingLocks, holidayAssignments, buildGenAvailability(), vacations,
+    surgeons.map(s => s.id), [...backupMondaySet].sort(), [...fierceBackupSet].sort(), priorCounts, year1Counts]);
+  // Run a search in time slices of ~40 ms until budgetMs of ACTIVE search
+  // time is spent or the schedule is perfect. Resolves { session, ms }, or
+  // null when cancelled (cancelSearch — Accept, Discard, a JSON load cancel a
+  // search whose result would land in the preview; never a Generate & Publish).
+  const runSearch = (session, purpose, budgetMs) => new Promise(resolve => {
+    const token = {};
+    searchRef.current = { session, token, purpose, activeMs: 0, budgetMs };
+    setSearching(purpose);
+    const tick = () => {
+      const sr = searchRef.current;
+      if (!sr || sr.token !== token) { resolve(null); return; }
+      const t0 = Date.now();
+      let failed = false;
+      try { session.step(40); } catch (e) { console.error("Schedule search failed:", e); failed = true; }
+      sr.activeMs += Date.now() - t0;
+      if (failed || sr.activeMs >= budgetMs || session.status().perfect) {
+        searchRef.current = null; setSearching(null);
+        resolve({ session, ms: sr.activeMs });
+        return;
+      }
+      setTimeout(tick, 0);
+    };
+    setTimeout(tick, 0);
+  });
+  const cancelSearch = () => { const sr = searchRef.current; if (sr && sr.purpose !== "publish") { searchRef.current = null; setSearching(null); } };
+  const publishSearchRunning = () => !!(searchRef.current && searchRef.current.purpose === "publish");
+  const doGenerate = async (preview) => {
+    if (searchRef.current) { showToast("A schedule search is already running — wait for it to finish.", "error"); return "busy"; }
     const prefs = buildPrefs();
     const availability = buildGenAvailability();
-    // Seed the generator with the week immediately preceding the new start so
-    // rotation continuity carries across the period boundary — without this,
-    // generating the next period can repeat the prior schedule's last
-    // service-week surgeon (no predecessor is visible to week 0). Uses fmt/addD
-    // (the same helpers that key the schedule) so lookups match exactly.
-    const prevWeekSeed = (() => {
-      if (!mondays.length) return null;
-      const first = mondays[0];
-      const prevWk = schedule[fmt(addD(first, -7))]; // contiguous prior week, if any
-      // Walk back up to ~60 weeks to capture each surgeon's most-recent DC week
-      // as a negative offset, for spacing continuity across the seam.
-      const recentDc = {};
-      for (let k = 1; k <= 60; k++) {
-        const wk = schedule[fmt(addD(first, -7 * k))];
-        if (!wk) continue;
-        const dc = wk.dayCall;
-        if (dc && recentDc[dc] === undefined) recentDc[dc] = -k; // nearest hit wins
-      }
-      return {
-        dayCall: (prevWk && prevWk.dayCall) || null,
-        wknd: (prevWk && prevWk.nights && prevWk.nights.wknd) || null,
-        recentDc,
-      };
-    })();
+    const prevWeekSeed = buildPrevWeekSeed();
     // Diagnostic: capture exactly what the seed saw, so the preview can show it.
     try {
       const _first = mondays[0];
@@ -4078,11 +4136,25 @@ function CallSchedule() {
       if (silvisRows.length > 0 && periodEnd && silvisDays.to && periodEnd > silvisDays.to) problems.push(`the Silvis feed only covers through ${silvisDays.to} — weeks after that will be generated as if ${nameOf(silvisFakId)} had NO Silvis call (Silvis publishes rolling 3-month periods; check Schedule Warnings again after it publishes)`);
       if (problems.length && !confirm(`⚠️ Rule silvisBusy is BLIND for part or all of this period:\n\n${problems.map(p => "• " + p).join("\n")}\n\nGenerate anyway?`)) return "cancelled";
     }
-    const result = generate(surgeons, mondays, availability, backupMondaySet, priorCounts, prefs, fierceBackupSet, holidayAssignments, pendingLocks, prevWeekSeed, vacations, year1Counts);
+    // The search (owner 2026-10-12, item 5): SEARCH_MS of searching, ranked by
+    // generator.js scheduleRules — the floor, FAK's last resort, service weeks
+    // even, weekends even, the least strain, the mildest bends, totals even.
+    const search = createScheduleSearch(surgeons, mondays, availability, backupMondaySet, priorCounts, prefs, fierceBackupSet, holidayAssignments, pendingLocks, prevWeekSeed, vacations, year1Counts);
+    const clickSig = genInputsSig();
+    const done = await runSearch(search, preview ? "generate" : "publish", SEARCH_MS);
+    const result = done && done.session.best();
+    if (!result) { if (done) showToast("The schedule search found nothing — try again.", "error"); return "cancelled"; }
+    { const st = done.session.status(); setSearchStats({ checked: st.checked, starts: st.starts, ms: done.ms, purpose: "generate", improved: true }); }
+    return genFinishRef.current(result, preview, clickSig, pendingLocks); // the locks this search used
+  };
+  // The rest of Generate, run with the LATEST state (genFinishRef, set every
+  // render): what changed during the search counts.
+  const finishGenerate = (result, preview, clickSig, clickLocks) => {
     // Locks the generator could not honor (a Service-Week / Weekend lock on a
     // surgeon the availability map blocks that week is dropped silently in
     // generator.js) — say so; a confirmed lock must never vanish unnoticed.
-    const droppedLocks = (pendingLocks || []).filter(l => {
+    // judged against the locks the SEARCH used (one added since was never seen — said below, not blamed on time off)
+    const droppedLocks = (clickLocks || []).filter(l => {
       const wk = result[l.mondayStr]; if (!wk) return false;
       const slot = l.slot === "dc" ? "dayCall" : l.slot;
       const holder = slot === "dayCall" ? wk.dayCall : wk.nights?.[slot];
@@ -4092,14 +4164,23 @@ function CallSchedule() {
     if (preview) {
       setPreviewSchedule(result); setPreviewOrigin("generated");
       setShowPreview(true);
+      if (JSON.stringify(clickLocks || []) !== JSON.stringify(pendingLocks || [])) showToast("The locks changed during the search — this preview used the earlier ones. Re-roll to use the new ones.", "error");
       return "preview";
     }
-    // Generate & Publish skips the preview — unless the result has anything in
-    // "Needs your OK" (2026-10-11): then it opens the preview instead, so no
-    // bend, empty slot or time-off placement is ever published unseen.
+    // Generate & Publish skips the preview — unless something it depends on
+    // changed during the search (time off, locks, holidays, the settings…), or
+    // the result has anything in "Needs your OK" (2026-10-11), judged on
+    // TODAY's inputs and with the locks, exactly like the box: then it opens
+    // the preview instead, so nothing is ever published unseen.
+    if (genInputsSig() !== clickSig) {
+      setPreviewSchedule(result); setPreviewOrigin("generated");
+      setShowPreview(true);
+      showToast("Time off, a lock, a holiday card or the Generate settings changed during the search — review the result in the preview below before publishing.", "error");
+      return "review";
+    }
     const needsOkN = (() => {
       try {
-        return listScheduleBends(result, { surgeons, mondays, vac: availability, vacationsOnly: vacations, holAssignments: holidayAssignments, prevWeekSeed }).items.length;
+        return listScheduleBends(result, { surgeons, mondays, vac: buildGenAvailability(), vacationsOnly: vacations, holAssignments: holidayAssignments, prevWeekSeed: buildPrevWeekSeed(), locks: pendingLocks }).items.length;
       } catch (e) { console.error("Needs-your-OK check failed:", e); return 1; } // fail closed: review by hand
     })();
     if (needsOkN > 0) {
@@ -4122,6 +4203,15 @@ function CallSchedule() {
           setSaveStatus("");
           return;
         }
+        await genCommitRef.current(result); // with the state as it is NOW (after the snapshot's await)
+       } finally { publishingRef.current = false; setPublishing(false); }
+      })();
+    }
+    return "published";
+  };
+  // Generate & Publish's commit, after a good snapshot — through genCommitRef,
+  // so the counts, the bundle and the blob are the LATEST state's.
+  const commitGenerated = async (result) => {
         // Counts move by the NET change, here at commit (owner 2026-10-12):
         // the new weeks, minus the published versions they replace (read from
         // the LATEST schedule, after the snapshot's await). This used to be
@@ -4148,11 +4238,8 @@ function CallSchedule() {
           if (regenErr) throw new Error(`regenerate blob save failed: ${String(regenErr).slice(0, 200)}`); // catch toasts; checked autosave retries
           syncSchedWeeks(merged); // persist the merged schedule (no spurious deletes)
         } catch(e) { console.error("Immediate save failed:", e); showToast("Couldn't save the regenerated schedule — check your connection.", "error"); }
-       } finally { publishingRef.current = false; setPublishing(false); }
-      })();
-    }
-    return "published";
   };
+  genFinishRef.current = finishGenerate; genCommitRef.current = commitGenerated;
 
   // ─── Clear / Reset Schedule ───
   const clearSchedule = async () => {
@@ -4370,19 +4457,23 @@ function CallSchedule() {
     if (!previewSchedule) return { cost: 0, items: [] };
     try {
       const keys = Object.keys(previewSchedule).sort();
-      const prevWk = keys.length ? schedule[fmt(addD(parse(keys[0]), -7))] : null;
       return listScheduleBends(previewSchedule, {
         surgeons, mondays: keys, vac: buildGenAvailability(), vacationsOnly: vacations,
         holAssignments: holidayAssignments,
-        prevWeekSeed: prevWk ? { dayCall: prevWk.dayCall || null, wknd: (prevWk.nights && prevWk.nights.wknd) || null } : null,
+        prevWeekSeed: keys.length ? buildPrevWeekSeed(parse(keys[0])) : null, // the generator's own seed (2026-10-12)
+        locks: pendingLocks, // a lock the schedule doesn't honor is listed too
       });
     } catch (e) {
       // Fail LOUD: a preview whose check failed must never look clean.
       console.error("Needs-your-OK list failed:", e);
       return { cost: 0, items: [{ kind: "error", key: "error", cost: 0, text: "⚠ The bend check itself failed (" + ((e && e.message) || e) + ") — review the calendar by hand before publishing." }] };
     }
-  }, [previewSchedule, schedule, surgeons, vacations, noCallDays, holidayAssignments, silvisActive, silvisFakId, silvisDays]);
+  }, [previewSchedule, schedule, surgeons, vacations, noCallDays, holidayAssignments, silvisActive, silvisFakId, silvisDays, pendingLocks]);
   const acceptPreview = () => {
+    // A Generate & Publish search publishes its own schedule when it ends —
+    // never two publishes racing (its button and this one are disabled meanwhile).
+    if (publishSearchRunning()) { showToast("Generate & Publish is still searching — wait for it to finish.", "error"); return; }
+    cancelSearch(); // a running "Search more" / Re-roll is dropped — its result can't reopen a published preview
     // The checkbox is the gate (the button is disabled too; this is the backstop).
     if (previewSchedule && previewNeedsOk.items.length > 0 && !previewAck) { showToast("Tick \"I've reviewed these items\" first.", "error"); return; }
     if (previewSchedule) {
@@ -4406,7 +4497,33 @@ function CallSchedule() {
   };
 
   const discardPreview = () => {
+    cancelSearch(); setSearchStats(null);
     setPreviewSchedule(null); setShowPreview(false);
+  };
+
+  // 🔍 Search more (owner 2026-10-12, item 5): another SEARCH_MS of searching
+  // that STARTS FROM the schedule in the preview (generated or loaded) and
+  // replaces it only with a strictly better one by the same ranking. It reads
+  // today's inputs, so a time-off or lock change since the preview counts. A
+  // late result is dropped if the preview was accepted, discarded, re-rolled
+  // or reloaded meanwhile.
+  const searchMore = async () => {
+    const base = previewSchedRef.current;
+    if (!base || searchRef.current || publishingRef.current) return;
+    const keys = Object.keys(base).sort();
+    if (!keys.length) return;
+    const ms = keys.map(parse);
+    const search = createScheduleSearch(surgeons, ms, buildGenAvailability(), backupMondaySet, priorCounts, buildPrefs(), fierceBackupSet, holidayAssignments, pendingLocks, buildPrevWeekSeed(ms[0]), vacations, year1Counts);
+    search.seed(base);
+    const done = await runSearch(search, "more", SEARCH_MS);
+    if (!done || previewSchedRef.current !== base) return;
+    const st = done.session.status();
+    setSearchStats({ checked: st.checked, starts: st.starts, ms: done.ms, purpose: "more", improved: st.improved });
+    if (st.improved) {
+      const better = done.session.best();
+      setPreviewSchedule(better); setPreviewOrigin("generated");
+      showToast(`Found a better schedule — ${st.checked.toLocaleString()} more schedules checked.`);
+    } else showToast(`No better schedule in ${st.checked.toLocaleString()} more checked — this one stays.`);
   };
 
   // ONE publish step for both publish paths (owner 2026-10-12). Reads the
@@ -4454,6 +4571,8 @@ function CallSchedule() {
   // your OK, the Fairness Summary and Accept & Publish treat it exactly like
   // a generated preview. Nothing is written until ✓ Accept & Publish.
   const loadScheduleJson = (text, fileName) => {
+    if (publishSearchRunning()) { showToast("Generate & Publish is still searching — wait for it to finish, then load the file.", "error"); return false; }
+    cancelSearch(); setSearchStats(null); // a file replaces the preview — a running search's result is dropped, and its count no longer applies
     const refuse = (why) => { showToast(`Not loaded — ${why}. Nothing was changed.`, "error"); return false; };
     let o;
     // (a byte-order mark, which Windows editors often write, is not JSON)
@@ -5786,7 +5905,12 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     }
     const hard = sfOverlaps(schedule, silvisDays.primary, silvisFakId).filter(inScope)
       .map(o => ({ key: `silvis|${silvisFakId}|${o.mondayStr}|${o.slot}|${o.day}`, severity: "error", week: o.mondayStr, message: `${who}: Silvis primary + Davenport ${o.label}, ${md(o.day)}` }));
-    return health.concat(hard);
+    // RULE 1 (owner 2026-10-12): a Silvis primary on the SUNDAY after his
+    // Davenport service week (the service-week surgeon must be free that Sunday).
+    const sunday = Object.keys(schedule).filter(m => /^\d{4}-\d{2}-\d{2}$/.test(m) && schedule[m] && schedule[m].dayCall === silvisFakId && inScope({ mondayStr: m }))
+      .filter(m => silvisDays.primary && silvisDays.primary.has(fmt(addD(parse(m), 6))))
+      .map(m => { const sun = fmt(addD(parse(m), 6)); return { key: `silvis-sun|${silvisFakId}|${m}|${sun}`, severity: "error", week: m, message: `${who}: Silvis primary Sun ${md(sun)} — the Sunday of the Davenport service week of ${md(m)}` }; });
+    return health.concat(hard, sunday);
   }, [schedule, silvisActive, silvisDays, silvisFakId, surgeons, isPublicMode, silvisRows, silvisLoadError]);
   // Silvis BACKUP touches — standby, never a block, never a warning: shown
   // on the Silvis feed card only (they used to summon the warning panel).
@@ -5891,6 +6015,21 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           if (!holCov[friD] && !holCov[sunD] && !designed(mStr, "dayCall", mStr, "wknd", wk.dayCall)) {
             issues.push({ key: `svc-wknd|${mStr}|${wk.dayCall}`, type: "double", severity: "error", week: mStr, message: `${sMap[wk.dayCall]?.name} is on Service Week AND Weekend (same week)` });
           }
+        }
+        // RULE 1 (owner 2026-10-12): the service-week surgeon must be free that
+        // SUNDAY too — no vacation or no-call (Silvis primary: its own line in
+        // silvisConflicts). Time off entered after publishing lands here.
+        const sunS = fmt(addD(mon, 6));
+        const sunKind = sunS >= todayStr ? (onVac(wk.dayCall, sunS, vacations || {}) ? "vacation" : onVac(wk.dayCall, sunS, noCallDays || {}) ? "no-call" : null) : null;
+        if (sunKind) issues.push({ key: `svc-sun|${mStr}|${wk.dayCall}|${sunS}|${sunKind}`, type: "timeoff", severity: "error", week: mStr, message: `${codeOf(wk.dayCall)} is on Service Week ${md(mStr)} but is off Sun ${md(sunS)} (${sunKind}) — the service-week surgeon must be free that Sunday` });
+      }
+      // RULE 2 (owner 2026-10-12): Thu night + that weekend is two nights in a
+      // row (Thu → Fri night) — unless the cards design it or a holiday 24h
+      // holds that Friday.
+      if (wk.nights?.thu && wk.nights.thu === wk.nights?.wknd) {
+        const friT = fmt(addD(mon, 4));
+        if (!(wk.holidayCoverage || {})[friT] && !designed(mStr, "thu", mStr, "wknd", wk.nights.thu)) {
+          issues.push({ key: `thu-wknd|${mStr}|${wk.nights.thu}`, type: "consecutive", severity: "error", week: mStr, message: `${codeOf(wk.nights.thu)} has Thu night then the Weekend (Fri night) — two nights in a row` });
         }
       }
 
@@ -7511,19 +7650,20 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           })()}
 
           <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
-            <button onClick={()=>doGenerate(true)} style={{...css.btn(false),padding:"13px 24px",fontSize:14,fontWeight:700,borderRadius:9,letterSpacing:0.3,flex:1}}>
-              👁 Preview Schedule
+            <button onClick={()=>doGenerate(true)} disabled={!!searching} style={{...css.btn(false),padding:"13px 24px",fontSize:14,fontWeight:700,borderRadius:9,letterSpacing:0.3,flex:1,opacity:searching?0.55:1}}>
+              {searching === "generate" ? "🔍 Searching…" : "👁 Preview Schedule"}
             </button>
             {(isScheduler || userProfile?.role === "admin") && <>
-              <button onClick={()=>loadJsonInputRef.current && loadJsonInputRef.current.click()} title={`Load a schedule for ${mondays.length ? fmt(mondays[0]) + " × " + mondays.length + " weeks" : "the Generate settings"} into the preview (JSON) — it is checked, not published`} style={{...css.btn(false),padding:"13px 18px",fontSize:14,fontWeight:700,borderRadius:9,letterSpacing:0.3}}>
+              <button onClick={()=>loadJsonInputRef.current && loadJsonInputRef.current.click()} disabled={searching === "publish"} title={`Load a schedule for ${mondays.length ? fmt(mondays[0]) + " × " + mondays.length + " weeks" : "the Generate settings"} into the preview (JSON) — it is checked, not published`} style={{...css.btn(false),padding:"13px 18px",fontSize:14,fontWeight:700,borderRadius:9,letterSpacing:0.3}}>
                 📋 Load schedule (JSON)
               </button>
               <input ref={loadJsonInputRef} type="file" accept=".json,application/json" onChange={onLoadJsonFile} style={{display:"none"}} aria-label="Load schedule (JSON)" />
             </>}
-            <button onClick={doGenerateAndNotify} disabled={publishing} style={{...css.btn(true),padding:"13px 24px",fontSize:14,fontWeight:700,borderRadius:9,letterSpacing:0.3,flex:1,opacity:publishing?0.55:1}}>
-              {publishing ? "Publishing…" : "Generate & Publish →"}
+            <button onClick={doGenerateAndNotify} disabled={publishing || !!searching} style={{...css.btn(true),padding:"13px 24px",fontSize:14,fontWeight:700,borderRadius:9,letterSpacing:0.3,flex:1,opacity:publishing||searching?0.55:1}}>
+              {publishing ? "Publishing…" : searching === "publish" ? "🔍 Searching…" : "Generate & Publish →"}
             </button>
           </div>
+          {(searching === "generate" || searching === "publish") && <SearchProgress searchRef={searchRef} dk={dk} />}
 
           {/* What-If Preview */}
           {showPreview && previewSchedule && (()=>{
@@ -7672,7 +7812,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                 <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12,flexWrap:"wrap",gap:8}}>
                   <div style={css.cardT}>👁 Schedule Preview{previewOrigin === "json" && <span style={{marginLeft:8,fontSize:11,fontWeight:700,color:dk?"#f0c890":"#8a5020",background:dk?"#3a2a10":"#fef3e6",border:"1px solid #e8c89a",borderRadius:5,padding:"2px 7px"}}>Loaded from JSON — not generated</span>}</div>
                   <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
-                    <button onClick={()=>{setPreviewCalMonth(0);doGenerate(true);}} style={{...css.btn(false),padding:"6px 14px",fontSize:12}}>↻ Re-roll</button>
+                    <button onClick={()=>{setPreviewCalMonth(0);doGenerate(true);}} disabled={!!searching} style={{...css.btn(false),padding:"6px 14px",fontSize:12,opacity:searching?0.55:1}}>↻ Re-roll</button>
+                    <button onClick={searchMore} disabled={!!searching || publishing} title="Keep searching from this schedule — it is replaced only by a better one" style={{...css.btn(false),padding:"6px 14px",fontSize:12,opacity:searching||publishing?0.55:1}}>{searching === "more" ? "🔍 Searching…" : "🔍 Search more"}</button>
                     <button onClick={()=>{
                       try {
                         // Compute month range from preview schedule
@@ -7700,21 +7841,31 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                         w.document.write(html); w.document.close();
                       } catch(e) { alert("Print failed: " + (e?.message||e)); }
                     }} style={{...css.btn(false),padding:"6px 14px",fontSize:12,background:"#fef3e6",borderColor:"#e8c89a",color:"#8a5020"}}>🖨 Print Calendar</button>
-                    <button onClick={acceptPreview} disabled={publishing || (previewNeedsOk.items.length > 0 && !previewAck)} title={previewNeedsOk.items.length > 0 && !previewAck ? "Review the Needs your OK items below first" : undefined} style={{...css.btn(true),padding:"6px 14px",fontSize:12,background:"linear-gradient(135deg,#1a8040,#30a060)",borderColor:"#1a8040",opacity:previewNeedsOk.items.length > 0 && !previewAck ? 0.45 : 1,cursor:previewNeedsOk.items.length > 0 && !previewAck ? "not-allowed" : "pointer"}}>✓ Accept & Publish</button>
+                    <button onClick={acceptPreview} disabled={publishing || searching === "publish" || (previewNeedsOk.items.length > 0 && !previewAck)} title={previewNeedsOk.items.length > 0 && !previewAck ? "Review the Needs your OK items below first" : undefined} style={{...css.btn(true),padding:"6px 14px",fontSize:12,background:"linear-gradient(135deg,#1a8040,#30a060)",borderColor:"#1a8040",opacity:previewNeedsOk.items.length > 0 && !previewAck ? 0.45 : 1,cursor:previewNeedsOk.items.length > 0 && !previewAck ? "not-allowed" : "pointer"}}>✓ Accept & Publish</button>
                     <button onClick={discardPreview} style={{background:"none",border:"1px solid #e0c0c0",color:"#904040",borderRadius:6,padding:"6px 14px",fontSize:12,cursor:"pointer",fontFamily:font}}>✕ Discard</button>
                   </div>
                 </div>
 
-                {/* Needs your OK (2026-10-11) — every bend, empty slot, time-off
-                    placement and crowded day, in plain words (generator.js
-                    listScheduleBends). Publishing waits for the checkbox. */}
+                {searching === "more" && <SearchProgress searchRef={searchRef} dk={dk} />}
+                {searchStats && !searching && <div style={{fontSize:11,color:dk?"#a0c8a0":"#4a7a4a",margin:"-6px 0 10px"}}>
+                  {searchStats.purpose === "more"
+                    ? `Search more ${searchStats.improved ? "found a better schedule" : "found nothing better — this one stays"}: ${searchStats.checked.toLocaleString()} more schedules checked in ${(searchStats.ms / 1000).toFixed(1)} s`
+                    : `The best of ${searchStats.checked.toLocaleString()} schedules checked in ${(searchStats.ms / 1000).toFixed(1)} s (${searchStats.starts.toLocaleString()} fresh start${searchStats.starts === 1 ? "" : "s"})`}
+                </div>}
+
+                {/* Needs your OK (2026-10-11; grouped 2026-10-12) — every item
+                    in plain words (generator.js listScheduleBends, the same
+                    reading the search ranks by). Publishing waits for the checkbox. */}
                 {previewNeedsOk.items.length > 0 && (
                   <div style={{background:dk?"#3a2410":"#fdf0e3",border:"1px solid #d09050",borderRadius:8,padding:"8px 12px",marginBottom:12,fontSize:12,color:dk?"#f0c890":"#7a4010",overflowWrap:"anywhere"}}>
                     <div style={{fontWeight:700,marginBottom:2}}>⚠ Needs your OK — {previewNeedsOk.items.length} item{previewNeedsOk.items.length===1?"":"s"}</div>
-                    {previewNeedsOk.items.map((it,i)=><div key={i} style={{marginTop:3}}>• {it.text}</div>)}
+                    {NEEDS_OK_GROUPS.map(g => { const its = previewNeedsOk.items.filter(it => g.kinds.includes(it.kind)); return its.length ? <div key={g.title} style={{marginTop:6}}>
+                      <div style={{fontWeight:700,fontSize:11,textTransform:"uppercase",letterSpacing:0.4,opacity:0.8}}>{g.title}</div>
+                      {its.map((it,i)=><div key={i} style={{marginTop:3}}>• {it.text}</div>)}
+                    </div> : null; })}
                     <div style={{marginTop:5,fontSize:11,opacity:0.85}}>{previewOrigin === "json"
-                      ? "These are in the loaded file — the generator didn't choose them. Every bend, empty slot, time-off placement and crowded day in it is listed here; review each before publishing. Re-roll replaces the file with a generated schedule."
-                      : "Vacation, no-call and Silvis days are never broken — when a week can't be covered by the usual rules, the generator takes the mildest bend and lists it here. Re-roll for different names; the bends themselves are the minimum the calendar allows."}</div>
+                      ? "These are in the loaded file — the generator didn't choose them. Everything the ranking looks at is listed here; review each before publishing. Re-roll replaces the file with a generated schedule; Search more keeps it unless it finds a better one."
+                      : "The search ranks schedules in this order: no time off and no two nights in a row (designed holiday runs aside — anything left breaking them is under Must fix), FAK's last resort, service weeks even, weekends even, the least strain, the mildest bends, totals even — this is the best it found. Search more looks further; Re-roll starts over."}</div>
                     <label style={{display:"flex",alignItems:"center",gap:8,marginTop:8,fontWeight:700,cursor:"pointer"}}>
                       <input type="checkbox" checked={previewAck} onChange={e=>setPreviewAck(e.target.checked)} style={{width:18,height:18,flexShrink:0}}/>
                       I've reviewed these {previewNeedsOk.items.length} item{previewNeedsOk.items.length===1?"":"s"}
@@ -8120,12 +8271,13 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             <div style={{display:"flex",gap:5}}>
               {isScheduler && <>
                 <button onClick={()=>setView("setup")} style={css.btn(false)}>← Setup</button>
-                <button onClick={()=>doGenerate(false)} style={css.btn(true)}>↻ Regenerate</button>
+                <button onClick={()=>doGenerate(false)} disabled={!!searching} style={{...css.btn(true),opacity:searching?0.55:1}}>{searching === "publish" ? "🔍 Searching…" : "↻ Regenerate"}</button>
                 <button onClick={clearSchedule} style={{...css.btn(false),color:"#c04040",borderColor:"#e0a0a0"}}>✕ Clear</button>
               </>}
             </div>
           </div>
 
+          {searching && searching !== "more" && view === "calendar" && <SearchProgress searchRef={searchRef} dk={dk} />}
           {/* Calendar Filters */}
           <div style={{display:"flex",gap:4,alignItems:"center",flexWrap:"wrap",marginBottom:10,padding:"8px 12px",background:dk?"#16213e":"#fff",border:`1px solid ${dkCardBorder}`,borderRadius:8}}>
             <span style={{fontSize:11,fontWeight:600,color:dkSubtext,marginRight:4}}>Show:</span>
@@ -11531,6 +11683,36 @@ function writeFailReason(err) {
 // helper (an old cached helpers.js), a refused count (ok:false) or a Silvis feed
 // problem shows as text, never as zeros. Module scope with React.* hooks, like
 // Collapsible below; every color has its own dark-mode branch.
+// The groups of the preview's "Needs your OK" box (owner 2026-10-12), by
+// listScheduleBends item kind, in this order.
+const NEEDS_OK_GROUPS = [
+  { title: "Must fix — breaks a rule", kinds: ["error", "lock", "empty", "timeoff", "hard"] },
+  { title: "Last resort", kinds: ["lastResort"] },
+  { title: "Strain", kinds: ["strain"] },
+  { title: "Bends", kinds: ["bend"] },
+  { title: "FAK — flexible (allowed, costs a little)", kinds: ["flexStrain"] },
+  { title: "Crowded days (information)", kinds: ["crowded"] },
+];
+
+// The live line under a running schedule search (owner 2026-10-12, item 5):
+// time searched, schedules checked, the best so far. It polls searchRef
+// itself, so only this line re-renders while the search runs.
+function SearchProgress({ searchRef, dk }) {
+  const [, setTick] = React.useState(0);
+  React.useEffect(() => { const t = setInterval(() => setTick(n => n + 1), 250); return () => clearInterval(t); }, []);
+  const sr = searchRef.current;
+  if (!sr || !sr.session) return null;
+  let st = null;
+  try { st = sr.session.status(); } catch (e) { return null; }
+  const t = st.tiers;
+  const best = t ? (t.floor ? "best so far still breaks a rule" : `best so far: service weeks Δ${t.svcSpread} · weekends Δ${t.wkndSpread} · strain ${t.strain} · bends ${t.bend}`) : "";
+  return (
+    <div role="status" style={{fontSize:12,color:dk?"#a0c8a0":"#2a6a3a",background:dk?"#16261a":"#eef8ee",border:"1px solid #a0d0a0",borderRadius:7,padding:"6px 10px",margin:"8px 0",overflowWrap:"anywhere"}}>
+      🔍 Searching… {(sr.activeMs / 1000).toFixed(1)} s of {(sr.budgetMs / 1000).toFixed(0)} · {st.checked.toLocaleString()} schedules checked{best ? " · " + best : ""}
+    </div>
+  );
+}
+
 function CallTotalsCard({ totals, silvisNote, css, dk }) {
   const [pick, setPick] = React.useState("month");
   const [showMonths, setShowMonths] = React.useState(false);
