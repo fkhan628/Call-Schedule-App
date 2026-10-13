@@ -1571,12 +1571,12 @@ check("prefs audit never logs the plaintext email (masked only)",
   check("the generator fold goes into `availability` exactly once…",
     count("availability[silvisFakId] = [...(availability[silvisFakId] || []), ...sfBusyRanges(silvisDays.primary)];") === 1 && count("sfBusyRanges(") === 1,
     `sfBusyRanges( ×${count("sfBusyRanges(")}`);
-  check("…and generate() still receives the untouched `vacations` map as its trailing-edge (vacationsOnly) argument",
-    count("generate(surgeons, mondays, availability, backupMondaySet, priorCounts, prefs, fierceBackupSet, holidayAssignments, pendingLocks, prevWeekSeed, vacations, year1Counts)") === 1
+  check("…and the generator's search still receives the untouched `vacations` map as its trailing-edge (vacationsOnly) argument",
+    count("createScheduleSearch(surgeons, mondays, availability, backupMondaySet, priorCounts, prefs, fierceBackupSet, holidayAssignments, pendingLocks, prevWeekSeed, vacations, year1Counts)") === 1
     && count("vacations[silvisFakId]") === 0);
   check("doGenerate: feed-health + coverage gate confirms BEFORE generating; dropped locks are toasted AFTER",
     count("Rule silvisBusy is BLIND for part or all of this period") === 1 && count("NOT honored by the generator") === 1
-    && src.indexOf("Rule silvisBusy is BLIND") < src.indexOf("const result = generate(surgeons, mondays, availability") && src.indexOf("const result = generate(surgeons, mondays, availability") < src.indexOf("NOT honored by the generator"));
+    && src.indexOf("Rule silvisBusy is BLIND") < src.indexOf("const search = createScheduleSearch(surgeons, mondays, availability") && src.indexOf("const search = createScheduleSearch(surgeons, mondays, availability") < src.indexOf("NOT honored by the generator"));
   check("FAK is resolved by roster CODE (name), never a literal id",
     count('surgeons.find(s => (s.name || "").toUpperCase() === want)') === 1 && !/silvisFakId\s*=\s*["']s\d+["']/.test(src));
   check("the rule is DATA: read from the blob on load AND on poll/realtime, reset on restore, saved back in the bundle",
@@ -1812,8 +1812,8 @@ check("prefs audit never logs the plaintext email (masked only)",
     return { body: src.slice(s0 + START.length, e0), deps: src.slice(e0, src.indexOf("]);", e0) + 3) };
   };
   const PRODUCERS = [
-    ["silvisConflicts", "  const silvisConflicts = useMemo(() => {", 5],
-    ["conflicts", "  const conflicts = useMemo(() => {", 7], // +2 time-off lines (2026-10-11)
+    ["silvisConflicts", "  const silvisConflicts = useMemo(() => {", 6], // +1 Silvis on the service week's Sunday (2026-10-12)
+    ["conflicts", "  const conflicts = useMemo(() => {", 9], // +2 time-off lines (2026-10-11); +2 rule 1 Sunday / rule 2 Thu → weekend (2026-10-12)
     ["vacOverlapWarnings", "  const vacOverlapWarnings = useMemo(() => {", 3],
   ];
   // Q1
@@ -3610,10 +3610,10 @@ check("prefs audit never logs the plaintext email (masked only)",
   const nsrcAE = src.replace(/\r\n/g, "\n");
   const i = nsrcAE.indexOf("  const acceptPreview = () => {"), e = i < 0 ? -1 : nsrcAE.indexOf("\n  };\n", i);
   const body = i < 0 || e < 0 ? null : "() => {" + nsrcAE.slice(i + "  const acceptPreview = () => {".length, e) + "\n  }";
-  const ENV = "previewSchedule, previewNeedsOk, previewAck, previewOrigin, publishWeeks, publishingRef, showToast, setPreviewSchedule, setShowPreview, setCalMonth, setCalYear, setView, setSaveStatus, setTimeout, numWeeks, MO, startMonth, startYear";
+  const ENV = "previewSchedule, previewNeedsOk, previewAck, previewOrigin, publishWeeks, publishingRef, showToast, setPreviewSchedule, setShowPreview, setCalMonth, setCalYear, setView, setSaveStatus, setTimeout, numWeeks, MO, startMonth, startYear, cancelSearch";
   let mk = null; try { mk = body ? vm.runInContext(`(function (env) { const { ${ENV} } = env; return (${body}); })`, sandbox) : null; } catch (ex) { mk = null; }
   const run = (items, ack, busy) => {
-    const rec = { published: 0, toasts: [], audits: [] };
+    const rec = { published: 0, toasts: [], audits: [], cancelled: 0 };
     mk({
       previewSchedule: { "2026-11-16": { dayCall: "s1", nights: {} }, "2026-11-23": { dayCall: "s2", nights: {} } }, previewNeedsOk: { cost: items.length * 6, items }, previewAck: ack,
       previewOrigin: "generated", publishingRef: { current: !!busy },
@@ -3622,6 +3622,7 @@ check("prefs audit never logs the plaintext email (masked only)",
       showToast: (m) => rec.toasts.push(String(m)), setPreviewSchedule: () => {}, setShowPreview: () => {}, setCalMonth: () => {}, setCalYear: () => {},
       setView: () => {}, setSaveStatus: () => {}, setTimeout: () => {},
       numWeeks: 14, MO: ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"], startMonth: 10, startYear: 2026,
+      cancelSearch: () => { rec.cancelled++; },
     })();
     return rec;
   };
@@ -3638,6 +3639,8 @@ check("prefs audit never logs the plaintext email (masked only)",
     // with the whole preview, and refuses while another publish is in progress.
     check("AE1 Accept & Publish hands the WHOLE preview to publishWeeks (the one publish step — net counts, undo, audit: AG5)",
       ticked.audits[0] && Object.keys(ticked.audits[0].weeks).join() === "2026-11-16,2026-11-23" && ticked.audits[0].meta.origin === "generated");
+    check("AE1 Accept & Publish first cancels a running search (\"Search more\"), so its late result can't reopen the published preview (2026-10-12)",
+      ticked.cancelled === 1 && clean.cancelled === 1, JSON.stringify([ticked.cancelled, clean.cancelled]));
     const busy = run([], false, true);
     check("AE1 while a publish is in progress (Generate & Publish waiting for its snapshot), Accept & Publish publishes NOTHING and says why",
       busy.published === 0 && /already in progress/.test(busy.toasts.join(" ")), JSON.stringify(busy));
@@ -3654,8 +3657,8 @@ check("prefs audit never logs the plaintext email (masked only)",
       && count('color:dk?"#f0c890":"#7a4010",overflowWrap:"anywhere"}}>') === 1);
   check("AE3 Generate & Publish: a result with items opens the preview (\"review\") instead of saving; only \"published\" sends the notice; a cancelled Silvis confirm sends nothing",
     count('    if (needsOkN > 0) {\n      setPreviewSchedule(result); setPreviewOrigin("generated");\n      setShowPreview(true);'.replace(/\n/g, src.includes("\r\n") ? "\r\n" : "\n")) === 1
-      && count('return "review";') === 1 && count('return "published";') === 1 && count('return "cancelled";') === 1
-      && count('if (doGenerate(false) !== "published") return;') === 1);
+      && count('return "review";') === 1 && count('return "published";') === 1 && count('return "cancelled";') === 2 // the Silvis confirm; a cancelled / empty search (2026-10-12)
+      && count('if ((await doGenerate(false)) !== "published") return;') === 1);
   check("AE4 the box and the generator share ONE availability builder (vacations ∪ no-call ∪ Silvis), and the box reads the bends from generator.js",
     count("const availability = buildGenAvailability();") === 1 && count("vac: buildGenAvailability(), vacationsOnly: vacations,") === 1
       && count("return listScheduleBends(previewSchedule, {") === 1 && count("const availability = {};") === 1);
@@ -3879,11 +3882,11 @@ await (async () => {
     if (i < 0 || e < 0) check("AG3 loadScheduleJson extractable", false, "anchors not found");
     else {
       const body = nsrc.slice(i, e) + "\n  };";
-      const mk = vm.runInContext(`(function (env) { const { showToast, validateScheduleJson, shapeScheduleWeeks, mondays, fmt, surgeons, backupMondaySet, fierceBackupSet, holidayAssignments, setPreviewSchedule, setPreviewOrigin, setPreviewCalMonth, setShowPreview } = env; ${body}; return loadScheduleJson; })`, sandbox);
+      const mk = vm.runInContext(`(function (env) { const { showToast, validateScheduleJson, shapeScheduleWeeks, mondays, fmt, surgeons, backupMondaySet, fierceBackupSet, holidayAssignments, setPreviewSchedule, setPreviewOrigin, setPreviewCalMonth, setShowPreview, cancelSearch, setSearchStats } = env; ${body}; return loadScheduleJson; })`, sandbox);
       const go = (text) => {
-        const rec = { toasts: [], preview: null, origin: null, shown: false };
+        const rec = { toasts: [], preview: null, origin: null, shown: false, cancelled: 0 };
         const load = mk({ showToast: (m, t) => rec.toasts.push([String(m), t]), validateScheduleJson: G.validateScheduleJson, shapeScheduleWeeks: G.shapeScheduleWeeks, mondays: MON, fmt: G.fmt, surgeons: SUR,
-          backupMondaySet: BK, fierceBackupSet: FB, holidayAssignments: HOL, setPreviewSchedule: (x) => { rec.preview = x; }, setPreviewOrigin: (x) => { rec.origin = x; }, setPreviewCalMonth: () => {}, setShowPreview: (x) => { rec.shown = x; } });
+          backupMondaySet: BK, fierceBackupSet: FB, holidayAssignments: HOL, setPreviewSchedule: (x) => { rec.preview = x; }, setPreviewOrigin: (x) => { rec.origin = x; }, setPreviewCalMonth: () => {}, setShowPreview: (x) => { rec.shown = x; }, cancelSearch: () => { rec.cancelled++; }, setSearchStats: (x) => { rec.stats = x; } });
         rec.ret = load(text, "bench.json");
         return rec;
       };
@@ -3903,7 +3906,7 @@ await (async () => {
   }
   // ── AG4 ──
   check("AG4 the button sits next to 👁 Preview Schedule, scheduler/admin only, with a hidden .json file input; the header says where the preview came from",
-    /👁 Preview Schedule\n\s*<\/button>\n\s*\{\(isScheduler \|\| userProfile\?\.role === "admin"\) && <>[\s\S]{0,600}📋 Load schedule \(JSON\)[\s\S]{0,200}<input ref=\{loadJsonInputRef\} type="file" accept="\.json,application\/json" onChange=\{onLoadJsonFile\}/.test(nsrc)
+    /👁 Preview Schedule"\}\n\s*<\/button>\n\s*\{\(isScheduler \|\| userProfile\?\.role === "admin"\) && <>[\s\S]{0,600}📋 Load schedule \(JSON\)[\s\S]{0,200}<input ref=\{loadJsonInputRef\} type="file" accept="\.json,application\/json" onChange=\{onLoadJsonFile\}/.test(nsrc)
       && count('{previewOrigin === "json" && <span') === 1 && count("Loaded from JSON — not generated") === 1
       && count('setPreviewSchedule(result); setPreviewOrigin("generated");') === 2 && count('setPreviewOrigin("json")') === 1);
   check("AG4 both publish paths go through the ONE publish step (Accept & Publish; Generate & Publish at commit), the only roll-forward — no 100 ms timer, no 'skip if any schedule exists'",
@@ -3911,12 +3914,12 @@ await (async () => {
       && count("const r = rollForwardCounts(newWeeks, replacedWeeks);") === 1 && count("rollForwardCounts(") === 1
       && count("hadExistingSchedule") === 0 && !/rollForwardCounts\(latest\)/.test(nsrc));
   {
-    const g = nsrc.indexOf("  const doGenerate = (preview) => {"), ge = nsrc.indexOf("\n  };\n", g), body = g < 0 ? "" : nsrc.slice(g, ge);
+    const g = nsrc.indexOf("  const doGenerate = async (preview) => {"), ge = nsrc.indexOf("\n  };\n", g), body = g < 0 ? "" : nsrc.slice(g, ge);
     const busy = body.indexOf("if (publishingRef.current) {"), arm = body.indexOf("publishingRef.current = true; setPublishing(true);"), iife = body.indexOf("(async () => {", arm);
     const snapOk = body.indexOf("if (!snap.ok) {"), pub = body.indexOf("publishWeeks(result, {"), fin = body.indexOf("} finally { publishingRef.current = false; setPublishing(false); }");
     check("AG4 Generate & Publish: refused while a publish is in progress, armed BEFORE the snapshot's await, released in finally; the counts move only AFTER a good snapshot (a refused publish moves nothing)",
-      busy > 0 && arm > busy && iife > arm && snapOk > iife && pub > snapOk && fin > pub && count('return "busy";') === 1
-        && count("disabled={publishing}") === 1 && count("disabled={publishing || (previewNeedsOk.items.length > 0 && !previewAck)}") === 1,
+      busy > 0 && arm > busy && iife > arm && snapOk > iife && pub > snapOk && fin > pub && count('return "busy";') === 2 // + a search already running (2026-10-12)
+        && count("disabled={publishing || !!searching}") === 1 && count("disabled={publishing || (previewNeedsOk.items.length > 0 && !previewAck)}") === 1,
       JSON.stringify({ busy, arm, iife, snapOk, pub, fin }));
   }
   check("AG4 the immediate save after Generate & Publish writes the counts AFTER the publish (not the render's)",
@@ -3982,6 +3985,296 @@ await (async () => {
     }
   }
 })();
+
+// ─── AH. The search, strain and the floor in the app (owner brief 2026-10-12, PR 2) ───
+// The generator's side is pinned by test/generator-regression.js (live
+// scenario + benchmark + oracle). Here, the app's side:
+//   AH1 Schedule Warnings (the REAL conflicts memo): rule 1 — a service-week
+//       surgeon off (vacation / no-call) on that Sunday is one line; rule 2 —
+//       Thu night + that weekend is one line (not when the cards design it or
+//       a holiday 24h holds the Friday)
+//   AH2 Schedule Warnings (the REAL silvisConflicts memo): a Silvis primary on
+//       the Sunday after FAK's Davenport service week is one line
+//   AH3 Needs your OK: every item kind listScheduleBends emits sits in exactly
+//       one group; the box renders the groups; the footnote no longer claims
+//       the bends are "the minimum the calendar allows"
+//   AH4 ONE seed builder (the REAL buildPrevWeekSeed): that week's service
+//       week, weekend AND weeknights, and the service-week history — used by
+//       Generate, Search more and the preview's box
+//   AH5 the REAL runSearch: time slices until perfect or the budget is spent;
+//       cancelled → null; a throwing slice still ends the search
+//   AH6 the wiring: Generate / Re-roll / Regenerate / Search more go through
+//       the search; Accept, Discard and a JSON load cancel it; Search more
+//       starts from the preview and drops a late result; the progress line
+//       re-renders itself, not the app
+//   AH7 generator.js: one FLEX list, the 10-second budget, and a generate()
+//       result is the weeks and nothing else
+await (async () => {
+  const nsrcAH = src.replace(/\r\n/g, "\n");
+  const G = vm.runInContext("({ fmt, addD, parse, listScheduleBends, generate, createScheduleSearch })", sandbox);
+  // ── AH1 ──
+  {
+    const START = "  const conflicts = useMemo(() => {";
+    const s0 = nsrcAH.indexOf(START), e0 = s0 < 0 ? -1 : nsrcAH.indexOf("\n  }, [", s0);
+    const body = s0 < 0 || e0 < 0 ? null : nsrcAH.slice(s0 + START.length, e0);
+    let runC = null;
+    try { runC = body ? vm.runInContext("(function (env) { const { schedule, surgeons, sMap, SHIFT_LABELS, holidayAssignments, vacations, noCallDays } = env; return (() => {" + body + "})(); })", sandbox, { filename: "ah-conflicts.js" }) : null; } catch (ex) { runC = null; }
+    if (!runC) check("AH1 conflicts memo extractable for execution", false, "anchor / compile");
+    else {
+      let mon = G.parse("2099-03-01"); while (mon.getDay() !== 1) mon = G.addD(mon, 1);
+      const M = G.fmt(mon), d = (o) => G.fmt(G.addD(mon, o));
+      const surgeons = [{ id: "s1", name: "DJA" }, { id: "s2", name: "MCC" }, { id: "s3", name: "RPC" }, { id: "s4", name: "KJH" }, { id: "s5", name: "REH" }, { id: "s6", name: "FAK" }, { id: "s7", name: "ARW" }];
+      const sMap = Object.fromEntries(surgeons.map((s, i) => [s.id, { name: s.name, idx: i }]));
+      const LABELS = vm.runInContext("SHIFT_LABELS", sandbox);
+      const base = (over) => ({ [M]: Object.assign({ dayCall: "s1", nights: { mon: "s2", tue: "s3", wed: "s4", thu: "s5", wknd: "s7" } }, over || {}) });
+      const run = (env) => runC(Object.assign({ schedule: base(), surgeons, sMap, SHIFT_LABELS: LABELS, holidayAssignments: {}, vacations: {}, noCallDays: {} }, env));
+      const keysOf = (r, p) => r.filter(x => x.key.startsWith(p)).map(x => x.key);
+      const vacSun = run({ vacations: { s1: [[d(6), d(6)]] } }), ncSun = run({ noCallDays: { s1: [[d(6), d(6)]] } }), clean = run({});
+      check("AH1 rule 1: the service-week surgeon on vacation that SUNDAY → one 'svc-sun' line keyed from facts, saying the surgeon must be free that Sunday",
+        JSON.stringify(keysOf(vacSun, "svc-sun|")) === JSON.stringify([`svc-sun|${M}|s1|${d(6)}|vacation`]) && /DJA is on Service Week .* but is off Sun .* \(vacation\) — the service-week surgeon must be free that Sunday/.test(vacSun.find(x => x.key.startsWith("svc-sun|")).message),
+        JSON.stringify(vacSun.map(x => x.key)));
+      check("AH1 rule 1: a NO-CALL Sunday is the same line (kind no-call); a free Sunday → none",
+        JSON.stringify(keysOf(ncSun, "svc-sun|")) === JSON.stringify([`svc-sun|${M}|s1|${d(6)}|no-call`]) && keysOf(clean, "svc-sun|").length === 0, JSON.stringify([ncSun.map(x => x.key), clean.map(x => x.key)]));
+      const thu = run({ schedule: base({ nights: { mon: "s2", tue: "s3", wed: "s4", thu: "s7", wknd: "s7" } }) });
+      check("AH1 rule 2: Thu night + that weekend by one surgeon → one 'thu-wknd' line (two nights in a row)",
+        JSON.stringify(keysOf(thu, "thu-wknd|")) === JSON.stringify([`thu-wknd|${M}|s7`]) && /ARW has Thu night then the Weekend \(Fri night\) — two nights in a row/.test(thu.find(x => x.key.startsWith("thu-wknd|")).message), JSON.stringify(thu.map(x => x.key)));
+      const holFri = run({ schedule: base({ nights: { mon: "s2", tue: "s3", wed: "s4", thu: "s7", wknd: "s7" }, holidayCoverage: { [d(4)]: { surgeonId: "s3", name: "Fri 24h" } } }) });
+      check("AH1 rule 2: a holiday 24h holding that Friday breaks the run — no 'thu-wknd' line", keysOf(holFri, "thu-wknd|").length === 0, JSON.stringify(holFri.map(x => x.key)));
+    }
+  }
+  // ── AH2 ──
+  {
+    const START = "  const silvisConflicts = useMemo(() => {";
+    const s0 = nsrcAH.indexOf(START), e0 = s0 < 0 ? -1 : nsrcAH.indexOf("\n  }, [", s0);
+    const body = s0 < 0 || e0 < 0 ? null : nsrcAH.slice(s0 + START.length, e0);
+    let runS = null;
+    try { runS = body ? vm.runInContext("(function (env) { const { silvisActive, isPublicMode, schedule, silvisDays, silvisFakId, nameOf, silvisRows, silvisLoadError } = env; return (() => {" + body + "})(); })", sandbox, { filename: "ah-silvis.js" }) : null; } catch (ex) { runS = null; }
+    if (!runS) check("AH2 silvisConflicts memo extractable for execution", false, "anchor / compile");
+    else {
+      let mon = G.parse("2099-03-01"); while (mon.getDay() !== 1) mon = G.addD(mon, 1);
+      const M = G.fmt(mon), d = (o) => G.fmt(G.addD(mon, o));
+      const env = (primary, dc) => ({ silvisActive: true, isPublicMode: false, schedule: { [M]: { dayCall: dc, nights: { mon: "s2", tue: "s3", wed: "s4", thu: "s5", wknd: "s7" } } },
+        silvisDays: { primary: new Set(primary), backup: new Set(), fetchedAt: new Date().toISOString(), from: d(-30), to: d(60) }, silvisFakId: "s6", nameOf: (id) => ({ s6: "FAK" })[id] || id, silvisRows: [{}], silvisLoadError: null });
+      let onSun = null, other = null, notHis = null;
+      try { onSun = runS(env([d(6)], "s6")); other = runS(env([d(13)], "s6")); notHis = runS(env([d(6)], "s1")); } catch (ex) { onSun = null; }
+      const sunKeys = (r) => (r || []).filter(x => x.key.startsWith("silvis-sun|")).map(x => x.key);
+      check("AH2 rule 1: a Silvis primary on the SUNDAY of FAK's Davenport service week → one 'silvis-sun' line; a Silvis day elsewhere, or another surgeon's service week → none",
+        !!onSun && JSON.stringify(sunKeys(onSun)) === JSON.stringify([`silvis-sun|s6|${M}|${d(6)}`]) && sunKeys(other).length === 0 && sunKeys(notHis).length === 0,
+        JSON.stringify([sunKeys(onSun), sunKeys(other), sunKeys(notHis)]));
+    }
+  }
+  // ── AH3 ──
+  {
+    const gs = nsrcAH.indexOf("const NEEDS_OK_GROUPS = ["), ge = gs < 0 ? -1 : nsrcAH.indexOf("];\n", gs);
+    let groups = null; try { groups = gs < 0 ? null : vm.runInContext("(" + nsrcAH.slice(gs + "const NEEDS_OK_GROUPS = ".length, ge + 1) + ")", sandbox); } catch (ex) { groups = null; }
+    const KINDS = ["error", "lock", "empty", "timeoff", "hard", "lastResort", "strain", "bend", "flexStrain", "crowded"];
+    const all = groups ? groups.flatMap(g => g.kinds) : [];
+    check("AH3 every item kind (incl. the check's own 'error') sits in exactly ONE Needs-your-OK group, rule breaks first",
+      !!groups && KINDS.every(k => all.filter(x => x === k).length === 1) && all.length === KINDS.length && groups[0].kinds.includes("hard") && groups[0].kinds.includes("timeoff"), JSON.stringify(groups));
+    // generator.js emits only kinds the groups know (a crafted schedule with a hard pair, a Sunday off, strain, a bend, an empty slot, a lock, crowding)
+    const S7 = ["DJA", "MCC", "RPC", "KJH", "REH", "FAK", "ARW"].map((n, i) => ({ id: "s" + (i + 1), name: n }));
+    const ms = ["2099-03-02", "2099-03-09"].map(G.parse);
+    const sched = { "2099-03-02": { dayCall: "s1", nights: { mon: "s2", tue: "s2", wed: "s3", thu: "s4", wknd: "s5" } }, "2099-03-09": { dayCall: "s5", nights: { mon: null, tue: "s7", wed: "s2", thu: "s6", wknd: "s6" } } };
+    const off = Object.fromEntries(["s2", "s3", "s4", "s7", "s6"].map(id => [id, [["2099-03-12", "2099-03-12"]]]));
+    off.s1 = [["2099-03-08", "2099-03-08"]];
+    const lst = G.listScheduleBends(sched, { surgeons: S7, mondays: ms, vac: off, vacationsOnly: {}, holAssignments: {}, prevWeekSeed: null, locks: [{ mondayStr: "2099-03-09", slot: "dc", surgeonId: "s3" }] });
+    const got = [...new Set(lst.items.map(i => i.kind))].sort();
+    check("AH3 the crafted schedule exercises the new kinds, and every kind listScheduleBends emits is in a group",
+      ["hard", "timeoff", "empty", "lock", "bend", "crowded"].every(k => got.includes(k)) && got.every(k => all.includes(k)) && lst.items.some(i => i.key === "sunday" && /must be free that Sunday/.test(i.text)), JSON.stringify(got) + " " + JSON.stringify(lst.items.map(i => i.text)));
+    check("AH3 the box renders the groups (subheads), and the footnote no longer claims the bends are the calendar's minimum",
+      count("{NEEDS_OK_GROUPS.map(g => { const its = previewNeedsOk.items.filter(it => g.kinds.includes(it.kind));") === 1 && count("the bends themselves are the minimum the calendar allows") === 0
+        && count("those rules, FAK's last resort, service weeks even, weekends even, the least strain, the mildest bends, totals even") === 1);
+  }
+  // ── AH4 ──
+  {
+    const i = nsrcAH.indexOf("  const buildPrevWeekSeed = (first) => {"), e = i < 0 ? -1 : nsrcAH.indexOf("\n  };\n", i);
+    let mk = null; try { mk = i < 0 ? null : vm.runInContext("(function (env) { const { mondays, schedule, fmt, addD } = env; return (" + nsrcAH.slice(i + "  const buildPrevWeekSeed = ".length, e) + "\n  }); })", sandbox); } catch (ex) { mk = null; }
+    if (!mk) check("AH4 buildPrevWeekSeed extractable", false, "anchor / compile");
+    else {
+      const schedule = { "2026-11-09": { dayCall: "s2", nights: { mon: "s1", tue: "s3", wed: "s4", thu: "s7", wknd: "s5" } }, "2026-11-02": { dayCall: "s4", nights: {} }, "2026-10-26": { dayCall: "s2", nights: {} } };
+      const seedOf = mk({ mondays: [G.parse("2026-11-16")], schedule, fmt: G.fmt, addD: G.addD });
+      const s1 = seedOf(), s2 = seedOf(G.parse("2026-11-23"));
+      check("AH4 the ONE seed: the week before's service week, weekend AND weeknights, and each surgeon's latest service week (nearest wins); `first` overrides the Generate settings",
+        JSON.stringify(s1) === JSON.stringify({ dayCall: "s2", wknd: "s5", nights: { mon: "s1", tue: "s3", wed: "s4", thu: "s7" }, recentDc: { s2: -1, s4: -2 } }) && s2.dayCall === null && s2.recentDc.s2 === -2,
+        JSON.stringify([s1, s2]));
+    }
+    check("AH4 Generate, Search more and the preview's box all build the seed with it (the box used to drop the history and the weeknights)",
+      count("const prevWeekSeed = buildPrevWeekSeed();") === 1 && count("buildPrevWeekSeed(ms[0])") === 1 && count("prevWeekSeed: keys.length ? buildPrevWeekSeed(parse(keys[0])) : null,") === 1
+        && count("locks: pendingLocks, // a lock the schedule doesn't honor is listed too") === 1);
+  }
+  // ── AH5 ──
+  {
+    const i = nsrcAH.indexOf("  const runSearch = (session, purpose, budgetMs) => new Promise(resolve => {"), e = i < 0 ? -1 : nsrcAH.indexOf("\n  });\n", i);
+    let mk = null; try { mk = i < 0 ? null : vm.runInContext("(function (env) { const { searchRef, setSearching, setTimeout } = env; return (" + nsrcAH.slice(i + "  const runSearch = ".length, e) + "\n  })); })", sandbox); } catch (ex) { mk = null; }
+    if (!mk) check("AH5 runSearch extractable", false, "anchor / compile");
+    else {
+      const mkEnv = () => { const flags = []; return { flags, env: { searchRef: { current: null }, setSearching: (v) => flags.push(v), setTimeout } }; };
+      const fake = (perfectAt, throwAt) => ({ n: 0, step() { this.n++; if (throwAt && this.n === throwAt) throw new Error("boom"); }, status() { return { perfect: this.n >= perfectAt }; } });
+      const A = mkEnv(), sA = fake(3); const rA = await mk(A.env)(sA, "generate", 60000);
+      check("AH5 the REAL runSearch: slices until perfect, then resolves { session, ms } and clears the flag (generate → null)",
+        !!rA && rA.session === sA && sA.n === 3 && A.env.searchRef.current === null && JSON.stringify(A.flags) === JSON.stringify(["generate", null]), JSON.stringify([sA.n, A.flags]));
+      const B = mkEnv(), sB = fake(1e9); const pB = mk(B.env)(sB, "more", 60000);
+      await new Promise(r => setTimeout(r, 5)); B.env.searchRef.current = null; // cancelSearch
+      const rB = await pB;
+      check("AH5 cancelled (Accept / Discard / a JSON load clears the ref) → resolves null; the search stops", rB === null && sB.n >= 1 && sB.n < 1e9, JSON.stringify([rB, sB.n]));
+      const C = mkEnv(), sC = fake(1e9); const rC = await mk(C.env)(sC, "generate", 0);
+      check("AH5 the budget counts ACTIVE search time: 0 ms → one slice, then done", !!rC && sC.n === 1 && C.env.searchRef.current === null, JSON.stringify(sC.n));
+      const D = mkEnv(), sD = fake(1e9, 2), errs = []; const oldErr = console.error; console.error = (...a) => errs.push(a.join(" "));
+      const rD = await mk(D.env)(sD, "generate", 60000); console.error = oldErr;
+      check("AH5 a slice that throws ends the search with what it has (no endless 'Searching…'), and says so in the console", !!rD && sD.n === 2 && D.env.searchRef.current === null && /Schedule search failed/.test(errs.join(" ")), JSON.stringify([sD.n, errs]));
+    }
+  }
+  // ── AH6 ──
+  {
+    const dg = nsrcAH.indexOf("  const doGenerate = async (preview) => {"), dge = nsrcAH.indexOf("\n  };\n", dg), dgb = dg < 0 ? "" : nsrcAH.slice(dg, dge);
+    check("AH6 Generate goes through the search for SEARCH_MS and refuses a second search while one runs",
+      dgb.indexOf('if (searchRef.current) { showToast("A schedule search is already running') > 0 && dgb.indexOf('const done = await runSearch(search, "generate", SEARCH_MS);') > dgb.indexOf("const search = createScheduleSearch(") && dgb.indexOf("const result = done && done.session.best();") > 0);
+    check("AH6 Accept, Discard and a JSON load cancel a running search first (Discard and a load also clear the last search's count, which no longer applies)",
+      /const acceptPreview = \(\) => \{\n    cancelSearch\(\);/.test(nsrcAH) && /const discardPreview = \(\) => \{\n    cancelSearch\(\); setSearchStats\(null\);/.test(nsrcAH) && /const loadScheduleJson = \(text, fileName\) => \{\n    cancelSearch\(\); setSearchStats\(null\);/.test(nsrcAH));
+    const sm = nsrcAH.indexOf("  const searchMore = async () => {"), sme = nsrcAH.indexOf("\n  };\n", sm), smb = sm < 0 ? "" : nsrcAH.slice(sm, sme);
+    check("AH6 🔍 Search more starts FROM the preview (seed), replaces it only when strictly better, and drops a late result if the preview changed meanwhile",
+      smb.indexOf("search.seed(base);") > 0 && smb.indexOf('const done = await runSearch(search, "more", SEARCH_MS);') > smb.indexOf("search.seed(base);")
+        && smb.indexOf("if (!done || previewSchedRef.current !== base) return;") > 0 && smb.indexOf("if (st.improved) {") > smb.indexOf("previewSchedRef.current !== base")
+        && count("previewSchedRef.current = previewSchedule;") === 1 && count('<button onClick={searchMore} disabled={!!searching || publishing}') === 1);
+    check("AH6 the buttons that start a search are disabled while one runs; the progress line polls the ref itself (setInterval in SearchProgress), not app state",
+      count('<button onClick={()=>doGenerate(true)} disabled={!!searching}') === 1 && count("disabled={publishing || !!searching}") === 1 && count("<button onClick={()=>doGenerate(false)} disabled={!!searching}") === 1
+        && /function SearchProgress\(\{ searchRef, dk \}\) \{\n  const \[, setTick\] = React\.useState\(0\);\n  React\.useEffect\(\(\) => \{ const t = setInterval\(\(\) => setTick\(n => n \+ 1\), 250\); return \(\) => clearInterval\(t\); \}, \[\]\);/.test(nsrcAH)
+        && count("<SearchProgress searchRef={searchRef} dk={dk} />") === 3);
+  }
+  // ── AH7 ──
+  {
+    const gsrc = fs.readFileSync(path.join(ROOT, "generator.js"), "utf8");
+    check("AH7 generator.js: ONE FLEX list (by code), the app's 10-second search budget",
+      (gsrc.match(/const FLEX = \["FAK"\];/g) || []).length === 1 && (gsrc.match(/const SEARCH_MS = 10000;/g) || []).length === 1);
+    const S7 = ["DJA", "MCC", "RPC", "KJH", "REH", "FAK", "ARW"].map((n, i) => ({ id: "s" + (i + 1), name: n }));
+    const ms = [0, 7, 14, 21, 28, 35, 42].map(o => G.addD(G.parse("2099-03-02"), o));
+    const r = G.generate(S7, ms, {}, new Set(), {}, {}, new Set(), null, [], null, {}, null);
+    const se = G.createScheduleSearch(S7, ms, {}, new Set(), {}, {}, new Set(), null, [], null, {}, null).seed(r);
+    check("AH7 a generate() result is the weeks and NOTHING else enumerable (the app spreads it into the schedule); a search seeded with it starts 'not improved'",
+      JSON.stringify(Object.keys(r)) === JSON.stringify(ms.map(G.fmt)) && se.status().improved === false && !!se.best(), JSON.stringify(Object.keys(r)));
+  }
+})();
+
+// ─── AI. NEVER RE-APPLY (owner rule, 2026-10-12/13) ───
+// A previewed schedule — generated, or loaded from a JSON file such as the
+// CP-SAT benchmark that is now the published period — reaches the schedule
+// ONLY through ✓ Accept & Publish. Nothing may keep it around to re-apply
+// later: it is never in the state bundle (the blob, the snapshots, the
+// unload flush, the export all build from it), never an autosave trigger,
+// never in browser storage, never restored from anywhere; and no app file
+// names the test fixture. Each guard below is TWO-SIDED: it passes on the
+// real source and FAILS on a copy with that violation planted (a guard that
+// can't fail proves nothing).
+//   AI1 buildStateBundle — the REAL function, executed: no preview key, and
+//       the preview object appears in no value
+//   AI2 the autosave effect: previewSchedule / previewOrigin are not in its
+//       deps and not read in its body
+//   AI3 browser storage: no localStorage / sessionStorage / IndexedDB write in
+//       any app file mentions the preview; the preview is only ever set from
+//       the search's result, the loader's checked weeks, or null — and the
+//       loader runs only from the file input
+//   AI4 no app file (index-source.html, helpers.js, config.js, generator.js,
+//       silvis-feed.js, app-styles.js) references the benchmark fixture — by
+//       name, or by any fetch / import / script source into test/
+{
+  const APP_FILES = ["index-source.html", "helpers.js", "config.js", "generator.js", "silvis-feed.js", "app-styles.js"];
+  const files = Object.fromEntries(APP_FILES.map(f => [f, fs.readFileSync(path.join(ROOT, f), "utf8").replace(/\r\n/g, "\n")]));
+  const PREVIEW = /\bpreview(Schedule|Origin)\b/;
+  const plant = (text, anchor, insert, label) => {
+    const n = text.split(anchor).length - 1;
+    if (n !== 1) throw new Error(`AI plant anchor x${n} (${label}): ${anchor.slice(0, 80)}`);
+    return text.replace(anchor, () => insert);
+  };
+  const twoSided = (name, guard, real, planted) => {
+    const r = guard(real), p = guard(planted);
+    check(`${name} — holds on the real source`, r.ok, r.why || "");
+    check(`${name} — and FAILS on a copy with the violation planted (the guard bites — it ran, and caught it)`, !p.ok && !p.broken, (p.broken ? "the guard could not run on the planted copy: " : "the planted copy passed: ") + (p.why || ""));
+  };
+  const src0 = files["index-source.html"];
+  // ── AI1 ──
+  {
+    const guard = (text) => {
+      const START = "  const buildStateBundle = (overrides = {}) => ({";
+      const i = text.indexOf(START), e = i < 0 ? -1 : text.indexOf("\n  });\n", i);
+      if (i < 0 || e < 0) return { ok: false, broken: true, why: "buildStateBundle not found" };
+      const body = text.slice(i + START.length, e);
+      const names = [...new Set((body.match(/\b[A-Za-z_$][\w$]*\b/g) || []))].filter(w => !["overrides", "true", "false", "null"].includes(w));
+      const PREV = { "2026-11-16": { dayCall: "s4", nights: {} } }, ORIGIN = "json";
+      const env = {};
+      names.forEach(n => { env[n] = n === "previewSchedule" ? PREV : n === "previewOrigin" ? ORIGIN : /Set$/.test(n) ? new Set() : { tag: n }; });
+      let out;
+      try { out = vm.runInContext(`(function (env) { const { ${names.join(", ")} } = env; return (overrides = {}) => ({${body}\n  }); })`, sandbox)(env)(); }
+      catch (ex) { return { ok: false, broken: true, why: "not executable: " + ex.message }; }
+      const keys = Object.keys(out).filter(k => /preview/i.test(k));
+      const holds = Object.values(out).some(v => v === PREV || v === ORIGIN || (v && typeof v === "object" && JSON.stringify(v) === JSON.stringify(PREV)));
+      return { ok: keys.length === 0 && !holds && !PREVIEW.test(body), why: JSON.stringify({ keys, holds }) };
+    };
+    twoSided("AI1 the REAL buildStateBundle (blob, snapshots, unload flush, export) never carries the preview",
+      guard, src0, plant(src0, "    startMonth, startYear, numWeeks, holidayAssignments, startMondayOverride,\n    pendingLocks,\n    silvisRule,\n", "    startMonth, startYear, numWeeks, holidayAssignments, startMondayOverride,\n    pendingLocks,\n    previewSchedule, previewOrigin,\n    silvisRule,\n", "AI1"));
+  }
+  // ── AI2 ──
+  {
+    const guard = (text) => {
+      const START = "  // ─── Supabase: Auto-save on changes ───\n  useEffect(() => {";
+      const i = text.indexOf(START), e = i < 0 ? -1 : text.indexOf("\n  }, [", i);
+      if (i < 0 || e < 0) return { ok: false, broken: true, why: "autosave effect not found" };
+      const deps = text.slice(e, text.indexOf("]);", e) + 3), body = text.slice(i, e);
+      return { ok: !PREVIEW.test(deps) && !PREVIEW.test(body), why: deps };
+    };
+    twoSided("AI2 the autosave effect neither depends on nor reads previewSchedule / previewOrigin",
+      guard, src0, plant(src0, "startMondayOverride, pendingLocks, dismissedWarnings]);", "startMondayOverride, pendingLocks, dismissedWarnings, previewSchedule]);", "AI2"));
+  }
+  // ── AI3 ──
+  {
+    // every argument list of a storage write (balanced parens), per file
+    const writes = (text) => {
+      const out = [], re = /\b(localStorage\.setItem|sessionStorage\.setItem|\.put|\.add)\s*\(/g;
+      let m;
+      while ((m = re.exec(text))) {
+        if (m[1] !== "localStorage.setItem" && m[1] !== "sessionStorage.setItem" && !/indexedDB|objectStore|\bstore\b|\bidb\b/i.test(text.slice(Math.max(0, m.index - 200), m.index))) continue;
+        let d = 1, j = m.index + m[0].length;
+        while (j < text.length && d > 0) { if (text[j] === "(") d++; else if (text[j] === ")") d--; j++; }
+        out.push(text.slice(m.index, j));
+      }
+      return out;
+    };
+    const guardStore = (fs_) => {
+      const bad = [];
+      for (const f in fs_) writes(fs_[f]).forEach(w => { if (/preview/i.test(w)) bad.push(f + ": " + w.slice(0, 120)); });
+      const n = Object.values(fs_).reduce((t, x) => t + writes(x).length, 0);
+      return { ok: bad.length === 0 && n > 0, why: bad.join(" | ") || `${n} storage writes scanned` };
+    };
+    twoSided("AI3 no localStorage / sessionStorage / IndexedDB write in any app file mentions the preview",
+      guardStore, files, Object.assign({}, files, { "index-source.html": plant(src0, "  const discardPreview = () => {\n", "  const discardPreview = () => {\n    try { localStorage.setItem(\"dsg-last-preview\", JSON.stringify(previewSchedule)); } catch (e) {}\n", "AI3a") }));
+    const guardSet = (text) => {
+      const args = [];
+      const re = /\bsetPreviewSchedule\(/g; let m;
+      while ((m = re.exec(text))) { let d = 1, j = m.index + m[0].length; while (j < text.length && d > 0) { if (text[j] === "(") d++; else if (text[j] === ")") d--; j++; } args.push(text.slice(m.index + m[0].length, j - 1).trim()); }
+      const ALLOWED = ["result", "better", "shaped", "null"];
+      const odd = args.filter(a => !ALLOWED.includes(a));
+      const calls = (text.match(/\bloadScheduleJson\(/g) || []).length, fromInput = /r\.onload = \(\) => loadScheduleJson\(String\(r\.result \|\| ""\), f\.name\);/.test(text);
+      return { ok: args.length > 0 && odd.length === 0 && calls === 1 && fromInput, why: JSON.stringify({ odd, calls, fromInput }) };
+    };
+    twoSided("AI3 the preview is only ever set from the search's result, the loader's checked weeks, or null — and the loader runs only from the file input (nothing restores a preview)",
+      guardSet, src0, plant(src0, "  const discardPreview = () => {\n", "  const restorePreview = () => { try { setPreviewSchedule(JSON.parse(localStorage.getItem(\"dsg-last-preview\"))); } catch (e) {} };\n  const discardPreview = () => {\n", "AI3b"));
+    twoSided("AI3 …and the loader can't be called from anywhere but the file input",
+      guardSet, src0, plant(src0, "  const discardPreview = () => {\n", "  const reloadBenchmark = (t) => loadScheduleJson(t, \"again.json\");\n  const discardPreview = () => {\n", "AI3c"));
+  }
+  // ── AI4 ──
+  {
+    const guard = (fs_) => {
+      // the benchmark by name anywhere (code or comment), and any fetch / import /
+      // script source into test/ (a doc comment naming another fixture is fine)
+      const bad = Object.keys(fs_).filter(f => /benchmark-2026-11-16-v3/.test(fs_[f]) || /(fetch|import|require)\s*\(\s*["'`][^"'`]*\btest\/|src=["'][^"']*\btest\//.test(fs_[f]));
+      const sizes = Object.values(fs_).every(x => x.length > 100);
+      return { ok: bad.length === 0 && sizes && Object.keys(fs_).length === APP_FILES.length, why: bad.join(", ") || "clean" };
+    };
+    twoSided("AI4 no app file references the benchmark fixture (test/fixtures/benchmark-2026-11-16-v3.json) — by name, or by a fetch / import into test/",
+      guard, files, Object.assign({}, files, { "generator.js": files["generator.js"] + "\n// see benchmark-2026-11-16-v3.json\n" }));
+    twoSided("AI4 …and a fetch into test/fixtures under any other name is caught too",
+      guard, files, Object.assign({}, files, { "helpers.js": files["helpers.js"] + "\nconst _b = () => fetch(\"test/fixtures/period.json\");\n" }));
+  }
+}
 
 // ─── Verdict ───
 console.log(`\n${checks} checks, ${failures.length} failure(s)`);
