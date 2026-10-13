@@ -4286,9 +4286,23 @@ await (async () => {
       const pinDc = (y) => { const x = G.parse(`${y}-12-25`), dow = x.getDay(), des = G.fmt(G.addD(x, dow === 0 ? -6 : 1 - dow));
         const hol = { [y]: [{ name: "Christmas Day", date: `${y}-12-25`, surgeonA: "s6", surgeonB: "s6", type: "major", coverage: [{ date: G.fmt(G.addD(x, -1)), surgeon: "s6", isEve: true }, { date: `${y}-12-25`, surgeon: "s6" }] }] };
         const des2 = vm.runInContext("holidayDesign", sandbox)(hol, [des], "s6");
-        return des2.pins[des] && des2.pins[des].dayCall; };
-      check("AH8 FAK's Christmas-week service week is pinned for every Christmas weekday the generator's rule covers (2027 Sat, 2033 Sun, 2026 Fri, 2029 Tue)",
-        ["2027", "2033", "2026", "2029"].every(y => pinDc(y) === "s6"), JSON.stringify(["2027", "2033", "2026", "2029"].map(y => [y, pinDc(y)])));
+        return des2.pins[des] && (des2.pins[des].dayCall + "/" + des2.pins[des].wknd); };
+      check("AH8 decision 3 — FAK's Christmas design week is his whole week: the cards pin him its service week AND its weekend for every Christmas weekday (2026 Fri, 2027 Sat, 2029 Tue, 2030 Wed, 2031 Thu, 2033 Sun)",
+        ["2026", "2027", "2029", "2030", "2031", "2033"].every(y => pinDc(y) === "s6/s6"), JSON.stringify(["2026", "2027", "2029", "2030", "2031", "2033"].map(y => [y, pinDc(y)])));
+      // …and the generator deals it (he is that week's service doctor too): 2029 (Tue) and 2027 (Sat), a few rolls each — and Needs your OK lists nothing for it
+      const gen = (y) => { const x = G.parse(`${y}-12-25`), dow = x.getDay(), des = G.addD(x, dow === 0 ? -6 : dow === 1 ? -7 : 1 - dow), ms4 = [-7, 0, 7, 14].map(o => G.addD(des, o));
+        const hol = { [y]: [{ name: "Christmas Day", date: `${y}-12-25`, surgeonA: "s6", surgeonB: "s6", type: "major", coverage: [{ date: G.fmt(G.addD(x, -1)), surgeon: "s6", isEve: true }, { date: `${y}-12-25`, surgeon: "s6" }] }] };
+        const S7g = ["DJA", "MCC", "RPC", "KJH", "REH", "FAK", "ARW"].map((n, k) => ({ id: "s" + (k + 1), name: n }));
+        const out = [];
+        for (let r = 0; r < 4; r++) {
+          const g = G.generate(S7g, ms4, {}, new Set(), {}, {}, new Set(), hol, [], null, {}, null, { proposals: 20000 });
+          const wk = g[G.fmt(des)], lst = G.listScheduleBends(g, { surgeons: S7g, mondays: ms4, vac: {}, vacationsOnly: {}, holAssignments: hol, prevWeekSeed: null });
+          out.push({ svc: wk.dayCall, wknd: wk.nights.wknd, fakItems: lst.items.filter(i => i.who === "s6" && i.kind !== "crowded").map(i => i.kind + ":" + i.key) });
+        }
+        return out; };
+      const g29 = gen(2029), g27 = gen(2027), g28 = gen(2028);
+      check("AH8 …the generator gives FAK that service week AND that weekend (2029 Tue, 2027 Sat, 2028 Mon Christmas — the week before it — every roll), and Needs your OK lists nothing for his Christmas week",
+        g29.concat(g27, g28).every(o => o.svc === "s6" && o.wknd === "s6" && o.fakItems.length === 0), JSON.stringify({ g29, g27, g28 }));
     }
     // (e) FAK's Christmas week in EVERY year — the card's own pattern is never "two nights in a row" nor a last resort (2026 Fri, 2027 Sat, 2028 Mon, 2029 Tue, 2031 Thu, 2033 Sun)
     {

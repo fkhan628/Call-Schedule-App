@@ -340,6 +340,11 @@ function holidayDesign(holAssignments, mondayStrs, christmasDcId) {
         pin(prevM, "dayCall", h.surgeonA);
         pin(prevM, "wknd", h.surgeonB);
       }
+      // Decision 3: when one surgeon holds the Christmas card (FAK, the standing
+      // rule), Christmas week is their whole week + Eve — the design week's
+      // WEEKEND too, whatever weekday Christmas falls on. (A Fri / Sun row or the
+      // Monday convention already pinned it; this covers Tue–Thu and Saturday.)
+      if (h.name === "Christmas Day" && h.surgeonA && h.surgeonA === h.surgeonB) pin(hDow === 1 ? fmt(addD(parse(hMon), -7)) : hMon, "wknd", h.surgeonA);
     });
   });
   return { pins, eves };
@@ -1149,6 +1154,20 @@ function generateOnce(surgeons, mondays, vac, backupMondays, priorCounts, prefer
     }
   }
 
+  // Decision 3: the Christmas card's surgeon (A = B — FAK, the standing rule)
+  // also holds the Christmas DESIGN week's weekend (holidayDesign pins it): the
+  // week holding Christmas, the week before for a Monday Christmas — dealt to
+  // them below although they are that week's service doctor.
+  const christWkndWeeks = new Set();
+  Object.keys(holByDate).forEach(ds => {
+    const hb = holByDate[ds];
+    if (!hb || hb.name !== "Christmas Day" || !hb.surgeonA || hb.surgeonA !== hb.surgeonB) return;
+    const x = parse(ds), dow = x.getDay(), des = fmt(addD(x, dow === 0 ? -6 : dow === 1 ? -7 : 1 - dow));
+    if (!mondays.some(m => fmt(m) === des)) return;
+    christWkndWeeks.add(des);
+    if (!(preAssign[des] && preAssign[des].wknd)) (preAssign[des] = preAssign[des] || {}).wknd = hb.surgeonA;
+  });
+
   // A Monday holiday right AFTER the period still claims the period's last
   // week by the same convention (A → its service week, B → its weekend) —
   // holidayDesign pins them too — or the last Sunday could run into the
@@ -1339,7 +1358,9 @@ function generateOnce(surgeons, mondays, vac, backupMondays, priorCounts, prefer
     // Monday-holiday convention: holiday week's Weekend pre-assigned to
     // surgeon B (the second holiday surgeon). Apply if available.
     const preWknd = preAssign[mStr]?.wknd;
-    if (preWknd && availWknd.includes(preWknd) && preWknd !== dc) {
+    // …and the Christmas design week's weekend goes to the card's surgeon even though they hold the service week (decision 3)
+    const christWknd = !!preWknd && preWknd === dc && christWkndWeeks.has(mStr) && floorOk(dc, monday, "wknd");
+    if (preWknd && ((availWknd.includes(preWknd) && preWknd !== dc) || christWknd)) {
       nights.wknd = preWknd; used.add(preWknd); wkndCt[preWknd]++; burden[preWknd]+=3;
       periodShifts[preWknd]++;
       if (friHoliday) holidayCt[preWknd][friHoliday.type]++;
