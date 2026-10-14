@@ -5090,9 +5090,9 @@ await require("./sync-engine-se.js")({ src, check });
   check("SE-W the schedule mirror has ONE writer: setSchedule( appears only inside commitSchedule, and scheduleRef.current is assigned only there (no passive-effect writer)",
     count("setSchedule(") === 1 && count("scheduleRef.current =") === 1 && count("const commitSchedule = useCallback((next) => { scheduleRef.current = next; setSchedule(next); }, []);") === 1,
     `setSchedule( ×${count("setSchedule(")}, scheduleRef.current = ×${count("scheduleRef.current =")}`);
-  check("SE-W one engine per session (created once, in a ref), with reads that fall back to anon and writes that never do",
+  check("SE-W one engine per session (created once, in a ref), with reads that fall back to anon (and go as anon once the server refused the token — executed in SE62 / SE-H) and writes that never do",
     count("createSchedSync({") === 1 && count("if (!schedSyncRef.current) schedSyncRef.current = createSchedSync({") === 1
-      && count("writeHeaders: () => dbAuthHeaders(),") === 1 && count("readHeaders: () => dbReadHeaders(),") === 1);
+      && count("writeHeaders: () => dbAuthHeaders(),") === 1 && count("readHeaders: () => dbReadHeaders(),") === 1 && count("anonHeaders: () => dbHeaders,") === 1);
   // The edit gate sits at the START of every user-initiated schedule action,
   // before its first side effect (status PATCH, undo step, schedule write).
   const gateBefore = (decl, endMark, firstEffect) => { const b = bodyOf(decl, endMark); const g = b.indexOf("schedEditable()"), f = b.indexOf(firstEffect); return g !== -1 && f !== -1 && g < f; };
@@ -5157,7 +5157,7 @@ await (async () => {
   let def = null; try { def = defSrc ? vm.runInContext("(" + defSrc + ")", sandbox) : null; } catch (ex) { def = null; }
   let createSchedSync = null; try { createSchedSync = se.compileEngine(se.extractEngine(src)); } catch (ex) { createSchedSync = null; }
   const engineFor = (o) => createSchedSync(Object.assign({ getState: () => ({}), commit: () => {}, fetch: () => new Promise(() => {}), url: "https://x.supabase.co",
-    writeHeaders: () => ({}), readHeaders: () => ({}), canWrite: () => true, token: () => "TOK", userId: () => "p1", now: () => new Date().toISOString(), nowMs: () => Date.now(),
+    writeHeaders: () => ({}), readHeaders: () => ({}), anonHeaders: () => ({}), canWrite: () => true, token: () => "TOK", userId: () => "p1", now: () => new Date().toISOString(), nowMs: () => Date.now(),
     onStatus: () => {}, onToast: () => {}, onWipeBlocked: () => {}, onInternalError: (e) => internalA.push(String(e && e.message || e)), log: () => {} }, o || {}));
   if (!def || !createSchedSync) { check("SE-A the schedSync default and the engine are extractable", false, JSON.stringify({ def: !!def, engine: !!createSchedSync })); return; }
   check("SE-A A14(1) the header's schedSync state starts as EXACTLY the engine's own first status — staleRemovals: 0 included (same keys, same order)",
@@ -5165,9 +5165,12 @@ await (async () => {
 
   // The header's decisions (the reload helper + the two flags), executed.
   const hdrSrc = after("  const reloadToResync = ", "\n  // The amber");
-  const hdrFn = hdrSrc ? fnIn("loaded, saveStatus, schedSync, confirmReloadWithPending, window", `(() => { const reloadToResync = ${hdrSrc}\n return { reloadToResync, schedStaleShown, schedSyncedShown }; })()`) : null;
+  // 13/n: the block asks the module-scope schedSyncLine (A16's one line) — the real one, extracted.
+  const sslSrc = (() => { const a = nsrcA.indexOf("function schedSyncLine(st, o) {"); const b = a < 0 ? -1 : nsrcA.indexOf("\n}\n", a); return a < 0 || b < 0 ? null : nsrcA.slice(a, b + 2); })();
+  let sslA = null; try { sslA = sslSrc ? vm.runInContext("(" + sslSrc + ")", sandbox) : null; } catch (ex) { sslA = null; }
+  const hdrFn = hdrSrc && sslA ? fnIn("loaded, saveStatus, schedSync, confirmReloadWithPending, window, isPublicMode, schedSyncLine", `(() => { const reloadToResync = ${hdrSrc}\n return { reloadToResync, schedStaleShown, schedSyncedShown }; })()`) : null;
   if (!hdrFn) { check("SE-A the header's sync decisions are extractable", false, "anchor / compile"); return; }
-  const HS = (st, o = {}) => hdrFn({ loaded: o.loaded !== false, saveStatus: o.saveStatus || "", schedSync: st, confirmReloadWithPending: o.confirm || (() => true), window: o.window || { location: { reload: () => {} } } });
+  const HS = (st, o = {}) => hdrFn({ loaded: o.loaded !== false, saveStatus: o.saveStatus || "", schedSync: st, confirmReloadWithPending: o.confirm || (() => true), window: o.window || { location: { reload: () => {} } }, isPublicMode: !!o.pub, schedSyncLine: sslA });
   const clean = Object.assign({}, def, { seeded: true });
   const H = (extra, o) => HS(Object.assign({}, clean, extra), o);
   check("SE-A A14(1) the header decides: staleRemovals > 0 → the 'fewer weeks' line and NOT \"☁ Synced\"; 0 and clean → Synced alone; nothing before the load; Synced still waits for pending / busy / the blob's status",
@@ -5216,11 +5219,11 @@ await (async () => {
     const at1 = nsrcA.indexOf(LINE), at2 = nsrcA.indexOf(LINE, at1 + 1);
     check("SE-A A14(1) the line is rendered in BOTH headers — the public / OR-board branch and the scheduler's — each gated by schedStaleShown, with its Reload; \"☁ Synced\" renders only through schedSyncedShown",
       count(LINE) === 2 && count('{schedStaleShown && <span role="status"') === 2 && pub0 > 0 && at1 > pub0 && at1 < sch0 && at2 > sch0 && at2 < conn
-        && count(">☁ Synced</span>") === 1 && count("{schedSyncedShown && <span") === 1 && count("schedSync.staleRemovals") === 1,
+        && count(">☁ Synced</span>") === 1 && count("{schedSyncedShown && <span") === 1 && count("schedSync.staleRemovals") === 0 && count('["stale", st.staleRemovals > 0, st.staleRemovals]') === 2, // read once per view, by schedSyncLine
       JSON.stringify({ n: count(LINE), pub0, at1, sch0, at2, conn }));
   }
   {
-    const decl = (s) => nsrcA.indexOf(s), at = decl("  const schedStaleShown = ");
+    const decl = (s) => nsrcA.indexOf(s), at = decl("  const schedLine = schedSyncLine(");
     const reads = ["const isPublicMode = useMemo(", "const [loaded, setLoaded]", "const [saveStatus, setSaveStatus]", "const [authUser, setAuthUser]", "const [schedSync, setSchedSync]", "const [reauthNeeded, setReauthNeeded]", "const [staleTokenWarn, setStaleTokenWarn]", "const confirmReloadWithPending = "];
     check("SE-A the header decisions are computed AFTER every state they read is declared (a later const would be a TDZ crash at render)",
       at > 0 && reads.every(s => decl(s) > 0 && decl(s) < at), JSON.stringify(reads.map(s => [s, decl(s)]).concat([["flags", at]])));
@@ -5510,6 +5513,7 @@ await (async () => {
     s.engine = createSchedSyncR({ getState: () => s.mirror, commit: (n) => { s.mirror = n; }, fetch: (u, i) => t.fetch(u, i), url: "https://x.supabase.co",
       writeHeaders: () => (tok() ? { apikey: "ANON", Authorization: "Bearer " + tok() } : anon),
       readHeaders: () => anon, // dbReadHeaders: anon once the token is stale (the table is anon-readable)
+      anonHeaders: () => anon, // dbHeaders: reads once the server refused the token
       canWrite: () => true, token: tok, userId: () => "s1", now: clockR, nowMs: () => msR,
       onStatus: (st) => { s.st = st; }, onToast: (m) => s.toasts.push(String(m)), onWipeBlocked: () => {}, onInternalError: (e) => internalR.push(String(e && e.message || e)), log: () => {} });
     await s.engine.load();
@@ -5571,6 +5575,20 @@ await (async () => {
   const wp = world({ engine: stubEng(), auth: { signIn: async () => { throw new Error("signIn must not be called"); } }, password: "" }); await wp.submit();
   check("SE-R the sheet with no password typed asks for it and calls nothing", !wp.threw && wp.log.join() === 'setReauthError:"Enter your password."', JSON.stringify([wp.log, wp.threw]));
   check("SE-R no session hit an engine internal error, and no harness call threw", internalR.length === 0 && [we1, we2, ws, wd, wp].every(w => !w.threw), internalR.join(" | "));
+
+  // (4) "Sign in again" IN PLACE — reauthForSync through config.js's real
+  // refreshKeep — on the real engine (the §7b loop: auth.getUser could hand
+  // back the very token the server refused, so the banner never cleared).
+  // A renewed session stores a NEW access token, never the refused one
+  // (deadToken): the engine unblocks at once and the pending week lands.
+  const RF = await expired(); RF.A.on(rt([[REFRESH, resp(200, { access_token: "TOK_A2", refresh_token: "REF_A2", user: UA })]]));
+  const wr = world({ engine: RF.s.engine, auth: RF.A.auth }); await wr.reauth(); await RF.s.engine.idle();
+  const rNew = RF.t.log.slice(RF.from), rPatch = rNew.find(e => e.method === "PATCH");
+  check("SE-R reauthForSync on the real engine: refreshKeep stores a NEW token (not the refused one), so the engine is unblocked at once, both banners clear, and after the pull the pending week lands under it by CAS — no loop back to 'Sign in again'",
+    !wr.threw && RF.A.ls.get(KEYS[0]) === "TOK_A2" && !RF.s.engine.authBlocked() && !!RF.s.st && RF.s.st.authNeeded === false
+      && seq(wr.log, "setReauthBusy:true", "setReauthNeeded:false", "setStaleTokenWarn:false", "report", "pull", "setReauthBusy:false") && none(wr.log, "setReauthSheet", "reset", "setAuthUser")
+      && !!rPatch && /Bearer TOK_A2/.test(JSON.stringify(rPatch.headers || {})) && rPatch.status === 200 && RF.t.get(WKR[0]).data.dayCall === "mine" && RF.s.engine.pending().length === 0,
+    JSON.stringify({ log: wr.log, tok: RF.A.ls.get(KEYS[0]), reqs: rNew.map(e => e.method + " " + e.status) }));
 
   // The sheet's markup (pinned — JSX can't run here).
   {
@@ -5756,7 +5774,7 @@ await (async () => {
     const ref = { current: {} }, toasts = [];
     const h = () => ({ apikey: "ANON", Authorization: "Bearer TOK" });
     const eng = createSchedSyncK({ getState: () => ref.current, commit: (n) => { ref.current = n; }, fetch: (u, i) => t.fetch(u, i), url: "https://x.supabase.co",
-      writeHeaders: h, readHeaders: h, canWrite: () => true, token: () => "TOK", userId: () => "s1", now: clockK, nowMs: () => msK,
+      writeHeaders: h, readHeaders: h, anonHeaders: () => ({ apikey: "ANON", Authorization: "Bearer ANON" }), canWrite: () => true, token: () => "TOK", userId: () => "s1", now: clockK, nowMs: () => msK,
       onStatus: () => {}, onToast: (m) => toasts.push(String(m)), onWipeBlocked: () => {}, onInternalError: (e) => internalK.push(String(e && e.message || e)), log: () => {} });
     await eng.load();
     return { t, ref, eng, toasts };
@@ -5896,7 +5914,9 @@ await (async () => {
 
   // ── A5(g): the header's "Sync stalled" ──
   const hdrC = after("  const reloadToResync = ", "\n  // The amber");
-  const hdrCFn = hdrC && fnC("loaded, saveStatus, schedSync, confirmReloadWithPending, window", `(() => { const reloadToResync = ${hdrC}\n return { schedStaleShown, schedStalledShown, schedSyncedShown }; })()`);
+  const sslC = (() => { const a = nsrcC.indexOf("function schedSyncLine(st, o) {"); const b = a < 0 ? -1 : nsrcC.indexOf("\n}\n", a); if (a < 0 || b < 0) return null; try { return vm.runInContext("(" + nsrcC.slice(a, b + 2) + ")", cctx); } catch (ex) { return null; } })();
+  const hdrCFn0 = hdrC && sslC && fnC("loaded, saveStatus, schedSync, confirmReloadWithPending, window, isPublicMode, schedSyncLine", `(() => { const reloadToResync = ${hdrC}\n return { schedStaleShown, schedStalledShown, schedSyncedShown }; })()`);
+  const hdrCFn = hdrCFn0 && ((env) => hdrCFn0(Object.assign({ isPublicMode: false, schedSyncLine: sslC }, env)));
   if (!hdrCFn) check("SE-C the header's sync decisions are extractable", false, "anchor / compile");
   else {
     const H = (st, loaded = true) => { try { return hdrCFn({ loaded, saveStatus: "", schedSync: Object.assign({ seeded: true, pending: 0, busy: null, staleRemovals: 0, stalled: false }, st), confirmReloadWithPending: () => true, window: {} }); } catch (ex) { return { threw: String(ex && ex.message || ex) }; } };
@@ -5908,7 +5928,7 @@ await (async () => {
     const at1 = nsrcC.indexOf(LINE), at2 = nsrcC.indexOf(LINE, at1 + 1);
     check("SE-C A5(g) the line is rendered in BOTH headers (public / OR board and the scheduler's), gated by schedStalledShown, its Reload through reloadToResync (the reload guard — no new reload path); 'Clearing… / Saving…' give way to it",
       count(LINE) === 2 && count("{schedStalledShown && <span role=\"status\"") === 2 && pub0 > 0 && at1 > pub0 && at1 < sch0 && at2 > sch0 && at2 < conn && count("confirmReloadWithPending(") === 3
-        && count("{loaded && schedSync.busy && !schedStalledShown && <span") === 1 && count("{loaded && !schedSync.busy && !schedStalledShown && schedSync.failing === 0 && schedSync.saving > 0 && <span") === 1,
+        && count('{schedLineKind === "busy" && <span') === 1 && count('{schedLineKind === "saving" && <span') === 1, // they give way by schedSyncLine's order (stalled ranks above both — executed in SE-H)
       JSON.stringify({ n: count(LINE), pub0, at1, sch0, at2, conn }));
   }
 
@@ -5954,7 +5974,7 @@ await (async () => {
   // assignment to the end of createSchedSync({…})), the real openWeekEditor,
   // the real engine, the emulated table; a peer's writes go straight in.
   const wireSrc = after("  schedSyncBridgeRef.current = { canWrite:", "\n\n  // The edit gates");
-  const wireFn = wireSrc && fnC("isPublicMode, userProfile, showToast, setEditWeekModal, schedSyncBridgeRef, useRef, createSchedSync, scheduleRef, commitSchedule, fetch, SUPABASE_URL, dbAuthHeaders, dbReadHeaders, auth, setSchedSync, console",
+  const wireFn = wireSrc && fnC("isPublicMode, userProfile, showToast, setEditWeekModal, schedSyncBridgeRef, useRef, createSchedSync, scheduleRef, commitSchedule, fetch, SUPABASE_URL, dbAuthHeaders, dbReadHeaders, dbHeaders, auth, setSchedSync, console",
     "(() => { schedSyncBridgeRef.current = { canWrite:" + wireSrc + "\n  return schedSyncRef; })()");
   const oweSrc = after("  const openWeekEditor = useCallback((mondayStr) => {", "\n  }, [appShifts, appShiftsLoaded]);");
   const oweFn = oweSrc && fnC("scheduleRef, parse, addD, fmt, appShifts, appShiftsLoaded, setEditWeekModal, schedSyncRef", "(mondayStr) => {" + oweSrc + "\n  }");
@@ -5975,7 +5995,7 @@ await (async () => {
     const hdrs = () => ({ apikey: "ANON", Authorization: "Bearer TOK_A" });
     const ref = wireFn({ isPublicMode: false, userProfile: { person_id: "s1" }, showToast: (m, tone) => rec.toasts.push([String(m), tone]), setEditWeekModal, schedSyncBridgeRef: { current: null },
       useRef: (v) => ({ current: v }), createSchedSync: createSchedSyncC, scheduleRef, commitSchedule: (n) => { scheduleRef.current = n; }, fetch: (u, i) => t.fetch(u, i), SUPABASE_URL: "https://x.supabase.co",
-      dbAuthHeaders: hdrs, dbReadHeaders: hdrs, auth: { getSession: () => ({ access_token: "TOK_A" }) }, setSchedSync: (f) => { st = typeof f === "function" ? f(st) : f; },
+      dbAuthHeaders: hdrs, dbReadHeaders: hdrs, dbHeaders: { apikey: "ANON", Authorization: "Bearer ANON" }, auth: { getSession: () => ({ access_token: "TOK_A" }) }, setSchedSync: (f) => { st = typeof f === "function" ? f(st) : f; },
       console: { error: (...a) => rec.errors.push(a.map(String).join(" ")), warn: () => {}, log: () => {} } });
     const eng = ref.current;
     const open = oweFn({ scheduleRef, parse: HC.parse, addD: HC.addD, fmt: HC.fmt, appShifts: {}, appShiftsLoaded: true, setEditWeekModal, schedSyncRef: ref });
@@ -6008,6 +6028,169 @@ await (async () => {
       JSON.stringify({ ed0, note, nav }));
   }
 })().catch(ex => check("SE-C harness ran without crashing", false, String(ex && ex.stack || ex).split("\n").slice(0, 3).join(" | ")));
+// SE-H. Sync v2 commit 13/n, EXECUTED: the header's ONE schedule-sync line
+// (A16) and the client / schema error class (A4). The real schedSyncLine
+// over a precedence matrix (every condition set, then the winner switched
+// off, again and again); the component's own decision block (isPublicMode,
+// the blob's status); both headers' markup gated by the line's kind; the real
+// writeFailReason; and, on the REAL engine against the emulated table, the
+// lines it drives — a rejection's sticky "couldn't be saved (CODE)" line and
+// its toast (reason from writeFailReason), the real reload guard counting
+// the week, a conflict then that week edited again — plus the app's OWN
+// engine construction reading as anon once the server refused the token.
+console.log("\nSE-H. sync v2 13/n: the header's one line (A16), client / schema errors (A4), anon reads after a 401 — executed");
+await (async () => {
+  const nsrcH = src.replace(/\r\n/g, "\n");
+  const after = (start, end) => { const i = nsrcH.indexOf(start); if (i < 0 || nsrcH.indexOf(start, i + 1) !== -1) return null; const e = nsrcH.indexOf(end, i + start.length); return e < 0 ? null : nsrcH.slice(i + start.length, e); };
+  const fnDecl = (decl) => { const a = nsrcH.indexOf(decl); if (a < 0 || nsrcH.indexOf(decl, a + 1) !== -1) return null; const b = nsrcH.indexOf("\n}\n", a); return b < 0 ? null : nsrcH.slice(a, b + 2); };
+  const hctx = vm.createContext({});
+  const fnH = (names, code) => { try { return vm.runInContext(`(function (env) { const { ${names} } = env; return (${code}); })`, hctx); } catch (ex) { return null; } };
+  const se = require("./sync-engine-se.js");
+  const { createFakeWeeksTable } = require("./fake-weeks-table.js");
+  let line = null, wfr = null;
+  try { line = vm.runInContext("(" + fnDecl("function schedSyncLine(st, o) {") + ")", hctx); } catch (ex) { line = null; }
+  try { wfr = vm.runInContext("(" + fnDecl("function writeFailReason(err) {") + ")", hctx); } catch (ex) { wfr = null; }
+  if (typeof line !== "function" || typeof wfr !== "function") { check("SE-H schedSyncLine and writeFailReason are extractable (module scope, once each)", false, JSON.stringify({ line: typeof line, wfr: typeof wfr })); return; }
+
+  // ── the precedence matrix ──
+  const ALL = { seeded: true, loadFailed: true, pending: 5, pendingKeys: [], saving: 1, failing: 3, auth: "expired", authNeeded: true, rejected: ["k1"], rejectCodes: ["PGRST204"], noPermission: [],
+    blockedDeletes: 2, staleRemovals: 4, conflicts: [{ k: "k9", at: 1 }], busy: "restore", stalled: true };
+  const OFF = { auth: { authNeeded: false }, loadFailed: { loadFailed: false }, notSaved: { failing: 1 }, rejected: { rejected: [], rejectCodes: [], failing: 0 }, blocked: { blockedDeletes: 0 },
+    stalled: { stalled: false }, busy: { busy: null }, stale: { staleRemovals: 0 }, conflicts: { conflicts: [] }, saving: { saving: 0, pending: 0 }, synced: { seeded: false } };
+  const walk = (o) => { let st = Object.assign({}, ALL); const seen = []; for (let i = 0; i < 14; i++) { const r = line(st, Object.assign({ loaded: true }, o)); seen.push(r ? r.kind + ":" + r.n : "none"); if (!r) break; st = Object.assign({}, st, OFF[r.kind]); } return seen; };
+  const wr = walk({ readOnly: false }), ro = walk({ readOnly: true });
+  check("SE-H A16 the scheduler header's line, strict precedence (all set, then each winner switched off): sign in again > didn't load > not saved > couldn't be saved > deletions blocked > stalled > Clearing/Restoring > stale removals > conflicts > Saving > Synced > nothing — one at a time, with its count",
+    wr.join() === "auth:5,loadFailed:0,notSaved:2,rejected:1,blocked:2,stalled:0,busy:0,stale:4,conflicts:1,saving:1,synced:0,none", wr.join());
+  check("SE-H A16 the public / OR-board line: only what a read-only view can show — didn't load > stalled > stale removals > nothing (never sign-in, saving, conflicts or Synced, whatever the status says)",
+    ro.join() === "loadFailed:0,stalled:0,stale:4,none", ro.join());
+  const CLEAN = { seeded: true, loadFailed: false, pending: 0, saving: 0, failing: 0, authNeeded: false, rejected: [], rejectCodes: [], noPermission: [], blockedDeletes: 0, staleRemovals: 0, conflicts: [], busy: null, stalled: false };
+  const k = (st, o) => { const r = line(Object.assign({}, CLEAN, st), Object.assign({ loaded: true }, o)); return r ? r.kind + ":" + r.n : "none"; };
+  check("SE-H A16 …nothing before the app has loaded; Synced waits for the blob leg's own status; a rejected week is a client error, not 'not saved' (failing counts it), and only the failures beyond the rejected ones are 'not saved'",
+    k({ authNeeded: true, pending: 2 }, { loaded: false }) === "none" && k({}) === "synced:0" && k({}, { blobStatus: true }) === "none"
+      && k({ pending: 1, failing: 1, rejected: ["a"], rejectCodes: ["22P02"] }) === "rejected:1" && k({ pending: 3, failing: 3, rejected: ["a"], rejectCodes: ["22P02"] }) === "notSaved:2" && k({ pending: 1, saving: 1 }) === "saving:1",
+    JSON.stringify([k({}), k({}, { blobStatus: true }), k({ pending: 1, failing: 1, rejected: ["a"] }), k({ pending: 3, failing: 3, rejected: ["a"] })]));
+
+  // ── the component's decision block, for real ──
+  const blk = after("  const reloadToResync = ", "\n  // The amber");
+  const blkFn = blk && fnH("loaded, saveStatus, schedSync, confirmReloadWithPending, window, isPublicMode, schedSyncLine",
+    `(() => { const reloadToResync = ${blk}\n return { schedLine, schedLineKind, schedStaleShown, schedStalledShown, schedSyncedShown }; })()`);
+  if (!blkFn) { check("SE-H the header's decision block is extractable", false, "anchor / compile"); return; }
+  const B = (st, o = {}) => blkFn({ loaded: o.loaded !== false, saveStatus: o.saveStatus || "", schedSync: Object.assign({}, CLEAN, st), confirmReloadWithPending: () => true, window: {}, isPublicMode: !!o.pub, schedSyncLine: line });
+  const both = { authNeeded: true, pending: 1, staleRemovals: 3 };
+  check("SE-H A16 the component asks schedSyncLine ONCE with its own view: a scheduler with sign-in needed AND stale removals shows only the sign-in line; the same status in a public / OR view shows the stale line; the blob's status holds back Synced",
+    B(both).schedLineKind === "auth" && B(both).schedStaleShown === false && B(both, { pub: true }).schedLineKind === "stale" && B(both, { pub: true }).schedStaleShown === true
+      && B({}).schedSyncedShown === true && B({}, { saveStatus: "Saved" }).schedSyncedShown === false && B({ stalled: true }).schedStalledShown === true && B({ stalled: true }).schedSyncedShown === false
+      && count("const schedLine = schedSyncLine(schedSync, { loaded, readOnly: isPublicMode, blobStatus: !!saveStatus });") === 1 && count("schedSyncLine(") === 2,
+    JSON.stringify([B(both).schedLineKind, B(both, { pub: true }).schedLineKind, B({}).schedLineKind]));
+
+  // ── both headers' markup: every line rendered only for its own kind ──
+  {
+    const pub0 = nsrcH.indexOf('isOrView ? "OR board · read-only" : "Read-only view"'), sch0 = nsrcH.indexOf("Call Schedule · Surgeons + APPs"), conn = nsrcH.indexOf("Connecting…</span>}");
+    const pubH = pub0 > 0 && sch0 > pub0 ? nsrcH.slice(pub0, sch0) : "", schH = sch0 > 0 && conn > sch0 ? nsrcH.slice(sch0, conn) : "";
+    const n = (hay, s) => hay.split(s).length - 1;
+    const GATE = { auth: '{schedLineKind === "auth" && <span', loadFailed: '{schedLineKind === "loadFailed" && <span', notSaved: '{schedLineKind === "notSaved" && <span', rejected: '{schedLineKind === "rejected" && <span',
+      blocked: '{schedLineKind === "blocked" && <span', stalled: '{schedStalledShown && <span', busy: '{schedLineKind === "busy" && <span', stale: '{schedStaleShown && <span',
+      conflicts: '{schedLineKind === "conflicts" && <button', saving: '{schedLineKind === "saving" && <span', synced: '{schedSyncedShown && <span' };
+    const order = Object.keys(GATE).map(kk => schH.indexOf(GATE[kk]));
+    const RAW_GATE = /\{[^{}]*\bschedSync\.[^{}]*&& </; // a JSX `{cond && <…` whose condition reads the raw status
+    check("SE-H A16 the scheduler header: exactly one line per kind, each rendered only for its kind (in precedence order), and no other schedule-sync line gated on the raw status",
+      !!schH && Object.keys(GATE).every(kk => n(schH, GATE[kk]) === 1) && order.every((x, i) => x > 0 && (i === 0 || x > order[i - 1])) && !RAW_GATE.test(schH)
+        && n(schH, "schedLineKind === ") === 8, // + stalled / stale / Synced through their flags
+      JSON.stringify({ order, n: Object.keys(GATE).map(kk => n(schH, GATE[kk])), raw: (schH.match(RAW_GATE) || [""])[0].slice(0, 80) }));
+    check("SE-H A16 the public / OR-board header: didn't load, stalled and stale removals, each only for its kind — nothing gated on the raw status",
+      !!pubH && n(pubH, GATE.loadFailed) === 1 && n(pubH, GATE.stalled) === 1 && n(pubH, GATE.stale) === 1 && n(pubH, "schedLineKind === ") === 1 && !RAW_GATE.test(pubH),
+      String(pubH.length));
+    check("SE-H A4 the sticky client-error line names the count and the codes and says to reload / update, with the guarded Reload; A16 the conflicts item says how many weeks were replaced, and its tap tells which and dismisses",
+      n(schH, '⚠ {schedLine.n} week{schedLine.n === 1 ? "" : "s"} couldn' + "'" + 't be saved ({schedSync.rejectCodes.join(", ")}) — reload/update the app <button onClick={reloadToResync}') === 1
+        && n(schH, "⚠ {schedLine.n} week{schedLine.n === 1 ? \"\" : \"s\"} replaced by someone else's change — tap for details</button>}") === 1 && n(schH, "schedSyncRef.current.dismissConflicts();") === 1
+        && count("confirmReloadWithPending(") === 3);
+  }
+
+  // ── writeFailReason: the reason a rejection's toast gives ──
+  {
+    const CLIENT = "the server rejected it — this app may be out of date (reload or update it)";
+    const client = ["PGRST204", "PGRST100", "22P02", "23502", "23505", "23514", "42703", "P0001"].map(c => wfr({ code: c, message: "x" }));
+    const other = [wfr({ code: "42501", message: "permission denied for table schedule_weeks" }), wfr({ code: "PGRST303", message: "JWT expired" }), wfr({ code: "PGRST000", message: "db down" }), wfr({ code: "57014", message: "canceling statement due to statement timeout" }), wfr("upstream connect error"), wfr(null), wfr({ code: 22 })];
+    check("SE-H A4 writeFailReason: a PostgREST client / schema error (PGRST1xx/2xx, 22xxx, 23xxx, 42xxx, P0xxx) is the request's content — 'the server rejected it — this app may be out of date'; a permission refusal, an expired sign-in and the connection keep their reasons",
+      client.every(x => x === CLIENT) && /permission/.test(other[0]) && /sign-in has expired/.test(other[1]) && other.slice(2).every(x => x === "check your connection and try again"),
+      JSON.stringify({ client, other }));
+  }
+
+  // ── the lines a real engine drives, on the emulated table ──
+  let createSchedSyncH = null; try { createSchedSyncH = se.compileEngine(se.extractEngine(src)); } catch (ex) { createSchedSyncH = null; }
+  const crSrc = after("  const confirmReloadWithPending = (base) => {", "\n  };\n");
+  const crFn = crSrc && fnH("schedSyncRef, confirm", "(base) => {" + crSrc + "\n  }");
+  if (!createSchedSyncH || !crFn) { check("SE-H the engine and the reload guard are extractable", false, JSON.stringify({ eng: !!createSchedSyncH, cr: !!crFn })); return; }
+  const WH = ["2026-10-12", "2026-10-19", "2026-10-26"];
+  const wkH = (dc) => ({ dayCall: dc, nights: { mon: "s2", tue: "s3", wed: "s4", thu: "s5", wknd: "s6" }, off: "s1" });
+  let msH = Date.UTC(2026, 9, 14, 12, 0, 0);
+  const clockH = () => new Date(msH += 1000).toISOString();
+  const internalH = [];
+  const t = createFakeWeeksTable({ baseUrl: "https://x.supabase.co", anonKey: "ANON", users: { TOK_A: "user-a", TOK_B: "user-b" }, clock: clockH,
+    rows: WH.map(kk => ({ week_monday: kk, data: wkH("s1"), version: 2, updated_by: "user-a", updated_at: "2026-10-01T08:00:00.000Z" })) });
+  const mkH = (tok) => {
+    const s = { mirror: {}, st: null, toasts: [] };
+    const h = () => ({ apikey: "ANON", Authorization: "Bearer " + tok });
+    s.engine = createSchedSyncH({ getState: () => s.mirror, commit: (x) => { s.mirror = x; }, fetch: (u, i) => t.fetch(u, i), url: "https://x.supabase.co",
+      writeHeaders: h, readHeaders: h, anonHeaders: () => ({ apikey: "ANON", Authorization: "Bearer ANON" }), canWrite: () => true, token: () => tok, userId: () => "s1", now: clockH, nowMs: () => msH,
+      onStatus: (st) => { s.st = st; }, onToast: (m) => s.toasts.push(String(m)), onWipeBlocked: () => {}, onInternalError: (e) => internalH.push(String(e && e.message || e)), log: () => {} });
+    s.edit = (kk, dc) => { s.mirror = Object.assign({}, s.mirror, { [kk]: wkH(dc) }); };
+    s.L = () => { const r = line(s.st, { loaded: true, readOnly: false }); return r ? r.kind + ":" + r.n : "none"; };
+    return s;
+  };
+  const A = mkH("TOK_A"), P = mkH("TOK_B");
+  await A.engine.load(); await P.engine.load();
+  const loadedLine = A.L();
+  t.control.fail({ method: "PATCH", week: WH[0], kind: "400-schema", count: 5 });
+  A.edit(WH[0], "mine"); await A.engine.push();
+  const rejLine = A.L(), codes = (A.st.rejectCodes || []).join(), toast0 = A.toasts.slice();
+  const asked = []; const reloadOk = crFn({ schedSyncRef: { current: A.engine }, confirm: (m) => { asked.push(m); return false; } })();
+  await A.engine.push(); msH += 30000; await A.engine.push();
+  check("SE-H A4 a PGRST204 rejection, on the real engine: the header line is 'couldn't be saved' for 1 week naming PGRST204 (sticky across the next pushes); ONE toast, its reason the real writeFailReason's",
+    loadedLine === "synced:0" && rejLine === "rejected:1" && codes === "PGRST204" && A.L() === "rejected:1" && toast0.length === 1 && A.toasts.length === 1
+      && toast0[0].includes("(PGRST204): " + wfr({ code: "PGRST204", message: "x" }) + "."),
+    JSON.stringify({ loadedLine, rejLine, codes, toasts: A.toasts }));
+  check("SE-H A4 …and the real reload guard counts the rejected week: it asks ('1 week of the schedule isn't saved yet — reloading now loses it') and a 'no' doesn't reload",
+    reloadOk === false && asked.length === 1 && /^1 week of the schedule isn't saved yet — reloading now loses it\./.test(asked[0]), JSON.stringify(asked));
+  t.control.clear(); msH += 61000; await A.engine.push();
+  const landedLine = A.L();
+  P.edit(WH[1], "peer"); await P.engine.push();
+  A.edit(WH[1], "mine1"); await A.engine.push();
+  const confLine = A.L();
+  A.edit(WH[1], "reapplied"); await A.engine.push();
+  check("SE-H A16 …the rejected week lands after its backoff → Synced; a conflict → the 'replaced by someone else's change' line (1 week); that week edited again → the item is gone and the edit lands → Synced",
+    landedLine === "synced:0" && t.get(WH[0]).data.dayCall === "mine" && confLine === "conflicts:1" && A.L() === "synced:0" && t.get(WH[1]).data.dayCall === "reapplied" && A.st.conflicts.length === 0,
+    JSON.stringify({ landedLine, confLine, now: A.L() }));
+  t.control.expiredTokens.add("TOK_A");
+  A.edit(WH[2], "mine2"); await A.engine.push();
+  check("SE-H A16 …a 401 → the sign-in line, counting the week not saved", A.L() === "auth:1" && A.st.authNeeded === true, A.L());
+  check("SE-H no engine internal error", internalH.length === 0, internalH.join(" | "));
+
+  // ── the app's OWN engine construction reads as anon once the server refused the token ──
+  const wireSrc = after("  schedSyncBridgeRef.current = { canWrite:", "\n\n  // The edit gates");
+  const wireFn = wireSrc && fnH("isPublicMode, userProfile, showToast, setEditWeekModal, schedSyncBridgeRef, useRef, createSchedSync, scheduleRef, commitSchedule, fetch, SUPABASE_URL, dbAuthHeaders, dbReadHeaders, dbHeaders, auth, setSchedSync, console",
+    "(() => { schedSyncBridgeRef.current = { canWrite:" + wireSrc + "\n  return schedSyncRef; })()");
+  if (!wireFn) { check("SE-H the app's engine construction is extractable", false, "anchor / compile"); return; }
+  const t2 = createFakeWeeksTable({ baseUrl: "https://x.supabase.co", anonKey: "ANON", users: { TOK_A: "user-a", TOK_B: "user-b" }, clock: clockH,
+    rows: WH.map(kk => ({ week_monday: kk, data: wkH("s1"), version: 2, updated_by: "user-a", updated_at: "2026-10-01T08:00:00.000Z" })) });
+  const errs = [], scheduleRef = { current: {} };
+  const tokH = () => ({ apikey: "ANON", Authorization: "Bearer TOK_A" }); // the device clock calls TOK_A fresh: dbReadHeaders keeps sending it
+  const ref = wireFn({ isPublicMode: false, userProfile: { person_id: "s1" }, showToast: () => {}, setEditWeekModal: () => {}, schedSyncBridgeRef: { current: null },
+    useRef: (v) => ({ current: v }), createSchedSync: createSchedSyncH, scheduleRef, commitSchedule: (x) => { scheduleRef.current = x; }, fetch: (u, i) => t2.fetch(u, i), SUPABASE_URL: "https://x.supabase.co",
+    dbAuthHeaders: tokH, dbReadHeaders: tokH, dbHeaders: { apikey: "ANON", Authorization: "Bearer ANON", "Content-Type": "application/json" }, auth: { getSession: () => ({ access_token: "TOK_A" }) }, setSchedSync: () => {},
+    console: { error: (...a) => errs.push(a.map(String).join(" ")), warn: () => {}, log: () => {} } });
+  const eng = ref.current;
+  await eng.load();
+  t2.control.expiredTokens.add("TOK_A");
+  scheduleRef.current = Object.assign({}, scheduleRef.current, { [WH[0]]: wkH("mine") }); await eng.push();
+  const peerRow = t2.get(WH[1]); t2.put(Object.assign({}, peerRow, { data: wkH("peer"), version: 3, updated_by: "user-b", updated_at: "2026-10-14T11:00:00+00:00" }));
+  const from = t2.log.length;
+  const pr = await eng.pull();
+  const reqs = t2.log.slice(from);
+  check("SE-H A7 the app's own engine (its deps as wired: dbHeaders for anon): after the server's 401 for a token the clock calls fresh, the pull reads as anon and adopts the peer's week; the unsaved week stays pending, nothing written",
+    pr.ok === true && reqs.length >= 2 && reqs.every(e => e.method === "GET" && e.headers.authorization === "Bearer ANON" && e.status === 200) && scheduleRef.current[WH[1]].dayCall === "peer" && eng.pending().join() === WH[0] && errs.length === 0,
+    JSON.stringify({ pr, reqs: reqs.map(e => [e.method, e.headers.authorization, e.status]), errs }));
+})().catch(ex => check("SE-H harness ran without crashing", false, String(ex && ex.stack || ex).split("\n").slice(0, 3).join(" | ")));
 {
   const { spawnSync } = require("child_process");
   const r = spawnSync(process.execPath, [path.join(__dirname, "fake-weeks-table.test.js")], { encoding: "utf8" });

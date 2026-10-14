@@ -432,6 +432,18 @@ test('fail 409 / 401 / 403 / 400: canned status + PostgREST-shaped JSON body, no
   }
 });
 
+test('fail 400-schema / 400-22P02: PostgREST client errors (PGRST204, 22P02) with the JSON body, nothing applied', async () => {
+  const want = { '400-schema': 'PGRST204', '400-22P02': '22P02' };
+  for (const kind of Object.keys(want)) {
+    const t = mk();
+    t.control.fail({ method: 'PATCH', kind });
+    const b = await expectErr(patch(t, 'week_monday=eq.2026-10-05', { version: 9 }, 'TOK_A', REP), 400, want[kind]);
+    assert.deepStrictEqual(Object.keys(b), ['code', 'details', 'hint', 'message']);
+    assert.strictEqual(t.get('2026-10-05').version, 3);
+    assert.deepStrictEqual([t.log[0].applied, t.log[0].injected], [false, kind]);
+  }
+});
+
 test('fail matching: method, week (URL or POST body), count, any-method rules, unknown kind', async () => {
   const t = mk();
   const rule = t.control.fail({ method: 'GET', kind: '5xx-before', count: 2 });

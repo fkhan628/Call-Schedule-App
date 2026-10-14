@@ -124,8 +124,8 @@ const MUTANTS = [
   // SE44's third case pins the behaviour instead.)
   { id: "M25", what: "a wipe-blocked push holds back every other week's save too (D)",
     from: "      sendDeletes = deletes.filter(k => approvedDeletes.has(k));", to: "      sendDeletes = []; sendable.length = 0;" },
-  { id: "M26", what: "a body the server rejected (400) is re-sent every minute forever",
-    from: "const sendable = changed.filter(k => !(rejected[k] && rejected[k].canon === canon(target[k])));", to: "const sendable = changed;" },
+  { id: "M26", what: "a body the server rejected (400) is re-sent on every push, its backoff ignored",
+    from: "const sendable = changed.filter(k => !heldBack(k, target[k]));", to: "const sendable = changed;" },
   { id: "M27", what: "a 400 is treated as a refusal (adopts the server copy, discarding the edit — D)",
     from: 'return code ? "rejected" : "unknown";', to: 'return code ? "refused" : "unknown";' },
   { id: "M28", what: "approvedDeletes are never pruned (a re-created week's old approval exempts a later wipe — A12)",
@@ -169,6 +169,30 @@ const MUTANTS = [
     from: "    if (changed.length && d.onAdopted) { try { d.onAdopted(changed.slice()); } catch (e) { log(\"onAdopted threw\", e); } }\n", to: "" },
   { id: "M48", what: "onAdopted is called before the adoption is on screen (A13)",
     from: "    if (changed.length) d.commit(next);\n    if (why === \"conflict\"", to: "    if (changed.length && d.onAdopted) d.onAdopted(changed.slice());\n    if (changed.length) d.commit(next);\n    if (why === \"conflict\"" },
+  { id: "M49", what: "reads keep sending the token the server refused (a skewed clock calls it fresh: every pull 401s — A7 / I5)",
+    from: 'const rh = () => Object.assign({}, authState() === "expired" ? d.anonHeaders() : d.readHeaders());', to: "const rh = () => Object.assign({}, d.readHeaders());" },
+  { id: "M50", what: "a publish takes someone else's copy of ANY unconfirmed week as known (the follow-up push overwrites it — the §7b I2 hole)",
+    from: 'else if (how === "theirs" && (job.mode !== "force" || (job.keys && !job.keys.has(k)))) {', to: 'else if (how === "theirs" && job.mode !== "force") {' },
+  { id: "M51", what: "a conflict on a week outside a publish's period makes the publish 'not landed' (no Regenerated!, no broadcast)",
+    from: "const ok = results.filter(x => !job.keys || job.keys.has(x.k)).every(", to: "const ok = results.every(" },
+  { id: "M52", what: "a rejected body is never retried until it changes (A4: retry with backoff)",
+    from: "return !!x && x.canon === canon(body) && d.nowMs() - x.at < Math.min(T.retry * Math.pow(2, x.tries - 1), T.retryMax);", to: "return !!x && x.canon === canon(body);" },
+  { id: "M53", what: "the retry backoff never grows (A4)",
+    from: "Math.min(T.retry * Math.pow(2, x.tries - 1), T.retryMax)", to: "Math.min(T.retry, T.retryMax)" },
+  { id: "M54", what: "every rejection is toasted, not once per new code (A4)",
+    from: "rej.forEach(x => { if (!toldCodes.has(x.code))", to: "rej.forEach(x => { if (true)" },
+  { id: "M55", what: "the rejection toast's reason isn't writeFailReason's (A4)",
+    from: "reason: writeFailReason(r.body), at:", to: "reason: \"it was not saved\", at:" },
+  { id: "M56", what: "the status carries no rejection codes (the header can't name them — A4)",
+    from: "rejectCodes: [...new Set(rej.map(k => rejected[k].code))].sort(),", to: "rejectCodes: []," },
+  { id: "M57", what: "a told code is never forgotten (a rejection that comes back after landing says nothing — A4)",
+    from: "    [...toldCodes].forEach(c => { if (!stillRejected.has(c)) toldCodes.delete(c); });\n", to: "" },
+  { id: "M58", what: "a rejected DELETE is re-sent on every push, its backoff ignored (A4)",
+    from: "      if (heldBack(k, undefined)) { heldDeletes++; continue; }\n", to: "" },
+  { id: "M59", what: "editing a replaced week again leaves its conflicts entry (A16)",
+    from: "    if (job.mode !== \"force\") dropEditedConflicts();\n", to: "" },
+  { id: "M60", what: "a clear / restore / publish drops the conflicts entries too (A16: the item must outlive it)",
+    from: "    if (job.mode !== \"force\") dropEditedConflicts();\n", to: "    dropEditedConflicts();\n" },
 ];
 
 async function scenarios(createSchedSync, check) {
@@ -190,6 +214,7 @@ async function scenarios(createSchedSync, check) {
       url: BASE,
       writeHeaders: () => hdr(s.token),
       readHeaders: () => hdr(s.readAsAnon ? null : s.token),   // the app's dbReadHeaders falls back to anon for a stale token
+      anonHeaders: () => hdr(null),                             // the app's dbHeaders
       canWrite: () => s.canWrite,
       token: () => s.token,
       userId: () => { if (s.userThrows) throw new Error("boom"); return s.user; },
@@ -685,7 +710,8 @@ async function scenarios(createSchedSync, check) {
   });
 
   // SE27b — a 400 is the server rejecting the content: keep the edit, don't
-  // adopt, don't re-send it unchanged; a new edit is sent (D: status classes).
+  // adopt, don't re-send it unchanged right away (only after its backoff —
+  // SE64); a new edit is sent at once (D: status classes).
   await run("SE27b", async () => {
     const t = mkTable(seedRows(2));
     const A = mkSession(t); await A.engine.load();
@@ -697,7 +723,7 @@ async function scenarios(createSchedSync, check) {
     const resent = writes(t, from).length;
     A.edit(W[0], w => (w.dayCall = "good", w));
     await A.engine.push();
-    check("SE27b 400 → rejected: the edit stays on screen and pending, isn't re-sent unchanged, says so; a new edit is sent and lands",
+    check("SE27b 400 → rejected: the edit stays on screen and pending, isn't re-sent unchanged by the next push, says so; a new edit is sent and lands",
       resent === 0 && A.toasts.some(m => /rejected/.test(m)) && t.get(W[0]).data.dayCall === "good" && A.st().pending === 0, JSON.stringify({ resent, toasts: A.toasts }));
   });
 
@@ -1059,9 +1085,9 @@ async function scenarios(createSchedSync, check) {
 
   // SE47 — A4: classification on the BODY. A gateway's HTML 403, a 429 / 408 /
   // 413 are unknown (read back, kept, retried); a PostgREST 4xx with a code is
-  // a rejection (kept, not re-sent unchanged); a 23505 duplicate on an insert
-  // is read back (someone inserted it first → conflict). Only JSON 403 42501
-  // adopts the server copy (SE27).
+  // a rejection (kept; re-sent unchanged only after its backoff, SE64); a
+  // 23505 duplicate on an insert is read back (someone inserted it first →
+  // conflict). Only JSON 403 42501 adopts the server copy (SE27).
   await run("SE47", async () => {
     for (const kind of ["html-403", "429", "408", "413"]) {
       const t = mkTable(seedRows(2));
@@ -1461,6 +1487,197 @@ async function scenarios(createSchedSync, check) {
     const r = await A.engine.pull();
     check("SE60 …an onAdopted that throws doesn't break the job: the pull still adopted the week and answered ok, and the engine reported no internal error",
       r.ok && A.mirror[W[3]].dayCall === "peer3b" && !A.internal, JSON.stringify(r));
+  });
+
+  // SE61 — the publish I2 hole (§7b of the engine read): a publish (a force
+  // job over its period's weeks) re-reads every unconfirmed week first. One
+  // OUTSIDE its period that someone else changed is a conflict exactly as in
+  // a normal push — their copy shown and told — never silently taken as
+  // known, which let the follow-up push overwrite it under a CAS taken from
+  // their row (0 conflicts, their change gone).
+  await run("SE61", async () => {
+    const t = mkTable(seedRows(4));
+    const A = mkSession(t), B = mkSession(t, { token: "TOK_B", user: "user-b" });
+    await A.engine.load(); await B.engine.load();
+    t.control.fail({ method: "PATCH", week: W[3], kind: "5xx-before" });
+    A.edit(W[3], w => (w.dayCall = "A-edit", w)); await A.engine.push();   // not written: A's body stays unconfirmed in the ledger
+    B.edit(W[3], w => (w.dayCall = "B-edit", w)); await B.engine.push();   // B's change lands (v4)
+    check("SE61 (setup) A's edit to W4 is unsaved (pending, unconfirmed); B's change to it is on the table", A.engine.pending().join() === W[3] && t.get(W[3]).data.dayCall === "B-edit" && t.get(W[3]).version === 4);
+    const period = [W[0], W[1]];
+    const gen = {}; period.forEach(k => { gen[k] = wk("regen"); });
+    A.mirror = Object.assign({}, A.mirror, gen);
+    const toasts0 = A.toasts.length, adopted0 = A.adopted.length;
+    const r = await A.engine.authoritative(clone(A.mirror), false, "publish", period);
+    await A.engine.idle(); await A.engine.idle();   // the follow-up push it requests
+    const aW3 = t.log.filter(e => e.method === "PATCH" && e.url.includes(W[3]) && e.headers.authorization === "Bearer TOK_A");
+    check("SE61 §7b B's change to a week OUTSIDE the period survives the publish and its follow-up push: A shows it, ONE conflict entry, onAdopted, the toast says someone else changed it; nothing left pending",
+      t.get(W[3]).data.dayCall === "B-edit" && A.mirror[W[3]].dayCall === "B-edit" && A.st().conflicts.map(c => c.k).join() === W[3] && A.adopted.slice(adopted0).some(x => x.weeks.join() === W[3])
+        && A.toasts.slice(toasts0).filter(m => /changed by someone else/.test(m)).length === 1 && A.engine.pending().length === 0,
+      JSON.stringify({ table: t.get(W[3]).data.dayCall, shown: A.mirror[W[3]].dayCall, conflicts: A.st().conflicts, toasts: A.toasts.slice(toasts0) }));
+    check("SE61 …and the publish itself landed and answers ok (another week's conflict doesn't withhold 'Regenerated!' or the broadcast); A's only W4 PATCH was the first, failed one",
+      r.ok === true && period.every(k => t.get(k).data.dayCall === "regen") && aW3.length === 1, JSON.stringify({ ok: r.ok, results: r.results, aW3: aW3.length }));
+  });
+
+  // SE62 — A7 / I5: the SERVER refuses a token this device's clock calls
+  // fresh (clock skew), so the read headers keep carrying it. Once a 401 has
+  // been answered for it, every read goes out as anon: the pull still adopts
+  // other people's changes; writes stay refused (auth-needed); a new token
+  // is read and written with again.
+  await run("SE62", async () => {
+    const t = mkTable(seedRows(3));
+    const A = mkSession(t), B = mkSession(t, { token: "TOK_B", user: "user-b" });
+    await A.engine.load(); await B.engine.load();
+    const loadedWithToken = t.log.filter(e => e.method === "GET" && e.headers.authorization === "Bearer TOK_A").length;
+    t.control.expiredTokens.add("TOK_A");   // the server: expired. A.readAsAnon stays false — the device clock calls it fresh.
+    A.edit(W[0], w => (w.dayCall = "mine", w));
+    await A.engine.push();
+    check("SE62 (setup) the write is answered 401 → auth-needed for that token; the edit kept and pending; before it, this session read WITH its token",
+      A.engine.authBlocked() && A.st().authNeeded && A.engine.pending().join() === W[0] && A.mirror[W[0]].dayCall === "mine" && loadedWithToken >= 1);
+    B.edit(W[1], w => (w.dayCall = "peer", w)); await B.engine.push();
+    const from = t.log.length;
+    const r = await A.engine.pull();
+    const reqs = t.log.slice(from);
+    check("SE62 A7 the pull after the server's 401 reads as ANON — every request a GET without the dead token, none answered 401 — and adopts B's change; the unsaved edit stays",
+      r.ok === true && reqs.length >= 2 && reqs.every(e => e.method === "GET" && e.headers.authorization === "Bearer ANON" && e.status === 200) && A.mirror[W[1]].dayCall === "peer" && A.mirror[W[0]].dayCall === "mine" && A.engine.pending().join() === W[0],
+      JSON.stringify({ r, reqs: reqs.map(e => [e.method, e.headers.authorization, e.status]) }));
+    check("SE62 …and writes stay refused: the pull's follow-up push sent nothing, still auth-needed", reqs.every(e => e.method === "GET") && A.engine.authBlocked() && A.st().authNeeded);
+    t.control.users.TOK_A2 = "user-a"; A.token = "TOK_A2";   // "Sign in again" stored a new token
+    const from2 = t.log.length;
+    await A.engine.pull();
+    const reqs2 = t.log.slice(from2);
+    check("SE62 …a new token is read with again (never anon), and the pending week lands under it by CAS",
+      reqs2.some(e => e.method === "GET" && e.headers.authorization === "Bearer TOK_A2") && !reqs2.some(e => e.headers.authorization === "Bearer ANON")
+        && reqs2.some(e => e.method === "PATCH" && e.headers.authorization === "Bearer TOK_A2" && e.status === 200) && t.get(W[0]).data.dayCall === "mine" && !A.st().authNeeded && A.engine.pending().length === 0,
+      JSON.stringify(reqs2.map(e => [e.method, e.headers.authorization, e.status])));
+  });
+
+  // SE63 — A4's failure-injection list, one uniform check: a 429, 408, 413,
+  // a gateway's HTML 403, a 400 PGRST204, a 400 22P02 and a 409 23505 each
+  // keep the week pending with the local edit and NEVER adopt (no onAdopted,
+  // no conflict, no commit of the screen); only a JSON 403 / 42501 adopts the
+  // server copy. Each then lands once the server answers (a rejection after
+  // its backoff).
+  await run("SE63", async () => {
+    const CASES = [["429", "PATCH"], ["408", "PATCH"], ["413", "PATCH"], ["html-403", "PATCH"], ["400-schema", "PATCH"], ["400-22P02", "PATCH"], ["409", "POST"]];
+    for (const [kind, method] of CASES) {
+      const t = mkTable(seedRows(2));
+      const A = mkSession(t); await A.engine.load();
+      const K = method === "POST" ? W[5] : W[0];
+      t.control.fail({ method, week: K, kind });
+      A.edit(K, w => method === "POST" ? wk("new") : (w.dayCall = "mine", w));
+      const want = clone(A.mirror[K]), commits = A.commits;
+      const r = await A.engine.push();
+      const injected = t.log.some(e => e.method === method && e.injected === kind);
+      const kept = injected && !r.ok && sameData(A.mirror[K], want) && A.commits === commits && A.adopted.length === 0 && A.st().conflicts.length === 0 && A.engine.pending().join() === K
+        && (method === "POST" ? !t.get(K) : t.get(K).data.dayCall !== "mine");
+      ms += 61000;
+      await A.engine.push();
+      check(`SE63 A4 ${kind} on a ${method} → kept pending with the local edit, never adopted (no onAdopted, conflict or commit); it lands once the server answers`,
+        kept && !!t.get(K) && sameData(t.get(K).data, want) && A.engine.pending().length === 0, JSON.stringify({ kind, injected, kept, st: A.st(), toasts: A.toasts }));
+    }
+    const t = mkTable(seedRows(2));
+    const A = mkSession(t); await A.engine.load();
+    t.control.fail({ method: "PATCH", week: W[0], kind: "403" });
+    A.edit(W[0], w => (w.dayCall = "mine", w));
+    await A.engine.push();
+    check("SE63 A4 …only a JSON 403 / 42501 adopts: the server copy is shown (onAdopted), nothing pending, the toast says refused",
+      A.mirror[W[0]].dayCall !== "mine" && sameData(A.mirror[W[0]], t.get(W[0]).data) && A.adopted.length === 1 && A.adopted[0].weeks.join() === W[0] && A.engine.pending().length === 0 && A.toasts.some(m => /refused/.test(m)),
+      JSON.stringify({ shown: A.mirror[W[0]].dayCall, adopted: A.adopted, toasts: A.toasts }));
+  });
+
+  // SE64 — A4, the client / schema error class: a rejected body is kept and
+  // pending (pending() — what the reload guard counts — names it), re-sent
+  // unchanged at the poll cadence with backoff (1 min, then 2, …), toasted
+  // ONCE per new code with writeFailReason's reason, and reported for the
+  // header's sticky line (rejected + rejectCodes). A changed body goes out
+  // at once; a code is told again only once nothing was rejected with it.
+  await run("SE64", async () => {
+    const last = (s) => s.statuses[s.statuses.length - 1] || {};
+    const t = mkTable(seedRows(3));
+    const A = mkSession(t); await A.engine.load();
+    const patches = () => t.log.filter(e => e.method === "PATCH").length;
+    t.control.fail({ method: "PATCH", week: W[0], kind: "400-schema", count: 3 });
+    A.edit(W[0], w => (w.dayCall = "mine", w));
+    await A.engine.push(); const t0 = ms;
+    const p1 = patches(), toast1 = A.toasts.slice(), rep1 = last(A);
+    await A.engine.push();
+    ms = t0 + 30000; await A.engine.push();
+    const p2 = patches();
+    ms = t0 + 61000; await A.engine.push(); const t1 = ms;   // due after 1 min: re-sent, rejected again (same code)
+    const p3 = patches(), toasts3 = A.toasts.length;
+    ms = t1 + 61000; await A.engine.push();                   // the backoff doubled: not due 1 min later
+    const p4 = patches();
+    ms = t1 + 121000; await A.engine.push();                  // due after 2 min: re-sent, rejected again
+    const p5 = patches();
+    check("SE64 A4 a rejected body stays on screen and pending (pending() — the reload guard's count — names it), never adopted",
+      A.mirror[W[0]].dayCall === "mine" && A.engine.pending().join() === W[0] && A.adopted.length === 0 && A.st().conflicts.length === 0 && t.get(W[0]).data.dayCall !== "mine");
+    check("SE64 A4 retried at the poll cadence with backoff: not re-sent at once or after 30 s; re-sent after 1 min; then not 1 min later, but after 2 (the backoff doubles)",
+      p1 === 1 && p2 === 1 && p3 === 2 && p4 === 2 && p5 === 3, JSON.stringify({ p1, p2, p3, p4, p5 }));
+    check("SE64 A4 toasted ONCE for the code, naming the week, the code and writeFailReason's reason — not again when a retry is rejected with the same code",
+      toast1.length === 1 && /^The week of .+ couldn't be saved \(PGRST204\): the server rejected it — this app may be out of date \(reload or update it\)\. It stays on this screen and is retried\.$/.test(toast1[0]) && toasts3 === 1 && A.toasts.length === 1,
+      JSON.stringify(A.toasts));
+    check("SE64 A4 the header's report (onStatus): rejected names the week, rejectCodes the code — from the first rejection and across the retries; failing counts it",
+      (rep1.rejected || []).join() === W[0] && (rep1.rejectCodes || []).join() === "PGRST204" && (last(A).rejected || []).join() === W[0] && (last(A).rejectCodes || []).join() === "PGRST204" && last(A).failing === 1,
+      JSON.stringify({ rep1: [rep1.rejected, rep1.rejectCodes], last: [last(A).rejected, last(A).rejectCodes, last(A).failing] }));
+    t.control.clear(); t.control.fail({ method: "PATCH", week: W[0], kind: "400-22P02" });
+    ms += 241000; await A.engine.push();                       // the next retry (after 4 min) meets a NEW code
+    const newCode = A.toasts.length === 2 && /couldn't be saved \(22P02\)/.test(A.toasts[1]) && (last(A).rejectCodes || []).join() === "22P02";
+    const from = t.log.length;
+    A.edit(W[0], w => (w.dayCall = "mine2", w)); await A.engine.push();   // a CHANGED body goes out at once, backoff or not
+    check("SE64 A4 …a NEW code on a retry is toasted (once) and is the code reported; a changed body is sent at once and lands — nothing rejected in the report after",
+      newCode && writes(t, from).length === 1 && t.get(W[0]).data.dayCall === "mine2" && A.engine.pending().length === 0 && (last(A).rejected || []).length === 0 && (last(A).rejectCodes || []).length === 0,
+      JSON.stringify({ toasts: A.toasts, w: writes(t, from).map(e => e.method) }));
+    t.control.fail({ method: "PATCH", week: W[1], kind: "400-schema" });
+    A.edit(W[1], w => (w.dayCall = "again", w)); await A.engine.push();
+    check("SE64 A4 …once nothing is rejected with a code it is forgotten: a later PGRST204 is told again",
+      A.toasts.length === 3 && /The week of .+ couldn't be saved \(PGRST204\)/.test(A.toasts[2]), JSON.stringify(A.toasts));
+    // A rejected DELETE waits out its backoff too.
+    t.control.clear(); t.control.fail({ method: "DELETE", week: W[2], kind: "400-22P02" });
+    ms += 61000; A.drop(W[2]); await A.engine.push();
+    const d1 = t.log.filter(e => e.method === "DELETE").length;
+    await A.engine.push();
+    const d2 = t.log.filter(e => e.method === "DELETE").length;
+    ms += 61000; await A.engine.push();
+    check("SE64 A4 a rejected DELETE is kept pending and waits out its backoff too (not re-sent by the next push), then goes through",
+      d1 === 1 && d2 === 1 && t.log.filter(e => e.method === "DELETE").length === 2 && !t.get(W[2]) && !A.engine.pending().includes(W[2]), JSON.stringify({ d1, d2, pending: A.engine.pending() }));
+  });
+
+  // SE65 — A16: a conflicts entry ("replaced by someone else's change")
+  // stays until it's dismissed, the session resets, or the user edits THAT
+  // week again. An edit to another week, a later pull, or a restore that
+  // rewrites the week (it isn't the user editing it again) leaves it.
+  await run("SE65", async () => {
+    const last = (s) => s.statuses[s.statuses.length - 1] || {};
+    const ks = (s) => (last(s).conflicts || []).map(c => c.k).join();
+    const t = mkTable(seedRows(4));
+    const A = mkSession(t), B = mkSession(t, { token: "TOK_B", user: "user-b" });
+    await A.engine.load(); await B.engine.load();
+    [0, 1].forEach(i => B.edit(W[i], w => (w.dayCall = "peer", w))); await B.engine.push();
+    [0, 1].forEach(i => A.edit(W[i], w => (w.dayCall = "mine", w))); await A.engine.push();
+    const two = ks(A);
+    A.edit(W[2], w => (w.dayCall = "other", w)); await A.engine.push();
+    B.edit(W[3], w => (w.dayCall = "peer3", w)); await B.engine.push(); await A.engine.pull();
+    const kept = ks(A);
+    A.edit(W[0], w => (w.dayCall = "reapplied", w)); await A.engine.push();
+    check("SE65 A16 two conflicts → two entries; an edit to ANOTHER week and a later pull keep both; editing one of THOSE weeks again drops just its entry (reported), and the re-applied edit lands",
+      two === [W[0], W[1]].join() && kept === two && ks(A) === W[1] && A.st().conflicts.map(c => c.k).join() === W[1] && t.get(W[0]).data.dayCall === "reapplied" && t.get(W[2]).data.dayCall === "other",
+      JSON.stringify({ two, kept, now: ks(A) }));
+    // A restore queued (behind a pull on the wire) that rewrites W2: not the user editing it again.
+    const snap = clone(A.mirror); snap[W[1]] = wk("snap"); snap[W[2]] = wk("snap");
+    const hold = t.control.pause({ method: "GET", count: 1 });
+    const pl = A.engine.pull(); await hold.arrived;
+    A.mirror = clone(snap);
+    const rr = A.engine.authoritative(snap, true, "restore");
+    hold.release(); await pl; const r = await rr; await A.engine.idle(); await A.engine.idle();
+    check("SE65 A16 …a restore queued behind a job and rewriting that week leaves the entry: still listed after the restore succeeds and its follow-up push",
+      r.ok && t.get(W[1]).data.dayCall === "snap" && A.mirror[W[1]].dayCall === "snap" && ks(A) === W[1] && A.st().conflicts.length === 1, JSON.stringify({ r: r.ok, now: ks(A) }));
+    A.engine.dismissConflicts();
+    const dismissed = ks(A) === "" && A.st().conflicts.length === 0;
+    await B.engine.pull(); B.edit(W[2], w => (w.dayCall = "peer2", w)); await B.engine.push();
+    A.edit(W[2], w => (w.dayCall = "mine2", w)); await A.engine.push();
+    const again = ks(A) === W[2];
+    await A.engine.reset();
+    check("SE65 A16 …dismissing clears it (reported), and a reset (sign-out) clears a new one", dismissed && again && ks(A) === "" && A.st().conflicts.length === 0, JSON.stringify({ dismissed, again, now: ks(A) }));
   });
 
   // SE-I — no scenario above produced an internal error.

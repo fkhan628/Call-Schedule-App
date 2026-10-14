@@ -36,8 +36,8 @@
   const TABLE = 'schedule_weeks';
   const COLS = ['week_monday', 'data', 'version', 'updated_by', 'updated_at'];
   const RESERVED_PARAMS = ['select', 'order', 'limit', 'offset', 'on_conflict', 'columns', 'apikey'];
-  const FAIL_KINDS = ['5xx-before', '5xx-after', 'throw', 'throw-after', '409', '401', '403', '400', 'html-403', '429', '408', '413', '400-schema'];
-  const BEFORE_KINDS = ['5xx-before', 'throw', '409', '401', '403', '400', 'html-403', '429', '408', '413', '400-schema'];
+  const FAIL_KINDS = ['5xx-before', '5xx-after', 'throw', 'throw-after', '409', '401', '403', '400', 'html-403', '429', '408', '413', '400-schema', '400-22P02'];
+  const BEFORE_KINDS = ['5xx-before', 'throw', '409', '401', '403', '400', 'html-403', '429', '408', '413', '400-schema', '400-22P02'];
   const STATUS_TEXT = {
     200: 'OK', 201: 'Created', 204: 'No Content', 400: 'Bad Request', 401: 'Unauthorized',
     403: 'Forbidden', 404: 'Not Found', 406: 'Not Acceptable', 408: 'Request Timeout', 409: 'Conflict', 413: 'Payload Too Large', 429: 'Too Many Requests',
@@ -785,6 +785,8 @@
         case '413': return { status: 413, text: 'Payload Too Large', headers: { 'content-type': 'text/plain' } };
         // A schema-cache miss: the client sent a column the table lacks.
         case '400-schema': return PgError(400, 'PGRST204', "Could not find the 'extra' column of 'schedule_weeks' in the schema cache").pgResult;
+        // Bad input for a column's type (e.g. a null / non-integer version).
+        case '400-22P02': return PgError(400, '22P02', 'invalid input syntax for type integer: "null"').pgResult;
       }
       throw new Error('unreachable');
     }

@@ -1775,7 +1775,7 @@ function CallSchedule() {
   // schedSyncBridgeRef (the latest-closure bridge, as for the day-off flush),
   // so nothing it calls is stale. Its status drives the header, the load and
   // sign-in gates, and the reload / sign-out guards.
-  const [schedSync, setSchedSync] = useState({ seeded: false, loadFailed: false, pending: 0, pendingKeys: [], saving: 0, failing: 0, auth: "ok", authNeeded: false, rejected: [], noPermission: [], blockedDeletes: 0, staleRemovals: 0, conflicts: [], busy: null, stalled: false });
+  const [schedSync, setSchedSync] = useState({ seeded: false, loadFailed: false, pending: 0, pendingKeys: [], saving: 0, failing: 0, auth: "ok", authNeeded: false, rejected: [], rejectCodes: [], noPermission: [], blockedDeletes: 0, staleRemovals: 0, conflicts: [], busy: null, stalled: false });
   const schedSyncBridgeRef = useRef(null);
   // onAdopted (A13): the engine just put someone else's copy of these weeks
   // on screen (a pull, a conflict). An OPEN week editor on one of them says
@@ -1791,6 +1791,7 @@ function CallSchedule() {
     url: SUPABASE_URL,
     writeHeaders: () => dbAuthHeaders(),   // writes send the stored token as-is (an expired one 401s — never anon)
     readHeaders: () => dbReadHeaders(),    // reads fall back to anon when the token is stale (the table is anon-readable)
+    anonHeaders: () => dbHeaders,          // …and once the SERVER has refused the token (a clock that calls it fresh can't tell)
     canWrite: () => schedSyncBridgeRef.current.canWrite,
     // The stored token. "Expired" is what the SERVER says (a 401 for this
     // token), never the device clock — a skewed clock must not stop saves (A7).
@@ -1931,11 +1932,16 @@ function CallSchedule() {
   // A5(g): the engine reports a job that has made no progress for its stall
   // bound (45 s — every request is answered or aborted within 15 s): the
   // header says "Sync stalled — reload to resync", with the same guarded
-  // Reload, until progress clears it; Clearing… / Saving… give way to it.
+  // Reload, until progress clears it.
+  // A16: each header shows ONE of these lines at a time — schedSyncLine
+  // (module scope, by its precedence) picks which; every line below renders
+  // only for its own kind.
   const reloadToResync = () => { if (confirmReloadWithPending()) window.location.reload(); };
-  const schedStaleShown = loaded && schedSync.staleRemovals > 0;
-  const schedStalledShown = loaded && !!schedSync.stalled;
-  const schedSyncedShown = loaded && !saveStatus && schedSync.seeded && schedSync.pending === 0 && !schedSync.busy && !schedStaleShown && !schedStalledShown;
+  const schedLine = schedSyncLine(schedSync, { loaded, readOnly: isPublicMode, blobStatus: !!saveStatus });
+  const schedLineKind = schedLine ? schedLine.kind : null;
+  const schedStaleShown = schedLineKind === "stale";
+  const schedStalledShown = schedLineKind === "stalled";
+  const schedSyncedShown = schedLineKind === "synced";
   // The amber "Sign in again" (A7(3)) — never beside the red one.
   const staleTokenShown = !isPublicMode && !!authUser && staleTokenWarn && !(schedSync.authNeeded || reauthNeeded);
   // Clear / factory reset / restore: an authoritative engine job — its own
@@ -6965,7 +6971,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   <span style={{color:"#7a8a98"}}>{isOrView ? "OR board · read-only" : "Read-only view"}</span>
                   {lastSyncRef.current && <> · Last updated: {new Date(lastSyncRef.current).toLocaleString(undefined, {month:"short",day:"numeric",year:"numeric",hour:"numeric",minute:"2-digit"})}</>}
                   {!lastSyncRef.current && <> · Loading schedule…</>}
-                  {loaded && schedSync.loadFailed && <span style={{color:"#c04040",fontWeight:700}}> · ⚠ The schedule didn't load — retrying. What's shown may be incomplete.</span>}
+                  {schedLineKind === "loadFailed" && <span style={{color:"#c04040",fontWeight:700}}> · ⚠ The schedule didn't load — retrying. What's shown may be incomplete.</span>}
                   {schedStaleShown && <span role="status" style={{color:"#8a5a10",fontWeight:700}}> · ⚠ The schedule on the server has fewer weeks than this screen — reload to resync <button onClick={reloadToResync} style={{marginLeft:4,background:"#fdf0e0",border:"1px solid #e0b070",color:"#8a5a10",borderRadius:5,padding:"1px 8px",fontSize:10.5,fontWeight:700,cursor:"pointer",fontFamily:font}}>Reload</button></span>}
                   {schedStalledShown && <span role="status" style={{color:"#c04040",fontWeight:700}}> · ⚠ Sync stalled — reload to resync <button onClick={reloadToResync} style={{marginLeft:4,background:"#fce8e8",border:"1px solid #e8c0c0",color:"#a83232",borderRadius:5,padding:"1px 8px",fontSize:10.5,fontWeight:700,cursor:"pointer",fontFamily:font}}>Reload</button></span>}
                 </>
@@ -6973,18 +6979,21 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                 <>
                   Call Schedule · Surgeons + APPs
                   {saveStatus && <span role="status" aria-live="polite" style={{marginLeft:8,color:saveError?"#c04040":"#1a8040",fontWeight:600,fontSize:11}}>{saveError?"⚠":"☁"} {saveStatus}</span>}
-                  {/* The schedule's own save state (sync v2). "Saving" is neutral —
-                      every edit is pending for a moment; red only when an attempt
-                      failed, sign-in is needed, deletes are blocked, or the
-                      schedule never loaded. */}
-                  {loaded && schedSync.loadFailed && <span role="status" style={{marginLeft:8,color:"#c04040",fontWeight:700,fontSize:11}}>⚠ Schedule didn't load — retrying (edits paused)</span>}
-                  {loaded && schedSync.busy && !schedStalledShown && <span role="status" style={{marginLeft:8,color:"#8a6a10",fontWeight:600,fontSize:11}}>{schedSync.busy === "restore" ? "Restoring…" : schedSync.busy === "clear" || schedSync.busy === "reset" ? "Clearing…" : "Saving…"} keep the app open</span>}
-                  {loaded && !schedSync.busy && schedSync.failing > 0 && <span role="status" aria-live="polite" style={{marginLeft:8,color:"#c04040",fontWeight:700,fontSize:11}}>⚠ {schedSync.failing} week{schedSync.failing === 1 ? "" : "s"} not saved — {schedSync.authNeeded ? "sign in again" : schedSync.noPermission.length === schedSync.failing ? "no permission" : schedSync.rejected.length === schedSync.failing ? "rejected by the server" : "retrying"}</span>}
+                  {/* The schedule's own save state (sync v2): ONE line, the kind
+                      schedSyncLine picks (A16). "Saving" is neutral — every edit is
+                      pending for a moment; red only when sign-in is needed, an
+                      attempt failed or was rejected, deletes are blocked, the sync
+                      stalled, or the schedule never loaded. */}
+                  {schedLineKind === "auth" && <span role="status" aria-live="polite" style={{marginLeft:8,color:"#c04040",fontWeight:700,fontSize:11}}>⚠ {schedLine.n ? `${schedLine.n} week${schedLine.n === 1 ? "" : "s"} not saved — sign in again` : "Sign-in expired — sign in again"}</span>}
+                  {schedLineKind === "loadFailed" && <span role="status" style={{marginLeft:8,color:"#c04040",fontWeight:700,fontSize:11}}>⚠ Schedule didn't load — retrying (edits paused)</span>}
+                  {schedLineKind === "notSaved" && <span role="status" aria-live="polite" style={{marginLeft:8,color:"#c04040",fontWeight:700,fontSize:11}}>⚠ {schedLine.n} week{schedLine.n === 1 ? "" : "s"} not saved — {schedSync.noPermission.length === schedLine.n ? "no permission" : "retrying"}</span>}
+                  {schedLineKind === "rejected" && <span role="status" aria-live="polite" style={{marginLeft:8,color:"#c04040",fontWeight:700,fontSize:11}}>⚠ {schedLine.n} week{schedLine.n === 1 ? "" : "s"} couldn't be saved ({schedSync.rejectCodes.join(", ")}) — reload/update the app <button onClick={reloadToResync} style={{marginLeft:4,background:"#fce8e8",border:"1px solid #e8c0c0",color:"#a83232",borderRadius:5,padding:"1px 8px",fontSize:10.5,fontWeight:700,cursor:"pointer",fontFamily:font}}>Reload</button></span>}
+                  {schedLineKind === "blocked" && <span role="status" style={{marginLeft:8,color:"#c04040",fontWeight:700,fontSize:11}}>⚠ {schedLine.n} week deletion{schedLine.n === 1 ? "" : "s"} blocked — reload to resync</span>}
                   {schedStalledShown && <span role="status" aria-live="polite" style={{marginLeft:8,color:"#c04040",fontWeight:700,fontSize:11}}>⚠ Sync stalled — reload to resync <button onClick={reloadToResync} style={{marginLeft:4,background:"#fce8e8",border:"1px solid #e8c0c0",color:"#a83232",borderRadius:5,padding:"1px 8px",fontSize:10.5,fontWeight:700,cursor:"pointer",fontFamily:font}}>Reload</button></span>}
-                  {loaded && !schedSync.busy && !schedStalledShown && schedSync.failing === 0 && schedSync.saving > 0 && <span style={{marginLeft:8,color:"#6a7a88",fontSize:10}}>Saving {schedSync.saving} week{schedSync.saving === 1 ? "" : "s"}…</span>}
-                  {loaded && schedSync.blockedDeletes > 0 && <span role="status" style={{marginLeft:8,color:"#c04040",fontWeight:700,fontSize:11}}>⚠ {schedSync.blockedDeletes} week deletion{schedSync.blockedDeletes === 1 ? "" : "s"} blocked — reload to resync</span>}
+                  {schedLineKind === "busy" && <span role="status" style={{marginLeft:8,color:"#8a6a10",fontWeight:600,fontSize:11}}>{schedSync.busy === "restore" ? "Restoring…" : schedSync.busy === "clear" || schedSync.busy === "reset" ? "Clearing…" : schedSync.busy === "publish" ? "Publishing…" : "Saving…"} keep the app open</span>}
                   {schedStaleShown && <span role="status" style={{marginLeft:8,color:"#8a5a10",fontWeight:700,fontSize:11}}>⚠ The schedule on the server has fewer weeks than this screen — reload to resync <button onClick={reloadToResync} style={{marginLeft:4,background:"#fdf0e0",border:"1px solid #e0b070",color:"#8a5a10",borderRadius:5,padding:"1px 8px",fontSize:10.5,fontWeight:700,cursor:"pointer",fontFamily:font}}>Reload</button></span>}
-                  {schedSync.conflicts.length > 0 && <button onClick={()=>{ showToast(`Changed by someone else (your edit was replaced — reapply it if it's still needed): week${schedSync.conflicts.length === 1 ? "" : "s"} of ${schedSync.conflicts.map(c => c.k).join(", ")}.`, "error"); schedSyncRef.current.dismissConflicts(); }} style={{marginLeft:8,background:"#fdf0e0",border:"1px solid #e0b070",color:"#8a5a10",borderRadius:5,padding:"1px 8px",fontSize:10.5,fontWeight:700,cursor:"pointer",fontFamily:font}}>⚠ {schedSync.conflicts.length} change{schedSync.conflicts.length === 1 ? "" : "s"} replaced — see</button>}
+                  {schedLineKind === "conflicts" && <button onClick={()=>{ showToast(`Changed by someone else (your edit was replaced — reapply it if it's still needed): week${schedSync.conflicts.length === 1 ? "" : "s"} of ${schedSync.conflicts.map(c => c.k).join(", ")}.`, "error"); schedSyncRef.current.dismissConflicts(); }} style={{marginLeft:8,background:"#fdf0e0",border:"1px solid #e0b070",color:"#8a5a10",borderRadius:5,padding:"1px 8px",fontSize:10.5,fontWeight:700,cursor:"pointer",fontFamily:font}}>⚠ {schedLine.n} week{schedLine.n === 1 ? "" : "s"} replaced by someone else's change — tap for details</button>}
+                  {schedLineKind === "saving" && <span style={{marginLeft:8,color:"#6a7a88",fontSize:10}}>Saving {schedLine.n} week{schedLine.n === 1 ? "" : "s"}…</span>}
                   {schedSyncedShown && <span style={{marginLeft:8,color:"#a0a8b0",fontSize:10}}>☁ Synced</span>}
                   {!loaded && <span style={{marginLeft:8,color:"#6a7a88",fontSize:10}}>Connecting…</span>}
                 </>
@@ -11992,15 +12001,19 @@ function MonthPainterSheet({ mode, css, dk, surgeons, apps, appShifts, vacations
 //      confirmed (keepalive included), so a read-back recognises this
 //      session's own write instead of calling it someone else's. A 401 / JWT
 //      error is "sign in again" — never "refused", never adopted;
+//   I5 other people's changes are pulled (the poll, resume, online) — as anon
+//      once the server has refused the stored token, so a skewed clock can't
+//      stop them;
 //   I6 clear / reset / restore re-read the whole table first and fail closed.
 //
 // deps: getState, commit(next), fetch(url, init), url, writeHeaders(),
-//   readHeaders(), canWrite() (false for public / OR-board sessions),
-//   token() (the stored access token, or null), userId(), now() (ISO),
-//   nowMs(), onStatus(s), onToast(msg, tone), onWipeBlocked(info),
+//   readHeaders(), anonHeaders() (the anon key's: reads once the server has
+//   refused the stored token), canWrite() (false for public / OR-board
+//   sessions), token() (the stored access token, or null), userId(), now()
+//   (ISO), nowMs(), onStatus(s), onToast(msg, tone), onWipeBlocked(info),
 //   onInternalError(e), onAdopted?(weeks) (someone else's copy of these weeks
 //   was just put on screen), log(...),
-//   timeouts? { read, write, stall, deadline } in ms.
+//   timeouts? { read, write, stall, deadline, retry, retryMax } in ms.
 function createSchedSync(deps) {
   const d = deps;
   // Request timeouts (A5a), then the stall bound and the caller deadline
@@ -12009,8 +12022,10 @@ function createSchedSync(deps) {
   // `stall` (3x that, and under the 60-s pull) is how long a job may make no
   // progress before the header says "Sync stalled"; `deadline` (two stall
   // bounds, queue wait included) is when a caller awaiting a load / clear /
-  // reset / restore / publish stops waiting.
-  const T = Object.assign({ read: 10000, write: 15000, stall: 45000, deadline: 90000 }, d.timeouts || {});
+  // reset / restore / publish stops waiting. `retry` / `retryMax`: a body
+  // the server rejected (a client / schema error, A4) is re-sent unchanged
+  // after 1 minute (the poll), then 2, 4, 8, and every 15 at most.
+  const T = Object.assign({ read: 10000, write: 15000, stall: 45000, deadline: 90000, retry: 60000, retryMax: 900000 }, d.timeouts || {});
   // ── canonical JSON: keys sorted at every level, JSON's own rules for the
   // rest (an undefined member is dropped, array order kept). jsonb hands keys
   // back in its own order, so plain JSON.stringify equality misfires.
@@ -12025,7 +12040,8 @@ function createSchedSync(deps) {
   let gen = 0;                     // bumped by reset(): a job from an older generation lands nothing
   const sent = {};                 // K -> [canon] bodies sent and not yet confirmed (chain + keepalive)
   const failed = new Set();        // K whose last attempt didn't land (vs merely "saving")
-  const rejected = {};             // K -> { canon, code } the server rejected (4xx JSON): not re-sent unchanged
+  const rejected = {};             // K -> { canon, code, reason, at, tries } the server rejected (4xx JSON): re-sent unchanged only with backoff
+  const toldCodes = new Set();     // rejection codes already toasted (A4: once per new code, until no week is rejected with it)
   const noPermission = new Set();  // K whose writes match 0 rows while the row is unchanged (RLS)
   const approvedDeletes = new Map(); // K -> the version a delete was authorized at (R7, R9; outstanding only)
   const inFlight = new Set();      // K with a chain request on the wire (the keepalive skips them)
@@ -12045,7 +12061,6 @@ function createSchedSync(deps) {
   const fromRow = (r) => ({ data: clone(r.data), canon: canon(r.data), version: (r.version === undefined ? null : r.version), updated_at: r.updated_at || null });
   const base = () => d.url + "/rest/v1/schedule_weeks";
   const wh = (extra) => Object.assign({}, d.writeHeaders(), { "Content-Type": "application/json" }, extra || {});
-  const rh = () => Object.assign({}, d.readHeaders());
   const say = (m, tone) => { try { d.onToast(m, tone); } catch (e) { log("onToast threw", e); } };
   const weekLabel = (k) => { try { const [y, m, dd] = k.split("-").map(Number); return new Date(y, m - 1, dd).toLocaleDateString(undefined, { month: "short", day: "numeric" }); } catch (e) { return k; } };
   const weekList = (ks) => ks.slice(0, 4).map(weekLabel).join(", ") + (ks.length > 4 ? ` and ${ks.length - 4} more` : "");
@@ -12053,6 +12068,14 @@ function createSchedSync(deps) {
   const settle = (k) => { delete sent[k]; failed.delete(k); noPermission.delete(k); delete rejected[k]; };
   const tokenNow = () => { try { return d.token ? d.token() : null; } catch (e) { return null; } };
   const authState = () => { const t = tokenNow(); return !t ? "none" : t === deadToken ? "expired" : "ok"; };
+  // Every READ (the pull, its week fetch, read-backs, whole-table reads)
+  // goes out with the read headers — the stored token while the device
+  // clock calls it fresh, else anon — EXCEPT once the server has refused the
+  // stored token (a 401 / JWT error: deadToken). Then as anon (A7, I5): a
+  // skewed clock would keep re-sending the dead token, and every pull would
+  // 401 until the user signs in again. The table is anon-readable; writes
+  // stay refused (auth-needed) until a new token is stored.
+  const rh = () => Object.assign({}, authState() === "expired" ? d.anonHeaders() : d.readHeaders());
 
   // One request, with a timeout that also covers reading the body. Only the
   // fetch itself is an "unknown outcome" — never a bug elsewhere in a job.
@@ -12072,7 +12095,8 @@ function createSchedSync(deps) {
   // Classify a write's answer on its BODY (A4): only what the body proves is
   // known. 401 or a JWT error = sign in again; a PostgREST 403 / 42501 = the
   // server refused this change (permission); another PostgREST 4xx = the
-  // content was rejected (kept, not re-sent unchanged); everything else —
+  // content was rejected (a client / schema error: kept and pending, re-sent
+  // unchanged only with backoff); everything else —
   // 0 rows, a 23505 duplicate, 404/408/413/429, 5xx, a gateway's HTML,
   // thrown, timed out — is UNKNOWN and is read back.
   const kindOf = (r) => {
@@ -12111,11 +12135,12 @@ function createSchedSync(deps) {
   const status = () => {
     const p = pendingKeys().filter(k => !ownedKey(k));
     const failing = p.filter(k => failed.has(k));
+    const rej = Object.keys(rejected).filter(k => p.includes(k)).sort();
     const a = authState();
     return { seeded, loadFailed: !seeded && loadFailed, pending: p.length, pendingKeys: p,
       saving: p.length - failing.length, failing: failing.length, auth: a,
       authNeeded: a !== "ok" && (p.length > 0 || a === "expired"),
-      rejected: Object.keys(rejected).filter(k => p.includes(k)),
+      rejected: rej, rejectCodes: [...new Set(rej.map(k => rejected[k].code))].sort(),
       noPermission: [...noPermission].filter(k => p.includes(k)),
       blockedDeletes: blocked, staleRemovals, conflicts: conflicts.slice(), busy: busy || headOwner(), stalled };
   };
@@ -12229,7 +12254,11 @@ function createSchedSync(deps) {
   };
 
   // ── one week's write: CAS PATCH / INSERT / CAS DELETE, then read-back ──
-  // → { k, outcome: "saved" | "pending" | "auth" | "rejected" | "refused" | "conflict", row?, thrown? }
+  // → { k, outcome: "saved" | "pending" | "auth" | "rejected" | "refused" | "conflict"
+  //   | "superseded" (our earlier body landed, and the screen has moved on since:
+  //   still pending — the next push sends the newer copy)
+  //   | "stale" (the session was reset mid-job: nothing more is sent),
+  //   row?, sent?, thrown?, code?, reason? }
   // mode "force" (clear / restore / publish): a conflict is rewritten at the
   // server's version, and a week found deleted is re-inserted.
   const writeWeek = async (k, target, mode, by, g) => {
@@ -12257,7 +12286,14 @@ function createSchedSync(deps) {
         return { k, outcome: "saved" };
       }
       if (kind === "auth") { deadToken = tok; failed.add(k); return { k, outcome: "auth" }; }
-      if (kind === "rejected") { rejected[k] = { canon: c, code: String((r.body && r.body.code) || r.status) }; failed.add(k); return { k, outcome: "rejected", code: rejected[k].code }; }
+      // A client / schema error (A4): kept on screen and pending, never
+      // adopted; the same body is re-sent only with backoff (`tries`).
+      if (kind === "rejected") {
+        const prev = rejected[k];
+        rejected[k] = { canon: c, code: String((r.body && r.body.code) || r.status), reason: writeFailReason(r.body), at: d.nowMs(), tries: prev && prev.canon === c ? prev.tries + 1 : 1 };
+        failed.add(k);
+        return { k, outcome: "rejected", code: rejected[k].code, reason: rejected[k].reason };
+      }
       if (gen !== g) return { k, outcome: "stale" };
       if (kind === "refused") { const rb = await readBack(k); return { k, outcome: "refused", sent: c, row: rb.ok ? rb.row : undefined }; }
       // unknown: read it back
@@ -12277,6 +12313,26 @@ function createSchedSync(deps) {
     return { k, outcome: "pending" };
   };
 
+  // A16: a "replaced by someone else's change" item stays until it's
+  // dismissed, the session resets, or the user edits that week again — seen
+  // here, at the start of the ordinary push every edit requests, as the
+  // screen no longer showing the copy that was adopted (mirror ≠ known). A
+  // clear / restore / publish isn't the user editing it again: the item
+  // stays past that job's success toast.
+  const dropEditedConflicts = () => {
+    if (!conflicts.length) return;
+    const cur = d.getState() || {};
+    const keep = conflicts.filter(c => (c.k in cur ? canon(cur[c.k]) : DEL) === (known[c.k] ? known[c.k].canon : DEL));
+    if (keep.length !== conflicts.length) { conflicts = keep; report(); }
+  };
+  // A rejected body (A4) is re-sent unchanged once its backoff has passed:
+  // T.retry after the rejection, doubling per rejection of that same body,
+  // at most T.retryMax. A changed body goes out at once.
+  const heldBack = (k, body) => {
+    const x = rejected[k];
+    return !!x && x.canon === canon(body) && d.nowMs() - x.at < Math.min(T.retry * Math.pow(2, x.tries - 1), T.retryMax);
+  };
+
   // ── PUSH: send every week the mirror (or an authoritative target) differs on ──
   // job: { mode: "normal" | "force", target?, grant?, keys? (publish: only
   // these weeks, never a delete) }
@@ -12285,6 +12341,7 @@ function createSchedSync(deps) {
     if (!seeded) { report(); return { ok: false, skipped: "not-loaded" }; }
     if (!d.canWrite()) { report(); return { ok: false, skipped: "read-only" }; }
     if (job.mode !== "force" && authoritativeQueued > 0) return { ok: false, skipped: "authoritative-queued" };
+    if (job.mode !== "force") dropEditedConflicts();
     if (authState() !== "ok") {
       const p = pendingKeys();
       p.forEach(k => failed.add(k));
@@ -12300,7 +12357,12 @@ function createSchedSync(deps) {
       if (!rb.ok) continue;
       const how = classify(k, rb.row);
       if (how === "mirror" || how === "ours") confirm(k, rb.row);
-      else if (how === "theirs" && job.mode !== "force") { const cur = d.getState() || {}; if (adoptInto({ [k]: rb.row }, "conflict", { [k]: k in cur ? canon(cur[k]) : DEL }).length) results.push({ k, outcome: "conflict" }); }
+      // Someone else's copy. A force job takes it as known (and so rewrites
+      // over it) only for a week it OWNS — a publish only its period's. Any
+      // other week is a conflict exactly as in a normal push: their copy is
+      // shown and told, so no later push can overwrite it under a CAS taken
+      // from their row (I2).
+      else if (how === "theirs" && (job.mode !== "force" || (job.keys && !job.keys.has(k)))) { const cur = d.getState() || {}; if (adoptInto({ [k]: rb.row }, "conflict", { [k]: k in cur ? canon(cur[k]) : DEL }).length) results.push({ k, outcome: "conflict" }); }
       else if (how === "theirs") { if (rb.row) known[k] = fromRow(rb.row); else delete known[k]; settle(k); }
     }
     // The target is read only NOW: the re-read above may have adopted someone
@@ -12308,8 +12370,8 @@ function createSchedSync(deps) {
     const target = job.target !== undefined ? job.target : (d.getState() || {});
     let { changed, deletes } = diff(target);
     if (job.keys) { changed = changed.filter(k => job.keys.has(k)); deletes = []; }
-    // A body the server rejected (4xx) is not re-sent until it changes.
-    const sendable = changed.filter(k => !(rejected[k] && rejected[k].canon === canon(target[k])));
+    // A body the server rejected (4xx) waits out its backoff (A4).
+    const sendable = changed.filter(k => !heldBack(k, target[k]));
     // Wipe guard on NEW deletes only (R7, R9, R10). An authoritative job
     // carries its own grant. An approval holds only while the delete is still
     // outstanding at the version it was approved at (A12). A blocked push
@@ -12345,10 +12407,12 @@ function createSchedSync(deps) {
       results.push(x);
       if (x.outcome === "auth" || x.thrown) stop = true;
     }
+    let heldDeletes = 0;
     for (const k of sendDeletes) {
       if (gen !== g) return { ok: false, skipped: "reset" };
       if (stop) break;
       if (moved(k)) continue;
+      if (heldBack(k, undefined)) { heldDeletes++; continue; }
       const x = await writeWeek(k, undefined, job.mode, by, g);
       results.push(x);
       if (x.outcome === "auth" || x.thrown) stop = true;
@@ -12364,7 +12428,9 @@ function createSchedSync(deps) {
     });
     toasts(results);
     report();
-    const ok = results.every(x => x.outcome === "saved") && sendDeletes.length === deletes.length && sendable.length === changed.length && !stop
+    // A publish answers for its own weeks: a conflict found on another week
+    // (above) is told, but doesn't make the publish "not landed".
+    const ok = results.filter(x => !job.keys || job.keys.has(x.k)).every(x => x.outcome === "saved") && sendDeletes.length === deletes.length && !heldDeletes && sendable.length === changed.length && !stop
       && (job.target === undefined || diff(target).changed.filter(k => !job.keys || job.keys.has(k)).length === 0);
     return { ok, results, blocked: sendDeletes.length < deletes.length };
   };
@@ -12379,7 +12445,19 @@ function createSchedSync(deps) {
     const parts = [];
     if (conf.length) parts.push(`${conf.length === 1 ? "The week of " + weekList(conf) + " was" : "The weeks of " + weekList(conf) + " were"} changed by someone else — showing the latest. Reapply your change if it's still needed.`);
     if (ref.length) parts.push(`The server refused the change to ${weekList(ref)} (no permission) — showing what is saved.`);
-    if (rej.length) parts.push(`The server rejected the change to ${weekList(rej.map(x => x.k))} (${[...new Set(rej.map(x => x.code))].join(", ")}) — it was not saved. Edit it again, or reload the app.`);
+    // A rejection (A4) is told once per NEW code, with writeFailReason's
+    // reason: a retried body rejected again with that code says nothing more
+    // (the header line stays). A code is forgotten once no week is rejected
+    // with it, so it's told again if it comes back.
+    const stillRejected = new Set(pendingKeys().filter(k => rejected[k]).map(k => rejected[k].code));
+    [...toldCodes].forEach(c => { if (!stillRejected.has(c)) toldCodes.delete(c); });
+    const fresh = {};
+    rej.forEach(x => { if (!toldCodes.has(x.code)) (fresh[x.code] = fresh[x.code] || { ks: [], reason: x.reason }).ks.push(x.k); });
+    Object.keys(fresh).sort().forEach(c => {
+      toldCodes.add(c);
+      const one = fresh[c].ks.length === 1;
+      parts.push(`${one ? "The week of" : "The weeks of"} ${weekList(fresh[c].ks)} couldn't be saved (${c}): ${fresh[c].reason}. ${one ? "It stays on this screen and is" : "They stay on this screen and are"} retried.`);
+    });
     const failing = pendingKeys().filter(k => failed.has(k) && !rejected[k]);
     const failedNow = results.some(x => x.outcome === "pending" || x.outcome === "auth");
     const kind = results.some(x => x.outcome === "auth") || authState() !== "ok" ? "auth" : failing.length && failing.every(k => noPermission.has(k)) ? "perm" : "net";
@@ -12462,7 +12540,7 @@ function createSchedSync(deps) {
     rows.forEach(x => { known[x.week_monday] = fromRow(x); next[x.week_monday] = clone(x.data); });
     seeded = true; loadFailed = false; staleRemovals = 0; removalSig = "";
     Object.keys(sent).forEach(k => delete sent[k]); failed.clear(); noPermission.clear(); approvedDeletes.clear();
-    Object.keys(rejected).forEach(k => delete rejected[k]);
+    Object.keys(rejected).forEach(k => delete rejected[k]); toldCodes.clear();
     d.commit(next);
     report();
     return { ok: true, seeded: true, weeks: rows.length };
@@ -12590,7 +12668,7 @@ function createSchedSync(deps) {
     reset() {
       gen++; known = {}; seeded = false; loadFailed = false; deadToken = null; blocked = 0; lastBlockSig = ""; removalSig = ""; staleRemovals = 0; conflicts = [];
       [...owners].forEach(o => { if (!o.state.started) { o.state.cancelled = true; o.release(); } }); // queued before the boundary: never runs under the next session
-      Object.keys(sent).forEach(k => delete sent[k]); Object.keys(rejected).forEach(k => delete rejected[k]);
+      Object.keys(sent).forEach(k => delete sent[k]); Object.keys(rejected).forEach(k => delete rejected[k]); toldCodes.clear();
       failed.clear(); noPermission.clear(); approvedDeletes.clear(); inFlight.clear();
       d.commit({});
       report();
@@ -12629,17 +12707,53 @@ function createSchedSync(deps) {
   };
   return api;
 }
-// ═══ END SYNC ENGINE v2 ═══
 
 // writeFailReason(error) -> a plain-language reason for a failed write, from the
 // error BODY (db.insert / PostgREST), the same classification the autosave uses:
 // an RLS / 403 refusal is a permission problem, an expired JWT / 401 is the
-// sign-in, anything else is the connection. Module scope: pure, no state.
+// sign-in, a PostgREST client / schema error is the request's CONTENT (A4: the
+// server took it and refused what it said — bad input 22xxx, a constraint
+// 23xxx, an unknown column 42xxx / PGRST204, a request it can't parse PGRST1xx,
+// a trigger's RAISE P0xxx — an out-of-date app, not the connection), anything
+// else is the connection. Module scope: pure, no state. It sits inside the
+// sync engine's anchors because the engine's rejection toast uses it too (so
+// the engine's tests run the real one); the app's submits call it as before.
 function writeFailReason(err) {
   const s = typeof err === "string" ? err : (() => { try { return JSON.stringify(err || ""); } catch (e) { return String(err); } })();
   if (/42501|row-level security|\b403\b/i.test(s)) return "you don't have permission to do that (ask the scheduler)";
   if (/JWT expired|PGRST30[0-3]|\b401\b/i.test(s)) return "your sign-in has expired — sign in again";
+  const code = err && typeof err === "object" && typeof err.code === "string" ? err.code : "";
+  if (/^(PGRST[12]\d\d|2[23][0-9A-Z]{3}|42[0-9A-Z]{3}|P0\d{3})$/.test(code)) return "the server rejected it — this app may be out of date (reload or update it)";
   return "check your connection and try again";
+}
+// ═══ END SYNC ENGINE v2 ═══
+
+// The header's ONE schedule-sync line (A16), from the engine's status. The
+// first that applies wins:
+//   sign in again > not saved (an attempt failed, or its outcome is unknown)
+//   > couldn't be saved (the server rejected the content: a client / schema
+//   error, A4) > deletions blocked > Sync stalled > Clearing… / Restoring… /
+//   Publishing… > fewer weeks on the server (stale removals) > replaced by
+//   someone else's change (conflicts) > Saving… > ☁ Synced.
+// Two lines aren't in A16's list: "didn't load" ranks right after sign-in
+// (nothing can be pending before the first read, so it never hides a save),
+// and deletions the wipe guard holds back rank as a refused attempt (with no
+// line of their own they would read "Saving…" for ever). A read-only view
+// (public / OR board) never writes, so only what can happen there applies:
+// didn't load > stalled > stale removals.
+// st: the engine's status (the header's schedSync state); o: { loaded,
+// readOnly, blobStatus } (blobStatus: the blob leg's own status is showing,
+// so "Synced" would be premature). → { kind, n } or null (nothing to say).
+function schedSyncLine(st, o) {
+  if (!st || !o || !o.loaded) return null;
+  const rej = (st.rejected || []).length, notSaved = Math.max(0, (st.failing || 0) - rej), conf = (st.conflicts || []).length;
+  const lines = o.readOnly
+    ? [["loadFailed", !!st.loadFailed], ["stalled", !!st.stalled], ["stale", st.staleRemovals > 0, st.staleRemovals]]
+    : [["auth", !!st.authNeeded, st.pending], ["loadFailed", !!st.loadFailed], ["notSaved", notSaved > 0, notSaved], ["rejected", rej > 0, rej],
+      ["blocked", st.blockedDeletes > 0, st.blockedDeletes], ["stalled", !!st.stalled], ["busy", !!st.busy], ["stale", st.staleRemovals > 0, st.staleRemovals],
+      ["conflicts", conf > 0, conf], ["saving", st.saving > 0, st.saving], ["synced", !o.blobStatus && !!st.seeded && st.pending === 0]];
+  const hit = lines.find(l => l[1]);
+  return hit ? { kind: hit[0], n: hit[2] || 0 } : null;
 }
 
 // 📊 My call totals — DSG + Silvis (owner request 2026-10-09; decisions 2026-10-11).
