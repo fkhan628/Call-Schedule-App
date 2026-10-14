@@ -2855,23 +2855,33 @@ function CallSchedule() {
         return;
       }
       if (!schedEditable()) return;
-      // The trade must still describe the schedule (sync v2, stale intents):
-      // the proposer still holds the shift and the other side the return
-      // shift. Someone else may have changed the week since it was proposed —
-      // and v2's pull shows that change here, so a blind accept would now
-      // overwrite it. Checked before the status PATCH: a refused trade stays
-      // pending.
-      {
-        const cur = scheduleRef.current;
-        const holder = (w, k) => (k === "dayCall" ? cur[w]?.dayCall : cur[w]?.nights?.[k]) || "";
-        if (holder(req.week_monday, req.shift_key) !== (req.from_surgeon_id || "")
-          || (req.return_week && req.return_shift && holder(req.return_week, req.return_shift) !== (req.to_surgeon_id || ""))) {
-          showToast("This trade is out of date — the schedule for those shifts changed since it was proposed. Nothing was changed; propose it again if it's still wanted.", "error");
-          return;
-        }
+      // The trade must still describe the schedule (sync v2, stale intents,
+      // A13): the proposer still holds the shift, the other side the return
+      // shift, and each cascade's `from` the slot it moves — as it stands once
+      // the two legs land, since a cascade can move a slot a leg just filled.
+      // Someone else may have changed the week since it was proposed — and
+      // v2's pull shows that change here, so a blind accept would now
+      // overwrite it. Everything is read from the mirror (scheduleRef), never
+      // the render's `schedule` (it stays in the deps only to keep this
+      // closure's logAudit current), so the cascades the confirm below lists
+      // are the schedule's own. Checked before the status PATCH (a refused
+      // trade stays pending) and again at commit, after its await.
+      const hasReturn = !!(req.return_week && req.return_shift);
+      const holderIn = (cur, w, k) => (k === "dayCall" ? cur[w]?.dayCall : cur[w]?.nights?.[k]) || "";
+      const holderAfterLegs = (cur, w, k) => (w === req.week_monday && k === req.shift_key) ? (req.to_surgeon_id || "")
+        : (hasReturn && w === req.return_week && k === req.return_shift) ? (req.from_surgeon_id || "") : holderIn(cur, w, k);
+      const tradeHolds = (cur, cs) => holderIn(cur, req.week_monday, req.shift_key) === (req.from_surgeon_id || "")
+        && (!hasReturn || holderIn(cur, req.return_week, req.return_shift) === (req.to_surgeon_id || ""))
+        && cs.every(ch => holderAfterLegs(cur, ch.week, ch.shiftKey) === (ch.from || ""));
+      // What the confirm asks about: each cascade's slot, both people, and
+      // whether it needs the off surgeon (its reason text derives from these).
+      const cascadeSig = (cs) => JSON.stringify(cs.map(c => [c.week, c.shiftKey, c.from, c.to, !!c.requiresApproval]));
+      const cur = scheduleRef.current;
+      const cascades = detectCascadeChanges(cur, req);
+      if (!tradeHolds(cur, cascades)) {
+        showToast("This trade is out of date — the schedule for those shifts changed since it was proposed. Nothing was changed; propose it again if it's still wanted.", "error");
+        return;
       }
-      // Detect cascade changes
-      const cascades = detectCascadeChanges(schedule, req);
       const nameOf = (id) => surgeons.find(s => s.id === id)?.name || id;
       // silvisBusy: neither leg — nor any cascade reassignment — may land FAK
       // on a Silvis primary day. Checked HERE, before the status PATCH: a
@@ -2879,9 +2889,9 @@ function CallSchedule() {
       // applied. Member → refused outright; scheduler/admin → confirm override.
       if (silvisActive) {
         const hits = [];
-        const r1 = silvisBlock(req.to_surgeon_id, req.week_monday, req.shift_key, schedule[req.week_monday]); if (r1) hits.push(r1);
-        if (req.return_week && req.return_shift) { const r2 = silvisBlock(req.from_surgeon_id, req.return_week, req.return_shift, schedule[req.return_week]); if (r2) hits.push(r2); }
-        for (const ch of cascades) { const rc = silvisBlock(ch.to, ch.week, ch.shiftKey, schedule[ch.week]); if (rc) hits.push("cascade: " + rc); }
+        const r1 = silvisBlock(req.to_surgeon_id, req.week_monday, req.shift_key, cur[req.week_monday]); if (r1) hits.push(r1);
+        if (hasReturn) { const r2 = silvisBlock(req.from_surgeon_id, req.return_week, req.return_shift, cur[req.return_week]); if (r2) hits.push(r2); }
+        for (const ch of cascades) { const rc = silvisBlock(ch.to, ch.week, ch.shiftKey, cur[ch.week]); if (rc) hits.push("cascade: " + rc); }
         if (silvisRefuse(hits)) return;
       }
 
@@ -2920,11 +2930,42 @@ function CallSchedule() {
         showToast("This trade was already handled or withdrawn — nothing was changed.", "error");
         return; // realtime/60s poll will refresh the visible status
       }
-      setTradeRequests(prev => prev.map(r => r.id === req.id ? { ...r, status: "accepted" } : r));
-      // Composed ONCE here and reused by the notification + email below,
-      // matching the propose/decline siblings (was composed twice).
+      // Composed ONCE here and reused by the audit line, the notification and
+      // the email below, matching the propose/decline siblings.
       const acceptMsg = tradeAcceptMsg(req);
-      logAudit("trade.accept", `${acceptMsg}${cascades.length ? ` (+${cascades.length} cascade change${cascades.length === 1 ? "" : "s"})` : ""}`, { request_id: req.id, cascades: cascades.length });
+      // RE-CHECKED AT COMMIT (A13). The status PATCH was awaited, and a pull
+      // can adopt someone else's change to these weeks meanwhile. Nothing
+      // awaits from here to updateSchedule, so what is checked is what is
+      // written: both legs and every confirmed cascade's `from` against the
+      // latest mirror, and the cascades re-computed from it must be exactly
+      // the set the user confirmed. Otherwise nothing is applied (no undo
+      // step, no schedule write, no notifications) and the request goes back
+      // to pending — only from the 'accepted' this click wrote
+      // (status=eq.accepted), and believed only when that one row comes back.
+      const curNow = scheduleRef.current;
+      const cascadesNow = detectCascadeChanges(curNow, req);
+      if (!tradeHolds(curNow, cascades) || cascadeSig(cascadesNow) !== cascadeSig(cascades)) {
+        let back = null, why = "";
+        try {
+          const backRes = await fetch(`${SUPABASE_URL}/rest/v1/shift_trade_requests?id=eq.${req.id}&status=eq.accepted`, {
+            method: "PATCH",
+            headers: { ...dbAuthHeaders(), "Content-Type": "application/json", Prefer: "return=representation" },
+            body: JSON.stringify({ status: "pending", reviewed_at: null }),
+          });
+          if (backRes.ok) back = await backRes.json().catch(() => null);
+          else why = `HTTP ${backRes.status} ${await backRes.text().catch(() => "")}`;
+        } catch (e) { why = String(e && e.message || e); }
+        const reverted = Array.isArray(back) && back.length === 1;
+        if (reverted) setTradeRequests(prev => prev.map(r => r.id === req.id ? { ...r, status: "pending" } : r));
+        else console.error("Trade accept not applied (the schedule changed), and the request could NOT be set back to pending:", req.id, why || `${Array.isArray(back) ? back.length : "no"} row(s) came back`);
+        logAudit("trade.accept_unapplied", `${acceptMsg} — NOT applied: the schedule for those shifts changed while it was being accepted; ${reverted ? "set back to pending" : "still marked accepted (setting it back failed) — needs a manual fix"}`, { request_id: req.id, reverted });
+        showToast(reverted
+          ? "This trade was not applied — the schedule for those shifts changed while it was being accepted. Nothing was changed, and the trade is pending again: look it over and accept it again if it still fits."
+          : "This trade was not applied — the schedule for those shifts changed while it was being accepted. The schedule was not changed, but the request is still marked accepted and needs a manual fix (it couldn't be set back to pending).", "error");
+        return; // no undo, no schedule write, no notifications
+      }
+      setTradeRequests(prev => prev.map(r => r.id === req.id ? { ...r, status: "accepted" } : r));
+      logAudit("trade.accept", `${acceptMsg}${cascadesNow.length ? ` (+${cascadesNow.length} cascade change${cascadesNow.length === 1 ? "" : "s"})` : ""}`, { request_id: req.id, cascades: cascadesNow.length });
       pushUndo();
       updateSchedule(p => {
         const n = { ...p };
@@ -2943,8 +2984,8 @@ function CallSchedule() {
           n[req.return_week] = wk2;
         }
 
-        // Apply all cascade changes
-        for (const ch of cascades) {
+        // Apply all cascade changes (the set re-computed at commit)
+        for (const ch of cascadesNow) {
           const wkC = { ...n[ch.week] };
           wkC.nights = { ...wkC.nights, [ch.shiftKey]: ch.to };
           // Recalculate off surgeon
@@ -2972,7 +3013,7 @@ function CallSchedule() {
       sendEmailNotif("trade_accepted", { from_name: req.from_surgeon_name, to_name: req.to_surgeon_name, shift: req.shift_label, week: req.week_monday, detail: acceptMsg }, [req.from_surgeon_id, req.to_surgeon_id]);
 
       // Notify about each cascade change — affected surgeons + scheduler/admin
-      for (const ch of cascades) {
+      for (const ch of cascadesNow) {
         const fromName = nameOf(ch.from);
         const toName = nameOf(ch.to);
         const cascadeTargets = [...new Set([ch.from, ch.to, ...schedulerAdminIds].filter(Boolean))];

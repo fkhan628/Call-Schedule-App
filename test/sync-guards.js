@@ -1671,9 +1671,10 @@ check("prefs audit never logs the plaintext email (masked only)",
   check("silvisBlock/silvisRefuse are stable useCallbacks with their own deps",
     count("}, [silvisActive, silvisFakId, silvisDays]);") >= 1 && count("}, [isScheduler, userProfile]);") === 1);
   check("every refusal call site hands silvisBlock the week row (holiday/override precedence): accept ×3, two-way ×2, one-way, lock, pending rows, propose ×2, submit ×2",
-    count("silvisBlock(req.to_surgeon_id, req.week_monday, req.shift_key, schedule[req.week_monday])") === 1
-    && count("silvisBlock(req.from_surgeon_id, req.return_week, req.return_shift, schedule[req.return_week])") === 1
-    && count("silvisBlock(ch.to, ch.week, ch.shiftKey, schedule[ch.week])") === 3
+    // accept reads the mirror (cur = scheduleRef.current, sync v2 11/n, A13); the two card previews still read the render
+    count("silvisBlock(req.to_surgeon_id, req.week_monday, req.shift_key, cur[req.week_monday])") === 1
+    && count("silvisBlock(req.from_surgeon_id, req.return_week, req.return_shift, cur[req.return_week])") === 1
+    && count("silvisBlock(ch.to, ch.week, ch.shiftKey, cur[ch.week])") === 1 && count("silvisBlock(ch.to, ch.week, ch.shiftKey, schedule[ch.week])") === 2
     && count("silvisBlock(candId, targetMon, targetShift, cur[targetMon])") === 1
     && count("silvisBlock(targetOldId, returnMon, returnShift, cur[returnMon])") === 1
     && count("silvisBlock(newId, mStr, shift, schedule[mStr])") === 1
@@ -5528,6 +5529,208 @@ await (async () => {
       (sheet || "").slice(0, 160));
   }
 })().catch(ex => check("SE-R harness ran without crashing", false, String(ex && ex.stack || ex).split("\n").slice(0, 3).join(" | ")));
+
+// SE-K. Sync v2 trade accept, re-checked at commit (11/n, A13; A17(b)), EXECUTED.
+// The real acceptTradeRequest and the real detectCascadeChanges, sliced by
+// their anchors and run in a FRESH context (a free identifier throws instead
+// of resolving to a sandbox global), with helpers.js / config.js's real
+// fmt, shiftStartDate, SHIFT_LABELS and message composers. The status PATCH
+// is scripted: while it is in flight the mirror (scheduleRef) changes the way
+// a pull adopting someone else's week changes it — by value, from a stub, and
+// once from the REAL engine pulling the emulated table. The compensating
+// PATCH answers one row, zero rows, a 500, or throws. The render's `schedule`
+// handed in is deliberately STALE (it gives no cascades), so a read of it
+// shows as a wrong cascade set. Every request, confirm, toast, audit line,
+// console.error, trade-status setter, undo step, schedule write and notice
+// is recorded; console.error is expected only where a check names it.
+console.log("\nSE-K. sync v2 trade accept re-checked at commit (A13), executed");
+await (async () => {
+  const nsrcK = src.replace(/\r\n/g, "\n");
+  const after = (start, end) => { const i = nsrcK.indexOf(start); if (i < 0 || nsrcK.indexOf(start, i + 1) !== -1) return null; const e = nsrcK.indexOf(end, i + start.length); return e < 0 ? null : nsrcK.slice(i + start.length, e); };
+  const kctx = vm.createContext({});
+  const fnK = (names, code) => { try { return vm.runInContext(`(function (env) { const { ${names} } = env; return (${code}); })`, kctx); } catch (ex) { return null; } };
+  const se = require("./sync-engine-se.js");
+  const { createFakeWeeksTable } = require("./fake-weeks-table.js");
+  const accSrc = after("  const acceptTradeRequest = useCallback(async (req) => {", "\n  }, [schedule, surgeons, pushUndo, addNotification, sendEmailNotif, detectCascadeChanges, schedulerAdminIds, silvisActive, silvisBlock, silvisRefuse]);");
+  const dcSrc = after("  const detectCascadeChanges = useCallback((sched, req) => {", "\n  }, [surgeons]);");
+  const accFn = accSrc && fnK("fmt, shiftStartDate, showToast, schedEditable, scheduleRef, detectCascadeChanges, surgeons, silvisActive, silvisBlock, silvisRefuse, confirm, fetch, SUPABASE_URL, dbAuthHeaders, console, setTradeRequests, tradeAcceptMsg, logAudit, pushUndo, updateSchedule, addNotification, sendEmailNotif, SHIFT_LABELS, schedulerAdminIds, cascadeMsg, schedule", "async (req) => {" + accSrc + "\n  }");
+  const dcFn = dcSrc && fnK("surgeons, SHIFT_LABELS", "(sched, req) => {" + dcSrc + "\n  }");
+  if (!accFn || !dcFn) { check("SE-K acceptTradeRequest and detectCascadeChanges are extractable", false, JSON.stringify({ acc: !!accFn, dc: !!dcFn })); return; }
+  const HK = vm.runInContext("({ fmt, shiftStartDate, SHIFT_LABELS, tradeAcceptMsg, cascadeMsg })", sandbox);
+  const SURG = ["AAA", "BBB", "CCC", "DDD", "EEE", "FFF", "GGG"].map((name, i) => ({ id: "s" + (i + 1), name }));
+  const detect = dcFn({ surgeons: SURG, SHIFT_LABELS: HK.SHIFT_LABELS });
+  const W1 = "2030-01-07", W2 = "2030-01-14", W3 = "2030-01-21";
+  const wk = (dc, n, off) => ({ dayCall: dc, nights: { mon: n[0], tue: n[1], wed: n[2], thu: n[3], wknd: n[4] }, off });
+  // AAA (s1) gives BBB (s2) the service week of W1 and takes BBB's of W2.
+  // Each new service-week holder also has that week's Tue night, so the
+  // trade cascades: both Tue nights move (W1's to AAA, W2's to BBB).
+  const MIRROR = () => ({ [W1]: wk("s1", ["s3", "s2", "s4", "s5", "s6"], "s7"), [W2]: wk("s2", ["s4", "s1", "s3", "s5", "s6"], "s7"), [W3]: wk("s5", ["s1", "s2", "s3", "s4", "s6"], "s7") });
+  // The render's copy, from before someone else's two Tue nights were adopted: it gives no cascades.
+  const STALE = () => ({ [W1]: wk("s1", ["s3", "s7", "s4", "s5", "s6"], "s2"), [W2]: wk("s2", ["s4", "s7", "s3", "s5", "s6"], "s1"), [W3]: wk("s5", ["s1", "s2", "s3", "s4", "s6"], "s7") });
+  const REQ = { id: 42, from_surgeon_id: "s1", to_surgeon_id: "s2", from_surgeon_name: "AAA", to_surgeon_name: "BBB", week_monday: W1, shift_key: "dayCall", shift_label: "Service Week",
+    return_week: W2, return_shift: "dayCall", status: "pending" };
+  const sig = (cs) => JSON.stringify(cs.map(c => [c.week, c.shiftKey, c.from, c.to]));
+  const WANT = JSON.stringify([[W1, "tue", "s2", "s1"], [W2, "tue", "s1", "s2"]]);
+  const with1 = (base, k, row) => Object.assign({}, base, { [k]: row });
+  check("SE-K setup: the real detectCascadeChanges gives this trade its two cascades on the mirror and NONE on the stale render copy (so reading the render shows up)",
+    sig(detect(MIRROR(), REQ)) === WANT && detect(STALE(), REQ).length === 0, JSON.stringify([detect(MIRROR(), REQ), detect(STALE(), REQ)]));
+
+  const resp = (status, json) => ({ ok: status >= 200 && status < 300, status, json: async () => json, text: async () => JSON.stringify(json) });
+  // One component instance. o.during(ref): runs while the status PATCH is in
+  // flight. o.back: how the compensating PATCH answers (one row by default).
+  const world = (o = {}) => {
+    const w = { reqs: [], confirms: [], toasts: [], audits: [], errors: [], trades: [], undo: 0, writes: 0, notes: [], emails: [], silvis: [] };
+    const ref = o.ref || { current: MIRROR() };
+    let list = [Object.assign({}, REQ)];
+    w.ref = ref;
+    const env = {
+      fmt: HK.fmt, shiftStartDate: HK.shiftStartDate, SHIFT_LABELS: HK.SHIFT_LABELS, tradeAcceptMsg: HK.tradeAcceptMsg, cascadeMsg: HK.cascadeMsg,
+      showToast: (m, tone) => w.toasts.push([String(m), tone]), schedEditable: () => true, scheduleRef: ref, surgeons: SURG, schedule: STALE(), detectCascadeChanges: detect,
+      silvisActive: true, silvisBlock: (id, mon, sk, row) => { w.silvis.push(row === ref.current[mon] ? "mirror" : "other"); return null; }, silvisRefuse: (hits) => hits.length > 0,
+      confirm: (m) => { w.confirms.push(String(m)); return true; },
+      SUPABASE_URL: "https://x.supabase.co", dbAuthHeaders: () => ({ apikey: "ANON", Authorization: "Bearer TOK" }),
+      console: { error: (...a) => w.errors.push(a.map(String).join(" ")), warn: () => {}, log: () => {} },
+      setTradeRequests: (f) => { list = f(list); w.trades.push(list.find(r => r.id === REQ.id).status); },
+      logAudit: (action, summary, details) => w.audits.push({ action, summary, details }),
+      pushUndo: () => { w.undo++; },
+      updateSchedule: (fn) => { const cur = ref.current, next = fn(cur); if (next !== cur) { w.writes++; ref.current = next; } return next; }, // the real one's contract
+      addNotification: async (type, title, msg, data, targets) => { w.notes.push(type); },
+      sendEmailNotif: (type) => { w.emails.push(type); },
+      schedulerAdminIds: ["s9"],
+      fetch: async (url, init) => {
+        const r = { url: String(url), method: (init && init.method) || "GET", headers: (init && init.headers) || {}, body: init && init.body ? JSON.parse(init.body) : null };
+        w.reqs.push(r);
+        if (/\/rest\/v1\/shift_trade_requests\?id=eq\.42&status=eq\.pending$/.test(r.url)) {
+          if (o.during) { await null; await o.during(ref); }
+          return resp(200, [Object.assign({}, REQ, { status: "accepted" })]);
+        }
+        if (/\/rest\/v1\/shift_trade_requests\?id=eq\.42&status=eq\.accepted$/.test(r.url)) {
+          if (o.back === "throw") throw new TypeError("Failed to fetch");
+          if (o.back === "http") return resp(500, { message: "upstream" });
+          return resp(200, o.back === "none" ? [] : [Object.assign({}, REQ, { status: "pending", reviewed_at: null })]);
+        }
+        throw new Error("unrouted request: " + r.method + " " + r.url);
+      },
+    };
+    w.run = async (req) => { await accFn(env)(Object.assign({}, req || REQ)); return w; };
+    return w;
+  };
+  const isAccept = (r) => !!r && r.method === "PATCH" && /status=eq\.pending$/.test(r.url) && !!r.body && r.body.status === "accepted";
+  const isBack = (r) => !!r && r.method === "PATCH" && /\/shift_trade_requests\?id=eq\.42&status=eq\.accepted$/.test(r.url) && JSON.stringify(r.body) === '{"status":"pending","reviewed_at":null}'
+    && r.headers.Prefer === "return=representation" && /Bearer TOK/.test(r.headers.Authorization || "");
+  const applied = (w, extra) => w.reqs.length === 1 && isAccept(w.reqs[0]) && w.writes === 1 && w.undo === 1 && w.trades.join() === "accepted"
+    && w.audits.length === 1 && w.audits[0].action === "trade.accept" && / \(\+2 cascade changes\)$/.test(w.audits[0].summary) && w.audits[0].details.cascades === 2
+    && w.notes.join() === "trade_accepted,schedule_changed,schedule_changed" && w.emails.length === 3 && w.toasts.length === 0 && w.errors.length === 0
+    && w.ref.current[W1].dayCall === "s2" && w.ref.current[W1].nights.tue === "s1" && w.ref.current[W2].dayCall === "s1" && w.ref.current[W2].nights.tue === "s2"
+    && w.ref.current[W1].off === "s7" && w.ref.current[W2].off === "s7" && (!extra || extra(w));
+  // Not applied: the status PATCH, then the compensating one; nothing else.
+  // (Compared canonically: a mirror the engine seeded holds jsonb key order.)
+  const canonK = (x) => JSON.stringify(x, (k, v) => (v && typeof v === "object" && !Array.isArray(v) ? Object.keys(v).sort().reduce((o, kk) => { o[kk] = v[kk]; return o; }, {}) : v));
+  const unapplied = (w, adopted) => w.reqs.length === 2 && isAccept(w.reqs[0]) && isBack(w.reqs[1]) && w.writes === 0 && w.undo === 0 && w.notes.length === 0 && w.emails.length === 0
+    && canonK(w.ref.current) === canonK(adopted) && w.audits.length === 1 && w.audits[0].action === "trade.accept_unapplied" && w.toasts.length === 1
+    && /^This trade was not applied — the schedule for those shifts changed while it was being accepted\./.test(w.toasts[0][0]) && w.toasts[0][1] === "error";
+  const reverted = (w, adopted) => unapplied(w, adopted) && w.trades.join() === "pending" && w.audits[0].details.reverted === true && /set back to pending$/.test(w.audits[0].summary)
+    && /pending again/.test(w.toasts[0][0]) && !/still marked accepted/.test(w.toasts[0][0]) && w.errors.length === 0;
+  const show = (w) => JSON.stringify({ reqs: w.reqs.map(r => r.method + " " + r.url.replace(/^.*\/rest\/v1\//, "") + " " + JSON.stringify(r.body)), writes: w.writes, undo: w.undo, trades: w.trades,
+    audits: w.audits.map(a => a.action + ":" + (a.details && a.details.reverted)), notes: w.notes, toasts: w.toasts.map(t => t[0].slice(0, 90)), errors: w.errors, confirms: w.confirms.length, silvis: w.silvis });
+
+  // GREEN: nothing changes while the status PATCH is in flight.
+  const g1 = await world().run();
+  check("SE-K nothing changes during the status PATCH → applied: the two cascades the confirm listed come from the MIRROR (not the stale render), and land with both legs in ONE schedule write after ONE undo step; accepted locally, audited (+2 cascade changes), the trade notice + both cascade notices + 3 emails; no toast, no error",
+    applied(g1, (w) => w.confirms.length === 1 && w.confirms[0].includes("BBB is now Service Week — Tue Night moves to AAA") && w.confirms[0].includes("AAA is now Service Week — Tue Night moves to BBB")
+      && w.silvis.length === 4 && w.silvis.every(x => x === "mirror")), show(g1));
+  const adoptW3 = with1(MIRROR(), W3, wk("s7", ["s1", "s2", "s3", "s4", "s6"], "s5"));
+  const g2 = await world({ during: (ref) => { ref.current = with1(ref.current, W3, adoptW3[W3]); } }).run();
+  check("SE-K a week the trade doesn't touch is adopted during the PATCH → still applied, onto the LATEST mirror: the adopted week survives the commit",
+    applied(g2, (w) => w.ref.current[W3].dayCall === "s7" && w.ref.current[W3].off === "s5"), show(g2));
+  // A cascade can move the very slot a leg fills: DDD (s4, who also has the
+  // Thu night) gives W1's Wed night to AAA, that week's service-week holder,
+  // and the cascade hands it on to the off surgeon EEE (s5). Its `from` is AAA
+  // once the leg lands, not DDD as the mirror shows it now.
+  const ONE = Object.assign({}, REQ, { from_surgeon_id: "s4", to_surgeon_id: "s1", from_surgeon_name: "DDD", to_surgeon_name: "AAA", shift_key: "wed", shift_label: "Wed Night", return_week: null, return_shift: null });
+  const g3w = world({ ref: { current: with1(MIRROR(), W1, wk("s1", ["s3", "s2", "s4", "s4", "s6"], "s5")) } }), g3 = await g3w.run(ONE);
+  check("SE-K a cascade that moves a slot the leg just filled (Wed night → the service-week holder → the off surgeon) is checked as it stands AFTER the legs → applied: one write, the Wed night is EEE's, one cascade notice; no refusal",
+    g3.reqs.length === 1 && isAccept(g3.reqs[0]) && g3.writes === 1 && g3.undo === 1 && g3.ref.current[W1].nights.wed === "s5" && g3.ref.current[W1].dayCall === "s1" && g3.ref.current[W1].off === "s7"
+      && g3.confirms.length === 1 && /Wed Night moves to EEE \(off surgeon\)/.test(g3.confirms[0]) && /EEE will be notified/.test(g3.confirms[0])
+      && g3.notes.join() === "trade_accepted,schedule_changed" && / \(\+1 cascade change\)$/.test(g3.audits[0].summary) && g3.toasts.length === 0 && g3.errors.length === 0, show(g3));
+
+  // RED: a pull adopts a change to what the trade needs while the PATCH is in flight.
+  const during = (k, row) => ({ adopted: with1(MIRROR(), k, row), during: (ref) => { ref.current = with1(ref.current, k, row); } });
+  const cases = [
+    ["the primary leg's holder (W1's service week is someone else's now)", during(W1, wk("s7", ["s3", "s2", "s4", "s5", "s6"], "s1"))],
+    ["the return leg's holder (W2's service week is someone else's now)", during(W2, wk("s7", ["s4", "s1", "s3", "s5", "s6"], "s2"))],
+    ["a confirmed cascade's `from` (W2's Tue night is someone else's now)", during(W2, wk("s2", ["s4", "s7", "s3", "s5", "s6"], "s1"))],
+    ["the cascade SET (W1's weekend is BBB's now: a third cascade, while both legs and every confirmed `from` still hold)", during(W1, wk("s1", ["s3", "s2", "s4", "s5", "s2"], "s6"))],
+  ];
+  check("SE-K setup: the last case really keeps both legs and both confirmed cascades' `from`, and only adds a cascade",
+    (() => { const a = cases[3][1].adopted, cs = detect(a, REQ); return a[W1].dayCall === "s1" && a[W2].dayCall === "s2" && a[W1].nights.tue === "s2" && a[W2].nights.tue === "s1" && cs.length === 3 && sig(cs) !== WANT; })(),
+    JSON.stringify(detect(cases[3][1].adopted, REQ)));
+  for (const [what, c] of cases) {
+    const r = await world({ during: c.during }).run();
+    check(`SE-K a pull adopts a change to ${what} during the status PATCH → NOT applied: no undo step, no schedule write (the screen keeps the adopted week), no notice or email; the request is PATCHed back to pending (?status=eq.accepted, return=representation) and, one row back, shown pending; one audit line, one toast`,
+      reverted(r, c.adopted), show(r));
+  }
+  // The compensating PATCH doesn't come back with the one row.
+  for (const [what, back] of [["zero rows", "none"], ["a 500", "http"], ["a thrown request (offline)", "throw"]]) {
+    const c = cases[0][1], r = await world({ during: c.during, back }).run();
+    check(`SE-K …and when setting it back answers ${what}: still NOT applied, the request is NOT shown pending (never accepted locally either), and the toast says it is still marked accepted and needs a manual fix; audited as not reverted; one console.error (expected), one toast (not the generic "Couldn't accept")`,
+      unapplied(r, c.adopted) && r.trades.length === 0 && r.audits[0].details.reverted === false && /still marked accepted/.test(r.audits[0].summary)
+        && /still marked accepted and needs a manual fix/.test(r.toasts[0][0]) && !/pending again/.test(r.toasts[0][0]) && r.errors.length === 1 && /could NOT be set back to pending/.test(r.errors[0]),
+      show(r));
+  }
+  // Nothing awaits between the re-check and the schedule write (a pause there
+  // could adopt a change after the check — no behaviour here can show that).
+  {
+    const b = accSrc, J = "await acceptRes.json()", iJ = b.indexOf(J), iNow = b.indexOf("const curNow = scheduleRef.current;"), iRet = b.indexOf("return; // no undo, no schedule write, no notifications"), iW = b.indexOf("updateSchedule(p =>");
+    check("SE-K the re-check reads the mirror right after the status PATCH's last await, and nothing awaits from the re-check to the schedule write except inside the not-applied branch (which returns)",
+      iJ > 0 && iNow > iJ && !/\bawait\b/.test(b.slice(iJ + J.length, iNow)) && iRet > iNow && iW > iRet && !/\bawait\b/.test(b.slice(iRet, iW)) && b.indexOf("await", iW) > iW,
+      JSON.stringify({ iJ, iNow, iRet, iW }));
+  }
+
+  // The REAL engine on the emulated table: its pull adopts a peer's change
+  // while the status PATCH is in flight; and, the control, the accepted trade
+  // reaches the table by CAS.
+  let createSchedSyncK = null; try { createSchedSyncK = se.compileEngine(se.extractEngine(src)); } catch (ex) { createSchedSyncK = null; }
+  if (!createSchedSyncK) { check("SE-K the engine is extractable", false, "anchor / compile"); return; }
+  let msK = Date.UTC(2026, 9, 14, 12, 0, 0);
+  const clockK = () => new Date(msK += 1000).toISOString();
+  const internalK = [];
+  const live = async () => {
+    const t = createFakeWeeksTable({ baseUrl: "https://x.supabase.co", anonKey: "ANON", users: { TOK: "user-a", TOK_P: "user-p" }, clock: clockK,
+      rows: [W1, W2, W3].map(k => ({ week_monday: k, data: MIRROR()[k], version: 2, updated_by: "user-a", updated_at: "2026-10-01T08:00:00.000Z" })) });
+    const ref = { current: {} }, toasts = [];
+    const h = () => ({ apikey: "ANON", Authorization: "Bearer TOK" });
+    const eng = createSchedSyncK({ getState: () => ref.current, commit: (n) => { ref.current = n; }, fetch: (u, i) => t.fetch(u, i), url: "https://x.supabase.co",
+      writeHeaders: h, readHeaders: h, canWrite: () => true, token: () => "TOK", userId: () => "s1", now: clockK, nowMs: () => msK,
+      onStatus: () => {}, onToast: (m) => toasts.push(String(m)), onWipeBlocked: () => {}, onInternalError: (e) => internalK.push(String(e && e.message || e)), log: () => {} });
+    await eng.load();
+    return { t, ref, eng, toasts };
+  };
+  {
+    const L = await live(), peerTue = wk("s2", ["s4", "s7", "s3", "s5", "s6"], "s1");
+    const w = await world({ ref: L.ref, during: async () => {
+      const row = L.t.get(W2);
+      L.t.put(Object.assign({}, row, { data: peerTue, version: row.version + 1, updated_by: "user-p", updated_at: "2026-10-14T11:00:00+00:00" }));
+      await L.eng.pull();
+    } }).run();
+    const from = L.t.log.length; await L.eng.push(); await L.eng.idle();
+    check("SE-K the REAL engine: its pull adopts a peer's change to W2's Tue night while the status PATCH is in flight → the trade is NOT applied (set back to pending), the table keeps the peer's week and W1 as it was, nothing is pending, and a push sends nothing",
+      reverted(w, Object.assign({}, MIRROR(), { [W2]: L.ref.current[W2] })) && L.eng.canon(L.ref.current[W2]) === L.eng.canon(peerTue) && L.eng.canon(L.t.get(W2).data) === L.eng.canon(peerTue)
+        && L.t.get(W1).data.dayCall === "s1" && L.t.get(W1).version === 2 && L.eng.pending().length === 0 && L.t.log.slice(from).filter(e => e.method !== "GET").length === 0 && L.toasts.length === 0,
+      show(w) + " " + JSON.stringify({ pend: L.eng.pending(), tW2: L.t.get(W2).data.nights, toasts: L.toasts }));
+    const P = await live();
+    const wp = await world({ ref: P.ref }).run();
+    const pend = P.eng.pending().join();
+    await P.eng.push(); await P.eng.idle();
+    const pW = P.t.log.filter(e => e.method === "PATCH");
+    check("SE-K …control: with no change during the PATCH, the accepted trade (both legs + both cascades) is what the engine then sends — W1 and W2 land on the table by CAS (version=eq.2 → 3), W3 untouched",
+      applied(wp) && pend === [W1, W2].join() && pW.length === 2 && pW.every(e => /version=eq\.2/.test(e.url) && e.status === 200)
+        && P.t.get(W1).version === 3 && P.t.get(W2).version === 3 && P.t.get(W3).version === 2
+        && P.t.get(W1).data.dayCall === "s2" && P.t.get(W1).data.nights.tue === "s1" && P.t.get(W2).data.dayCall === "s1" && P.t.get(W2).data.nights.tue === "s2" && P.eng.pending().length === 0 && P.toasts.length === 0,
+      JSON.stringify({ pend, pW: pW.map(e => e.url.replace(/^.*\?/, "") + " " + e.status), v: [W1, W2, W3].map(k => P.t.get(k).version) }));
+  }
+  check("SE-K no engine internal error in any run", internalK.length === 0, internalK.join(" | "));
+})().catch(ex => check("SE-K harness ran without crashing", false, String(ex && ex.stack || ex).split("\n").slice(0, 3).join(" | ")));
 {
   const { spawnSync } = require("child_process");
   const r = spawnSync(process.execPath, [path.join(__dirname, "fake-weeks-table.test.js")], { encoding: "utf8" });
