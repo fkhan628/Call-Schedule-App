@@ -8,9 +8,10 @@
 //
 // Each scenario cites what it pins: R1–R37 are the confirmed findings of the
 // three reviews of #68/#69 (private docs/sync-v2/MAP), I1–I6 the design's
-// invariants, D-n the design review of rev 1. Every scenario also asserts the
-// engine reported no internal error. Called from test/sync-guards.js (CI runs
-// that file); also runnable alone:  node test/sync-engine-se.js
+// invariants, D-n the design review of rev 1, A-n the design review's
+// amendments. Every scenario also asserts the engine reported no internal
+// error. Called from test/sync-guards.js (CI runs that file); also runnable
+// alone:  node test/sync-engine-se.js
 "use strict";
 const fs = require("fs");
 const path = require("path");
@@ -146,6 +147,28 @@ const MUTANTS = [
     from: '    else { removalSig = ""; staleRemovals = 0; }\n', to: '    else { removalSig = ""; }\n' },
   { id: "M37", what: "an empty list sets the stale-removal status without reporting it (the header, fed by onStatus, never shows it — A14)",
     from: "staleRemovals = Object.keys(known).length; report();", to: "staleRemovals = Object.keys(known).length;" },
+  { id: "M38", what: "the weeks a queued / running clear, restore or publish is writing are reported as pending ('not saved' mid-clear — A11(4))",
+    from: "    const p = pendingKeys().filter(k => !ownedKey(k));\n", to: "    const p = pendingKeys();\n" },
+  { id: "M39", what: "a clear / restore / publish hands its weeks back only after its last report (a week it couldn't write isn't shown pending — A11(4))",
+    from: "    } finally { release(); busy = null; report(); }", to: "    } finally { busy = null; report(); }" },
+  { id: "M40", what: "no stall watchdog (a stuck chain never says so — A5(g))",
+    from: "if (running && !stalled) { stalled = true; report(); }", to: "" },
+  { id: "M41", what: "progress doesn't clear a reported stall ('Sync stalled' forever — A5(g))",
+    from: "    if (stalled) { stalled = false; report(); }\n", to: "" },
+  { id: "M42", what: "a clear not started by its deadline isn't cancelled (it runs later, after the caller was told nothing changed — A5(f))",
+    from: "if (!owner.state.started) { owner.state.cancelled = true; owner.release();", to: "if (!owner.state.started) { owner.release();" },
+  { id: "M43", what: "no deadline: a caller waits as long as the chain is stuck (A5(f))",
+    from: "    const timer = setTimeout(() => { if (!done) { done = true; resolve(late()); } }, T.deadline);\n", to: "    const timer = null;\n" },
+  { id: "M44", what: "a job already writing at its deadline is reported as cancelled ('nothing was changed' while it writes — A5(f))",
+    from: "        if (!owner.state.started) { owner.state.cancelled = true;", to: "        if (true) { owner.state.cancelled = true;" },
+  { id: "M45", what: "the outcome of a job that ran past its deadline is never told (A5(f))",
+    from: "        p.then(r => lateOutcome(owner.what, r));\n", to: "" },
+  { id: "M46", what: "a sign-out doesn't cancel a clear still waiting for its turn (it runs under the next account — A8)",
+    from: "      [...owners].forEach(o => { if (!o.state.started) { o.state.cancelled = true; o.release(); } });", to: "" },
+  { id: "M47", what: "onAdopted is never called (an open week editor only finds out at Save — A13)",
+    from: "    if (changed.length && d.onAdopted) { try { d.onAdopted(changed.slice()); } catch (e) { log(\"onAdopted threw\", e); } }\n", to: "" },
+  { id: "M48", what: "onAdopted is called before the adoption is on screen (A13)",
+    from: "    if (changed.length) d.commit(next);\n    if (why === \"conflict\"", to: "    if (changed.length && d.onAdopted) d.onAdopted(changed.slice());\n    if (changed.length) d.commit(next);\n    if (why === \"conflict\"" },
 ];
 
 async function scenarios(createSchedSync, check) {
@@ -157,7 +180,7 @@ async function scenarios(createSchedSync, check) {
   const internal = [];
   const mkSession = (table, o) => {
     o = o || {};
-    const s = { mirror: {}, toasts: [], statuses: [], wipeBlocked: [], commits: 0, readAsAnon: false,
+    const s = { mirror: {}, toasts: [], statuses: [], wipeBlocked: [], commits: 0, readAsAnon: false, adopted: [],
       token: o.token === undefined ? "TOK_A" : o.token, canWrite: o.canWrite !== false, user: o.user || "user-a" };
     const hdr = (tok) => tok ? { apikey: "ANON", Authorization: "Bearer " + tok } : { apikey: "ANON", Authorization: "Bearer ANON" };
     s.engine = createSchedSync({
@@ -176,6 +199,8 @@ async function scenarios(createSchedSync, check) {
       onToast: (m) => s.toasts.push(String(m)),
       onWipeBlocked: (i) => s.wipeBlocked.push(i),
       onInternalError: (e) => { internal.push(String(e && e.message || e)); s.internal = (s.internal || 0) + 1; },
+      // what each call names, and what the screen showed for those weeks at that moment
+      onAdopted: (ks) => { if (s.adoptThrows) throw new Error("an app bug in onAdopted"); s.adopted.push({ weeks: ks.slice().sort(), seen: ks.slice().sort().map(k => s.mirror[k] ? s.mirror[k].dayCall : null) }); },
       log: () => {},
       timeouts: o.timeouts,
     });
@@ -1281,6 +1306,161 @@ async function scenarios(createSchedSync, check) {
     const setAgain = last(B).staleRemovals;
     await B.engine.reset();
     check("SE57 …and a reset (sign-out) settles it: the reload of the empty table reports 0", setAgain === 2 && last(B).staleRemovals === 0 && Object.keys(B.mirror).length === 0, JSON.stringify({ setAgain, after: last(B).staleRemovals }));
+  });
+
+  // SE58 — A11(4): the weeks a queued or running clear / restore / publish
+  // will write are not reported as pending — the header says Clearing… /
+  // Restoring…, never "not saved" — while a week it won't write still is,
+  // and the guards' pending() still counts them all (reloading would cut the
+  // job short). When the job ends they're handed back in its last report: a
+  // week it couldn't write is pending again.
+  await run("SE58", async () => {
+    const last = (s) => s.statuses[s.statuses.length - 1] || {};
+    const t = mkTable(seedRows(6));
+    const A = mkSession(t); await A.engine.load();
+    A.edit(W[0], w => (w.dayCall = "e", w));
+    const hold = t.control.pause({ method: "PATCH", week: W[0], count: 1 });
+    const pp = A.engine.push(); await hold.arrived;       // a push on the wire: the clear queues behind it
+    A.mirror = {};
+    const from0 = A.statuses.length;
+    const rc = A.engine.authoritative({}, true, "clear");
+    const queued = { st: A.st(), rep: last(A), raw: A.engine.pending().length };
+    const holdDel = t.control.pause({ method: "DELETE", week: W[3], count: 1 });
+    hold.release(); await pp; await holdDel.arrived;     // the clear is running, three weeks deleted
+    const mid = { st: A.st(), rep: last(A), raw: A.engine.pending().length };
+    holdDel.release(); const r = await rc; await A.engine.idle();
+    const reps = A.statuses.slice(from0);
+    check("SE58 A11(4) a clear queued behind a push: from the click its weeks are not pending (0, busy 'clear' — 'Clearing…', not 'not saved'), reported at once; the guards' pending() still counts all 6",
+      queued.st.pending === 0 && queued.st.busy === "clear" && queued.rep.pending === 0 && queued.rep.busy === "clear" && queued.raw === 6, JSON.stringify(queued));
+    check("SE58 …running: still 0 and 'clear' with 3 weeks left to delete (pending() says 3); no report during the whole clear said a week was pending or failing; it ends empty, mirror = known, busy cleared",
+      mid.st.pending === 0 && mid.st.busy === "clear" && mid.rep.busy === "clear" && mid.raw === 3 && reps.length > 2 && reps.every(s => s.pending === 0 && s.failing === 0)
+        && r.ok && t.rows().length === 0 && A.engine.pending().length === 0 && last(A).pending === 0 && last(A).busy === null,
+      JSON.stringify({ mid, reps: reps.map(s => [s.pending, s.failing, s.busy]), r: r.ok }));
+    // A publish owns its period's weeks only.
+    const t2 = mkTable(seedRows(6));
+    const P = mkSession(t2); await P.engine.load();
+    const period = [W[0], W[1], W[2]];
+    const gen = {}; period.forEach(k => { gen[k] = wk("regen"); });
+    P.edit(W[4], w => (w.dayCall = "outside", w));        // an edit outside the period
+    P.mirror = Object.assign({}, P.mirror, gen);
+    t2.control.fail({ method: "PATCH", week: W[1], kind: "5xx-before" });
+    const holdP = t2.control.pause({ method: "PATCH", week: W[2], count: 1 });
+    const from1 = P.statuses.length;
+    const rp = P.engine.authoritative(gen, false, "publish", period); await holdP.arrived;
+    const midP = { st: P.st(), raw: P.engine.pending() };
+    holdP.release(); const r2 = await rp;
+    const reps2 = P.statuses.slice(from1), lastPub = reps2.map(s => s.busy).lastIndexOf("publish"), endRep = reps2[lastPub + 1] || {};
+    check("SE58 …a publish: mid-job only the edit OUTSIDE its period is pending (the period's weeks — one failed, one on the wire — are its own), pending() still names all three",
+      midP.st.pendingKeys.join() === W[4] && midP.st.busy === "publish" && midP.raw.join() === [W[1], W[2], W[4]].join(), JSON.stringify(midP));
+    check("SE58 …and the report it makes as it ends hands them back: busy cleared, the week it couldn't write pending (and failing) again beside the outside edit",
+      r2.ok === false && lastPub >= 0 && endRep.busy === null && (endRep.pendingKeys || []).join() === [W[1], W[4]].join() && endRep.failing === 1, JSON.stringify({ lastPub, endRep, reps2: reps2.map(s => [s.busy, (s.pendingKeys || []).join("|")]) }));
+    // A restore owns its snapshot's weeks and every week the table holds — not a brand-new local week it won't write.
+    const t3 = mkTable(seedRows(4));
+    const R = mkSession(t3); await R.engine.load();
+    const snap = clone(R.mirror); snap[W[0]] = wk("snap"); delete snap[W[3]];
+    R.mirror = clone(snap);
+    const holdR = t3.control.pause({ method: "PATCH", week: W[0], count: 1 });
+    const rr = R.engine.authoritative(snap, true, "restore"); await holdR.arrived;
+    R.edit(W[7], () => wk("new-local"));
+    const midR = R.st();
+    holdR.release(); const r3 = await rr; await R.engine.idle();
+    check("SE58 …a restore: mid-job the week it rewrites and the week it deletes are its own, a brand-new local week it won't write is still reported (busy 'restore'); afterwards it lands through the follow-up push",
+      midR.pendingKeys.join() === W[7] && midR.busy === "restore" && r3.ok && sameData(tableSched(t3), Object.assign({}, snap, { [W[7]]: wk("new-local") })) && R.engine.pending().length === 0,
+      JSON.stringify({ midR: midR.pendingKeys, busy: midR.busy, r3: r3.ok }));
+  });
+
+  // SE59 — A5(g) the stall watchdog and A5(f) the caller deadline, on
+  // requests that never answer (paused; the request timeouts out of reach),
+  // with a 15-ms stall bound and a 60-ms deadline (real timers: each fires
+  // in due order, so the samples below are deterministic).
+  await run("SE59", async () => {
+    const last = (s) => s.statuses[s.statuses.length - 1] || {};
+    const sleep = (n) => new Promise(res => setTimeout(res, n));
+    const quick = { read: 60000, write: 60000, stall: 15, deadline: 60 };
+    const t = mkTable(seedRows(4));
+    const A = mkSession(t, { timeouts: quick }); await A.engine.load();
+    check("SE59 (control) a load that makes progress is never stalled", A.st().stalled === false && A.statuses.length > 0 && A.statuses.every(s => s.stalled === false));
+    const hang = t.control.pause({ method: "GET", count: 1 });  // the pull's version list never answers
+    const pl = A.engine.pull(); await hang.arrived;
+    const before = A.st().stalled;
+    A.mirror = {};
+    const rc = A.engine.authoritative({}, true, "clear");      // queued behind the stuck pull
+    const rl = A.engine.load();                                  // and a sign-in's load
+    await sleep(35);
+    const stalledRep = last(A).stalled, busyRep = last(A).busy, stalledNow = A.st().stalled;
+    const r = await Promise.race([rc, sleep(600).then(() => "no answer")]);
+    const lr = await Promise.race([rl, sleep(600).then(() => "no answer")]);
+    check("SE59 A5(g) no progress for the bound → stalled, REPORTED (the header reads onStatus): false before it, true after; the queued clear says 'Clearing…' meanwhile",
+      before === false && stalledRep === true && stalledNow === true && busyRep === "clear", JSON.stringify({ before, stalledRep, stalledNow, busyRep }));
+    check("SE59 A5(f) a clear queued behind the stuck job is answered at its deadline — ok:false, nothing written, reason timeout — and is no longer reported as owning the weeks",
+      r !== "no answer" && r.ok === false && r.wrote === false && r.reason === "timeout" && !r.running && /nothing was changed/.test(r.error || "") && last(A).busy === null, JSON.stringify(r));
+    check("SE59 A5(f) …the queued load is answered at its deadline too (ok:false, timeout)", lr !== "no answer" && lr.ok === false && lr.reason === "timeout", JSON.stringify(lr));
+    A.mirror = A.engine.knownSchedule(); // what the app does when nothing was written (runAuthoritativeSchedule)
+    const from = t.log.length;
+    hang.release(); await pl; await A.engine.idle(); await A.engine.idle();
+    check("SE59 …once the stuck request answers, the stall is cleared (reported), the cancelled clear NEVER runs (zero DELETEs, the 4 weeks still there), and the load ran in its turn",
+      last(A).stalled === false && A.st().stalled === false && writes(t, from).length === 0 && t.rows().length === 4 && t.log.slice(from).some(e => e.method === "GET"),
+      JSON.stringify({ st: last(A).stalled, w: writes(t, from).map(e => e.method + " " + e.url) }));
+    // A job already writing at its deadline: "still running", never cut short; its outcome is toasted when it ends.
+    const t2 = mkTable(seedRows(4));
+    const B = mkSession(t2, { timeouts: quick }); await B.engine.load();
+    const snap = clone(B.mirror); snap[W[0]] = wk("snap");
+    B.mirror = clone(snap);
+    const holdB = t2.control.pause({ method: "PATCH", week: W[0], count: 1 });
+    const rr = B.engine.authoritative(snap, true, "restore"); await holdB.arrived;
+    const r2 = await Promise.race([rr, sleep(600).then(() => "no answer")]);
+    const toastsAtDeadline = B.toasts.length, stalledMid = last(B).stalled;
+    holdB.release(); await B.engine.idle(); await sleep(5);
+    check("SE59 A5(f) a restore already writing at its deadline → ok:false, running:true (not 'nothing was changed'); it keeps going and lands",
+      r2 !== "no answer" && r2.ok === false && r2.running === true && r2.reason === "timeout" && /still running/.test(r2.error || "") && sameData(tableSched(t2), snap) && stalledMid === true,
+      JSON.stringify({ r2, table: t2.get(W[0]).data.dayCall }));
+    check("SE59 …and its outcome is told once, when it ends: exactly one toast, 'finished — every week is saved'",
+      toastsAtDeadline === 0 && B.toasts.length === 1 && /Restoring the snapshot has finished — every week is saved/.test(B.toasts[0]) && last(B).stalled === false, JSON.stringify(B.toasts));
+    // A8: a clear still waiting for its turn at a sign-out never runs under the next account.
+    const t3 = mkTable(seedRows(4));
+    const C = mkSession(t3); await C.engine.load();
+    const hang3 = t3.control.pause({ method: "GET", count: 1 });
+    const pl3 = C.engine.pull(); await hang3.arrived;
+    C.mirror = {};
+    const rc3 = C.engine.authoritative({}, true, "clear");
+    C.engine.reset();                                // sign-out while the clear waits
+    C.token = "TOK_B"; C.user = "user-b";            // someone else signs in
+    const from3 = t3.log.length;
+    hang3.release(); await pl3; const r3 = await rc3; await C.engine.idle(); await C.engine.idle();
+    check("SE59 A8 a clear queued before a sign-out is cancelled by it: it never runs under the next account (zero writes, the 4 weeks kept), and says nothing was changed",
+      r3.ok === false && r3.wrote === false && r3.skipped === "cancelled" && writes(t3, from3).length === 0 && t3.rows().length === 4 && Object.keys(C.mirror).length === 4,
+      JSON.stringify({ r3, w: writes(t3, from3).map(e => e.method + " " + e.url) }));
+  });
+
+  // SE60 — A13 onAdopted(weeks): called once per adoption that changes what's
+  // on screen (a pull, a conflict), AFTER the commit, naming exactly those
+  // weeks; never for this session's own saved write, the seed (load), a
+  // clear / restore re-commit, or a pulled change already on screen. A
+  // callback that throws doesn't break the job.
+  await run("SE60", async () => {
+    const t = mkTable(seedRows(4));
+    const A = mkSession(t), B = mkSession(t, { token: "TOK_B", user: "user-b" });
+    await A.engine.load(); await B.engine.load();
+    A.edit(W[0], w => (w.dayCall = "mine", w)); await A.engine.push();
+    const quiet1 = A.adopted.length;
+    B.edit(W[1], w => (w.dayCall = "peer1", w)); B.edit(W[3], w => (w.dayCall = "peer3", w)); await B.engine.push();
+    await A.engine.pull();
+    check("SE60 A13 a pull that adopts two peer weeks → ONE onAdopted naming exactly those two, called after the commit (the screen already showed both); none for the load or our own saved write",
+      quiet1 === 0 && A.adopted.length === 1 && A.adopted[0].weeks.join() === [W[1], W[3]].join() && A.adopted[0].seen.join() === "peer1,peer3", JSON.stringify(A.adopted));
+    B.edit(W[2], w => (w.dayCall = "peer2", w)); await B.engine.push();
+    A.edit(W[2], w => (w.dayCall = "mine2", w)); await A.engine.push();
+    check("SE60 …a conflict adoption (our push meets the peer's copy) → onAdopted for that week, the peer's copy already on screen",
+      A.adopted.length === 2 && A.adopted[1].weeks.join() === W[2] && A.adopted[1].seen.join() === "peer2" && A.st().conflicts.length === 1, JSON.stringify(A.adopted));
+    t.put({ week_monday: W[1], data: clone(A.mirror[W[1]]), version: 9, updated_at: "2026-10-12T19:00:00+00:00" }); // re-saved elsewhere, same data
+    await A.engine.pull();
+    const snap = clone(A.mirror); snap[W[0]] = wk("snap");
+    A.mirror = clone(snap); await A.engine.authoritative(snap, true, "restore");
+    check("SE60 …none for a pulled change already on screen, or a restore's re-commit", A.adopted.length === 2 && t.get(W[0]).data.dayCall === "snap", JSON.stringify(A.adopted));
+    A.adoptThrows = true;
+    B.edit(W[3], w => (w.dayCall = "peer3b", w)); await B.engine.push();
+    const r = await A.engine.pull();
+    check("SE60 …an onAdopted that throws doesn't break the job: the pull still adopted the week and answered ok, and the engine reported no internal error",
+      r.ok && A.mirror[W[3]].dayCall === "peer3b" && !A.internal, JSON.stringify(r));
   });
 
   // SE-I — no scenario above produced an internal error.

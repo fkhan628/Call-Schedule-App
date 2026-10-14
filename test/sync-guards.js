@@ -442,6 +442,39 @@ await (async () => {
     blobBody && blobBody.data && !("schedule" in blobBody.data));
   check("success → applier received the snapshot's schedule",
     appliedSchedule && appliedSchedule["2026-01-05"] && appliedSchedule["2026-01-05"].dayCall === "s1");
+
+  // A15: opts.confirm(schedule, snap) is asked once the snapshot is read —
+  // so the caller can state the week change — and BEFORE anything is
+  // written, the before_restore capture included. A "no" changes nothing.
+  const fullRestore = () => stubFetch([
+    { m: "GET", url: snapUrl, json: GOOD_SNAP },
+    { m: "GET", url: "call_schedule_data", json: BLOB_ROW },
+    { m: "GET", url: "schedule_weeks", json: WEEK_ROWS },
+    { m: "GET", url: "time_off", json: [] },
+    { m: "POST", url: "call_schedule_snapshots", status: 201, json: [] },
+    { m: "POST", url: "call_schedule_data", status: 201, json: [] },
+  ]);
+  f = fullRestore();
+  const asked = [];
+  applied = 0;
+  r = await snapshots.restore(7, async () => { applied++; return { ok: true }; }, { confirm: (sched, s) => { asked.push({ sched, calls: f.calls.length, id: s && s.id }); return false; } });
+  check("A15 restore confirm: asked ONCE, with the snapshot's schedule, right after the one read of the snapshot; a 'no' → cancelled — nothing captured, nothing written, the applier never called",
+    r.ok === false && r.cancelled === true && asked.length === 1 && asked[0].calls === 1 && asked[0].id === 7 && asked[0].sched["2026-01-05"].dayCall === "s1"
+      && f.calls.length === 1 && writesIn(f).length === 0 && applied === 0, JSON.stringify({ r, asked: asked.map(a => a.calls), calls: f.calls.map(c => c.method + " " + c.url) }));
+  f = fullRestore();
+  let askedYes = 0, callsAtApply = -1;
+  r = await snapshots.restore(7, async () => { callsAtApply = writesIn(f).map(c => c.url.replace(/^.*\/rest\/v1\//, "").replace(/\?.*$/, "")).join(); return { ok: true }; }, { confirm: async () => { askedYes++; return true; } });
+  check("A15 …a 'yes' (an async one too) proceeds as before: the before_restore snapshot first, then the blob, then the applier",
+    r.ok === true && askedYes === 1 && callsAtApply === "call_schedule_snapshots,call_schedule_data", JSON.stringify({ r, callsAtApply }));
+  f = stubFetch([{ m: "GET", url: snapUrl, json: [{ id: 7, reason: "periodic_session", created_at: "c", data: { surgeons: INIT_SURGEONS, vacations: { s5: [["2026-09-12", "2026-09-21"]] } } }] }]);
+  let askedNone = 0;
+  r = await snapshots.restore(7, async () => ({ ok: true }), { confirm: () => { askedNone++; return true; } });
+  check("A15 …a snapshot with no schedule is refused BEFORE the confirm (there is no week change to state)", r.ok === false && /no schedule/.test(r.error || "") && askedNone === 0 && writesIn(f).length === 0, JSON.stringify(r));
+  // A5(f): the applier's job is still running past its deadline.
+  f = fullRestore();
+  r = await snapshots.restore(7, async () => ({ ok: false, running: true, error: "Restoring the snapshot is taking longer than expected. It's still running." }));
+  check("A5(f) restore: a schedule job still running past its deadline → ok:false, running:true, with the restored blob (blobRestored) for the caller to adopt as on success",
+    r.ok === false && r.running === true && r.blobRestored === true && !!r.blob && Array.isArray(r.blob.surgeons) && !("schedule" in r.blob) && /still running/.test(r.error || ""), JSON.stringify({ ok: r.ok, running: r.running, blob: !!r.blob }));
 })();
 
 // ══════════════════════════════════════════════════════════════
@@ -490,6 +523,25 @@ await (async () => {
   ]);
   r = await snapshots.captureIfStale("periodic_session", 6);
   check("A15 periodic capture, schedule fold 503 → ok:false, nothing inserted", r.ok === false && writesIn(f2).length === 0, JSON.stringify(r));
+  // A15: captureIfStale hands its options to capture(). The app's periodic
+  // call passes minWeeks, so an EMPTY schedule read while weeks are known
+  // (the anon/RLS shape) fails the capture — never a snapshot whose schedule
+  // is {}, which restore would accept as "delete every week".
+  const emptyFold = () => stubFetch([
+    { m: "GET", url: "call_schedule_snapshots?select=", json: [{ created_at: "2026-01-01T00:00:00Z" }] },
+    { m: "GET", url: "call_schedule_data", json: BLOB_ROW },
+    { m: "GET", url: "schedule_weeks", json: [] },
+    { m: "GET", url: "time_off", json: [] },
+    { m: "POST", url: "call_schedule_snapshots", status: 201, json: [] },
+  ]);
+  let f3 = emptyFold();
+  r = await snapshots.captureIfStale("periodic_session", 6, { minWeeks: 1 });
+  check("A15 captureIfStale forwards its options: minWeeks 1 + an EMPTY schedule read → ok:false, nothing inserted (never schedule: {})", r.ok === false && writesIn(f3).length === 0, JSON.stringify(r));
+  f3 = emptyFold();
+  r = await snapshots.captureIfStale("periodic_session", 6);
+  const ins3 = writesIn(f3)[0];
+  check("A15 …control: with no minWeeks the same empty read is a genuinely empty table, recorded as schedule: {}",
+    r.ok === true && !!ins3 && JSON.parse(ins3.body).data.schedule && Object.keys(JSON.parse(ins3.body).data.schedule).length === 0, JSON.stringify(r));
 })();
 
 // ══════════════════════════════════════════════════════════════
@@ -5075,8 +5127,11 @@ await require("./sync-engine-se.js")({ src, check });
   check("SE-W Undo is all-or-nothing through the engine's undoPlan (each step carries its epoch)",
     count("const plan = schedSyncRef.current.undoPlan(step.sched, step.epoch);") === 1 && count("epoch: schedSyncRef.current ? schedSyncRef.current.epochNow() : 0") === 1
       && count("const pushUndo = useCallback((counts) => {") === 1 && count("pushUndo({ prior: priorCounts, y1: year1Counts })") === 1 && (src.match(/pushUndo\([a-z]/g) || []).length === 0);
-  check("SE-W destructive snapshots pass minWeeks (an RLS-empty schedule read fails the capture): clear, regenerate, reset, restore",
-    count("{ minWeeks: Object.keys(schedSyncRef.current.knownSchedule()).length ? 1 : 0 }") === 5); // + Accept & Publish's backup (A14)
+  check("SE-W every snapshot capture passes minWeeks (an RLS-empty schedule read fails the capture): clear, regenerate, reset, Accept & Publish's backup (A14), the periodic one (A15 — executed in SE-C), and restore's before_restore through its options",
+    count("minWeeks: Object.keys(schedSyncRef.current.knownSchedule()).length ? 1 : 0") === 6
+      && count("{ minWeeks: Object.keys(schedSyncRef.current.knownSchedule()).length ? 1 : 0 }") === 5 // clear, regenerate ×2, reset, periodic
+      && count('snapshots.captureIfStale("periodic_session", 6, { minWeeks: Object.keys(schedSyncRef.current.knownSchedule()).length ? 1 : 0 });') === 1
+      && count("        minWeeks: Object.keys(schedSyncRef.current.knownSchedule()).length ? 1 : 0,") === 1); // restore's options, beside its confirm
 }
 
 // SE-A. Sync v2 app wiring, EXECUTED (9/n). The real component code, sliced
@@ -5731,6 +5786,228 @@ await (async () => {
   }
   check("SE-K no engine internal error in any run", internalK.length === 0, internalK.join(" | "));
 })().catch(ex => check("SE-K harness ran without crashing", false, String(ex && ex.stack || ex).split("\n").slice(0, 3).join(" | ")));
+
+// SE-C. Sync v2 commit 12/n, EXECUTED: the periodic snapshot's minWeeks
+// (A15), the restore confirm's week change (A15), the "Sync stalled" header
+// and a job still running past its deadline (A5(f)/(g)), and an open week
+// editor told at once when its week is adopted (A13, engine.onAdopted). The
+// real component code, sliced by its anchors and run in a FRESH context (a
+// free identifier throws), with config.js's real snapshots on the stubbed
+// fetch and — for the editor — the app's OWN engine construction and bridge
+// driving the real engine against the emulated table. Every confirm, toast,
+// setter call and request is recorded.
+console.log("\nSE-C. sync v2 12/n: periodic minWeeks, the restore's week change, stalled / still running, onAdopted — executed");
+await (async () => {
+  const nsrcC = src.replace(/\r\n/g, "\n");
+  const after = (start, end) => { const i = nsrcC.indexOf(start); if (i < 0 || nsrcC.indexOf(start, i + 1) !== -1) return null; const e = nsrcC.indexOf(end, i + start.length); return e < 0 ? null : nsrcC.slice(i + start.length, e); };
+  const cctx = vm.createContext({});
+  const fnC = (names, code) => { try { return vm.runInContext(`(function (env) { const { ${names} } = env; return (${code}); })`, cctx); } catch (ex) { return null; } };
+  const se = require("./sync-engine-se.js");
+  const { createFakeWeeksTable } = require("./fake-weeks-table.js");
+
+  // ── A15: the periodic snapshot passes minWeeks, after the engine's first read ──
+  const perSrc = after("  const sessionSnapRef = useRef(false);\n  useEffect(() => {", "\n  }, [loaded, isScheduler, userProfile, schedSync.seeded]);");
+  const perFx = perSrc && fnC("loaded, sessionSnapRef, schedSync, isScheduler, userProfile, snapshots, schedSyncRef", "() => {" + perSrc + "\n  }");
+  if (!perFx) check("SE-C the periodic snapshot effect is extractable", false, "anchor / compile");
+  else {
+    const per = (o) => {
+      const r = { calls: [], ref: o.ref || { current: false } };
+      perFx({ loaded: o.loaded !== false, sessionSnapRef: r.ref, schedSync: { seeded: !!o.seeded }, isScheduler: o.isScheduler !== false, userProfile: o.profile || null,
+        snapshots: { captureIfStale: (...a) => { r.calls.push(JSON.parse(JSON.stringify(a))); return Promise.resolve({ ok: true }); } },
+        schedSyncRef: { current: { knownSchedule: () => o.known || {} } } })();
+      return r;
+    };
+    const three = { "2026-10-12": {}, "2026-10-19": {}, "2026-10-26": {} };
+    const unseeded = per({ seeded: false, known: three }), seededW = per({ seeded: true, known: three }), seededE = per({ seeded: true, known: {} });
+    const again = per({ seeded: true, known: three, ref: seededW.ref }), member = per({ seeded: true, known: three, isScheduler: false, profile: { role: "member" } }), admin = per({ seeded: true, known: three, isScheduler: false, profile: { role: "admin" } });
+    check("SE-C A15 the periodic snapshot passes minWeeks as the destructive captures do — 1 while the engine knows weeks (so an empty schedule read fails the capture: never a snapshot whose schedule is {}), 0 for a known-empty table",
+      seededW.calls.length === 1 && JSON.stringify(seededW.calls[0]) === JSON.stringify(["periodic_session", 6, { minWeeks: 1 }]) && seededE.calls.length === 1 && JSON.stringify(seededE.calls[0]) === JSON.stringify(["periodic_session", 6, { minWeeks: 0 }]),
+      JSON.stringify([seededW.calls, seededE.calls]));
+    check("SE-C A15 …and it waits for the engine's first read (until then no weeks are known — minWeeks would be 0) without using up its once-per-session turn; scheduler / admin only",
+      unseeded.calls.length === 0 && unseeded.ref.current === false && again.calls.length === 0 && member.calls.length === 0 && admin.calls.length === 1,
+      JSON.stringify({ unseeded: unseeded.calls, again: again.calls, member: member.calls, admin: admin.calls }));
+  }
+
+  // ── A15: the restore confirm states the week change; busy cleared in finally; A5(f) still running ──
+  const rsSrc = after("  const restoreConfirmText = ", "\n  // ─── Roll forward counts");
+  const RS_ENV = "isScheduler, userProfile, setRestoreBusyId, setSaveStatus, snapshots, scheduleRef, pushUndo, commitSchedule, runAuthoritativeSchedule, schedSyncRef, confirm, snapshotReasonLabel, showToast, setSurgeons, setApps, setBackupMondaySet, setFierceBackupSet, setAppShifts, setPriorCounts, setYear1Counts, setStartMonth, setStartYear, setNumWeeks, setStartMondayOverride, setHolidayAssignments, setPendingLocks, setSilvisRule, sfRule, SF_RULE_DEFAULT, setDismissedWarnings, lastSyncRef, everHadRealDataRef, logAudit, loadSnapshots, setTimeout, alert";
+  const rsFn = rsSrc && fnC(RS_ENV, "(() => { const restoreConfirmText = " + rsSrc + "\n  return { restoreConfirmText, restoreSnapshot }; })()");
+  if (!rsFn) check("SE-C restoreConfirmText + restoreSnapshot are extractable", false, "anchor / compile");
+  else {
+    const SAVED3 = { "2026-01-05": WEEK, "2026-01-12": WEEK, "2026-01-19": WEEK };
+    const SNAP2 = { "2026-01-05": WEEK, "2026-01-12": WEEK };
+    const snapRow = (schedule) => [{ id: 7, reason: "manual", created_at: "2026-07-29T00:00:00Z", data: { surgeons: INIT_SURGEONS, vacations: { s5: [["2026-09-12", "2026-09-21"]] }, schedule } }];
+    const routes = (schedule) => [
+      { m: "GET", url: snapUrl, json: snapRow(schedule) },
+      { m: "GET", url: "call_schedule_data", json: BLOB_ROW },
+      { m: "GET", url: "schedule_weeks", json: WEEK_ROWS },
+      { m: "GET", url: "time_off", json: [] },
+      { m: "POST", url: "call_schedule_snapshots", status: 201, json: [] },
+      { m: "POST", url: "call_schedule_data", status: 201, json: [] },
+    ];
+    const rs = (o = {}) => {
+      const f = o.snapshots ? null : stubFetch(routes(o.schedule || SNAP2));
+      const w = { f, confirms: [], toasts: [], busy: [], status: [], undo: 0, commits: [], auth: [], audits: [], alerts: 0, adopted: [], snaps: 0, threw: null };
+      const noop = () => {};
+      const env = {
+        isScheduler: true, userProfile: null, setRestoreBusyId: (v) => w.busy.push(v), setSaveStatus: (v) => w.status.push(v),
+        snapshots: o.snapshots || snapshots,
+        scheduleRef: { current: { "2026-01-05": WEEK } }, // on screen: ONE week — the count must come from what's SAVED (three)
+        pushUndo: () => { w.undo++; }, commitSchedule: (s) => w.commits.push(Object.keys(s).length),
+        runAuthoritativeSchedule: async (s, what) => { w.auth.push([Object.keys(s).length, what]); return o.ar || { ok: true }; },
+        schedSyncRef: { current: { knownSchedule: () => o.known || SAVED3, pending: () => [] } },
+        confirm: (m) => { w.confirms.push({ m: String(m), calls: f ? f.calls.length : -1 }); return o.yes !== false; },
+        snapshotReasonLabel: (r) => "LABEL:" + r, showToast: (m, tone) => w.toasts.push([String(m), tone]),
+        setSurgeons: () => w.adopted.push("surgeons"), setApps: noop, setBackupMondaySet: noop, setFierceBackupSet: noop, setAppShifts: noop, setPriorCounts: noop, setYear1Counts: noop,
+        setStartMonth: noop, setStartYear: noop, setNumWeeks: noop, setStartMondayOverride: noop, setHolidayAssignments: noop, setPendingLocks: noop, setSilvisRule: noop,
+        sfRule: (x) => x, SF_RULE_DEFAULT: {}, setDismissedWarnings: noop, lastSyncRef: { current: null }, everHadRealDataRef: { current: false },
+        logAudit: (a) => w.audits.push(a), loadSnapshots: () => { w.snaps++; }, setTimeout: () => 0, alert: () => { w.alerts++; },
+      };
+      w.run = async () => { try { await rsFn(env).restoreSnapshot({ id: 7, reason: "manual", created_at: "2026-07-29T00:00:00Z" }); } catch (ex) { w.threw = String(ex && ex.message || ex); } return w; };
+      return w;
+    };
+    const showR = (w) => JSON.stringify({ confirms: w.confirms.map(c => [c.calls, c.m.split("\n\n")[1]]), toasts: w.toasts, busy: w.busy, status: w.status, auth: w.auth, commits: w.commits, writes: w.f ? writesIn(w.f).map(c => c.url.replace(/^.*\/rest\/v1\//, "")) : null, alerts: w.alerts, threw: w.threw });
+    const no = await rs({ yes: false }).run();
+    check("SE-C A15 the restore confirm states the week change, counted against what is SAVED (the engine's knownSchedule — not the one week on screen): 'Sets 2 weeks; deletes 1 of the 3 weeks now saved'",
+      no.confirms.length === 1 && /^Restore the "LABEL:manual" snapshot from .+\?\n\nSets 2 weeks; deletes 1 of the 3 weeks now saved \(the weeks not in the snapshot\)\.\n\nThis replaces the CURRENT schedule/.test(no.confirms[0].m), showR(no));
+    check("SE-C A15 …asked once the snapshot has been read (after its one GET) and before anything is written; 'Cancel' changes nothing: no capture, no write, no applier, no toast, never left busy",
+      no.confirms[0].calls === 1 && no.f.calls.length === 1 && writesIn(no.f).length === 0 && no.auth.length === 0 && no.commits.length === 0 && no.undo === 0 && no.toasts.length === 0
+        && no.busy.join() === "7," && no.status[no.status.length - 1] === "" && !no.threw, showR(no));
+    const empty = await rs({ yes: false, schedule: {} }).run();
+    const T = rsFn({}).restoreConfirmText;
+    check("SE-C A15 …a snapshot whose schedule is {} says it deletes ALL the saved weeks; with nothing saved the line says so too",
+      /\n\nThe snapshot's schedule is EMPTY: this deletes all 3 weeks now saved\.\n\n/.test(empty.confirms[0] && empty.confirms[0].m) && /\n\nSets 1 week \(no weeks are saved now\)\.\n\n/.test(T("L", "w", { a: 1 }, {}))
+        && /\n\nThe snapshot's schedule is empty, and so is the saved one\.\n\n/.test(T("L", "w", {}, {})) && /Sets 3 weeks; deletes 0 of the 1 week now saved/.test(T("L", "w", { a: 1, b: 1, c: 1 }, { a: 1 })),
+      showR(empty));
+    const yes = await rs().run();
+    check("SE-C A15 …'OK' restores as before: the snapshot's 2 weeks through the restore job (after one undo step), the blob adopted, the report and the success toast; never left busy",
+      yes.confirms.length === 1 && yes.auth.length === 1 && yes.auth[0].join() === "2,restore" && yes.commits.join() === "2" && yes.undo === 1 && yes.adopted.length === 1 && yes.alerts === 1
+        && yes.toasts.length === 1 && yes.toasts[0][1] === "success" && yes.busy.join() === "7," && yes.status.includes("Reading the snapshot…") && yes.status.includes("Restoring snapshot…") && yes.status.includes("Snapshot restored"), showR(yes));
+    const running = await rs({ ar: { ok: false, wrote: false, running: true, reason: "timeout", error: "Restoring the snapshot is taking longer than expected. It's still running — keep the app open; you'll see a message when it ends." } }).run();
+    check("SE-C A5(f) a restore whose schedule job is still running past its deadline: NOT 'Restore failed' — the blob it already restored is adopted, audited, and the toast says the schedule is still being written (info); no report alert",
+      running.adopted.length === 1 && running.audits.length === 1 && running.snaps === 1 && running.toasts.length === 1 && running.toasts[0][1] === "info" && /^The roster and setup are restored\. Restoring the snapshot is taking longer/.test(running.toasts[0][0])
+        && running.alerts === 0 && running.busy.join() === "7," && running.status[running.status.length - 1] === "", showR(running));
+    const failed = await rs({ ar: { ok: false, wrote: false, error: "Couldn't read the saved schedule — nothing was changed." } }).run();
+    const thrown = await rs({ snapshots: { restore: async () => { throw new Error("boom"); } } }).run();
+    check("SE-C A5(f) …a failed restore still says 'Restore failed'; and the busy state is cleared in finally — even when the restore call throws",
+      failed.toasts.length === 1 && /^Restore failed: /.test(failed.toasts[0][0]) && failed.busy.join() === "7," && failed.adopted.length === 0
+        && thrown.threw === "boom" && thrown.busy.join() === "7,", showR(failed) + " " + showR(thrown));
+  }
+
+  // ── A5(g): the header's "Sync stalled" ──
+  const hdrC = after("  const reloadToResync = ", "\n  // The amber");
+  const hdrCFn = hdrC && fnC("loaded, saveStatus, schedSync, confirmReloadWithPending, window", `(() => { const reloadToResync = ${hdrC}\n return { schedStaleShown, schedStalledShown, schedSyncedShown }; })()`);
+  if (!hdrCFn) check("SE-C the header's sync decisions are extractable", false, "anchor / compile");
+  else {
+    const H = (st, loaded = true) => { try { return hdrCFn({ loaded, saveStatus: "", schedSync: Object.assign({ seeded: true, pending: 0, busy: null, staleRemovals: 0, stalled: false }, st), confirmReloadWithPending: () => true, window: {} }); } catch (ex) { return { threw: String(ex && ex.message || ex) }; } };
+    check("SE-C A5(g) the header decides: stalled → 'Sync stalled' and NOT \"☁ Synced\"; not stalled → no line; nothing before the load",
+      H({ stalled: true }).schedStalledShown === true && H({ stalled: true }).schedSyncedShown === false && H({}).schedStalledShown === false && H({}).schedSyncedShown === true && H({ stalled: true }, false).schedStalledShown === false,
+      JSON.stringify([H({ stalled: true }), H({})]));
+    const LINE = "⚠ Sync stalled — reload to resync <button onClick={reloadToResync}";
+    const pub0 = nsrcC.indexOf('isOrView ? "OR board · read-only" : "Read-only view"'), sch0 = nsrcC.indexOf("Call Schedule · Surgeons + APPs"), conn = nsrcC.indexOf("Connecting…</span>}");
+    const at1 = nsrcC.indexOf(LINE), at2 = nsrcC.indexOf(LINE, at1 + 1);
+    check("SE-C A5(g) the line is rendered in BOTH headers (public / OR board and the scheduler's), gated by schedStalledShown, its Reload through reloadToResync (the reload guard — no new reload path); 'Clearing… / Saving…' give way to it",
+      count(LINE) === 2 && count("{schedStalledShown && <span role=\"status\"") === 2 && pub0 > 0 && at1 > pub0 && at1 < sch0 && at2 > sch0 && at2 < conn && count("confirmReloadWithPending(") === 3
+        && count("{loaded && schedSync.busy && !schedStalledShown && <span") === 1 && count("{loaded && !schedSync.busy && !schedStalledShown && schedSync.failing === 0 && schedSync.saving > 0 && <span") === 1,
+      JSON.stringify({ n: count(LINE), pub0, at1, sch0, at2, conn }));
+  }
+
+  // ── A5(f): a job still running past its deadline — the callers ──
+  const raSrc = after("  const runAuthoritativeSchedule = async (target, what) => {", "\n  };\n");
+  const raFn = raSrc && fnC("schedSyncRef, commitSchedule", "async (target, what) => {" + raSrc + "\n  }");
+  const clSrc = after("  const clearSchedule = async () => {", "\n  };\n\n  // ─── Snapshot restore");
+  const clFn = clSrc && fnC("confirm, snapshots, schedSyncRef, showToast, scheduleRef, pushUndo, commitSchedule, setSaveStatus, runAuthoritativeSchedule, setTimeout, lastSyncRef, buildStateBundle, supabase, console", "async () => {" + clSrc + "\n  }");
+  const pnSrc = after("  const publishNotLanded = (pr, what) => {", "\n  };\n");
+  const pnFn = pnSrc && fnC("showToast", "(pr, what) => {" + pnSrc + "\n  }");
+  if (!raFn || !clFn || !pnFn) check("SE-C runAuthoritativeSchedule / clearSchedule / publishNotLanded are extractable", false, JSON.stringify({ ra: !!raFn, cl: !!clFn, pn: !!pnFn }));
+  else {
+    const RUNNING = (label) => ({ ok: false, wrote: false, running: true, reason: "timeout", error: `${label} is taking longer than expected. It's still running — keep the app open; you'll see a message when it ends.` });
+    const ra = async (res) => { const commits = []; await raFn({ schedSyncRef: { current: { authoritative: async () => res, knownSchedule: () => ({ K: 1 }) } }, commitSchedule: (s) => commits.push(s) })({}, "clear"); return commits.length; };
+    const raRun = await ra(RUNNING("Clearing the schedule")), raNone = await ra({ ok: false, wrote: false, error: "x" }), raPart = await ra({ ok: false, wrote: true }), raOk = await ra({ ok: true, wrote: true });
+    check("SE-C A5(f) runAuthoritativeSchedule never puts the saved weeks back over a job still running past its deadline (it is writing the target — they would be re-sent); one that wrote nothing still is put back, a partial or landed one isn't",
+      raRun === 0 && raNone === 1 && raPart === 0 && raOk === 0, JSON.stringify({ raRun, raNone, raPart, raOk }));
+    const cl = async (cr) => {
+      const w = { toasts: [], status: [], upserts: 0 };
+      await clFn({ confirm: () => true, snapshots: { capture: async () => ({ ok: true }) }, schedSyncRef: { current: { knownSchedule: () => ({}), pending: () => ["a", "b"] } }, showToast: (m, t) => w.toasts.push([String(m), t]),
+        scheduleRef: { current: {} }, pushUndo: () => {}, commitSchedule: () => {}, setSaveStatus: (s) => w.status.push(s), runAuthoritativeSchedule: async () => cr, setTimeout: () => 0, lastSyncRef: { current: null },
+        buildStateBundle: (x) => Object.assign({}, x), supabase: { from: () => ({ upsert: async () => { w.upserts++; return { error: null }; } }) }, console: { error: () => {}, warn: () => {} } })();
+      await null; await null;
+      return w;
+    };
+    const clRun = await cl(RUNNING("Clearing the schedule")), clErr = await cl({ ok: false, wrote: false, error: "Couldn't read the saved schedule — nothing was changed." }), clPart = await cl({ ok: false, wrote: true }), clOk = await cl({ ok: true, wrote: true });
+    check("SE-C A5(f) Clear still running past its deadline says so (info — not 'NOT cleared', not 'N week(s) not deleted'), and the blob's cleared state is saved as for a partial clear; a refused clear still stops before it; the others unchanged",
+      clRun.toasts.length === 1 && clRun.toasts[0][1] === "info" && /still running/.test(clRun.toasts[0][0]) && !/NOT cleared|not deleted/.test(clRun.toasts[0][0]) && clRun.upserts === 1 && !clRun.status.includes("Schedule cleared")
+        && clErr.toasts.length === 1 && /^The schedule was NOT cleared — /.test(clErr.toasts[0][0]) && clErr.upserts === 0
+        && clPart.toasts.length === 1 && /^2 week\(s\) not deleted yet/.test(clPart.toasts[0][0]) && clPart.upserts === 1 && clOk.toasts.length === 0 && clOk.status.includes("Schedule cleared") && clOk.upserts === 1,
+      JSON.stringify({ clRun, clErr, clPart, clOk }));
+    const pn = (pr) => { const t = []; pnFn({ showToast: (m, tone) => t.push([String(m), tone]) })(pr, "Regenerated on this screen"); return t[0] || []; };
+    const pnRun = pn(RUNNING("Publishing the new weeks")), pnErr = pn({ ok: false, wrote: false, error: "Couldn't read the saved weeks — nothing was published." }), pnN = pn({ ok: false, results: [{ outcome: "saved" }, { outcome: "pending" }] });
+    check("SE-C A5(f) a publish still running past its deadline: the toast says so, and that nobody was notified, as info; the other not-landed toasts are unchanged",
+      pnRun[1] === "info" && /^Regenerated on this screen: Publishing the new weeks is taking longer than expected\. It's still running/.test(pnRun[0]) && / Nobody was notified\.$/.test(pnRun[0])
+        && pnErr[1] === "error" && !/Nobody/.test(pnErr[0]) && pnN[1] === "error" && /— 1 week isn't saved yet; retrying automatically\. Nobody was notified\.$/.test(pnN[0]), JSON.stringify({ pnRun, pnErr, pnN }));
+    check("SE-C A5(f) the factory reset's schedule job: still running → said so (info), not 'the schedule was NOT cleared'",
+      count('runAuthoritativeSchedule({}, "reset").then(r => { if (r.running) showToast(r.error, "info"); else if (!r.ok) showToast(r.error ? "Factory reset: the schedule was NOT cleared — " + r.error') === 1);
+  }
+
+  // ── A13: an open week editor is told when its week is adopted (engine.onAdopted) ──
+  // The app's OWN engine construction and bridge (sliced from the bridge
+  // assignment to the end of createSchedSync({…})), the real openWeekEditor,
+  // the real engine, the emulated table; a peer's writes go straight in.
+  const wireSrc = after("  schedSyncBridgeRef.current = { canWrite:", "\n\n  // The edit gates");
+  const wireFn = wireSrc && fnC("isPublicMode, userProfile, showToast, setEditWeekModal, schedSyncBridgeRef, useRef, createSchedSync, scheduleRef, commitSchedule, fetch, SUPABASE_URL, dbAuthHeaders, dbReadHeaders, auth, setSchedSync, console",
+    "(() => { schedSyncBridgeRef.current = { canWrite:" + wireSrc + "\n  return schedSyncRef; })()");
+  const oweSrc = after("  const openWeekEditor = useCallback((mondayStr) => {", "\n  }, [appShifts, appShiftsLoaded]);");
+  const oweFn = oweSrc && fnC("scheduleRef, parse, addD, fmt, appShifts, appShiftsLoaded, setEditWeekModal, schedSyncRef", "(mondayStr) => {" + oweSrc + "\n  }");
+  let createSchedSyncC = null; try { createSchedSyncC = se.compileEngine(se.extractEngine(src)); } catch (ex) { createSchedSyncC = null; }
+  if (!wireFn || !oweFn || !createSchedSyncC) check("SE-C the engine wiring, openWeekEditor and the engine are extractable", false, JSON.stringify({ wire: !!wireFn, owe: !!oweFn, eng: !!createSchedSyncC }));
+  else {
+    const HC = vm.runInContext("({ parse, addD, fmt })", sandbox);
+    const W1 = "2026-10-12", W2 = "2026-10-19";
+    const wkC = (dc) => ({ dayCall: dc, nights: { mon: "s2", tue: "s3", wed: "s4", thu: "s5", wknd: "s6" }, off: "s7" });
+    let msC = Date.UTC(2026, 9, 14, 12, 0, 0);
+    const t = createFakeWeeksTable({ baseUrl: "https://x.supabase.co", anonKey: "ANON", users: { TOK_A: "user-a" }, clock: () => new Date(msC += 1000).toISOString(),
+      rows: [W1, W2].map(k => ({ week_monday: k, data: wkC("s1"), version: 2, updated_by: "user-a", updated_at: "2026-10-01T08:00:00.000Z" })) });
+    const peer = (k, dc) => { const row = t.get(k); t.put(Object.assign({}, row, { data: wkC(dc), version: row.version + 1, updated_by: "user-b", updated_at: new Date(msC += 60000).toISOString() })); };
+    const rec = { errors: [], toasts: [], sets: 0 };
+    let modal = null, st = null;
+    const scheduleRef = { current: {} };
+    const setEditWeekModal = (x) => { rec.sets++; modal = typeof x === "function" ? x(modal) : x; };
+    const hdrs = () => ({ apikey: "ANON", Authorization: "Bearer TOK_A" });
+    const ref = wireFn({ isPublicMode: false, userProfile: { person_id: "s1" }, showToast: (m, tone) => rec.toasts.push([String(m), tone]), setEditWeekModal, schedSyncBridgeRef: { current: null },
+      useRef: (v) => ({ current: v }), createSchedSync: createSchedSyncC, scheduleRef, commitSchedule: (n) => { scheduleRef.current = n; }, fetch: (u, i) => t.fetch(u, i), SUPABASE_URL: "https://x.supabase.co",
+      dbAuthHeaders: hdrs, dbReadHeaders: hdrs, auth: { getSession: () => ({ access_token: "TOK_A" }) }, setSchedSync: (f) => { st = typeof f === "function" ? f(st) : f; },
+      console: { error: (...a) => rec.errors.push(a.map(String).join(" ")), warn: () => {}, log: () => {} } });
+    const eng = ref.current;
+    const open = oweFn({ scheduleRef, parse: HC.parse, addD: HC.addD, fmt: HC.fmt, appShifts: {}, appShiftsLoaded: true, setEditWeekModal, schedSyncRef: ref });
+    await eng.load();
+    open(W1);
+    const opened = modal;
+    peer(W2, "peer2"); await eng.pull();
+    const afterOther = modal;
+    peer(W1, "peer1"); await eng.pull();
+    const flagged = modal;
+    check("SE-C A13 the editor open on W1: a peer's change to W2 is adopted → the editor is untouched (same object); a peer's change to W1 is adopted → at once the editor says so (adoptedAway), its draft kept to read — exactly when its Save would be refused (the open epoch)",
+      !!opened && opened.mondayStr === W1 && !opened.adoptedAway && afterOther === opened && scheduleRef.current[W2].dayCall === "peer2"
+        && flagged !== opened && flagged.adoptedAway === true && flagged.draft.dayCall === "s1" && scheduleRef.current[W1].dayCall === "peer1" && eng.changedSince([W1], flagged.openEpoch).length === 1,
+      JSON.stringify({ opened: opened && opened.mondayStr, other: afterOther === opened, flagged: flagged && flagged.adoptedAway, draft: flagged && flagged.draft.dayCall }));
+    open(W1);
+    const reopened = modal;
+    await eng.pull();
+    open(W2); const w2 = modal; await eng.pull();
+    const w2After = modal;
+    modal = null; peer(W2, "peer2b"); await eng.pull();
+    check("SE-C A13 …'Reopen with the latest' (openWeekEditor) starts clean from the adopted week, and a save from it would go through; an editor opened AFTER an adoption isn't flagged by it; with no editor open nothing is opened",
+      !reopened.adoptedAway && reopened.draft.dayCall === "peer1" && eng.changedSince([W1], reopened.openEpoch).length === 0 && modal === null
+        && !w2.adoptedAway && w2After === w2 && scheduleRef.current[W2].dayCall === "peer2b" && rec.errors.length === 0,
+      JSON.stringify({ reopened: reopened && [reopened.adoptedAway, reopened.draft.dayCall], w2: w2After === w2, modal, errors: rec.errors }));
+    const NOTE = "⚠ This week was just changed by someone else — this editor shows the old version, so saving it would be refused. Your draft stays here to read.";
+    const ed0 = nsrcC.indexOf("✏️ Edit Week — {wkLabel}"), note = nsrcC.indexOf(NOTE), nav = nsrcC.indexOf("{(prevMonday || nextMonday) && (", ed0);
+    check("SE-C A13 the editor renders the note when adoptedAway is set — inside the editor, under its title — with 'Reopen with the latest' (asking first only when there are unsaved changes)",
+      count("{editWeekModal.adoptedAway && (") === 1 && count(NOTE) === 1 && ed0 > 0 && note > ed0 && note < nav
+        && count('<button onClick={()=>{ if (!hasUnsaved || confirm("Reopen this week as it is now? What you changed in this editor is discarded.")) openWeekEditor(mondayStr); }}') === 1,
+      JSON.stringify({ ed0, note, nav }));
+  }
+})().catch(ex => check("SE-C harness ran without crashing", false, String(ex && ex.stack || ex).split("\n").slice(0, 3).join(" | ")));
 {
   const { spawnSync } = require("child_process");
   const r = spawnSync(process.execPath, [path.join(__dirname, "fake-weeks-table.test.js")], { encoding: "utf8" });

@@ -222,8 +222,9 @@ const buildTimeOffMaps = (rows) => {
 // every week. A genuine empty table is recorded as schedule: {}. opts.minWeeks
 // (the caller's count of weeks it knows exist) turns an EMPTY read into a
 // failure too: schedule_weeks is anon-readable, so 200 + [] while weeks exist
-// is the RLS/anon shape, not an empty schedule. Periodic captures stay
-// best-effort (a schedule-less one simply can't be restored — see restore).
+// is the RLS/anon shape, not an empty schedule. A periodic capture fails the
+// same way (A15): a schedule-less snapshot can't put the schedule back, and
+// inserting one would reset captureIfStale's 6-hour clock.
 const SNAPSHOT_STRICT_REASONS = ["clear_schedule", "regenerate", "reset_all_data", "before_restore"];
 const snapshots = {
   async capture(reason, opts) {
@@ -345,22 +346,27 @@ const snapshots = {
   },
   // Periodic safety net: capture at most once per maxAgeHours (default 6), so
   // corruption that never passes through a destructive button still has a
-  // recent restore point without flooding the table.
-  async captureIfStale(reason, maxAgeHours) {
+  // recent restore point without flooding the table. opts go to capture()
+  // (A15: minWeeks, so an empty schedule read while weeks are known fails the
+  // capture instead of saving schedule: {}).
+  async captureIfStale(reason, maxAgeHours, opts) {
     try {
       const hours = maxAgeHours || 6;
       const recent = await this.list(1);
       const newest = recent?.[0]?.created_at ? new Date(recent[0].created_at).getTime() : 0;
       if (Date.now() - newest < hours * 3600 * 1000) return { ok: true, skipped: "fresh" };
-      return await this.capture(reason || "periodic");
+      return await this.capture(reason || "periodic", opts);
     } catch (e) { return { ok: false, error: String(e) }; }
   },
   // Restore a snapshot: roster/config back into the call_schedule_data blob,
   // schedule back into schedule_weeks. The schedule leg MUST go through the
-  // app's own sync (syncSchedWeeks: per-week compare-and-swap + wipe guard),
-  // which lives in the component — the caller passes it in as applySchedule.
-  // A restore is itself destructive, so the CURRENT state is snapshotted
-  // first and the restore aborts if that capture fails.
+  // app's own sync (the sync engine's authoritative job: a fresh whole-table
+  // read, then per-week writes, the outcome reported honestly), which lives
+  // in the component — the caller passes it in as applySchedule. A restore is
+  // itself destructive, so the CURRENT state is snapshotted first and the
+  // restore aborts if that capture fails. opts.confirm(schedule, snap), when
+  // given, is asked once the snapshot is read and before anything is written
+  // (A15: the caller states the week change); a "no" returns { cancelled }.
   async restore(snapshotId, applySchedule, opts) {
     if (!snapshotId) return { ok: false, error: "No snapshot id" };
     if (typeof applySchedule !== "function") {
@@ -382,6 +388,7 @@ const snapshots = {
       // deleted. Refuse it (sync v2, I6); {} (a genuinely empty schedule) is a
       // real value and is allowed.
       if (!payload.schedule || typeof payload.schedule !== "object") return { ok: false, error: "This snapshot has no schedule in it (the schedule couldn't be read when it was taken) — restoring it would delete every week, so it was refused. Nothing was changed." };
+      if (opts && typeof opts.confirm === "function" && !(await opts.confirm(payload.schedule, snap))) return { ok: false, cancelled: true };
       const pre = await this.capture("before_restore", opts && opts.minWeeks ? { minWeeks: opts.minWeeks } : undefined);
       if (!pre.ok) return { ok: false, error: "Couldn't snapshot the current state first — restore aborted, nothing changed" };
       const schedule = payload.schedule;
@@ -390,6 +397,9 @@ const snapshots = {
       const up = await db.upsert("call_schedule_data", { id: "main", data: blob, updated_at: ts });
       if (up && up.error) return { ok: false, error: "Config write failed: " + up.error };
       const applied = await applySchedule(schedule);
+      // Still writing past its deadline (A5(f)): the blob is back, the
+      // schedule's outcome comes later — the caller adopts the blob as on success.
+      if (applied && applied.running) return { ok: false, running: true, error: applied.error, blobRestored: true, blob, schedule, ts, reason: snap.reason, created_at: snap.created_at };
       if (applied && applied.ok === false) {
         return { ok: false, error: applied.error || "Schedule apply failed", blobRestored: true };
       }

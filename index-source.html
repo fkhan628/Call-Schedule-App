@@ -1775,9 +1775,14 @@ function CallSchedule() {
   // schedSyncBridgeRef (the latest-closure bridge, as for the day-off flush),
   // so nothing it calls is stale. Its status drives the header, the load and
   // sign-in gates, and the reload / sign-out guards.
-  const [schedSync, setSchedSync] = useState({ seeded: false, loadFailed: false, pending: 0, pendingKeys: [], saving: 0, failing: 0, auth: "ok", authNeeded: false, rejected: [], noPermission: [], blockedDeletes: 0, staleRemovals: 0, conflicts: [], busy: null });
+  const [schedSync, setSchedSync] = useState({ seeded: false, loadFailed: false, pending: 0, pendingKeys: [], saving: 0, failing: 0, auth: "ok", authNeeded: false, rejected: [], noPermission: [], blockedDeletes: 0, staleRemovals: 0, conflicts: [], busy: null, stalled: false });
   const schedSyncBridgeRef = useRef(null);
-  schedSyncBridgeRef.current = { canWrite: !isPublicMode, userId: userProfile?.person_id || null, showToast };
+  // onAdopted (A13): the engine just put someone else's copy of these weeks
+  // on screen (a pull, a conflict). An OPEN week editor on one of them says
+  // so at once — its Save would be refused (the open epoch, saveWeekEdits) —
+  // instead of only when Save is tapped. (setEditWeekModal is stable.)
+  schedSyncBridgeRef.current = { canWrite: !isPublicMode, userId: userProfile?.person_id || null, showToast,
+    onAdopted: (weeks) => setEditWeekModal(m => (m && !m.adoptedAway && weeks.includes(m.mondayStr)) ? { ...m, adoptedAway: true } : m) };
   const schedSyncRef = useRef(null);
   if (!schedSyncRef.current) schedSyncRef.current = createSchedSync({
     getState: () => scheduleRef.current,
@@ -1800,6 +1805,7 @@ function CallSchedule() {
       schedSyncBridgeRef.current.showToast("Blocked an unexpected schedule wipe — your saved schedule is safe. Reload to resync.", "error");
     },
     onInternalError: (e) => console.error("schedule sync: internal error (a bug, not the network):", e),
+    onAdopted: (weeks) => schedSyncBridgeRef.current.onAdopted(weeks),
     log: (...a) => console.warn(...a),
   });
 
@@ -1922,9 +1928,14 @@ function CallSchedule() {
   // persistently, in the scheduler AND the public / OR-board headers, until a
   // later pull or a reload settles it, and "☁ Synced" never shows beside it.
   // Its Reload goes through the reload guard (asks while weeks are unsaved).
+  // A5(g): the engine reports a job that has made no progress for its stall
+  // bound (45 s — every request is answered or aborted within 15 s): the
+  // header says "Sync stalled — reload to resync", with the same guarded
+  // Reload, until progress clears it; Clearing… / Saving… give way to it.
   const reloadToResync = () => { if (confirmReloadWithPending()) window.location.reload(); };
   const schedStaleShown = loaded && schedSync.staleRemovals > 0;
-  const schedSyncedShown = loaded && !saveStatus && schedSync.seeded && schedSync.pending === 0 && !schedSync.busy && !schedStaleShown;
+  const schedStalledShown = loaded && !!schedSync.stalled;
+  const schedSyncedShown = loaded && !saveStatus && schedSync.seeded && schedSync.pending === 0 && !schedSync.busy && !schedStaleShown && !schedStalledShown;
   // The amber "Sign in again" (A7(3)) — never beside the red one.
   const staleTokenShown = !isPublicMode && !!authUser && staleTokenWarn && !(schedSync.authNeeded || reauthNeeded);
   // Clear / factory reset / restore: an authoritative engine job — its own
@@ -1934,7 +1945,9 @@ function CallSchedule() {
   const runAuthoritativeSchedule = async (target, what) => {
     const eng = schedSyncRef.current;
     const r = await eng.authoritative(target, true, what);
-    if (!r.ok && !r.wrote) commitSchedule(eng.knownSchedule());
+    // (Never for a job still running past its deadline, A5(f): it is writing
+    // the target, and the old weeks put back on screen would be re-sent.)
+    if (!r.ok && !r.wrote && !r.running) commitSchedule(eng.knownSchedule());
     return r;
   };
   // Generate & Publish / Accept & Publish (A14): the engine's PUBLISH job —
@@ -1948,8 +1961,8 @@ function CallSchedule() {
   // What a publish that didn't fully land tells the scheduler (nobody is notified).
   const publishNotLanded = (pr, what) => {
     const n = ((pr && pr.results) || []).filter(x => x.outcome !== "saved").length;
-    showToast(pr && pr.error ? `${what}: ${pr.error}`
-      : `${what} — ${n ? n + " week" + (n === 1 ? " isn't" : "s aren't") : "the new weeks aren't"} saved yet; retrying automatically. Nobody was notified.`, "error");
+    showToast(pr && pr.error ? `${what}: ${pr.error}${pr.running ? " Nobody was notified." : ""}`
+      : `${what} — ${n ? n + " week" + (n === 1 ? " isn't" : "s aren't") : "the new weeks aren't"} saved yet; retrying automatically. Nobody was notified.`, pr && pr.running ? "info" : "error");
   };
 
   // ─── Current-state bundle (NOT "the thing we persist") ───
@@ -2262,14 +2275,18 @@ function CallSchedule() {
   // 6h across sessions), capture a snapshot after load so there is always a
   // recent restore point. Scheduler/admin only — the same people whose
   // destructive actions already write snapshots. Best-effort: a failure here
-  // must never block the app.
+  // must never block the app. A15: it passes minWeeks as the destructive
+  // captures do, so a schedule read that comes back EMPTY while weeks are
+  // known (the anon/RLS shape) fails the capture instead of saving a snapshot
+  // whose schedule is {} (restoring that deletes every week) — and so it
+  // waits for the engine's first read, before which no weeks are known.
   const sessionSnapRef = useRef(false);
   useEffect(() => {
-    if (!loaded || sessionSnapRef.current) return;
+    if (!loaded || sessionSnapRef.current || !schedSync.seeded) return;
     if (!(isScheduler || userProfile?.role === "admin")) return;
     sessionSnapRef.current = true;
-    snapshots.captureIfStale("periodic_session", 6);
-  }, [loaded, isScheduler, userProfile]);
+    snapshots.captureIfStale("periodic_session", 6, { minWeeks: Object.keys(schedSyncRef.current.knownSchedule()).length ? 1 : 0 });
+  }, [loaded, isScheduler, userProfile, schedSync.seeded]);
 
   // ─── Reset all data ───
   const resetAllData = async () => {
@@ -2339,7 +2356,7 @@ function CallSchedule() {
     // Every week deleted: an authoritative engine job with its own grant. If
     // it can't write (table unreadable, signed out) the schedule on screen goes
     // back to what is saved and the reason is shown.
-    runAuthoritativeSchedule({}, "reset").then(r => { if (!r.ok) showToast(r.error ? "Factory reset: the schedule was NOT cleared — " + r.error : `Factory reset: ${schedSyncRef.current.pending().length} week(s) not deleted yet — retrying automatically.`, "error"); });
+    runAuthoritativeSchedule({}, "reset").then(r => { if (r.running) showToast(r.error, "info"); else if (!r.ok) showToast(r.error ? "Factory reset: the schedule was NOT cleared — " + r.error : `Factory reset: ${schedSyncRef.current.pending().length} week(s) not deleted yet — retrying automatically.`, "error"); });
     setAppShifts({});
     setPriorCounts({});
     setYear1Counts({});
@@ -4397,7 +4414,8 @@ function CallSchedule() {
     // the last pull go too). "Schedule cleared" only once it has happened.
     setSaveStatus("Clearing… keep the app open");
     const cr = await runAuthoritativeSchedule({}, "clear");
-    if (!cr.ok) {
+    if (cr.running) { showToast(cr.error, "info"); setSaveStatus(""); } // A5(f): still deleting past its deadline — the engine toasts how it ended
+    else if (!cr.ok) {
       showToast(cr.error ? "The schedule was NOT cleared — " + cr.error : `${schedSyncRef.current.pending().length} week(s) not deleted yet — retrying automatically.`, "error");
       setSaveStatus("");
       if (cr.error) return;
@@ -4445,24 +4463,49 @@ function CallSchedule() {
     before_restore: "Before restore",
     periodic_session: "Periodic (session start)",
   }[r] || r || "manual");
+  // A15: the restore confirm states the WEEK change — how many weeks the
+  // snapshot sets, and how many of the weeks now saved it deletes, counted
+  // against the engine's knownSchedule() (what the table holds as last
+  // confirmed, not what's on screen). A snapshot whose schedule is {} deletes
+  // every week, and says so.
+  const restoreConfirmText = (label, when, sched, known) => {
+    const sets = Object.keys(sched || {}).length, saved = Object.keys(known || {}).length;
+    const deletes = Object.keys(known || {}).filter(k => !(k in (sched || {}))).length;
+    const wk = (n) => `${n} week${n === 1 ? "" : "s"}`;
+    const change = !sets ? (saved ? `The snapshot's schedule is EMPTY: this deletes all ${wk(saved)} now saved.` : "The snapshot's schedule is empty, and so is the saved one.")
+      : saved ? `Sets ${wk(sets)}; deletes ${deletes} of the ${wk(saved)} now saved (the weeks not in the snapshot).` : `Sets ${wk(sets)} (no weeks are saved now).`;
+    return `Restore the "${label}" snapshot from ${when}?\n\n${change}\n\nThis replaces the CURRENT schedule and setup for everyone with that saved copy. A fresh snapshot of the current state is saved first, so this restore can itself be undone.\n\nNOTE: Vacations and no-call days are NOT restored automatically — they live in their own table. If they need recovery, they must be re-entered or recovered manually from the snapshot.`;
+  };
   const restoreSnapshot = async (snap) => {
     if (!(isScheduler || userProfile?.role === "admin")) return;
     const when = new Date(snap.created_at).toLocaleString(undefined, { month:"short", day:"numeric", year:"numeric", hour:"numeric", minute:"2-digit" });
-    if (!confirm(`Restore the "${snapshotReasonLabel(snap.reason)}" snapshot from ${when}?\n\nThis replaces the CURRENT schedule and setup for everyone with that saved copy. A fresh snapshot of the current state is saved first, so this restore can itself be undone.\n\nNOTE: Vacations and no-call days are NOT restored automatically — they live in their own table. If they need recovery, they must be re-entered or recovered manually from the snapshot.`)) return;
     setRestoreBusyId(snap.id);
-    setSaveStatus("Restoring snapshot…");
-    const r = await snapshots.restore(snap.id, async (sched) => {
-      // The schedule leg of the restore: an authoritative engine job — its
-      // own grant (a confirmed restore may shrink or clear the table), a fresh
-      // whole-table read first, the outcome reported honestly.
-      if (Object.keys(scheduleRef.current).length > 0) pushUndo();
-      commitSchedule(sched);
-      const ar = await runAuthoritativeSchedule(sched, "restore");
-      if (ar.ok) return { ok: true };
-      return { ok: false, error: ar.error || `${schedSyncRef.current.pending().length} week(s) of the schedule aren't saved yet — they retry automatically` };
-    }, { minWeeks: Object.keys(schedSyncRef.current.knownSchedule()).length ? 1 : 0 });
-    setRestoreBusyId(null);
-    if (!r.ok) {
+    setSaveStatus("Reading the snapshot…");
+    let r;
+    try {
+      r = await snapshots.restore(snap.id, async (sched) => {
+        // The schedule leg of the restore: an authoritative engine job — its
+        // own grant (a confirmed restore may shrink or clear the table), a fresh
+        // whole-table read first, the outcome reported honestly.
+        if (Object.keys(scheduleRef.current).length > 0) pushUndo();
+        commitSchedule(sched);
+        const ar = await runAuthoritativeSchedule(sched, "restore");
+        if (ar.ok) return { ok: true };
+        if (ar.running) return { ok: false, running: true, error: ar.error }; // A5(f): still writing past its deadline — the engine toasts how it ended
+        return { ok: false, error: ar.error || `${schedSyncRef.current.pending().length} week(s) of the schedule aren't saved yet — they retry automatically` };
+      }, {
+        minWeeks: Object.keys(schedSyncRef.current.knownSchedule()).length ? 1 : 0,
+        // Asked once the snapshot has been read (the list carries no data) and
+        // before anything is written; "Cancel" changes nothing.
+        confirm: (sched) => {
+          const yes = confirm(restoreConfirmText(snapshotReasonLabel(snap.reason), when, sched, schedSyncRef.current.knownSchedule()));
+          if (yes) setSaveStatus("Restoring snapshot…");
+          return yes;
+        },
+      });
+    } finally { setRestoreBusyId(null); } // never left busy (A5(f))
+    if (r.cancelled) { setSaveStatus(""); return; }
+    if (!r.ok && !r.running) {
       showToast("Restore failed: " + (r.error || "unknown error"), "error");
       setSaveStatus("");
       return;
@@ -4491,6 +4534,8 @@ function CallSchedule() {
     everHadRealDataRef.current = true; // restored data is real data
     logAudit("system.restore_snapshot", `Restored snapshot "${snapshotReasonLabel(snap.reason)}" from ${when}`, { snapshot_id: snap.id, reason: snap.reason, created_at: snap.created_at });
     loadSnapshots(); // refresh — the just-added before_restore row should appear
+    // The setup is back; the schedule's job is still writing (A5(f)) — the engine toasts how it ended.
+    if (r.running) { setSaveStatus(""); showToast("The roster and setup are restored. " + r.error, "info"); return; }
     setSaveStatus("Snapshot restored");
     setTimeout(() => setSaveStatus(""), 3000);
     // Post-restore report — say plainly what came back and what didn't.
@@ -6922,6 +6967,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   {!lastSyncRef.current && <> · Loading schedule…</>}
                   {loaded && schedSync.loadFailed && <span style={{color:"#c04040",fontWeight:700}}> · ⚠ The schedule didn't load — retrying. What's shown may be incomplete.</span>}
                   {schedStaleShown && <span role="status" style={{color:"#8a5a10",fontWeight:700}}> · ⚠ The schedule on the server has fewer weeks than this screen — reload to resync <button onClick={reloadToResync} style={{marginLeft:4,background:"#fdf0e0",border:"1px solid #e0b070",color:"#8a5a10",borderRadius:5,padding:"1px 8px",fontSize:10.5,fontWeight:700,cursor:"pointer",fontFamily:font}}>Reload</button></span>}
+                  {schedStalledShown && <span role="status" style={{color:"#c04040",fontWeight:700}}> · ⚠ Sync stalled — reload to resync <button onClick={reloadToResync} style={{marginLeft:4,background:"#fce8e8",border:"1px solid #e8c0c0",color:"#a83232",borderRadius:5,padding:"1px 8px",fontSize:10.5,fontWeight:700,cursor:"pointer",fontFamily:font}}>Reload</button></span>}
                 </>
               ) : (
                 <>
@@ -6932,9 +6978,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                       failed, sign-in is needed, deletes are blocked, or the
                       schedule never loaded. */}
                   {loaded && schedSync.loadFailed && <span role="status" style={{marginLeft:8,color:"#c04040",fontWeight:700,fontSize:11}}>⚠ Schedule didn't load — retrying (edits paused)</span>}
-                  {loaded && schedSync.busy && <span role="status" style={{marginLeft:8,color:"#8a6a10",fontWeight:600,fontSize:11}}>{schedSync.busy === "restore" ? "Restoring…" : schedSync.busy === "clear" || schedSync.busy === "reset" ? "Clearing…" : "Saving…"} keep the app open</span>}
+                  {loaded && schedSync.busy && !schedStalledShown && <span role="status" style={{marginLeft:8,color:"#8a6a10",fontWeight:600,fontSize:11}}>{schedSync.busy === "restore" ? "Restoring…" : schedSync.busy === "clear" || schedSync.busy === "reset" ? "Clearing…" : "Saving…"} keep the app open</span>}
                   {loaded && !schedSync.busy && schedSync.failing > 0 && <span role="status" aria-live="polite" style={{marginLeft:8,color:"#c04040",fontWeight:700,fontSize:11}}>⚠ {schedSync.failing} week{schedSync.failing === 1 ? "" : "s"} not saved — {schedSync.authNeeded ? "sign in again" : schedSync.noPermission.length === schedSync.failing ? "no permission" : schedSync.rejected.length === schedSync.failing ? "rejected by the server" : "retrying"}</span>}
-                  {loaded && !schedSync.busy && schedSync.failing === 0 && schedSync.saving > 0 && <span style={{marginLeft:8,color:"#6a7a88",fontSize:10}}>Saving {schedSync.saving} week{schedSync.saving === 1 ? "" : "s"}…</span>}
+                  {schedStalledShown && <span role="status" aria-live="polite" style={{marginLeft:8,color:"#c04040",fontWeight:700,fontSize:11}}>⚠ Sync stalled — reload to resync <button onClick={reloadToResync} style={{marginLeft:4,background:"#fce8e8",border:"1px solid #e8c0c0",color:"#a83232",borderRadius:5,padding:"1px 8px",fontSize:10.5,fontWeight:700,cursor:"pointer",fontFamily:font}}>Reload</button></span>}
+                  {loaded && !schedSync.busy && !schedStalledShown && schedSync.failing === 0 && schedSync.saving > 0 && <span style={{marginLeft:8,color:"#6a7a88",fontSize:10}}>Saving {schedSync.saving} week{schedSync.saving === 1 ? "" : "s"}…</span>}
                   {loaded && schedSync.blockedDeletes > 0 && <span role="status" style={{marginLeft:8,color:"#c04040",fontWeight:700,fontSize:11}}>⚠ {schedSync.blockedDeletes} week deletion{schedSync.blockedDeletes === 1 ? "" : "s"} blocked — reload to resync</span>}
                   {schedStaleShown && <span role="status" style={{marginLeft:8,color:"#8a5a10",fontWeight:700,fontSize:11}}>⚠ The schedule on the server has fewer weeks than this screen — reload to resync <button onClick={reloadToResync} style={{marginLeft:4,background:"#fdf0e0",border:"1px solid #e0b070",color:"#8a5a10",borderRadius:5,padding:"1px 8px",fontSize:10.5,fontWeight:700,cursor:"pointer",fontFamily:font}}>Reload</button></span>}
                   {schedSync.conflicts.length > 0 && <button onClick={()=>{ showToast(`Changed by someone else (your edit was replaced — reapply it if it's still needed): week${schedSync.conflicts.length === 1 ? "" : "s"} of ${schedSync.conflicts.map(c => c.k).join(", ")}.`, "error"); schedSyncRef.current.dismissConflicts(); }} style={{marginLeft:8,background:"#fdf0e0",border:"1px solid #e0b070",color:"#8a5a10",borderRadius:5,padding:"1px 8px",fontSize:10.5,fontWeight:700,cursor:"pointer",fontFamily:font}}>⚠ {schedSync.conflicts.length} change{schedSync.conflicts.length === 1 ? "" : "s"} replaced — see</button>}
@@ -9325,6 +9372,17 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                     <div style={{fontSize:16,fontWeight:700,color:dk?"#e8e8f0":"#2c5a80"}}>✏️ Edit Week — {wkLabel}</div>
                     <button aria-label="Close" onClick={()=>setEditWeekModal(null)} style={{background:"none",border:"none",fontSize:20,cursor:"pointer",color:dk?"#8a94a0":"#5a6a78"}}>×</button>
                   </div>
+
+                  {/* A13: someone else's copy of this week was adopted while the
+                      editor is open (the engine's onAdopted). Say so now — Save
+                      would be refused (the open epoch) — keep the draft on screen
+                      to read, and offer to start again from the latest. */}
+                  {editWeekModal.adoptedAway && (
+                    <div role="alert" style={{marginBottom:10,padding:"8px 10px",borderRadius:8,background:dk?"#3a2a12":"#fdf0e0",border:"1px solid #e0b070",fontSize:12,lineHeight:1.45,color:dk?"#f0c890":"#7a4a00"}}>
+                      ⚠ This week was just changed by someone else — this editor shows the old version, so saving it would be refused. Your draft stays here to read.
+                      <button onClick={()=>{ if (!hasUnsaved || confirm("Reopen this week as it is now? What you changed in this editor is discarded.")) openWeekEditor(mondayStr); }} style={{marginLeft:8,background:dk?"#5a4020":"#fff",border:"1px solid #e0b070",color:dk?"#f0c890":"#8a5a10",borderRadius:6,padding:"3px 10px",fontSize:11.5,fontWeight:700,cursor:"pointer",fontFamily:font}}>Reopen with the latest</button>
+                    </div>
+                  )}
 
                   {(prevMonday || nextMonday) && (
                     <div style={{display:"flex",gap:6,marginBottom:12,paddingBottom:10,borderBottom:`1px solid ${dk?"#2a3a5e":"#e8ecf0"}`}}>
@@ -11925,7 +11983,10 @@ function MonthPainterSheet({ mode, css, dk, surgeons, apps, appShifts, vacations
 //      slip under a stale edit; a new week is a plain INSERT;
 //   I3 one job at a time (load, push, pull, authoritative, publish) on one
 //      chain; every request times out, and a push stops at the first request
-//      that never answered, so a dead network can't hold the chain;
+//      that never answered, so a dead network can't hold the chain; a job
+//      that makes no progress for `stall` is reported (status.stalled), and a
+//      caller waiting on a load / clear / restore / publish has its answer by
+//      `deadline` (a clear / restore / publish not started by then never runs);
 //   I4 an outcome the response BODY doesn't prove is unknown and is READ
 //      BACK. The ledger `sent` remembers every body sent and not yet
 //      confirmed (keepalive included), so a read-back recognises this
@@ -11937,10 +11998,19 @@ function MonthPainterSheet({ mode, css, dk, surgeons, apps, appShifts, vacations
 //   readHeaders(), canWrite() (false for public / OR-board sessions),
 //   token() (the stored access token, or null), userId(), now() (ISO),
 //   nowMs(), onStatus(s), onToast(msg, tone), onWipeBlocked(info),
-//   onInternalError(e), log(...), timeouts? { read, write } in ms.
+//   onInternalError(e), onAdopted?(weeks) (someone else's copy of these weeks
+//   was just put on screen), log(...),
+//   timeouts? { read, write, stall, deadline } in ms.
 function createSchedSync(deps) {
   const d = deps;
-  const T = Object.assign({ read: 10000, write: 15000 }, d.timeouts || {});
+  // Request timeouts (A5a), then the stall bound and the caller deadline
+  // (A5f/g). Every request is aborted within its timeout, the body read
+  // included, so a chain that works settles SOMETHING at least every 15 s:
+  // `stall` (3x that, and under the 60-s pull) is how long a job may make no
+  // progress before the header says "Sync stalled"; `deadline` (two stall
+  // bounds, queue wait included) is when a caller awaiting a load / clear /
+  // reset / restore / publish stops waiting.
+  const T = Object.assign({ read: 10000, write: 15000, stall: 45000, deadline: 90000 }, d.timeouts || {});
   // ── canonical JSON: keys sorted at every level, JSON's own rules for the
   // rest (an undefined member is dropped, array order kept). jsonb hands keys
   // back in its own order, so plain JSON.stringify equality misfires.
@@ -11965,6 +12035,8 @@ function createSchedSync(deps) {
   let chain = Promise.resolve();
   let queuedPush = null, queuedPull = null;
   let authoritativeQueued = 0, busy = null;
+  const owners = new Set();        // A11: per queued / running clear, reset, restore, publish: { what, keys (Set, or null = every week), withKnown, state, release }
+  let running = false, stalled = false, watch = null; // A5(g): a job is at the chain's head · it has made no progress for T.stall · the watchdog timer
   let deadToken = null;            // the token a 401 / JWT error was answered for: not re-sent
   let blocked = 0, lastBlockSig = "";
   let removalSig = "", staleRemovals = 0; // a wipe-shaped / empty removal seen and not (yet) adopted
@@ -11995,7 +12067,7 @@ function createSchedSync(deps) {
       try { const t = await r.text(); if (t) { body = JSON.parse(t); json = true; } } catch (e) { body = null; json = false; }
       return { ok: !!r.ok, status: r.status, body, json };
     } catch (e) { return { thrown: e }; }
-    finally { if (timer) clearTimeout(timer); live.delete(entry); }
+    finally { if (timer) clearTimeout(timer); live.delete(entry); progress(); }
   };
   // Classify a write's answer on its BODY (A4): only what the body proves is
   // known. 401 or a JWT error = sign in again; a PostgREST 403 / 42501 = the
@@ -12030,8 +12102,14 @@ function createSchedSync(deps) {
     const { changed, deletes } = diff(d.getState() || {});
     return [...new Set([...changed, ...deletes, ...Object.keys(sent).filter(unconfirmed)])].sort();
   };
+  // A11(4): a week a queued or running clear / reset / restore / publish
+  // will write is not reported as pending: the header says Clearing… /
+  // Restoring… for it, never "not saved". (api.pending(), which the reload
+  // and sign-out guards ask, still counts it: leaving now cuts that job short.)
+  const ownedKey = (k) => { for (const o of owners) { if (!o.keys || o.keys.has(k) || (o.withKnown && known[k])) return true; } return false; };
+  const headOwner = () => { for (const o of owners) return o.what; return null; };
   const status = () => {
-    const p = pendingKeys();
+    const p = pendingKeys().filter(k => !ownedKey(k));
     const failing = p.filter(k => failed.has(k));
     const a = authState();
     return { seeded, loadFailed: !seeded && loadFailed, pending: p.length, pendingKeys: p,
@@ -12039,19 +12117,49 @@ function createSchedSync(deps) {
       authNeeded: a !== "ok" && (p.length > 0 || a === "expired"),
       rejected: Object.keys(rejected).filter(k => p.includes(k)),
       noPermission: [...noPermission].filter(k => p.includes(k)),
-      blockedDeletes: blocked, staleRemovals, conflicts: conflicts.slice(), busy };
+      blockedDeletes: blocked, staleRemovals, conflicts: conflicts.slice(), busy: busy || headOwner(), stalled };
   };
   const report = () => { try { d.onStatus(status()); } catch (e) { log("onStatus threw", e); } };
 
+  // A5(g) the watchdog. Progress is a job starting or ending, or any request
+  // settling (each one does within its timeout). A job that makes none for
+  // T.stall is STALLED — reported, so the header says so — until the next
+  // progress. Only progress re-arms the timer: a job stuck for good leaves
+  // no timer behind.
+  const progress = () => {
+    if (watch) { clearTimeout(watch); watch = null; }
+    if (running) watch = setTimeout(() => { watch = null; if (running && !stalled) { stalled = true; report(); } }, T.stall);
+    if (stalled) { stalled = false; report(); }
+  };
   // Jobs: one at a time; a job that throws (a bug, not the network) is
   // reported and stops without poisoning the chain.
   const enqueue = (fn) => {
     const p = chain.then(async () => {
+      running = true; progress();
       try { return await fn(); }
       catch (e) { try { if (d.onInternalError) d.onInternalError(e); } catch (e2) { /* nothing more to do */ } report(); return { ok: false, internal: String(e && e.message || e) }; }
+      finally { running = false; progress(); }
     });
     chain = p.then(() => {}, () => {});
     return p;
+  };
+
+  // A5(f): the caller's promise settles by T.deadline (queue wait included)
+  // even when the chain is stuck — with late()'s answer then.
+  const settleBy = (p, late) => new Promise((resolve) => {
+    let done = false;
+    const timer = setTimeout(() => { if (!done) { done = true; resolve(late()); } }, T.deadline);
+    const fin = (v) => { if (!done) { done = true; clearTimeout(timer); resolve(v); } };
+    p.then(fin, (e) => fin({ ok: false, internal: String(e && e.message || e) }));
+  });
+  const JOB_LABEL = { clear: "Clearing the schedule", reset: "Clearing the schedule", restore: "Restoring the snapshot", publish: "Publishing the new weeks" };
+  const jobLabel = (what) => JOB_LABEL[what] || "Saving the schedule";
+  // One toast for a job that ended after its caller stopped waiting (A5f).
+  const lateOutcome = (what, r) => {
+    if (r && (r.skipped === "reset" || r.skipped === "cancelled")) return; // another session now, or it never ran
+    if (r && r.ok) { say(`${jobLabel(what)} has finished — every week is saved.`, "success"); return; }
+    const n = ((r && r.results) || []).filter(x => x.outcome !== "saved").length;
+    say(r && r.error ? `${jobLabel(what)} stopped — ${r.error}` : `${jobLabel(what)} has finished, but ${n ? n + " week" + (n === 1 ? " isn't" : "s aren't") : "not every week is"} saved yet — retrying automatically.`, "error");
   };
 
   const readBack = async (k) => {
@@ -12094,6 +12202,9 @@ function createSchedSync(deps) {
     });
     if (changed.length) d.commit(next);
     if (why === "conflict" && changed.length) { const at = d.nowMs(); changed.forEach(k => { conflicts = conflicts.filter(c => c.k !== k).concat([{ k, at }]); }); }
+    // A13: the weeks that now show someone else's copy (their epoch moved),
+    // after the commit — an open week editor on one of them says so at once.
+    if (changed.length && d.onAdopted) { try { d.onAdopted(changed.slice()); } catch (e) { log("onAdopted threw", e); } }
     return taken;
   };
 
@@ -12364,7 +12475,7 @@ function createSchedSync(deps) {
   // weeks — re-read just those, write them (a week deleted elsewhere is
   // re-inserted), never a delete. Afterwards every week the user hasn't
   // touched since shows exactly what was written (A11).
-  const runAuthoritative = async (target, grant, what, keys, startShown) => {
+  const runAuthoritative = async (target, grant, what, keys, startShown, release) => {
     const g = gen;
     busy = what || "saving"; report();
     try {
@@ -12402,7 +12513,7 @@ function createSchedSync(deps) {
       if (changedMirror) d.commit(next);
       if (res.skipped === "auth") return { ok: false, wrote: false, error: "Your sign-in has expired — tap \"Sign in again\", then retry. Nothing was changed." };
       return Object.assign({ wrote }, res);
-    } finally { busy = null; report(); }
+    } finally { release(); busy = null; report(); }
   };
 
   // ── keepalive (pagehide / beforeunload only, A9): CAS PATCHes for unsaved
@@ -12427,7 +12538,9 @@ function createSchedSync(deps) {
     canon,
     // First load seeds; a later load (signing in again) is a pull — and then
     // sends what's pending.
-    load() { return enqueue(async () => { const r = await runLoad(); if (r.ok && seeded && d.canWrite() && pendingKeys().length) await runPush({ mode: "normal" }); return r; }); },
+    // (A5f: the caller has its answer by the deadline; a load still queued
+    // then stays queued, and seeds or pulls when its turn comes.)
+    load() { return settleBy(enqueue(async () => { const r = await runLoad(); if (r.ok && seeded && d.canWrite() && pendingKeys().length) await runPush({ mode: "normal" }); return r; }), () => ({ ok: false, reason: "timeout" })); },
     push() {
       if (queuedPush) return queuedPush;
       const p = enqueue(async () => { queuedPush = null; return runPush({ mode: "normal" }); });
@@ -12448,16 +12561,35 @@ function createSchedSync(deps) {
       const t = clone(target || {});
       const keys = keysArr ? new Set(keysArr) : null;
       const startShown = shownMap([...new Set([...Object.keys(t), ...Object.keys(known), ...(keysArr || [])])]);
-      authoritativeQueued++;
-      const p = enqueue(async () => { try { return await runAuthoritative(t, !!grant, what, keys, startShown); } finally { authoritativeQueued--; } });
+      // The weeks it owns from now until it's done (A11): a publish, its
+      // period's; a clear / reset (an empty target), every week; a restore,
+      // its target's and every week the table holds.
+      const owner = { what: what || "saving", keys: keys || (Object.keys(t).length ? new Set(Object.keys(t)) : null), withKnown: !keys, state: { started: false, cancelled: false } };
+      owner.release = () => { if (owners.delete(owner)) authoritativeQueued--; };
+      owners.add(owner); authoritativeQueued++;
+      const p = enqueue(async () => {
+        if (owner.state.cancelled) return { ok: false, wrote: false, skipped: "cancelled", error: "It was cancelled before its turn came — nothing was changed." }; // past its deadline, or a sign-out, before its turn: it never runs
+        owner.state.started = true;
+        try { return await runAuthoritative(t, !!grant, what, keys, startShown, owner.release); } finally { owner.release(); }
+      });
+      report();
       p.then(() => { if (!authoritativeQueued) api.push(); }, () => {});
-      return p;
+      // A5(f): the caller has its answer by the deadline. Not started by
+      // then: cancelled — it never runs later — and nothing was written.
+      // Started: "still running" (a job is never cut short mid-write), and
+      // its outcome is toasted when it ends.
+      return settleBy(p, () => {
+        if (!owner.state.started) { owner.state.cancelled = true; owner.release(); report(); return { ok: false, wrote: false, reason: "timeout", error: "The sync is stuck behind an earlier save — nothing was changed. Reload the app, then try again." }; }
+        p.then(r => lateOutcome(owner.what, r));
+        return { ok: false, wrote: false, running: true, reason: "timeout", error: `${jobLabel(owner.what)} is taking longer than expected. It's still running — keep the app open; you'll see a message when it ends.` };
+      });
     },
     // Sign-out / user switch (A8): forget everything — the mirror too — fence
     // jobs in flight, and read the table again (public / OR views refill);
     // nothing is pushed until that load succeeds.
     reset() {
       gen++; known = {}; seeded = false; loadFailed = false; deadToken = null; blocked = 0; lastBlockSig = ""; removalSig = ""; staleRemovals = 0; conflicts = [];
+      [...owners].forEach(o => { if (!o.state.started) { o.state.cancelled = true; o.release(); } }); // queued before the boundary: never runs under the next session
       Object.keys(sent).forEach(k => delete sent[k]); Object.keys(rejected).forEach(k => delete rejected[k]);
       failed.clear(); noPermission.clear(); approvedDeletes.clear(); inFlight.clear();
       d.commit({});
