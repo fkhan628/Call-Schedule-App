@@ -2035,66 +2035,11 @@ function CallSchedule() {
   // Supabase JS's upsert doesn't support keepalive, so we construct the fetch
   // directly using the stored session token.
   useEffect(() => {
-    const flushPending = (source) => {
-      if (isPublicMode) return; // Public viewers never write to the DB
-      const payload = pendingSaveRef.current;
-      if (!payload) return; // Nothing to save
-      if (loadFailedRef.current) return; // read failed — never flush a possibly-degraded state
-      // Empty-save guard (same rule as the debounced autosave). Keep the
-      // payload pending rather than firing a wiping keepalive write.
-      if (payloadLooksWiped(payload) && everHadRealDataRef.current && !allowWipeSaveRef.current) {
-        console.warn(`Keepalive flush blocked (${source}): empty payload over real data.`);
-        return; // leave pendingSaveRef intact
-      }
-      pendingSaveRef.current = null; // Clear optimistically — if the flush
-      //                                fails we'll re-save on next edit or
-      //                                via the regular debounce path.
-      //                                For members the only leg is the weeks
-      //                                blind-upsert below, so "pending" here
-      //                                means exactly that leg for them.
-
-      try {
-        const session = (typeof auth !== "undefined" && auth.getSession) ? auth.getSession() : null;
-        const token = session?.access_token || SUPABASE_ANON_KEY;
-        const ts = new Date().toISOString();
-        // Stage 6: keep the schedule out of the blob (it lives in schedule_weeks).
-        const blobData = { ...payload }; delete blobData.schedule;
-        delete blobData.vacations; delete blobData.noCallDays; // retired mirror — time_off is the source
-        const body = JSON.stringify({ id: "main", data: blobData, updated_at: ts });
-        // (schedule_weeks is not flushed here — see flushSchedWeeks below: it
-        // doesn't depend on this blob payload being pending.)
-        // Blob leg — same RLS reality as the debounced autosave: members are
-        // denied, so they must not fire it. They keep the weeks flush
-        // (their swaps/trades still land on unload); only this half is
-        // scheduler/admin. Previously this 4xx'd into the keepalive catch and
-        // vanished — silent, but still a guaranteed-failing request on every
-        // backgrounding of every member's phone.
-        if (!canWriteBlob) return;
-        // Fire with keepalive so the browser finishes the request even if
-        // the page is being unloaded. Payloads >64KB may still be dropped;
-        // in practice the blob (now schedule-less) is well under this.
-        fetch(`${SUPABASE_URL}/rest/v1/call_schedule_data?on_conflict=id`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "apikey": SUPABASE_ANON_KEY,
-            "Authorization": `Bearer ${token}`,
-            "Prefer": "resolution=merge-duplicates,return=minimal",
-          },
-          body,
-          keepalive: true,
-        }).then(() => {
-          lastSyncRef.current = ts;
-        }).catch(e => {
-          console.warn(`Keepalive save failed (${source}):`, e);
-          // Restore pending so next edit or debounce re-saves
-          pendingSaveRef.current = payload;
-        });
-      } catch (e) {
-        console.warn(`Flush pending save (${source}) error:`, e);
-        pendingSaveRef.current = payload;
-      }
-    };
+    // (The blob keepalive is gone — A10: its canWriteBlob gate sat in this
+    // []-closure, frozen at the first render's false, so it never fired; a
+    // live one would be a blind, un-chained blob write. A blob edit made in
+    // the last 800 ms before the app closes is lost — the same trade-off the
+    // day-off flush below documents.)
 
     // Day-off flush: anything UNCONFIRMED (pending burst OR failed save
     // awaiting retry — the dirty flag covers both) is pushed through the
@@ -2137,13 +2082,13 @@ function CallSchedule() {
     };
 
     const onVisibilityChange = () => {
-      if (document.hidden) { flushPending("visibilitychange"); flushDayOff("visibilitychange"); flushSchedWeeks("visibilitychange"); }
+      if (document.hidden) { flushDayOff("visibilitychange"); flushSchedWeeks("visibilitychange"); }
     };
-    const onPageHide = () => { flushPending("pagehide"); flushDayOff("pagehide"); flushSchedWeeks("pagehide"); };
+    const onPageHide = () => { flushDayOff("pagehide"); flushSchedWeeks("pagehide"); };
     // beforeunload also asks the browser to confirm leaving while weeks are
     // unsaved (desktop shows its own "Leave site?" prompt; ignored on mobile).
     const onBeforeUnload = (ev) => {
-      flushPending("beforeunload"); flushDayOff("beforeunload"); flushSchedWeeks("beforeunload");
+      flushDayOff("beforeunload"); flushSchedWeeks("beforeunload");
       try { if (!isPublicMode && schedSyncRef.current.pending().length) { ev.preventDefault(); ev.returnValue = ""; } } catch (e) { /* never block unload on an error */ }
     };
 

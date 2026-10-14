@@ -132,8 +132,8 @@ const MUTANTS = [
   { id: "M30", what: "a gateway's HTML 403 is taken as a permission refusal (adopts the server copy, drops the edit — A4)",
     from: 'if (r.status === 403) return code === "42501" ? "refused" : "unknown";', to: 'if (r.status === 403) return "refused";' },
   { id: "M31", what: "a push walks every week into a timeout instead of stopping at the first dead request (A5)",
-    from: "      const x = await writeWeek(k, clone(target[k]), job.mode, by);\n      results.push(x);\n      if (x.outcome === \"auth\" || x.thrown) stop = true;",
-    to: "      const x = await writeWeek(k, clone(target[k]), job.mode, by);\n      results.push(x);\n      if (x.outcome === \"auth\") stop = true;" },
+    from: "      const x = await writeWeek(k, clone(target[k]), job.mode, by, g);\n      results.push(x);\n      if (x.outcome === \"auth\" || x.thrown) stop = true;",
+    to: "      const x = await writeWeek(k, clone(target[k]), job.mode, by, g);\n      results.push(x);\n      if (x.outcome === \"auth\") stop = true;" },
   { id: "M32", what: "a pull running when a clear/restore is requested still adopts (A11)",
     from: "    if (authoritativeQueued > 0) return { ok: false, skipped: \"authoritative-queued\" };\n    const cur0", to: "    const cur0" },
   { id: "M33", what: "adoption ignores an edit made while the request was out (A3)",
@@ -1169,6 +1169,81 @@ async function scenarios(createSchedSync, check) {
     await A.engine.push();
     check("SE53 one dead request stops the job (1 PATCH, not 3); the next push lands all three",
       patches1 === 1 && [0, 1, 2].every(i => t.get(W[i]).data.dayCall === "x" + i) && A.st().pending === 0, JSON.stringify({ patches1 }));
+  });
+
+  // SE54 — A12 (M28): an approval is pruned at the START of every push that no
+  // longer deletes the week — not only when a later write confirms it. Clear
+  // with two DELETEs failing (approved at v3), regenerate the 6 weeks with the
+  // two re-create PATCHes ALSO failing (nothing confirms them, so only the
+  // push-start prune can drop their approvals), then drop W1–W3: a half-wipe
+  // that must be blocked like any other (zero DELETEs).
+  await run("SE54", async () => {
+    const t = mkTable(seedRows(6));
+    const A = mkSession(t); await A.engine.load();
+    t.control.fail({ method: "DELETE", week: W[0], kind: "5xx-before" });
+    t.control.fail({ method: "DELETE", week: W[1], kind: "5xx-before" });
+    A.mirror = {};
+    await A.engine.authoritative({}, true, "clear");
+    t.control.fail({ method: "DELETE", kind: "5xx-before", count: 10 }); // keep the follow-up push from finishing the clear
+    await A.engine.idle();
+    t.control.clear();
+    t.control.fail({ method: "PATCH", week: W[0], kind: "5xx-before" });
+    t.control.fail({ method: "PATCH", week: W[1], kind: "5xx-before" });
+    seedRows(6).forEach(r => A.edit(r.week_monday, () => wk("regen")));
+    await A.engine.push();
+    check("SE54 (fixture) 4 weeks re-created; the 2 re-create PATCHes failed (still the cleared-but-undeleted v3 rows, pending)",
+      t.rows().length === 6 && t.get(W[0]).version === 3 && t.get(W[1]).version === 3 && t.get(W[2]).data.dayCall === "regen" && A.engine.pending().length === 2,
+      JSON.stringify({ rows: t.rows().map(r => r.week_monday + "@" + r.version), pending: A.engine.pending() }));
+    t.control.clear();
+    [0, 1, 2].forEach(i => A.drop(W[i]));
+    const from = t.log.length;
+    const r = await A.engine.push();
+    check("SE54 A12: dropping W1–W3 after a re-create whose write FAILED is a fresh half-wipe → blocked, zero DELETEs",
+      r.blocked === true && writes(t, from).filter(e => e.method === "DELETE").length === 0 && t.rows().length === 6 && A.wipeBlocked.length === 1,
+      JSON.stringify({ r: r.results, blocked: A.wipeBlocked, rows: t.rows().length }));
+  });
+
+  // SE55 — A3 (M33): a conflict found early in a multi-week push is adopted at
+  // the END of the job — and only if the screen still shows what was sent. An
+  // edit to that week made while a later week's request is out survives; the
+  // conflict surfaces (loudly) on the next push instead.
+  await run("SE55", async () => {
+    const t = mkTable(seedRows(3));
+    const A = mkSession(t), B = mkSession(t, { token: "TOK_B", user: "user-b" });
+    await A.engine.load(); await B.engine.load();
+    B.edit(W[0], w => (w.dayCall = "sB", w)); await B.engine.push();
+    A.edit(W[0], w => (w.dayCall = "sA", w));
+    A.edit(W[1], w => (w.dayCall = "sA2", w));
+    const hold = t.control.pause({ method: "PATCH", week: W[1], count: 1 });
+    const p = A.engine.push(); await hold.arrived;   // W1's PATCH already met B's row (conflict, not yet adopted)
+    A.edit(W[0], w => (w.dayCall = "sA-again", w));  // the user edits W1 again mid-job
+    hold.release(); await p;
+    check("SE55 A3: the end-of-job conflict adoption skips the week edited mid-job — the new edit stays on screen and pending, no toast yet",
+      A.mirror[W[0]].dayCall === "sA-again" && A.engine.pending().join() === W[0] && t.get(W[1]).data.dayCall === "sA2" && A.st().conflicts.length === 0 && A.toasts.length === 0,
+      JSON.stringify({ w0: A.mirror[W[0]].dayCall, pending: A.engine.pending(), toasts: A.toasts }));
+    await A.engine.push();
+    check("SE55 …the next push settles it loudly: B's copy shown, one conflict toast + entry, and B's row was never overwritten",
+      A.mirror[W[0]].dayCall === "sB" && t.get(W[0]).data.dayCall === "sB" && A.toasts.length === 1 && /someone else/.test(A.toasts[0]) && A.st().conflicts.length === 1,
+      JSON.stringify({ w0: A.mirror[W[0]].dayCall, toasts: A.toasts }));
+  });
+
+  // SE56 — A14.3: a publish (regenerate / accept-preview) with one week
+  // answering 503 is NOT ok — the caller must not say "Regenerated!" or
+  // broadcast; the failed week stays on screen, pending, and the follow-up
+  // push lands it.
+  await run("SE56", async () => {
+    const t = mkTable(seedRows(4));
+    const A = mkSession(t); await A.engine.load();
+    const period = [W[0], W[1], W[2]];
+    const gen = {}; period.forEach(k => { gen[k] = wk("regen"); });
+    A.mirror = Object.assign({}, A.mirror, gen);
+    t.control.fail({ method: "PATCH", week: W[1], kind: "5xx-before" });
+    const r = await A.engine.authoritative(gen, false, "publish", period);
+    check("SE56 one period week 503s → the publish outcome is NOT ok (no Regenerated!, no broadcast); the other weeks landed; W2 still shows the generated week and is pending",
+      r.ok === false && t.get(W[0]).data.dayCall === "regen" && t.get(W[2]).data.dayCall === "regen" && t.get(W[1]).data.dayCall !== "regen"
+        && A.mirror[W[1]].dayCall === "regen" && A.engine.pending().join() === W[1], JSON.stringify({ r: r.results, pending: A.engine.pending() }));
+    await A.engine.idle(); await A.engine.push();
+    check("SE56 …the follow-up push lands it", t.get(W[1]).data.dayCall === "regen" && A.engine.pending().length === 0);
   });
 
   // SE-I — no scenario above produced an internal error.

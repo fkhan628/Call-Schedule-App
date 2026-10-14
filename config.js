@@ -270,9 +270,12 @@ const snapshots = {
           }
         } else foldErr = `schedule read failed: HTTP ${wres.status}`;
       } catch (e) { foldErr = "schedule read failed: " + String(e); }
+      // A15: a snapshot without the schedule can't put it back — for ANY
+      // reason (a periodic one included: inserting it would reset the 6-hour
+      // clock on a backup that can't restore the schedule).
       if (foldErr) {
         console.warn("Snapshot: schedule_weeks fold failed:", foldErr);
-        if (strict) return { ok: false, error: foldErr };
+        return { ok: false, error: foldErr };
       }
       // Vacations/no-call live in the time_off table (the blob mirror was
       // retired in PR #18), so fold them back in under the old mirror keys —

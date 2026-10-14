@@ -274,7 +274,7 @@ await (async () => {
     { m: "POST", url: "call_schedule_snapshots", status: 201, json: [] },
   ]);
   r = await snapshots.capture("test");
-  check("schedule_weeks fetch fails, blob real → still ok:true (best-effort)", r.ok === true);
+  check("A15 schedule_weeks fetch fails, blob real → ok:false, nothing inserted (no schedule-less snapshot, any reason)", r.ok === false && writesIn(f).length === 0, JSON.stringify(r));
   // 6b. …but NOT for a capture that precedes a destructive operation (sync
   //     v2, I6): the schedule fold is required there, or the snapshot can't
   //     put the schedule back. Every strict reason, and nothing inserted.
@@ -479,6 +479,17 @@ await (async () => {
   ]);
   r = await snapshots.captureIfStale("periodic", 6);
   check("list() fails → still attempts capture (fails toward capturing)", r.ok === true && !r.skipped, JSON.stringify(r));
+  // A15: a periodic capture whose schedule fold fails inserts NOTHING and is
+  // ok:false, so the 6-hour clock does not reset on a schedule-less snapshot.
+  let f2 = stubFetch([
+    { m: "GET", url: "call_schedule_snapshots?select=", json: [{ created_at: "2026-01-01T00:00:00Z" }] },
+    { m: "GET", url: "call_schedule_data", json: BLOB_ROW },
+    { m: "GET", url: "schedule_weeks", status: 503, text: "boom" },
+    { m: "GET", url: "time_off", json: [] },
+    { m: "POST", url: "call_schedule_snapshots", status: 201, json: [] },
+  ]);
+  r = await snapshots.captureIfStale("periodic_session", 6);
+  check("A15 periodic capture, schedule fold 503 → ok:false, nothing inserted", r.ok === false && writesIn(f2).length === 0, JSON.stringify(r));
 })();
 
 // ══════════════════════════════════════════════════════════════
@@ -492,7 +503,7 @@ const count = (needle) => src.split(needle).length - 1;
 // the immediate flush path). Exactly 2 — a third path means a new save site
 // that must consciously adopt the guard.
 const GATE = "payloadLooksWiped(payload) && everHadRealDataRef.current && !allowWipeSaveRef.current";
-check("empty-save gate present at exactly 2 save paths", count(GATE) === 2, `found ${count(GATE)}`);
+check("empty-save gate present at exactly 1 save path (the autosave; the blob keepalive is removed — A10)", count(GATE) === 1, `found ${count(GATE)}`);
 
 // Exactly ONE grant site (factory reset). A new `= true` site is a new wipe
 // authorization — the tripwire forces that to be a reviewed decision.
@@ -665,8 +676,8 @@ check("schedule_weeks has no second adopter (no realtime handler; the engine's p
 // all three write sites (autosave blob leg, keepalive blob leg, edge-URL).
 check("canWriteBlob defined once, mirroring is_scheduler_or_admin()",
   count("const canWriteBlob = isScheduler;") === 1);
-check("blob gate applied at exactly 3 sites (autosave, keepalive flush, edge-URL)",
-  count("if (!canWriteBlob) return;") === 3, `found ${count("if (!canWriteBlob) return;")}`);
+check("blob gate applied at exactly 2 sites (autosave, edge-URL; the blob keepalive is removed — A10)",
+  count("if (!canWriteBlob) return;") === 2, `found ${count("if (!canWriteBlob) return;")}`);
 check("the weeks are pushed from exactly one effect, never from inside the blob autosave (decoupling is structural, not incidental)",
   count("schedSyncRef.current.push(); }, 800);") === 1 && count("const syncSchedWeeks") === 0);
 
@@ -691,8 +702,8 @@ check("appOffVisible used at exactly 4 sites (2 fetch, 2 render)",
 
 // The four write guards must still key on isPublicMode ALONE — never on the
 // OR flag, which would let a nurse's link write.
-check("all 5 public-mode write guards remain `if (isPublicMode) return;` (the 4 before sync v2 + the schedule_weeks flush)",
-  count("if (isPublicMode) return;") === 5, `found ${count("if (isPublicMode) return;")}`);
+check("all 4 public-mode write guards remain `if (isPublicMode) return;` (autosave, day-off flush, schedule_weeks flush, config; the blob keepalive is removed — A10)",
+  count("if (isPublicMode) return;") === 4, `found ${count("if (isPublicMode) return;")}`);
 check("the sync engine's write gate keys on isPublicMode ALONE (never the OR flag); its push effect too",
   count("canWrite: !isPublicMode,") === 1 && count("if (!loaded || isPublicMode) return;") === 1);
 check("isOrView never appears on a write path (no isOrView in any write guard)",
