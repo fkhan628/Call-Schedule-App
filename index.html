@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.10.14a";
+    var APP_VERSION = "2026.10.14b";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -10787,7 +10787,29 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       } else setCalMonth(m => m + 1);
     },
     style: css.btn(false)
-  }, "▶")), React.createElement("div", {
+  }, "▶"), (() => {
+    const now = new Date(),
+      away = calMonth !== now.getMonth() || calYear !== now.getFullYear();
+    return React.createElement("button", {
+      "aria-label": "Go to today",
+      title: "Back to today",
+      onClick: () => {
+        const n = new Date();
+        setCalMonth(n.getMonth());
+        setCalYear(n.getFullYear());
+        setTimeout(() => {
+          const el = document.querySelector("[data-cal-today=\"1\"]");
+          if (el && el.scrollIntoView) el.scrollIntoView({
+            behavior: "smooth",
+            block: "center"
+          });
+        }, 60);
+      },
+      style: _objectSpread(_objectSpread({}, css.btn(away)), {}, {
+        padding: "7px 10px"
+      })
+    }, "Today");
+  })()), React.createElement("div", {
     style: {
       display: "flex",
       gap: 5
@@ -11251,6 +11273,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       }
       return React.createElement("div", {
         key: ds,
+        "data-cal-today": isToday ? "1" : undefined,
         style: {
           background: cellBg,
           border: cellBorder,
