@@ -463,6 +463,22 @@ const stress = runStress();
 //    over-block on any single leg fails.
 //    RED: the identical fixture WITHOUT the Silvis days must put FAK on at
 //    least one overlapping slot in ≥1 roll — proving the fixture bites.
+//    RULE 2 ACROSS THE TWO JOBS (owner 2026-10-13): with opts.silvisPrimary
+//    the search also knows the days are 24h overnights, so FAK's Davenport
+//    overnight on the date before or after one is his LAST RESORT — gone in
+//    ≥ 90% of rolls (the run above, without it, gives him those legs), while
+//    the service week starting the Monday a Silvis Sunday ends (a daytime
+//    Monday — its overnight is Saturday) is still his in some roll.
+function silvisAdjacent(sched, days, id) {
+  // -> ["date"] FAK's Davenport overnights (Mon–Thu nights, Fri / Sun weekend, Sat service) on a date next to a Silvis day
+  const own = {};
+  for (const m of MONDAY_KEYS) { const wk = sched[m]; if (!wk) continue; const mon = parse(m), d = (o) => fmt(addD(mon, o));
+    [["mon", 0], ["tue", 1], ["wed", 2], ["thu", 3]].forEach(([k, o]) => { own[d(o)] = wk.nights?.[k]; });
+    own[d(4)] = wk.nights?.wknd; own[d(5)] = wk.dayCall; own[d(6)] = wk.nights?.wknd; }
+  const out = [];
+  days.forEach(D => [-1, 1].forEach(o => { const n = fmt(addD(parse(D), o)); if (own[n] === id) out.push(n); }));
+  return out;
+}
 function silvisOverlapSlots(sched, days, id) {
   // -> [{ day, mondayStr, slot }] every (week, slot) FAK holds that overlaps a Silvis day.
   const hits = [];
@@ -499,21 +515,31 @@ function runSilvis() {
     ["2026-03-23", "wknd", "weekend (Fri + Sun) around a Silvis Saturday"],
   ];
   const given = openNeighbors.map(() => 0);
-  let redFired = 0, trailingAllowed = 0;
+  let redFired = 0, trailingAllowed = 0, adjWith = 0, adjWithout = 0, cleanWith = 0, dayMonWith = 0;
   for (let roll = 0; roll < ROLLS; roll++) {
     // GREEN — vac = vacations ∪ Silvis days; vacationsOnly = vacations ONLY
     const g = generate(SURGEONS, MONDAYS, withSilvis, new Set(), {}, {}, new Set(), null, [], null, LIGHT_VACATIONS, COUNTS_1YR);
     const hits = silvisOverlapSlots(g, SILVIS_DAYS, FAK);
     if (hits.length) failures.push(`silvis roll ${roll}: FAK on ${hits.map(h => h.slot + "@" + h.mondayStr + " (Silvis " + h.day + ")").join(", ")}`);
     openNeighbors.forEach(([m, k], i) => { const holder = k === "dayCall" ? g[m]?.dayCall : g[m]?.nights?.[k]; if (holder === FAK) { given[i]++; trailingAllowed++; } });
+    adjWithout += silvisAdjacent(g, SILVIS_DAYS, FAK).length;
+    // WITH the rule: the same inputs + the Silvis days as 24h overnights
+    const gr = generate(SURGEONS, MONDAYS, withSilvis, new Set(), {}, {}, new Set(), null, [], null, LIGHT_VACATIONS, COUNTS_1YR, { silvisPrimary: { id: FAK, dates: SILVIS_DAYS } });
+    const ar = silvisAdjacent(gr, SILVIS_DAYS, FAK);
+    silvisOverlapSlots(gr, SILVIS_DAYS, FAK).forEach(h => failures.push(`silvis (rule 2 across jobs) roll ${roll}: FAK on ${h.slot}@${h.mondayStr} (Silvis ${h.day})`));
+    adjWith += ar.length; if (!ar.length) cleanWith++;
+    if (gr["2026-02-23"]?.dayCall === FAK) dayMonWith++;
     // RED — same fixture, no Silvis days
     const r = generate(SURGEONS, MONDAYS, without, new Set(), {}, {}, new Set(), null, [], null, LIGHT_VACATIONS, COUNTS_1YR);
     if (silvisOverlapSlots(r, SILVIS_DAYS, FAK).length) redFired++;
     if (failures.length > 25) break;
   }
   if (redFired === 0) failures.push(`silvis: WITHOUT the Silvis days FAK never landed on an overlapping slot in ${ROLLS} rolls — the fixture is vacuous, tighten it`);
+  if (cleanWith < Math.ceil(0.9 * ROLLS)) failures.push(`silvis (rule 2 across jobs): FAK's Davenport overnight next to a Silvis day in ${ROLLS - cleanWith}/${ROLLS} rolls (${adjWith} in all) — it should be his last resort`);
+  if (adjWithout === 0) failures.push(`silvis (rule 2 across jobs): WITHOUT opts.silvisPrimary FAK never got a night next to a Silvis day — the control is vacuous`);
+  if (dayMonWith === 0) failures.push(`silvis (rule 2 across jobs): the service week of 2026-02-23 (a daytime Monday after a Silvis Sunday) was never FAK's — the rule over-blocks`);
   openNeighbors.forEach(([m, k, why], i) => { if (given[i] === 0) failures.push(`silvis: ${k}@${m} (${why}) was NEVER given to FAK in ${ROLLS} rolls — that leg is over-blocked (a Silvis day must have no-call semantics on its own day only)`); });
-  return { name: "silvis", failures, redFired, trailingAllowed, given: openNeighbors.map(([m, k], i) => `${k}@${m}=${given[i]}`).join(" ") };
+  return { name: "silvis", failures, redFired, trailingAllowed, adjWith, adjWithout, cleanWith, dayMonWith, given: openNeighbors.map(([m, k], i) => `${k}@${m}=${given[i]}`).join(" ") };
 }
 const silvis = runSilvis();
 
@@ -825,6 +851,7 @@ console.log(`lastResort ${lastResort.rolls} + ${lastResort.rolls} rolls — FAK 
 console.log(`soft      ${softJ.rolls} rolls (2 backup weeks + DJA avoids Thu, MCC prefers Tue) — ${softJ.early} ended before the budget; 1st-call splits ${JSON.stringify(softJ.soft)}; preferences (avoided − preferred) ${JSON.stringify(softJ.prefs)}`);
 console.log(`fuzz      ${FUZZ_N} broken copies of a live schedule — listScheduleBends and the test agree on every count; schedules with each finding: ${JSON.stringify(fuzz.cover)}`);
 console.log(`silvis    ${ROLLS} rolls — FAK off every overlapping slot (6 Silvis days: Mon/Tue/Wed/Sun/Fri/Sat); control without them put him on one in ${silvis.redFired}/${ROLLS} rolls; open neighbor legs given to him: ${silvis.given}`);
+console.log(`          rule 2 across the two jobs (opts.silvisPrimary): no Davenport overnight next to a Silvis day in ${silvis.cleanWith}/${ROLLS} rolls (${silvis.adjWith} in all; without it ${silvis.adjWithout}); service week after the Silvis Sunday still his ×${silvis.dayMonWith}`);
 
 const failures = [...clean.failures, ...cleanProxy.failures, ...light.failures, ...squeeze.failures, ...stress.failures, ...silvis.failures, ...live.failures, ...sunday.failures, ...fuzz.failures, ...lastResort.failures, ...softJ.failures];
 if (failures.length) {

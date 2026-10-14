@@ -297,21 +297,17 @@ function crossWeekBendKey(a, b) {
 
 // Decision 3's Christmas DESIGN week for one holiday card: null unless it is a
 // Christmas card wholly the Christmas surgeon's (A = B = christmasDcId — FAK by
-// the standing rule); else { mon, whole }. mon = the Monday of the week holding
-// Christmas (the week before for a Monday Christmas — the Monday-holiday
-// convention). whole = that week is really theirs: no OTHER card dated on the
-// Monday right after it claims it by the Monday-holiday convention. Only a
-// Tuesday Christmas meets that (New Year's card on Mon 12/31 — 2029, 2035…):
-// New Year's A / B keep the week, as generateOnce's preDc always gave them;
-// the surgeon keeps the eve and Christmas Day. Read by holidayDesign, the rules
-// engine and generateOnce alike.
-function christmasDesignWeek(h, christmasDcId, holAssignments) {
+// the standing rule); else the Monday of the week holding Christmas (the week
+// before for a Monday Christmas — the Monday-holiday convention). It is his
+// WHOLE week, its service week and its weekend, in every year (owner
+// 2026-10-13): on a Tuesday Christmas (2029, 2035…) the New Year's card on
+// Mon 12/31 would claim the same week by its Monday convention — decision 3
+// wins, and New Year's keeps its own 24h rows. Read by holidayDesign, the
+// rules engine and generateOnce alike.
+function christmasDesignWeek(h, christmasDcId) {
   if (!h || h.name !== "Christmas Day" || !h.date || !christmasDcId || h.surgeonA !== christmasDcId || h.surgeonB !== christmasDcId) return null;
   const x = parse(h.date), dow = x.getDay();
-  const mon = addD(x, dow === 0 ? -6 : dow === 1 ? -7 : 1 - dow), nextMon = fmt(addD(mon, 7));
-  const claimed = Object.values(holAssignments || {}).some(arr => Array.isArray(arr) && arr.some(o =>
-    o && o !== h && o.date === nextMon && o.name !== "Christmas Day" && (o.surgeonA || o.surgeonB)));
-  return { mon: fmt(mon), whole: !claimed };
+  return fmt(addD(x, dow === 0 ? -6 : dow === 1 ? -7 : 1 - dow));
 }
 
 // Designed holiday patterns, from the holiday cards (effectiveHolidayCoverage
@@ -323,10 +319,11 @@ function christmasDesignWeek(h, christmasDcId, holAssignments) {
 //   - a Tue–Fri holiday week's service week → the card's surgeon A
 //     (Christmas week → christmasDcId, FAK by the standing rule — decision 3)
 //   - a Monday holiday: the PREVIOUS week's service week → A, its weekend → B
-//     (applied last: it wins a week a Tue–Fri pin also claims, in either card
-//     order — generateOnce's preDc does too)
-//   - decision 3: FAK's whole Christmas design week → its weekend too
-//     (christmasDesignWeek)
+//     (applied after the cards: it wins a week a Tue–Fri pin also claims, in
+//     either card order — generateOnce's preDc does too)
+//   - decision 3, applied last: FAK's whole Christmas design week → its
+//     service week AND its weekend, over a Monday convention too
+//     (christmasDesignWeek — a Tuesday Christmas's New Year's card)
 // Eves on a Fri or Sun (the weekend slot) keep today's handling (not pinned).
 function holidayDesign(holAssignments, mondayStrs, christmasDcId) {
   const pins = {}, eves = {};
@@ -367,12 +364,12 @@ function holidayDesign(holAssignments, mondayStrs, christmasDcId) {
       // rule), Christmas week is his whole week + Eve — the design week's
       // WEEKEND too, whatever weekday Christmas falls on. (A Fri / Sun row or the
       // Monday convention already pinned it; this covers Tue–Thu and Saturday.)
-      const cw = christmasDesignWeek(h, christmasDcId, holAssignments);
-      if (cw && cw.whole) christWeeks.push(cw.mon);
+      const cw = christmasDesignWeek(h, christmasDcId);
+      if (cw) christWeeks.push(cw);
     });
   });
   monConv.forEach(([m, slot, id]) => pin(m, slot, id));
-  christWeeks.forEach(m => pin(m, "wknd", christmasDcId));
+  christWeeks.forEach(m => { pin(m, "dayCall", christmasDcId); pin(m, "wknd", christmasDcId); });
   return { pins, eves };
 }
 
@@ -418,8 +415,10 @@ const RULE_LADDER = ["monWknd", "tueWknd", "wedWknd", "nightsApart", "svcPlus", 
 
 // ctx = { surgeons, mondays (consecutive), vac, vacationsOnly, holAssignments,
 // prevWeekSeed {dayCall, wknd, nights?, holidayCoverage?, dayCallOverrides?, recentDc?}, locks?, preferences?,
-// backupMondays?, christmasDcId?, sched? } — sched (optional) supplies each
-// week's stored holidayCoverage and isBackup, and marks absent weeks.
+// backupMondays?, christmasDcId?, sched?, silvisPrimary? } — sched (optional)
+// supplies each week's stored holidayCoverage and isBackup, and marks absent
+// weeks; silvisPrimary { id, dates } — FAK's Silvis primary 24h days (rule 2
+// across the two jobs: his last resort).
 function scheduleRules(ctx) {
   const c = ctx || {};
   const surgeons = c.surgeons || [];
@@ -477,12 +476,12 @@ function scheduleRules(ctx) {
   // him: the eve, Christmas Day, and the Friday night, service Saturday and
   // Sunday of the Christmas DESIGN week (christmasDesignWeek: the week holding
   // Christmas; the week before when Christmas is a Monday). Read from the card
-  // by date, for every weekday Christmas can fall on. Those dates count as
-  // fixed by the cards when he holds them (christOwner), and that week is never
-  // his "last resort" — the Fri–Sun and the week only when the week is wholly
-  // his (a Tuesday Christmas's week is New Year's, by its Monday convention).
-  // A pair is exempt only when both dates are fixed by the cards (fix 1) AND
-  // marked here — another night he takes that week is not.
+  // by date, for every weekday Christmas can fall on (a Tuesday Christmas
+  // too — decision 3 wins over New Year's Monday convention). Those dates
+  // count as fixed by the cards when he holds them (christOwner), and that
+  // week is never his "last resort". A pair is exempt only when both dates
+  // are fixed by the cards (fix 1) AND marked here — another night he takes
+  // that week is not.
   const designedPair = new Uint8Array(ND + 1);
   const christOwner = new Int8Array(ND + 1).fill(-1), christWeekP = new Int8Array(W).fill(-1);
   const dIdx = new Map(dayStr.map((ds, d) => [ds, d]));
@@ -494,18 +493,27 @@ function scheduleRules(ctx) {
       const d = dIdx.get(r.date);
       if (rows.some(q => q && !q.isEve && q.date === dayStr[d + 1] && q.surgeon === r.surgeon)) designedPair[d] = 1;
     });
-    const cw = christmasDesignWeek(h, fakId, c.holAssignments);
+    const cw = christmasDesignWeek(h, fakId);
     if (cw && sp(fakId) >= 0) {
-      const p = sp(fakId), desMon = parse(cw.mon);
+      const p = sp(fakId), desMon = parse(cw);
       const eve = rows.find(r => r && r.isEve && r.date);
-      const desDays = new Set([h.date]);
-      if (cw.whole) [4, 5, 6].forEach(o => desDays.add(fmt(addD(desMon, o))));
+      const desDays = new Set([h.date, fmt(addD(desMon, 4)), fmt(addD(desMon, 5)), fmt(addD(desMon, 6))]);
       if (eve) desDays.add(eve.date);
       desDays.forEach(ds => { if (dIdx.has(ds)) christOwner[dIdx.get(ds)] = p; });
       desDays.forEach(ds => { const nx = fmt(addD(parse(ds), 1)); if (desDays.has(nx) && dIdx.has(ds)) designedPair[dIdx.get(ds)] = 1; });
-      const w = mStrs.indexOf(cw.mon); if (w >= 0 && cw.whole) christWeekP[w] = p;
+      const w = mStrs.indexOf(cw); if (w >= 0) christWeekP[w] = p;
     }
   }));
+  // Rule 2 across the two jobs (owner 2026-10-13): FAK's Silvis PRIMARY days
+  // (ctx.silvisPrimary { id, dates } — each one 24h, 07:00 → 07:00) are
+  // overnights too. A Davenport overnight of his on the date right before or
+  // after one is two overnights in a row — allowed only as his LAST RESORT,
+  // like his service week + weekend: ranked just below the floor and listed.
+  // (Davenport call ON a Silvis day is time off: the app folds those days
+  // into vac.) silAt[d] = a Silvis primary on dayStr[d].
+  const silP = c.silvisPrimary ? sp(c.silvisPrimary.id) : -1;
+  const silAt = new Uint8Array(ND + 1);
+  if (silP >= 0) { const sd = new Set(Array.from(c.silvisPrimary.dates || [])); for (let d = 0; d <= ND; d++) if (sd.has(dayStr[d])) silAt[d] = 1; }
   // The week before the period (prevWeekSeed): its overnights, and service-week history.
   const seed = c.prevWeekSeed || null;
   const seedOwn = new Int8Array(7).fill(-1);
@@ -597,6 +605,14 @@ function scheduleRules(ctx) {
       lrWeek[w] = present[w] && p >= 0 && flex[p] && a[w * 6 + 5] === p && own[7 + 7 * w + 5] === p && christWeekP[w] !== p ? 1 : 0;
       if (lrWeek[w] && !(pin[w * 6] === p && pin[w * 6 + 5] === p)) { lastRes++; if (out) out.lastResort.push(w); }
     }
+    // …and FAK's Davenport overnight next to his Silvis primary 24h (one unit per side)
+    let silAdj = 0;
+    if (silP >= 0) for (let d = 7; d < ND; d++) {
+      if (own[d] !== silP) continue;
+      const n = silAt[d - 1] + silAt[d + 1];
+      if (n) { silAdj += n; if (out) out.silvisAdj.push(d); }
+    }
+    lastRes += silAdj;
     for (let d = 6; d < ND; d++) {
       const p = own[d];
       if (p < 0 || own[d + 1] !== p) continue;
@@ -676,7 +692,7 @@ function scheduleRules(ctx) {
     T[6] = spreadSq(tot);
     T[7] = spread(svcR) * 10 + spread(wkR);
     T[8] = avoided;
-    if (out) Object.assign(out.n, { empty, timeoff, dropped, hard, lastRes, strain, flexUnits: flexU, ladder: bend });
+    if (out) Object.assign(out.n, { empty, timeoff, dropped, hard, lastRes, silvisAdj: silAdj, strain, flexUnits: flexU, ladder: bend });
   }
 
   const encode = (s) => {
@@ -713,7 +729,7 @@ function scheduleRules(ctx) {
   function list(s, costOnly) {
     const a = encode(s);
     const T = new Float64Array(TN);
-    const F = { empty: [], timeoff: [], dropped: [], hard: [], lastResort: [], wkndPair: [], svcPair: [], triple: [], bend: [], n: {} };
+    const F = { empty: [], timeoff: [], dropped: [], hard: [], lastResort: [], silvisAdj: [], wkndPair: [], svcPair: [], triple: [], bend: [], n: {} };
     scan(a, T, F);
     const items = [];
     const mOf = (w) => w >= 0 ? mStrs[w] : fmt(addD(m0, 7 * w));
@@ -759,7 +775,11 @@ function scheduleRules(ctx) {
       const run = [4, 5, 6].filter(k => own[b + k] === p).map(k => dml(b + k)).join(" → "); // only the nights they really hold
       push({ kind: "lastResort", key: "svcWknd", cost: 0, who: ids[p], mondayStr: mStrs[w], slots: ["dayCall", "wknd"],
         text: `${code(p)}: ${slotName(w, 0)} + ${slotName(w, 5)} — ${run} in a row, the last resort${whoElse(p, [[w, 5]])}` }); });
-    const strainItem = (p, key, units, w, text) => push({ kind: flex[p] ? "flexStrain" : "strain", key, cost: flex[p] ? FLEX_STRAIN_COST * units : 0, units, who: ids[p], mondayStr: mOf(w), slots: [], text });
+    F.silvisAdj.forEach(d => { const p = silP, w = wOfDay(d), s = RULE_SLOT_OF_DAY[(d - 7) % 7];
+      const chain = [d - 1, d, d + 1].filter(x => x === d || silAt[x]).map(x => x === d ? "Davenport " + dml(d) + " (" + slotName(w, s) + ")" : "Silvis 24h " + dml(x)).join(" → ");
+      push({ kind: "lastResort", key: "silvisAdj", cost: 0, who: ids[p], mondayStr: mStrs[w], date: dayStr[d], slots: [BEND_SLOTS[s]],
+        text: `${code(p)}: ${chain} — two overnights in a row across the two jobs, the last resort${whoElse(p, [[w, s]])}` }); });
+    const strainItem = (p, key, units, w, text, extra) => push({ kind: flex[p] ? "flexStrain" : "strain", key, cost: flex[p] ? FLEX_STRAIN_COST * units : 0, units, who: ids[p], mondayStr: mOf(w), slots: [], text, ...(extra || {}) });
     // a: runs of weekends worked — one item per run (every worked weekend in a
     // row, exempt pairs included in the span), units = its non-exempt pairs.
     // Week v's flags sit at row v + 1 (row 0 = the week before the period).
@@ -778,7 +798,7 @@ function scheduleRules(ctx) {
     // b: service weeks close together
     const mdWeek = (w) => { const x = addD(m0, 7 * w); return (x.getMonth() + 1) + "/" + x.getDate(); };
     F.svcPair.forEach(([w1, w2, p]) => strainItem(p, "svcGap", 1, w2,
-      `${code(p)}: service weeks ${w2 - w1 === 1 ? "back to back" : "two weeks apart"}, ${mdWeek(w1)} & ${mdWeek(w2)}`));
+      `${code(p)}: service weeks ${w2 - w1 === 1 ? "back to back" : "two weeks apart"}, ${mdWeek(w1)} & ${mdWeek(w2)}`, { prevMondayStr: mOf(w1) }));
     // c: every-other-night chains
     { const done = new Set();
       F.triple.forEach(d => {
@@ -1182,19 +1202,6 @@ function generateOnce(surgeons, mondays, vac, backupMondays, priorCounts, prefer
     }
   }
 
-  // Decision 3: FAK, holding the Christmas card (A = B, the standing rule),
-  // also holds the Christmas DESIGN week's weekend (holidayDesign pins it): the
-  // week holding Christmas, the week before for a Monday Christmas — dealt to
-  // him below although he is that week's service doctor. Not when another
-  // card's Monday-holiday convention claims that week (christmasDesignWeek).
-  const christWkndWeeks = new Set();
-  Object.values(holAssignments || {}).forEach(arr => (Array.isArray(arr) ? arr : []).forEach(h => {
-    const cw = christmasDesignWeek(h, fakId, holAssignments);
-    if (!cw || !cw.whole || !mondays.some(m => fmt(m) === cw.mon)) return;
-    christWkndWeeks.add(cw.mon);
-    if (!(preAssign[cw.mon] && preAssign[cw.mon].wknd)) (preAssign[cw.mon] = preAssign[cw.mon] || {}).wknd = fakId;
-  }));
-
   // A Monday holiday right AFTER the period still claims the period's last
   // week by the same convention (A → its service week, B → its weekend) —
   // holidayDesign pins them too — or the last Sunday could run into the
@@ -1206,6 +1213,23 @@ function generateOnce(surgeons, mondays, vac, backupMondays, priorCounts, prefer
       if (nextHol.surgeonB && wkndAvail(nextHol.surgeonB, lastMon)) (preAssign[lastMStr] = preAssign[lastMStr] || {}).wknd = nextHol.surgeonB;
     }
   }
+
+  // Decision 3: FAK, holding the Christmas card (A = B, the standing rule),
+  // has the Christmas DESIGN week whole — its service week AND its weekend
+  // (holidayDesign pins both) — over any Monday-holiday convention above that
+  // claims the same week (a Tuesday Christmas: the New Year's card on Mon
+  // 12/31; owner 2026-10-13). Dealt to him below although he is that week's
+  // service doctor; where he is not free, the conventions stand. Manual locks
+  // (next) still win.
+  const christWkndWeeks = new Set();
+  Object.values(holAssignments || {}).forEach(arr => (Array.isArray(arr) ? arr : []).forEach(h => {
+    const cw = christmasDesignWeek(h, fakId), i = cw ? mondays.findIndex(m => fmt(m) === cw) : -1;
+    if (i < 0) return;
+    christWkndWeeks.add(cw);
+    const pa = (preAssign[cw] = preAssign[cw] || {});
+    if (floorOk(fakId, mondays[i], "dayCall")) pa.dayCall = fakId;
+    if (floorOk(fakId, mondays[i], "wknd")) pa.wknd = fakId;
+  }));
 
   // MANUAL LOCKS override convention-based pre-assignments. These come from
   // the scheduler explicitly pinning a surgeon to a slot via the UI. They
@@ -2441,7 +2465,7 @@ function createScheduleSearch(surgeons, mondays, vac, backupMondays, priorCounts
   const o = opts || {};
   const rnd = o.random || Math.random;
   const now = o.now || (() => Date.now());
-  const R = scheduleRules({ surgeons, mondays, vac, vacationsOnly, holAssignments, prevWeekSeed, locks, preferences, backupMondays });
+  const R = scheduleRules({ surgeons, mondays, vac, vacationsOnly, holAssignments, prevWeekSeed, locks, preferences, backupMondays, silvisPrimary: o.silvisPrimary || null });
   const floorMemo = new Map();
   const P = R.P, W = R.W;
   const tgt = (n) => (P && n % P) ? 1 : 0;

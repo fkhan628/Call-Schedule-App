@@ -244,6 +244,136 @@ function weekHolders(mondayStr, wk) {
   return { mondayStr, isBackup: !!w.isBackup, days, covers };
 }
 
+// Who holds the OVERNIGHT of date ds in a published schedule, by weekHolders'
+// rule: a holiday 24h row, else the Mon–Thu night, Fri / Sun the weekend, Sat
+// the service week (or its single-day override). null for nobody / no week.
+function overnightHolderOn(schedule, ds) {
+  const x = parse(ds), dow = x.getDay(), mStr = fmt(addD(x, dow === 0 ? -6 : 1 - dow));
+  const wk = schedule && schedule[mStr];
+  if (!wk) return null;
+  const day = weekHolders(mStr, wk).days[(dow + 6) % 7];
+  if (day.cover) return day.cover.sid || null;
+  return day.night || day.wkndFri || day.sat || day.wkndSun || null;
+}
+
+// ═══ HOLIDAY PAIRS — who takes which holiday each year (owner 2026-10-13) ═══
+// FAK (the Christmas surgeon) takes Christmas Eve + Christmas Day, both slots,
+// every year — his major and his minor; the app sets that card itself. Every
+// other partner takes ONE minor a year (Memorial Day, July 4th, Labor Day —
+// 6 slots for 6 partners) and at most ONE major (New Year's, Thanksgiving —
+// 4 slots for 6, so two sit out a major each year, and get one the next).
+// The rest rotates. One group at a time (major, minor), every assignment of
+// partners to its A / B slots is ranked, in order:
+//   1. nobody on time off for the dates their role holds (unavailable)
+//   2. nobody on two holidays of the group
+//   3. nobody sits out the group two years running (who sat out last year
+//      gets one this year)
+//   4. nobody gets the same holiday as last year; 5. as two years ago
+//   6. no two partners paired on two cards in the same year
+//   7. the holiday each partner has had least often
+//   8. who gets one: the shortest run of years with one, ending last year
+//      (a major, a major, then a year off — the 3-year cycle)
+//   9. then the lower lifetime rate of the group (rate, tenure-normalized)
+//  10. new pairings: not the same pair on the same holiday before, nor a
+//      pair from the last two years
+//  11. the A / B role each has had less often
+//   then a random pick among equals (random).
+// o = { year, holidays: [{ name, date, type }] to plan (not Christmas),
+//       partners: [ids], history: holidayAssignments (only years < year are
+//       read), fixed: [{ name, type, surgeonA, surgeonB }] already set this
+//       year (they count), unavailable(id, hol, role), rate(id, type), random }
+// → { picks: { [name]: { surgeonA, surgeonB } }, notes: [plain words], cost: { major, minor } }
+function planHolidayPairs(o) {
+  const year = Number(o.year), hist = o.history || {}, rnd = o.random || Math.random;
+  const unavailable = o.unavailable || (() => false), rate = o.rate || (() => 0);
+  const partners = (o.partners || []).filter(Boolean), fixed = o.fixed || [];
+  const yearArr = (y) => Array.isArray(hist[String(y)]) ? hist[String(y)] : null;
+  const heldMemo = {};
+  const heldIn = (y) => { // { id: [{ name, type, role }] } — a collapsed A = B pair is ONE holiday
+    if (heldMemo[y]) return heldMemo[y];
+    const m = {};
+    (yearArr(y) || []).forEach(h => {
+      if (!h || !h.name) return;
+      const add = (id, role) => { if (id) (m[id] = m[id] || []).push({ name: h.name, type: h.type, role }); };
+      add(h.surgeonA, "A"); if (h.surgeonB !== h.surgeonA) add(h.surgeonB, "B");
+    });
+    return (heldMemo[y] = m);
+  };
+  const past = Object.keys(hist).map(Number).filter(y => Number.isFinite(y) && y < year);
+  const nameCt = {}, roleCt = {}, run = {};
+  const pairKey = (a, b) => a < b ? a + "|" + b : b + "|" + a;
+  const pairsOf = (arr) => (arr || []).filter(h => h && h.surgeonA && h.surgeonB && h.surgeonA !== h.surgeonB).map(h => ({ name: h.name, k: pairKey(h.surgeonA, h.surgeonB) }));
+  const pairHol = {}; past.forEach(y => pairsOf(yearArr(y)).forEach(({ name, k }) => { pairHol[name + "#" + k] = (pairHol[name + "#" + k] || 0) + 1; }));
+  const pairY1 = new Set(pairsOf(yearArr(year - 1)).map(x => x.k)), pairY2 = new Set(pairsOf(yearArr(year - 2)).map(x => x.k));
+  const pairNow = new Set(pairsOf(fixed).map(x => x.k)); // this year's cards so far (presets, then the major group's picks)
+  const pairCost = (a, b, name) => { const k = pairKey(a, b); return 3 * (pairHol[name + "#" + k] || 0) + (pairY1.has(k) ? 2 : 0) + (pairY2.has(k) ? 1 : 0); };
+  partners.forEach(id => { nameCt[id] = {}; roleCt[id] = { major: { A: 0, B: 0 }, minor: { A: 0, B: 0 } }; run[id] = { major: 0, minor: 0 }; });
+  past.forEach(y => { const m = heldIn(y); partners.forEach(id => (m[id] || []).forEach(x => {
+    nameCt[id][x.name] = (nameCt[id][x.name] || 0) + 1;
+    if (roleCt[id][x.type]) roleCt[id][x.type][x.role]++;
+  })); });
+  partners.forEach(id => ["major", "minor"].forEach(t => {
+    let k = 0; for (let y = year - 1; yearArr(y); y--) { if ((heldIn(y)[id] || []).some(x => x.type === t)) k++; else break; }
+    run[id][t] = k;
+  }));
+  const hasLast = !!yearArr(year - 1), Y1 = heldIn(year - 1), Y2 = heldIn(year - 2);
+  const had = (m, id, name) => (m[id] || []).some(x => x.name === name);
+  const satOutLast = (id, t) => hasLast && !(Y1[id] || []).some(x => x.type === t);
+  const picks = {}, notes = [], cost = {};
+  const nm = o.nameOf || ((id) => id);
+  ["minor", "major"].forEach(type => { // minors first: the tighter group (one each) — the majors then avoid its pairs
+    const hols = (o.holidays || []).filter(h => h && h.type === type && h.name !== "Christmas Day");
+    if (!hols.length || !partners.length) return;
+    const fixedUse = {};
+    fixed.filter(h => h && h.type === type).forEach(h => [h.surgeonA, h.surgeonB].filter((v, i, a) => v && a.indexOf(v) === i).forEach(id => { fixedUse[id] = (fixedUse[id] || 0) + 1; }));
+    const slots = []; hols.forEach((h, hi) => { slots.push({ hi, role: "A" }); slots.push({ hi, role: "B" }); });
+    const order = partners.slice();
+    for (let i = order.length - 1; i > 0; i--) { const j = Math.floor(rnd() * (i + 1)); const t = order[i]; order[i] = order[j]; order[j] = t; }
+    // additive per (slot, partner): [unavailable, same as last year, as two years ago, times had it, role had]
+    const add = slots.map(({ hi, role }) => { const h = hols[hi], r = {}; order.forEach(id => {
+      r[id] = [unavailable(id, h, role) ? 1 : 0, had(Y1, id, h.name) ? 1 : 0, had(Y2, id, h.name) ? 1 : 0, nameCt[id][h.name] || 0, (roleCt[id][type] || {})[role] || 0];
+    }); return r; });
+    const score = (cur) => {
+      const use = Object.assign({}, fixedUse);
+      let un = 0, r1 = 0, r2 = 0, sp = 0, rl = 0;
+      cur.forEach((id, k) => { const a = add[k][id]; un += a[0]; r1 += a[1]; r2 += a[2]; sp += a[3]; rl += a[4]; use[id] = (use[id] || 0) + 1; });
+      let multi = 0, sat2 = 0, runs = 0, rates = 0, pairs = 0, twice = 0;
+      for (let k = 0; k + 1 < cur.length; k += 2) { pairs += pairCost(cur[k], cur[k + 1], hols[k >> 1].name); if (cur[k] !== cur[k + 1] && pairNow.has(pairKey(cur[k], cur[k + 1]))) twice++; }
+      partners.forEach(id => {
+        const u = use[id] || 0;
+        if (u > 1) multi += u - 1;
+        if (u === 0 && satOutLast(id, type)) sat2++;
+        if (u > 0 && !fixedUse[id]) { runs += run[id][type]; rates += Math.round((rate(id, type) || 0) * 1000); }
+      });
+      return [un, multi, sat2, r1, r2, twice, sp, runs, rates, pairs, rl];
+    };
+    const cmp = (a, b) => { for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return a[i] - b[i]; return 0; };
+    let best = null, bestV = null;
+    const cur = new Array(slots.length);
+    const dfs = (k) => {
+      if (k === slots.length) { const v = score(cur); if (!bestV || cmp(v, bestV) < 0) { bestV = v; best = cur.slice(); } return; }
+      for (const id of order) {
+        if (slots[k].role === "B" && cur[k - 1] === id && order.length > 1) continue; // A ≠ B
+        cur[k] = id; dfs(k + 1);
+      }
+    };
+    dfs(0);
+    if (!best) return;
+    cost[type] = bestV;
+    hols.forEach((h, hi) => { picks[h.name] = { surgeonA: best[2 * hi], surgeonB: best[2 * hi + 1] }; if (best[2 * hi] !== best[2 * hi + 1]) pairNow.add(pairKey(best[2 * hi], best[2 * hi + 1])); });
+    // plain words for anything the rules could not all have
+    hols.forEach((h, hi) => ["A", "B"].forEach((role, j) => { const id = best[2 * hi + j];
+      if (add[2 * hi + j][id][0]) notes.push(`${nm(id)} is on time off for ${h.name} ${year} (surgeon ${role}) — nobody else fit; change it with the swap controls`);
+      if (add[2 * hi + j][id][1]) notes.push(`${nm(id)} has ${h.name} again (${year - 1} too) — no other way this year`); }));
+    const use = Object.assign({}, fixedUse); best.forEach(id => { use[id] = (use[id] || 0) + 1; });
+    partners.forEach(id => {
+      if ((use[id] || 0) > 1) notes.push(`${nm(id)} has two ${type} holidays in ${year} — not enough partners for one each`);
+      if (!use[id] && satOutLast(id, type)) notes.push(`${nm(id)} has no ${type} holiday in ${year} or ${year - 1}`);
+    });
+  });
+  return { picks, notes, cost };
+}
+
 // A covered date's holiday name: the generator's own holiday field when it
 // stored one, else the label without its trailing "24h" ("Labor Day 24h" → "Labor Day").
 function holidayTitleName(cover) {

@@ -4038,6 +4038,11 @@ function CallSchedule() {
     }
     return availability;
   };
+  // FAK's Silvis PRIMARY days for the search, Needs your OK and the G&P gate
+  // (owner 2026-10-13): a Davenport overnight of his right before or after
+  // one is two overnights in a row across the two jobs — his LAST RESORT
+  // (generator.js scheduleRules). ONE builder, like buildGenAvailability.
+  const buildSilvisPrimary = () => (silvisActive && silvisFakId) ? { id: silvisFakId, dates: [...(silvisDays.primary || [])] } : null;
   // Seed the generator with the week immediately preceding the new start so
   // rotation continuity carries across the period boundary — without this,
   // generating the next period can repeat the prior schedule's last
@@ -4139,7 +4144,7 @@ function CallSchedule() {
     // The search (owner 2026-10-12, item 5): SEARCH_MS of searching, ranked by
     // generator.js scheduleRules — the floor, FAK's last resort, service weeks
     // even, weekends even, the least strain, the mildest bends, totals even.
-    const search = createScheduleSearch(surgeons, mondays, availability, backupMondaySet, priorCounts, prefs, fierceBackupSet, holidayAssignments, pendingLocks, prevWeekSeed, vacations, year1Counts);
+    const search = createScheduleSearch(surgeons, mondays, availability, backupMondaySet, priorCounts, prefs, fierceBackupSet, holidayAssignments, pendingLocks, prevWeekSeed, vacations, year1Counts, { silvisPrimary: buildSilvisPrimary() });
     const clickSig = genInputsSig();
     const done = await runSearch(search, preview ? "generate" : "publish", SEARCH_MS);
     const result = done && done.session.best();
@@ -4180,7 +4185,7 @@ function CallSchedule() {
     }
     const needsOkN = (() => {
       try {
-        return listScheduleBends(result, { surgeons, mondays, vac: buildGenAvailability(), vacationsOnly: vacations, holAssignments: holidayAssignments, prevWeekSeed: buildPrevWeekSeed(), locks: pendingLocks }).items.length;
+        return listScheduleBends(result, { surgeons, mondays, vac: buildGenAvailability(), vacationsOnly: vacations, holAssignments: holidayAssignments, prevWeekSeed: buildPrevWeekSeed(), locks: pendingLocks, silvisPrimary: buildSilvisPrimary() }).items.length;
       } catch (e) { console.error("Needs-your-OK check failed:", e); return 1; } // fail closed: review by hand
     })();
     if (needsOkN > 0) {
@@ -4462,6 +4467,7 @@ function CallSchedule() {
         holAssignments: holidayAssignments,
         prevWeekSeed: keys.length ? buildPrevWeekSeed(parse(keys[0])) : null, // the generator's own seed (2026-10-12)
         locks: pendingLocks, // a lock the schedule doesn't honor is listed too
+        silvisPrimary: buildSilvisPrimary(), // FAK's Davenport night next to his Silvis 24h: his last resort
       });
     } catch (e) {
       // Fail LOUD: a preview whose check failed must never look clean.
@@ -4513,7 +4519,7 @@ function CallSchedule() {
     const keys = Object.keys(base).sort();
     if (!keys.length) return;
     const ms = keys.map(parse);
-    const search = createScheduleSearch(surgeons, ms, buildGenAvailability(), backupMondaySet, priorCounts, buildPrefs(), fierceBackupSet, holidayAssignments, pendingLocks, buildPrevWeekSeed(ms[0]), vacations, year1Counts);
+    const search = createScheduleSearch(surgeons, ms, buildGenAvailability(), backupMondaySet, priorCounts, buildPrefs(), fierceBackupSet, holidayAssignments, pendingLocks, buildPrevWeekSeed(ms[0]), vacations, year1Counts, { silvisPrimary: buildSilvisPrimary() });
     search.seed(base);
     const done = await runSearch(search, "more", SEARCH_MS);
     if (!done || previewSchedRef.current !== base) return;
@@ -4598,22 +4604,18 @@ function CallSchedule() {
   };
 
   // ─── Holiday Assignment Generator ───
-  // RULE: Each holiday within a group (major / minor) must have a DISTINCT
-  // surgeon pair — no surgeon appears on more than one holiday in the same group.
-  // Major = Christmas, Thanksgiving, New Year's  (3 holidays × 2 = 6 of 7 surgeons)
-  // Minor = Memorial Day, July 4th, Labor Day    (3 holidays × 2 = 6 of 7 surgeons)
-  // FAK is always locked to Christmas.
+  // RULE (owner 2026-10-13): FAK takes Christmas Eve + Christmas Day, both
+  // slots, every year — his major AND his minor. Every other partner takes ONE
+  // minor a year (Memorial Day, July 4th, Labor Day: 3 × 2 = 6 slots for 6)
+  // and at most ONE major (New Year's, Thanksgiving: 4 slots for 6 — two sit
+  // out a major each year and get one the next). Nobody gets the same holiday
+  // as last year; the holidays rotate (helpers.js planHolidayPairs).
   const generateHolidayAssignments = useCallback((year) => {
     setHolidayLockWarning(""); // a healthy run clears any stale lock warning
     const holidays = getHolidays(year);
     const ids = surgeons.map(s => s.id);
     const nameMap = {}; surgeons.forEach(s => nameMap[s.id] = s.name);
     const DAYNAMES = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
-
-    // Load prior year assignments to avoid same surgeon on same holiday 2 years running
-    const priorYear = holidayAssignments[String(year - 1)] || [];
-    const priorByName = {}; // { "Christmas Day": { surgeonA, surgeonB }, ... }
-    priorYear.forEach(h => { priorByName[h.name] = { surgeonA: h.surgeonA, surgeonB: h.surgeonB }; });
 
     // Lifetime holiday counts across all stored years for overall fairness,
     // plus TENURE ELIGIBILITY (2026-08-07): eligibleCt[id][type] = stored
@@ -4733,135 +4735,84 @@ function CallSchedule() {
       return [...days];
     };
 
-    // Helper: pick best pair from a pool, considering vacation + fairness
-    const pickPair = (hol, pool) => {
-      const holDate = parse(hol.date);
-      const dayAfterStr = fmt(addD(holDate, 1));
-      const type = hol.type;
+    // ─── The pairs ───
+    // Presets (hand-written) are facts and count; FAK's Christmas is the
+    // standing rule; everything else is planned by helpers.js
+    // planHolidayPairs, which ranks every way to fill each group: time off,
+    // one per group, nobody sitting out a group twice running, no repeat of
+    // last year's (then two years ago's) holiday, the holiday each has had
+    // least, the 3-year major cycle, the lifetime rate, new pairings, A / B.
+    const presets = (typeof HOLIDAY_PRESETS !== "undefined") ? HOLIDAY_PRESETS[String(year)] : null;
+    const allHols = [...holidays.major.map(h => ({ ...h, type: "major" })), ...holidays.minor.map(h => ({ ...h, type: "minor" }))];
+    const assignments = [], fixedCards = [], toPlan = [];
+    const card = (hol, sA, sB) => ({ name: hol.name, date: hol.date, type: hol.type, emoji: hol.emoji || "📅", surgeonA: sA, surgeonB: sB, coverage: buildCoverage(hol, sA, sB) });
+    allHols.forEach(hol => {
+      // Check for pre-set assignments (e.g., handwritten schedule for this year)
+      if (presets && presets[hol.name]) {
+        const [sA, sB] = presets[hol.name];
+        // silvisBusy: a hand-written preset is a fact, so it is kept — but
+        // an overlap with FAK's Silvis primary days is said out loud.
+        if (silvisActive) {
+          const ph = [];
+          if (sA === silvisFakId) { const h = sfConflictDay(silvisDays.primary, holDatesFor(hol, sA, "A")); if (h) ph.push(h); }
+          if (sB === silvisFakId) { const h = sfConflictDay(silvisDays.primary, holDatesFor(hol, sB, "B")); if (h) ph.push(h); }
+          if (ph.length) setHolidayLockWarning(`⚠ ${hol.name} ${year} preset puts ${nameMap[silvisFakId]} on a Silvis PRIMARY day (${ph.join(", ")}) — kept as written; resolve with Silvis or change it via the swap controls.`);
+        }
+        const c = card(hol, sA, sB);
+        assignments.push(c); fixedCards.push(c);
+        return;
+      }
 
-      // Filter by vacation availability; fall back to full pool if too few
-      // silvisBusy: a holiday 24h on a Silvis primary day (or its day-after
-      // half) is the one leg the generator cannot gate via availability —
-      // holiday coverage is applied verbatim from these assignments — so it
-      // is enforced HERE, where surgeon A/B are chosen.
-      const silvisHol = (id) => silvisActive && id === silvisFakId
-        && sfConflictDay(silvisDays.primary, [...holDatesFor(hol, id, "A"), ...holDatesFor(hol, id, "B")]) !== null; // either role — conservative
-      let avail = pool.filter(id => !onVac(id, hol.date, vacations) && !onVac(id, dayAfterStr, vacations) && !silvisHol(id));
-      if (avail.length < 2) avail = [...pool].filter(id => !silvisHol(id));
-      if (avail.length < 2) avail = [...pool];
-
-      // Sort by fairness: lifetime holiday count → avoid repeat from prior year → random
-      const prior = priorByName[hol.name] || {};
-      avail.sort((a, b) => {
-        // Prefer surgeons with the lower lifetime RATE of this type —
-        // assignments ÷ holidays they were eligible for (tenure-normalized,
-        // 2026-08-07). Raw counts under-served partial tenure: ARW's 1 major
-        // from 9 eligible read as "less burdened" than MCC's 2 from 12.
-        // holidayRate (config.js) guards the zero-eligible new hire: rate 0,
-        // never 0/0 = NaN — a NaN comparator silently randomizes the sort.
-        const la = holidayRate(lifetimeCt[a]?.[type] || 0, eligibleCt[a]?.[type] || 0);
-        const lb = holidayRate(lifetimeCt[b]?.[type] || 0, eligibleCt[b]?.[type] || 0);
-        if (la !== lb) return la - lb;
-        // Avoid repeating the same holiday as last year
-        const aRepeat = (a === prior.surgeonA || a === prior.surgeonB) ? 1 : 0;
-        const bRepeat = (b === prior.surgeonA || b === prior.surgeonB) ? 1 : 0;
-        if (aRepeat !== bRepeat) return aRepeat - bRepeat;
-        return Math.random() - 0.5;
-      });
-
-      return { sA: avail[0], sB: avail[1] || avail[0] };
-    };
-
-    // ─── Process each group independently with distinct-pair constraint ───
-    const majorHols = holidays.major.map(h => ({ ...h, type: "major" }));
-    const minorHols = holidays.minor.map(h => ({ ...h, type: "minor" }));
-    const assignments = [];
-
-    [majorHols, minorHols].forEach(group => {
-      const type = group[0]?.type;
-      const usedInGroup = new Set(); // surgeons already assigned in this group
-
-      // Sort: Christmas first (FAK locked), then by date
-      group.sort((a, b) => {
-        if (a.name === "Christmas Day") return -1;
-        if (b.name === "Christmas Day") return 1;
-        return a.date.localeCompare(b.date);
-      });
-
-      group.forEach(hol => {
-        // Check for pre-set assignments (e.g., handwritten schedule for this year)
-        const presets = (typeof HOLIDAY_PRESETS !== "undefined") ? HOLIDAY_PRESETS[String(year)] : null;
-        if (presets && presets[hol.name]) {
-          const [sA, sB] = presets[hol.name];
-          // silvisBusy: a hand-written preset is a fact, so it is kept — but
-          // an overlap with FAK's Silvis primary days is said out loud.
-          if (silvisActive) {
-            const ph = [];
-            if (sA === silvisFakId) { const h = sfConflictDay(silvisDays.primary, holDatesFor(hol, sA, "A")); if (h) ph.push(h); }
-            if (sB === silvisFakId) { const h = sfConflictDay(silvisDays.primary, holDatesFor(hol, sB, "B")); if (h) ph.push(h); }
-            if (ph.length) setHolidayLockWarning(`⚠ ${hol.name} ${year} preset puts ${nameMap[silvisFakId]} on a Silvis PRIMARY day (${ph.join(", ")}) — kept as written; resolve with Silvis or change it via the swap controls.`);
-          }
-          usedInGroup.add(sA); usedInGroup.add(sB);
-          assignments.push({
-            name: hol.name, date: hol.date, type, emoji: hol.emoji || "📅",
-            surgeonA: sA, surgeonB: sB, coverage: buildCoverage(hol, sA, sB),
-          });
+      // CHRISTMAS STANDING RULE (2026-08-06): FAK covers BOTH Christmas Eve
+      // and Christmas Day, every year — formalizing what the 2024 and 2025
+      // schedules already did. No partner is selected; coverage is capped
+      // to the two days in buildCoverage, and the lifetimeCt dedupe counts
+      // the collapsed pair as ONE assignment.
+      if (hol.name === "Christmas Day") {
+        if (!fakId) {
+          // FAIL LOUDLY (wipe-guard doctrine): if the designated Christmas
+          // surgeon can't be resolved (renamed, departed), the lock must
+          // not silently dissolve into the normal rotation with nobody
+          // told. Surface it and leave Christmas UNASSIGNED for the
+          // scheduler to fill by hand.
+          console.error(`Christmas lock: designated surgeon "FAK" not found in the roster — Christmas ${year} left unassigned.`);
+          setHolidayLockWarning(`⚠ Christmas ${year} was NOT auto-assigned: the designated surgeon (FAK) isn't in the roster. Assign it manually via the swap controls.`);
           return;
         }
-
-        // Build available pool: all surgeons NOT yet used in this group
-        let pool = ids.filter(id => !usedInGroup.has(id));
-
-        // CHRISTMAS STANDING RULE (2026-08-06): FAK covers BOTH Christmas Eve
-        // and Christmas Day, every year — formalizing what the 2024 and 2025
-        // schedules already did. No partner is selected; coverage is capped
-        // to the two days in buildCoverage, and the lifetimeCt dedupe counts
-        // the collapsed pair as ONE assignment.
-        if (hol.name === "Christmas Day") {
-          if (!fakId) {
-            // FAIL LOUDLY (wipe-guard doctrine): if the designated Christmas
-            // surgeon can't be resolved (renamed, departed), the lock must
-            // not silently dissolve into the normal rotation with nobody
-            // told. Surface it and leave Christmas UNASSIGNED for the
-            // scheduler to fill by hand.
-            console.error(`Christmas lock: designated surgeon "FAK" not found in the roster — Christmas ${year} left unassigned.`);
-            setHolidayLockWarning(`⚠ Christmas ${year} was NOT auto-assigned: the designated surgeon (FAK) isn't in the roster. Assign it manually via the swap controls.`);
+        // silvisBusy: the standing rule is FAK, so check HIS dates (Eve is
+        // display-only; the 24h day, plus its weekend leg when Dec 25 is a
+        // Fri/Sun). Same fail-LOUD shape as the missing-roster case above:
+        // leave Christmas unassigned and say why — never assign silently.
+        if (silvisActive && fakId === silvisFakId) {
+          const hit = sfConflictDay(silvisDays.primary, holDatesFor(hol, fakId, "both"));
+          if (hit) {
+            console.error(`Christmas lock: ${nameMap[fakId]} is Silvis PRIMARY on ${hit} — Christmas ${year} left unassigned.`);
+            setHolidayLockWarning(`⚠ Christmas ${year} was NOT auto-assigned: ${nameMap[fakId]} is Silvis PRIMARY on ${hit} (rule silvisBusy). Resolve it with Silvis or assign manually via the swap controls.`);
             return;
           }
-          // silvisBusy: the standing rule is FAK, so check HIS dates (Eve is
-          // display-only; the 24h day, plus its weekend leg when Dec 25 is a
-          // Fri/Sun). Same fail-LOUD shape as the missing-roster case above:
-          // leave Christmas unassigned and say why — never assign silently.
-          if (silvisActive && fakId === silvisFakId) {
-            const hit = sfConflictDay(silvisDays.primary, holDatesFor(hol, fakId, "both"));
-            if (hit) {
-              console.error(`Christmas lock: ${nameMap[fakId]} is Silvis PRIMARY on ${hit} — Christmas ${year} left unassigned.`);
-              setHolidayLockWarning(`⚠ Christmas ${year} was NOT auto-assigned: ${nameMap[fakId]} is Silvis PRIMARY on ${hit} (rule silvisBusy). Resolve it with Silvis or assign manually via the swap controls.`);
-              return;
-            }
-          }
-          const sA = fakId;
-          usedInGroup.add(sA);
-          assignments.push({
-            name: hol.name, date: hol.date, type, emoji: hol.emoji || "📅",
-            surgeonA: sA, surgeonB: sA, coverage: buildCoverage(hol, sA, sA),
-          });
-          return;
         }
-
-        // If pool is too small (shouldn't happen with 7 surgeons & 3 holidays),
-        // fall back to full list
-        if (pool.length < 2) pool = [...ids];
-
-        const { sA, sB } = pickPair(hol, pool);
-        usedInGroup.add(sA); usedInGroup.add(sB);
-
-        assignments.push({
-          name: hol.name, date: hol.date, type, emoji: hol.emoji || "📅",
-          surgeonA: sA, surgeonB: sB, coverage: buildCoverage(hol, sA, sB),
-        });
-      });
+        assignments.push(card(hol, fakId, fakId));
+        return;
+      }
+      toPlan.push(hol);
     });
+    // Time off on the dates each ROLE holds (the eve night is surgeon B's), and
+    // silvisBusy should FAK ever be planned — "unavailable" ranks first.
+    const unavailable = (id, hol, role) => {
+      const days = holDatesFor(hol, id, role);
+      if (role === "B") days.push(fmt(addD(parse(hol.date), -1)));
+      if (days.some(ds => onVac(id, ds, vacations))) return true;
+      return !!(silvisActive && id === silvisFakId && sfConflictDay(silvisDays.primary, holDatesFor(hol, id, role)) !== null);
+    };
+    // The lifetime RATE of the group — assignments ÷ holidays they were
+    // eligible for (tenure-normalized, 2026-08-07). Raw counts under-served
+    // partial tenure: ARW's 1 major from 9 eligible read as "less burdened"
+    // than MCC's 2 from 12. holidayRate (config.js) guards the zero-eligible
+    // new hire: rate 0, never 0/0 = NaN.
+    const rateOf = (id, type) => holidayRate(lifetimeCt[id]?.[type] || 0, eligibleCt[id]?.[type] || 0);
+    const plan = planHolidayPairs({ year, holidays: toPlan, partners: ids.filter(id => id !== fakId), history: holidayAssignments, fixed: fixedCards, unavailable, rate: rateOf, nameOf: (id) => nameMap[id] || id });
+    toPlan.forEach(hol => { const pk = plan.picks[hol.name]; if (pk) assignments.push(card(hol, pk.surgeonA, pk.surgeonB)); });
+    if (plan.notes.length) setHolidayLockWarning(prev => [prev, ...plan.notes.map(n => "⚠ " + n)].filter(Boolean).join(" · "));
 
     // Sort final assignments by date for display
     assignments.sort((a, b) => a.date.localeCompare(b.date));
@@ -4881,8 +4832,12 @@ function CallSchedule() {
       if (usedInGroup.has(newSurgeonId)) {
         const conflictHol = sameGroup.find(h => h.surgeonA === newSurgeonId || h.surgeonB === newSurgeonId);
         const surgeonName = surgeons.find(s => s.id === newSurgeonId)?.name || newSurgeonId;
-        if (!confirm(`⚠️ ${surgeonName} is already assigned to ${conflictHol?.name} (${targetHol.type} group).\n\nThis violates the distinct-pairs rule. Assign anyway?`)) return;
+        if (!confirm(`⚠️ ${surgeonName} is already assigned to ${conflictHol?.name} (${targetHol.type} group).\n\nEach partner takes at most one ${targetHol.type} holiday a year. Assign anyway?`)) return;
       }
+      // FAK's holidays are Christmas Eve + Christmas Day — his major and his minor (owner 2026-10-13)
+      const fakSwap = surgeons.find(s => (s.name || "").toUpperCase() === "FAK")?.id;
+      if (newSurgeonId && newSurgeonId === fakSwap && targetHol.name !== "Christmas Day"
+        && !confirm(`${nameOf(newSurgeonId)}'s holidays are Christmas Eve + Christmas Day (his major and his minor). Put him on ${targetHol.name} too?`)) return;
       // silvisBusy: holiday 24h on a Silvis primary day — same confirm-to-
       // override idiom, on the dates THIS slot will actually hold (the
       // non-Eve coverage rows this role maps to, plus the weekend leg the
@@ -5910,7 +5865,20 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     const sunday = Object.keys(schedule).filter(m => /^\d{4}-\d{2}-\d{2}$/.test(m) && schedule[m] && schedule[m].dayCall === silvisFakId && inScope({ mondayStr: m }))
       .filter(m => silvisDays.primary && silvisDays.primary.has(fmt(addD(parse(m), 6))))
       .map(m => { const sun = fmt(addD(parse(m), 6)); return { key: `silvis-sun|${silvisFakId}|${m}|${sun}`, severity: "error", week: m, message: `${who}: Silvis primary Sun ${md(sun)} — the Sunday of the Davenport service week of ${md(m)}` }; });
-    return health.concat(hard, sunday);
+    // RULE 2 across the two jobs (owner 2026-10-13): a Davenport overnight of
+    // his on the date right before or after a Silvis primary 24h is two
+    // overnights in a row (the generator allows it only as his last resort).
+    const adj = [];
+    [...(silvisDays.primary || [])].sort().forEach(D => [-1, 1].forEach(o => {
+      const N = fmt(addD(parse(D), o));
+      if (overnightHolderOn(schedule, N) !== silvisFakId) return;
+      const nd = parse(N), mN = fmt(addD(nd, nd.getDay() === 0 ? -6 : 1 - nd.getDay()));
+      if (!inScope({ mondayStr: mN })) return;
+      adj.push({ key: `silvis-adj|${silvisFakId}|${D}|${N}`, severity: "warning", week: mN,
+        message: o < 0 ? `${who}: Davenport overnight ${dayMonthLabel(N)} → Silvis primary ${dayMonthLabel(D)} — two overnights in a row across the two jobs`
+                       : `${who}: Silvis primary ${dayMonthLabel(D)} → Davenport overnight ${dayMonthLabel(N)} — two overnights in a row across the two jobs` });
+    }));
+    return health.concat(hard, sunday, adj);
   }, [schedule, silvisActive, silvisDays, silvisFakId, surgeons, isPublicMode, silvisRows, silvisLoadError]);
   // Silvis BACKUP touches — standby, never a block, never a warning: shown
   // on the Silvis feed card only (they used to summon the warning panel).
@@ -7326,7 +7294,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               <strong>Monday holidays (Memorial Day, Labor Day):</strong> Surgeon A covers Monday 24h, Surgeon B covers night before (Sun). Service week doctor starts Tuesday — no day-after override.<br/>
               <strong>Friday holidays:</strong> Fri (A) + Sat (B)<br/>
               <strong>Exception:</strong> FAK covers Christmas Eve night and Christmas Day (standing rule), and the generator also gives FAK that week's service week and weekend<br/>
-              <strong style={{color:"#8a4010"}}>Distinct-pair rule:</strong> Within each group (major / minor), every holiday must have a completely different surgeon pair — no surgeon appears on two holidays in the same group.
+              <strong style={{color:"#8a4010"}}>Rotation:</strong> FAK takes Christmas Eve + Christmas Day every year — his major and his minor. Every other partner gets one minor holiday a year (Memorial Day, July 4th, Labor Day) and at most one major (New Year's, Thanksgiving — 4 slots for 6 partners, so two sit out a major each year and get one the next). Nobody gets the same holiday as last year; over the years everyone rotates through all five.
             </div>
             {holidayLockWarning && (
               <div style={{fontSize:12,fontWeight:700,color:"#a8342a",background:"#fdeaea",border:"1px solid #e8b8b4",borderRadius:6,padding:"8px 12px",marginBottom:12}}>
@@ -7352,7 +7320,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               surgeons.forEach(s=>{holCounts[s.id]={major:0,minor:0};});
               assignments.forEach(h=>{
                 if(h.surgeonA&&holCounts[h.surgeonA]) holCounts[h.surgeonA][h.type]++;
-                if(h.surgeonB&&holCounts[h.surgeonB]) holCounts[h.surgeonB][h.type]++;
+                if(h.surgeonB&&h.surgeonB!==h.surgeonA&&holCounts[h.surgeonB]) holCounts[h.surgeonB][h.type]++; // A = B (FAK's Christmas) is ONE holiday
               });
 
               // Build sets of surgeons already used in each group (for dropdown hints)
@@ -7421,22 +7389,28 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                 <div style={{fontSize:12,fontWeight:700,color:"#2868a8",marginBottom:6,marginTop:14}}>📌 Minor Holidays</div>
                 {minors.map((h,i)=>renderCard(h, assignments.indexOf(h)))}
 
-                {/* Distinct-pair validation */}
+                {/* The rotation rules (owner 2026-10-13): one holiday per group at most (A = B is ONE), every partner one
+                    minor, FAK's are Christmas Eve + Day, nobody without a major two years running, no repeat of last year's */}
                 {(()=>{
+                  const fakH = surgeons.find(s => (s.name || "").toUpperCase() === "FAK")?.id;
+                  const prior = holidayAssignments[String(holidayYear - 1)] || [];
+                  const holders = (h) => [h.surgeonA, h.surgeonB].filter((v, i, a) => v && a.indexOf(v) === i);
+                  const nm = (id) => surgeons.find(s => s.id === id)?.name || id;
                   const checkGroup = (group, label) => {
-                    const seen = {};
-                    const dupes = [];
-                    group.forEach(h => {
-                      [h.surgeonA, h.surgeonB].forEach(sid => {
-                        if (!sid) return;
-                        if (seen[sid]) dupes.push({ surgeon: sid, hol1: seen[sid], hol2: h.name });
-                        else seen[sid] = h.name;
-                      });
-                    });
-                    return { label, ok: dupes.length === 0, dupes, uniqueCount: Object.keys(seen).length, freeCount: surgeons.length - Object.keys(seen).length };
+                    const seen = {}, dupes = [];
+                    group.forEach(h => holders(h).forEach(sid => { if (seen[sid]) dupes.push({ surgeon: sid, hol1: seen[sid], hol2: h.name }); else seen[sid] = h.name; }));
+                    return { label, ok: dupes.length === 0, dupes, uniqueCount: Object.keys(seen).length, none: surgeons.filter(s => s.id !== fakH && !seen[s.id]).map(s => s.id) };
                   };
                   const majorCheck = checkGroup(majors, "Major");
                   const minorCheck = checkGroup(minors, "Minor");
+                  const issues = [];
+                  minorCheck.none.forEach(id => issues.push(`${nm(id)} has no minor holiday`));
+                  if (fakH) assignments.filter(h => h.name !== "Christmas Day" && holders(h).includes(fakH)).forEach(h => issues.push(`${nm(fakH)} is on ${h.name} (his holidays are Christmas Eve + Day)`));
+                  if (prior.length) {
+                    const hadMajor = new Set(prior.filter(h => h.type === "major").flatMap(holders));
+                    majorCheck.none.filter(id => !hadMajor.has(id)).forEach(id => issues.push(`${nm(id)} has no major in ${holidayYear - 1} or ${holidayYear}`));
+                    assignments.forEach(h => holders(h).forEach(id => { if (id !== fakH && prior.some(p => p.name === h.name && holders(p).includes(id))) issues.push(`${nm(id)} has ${h.name} again (${holidayYear - 1} too)`); }));
+                  }
                   return (
                     <div style={{marginTop:10,display:"flex",gap:8,flexWrap:"wrap"}}>
                       {[majorCheck, minorCheck].map(ck => (
@@ -7444,10 +7418,15 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                           background:ck.ok?"#e8f8e8":"#fce8e8",border:`1px solid ${ck.ok?"#a0d8a0":"#e0a0a0"}`,color:ck.ok?"#1a6030":"#903030"}}>
                           <span style={{fontWeight:700}}>{ck.ok?"✓":"⚠"} {ck.label} group:</span>{" "}
                           {ck.ok
-                            ? `All ${ck.uniqueCount} surgeons distinct (${ck.freeCount} free)`
-                            : ck.dupes.map(d => `${surgeons.find(s=>s.id===d.surgeon)?.name||d.surgeon} is on both ${d.hol1} & ${d.hol2}`).join("; ")}
+                            ? `All ${ck.uniqueCount} surgeons distinct${ck.label === "Major" && ck.none.length ? ` · sitting out a major: ${ck.none.map(nm).join(", ")}` : ""}`
+                            : ck.dupes.map(d => `${nm(d.surgeon)} is on both ${d.hol1} & ${d.hol2}`).join("; ")}
                         </div>
                       ))}
+                      {issues.length > 0 && (
+                        <div style={{flexBasis:"100%",padding:"8px 12px",borderRadius:6,fontSize:11,background:"#fdf3e3",border:"1px solid #e0c080",color:"#7a5010"}}>
+                          <span style={{fontWeight:700}}>⚠ Rotation:</span> {issues.join(" · ")}
+                        </div>
+                      )}
                     </div>
                   );
                 })()}
@@ -7459,9 +7438,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                     {surgeons.map(s=>{
                       const mc = holCounts[s.id]?.major||0;
                       const mi = holCounts[s.id]?.minor||0;
+                      const xmasOnly = mi === 0 && mc === 1 && assignments.some(h => h.name === "Christmas Day" && h.surgeonA === s.id && h.surgeonB === s.id);
                       return (
                         <div key={s.id} style={{...css.badge(sMap[s.id]?.idx||0, sMap[s.id]?.name),padding:"4px 10px",fontSize:11}}>
-                          {s.name} <span style={{fontWeight:400}}>— {mc} major, {mi} minor</span>
+                          {s.name} <span style={{fontWeight:400}}>— {xmasOnly ? "Christmas Eve + Day" : `${mc} major, ${mi} minor`}</span>
                         </div>
                       );
                     })}
@@ -7786,13 +7766,17 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   }
                   return null; // no claim — pool congestion (vacations/no-call)
                 };
+                // A pair Needs your OK already lists as strain (svcGap — both weeks
+                // carried) is not repeated here (owner 2026-10-13): this box keeps
+                // the pairs it doesn't count — both weeks fixed by the holiday cards.
+                const listedGap = new Set((previewNeedsOk.items || []).filter(it => it.key === "svcGap").map(it => it.who + "|" + it.prevMondayStr + "|" + it.mondayStr));
                 const notes = [];
                 for (const mStr of keys) {
                   const wk = previewSchedule[mStr];
                   const id = wk && wk.dayCall;
                   if (!id) continue;
                   const w = Math.round((parse(mStr).getTime() - t0) / 604800000);
-                  if (last[id] !== undefined && w - last[id].w <= MIN_DC_GAP) {
+                  if (last[id] !== undefined && w - last[id].w <= MIN_DC_GAP && !listedGap.has(id + "|" + last[id].mStr + "|" + mStr)) {
                     const reason = reasonFor(id, mStr) || reasonFor(id, last[id].mStr) || "vacations that week";
                     notes.push(previewOrigin === "json" ? `${nameOf(id)}: service weeks ${nice(last[id].mStr)} and ${nice(mStr)} (as in the loaded file)` : `${nameOf(id)}: service weeks ${nice(last[id].mStr)} and ${nice(mStr)}, forced by ${reason}`);
                   }
@@ -7878,7 +7862,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   <div style={{background:dk?"#3a3010":"#fdf6e3",border:"1px solid #d0b050",borderRadius:8,padding:"8px 12px",marginBottom:12,fontSize:12,color:dk?"#e8d080":"#7a5c10"}}>
                     <div style={{fontWeight:700,marginBottom:2}}>⚠ Service-week spacing exception{spacingNotes.length===1?"":"s"}</div>
                     {spacingNotes.map((n,i)=><div key={i} style={{marginTop:3}}>• {n}</div>)}
-                    <div style={{marginTop:5,fontSize:11,opacity:0.85}}>{previewOrigin === "json" ? "These are in the loaded file. Accepting publishes them as shown — consider warning the surgeon." : "The generator couldn't space these apart. Accepting publishes them as shown — consider warning the surgeon, or adjust and re-roll."}</div>
+                    <div style={{marginTop:5,fontSize:11,opacity:0.85}}>{previewOrigin === "json" ? "These are in the loaded file. Accepting publishes them as shown — consider warning the surgeon." : "Fixed by the holiday cards, so Needs your OK doesn't count them as strain (the others are listed there). Accepting publishes them as shown — consider warning the surgeon."}</div>
                   </div>
                 )}
 
