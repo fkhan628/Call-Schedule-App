@@ -8,13 +8,19 @@
  *   week slots: dayCall (service week Mon..Sat), nights mon/tue/wed/thu, wknd (Fri night + Sun 24h).
  *   each slot = one surgeon id or EMPTY (400).
  * Floor (hard):
- *   dayCall      : holder not in avail on any of Mon..Sat.
+ *   dayCall      : holder not in avail on any of Mon..SUN (rule 1, owner brief 2026-10-12: the
+ *                  service-week surgeon must be free that Sunday).
  *   night on d   : holder not in avail on d, and not in vacOnly on d+1.
  *   wknd         : holder not in avail on Fri or Sun, and not in vacOnly on the following Monday.
  * Pins: fixed assignments; a pin that violates the floor is dropped and the slot is searched normally.
  * Designed pairs (never costed): by default, every pair of slots in the same week that are BOTH
  *   surviving pins held by the same surgeon. An explicit `designedPairs` list replaces the default.
  * Bend costs: pairwise over same-holder slot pairs (same week table + 4 week->week+1 rows, seam uses seed).
+ * Rule 2 (owner brief 2026-10-12, restated here — not shared with generator.js): nobody works two
+ *   overnights in a row. At the slot level those pairs are adjacent weeknights, Thu night + that
+ *   weekend (Thu → Fri night), service week + that weekend (Fri night → service Saturday → Sunday)
+ *   and weekend → next Monday night; they cost HARD (never chosen) unless designed (waived), except
+ *   service week + weekend for an id in opts.flex, which costs opts.lastResort (FAK's last resort).
  *
  * Exact method: DP over weeks. The only coupling between week w and w+1 is through
  * (dayCall_w, wknd_w) x (dayCall_{w+1}, mon_{w+1}). For every week we fully enumerate all legal
@@ -39,6 +45,10 @@ const PAIR = (() => {
 })();
 // week w -> week w+1 rows
 const CROSS = { dcMon: 30, wkMon: 40, wkDc: 45, dcDc: 45 };
+// rule 2 — the hard slot pairs (2026-10-12)
+const HARD = Infinity;
+const HARD_PAIRS = [[MON, TUE], [TUE, WED], [WED, THU], [THU, WK], [DC, WK]];
+const isHardPair = (a, b) => HARD_PAIRS.some(([x, y]) => (x === a && y === b) || (x === b && y === a));
 
 // ---------- date utils (own, UTC-based on ISO strings) ----------
 function isoToMs(iso) {
@@ -58,7 +68,7 @@ function isLegal(id, mondayISO, slot, avail, vacOnly) {
   const A = avail[id], V = vacOnly[id];
   const d = (k) => addDays(mondayISO, k); // k: 0=Mon .. 6=Sun, 7=next Mon
   if (slot === DC) {
-    for (let k = 0; k <= 5; k++) if (inRanges(A, d(k))) return false;
+    for (let k = 0; k <= 6; k++) if (inRanges(A, d(k))) return false; // Mon..Sun (rule 1)
     return true;
   }
   if (slot === WK) return !inRanges(A, d(4)) && !inRanges(A, d(6)) && !inRanges(V, d(7));
@@ -79,6 +89,8 @@ function isLegal(id, mondayISO, slot, avail, vacOnly) {
  *   names      : optional {id: label} for readable pair labels
  *   forceFill  : optional; if true EMPTY is only allowed when no surgeon is legal (default false:
  *                EMPTY is always an option, it just costs 400)
+ *   rule2      : optional; true → the rule-2 pairs above cost HARD (Infinity) unless designed
+ *   flex, lastResort : with rule2 — ids whose service week + weekend costs lastResort instead
  * → { cost, perWeek:[{monday, cost, pairs:[...]}], assignment:[{monday, dayCall..wknd}], pinsKept, pinsDropped, waived }
  */
 function minBendCost(opts) {
@@ -90,6 +102,7 @@ function minBendCost(opts) {
   const seed = opts.seed || {};
   const names = opts.names || {};
   const forceFill = !!opts.forceFill;
+  const rule2 = !!opts.rule2, flexSet = new Set(opts.flex || []), lastResort = opts.lastResort === undefined ? HARD : opts.lastResort;
   const n = ids.length, E = n, S = n + 1, W = mondays.length;
   const idx = new Map(ids.map((id, i) => [id, i]));
   const lbl = (i) => (i === E ? 'EMPTY' : (names[ids[i]] || ids[i]));
@@ -144,13 +157,20 @@ function minBendCost(opts) {
     }
   }
 
+  // same-week pair cost for holder i (rule 2 when asked)
+  const pairCost = (sa, sb, i) => {
+    if (!rule2 || !isHardPair(sa, sb)) return PAIR[sa][sb];
+    const svcWk = (sa === DC && sb === WK) || (sa === WK && sb === DC);
+    return svcWk && flexSet.has(ids[i]) ? lastResort : HARD;
+  };
+  const crossWkMon = rule2 ? HARD : CROSS.wkMon;
   // ---- per-week exhaustive enumeration: best[dc][mon][wk] over (tue,wed,thu) ----
   const S3 = S * S * S;
   const bestCost = [], bestArg = [];
   let enumerated = 0;
   for (let w = 0; w < W; w++) {
     const o = options[w], wv = waived[w];
-    const pc = (sa, sb, a, b) => (a !== E && a === b && !wv[sa][sb] ? PAIR[sa][sb] : 0);
+    const pc = (sa, sb, a, b) => (a !== E && a === b && !wv[sa][sb] ? pairCost(sa, sb, a) : 0);
     const ec = (a) => (a === E ? EMPTY_COST : 0);
     const bc = new Float64Array(S3).fill(Infinity);
     const ba = new Int32Array(S3).fill(-1);
@@ -176,7 +196,7 @@ function minBendCost(opts) {
   // ---- DP over weeks, state = (dayCall, wknd) of the previous week ----
   const sIdx = (id) => (id != null && idx.has(id) ? idx.get(id) : E);
   const cross = (pdc, pwk, dc, mn) =>
-    (pdc !== E && pdc === mn ? CROSS.dcMon : 0) + (pwk !== E && pwk === mn ? CROSS.wkMon : 0) +
+    (pdc !== E && pdc === mn ? CROSS.dcMon : 0) + (pwk !== E && pwk === mn ? crossWkMon : 0) +
     (pwk !== E && pwk === dc ? CROSS.wkDc : 0) + (pdc !== E && pdc === dc ? CROSS.dcDc : 0);
   let dp = new Float64Array(S * S).fill(Infinity);
   dp[sIdx(seed.dayCall) * S + sIdx(seed.wknd)] = 0;
@@ -229,14 +249,15 @@ function minBendCost(opts) {
     for (let s = 0; s < 6; s++) for (let t = s + 1; t < 6; t++) {
       if (a[s] === E || a[s] !== a[t]) continue;
       if (waived[w][s][t]) continue;
-      pairs.push({ kind: 'sameWeek', id: ids[a[s]], slots: [SLOTS[s], SLOTS[t]], cost: PAIR[s][t],
-        label: `${lbl(a[s])} ${SLOTS[s]}+${SLOTS[t]} = ${PAIR[s][t]}` });
-      wc += PAIR[s][t];
+      const pcv = pairCost(s, t, a[s]);
+      pairs.push({ kind: 'sameWeek', id: ids[a[s]], slots: [SLOTS[s], SLOTS[t]], cost: pcv,
+        label: `${lbl(a[s])} ${SLOTS[s]}+${SLOTS[t]} = ${pcv}` });
+      wc += pcv;
     }
     const prevTag = w === 0 ? 'seed' : 'prev wk';
     const xr = [
       [pdc, a[MON], 'dayCall', 'mon', CROSS.dcMon],
-      [pwk, a[MON], 'wknd', 'mon', CROSS.wkMon],
+      [pwk, a[MON], 'wknd', 'mon', crossWkMon],
       [pwk, a[DC], 'wknd', 'dayCall', CROSS.wkDc],
       [pdc, a[DC], 'dayCall', 'dayCall', CROSS.dcDc],
     ];
@@ -260,4 +281,4 @@ function minBendCost(opts) {
   return { cost, perWeek, assignment, pinsKept, pinsDropped, waived: waivedList, stats: { enumerated } };
 }
 
-module.exports = { minBendCost, isLegal, SLOTS, PAIR, CROSS, EMPTY_COST, addDays };
+module.exports = { minBendCost, isLegal, SLOTS, PAIR, CROSS, EMPTY_COST, addDays, isHardPair };

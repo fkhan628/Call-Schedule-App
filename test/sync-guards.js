@@ -730,17 +730,39 @@ check("lifetimeCt dedupes collapsed pairs",
   const s = nsrc.indexOf(START), e = nsrc.indexOf(END);
   if (s === -1 || e === -1) { check("buildCoverage extractable for execution", false, "anchors not found"); return; }
   const fnSrc = nsrc.slice(s, e + END.length);
-  let buildCoverage;
+  // its closure: DAYNAMES, the year being generated and FAK (the Christmas surgeon — his design-week eve, 2026-10-13)
+  let buildCoverage, mkCov, gctxEH = null;
   try {
-    buildCoverage = vm.runInContext(
-      `(function(){ const DAYNAMES = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"]; ${fnSrc} return buildCoverage; })()`,
+    // generator.js joins this sandbox later (as the page loads it after the app's helpers): its christmasDesignWeek comes from its own context
+    const gctx = vm.createContext({ console, Math, Date, JSON, Set, Map, Object, Array, Number, String, Boolean, Int8Array, Int16Array, Uint8Array, Float64Array, Infinity, NaN, isFinite, parseInt, parseFloat, localStorage: { getItem() { return null; }, setItem() {} } });
+    for (const f of ["config.js", "helpers.js", "generator.js"]) vm.runInContext(fs.readFileSync(path.join(ROOT, f), "utf8"), gctx, { filename: f });
+    const cdw = vm.runInContext("christmasDesignWeek", gctx); gctxEH = gctx;
+    const mk0 = vm.runInContext(
+      `(function(year, christmasDesignWeek){ const DAYNAMES = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"]; const fakId = "s6"; ${fnSrc} return buildCoverage; })`,
       sandbox
     );
+    mkCov = (y) => mk0(y, cdw);
+    buildCoverage = mkCov(2029);
   } catch (ex) { check("buildCoverage compiles standalone", false, String(ex)); return; }
+  // decision 3 (owner 2026-10-13): a New Year's eve that is a weekend night of FAK's Christmas design week is HIS (a
+  // Tuesday Christmas: Mon 12/31 New Year's, Sun 12/30 eve) — the card, the swap and the time-off check follow the row;
+  // any other year's eve stays surgeon B's
+  const ny = (y) => mkCov(y)({ name: "New Year's", date: `${y}-12-31`, endDate: `${y + 1}-01-01` }, "s5", "s1").find(c => c.isEve);
+  check("buildCoverage: a card's Night Before row is its surgeon B in every year (the stored data) — who really works a weekend eve of FAK's Christmas week is resolved live",
+    [2026, 2027, 2028, 2029, 2030, 2031, 2033, 2035].every(y => ny(y).surgeon === "s1" && !ny(y).christmasWeek), JSON.stringify([2026, 2029, 2035].map(y => [y, ny(y).date, ny(y).surgeon])));
+  // holidayEveHolder (generator.js), executed: FAK's only when the real Christmas card is his A = B, the eve is a weekend night of
+  // that design week, and the cards give him the weekend (takesWknd — the generator's own pins); else surgeon B
+  const EH = vm.runInContext("holidayEveHolder", gctxEH);
+  const nyH = (y) => ({ name: "New Year's", date: `${y}-12-31`, surgeonA: "s5", surgeonB: "s1" }), xc = (y, a) => ({ [y]: [{ name: "Christmas Day", date: `${y}-12-25`, surgeonA: a, surgeonB: a }] });
+  const yes = () => true, no = () => false;
+  check("holidayEveHolder: the 2029 / 2035 New Year's eve (Sun 12/30) is FAK's when the cards give him his Christmas weekend, surgeon B's when they don't (time off, a Silvis day) or when the Christmas card isn't his; a weekday eve (2026 Wed 12/30) is always B's",
+    EH(nyH(2029), "2029-12-30", xc(2029, "s6"), "s6", yes) === "s6" && EH(nyH(2035), "2035-12-30", xc(2035, "s6"), "s6", yes) === "s6" && EH(nyH(2029), "2029-12-30", xc(2029, "s6"), "s6", no) === "s1"
+      && EH(nyH(2029), "2029-12-30", xc(2029, "s7"), "s6", yes) === "s1" && EH(nyH(2029), "2029-12-30", {}, "s6", yes) === "s1" && EH(nyH(2026), "2026-12-30", xc(2026, "s6"), "s6", yes) === "s1",
+    JSON.stringify([EH(nyH(2029), "2029-12-30", xc(2029, "s6"), "s6", yes), EH(nyH(2029), "2029-12-30", xc(2029, "s6"), "s6", no), EH(nyH(2026), "2026-12-30", xc(2026, "s6"), "s6", yes)]));
   // Dec 25 weekday walk: 2026 Fri, 2027 Sat, 2028 Mon, 2029 Tue (the six-day
   // trap), 2030 Wed, 2031 Thu — every shape must cap at 2.
   for (let y = 2026; y <= 2031; y++) {
-    const cov = buildCoverage({ name: "Christmas Day", date: `${y}-12-25` }, "s6", "s6");
+    const cov = mkCov(y)({ name: "Christmas Day", date: `${y}-12-25` }, "s6", "s6");
     check(`Christmas ${y} coverage is exactly 2 days (got ${cov.length})`, cov.length === 2,
       cov.map(c => `${c.date}:${c.surgeon}`).join(", "));
   }
@@ -769,8 +791,9 @@ check("comparator delta for zero-tenure vs veteran is finite (sort-safe)",
   Number.isFinite(holidayRate(0, 0) - holidayRate(3, 12)));
 // Wiring tripwires: pickPair compares RATES (both operands), and ARW's
 // start date exists where the eligibility code reads it (INIT_SURGEONS).
-check("pickPair compares tenure-normalized rates (2 holidayRate operands)",
-  count("holidayRate(lifetimeCt") === 2, `found ${count("holidayRate(lifetimeCt")}`);
+check("the holiday planner ranks by tenure-normalized RATES (holidayRate over both operands, handed to planHolidayPairs as rate)",
+  count("const rateOf = (id, type) => holidayRate(lifetimeCt[id]?.[type] || 0, eligibleCt[id]?.[type] || 0);") === 1 && count("unavailable, rate: rateOf,") === 1,
+  `found ${count("holidayRate(lifetimeCt")}`);
 check("ARW start date present in INIT_SURGEONS (2023-09-01)",
   INIT_SURGEONS.find(s => s.id === "s7")?.start === "2023-09-01");
 check("eligibility loop present (eligibleCt built from holiday dates)",
@@ -1600,12 +1623,12 @@ check("prefs audit never logs the plaintext email (masked only)",
   check("the generator fold goes into `availability` exactly once…",
     count("availability[silvisFakId] = [...(availability[silvisFakId] || []), ...sfBusyRanges(silvisDays.primary)];") === 1 && count("sfBusyRanges(") === 1,
     `sfBusyRanges( ×${count("sfBusyRanges(")}`);
-  check("…and generate() still receives the untouched `vacations` map as its trailing-edge (vacationsOnly) argument",
-    count("generate(surgeons, mondays, availability, backupMondaySet, priorCounts, prefs, fierceBackupSet, holidayAssignments, pendingLocks, prevWeekSeed, vacations, year1Counts)") === 1
+  check("…and the generator's search still receives the untouched `vacations` map as its trailing-edge (vacationsOnly) argument",
+    count("createScheduleSearch(surgeons, mondays, availability, backupMondaySet, priorCounts, prefs, fierceBackupSet, holidayAssignments, pendingLocks, prevWeekSeed, vacations, year1Counts, { silvisPrimary: buildSilvisPrimary() })") === 1
     && count("vacations[silvisFakId]") === 0);
   check("doGenerate: feed-health + coverage gate confirms BEFORE generating; dropped locks are toasted AFTER",
     count("Rule silvisBusy is BLIND for part or all of this period") === 1 && count("NOT honored by the generator") === 1
-    && src.indexOf("Rule silvisBusy is BLIND") < src.indexOf("const result = generate(surgeons, mondays, availability") && src.indexOf("const result = generate(surgeons, mondays, availability") < src.indexOf("NOT honored by the generator"));
+    && src.indexOf("Rule silvisBusy is BLIND") < src.indexOf("const search = createScheduleSearch(surgeons, mondays, availability") && src.indexOf("const search = createScheduleSearch(surgeons, mondays, availability") < src.indexOf("NOT honored by the generator"));
   check("FAK is resolved by roster CODE (name), never a literal id",
     count('surgeons.find(s => (s.name || "").toUpperCase() === want)') === 1 && !/silvisFakId\s*=\s*["']s\d+["']/.test(src));
   check("the rule is DATA: read from the blob on load AND on poll/realtime, reset on restore, saved back in the bundle",
@@ -1730,7 +1753,7 @@ check("prefs audit never logs the plaintext email (masked only)",
   check("swap suggestions: candidates never get FAK's Silvis slot AND FAK is never offered a return leg on his Silvis day (3 legs)",
     count("candId === silvisFakId && sfConflict(silvisDays.primary, mondayStr, shift)) eligible = false;") === 1 && count("!silvisRet(") === 3);
   check("holidays: pool + Christmas + presets + swap all test the dates the role REALLY holds (holDatesFor / slot parity), incl. the Fri/Sun weekend leg",
-    count("holDatesFor(hol, id, \"A\")") === 1 && count("holDatesFor(hol, id, \"B\")") === 1 && count('holDatesFor(hol, fakId, "both")') === 1
+    count("holDatesFor(hol, id, role)") === 2 && count('holDatesFor(hol, fakId, "both")') === 1
     && count('holDatesFor(hol, sA, "A")') === 1 && count('holDatesFor(hol, sB, "B")') === 1
     && count('(slot === "surgeonA" ? i % 2 === 0 : i % 2 === 1)') === 1 && count("if (dow === 5) days.add(") === 2 && count("if (dow === 0) days.add(") === 2);
   check("Christmas: a Silvis primary hit leaves Christmas UNASSIGNED with a loud warning (mirrors the missing-roster path)",
@@ -1841,8 +1864,8 @@ check("prefs audit never logs the plaintext email (masked only)",
     return { body: src.slice(s0 + START.length, e0), deps: src.slice(e0, src.indexOf("]);", e0) + 3) };
   };
   const PRODUCERS = [
-    ["silvisConflicts", "  const silvisConflicts = useMemo(() => {", 5],
-    ["conflicts", "  const conflicts = useMemo(() => {", 7], // +2 time-off lines (2026-10-11)
+    ["silvisConflicts", "  const silvisConflicts = useMemo(() => {", 7], // +1 Silvis on the service week's Sunday (2026-10-12); +1 a Davenport overnight next to a Silvis 24h (2026-10-13)
+    ["conflicts", "  const conflicts = useMemo(() => {", 9], // +2 time-off lines (2026-10-11); +2 rule 1 Sunday / rule 2 Thu → weekend (2026-10-12)
     ["vacOverlapWarnings", "  const vacOverlapWarnings = useMemo(() => {", 3],
   ];
   // Q1
@@ -1866,8 +1889,8 @@ check("prefs audit never logs the plaintext email (masked only)",
   if (warnMemo && confMemo && vacMemo) {
     let runConf, runVac, runShown;
     try {
-      runConf = vm.runInContext("(function (env) { const { schedule, surgeons, sMap, SHIFT_LABELS, holidayAssignments, vacations, noCallDays } = env; return (() => {" + confMemo.body + "})(); })", sandbox, { filename: "q-conflicts.js" });
-      runVac = vm.runInContext("(function (env) { const { mondays, surgeons, apps, vacations, holidayAssignments, sMap } = env; return (() => {" + vacMemo.body + "})(); })", sandbox, { filename: "q-vac.js" });
+      runConf = vm.runInContext("(function (env) { const { schedule, surgeons, sMap, SHIFT_LABELS, holidayAssignments, vacations, noCallDays } = env; const buildGenAvailability = env.buildGenAvailability || (() => { const m = {}; [vacations || {}, noCallDays || {}].forEach(src => Object.keys(src).forEach(k => { m[k] = (m[k] || []).concat(src[k]); })); return m; }); const buildSilvisPrimary = env.buildSilvisPrimary || (() => null); return (() => {" + confMemo.body + "})(); })", sandbox, { filename: "q-conflicts.js" });
+      runVac = vm.runInContext("(function (env) { const { mondays, surgeons, apps, vacations, holidayAssignments, sMap } = env; const takesChristWknd = env.takesChristWknd || (() => false); return (() => {" + vacMemo.body + "})(); })", sandbox, { filename: "q-vac.js" });
       runShown = vm.runInContext("(function (env) { const { silvisConflicts, conflicts, vacOverlapWarnings, dismissedWarnings } = env; return (() => {" + warnMemo.body + "})(); })", sandbox, { filename: "q-shown.js" });
       check("Q2 conflicts / vacOverlap / warnShown memos compile standalone", true);
     } catch (ex) { check("Q2 conflicts / vacOverlap / warnShown memos compile standalone", false, String(ex)); }
@@ -3643,18 +3666,22 @@ check("prefs audit never logs the plaintext email (masked only)",
   const nsrcAE = src.replace(/\r\n/g, "\n");
   const i = nsrcAE.indexOf("  const acceptPreview = () => {"), e = i < 0 ? -1 : nsrcAE.indexOf("\n  };\n", i);
   const body = i < 0 || e < 0 ? null : "() => {" + nsrcAE.slice(i + "  const acceptPreview = () => {".length, e) + "\n  }";
-  const ENV = "previewSchedule, previewNeedsOk, previewAck, showToast, schedule, scheduleRef, schedEditable, schedSyncRef, previewEpochRef, pushUndo, rollForwardCounts, updateSchedule, setPreviewSchedule, setShowPreview, setCalMonth, setCalYear, setView, setSaveStatus, setTimeout, logAudit, numWeeks, MO, startMonth, startYear";
+  const ENV = "previewSchedule, previewNeedsOk, previewAck, previewOrigin, publishWeeks, publishingRef, showToast, schedEditable, schedSyncRef, previewEpochRef, setPreviewSchedule, setShowPreview, setCalMonth, setCalYear, setView, setSaveStatus, setTimeout, numWeeks, MO, startMonth, startYear, cancelSearch, publishSearchRunning";
   let mk = null; try { mk = body ? vm.runInContext(`(function (env) { const { ${ENV} } = env; return (${body}); })`, sandbox) : null; } catch (ex) { mk = null; }
-  const run = (items, ack, movedSincePreview) => {
-    const rec = { published: 0, toasts: [], audits: [] };
+  // busy: a publish in progress · pubSearch: a Generate & Publish search running · moved: a week of the preview adopted since it was made (sync v2) · gated: the edit gate refuses (sync v2)
+  const run = (items, ack, busy, pubSearch, moved, gated) => {
+    const rec = { published: 0, toasts: [], audits: [], cancelled: 0 };
     mk({
-      schedEditable: () => true, previewEpochRef: { current: 0 },
-      schedSyncRef: { current: { changedSince: (keys) => movedSincePreview ? keys.slice(0, 1) : [] } },
-      previewSchedule: { "2026-11-16": { dayCall: "s1", nights: {} } }, previewNeedsOk: { cost: items.length * 6, items }, previewAck: ack,
-      showToast: (m) => rec.toasts.push(String(m)), schedule: {}, pushUndo: () => {}, rollForwardCounts: () => {},
-      scheduleRef: { current: {} }, updateSchedule: () => { rec.published++; }, setPreviewSchedule: () => {}, setShowPreview: () => {}, setCalMonth: () => {}, setCalYear: () => {},
-      setView: () => {}, setSaveStatus: () => {}, setTimeout: () => {}, logAudit: (a, msg, meta) => rec.audits.push({ a, msg, meta }),
+      schedEditable: () => !gated, previewEpochRef: { current: 3 },
+      schedSyncRef: { current: { changedSince: (keys, since) => (moved && since === 3) ? keys.slice(0, 1) : [] } }, // bites only if acceptPreview asks with previewEpochRef.current
+      previewSchedule: { "2026-11-16": { dayCall: "s1", nights: {} }, "2026-11-23": { dayCall: "s2", nights: {} } }, previewNeedsOk: { cost: items.length * 6, items }, previewAck: ack,
+      previewOrigin: "generated", publishingRef: { current: !!busy },
+      // publishWeeks (the one publish step) is executed for real in AG5; here it records what acceptPreview hands it
+      publishWeeks: (weeks, how) => { rec.published++; rec.audits.push({ msg: `Published schedule (${how.label})${how.extra || ""}`, meta: how.meta, weeks }); return {}; },
+      showToast: (m) => rec.toasts.push(String(m)), setPreviewSchedule: () => {}, setShowPreview: () => {}, setCalMonth: () => {}, setCalYear: () => {},
+      setView: () => {}, setSaveStatus: () => {}, setTimeout: () => {},
       numWeeks: 14, MO: ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"], startMonth: 10, startYear: 2026,
+      cancelSearch: () => { rec.cancelled++; }, publishSearchRunning: () => !!pubSearch,
     })();
     return rec;
   };
@@ -3665,14 +3692,28 @@ check("prefs audit never logs the plaintext email (masked only)",
       blocked.published === 0 && blocked.audits.length === 0 && /reviewed/.test(blocked.toasts.join(" ")), JSON.stringify(blocked));
     check("AE1 ticked: it publishes, and the publish audit entry records N (and the bend cost)",
       ticked.published === 1 && ticked.audits.length === 1 && ticked.audits[0].meta.needsOk === 2 && ticked.audits[0].meta.bendCost === 12 && /2 items reviewed/.test(ticked.audits[0].msg), JSON.stringify(ticked.audits));
-    const stale = run([], false, true);
+    const stale = run([], false, false, false, true);
     check("AE1 sync v2: a preview whose week someone else changed since it was generated is NOT published (it would overwrite that change) — and it says so",
       stale.published === 0 && stale.audits.length === 0 && /changed since this preview was generated/.test(stale.toasts.join(" ")), JSON.stringify(stale));
+    const gatedRun = run([], false, false, false, false, true);
+    check("AE1 sync v2: the edit gate (not loaded / sign-in expired) refuses before the publish step — nothing published", gatedRun.published === 0 && gatedRun.audits.length === 0, JSON.stringify(gatedRun));
     check("AE1 an empty box publishes exactly as before — no checkbox needed, needsOk 0, no extra wording",
       clean.published === 1 && clean.toasts.length === 0 && clean.audits[0].meta.needsOk === 0 && !/reviewed/.test(clean.audits[0].msg), JSON.stringify(clean.audits));
+    // PR 1: Accept & Publish goes through the one publish step (AG5 runs it),
+    // with the whole preview, and refuses while another publish is in progress.
+    check("AE1 Accept & Publish hands the WHOLE preview to publishWeeks (the one publish step — net counts, undo, audit: AG5)",
+      ticked.audits[0] && Object.keys(ticked.audits[0].weeks).join() === "2026-11-16,2026-11-23" && ticked.audits[0].meta.origin === "generated");
+    check("AE1 Accept & Publish first cancels a running search (\"Search more\"), so its late result can't reopen the published preview (2026-10-12)",
+      ticked.cancelled === 1 && clean.cancelled === 1, JSON.stringify([ticked.cancelled, clean.cancelled]));
+    const during = run([], false, false, true);
+    check("AE1 while a Generate & Publish SEARCH runs (it publishes its own schedule when it ends), Accept & Publish publishes NOTHING and says why — never two publishes racing",
+      during.published === 0 && during.cancelled === 0 && /still searching/.test(during.toasts.join(" ")), JSON.stringify(during));
+    const busy = run([], false, true);
+    check("AE1 while a publish is in progress (Generate & Publish waiting for its snapshot), Accept & Publish publishes NOTHING and says why",
+      busy.published === 0 && /already in progress/.test(busy.toasts.join(" ")), JSON.stringify(busy));
   } else check("AE1 acceptPreview extractable for execution", false, "anchors not found");
   check("AE2 ✓ Accept & Publish is disabled while the box has items and is unticked; the checkbox drives previewAck; a new preview resets it",
-    count("<button onClick={acceptPreview} disabled={previewNeedsOk.items.length > 0 && !previewAck}") === 1
+    count('<button onClick={acceptPreview} disabled={publishing || searching === "publish" || (previewNeedsOk.items.length > 0 && !previewAck)}') === 1
       && count("checked={previewAck} onChange={e=>setPreviewAck(e.target.checked)}") === 1
       && count("useEffect(() => { setPreviewAck(false); }, [previewSchedule]);") === 1
       && count("{previewNeedsOk.items.length > 0 && (") === 1
@@ -3682,11 +3723,12 @@ check("prefs audit never logs the plaintext email (masked only)",
       && nsrcAE.indexOf("{/* Spacing-exception disclosure") < nsrcAE.indexOf("{/* Preview Calendar Grid */}")
       && count('color:dk?"#f0c890":"#7a4010",overflowWrap:"anywhere"}}>') === 1);
   check("AE3 Generate & Publish: a result with items opens the preview (\"review\") instead of saving; only \"published\" sends the notice; a cancelled Silvis confirm sends nothing",
-    count('    if (needsOkN > 0) {\n      setPreviewSchedule(result); previewEpochRef.current = genEpoch;\n      setShowPreview(true);'.replace(/\n/g, src.includes("\r\n") ? "\r\n" : "\n")) === 1
-      && count('return "review";') === 1 && count('return "published";') === 1 && count('return "cancelled";') === 1
-      && count('if (doGenerate(false) !== "published") return;') === 1);
+    count('    if (needsOkN > 0) {\n      setPreviewSchedule(result); setPreviewOrigin("generated"); previewEpochRef.current = genEpoch;\n      setShowPreview(true);'.replace(/\n/g, src.includes("\r\n") ? "\r\n" : "\n")) === 1
+      && count('previewEpochRef.current = genEpoch;') === 3 // preview · inputs changed · Needs your OK (sync v2)
+      && count('return "review";') === 2 && count('return "published";') === 1 && count('return "cancelled";') === 2 // review: + inputs changed during the search (2026-10-12) — // the Silvis confirm; a cancelled / empty search (2026-10-12)
+      && count('if ((await doGenerate(false)) !== "published") return;') === 1);
   check("AE4 the box and the generator share ONE availability builder (vacations ∪ no-call ∪ Silvis), and the box reads the bends from generator.js",
-    count("const availability = buildGenAvailability();") === 1 && count("vac: buildGenAvailability(), vacationsOnly: vacations,") === 1
+    count("const availability = buildGenAvailability();") === 1 && count("vac: buildGenAvailability(), vacationsOnly: vacations,") === 2 // the box + Generate & Publish's gate (today's inputs, 2026-10-12)
       && count("return listScheduleBends(previewSchedule, {") === 1 && count("const availability = {};") === 1);
   check("AE5 Setup → Holidays: eves are night shifts for the card's Night Before surgeon; Christmas week is FAK's; the stale sentences are gone",
     count("The eve is a regular night shift worked by the card's \"Night Before\" surgeon") === 1
@@ -3716,7 +3758,7 @@ check("prefs audit never logs the plaintext email (masked only)",
   const s0 = nsrcAF.indexOf(START), e0 = s0 < 0 ? -1 : nsrcAF.indexOf("\n  }, [", s0);
   const body = s0 < 0 || e0 < 0 ? null : nsrcAF.slice(s0 + START.length, e0);
   let runC = null;
-  try { runC = body ? vm.runInContext("(function (env) { const { schedule, surgeons, sMap, SHIFT_LABELS, holidayAssignments, vacations, noCallDays } = env; return (() => {" + body + "})(); })", sandbox, { filename: "af-conflicts.js" }) : null; } catch (ex) { runC = null; }
+  try { runC = body ? vm.runInContext("(function (env) { const { schedule, surgeons, sMap, SHIFT_LABELS, holidayAssignments, vacations, noCallDays } = env; const buildGenAvailability = env.buildGenAvailability || (() => { const m = {}; [vacations || {}, noCallDays || {}].forEach(src => Object.keys(src).forEach(k => { m[k] = (m[k] || []).concat(src[k]); })); return m; }); const buildSilvisPrimary = env.buildSilvisPrimary || (() => null); return (() => {" + body + "})(); })", sandbox, { filename: "af-conflicts.js" }) : null; } catch (ex) { runC = null; }
   if (!runC) check("AF conflicts memo extractable for execution", false, "anchor / compile");
   else {
     const { fmt: F, addD: A, parse: P } = vm.runInContext("({ fmt, addD, parse })", sandbox);
@@ -3782,7 +3824,7 @@ check("prefs audit never logs the plaintext email (masked only)",
     const M2 = F2(mon2), dd = (o) => F2(A2(mon2, o));
     const clockAt = (o) => { const fixed = A2(mon2, o).getTime(); const RealDate = vm.runInContext("Date", sandbox); return class extends RealDate { constructor(...a) { if (a.length) super(...a); else super(fixed); } }; };
     let runAt = null;
-    try { runAt = body ? vm.runInContext("(function (env) { const { schedule, surgeons, sMap, SHIFT_LABELS, holidayAssignments, vacations, noCallDays, Date } = env; return (() => {" + body + "})(); })", sandbox, { filename: "af6-conflicts.js" }) : null; } catch (ex) { runAt = null; }
+    try { runAt = body ? vm.runInContext("(function (env) { const { schedule, surgeons, sMap, SHIFT_LABELS, holidayAssignments, vacations, noCallDays, Date } = env; const buildGenAvailability = env.buildGenAvailability || (() => { const m = {}; [vacations || {}, noCallDays || {}].forEach(src => Object.keys(src).forEach(k => { m[k] = (m[k] || []).concat(src[k]); })); return m; }); const buildSilvisPrimary = env.buildSilvisPrimary || (() => null); return (() => {" + body + "})(); })", sandbox, { filename: "af6-conflicts.js" }) : null; } catch (ex) { runAt = null; }
     const sur = [{ id: "s1", name: "DJA" }, { id: "s2", name: "MCC" }, { id: "s3", name: "RPC" }, { id: "s4", name: "KJH" }, { id: "s5", name: "REH" }, { id: "s6", name: "FAK" }, { id: "s7", name: "ARW" }];
     const sm = Object.fromEntries(sur.map((s, i) => [s.id, { name: s.name, idx: i }]));
     const sch = { [M2]: { dayCall: "s1", nights: { mon: "s2", tue: "s3", wed: "s4", thu: "s5", wknd: "s7" } } };
@@ -3803,6 +3845,1145 @@ check("prefs audit never logs the plaintext email (masked only)",
         && !/dismissable:\s*false/.test(body));
   }
 }
+
+// ══════════════════════════════════════════════════════════════
+// AG. Benchmark loader + safe re-publish (owner 2026-10-12, PR 1)
+// ══════════════════════════════════════════════════════════════
+//   AG1 the REAL rollForwardCounts: publishing a period twice counts it once;
+//       re-publishing a corrected version moves the counts by the difference
+//   AG2 validateScheduleJson / shapeScheduleWeeks (generator.js): a real
+//       generate() result written out in the loader's format loads back
+//       IDENTICAL to what the generator stored; every refusal names its reason
+//   AG3 the REAL loadScheduleJson: a good file fills the preview (origin
+//       "json"); a bad one changes nothing and says why
+//   AG4 wiring pins: the button (scheduler only), the header label, both
+//       publish paths net, no 100 ms timer
+console.log("\nAG. benchmark loader + safe re-publish");
+await (async () => {
+  const nsrc = src.replace(/\r\n/g, "\n");
+  // ── AG1 ──
+  {
+    const i = nsrc.indexOf("  const countsOfWeeks = (weeks, pick) => {");
+    const k = i < 0 ? -1 : nsrc.indexOf("  const rollForwardCounts = useCallback((sched, replaced) => {", i);
+    const j = k < 0 ? -1 : nsrc.indexOf("\n  }, [", k);
+    let mk = null;
+    if (i >= 0 && k > i && j > k) { try { mk = vm.runInContext(`(function (env) { const { surgeons, parse, useCallback, setPriorCounts, setYear1Counts } = env; ${nsrc.slice(i, j) + "\n  });"}; return rollForwardCounts; })`, sandbox); } catch (ex) { mk = null; } }
+    if (!mk) check("AG1 rollForwardCounts extractable and compiles", false, "anchors not found or compile error");
+    else {
+      const sur = ["s1", "s2", "s3", "s4", "s5", "s6", "s7"].map(id => ({ id, name: id.toUpperCase() }));
+      const state = { prior: { s1: { dc: 10, nights: 40, wknd: 12, off: 5, dcB: 1, nightsB: 2, wkndB: 1, offB: 0, totalDays: 150, totalDaysB: 12 } }, y1: {} };
+      const roll = mk({ surgeons: sur, parse: vm.runInContext("parse", sandbox), useCallback: (f) => f,
+        setPriorCounts: (fn) => { state.prior = fn(state.prior); }, setYear1Counts: (fn) => { state.y1 = fn(state.y1); } });
+      const wk = (dc, n, bk) => ({ dayCall: dc, nights: { wknd: n[4], mon: n[0], tue: n[1], wed: n[2], thu: n[3] }, off: "s7", isBackup: !!bk, isFierceBackup: false, holidayCoverage: null });
+      // Two Mondays in December of THIS year (the 1-year tally counts the
+      // current year only — fixed 2026 dates would make that half vacuous
+      // from 2027-01-01). Always above the 2026-05-04 floor.
+      const Y = Math.max(2026, new Date().getFullYear());
+      const dec1 = new Date(Y, 11, 1), m1 = new Date(Y, 11, 1 + ((8 - dec1.getDay()) % 7)), m2 = new Date(m1.getFullYear(), 11, m1.getDate() + 7);
+      const iso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+      const W1 = iso(m1), W2 = iso(m2), W0 = iso(new Date(m1.getFullYear(), 11, m1.getDate() - 7));
+      const P = { [W1]: wk("s1", ["s2", "s3", "s4", "s5", "s6"]), [W2]: wk("s2", ["s1", "s4", "s3", "s6", "s5"], true) };
+      const P2 = { [W1]: wk("s3", ["s2", "s1", "s4", "s5", "s6"]), [W2]: wk("s2", ["s1", "s4", "s3", "s6", "s5"], true) };
+      const snap = () => JSON.stringify({ p: state.prior, y: state.y1 });
+      const base = snap();
+      roll(P, {}); const once = snap();
+      roll(P, P); const twice = snap();
+      check("AG1 publish a period, publish it AGAIN (replacing itself) → counts equal ONE publish (multi-year AND 1-year — both moved on the first publish — totalDays too)",
+        once !== base && twice === once && JSON.stringify(JSON.parse(once).y) !== JSON.stringify(JSON.parse(base).y) && JSON.stringify(JSON.parse(once).p) !== JSON.stringify(JSON.parse(base).p),
+        twice === once ? "the 1-year or multi-year tally did not move on the first publish" : `once=${once}\ntwice=${twice}`);
+      roll(P2, P); const corrected = snap();
+      state.prior = JSON.parse(base).p; state.y1 = JSON.parse(base).y; roll(P2, {}); const p2once = snap();
+      check("AG1 re-publishing a CORRECTED version replaces the old one: counts = one publish of the corrected period", corrected === p2once, `corrected=${corrected}\nfresh=${p2once}`);
+      state.prior = JSON.parse(base).p; state.y1 = JSON.parse(base).y;
+      const rr = roll(P, { [W1]: P[W1], [W0]: wk("s5", ["s1", "s2", "s3", "s4", "s6"]) });
+      const net = rr && rr.delta;
+      check("AG1 only a replaced week that is itself being published comes off (the week before isn't in this publish): net = the new second week alone, 1 replaced week counted",
+        net && net.s2.dc === 0 && net.s2.dcB === 1 && net.s1.dc === 0 && net.s1.nightsB === 1 && net.s5.dc === 0 && rr.replacedCounted === 1 && rr.delta1yr.s2.dcB === 1,
+        JSON.stringify(rr && { s1: net.s1, s2: net.s2, s5: net.s5, replaced: rr.replacedCounted }));
+      const floorNet = roll({ "2026-04-27": wk("s1", ["s2", "s3", "s4", "s5", "s6"]) }, {});
+      check("AG1 the counts floor still holds (a week before 2026-05-04 never rolls forward)", floorNet === null);
+    }
+  }
+  // ── AG2 ──
+  const gsb2 = { console: { ...console, warn: () => {} }, window: {}, document: undefined, navigator: { userAgent: "node-test" }, localStorage: { getItem: () => null, setItem() {}, removeItem() {} }, fetch: () => { throw new Error("fetch during generation"); }, setTimeout, clearTimeout };
+  gsb2.globalThis = gsb2; vm.createContext(gsb2);
+  for (const f of ["helpers.js", "config.js", "generator.js"]) vm.runInContext(fs.readFileSync(path.join(ROOT, f), "utf8"), gsb2, { filename: f });
+  const G = vm.runInContext("({ generate, validateScheduleJson, shapeScheduleWeeks, fmt, addD, parse })", gsb2);
+  const SUR = vm.runInContext("INIT_SURGEONS", gsb2).map(x => ({ id: x.id, name: x.name }));
+  const ids = SUR.map(x => x.id);
+  const MON = Array.from({ length: 6 }, (_, k) => G.addD(G.parse("2026-11-16"), 7 * k));
+  const mStrs = MON.map(G.fmt);
+  const HOL = JSON.parse(fs.readFileSync(path.join(ROOT, "test", "fixtures", "holiday-assignments-2026-live.json"), "utf8"));
+  const BK = new Set([mStrs[2]]), FB = new Set([mStrs[4]]);
+  const gen = G.generate(SUR, MON, {}, BK, {}, {}, FB, HOL, [], null, {}, {});
+  const asFile = { startMonday: mStrs[0], numWeeks: mStrs.length, weeks: Object.fromEntries(mStrs.map(m => [m, { dayCall: gen[m].dayCall, nights: { mon: gen[m].nights.mon, tue: gen[m].nights.tue, wed: gen[m].nights.wed, thu: gen[m].nights.thu, wknd: gen[m].nights.wknd } }])) };
+  const v = G.validateScheduleJson(JSON.parse(JSON.stringify(asFile)), mStrs, ids);
+  const shaped = v.ok ? G.shapeScheduleWeeks(v.weeks, SUR, BK, FB, HOL) : null;
+  const hasHol = mStrs.some(m => gen[m].holidayCoverage);
+  check("AG2 a real generate() result, written out in the loader's format and loaded back, is IDENTICAL to what the generator stored (off, backup flags, holiday coverage, key order)",
+    v.ok && hasHol && JSON.stringify(shaped) === JSON.stringify(Object.fromEntries(mStrs.map(m => [m, gen[m]]))),
+    v.ok ? (hasHol ? "differs: " + JSON.stringify(shaped).slice(0, 200) : "fixture has no holiday week") : v.error);
+  const wkOk = asFile.weeks[mStrs[0]];
+  const refusals = [
+    ["a JSON array", [], /one JSON object/],
+    ["a different start Monday", Object.assign({}, asFile, { startMonday: mStrs[1] }), /starts on "2026-11-23", but Generate is set to start on 2026-11-16/],
+    ["a different week count", Object.assign({}, asFile, { numWeeks: 5 }), /numWeeks 5, but Generate is set to 6 weeks/],
+    ["numWeeks as text", Object.assign({}, asFile, { numWeeks: "6" }), /numWeeks must be the number 6 \(the file has "6", which is text\)/],
+    ["no numWeeks", (() => { const x = Object.assign({}, asFile); delete x.numWeeks; return x; })(), /the file has no numWeeks/],
+    ["a missing week", Object.assign({}, asFile, { weeks: Object.fromEntries(mStrs.slice(0, 5).map(m => [m, asFile.weeks[m]])) }), /missing "2026-12-21"/],
+    ["an extra week", Object.assign({}, asFile, { weeks: Object.assign({}, asFile.weeks, { "2026-12-28": wkOk }) }), /not in the settings: "2026-12-28"/],
+    ["an id not on the roster", Object.assign({}, asFile, { weeks: Object.assign({}, asFile.weeks, { [mStrs[1]]: { dayCall: "s9", nights: wkOk.nights } }) }), /dayCall "s9" is not a roster id/],
+    ["a night id not on the roster", Object.assign({}, asFile, { weeks: Object.assign({}, asFile.weeks, { [mStrs[1]]: { dayCall: "s1", nights: Object.assign({}, wkOk.nights, { thu: "DJA" }) } }) }), /thu "DJA" is not a roster id/],
+    ["an unknown night", Object.assign({}, asFile, { weeks: Object.assign({}, asFile.weeks, { [mStrs[1]]: { dayCall: "s1", nights: Object.assign({}, wkOk.nights, { fri: "s2" }) } }) }), /unknown night "fri"/],
+    ["an unknown field (typo)", Object.assign({}, asFile, { weeks: Object.assign({}, asFile.weeks, { [mStrs[1]]: { daycall: "s1", nights: wkOk.nights } }) }), /unknown field "daycall"/],
+  ];
+  const wrong = refusals.filter(([, o, re]) => { const r = G.validateScheduleJson(o, mStrs, ids); return r.ok || !re.test(r.error); }).map(([n]) => n);
+  check("AG2 the whole load is refused, with the reason, for: " + refusals.map(r => r[0]).join(", "), wrong.length === 0, "not refused / wrong reason: " + wrong.join(", "));
+  const exported = Object.assign({}, asFile, { weeks: Object.fromEntries(mStrs.map(m => [m, gen[m]])) });
+  const ve = G.validateScheduleJson(JSON.parse(JSON.stringify(exported)), mStrs, ids);
+  check("AG2 an exported week (with off / isBackup / holidayCoverage) loads: those fields are ignored and recomputed", ve.ok && JSON.stringify(G.shapeScheduleWeeks(ve.weeks, SUR, BK, FB, HOL)) === JSON.stringify(shaped));
+  const blank = G.validateScheduleJson({ startMonday: mStrs[0], numWeeks: 6, weeks: Object.fromEntries(mStrs.map(m => [m, { dayCall: "s1", nights: { mon: null, tue: "" } }])) }, mStrs, ids);
+  check("AG2 an empty slot (null / \"\" / missing) loads as empty — it shows in Needs your OK as an EMPTY slot, like a generated one", blank.ok && blank.weeks[mStrs[0]].nights.mon === null && blank.weeks[mStrs[0]].nights.wknd === null);
+  // ── AG3 ──
+  {
+    const i = nsrc.indexOf("  const loadScheduleJson = (text, fileName) => {"), e = i < 0 ? -1 : nsrc.indexOf("\n  };\n", i);
+    if (i < 0 || e < 0) check("AG3 loadScheduleJson extractable", false, "anchors not found");
+    else {
+      const body = nsrc.slice(i, e) + "\n  };";
+      const mk = vm.runInContext(`(function (env) { const { showToast, validateScheduleJson, shapeScheduleWeeks, mondays, fmt, surgeons, backupMondaySet, fierceBackupSet, holidayAssignments, setPreviewSchedule, setPreviewOrigin, setPreviewCalMonth, setShowPreview, cancelSearch, setSearchStats, publishSearchRunning, previewEpochRef, schedSyncRef } = env; ${body}; return loadScheduleJson; })`, sandbox);
+      const go = (text) => {
+        const rec = { toasts: [], preview: null, origin: null, shown: false, cancelled: 0 }, pe = { current: -1 };
+        const load = mk({ showToast: (m, t) => rec.toasts.push([String(m), t]), validateScheduleJson: G.validateScheduleJson, shapeScheduleWeeks: G.shapeScheduleWeeks, mondays: MON, fmt: G.fmt, surgeons: SUR,
+          backupMondaySet: BK, fierceBackupSet: FB, holidayAssignments: HOL, setPreviewSchedule: (x) => { rec.preview = x; }, setPreviewOrigin: (x) => { rec.origin = x; }, setPreviewCalMonth: () => {}, setShowPreview: (x) => { rec.shown = x; }, cancelSearch: () => { rec.cancelled++; }, setSearchStats: (x) => { rec.stats = x; }, publishSearchRunning: () => false, previewEpochRef: pe, schedSyncRef: { current: { epochNow: () => 7 } } });
+        rec.ret = load(text, "bench.json"); rec.epoch = pe.current;
+        return rec;
+      };
+      const good = go(JSON.stringify(asFile)), bad = go(JSON.stringify(Object.assign({}, asFile, { numWeeks: 9 }))), junk = go("{not json");
+      const bom = go("﻿" + JSON.stringify(asFile, null, 2));
+      check("AG3 sync v2: a loaded preview is judged from the engine epoch at the load; a refused file leaves the epoch alone", good.epoch === 7 && bad.epoch === -1 && junk.epoch === -1, JSON.stringify([good.epoch, bad.epoch, junk.epoch]));
+      check("AG3 a file saved with a byte-order mark (Windows editors) loads like any other", bom.ret === true && JSON.stringify(bom.preview) === JSON.stringify(shaped), JSON.stringify(bom.toasts));
+      check("AG3 the REAL loader: a good file fills the preview with the shaped weeks, origin \"json\", shown, and says nothing is published yet",
+        good.ret === true && JSON.stringify(good.preview) === JSON.stringify(shaped) && good.origin === "json" && good.shown === true && /nothing is published until/.test(good.toasts[0][0]), JSON.stringify(good.toasts));
+      const shifted = { startMonday: mStrs[1], numWeeks: 6, weeks: Object.fromEntries([...mStrs.slice(1), G.fmt(G.addD(MON[5], 7))].map(m => [m, wkOk])) };
+      const sh = go(JSON.stringify(shifted));
+      check("AG3 a self-consistent file for a DIFFERENT start (11/23 × 6) is refused against the Generate settings (11/16 × 6)",
+        sh.ret === false && sh.preview === null && sh.origin === null && /Generate is set to start on 2026-11-16/.test(sh.toasts[0][0]), JSON.stringify(sh.toasts));
+      check("AG3 a refused file (wrong week count) or a non-JSON file changes NOTHING and says why",
+        bad.ret === false && bad.preview === null && bad.origin === null && /Not loaded — the file has numWeeks 9/.test(bad.toasts[0][0]) && bad.toasts[0][1] === "error"
+          && junk.ret === false && junk.preview === null && /isn't valid JSON/.test(junk.toasts[0][0]), JSON.stringify([bad.toasts, junk.toasts]));
+    }
+  }
+  // ── AG4 ──
+  check("AG4 the button sits next to 👁 Preview Schedule, scheduler/admin only, with a hidden .json file input; the header says where the preview came from",
+    /👁 Preview Schedule"\}\n\s*<\/button>\n\s*\{\(isScheduler \|\| userProfile\?\.role === "admin"\) && <>[\s\S]{0,600}📋 Load schedule \(JSON\)[\s\S]{0,200}<input ref=\{loadJsonInputRef\} type="file" accept="\.json,application\/json" onChange=\{onLoadJsonFile\}/.test(nsrc)
+      && count('{previewOrigin === "json" && <span') === 1 && count("Loaded from JSON — not generated") === 1
+      && count('setPreviewSchedule(result); setPreviewOrigin("generated");') === 3 && count('setPreviewOrigin("json")') === 1); // preview · inputs changed · Needs your OK
+  check("AG4 both publish paths go through the ONE publish step (Accept & Publish; Generate & Publish at commit), the only roll-forward — no 100 ms timer, no 'skip if any schedule exists'",
+    count("publishWeeks(previewSchedule, {") === 1 && count("publishWeeks(result, {") === 1 && count("publishWeeks(") === 2
+      && count("const r = rollForwardCounts(newWeeks, replacedWeeks);") === 1 && count("rollForwardCounts(") === 1
+      && count("hadExistingSchedule") === 0 && !/rollForwardCounts\(latest\)/.test(nsrc));
+  {
+    // since 2026-10-12 the publish runs after the search, in finishGenerate → commitGenerated (with the latest state)
+    const g = nsrc.indexOf("  const finishGenerate = (result, preview, clickSig, clickLocks, genEpoch) => {"), ge = nsrc.indexOf("\n  genFinishRef.current = finishGenerate; genCommitRef.current = commitGenerated;", g), body = g < 0 || ge < 0 ? "" : nsrc.slice(g, ge);
+    const busy = body.indexOf("if (publishingRef.current) {"), arm = body.indexOf("publishingRef.current = true; setPublishing(true);"), iife = body.indexOf("(async () => {", arm);
+    const snapOk = body.indexOf("if (!snap.ok) {"), commit = body.indexOf("await genCommitRef.current(result);"), fin = body.indexOf("} finally { publishingRef.current = false; setPublishing(false); }"), pub = body.indexOf("publishWeeks(result, {");
+    check("AG4 Generate & Publish: refused while a publish is in progress, armed BEFORE the snapshot's await, released in finally; the counts move only AFTER a good snapshot (a refused publish moves nothing), in commitGenerated — with the state as it is after the await",
+      busy > 0 && arm > busy && iife > arm && snapOk > iife && commit > snapOk && fin > commit && pub > fin && body.indexOf("const commitGenerated = async (result) => {") > fin && body.indexOf("const commitGenerated = async (result) => {") < pub && count('return "busy";') === 2 // + a search already running (2026-10-12)
+        && count("disabled={publishing || !!searching}") === 1 && count("disabled={publishing || searching === \"publish\" || (previewNeedsOk.items.length > 0 && !previewAck)}") === 1,
+      JSON.stringify({ busy, arm, iife, snapOk, commit, fin, pub }));
+  }
+  check("AG4 the immediate save after Generate & Publish writes the counts AFTER the publish (not the render's)",
+    count("buildStateBundle({ schedule: merged, priorCounts: prior, year1Counts: y1 })") === 1);
+  check("AG4 a loaded preview's texts say the weeks came from the file (Needs-your-OK footnote, spacing notes), and the generator's seed panel is hidden for it",
+    (nsrc.split('previewOrigin === "json"\n                      ? "These are in the loaded file').length - 1) === 1 && count("(as in the loaded file)") === 1
+      && count('{previewOrigin === "json" ? "These are in the loaded file. Accepting publishes them as shown') === 1 && count('seedDebug && previewOrigin !== "json" && (') === 1);
+  // ── AG5: the REAL publish step, undo and audit text, on a simulated component state ──
+  {
+    const iU = nsrc.indexOf("  const pushUndo = useCallback((counts) => {"), eU = iU < 0 ? -1 : nsrc.indexOf("\n  // ─── What-If Preview ───", iU);
+    const iC = nsrc.indexOf("  const countsOfWeeks = (weeks, pick) => {"), kC = iC < 0 ? -1 : nsrc.indexOf("  const rollForwardCounts = useCallback((sched, replaced) => {", iC), eC = kC < 0 ? -1 : nsrc.indexOf("\n  }, [", kC);
+    const iP = nsrc.indexOf("  const publishWeeks = (newWeeks, how) => {"), eP = iP < 0 ? -1 : nsrc.indexOf("\n\n  // ─── Load a schedule from JSON", iP);
+    let factory = null;
+    if ([iU, eU, iC, kC, eC, iP, eP].every(x => x >= 0)) {
+      try {
+        factory = vm.runInContext(`(function (env) {
+          const { surgeons, parse, useCallback, scheduleRef, commitSchedule, schedSyncRef, schedEditable, showToast, priorCounts, year1Counts, setPriorCounts, setYear1Counts, scheduleHistory, setScheduleHistory, logAudit } = env;
+          ${nsrc.slice(iU, eU)}
+          ${nsrc.slice(iC, eC) + "\n  });"}
+          ${nsrc.slice(iP, eP)}
+          return { pushUndo, undoLastChange, rollForwardCounts, publishWeeks, netCountsText, applyCountsDelta };
+        })`, sandbox);
+      } catch (ex) { factory = null; }
+    }
+    if (!factory) check("AG5 the publish step, undo and counts are extractable and compile", false, "anchors not found or compile error");
+    else {
+      const sur = ["s1", "s2", "s3", "s4", "s5", "s6", "s7"].map(id => ({ id, name: id.toUpperCase() }));
+      const st = { schedule: {}, prior: { s1: { dc: 9, nights: 30, wknd: 10, off: 4, dcB: 0, nightsB: 0, wkndB: 0, offB: 0, totalDays: 120, totalDaysB: 0 } }, y1: {}, history: [], audits: [], toasts: [] };
+      const eng = { epoch: 4, blocked: [] }; // the engine stub: its epoch, and the weeks its undoPlan reports as adopted since a step
+      const ref = { current: st.schedule };
+      const upd = (k) => (f) => { st[k] = typeof f === "function" ? f(st[k]) : f; };
+      const render = () => factory({ surgeons: sur, parse: vm.runInContext("parse", sandbox), useCallback: (f) => f, scheduleRef: ref,
+        commitSchedule: (v) => { st.schedule = v; ref.current = v; }, schedEditable: () => true, showToast: (m) => st.toasts.push(String(m)),
+        schedSyncRef: { current: { epochNow: () => eng.epoch, undoPlan: (snap) => ({ next: JSON.parse(JSON.stringify(snap)), touched: [], blocked: eng.blocked.slice() }) } }, priorCounts: st.prior, year1Counts: st.y1,
+        setPriorCounts: upd("prior"), setYear1Counts: upd("y1"), scheduleHistory: st.history, setScheduleHistory: upd("history"),
+        logAudit: (a, msg, meta) => st.audits.push({ a, msg, meta }) });
+      const wk = (dc, n) => ({ dayCall: dc, nights: { wknd: n[4], mon: n[0], tue: n[1], wed: n[2], thu: n[3] }, off: "s7", isBackup: false, isFierceBackup: false, holidayCoverage: null });
+      const OLD = { "2026-11-09": wk("s5", ["s1", "s2", "s3", "s4", "s6"]) };
+      const P = { "2026-11-16": wk("s1", ["s2", "s3", "s4", "s5", "s6"]), "2026-11-23": wk("s2", ["s1", "s4", "s3", "s6", "s5"]) };
+      st.schedule = JSON.parse(JSON.stringify(OLD)); ref.current = st.schedule;
+      const counts = () => JSON.stringify({ p: st.prior, y: st.y1 });
+      const c0 = counts();
+      const r1 = render().publishWeeks(P, { label: "test", meta: {} });
+      const c1 = counts();
+      check("AG5 the REAL publish step: publishes, merges into the existing weeks, moves the counts, and returns exactly the counts it set (for the immediate save)",
+        c1 !== c0 && Object.keys(st.schedule).length === 3 && JSON.stringify({ p: r1.prior, y: r1.y1 }) === c1 && st.audits[0].meta.replaced === 0 && st.history.length === 1 && st.history[0].counts,
+        JSON.stringify({ c0, c1, ret: { p: r1.prior, y: r1.y1 } }).slice(0, 400));
+      render().publishWeeks(JSON.parse(JSON.stringify(P)), { label: "test", meta: {} });
+      check("AG5 publish → publish again: counts equal ONE publish; the audit says 2 weeks replaced, counts net: no change",
+        counts() === c1 && st.audits[1].meta.replaced === 2 && /2 weeks replaced a published version — counts net: no change/.test(st.audits[1].msg), st.audits[1].msg);
+      render().undoLastChange();
+      render().undoLastChange();
+      check("AG5 ↩ Undo twice takes BOTH publishes back off: the schedule AND the counts are as before the first publish", counts() === c0 && JSON.stringify(st.schedule) === JSON.stringify(OLD), counts());
+      render().publishWeeks(JSON.parse(JSON.stringify(P)), { label: "test", meta: {} });
+      check("AG5 publish → ↩ Undo → publish counts the period ONCE (Undo used to put the schedule back but not the counts)", counts() === c1, counts());
+      check("AG5 sync v2: the publish step carries the engine epoch with its counts", st.history.length >= 1 && st.history[st.history.length - 1].epoch === 4 && !!st.history[st.history.length - 1].counts, JSON.stringify(st.history.map(h => h.epoch)));
+      { const s0 = JSON.stringify(st.schedule), k0 = counts(), h0 = st.history.length; eng.blocked = ["2026-11-16"]; render().undoLastChange(); eng.blocked = [];
+        check("AG5 sync v2: an Undo the engine refuses (a week adopted since) changes NOTHING — schedule, counts and history — and says why",
+          JSON.stringify(st.schedule) === s0 && counts() === k0 && st.history.length === h0 && /Can't undo/.test(st.toasts.join(" ")), JSON.stringify({ toasts: st.toasts, h: [h0, st.history.length] })); }
+      const P2 = { "2026-11-16": wk("s3", ["s2", "s1", "s4", "s5", "s6"]) };
+      render().publishWeeks(P2, { label: "test", meta: {} });
+      const last = st.audits[st.audits.length - 1].msg;
+      check("AG5 the audit names the net in plain words: a corrected week → 'S1 service −1, nights +1; S3 service +1, nights −1'",
+        /counts net: S1 service −1, nights \+1; S3 service \+1, nights −1$/.test(last) || /counts net: S1 service −1, nights \+1; S3 service \+1, nights −1 \(this year/.test(last), last);
+      const fns = render();
+      check("AG5 netCountsText: null → 'no change'; a backup week reads as 'backup service'; off counts are included",
+        fns.netCountsText(null) === "no change" && /S4 backup service \+1/.test(fns.netCountsText({ s4: { dc: 0, nights: 0, wknd: 0, off: 0, dcB: 1, nightsB: 0, wkndB: 0, offB: 0 } }))
+          && /S7 off \+2/.test(fns.netCountsText({ s7: { dc: 0, nights: 0, wknd: 0, off: 2, dcB: 0, nightsB: 0, wkndB: 0, offB: 0 } })));
+    }
+  }
+})();
+
+// ─── AH. The search, strain and the floor in the app (owner brief 2026-10-12, PR 2) ───
+// The generator's side is pinned by test/generator-regression.js (live
+// scenario + benchmark + oracle). Here, the app's side:
+//   AH1 Schedule Warnings (the REAL conflicts memo): rule 1 — a service-week
+//       surgeon off (vacation / no-call) on that Sunday is one line; rule 2 —
+//       Thu night + that weekend is one line (not when the cards design it or
+//       a holiday 24h holds the Friday)
+//   AH2 Schedule Warnings (the REAL silvisConflicts memo): a Silvis primary on
+//       the Sunday after FAK's Davenport service week is one line
+//   AH3 Needs your OK: every item kind listScheduleBends emits sits in exactly
+//       one group; the box renders the groups; the footnote no longer claims
+//       the bends are "the minimum the calendar allows"
+//   AH4 ONE seed builder (the REAL buildPrevWeekSeed): that week's service
+//       week, weekend AND weeknights, and the service-week history — used by
+//       Generate, Search more and the preview's box
+//   AH5 the REAL runSearch: time slices until perfect or the budget is spent;
+//       cancelled → null; a throwing slice still ends the search
+//   AH6 the wiring: Generate / Re-roll / Regenerate / Search more go through
+//       the search; Accept, Discard and a JSON load cancel it; Search more
+//       starts from the preview and drops a late result; the progress line
+//       re-renders itself, not the app
+//   AH7 generator.js: one FLEX list, the 10-second budget, and a generate()
+//       result is the weeks and nothing else
+await (async () => {
+  const nsrcAH = src.replace(/\r\n/g, "\n");
+  const G = vm.runInContext("({ fmt, addD, parse, listScheduleBends, generate, createScheduleSearch })", sandbox);
+  // ── AH1 ──
+  {
+    const START = "  const conflicts = useMemo(() => {";
+    const s0 = nsrcAH.indexOf(START), e0 = s0 < 0 ? -1 : nsrcAH.indexOf("\n  }, [", s0);
+    const body = s0 < 0 || e0 < 0 ? null : nsrcAH.slice(s0 + START.length, e0);
+    let runC = null;
+    try { runC = body ? vm.runInContext("(function (env) { const { schedule, surgeons, sMap, SHIFT_LABELS, holidayAssignments, vacations, noCallDays } = env; const buildGenAvailability = env.buildGenAvailability || (() => { const m = {}; [vacations || {}, noCallDays || {}].forEach(src => Object.keys(src).forEach(k => { m[k] = (m[k] || []).concat(src[k]); })); return m; }); const buildSilvisPrimary = env.buildSilvisPrimary || (() => null); return (() => {" + body + "})(); })", sandbox, { filename: "ah-conflicts.js" }) : null; } catch (ex) { runC = null; }
+    if (!runC) check("AH1 conflicts memo extractable for execution", false, "anchor / compile");
+    else {
+      let mon = G.parse("2099-03-01"); while (mon.getDay() !== 1) mon = G.addD(mon, 1);
+      const M = G.fmt(mon), d = (o) => G.fmt(G.addD(mon, o));
+      const surgeons = [{ id: "s1", name: "DJA" }, { id: "s2", name: "MCC" }, { id: "s3", name: "RPC" }, { id: "s4", name: "KJH" }, { id: "s5", name: "REH" }, { id: "s6", name: "FAK" }, { id: "s7", name: "ARW" }];
+      const sMap = Object.fromEntries(surgeons.map((s, i) => [s.id, { name: s.name, idx: i }]));
+      const LABELS = vm.runInContext("SHIFT_LABELS", sandbox);
+      const base = (over) => ({ [M]: Object.assign({ dayCall: "s1", nights: { mon: "s2", tue: "s3", wed: "s4", thu: "s5", wknd: "s7" } }, over || {}) });
+      const run = (env) => runC(Object.assign({ schedule: base(), surgeons, sMap, SHIFT_LABELS: LABELS, holidayAssignments: {}, vacations: {}, noCallDays: {} }, env));
+      const keysOf = (r, p) => r.filter(x => x.key.startsWith(p)).map(x => x.key);
+      const vacSun = run({ vacations: { s1: [[d(6), d(6)]] } }), ncSun = run({ noCallDays: { s1: [[d(6), d(6)]] } }), clean = run({});
+      check("AH1 rule 1: the service-week surgeon on vacation that SUNDAY → one 'svc-sun' line keyed from facts, saying the surgeon must be free that Sunday",
+        JSON.stringify(keysOf(vacSun, "svc-sun|")) === JSON.stringify([`svc-sun|${M}|s1|${d(6)}|vacation`]) && /DJA is on Service Week .* but is off Sun .* \(vacation\) — the service-week surgeon must be free that Sunday/.test(vacSun.find(x => x.key.startsWith("svc-sun|")).message),
+        JSON.stringify(vacSun.map(x => x.key)));
+      check("AH1 rule 1: a NO-CALL Sunday is the same line (kind no-call); a free Sunday → none",
+        JSON.stringify(keysOf(ncSun, "svc-sun|")) === JSON.stringify([`svc-sun|${M}|s1|${d(6)}|no-call`]) && keysOf(clean, "svc-sun|").length === 0, JSON.stringify([ncSun.map(x => x.key), clean.map(x => x.key)]));
+      const thu = run({ schedule: base({ nights: { mon: "s2", tue: "s3", wed: "s4", thu: "s7", wknd: "s7" } }) });
+      check("AH1 rule 2: Thu night + that weekend by one surgeon → one 'thu-wknd' line (two nights in a row)",
+        JSON.stringify(keysOf(thu, "thu-wknd|")) === JSON.stringify([`thu-wknd|${M}|s7`]) && /ARW has Thu night then the Weekend \(Fri night\) — two nights in a row/.test(thu.find(x => x.key.startsWith("thu-wknd|")).message), JSON.stringify(thu.map(x => x.key)));
+      const holFri = run({ schedule: base({ nights: { mon: "s2", tue: "s3", wed: "s4", thu: "s7", wknd: "s7" }, holidayCoverage: { [d(4)]: { surgeonId: "s3", name: "Fri 24h" } } }) });
+      check("AH1 rule 2: a holiday 24h holding that Friday breaks the run — no 'thu-wknd' line", keysOf(holFri, "thu-wknd|").length === 0, JSON.stringify(holFri.map(x => x.key)));
+    }
+  }
+  // ── AH2 ──
+  {
+    const START = "  const silvisConflicts = useMemo(() => {";
+    const s0 = nsrcAH.indexOf(START), e0 = s0 < 0 ? -1 : nsrcAH.indexOf("\n  }, [", s0);
+    const body = s0 < 0 || e0 < 0 ? null : nsrcAH.slice(s0 + START.length, e0);
+    let runS = null;
+    try { runS = body ? vm.runInContext("(function (env) { const { silvisActive, isPublicMode, schedule, silvisDays, silvisFakId, nameOf, silvisRows, silvisLoadError } = env; return (() => {" + body + "})(); })", sandbox, { filename: "ah-silvis.js" }) : null; } catch (ex) { runS = null; }
+    if (!runS) check("AH2 silvisConflicts memo extractable for execution", false, "anchor / compile");
+    else {
+      let mon = G.parse("2099-03-01"); while (mon.getDay() !== 1) mon = G.addD(mon, 1);
+      const M = G.fmt(mon), d = (o) => G.fmt(G.addD(mon, o));
+      const env = (primary, dc) => ({ silvisActive: true, isPublicMode: false, schedule: { [M]: { dayCall: dc, nights: { mon: "s2", tue: "s3", wed: "s4", thu: "s5", wknd: "s7" } } },
+        silvisDays: { primary: new Set(primary), backup: new Set(), fetchedAt: new Date().toISOString(), from: d(-30), to: d(60) }, silvisFakId: "s6", nameOf: (id) => ({ s6: "FAK" })[id] || id, silvisRows: [{}], silvisLoadError: null });
+      let onSun = null, other = null, notHis = null;
+      try { onSun = runS(env([d(6)], "s6")); other = runS(env([d(13)], "s6")); notHis = runS(env([d(6)], "s1")); } catch (ex) { onSun = null; }
+      const sunKeys = (r) => (r || []).filter(x => x.key.startsWith("silvis-sun|")).map(x => x.key);
+      check("AH2 rule 1: a Silvis primary on the SUNDAY of FAK's Davenport service week → one 'silvis-sun' line; a Silvis day elsewhere, or another surgeon's service week → none",
+        !!onSun && JSON.stringify(sunKeys(onSun)) === JSON.stringify([`silvis-sun|s6|${M}|${d(6)}`]) && sunKeys(other).length === 0 && sunKeys(notHis).length === 0,
+        JSON.stringify([sunKeys(onSun), sunKeys(other), sunKeys(notHis)]));
+      // rule 2 across the two jobs (2026-10-13): a published Davenport overnight of FAK's next to a Silvis 24h — both sides, by
+      // weekHolders' rule (a holiday row counts, a Saturday override hands the night away), and never a past week
+      const adjEnv = (primary, wk, mStr) => ({ silvisActive: true, isPublicMode: false, schedule: { [mStr || M]: wk },
+        silvisDays: { primary: new Set(primary), backup: new Set(), fetchedAt: new Date().toISOString(), from: d(-30), to: d(60) }, silvisFakId: "s6", nameOf: (id) => ({ s6: "FAK" })[id] || id, silvisRows: [{}], silvisLoadError: null });
+      const adjKeys = (r) => (r || []).filter(x => x.key.startsWith("silvis-adj|")).map(x => x.key).sort();
+      const base = { dayCall: "s1", nights: { mon: "s2", tue: "s3", wed: "s4", thu: "s6", wknd: "s7" } };
+      let thuFri = null, satBoth = null, ovr = null, row = null, past = null;
+      try {
+        thuFri = runS(adjEnv([d(4)], base));                                                                   // FAK Thu night → Silvis Fri
+        satBoth = runS(adjEnv([d(5)], { ...base, nights: { ...base.nights, thu: "s5", wknd: "s6" } }));         // FAK weekend Fri + Sun around a Silvis Sat
+        ovr = runS(adjEnv([d(4)], { ...base, dayCall: "s6", nights: { ...base.nights, thu: "s5" }, dayCallOverrides: { [d(5)]: "s2" } })); // FAK's service Sat handed to MCC
+        row = runS(adjEnv([d(3)], { ...base, nights: { ...base.nights, thu: "s5" }, holidayCoverage: { [d(2)]: { surgeonId: "s6" } } })); // FAK's holiday 24h Wed → Silvis Thu
+        let pm = G.parse("2020-03-02"); const PM = G.fmt(pm);
+        past = runS(adjEnv([G.fmt(G.addD(pm, 4))], base, PM));
+      } catch (ex) { thuFri = null; }
+      check("AH2 rule 2 across the two jobs: a published Davenport overnight of FAK's next to a Silvis 24h is listed — Thu night → Silvis Fri, both sides of a Silvis Saturday, a holiday 24h row of his; not a Saturday handed to someone else by an override, not a past week",
+        !!thuFri && JSON.stringify(adjKeys(thuFri)) === JSON.stringify([`silvis-adj|s6|${d(4)}|${d(3)}`])
+          && JSON.stringify(adjKeys(satBoth)) === JSON.stringify([`silvis-adj|s6|${d(5)}|${d(4)}`, `silvis-adj|s6|${d(5)}|${d(6)}`].sort())
+          && adjKeys(ovr).length === 0 && JSON.stringify(adjKeys(row)) === JSON.stringify([`silvis-adj|s6|${d(3)}|${d(2)}`]) && adjKeys(past).length === 0
+          && (thuFri.find(x => x.key.startsWith("silvis-adj|")) || {}).severity === "warning",
+        JSON.stringify([adjKeys(thuFri), adjKeys(satBoth), adjKeys(ovr), adjKeys(row), adjKeys(past)]));
+    }
+  }
+  // ── AH3 ──
+  {
+    const gs = nsrcAH.indexOf("const NEEDS_OK_GROUPS = ["), ge = gs < 0 ? -1 : nsrcAH.indexOf("];\n", gs);
+    let groups = null; try { groups = gs < 0 ? null : vm.runInContext("(" + nsrcAH.slice(gs + "const NEEDS_OK_GROUPS = ".length, ge + 1) + ")", sandbox); } catch (ex) { groups = null; }
+    const KINDS = ["error", "lock", "empty", "timeoff", "hard", "lastResort", "strain", "bend", "flexStrain", "crowded"];
+    const all = groups ? groups.flatMap(g => g.kinds) : [];
+    check("AH3 every item kind (incl. the check's own 'error') sits in exactly ONE Needs-your-OK group, rule breaks first",
+      !!groups && KINDS.every(k => all.filter(x => x === k).length === 1) && all.length === KINDS.length && groups[0].kinds.includes("hard") && groups[0].kinds.includes("timeoff"), JSON.stringify(groups));
+    // generator.js emits only kinds the groups know (a crafted schedule with a hard pair, a Sunday off, strain, a bend, an empty slot, a lock, crowding)
+    const S7 = ["DJA", "MCC", "RPC", "KJH", "REH", "FAK", "ARW"].map((n, i) => ({ id: "s" + (i + 1), name: n }));
+    const ms = ["2099-03-02", "2099-03-09"].map(G.parse);
+    const sched = { "2099-03-02": { dayCall: "s1", nights: { mon: "s2", tue: "s2", wed: "s3", thu: "s4", wknd: "s5" } }, "2099-03-09": { dayCall: "s5", nights: { mon: null, tue: "s7", wed: "s2", thu: "s6", wknd: "s6" } } };
+    const off = Object.fromEntries(["s2", "s3", "s4", "s7", "s6"].map(id => [id, [["2099-03-12", "2099-03-12"]]]));
+    off.s1 = [["2099-03-08", "2099-03-08"]];
+    const lst = G.listScheduleBends(sched, { surgeons: S7, mondays: ms, vac: off, vacationsOnly: {}, holAssignments: {}, prevWeekSeed: null, locks: [{ mondayStr: "2099-03-09", slot: "dc", surgeonId: "s3" }] });
+    const got = [...new Set(lst.items.map(i => i.kind))].sort();
+    check("AH3 the crafted schedule exercises the new kinds, and every kind listScheduleBends emits is in a group",
+      ["hard", "timeoff", "empty", "lock", "bend", "crowded"].every(k => got.includes(k)) && got.every(k => all.includes(k)) && lst.items.some(i => i.key === "sunday" && /must be free that Sunday/.test(i.text)), JSON.stringify(got) + " " + JSON.stringify(lst.items.map(i => i.text)));
+    check("AH3 the box renders the groups (subheads), and the footnote no longer claims the bends are the calendar's minimum",
+      count("{NEEDS_OK_GROUPS.map(g => { const its = previewNeedsOk.items.filter(it => g.kinds.includes(it.kind));") === 1 && count("the bends themselves are the minimum the calendar allows") === 0
+        && count("no time off and no two nights in a row (designed holiday runs aside — anything left breaking them is under Must fix), FAK's last resort, service weeks even, weekends even, the least strain, the mildest bends, totals even") === 1);
+  }
+  // ── AH4 ──
+  {
+    const i = nsrcAH.indexOf("  const buildPrevWeekSeed = (first) => {"), e = i < 0 ? -1 : nsrcAH.indexOf("\n  };\n", i);
+    let mk = null; try { mk = i < 0 ? null : vm.runInContext("(function (env) { const { mondays, schedule, fmt, addD } = env; return (" + nsrcAH.slice(i + "  const buildPrevWeekSeed = ".length, e) + "\n  }); })", sandbox); } catch (ex) { mk = null; }
+    if (!mk) check("AH4 buildPrevWeekSeed extractable", false, "anchor / compile");
+    else {
+      const schedule = { "2026-11-09": { dayCall: "s2", nights: { mon: "s1", tue: "s3", wed: "s4", thu: "s7", wknd: "s5" }, holidayCoverage: { "2026-11-15": { surgeonId: "s6" } }, dayCallOverrides: { "2026-11-14": "s3" } }, "2026-11-02": { dayCall: "s4", nights: {} }, "2026-10-26": { dayCall: "s2", nights: {} } };
+      const seedOf = mk({ mondays: [G.parse("2026-11-16")], schedule, fmt: G.fmt, addD: G.addD });
+      const s1 = seedOf(), s2 = seedOf(G.parse("2026-11-23"));
+      check("AH4 the ONE seed: the week before's service week, weekend AND weeknights, and each surgeon's latest service week (nearest wins); `first` overrides the Generate settings",
+        JSON.stringify(s1) === JSON.stringify({ dayCall: "s2", wknd: "s5", nights: { mon: "s1", tue: "s3", wed: "s4", thu: "s7" }, holidayCoverage: { "2026-11-15": { surgeonId: "s6" } }, dayCallOverrides: { "2026-11-14": "s3" }, recentDc: { s2: -1, s4: -2 } }) && s2.dayCall === null && s2.recentDc.s2 === -2,
+        JSON.stringify([s1, s2]));
+    }
+    {
+      // the engine reads the seed's dates by weekHolders' rule: the row's surgeon held that Sunday, not the weekend slot's
+      const S7 = ["DJA", "MCC", "RPC", "KJH", "REH", "FAK", "ARW"].map((n, i) => ({ id: "s" + (i + 1), name: n }));
+      const wk = { "2026-11-16": { dayCall: "s1", nights: { mon: "s5", tue: "s2", wed: "s3", thu: "s4", wknd: "s7" } } };
+      const ctx = (seed) => ({ surgeons: S7, mondays: ["2026-11-16"], vac: {}, vacationsOnly: {}, holAssignments: {}, prevWeekSeed: seed });
+      const plain = { dayCall: "s2", wknd: "s5", nights: {}, recentDc: {} };
+      const hard = (seed) => G.listScheduleBends(wk, ctx(seed)).items.filter(i => i.kind === "hard").map(i => i.who);
+      check("AH4 the engine reads the seed by weekHolders' rule: a holiday/swap row on the seam Sunday (or an override on its Saturday) is who worked it — REH's weekend Sun → Mon night is a rule-2 item; with FAK's row on that Sunday it is not",
+        JSON.stringify(hard(plain)) === JSON.stringify(["s5"]) && hard({ ...plain, holidayCoverage: { "2026-11-15": { surgeonId: "s6" } } }).length === 0,
+        JSON.stringify([hard(plain), hard({ ...plain, holidayCoverage: { "2026-11-15": { surgeonId: "s6" } } })]));
+    }
+    check("AH4 Generate, Search more and the preview's box all build the seed with it (the box used to drop the history and the weeknights)",
+      count("const prevWeekSeed = buildPrevWeekSeed();") === 1 && count("buildPrevWeekSeed(ms[0])") === 1 && count("prevWeekSeed: keys.length ? buildPrevWeekSeed(parse(keys[0])) : null,") === 1
+        && count("prevWeekSeed: buildPrevWeekSeed(), locks: pendingLocks, silvisPrimary: buildSilvisPrimary() }).items.length;") === 1 // Generate & Publish's gate: today's seed AND the locks, like the box
+        && count("locks: pendingLocks, // a lock the schedule doesn't honor is listed too") === 1);
+  }
+  // ── AH5 ──
+  {
+    const i = nsrcAH.indexOf("  const runSearch = (session, purpose, budgetMs) => new Promise(resolve => {"), e = i < 0 ? -1 : nsrcAH.indexOf("\n  });\n", i);
+    let mk = null; try { mk = i < 0 ? null : vm.runInContext("(function (env) { const { searchRef, setSearching, setTimeout } = env; return (" + nsrcAH.slice(i + "  const runSearch = ".length, e) + "\n  })); })", sandbox); } catch (ex) { mk = null; }
+    // the REAL cancelSearch + publishSearchRunning, on the same ref as the real runSearch
+    const ci = nsrcAH.indexOf("  const cancelSearch = () => {"), ce = ci < 0 ? -1 : nsrcAH.indexOf("\n", nsrcAH.indexOf("  const publishSearchRunning = () =>", ci));
+    let mkAll = null; try { mkAll = ci < 0 || i < 0 ? null : vm.runInContext("(function (env) { const { searchRef, setSearching, setTimeout } = env; const runSearch = (" + nsrcAH.slice(i + "  const runSearch = ".length, e) + "\n  }));\n" + nsrcAH.slice(ci, ce) + "\n return { runSearch, cancelSearch, publishSearchRunning }; })", sandbox); } catch (ex) { mkAll = null; }
+    if (!mk) check("AH5 runSearch extractable", false, "anchor / compile");
+    else {
+      const mkEnv = () => { const flags = []; return { flags, env: { searchRef: { current: null }, setSearching: (v) => flags.push(v), setTimeout } }; };
+      const fake = (perfectAt, throwAt) => ({ n: 0, step() { this.n++; if (throwAt && this.n === throwAt) throw new Error("boom"); }, status() { return { perfect: this.n >= perfectAt }; } });
+      const A = mkEnv(), sA = fake(3); const rA = await mk(A.env)(sA, "generate", 60000);
+      check("AH5 the REAL runSearch: slices until perfect, then resolves { session, ms } and clears the flag (generate → null)",
+        !!rA && rA.session === sA && sA.n === 3 && A.env.searchRef.current === null && JSON.stringify(A.flags) === JSON.stringify(["generate", null]), JSON.stringify([sA.n, A.flags]));
+      const B = mkEnv(), sB = fake(1e9); const pB = mk(B.env)(sB, "more", 60000);
+      await new Promise(r => setTimeout(r, 5)); B.env.searchRef.current = null; // cancelSearch
+      const rB = await pB;
+      check("AH5 cancelled (Accept / Discard / a JSON load clears the ref) → resolves null; the search stops", rB === null && sB.n >= 1 && sB.n < 1e9, JSON.stringify([rB, sB.n]));
+      const C = mkEnv(), sC = fake(1e9); const rC = await mk(C.env)(sC, "generate", 0);
+      check("AH5 the budget counts ACTIVE search time: 0 ms → one slice, then done", !!rC && sC.n === 1 && C.env.searchRef.current === null, JSON.stringify(sC.n));
+      const D = mkEnv(), sD = fake(1e9, 2), errs = []; const oldErr = console.error; console.error = (...a) => errs.push(a.join(" "));
+      const rD = await mk(D.env)(sD, "generate", 60000); console.error = oldErr;
+      check("AH5 a slice that throws ends the search with what it has (no endless 'Searching…'), and says so in the console", !!rD && sD.n === 2 && D.env.searchRef.current === null && /Schedule search failed/.test(errs.join(" ")), JSON.stringify([sD.n, errs]));
+      if (!mkAll) check("AH5 the real cancelSearch / publishSearchRunning extractable with runSearch", false, "anchor / compile");
+      else {
+        const E1 = mkEnv(), f1 = mkAll(E1.env), s1 = fake(1e9); const p1 = f1.runSearch(s1, "generate", 60000);
+        await new Promise(r => setTimeout(r, 5)); f1.cancelSearch();
+        const r1 = await Promise.race([p1, new Promise(r => setTimeout(() => r("TIMEOUT"), 3000))]); // a cancel that doesn't cancel fails here, it doesn't hang the suite
+        if (r1 === "TIMEOUT") E1.env.searchRef.current = null;
+        const n1 = s1.n; await new Promise(r => setTimeout(r, 20));
+        check("AH5 the REAL cancelSearch stops a preview-bound search: it resolves null, the ref is cleared, and the session gets no more slices", r1 === null && E1.env.searchRef.current === null && s1.n === n1 && JSON.stringify(E1.flags) === JSON.stringify(["generate", null]), JSON.stringify([r1, n1, s1.n, E1.flags]));
+        const E2 = mkEnv(), f2 = mkAll(E2.env), s2 = { n: 0, step() { this.n++; const t = Date.now(); while (Date.now() - t < 1) {} }, status() { return { perfect: false }; } }; const p2 = f2.runSearch(s2, "publish", 30);
+        await new Promise(r => setTimeout(r, 5)); f2.cancelSearch(); const running = f2.publishSearchRunning(); const r2 = await p2;
+        check("AH5 …but never a Generate & Publish search (its result doesn't go to the preview): it keeps running to its end and publishSearchRunning() says so meanwhile", running === true && !!r2 && r2.session === s2 && E2.env.searchRef.current === null, JSON.stringify([running, !!r2]));
+        // ACTIVE time: each slice works ~2 ms, the gap between slices is ~25 ms (a throttled tab) — wall-clock accounting would stop after ~2 slices
+        const E3 = mkEnv(); E3.env.setTimeout = (fn) => setTimeout(fn, 25);
+        const s3 = { n: 0, step() { this.n++; const t = Date.now(); while (Date.now() - t < 2) {} }, status() { return { perfect: false }; } };
+        const r3 = await mkAll(E3.env).runSearch(s3, "generate", 30);
+        check("AH5 the budget is ACTIVE search time: slow gaps between slices (a hidden, throttled tab) don't use it up", !!r3 && s3.n >= 10 && r3.ms >= 30, JSON.stringify([s3.n, r3 && r3.ms]));
+        const S7r = ["DJA", "MCC", "RPC", "KJH", "REH", "FAK", "ARW"].map((n, k) => ({ id: "s" + (k + 1), name: n }));
+        const msr = [0, 7, 14, 21, 28, 35, 42].map(o => G.addD(G.parse("2099-03-02"), o));
+        const real = G.createScheduleSearch(S7r, msr, {}, new Set(), {}, {}, new Set(), null, [], null, {}, null);
+        const E4 = mkEnv(), r4 = await mkAll(E4.env).runSearch(real, "generate", 2000);
+        check("AH5 a REAL search session through the REAL runSearch: it ends (perfect, or the budget) with a schedule and schedules checked", !!r4 && r4.session === real && !!real.best() && real.status().checked > 0, JSON.stringify(real.status()));
+      }
+    }
+  }
+  // ── AH6 ──
+  {
+    const dg = nsrcAH.indexOf("  const doGenerate = async (preview) => {"), dge = nsrcAH.indexOf("\n  };\n", dg), dgb = dg < 0 ? "" : nsrcAH.slice(dg, dge);
+    check("AH6 Generate goes through the search for SEARCH_MS and refuses a second search while one runs",
+      dgb.indexOf('if (searchRef.current) { showToast("A schedule search is already running') > 0 && dgb.indexOf('const done = await runSearch(search, preview ? "generate" : "publish", SEARCH_MS);') > dgb.indexOf("const search = createScheduleSearch(") && dgb.indexOf("return genFinishRef.current(result, preview, clickSig, pendingLocks, genEpoch);") > 0 && dgb.indexOf("const result = done && done.session.best();") > 0);
+    check("AH6 Accept, Discard and a JSON load cancel a running search first (Discard and a load also clear the last search's count, which no longer applies)",
+      /const acceptPreview = \(\) => \{\n[^]*?if \(publishSearchRunning\(\)\) \{[^\n]*return; \}\n    cancelSearch\(\);/.test(nsrcAH) && /const discardPreview = \(\) => \{\n    cancelSearch\(\); setSearchStats\(null\);/.test(nsrcAH)
+        && /const loadScheduleJson = \(text, fileName\) => \{\n    if \(publishSearchRunning\(\)\) \{[^\n]*return false; \}\n    cancelSearch\(\); setSearchStats\(null\);/.test(nsrcAH)
+        && count('const cancelSearch = () => { const sr = searchRef.current; if (sr && sr.purpose !== "publish") { searchRef.current = null; setSearching(null); } };') === 1);
+    const sm = nsrcAH.indexOf("  const searchMore = async () => {"), sme = nsrcAH.indexOf("\n  };\n", sm), smb = sm < 0 ? "" : nsrcAH.slice(sm, sme);
+    check("AH6 🔍 Search more starts FROM the preview (seed), replaces it only when strictly better, and drops a late result if the preview changed meanwhile",
+      smb.indexOf("search.seed(base);") > 0 && smb.indexOf('const done = await runSearch(search, "more", SEARCH_MS);') > smb.indexOf("search.seed(base);")
+        && smb.indexOf("if (!done || previewSchedRef.current !== base) return;") > 0 && smb.indexOf("if (st.improved) {") > smb.indexOf("previewSchedRef.current !== base")
+        && count("previewSchedRef.current = previewSchedule;") === 1 && count('<button onClick={searchMore} disabled={!!searching || publishing}') === 1
+        // the same floor and seam as Generate: vacations ∪ no-call ∪ Silvis as vac, the untouched vacations as vacationsOnly, the locks, the seed
+        && count("createScheduleSearch(surgeons, ms, buildGenAvailability(), backupMondaySet, priorCounts, buildPrefs(), fierceBackupSet, holidayAssignments, pendingLocks, buildPrevWeekSeed(ms[0]), vacations, year1Counts, { silvisPrimary: buildSilvisPrimary() })") === 1
+        && count("createScheduleSearch(") === 2);
+    check("AH6 the buttons that start a search are disabled while one runs; the progress line polls the ref itself (setInterval in SearchProgress), not app state",
+      count('<button onClick={()=>doGenerate(true)} disabled={!!searching}') === 1 && count("disabled={publishing || !!searching}") === 1 && count("<button onClick={()=>doGenerate(false)} disabled={!!searching}") === 1
+        && /function SearchProgress\(\{ searchRef, dk \}\) \{\n  const \[, setTick\] = React\.useState\(0\);\n  React\.useEffect\(\(\) => \{ const t = setInterval\(\(\) => setTick\(n => n \+ 1\), 250\); return \(\) => clearInterval\(t\); \}, \[\]\);/.test(nsrcAH)
+        && count("<SearchProgress searchRef={searchRef} dk={dk} />") === 3);
+  }
+  // ── AH7 ──
+  {
+    const gsrc = fs.readFileSync(path.join(ROOT, "generator.js"), "utf8");
+    check("AH7 generator.js: ONE FLEX list (by code), the app's 10-second search budget, the preferences polish's size, and the brief's tier order (floor > last resort > service weeks > weekends > strain > bends > totals > soft > preferences), compared in that order",
+      (gsrc.match(/const FLEX = \["FAK"\];/g) || []).length === 1 && (gsrc.match(/const SEARCH_MS = 10000;/g) || []).length === 1 && (gsrc.match(/const SEARCH_PREFS_POLISH = 3000;/g) || []).length === 1
+        && gsrc.includes('const RULE_TIERS = ["floor", "lastResort", "svc", "wknd", "strain", "bend", "total", "soft", "prefs"];')
+        && gsrc.includes("  for (let i = 0; i < RULE_TIERS.length; i++) { if (A[i] < B[i]) return -1; if (A[i] > B[i]) return 1; }"));
+    const S7 = ["DJA", "MCC", "RPC", "KJH", "REH", "FAK", "ARW"].map((n, i) => ({ id: "s" + (i + 1), name: n }));
+    const ms = [0, 7, 14, 21, 28, 35, 42].map(o => G.addD(G.parse("2099-03-02"), o));
+    const r = G.generate(S7, ms, {}, new Set(), {}, {}, new Set(), null, [], null, {}, null);
+    const se = G.createScheduleSearch(S7, ms, {}, new Set(), {}, {}, new Set(), null, [], null, {}, null).seed(r);
+    check("AH7 a generate() result is the weeks and NOTHING else enumerable (the app spreads it into the schedule); a search seeded with it starts 'not improved'",
+      JSON.stringify(Object.keys(r)) === JSON.stringify(ms.map(G.fmt)) && se.status().improved === false && !!se.best(), JSON.stringify(Object.keys(r)));
+    // seed(): a perfect schedule stays as it is (nothing checked, nothing replaced); a broken one is ranked as listed, then improved
+    se.run({ proposals: 20000 });
+    const POLISH = vm.runInContext("SEARCH_PREFS_POLISH", sandbox);
+    check("AH7 Search more from a schedule that is already perfect: only the short preferences polish (SEARCH_PREFS_POLISH schedules), then the same schedule back, 'not improved'",
+      se.status().checked >= POLISH && se.status().checked <= POLISH + 1000 && se.status().improved === false && se.status().perfect === true && JSON.stringify(se.best()) === JSON.stringify(r), JSON.stringify(se.status()));
+    // step() — the app's ONLY way into the search — does work every slice, and a fresh start (a whole
+    // generateOnce, up to ~0.2 s on a squeezed period) only ever OPENS a slice: on the live period (never
+    // perfect, its improvers are used up in well under a second) one long step() opens exactly one start
+    { const LF = JSON.parse(fs.readFileSync(path.join(ROOT, "test", "fixtures", "generator-live-2026-11-16.json"), "utf8"));
+      const sl = G.createScheduleSearch(LF.surgeons, LF.mondays.map(G.parse), LF.avail, new Set(LF.backupMondays), LF.priorCounts, LF.prefs, new Set(LF.fierceBackupMondays), LF.holAssignments, [], LF.prevWeekSeed, LF.vacationsOnly, LF.yearCounts);
+      const a0 = sl.status(); sl.step(1500); const a1 = sl.status(); sl.step(1500); const a2 = sl.status();
+      check("AH7 step() does work (schedules checked, a best found) and opens exactly ONE fresh start per slice, however long the slice",
+        a1.starts - a0.starts === 1 && a2.starts - a1.starts <= 1 && a1.checked > 1000 && a2.checked > a1.checked && !!sl.best(), JSON.stringify([a0, a1, a2].map(x => [x.starts, x.checked]))); }
+    const broken = JSON.parse(JSON.stringify(r)); const m0 = ms.map(G.fmt)[2];
+    broken[m0].nights.tue = broken[m0].nights.mon; // two nights in a row (rule 2) for that surgeon
+    const ctx7 = { surgeons: S7, mondays: ms, vac: {}, vacationsOnly: {}, holAssignments: null, prevWeekSeed: null };
+    const listed = G.listScheduleBends(broken, ctx7).tiers;
+    const sb7 = G.createScheduleSearch(S7, ms, {}, new Set(), {}, {}, new Set(), null, [], null, {}, null).seed(broken);
+    const before = sb7.status().tiers;
+    sb7.run({ proposals: 20000 });
+    const after = sb7.status();
+    const T7 = ["floor", "lastResort", "svc", "wknd", "strain", "bend", "total"];
+    check("AH7 Search more from a broken schedule: it starts from exactly what Needs your OK ranks (two nights in a row on the floor), checks schedules, and replaces it only with a strictly better one",
+      T7.every(k => before[k] === listed[k]) && before.floor > 0 && after.checked > 0 && after.improved === true && after.tiers.floor < before.floor,
+      JSON.stringify({ before, listed, after }));
+  }
+  // ── AH8: the brief's designed runs and its strain texts, on crafted schedules (generator.js listScheduleBends) ──
+  {
+    const S7 = ["DJA", "MCC", "RPC", "KJH", "REH", "FAK", "ARW"].map((n, i) => ({ id: "s" + (i + 1), name: n }));
+    const md = (d) => (d.getMonth() + 1) + "/" + d.getDate();
+    const monOf = (y, mo, dd) => { let d = G.parse(`${y}-${mo}-${dd}`); while (d.getDay() !== 1) d = G.addD(d, -1); return d; };
+    const W = (dc, mon, tue, wed, thu, wknd) => ({ dayCall: dc, nights: { wknd, mon, tue, wed, thu } });
+    const run8 = (weeks, mons, hol, seed) => G.listScheduleBends(weeks, { surgeons: S7, mondays: mons, vac: {}, vacationsOnly: {}, holAssignments: hol, prevWeekSeed: seed || null });
+    // (a) a card's Night Before + its own 24h → designed; (b) a card fixing one partner on two other consecutive dates → still two nights in a row
+    {
+      const m = monOf(2099, "11", "26"), M = G.fmt(m), d = (o) => G.fmt(G.addD(m, o));
+      const card = (a, b, cov) => ({ 2099: [{ name: "Thanksgiving", date: d(3), surgeonA: a, surgeonB: b, type: "major", coverage: cov }] });
+      const eveRun = run8({ [M]: W("s2", "s4", "s5", "s2", "s2", "s3") }, [M], card("s2", "s3", [{ date: d(2), surgeon: "s2", isEve: true }, { date: d(3), surgeon: "s2" }, { date: d(4), surgeon: "s3" }]));
+      const collapsed = run8({ [M]: W("s2", "s4", "s5", "s1", "s2", "s2") }, [M], card("s2", "s2", [{ date: d(3), surgeon: "s2" }, { date: d(4), surgeon: "s2" }]));
+      check("AH8 rule 2's designed runs are exactly the brief's: a card's Night Before → its own 24h is not listed; a card that fixes a partner on two other dates in a row (Thu 24h → Fri 24h → …) IS (only FAK's Christmas is the other exemption)",
+        eveRun.counts.hard === 0 && collapsed.counts.hard === 3 && collapsed.items.some(it => it.kind === "hard" && it.who === "s2"), JSON.stringify([eveRun.counts, collapsed.counts, collapsed.items.filter(i => i.kind === "hard").map(i => i.text)]));
+    }
+    // (c) two weekends in a row that the cards fix entirely → no strain; one of them a free choice → strain
+    {
+      const m = monOf(2099, "03", "04"), M0 = G.fmt(m), M1 = G.fmt(G.addD(m, 7)), d = (o) => G.fmt(G.addD(m, o));
+      const sunCard = (date) => ({ name: "July 4th", date, surgeonA: "s3", surgeonB: null, type: "minor", coverage: [{ date, surgeon: "s3" }] });
+      const weeks = { [M0]: W("s1", "s2", "s4", "s5", "s7", "s3"), [M1]: W("s6", "s4", "s2", "s1", "s5", "s3") };
+      const both = run8(weeks, [M0, M1], { 2099: [sunCard(d(6)), sunCard(d(13))] }), one = run8(weeks, [M0, M1], { 2099: [sunCard(d(6))] });
+      check("AH8 strain a: two weekends in a row that the holiday cards fix entirely are not strain (both exempt); with one of them a free choice, it is one unit",
+        both.tiers.strain === 0 && one.tiers.strain === 1 && one.items.some(it => it.kind === "strain" && it.key === "wkndRun" && it.who === "s3"), JSON.stringify([both.tiers.strain, one.tiers.strain, one.items.filter(i => i.kind === "strain").map(i => i.text)]));
+    }
+    // (d) the brief's plain words: "3 weekends in a row, <first>–<last>" and "every other night ×3, …"
+    {
+      const m = monOf(2099, "03", "04"), ms4 = [0, 7, 14, 21].map(o => G.addD(m, o)), K = ms4.map(G.fmt), d = (o) => G.addD(m, o);
+      const weeks = { [K[0]]: W("s1", "s2", "s3", "s5", "s7", "s4"), [K[1]]: W("s2", "s1", "s5", "s3", "s6", "s4"), [K[2]]: W("s3", "s6", "s1", "s2", "s7", "s4"), [K[3]]: W("s5", "s1", "s5", "s3", "s5", "s7") };
+      const r8 = run8(weeks, ms4, null);
+      const want1 = `KJH: 3 weekends in a row, ${md(d(4))}–${md(d(20))}`, want2 = `REH: every other night ×3, Tue ${md(d(22))} → Thu ${md(d(24))} → Sat ${md(d(26))}`;
+      const it1 = r8.items.find(i => i.text === want1), it2 = r8.items.find(i => i.text === want2);
+      check("AH8 strain in plain words (brief item 6): '" + want1 + "' (2 units) and '" + want2 + "' (1 unit)",
+        !!it1 && it1.kind === "strain" && it1.units === 2 && !!it2 && it2.kind === "strain" && it2.units === 1, JSON.stringify(r8.items.filter(i => /strain/i.test(i.kind)).map(i => [i.text, i.units])));
+    }
+    // (d2) service week + that weekend when someone else's holiday 24h holds the Saturday: no two nights in a row, but a bend (60) — FAK: his last resort
+    {
+      const m = monOf(2099, "07", "01"), M = G.fmt(m), d = (o) => G.fmt(G.addD(m, o));
+      const hol = { 2099: [{ name: "July 4th", date: d(5), surgeonA: "s3", surgeonB: null, type: "minor", coverage: [{ date: d(5), surgeon: "s3" }] }] };
+      const part = run8({ [M]: W("s2", "s4", "s5", "s1", "s7", "s2") }, [M], hol), fak = run8({ [M]: W("s6", "s4", "s5", "s1", "s7", "s6") }, [M], hol);
+      check("AH8 service week + that weekend split by someone else's Saturday holiday 24h: not two nights in a row (no Fri → Sat → Sun), but listed and priced as a bend (60) — for a partner and for FAK alike (no last resort: nothing runs in a row)",
+        part.counts.hard === 0 && part.items.some(i => i.kind === "bend" && i.key === "svcWkndSplit" && i.cost === 60 && i.who === "s2")
+          && fak.counts.hard === 0 && fak.counts.lastRes === 0 && fak.items.some(i => i.kind === "bend" && i.key === "svcWkndSplit" && i.who === "s6"),
+        JSON.stringify([part.counts, part.items.map(i => i.kind + ":" + i.key), fak.counts, fak.items.map(i => i.kind + ":" + i.key)]));
+      // FAK as surgeon A of a Friday holiday: the cards pin him the service week AND the weekend (B holds the Saturday 24h) — designed, nothing listed
+      const holA = { 2099: [{ name: "July 4th", date: d(4), surgeonA: "s6", surgeonB: "s3", type: "minor", coverage: [{ date: d(4), surgeon: "s6" }, { date: d(5), surgeon: "s3" }] }] };
+      const des = run8({ [M]: W("s6", "s4", "s5", "s1", "s7", "s6") }, [M], holA);
+      check("AH8 FAK as surgeon A of a Friday holiday — the cards give him that week's service week and weekend: designed, so not his last resort and not a bend (nothing listed for it)",
+        des.counts.lastRes === 0 && des.counts.hard === 0 && !des.items.some(i => i.key === "svcWkndSplit" || i.kind === "lastResort"), JSON.stringify([des.counts, des.items.map(i => i.kind + ":" + i.key)]));
+      // a real Fri → Sat → Sun for FAK (no rows) — the last resort, and its text names the nights he holds
+      const realLR = run8({ [M]: W("s6", "s4", "s5", "s1", "s7", "s6") }, [M], null);
+      check("AH8 FAK on a service week + that weekend with no holiday in it: Fri → Sat → Sun, his listed LAST RESORT (with those three nights named), not two-in-a-row",
+        realLR.counts.lastRes === 1 && realLR.counts.hard === 0 && realLR.items.some(i => i.kind === "lastResort" && new RegExp("Fri " + md(G.addD(m, 4)) + " → Sat " + md(G.addD(m, 5)) + " → Sun " + md(G.addD(m, 6)) + " in a row").test(i.text)),
+        JSON.stringify([realLR.counts, realLR.items.filter(i => i.kind === "lastResort").map(i => i.text)]));
+    }
+    // FAK's Christmas service week is pinned for a Saturday / Sunday Christmas too (decision 3), like Tue–Fri
+    {
+      const pinDc = (y) => { const x = G.parse(`${y}-12-25`), dow = x.getDay(), des = G.fmt(G.addD(x, dow === 0 ? -6 : 1 - dow));
+        const hol = { [y]: [{ name: "Christmas Day", date: `${y}-12-25`, surgeonA: "s6", surgeonB: "s6", type: "major", coverage: [{ date: G.fmt(G.addD(x, -1)), surgeon: "s6", isEve: true }, { date: `${y}-12-25`, surgeon: "s6" }] }] };
+        const des2 = vm.runInContext("holidayDesign", sandbox)(hol, [des], "s6");
+        return des2.pins[des] && (des2.pins[des].dayCall + "/" + des2.pins[des].wknd); };
+      check("AH8 decision 3 — FAK's Christmas design week is his whole week: the cards pin him its service week AND its weekend for every Christmas weekday (2026 Fri, 2027 Sat, 2029 Tue, 2030 Wed, 2031 Thu, 2033 Sun)",
+        ["2026", "2027", "2029", "2030", "2031", "2033"].every(y => pinDc(y) === "s6/s6"), JSON.stringify(["2026", "2027", "2029", "2030", "2031", "2033"].map(y => [y, pinDc(y)])));
+      // …and the generator deals it (he is that week's service doctor too): 2029 (Tue) and 2027 (Sat), a few rolls each — and Needs your OK lists nothing for it
+      const gen = (y) => { const x = G.parse(`${y}-12-25`), dow = x.getDay(), des = G.addD(x, dow === 0 ? -6 : dow === 1 ? -7 : 1 - dow), ms4 = [-7, 0, 7, 14].map(o => G.addD(des, o));
+        const hol = { [y]: [{ name: "Christmas Day", date: `${y}-12-25`, surgeonA: "s6", surgeonB: "s6", type: "major", coverage: [{ date: G.fmt(G.addD(x, -1)), surgeon: "s6", isEve: true }, { date: `${y}-12-25`, surgeon: "s6" }] }] };
+        const S7g = ["DJA", "MCC", "RPC", "KJH", "REH", "FAK", "ARW"].map((n, k) => ({ id: "s" + (k + 1), name: n }));
+        const out = [];
+        for (let r = 0; r < 4; r++) {
+          const g = G.generate(S7g, ms4, {}, new Set(), {}, {}, new Set(), hol, [], null, {}, null, { proposals: 20000 });
+          const wk = g[G.fmt(des)], lst = G.listScheduleBends(g, { surgeons: S7g, mondays: ms4, vac: {}, vacationsOnly: {}, holAssignments: hol, prevWeekSeed: null });
+          out.push({ svc: wk.dayCall, wknd: wk.nights.wknd, fakItems: lst.items.filter(i => i.who === "s6" && i.kind !== "crowded").map(i => i.kind + ":" + i.key) });
+        }
+        return out; };
+      const g29 = gen(2029), g27 = gen(2027), g28 = gen(2028);
+      check("AH8 …the generator gives FAK that service week AND that weekend (2029 Tue, 2027 Sat, 2028 Mon Christmas — the week before it — every roll), and Needs your OK lists nothing for his Christmas week",
+        g29.concat(g27, g28).every(o => o.svc === "s6" && o.wknd === "s6" && o.fakItems.length === 0), JSON.stringify({ g29, g27, g28 }));
+    }
+    // (e0) a Tuesday Christmas WITH the New Year's card (Mon 12/31, A = REH s5, B = DJA s1): the owner chose decision 3
+    // (2026-10-13) — FAK's Christmas design week is whole over New Year's Monday convention, in either card order and
+    // for every reader; New Year's keeps its own 24h rows (12/31 REH, 1/1 DJA). Other years are unchanged by the card.
+    {
+      const H = vm.runInContext("holidayDesign", sandbox);
+      const xmas = (y) => { const x = G.parse(`${y}-12-25`); return { name: "Christmas Day", date: `${y}-12-25`, surgeonA: "s6", surgeonB: "s6", type: "major", coverage: [{ date: G.fmt(G.addD(x, -1)), surgeon: "s6", isEve: true }, { date: `${y}-12-25`, surgeon: "s6" }] }; };
+      const ny = (y) => { const x = G.parse(`${y}-12-31`); return { name: "New Year's", date: `${y}-12-31`, surgeonA: "s5", surgeonB: "s1", type: "major", coverage: [{ date: `${y}-12-31`, surgeon: "s5" }, { date: G.fmt(G.addD(x, 1)), surgeon: "s1" }] }; };
+      const desOf = (y) => { const x = G.parse(`${y}-12-25`), dow = x.getDay(); return G.fmt(G.addD(x, dow === 0 ? -6 : dow === 1 ? -7 : 1 - dow)); };
+      const pinsY = (y, cards) => { const p = H({ [y]: cards }, [desOf(y)], "s6").pins[desOf(y)] || {}; return p.dayCall + "/" + p.wknd; };
+      const all = ["2026", "2027", "2028", "2029", "2030", "2031", "2033", "2035"].map(y => [y, pinsY(y, [xmas(y), ny(y)]), pinsY(y, [ny(y), xmas(y)])]);
+      check("AH8 decision 3 vs New Year's (a Tuesday Christmas, 2029 / 2035 — owner 2026-10-13): FAK's design week stays whole — the cards pin him its service week AND weekend over New Year's Monday convention, in EITHER card order; every other year likewise with the New Year's card present",
+        all.every(r => r[1] === "s6/s6" && r[2] === "s6/s6"), JSON.stringify(all));
+      const x = G.parse("2029-12-25"), des = G.addD(x, -1), ms4 = [-7, 0, 7, 14].map(o => G.addD(des, o)), K = ms4.map(G.fmt);
+      const S7g = ["DJA", "MCC", "RPC", "KJH", "REH", "FAK", "ARW"].map((n, k) => ({ id: "s" + (k + 1), name: n }));
+      const out = [];
+      for (const order of [0, 1]) for (let r = 0; r < 3; r++) {
+        const hol = { 2029: order ? [ny(2029), xmas(2029)] : [xmas(2029), ny(2029)] };
+        const g = G.generate(S7g, ms4, {}, new Set(), {}, {}, new Set(), hol, [], null, {}, null, { proposals: 20000 });
+        const wk = g[K[1]], nyw = g[K[2]] || {}, hc = nyw.holidayCoverage || {}, lst = G.listScheduleBends(g, { surgeons: S7g, mondays: ms4, vac: {}, vacationsOnly: {}, holAssignments: hol, prevWeekSeed: null });
+        out.push({ svc: wk.dayCall, wknd: wk.nights.wknd, eve: wk.nights.mon, nyEve: hc["2029-12-31"] && hc["2029-12-31"].surgeonId, nyDay: hc["2030-01-01"] && hc["2030-01-01"].surgeonId, hard: lst.counts.hard, lastRes: lst.counts.lastRes, fakItems: lst.items.filter(i => i.who === "s6" && i.kind !== "crowded").map(i => i.kind + ":" + i.key) });
+      }
+      check("AH8 …and the generator deals it so (2029 + the New Year's card, both card orders, every roll): FAK service week, weekend and eve; New Year's 24h rows REH 12/31, DJA 1/1; nothing breaks a rule and nothing is listed for FAK",
+        out.every(o => o.svc === "s6" && o.wknd === "s6" && o.eve === "s6" && o.nyEve === "s5" && o.nyDay === "s1" && o.hard === 0 && o.lastRes === 0 && o.fakItems.length === 0), JSON.stringify(out));
+      // the rules engine agrees: FAK's whole week there is his designed Christmas — never his last resort, never two in a row
+      const hol = { 2029: [ny(2029), xmas(2029)] };
+      const whole = { [K[0]]: W("s1", "s2", "s3", "s4", "s7", "s2"), [K[1]]: W("s6", "s6", "s6", "s2", "s3", "s6"), [K[2]]: W("s7", "s5", "s1", "s3", "s4", "s3"), [K[3]]: W("s2", "s5", "s4", "s7", "s1", "s4") };
+      const rw = run8(whole, ms4, hol);
+      check("AH8 …the rules engine reads the same week the same way: FAK's whole 2029 Christmas week (eve, 24h, Fri → service Sat → Sun) with the New Year's card is his design — not two in a row, not his last resort, nothing listed for him",
+        rw.counts.hard === 0 && rw.counts.lastRes === 0 && !rw.items.some(i => i.who === "s6" && i.kind !== "crowded"),
+        JSON.stringify([rw.counts, rw.items.filter(i => i.who === "s6").map(i => i.text)]));
+    }
+    // (e1) decision 3 is FAK's (christmasDcId), not whoever holds an A = B Christmas card: ARW (s7) on both slots of a Wednesday
+    // Christmas (2030) gets the eve + Christmas Day, FAK the service week, and no weekend pin, no designated Fri / Sun for ARW
+    {
+      const H = vm.runInContext("holidayDesign", sandbox);
+      const x = G.parse("2030-12-25"), des = G.addD(x, -2), K = [-7, 0, 7].map(o => G.fmt(G.addD(des, o)));
+      const hol = { 2030: [{ name: "Christmas Day", date: "2030-12-25", surgeonA: "s7", surgeonB: "s7", type: "major", coverage: [{ date: "2030-12-24", surgeon: "s7", isEve: true }, { date: "2030-12-25", surgeon: "s7" }] }] };
+      const p = H(hol, [K[1]], "s6").pins[K[1]] || {};
+      // ARW: eve Tue, Christmas Wed (row), then the design week's weekend Fri + Sun → Wed → Fri → Sun is every other night ×3, a free choice: strain
+      const weeks = { [K[0]]: W("s1", "s2", "s3", "s4", "s5", "s2"), [K[1]]: W("s6", "s1", "s7", "s7", "s2", "s7"), [K[2]]: W("s3", "s4", "s5", "s1", "s2", "s4") };
+      const r = run8(weeks, K.map(G.parse), hol);
+      check("AH8 decision 3 is FAK's alone: an A = B Christmas card held by ARW pins FAK the service week and NO weekend for ARW; ARW's Wed 24h → Fri → Sun is strain (every other night ×3), not exempted as a designed Christmas week",
+        p.dayCall === "s6" && !p.wknd && r.items.some(i => i.kind === "strain" && i.who === "s7"), JSON.stringify([p, r.tiers, r.items.filter(i => i.who === "s7").map(i => i.kind + ":" + i.text)]));
+    }
+    // (e) FAK's Christmas week in EVERY year — the card's own pattern is never "two nights in a row" nor a last resort (2026 Fri, 2027 Sat, 2028 Mon, 2029 Tue, 2031 Thu, 2033 Sun)
+    {
+      const res = [], adj = []; let adjN = 0;
+      for (const y of [2026, 2027, 2028, 2029, 2031, 2033]) {
+        const x = G.parse(`${y}-12-25`), dow = x.getDay();
+        const des = G.addD(x, dow === 0 ? -6 : dow === 1 ? -7 : 1 - dow), prev = G.addD(des, -7), next = G.addD(des, 7), after = G.addD(des, 14);
+        const mons = [prev, des, next, after], K = mons.map(G.fmt);
+        const eve = G.fmt(G.addD(x, -1)), xs = G.fmt(x);
+        const hol = { [y]: [{ name: "Christmas Day", date: xs, surgeonA: "s6", surgeonB: "s6", type: "major", coverage: [{ date: eve, surgeon: "s6", isEve: true }, { date: xs, surgeon: "s6" }] }] };
+        // FAK holds the design week's service week + weekend, the eve night (a weeknight eve) and the Christmas 24h night (a Mon–Thu Christmas)
+        const nightKey = (date) => ["mon", "tue", "wed", "thu"][G.parse(date).getDay() - 1];
+        const weeks = {};
+        weeks[K[0]] = W("s1", "s2", "s3", "s4", "s5", "s7");
+        weeks[K[1]] = W("s6", "s1", "s2", "s3", "s4", "s6");
+        weeks[K[2]] = W("s7", "s5", "s1", "s2", "s3", "s4");
+        weeks[K[3]] = W("s2", "s3", "s4", "s5", "s7", "s1");
+        [eve, xs].forEach(dt => { const k = nightKey(dt), wi = K.findIndex(m => m <= dt && dt < G.fmt(G.addD(G.parse(m), 7))); if (k && wi >= 0) weeks[K[wi]].nights[k] = "s6"; });
+        const r = run8(weeks, mons, hol);
+        res.push({ y, hard: r.counts.hard, lastRes: r.counts.lastRes, items: r.items.filter(i => i.kind === "hard" || i.kind === "lastResort").map(i => i.text) });
+        // each Mon–Thu night of the design week (and the Monday after) that is NOT in decision 3's set but touches it: FAK there → two in a row
+        const D = new Set([eve, xs, G.fmt(G.addD(des, 4)), G.fmt(G.addD(des, 5)), G.fmt(G.addD(des, 6))]);
+        [0, 1, 2, 3, 7].map(o => G.fmt(G.addD(des, o))).forEach(n => {
+          if (D.has(n) || !(D.has(G.fmt(G.addD(G.parse(n), -1))) || D.has(G.fmt(G.addD(G.parse(n), 1))))) return;
+          const k = ["mon", "tue", "wed", "thu"][G.parse(n).getDay() - 1], wi = K.findIndex(mm => mm <= n && n < G.fmt(G.addD(G.parse(mm), 7)));
+          if (!k || wi < 0) return;
+          const w2 = JSON.parse(JSON.stringify(weeks)); w2[K[wi]].nights[k] = "s6";
+          const r2 = run8(w2, mons, hol);
+          if (r2.counts.hard < 1) adj.push(`${y}: FAK on ${n} (next to his designed Christmas nights) is not listed as two in a row`);
+          adjN++;
+        });
+      }
+      check("AH8 FAK's Christmas week is the card's design in EVERY year (Fri 2026, Sat 2027, Mon 2028, Tue 2029, Thu 2031, Sun 2033): never two nights in a row, never his last resort",
+        res.every(x => x.hard === 0 && x.lastRes === 0), JSON.stringify(res));
+      check(`AH8 …and exactly that set: every free night touching it (${adjN} cases across the six years — e.g. Thu before a Friday-night weekend, the Monday after the Christmas Sunday) is still two nights in a row`,
+        adj.length === 0 && adjN >= 6, JSON.stringify(adj));
+      // control: the same 2029 week with FAK also on the Wednesday after his Tuesday Christmas 24h — not designed
+      const x = G.parse("2029-12-25"), des = G.addD(x, -1), K = [G.addD(des, -7), des, G.addD(des, 7)].map(G.fmt);
+      const hol = { 2029: [{ name: "Christmas Day", date: "2029-12-25", surgeonA: "s6", surgeonB: "s6", type: "major", coverage: [{ date: "2029-12-24", surgeon: "s6", isEve: true }, { date: "2029-12-25", surgeon: "s6" }] }] };
+      const weeks = { [K[0]]: W("s1", "s2", "s3", "s4", "s5", "s7"), [K[1]]: W("s6", "s6", "s6", "s6", "s4", "s6"), [K[2]]: W("s7", "s5", "s1", "s2", "s3", "s4") };
+      const r = run8(weeks, K.map(G.parse), hol);
+      const plainWeeks = { [K[0]]: W("s6", "s2", "s3", "s4", "s5", "s6"), [K[1]]: W("s1", "s5", "s2", "s3", "s4", "s7"), [K[2]]: W("s7", "s5", "s1", "s2", "s3", "s4") };
+      const plain = run8(plainWeeks, K.map(G.parse), hol);
+      check("AH8 …but not more than the design: FAK's free Wednesday after his Tuesday Christmas 24h is two nights in a row; his service week + weekend in another week is his last resort",
+        r.counts.hard === 1 && plain.counts.lastRes === 1 && plain.counts.hard === 0, JSON.stringify([r.counts, plain.counts]));
+    }
+  }
+})();
+
+// ─── AH9. The REAL finishGenerate: Generate's end, with the LATEST state (2026-10-13) ───
+await (async () => {
+  const nsrcF = src.replace(/\r\n/g, "\n");
+  const i = nsrcF.indexOf("  const finishGenerate = (result, preview, clickSig, clickLocks, genEpoch) => {"), e = i < 0 ? -1 : nsrcF.indexOf("\n  };\n", i);
+  const ENV = "pendingLocks, nameOf, slotLabel, showToast, setPreviewSchedule, setPreviewOrigin, setShowPreview, genInputsSig, listScheduleBends, surgeons, mondays, buildGenAvailability, buildSilvisPrimary, vacations, holidayAssignments, buildPrevWeekSeed, publishingRef, setPublishing, setSaveStatus, snapshots, genCommitRef, previewEpochRef, schedEditable, schedSyncRef";
+  let mk = null; try { mk = i < 0 ? null : vm.runInContext("(function (env) { const { " + ENV + " } = env; return (" + nsrcF.slice(i + "  const finishGenerate = ".length, e) + "\n  }); })", sandbox); } catch (ex) { mk = null; }
+  if (!mk) { check("AH9 finishGenerate extractable for execution", false, "anchor / compile"); return; }
+  const RES = { "2099-03-02": { dayCall: "s1", nights: {} } };
+  const go = async (o) => {
+    const rec = { toasts: [], preview: null, shown: false, captured: 0, committed: 0 }, pub = { current: false }, pe = { current: -1 };
+    const fn = mk({ pendingLocks: o.locksNow || [], nameOf: (x) => x, slotLabel: () => "slot", showToast: (m) => rec.toasts.push(String(m)), setPreviewSchedule: (x) => { rec.preview = x; }, setPreviewOrigin: () => {}, setShowPreview: (x) => { rec.shown = x; },
+      genInputsSig: () => o.sigNow, listScheduleBends: () => ({ items: o.items || [] }), surgeons: [], mondays: [], buildGenAvailability: () => ({}), buildSilvisPrimary: () => null, vacations: {}, holidayAssignments: {}, buildPrevWeekSeed: () => null,
+      publishingRef: pub, setPublishing: () => {}, setSaveStatus: () => {}, snapshots: { capture: async () => { rec.captured++; if (o.gateAfter) o.gated = true; return { ok: true }; } }, genCommitRef: { current: async () => { rec.committed++; } },
+      previewEpochRef: pe, schedEditable: () => !o.gated, schedSyncRef: { current: { knownSchedule: () => ({}), changedSince: (keys, since) => (o.moved && since === 5) ? keys.slice() : [] } } });
+    rec.ret = fn(RES, !!o.preview, "SIG0", o.locksAtClick || [], 5); rec.epoch = pe.current;
+    await new Promise(r => setTimeout(r, 30)); // let a publish run through its snapshot
+    rec.armed = pub.current;
+    return rec;
+  };
+  const changed = await go({ sigNow: "SIG1" });
+  check("AH9 the REAL finishGenerate: when what the schedule depends on changed during the search, Generate & Publish sends the result to the preview, says why, and publishes NOTHING (no snapshot, no commit)",
+    changed.ret === "review" && changed.preview === RES && changed.shown === true && /changed during the search/.test(changed.toasts.join(" ")) && changed.captured === 0 && changed.committed === 0, JSON.stringify(changed));
+  const items = await go({ sigNow: "SIG0", items: [{ kind: "bend" }] });
+  check("AH9 …unchanged inputs but Needs-your-OK items (judged on today's inputs) → the preview, nothing published", items.ret === "review" && items.preview === RES && items.captured === 0 && items.committed === 0, JSON.stringify(items));
+  const clean = await go({ sigNow: "SIG0" });
+  check("AH9 …unchanged and clean → published: the snapshot first, then the commit through genCommitRef (the state after the snapshot's await), and the publish flag released",
+    clean.ret === "published" && clean.captured === 1 && clean.committed === 1 && clean.armed === false, JSON.stringify(clean));
+  check("AH9 sync v2: every preview it opens is judged from the click's engine epoch", changed.epoch === 5 && items.epoch === 5, JSON.stringify([changed.epoch, items.epoch]));
+  const moved = await go({ sigNow: "SIG0", moved: true }), gatedNow = await go({ sigNow: "SIG0", gated: true }), gatedLater = await go({ sigNow: "SIG0", gateAfter: true });
+  check("AH9 sync v2: a week of the period adopted since the CLICK → after the snapshot NOTHING is committed, it says why, and the publish flag is released",
+    moved.captured === 1 && moved.committed === 0 && /changed while generating/.test(moved.toasts.join(" ")) && moved.armed === false, JSON.stringify(moved));
+  check("AH9 sync v2: the edit gate before the snapshot (\"refused\", no snapshot) and again after it (signed out during the await: nothing committed, flag released)",
+    gatedNow.ret === "refused" && gatedNow.captured === 0 && gatedNow.committed === 0 && gatedLater.captured === 1 && gatedLater.committed === 0 && gatedLater.armed === false, JSON.stringify([gatedNow, gatedLater]));
+  const lk = [{ mondayStr: "2099-03-02", slot: "dc", surgeonId: "s1" }];
+  const prev = await go({ preview: true, sigNow: "SIGx", locksAtClick: lk, locksNow: lk.concat([{ mondayStr: "2099-03-02", slot: "mon", surgeonId: "s2" }]) });
+  check("AH9 …a Preview: it opens; a lock ADDED during the search is not blamed on time off ('NOT honored') — the scheduler is told the preview used the earlier locks",
+    prev.ret === "preview" && prev.preview === RES && !/NOT honored/.test(prev.toasts.join(" ")) && /locks changed during the search/.test(prev.toasts.join(" ")), JSON.stringify(prev.toasts));
+  check("AH9 the finish and commit refs are set on EVERY render, at the component's top level (not once, not conditionally)",
+    /\n  \};\n  genFinishRef\.current = finishGenerate; genCommitRef\.current = commitGenerated;\n/.test(nsrcF) && (nsrcF.match(/genFinishRef\.current = /g) || []).length === 1);
+})();
+
+// ─── AI. NEVER RE-APPLY (owner rule, 2026-10-12/13) ───
+// A previewed schedule — generated, or loaded from a JSON file such as the
+// CP-SAT benchmark that is now the published period — reaches the schedule
+// ONLY through ✓ Accept & Publish. Nothing may keep it around to re-apply
+// later: it is never in the state bundle (the blob, the snapshots, the
+// unload flush, the export all build from it), never an autosave trigger,
+// never in browser storage, never restored from anywhere; and no app file
+// names the test fixture. Each guard below is TWO-SIDED: it passes on the
+// real source and FAILS on a copy with that violation planted (a guard that
+// can't fail proves nothing).
+//   AI1 buildStateBundle — the REAL function, executed: no preview key, and
+//       the preview object appears in no value
+//   AI2 the autosave effect: previewSchedule / previewOrigin are not in its
+//       deps and not read in its body
+//   AI3 browser storage: no localStorage / sessionStorage / IndexedDB write in
+//       any app file mentions the preview; the preview is only ever set from
+//       the search's result, the loader's checked weeks, or null — and the
+//       loader runs only from the file input
+//   AI4 no app file (index-source.html, helpers.js, config.js, generator.js,
+//       silvis-feed.js, app-styles.js) references the benchmark fixture — by
+//       name, or by any fetch / import / script source into test/
+{
+  const APP_FILES = ["index-source.html", "helpers.js", "config.js", "generator.js", "silvis-feed.js", "app-styles.js"];
+  const files = Object.fromEntries(APP_FILES.map(f => [f, fs.readFileSync(path.join(ROOT, f), "utf8").replace(/\r\n/g, "\n")]));
+  const PREVIEW = /\bpreview(Schedule|Origin|SchedRef)\b/;
+  const plant = (text, anchor, insert, label) => {
+    const n = text.split(anchor).length - 1;
+    if (n !== 1) throw new Error(`AI plant anchor x${n} (${label}): ${anchor.slice(0, 80)}`);
+    return text.replace(anchor, () => insert);
+  };
+  const twoSided = (name, guard, real, planted) => {
+    const r = guard(real), p = guard(planted);
+    check(`${name} — holds on the real source`, r.ok, r.why || "");
+    check(`${name} — and FAILS on a copy with the violation planted (the guard bites — it ran, and caught it)`, !p.ok && !p.broken, (p.broken ? "the guard could not run on the planted copy: " : "the planted copy passed: ") + (p.why || ""));
+  };
+  const src0 = files["index-source.html"];
+  // ── AI1 ──
+  {
+    const guard = (text) => {
+      const START = "  const buildStateBundle = (overrides = {}) => ({";
+      const i = text.indexOf(START), e = i < 0 ? -1 : text.indexOf("\n  });\n", i);
+      if (i < 0 || e < 0) return { ok: false, broken: true, why: "buildStateBundle not found" };
+      const body = text.slice(i + START.length, e);
+      const names = [...new Set((body.match(/\b[A-Za-z_$][\w$]*\b/g) || []))].filter(w => !["overrides", "true", "false", "null"].includes(w));
+      const PREV = { "2026-11-16": { dayCall: "s4", nights: {} } }, ORIGIN = "json";
+      const env = {};
+      names.forEach(n => { env[n] = n === "previewSchedule" ? PREV : n === "previewOrigin" ? ORIGIN : n === "previewSchedRef" ? { current: PREV } : /Set$/.test(n) ? new Set() : { tag: n }; });
+      let out;
+      try { out = vm.runInContext(`(function (env) { const { ${names.join(", ")} } = env; return (overrides = {}) => ({${body}\n  }); })`, sandbox)(env)(); }
+      catch (ex) { return { ok: false, broken: true, why: "not executable: " + ex.message }; }
+      const keys = Object.keys(out).filter(k => /preview/i.test(k));
+      const holds = Object.values(out).some(v => v === PREV || v === ORIGIN || (v && typeof v === "object" && JSON.stringify(v) === JSON.stringify(PREV)));
+      // an ALLOWLIST: the bundle holds exactly these keys — any new one (an alias of the preview, the search's session…) must be reviewed here first
+      const BUNDLE_KEYS = ["apps", "backupMondays", "dismissedWarnings", "fierceBackup", "holidayAssignments", "noCallDays", "numWeeks", "pendingLocks", "priorCounts", "schedule", "silvisRule", "startMondayOverride", "startMonth", "startYear", "surgeons", "vacations", "year1Counts"];
+      const exact = JSON.stringify(Object.keys(out).sort()) === JSON.stringify(BUNDLE_KEYS);
+      return { ok: keys.length === 0 && !holds && !PREVIEW.test(body) && exact, why: JSON.stringify({ keys, holds, extra: Object.keys(out).filter(k => !BUNDLE_KEYS.includes(k)) }) };
+    };
+    twoSided("AI1 the REAL buildStateBundle (blob, snapshots, unload flush, export) never carries the preview",
+      guard, src0, plant(src0, "    startMonth, startYear, numWeeks, holidayAssignments, startMondayOverride,\n    pendingLocks,\n    silvisRule,\n", "    startMonth, startYear, numWeeks, holidayAssignments, startMondayOverride,\n    pendingLocks,\n    previewSchedule, previewOrigin,\n    silvisRule,\n", "AI1"));
+    twoSided("AI1 …nor the preview under another name (previewSchedRef, the ref that mirrors it every render)",
+      guard, src0, plant(src0, "    startMonth, startYear, numWeeks, holidayAssignments, startMondayOverride,\n    pendingLocks,\n    silvisRule,\n", "    startMonth, startYear, numWeeks, holidayAssignments, startMondayOverride,\n    pendingLocks,\n    draft: previewSchedRef.current,\n    silvisRule,\n", "AI1b"));
+    twoSided("AI1 …nor anything else new, under any name (the bundle's keys are an allowlist — e.g. the search's best schedule)",
+      guard, src0, plant(src0, "    startMonth, startYear, numWeeks, holidayAssignments, startMondayOverride,\n    pendingLocks,\n    silvisRule,\n", "    startMonth, startYear, numWeeks, holidayAssignments, startMondayOverride,\n    pendingLocks,\n    lastSearch: searchRef.current && searchRef.current.session.best(),\n    silvisRule,\n", "AI1c"));
+  }
+  // ── AI2 ──
+  {
+    const guard = (text) => {
+      const START = "  // ─── Supabase: Auto-save on changes ───\n  useEffect(() => {";
+      const i = text.indexOf(START), e = i < 0 ? -1 : text.indexOf("\n  }, [", i);
+      if (i < 0 || e < 0) return { ok: false, broken: true, why: "autosave effect not found" };
+      const deps = text.slice(e, text.indexOf("]);", e) + 3), body = text.slice(i, e);
+      return { ok: !PREVIEW.test(deps) && !PREVIEW.test(body), why: deps };
+    };
+    twoSided("AI2 the autosave effect neither depends on nor reads previewSchedule / previewOrigin",
+      guard, src0, plant(src0, "startMondayOverride, pendingLocks, dismissedWarnings]);", "startMondayOverride, pendingLocks, dismissedWarnings, previewSchedule]);", "AI2"));
+  }
+  // ── AI3 ──
+  {
+    // every argument list of a storage write (balanced parens), per file
+    const writes = (text) => {
+      const out = [], re = /\b(localStorage\.setItem|sessionStorage\.setItem|\.put|\.add)\s*\(/g;
+      let m;
+      while ((m = re.exec(text))) {
+        if (m[1] !== "localStorage.setItem" && m[1] !== "sessionStorage.setItem" && !/indexedDB|objectStore|\bstore\b|\bidb\b/i.test(text.slice(Math.max(0, m.index - 200), m.index))) continue;
+        let d = 1, j = m.index + m[0].length;
+        while (j < text.length && d > 0) { if (text[j] === "(") d++; else if (text[j] === ")") d--; j++; }
+        out.push(text.slice(m.index, j));
+      }
+      return out;
+    };
+    // …and ANY storage write inside the paths that hold the preview or the search's result under another name
+    const PREVIEW_PATHS = ["  const runSearch = (session, purpose, budgetMs) => new Promise(resolve => {", "  const doGenerate = async (preview) => {", "  const finishGenerate = (result, preview, clickSig, clickLocks, genEpoch) => {", "  const commitGenerated = async (result) => {", "  const searchMore = async () => {", "  const acceptPreview = () => {", "  const discardPreview = () => {", "  const loadScheduleJson = (text, fileName) => {", "  const onLoadJsonFile = (e) => {"];
+    const pathBodies = (text) => PREVIEW_PATHS.map(a => { const i = text.indexOf(a); if (i < 0) return ""; const e = text.indexOf("\n  };\n", i); return text.slice(i, e < 0 ? i : e); });
+    const guardStore = (fs_) => {
+      const bad = [];
+      for (const f in fs_) writes(fs_[f]).forEach(w => { if (/preview|\b(result|better|shaped|base)\b/i.test(w)) bad.push(f + ": " + w.slice(0, 120)); });
+      pathBodies(fs_["index-source.html"]).forEach(b => writes(b).forEach(w => bad.push("in a preview path: " + w.slice(0, 120))));
+      if (pathBodies(fs_["index-source.html"]).some(b => !b)) bad.push("a preview path was not found");
+      // an ALLOWLIST of the keys the app may write (anything else — a helper that stashes "a value", a new key — must be reviewed here first)
+      const STORE_KEYS = ["AUTH_TOKEN_KEY", "AUTH_REFRESH_KEY", "BIOMETRIC_CRED_KEY", "BIOMETRIC_USER_KEY", '"dsg_collapse_" + ck', '"dsg-notif-seen"', '"dsg-notif-cleared"', "CAL_SILVIS_STORE_KEY", '"dsg-dark-mode"', '"dsg-my-surgeon"', '"dsg_app_version"'];
+      for (const f in fs_) writes(fs_[f]).filter(w => /Storage\.setItem/.test(w)).forEach(w => { const k = w.slice(w.indexOf("(") + 1).split(",")[0].trim(); if (!STORE_KEYS.includes(k)) bad.push(`${f}: a storage key not on the allowlist — ${k}`); });
+      const n = Object.values(fs_).reduce((t, x) => t + writes(x).length, 0);
+      return { ok: bad.length === 0 && n > 0, why: bad.join(" | ") || `${n} storage writes scanned` };
+    };
+    twoSided("AI3 no localStorage / sessionStorage / IndexedDB write in any app file mentions the preview",
+      guardStore, files, Object.assign({}, files, { "index-source.html": plant(src0, "  const discardPreview = () => {\n", "  const discardPreview = () => {\n    try { localStorage.setItem(\"dsg-last-preview\", JSON.stringify(previewSchedule)); } catch (e) {}\n", "AI3a") }));
+    twoSided("AI3 …nor one that keeps the search's result under its own name (result / better / shaped) in a preview path",
+      guardStore, files, Object.assign({}, files, { "index-source.html": plant(src0, "  const finishGenerate = (result, preview, clickSig, clickLocks, genEpoch) => {\n", "  const finishGenerate = (result, preview, clickSig, clickLocks, genEpoch) => {\n    try { localStorage.setItem(\"dsg-gen\", JSON.stringify(result)); } catch (e) {}\n", "AI3d") }));
+    twoSided("AI3 …nor a helper that stores something under its own key (the storage keys are an allowlist)",
+      guardStore, files, Object.assign({}, files, { "index-source.html": plant(src0, "  const discardPreview = () => {\n", "  const stash = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} };\n  const discardPreview = () => {\n", "AI3e") }));
+    twoSided("AI3 …nor one inside the search runner",
+      guardStore, files, Object.assign({}, files, { "index-source.html": plant(src0, "      sr.activeMs += Date.now() - t0;\n", "      sr.activeMs += Date.now() - t0;\n      try { sessionStorage.setItem(\"dsg-run\", \"x\"); } catch (e) {}\n", "AI3f") }));
+    const guardSet = (text) => {
+      const args = [];
+      const re = /\bsetPreviewSchedule\(/g; let m;
+      while ((m = re.exec(text))) { let d = 1, j = m.index + m[0].length; while (j < text.length && d > 0) { if (text[j] === "(") d++; else if (text[j] === ")") d--; j++; } args.push(text.slice(m.index + m[0].length, j - 1).trim()); }
+      const ALLOWED = ["result", "better", "shaped", "null"];
+      const odd = args.filter(a => !ALLOWED.includes(a));
+      const calls = (text.match(/\bloadScheduleJson\(/g) || []).length, fromInput = /r\.onload = \(\) => loadScheduleJson\(String\(r\.result \|\| ""\), f\.name\);/.test(text);
+      return { ok: args.length > 0 && odd.length === 0 && calls === 1 && fromInput, why: JSON.stringify({ odd, calls, fromInput }) };
+    };
+    twoSided("AI3 the preview is only ever set from the search's result, the loader's checked weeks, or null — and the loader runs only from the file input (nothing restores a preview)",
+      guardSet, src0, plant(src0, "  const discardPreview = () => {\n", "  const restorePreview = () => { try { setPreviewSchedule(JSON.parse(localStorage.getItem(\"dsg-last-preview\"))); } catch (e) {} };\n  const discardPreview = () => {\n", "AI3b"));
+    twoSided("AI3 …and the loader can't be called from anywhere but the file input",
+      guardSet, src0, plant(src0, "  const discardPreview = () => {\n", "  const reloadBenchmark = (t) => loadScheduleJson(t, \"again.json\");\n  const discardPreview = () => {\n", "AI3c"));
+  }
+  // ── AI4 ──
+  {
+    const guard = (fs_) => {
+      // the benchmark by name anywhere (code or comment), and any fetch / import /
+      // script source into test/ (a doc comment naming another fixture is fine)
+      const bad = Object.keys(fs_).filter(f => /benchmark-2026-11-16-v3/.test(fs_[f]) || /(fetch|import|require)\s*\(\s*["'`][^"'`]*\btest\/|src=["'][^"']*\btest\//.test(fs_[f]));
+      const sizes = Object.values(fs_).every(x => x.length > 100);
+      return { ok: bad.length === 0 && sizes && Object.keys(fs_).length === APP_FILES.length, why: bad.join(", ") || "clean" };
+    };
+    twoSided("AI4 no app file references the benchmark fixture (test/fixtures/benchmark-2026-11-16-v3.json) — by name, or by a fetch / import into test/",
+      guard, files, Object.assign({}, files, { "generator.js": files["generator.js"] + "\n// see benchmark-2026-11-16-v3.json\n" }));
+    twoSided("AI4 …and a fetch into test/fixtures under any other name is caught too",
+      guard, files, Object.assign({}, files, { "helpers.js": files["helpers.js"] + "\nconst _b = () => fetch(\"test/fixtures/period.json\");\n" }));
+  }
+}
+
+// ─── AJ. Owner decisions 2026-10-13: Silvis next to a Davenport night, the spacing box, holiday pairs ───
+console.log("\nAJ. owner decisions 2026-10-13");
+{
+  const G = vm.runInContext("({ fmt, addD, parse, listScheduleBends, createScheduleSearch, planHolidayPairs, overnightHolderOn, getHolidays, generate })", sandbox);
+  const S7 = ["DJA", "MCC", "RPC", "KJH", "REH", "FAK", "ARW"].map((n, i) => ({ id: "s" + (i + 1), name: n }));
+  const W = (dc, mon, tue, wed, thu, wknd) => ({ dayCall: dc, nights: { wknd, mon, tue, wed, thu } });
+  // ── AJ1: FAK's Davenport overnight next to his Silvis primary 24h — his LAST RESORT (rule 2 across the two jobs) ──
+  {
+    const K = ["2099-03-09", "2099-03-16"], ms = K.map(G.parse);
+    const ctx = (sil, extra) => Object.assign({ surgeons: S7, mondays: ms, vac: {}, vacationsOnly: {}, holAssignments: null, prevWeekSeed: null }, sil ? { silvisPrimary: { id: "s6", dates: sil } } : {}, extra || {});
+    // FAK the Thu night 3/12; Silvis primary Fri 3/13
+    const thu = { [K[0]]: W("s1", "s2", "s3", "s4", "s6", "s5"), [K[1]]: W("s2", "s3", "s4", "s5", "s7", "s1") };
+    const a = G.listScheduleBends(thu, ctx(["2099-03-13"])), b = G.listScheduleBends(thu, ctx(null));
+    const it = a.items.find(i => i.kind === "lastResort" && i.key === "silvisAdj");
+    check("AJ1 FAK's Davenport Thu night 3/12 before his Silvis primary Fri 3/13: his LAST RESORT (one unit, listed in plain words with the date and the slot); without the Silvis days it is nothing",
+      a.counts.lastRes === 1 && a.counts.silvisAdj === 1 && !!it && it.who === "s6" && it.date === "2099-03-12" && /Davenport Thu 3\/12 \(Thu night 3\/12\) → Silvis 24h Fri 3\/13 — two overnights in a row across the two jobs, the last resort/.test(it.text)
+        && b.counts.lastRes === 0 && !b.items.some(i => i.key === "silvisAdj"), JSON.stringify([a.counts, it && it.text, b.counts]));
+    // FAK the weekend 3/13 + 3/15 around a Silvis Saturday 3/14: two units (Fri → Sat, Sat → Sun); the daytime service week after a Silvis Sunday: nothing
+    const wk = { [K[0]]: W("s1", "s2", "s3", "s4", "s7", "s6"), [K[1]]: W("s2", "s3", "s4", "s5", "s7", "s1") };
+    const c2 = G.listScheduleBends(wk, ctx(["2099-03-14"]));
+    const svc = { [K[0]]: W("s1", "s2", "s3", "s4", "s7", "s5"), [K[1]]: W("s6", "s3", "s4", "s5", "s7", "s1") };
+    const c3 = G.listScheduleBends(svc, ctx(["2099-03-15"]));
+    check("AJ1 …the weekend around a Silvis Saturday is two units (Fri → Sat, Sat → Sun); FAK's service week starting the Monday a Silvis Sunday ends (07:00) is not (its overnight is Saturday) — only overnights count",
+      c2.counts.silvisAdj === 2 && c2.counts.lastRes === 2 && c3.counts.silvisAdj === 0 && c3.counts.lastRes === 0, JSON.stringify([c2.counts, c3.counts]));
+    // the seam: a Silvis primary on the Sunday before the period → FAK's Mon night of week 0; and on the Monday after → FAK's last Sunday
+    const seam = { [K[0]]: W("s1", "s6", "s3", "s4", "s7", "s5"), [K[1]]: W("s2", "s3", "s4", "s5", "s7", "s6") };
+    const c4 = G.listScheduleBends(seam, ctx(["2099-03-08", "2099-03-23"]));
+    check("AJ1 …across the seam both ways: a Silvis Sunday before the period next to FAK's Mon night of week 0, a Silvis Monday after it next to FAK's last Sunday",
+      c4.counts.silvisAdj === 2 && c4.items.filter(i => i.key === "silvisAdj").map(i => i.date).join(",") === "2099-03-09,2099-03-22", JSON.stringify(c4.items.filter(i => i.key === "silvisAdj").map(i => i.text)));
+    // the search reads it (opts.silvisPrimary → its rules): a seeded schedule's tiers say so
+    const sr = (o) => { const S = G.createScheduleSearch(S7, ms, {}, new Set(), {}, {}, new Set(), null, [], null, {}, null, o); S.seed(thu); return S.status().tiers; };
+    check("AJ1 …and the search ranks by it: createScheduleSearch's opts.silvisPrimary reaches its rules (a seeded schedule's last-resort tier is 1 with it, 0 without)",
+      sr({ silvisPrimary: { id: "s6", dates: ["2099-03-13"] } }).lastResort === 1 && sr({}).lastResort === 0, JSON.stringify([sr({ silvisPrimary: { id: "s6", dates: ["2099-03-13"] } }), sr({})]));
+    // FAK's own holiday 24h next to a Silvis day is not a free choice: the item names the card's row, no slot, no "also free"
+    const hol25 = { 2099: [{ name: "July 4th", date: "2099-03-11", surgeonA: "s6", surgeonB: "s3", type: "minor", coverage: [{ date: "2099-03-11", surgeon: "s6" }] }] };
+    const r25 = G.listScheduleBends({ [K[0]]: W("s1", "s2", "s3", "s4", "s5", "s7"), [K[1]]: W("s2", "s3", "s4", "s5", "s7", "s1") }, ctx(["2099-03-12"], { holAssignments: hol25 }));
+    const i25 = r25.items.find(i => i.key === "silvisAdj");
+    check("AJ1 …on FAK's own holiday 24h row (fixed by the card) the item says so — no slot, no 'also free' list (nothing to choose)",
+      !!i25 && i25.slots.length === 0 && /holiday 24h Wed 3\/11, the card's/.test(i25.text) && !/also free/.test(i25.text), JSON.stringify(i25));
+    // overnightHolderOn (Warnings): weekHolders' rule, executed
+    const pub = { "2099-03-09": { dayCall: "s1", nights: { mon: "s2", tue: "s3", wed: "s4", thu: "s5", wknd: "s7" }, holidayCoverage: { "2099-03-11": { surgeonId: "s6" } }, dayCallOverrides: { "2099-03-14": "s4" } } };
+    const hs = ["09", "10", "11", "12", "13", "14", "15"].map(d => G.overnightHolderOn(pub, "2099-03-" + d)), none = G.overnightHolderOn(pub, "2099-03-16");
+    check("AJ1 overnightHolderOn reads a published week by weekHolders' rule: Mon–Thu nights, a holiday 24h row on its date, Fri / Sun the weekend, Sat the service week's single-day override; nothing for an unpublished week",
+      hs.join(",") === "s2,s3,s6,s5,s7,s4,s7" && none === null, JSON.stringify([hs, none]));
+    // the app wires it everywhere a schedule is read, and Warnings says it for published weeks
+    check("AJ1 the app hands FAK's Silvis primaries to BOTH searches, the G&P gate and the preview's Needs your OK (one builder), and Warnings lists a published Davenport overnight next to one",
+      count("const buildSilvisPrimary = () => (silvisActive && silvisFakId) ? { id: silvisFakId, dates: [...(silvisDays.primary || [])] } : null;") === 1
+        && count(", { silvisPrimary: buildSilvisPrimary() });") === 2 && count("silvisPrimary: buildSilvisPrimary() }).items.length;") === 1 && count("silvisPrimary: buildSilvisPrimary(), // FAK's Davenport night next to his Silvis 24h") === 1
+        && count("if (overnightHolderOn(schedule, N) !== silvisFakId) return;") === 1 && count("return health.concat(hard, sunday, adj);") === 1);
+  }
+  // ── AJ1b: decision 3 only where FAK can work it — else New Year's Monday convention stands, for every reader ──
+  {
+    const H = vm.runInContext("holidayDesign", sandbox), SOK = vm.runInContext("christmasSlotOk", sandbox);
+    const xmas = { name: "Christmas Day", date: "2029-12-25", surgeonA: "s6", surgeonB: "s6", type: "major", coverage: [{ date: "2029-12-24", surgeon: "s6", isEve: true }, { date: "2029-12-25", surgeon: "s6" }] };
+    const ny = (a, b) => ({ name: "New Year's", date: "2029-12-31", surgeonA: a, surgeonB: b, type: "major", coverage: [{ date: "2029-12-31", surgeon: a }, { date: "2030-01-01", surgeon: b }] });
+    const D = "2029-12-24", pinsOf = (hol, vac, sil) => { const p = H({ 2029: hol }, [D], "s6", SOK(vac || {}, vac || {}, sil || null)).pins[D] || {}; return p.dayCall + "/" + p.wknd; };
+    const free = pinsOf([xmas, ny("s5", "s1")]), offWed = pinsOf([xmas, ny("s5", "s1")], { s6: [["2029-12-26", "2029-12-26"]] }), offSun = pinsOf([xmas, ny("s5", "s1")], { s6: [["2029-12-30", "2029-12-30"]] }), offMon = pinsOf([xmas, ny("s5", "s1")], { s6: [["2029-12-31", "2029-12-31"]] });
+    const silMon = pinsOf([xmas, ny("s5", "s1")], {}, { id: "s6", dates: ["2029-12-31"] }), nyFak = pinsOf([xmas, ny("s6", "s1")]);
+    check("AJ1b decision 3 slot by slot (2029 + New Year's REH / DJA): free → FAK / FAK; FAK off Wed 12/26 → REH's service week (the convention), his weekend stays; off Sun 12/30 (his service week's Sunday too) → REH / DJA; off Mon 12/31 (the weekend's Monday) → his service week, DJA's weekend; a Silvis Mon 12/31 → not his weekend; FAK as New Year's surgeon A (his 24h Mon 12/31) → not his weekend either",
+      free === "s6/s6" && offWed === "s5/s6" && offSun === "s5/s1" && offMon === "s6/s1" && silMon === "s6/s1" && nyFak === "s6/s1", JSON.stringify({ free, offWed, offSun, offMon, silMon, nyFak }));
+    // the generator and the rules engine agree: FAK off Wed 12/26 → REH service week, nothing listed for REH's convention week
+    const S7g = ["DJA", "MCC", "RPC", "KJH", "REH", "FAK", "ARW"].map((n, k) => ({ id: "s" + (k + 1), name: n }));
+    const ms4 = [-7, 0, 7, 14].map(o => G.addD(G.parse(D), o)), vac = { s6: [["2029-12-26", "2029-12-26"]] }, hol = { 2029: [xmas, ny("s5", "s1")] };
+    const out = [];
+    for (let r = 0; r < 3; r++) {
+      const g = G.generate(S7g, ms4, vac, new Set(), {}, {}, new Set(), hol, [], null, vac, null, { proposals: 20000 });
+      const lst = G.listScheduleBends(g, { surgeons: S7g, mondays: ms4, vac, vacationsOnly: vac, holAssignments: hol, prevWeekSeed: null });
+      out.push({ svc: g[D].dayCall, wknd: g[D].nights.wknd, hard: lst.counts.hard, reh: lst.items.filter(i => i.who === "s5" && i.kind === "bend").map(i => i.key) });
+    }
+    check("AJ1b …and the generator deals the fallback the rules engine reads as designed: FAK off Wed 12/26 → REH's service week every roll, FAK's weekend, no bend listed for REH's convention week, nothing in a row",
+      out.every(o => o.svc === "s5" && o.wknd === "s6" && o.hard === 0 && o.reh.length === 0), JSON.stringify(out));
+  }
+  // ── AJ1c: FAK's design-week pins he cannot work are dropped whatever rule set them; designation follows the pins ──
+  {
+    const H = vm.runInContext("holidayDesign", sandbox), SOK = vm.runInContext("christmasSlotOk", sandbox);
+    const card = (y, dow) => { const x = `${y}-12-25`, ev = G.fmt(G.addD(G.parse(x), -1)); return { name: "Christmas Day", date: x, surgeonA: "s6", surgeonB: "s6", type: "major", coverage: [{ date: ev, surgeon: "s6", isEve: true }, { date: x, surgeon: "s6" }] }; };
+    const p26 = (sil) => H({ 2026: [card(2026)] }, ["2026-12-21"], "s6", SOK({}, {}, sil ? { id: "s6", dates: sil } : null)).pins["2026-12-21"] || {};
+    const p28 = (sil) => H({ 2028: [card(2028)] }, ["2028-12-18"], "s6", SOK({}, {}, sil ? { id: "s6", dates: sil } : null)).pins["2028-12-18"] || {};
+    const a = p26(null), b = p26(["2026-12-28"]), c = p28(["2028-12-23"]);
+    check("AJ1c a Friday Christmas (2026): his own 24h's weekend pin is dropped when a Silvis Mon 12/28 sits next to its Sunday (the service Saturday stays his); a Monday Christmas (2028) keeps the weekend holding his Christmas Eve even next to a Silvis Saturday",
+      a.wknd === "s6" && a.dayCall === "s6" && !b.wknd && b.dayCall === "s6" && c.wknd === "s6", JSON.stringify({ a, b, c }));
+    // the search follows: 2026 with Silvis Mon 12/28 — the weekend goes to a partner, nothing is his last resort
+    const S7g = ["DJA", "MCC", "RPC", "KJH", "REH", "FAK", "ARW"].map((n, k) => ({ id: "s" + (k + 1), name: n }));
+    const ms4 = ["2026-12-14", "2026-12-21", "2026-12-28", "2027-01-04"].map(G.parse), hol = { 2026: [card(2026)] }, vac = { s6: [["2026-12-28", "2026-12-28"]] }, sil = { id: "s6", dates: ["2026-12-28"] };
+    const out = [];
+    for (let r = 0; r < 3; r++) {
+      const g = G.generate(S7g, ms4, vac, new Set(), {}, {}, new Set(), hol, [], null, {}, null, { proposals: 20000, silvisPrimary: sil });
+      const l = G.listScheduleBends(g, { surgeons: S7g, mondays: ms4, vac, vacationsOnly: {}, holAssignments: hol, prevWeekSeed: null, silvisPrimary: sil });
+      out.push({ wknd: g["2026-12-21"].nights.wknd, svc: g["2026-12-21"].dayCall, lastRes: l.counts.lastRes, hard: l.counts.hard });
+    }
+    check("AJ1c …and the generator follows it (2026, Silvis Mon 12/28): FAK keeps the service week, a partner takes the weekend, no last resort and nothing in a row — every roll",
+      out.every(o => o.svc === "s6" && o.wknd !== "s6" && o.lastRes === 0 && o.hard === 0), JSON.stringify(out));
+    // a slot the cards fix next to a Silvis day: the item says so (no slot, no "also free") — 2030 Christmas Eve Tue 12/24 (the card's eve pin) by a Silvis Mon 12/23
+    const K30 = ["2030-12-16", "2030-12-23", "2030-12-30"], ms30 = K30.map(G.parse), hol30 = { 2030: [card(2030)] };
+    const w30 = { [K30[0]]: W("s1", "s2", "s3", "s4", "s5", "s7"), [K30[1]]: W("s6", "s2", "s6", "s6", "s3", "s6"), [K30[2]]: W("s2", "s3", "s4", "s5", "s7", "s1") };
+    const l30 = G.listScheduleBends(w30, { surgeons: S7, mondays: ms30, vac: {}, vacationsOnly: {}, holAssignments: hol30, prevWeekSeed: null, silvisPrimary: { id: "s6", dates: ["2030-12-23"] } });
+    const i30 = l30.items.find(i => i.key === "silvisAdj" && i.date === "2030-12-24");
+    check("AJ1c …a slot the cards fix (the 2030 Christmas Eve, Tue 12/24) next to a Silvis Mon 12/23: listed as his last resort with 'fixed by the holiday cards' — no slot, no 'also free'",
+      !!i30 && i30.slots.length === 0 && /Tue night 12\/24, fixed by the holiday cards/.test(i30.text) && !/also free/.test(i30.text), JSON.stringify(i30));
+    // designation follows the pins: 2029 + New Year's, FAK off Wed 12/26 (the service week is REH's by the convention) — FAK on that service week + weekend anyway is his LAST RESORT, not his design
+    const xm = card(2029), nyc = { name: "New Year's", date: "2029-12-31", surgeonA: "s5", surgeonB: "s1", type: "major", coverage: [{ date: "2029-12-31", surgeon: "s5" }, { date: "2030-01-01", surgeon: "s1" }] };
+    const K29 = ["2029-12-17", "2029-12-24", "2029-12-31", "2030-01-07"], v29 = { s6: [["2029-12-26", "2029-12-26"]] };
+    const w29 = { [K29[0]]: W("s1", "s2", "s3", "s4", "s7", "s2"), [K29[1]]: W("s6", "s6", "s6", "s2", "s3", "s6"), [K29[2]]: W("s7", "s5", "s1", "s3", "s4", "s3"), [K29[3]]: W("s2", "s5", "s4", "s7", "s1", "s4") };
+    const l29 = G.listScheduleBends(w29, { surgeons: S7, mondays: K29.map(G.parse), vac: v29, vacationsOnly: v29, holAssignments: { 2029: [xm, nyc] }, prevWeekSeed: null });
+    check("AJ1c …designation follows the pins: 2029, FAK off Wed 12/26 (the convention gives REH the service week) — FAK on that service week + weekend anyway is his LAST RESORT, not his Christmas design",
+      l29.counts.lastRes === 1 && l29.items.some(i => i.kind === "lastResort" && i.key === "svcWknd" && i.mondayStr === K29[1]), JSON.stringify(l29.counts));
+    check("AJ1c the app's Warnings judge 'designed' with the generator's own slot test",
+      count("holidayDesign(holidayAssignments, mondayStrs, fakW, christmasSlotOk(buildGenAvailability(), vacations, buildSilvisPrimary()))") === 1);
+  }
+  // ── AJ2: the spacing box no longer repeats what Needs your OK lists ──
+  {
+    const K = ["2099-03-02", "2099-03-09", "2099-03-16"], ms = K.map(G.parse);
+    const sch = { [K[0]]: W("s2", "s1", "s3", "s4", "s5", "s7"), [K[1]]: W("s1", "s3", "s4", "s5", "s7", "s6"), [K[2]]: W("s2", "s4", "s5", "s7", "s3", "s1") };
+    const it = G.listScheduleBends(sch, { surgeons: S7, mondays: ms, vac: {}, vacationsOnly: {}, holAssignments: null, prevWeekSeed: null }).items.find(i => i.key === "svcGap");
+    check("AJ2 a svcGap strain item carries BOTH its weeks (prevMondayStr + mondayStr), so the spacing box can tell it is listed",
+      !!it && it.who === "s2" && it.prevMondayStr === K[0] && it.mondayStr === K[2], JSON.stringify(it));
+    // across the seam (the case the box was built for): MCC's service week 2 weeks before the period (recentDc) and its week 1
+    const seamS = { [K[0]]: W("s1", "s3", "s4", "s5", "s7", "s6"), [K[1]]: W("s2", "s1", "s3", "s4", "s5", "s7"), [K[2]]: W("s3", "s4", "s5", "s7", "s1", "s2") };
+    const seamIt = G.listScheduleBends(seamS, { surgeons: S7, mondays: ms, vac: {}, vacationsOnly: {}, holAssignments: null, prevWeekSeed: { dayCall: "s4", wknd: "s1", nights: {}, recentDc: { s2: -1 } } }).items.find(i => i.key === "svcGap" && i.who === "s2");
+    check("AJ2 …across the seam too: MCC's service week the week before the period (recentDc) and the period's week 1 → the item's prevMondayStr is that Monday, exactly the Monday the box walks back to",
+      !!seamIt && seamIt.prevMondayStr === G.fmt(G.addD(ms[0], -7)) && seamIt.mondayStr === K[1], JSON.stringify(seamIt));
+    check("AJ2 the spacing box skips every pair Needs your OK lists as svcGap strain (keeping only the card-forced ones), and says so",
+      count('const listedGap = new Set((previewNeedsOk.items || []).filter(it => it.key === "svcGap").map(it => it.who + "|" + it.prevMondayStr + "|" + it.mondayStr));') === 1
+        && count('w - last[id].w <= MIN_DC_GAP && !listedGap.has(id + "|" + last[id].mStr + "|" + mStr)') === 1 && count("so Needs your OK doesn't count them as strain") === 1);
+  }
+  // ── AJ3: holiday pairs — one minor + at most one major each, FAK's Christmas Eve + Day, the rest rotating ──
+  {
+    const live = JSON.parse(fs.readFileSync(path.join(__dirname, "fixtures", "holiday-assignments-2026-live.json"), "utf8"));
+    const PART = ["s1", "s2", "s3", "s4", "s5", "s7"];
+    const holsOf = (y) => { const H = G.getHolidays(y); return [...H.major.map(h => Object.assign({}, h, { type: "major" })), ...H.minor.map(h => Object.assign({}, h, { type: "minor" }))].filter(h => h.name !== "Christmas Day"); };
+    const run = (from, to, extra) => {
+      const hist = JSON.parse(JSON.stringify(live.holidayAssignments || live)), bad = [];
+      for (let y = from; y <= to; y++) {
+        const plan = G.planHolidayPairs(Object.assign({ year: y, holidays: holsOf(y), partners: PART, history: hist }, extra ? extra(y) : {}));
+        const arr = holsOf(y).map(h => ({ name: h.name, type: h.type, date: h.date, surgeonA: plan.picks[h.name].surgeonA, surgeonB: plan.picks[h.name].surgeonB }));
+        arr.push({ name: "Christmas Day", type: "major", date: y + "-12-25", surgeonA: "s6", surgeonB: "s6" });
+        const prev = hist[String(y - 1)] || [];
+        PART.forEach(id => {
+          const mine = arr.filter(h => h.name !== "Christmas Day" && (h.surgeonA === id || h.surgeonB === id));
+          if (mine.filter(h => h.type === "minor").length !== 1) bad.push(`${y} ${id}: ${mine.filter(h => h.type === "minor").length} minors`);
+          if (mine.filter(h => h.type === "major").length > 1) bad.push(`${y} ${id}: two majors`);
+          mine.forEach(h => { if (prev.some(p => p.name === h.name && (p.surgeonA === id || p.surgeonB === id))) bad.push(`${y} ${id}: ${h.name} again`); });
+          if (!mine.some(h => h.type === "major") && !prev.some(p => p.type === "major" && (p.surgeonA === id || p.surgeonB === id))) bad.push(`${y} ${id}: no major two years running`);
+          if (arr.some(h => h.surgeonA === h.surgeonB && h.name !== "Christmas Day")) bad.push(`${y}: a collapsed pair`);
+        });
+        if (arr.some(h => h.name !== "Christmas Day" && (h.surgeonA === "s6" || h.surgeonB === "s6"))) bad.push(`${y}: FAK on a holiday other than Christmas`);
+        hist[String(y)] = arr;
+      }
+      return { hist, bad };
+    };
+    const r = run(2027, 2044);
+    const tally = {}; PART.forEach(id => { tally[id] = {}; });
+    for (let y = 2027; y <= 2044; y++) r.hist[String(y)].forEach(h => [h.surgeonA, h.surgeonB].filter((v, i, a) => a.indexOf(v) === i).forEach(id => { if (tally[id]) tally[id][h.name] = (tally[id][h.name] || 0) + 1; }));
+    const spread = PART.every(id => ["New Year's", "Thanksgiving", "Memorial Day", "July 4th", "Labor Day"].every(n => (tally[id][n] || 0) >= 5 && (tally[id][n] || 0) <= 7));
+    const cycle = PART.every(id => { for (let y = 2027; y + 2 <= 2044; y++) { const n = [y, y + 1, y + 2].filter(z => r.hist[String(z)].some(h => h.type === "major" && h.name !== "Christmas Day" && (h.surgeonA === id || h.surgeonB === id))).length; if (n !== 2) return false; } return true; });
+    check("AJ3 holiday pairs 2027–2044 from the live 2026 cards: every year each partner has exactly ONE minor and at most ONE major, FAK only Christmas, no partner on the same holiday as last year, nobody without a major two years running",
+      r.bad.length === 0, r.bad.slice(0, 6).join("; "));
+    check("AJ3 …and it rotates: over 18 years each partner has each of the five holidays 5–7 times, and exactly 2 majors in every 3 consecutive years",
+      spread && cycle, JSON.stringify(tally));
+    // time off: DJA off on July 4th 2027 → never there; presets count (Memorial Day 2027 fixed to DJA/MCC → neither is planned onto another minor)
+    const off = G.planHolidayPairs({ year: 2027, holidays: holsOf(2027), partners: PART, history: live.holidayAssignments || live, unavailable: (id, h) => id === "s1" && h.name === "July 4th" });
+    const fixedM = { name: "Memorial Day", type: "minor", surgeonA: "s1", surgeonB: "s2" };
+    const pre = G.planHolidayPairs({ year: 2027, holidays: holsOf(2027).filter(h => h.name !== "Memorial Day"), partners: PART, history: live.holidayAssignments || live, fixed: [fixedM] });
+    const preMinor = ["July 4th", "Labor Day"].flatMap(n => [pre.picks[n].surgeonA, pre.picks[n].surgeonB]);
+    check("AJ3 …time off on a role's dates keeps a partner off that holiday; a preset card counts toward one-per-group (its two partners are not planned onto another minor)",
+      ![off.picks["July 4th"].surgeonA, off.picks["July 4th"].surgeonB].includes("s1") && !preMinor.includes("s1") && !preMinor.includes("s2") && new Set(preMinor).size === 4,
+      JSON.stringify([off.picks["July 4th"], pre.picks]));
+    // too few / too many partners: said in plain words, never silently
+    const five = G.planHolidayPairs({ year: 2027, holidays: holsOf(2027), partners: PART.slice(0, 5), history: live.holidayAssignments || live, nameOf: (id) => id });
+    const seven = G.planHolidayPairs({ year: 2027, holidays: holsOf(2027), partners: PART.concat(["s8"]), history: live.holidayAssignments || live });
+    const sevenMinor = ["Memorial Day", "July 4th", "Labor Day"].flatMap(n => [seven.picks[n].surgeonA, seven.picks[n].surgeonB]);
+    const sevenMajor = ["New Year's", "Thanksgiving"].flatMap(n => [seven.picks[n].surgeonA, seven.picks[n].surgeonB]);
+    check("AJ3 …five partners for six minor slots: someone takes two and the notes SAY so; a seventh partner (a new hire): still at most one each, and the new hire — no holiday last year — gets a major first",
+      five.notes.some(n => /has two minor holidays in 2027/.test(n)) && new Set(sevenMinor).size === 6 && new Set(sevenMajor).size === 4 && sevenMajor.includes("s8"),
+      JSON.stringify([five.notes, seven.picks]));
+    // sitting out twice running beats the counts: KJH (s4) and ARW (s7) held New Year's / Thanksgiving every year
+    // 2016–2025 and sat out 2026 — the holiday counts alone would leave them out again; the rule puts both in 2027
+    const heavy = {};
+    for (let y = 2016; y <= 2025; y++) heavy[String(y)] = [{ name: y % 2 ? "Thanksgiving" : "New Year's", type: "major", date: y + "-12-31", surgeonA: "s4", surgeonB: "s7" }];
+    heavy["2026"] = [{ name: "New Year's", type: "major", date: "2026-12-31", surgeonA: "s1", surgeonB: "s2" }, { name: "Thanksgiving", type: "major", date: "2026-11-26", surgeonA: "s3", surgeonB: "s5" }];
+    const hv = G.planHolidayPairs({ year: 2027, holidays: holsOf(2027), partners: PART, history: heavy });
+    const hvMajor = ["New Year's", "Thanksgiving"].flatMap(n => [hv.picks[n].surgeonA, hv.picks[n].surgeonB]);
+    check("AJ3 …nobody sits out a major two years running even when the holiday counts favour others (KJH and ARW held the majors for ten years, then sat out 2026: both get one in 2027)",
+      hvMajor.includes("s4") && hvMajor.includes("s7"), JSON.stringify(hv.picks));
+    const L26 = live.holidayAssignments || live;
+    // rule order: time off ranks above "not the same holiday as last year" — DJA off July 4th + Labor Day → Memorial Day again (said)
+    const ord = G.planHolidayPairs({ year: 2027, holidays: holsOf(2027), partners: PART, history: L26, unavailable: (id, h) => id === "s1" && (h.name === "July 4th" || h.name === "Labor Day"), nameOf: (id) => id });
+    check("AJ3 rule order: time off outranks 'not last year's holiday' — DJA off July 4th and Labor Day gets Memorial Day again (2026 too), and the notes say so; never a holiday he is off for",
+      [ord.picks["Memorial Day"].surgeonA, ord.picks["Memorial Day"].surgeonB].includes("s1") && !["July 4th", "Labor Day"].some(n => [ord.picks[n].surgeonA, ord.picks[n].surgeonB].includes("s1"))
+        && ord.notes.some(n => /s1 has Memorial Day again \(2026 too\)/.test(n)), JSON.stringify(ord));
+    // the rate tier: with the sit-outs (KJH, ARW) placed, the other two majors go to the LOWER lifetime rates
+    const rates = { s1: 0.9, s2: 0.8, s3: 0.1, s5: 0.2, s4: 0.5, s7: 0.5 };
+    const rt = G.planHolidayPairs({ year: 2027, holidays: holsOf(2027), partners: PART, history: L26, rate: (id) => rates[id] });
+    const rtMajor = ["New Year's", "Thanksgiving"].flatMap(n => [rt.picks[n].surgeonA, rt.picks[n].surgeonB]);
+    check("AJ3 the rate tier decides who else gets a major: RPC and REH (rates 0.1, 0.2) over DJA and MCC (0.9, 0.8), beside the sit-outs KJH and ARW",
+      ["s3", "s5", "s4", "s7"].every(id => rtMajor.includes(id)), JSON.stringify(rt.picks));
+    // a preset pair is never paired again on another card that year (10 random tie-breaks: KJH + ARW fixed on Memorial Day, both need a major)
+    let apart = 0;
+    for (let t = 0; t < 10; t++) { const pp = G.planHolidayPairs({ year: 2027, holidays: holsOf(2027).filter(h => h.name !== "Memorial Day"), partners: PART, history: L26, fixed: [{ name: "Memorial Day", type: "minor", surgeonA: "s4", surgeonB: "s7" }] });
+      if (!["New Year's", "Thanksgiving"].some(n => { const p = pp.picks[n]; return [p.surgeonA, p.surgeonB].includes("s4") && [p.surgeonA, p.surgeonB].includes("s7"); })) apart++; }
+    check("AJ3 no two partners on two cards the same year: KJH + ARW, fixed together on Memorial Day and both owed a major, are never put on one major card (10 of 10 tie-breaks)", apart === 10, `${apart}/10`);
+    // …where nothing else tells them apart (no history, four partners, every one gets a major): only that rule keeps the pair off one card
+    let apart2 = 0;
+    const nyThx = holsOf(2030).filter(h => h.type === "major");
+    for (let t = 0; t < 20; t++) { const pp = G.planHolidayPairs({ year: 2030, holidays: nyThx, partners: ["s1", "s2", "s3", "s4"], history: {}, fixed: [{ name: "Memorial Day", type: "minor", surgeonA: "s1", surgeonB: "s2" }] });
+      if (!nyThx.some(h => { const p = pp.picks[h.name]; return [p.surgeonA, p.surgeonB].includes("s1") && [p.surgeonA, p.surgeonB].includes("s2"); })) apart2++; }
+    check("AJ3 …even with nothing else to go on (no history, four partners for four major slots): DJA + MCC, paired on Memorial Day, never share a major card (20 of 20)", apart2 === 20, `${apart2}/20`);
+    // the notes give the real reason
+    const offK = G.planHolidayPairs({ year: 2027, holidays: holsOf(2027), partners: PART, history: L26, unavailable: (id, h) => id === "s4" && h.type === "minor", nameOf: (id) => id });
+    check("AJ3 the notes give the real reason: KJH off for every minor → 'KJH has no minor holiday in 2027 — off on every minor holiday date' and the partner with two says KJH is off, not 'not enough partners'",
+      offK.notes.some(n => /^s4 has no minor holiday in 2027 — off on every minor holiday date/.test(n)) && offK.notes.some(n => /has two minor holidays in 2027 — s4 off on every minor holiday/.test(n)) && !offK.notes.some(n => /not enough partners/.test(n)),
+      JSON.stringify(offK.notes));
+    // a year already stored after this one: the notes say what the new picks break against it
+    const h27 = run(2027, 2028).hist; const re27 = G.planHolidayPairs({ year: 2027, holidays: holsOf(2027), partners: PART, history: Object.assign({}, h27, { "2027": undefined }), nameOf: (id) => id });
+    const clash = PART.some(id => Object.keys(re27.picks).some(n => [re27.picks[n].surgeonA, re27.picks[n].surgeonB].includes(id) && h27["2028"].some(h => h.name === n && (h.surgeonA === id || h.surgeonB === id))));
+    let clashes = 0;
+    for (let t = 0; t < 30; t++) { const rp = G.planHolidayPairs({ year: 2027, holidays: holsOf(2027), partners: PART, history: Object.assign({}, h27, { "2027": undefined }) });
+      if (PART.some(id => Object.keys(rp.picks).some(n => [rp.picks[n].surgeonA, rp.picks[n].surgeonB].includes(id) && h27["2028"].some(h => h.name === n && (h.surgeonA === id || h.surgeonB === id))))) clashes++; }
+    check("AJ3 re-generating a year with the NEXT year stored ranks against it: the same holiday as someone's stored 2028 is avoided (0 of 30 re-plans clash — the year it replaced fit)", clashes === 0, `${clashes}/30`);
+    check("AJ3 re-generating a year with the NEXT year stored: every clash with it is in the notes ('re-generate 2028 too'), none when there is none",
+      clash ? re27.notes.some(n => /\(already stored\) — re-generate 2028 too/.test(n)) : !re27.notes.some(n => /already stored/.test(n)), JSON.stringify({ clash, notes: re27.notes }));
+    // the holiday card's checks, executed (helpers.js holidayRotationCheck)
+    const RC = vm.runInContext("holidayRotationCheck", sandbox);
+    const prior = [{ name: "New Year's", type: "major", surgeonA: "s1", surgeonB: "s2" }, { name: "Thanksgiving", type: "major", surgeonA: "s3", surgeonB: "s5" }, { name: "July 4th", type: "minor", surgeonA: "s4", surgeonB: "s7" }];
+    const cards = [{ name: "New Year's", type: "major", surgeonA: "s1", surgeonB: "s3" }, { name: "Thanksgiving", type: "major", surgeonA: "s2", surgeonB: "s5" }, { name: "Christmas Day", type: "major", surgeonA: "s6", surgeonB: "s6" },
+      { name: "Memorial Day", type: "minor", surgeonA: "s1", surgeonB: "s2" }, { name: "July 4th", type: "minor", surgeonA: "s4", surgeonB: "s6" }, { name: "Labor Day", type: "minor", surgeonA: "s3", surgeonB: "s5" }];
+    const rc = RC({ assignments: cards, prior, surgeons: S7, fakId: "s6", year: 2027 }), rcP = RC({ assignments: cards, prior, surgeons: S7, fakId: "s6", year: 2027, preset: true });
+    const want = ["ARW has no minor holiday", "FAK is on July 4th (his holidays are Christmas Eve + Day)", "KJH has no major in 2026 or 2027", "ARW has no major in 2026 or 2027", "DJA has New Year's again (2026 too)", "REH has Thanksgiving again (2026 too)", "KJH has July 4th again (2026 too)"];
+    check("AJ3 the holiday card's checks (holidayRotationCheck, executed): FAK's Christmas A = B is ONE holiday (no duplicate); it names a partner with no minor, FAK on another holiday, no major two years running, a holiday again from last year — and nothing in a hand-written preset year",
+      rc.major.ok && rc.major.uniqueCount === 5 && JSON.stringify(rc.major.none.slice().sort()) === JSON.stringify(["s4", "s7"]) && want.every(w => rc.issues.includes(w)) && rc.issues.length === want.length
+        && rcP.preset === true && rcP.issues.length === 0, JSON.stringify(rc.issues));
+    // the app, executed: the REAL generateHolidayAssignments (with a spy on the planner) — FAK only on Christmas, the
+    // role's dates as the floor sees them (vacation ∪ no-call, the next morning, B's eve unless FAK's Christmas week), worked holidays kept
+    {
+      const nsrcG = src.replace(/\r\n/g, "\n");
+      const START = "  const generateHolidayAssignments = useCallback((year) => {", i0 = nsrcG.indexOf(START), e0 = i0 < 0 ? -1 : nsrcG.indexOf("\n  }, [surgeons, vacations, noCallDays, holidayAssignments, silvisActive, silvisFakId, silvisDays]);", i0);
+      const ENVK = "surgeons, vacations, noCallDays, holidayAssignments, silvisActive, silvisFakId, silvisDays, setHolidayLockWarning, setHolidayAssignments, logAudit, planHolidayPairs, sfConflictDay, buildGenAvailability, buildSilvisPrimary, Date";
+      let mkG = null; try { mkG = i0 < 0 || e0 < 0 ? null : vm.runInContext("(function (env) { const { " + ENVK + " } = env; return (year) => {" + nsrcG.slice(i0 + START.length, e0) + "\n  }; })", sandbox, { filename: "ah-holgen.js" }); } catch (ex) { mkG = null; }
+      if (!mkG) check("AJ3 generateHolidayAssignments extractable for execution", false, "anchor / compile");
+      else {
+        const realPlan = vm.runInContext("planHolidayPairs", sandbox);
+        const go = (year, o) => { const rec = { warn: "", saved: null, plan: null };
+          const fn = mkG({ surgeons: S7, vacations: o.vac || {}, noCallDays: o.noCall || {}, holidayAssignments: o.hist || L26, silvisActive: false, silvisFakId: "s6", silvisDays: { primary: new Set() },
+            setHolidayLockWarning: (v) => { rec.warn = typeof v === "function" ? v(rec.warn) : v; }, setHolidayAssignments: (u) => { rec.saved = u({})[String(year)]; }, logAudit: () => {},
+            planHolidayPairs: (p) => { rec.plan = p; return realPlan(p); }, sfConflictDay: () => null,
+            buildGenAvailability: () => { const m = {}; [o.vac || {}, o.noCall || {}].forEach(src => Object.keys(src).forEach(k => { m[k] = (m[k] || []).concat(src[k]); })); return m; }, buildSilvisPrimary: () => null,
+            Date: o.today ? class extends Date { constructor(...a) { if (a.length) super(...a); else super(o.today + "T12:00:00"); } } : Date });
+          fn(year); return rec; };
+        const g27 = go(2027, {});
+        const fakCards = (g27.saved || []).filter(h => h.surgeonA === "s6" || h.surgeonB === "s6").map(h => h.name);
+        const u = g27.plan && g27.plan.unavailable, mem = { name: "Memorial Day", date: "2027-05-31", type: "minor" };
+        const nyH = (y) => ({ name: "New Year's", date: `${y}-12-31`, endDate: `${y + 1}-01-01`, type: "major" });
+        const vacOn = (ds) => go(2027, { vac: { s1: [[ds, ds]] } }).plan.unavailable, ncOn = (ds) => go(2027, { noCall: { s1: [[ds, ds]] } }).plan.unavailable;
+        const uSun = vacOn("2027-05-30"), uTue = vacOn("2027-06-01"), uNc = ncOn("2027-05-31"), u29 = go(2029, { vac: { s1: [["2029-12-30", "2029-12-30"]] } }).plan.unavailable, u26 = go(2026, { hist: {}, vac: { s1: [["2026-12-30", "2026-12-30"]] } }).plan;
+        check("AJ3 the app, executed: FAK only on Christmas (A = B) though he is on the roster; the planner gets the roster minus FAK and the lifetime rate",
+          JSON.stringify(fakCards) === JSON.stringify(["Christmas Day"]) && !!g27.plan && !g27.plan.partners.includes("s6") && g27.plan.partners.length === 6 && typeof g27.plan.rate === "function",
+          JSON.stringify({ fakCards, partners: g27.plan && g27.plan.partners }));
+        check("AJ3 …time off by the role's dates as the floor sees it: Memorial Day (Mon) — a vacation on the Sun eve keeps DJA off B, not A; one starting Tue (the morning after A's 24h) keeps him off A; a no-call on the Monday keeps him off A; with nothing, both open",
+          uSun("s1", mem, "B") === true && uSun("s1", mem, "A") === false && uTue("s1", mem, "A") === true && uTue("s1", mem, "B") === false && uNc("s1", mem, "A") === true && u("s1", mem, "A") === false && u("s1", mem, "B") === false,
+          JSON.stringify([uSun("s1", mem, "B"), uSun("s1", mem, "A"), uTue("s1", mem, "A"), uTue("s1", mem, "B"), uNc("s1", mem, "A")]));
+        check("AJ3 …and B's eve only when it is his: the 2029 New Year's eve (Sun 12/30) is FAK's Christmas-week night — a B vacation that day does not count; the 2026 eve (Wed 12/30) does",
+          u29("s1", nyH(2029), "B") === false && (u26 ? u26.unavailable("s1", nyH(2026), "B") === true : false), JSON.stringify([u29("s1", nyH(2029), "B"), u26 && u26.unavailable("s1", nyH(2026), "B")]));
+        // a hand-written preset (a partly preset year): kept as written AND counted — its two partners are not planned onto another minor
+        vm.runInContext('HOLIDAY_PRESETS["2027"] = { "Memorial Day": ["s4", "s7"] };', sandbox);
+        let gp = null; try { gp = go(2027, {}); } finally { vm.runInContext('delete HOLIDAY_PRESETS["2027"];', sandbox); }
+        const pm = gp && gp.saved && gp.saved.find(h => h.name === "Memorial Day"), otherMinor = gp && gp.saved ? gp.saved.filter(h => h.type === "minor" && h.name !== "Memorial Day").flatMap(h => [h.surgeonA, h.surgeonB]) : [];
+        check("AJ3 …a partly preset year: the preset card is kept as written and handed to the planner as fixed — KJH + ARW (Memorial Day) are on no other minor",
+          !!pm && pm.surgeonA === "s4" && pm.surgeonB === "s7" && gp.plan.fixed.some(h => h.name === "Memorial Day") && !otherMinor.includes("s4") && !otherMinor.includes("s7") && otherMinor.length === 4,
+          JSON.stringify(gp && gp.saved && gp.saved.map(h => [h.name, h.surgeonA, h.surgeonB])));
+        // a partly past year (the clock at 8/1/2027): Memorial Day (KJH / ARW) and July 4th (DJA / MCC) were worked — kept, and
+        // counted, so Labor Day goes to the two partners with no minor yet (RPC, REH)
+        const part27 = [{ name: "Memorial Day", date: "2027-05-31", type: "minor", emoji: "x", surgeonA: "s4", surgeonB: "s7", coverage: [] }, { name: "July 4th", date: "2027-07-04", type: "minor", emoji: "x", surgeonA: "s1", surgeonB: "s2", coverage: [] }];
+        const gpp = go(2027, { hist: Object.assign({}, L26, { "2027": part27 }), today: "2027-08-01" });
+        const lab = gpp.saved && gpp.saved.find(h => h.name === "Labor Day"), keptOk = part27.every(k => gpp.saved && gpp.saved.some(x => x.name === k.name && x.surgeonA === k.surgeonA && x.surgeonB === k.surgeonB));
+        check("AJ3 …a partly past year (clock 8/1/2027): the worked Memorial Day and July 4th are kept as stored and count — Labor Day goes to RPC + REH, the two with no minor yet",
+          keptOk && !!lab && [lab.surgeonA, lab.surgeonB].sort().join() === "s3,s5" && gpp.plan.fixed.length >= 2, JSON.stringify(gpp.saved && gpp.saved.map(h => [h.name, h.surgeonA, h.surgeonB])));
+        // worked holidays are kept: re-generating 2025 (all past) re-plans nothing and keeps every card as stored
+        const st25 = holsOf(2025).map((h, k) => ({ name: h.name, date: h.date, type: h.type, emoji: "x", surgeonA: PART[k % 6], surgeonB: PART[(k + 1) % 6], coverage: [] }));
+        st25.push({ name: "Christmas Day", date: "2025-12-25", type: "major", emoji: "x", surgeonA: "s6", surgeonB: "s6", coverage: [] });
+        const g25 = go(2025, { hist: { "2025": st25 } });
+        check("AJ3 …a holiday already worked (dated before today) is kept as stored on a re-generate — re-generating 2025 re-plans nothing",
+          !!g25.saved && g25.saved.length === 6 && st25.every(h => g25.saved.some(x => x.name === h.name && x.surgeonA === h.surgeonA && x.surgeonB === h.surgeonB)) && g25.plan.holidays.length === 0,
+          JSON.stringify(g25.saved && g25.saved.map(h => [h.name, h.surgeonA, h.surgeonB])));
+        check("AJ3 swapping FAK onto a holiday other than Christmas asks ONCE (his own question, not the one-per-group one too); the card, the holiday-vac Warnings and the planner resolve a weekend eve with holidayEveHolder",
+          count("'s holidays are Christmas Eve + Christmas Day (his major and his minor). Put him on") === 1 && count("if (usedInGroup.has(newSurgeonId) && newSurgeonId !== fakSwap) {") === 1
+            && count("holidayEveHolder(hol, c.date, holidayAssignments, fakIdUI, takesChristWknd)") === 1 && count("holidayEveHolder(h, c.date, holidayAssignments, fakV, takesChristWknd)") === 1
+            && count("if (holidayEveHolder({ ...hol, surgeonB: id }, eve, { [year]: xc ? [xc] : [] }, fakId, takes) === id) days.push(eve);") === 1 && count("christmasWeek") === 0);
+        // the REAL vacOverlapWarnings memo: the 2029 New Year's eve (Sun 12/30) is checked against whoever works it — FAK when
+        // the cards give him his Christmas weekend (DJA's vacation then is no conflict), DJA (surgeon B) when they don't
+        const VS = "  const vacOverlapWarnings = useMemo(() => {", vs0 = nsrcG.indexOf(VS), ve0 = vs0 < 0 ? -1 : nsrcG.indexOf("\n  }, [", vs0);
+        let runV = null; try { runV = vs0 < 0 ? null : vm.runInContext("(function (env) { const { mondays, surgeons, apps, vacations, holidayAssignments, sMap, takesChristWknd } = env; return (() => {" + nsrcG.slice(vs0 + VS.length, ve0) + "})(); })", sandbox, { filename: "aj-vac.js" }); } catch (ex) { runV = null; }
+        if (!runV) check("AJ3 vacOverlapWarnings extractable for execution", false, "anchor / compile");
+        else {
+          const hv = { 2029: [{ name: "Christmas Day", date: "2029-12-25", type: "major", surgeonA: "s6", surgeonB: "s6", coverage: [{ date: "2029-12-24", surgeon: "s6", isEve: true }, { date: "2029-12-25", surgeon: "s6" }] },
+            { name: "New Year's", date: "2029-12-31", type: "major", surgeonA: "s5", surgeonB: "s1", coverage: [{ date: "2029-12-30", surgeon: "s1", isEve: true }, { date: "2029-12-31", surgeon: "s5" }, { date: "2030-01-01", surgeon: "s1" }] }] };
+          const sMapV = Object.fromEntries(S7.map(x => [x.id, x]));
+          const hvKeys = (vacs, takes) => (runV({ mondays: [G.parse("2029-12-24")], surgeons: S7, apps: [], vacations: vacs, holidayAssignments: hv, sMap: sMapV, takesChristWknd: () => takes }) || []).filter(w => w.key.startsWith("holiday-vac|")).map(w => w.key);
+          const djaOffT = hvKeys({ s1: [["2029-12-30", "2029-12-30"]] }, true), djaOffF = hvKeys({ s1: [["2029-12-30", "2029-12-30"]] }, false), fakOffT = hvKeys({ s6: [["2029-12-30", "2029-12-30"]] }, true);
+          check("AJ3 the holiday-vac Warnings (executed) check a weekend eve of FAK's Christmas week against who works it: DJA off Sun 12/30 is no conflict when FAK takes that weekend, a conflict when he doesn't; FAK off that day is one when he does",
+            djaOffT.length === 0 && djaOffF.includes("holiday-vac|2029-12-31|2029-12-30|s1") && fakOffT.includes("holiday-vac|2029-12-31|2029-12-30|s6"), JSON.stringify({ djaOffT, djaOffF, fakOffT }));
+        }
+      }
+    }
+  }
+}
+
+// ─── AK. The calendar's Today button (owner 2026-10-14) ───
+console.log("\nAK. calendar Today button");
+check("AK1 the calendar has a Today button beside the month arrows: it sets the month AND the year from a fresh Date (not a stale render), then scrolls today's cell into view",
+  count('aria-label="Go to today"') === 1 && count("const n = new Date(); setCalMonth(n.getMonth()); setCalYear(n.getFullYear());") === 1
+    && count('document.querySelector("[data-cal-today=\\"1\\"]")') === 1 && count('data-cal-today={isToday ? "1" : undefined}') === 1
+    && src.indexOf('aria-label="Go to today"') > src.indexOf('aria-label="Next month"'));
 
 // ══════════════════════════════════════════════════════════════
 // SE. Sync engine v2 — test/sync-engine-se.js (the real createSchedSync on an
@@ -3832,19 +5013,29 @@ await require("./sync-engine-se.js")({ src, check });
       && gateBefore("  const swapShift = (mStr, shift, newId, expectOldId) => {", "\n  };\n", "pushUndo();")
       && gateBefore("  const executeTwoWaySwap = useCallback(", "\n  }, [", "pushUndo();")
       && gateBefore("  const saveWeekEdits = useCallback(", "\n  }, [", "pushUndo();")
-      && gateBefore("  const acceptPreview = () => {", "\n  };\n", "pushUndo();")
-      && gateBefore("  const doGenerate = (preview) => {", "\n  };\n", "buildPrefs()"));
+      && gateBefore("  const acceptPreview = () => {", "\n  };\n", "publishWeeks(previewSchedule, {")
+      && gateBefore("  const doGenerate = async (preview) => {", "\n  };\n", "buildPrefs()")
+      && gateBefore("  const finishGenerate = (result, preview, clickSig, clickLocks, genEpoch) => {", "\n  };\n", "publishingRef.current = true;"));
+  {
+    const fb = bodyOf("  const finishGenerate = (result, preview, clickSig, clickLocks, genEpoch) => {", "\n  };\n");
+    const snapOk = fb.indexOf("if (!snap.ok) {"), gate = fb.indexOf('if (!schedEditable()) { setSaveStatus(""); return; }'), stale = fb.indexOf("changedSince(Object.keys(result), genEpoch)"), commit = fb.indexOf("await genCommitRef.current(result);");
+    check("SE-W Generate & Publish re-checks AFTER the snapshot's await and before the commit: the edit gate, then the click's engine epoch",
+      snapOk > 0 && gate > snapOk && stale > gate && commit > stale, JSON.stringify({ snapOk, gate, stale, commit }));
+  }
   check("SE-W stale intents carry preconditions: trade accept + both swaps check the slot holder; preview / publish / editor check the engine epoch",
     count("This trade is out of date") === 1 && count("This swap is out of date") === 2
       && count("changedSince(Object.keys(previewSchedule), previewEpochRef.current)") === 1 && count("changedSince(Object.keys(result), genEpoch)") === 1
-      && count("changedSince([mondayStr], editWeekModal.openEpoch || 0)") === 1 && count("swapShift(swapTarget.mondayStr, swapTarget.shift, s.candidateId, swapTarget.surgeonId)") === 1);
+      && count("changedSince([mondayStr], editWeekModal.openEpoch || 0)") === 1 && count("swapShift(swapTarget.mondayStr, swapTarget.shift, s.candidateId, swapTarget.surgeonId)") === 1
+      && count("previewEpochRef.current = genEpoch;") === 3 && count("previewEpochRef.current = schedSyncRef.current.epochNow();") === 1 && count("return genFinishRef.current(result, preview, clickSig, pendingLocks, genEpoch);") === 1);
   check("SE-W unload: the weeks keepalive comes ONLY from the engine (CAS, no insert, no delete) and only on pagehide/beforeunload; hide pushes through the chain",
     count("keepaliveRequests()") === 1 && count('if (source === "visibilitychange") { schedSyncRef.current.push(); return; }') === 1 && count("on_conflict=week_monday") === 0);
   check("SE-W reload / sign-out guards: both reload buttons ask while weeks are unsaved; sign-out asks, then resets the engine (mirror too), undo and editor BEFORE signing out",
     count("confirmReloadWithPending(") === 2
-      && /const handleSignOut = async \(\) => \{[\s\S]{0,900}schedSyncRef\.current\.reset\(\);\s*setScheduleHistory\(\[\]\); setEditWeekModal\(null\);[\s\S]{0,120}await auth\.signOut\(\);/.test(nsrcW));
+      && /searchRef\.current = null; setSearching\(null\); setSearchStats\(null\); setPreviewSchedule\(null\); setShowPreview\(false\);[^\n]*\n\s*schedSyncRef\.current\.reset\(\);/.test(nsrcW)
+      && /const handleSignOut = async \(\) => \{[\s\S]{0,1100}schedSyncRef\.current\.reset\(\);\s*setScheduleHistory\(\[\]\); setEditWeekModal\(null\);[\s\S]{0,120}await auth\.signOut\(\);/.test(nsrcW));
   check("SE-W Undo is all-or-nothing through the engine's undoPlan (each step carries its epoch)",
-    count("const plan = schedSyncRef.current.undoPlan(step.sched, step.epoch);") === 1 && count("epoch: schedSyncRef.current ? schedSyncRef.current.epochNow() : 0") === 1);
+    count("const plan = schedSyncRef.current.undoPlan(step.sched, step.epoch);") === 1 && count("epoch: schedSyncRef.current ? schedSyncRef.current.epochNow() : 0") === 1
+      && count("const pushUndo = useCallback((counts) => {") === 1 && count("pushUndo({ prior: priorCounts, y1: year1Counts })") === 1 && (src.match(/pushUndo\([a-z]/g) || []).length === 0);
   check("SE-W destructive snapshots pass minWeeks (an RLS-empty schedule read fails the capture): clear, regenerate, reset, restore",
     count("{ minWeeks: Object.keys(schedSyncRef.current.knownSchedule()).length ? 1 : 0 }") === 4);
 }

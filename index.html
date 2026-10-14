@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.10.11g";
+    var APP_VERSION = "2026.10.14b";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -131,7 +131,7 @@ const CAL_FILTER_DEFAULTS = Object.freeze({
 });
 const CAL_SILVIS_STORE_KEY = "dsg-cal-silvis";
 function CallSchedule() {
-  var _find, _surgeons$find14;
+  var _find, _surgeons$find16;
   const isPublicMode = useMemo(() => {
     try {
       const params = new URLSearchParams(window.location.search);
@@ -249,16 +249,35 @@ function CallSchedule() {
     }
   }, [darkMode]);
   const [scheduleHistory, setScheduleHistory] = useState([]);
-  const pushUndo = useCallback(sched => {
-    setScheduleHistory(prev => [...prev.slice(-9), JSON.parse(JSON.stringify(sched))]);
+  const pushUndo = useCallback((sched, counts) => {
+    const step = {
+      sched: JSON.parse(JSON.stringify(sched)),
+      counts: counts ? JSON.parse(JSON.stringify(counts)) : null
+    };
+    setScheduleHistory(prev => [...prev.slice(-9), step]);
   }, []);
   const undoLastChange = useCallback(() => {
     if (scheduleHistory.length === 0) return;
-    const prev = scheduleHistory[scheduleHistory.length - 1];
-    setSchedule(prev);
+    const step = scheduleHistory[scheduleHistory.length - 1];
+    setSchedule(step.sched);
+    if (step.counts) {
+      setPriorCounts(step.counts.prior || {});
+      setYear1Counts(step.counts.y1 || {});
+    }
     setScheduleHistory(h => h.slice(0, -1));
   }, [scheduleHistory]);
   const [previewSchedule, setPreviewSchedule] = useState(null);
+  const [previewOrigin, setPreviewOrigin] = useState("generated");
+  const searchRef = useRef(null);
+  const [searching, setSearching] = useState(null);
+  const genFinishRef = useRef(null),
+    genCommitRef = useRef(null);
+  const [searchStats, setSearchStats] = useState(null);
+  const previewSchedRef = useRef(null);
+  previewSchedRef.current = previewSchedule;
+  const loadJsonInputRef = useRef(null);
+  const publishingRef = useRef(false);
+  const [publishing, setPublishing] = useState(false);
   const [pendingLocks, setPendingLocks] = useState([]);
   const [silvisRows, setSilvisRows] = useState([]);
   const [silvisRule, setSilvisRule] = useState(SF_RULE_DEFAULT);
@@ -3202,14 +3221,7 @@ function CallSchedule() {
     setTimeout(() => setNotifTestSent(""), 3000);
   }, [sendBrowserNotif, sendEmailNotif, edgeFunctionUrl, notifPrefs, mySurgeon]);
   const doGenerateAndNotify = async () => {
-    const hadExistingSchedule = Object.keys(schedule).length > 0;
-    if (doGenerate(false) !== "published") return;
-    if (!hadExistingSchedule) {
-      setTimeout(() => {
-        const latest = scheduleRef.current;
-        if (latest && Object.keys(latest).length > 0) rollForwardCounts(latest);
-      }, 100);
-    }
+    if ((await doGenerate(false)) !== "published") return;
     await addNotification("schedule_published", "Schedule Published", "A new call schedule has been generated. Check the Schedule or Calendar tab.");
     sendEmailNotif("schedule_published", {
       period: `${MO[startMonth]} – ${MO[endMoIdx]} ${startYear}`
@@ -3818,26 +3830,97 @@ function CallSchedule() {
     }
     return availability;
   };
-  const doGenerate = preview => {
+  const buildSilvisPrimary = () => silvisActive && silvisFakId ? {
+    id: silvisFakId,
+    dates: [...(silvisDays.primary || [])]
+  } : null;
+  const takesChristWknd = mon => {
+    const fid = (surgeons.find(s => (s.name || "").toUpperCase() === "FAK") || {}).id || null;
+    if (!fid || typeof holidayDesign !== "function") return false;
+    const p = holidayDesign(holidayAssignments, [mon], fid, christmasSlotOk(buildGenAvailability(), vacations, buildSilvisPrimary())).pins[mon];
+    return !!p && p.wknd === fid;
+  };
+  const buildPrevWeekSeed = first => {
+    const f = first || mondays[0];
+    if (!f) return null;
+    const prevWk = schedule[fmt(addD(f, -7))];
+    const recentDc = {};
+    for (let k = 1; k <= 60; k++) {
+      const wk = schedule[fmt(addD(f, -7 * k))];
+      if (!wk) continue;
+      const dc = wk.dayCall;
+      if (dc && recentDc[dc] === undefined) recentDc[dc] = -k;
+    }
+    const pn = prevWk && prevWk.nights || {};
+    return {
+      dayCall: prevWk && prevWk.dayCall || null,
+      wknd: pn.wknd || null,
+      nights: {
+        mon: pn.mon || null,
+        tue: pn.tue || null,
+        wed: pn.wed || null,
+        thu: pn.thu || null
+      },
+      holidayCoverage: prevWk && prevWk.holidayCoverage || null,
+      dayCallOverrides: prevWk && prevWk.dayCallOverrides || null,
+      recentDc
+    };
+  };
+  const genInputsSig = () => JSON.stringify([mondays.map(fmt), pendingLocks, holidayAssignments, buildGenAvailability(), vacations, surgeons.map(s => s.id), [...backupMondaySet].sort(), [...fierceBackupSet].sort(), priorCounts, year1Counts]);
+  const runSearch = (session, purpose, budgetMs) => new Promise(resolve => {
+    const token = {};
+    searchRef.current = {
+      session,
+      token,
+      purpose,
+      activeMs: 0,
+      budgetMs
+    };
+    setSearching(purpose);
+    const tick = () => {
+      const sr = searchRef.current;
+      if (!sr || sr.token !== token) {
+        resolve(null);
+        return;
+      }
+      const t0 = Date.now();
+      let failed = false;
+      try {
+        session.step(40);
+      } catch (e) {
+        console.error("Schedule search failed:", e);
+        failed = true;
+      }
+      sr.activeMs += Date.now() - t0;
+      if (failed || sr.activeMs >= budgetMs || session.status().perfect) {
+        searchRef.current = null;
+        setSearching(null);
+        resolve({
+          session,
+          ms: sr.activeMs
+        });
+        return;
+      }
+      setTimeout(tick, 0);
+    };
+    setTimeout(tick, 0);
+  });
+  const cancelSearch = () => {
+    const sr = searchRef.current;
+    if (sr && sr.purpose !== "publish") {
+      searchRef.current = null;
+      setSearching(null);
+    }
+  };
+  const publishSearchRunning = () => !!(searchRef.current && searchRef.current.purpose === "publish");
+  const doGenerate = async preview => {
+    if (searchRef.current) {
+      showToast("A schedule search is already running — wait for it to finish.", "error");
+      return "busy";
+    }
     const prefs = buildPrefs();
     const availability = buildGenAvailability();
-    const prevWeekSeed = (() => {
-      if (!mondays.length) return null;
-      const first = mondays[0];
-      const prevWk = schedule[fmt(addD(first, -7))];
-      const recentDc = {};
-      for (let k = 1; k <= 60; k++) {
-        const wk = schedule[fmt(addD(first, -7 * k))];
-        if (!wk) continue;
-        const dc = wk.dayCall;
-        if (dc && recentDc[dc] === undefined) recentDc[dc] = -k;
-      }
-      return {
-        dayCall: prevWk && prevWk.dayCall || null,
-        wknd: prevWk && prevWk.nights && prevWk.nights.wknd || null,
-        recentDc
-      };
-    })();
+    const prevWeekSeed = buildPrevWeekSeed();
     try {
       const _first = mondays[0];
       const _prevKey = _first ? fmt(addD(_first, -7)) : "(no mondays)";
@@ -3863,8 +3946,30 @@ function CallSchedule() {
       if (silvisRows.length > 0 && periodEnd && silvisDays.to && periodEnd > silvisDays.to) problems.push(`the Silvis feed only covers through ${silvisDays.to} — weeks after that will be generated as if ${nameOf(silvisFakId)} had NO Silvis call (Silvis publishes rolling 3-month periods; check Schedule Warnings again after it publishes)`);
       if (problems.length && !confirm(`⚠️ Rule silvisBusy is BLIND for part or all of this period:\n\n${problems.map(p => "• " + p).join("\n")}\n\nGenerate anyway?`)) return "cancelled";
     }
-    const result = generate(surgeons, mondays, availability, backupMondaySet, priorCounts, prefs, fierceBackupSet, holidayAssignments, pendingLocks, prevWeekSeed, vacations, year1Counts);
-    const droppedLocks = (pendingLocks || []).filter(l => {
+    const search = createScheduleSearch(surgeons, mondays, availability, backupMondaySet, priorCounts, prefs, fierceBackupSet, holidayAssignments, pendingLocks, prevWeekSeed, vacations, year1Counts, {
+      silvisPrimary: buildSilvisPrimary()
+    });
+    const clickSig = genInputsSig();
+    const done = await runSearch(search, preview ? "generate" : "publish", SEARCH_MS);
+    const result = done && done.session.best();
+    if (!result) {
+      if (done) showToast("The schedule search found nothing — try again.", "error");
+      return "cancelled";
+    }
+    {
+      const st = done.session.status();
+      setSearchStats({
+        checked: st.checked,
+        starts: st.starts,
+        ms: done.ms,
+        purpose: "generate",
+        improved: true
+      });
+    }
+    return genFinishRef.current(result, preview, clickSig, pendingLocks);
+  };
+  const finishGenerate = (result, preview, clickSig, clickLocks) => {
+    const droppedLocks = (clickLocks || []).filter(l => {
       var _wk$nights;
       const wk = result[l.mondayStr];
       if (!wk) return false;
@@ -3875,18 +3980,29 @@ function CallSchedule() {
     if (droppedLocks.length) showToast(`⚠ ${droppedLocks.length} lock${droppedLocks.length === 1 ? " was" : "s were"} NOT honored by the generator: ${droppedLocks.map(l => `${nameOf(l.surgeonId)} — ${slotLabel(l.mondayStr, l.slot === "dc" ? "dayCall" : l.slot)}`).join("; ")} (the surgeon is unavailable there — vacation, no-call or Silvis).`, "error");
     if (preview) {
       setPreviewSchedule(result);
+      setPreviewOrigin("generated");
       setShowPreview(true);
+      if (JSON.stringify(clickLocks || []) !== JSON.stringify(pendingLocks || [])) showToast("The locks changed during the search — this preview used the earlier ones. Re-roll to use the new ones.", "error");
       return "preview";
+    }
+    if (genInputsSig() !== clickSig) {
+      setPreviewSchedule(result);
+      setPreviewOrigin("generated");
+      setShowPreview(true);
+      showToast("Time off, a lock, a holiday card or the Generate settings changed during the search — review the result in the preview below before publishing.", "error");
+      return "review";
     }
     const needsOkN = (() => {
       try {
         return listScheduleBends(result, {
           surgeons,
           mondays,
-          vac: availability,
+          vac: buildGenAvailability(),
           vacationsOnly: vacations,
           holAssignments: holidayAssignments,
-          prevWeekSeed
+          prevWeekSeed: buildPrevWeekSeed(),
+          locks: pendingLocks,
+          silvisPrimary: buildSilvisPrimary()
         }).items.length;
       } catch (e) {
         console.error("Needs-your-OK check failed:", e);
@@ -3895,52 +4011,81 @@ function CallSchedule() {
     })();
     if (needsOkN > 0) {
       setPreviewSchedule(result);
+      setPreviewOrigin("generated");
       setShowPreview(true);
       showToast(`${needsOkN} item${needsOkN === 1 ? " needs" : "s need"} your OK before publishing — review them in the preview below, then ✓ Accept & Publish.`, "error");
       return "review";
     }
+    if (publishingRef.current) {
+      showToast("A publish is already in progress — wait for it to finish.", "error");
+      return "busy";
+    }
+    publishingRef.current = true;
+    setPublishing(true);
     {
       (async () => {
-        setSaveStatus("Saving backup snapshot…");
-        const snap = await snapshots.capture("regenerate");
-        if (!snap.ok) {
-          showToast("Couldn't save a backup snapshot — regenerate cancelled. Schedule unchanged.", "error");
-          setSaveStatus("");
-          return;
-        }
-        if (Object.keys(schedule).length > 0) pushUndo(schedule);
-        const merged = _objectSpread(_objectSpread({}, schedule), result);
-        setSchedule(merged);
-        setPreviewSchedule(null);
-        setShowPreview(false);
-        setSaveStatus("Regenerated!");
-        setTimeout(() => setSaveStatus(""), 2000);
         try {
-          const ts = new Date().toISOString();
-          lastSyncRef.current = ts;
-          const blobData = buildStateBundle({
-            schedule: merged
-          });
-          delete blobData.schedule;
-          delete blobData.vacations;
-          delete blobData.noCallDays;
-          const {
-            error: regenErr
-          } = await supabase.from("call_schedule_data").upsert({
-            id: "main",
-            data: blobData,
-            updated_at: ts
-          });
-          if (regenErr) throw new Error(`regenerate blob save failed: ${String(regenErr).slice(0, 200)}`);
-          syncSchedWeeks(merged);
-        } catch (e) {
-          console.error("Immediate save failed:", e);
-          showToast("Couldn't save the regenerated schedule — check your connection.", "error");
+          setSaveStatus("Saving backup snapshot…");
+          const snap = await snapshots.capture("regenerate");
+          if (!snap.ok) {
+            showToast("Couldn't save a backup snapshot — regenerate cancelled. Schedule unchanged.", "error");
+            setSaveStatus("");
+            return;
+          }
+          await genCommitRef.current(result);
+        } finally {
+          publishingRef.current = false;
+          setPublishing(false);
         }
       })();
     }
     return "published";
   };
+  const commitGenerated = async result => {
+    const {
+      merged,
+      prior,
+      y1
+    } = publishWeeks(result, {
+      label: `${numWeeks} weeks from ${MO[startMonth]} ${startYear}, Generate & Publish`,
+      meta: {
+        startMonth,
+        startYear,
+        numWeeks,
+        origin: "generated"
+      }
+    });
+    setPreviewSchedule(null);
+    setShowPreview(false);
+    setSaveStatus("Regenerated!");
+    setTimeout(() => setSaveStatus(""), 2000);
+    try {
+      const ts = new Date().toISOString();
+      lastSyncRef.current = ts;
+      const blobData = buildStateBundle({
+        schedule: merged,
+        priorCounts: prior,
+        year1Counts: y1
+      });
+      delete blobData.schedule;
+      delete blobData.vacations;
+      delete blobData.noCallDays;
+      const {
+        error: regenErr
+      } = await supabase.from("call_schedule_data").upsert({
+        id: "main",
+        data: blobData,
+        updated_at: ts
+      });
+      if (regenErr) throw new Error(`regenerate blob save failed: ${String(regenErr).slice(0, 200)}`);
+      syncSchedWeeks(merged);
+    } catch (e) {
+      console.error("Immediate save failed:", e);
+      showToast("Couldn't save the regenerated schedule — check your connection.", "error");
+    }
+  };
+  genFinishRef.current = finishGenerate;
+  genCommitRef.current = commitGenerated;
   const clearSchedule = async () => {
     if (!confirm("Clear the entire generated schedule? Holiday assignments and setup data will be kept.\n\nThis cannot be undone.")) return;
     const clearSnap = await snapshots.capture("clear_schedule");
@@ -4069,14 +4214,10 @@ function CallSchedule() {
     alert(`Snapshot restored.\n\n` + `RESTORED: ${weekCt} schedule week${weekCt === 1 ? "" : "s"}, roster, and setup.\n\n` + `NOT RESTORED: vacations and no-call days — restore never changes them (they live in their own table). ` + (vacCt || ncCt ? `This snapshot holds ${vacCt} vacation entr${vacCt === 1 ? "y" : "ies"} and ${ncCt} no-call entr${ncCt === 1 ? "y" : "ies"}; if time off needs recovery it must be re-entered or recovered manually from the snapshot.` : `This snapshot predates time-off capture and holds none; current time off was left untouched.`));
     showToast("Snapshot restored — other devices will pick it up on their next sync.", "success");
   };
-  const rollForwardCounts = useCallback(sched => {
-    if (!sched || Object.keys(sched).length === 0) return;
-    const COUNTS_FLOOR = "2026-05-04";
-    sched = Object.fromEntries(Object.entries(sched).filter(([mStr]) => mStr >= COUNTS_FLOOR));
-    if (Object.keys(sched).length === 0) return;
-    const delta = {};
+  const countsOfWeeks = (weeks, pick) => {
+    const c = {};
     surgeons.forEach(s => {
-      delta[s.id] = {
+      c[s.id] = {
         dc: 0,
         nights: 0,
         wknd: 0,
@@ -4087,81 +4228,67 @@ function CallSchedule() {
         offB: 0
       };
     });
-    Object.values(sched).forEach(wk => {
+    Object.entries(weeks || {}).forEach(([mStr, wk]) => {
+      if (!wk || pick && !pick(mStr)) return;
       const bk = wk.isBackup;
-      if (wk.dayCall && delta[wk.dayCall]) delta[wk.dayCall][bk ? "dcB" : "dc"]++;
-      if (wk.off && delta[wk.off]) delta[wk.off][bk ? "offB" : "off"]++;
+      if (wk.dayCall && c[wk.dayCall]) c[wk.dayCall][bk ? "dcB" : "dc"]++;
+      if (wk.off && c[wk.off]) c[wk.off][bk ? "offB" : "off"]++;
       Object.entries(wk.nights || {}).forEach(([sh, sid]) => {
-        if (!sid || !delta[sid]) return;
-        if (sh === "wknd") delta[sid][bk ? "wkndB" : "wknd"]++;else delta[sid][bk ? "nightsB" : "nights"]++;
+        if (!sid || !c[sid]) return;
+        if (sh === "wknd") c[sid][bk ? "wkndB" : "wknd"]++;else c[sid][bk ? "nightsB" : "nights"]++;
       });
     });
+    return c;
+  };
+  const applyCountsDelta = (prev, delta) => {
     const addDays = c => (c.dc || 0) * 7 + (c.nights || 0) + (c.wknd || 0) * 3 + (c.svcAdj7 || 0);
     const addDaysB = c => (c.dcB || 0) * 7 + (c.nightsB || 0) + (c.wkndB || 0) * 3;
-    setPriorCounts(prev => {
-      const next = _objectSpread({}, prev);
-      Object.keys(delta).forEach(id => {
-        const p = next[id] || {};
-        const d = delta[id];
-        next[id] = {
-          dc: (p.dc || 0) + d.dc,
-          nights: (p.nights || 0) + d.nights,
-          wknd: (p.wknd || 0) + d.wknd,
-          off: (p.off || 0) + d.off,
-          dcB: (p.dcB || 0) + d.dcB,
-          nightsB: (p.nightsB || 0) + d.nightsB,
-          wkndB: (p.wkndB || 0) + d.wkndB,
-          offB: (p.offB || 0) + d.offB,
-          totalDays: (p.totalDays || 0) + addDays(d),
-          totalDaysB: (p.totalDaysB || 0) + addDaysB(d)
-        };
+    const next = _objectSpread({}, prev || {});
+    Object.keys(delta || {}).forEach(id => {
+      const p = next[id] || {},
+        d = delta[id];
+      next[id] = _objectSpread(_objectSpread({}, p), {}, {
+        dc: (p.dc || 0) + d.dc,
+        nights: (p.nights || 0) + d.nights,
+        wknd: (p.wknd || 0) + d.wknd,
+        off: (p.off || 0) + d.off,
+        dcB: (p.dcB || 0) + d.dcB,
+        nightsB: (p.nightsB || 0) + d.nightsB,
+        wkndB: (p.wkndB || 0) + d.wkndB,
+        offB: (p.offB || 0) + d.offB,
+        totalDays: (p.totalDays || 0) + addDays(d),
+        totalDaysB: (p.totalDaysB || 0) + addDaysB(d)
       });
-      return next;
     });
+    return next;
+  };
+  const netCounts = (add, sub) => {
+    const out = {};
+    Object.keys(add).forEach(id => {
+      out[id] = {};
+      Object.keys(add[id]).forEach(k => {
+        out[id][k] = add[id][k] - ((sub[id] || {})[k] || 0);
+      });
+    });
+    return out;
+  };
+  const rollForwardCounts = useCallback((sched, replaced) => {
+    if (!sched || Object.keys(sched).length === 0) return null;
+    const COUNTS_FLOOR = "2026-05-04";
+    sched = Object.fromEntries(Object.entries(sched).filter(([mStr]) => mStr >= COUNTS_FLOOR));
+    if (Object.keys(sched).length === 0) return null;
+    const old = Object.fromEntries(Object.entries(replaced || {}).filter(([mStr]) => mStr >= COUNTS_FLOOR && sched[mStr]));
+    const delta = netCounts(countsOfWeeks(sched), countsOfWeeks(old));
+    setPriorCounts(prev => applyCountsDelta(prev, delta));
     const currentYear = new Date().getFullYear();
-    const delta1yr = {};
-    surgeons.forEach(s => {
-      delta1yr[s.id] = {
-        dc: 0,
-        nights: 0,
-        wknd: 0,
-        off: 0,
-        dcB: 0,
-        nightsB: 0,
-        wkndB: 0,
-        offB: 0
-      };
-    });
-    Object.entries(sched).forEach(([mStr, wk]) => {
-      if (parse(mStr).getFullYear() !== currentYear) return;
-      const bk = wk.isBackup;
-      if (wk.dayCall && delta1yr[wk.dayCall]) delta1yr[wk.dayCall][bk ? "dcB" : "dc"]++;
-      if (wk.off && delta1yr[wk.off]) delta1yr[wk.off][bk ? "offB" : "off"]++;
-      Object.entries(wk.nights || {}).forEach(([sh, sid]) => {
-        if (!sid || !delta1yr[sid]) return;
-        if (sh === "wknd") delta1yr[sid][bk ? "wkndB" : "wknd"]++;else delta1yr[sid][bk ? "nightsB" : "nights"]++;
-      });
-    });
-    setYear1Counts(prev => {
-      const next = _objectSpread({}, prev);
-      Object.keys(delta1yr).forEach(id => {
-        const p = next[id] || {};
-        const d = delta1yr[id];
-        next[id] = {
-          dc: (p.dc || 0) + d.dc,
-          nights: (p.nights || 0) + d.nights,
-          wknd: (p.wknd || 0) + d.wknd,
-          off: (p.off || 0) + d.off,
-          dcB: (p.dcB || 0) + d.dcB,
-          nightsB: (p.nightsB || 0) + d.nightsB,
-          wkndB: (p.wkndB || 0) + d.wkndB,
-          offB: (p.offB || 0) + d.offB,
-          totalDays: (p.totalDays || 0) + addDays(d),
-          totalDaysB: (p.totalDaysB || 0) + addDaysB(d)
-        };
-      });
-      return next;
-    });
+    const inYear = mStr => parse(mStr).getFullYear() === currentYear;
+    const delta1yr = netCounts(countsOfWeeks(sched, inYear), countsOfWeeks(old, inYear));
+    setYear1Counts(prev => applyCountsDelta(prev, delta1yr));
+    return {
+      delta,
+      delta1yr,
+      replacedCounted: Object.keys(old).length
+    };
   }, [surgeons]);
   const previewNeedsOk = useMemo(() => {
     if (!previewSchedule) return {
@@ -4170,17 +4297,15 @@ function CallSchedule() {
     };
     try {
       const keys = Object.keys(previewSchedule).sort();
-      const prevWk = keys.length ? schedule[fmt(addD(parse(keys[0]), -7))] : null;
       return listScheduleBends(previewSchedule, {
         surgeons,
         mondays: keys,
         vac: buildGenAvailability(),
         vacationsOnly: vacations,
         holAssignments: holidayAssignments,
-        prevWeekSeed: prevWk ? {
-          dayCall: prevWk.dayCall || null,
-          wknd: prevWk.nights && prevWk.nights.wknd || null
-        } : null
+        prevWeekSeed: keys.length ? buildPrevWeekSeed(parse(keys[0])) : null,
+        locks: pendingLocks,
+        silvisPrimary: buildSilvisPrimary()
       });
     } catch (e) {
       console.error("Needs-your-OK list failed:", e);
@@ -4194,16 +4319,35 @@ function CallSchedule() {
         }]
       };
     }
-  }, [previewSchedule, schedule, surgeons, vacations, noCallDays, holidayAssignments, silvisActive, silvisFakId, silvisDays]);
+  }, [previewSchedule, schedule, surgeons, vacations, noCallDays, holidayAssignments, silvisActive, silvisFakId, silvisDays, pendingLocks]);
   const acceptPreview = () => {
+    if (publishSearchRunning()) {
+      showToast("Generate & Publish is still searching — wait for it to finish.", "error");
+      return;
+    }
+    cancelSearch();
     if (previewSchedule && previewNeedsOk.items.length > 0 && !previewAck) {
       showToast("Tick \"I've reviewed these items\" first.", "error");
       return;
     }
     if (previewSchedule) {
-      if (Object.keys(schedule).length > 0) pushUndo(schedule);
-      rollForwardCounts(previewSchedule);
-      setSchedule(prev => _objectSpread(_objectSpread({}, prev), previewSchedule));
+      if (publishingRef.current) {
+        showToast("A publish is already in progress — wait for it to finish.", "error");
+        return;
+      }
+      const needsOkN = previewNeedsOk.items.length;
+      publishWeeks(previewSchedule, {
+        label: `${numWeeks} weeks from ${MO[startMonth]} ${startYear}${previewOrigin === "json" ? ", loaded from JSON" : ""}`,
+        extra: needsOkN ? ` — ${needsOkN} item${needsOkN === 1 ? "" : "s"} reviewed in Needs your OK` : "",
+        meta: {
+          startMonth,
+          startYear,
+          numWeeks,
+          needsOk: needsOkN,
+          bendCost: previewNeedsOk.cost,
+          origin: previewOrigin
+        }
+      });
       setPreviewSchedule(null);
       setShowPreview(false);
       setCalMonth(startMonth);
@@ -4211,20 +4355,119 @@ function CallSchedule() {
       setView("calendar");
       setSaveStatus("Published — totals updated");
       setTimeout(() => setSaveStatus(""), 3000);
-      const needsOkN = previewNeedsOk.items.length;
-      logAudit("schedule.publish", `Published schedule (${numWeeks} weeks from ${MO[startMonth]} ${startYear})${needsOkN ? ` — ${needsOkN} item${needsOkN === 1 ? "" : "s"} reviewed in Needs your OK` : ""}`, {
-        startMonth,
-        startYear,
-        numWeeks,
-        weeks: Object.keys(previewSchedule).length,
-        needsOk: needsOkN,
-        bendCost: previewNeedsOk.cost
-      });
     }
   };
   const discardPreview = () => {
+    cancelSearch();
+    setSearchStats(null);
     setPreviewSchedule(null);
     setShowPreview(false);
+  };
+  const searchMore = async () => {
+    const base = previewSchedRef.current;
+    if (!base || searchRef.current || publishingRef.current) return;
+    const keys = Object.keys(base).sort();
+    if (!keys.length) return;
+    const ms = keys.map(parse);
+    const search = createScheduleSearch(surgeons, ms, buildGenAvailability(), backupMondaySet, priorCounts, buildPrefs(), fierceBackupSet, holidayAssignments, pendingLocks, buildPrevWeekSeed(ms[0]), vacations, year1Counts, {
+      silvisPrimary: buildSilvisPrimary()
+    });
+    search.seed(base);
+    const done = await runSearch(search, "more", SEARCH_MS);
+    if (!done || previewSchedRef.current !== base) return;
+    const st = done.session.status();
+    setSearchStats({
+      checked: st.checked,
+      starts: st.starts,
+      ms: done.ms,
+      purpose: "more",
+      improved: st.improved
+    });
+    if (st.improved) {
+      const better = done.session.best();
+      setPreviewSchedule(better);
+      setPreviewOrigin("generated");
+      showToast(`Found a better schedule — ${st.checked.toLocaleString()} more schedules checked.`);
+    } else showToast(`No better schedule in ${st.checked.toLocaleString()} more checked — this one stays.`);
+  };
+  const publishWeeks = (newWeeks, how) => {
+    const cur = scheduleRef.current || {};
+    const replacedWeeks = Object.fromEntries(Object.keys(newWeeks).filter(m => cur[m]).map(m => [m, cur[m]]));
+    if (Object.keys(cur).length > 0) pushUndo(cur, {
+      prior: priorCounts,
+      y1: year1Counts
+    });
+    const r = rollForwardCounts(newWeeks, replacedWeeks);
+    const merged = _objectSpread(_objectSpread({}, cur), newWeeks);
+    scheduleRef.current = merged;
+    setSchedule(merged);
+    const nRep = r ? r.replacedCounted : 0;
+    const t1 = r ? netCountsText(r.delta1yr) : "no change",
+      tAll = r ? netCountsText(r.delta) : "no change";
+    logAudit("schedule.publish", `Published schedule (${how.label})${how.extra || ""}${nRep ? ` — ${nRep} week${nRep === 1 ? "" : "s"} replaced a published version` : ""} — counts net: ${tAll}${t1 !== tAll ? ` (this year's tally: ${t1})` : ""}`, Object.assign({}, how.meta || {}, {
+      weeks: Object.keys(newWeeks).length,
+      replaced: nRep,
+      net: r ? r.delta : null,
+      net1yr: r ? r.delta1yr : null
+    }));
+    return {
+      merged,
+      prior: r ? applyCountsDelta(priorCounts, r.delta) : priorCounts,
+      y1: r ? applyCountsDelta(year1Counts, r.delta1yr) : year1Counts
+    };
+  };
+  const netCountsText = net => {
+    if (!net) return "no change";
+    const parts = [];
+    surgeons.forEach(sg => {
+      const d = net[sg.id];
+      if (!d) return;
+      const bits = [["dc", "service"], ["nights", "nights"], ["wknd", "weekends"], ["off", "off"], ["dcB", "backup service"], ["nightsB", "backup nights"], ["wkndB", "backup weekends"], ["offB", "backup off"]].filter(([k]) => d[k]).map(([k, l]) => `${l} ${d[k] > 0 ? "+" : "−"}${Math.abs(d[k])}`);
+      if (bits.length) parts.push(`${sg.name} ${bits.join(", ")}`);
+    });
+    return parts.length ? parts.join("; ") : "no change";
+  };
+  const loadScheduleJson = (text, fileName) => {
+    if (publishSearchRunning()) {
+      showToast("Generate & Publish is still searching — wait for it to finish, then load the file.", "error");
+      return false;
+    }
+    cancelSearch();
+    setSearchStats(null);
+    const refuse = why => {
+      showToast(`Not loaded — ${why}. Nothing was changed.`, "error");
+      return false;
+    };
+    let o;
+    try {
+      o = JSON.parse(String(text).replace(/^﻿/, ""));
+    } catch (e) {
+      return refuse("the file isn't valid JSON");
+    }
+    let v, shaped;
+    try {
+      v = validateScheduleJson(o, mondays.map(fmt), surgeons.map(sg => sg.id), Object.fromEntries(surgeons.map(sg => [sg.id, sg.name])));
+      if (!v.ok) return refuse(v.error);
+      shaped = shapeScheduleWeeks(v.weeks, surgeons, backupMondaySet, fierceBackupSet, holidayAssignments);
+    } catch (e) {
+      console.error("schedule JSON load failed:", e);
+      return refuse(`the file could not be checked (${e && e.message || e})`);
+    }
+    setPreviewSchedule(shaped);
+    setPreviewOrigin("json");
+    setPreviewCalMonth(0);
+    setShowPreview(true);
+    showToast(`Loaded ${fileName || "the file"} into the preview (${Object.keys(shaped).length} weeks) — nothing is published until ✓ Accept & Publish.`, "success");
+    return true;
+  };
+  const onLoadJsonFile = e => {
+    const f = e.target.files && e.target.files[0];
+    e.target.value = "";
+    if (!f) return;
+    const r = new FileReader();
+    r.onload = () => loadScheduleJson(String(r.result || ""), f.name);
+    r.onerror = () => showToast("Couldn't read that file — nothing was changed.", "error");
+    r.readAsText(f);
   };
   const generateHolidayAssignments = useCallback(year => {
     setHolidayLockWarning("");
@@ -4233,14 +4476,6 @@ function CallSchedule() {
     const nameMap = {};
     surgeons.forEach(s => nameMap[s.id] = s.name);
     const DAYNAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-    const priorYear = holidayAssignments[String(year - 1)] || [];
-    const priorByName = {};
-    priorYear.forEach(h => {
-      priorByName[h.name] = {
-        surgeonA: h.surgeonA,
-        surgeonB: h.surgeonB
-      };
-    });
     const startOf = {};
     ids.forEach(id => {
       var _surgeons$find10, _INIT_SURGEONS$find;
@@ -4361,121 +4596,111 @@ function CallSchedule() {
       });
       return [...days];
     };
-    const pickPair = (hol, pool) => {
-      const holDate = parse(hol.date);
-      const dayAfterStr = fmt(addD(holDate, 1));
-      const type = hol.type;
-      const silvisHol = id => silvisActive && id === silvisFakId && sfConflictDay(silvisDays.primary, [...holDatesFor(hol, id, "A"), ...holDatesFor(hol, id, "B")]) !== null;
-      let avail = pool.filter(id => !onVac(id, hol.date, vacations) && !onVac(id, dayAfterStr, vacations) && !silvisHol(id));
-      if (avail.length < 2) avail = [...pool].filter(id => !silvisHol(id));
-      if (avail.length < 2) avail = [...pool];
-      const prior = priorByName[hol.name] || {};
-      avail.sort((a, b) => {
-        var _lifetimeCt$a, _eligibleCt$a, _lifetimeCt$b, _eligibleCt$b;
-        const la = holidayRate(((_lifetimeCt$a = lifetimeCt[a]) === null || _lifetimeCt$a === void 0 ? void 0 : _lifetimeCt$a[type]) || 0, ((_eligibleCt$a = eligibleCt[a]) === null || _eligibleCt$a === void 0 ? void 0 : _eligibleCt$a[type]) || 0);
-        const lb = holidayRate(((_lifetimeCt$b = lifetimeCt[b]) === null || _lifetimeCt$b === void 0 ? void 0 : _lifetimeCt$b[type]) || 0, ((_eligibleCt$b = eligibleCt[b]) === null || _eligibleCt$b === void 0 ? void 0 : _eligibleCt$b[type]) || 0);
-        if (la !== lb) return la - lb;
-        const aRepeat = a === prior.surgeonA || a === prior.surgeonB ? 1 : 0;
-        const bRepeat = b === prior.surgeonA || b === prior.surgeonB ? 1 : 0;
-        if (aRepeat !== bRepeat) return aRepeat - bRepeat;
-        return Math.random() - 0.5;
-      });
-      return {
-        sA: avail[0],
-        sB: avail[1] || avail[0]
-      };
-    };
-    const majorHols = holidays.major.map(h => _objectSpread(_objectSpread({}, h), {}, {
+    const presets = typeof HOLIDAY_PRESETS !== "undefined" ? HOLIDAY_PRESETS[String(year)] : null;
+    const allHols = [...holidays.major.map(h => _objectSpread(_objectSpread({}, h), {}, {
       type: "major"
-    }));
-    const minorHols = holidays.minor.map(h => _objectSpread(_objectSpread({}, h), {}, {
+    })), ...holidays.minor.map(h => _objectSpread(_objectSpread({}, h), {}, {
       type: "minor"
-    }));
-    const assignments = [];
-    [majorHols, minorHols].forEach(group => {
-      var _group$;
-      const type = (_group$ = group[0]) === null || _group$ === void 0 ? void 0 : _group$.type;
-      const usedInGroup = new Set();
-      group.sort((a, b) => {
-        if (a.name === "Christmas Day") return -1;
-        if (b.name === "Christmas Day") return 1;
-        return a.date.localeCompare(b.date);
-      });
-      group.forEach(hol => {
-        const presets = typeof HOLIDAY_PRESETS !== "undefined" ? HOLIDAY_PRESETS[String(year)] : null;
-        if (presets && presets[hol.name]) {
-          const [sA, sB] = presets[hol.name];
-          if (silvisActive) {
-            const ph = [];
-            if (sA === silvisFakId) {
-              const h = sfConflictDay(silvisDays.primary, holDatesFor(hol, sA, "A"));
-              if (h) ph.push(h);
-            }
-            if (sB === silvisFakId) {
-              const h = sfConflictDay(silvisDays.primary, holDatesFor(hol, sB, "B"));
-              if (h) ph.push(h);
-            }
-            if (ph.length) setHolidayLockWarning(`⚠ ${hol.name} ${year} preset puts ${nameMap[silvisFakId]} on a Silvis PRIMARY day (${ph.join(", ")}) — kept as written; resolve with Silvis or change it via the swap controls.`);
+    }))];
+    const assignments = [],
+      fixedCards = [],
+      toPlan = [];
+    const card = (hol, sA, sB) => ({
+      name: hol.name,
+      date: hol.date,
+      type: hol.type,
+      emoji: hol.emoji || "📅",
+      surgeonA: sA,
+      surgeonB: sB,
+      coverage: buildCoverage(hol, sA, sB)
+    });
+    const todayStr = fmt(new Date());
+    const stored = holidayAssignments[String(year)] || [];
+    allHols.forEach(hol => {
+      const kept = stored.find(h => h && h.name === hol.name && h.date && h.date < todayStr);
+      if (kept) {
+        assignments.push(kept);
+        fixedCards.push(kept);
+        return;
+      }
+      if (presets && presets[hol.name]) {
+        const [sA, sB] = presets[hol.name];
+        if (silvisActive) {
+          const ph = [];
+          if (sA === silvisFakId) {
+            const h = sfConflictDay(silvisDays.primary, holDatesFor(hol, sA, "A"));
+            if (h) ph.push(h);
           }
-          usedInGroup.add(sA);
-          usedInGroup.add(sB);
-          assignments.push({
-            name: hol.name,
-            date: hol.date,
-            type,
-            emoji: hol.emoji || "📅",
-            surgeonA: sA,
-            surgeonB: sB,
-            coverage: buildCoverage(hol, sA, sB)
-          });
+          if (sB === silvisFakId) {
+            const h = sfConflictDay(silvisDays.primary, holDatesFor(hol, sB, "B"));
+            if (h) ph.push(h);
+          }
+          if (ph.length) setHolidayLockWarning(`⚠ ${hol.name} ${year} preset puts ${nameMap[silvisFakId]} on a Silvis PRIMARY day (${ph.join(", ")}) — kept as written; resolve with Silvis or change it via the swap controls.`);
+        }
+        const c = card(hol, sA, sB);
+        assignments.push(c);
+        fixedCards.push(c);
+        return;
+      }
+      if (hol.name === "Christmas Day") {
+        if (!fakId) {
+          console.error(`Christmas lock: designated surgeon "FAK" not found in the roster — Christmas ${year} left unassigned.`);
+          setHolidayLockWarning(`⚠ Christmas ${year} was NOT auto-assigned: the designated surgeon (FAK) isn't in the roster. Assign it manually via the swap controls.`);
           return;
         }
-        let pool = ids.filter(id => !usedInGroup.has(id));
-        if (hol.name === "Christmas Day") {
-          if (!fakId) {
-            console.error(`Christmas lock: designated surgeon "FAK" not found in the roster — Christmas ${year} left unassigned.`);
-            setHolidayLockWarning(`⚠ Christmas ${year} was NOT auto-assigned: the designated surgeon (FAK) isn't in the roster. Assign it manually via the swap controls.`);
+        if (silvisActive && fakId === silvisFakId) {
+          const hit = sfConflictDay(silvisDays.primary, holDatesFor(hol, fakId, "both"));
+          if (hit) {
+            console.error(`Christmas lock: ${nameMap[fakId]} is Silvis PRIMARY on ${hit} — Christmas ${year} left unassigned.`);
+            setHolidayLockWarning(`⚠ Christmas ${year} was NOT auto-assigned: ${nameMap[fakId]} is Silvis PRIMARY on ${hit} (rule silvisBusy). Resolve it with Silvis or assign manually via the swap controls.`);
             return;
           }
-          if (silvisActive && fakId === silvisFakId) {
-            const hit = sfConflictDay(silvisDays.primary, holDatesFor(hol, fakId, "both"));
-            if (hit) {
-              console.error(`Christmas lock: ${nameMap[fakId]} is Silvis PRIMARY on ${hit} — Christmas ${year} left unassigned.`);
-              setHolidayLockWarning(`⚠ Christmas ${year} was NOT auto-assigned: ${nameMap[fakId]} is Silvis PRIMARY on ${hit} (rule silvisBusy). Resolve it with Silvis or assign manually via the swap controls.`);
-              return;
-            }
-          }
-          const sA = fakId;
-          usedInGroup.add(sA);
-          assignments.push({
-            name: hol.name,
-            date: hol.date,
-            type,
-            emoji: hol.emoji || "📅",
-            surgeonA: sA,
-            surgeonB: sA,
-            coverage: buildCoverage(hol, sA, sA)
-          });
-          return;
         }
-        if (pool.length < 2) pool = [...ids];
-        const {
-          sA,
-          sB
-        } = pickPair(hol, pool);
-        usedInGroup.add(sA);
-        usedInGroup.add(sB);
-        assignments.push({
-          name: hol.name,
-          date: hol.date,
-          type,
-          emoji: hol.emoji || "📅",
-          surgeonA: sA,
-          surgeonB: sB,
-          coverage: buildCoverage(hol, sA, sB)
-        });
-      });
+        assignments.push(card(hol, fakId, fakId));
+        return;
+      }
+      toPlan.push(hol);
     });
+    const unavailable = (id, hol, role) => {
+      const days = holDatesFor(hol, id, role);
+      if (role === "B") {
+        const xc = assignments.find(h => h.name === "Christmas Day"),
+          eve = fmt(addD(parse(hol.date), -1));
+        const takes = mon => {
+          const p = holidayDesign({
+            [year]: xc ? [xc] : []
+          }, [mon], fakId, christmasSlotOk(buildGenAvailability(), vacations, buildSilvisPrimary())).pins[mon];
+          return !!p && p.wknd === fakId;
+        };
+        if (holidayEveHolder(_objectSpread(_objectSpread({}, hol), {}, {
+          surgeonB: id
+        }), eve, {
+          [year]: xc ? [xc] : []
+        }, fakId, takes) === id) days.push(eve);
+      }
+      if (days.some(ds => onVac(id, ds, vacations) || onVac(id, ds, noCallDays))) return true;
+      if (days.some(ds => onVac(id, fmt(addD(parse(ds), 1)), vacations))) return true;
+      return !!(silvisActive && id === silvisFakId && sfConflictDay(silvisDays.primary, holDatesFor(hol, id, role)) !== null);
+    };
+    const rateOf = (id, type) => {
+      var _lifetimeCt$id, _eligibleCt$id;
+      return holidayRate(((_lifetimeCt$id = lifetimeCt[id]) === null || _lifetimeCt$id === void 0 ? void 0 : _lifetimeCt$id[type]) || 0, ((_eligibleCt$id = eligibleCt[id]) === null || _eligibleCt$id === void 0 ? void 0 : _eligibleCt$id[type]) || 0);
+    };
+    const plan = planHolidayPairs({
+      year,
+      holidays: toPlan,
+      partners: ids.filter(id => id !== fakId),
+      history: holidayAssignments,
+      fixed: fixedCards,
+      unavailable,
+      rate: rateOf,
+      nameOf: id => nameMap[id] || id
+    });
+    toPlan.forEach(hol => {
+      const pk = plan.picks[hol.name];
+      if (pk) assignments.push(card(hol, pk.surgeonA, pk.surgeonB));
+    });
+    if (plan.notes.length) setHolidayLockWarning(prev => [prev, ...plan.notes.map(n => "⚠ " + n)].filter(Boolean).join(" · "));
     assignments.sort((a, b) => a.date.localeCompare(b.date));
     setHolidayAssignments(prev => _objectSpread(_objectSpread({}, prev), {}, {
       [String(year)]: assignments
@@ -4484,23 +4709,26 @@ function CallSchedule() {
       year,
       count: assignments.length
     });
-  }, [surgeons, vacations, holidayAssignments, silvisActive, silvisFakId, silvisDays]);
+  }, [surgeons, vacations, noCallDays, holidayAssignments, silvisActive, silvisFakId, silvisDays]);
   const swapHolidaySurgeon = useCallback((year, holidayIdx, slot, newSurgeonId) => {
     const arr = holidayAssignments[String(year)] || [];
     const targetHol = arr[holidayIdx];
     if (targetHol) {
+      var _surgeons$find11;
       const sameGroup = arr.filter((h, i) => i !== holidayIdx && h.type === targetHol.type);
       const usedInGroup = new Set();
       sameGroup.forEach(h => {
         usedInGroup.add(h.surgeonA);
         usedInGroup.add(h.surgeonB);
       });
-      if (usedInGroup.has(newSurgeonId)) {
-        var _surgeons$find11;
+      const fakSwap = (_surgeons$find11 = surgeons.find(s => (s.name || "").toUpperCase() === "FAK")) === null || _surgeons$find11 === void 0 ? void 0 : _surgeons$find11.id;
+      if (usedInGroup.has(newSurgeonId) && newSurgeonId !== fakSwap) {
+        var _surgeons$find12;
         const conflictHol = sameGroup.find(h => h.surgeonA === newSurgeonId || h.surgeonB === newSurgeonId);
-        const surgeonName = ((_surgeons$find11 = surgeons.find(s => s.id === newSurgeonId)) === null || _surgeons$find11 === void 0 ? void 0 : _surgeons$find11.name) || newSurgeonId;
-        if (!confirm(`⚠️ ${surgeonName} is already assigned to ${conflictHol === null || conflictHol === void 0 ? void 0 : conflictHol.name} (${targetHol.type} group).\n\nThis violates the distinct-pairs rule. Assign anyway?`)) return;
+        const surgeonName = ((_surgeons$find12 = surgeons.find(s => s.id === newSurgeonId)) === null || _surgeons$find12 === void 0 ? void 0 : _surgeons$find12.name) || newSurgeonId;
+        if (!confirm(`⚠️ ${surgeonName} is already assigned to ${conflictHol === null || conflictHol === void 0 ? void 0 : conflictHol.name} (${targetHol.type} group).\n\nEach partner takes at most one ${targetHol.type} holiday a year. Assign anyway?`)) return;
       }
+      if (newSurgeonId && newSurgeonId === fakSwap && targetHol.name !== "Christmas Day" && !confirm(`${nameOf(newSurgeonId)}'s holidays are Christmas Eve + Christmas Day (his major and his minor). Put him on ${targetHol.name} too?`)) return;
       if (silvisActive && newSurgeonId === silvisFakId) {
         const nonEve = effectiveHolidayCoverage(targetHol).filter(c => !c.isEve);
         const mine = nonEve.filter((c, i) => slot === "surgeonA" ? i % 2 === 0 : i % 2 === 1).map(c => c.date);
@@ -5608,7 +5836,34 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       week: o.mondayStr,
       message: `${who}: Silvis primary + Davenport ${o.label}, ${md(o.day)}`
     }));
-    return health.concat(hard);
+    const sunday = Object.keys(schedule).filter(m => /^\d{4}-\d{2}-\d{2}$/.test(m) && schedule[m] && schedule[m].dayCall === silvisFakId && inScope({
+      mondayStr: m
+    })).filter(m => silvisDays.primary && silvisDays.primary.has(fmt(addD(parse(m), 6)))).map(m => {
+      const sun = fmt(addD(parse(m), 6));
+      return {
+        key: `silvis-sun|${silvisFakId}|${m}|${sun}`,
+        severity: "error",
+        week: m,
+        message: `${who}: Silvis primary Sun ${md(sun)} — the Sunday of the Davenport service week of ${md(m)}`
+      };
+    });
+    const adj = [];
+    [...(silvisDays.primary || [])].sort().forEach(D => [-1, 1].forEach(o => {
+      const N = fmt(addD(parse(D), o));
+      if (overnightHolderOn(schedule, N) !== silvisFakId) return;
+      const nd = parse(N),
+        mN = fmt(addD(nd, nd.getDay() === 0 ? -6 : 1 - nd.getDay()));
+      if (!inScope({
+        mondayStr: mN
+      })) return;
+      adj.push({
+        key: `silvis-adj|${silvisFakId}|${D}|${N}`,
+        severity: "warning",
+        week: mN,
+        message: o < 0 ? `${who}: Davenport overnight ${dayMonthLabel(N)} → Silvis primary ${dayMonthLabel(D)} — two overnights in a row across the two jobs` : `${who}: Silvis primary ${dayMonthLabel(D)} → Davenport overnight ${dayMonthLabel(N)} — two overnights in a row across the two jobs`
+      });
+    }));
+    return health.concat(hard, sunday, adj);
   }, [schedule, silvisActive, silvisDays, silvisFakId, surgeons, isPublicMode, silvisRows, silvisLoadError]);
   const silvisSoftNotes = useMemo(() => {
     if (!silvisActive || isPublicMode) return [];
@@ -5628,7 +5883,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     const mondayStrs = Object.keys(schedule).sort().filter(mStr => fmt(addD(parse(mStr), 6)) >= todayStr);
     const ids = surgeons.map(s => s.id);
     const fakW = (surgeons.find(s => (s.name || "").toUpperCase() === "FAK") || {}).id || null;
-    const design = typeof holidayDesign === "function" ? holidayDesign(holidayAssignments, mondayStrs, fakW) : {
+    const design = typeof holidayDesign === "function" ? holidayDesign(holidayAssignments, mondayStrs, fakW, christmasSlotOk(buildGenAvailability(), vacations, buildSilvisPrimary())) : {
       pins: {},
       eves: {}
     };
@@ -5648,7 +5903,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       return ((_sMap$id = sMap[id]) === null || _sMap$id === void 0 ? void 0 : _sMap$id.name) || id;
     };
     mondayStrs.forEach((mStr, wkIdx) => {
-      var _wk$nights6;
+      var _wk$nights6, _wk$nights9, _wk$nights0;
       const wk = schedule[mStr];
       const mon = parse(mStr);
       const nightOrder = ["mon", "tue", "wed", "thu"];
@@ -5733,6 +5988,27 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               message: `${(_sMap$wk$dayCall3 = sMap[wk.dayCall]) === null || _sMap$wk$dayCall3 === void 0 ? void 0 : _sMap$wk$dayCall3.name} is on Service Week AND Weekend (same week)`
             });
           }
+        }
+        const sunS = fmt(addD(mon, 6));
+        const sunKind = sunS >= todayStr ? onVac(wk.dayCall, sunS, vacations || {}) ? "vacation" : onVac(wk.dayCall, sunS, noCallDays || {}) ? "no-call" : null : null;
+        if (sunKind) issues.push({
+          key: `svc-sun|${mStr}|${wk.dayCall}|${sunS}|${sunKind}`,
+          type: "timeoff",
+          severity: "error",
+          week: mStr,
+          message: `${codeOf(wk.dayCall)} is on Service Week ${md(mStr)} but is off Sun ${md(sunS)} (${sunKind}) — the service-week surgeon must be free that Sunday`
+        });
+      }
+      if ((_wk$nights9 = wk.nights) !== null && _wk$nights9 !== void 0 && _wk$nights9.thu && wk.nights.thu === ((_wk$nights0 = wk.nights) === null || _wk$nights0 === void 0 ? void 0 : _wk$nights0.wknd)) {
+        const friT = fmt(addD(mon, 4));
+        if (!(wk.holidayCoverage || {})[friT] && !designed(mStr, "thu", mStr, "wknd", wk.nights.thu)) {
+          issues.push({
+            key: `thu-wknd|${mStr}|${wk.nights.thu}`,
+            type: "consecutive",
+            severity: "error",
+            week: mStr,
+            message: `${codeOf(wk.nights.thu)} has Thu night then the Weekend (Fri night) — two nights in a row`
+          });
         }
       }
       const hw = weekHolders(mStr, wk);
@@ -5828,7 +6104,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       });
     });
     return issues;
-  }, [schedule, surgeons, sMap, vacations, noCallDays, holidayAssignments]);
+  }, [schedule, surgeons, sMap, vacations, noCallDays, holidayAssignments, silvisActive, silvisFakId, silvisDays]);
   const vacOverlapWarnings = useMemo(() => {
     const warnings = [];
     if (!mondays.length) return warnings;
@@ -5859,23 +6135,25 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     }
     Object.values(holidayAssignments || {}).forEach(arr => {
       if (!Array.isArray(arr)) return;
+      const fakV = (surgeons.find(s => (s.name || "").toUpperCase() === "FAK") || {}).id || null;
       arr.forEach(h => {
         effectiveHolidayCoverage(h).forEach(c => {
           if (!c.surgeon || !c.date) return;
-          if (onVac(c.surgeon, c.date, vacations)) {
-            var _sMap$c$surgeon;
+          const sid = c.isEve ? holidayEveHolder(h, c.date, holidayAssignments, fakV, takesChristWknd) || c.surgeon : c.surgeon;
+          if (onVac(sid, c.date, vacations)) {
+            var _sMap$sid;
             warnings.push({
-              key: `holiday-vac|${h.date || ""}|${c.date}|${c.surgeon}`,
+              key: `holiday-vac|${h.date || ""}|${c.date}|${sid}`,
               date: c.date,
               severity: "error",
-              message: `${((_sMap$c$surgeon = sMap[c.surgeon]) === null || _sMap$c$surgeon === void 0 ? void 0 : _sMap$c$surgeon.name) || c.surgeon} is assigned ${h.name} coverage (${c.date}) but has vacation then — holiday surgeons can't be on vacation during their holiday`
+              message: `${((_sMap$sid = sMap[sid]) === null || _sMap$sid === void 0 ? void 0 : _sMap$sid.name) || sid} is assigned ${h.name} coverage (${c.date}) but has vacation then — holiday surgeons can't be on vacation during their holiday`
             });
           }
         });
       });
     });
     return warnings;
-  }, [mondays, surgeons, apps, vacations, holidayAssignments, sMap]);
+  }, [mondays, surgeons, apps, vacations, noCallDays, holidayAssignments, sMap, silvisActive, silvisFakId, silvisDays]);
   const warnShown = useMemo(() => {
     const hid = new Set((dismissedWarnings || []).map(d => d && d.key).filter(Boolean));
     const keep = arr => arr.filter(x => x.dismissable === false || !(x.key && hid.has(x.key)));
@@ -5889,8 +6167,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
   }, [silvisConflicts, conflicts, vacOverlapWarnings, dismissedWarnings]);
   const warnLineText = x => (x.week && x.week !== "feed" ? x.week + " · " : "") + x.message;
   const warnActor = () => {
-    var _surgeons$find12;
-    return (userProfile === null || userProfile === void 0 ? void 0 : userProfile.display_name) || ((_surgeons$find12 = surgeons.find(s => s.id === (userProfile === null || userProfile === void 0 ? void 0 : userProfile.person_id))) === null || _surgeons$find12 === void 0 ? void 0 : _surgeons$find12.name) || "a scheduler";
+    var _surgeons$find13;
+    return (userProfile === null || userProfile === void 0 ? void 0 : userProfile.display_name) || ((_surgeons$find13 = surgeons.find(s => s.id === (userProfile === null || userProfile === void 0 ? void 0 : userProfile.person_id))) === null || _surgeons$find13 === void 0 ? void 0 : _surgeons$find13.name) || "a scheduler";
   };
   const dismissWarning = x => {
     if (!canWriteBlob || !x || !x.key || x.dismissable === false) return;
@@ -5960,7 +6238,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
   const calData = useMemo(() => {
     const d = {};
     Object.entries(schedule).forEach(([mStr, wk]) => {
-      var _wk$nights0;
+      var _wk$nights10;
       const mon = parse(mStr);
       const pfx = wk.isBackup ? "B-" : "";
       const cls = wk.isBackup ? "backup" : "primary";
@@ -5984,8 +6262,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         }];
       }
       NIGHT_KEYS.forEach((sk, i) => {
-        var _wk$nights9;
-        const sid = (_wk$nights9 = wk.nights) === null || _wk$nights9 === void 0 ? void 0 : _wk$nights9[sk];
+        var _wk$nights1;
+        const sid = (_wk$nights1 = wk.nights) === null || _wk$nights1 === void 0 ? void 0 : _wk$nights1[sk];
         if (!sid) return;
         const ds = fmt(addD(mon, i));
         if (holCov[ds]) return;
@@ -5995,7 +6273,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           cls
         }];
       });
-      const wkndS = (_wk$nights0 = wk.nights) === null || _wk$nights0 === void 0 ? void 0 : _wk$nights0.wknd;
+      const wkndS = (_wk$nights10 = wk.nights) === null || _wk$nights10 === void 0 ? void 0 : _wk$nights10.wknd;
       if (wkndS) {
         const fri = fmt(addD(mon, 4));
         if (!holCov[fri]) d[fri] = [...(d[fri] || []), {
@@ -8526,7 +8804,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     style: {
       color: "#8a4010"
     }
-  }, "Distinct-pair rule:"), " Within each group (major / minor), every holiday must have a completely different surgeon pair — no surgeon appears on two holidays in the same group."), holidayLockWarning && React.createElement("div", {
+  }, "Rotation:"), " FAK takes Christmas Eve + Christmas Day every year — his major and his minor. Every other partner gets one minor holiday a year (Memorial Day, July 4th, Labor Day) and at most one major (New Year's, Thanksgiving — 4 slots for 6 partners, so two sit out a major each year and get one the next). Nobody gets the same holiday as last year; over the years everyone rotates through all five."), holidayLockWarning && React.createElement("div", {
     style: {
       fontSize: 12,
       fontWeight: 700,
@@ -8578,7 +8856,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     });
     assignments.forEach(h => {
       if (h.surgeonA && holCounts[h.surgeonA]) holCounts[h.surgeonA][h.type]++;
-      if (h.surgeonB && holCounts[h.surgeonB]) holCounts[h.surgeonB][h.type]++;
+      if (h.surgeonB && h.surgeonB !== h.surgeonA && holCounts[h.surgeonB]) holCounts[h.surgeonB][h.type]++;
     });
     const usedInMajor = new Set();
     const usedInMinor = new Set();
@@ -8590,6 +8868,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       if (h.surgeonA) usedInMinor.add(h.surgeonA);
       if (h.surgeonB) usedInMinor.add(h.surgeonB);
     });
+    const fakIdUI = (surgeons.find(s => (s.name || "").toUpperCase() === "FAK") || {}).id || null;
     const renderCard = (hol, idx) => {
       const sameGroup = assignments.filter(h => h.type === hol.type && h.date !== hol.date);
       const usedElsewhere = new Set();
@@ -8689,7 +8968,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         }
       }, effectiveHolidayCoverage(hol).map((c, j) => {
         const isEve = c.isEve;
-        const displaySurgeon = isEve ? hol.surgeonB || c.surgeon : c.surgeon;
+        const displaySurgeon = isEve ? holidayEveHolder(hol, c.date, holidayAssignments, fakIdUI, takesChristWknd) || hol.surgeonB || c.surgeon : c.surgeon;
         const isSurgA = !isEve && c.surgeon === hol.surgeonA;
         return React.createElement("div", {
           key: j,
@@ -8735,30 +9014,19 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         marginBottom: 6,
         marginTop: 14
       }
-    }, "📌 Minor Holidays"), minors.map((h, i) => renderCard(h, assignments.indexOf(h))), (() => {
-      const checkGroup = (group, label) => {
-        const seen = {};
-        const dupes = [];
-        group.forEach(h => {
-          [h.surgeonA, h.surgeonB].forEach(sid => {
-            if (!sid) return;
-            if (seen[sid]) dupes.push({
-              surgeon: sid,
-              hol1: seen[sid],
-              hol2: h.name
-            });else seen[sid] = h.name;
-          });
-        });
-        return {
-          label,
-          ok: dupes.length === 0,
-          dupes,
-          uniqueCount: Object.keys(seen).length,
-          freeCount: surgeons.length - Object.keys(seen).length
-        };
+    }, "📌 Minor Holidays"), minors.map((h, i) => renderCard(h, assignments.indexOf(h))), (_surgeons$find14 => {
+      const rc = holidayRotationCheck({
+        assignments,
+        prior: holidayAssignments[String(holidayYear - 1)] || [],
+        surgeons,
+        year: holidayYear,
+        fakId: (_surgeons$find14 = surgeons.find(s => (s.name || "").toUpperCase() === "FAK")) === null || _surgeons$find14 === void 0 ? void 0 : _surgeons$find14.id,
+        preset: typeof HOLIDAY_PRESETS !== "undefined" && !!HOLIDAY_PRESETS[String(holidayYear)]
+      });
+      const nm = id => {
+        var _surgeons$find15;
+        return ((_surgeons$find15 = surgeons.find(s => s.id === id)) === null || _surgeons$find15 === void 0 ? void 0 : _surgeons$find15.name) || id;
       };
-      const majorCheck = checkGroup(majors, "Major");
-      const minorCheck = checkGroup(minors, "Minor");
       return React.createElement("div", {
         style: {
           marginTop: 10,
@@ -8766,7 +9034,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           gap: 8,
           flexWrap: "wrap"
         }
-      }, [majorCheck, minorCheck].map(ck => React.createElement("div", {
+      }, [rc.major, rc.minor].map(ck => React.createElement("div", {
         key: ck.label,
         style: {
           flex: 1,
@@ -8782,10 +9050,27 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         style: {
           fontWeight: 700
         }
-      }, ck.ok ? "✓" : "⚠", " ", ck.label, " group:"), " ", ck.ok ? `All ${ck.uniqueCount} surgeons distinct (${ck.freeCount} free)` : ck.dupes.map(d => {
-        var _surgeons$find13;
-        return `${((_surgeons$find13 = surgeons.find(s => s.id === d.surgeon)) === null || _surgeons$find13 === void 0 ? void 0 : _surgeons$find13.name) || d.surgeon} is on both ${d.hol1} & ${d.hol2}`;
-      }).join("; "))));
+      }, ck.ok ? "✓" : "⚠", " ", ck.label, " group:"), " ", ck.ok ? `All ${ck.uniqueCount} surgeons distinct${ck.label === "Major" && ck.none.length ? ` · sitting out a major: ${ck.none.map(nm).join(", ")}` : ""}` : ck.dupes.map(d => `${nm(d.surgeon)} is on both ${d.hol1} & ${d.hol2}`).join("; "))), rc.issues.length > 0 && React.createElement("div", {
+        style: {
+          flexBasis: "100%",
+          padding: "8px 12px",
+          borderRadius: 6,
+          fontSize: 11,
+          background: "#fdf3e3",
+          border: "1px solid #e0c080",
+          color: "#7a5010"
+        }
+      }, React.createElement("span", {
+        style: {
+          fontWeight: 700
+        }
+      }, "⚠ Rotation:"), " ", rc.issues.join(" · ")), rc.preset && React.createElement("div", {
+        style: {
+          flexBasis: "100%",
+          fontSize: 11,
+          color: "#5a6a78"
+        }
+      }, "ℹ ", holidayYear, " is the hand-written schedule — the rotation applies from the next generated year."));
     })(), React.createElement("div", {
       style: {
         marginTop: 14,
@@ -8809,6 +9094,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       var _holCounts$s$id, _holCounts$s$id2, _sMap$s$id, _sMap$s$id2;
       const mc = ((_holCounts$s$id = holCounts[s.id]) === null || _holCounts$s$id === void 0 ? void 0 : _holCounts$s$id.major) || 0;
       const mi = ((_holCounts$s$id2 = holCounts[s.id]) === null || _holCounts$s$id2 === void 0 ? void 0 : _holCounts$s$id2.minor) || 0;
+      const xmasOnly = mi === 0 && mc === 1 && assignments.some(h => h.name === "Christmas Day" && h.surgeonA === s.id && h.surgeonB === s.id);
       return React.createElement("div", {
         key: s.id,
         style: _objectSpread(_objectSpread({}, css.badge(((_sMap$s$id = sMap[s.id]) === null || _sMap$s$id === void 0 ? void 0 : _sMap$s$id.idx) || 0, (_sMap$s$id2 = sMap[s.id]) === null || _sMap$s$id2 === void 0 ? void 0 : _sMap$s$id2.name)), {}, {
@@ -8819,7 +9105,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         style: {
           fontWeight: 400
         }
-      }, "— ", mc, " major, ", mi, " minor"));
+      }, "— ", xmasOnly ? "Christmas Eve + Day" : `${mc} major, ${mi} minor`));
     }))));
   })()))), view === "generate" && !isPublicMode && (isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.role) === "admin") && React.createElement(React.Fragment, null, React.createElement("div", {
     style: css.card
@@ -9158,25 +9444,52 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     }
   }, React.createElement("button", {
     onClick: () => doGenerate(true),
+    disabled: !!searching,
     style: _objectSpread(_objectSpread({}, css.btn(false)), {}, {
       padding: "13px 24px",
       fontSize: 14,
       fontWeight: 700,
       borderRadius: 9,
       letterSpacing: 0.3,
-      flex: 1
+      flex: 1,
+      opacity: searching ? 0.55 : 1
     })
-  }, "👁 Preview Schedule"), React.createElement("button", {
+  }, searching === "generate" ? "🔍 Searching…" : "👁 Preview Schedule"), (isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.role) === "admin") && React.createElement(React.Fragment, null, React.createElement("button", {
+    onClick: () => loadJsonInputRef.current && loadJsonInputRef.current.click(),
+    disabled: searching === "publish",
+    title: `Load a schedule for ${mondays.length ? fmt(mondays[0]) + " × " + mondays.length + " weeks" : "the Generate settings"} into the preview (JSON) — it is checked, not published`,
+    style: _objectSpread(_objectSpread({}, css.btn(false)), {}, {
+      padding: "13px 18px",
+      fontSize: 14,
+      fontWeight: 700,
+      borderRadius: 9,
+      letterSpacing: 0.3
+    })
+  }, "📋 Load schedule (JSON)"), React.createElement("input", {
+    ref: loadJsonInputRef,
+    type: "file",
+    accept: ".json,application/json",
+    onChange: onLoadJsonFile,
+    style: {
+      display: "none"
+    },
+    "aria-label": "Load schedule (JSON)"
+  })), React.createElement("button", {
     onClick: doGenerateAndNotify,
+    disabled: publishing || !!searching,
     style: _objectSpread(_objectSpread({}, css.btn(true)), {}, {
       padding: "13px 24px",
       fontSize: 14,
       fontWeight: 700,
       borderRadius: 9,
       letterSpacing: 0.3,
-      flex: 1
+      flex: 1,
+      opacity: publishing || searching ? 0.55 : 1
     })
-  }, "Generate & Publish →")), showPreview && previewSchedule && (() => {
+  }, publishing ? "Publishing…" : searching === "publish" ? "🔍 Searching…" : "Generate & Publish →")), (searching === "generate" || searching === "publish") && React.createElement(SearchProgress, {
+    searchRef: searchRef,
+    dk: dk
+  }), showPreview && previewSchedule && (() => {
     const pStats = {};
     surgeons.forEach(s => {
       pStats[s.id] = {
@@ -9200,7 +9513,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     });
     const pCalData = {};
     Object.entries(previewSchedule).forEach(([mStr, wk]) => {
-      var _wk$nights10;
+      var _wk$nights12;
       const mon = parse(mStr);
       const pfx = wk.isBackup ? "B-" : "";
       const cls = wk.isBackup ? "backup" : "primary";
@@ -9224,8 +9537,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         }];
       }
       NIGHT_KEYS.forEach((sk, i) => {
-        var _wk$nights1;
-        const sid = (_wk$nights1 = wk.nights) === null || _wk$nights1 === void 0 ? void 0 : _wk$nights1[sk];
+        var _wk$nights11;
+        const sid = (_wk$nights11 = wk.nights) === null || _wk$nights11 === void 0 ? void 0 : _wk$nights11[sk];
         if (!sid) return;
         const ds = fmt(addD(mon, i));
         if (holCov[ds]) return;
@@ -9235,7 +9548,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           cls
         }];
       });
-      const wkndS = (_wk$nights10 = wk.nights) === null || _wk$nights10 === void 0 ? void 0 : _wk$nights10.wknd;
+      const wkndS = (_wk$nights12 = wk.nights) === null || _wk$nights12 === void 0 ? void 0 : _wk$nights12.wknd;
       if (wkndS) {
         const fri = fmt(addD(mon, 4));
         if (!holCov[fri]) pCalData[fri] = [...(pCalData[fri] || []), {
@@ -9329,15 +9642,16 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           }
           return null;
         };
+        const listedGap = new Set((previewNeedsOk.items || []).filter(it => it.key === "svcGap").map(it => it.who + "|" + it.prevMondayStr + "|" + it.mondayStr));
         const notes = [];
         for (const mStr of keys) {
           const wk = previewSchedule[mStr];
           const id = wk && wk.dayCall;
           if (!id) continue;
           const w = Math.round((parse(mStr).getTime() - t0) / 604800000);
-          if (last[id] !== undefined && w - last[id].w <= MIN_DC_GAP) {
+          if (last[id] !== undefined && w - last[id].w <= MIN_DC_GAP && !listedGap.has(id + "|" + last[id].mStr + "|" + mStr)) {
             const reason = reasonFor(id, mStr) || reasonFor(id, last[id].mStr) || "vacations that week";
-            notes.push(`${nameOf(id)}: service weeks ${nice(last[id].mStr)} and ${nice(mStr)}, forced by ${reason}`);
+            notes.push(previewOrigin === "json" ? `${nameOf(id)}: service weeks ${nice(last[id].mStr)} and ${nice(mStr)} (as in the loaded file)` : `${nameOf(id)}: service weeks ${nice(last[id].mStr)} and ${nice(mStr)}, forced by ${reason}`);
           }
           last[id] = {
             w,
@@ -9367,7 +9681,18 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       }
     }, React.createElement("div", {
       style: css.cardT
-    }, "👁 Schedule Preview"), React.createElement("div", {
+    }, "👁 Schedule Preview", previewOrigin === "json" && React.createElement("span", {
+      style: {
+        marginLeft: 8,
+        fontSize: 11,
+        fontWeight: 700,
+        color: dk ? "#f0c890" : "#8a5020",
+        background: dk ? "#3a2a10" : "#fef3e6",
+        border: "1px solid #e8c89a",
+        borderRadius: 5,
+        padding: "2px 7px"
+      }
+    }, "Loaded from JSON — not generated")), React.createElement("div", {
       style: {
         display: "flex",
         gap: 6,
@@ -9378,11 +9703,22 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         setPreviewCalMonth(0);
         doGenerate(true);
       },
+      disabled: !!searching,
       style: _objectSpread(_objectSpread({}, css.btn(false)), {}, {
         padding: "6px 14px",
-        fontSize: 12
+        fontSize: 12,
+        opacity: searching ? 0.55 : 1
       })
     }, "↻ Re-roll"), React.createElement("button", {
+      onClick: searchMore,
+      disabled: !!searching || publishing,
+      title: "Keep searching from this schedule — it is replaced only by a better one",
+      style: _objectSpread(_objectSpread({}, css.btn(false)), {}, {
+        padding: "6px 14px",
+        fontSize: 12,
+        opacity: searching || publishing ? 0.55 : 1
+      })
+    }, searching === "more" ? "🔍 Searching…" : "🔍 Search more"), React.createElement("button", {
       onClick: () => {
         try {
           const previewMondays = Object.keys(previewSchedule).sort();
@@ -9424,7 +9760,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       })
     }, "🖨 Print Calendar"), React.createElement("button", {
       onClick: acceptPreview,
-      disabled: previewNeedsOk.items.length > 0 && !previewAck,
+      disabled: publishing || searching === "publish" || previewNeedsOk.items.length > 0 && !previewAck,
       title: previewNeedsOk.items.length > 0 && !previewAck ? "Review the Needs your OK items below first" : undefined,
       style: _objectSpread(_objectSpread({}, css.btn(true)), {}, {
         padding: "6px 14px",
@@ -9446,7 +9782,16 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         cursor: "pointer",
         fontFamily: font
       }
-    }, "✕ Discard"))), previewNeedsOk.items.length > 0 && React.createElement("div", {
+    }, "✕ Discard"))), searching === "more" && React.createElement(SearchProgress, {
+      searchRef: searchRef,
+      dk: dk
+    }), searchStats && !searching && React.createElement("div", {
+      style: {
+        fontSize: 11,
+        color: dk ? "#a0c8a0" : "#4a7a4a",
+        margin: "-6px 0 10px"
+      }
+    }, searchStats.purpose === "more" ? `Search more ${searchStats.improved ? "found a better schedule" : "found nothing better — this one stays"}: ${searchStats.checked.toLocaleString()} more schedules checked in ${(searchStats.ms / 1000).toFixed(1)} s` : `The best of ${searchStats.checked.toLocaleString()} schedules checked in ${(searchStats.ms / 1000).toFixed(1)} s (${searchStats.starts.toLocaleString()} fresh start${searchStats.starts === 1 ? "" : "s"})`), previewNeedsOk.items.length > 0 && React.createElement("div", {
       style: {
         background: dk ? "#3a2410" : "#fdf0e3",
         border: "1px solid #d09050",
@@ -9462,18 +9807,34 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         fontWeight: 700,
         marginBottom: 2
       }
-    }, "⚠ Needs your OK — ", previewNeedsOk.items.length, " item", previewNeedsOk.items.length === 1 ? "" : "s"), previewNeedsOk.items.map((it, i) => React.createElement("div", {
-      key: i,
-      style: {
-        marginTop: 3
-      }
-    }, "• ", it.text)), React.createElement("div", {
+    }, "⚠ Needs your OK — ", previewNeedsOk.items.length, " item", previewNeedsOk.items.length === 1 ? "" : "s"), NEEDS_OK_GROUPS.map(g => {
+      const its = previewNeedsOk.items.filter(it => g.kinds.includes(it.kind));
+      return its.length ? React.createElement("div", {
+        key: g.title,
+        style: {
+          marginTop: 6
+        }
+      }, React.createElement("div", {
+        style: {
+          fontWeight: 700,
+          fontSize: 11,
+          textTransform: "uppercase",
+          letterSpacing: 0.4,
+          opacity: 0.8
+        }
+      }, g.title), its.map((it, i) => React.createElement("div", {
+        key: i,
+        style: {
+          marginTop: 3
+        }
+      }, "• ", it.text))) : null;
+    }), React.createElement("div", {
       style: {
         marginTop: 5,
         fontSize: 11,
         opacity: 0.85
       }
-    }, "Vacation, no-call and Silvis days are never broken — when a week can't be covered by the usual rules, the generator takes the mildest bend and lists it here. Re-roll for different names; the bends themselves are the minimum the calendar allows."), React.createElement("label", {
+    }, previewOrigin === "json" ? "These are in the loaded file — the generator didn't choose them. Everything the ranking looks at is listed here; review each before publishing. Re-roll replaces the file with a generated schedule; Search more keeps it unless it finds a better one." : "The search ranks schedules in this order: no time off and no two nights in a row (designed holiday runs aside — anything left breaking them is under Must fix), FAK's last resort, service weeks even, weekends even, the least strain, the mildest bends, totals even — this is the best it found. Search more looks further; Re-roll starts over."), React.createElement("label", {
       style: {
         display: "flex",
         alignItems: "center",
@@ -9517,7 +9878,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         fontSize: 11,
         opacity: 0.85
       }
-    }, "The generator couldn't space these apart. Accepting publishes them as shown — consider warning the surgeon, or adjust and re-roll.")), pm && React.createElement(React.Fragment, null, React.createElement("div", {
+    }, previewOrigin === "json" ? "These are in the loaded file. Accepting publishes them as shown — consider warning the surgeon." : "Fixed by the holiday cards, so Needs your OK doesn't count them as strain (the others are listed there). Accepting publishes them as shown — consider warning the surgeon.")), pm && React.createElement(React.Fragment, null, React.createElement("div", {
       style: {
         display: "flex",
         alignItems: "center",
@@ -9668,7 +10029,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           overflowWrap: "anywhere"
         }
       }, "🏖", vacList.map(v => v.name).join(", ")));
-    }))), (isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.role) === "admin") && seedDebug && React.createElement("div", {
+    }))), (isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.role) === "admin") && seedDebug && previewOrigin !== "json" && React.createElement("div", {
       style: {
         background: dk ? "#2a2410" : "#fffbe8",
         border: "1px solid #e0c870",
@@ -10426,7 +10787,29 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       } else setCalMonth(m => m + 1);
     },
     style: css.btn(false)
-  }, "▶")), React.createElement("div", {
+  }, "▶"), (() => {
+    const now = new Date(),
+      away = calMonth !== now.getMonth() || calYear !== now.getFullYear();
+    return React.createElement("button", {
+      "aria-label": "Go to today",
+      title: "Back to today",
+      onClick: () => {
+        const n = new Date();
+        setCalMonth(n.getMonth());
+        setCalYear(n.getFullYear());
+        setTimeout(() => {
+          const el = document.querySelector("[data-cal-today=\"1\"]");
+          if (el && el.scrollIntoView) el.scrollIntoView({
+            behavior: "smooth",
+            block: "center"
+          });
+        }, 60);
+      },
+      style: _objectSpread(_objectSpread({}, css.btn(away)), {}, {
+        padding: "7px 10px"
+      })
+    }, "Today");
+  })()), React.createElement("div", {
     style: {
       display: "flex",
       gap: 5
@@ -10436,14 +10819,20 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     style: css.btn(false)
   }, "← Setup"), React.createElement("button", {
     onClick: () => doGenerate(false),
-    style: css.btn(true)
-  }, "↻ Regenerate"), React.createElement("button", {
+    disabled: !!searching,
+    style: _objectSpread(_objectSpread({}, css.btn(true)), {}, {
+      opacity: searching ? 0.55 : 1
+    })
+  }, searching === "publish" ? "🔍 Searching…" : "↻ Regenerate"), React.createElement("button", {
     onClick: clearSchedule,
     style: _objectSpread(_objectSpread({}, css.btn(false)), {}, {
       color: "#c04040",
       borderColor: "#e0a0a0"
     })
-  }, "✕ Clear")))), React.createElement("div", {
+  }, "✕ Clear")))), searching && searching !== "more" && view === "calendar" && React.createElement(SearchProgress, {
+    searchRef: searchRef,
+    dk: dk
+  }), React.createElement("div", {
     style: {
       display: "flex",
       gap: 4,
@@ -10884,6 +11273,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       }
       return React.createElement("div", {
         key: ds,
+        "data-cal-today": isToday ? "1" : undefined,
         style: {
           background: cellBg,
           border: cellBorder,
@@ -11426,8 +11816,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     const wk = m ? schedule[m] : null;
     let currentId = null;
     if (wk && sh) {
-      var _wk$nights11;
-      currentId = sh === "dayCall" ? wk.dayCall : (_wk$nights11 = wk.nights) === null || _wk$nights11 === void 0 ? void 0 : _wk$nights11[sh];
+      var _wk$nights13;
+      currentId = sh === "dayCall" ? wk.dayCall : (_wk$nights13 = wk.nights) === null || _wk$nights13 === void 0 ? void 0 : _wk$nights13[sh];
     }
     return currentId ? React.createElement("div", {
       style: {
@@ -11455,8 +11845,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       const wk = schedule[m];
       if (!wk) return;
       ALL_SHIFT_KEYS.forEach(sk => {
-        var _wk$nights12;
-        const holder = sk === "dayCall" ? wk.dayCall : (_wk$nights12 = wk.nights) === null || _wk$nights12 === void 0 ? void 0 : _wk$nights12[sk];
+        var _wk$nights14;
+        const holder = sk === "dayCall" ? wk.dayCall : (_wk$nights14 = wk.nights) === null || _wk$nights14 === void 0 ? void 0 : _wk$nights14[sk];
         if (holder === mySurgeon) {
           if (shiftStartDate(m, sk) < todayStr) return;
           const label = `${slotLabel(m, sk)}${wk.isBackup ? " (Backup)" : ""}${m <= todayStr ? " (this week)" : ""}`;
@@ -11496,12 +11886,12 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     }, o.label)));
   })()), React.createElement("button", {
     onClick: () => {
-      var _wk$nights13;
+      var _wk$nights15;
       const m = swapTarget === null || swapTarget === void 0 ? void 0 : swapTarget.mondayStr;
       const sh = swapTarget === null || swapTarget === void 0 ? void 0 : swapTarget.shift;
       const wk = m ? schedule[m] : null;
       if (!wk || !sh) return;
-      const currentId = sh === "dayCall" ? wk.dayCall : (_wk$nights13 = wk.nights) === null || _wk$nights13 === void 0 ? void 0 : _wk$nights13[sh];
+      const currentId = sh === "dayCall" ? wk.dayCall : (_wk$nights15 = wk.nights) === null || _wk$nights15 === void 0 ? void 0 : _wk$nights15[sh];
       if (!currentId) return;
       findSwapSuggestions(m, sh, currentId);
     },
@@ -12400,7 +12790,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     const monthlyData = {};
     const allMonths = new Set();
     Object.entries(schedule).forEach(([mStr, wk]) => {
-      var _wk$nights15;
+      var _wk$nights17;
       const mon = parse(mStr);
       for (let i = 0; i < 7; i++) {
         const d = addD(mon, i);
@@ -12422,14 +12812,14 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         if ((_monthlyData$monMoKey = monthlyData[monMoKey]) !== null && _monthlyData$monMoKey !== void 0 && _monthlyData$monMoKey[wk.dayCall]) monthlyData[monMoKey][wk.dayCall][countKey] += 6;
       }
       NIGHT_KEYS.forEach((sk, i) => {
-        var _wk$nights14, _monthlyData$moKey;
-        const sid = (_wk$nights14 = wk.nights) === null || _wk$nights14 === void 0 ? void 0 : _wk$nights14[sk];
+        var _wk$nights16, _monthlyData$moKey;
+        const sid = (_wk$nights16 = wk.nights) === null || _wk$nights16 === void 0 ? void 0 : _wk$nights16[sk];
         if (!sid) return;
         const d = addD(mon, i);
         const moKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
         if ((_monthlyData$moKey = monthlyData[moKey]) !== null && _monthlyData$moKey !== void 0 && _monthlyData$moKey[sid]) monthlyData[moKey][sid][countKey] += 1;
       });
-      const wkndSid = (_wk$nights15 = wk.nights) === null || _wk$nights15 === void 0 ? void 0 : _wk$nights15.wknd;
+      const wkndSid = (_wk$nights17 = wk.nights) === null || _wk$nights17 === void 0 ? void 0 : _wk$nights17.wknd;
       if (wkndSid) {
         var _monthlyData$friMo;
         const fri = addD(mon, 4);
@@ -13284,7 +13674,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     };
     const myShifts = [];
     Object.entries(schedule).forEach(([mStr, wk]) => {
-      var _wk$nights16;
+      var _wk$nights18;
       const mon = parse(mStr);
       const endStr = fmt(addD(mon, 6));
       const hw = weekHolders(mStr, wk);
@@ -13311,7 +13701,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           shiftKey: sk
         });
       });
-      if (((_wk$nights16 = wk.nights) === null || _wk$nights16 === void 0 ? void 0 : _wk$nights16.wknd) === myId) {
+      if (((_wk$nights18 = wk.nights) === null || _wk$nights18 === void 0 ? void 0 : _wk$nights18.wknd) === myId) {
         const legs = [hw.days[4], hw.days[6]];
         const mine = d => (d.i === 4 ? d.wkndFri : d.wkndSun) === myId;
         const notes = legs.filter(d => !mine(d) && !(d.cover && d.cover.sid === myId)).map(d => coverNote(d, d.cover ? d.cover.sid : null, nameOf));
@@ -14856,7 +15246,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       color: "#6030a0",
       padding: "6px 0"
     }
-  }, ((_surgeons$find14 = surgeons.find(s => s.id === mySurgeon)) === null || _surgeons$find14 === void 0 ? void 0 : _surgeons$find14.name) || "—")), React.createElement("div", null, React.createElement("label", {
+  }, ((_surgeons$find16 = surgeons.find(s => s.id === mySurgeon)) === null || _surgeons$find16 === void 0 ? void 0 : _surgeons$find16.name) || "—")), React.createElement("div", null, React.createElement("label", {
     style: {
       fontSize: 10,
       color: "#7a8a98",
@@ -14923,8 +15313,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       const wk = schedule[m];
       if (!wk) return;
       ALL_SHIFT_KEYS.forEach(sk => {
-        var _wk$nights17;
-        const holder = sk === "dayCall" ? wk.dayCall : (_wk$nights17 = wk.nights) === null || _wk$nights17 === void 0 ? void 0 : _wk$nights17[sk];
+        var _wk$nights19;
+        const holder = sk === "dayCall" ? wk.dayCall : (_wk$nights19 = wk.nights) === null || _wk$nights19 === void 0 ? void 0 : _wk$nights19[sk];
         if (holder === tradeFrom) {
           if (shiftStartDate(m, sk) < todayStr) return;
           const label = `${slotLabel(m, sk)}${wk.isBackup ? " (Backup)" : ""}${m <= todayStr ? " (this week)" : ""}`;
@@ -15016,8 +15406,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         const wk = schedule[m];
         if (!wk) return;
         ALL_SHIFT_KEYS.forEach(sk => {
-          var _wk$nights18;
-          const holder = sk === "dayCall" ? wk.dayCall : (_wk$nights18 = wk.nights) === null || _wk$nights18 === void 0 ? void 0 : _wk$nights18[sk];
+          var _wk$nights20;
+          const holder = sk === "dayCall" ? wk.dayCall : (_wk$nights20 = wk.nights) === null || _wk$nights20 === void 0 ? void 0 : _wk$nights20[sk];
           if (holder === tradeTo) {
             if (shiftStartDate(m, sk) < todayStr) return;
             const label = `${slotLabel(m, sk)}${wk.isBackup ? " (Backup)" : ""}${m <= todayStr ? " (this week)" : ""}`;
@@ -17785,6 +18175,58 @@ function writeFailReason(err) {
   if (/42501|row-level security|\b403\b/i.test(s)) return "you don't have permission to do that (ask the scheduler)";
   if (/JWT expired|PGRST30[0-3]|\b401\b/i.test(s)) return "your sign-in has expired — sign in again";
   return "check your connection and try again";
+}
+const NEEDS_OK_GROUPS = [{
+  title: "Must fix — breaks a rule",
+  kinds: ["error", "lock", "empty", "timeoff", "hard"]
+}, {
+  title: "Last resort",
+  kinds: ["lastResort"]
+}, {
+  title: "Strain",
+  kinds: ["strain"]
+}, {
+  title: "Bends",
+  kinds: ["bend"]
+}, {
+  title: "FAK — flexible (allowed, costs a little)",
+  kinds: ["flexStrain"]
+}, {
+  title: "Crowded days (information)",
+  kinds: ["crowded"]
+}];
+function SearchProgress({
+  searchRef,
+  dk
+}) {
+  const [, setTick] = React.useState(0);
+  React.useEffect(() => {
+    const t = setInterval(() => setTick(n => n + 1), 250);
+    return () => clearInterval(t);
+  }, []);
+  const sr = searchRef.current;
+  if (!sr || !sr.session) return null;
+  let st = null;
+  try {
+    st = sr.session.status();
+  } catch (e) {
+    return null;
+  }
+  const t = st.tiers;
+  const best = t ? t.floor ? "best so far still breaks a rule" : `best so far: service weeks Δ${t.svcSpread} · weekends Δ${t.wkndSpread} · strain ${t.strain} · bends ${t.bend}` : "";
+  return React.createElement("div", {
+    role: "status",
+    style: {
+      fontSize: 12,
+      color: dk ? "#a0c8a0" : "#2a6a3a",
+      background: dk ? "#16261a" : "#eef8ee",
+      border: "1px solid #a0d0a0",
+      borderRadius: 7,
+      padding: "6px 10px",
+      margin: "8px 0",
+      overflowWrap: "anywhere"
+    }
+  }, "🔍 Searching… ", (sr.activeMs / 1000).toFixed(1), " s of ", (sr.budgetMs / 1000).toFixed(0), " · ", st.checked.toLocaleString(), " schedules checked", best ? " · " + best : "");
 }
 function CallTotalsCard({
   totals,

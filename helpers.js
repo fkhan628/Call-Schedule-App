@@ -244,6 +244,194 @@ function weekHolders(mondayStr, wk) {
   return { mondayStr, isBackup: !!w.isBackup, days, covers };
 }
 
+// Who holds the OVERNIGHT of date ds in a published schedule, by weekHolders'
+// rule: a holiday 24h row, else the Mon–Thu night, Fri / Sun the weekend, Sat
+// the service week (or its single-day override). null for nobody / no week.
+function overnightHolderOn(schedule, ds) {
+  const x = parse(ds), dow = x.getDay(), mStr = fmt(addD(x, dow === 0 ? -6 : 1 - dow));
+  const wk = schedule && schedule[mStr];
+  if (!wk) return null;
+  const day = weekHolders(mStr, wk).days[(dow + 6) % 7];
+  if (day.cover) return day.cover.sid || null;
+  return day.night || day.wkndFri || day.sat || day.wkndSun || null;
+}
+
+// ═══ HOLIDAY PAIRS — who takes which holiday each year (owner 2026-10-13) ═══
+// FAK (the Christmas surgeon) takes Christmas Eve + Christmas Day, both slots,
+// every year — his major and his minor; the app sets that card itself. Every
+// other partner takes ONE minor a year (Memorial Day, July 4th, Labor Day —
+// 6 slots for 6 partners) and at most ONE major (New Year's, Thanksgiving —
+// 4 slots for 6, so two sit out a major each year, and get one the next).
+// The rest rotates. One group at a time (major, minor), every assignment of
+// partners to its A / B slots is ranked, in order:
+//   1. nobody on time off for the dates their role holds (unavailable)
+//   2. nobody on two holidays of the group
+//   3. nobody sits out the group two years running (who sat out last year
+//      gets one this year)
+//   4. nobody gets the same holiday as last year; 5. as two years ago
+//   5b. a year already stored AFTER this one (re-generating): not the holiday
+//      someone has there, and nobody without a major in both years
+//   6. no two partners paired on two cards in the same year
+//   7. the holiday each partner has had least often
+//   8. who gets one: the shortest run of years with one, ending last year
+//      (a major, a major, then a year off — the 3-year cycle)
+//   9. then the lower lifetime rate of the group (rate, tenure-normalized)
+//  10. new pairings: not the same pair on the same holiday before, nor a
+//      pair from the last two years
+//  11. the A / B role each has had less often
+//   then a random pick among equals (random).
+// o = { year, holidays: [{ name, date, type }] to plan (not Christmas),
+//       partners: [ids], history: holidayAssignments (only years < year are
+//       read), fixed: [{ name, type, surgeonA, surgeonB }] already set this
+//       year (they count), unavailable(id, hol, role), rate(id, type), random }
+// → { picks: { [name]: { surgeonA, surgeonB } }, notes: [plain words], cost: { major, minor } }
+// A year already stored AFTER this one (re-generating) is checked too: the
+// notes say what the new picks break against it.
+function planHolidayPairs(o) {
+  const year = Number(o.year), hist = o.history || {}, rnd = o.random || Math.random;
+  const unavailable = o.unavailable || (() => false), rate = o.rate || (() => 0);
+  const partners = (o.partners || []).filter(Boolean), fixed = o.fixed || [];
+  const yearArr = (y) => Array.isArray(hist[String(y)]) ? hist[String(y)] : null;
+  const heldMemo = {};
+  const heldIn = (y) => { // { id: [{ name, type, role }] } — a collapsed A = B pair is ONE holiday
+    if (heldMemo[y]) return heldMemo[y];
+    const m = {};
+    (yearArr(y) || []).forEach(h => {
+      if (!h || !h.name) return;
+      const add = (id, role) => { if (id) (m[id] = m[id] || []).push({ name: h.name, type: h.type, role }); };
+      add(h.surgeonA, "A"); if (h.surgeonB !== h.surgeonA) add(h.surgeonB, "B");
+    });
+    return (heldMemo[y] = m);
+  };
+  const past = Object.keys(hist).map(Number).filter(y => Number.isFinite(y) && y < year);
+  const nameCt = {}, roleCt = {}, run = {};
+  const pairKey = (a, b) => a < b ? a + "|" + b : b + "|" + a;
+  const pairsOf = (arr) => (arr || []).filter(h => h && h.surgeonA && h.surgeonB && h.surgeonA !== h.surgeonB).map(h => ({ name: h.name, k: pairKey(h.surgeonA, h.surgeonB) }));
+  const pairHol = {}; past.forEach(y => pairsOf(yearArr(y)).forEach(({ name, k }) => { pairHol[name + "#" + k] = (pairHol[name + "#" + k] || 0) + 1; }));
+  const pairY1 = new Set(pairsOf(yearArr(year - 1)).map(x => x.k)), pairY2 = new Set(pairsOf(yearArr(year - 2)).map(x => x.k));
+  const pairNow = new Set(pairsOf(fixed).map(x => x.k)); // this year's cards so far (presets, then the major group's picks)
+  const pairCost = (a, b, name) => { const k = pairKey(a, b); return 3 * (pairHol[name + "#" + k] || 0) + (pairY1.has(k) ? 2 : 0) + (pairY2.has(k) ? 1 : 0); };
+  partners.forEach(id => { nameCt[id] = {}; roleCt[id] = { major: { A: 0, B: 0 }, minor: { A: 0, B: 0 } }; run[id] = { major: 0, minor: 0 }; });
+  past.forEach(y => { const m = heldIn(y); partners.forEach(id => (m[id] || []).forEach(x => {
+    nameCt[id][x.name] = (nameCt[id][x.name] || 0) + 1;
+    if (roleCt[id][x.type]) roleCt[id][x.type][x.role]++;
+  })); });
+  partners.forEach(id => ["major", "minor"].forEach(t => {
+    let k = 0; for (let y = year - 1; yearArr(y); y--) { if ((heldIn(y)[id] || []).some(x => x.type === t)) k++; else break; }
+    run[id][t] = k;
+  }));
+  const hasLast = !!yearArr(year - 1), Y1 = heldIn(year - 1), Y2 = heldIn(year - 2), hasNext = !!yearArr(year + 1), YN = heldIn(year + 1);
+  const had = (m, id, name) => (m[id] || []).some(x => x.name === name);
+  const satOutLast = (id, t) => hasLast && !(Y1[id] || []).some(x => x.type === t);
+  const picks = {}, notes = [], cost = {};
+  const nm = o.nameOf || ((id) => id);
+  ["minor", "major"].forEach(type => { // minors first: the tighter group (one each) — the majors then avoid its pairs
+    const hols = (o.holidays || []).filter(h => h && h.type === type && h.name !== "Christmas Day");
+    if (!hols.length || !partners.length) return;
+    const fixedUse = {};
+    fixed.filter(h => h && h.type === type).forEach(h => [h.surgeonA, h.surgeonB].filter((v, i, a) => v && a.indexOf(v) === i).forEach(id => { fixedUse[id] = (fixedUse[id] || 0) + 1; }));
+    const slots = []; hols.forEach((h, hi) => { slots.push({ hi, role: "A" }); slots.push({ hi, role: "B" }); });
+    const order = partners.slice();
+    for (let i = order.length - 1; i > 0; i--) { const j = Math.floor(rnd() * (i + 1)); const t = order[i]; order[i] = order[j]; order[j] = t; }
+    // additive per (slot, partner): [unavailable, same as last year, as two years ago, times had it, role had, as the stored next year]
+    const add = slots.map(({ hi, role }) => { const h = hols[hi], r = {}; order.forEach(id => {
+      r[id] = [unavailable(id, h, role) ? 1 : 0, had(Y1, id, h.name) ? 1 : 0, had(Y2, id, h.name) ? 1 : 0, nameCt[id][h.name] || 0, (roleCt[id][type] || {})[role] || 0, had(YN, id, h.name) ? 1 : 0];
+    }); return r; });
+    const score = (cur) => {
+      const use = Object.assign({}, fixedUse);
+      let un = 0, r1 = 0, r2 = 0, sp = 0, rl = 0, nx = 0;
+      cur.forEach((id, k) => { const a = add[k][id]; un += a[0]; r1 += a[1]; r2 += a[2]; sp += a[3]; rl += a[4]; nx += a[5]; use[id] = (use[id] || 0) + 1; });
+      let multi = 0, sat2 = 0, runs = 0, rates = 0, pairs = 0, twice = 0;
+      for (let k = 0; k + 1 < cur.length; k += 2) { pairs += pairCost(cur[k], cur[k + 1], hols[k >> 1].name); if (cur[k] !== cur[k + 1] && pairNow.has(pairKey(cur[k], cur[k + 1]))) twice++; }
+      partners.forEach(id => {
+        const u = use[id] || 0;
+        if (u > 1) multi += u - 1;
+        if (u === 0 && satOutLast(id, type)) sat2++;
+        if (u === 0 && hasNext && !(YN[id] || []).some(x => x.type === type && x.name !== "Christmas Day")) nx++;
+        if (u > 0 && !fixedUse[id]) { runs += run[id][type]; rates += Math.round((rate(id, type) || 0) * 1000); }
+      });
+      return [un, multi, sat2, r1, r2, nx, twice, sp, runs, rates, pairs, rl];
+    };
+    const cmp = (a, b) => { for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return a[i] - b[i]; return 0; };
+    let best = null, bestV = null;
+    const cur = new Array(slots.length), useP = Object.assign({}, fixedUse);
+    // the first two tiers (time off, two in a group) only grow down a path: cut a branch already worse than the best
+    const dfs = (k, unP, multiP) => {
+      if (bestV && (unP > bestV[0] || (unP === bestV[0] && multiP > bestV[1]))) return;
+      if (k === slots.length) { const v = score(cur); if (!bestV || cmp(v, bestV) < 0) { bestV = v; best = cur.slice(); } return; }
+      for (const id of order) {
+        if (slots[k].role === "B" && cur[k - 1] === id && order.length > 1) continue; // A ≠ B
+        const u0 = useP[id] || 0;
+        cur[k] = id; useP[id] = u0 + 1;
+        dfs(k + 1, unP + add[k][id][0], multiP + (u0 >= 1 ? 1 : 0));
+        useP[id] = u0;
+      }
+    };
+    dfs(0, 0, partners.reduce((n, id) => n + Math.max(0, (fixedUse[id] || 0) - 1), 0));
+    if (!best) return;
+    cost[type] = bestV;
+    hols.forEach((h, hi) => { picks[h.name] = { surgeonA: best[2 * hi], surgeonB: best[2 * hi + 1] }; if (best[2 * hi] !== best[2 * hi + 1]) pairNow.add(pairKey(best[2 * hi], best[2 * hi + 1])); });
+    // plain words for anything the rules could not all have
+    hols.forEach((h, hi) => ["A", "B"].forEach((role, j) => { const id = best[2 * hi + j];
+      if (add[2 * hi + j][id][0]) notes.push(`${nm(id)} is on time off for ${h.name} ${year} (surgeon ${role}) — nobody else fit; change it with the swap controls`);
+      if (add[2 * hi + j][id][1]) notes.push(`${nm(id)} has ${h.name} again (${year - 1} too) — no other way this year`); }));
+    const use = Object.assign({}, fixedUse); best.forEach(id => { use[id] = (use[id] || 0) + 1; });
+    const free = partners.filter(id => !fixedUse[id]);
+    const oneEach = free.length <= slots.length, short = free.length < slots.length; // everyone gets one (the minors); someone must take two
+    const offAll = (id) => slots.every((sl, k) => add[k][id][0]); // off for every date this group's roles hold
+    const offNames = partners.filter(id => !use[id] && offAll(id)).map(nm);
+    partners.forEach(id => {
+      if ((use[id] || 0) > 1) notes.push(`${nm(id)} has two ${type} holidays in ${year} — ${short ? "not enough partners for one each" : (offNames.length ? offNames.join(", ") + " off on every " + type + " holiday" : "the others' time off")}`);
+      if (!use[id] && !fixedUse[id] && oneEach) notes.push(`${nm(id)} has no ${type} holiday in ${year}${offAll(id) ? " — off on every " + type + " holiday date" : ""}`);
+      else if (!use[id] && satOutLast(id, type)) notes.push(`${nm(id)} has no ${type} holiday in ${year} or ${year - 1}`);
+    });
+  });
+  // a year already stored AFTER this one: what the new picks break against it
+  const next = yearArr(year + 1);
+  if (next) {
+    const typeOf = {}; (o.holidays || []).concat(fixed).forEach(h => { if (h && h.name) typeOf[h.name] = h.type; });
+    const mine = (id) => Object.keys(picks).filter(n => picks[n].surgeonA === id || picks[n].surgeonB === id)
+      .concat(fixed.filter(h => h && (h.surgeonA === id || h.surgeonB === id)).map(h => h.name));
+    const plannedMajor = Object.keys(picks).some(n => typeOf[n] === "major");
+    partners.forEach(id => {
+      const nowH = mine(id), nextH = next.filter(h => h && (h.surgeonA === id || h.surgeonB === id));
+      nowH.forEach(n => { if (nextH.some(h => h.name === n)) notes.push(`${nm(id)} has ${n} in ${year} and in ${year + 1} (already stored) — re-generate ${year + 1} too`); });
+      if (plannedMajor && !nowH.some(n => typeOf[n] === "major") && !nextH.some(h => h.type === "major" && h.name !== "Christmas Day"))
+        notes.push(`${nm(id)} has no major in ${year} or in ${year + 1} (already stored) — re-generate ${year + 1} too`);
+    });
+  }
+  return { picks, notes, cost };
+}
+
+// The holiday card's rotation checks (owner 2026-10-13) — one pure function
+// the card renders. Each group's holders (A = B is ONE holiday: FAK's
+// Christmas), duplicates within a group, who sits out a major, and the issues:
+// a partner with no minor, FAK on another holiday, no major two years running,
+// a holiday again from last year. A hand-written preset year is a fact: no
+// rotation issues (preset).
+// o = { assignments, prior (last year's cards), surgeons, fakId, year, preset, nameOf? }
+function holidayRotationCheck(o) {
+  const assignments = (o.assignments || []).filter(Boolean), prior = (o.prior || []).filter(Boolean), surgeons = o.surgeons || [], fakId = o.fakId || null, year = Number(o.year);
+  const holders = (h) => [h.surgeonA, h.surgeonB].filter((v, i, a) => v && a.indexOf(v) === i);
+  const nm = o.nameOf || ((id) => (surgeons.find(s => s.id === id) || {}).name || id);
+  const group = (type, label) => {
+    const seen = {}, dupes = [];
+    assignments.filter(h => h.type === type).forEach(h => holders(h).forEach(sid => { if (seen[sid]) dupes.push({ surgeon: sid, hol1: seen[sid], hol2: h.name }); else seen[sid] = h.name; }));
+    return { label, ok: dupes.length === 0, dupes, uniqueCount: Object.keys(seen).length, none: surgeons.filter(sg => sg.id !== fakId && !seen[sg.id]).map(sg => sg.id) };
+  };
+  const major = group("major", "Major"), minor = group("minor", "Minor"), issues = [];
+  if (!o.preset) {
+    minor.none.forEach(id => issues.push(`${nm(id)} has no minor holiday`));
+    if (fakId) assignments.filter(h => h.name !== "Christmas Day" && holders(h).includes(fakId)).forEach(h => issues.push(`${nm(fakId)} is on ${h.name} (his holidays are Christmas Eve + Day)`));
+    if (prior.length) {
+      const hadMajor = new Set(prior.filter(h => h.type === "major").flatMap(holders));
+      major.none.filter(id => !hadMajor.has(id)).forEach(id => issues.push(`${nm(id)} has no major in ${year - 1} or ${year}`));
+      assignments.forEach(h => holders(h).forEach(id => { if (id !== fakId && prior.some(p => p.name === h.name && holders(p).includes(id))) issues.push(`${nm(id)} has ${h.name} again (${year - 1} too)`); }));
+    }
+  }
+  return { major, minor, issues, preset: !!o.preset };
+}
+
 // A covered date's holiday name: the generator's own holiday field when it
 // stored one, else the label without its trailing "24h" ("Labor Day 24h" → "Labor Day").
 function holidayTitleName(cover) {

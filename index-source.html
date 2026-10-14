@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.10.11g";
+    var APP_VERSION = "2026.10.14b";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -387,13 +387,17 @@ function CallSchedule() {
 
   // ─── Undo History ───
   const [scheduleHistory, setScheduleHistory] = useState([]);
-  // Each step remembers the sync engine's epoch when it was taken. Undo is
-  // all-or-nothing (sync v2, R15): if restoring the snapshot would also revert
-  // a week someone else changed since (adopted by a pull or a conflict), it
-  // is refused and says which week — it never half-applies, and it never
-  // silently reverts the other person's change.
-  const pushUndo = useCallback(() => {
-    const snap = { sched: JSON.parse(JSON.stringify(scheduleRef.current)), epoch: schedSyncRef.current ? schedSyncRef.current.epochNow() : 0 };
+  // Each step is { sched, epoch, counts }: the schedule MIRROR when it was
+  // taken and the sync engine's epoch then (sync v2, R15) — Undo is
+  // all-or-nothing: if restoring the snapshot would also revert a week
+  // someone else changed since (adopted by a pull or a conflict), it is
+  // refused and says which week; it never half-applies, and it never
+  // silently reverts the other person's change. A PUBLISH step also carries
+  // the counts as they were before it (owner 2026-10-12: publish → ↩ Undo →
+  // publish used to count the period twice — Undo put the schedule back but
+  // not the counts). Other steps carry none and leave the counts alone.
+  const pushUndo = useCallback((counts) => {
+    const snap = { sched: JSON.parse(JSON.stringify(scheduleRef.current)), epoch: schedSyncRef.current ? schedSyncRef.current.epochNow() : 0, counts: counts ? JSON.parse(JSON.stringify(counts)) : null };
     setScheduleHistory(prev => [...prev.slice(-9), snap]);
   }, []);
   const undoLastChange = () => {
@@ -406,12 +410,42 @@ function CallSchedule() {
       return;
     }
     commitSchedule(plan.next);
+    // A publish step takes its counts back off too — only together with the schedule, never one without the other.
+    if (step.counts) { setPriorCounts(step.counts.prior || {}); setYear1Counts(step.counts.y1 || {}); }
     setScheduleHistory(h => h.slice(0, -1));
   };
 
   // ─── What-If Preview ───
   const [previewSchedule, setPreviewSchedule] = useState(null);
-  const previewEpochRef = useRef(0); // the sync engine's epoch the preview was computed at
+  // The sync engine's epoch a preview is judged from (sync v2, stale intents):
+  // a generated one, the CLICK that started its search; a loaded one, the
+  // load. Accept & Publish refuses if one of its weeks was adopted since.
+  const previewEpochRef = useRef(0);
+  // Where the preview came from: "generated" (doGenerate) or "json" (the
+  // benchmark loader, 2026-10-12) — the preview header says which.
+  const [previewOrigin, setPreviewOrigin] = useState("generated");
+  // The schedule SEARCH (owner 2026-10-12, item 5): Preview / Generate &
+  // Publish / Re-roll / Regenerate / "🔍 Search more" run generator.js
+  // createScheduleSearch in time slices — SEARCH_MS of ACTIVE search time (a
+  // hidden tab's throttled slices don't use up the budget) — so the page
+  // stays responsive. searchRef holds the live run; `searching` is only the
+  // flag the buttons read ("generate" | "more"); the progress line polls the
+  // ref and re-renders itself (SearchProgress), not the whole app.
+  const searchRef = useRef(null);
+  const [searching, setSearching] = useState(null); // null | "generate" (→ the preview) | "publish" (Generate & Publish / Regenerate) | "more"
+  // After a search (≥ SEARCH_MS, minutes in a hidden tab) the finish and the
+  // commit run through these refs, i.e. with the LATEST render's state —
+  // never the click's (in-file convention 1). Set every render below.
+  const genFinishRef = useRef(null), genCommitRef = useRef(null);
+  const [searchStats, setSearchStats] = useState(null); // the last finished search: { checked, starts, ms, purpose, improved }
+  const previewSchedRef = useRef(null); previewSchedRef.current = previewSchedule;
+  const loadJsonInputRef = useRef(null);
+  // A publish in progress: Generate & Publish waits 1–3 s for its backup
+  // snapshot before it commits. A second publish in that window would net
+  // against the same old weeks and count the period twice — refused while
+  // this is set (both publish buttons are disabled too).
+  const publishingRef = useRef(false);
+  const [publishing, setPublishing] = useState(false);
   const [pendingLocks, setPendingLocks] = useState([]); // [{ mondayStr, slot: "dc"|"mon"|"tue"|"wed"|"thu"|"wknd", surgeonId }]
 
   // ─── Silvis (trauma) feed — rule silvisBusy (silvis-feed.js) ───
@@ -1063,6 +1097,7 @@ function CallSchedule() {
     // editor — so nothing of it can be sent as the next user.
     const unsaved = schedSyncRef.current.pending().length;
     if (unsaved && !confirm(`${unsaved} week${unsaved === 1 ? "" : "s"} of the schedule ${unsaved === 1 ? "isn't" : "aren't"} saved yet — signing out loses ${unsaved === 1 ? "it" : "them"}.\n\nSign out anyway?`)) return;
+    searchRef.current = null; setSearching(null); setSearchStats(null); setPreviewSchedule(null); setShowPreview(false); // nothing searched, generated or loaded by this user is published as the next one
     schedSyncRef.current.reset();
     setScheduleHistory([]); setEditWeekModal(null); setReauthNeeded(false);
     await auth.signOut();
@@ -3481,21 +3516,12 @@ function CallSchedule() {
 
   // ─── Publish Schedule (with notification) ───
   const doGenerateAndNotify = async () => {
-    const hadExistingSchedule = Object.keys(schedule).length > 0;
     // Notify only when something was actually published — not when the Silvis
     // confirm was cancelled, and not when the result went to the preview for
     // "Needs your OK" review (2026-10-11).
-    if (doGenerate(false) !== "published") return;
-    // If this is a brand new schedule period (no existing schedule),
-    // roll the generated counts forward into the running totals.
-    // When regenerating an existing period, do not roll forward (same period, not a new one).
-    if (!hadExistingSchedule) {
-      // Give doGenerate's setSchedule a tick to flush, then roll forward
-      setTimeout(() => {
-        const latest = scheduleRef.current;
-        if (latest && Object.keys(latest).length > 0) rollForwardCounts(latest);
-      }, 100);
-    }
+    if ((await doGenerate(false)) !== "published") return;
+    // (The counts roll forward inside doGenerate's publish, at commit — net
+    // of any weeks it replaced.)
     await addNotification("schedule_published", "Schedule Published",
       "A new call schedule has been generated. Check the Schedule or Calendar tab.");
     sendEmailNotif("schedule_published", { period: `${MO[startMonth]} – ${MO[endMoIdx]} ${startYear}` });
@@ -4008,7 +4034,7 @@ function CallSchedule() {
     // [D,D] ranges — exactly NO-CALL semantics: they block the shift's OWN
     // day(s) and the night before D (which ends 07:00 D) stays allowed. Into
     // `availability` ONLY, never the vacations (trailing-edge) map below.
-    // Zero generator change: availDC (Mon..Sat), every weeknight (its day),
+    // Zero generator change: availDC (Mon..Sun since 2026-10-12), every weeknight (its day),
     // the weekend (Fri, Sun) and the holiday pre-assignments all already gate
     // through onVac. Since 2026-10-11 the generator never places anyone below
     // this floor (generator.js slotFloorOk) — a squeezed week bends a softer
@@ -4018,37 +4044,97 @@ function CallSchedule() {
     }
     return availability;
   };
-  const doGenerate = (preview) => {
+  // FAK's Silvis PRIMARY days for the search, Needs your OK and the G&P gate
+  // (owner 2026-10-13): a Davenport overnight of his right before or after
+  // one is two overnights in a row across the two jobs — his LAST RESORT
+  // (generator.js scheduleRules). ONE builder, like buildGenAvailability.
+  const buildSilvisPrimary = () => (silvisActive && silvisFakId) ? { id: silvisFakId, dates: [...(silvisDays.primary || [])] } : null;
+  // Does FAK take his Christmas design week's weekend (decision 3)? The
+  // generator's own pins answer — holidayDesign with christmasSlotOk on
+  // today's time off and Silvis days — for a holiday card's weekend eve
+  // (generator.js holidayEveHolder): the card, Warnings and the planner.
+  const takesChristWknd = (mon) => {
+    const fid = (surgeons.find(s => (s.name || "").toUpperCase() === "FAK") || {}).id || null;
+    if (!fid || typeof holidayDesign !== "function") return false;
+    const p = holidayDesign(holidayAssignments, [mon], fid, christmasSlotOk(buildGenAvailability(), vacations, buildSilvisPrimary())).pins[mon];
+    return !!p && p.wknd === fid;
+  };
+  // Seed the generator with the week immediately preceding the new start so
+  // rotation continuity carries across the period boundary — without this,
+  // generating the next period can repeat the prior schedule's last
+  // service-week surgeon (no predecessor is visible to week 0). Uses fmt/addD
+  // (the same helpers that key the schedule) so lookups match exactly. ONE
+  // builder (2026-10-12) for doGenerate, "Search more" and the preview's
+  // Needs your OK — which used to get only {dayCall, wknd} and so missed
+  // spacing across the seam — now with that week's weeknights too (rule 2 and
+  // every-other-night strain across the seam). first: the period's first
+  // Monday (a Date; default the Generate settings').
+  const buildPrevWeekSeed = (first) => {
+    const f = first || mondays[0];
+    if (!f) return null;
+    const prevWk = schedule[fmt(addD(f, -7))]; // contiguous prior week, if any
+    // Walk back up to ~60 weeks to capture each surgeon's most-recent DC week
+    // as a negative offset, for spacing continuity across the seam.
+    const recentDc = {};
+    for (let k = 1; k <= 60; k++) {
+      const wk = schedule[fmt(addD(f, -7 * k))];
+      if (!wk) continue;
+      const dc = wk.dayCall;
+      if (dc && recentDc[dc] === undefined) recentDc[dc] = -k; // nearest hit wins
+    }
+    const pn = (prevWk && prevWk.nights) || {};
+    return {
+      dayCall: (prevWk && prevWk.dayCall) || null,
+      wknd: pn.wknd || null,
+      nights: { mon: pn.mon || null, tue: pn.tue || null, wed: pn.wed || null, thu: pn.thu || null },
+      // who actually held those dates (weekHolders' rule): a holiday / swap row
+      // holds its date, a single-day override the service Saturday
+      holidayCoverage: (prevWk && prevWk.holidayCoverage) || null,
+      dayCallOverrides: (prevWk && prevWk.dayCallOverrides) || null,
+      recentDc,
+    };
+  };
+  // Everything the generated schedule depends on, as one string: a search's
+  // result is published straight away only if this is unchanged since the click.
+  const genInputsSig = () => JSON.stringify([mondays.map(fmt), pendingLocks, holidayAssignments, buildGenAvailability(), vacations,
+    surgeons.map(s => s.id), [...backupMondaySet].sort(), [...fierceBackupSet].sort(), priorCounts, year1Counts]);
+  // Run a search in time slices of ~40 ms until budgetMs of ACTIVE search
+  // time is spent or the schedule is perfect. Resolves { session, ms }, or
+  // null when cancelled (cancelSearch — Accept, Discard, a JSON load cancel a
+  // search whose result would land in the preview; never a Generate & Publish).
+  const runSearch = (session, purpose, budgetMs) => new Promise(resolve => {
+    const token = {};
+    searchRef.current = { session, token, purpose, activeMs: 0, budgetMs };
+    setSearching(purpose);
+    const tick = () => {
+      const sr = searchRef.current;
+      if (!sr || sr.token !== token) { resolve(null); return; }
+      const t0 = Date.now();
+      let failed = false;
+      try { session.step(40); } catch (e) { console.error("Schedule search failed:", e); failed = true; }
+      sr.activeMs += Date.now() - t0;
+      if (failed || sr.activeMs >= budgetMs || session.status().perfect) {
+        searchRef.current = null; setSearching(null);
+        resolve({ session, ms: sr.activeMs });
+        return;
+      }
+      setTimeout(tick, 0);
+    };
+    setTimeout(tick, 0);
+  });
+  const cancelSearch = () => { const sr = searchRef.current; if (sr && sr.purpose !== "publish") { searchRef.current = null; setSearching(null); } };
+  const publishSearchRunning = () => !!(searchRef.current && searchRef.current.purpose === "publish");
+  const doGenerate = async (preview) => {
+    if (searchRef.current) { showToast("A schedule search is already running — wait for it to finish.", "error"); return "busy"; }
     if (!schedEditable()) return "refused";
-    // The engine epoch this result is computed at: a preview or a publish is
-    // refused if someone else changes one of its weeks before it lands.
+    // The engine epoch this result is computed from — the CLICK (the search
+    // then runs SEARCH_MS of active time, minutes in a hidden tab): a preview
+    // or a publish is refused if someone else changes one of its weeks
+    // before it lands.
     const genEpoch = schedSyncRef.current.epochNow();
     const prefs = buildPrefs();
     const availability = buildGenAvailability();
-    // Seed the generator with the week immediately preceding the new start so
-    // rotation continuity carries across the period boundary — without this,
-    // generating the next period can repeat the prior schedule's last
-    // service-week surgeon (no predecessor is visible to week 0). Uses fmt/addD
-    // (the same helpers that key the schedule) so lookups match exactly.
-    const prevWeekSeed = (() => {
-      if (!mondays.length) return null;
-      const first = mondays[0];
-      const prevWk = schedule[fmt(addD(first, -7))]; // contiguous prior week, if any
-      // Walk back up to ~60 weeks to capture each surgeon's most-recent DC week
-      // as a negative offset, for spacing continuity across the seam.
-      const recentDc = {};
-      for (let k = 1; k <= 60; k++) {
-        const wk = schedule[fmt(addD(first, -7 * k))];
-        if (!wk) continue;
-        const dc = wk.dayCall;
-        if (dc && recentDc[dc] === undefined) recentDc[dc] = -k; // nearest hit wins
-      }
-      return {
-        dayCall: (prevWk && prevWk.dayCall) || null,
-        wknd: (prevWk && prevWk.nights && prevWk.nights.wknd) || null,
-        recentDc,
-      };
-    })();
+    const prevWeekSeed = buildPrevWeekSeed();
     // Diagnostic: capture exactly what the seed saw, so the preview can show it.
     try {
       const _first = mondays[0];
@@ -4077,11 +4163,25 @@ function CallSchedule() {
       if (silvisRows.length > 0 && periodEnd && silvisDays.to && periodEnd > silvisDays.to) problems.push(`the Silvis feed only covers through ${silvisDays.to} — weeks after that will be generated as if ${nameOf(silvisFakId)} had NO Silvis call (Silvis publishes rolling 3-month periods; check Schedule Warnings again after it publishes)`);
       if (problems.length && !confirm(`⚠️ Rule silvisBusy is BLIND for part or all of this period:\n\n${problems.map(p => "• " + p).join("\n")}\n\nGenerate anyway?`)) return "cancelled";
     }
-    const result = generate(surgeons, mondays, availability, backupMondaySet, priorCounts, prefs, fierceBackupSet, holidayAssignments, pendingLocks, prevWeekSeed, vacations, year1Counts);
+    // The search (owner 2026-10-12, item 5): SEARCH_MS of searching, ranked by
+    // generator.js scheduleRules — the floor, FAK's last resort, service weeks
+    // even, weekends even, the least strain, the mildest bends, totals even.
+    const search = createScheduleSearch(surgeons, mondays, availability, backupMondaySet, priorCounts, prefs, fierceBackupSet, holidayAssignments, pendingLocks, prevWeekSeed, vacations, year1Counts, { silvisPrimary: buildSilvisPrimary() });
+    const clickSig = genInputsSig();
+    const done = await runSearch(search, preview ? "generate" : "publish", SEARCH_MS);
+    const result = done && done.session.best();
+    if (!result) { if (done) showToast("The schedule search found nothing — try again.", "error"); return "cancelled"; }
+    { const st = done.session.status(); setSearchStats({ checked: st.checked, starts: st.starts, ms: done.ms, purpose: "generate", improved: true }); }
+    return genFinishRef.current(result, preview, clickSig, pendingLocks, genEpoch); // the locks and the engine epoch this search used
+  };
+  // The rest of Generate, run with the LATEST state (genFinishRef, set every
+  // render): what changed during the search counts.
+  const finishGenerate = (result, preview, clickSig, clickLocks, genEpoch) => {
     // Locks the generator could not honor (a Service-Week / Weekend lock on a
     // surgeon the availability map blocks that week is dropped silently in
     // generator.js) — say so; a confirmed lock must never vanish unnoticed.
-    const droppedLocks = (pendingLocks || []).filter(l => {
+    // judged against the locks the SEARCH used (one added since was never seen — said below, not blamed on time off)
+    const droppedLocks = (clickLocks || []).filter(l => {
       const wk = result[l.mondayStr]; if (!wk) return false;
       const slot = l.slot === "dc" ? "dayCall" : l.slot;
       const holder = slot === "dayCall" ? wk.dayCall : wk.nights?.[slot];
@@ -4089,26 +4189,39 @@ function CallSchedule() {
     });
     if (droppedLocks.length) showToast(`⚠ ${droppedLocks.length} lock${droppedLocks.length === 1 ? " was" : "s were"} NOT honored by the generator: ${droppedLocks.map(l => `${nameOf(l.surgeonId)} — ${slotLabel(l.mondayStr, l.slot === "dc" ? "dayCall" : l.slot)}`).join("; ")} (the surgeon is unavailable there — vacation, no-call or Silvis).`, "error");
     if (preview) {
-      setPreviewSchedule(result); previewEpochRef.current = genEpoch;
+      setPreviewSchedule(result); setPreviewOrigin("generated"); previewEpochRef.current = genEpoch;
       setShowPreview(true);
+      if (JSON.stringify(clickLocks || []) !== JSON.stringify(pendingLocks || [])) showToast("The locks changed during the search — this preview used the earlier ones. Re-roll to use the new ones.", "error");
       return "preview";
     }
-    // Generate & Publish skips the preview — unless the result has anything in
-    // "Needs your OK" (2026-10-11): then it opens the preview instead, so no
-    // bend, empty slot or time-off placement is ever published unseen.
+    // Generate & Publish skips the preview — unless something it depends on
+    // changed during the search (time off, locks, holidays, the settings…), or
+    // the result has anything in "Needs your OK" (2026-10-11), judged on
+    // TODAY's inputs and with the locks, exactly like the box: then it opens
+    // the preview instead, so nothing is ever published unseen.
+    if (genInputsSig() !== clickSig) {
+      setPreviewSchedule(result); setPreviewOrigin("generated"); previewEpochRef.current = genEpoch;
+      setShowPreview(true);
+      showToast("Time off, a lock, a holiday card or the Generate settings changed during the search — review the result in the preview below before publishing.", "error");
+      return "review";
+    }
     const needsOkN = (() => {
       try {
-        return listScheduleBends(result, { surgeons, mondays, vac: availability, vacationsOnly: vacations, holAssignments: holidayAssignments, prevWeekSeed }).items.length;
+        return listScheduleBends(result, { surgeons, mondays, vac: buildGenAvailability(), vacationsOnly: vacations, holAssignments: holidayAssignments, prevWeekSeed: buildPrevWeekSeed(), locks: pendingLocks, silvisPrimary: buildSilvisPrimary() }).items.length;
       } catch (e) { console.error("Needs-your-OK check failed:", e); return 1; } // fail closed: review by hand
     })();
     if (needsOkN > 0) {
-      setPreviewSchedule(result); previewEpochRef.current = genEpoch;
+      setPreviewSchedule(result); setPreviewOrigin("generated"); previewEpochRef.current = genEpoch;
       setShowPreview(true);
       showToast(`${needsOkN} item${needsOkN === 1 ? " needs" : "s need"} your OK before publishing — review them in the preview below, then ✓ Accept & Publish.`, "error");
       return "review";
     }
+    if (publishingRef.current) { showToast("A publish is already in progress — wait for it to finish.", "error"); return "busy"; }
+    if (!schedEditable()) return "refused"; // the search can outlast the session: signed out / sign-in expired meanwhile → no snapshot, nothing published
+    publishingRef.current = true; setPublishing(true);
     {
       (async () => {
+       try {
         // Snapshot the persisted state BEFORE any mutation; if the snapshot
         // can't be written there is no backup, so the regenerate is refused.
         setSaveStatus("Saving backup snapshot…");
@@ -4118,21 +4231,39 @@ function CallSchedule() {
           setSaveStatus("");
           return;
         }
-        // Someone else changed a week of this period while the snapshot was
-        // being saved: the result was computed from the old copy — refuse
-        // rather than overwrite their change (sync v2, stale intents).
+        // Re-checked AFTER the snapshot's await (sync v2): signed out or the
+        // sign-in expired meanwhile → nothing is published; someone else changed
+        // a week of this period since the CLICK (the search ran SEARCH_MS or
+        // more) → the result was computed from the old copy: refuse rather
+        // than overwrite their change.
+        if (!schedEditable()) { setSaveStatus(""); return; }
         const movedWeeks = schedSyncRef.current.changedSince(Object.keys(result), genEpoch);
         if (movedWeeks.length) {
           showToast(`The week${movedWeeks.length === 1 ? "" : "s"} of ${movedWeeks.join(", ")} changed while generating — nothing was published. Generate again.`, "error");
           setSaveStatus("");
           return;
         }
-        if (Object.keys(scheduleRef.current).length > 0) pushUndo();
-        // Accumulate: merge the new period into the existing schedule so prior
-        // periods are preserved. Regenerating the same weeks cleanly overwrites
-        // just those keys; a different period coexists alongside.
-        const merged = { ...scheduleRef.current, ...result }; // the LATEST schedule, not the click-time closure
-        commitSchedule(merged);
+        await genCommitRef.current(result); // with the state as it is NOW (after the snapshot's await)
+       } finally { publishingRef.current = false; setPublishing(false); }
+      })();
+    }
+    return "published";
+  };
+  // Generate & Publish's commit, after a good snapshot — through genCommitRef,
+  // so the counts, the bundle and the blob are the LATEST state's.
+  const commitGenerated = async (result) => {
+        // Counts move by the NET change, here at commit (owner 2026-10-12):
+        // the new weeks, minus the published versions they replace (read from
+        // the LATEST schedule, after the snapshot's await). This used to be
+        // skipped whenever ANY schedule existed (so a new period added
+        // nothing), and otherwise ran on a 100 ms timer after the click.
+        // Accumulate: the new period merges into the existing schedule so
+        // prior periods are preserved; regenerating the same weeks cleanly
+        // overwrites just those keys.
+        const { merged, prior, y1 } = publishWeeks(result, {
+          label: `${numWeeks} weeks from ${MO[startMonth]} ${startYear}, Generate & Publish`,
+          meta: { startMonth, startYear, numWeeks, origin: "generated" },
+        });
         setPreviewSchedule(null); setShowPreview(false);
         setSaveStatus("Regenerated!");
         setTimeout(() => setSaveStatus(""), 2000);
@@ -4141,16 +4272,14 @@ function CallSchedule() {
           const ts = new Date().toISOString();
           lastSyncRef.current = ts; // block poll from overwriting
           // Stage 6: schedule goes to schedule_weeks, not the blob.
-          const blobData = buildStateBundle({ schedule: merged }); delete blobData.schedule;
+          const blobData = buildStateBundle({ schedule: merged, priorCounts: prior, year1Counts: y1 }); delete blobData.schedule; // the counts AFTER this publish
           delete blobData.vacations; delete blobData.noCallDays; // retired mirror — time_off is the source
           const { error: regenErr } = await supabase.from("call_schedule_data").upsert({ id: "main", data: blobData, updated_at: ts });
           if (regenErr) throw new Error(`regenerate blob save failed: ${String(regenErr).slice(0, 200)}`); // catch toasts; checked autosave retries
           schedSyncRef.current.push(); // send the weeks now (the weeks effect would too; pushes coalesce)
         } catch(e) { console.error("Immediate save failed:", e); showToast("Couldn't save the regenerated schedule — check your connection.", "error"); }
-      })();
-    }
-    return "published";
   };
+  genFinishRef.current = finishGenerate; genCommitRef.current = commitGenerated;
 
   // ─── Clear / Reset Schedule ───
   const clearSchedule = async () => {
@@ -4284,10 +4413,58 @@ function CallSchedule() {
     showToast("Snapshot restored — other devices will pick it up on their next sync.", "success");
   };
 
-  // ─── Roll forward counts: sum up a schedule's shifts and add them to priorCounts ───
-  // Called on Accept & Publish so the next generation uses up-to-date totals
-  const rollForwardCounts = useCallback((sched) => {
-    if (!sched || Object.keys(sched).length === 0) return;
+  // ─── Roll forward counts: a published period's shifts into priorCounts ───
+  // Called on every publish (Accept & Publish, Generate & Publish) so the next
+  // generation uses up-to-date totals. NET (owner 2026-10-12): `replaced` is
+  // the currently published version of any week being published again; its
+  // counts come OFF before the new week's go on, so publishing a period twice
+  // counts it once (re-publishing used to add the whole period again). Returns
+  // { delta, delta1yr, replacedCounted } — the net per surgeon after the
+  // floor, and how many replaced weeks came off — or null (nothing above the
+  // floor). The weeks are replaced as they are stored NOW (the owner's rule):
+  // swaps, edits and flag changes never move the counts, so a week edited
+  // after its first publish nets against the edited version.
+  const countsOfWeeks = (weeks, pick) => {
+    const c = {};
+    surgeons.forEach(s => { c[s.id] = { dc:0, nights:0, wknd:0, off:0, dcB:0, nightsB:0, wkndB:0, offB:0 }; });
+    Object.entries(weeks || {}).forEach(([mStr, wk]) => {
+      if (!wk || (pick && !pick(mStr))) return;
+      const bk = wk.isBackup;
+      if (wk.dayCall && c[wk.dayCall]) c[wk.dayCall][bk?"dcB":"dc"]++;
+      if (wk.off && c[wk.off]) c[wk.off][bk?"offB":"off"]++;
+      Object.entries(wk.nights||{}).forEach(([sh, sid]) => {
+        if (!sid || !c[sid]) return;
+        if (sh === "wknd") c[sid][bk?"wkndB":"wknd"]++;
+        else c[sid][bk?"nightsB":"nights"]++;
+      });
+    });
+    return c;
+  };
+  // counts + a delta → the new counts (day totals: dc*7 + nights + wknd*3 —
+  // the approximation of days worked). One function for the state update and
+  // for the immediate save, so they can't disagree.
+  const applyCountsDelta = (prev, delta) => {
+    const addDays = (c) => (c.dc||0)*7 + (c.nights||0) + (c.wknd||0)*3 + (c.svcAdj7||0);
+    const addDaysB = (c) => (c.dcB||0)*7 + (c.nightsB||0) + (c.wkndB||0)*3;
+    const next = { ...(prev || {}) };
+    Object.keys(delta || {}).forEach(id => {
+      const p = next[id] || {}, d = delta[id];
+      next[id] = {
+        ...p,
+        dc: (p.dc||0) + d.dc, nights: (p.nights||0) + d.nights, wknd: (p.wknd||0) + d.wknd, off: (p.off||0) + d.off,
+        dcB: (p.dcB||0) + d.dcB, nightsB: (p.nightsB||0) + d.nightsB, wkndB: (p.wkndB||0) + d.wkndB, offB: (p.offB||0) + d.offB,
+        totalDays: (p.totalDays||0) + addDays(d), totalDaysB: (p.totalDaysB||0) + addDaysB(d),
+      };
+    });
+    return next;
+  };
+  const netCounts = (add, sub) => {
+    const out = {};
+    Object.keys(add).forEach(id => { out[id] = {}; Object.keys(add[id]).forEach(k => { out[id][k] = add[id][k] - ((sub[id] || {})[k] || 0); }); });
+    return out;
+  };
+  const rollForwardCounts = useCallback((sched, replaced) => {
+    if (!sched || Object.keys(sched).length === 0) return null;
     // COUNTS FLOOR: everything through April 2026 is already inside the
     // multi-year aggregates (the 45-month PDF-parse era) AND, since the
     // 2026-08 historical import, also in schedule_weeks. Rolling a
@@ -4296,73 +4473,21 @@ function CallSchedule() {
     // purpose — this makes sure an accidental publish can't.
     const COUNTS_FLOOR = "2026-05-04";
     sched = Object.fromEntries(Object.entries(sched).filter(([mStr]) => mStr >= COUNTS_FLOOR));
-    if (Object.keys(sched).length === 0) return;
-    const delta = {};
-    surgeons.forEach(s => { delta[s.id] = { dc:0, nights:0, wknd:0, off:0, dcB:0, nightsB:0, wkndB:0, offB:0 }; });
-    Object.values(sched).forEach(wk => {
-      const bk = wk.isBackup;
-      if (wk.dayCall && delta[wk.dayCall]) delta[wk.dayCall][bk?"dcB":"dc"]++;
-      if (wk.off && delta[wk.off]) delta[wk.off][bk?"offB":"off"]++;
-      Object.entries(wk.nights||{}).forEach(([sh, sid]) => {
-        if (!sid || !delta[sid]) return;
-        if (sh === "wknd") delta[sid][bk?"wkndB":"wknd"]++;
-        else delta[sid][bk?"nightsB":"nights"]++;
-      });
-    });
-    // Compute day totals (dc*7 + nights + wknd*3 = approximation of days worked)
-    const addDays = (c) => (c.dc||0)*7 + (c.nights||0) + (c.wknd||0)*3 + (c.svcAdj7||0);
-    const addDaysB = (c) => (c.dcB||0)*7 + (c.nightsB||0) + (c.wkndB||0)*3;
-    // Merge into priorCounts (Multi-Year — used by generator)
-    setPriorCounts(prev => {
-      const next = { ...prev };
-      Object.keys(delta).forEach(id => {
-        const p = next[id] || {};
-        const d = delta[id];
-        next[id] = {
-          dc: (p.dc||0) + d.dc,
-          nights: (p.nights||0) + d.nights,
-          wknd: (p.wknd||0) + d.wknd,
-          off: (p.off||0) + d.off,
-          dcB: (p.dcB||0) + d.dcB,
-          nightsB: (p.nightsB||0) + d.nightsB,
-          wkndB: (p.wkndB||0) + d.wkndB,
-          offB: (p.offB||0) + d.offB,
-          totalDays: (p.totalDays||0) + addDays(d),
-          totalDaysB: (p.totalDaysB||0) + addDaysB(d),
-        };
-      });
-      return next;
-    });
+    if (Object.keys(sched).length === 0) return null;
+    // Only a replaced week that is itself being published again comes off
+    // (and only above the floor, like the new weeks).
+    const old = Object.fromEntries(Object.entries(replaced || {}).filter(([mStr]) => mStr >= COUNTS_FLOOR && sched[mStr]));
+    const delta = netCounts(countsOfWeeks(sched), countsOfWeeks(old));
+    // Merge into priorCounts (Multi-Year — used by generator).
     // (The year2Counts mirror-merge that used to sit here was retired
     // 2026-08-06 with the tier itself.)
+    setPriorCounts(prev => applyCountsDelta(prev, delta));
     // And into year1Counts (1-Year) — only for shifts in the current year
     const currentYear = new Date().getFullYear();
-    const delta1yr = {};
-    surgeons.forEach(s => { delta1yr[s.id] = { dc:0, nights:0, wknd:0, off:0, dcB:0, nightsB:0, wkndB:0, offB:0 }; });
-    Object.entries(sched).forEach(([mStr, wk]) => {
-      if (parse(mStr).getFullYear() !== currentYear) return;
-      const bk = wk.isBackup;
-      if (wk.dayCall && delta1yr[wk.dayCall]) delta1yr[wk.dayCall][bk?"dcB":"dc"]++;
-      if (wk.off && delta1yr[wk.off]) delta1yr[wk.off][bk?"offB":"off"]++;
-      Object.entries(wk.nights||{}).forEach(([sh, sid]) => {
-        if (!sid || !delta1yr[sid]) return;
-        if (sh === "wknd") delta1yr[sid][bk?"wkndB":"wknd"]++;
-        else delta1yr[sid][bk?"nightsB":"nights"]++;
-      });
-    });
-    setYear1Counts(prev => {
-      const next = { ...prev };
-      Object.keys(delta1yr).forEach(id => {
-        const p = next[id] || {};
-        const d = delta1yr[id];
-        next[id] = {
-          dc: (p.dc||0) + d.dc, nights: (p.nights||0) + d.nights, wknd: (p.wknd||0) + d.wknd, off: (p.off||0) + d.off,
-          dcB: (p.dcB||0) + d.dcB, nightsB: (p.nightsB||0) + d.nightsB, wkndB: (p.wkndB||0) + d.wkndB, offB: (p.offB||0) + d.offB,
-          totalDays: (p.totalDays||0) + addDays(d), totalDaysB: (p.totalDaysB||0) + addDaysB(d),
-        };
-      });
-      return next;
-    });
+    const inYear = (mStr) => parse(mStr).getFullYear() === currentYear;
+    const delta1yr = netCounts(countsOfWeeks(sched, inYear), countsOfWeeks(old, inYear));
+    setYear1Counts(prev => applyCountsDelta(prev, delta1yr));
+    return { delta, delta1yr, replacedCounted: Object.keys(old).length };
   }, [surgeons]);
 
   // "Needs your OK" (owner decision 2026-10-11): every bend, empty slot,
@@ -4375,65 +4500,166 @@ function CallSchedule() {
     if (!previewSchedule) return { cost: 0, items: [] };
     try {
       const keys = Object.keys(previewSchedule).sort();
-      const prevWk = keys.length ? schedule[fmt(addD(parse(keys[0]), -7))] : null;
       return listScheduleBends(previewSchedule, {
         surgeons, mondays: keys, vac: buildGenAvailability(), vacationsOnly: vacations,
         holAssignments: holidayAssignments,
-        prevWeekSeed: prevWk ? { dayCall: prevWk.dayCall || null, wknd: (prevWk.nights && prevWk.nights.wknd) || null } : null,
+        prevWeekSeed: keys.length ? buildPrevWeekSeed(parse(keys[0])) : null, // the generator's own seed (2026-10-12)
+        locks: pendingLocks, // a lock the schedule doesn't honor is listed too
+        silvisPrimary: buildSilvisPrimary(), // FAK's Davenport night next to his Silvis 24h: his last resort
       });
     } catch (e) {
       // Fail LOUD: a preview whose check failed must never look clean.
       console.error("Needs-your-OK list failed:", e);
       return { cost: 0, items: [{ kind: "error", key: "error", cost: 0, text: "⚠ The bend check itself failed (" + ((e && e.message) || e) + ") — review the calendar by hand before publishing." }] };
     }
-  }, [previewSchedule, schedule, surgeons, vacations, noCallDays, holidayAssignments, silvisActive, silvisFakId, silvisDays]);
+  }, [previewSchedule, schedule, surgeons, vacations, noCallDays, holidayAssignments, silvisActive, silvisFakId, silvisDays, pendingLocks]);
   const acceptPreview = () => {
+    // A Generate & Publish search publishes its own schedule when it ends —
+    // never two publishes racing (its button and this one are disabled meanwhile).
+    if (publishSearchRunning()) { showToast("Generate & Publish is still searching — wait for it to finish.", "error"); return; }
+    cancelSearch(); // a running "Search more" / Re-roll is dropped — its result can't reopen a published preview
     // The checkbox is the gate (the button is disabled too; this is the backstop).
     if (previewSchedule && previewNeedsOk.items.length > 0 && !previewAck) { showToast("Tick \"I've reviewed these items\" first.", "error"); return; }
     if (previewSchedule) {
+      if (publishingRef.current) { showToast("A publish is already in progress — wait for it to finish.", "error"); return; }
       if (!schedEditable()) return;
       // A preview can sit for minutes: if someone else changed one of its
       // weeks since it was generated, publishing it would overwrite that
       // change with a copy made before it (sync v2, stale intents). Refuse.
       const moved = schedSyncRef.current.changedSince(Object.keys(previewSchedule), previewEpochRef.current);
       if (moved.length) { showToast(`The week${moved.length === 1 ? "" : "s"} of ${moved.join(", ")} changed since this preview was generated — nothing was published. Generate the preview again.`, "error"); return; }
-      if (Object.keys(scheduleRef.current).length > 0) pushUndo();
-      rollForwardCounts(previewSchedule);
-      // Accumulate: merge the published period into the existing schedule so
-      // prior periods are preserved (the autosave then syncs without deletes).
-      updateSchedule(prev => ({ ...prev, ...previewSchedule }));
+      const needsOkN = previewNeedsOk.items.length;
+      // Weeks already published get their counts replaced, not added again;
+      // the published period merges into the existing schedule so prior
+      // periods are preserved (the autosave then syncs without deletes).
+      publishWeeks(previewSchedule, {
+        label: `${numWeeks} weeks from ${MO[startMonth]} ${startYear}${previewOrigin === "json" ? ", loaded from JSON" : ""}`,
+        extra: needsOkN ? ` — ${needsOkN} item${needsOkN === 1 ? "" : "s"} reviewed in Needs your OK` : "",
+        meta: { startMonth, startYear, numWeeks, needsOk: needsOkN, bendCost: previewNeedsOk.cost, origin: previewOrigin },
+      });
       setPreviewSchedule(null); setShowPreview(false);
       setCalMonth(startMonth);
       setCalYear(startYear);
       setView("calendar");
       setSaveStatus("Published — totals updated");
       setTimeout(() => setSaveStatus(""), 3000);
-      const needsOkN = previewNeedsOk.items.length;
-      logAudit("schedule.publish", `Published schedule (${numWeeks} weeks from ${MO[startMonth]} ${startYear})${needsOkN ? ` — ${needsOkN} item${needsOkN === 1 ? "" : "s"} reviewed in Needs your OK` : ""}`, { startMonth, startYear, numWeeks, weeks: Object.keys(previewSchedule).length, needsOk: needsOkN, bendCost: previewNeedsOk.cost });
     }
   };
 
   const discardPreview = () => {
+    cancelSearch(); setSearchStats(null);
     setPreviewSchedule(null); setShowPreview(false);
   };
 
+  // 🔍 Search more (owner 2026-10-12, item 5): another SEARCH_MS of searching
+  // that STARTS FROM the schedule in the preview (generated or loaded) and
+  // replaces it only with a strictly better one by the same ranking. It reads
+  // today's inputs, so a time-off or lock change since the preview counts. A
+  // late result is dropped if the preview was accepted, discarded, re-rolled
+  // or reloaded meanwhile.
+  const searchMore = async () => {
+    const base = previewSchedRef.current;
+    if (!base || searchRef.current || publishingRef.current) return;
+    const keys = Object.keys(base).sort();
+    if (!keys.length) return;
+    const ms = keys.map(parse);
+    const search = createScheduleSearch(surgeons, ms, buildGenAvailability(), backupMondaySet, priorCounts, buildPrefs(), fierceBackupSet, holidayAssignments, pendingLocks, buildPrevWeekSeed(ms[0]), vacations, year1Counts, { silvisPrimary: buildSilvisPrimary() });
+    search.seed(base);
+    const done = await runSearch(search, "more", SEARCH_MS);
+    if (!done || previewSchedRef.current !== base) return;
+    const st = done.session.status();
+    setSearchStats({ checked: st.checked, starts: st.starts, ms: done.ms, purpose: "more", improved: st.improved });
+    if (st.improved) {
+      const better = done.session.best();
+      setPreviewSchedule(better); setPreviewOrigin("generated");
+      showToast(`Found a better schedule — ${st.checked.toLocaleString()} more schedules checked.`);
+    } else showToast(`No better schedule in ${st.checked.toLocaleString()} more checked — this one stays.`);
+  };
+
+  // ONE publish step for both publish paths (owner 2026-10-12). Reads the
+  // weeks it replaces from the LATEST schedule (scheduleRef — never a copy
+  // taken at the click, before an await); puts the counts as they were on the
+  // undo step (↩ Undo of a publish takes its counts back off); rolls the
+  // counts forward by the net change; writes the audit line; commits the
+  // merged schedule. Returns { merged, prior, y1 }: the schedule and the
+  // counts after, for an immediate save.
+  const publishWeeks = (newWeeks, how) => {
+    const cur = scheduleRef.current || {};
+    const replacedWeeks = Object.fromEntries(Object.keys(newWeeks).filter(m => cur[m]).map(m => [m, cur[m]]));
+    if (Object.keys(cur).length > 0) pushUndo({ prior: priorCounts, y1: year1Counts }); // the step snapshots the mirror (= cur) and the engine epoch
+    const r = rollForwardCounts(newWeeks, replacedWeeks);
+    const merged = { ...cur, ...newWeeks };
+    commitSchedule(merged); // the schedule's ONE writer (sync v2 §2.1): the mirror first — a publish right after this one sees it before the next render
+    const nRep = r ? r.replacedCounted : 0;
+    const t1 = r ? netCountsText(r.delta1yr) : "no change", tAll = r ? netCountsText(r.delta) : "no change";
+    logAudit("schedule.publish", `Published schedule (${how.label})${how.extra || ""}${nRep ? ` — ${nRep} week${nRep === 1 ? "" : "s"} replaced a published version` : ""} — counts net: ${tAll}${t1 !== tAll ? ` (this year's tally: ${t1})` : ""}`,
+      Object.assign({}, how.meta || {}, { weeks: Object.keys(newWeeks).length, replaced: nRep, net: r ? r.delta : null, net1yr: r ? r.delta1yr : null }));
+    return { merged, prior: r ? applyCountsDelta(priorCounts, r.delta) : priorCounts, y1: r ? applyCountsDelta(year1Counts, r.delta1yr) : year1Counts };
+  };
+
+  // The net count change of a publish, in plain words: "DJA service +1,
+  // nights −1; KJH weekends +1" — or "no change" (the same assignments again).
+  const netCountsText = (net) => {
+    if (!net) return "no change";
+    const parts = [];
+    surgeons.forEach(sg => {
+      const d = net[sg.id]; if (!d) return;
+      const bits = [["dc", "service"], ["nights", "nights"], ["wknd", "weekends"], ["off", "off"], ["dcB", "backup service"], ["nightsB", "backup nights"], ["wkndB", "backup weekends"], ["offB", "backup off"]]
+        .filter(([k]) => d[k]).map(([k, l]) => `${l} ${d[k] > 0 ? "+" : "−"}${Math.abs(d[k])}`);
+      if (bits.length) parts.push(`${sg.name} ${bits.join(", ")}`);
+    });
+    return parts.length ? parts.join("; ") : "no change";
+  };
+
+  // ─── Load a schedule from JSON into the preview (benchmark loader, owner 2026-10-12) ───
+  // Scheduler-only. The file's weeks must be EXACTLY the Mondays of the
+  // current Generate settings and every id a roster id, or the whole load is
+  // refused with the reason (validateScheduleJson, generator.js). Each week is
+  // then shaped by generator.js's own shapeScheduleWeeks — off, the backup
+  // flags from the sets, holiday coverage from the holiday cards — so Needs
+  // your OK, the Fairness Summary and Accept & Publish treat it exactly like
+  // a generated preview. Nothing is written until ✓ Accept & Publish.
+  const loadScheduleJson = (text, fileName) => {
+    if (publishSearchRunning()) { showToast("Generate & Publish is still searching — wait for it to finish, then load the file.", "error"); return false; }
+    cancelSearch(); setSearchStats(null); // a file replaces the preview — a running search's result is dropped, and its count no longer applies
+    const refuse = (why) => { showToast(`Not loaded — ${why}. Nothing was changed.`, "error"); return false; };
+    let o;
+    // (a byte-order mark, which Windows editors often write, is not JSON)
+    try { o = JSON.parse(String(text).replace(/^﻿/, "")); } catch (e) { return refuse("the file isn't valid JSON"); }
+    let v, shaped;
+    try {
+      v = validateScheduleJson(o, mondays.map(fmt), surgeons.map(sg => sg.id), Object.fromEntries(surgeons.map(sg => [sg.id, sg.name])));
+      if (!v.ok) return refuse(v.error);
+      shaped = shapeScheduleWeeks(v.weeks, surgeons, backupMondaySet, fierceBackupSet, holidayAssignments);
+    } catch (e) { console.error("schedule JSON load failed:", e); return refuse(`the file could not be checked (${(e && e.message) || e})`); }
+    previewEpochRef.current = schedSyncRef.current.epochNow(); // judged from the load (sync v2): Accept refuses if one of its weeks is adopted after
+    setPreviewSchedule(shaped); setPreviewOrigin("json"); setPreviewCalMonth(0); setShowPreview(true);
+    showToast(`Loaded ${fileName || "the file"} into the preview (${Object.keys(shaped).length} weeks) — nothing is published until ✓ Accept & Publish.`, "success");
+    return true;
+  };
+  const onLoadJsonFile = (e) => {
+    const f = e.target.files && e.target.files[0];
+    e.target.value = ""; // the same file can be chosen again
+    if (!f) return;
+    const r = new FileReader();
+    r.onload = () => loadScheduleJson(String(r.result || ""), f.name);
+    r.onerror = () => showToast("Couldn't read that file — nothing was changed.", "error");
+    r.readAsText(f);
+  };
+
   // ─── Holiday Assignment Generator ───
-  // RULE: Each holiday within a group (major / minor) must have a DISTINCT
-  // surgeon pair — no surgeon appears on more than one holiday in the same group.
-  // Major = Christmas, Thanksgiving, New Year's  (3 holidays × 2 = 6 of 7 surgeons)
-  // Minor = Memorial Day, July 4th, Labor Day    (3 holidays × 2 = 6 of 7 surgeons)
-  // FAK is always locked to Christmas.
+  // RULE (owner 2026-10-13): FAK takes Christmas Eve + Christmas Day, both
+  // slots, every year — his major AND his minor. Every other partner takes ONE
+  // minor a year (Memorial Day, July 4th, Labor Day: 3 × 2 = 6 slots for 6)
+  // and at most ONE major (New Year's, Thanksgiving: 4 slots for 6 — two sit
+  // out a major each year and get one the next). Nobody gets the same holiday
+  // as last year; the holidays rotate (helpers.js planHolidayPairs).
   const generateHolidayAssignments = useCallback((year) => {
     setHolidayLockWarning(""); // a healthy run clears any stale lock warning
     const holidays = getHolidays(year);
     const ids = surgeons.map(s => s.id);
     const nameMap = {}; surgeons.forEach(s => nameMap[s.id] = s.name);
     const DAYNAMES = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
-
-    // Load prior year assignments to avoid same surgeon on same holiday 2 years running
-    const priorYear = holidayAssignments[String(year - 1)] || [];
-    const priorByName = {}; // { "Christmas Day": { surgeonA, surgeonB }, ... }
-    priorYear.forEach(h => { priorByName[h.name] = { surgeonA: h.surgeonA, surgeonB: h.surgeonB }; });
 
     // Lifetime holiday counts across all stored years for overall fairness,
     // plus TENURE ELIGIBILITY (2026-08-07): eligibleCt[id][type] = stored
@@ -4484,7 +4710,8 @@ function CallSchedule() {
       const holDow = holDate.getDay();
       const coverage = [];
 
-      // Night before — defaults to Surgeon B (replaced at display time by actual night-shift person)
+      // Night before — defaults to Surgeon B (replaced at display time by actual night-shift person;
+      // a weekend night of FAK's Christmas design week is resolved live — generator.js holidayEveHolder)
       const evDate = addD(holDate, -1);
       coverage.push({ date: fmt(evDate), surgeon: sB, label: hol.name + " Night Before", day: DAYNAMES[evDate.getDay()], isEve: true });
 
@@ -4553,141 +4780,104 @@ function CallSchedule() {
       return [...days];
     };
 
-    // Helper: pick best pair from a pool, considering vacation + fairness
-    const pickPair = (hol, pool) => {
-      const holDate = parse(hol.date);
-      const dayAfterStr = fmt(addD(holDate, 1));
-      const type = hol.type;
+    // ─── The pairs ───
+    // Presets (hand-written) are facts and count; FAK's Christmas is the
+    // standing rule; everything else is planned by helpers.js
+    // planHolidayPairs, which ranks every way to fill each group: time off,
+    // one per group, nobody sitting out a group twice running, no repeat of
+    // last year's (then two years ago's) holiday, the holiday each has had
+    // least, the 3-year major cycle, the lifetime rate, new pairings, A / B.
+    const presets = (typeof HOLIDAY_PRESETS !== "undefined") ? HOLIDAY_PRESETS[String(year)] : null;
+    const allHols = [...holidays.major.map(h => ({ ...h, type: "major" })), ...holidays.minor.map(h => ({ ...h, type: "minor" }))];
+    const assignments = [], fixedCards = [], toPlan = [];
+    const card = (hol, sA, sB) => ({ name: hol.name, date: hol.date, type: hol.type, emoji: hol.emoji || "📅", surgeonA: sA, surgeonB: sB, coverage: buildCoverage(hol, sA, sB) });
+    // A holiday of this year already worked (dated before today) is history —
+    // kept as it is on a re-generate, like a preset (the rotation reads it).
+    const todayStr = fmt(new Date());
+    const stored = holidayAssignments[String(year)] || [];
+    allHols.forEach(hol => {
+      const kept = stored.find(h => h && h.name === hol.name && h.date && h.date < todayStr);
+      if (kept) { assignments.push(kept); fixedCards.push(kept); return; }
+      // Check for pre-set assignments (e.g., handwritten schedule for this year)
+      if (presets && presets[hol.name]) {
+        const [sA, sB] = presets[hol.name];
+        // silvisBusy: a hand-written preset is a fact, so it is kept — but
+        // an overlap with FAK's Silvis primary days is said out loud.
+        if (silvisActive) {
+          const ph = [];
+          if (sA === silvisFakId) { const h = sfConflictDay(silvisDays.primary, holDatesFor(hol, sA, "A")); if (h) ph.push(h); }
+          if (sB === silvisFakId) { const h = sfConflictDay(silvisDays.primary, holDatesFor(hol, sB, "B")); if (h) ph.push(h); }
+          if (ph.length) setHolidayLockWarning(`⚠ ${hol.name} ${year} preset puts ${nameMap[silvisFakId]} on a Silvis PRIMARY day (${ph.join(", ")}) — kept as written; resolve with Silvis or change it via the swap controls.`);
+        }
+        const c = card(hol, sA, sB);
+        assignments.push(c); fixedCards.push(c);
+        return;
+      }
 
-      // Filter by vacation availability; fall back to full pool if too few
-      // silvisBusy: a holiday 24h on a Silvis primary day (or its day-after
-      // half) is the one leg the generator cannot gate via availability —
-      // holiday coverage is applied verbatim from these assignments — so it
-      // is enforced HERE, where surgeon A/B are chosen.
-      const silvisHol = (id) => silvisActive && id === silvisFakId
-        && sfConflictDay(silvisDays.primary, [...holDatesFor(hol, id, "A"), ...holDatesFor(hol, id, "B")]) !== null; // either role — conservative
-      let avail = pool.filter(id => !onVac(id, hol.date, vacations) && !onVac(id, dayAfterStr, vacations) && !silvisHol(id));
-      if (avail.length < 2) avail = [...pool].filter(id => !silvisHol(id));
-      if (avail.length < 2) avail = [...pool];
-
-      // Sort by fairness: lifetime holiday count → avoid repeat from prior year → random
-      const prior = priorByName[hol.name] || {};
-      avail.sort((a, b) => {
-        // Prefer surgeons with the lower lifetime RATE of this type —
-        // assignments ÷ holidays they were eligible for (tenure-normalized,
-        // 2026-08-07). Raw counts under-served partial tenure: ARW's 1 major
-        // from 9 eligible read as "less burdened" than MCC's 2 from 12.
-        // holidayRate (config.js) guards the zero-eligible new hire: rate 0,
-        // never 0/0 = NaN — a NaN comparator silently randomizes the sort.
-        const la = holidayRate(lifetimeCt[a]?.[type] || 0, eligibleCt[a]?.[type] || 0);
-        const lb = holidayRate(lifetimeCt[b]?.[type] || 0, eligibleCt[b]?.[type] || 0);
-        if (la !== lb) return la - lb;
-        // Avoid repeating the same holiday as last year
-        const aRepeat = (a === prior.surgeonA || a === prior.surgeonB) ? 1 : 0;
-        const bRepeat = (b === prior.surgeonA || b === prior.surgeonB) ? 1 : 0;
-        if (aRepeat !== bRepeat) return aRepeat - bRepeat;
-        return Math.random() - 0.5;
-      });
-
-      return { sA: avail[0], sB: avail[1] || avail[0] };
-    };
-
-    // ─── Process each group independently with distinct-pair constraint ───
-    const majorHols = holidays.major.map(h => ({ ...h, type: "major" }));
-    const minorHols = holidays.minor.map(h => ({ ...h, type: "minor" }));
-    const assignments = [];
-
-    [majorHols, minorHols].forEach(group => {
-      const type = group[0]?.type;
-      const usedInGroup = new Set(); // surgeons already assigned in this group
-
-      // Sort: Christmas first (FAK locked), then by date
-      group.sort((a, b) => {
-        if (a.name === "Christmas Day") return -1;
-        if (b.name === "Christmas Day") return 1;
-        return a.date.localeCompare(b.date);
-      });
-
-      group.forEach(hol => {
-        // Check for pre-set assignments (e.g., handwritten schedule for this year)
-        const presets = (typeof HOLIDAY_PRESETS !== "undefined") ? HOLIDAY_PRESETS[String(year)] : null;
-        if (presets && presets[hol.name]) {
-          const [sA, sB] = presets[hol.name];
-          // silvisBusy: a hand-written preset is a fact, so it is kept — but
-          // an overlap with FAK's Silvis primary days is said out loud.
-          if (silvisActive) {
-            const ph = [];
-            if (sA === silvisFakId) { const h = sfConflictDay(silvisDays.primary, holDatesFor(hol, sA, "A")); if (h) ph.push(h); }
-            if (sB === silvisFakId) { const h = sfConflictDay(silvisDays.primary, holDatesFor(hol, sB, "B")); if (h) ph.push(h); }
-            if (ph.length) setHolidayLockWarning(`⚠ ${hol.name} ${year} preset puts ${nameMap[silvisFakId]} on a Silvis PRIMARY day (${ph.join(", ")}) — kept as written; resolve with Silvis or change it via the swap controls.`);
-          }
-          usedInGroup.add(sA); usedInGroup.add(sB);
-          assignments.push({
-            name: hol.name, date: hol.date, type, emoji: hol.emoji || "📅",
-            surgeonA: sA, surgeonB: sB, coverage: buildCoverage(hol, sA, sB),
-          });
+      // CHRISTMAS STANDING RULE (2026-08-06): FAK covers BOTH Christmas Eve
+      // and Christmas Day, every year — formalizing what the 2024 and 2025
+      // schedules already did. No partner is selected; coverage is capped
+      // to the two days in buildCoverage, and the lifetimeCt dedupe counts
+      // the collapsed pair as ONE assignment.
+      if (hol.name === "Christmas Day") {
+        if (!fakId) {
+          // FAIL LOUDLY (wipe-guard doctrine): if the designated Christmas
+          // surgeon can't be resolved (renamed, departed), the lock must
+          // not silently dissolve into the normal rotation with nobody
+          // told. Surface it and leave Christmas UNASSIGNED for the
+          // scheduler to fill by hand.
+          console.error(`Christmas lock: designated surgeon "FAK" not found in the roster — Christmas ${year} left unassigned.`);
+          setHolidayLockWarning(`⚠ Christmas ${year} was NOT auto-assigned: the designated surgeon (FAK) isn't in the roster. Assign it manually via the swap controls.`);
           return;
         }
-
-        // Build available pool: all surgeons NOT yet used in this group
-        let pool = ids.filter(id => !usedInGroup.has(id));
-
-        // CHRISTMAS STANDING RULE (2026-08-06): FAK covers BOTH Christmas Eve
-        // and Christmas Day, every year — formalizing what the 2024 and 2025
-        // schedules already did. No partner is selected; coverage is capped
-        // to the two days in buildCoverage, and the lifetimeCt dedupe counts
-        // the collapsed pair as ONE assignment.
-        if (hol.name === "Christmas Day") {
-          if (!fakId) {
-            // FAIL LOUDLY (wipe-guard doctrine): if the designated Christmas
-            // surgeon can't be resolved (renamed, departed), the lock must
-            // not silently dissolve into the normal rotation with nobody
-            // told. Surface it and leave Christmas UNASSIGNED for the
-            // scheduler to fill by hand.
-            console.error(`Christmas lock: designated surgeon "FAK" not found in the roster — Christmas ${year} left unassigned.`);
-            setHolidayLockWarning(`⚠ Christmas ${year} was NOT auto-assigned: the designated surgeon (FAK) isn't in the roster. Assign it manually via the swap controls.`);
+        // silvisBusy: the standing rule is FAK, so check HIS dates (Eve is
+        // display-only; the 24h day, plus its weekend leg when Dec 25 is a
+        // Fri/Sun). Same fail-LOUD shape as the missing-roster case above:
+        // leave Christmas unassigned and say why — never assign silently.
+        if (silvisActive && fakId === silvisFakId) {
+          const hit = sfConflictDay(silvisDays.primary, holDatesFor(hol, fakId, "both"));
+          if (hit) {
+            console.error(`Christmas lock: ${nameMap[fakId]} is Silvis PRIMARY on ${hit} — Christmas ${year} left unassigned.`);
+            setHolidayLockWarning(`⚠ Christmas ${year} was NOT auto-assigned: ${nameMap[fakId]} is Silvis PRIMARY on ${hit} (rule silvisBusy). Resolve it with Silvis or assign manually via the swap controls.`);
             return;
           }
-          // silvisBusy: the standing rule is FAK, so check HIS dates (Eve is
-          // display-only; the 24h day, plus its weekend leg when Dec 25 is a
-          // Fri/Sun). Same fail-LOUD shape as the missing-roster case above:
-          // leave Christmas unassigned and say why — never assign silently.
-          if (silvisActive && fakId === silvisFakId) {
-            const hit = sfConflictDay(silvisDays.primary, holDatesFor(hol, fakId, "both"));
-            if (hit) {
-              console.error(`Christmas lock: ${nameMap[fakId]} is Silvis PRIMARY on ${hit} — Christmas ${year} left unassigned.`);
-              setHolidayLockWarning(`⚠ Christmas ${year} was NOT auto-assigned: ${nameMap[fakId]} is Silvis PRIMARY on ${hit} (rule silvisBusy). Resolve it with Silvis or assign manually via the swap controls.`);
-              return;
-            }
-          }
-          const sA = fakId;
-          usedInGroup.add(sA);
-          assignments.push({
-            name: hol.name, date: hol.date, type, emoji: hol.emoji || "📅",
-            surgeonA: sA, surgeonB: sA, coverage: buildCoverage(hol, sA, sA),
-          });
-          return;
         }
-
-        // If pool is too small (shouldn't happen with 7 surgeons & 3 holidays),
-        // fall back to full list
-        if (pool.length < 2) pool = [...ids];
-
-        const { sA, sB } = pickPair(hol, pool);
-        usedInGroup.add(sA); usedInGroup.add(sB);
-
-        assignments.push({
-          name: hol.name, date: hol.date, type, emoji: hol.emoji || "📅",
-          surgeonA: sA, surgeonB: sB, coverage: buildCoverage(hol, sA, sB),
-        });
-      });
+        assignments.push(card(hol, fakId, fakId));
+        return;
+      }
+      toPlan.push(hol);
     });
+    // Time off on the dates each ROLE holds — its 24h rows (+ the weekend leg a
+    // Fri / Sun row implies) and surgeon B's eve night when it is his — as the
+    // generator's floor sees it: vacation OR no-call; and a night ends 07:00
+    // the next morning, so a vacation starting then is too late (Warnings'
+    // into-vac rule). silvisBusy should FAK ever be planned. Ranks first.
+    const unavailable = (id, hol, role) => {
+      const days = holDatesFor(hol, id, role);
+      if (role === "B") {
+        const xc = assignments.find(h => h.name === "Christmas Day"), eve = fmt(addD(parse(hol.date), -1));
+        const takes = (mon) => { const p = holidayDesign({ [year]: xc ? [xc] : [] }, [mon], fakId, christmasSlotOk(buildGenAvailability(), vacations, buildSilvisPrimary())).pins[mon]; return !!p && p.wknd === fakId; };
+        if (holidayEveHolder({ ...hol, surgeonB: id }, eve, { [year]: xc ? [xc] : [] }, fakId, takes) === id) days.push(eve);
+      }
+      if (days.some(ds => onVac(id, ds, vacations) || onVac(id, ds, noCallDays))) return true;
+      if (days.some(ds => onVac(id, fmt(addD(parse(ds), 1)), vacations))) return true;
+      return !!(silvisActive && id === silvisFakId && sfConflictDay(silvisDays.primary, holDatesFor(hol, id, role)) !== null);
+    };
+    // The lifetime RATE of the group — assignments ÷ holidays they were
+    // eligible for (tenure-normalized, 2026-08-07). Raw counts under-served
+    // partial tenure: ARW's 1 major from 9 eligible read as "less burdened"
+    // than MCC's 2 from 12. holidayRate (config.js) guards the zero-eligible
+    // new hire: rate 0, never 0/0 = NaN.
+    const rateOf = (id, type) => holidayRate(lifetimeCt[id]?.[type] || 0, eligibleCt[id]?.[type] || 0);
+    const plan = planHolidayPairs({ year, holidays: toPlan, partners: ids.filter(id => id !== fakId), history: holidayAssignments, fixed: fixedCards, unavailable, rate: rateOf, nameOf: (id) => nameMap[id] || id });
+    toPlan.forEach(hol => { const pk = plan.picks[hol.name]; if (pk) assignments.push(card(hol, pk.surgeonA, pk.surgeonB)); });
+    if (plan.notes.length) setHolidayLockWarning(prev => [prev, ...plan.notes.map(n => "⚠ " + n)].filter(Boolean).join(" · "));
 
     // Sort final assignments by date for display
     assignments.sort((a, b) => a.date.localeCompare(b.date));
     setHolidayAssignments(prev => ({ ...prev, [String(year)]: assignments }));
     logAudit("holiday.generate", `Generated holiday assignments for ${year} (${assignments.length} holidays)`, { year, count: assignments.length });
-  }, [surgeons, vacations, holidayAssignments, silvisActive, silvisFakId, silvisDays]);
+  }, [surgeons, vacations, noCallDays, holidayAssignments, silvisActive, silvisFakId, silvisDays]);
 
   // ─── Swap a holiday surgeon ───
   const swapHolidaySurgeon = useCallback((year, holidayIdx, slot, newSurgeonId) => {
@@ -4698,11 +4888,15 @@ function CallSchedule() {
       const sameGroup = arr.filter((h, i) => i !== holidayIdx && h.type === targetHol.type);
       const usedInGroup = new Set();
       sameGroup.forEach(h => { usedInGroup.add(h.surgeonA); usedInGroup.add(h.surgeonB); });
-      if (usedInGroup.has(newSurgeonId)) {
+      const fakSwap = surgeons.find(s => (s.name || "").toUpperCase() === "FAK")?.id;
+      if (usedInGroup.has(newSurgeonId) && newSurgeonId !== fakSwap) { // FAK gets his own question below
         const conflictHol = sameGroup.find(h => h.surgeonA === newSurgeonId || h.surgeonB === newSurgeonId);
         const surgeonName = surgeons.find(s => s.id === newSurgeonId)?.name || newSurgeonId;
-        if (!confirm(`⚠️ ${surgeonName} is already assigned to ${conflictHol?.name} (${targetHol.type} group).\n\nThis violates the distinct-pairs rule. Assign anyway?`)) return;
+        if (!confirm(`⚠️ ${surgeonName} is already assigned to ${conflictHol?.name} (${targetHol.type} group).\n\nEach partner takes at most one ${targetHol.type} holiday a year. Assign anyway?`)) return;
       }
+      // FAK's holidays are Christmas Eve + Christmas Day — his major and his minor (owner 2026-10-13)
+      if (newSurgeonId && newSurgeonId === fakSwap && targetHol.name !== "Christmas Day"
+        && !confirm(`${nameOf(newSurgeonId)}'s holidays are Christmas Eve + Christmas Day (his major and his minor). Put him on ${targetHol.name} too?`)) return;
       // silvisBusy: holiday 24h on a Silvis primary day — same confirm-to-
       // override idiom, on the dates THIS slot will actually hold (the
       // non-Eve coverage rows this role maps to, plus the weekend leg the
@@ -5757,7 +5951,25 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     }
     const hard = sfOverlaps(schedule, silvisDays.primary, silvisFakId).filter(inScope)
       .map(o => ({ key: `silvis|${silvisFakId}|${o.mondayStr}|${o.slot}|${o.day}`, severity: "error", week: o.mondayStr, message: `${who}: Silvis primary + Davenport ${o.label}, ${md(o.day)}` }));
-    return health.concat(hard);
+    // RULE 1 (owner 2026-10-12): a Silvis primary on the SUNDAY after his
+    // Davenport service week (the service-week surgeon must be free that Sunday).
+    const sunday = Object.keys(schedule).filter(m => /^\d{4}-\d{2}-\d{2}$/.test(m) && schedule[m] && schedule[m].dayCall === silvisFakId && inScope({ mondayStr: m }))
+      .filter(m => silvisDays.primary && silvisDays.primary.has(fmt(addD(parse(m), 6))))
+      .map(m => { const sun = fmt(addD(parse(m), 6)); return { key: `silvis-sun|${silvisFakId}|${m}|${sun}`, severity: "error", week: m, message: `${who}: Silvis primary Sun ${md(sun)} — the Sunday of the Davenport service week of ${md(m)}` }; });
+    // RULE 2 across the two jobs (owner 2026-10-13): a Davenport overnight of
+    // his on the date right before or after a Silvis primary 24h is two
+    // overnights in a row (the generator allows it only as his last resort).
+    const adj = [];
+    [...(silvisDays.primary || [])].sort().forEach(D => [-1, 1].forEach(o => {
+      const N = fmt(addD(parse(D), o));
+      if (overnightHolderOn(schedule, N) !== silvisFakId) return;
+      const nd = parse(N), mN = fmt(addD(nd, nd.getDay() === 0 ? -6 : 1 - nd.getDay()));
+      if (!inScope({ mondayStr: mN })) return;
+      adj.push({ key: `silvis-adj|${silvisFakId}|${D}|${N}`, severity: "warning", week: mN,
+        message: o < 0 ? `${who}: Davenport overnight ${dayMonthLabel(N)} → Silvis primary ${dayMonthLabel(D)} — two overnights in a row across the two jobs`
+                       : `${who}: Silvis primary ${dayMonthLabel(D)} → Davenport overnight ${dayMonthLabel(N)} — two overnights in a row across the two jobs` });
+    }));
+    return health.concat(hard, sunday, adj);
   }, [schedule, silvisActive, silvisDays, silvisFakId, surgeons, isPublicMode, silvisRows, silvisLoadError]);
   // Silvis BACKUP touches — standby, never a block, never a warning: shown
   // on the Silvis feed card only (they used to summon the warning panel).
@@ -5795,7 +6007,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     // card's service-week holder is a real conflict and is still shown.) If
     // generator.js isn't loaded, nothing is waived — more lines, never fewer.
     const fakW = (surgeons.find(s => (s.name || "").toUpperCase() === "FAK") || {}).id || null;
-    const design = typeof holidayDesign === "function" ? holidayDesign(holidayAssignments, mondayStrs, fakW) : { pins: {}, eves: {} };
+    const design = typeof holidayDesign === "function" ? holidayDesign(holidayAssignments, mondayStrs, fakW, christmasSlotOk(buildGenAvailability(), vacations, buildSilvisPrimary())) : { pins: {}, eves: {} }; // the generator's own slot test (decision 3 where FAK can work it)
     const designed = (m1, s1, m2, s2, id) => !!(id && design.pins[m1] && design.pins[m1][s1] === id && design.pins[m2] && design.pins[m2][s2] === id);
     // Card coverage rows (date|surgeon, eve or not): a VACATION on one of these is
     // already the vacOverlapWarnings "holiday-vac" line — one fact, one line.
@@ -5862,6 +6074,21 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           if (!holCov[friD] && !holCov[sunD] && !designed(mStr, "dayCall", mStr, "wknd", wk.dayCall)) {
             issues.push({ key: `svc-wknd|${mStr}|${wk.dayCall}`, type: "double", severity: "error", week: mStr, message: `${sMap[wk.dayCall]?.name} is on Service Week AND Weekend (same week)` });
           }
+        }
+        // RULE 1 (owner 2026-10-12): the service-week surgeon must be free that
+        // SUNDAY too — no vacation or no-call (Silvis primary: its own line in
+        // silvisConflicts). Time off entered after publishing lands here.
+        const sunS = fmt(addD(mon, 6));
+        const sunKind = sunS >= todayStr ? (onVac(wk.dayCall, sunS, vacations || {}) ? "vacation" : onVac(wk.dayCall, sunS, noCallDays || {}) ? "no-call" : null) : null;
+        if (sunKind) issues.push({ key: `svc-sun|${mStr}|${wk.dayCall}|${sunS}|${sunKind}`, type: "timeoff", severity: "error", week: mStr, message: `${codeOf(wk.dayCall)} is on Service Week ${md(mStr)} but is off Sun ${md(sunS)} (${sunKind}) — the service-week surgeon must be free that Sunday` });
+      }
+      // RULE 2 (owner 2026-10-12): Thu night + that weekend is two nights in a
+      // row (Thu → Fri night) — unless the cards design it or a holiday 24h
+      // holds that Friday.
+      if (wk.nights?.thu && wk.nights.thu === wk.nights?.wknd) {
+        const friT = fmt(addD(mon, 4));
+        if (!(wk.holidayCoverage || {})[friT] && !designed(mStr, "thu", mStr, "wknd", wk.nights.thu)) {
+          issues.push({ key: `thu-wknd|${mStr}|${wk.nights.thu}`, type: "consecutive", severity: "error", week: mStr, message: `${codeOf(wk.nights.thu)} has Thu night then the Weekend (Fri night) — two nights in a row` });
         }
       }
 
@@ -5936,7 +6163,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     });
 
     return issues;
-  }, [schedule, surgeons, sMap, vacations, noCallDays, holidayAssignments]);
+  }, [schedule, surgeons, sMap, vacations, noCallDays, holidayAssignments, silvisActive, silvisFakId, silvisDays]);
 
   // ─── Vacation Overlap Warnings ───
   const vacOverlapWarnings = useMemo(() => {
@@ -5967,18 +6194,21 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     // surgeon has vacation then, flag it at setup time.
     Object.values(holidayAssignments || {}).forEach(arr => {
       if (!Array.isArray(arr)) return;
+      const fakV = (surgeons.find(s => (s.name || "").toUpperCase() === "FAK") || {}).id || null;
       arr.forEach(h => {
         effectiveHolidayCoverage(h).forEach(c => {
           if (!c.surgeon || !c.date) return;
-          if (onVac(c.surgeon, c.date, vacations)) {
-            warnings.push({ key: `holiday-vac|${h.date || ""}|${c.date}|${c.surgeon}`, date: c.date, severity: "error", message: `${sMap[c.surgeon]?.name || c.surgeon} is assigned ${h.name} coverage (${c.date}) but has vacation then — holiday surgeons can't be on vacation during their holiday` });
+          // a weekend eve inside FAK's Christmas design week is his when the cards give him that weekend (decision 3)
+          const sid = c.isEve ? (holidayEveHolder(h, c.date, holidayAssignments, fakV, takesChristWknd) || c.surgeon) : c.surgeon;
+          if (onVac(sid, c.date, vacations)) {
+            warnings.push({ key: `holiday-vac|${h.date || ""}|${c.date}|${sid}`, date: c.date, severity: "error", message: `${sMap[sid]?.name || sid} is assigned ${h.name} coverage (${c.date}) but has vacation then — holiday surgeons can't be on vacation during their holiday` });
           }
         });
       });
     });
 
     return warnings;
-  }, [mondays, surgeons, apps, vacations, holidayAssignments, sMap]);
+  }, [mondays, surgeons, apps, vacations, noCallDays, holidayAssignments, sMap, silvisActive, silvisFakId, silvisDays]);
 
   // ─── Schedule Warnings: dismissals applied ───
   // Every viewer's panel reads THESE lists (header count and "+ more" too);
@@ -7179,7 +7409,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               <strong>Monday holidays (Memorial Day, Labor Day):</strong> Surgeon A covers Monday 24h, Surgeon B covers night before (Sun). Service week doctor starts Tuesday — no day-after override.<br/>
               <strong>Friday holidays:</strong> Fri (A) + Sat (B)<br/>
               <strong>Exception:</strong> FAK covers Christmas Eve night and Christmas Day (standing rule), and the generator also gives FAK that week's service week and weekend<br/>
-              <strong style={{color:"#8a4010"}}>Distinct-pair rule:</strong> Within each group (major / minor), every holiday must have a completely different surgeon pair — no surgeon appears on two holidays in the same group.
+              <strong style={{color:"#8a4010"}}>Rotation:</strong> FAK takes Christmas Eve + Christmas Day every year — his major and his minor. Every other partner gets one minor holiday a year (Memorial Day, July 4th, Labor Day) and at most one major (New Year's, Thanksgiving — 4 slots for 6 partners, so two sit out a major each year and get one the next). Nobody gets the same holiday as last year; over the years everyone rotates through all five.
             </div>
             {holidayLockWarning && (
               <div style={{fontSize:12,fontWeight:700,color:"#a8342a",background:"#fdeaea",border:"1px solid #e8b8b4",borderRadius:6,padding:"8px 12px",marginBottom:12}}>
@@ -7205,7 +7435,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               surgeons.forEach(s=>{holCounts[s.id]={major:0,minor:0};});
               assignments.forEach(h=>{
                 if(h.surgeonA&&holCounts[h.surgeonA]) holCounts[h.surgeonA][h.type]++;
-                if(h.surgeonB&&holCounts[h.surgeonB]) holCounts[h.surgeonB][h.type]++;
+                if(h.surgeonB&&h.surgeonB!==h.surgeonA&&holCounts[h.surgeonB]) holCounts[h.surgeonB][h.type]++; // A = B (FAK's Christmas) is ONE holiday
               });
 
               // Build sets of surgeons already used in each group (for dropdown hints)
@@ -7214,6 +7444,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               majors.forEach(h => { if(h.surgeonA) usedInMajor.add(h.surgeonA); if(h.surgeonB) usedInMajor.add(h.surgeonB); });
               minors.forEach(h => { if(h.surgeonA) usedInMinor.add(h.surgeonA); if(h.surgeonB) usedInMinor.add(h.surgeonB); });
 
+              const fakIdUI = (surgeons.find(s => (s.name || "").toUpperCase() === "FAK") || {}).id || null;
               const renderCard = (hol, idx) => {
                 // Surgeons used in OTHER holidays of the same group (not this one)
                 const sameGroup = assignments.filter(h => h.type === hol.type && h.date !== hol.date);
@@ -7248,7 +7479,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                       const isEve = c.isEve;
                       // Eve tag shows Surgeon B (the "Day After / Eve" dropdown value).
                       // Non-eve tag shows whoever that specific coverage row is assigned to.
-                      const displaySurgeon = isEve ? (hol.surgeonB || c.surgeon) : c.surgeon;
+                      // a weekend eve inside FAK's Christmas design week is his when the cards give him that weekend (decision 3)
+                      const displaySurgeon = isEve ? (holidayEveHolder(hol, c.date, holidayAssignments, fakIdUI, takesChristWknd) || hol.surgeonB || c.surgeon) : c.surgeon;
                       const isSurgA = !isEve && c.surgeon === hol.surgeonA;
                       return (
                       <div key={j} style={{padding:"4px 10px",borderRadius:5,fontSize:11,fontWeight:600,
@@ -7274,33 +7506,30 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                 <div style={{fontSize:12,fontWeight:700,color:"#2868a8",marginBottom:6,marginTop:14}}>📌 Minor Holidays</div>
                 {minors.map((h,i)=>renderCard(h, assignments.indexOf(h)))}
 
-                {/* Distinct-pair validation */}
+                {/* The rotation rules (owner 2026-10-13) — helpers.js holidayRotationCheck: one holiday per group at most
+                    (A = B is ONE), every partner one minor, FAK's are Christmas Eve + Day, nobody without a major two years
+                    running, no repeat of last year's; a hand-written preset year is a fact (no rotation issues) */}
                 {(()=>{
-                  const checkGroup = (group, label) => {
-                    const seen = {};
-                    const dupes = [];
-                    group.forEach(h => {
-                      [h.surgeonA, h.surgeonB].forEach(sid => {
-                        if (!sid) return;
-                        if (seen[sid]) dupes.push({ surgeon: sid, hol1: seen[sid], hol2: h.name });
-                        else seen[sid] = h.name;
-                      });
-                    });
-                    return { label, ok: dupes.length === 0, dupes, uniqueCount: Object.keys(seen).length, freeCount: surgeons.length - Object.keys(seen).length };
-                  };
-                  const majorCheck = checkGroup(majors, "Major");
-                  const minorCheck = checkGroup(minors, "Minor");
+                  const rc = holidayRotationCheck({ assignments, prior: holidayAssignments[String(holidayYear - 1)] || [], surgeons, year: holidayYear,
+                    fakId: surgeons.find(s => (s.name || "").toUpperCase() === "FAK")?.id, preset: typeof HOLIDAY_PRESETS !== "undefined" && !!HOLIDAY_PRESETS[String(holidayYear)] });
+                  const nm = (id) => surgeons.find(s => s.id === id)?.name || id;
                   return (
                     <div style={{marginTop:10,display:"flex",gap:8,flexWrap:"wrap"}}>
-                      {[majorCheck, minorCheck].map(ck => (
+                      {[rc.major, rc.minor].map(ck => (
                         <div key={ck.label} style={{flex:1,minWidth:180,padding:"8px 12px",borderRadius:6,fontSize:11,
                           background:ck.ok?"#e8f8e8":"#fce8e8",border:`1px solid ${ck.ok?"#a0d8a0":"#e0a0a0"}`,color:ck.ok?"#1a6030":"#903030"}}>
                           <span style={{fontWeight:700}}>{ck.ok?"✓":"⚠"} {ck.label} group:</span>{" "}
                           {ck.ok
-                            ? `All ${ck.uniqueCount} surgeons distinct (${ck.freeCount} free)`
-                            : ck.dupes.map(d => `${surgeons.find(s=>s.id===d.surgeon)?.name||d.surgeon} is on both ${d.hol1} & ${d.hol2}`).join("; ")}
+                            ? `All ${ck.uniqueCount} surgeons distinct${ck.label === "Major" && ck.none.length ? ` · sitting out a major: ${ck.none.map(nm).join(", ")}` : ""}`
+                            : ck.dupes.map(d => `${nm(d.surgeon)} is on both ${d.hol1} & ${d.hol2}`).join("; ")}
                         </div>
                       ))}
+                      {rc.issues.length > 0 && (
+                        <div style={{flexBasis:"100%",padding:"8px 12px",borderRadius:6,fontSize:11,background:"#fdf3e3",border:"1px solid #e0c080",color:"#7a5010"}}>
+                          <span style={{fontWeight:700}}>⚠ Rotation:</span> {rc.issues.join(" · ")}
+                        </div>
+                      )}
+                      {rc.preset && <div style={{flexBasis:"100%",fontSize:11,color:"#5a6a78"}}>ℹ {holidayYear} is the hand-written schedule — the rotation applies from the next generated year.</div>}
                     </div>
                   );
                 })()}
@@ -7312,9 +7541,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                     {surgeons.map(s=>{
                       const mc = holCounts[s.id]?.major||0;
                       const mi = holCounts[s.id]?.minor||0;
+                      const xmasOnly = mi === 0 && mc === 1 && assignments.some(h => h.name === "Christmas Day" && h.surgeonA === s.id && h.surgeonB === s.id);
                       return (
                         <div key={s.id} style={{...css.badge(sMap[s.id]?.idx||0, sMap[s.id]?.name),padding:"4px 10px",fontSize:11}}>
-                          {s.name} <span style={{fontWeight:400}}>— {mc} major, {mi} minor</span>
+                          {s.name} <span style={{fontWeight:400}}>— {xmasOnly ? "Christmas Eve + Day" : `${mc} major, ${mi} minor`}</span>
                         </div>
                       );
                     })}
@@ -7503,13 +7733,20 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           })()}
 
           <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
-            <button onClick={()=>doGenerate(true)} style={{...css.btn(false),padding:"13px 24px",fontSize:14,fontWeight:700,borderRadius:9,letterSpacing:0.3,flex:1}}>
-              👁 Preview Schedule
+            <button onClick={()=>doGenerate(true)} disabled={!!searching} style={{...css.btn(false),padding:"13px 24px",fontSize:14,fontWeight:700,borderRadius:9,letterSpacing:0.3,flex:1,opacity:searching?0.55:1}}>
+              {searching === "generate" ? "🔍 Searching…" : "👁 Preview Schedule"}
             </button>
-            <button onClick={doGenerateAndNotify} style={{...css.btn(true),padding:"13px 24px",fontSize:14,fontWeight:700,borderRadius:9,letterSpacing:0.3,flex:1}}>
-              Generate & Publish →
+            {(isScheduler || userProfile?.role === "admin") && <>
+              <button onClick={()=>loadJsonInputRef.current && loadJsonInputRef.current.click()} disabled={searching === "publish"} title={`Load a schedule for ${mondays.length ? fmt(mondays[0]) + " × " + mondays.length + " weeks" : "the Generate settings"} into the preview (JSON) — it is checked, not published`} style={{...css.btn(false),padding:"13px 18px",fontSize:14,fontWeight:700,borderRadius:9,letterSpacing:0.3}}>
+                📋 Load schedule (JSON)
+              </button>
+              <input ref={loadJsonInputRef} type="file" accept=".json,application/json" onChange={onLoadJsonFile} style={{display:"none"}} aria-label="Load schedule (JSON)" />
+            </>}
+            <button onClick={doGenerateAndNotify} disabled={publishing || !!searching} style={{...css.btn(true),padding:"13px 24px",fontSize:14,fontWeight:700,borderRadius:9,letterSpacing:0.3,flex:1,opacity:publishing||searching?0.55:1}}>
+              {publishing ? "Publishing…" : searching === "publish" ? "🔍 Searching…" : "Generate & Publish →"}
             </button>
           </div>
+          {(searching === "generate" || searching === "publish") && <SearchProgress searchRef={searchRef} dk={dk} />}
 
           {/* What-If Preview */}
           {showPreview && previewSchedule && (()=>{
@@ -7632,15 +7869,19 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   }
                   return null; // no claim — pool congestion (vacations/no-call)
                 };
+                // A pair Needs your OK already lists as strain (svcGap — both weeks
+                // carried) is not repeated here (owner 2026-10-13): this box keeps
+                // the pairs it doesn't count — both weeks fixed by the holiday cards.
+                const listedGap = new Set((previewNeedsOk.items || []).filter(it => it.key === "svcGap").map(it => it.who + "|" + it.prevMondayStr + "|" + it.mondayStr));
                 const notes = [];
                 for (const mStr of keys) {
                   const wk = previewSchedule[mStr];
                   const id = wk && wk.dayCall;
                   if (!id) continue;
                   const w = Math.round((parse(mStr).getTime() - t0) / 604800000);
-                  if (last[id] !== undefined && w - last[id].w <= MIN_DC_GAP) {
+                  if (last[id] !== undefined && w - last[id].w <= MIN_DC_GAP && !listedGap.has(id + "|" + last[id].mStr + "|" + mStr)) {
                     const reason = reasonFor(id, mStr) || reasonFor(id, last[id].mStr) || "vacations that week";
-                    notes.push(`${nameOf(id)}: service weeks ${nice(last[id].mStr)} and ${nice(mStr)}, forced by ${reason}`);
+                    notes.push(previewOrigin === "json" ? `${nameOf(id)}: service weeks ${nice(last[id].mStr)} and ${nice(mStr)} (as in the loaded file)` : `${nameOf(id)}: service weeks ${nice(last[id].mStr)} and ${nice(mStr)}, forced by ${reason}`);
                   }
                   last[id] = { w, mStr };
                 }
@@ -7656,9 +7897,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             return (
               <div style={{...css.card,marginTop:14,background:dk?"#1a2a1a":"#f0faf0",border:"2px solid #80c080"}}>
                 <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12,flexWrap:"wrap",gap:8}}>
-                  <div style={css.cardT}>👁 Schedule Preview</div>
+                  <div style={css.cardT}>👁 Schedule Preview{previewOrigin === "json" && <span style={{marginLeft:8,fontSize:11,fontWeight:700,color:dk?"#f0c890":"#8a5020",background:dk?"#3a2a10":"#fef3e6",border:"1px solid #e8c89a",borderRadius:5,padding:"2px 7px"}}>Loaded from JSON — not generated</span>}</div>
                   <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
-                    <button onClick={()=>{setPreviewCalMonth(0);doGenerate(true);}} style={{...css.btn(false),padding:"6px 14px",fontSize:12}}>↻ Re-roll</button>
+                    <button onClick={()=>{setPreviewCalMonth(0);doGenerate(true);}} disabled={!!searching} style={{...css.btn(false),padding:"6px 14px",fontSize:12,opacity:searching?0.55:1}}>↻ Re-roll</button>
+                    <button onClick={searchMore} disabled={!!searching || publishing} title="Keep searching from this schedule — it is replaced only by a better one" style={{...css.btn(false),padding:"6px 14px",fontSize:12,opacity:searching||publishing?0.55:1}}>{searching === "more" ? "🔍 Searching…" : "🔍 Search more"}</button>
                     <button onClick={()=>{
                       try {
                         // Compute month range from preview schedule
@@ -7686,19 +7928,31 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                         w.document.write(html); w.document.close();
                       } catch(e) { alert("Print failed: " + (e?.message||e)); }
                     }} style={{...css.btn(false),padding:"6px 14px",fontSize:12,background:"#fef3e6",borderColor:"#e8c89a",color:"#8a5020"}}>🖨 Print Calendar</button>
-                    <button onClick={acceptPreview} disabled={previewNeedsOk.items.length > 0 && !previewAck} title={previewNeedsOk.items.length > 0 && !previewAck ? "Review the Needs your OK items below first" : undefined} style={{...css.btn(true),padding:"6px 14px",fontSize:12,background:"linear-gradient(135deg,#1a8040,#30a060)",borderColor:"#1a8040",opacity:previewNeedsOk.items.length > 0 && !previewAck ? 0.45 : 1,cursor:previewNeedsOk.items.length > 0 && !previewAck ? "not-allowed" : "pointer"}}>✓ Accept & Publish</button>
+                    <button onClick={acceptPreview} disabled={publishing || searching === "publish" || (previewNeedsOk.items.length > 0 && !previewAck)} title={previewNeedsOk.items.length > 0 && !previewAck ? "Review the Needs your OK items below first" : undefined} style={{...css.btn(true),padding:"6px 14px",fontSize:12,background:"linear-gradient(135deg,#1a8040,#30a060)",borderColor:"#1a8040",opacity:previewNeedsOk.items.length > 0 && !previewAck ? 0.45 : 1,cursor:previewNeedsOk.items.length > 0 && !previewAck ? "not-allowed" : "pointer"}}>✓ Accept & Publish</button>
                     <button onClick={discardPreview} style={{background:"none",border:"1px solid #e0c0c0",color:"#904040",borderRadius:6,padding:"6px 14px",fontSize:12,cursor:"pointer",fontFamily:font}}>✕ Discard</button>
                   </div>
                 </div>
 
-                {/* Needs your OK (2026-10-11) — every bend, empty slot, time-off
-                    placement and crowded day, in plain words (generator.js
-                    listScheduleBends). Publishing waits for the checkbox. */}
+                {searching === "more" && <SearchProgress searchRef={searchRef} dk={dk} />}
+                {searchStats && !searching && <div style={{fontSize:11,color:dk?"#a0c8a0":"#4a7a4a",margin:"-6px 0 10px"}}>
+                  {searchStats.purpose === "more"
+                    ? `Search more ${searchStats.improved ? "found a better schedule" : "found nothing better — this one stays"}: ${searchStats.checked.toLocaleString()} more schedules checked in ${(searchStats.ms / 1000).toFixed(1)} s`
+                    : `The best of ${searchStats.checked.toLocaleString()} schedules checked in ${(searchStats.ms / 1000).toFixed(1)} s (${searchStats.starts.toLocaleString()} fresh start${searchStats.starts === 1 ? "" : "s"})`}
+                </div>}
+
+                {/* Needs your OK (2026-10-11; grouped 2026-10-12) — every item
+                    in plain words (generator.js listScheduleBends, the same
+                    reading the search ranks by). Publishing waits for the checkbox. */}
                 {previewNeedsOk.items.length > 0 && (
                   <div style={{background:dk?"#3a2410":"#fdf0e3",border:"1px solid #d09050",borderRadius:8,padding:"8px 12px",marginBottom:12,fontSize:12,color:dk?"#f0c890":"#7a4010",overflowWrap:"anywhere"}}>
                     <div style={{fontWeight:700,marginBottom:2}}>⚠ Needs your OK — {previewNeedsOk.items.length} item{previewNeedsOk.items.length===1?"":"s"}</div>
-                    {previewNeedsOk.items.map((it,i)=><div key={i} style={{marginTop:3}}>• {it.text}</div>)}
-                    <div style={{marginTop:5,fontSize:11,opacity:0.85}}>Vacation, no-call and Silvis days are never broken — when a week can't be covered by the usual rules, the generator takes the mildest bend and lists it here. Re-roll for different names; the bends themselves are the minimum the calendar allows.</div>
+                    {NEEDS_OK_GROUPS.map(g => { const its = previewNeedsOk.items.filter(it => g.kinds.includes(it.kind)); return its.length ? <div key={g.title} style={{marginTop:6}}>
+                      <div style={{fontWeight:700,fontSize:11,textTransform:"uppercase",letterSpacing:0.4,opacity:0.8}}>{g.title}</div>
+                      {its.map((it,i)=><div key={i} style={{marginTop:3}}>• {it.text}</div>)}
+                    </div> : null; })}
+                    <div style={{marginTop:5,fontSize:11,opacity:0.85}}>{previewOrigin === "json"
+                      ? "These are in the loaded file — the generator didn't choose them. Everything the ranking looks at is listed here; review each before publishing. Re-roll replaces the file with a generated schedule; Search more keeps it unless it finds a better one."
+                      : "The search ranks schedules in this order: no time off and no two nights in a row (designed holiday runs aside — anything left breaking them is under Must fix), FAK's last resort, service weeks even, weekends even, the least strain, the mildest bends, totals even — this is the best it found. Search more looks further; Re-roll starts over."}</div>
                     <label style={{display:"flex",alignItems:"center",gap:8,marginTop:8,fontWeight:700,cursor:"pointer"}}>
                       <input type="checkbox" checked={previewAck} onChange={e=>setPreviewAck(e.target.checked)} style={{width:18,height:18,flexShrink:0}}/>
                       I've reviewed these {previewNeedsOk.items.length} item{previewNeedsOk.items.length===1?"":"s"}
@@ -7711,7 +7965,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   <div style={{background:dk?"#3a3010":"#fdf6e3",border:"1px solid #d0b050",borderRadius:8,padding:"8px 12px",marginBottom:12,fontSize:12,color:dk?"#e8d080":"#7a5c10"}}>
                     <div style={{fontWeight:700,marginBottom:2}}>⚠ Service-week spacing exception{spacingNotes.length===1?"":"s"}</div>
                     {spacingNotes.map((n,i)=><div key={i} style={{marginTop:3}}>• {n}</div>)}
-                    <div style={{marginTop:5,fontSize:11,opacity:0.85}}>The generator couldn't space these apart. Accepting publishes them as shown — consider warning the surgeon, or adjust and re-roll.</div>
+                    <div style={{marginTop:5,fontSize:11,opacity:0.85}}>{previewOrigin === "json" ? "These are in the loaded file. Accepting publishes them as shown — consider warning the surgeon." : "Fixed by the holiday cards, so Needs your OK doesn't count them as strain (the others are listed there). Accepting publishes them as shown — consider warning the surgeon."}</div>
                   </div>
                 )}
 
@@ -7773,7 +8027,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                 </>}
 
                 {/* Boundary-seed diagnostic (scheduler/admin) — temporary */}
-                {(isScheduler || userProfile?.role === "admin") && seedDebug && (
+                {(isScheduler || userProfile?.role === "admin") && seedDebug && previewOrigin !== "json" && (
                   <div style={{background:dk?"#2a2410":"#fffbe8",border:"1px solid #e0c870",borderRadius:6,padding:"8px 12px",marginBottom:10,fontFamily:mono,fontSize:11,color:dk?"#d8c890":"#7a5a10"}}>
                     <div style={{fontWeight:700,marginBottom:3}}>🔧 boundary seed (debug)</div>
                     {seedDebug.error ? <div>error: {seedDebug.error}</div> : <>
@@ -8100,16 +8354,24 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               <button aria-label="Previous month" onClick={()=>{if(calMonth===0){setCalMonth(11);setCalYear(y=>y-1);}else setCalMonth(m=>m-1);}} style={css.btn(false)}>◀</button>
               <span style={{fontSize:15,fontWeight:700,color:"#2c5a80",minWidth:170,textAlign:"center"}}>{MO[calMonth]} {calYear}</span>
               <button aria-label="Next month" onClick={()=>{if(calMonth===11){setCalMonth(0);setCalYear(y=>y+1);}else setCalMonth(m=>m+1);}} style={css.btn(false)}>▶</button>
+              {/* Back to today (owner 2026-10-14): today's month, then today's cell scrolled into view (a long grid on a phone).
+                  Blue while another month is showing. */}
+              {(() => { const now = new Date(), away = calMonth !== now.getMonth() || calYear !== now.getFullYear();
+                return <button aria-label="Go to today" title="Back to today" onClick={()=>{
+                  const n = new Date(); setCalMonth(n.getMonth()); setCalYear(n.getFullYear());
+                  setTimeout(() => { const el = document.querySelector("[data-cal-today=\"1\"]"); if (el && el.scrollIntoView) el.scrollIntoView({ behavior: "smooth", block: "center" }); }, 60);
+                }} style={{...css.btn(away),padding:"7px 10px"}}>Today</button>; })()}
             </div>
             <div style={{display:"flex",gap:5}}>
               {isScheduler && <>
                 <button onClick={()=>setView("setup")} style={css.btn(false)}>← Setup</button>
-                <button onClick={()=>doGenerate(false)} style={css.btn(true)}>↻ Regenerate</button>
+                <button onClick={()=>doGenerate(false)} disabled={!!searching} style={{...css.btn(true),opacity:searching?0.55:1}}>{searching === "publish" ? "🔍 Searching…" : "↻ Regenerate"}</button>
                 <button onClick={clearSchedule} style={{...css.btn(false),color:"#c04040",borderColor:"#e0a0a0"}}>✕ Clear</button>
               </>}
             </div>
           </div>
 
+          {searching && searching !== "more" && view === "calendar" && <SearchProgress searchRef={searchRef} dk={dk} />}
           {/* Calendar Filters */}
           <div style={{display:"flex",gap:4,alignItems:"center",flexWrap:"wrap",marginBottom:10,padding:"8px 12px",background:dk?"#16213e":"#fff",border:`1px solid ${dkCardBorder}`,borderRadius:8}}>
             <span style={{fontSize:11,fontWeight:600,color:dkSubtext,marginRight:4}}>Show:</span>
@@ -8319,7 +8581,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               }
 
               return (
-                <div key={ds} style={{
+                <div key={ds} data-cal-today={isToday ? "1" : undefined} style={{
                   background: cellBg,
                   border: cellBorder,
                   minHeight:82, padding:"3px 4px", borderRadius:2,
@@ -12105,6 +12367,36 @@ function writeFailReason(err) {
 // helper (an old cached helpers.js), a refused count (ok:false) or a Silvis feed
 // problem shows as text, never as zeros. Module scope with React.* hooks, like
 // Collapsible below; every color has its own dark-mode branch.
+// The groups of the preview's "Needs your OK" box (owner 2026-10-12), by
+// listScheduleBends item kind, in this order.
+const NEEDS_OK_GROUPS = [
+  { title: "Must fix — breaks a rule", kinds: ["error", "lock", "empty", "timeoff", "hard"] },
+  { title: "Last resort", kinds: ["lastResort"] },
+  { title: "Strain", kinds: ["strain"] },
+  { title: "Bends", kinds: ["bend"] },
+  { title: "FAK — flexible (allowed, costs a little)", kinds: ["flexStrain"] },
+  { title: "Crowded days (information)", kinds: ["crowded"] },
+];
+
+// The live line under a running schedule search (owner 2026-10-12, item 5):
+// time searched, schedules checked, the best so far. It polls searchRef
+// itself, so only this line re-renders while the search runs.
+function SearchProgress({ searchRef, dk }) {
+  const [, setTick] = React.useState(0);
+  React.useEffect(() => { const t = setInterval(() => setTick(n => n + 1), 250); return () => clearInterval(t); }, []);
+  const sr = searchRef.current;
+  if (!sr || !sr.session) return null;
+  let st = null;
+  try { st = sr.session.status(); } catch (e) { return null; }
+  const t = st.tiers;
+  const best = t ? (t.floor ? "best so far still breaks a rule" : `best so far: service weeks Δ${t.svcSpread} · weekends Δ${t.wkndSpread} · strain ${t.strain} · bends ${t.bend}`) : "";
+  return (
+    <div role="status" style={{fontSize:12,color:dk?"#a0c8a0":"#2a6a3a",background:dk?"#16261a":"#eef8ee",border:"1px solid #a0d0a0",borderRadius:7,padding:"6px 10px",margin:"8px 0",overflowWrap:"anywhere"}}>
+      🔍 Searching… {(sr.activeMs / 1000).toFixed(1)} s of {(sr.budgetMs / 1000).toFixed(0)} · {st.checked.toLocaleString()} schedules checked{best ? " · " + best : ""}
+    </div>
+  );
+}
+
 function CallTotalsCard({ totals, silvisNote, css, dk }) {
   const [pick, setPick] = React.useState("month");
   const [showMonths, setShowMonths] = React.useState(false);
