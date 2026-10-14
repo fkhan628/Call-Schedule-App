@@ -4667,8 +4667,12 @@ function CallSchedule() {
       const coverage = [];
 
       // Night before — defaults to Surgeon B (replaced at display time by actual night-shift person)
-      const evDate = addD(holDate, -1);
-      coverage.push({ date: fmt(evDate), surgeon: sB, label: hol.name + " Night Before", day: DAYNAMES[evDate.getDay()], isEve: true });
+      // …unless it is a weekend night of FAK's Christmas design week: decision 3 gives him that weekend
+      // (a Tuesday Christmas's New Year's eve, Sun 12/30 — owner 2026-10-13)
+      const evDate = addD(holDate, -1), evDs = fmt(evDate), evDow = evDate.getDay();
+      const xmasMon = fakId && hol.name !== "Christmas Day" ? christmasDesignWeek({ name: "Christmas Day", date: `${year}-12-25`, surgeonA: fakId, surgeonB: fakId }, fakId) : null;
+      const inXmas = !!xmasMon && (evDow === 5 || evDow === 0) && evDs >= xmasMon && evDs <= fmt(addD(parse(xmasMon), 6));
+      coverage.push({ date: evDs, surgeon: inXmas ? fakId : sB, label: hol.name + " Night Before", day: DAYNAMES[evDow], isEve: true, ...(inXmas ? { christmasWeek: true } : {}) });
 
       // Holiday day — Surgeon A
       coverage.push({ date: hol.date, surgeon: sA, label: hol.name + " 24h", day: DAYNAMES[holDow] });
@@ -4746,7 +4750,13 @@ function CallSchedule() {
     const allHols = [...holidays.major.map(h => ({ ...h, type: "major" })), ...holidays.minor.map(h => ({ ...h, type: "minor" }))];
     const assignments = [], fixedCards = [], toPlan = [];
     const card = (hol, sA, sB) => ({ name: hol.name, date: hol.date, type: hol.type, emoji: hol.emoji || "📅", surgeonA: sA, surgeonB: sB, coverage: buildCoverage(hol, sA, sB) });
+    // A holiday of this year already worked (dated before today) is history —
+    // kept as it is on a re-generate, like a preset (the rotation reads it).
+    const todayStr = fmt(new Date());
+    const stored = holidayAssignments[String(year)] || [];
     allHols.forEach(hol => {
+      const kept = stored.find(h => h && h.name === hol.name && h.date && h.date < todayStr);
+      if (kept) { assignments.push(kept); fixedCards.push(kept); return; }
       // Check for pre-set assignments (e.g., handwritten schedule for this year)
       if (presets && presets[hol.name]) {
         const [sA, sB] = presets[hol.name];
@@ -4796,12 +4806,16 @@ function CallSchedule() {
       }
       toPlan.push(hol);
     });
-    // Time off on the dates each ROLE holds (the eve night is surgeon B's), and
-    // silvisBusy should FAK ever be planned — "unavailable" ranks first.
+    // Time off on the dates each ROLE holds — its 24h rows (+ the weekend leg a
+    // Fri / Sun row implies) and surgeon B's eve night when it is his — as the
+    // generator's floor sees it: vacation OR no-call; and a night ends 07:00
+    // the next morning, so a vacation starting then is too late (Warnings'
+    // into-vac rule). silvisBusy should FAK ever be planned. Ranks first.
     const unavailable = (id, hol, role) => {
       const days = holDatesFor(hol, id, role);
-      if (role === "B") days.push(fmt(addD(parse(hol.date), -1)));
-      if (days.some(ds => onVac(id, ds, vacations))) return true;
+      if (role === "B") buildCoverage(hol, "_a", id).filter(c => c.isEve && c.surgeon === id).forEach(c => days.push(c.date));
+      if (days.some(ds => onVac(id, ds, vacations) || onVac(id, ds, noCallDays))) return true;
+      if (days.some(ds => onVac(id, fmt(addD(parse(ds), 1)), vacations))) return true;
       return !!(silvisActive && id === silvisFakId && sfConflictDay(silvisDays.primary, holDatesFor(hol, id, role)) !== null);
     };
     // The lifetime RATE of the group — assignments ÷ holidays they were
@@ -4818,7 +4832,7 @@ function CallSchedule() {
     assignments.sort((a, b) => a.date.localeCompare(b.date));
     setHolidayAssignments(prev => ({ ...prev, [String(year)]: assignments }));
     logAudit("holiday.generate", `Generated holiday assignments for ${year} (${assignments.length} holidays)`, { year, count: assignments.length });
-  }, [surgeons, vacations, holidayAssignments, silvisActive, silvisFakId, silvisDays]);
+  }, [surgeons, vacations, noCallDays, holidayAssignments, silvisActive, silvisFakId, silvisDays]);
 
   // ─── Swap a holiday surgeon ───
   const swapHolidaySurgeon = useCallback((year, holidayIdx, slot, newSurgeonId) => {
@@ -4862,7 +4876,7 @@ function CallSchedule() {
       hol.surgeonB = sB;
       let nonEveIdx = 0;
       hol.coverage = hol.coverage.map((c) => {
-        if (c.isEve) return { ...c, surgeon: sB };
+        if (c.isEve) return { ...c, surgeon: c.christmasWeek ? c.surgeon : sB }; // FAK's Christmas-week eve stays his
         const surgeon = nonEveIdx % 2 === 0 ? sA : sB;
         nonEveIdx++;
         return { ...c, surgeon };
@@ -7363,7 +7377,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                       const isEve = c.isEve;
                       // Eve tag shows Surgeon B (the "Day After / Eve" dropdown value).
                       // Non-eve tag shows whoever that specific coverage row is assigned to.
-                      const displaySurgeon = isEve ? (hol.surgeonB || c.surgeon) : c.surgeon;
+                      const displaySurgeon = isEve ? (c.christmasWeek ? c.surgeon : (hol.surgeonB || c.surgeon)) : c.surgeon; // FAK's Christmas-week eve is his
                       const isSurgA = !isEve && c.surgeon === hol.surgeonA;
                       return (
                       <div key={j} style={{padding:"4px 10px",borderRadius:5,fontSize:11,fontWeight:600,
@@ -7389,31 +7403,16 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                 <div style={{fontSize:12,fontWeight:700,color:"#2868a8",marginBottom:6,marginTop:14}}>📌 Minor Holidays</div>
                 {minors.map((h,i)=>renderCard(h, assignments.indexOf(h)))}
 
-                {/* The rotation rules (owner 2026-10-13): one holiday per group at most (A = B is ONE), every partner one
-                    minor, FAK's are Christmas Eve + Day, nobody without a major two years running, no repeat of last year's */}
+                {/* The rotation rules (owner 2026-10-13) — helpers.js holidayRotationCheck: one holiday per group at most
+                    (A = B is ONE), every partner one minor, FAK's are Christmas Eve + Day, nobody without a major two years
+                    running, no repeat of last year's; a hand-written preset year is a fact (no rotation issues) */}
                 {(()=>{
-                  const fakH = surgeons.find(s => (s.name || "").toUpperCase() === "FAK")?.id;
-                  const prior = holidayAssignments[String(holidayYear - 1)] || [];
-                  const holders = (h) => [h.surgeonA, h.surgeonB].filter((v, i, a) => v && a.indexOf(v) === i);
+                  const rc = holidayRotationCheck({ assignments, prior: holidayAssignments[String(holidayYear - 1)] || [], surgeons, year: holidayYear,
+                    fakId: surgeons.find(s => (s.name || "").toUpperCase() === "FAK")?.id, preset: typeof HOLIDAY_PRESETS !== "undefined" && !!HOLIDAY_PRESETS[String(holidayYear)] });
                   const nm = (id) => surgeons.find(s => s.id === id)?.name || id;
-                  const checkGroup = (group, label) => {
-                    const seen = {}, dupes = [];
-                    group.forEach(h => holders(h).forEach(sid => { if (seen[sid]) dupes.push({ surgeon: sid, hol1: seen[sid], hol2: h.name }); else seen[sid] = h.name; }));
-                    return { label, ok: dupes.length === 0, dupes, uniqueCount: Object.keys(seen).length, none: surgeons.filter(s => s.id !== fakH && !seen[s.id]).map(s => s.id) };
-                  };
-                  const majorCheck = checkGroup(majors, "Major");
-                  const minorCheck = checkGroup(minors, "Minor");
-                  const issues = [];
-                  minorCheck.none.forEach(id => issues.push(`${nm(id)} has no minor holiday`));
-                  if (fakH) assignments.filter(h => h.name !== "Christmas Day" && holders(h).includes(fakH)).forEach(h => issues.push(`${nm(fakH)} is on ${h.name} (his holidays are Christmas Eve + Day)`));
-                  if (prior.length) {
-                    const hadMajor = new Set(prior.filter(h => h.type === "major").flatMap(holders));
-                    majorCheck.none.filter(id => !hadMajor.has(id)).forEach(id => issues.push(`${nm(id)} has no major in ${holidayYear - 1} or ${holidayYear}`));
-                    assignments.forEach(h => holders(h).forEach(id => { if (id !== fakH && prior.some(p => p.name === h.name && holders(p).includes(id))) issues.push(`${nm(id)} has ${h.name} again (${holidayYear - 1} too)`); }));
-                  }
                   return (
                     <div style={{marginTop:10,display:"flex",gap:8,flexWrap:"wrap"}}>
-                      {[majorCheck, minorCheck].map(ck => (
+                      {[rc.major, rc.minor].map(ck => (
                         <div key={ck.label} style={{flex:1,minWidth:180,padding:"8px 12px",borderRadius:6,fontSize:11,
                           background:ck.ok?"#e8f8e8":"#fce8e8",border:`1px solid ${ck.ok?"#a0d8a0":"#e0a0a0"}`,color:ck.ok?"#1a6030":"#903030"}}>
                           <span style={{fontWeight:700}}>{ck.ok?"✓":"⚠"} {ck.label} group:</span>{" "}
@@ -7422,11 +7421,12 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                             : ck.dupes.map(d => `${nm(d.surgeon)} is on both ${d.hol1} & ${d.hol2}`).join("; ")}
                         </div>
                       ))}
-                      {issues.length > 0 && (
+                      {rc.issues.length > 0 && (
                         <div style={{flexBasis:"100%",padding:"8px 12px",borderRadius:6,fontSize:11,background:"#fdf3e3",border:"1px solid #e0c080",color:"#7a5010"}}>
-                          <span style={{fontWeight:700}}>⚠ Rotation:</span> {issues.join(" · ")}
+                          <span style={{fontWeight:700}}>⚠ Rotation:</span> {rc.issues.join(" · ")}
                         </div>
                       )}
+                      {rc.preset && <div style={{flexBasis:"100%",fontSize:11,color:"#5a6a78"}}>ℹ {holidayYear} is the hand-written schedule — the rotation applies from the next generated year.</div>}
                     </div>
                   );
                 })()}
