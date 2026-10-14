@@ -1853,6 +1853,20 @@ function CallSchedule() {
     if (!r.ok && !r.wrote) commitSchedule(eng.knownSchedule());
     return r;
   };
+  // Generate & Publish / Accept & Publish (A14): the engine's PUBLISH job —
+  // authoritative over the period's weeks only (re-read just those, write
+  // them, a week deleted elsewhere is re-inserted, never a delete). Call it
+  // right after publishWeeks commits, before any await, so the debounced
+  // weeks push defers to it. Resolves ok only when EVERY period week landed;
+  // a week that didn't stays on screen and pending, and the follow-up push
+  // keeps retrying it.
+  const runPublish = (weeks) => schedSyncRef.current.authoritative(weeks, false, "publish", Object.keys(weeks));
+  // What a publish that didn't fully land tells the scheduler (nobody is notified).
+  const publishNotLanded = (pr, what) => {
+    const n = ((pr && pr.results) || []).filter(x => x.outcome !== "saved").length;
+    showToast(pr && pr.error ? `${what}: ${pr.error}`
+      : `${what} — ${n ? n + " week" + (n === 1 ? " isn't" : "s aren't") : "the new weeks aren't"} saved yet; retrying automatically. Nobody was notified.`, "error");
+  };
 
   // ─── Current-state bundle (NOT "the thing we persist") ───
   // A snapshot of live component state in one object. Every save path builds
@@ -4164,8 +4178,10 @@ function CallSchedule() {
     if (publishingRef.current) { showToast("A publish is already in progress — wait for it to finish.", "error"); return "busy"; }
     if (!schedEditable()) return "refused"; // the search can outlast the session: signed out / sign-in expired meanwhile → no snapshot, nothing published
     publishingRef.current = true; setPublishing(true);
-    {
-      (async () => {
+    // The outcome is the publish's (A14): doGenerate resolves to "published"
+    // only when every week of the period landed in the table — only then do
+    // Generate & Publish's notice and e-mail go out (doGenerateAndNotify).
+    return (async () => {
        try {
         // Snapshot the persisted state BEFORE any mutation; if the snapshot
         // can't be written there is no backup, so the regenerate is refused.
@@ -4174,25 +4190,24 @@ function CallSchedule() {
         if (!snap.ok) {
           showToast("Couldn't save a backup snapshot — regenerate cancelled. Schedule unchanged.", "error");
           setSaveStatus("");
-          return;
+          return "no-snapshot";
         }
         // Re-checked AFTER the snapshot's await (sync v2): signed out or the
         // sign-in expired meanwhile → nothing is published; someone else changed
         // a week of this period since the CLICK (the search ran SEARCH_MS or
         // more) → the result was computed from the old copy: refuse rather
         // than overwrite their change.
-        if (!schedEditable()) { setSaveStatus(""); return; }
+        if (!schedEditable()) { setSaveStatus(""); return "refused"; }
         const movedWeeks = schedSyncRef.current.changedSince(Object.keys(result), genEpoch);
         if (movedWeeks.length) {
           showToast(`The week${movedWeeks.length === 1 ? "" : "s"} of ${movedWeeks.join(", ")} changed while generating — nothing was published. Generate again.`, "error");
           setSaveStatus("");
-          return;
+          return "moved";
         }
-        await genCommitRef.current(result); // with the state as it is NOW (after the snapshot's await)
+        const out = await genCommitRef.current(result); // with the state as it is NOW (after the snapshot's await)
+        return out && out.ok ? "published" : "not-published";
        } finally { publishingRef.current = false; setPublishing(false); }
-      })();
-    }
-    return "published";
+    })();
   };
   // Generate & Publish's commit, after a good snapshot — through genCommitRef,
   // so the counts, the bundle and the blob are the LATEST state's.
@@ -4209,9 +4224,9 @@ function CallSchedule() {
           label: `${numWeeks} weeks from ${MO[startMonth]} ${startYear}, Generate & Publish`,
           meta: { startMonth, startYear, numWeeks, origin: "generated" },
         });
+        const job = runPublish(result); // the period's weeks → the table, as ONE engine job (A14) — registered now, before any await
         setPreviewSchedule(null); setShowPreview(false);
-        setSaveStatus("Regenerated!");
-        setTimeout(() => setSaveStatus(""), 2000);
+        setSaveStatus("Publishing…");
         // Immediately save to Supabase to prevent polling race condition
         try {
           const ts = new Date().toISOString();
@@ -4221,8 +4236,12 @@ function CallSchedule() {
           delete blobData.vacations; delete blobData.noCallDays; // retired mirror — time_off is the source
           const { error: regenErr } = await supabase.from("call_schedule_data").upsert({ id: "main", data: blobData, updated_at: ts });
           if (regenErr) throw new Error(`regenerate blob save failed: ${String(regenErr).slice(0, 200)}`); // catch toasts; checked autosave retries
-          schedSyncRef.current.push(); // send the weeks now (the weeks effect would too; pushes coalesce)
         } catch(e) { console.error("Immediate save failed:", e); showToast("Couldn't save the regenerated schedule — check your connection.", "error"); }
+        // "Regenerated!" only when every week of the period landed (A14)
+        const pr = await job;
+        if (pr && pr.ok) { setSaveStatus("Regenerated!"); setTimeout(() => setSaveStatus(""), 2000); return { ok: true }; }
+        setSaveStatus(""); publishNotLanded(pr, "Regenerated on this screen");
+        return { ok: false };
   };
   genFinishRef.current = finishGenerate; genCommitRef.current = commitGenerated;
 
@@ -4458,7 +4477,7 @@ function CallSchedule() {
       return { cost: 0, items: [{ kind: "error", key: "error", cost: 0, text: "⚠ The bend check itself failed (" + ((e && e.message) || e) + ") — review the calendar by hand before publishing." }] };
     }
   }, [previewSchedule, schedule, surgeons, vacations, noCallDays, holidayAssignments, silvisActive, silvisFakId, silvisDays, pendingLocks]);
-  const acceptPreview = () => {
+  const acceptPreview = async () => {
     // A Generate & Publish search publishes its own schedule when it ends —
     // never two publishes racing (its button and this one are disabled meanwhile).
     if (publishSearchRunning()) { showToast("Generate & Publish is still searching — wait for it to finish.", "error"); return; }
@@ -4474,20 +4493,36 @@ function CallSchedule() {
       const moved = schedSyncRef.current.changedSince(Object.keys(previewSchedule), previewEpochRef.current);
       if (moved.length) { showToast(`The week${moved.length === 1 ? "" : "s"} of ${moved.join(", ")} changed since this preview was generated — nothing was published. Generate the preview again.`, "error"); return; }
       const needsOkN = previewNeedsOk.items.length;
-      // Weeks already published get their counts replaced, not added again;
-      // the published period merges into the existing schedule so prior
-      // periods are preserved (the autosave then syncs without deletes).
-      publishWeeks(previewSchedule, {
-        label: `${numWeeks} weeks from ${MO[startMonth]} ${startYear}${previewOrigin === "json" ? ", loaded from JSON" : ""}`,
-        extra: needsOkN ? ` — ${needsOkN} item${needsOkN === 1 ? "" : "s"} reviewed in Needs your OK` : "",
-        meta: { startMonth, startYear, numWeeks, needsOk: needsOkN, bendCost: previewNeedsOk.cost, origin: previewOrigin },
-      });
-      setPreviewSchedule(null); setShowPreview(false);
-      setCalMonth(startMonth);
-      setCalYear(startYear);
-      setView("calendar");
-      setSaveStatus("Published — totals updated");
-      setTimeout(() => setSaveStatus(""), 3000);
+      const weeks = previewSchedule, origin = previewOrigin, sM = startMonth, sY = startYear, nW = numWeeks, bend = previewNeedsOk.cost;
+      publishingRef.current = true; setPublishing(true);
+      try {
+        // A backup snapshot first, fail closed (A14 — as Generate & Publish):
+        // no backup, nothing published.
+        setSaveStatus("Saving backup snapshot…");
+        const snap = await snapshots.capture("regenerate", { minWeeks: Object.keys(schedSyncRef.current.knownSchedule()).length ? 1 : 0 });
+        if (!snap.ok) { showToast("Couldn't save a backup snapshot — nothing was published.", "error"); setSaveStatus(""); return; }
+        // …and the checks again after its await: still signed in, still the same preview, none of its weeks changed by someone else
+        if (!schedEditable() || previewSchedRef.current !== weeks) { setSaveStatus(""); return; }
+        const moved2 = schedSyncRef.current.changedSince(Object.keys(weeks), previewEpochRef.current);
+        if (moved2.length) { showToast(`The week${moved2.length === 1 ? "" : "s"} of ${moved2.join(", ")} changed since this preview was generated — nothing was published. Generate the preview again.`, "error"); setSaveStatus(""); return; }
+        // Weeks already published get their counts replaced, not added again;
+        // the published period merges into the existing schedule so prior
+        // periods are preserved.
+        publishWeeks(weeks, {
+          label: `${nW} weeks from ${MO[sM]} ${sY}${origin === "json" ? ", loaded from JSON" : ""}`,
+          extra: needsOkN ? ` — ${needsOkN} item${needsOkN === 1 ? "" : "s"} reviewed in Needs your OK` : "",
+          meta: { startMonth: sM, startYear: sY, numWeeks: nW, needsOk: needsOkN, bendCost: bend, origin },
+        });
+        const job = runPublish(weeks); // the period's weeks → the table, as ONE engine job (A14) — registered now, before any await
+        setPreviewSchedule(null); setShowPreview(false);
+        setCalMonth(sM);
+        setCalYear(sY);
+        setView("calendar");
+        setSaveStatus("Publishing…");
+        const pr = await job;
+        if (pr && pr.ok) { setSaveStatus("Published — totals updated"); setTimeout(() => setSaveStatus(""), 3000); }
+        else { setSaveStatus(""); publishNotLanded(pr, "Published on this screen"); }
+      } finally { publishingRef.current = false; setPublishing(false); }
     }
   };
 

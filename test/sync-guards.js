@@ -555,8 +555,9 @@ check("the shared armed wipe grant is gone (no intentionalScheduleWipeRef anywhe
   count("intentionalScheduleWipeRef") === 0, `found ${count("intentionalScheduleWipeRef")}`);
 check("the engine's wipe guard: a wipe-shaped push WITHOUT the request's grant is blocked (one guard)",
   count("if ((wipingAll || wipingMost) && !job.grant) {") === 1);
-check("authoritative jobs (the only grant holders) start at exactly 1 site, called from exactly 3: clear, factory reset, restore — a 4th caller needs this census updated",
-  count(".authoritative(") === 1 && count("runAuthoritativeSchedule(") === 3
+check("authoritative jobs start at exactly 2 sites — runAuthoritativeSchedule (the grant holders: clear, factory reset, restore) and runPublish (the period's weeks, no grant, no delete: Generate & Publish, Accept & Publish — A14) — a new caller needs this census updated",
+  count(".authoritative(") === 2 && count("runAuthoritativeSchedule(") === 3
+    && count('const runPublish = (weeks) => schedSyncRef.current.authoritative(weeks, false, "publish", Object.keys(weeks));') === 1 && count("runPublish(") === 2 && count("const job = runPublish(") === 2
     && count('runAuthoritativeSchedule({}, "clear")') === 1 && count('runAuthoritativeSchedule({}, "reset")') === 1 && count('runAuthoritativeSchedule(sched, "restore")') === 1,
   `.authoritative( ×${count(".authoritative(")}, runAuthoritativeSchedule( ×${count("runAuthoritativeSchedule(")}`);
 
@@ -3675,53 +3676,71 @@ check("prefs audit never logs the plaintext email (masked only)",
 //   AE5 Setup → Holidays says eves are night shifts and Christmas week is FAK's
 {
   const nsrcAE = src.replace(/\r\n/g, "\n");
-  const i = nsrcAE.indexOf("  const acceptPreview = () => {"), e = i < 0 ? -1 : nsrcAE.indexOf("\n  };\n", i);
-  const body = i < 0 || e < 0 ? null : "() => {" + nsrcAE.slice(i + "  const acceptPreview = () => {".length, e) + "\n  }";
-  const ENV = "previewSchedule, previewNeedsOk, previewAck, previewOrigin, publishWeeks, publishingRef, showToast, schedEditable, schedSyncRef, previewEpochRef, setPreviewSchedule, setShowPreview, setCalMonth, setCalYear, setView, setSaveStatus, setTimeout, numWeeks, MO, startMonth, startYear, cancelSearch, publishSearchRunning";
+  const A0 = "  const acceptPreview = async () => {";
+  const i = nsrcAE.indexOf(A0), e = i < 0 ? -1 : nsrcAE.indexOf("\n  };\n", i);
+  const body = i < 0 || e < 0 ? null : "async () => {" + nsrcAE.slice(i + A0.length, e) + "\n  }";
+  const ENV = "previewSchedule, previewSchedRef, previewNeedsOk, previewAck, previewOrigin, publishWeeks, runPublish, publishNotLanded, publishingRef, setPublishing, snapshots, showToast, schedEditable, schedSyncRef, previewEpochRef, setPreviewSchedule, setShowPreview, setCalMonth, setCalYear, setView, setSaveStatus, setTimeout, numWeeks, MO, startMonth, startYear, cancelSearch, publishSearchRunning";
   let mk = null; try { mk = body ? vm.runInContext(`(function (env) { const { ${ENV} } = env; return (${body}); })`, sandbox) : null; } catch (ex) { mk = null; }
-  // busy: a publish in progress · pubSearch: a Generate & Publish search running · moved: a week of the preview adopted since it was made (sync v2) · gated: the edit gate refuses (sync v2)
-  const run = (items, ack, busy, pubSearch, moved, gated) => {
-    const rec = { published: 0, toasts: [], audits: [], cancelled: 0 };
-    mk({
-      schedEditable: () => !gated, previewEpochRef: { current: 3 },
-      schedSyncRef: { current: { changedSince: (keys, since) => (moved && since === 3) ? keys.slice(0, 1) : [] } }, // bites only if acceptPreview asks with previewEpochRef.current
-      previewSchedule: { "2026-11-16": { dayCall: "s1", nights: {} }, "2026-11-23": { dayCall: "s2", nights: {} } }, previewNeedsOk: { cost: items.length * 6, items }, previewAck: ack,
-      previewOrigin: "generated", publishingRef: { current: !!busy },
+  // o: busy (a publish in progress) · pubSearch (a Generate & Publish search running) · moved (a week of the preview adopted
+  // since it was made) · movedAfter (…adopted during the snapshot's await) · gated (the edit gate refuses) · snapFail · landed:false
+  const run = async (items, ack, o = {}) => {
+    const rec = { published: 0, toasts: [], audits: [], cancelled: 0, jobs: 0, snaps: 0, status: [], order: [] };
+    const PS = { "2026-11-16": { dayCall: "s1", nights: {} }, "2026-11-23": { dayCall: "s2", nights: {} } };
+    let snapped = false;
+    await mk({
+      schedEditable: () => !o.gated, previewEpochRef: { current: 3 },
+      // bites only if acceptPreview asks with previewEpochRef.current
+      schedSyncRef: { current: { changedSince: (keys, since) => (since === 3 && (o.moved || (o.movedAfter && snapped))) ? keys.slice(0, 1) : [], knownSchedule: () => ({ "2026-11-09": {} }) } },
+      previewSchedule: PS, previewSchedRef: { current: PS }, previewNeedsOk: { cost: items.length * 6, items }, previewAck: ack,
+      previewOrigin: "generated", publishingRef: { current: !!o.busy }, setPublishing: () => {},
+      snapshots: { capture: async () => { rec.snaps++; rec.order.push("snapshot"); snapped = true; return { ok: !o.snapFail }; } },
       // publishWeeks (the one publish step) is executed for real in AG5; here it records what acceptPreview hands it
-      publishWeeks: (weeks, how) => { rec.published++; rec.audits.push({ msg: `Published schedule (${how.label})${how.extra || ""}`, meta: how.meta, weeks }); return {}; },
+      publishWeeks: (weeks, how) => { rec.published++; rec.order.push("publishWeeks"); rec.audits.push({ msg: `Published schedule (${how.label})${how.extra || ""}`, meta: how.meta, weeks }); return {}; },
+      runPublish: (w) => { rec.jobs++; rec.order.push("job"); rec.jobWeeks = Object.keys(w).join(); return Promise.resolve(o.landed === false ? { ok: false, results: [{ k: "2026-11-23", outcome: "pending" }] } : { ok: true, results: [] }); },
+      publishNotLanded: (pr, what) => rec.toasts.push("NOT LANDED: " + what),
       showToast: (m) => rec.toasts.push(String(m)), setPreviewSchedule: () => {}, setShowPreview: () => {}, setCalMonth: () => {}, setCalYear: () => {},
-      setView: () => {}, setSaveStatus: () => {}, setTimeout: () => {},
+      setView: () => {}, setSaveStatus: (x) => rec.status.push(x), setTimeout: () => {},
       numWeeks: 14, MO: ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"], startMonth: 10, startYear: 2026,
-      cancelSearch: () => { rec.cancelled++; }, publishSearchRunning: () => !!pubSearch,
+      cancelSearch: () => { rec.cancelled++; }, publishSearchRunning: () => !!o.pubSearch,
     })();
     return rec;
   };
   if (mk) {
     const two = [{ kind: "bend", text: "a" }, { kind: "crowded", text: "b" }];
-    const blocked = run(two, false), ticked = run(two, true), clean = run([], false);
+    const blocked = await run(two, false), ticked = await run(two, true), clean = await run([], false);
     check("AE1 the REAL acceptPreview: with items and the box unticked nothing is published (and it says why)",
       blocked.published === 0 && blocked.audits.length === 0 && /reviewed/.test(blocked.toasts.join(" ")), JSON.stringify(blocked));
     check("AE1 ticked: it publishes, and the publish audit entry records N (and the bend cost)",
       ticked.published === 1 && ticked.audits.length === 1 && ticked.audits[0].meta.needsOk === 2 && ticked.audits[0].meta.bendCost === 12 && /2 items reviewed/.test(ticked.audits[0].msg), JSON.stringify(ticked.audits));
-    const stale = run([], false, false, false, true);
+    const stale = await run([], false, { moved: true });
     check("AE1 sync v2: a preview whose week someone else changed since it was generated is NOT published (it would overwrite that change) — and it says so",
-      stale.published === 0 && stale.audits.length === 0 && /changed since this preview was generated/.test(stale.toasts.join(" ")), JSON.stringify(stale));
-    const gatedRun = run([], false, false, false, false, true);
-    check("AE1 sync v2: the edit gate (not loaded / sign-in expired) refuses before the publish step — nothing published", gatedRun.published === 0 && gatedRun.audits.length === 0, JSON.stringify(gatedRun));
+      stale.published === 0 && stale.audits.length === 0 && stale.snaps === 0 && /changed since this preview was generated/.test(stale.toasts.join(" ")), JSON.stringify(stale));
+    const gatedRun = await run([], false, { gated: true });
+    check("AE1 sync v2: the edit gate (not loaded / sign-in expired) refuses before the publish step — nothing published", gatedRun.published === 0 && gatedRun.audits.length === 0 && gatedRun.snaps === 0, JSON.stringify(gatedRun));
     check("AE1 an empty box publishes exactly as before — no checkbox needed, needsOk 0, no extra wording",
       clean.published === 1 && clean.toasts.length === 0 && clean.audits[0].meta.needsOk === 0 && !/reviewed/.test(clean.audits[0].msg), JSON.stringify(clean.audits));
-    // PR 1: Accept & Publish goes through the one publish step (AG5 runs it),
-    // with the whole preview, and refuses while another publish is in progress.
-    check("AE1 Accept & Publish hands the WHOLE preview to publishWeeks (the one publish step — net counts, undo, audit: AG5)",
-      ticked.audits[0] && Object.keys(ticked.audits[0].weeks).join() === "2026-11-16,2026-11-23" && ticked.audits[0].meta.origin === "generated");
+    check("AE1 Accept & Publish hands the WHOLE preview to publishWeeks (the one publish step — net counts, undo, audit: AG5) and to the engine's publish job",
+      ticked.audits[0] && Object.keys(ticked.audits[0].weeks).join() === "2026-11-16,2026-11-23" && ticked.audits[0].meta.origin === "generated" && ticked.jobWeeks === "2026-11-16,2026-11-23");
     check("AE1 Accept & Publish first cancels a running search (\"Search more\"), so its late result can't reopen the published preview (2026-10-12)",
       ticked.cancelled === 1 && clean.cancelled === 1, JSON.stringify([ticked.cancelled, clean.cancelled]));
-    const during = run([], false, false, true);
+    const during = await run([], false, { pubSearch: true });
     check("AE1 while a Generate & Publish SEARCH runs (it publishes its own schedule when it ends), Accept & Publish publishes NOTHING and says why — never two publishes racing",
       during.published === 0 && during.cancelled === 0 && /still searching/.test(during.toasts.join(" ")), JSON.stringify(during));
-    const busy = run([], false, true);
+    const busy = await run([], false, { busy: true });
     check("AE1 while a publish is in progress (Generate & Publish waiting for its snapshot), Accept & Publish publishes NOTHING and says why",
       busy.published === 0 && /already in progress/.test(busy.toasts.join(" ")), JSON.stringify(busy));
+    // A14 — a backup snapshot first (fail closed), the checks again after its await, the period as ONE engine job, the outcome said
+    check("AE1 A14: the order is snapshot → publishWeeks → the engine's publish job, and \"Published — totals updated\" only after the job landed every week",
+      clean.order.join() === "snapshot,publishWeeks,job" && clean.status.includes("Publishing…") && clean.status.includes("Published — totals updated")
+        && clean.status.indexOf("Publishing…") < clean.status.indexOf("Published — totals updated"), JSON.stringify({ order: clean.order, status: clean.status }));
+    const noSnap = await run([], false, { snapFail: true }), movedAfter = await run([], false, { movedAfter: true }), notLanded = await run([], false, { landed: false });
+    check("AE1 A14: no backup snapshot → nothing published (and it says so); a week changed by someone else DURING the snapshot's await → nothing published either",
+      noSnap.snaps === 1 && noSnap.published === 0 && noSnap.jobs === 0 && /backup snapshot/.test(noSnap.toasts.join(" "))
+        && movedAfter.snaps === 1 && movedAfter.published === 0 && movedAfter.jobs === 0 && /changed since this preview was generated/.test(movedAfter.toasts.join(" ")),
+      JSON.stringify([noSnap, movedAfter]));
+    check("AE1 A14: a publish job that didn't land every week → no \"Published\", the scheduler is told (retrying, nobody notified)",
+      notLanded.published === 1 && notLanded.jobs === 1 && !notLanded.status.includes("Published — totals updated") && /NOT LANDED: Published on this screen/.test(notLanded.toasts.join(" ")),
+      JSON.stringify(notLanded));
   } else check("AE1 acceptPreview extractable for execution", false, "anchors not found");
   check("AE2 ✓ Accept & Publish is disabled while the box has items and is unticked; the checkbox drives previewAck; a new preview resets it",
     count('<button onClick={acceptPreview} disabled={publishing || searching === "publish" || (previewNeedsOk.items.length > 0 && !previewAck)}') === 1
@@ -3736,7 +3755,7 @@ check("prefs audit never logs the plaintext email (masked only)",
   check("AE3 Generate & Publish: a result with items opens the preview (\"review\") instead of saving; only \"published\" sends the notice; a cancelled Silvis confirm sends nothing",
     count('    if (needsOkN > 0) {\n      setPreviewSchedule(result); setPreviewOrigin("generated"); previewEpochRef.current = genEpoch;\n      setShowPreview(true);'.replace(/\n/g, src.includes("\r\n") ? "\r\n" : "\n")) === 1
       && count('previewEpochRef.current = genEpoch;') === 3 // preview · inputs changed · Needs your OK (sync v2)
-      && count('return "review";') === 2 && count('return "published";') === 1 && count('return "cancelled";') === 2 // review: + inputs changed during the search (2026-10-12) — // the Silvis confirm; a cancelled / empty search (2026-10-12)
+      && count('return "review";') === 2 && count('return out && out.ok ? "published" : "not-published";') === 1 && count('return "published";') === 0 && count('return "cancelled";') === 2 // review: + inputs changed during the search (2026-10-12) — // the Silvis confirm; a cancelled / empty search (2026-10-12)
       && count('if ((await doGenerate(false)) !== "published") return;') === 1);
   check("AE4 the box and the generator share ONE availability builder (vacations ∪ no-call ∪ Silvis), and the box reads the bends from generator.js",
     count("const availability = buildGenAvailability();") === 1 && count("vac: buildGenAvailability(), vacationsOnly: vacations,") === 2 // the box + Generate & Publish's gate (today's inputs, 2026-10-12)
@@ -3990,7 +4009,7 @@ await (async () => {
       && count('{previewOrigin === "json" && <span') === 1 && count("Loaded from JSON — not generated") === 1
       && count('setPreviewSchedule(result); setPreviewOrigin("generated");') === 3 && count('setPreviewOrigin("json")') === 1); // preview · inputs changed · Needs your OK
   check("AG4 both publish paths go through the ONE publish step (Accept & Publish; Generate & Publish at commit), the only roll-forward — no 100 ms timer, no 'skip if any schedule exists'",
-    count("publishWeeks(previewSchedule, {") === 1 && count("publishWeeks(result, {") === 1 && count("publishWeeks(") === 2
+    count("publishWeeks(weeks, {") === 1 && count("publishWeeks(result, {") === 1 && count("publishWeeks(") === 2
       && count("const r = rollForwardCounts(newWeeks, replacedWeeks);") === 1 && count("rollForwardCounts(") === 1
       && count("hadExistingSchedule") === 0 && !/rollForwardCounts\(latest\)/.test(nsrc));
   {
@@ -4275,7 +4294,7 @@ await (async () => {
     check("AH6 Generate goes through the search for SEARCH_MS and refuses a second search while one runs",
       dgb.indexOf('if (searchRef.current) { showToast("A schedule search is already running') > 0 && dgb.indexOf('const done = await runSearch(search, preview ? "generate" : "publish", SEARCH_MS);') > dgb.indexOf("const search = createScheduleSearch(") && dgb.indexOf("return genFinishRef.current(result, preview, clickSig, pendingLocks, genEpoch);") > 0 && dgb.indexOf("const result = done && done.session.best();") > 0);
     check("AH6 Accept, Discard and a JSON load cancel a running search first (Discard and a load also clear the last search's count, which no longer applies)",
-      /const acceptPreview = \(\) => \{\n[^]*?if \(publishSearchRunning\(\)\) \{[^\n]*return; \}\n    cancelSearch\(\);/.test(nsrcAH) && /const discardPreview = \(\) => \{\n    cancelSearch\(\); setSearchStats\(null\);/.test(nsrcAH)
+      /const acceptPreview = async \(\) => \{\n[^]*?if \(publishSearchRunning\(\)\) \{[^\n]*return; \}\n    cancelSearch\(\);/.test(nsrcAH) && /const discardPreview = \(\) => \{\n    cancelSearch\(\); setSearchStats\(null\);/.test(nsrcAH)
         && /const loadScheduleJson = \(text, fileName\) => \{\n    if \(publishSearchRunning\(\)\) \{[^\n]*return false; \}\n    cancelSearch\(\); setSearchStats\(null\);/.test(nsrcAH)
         && count('const cancelSearch = () => { const sr = searchRef.current; if (sr && sr.purpose !== "publish") { searchRef.current = null; setSearching(null); } };') === 1);
     const sm = nsrcAH.indexOf("  const searchMore = async () => {"), sme = nsrcAH.indexOf("\n  };\n", sm), smb = sm < 0 ? "" : nsrcAH.slice(sm, sme);
@@ -4512,9 +4531,9 @@ await (async () => {
     const rec = { toasts: [], preview: null, shown: false, captured: 0, committed: 0 }, pub = { current: false }, pe = { current: -1 };
     const fn = mk({ pendingLocks: o.locksNow || [], nameOf: (x) => x, slotLabel: () => "slot", showToast: (m) => rec.toasts.push(String(m)), setPreviewSchedule: (x) => { rec.preview = x; }, setPreviewOrigin: () => {}, setShowPreview: (x) => { rec.shown = x; },
       genInputsSig: () => o.sigNow, listScheduleBends: () => ({ items: o.items || [] }), surgeons: [], mondays: [], buildGenAvailability: () => ({}), buildSilvisPrimary: () => null, vacations: {}, holidayAssignments: {}, buildPrevWeekSeed: () => null,
-      publishingRef: pub, setPublishing: () => {}, setSaveStatus: () => {}, snapshots: { capture: async () => { rec.captured++; if (o.gateAfter) o.gated = true; return { ok: true }; } }, genCommitRef: { current: async () => { rec.committed++; } },
+      publishingRef: pub, setPublishing: () => {}, setSaveStatus: () => {}, snapshots: { capture: async () => { rec.captured++; if (o.gateAfter) o.gated = true; return { ok: !o.snapFail }; } }, genCommitRef: { current: async () => { rec.committed++; return { ok: !o.notLanded }; } },
       previewEpochRef: pe, schedEditable: () => !o.gated, schedSyncRef: { current: { knownSchedule: () => ({}), changedSince: (keys, since) => (o.moved && since === 5) ? keys.slice() : [] } } });
-    rec.ret = fn(RES, !!o.preview, "SIG0", o.locksAtClick || [], 5); rec.epoch = pe.current;
+    rec.ret = await fn(RES, !!o.preview, "SIG0", o.locksAtClick || [], 5); rec.epoch = pe.current; // a publish resolves to its OUTCOME (A14)
     await new Promise(r => setTimeout(r, 30)); // let a publish run through its snapshot
     rec.armed = pub.current;
     return rec;
@@ -4533,6 +4552,10 @@ await (async () => {
     moved.captured === 1 && moved.committed === 0 && /changed while generating/.test(moved.toasts.join(" ")) && moved.armed === false, JSON.stringify(moved));
   check("AH9 sync v2: the edit gate before the snapshot (\"refused\", no snapshot) and again after it (signed out during the await: nothing committed, flag released)",
     gatedNow.ret === "refused" && gatedNow.captured === 0 && gatedNow.committed === 0 && gatedLater.captured === 1 && gatedLater.committed === 0 && gatedLater.armed === false, JSON.stringify([gatedNow, gatedLater]));
+  const notLanded = await go({ sigNow: "SIG0", notLanded: true }), noSnap = await go({ sigNow: "SIG0", snapFail: true });
+  check("AH9 A14: Generate & Publish resolves to its OUTCOME — \"published\" only when the commit's publish job landed every week (\"not-published\" otherwise), \"no-snapshot\" / \"moved\" / \"refused\" when it stopped; so only a real publish notifies",
+    notLanded.ret === "not-published" && notLanded.committed === 1 && notLanded.armed === false && noSnap.ret === "no-snapshot" && noSnap.committed === 0 && moved.ret === "moved" && gatedLater.ret === "refused",
+    JSON.stringify([notLanded.ret, noSnap.ret, moved.ret, gatedLater.ret]));
   const lk = [{ mondayStr: "2099-03-02", slot: "dc", surgeonId: "s1" }];
   const prev = await go({ preview: true, sigNow: "SIGx", locksAtClick: lk, locksNow: lk.concat([{ mondayStr: "2099-03-02", slot: "mon", surgeonId: "s2" }]) });
   check("AH9 …a Preview: it opens; a lock ADDED during the search is not blamed on time off ('NOT honored') — the scheduler is told the preview used the earlier locks",
@@ -4632,7 +4655,7 @@ await (async () => {
       return out;
     };
     // …and ANY storage write inside the paths that hold the preview or the search's result under another name
-    const PREVIEW_PATHS = ["  const runSearch = (session, purpose, budgetMs) => new Promise(resolve => {", "  const doGenerate = async (preview) => {", "  const finishGenerate = (result, preview, clickSig, clickLocks, genEpoch) => {", "  const commitGenerated = async (result) => {", "  const searchMore = async () => {", "  const acceptPreview = () => {", "  const discardPreview = () => {", "  const loadScheduleJson = (text, fileName) => {", "  const onLoadJsonFile = (e) => {"];
+    const PREVIEW_PATHS = ["  const runSearch = (session, purpose, budgetMs) => new Promise(resolve => {", "  const doGenerate = async (preview) => {", "  const finishGenerate = (result, preview, clickSig, clickLocks, genEpoch) => {", "  const commitGenerated = async (result) => {", "  const searchMore = async () => {", "  const acceptPreview = async () => {", "  const discardPreview = () => {", "  const loadScheduleJson = (text, fileName) => {", "  const onLoadJsonFile = (e) => {"];
     const pathBodies = (text) => PREVIEW_PATHS.map(a => { const i = text.indexOf(a); if (i < 0) return ""; const e = text.indexOf("\n  };\n", i); return text.slice(i, e < 0 ? i : e); });
     const guardStore = (fs_) => {
       const bad = [];
@@ -5024,18 +5047,18 @@ await require("./sync-engine-se.js")({ src, check });
       && gateBefore("  const swapShift = (mStr, shift, newId, expectOldId) => {", "\n  };\n", "pushUndo();")
       && gateBefore("  const executeTwoWaySwap = useCallback(", "\n  }, [", "pushUndo();")
       && gateBefore("  const saveWeekEdits = useCallback(", "\n  }, [", "pushUndo();")
-      && gateBefore("  const acceptPreview = () => {", "\n  };\n", "publishWeeks(previewSchedule, {")
+      && gateBefore("  const acceptPreview = async () => {", "\n  };\n", "snapshots.capture(")
       && gateBefore("  const doGenerate = async (preview) => {", "\n  };\n", "buildPrefs()")
       && gateBefore("  const finishGenerate = (result, preview, clickSig, clickLocks, genEpoch) => {", "\n  };\n", "publishingRef.current = true;"));
   {
     const fb = bodyOf("  const finishGenerate = (result, preview, clickSig, clickLocks, genEpoch) => {", "\n  };\n");
-    const snapOk = fb.indexOf("if (!snap.ok) {"), gate = fb.indexOf('if (!schedEditable()) { setSaveStatus(""); return; }'), stale = fb.indexOf("changedSince(Object.keys(result), genEpoch)"), commit = fb.indexOf("await genCommitRef.current(result);");
+    const snapOk = fb.indexOf("if (!snap.ok) {"), gate = fb.indexOf('if (!schedEditable()) { setSaveStatus(""); return "refused"; }'), stale = fb.indexOf("changedSince(Object.keys(result), genEpoch)"), commit = fb.indexOf("await genCommitRef.current(result);");
     check("SE-W Generate & Publish re-checks AFTER the snapshot's await and before the commit: the edit gate, then the click's engine epoch",
       snapOk > 0 && gate > snapOk && stale > gate && commit > stale, JSON.stringify({ snapOk, gate, stale, commit }));
   }
   check("SE-W stale intents carry preconditions: trade accept + both swaps check the slot holder; preview / publish / editor check the engine epoch",
     count("This trade is out of date") === 1 && count("This swap is out of date") === 2
-      && count("changedSince(Object.keys(previewSchedule), previewEpochRef.current)") === 1 && count("changedSince(Object.keys(result), genEpoch)") === 1
+      && count("changedSince(Object.keys(previewSchedule), previewEpochRef.current)") === 1 && count("changedSince(Object.keys(weeks), previewEpochRef.current)") === 1 && count("changedSince(Object.keys(result), genEpoch)") === 1
       && count("changedSince([mondayStr], editWeekModal.openEpoch || 0)") === 1 && count("swapShift(swapTarget.mondayStr, swapTarget.shift, s.candidateId, swapTarget.surgeonId)") === 1
       && count("previewEpochRef.current = genEpoch;") === 3 && count("previewEpochRef.current = schedSyncRef.current.epochNow();") === 1 && count("return genFinishRef.current(result, preview, clickSig, pendingLocks, genEpoch);") === 1);
   check("SE-W unload: the weeks keepalive comes ONLY from the engine (CAS, no insert, no delete) and only on pagehide/beforeunload; hide pushes through the chain",
@@ -5048,7 +5071,7 @@ await require("./sync-engine-se.js")({ src, check });
     count("const plan = schedSyncRef.current.undoPlan(step.sched, step.epoch);") === 1 && count("epoch: schedSyncRef.current ? schedSyncRef.current.epochNow() : 0") === 1
       && count("const pushUndo = useCallback((counts) => {") === 1 && count("pushUndo({ prior: priorCounts, y1: year1Counts })") === 1 && (src.match(/pushUndo\([a-z]/g) || []).length === 0);
   check("SE-W destructive snapshots pass minWeeks (an RLS-empty schedule read fails the capture): clear, regenerate, reset, restore",
-    count("{ minWeeks: Object.keys(schedSyncRef.current.knownSchedule()).length ? 1 : 0 }") === 4);
+    count("{ minWeeks: Object.keys(schedSyncRef.current.knownSchedule()).length ? 1 : 0 }") === 5); // + Accept & Publish's backup (A14)
 }
 {
   const { spawnSync } = require("child_process");
