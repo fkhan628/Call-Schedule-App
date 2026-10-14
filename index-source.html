@@ -1090,16 +1090,23 @@ function CallSchedule() {
     setAuthBusy(false);
   };
 
-  const handleSignOut = async () => {
-    // Sign-out is a boundary (sync v2): weeks not saved can't be sent without
-    // this user's token, so say so first; then forget the session's schedule
-    // state — the mirror, what the engine knows, the undo steps and an open
-    // editor — so nothing of it can be sent as the next user.
-    const unsaved = schedSyncRef.current.pending().length;
-    if (unsaved && !confirm(`${unsaved} week${unsaved === 1 ? "" : "s"} of the schedule ${unsaved === 1 ? "isn't" : "aren't"} saved yet — signing out loses ${unsaved === 1 ? "it" : "them"}.\n\nSign out anyway?`)) return;
+  // The session boundary (sync v2): forget this user's schedule state — the
+  // mirror, what the engine knows, the undo steps, an open editor, a search or
+  // a preview — so nothing of it can be sent as the next user. Sign-out
+  // crosses it, and so does a "Sign in again" that lands on a different
+  // account (reauthLanded) — that one without signing out.
+  const sessionBoundary = () => {
     searchRef.current = null; setSearching(null); setSearchStats(null); setPreviewSchedule(null); setShowPreview(false); // nothing searched, generated or loaded by this user is published as the next one
     schedSyncRef.current.reset();
     setScheduleHistory([]); setEditWeekModal(null); setReauthNeeded(false); setStaleTokenWarn(false);
+  };
+  const handleSignOut = async () => {
+    // Sign-out is a boundary (sync v2): weeks not saved can't be sent without
+    // this user's token, so say so first; then cross the session boundary
+    // BEFORE signing out.
+    const unsaved = schedSyncRef.current.pending().length;
+    if (unsaved && !confirm(`${unsaved} week${unsaved === 1 ? "" : "s"} of the schedule ${unsaved === 1 ? "isn't" : "aren't"} saved yet — signing out loses ${unsaved === 1 ? "it" : "them"}.\n\nSign out anyway?`)) return;
+    sessionBoundary();
     await auth.signOut();
     biometric.unenroll();
     setAuthUser(null); setUserProfile(null); setNeedsProfile(false); setMySurgeon("");
@@ -1810,6 +1817,11 @@ function CallSchedule() {
   // "Sign in again", in amber — never an edit gate: a skewed clock must not
   // stop edits (the gate below closes on the server's 401).
   const [staleTokenWarn, setStaleTokenWarn] = useState(false);
+  // The password sheet (A7(2)): opens when "Sign in again" can't renew the
+  // session in place. Its email is the signed-in account's, fixed.
+  const [reauthSheet, setReauthSheet] = useState(false);
+  const [reauthPassword, setReauthPassword] = useState("");
+  const [reauthError, setReauthError] = useState("");
   const schedEditable = () => {
     if (!schedSyncRef.current.isSeeded()) {
       showToast("The schedule hasn't loaded yet — nothing was changed. It retries every minute; try again shortly.", "error");
@@ -1822,23 +1834,79 @@ function CallSchedule() {
     }
     return true;
   };
-  // "Sign in again": renew the session IN PLACE with the stored refresh
-  // token — the same auth.getUser() refresh every app open does — so nothing
-  // in memory is lost (a reload or a sign-out would drop unsaved weeks).
+  // A re-auth landed: the session was renewed in place, or the password sheet
+  // signed in (A7(2)). WHICH account it is decides what happens — by the auth
+  // id (authUser.id), not person_id (what the engine's userId() carries):
+  //  - the SAME account: keep everything — the mirror, what the engine knows,
+  //    undo, an open editor. The new token un-blocks writes (the dead token
+  //    was the old one), so clear both banners, then pull, which sends what's
+  //    pending after it.
+  //  - a DIFFERENT account: nothing of this session may be sent as it. Cross
+  //    the sign-out boundary WITHOUT signing out (that would end the session
+  //    just made), then take the new account in as a password sign-in does.
+  // It never calls handleSignOut, never nulls authUser, and bumps
+  // reloadTrigger only for a different account.
+  const reauthLanded = async (user) => {
+    const eng = schedSyncRef.current;
+    if (!user || (authUser && user.id === authUser.id)) {
+      setReauthNeeded(false); setStaleTokenWarn(false);
+      eng.report(); // the banners follow the new token now, not at the next job's report
+      showToast(eng.pending().length ? "Signed in again — sending what wasn't saved." : "Signed in again.", "info");
+      schedSyncRef.current.pull();
+      return "same";
+    }
+    const lost = eng.pending().length;
+    sessionBoundary();
+    biometric.unenroll(); setBiometricEnrolled(false); setBiometricPending(false); // the previous account's enrolment (sign-out drops it too)
+    setAuthUser(user);
+    let profile = null;
+    try { profile = await dbAuth.getProfile(user.id); } catch (e) { profile = null; }
+    if (profile) {
+      setUserProfile(profile); setMySurgeon(profile.person_id); setNeedsProfile(false);
+      setIsScheduler(profile.role === "scheduler" || profile.role === "admin"); // never left on from the previous account
+      setReloadTrigger(t => t + 1);
+    } else {
+      setUserProfile(null); setMySurgeon(""); setIsScheduler(false); setNeedsProfile(true);
+    }
+    showToast(lost
+      ? `Signed in as a different account than before — the ${lost} week${lost === 1 ? "" : "s"} not saved ${lost === 1 ? "was" : "were"} discarded.`
+      : "Signed in as a different account than before — the schedule is reloading.", lost ? "error" : "info");
+    return "switched";
+  };
+  // "Sign in again": first renew the session IN PLACE with the stored refresh
+  // token (auth.refreshKeep: the refresh every app open does, except that a
+  // failure never clears the stored session), so nothing in memory is lost (a
+  // reload or a sign-out would drop unsaved weeks). When it can't be renewed,
+  // the password sheet opens — still in place. Biometric isn't offered: it
+  // would only unlock the same stored session.
   const reauthForSync = async () => {
     if (reauthBusy) return;
     setReauthBusy(true);
     try {
-      const { user, error } = await auth.getUser();
-      if (user) {
-        setReauthNeeded(false); setStaleTokenWarn(false);
-        showToast(schedSyncRef.current.pending().length ? "Signed in again — sending what wasn't saved." : "Signed in again.", "info");
-        schedSyncRef.current.push();
-        return;
-      }
-      showToast(error === "network"
-        ? "Couldn't reach the server — check the connection and try again."
-        : "This sign-in can't be renewed here. Reload the app and sign in" + (schedSyncRef.current.pending().length ? " — the weeks not saved yet will be lost (the reload asks first)." : "."), "error");
+      const r = await auth.refreshKeep();
+      if (r.ok) { await reauthLanded(r.user && r.user.id ? r.user : authUser); return; } // a refresh token renews the session it was issued for
+      setReauthPassword("");
+      setReauthError(r.error === "network" ? "Couldn't reach the server to renew your sign-in — check the connection, then sign in here." : "");
+      setReauthSheet(true);
+    } finally { setReauthBusy(false); }
+  };
+  // The sheet's submit: a password sign-in as the signed-in account (its
+  // email, fixed). A failure — a wrong password, offline, a server error — is
+  // shown in the sheet and clears NOTHING (signIn leaves the stored session
+  // alone when refused, and throws when offline — caught here).
+  const submitReauth = async () => {
+    if (reauthBusy) return;
+    const email = authUser && authUser.email;
+    if (!email) { setReauthError("This account has no email to sign in with here — reload the app and sign in."); return; }
+    if (!reauthPassword) { setReauthError("Enter your password."); return; }
+    setReauthBusy(true); setReauthError("");
+    try {
+      let res;
+      try { res = await auth.signIn(email, reauthPassword); }
+      catch (e) { res = { user: null, error: "Couldn't reach the server — check the connection and try again." }; }
+      if (!res || res.error || !res.user || !res.user.id) { setReauthError((res && res.error) || "Sign in failed — try again."); return; }
+      setReauthSheet(false); setReauthPassword(""); setReauthError("");
+      await reauthLanded(res.user);
     } finally { setReauthBusy(false); }
   };
   // The reload guard: any path that reloads the page while weeks aren't
@@ -6514,6 +6582,26 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           <span>⚠ Your sign-in may have expired — sign in again so your changes keep saving.</span>
           <button onClick={reauthForSync} disabled={reauthBusy} style={{background:"#8a5a10",border:"none",color:"#fff",borderRadius:6,padding:"4px 12px",fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:font}}>{reauthBusy ? "Signing in…" : "Sign in again"}</button>
           <button aria-label="Dismiss" onClick={()=>setStaleTokenWarn(false)} style={{background:"none",border:"none",color:"#8a5a10",cursor:"pointer",fontSize:14,padding:"2px 6px"}}>✕</button>
+        </div>
+      )}
+      {/* The password sheet (A7(2)), ABOVE both banners (z 10001): "Sign in
+          again" opens it when the session can't be renewed in place. The
+          email is the signed-in account's, fixed. A failure shows here and
+          clears nothing; Cancel only closes it (the banner stays). It never
+          signs out. Rendered outside the view conditionals, like the banners. */}
+      {!isPublicMode && authUser && reauthSheet && (
+        <div role="dialog" aria-modal="true" aria-label="Sign in again" style={{position:"fixed",inset:0,zIndex:10001,background:"rgba(0,0,0,0.55)",display:"flex",alignItems:"flex-start",justifyContent:"center",padding:"48px 16px 16px",overflowY:"auto",fontFamily:font}}>
+          <form onSubmit={e=>{ e.preventDefault(); submitReauth(); }} style={{background:"#fff",borderRadius:12,padding:20,maxWidth:380,width:"100%",boxSizing:"border-box",boxShadow:"0 8px 32px rgba(0,0,0,0.25)"}}>
+            <h3 style={{margin:"0 0 6px",fontSize:16,color:"#1a2a3a"}}>Sign in again</h3>
+            <p style={{fontSize:12.5,color:"#5a6a78",margin:"0 0 12px",lineHeight:1.5}}>Your sign-in couldn't be renewed. Enter your password to keep going — {schedSync.pending ? `the ${schedSync.pending} week${schedSync.pending === 1 ? "" : "s"} not saved yet stay${schedSync.pending === 1 ? "s" : ""} on this screen and ${schedSync.pending === 1 ? "is" : "are"} sent once you're in.` : "nothing on this screen is lost."}</p>
+            <input type="email" value={authUser.email || ""} readOnly aria-label="Email" autoComplete="username" style={{...css.inp,width:"100%",boxSizing:"border-box",padding:"10px 12px",fontSize:16,marginBottom:8,opacity:0.75}}/>
+            <input type="password" value={reauthPassword} onChange={e=>setReauthPassword(e.target.value)} placeholder="Password" aria-label="Password" autoComplete="current-password" autoFocus style={{...css.inp,width:"100%",boxSizing:"border-box",padding:"10px 12px",fontSize:16,marginBottom:8}}/>
+            {reauthError && <div role="alert" style={{fontSize:12,color:"#c04040",padding:"6px 10px",background:"#fce8e8",borderRadius:6,border:"1px solid #e8c0c0",marginBottom:8}}>{reauthError}</div>}
+            <div style={{display:"flex",justifyContent:"flex-end",gap:8}}>
+              <button type="button" onClick={()=>{ setReauthSheet(false); setReauthPassword(""); setReauthError(""); }} disabled={reauthBusy} style={{...css.btn(false),padding:"9px 14px",fontSize:13}}>Cancel</button>
+              <button type="submit" disabled={reauthBusy} style={{...css.btn(true),padding:"9px 18px",fontSize:13,fontWeight:700,opacity:reauthBusy?0.6:1}}>{reauthBusy ? "Signing in…" : "Sign in"}</button>
+            </div>
+          </form>
         </div>
       )}
       {/* Update-available banner — persistent until acted on; reload is USER-initiated

@@ -669,8 +669,10 @@ await (async () => {
 // what it adopts becomes what it knows in the same step — executed in SE13
 // ("the adopted W1 caused ZERO echo writes") and SE36 (two writers converge).
 // This pin keeps it the only adopter: no realtime schedule_weeks handler.
+// The pull triggers: the 60-s refresh, resume, reconnect, and a re-auth as
+// the same account (reauthLanded, A7(2) — executed in SE-R).
 check("schedule_weeks has no second adopter (no realtime handler; the engine's pull is the one)",
-  count('table: "schedule_weeks" }') === 0 && count("schedSyncRef.current.pull()") === 3,
+  count('table: "schedule_weeks" }') === 0 && count("schedSyncRef.current.pull()") === 4,
   `realtime: ${count('table: "schedule_weeks" }')}, pull triggers: ${count("schedSyncRef.current.pull()")}`);
 
 // Source pins: the gate exists, mirrors the DB predicate, and is applied at
@@ -5066,7 +5068,9 @@ await require("./sync-engine-se.js")({ src, check });
   check("SE-W reload / sign-out guards: every reload button (update banner, Settings → Refresh, the stale-removal Reload — A14) asks while weeks are unsaved; sign-out asks, then resets the engine (mirror too), undo and editor BEFORE signing out",
     count("confirmReloadWithPending(") === 3 && count("const reloadToResync = () => { if (confirmReloadWithPending()) window.location.reload(); };") === 1 // reloadToResync is executed in SE-A
       && /searchRef\.current = null; setSearching\(null\); setSearchStats\(null\); setPreviewSchedule\(null\); setShowPreview\(false\);[^\n]*\n\s*schedSyncRef\.current\.reset\(\);/.test(nsrcW)
-      && /const handleSignOut = async \(\) => \{[\s\S]{0,1100}schedSyncRef\.current\.reset\(\);\s*setScheduleHistory\(\[\]\); setEditWeekModal\(null\);[\s\S]{0,120}await auth\.signOut\(\);/.test(nsrcW));
+      // the boundary is ONE helper, crossed by sign-out (before signing out) and by a re-auth that lands on a different account (both executed in SE-R)
+      && /const sessionBoundary = \(\) => \{\n[^\n]*\n\s*schedSyncRef\.current\.reset\(\);\s*setScheduleHistory\(\[\]\); setEditWeekModal\(null\);[^\n]*\n  \};\n  const handleSignOut = async \(\) => \{[\s\S]{0,900}\n    sessionBoundary\(\);\n    await auth\.signOut\(\);/.test(nsrcW)
+      && count("sessionBoundary();") === 2);
   check("SE-W Undo is all-or-nothing through the engine's undoPlan (each step carries its epoch)",
     count("const plan = schedSyncRef.current.undoPlan(step.sched, step.epoch);") === 1 && count("epoch: schedSyncRef.current ? schedSyncRef.current.epochNow() : 0") === 1
       && count("const pushUndo = useCallback((counts) => {") === 1 && count("pushUndo({ prior: priorCounts, y1: year1Counts })") === 1 && (src.match(/pushUndo\([a-z]/g) || []).length === 0);
@@ -5207,18 +5211,28 @@ await (async () => {
       !!amber && /^\n        <div role="status"/.test(amber) && amber.includes("<button onClick={reauthForSync} disabled={reauthBusy}") && amber.includes('onClick={()=>setStaleTokenWarn(false)}')
         && count("onClick={reauthForSync}") === 2 && count("{!isPublicMode && authUser && (schedSync.authNeeded || reauthNeeded) && (") === 1, (amber || "").slice(0, 120));
   }
-  const raSrc = after("  const reauthForSync = ", "\n  };\n");
-  const raFn = raSrc ? fnIn("reauthBusy, setReauthBusy, auth, setReauthNeeded, setStaleTokenWarn, showToast, schedSyncRef", raSrc + "\n  }") : null;
-  if (!raFn) { check("SE-A reauthForSync is extractable", false, "anchor / compile"); return; }
+  // reauthForSync with the real reauthLanded behind it (10/n moved it from
+  // auth.getUser to auth.refreshKeep, and a failed renewal to the password
+  // sheet — every branch is executed in SE-R).
+  const raSrc = after("  const reauthForSync = ", "\n  };\n"), rlSrc = after("  const reauthLanded = ", "\n  };\n");
+  const raFn = raSrc ? fnIn("reauthBusy, setReauthBusy, auth, authUser, reauthLanded, setReauthPassword, setReauthError, setReauthSheet", raSrc + "\n  }") : null;
+  const rlFn = rlSrc ? fnIn("schedSyncRef, authUser, setReauthNeeded, setStaleTokenWarn, showToast, sessionBoundary, biometric, setBiometricEnrolled, setBiometricPending, setAuthUser, dbAuth, setUserProfile, setMySurgeon, setNeedsProfile, setIsScheduler, setReloadTrigger", rlSrc + "\n  }") : null;
+  if (!raFn || !rlFn) { check("SE-A reauthForSync and reauthLanded are extractable", false, "anchor / compile"); return; }
   const ra = async (res) => {
-    const r = { warn: [], need: [], pushes: 0, toasts: [] };
-    await raFn({ reauthBusy: false, setReauthBusy: () => {}, auth: { getUser: async () => res }, setReauthNeeded: (v) => r.need.push(v), setStaleTokenWarn: (v) => r.warn.push(v),
-      showToast: (m) => r.toasts.push(String(m)), schedSyncRef: { current: { pending: () => [], push: () => { r.pushes++; } } } })();
+    const r = { warn: [], need: [], pulls: 0, toasts: [], sheet: [], err: [] };
+    const env = { reauthBusy: false, setReauthBusy: () => {}, authUser: { id: "u1", email: "u1@dsg.test" }, auth: { refreshKeep: async () => res },
+      setReauthNeeded: (v) => r.need.push(v), setStaleTokenWarn: (v) => r.warn.push(v), showToast: (m) => r.toasts.push(String(m)),
+      schedSyncRef: { current: { pending: () => [], report: () => {}, pull: () => { r.pulls++; } } },
+      setReauthPassword: () => {}, setReauthError: (v) => r.err.push(v), setReauthSheet: (v) => r.sheet.push(v) };
+    env.reauthLanded = rlFn(env);
+    await raFn(env)();
     return r;
   };
-  const raOk = await ra({ user: { id: "u1" } }), raDead = await ra({ user: null }), raNet = await ra({ user: null, error: "network" });
-  check("SE-A A7(3) \"Sign in again\" that renews the session clears BOTH banners and sends what's pending; one that can't renew clears nothing (the warning stays, to retry)",
-    raOk.warn.join() === "false" && raOk.need.join() === "false" && raOk.pushes === 1 && raDead.warn.length === 0 && raDead.need.length === 0 && raDead.pushes === 0 && raNet.warn.length === 0 && /reach the server/.test(raNet.toasts.join(" ")),
+  const raOk = await ra({ ok: true, user: { id: "u1" } }), raDead = await ra({ ok: false, error: "refused" }), raNet = await ra({ ok: false, error: "network" });
+  check("SE-A A7(3) \"Sign in again\" that renews the session clears BOTH banners and sends what's pending (a pull, which pushes after it); one that can't renew clears nothing (the warning stays) and opens the password sheet instead",
+    raOk.warn.join() === "false" && raOk.need.join() === "false" && raOk.pulls === 1 && raOk.sheet.length === 0
+      && raDead.warn.length === 0 && raDead.need.length === 0 && raDead.pulls === 0 && raDead.sheet.join() === "true"
+      && raNet.warn.length === 0 && raNet.pulls === 0 && raNet.sheet.join() === "true" && /reach the server/.test(raNet.err.join(" ")),
     JSON.stringify([raOk, raDead, raNet]));
   const geSrc = after("  const schedEditable = ", "\n  };\n");
   const geFn = geSrc ? fnIn("schedSyncRef, showToast, setReauthNeeded, staleTokenWarn, jwtIsFresh", geSrc + "\n  }") : null;
@@ -5226,8 +5240,10 @@ await (async () => {
   const ge = (blocked) => { const r = { toasts: 0 }; r.ok = geFn({ schedSyncRef: { current: { isSeeded: () => true, authBlocked: () => blocked } }, showToast: () => { r.toasts++; }, setReauthNeeded: () => {}, staleTokenWarn: true, jwtIsFresh: () => false })(); return r; };
   check("SE-A A7(3) the soft warning is NOT an edit gate: with it set (the token stale by the clock) an edit is allowed; only the server's 401 (authBlocked) refuses",
     ge(false).ok === true && ge(false).toasts === 0 && ge(true).ok === false, JSON.stringify([ge(false), ge(true)]));
-  check("SE-A A7(3) signing out (a boundary) and a renewed sign-in both drop the soft warning",
-    count("setReauthNeeded(false); setStaleTokenWarn(false);") === 2 && /const handleSignOut = async \(\) => \{[\s\S]{0,1300}setReauthNeeded\(false\); setStaleTokenWarn\(false\);\n\s*await auth\.signOut\(\);/.test(nsrcA));
+  check("SE-A A7(3) signing out (the session boundary, crossed before signing out) and a renewed sign-in both drop the soft warning",
+    count("setReauthNeeded(false); setStaleTokenWarn(false);") === 2
+      && /const sessionBoundary = \(\) => \{[\s\S]{0,400}setReauthNeeded\(false\); setStaleTokenWarn\(false\);\n  \};\n  const handleSignOut = async \(\) => \{[\s\S]{0,900}\n    sessionBoundary\(\);\n    await auth\.signOut\(\);/.test(nsrcA)
+      && /const reauthLanded = async \(user\) => \{\n[^\n]*\n[^\n]*\n      setReauthNeeded\(false\); setStaleTokenWarn\(false\);/.test(nsrcA));
 
   // ── A13: an out-of-date swap also drops the stale suggestions ──
   const MON = "2030-01-07", MON2 = "2030-01-14";
@@ -5257,6 +5273,261 @@ await (async () => {
       && twOk.writes === 1 && twOk.undo === 1 && twOk.notes === 1 && twOk.emails === 1 && twOk.next[MON].nights.tue === "s3" && twOk.next[MON2].nights.wed === "s1" && twOk.cleared.join() === "suggestions:null,target:null" && twOk.toasts.length === 0,
     JSON.stringify([owOk, twOk].map(r => ({ w: r.writes, u: r.undo, n: r.notes, c: r.cleared, t: r.toasts }))));
 })().catch(ex => check("SE-A harness ran without crashing", false, String(ex && ex.stack || ex).split("\n").slice(0, 3).join(" | ")));
+
+// SE-R. Sync v2 "Sign in again" (10/n, A7(2)), EXECUTED.
+//  - config.js's REAL auth, loaded in its own context on a stubbed fetch and
+//    an in-memory localStorage: refreshKeep keeps the stored session on
+//    every failure (getUser / _refresh clear it on the same answers — the
+//    control, which also proves this harness sees a clear), and signIn's
+//    failure paths leave it alone (A7(2): "verify that signIn's failure path
+//    leaves the stored session intact").
+//  - the component's sessionBoundary, handleSignOut, reauthLanded,
+//    reauthForSync and submitReauth, sliced by their anchors and run in a
+//    FRESH context (a free identifier throws instead of resolving to a real
+//    config.js object), wired to that auth and, for the sheet's three
+//    outcomes, to the REAL engine on the emulated table. Every setter and
+//    call lands in one ordered log; toasts and the engine's internal errors
+//    are recorded too.
+// JSX can't run here (no Babel in CI), so the sheet's markup is pinned.
+console.log("\nSE-R. sync v2 re-auth (A7(2)), executed");
+await (async () => {
+  const nsrcR = src.replace(/\r\n/g, "\n");
+  const after = (start, end) => { const i = nsrcR.indexOf(start); if (i < 0 || nsrcR.indexOf(start, i + 1) !== -1) return null; const e = nsrcR.indexOf(end, i + start.length); return e < 0 ? null : nsrcR.slice(i + start.length, e); };
+  const rctx = vm.createContext({});
+  const fnR = (names, code) => { try { return vm.runInContext(`(function (env) { const { ${names} } = env; return (${code}); })`, rctx); } catch (ex) { return null; } };
+  const se = require("./sync-engine-se.js");
+  const { createFakeWeeksTable } = require("./fake-weeks-table.js");
+
+  // ── config.js's auth, for real ──
+  const KEYS = ["dsg-auth-token", "dsg-auth-refresh"];
+  const SESS = { "dsg-auth-token": "TOK_OLD", "dsg-auth-refresh": "REF_OLD" };
+  const mkAuth = (store) => {
+    const ls = new Map(Object.entries(store || {})), calls = [];
+    let route = () => { throw new Error("no auth route installed"); };
+    const g = { console, window: {}, document: undefined, navigator: { userAgent: "node-test" }, setTimeout, clearTimeout,
+      localStorage: { getItem: (k) => (ls.has(k) ? ls.get(k) : null), setItem: (k, v) => { ls.set(k, String(v)); }, removeItem: (k) => { ls.delete(k); } },
+      fetch: async (url, init) => { calls.push({ url: String(url), method: (init && init.method) || "GET", body: init && init.body }); return route(String(url)); } };
+    g.globalThis = g;
+    vm.createContext(g);
+    for (const f of ["helpers.js", "config.js"]) vm.runInContext(fs.readFileSync(path.join(ROOT, f), "utf8"), g, { filename: f });
+    return { auth: vm.runInContext("auth", g), ls, calls, on: (fn) => { route = fn; } };
+  };
+  const resp = (status, json) => ({ ok: status >= 200 && status < 300, status, json: async () => json, text: async () => JSON.stringify(json) });
+  const rt = (table) => (url) => { for (const [k, v] of table) if (url.includes(k)) return v; throw new Error("unrouted auth request: " + url); };
+  const offline = () => { throw new TypeError("Failed to fetch"); };
+  const REFRESH = "/auth/v1/token?grant_type=refresh_token", PASSWORD = "/auth/v1/token?grant_type=password";
+  const refused = rt([[REFRESH, resp(400, { error: "invalid_grant", error_description: "Invalid Refresh Token: Already Used" })], ["/auth/v1/user", resp(403, { msg: "invalid JWT" })]]);
+  const kept = (A) => A.ls.get(KEYS[0]) === "TOK_OLD" && A.ls.get(KEYS[1]) === "REF_OLD";
+  const gone = (A) => !A.ls.has(KEYS[0]) && !A.ls.has(KEYS[1]);
+  const UA = { id: "auth-a", email: "a@dsg.test" };
+  {
+    const A1 = mkAuth(SESS); A1.on(refused);
+    const r1 = typeof A1.auth.refreshKeep === "function" ? await A1.auth.refreshKeep() : null;
+    const A2 = mkAuth(SESS); A2.on(offline);
+    const r2 = r1 ? await A2.auth.refreshKeep() : null;
+    check("SE-R config.js auth.refreshKeep: a REFUSED refresh (400) and a NETWORK error both report failure and leave the stored session exactly as it was (one refresh request, with the stored refresh token)",
+      !!r1 && r1.ok === false && r1.error === "refused" && kept(A1) && A1.calls.length === 1 && A1.calls[0].method === "POST" && A1.calls[0].url.includes(REFRESH) && JSON.parse(A1.calls[0].body).refresh_token === "REF_OLD"
+        && !!r2 && r2.ok === false && r2.error === "network" && kept(A2),
+      JSON.stringify({ r1, r2, ls1: [...A1.ls], ls2: [...A2.ls], calls: A1.calls.map(c => c.url) }));
+    if (!r1) return;
+    const A3 = mkAuth(SESS); A3.on(rt([[REFRESH, resp(200, { access_token: "TOK_NEW", refresh_token: "REF_NEW", user: UA })]]));
+    const r3 = await A3.auth.refreshKeep();
+    const A4 = mkAuth({}); A4.on(offline);
+    const r4 = await A4.auth.refreshKeep();
+    check("SE-R …a renewed refresh stores the new session and returns its user; with no stored session it sends nothing",
+      r3.ok === true && !!r3.user && r3.user.id === "auth-a" && A3.ls.get(KEYS[0]) === "TOK_NEW" && A3.ls.get(KEYS[1]) === "REF_NEW" && r4.ok === false && r4.error === "no-session" && A4.calls.length === 0,
+      JSON.stringify({ r3, r4, ls3: [...A3.ls] }));
+    // The control: the refresh behind auth.getUser() — what "Sign in again"
+    // ran before 10/n — CLEARS the stored session on the same answers.
+    const C1 = mkAuth(SESS); C1.on(refused);
+    const c1 = await C1.auth.getUser();
+    const C2 = mkAuth(SESS); C2.on(offline);
+    const c2 = await C2.auth._refresh("REF_OLD");
+    check("SE-R control: auth.getUser() and _refresh CLEAR the stored session on the same refused / failed refresh (why the re-auth no longer uses them; and this harness sees a clear)",
+      !c1.user && gone(C1) && !c2.user && gone(C2), JSON.stringify({ c1, ls1: [...C1.ls], ls2: [...C2.ls] }));
+    const S1 = mkAuth(SESS); S1.on(rt([[PASSWORD, resp(400, { error: "invalid_grant", error_description: "Invalid login credentials" })]]));
+    const s1 = await S1.auth.signIn("a@dsg.test", "wrong");
+    const S2 = mkAuth(SESS); S2.on(offline);
+    let s2threw = false; try { await S2.auth.signIn("a@dsg.test", "pw"); } catch (e) { s2threw = true; }
+    check("SE-R A7(2) signIn's failure paths leave the stored session intact: a wrong password returns the error (nothing stored or cleared); offline it throws (the sheet catches it), nothing cleared",
+      s1.user === null && s1.error === "Invalid login credentials" && kept(S1) && s2threw && kept(S2), JSON.stringify({ s1, ls1: [...S1.ls], ls2: [...S2.ls] }));
+  }
+
+  // ── the component's re-auth, for real ──
+  const sbSrc = after("  const sessionBoundary = ", "\n  };\n"), soSrc = after("  const handleSignOut = ", "\n  };\n"),
+    rlSrc = after("  const reauthLanded = ", "\n  };\n"), raSrc = after("  const reauthForSync = ", "\n  };\n"), smSrc = after("  const submitReauth = ", "\n  };\n");
+  const sbFn = sbSrc && fnR("searchRef, setSearching, setSearchStats, setPreviewSchedule, setShowPreview, schedSyncRef, setScheduleHistory, setEditWeekModal, setReauthNeeded, setStaleTokenWarn", sbSrc + "\n  }");
+  const soFn = soSrc && fnR("schedSyncRef, confirm, sessionBoundary, auth, biometric, setAuthUser, setUserProfile, setNeedsProfile, setMySurgeon, setBiometricEnrolled, setBiometricPending", soSrc + "\n  }");
+  const rlFn = rlSrc && fnR("schedSyncRef, authUser, setReauthNeeded, setStaleTokenWarn, showToast, sessionBoundary, biometric, setBiometricEnrolled, setBiometricPending, setAuthUser, dbAuth, setUserProfile, setMySurgeon, setNeedsProfile, setIsScheduler, setReloadTrigger, handleSignOut, auth", rlSrc + "\n  }");
+  const raFn = raSrc && fnR("reauthBusy, setReauthBusy, auth, authUser, reauthLanded, setReauthPassword, setReauthError, setReauthSheet", raSrc + "\n  }");
+  const smFn = smSrc && fnR("reauthBusy, setReauthBusy, authUser, reauthPassword, setReauthError, auth, setReauthSheet, setReauthPassword, reauthLanded", smSrc + "\n  }");
+  if (!sbFn || !soFn || !rlFn || !raFn || !smFn) { check("SE-R the re-auth wiring is extractable (sessionBoundary, handleSignOut, reauthLanded, reauthForSync, submitReauth)", false, JSON.stringify({ sbFn: !!sbFn, soFn: !!soFn, rlFn: !!rlFn, raFn: !!raFn, smFn: !!smFn })); return; }
+  const SETTERS = ["setSearching", "setSearchStats", "setPreviewSchedule", "setShowPreview", "setScheduleHistory", "setEditWeekModal", "setReauthNeeded", "setStaleTokenWarn",
+    "setAuthUser", "setUserProfile", "setNeedsProfile", "setMySurgeon", "setBiometricEnrolled", "setBiometricPending", "setIsScheduler", "setReloadTrigger",
+    "setReauthBusy", "setReauthPassword", "setReauthError", "setReauthSheet"];
+  // One component instance: every setter and call it makes, in order, in w.log.
+  const world = (o) => {
+    const w = { log: [], toasts: [], bumped: null, threw: null };
+    const env = {};
+    SETTERS.forEach(n => { env[n] = (v) => { w.log.push(n + ":" + (typeof v === "function" ? "fn" : JSON.stringify(v === undefined ? null : v))); if (n === "setReloadTrigger" && typeof v === "function") w.bumped = v(0); }; });
+    const eng = o.engine;
+    env.schedSyncRef = { current: Object.assign({}, eng, {
+      pull: () => { w.log.push("pull"); return eng.pull(); }, push: () => { w.log.push("push"); return eng.push(); },
+      reset: () => { w.log.push("reset"); return eng.reset(); }, report: () => { w.log.push("report"); return eng.report(); } }) };
+    env.searchRef = { current: { purpose: "search" } };
+    env.confirm = () => { w.log.push("confirm"); return o.confirm !== false; };
+    env.showToast = (m, tone) => { w.toasts.push([String(m), tone]); };
+    env.biometric = { unenroll: () => { w.log.push("biometric.unenroll"); } };
+    env.dbAuth = { getProfile: async (id) => { w.log.push("getProfile:" + id); return o.profile || null; } };
+    env.handleSignOut = async () => { w.log.push("handleSignOut"); };
+    env.auth = Object.assign(Object.create(o.auth || {}), { signOut: async () => { w.log.push("auth.signOut"); } });
+    env.authUser = o.authUser === undefined ? UA : o.authUser;
+    env.reauthBusy = !!o.busy;
+    env.reauthPassword = o.password === undefined ? "pw-a" : o.password;
+    env.sessionBoundary = sbFn(env);
+    env.reauthLanded = rlFn(env);
+    w.env = env; w.signOut = soFn(env); w.reauth = raFn(env);
+    w.submit = async () => { try { await smFn(env)(); } catch (e) { w.threw = String(e && e.message || e); } };
+    return w;
+  };
+  const stubEng = (pend) => ({ pending: () => (pend || []).slice(), reset: () => Promise.resolve({ ok: true }), report: () => {}, pull: () => Promise.resolve({ ok: true }), push: () => Promise.resolve({ ok: true }) });
+  const hit = (x, m) => x === m || x.startsWith(m);
+  const seq = (log, ...marks) => { let at = -1; for (const m of marks) { const i = log.findIndex((x, j) => j > at && hit(x, m)); if (i < 0) return false; at = i; } return true; };
+  const none = (log, ...marks) => !log.some(x => marks.some(m => hit(x, m)));
+  const contig = (log, part) => { for (let i = 0; i + part.length <= log.length; i++) if (part.every((x, j) => log[i + j] === x)) return i; return -1; };
+
+  // The session boundary on its own, then sign-out around it.
+  const B = world({ engine: stubEng() }); B.env.sessionBoundary();
+  const B0 = B.log.slice();
+  check("SE-R the session boundary, executed: search / preview dropped, the engine reset (the mirror too), the undo history and the week editor cleared, both banners down — in that order",
+    JSON.stringify(B0) === JSON.stringify(["setSearching:null", "setSearchStats:null", "setPreviewSchedule:null", "setShowPreview:false", "reset", "setScheduleHistory:[]", "setEditWeekModal:null", "setReauthNeeded:false", "setStaleTokenWarn:false"]) && B.env.searchRef.current === null,
+    JSON.stringify(B0));
+  const O1 = world({ engine: stubEng([]) }); await O1.signOut();
+  const O2 = world({ engine: stubEng(["2026-10-12", "2026-10-19"]), confirm: false }); await O2.signOut();
+  const O3 = world({ engine: stubEng(["2026-10-12"]) }); await O3.signOut();
+  check("SE-R sign-out crosses that boundary BEFORE signing out; with weeks unsaved it asks first, and a no changes nothing",
+    contig(O1.log, B0) === 0 && O1.log.indexOf("auth.signOut") === B0.length && O1.log.includes("setAuthUser:null") && !O1.log.includes("confirm")
+      && O2.log.join() === "confirm" && O3.log[0] === "confirm" && contig(O3.log, B0) === 1 && O3.log.indexOf("auth.signOut") === B0.length + 1,
+    JSON.stringify({ O1: O1.log, O2: O2.log, O3: O3.log }));
+
+  // reauthForSync's branches, on config.js's real auth.
+  const RA = async (route, o) => { const A = mkAuth(SESS); A.on(route); const w = world(Object.assign({ engine: stubEng(), auth: A.auth }, o || {})); await w.reauth(); return { w, A }; };
+  const raRef = await RA(refused), raNet = await RA(offline), raBusy = await RA(offline, { busy: true });
+  const raSame = await RA(rt([[REFRESH, resp(200, { access_token: "TOK_NEW", refresh_token: "REF_NEW", user: UA })]]));
+  const raNoUser = await RA(rt([[REFRESH, resp(200, { access_token: "TOK_NEW", refresh_token: "REF_NEW" })]]));
+  const raOther = await RA(rt([[REFRESH, resp(200, { access_token: "TOK_B", refresh_token: "REF_B", user: { id: "auth-b", email: "b@dsg.test" } })]]), { profile: { person_id: "s5", role: "member" } });
+  const QUIET = ["setReauthNeeded", "setStaleTokenWarn", "report", "pull", "push", "reset", "setScheduleHistory", "setEditWeekModal", "setAuthUser", "setUserProfile", "setReloadTrigger", "handleSignOut", "auth.signOut", "biometric.unenroll"];
+  check("SE-R reauthForSync: a refresh that can't renew (refused, or offline) opens the password sheet and clears NOTHING — the stored session, both banners, the engine, undo, the editor — and never asks auth.getUser (which would clear it)",
+    seq(raRef.w.log, "setReauthBusy:true", 'setReauthPassword:""', 'setReauthError:""', "setReauthSheet:true", "setReauthBusy:false") && none(raRef.w.log, ...QUIET) && kept(raRef.A)
+      && raRef.A.calls.length === 1 && raRef.A.calls[0].url.includes(REFRESH)
+      && seq(raNet.w.log, "setReauthBusy:true", 'setReauthPassword:""', 'setReauthError:"Couldn', "setReauthSheet:true") && raNet.w.log.some(x => /^setReauthError:".*reach the server/.test(x)) && none(raNet.w.log, ...QUIET) && kept(raNet.A)
+      && raBusy.w.log.length === 0 && raBusy.A.calls.length === 0,
+    JSON.stringify({ ref: raRef.w.log, net: raNet.w.log, calls: raRef.A.calls.map(c => c.url) }));
+  const sameOk = (r) => seq(r.w.log, "setReauthBusy:true", "setReauthNeeded:false", "setStaleTokenWarn:false", "report", "pull", "setReauthBusy:false")
+    && none(r.w.log, "setReauthSheet", "reset", "setScheduleHistory", "setEditWeekModal", "setSearching", "setAuthUser", "setReloadTrigger", "handleSignOut", "auth.signOut", "biometric.unenroll") && r.A.ls.get(KEYS[0]) === "TOK_NEW";
+  check("SE-R reauthForSync: a renewed session as the SAME account (or an answer naming no user — a refresh token renews its own session) clears both banners, then pulls (which sends what's pending); no sheet, no boundary, no reload",
+    sameOk(raSame) && sameOk(raNoUser), JSON.stringify({ same: raSame.w.log, noUser: raNoUser.w.log }));
+  const oB = contig(raOther.w.log, B0);
+  check("SE-R reauthForSync: a renewed session that is ANOTHER account (the stored refresh token was someone else's) crosses the boundary, then takes that account in — never a sign-out",
+    oB > 0 && seq(raOther.w.log.slice(oB + B0.length), 'setAuthUser:{"id":"auth-b"', "getProfile:auth-b", 'setUserProfile:{"person_id":"s5"', "setReloadTrigger:fn") && raOther.w.bumped === 1
+      && none(raOther.w.log, "handleSignOut", "auth.signOut", "setAuthUser:null", "pull", "setReauthSheet"),
+    JSON.stringify(raOther.w.log));
+
+  // The sheet's submit: its three outcomes, with the REAL engine on the
+  // emulated table. A signed-in session whose token the server stopped
+  // accepting after it loaded: an edit made since is pending (auth-needed),
+  // and a peer changed another week meanwhile.
+  let createSchedSyncR = null; try { createSchedSyncR = se.compileEngine(se.extractEngine(src)); } catch (ex) { createSchedSyncR = null; }
+  if (!createSchedSyncR) { check("SE-R the engine is extractable", false, "anchor / compile"); return; }
+  const WKR = ["2026-10-12", "2026-10-19", "2026-10-26"];
+  const wkR = (dc) => ({ dayCall: dc, nights: { mon: "s2", tue: "s3", wed: "s4", thu: "s5", wknd: "s6" }, off: "s1" });
+  let msR = Date.UTC(2026, 9, 14, 12, 0, 0);
+  const clockR = () => new Date(msR += 1000).toISOString();
+  const internalR = [];
+  const expired = async () => {
+    const t = createFakeWeeksTable({ baseUrl: "https://x.supabase.co", anonKey: "ANON", users: { TOK_OLD: "user-a", TOK_A2: "user-a", TOK_B: "user-b" }, clock: clockR,
+      rows: WKR.map((k, i) => ({ week_monday: k, data: wkR("s" + (i + 1)), version: 2, updated_by: "user-a", updated_at: "2026-10-01T08:00:00.000Z" })) });
+    const A = mkAuth(SESS);
+    const s = { mirror: {}, st: null, toasts: [] };
+    const anon = { apikey: "ANON", Authorization: "Bearer ANON" };
+    const tok = () => (A.auth.getSession() || {}).access_token || null; // the app's token(): whatever the stored session holds
+    s.engine = createSchedSyncR({ getState: () => s.mirror, commit: (n) => { s.mirror = n; }, fetch: (u, i) => t.fetch(u, i), url: "https://x.supabase.co",
+      writeHeaders: () => (tok() ? { apikey: "ANON", Authorization: "Bearer " + tok() } : anon),
+      readHeaders: () => anon, // dbReadHeaders: anon once the token is stale (the table is anon-readable)
+      canWrite: () => true, token: tok, userId: () => "s1", now: clockR, nowMs: () => msR,
+      onStatus: (st) => { s.st = st; }, onToast: (m) => s.toasts.push(String(m)), onWipeBlocked: () => {}, onInternalError: (e) => internalR.push(String(e && e.message || e)), log: () => {} });
+    await s.engine.load();
+    t.control.expiredTokens.add("TOK_OLD");
+    s.mirror = Object.assign({}, s.mirror, { [WKR[0]]: wkR("mine") });
+    await s.engine.push();
+    const peer = t.get(WKR[1]);
+    t.put(Object.assign({}, peer, { data: wkR("peer"), version: peer.version + 1, updated_by: "user-p", updated_at: "2026-10-14T11:00:00+00:00" }));
+    return { t, A, s, from: t.log.length };
+  };
+  const pre = await expired();
+  check("SE-R setup: the session is auth-needed with ONE week pending (the 401 answered the old token; the edit kept on screen)",
+    pre.s.engine.authBlocked() && pre.s.engine.pending().join() === WKR[0] && pre.s.st && pre.s.st.authNeeded === true && pre.s.mirror[WKR[0]].dayCall === "mine" && pre.t.get(WKR[0]).data.dayCall === "s1",
+    JSON.stringify({ pend: pre.s.engine.pending(), st: pre.s.st && pre.s.st.authNeeded }));
+
+  // (1) an ERROR: a wrong password, or offline (signIn throws).
+  const E1 = await expired(); E1.A.on(rt([[PASSWORD, resp(400, { error: "invalid_grant", error_description: "Invalid login credentials" })]]));
+  const we1 = world({ engine: E1.s.engine, auth: E1.A.auth }); await we1.submit(); await E1.s.engine.idle();
+  const E2 = await expired(); E2.A.on(offline);
+  const we2 = world({ engine: E2.s.engine, auth: E2.A.auth }); await we2.submit(); await E2.s.engine.idle();
+  const untouched = (E, w) => kept(E.A) && E.t.log.length === E.from && E.s.engine.pending().join() === WKR[0] && E.s.engine.authBlocked() && E.s.mirror[WKR[0]].dayCall === "mine" && E.t.get(WKR[0]).data.dayCall === "s1"
+    && none(w.log, "setReauthSheet", ...QUIET);
+  check("SE-R the sheet's submit, outcome 1 — an ERROR (a wrong password; offline, where signIn throws): shown in the sheet, and NOTHING is cleared — the stored session, the sheet itself, both banners, the pending week (still pending, still on screen), the engine, undo, the editor; no request reaches the table",
+    !we1.threw && !we2.threw && we1.log.includes('setReauthError:"Invalid login credentials"') && we2.log.some(x => /^setReauthError:".*reach the server/.test(x)) && untouched(E1, we1) && untouched(E2, we2)
+      && E1.A.calls.length === 1 && E1.A.calls[0].url.includes(PASSWORD) && JSON.parse(E1.A.calls[0].body).email === UA.email && JSON.parse(E1.A.calls[0].body).password === "pw-a",
+    JSON.stringify({ we1: we1.log, we2: we2.log, threw: [we1.threw, we2.threw], pend: E1.s.engine.pending() }));
+
+  // (2) the SAME account.
+  const S = await expired(); S.A.on(rt([[PASSWORD, resp(200, { access_token: "TOK_A2", refresh_token: "REF_A2", user: UA })]]));
+  const ws = world({ engine: S.s.engine, auth: S.A.auth }); await ws.submit(); await S.s.engine.idle();
+  const sNew = S.t.log.slice(S.from), sGet = sNew.findIndex(e => e.method === "GET"), sPatch = sNew.findIndex(e => e.method === "PATCH");
+  check("SE-R the sheet's submit, outcome 2 — the SAME account (authUser.id): the sheet closes, both banners clear, THEN a pull, which adopts the peer's week and then sends the pending one under the new token, by CAS",
+    !ws.threw && seq(ws.log, "setReauthSheet:false", "setReauthNeeded:false", "setStaleTokenWarn:false", "report", "pull") && sGet === 0 && sPatch > sGet
+      && /version=eq\.2/.test(sNew[sPatch].url) && /Bearer TOK_A2/.test(JSON.stringify(sNew[sPatch].headers || {})) && S.t.get(WKR[0]).data.dayCall === "mine" && S.t.get(WKR[0]).version === 3
+      && S.s.mirror[WKR[1]].dayCall === "peer" && S.s.engine.pending().length === 0 && !S.s.engine.authBlocked() && !!S.s.st && S.s.st.authNeeded === false && S.A.ls.get(KEYS[0]) === "TOK_A2",
+    JSON.stringify({ log: ws.log, reqs: sNew.map(e => e.method + " " + e.status), st: S.s.st && S.s.st.authNeeded }));
+  check("SE-R …and it KEEPS the session: no boundary (no engine reset; undo, the editor, a search untouched), no new authUser, no reload trigger, never handleSignOut or a sign-out; the edit is still on screen",
+    none(ws.log, "reset", "setScheduleHistory", "setEditWeekModal", "setSearching", "setAuthUser", "setUserProfile", "setReloadTrigger", "handleSignOut", "auth.signOut", "biometric.unenroll") && ws.env.searchRef.current !== null
+      && S.s.mirror[WKR[0]].dayCall === "mine" && /sending what wasn't saved/.test(ws.toasts.map(x => x[0]).join(" ")),
+    JSON.stringify(ws.log));
+
+  // (3) a DIFFERENT account: the same email, another auth id.
+  const D = await expired(); D.A.on(rt([[PASSWORD, resp(200, { access_token: "TOK_B", refresh_token: "REF_B", user: { id: "auth-b", email: UA.email } })]]));
+  const wd = world({ engine: D.s.engine, auth: D.A.auth, profile: { person_id: "s5", role: "member" } }); await wd.submit(); await D.s.engine.idle();
+  const dShut = wd.log.indexOf("setReauthSheet:false"), dB = contig(wd.log, B0), dNew = D.t.log.slice(D.from);
+  check("SE-R the sheet's submit, outcome 3 — a DIFFERENT account: the sheet closes, the SAME boundary sign-out crosses (engine reset, undo, editor, search), then the new account in (authUser, its profile, the reload trigger bumped) — and never a sign-out",
+    !wd.threw && dShut >= 0 && dB > dShut && seq(wd.log.slice(dB + B0.length), 'setAuthUser:{"id":"auth-b"', "getProfile:auth-b", 'setUserProfile:{"person_id":"s5"', 'setMySurgeon:"s5"', "setIsScheduler:false", "setReloadTrigger:fn")
+      && wd.bumped === 1 && wd.log.includes("biometric.unenroll") && none(wd.log, "handleSignOut", "auth.signOut", "setAuthUser:null", "pull"),
+    JSON.stringify(wd.log));
+  check("SE-R …and nothing of the old session is sent as the new account: the pending week is dropped (never written, under any token), the screen refills from the table, and the toast says it was discarded",
+    dNew.filter(e => e.method !== "GET").length === 0 && D.t.get(WKR[0]).data.dayCall === "s1" && !!D.s.mirror[WKR[0]] && D.s.mirror[WKR[0]].dayCall === "s1" && D.s.mirror[WKR[1]].dayCall === "peer"
+      && D.s.engine.pending().length === 0 && /discarded/.test(wd.toasts.map(x => x[0]).join(" ")),
+    JSON.stringify({ reqs: dNew.map(e => e.method), toasts: wd.toasts, mirror: Object.keys(D.s.mirror) }));
+  const wn = world({ engine: stubEng(), profile: null });
+  const rn = await wn.env.reauthLanded({ id: "auth-c", email: "c@dsg.test" });
+  check("SE-R …a different account with no profile yet → the profile screen, the previous profile dropped, no reload trigger (choosing a name bumps it), as a password sign-in does",
+    rn === "switched" && seq(wn.log, 'setAuthUser:{"id":"auth-c"', "getProfile:auth-c", "setUserProfile:null", 'setMySurgeon:""', "setIsScheduler:false", "setNeedsProfile:true") && none(wn.log, "setReloadTrigger", "handleSignOut", "auth.signOut"),
+    JSON.stringify(wn.log));
+  const wp = world({ engine: stubEng(), auth: { signIn: async () => { throw new Error("signIn must not be called"); } }, password: "" }); await wp.submit();
+  check("SE-R the sheet with no password typed asks for it and calls nothing", !wp.threw && wp.log.join() === 'setReauthError:"Enter your password."', JSON.stringify([wp.log, wp.threw]));
+  check("SE-R no session hit an engine internal error, and no harness call threw", internalR.length === 0 && [we1, we2, ws, wd, wp].every(w => !w.threw), internalR.join(" | "));
+
+  // The sheet's markup (pinned — JSX can't run here).
+  {
+    const sheet = after("      {!isPublicMode && authUser && reauthSheet && (", "\n      )}");
+    const amberAt = nsrcR.indexOf("      {staleTokenShown && ("), sheetAt = nsrcR.indexOf("      {!isPublicMode && authUser && reauthSheet && ("), updAt = nsrcR.indexOf("      {updateAvailable && !paintSheet && (");
+    check("SE-R the sheet's markup: a dialog ABOVE both banners (z 10001 > 10000), rendered beside them (outside the view conditionals); the email is the signed-in account's, read-only; a password field; the form submits submitReauth; Cancel only closes it; no biometric or sign-out inside",
+      !!sheet && /^\n        <div role="dialog" aria-modal="true"[^\n]*zIndex:10001/.test(sheet) && count("zIndex:10000") === 2 && amberAt > 0 && sheetAt > amberAt && updAt > sheetAt
+        && sheet.includes('<input type="email" value={authUser.email || ""} readOnly') && sheet.includes('<input type="password" value={reauthPassword} onChange={e=>setReauthPassword(e.target.value)}')
+        && sheet.includes("<form onSubmit={e=>{ e.preventDefault(); submitReauth(); }}") && sheet.includes('onClick={()=>{ setReauthSheet(false); setReauthPassword(""); setReauthError(""); }}')
+        && !/biometric|signOut|reloadTrigger/i.test(sheet) && count("submitReauth()") === 1 && count("setReauthSheet(true)") === 1 && count("auth.refreshKeep()") === 1,
+      (sheet || "").slice(0, 160));
+  }
+})().catch(ex => check("SE-R harness ran without crashing", false, String(ex && ex.stack || ex).split("\n").slice(0, 3).join(" | ")));
 {
   const { spawnSync } = require("child_process");
   const r = spawnSync(process.execPath, [path.join(__dirname, "fake-weeks-table.test.js")], { encoding: "utf8" });

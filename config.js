@@ -737,6 +737,29 @@ const auth = {
     } catch(e) { auth._clearSession(); return { user: null }; }
   },
 
+  // Refresh that KEEPS the stored session on failure (sync v2 "Sign in
+  // again", A7(2)). The same refresh call as _refresh, but a refused answer or
+  // a network error never clears the stored session: the app keeps the
+  // user's unsaved work on screen and offers a password sign-in instead.
+  // Returns { ok: true, user, session } or
+  // { ok: false, error: "no-session" | "refused" | "network" }.
+  async refreshKeep() {
+    const session = auth.getSession();
+    if (!session || !session.refresh_token) return { ok: false, error: "no-session" };
+    try {
+      const res = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`, {
+        method: "POST",
+        headers: { apikey: SUPABASE_ANON_KEY, "Content-Type": "application/json" },
+        body: JSON.stringify({ refresh_token: session.refresh_token }),
+      });
+      if (!res.ok) return { ok: false, error: "refused" };
+      const data = await res.json();
+      if (!data || !data.access_token) return { ok: false, error: "refused" };
+      auth._saveSession(data);
+      return { ok: true, user: data.user || null, session: data };
+    } catch(e) { return { ok: false, error: "network" }; }
+  },
+
   // Sign out
   async signOut() {
     const session = auth.getSession();
