@@ -326,6 +326,23 @@ function christmasSlotOk(vac, vacOnly, silvisPrimary) {
   };
 }
 
+// Who works a holiday card's Night Before (owner 2026-10-13): its surgeon B —
+// except a weekend night (Fri / Sun) of FAK's Christmas design week when the
+// cards give him that weekend (decision 3: a Tuesday Christmas's New Year's
+// eve, Sun 12/30). takesWknd(mondayStr) answers from the generator's own pins
+// (holidayDesign with christmasSlotOk), so time off or a Silvis day added
+// after the cards were made moves the eve back to B with them.
+function holidayEveHolder(hol, eveDate, holAssignments, christmasDcId, takesWknd) {
+  const b = hol ? hol.surgeonB : null;
+  if (!hol || !eveDate || !christmasDcId || hol.name === "Christmas Day") return b;
+  const x = parse(eveDate), dow = x.getDay();
+  if (dow !== 5 && dow !== 0) return b;
+  const arr = holAssignments && holAssignments[String(x.getFullYear())];
+  const mon = christmasDesignWeek((Array.isArray(arr) ? arr : []).find(h => h && h.name === "Christmas Day"), christmasDcId);
+  if (!mon || eveDate < mon || eveDate > fmt(addD(parse(mon), 6))) return b;
+  return takesWknd && takesWknd(mon) ? christmasDcId : b;
+}
+
 // Designed holiday patterns, from the holiday cards (effectiveHolidayCoverage
 // rows): { pins: {mondayStr: {slot: id}}, eves: {mondayStr: {nightKey: id}},
 // coverOff: [...] }. A pair of slots both pinned here to the same surgeon is a
@@ -385,15 +402,23 @@ function holidayDesign(holAssignments, mondayStrs, christmasDcId, slotOk) {
       // WEEKEND too, whatever weekday Christmas falls on. (A Fri / Sun row or the
       // Monday convention already pinned it; this covers Tue–Thu and Saturday.)
       const cw = christmasDesignWeek(h, christmasDcId);
-      if (cw) christWeeks.push(cw);
+      if (cw) christWeeks.push({ m: cw, eve: fmt(addD(parse(h.date), -1)) });
     });
   });
   monConv.forEach(([m, slot, id]) => pin(m, slot, id));
-  christWeeks.forEach(m => {
+  christWeeks.forEach(({ m, eve }) => {
     const ok = (slot) => !slotOk || slotOk(christmasDcId, m, slot);
     const d = (o) => fmt(addD(parse(m), o));
     if (ok("dayCall")) pin(m, "dayCall", christmasDcId);
     if (ok("wknd") && !fakRows.has(d(3)) && !fakRows.has(d(7))) pin(m, "wknd", christmasDcId);
+    // …and a pin of his there that another rule set (his Fri / Sun Christmas
+    // 24h's weekend, a Monday convention) but he cannot work is dropped — the
+    // search fills it — except the weekend holding his own Christmas Eve (a
+    // Monday Christmas: that Sunday night is the card's)
+    if (slotOk && pins[m]) ["dayCall", "wknd"].forEach(slot => {
+      if (pins[m][slot] !== christmasDcId || ok(slot) || (slot === "wknd" && (eve === d(4) || eve === d(6)))) return;
+      delete pins[m][slot];
+    });
   });
   return { pins, eves };
 }
@@ -1260,8 +1285,8 @@ function generateOnce(surgeons, mondays, vac, backupMondays, priorCounts, prefer
     const cw = christmasDesignWeek(h, fakId), i = cw ? mondays.findIndex(m => fmt(m) === cw) : -1;
     if (i < 0) return;
     const dp = design.pins[cw] || {}, pa = (preAssign[cw] = preAssign[cw] || {});
-    if (dp.dayCall === fakId && floorOk(fakId, mondays[i], "dayCall")) pa.dayCall = fakId;
-    if (dp.wknd === fakId && floorOk(fakId, mondays[i], "wknd")) { pa.wknd = fakId; christWkndWeeks.add(cw); }
+    if (dp.dayCall === fakId && floorOk(fakId, mondays[i], "dayCall")) pa.dayCall = fakId; else if (pa.dayCall === fakId) delete pa.dayCall;
+    if (dp.wknd === fakId && floorOk(fakId, mondays[i], "wknd")) { pa.wknd = fakId; christWkndWeeks.add(cw); } else if (pa.wknd === fakId) delete pa.wknd; // a slot the pins don't give him (his Fri Christmas's weekend next to a Silvis day) is not dealt to him either
   }));
 
   // MANUAL LOCKS override convention-based pre-assignments. These come from

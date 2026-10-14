@@ -269,6 +269,8 @@ function overnightHolderOn(schedule, ds) {
 //   3. nobody sits out the group two years running (who sat out last year
 //      gets one this year)
 //   4. nobody gets the same holiday as last year; 5. as two years ago
+//   5b. a year already stored AFTER this one (re-generating): not the holiday
+//      someone has there, and nobody without a major in both years
 //   6. no two partners paired on two cards in the same year
 //   7. the holiday each partner has had least often
 //   8. who gets one: the shortest run of years with one, ending last year
@@ -318,7 +320,7 @@ function planHolidayPairs(o) {
     let k = 0; for (let y = year - 1; yearArr(y); y--) { if ((heldIn(y)[id] || []).some(x => x.type === t)) k++; else break; }
     run[id][t] = k;
   }));
-  const hasLast = !!yearArr(year - 1), Y1 = heldIn(year - 1), Y2 = heldIn(year - 2);
+  const hasLast = !!yearArr(year - 1), Y1 = heldIn(year - 1), Y2 = heldIn(year - 2), hasNext = !!yearArr(year + 1), YN = heldIn(year + 1);
   const had = (m, id, name) => (m[id] || []).some(x => x.name === name);
   const satOutLast = (id, t) => hasLast && !(Y1[id] || []).some(x => x.type === t);
   const picks = {}, notes = [], cost = {};
@@ -331,23 +333,24 @@ function planHolidayPairs(o) {
     const slots = []; hols.forEach((h, hi) => { slots.push({ hi, role: "A" }); slots.push({ hi, role: "B" }); });
     const order = partners.slice();
     for (let i = order.length - 1; i > 0; i--) { const j = Math.floor(rnd() * (i + 1)); const t = order[i]; order[i] = order[j]; order[j] = t; }
-    // additive per (slot, partner): [unavailable, same as last year, as two years ago, times had it, role had]
+    // additive per (slot, partner): [unavailable, same as last year, as two years ago, times had it, role had, as the stored next year]
     const add = slots.map(({ hi, role }) => { const h = hols[hi], r = {}; order.forEach(id => {
-      r[id] = [unavailable(id, h, role) ? 1 : 0, had(Y1, id, h.name) ? 1 : 0, had(Y2, id, h.name) ? 1 : 0, nameCt[id][h.name] || 0, (roleCt[id][type] || {})[role] || 0];
+      r[id] = [unavailable(id, h, role) ? 1 : 0, had(Y1, id, h.name) ? 1 : 0, had(Y2, id, h.name) ? 1 : 0, nameCt[id][h.name] || 0, (roleCt[id][type] || {})[role] || 0, had(YN, id, h.name) ? 1 : 0];
     }); return r; });
     const score = (cur) => {
       const use = Object.assign({}, fixedUse);
-      let un = 0, r1 = 0, r2 = 0, sp = 0, rl = 0;
-      cur.forEach((id, k) => { const a = add[k][id]; un += a[0]; r1 += a[1]; r2 += a[2]; sp += a[3]; rl += a[4]; use[id] = (use[id] || 0) + 1; });
+      let un = 0, r1 = 0, r2 = 0, sp = 0, rl = 0, nx = 0;
+      cur.forEach((id, k) => { const a = add[k][id]; un += a[0]; r1 += a[1]; r2 += a[2]; sp += a[3]; rl += a[4]; nx += a[5]; use[id] = (use[id] || 0) + 1; });
       let multi = 0, sat2 = 0, runs = 0, rates = 0, pairs = 0, twice = 0;
       for (let k = 0; k + 1 < cur.length; k += 2) { pairs += pairCost(cur[k], cur[k + 1], hols[k >> 1].name); if (cur[k] !== cur[k + 1] && pairNow.has(pairKey(cur[k], cur[k + 1]))) twice++; }
       partners.forEach(id => {
         const u = use[id] || 0;
         if (u > 1) multi += u - 1;
         if (u === 0 && satOutLast(id, type)) sat2++;
+        if (u === 0 && hasNext && !(YN[id] || []).some(x => x.type === type && x.name !== "Christmas Day")) nx++;
         if (u > 0 && !fixedUse[id]) { runs += run[id][type]; rates += Math.round((rate(id, type) || 0) * 1000); }
       });
-      return [un, multi, sat2, r1, r2, twice, sp, runs, rates, pairs, rl];
+      return [un, multi, sat2, r1, r2, nx, twice, sp, runs, rates, pairs, rl];
     };
     const cmp = (a, b) => { for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return a[i] - b[i]; return 0; };
     let best = null, bestV = null;

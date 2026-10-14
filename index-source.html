@@ -4043,6 +4043,16 @@ function CallSchedule() {
   // one is two overnights in a row across the two jobs — his LAST RESORT
   // (generator.js scheduleRules). ONE builder, like buildGenAvailability.
   const buildSilvisPrimary = () => (silvisActive && silvisFakId) ? { id: silvisFakId, dates: [...(silvisDays.primary || [])] } : null;
+  // Does FAK take his Christmas design week's weekend (decision 3)? The
+  // generator's own pins answer — holidayDesign with christmasSlotOk on
+  // today's time off and Silvis days — for a holiday card's weekend eve
+  // (generator.js holidayEveHolder): the card, Warnings and the planner.
+  const takesChristWknd = (mon) => {
+    const fid = (surgeons.find(s => (s.name || "").toUpperCase() === "FAK") || {}).id || null;
+    if (!fid || typeof holidayDesign !== "function") return false;
+    const p = holidayDesign(holidayAssignments, [mon], fid, christmasSlotOk(buildGenAvailability(), vacations, buildSilvisPrimary())).pins[mon];
+    return !!p && p.wknd === fid;
+  };
   // Seed the generator with the week immediately preceding the new start so
   // rotation continuity carries across the period boundary — without this,
   // generating the next period can repeat the prior schedule's last
@@ -4666,13 +4676,10 @@ function CallSchedule() {
       const holDow = holDate.getDay();
       const coverage = [];
 
-      // Night before — defaults to Surgeon B (replaced at display time by actual night-shift person)
-      // …unless it is a weekend night of FAK's Christmas design week: decision 3 gives him that weekend
-      // (a Tuesday Christmas's New Year's eve, Sun 12/30 — owner 2026-10-13)
-      const evDate = addD(holDate, -1), evDs = fmt(evDate), evDow = evDate.getDay();
-      const xmasMon = fakId && hol.name !== "Christmas Day" ? christmasDesignWeek({ name: "Christmas Day", date: `${year}-12-25`, surgeonA: fakId, surgeonB: fakId }, fakId) : null;
-      const inXmas = !!xmasMon && (evDow === 5 || evDow === 0) && evDs >= xmasMon && evDs <= fmt(addD(parse(xmasMon), 6));
-      coverage.push({ date: evDs, surgeon: inXmas ? fakId : sB, label: hol.name + " Night Before", day: DAYNAMES[evDow], isEve: true, ...(inXmas ? { christmasWeek: true } : {}) });
+      // Night before — defaults to Surgeon B (replaced at display time by actual night-shift person;
+      // a weekend night of FAK's Christmas design week is resolved live — generator.js holidayEveHolder)
+      const evDate = addD(holDate, -1);
+      coverage.push({ date: fmt(evDate), surgeon: sB, label: hol.name + " Night Before", day: DAYNAMES[evDate.getDay()], isEve: true });
 
       // Holiday day — Surgeon A
       coverage.push({ date: hol.date, surgeon: sA, label: hol.name + " 24h", day: DAYNAMES[holDow] });
@@ -4813,7 +4820,11 @@ function CallSchedule() {
     // into-vac rule). silvisBusy should FAK ever be planned. Ranks first.
     const unavailable = (id, hol, role) => {
       const days = holDatesFor(hol, id, role);
-      if (role === "B") buildCoverage(hol, "_a", id).filter(c => c.isEve && c.surgeon === id).forEach(c => days.push(c.date));
+      if (role === "B") {
+        const xc = assignments.find(h => h.name === "Christmas Day"), eve = fmt(addD(parse(hol.date), -1));
+        const takes = (mon) => { const p = holidayDesign({ [year]: xc ? [xc] : [] }, [mon], fakId, christmasSlotOk(buildGenAvailability(), vacations, buildSilvisPrimary())).pins[mon]; return !!p && p.wknd === fakId; };
+        if (holidayEveHolder({ ...hol, surgeonB: id }, eve, { [year]: xc ? [xc] : [] }, fakId, takes) === id) days.push(eve);
+      }
       if (days.some(ds => onVac(id, ds, vacations) || onVac(id, ds, noCallDays))) return true;
       if (days.some(ds => onVac(id, fmt(addD(parse(ds), 1)), vacations))) return true;
       return !!(silvisActive && id === silvisFakId && sfConflictDay(silvisDays.primary, holDatesFor(hol, id, role)) !== null);
@@ -4843,13 +4854,13 @@ function CallSchedule() {
       const sameGroup = arr.filter((h, i) => i !== holidayIdx && h.type === targetHol.type);
       const usedInGroup = new Set();
       sameGroup.forEach(h => { usedInGroup.add(h.surgeonA); usedInGroup.add(h.surgeonB); });
-      if (usedInGroup.has(newSurgeonId)) {
+      const fakSwap = surgeons.find(s => (s.name || "").toUpperCase() === "FAK")?.id;
+      if (usedInGroup.has(newSurgeonId) && newSurgeonId !== fakSwap) { // FAK gets his own question below
         const conflictHol = sameGroup.find(h => h.surgeonA === newSurgeonId || h.surgeonB === newSurgeonId);
         const surgeonName = surgeons.find(s => s.id === newSurgeonId)?.name || newSurgeonId;
         if (!confirm(`⚠️ ${surgeonName} is already assigned to ${conflictHol?.name} (${targetHol.type} group).\n\nEach partner takes at most one ${targetHol.type} holiday a year. Assign anyway?`)) return;
       }
       // FAK's holidays are Christmas Eve + Christmas Day — his major and his minor (owner 2026-10-13)
-      const fakSwap = surgeons.find(s => (s.name || "").toUpperCase() === "FAK")?.id;
       if (newSurgeonId && newSurgeonId === fakSwap && targetHol.name !== "Christmas Day"
         && !confirm(`${nameOf(newSurgeonId)}'s holidays are Christmas Eve + Christmas Day (his major and his minor). Put him on ${targetHol.name} too?`)) return;
       // silvisBusy: holiday 24h on a Silvis primary day — same confirm-to-
@@ -4876,7 +4887,7 @@ function CallSchedule() {
       hol.surgeonB = sB;
       let nonEveIdx = 0;
       hol.coverage = hol.coverage.map((c) => {
-        if (c.isEve) return { ...c, surgeon: c.christmasWeek ? c.surgeon : sB }; // FAK's Christmas-week eve stays his
+        if (c.isEve) return { ...c, surgeon: sB };
         const surgeon = nonEveIdx % 2 === 0 ? sA : sB;
         nonEveIdx++;
         return { ...c, surgeon };
@@ -5930,7 +5941,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     // card's service-week holder is a real conflict and is still shown.) If
     // generator.js isn't loaded, nothing is waived — more lines, never fewer.
     const fakW = (surgeons.find(s => (s.name || "").toUpperCase() === "FAK") || {}).id || null;
-    const design = typeof holidayDesign === "function" ? holidayDesign(holidayAssignments, mondayStrs, fakW) : { pins: {}, eves: {} };
+    const design = typeof holidayDesign === "function" ? holidayDesign(holidayAssignments, mondayStrs, fakW, christmasSlotOk(buildGenAvailability(), vacations, buildSilvisPrimary())) : { pins: {}, eves: {} }; // the generator's own slot test (decision 3 where FAK can work it)
     const designed = (m1, s1, m2, s2, id) => !!(id && design.pins[m1] && design.pins[m1][s1] === id && design.pins[m2] && design.pins[m2][s2] === id);
     // Card coverage rows (date|surgeon, eve or not): a VACATION on one of these is
     // already the vacOverlapWarnings "holiday-vac" line — one fact, one line.
@@ -6086,7 +6097,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     });
 
     return issues;
-  }, [schedule, surgeons, sMap, vacations, noCallDays, holidayAssignments]);
+  }, [schedule, surgeons, sMap, vacations, noCallDays, holidayAssignments, silvisActive, silvisFakId, silvisDays]);
 
   // ─── Vacation Overlap Warnings ───
   const vacOverlapWarnings = useMemo(() => {
@@ -6117,18 +6128,21 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     // surgeon has vacation then, flag it at setup time.
     Object.values(holidayAssignments || {}).forEach(arr => {
       if (!Array.isArray(arr)) return;
+      const fakV = (surgeons.find(s => (s.name || "").toUpperCase() === "FAK") || {}).id || null;
       arr.forEach(h => {
         effectiveHolidayCoverage(h).forEach(c => {
           if (!c.surgeon || !c.date) return;
-          if (onVac(c.surgeon, c.date, vacations)) {
-            warnings.push({ key: `holiday-vac|${h.date || ""}|${c.date}|${c.surgeon}`, date: c.date, severity: "error", message: `${sMap[c.surgeon]?.name || c.surgeon} is assigned ${h.name} coverage (${c.date}) but has vacation then — holiday surgeons can't be on vacation during their holiday` });
+          // a weekend eve inside FAK's Christmas design week is his when the cards give him that weekend (decision 3)
+          const sid = c.isEve ? (holidayEveHolder(h, c.date, holidayAssignments, fakV, takesChristWknd) || c.surgeon) : c.surgeon;
+          if (onVac(sid, c.date, vacations)) {
+            warnings.push({ key: `holiday-vac|${h.date || ""}|${c.date}|${sid}`, date: c.date, severity: "error", message: `${sMap[sid]?.name || sid} is assigned ${h.name} coverage (${c.date}) but has vacation then — holiday surgeons can't be on vacation during their holiday` });
           }
         });
       });
     });
 
     return warnings;
-  }, [mondays, surgeons, apps, vacations, holidayAssignments, sMap]);
+  }, [mondays, surgeons, apps, vacations, noCallDays, holidayAssignments, sMap, silvisActive, silvisFakId, silvisDays]);
 
   // ─── Schedule Warnings: dismissals applied ───
   // Every viewer's panel reads THESE lists (header count and "+ more" too);
@@ -7343,6 +7357,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               majors.forEach(h => { if(h.surgeonA) usedInMajor.add(h.surgeonA); if(h.surgeonB) usedInMajor.add(h.surgeonB); });
               minors.forEach(h => { if(h.surgeonA) usedInMinor.add(h.surgeonA); if(h.surgeonB) usedInMinor.add(h.surgeonB); });
 
+              const fakIdUI = (surgeons.find(s => (s.name || "").toUpperCase() === "FAK") || {}).id || null;
               const renderCard = (hol, idx) => {
                 // Surgeons used in OTHER holidays of the same group (not this one)
                 const sameGroup = assignments.filter(h => h.type === hol.type && h.date !== hol.date);
@@ -7377,7 +7392,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                       const isEve = c.isEve;
                       // Eve tag shows Surgeon B (the "Day After / Eve" dropdown value).
                       // Non-eve tag shows whoever that specific coverage row is assigned to.
-                      const displaySurgeon = isEve ? (c.christmasWeek ? c.surgeon : (hol.surgeonB || c.surgeon)) : c.surgeon; // FAK's Christmas-week eve is his
+                      // a weekend eve inside FAK's Christmas design week is his when the cards give him that weekend (decision 3)
+                      const displaySurgeon = isEve ? (holidayEveHolder(hol, c.date, holidayAssignments, fakIdUI, takesChristWknd) || hol.surgeonB || c.surgeon) : c.surgeon;
                       const isSurgA = !isEve && c.surgeon === hol.surgeonA;
                       return (
                       <div key={j} style={{padding:"4px 10px",borderRadius:5,fontSize:11,fontWeight:600,
