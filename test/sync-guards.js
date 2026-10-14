@@ -4922,6 +4922,13 @@ console.log("\nAJ. owner decisions 2026-10-13");
   }
 }
 
+// ─── AK. The calendar's Today button (owner 2026-10-14) ───
+console.log("\nAK. calendar Today button");
+check("AK1 the calendar has a Today button beside the month arrows: it sets the month AND the year from a fresh Date (not a stale render), then scrolls today's cell into view",
+  count('aria-label="Go to today"') === 1 && count("const n = new Date(); setCalMonth(n.getMonth()); setCalYear(n.getFullYear());") === 1
+    && count('document.querySelector("[data-cal-today=\\"1\\"]")') === 1 && count('data-cal-today={isToday ? "1" : undefined}') === 1
+    && src.indexOf('aria-label="Go to today"') > src.indexOf('aria-label="Next month"'));
+
 // ─── Verdict ───
 console.log(`\n${checks} checks, ${failures.length} failure(s)`);
 if (failures.length) {

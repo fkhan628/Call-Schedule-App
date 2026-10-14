@@ -8267,6 +8267,13 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               <button aria-label="Previous month" onClick={()=>{if(calMonth===0){setCalMonth(11);setCalYear(y=>y-1);}else setCalMonth(m=>m-1);}} style={css.btn(false)}>◀</button>
               <span style={{fontSize:15,fontWeight:700,color:"#2c5a80",minWidth:170,textAlign:"center"}}>{MO[calMonth]} {calYear}</span>
               <button aria-label="Next month" onClick={()=>{if(calMonth===11){setCalMonth(0);setCalYear(y=>y+1);}else setCalMonth(m=>m+1);}} style={css.btn(false)}>▶</button>
+              {/* Back to today (owner 2026-10-14): today's month, then today's cell scrolled into view (a long grid on a phone).
+                  Blue while another month is showing. */}
+              {(() => { const now = new Date(), away = calMonth !== now.getMonth() || calYear !== now.getFullYear();
+                return <button aria-label="Go to today" title="Back to today" onClick={()=>{
+                  const n = new Date(); setCalMonth(n.getMonth()); setCalYear(n.getFullYear());
+                  setTimeout(() => { const el = document.querySelector("[data-cal-today=\"1\"]"); if (el && el.scrollIntoView) el.scrollIntoView({ behavior: "smooth", block: "center" }); }, 60);
+                }} style={{...css.btn(away),padding:"7px 10px"}}>Today</button>; })()}
             </div>
             <div style={{display:"flex",gap:5}}>
               {isScheduler && <>
@@ -8487,7 +8494,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               }
 
               return (
-                <div key={ds} style={{
+                <div key={ds} data-cal-today={isToday ? "1" : undefined} style={{
                   background: cellBg,
                   border: cellBorder,
                   minHeight:82, padding:"3px 4px", borderRadius:2,
