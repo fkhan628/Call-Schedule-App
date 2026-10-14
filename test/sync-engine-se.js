@@ -102,14 +102,14 @@ const MUTANTS = [
   { id: "M15", what: "pushes don't coalesce (R3)",
     from: "      if (queuedPush) return queuedPush;\n", to: "" },
   { id: "M16", what: "the toast cap never expires (R36)",
-    from: " && d.nowMs() - lastFail.at <= 5 * 60 * 1000) return;", to: ") return;" },
+    from: " && d.nowMs() - lastFail.at <= 5 * 60 * 1000) return null;", to: ") return null;" },
   { id: "M17", what: "a new week is a merge-duplicates upsert (overwrites a row someone inserted)",
     from: 'else { url = base(); init = { method: "POST", headers: wh({ Prefer: "return=representation" })',
     to: 'else { url = base() + "?on_conflict=week_monday"; init = { method: "POST", headers: wh({ Prefer: "resolution=merge-duplicates,return=representation" })' },
   { id: "M18", what: "clear/restore act on the last-known weeks instead of re-reading the table (I6)",
     from: "        known = {}; rows.forEach(x => { known[x.week_monday] = fromRow(x); });\n", to: "" },
   { id: "M19", what: "clear/restore write even when the table can't be read (I6 fail closed)",
-    from: '        if (!rows) return { ok: false, wrote: false, error: "Couldn\'t read the saved schedule — nothing was changed." };\n',
+    from: '        if (!rows) return refuse({ ok: false, wrote: false, error: "Couldn\'t read the saved schedule — nothing was changed." });\n',
     to: '        if (!rows) return Object.assign({ wrote: true }, await runPush({ target, grant, mode: "force" }));\n' },
   { id: "M20", what: "adoption rebuilds the whole schedule from the server copy (R15: reverts other unsaved edits)",
     from: "    const next = Object.assign({}, cur);\n    const changed = [], taken = [];", to: "    const next = Object.keys(known).reduce((o, k) => (o[k] = clone(known[k].data), o), {});\n    const changed = [], taken = [];" },
@@ -140,7 +140,7 @@ const MUTANTS = [
   { id: "M33", what: "adoption ignores an edit made while the request was out (A3)",
     from: "      if (expect && k in expect && expect[k] !== shown) return;\n", to: "" },
   { id: "M34", what: "a clear/restore re-commits weeks whose write FAILED (they'd stop being retried — R7)",
-    from: "Object.keys(startShown).filter(k => saved.has(k)).forEach(k => {", to: "Object.keys(startShown).forEach(k => {" },
+    from: "showKnown(startShown, saved);", to: "showKnown(startShown);" },
   { id: "M35", what: "a re-send after recognising our own earlier body ignores that the screen moved on (re-sends an undone edit — A3)",
     from: "if (mode !== \"force\" && canon((d.getState() || {})[k]) !== c) return { k, outcome: \"superseded\" }; ", to: "" },
   { id: "M36", what: "the stale-removal status is never cleared by a later pull (the header says 'reload to resync' forever — A14)",
@@ -150,7 +150,7 @@ const MUTANTS = [
   { id: "M38", what: "the weeks a queued / running clear, restore or publish is writing are reported as pending ('not saved' mid-clear — A11(4))",
     from: "    const p = pendingKeys().filter(k => !ownedKey(k));\n", to: "    const p = pendingKeys();\n" },
   { id: "M39", what: "a clear / restore / publish hands its weeks back only after its last report (a week it couldn't write isn't shown pending — A11(4))",
-    from: "    } finally { release(); busy = null; report(); }", to: "    } finally { busy = null; report(); }" },
+    from: "    finally { release(); busy = null; report(); }", to: "    finally { busy = null; report(); }" },
   { id: "M40", what: "no stall watchdog (a stuck chain never says so — A5(g))",
     from: "if (running && !stalled) { stalled = true; report(); }", to: "" },
   { id: "M41", what: "progress doesn't clear a reported stall ('Sync stalled' forever — A5(g))",
@@ -193,6 +193,30 @@ const MUTANTS = [
     from: "    if (job.mode !== \"force\") dropEditedConflicts();\n", to: "" },
   { id: "M60", what: "a clear / restore / publish drops the conflicts entries too (A16: the item must outlive it)",
     from: "    if (job.mode !== \"force\") dropEditedConflicts();\n", to: "    dropEditedConflicts();\n" },
+  // 14/n — a clear / reset / restore / publish is quiet: its caller's ONE message carries the job's notice (SE66)
+  { id: "M61", what: "a quiet job toasts anyway (two messages compete for the one toast slot)",
+    from: 'const tell = (m) => { if (!quiet) say(m, "error"); return m; };', to: 'const tell = (m) => { say(m, "error"); return m; };' },
+  { id: "M62", what: "an authoritative job hands back no notice (its caller can't say which weeks, or why)",
+    from: "    if (job.quiet) out.notice = notice || null; // what this job would have toasted: its caller's one message carries it\n", to: "" },
+  { id: "M63", what: "authoritative jobs aren't quiet (the engine's toast and the caller's compete)",
+    from: "keys, quiet: true }); // its caller tells the outcome", to: "keys }); // its caller tells the outcome" },
+  { id: "M64", what: "a deletion that didn't land is called 'not saved' (a clear's message reads wrong)",
+    from: "del = n > 0 && failing.every(k => !(k in shown))", to: "del = false" },
+  { id: "M65", what: "a quiet job doesn't start the cap (the follow-up push repeats the caller's message)",
+    from: "    lastFail.keys = keys; lastFail.kind = kind; lastFail.at = d.nowMs();\n    return tell(failMsg);", to: "    if (!quiet) { lastFail.keys = keys; lastFail.kind = kind; lastFail.at = d.nowMs(); }\n    return tell(failMsg);" },
+  { id: "M66", what: "a quiet job's notice is capped (a second clear within 5 min says nothing of the week)",
+    from: "if (!quiet && keys === lastFail.keys", to: "if (keys === lastFail.keys" },
+  { id: "M67", what: "a job ending after its caller stopped waiting drops its notice from the late toast",
+    from: 'const extra = r && r.notice ? " " + r.notice : "";', to: 'const extra = "";' },
+  // 14/n — a clear / reset / restore that writes nothing puts the screen back IN the job (SE67)
+  { id: "M68", what: "a refused clear / restore leaves its target on screen (the follow-up push sends a refused restore; a refused clear trips the wipe guard)",
+    from: "const refuse = (out) => { if (!keys && gen === g) showKnown(startShown); return out; };", to: "const refuse = (out) => out;" },
+  { id: "M69", what: "putting the screen back overwrites a week edited after the tap",
+    from: "      if (shownNow !== startShown[k]) return;\n      const want = known[k] ? known[k].canon : DEL;\n      if (shownNow !== want) { changed = true;", to: "      const want = known[k] ? known[k].canon : DEL;\n      if (shownNow !== want) { changed = true;" },
+  { id: "M70", what: "a clear cancelled at its deadline leaves its target on screen",
+    from: "owner.release(); if (!keys) showKnown(startShown); report(); return { ok: false, wrote: false, reason: \"timeout\"", to: "owner.release(); report(); return { ok: false, wrote: false, reason: \"timeout\"" },
+  { id: "M71", what: "a refused publish takes its generated weeks off screen (they'd never be retried — A14)",
+    from: "const refuse = (out) => { if (!keys && gen === g) showKnown(startShown); return out; };", to: "const refuse = (out) => { if (gen === g) showKnown(startShown); return out; };" },
 ];
 
 async function scenarios(createSchedSync, check) {
@@ -1421,11 +1445,12 @@ async function scenarios(createSchedSync, check) {
     check("SE59 A5(f) a clear queued behind the stuck job is answered at its deadline — ok:false, nothing written, reason timeout — and is no longer reported as owning the weeks",
       r !== "no answer" && r.ok === false && r.wrote === false && r.reason === "timeout" && !r.running && /nothing was changed/.test(r.error || "") && last(A).busy === null, JSON.stringify(r));
     check("SE59 A5(f) …the queued load is answered at its deadline too (ok:false, timeout)", lr !== "no answer" && lr.ok === false && lr.reason === "timeout", JSON.stringify(lr));
-    A.mirror = A.engine.knownSchedule(); // what the app does when nothing was written (runAuthoritativeSchedule)
+    // (14/n: the ENGINE puts the screen back when it cancels the clear — the app used to, after the answer)
+    const putBack = Object.keys(A.mirror).length === 4 && sameData(A.mirror, A.engine.knownSchedule());
     const from = t.log.length;
     hang.release(); await pl; await A.engine.idle(); await A.engine.idle();
-    check("SE59 …once the stuck request answers, the stall is cleared (reported), the cancelled clear NEVER runs (zero DELETEs, the 4 weeks still there), and the load ran in its turn",
-      last(A).stalled === false && A.st().stalled === false && writes(t, from).length === 0 && t.rows().length === 4 && t.log.slice(from).some(e => e.method === "GET"),
+    check("SE59 …the cancelled clear put the screen back at its deadline (the 4 weeks); once the stuck request answers, the stall is cleared (reported), the cancelled clear NEVER runs (zero DELETEs, the 4 weeks still there), and the load ran in its turn",
+      putBack && last(A).stalled === false && A.st().stalled === false && writes(t, from).length === 0 && t.rows().length === 4 && t.log.slice(from).some(e => e.method === "GET"),
       JSON.stringify({ st: last(A).stalled, w: writes(t, from).map(e => e.method + " " + e.url) }));
     // A job already writing at its deadline: "still running", never cut short; its outcome is toasted when it ends.
     const t2 = mkTable(seedRows(4));
@@ -1510,10 +1535,11 @@ async function scenarios(createSchedSync, check) {
     const r = await A.engine.authoritative(clone(A.mirror), false, "publish", period);
     await A.engine.idle(); await A.engine.idle();   // the follow-up push it requests
     const aW3 = t.log.filter(e => e.method === "PATCH" && e.url.includes(W[3]) && e.headers.authorization === "Bearer TOK_A");
-    check("SE61 §7b B's change to a week OUTSIDE the period survives the publish and its follow-up push: A shows it, ONE conflict entry, onAdopted, the toast says someone else changed it; nothing left pending",
+    // (14/n: a publish is quiet — its caller's one message tells it, from r.notice; SE66)
+    check("SE61 §7b B's change to a week OUTSIDE the period survives the publish and its follow-up push: A shows it, ONE conflict entry, onAdopted, told once — in the publish's notice (its caller's one message; the engine toasts nothing beside it); nothing left pending",
       t.get(W[3]).data.dayCall === "B-edit" && A.mirror[W[3]].dayCall === "B-edit" && A.st().conflicts.map(c => c.k).join() === W[3] && A.adopted.slice(adopted0).some(x => x.weeks.join() === W[3])
-        && A.toasts.slice(toasts0).filter(m => /changed by someone else/.test(m)).length === 1 && A.engine.pending().length === 0,
-      JSON.stringify({ table: t.get(W[3]).data.dayCall, shown: A.mirror[W[3]].dayCall, conflicts: A.st().conflicts, toasts: A.toasts.slice(toasts0) }));
+        && /changed by someone else/.test(r.notice || "") && A.toasts.slice(toasts0).length === 0 && A.engine.pending().length === 0,
+      JSON.stringify({ table: t.get(W[3]).data.dayCall, shown: A.mirror[W[3]].dayCall, conflicts: A.st().conflicts, notice: r.notice, toasts: A.toasts.slice(toasts0) }));
     check("SE61 …and the publish itself landed and answers ok (another week's conflict doesn't withhold 'Regenerated!' or the broadcast); A's only W4 PATCH was the first, failed one",
       r.ok === true && period.every(k => t.get(k).data.dayCall === "regen") && aW3.length === 1, JSON.stringify({ ok: r.ok, results: r.results, aW3: aW3.length }));
   });
@@ -1680,14 +1706,110 @@ async function scenarios(createSchedSync, check) {
     check("SE65 A16 …dismissing clears it (reported), and a reset (sign-out) clears a new one", dismissed && again && ks(A) === "" && A.st().conflicts.length === 0, JSON.stringify({ dismissed, again, now: ks(A) }));
   });
 
+  // SE66 — 14/n: a clear / reset / restore / publish is QUIET. Its caller
+  // tells the outcome in ONE toast; the engine hands its own detail back as
+  // the result's `notice` (which weeks, and why) — uncapped, since a caller
+  // always tells its outcome — and toasts nothing beside it. The cap still
+  // starts, so the follow-up push doesn't repeat it. A job that ends after its
+  // caller stopped waiting puts the notice in its one late toast.
+  await run("SE66", async () => {
+    const DEL1 = "Couldn't delete 1 week yet — retrying every minute while the app is open.";
+    const t = mkTable(seedRows(4));
+    const A = mkSession(t); await A.engine.load();
+    t.control.fail({ method: "DELETE", week: W[1], kind: "5xx-before", count: 3 });
+    A.mirror = {};
+    const r = await A.engine.authoritative({}, true, "clear");
+    const toastsAfterJob = A.toasts.length;
+    await A.engine.idle(); await A.engine.idle(); // the follow-up push it requests: W2's DELETE fails again
+    check("SE66 a partly failed clear: ok:false, wrote; its notice names the week not DELETED ('delete', not 'save'); the engine toasted nothing — in the job, or in the follow-up push for the same week",
+      r.ok === false && r.wrote === true && r.notice === DEL1 && toastsAfterJob === 0 && A.toasts.length === 0 && t.rows().length === 1 && A.engine.pending().join() === W[1],
+      JSON.stringify({ r: { ok: r.ok, wrote: r.wrote, notice: r.notice }, toasts: A.toasts, rows: t.rows().map(x => x.week_monday) }));
+    const r2 = await A.engine.authoritative({}, true, "clear");
+    await A.engine.idle(); await A.engine.idle();
+    check("SE66 …a second clear within the 5-min cap, the same week failing: its notice is still there (a caller always tells its outcome), still no engine toast; the follow-up push then lands it",
+      r2.ok === false && r2.notice === DEL1 && A.toasts.length === 0 && t.rows().length === 0 && A.engine.pending().length === 0, JSON.stringify({ notice: r2.notice, toasts: A.toasts, rows: t.rows().length }));
+    const ok = await A.engine.authoritative({}, true, "clear");
+    check("SE66 …a clear that lands has no notice", ok.ok === true && ok.notice === null && A.toasts.length === 0, JSON.stringify(ok));
+    // control: the same failure in an ORDINARY push is toasted — once, saying "delete"
+    const t2 = mkTable(seedRows(4));
+    const B = mkSession(t2); await B.engine.load();
+    t2.control.fail({ method: "DELETE", week: W[2], kind: "5xx-before", count: 1 });
+    B.drop(W[2]); const rb = await B.engine.push();
+    check("SE66 control: an ordinary push whose one deletion fails IS toasted (once, 'Couldn't delete 1 week'), and an ordinary push carries no notice",
+      B.toasts.length === 1 && B.toasts[0] === DEL1 && rb.ok === false && !("notice" in rb), JSON.stringify({ toasts: B.toasts, rb }));
+    // a restore still writing at its caller's deadline, ending with a week not saved: ONE late toast, the notice in it
+    const sleep = (n) => new Promise(res => setTimeout(res, n));
+    const t3 = mkTable(seedRows(4));
+    const C = mkSession(t3, { timeouts: { read: 60000, write: 60000, stall: 15, deadline: 60 } }); await C.engine.load();
+    const snap = clone(C.mirror); snap[W[0]] = wk("snap0"); snap[W[1]] = wk("snap1");
+    C.mirror = clone(snap);
+    const hold = t3.control.pause({ method: "PATCH", week: W[0], count: 1 });
+    t3.control.fail({ method: "PATCH", week: W[1], kind: "5xx-before", count: 5 });
+    const rr = C.engine.authoritative(snap, true, "restore"); await hold.arrived;
+    const r3 = await Promise.race([rr, sleep(600).then(() => "no answer")]);
+    const atDeadline = C.toasts.length;
+    hold.release(); await C.engine.idle(); await sleep(5); await C.engine.idle(); await C.engine.idle();
+    check("SE66 a restore still running at its deadline that ends with a week not saved: answered 'running', then ONE toast when it ends — 'finished, but not every week is saved' with the job's notice in it; the follow-up push adds none",
+      r3 !== "no answer" && r3.running === true && atDeadline === 0 && C.toasts.length === 1
+        && C.toasts[0] === "Restoring the snapshot has finished, but not every week is saved. Couldn't save 1 week yet — retrying every minute while the app is open." && t3.get(W[0]).data.dayCall === "snap0",
+      JSON.stringify({ r3, toasts: C.toasts }));
+  });
+
+  // SE67 — 14/n: a clear / reset / restore that writes NOTHING (refused: the
+  // table unreadable, signed out) puts the screen back to what the table
+  // holds IN the job, before its follow-up push reads the mirror. Left to the
+  // caller (after the answer), that push ran first: a refused restore's weeks
+  // went out as an ordinary push, a refused clear tripped the wipe guard. A
+  // week edited after the tap keeps its edit (and is pushed); a refused
+  // PUBLISH keeps its weeks on screen, pending (A14).
+  await run("SE67", async () => {
+    const t = mkTable(seedRows(4));
+    const A = mkSession(t); await A.engine.load();
+    const snap = clone(A.mirror); snap[W[0]] = wk("snapA"); delete snap[W[3]];
+    A.mirror = clone(snap);
+    t.control.fail({ method: "GET", kind: "5xx-before", count: 1 });
+    const from = t.log.length;
+    const r = await A.engine.authoritative(snap, true, "restore"); await A.engine.idle(); await A.engine.idle();
+    check("SE67 a restore refused (the table couldn't be re-read): the screen is back to what the table holds, and its follow-up push sent NOTHING — the refused snapshot never goes out as an ordinary push",
+      r.ok === false && r.wrote === false && /nothing was changed/.test(r.error || "") && writes(t, from).length === 0 && sameData(A.mirror, tableSched(t)) && A.engine.pending().length === 0 && A.wipeBlocked.length === 0,
+      JSON.stringify({ r, w: writes(t, from).map(e => e.method + " " + e.url), shown: Object.keys(A.mirror) }));
+    A.mirror = {}; t.control.fail({ method: "GET", kind: "5xx-before", count: 1 });
+    const c = await A.engine.authoritative({}, true, "clear"); await A.engine.idle(); await A.engine.idle();
+    check("SE67 …a clear refused the same way: the 4 weeks back on screen, zero writes, and no wipe-guard trip (the follow-up push has nothing to delete)",
+      c.wrote === false && Object.keys(A.mirror).length === 4 && writes(t, from).length === 0 && A.wipeBlocked.length === 0 && A.st().blockedDeletes === 0, JSON.stringify({ c, wb: A.wipeBlocked }));
+    A.mirror = {}; t.control.fail({ method: "GET", kind: "5xx-before", count: 1 }); const hold = t.control.pause({ method: "GET", count: 1 });
+    const c2p = A.engine.authoritative({}, true, "clear"); await hold.arrived;
+    A.mirror = Object.assign({}, A.mirror, { [W[1]]: wk("after-tap") }); // edited while the clear waits on its read
+    hold.release(); const c2 = await c2p; await A.engine.idle(); await A.engine.idle();
+    check("SE67 …a week edited AFTER the tap keeps the edit — and it's pushed (one PATCH); the other weeks come back; no wipe-guard trip",
+      c2.wrote === false && A.mirror[W[1]].dayCall === "after-tap" && t.get(W[1]).data.dayCall === "after-tap" && Object.keys(A.mirror).length === 4 && t.rows().length === 4
+        && writes(t, from).length === 1 && writes(t, from)[0].method === "PATCH" && A.wipeBlocked.length === 0, JSON.stringify({ shown: Object.keys(A.mirror), w: writes(t, from).map(e => e.method) }));
+    A.token = null; A.mirror = {};
+    const c3 = await A.engine.authoritative({}, true, "clear");
+    check("SE67 …signed out: refused before any read, and the screen is back as well", c3.wrote === false && /sign in/i.test(c3.error || "") && Object.keys(A.mirror).length === 4, JSON.stringify(c3));
+    A.token = "TOK_A";
+    const gen = { [W[0]]: wk("gen0"), [W[2]]: wk("gen2") };
+    A.mirror = Object.assign({}, A.mirror, gen);
+    t.control.fail({ method: "GET", kind: "5xx-before", count: 1 });
+    const from2 = t.log.length;
+    const p = await A.engine.authoritative(clone(A.mirror), false, "publish", [W[0], W[2]]);
+    const keptShown = A.mirror[W[0]].dayCall === "gen0" && A.mirror[W[2]].dayCall === "gen2";
+    await A.engine.idle(); await A.engine.idle();
+    check("SE67 …a PUBLISH refused the same way keeps its weeks on screen, pending — and its follow-up push lands them (A14: retried, never dropped)",
+      p.ok === false && p.wrote === false && keptShown && t.get(W[0]).data.dayCall === "gen0" && t.get(W[2]).data.dayCall === "gen2" && writes(t, from2).length === 2, JSON.stringify({ p, keptShown }));
+  });
+
   // SE-I — no scenario above produced an internal error.
   check("SE-I no internal (non-network) error in any scenario", internal.length === 0, internal.slice(0, 3).join(" | "));
 }
 
 // For the app-wiring tests in sync-guards (SE-A): the same extraction and the
-// same bare compile, so they drive the real engine too.
+// same bare compile, so they drive the real engine too — and the week
+// editor's pure merge (mergeEditorEdits, A17(a)), which sits inside the same
+// anchors, compiled the same way in an EMPTY context (it needs nothing).
 module.exports.extractEngine = extractEngine;
 module.exports.compileEngine = compile;
+module.exports.compileMerge = (code) => vm.runInContext(`${code}; mergeEditorEdits`, vm.createContext({}), { filename: "mergeEditorEdits.js" });
 
 // Standalone: node test/sync-engine-se.js
 if (require.main === module) {

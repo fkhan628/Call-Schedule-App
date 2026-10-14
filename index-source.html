@@ -396,9 +396,12 @@ function CallSchedule() {
   // the counts as they were before it (owner 2026-10-12: publish → ↩ Undo →
   // publish used to count the period twice — Undo put the schedule back but
   // not the counts). Other steps carry none and leave the counts alone.
+  // Returns the step, so a caller whose change then doesn't happen (a clear /
+  // restore that wrote nothing) can take exactly that step back.
   const pushUndo = useCallback((counts) => {
     const snap = { sched: JSON.parse(JSON.stringify(scheduleRef.current)), epoch: schedSyncRef.current ? schedSyncRef.current.epochNow() : 0, counts: counts ? JSON.parse(JSON.stringify(counts)) : null };
     setScheduleHistory(prev => [...prev.slice(-9), snap]);
+    return snap;
   }, []);
   const undoLastChange = () => {
     if (scheduleHistory.length === 0) return;
@@ -1778,11 +1781,24 @@ function CallSchedule() {
   const [schedSync, setSchedSync] = useState({ seeded: false, loadFailed: false, pending: 0, pendingKeys: [], saving: 0, failing: 0, auth: "ok", authNeeded: false, rejected: [], rejectCodes: [], noPermission: [], blockedDeletes: 0, staleRemovals: 0, conflicts: [], busy: null, stalled: false });
   const schedSyncBridgeRef = useRef(null);
   // onAdopted (A13): the engine just put someone else's copy of these weeks
-  // on screen (a pull, a conflict). An OPEN week editor on one of them says
-  // so at once — its Save would be refused (the open epoch, saveWeekEdits) —
-  // instead of only when Save is tapped. (setEditWeekModal is stable.)
+  // on screen (a pull, a conflict).
+  //  - An OPEN week editor on one of them says so at once, and what its Save
+  //    would do (keep their change, or refuse when it hit a slot edited
+  //    there — mergeEditorEdits), instead of only when Save is tapped.
+  //  - Swap OPTIONS made earlier that involve one of them — the target's week
+  //    or a return swap's — describe a schedule that's gone: they're closed,
+  //    as an out-of-date swap tap closes them. A week merely picked in the
+  //    swap tool, with no options found yet, stays picked.
+  // (The setters are stable; swapTarget / swapSuggestions are this render's —
+  // the bridge is re-made every render.)
   schedSyncBridgeRef.current = { canWrite: !isPublicMode, userId: userProfile?.person_id || null, showToast,
-    onAdopted: (weeks) => setEditWeekModal(m => (m && !m.adoptedAway && weeks.includes(m.mondayStr)) ? { ...m, adoptedAway: true } : m) };
+    onAdopted: (weeks) => {
+      setEditWeekModal(m => (m && !m.adoptedAway && weeks.includes(m.mondayStr)) ? { ...m, adoptedAway: true } : m);
+      if (swapSuggestions && swapTarget && (weeks.includes(swapTarget.mondayStr) || swapSuggestions.some(c => (c.returnSwaps || []).some(r => weeks.includes(r.mondayStr))))) {
+        setSwapSuggestions(null); setSwapTarget(null);
+        showToast("Someone else just changed a week these swap options were for — they were closed. Find swaps again.", "info");
+      }
+    } };
   const schedSyncRef = useRef(null);
   if (!schedSyncRef.current) schedSyncRef.current = createSchedSync({
     getState: () => scheduleRef.current,
@@ -1945,15 +1961,20 @@ function CallSchedule() {
   // The amber "Sign in again" (A7(3)) — never beside the red one.
   const staleTokenShown = !isPublicMode && !!authUser && staleTokenWarn && !(schedSync.authNeeded || reauthNeeded);
   // Clear / factory reset / restore: an authoritative engine job — its own
-  // grant, a fresh whole-table read first, fail closed. When it could write
-  // nothing (the read failed, signed out…), the screen goes back to what the
-  // table holds, so it never shows a clear that didn't happen.
-  const runAuthoritativeSchedule = async (target, what) => {
-    const eng = schedSyncRef.current;
-    const r = await eng.authoritative(target, true, what);
-    // (Never for a job still running past its deadline, A5(f): it is writing
-    // the target, and the old weeks put back on screen would be re-sent.)
-    if (!r.ok && !r.wrote && !r.running) commitSchedule(eng.knownSchedule());
+  // grant, a fresh whole-table read first, fail closed. When it was refused
+  // and wrote nothing (the read failed, signed out, cancelled at its
+  // deadline…), the ENGINE puts the screen back to what the table holds —
+  // in the job, before its follow-up push can send the refused target; every
+  // week edited since the tap stays — so it never shows a clear that didn't
+  // happen. The caller's Undo step for it (undoStep, from pushUndo) is taken
+  // back then: nothing happened to undo. By identity — a step pushed
+  // meanwhile stays. (A job still running past its deadline, A5(f), or one
+  // whose writes merely failed and are retried, R7, keeps its step.) The job
+  // tells its own detail as r.notice, not in a toast: the caller's one
+  // message about the outcome carries it.
+  const runAuthoritativeSchedule = async (target, what, undoStep) => {
+    const r = await schedSyncRef.current.authoritative(target, true, what);
+    if (undoStep && !r.ok && !r.wrote && !r.running && (r.error || r.internal)) setScheduleHistory(h => h.filter(s => s !== undoStep));
     return r;
   };
   // Generate & Publish / Accept & Publish (A14): the engine's PUBLISH job —
@@ -1964,10 +1985,13 @@ function CallSchedule() {
   // a week that didn't stays on screen and pending, and the follow-up push
   // keeps retrying it.
   const runPublish = (weeks) => schedSyncRef.current.authoritative(weeks, false, "publish", Object.keys(weeks));
-  // What a publish that didn't fully land tells the scheduler (nobody is notified).
+  // What a publish that didn't fully land tells the scheduler (nobody is
+  // notified) — ONE message, with the engine's own detail (pr.notice: which
+  // weeks, and why) in it; the engine doesn't toast it beside this.
   const publishNotLanded = (pr, what) => {
     const n = ((pr && pr.results) || []).filter(x => x.outcome !== "saved").length;
     showToast(pr && pr.error ? `${what}: ${pr.error}${pr.running ? " Nobody was notified." : ""}`
+      : pr && pr.notice ? `${what}: ${pr.notice} Nobody was notified.`
       : `${what} — ${n ? n + " week" + (n === 1 ? " isn't" : "s aren't") : "the new weeks aren't"} saved yet; retrying automatically. Nobody was notified.`, pr && pr.running ? "info" : "error");
   };
 
@@ -2301,6 +2325,9 @@ function CallSchedule() {
       alert("Only a scheduler or the admin account can reset all data.");
       return;
     }
+    // …and the edit gate (the schedule loaded, the sign-in live), before
+    // anything is asked or written: the reset deletes every week.
+    if (!schedEditable()) return;
     // Typed confirmation — a single mis-tap can no longer wipe the schedule.
     const typed = prompt(
       "⚠ This permanently clears the ENTIRE saved schedule for everyone " +
@@ -2321,6 +2348,12 @@ function CallSchedule() {
     const resetSnap = await snapshots.capture("reset_all_data", { minWeeks: Object.keys(schedSyncRef.current.knownSchedule()).length ? 1 : 0 });
     if (!resetSnap.ok) {
       showToast("Couldn't save a backup snapshot — reset cancelled. Nothing was deleted.", "error");
+      setSaveStatus("Reset cancelled");
+      setTimeout(() => setSaveStatus(""), 2000);
+      return;
+    }
+    // The edit gate again, after the snapshot's await — before the first write.
+    if (!schedEditable()) {
       setSaveStatus("Reset cancelled");
       setTimeout(() => setSaveStatus(""), 2000);
       return;
@@ -2361,8 +2394,9 @@ function CallSchedule() {
     commitSchedule({});
     // Every week deleted: an authoritative engine job with its own grant. If
     // it can't write (table unreadable, signed out) the schedule on screen goes
-    // back to what is saved and the reason is shown.
-    runAuthoritativeSchedule({}, "reset").then(r => { if (r.running) showToast(r.error, "info"); else if (!r.ok) showToast(r.error ? "Factory reset: the schedule was NOT cleared — " + r.error : `Factory reset: ${schedSyncRef.current.pending().length} week(s) not deleted yet — retrying automatically.`, "error"); });
+    // back to what is saved and the reason is shown. A partly failed one is
+    // ONE message, with the engine's detail (r.notice) in it.
+    runAuthoritativeSchedule({}, "reset").then(r => { if (r.running) showToast(r.error, "info"); else if (!r.ok) showToast(r.error ? "Factory reset: the schedule was NOT cleared — " + r.error : "Factory reset: the schedule wasn't fully cleared. " + (r.notice || `${schedSyncRef.current.pending().length} week(s) not deleted yet — retrying automatically.`), "error"); });
     setAppShifts({});
     setPriorCounts({});
     setYear1Counts({});
@@ -2673,11 +2707,12 @@ function CallSchedule() {
     // silvisBusy: don't send a proposal that can never be accepted (both
     // legs; cascades are shown in the card's preview — detectCascadeChanges
     // is declared below this hook, so it is not read here). Member: refused
-    // with the reasons; scheduler/admin: confirm.
+    // with the reasons; scheduler/admin: confirm. The weeks as the MIRROR
+    // holds them (sync v2 §2.1), not this render's copy.
     if (silvisActive) {
-      const hits = [];
-      const r1 = silvisBlock(tradeTo, tradeWeek, tradeShift, schedule[tradeWeek]); if (r1) hits.push(r1);
-      if (tradeReturnWeek && tradeReturnShift) { const r2 = silvisBlock(tradeFrom, tradeReturnWeek, tradeReturnShift, schedule[tradeReturnWeek]); if (r2) hits.push(r2); }
+      const hits = [], cur = scheduleRef.current;
+      const r1 = silvisBlock(tradeTo, tradeWeek, tradeShift, cur[tradeWeek]); if (r1) hits.push(r1);
+      if (tradeReturnWeek && tradeReturnShift) { const r2 = silvisBlock(tradeFrom, tradeReturnWeek, tradeReturnShift, cur[tradeReturnWeek]); if (r2) hits.push(r2); }
       if (silvisRefuse(hits)) return;
     }
     const fromName = surgeons.find(s => s.id === tradeFrom)?.name || tradeFrom;
@@ -4398,7 +4433,7 @@ function CallSchedule() {
         } catch(e) { console.error("Immediate save failed:", e); showToast("Couldn't save the regenerated schedule — check your connection.", "error"); }
         // "Regenerated!" only when every week of the period landed (A14)
         const pr = await job;
-        if (pr && pr.ok) { setSaveStatus("Regenerated!"); setTimeout(() => setSaveStatus(""), 2000); return { ok: true }; }
+        if (pr && pr.ok) { setSaveStatus("Regenerated!"); setTimeout(() => setSaveStatus(""), 2000); if (pr.notice) showToast(pr.notice, "error"); return { ok: true }; } // (a notice here: another week someone else changed)
         setSaveStatus(""); publishNotLanded(pr, "Regenerated on this screen");
         return { ok: false };
   };
@@ -4406,6 +4441,7 @@ function CallSchedule() {
 
   // ─── Clear / Reset Schedule ───
   const clearSchedule = async () => {
+    if (!schedEditable()) return; // the edit gate first — before even asking
     if (!confirm("Clear the entire generated schedule? Holiday assignments and setup data will be kept.\n\nThis cannot be undone.")) return;
     // Preserve pre-clear state; if the snapshot can't be written, refuse to clear.
     const clearSnap = await snapshots.capture("clear_schedule", { minWeeks: Object.keys(schedSyncRef.current.knownSchedule()).length ? 1 : 0 });
@@ -4413,16 +4449,21 @@ function CallSchedule() {
       showToast("Couldn't save a backup snapshot — clear cancelled. Schedule unchanged.", "error");
       return;
     }
-    if (Object.keys(scheduleRef.current).length > 0) pushUndo();
+    if (!schedEditable()) return; // …and again after the snapshot's await (a sign-out, a refused sign-in meanwhile)
+    // The Undo step only now that the clear goes ahead — and it's taken back
+    // (runAuthoritativeSchedule) if the job then writes nothing.
+    const undoStep = Object.keys(scheduleRef.current).length > 0 ? pushUndo() : null;
     commitSchedule({});
     // Every week deleted: an authoritative engine job with its own grant (the
     // re-read of the whole table comes first, so weeks added elsewhere since
     // the last pull go too). "Schedule cleared" only once it has happened.
     setSaveStatus("Clearing… keep the app open");
-    const cr = await runAuthoritativeSchedule({}, "clear");
+    const cr = await runAuthoritativeSchedule({}, "clear", undoStep);
     if (cr.running) { showToast(cr.error, "info"); setSaveStatus(""); } // A5(f): still deleting past its deadline — the engine toasts how it ended
     else if (!cr.ok) {
-      showToast(cr.error ? "The schedule was NOT cleared — " + cr.error : `${schedSyncRef.current.pending().length} week(s) not deleted yet — retrying automatically.`, "error");
+      // ONE message for the outcome: ours, with the engine's own detail (which
+      // weeks, and why — cr.notice; the engine doesn't toast it beside this).
+      showToast(cr.error ? "The schedule was NOT cleared — " + cr.error : "The schedule wasn't fully cleared. " + (cr.notice || `${schedSyncRef.current.pending().length} week(s) not deleted yet — retrying automatically.`), "error");
       setSaveStatus("");
       if (cr.error) return;
     } else setSaveStatus("Schedule cleared");
@@ -4484,6 +4525,7 @@ function CallSchedule() {
   };
   const restoreSnapshot = async (snap) => {
     if (!(isScheduler || userProfile?.role === "admin")) return;
+    if (!schedEditable()) return; // the edit gate, before anything is read, asked or written
     const when = new Date(snap.created_at).toLocaleString(undefined, { month:"short", day:"numeric", year:"numeric", hour:"numeric", minute:"2-digit" });
     setRestoreBusyId(snap.id);
     setSaveStatus("Reading the snapshot…");
@@ -4492,18 +4534,22 @@ function CallSchedule() {
       r = await snapshots.restore(snap.id, async (sched) => {
         // The schedule leg of the restore: an authoritative engine job — its
         // own grant (a confirmed restore may shrink or clear the table), a fresh
-        // whole-table read first, the outcome reported honestly.
-        if (Object.keys(scheduleRef.current).length > 0) pushUndo();
+        // whole-table read first, the outcome reported honestly (one message:
+        // the engine's detail, ar.notice, rides in it). Its Undo step is taken
+        // back if the job writes nothing.
+        const undoStep = Object.keys(scheduleRef.current).length > 0 ? pushUndo() : null;
         commitSchedule(sched);
-        const ar = await runAuthoritativeSchedule(sched, "restore");
+        const ar = await runAuthoritativeSchedule(sched, "restore", undoStep);
         if (ar.ok) return { ok: true };
         if (ar.running) return { ok: false, running: true, error: ar.error }; // A5(f): still writing past its deadline — the engine toasts how it ended
-        return { ok: false, error: ar.error || `${schedSyncRef.current.pending().length} week(s) of the schedule aren't saved yet — they retry automatically` };
+        return { ok: false, error: ar.error || ar.notice || `${schedSyncRef.current.pending().length} week(s) of the schedule aren't saved yet — they retry automatically` };
       }, {
         minWeeks: Object.keys(schedSyncRef.current.knownSchedule()).length ? 1 : 0,
         // Asked once the snapshot has been read (the list carries no data) and
-        // before anything is written; "Cancel" changes nothing.
+        // before anything is written; "Cancel" changes nothing. The edit gate
+        // again first: the read took a moment.
         confirm: (sched) => {
+          if (!schedEditable()) return false;
           const yes = confirm(restoreConfirmText(snapshotReasonLabel(snap.reason), when, sched, schedSyncRef.current.knownSchedule()));
           if (yes) setSaveStatus("Restoring snapshot…");
           return yes;
@@ -4707,7 +4753,7 @@ function CallSchedule() {
         setView("calendar");
         setSaveStatus("Publishing…");
         const pr = await job;
-        if (pr && pr.ok) { setSaveStatus("Published — totals updated"); setTimeout(() => setSaveStatus(""), 3000); }
+        if (pr && pr.ok) { setSaveStatus("Published — totals updated"); setTimeout(() => setSaveStatus(""), 3000); if (pr.notice) showToast(pr.notice, "error"); } // (a notice here: another week someone else changed)
         else { setSaveStatus(""); publishNotLanded(pr, "Published on this screen"); }
       } finally { publishingRef.current = false; setPublishing(false); }
     }
@@ -5101,20 +5147,21 @@ function CallSchedule() {
 
   const swapShift = (mStr, shift, newId, expectOldId) => {
     if (!schedEditable()) return;
-    const oldId = shift === "dayCall" ? schedule[mStr]?.dayCall : schedule[mStr]?.nights?.[shift];
+    // The slot as the MIRROR holds it (sync v2 §2.1): the holder the notices
+    // name and the week the Silvis check reads — a render's `schedule` can be
+    // a pull behind the latest.
+    const cur = scheduleRef.current;
+    const oldId = shift === "dayCall" ? cur[mStr]?.dayCall : cur[mStr]?.nights?.[shift];
     // A swap chosen from suggestions made earlier: the slot must still hold
     // the surgeon it was suggested for (sync v2, stale intents).
-    if (expectOldId !== undefined) {
-      const cw = scheduleRef.current[mStr];
-      if (((shift === "dayCall" ? cw?.dayCall : cw?.nights?.[shift]) || "") !== (expectOldId || "")) {
-        showToast("This swap is out of date — that shift changed since the suggestions were made. Nothing was changed; find swaps again.", "error");
-        setSwapSuggestions(null); setSwapTarget(null); // they describe a schedule that's gone (A13)
-        return;
-      }
+    if (expectOldId !== undefined && (oldId || "") !== (expectOldId || "")) {
+      showToast("This swap is out of date — that shift changed since the suggestions were made. Nothing was changed; find swaps again.", "error");
+      setSwapSuggestions(null); setSwapTarget(null); // they describe a schedule that's gone (A13)
+      return;
     }
     // silvisBusy (see acceptTradeRequest). swapShift is a manual edit path, so
     // the scheduler override applies.
-    if (silvisActive) { const r = silvisBlock(newId, mStr, shift, schedule[mStr]); if (silvisRefuse(r ? [r] : [])) return; }
+    if (silvisActive) { const r = silvisBlock(newId, mStr, shift, cur[mStr]); if (silvisRefuse(r ? [r] : [])) return; }
     pushUndo();
     updateSchedule(p => {
       const wk = {...p[mStr]};
@@ -5140,7 +5187,7 @@ function CallSchedule() {
   // ─── Smart Swap Suggestions ───
   const [swapTarget, setSwapTarget] = useState(null); // { mondayStr, shift, surgeonId }
   const [swapSuggestions, setSwapSuggestions] = useState(null); // [{ candidateId, score, reasons, returnSwaps }]
-  const [editWeekModal, setEditWeekModal] = useState(null); // { mondayStr, draft: { dayCall, nights, apps, reason } } or null
+  const [editWeekModal, setEditWeekModal] = useState(null); // { mondayStr, appsBase, appsLoaded, openWeek, openEpoch, draft: { dayCall, nights, dayCallOverrides, apps, reason }, adoptedAway? } or null
   const [editWeekPick, setEditWeekPick] = useState(""); // dropdown selection on the Manual Adjustments card
   // Clear stale selection when the user navigates to a different month
   useEffect(() => { setEditWeekPick(""); }, [calMonth, calYear]);
@@ -5378,9 +5425,11 @@ function CallSchedule() {
       // Opened before the row loaded: the APP rows show blanks that may not be
       // blank — they are locked (re-review 2026-10-11); reopening picks up the map.
       appsLoaded: appShiftsLoaded,
-      // The sync engine's epoch when the editor opened (sync v2, R15): if
-      // someone else's change to this week is adopted while it's open, saving
-      // the draft would overwrite it — so the save is refused instead.
+      // The week as the editor OPENED it, and the sync engine's epoch then
+      // (sync v2, R15; design §2.6): the save writes only the slots edited
+      // against this copy, onto the latest week — and if someone else's change
+      // to an edited slot was adopted meanwhile, it is refused (mergeEditorEdits).
+      openWeek: scheduleRef.current[mondayStr] ? JSON.parse(JSON.stringify(wk)) : null,
       openEpoch: schedSyncRef.current.epochNow(),
       draft: {
         dayCall: wk.dayCall || "",
@@ -5396,27 +5445,35 @@ function CallSchedule() {
     if (!editWeekModal) return;
     if (!schedEditable()) return;
     const { mondayStr, draft } = editWeekModal;
-    if (schedSyncRef.current.changedSince([mondayStr], editWeekModal.openEpoch || 0).length) {
-      showToast("This week was changed by someone else while the editor was open — nothing was saved (surgeon slots or APP days). Close the editor and reopen it to start from the latest.", "error");
+    const oldWk = scheduleRef.current[mondayStr] || {};
+    // ONLY the slots edited in THIS editor go onto the LATEST week (design
+    // §2.6, A17(a) — mergeEditorEdits, pure, beside the sync engine): a change
+    // someone else made to another slot of this week while the editor was open
+    // is kept, never reverted by the old draft. One they made to a slot edited
+    // here refuses the whole save, naming it (the open epoch, sync v2 R15).
+    const m = mergeEditorEdits({ week: editWeekModal.openWeek, apps: editWeekModal.appsBase || {} }, draft, scheduleRef.current[mondayStr], editWeekModal.openEpoch || 0, schedSyncRef.current.epochOf(mondayStr),
+      { surgeonIds: surgeons.map(s => s.id), flags: { isBackup: backupMondaySet.has(mondayStr), isFierceBackup: fierceBackupSet.has(mondayStr) } });
+    if (!m.ok) {
+      const slotName = (x) => x.kind === "override" ? `Service Day ${x.key}` : (SHIFT_LABELS[x.key] || x.key);
+      showToast(`This week was changed by someone else while the editor was open — nothing was saved (surgeon slots or APP days). They changed the ${m.slots.map(slotName).join(", ")} you edited here. Close the editor and reopen it to start from the latest.`, "error");
       return; // the editor stays open, so the draft can still be read
     }
-    const oldWk = scheduleRef.current[mondayStr] || {};
+    const next = m.week; // the week as this save writes it
     // APP days the user actually edited in THIS editor, against what it showed
-    // when it opened (2026-10-11) — only these are written. Before the APP-shift
+    // when it opened (2026-10-11, appsBase) — only these are written. Before the APP-shift
     // row has loaded this session the whole map can't be trusted: the APP part
     // is refused, with the reason, while the surgeon edits still save (3a).
-    const appsBase = editWeekModal.appsBase || {};
-    const appEdits = Object.entries(draft.apps).filter(([ds, aid]) => (aid || "") !== (appsBase[ds] || ""));
+    const appEdits = m.appEdits;
     const appRefused = appEdits.length > 0 && !appShiftsLoaded;
 
-    // Build diff list of changes
+    // Build diff list of changes: the week as written vs as it is now
     const changes = []; // { slotLabel, oldId, newId, isApp, date }
-    if ((oldWk.dayCall || "") !== draft.dayCall) {
-      changes.push({ slotLabel: `Service Week`, oldId: oldWk.dayCall || "", newId: draft.dayCall, isApp: false });
+    if ((oldWk.dayCall || "") !== (next.dayCall || "")) {
+      changes.push({ slotLabel: `Service Week`, oldId: oldWk.dayCall || "", newId: next.dayCall || "", isApp: false });
     }
     ["mon","tue","wed","thu","wknd"].forEach(nk => {
       const oldId = oldWk.nights?.[nk] || "";
-      const newId = draft.nights?.[nk] || "";
+      const newId = next.nights?.[nk] || "";
       if (oldId !== newId) {
         changes.push({ slotLabel: SHIFT_LABELS[nk] || nk, oldId, newId, isApp: false });
       }
@@ -5424,14 +5481,11 @@ function CallSchedule() {
     // Single-day service coverage overrides
     {
       const oldOv = oldWk.dayCallOverrides || {};
-      const newOv = {};
-      Object.entries(draft.dayCallOverrides || {}).forEach(([d2, sid]) => {
-        if (sid && sid !== (draft.dayCall || "")) newOv[d2] = sid;
-      });
+      const newOv = next.dayCallOverrides || {};
       const ovDates = new Set([...Object.keys(oldOv), ...Object.keys(newOv)]);
       ovDates.forEach(ds => {
         const oldId = oldOv[ds] || (oldWk.dayCall || "");
-        const newId = newOv[ds] || (draft.dayCall || "");
+        const newId = newOv[ds] || (next.dayCall || "");
         if (oldId !== newId) {
           changes.push({ slotLabel: `Service Day ${ds}`, oldId, newId, isApp: false, date: ds });
         }
@@ -5452,8 +5506,8 @@ function CallSchedule() {
       return;
     }
     // silvisBusy: any change that puts FAK on a Silvis primary day is refused
-    // (scheduler override with the reason on screen). Checked from the draft
-    // vs the old week so only NEW placements trigger it.
+    // (scheduler override with the reason on screen). Checked from the week
+    // as written vs the old week so only NEW placements trigger it.
     if (silvisActive) {
       const hits = [];
       // Service days FAK COVERS before vs after this draft: Mon..Sat where
@@ -5470,11 +5524,11 @@ function CallSchedule() {
         return ((o != null && o !== "") ? o : (dc || "")) === silvisFakId;
       }));
       const before = coveredBy(oldWk.dayCall, oldWk.dayCallOverrides);
-      coveredBy(draft.dayCall, draft.dayCallOverrides).forEach(ds => {
+      coveredBy(next.dayCall, next.dayCallOverrides).forEach(ds => {
         if (!before.has(ds) && silvisDays.primary.has(ds)) hits.push(`${nameOf(silvisFakId)} is Silvis PRIMARY on ${ds} (07:00 → 07:00 next day), which overlaps Service Day ${ds}`);
       });
       ["mon","tue","wed","thu","wknd"].forEach(nk => {
-        if (draft.nights?.[nk] === silvisFakId && oldWk.nights?.[nk] !== silvisFakId) { const r = silvisBlock(silvisFakId, mondayStr, nk, oldWk); if (r) hits.push(r); }
+        if (next.nights?.[nk] === silvisFakId && oldWk.nights?.[nk] !== silvisFakId) { const r = silvisBlock(silvisFakId, mondayStr, nk, oldWk); if (r) hits.push(r); }
       });
       if (silvisRefuse(hits)) return;
     }
@@ -5483,35 +5537,14 @@ function CallSchedule() {
       if (!confirm(`You are changing ${changes.length} shifts in the week of ${mondayStr}. Continue?`)) return;
     }
 
-    // Commit
-    pushUndo();
-    updateSchedule(p => {
-      const n = { ...p };
-      const creating = !n[mondayStr];
-      const wk = { ...(n[mondayStr] || {}) };
-      // A brand-new hand-created week inherits its backup/fierce flags from
-      // the sets (exactly what the generator stamps at generation time) —
-      // without this, creating a week for a marked Monday births it
-      // flag-stale. Existing weeks keep their flags via the spread.
-      if (creating) {
-        wk.isBackup = backupMondaySet.has(mondayStr);
-        wk.isFierceBackup = fierceBackupSet.has(mondayStr);
-      }
-      wk.dayCall = draft.dayCall || null;
-      wk.nights = { ...(wk.nights || {}), ...draft.nights };
-      // Persist single-day service-coverage overrides. Drop any that equal the
-      // week's service surgeon or are blank — those aren't real overrides.
-      const ov = {};
-      Object.entries(draft.dayCallOverrides || {}).forEach(([d2, sid]) => {
-        if (sid && sid !== (draft.dayCall || null)) ov[d2] = sid;
-      });
-      if (Object.keys(ov).length) wk.dayCallOverrides = ov; else delete wk.dayCallOverrides;
-      // Recompute 'off' — any surgeon not assigned anywhere this week (incl. coverers)
-      const assigned = new Set([wk.dayCall, ...Object.values(wk.nights), ...Object.values(ov)].filter(Boolean));
-      wk.off = surgeons.map(s => s.id).find(id => !assigned.has(id)) || null;
-      n[mondayStr] = wk;
-      return n;
-    });
+    // Commit — the merged week (a brand-new hand-created week carries its
+    // backup / fierce flags from the sets; 'off' recomputed, coverers
+    // included). Only when a surgeon slot changed: an APP-only save writes the
+    // APP map, never a schedule week (it used to create an empty one).
+    if (changes.some(c => !c.isApp)) {
+      pushUndo();
+      updateSchedule(p => ({ ...p, [mondayStr]: next }));
+    }
     // APP changes (2026-10-11): only the days edited in this editor, applied to
     // the LATEST map; never before the APP-shift row has loaded this session —
     // the whole map is upserted, so a write from a failed load would replace
@@ -5623,6 +5656,10 @@ function CallSchedule() {
   //    code exists to prevent. (The set edit was never undoable.)
   //  - No direct sync call, no wipe-ref touches: the plain state set rides
   //    the schedule_weeks push (sync engine v2) like any shift edit.
+  //  - The edit gate (load + sign-in) first, before the set changes: a mark
+  //    made before the schedule has loaded could miss the week it should flip,
+  //    and with the sign-in expired the flag could only wait in memory — the
+  //    set and the week flag go together, or neither does.
   const setWeekFlag = (monday, flagKey, val) => {
     updateSchedule(p => {
       const wk = p[monday];
@@ -5632,24 +5669,28 @@ function CallSchedule() {
   };
   const markBackupWeek = () => {
     if (!bkMonday) return;
+    if (!schedEditable()) return;
     setBackupMondaySet(p => { const n = new Set(p); n.add(bkMonday); return n; });
     setWeekFlag(bkMonday, "isBackup", true);
     logAudit("schedule.backup_mark", `Marked week of ${bkMonday} as Backup (Fierce primary)`, { week: bkMonday });
     setBkMonday(mondayOfToday());
   };
   const unmarkBackupWeek = (m) => {
+    if (!schedEditable()) return;
     setBackupMondaySet(p => { const n = new Set(p); n.delete(m); return n; });
     setWeekFlag(m, "isBackup", false);
     logAudit("schedule.backup_unmark", `Removed Backup mark from week of ${m}`, { week: m });
   };
   const markFierceBackupWeek = () => {
     if (!bkMonday) return;
+    if (!schedEditable()) return;
     setFierceBackupSet(p => { const n = new Set(p); n.add(bkMonday); return n; });
     setWeekFlag(bkMonday, "isFierceBackup", true);
     logAudit("schedule.fierce_mark", `Marked week of ${bkMonday} as Fierce Backup`, { week: bkMonday });
     setBkMonday(mondayOfToday());
   };
   const unmarkFierceBackupWeek = (m) => {
+    if (!schedEditable()) return;
     setFierceBackupSet(p => { const n = new Set(p); n.delete(m); return n; });
     setWeekFlag(m, "isFierceBackup", false);
     logAudit("schedule.fierce_unmark", `Removed Fierce Backup mark from week of ${m}`, { week: m });
@@ -7857,7 +7898,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               // silently by the generator, so it can only record intent —
               // say exactly that, and doGenerate toasts every dropped lock.
               if (silvisActive) {
-                const r = silvisBlock(newLockSurgeon, newLockWeek, newLockSlot, schedule[newLockWeek]);
+                const cur = scheduleRef.current; // the week as the mirror holds it (sync v2 §2.1)
+                const r = silvisBlock(newLockSurgeon, newLockWeek, newLockSlot, cur[newLockWeek]);
                 const note = (newLockSlot === "dc" || newLockSlot === "wknd")
                   ? " — NOTE: the generator will NOT honor a Service Week / Weekend lock on a Silvis-blocked day (it is dropped, and you will be told after generating); this lock only records intent"
                   : " — a weeknight lock overrides the rule for this generation";
@@ -9345,9 +9387,11 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             const prevMonday = idx > 0 ? allMondays[idx-1] : null;
             const nextMonday = (idx >= 0 && idx < allMondays.length-1) ? allMondays[idx+1] : null;
 
-            // Detect unsaved changes against the current schedule (APP days:
-            // against what the editor showed when it opened — appsBase)
-            const oldWk = schedule[mondayStr] || {};
+            // Detect unsaved changes: what was changed IN THIS EDITOR, against
+            // the week as it opened (openWeek) and the APP days it showed
+            // (appsBase) — the slots its save writes (mergeEditorEdits). Someone
+            // else's change adopted meanwhile isn't an unsaved edit of yours.
+            const oldWk = editWeekModal.openWeek || {};
             const appsBase = editWeekModal.appsBase || {};
             const appsLocked = !editWeekModal.appsLoaded;
             const hasUnsaved = (
@@ -9361,6 +9405,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                 return [...keys].some(ds => (oldOv[ds] || (oldWk.dayCall||"")) !== (newOv[ds] || (draft.dayCall||"")));
               })()
             );
+            // After someone else's copy of this week was adopted (adoptedAway):
+            // would Save go through? The save's own pure merge decides — it is
+            // refused only when they changed a slot edited here.
+            const adoptRefused = !!editWeekModal.adoptedAway && !mergeEditorEdits({ week: editWeekModal.openWeek, apps: appsBase }, draft, schedule[mondayStr], editWeekModal.openEpoch || 0, schedSyncRef.current.epochOf(mondayStr)).ok;
 
             const navigateTo = (target) => {
               if (!target) return;
@@ -9383,12 +9431,16 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   </div>
 
                   {/* A13: someone else's copy of this week was adopted while the
-                      editor is open (the engine's onAdopted). Say so now — Save
-                      would be refused (the open epoch) — keep the draft on screen
-                      to read, and offer to start again from the latest. */}
+                      editor is open (the engine's onAdopted). Say so now — and
+                      what Save would do: keep their change and write only the
+                      slots edited here, or (they changed one of those) refuse —
+                      keep the draft on screen to read, and offer to start again
+                      from the latest. */}
                   {editWeekModal.adoptedAway && (
                     <div role="alert" style={{marginBottom:10,padding:"8px 10px",borderRadius:8,background:dk?"#3a2a12":"#fdf0e0",border:"1px solid #e0b070",fontSize:12,lineHeight:1.45,color:dk?"#f0c890":"#7a4a00"}}>
-                      ⚠ This week was just changed by someone else — this editor shows the old version, so saving it would be refused. Your draft stays here to read.
+                      {adoptRefused
+                        ? "⚠ This week was just changed by someone else — including a slot you changed here, so saving it would be refused. Your draft stays here to read."
+                        : "⚠ This week was just changed by someone else — this editor still shows the old version. Saving writes only what you changed here; their other changes stay."}
                       <button onClick={()=>{ if (!hasUnsaved || confirm("Reopen this week as it is now? What you changed in this editor is discarded.")) openWeekEditor(mondayStr); }} style={{marginLeft:8,background:dk?"#5a4020":"#fff",border:"1px solid #e0b070",color:dk?"#f0c890":"#8a5a10",borderRadius:6,padding:"3px 10px",fontSize:11.5,fontWeight:700,cursor:"pointer",fontFamily:font}}>Reopen with the latest</button>
                     </div>
                   )}
@@ -12004,7 +12056,8 @@ function MonthPainterSheet({ mode, css, dk, surgeons, apps, appShifts, vacations
 //   I5 other people's changes are pulled (the poll, resume, online) — as anon
 //      once the server has refused the stored token, so a skewed clock can't
 //      stop them;
-//   I6 clear / reset / restore re-read the whole table first and fail closed.
+//   I6 clear / reset / restore re-read the whole table first and fail closed —
+//      one refused puts the screen back to what the table holds, in the job.
 //
 // deps: getState, commit(next), fetch(url, init), url, writeHeaders(),
 //   readHeaders(), anonHeaders() (the anon key's: reads once the server has
@@ -12179,12 +12232,14 @@ function createSchedSync(deps) {
   });
   const JOB_LABEL = { clear: "Clearing the schedule", reset: "Clearing the schedule", restore: "Restoring the snapshot", publish: "Publishing the new weeks" };
   const jobLabel = (what) => JOB_LABEL[what] || "Saving the schedule";
-  // One toast for a job that ended after its caller stopped waiting (A5f).
+  // One toast for a job that ended after its caller stopped waiting (A5f) —
+  // with the job's own detail (its notice: which weeks, and why) in it.
   const lateOutcome = (what, r) => {
     if (r && (r.skipped === "reset" || r.skipped === "cancelled")) return; // another session now, or it never ran
-    if (r && r.ok) { say(`${jobLabel(what)} has finished — every week is saved.`, "success"); return; }
+    const extra = r && r.notice ? " " + r.notice : "";
+    if (r && r.ok) { say(`${jobLabel(what)} has finished — every week is saved.${extra}`, extra ? "error" : "success"); return; }
     const n = ((r && r.results) || []).filter(x => x.outcome !== "saved").length;
-    say(r && r.error ? `${jobLabel(what)} stopped — ${r.error}` : `${jobLabel(what)} has finished, but ${n ? n + " week" + (n === 1 ? " isn't" : "s aren't") : "not every week is"} saved yet — retrying automatically.`, "error");
+    say(r && r.error ? `${jobLabel(what)} stopped — ${r.error}` : extra ? `${jobLabel(what)} has finished, but not every week is saved.${extra}` : `${jobLabel(what)} has finished, but ${n ? n + " week" + (n === 1 ? " isn't" : "s aren't") : "not every week is"} saved yet — retrying automatically.`, "error");
   };
 
   const readBack = async (k) => {
@@ -12335,7 +12390,8 @@ function createSchedSync(deps) {
 
   // ── PUSH: send every week the mirror (or an authoritative target) differs on ──
   // job: { mode: "normal" | "force", target?, grant?, keys? (publish: only
-  // these weeks, never a delete) }
+  // these weeks, never a delete), quiet? (an authoritative job: the toast
+  // comes back as `notice` instead) }
   const runPush = async (job) => {
     const g = gen;
     if (!seeded) { report(); return { ok: false, skipped: "not-loaded" }; }
@@ -12426,19 +12482,25 @@ function createSchedSync(deps) {
         if (!taken.length) x.outcome = "pending"; // edited again meanwhile: settled by the next push
       }
     });
-    toasts(results);
+    const notice = toasts(results, !!job.quiet);
     report();
     // A publish answers for its own weeks: a conflict found on another week
     // (above) is told, but doesn't make the publish "not landed".
     const ok = results.filter(x => !job.keys || job.keys.has(x.k)).every(x => x.outcome === "saved") && sendDeletes.length === deletes.length && !heldDeletes && sendable.length === changed.length && !stop
       && (job.target === undefined || diff(target).changed.filter(k => !job.keys || job.keys.has(k)).length === 0);
-    return { ok, results, blocked: sendDeletes.length < deletes.length };
+    const out = { ok, results, blocked: sendDeletes.length < deletes.length };
+    if (job.quiet) out.notice = notice || null; // what this job would have toasted: its caller's one message carries it
+    return out;
   };
 
   // ONE toast per job (the app's toast slot holds one message, A16): every
   // week replaced, refused or rejected is named, and a still-failing count is
-  // added; failures alone are capped per set (5 min).
-  const toasts = (results) => {
+  // added; failures alone are capped per set (5 min). `quiet` (a clear /
+  // reset / restore / publish): its CALLER tells the outcome, so the message
+  // isn't said here — it's returned (uncapped) as the job's `notice`, for the
+  // caller's one toast; the cap still starts, so the follow-up push doesn't
+  // repeat it. Returns the message (said or not), or null.
+  const toasts = (results, quiet) => {
     const conf = results.filter(x => x.outcome === "conflict").map(x => x.k);
     const ref = results.filter(x => x.outcome === "refused").map(x => x.k);
     const rej = results.filter(x => x.outcome === "rejected");
@@ -12462,16 +12524,19 @@ function createSchedSync(deps) {
     const failedNow = results.some(x => x.outcome === "pending" || x.outcome === "auth");
     const kind = results.some(x => x.outcome === "auth") || authState() !== "ok" ? "auth" : failing.length && failing.every(k => noPermission.has(k)) ? "perm" : "net";
     const n = failing.length, wk = `${n} week${n === 1 ? "" : "s"}`;
-    const failMsg = kind === "auth" ? `Your sign-in has expired — ${wk} not saved. Tap "Sign in again" at the top; ${n === 1 ? "it" : "they"}'ll be sent then.`
-      : kind === "perm" ? `${wk} not saved — your account isn't allowed to change ${n === 1 ? "it" : "them"}.`
-      : `Couldn't save ${wk} yet — retrying every minute while the app is open.`;
-    if (parts.length) { say(parts.join(" ") + (n && failedNow ? " " + failMsg : ""), "error"); if (n && failedNow) { lastFail.keys = failing.join(","); lastFail.kind = kind; lastFail.at = d.nowMs(); } return; }
-    if (!n) { lastFail.keys = ""; lastFail.kind = ""; lastFail.at = 0; return; }
-    if (!failedNow) return;
+    // Every week not landed is a deletion (a clear, a reset): say "deleted", not "saved".
+    const shown = d.getState() || {}, del = n > 0 && failing.every(k => !(k in shown)), done = del ? "deleted" : "saved";
+    const failMsg = kind === "auth" ? `Your sign-in has expired — ${wk} not ${done}. Tap "Sign in again" at the top; ${n === 1 ? "it" : "they"}'ll be sent then.`
+      : kind === "perm" ? `${wk} not ${done} — your account isn't allowed to change ${n === 1 ? "it" : "them"}.`
+      : `Couldn't ${del ? "delete" : "save"} ${wk} yet — retrying every minute while the app is open.`;
+    const tell = (m) => { if (!quiet) say(m, "error"); return m; };
+    if (parts.length) { if (n && failedNow) { lastFail.keys = failing.join(","); lastFail.kind = kind; lastFail.at = d.nowMs(); } return tell(parts.join(" ") + (n && failedNow ? " " + failMsg : "")); }
+    if (!n) { lastFail.keys = ""; lastFail.kind = ""; lastFail.at = 0; return null; }
+    if (!failedNow) return null;
     const keys = failing.join(",");
-    if (keys === lastFail.keys && kind === lastFail.kind && d.nowMs() - lastFail.at <= 5 * 60 * 1000) return;
+    if (!quiet && keys === lastFail.keys && kind === lastFail.kind && d.nowMs() - lastFail.at <= 5 * 60 * 1000) return null;
     lastFail.keys = keys; lastFail.kind = kind; lastFail.at = d.nowMs();
-    say(failMsg, "error");
+    return tell(failMsg);
   };
 
   // ── PULL: adopt other people's changes to weeks this session hasn't edited ──
@@ -12553,45 +12618,60 @@ function createSchedSync(deps) {
   // weeks — re-read just those, write them (a week deleted elsewhere is
   // re-inserted), never a delete. Afterwards every week the user hasn't
   // touched since shows exactly what was written (A11).
+  // A clear / reset / restore that writes NOTHING (read-only, signed out, the
+  // table unreadable, a bug) puts the screen back to what the table holds —
+  // here, in the job, with no await before the follow-up push can read the
+  // mirror: left to the caller, that push ran first and sent the refused
+  // target as an ordinary push (a refused restore's weeks written anyway; a
+  // refused clear tripping the wipe guard). A publish keeps its weeks on
+  // screen, pending (A14).
+  // showKnown: what the table holds (known) for these weeks — only where the
+  // screen still shows what it showed when the job was requested (an edit
+  // made since stays, and is pushed). One commit.
+  const showKnown = (startShown, only) => {
+    const cur = d.getState() || {}, next = Object.assign({}, cur); let changed = false;
+    Object.keys(startShown).filter(k => !only || only.has(k)).forEach(k => {
+      const shownNow = k in cur ? canon(cur[k]) : DEL;
+      if (shownNow !== startShown[k]) return;
+      const want = known[k] ? known[k].canon : DEL;
+      if (shownNow !== want) { changed = true; if (known[k]) next[k] = clone(known[k].data); else delete next[k]; }
+    });
+    if (changed) d.commit(next);
+  };
   const runAuthoritative = async (target, grant, what, keys, startShown, release) => {
     const g = gen;
+    const refuse = (out) => { if (!keys && gen === g) showKnown(startShown); return out; };
     busy = what || "saving"; report();
     try {
-      if (!d.canWrite()) return { ok: false, wrote: false, error: "This view is read-only." };
-      if (authState() !== "ok") return { ok: false, wrote: false, error: "Your sign-in has expired — tap \"Sign in again\", then retry. Nothing was changed." };
+      if (!d.canWrite()) return refuse({ ok: false, wrote: false, error: "This view is read-only." });
+      if (authState() !== "ok") return refuse({ ok: false, wrote: false, error: "Your sign-in has expired — tap \"Sign in again\", then retry. Nothing was changed." });
       if (keys) {
-        if (!seeded) return { ok: false, wrote: false, error: "The schedule hasn't loaded yet — nothing was changed." };
+        if (!seeded) return refuse({ ok: false, wrote: false, error: "The schedule hasn't loaded yet — nothing was changed." });
         const rows = await readSome([...keys]);
         if (gen !== g) return { ok: false, wrote: false, skipped: "reset" };
-        if (rows === null) return { ok: false, wrote: false, error: "Couldn't read the saved weeks — nothing was published." };
+        if (rows === null) return refuse({ ok: false, wrote: false, error: "Couldn't read the saved weeks — nothing was published." });
         const got = {}; rows.forEach(x => { got[x.week_monday] = x; });
         keys.forEach(k => { if (got[k]) known[k] = fromRow(got[k]); else delete known[k]; delete sent[k]; });
       } else {
         const rows = await readAll();
         if (gen !== g) return { ok: false, wrote: false, skipped: "reset" };
-        if (!rows) return { ok: false, wrote: false, error: "Couldn't read the saved schedule — nothing was changed." };
+        if (!rows) return refuse({ ok: false, wrote: false, error: "Couldn't read the saved schedule — nothing was changed." });
         known = {}; rows.forEach(x => { known[x.week_monday] = fromRow(x); });
         seeded = true; loadFailed = false; staleRemovals = 0; removalSig = "";
         Object.keys(sent).forEach(k => delete sent[k]);
       }
-      const res = await runPush({ target, grant, mode: "force", keys });
+      const res = await runPush({ target, grant, mode: "force", keys, quiet: true }); // its caller tells the outcome (res.notice), in ONE toast
       if (gen !== g) return { ok: false, wrote: false, skipped: "reset" };
       const wrote = !!(res.results && res.results.some(x => x.outcome === "saved"));
       // Re-commit what was WRITTEN (saved weeks only — a week whose write
       // failed keeps the target on screen, so it stays pending and is
       // retried, R7) for weeks the user hasn't touched since the request.
       const saved = new Set((res.results || []).filter(x => x.outcome === "saved").map(x => x.k));
-      const cur = d.getState() || {}, next = Object.assign({}, cur); let changedMirror = false;
-      Object.keys(startShown).filter(k => saved.has(k)).forEach(k => {
-        const shownNow = k in cur ? canon(cur[k]) : DEL;
-        if (shownNow !== startShown[k]) return;
-        const want = known[k] ? known[k].canon : DEL;
-        if (shownNow !== want) { changedMirror = true; if (known[k]) next[k] = clone(known[k].data); else delete next[k]; }
-      });
-      if (changedMirror) d.commit(next);
-      if (res.skipped === "auth") return { ok: false, wrote: false, error: "Your sign-in has expired — tap \"Sign in again\", then retry. Nothing was changed." };
+      showKnown(startShown, saved);
+      if (res.skipped === "auth") return refuse({ ok: false, wrote: false, error: "Your sign-in has expired — tap \"Sign in again\", then retry. Nothing was changed." });
       return Object.assign({ wrote }, res);
-    } finally { release(); busy = null; report(); }
+    } catch (e) { refuse(null); throw e; } // a bug mid-job: the screen shows what the table holds; the chain reports it
+    finally { release(); busy = null; report(); }
   };
 
   // ── keepalive (pagehide / beforeunload only, A9): CAS PATCHes for unsaved
@@ -12653,11 +12733,12 @@ function createSchedSync(deps) {
       report();
       p.then(() => { if (!authoritativeQueued) api.push(); }, () => {});
       // A5(f): the caller has its answer by the deadline. Not started by
-      // then: cancelled — it never runs later — and nothing was written.
+      // then: cancelled — it never runs later — and nothing was written (a
+      // clear / reset / restore puts the screen back, as when it's refused).
       // Started: "still running" (a job is never cut short mid-write), and
       // its outcome is toasted when it ends.
       return settleBy(p, () => {
-        if (!owner.state.started) { owner.state.cancelled = true; owner.release(); report(); return { ok: false, wrote: false, reason: "timeout", error: "The sync is stuck behind an earlier save — nothing was changed. Reload the app, then try again." }; }
+        if (!owner.state.started) { owner.state.cancelled = true; owner.release(); if (!keys) showKnown(startShown); report(); return { ok: false, wrote: false, reason: "timeout", error: "The sync is stuck behind an earlier save — nothing was changed. Reload the app, then try again." }; }
         p.then(r => lateOutcome(owner.what, r));
         return { ok: false, wrote: false, running: true, reason: "timeout", error: `${jobLabel(owner.what)} is taking longer than expected. It's still running — keep the app open; you'll see a message when it ends.` };
       });
@@ -12725,6 +12806,69 @@ function writeFailReason(err) {
   const code = err && typeof err === "object" && typeof err.code === "string" ? err.code : "";
   if (/^(PGRST[12]\d\d|2[23][0-9A-Z]{3}|42[0-9A-Z]{3}|P0\d{3})$/.test(code)) return "the server rejected it — this app may be out of date (reload or update it)";
   return "check your connection and try again";
+}
+
+// mergeEditorEdits(openCopy, draft, latest, openEpoch, adoptEpochOfWeek, opts)
+// — the week editor's save (design §2.6, A17(a)). Pure: no state, no React;
+// saveWeekEdits (and the editor's note) call it with no branching of their own.
+// ONLY the slots edited in the editor — the service week (dayCall), each
+// night, each Service Day override — go onto the LATEST week; every other slot
+// keeps what the latest week holds, someone else's change adopted while the
+// editor was open included (the editor used to write its whole draft back,
+// reverting those). A slot is "edited" when the draft differs from what the
+// editor showed when it opened (openCopy.week). The save is refused only when
+// someone else's copy of this week was adopted since the editor opened
+// (adoptEpochOfWeek > openEpoch — the engine's epochOf / epochNow) AND an
+// edited slot moved underneath: the latest differs there from the open copy,
+// and from the edit (the same change twice isn't a conflict). The refusal
+// names those slots. APP days live in their own table: the days edited against
+// what the APP rows showed on open (openCopy.apps) come back as appEdits, for
+// the caller to apply onto the latest APP map.
+//   openCopy { week (null: it didn't exist when the editor opened), apps }
+//   draft    { dayCall, nights, dayCallOverrides, apps }
+//   latest   the week as the mirror holds it now (undefined: there is none)
+//   opts     { surgeonIds (to recompute `off`), flags ({ isBackup,
+//            isFierceBackup }: stamped on a week the save CREATES) }
+// → { ok: true, week, creating, appEdits: [[day, appId]] }
+//   | { ok: false, slots: [{ kind: "dayCall" | "night" | "override", key }], appEdits }
+function mergeEditorEdits(openCopy, draft, latest, openEpoch, adoptEpochOfWeek, opts) {
+  const s = (v) => v || "";
+  const was = (openCopy && openCopy.week) || {}, dr = draft || {}, lt = latest || null, o = opts || {};
+  const wasOv = was.dayCallOverrides || {}, drOv = dr.dayCallOverrides || {}, ltOv = (lt && lt.dayCallOverrides) || {};
+  const edits = [];
+  if (s(dr.dayCall) !== s(was.dayCall)) edits.push({ kind: "dayCall", key: "dayCall", mine: s(dr.dayCall), then: s(was.dayCall), now: s(lt && lt.dayCall) });
+  ["mon", "tue", "wed", "thu", "wknd"].forEach(nk => {
+    const mine = s(dr.nights && dr.nights[nk]), then = s(was.nights && was.nights[nk]);
+    if (mine !== then) edits.push({ kind: "night", key: nk, mine, then, now: s(lt && lt.nights && lt.nights[nk]) });
+  });
+  [...new Set([...Object.keys(wasOv), ...Object.keys(drOv)])].sort().forEach(ds => {
+    if (s(drOv[ds]) !== s(wasOv[ds])) edits.push({ kind: "override", key: ds, mine: s(drOv[ds]), then: s(wasOv[ds]), now: s(ltOv[ds]) });
+  });
+  const appsThen = (openCopy && openCopy.apps) || {};
+  const appEdits = Object.entries(dr.apps || {}).filter(([ds, aid]) => s(aid) !== s(appsThen[ds]));
+  if ((adoptEpochOfWeek || 0) > (openEpoch || 0)) {
+    const moved = edits.filter(e => e.now !== e.then && e.now !== e.mine);
+    if (moved.length) return { ok: false, slots: moved.map(e => ({ kind: e.kind, key: e.key })), appEdits };
+  }
+  const creating = !lt;
+  const wk = Object.assign({}, lt || {});
+  // A brand-new week inherits its backup / fierce flags from the sets, as the
+  // generator stamps them; an existing week keeps its own.
+  if (creating) { const f = o.flags || {}; wk.isBackup = !!f.isBackup; wk.isFierceBackup = !!f.isFierceBackup; }
+  const dc = edits.find(e => e.kind === "dayCall");
+  wk.dayCall = dc ? (dc.mine || null) : (wk.dayCall === undefined ? null : wk.dayCall);
+  wk.nights = Object.assign({}, wk.nights || {});
+  edits.filter(e => e.kind === "night").forEach(e => { wk.nights[e.key] = e.mine; });
+  // Overrides: the latest week's, with the edited days set or cleared; one
+  // that is blank or equals the service surgeon isn't a real override.
+  const ov = Object.assign({}, ltOv);
+  edits.filter(e => e.kind === "override").forEach(e => { if (e.mine) ov[e.key] = e.mine; else delete ov[e.key]; });
+  Object.keys(ov).forEach(ds => { if (!ov[ds] || ov[ds] === (wk.dayCall || null)) delete ov[ds]; });
+  if (Object.keys(ov).length) wk.dayCallOverrides = ov; else delete wk.dayCallOverrides;
+  // 'off' — any surgeon not assigned anywhere this week (incl. coverers)
+  const assigned = new Set([wk.dayCall, ...Object.values(wk.nights), ...Object.values(ov)].filter(Boolean));
+  wk.off = (o.surgeonIds || []).find(id => !assigned.has(id)) || null;
+  return { ok: true, week: wk, creating, appEdits };
 }
 // ═══ END SYNC ENGINE v2 ═══
 
