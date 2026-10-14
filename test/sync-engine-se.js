@@ -142,6 +142,10 @@ const MUTANTS = [
     from: "Object.keys(startShown).filter(k => saved.has(k)).forEach(k => {", to: "Object.keys(startShown).forEach(k => {" },
   { id: "M35", what: "a re-send after recognising our own earlier body ignores that the screen moved on (re-sends an undone edit — A3)",
     from: "if (mode !== \"force\" && canon((d.getState() || {})[k]) !== c) return { k, outcome: \"superseded\" }; ", to: "" },
+  { id: "M36", what: "the stale-removal status is never cleared by a later pull (the header says 'reload to resync' forever — A14)",
+    from: '    else { removalSig = ""; staleRemovals = 0; }\n', to: '    else { removalSig = ""; }\n' },
+  { id: "M37", what: "an empty list sets the stale-removal status without reporting it (the header, fed by onStatus, never shows it — A14)",
+    from: "staleRemovals = Object.keys(known).length; report();", to: "staleRemovals = Object.keys(known).length;" },
 ];
 
 async function scenarios(createSchedSync, check) {
@@ -1246,9 +1250,47 @@ async function scenarios(createSchedSync, check) {
     check("SE56 …the follow-up push lands it", t.get(W[1]).data.dayCall === "regen" && A.engine.pending().length === 0);
   });
 
+  // SE57 — A14(1): the stale-removal status as the HEADER sees it — through
+  // onStatus (the app renders the last report, never status() directly). An
+  // empty list while weeks are known reports it; a later pull that isn't
+  // suppressed clears it; a wipe-shaped removal reports it until the second
+  // pull agrees and adopts; a reset (sign-out) settles it.
+  await run("SE57", async () => {
+    const last = (s) => s.statuses[s.statuses.length - 1] || {};
+    const t = mkTable(seedRows(6));
+    const A = mkSession(t), B = mkSession(t, { token: "TOK_B", user: "user-b" });
+    await A.engine.load(); await B.engine.load();
+    const before = last(B).staleRemovals;
+    A.mirror = {}; await A.engine.authoritative({}, true, "clear");
+    await B.engine.pull();
+    const onEmpty = last(B).staleRemovals;
+    A.mirror = {}; W.slice(0, 6).forEach(k => { A.mirror[k] = wk("regen"); }); await A.engine.push();
+    await B.engine.pull();
+    check("SE57 A14(1) through onStatus: 0 after the load → 6 when the pull sees the cleared table (not adopted) → 0 once a later pull sees the weeks again (and adopts them)",
+      before === 0 && onEmpty === 6 && last(B).staleRemovals === 0 && Object.keys(B.mirror).length === 6 && W.slice(0, 6).every(k => B.mirror[k].dayCall === "regen"),
+      JSON.stringify({ before, onEmpty, after: last(B).staleRemovals }));
+    // wipe-shaped: 4 of the 6 weeks deleted elsewhere
+    A.mirror = {}; W.slice(4, 6).forEach(k => { A.mirror[k] = wk("regen"); }); await A.engine.authoritative(A.mirror, true, "restore");
+    await B.engine.pull();
+    const firstWipe = last(B).staleRemovals, keptOnScreen = Object.keys(B.mirror).length;
+    await B.engine.pull();
+    check("SE57 …a wipe-shaped removal: reported (4) and not adopted on the first pull; the second pull agrees, adopts it and clears the status",
+      firstWipe === 4 && keptOnScreen === 6 && last(B).staleRemovals === 0 && Object.keys(B.mirror).join() === W.slice(4, 6).join(), JSON.stringify({ firstWipe, keptOnScreen, after: last(B).staleRemovals }));
+    A.mirror = {}; await A.engine.authoritative({}, true, "clear");
+    await B.engine.pull();
+    const setAgain = last(B).staleRemovals;
+    await B.engine.reset();
+    check("SE57 …and a reset (sign-out) settles it: the reload of the empty table reports 0", setAgain === 2 && last(B).staleRemovals === 0 && Object.keys(B.mirror).length === 0, JSON.stringify({ setAgain, after: last(B).staleRemovals }));
+  });
+
   // SE-I — no scenario above produced an internal error.
   check("SE-I no internal (non-network) error in any scenario", internal.length === 0, internal.slice(0, 3).join(" | "));
 }
+
+// For the app-wiring tests in sync-guards (SE-A): the same extraction and the
+// same bare compile, so they drive the real engine too.
+module.exports.extractEngine = extractEngine;
+module.exports.compileEngine = compile;
 
 // Standalone: node test/sync-engine-se.js
 if (require.main === module) {

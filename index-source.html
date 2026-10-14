@@ -1099,7 +1099,7 @@ function CallSchedule() {
     if (unsaved && !confirm(`${unsaved} week${unsaved === 1 ? "" : "s"} of the schedule ${unsaved === 1 ? "isn't" : "aren't"} saved yet — signing out loses ${unsaved === 1 ? "it" : "them"}.\n\nSign out anyway?`)) return;
     searchRef.current = null; setSearching(null); setSearchStats(null); setPreviewSchedule(null); setShowPreview(false); // nothing searched, generated or loaded by this user is published as the next one
     schedSyncRef.current.reset();
-    setScheduleHistory([]); setEditWeekModal(null); setReauthNeeded(false);
+    setScheduleHistory([]); setEditWeekModal(null); setReauthNeeded(false); setStaleTokenWarn(false);
     await auth.signOut();
     biometric.unenroll();
     setAuthUser(null); setUserProfile(null); setNeedsProfile(false); setMySurgeon("");
@@ -1768,7 +1768,7 @@ function CallSchedule() {
   // schedSyncBridgeRef (the latest-closure bridge, as for the day-off flush),
   // so nothing it calls is stale. Its status drives the header, the load and
   // sign-in gates, and the reload / sign-out guards.
-  const [schedSync, setSchedSync] = useState({ seeded: false, loadFailed: false, pending: 0, pendingKeys: [], saving: 0, failing: 0, auth: "ok", authNeeded: false, rejected: [], noPermission: [], blockedDeletes: 0, conflicts: [], busy: null });
+  const [schedSync, setSchedSync] = useState({ seeded: false, loadFailed: false, pending: 0, pendingKeys: [], saving: 0, failing: 0, auth: "ok", authNeeded: false, rejected: [], noPermission: [], blockedDeletes: 0, staleRemovals: 0, conflicts: [], busy: null });
   const schedSyncBridgeRef = useRef(null);
   schedSyncBridgeRef.current = { canWrite: !isPublicMode, userId: userProfile?.person_id || null, showToast };
   const schedSyncRef = useRef(null);
@@ -1805,6 +1805,11 @@ function CallSchedule() {
   //    way out ("Sign in again" at the top) — nothing becomes pending.
   const [reauthNeeded, setReauthNeeded] = useState(false);
   const [reauthBusy, setReauthBusy] = useState(false);
+  // The SOFT stale-sign-in warning (A7(3)): set on resume when the stored
+  // token is past its expiry by the DEVICE clock. Only a warning — the same
+  // "Sign in again", in amber — never an edit gate: a skewed clock must not
+  // stop edits (the gate below closes on the server's 401).
+  const [staleTokenWarn, setStaleTokenWarn] = useState(false);
   const schedEditable = () => {
     if (!schedSyncRef.current.isSeeded()) {
       showToast("The schedule hasn't loaded yet — nothing was changed. It retries every minute; try again shortly.", "error");
@@ -1826,7 +1831,7 @@ function CallSchedule() {
     try {
       const { user, error } = await auth.getUser();
       if (user) {
-        setReauthNeeded(false);
+        setReauthNeeded(false); setStaleTokenWarn(false);
         showToast(schedSyncRef.current.pending().length ? "Signed in again — sending what wasn't saved." : "Signed in again.", "info");
         schedSyncRef.current.push();
         return;
@@ -1843,6 +1848,17 @@ function CallSchedule() {
     if (!n) return base ? confirm(base) : true;
     return confirm(`${n} week${n === 1 ? "" : "s"} of the schedule ${n === 1 ? "isn't" : "aren't"} saved yet — reloading now loses ${n === 1 ? "it" : "them"}.\n\nReload anyway?`);
   };
+  // The header's schedule sync line. A14: a pull found the server with fewer
+  // weeks than this screen and didn't adopt that (a full clear elsewhere, or
+  // the RLS/anon empty shape — never adopted on one read). The header says so
+  // persistently, in the scheduler AND the public / OR-board headers, until a
+  // later pull or a reload settles it, and "☁ Synced" never shows beside it.
+  // Its Reload goes through the reload guard (asks while weeks are unsaved).
+  const reloadToResync = () => { if (confirmReloadWithPending()) window.location.reload(); };
+  const schedStaleShown = loaded && schedSync.staleRemovals > 0;
+  const schedSyncedShown = loaded && !saveStatus && schedSync.seeded && schedSync.pending === 0 && !schedSync.busy && !schedStaleShown;
+  // The amber "Sign in again" (A7(3)) — never beside the red one.
+  const staleTokenShown = !isPublicMode && !!authUser && staleTokenWarn && !(schedSync.authNeeded || reauthNeeded);
   // Clear / factory reset / restore: an authoritative engine job — its own
   // grant, a fresh whole-table read first, fail closed. When it could write
   // nothing (the read failed, signed out…), the screen goes back to what the
@@ -2023,9 +2039,20 @@ function CallSchedule() {
   // shows other people's changes the moment it's opened, not a minute later,
   // and anything pending is retried as soon as the network is back. Public
   // and OR-board sessions pull too (the engine never writes from them).
+  // On resume, first (A5(b)): timers froze while the page was suspended, so
+  // a request sent before can't have timed out — the engine aborts any older
+  // than its timeout, so the pull isn't queued behind it. Then (A7(3)): a
+  // stored sign-in past its expiry by the device clock, in a view that
+  // writes, shows the amber "Sign in again" (a warning, never a gate).
   useEffect(() => {
     if (!loaded) return;
-    const onVisible = () => { if (!document.hidden) schedSyncRef.current.pull(); };
+    const onVisible = () => {
+      if (document.hidden) return;
+      schedSyncRef.current.onResume();
+      const t = auth.getSession()?.access_token || null;
+      setStaleTokenWarn(!!t && schedSyncBridgeRef.current.canWrite && !jwtIsFresh(t));
+      schedSyncRef.current.pull();
+    };
     const onOnline = () => schedSyncRef.current.pull();
     document.addEventListener("visibilitychange", onVisible);
     window.addEventListener("online", onOnline);
@@ -4921,6 +4948,7 @@ function CallSchedule() {
       const cw = scheduleRef.current[mStr];
       if (((shift === "dayCall" ? cw?.dayCall : cw?.nights?.[shift]) || "") !== (expectOldId || "")) {
         showToast("This swap is out of date — that shift changed since the suggestions were made. Nothing was changed; find swaps again.", "error");
+        setSwapSuggestions(null); setSwapTarget(null); // they describe a schedule that's gone (A13)
         return;
       }
     }
@@ -5120,6 +5148,7 @@ function CallSchedule() {
       const holder = (w, k) => (k === "dayCall" ? cur[w]?.dayCall : cur[w]?.nights?.[k]) || "";
       if (holder(targetMon, targetShift) !== (targetOldId || "") || (returnMon && returnShift && holder(returnMon, returnShift) !== (candId || ""))) {
         showToast("This swap is out of date — those shifts changed since the suggestions were made. Nothing was changed; find swaps again.", "error");
+        setSwapSuggestions(null); setSwapTarget(null); // they describe a schedule that's gone (A13)
         return;
       }
     }
@@ -6476,6 +6505,17 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           <button onClick={reauthForSync} disabled={reauthBusy} style={{background:"#fff",border:"none",color:"#a83232",borderRadius:6,padding:"4px 12px",fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:font}}>{reauthBusy ? "Signing in…" : "Sign in again"}</button>
         </div>
       )}
+      {/* …and its SOFT version (A7(3)): on resume the sign-in looked expired by
+          this device's clock. Amber and a warning only — edits still work (a
+          skewed clock must not stop them); the red banner takes over once the
+          server actually refuses the token. */}
+      {staleTokenShown && (
+        <div role="status" aria-live="polite" style={{position:"fixed",left:0,right:0,top:0,zIndex:10000,background:"#fdf0e0",color:"#7a4a00",borderBottom:"1px solid #e0b070",display:"flex",alignItems:"center",justifyContent:"center",flexWrap:"wrap",gap:10,padding:"8px 14px",fontSize:12.5,fontWeight:600,fontFamily:font,boxShadow:"0 2px 12px rgba(0,0,0,0.15)"}}>
+          <span>⚠ Your sign-in may have expired — sign in again so your changes keep saving.</span>
+          <button onClick={reauthForSync} disabled={reauthBusy} style={{background:"#8a5a10",border:"none",color:"#fff",borderRadius:6,padding:"4px 12px",fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:font}}>{reauthBusy ? "Signing in…" : "Sign in again"}</button>
+          <button aria-label="Dismiss" onClick={()=>setStaleTokenWarn(false)} style={{background:"none",border:"none",color:"#8a5a10",cursor:"pointer",fontSize:14,padding:"2px 6px"}}>✕</button>
+        </div>
+      )}
       {/* Update-available banner — persistent until acted on; reload is USER-initiated
           (never forced — a mid-action reload is jarring and kills adoption). */}
       {/* Hidden while the paint sheet is open: the banner sits at z 9998
@@ -6752,6 +6792,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   {lastSyncRef.current && <> · Last updated: {new Date(lastSyncRef.current).toLocaleString(undefined, {month:"short",day:"numeric",year:"numeric",hour:"numeric",minute:"2-digit"})}</>}
                   {!lastSyncRef.current && <> · Loading schedule…</>}
                   {loaded && schedSync.loadFailed && <span style={{color:"#c04040",fontWeight:700}}> · ⚠ The schedule didn't load — retrying. What's shown may be incomplete.</span>}
+                  {schedStaleShown && <span role="status" style={{color:"#8a5a10",fontWeight:700}}> · ⚠ The schedule on the server has fewer weeks than this screen — reload to resync <button onClick={reloadToResync} style={{marginLeft:4,background:"#fdf0e0",border:"1px solid #e0b070",color:"#8a5a10",borderRadius:5,padding:"1px 8px",fontSize:10.5,fontWeight:700,cursor:"pointer",fontFamily:font}}>Reload</button></span>}
                 </>
               ) : (
                 <>
@@ -6766,8 +6807,9 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   {loaded && !schedSync.busy && schedSync.failing > 0 && <span role="status" aria-live="polite" style={{marginLeft:8,color:"#c04040",fontWeight:700,fontSize:11}}>⚠ {schedSync.failing} week{schedSync.failing === 1 ? "" : "s"} not saved — {schedSync.authNeeded ? "sign in again" : schedSync.noPermission.length === schedSync.failing ? "no permission" : schedSync.rejected.length === schedSync.failing ? "rejected by the server" : "retrying"}</span>}
                   {loaded && !schedSync.busy && schedSync.failing === 0 && schedSync.saving > 0 && <span style={{marginLeft:8,color:"#6a7a88",fontSize:10}}>Saving {schedSync.saving} week{schedSync.saving === 1 ? "" : "s"}…</span>}
                   {loaded && schedSync.blockedDeletes > 0 && <span role="status" style={{marginLeft:8,color:"#c04040",fontWeight:700,fontSize:11}}>⚠ {schedSync.blockedDeletes} week deletion{schedSync.blockedDeletes === 1 ? "" : "s"} blocked — reload to resync</span>}
+                  {schedStaleShown && <span role="status" style={{marginLeft:8,color:"#8a5a10",fontWeight:700,fontSize:11}}>⚠ The schedule on the server has fewer weeks than this screen — reload to resync <button onClick={reloadToResync} style={{marginLeft:4,background:"#fdf0e0",border:"1px solid #e0b070",color:"#8a5a10",borderRadius:5,padding:"1px 8px",fontSize:10.5,fontWeight:700,cursor:"pointer",fontFamily:font}}>Reload</button></span>}
                   {schedSync.conflicts.length > 0 && <button onClick={()=>{ showToast(`Changed by someone else (your edit was replaced — reapply it if it's still needed): week${schedSync.conflicts.length === 1 ? "" : "s"} of ${schedSync.conflicts.map(c => c.k).join(", ")}.`, "error"); schedSyncRef.current.dismissConflicts(); }} style={{marginLeft:8,background:"#fdf0e0",border:"1px solid #e0b070",color:"#8a5a10",borderRadius:5,padding:"1px 8px",fontSize:10.5,fontWeight:700,cursor:"pointer",fontFamily:font}}>⚠ {schedSync.conflicts.length} change{schedSync.conflicts.length === 1 ? "" : "s"} replaced — see</button>}
-                  {loaded && !saveStatus && schedSync.seeded && schedSync.pending === 0 && !schedSync.busy && <span style={{marginLeft:8,color:"#a0a8b0",fontSize:10}}>☁ Synced</span>}
+                  {schedSyncedShown && <span style={{marginLeft:8,color:"#a0a8b0",fontSize:10}}>☁ Synced</span>}
                   {!loaded && <span style={{marginLeft:8,color:"#6a7a88",fontSize:10}}>Connecting…</span>}
                 </>
               )}

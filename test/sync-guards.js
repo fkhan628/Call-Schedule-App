@@ -5063,8 +5063,8 @@ await require("./sync-engine-se.js")({ src, check });
       && count("previewEpochRef.current = genEpoch;") === 3 && count("previewEpochRef.current = schedSyncRef.current.epochNow();") === 1 && count("return genFinishRef.current(result, preview, clickSig, pendingLocks, genEpoch);") === 1);
   check("SE-W unload: the weeks keepalive comes ONLY from the engine (CAS, no insert, no delete) and only on pagehide/beforeunload; hide pushes through the chain",
     count("keepaliveRequests()") === 1 && count('if (source === "visibilitychange") { schedSyncRef.current.push(); return; }') === 1 && count("on_conflict=week_monday") === 0);
-  check("SE-W reload / sign-out guards: both reload buttons ask while weeks are unsaved; sign-out asks, then resets the engine (mirror too), undo and editor BEFORE signing out",
-    count("confirmReloadWithPending(") === 2
+  check("SE-W reload / sign-out guards: every reload button (update banner, Settings → Refresh, the stale-removal Reload — A14) asks while weeks are unsaved; sign-out asks, then resets the engine (mirror too), undo and editor BEFORE signing out",
+    count("confirmReloadWithPending(") === 3 && count("const reloadToResync = () => { if (confirmReloadWithPending()) window.location.reload(); };") === 1 // reloadToResync is executed in SE-A
       && /searchRef\.current = null; setSearching\(null\); setSearchStats\(null\); setPreviewSchedule\(null\); setShowPreview\(false\);[^\n]*\n\s*schedSyncRef\.current\.reset\(\);/.test(nsrcW)
       && /const handleSignOut = async \(\) => \{[\s\S]{0,1100}schedSyncRef\.current\.reset\(\);\s*setScheduleHistory\(\[\]\); setEditWeekModal\(null\);[\s\S]{0,120}await auth\.signOut\(\);/.test(nsrcW));
   check("SE-W Undo is all-or-nothing through the engine's undoPlan (each step carries its epoch)",
@@ -5073,6 +5073,190 @@ await require("./sync-engine-se.js")({ src, check });
   check("SE-W destructive snapshots pass minWeeks (an RLS-empty schedule read fails the capture): clear, regenerate, reset, restore",
     count("{ minWeeks: Object.keys(schedSyncRef.current.knownSchedule()).length ? 1 : 0 }") === 5); // + Accept & Publish's backup (A14)
 }
+
+// SE-A. Sync v2 app wiring, EXECUTED (9/n). The real component code, sliced
+// by its anchors and run with stubs — and, for the header, the real engine on
+// the emulated table: the stale-removal line (A14(1)), the resume hook
+// (A5(b)), the soft stale-token warning (A7(3)) and the swap refusals that
+// drop the stale suggestions (A13). JSX can't run here (no Babel in CI), so
+// the markup is pinned and the decisions it renders are executed.
+console.log("\nSE-A. sync v2 app wiring, executed");
+await (async () => {
+  const nsrcA = src.replace(/\r\n/g, "\n");
+  // The text after `start` (exactly one occurrence) up to the first `end` after it.
+  const after = (start, end) => { const i = nsrcA.indexOf(start); if (i < 0 || nsrcA.indexOf(start, i + 1) !== -1) return null; const e = nsrcA.indexOf(end, i + start.length); return e < 0 ? null : nsrcA.slice(i + start.length, e); };
+  const fnIn = (names, code) => { try { return vm.runInContext(`(function (env) { const { ${names} } = env; return (${code}); })`, sandbox); } catch (ex) { return null; } };
+  const se = require("./sync-engine-se.js");
+  const { createFakeWeeksTable } = require("./fake-weeks-table.js");
+  const internalA = [];
+
+  // ── A14(1): the stale-removal header line ──
+  // The component's status state starts as EXACTLY the engine's own first
+  // report (onStatus dedupes by JSON, so the keys AND their order matter).
+  const defSrc = after("  const [schedSync, setSchedSync] = useState(", ");\n");
+  let def = null; try { def = defSrc ? vm.runInContext("(" + defSrc + ")", sandbox) : null; } catch (ex) { def = null; }
+  let createSchedSync = null; try { createSchedSync = se.compileEngine(se.extractEngine(src)); } catch (ex) { createSchedSync = null; }
+  const engineFor = (o) => createSchedSync(Object.assign({ getState: () => ({}), commit: () => {}, fetch: () => new Promise(() => {}), url: "https://x.supabase.co",
+    writeHeaders: () => ({}), readHeaders: () => ({}), canWrite: () => true, token: () => "TOK", userId: () => "p1", now: () => new Date().toISOString(), nowMs: () => Date.now(),
+    onStatus: () => {}, onToast: () => {}, onWipeBlocked: () => {}, onInternalError: (e) => internalA.push(String(e && e.message || e)), log: () => {} }, o || {}));
+  if (!def || !createSchedSync) { check("SE-A the schedSync default and the engine are extractable", false, JSON.stringify({ def: !!def, engine: !!createSchedSync })); return; }
+  check("SE-A A14(1) the header's schedSync state starts as EXACTLY the engine's own first status — staleRemovals: 0 included (same keys, same order)",
+    JSON.stringify(def) === JSON.stringify(engineFor().status()), JSON.stringify({ def, engine: engineFor().status() }));
+
+  // The header's decisions (the reload helper + the two flags), executed.
+  const hdrSrc = after("  const reloadToResync = ", "\n  // The amber");
+  const hdrFn = hdrSrc ? fnIn("loaded, saveStatus, schedSync, confirmReloadWithPending, window", `(() => { const reloadToResync = ${hdrSrc}\n return { reloadToResync, schedStaleShown, schedSyncedShown }; })()`) : null;
+  if (!hdrFn) { check("SE-A the header's sync decisions are extractable", false, "anchor / compile"); return; }
+  const HS = (st, o = {}) => hdrFn({ loaded: o.loaded !== false, saveStatus: o.saveStatus || "", schedSync: st, confirmReloadWithPending: o.confirm || (() => true), window: o.window || { location: { reload: () => {} } } });
+  const clean = Object.assign({}, def, { seeded: true });
+  const H = (extra, o) => HS(Object.assign({}, clean, extra), o);
+  check("SE-A A14(1) the header decides: staleRemovals > 0 → the 'fewer weeks' line and NOT \"☁ Synced\"; 0 and clean → Synced alone; nothing before the load; Synced still waits for pending / busy / the blob's status",
+    H({ staleRemovals: 6 }).schedStaleShown === true && H({ staleRemovals: 6 }).schedSyncedShown === false && H({}).schedStaleShown === false && H({}).schedSyncedShown === true
+      && H({ staleRemovals: 6 }, { loaded: false }).schedStaleShown === false && H({ pending: 1 }).schedSyncedShown === false && H({ busy: "clear" }).schedSyncedShown === false && H({}, { saveStatus: "Saved" }).schedSyncedShown === false,
+    JSON.stringify([H({ staleRemovals: 6 }), H({})]));
+  // …and over a real lifecycle: the REAL engine on the emulated table, the
+  // header fed by onStatus as the component's state is — a scheduler session
+  // and an OR board (read-only, no token), while another device clears.
+  {
+    let ms = Date.UTC(2026, 9, 14, 12, 0, 0);
+    const clock = () => new Date(ms += 1000).toISOString();
+    const WK = ["2026-10-12", "2026-10-19", "2026-10-26", "2026-11-02", "2026-11-09", "2026-11-16"];
+    const wkA = (dc) => ({ dayCall: dc, nights: { mon: "s2", tue: "s3", wed: "s4", thu: "s5", wknd: "s6" }, off: "s1" });
+    const t = createFakeWeeksTable({ baseUrl: "https://x.supabase.co", anonKey: "ANON", users: { TOK_A: "user-a", TOK_B: "user-b" }, clock,
+      rows: WK.map((k, i) => ({ week_monday: k, data: wkA("s" + (i + 1)), version: 2, updated_by: "user-a", updated_at: "2026-10-01T08:00:00.000Z" })) });
+    const mkS = (tok, canWrite) => {
+      const s = { mirror: {}, st: def, toasts: [] };
+      const h = () => ({ apikey: "ANON", Authorization: "Bearer " + (tok || "ANON") });
+      s.engine = engineFor({ getState: () => s.mirror, commit: (n) => { s.mirror = n; }, fetch: (u, i) => t.fetch(u, i), writeHeaders: h, readHeaders: h,
+        canWrite: () => canWrite, token: () => tok, now: clock, nowMs: () => ms, onStatus: (st) => { s.st = st; }, onToast: (m) => s.toasts.push(String(m)) });
+      return s;
+    };
+    const A = mkS("TOK_A", true), B = mkS("TOK_B", true), OR = mkS(null, false);
+    await A.engine.load(); await B.engine.load(); await OR.engine.load();
+    const loadedB = HS(B.st), loadedOR = HS(OR.st);
+    A.mirror = {}; await A.engine.authoritative({}, true, "clear");
+    await B.engine.pull(); await OR.engine.pull();
+    const staleB = HS(B.st), staleOR = HS(OR.st), keptB = Object.keys(B.mirror).length, keptOR = Object.keys(OR.mirror).length;
+    A.mirror = {}; WK.forEach(k => { A.mirror[k] = wkA("regen"); }); await A.engine.push();
+    await B.engine.pull(); await OR.engine.pull();
+    const backB = HS(B.st), backOR = HS(OR.st);
+    check("SE-A A14(1) a real clear elsewhere: the scheduler and the OR board both show the line (not \"☁ Synced\"; 6 weeks still on screen), and both clear it once a later pull sees the weeks again",
+      !loadedB.schedStaleShown && loadedB.schedSyncedShown && !loadedOR.schedStaleShown && staleB.schedStaleShown && !staleB.schedSyncedShown && staleOR.schedStaleShown && keptB === 6 && keptOR === 6
+        && !backB.schedStaleShown && backB.schedSyncedShown && !backOR.schedStaleShown && B.mirror[WK[0]].dayCall === "regen" && OR.mirror[WK[0]].dayCall === "regen" && writesIn({ calls: t.log }).length > 0,
+      JSON.stringify({ loadedB, staleB, staleOR, backB, backOR, keptB, keptOR }));
+    check("SE-A …the OR board never wrote, and no session hit an internal error", t.log.filter(e => e.method !== "GET" && /Bearer ANON/.test(JSON.stringify(e.headers || {}))).length === 0 && internalA.length === 0, internalA.join(" | "));
+  }
+  const rl = (ok) => { const r = { asked: 0, reloads: 0 }; H({ staleRemovals: 6 }, { confirm: (b) => { r.asked++; r.arg = b; return ok; }, window: { location: { reload: () => { r.reloads++; } } } }).reloadToResync(); return r; };
+  const yes = rl(true), no = rl(false);
+  check("SE-A A14(1) its Reload goes through the reload guard (which asks only while weeks are unsaved): reloads on yes, not on no",
+    yes.asked === 1 && yes.arg === undefined && yes.reloads === 1 && no.asked === 1 && no.reloads === 0, JSON.stringify({ yes, no }));
+  {
+    const LINE = "⚠ The schedule on the server has fewer weeks than this screen — reload to resync <button onClick={reloadToResync}";
+    const pub0 = nsrcA.indexOf('isOrView ? "OR board · read-only" : "Read-only view"'), sch0 = nsrcA.indexOf("Call Schedule · Surgeons + APPs"), conn = nsrcA.indexOf("Connecting…</span>}");
+    const at1 = nsrcA.indexOf(LINE), at2 = nsrcA.indexOf(LINE, at1 + 1);
+    check("SE-A A14(1) the line is rendered in BOTH headers — the public / OR-board branch and the scheduler's — each gated by schedStaleShown, with its Reload; \"☁ Synced\" renders only through schedSyncedShown",
+      count(LINE) === 2 && count('{schedStaleShown && <span role="status"') === 2 && pub0 > 0 && at1 > pub0 && at1 < sch0 && at2 > sch0 && at2 < conn
+        && count(">☁ Synced</span>") === 1 && count("{schedSyncedShown && <span") === 1 && count("schedSync.staleRemovals") === 1,
+      JSON.stringify({ n: count(LINE), pub0, at1, sch0, at2, conn }));
+  }
+  {
+    const decl = (s) => nsrcA.indexOf(s), at = decl("  const schedStaleShown = ");
+    const reads = ["const isPublicMode = useMemo(", "const [loaded, setLoaded]", "const [saveStatus, setSaveStatus]", "const [authUser, setAuthUser]", "const [schedSync, setSchedSync]", "const [reauthNeeded, setReauthNeeded]", "const [staleTokenWarn, setStaleTokenWarn]", "const confirmReloadWithPending = "];
+    check("SE-A the header decisions are computed AFTER every state they read is declared (a later const would be a TDZ crash at render)",
+      at > 0 && reads.every(s => decl(s) > 0 && decl(s) < at), JSON.stringify(reads.map(s => [s, decl(s)]).concat([["flags", at]])));
+  }
+
+  // ── A5(b) + A7(3): the resume hook ──
+  const visBody = after("  useEffect(() => {\n    if (!loaded) return;\n    const onVisible = () => {", "\n  }, [loaded]);");
+  const visFx = visBody ? fnIn("loaded, document, window, schedSyncRef, auth, jwtIsFresh, schedSyncBridgeRef, setStaleTokenWarn", `() => {\n    if (!loaded) return;\n    const onVisible = () => {${visBody}\n}`) : null;
+  if (!visFx) { check("SE-A the resume / reconnect effect is extractable", false, "anchor / compile"); return; }
+  const resume = (o = {}) => {
+    const r = { calls: [], warn: [], on: {} };
+    const doc = { hidden: true, addEventListener: (ev, f) => { r.on["doc:" + ev] = f; }, removeEventListener: () => {} };
+    const win = { addEventListener: (ev, f) => { r.on["win:" + ev] = f; }, removeEventListener: () => {} };
+    visFx({ loaded: o.loaded !== false, document: doc, window: win,
+      schedSyncRef: { current: { onResume: () => { r.calls.push("onResume"); }, pull: () => { r.calls.push("pull"); return Promise.resolve({ ok: true }); } } },
+      auth: { getSession: () => (o.token ? { access_token: o.token, refresh_token: "R" } : null) },
+      jwtIsFresh: (tok) => tok === "FRESH", schedSyncBridgeRef: { current: { canWrite: o.canWrite !== false } },
+      setStaleTokenWarn: (v) => { r.warn.push(v); } })();
+    doc.hidden = !!o.hidden;
+    if (o.event === "online") { if (r.on["win:online"]) r.on["win:online"](); }
+    else if (r.on["doc:visibilitychange"]) r.on["doc:visibilitychange"]();
+    return r;
+  };
+  const vFresh = resume({ token: "FRESH" }), vStale = resume({ token: "STALE" }), vPub = resume({ token: "STALE", canWrite: false }), vNone = resume({}), vHidden = resume({ token: "STALE", hidden: true }), vOnline = resume({ token: "STALE", event: "online" }), vUnloaded = resume({ token: "STALE", loaded: false });
+  check("SE-A A5(b) visible → engine.onResume() FIRST (abort requests older than their timeout — timers froze while suspended), THEN the pull; hidden → neither",
+    vFresh.calls.join() === "onResume,pull" && vStale.calls.join() === "onResume,pull" && vHidden.calls.length === 0 && vHidden.warn.length === 0, JSON.stringify([vFresh, vHidden]));
+  check("SE-A A7(3) on resume a stored token stale by the device clock, in a view that writes → the soft warning; a fresh token clears it; no token / a public or OR view → none",
+    vStale.warn.join() === "true" && vFresh.warn.join() === "false" && vNone.warn.join() === "false" && vPub.warn.join() === "false", JSON.stringify([vStale.warn, vFresh.warn, vNone.warn, vPub.warn]));
+  check("SE-A …and it never stops the resume: the pull still runs with the warning set; reconnecting (online) just pulls; nothing is wired before the load",
+    vStale.calls.includes("pull") && vOnline.calls.join() === "pull" && vOnline.warn.length === 0 && Object.keys(vUnloaded.on).length === 0, JSON.stringify([vOnline, vUnloaded.on]));
+  check("SE-A the resume pull keeps its literal (the pull-trigger census in E2 counts it)",
+    /if \(document\.hidden\) return;\n      schedSyncRef\.current\.onResume\(\);[\s\S]{0,260}\n      schedSyncRef\.current\.pull\(\);\n    \};/.test(nsrcA) && count("schedSyncRef.current.onResume()") === 1);
+
+  // ── A7(3): the amber banner's decision, its button, and what clears it ──
+  const stSrc = after("  const staleTokenShown = ", ";\n");
+  const stFn = stSrc ? fnIn("isPublicMode, authUser, staleTokenWarn, schedSync, reauthNeeded", stSrc) : null;
+  if (!stFn) { check("SE-A the soft-warning decision is extractable", false, "anchor / compile"); return; }
+  const ST = (o) => stFn(Object.assign({ isPublicMode: false, authUser: { id: "u1" }, staleTokenWarn: true, schedSync: { authNeeded: false }, reauthNeeded: false }, o));
+  check("SE-A A7(3) the amber \"Sign in again\" shows for a signed-in writer with the warning set — and NOT while the red one shows (authNeeded / an edit refused), in a public view, or signed out",
+    ST({}) === true && ST({ schedSync: { authNeeded: true } }) === false && ST({ reauthNeeded: true }) === false && ST({ isPublicMode: true }) === false && ST({ authUser: null }) === false && ST({ staleTokenWarn: false }) === false);
+  {
+    const amber = after("      {staleTokenShown && (", "\n      )}");
+    check("SE-A A7(3) the amber banner: non-blocking (role=status, dismissible), the same reauthForSync button as the red one; the red banner's condition is unchanged",
+      !!amber && /^\n        <div role="status"/.test(amber) && amber.includes("<button onClick={reauthForSync} disabled={reauthBusy}") && amber.includes('onClick={()=>setStaleTokenWarn(false)}')
+        && count("onClick={reauthForSync}") === 2 && count("{!isPublicMode && authUser && (schedSync.authNeeded || reauthNeeded) && (") === 1, (amber || "").slice(0, 120));
+  }
+  const raSrc = after("  const reauthForSync = ", "\n  };\n");
+  const raFn = raSrc ? fnIn("reauthBusy, setReauthBusy, auth, setReauthNeeded, setStaleTokenWarn, showToast, schedSyncRef", raSrc + "\n  }") : null;
+  if (!raFn) { check("SE-A reauthForSync is extractable", false, "anchor / compile"); return; }
+  const ra = async (res) => {
+    const r = { warn: [], need: [], pushes: 0, toasts: [] };
+    await raFn({ reauthBusy: false, setReauthBusy: () => {}, auth: { getUser: async () => res }, setReauthNeeded: (v) => r.need.push(v), setStaleTokenWarn: (v) => r.warn.push(v),
+      showToast: (m) => r.toasts.push(String(m)), schedSyncRef: { current: { pending: () => [], push: () => { r.pushes++; } } } })();
+    return r;
+  };
+  const raOk = await ra({ user: { id: "u1" } }), raDead = await ra({ user: null }), raNet = await ra({ user: null, error: "network" });
+  check("SE-A A7(3) \"Sign in again\" that renews the session clears BOTH banners and sends what's pending; one that can't renew clears nothing (the warning stays, to retry)",
+    raOk.warn.join() === "false" && raOk.need.join() === "false" && raOk.pushes === 1 && raDead.warn.length === 0 && raDead.need.length === 0 && raDead.pushes === 0 && raNet.warn.length === 0 && /reach the server/.test(raNet.toasts.join(" ")),
+    JSON.stringify([raOk, raDead, raNet]));
+  const geSrc = after("  const schedEditable = ", "\n  };\n");
+  const geFn = geSrc ? fnIn("schedSyncRef, showToast, setReauthNeeded, staleTokenWarn, jwtIsFresh", geSrc + "\n  }") : null;
+  if (!geFn) { check("SE-A schedEditable is extractable", false, "anchor / compile"); return; }
+  const ge = (blocked) => { const r = { toasts: 0 }; r.ok = geFn({ schedSyncRef: { current: { isSeeded: () => true, authBlocked: () => blocked } }, showToast: () => { r.toasts++; }, setReauthNeeded: () => {}, staleTokenWarn: true, jwtIsFresh: () => false })(); return r; };
+  check("SE-A A7(3) the soft warning is NOT an edit gate: with it set (the token stale by the clock) an edit is allowed; only the server's 401 (authBlocked) refuses",
+    ge(false).ok === true && ge(false).toasts === 0 && ge(true).ok === false, JSON.stringify([ge(false), ge(true)]));
+  check("SE-A A7(3) signing out (a boundary) and a renewed sign-in both drop the soft warning",
+    count("setReauthNeeded(false); setStaleTokenWarn(false);") === 2 && /const handleSignOut = async \(\) => \{[\s\S]{0,1300}setReauthNeeded\(false\); setStaleTokenWarn\(false\);\n\s*await auth\.signOut\(\);/.test(nsrcA));
+
+  // ── A13: an out-of-date swap also drops the stale suggestions ──
+  const MON = "2030-01-07", MON2 = "2030-01-14";
+  const mkCur = (tue, wed2) => ({ [MON]: { dayCall: "s3", nights: { mon: "s3", tue, wed: "s2", thu: "s2", wknd: "s3" }, off: null }, [MON2]: { dayCall: "s2", nights: { mon: "s2", tue: "s2", wed: wed2, thu: "s2", wknd: "s2" }, off: null } });
+  const swapEnv = (rec, cur) => ({ schedEditable: () => true, schedule: cur, scheduleRef: { current: cur }, showToast: (m) => rec.toasts.push(String(m)),
+    silvisActive: false, silvisBlock: () => null, silvisRefuse: () => false, pushUndo: () => { rec.undo++; }, updateSchedule: (f) => { rec.writes++; rec.next = f(cur); },
+    surgeons: [{ id: "s1" }, { id: "s2" }, { id: "s3" }], setEditShift: () => {}, setEditingWeek: () => {},
+    setSwapSuggestions: (v) => rec.cleared.push("suggestions:" + v), setSwapTarget: (v) => rec.cleared.push("target:" + v),
+    sMap: { s1: { name: "AAA" }, s2: { name: "BBB" }, s3: { name: "CCC" } }, schedulerAdminIds: [], addNotification: () => { rec.notes++; }, sendEmailNotif: () => { rec.emails++; } });
+  const newRec = () => ({ toasts: [], undo: 0, writes: 0, notes: 0, emails: 0, cleared: [] });
+  const SWAP_ENV = "schedEditable, schedule, scheduleRef, showToast, silvisActive, silvisBlock, silvisRefuse, pushUndo, updateSchedule, surgeons, setEditShift, setEditingWeek, setSwapSuggestions, setSwapTarget, sMap, schedulerAdminIds, addNotification, sendEmailNotif";
+  const ssSrc = after("  const swapShift = ", "\n  };\n");
+  const ssFn = ssSrc ? fnIn(SWAP_ENV, ssSrc + "\n  }") : null;
+  const twSrc = after("  const executeTwoWaySwap = useCallback(", "\n  }, [surgeons, sMap, addNotification, sendEmailNotif, schedulerAdminIds, silvisActive, silvisBlock, silvisRefuse]);");
+  const twFn = twSrc ? fnIn(SWAP_ENV, twSrc + "\n  }") : null;
+  if (!ssFn || !twFn) { check("SE-A swapShift and executeTwoWaySwap are extractable", false, JSON.stringify({ ssFn: !!ssFn, twFn: !!twFn })); return; }
+  const oneWay = (holder) => { const rec = newRec(); ssFn(swapEnv(rec, mkCur(holder, "s3")))(MON, "tue", "s3", "s1"); return rec; };
+  const twoWay = (holder, ret) => { const rec = newRec(); twFn(swapEnv(rec, mkCur(holder, ret)))(MON, "tue", "s1", "s3", MON2, "wed"); return rec; };
+  const refusedClean = (r) => /This swap is out of date/.test(r.toasts.join(" ")) && r.cleared.join() === "suggestions:null,target:null" && r.undo === 0 && r.writes === 0 && r.notes === 0 && r.emails === 0;
+  const owStale = oneWay("s2"), owOk = oneWay("s1"), twStale = twoWay("s2", "s3"), twRet = twoWay("s1", "s2"), twOk = twoWay("s1", "s3");
+  check("SE-A A13 an out-of-date one-way swap (the slot no longer holds the surgeon it was suggested for) → refused, zero writes / undo / notices, AND the stale suggestions + target are cleared",
+    refusedClean(owStale), JSON.stringify(owStale));
+  check("SE-A A13 an out-of-date two-way swap (target holder or return holder changed) → refused, zero writes / undo / notices, AND the suggestions + target are cleared",
+    refusedClean(twStale) && refusedClean(twRet), JSON.stringify([twStale, twRet]));
+  check("SE-A A13 positive controls: a current one-way and two-way swap still land (one write, one undo step, the notices) and clear the suggestions as before",
+    owOk.writes === 1 && owOk.undo === 1 && owOk.notes === 1 && owOk.emails === 1 && owOk.next[MON].nights.tue === "s3" && owOk.cleared.join() === "suggestions:null,target:null" && owOk.toasts.length === 0
+      && twOk.writes === 1 && twOk.undo === 1 && twOk.notes === 1 && twOk.emails === 1 && twOk.next[MON].nights.tue === "s3" && twOk.next[MON2].nights.wed === "s1" && twOk.cleared.join() === "suggestions:null,target:null" && twOk.toasts.length === 0,
+    JSON.stringify([owOk, twOk].map(r => ({ w: r.writes, u: r.undo, n: r.notes, c: r.cleared, t: r.toasts }))));
+})().catch(ex => check("SE-A harness ran without crashing", false, String(ex && ex.stack || ex).split("\n").slice(0, 3).join(" | ")));
 {
   const { spawnSync } = require("child_process");
   const r = spawnSync(process.execPath, [path.join(__dirname, "fake-weeks-table.test.js")], { encoding: "utf8" });
