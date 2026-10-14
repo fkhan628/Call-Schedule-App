@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.10.13a";
+    var APP_VERSION = "2026.10.14a";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -131,7 +131,7 @@ const CAL_FILTER_DEFAULTS = Object.freeze({
 });
 const CAL_SILVIS_STORE_KEY = "dsg-cal-silvis";
 function CallSchedule() {
-  var _find, _surgeons$find14;
+  var _find, _surgeons$find16;
   const isPublicMode = useMemo(() => {
     try {
       const params = new URLSearchParams(window.location.search);
@@ -3830,6 +3830,16 @@ function CallSchedule() {
     }
     return availability;
   };
+  const buildSilvisPrimary = () => silvisActive && silvisFakId ? {
+    id: silvisFakId,
+    dates: [...(silvisDays.primary || [])]
+  } : null;
+  const takesChristWknd = mon => {
+    const fid = (surgeons.find(s => (s.name || "").toUpperCase() === "FAK") || {}).id || null;
+    if (!fid || typeof holidayDesign !== "function") return false;
+    const p = holidayDesign(holidayAssignments, [mon], fid, christmasSlotOk(buildGenAvailability(), vacations, buildSilvisPrimary())).pins[mon];
+    return !!p && p.wknd === fid;
+  };
   const buildPrevWeekSeed = first => {
     const f = first || mondays[0];
     if (!f) return null;
@@ -3936,7 +3946,9 @@ function CallSchedule() {
       if (silvisRows.length > 0 && periodEnd && silvisDays.to && periodEnd > silvisDays.to) problems.push(`the Silvis feed only covers through ${silvisDays.to} — weeks after that will be generated as if ${nameOf(silvisFakId)} had NO Silvis call (Silvis publishes rolling 3-month periods; check Schedule Warnings again after it publishes)`);
       if (problems.length && !confirm(`⚠️ Rule silvisBusy is BLIND for part or all of this period:\n\n${problems.map(p => "• " + p).join("\n")}\n\nGenerate anyway?`)) return "cancelled";
     }
-    const search = createScheduleSearch(surgeons, mondays, availability, backupMondaySet, priorCounts, prefs, fierceBackupSet, holidayAssignments, pendingLocks, prevWeekSeed, vacations, year1Counts);
+    const search = createScheduleSearch(surgeons, mondays, availability, backupMondaySet, priorCounts, prefs, fierceBackupSet, holidayAssignments, pendingLocks, prevWeekSeed, vacations, year1Counts, {
+      silvisPrimary: buildSilvisPrimary()
+    });
     const clickSig = genInputsSig();
     const done = await runSearch(search, preview ? "generate" : "publish", SEARCH_MS);
     const result = done && done.session.best();
@@ -3989,7 +4001,8 @@ function CallSchedule() {
           vacationsOnly: vacations,
           holAssignments: holidayAssignments,
           prevWeekSeed: buildPrevWeekSeed(),
-          locks: pendingLocks
+          locks: pendingLocks,
+          silvisPrimary: buildSilvisPrimary()
         }).items.length;
       } catch (e) {
         console.error("Needs-your-OK check failed:", e);
@@ -4291,7 +4304,8 @@ function CallSchedule() {
         vacationsOnly: vacations,
         holAssignments: holidayAssignments,
         prevWeekSeed: keys.length ? buildPrevWeekSeed(parse(keys[0])) : null,
-        locks: pendingLocks
+        locks: pendingLocks,
+        silvisPrimary: buildSilvisPrimary()
       });
     } catch (e) {
       console.error("Needs-your-OK list failed:", e);
@@ -4355,7 +4369,9 @@ function CallSchedule() {
     const keys = Object.keys(base).sort();
     if (!keys.length) return;
     const ms = keys.map(parse);
-    const search = createScheduleSearch(surgeons, ms, buildGenAvailability(), backupMondaySet, priorCounts, buildPrefs(), fierceBackupSet, holidayAssignments, pendingLocks, buildPrevWeekSeed(ms[0]), vacations, year1Counts);
+    const search = createScheduleSearch(surgeons, ms, buildGenAvailability(), backupMondaySet, priorCounts, buildPrefs(), fierceBackupSet, holidayAssignments, pendingLocks, buildPrevWeekSeed(ms[0]), vacations, year1Counts, {
+      silvisPrimary: buildSilvisPrimary()
+    });
     search.seed(base);
     const done = await runSearch(search, "more", SEARCH_MS);
     if (!done || previewSchedRef.current !== base) return;
@@ -4460,14 +4476,6 @@ function CallSchedule() {
     const nameMap = {};
     surgeons.forEach(s => nameMap[s.id] = s.name);
     const DAYNAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-    const priorYear = holidayAssignments[String(year - 1)] || [];
-    const priorByName = {};
-    priorYear.forEach(h => {
-      priorByName[h.name] = {
-        surgeonA: h.surgeonA,
-        surgeonB: h.surgeonB
-      };
-    });
     const startOf = {};
     ids.forEach(id => {
       var _surgeons$find10, _INIT_SURGEONS$find;
@@ -4588,121 +4596,111 @@ function CallSchedule() {
       });
       return [...days];
     };
-    const pickPair = (hol, pool) => {
-      const holDate = parse(hol.date);
-      const dayAfterStr = fmt(addD(holDate, 1));
-      const type = hol.type;
-      const silvisHol = id => silvisActive && id === silvisFakId && sfConflictDay(silvisDays.primary, [...holDatesFor(hol, id, "A"), ...holDatesFor(hol, id, "B")]) !== null;
-      let avail = pool.filter(id => !onVac(id, hol.date, vacations) && !onVac(id, dayAfterStr, vacations) && !silvisHol(id));
-      if (avail.length < 2) avail = [...pool].filter(id => !silvisHol(id));
-      if (avail.length < 2) avail = [...pool];
-      const prior = priorByName[hol.name] || {};
-      avail.sort((a, b) => {
-        var _lifetimeCt$a, _eligibleCt$a, _lifetimeCt$b, _eligibleCt$b;
-        const la = holidayRate(((_lifetimeCt$a = lifetimeCt[a]) === null || _lifetimeCt$a === void 0 ? void 0 : _lifetimeCt$a[type]) || 0, ((_eligibleCt$a = eligibleCt[a]) === null || _eligibleCt$a === void 0 ? void 0 : _eligibleCt$a[type]) || 0);
-        const lb = holidayRate(((_lifetimeCt$b = lifetimeCt[b]) === null || _lifetimeCt$b === void 0 ? void 0 : _lifetimeCt$b[type]) || 0, ((_eligibleCt$b = eligibleCt[b]) === null || _eligibleCt$b === void 0 ? void 0 : _eligibleCt$b[type]) || 0);
-        if (la !== lb) return la - lb;
-        const aRepeat = a === prior.surgeonA || a === prior.surgeonB ? 1 : 0;
-        const bRepeat = b === prior.surgeonA || b === prior.surgeonB ? 1 : 0;
-        if (aRepeat !== bRepeat) return aRepeat - bRepeat;
-        return Math.random() - 0.5;
-      });
-      return {
-        sA: avail[0],
-        sB: avail[1] || avail[0]
-      };
-    };
-    const majorHols = holidays.major.map(h => _objectSpread(_objectSpread({}, h), {}, {
+    const presets = typeof HOLIDAY_PRESETS !== "undefined" ? HOLIDAY_PRESETS[String(year)] : null;
+    const allHols = [...holidays.major.map(h => _objectSpread(_objectSpread({}, h), {}, {
       type: "major"
-    }));
-    const minorHols = holidays.minor.map(h => _objectSpread(_objectSpread({}, h), {}, {
+    })), ...holidays.minor.map(h => _objectSpread(_objectSpread({}, h), {}, {
       type: "minor"
-    }));
-    const assignments = [];
-    [majorHols, minorHols].forEach(group => {
-      var _group$;
-      const type = (_group$ = group[0]) === null || _group$ === void 0 ? void 0 : _group$.type;
-      const usedInGroup = new Set();
-      group.sort((a, b) => {
-        if (a.name === "Christmas Day") return -1;
-        if (b.name === "Christmas Day") return 1;
-        return a.date.localeCompare(b.date);
-      });
-      group.forEach(hol => {
-        const presets = typeof HOLIDAY_PRESETS !== "undefined" ? HOLIDAY_PRESETS[String(year)] : null;
-        if (presets && presets[hol.name]) {
-          const [sA, sB] = presets[hol.name];
-          if (silvisActive) {
-            const ph = [];
-            if (sA === silvisFakId) {
-              const h = sfConflictDay(silvisDays.primary, holDatesFor(hol, sA, "A"));
-              if (h) ph.push(h);
-            }
-            if (sB === silvisFakId) {
-              const h = sfConflictDay(silvisDays.primary, holDatesFor(hol, sB, "B"));
-              if (h) ph.push(h);
-            }
-            if (ph.length) setHolidayLockWarning(`⚠ ${hol.name} ${year} preset puts ${nameMap[silvisFakId]} on a Silvis PRIMARY day (${ph.join(", ")}) — kept as written; resolve with Silvis or change it via the swap controls.`);
+    }))];
+    const assignments = [],
+      fixedCards = [],
+      toPlan = [];
+    const card = (hol, sA, sB) => ({
+      name: hol.name,
+      date: hol.date,
+      type: hol.type,
+      emoji: hol.emoji || "📅",
+      surgeonA: sA,
+      surgeonB: sB,
+      coverage: buildCoverage(hol, sA, sB)
+    });
+    const todayStr = fmt(new Date());
+    const stored = holidayAssignments[String(year)] || [];
+    allHols.forEach(hol => {
+      const kept = stored.find(h => h && h.name === hol.name && h.date && h.date < todayStr);
+      if (kept) {
+        assignments.push(kept);
+        fixedCards.push(kept);
+        return;
+      }
+      if (presets && presets[hol.name]) {
+        const [sA, sB] = presets[hol.name];
+        if (silvisActive) {
+          const ph = [];
+          if (sA === silvisFakId) {
+            const h = sfConflictDay(silvisDays.primary, holDatesFor(hol, sA, "A"));
+            if (h) ph.push(h);
           }
-          usedInGroup.add(sA);
-          usedInGroup.add(sB);
-          assignments.push({
-            name: hol.name,
-            date: hol.date,
-            type,
-            emoji: hol.emoji || "📅",
-            surgeonA: sA,
-            surgeonB: sB,
-            coverage: buildCoverage(hol, sA, sB)
-          });
+          if (sB === silvisFakId) {
+            const h = sfConflictDay(silvisDays.primary, holDatesFor(hol, sB, "B"));
+            if (h) ph.push(h);
+          }
+          if (ph.length) setHolidayLockWarning(`⚠ ${hol.name} ${year} preset puts ${nameMap[silvisFakId]} on a Silvis PRIMARY day (${ph.join(", ")}) — kept as written; resolve with Silvis or change it via the swap controls.`);
+        }
+        const c = card(hol, sA, sB);
+        assignments.push(c);
+        fixedCards.push(c);
+        return;
+      }
+      if (hol.name === "Christmas Day") {
+        if (!fakId) {
+          console.error(`Christmas lock: designated surgeon "FAK" not found in the roster — Christmas ${year} left unassigned.`);
+          setHolidayLockWarning(`⚠ Christmas ${year} was NOT auto-assigned: the designated surgeon (FAK) isn't in the roster. Assign it manually via the swap controls.`);
           return;
         }
-        let pool = ids.filter(id => !usedInGroup.has(id));
-        if (hol.name === "Christmas Day") {
-          if (!fakId) {
-            console.error(`Christmas lock: designated surgeon "FAK" not found in the roster — Christmas ${year} left unassigned.`);
-            setHolidayLockWarning(`⚠ Christmas ${year} was NOT auto-assigned: the designated surgeon (FAK) isn't in the roster. Assign it manually via the swap controls.`);
+        if (silvisActive && fakId === silvisFakId) {
+          const hit = sfConflictDay(silvisDays.primary, holDatesFor(hol, fakId, "both"));
+          if (hit) {
+            console.error(`Christmas lock: ${nameMap[fakId]} is Silvis PRIMARY on ${hit} — Christmas ${year} left unassigned.`);
+            setHolidayLockWarning(`⚠ Christmas ${year} was NOT auto-assigned: ${nameMap[fakId]} is Silvis PRIMARY on ${hit} (rule silvisBusy). Resolve it with Silvis or assign manually via the swap controls.`);
             return;
           }
-          if (silvisActive && fakId === silvisFakId) {
-            const hit = sfConflictDay(silvisDays.primary, holDatesFor(hol, fakId, "both"));
-            if (hit) {
-              console.error(`Christmas lock: ${nameMap[fakId]} is Silvis PRIMARY on ${hit} — Christmas ${year} left unassigned.`);
-              setHolidayLockWarning(`⚠ Christmas ${year} was NOT auto-assigned: ${nameMap[fakId]} is Silvis PRIMARY on ${hit} (rule silvisBusy). Resolve it with Silvis or assign manually via the swap controls.`);
-              return;
-            }
-          }
-          const sA = fakId;
-          usedInGroup.add(sA);
-          assignments.push({
-            name: hol.name,
-            date: hol.date,
-            type,
-            emoji: hol.emoji || "📅",
-            surgeonA: sA,
-            surgeonB: sA,
-            coverage: buildCoverage(hol, sA, sA)
-          });
-          return;
         }
-        if (pool.length < 2) pool = [...ids];
-        const {
-          sA,
-          sB
-        } = pickPair(hol, pool);
-        usedInGroup.add(sA);
-        usedInGroup.add(sB);
-        assignments.push({
-          name: hol.name,
-          date: hol.date,
-          type,
-          emoji: hol.emoji || "📅",
-          surgeonA: sA,
-          surgeonB: sB,
-          coverage: buildCoverage(hol, sA, sB)
-        });
-      });
+        assignments.push(card(hol, fakId, fakId));
+        return;
+      }
+      toPlan.push(hol);
     });
+    const unavailable = (id, hol, role) => {
+      const days = holDatesFor(hol, id, role);
+      if (role === "B") {
+        const xc = assignments.find(h => h.name === "Christmas Day"),
+          eve = fmt(addD(parse(hol.date), -1));
+        const takes = mon => {
+          const p = holidayDesign({
+            [year]: xc ? [xc] : []
+          }, [mon], fakId, christmasSlotOk(buildGenAvailability(), vacations, buildSilvisPrimary())).pins[mon];
+          return !!p && p.wknd === fakId;
+        };
+        if (holidayEveHolder(_objectSpread(_objectSpread({}, hol), {}, {
+          surgeonB: id
+        }), eve, {
+          [year]: xc ? [xc] : []
+        }, fakId, takes) === id) days.push(eve);
+      }
+      if (days.some(ds => onVac(id, ds, vacations) || onVac(id, ds, noCallDays))) return true;
+      if (days.some(ds => onVac(id, fmt(addD(parse(ds), 1)), vacations))) return true;
+      return !!(silvisActive && id === silvisFakId && sfConflictDay(silvisDays.primary, holDatesFor(hol, id, role)) !== null);
+    };
+    const rateOf = (id, type) => {
+      var _lifetimeCt$id, _eligibleCt$id;
+      return holidayRate(((_lifetimeCt$id = lifetimeCt[id]) === null || _lifetimeCt$id === void 0 ? void 0 : _lifetimeCt$id[type]) || 0, ((_eligibleCt$id = eligibleCt[id]) === null || _eligibleCt$id === void 0 ? void 0 : _eligibleCt$id[type]) || 0);
+    };
+    const plan = planHolidayPairs({
+      year,
+      holidays: toPlan,
+      partners: ids.filter(id => id !== fakId),
+      history: holidayAssignments,
+      fixed: fixedCards,
+      unavailable,
+      rate: rateOf,
+      nameOf: id => nameMap[id] || id
+    });
+    toPlan.forEach(hol => {
+      const pk = plan.picks[hol.name];
+      if (pk) assignments.push(card(hol, pk.surgeonA, pk.surgeonB));
+    });
+    if (plan.notes.length) setHolidayLockWarning(prev => [prev, ...plan.notes.map(n => "⚠ " + n)].filter(Boolean).join(" · "));
     assignments.sort((a, b) => a.date.localeCompare(b.date));
     setHolidayAssignments(prev => _objectSpread(_objectSpread({}, prev), {}, {
       [String(year)]: assignments
@@ -4711,23 +4709,26 @@ function CallSchedule() {
       year,
       count: assignments.length
     });
-  }, [surgeons, vacations, holidayAssignments, silvisActive, silvisFakId, silvisDays]);
+  }, [surgeons, vacations, noCallDays, holidayAssignments, silvisActive, silvisFakId, silvisDays]);
   const swapHolidaySurgeon = useCallback((year, holidayIdx, slot, newSurgeonId) => {
     const arr = holidayAssignments[String(year)] || [];
     const targetHol = arr[holidayIdx];
     if (targetHol) {
+      var _surgeons$find11;
       const sameGroup = arr.filter((h, i) => i !== holidayIdx && h.type === targetHol.type);
       const usedInGroup = new Set();
       sameGroup.forEach(h => {
         usedInGroup.add(h.surgeonA);
         usedInGroup.add(h.surgeonB);
       });
-      if (usedInGroup.has(newSurgeonId)) {
-        var _surgeons$find11;
+      const fakSwap = (_surgeons$find11 = surgeons.find(s => (s.name || "").toUpperCase() === "FAK")) === null || _surgeons$find11 === void 0 ? void 0 : _surgeons$find11.id;
+      if (usedInGroup.has(newSurgeonId) && newSurgeonId !== fakSwap) {
+        var _surgeons$find12;
         const conflictHol = sameGroup.find(h => h.surgeonA === newSurgeonId || h.surgeonB === newSurgeonId);
-        const surgeonName = ((_surgeons$find11 = surgeons.find(s => s.id === newSurgeonId)) === null || _surgeons$find11 === void 0 ? void 0 : _surgeons$find11.name) || newSurgeonId;
-        if (!confirm(`⚠️ ${surgeonName} is already assigned to ${conflictHol === null || conflictHol === void 0 ? void 0 : conflictHol.name} (${targetHol.type} group).\n\nThis violates the distinct-pairs rule. Assign anyway?`)) return;
+        const surgeonName = ((_surgeons$find12 = surgeons.find(s => s.id === newSurgeonId)) === null || _surgeons$find12 === void 0 ? void 0 : _surgeons$find12.name) || newSurgeonId;
+        if (!confirm(`⚠️ ${surgeonName} is already assigned to ${conflictHol === null || conflictHol === void 0 ? void 0 : conflictHol.name} (${targetHol.type} group).\n\nEach partner takes at most one ${targetHol.type} holiday a year. Assign anyway?`)) return;
       }
+      if (newSurgeonId && newSurgeonId === fakSwap && targetHol.name !== "Christmas Day" && !confirm(`${nameOf(newSurgeonId)}'s holidays are Christmas Eve + Christmas Day (his major and his minor). Put him on ${targetHol.name} too?`)) return;
       if (silvisActive && newSurgeonId === silvisFakId) {
         const nonEve = effectiveHolidayCoverage(targetHol).filter(c => !c.isEve);
         const mine = nonEve.filter((c, i) => slot === "surgeonA" ? i % 2 === 0 : i % 2 === 1).map(c => c.date);
@@ -5846,7 +5847,23 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         message: `${who}: Silvis primary Sun ${md(sun)} — the Sunday of the Davenport service week of ${md(m)}`
       };
     });
-    return health.concat(hard, sunday);
+    const adj = [];
+    [...(silvisDays.primary || [])].sort().forEach(D => [-1, 1].forEach(o => {
+      const N = fmt(addD(parse(D), o));
+      if (overnightHolderOn(schedule, N) !== silvisFakId) return;
+      const nd = parse(N),
+        mN = fmt(addD(nd, nd.getDay() === 0 ? -6 : 1 - nd.getDay()));
+      if (!inScope({
+        mondayStr: mN
+      })) return;
+      adj.push({
+        key: `silvis-adj|${silvisFakId}|${D}|${N}`,
+        severity: "warning",
+        week: mN,
+        message: o < 0 ? `${who}: Davenport overnight ${dayMonthLabel(N)} → Silvis primary ${dayMonthLabel(D)} — two overnights in a row across the two jobs` : `${who}: Silvis primary ${dayMonthLabel(D)} → Davenport overnight ${dayMonthLabel(N)} — two overnights in a row across the two jobs`
+      });
+    }));
+    return health.concat(hard, sunday, adj);
   }, [schedule, silvisActive, silvisDays, silvisFakId, surgeons, isPublicMode, silvisRows, silvisLoadError]);
   const silvisSoftNotes = useMemo(() => {
     if (!silvisActive || isPublicMode) return [];
@@ -5866,7 +5883,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     const mondayStrs = Object.keys(schedule).sort().filter(mStr => fmt(addD(parse(mStr), 6)) >= todayStr);
     const ids = surgeons.map(s => s.id);
     const fakW = (surgeons.find(s => (s.name || "").toUpperCase() === "FAK") || {}).id || null;
-    const design = typeof holidayDesign === "function" ? holidayDesign(holidayAssignments, mondayStrs, fakW) : {
+    const design = typeof holidayDesign === "function" ? holidayDesign(holidayAssignments, mondayStrs, fakW, christmasSlotOk(buildGenAvailability(), vacations, buildSilvisPrimary())) : {
       pins: {},
       eves: {}
     };
@@ -6087,7 +6104,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       });
     });
     return issues;
-  }, [schedule, surgeons, sMap, vacations, noCallDays, holidayAssignments]);
+  }, [schedule, surgeons, sMap, vacations, noCallDays, holidayAssignments, silvisActive, silvisFakId, silvisDays]);
   const vacOverlapWarnings = useMemo(() => {
     const warnings = [];
     if (!mondays.length) return warnings;
@@ -6118,23 +6135,25 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     }
     Object.values(holidayAssignments || {}).forEach(arr => {
       if (!Array.isArray(arr)) return;
+      const fakV = (surgeons.find(s => (s.name || "").toUpperCase() === "FAK") || {}).id || null;
       arr.forEach(h => {
         effectiveHolidayCoverage(h).forEach(c => {
           if (!c.surgeon || !c.date) return;
-          if (onVac(c.surgeon, c.date, vacations)) {
-            var _sMap$c$surgeon;
+          const sid = c.isEve ? holidayEveHolder(h, c.date, holidayAssignments, fakV, takesChristWknd) || c.surgeon : c.surgeon;
+          if (onVac(sid, c.date, vacations)) {
+            var _sMap$sid;
             warnings.push({
-              key: `holiday-vac|${h.date || ""}|${c.date}|${c.surgeon}`,
+              key: `holiday-vac|${h.date || ""}|${c.date}|${sid}`,
               date: c.date,
               severity: "error",
-              message: `${((_sMap$c$surgeon = sMap[c.surgeon]) === null || _sMap$c$surgeon === void 0 ? void 0 : _sMap$c$surgeon.name) || c.surgeon} is assigned ${h.name} coverage (${c.date}) but has vacation then — holiday surgeons can't be on vacation during their holiday`
+              message: `${((_sMap$sid = sMap[sid]) === null || _sMap$sid === void 0 ? void 0 : _sMap$sid.name) || sid} is assigned ${h.name} coverage (${c.date}) but has vacation then — holiday surgeons can't be on vacation during their holiday`
             });
           }
         });
       });
     });
     return warnings;
-  }, [mondays, surgeons, apps, vacations, holidayAssignments, sMap]);
+  }, [mondays, surgeons, apps, vacations, noCallDays, holidayAssignments, sMap, silvisActive, silvisFakId, silvisDays]);
   const warnShown = useMemo(() => {
     const hid = new Set((dismissedWarnings || []).map(d => d && d.key).filter(Boolean));
     const keep = arr => arr.filter(x => x.dismissable === false || !(x.key && hid.has(x.key)));
@@ -6148,8 +6167,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
   }, [silvisConflicts, conflicts, vacOverlapWarnings, dismissedWarnings]);
   const warnLineText = x => (x.week && x.week !== "feed" ? x.week + " · " : "") + x.message;
   const warnActor = () => {
-    var _surgeons$find12;
-    return (userProfile === null || userProfile === void 0 ? void 0 : userProfile.display_name) || ((_surgeons$find12 = surgeons.find(s => s.id === (userProfile === null || userProfile === void 0 ? void 0 : userProfile.person_id))) === null || _surgeons$find12 === void 0 ? void 0 : _surgeons$find12.name) || "a scheduler";
+    var _surgeons$find13;
+    return (userProfile === null || userProfile === void 0 ? void 0 : userProfile.display_name) || ((_surgeons$find13 = surgeons.find(s => s.id === (userProfile === null || userProfile === void 0 ? void 0 : userProfile.person_id))) === null || _surgeons$find13 === void 0 ? void 0 : _surgeons$find13.name) || "a scheduler";
   };
   const dismissWarning = x => {
     if (!canWriteBlob || !x || !x.key || x.dismissable === false) return;
@@ -8785,7 +8804,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     style: {
       color: "#8a4010"
     }
-  }, "Distinct-pair rule:"), " Within each group (major / minor), every holiday must have a completely different surgeon pair — no surgeon appears on two holidays in the same group."), holidayLockWarning && React.createElement("div", {
+  }, "Rotation:"), " FAK takes Christmas Eve + Christmas Day every year — his major and his minor. Every other partner gets one minor holiday a year (Memorial Day, July 4th, Labor Day) and at most one major (New Year's, Thanksgiving — 4 slots for 6 partners, so two sit out a major each year and get one the next). Nobody gets the same holiday as last year; over the years everyone rotates through all five."), holidayLockWarning && React.createElement("div", {
     style: {
       fontSize: 12,
       fontWeight: 700,
@@ -8837,7 +8856,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     });
     assignments.forEach(h => {
       if (h.surgeonA && holCounts[h.surgeonA]) holCounts[h.surgeonA][h.type]++;
-      if (h.surgeonB && holCounts[h.surgeonB]) holCounts[h.surgeonB][h.type]++;
+      if (h.surgeonB && h.surgeonB !== h.surgeonA && holCounts[h.surgeonB]) holCounts[h.surgeonB][h.type]++;
     });
     const usedInMajor = new Set();
     const usedInMinor = new Set();
@@ -8849,6 +8868,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       if (h.surgeonA) usedInMinor.add(h.surgeonA);
       if (h.surgeonB) usedInMinor.add(h.surgeonB);
     });
+    const fakIdUI = (surgeons.find(s => (s.name || "").toUpperCase() === "FAK") || {}).id || null;
     const renderCard = (hol, idx) => {
       const sameGroup = assignments.filter(h => h.type === hol.type && h.date !== hol.date);
       const usedElsewhere = new Set();
@@ -8948,7 +8968,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         }
       }, effectiveHolidayCoverage(hol).map((c, j) => {
         const isEve = c.isEve;
-        const displaySurgeon = isEve ? hol.surgeonB || c.surgeon : c.surgeon;
+        const displaySurgeon = isEve ? holidayEveHolder(hol, c.date, holidayAssignments, fakIdUI, takesChristWknd) || hol.surgeonB || c.surgeon : c.surgeon;
         const isSurgA = !isEve && c.surgeon === hol.surgeonA;
         return React.createElement("div", {
           key: j,
@@ -8994,30 +9014,19 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         marginBottom: 6,
         marginTop: 14
       }
-    }, "📌 Minor Holidays"), minors.map((h, i) => renderCard(h, assignments.indexOf(h))), (() => {
-      const checkGroup = (group, label) => {
-        const seen = {};
-        const dupes = [];
-        group.forEach(h => {
-          [h.surgeonA, h.surgeonB].forEach(sid => {
-            if (!sid) return;
-            if (seen[sid]) dupes.push({
-              surgeon: sid,
-              hol1: seen[sid],
-              hol2: h.name
-            });else seen[sid] = h.name;
-          });
-        });
-        return {
-          label,
-          ok: dupes.length === 0,
-          dupes,
-          uniqueCount: Object.keys(seen).length,
-          freeCount: surgeons.length - Object.keys(seen).length
-        };
+    }, "📌 Minor Holidays"), minors.map((h, i) => renderCard(h, assignments.indexOf(h))), (_surgeons$find14 => {
+      const rc = holidayRotationCheck({
+        assignments,
+        prior: holidayAssignments[String(holidayYear - 1)] || [],
+        surgeons,
+        year: holidayYear,
+        fakId: (_surgeons$find14 = surgeons.find(s => (s.name || "").toUpperCase() === "FAK")) === null || _surgeons$find14 === void 0 ? void 0 : _surgeons$find14.id,
+        preset: typeof HOLIDAY_PRESETS !== "undefined" && !!HOLIDAY_PRESETS[String(holidayYear)]
+      });
+      const nm = id => {
+        var _surgeons$find15;
+        return ((_surgeons$find15 = surgeons.find(s => s.id === id)) === null || _surgeons$find15 === void 0 ? void 0 : _surgeons$find15.name) || id;
       };
-      const majorCheck = checkGroup(majors, "Major");
-      const minorCheck = checkGroup(minors, "Minor");
       return React.createElement("div", {
         style: {
           marginTop: 10,
@@ -9025,7 +9034,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           gap: 8,
           flexWrap: "wrap"
         }
-      }, [majorCheck, minorCheck].map(ck => React.createElement("div", {
+      }, [rc.major, rc.minor].map(ck => React.createElement("div", {
         key: ck.label,
         style: {
           flex: 1,
@@ -9041,10 +9050,27 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         style: {
           fontWeight: 700
         }
-      }, ck.ok ? "✓" : "⚠", " ", ck.label, " group:"), " ", ck.ok ? `All ${ck.uniqueCount} surgeons distinct (${ck.freeCount} free)` : ck.dupes.map(d => {
-        var _surgeons$find13;
-        return `${((_surgeons$find13 = surgeons.find(s => s.id === d.surgeon)) === null || _surgeons$find13 === void 0 ? void 0 : _surgeons$find13.name) || d.surgeon} is on both ${d.hol1} & ${d.hol2}`;
-      }).join("; "))));
+      }, ck.ok ? "✓" : "⚠", " ", ck.label, " group:"), " ", ck.ok ? `All ${ck.uniqueCount} surgeons distinct${ck.label === "Major" && ck.none.length ? ` · sitting out a major: ${ck.none.map(nm).join(", ")}` : ""}` : ck.dupes.map(d => `${nm(d.surgeon)} is on both ${d.hol1} & ${d.hol2}`).join("; "))), rc.issues.length > 0 && React.createElement("div", {
+        style: {
+          flexBasis: "100%",
+          padding: "8px 12px",
+          borderRadius: 6,
+          fontSize: 11,
+          background: "#fdf3e3",
+          border: "1px solid #e0c080",
+          color: "#7a5010"
+        }
+      }, React.createElement("span", {
+        style: {
+          fontWeight: 700
+        }
+      }, "⚠ Rotation:"), " ", rc.issues.join(" · ")), rc.preset && React.createElement("div", {
+        style: {
+          flexBasis: "100%",
+          fontSize: 11,
+          color: "#5a6a78"
+        }
+      }, "ℹ ", holidayYear, " is the hand-written schedule — the rotation applies from the next generated year."));
     })(), React.createElement("div", {
       style: {
         marginTop: 14,
@@ -9068,6 +9094,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       var _holCounts$s$id, _holCounts$s$id2, _sMap$s$id, _sMap$s$id2;
       const mc = ((_holCounts$s$id = holCounts[s.id]) === null || _holCounts$s$id === void 0 ? void 0 : _holCounts$s$id.major) || 0;
       const mi = ((_holCounts$s$id2 = holCounts[s.id]) === null || _holCounts$s$id2 === void 0 ? void 0 : _holCounts$s$id2.minor) || 0;
+      const xmasOnly = mi === 0 && mc === 1 && assignments.some(h => h.name === "Christmas Day" && h.surgeonA === s.id && h.surgeonB === s.id);
       return React.createElement("div", {
         key: s.id,
         style: _objectSpread(_objectSpread({}, css.badge(((_sMap$s$id = sMap[s.id]) === null || _sMap$s$id === void 0 ? void 0 : _sMap$s$id.idx) || 0, (_sMap$s$id2 = sMap[s.id]) === null || _sMap$s$id2 === void 0 ? void 0 : _sMap$s$id2.name)), {}, {
@@ -9078,7 +9105,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         style: {
           fontWeight: 400
         }
-      }, "— ", mc, " major, ", mi, " minor"));
+      }, "— ", xmasOnly ? "Christmas Eve + Day" : `${mc} major, ${mi} minor`));
     }))));
   })()))), view === "generate" && !isPublicMode && (isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.role) === "admin") && React.createElement(React.Fragment, null, React.createElement("div", {
     style: css.card
@@ -9615,13 +9642,14 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           }
           return null;
         };
+        const listedGap = new Set((previewNeedsOk.items || []).filter(it => it.key === "svcGap").map(it => it.who + "|" + it.prevMondayStr + "|" + it.mondayStr));
         const notes = [];
         for (const mStr of keys) {
           const wk = previewSchedule[mStr];
           const id = wk && wk.dayCall;
           if (!id) continue;
           const w = Math.round((parse(mStr).getTime() - t0) / 604800000);
-          if (last[id] !== undefined && w - last[id].w <= MIN_DC_GAP) {
+          if (last[id] !== undefined && w - last[id].w <= MIN_DC_GAP && !listedGap.has(id + "|" + last[id].mStr + "|" + mStr)) {
             const reason = reasonFor(id, mStr) || reasonFor(id, last[id].mStr) || "vacations that week";
             notes.push(previewOrigin === "json" ? `${nameOf(id)}: service weeks ${nice(last[id].mStr)} and ${nice(mStr)} (as in the loaded file)` : `${nameOf(id)}: service weeks ${nice(last[id].mStr)} and ${nice(mStr)}, forced by ${reason}`);
           }
@@ -9850,7 +9878,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         fontSize: 11,
         opacity: 0.85
       }
-    }, previewOrigin === "json" ? "These are in the loaded file. Accepting publishes them as shown — consider warning the surgeon." : "The generator couldn't space these apart. Accepting publishes them as shown — consider warning the surgeon, or adjust and re-roll.")), pm && React.createElement(React.Fragment, null, React.createElement("div", {
+    }, previewOrigin === "json" ? "These are in the loaded file. Accepting publishes them as shown — consider warning the surgeon." : "Fixed by the holiday cards, so Needs your OK doesn't count them as strain (the others are listed there). Accepting publishes them as shown — consider warning the surgeon.")), pm && React.createElement(React.Fragment, null, React.createElement("div", {
       style: {
         display: "flex",
         alignItems: "center",
@@ -15195,7 +15223,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       color: "#6030a0",
       padding: "6px 0"
     }
-  }, ((_surgeons$find14 = surgeons.find(s => s.id === mySurgeon)) === null || _surgeons$find14 === void 0 ? void 0 : _surgeons$find14.name) || "—")), React.createElement("div", null, React.createElement("label", {
+  }, ((_surgeons$find16 = surgeons.find(s => s.id === mySurgeon)) === null || _surgeons$find16 === void 0 ? void 0 : _surgeons$find16.name) || "—")), React.createElement("div", null, React.createElement("label", {
     style: {
       fontSize: 10,
       color: "#7a8a98",
