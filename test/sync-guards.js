@@ -568,7 +568,13 @@ check("allowWipeSaveRef cleared at exactly 2 sites (consume + failure-restore)",
 
 // The consume must come AFTER the gate in the autosave body — a consume
 // before the gate would let a blocked save eat the authorization.
-check("consume follows the gate (order)", src.indexOf(GATE) < src.indexOf("allowWipeSaveRef.current = false"));
+// (Both must be PRESENT, and in order: the bare `indexOf(a) < indexOf(b)` this
+// was passed with the gate gone — -1 is less than anything (A17(e); E2's own
+// order pin, "weeks leg before the blob gate", became counts in 5/n).)
+{
+  const g = src.indexOf(GATE), c = src.indexOf("allowWipeSaveRef.current = false");
+  check("consume follows the gate (order — both present: a missing one can't pass as -1)", g >= 0 && c > g, `gate at ${g}, consume at ${c}`);
+}
 
 // Factory-reset FAILURE must restore the refs (PR #23): the adjacent
 // disarm-undo pair after the single grant site.
@@ -5095,6 +5101,21 @@ check("AK1 the calendar has a Today button beside the month arrows: it sets the 
 // ══════════════════════════════════════════════════════════════
 await require("./sync-engine-se.js")({ src, check });
 
+// A17(c) — the harness rule, for every SE-* harness below: each records
+// console.error (its fresh context's console, or the one it hands in as a
+// dep), the app's showToast and the engine's onToast, the engine's internal
+// errors and its CAUGHT callback errors (the `log` dep's "… threw"), and
+// fails — in its own check — on an unexpected one. (SE's SE-I and SE-X-I in
+// sync-engine-se.js do the same.)
+const seRec = require("./sync-engine-se.js");
+const harnessWatch = () => {
+  const w = { con: [], caught: [] };
+  w.console = seRec.recConsole(w.con);
+  w.log = seRec.caughtLog(w.caught);
+  w.unexpected = () => w.con.filter(x => /^error: /.test(x) || / threw /.test(x)).concat(w.caught);
+  return w;
+};
+
 // SE-W. The engine's wiring in the component. The behaviour is executed in SE
 // (the engine) and E2 (the push effect); these pins keep the integration the
 // design depends on from drifting quietly.
@@ -5163,6 +5184,8 @@ await require("./sync-engine-se.js")({ src, check });
 // drop the stale suggestions (A13). JSX can't run here (no Babel in CI), so
 // the markup is pinned and the decisions it renders are executed.
 console.log("\nSE-A. sync v2 app wiring, executed");
+const watchA = harnessWatch(), conA0 = sandbox.console;
+sandbox.console = watchA.console; // SE-A slices run in the shared sandbox: its console records while SE-A runs (A17(c))
 await (async () => {
   const nsrcA = src.replace(/\r\n/g, "\n");
   // The text after `start` (exactly one occurrence) up to the first `end` after it.
@@ -5180,7 +5203,7 @@ await (async () => {
   let createSchedSync = null; try { createSchedSync = se.compileEngine(se.extractEngine(src)); } catch (ex) { createSchedSync = null; }
   const engineFor = (o) => createSchedSync(Object.assign({ getState: () => ({}), commit: () => {}, fetch: () => new Promise(() => {}), url: "https://x.supabase.co",
     writeHeaders: () => ({}), readHeaders: () => ({}), anonHeaders: () => ({}), canWrite: () => true, token: () => "TOK", userId: () => "p1", now: () => new Date().toISOString(), nowMs: () => Date.now(),
-    onStatus: () => {}, onToast: () => {}, onWipeBlocked: () => {}, onInternalError: (e) => internalA.push(String(e && e.message || e)), log: () => {} }, o || {}));
+    onStatus: () => {}, onToast: () => {}, onWipeBlocked: () => {}, onInternalError: (e) => internalA.push(String(e && e.message || e)), log: watchA.log }, o || {}));
   if (!def || !createSchedSync) { check("SE-A the schedSync default and the engine are extractable", false, JSON.stringify({ def: !!def, engine: !!createSchedSync })); return; }
   check("SE-A A14(1) the header's schedSync state starts as EXACTLY the engine's own first status — staleRemovals: 0 included (same keys, same order)",
     JSON.stringify(def) === JSON.stringify(engineFor().status()), JSON.stringify({ def, engine: engineFor().status() }));
@@ -5229,7 +5252,9 @@ await (async () => {
       !loadedB.schedStaleShown && loadedB.schedSyncedShown && !loadedOR.schedStaleShown && staleB.schedStaleShown && !staleB.schedSyncedShown && staleOR.schedStaleShown && keptB === 6 && keptOR === 6
         && !backB.schedStaleShown && backB.schedSyncedShown && !backOR.schedStaleShown && B.mirror[WK[0]].dayCall === "regen" && OR.mirror[WK[0]].dayCall === "regen" && writesIn({ calls: t.log }).length > 0,
       JSON.stringify({ loadedB, staleB, staleOR, backB, backOR, keptB, keptOR }));
-    check("SE-A …the OR board never wrote, and no session hit an internal error", t.log.filter(e => e.method !== "GET" && /Bearer ANON/.test(JSON.stringify(e.headers || {}))).length === 0 && internalA.length === 0, internalA.join(" | "));
+    check("SE-A …the OR board never wrote, no session hit an internal error, and none was told anything (no toast: a clear elsewhere is a status line, not a message)",
+      t.log.filter(e => e.method !== "GET" && /Bearer ANON/.test(JSON.stringify(e.headers || {}))).length === 0 && internalA.length === 0 && [A, B, OR].every(x => x.toasts.length === 0),
+      internalA.concat(A.toasts, B.toasts, OR.toasts).join(" | "));
   }
   const rl = (ok) => { const r = { asked: 0, reloads: 0 }; H({ staleRemovals: 6 }, { confirm: (b) => { r.asked++; r.arg = b; return ok; }, window: { location: { reload: () => { r.reloads++; } } } }).reloadToResync(); return r; };
   const yes = rl(true), no = rl(false);
@@ -5353,7 +5378,9 @@ await (async () => {
     owOk.writes === 1 && owOk.undo === 1 && owOk.notes === 1 && owOk.emails === 1 && owOk.next[MON].nights.tue === "s3" && owOk.cleared.join() === "suggestions:null,target:null" && owOk.toasts.length === 0
       && twOk.writes === 1 && twOk.undo === 1 && twOk.notes === 1 && twOk.emails === 1 && twOk.next[MON].nights.tue === "s3" && twOk.next[MON2].nights.wed === "s1" && twOk.cleared.join() === "suggestions:null,target:null" && twOk.toasts.length === 0,
     JSON.stringify([owOk, twOk].map(r => ({ w: r.writes, u: r.undo, n: r.notes, c: r.cleared, t: r.toasts }))));
+  check("SE-A A17(c) no unexpected error in any run: no console.error from the sliced code, no internal or caught callback error in an engine", watchA.unexpected().length === 0 && internalA.length === 0, watchA.unexpected().concat(internalA).slice(0, 3).join(" | "));
 })().catch(ex => check("SE-A harness ran without crashing", false, String(ex && ex.stack || ex).split("\n").slice(0, 3).join(" | ")));
+sandbox.console = conA0;
 
 // SE-R. Sync v2 "Sign in again" (10/n, A7(2)), EXECUTED.
 //  - config.js's REAL auth, loaded in its own context on a stubbed fetch and
@@ -5374,7 +5401,8 @@ console.log("\nSE-R. sync v2 re-auth (A7(2)), executed");
 await (async () => {
   const nsrcR = src.replace(/\r\n/g, "\n");
   const after = (start, end) => { const i = nsrcR.indexOf(start); if (i < 0 || nsrcR.indexOf(start, i + 1) !== -1) return null; const e = nsrcR.indexOf(end, i + start.length); return e < 0 ? null : nsrcR.slice(i + start.length, e); };
-  const rctx = vm.createContext({});
+  const watchR = harnessWatch();
+  const rctx = vm.createContext({ console: watchR.console });
   const fnR = (names, code) => { try { return vm.runInContext(`(function (env) { const { ${names} } = env; return (${code}); })`, rctx); } catch (ex) { return null; } };
   const se = require("./sync-engine-se.js");
   const { createFakeWeeksTable } = require("./fake-weeks-table.js");
@@ -5385,7 +5413,7 @@ await (async () => {
   const mkAuth = (store) => {
     const ls = new Map(Object.entries(store || {})), calls = [];
     let route = () => { throw new Error("no auth route installed"); };
-    const g = { console, window: {}, document: undefined, navigator: { userAgent: "node-test" }, setTimeout, clearTimeout,
+    const g = { console: watchR.console, window: {}, document: undefined, navigator: { userAgent: "node-test" }, setTimeout, clearTimeout,
       localStorage: { getItem: (k) => (ls.has(k) ? ls.get(k) : null), setItem: (k, v) => { ls.set(k, String(v)); }, removeItem: (k) => { ls.delete(k); } },
       fetch: async (url, init) => { calls.push({ url: String(url), method: (init && init.method) || "GET", body: init && init.body }); return route(String(url)); } };
     g.globalThis = g;
@@ -5537,7 +5565,7 @@ await (async () => {
       readHeaders: () => anon, // dbReadHeaders: anon once the token is stale (the table is anon-readable)
       anonHeaders: () => anon, // dbHeaders: reads once the server refused the token
       canWrite: () => true, token: tok, userId: () => "s1", now: clockR, nowMs: () => msR,
-      onStatus: (st) => { s.st = st; }, onToast: (m) => s.toasts.push(String(m)), onWipeBlocked: () => {}, onInternalError: (e) => internalR.push(String(e && e.message || e)), log: () => {} });
+      onStatus: (st) => { s.st = st; }, onToast: (m) => s.toasts.push(String(m)), onWipeBlocked: () => {}, onInternalError: (e) => internalR.push(String(e && e.message || e)), log: watchR.log });
     await s.engine.load();
     t.control.expiredTokens.add("TOK_OLD");
     s.mirror = Object.assign({}, s.mirror, { [WKR[0]]: wkR("mine") });
@@ -5623,6 +5651,7 @@ await (async () => {
         && !/biometric|signOut|reloadTrigger/i.test(sheet) && count("submitReauth()") === 1 && count("setReauthSheet(true)") === 1 && count("auth.refreshKeep()") === 1,
       (sheet || "").slice(0, 160));
   }
+  check("SE-R A17(c) no unexpected error in any run: no console.error (the component's context, config.js's auth), no caught callback error in an engine", watchR.unexpected().length === 0, watchR.unexpected().slice(0, 3).join(" | "));
 })().catch(ex => check("SE-R harness ran without crashing", false, String(ex && ex.stack || ex).split("\n").slice(0, 3).join(" | ")));
 
 // SE-K. Sync v2 trade accept, re-checked at commit (11/n, A13; A17(b)), EXECUTED.
@@ -5642,7 +5671,8 @@ console.log("\nSE-K. sync v2 trade accept re-checked at commit (A13), executed")
 await (async () => {
   const nsrcK = src.replace(/\r\n/g, "\n");
   const after = (start, end) => { const i = nsrcK.indexOf(start); if (i < 0 || nsrcK.indexOf(start, i + 1) !== -1) return null; const e = nsrcK.indexOf(end, i + start.length); return e < 0 ? null : nsrcK.slice(i + start.length, e); };
-  const kctx = vm.createContext({});
+  const watchK = harnessWatch();
+  const kctx = vm.createContext({ console: watchK.console });
   const fnK = (names, code) => { try { return vm.runInContext(`(function (env) { const { ${names} } = env; return (${code}); })`, kctx); } catch (ex) { return null; } };
   const se = require("./sync-engine-se.js");
   const { createFakeWeeksTable } = require("./fake-weeks-table.js");
@@ -5797,7 +5827,7 @@ await (async () => {
     const h = () => ({ apikey: "ANON", Authorization: "Bearer TOK" });
     const eng = createSchedSyncK({ getState: () => ref.current, commit: (n) => { ref.current = n; }, fetch: (u, i) => t.fetch(u, i), url: "https://x.supabase.co",
       writeHeaders: h, readHeaders: h, anonHeaders: () => ({ apikey: "ANON", Authorization: "Bearer ANON" }), canWrite: () => true, token: () => "TOK", userId: () => "s1", now: clockK, nowMs: () => msK,
-      onStatus: () => {}, onToast: (m) => toasts.push(String(m)), onWipeBlocked: () => {}, onInternalError: (e) => internalK.push(String(e && e.message || e)), log: () => {} });
+      onStatus: () => {}, onToast: (m) => toasts.push(String(m)), onWipeBlocked: () => {}, onInternalError: (e) => internalK.push(String(e && e.message || e)), log: watchK.log });
     await eng.load();
     return { t, ref, eng, toasts };
   };
@@ -5825,6 +5855,7 @@ await (async () => {
       JSON.stringify({ pend, pW: pW.map(e => e.url.replace(/^.*\?/, "") + " " + e.status), v: [W1, W2, W3].map(k => P.t.get(k).version) }));
   }
   check("SE-K no engine internal error in any run", internalK.length === 0, internalK.join(" | "));
+  check("SE-K A17(c) no unexpected error outside the expected ones: nothing on the context's console, no caught callback error in an engine (the handed-in console's errors are asserted per run above)", watchK.unexpected().length === 0, watchK.unexpected().slice(0, 3).join(" | "));
 })().catch(ex => check("SE-K harness ran without crashing", false, String(ex && ex.stack || ex).split("\n").slice(0, 3).join(" | ")));
 
 // SE-C. Sync v2 commit 12/n, EXECUTED: the periodic snapshot's minWeeks
@@ -5840,7 +5871,8 @@ console.log("\nSE-C. sync v2 12/n: periodic minWeeks, the restore's week change,
 await (async () => {
   const nsrcC = src.replace(/\r\n/g, "\n");
   const after = (start, end) => { const i = nsrcC.indexOf(start); if (i < 0 || nsrcC.indexOf(start, i + 1) !== -1) return null; const e = nsrcC.indexOf(end, i + start.length); return e < 0 ? null : nsrcC.slice(i + start.length, e); };
-  const cctx = vm.createContext({});
+  const watchC = harnessWatch();
+  const cctx = vm.createContext({ console: watchC.console });
   const fnC = (names, code) => { try { return vm.runInContext(`(function (env) { const { ${names} } = env; return (${code}); })`, cctx); } catch (ex) { return null; } };
   const se = require("./sync-engine-se.js");
   const { createFakeWeeksTable } = require("./fake-weeks-table.js");
@@ -5977,7 +6009,7 @@ await (async () => {
       const w = { toasts: [], status: [], upserts: 0 };
       await clFn({ schedEditable: () => true, confirm: () => true, snapshots: { capture: async () => ({ ok: true }) }, schedSyncRef: { current: { knownSchedule: () => ({}), pending: () => ["a", "b"] } }, showToast: (m, t) => w.toasts.push([String(m), t]),
         scheduleRef: { current: {} }, pushUndo: () => {}, commitSchedule: () => {}, setSaveStatus: (s) => w.status.push(s), runAuthoritativeSchedule: async () => cr, setTimeout: () => 0, lastSyncRef: { current: null },
-        buildStateBundle: (x) => Object.assign({}, x), supabase: { from: () => ({ upsert: async () => { w.upserts++; return { error: null }; } }) }, console: { error: () => {}, warn: () => {} } })();
+        buildStateBundle: (x) => Object.assign({}, x), supabase: { from: () => ({ upsert: async () => { w.upserts++; return { error: null }; } }) }, console: watchC.console })();
       await null; await null;
       return w;
     };
@@ -6023,7 +6055,7 @@ await (async () => {
     const ref = wireFn({ isPublicMode: false, userProfile: { person_id: "s1" }, showToast: (m, tone) => rec.toasts.push([String(m), tone]), setEditWeekModal, schedSyncBridgeRef: { current: null },
       useRef: (v) => ({ current: v }), createSchedSync: createSchedSyncC, scheduleRef, commitSchedule: (n) => { scheduleRef.current = n; }, fetch: (u, i) => t.fetch(u, i), SUPABASE_URL: "https://x.supabase.co",
       dbAuthHeaders: hdrs, dbReadHeaders: hdrs, dbHeaders: { apikey: "ANON", Authorization: "Bearer ANON" }, auth: { getSession: () => ({ access_token: "TOK_A" }) }, setSchedSync: (f) => { st = typeof f === "function" ? f(st) : f; },
-      console: { error: (...a) => rec.errors.push(a.map(String).join(" ")), warn: () => {}, log: () => {} } });
+      console: { error: (...a) => rec.errors.push(a.map(String).join(" ")), warn: watchC.console.warn, log: () => {} } });
     const eng = ref.current;
     const open = oweFn({ scheduleRef, parse: HC.parse, addD: HC.addD, fmt: HC.fmt, appShifts: {}, appShiftsLoaded: true, setEditWeekModal, schedSyncRef: ref });
     await eng.load();
@@ -6045,7 +6077,7 @@ await (async () => {
     modal = null; peer(W2, "peer2b"); await eng.pull();
     check("SE-C A13 …'Reopen with the latest' (openWeekEditor) starts clean from the adopted week, and a save from it would go through; an editor opened AFTER an adoption isn't flagged by it; with no editor open nothing is opened",
       !reopened.adoptedAway && reopened.draft.dayCall === "peer1" && eng.changedSince([W1], reopened.openEpoch).length === 0 && modal === null
-        && !w2.adoptedAway && w2After === w2 && scheduleRef.current[W2].dayCall === "peer2b" && rec.errors.length === 0,
+        && !w2.adoptedAway && w2After === w2 && scheduleRef.current[W2].dayCall === "peer2b" && rec.errors.length === 0 && rec.toasts.length === 0,
       JSON.stringify({ reopened: reopened && [reopened.adoptedAway, reopened.draft.dayCall], w2: w2After === w2, modal, errors: rec.errors }));
     const NOTE = "⚠ This week was just changed by someone else — including a slot you changed here, so saving it would be refused. Your draft stays here to read.";
     const NOTE_OK = "⚠ This week was just changed by someone else — this editor still shows the old version. Saving writes only what you changed here; their other changes stay.";
@@ -6055,6 +6087,7 @@ await (async () => {
         && count('<button onClick={()=>{ if (!hasUnsaved || confirm("Reopen this week as it is now? What you changed in this editor is discarded.")) openWeekEditor(mondayStr); }}') === 1,
       JSON.stringify({ ed0, note, nav }));
   }
+  check("SE-C A17(c) no unexpected error in any run: no console.error (the sliced code's context, the consoles handed in), no caught callback error in the app's engine", watchC.unexpected().length === 0, watchC.unexpected().slice(0, 3).join(" | "));
 })().catch(ex => check("SE-C harness ran without crashing", false, String(ex && ex.stack || ex).split("\n").slice(0, 3).join(" | ")));
 // SE-H. Sync v2 commit 13/n, EXECUTED: the header's ONE schedule-sync line
 // (A16) and the client / schema error class (A4). The real schedSyncLine
@@ -6071,7 +6104,8 @@ await (async () => {
   const nsrcH = src.replace(/\r\n/g, "\n");
   const after = (start, end) => { const i = nsrcH.indexOf(start); if (i < 0 || nsrcH.indexOf(start, i + 1) !== -1) return null; const e = nsrcH.indexOf(end, i + start.length); return e < 0 ? null : nsrcH.slice(i + start.length, e); };
   const fnDecl = (decl) => { const a = nsrcH.indexOf(decl); if (a < 0 || nsrcH.indexOf(decl, a + 1) !== -1) return null; const b = nsrcH.indexOf("\n}\n", a); return b < 0 ? null : nsrcH.slice(a, b + 2); };
-  const hctx = vm.createContext({});
+  const watchH = harnessWatch();
+  const hctx = vm.createContext({ console: watchH.console });
   const fnH = (names, code) => { try { return vm.runInContext(`(function (env) { const { ${names} } = env; return (${code}); })`, hctx); } catch (ex) { return null; } };
   const se = require("./sync-engine-se.js");
   const { createFakeWeeksTable } = require("./fake-weeks-table.js");
@@ -6161,7 +6195,7 @@ await (async () => {
     const h = () => ({ apikey: "ANON", Authorization: "Bearer " + tok });
     s.engine = createSchedSyncH({ getState: () => s.mirror, commit: (x) => { s.mirror = x; }, fetch: (u, i) => t.fetch(u, i), url: "https://x.supabase.co",
       writeHeaders: h, readHeaders: h, anonHeaders: () => ({ apikey: "ANON", Authorization: "Bearer ANON" }), canWrite: () => true, token: () => tok, userId: () => "s1", now: clockH, nowMs: () => msH,
-      onStatus: (st) => { s.st = st; }, onToast: (m) => s.toasts.push(String(m)), onWipeBlocked: () => {}, onInternalError: (e) => internalH.push(String(e && e.message || e)), log: () => {} });
+      onStatus: (st) => { s.st = st; }, onToast: (m) => s.toasts.push(String(m)), onWipeBlocked: () => {}, onInternalError: (e) => internalH.push(String(e && e.message || e)), log: watchH.log });
     s.edit = (kk, dc) => { s.mirror = Object.assign({}, s.mirror, { [kk]: wkH(dc) }); };
     s.L = () => { const r = line(s.st, { loaded: true, readOnly: false }); return r ? r.kind + ":" + r.n : "none"; };
     return s;
@@ -6206,7 +6240,7 @@ await (async () => {
   const ref = wireFn({ isPublicMode: false, userProfile: { person_id: "s1" }, showToast: () => {}, setEditWeekModal: () => {}, schedSyncBridgeRef: { current: null },
     useRef: (v) => ({ current: v }), createSchedSync: createSchedSyncH, scheduleRef, commitSchedule: (x) => { scheduleRef.current = x; }, fetch: (u, i) => t2.fetch(u, i), SUPABASE_URL: "https://x.supabase.co",
     dbAuthHeaders: tokH, dbReadHeaders: tokH, dbHeaders: { apikey: "ANON", Authorization: "Bearer ANON", "Content-Type": "application/json" }, auth: { getSession: () => ({ access_token: "TOK_A" }) }, setSchedSync: () => {},
-    console: { error: (...a) => errs.push(a.map(String).join(" ")), warn: () => {}, log: () => {} } });
+    console: { error: (...a) => errs.push(a.map(String).join(" ")), warn: watchH.console.warn, log: () => {} } });
   const eng = ref.current;
   await eng.load();
   t2.control.expiredTokens.add("TOK_A");
@@ -6218,6 +6252,7 @@ await (async () => {
   check("SE-H A7 the app's own engine (its deps as wired: dbHeaders for anon): after the server's 401 for a token the clock calls fresh, the pull reads as anon and adopts the peer's week; the unsaved week stays pending, nothing written",
     pr.ok === true && reqs.length >= 2 && reqs.every(e => e.method === "GET" && e.headers.authorization === "Bearer ANON" && e.status === 200) && scheduleRef.current[WH[1]].dayCall === "peer" && eng.pending().join() === WH[0] && errs.length === 0,
     JSON.stringify({ pr, reqs: reqs.map(e => [e.method, e.headers.authorization, e.status]), errs }));
+  check("SE-H A17(c) no unexpected error in any run: nothing on the context's console, no caught callback error in an engine", watchH.unexpected().length === 0, watchH.unexpected().slice(0, 3).join(" | "));
 })().catch(ex => check("SE-H harness ran without crashing", false, String(ex && ex.stack || ex).split("\n").slice(0, 3).join(" | ")));
 // SE-G. Sync v2 commit 14/n, EXECUTED: the app's intents and gates. The real
 // component code, sliced by its anchors and run in a FRESH context (a free
@@ -6243,7 +6278,8 @@ console.log("\nSE-G. sync v2 14/n: the edit gate on marks / clear / reset / rest
 await (async () => {
   const nsrcG = src.replace(/\r\n/g, "\n");
   const after = (start, end) => { const i = nsrcG.indexOf(start); if (i < 0 || nsrcG.indexOf(start, i + 1) !== -1) return null; const e = nsrcG.indexOf(end, i + start.length); return e < 0 ? null : nsrcG.slice(i + start.length, e); };
-  const gctx = vm.createContext({});
+  const watchG = harnessWatch();
+  const gctx = vm.createContext({ console: watchG.console });
   const fnG = (names, code) => { try { return vm.runInContext(`(function (env) { const { ${names} } = env; return (${code}); })`, gctx); } catch (ex) { return null; } };
   const se = require("./sync-engine-se.js");
   const { createFakeWeeksTable } = require("./fake-weeks-table.js");
@@ -6265,7 +6301,7 @@ await (async () => {
   const wkG = (dc, nights) => ({ dayCall: dc, nights: Object.assign({ mon: "s2", tue: "s3", wed: "s4", thu: "s5", wknd: "s6" }, nights || {}), off: "s7" });
   let msG = Date.UTC(2026, 9, 14, 12, 0, 0);
   const clockG = () => new Date(msG += 1000).toISOString();
-  const internalG = [];
+  const internalG = [], appsG = [];
   const mkTableG = () => createFakeWeeksTable({ baseUrl: "https://x.supabase.co", anonKey: "ANON", users: { TOK_A: "user-a", TOK_B: "user-b" }, clock: clockG,
     rows: WG.map(k => ({ week_monday: k, data: wkG("s1"), version: 2, updated_by: "user-a", updated_at: "2026-10-01T08:00:00.000Z" })) });
   const writesG = (t, from, tok) => t.log.slice(from || 0).filter(e => e.method !== "GET" && (!tok || e.headers.authorization === "Bearer " + tok));
@@ -6283,8 +6319,9 @@ await (async () => {
       writeHeaders: hdr, readHeaders: hdr, anonHeaders: () => ({ apikey: "ANON", Authorization: "Bearer ANON" }), canWrite: () => true, token: () => a.token, userId: () => "s1",
       now: clockG, nowMs: () => msG, onStatus: () => {}, onToast: (m, tone) => a.showToast(m, tone),
       onWipeBlocked: () => a.showToast("Blocked an unexpected schedule wipe — your saved schedule is safe. Reload to resync.", "error"), // as the app wires it
-      onInternalError: (e) => internalG.push(String(e && e.message || e)), log: () => {} });
+      onInternalError: (e) => internalG.push(String(e && e.message || e)), log: watchG.log });
     a.schedSyncRef = { current: a.eng };
+    appsG.push(a);
     a.schedEditable = geF({ schedSyncRef: a.schedSyncRef, showToast: a.showToast, setReauthNeeded: () => { a.reauth++; } });
     a.pushUndo = puF({ scheduleRef: a.ref, schedSyncRef: a.schedSyncRef, setScheduleHistory: a.setScheduleHistory });
     a.runAuthoritativeSchedule = raF({ schedSyncRef: a.schedSyncRef, commitSchedule: a.commitSchedule, setScheduleHistory: a.setScheduleHistory });
@@ -6468,7 +6505,7 @@ await (async () => {
       const w = { toasts: [], status: [] };
       const out = await cgF({ publishWeeks: () => ({ merged: {}, prior: {}, y1: {} }), numWeeks: 2, MO: ["Jan"], startMonth: 0, startYear: 2026, runPublish: () => Promise.resolve(pr),
         setPreviewSchedule: () => {}, setShowPreview: () => {}, setSaveStatus: (s) => w.status.push(s), lastSyncRef: { current: null }, buildStateBundle: (x) => Object.assign({}, x),
-        supabase: { from: () => ({ upsert: async () => ({ error: null }) }) }, console: { error: () => {} }, showToast: (m, tone) => w.toasts.push([String(m), tone]), setTimeout: () => 0 })({ [WG[0]]: wkG("g") });
+        supabase: { from: () => ({ upsert: async () => ({ error: null }) }) }, console: watchG.console, showToast: (m, tone) => w.toasts.push([String(m), tone]), setTimeout: () => 0 })({ [WG[0]]: wkG("g") });
       w.out = out; return w;
     };
     const landed = await cg({ ok: true, results: [], notice: NOTICE }), quiet = await cg({ ok: true, results: [], notice: null }), part = await cg({ ok: false, results: [{ k: WG[0], outcome: "pending" }], notice: SAVE1 });
@@ -6638,7 +6675,7 @@ await (async () => {
     await peer(WG[0], "p0b"); await eng.pull();
     check("SE-G 14/n A13 …a week merely PICKED in the swap tool (no options found yet) stays picked when that week is adopted; the bridge never threw (a throw is logged as a warning) and no error",
       st.sets.length === 0 && !!st.target && st.target.mondayStr === WG[0] && st.toasts.length === 0 && ref.current[WG[0]].dayCall === "p0b" && st.modalCalls >= 4
-        && !st.warns.some(x => /onAdopted threw/.test(x)) && st.errors.length === 0, JSON.stringify({ sets: st.sets, warns: st.warns, errors: st.errors }));
+        && !st.warns.some(x => / threw/.test(x)) && st.errors.length === 0, JSON.stringify({ sets: st.sets, warns: st.warns, errors: st.errors })); // (A17(c): any caught callback error the engine logged)
   }
 
   // ── (9) write paths read the MIRROR: the one-way swap, the trade proposal, the lock ──
@@ -6673,7 +6710,7 @@ await (async () => {
       await stF({ tradeSubmitBusyRef: { current: false }, showToast: () => {}, tradeFrom: "s4", tradeTo: "s6", tradeWeek: W1, tradeShift: "tue", tradeReturnWeek: W2, tradeReturnShift: "wed", isScheduler: true, alert: () => {}, confirm: () => true,
         silvisActive: true, silvisBlock: (id, m, s, wk) => { tr.blocks.push(wk); return "hit"; }, silvisRefuse: () => true, schedule: STALE, scheduleRef: { current: MIRROR }, surgeons: S7, SHIFT_LABELS: HG.SHIFT_LABELS,
         db: { insert: async () => { tr.inserts++; return { data: null }; } }, writeFailReason: () => "", setTradeRequests: () => {}, setTradeWeek: () => {}, setTradeShift: () => {}, setTradeReturnWeek: () => {}, setTradeReturnShift: () => {},
-        tradeProposeMsg: () => "", logAudit: () => {}, addNotification: async () => {}, sendEmailNotif: () => {}, console: { error: () => {} } })();
+        tradeProposeMsg: () => "", logAudit: () => {}, addNotification: async () => {}, sendEmailNotif: () => {}, console: watchG.console })();
       const lk = { wk: undefined, locks: null };
       alF({ newLockWeek: W1, newLockSlot: "tue", newLockSurgeon: "s6", silvisActive: true, silvisBlock: (id, m, s, wk) => { lk.wk = wk; return null; }, silvisRefuse: () => false, schedule: STALE, scheduleRef: { current: MIRROR },
         setPendingLocks: (f) => { lk.locks = f([]); }, setNewLockWeek: () => {}, setNewLockSlot: () => {}, setNewLockSurgeon: () => {} })();
@@ -6683,13 +6720,15 @@ await (async () => {
     }
   }
   check("SE-G no engine internal error in any run", internalG.length === 0, internalG.join(" | "));
+  const badG = appsG.reduce((acc, a) => acc.concat(a.errors), watchG.unexpected());
+  check("SE-G A17(c) no unexpected error in any run: no console.error (the sliced code's context, every session's console handed in), no caught callback error in an engine", badG.length === 0, badG.slice(0, 3).join(" | "));
 })().catch(ex => check("SE-G harness ran without crashing", false, String(ex && ex.stack || ex).split("\n").slice(0, 3).join(" | ")));
 {
   const { spawnSync } = require("child_process");
   const r = spawnSync(process.execPath, [path.join(__dirname, "fake-weeks-table.test.js")], { encoding: "utf8" });
   const m = /(\d+)\/(\d+) tests passed/.exec(r.stdout || "");
   check("SE-T the emulated schedule_weeks table passes its own contract tests",
-    r.status === 0 && !!m && m[1] === m[2] && Number(m[2]) >= 36,
+    r.status === 0 && !!m && m[1] === m[2] && Number(m[2]) >= 44,
     ((r.stdout || "").split("\n").filter(l => /^FAIL/.test(l)).join(" | ") || r.stderr || "no verdict").slice(0, 300));
 }
 

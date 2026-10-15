@@ -444,6 +444,72 @@ test('fail 400-schema / 400-22P02: PostgREST client errors (PGRST204, 22P02) wit
   }
 });
 
+test('fail html-403 / 429 / 408 / 413: canned NON-JSON bodies (a gateway / WAF / proxy, not PostgREST), nothing applied', async () => {
+  const want = { 'html-403': [403, 'text/html', /<h1>403 Forbidden<\/h1>/], '429': [429, 'text/plain', /^Too Many Requests$/], '408': [408, 'text/plain', /^Request Timeout$/], '413': [413, 'text/plain', /^Payload Too Large$/] };
+  for (const kind of Object.keys(want)) {
+    const t = mk();
+    t.control.fail({ method: 'PATCH', kind });
+    const r = await patch(t, 'week_monday=eq.2026-10-05&version=eq.3', { version: 4 }, 'TOK_A', REP);
+    assert.strictEqual(r.status, want[kind][0], kind);
+    assert.strictEqual(r.ok, false);
+    assert.strictEqual(r.headers.get('content-type'), want[kind][1], kind);
+    assert.ok(want[kind][2].test(await r.clone().text()), kind);
+    await assert.rejects(r.json(), SyntaxError); // not JSON: a client can't read a PostgREST code from it
+    assert.strictEqual(t.get('2026-10-05').version, 3);
+    assert.deepStrictEqual([t.log[0].status, t.log[0].applied, t.log[0].injected], [want[kind][0], false, kind]);
+  }
+  const t = mk();
+  t.control.fail({ kind: '429' });
+  assert.strictEqual((await get(t, '')).headers.get('retry-after'), '1');
+});
+
+test('fail 404-PGRST205: the TABLE missing from the schema cache — 404 with the PostgREST JSON body, nothing applied (any method)', async () => {
+  for (const method of ['GET', 'PATCH', 'DELETE']) {
+    const t = mk();
+    t.control.fail({ method, kind: '404-PGRST205' });
+    const p = method === 'GET' ? get(t, 'week_monday=eq.2026-10-05') : method === 'PATCH' ? patch(t, 'week_monday=eq.2026-10-05&version=eq.3', { version: 4 }, 'TOK_A', REP) : remove(t, 'week_monday=eq.2026-10-05', REP);
+    const b = await expectErr(p, 404, 'PGRST205');
+    assert.ok(/Could not find the table 'public\.schedule_weeks' in the schema cache/.test(b.message));
+    assert.deepStrictEqual(Object.keys(b), ['code', 'details', 'hint', 'message']);
+    assert.strictEqual(t.get('2026-10-05').version, 3);
+    assert.deepStrictEqual([t.log[0].applied, t.log[0].injected], [false, '404-PGRST205']);
+  }
+});
+
+test('fail hang: the request NEVER settles and nothing is applied; an AbortSignal rejects it with AbortError (as a real fetch)', async () => {
+  const t = mk();
+  t.control.fail({ method: 'PATCH', week: '2026-10-05', kind: 'hang', count: 2 });
+  let settled = false;
+  patch(t, 'week_monday=eq.2026-10-05&version=eq.3', { version: 4 }, 'TOK_A', REP).then(() => { settled = true; }, () => { settled = true; });
+  for (let i = 0; i < 20; i++) await flush();
+  assert.strictEqual(settled, false);
+  assert.deepStrictEqual([t.log[0].status, t.log[0].applied, t.log[0].injected], [null, false, 'hang']);
+  const ac = new AbortController();
+  const p = t.fetch(url('week_monday=eq.2026-10-05&version=eq.3'), { method: 'PATCH', headers: H('TOK_A', REP), body: '{"version":4}', signal: ac.signal });
+  await flush();
+  ac.abort();
+  await assert.rejects(p, e => e.name === 'AbortError');
+  assert.deepStrictEqual([t.log[1].status, t.log[1].error, t.log[1].applied], [0, 'AbortError', false]);
+  assert.strictEqual(t.get('2026-10-05').version, 3);
+  assert.strictEqual((await get(t, 'week_monday=eq.2026-10-05')).status, 200); // other requests flow
+});
+
+test('fail hang-after: the write IS applied, then the response never comes; aborting rejects it (the outcome is unknown to the client)', async () => {
+  const t = mk();
+  t.control.fail({ method: 'PATCH', week: '2026-10-05', kind: 'hang-after' });
+  const ac = new AbortController();
+  let settled = false;
+  const p = t.fetch(url('week_monday=eq.2026-10-05&version=eq.3'), { method: 'PATCH', headers: H('TOK_A', REP), body: '{"version":4}', signal: ac.signal });
+  p.then(() => { settled = true; }, () => { settled = true; });
+  for (let i = 0; i < 20; i++) await flush();
+  assert.strictEqual(settled, false);
+  assert.strictEqual(t.get('2026-10-05').version, 4);   // committed
+  assert.deepStrictEqual([t.log[0].status, t.log[0].applied], [null, true]);
+  ac.abort();
+  await assert.rejects(p, e => e.name === 'AbortError');
+  assert.deepStrictEqual([t.log[0].status, t.log[0].error, t.log[0].applied], [0, 'AbortError', true]);
+});
+
 test('fail matching: method, week (URL or POST body), count, any-method rules, unknown kind', async () => {
   const t = mk();
   const rule = t.control.fail({ method: 'GET', kind: '5xx-before', count: 2 });
@@ -607,6 +673,67 @@ test('timestamptz: updated_at comes back as +00:00 with trimmed micros; offsets 
   const r = await json(patch(raw, 'week_monday=eq.2026-10-05&select=updated_at', { updated_at: '2026-10-11T12:34:56.120Z' }, 'TOK_A', REP));
   assert.strictEqual(r[0].updated_at, '2026-10-11T12:34:56.120Z');
   assert.strictEqual(raw.get('2026-09-28').updated_at, '2026-09-27T08:00:00.000Z');
+});
+
+test('stampUpdatedAt: the SERVER renders updated_at on INSERT, UPDATE and upsert (the body\'s value ignored), from its clock; off by default', async () => {
+  let n = 0;
+  const srv = () => '2026-10-11T12:00:0' + (n++) + '.000Z';
+  const t = mk({ stampUpdatedAt: true, clock: srv });
+  n = 0; // (seeding read the clock for its defaults)
+  const p = await json(patch(t, 'week_monday=eq.2026-10-05&version=eq.3', { data: { x: 1 }, version: 4, updated_at: '2030-01-01T00:00:00Z' }, 'TOK_A', REP));
+  assert.strictEqual(p[0].updated_at, '2026-10-11T12:00:00+00:00');
+  assert.strictEqual(t.get('2026-10-05').updated_at, '2026-10-11T12:00:00+00:00');
+  const i = await json(post(t, { week_monday: '2026-10-19', data: {}, version: 1, updated_at: '2030-01-01T00:00:00Z' }, { headers: REP }));
+  assert.strictEqual(i[0].updated_at, '2026-10-11T12:00:01+00:00');
+  await post(t, [{ week_monday: '2026-10-12', data: { up: 1 }, updated_at: '2030-01-01T00:00:00Z' }], { qs: 'on_conflict=week_monday', headers: { Prefer: 'resolution=merge-duplicates' } });
+  assert.deepStrictEqual([t.get('2026-10-12').updated_at, t.get('2026-10-12').version], ['2026-10-11T12:00:02+00:00', 2]);
+  // a CAS on the client's own value now misses: only a response or a read tells the stored one
+  assert.deepStrictEqual(await json(patch(t, 'week_monday=eq.2026-10-05&version=eq.4&updated_at=eq.2030-01-01T00:00:00Z', { version: 5 }, 'TOK_A', REP)), []);
+  assert.strictEqual((await json(patch(t, 'week_monday=eq.2026-10-05&version=eq.4&updated_at=eq.' + encodeURIComponent(p[0].updated_at), { version: 5 }, 'TOK_A', REP))).length, 1);
+  // off by default: the body's value is stored (the PATCH test above pins "no trigger")
+  const d = mk();
+  assert.strictEqual((await json(patch(d, 'week_monday=eq.2026-10-05', { updated_at: '2030-01-01T00:00:00Z' }, 'TOK_A', REP)))[0].updated_at, '2030-01-01T00:00:00+00:00');
+});
+
+test('oldBuild(token, by): upsert() is the pre-v2 keepalive — merge-duplicates, no version: an existing row KEEPS its version, a new week starts at v1 — and remove() an unversioned DELETE; both through fetch, as that user', async () => {
+  const t = mk();
+  const ob = t.oldBuild('TOK_B', 's9');
+  const r = await ob.upsert({ '2026-10-05': { old: 1 }, '2026-10-26': { fresh: 1 } }, '2026-10-11T13:00:00Z');
+  assert.strictEqual(r.status, 201);
+  assert.deepStrictEqual(t.get('2026-10-05'), { week_monday: '2026-10-05', data: { old: 1 }, version: 3, updated_by: 's9', updated_at: '2026-10-11T13:00:00+00:00' });
+  assert.deepStrictEqual([t.get('2026-10-26').version, t.get('2026-10-26').updated_by], [1, 's9']);
+  const e = t.log[0];
+  assert.deepStrictEqual([e.method, e.query.on_conflict, e.headers.prefer, e.user, e.applied], ['POST', 'week_monday', 'resolution=merge-duplicates,return=minimal', 'user-b', true]);
+  assert.ok(e.body.every(x => !('version' in x)));
+  const r2 = await ob.remove('2026-10-12');
+  assert.strictEqual(r2.status, 204);
+  assert.strictEqual(t.get('2026-10-12'), null);
+  assert.deepStrictEqual([t.log[1].method, t.log[1].query, t.log[1].applied], ['DELETE', { week_monday: 'eq.2026-10-12' }, true]);
+  // through fetch: the failure rules apply, and anon is RLS-refused
+  t.control.fail({ method: 'POST', kind: '5xx-before' });
+  assert.strictEqual((await ob.upsert({ '2026-10-05': { x: 2 } })).status, 503);
+  assert.deepStrictEqual(t.get('2026-10-05').data, { old: 1 });
+  assert.strictEqual((await t.oldBuild(null).upsert({ '2026-10-05': { x: 3 } })).status, 401);
+});
+
+test('recreate(token, k, data): a clear + regenerate elsewhere — DELETE then INSERT at v1, so the version REPEATS and only updated_at differs; two requests logged', async () => {
+  const t = mk({ rows: [{ week_monday: '2026-10-05', data: { a: 1 }, version: 1, updated_by: 'user-a', updated_at: '2026-10-01T08:00:00.000Z' }] });
+  const before = t.get('2026-10-05');
+  const r = await t.recreate('TOK_B', '2026-10-05', { reborn: 1 }, { by: 's9', at: '2026-10-11T14:00:00Z' });
+  assert.strictEqual(r.status, 201);
+  const after = t.get('2026-10-05');
+  assert.deepStrictEqual([after.version, after.data, after.updated_by], [1, { reborn: 1 }, 's9']);
+  assert.strictEqual(before.version, after.version);
+  assert.notStrictEqual(before.updated_at, after.updated_at);
+  assert.deepStrictEqual(t.log.map(x => [x.method, x.applied, x.user]), [['DELETE', true, 'user-b'], ['POST', true, 'user-b']]);
+  // a version-only CAS taken from the old row still matches the new one; the (version, updated_at) pair does not
+  assert.strictEqual((await json(patch(t, 'week_monday=eq.2026-10-05&version=eq.1&updated_at=eq.' + encodeURIComponent('2026-10-01T08:00:00+00:00'), { version: 2 }, 'TOK_A', REP))).length, 0);
+  assert.strictEqual((await json(patch(t, 'week_monday=eq.2026-10-05&version=eq.1', { version: 2 }, 'TOK_A', REP))).length, 1);
+  // a failed DELETE stops it (no insert)
+  const t2 = mk();
+  t2.control.fail({ method: 'DELETE', kind: '5xx-before' });
+  assert.strictEqual((await t2.recreate('TOK_B', '2026-10-05', {})).status, 503);
+  assert.deepStrictEqual([t2.get('2026-10-05').version, t2.log.length], [3, 1]);
 });
 
 // ------------------------------------------------------------------- log

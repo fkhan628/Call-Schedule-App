@@ -13,6 +13,7 @@
  *   t.rows() / t.get(k) / t.put(row) / t.del(k)   (test backdoors)
  *   t.control  -> fail(), pause(), expiredTokens, users, clear()
  *   t.log      -> one entry per request
+ *   t.oldBuild(token, by) / t.recreate(token, k, data, o)  (other clients, through fetch)
  *
  * Realism beyond the basic contract (each mirrors real Supabase/PostgREST/fetch
  * behaviour a sync engine can trip over):
@@ -29,6 +30,24 @@
  *   - The apikey header (or ?apikey=) is required and must equal anonKey
  *     (opts.requireApiKey === false disables the check).
  *   - A response body can be read once (second text()/json() rejects).
+ *   - opts.stampUpdatedAt: the SERVER renders updated_at on every INSERT /
+ *     UPDATE (an `updated_at := now()` trigger, from opts.clock), whatever the
+ *     body says — so a client can only learn the stored value from a response
+ *     or a read. Off by default (the live table stores the client's value).
+ *
+ * Failure kinds (control.fail): 5xx before / after commit, thrown before /
+ * after commit, 409 (23505), 401, 403 (42501), 400 (PGRST100), a gateway's
+ * HTML 403, 429 / 408 / 413 (plain text), 400 PGRST204 and 22P02, 404
+ * PGRST205 (the table missing from the schema cache), and never-settling
+ * requests: 'hang' (nothing applied) and 'hang-after' (applied, the response
+ * never comes) — an AbortSignal still rejects them, as with a real fetch.
+ *
+ * Mixed fleet (design §2.11) — other clients, through fetch() like any request
+ * (logged; auth, RLS and failure rules apply): t.oldBuild(token, by).upsert()
+ * is an old build's keepalive, a version-PRESERVING merge-duplicates upsert,
+ * and .remove(k) its unversioned DELETE; t.recreate(token, k, data) is a clear
+ * + regenerate elsewhere — DELETE, then INSERT at v1, so the version repeats
+ * and only updated_at tells the rows apart (ABA).
  */
 (function (root) {
   'use strict';
@@ -36,8 +55,8 @@
   const TABLE = 'schedule_weeks';
   const COLS = ['week_monday', 'data', 'version', 'updated_by', 'updated_at'];
   const RESERVED_PARAMS = ['select', 'order', 'limit', 'offset', 'on_conflict', 'columns', 'apikey'];
-  const FAIL_KINDS = ['5xx-before', '5xx-after', 'throw', 'throw-after', '409', '401', '403', '400', 'html-403', '429', '408', '413', '400-schema', '400-22P02'];
-  const BEFORE_KINDS = ['5xx-before', 'throw', '409', '401', '403', '400', 'html-403', '429', '408', '413', '400-schema', '400-22P02'];
+  const FAIL_KINDS = ['5xx-before', '5xx-after', 'throw', 'throw-after', '409', '401', '403', '400', 'html-403', '429', '408', '413', '400-schema', '400-22P02', '404-PGRST205', 'hang', 'hang-after'];
+  const BEFORE_KINDS = ['5xx-before', 'throw', '409', '401', '403', '400', 'html-403', '429', '408', '413', '400-schema', '400-22P02', '404-PGRST205', 'hang'];
   const STATUS_TEXT = {
     200: 'OK', 201: 'Created', 204: 'No Content', 400: 'Bad Request', 401: 'Unauthorized',
     403: 'Forbidden', 404: 'Not Found', 406: 'Not Acceptable', 408: 'Request Timeout', 409: 'Conflict', 413: 'Payload Too Large', 429: 'Too Many Requests',
@@ -117,6 +136,16 @@
     const e = new Error('This operation was aborted');
     e.name = 'AbortError';
     return e;
+  }
+  // A request that never answers (a dead radio, a proxy that holds the
+  // connection): never settles — except that an AbortSignal rejects it, as it
+  // does a real fetch.
+  function never(signal) {
+    return new Promise((resolve, reject) => {
+      if (!signal || typeof signal.addEventListener !== 'function') return;
+      if (signal.aborted) { reject(abortError(signal)); return; }
+      signal.addEventListener('abort', () => reject(abortError(signal)));
+    });
   }
 
   // ------------------------------------------------------------------ jsonb
@@ -413,6 +442,7 @@
     const requireApiKey = opts.requireApiKey !== false;
     const tsMode = opts.timestamptz !== false;
     const defaultVersion = opts.defaultVersion === undefined ? 1 : opts.defaultVersion;
+    const stampUpdatedAt = opts.stampUpdatedAt === true;
     const tablePath = baseUrl + '/rest/v1/' + TABLE;
 
     let heap = [];          // physical ("heap") order; UPDATE moves a row to the end
@@ -468,8 +498,12 @@
       const r = parseTimestamptz(scalarText(v));
       return r.code ? v : r.value;
     }
-    function defaultRow() {
-      return { week_monday: null, data: {}, version: defaultVersion, updated_by: null, updated_at: lenientTs(clock()) };
+    function defaultRow(ts) {
+      return { week_monday: null, data: {}, version: defaultVersion, updated_by: null, updated_at: ts !== undefined ? ts : lenientTs(clock()) };
+    }
+    // opts.stampUpdatedAt: the trigger's `updated_at := now()` on a written row.
+    function stamp() {
+      return stampUpdatedAt ? { updated_at: lenientTs(clock()) } : {};
     }
     function cloneRow(r) {
       let data;
@@ -614,7 +648,7 @@
       // RLS: the UPDATE policy's USING clause hides every row from anon.
       const visible = auth.role === 'anon' ? [] : heap;
       const matched = visible.filter(r => matchAll(filters, r));
-      const updated = matched.map(r => Object.assign({}, r, patch));
+      const updated = matched.map(r => Object.assign({}, r, patch, stamp()));
       updated.forEach(checkNotNull);
       const seen = {};
       for (const u of updated) {
@@ -689,11 +723,12 @@
           if (resolution !== 'merge-duplicates') throw dupKeyError(key);
           // ON CONFLICT DO UPDATE SET <payload columns> = EXCLUDED.<...>: columns
           // absent from the payload (typically `version`) keep their value.
-          const row = Object.assign({}, existing, pt);
+          const row = Object.assign({}, existing, pt, stamp());
           checkNotNull(row);
           ops.push({ old: existing, row: row });
         } else {
-          const row = Object.assign(defaultRow(), pt);
+          const s = stamp();
+          const row = Object.assign(defaultRow(s.updated_at), pt, s);
           checkNotNull(row);
           ops.push({ old: null, row: row });
         }
@@ -787,6 +822,8 @@
         case '400-schema': return PgError(400, 'PGRST204', "Could not find the 'extra' column of 'schedule_weeks' in the schema cache").pgResult;
         // Bad input for a column's type (e.g. a null / non-integer version).
         case '400-22P02': return PgError(400, '22P02', 'invalid input syntax for type integer: "null"').pgResult;
+        // The TABLE missing from PostgREST's schema cache (a migration mid-deploy).
+        case '404-PGRST205': return PgError(404, 'PGRST205', "Could not find the table 'public." + TABLE + "' in the schema cache").pgResult;
       }
       throw new Error('unreachable');
     }
@@ -859,6 +896,7 @@
       const rule = ctx.rule;
       if (rule && BEFORE_KINDS.indexOf(rule.kind) >= 0) {
         if (rule.kind === 'throw') failNetwork('TypeError: Failed to fetch', new TypeError('Failed to fetch'));
+        if (rule.kind === 'hang') { try { await never(ctx.signal); } catch (e) { failNetwork('AbortError', e); } }
         const r = injectedResult(rule);
         entry.status = r.status;
         return makeResponse(r, ctx.url);
@@ -867,6 +905,7 @@
       if (after.length) {
         try { await waitForPauses(after, entry, ctx.signal); } catch (e) { failNetwork('AbortError', e); }
       }
+      if (rule && rule.kind === 'hang-after') { try { await never(ctx.signal); } catch (e) { failNetwork('AbortError', e); } }
       if (rule && rule.kind === 'throw-after') failNetwork('TypeError: Failed to fetch', new TypeError('Failed to fetch'));
       if (rule && rule.kind === '5xx-after') result = gatewayResult(rule.status || 504);
       entry.status = result.status;
@@ -946,9 +985,45 @@
       return true;
     }
 
+    // -------------------------------------------- mixed fleet (design §2.11)
+    // Other clients' writes, sent through fetch() like any request — logged,
+    // and subject to auth, RLS and the failure rules — never the backdoors.
+    function headersFor(token, extra) {
+      const h = { apikey: anonKey, 'Content-Type': 'application/json' };
+      if (token) h.Authorization = 'Bearer ' + token;
+      return Object.assign(h, extra || {});
+    }
+    // An old build (pre-v2): its keepalive upsert is POST ?on_conflict=
+    // week_monday with merge-duplicates and NO version in the body, so an
+    // existing row KEEPS its version while its data and updated_at change
+    // (R18); a new week gets the default (v1). Its delete carries no version
+    // (R28). weeks: { K: data }.
+    function oldBuild(token, by) {
+      return {
+        upsert(weeks, at) {
+          const body = Object.keys(weeks).sort().map(k => ({ week_monday: k, data: weeks[k], updated_by: by === undefined ? null : by, updated_at: at || clock() }));
+          return fetchFn(tablePath + '?on_conflict=week_monday', { method: 'POST', headers: headersFor(token, { Prefer: 'resolution=merge-duplicates,return=minimal' }), body: JSON.stringify(body) });
+        },
+        remove(k) {
+          return fetchFn(tablePath + '?week_monday=eq.' + k, { method: 'DELETE', headers: headersFor(token, { Prefer: 'return=minimal' }) });
+        },
+      };
+    }
+    // A clear + regenerate on another device, for one week: DELETE, then a
+    // plain INSERT at version 1 — the version number repeats, and only
+    // updated_at tells the new row from the old (the ABA case A2 closes).
+    function recreate(token, k, data, o) {
+      o = o || {};
+      return fetchFn(tablePath + '?week_monday=eq.' + k, { method: 'DELETE', headers: headersFor(token) }).then(r => {
+        if (!r.ok) return r;
+        return fetchFn(tablePath, { method: 'POST', headers: headersFor(token, { Prefer: 'return=representation' }),
+          body: JSON.stringify({ week_monday: k, data: data, version: 1, updated_by: o.by === undefined ? null : o.by, updated_at: o.at || clock() }) });
+      });
+    }
+
     (opts.rows || []).forEach(put);
 
-    return { fetch: fetchFn, rows: rows, get: get, put: put, del: del, control: control, log: log };
+    return { fetch: fetchFn, rows: rows, get: get, put: put, del: del, control: control, log: log, oldBuild: oldBuild, recreate: recreate };
   }
 
   if (typeof module !== 'undefined' && module) module.exports = { createFakeWeeksTable: createFakeWeeksTable };

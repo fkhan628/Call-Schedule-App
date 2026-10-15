@@ -9,8 +9,11 @@
 // Each scenario cites what it pins: R1–R37 are the confirmed findings of the
 // three reviews of #68/#69 (private docs/sync-v2/MAP), I1–I6 the design's
 // invariants, D-n the design review of rev 1, A-n the design review's
-// amendments. Every scenario also asserts the engine reported no internal
-// error. Called from test/sync-guards.js (CI runs that file); also runnable
+// amendments. The harness rule (A17(c)): every session records its toasts,
+// the engine's internal errors and its CAUGHT callback errors, and the engine's
+// context has a recording console; SE-I fails on any of them unexpected.
+// SE-X runs the app's code around the engine (the real component slices) the
+// same way. Called from test/sync-guards.js (CI runs that file); also runnable
 // alone:  node test/sync-engine-se.js
 "use strict";
 const fs = require("fs");
@@ -33,32 +36,55 @@ function extractEngine(src) {
   if (s === -1 || e === -1 || nsrc.indexOf(START, s + 1) !== -1) return null;
   return nsrc.slice(s, e);
 }
-// A fresh context with only what a browser page gives the engine.
-const compile = (code) => vm.runInContext(`${code}; createSchedSync`, vm.createContext({ AbortController, setTimeout, clearTimeout }), { filename: "createSchedSync.js" });
+// A fresh context with only what a browser page gives the engine — and a
+// console that RECORDS (A17(c)): the engine reports through deps (log,
+// onInternalError), never the console, so any console call from it is
+// unexpected and fails SE-I.
+const engineConsole = [];
+const recConsole = (into) => { const f = (lvl) => (...a) => into.push(lvl + ": " + a.map(x => (x && x.stack ? String(x.message) : String(x))).join(" ")); return { error: f("error"), warn: f("warn"), log: f("log"), info: f("info") }; };
+// The engine's `log` dep, recording a CAUGHT error: a callback of the app's
+// that threw ("onToast threw", "onAdopted threw", …). (Its other lines are the
+// network's — a failed pull's reason, a suppressed removal — not errors.)
+const caughtLog = (into) => (...a) => { if (/ threw$/.test(String(a[0]))) into.push(a.map(x => (x && x.stack ? String(x.message) : String(x))).join(" ")); };
+const compile = (code) => vm.runInContext(`${code}; createSchedSync`, vm.createContext({ AbortController, setTimeout, clearTimeout, console: recConsole(engineConsole) }), { filename: "createSchedSync.js" });
+const compileMerge = (code) => vm.runInContext(`${code}; mergeEditorEdits`, vm.createContext({}), { filename: "mergeEditorEdits.js" });
 
 module.exports = async function runSE({ src, check }) {
   console.log("\nSE. sync engine v2 (the real createSchedSync on an emulated schedule_weeks)");
   const engSrc = extractEngine(src);
   check("SE0 createSchedSync is extractable by its anchors (exactly one definition)", !!engSrc);
   if (!engSrc) return;
-  let createSchedSync;
-  try { createSchedSync = compile(engSrc); }
+  let createSchedSync, merge;
+  try { createSchedSync = compile(engSrc); merge = compileMerge(engSrc); }
   catch (ex) { check("SE0 createSchedSync compiles standalone", false, String(ex)); return; }
   await scenarios(createSchedSync, check);
+  console.log("\nSE-X. the app's code around the engine — the REAL component slices on the real engine and the emulated table");
+  await appScenarios(src, createSchedSync, merge, check);
 
   // ── SE-M. Mutant battery ──
   // Each mutant re-breaks one thing the reviews found (or one guarantee); the
   // scenarios must turn red for every one. A mutant whose anchor is gone fails
-  // too, so a refactor can't quietly retire one.
+  // too, so a refactor can't quietly retire one. An engine mutant (the default)
+  // edits the engine's anchors (createSchedSync + mergeEditorEdits): it runs the
+  // engine scenarios, then — only if those all stay green — the SE-X app
+  // scenarios on the mutated engine. An `app` mutant edits the component code
+  // outside the anchors: it runs the SE-X app scenarios on that source. `edits`
+  // lists several [from, to] pairs for one bug.
   console.log("\nSE-M. mutant battery (each must turn at least one SE check red)");
   for (const m of MUTANTS) {
-    const n = engSrc.split(m.from).length - 1;
-    if (n !== 1) { check(`SE-M ${m.id} anchor present exactly once (${m.what})`, false, `found ${n}`); continue; }
-    let red = 0, mutant;
-    try { mutant = compile(engSrc.replace(m.from, m.to)); } catch (ex) { check(`SE-M ${m.id} compiles`, false, String(ex)); continue; }
+    const edits = m.edits || [[m.from, m.to]];
+    const hay = m.app ? src.replace(/\r\n/g, "\n") : engSrc;
+    const counts = edits.map(([f]) => hay.split(f).length - 1);
+    if (counts.some(n => n !== 1)) { check(`SE-M ${m.id} anchor present exactly once (${m.what})`, false, `found ${counts.join(" / ")}`); continue; }
+    const mutated = edits.reduce((s, [f, t]) => s.replace(f, () => t), hay);
+    let red = 0, mutant = createSchedSync, mMerge = merge;
+    if (!m.app) { try { mutant = compile(mutated); mMerge = compileMerge(mutated); } catch (ex) { check(`SE-M ${m.id} compiles`, false, String(ex)); continue; } }
     const quiet = (name, cond) => { if (!cond) red++; };
     const log = console.log; console.log = () => {};
-    try { await scenarios(mutant, quiet); } finally { console.log = log; }
+    try {
+      if (!m.app) await scenarios(mutant, quiet);
+      if (red === 0) await appScenarios(m.app ? mutated : src, mutant, mMerge, quiet);
+    } finally { console.log = log; }
     check(`SE-M ${m.id} killed: ${m.what}`, red > 0, "every SE check still passes with this bug in place");
   }
 };
@@ -217,6 +243,50 @@ const MUTANTS = [
     from: "owner.release(); if (!keys) showKnown(startShown); report(); return { ok: false, wrote: false, reason: \"timeout\"", to: "owner.release(); report(); return { ok: false, wrote: false, reason: \"timeout\"" },
   { id: "M71", what: "a refused publish takes its generated weeks off screen (they'd never be retried — A14)",
     from: "const refuse = (out) => { if (!keys && gen === g) showKnown(startShown); return out; };", to: "const refuse = (out) => { if (gen === g) showKnown(startShown); return out; };" },
+  // 15/n — A17(f): the list's missing ones, and the new emulator capabilities' (A17(d))
+  { id: "M72", what: "no ledger at all: nothing sent is remembered (our own lost-response writes read as someone else's — A1)",
+    from: "const addSent = (k, c) => { (sent[k] = sent[k] || []).push(c); if (sent[k].length > 20) sent[k].shift(); };", to: "const addSent = (k, c) => {};" },
+  { id: "M73", what: "no epoch filter for intents: changedSince never names an adopted week (a preview / publish overwrites someone else's change — A13)",
+    from: "changedSince: (keys, sinceEpoch) => (keys || []).filter(k => (adoptEpoch[k] || 0) > sinceEpoch),", to: "changedSince: (keys, sinceEpoch) => []," },
+  { id: "M74", what: "no epoch filter for the editor: epochOf never moves (a save over someone else's change to an edited slot isn't refused — §2.6)",
+    from: "epochOf: (k) => adoptEpoch[k] || 0,", to: "epochOf: (k) => 0," },
+  { id: "M75", what: "mergeEditorEdits ignores the adoption epoch (the editor writes its slot over someone else's — §2.6, A17(a))",
+    from: "  if ((adoptEpochOfWeek || 0) > (openEpoch || 0)) {", to: "  if (false) {" },
+  { id: "M76", what: "the keepalive is sent as a POST (A9)",
+    from: 'init: { method: "PATCH", keepalive: true', to: 'init: { method: "POST", keepalive: true' },
+  { id: "M77", what: "the keepalive INSERTS new weeks (a stalled one resurrects a week deleted later — A9)",
+    edits: [["return diff(target).changed.filter(k => known[k] && !inFlight.has(k)", "return diff(target).changed.filter(k => !inFlight.has(k)"],
+      ["      const kn = known[k];\n      addSent(k, canon(target[k]));\n      return { url:", '      const kn = known[k];\n      addSent(k, canon(target[k]));\n      if (!kn) return { url: base(), init: { method: "POST", keepalive: true, headers: wh({ Prefer: "return=minimal" }), body: JSON.stringify({ week_monday: k, data: target[k], version: 1, updated_by: by, updated_at: ts }) } };\n      return { url:']] },
+  { id: "M78", what: "known.updated_at taken from the body this client sent, not the server's row (A2: wrong CAS against a server that renders it)",
+    from: "        confirm(k, row);\n        // The server stored something other", to: "        confirm(k, row && Object.assign({}, row, { updated_at: ts }));\n        // The server stored something other" },
+  { id: "M79", what: "the keepalive's CAS on the version alone (a stalled one lands on a week re-created at v1 — A2/A9)",
+    from: 'return { url: `${base()}?week_monday=eq.${k}&${cas(kn)}`, init: { method: "PATCH", keepalive: true', to: 'return { url: `${base()}?week_monday=eq.${k}&version=eq.${kn.version}`, init: { method: "PATCH", keepalive: true' },
+  { id: "M80", what: "a 404 PGRST205 is a client error (no read-back; 'reload/update the app' — A4: unknown)",
+    from: "if ([404, 408, 413, 429].includes(r.status)", to: "if ([408, 413, 429].includes(r.status)" },
+  { id: "M81", what: "the same data under a new token is someone else's (an old build's unchanged re-send costs the edit — A2)",
+    from: '    if (kn && row && c === kn.canon) return "refreshed";\n', to: "" },
+  // App mutants (A17(b)/(f)): the component code around the engine, killed by SE-X.
+  { id: "X1", app: true, what: "Undo ignores the engine's blocked list (reverts a week someone else changed since — R15)",
+    from: "    if (plan.blocked.length) {\n      showToast(`Can't undo", to: "    if (false) {\n      showToast(`Can't undo" },
+  { id: "X2", app: true, what: "the keepalive fires on visibilitychange (a side-write that can land after a later save — A9)",
+    from: '        if (source === "visibilitychange") { schedSyncRef.current.push(); return; }\n', to: "" },
+  { id: "X3", app: true, what: "a two-way swap without the holder check (writes over a changed slot — A13)",
+    from: '      if (holder(targetMon, targetShift) !== (targetOldId || "") || (returnMon && returnShift && holder(returnMon, returnShift) !== (candId || ""))) {', to: "      if (false) {" },
+  { id: "X4", app: true, what: "a one-way swap from suggestions without the expected-holder check (A13)",
+    from: '    if (expectOldId !== undefined && (oldId || "") !== (expectOldId || "")) {', to: "    if (false) {" },
+  { id: "X5", app: true, what: "a trade accepted without the holder check before its status PATCH (A13)",
+    from: "      if (!tradeHolds(cur, cascades)) {", to: "      if (false) {" },
+  { id: "X6", app: true, what: "a trade applied without the re-check at commit (a change adopted during the PATCH is overwritten — A13)",
+    from: "      if (!tradeHolds(curNow, cascades) || cascadeSig(cascadesNow) !== cascadeSig(cascades)) {", to: "      if (false) {" },
+  { id: "X7", app: true, what: "the editor's save passes no adoption epoch (never refused — §2.6)",
+    from: "scheduleRef.current[mondayStr], editWeekModal.openEpoch || 0, schedSyncRef.current.epochOf(mondayStr),", to: "scheduleRef.current[mondayStr], editWeekModal.openEpoch || 0, 0," },
+  { id: "X8", app: true, what: "Accept & Publish without the preview's epoch checks (publishes over someone else's change — A13)",
+    edits: [["const moved = schedSyncRef.current.changedSince(Object.keys(previewSchedule), previewEpochRef.current);", "const moved = [];"],
+      ["const moved2 = schedSyncRef.current.changedSince(Object.keys(weeks), previewEpochRef.current);", "const moved2 = [];"]] },
+  { id: "X9", app: true, what: "the edit gate without the load gate (edits before the first read — §2.5.7)",
+    from: "    if (!schedSyncRef.current.isSeeded()) {\n      showToast(\"The schedule hasn't loaded yet", to: "    if (false) {\n      showToast(\"The schedule hasn't loaded yet" },
+  { id: "X10", app: true, what: "the load effect doesn't wait for the engine's first read (loaded before the schedule is — A6)",
+    from: "        const sr = await schedSyncRef.current.load();", to: "        const sr = { ok: false }; schedSyncRef.current.load();" },
 ];
 
 async function scenarios(createSchedSync, check) {
@@ -226,6 +296,11 @@ async function scenarios(createSchedSync, check) {
   const mkTable = (rows) => createFakeWeeksTable({ baseUrl: BASE, anonKey: "ANON", users: { TOK_A: "user-a", TOK_B: "user-b", TOK_M: "member" }, rows: rows || [], clock: clockIso });
   const seedRows = (n, v) => W.slice(0, n).map((k, i) => ({ week_monday: k, data: wk("s" + (i % 6 + 1)), version: v || 3, updated_by: "user-a", updated_at: "2026-10-01T08:00:00.000Z" }));
   const internal = [];
+  // A17(c): a callback error the engine CAUGHT and logged ("onToast threw", …)
+  // is recorded too, and so is anything the engine writes to the console;
+  // SE-I fails on either (SE60's one deliberate throw is accounted for there).
+  const caught = [];
+  engineConsole.length = 0;
   const mkSession = (table, o) => {
     o = o || {};
     const s = { mirror: {}, toasts: [], statuses: [], wipeBlocked: [], commits: 0, readAsAnon: false, adopted: [],
@@ -250,7 +325,7 @@ async function scenarios(createSchedSync, check) {
       onInternalError: (e) => { internal.push(String(e && e.message || e)); s.internal = (s.internal || 0) + 1; },
       // what each call names, and what the screen showed for those weeks at that moment
       onAdopted: (ks) => { if (s.adoptThrows) throw new Error("an app bug in onAdopted"); s.adopted.push({ weeks: ks.slice().sort(), seen: ks.slice().sort().map(k => s.mirror[k] ? s.mirror[k].dayCall : null) }); },
-      log: () => {},
+      log: caughtLog(caught),
       timeouts: o.timeouts,
     });
     s.edit = (k, fn) => { s.mirror = Object.assign({}, s.mirror, { [k]: fn(clone(s.mirror[k] || {})) }); };
@@ -455,8 +530,7 @@ async function scenarios(createSchedSync, check) {
   await run("SE14", async () => {
     const t = mkTable(seedRows(2));
     const A = mkSession(t); await A.engine.load();
-    await t.fetch(`${BASE}/rest/v1/schedule_weeks?on_conflict=week_monday`, { method: "POST", headers: { apikey: "ANON", Authorization: "Bearer TOK_B", "Content-Type": "application/json", Prefer: "resolution=merge-duplicates,return=minimal" },
-      body: JSON.stringify([{ week_monday: W[0], data: wk("old-build"), updated_by: "user-b", updated_at: "2026-10-12T13:00:00.000Z" }]) });
+    await t.oldBuild("TOK_B", "user-b").upsert({ [W[0]]: wk("old-build") }, "2026-10-12T13:00:00.000Z"); // the emulator's old build: a version-preserving merge-duplicates upsert
     check("SE14 (fixture) the old build's blind upsert kept version 3", t.get(W[0]).version === 3 && t.get(W[0]).data.dayCall === "old-build");
     await A.engine.pull();
     check("SE14 R18: pull notices the same-version change by updated_at and adopts it", A.mirror[W[0]].dayCall === "old-build", A.mirror[W[0]].dayCall);
@@ -467,9 +541,9 @@ async function scenarios(createSchedSync, check) {
   await run("SE15", async () => {
     const t = mkTable(seedRows(2, 1));
     const A = mkSession(t); await A.engine.load();
-    t.del(W[0]); t.put({ week_monday: W[0], data: wk("reborn"), version: 1, updated_by: "user-b", updated_at: "2026-10-12T14:00:00+00:00" });
+    await t.recreate("TOK_B", W[0], wk("reborn"), { by: "user-b", at: "2026-10-12T14:00:00+00:00" }); // through the API: DELETE, then INSERT at v1
     await A.engine.pull();
-    check("SE15 R18: a delete + re-insert at v1 (same version number) is still seen as a change", A.mirror[W[0]].dayCall === "reborn", A.mirror[W[0]].dayCall);
+    check("SE15 R18: a delete + re-insert at v1 (same version number) is still seen as a change", t.get(W[0]).version === 1 && A.mirror[W[0]].dayCall === "reborn", A.mirror[W[0]].dayCall);
   });
 
   // SE16 — removals: adopted when not edited here; a locally edited week is
@@ -1016,8 +1090,7 @@ async function scenarios(createSchedSync, check) {
     const A = mkSession(t); await A.engine.load();
     t.control.fail({ method: "PATCH", week: W[0], kind: "5xx-before" });
     A.edit(W[0], w => (w.dayCall = "v2-edit", w)); await A.engine.push();
-    await t.fetch(`${BASE}/rest/v1/schedule_weeks?on_conflict=week_monday`, { method: "POST", headers: { apikey: "ANON", Authorization: "Bearer TOK_B", "Content-Type": "application/json", Prefer: "resolution=merge-duplicates,return=minimal" },
-      body: JSON.stringify([{ week_monday: W[0], data: wk("old-build-swap"), updated_by: "user-b", updated_at: "2026-10-12T16:00:00.000Z" }]) });
+    await t.oldBuild("TOK_B", "user-b").upsert({ [W[0]]: wk("old-build-swap") }, "2026-10-12T16:00:00.000Z");
     await A.engine.push();
     check("SE42 2.11: an old build's blind upsert (same version) is NOT overwritten by A's pending edit — conflict, the old build's swap kept",
       t.get(W[0]).data.dayCall === "old-build-swap" && A.st().conflicts.length === 1, JSON.stringify(t.get(W[0]).data.dayCall));
@@ -1508,10 +1581,13 @@ async function scenarios(createSchedSync, check) {
     A.mirror = clone(snap); await A.engine.authoritative(snap, true, "restore");
     check("SE60 …none for a pulled change already on screen, or a restore's re-commit", A.adopted.length === 2 && t.get(W[0]).data.dayCall === "snap", JSON.stringify(A.adopted));
     A.adoptThrows = true;
+    const caught0 = caught.length;
     B.edit(W[3], w => (w.dayCall = "peer3b", w)); await B.engine.push();
     const r = await A.engine.pull();
-    check("SE60 …an onAdopted that throws doesn't break the job: the pull still adopted the week and answered ok, and the engine reported no internal error",
-      r.ok && A.mirror[W[3]].dayCall === "peer3b" && !A.internal, JSON.stringify(r));
+    const thrown = caught.slice(caught0);
+    check("SE60 …an onAdopted that throws doesn't break the job: the pull still adopted the week and answered ok, the engine reported no internal error — and it CAUGHT and logged the throw (once: the harness's recorder sees it)",
+      r.ok && A.mirror[W[3]].dayCall === "peer3b" && !A.internal && thrown.length === 1 && /^onAdopted threw an app bug in onAdopted$/.test(thrown[0]), JSON.stringify({ r, thrown }));
+    caught.splice(caught0, thrown.length); // expected here — not counted against SE-I
   });
 
   // SE61 — the publish I2 hole (§7b of the engine read): a publish (a force
@@ -1799,8 +1875,603 @@ async function scenarios(createSchedSync, check) {
       p.ok === false && p.wrote === false && keptShown && t.get(W[0]).data.dayCall === "gen0" && t.get(W[2]).data.dayCall === "gen2" && writes(t, from2).length === 2, JSON.stringify({ p, keptShown }));
   });
 
-  // SE-I — no scenario above produced an internal error.
-  check("SE-I no internal (non-network) error in any scenario", internal.length === 0, internal.slice(0, 3).join(" | "));
+  // SE68 — A5 on the emulator's never-settling requests (A17(d)): a PATCH that
+  // COMMITS and then never answers ('hang-after') is aborted at its timeout
+  // and read back — our own body: saved, quietly. A pull whose version list
+  // never answers ('hang', nothing applied) fails as a read (no adoption, no
+  // removal), and the next pull runs.
+  await run("SE68", async () => {
+    const t = mkTable(seedRows(3));
+    const A = mkSession(t, { timeouts: { read: 150, write: 150 } }), B = mkSession(t, { token: "TOK_B", user: "user-b" });
+    await A.engine.load(); await B.engine.load();
+    t.control.fail({ method: "PATCH", week: W[0], kind: "hang-after", count: 1 });
+    A.edit(W[0], w => (w.dayCall = "x", w));
+    const r = await A.engine.push();
+    const p = t.log.find(e => e.method === "PATCH");
+    check("SE68 A5 a PATCH that commits and then NEVER answers: aborted at its timeout, read back, found to hold what's on screen → saved (no conflict, no toast, nothing pending)",
+      r.ok && !!p && p.injected === "hang-after" && p.applied === true && p.error === "AbortError" && t.get(W[0]).data.dayCall === "x" && A.engine.knownVersion(W[0]) === 4
+        && A.st().pending === 0 && A.st().conflicts.length === 0 && A.toasts.length === 0, JSON.stringify({ r: r.results, p: p && [p.applied, p.error], toasts: A.toasts }));
+    B.edit(W[1], w => (w.dayCall = "peer", w)); await B.engine.push();
+    t.control.fail({ method: "GET", kind: "hang", count: 1 });
+    const shown = clone(A.mirror);
+    const p1 = await A.engine.pull();
+    const after1 = sameData(A.mirror, shown);
+    const p2 = await A.engine.pull();
+    const hung = t.log.find(e => e.injected === "hang");
+    check("SE68 A5 a pull whose GET never answers (nothing applied): aborted at its timeout, a FAILED read — nothing adopted or removed; the next pull runs and adopts the peer's week",
+      p1.ok === false && after1 && !!hung && hung.error === "AbortError" && hung.applied === false && p2.ok === true && A.mirror[W[1]].dayCall === "peer" && Object.keys(A.mirror).length === 3,
+      JSON.stringify({ p1, p2, w1: A.mirror[W[1]].dayCall }));
+  });
+
+  // SE69 — A4: a 404 PGRST205 (the TABLE missing from PostgREST's schema
+  // cache — a deploy mid-migration) is UNKNOWN, not a client error: read back
+  // (which 404s too), the edit kept pending and failing — never "rejected"
+  // (no backoff, no "reload/update the app"), never adopted — and the next
+  // push lands it.
+  await run("SE69", async () => {
+    const t = mkTable(seedRows(2));
+    const A = mkSession(t); await A.engine.load();
+    t.control.fail({ week: W[0], kind: "404-PGRST205", count: 2 }); // the PATCH and its read-back
+    A.edit(W[0], w => (w.dayCall = "s9", w));
+    const r = await A.engine.push();
+    const hits = t.log.filter(e => e.injected === "404-PGRST205").map(e => e.method).join();
+    const kept = !r.ok && A.mirror[W[0]].dayCall === "s9" && A.st().pending === 1 && A.st().failing === 1 && A.st().rejected.length === 0 && A.st().conflicts.length === 0 && A.adopted.length === 0
+      && A.toasts.length === 1 && /^Couldn't save 1 week yet/.test(A.toasts[0]) && !/PGRST205|rejected/.test(A.toasts[0]);
+    await A.engine.push();
+    check("SE69 A4 a 404 PGRST205 on a PATCH → unknown: read back (404 too), kept pending + failing with the edit — not rejected, not adopted, told as 'couldn't save … retrying'; the next push lands it",
+      hits === "PATCH,GET" && kept && t.get(W[0]).data.dayCall === "s9" && A.st().pending === 0, JSON.stringify({ hits, st: A.st(), toasts: A.toasts }));
+  });
+
+  // SE70 — A2: a server that RENDERS updated_at itself (the emulator's
+  // stampUpdatedAt: a trigger, its own clock). The engine's CAS must come from
+  // what the server returned — a response or a read — never the updated_at it
+  // put in the body: repeated edits land, a 504-after-commit is read back as
+  // ours, the keepalive's CAS matches, a pull after our own writes is quiet,
+  // and a third party's change is still a conflict.
+  await run("SE70", async () => {
+    let srv = Date.UTC(2026, 9, 12, 9, 0, 0);
+    const t = createFakeWeeksTable({ baseUrl: BASE, anonKey: "ANON", users: { TOK_A: "user-a", TOK_B: "user-b" }, rows: seedRows(3), clock: () => new Date(srv += 7).toISOString(), stampUpdatedAt: true });
+    const A = mkSession(t), B = mkSession(t, { token: "TOK_B", user: "user-b" });
+    await A.engine.load(); await B.engine.load();
+    const rs = [], patches = [];
+    const pc = () => t.log.filter(e => e.method === "PATCH" && e.headers.authorization === "Bearer TOK_A").length;
+    A.edit(W[0], w => (w.dayCall = "e1", w)); rs.push(await A.engine.push()); patches.push(pc());
+    A.edit(W[0], w => (w.dayCall = "e2", w)); rs.push(await A.engine.push()); patches.push(pc());
+    t.control.fail({ method: "PATCH", week: W[0], kind: "5xx-after" });
+    A.edit(W[0], w => (w.dayCall = "e3", w)); rs.push(await A.engine.push()); patches.push(pc());
+    const stamped = /^2026-10-12T09:/.test(t.get(W[0]).updated_at) && Date.parse(t.get(W[0]).updated_at) !== Date.parse(t.log.filter(e => e.method === "PATCH").pop().body.updated_at); // the server's clock, not the body's
+    A.edit(W[0], w => (w.dayCall = "e4", w));
+    const ka = A.engine.keepaliveRequests();
+    for (const x of ka) await t.fetch(x.url, x.init);
+    const kaLanded = t.get(W[0]).data.dayCall === "e4";
+    const from = t.log.length;
+    await A.engine.pull(); await A.engine.idle();
+    const quiet = writes(t, from).length === 0 && A.toasts.length === 0 && A.st().conflicts.length === 0 && A.engine.pending().length === 0;
+    check("SE70 A2 against a server that stamps updated_at itself: three edits in a row land by CAS, ONE PATCH each (the 504-after-commit one read back as ours), the keepalive's CAS matches (v7), and the next pull settles it quietly — no false conflict, no write, nothing pending",
+      stamped && rs.every(x => x.ok) && patches.join() === "1,2,3" && ka.length === 1 && kaLanded && t.get(W[0]).version === 7 && quiet,
+      JSON.stringify({ stamped, patches, rs: rs.map(x => x.results && x.results.map(y => y.outcome)), kaLanded, v: t.get(W[0]).version, toasts: A.toasts, c: A.st().conflicts }));
+    B.edit(W[1], w => (w.dayCall = "peer", w)); await B.engine.push();
+    A.edit(W[1], w => (w.dayCall = "mine", w)); await A.engine.push();
+    check("SE70 …and someone else's change is still a conflict (shown, told once)", A.mirror[W[1]].dayCall === "peer" && t.get(W[1]).data.dayCall === "peer" && A.st().conflicts.length === 1 && A.toasts.length === 1);
+  });
+
+  // SE71 — A2 / 2.11, the emulator's old build (t.oldBuild): its keepalive
+  // re-sends a week UNCHANGED under an edit here (version kept, updated_at
+  // moved) — the data this edit was made on, so not a conflict: one 0-row
+  // PATCH, a read-back, the new token, and the edit lands. (SE42: different
+  // data → a conflict.) Its unversioned DELETE of a week edited here is
+  // someone else's change: shown, told, never re-inserted.
+  await run("SE71", async () => {
+    const t = mkTable(seedRows(2));
+    const A = mkSession(t); await A.engine.load();
+    A.edit(W[0], w => (w.dayCall = "mine", w));
+    await t.oldBuild("TOK_B", "user-b").upsert({ [W[0]]: clone(t.get(W[0]).data) });
+    const moved = t.get(W[0]).version === 3 && t.get(W[0]).updated_at !== "2026-10-01T08:00:00+00:00";
+    const from = t.log.length;
+    const r = await A.engine.push();
+    const ws = writes(t, from);
+    check("SE71 A2 an old build re-sends a week UNCHANGED under an unsaved edit → not a conflict: a 0-row CAS PATCH, a read-back, the token refreshed, the edit lands at v4 — no toast, no conflict entry, nothing adopted",
+      moved && r.ok && ws.length === 2 && ws.every(e => e.method === "PATCH") && ws[0].applied === false && ws[1].applied === true && t.get(W[0]).data.dayCall === "mine" && t.get(W[0]).version === 4
+        && A.toasts.length === 0 && A.st().conflicts.length === 0 && A.adopted.length === 0 && A.engine.pending().length === 0, JSON.stringify({ moved, r: r.results, ws: ws.map(e => [e.method, e.applied]), toasts: A.toasts }));
+    const t2 = mkTable(seedRows(3));
+    const C = mkSession(t2); await C.engine.load();
+    C.edit(W[1], w => (w.dayCall = "mine", w));
+    await t2.oldBuild("TOK_B", "user-b").remove(W[1]);
+    const from2 = t2.log.length;
+    await C.engine.push(); await C.engine.push();
+    check("SE71 2.11 an old build's unversioned DELETE of a week edited here → someone else's change: the deletion is shown (one toast, a conflict entry), and the week is never re-inserted",
+      !(W[1] in C.mirror) && !t2.get(W[1]) && C.toasts.length === 1 && /changed by someone else/.test(C.toasts[0]) && C.st().conflicts.length === 1 && writes(t2, from2).every(e => e.method !== "POST") && C.engine.pending().length === 0,
+      JSON.stringify({ shown: Object.keys(C.mirror), toasts: C.toasts, w: writes(t2, from2).map(e => e.method) }));
+  });
+
+  // SE72 — A9 / A2, the keepalive against a delete + re-insert (the
+  // emulator's t.recreate). (i) A keepalive PATCH at v1 that stalls and is
+  // released after the week was deleted and re-created AT v1 elsewhere matches
+  // 0 rows (its updated_at tells the rows apart). (ii) A keepalive built while
+  // a brand-new week was unsaved, arriving late — after the chain's POST 201
+  // and its DELETE version=eq.1 — must not resurrect it: there is no keepalive
+  // for a week the table doesn't have (never an insert).
+  await run("SE72", async () => {
+    const t = mkTable(seedRows(2, 1));
+    const A = mkSession(t); await A.engine.load();
+    A.edit(W[0], w => (w.dayCall = "unload-edit", w));
+    const reqs = A.engine.keepaliveRequests();
+    const hold = t.control.pause({ method: "PATCH", week: W[0], count: 1 });
+    const pk = Promise.all(reqs.map(x => t.fetch(x.url, x.init)));
+    await Promise.race([hold.arrived, pk]); // (a keepalive that isn't a PATCH isn't held — it answers at once)
+    await t.recreate("TOK_B", W[0], wk("regenerated"), { by: "user-b" });
+    hold.release(); await pk;
+    const ka = t.log.find(e => e.method === "PATCH" && e.headers.authorization === "Bearer TOK_A");
+    check("SE72 A2/A9 a stalled keepalive PATCH at v1, released after the week was deleted and re-created AT v1 elsewhere → 0 rows: the re-created week stands",
+      reqs.length === 1 && /version=eq\.1&updated_at=eq\./.test(reqs[0].url) && !!ka && ka.applied === false && t.get(W[0]).version === 1 && t.get(W[0]).data.dayCall === "regenerated",
+      JSON.stringify({ reqs: reqs.map(x => x.url.split("?")[1]), applied: ka && ka.applied, row: t.get(W[0]) }));
+    await A.engine.pull(); await A.engine.idle();
+    check("SE72 …and when the page survives, the next pull + push settle it as someone else's change (the re-created week shown, one conflict) — the keepalive's body isn't taken for theirs or ours",
+      A.mirror[W[0]].dayCall === "regenerated" && A.st().conflicts.length === 1 && A.engine.pending().length === 0, JSON.stringify({ shown: A.mirror[W[0]].dayCall, c: A.st().conflicts }));
+    const t2 = mkTable(seedRows(1));
+    const B = mkSession(t2); await B.engine.load();
+    B.edit(W[4], () => wk("brand-new"));
+    const late = B.engine.keepaliveRequests();          // pagehide while the new week is still unsaved: the radio holds whatever it sends
+    await B.engine.push();                                // the page survived: the chain's POST 201
+    B.drop(W[4]); await B.engine.push();                  // …and the user deletes it again: DELETE version=eq.1
+    const del = t2.log.find(e => e.method === "DELETE");
+    for (const x of late) await t2.fetch(x.url, x.init); // the stalled keepalive arrives now
+    await B.engine.pull();
+    check("SE72 A9 a brand-new week: no keepalive is built for it (never an insert), so nothing arriving late can resurrect it after the chain's POST 201 and DELETE version=eq.1 — the table and the screen stay without it",
+      late.length === 0 && !!del && /version=eq\.1&updated_at=eq\./.test(del.url) && del.applied === true && !t2.get(W[4]) && !(W[4] in B.mirror),
+      JSON.stringify({ late: late.map(x => x.init.method + " " + x.url.split("?")[1]), row: t2.get(W[4]) }));
+  });
+
+  // SE-I — no scenario above produced an internal error, a caught callback
+  // error, or console output from the engine (A17(c)).
+  check("SE-I no internal (non-network) error, no caught callback error, and no console output from the engine in any scenario",
+    internal.length === 0 && caught.length === 0 && engineConsole.length === 0, internal.concat(caught, engineConsole).slice(0, 3).join(" | "));
+}
+
+// ══ SE-X. The app's code around the engine, EXECUTED (A17(b)) ══
+// The REAL component slices — undoLastChange, the unload handler (hide /
+// pagehide / beforeunload), the schedule load effect, both swaps, trade
+// accept, the week editor's save, Accept & Publish — sliced from
+// index-source.html by their anchors and run in a FRESH context (a free
+// identifier throws), wired to the app's OWN engine construction (the bridge
+// through createSchedSync({…}), so the engine's toasts, internal errors and
+// logs go where the app sends them), the real engine, the emulated table, and
+// helpers.js / config.js's real helpers. Every request, toast, console.error
+// and caught callback error is recorded; each run fails on an unexpected one
+// (SE-X-I) and carries a positive control proving the write it expects. The
+// battery's `app` mutants (X1–X10) are killed here.
+let HELPERS = null;
+const appHelpers = () => {
+  if (HELPERS) return HELPERS;
+  const g = { console: { log() {}, warn() {}, error() {}, info() {} }, window: {}, document: undefined, navigator: { userAgent: "node-test" }, setTimeout, clearTimeout,
+    localStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {} }, fetch: () => { throw new Error("the helpers' context has no network"); } };
+  g.globalThis = g;
+  vm.createContext(g);
+  for (const f of ["helpers.js", "config.js"]) vm.runInContext(fs.readFileSync(path.join(__dirname, "..", f), "utf8"), g, { filename: f });
+  HELPERS = vm.runInContext("({ fmt, parse, addD, shiftStartDate, SHIFT_LABELS, swapMsg, cascadeMsg, tradeAcceptMsg, MO })", g);
+  return HELPERS;
+};
+
+async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
+  const nsrc = src.replace(/\r\n/g, "\n");
+  // The text after `start` (exactly one occurrence) up to the first `end` after it.
+  const after = (start, end) => { const i = nsrc.indexOf(start); if (i < 0 || nsrc.indexOf(start, i + 1) !== -1) return null; const e = nsrc.indexOf(end, i + start.length); return e < 0 ? null : nsrc.slice(i + start.length, e); };
+  const xcon = []; // app code that reaches the context's global console (it named `console` freely)
+  const xctx = vm.createContext({ console: recConsole(xcon) });
+  const fnX = (names, code) => { if (code === null) return null; try { return vm.runInContext(`(function (env) { const { ${names} } = env; return (${code}); })`, xctx); } catch (ex) { return null; } };
+  const wrap = (head, body, tail) => (body === null ? null : head + body + tail);
+  const HX = appHelpers();
+  const F = {
+    wire: fnX("isPublicMode, userProfile, showToast, setEditWeekModal, swapSuggestions, swapTarget, setSwapSuggestions, setSwapTarget, schedSyncBridgeRef, useRef, createSchedSync, scheduleRef, commitSchedule, fetch, SUPABASE_URL, dbAuthHeaders, dbReadHeaders, dbHeaders, auth, setSchedSync, console",
+      wrap("(() => { schedSyncBridgeRef.current = { canWrite:", after("  schedSyncBridgeRef.current = { canWrite:", "\n\n  // The edit gates"), "\n  return schedSyncRef; })()")),
+    gate: fnX("schedSyncRef, showToast, setReauthNeeded", wrap("() => {", after("  const schedEditable = () => {", "\n  };\n"), "\n  }")),
+    pushUndo: fnX("scheduleRef, schedSyncRef, setScheduleHistory", wrap("(counts) => {", after("  const pushUndo = useCallback((counts) => {", "\n  }, []);"), "\n  }")),
+    update: fnX("scheduleRef, commitSchedule", wrap("(fn) => {", after("  const updateSchedule = useCallback((fn) => {", "\n  }, [commitSchedule]);"), "\n  }")),
+    undo: fnX("scheduleHistory, schedEditable, schedSyncRef, showToast, commitSchedule, setPriorCounts, setYear1Counts, setScheduleHistory", wrap("() => {", after("  const undoLastChange = () => {", "\n  };\n"), "\n  }")),
+    unload: fnX("isPublicMode, dayOffDirtyRef, dayOffSaveTimerRef, clearTimeout, dayOffEnqueueRef, console, schedSyncRef, fetch, document, window",
+      wrap("() => {\n    // (The blob keepalive is gone", after("  useEffect(() => {\n    // (The blob keepalive is gone", "\n  }, []);"), "\n  }")),
+    load: fnX("loadFailedRef, supabase, lastSyncRef, setSurgeons, setApps, USE_TIME_OFF, setVacations, setNoCallDays, setBackupMondaySet, setFierceBackupSet, setAppShifts, setPriorCounts, setYear1Counts, setStartMonth, setStartYear, setNumWeeks, setStartMondayOverride, setHolidayAssignments, setPendingLocks, setSilvisRule, sfRule, setDismissedWarnings, everHadRealDataRef, setEdgeFunctionUrl, console, setAppShiftsLoaded, appOffVisible, adoptDayOffRow, db, setVacRequests, setTradeRequests, setNotifications, showToast, schedSyncRef, scheduleRef, loadTimeOff, loadSilvisFeed, refreshSilvisFeed, setLoaded, loadedAtRef, getSupabaseRT, window, setTimeout, setInterval, clearInterval",
+      wrap("() => {", after("  // ─── Supabase: Load on mount + real-time sync ───\n  useEffect(() => {", "\n  }, [reloadTrigger]);"), "\n  }")),
+    swapOne: fnX("fmt, shiftStartDate, swapMsg, SHIFT_LABELS, schedEditable, schedule, scheduleRef, showToast, silvisActive, silvisBlock, silvisRefuse, pushUndo, updateSchedule, surgeons, setEditShift, setEditingWeek, setSwapSuggestions, setSwapTarget, sMap, schedulerAdminIds, addNotification, sendEmailNotif",
+      wrap("", after("  const swapShift = ", "\n  };\n"), "\n  }")),
+    swapTwo: fnX("fmt, shiftStartDate, swapMsg, SHIFT_LABELS, schedEditable, schedule, scheduleRef, showToast, silvisActive, silvisBlock, silvisRefuse, pushUndo, updateSchedule, surgeons, setEditShift, setEditingWeek, setSwapSuggestions, setSwapTarget, sMap, schedulerAdminIds, addNotification, sendEmailNotif",
+      wrap("", after("  const executeTwoWaySwap = useCallback(", "\n  }, [surgeons, sMap, addNotification, sendEmailNotif, schedulerAdminIds, silvisActive, silvisBlock, silvisRefuse]);"), "\n  }")),
+    accept: fnX("fmt, shiftStartDate, showToast, schedEditable, scheduleRef, detectCascadeChanges, surgeons, silvisActive, silvisBlock, silvisRefuse, confirm, fetch, SUPABASE_URL, dbAuthHeaders, console, setTradeRequests, tradeAcceptMsg, logAudit, pushUndo, updateSchedule, addNotification, sendEmailNotif, SHIFT_LABELS, schedulerAdminIds, cascadeMsg, schedule",
+      wrap("async (req) => {", after("  const acceptTradeRequest = useCallback(async (req) => {", "\n  }, [schedule, surgeons, pushUndo, addNotification, sendEmailNotif, detectCascadeChanges, schedulerAdminIds, silvisActive, silvisBlock, silvisRefuse]);"), "\n  }")),
+    cascades: fnX("surgeons, SHIFT_LABELS", wrap("(sched, req) => {", after("  const detectCascadeChanges = useCallback((sched, req) => {", "\n  }, [surgeons]);"), "\n  }")),
+    openEditor: fnX("scheduleRef, parse, addD, fmt, appShifts, appShiftsLoaded, setEditWeekModal, schedSyncRef", wrap("(mondayStr) => {", after("  const openWeekEditor = useCallback((mondayStr) => {", "\n  }, [appShifts, appShiftsLoaded]);"), "\n  }")),
+    saveEditor: fnX("editWeekModal, schedule, appShifts, appShiftsLoaded, openWeekEditor, setEditWeekModal, silvisActive, silvisFakId, silvisDays, silvisBlock, silvisRefuse, sfSlotDays, confirm, pushUndo, updateSchedule, scheduleRef, schedEditable, schedSyncRef, mergeEditorEdits, SHIFT_LABELS, backupMondaySet, fierceBackupSet, surgeons, showToast, APP_SHIFTS_NOT_LOADED, setAppShifts, saveAppShifts, logAudit, nameOf, aMap, sMap, schedulerAdminIds, addNotification, sendEmailNotif, setTimeout",
+      wrap("(openAfter) => {", after("  const saveWeekEdits = useCallback((openAfter) => {", "\n  }, [editWeekModal,"), "\n  }")),
+    acceptPreview: fnX("publishSearchRunning, showToast, cancelSearch, previewSchedule, previewNeedsOk, previewAck, publishingRef, schedEditable, schedSyncRef, previewEpochRef, previewOrigin, startMonth, startYear, numWeeks, setPublishing, setSaveStatus, snapshots, previewSchedRef, publishWeeks, MO, runPublish, setPreviewSchedule, setShowPreview, setCalMonth, setCalYear, setView, setTimeout, publishNotLanded",
+      wrap("async () => {", after("  const acceptPreview = async () => {", "\n  };\n"), "\n  }")),
+    notLanded: fnX("showToast", wrap("(pr, what) => {", after("  const publishNotLanded = (pr, what) => {", "\n  };\n"), "\n  }")),
+    runPublish: fnX("schedSyncRef", after("  const runPublish = ", ";\n")),
+  };
+  const missing = Object.keys(F).filter(k => typeof F[k] !== "function");
+  check("SE-X the component slices are extractable by their anchors and compile in a fresh context", missing.length === 0, missing.join(", "));
+  if (missing.length) return;
+
+  // ── fixtures ──
+  const X = ["2030-01-07", "2030-01-14", "2030-01-21", "2030-01-28"], XNEW = "2030-02-11";
+  const wkX = (dc, n, off) => ({ dayCall: dc, nights: { mon: n[0], tue: n[1], wed: n[2], thu: n[3], wknd: n[4] }, off: off || "s7" });
+  // (X0–X2: the trade fixture of sync-guards SE-K — this trade cascades both Tue nights)
+  const ROWS = () => [wkX("s1", ["s3", "s2", "s4", "s5", "s6"]), wkX("s2", ["s4", "s1", "s3", "s5", "s6"]), wkX("s5", ["s1", "s2", "s3", "s4", "s6"]), wkX("s6", ["s1", "s2", "s3", "s4", "s5"])]
+    .map((data, i) => ({ week_monday: X[i], data, version: 3, updated_by: "s1", updated_at: "2026-10-01T08:00:00.000Z" }));
+  const S7 = ["AAA", "BBB", "CCC", "DDD", "EEE", "FFF", "GGG"].map((name, i) => ({ id: "s" + (i + 1), name }));
+  const S7MAP = S7.reduce((m, s) => (m[s.id] = s, m), {});
+  let xms = Date.UTC(2026, 9, 14, 12, 0, 0);
+  const mkT = () => createFakeWeeksTable({ baseUrl: BASE, anonKey: "ANON", users: { TOK_A: "user-a", TOK_B: "user-b" }, rows: ROWS(), clock: () => new Date(xms += 1000).toISOString() });
+  const writesOf = (t, from, tok) => t.log.slice(from || 0).filter(e => e.method !== "GET" && (!tok || e.headers.authorization === "Bearer " + tok));
+  const sortDeep = (x) => Array.isArray(x) ? x.map(sortDeep) : (x && typeof x === "object") ? Object.keys(x).sort().reduce((o, k) => (o[k] = sortDeep(x[k]), o), {}) : x;
+  const same = (a, b) => JSON.stringify(sortDeep(a)) === JSON.stringify(sortDeep(b));
+  const tableOf = (t) => t.rows().reduce((o, r) => (o[r.week_monday] = r.data, o), {});
+  const apps = [];
+  // One app session: the mirror and its one writer, the undo history, ONE
+  // toast slot (the engine's onToast is the app's showToast, as wired), the
+  // app's own engine construction, the real gate / pushUndo / updateSchedule.
+  const mkApp = (t, o = {}) => {
+    const a = { t, token: o.token || "TOK_A", toasts: [], errors: [], warns: [], history: [], ref: { current: {} }, modal: null, sync: null, reauth: 0, sug: null, target: null };
+    const text = (x) => x.map(v => (v && v.stack ? String(v.message) : String(v))).join(" ");
+    a.console = { error: (...x) => a.errors.push(text(x)), warn: (...x) => a.warns.push(text(x)), log: () => {}, info: () => {} };
+    a.commitSchedule = (n) => { a.ref.current = n; };
+    a.showToast = (m, tone) => a.toasts.push([String(m), tone || "info"]);
+    a.setModal = (x) => { a.modal = typeof x === "function" ? x(a.modal) : x; };
+    const hdr = () => ({ apikey: "ANON", Authorization: "Bearer " + (a.token || "ANON") });
+    const engRef = { current: null };
+    a.bridge = { current: null };
+    a.schedSyncRef = F.wire({ isPublicMode: false, userProfile: { person_id: o.person || "s1" }, showToast: a.showToast, setEditWeekModal: a.setModal,
+      swapSuggestions: null, swapTarget: null, setSwapSuggestions: (v) => { a.sug = v; }, setSwapTarget: (v) => { a.target = v; },
+      schedSyncBridgeRef: a.bridge, useRef: () => engRef, createSchedSync, scheduleRef: a.ref, commitSchedule: a.commitSchedule, fetch: (u, i) => t.fetch(u, i), SUPABASE_URL: BASE,
+      dbAuthHeaders: hdr, dbReadHeaders: hdr, dbHeaders: { apikey: "ANON", Authorization: "Bearer ANON", "Content-Type": "application/json" },
+      auth: { getSession: () => (a.token ? { access_token: a.token } : null) }, setSchedSync: (f) => { a.sync = typeof f === "function" ? f(a.sync) : f; }, console: a.console });
+    a.eng = a.schedSyncRef.current;
+    a.schedEditable = F.gate({ schedSyncRef: a.schedSyncRef, showToast: a.showToast, setReauthNeeded: () => { a.reauth++; } });
+    a.setScheduleHistory = (f) => { a.history = typeof f === "function" ? f(a.history) : f; };
+    a.pushUndo = F.pushUndo({ scheduleRef: a.ref, schedSyncRef: a.schedSyncRef, setScheduleHistory: a.setScheduleHistory });
+    a.updateSchedule = F.update({ scheduleRef: a.ref, commitSchedule: a.commitSchedule });
+    a.edit = (k, f) => a.updateSchedule(p => Object.assign({}, p, { [k]: f(JSON.parse(JSON.stringify(p[k] || {}))) }));
+    a.settle = async () => { for (let i = 0; i < 4; i++) await a.eng.idle(); };
+    a.unexpected = () => a.errors.concat(a.warns.filter(w => / threw /.test(w)));
+    apps.push(a);
+    return a;
+  };
+  const pair = async () => { const t = mkT(), A = mkApp(t), P = mkApp(t, { token: "TOK_B", person: "s2" }); await A.eng.load(); await P.eng.load(); return { t, A, P }; };
+  const run = async (name, fn) => {
+    let timer;
+    const timeout = new Promise((_, rej) => { timer = setTimeout(() => rej(new Error("timed out after 10 s (a request never settled)")), 10000); });
+    try { await Promise.race([fn(), timeout]); }
+    catch (ex) { check(name + " (scenario crashed)", false, String(ex && ex.stack || ex).split("\n").slice(0, 3).join(" | ")); }
+    finally { clearTimeout(timer); }
+  };
+
+  // SE-X1 — the REAL undoLastChange (with the real pushUndo / gate): Undo is
+  // all-or-nothing. Control: it reverts a landed edit by CAS. A week the Undo
+  // would revert that someone else changed since the step was taken (adopted
+  // by a pull) → refused whole: zero writes to it (or anything), and one toast
+  // naming it. An adoption that changed nothing on screen doesn't block it.
+  await run("SE-X1", async () => {
+    const { t, A, P } = await pair();
+    const undo = () => F.undo({ scheduleHistory: A.history, schedEditable: A.schedEditable, schedSyncRef: A.schedSyncRef, showToast: A.showToast, commitSchedule: A.commitSchedule,
+      setPriorCounts: () => {}, setYear1Counts: () => {}, setScheduleHistory: A.setScheduleHistory })(); // re-rendered: it reads this render's history
+    const orig = tableOf(t);
+    A.pushUndo(); A.edit(X[0], w => (w.dayCall = "s7", w)); A.edit(X[1], w => (w.dayCall = "s7", w)); await A.eng.push();
+    const from0 = t.log.length;
+    undo(); await A.eng.push();
+    const w0 = writesOf(t, from0, "TOK_A");
+    check("SE-X1 the real undoLastChange, control: Undo of a landed two-week edit puts both back on the table by CAS (two PATCHes at v4), the step used up, no toast",
+      w0.length === 2 && w0.every(e => e.method === "PATCH" && /version=eq\.4&updated_at=eq\./.test(e.url) && e.status === 200) && same(tableOf(t), orig) && A.history.length === 0 && A.toasts.length === 0,
+      JSON.stringify({ w0: w0.map(e => e.method + " " + e.url.split("?")[1] + " " + e.status), h: A.history.length, toasts: A.toasts }));
+    A.pushUndo(); A.edit(X[0], w => (w.dayCall = "s6", w)); A.edit(X[1], w => (w.dayCall = "s6", w)); await A.eng.push();
+    await P.eng.pull(); P.edit(X[1], w => (w.nights.tue = "s5", w)); await P.eng.push();
+    await A.eng.pull();
+    const adopted = A.ref.current[X[1]].nights.tue === "s5", shown = JSON.parse(JSON.stringify(A.ref.current)), from1 = t.log.length;
+    undo(); await A.eng.push(); await A.settle();
+    const w1 = writesOf(t, from1, "TOK_A");
+    check("SE-X1 adopt, then Undo: someone else's change to a week the Undo would revert was adopted after the step → refused WHOLE — zero writes (none to the adopted week), the screen and the step untouched, ONE toast naming that week",
+      adopted && w1.length === 0 && same(A.ref.current, shown) && A.history.length === 1 && t.get(X[1]).data.nights.tue === "s5" && t.get(X[0]).data.dayCall === "s6"
+        && A.toasts.length === 1 && A.toasts[0][1] === "error" && A.toasts[0][0] === `Can't undo — the week of ${X[1]} was changed by someone else since. Nothing was changed.`,
+      JSON.stringify({ adopted, w1: w1.map(e => e.method + " " + e.url), toasts: A.toasts, h: A.history.length }));
+    A.history = []; A.toasts.length = 0;
+    A.pushUndo(); A.edit(X[0], w => (w.dayCall = "s5", w)); await A.eng.push();
+    await t.oldBuild("TOK_B", "s2").upsert({ [X[3]]: JSON.parse(JSON.stringify(t.get(X[3]).data)) }); // X3 re-saved elsewhere, unchanged
+    await A.eng.pull();
+    const from2 = t.log.length;
+    undo(); await A.eng.push();
+    const w2 = writesOf(t, from2, "TOK_A");
+    check("SE-X1 …an adoption that changed nothing on screen (X3 re-saved elsewhere unchanged) doesn't block it: the edit is undone (one PATCH, X1's week), zero writes to the re-saved week, no toast",
+      w2.length === 1 && w2[0].url.includes(X[0]) && t.get(X[0]).data.dayCall === "s6" && A.history.length === 0 && A.toasts.length === 0,
+      JSON.stringify({ w2: w2.map(e => e.method + " " + e.url), toasts: A.toasts }));
+  });
+
+  // SE-X2 — the REAL unload handler (its []-deps effect, with the real
+  // engine): hide pushes through the chain (no keepalive side-write);
+  // pagehide sends CAS keepalive PATCHes that land (control); after a
+  // confirmed save, or a conflict, it changes 0 rows; beforeunload asks only
+  // while weeks are unsaved; never an insert or a delete; nothing in a public view.
+  await run("SE-X2", async () => {
+    const { t, A, P } = await pair();
+    const rig = (o = {}) => {
+      const on = {}, ka = [];
+      const doc = { hidden: false, addEventListener: (ev, f) => { on["doc:" + ev] = f; }, removeEventListener: () => {} };
+      const win = { addEventListener: (ev, f) => { on["win:" + ev] = f; }, removeEventListener: () => {} };
+      F.unload({ isPublicMode: !!o.pub, dayOffDirtyRef: { current: false }, dayOffSaveTimerRef: { current: null }, clearTimeout, dayOffEnqueueRef: { current: () => {} }, console: A.console,
+        schedSyncRef: A.schedSyncRef, fetch: (u, i) => { const p = t.fetch(u, i); ka.push({ url: String(u), init: i, p }); return p; }, document: doc, window: win })();
+      return { ka,
+        hide: () => { doc.hidden = true; on["doc:visibilitychange"](); doc.hidden = false; },
+        pagehide: () => on["win:pagehide"](),
+        beforeunload: () => { const ev = { prevented: 0, returnValue: undefined, preventDefault() { this.prevented++; } }; on["win:beforeunload"](ev); return ev; },
+        sent: async (n0) => { const xs = ka.slice(n0); await Promise.all(xs.map(x => x.p.catch(() => {}))); return xs; } };
+    };
+    const U = rig();
+    const rowsNow = () => JSON.stringify(t.rows());
+    const isKa = (x) => x.init && x.init.keepalive === true && x.init.method === "PATCH" && /version=eq\.\d+&updated_at=eq\./.test(x.url) && /return=minimal/.test(x.init.headers.Prefer || "");
+    // (a) hide: through the chain
+    A.edit(X[0], w => (w.dayCall = "s7", w));
+    let from = t.log.length;
+    U.hide(); await A.settle();
+    const hideW = writesOf(t, from, "TOK_A");
+    check("SE-X2 the real unload handler, HIDE (visibilitychange → hidden): no keepalive side-write — the unsaved week goes out through the engine's chain (a CAS PATCH with return=representation) and lands",
+      U.ka.length === 0 && hideW.length === 1 && hideW[0].method === "PATCH" && /return=representation/.test(hideW[0].headers.prefer || "") && t.get(X[0]).data.dayCall === "s7",
+      JSON.stringify({ ka: U.ka.length, w: hideW.map(e => e.method + " " + (e.headers.prefer || "")) }));
+    // (b) pagehide: the CAS keepalive lands (control)
+    A.edit(X[1], w => (w.dayCall = "s7", w));
+    let n0 = U.ka.length; U.pagehide();
+    const kb = await U.sent(n0), eb = t.log[t.log.length - 1];
+    check("SE-X2 PAGEHIDE (control): one keepalive — a PATCH with keepalive:true, the CAS (version, updated_at) and return=minimal — and it changes the row (1 row)",
+      kb.length === 1 && isKa(kb[0]) && eb.method === "PATCH" && eb.applied === true && t.get(X[1]).data.dayCall === "s7", JSON.stringify(kb.map(x => [x.init.method, x.init.keepalive, x.url.split("?")[1]])));
+    // (c) after a confirmed save: 0 rows changed
+    await A.eng.push();               // the page survived: the keepalive's body is confirmed as ours
+    A.edit(X[2], w => (w.dayCall = "s7", w)); await A.eng.push();
+    const before = rowsNow(); n0 = U.ka.length; U.pagehide();
+    const kc = await U.sent(n0);
+    check("SE-X2 …after the saves are CONFIRMED: pagehide sends nothing — 0 rows changed", kc.length === 0 && rowsNow() === before && A.eng.pending().length === 0, JSON.stringify(kc.map(x => x.url)));
+    // (d) a conflict not yet seen: the keepalive's CAS matches nothing
+    await P.eng.pull(); P.edit(X[3], w => (w.dayCall = "s4", w)); await P.eng.push();
+    A.edit(X[3], w => (w.dayCall = "s7", w));
+    const beforeD = rowsNow(); n0 = U.ka.length; U.pagehide();
+    const kd = await U.sent(n0), ed = t.log[t.log.length - 1];
+    check("SE-X2 …a week someone else changed meanwhile (not yet seen here): pagehide's keepalive carries this session's old CAS — 0 rows changed, their change stands",
+      kd.length === 1 && isKa(kd[0]) && ed.applied === false && rowsNow() === beforeD && t.get(X[3]).data.dayCall === "s4", JSON.stringify({ kd: kd.map(x => x.url.split("?")[1]), applied: ed.applied }));
+    // (e) …the conflict resolved (the page survived; the push met their copy): nothing more
+    await A.eng.push();
+    const resolved = A.ref.current[X[3]].dayCall === "s4" && A.toasts.length === 1 && /changed by someone else/.test(A.toasts[0][0]);
+    const beforeE = rowsNow(); n0 = U.ka.length; U.pagehide();
+    const ke = await U.sent(n0);
+    check("SE-X2 …and after that conflict is settled (their copy shown, one toast): pagehide sends nothing — 0 rows changed", resolved && ke.length === 0 && rowsNow() === beforeE, JSON.stringify({ resolved, toasts: A.toasts, ke: ke.length }));
+    // (f) beforeunload asks only while weeks are unsaved (and still sends the keepalive)
+    A.edit(X[0], w => (w.nights.mon = "s7", w));
+    n0 = U.ka.length; const ev1 = U.beforeunload(); const kf = await U.sent(n0);
+    await A.eng.push();
+    n0 = U.ka.length; const ev2 = U.beforeunload(); const kf2 = await U.sent(n0);
+    check("SE-X2 BEFOREUNLOAD with a week unsaved: the browser is asked to confirm (preventDefault, returnValue '') and the keepalive goes (lands); with nothing unsaved: not asked, nothing sent",
+      ev1.prevented === 1 && ev1.returnValue === "" && kf.length === 1 && isKa(kf[0]) && t.get(X[0]).data.nights.mon === "s7" && ev2.prevented === 0 && ev2.returnValue === undefined && kf2.length === 0,
+      JSON.stringify({ ev1: [ev1.prevented, ev1.returnValue], kf: kf.length, ev2: [ev2.prevented, ev2.returnValue], kf2: kf2.length }));
+    // (g) never an insert, never a delete
+    A.edit(XNEW, () => wkX("s3", ["s1", "s2", "s4", "s5", "s6"]));
+    A.updateSchedule(p => { const n = Object.assign({}, p); delete n[X[2]]; return n; });
+    const beforeG = rowsNow(); n0 = U.ka.length; U.pagehide();
+    const kg = await U.sent(n0);
+    check("SE-X2 …a brand-new week and a deleted one: pagehide sends NO insert and NO delete (both wait for the chain) — 0 rows changed",
+      kg.length === 0 && rowsNow() === beforeG && !!t.get(X[2]) && !t.get(XNEW), JSON.stringify(kg.map(x => x.init.method + " " + x.url)));
+    await A.eng.push();
+    // (h) a public / OR-board view: nothing, on any event
+    const Pub = rig({ pub: true });
+    A.edit(X[1], w => (w.nights.wed = "s7", w));
+    from = t.log.length;
+    Pub.hide(); Pub.pagehide(); const evp = Pub.beforeunload(); await A.settle();
+    check("SE-X2 …a public / OR-board view: no keepalive, no push, never asks — on hide, pagehide or beforeunload",
+      Pub.ka.length === 0 && writesOf(t, from).length === 0 && evp.prevented === 0, JSON.stringify({ ka: Pub.ka.length, w: writesOf(t, from).length }));
+  });
+
+  // SE-X3 — the REAL schedule load effect (the [reloadTrigger] effect, the
+  // blob reads stubbed), the real gate: the schedule is seeded before the app
+  // says it has loaded, and edits are refused until the first table read
+  // succeeds; a failed read leaves the engine unloaded and the 60-s poll
+  // repairs it; a second pass (sign-in) is a pull — an edit made in between
+  // survives and is sent.
+  await run("SE-X3", async () => {
+    const rig = (a) => {
+      const r = { order: [], polls: [], ever: { current: false } };
+      let done; r.loaded = new Promise(res => { done = res; });
+      const noop = () => {};
+      const single = async () => ({ data: null, error: null });
+      F.load({ loadFailedRef: { current: false }, supabase: { from: () => ({ select: () => ({ eq: () => ({ single }) }) }) }, lastSyncRef: { current: null },
+        setSurgeons: noop, setApps: noop, USE_TIME_OFF: true, setVacations: noop, setNoCallDays: noop, setBackupMondaySet: noop, setFierceBackupSet: noop, setAppShifts: noop, setPriorCounts: noop, setYear1Counts: noop,
+        setStartMonth: noop, setStartYear: noop, setNumWeeks: noop, setStartMondayOverride: noop, setHolidayAssignments: noop, setPendingLocks: noop, setSilvisRule: noop, sfRule: (x) => x, setDismissedWarnings: noop,
+        everHadRealDataRef: r.ever, setEdgeFunctionUrl: noop, console: a.console, setAppShiftsLoaded: noop, appOffVisible: false, adoptDayOffRow: noop, db: { query: async () => [] },
+        setVacRequests: noop, setTradeRequests: noop, setNotifications: noop, showToast: a.showToast, schedSyncRef: a.schedSyncRef, scheduleRef: a.ref,
+        loadTimeOff: async () => { r.order.push("timeoff"); }, loadSilvisFeed: async () => {}, refreshSilvisFeed: noop,
+        setLoaded: (v) => { r.order.push("loaded:" + v + ":" + (a.eng.isSeeded() ? "seeded" : "unseeded") + ":" + Object.keys(a.ref.current).length); done(); },
+        loadedAtRef: { current: 0 }, getSupabaseRT: () => null, window: { addEventListener: noop, removeEventListener: noop }, setTimeout: () => 0,
+        setInterval: (f) => { r.polls.push(f); return r.polls.length; }, clearInterval: noop })();
+      return r;
+    };
+    const NOT_LOADED = /^The schedule hasn't loaded yet — nothing was changed\./;
+    // (a) the first read fails
+    const t = mkT(), A = mkApp(t);
+    t.control.fail({ method: "GET", kind: "5xx-before", count: 1 });
+    const L = rig(A); await L.loaded; await A.settle();
+    const gate1 = A.schedEditable(), toasts1 = A.toasts.slice(), w1 = writesOf(t, 0).length;
+    check("SE-X3 the real load effect, the schedule read FAILS: the app still finishes loading (after the engine answered), the engine is unloaded, and the edit gate refuses — 'hasn't loaded yet', nothing written; nothing armed as real data",
+      L.order.join() === "timeoff,loaded:true:unseeded:0" && !A.eng.isSeeded() && gate1 === false && toasts1.length === 1 && NOT_LOADED.test(toasts1[0][0]) && w1 === 0 && L.ever.current === false,
+      JSON.stringify({ order: L.order, gate1, toasts1 }));
+    await L.polls[0](); await A.settle();
+    const gate2 = A.schedEditable();
+    A.edit(X[0], w => (w.dayCall = "s7", w)); await A.eng.push();
+    check("SE-X3 …the effect's 60-s poll repairs it: the table is read and seeded, the gate opens, and an edit then lands by CAS (control)",
+      L.polls.length === 1 && A.eng.isSeeded() && gate2 === true && t.get(X[0]).data.dayCall === "s7" && t.get(X[0]).version === 4 && A.toasts.length === 1, JSON.stringify({ gate2, toasts: A.toasts }));
+    // (b) gated during the load; seeded before "loaded"
+    const t2 = mkT(), B = mkApp(t2);
+    const hold = t2.control.pause({ method: "GET", count: 1 });
+    const L2 = rig(B); await hold.arrived; await null;
+    const during = { gate: B.schedEditable(), order: L2.order.slice(), shown: Object.keys(B.ref.current).length };
+    hold.release(); await L2.loaded; await B.settle();
+    check("SE-X3 the schedule read still OUT: not loaded yet and the gate refuses; once it lands the mirror is seeded (= the table) BEFORE the app says loaded, real data armed, the gate opens",
+      during.gate === false && during.order.length === 0 && during.shown === 0 && L2.order.join() === "timeoff,loaded:true:seeded:4" && same(B.ref.current, tableOf(t2)) && L2.ever.current === true && B.schedEditable() === true,
+      JSON.stringify({ during, order: L2.order }));
+    // (c) a second pass: an edit made in between survives and is sent; a peer's change arrives
+    B.edit(X[0], w => (w.nights.thu = "s7", w));
+    const Q = mkApp(t2, { token: "TOK_B", person: "s2" }); await Q.eng.load(); Q.edit(X[1], w => (w.nights.wed = "s7", w)); await Q.eng.push();
+    const L3 = rig(B); await L3.loaded; await B.settle();
+    check("SE-X3 a SECOND pass (sign-in, reloadTrigger): a pull, not a re-seed — the edit made in between stays on screen and lands; the peer's change to another week arrives; nothing pending",
+      L3.order.join() === "timeoff,loaded:true:seeded:4" && B.ref.current[X[0]].nights.thu === "s7" && t2.get(X[0]).data.nights.thu === "s7" && B.ref.current[X[1]].nights.wed === "s7" && B.eng.pending().length === 0,
+      JSON.stringify({ order: L3.order, pending: B.eng.pending() }));
+  });
+
+  // SE-X4 — the REAL executeTwoWaySwap / swapShift on the real engine (A13):
+  // a pull adopts a change to the target's or the return's holder between the
+  // suggestion and the tap → zero writes, zero notices, the refusal toast,
+  // the suggestions closed; the same for a one-way swap from suggestions;
+  // each with its control landing by CAS.
+  await run("SE-X4", async () => {
+    const env = (a, rec) => ({ fmt: HX.fmt, shiftStartDate: HX.shiftStartDate, swapMsg: HX.swapMsg, SHIFT_LABELS: HX.SHIFT_LABELS, schedEditable: a.schedEditable, schedule: {}, scheduleRef: a.ref, showToast: a.showToast,
+      silvisActive: false, silvisBlock: () => null, silvisRefuse: () => false, pushUndo: a.pushUndo, updateSchedule: a.updateSchedule, surgeons: S7, setEditShift: () => {}, setEditingWeek: () => {},
+      setSwapSuggestions: (v) => rec.cleared.push("suggestions:" + v), setSwapTarget: (v) => rec.cleared.push("target:" + v), sMap: S7MAP, schedulerAdminIds: ["s7"],
+      addNotification: (type) => { rec.notes.push(type); }, sendEmailNotif: (type) => { rec.emails.push(type); } });
+    const tap = async (two, change) => {
+      const { t, A, P } = await pair();
+      if (change) { await P.eng.pull(); P.edit(change[0], change[1]); await P.eng.push(); await A.eng.pull(); }
+      const rec = { cleared: [], notes: [], emails: [] }, from = t.log.length;
+      if (two) F.swapTwo(env(A, rec))(X[0], "tue", "s2", "s4", X[1], "mon");   // AAA's suggestion: DDD takes BBB's Tue night of X0, BBB takes DDD's Mon night of X1
+      else F.swapOne(env(A, rec))(X[0], "tue", "s6", "s2");                    // a one-way swap from suggestions: FFF takes BBB's Tue night
+      await A.eng.push();
+      return { t, A, rec, w: writesOf(t, from, "TOK_A") };
+    };
+    const refused = (r, re) => r.w.length === 0 && r.rec.notes.length === 0 && r.rec.emails.length === 0 && r.A.history.length === 0 && r.rec.cleared.join() === "suggestions:null,target:null"
+      && r.A.toasts.length === 1 && re.test(r.A.toasts[0][0]);
+    const sh = (r) => JSON.stringify({ w: r.w.map(e => e.method + " " + e.url.split("?")[1]), notes: r.rec.notes, toasts: r.A.toasts, cleared: r.rec.cleared });
+    const tgt = await tap(true, [X[0], w => (w.nights.tue = "s5", w)]), ret = await tap(true, [X[1], w => (w.nights.mon = "s5", w)]), ok2 = await tap(true, null);
+    check("SE-X4 the real executeTwoWaySwap: a pull adopts a change to the TARGET's holder between the suggestion and the tap → refused: zero writes, zero notices / emails, no undo step, the suggestions closed, 'This swap is out of date'",
+      refused(tgt, /^This swap is out of date — those shifts changed/) && tgt.t.get(X[0]).data.nights.tue === "s5", sh(tgt));
+    check("SE-X4 …a change to the RETURN slot's holder → refused the same way", refused(ret, /^This swap is out of date/) && ret.t.get(X[1]).data.nights.mon === "s5", sh(ret));
+    check("SE-X4 …control: unchanged → the swap lands on the table by CAS (two PATCHes at v3), one undo step, the notice and the email",
+      ok2.w.length === 2 && ok2.w.every(e => e.method === "PATCH" && /version=eq\.3/.test(e.url) && e.status === 200) && ok2.t.get(X[0]).data.nights.tue === "s4" && ok2.t.get(X[1]).data.nights.mon === "s2"
+        && ok2.A.history.length === 1 && ok2.rec.notes.join() === "schedule_changed" && ok2.rec.emails.length === 1 && ok2.A.toasts.length === 0, sh(ok2));
+    const one = await tap(false, [X[0], w => (w.nights.tue = "s5", w)]), ok1 = await tap(false, null);
+    check("SE-X4 the real swapShift from suggestions: the slot changed since (adopted by a pull) → refused, zero writes / notices, the suggestions closed; control: it lands by CAS",
+      refused(one, /^This swap is out of date — that shift changed/) && ok1.w.length === 1 && ok1.t.get(X[0]).data.nights.tue === "s6" && ok1.rec.notes.length === 1 && ok1.A.toasts.length === 0, sh(one) + " " + sh(ok1));
+  });
+
+  // SE-X5 — the REAL acceptTradeRequest + detectCascadeChanges on the real
+  // engine (A13): the proposer lost the slot before the tap (adopted by a
+  // pull) → refused before any request, the trade untouched; a change to a
+  // confirmed cascade's slot adopted DURING the status PATCH → not applied
+  // (set back to pending), zero schedule writes; control: it lands by CAS.
+  await run("SE-X5", async () => {
+    const REQ = { id: 42, from_surgeon_id: "s1", to_surgeon_id: "s2", from_surgeon_name: "AAA", to_surgeon_name: "BBB", week_monday: X[0], shift_key: "dayCall", shift_label: "Service Week",
+      return_week: X[1], return_shift: "dayCall", status: "pending" };
+    const detect = F.cascades({ surgeons: S7, SHIFT_LABELS: HX.SHIFT_LABELS });
+    const resp = (status, json) => ({ ok: status >= 200 && status < 300, status, json: async () => json, text: async () => JSON.stringify(json) });
+    const accept = async (o = {}) => {
+      const { t, A, P } = await pair();
+      if (o.before) { await P.eng.pull(); P.edit(o.before[0], o.before[1]); await P.eng.push(); await A.eng.pull(); }
+      const rec = { reqs: [], confirms: [], audits: [], notes: [], emails: [], list: [Object.assign({}, REQ)] }, from = t.log.length;
+      await F.accept({ fmt: HX.fmt, shiftStartDate: HX.shiftStartDate, SHIFT_LABELS: HX.SHIFT_LABELS, tradeAcceptMsg: HX.tradeAcceptMsg, cascadeMsg: HX.cascadeMsg,
+        showToast: A.showToast, schedEditable: A.schedEditable, scheduleRef: A.ref, surgeons: S7, schedule: {}, detectCascadeChanges: detect,
+        silvisActive: false, silvisBlock: () => null, silvisRefuse: () => false, confirm: (m) => { rec.confirms.push(String(m)); return true; },
+        SUPABASE_URL: BASE, dbAuthHeaders: () => ({ apikey: "ANON", Authorization: "Bearer TOK_A" }), console: A.console,
+        setTradeRequests: (f) => { rec.list = f(rec.list); }, logAudit: (action) => rec.audits.push(action), pushUndo: A.pushUndo, updateSchedule: A.updateSchedule,
+        addNotification: async (type) => { rec.notes.push(type); }, sendEmailNotif: (type) => { rec.emails.push(type); }, schedulerAdminIds: ["s7"],
+        fetch: async (url, init) => {
+          const r = { url: String(url), method: (init && init.method) || "GET" };
+          rec.reqs.push(r);
+          if (/\/rest\/v1\/shift_trade_requests\?id=eq\.42&status=eq\.pending$/.test(r.url)) {
+            if (o.during) { await P.eng.pull(); P.edit(o.during[0], o.during[1]); await P.eng.push(); await A.eng.pull(); }
+            return resp(200, [Object.assign({}, REQ, { status: "accepted" })]);
+          }
+          if (/\/rest\/v1\/shift_trade_requests\?id=eq\.42&status=eq\.accepted$/.test(r.url)) return resp(200, [Object.assign({}, REQ, { status: "pending", reviewed_at: null })]);
+          throw new Error("unrouted request: " + r.method + " " + r.url);
+        } })(Object.assign({}, REQ));
+      await A.eng.push();
+      return { t, A, rec, w: writesOf(t, from, "TOK_A") };
+    };
+    const sh = (r) => JSON.stringify({ reqs: r.rec.reqs.map(x => x.method + " " + x.url.replace(/^.*\/rest\/v1\//, "")), w: r.w.map(e => e.method + " " + e.url.split("?")[1]), toasts: r.A.toasts, audits: r.rec.audits, status: r.rec.list[0].status });
+    const pre = await accept({ before: [X[0], w => (w.dayCall = "s7", w)] });
+    check("SE-X5 the real acceptTradeRequest: the proposer lost the service week before the tap (adopted by a pull) → refused BEFORE any request: no status PATCH, no confirm, zero schedule writes / notices, the trade still pending, 'This trade is out of date'",
+      pre.rec.reqs.length === 0 && pre.rec.confirms.length === 0 && pre.w.length === 0 && pre.rec.notes.length === 0 && pre.rec.list[0].status === "pending" && pre.A.history.length === 0
+        && pre.A.toasts.length === 1 && /^This trade is out of date/.test(pre.A.toasts[0][0]) && pre.t.get(X[0]).data.dayCall === "s7", sh(pre));
+    const mid = await accept({ during: [X[1], w => (w.nights.tue = "s7", w)] });
+    check("SE-X5 …a change to a confirmed cascade's slot (X1's Tue night) adopted DURING the status PATCH → not applied: the status set back (the compensating PATCH), zero schedule writes, no undo step or notice, their change stands",
+      mid.rec.reqs.length === 2 && /status=eq\.accepted$/.test(mid.rec.reqs[1].url) && mid.w.length === 0 && mid.A.history.length === 0 && mid.rec.notes.length === 0 && mid.rec.list[0].status === "pending"
+        && mid.rec.audits.join() === "trade.accept_unapplied" && mid.t.get(X[1]).data.nights.tue === "s7" && mid.A.toasts.length === 1 && /^This trade was not applied/.test(mid.A.toasts[0][0]), sh(mid));
+    const ok = await accept();
+    check("SE-X5 …control: nothing changes → applied: one status PATCH, then both legs + both cascades land on the table by CAS (X0, X1 at v3 → 4), the notices and emails sent",
+      ok.rec.reqs.length === 1 && ok.w.length === 2 && ok.w.every(e => e.method === "PATCH" && /version=eq\.3/.test(e.url) && e.status === 200) && ok.rec.list[0].status === "accepted"
+        && ok.t.get(X[0]).data.dayCall === "s2" && ok.t.get(X[0]).data.nights.tue === "s1" && ok.t.get(X[1]).data.dayCall === "s1" && ok.t.get(X[1]).data.nights.tue === "s2"
+        && ok.rec.notes.join() === "trade_accepted,schedule_changed,schedule_changed" && ok.rec.emails.length === 3 && ok.A.toasts.length === 0, sh(ok));
+  });
+
+  // SE-X6 — the REAL openWeekEditor + saveWeekEdits + mergeEditorEdits on the
+  // real engine (§2.6): someone else's change to the slot edited here,
+  // adopted while the editor is open → refused, zero writes; to another slot
+  // → both kept; control: the edit lands.
+  await run("SE-X6", async () => {
+    const { t, A, P } = await pair();
+    const rec = { audits: [], notes: [] };
+    const open = F.openEditor({ scheduleRef: A.ref, parse: HX.parse, addD: HX.addD, fmt: HX.fmt, appShifts: {}, appShiftsLoaded: true, setEditWeekModal: A.setModal, schedSyncRef: A.schedSyncRef });
+    const draft = (f) => { const d = JSON.parse(JSON.stringify(A.modal.draft)); f(d); A.modal = Object.assign({}, A.modal, { draft: d }); };
+    const save = () => F.saveEditor({ editWeekModal: A.modal, schedule: {}, appShifts: {}, appShiftsLoaded: true, openWeekEditor: open, setEditWeekModal: A.setModal,
+      silvisActive: false, silvisFakId: null, silvisDays: { primary: new Set() }, silvisBlock: () => null, silvisRefuse: () => false, sfSlotDays: () => [], confirm: () => true,
+      pushUndo: A.pushUndo, updateSchedule: A.updateSchedule, scheduleRef: A.ref, schedEditable: A.schedEditable, schedSyncRef: A.schedSyncRef, mergeEditorEdits, SHIFT_LABELS: HX.SHIFT_LABELS,
+      backupMondaySet: new Set(), fierceBackupSet: new Set(), surgeons: S7, showToast: A.showToast, APP_SHIFTS_NOT_LOADED: "APP shifts haven't loaded yet",
+      setAppShifts: () => {}, saveAppShifts: () => {}, logAudit: (x, msg, meta) => rec.audits.push(meta), nameOf: (x) => x, aMap: {}, sMap: S7MAP, schedulerAdminIds: [],
+      addNotification: (type, title, msg) => rec.notes.push(msg), sendEmailNotif: () => {}, setTimeout: () => {} })(null);
+    const peer = async (k, f) => { await P.eng.pull(); P.edit(k, f); await P.eng.push(); await A.eng.pull(); };
+    open(X[0]); draft(d => { d.nights.tue = "s1"; });
+    await peer(X[0], w => (w.nights.tue = "s5", w));
+    let from = t.log.length; save(); await A.eng.push();
+    check("SE-X6 the real editor: someone else's change to the slot edited here (X0's Tue night) adopted while it is open → Save REFUSED, naming it — zero writes, no undo step or audit, the editor still open, their value on screen and on the table",
+      writesOf(t, from, "TOK_A").length === 0 && A.history.length === 0 && rec.audits.length === 0 && !!A.modal && A.modal.mondayStr === X[0] && A.ref.current[X[0]].nights.tue === "s5" && t.get(X[0]).data.nights.tue === "s5"
+        && A.toasts.length === 1 && /They changed the Tue Night you edited here\./.test(A.toasts[0][0]), JSON.stringify({ toasts: A.toasts, w: writesOf(t, from, "TOK_A").length }));
+    A.setModal(null); A.toasts.length = 0;
+    open(X[1]); draft(d => { d.dayCall = "s7"; });
+    await peer(X[1], w => (w.nights.wed = "s6", w));
+    from = t.log.length; save(); await A.eng.push();
+    check("SE-X6 …their change to ANOTHER slot (X1's Wed night) → Save writes only the edit, onto the latest week: the table has both, by one CAS PATCH",
+      writesOf(t, from, "TOK_A").length === 1 && t.get(X[1]).data.dayCall === "s7" && t.get(X[1]).data.nights.wed === "s6" && A.modal === null && A.toasts.length === 0, JSON.stringify({ row: t.get(X[1]).data, toasts: A.toasts }));
+    open(X[2]); draft(d => { d.dayCall = "s6"; });
+    from = t.log.length; save(); await A.eng.push();
+    check("SE-X6 …control: nobody else touches the week → the edit lands (one PATCH), one undo step, one audit line",
+      writesOf(t, from, "TOK_A").length === 1 && t.get(X[2]).data.dayCall === "s6" && A.history.length === 2 && rec.audits.length === 2 && A.toasts.length === 0, JSON.stringify({ h: A.history.length, audits: rec.audits.length }));
+  });
+
+  // SE-X7 — the REAL acceptPreview (and publishNotLanded / runPublish) on the
+  // real engine (A13 / A14): a week of the preview someone else changed since
+  // it was generated (adopted) → refused before anything is captured or
+  // written, naming it; control: it publishes (the job lands the weeks); a
+  // change to a week OUTSIDE the preview doesn't stop it, and isn't written.
+  await run("SE-X7", async () => {
+    const go = async (change) => {
+      const { t, A, P } = await pair();
+      const stamp = A.eng.epochNow();                       // the preview is generated now
+      const weeks = { [X[0]]: wkX("s4", ["s1", "s2", "s3", "s5", "s6"]), [X[1]]: wkX("s3", ["s1", "s2", "s4", "s5", "s6"]) };
+      if (change) { await P.eng.pull(); P.edit(change[0], change[1]); await P.eng.push(); await A.eng.pull(); }
+      const r = { snaps: 0, status: [], published: 0 }, from = t.log.length;
+      await F.acceptPreview({ publishSearchRunning: () => false, showToast: A.showToast, cancelSearch: () => {}, previewSchedule: weeks, previewNeedsOk: { items: [], cost: 0 }, previewAck: true,
+        publishingRef: { current: false }, schedEditable: A.schedEditable, schedSyncRef: A.schedSyncRef, previewEpochRef: { current: stamp }, previewOrigin: "generated", startMonth: 0, startYear: 2030, numWeeks: 2,
+        setPublishing: () => {}, setSaveStatus: (s) => r.status.push(s), snapshots: { capture: async () => { r.snaps++; return { ok: true }; } }, previewSchedRef: { current: weeks },
+        // (the real publishWeeks also moves the counts and audits; its schedule part is this)
+        publishWeeks: (w) => { r.published++; A.pushUndo(); A.commitSchedule(Object.assign({}, A.ref.current, w)); return {}; },
+        MO: HX.MO, runPublish: F.runPublish({ schedSyncRef: A.schedSyncRef }), setPreviewSchedule: () => {}, setShowPreview: () => {}, setCalMonth: () => {}, setCalYear: () => {}, setView: () => {}, setTimeout: () => 0,
+        publishNotLanded: F.notLanded({ showToast: A.showToast }) })();
+      await A.settle();
+      return { t, A, r, weeks, w: writesOf(t, from, "TOK_A") };
+    };
+    const sh = (x) => JSON.stringify({ r: x.r, w: x.w.map(e => e.method + " " + e.url.split("?")[1]), toasts: x.A.toasts });
+    const red = await go([X[1], w => (w.nights.thu = "s7", w)]), ok = await go(null), out = await go([X[3], w => (w.nights.thu = "s7", w)]);
+    check("SE-X7 the real acceptPreview: a week of the preview someone else changed since it was generated (adopted) → refused before ANYTHING — no snapshot, no publish, zero writes — naming that week; their change stands",
+      red.r.snaps === 0 && red.r.published === 0 && red.w.length === 0 && red.A.toasts.length === 1 && red.A.toasts[0][0] === `The week of ${X[1]} changed since this preview was generated — nothing was published. Generate the preview again.`
+        && red.t.get(X[1]).data.nights.thu === "s7", sh(red));
+    check("SE-X7 …control: nothing changed → one snapshot, published: the job writes the preview's weeks (X0, X1) to the table, 'Published — totals updated', no toast",
+      ok.r.snaps === 1 && ok.r.published === 1 && ok.w.length === 2 && same({ [X[0]]: ok.t.get(X[0]).data, [X[1]]: ok.t.get(X[1]).data }, ok.weeks) && ok.r.status.includes("Published — totals updated") && ok.A.toasts.length === 0, sh(ok));
+    check("SE-X7 …a change to a week OUTSIDE the preview doesn't stop it: published, and zero writes to that week (their change stands)",
+      out.r.published === 1 && out.w.length === 2 && out.w.every(e => !e.url.includes(X[3])) && out.t.get(X[3]).data.nights.thu === "s7" && out.A.ref.current[X[3]].nights.thu === "s7", sh(out));
+  });
+
+  // SE-X-I — the harness rule (A17(c)).
+  const bad = apps.reduce((acc, a) => acc.concat(a.unexpected()), []).concat(xcon);
+  check("SE-X-I no unexpected error in any run: no console.error (the app's catch blocks; the engine's internal errors, as the app wires them), no caught callback error ('… threw'), nothing on a context's global console",
+    bad.length === 0, bad.slice(0, 3).join(" | "));
 }
 
 // For the app-wiring tests in sync-guards (SE-A): the same extraction and the
@@ -1809,7 +2480,11 @@ async function scenarios(createSchedSync, check) {
 // anchors, compiled the same way in an EMPTY context (it needs nothing).
 module.exports.extractEngine = extractEngine;
 module.exports.compileEngine = compile;
-module.exports.compileMerge = (code) => vm.runInContext(`${code}; mergeEditorEdits`, vm.createContext({}), { filename: "mergeEditorEdits.js" });
+module.exports.compileMerge = compileMerge;
+// A17(c) for those harnesses: a console that records into an array, and the
+// engine `log` dep that records a caught callback error.
+module.exports.recConsole = recConsole;
+module.exports.caughtLog = caughtLog;
 
 // Standalone: node test/sync-engine-se.js
 if (require.main === module) {

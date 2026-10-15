@@ -12291,6 +12291,7 @@ function createSchedSync(deps) {
   // What a row read back (or pulled) for k means. → "mirror" (the table
   // already holds what's on screen) | "ours" (an earlier body of ours landed;
   // the screen has moved on since) | "unchanged" (nothing of ours landed) |
+  // "refreshed" (the data we knew, under a new token: nobody changed it) |
   // "theirs" (someone else wrote it).
   const classify = (k, row) => {
     const c = row ? canon(row.data) : DEL;
@@ -12299,6 +12300,13 @@ function createSchedSync(deps) {
     if (sent[k] && sent[k].includes(c)) return "ours";
     const kn = known[k];
     if (kn ? (!!row && (row.version === undefined ? null : row.version) === kn.version && (row.updated_at || null) === kn.updated_at && c === kn.canon) : !row) return "unchanged";
+    // The data we knew, under a new (version, updated_at): an old build's tab
+    // re-sent the week unchanged (its keepalive upsert keeps the version and
+    // moves updated_at), or it was deleted and re-inserted as it was. Nothing
+    // anyone changed is lost by writing over it, so it isn't a conflict: take
+    // the new token and retry (A2) — else every old tab closing would cost the
+    // open sessions their unsaved edits to those weeks.
+    if (kn && row && c === kn.canon) return "refreshed";
     return "theirs";
   };
   const confirm = (k, row) => {
@@ -12356,10 +12364,11 @@ function createSchedSync(deps) {
       if (!rb.ok) { failed.add(k); return { k, outcome: "pending", thrown: !!r.thrown }; }
       const how = classify(k, rb.row);
       if (how === "mirror") { confirm(k, rb.row); return { k, outcome: "saved" }; }
-      // Our earlier body landed: send this one at the new version — unless
-      // the screen has moved on since (e.g. an Undo during the read-back);
-      // then the week stays pending and the next push sends the newer copy.
-      if (how === "ours") { confirm(k, rb.row); if (mode !== "force" && canon((d.getState() || {})[k]) !== c) return { k, outcome: "superseded" }; continue; }
+      // Our earlier body landed (or the row only took a new token, our data
+      // under it unchanged): send this one at the new token — unless the
+      // screen has moved on since (e.g. an Undo during the read-back); then
+      // the week stays pending and the next push sends the newer copy.
+      if (how === "ours" || how === "refreshed") { confirm(k, rb.row); if (mode !== "force" && canon((d.getState() || {})[k]) !== c) return { k, outcome: "superseded" }; continue; }
       if (how === "unchanged") { if (kind === "ok") noPermission.add(k); failed.add(k); return { k, outcome: "pending", thrown: !!r.thrown }; }
       if (mode === "force" && attempt === 0) { if (rb.row) known[k] = fromRow(rb.row); else delete known[k]; continue; } // rewrite at the server's version / re-insert
       return { k, outcome: "conflict", sent: c, row: rb.row };
@@ -12412,7 +12421,7 @@ function createSchedSync(deps) {
       if (gen !== g) return { ok: false, skipped: "reset" };
       if (!rb.ok) continue;
       const how = classify(k, rb.row);
-      if (how === "mirror" || how === "ours") confirm(k, rb.row);
+      if (how === "mirror" || how === "ours" || how === "refreshed") confirm(k, rb.row);
       // Someone else's copy. A force job takes it as known (and so rewrites
       // over it) only for a week it OWNS — a publish only its period's. Any
       // other week is a conflict exactly as in a normal push: their copy is
