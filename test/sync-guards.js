@@ -616,8 +616,10 @@ check("the engine's wipe guard: a wipe-shaped push WITHOUT the request's grant i
 check("authoritative jobs start at exactly 2 sites — runAuthoritativeSchedule (the grant holders: clear, factory reset, restore) and runPublish (the period's weeks, no grant, no delete: Generate & Publish, Accept & Publish — A14) — a new caller needs this census updated",
   count(".authoritative(") === 2 && count("runAuthoritativeSchedule(") === 3
     && count('const runPublish = (weeks) => schedSyncRef.current.authoritative(weeks, false, "publish", Object.keys(weeks));') === 1 && count("runPublish(") === 2 && count("const job = runPublish(") === 2
-    // (clear and restore hand it their Undo step, taken back when the job wrote nothing — executed in SE-G)
-    && count('runAuthoritativeSchedule({}, "clear", undoStep)') === 1 && count('runAuthoritativeSchedule({}, "reset")') === 1 && count('runAuthoritativeSchedule(sched, "restore", undoStep)') === 1,
+    // (clear and restore hand it their Undo step, taken back when the job wrote nothing — executed in SE-G; all three
+    // hand it `before`, the screen as it was before their commit, which a refused job puts back — 17/n P2, executed in SE-X10)
+    && count('runAuthoritativeSchedule({}, "clear", undoStep, before)') === 1 && count('runAuthoritativeSchedule({}, "reset", null, before)') === 1 && count('runAuthoritativeSchedule(sched, "restore", undoStep, before)') === 1
+    && count("schedSyncRef.current.authoritative(target, true, what, null, { before })") === 1,
   `.authoritative( ×${count(".authoritative(")}, runAuthoritativeSchedule( ×${count("runAuthoritativeSchedule(")}`);
 
 // ══════════════════════════════════════════════════════════════
@@ -3800,9 +3802,11 @@ check("prefs audit never logs the plaintext email (masked only)",
     check("AE1 while a publish is in progress (Generate & Publish waiting for its snapshot), Accept & Publish publishes NOTHING and says why",
       busy.published === 0 && /already in progress/.test(busy.toasts.join(" ")), JSON.stringify(busy));
     // A14 — a backup snapshot first (fail closed), the checks again after its await, the period as ONE engine job, the outcome said
-    check("AE1 A14: the order is snapshot → publishWeeks → the engine's publish job, and \"Published — totals updated\" only after the job landed every week",
-      clean.order.join() === "snapshot,publishWeeks,job" && clean.status.includes("Publishing…") && clean.status.includes("Published — totals updated")
-        && clean.status.indexOf("Publishing…") < clean.status.indexOf("Published — totals updated"), JSON.stringify({ order: clean.order, status: clean.status }));
+    // 17/n P6 (review r1 regress-dup-status-line): while the job runs the engine's line says "Publishing… keep the app open" —
+    // the header's ONE line — so the snapshot's status ends as the job starts ("") and no "Publishing…" of its own (executed in SE-X13)
+    check("AE1 A14: the order is snapshot → publishWeeks → the engine's publish job, and \"Published — totals updated\" only after the job landed every week; the status: 'Saving backup snapshot…', then nothing while the job runs (17/n P6), then 'Published — totals updated'",
+      clean.order.join() === "snapshot,publishWeeks,job" && clean.status.join("|") === "Saving backup snapshot…||Published — totals updated" && !clean.status.includes("Publishing…"),
+      JSON.stringify({ order: clean.order, status: clean.status }));
     const noSnap = await run([], false, { snapFail: true }), movedAfter = await run([], false, { movedAfter: true }), notLanded = await run([], false, { landed: false });
     check("AE1 A14: no backup snapshot → nothing published (and it says so); a week changed by someone else DURING the snapshot's await → nothing published either",
       noSnap.snaps === 1 && noSnap.published === 0 && noSnap.jobs === 0 && /backup snapshot/.test(noSnap.toasts.join(" "))
@@ -5122,8 +5126,8 @@ const harnessWatch = () => {
 {
   const nsrcW = src.replace(/\r\n/g, "\n");
   const bodyOf = (decl, endMark) => { const i = nsrcW.indexOf(decl); if (i < 0) return ""; const e = nsrcW.indexOf(endMark, i); return e < 0 ? "" : nsrcW.slice(i, e); };
-  check("SE-W the schedule mirror has ONE writer: setSchedule( appears only inside commitSchedule, and scheduleRef.current is assigned only there (no passive-effect writer)",
-    count("setSchedule(") === 1 && count("scheduleRef.current =") === 1 && count("const commitSchedule = useCallback((next) => { scheduleRef.current = next; setSchedule(next); }, []);") === 1,
+  check("SE-W the schedule mirror has ONE writer: setSchedule( appears only inside commitSchedule, and scheduleRef.current is assigned only there (no passive-effect writer); it asks the engine to report, in a microtask (17/n P1 — executed in SE-X9)",
+    count("setSchedule(") === 1 && count("scheduleRef.current =") === 1 && count("const commitSchedule = useCallback((next) => { scheduleRef.current = next; setSchedule(next); Promise.resolve().then(() => { if (schedSyncRef.current) schedSyncRef.current.report(); }); }, []);") === 1,
     `setSchedule( ×${count("setSchedule(")}, scheduleRef.current = ×${count("scheduleRef.current =")}`);
   check("SE-W one engine per session (created once, in a ref), with reads that fall back to anon (and go as anon once the server refused the token — executed in SE62 / SE-H) and writes that never do",
     count("createSchedSync({") === 1 && count("if (!schedSyncRef.current) schedSyncRef.current = createSchedSync({") === 1
@@ -5165,7 +5169,8 @@ const harnessWatch = () => {
     count("confirmReloadWithPending(") === 3 && count("const reloadToResync = () => { if (confirmReloadWithPending()) window.location.reload(); };") === 1 // reloadToResync is executed in SE-A
       && /searchRef\.current = null; setSearching\(null\); setSearchStats\(null\); setPreviewSchedule\(null\); setShowPreview\(false\);[^\n]*\n\s*schedSyncRef\.current\.reset\(\);/.test(nsrcW)
       // the boundary is ONE helper, crossed by sign-out (before signing out) and by a re-auth that lands on a different account (both executed in SE-R)
-      && /const sessionBoundary = \(\) => \{\n[^\n]*\n\s*schedSyncRef\.current\.reset\(\);\s*setScheduleHistory\(\[\]\); setEditWeekModal\(null\);[^\n]*\n  \};\n  const handleSignOut = async \(\) => \{[\s\S]{0,900}\n    sessionBoundary\(\);\n    await auth\.signOut\(\);/.test(nsrcW)
+      // (17/n P4: the boundary's last line clears the scheduler flag and disarms the setup autosave — executed in SE-X11 / SE-R)
+      && /const sessionBoundary = \(\) => \{\n[^\n]*\n\s*schedSyncRef\.current\.reset\(\);\s*setScheduleHistory\(\[\]\); setEditWeekModal\(null\);[^\n]*\n    setIsScheduler\(false\); setupReadRef\.current = false; lastSyncRef\.current = null;\n  \};\n  const handleSignOut = async \(\) => \{[\s\S]{0,900}\n    sessionBoundary\(\);\n    await auth\.signOut\(\);/.test(nsrcW)
       && count("sessionBoundary();") === 2);
   check("SE-W Undo is all-or-nothing through the engine's undoPlan (each step carries its epoch)",
     count("const plan = schedSyncRef.current.undoPlan(step.sched, step.epoch);") === 1 && count("epoch: schedSyncRef.current ? schedSyncRef.current.epochNow() : 0") === 1
@@ -5348,7 +5353,7 @@ await (async () => {
     ge(false).ok === true && ge(false).toasts === 0 && ge(true).ok === false, JSON.stringify([ge(false), ge(true)]));
   check("SE-A A7(3) signing out (the session boundary, crossed before signing out) and a renewed sign-in both drop the soft warning",
     count("setReauthNeeded(false); setStaleTokenWarn(false);") === 2
-      && /const sessionBoundary = \(\) => \{[\s\S]{0,400}setReauthNeeded\(false\); setStaleTokenWarn\(false\);\n  \};\n  const handleSignOut = async \(\) => \{[\s\S]{0,900}\n    sessionBoundary\(\);\n    await auth\.signOut\(\);/.test(nsrcA)
+      && /const sessionBoundary = \(\) => \{[\s\S]{0,400}setReauthNeeded\(false\); setStaleTokenWarn\(false\);\n    setIsScheduler\(false\); setupReadRef\.current = false; lastSyncRef\.current = null;\n  \};\n  const handleSignOut = async \(\) => \{[\s\S]{0,900}\n    sessionBoundary\(\);\n    await auth\.signOut\(\);/.test(nsrcA)
       && /const reauthLanded = async \(user\) => \{\n[^\n]*\n[^\n]*\n      setReauthNeeded\(false\); setStaleTokenWarn\(false\);/.test(nsrcA));
 
   // ── A13: an out-of-date swap also drops the stale suggestions ──
@@ -5465,7 +5470,7 @@ await (async () => {
   // ── the component's re-auth, for real ──
   const sbSrc = after("  const sessionBoundary = ", "\n  };\n"), soSrc = after("  const handleSignOut = ", "\n  };\n"),
     rlSrc = after("  const reauthLanded = ", "\n  };\n"), raSrc = after("  const reauthForSync = ", "\n  };\n"), smSrc = after("  const submitReauth = ", "\n  };\n");
-  const sbFn = sbSrc && fnR("searchRef, setSearching, setSearchStats, setPreviewSchedule, setShowPreview, schedSyncRef, setScheduleHistory, setEditWeekModal, setReauthNeeded, setStaleTokenWarn", sbSrc + "\n  }");
+  const sbFn = sbSrc && fnR("searchRef, setSearching, setSearchStats, setPreviewSchedule, setShowPreview, schedSyncRef, setScheduleHistory, setEditWeekModal, setReauthNeeded, setStaleTokenWarn, setIsScheduler, setupReadRef, lastSyncRef", sbSrc + "\n  }");
   const soFn = soSrc && fnR("schedSyncRef, confirm, sessionBoundary, auth, biometric, setAuthUser, setUserProfile, setNeedsProfile, setMySurgeon, setBiometricEnrolled, setBiometricPending", soSrc + "\n  }");
   const rlFn = rlSrc && fnR("schedSyncRef, authUser, setReauthNeeded, setStaleTokenWarn, showToast, sessionBoundary, biometric, setBiometricEnrolled, setBiometricPending, setAuthUser, dbAuth, setUserProfile, setMySurgeon, setNeedsProfile, setIsScheduler, setReloadTrigger, handleSignOut, auth", rlSrc + "\n  }");
   const raFn = raSrc && fnR("reauthBusy, setReauthBusy, auth, authUser, reauthLanded, setReauthPassword, setReauthError, setReauthSheet", raSrc + "\n  }");
@@ -5493,6 +5498,9 @@ await (async () => {
     env.authUser = o.authUser === undefined ? UA : o.authUser;
     env.reauthBusy = !!o.busy;
     env.reauthPassword = o.password === undefined ? "pw-a" : o.password;
+    // (17/n P4) the setup autosave's arm and the blob row the boundary forgets — recorded in the log when the boundary sets them
+    env.setupReadRef = { set current(v) { w.log.push("setupReadRef:" + v); }, get current() { return true; } };
+    env.lastSyncRef = { set current(v) { w.log.push("lastSyncRef:" + JSON.stringify(v)); }, get current() { return "2026-10-01T08:00:00+00:00"; } };
     env.sessionBoundary = sbFn(env);
     env.reauthLanded = rlFn(env);
     w.env = env; w.signOut = soFn(env); w.reauth = raFn(env);
@@ -5508,8 +5516,9 @@ await (async () => {
   // The session boundary on its own, then sign-out around it.
   const B = world({ engine: stubEng() }); B.env.sessionBoundary();
   const B0 = B.log.slice();
-  check("SE-R the session boundary, executed: search / preview dropped, the engine reset (the mirror too), the undo history and the week editor cleared, both banners down — in that order",
-    JSON.stringify(B0) === JSON.stringify(["setSearching:null", "setSearchStats:null", "setPreviewSchedule:null", "setShowPreview:false", "reset", "setScheduleHistory:[]", "setEditWeekModal:null", "setReauthNeeded:false", "setStaleTokenWarn:false"]) && B.env.searchRef.current === null,
+  check("SE-R the session boundary, executed: search / preview dropped, the engine reset (the mirror too), the undo history and the week editor cleared, both banners down; then (17/n P4) the scheduler flag cleared, the setup autosave disarmed and the blob row forgotten — in that order",
+    JSON.stringify(B0) === JSON.stringify(["setSearching:null", "setSearchStats:null", "setPreviewSchedule:null", "setShowPreview:false", "reset", "setScheduleHistory:[]", "setEditWeekModal:null", "setReauthNeeded:false", "setStaleTokenWarn:false",
+      "setIsScheduler:false", "setupReadRef:false", "lastSyncRef:null"]) && B.env.searchRef.current === null,
     JSON.stringify(B0));
   const O1 = world({ engine: stubEng([]) }); await O1.signOut();
   const O2 = world({ engine: stubEng(["2026-10-12", "2026-10-19"]), confirm: false }); await O2.signOut();
@@ -5541,6 +5550,14 @@ await (async () => {
     oB > 0 && seq(raOther.w.log.slice(oB + B0.length), 'setAuthUser:{"id":"auth-b"', "getProfile:auth-b", 'setUserProfile:{"person_id":"s5"', "setReloadTrigger:fn") && raOther.w.bumped === 1
       && none(raOther.w.log, "handleSignOut", "auth.signOut", "setAuthUser:null", "pull", "setReauthSheet"),
     JSON.stringify(raOther.w.log));
+  // 17/n P4 (review r1 app-5): the roles follow the account — the boundary clears the scheduler flag FIRST, and the
+  // new account's profile sets it again (a scheduler → on; a member → stays off): never the previous account's.
+  const raSch = await RA(rt([[REFRESH, resp(200, { access_token: "TOK_B", refresh_token: "REF_B", user: { id: "auth-b", email: "b@dsg.test" } })]]), { profile: { person_id: "s5", role: "scheduler" } });
+  const roleLog = (w) => w.log.filter(x => /^setIsScheduler:/.test(x)).join();
+  check("SE-R 17/n P4 a renewed session that is ANOTHER account: the scheduler flag is cleared at the boundary, before the new profile is even asked for, and then set from it — a scheduler on (false, then true), a member left off (false, false)",
+    roleLog(raSch.w) === "setIsScheduler:false,setIsScheduler:true" && roleLog(raOther.w) === "setIsScheduler:false,setIsScheduler:false"
+      && raSch.w.log.indexOf("setIsScheduler:false") < raSch.w.log.indexOf("getProfile:auth-b") && raSch.w.log.indexOf("getProfile:auth-b") < raSch.w.log.indexOf("setIsScheduler:true"),
+    JSON.stringify({ sch: raSch.w.log, member: raOther.w.log }));
 
   // The sheet's submit: its three outcomes, with the REAL engine on the
   // emulated table. A signed-in session whose token the server stopped
@@ -5987,10 +6004,10 @@ await (async () => {
   }
 
   // ── A5(f): a job still running past its deadline — the callers ──
-  const raSrc = after("  const runAuthoritativeSchedule = async (target, what, undoStep) => {", "\n  };\n");
-  const raFn = raSrc && fnC("schedSyncRef, commitSchedule, setScheduleHistory", "async (target, what, undoStep) => {" + raSrc + "\n  }");
+  const raSrc = after("  const runAuthoritativeSchedule = async (target, what, undoStep, before) => {", "\n  };\n");
+  const raFn = raSrc && fnC("schedSyncRef, commitSchedule, setScheduleHistory", "async (target, what, undoStep, before) => {" + raSrc + "\n  }");
   const clSrc = after("  const clearSchedule = async () => {", "\n  };\n\n  // ─── Snapshot restore");
-  const clFn = clSrc && fnC("schedEditable, confirm, snapshots, schedSyncRef, showToast, scheduleRef, pushUndo, commitSchedule, setSaveStatus, runAuthoritativeSchedule, setTimeout, lastSyncRef, buildStateBundle, supabase, console", "async () => {" + clSrc + "\n  }");
+  const clFn = clSrc && fnC("schedEditable, confirm, snapshots, schedSyncRef, showToast, scheduleRef, pushUndo, commitSchedule, setSaveStatus, runAuthoritativeSchedule, setTimeout, lastSyncRef, stateBundleRef, setupReadRef, auth, supabase, console", "async () => {" + clSrc + "\n  }");
   const pnSrc = after("  const publishNotLanded = (pr, what) => {", "\n  };\n");
   const pnFn = pnSrc && fnC("showToast", "(pr, what) => {" + pnSrc + "\n  }");
   if (!raFn || !clFn || !pnFn) check("SE-C runAuthoritativeSchedule / clearSchedule / publishNotLanded are extractable", false, JSON.stringify({ ra: !!raFn, cl: !!clFn, pn: !!pnFn }));
@@ -6009,7 +6026,8 @@ await (async () => {
       const w = { toasts: [], status: [], upserts: 0 };
       await clFn({ schedEditable: () => true, confirm: () => true, snapshots: { capture: async () => ({ ok: true }) }, schedSyncRef: { current: { knownSchedule: () => ({}), pending: () => ["a", "b"] } }, showToast: (m, t) => w.toasts.push([String(m), t]),
         scheduleRef: { current: {} }, pushUndo: () => {}, commitSchedule: () => {}, setSaveStatus: (s) => w.status.push(s), runAuthoritativeSchedule: async () => cr, setTimeout: () => 0, lastSyncRef: { current: null },
-        buildStateBundle: (x) => Object.assign({}, x), supabase: { from: () => ({ upsert: async () => { w.upserts++; return { error: null }; } }) }, console: watchC.console })();
+        stateBundleRef: { current: (x) => Object.assign({}, x) }, setupReadRef: { current: true }, auth: { getSession: () => ({ access_token: "TOK" }) },
+        supabase: { from: () => ({ upsert: async () => { w.upserts++; return { error: null }; } }) }, console: watchC.console })();
       await null; await null;
       return w;
     };
@@ -6028,7 +6046,8 @@ await (async () => {
         && pnErr[1] === "error" && pnErr[0] === "Regenerated on this screen: " + PN_READ && (pnErr[0].match(/Nobody was notified\./g) || []).length === 1
         && pnN[1] === "error" && /— 1 week isn't saved yet; retrying automatically\. Nobody was notified\.$/.test(pnN[0]), JSON.stringify({ pnRun, pnErr, pnN }));
     check("SE-C A5(f) the factory reset's schedule job: still running → said so (info), not 'the schedule was NOT cleared'",
-      count('runAuthoritativeSchedule({}, "reset").then(r => { if (r.running) showToast(r.error, "info"); else if (!r.ok) showToast(r.error ? "Factory reset: the schedule was NOT cleared — " + r.error') === 1);
+      // (17/n P3: the reset's other outcomes — refused, landed — are executed in SE-X10)
+      nsrcC.split('runAuthoritativeSchedule({}, "reset", null, before).then(r => {\n      if (r.running) { showToast(r.error, "info"); return; }\n      if (r.ok) { setSaveStatus("Reset complete");').length === 2 && count("Factory reset: the schedule was NOT cleared") === 0);
   }
 
   // ── A13: an open week editor is told when its week is adopted (engine.onAdopted) ──
@@ -6300,8 +6319,8 @@ await (async () => {
   const geF = geSrc && fnG("schedSyncRef, showToast, setReauthNeeded", "() => {" + geSrc + "\n  }");
   const puSrc = after("  const pushUndo = useCallback((counts) => {", "\n  }, []);");
   const puF = puSrc && fnG("scheduleRef, schedSyncRef, setScheduleHistory", "(counts) => {" + puSrc + "\n  }");
-  const raSrc = after("  const runAuthoritativeSchedule = async (target, what, undoStep) => {", "\n  };\n");
-  const raF = raSrc && fnG("schedSyncRef, commitSchedule, setScheduleHistory", "async (target, what, undoStep) => {" + raSrc + "\n  }");
+  const raSrc = after("  const runAuthoritativeSchedule = async (target, what, undoStep, before) => {", "\n  };\n");
+  const raF = raSrc && fnG("schedSyncRef, commitSchedule, setScheduleHistory", "async (target, what, undoStep, before) => {" + raSrc + "\n  }");
   const usSrc = after("  const updateSchedule = useCallback((fn) => {", "\n  }, [commitSchedule]);");
   const usF = usSrc && fnG("scheduleRef, commitSchedule", "(fn) => {" + usSrc + "\n  }");
   const partsG = { engine: !!createSchedSyncG, merge: typeof merge === "function", gate: !!geF, undo: !!puF, authoritative: !!raF, update: !!usF };
@@ -6380,7 +6399,7 @@ await (async () => {
 
   // ── (2) Clear: the gate, the Undo step, one message ──
   const clSrc = after("  const clearSchedule = async () => {", "\n  };\n\n  // ─── Snapshot restore");
-  const clF = clSrc && fnG("schedEditable, confirm, snapshots, schedSyncRef, showToast, scheduleRef, pushUndo, commitSchedule, setSaveStatus, runAuthoritativeSchedule, setTimeout, lastSyncRef, buildStateBundle, supabase, console", "async () => {" + clSrc + "\n  }");
+  const clF = clSrc && fnG("schedEditable, confirm, snapshots, schedSyncRef, showToast, scheduleRef, pushUndo, commitSchedule, setSaveStatus, runAuthoritativeSchedule, setTimeout, lastSyncRef, stateBundleRef, setupReadRef, auth, supabase, console", "async () => {" + clSrc + "\n  }");
   if (!clF) check("SE-G clearSchedule is extractable", false, "anchor / compile");
   else {
     const clear = async (a, o = {}) => {
@@ -6388,7 +6407,8 @@ await (async () => {
       await clF({ schedEditable: a.schedEditable, confirm: () => { w.confirms++; return true; },
         snapshots: { capture: async () => { w.snaps++; if (o.duringSnap) o.duringSnap(); return { ok: !o.snapFails }; } },
         schedSyncRef: a.schedSyncRef, showToast: a.showToast, scheduleRef: a.ref, pushUndo: a.pushUndo, commitSchedule: a.commitSchedule, setSaveStatus: (s) => w.status.push(s),
-        runAuthoritativeSchedule: a.runAuthoritativeSchedule, setTimeout: () => 0, lastSyncRef: { current: null }, buildStateBundle: (x) => Object.assign({}, x),
+        runAuthoritativeSchedule: a.runAuthoritativeSchedule, setTimeout: () => 0, lastSyncRef: { current: null }, stateBundleRef: { current: (x) => Object.assign({}, x) },
+        setupReadRef: { current: true }, auth: { getSession: () => (a.token ? { access_token: a.token } : null) },
         supabase: { from: () => ({ upsert: async () => { w.upserts++; return { error: null }; } }) }, console: { error: (...x) => a.errors.push(x.map(String).join(" ")), warn: () => {} } })();
       await a.settle();
       return w;
@@ -6427,7 +6447,7 @@ await (async () => {
 
   // ── (3) Factory reset: the gate, one message ──
   const rstSrc = after("  const resetAllData = async () => {", "\n  };\n\n  // ─── Push Notifications");
-  const rstF = rstSrc && fnG("isScheduler, userProfile, alert, schedEditable, prompt, setSaveStatus, setTimeout, snapshots, schedSyncRef, showToast, logAudit, allowWipeSaveRef, everHadRealDataRef, supabase, console, setSurgeons, INIT_SURGEONS, setApps, INIT_APPS, toClearAll, setBackupMondaySet, setFierceBackupSet, commitSchedule, runAuthoritativeSchedule, setAppShifts, setPriorCounts, setYear1Counts, setStartMonth, setStartYear",
+  const rstF = rstSrc && fnG("isScheduler, userProfile, alert, schedEditable, prompt, setSaveStatus, setTimeout, snapshots, schedSyncRef, showToast, logAudit, allowWipeSaveRef, everHadRealDataRef, supabase, console, setSurgeons, INIT_SURGEONS, setApps, INIT_APPS, toClearAll, setBackupMondaySet, setFierceBackupSet, scheduleRef, commitSchedule, runAuthoritativeSchedule, setAppShifts, setPriorCounts, setYear1Counts, setStartMonth, setStartYear",
     "async () => {" + rstSrc + "\n  }");
   if (!rstF) check("SE-G resetAllData is extractable", false, "anchor / compile");
   else {
@@ -6438,7 +6458,7 @@ await (async () => {
         snapshots: { capture: async () => { w.snaps++; if (o.duringSnap) o.duringSnap(); return { ok: true }; } }, schedSyncRef: a.schedSyncRef, showToast: a.showToast, logAudit: () => { w.audits++; },
         allowWipeSaveRef: { current: false }, everHadRealDataRef: { current: true }, supabase: { from: () => ({ upsert: async () => { w.upserts++; return { error: null }; } }) },
         console: { error: (...x) => a.errors.push(x.map(String).join(" ")), warn: noop }, setSurgeons: () => { w.cleared++; }, INIT_SURGEONS: [], setApps: noop, INIT_APPS: [], toClearAll: noop,
-        setBackupMondaySet: noop, setFierceBackupSet: noop, commitSchedule: a.commitSchedule, runAuthoritativeSchedule: a.runAuthoritativeSchedule,
+        setBackupMondaySet: noop, setFierceBackupSet: noop, scheduleRef: a.ref, commitSchedule: a.commitSchedule, runAuthoritativeSchedule: a.runAuthoritativeSchedule,
         setAppShifts: noop, setPriorCounts: noop, setYear1Counts: noop, setStartMonth: noop, setStartYear: noop })();
       await a.settle();
       return w;

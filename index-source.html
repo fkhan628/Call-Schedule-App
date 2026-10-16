@@ -236,8 +236,17 @@ function CallSchedule() {
   // keeps the updater shape for convenience, but runs fn NOW, on the mirror.
   // The sync engine reads the same mirror, so what it saves is always the
   // latest edit. sync-guards SE pins that setSchedule has no other caller.
+  // The header's sync line follows the mirror (A16, review r1 app-2): every
+  // commit asks the engine to report, so a week edited here reads "Saving…"
+  // from the moment it is on screen — through the push's 800 ms debounce, its
+  // queue and its write — never the "☁ Synced" of the report before it. In a
+  // microtask: after this commit's own synchronous work (an engine commit
+  // reports a finished state, not a half-made one), never inside a render or
+  // a state updater (setSchedSync can't run there), and still before the
+  // browser paints. (schedSyncRef is declared further down; it is only read
+  // when the microtask runs, after the render.)
   const scheduleRef = useRef({});
-  const commitSchedule = useCallback((next) => { scheduleRef.current = next; setSchedule(next); }, []);
+  const commitSchedule = useCallback((next) => { scheduleRef.current = next; setSchedule(next); Promise.resolve().then(() => { if (schedSyncRef.current) schedSyncRef.current.report(); }); }, []);
   const updateSchedule = useCallback((fn) => {
     const cur = scheduleRef.current, next = fn(cur);
     if (next !== cur) commitSchedule(next);
@@ -515,6 +524,13 @@ function CallSchedule() {
   const [saveError, setSaveError] = useState(false); // true = last save failed
   const fileRef = useRef(null);
   const lastSyncRef = useRef(null);
+  // The shared setup (the call_schedule_data blob) has been READ for this
+  // session's account: set by the load's read and by a poll / realtime read
+  // that adopts the row; cleared at the session boundary (sign-out, another
+  // account). The setup autosave and the edge-URL save write only while it's
+  // set — so what this page holds in memory is never written across the
+  // boundary, as the next account or as nobody (review r1 regress).
+  const setupReadRef = useRef(false);
   const loadedAtRef = useRef(null); // timestamp when initial load completed — prevents auto-save race
   const pendingSaveRef = useRef(null); // payload queued for debounced save; flushed immediately on page hide/unload
   // ─── Data-loss guard refs ───
@@ -1098,10 +1114,18 @@ function CallSchedule() {
   // a preview — so nothing of it can be sent as the next user. Sign-out
   // crosses it, and so does a "Sign in again" that lands on a different
   // account (reauthLanded) — that one without signing out.
+  // The roles and the shared setup go too (review r1 app-5 / regress): the
+  // scheduler flag is cleared — the next account's profile sets it again
+  // (reauthLanded; a password sign-in; the profile effect) — and the setup
+  // autosave is disarmed until the next account's setup (the blob) has been
+  // read (the load, or a poll that adopts it): nothing this session holds in
+  // memory is written as the next account, or as nobody after a sign-out.
+  // lastSyncRef forgets this session's row, so that read adopts it.
   const sessionBoundary = () => {
     searchRef.current = null; setSearching(null); setSearchStats(null); setPreviewSchedule(null); setShowPreview(false); // nothing searched, generated or loaded by this user is published as the next one
     schedSyncRef.current.reset();
     setScheduleHistory([]); setEditWeekModal(null); setReauthNeeded(false); setStaleTokenWarn(false);
+    setIsScheduler(false); setupReadRef.current = false; lastSyncRef.current = null;
   };
   const handleSignOut = async () => {
     // Sign-out is a boundary (sync v2): weeks not saved can't be sent without
@@ -1474,6 +1498,7 @@ function CallSchedule() {
           .select("data,updated_at")
           .eq("id", "main")
           .single();
+        setupReadRef.current = true; // .single() throws on failure: this account's setup is read — the autosave may write it (adopted just below, in the same render)
         if (row?.data) {
           const d = typeof row.data === "string" ? JSON.parse(row.data) : row.data;
           if (row.updated_at) lastSyncRef.current = row.updated_at; // prevent auto-save from re-saving unchanged data
@@ -1618,6 +1643,7 @@ function CallSchedule() {
         if (row.updated_at === lastSyncRef.current) return; // nothing new
         lastSyncRef.current = row.updated_at;
         const d = typeof row.data === "string" ? JSON.parse(row.data) : row.data;
+        setupReadRef.current = true; // adopted just below, in the same render (after a session boundary lastSyncRef is null, so the first read lands here)
         if (d.surgeons) setSurgeons(d.surgeons);
         if (d.apps) setApps(d.apps);
         if (!USE_TIME_OFF) { if (d.vacations) setVacations(d.vacations); if (d.noCallDays) setNoCallDays(d.noCallDays); }
@@ -1960,20 +1986,30 @@ function CallSchedule() {
   const schedSyncedShown = schedLineKind === "synced";
   // The amber "Sign in again" (A7(3)) — never beside the red one.
   const staleTokenShown = !isPublicMode && !!authUser && staleTokenWarn && !(schedSync.authNeeded || reauthNeeded);
+  // The setup autosave's own "☁ Saved" never renders beside a RED schedule
+  // line (A16: one story — beside "⚠ 1 week not saved" it would read as if
+  // everything were saved); the autosave's errors still do, and so does
+  // every other status (a job's own outcome says what landed).
+  const SCHED_LINE_RED = ["auth", "loadFailed", "notSaved", "rejected", "blocked", "stalled"];
+  const saveStatusShown = !!saveStatus && !(saveStatus === "Saved" && !saveError && SCHED_LINE_RED.includes(schedLineKind));
   // Clear / factory reset / restore: an authoritative engine job — its own
   // grant, a fresh whole-table read first, fail closed. When it was refused
   // and wrote nothing (the read failed, signed out, cancelled at its
-  // deadline…), the ENGINE puts the screen back to what the table holds —
-  // in the job, before its follow-up push can send the refused target; every
+  // deadline…), the ENGINE puts the screen back as it was BEFORE the caller
+  // committed the target — `before`, the mirror the caller captures just
+  // ahead of that commit (E4, review r1 app-1): edits pending from before the
+  // tap and new local weeks stay pending, and the job's follow-up push sends
+  // them — in the job, before that push could send the refused target; every
   // week edited since the tap stays — so it never shows a clear that didn't
-  // happen. The caller's Undo step for it (undoStep, from pushUndo) is taken
-  // back then: nothing happened to undo. By identity — a step pushed
+  // happen. The caller's Undo step for it (undoStep, from pushUndo — taken of
+  // that same mirror) is taken back then: the screen is back where the step
+  // would take it, so there is nothing to undo. By identity — a step pushed
   // meanwhile stays. (A job still running past its deadline, A5(f), or one
   // whose writes merely failed and are retried, R7, keeps its step.) The job
   // tells its own detail as r.notice, not in a toast: the caller's one
   // message about the outcome carries it.
-  const runAuthoritativeSchedule = async (target, what, undoStep) => {
-    const r = await schedSyncRef.current.authoritative(target, true, what);
+  const runAuthoritativeSchedule = async (target, what, undoStep, before) => {
+    const r = await schedSyncRef.current.authoritative(target, true, what, null, { before });
     if (undoStep && !r.ok && !r.wrote && !r.running && (r.error || r.internal)) setScheduleHistory(h => h.filter(s => s !== undoStep));
     return r;
   };
@@ -2025,6 +2061,13 @@ function CallSchedule() {
     dismissedWarnings,
     ...overrides,
   });
+  // The LATEST render's buildStateBundle (as genCommitRef is for Generate &
+  // Publish): a write made after an await — the clear's blob save, after its
+  // whole job — builds from the state as it is THEN, never the tap's render
+  // (a setting changed, or another scheduler's setup adopted, during the job
+  // would be reverted — review r1 regress).
+  const stateBundleRef = useRef(null);
+  stateBundleRef.current = buildStateBundle;
 
   // Mirrors the DB predicate these shared-config tables actually enforce:
   // is_scheduler_or_admin() = role IN ('scheduler','admin'). `isScheduler` is
@@ -2048,6 +2091,11 @@ function CallSchedule() {
       setSaveStatus("⚠ Not saving — schedule failed to load");
       return;
     }
+    // The session boundary (review r1 regress) — see the write below. Here:
+    // a render from before this account's setup was read schedules nothing,
+    // so its payload (the previous session's) can't be written by a timer
+    // that fires after the read but before the render that adopts it.
+    if (!setupReadRef.current || !auth.getSession()) return;
     // Capture the payload so the visibility/unload handlers can flush it
     // immediately without waiting for the debounce.
     const payload = buildStateBundle();
@@ -2057,6 +2105,12 @@ function CallSchedule() {
     // guard is otherwise set.
     if (!payloadLooksWiped(payload)) everHadRealDataRef.current = true;
     const timer = setTimeout(async () => {
+      // Never across the session boundary (review r1 regress), checked when
+      // it would write: signed out (no session — another tab may have signed
+      // out), or this account's setup not read yet since the boundary
+      // (setupReadRef) — what this page holds in memory is the previous
+      // session's, not this account's to write.
+      if (!setupReadRef.current || !auth.getSession()) return;
       // ── Empty-save guard ──
       // Structural fix for the load(permissive)/save(unconditional) asymmetry:
       // refuse to overwrite known-good data with a wiped payload. Leave
@@ -2277,6 +2331,10 @@ function CallSchedule() {
     // (The Settings field that legitimately EDITS this is already
     // scheduler/admin-gated; this effect is just its persist-back.)
     if (!canWriteBlob) return;
+    // …and not across the session boundary: another account's role arriving
+    // (canWriteBlob false → true) would echo this page's value as that account
+    // before its own setup has been read (setupReadRef, as the autosave).
+    if (!setupReadRef.current) return;
     const timer = setTimeout(async () => {
       try {
         const { error: cfgErr } = await supabase
@@ -2391,19 +2449,29 @@ function CallSchedule() {
     toClearAll(); // clears vacations + no-call locally, and the time_off table when on
     setBackupMondaySet(new Set());
     setFierceBackupSet(new Set());
+    const before = scheduleRef.current; // the weeks as shown — what a refused job puts back (E4)
     commitSchedule({});
     // Every week deleted: an authoritative engine job with its own grant. If
-    // it can't write (table unreadable, signed out) the schedule on screen goes
-    // back to what is saved and the reason is shown. A partly failed one is
-    // ONE message, with the engine's detail (r.notice) in it.
-    runAuthoritativeSchedule({}, "reset").then(r => { if (r.running) showToast(r.error, "info"); else if (!r.ok) showToast(r.error ? "Factory reset: the schedule was NOT cleared — " + r.error : "Factory reset: the schedule wasn't fully cleared. " + (r.notice || `${schedSyncRef.current.pending().length} week(s) not deleted yet — retrying automatically.`), "error"); });
+    // it can't write (table unreadable, signed out, cancelled at its deadline)
+    // the weeks on screen go back as they were (`before`) — and the toast says
+    // what DID happen (review r1 app-4): the setup, APP shifts and time off
+    // were reset above, before this job; only the weeks were not cleared. The
+    // engine's reason says "nothing was changed" — of the weeks — so that
+    // clause is dropped here. A partly failed one is ONE message, with the
+    // engine's detail (r.notice) in it. "Reset complete" only once every week
+    // is cleared too (while it runs, the header says "Clearing…").
+    runAuthoritativeSchedule({}, "reset", null, before).then(r => {
+      if (r.running) { showToast(r.error, "info"); return; }
+      if (r.ok) { setSaveStatus("Reset complete"); setTimeout(() => setSaveStatus(""), 2000); return; }
+      const why = r.error && String(r.error).replace(/ — nothing was changed\./, ".").replace(/ Nothing was changed\./, "");
+      showToast(why ? `Factory reset: the setup, APP shifts and time off were reset, but the schedule weeks were NOT cleared: ${why} Run the reset again, or restore the "Before factory reset" snapshot.`
+        : "Factory reset: the schedule wasn't fully cleared. " + (r.notice || `${schedSyncRef.current.pending().length} week(s) not deleted yet — retrying automatically.`), "error");
+    });
     setAppShifts({});
     setPriorCounts({});
     setYear1Counts({});
     setStartMonth(4);
     setStartYear(2026);
-    setSaveStatus("Reset complete");
-    setTimeout(() => setSaveStatus(""), 2000);
   };
 
   // ─── Push Notifications — sent via send-push Edge Function ───
@@ -4420,7 +4488,7 @@ function CallSchedule() {
         });
         const job = runPublish(result); // the period's weeks → the table, as ONE engine job (A14) — registered now, before any await
         setPreviewSchedule(null); setShowPreview(false);
-        setSaveStatus("Publishing…");
+        setSaveStatus(""); // the snapshot's status ends: while the job runs, the engine's "Publishing… keep the app open" is the header's ONE line (A16)
         // Immediately save to Supabase to prevent polling race condition
         try {
           const ts = new Date().toISOString();
@@ -4453,28 +4521,32 @@ function CallSchedule() {
     // The Undo step only now that the clear goes ahead — and it's taken back
     // (runAuthoritativeSchedule) if the job then writes nothing.
     const undoStep = Object.keys(scheduleRef.current).length > 0 ? pushUndo() : null;
+    const before = scheduleRef.current; // the screen as it was — what a refused clear puts back (E4): edits pending from before the tap stay pending
     commitSchedule({});
     // Every week deleted: an authoritative engine job with its own grant (the
     // re-read of the whole table comes first, so weeks added elsewhere since
-    // the last pull go too). "Schedule cleared" only once it has happened.
-    setSaveStatus("Clearing… keep the app open");
-    const cr = await runAuthoritativeSchedule({}, "clear", undoStep);
-    if (cr.running) { showToast(cr.error, "info"); setSaveStatus(""); } // A5(f): still deleting past its deadline — the engine toasts how it ended
+    // the last pull go too). "Schedule cleared" only once it has happened;
+    // while it runs, the engine's line says "Clearing… keep the app open" —
+    // the header's ONE line for it (A16), so no status of ours beside it.
+    const cr = await runAuthoritativeSchedule({}, "clear", undoStep, before);
+    if (cr.running) showToast(cr.error, "info"); // A5(f): still deleting past its deadline — the engine toasts how it ended
     else if (!cr.ok) {
       // ONE message for the outcome: ours, with the engine's own detail (which
       // weeks, and why — cr.notice; the engine doesn't toast it beside this).
       showToast(cr.error ? "The schedule was NOT cleared — " + cr.error : "The schedule wasn't fully cleared. " + (cr.notice || `${schedSyncRef.current.pending().length} week(s) not deleted yet — retrying automatically.`), "error");
-      setSaveStatus("");
       if (cr.error) return;
-    } else setSaveStatus("Schedule cleared");
-    setTimeout(() => setSaveStatus(""), 2000);
-    // Immediately save to prevent polling race condition
+    } else { setSaveStatus("Schedule cleared"); setTimeout(() => setSaveStatus(""), 2000); }
+    // Immediately save to prevent polling race condition — from the state as
+    // it is NOW, after the job (stateBundleRef: the latest render's), and
+    // never across the session boundary (signed out / another account during
+    // the job: nothing of this session is written).
     (async () => {
       try {
+        if (!setupReadRef.current || !auth.getSession()) return;
         const ts = new Date().toISOString();
         lastSyncRef.current = ts;
         // Stage 6: schedule lives in schedule_weeks (cleared by the authoritative engine job above).
-        const blobData = buildStateBundle({ schedule: {}, _intentionalClear: true }); delete blobData.schedule;
+        const blobData = stateBundleRef.current({ schedule: {}, _intentionalClear: true }); delete blobData.schedule;
         delete blobData.vacations; delete blobData.noCallDays; // retired mirror — time_off is the source
         const { error: clearErr } = await supabase.from("call_schedule_data").upsert({ id: "main", data: blobData, updated_at: ts });
         if (clearErr) throw new Error(`clear-schedule blob save failed: ${String(clearErr).slice(0, 200)}`); // catch toasts; checked autosave retries
@@ -4536,10 +4608,15 @@ function CallSchedule() {
         // own grant (a confirmed restore may shrink or clear the table), a fresh
         // whole-table read first, the outcome reported honestly (one message:
         // the engine's detail, ar.notice, rides in it). Its Undo step is taken
-        // back if the job writes nothing.
+        // back if the job writes nothing — the screen is then put back as it
+        // was (`before`, E4): edits pending from before the tap stay pending.
+        // While it runs the header's ONE line is the engine's "Restoring… keep
+        // the app open" (A16), so the snapshot's own status ends here.
         const undoStep = Object.keys(scheduleRef.current).length > 0 ? pushUndo() : null;
+        const before = scheduleRef.current;
         commitSchedule(sched);
-        const ar = await runAuthoritativeSchedule(sched, "restore", undoStep);
+        setSaveStatus("");
+        const ar = await runAuthoritativeSchedule(sched, "restore", undoStep, before);
         if (ar.ok) return { ok: true };
         if (ar.running) return { ok: false, running: true, error: ar.error }; // A5(f): still writing past its deadline — the engine toasts how it ended
         return { ok: false, error: ar.error || ar.notice || `${schedSyncRef.current.pending().length} week(s) of the schedule aren't saved yet — they retry automatically` };
@@ -4751,7 +4828,7 @@ function CallSchedule() {
         setCalMonth(sM);
         setCalYear(sY);
         setView("calendar");
-        setSaveStatus("Publishing…");
+        setSaveStatus(""); // the snapshot's status ends: while the job runs, the engine's "Publishing… keep the app open" is the header's ONE line (A16)
         const pr = await job;
         if (pr && pr.ok) { setSaveStatus("Published — totals updated"); setTimeout(() => setSaveStatus(""), 3000); if (pr.notice) showToast(pr.notice, "error"); } // (a notice here: another week someone else changed)
         else { setSaveStatus(""); publishNotLanded(pr, "Published on this screen"); }
@@ -7019,7 +7096,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               ) : (
                 <>
                   Call Schedule · Surgeons + APPs
-                  {saveStatus && <span role="status" aria-live="polite" style={{marginLeft:8,color:saveError?"#c04040":"#1a8040",fontWeight:600,fontSize:11}}>{saveError?"⚠":"☁"} {saveStatus}</span>}
+                  {saveStatusShown && <span role="status" aria-live="polite" style={{marginLeft:8,color:saveError?"#c04040":"#1a8040",fontWeight:600,fontSize:11}}>{saveError?"⚠":"☁"} {saveStatus}</span>}
                   {/* The schedule's own save state (sync v2): ONE line, the kind
                       schedSyncLine picks (A16). "Saving" is neutral — every edit is
                       pending for a moment; red only when sign-in is needed, an
