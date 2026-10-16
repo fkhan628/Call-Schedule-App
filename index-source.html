@@ -12242,6 +12242,9 @@ function createSchedSync(deps) {
   };
   // The CAS filter: the (version, updated_at) pair the pull uses as its token.
   const cas = (kn) => `version=${kn.version === null ? "is.null" : "eq." + kn.version}&updated_at=${kn.updated_at === null ? "is.null" : "eq." + encodeURIComponent(kn.updated_at)}`;
+  // …and as one string, for telling whether a week's saved copy has moved
+  // (E7) — DEL when there is no row.
+  const tokOf = (kn) => (kn ? `${kn.version}|${kn.updated_at}` : DEL);
 
   // Which weeks the target differs on from what the table holds.
   const diff = (target) => {
@@ -12317,6 +12320,20 @@ function createSchedSync(deps) {
     if (r && r.ok) { say(`${jobLabel(what)} has finished — every week is saved.${extra}`, extra ? "error" : "success"); return; }
     const n = ((r && r.results) || []).filter(x => x.outcome !== "saved").length;
     say(r && r.error ? `${jobLabel(what)} stopped — ${r.error}` : extra ? `${jobLabel(what)} has finished, but not every week is saved.${extra}` : `${jobLabel(what)} has finished, but ${n ? n + " week" + (n === 1 ? " isn't" : "s aren't") : "not every week is"} saved yet — retrying automatically.`, "error");
+  };
+  // E8: …in the CALLER's words when it gave authoritative() opts.late(r) — a
+  // factory reset or a restore knows what it did before the weeks job (the
+  // setup written), which the engine's generic text can't say. Called once,
+  // with the job's result; its text is the one toast. One that's missing,
+  // throws or returns no text: the engine's own. Never for a job fenced by a
+  // sign-out (another session now) — nothing is said for it.
+  const tellLate = (what, r, late) => {
+    if (late && !(r && (r.skipped === "reset" || r.skipped === "cancelled"))) {
+      let m = null;
+      try { m = late(r); } catch (e) { log("opts.late threw", e); m = null; }
+      if (typeof m === "string" && m) { say(m, r && r.ok && !r.notice ? "success" : "error"); return; }
+    }
+    lateOutcome(what, r);
   };
 
   // ONE engine read (the pull's version list, readAll, readSome, readBack —
@@ -12404,8 +12421,15 @@ function createSchedSync(deps) {
     if (kn && row && c === kn.canon) return "refreshed";
     return "theirs";
   };
-  const confirm = (k, row) => {
+  // `mine`: the row is the answer to our own write. A row read back is ours
+  // when it holds a body we sent (the ledger, before settle() forgets it).
+  const confirm = (k, row, mine) => {
+    const ours = !!mine || (!!sent[k] && sent[k].includes(row ? canon(row.data) : DEL));
     if (row) known[k] = fromRow(row); else delete known[k];
+    // E7: a clear / reset / restore waiting to put back `before` records
+    // which saved copies are OURS — so its refusal never takes our own body,
+    // landing meanwhile, for someone else's change.
+    owners.forEach(o => { if (o.knownAt) { if (ours) o.knownAt.landed[k] = tokOf(known[k]); else delete o.knownAt.landed[k]; } });
     settle(k);
     const ad = approvedDeletes.get(k);
     if (!row || !known[k] || ad !== known[k].version) approvedDeletes.delete(k);
@@ -12437,7 +12461,7 @@ function createSchedSync(deps) {
       const kind = kindOf(r);
       if (kind === "ok" && Array.isArray(r.body) && r.body.length === 1) {
         const row = del ? null : r.body[0];
-        confirm(k, row);
+        confirm(k, row, true);
         // The server stored something other than what we sent (it
         // normalised it): show that, so the week doesn't re-send forever.
         if (row && canon(row.data) !== c && canon((d.getState() || {})[k]) === c) d.commit(Object.assign({}, d.getState() || {}, { [k]: clone(row.data) }));
@@ -12750,22 +12774,62 @@ function createSchedSync(deps) {
   // before the tap and new local weeks stay pending and go out in the
   // follow-up push, and a slow save's landed edit isn't reverted by it —
   // or, without `before`, what the table holds (known). One commit.
-  const showKnown = (startShown, only, before) => {
-    const cur = d.getState() || {}, next = Object.assign({}, cur); let changed = false;
-    Object.keys(startShown).filter(k => !only || only.has(k)).forEach(k => {
+  // E7 (with `before`, and knownAt — the saved copy of each week as the job
+  // was requested): only where that saved copy hasn't moved since to SOMEONE
+  // ELSE's change. Where it has (a peer deleted or rewrote the week while our
+  // write of it was out, and the read-back, compared with the job's target
+  // on screen, made the engine take it), `before[k]` would bring back an
+  // edit over their change — the follow-up push re-inserted a week they
+  // deleted, unseen. Their copy is adopted over it instead, as a conflict
+  // through the normal path (adoptInto, a second commit: the header's
+  // "replaced by someone else's change", onAdopted), and those weeks are
+  // returned for the refusal's message (tellTheirs).
+  // A refusal (no `only`) also covers a week the table holds now that was
+  // neither known nor on screen at the request (shown then: none) — a
+  // restore queued ahead created it (E6's fallback: without it, the week
+  // stayed off screen and the follow-up push deleted it).
+  const showKnown = (startShown, only, before, knownAt) => {
+    const cur = d.getState() || {}, next = Object.assign({}, cur); let changed = false; const theirs = [];
+    const weeks = only ? Object.keys(startShown) : [...new Set([...Object.keys(startShown), ...Object.keys(known)])];
+    weeks.filter(k => !only || only.has(k)).forEach(k => {
       const shownNow = k in cur ? canon(cur[k]) : DEL;
-      if (shownNow !== startShown[k]) return;
+      if (shownNow !== (k in startShown ? startShown[k] : DEL)) return;
       const has = before ? k in before : !!known[k], data = before ? before[k] : has ? known[k].data : undefined;
+      if (before && knownAt && savedMoved(k, has ? canon(data) : DEL, knownAt)) theirs.push(k);
       if (shownNow !== (has ? canon(data) : DEL)) { changed = true; if (has) next[k] = clone(data); else delete next[k]; }
     });
     if (changed) d.commit(next);
+    if (theirs.length) {
+      const rows = {}, expect = {};
+      theirs.forEach(k => { rows[k] = known[k] ? { data: known[k].data, version: known[k].version, updated_at: known[k].updated_at } : null; expect[k] = k in before ? canon(before[k]) : DEL; });
+      adoptInto(rows, "conflict", expect);
+    }
+    return theirs;
+  };
+  // E7: has the saved copy of k moved, since the job was requested, to
+  // someone else's change? Not when its token is the same; nor when it now
+  // holds just what is being put back (`back` — the user's own in-flight edit
+  // that landed); nor the data known then under a new token (A2's
+  // "refreshed": an old build's unchanged re-send — nobody changed it); nor
+  // a body of OURS confirmed meanwhile (knownAt.landed — an earlier edit
+  // landing under a later one, which is put back and sent at that token).
+  const savedMoved = (k, back, knownAt) => {
+    const was = knownAt.was[k], kn = known[k], tok = tokOf(kn), now = kn ? kn.canon : DEL;
+    return !!was && tok !== was.tok && now !== back && now !== was.canon && knownAt.landed[k] !== tok;
+  };
+  // E7: the weeks a refusal / cancel found someone else's change on are told
+  // in its ONE message — the caller's, from `error` — as any conflict is.
+  const tellTheirs = (out, ks) => {
+    const m = ks && ks.length ? toasts(ks.map(k => ({ k, outcome: "conflict" })), true) : null;
+    if (m) out.error = out.error ? `${out.error} ${m}` : m;
+    return out;
   };
   // A publish's refusals (keys): its weeks stay on screen and pending — the
   // follow-up push writes them — so none of them says "nothing was published".
   const PUB_AUTH = "Your sign-in has expired — the new weeks stay on this screen and will be saved once you sign in again (tap \"Sign in again\" at the top). Nobody was notified.";
-  const runAuthoritative = async (target, grant, what, keys, startShown, release, before) => {
+  const runAuthoritative = async (target, grant, what, keys, startShown, release, before, knownAt) => {
     const g = gen;
-    const refuse = (out) => { if (!keys && gen === g) showKnown(startShown, null, before); return out; };
+    const refuse = (out) => { if (!keys && gen === g) tellTheirs(out, showKnown(startShown, null, before, knownAt)); return out; };
     const signIn = keys ? PUB_AUTH : "Your sign-in has expired — tap \"Sign in again\", then retry. Nothing was changed.";
     busy = what || "saving"; report();
     try {
@@ -12853,22 +12917,37 @@ function createSchedSync(deps) {
     // push for anything edited meanwhile.
     // opts.before (clear / reset / restore): the mirror as it was BEFORE the
     // caller committed `target` — what a refusal or a deadline cancel puts
-    // back (showKnown). Without it, what the table holds.
+    // back (showKnown), where the saved copy hasn't moved to someone else's
+    // change meanwhile (E7). Without it, what the table holds.
+    // opts.late(r): the caller's text for the job's outcome if it ends after
+    // the caller stopped waiting (E8, tellLate).
     authoritative(target, grant, what, keysArr, opts) {
       const t = clone(target || {});
       const keys = keysArr ? new Set(keysArr) : null;
-      const before = !keys && opts && opts.before ? clone(opts.before) : null;
+      // E6 (A11): a clear / reset / restore requested while ANOTHER one is
+      // still queued or running never trusts `before` — the screen it was
+      // taken from shows that job's target, not yet applied (or never: both
+      // refused, both cancelled), and putting it back would send it as an
+      // ordinary push: a week deleted, a refused restore's copy written. It
+      // falls back to what the table holds. (A publish ahead doesn't count:
+      // its weeks are on screen, pending, either way — A14.)
+      const stacked = !keys && [...owners].some(o => o.withKnown);
+      const before = !keys && !stacked && opts && opts.before ? clone(opts.before) : null;
+      const late = opts && typeof opts.late === "function" ? opts.late : null;
       const startShown = shownMap([...new Set([...Object.keys(t), ...Object.keys(known), ...(keysArr || []), ...Object.keys(before || {})])]);
+      // E7: the saved copy of each of those weeks now — its token and its
+      // data — and (filled by confirm()) the ones of ours confirmed meanwhile.
+      const knownAt = before ? { was: Object.keys(startShown).reduce((m, k) => (m[k] = { tok: tokOf(known[k]), canon: known[k] ? known[k].canon : DEL }, m), {}), landed: {} } : null;
       // The weeks it owns from now until it's done (A11): a publish, its
       // period's; a clear / reset (an empty target), every week; a restore,
       // its target's and every week the table holds.
-      const owner = { what: what || "saving", keys: keys || (Object.keys(t).length ? new Set(Object.keys(t)) : null), withKnown: !keys, state: { started: false, cancelled: false } };
+      const owner = { what: what || "saving", keys: keys || (Object.keys(t).length ? new Set(Object.keys(t)) : null), withKnown: !keys, state: { started: false, cancelled: false }, knownAt };
       owner.release = () => { if (owners.delete(owner)) authoritativeQueued--; };
       owners.add(owner); authoritativeQueued++;
       const p = enqueue(async () => {
         if (owner.state.cancelled) return { ok: false, wrote: false, skipped: "cancelled", error: "It was cancelled before its turn came — nothing was changed." }; // past its deadline, or a sign-out, before its turn: it never runs
         owner.state.started = true;
-        try { return await runAuthoritative(t, !!grant, what, keys, startShown, owner.release, before); } finally { owner.release(); }
+        try { return await runAuthoritative(t, !!grant, what, keys, startShown, owner.release, before, knownAt); } finally { owner.release(); }
       });
       report();
       p.then(() => { if (!authoritativeQueued) api.push(); }, () => {});
@@ -12876,13 +12955,22 @@ function createSchedSync(deps) {
       // then: cancelled — it never runs later — and nothing was written (a
       // clear / reset / restore puts the screen back, as when it's refused).
       // Started: "still running" (a job is never cut short mid-write), and
-      // its outcome is toasted when it ends.
+      // its outcome is toasted when it ends — in the caller's words if it
+      // gave opts.late (E8).
       return settleBy(p, () => {
-        if (!owner.state.started) { owner.state.cancelled = true; owner.release(); if (!keys) showKnown(startShown, null, before); report(); return { ok: false, wrote: false, reason: "timeout", error: keys ? "The sync is stuck behind an earlier save — the new weeks stay on this screen and will be saved automatically once it gets through; keep the app open. Nobody was notified." : "The sync is stuck behind an earlier save — nothing was changed. Reload the app, then try again." }; }
-        p.then(r => lateOutcome(owner.what, r));
+        if (!owner.state.started) { owner.state.cancelled = true; owner.release();
+          const out = { ok: false, wrote: false, reason: "timeout", error: keys ? "The sync is stuck behind an earlier save — the new weeks stay on this screen and will be saved automatically once it gets through; keep the app open. Nobody was notified." : "The sync is stuck behind an earlier save — nothing was changed. Reload the app, then try again." };
+          if (!keys) tellTheirs(out, showKnown(startShown, null, before, knownAt));
+          report(); return out;
+        }
+        p.then(r => tellLate(owner.what, r, late));
         return { ok: false, wrote: false, running: true, reason: "timeout", error: `${jobLabel(owner.what)} is taking longer than expected. It's still running — keep the app open; you'll see a message when it ends.` };
       });
     },
+    // E6: the first clear / reset / restore / publish queued or running
+    // ("clear", "reset", "restore", "publish" — what the header's busy line
+    // names), or null: the app's one-job-at-a-time gate (P7) asks it.
+    jobPending: () => headOwner(),
     // Sign-out / user switch (A8): forget everything — the mirror too — fence
     // jobs in flight, and read the table again (public / OR views refill);
     // nothing is pushed until that load succeeds.

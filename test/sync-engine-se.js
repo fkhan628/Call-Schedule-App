@@ -204,7 +204,7 @@ const MUTANTS = [
   { id: "M44", what: "a job already writing at its deadline is reported as cancelled ('nothing was changed' while it writes — A5(f))",
     from: "        if (!owner.state.started) { owner.state.cancelled = true;", to: "        if (true) { owner.state.cancelled = true;" },
   { id: "M45", what: "the outcome of a job that ran past its deadline is never told (A5(f))",
-    from: "        p.then(r => lateOutcome(owner.what, r));\n", to: "" },
+    from: "        p.then(r => tellLate(owner.what, r, late));\n", to: "" },
   { id: "M46", what: "a sign-out doesn't cancel a clear still waiting for its turn (it runs under the next account — A8)",
     from: "      [...owners].forEach(o => { if (!o.state.started) { o.state.cancelled = true; o.release(); } });", to: "" },
   { id: "M47", what: "onAdopted is never called (an open week editor only finds out at Save — A13)",
@@ -252,13 +252,13 @@ const MUTANTS = [
     from: 'const extra = r && r.notice ? " " + r.notice : "";', to: 'const extra = "";' },
   // 14/n — a clear / reset / restore that writes nothing puts the screen back IN the job (SE67)
   { id: "M68", what: "a refused clear / restore leaves its target on screen (the follow-up push sends a refused restore; a refused clear trips the wipe guard)",
-    from: "const refuse = (out) => { if (!keys && gen === g) showKnown(startShown, null, before); return out; };", to: "const refuse = (out) => out;" },
+    from: "const refuse = (out) => { if (!keys && gen === g) tellTheirs(out, showKnown(startShown, null, before, knownAt)); return out; };", to: "const refuse = (out) => out;" },
   { id: "M69", what: "putting the screen back overwrites a week edited after the tap",
-    from: "      if (shownNow !== startShown[k]) return;\n      const has = before ? k in before", to: "      const has = before ? k in before" },
+    from: "      if (shownNow !== (k in startShown ? startShown[k] : DEL)) return;\n      const has = before ? k in before", to: "      const has = before ? k in before" },
   { id: "M70", what: "a clear cancelled at its deadline leaves its target on screen",
-    from: "owner.release(); if (!keys) showKnown(startShown, null, before); report(); return { ok: false, wrote: false, reason: \"timeout\"", to: "owner.release(); report(); return { ok: false, wrote: false, reason: \"timeout\"" },
+    from: "          if (!keys) tellTheirs(out, showKnown(startShown, null, before, knownAt));\n          report(); return out;", to: "          report(); return out;" },
   { id: "M71", what: "a refused publish takes its generated weeks off screen (they'd never be retried — A14)",
-    from: "const refuse = (out) => { if (!keys && gen === g) showKnown(startShown, null, before); return out; };", to: "const refuse = (out) => { if (gen === g) showKnown(startShown, null, before); return out; };" },
+    from: "const refuse = (out) => { if (!keys && gen === g) tellTheirs(out, showKnown(startShown, null, before, knownAt)); return out; };", to: "const refuse = (out) => { if (gen === g) tellTheirs(out, showKnown(startShown, null, before, knownAt)); return out; };" },
   // 15/n — A17(f): the list's missing ones, and the new emulator capabilities' (A17(d))
   { id: "M72", what: "no ledger at all: nothing sent is remembered (our own lost-response writes read as someone else's — A1)",
     from: "const addSent = (k, c) => { (sent[k] = sent[k] || []).push(c); if (sent[k].length > 20) sent[k].shift(); };", to: "const addSent = (k, c) => {};" },
@@ -274,7 +274,7 @@ const MUTANTS = [
     edits: [["return diff(target).changed.filter(k => known[k] && !inFlight.has(k)", "return diff(target).changed.filter(k => !inFlight.has(k)"],
       ["      const kn = known[k];\n      addSent(k, canon(target[k]));\n      return { url:", '      const kn = known[k];\n      addSent(k, canon(target[k]));\n      if (!kn) return { url: base(), init: { method: "POST", keepalive: true, headers: wh({ Prefer: "return=minimal" }), body: JSON.stringify({ week_monday: k, data: target[k], version: 1, updated_by: by, updated_at: ts }) } };\n      return { url:']] },
   { id: "M78", what: "known.updated_at taken from the body this client sent, not the server's row (A2: wrong CAS against a server that renders it)",
-    from: "        confirm(k, row);\n        // The server stored something other", to: "        confirm(k, row && Object.assign({}, row, { updated_at: ts }));\n        // The server stored something other" },
+    from: "        confirm(k, row, true);\n        // The server stored something other", to: "        confirm(k, row && Object.assign({}, row, { updated_at: ts }), true);\n        // The server stored something other" },
   { id: "M79", what: "the keepalive's CAS on the version alone (a stalled one lands on a week re-created at v1 — A2/A9)",
     from: 'return { url: `${base()}?week_monday=eq.${k}&${cas(kn)}`, init: { method: "PATCH", keepalive: true', to: 'return { url: `${base()}?week_monday=eq.${k}&version=eq.${kn.version}`, init: { method: "PATCH", keepalive: true' },
   { id: "M80", what: "a 404 PGRST205 is a client error (no read-back; 'reload/update the app' — A4: unknown)",
@@ -313,9 +313,9 @@ const MUTANTS = [
   { id: "M94", what: "E3: a push doesn't report as it starts (after a pull that failed early, 'Synced' stays over a week being saved — A16)",
     from: '    report();\n    if (!seeded) { report(); return { ok: false, skipped: "not-loaded" }; }', to: '    if (!seeded) { report(); return { ok: false, skipped: "not-loaded" }; }' },
   { id: "M95", what: "E4: a refused clear / restore puts back what the table holds, not the screen as it was (edits pending from before the tap are lost — I6)",
-    from: "const refuse = (out) => { if (!keys && gen === g) showKnown(startShown, null, before); return out; };", to: "const refuse = (out) => { if (!keys && gen === g) showKnown(startShown); return out; };" },
+    from: "const refuse = (out) => { if (!keys && gen === g) tellTheirs(out, showKnown(startShown, null, before, knownAt)); return out; };", to: "const refuse = (out) => { if (!keys && gen === g) showKnown(startShown); return out; };" },
   { id: "M96", what: "E4: a clear cancelled at its deadline puts back what the table holds (a slow save's landed edit is then reverted by the follow-up push)",
-    from: "if (!keys) showKnown(startShown, null, before); report(); return", to: "if (!keys) showKnown(startShown); report(); return" },
+    from: "if (!keys) tellTheirs(out, showKnown(startShown, null, before, knownAt));", to: "if (!keys) showKnown(startShown);" },
   { id: "M97", what: "E4: the weeks only the screen-as-it-was holds (new local weeks) are left out of what is put back",
     from: "...(keysArr || []), ...Object.keys(before || {})])]);", to: "...(keysArr || [])])]);" },
   { id: "M98", what: "E5: a publish whose re-read fails says 'nothing was published' (its weeks are then saved anyway — A14)",
@@ -333,6 +333,55 @@ const MUTANTS = [
     from: "return [...new Set([...changed, ...deletes, ...Object.keys(sent).filter(unconfirmed)])].sort();", to: "return [...new Set([...changed, ...deletes])].sort();" },
   { id: "N37", what: "T3: the pull adopts someone else's NEW week over this session's unsent new week (no dirty test for never-known weeks)",
     from: "(known[k] ? (!(k in cur0) || canon(cur0[k]) !== known[k].canon) : (k in cur0));", to: "(known[k] ? (!(k in cur0) || canon(cur0[k]) !== known[k].canon) : false);" },
+  // 18/n — review round 2, the engine items (E6–E8; killed in SE81–SE83), each with
+  // anchor-keeping variants (the bug again, the literal mutant's anchor left in place),
+  // and the test gaps' variants from r2-verify-tests/variants.cjs (V18, V5, V3, V2;
+  // killed in SE67b, SE76c, SE74b, SE73b) — every one killed by behaviour, not an anchor.
+  { id: "M102", what: "E6: a clear / restore requested while another is queued or running trusts its `before` (the first's target, put back, goes out as an ordinary push: a saved week deleted, a refused restore's copy written)",
+    from: "const stacked = !keys && [...owners].some(o => o.withKnown);", to: "const stacked = false;" },
+  { id: "M102b", what: "E6 (variant): only a RUNNING clear / restore counts — one still queued behind a slow save doesn't",
+    from: "const stacked = !keys && [...owners].some(o => o.withKnown);", to: "const stacked = !keys && [...owners].some(o => o.withKnown && o.state.started);" },
+  { id: "M102c", what: "E6 (variant, the `stacked` line kept): `before` is taken without looking at it",
+    from: "const before = !keys && !stacked && opts && opts.before ? clone(opts.before) : null;", to: "const before = !keys && opts && opts.before ? clone(opts.before) : null;" },
+  { id: "M102d", what: "E6 (variant): a PUBLISH queued ahead counts too (a clear requested behind it drops the edits pending from before its tap)",
+    from: "const stacked = !keys && [...owners].some(o => o.withKnown);", to: "const stacked = !keys && owners.size > 0;" },
+  { id: "M102e", what: "E6: the fallback puts back only the weeks known or shown at the request (a week a restore queued ahead created stays off screen, and the follow-up push deletes it)",
+    from: "    const weeks = only ? Object.keys(startShown) : [...new Set([...Object.keys(startShown), ...Object.keys(known)])];", to: "    const weeks = Object.keys(startShown);" },
+  { id: "M103", what: "E6: jobPending() says nothing is pending while a job is queued (the app's one-job-at-a-time gate never closes)",
+    from: "    jobPending: () => headOwner(),", to: "    jobPending: () => null," },
+  { id: "M104", what: "E7: a refusal puts back `before` even where the saved copy moved to someone else's change (a week a peer deleted is re-inserted, unseen)",
+    from: "      if (before && knownAt && savedMoved(k, has ? canon(data) : DEL, knownAt)) theirs.push(k);\n", to: "" },
+  { id: "M104b", what: "E7 (variant, the check kept): every confirmed copy counts as ours — the read-back that merely agreed with the cleared screen too",
+    from: "owners.forEach(o => { if (o.knownAt) { if (ours) o.knownAt.landed[k] = tokOf(known[k]); else delete o.knownAt.landed[k]; } });", to: "owners.forEach(o => { if (o.knownAt) o.knownAt.landed[k] = tokOf(known[k]); });" },
+  { id: "M105", what: "E7: a refusal's conflict isn't told in its message (the caller's one toast says nothing of the week someone else changed)",
+    from: "    if (m) out.error = out.error ? `${out.error} ${m}` : m;\n", to: "" },
+  { id: "M105b", what: "E7 (variant): the conflict's text goes to `notice`, which no refusal's caller shows",
+    from: "    if (m) out.error = out.error ? `${out.error} ${m}` : m;\n", to: "    if (m) out.notice = m;\n" },
+  { id: "M106", what: "E7: our own earlier body, confirmed while the job waits, is taken for someone else's change (the later edit lost, a false conflict)",
+    from: " && knownAt.landed[k] !== tok;", to: ";" },
+  { id: "M107", what: "E7: the data known at the request under a new token (an old build's unchanged re-send — A2's 'refreshed') is taken for someone else's change",
+    from: " && now !== was.canon", to: "" },
+  { id: "M108", what: "E7: a saved copy that now holds exactly what is put back is taken for someone else's change",
+    from: " && now !== back", to: "" },
+  { id: "M109", what: "E7: our own write's answer counts as ours only when it repeats the body sent (a server-normalised copy reads as someone else's)",
+    from: "        confirm(k, row, true);\n", to: "        confirm(k, row);\n" },
+  { id: "M110", what: "E8: a job refused after its deadline ignores the caller's late() (a factory reset's late refusal says 'nothing was changed')",
+    from: "        p.then(r => tellLate(owner.what, r, late));\n", to: "        p.then(r => lateOutcome(owner.what, r));\n" },
+  { id: "M111", what: "E8: late()'s text is toasted AND the engine's own (two messages for one outcome)",
+    from: "{ say(m, r && r.ok && !r.notice ? \"success\" : \"error\"); return; }", to: "{ say(m, r && r.ok && !r.notice ? \"success\" : \"error\"); }" },
+  { id: "M112", what: "E8: a late() that throws or returns no text silences the job's outcome (no fallback to the engine's own)",
+    from: "      if (typeof m === \"string\" && m) { say(", to: "      if (true) { if (typeof m === \"string\" && m) say(" },
+  { id: "M113", what: "E8: late() is called for a job fenced by a sign-out (the old session's outcome told on the next one's screen)",
+    from: "if (late && !(r && (r.skipped === \"reset\" || r.skipped === \"cancelled\"))) {", to: "if (late) {" },
+  { id: "V18", what: "r2-tests-2: a week in `before` is put back even if edited after the tap (a line ahead of the check — M69's anchor kept)",
+    from: "      const shownNow = k in cur ? canon(cur[k]) : DEL;\n", to: "      const shownNow = k in cur ? canon(cur[k]) : DEL;\n      if (before && k in before) { if (shownNow !== canon(before[k])) { changed = true; next[k] = clone(before[k]); } return; }\n" },
+  { id: "V5", what: "r2-tests-3: a week absent from `before` falls back to what the table holds (a local delete pending from before the tap comes back — M69's anchor kept)",
+    from: "const has = before ? k in before : !!known[k], data = before ? before[k] : has ? known[k].data : undefined;", to: "const has = before ? k in before || !!known[k] : !!known[k], data = before && k in before ? before[k] : has ? known[k].data : undefined;" },
+  { id: "V3", what: "r2-tests-6: the token blamed for a refused read is the one stored when it ANSWERS (a new token stored meanwhile is marked dead — M83–M85's anchors kept)",
+    from: "    const g = gen, tok = tokenNow(), h = rh();\n    const r = await req(url, { method: \"GET\", headers: h }, T.read);\n", to: "    const g = gen, h = rh();\n    const r = await req(url, { method: \"GET\", headers: h }, T.read);\n    const tok = tokenNow();\n" },
+  { id: "V2", what: "r2-tests-7: the conflict a push's re-read adopted isn't toasted when the push stops for a job requested meanwhile (results emptied — M82's anchor kept)",
+    from: "    if (job.mode !== \"force\" && authoritativeQueued > 0) { if (results.length) toasts(results); report(); return { ok: false, skipped: \"authoritative-queued\", results }; }\n",
+    to: "    if (job.mode !== \"force\" && authoritativeQueued > 0) results.length = 0;\n    if (job.mode !== \"force\" && authoritativeQueued > 0) { if (results.length) toasts(results); report(); return { ok: false, skipped: \"authoritative-queued\", results }; }\n" },
   // App mutants (A17(b)/(f)): the component code around the engine, killed by SE-X.
   { id: "X1", app: true, what: "Undo ignores the engine's blocked list (reverts a week someone else changed since — R15)",
     from: "    if (plan.blocked.length) {\n      showToast(`Can't undo", to: "    if (false) {\n      showToast(`Can't undo" },
@@ -2513,6 +2562,422 @@ async function scenarios(createSchedSync, check, line) {
     check("SE80 T3 an unsent new week here + someone else's insert of it + a pull: the pull doesn't take it (not among its adoptions); its follow-up push's INSERT meets theirs → a conflict: their copy shown, ONE toast 'changed by someone else', one conflicts entry; nothing pending",
       r.ok === true && !(r.adopted || []).includes(W[4]) && t.get(W[4]).data.dayCall === "theirs-new" && A.mirror[W[4]].dayCall === "theirs-new" && A.toasts.length === 1 && /changed by someone else/.test(A.toasts[0])
         && A.st().conflicts.map(c => c.k).join() === W[4] && A.engine.pending().length === 0, JSON.stringify({ r, shown: A.mirror[W[4]] && A.mirror[W[4]].dayCall, toasts: A.toasts, c: A.st().conflicts }));
+  });
+
+  // ── 18/n: review round 2 — the engine items E6–E8 and the test gaps (r2-tests-2, -3, -6, -7) ──
+  const READ_FAIL = "Couldn't read the saved schedule — nothing was changed.";
+  const theirsTold = (msgs) => msgs.filter(m => /changed by someone else/.test(String(m || ""))).length;
+  const jobOf = (S) => (typeof S.engine.jobPending === "function" ? S.engine.jobPending() : "no jobPending()");
+  const twoSessions = async (n, o) => {
+    const t = mkTable(seedRows(n || 4));
+    const A = mkSession(t, o), B = mkSession(t, { token: "TOK_B", user: "user-b" });
+    await A.engine.load(); await B.engine.load();
+    return { t, A, B };
+  };
+  const shortT = { read: 60000, write: 60000, stall: 15, deadline: 60 };
+  const fastT = { read: 60000, write: 60000, stall: 10, deadline: 25 };   // (the battery re-runs these: kept quick)
+
+  // SE81 — E6 (review r2 regress-1, A11): a clear / reset / restore requested
+  // while ANOTHER clear / reset / restore is still queued or running never
+  // trusts its `before` — the screen it was taken from shows that job's
+  // unapplied target — and falls back to what the table holds. Clear →
+  // restore and restore → clear, both queued behind an ordinary save: (i)
+  // both refused (their whole-table reads fail), (ii) both cancelled at their
+  // deadlines (nothing fails). Before E6 the second job's refusal put the
+  // first's target back on screen and the follow-up push sent it: a saved
+  // week deleted, or a refused restore's copy written. jobPending() names the
+  // first job from its request to its end (the app's one-job-at-a-time gate,
+  // P7). A PUBLISH queued ahead isn't one of them. And the fallback covers
+  // the weeks the table holds by the refusal: a week a restore queued ahead
+  // created (it lands; the clear behind it is refused) isn't deleted.
+  await run("SE81", async () => {
+    const stack = async (order, mode) => {
+      const t = mkTable(seedRows(6));
+      const A = mkSession(t, { timeouts: mode === "cancelled" ? fastT : undefined }); await A.engine.load();
+      // an ordinary edit whose PATCH holds the chain (cancelled: it lands, its answer is slow)
+      const hold = t.control.pause({ method: "PATCH", week: W[3], count: 1, when: mode === "cancelled" ? "after" : "before" });
+      A.edit(W[3], w => (w.nights.mon = "zz", w));
+      const pp = A.engine.push(); await hold.arrived;
+      const expectTable = Object.assign(clone(tableSched(t)), { [W[3]]: clone(A.mirror[W[3]]) });
+      const SNAP = { [W[0]]: wk("snap0"), [W[1]]: wk("snap1") };
+      const jobs = order === "clear-then-restore" ? [["clear", {}], ["restore", SNAP]] : [["restore", SNAP], ["clear", {}]];
+      const pend = [jobOf(A)], ps = [];
+      for (const [what, target] of jobs) {
+        const before = clone(A.mirror); A.mirror = clone(target);       // the caller: before, commitSchedule(target), authoritative()
+        ps.push(A.engine.authoritative(clone(target), true, what, undefined, { before }));
+        pend.push(jobOf(A));
+      }
+      if (mode === "refused") { t.control.fail({ method: "GET", week: "limit=5000", kind: "5xx-before", count: 2 }); hold.release(); }
+      const rs = [];
+      for (const p of ps) rs.push(await p);
+      if (mode === "cancelled") hold.release();
+      await pp; for (let i = 0; i < 3; i++) await A.engine.idle(); await sleep(5); await A.engine.idle();
+      pend.push(jobOf(A));
+      const ws = writes(t).map(e => e.method + " " + e.url.replace(/^.*schedule_weeks\?/, "").split("&")[0]);
+      return { A, t, rs, pend, ws, expectTable, first: jobs[0][0] };
+    };
+    for (const mode of ["refused", "cancelled"]) for (const order of ["clear-then-restore", "restore-then-clear"]) {
+      const x = await stack(order, mode);
+      check(`SE81 E6 ${order}, both ${mode === "refused" ? "refused (their whole-table reads fail)" : "cancelled at their deadlines (nothing fails)"}: the table is unchanged — the ordinary save is its only write (no DELETE, no snapshot copy written) — the screen equals it, nothing pending, no wipe-guard trip; both answer wrote:false`,
+        sameData(tableSched(x.t), x.expectTable) && x.ws.join() === "PATCH week_monday=eq." + W[3] && sameData(x.A.mirror, x.expectTable) && x.A.engine.pending().length === 0
+          && x.rs.every(r => r.ok === false && r.wrote === false) && x.A.wipeBlocked.length === 0,
+        JSON.stringify({ ws: x.ws, rs: x.rs.map(r => r.error), table: Object.keys(tableSched(x.t)).map(k => k + "=" + tableSched(x.t)[k].dayCall), shown: Object.keys(x.A.mirror).map(k => k + "=" + x.A.mirror[k].dayCall), pending: x.A.engine.pending() }));
+      check(`SE81 E6 …jobPending() (${order}, ${mode}): null before, the FIRST job's name from its request on (the second queued behind it), null once both have ended`,
+        JSON.stringify(x.pend) === JSON.stringify([null, x.first, x.first, null]), JSON.stringify(x.pend));
+    }
+    const t5 = mkTable(seedRows(4));
+    const P = mkSession(t5); await P.engine.load();
+    t5.control.fail({ method: "PATCH", week: W[2], kind: "throw" }); t5.control.fail({ method: "GET", week: W[2], kind: "throw" });
+    P.edit(W[2], w => (w.dayCall = "pending-edit", w)); await P.engine.push();   // W3's edit pending from before the tap (its PATCH threw, and its read-back)
+    const holdP = t5.control.pause({ method: "GET", week: "in.(", count: 1 });  // the publish's re-read of its week holds the chain
+    P.mirror = Object.assign({}, P.mirror, { [W[5]]: wk("gen5") });
+    const pubP = P.engine.authoritative(clone(P.mirror), false, "publish", [W[5]]); await holdP.arrived;
+    const beforeP = clone(P.mirror); P.mirror = {};
+    t5.control.fail({ method: "GET", week: "limit=5000", kind: "5xx-before" });
+    const clrP = P.engine.authoritative({}, true, "clear", undefined, { before: beforeP });
+    const pendP = jobOf(P);
+    holdP.release(); const rp = await pubP, rc = await clrP; await P.engine.idle(); await P.engine.idle();
+    check("SE81 E6 …a PUBLISH queued ahead isn't a clear / reset / restore: the clear requested behind it (then refused) still puts back the screen as it was before its tap — the pending edit included, which the follow-up push saves — beside the published week; jobPending() names the publish",
+      pendP === "publish" && rp.ok === true && rc.ok === false && rc.wrote === false && t5.get(W[2]).data.dayCall === "pending-edit" && P.mirror[W[2]].dayCall === "pending-edit"
+        && !!t5.get(W[5]) && t5.get(W[5]).data.dayCall === "gen5" && !!P.mirror[W[5]] && P.mirror[W[5]].dayCall === "gen5" && Object.keys(P.mirror).length === 5 && P.engine.pending().length === 0,
+      JSON.stringify({ pendP, rp: rp.ok, rc, shown: Object.keys(P.mirror).map(k => k + "=" + P.mirror[k].dayCall), rows: t5.rows().map(r => r.week_monday + "=" + r.data.dayCall), pending: P.engine.pending() }));
+    // The fallback covers the weeks the table holds by the refusal, not only those known at the request:
+    // a restore queued ahead LANDS — with a week the table didn't have — and the clear behind it is refused.
+    const t6 = mkTable(seedRows(6));
+    const R = mkSession(t6); await R.engine.load();
+    const hold6 = t6.control.pause({ method: "PATCH", week: W[3], count: 1 });
+    R.edit(W[3], w => (w.nights.mon = "zz", w));
+    const pp6 = R.engine.push(); await hold6.arrived;
+    const SNAP6 = Object.assign(clone(tableSched(t6)), { [W[0]]: wk("snap0"), [W[8]]: wk("new8") });
+    const bR = clone(R.mirror); R.mirror = clone(SNAP6); const pR = R.engine.authoritative(clone(SNAP6), true, "restore", undefined, { before: bR });
+    const bC = clone(R.mirror); R.mirror = {}; const pC = R.engine.authoritative({}, true, "clear", undefined, { before: bC });
+    let whole = 0;   // the restore's whole-table read answers; the clear's (the second) fails
+    R.fetchHook = (u, i) => (/limit=5000/.test(u) && /select=week_monday,data/.test(u) && ++whole === 2) ? Promise.resolve({ ok: false, status: 503, text: () => Promise.resolve("upstream connect error") }) : t6.fetch(u, i);
+    hold6.release();
+    const rR = await pR, rC = await pC; await pp6; for (let i = 0; i < 3; i++) await R.engine.idle(); R.fetchHook = null;
+    check("SE81 E6 …the fallback covers the weeks the table holds by then: a restore queued ahead LANDS — with a week the table didn't have — and the clear behind it is refused: the restored weeks stay, the new one on screen and in the table; the follow-up push deletes nothing",
+      rR.ok === true && rC.ok === false && rC.wrote === false && whole === 2 && !!t6.get(W[8]) && t6.get(W[8]).data.dayCall === "new8" && !!R.mirror[W[8]] && R.mirror[W[8]].dayCall === "new8"
+        && t6.get(W[0]).data.dayCall === "snap0" && sameData(R.mirror, tableSched(t6)) && !writes(t6).some(e => e.method === "DELETE") && R.engine.pending().length === 0,
+      JSON.stringify({ rR: rR.ok, rC, whole, rows: t6.rows().map(r => r.week_monday + "=" + r.data.dayCall), shown: Object.keys(R.mirror).sort(), w: writes(t6).map(e => e.method + " " + e.url.replace(/^.*schedule_weeks\??/, "").split("&")[0]) }));
+  });
+
+  // SE82 — E7 (review r2 regress-3, I2): a refused or cancelled clear puts
+  // back `before[k]` only where the SAVED copy hasn't moved, since the job
+  // was requested, to someone else's change. (a) A's edit of W3 is on the
+  // wire, B deletes W3, A taps Clear and the clear's whole-table read fails:
+  // A's PATCH matches 0 rows and its read-back (no row) agrees with the
+  // cleared screen, so the engine forgets W3. Putting A's edit back let the
+  // follow-up push INSERT it — B's delete undone, nobody told. The refusal
+  // shows the deletion and tells it as a conflict: in its own message (the
+  // caller's one toast) and the header's conflicts. (a') The same at a
+  // deadline cancel. (b) B EDITS W3 instead: one loud conflict. (c) A's own
+  // PATCH lands before the refusal: MY-EDIT stays, no conflict. Not someone
+  // else's change either: (d) A's EARLIER body landing under a later edit —
+  // the later edit is put back and saved; (e) an old build re-sending the
+  // week unchanged (a new token, the same data — A2); (f) the saved copy now
+  // holding just what is put back (a publish queued ahead re-read it); (g)
+  // our own write's answer, though the server normalised what it stored.
+  await run("SE82", async () => {
+    {
+      const { t, A, B } = await twoSessions();
+      const hold = t.control.pause({ method: "PATCH", week: W[2], count: 1 });
+      A.edit(W[2], w => (w.dayCall = "a-edit", w));
+      const pp = A.engine.push(); await hold.arrived;                   // A's PATCH of W3 is on the wire
+      B.drop(W[2]); await B.engine.push();                              // B deletes W3: it lands
+      const before = clone(A.mirror); A.mirror = {};                    // A taps Clear
+      t.control.fail({ method: "GET", week: "limit=5000", kind: "5xx-before" });
+      const from = t.log.length, adopted0 = A.adopted.length;
+      const cp = A.engine.authoritative({}, true, "clear", undefined, { before });
+      hold.release();
+      const r = await cp; await pp; await A.engine.idle(); await A.engine.idle();
+      check("SE82 E7 (a) A's edit on the wire + B's delete of that week + A's clear refused (its read failed): the deletion stands — never re-inserted, not on A's screen — and it is told ONCE, as a conflict, in the refusal's own message (after the reason) with a conflicts entry and onAdopted; the other weeks back, nothing pending",
+        r.ok === false && r.wrote === false && String(r.error || "").startsWith(READ_FAIL + " ") && /The week of .+ was changed by someone else — showing the latest\./.test(r.error || "") && theirsTold([r.error].concat(A.toasts)) === 1
+          && !t.get(W[2]) && !(W[2] in A.mirror) && Object.keys(A.mirror).length === 3 && !writes(t, from).some(e => e.method === "POST") && A.st().conflicts.map(c => c.k).join() === W[2]
+          && A.adopted.slice(adopted0).some(x => x.weeks.includes(W[2])) && A.engine.pending().length === 0,
+        JSON.stringify({ r, toasts: A.toasts, tableHas: !!t.get(W[2]), shown: Object.keys(A.mirror), w: writes(t, from).map(e => e.method + " " + e.url.split("?")[1]), c: A.st().conflicts }));
+    }
+    {
+      const { t, A, B } = await twoSessions(4, { timeouts: shortT });
+      const hold = t.control.pause({ method: "PATCH", week: W[2], count: 1 }), hold2 = t.control.pause({ method: "DELETE", week: W[3], count: 1 });
+      A.edit(W[2], w => (w.dayCall = "a-edit", w)); A.drop(W[3]);       // an edit of W3 and a delete of W4, in one push
+      const pp = A.engine.push(); await hold.arrived;
+      B.drop(W[2]); await B.engine.push();
+      const before = clone(A.mirror); A.mirror = {};
+      const from = t.log.length;
+      const cp = A.engine.authoritative({}, true, "clear", undefined, { before });
+      hold.release(); await hold2.arrived;           // W3's PATCH answered (0 rows; read back: no row) and W4's DELETE holds the chain past the deadline
+      const r = await Promise.race([cp, sleep(600).then(() => "no answer")]);
+      const atCancel = Object.keys(A.mirror).sort();
+      hold2.release(); await pp; await A.engine.idle(); await A.engine.idle(); await sleep(5); await A.engine.idle();
+      check("SE82 E7 (a') …the same at a DEADLINE cancel (the clear still queued behind that save): B's deletion is shown and told once in the cancel's message, never re-inserted; A's own pending delete (W4) stays off the screen and lands",
+        r !== "no answer" && r.reason === "timeout" && r.wrote === false && /changed by someone else/.test(r.error || "") && theirsTold([r.error].concat(A.toasts)) === 1 && atCancel.join() === [W[0], W[1]].join()
+          && !t.get(W[2]) && !t.get(W[3]) && Object.keys(A.mirror).sort().join() === [W[0], W[1]].join() && !writes(t, from).some(e => e.method === "POST") && A.st().conflicts.map(c => c.k).join() === W[2] && A.engine.pending().length === 0,
+        JSON.stringify({ r, atCancel, toasts: A.toasts, rows: t.rows().map(x => x.week_monday), w: writes(t, from).map(e => e.method + " " + e.url.split("?")[1]) }));
+    }
+    {
+      const { t, A, B } = await twoSessions();
+      const hold = t.control.pause({ method: "PATCH", week: W[2], count: 1 });
+      A.edit(W[2], w => (w.dayCall = "a-edit", w));
+      const pp = A.engine.push(); await hold.arrived;
+      B.edit(W[2], w => (w.dayCall = "b-edit", w)); await B.engine.push(); // B EDITS W3 meanwhile: it lands
+      const before = clone(A.mirror); A.mirror = {};
+      t.control.fail({ method: "GET", week: "limit=5000", kind: "5xx-before" });
+      const cp = A.engine.authoritative({}, true, "clear", undefined, { before });
+      hold.release();
+      const r = await cp; await pp; await A.engine.idle(); await A.engine.idle();
+      check("SE82 E7 (b) …B EDITS the week instead: B's change is never overwritten — B's copy shown and kept — and told ONCE as a conflict (a conflicts entry); nothing pending",
+        r.ok === false && r.wrote === false && t.get(W[2]).data.dayCall === "b-edit" && A.mirror[W[2]].dayCall === "b-edit" && theirsTold([r.error].concat(A.toasts)) === 1
+          && A.st().conflicts.map(c => c.k).join() === W[2] && Object.keys(A.mirror).length === 4 && A.engine.pending().length === 0,
+        JSON.stringify({ r, toasts: A.toasts, table: t.get(W[2]).data.dayCall, shown: A.mirror[W[2]] && A.mirror[W[2]].dayCall, c: A.st().conflicts }));
+    }
+    {
+      const t = mkTable(seedRows(4)); const A = mkSession(t); await A.engine.load();
+      const slow = t.control.pause({ method: "PATCH", week: W[1], count: 1, when: "after" });   // it LANDS; its answer comes before the job runs
+      A.edit(W[1], w => (w.dayCall = "MY-EDIT", w));
+      const pp = A.engine.push(); await slow.arrived;
+      const before = clone(A.mirror); A.mirror = {};
+      t.control.fail({ method: "GET", week: "limit=5000", kind: "5xx-before" });
+      const cp = A.engine.authoritative({}, true, "clear", undefined, { before });
+      slow.release();
+      const r = await cp; await pp; await A.engine.idle(); await A.engine.idle();
+      check("SE82 E7 (c) (control, app-1 b) A's OWN PATCH lands (answered before the job runs), then the clear is refused: MY-EDIT stays on screen and in the table, one PATCH in all, no conflict told or recorded, nothing pending",
+        r.ok === false && r.wrote === false && r.error === READ_FAIL && A.mirror[W[1]].dayCall === "MY-EDIT" && t.get(W[1]).data.dayCall === "MY-EDIT" && writes(t).length === 1
+          && theirsTold([r.error].concat(A.toasts)) === 0 && A.st().conflicts.length === 0 && Object.keys(A.mirror).length === 4 && A.engine.pending().length === 0,
+        JSON.stringify({ r, toasts: A.toasts, shown: A.mirror[W[1]] && A.mirror[W[1]].dayCall, w: writes(t).length, c: A.st().conflicts }));
+    }
+    {
+      const t = mkTable(seedRows(4)); const A = mkSession(t); await A.engine.load();
+      const slow = t.control.pause({ method: "PATCH", week: W[1], count: 1, when: "after" });   // e1 lands; its answer is slow
+      A.edit(W[1], w => (w.dayCall = "e1", w));
+      const pp = A.engine.push(); await slow.arrived;
+      A.edit(W[1], w => (w.dayCall = "e2", w)); A.engine.push();        // edited again (its push queues)
+      const before = clone(A.mirror); A.mirror = {};
+      t.control.fail({ method: "GET", week: "limit=5000", kind: "5xx-before" });
+      const cp = A.engine.authoritative({}, true, "clear", undefined, { before });
+      slow.release();
+      const r = await cp; await pp; await A.engine.idle(); await A.engine.idle();
+      const patches = writes(t).filter(e => e.method === "PATCH").map(e => e.body.data.dayCall);
+      check("SE82 E7 (d) …A's EARLIER body (e1) landing under a later edit (e2) while the clear waits isn't someone else's change: e2 is put back (pending), no conflict told or recorded, and the follow-up push saves it at e1's token",
+        r.ok === false && r.error === READ_FAIL && theirsTold([r.error].concat(A.toasts)) === 0 && A.st().conflicts.length === 0 && A.mirror[W[1]].dayCall === "e2" && t.get(W[1]).data.dayCall === "e2"
+          && patches.join() === "e1,e2" && A.engine.pending().length === 0,
+        JSON.stringify({ r, toasts: A.toasts, shown: A.mirror[W[1]] && A.mirror[W[1]].dayCall, table: t.get(W[1]).data.dayCall, patches, c: A.st().conflicts }));
+    }
+    {
+      const t = mkTable(seedRows(4)); const A = mkSession(t); await A.engine.load();
+      const hold = t.control.pause({ method: "PATCH", week: W[1], count: 1 });
+      A.edit(W[1], w => (w.dayCall = "mine", w));
+      const pp = A.engine.push(); await hold.arrived;
+      await t.oldBuild("TOK_B", "user-b").upsert({ [W[1]]: clone(t.get(W[1]).data) });   // an old build re-sends W2 UNCHANGED: version kept, updated_at moved (A2)
+      const moved = t.get(W[1]).version === 3 && t.get(W[1]).updated_at !== "2026-10-01T08:00:00+00:00";
+      const before = clone(A.mirror); A.mirror = {};
+      t.control.fail({ method: "GET", week: "limit=5000", kind: "5xx-before" });
+      const cp = A.engine.authoritative({}, true, "clear", undefined, { before });
+      hold.release();
+      const r = await cp; await pp; await A.engine.idle(); await A.engine.idle();
+      check("SE82 E7 (e) …nor an old build re-sending the week UNCHANGED meanwhile (a new token, the data known at the tap — A2's 'refreshed'): A's edit is put back, no conflict told or recorded, and the follow-up push saves it at the new token",
+        moved && r.ok === false && r.error === READ_FAIL && theirsTold([r.error].concat(A.toasts)) === 0 && A.st().conflicts.length === 0 && A.mirror[W[1]].dayCall === "mine" && t.get(W[1]).data.dayCall === "mine"
+          && t.get(W[1]).version === 4 && A.engine.pending().length === 0,
+        JSON.stringify({ moved, r, toasts: A.toasts, shown: A.mirror[W[1]] && A.mirror[W[1]].dayCall, row: t.get(W[1]), c: A.st().conflicts }));
+    }
+    {
+      const { t, A, B } = await twoSessions();
+      B.edit(W[5], () => wk("gen5")); await B.engine.push();             // B published W6 (A hasn't pulled it)…
+      const holdR = t.control.pause({ method: "GET", week: "in.(", count: 1 });   // …A's publish of the very same week re-reads it: held
+      A.mirror = Object.assign({}, A.mirror, { [W[5]]: wk("gen5") });
+      const pub = A.engine.authoritative(clone(A.mirror), false, "publish", [W[5]]); await holdR.arrived;
+      const before = clone(A.mirror); A.mirror = {};
+      t.control.fail({ method: "GET", week: "limit=5000", kind: "5xx-before" });
+      const cp = A.engine.authoritative({}, true, "clear", undefined, { before });
+      holdR.release();
+      const rp = await pub, r = await cp; await A.engine.idle(); await A.engine.idle();
+      check("SE82 E7 (f) …nor a saved copy that now holds exactly what is put back (the publish ahead re-read B's identical week): it's shown, no conflict told or recorded, nothing pending",
+        rp.ok === true && r.ok === false && r.error === READ_FAIL && theirsTold([r.error].concat(A.toasts)) === 0 && A.st().conflicts.length === 0 && !!A.mirror[W[5]] && A.mirror[W[5]].dayCall === "gen5"
+          && Object.keys(A.mirror).length === 5 && A.engine.pending().length === 0,
+        JSON.stringify({ rp: rp.ok, r, toasts: A.toasts, shown: Object.keys(A.mirror), c: A.st().conflicts, pending: A.engine.pending() }));
+    }
+    {
+      const t = mkTable(seedRows(4)); const A = mkSession(t); await A.engine.load();
+      const slow = t.control.pause({ method: "PATCH", week: W[1], count: 1, when: "after" });   // it lands; its answer comes before the job runs…
+      let normalise = true;                                             // …and says the server stored a normalised copy (a trigger added a field)
+      A.fetchHook = async (u, i) => {
+        const res = await t.fetch(u, i);
+        if (!normalise || !i || i.method !== "PATCH") return res;
+        normalise = false;
+        const body = JSON.parse(await res.text());
+        if (Array.isArray(body) && body[0]) body[0].data = Object.assign({}, body[0].data, { normalised: true });
+        return { ok: res.ok, status: res.status, text: () => Promise.resolve(JSON.stringify(body)) };
+      };
+      A.edit(W[1], w => (w.dayCall = "MY-EDIT", w));
+      const pp = A.engine.push(); await slow.arrived;
+      const before = clone(A.mirror); A.mirror = {};
+      t.control.fail({ method: "GET", week: "limit=5000", kind: "5xx-before" });
+      const cp = A.engine.authoritative({}, true, "clear", undefined, { before });
+      slow.release();
+      const r = await cp; await pp; A.fetchHook = null; await A.engine.idle(); await A.engine.idle();
+      check("SE82 E7 (g) …nor our own write's ANSWER, though the server normalised what it stored (not a body we sent): MY-EDIT is put back, no conflict told or recorded, nothing pending",
+        r.ok === false && r.error === READ_FAIL && theirsTold([r.error].concat(A.toasts)) === 0 && A.st().conflicts.length === 0 && A.mirror[W[1]].dayCall === "MY-EDIT" && A.engine.pending().length === 0,
+        JSON.stringify({ r, toasts: A.toasts, shown: A.mirror[W[1]], c: A.st().conflicts, pending: A.engine.pending() }));
+    }
+  });
+
+  // SE83 — E8 (review r2 fixes-1, A5(f)): a job that ends after its caller
+  // stopped waiting is told in the CALLER's words when it passes
+  // opts.late(r): called once, with the job's result, and its text is the
+  // only toast. A late() that is missing, throws or returns no text falls
+  // back to the engine's own late toast; a job answered in time never calls
+  // it (its caller tells it); a job fenced by a sign-out tells nothing.
+  await run("SE83", async () => {
+    const lateJob = async (late, o) => {
+      o = o || {};
+      const t = mkTable(seedRows(4));
+      const A = mkSession(t, { timeouts: o.inTime ? undefined : fastT }); await A.engine.load();
+      const before = clone(A.mirror); A.mirror = {};
+      t.control.fail({ method: "GET", week: "limit=5000", kind: "5xx-before" });
+      const hold = t.control.pause({ method: "GET", week: "limit=5000", count: 1 });   // the job's own whole-table read: it has STARTED; it answers 503 once released
+      const calls = [], opts = { before };
+      if (late) opts.late = (r) => { calls.push(clone(r)); return late(r); };
+      const cp = A.engine.authoritative({}, true, "clear", undefined, opts); await hold.arrived;
+      let answer;
+      if (o.inTime) { hold.release(); answer = await cp; }
+      else {
+        answer = await Promise.race([cp, sleep(600).then(() => "no answer")]);   // past the deadline: "still running"
+        if (o.signOut) { A.engine.reset(); A.token = "TOK_B"; A.user = "user-b"; }
+        hold.release();
+      }
+      await A.engine.idle(); await A.engine.idle(); await sleep(5); await A.engine.idle();
+      return { A, t, answer, calls, toasts: A.toasts.slice() };
+    };
+    const LATE = (r) => `Factory reset: the weeks were NOT cleared — ${r.error}`;
+    const x = await lateJob(LATE);
+    check("SE83 E8 a clear that STARTED before its deadline (its whole-table read out) and is refused after it: its caller was told 'still running'; when it ends, late(r) is called ONCE with the job's result, and late's text is the ONLY toast (not the engine's own)",
+      x.answer !== "no answer" && x.answer.running === true && x.calls.length === 1 && x.calls[0].ok === false && x.calls[0].wrote === false && x.calls[0].error === READ_FAIL
+        && JSON.stringify(x.toasts) === JSON.stringify([LATE(x.calls[0])]) && Object.keys(x.A.mirror).length === 4 && writes(x.t).length === 0,
+      JSON.stringify({ answer: x.answer, calls: x.calls, toasts: x.toasts }));
+    const GENERIC = "Clearing the schedule stopped — " + READ_FAIL;
+    const m = await lateJob(null);
+    const caught0 = caught.length;
+    const th = await lateJob(() => { throw new Error("an app bug in late"); });
+    const thrown = caught.slice(caught0);
+    caught.splice(caught0, thrown.length);   // expected here — not counted against SE-I
+    const nu = await lateJob(() => null);
+    check("SE83 E8 …late() missing, throwing (caught and logged once — the job and the chain unharmed) or returning no text: the engine's own late toast, once",
+      [m, th, nu].every(y => y.answer.running === true && JSON.stringify(y.toasts) === JSON.stringify([GENERIC])) && th.calls.length === 1 && nu.calls.length === 1
+        && thrown.length === 1 && /^opts\.late threw an app bug in late$/.test(thrown[0]) && !th.A.internal,
+      JSON.stringify({ toasts: [m.toasts, th.toasts, nu.toasts], calls: [th.calls.length, nu.calls.length], thrown }));
+    const it = await lateJob(LATE, { inTime: true }), so = await lateJob(LATE, { signOut: true });
+    check("SE83 E8 …a job refused IN time never calls late() (its caller tells it) and the engine toasts nothing; a job fenced by a sign-out mid-job (skipped 'reset') calls nothing and tells nothing",
+      it.answer.ok === false && it.answer.error === READ_FAIL && !it.answer.running && it.calls.length === 0 && it.toasts.length === 0
+        && so.answer !== "no answer" && so.answer.running === true && so.calls.length === 0 && so.toasts.length === 0,
+      JSON.stringify({ it: { answer: it.answer, calls: it.calls.length, toasts: it.toasts }, so: { answer: so.answer, calls: so.calls.length, toasts: so.toasts } }));
+  });
+
+  // SE67b — review r2 tests-2 (E4, M69) on the app's path, WITH `before`
+  // (17/n P2 always passes it): a week edited AFTER the tap — while a clear's
+  // or a restore's whole-table read is out, or while a clear waits for its
+  // turn and is cancelled at its deadline — keeps the edit, which is pushed;
+  // only the weeks still showing the job's target are put back as they were.
+  await run("SE67b", async () => {
+    for (const what of ["clear", "restore"]) {
+      const t = mkTable(seedRows(4));
+      const A = mkSession(t); await A.engine.load();
+      const before = clone(A.mirror);
+      const target = what === "clear" ? {} : W.slice(0, 4).reduce((o, k) => (o[k] = wk("snap"), o), {});
+      A.mirror = clone(target);                                         // commitSchedule(target)
+      t.control.fail({ method: "GET", week: "limit=5000", kind: "5xx-before" });
+      const hold = t.control.pause({ method: "GET", week: "limit=5000", count: 1 });
+      const cp = A.engine.authoritative(clone(target), true, what, undefined, { before }); await hold.arrived;
+      A.edit(W[1], () => wk("after-tap"));                              // edited AFTER the tap, while the job's read is out
+      hold.release();
+      const r = await cp;
+      const shown = A.mirror[W[1]] && A.mirror[W[1]].dayCall, others = [0, 2, 3].map(i => A.mirror[W[i]] && A.mirror[W[i]].dayCall);
+      await A.engine.idle(); await A.engine.idle();
+      check(`SE67b (${what}, with before) a ${what} refused (its read failed) keeps a week edited AFTER the tap — on screen, then saved by the follow-up push (one PATCH); the other weeks are put back as they were before the tap`,
+        r.ok === false && r.wrote === false && shown === "after-tap" && others.every((c, j) => c === before[W[[0, 2, 3][j]]].dayCall) && t.get(W[1]).data.dayCall === "after-tap"
+          && writes(t).length === 1 && writes(t)[0].method === "PATCH" && Object.keys(A.mirror).length === 4 && A.engine.pending().length === 0,
+        JSON.stringify({ r, shown, others, table: t.get(W[1]).data.dayCall, w: writes(t).map(e => e.method) }));
+    }
+    const t2 = mkTable(seedRows(4));
+    const B = mkSession(t2, { timeouts: shortT }); await B.engine.load();
+    const hang = t2.control.pause({ method: "GET", count: 1 });           // the pull's version list never answers: the chain is stuck
+    const pl = B.engine.pull(); await hang.arrived;
+    const before = clone(B.mirror); B.mirror = {};
+    const cp = B.engine.authoritative({}, true, "clear", undefined, { before });
+    B.edit(W[1], () => wk("after-tap"));                                // edited while the clear waits for its turn
+    const r = await Promise.race([cp, sleep(600).then(() => "no answer")]);
+    const shown = B.mirror[W[1]] && B.mirror[W[1]].dayCall, n = Object.keys(B.mirror).length;
+    hang.release(); await pl; await B.engine.idle(); await B.engine.idle(); await sleep(5); await B.engine.idle();
+    check("SE67b (deadline, with before) a clear cancelled at its deadline keeps a week edited after the tap (the others back as they were); once the chain moves, the edit is saved and nothing is deleted",
+      r !== "no answer" && r.reason === "timeout" && r.wrote === false && shown === "after-tap" && n === 4 && t2.get(W[1]).data.dayCall === "after-tap" && t2.rows().length === 4
+        && !writes(t2).some(e => e.method === "DELETE") && B.engine.pending().length === 0,
+      JSON.stringify({ r, shown, n, table: t2.get(W[1]).data.dayCall, w: writes(t2).map(e => e.method) }));
+  });
+
+  // SE76c — review r2 tests-3 (E4): a local DELETE pending from before the
+  // tap (its DELETE threw, and its read-back) and then a clear whose read
+  // fails: the screen is back as it was — the removed week stays OFF it and
+  // pending (never put back from what the table holds) — and the follow-up
+  // push deletes it.
+  await run("SE76c", async () => {
+    const t = mkTable(seedRows(4));
+    const A = mkSession(t); await A.engine.load();
+    t.control.fail({ method: "DELETE", week: W[3], kind: "throw" });
+    t.control.fail({ method: "GET", week: W[3], kind: "throw" });
+    A.drop(W[3]); await A.engine.push();                                // the user removed W4: pending
+    const setup = A.engine.pending().join() === W[3] && !!t.get(W[3]) && !(W[3] in A.mirror);
+    const before = clone(A.mirror); A.mirror = {};
+    t.control.fail({ method: "GET", week: "limit=5000", kind: "5xx-before" });
+    const c = await A.engine.authoritative({}, true, "clear", undefined, { before });
+    const shownAfter = W[3] in A.mirror, pendAfter = A.engine.pending().join(), nShown = Object.keys(A.mirror).length;
+    await A.engine.idle(); await A.engine.idle();
+    check("SE76c E4 a clear refused (its read failed) with a local DELETE pending from before the tap: the removed week stays OFF the screen and pending, the other weeks come back — and the follow-up push deletes it",
+      setup && c.ok === false && c.wrote === false && !shownAfter && nShown === 3 && pendAfter === W[3] && !t.get(W[3]) && t.rows().length === 3 && A.engine.pending().length === 0,
+      JSON.stringify({ setup, c, shownAfter, nShown, pendAfter, rows: t.rows().map(r => r.week_monday), pendingNow: A.engine.pending() }));
+  });
+
+  // SE74b — review r2 tests-6 (E2): the token marked dead is the one the
+  // read was SENT with. A pull's read goes out with TOK_A, "Sign in again"
+  // stores TOK_A2 while it is out, then the server refuses TOK_A: the new
+  // token isn't marked dead — no sign-in line, writes not blocked: the next
+  // edit lands under TOK_A2.
+  await run("SE74b", async () => {
+    const t = mkTable(seedRows(3));
+    const A = mkSession(t); await A.engine.load();
+    t.control.expiredTokens.add("TOK_A");
+    const hold = t.control.pause({ method: "GET", count: 1 });
+    const p = A.engine.pull(); await hold.arrived;                      // the version list, sent with TOK_A
+    t.control.users.TOK_A2 = "user-a"; A.token = "TOK_A2";              // "Sign in again" stores a new token while it is out
+    hold.release(); await p; await A.engine.idle();
+    const after = { blocked: A.engine.authBlocked(), auth: A.st().auth, authNeeded: A.last().authNeeded, line: kindOfLine(A.last()) };
+    const sentWith = (t.log.find(e => e.method === "GET" && e.status === 401) || { headers: {} }).headers.authorization;
+    A.edit(W[0], w => (w.dayCall = "after-sign-in", w));
+    const from = t.log.length; const r = await A.engine.push();
+    const ws = writes(t, from);
+    check("SE74b E2 a read SENT with the old token and refused after a new token was stored marks the OLD token dead, not the new one: no sign-in line, writes not blocked — the next edit lands under the new token",
+      sentWith === "Bearer TOK_A" && !after.blocked && after.auth === "ok" && after.authNeeded === false && after.line !== "auth" && r.ok === true && ws.length === 1 && ws[0].headers.authorization === "Bearer TOK_A2" && t.get(W[0]).data.dayCall === "after-sign-in",
+      JSON.stringify({ sentWith, after, r: r.results, ws: ws.map(e => e.method + " " + e.headers.authorization + " " + e.status) }));
+  });
+
+  // SE73b — review r2 tests-7 (E1, 16/n deviation 1): a push whose re-read
+  // ADOPTS someone else's copy of an unconfirmed week, while a publish of
+  // another week is requested meanwhile, stops for the publish (E1) — and
+  // still tells that conflict: one "changed by someone else" toast, their
+  // copy shown, a conflicts entry; the publish lands.
+  await run("SE73b", async () => {
+    const t = mkTable(seedRows(5));
+    const A = mkSession(t), B = mkSession(t, { token: "TOK_B", user: "user-b" });
+    await A.engine.load(); await B.engine.load();
+    const setup = await unconfirmedW0(t, A);                            // A's edit of W1 unconfirmed
+    B.edit(W[0], w => (w.dayCall = "theirs", w)); await B.engine.push();
+    const hold = t.control.pause({ method: "GET", week: W[0], count: 1 });
+    const P = A.engine.push(); await hold.arrived;                      // A's push in its re-read of W1
+    A.mirror = Object.assign({}, A.mirror, { [W[6]]: wk("pub") });
+    const J = A.engine.authoritative(clone(A.mirror), false, "publish", [W[6]]);   // a publish (of another week) requested meanwhile
+    hold.release();
+    const pr = await P, jr = await J; await A.engine.idle(); await A.engine.idle();
+    check("SE73b E1 a conflict the push's re-read adopts is TOLD although the push then stops for the publish requested meanwhile: their copy shown, ONE 'changed by someone else' toast, a conflicts entry; the publish lands",
+      setup && pr.skipped === "authoritative-queued" && A.mirror[W[0]].dayCall === "theirs" && t.get(W[0]).data.dayCall === "theirs" && theirsTold(A.toasts) === 1
+        && A.st().conflicts.map(c => c.k).join() === W[0] && jr.ok === true && !!t.get(W[6]) && t.get(W[6]).data.dayCall === "pub" && A.engine.pending().length === 0,
+      JSON.stringify({ setup, pr: { skipped: pr.skipped, results: pr.results }, toasts: A.toasts, shown: A.mirror[W[0]].dayCall, jr: jr.ok }));
   });
 
   // SE-I — no scenario above produced an internal error, a caught callback
