@@ -533,6 +533,11 @@ function CallSchedule() {
   const setupReadRef = useRef(false);
   const loadedAtRef = useRef(null); // timestamp when initial load completed — prevents auto-save race
   const pendingSaveRef = useRef(null); // payload queued for debounced save; flushed immediately on page hide/unload
+  // Bumped when "Sign in again" lands on the SAME account while a setup save
+  // is pending (review r2 regress-2): the setup autosave depends on it, so a
+  // change kept while signed out goes out then — none of its other deps
+  // change on a sign-in.
+  const [setupSaveNudge, setSetupSaveNudge] = useState(0);
   // ─── Data-loss guard refs ───
   // everHadRealDataRef arms the empty-save guard: it flips true the first time
   // we observe real operational data (schedule/vacations/appShifts) from the DB
@@ -1859,6 +1864,15 @@ function CallSchedule() {
   //  - the SIGN-IN gate: with an expired token the edit could only be held in
   //    memory until a reload drops it. Refuse it up front instead, with the
   //    way out ("Sign in again" at the top) — nothing becomes pending.
+  //  - the JOB gate (schedEditable("job"), review r2 regress-1): ONE clear /
+  //    reset / restore / publish at a time from the UI. Those callers ask it
+  //    at the tap and again after each await, right before they commit their
+  //    target; it refuses while another such job is queued or running (the
+  //    engine's jobPending()), naming it. A second one stacked behind the
+  //    first took its `before` from a screen showing the first's target, not
+  //    yet applied — when both then wrote nothing, putting that back sent the
+  //    first's target as an ordinary save (a saved week deleted, a refused
+  //    restore's copy written).
   const [reauthNeeded, setReauthNeeded] = useState(false);
   const [reauthBusy, setReauthBusy] = useState(false);
   // The SOFT stale-sign-in warning (A7(3)): set on resume when the stored
@@ -1871,7 +1885,7 @@ function CallSchedule() {
   const [reauthSheet, setReauthSheet] = useState(false);
   const [reauthPassword, setReauthPassword] = useState("");
   const [reauthError, setReauthError] = useState("");
-  const schedEditable = () => {
+  const schedEditable = (job) => {
     if (!schedSyncRef.current.isSeeded()) {
       showToast("The schedule hasn't loaded yet — nothing was changed. It retries every minute; try again shortly.", "error");
       return false;
@@ -1880,6 +1894,10 @@ function CallSchedule() {
       setReauthNeeded(true);
       showToast("Your sign-in has expired — nothing was changed. Tap \"Sign in again\" at the top, then redo this.", "error");
       return false;
+    }
+    if (job) {
+      const busy = schedSyncRef.current.jobPending();
+      if (busy) { showToast(`${schedSyncRef.current.jobLabel(busy)} is still running — wait for it to finish, then try again.`, "error"); return false; }
     }
     return true;
   };
@@ -1900,6 +1918,7 @@ function CallSchedule() {
     if (!user || (authUser && user.id === authUser.id)) {
       setReauthNeeded(false); setStaleTokenWarn(false);
       eng.report(); // the banners follow the new token now, not at the next job's report
+      if (pendingSaveRef.current) setSetupSaveNudge(n => n + 1); // a setup change kept while signed out (review r2 regress-2) goes out now, under the renewed session
       showToast(eng.pending().length ? "Signed in again — sending what wasn't saved." : "Signed in again.", "info");
       schedSyncRef.current.pull();
       return "same";
@@ -1988,10 +2007,13 @@ function CallSchedule() {
   const staleTokenShown = !isPublicMode && !!authUser && staleTokenWarn && !(schedSync.authNeeded || reauthNeeded);
   // The setup autosave's own "☁ Saved" never renders beside a RED schedule
   // line (A16: one story — beside "⚠ 1 week not saved" it would read as if
-  // everything were saved); the autosave's errors still do, and so does
-  // every other status (a job's own outcome says what landed).
+  // everything were saved), nor beside the busy line of a clear / reset /
+  // restore / publish job (review r2 fixes-2: "☁ Saved  Clearing… keep the
+  // app open" read as if the clear were saved while it still runs — the
+  // job's own commit re-runs the autosave); the autosave's errors still do,
+  // and so does every other status (a job's own outcome says what landed).
   const SCHED_LINE_RED = ["auth", "loadFailed", "notSaved", "rejected", "blocked", "stalled"];
-  const saveStatusShown = !!saveStatus && !(saveStatus === "Saved" && !saveError && SCHED_LINE_RED.includes(schedLineKind));
+  const saveStatusShown = !!saveStatus && !(saveStatus === "Saved" && !saveError && (SCHED_LINE_RED.includes(schedLineKind) || schedLineKind === "busy"));
   // Clear / factory reset / restore: an authoritative engine job — its own
   // grant, a fresh whole-table read first, fail closed. When it was refused
   // and wrote nothing (the read failed, signed out, cancelled at its
@@ -2007,9 +2029,11 @@ function CallSchedule() {
   // meanwhile stays. (A job still running past its deadline, A5(f), or one
   // whose writes merely failed and are retried, R7, keeps its step.) The job
   // tells its own detail as r.notice, not in a toast: the caller's one
-  // message about the outcome carries it.
-  const runAuthoritativeSchedule = async (target, what, undoStep, before) => {
-    const r = await schedSyncRef.current.authoritative(target, true, what, null, { before });
+  // message about the outcome carries it. `late(r)` (E8, review r2 fixes-1):
+  // the caller's words for that outcome when the job ends after its deadline
+  // — a factory reset or a restore knows what it did before the weeks job.
+  const runAuthoritativeSchedule = async (target, what, undoStep, before, late) => {
+    const r = await schedSyncRef.current.authoritative(target, true, what, null, { before, late });
     if (undoStep && !r.ok && !r.wrote && !r.running && (r.error || r.internal)) setScheduleHistory(h => h.filter(s => s !== undoStep));
     return r;
   };
@@ -2025,6 +2049,7 @@ function CallSchedule() {
   // notified) — ONE message, with the engine's own detail (pr.notice: which
   // weeks, and why) in it; the engine doesn't toast it beside this.
   const publishNotLanded = (pr, what) => {
+    if (pr && (pr.skipped === "reset" || pr.skipped === "cancelled")) return; // fenced by a sign-out (another session now): nothing is said on its screen
     const n = ((pr && pr.results) || []).filter(x => x.outcome !== "saved").length;
     showToast(pr && pr.error ? `${what}: ${pr.error}${pr.running ? " Nobody was notified." : ""}`
       : pr && pr.notice ? `${what}: ${pr.notice} Nobody was notified.`
@@ -2095,22 +2120,34 @@ function CallSchedule() {
     // a render from before this account's setup was read schedules nothing,
     // so its payload (the previous session's) can't be written by a timer
     // that fires after the read but before the render that adopts it.
-    if (!setupReadRef.current || !auth.getSession()) return;
+    if (!setupReadRef.current) return;
     // Capture the payload so the visibility/unload handlers can flush it
     // immediately without waiting for the debounce.
     const payload = buildStateBundle();
     pendingSaveRef.current = payload;
+    // No stored session while this account's setup IS read (review r2
+    // regress-2: another tab signed out, or its refresh failed — no boundary
+    // crossed here): nothing is written, never as anon — but never silently.
+    // A scheduler's change stays pending (pendingSaveRef) and is said: "⚠ Not
+    // saved — you're signed out", with the red "Sign in again" banner; when
+    // the same account signs in again, reauthLanded nudges this effect
+    // (setupSaveNudge) and the change goes out under the renewed session.
+    // (A member never writes the setup: nothing to say.)
+    const signedOut = () => { if (canWriteBlob) { setSaveError(true); setSaveStatus("⚠ Not saved — you're signed out. Sign in again"); setReauthNeeded(true); } };
+    if (!auth.getSession()) { signedOut(); return; }
     // Arm the guard as soon as we hold real data locally, so a later
     // transient-empty render can't slip an empty blob through before the
     // guard is otherwise set.
     if (!payloadLooksWiped(payload)) everHadRealDataRef.current = true;
     const timer = setTimeout(async () => {
       // Never across the session boundary (review r1 regress), checked when
-      // it would write: signed out (no session — another tab may have signed
-      // out), or this account's setup not read yet since the boundary
+      // it would write: this account's setup not read yet since the boundary
       // (setupReadRef) — what this page holds in memory is the previous
-      // session's, not this account's to write.
-      if (!setupReadRef.current || !auth.getSession()) return;
+      // session's, not this account's to write …
+      if (!setupReadRef.current) return;
+      // …and never without a session (signed out during the debounce — in
+      // another tab, perhaps): said, and kept pending, as above.
+      if (!auth.getSession()) { signedOut(); return; }
       // ── Empty-save guard ──
       // Structural fix for the load(permissive)/save(unconditional) asymmetry:
       // refuse to overwrite known-good data with a wiped payload. Leave
@@ -2185,7 +2222,7 @@ function CallSchedule() {
       }
     }, 800);
     return () => clearTimeout(timer);
-  }, [loaded, surgeons, apps, vacations, noCallDays, backupMondaySet, fierceBackupSet, schedule, priorCounts, year1Counts, startMonth, startYear, numWeeks, holidayAssignments, startMondayOverride, pendingLocks, dismissedWarnings]);
+  }, [loaded, surgeons, apps, vacations, noCallDays, backupMondaySet, fierceBackupSet, schedule, setupSaveNudge, priorCounts, year1Counts, startMonth, startYear, numWeeks, holidayAssignments, startMondayOverride, pendingLocks, dismissedWarnings]);
 
   // ─── schedule_weeks: push every schedule change (sync engine v2) ───
   // Its own effect, for every non-public session and every role — members
@@ -2383,9 +2420,10 @@ function CallSchedule() {
       alert("Only a scheduler or the admin account can reset all data.");
       return;
     }
-    // …and the edit gate (the schedule loaded, the sign-in live), before
-    // anything is asked or written: the reset deletes every week.
-    if (!schedEditable()) return;
+    // …and the edit gate (the schedule loaded, the sign-in live, no other
+    // clear / reset / restore / publish queued or running), before anything
+    // is asked or written: the reset deletes every week.
+    if (!schedEditable("job")) return;
     // Typed confirmation — a single mis-tap can no longer wipe the schedule.
     const typed = prompt(
       "⚠ This permanently clears the ENTIRE saved schedule for everyone " +
@@ -2411,7 +2449,7 @@ function CallSchedule() {
       return;
     }
     // The edit gate again, after the snapshot's await — before the first write.
-    if (!schedEditable()) {
+    if (!schedEditable("job")) {
       setSaveStatus("Reset cancelled");
       setTimeout(() => setSaveStatus(""), 2000);
       return;
@@ -2449,24 +2487,39 @@ function CallSchedule() {
     toClearAll(); // clears vacations + no-call locally, and the time_off table when on
     setBackupMondaySet(new Set());
     setFierceBackupSet(new Set());
-    const before = scheduleRef.current; // the weeks as shown — what a refused job puts back (E4)
-    commitSchedule({});
     // Every week deleted: an authoritative engine job with its own grant. If
     // it can't write (table unreadable, signed out, cancelled at its deadline)
-    // the weeks on screen go back as they were (`before`) — and the toast says
-    // what DID happen (review r1 app-4): the setup, APP shifts and time off
-    // were reset above, before this job; only the weeks were not cleared. The
-    // engine's reason says "nothing was changed" — of the weeks — so that
-    // clause is dropped here. A partly failed one is ONE message, with the
-    // engine's detail (r.notice) in it. "Reset complete" only once every week
-    // is cleared too (while it runs, the header says "Clearing…").
-    runAuthoritativeSchedule({}, "reset", null, before).then(r => {
+    // the weeks on screen go back as they were (`before`) — and ONE message
+    // says what DID happen (review r1 app-4): the setup, APP shifts and time
+    // off were reset above, before this job; only the weeks were not cleared.
+    // The engine's reason says "nothing was changed" — of the weeks — so that
+    // clause is dropped here. A partly failed one carries the engine's detail
+    // (r.notice). The same message when the job ends after its deadline
+    // (`late`, E8 — review r2 fixes-1: the engine's own text said "nothing was
+    // changed" after the setup had been reset). "Reset complete" only once
+    // every week is cleared too (while it runs, the header says "Clearing…").
+    const weeksNotCleared = (r) => {
+      if (!r || r.ok) return null;
+      const why = r.error && String(r.error).replace(/ — nothing was changed\./, ".").replace(/ Nothing was changed\./, "");
+      return why ? `Factory reset: the setup, APP shifts and time off were reset, but the schedule weeks were NOT cleared: ${why} Run the reset again, or restore the "Before factory reset" snapshot.`
+        : "Factory reset: the schedule wasn't fully cleared. " + (r.notice || `${schedSyncRef.current.pending().length} week(s) not deleted yet — retrying automatically.`);
+    };
+    const tellWeeks = (r) => {
+      if (r.skipped === "reset" || r.skipped === "cancelled") return; // fenced by a sign-out: another session now — nothing is said on its screen
       if (r.running) { showToast(r.error, "info"); return; }
       if (r.ok) { setSaveStatus("Reset complete"); setTimeout(() => setSaveStatus(""), 2000); return; }
-      const why = r.error && String(r.error).replace(/ — nothing was changed\./, ".").replace(/ Nothing was changed\./, "");
-      showToast(why ? `Factory reset: the setup, APP shifts and time off were reset, but the schedule weeks were NOT cleared: ${why} Run the reset again, or restore the "Before factory reset" snapshot.`
-        : "Factory reset: the schedule wasn't fully cleared. " + (r.notice || `${schedSyncRef.current.pending().length} week(s) not deleted yet — retrying automatically.`), "error");
-    });
+      showToast(weeksNotCleared(r), "error");
+    };
+    // …and never while another clear / reset / restore / publish is queued or
+    // running by now — one requested during the stored-data clears above
+    // (review r2 regress-1): the weeks are left as they are, said as above.
+    const busyJob = schedSyncRef.current.jobPending();
+    if (busyJob) tellWeeks({ ok: false, wrote: false, error: `${schedSyncRef.current.jobLabel(busyJob)} is still running — wait for it to finish.` });
+    else {
+      const before = scheduleRef.current; // the weeks as shown — what a refused job puts back (E4)
+      commitSchedule({});
+      runAuthoritativeSchedule({}, "reset", null, before, weeksNotCleared).then(tellWeeks);
+    }
     setAppShifts({});
     setPriorCounts({});
     setYear1Counts({});
@@ -4347,7 +4400,7 @@ function CallSchedule() {
   const publishSearchRunning = () => !!(searchRef.current && searchRef.current.purpose === "publish");
   const doGenerate = async (preview) => {
     if (searchRef.current) { showToast("A schedule search is already running — wait for it to finish.", "error"); return "busy"; }
-    if (!schedEditable()) return "refused";
+    if (!schedEditable(preview ? null : "job")) return "refused"; // Generate & Publish: no clear / reset / restore / publish queued or running either (P7)
     // The engine epoch this result is computed from — the CLICK (the search
     // then runs SEARCH_MS of active time, minutes in a hidden tab): a preview
     // or a publish is refused if someone else changes one of its weeks
@@ -4438,7 +4491,7 @@ function CallSchedule() {
       return "review";
     }
     if (publishingRef.current) { showToast("A publish is already in progress — wait for it to finish.", "error"); return "busy"; }
-    if (!schedEditable()) return "refused"; // the search can outlast the session: signed out / sign-in expired meanwhile → no snapshot, nothing published
+    if (!schedEditable("job")) return "refused"; // the search can outlast the session: signed out / sign-in expired meanwhile → no snapshot, nothing published (nor while another clear / reset / restore / publish is queued or running — P7)
     publishingRef.current = true; setPublishing(true);
     // The outcome is the publish's (A14): doGenerate resolves to "published"
     // only when every week of the period landed in the table — only then do
@@ -4455,11 +4508,12 @@ function CallSchedule() {
           return "no-snapshot";
         }
         // Re-checked AFTER the snapshot's await (sync v2): signed out or the
-        // sign-in expired meanwhile → nothing is published; someone else changed
-        // a week of this period since the CLICK (the search ran SEARCH_MS or
-        // more) → the result was computed from the old copy: refuse rather
-        // than overwrite their change.
-        if (!schedEditable()) { setSaveStatus(""); return "refused"; }
+        // sign-in expired meanwhile, or another clear / reset / restore /
+        // publish requested meanwhile (P7) → nothing is published; someone
+        // else changed a week of this period since the CLICK (the search ran
+        // SEARCH_MS or more) → the result was computed from the old copy:
+        // refuse rather than overwrite their change.
+        if (!schedEditable("job")) { setSaveStatus(""); return "refused"; }
         const movedWeeks = schedSyncRef.current.changedSince(Object.keys(result), genEpoch);
         if (movedWeeks.length) {
           showToast(`The week${movedWeeks.length === 1 ? "" : "s"} of ${movedWeeks.join(", ")} changed while generating — nothing was published. Generate again.`, "error");
@@ -4509,7 +4563,7 @@ function CallSchedule() {
 
   // ─── Clear / Reset Schedule ───
   const clearSchedule = async () => {
-    if (!schedEditable()) return; // the edit gate first — before even asking
+    if (!schedEditable("job")) return; // the edit gate first — before even asking (and no other clear / reset / restore / publish queued or running — P7)
     if (!confirm("Clear the entire generated schedule? Holiday assignments and setup data will be kept.\n\nThis cannot be undone.")) return;
     // Preserve pre-clear state; if the snapshot can't be written, refuse to clear.
     const clearSnap = await snapshots.capture("clear_schedule", { minWeeks: Object.keys(schedSyncRef.current.knownSchedule()).length ? 1 : 0 });
@@ -4517,7 +4571,7 @@ function CallSchedule() {
       showToast("Couldn't save a backup snapshot — clear cancelled. Schedule unchanged.", "error");
       return;
     }
-    if (!schedEditable()) return; // …and again after the snapshot's await (a sign-out, a refused sign-in meanwhile)
+    if (!schedEditable("job")) return; // …and again after the snapshot's await (a sign-out, a refused sign-in, another job requested meanwhile)
     // The Undo step only now that the clear goes ahead — and it's taken back
     // (runAuthoritativeSchedule) if the job then writes nothing.
     const undoStep = Object.keys(scheduleRef.current).length > 0 ? pushUndo() : null;
@@ -4529,6 +4583,7 @@ function CallSchedule() {
     // while it runs, the engine's line says "Clearing… keep the app open" —
     // the header's ONE line for it (A16), so no status of ours beside it.
     const cr = await runAuthoritativeSchedule({}, "clear", undoStep, before);
+    if (cr.skipped === "reset" || cr.skipped === "cancelled") return; // fenced by a sign-out (review r1, 17/n open item): another session now — nothing is said, or saved, on its screen
     if (cr.running) showToast(cr.error, "info"); // A5(f): still deleting past its deadline — the engine toasts how it ended
     else if (!cr.ok) {
       // ONE message for the outcome: ours, with the engine's own detail (which
@@ -4597,10 +4652,24 @@ function CallSchedule() {
   };
   const restoreSnapshot = async (snap) => {
     if (!(isScheduler || userProfile?.role === "admin")) return;
-    if (!schedEditable()) return; // the edit gate, before anything is read, asked or written
+    if (!schedEditable("job")) return; // the edit gate, before anything is read, asked or written (and no other clear / reset / restore / publish queued or running — P7)
     const when = new Date(snap.created_at).toLocaleString(undefined, { month:"short", day:"numeric", year:"numeric", hour:"numeric", minute:"2-digit" });
     setRestoreBusyId(snap.id);
     setSaveStatus("Reading the snapshot…");
+    // The schedule weeks' own outcome (review r2 fixes-1; 17/n's open item):
+    // snapshots.restore writes the roster and setup (the blob) BEFORE the
+    // weeks job, so a weeks job that is refused or partly fails is not
+    // "Restore failed … nothing was changed" — the setup IS back, and is
+    // adopted below. ONE message says so, with the reason (its "nothing was
+    // changed" — of the weeks — dropped), in time or (`late`, E8) when the
+    // job ends after its deadline. weeksR: the job's own answer.
+    let weeksR = null;
+    const weeksNotRestored = (ar) => {
+      if (!ar || ar.ok) return null;
+      const whyNot = ar.error && String(ar.error).replace(/ — nothing was changed\./, ".").replace(/ Nothing was changed\./, "");
+      return whyNot ? `Restore: the roster and setup were restored, but the schedule weeks were NOT restored: ${whyNot} Try the restore again.`
+        : `Restore: the roster and setup were restored, but not every schedule week is saved yet: ${ar.notice || `${schedSyncRef.current.pending().length} week(s) of the schedule aren't saved yet — they retry automatically.`}`;
+    };
     let r;
     try {
       r = await snapshots.restore(snap.id, async (sched) => {
@@ -4612,13 +4681,19 @@ function CallSchedule() {
         // was (`before`, E4): edits pending from before the tap stay pending.
         // While it runs the header's ONE line is the engine's "Restoring… keep
         // the app open" (A16), so the snapshot's own status ends here.
+        // Never while another clear / reset / restore / publish is queued or
+        // running by now — one requested while the before_restore snapshot
+        // and the blob were written (P7): the weeks are left as they are.
+        const busyJob = schedSyncRef.current.jobPending();
+        if (busyJob) { setSaveStatus(""); weeksR = { ok: false, wrote: false, error: `${schedSyncRef.current.jobLabel(busyJob)} is still running — wait for it to finish.` }; return { ok: false, error: weeksR.error }; }
         const undoStep = Object.keys(scheduleRef.current).length > 0 ? pushUndo() : null;
         const before = scheduleRef.current;
         commitSchedule(sched);
         setSaveStatus("");
-        const ar = await runAuthoritativeSchedule(sched, "restore", undoStep, before);
+        const ar = await runAuthoritativeSchedule(sched, "restore", undoStep, before, weeksNotRestored);
+        weeksR = ar;
         if (ar.ok) return { ok: true };
-        if (ar.running) return { ok: false, running: true, error: ar.error }; // A5(f): still writing past its deadline — the engine toasts how it ended
+        if (ar.running) return { ok: false, running: true, error: ar.error }; // A5(f): still writing past its deadline — the engine toasts how it ended (in our words: weeksNotRestored)
         return { ok: false, error: ar.error || ar.notice || `${schedSyncRef.current.pending().length} week(s) of the schedule aren't saved yet — they retry automatically` };
       }, {
         minWeeks: Object.keys(schedSyncRef.current.knownSchedule()).length ? 1 : 0,
@@ -4626,7 +4701,7 @@ function CallSchedule() {
         // before anything is written; "Cancel" changes nothing. The edit gate
         // again first: the read took a moment.
         confirm: (sched) => {
-          if (!schedEditable()) return false;
+          if (!schedEditable("job")) return false;
           const yes = confirm(restoreConfirmText(snapshotReasonLabel(snap.reason), when, sched, schedSyncRef.current.knownSchedule()));
           if (yes) setSaveStatus("Restoring snapshot…");
           return yes;
@@ -4634,15 +4709,22 @@ function CallSchedule() {
       });
     } finally { setRestoreBusyId(null); } // never left busy (A5(f))
     if (r.cancelled) { setSaveStatus(""); return; }
-    if (!r.ok && !r.running) {
+    // The weeks job fenced by a sign-out: another session now — nothing is adopted, or said, on its screen.
+    if (weeksR && (weeksR.skipped === "reset" || weeksR.skipped === "cancelled")) { setSaveStatus(""); return; }
+    // Failed BEFORE the setup was written (the snapshot unreadable, the
+    // before_restore capture or the blob write refused): nothing changed.
+    if (!r.ok && !r.running && !r.blobRestored) {
       showToast("Restore failed: " + (r.error || "unknown error"), "error");
       setSaveStatus("");
       return;
     }
     // Adopt the restored blob into local state (same field-by-field shape as
     // the initial loader) so the next autosave writes restored values instead
-    // of clobbering the just-restored blob with pre-restore state. Vacations /
-    // no-call are NOT adopted — the time_off table is their source of truth.
+    // of clobbering the just-restored blob with pre-restore state — also when
+    // the weeks job was refused or didn't fully land (review r2 fixes-1: the
+    // blob is back either way; left un-adopted, the next autosave wrote the
+    // pre-restore setup over it). Vacations / no-call are NOT adopted — the
+    // time_off table is their source of truth.
     const d = r.blob || {};
     if (d.surgeons) setSurgeons(d.surgeons);
     if (d.apps) setApps(d.apps);
@@ -4661,10 +4743,12 @@ function CallSchedule() {
     setDismissedWarnings(Array.isArray(d.dismissedWarnings) ? d.dismissedWarnings : []); // a snapshot's dismissals come back with it
     lastSyncRef.current = r.ts;        // our own write — don't let the poll treat it as foreign
     everHadRealDataRef.current = true; // restored data is real data
-    logAudit("system.restore_snapshot", `Restored snapshot "${snapshotReasonLabel(snap.reason)}" from ${when}`, { snapshot_id: snap.id, reason: snap.reason, created_at: snap.created_at });
+    logAudit("system.restore_snapshot", `Restored snapshot "${snapshotReasonLabel(snap.reason)}" from ${when}`, { snapshot_id: snap.id, reason: snap.reason, created_at: snap.created_at, weeks: r.ok ? "restored" : r.running ? "still being written" : "not all restored" });
     loadSnapshots(); // refresh — the just-added before_restore row should appear
-    // The setup is back; the schedule's job is still writing (A5(f)) — the engine toasts how it ended.
+    // The setup is back; the schedule's job is still writing (A5(f)) — the engine toasts how it ended (weeksNotRestored's words if it doesn't land).
     if (r.running) { setSaveStatus(""); showToast("The roster and setup are restored. " + r.error, "info"); return; }
+    // The setup is back; the weeks job was refused or didn't fully land: ONE message saying so.
+    if (!r.ok) { setSaveStatus(""); showToast(weeksNotRestored(weeksR || { ok: false, error: r.error }), "error"); return; }
     setSaveStatus("Snapshot restored");
     setTimeout(() => setSaveStatus(""), 3000);
     // Post-restore report — say plainly what came back and what didn't.
@@ -4796,7 +4880,7 @@ function CallSchedule() {
     if (previewSchedule && previewNeedsOk.items.length > 0 && !previewAck) { showToast("Tick \"I've reviewed these items\" first.", "error"); return; }
     if (previewSchedule) {
       if (publishingRef.current) { showToast("A publish is already in progress — wait for it to finish.", "error"); return; }
-      if (!schedEditable()) return;
+      if (!schedEditable("job")) return; // (and no other clear / reset / restore / publish queued or running — P7)
       // A preview can sit for minutes: if someone else changed one of its
       // weeks since it was generated, publishing it would overwrite that
       // change with a copy made before it (sync v2, stale intents). Refuse.
@@ -4811,8 +4895,8 @@ function CallSchedule() {
         setSaveStatus("Saving backup snapshot…");
         const snap = await snapshots.capture("regenerate", { minWeeks: Object.keys(schedSyncRef.current.knownSchedule()).length ? 1 : 0 });
         if (!snap.ok) { showToast("Couldn't save a backup snapshot — nothing was published.", "error"); setSaveStatus(""); return; }
-        // …and the checks again after its await: still signed in, still the same preview, none of its weeks changed by someone else
-        if (!schedEditable() || previewSchedRef.current !== weeks) { setSaveStatus(""); return; }
+        // …and the checks again after its await: still signed in, no other job requested meanwhile (P7), still the same preview, none of its weeks changed by someone else
+        if (!schedEditable("job") || previewSchedRef.current !== weeks) { setSaveStatus(""); return; }
         const moved2 = schedSyncRef.current.changedSince(Object.keys(weeks), previewEpochRef.current);
         if (moved2.length) { showToast(`The week${moved2.length === 1 ? "" : "s"} of ${moved2.join(", ")} changed since this preview was generated — nothing was published. Generate the preview again.`, "error"); setSaveStatus(""); return; }
         // Weeks already published get their counts replaced, not added again;
@@ -12959,7 +13043,8 @@ function createSchedSync(deps) {
       // gave opts.late (E8).
       return settleBy(p, () => {
         if (!owner.state.started) { owner.state.cancelled = true; owner.release();
-          const out = { ok: false, wrote: false, reason: "timeout", error: keys ? "The sync is stuck behind an earlier save — the new weeks stay on this screen and will be saved automatically once it gets through; keep the app open. Nobody was notified." : "The sync is stuck behind an earlier save — nothing was changed. Reload the app, then try again." };
+          // (A clear / reset / restore cancelled here put the screen back as it was — edits waiting to save included, which a reload would lose: never "reload" — review r2.)
+          const out = { ok: false, wrote: false, reason: "timeout", error: keys ? "The sync is stuck behind an earlier save — the new weeks stay on this screen and will be saved automatically once it gets through; keep the app open. Nobody was notified." : "The sync is stuck behind an earlier save — nothing was changed. The schedule on screen is as it was; try again in a minute." };
           if (!keys) tellTheirs(out, showKnown(startShown, null, before, knownAt));
           report(); return out;
         }
@@ -12971,6 +13056,9 @@ function createSchedSync(deps) {
     // ("clear", "reset", "restore", "publish" — what the header's busy line
     // names), or null: the app's one-job-at-a-time gate (P7) asks it.
     jobPending: () => headOwner(),
+    // …and the name a message gives it ("Clearing the schedule", "Restoring
+    // the snapshot", …): the app's refusal names it as the engine's own do.
+    jobLabel: (what) => jobLabel(what),
     // Sign-out / user switch (A8): forget everything — the mirror too — fence
     // jobs in flight, and read the table again (public / OR views refill);
     // nothing is pushed until that load succeeds.

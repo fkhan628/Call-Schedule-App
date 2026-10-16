@@ -400,8 +400,12 @@ const snapshots = {
       // Still writing past its deadline (A5(f)): the blob is back, the
       // schedule's outcome comes later — the caller adopts the blob as on success.
       if (applied && applied.running) return { ok: false, running: true, error: applied.error, blobRestored: true, blob, schedule, ts, reason: snap.reason, created_at: snap.created_at };
+      // The schedule leg refused or not fully landed: the blob is back all the
+      // same — the caller adopts it too (left un-adopted, its next autosave
+      // wrote the pre-restore setup over it — review r2 fixes-1) and says the
+      // setup was restored, the weeks not.
       if (applied && applied.ok === false) {
-        return { ok: false, error: applied.error || "Schedule apply failed", blobRestored: true };
+        return { ok: false, error: applied.error || "Schedule apply failed", blobRestored: true, blob, schedule, ts, reason: snap.reason, created_at: snap.created_at };
       }
       return { ok: true, blob, schedule, ts, reason: snap.reason, created_at: snap.created_at };
     } catch (e) {

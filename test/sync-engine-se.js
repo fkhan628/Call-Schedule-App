@@ -410,22 +410,23 @@ const MUTANTS = [
   { id: "P2a", app: true, what: "P2: Clear hands the engine no `before` (a refused clear drops the edits pending from before the tap)",
     from: 'runAuthoritativeSchedule({}, "clear", undoStep, before)', to: 'runAuthoritativeSchedule({}, "clear", undoStep)' },
   { id: "P2b", app: true, what: "P2: Restore's schedule leg hands the engine no `before`",
-    from: 'runAuthoritativeSchedule(sched, "restore", undoStep, before)', to: 'runAuthoritativeSchedule(sched, "restore", undoStep)' },
+    from: 'runAuthoritativeSchedule(sched, "restore", undoStep, before, weeksNotRestored)', to: 'runAuthoritativeSchedule(sched, "restore", undoStep, undefined, weeksNotRestored)' },
   { id: "P2c", app: true, what: "P2: Factory reset hands the engine no `before`",
-    from: 'runAuthoritativeSchedule({}, "reset", null, before)', to: 'runAuthoritativeSchedule({}, "reset")' },
+    from: 'runAuthoritativeSchedule({}, "reset", null, before, weeksNotCleared)', to: 'runAuthoritativeSchedule({}, "reset", null, undefined, weeksNotCleared)' },
   { id: "P2d", app: true, what: "P2: runAuthoritativeSchedule doesn't pass `before` on to the engine",
-    from: "schedSyncRef.current.authoritative(target, true, what, null, { before })", to: "schedSyncRef.current.authoritative(target, true, what)" },
+    from: "schedSyncRef.current.authoritative(target, true, what, null, { before, late })", to: "schedSyncRef.current.authoritative(target, true, what, null, { late })" },
   { id: "P3a", app: true, what: "P3: a refused factory reset says 'the schedule was NOT cleared — … nothing was changed' (the setup, APP shifts and time off were reset)",
-    from: 'showToast(why ? `Factory reset: the setup, APP shifts and time off were reset, but the schedule weeks were NOT cleared: ${why} Run the reset again, or restore the "Before factory reset" snapshot.`',
-    to: 'showToast(why ? "Factory reset: the schedule was NOT cleared — " + r.error' },
+    from: 'return why ? `Factory reset: the setup, APP shifts and time off were reset, but the schedule weeks were NOT cleared: ${why} Run the reset again, or restore the "Before factory reset" snapshot.`',
+    to: 'return why ? "Factory reset: the schedule was NOT cleared — " + r.error' },
   { id: "P3b", app: true, what: "P3: 'Reset complete' whatever the weeks job did",
     from: '      if (r.running) { showToast(r.error, "info"); return; }\n      if (r.ok) { setSaveStatus("Reset complete");', to: '      setSaveStatus("Reset complete");\n      if (r.running) { showToast(r.error, "info"); return; }\n      if (r.ok) { setSaveStatus("Reset complete");' },
   { id: "P4a", app: true, what: "P4: the session boundary leaves the scheduler flag on (the next account gets the scheduler's controls and blob writes — app-5)",
     from: "    setIsScheduler(false); setupReadRef.current = false; lastSyncRef.current = null;", to: "    setupReadRef.current = false; lastSyncRef.current = null;" },
   { id: "P4b", app: true, what: "P4: the setup autosave schedules a write from a render made before this account's setup was read (it fires after the read, before the adoption)",
-    from: "    if (!setupReadRef.current || !auth.getSession()) return;\n    // Capture the payload", to: "    // Capture the payload" },
-  { id: "P4b2", app: true, what: "P4: the setup autosave writes without a session (signed out in another tab, or during its debounce — an anon upsert, a false 'no permission')",
-    from: "      if (!setupReadRef.current || !auth.getSession()) return;\n      // ── Empty-save guard ──", to: "      // ── Empty-save guard ──" },
+    from: "    if (!setupReadRef.current) return;\n    // Capture the payload", to: "    // Capture the payload" },
+  { id: "P4b2", app: true, what: "P4: the setup autosave's timer writes across the boundary or without a session (signed out in another tab, or during its debounce — an anon upsert, a false 'no permission')",
+    from: "      if (!setupReadRef.current) return;\n      // …and never without a session (signed out during the debounce — in\n      // another tab, perhaps): said, and kept pending, as above.\n      if (!auth.getSession()) { signedOut(); return; }\n      // ── Empty-save guard ──",
+    to: "      // ── Empty-save guard ──" },
   { id: "P4c", app: true, what: "P4: the session boundary doesn't disarm the setup autosave (the previous session's setup written as the next account)",
     from: "    setIsScheduler(false); setupReadRef.current = false; lastSyncRef.current = null;", to: "    setIsScheduler(false); lastSyncRef.current = null;" },
   { id: "P4d", app: true, what: "P4: the load's setup read doesn't arm the autosave (after a boundary it never writes again — silently)",
@@ -449,7 +450,105 @@ const MUTANTS = [
   { id: "P6d", app: true, what: "P6: Restore leaves 'Restoring snapshot…' showing beside the engine's busy line",
     from: "        commitSchedule(sched);\n        setSaveStatus(\"\");\n", to: "        commitSchedule(sched);\n" },
   { id: "P6e", app: true, what: "P6: the setup autosave's '☁ Saved' renders beside a red schedule line",
-    from: 'const saveStatusShown = !!saveStatus && !(saveStatus === "Saved" && !saveError && SCHED_LINE_RED.includes(schedLineKind));', to: "const saveStatusShown = !!saveStatus;" },
+    from: 'const saveStatusShown = !!saveStatus && !(saveStatus === "Saved" && !saveError && (SCHED_LINE_RED.includes(schedLineKind) || schedLineKind === "busy"));', to: "const saveStatusShown = !!saveStatus;" },
+  // 19/n (review r2, the app items P7–P10 and the app test gaps r2-tests-1, -4, -5) — killed in SE-X10 … SE-X17, each by
+  // behaviour; the anchor-keeping variants (the bug again, written so no anchor of another entry moves) beside them.
+  // P7: one clear / reset / restore / publish at a time from the UI (SE-X15)
+  { id: "P7a", app: true, what: "P7: the job gate never looks at the engine's jobs (a second clear / restore stacked behind the first — R2V-1: a saved week deleted, a refused restore's copy written)",
+    from: "    if (job) {\n      const busy = schedSyncRef.current.jobPending();", to: "    if (false) {\n      const busy = schedSyncRef.current.jobPending();" },
+  { id: "P7a2", app: true, what: "P7 (variant, the gate kept): a PUBLISH queued or running doesn't count (a clear stacked behind it deletes the weeks it just published)",
+    from: "      const busy = schedSyncRef.current.jobPending();\n      if (busy) {", to: "      const busy = schedSyncRef.current.jobPending();\n      if (busy && busy !== \"publish\") {" },
+  { id: "P7a3", app: true, what: "P7: the refusal doesn't name the job (one generic toast)",
+    from: "showToast(`${schedSyncRef.current.jobLabel(busy)} is still running", to: "showToast(`Another job is still running" },
+  { id: "P7b", app: true, what: "P7: Clear's tap skips the job gate (asked and snapshotted while a restore is queued — then stacked, or refused only after its snapshot)",
+    from: 'if (!schedEditable("job")) return; // the edit gate first', to: 'if (!schedEditable()) return; // the edit gate first' },
+  { id: "P7c", app: true, what: "P7: Clear's re-check after its snapshot skips the job gate (a publish requested meanwhile — the clear stacked behind it deletes its weeks)",
+    from: 'if (!schedEditable("job")) return; // …and again after the snapshot', to: 'if (!schedEditable()) return; // …and again after the snapshot' },
+  { id: "P7d", app: true, what: "P7: Restore's tap skips the job gate (R2V-1: the restore stacked behind a queued clear)",
+    from: 'if (!schedEditable("job")) return; // the edit gate, before anything is read', to: 'if (!schedEditable()) return; // the edit gate, before anything is read' },
+  { id: "P7e", app: true, what: "P7: Restore's re-check once the snapshot is read skips the job gate (a clear requested during the read — the restore asked, written, stacked)",
+    from: '          if (!schedEditable("job")) return false;', to: '          if (!schedEditable()) return false;' },
+  { id: "P7f", app: true, what: "P7: Restore's check right before its commit is gone (a clear requested while its blob was written — the restore stacked behind it)",
+    from: "        if (busyJob) { setSaveStatus(\"\"); weeksR =", to: "        if (false) { setSaveStatus(\"\"); weeksR =" },
+  { id: "P7f2", app: true, what: "P7 (variant, the check kept): it runs AFTER the restore committed its target (the snapshot's weeks left on screen — the follow-up push writes them)",
+    from: "        const busyJob = schedSyncRef.current.jobPending();\n        if (busyJob) { setSaveStatus(\"\"); weeksR =", to: "        commitSchedule(sched);\n        const busyJob = schedSyncRef.current.jobPending();\n        if (busyJob) { setSaveStatus(\"\"); weeksR =" },
+  { id: "P7g", app: true, what: "P7: Factory reset's tap skips the job gate (its typed confirmation asked, its snapshot taken during a clear)",
+    from: '    if (!schedEditable("job")) return;\n    // Typed confirmation', to: '    if (!schedEditable()) return;\n    // Typed confirmation' },
+  { id: "P7h", app: true, what: "P7: Factory reset's re-check after its snapshot skips the job gate (the stored setup cleared while a clear requested meanwhile runs)",
+    from: '    if (!schedEditable("job")) {\n      setSaveStatus("Reset cancelled");', to: '    if (!schedEditable()) {\n      setSaveStatus("Reset cancelled");' },
+  { id: "P7i", app: true, what: "P7: Factory reset's check right before its commit is gone (a weeks job stacked behind one requested during its stored-data clears)",
+    from: "    if (busyJob) tellWeeks(", to: "    if (false) tellWeeks(" },
+  { id: "P7j", app: true, what: "P7: Accept & Publish's tap skips the job gate (a publish stacked behind a running clear)",
+    from: 'if (!schedEditable("job")) return; // (and no other clear', to: 'if (!schedEditable()) return; // (and no other clear' },
+  { id: "P7k", app: true, what: "P7: Accept & Publish's re-check after its snapshot skips the job gate",
+    from: 'if (!schedEditable("job") || previewSchedRef.current !== weeks)', to: 'if (!schedEditable() || previewSchedRef.current !== weeks)' },
+  { id: "P7l", app: true, what: "P7: Generate & Publish, its search done, skips the job gate",
+    from: 'if (!schedEditable("job")) return "refused"; // the search can outlast', to: 'if (!schedEditable()) return "refused"; // the search can outlast' },
+  { id: "P7m", app: true, what: "P7: Generate & Publish's re-check after its snapshot skips the job gate",
+    from: 'if (!schedEditable("job")) { setSaveStatus(""); return "refused"; }', to: 'if (!schedEditable()) { setSaveStatus(""); return "refused"; }' },
+  { id: "P7n", app: true, what: "P7: Generate & Publish's tap skips the job gate (a whole search run, to be refused at its end)",
+    from: 'if (!schedEditable(preview ? null : "job")) return "refused";', to: 'if (!schedEditable()) return "refused";' },
+  { id: "P7o", app: true, what: "P7 (over-reach): a Generate PREVIEW is held back by a job too (it publishes nothing)",
+    from: 'if (!schedEditable(preview ? null : "job")) return "refused";', to: 'if (!schedEditable("job")) return "refused";' },
+  // P8: late outcomes and refusals of reset / restore say what really happened (SE-X16, SE-X10, SE-X15)
+  { id: "P8a", app: true, what: "P8: Factory reset hands the engine no late() (refused after its deadline: 'Clearing the schedule stopped — … nothing was changed' after the setup was reset)",
+    from: 'runAuthoritativeSchedule({}, "reset", null, before, weeksNotCleared)', to: 'runAuthoritativeSchedule({}, "reset", null, before)' },
+  { id: "P8b", app: true, what: "P8: Restore hands the engine no late() (refused after its deadline: 'Restoring the snapshot stopped — … nothing was changed' after the setup was restored)",
+    from: 'runAuthoritativeSchedule(sched, "restore", undoStep, before, weeksNotRestored)', to: 'runAuthoritativeSchedule(sched, "restore", undoStep, before)' },
+  { id: "P8c", app: true, what: "P8: runAuthoritativeSchedule doesn't pass late() on to the engine",
+    from: "schedSyncRef.current.authoritative(target, true, what, null, { before, late })", to: "schedSyncRef.current.authoritative(target, true, what, null, { before })" },
+  { id: "P8d", app: true, what: "P8: a restore whose weeks job was refused says 'Restore failed' and doesn't adopt the setup it wrote (the next autosave writes the pre-restore setup over it)",
+    from: "    if (!r.ok && !r.running && !r.blobRestored) {", to: "    if (!r.ok && !r.running) {" },
+  { id: "P8d2", app: true, what: "P8 (variant, the new message kept): a refused restore says the setup was restored — but doesn't adopt it",
+    from: "    const d = r.blob || {};\n", to: "    if (!r.ok && !r.running) { setSaveStatus(\"\"); showToast(weeksNotRestored(weeksR || { ok: false, error: r.error }), \"error\"); return; }\n    const d = r.blob || {};\n" },
+  { id: "P8e", app: true, what: "P8: a restore refused for the sign-in keeps the engine's ' Nothing was changed.' (after the setup was restored)",
+    from: 'const whyNot = ar.error && String(ar.error).replace(/ — nothing was changed\\./, ".").replace(/ Nothing was changed\\./, "");', to: 'const whyNot = ar.error && String(ar.error).replace(/ — nothing was changed\\./, ".");' },
+  { id: "P8f", app: true, what: "P8: a restore whose weeks job partly failed says 'Restore failed' (its setup and most weeks restored)",
+    from: ": `Restore: the roster and setup were restored, but not every schedule week is saved yet: ${", to: ": `Restore failed: ${" },
+  { id: "R13", app: true, what: "r2-tests-5: a factory reset refused for the sign-in keeps the engine's ' Nothing was changed.' (only the ' — nothing was changed.' clause stripped)",
+    from: 'const why = r.error && String(r.error).replace(/ — nothing was changed\\./, ".").replace(/ Nothing was changed\\./, "");', to: 'const why = r.error && String(r.error).replace(/ — nothing was changed\\./, ".");' },
+  // P9: with no session, a setup change is never dropped silently (SE-X11)
+  { id: "P9a", app: true, what: "P9: with no session the setup autosave returns silently again (a setting change kept only in memory, the header 'Synced' — review r2 regress-2)",
+    from: "    if (!auth.getSession()) { signedOut(); return; }\n    // Arm the guard", to: "    if (!auth.getSession()) return;\n    // Arm the guard" },
+  { id: "P9b", app: true, what: "P9: the autosave's timer returns silently when the session went during its debounce",
+    from: "      if (!auth.getSession()) { signedOut(); return; }\n      // ── Empty-save guard ──", to: "      if (!auth.getSession()) return;\n      // ── Empty-save guard ──" },
+  { id: "P9c", app: true, what: "P9: 'Not saved — you're signed out' without the red 'Sign in again' banner",
+    from: "setSaveStatus(\"⚠ Not saved — you're signed out. Sign in again\"); setReauthNeeded(true); } };", to: "setSaveStatus(\"⚠ Not saved — you're signed out. Sign in again\"); } };" },
+  { id: "P9d", app: true, what: "P9: 'Sign in again' on the same account doesn't send the setup change kept pending (the autosave's deps don't change on a sign-in)",
+    from: "      if (pendingSaveRef.current) setSetupSaveNudge(n => n + 1);", to: "" },
+  { id: "P9e", app: true, what: "P9 (variant, the nudge kept): the setup autosave doesn't depend on it (the bump re-runs nothing)",
+    from: "schedule, setupSaveNudge, priorCounts", to: "schedule, priorCounts" },
+  { id: "P9f", app: true, what: "P9 (variant): the pending save isn't recorded while signed out (the change is said, but the sign-in sends nothing)",
+    edits: [["    pendingSaveRef.current = payload;\n    // No stored session while", "    // No stored session while"],
+      ["    if (!auth.getSession()) { signedOut(); return; }\n    // Arm the guard", "    if (!auth.getSession()) { signedOut(); return; }\n    pendingSaveRef.current = payload;\n    // Arm the guard"]] },
+  { id: "P9g", app: true, what: "P9 (over-reach): a MEMBER with no session is told 'Not saved — you're signed out' (a member never writes the setup)",
+    from: "const signedOut = () => { if (canWriteBlob) { setSaveError(true);", to: "const signedOut = () => { if (true) { setSaveError(true);" },
+  // P10: the small message and status fixes (SE-X13, SE-X17)
+  { id: "P10a", app: true, what: "P10: '☁ Saved' renders beside a job's busy line ('☁ Saved  Clearing… keep the app open' — review r2 fixes-2)",
+    from: '(SCHED_LINE_RED.includes(schedLineKind) || schedLineKind === "busy")', to: "SCHED_LINE_RED.includes(schedLineKind)" },
+  { id: "P10a2", app: true, what: "P10 (variant): beside the busy line every status is hidden — the autosave's errors too",
+    from: 'const saveStatusShown = !!saveStatus && !(saveStatus === "Saved" && !saveError && (SCHED_LINE_RED.includes(schedLineKind) || schedLineKind === "busy"));',
+    to: 'const saveStatusShown = !!saveStatus && schedLineKind !== "busy" && !(saveStatus === "Saved" && !saveError && SCHED_LINE_RED.includes(schedLineKind));' },
+  { id: "P10b", what: "P10: a clear / reset / restore cancelled at its deadline says 'Reload the app, then try again' (edits waiting to save are back on screen — a phone's reload loses them)",
+    from: '"The sync is stuck behind an earlier save — nothing was changed. The schedule on screen is as it was; try again in a minute."', to: '"The sync is stuck behind an earlier save — nothing was changed. Reload the app, then try again."' },
+  { id: "P10c", app: true, what: "P10: a clear fenced by a sign-out toasts on the sign-in screen ('The schedule wasn't fully cleared. 0 week(s)…')",
+    from: '    if (cr.skipped === "reset" || cr.skipped === "cancelled") return; // fenced', to: '    // fenced' },
+  { id: "P10c2", app: true, what: "P10 (variant): only a RUNNING job counts as fenced — a clear still queued at the sign-out (cancelled) is told",
+    from: 'if (cr.skipped === "reset" || cr.skipped === "cancelled") return;', to: 'if (cr.skipped === "reset") return;' },
+  { id: "P10d", app: true, what: "P10: a factory reset fenced by a sign-out toasts on the sign-in screen",
+    from: '      if (r.skipped === "reset" || r.skipped === "cancelled") return; // fenced by a sign-out: another session now', to: '      // fenced by a sign-out: another session now' },
+  { id: "P10e", app: true, what: "P10: a restore fenced by a sign-out adopts its setup and toasts on the sign-in screen",
+    from: '    if (weeksR && (weeksR.skipped === "reset" || weeksR.skipped === "cancelled")) { setSaveStatus(""); return; }\n', to: "" },
+  { id: "P10f", app: true, what: "P10: a publish fenced by a sign-out toasts 'Published on this screen…' on the sign-in screen",
+    from: '    if (pr && (pr.skipped === "reset" || pr.skipped === "cancelled")) return; // fenced', to: '    // fenced' },
+  // The app test gaps (their R-forms): r2-tests-1 (R7d, SE-X11 e), r2-tests-4 (R8, SE-X11 f; R9, SE-X12)
+  { id: "R7d", app: true, what: "r2-tests-1: the load arms the setup autosave BEFORE its blob read answers (disarmed again if it throws; P4d's line kept): a render meanwhile writes this page's setup as the next account",
+    edits: [['      try {\n        const { data: row } = await supabase\n          .from("call_schedule_data")', '      try {\n        setupReadRef.current = true;\n        const { data: row } = await supabase\n          .from("call_schedule_data")'],
+      ["        loadFailedRef.current = true; // read threw — suppress autosave until a read succeeds\n", "        loadFailedRef.current = true; // read threw — suppress autosave until a read succeeds\n        setupReadRef.current = false;\n"]] },
+  { id: "R8", app: true, what: "r2-tests-4: the autosave's timer checks only the session, not that this account's setup was read (a timer pending across the boundary into another signed-in account writes)",
+    from: "      if (!setupReadRef.current) return;\n      // …and never without a session", to: "      // …and never without a session" },
+  { id: "R9", app: true, what: "r2-tests-4: the clear's setup save after its job checks only the session ('Sign in again' on another account during the job: written as that account)",
+    from: "        if (!setupReadRef.current || !auth.getSession()) return;\n        const ts = new Date().toISOString();", to: "        if (!auth.getSession()) return;\n        const ts = new Date().toISOString();" },
   // T4 (review r1 tests-5): the engine's token() as the app wires it — killed in SE-X14.
   { id: "N19", app: true, what: "T4: the engine's token() is a constant, not the stored session's (writes stay blocked after 'Sign in again')",
     from: "    token: () => auth.getSession()?.access_token || null,", to: "    token: () => \"T\"," },
@@ -3022,7 +3121,7 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
   const F = {
     wire: fnX("isPublicMode, userProfile, showToast, setEditWeekModal, swapSuggestions, swapTarget, setSwapSuggestions, setSwapTarget, schedSyncBridgeRef, useRef, createSchedSync, scheduleRef, commitSchedule, fetch, SUPABASE_URL, dbAuthHeaders, dbReadHeaders, dbHeaders, auth, setSchedSync, console",
       wrap("(() => { schedSyncBridgeRef.current = { canWrite:", after("  schedSyncBridgeRef.current = { canWrite:", "\n\n  // The edit gates"), "\n  return schedSyncRef; })()")),
-    gate: fnX("schedSyncRef, showToast, setReauthNeeded", wrap("() => {", after("  const schedEditable = () => {", "\n  };\n"), "\n  }")),
+    gate: fnX("schedSyncRef, showToast, setReauthNeeded", wrap("", after("  const schedEditable = ", "\n  };\n"), "\n  }")),
     pushUndo: fnX("scheduleRef, schedSyncRef, setScheduleHistory", wrap("(counts) => {", after("  const pushUndo = useCallback((counts) => {", "\n  }, []);"), "\n  }")),
     update: fnX("scheduleRef, commitSchedule", wrap("(fn) => {", after("  const updateSchedule = useCallback((fn) => {", "\n  }, [commitSchedule]);"), "\n  }")),
     undo: fnX("scheduleHistory, schedEditable, schedSyncRef, showToast, commitSchedule, setPriorCounts, setYear1Counts, setScheduleHistory", wrap("() => {", after("  const undoLastChange = () => {", "\n  };\n"), "\n  }")),
@@ -3060,10 +3159,10 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
     // the session boundary + sign-out, and the re-auth that can land on another account (P4)
     boundary: fnX("searchRef, setSearching, setSearchStats, setPreviewSchedule, setShowPreview, schedSyncRef, setScheduleHistory, setEditWeekModal, setReauthNeeded, setStaleTokenWarn, setIsScheduler, setupReadRef, lastSyncRef, confirm, auth, biometric, setAuthUser, setUserProfile, setNeedsProfile, setMySurgeon, setBiometricEnrolled, setBiometricPending",
       wrap("(() => { const sessionBoundary = () => {", after("  const sessionBoundary = () => {", "\n  // ════"), "\n  return { sessionBoundary, handleSignOut }; })()")),
-    reauth: fnX("schedSyncRef, authUser, setReauthNeeded, setStaleTokenWarn, showToast, sessionBoundary, biometric, setBiometricEnrolled, setBiometricPending, setAuthUser, dbAuth, setUserProfile, setMySurgeon, setNeedsProfile, setIsScheduler, setReloadTrigger",
+    reauth: fnX("schedSyncRef, authUser, setReauthNeeded, setStaleTokenWarn, showToast, sessionBoundary, biometric, setBiometricEnrolled, setBiometricPending, setAuthUser, dbAuth, setUserProfile, setMySurgeon, setNeedsProfile, setIsScheduler, setReloadTrigger, pendingSaveRef, setSetupSaveNudge",
       decl("reauthLanded", "\n  };\n")),
     // the setup autosave effect and the edge-URL save effect (P4), and the bundle they write — with the latest-render ref (P5)
-    autosave: fnX("loaded, isPublicMode, loadedAtRef, loadFailedRef, setSaveError, setSaveStatus, setupReadRef, auth, buildStateBundle, pendingSaveRef, payloadLooksWiped, everHadRealDataRef, setTimeout, clearTimeout, allowWipeSaveRef, canWriteBlob, supabase, lastSyncRef, showToast, console",
+    autosave: fnX("loaded, isPublicMode, loadedAtRef, loadFailedRef, setSaveError, setSaveStatus, setupReadRef, auth, buildStateBundle, pendingSaveRef, payloadLooksWiped, everHadRealDataRef, setTimeout, clearTimeout, allowWipeSaveRef, canWriteBlob, supabase, lastSyncRef, showToast, console, setReauthNeeded",
       wrap("() => {", after("  // ─── Supabase: Auto-save on changes ───\n  useEffect(() => {", "\n  }, [loaded, surgeons, apps,"), "\n  }")),
     urlSave: fnX("loaded, isPublicMode, loadFailedRef, edgeFunctionUrl, canWriteBlob, setupReadRef, setTimeout, clearTimeout, supabase, showToast, console",
       wrap("() => {", after("  // ─── Supabase: Save edge function URL ───\n  useEffect(() => {", "\n  }, [loaded, edgeFunctionUrl, canWriteBlob]);"), "\n  }")),
@@ -3079,6 +3178,10 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
       wrap("(() => { const restoreConfirmText = ", after("  const restoreConfirmText = ", "\n  // ─── Roll forward counts"), "\n  return restoreSnapshot; })()")),
     genCommit: fnX("publishWeeks, numWeeks, MO, startMonth, startYear, runPublish, setPreviewSchedule, setShowPreview, setSaveStatus, lastSyncRef, buildStateBundle, supabase, console, showToast, setTimeout, publishNotLanded",
       wrap("async (result) => {", after("  const commitGenerated = async (result) => {", "\n  };\n  genFinishRef.current = finishGenerate;"), "\n  }")),
+    // Generate & Publish's end (after its search) and its click — as sync-guards AH9 runs them (19/n P7: the job gate)
+    finish: fnX("pendingLocks, nameOf, slotLabel, showToast, setPreviewSchedule, setPreviewOrigin, setShowPreview, genInputsSig, listScheduleBends, surgeons, mondays, buildGenAvailability, buildSilvisPrimary, vacations, holidayAssignments, buildPrevWeekSeed, publishingRef, setPublishing, setSaveStatus, snapshots, genCommitRef, previewEpochRef, schedEditable, schedSyncRef",
+      decl("finishGenerate", "\n  };\n")),
+    gen: fnX("searchRef, showToast, schedEditable, schedSyncRef, buildPrefs", decl("doGenerate", "\n  };\n")), // (only its first statements are reached here: the gates, then buildPrefs)
     // the header: does the save-status span render (P6)?
     saveShown: fnX("saveStatus, saveError, schedLineKind", wrap("(() => { const SCHED_LINE_RED = ", after("  const SCHED_LINE_RED = ", "\n  // Clear / factory reset / restore: an authoritative"), "\n  return saveStatusShown; })()")),
   };
@@ -3121,7 +3224,7 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
     a.bridge = { current: null };
     a.schedSyncRef = F.wire({ isPublicMode: false, userProfile: { person_id: o.person || "s1" }, showToast: a.showToast, setEditWeekModal: a.setModal,
       swapSuggestions: null, swapTarget: null, setSwapSuggestions: (v) => { a.sug = v; }, setSwapTarget: (v) => { a.target = v; },
-      schedSyncBridgeRef: a.bridge, useRef: () => engRef, createSchedSync, scheduleRef: a.ref, commitSchedule: a.commitSchedule, fetch: (u, i) => t.fetch(u, i), SUPABASE_URL: BASE,
+      schedSyncBridgeRef: a.bridge, useRef: () => engRef, createSchedSync: o.timeouts ? (d) => createSchedSync(Object.assign({}, d, { timeouts: o.timeouts })) : createSchedSync, scheduleRef: a.ref, commitSchedule: a.commitSchedule, fetch: (u, i) => t.fetch(u, i), SUPABASE_URL: BASE,
       dbAuthHeaders: hdr, dbReadHeaders: hdr, dbHeaders: { apikey: "ANON", Authorization: "Bearer ANON", "Content-Type": "application/json" },
       auth: a.auth, setSchedSync: (f) => { a.sync = typeof f === "function" ? f(a.sync) : f; a.syncs.push(a.sync); if (a.onSync) a.onSync(a.sync); }, console: a.console });
     a.eng = a.schedSyncRef.current;
@@ -3514,13 +3617,16 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
   // token it goes out with — the stored session's, or anon, which RLS refuses
   // (42501) as the live tables do.
   const DENY = { error: '{"code":"42501","message":"new row violates row-level security policy for table \\"call_schedule_data\\""}' };
+  // The setup autosave's deps as the SOURCE lists them: an emulated render re-runs it exactly when one of those changed (19/n P9's nudge included — or not, on an older source).
+  const AUTO_DEPS = (() => { const a = nsrc.indexOf("  // ─── Supabase: Auto-save on changes ───\n  useEffect(() => {"), e = a < 0 ? -1 : nsrc.indexOf("\n  }, [", a); return e < 0 ? [] : nsrc.slice(e + 7, nsrc.indexOf("]);", e)).split(",").map(x => x.trim()); })();
   const mkComp = (A, o = {}) => {
-    const c = { st: Object.assign({ loaded: true, isScheduler: true, numWeeks: 13, surgeons: S7, schedule: A.ref.current, edgeFunctionUrl: "https://fn.test/functions/v1/send-notification" }, o.st || {}),
-      upserts: [], status: [], timers: new Map(), tid: 0, renders: 0, queued: false, reloads: 0, roles: [],
-      setupReadRef: { current: true }, lastSyncRef: { current: "2026-10-01T08:00:00+00:00" }, loadedAtRef: { current: 1 }, loadFailedRef: { current: false }, everRef: { current: true }, bundleRef: { current: null } };
+    const c = { st: Object.assign({ loaded: true, isScheduler: true, numWeeks: 13, surgeons: S7, schedule: A.ref.current, edgeFunctionUrl: "https://fn.test/functions/v1/send-notification", setupSaveNudge: 0 }, o.st || {}),
+      upserts: [], status: [], timers: new Map(), tid: 0, renders: 0, queued: false, reloads: 0, roles: [], saveError: false, reauth: 0,
+      setupReadRef: { current: true }, lastSyncRef: { current: "2026-10-01T08:00:00+00:00" }, loadedAtRef: { current: 1 }, loadFailedRef: { current: false }, everRef: { current: true }, bundleRef: { current: null }, pendingSaveRef: { current: null } };
     c.setTimeout = (f) => { const id = ++c.tid; c.timers.set(id, f); return id; };
     c.clearTimeout = (id) => { c.timers.delete(id); };
     c.fire = async () => { for (let n = 0; n < 5 && c.timers.size; n++) { const fs = [...c.timers.values()]; c.timers.clear(); for (const f of fs) await f(); } }; // (and the timers those set: "Saved" clears itself after 2 s)
+    c.fireOnce = async () => { const fs = [...c.timers.values()]; c.timers.clear(); for (const f of fs) await f(); }; // (just the timers due now: "Saved" stays)
     c.supabase = { from: (tb) => ({ upsert: async (row) => {
       const s = A.auth.getSession();
       c.upserts.push({ tb, as: s ? s.access_token : "ANON", numWeeks: row.data ? row.data.numWeeks : undefined, url: row.edge_function_url, clear: !!(row.data && row.data._intentionalClear) });
@@ -3542,12 +3648,12 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
       const s = c.st;
       c.bundle = G.bundle({ surgeons: s.surgeons, apps: [], vacations: VAC, noCallDays: {}, backupMondaySet: NOSET, fierceBackupSet: NOSET, schedule: s.schedule, priorCounts: {}, year1Counts: {},
         startMonth: 0, startYear: 2030, numWeeks: s.numWeeks, holidayAssignments: {}, startMondayOverride: "", pendingLocks: [], silvisRule: null, dismissedWarnings: [], useRef: () => c.bundleRef });
-      const ad = [s.loaded, s.surgeons, s.schedule, s.numWeeks]; // (the autosave's deps that move here; the others stay put)
+      const ad = AUTO_DEPS.map(n => s[n]); // (the autosave's deps, by the source's list: those that move here — loaded, surgeons, schedule, numWeeks, the nudge — and the others, which stay put)
       if (!aDeps || ad.some((v, i) => v !== aDeps[i])) {
         aDeps = ad; if (aClean) aClean();
-        aClean = G.autosave({ loaded: s.loaded, isPublicMode: false, loadedAtRef: c.loadedAtRef, loadFailedRef: c.loadFailedRef, setSaveError: () => {}, setSaveStatus: (x) => c.status.push(x), setupReadRef: c.setupReadRef, auth: A.auth,
-          buildStateBundle: c.bundle, pendingSaveRef: { current: null }, payloadLooksWiped: HX.payloadLooksWiped, everHadRealDataRef: c.everRef, setTimeout: c.setTimeout, clearTimeout: c.clearTimeout, allowWipeSaveRef: { current: false },
-          canWriteBlob: s.isScheduler, supabase: c.supabase, lastSyncRef: c.lastSyncRef, showToast: A.showToast, console: A.console })() || null;
+        aClean = G.autosave({ loaded: s.loaded, isPublicMode: false, loadedAtRef: c.loadedAtRef, loadFailedRef: c.loadFailedRef, setSaveError: (x) => { c.saveError = x; }, setSaveStatus: (x) => c.status.push(x), setupReadRef: c.setupReadRef, auth: A.auth,
+          buildStateBundle: c.bundle, pendingSaveRef: c.pendingSaveRef, payloadLooksWiped: HX.payloadLooksWiped, everHadRealDataRef: c.everRef, setTimeout: c.setTimeout, clearTimeout: c.clearTimeout, allowWipeSaveRef: { current: false },
+          canWriteBlob: s.isScheduler, supabase: c.supabase, lastSyncRef: c.lastSyncRef, showToast: A.showToast, console: A.console, setReauthNeeded: (v) => { if (v) c.reauth++; } })() || null;
       }
       const ud = [s.loaded, s.edgeFunctionUrl, s.isScheduler];
       if (!uDeps || ud.some((v, i) => v !== uDeps[i])) {
@@ -3561,7 +3667,10 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
   // The session boundary's env (the real sessionBoundary / handleSignOut) for an app session + its component.
   const bEnv = (A, c) => { const noop = () => {}; return { searchRef: { current: null }, setSearching: noop, setSearchStats: noop, setPreviewSchedule: noop, setShowPreview: noop, schedSyncRef: A.schedSyncRef,
     setScheduleHistory: A.setScheduleHistory, setEditWeekModal: A.setModal, setReauthNeeded: noop, setStaleTokenWarn: noop, setIsScheduler: c.set("isScheduler"), setupReadRef: c.setupReadRef, lastSyncRef: c.lastSyncRef,
-    confirm: () => true, auth: A.auth, biometric: { unenroll: noop }, setAuthUser: c.set("authUser"), setUserProfile: c.set("userProfile"), setNeedsProfile: noop, setMySurgeon: noop, setBiometricEnrolled: noop, setBiometricPending: noop }; };
+    confirm: () => true, auth: A.auth, biometric: { unenroll: noop }, setAuthUser: c.set("authUser"), setUserProfile: c.set("userProfile"), setNeedsProfile: noop, setMySurgeon: noop, setBiometricEnrolled: noop, setBiometricPending: noop,
+    pendingSaveRef: c.pendingSaveRef, setSetupSaveNudge: c.set("setupSaveNudge") }; };
+  // …and "Sign in again" landing on the SAME account (a renewed session — the real reauthLanded's same-account branch).
+  const sameAccount = (A, c) => Object.assign(bEnv(A, c), { authUser: { id: "auth-a" }, showToast: A.showToast, dbAuth: { getProfile: async () => null }, setReloadTrigger: () => { c.reloads++; } });
   // …and "Sign in again" landing on ANOTHER account, a scheduler (the real reauthLanded, crossing that boundary).
   const otherAccount = async (A, c) => {
     A.token = "TOK_B"; // the new account's session is stored
@@ -3578,6 +3687,7 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
     const noop = () => {};
     const single = (tb) => async () => {
       if (tb !== "call_schedule_data") return { data: null, error: null };
+      if (o.gate) await o.gate; // (19/n, r2-tests-1: the read held — a slow setup read)
       if (o.blobFails && o.blobFails()) throw new Error("HTTP 503");
       return { data: o.blob, error: null };
     };
@@ -3592,6 +3702,64 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
     return r;
   };
   const ticks = async (A, n) => { for (let i = 0; i < (n || 1); i++) { await A.settle(); for (let j = 0; j < 4; j++) await null; } };
+  // ── 19/n (review r2, the app items P7–P10 and the test gaps) ──
+  const nap = (n) => new Promise(res => setTimeout(res, n));
+  const noopX = () => {};
+  const dc = (o) => Object.keys(o || {}).sort().map(k => k + "=" + (o[k] && o[k].dayCall)).join(" ");
+  // config.js's snapshots.restore as the app sees it (sync-guards C and SE-G run the real one): the confirm, then (the
+  // before_restore capture and) the blob written, then the schedule leg — and, whenever the blob was written, the
+  // restored blob in its answer (19/n P8: also when the leg is refused or doesn't fully land). o.beforeConfirm /
+  // o.beforeApply: awaited first (a slow snapshot read; a slow capture + blob write); o.rec counts its calls and blob writes.
+  const restoreStub = (SNAP, o = {}) => ({ restore: async (id, apply, opts) => {
+    if (o.rec) o.rec.calls++;
+    if (o.beforeConfirm) await o.beforeConfirm;
+    if (opts && opts.confirm && !(await opts.confirm(SNAP, {}))) return { ok: false, cancelled: true };
+    if (o.beforeApply) await o.beforeApply;
+    if (o.rec) o.rec.blobWrites++;
+    const blob = o.blob || {}, ts = "2026-10-14T10:00:00Z";
+    const applied = await apply(SNAP);
+    if (applied && applied.running) return { ok: false, running: true, error: applied.error, blobRestored: true, blob, schedule: SNAP, ts };
+    if (applied && applied.ok === false) return { ok: false, error: applied.error || "Schedule apply failed", blobRestored: true, blob, schedule: SNAP, ts };
+    return { ok: true, blob, schedule: SNAP, ts };
+  } });
+  const mkRec = () => ({ status: [], upserts: [], snaps: 0, confirms: 0, prompts: 0, calls: 0, blobWrites: 0, alerts: 0, adopted: [], published: 0, setupReset: 0, timeOff: 0, prefs: 0, jobP: null });
+  // The REAL clearSchedule / restoreSnapshot / resetAllData / acceptPreview for one app session, every effect recorded in
+  // rec (the confirm and the snapshot asked, the setup writes, the statuses, the setup adopted); o.captureGate /
+  // o.upsertGate: a slow snapshot capture / a slow first setup write; o.env: overrides (a component's setters and refs).
+  const appJobs = (A, rec, o = {}) => {
+    const ra = G.runAuth({ schedSyncRef: A.schedSyncRef, setScheduleHistory: A.setScheduleHistory });
+    const sup = { from: (tb) => ({ upsert: async () => { rec.upserts.push(tb); if (o.upsertGate && rec.upserts.length === 1) await o.upsertGate; return { error: null }; } }) };
+    const capture = async () => { rec.snaps++; if (o.captureGate) await o.captureGate; return { ok: true }; };
+    const confirm = () => { rec.confirms++; return true; };
+    const env = (base) => Object.assign(base, o.env || {});
+    return {
+      clear: () => G.clear(env({ schedEditable: A.schedEditable, confirm, snapshots: { capture }, schedSyncRef: A.schedSyncRef, showToast: A.showToast,
+        scheduleRef: A.ref, pushUndo: A.pushUndo, commitSchedule: A.commitSchedule, setSaveStatus: (s) => rec.status.push(s), runAuthoritativeSchedule: ra, setTimeout: () => 0, lastSyncRef: { current: null },
+        buildStateBundle: (x) => Object.assign({}, x), stateBundleRef: { current: (x) => Object.assign({}, x) }, setupReadRef: { current: true }, auth: A.auth, supabase: sup, console: A.console }))(),
+      restore: (SNAP, so) => G.restore(env({ schedEditable: A.schedEditable, isScheduler: true, userProfile: null, setRestoreBusyId: noopX, setSaveStatus: (s) => rec.status.push(s),
+        snapshots: restoreStub(SNAP, Object.assign({ rec }, so || {})), scheduleRef: A.ref, pushUndo: A.pushUndo, commitSchedule: A.commitSchedule, runAuthoritativeSchedule: ra, schedSyncRef: A.schedSyncRef, confirm, snapshotReasonLabel: (r) => r,
+        showToast: A.showToast, setSurgeons: noopX, setApps: noopX, setBackupMondaySet: noopX, setFierceBackupSet: noopX, setAppShifts: noopX, setPriorCounts: noopX, setYear1Counts: noopX, setStartMonth: noopX, setStartYear: noopX,
+        setNumWeeks: (n) => rec.adopted.push(n), setStartMondayOverride: noopX, setHolidayAssignments: noopX, setPendingLocks: noopX, setSilvisRule: noopX, sfRule: (x) => x, SF_RULE_DEFAULT: {}, setDismissedWarnings: noopX,
+        lastSyncRef: { current: null }, everHadRealDataRef: { current: false }, logAudit: noopX, loadSnapshots: noopX, setTimeout: () => 0, alert: () => { rec.alerts++; } }))({ id: 9, reason: "manual", created_at: "2026-10-13T00:00:00Z" }),
+      reset: () => G.reset(env({ isScheduler: true, userProfile: null, alert: noopX, schedEditable: A.schedEditable, prompt: () => { rec.prompts++; return "RESET"; }, setSaveStatus: (s) => rec.status.push(s), setTimeout: () => 0,
+        snapshots: { capture }, schedSyncRef: A.schedSyncRef, showToast: A.showToast, logAudit: noopX, allowWipeSaveRef: { current: false }, everHadRealDataRef: { current: true },
+        supabase: sup, console: A.console, setSurgeons: () => { rec.setupReset++; }, INIT_SURGEONS: [], setApps: noopX, INIT_APPS: [], toClearAll: () => { rec.timeOff++; },
+        setBackupMondaySet: noopX, setFierceBackupSet: noopX, scheduleRef: A.ref, commitSchedule: A.commitSchedule, runAuthoritativeSchedule: (...a) => (rec.jobP = ra(...a)),
+        setAppShifts: noopX, setPriorCounts: noopX, setYear1Counts: noopX, setStartMonth: noopX, setStartYear: noopX }))(),
+      accept: (weeks) => F.acceptPreview(env({ publishSearchRunning: () => false, showToast: A.showToast, cancelSearch: noopX, previewSchedule: weeks, previewNeedsOk: { items: [], cost: 0 }, previewAck: true,
+        publishingRef: { current: false }, schedEditable: A.schedEditable, schedSyncRef: A.schedSyncRef, previewEpochRef: { current: A.eng.epochNow() }, previewOrigin: "generated", startMonth: 0, startYear: 2030, numWeeks: 2,
+        setPublishing: noopX, setSaveStatus: (s) => rec.status.push(s), snapshots: { capture }, previewSchedRef: { current: weeks },
+        publishWeeks: (w) => { rec.published++; A.pushUndo(); A.commitSchedule(Object.assign({}, A.ref.current, w)); return {}; }, MO: HX.MO, runPublish: F.runPublish({ schedSyncRef: A.schedSyncRef }),
+        setPreviewSchedule: noopX, setShowPreview: noopX, setCalMonth: noopX, setCalYear: noopX, setView: noopX, setTimeout: () => 0, publishNotLanded: F.notLanded({ showToast: A.showToast }) }))(),
+      // Generate & Publish after its search (finishGenerate, as AH9: a clean result, unchanged inputs) — its commit recorded, not run
+      finish: (RES) => G.finish({ pendingLocks: [], nameOf: (x) => x, slotLabel: () => "slot", showToast: A.showToast, setPreviewSchedule: noopX, setPreviewOrigin: noopX, setShowPreview: noopX,
+        genInputsSig: () => "SIG0", listScheduleBends: () => ({ items: [] }), surgeons: [], mondays: [], buildGenAvailability: () => ({}), buildSilvisPrimary: () => null, vacations: {}, holidayAssignments: {}, buildPrevWeekSeed: () => null,
+        publishingRef: { current: false }, setPublishing: noopX, setSaveStatus: (s) => rec.status.push(s), snapshots: { capture },
+        genCommitRef: { current: async () => { rec.published++; return { ok: true }; } }, previewEpochRef: { current: -1 }, schedEditable: A.schedEditable, schedSyncRef: A.schedSyncRef })(RES, false, "SIG0", [], A.eng.epochNow()),
+      // Generate / Generate & Publish at the click (doGenerate) — up to its first step past the gates (buildPrefs, which stops it here)
+      gen: (preview) => G.gen({ searchRef: { current: null }, showToast: A.showToast, schedEditable: A.schedEditable, schedSyncRef: A.schedSyncRef, buildPrefs: () => { rec.prefs++; throw new Error("STOP"); } })(preview).catch(e => "stopped:" + (e && e.message)),
+    };
+  };
 
   // SE-X9 — 17/n P1 (review r1 app-2 = regress-synced-while-unsaved): what the
   // header says while an edit is unsaved, through the app's OWN wiring — the
@@ -3642,13 +3810,7 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
     const noop = () => {};
     const SNAP = { [X[0]]: wkX("s6", ["s1", "s2", "s3", "s4", "s5"]), [X[1]]: wkX("s5", ["s1", "s2", "s3", "s4", "s6"]) };
     // config.js's restore, as far as the schedule leg goes: the confirm, (the before_restore capture and the blob) then the leg
-    const snapStub = { restore: async (id, apply, opts) => {
-      if (opts && opts.confirm && !(await opts.confirm(SNAP, {}))) return { ok: false, cancelled: true };
-      const applied = await apply(SNAP);
-      if (applied && applied.running) return { ok: false, running: true, error: applied.error, blobRestored: true, blob: {}, schedule: SNAP, ts: "2026-10-14T10:00:00Z" };
-      if (applied && applied.ok === false) return { ok: false, error: applied.error || "Schedule apply failed", blobRestored: true };
-      return { ok: true, blob: {}, schedule: SNAP, ts: "2026-10-14T10:00:00Z" };
-    } };
+    const snapStub = restoreStub(SNAP, { rec: { calls: 0, blobWrites: 0 } });
     const upsertStub = (rec) => ({ from: () => ({ upsert: async () => { rec.upserts++; return { error: null }; } }) });
     const clearJob = (A, ra, rec) => G.clear({ schedEditable: A.schedEditable, confirm: () => true, snapshots: { capture: async () => ({ ok: true }) }, schedSyncRef: A.schedSyncRef, showToast: A.showToast,
       scheduleRef: A.ref, pushUndo: A.pushUndo, commitSchedule: A.commitSchedule, setSaveStatus: (s) => rec.status.push(s), runAuthoritativeSchedule: ra, setTimeout: () => 0, lastSyncRef: { current: null },
@@ -3699,8 +3861,8 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
     check("SE-X10 17/n P2 the real clearSchedule, refused (its whole-table read fails), with an edited week and a new local week pending from BEFORE the tap: both shown again and still pending, nothing written by the job; its Undo step taken back (the earlier one stays); ONE message, no blob save; and the follow-up push lands both",
       back(cl) && cl.hist.length === 1 && cl.hist[0] === cl.earlier && cl.toasts.length === 1 && cl.toasts[0][0] === "The schedule was NOT cleared — " + READ && cl.rec.upserts === 0, show(cl));
     const rv = await go(restoreJob, { refuse: true });
-    check("SE-X10 17/n P2 the real restoreSnapshot's schedule leg, refused the same way: the pending weeks shown again (not the snapshot's, not the table's) and still pending, nothing written by the job; its Undo step taken back (the earlier one stays); ONE message ('Restore failed: …'); and the follow-up push lands both",
-      back(rv) && rv.hist.length === 1 && rv.hist[0] === rv.earlier && rv.toasts.length === 1 && /^Restore failed: /.test(rv.toasts[0][0]) && rv.rec.alerts === 0, show(rv));
+    check("SE-X10 17/n P2 the real restoreSnapshot's schedule leg, refused the same way: the pending weeks shown again (not the snapshot's, not the table's) and still pending, nothing written by the job; its Undo step taken back (the earlier one stays); ONE message — (19/n P8) that the roster and setup WERE restored, the weeks not, and why: 'Restore: the roster and setup were restored, but the schedule weeks were NOT restored: Couldn't read the saved schedule. Try the restore again.'; and the follow-up push lands both",
+      back(rv) && rv.hist.length === 1 && rv.hist[0] === rv.earlier && rv.toasts.length === 1 && rv.toasts[0][0] === "Restore: the roster and setup were restored, but the schedule weeks were NOT restored: Couldn't read the saved schedule. Try the restore again." && rv.toasts[0][1] === "error" && rv.rec.alerts === 0, show(rv));
     const rs = await go(resetJob, { refuse: true });
     const RESET_NOT = "Factory reset: the setup, APP shifts and time off were reset, but the schedule weeks were NOT cleared: Couldn't read the saved schedule. Run the reset again, or restore the \"Before factory reset\" snapshot.";
     check("SE-X10 17/n P2 the real resetAllData, its weeks job refused the same way: the pending weeks shown again and still pending, nothing written by the job; and the follow-up push lands both",
@@ -3729,19 +3891,41 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
     check("SE-X11 17/n P4 a scheduler with nothing pending signs out — the real sessionBoundary + handleSignOut (the engine resets and reloads the table: the schedule changes twice under the setup autosave): no setup write at all — none as anon, none under the old token — and no 'no permission' toast; the scheduler flag cleared at the boundary (the next account's profile sets it again), the setup autosave disarmed and its row forgotten",
       sa.base === "call_schedule_data:TOK_A,call_schedule_config:TOK_A" && sa.ups.length === 0 && !sa.toasts.some(x => /permission|Couldn't save/.test(x[0])) && sa.roles.join() === "false" && sa.isScheduler === false
         && sa.armed === false && sa.last === null && sa.signOuts === 1 && sa.renders >= 3 && sa.shown === 4, JSON.stringify(sa));
-    // (b) no stored session, no boundary crossed here (another tab signed out)
+    // (b) no stored session, no boundary crossed here (another tab signed out) — 19/n P9 (review r2 regress-2, R2-1):
+    // still never written (not as anon), but never silently: kept pending and SAID — "⚠ Not saved — you're signed out.
+    // Sign in again" (saveError), the red "Sign in again" banner (reauthNeeded), the header not "Synced"; the same when
+    // the session goes DURING the autosave's debounce (its timer); and when the SAME account signs in again (the real
+    // reauthLanded — no dep of the autosave changes on a sign-in), the change kept pending goes out under the renewed token.
+    const NOT_SIGNED = "⚠ Not saved — you're signed out. Sign in again";
     let sb;
-    { const { A } = await pair(); const c = mkComp(A); c.render(); await c.fire(); c.upserts.length = 0; A.toasts.length = 0;
+    { const { t, A } = await pair(); const c = mkComp(A); c.render(); await c.fire(); c.upserts.length = 0; A.toasts.length = 0; c.status.length = 0;
       A.token = null;
       c.set("numWeeks")(20); await ticks(A); await c.fire();
-      const r1 = c.upserts.length;
-      A.token = "TOK_A"; c.set("numWeeks")(21); await ticks(A); // signed in again there; a change here, its autosave debounced…
+      const shown1 = c.status.filter(Boolean).slice(-1)[0] || "";
+      const r1 = { ups: c.upserts.length, status: c.status.slice(), err: c.saveError, reauth: c.reauth, pending: c.pendingSaveRef.current ? c.pendingSaveRef.current.numWeeks : null,
+        header: lineX ? ((lineX(A.sync, { loaded: true, readOnly: false, blobStatus: !!shown1 }) || { kind: "none" }).kind) : "no line" };
+      A.token = "TOK_A"; c.saveError = false; c.status.length = 0; c.reauth = 0;
+      c.set("numWeeks")(21); await ticks(A);                      // signed in again there; a change here, its autosave debounced…
       const debounced = c.timers.size;
       A.token = null; await c.fire();                             // …and that tab signs out within those 800 ms
-      sb = { r1, debounced, ups: c.upserts.slice(), toasts: A.toasts.slice() };
+      const r2 = { ups: c.upserts.length, status: c.status.slice(), err: c.saveError, reauth: c.reauth, pending: c.pendingSaveRef.current ? c.pendingSaveRef.current.numWeeks : null };
+      t.control.users.TOK_A2 = "user-a"; A.token = "TOK_A2";      // "Sign in again": the same account, a renewed session
+      c.status.length = 0;
+      const how = await G.reauth(sameAccount(A, c))({ id: "auth-a", email: "a@dsg.test" }); await ticks(A); await c.fire();
+      sb = { r1, debounced, r2, how, ups: c.upserts.slice(), status: c.status.slice(), err: c.saveError, toasts: A.toasts.map(x => x[0]) };
     }
-    check("SE-X11 17/n P4 no stored session (another tab signed out: no boundary crossed here — still armed, still a scheduler): a setup change writes nothing, not as anon, no toast; the same when the session goes DURING the autosave's 800-ms debounce",
-      sb.r1 === 0 && sb.debounced === 1 && sb.ups.length === 0 && sb.toasts.length === 0, JSON.stringify(sb));
+    check("SE-X11 19/n P9 no stored session (another tab signed out: no boundary crossed here — still armed, still a scheduler): a setup change writes NOTHING (not as anon) — but is never dropped silently: kept pending, '" + NOT_SIGNED + "' (saveError), the red 'Sign in again' banner raised, the header not 'Synced'; the same when the session goes DURING the autosave's 800-ms debounce",
+      sb.r1.ups === 0 && sb.r1.status.slice(-1)[0] === NOT_SIGNED && sb.r1.err === true && sb.r1.reauth >= 1 && sb.r1.pending === 20 && sb.r1.header !== "synced"
+        && sb.debounced === 1 && sb.r2.ups === 0 && sb.r2.status.slice(-1)[0] === NOT_SIGNED && sb.r2.err === true && sb.r2.reauth >= 1 && sb.r2.pending === 21, JSON.stringify(sb));
+    check("SE-X11 19/n P9 …and when the SAME account signs in again (the real reauthLanded: a renewed token; no dep of the autosave changed), the setup change kept pending goes out — once, under the renewed token, the latest (numWeeks 21) — and the status says 'Saved'",
+      sb.how === "same" && sb.ups.length === 1 && sb.ups[0].tb === "call_schedule_data" && sb.ups[0].as === "TOK_A2" && sb.ups[0].numWeeks === 21 && sb.status.includes("Saved") && sb.err === false, JSON.stringify(sb));
+    let sbm;
+    { const { A } = await pair(); const c = mkComp(A, { st: { isScheduler: false } }); c.render(); await c.fire(); c.upserts.length = 0; c.status.length = 0;
+      A.token = null; c.set("numWeeks")(20); await ticks(A); await c.fire();
+      sbm = { ups: c.upserts.length, status: c.status.slice(), err: c.saveError, reauth: c.reauth };
+    }
+    check("SE-X11 19/n P9 …a MEMBER (who never writes the setup) with no stored session: nothing written, and no false 'Not saved' or banner (the autosave's deps move for a member only by adoption)",
+      sbm.ups === 0 && sbm.status.length === 0 && sbm.err === false && sbm.reauth === 0, JSON.stringify(sbm));
     // (c) "Sign in again" lands on ANOTHER account, a scheduler; its setup read works
     let sc;
     { const { t, A } = await pair(); const c = mkComp(A); c.render(); await c.fire(); c.upserts.length = 0; A.toasts.length = 0;
@@ -3783,6 +3967,36 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
     check("SE-X11 17/n P4 …another account whose setup read FAILS at the load: the autosave says it isn't saving, and writes nothing; the 60-s poll's read — of the very row this page last saw (the boundary forgot it, so it is adopted) — arms it again, and the next setup change lands as B",
       sd.whileFailed.ups === 0 && sd.whileFailed.status === "⚠ Not saving — schedule failed to load" && sd.numWeeks === 28 && !!sd.last && sd.last.as === "TOK_B" && sd.last.numWeeks === 28
         && sd.errors.length === 1 && /^Supabase load error/.test(sd.errors[0]), JSON.stringify(sd));
+    // (e) 19/n r2-tests-1 (R7d): B's setup read is still OUT (held) — a render meanwhile, its timers fired: nothing of this
+    // page's setup is written as B; the autosave arms only once that read has answered (and then writes as B).
+    let se;
+    { const { A } = await pair(); const c = mkComp(A); c.render(); await c.fire(); c.upserts.length = 0; A.toasts.length = 0;
+      await otherAccount(A, c); await ticks(A, 2);                // "Sign in again" landed on B (a scheduler); the boundary disarmed the autosave
+      let open; const gate = new Promise(res => { open = res; });
+      const L = loadRig(A, c, { gate, blob: { data: { numWeeks: 26 }, updated_at: "2026-10-14T09:00:00+00:00" } }); // the reload's setup read: SLOW
+      for (let j = 0; j < 6; j++) await null;
+      c.set("numWeeks")(14); await ticks(A);                      // a render while B's setup read is still out
+      await c.fire();                                             // the autosave's 800 ms pass before that read answers
+      const whileOut = c.blobs().slice(), armedWhileOut = c.setupReadRef.current;
+      open(); await L.loaded; await ticks(A);
+      c.loadedAtRef.current = 1; c.set("numWeeks")(27); await ticks(A); await c.fire();
+      se = { whileOut, armedWhileOut, adopted: c.st.numWeeks, last: c.blobs().slice(-1)[0] };
+    }
+    check("SE-X11 19/n (r2-tests-1) while the next account's setup read is still OUT (held), a render and its 800 ms pass: NOTHING of this page's setup is written as that account — the autosave arms only once the read has answered; then a change lands as B",
+      se.whileOut.length === 0 && se.armedWhileOut === false && !!se.last && se.last.as === "TOK_B" && se.last.numWeeks === 27, JSON.stringify(se));
+    // (f) 19/n r2-tests-4 (R8): an autosave timer still PENDING (A's change, debounced) when the boundary into another
+    // signed-in account is crossed, coming due before the next render clears it: nothing written as that account.
+    let sf;
+    { const { A } = await pair(); const c = mkComp(A); c.render(); await c.fire(); c.upserts.length = 0; A.toasts.length = 0;
+      c.set("numWeeks")(14); await ticks(A);                      // A's own setup change: its autosave timer is pending (800 ms)
+      const pending = c.timers.size;
+      const p = otherAccount(A, c);                               // "Sign in again" lands on B: the boundary runs now…
+      await c.fire();                                             // …and that timer comes due before the next render clears it
+      await p; await ticks(A, 2);
+      sf = { pending, asB: c.blobs().filter(u => u.as === "TOK_B"), ups: c.upserts.slice() };
+    }
+    check("SE-X11 19/n (r2-tests-4) an autosave timer still pending when the boundary into ANOTHER signed-in account is crossed (the session is there — B's): it writes nothing as that account (this account's setup not read yet)",
+      sf.pending === 1 && sf.asB.length === 0, JSON.stringify(sf));
   });
 
   // SE-X12 — 17/n P5 (review r1 regress-clear-stale-blob): the clear's own
@@ -3821,6 +4035,31 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
     const out = await go({ during: async (A, c) => { await G.boundary(bEnv(A, c)).handleSignOut(); for (let j = 0; j < 6; j++) await null; } });
     check("SE-X12 17/n P4 …signed out DURING the job (the real handleSignOut: the job is fenced): the clear's setup save is NOT made — nothing written after the sign-out, as anon or otherwise; no permission / 'Couldn't save' toast",
       out.blobs.length === 0 && out.c.upserts.length === 0 && !out.toasts.some(m => /permission|Couldn't save/.test(m)) && out.A.signOuts === 1, show(out));
+    const other = await go({ during: async (A, c) => { await otherAccount(A, c); for (let j = 0; j < 6; j++) await null; } });
+    check("SE-X12 19/n (r2-tests-4) …'Sign in again' lands on ANOTHER account during the job (a session is there — B's — but B's setup isn't read yet): the clear's setup save is NOT made as that account",
+      other.blobs.filter(u => u.as === "TOK_B").length === 0 && other.c.upserts.filter(u => u.as === "TOK_B").length === 0, show(other));
+    // 19/n (r2-tests-4, P5b / R9): the boundary crossed while the clear's job RUNS, its request still out when its deadline
+    // passes — so the clear is answered "still running" (not fenced: 19/n P10 silences a fenced one before its save) and goes
+    // on to its setup save: never made across the boundary — not as anon after a sign-out, not as the next account.
+    const lateCross = async (cross) => {
+      const t = mkT(), A = mkApp(t, { timeouts: { deadline: 40 } }); await A.eng.load(); await ticks(A);
+      const c = mkComp(A); c.render(); await c.fire(); c.upserts.length = 0; A.toasts.length = 0;
+      const ra = G.runAuth({ schedSyncRef: A.schedSyncRef, setScheduleHistory: A.setScheduleHistory });
+      const hold = t.control.pause({ method: "DELETE", count: 1 }); // the clear's first DELETE on the wire: the job runs
+      const p = G.clear({ schedEditable: A.schedEditable, confirm: () => true, snapshots: { capture: async () => ({ ok: true }) }, schedSyncRef: A.schedSyncRef, showToast: A.showToast,
+        scheduleRef: A.ref, pushUndo: A.pushUndo, commitSchedule: A.commitSchedule, setSaveStatus: (s) => c.status.push(s), runAuthoritativeSchedule: ra, setTimeout: () => 0, lastSyncRef: c.lastSyncRef,
+        buildStateBundle: c.bundle, stateBundleRef: c.bundleRef, setupReadRef: c.setupReadRef, auth: A.auth, supabase: c.supabase, console: A.console })();
+      await hold.arrived;
+      await cross(A, c); for (let j = 0; j < 6; j++) await null;
+      await p; await c.fire();                                    // answered at its deadline ("still running"): its setup save, if any, is made now
+      const ups = c.upserts.filter(u => u.tb === "call_schedule_data");
+      hold.release(); await ticks(A, 2);
+      return { ups, toasts: A.toasts.map(x => x[0]) };
+    };
+    const lo = await lateCross(async (A, c) => { await G.boundary(bEnv(A, c)).handleSignOut(); });
+    const lb = await lateCross(async (A, c) => { await otherAccount(A, c); });
+    check("SE-X12 19/n (r2-tests-4) …the boundary crossed while the clear's job runs, its request still out at the deadline (answered 'still running', the clear goes on to its setup save): that save is NOT made across the boundary — not as anon after a sign-out, not as the next account after 'Sign in again' lands on another",
+      lo.ups.length === 0 && lb.ups.length === 0 && lo.toasts.some(m => /taking longer than expected/.test(m)) && lb.toasts.some(m => /taking longer than expected/.test(m)), JSON.stringify({ lo, lb }));
   });
 
   // SE-X13 — 17/n P6 (review r1 regress-dup-status-line): ONE status line.
@@ -3860,7 +4099,7 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
       numWeeks: 2, MO: HX.MO, startMonth: 0, startYear: 2030, runPublish: F.runPublish({ schedSyncRef: A.schedSyncRef }), setPreviewSchedule: noop, setShowPreview: noop, setSaveStatus: ss, lastSyncRef: { current: null },
       buildStateBundle: (x) => Object.assign({}, x), supabase: { from: () => ({ upsert: async () => ({ error: null }) }) }, console: A.console, showToast: A.showToast, setTimeout: () => 0, publishNotLanded: F.notLanded({ showToast: A.showToast }) })(WEEKS()); });
     const SNAP = WEEKS();
-    const snapStub = { restore: async (id, apply, opts) => { if (opts && opts.confirm && !(await opts.confirm(SNAP, {}))) return { ok: false, cancelled: true }; const r = await apply(SNAP); return r && r.ok === false ? { ok: false, error: r.error } : { ok: true, blob: {}, schedule: SNAP, ts: "2026-10-14T10:00:00Z" }; } };
+    const snapStub = restoreStub(SNAP, { rec: { calls: 0, blobWrites: 0 } });
     const rv = await atJob(undefined, (A, ss) => G.restore({ schedEditable: A.schedEditable, isScheduler: true, userProfile: null, setRestoreBusyId: noop, setSaveStatus: ss, snapshots: snapStub, scheduleRef: A.ref, pushUndo: A.pushUndo,
       commitSchedule: A.commitSchedule, runAuthoritativeSchedule: ra(A), schedSyncRef: A.schedSyncRef, confirm: () => true, snapshotReasonLabel: (r) => r, showToast: A.showToast, setSurgeons: noop, setApps: noop,
       setBackupMondaySet: noop, setFierceBackupSet: noop, setAppShifts: noop, setPriorCounts: noop, setYear1Counts: noop, setStartMonth: noop, setStartYear: noop, setNumWeeks: noop, setStartMondayOverride: noop,
@@ -3881,11 +4120,11 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
     await A.eng.push(); await ticks(A);
     const okKind = LV(A.sync).split(":")[0];
     const S = (saveStatus, saveError, schedLineKind) => G.saveShown({ saveStatus, saveError, schedLineKind });
-    const RED = ["auth", "loadFailed", "notSaved", "rejected", "blocked", "stalled"], OTHER = ["busy", "stale", "conflicts", "saving", "synced", null];
-    check("SE-X13 17/n P6 the header (the real saveStatusShown): the setup autosave's '☁ Saved' does NOT render beside a red schedule line — the one a failed week write gives (the real 'notSaved') and every other red kind (sign in again, didn't load, couldn't be saved, deletions blocked, stalled); its errors still do ('⚠ Not saved — no permission', saveError), and so do the other statuses (a job's 'Schedule cleared'); beside any other line it renders",
-      redKind === "notSaved" && okKind === "synced" && S("Saved", false, redKind) === false && S("Saved", false, okKind) === true && RED.every(k => S("Saved", false, k) === false)
-        && RED.every(k => S("Not saved — no permission", true, k) === true && S("Schedule cleared", false, k) === true) && OTHER.every(k => S("Saved", false, k) === true) && S("", false, "synced") === false,
-      JSON.stringify({ redKind, okKind, red: RED.map(k => [k, S("Saved", false, k)]), other: OTHER.map(k => [k, S("Saved", false, k)]) }));
+    const RED = ["auth", "loadFailed", "notSaved", "rejected", "blocked", "stalled"], HIDES = RED.concat(["busy"]), OTHER = ["stale", "conflicts", "saving", "synced", null];
+    check("SE-X13 17/n P6 the header (the real saveStatusShown): the setup autosave's '☁ Saved' does NOT render beside a red schedule line — the one a failed week write gives (the real 'notSaved') and every other red kind (sign in again, didn't load, couldn't be saved, deletions blocked, stalled) — nor (19/n P10, review r2 fixes-2) beside a job's busy line; its errors still do ('⚠ Not saved — no permission', saveError), and so do the other statuses (a job's 'Schedule cleared'); beside any other line it renders",
+      redKind === "notSaved" && okKind === "synced" && S("Saved", false, redKind) === false && S("Saved", false, okKind) === true && HIDES.every(k => S("Saved", false, k) === false)
+        && HIDES.every(k => S("Not saved — no permission", true, k) === true && S("Schedule cleared", false, k) === true) && OTHER.every(k => S("Saved", false, k) === true) && S("", false, "synced") === false,
+      JSON.stringify({ redKind, okKind, hides: HIDES.map(k => [k, S("Saved", false, k)]), other: OTHER.map(k => [k, S("Saved", false, k)]) }));
   });
 
   // SE-X14 — 17/n T4 (review r1 tests-5): the engine's token() as the app
@@ -3908,6 +4147,298 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
     check("SE-X14 17/n T4 the app's token() (its real wiring): after a 401 for TOK_A writes are blocked ('expired') and the week pending; a new stored token (TOK_A2) unblocks at once, and the next pull sends the week under it — one CAS PATCH, Bearer TOK_A2, landed; no stored session → 'none'",
       blocked && unblocked && w.length === 1 && w[0].method === "PATCH" && w[0].headers.authorization === "Bearer TOK_A2" && /version=eq\.3/.test(w[0].url) && w[0].status === 200
         && t.get(X[2]).data.dayCall === "s7" && A.eng.pending().length === 0 && none === "none", JSON.stringify({ blocked, unblocked, w: w.map(e => [e.method, e.headers.authorization, e.status]), none, toasts: A.toasts }));
+  });
+
+  // SE-X15 — 19/n P7 (review r2 regress-1, the app half): ONE clear / reset / restore / publish at a time from the UI
+  // — the job gate (schedEditable("job")), asked at the tap and again after each await, right before the commit;
+  // refused with one toast naming the job queued or running. The REAL clearSchedule, restoreSnapshot, resetAllData,
+  // acceptPreview, finishGenerate and doGenerate on the app's engine. (a) R2V-1 (r2-verify-regress): an ordinary save
+  // holds the chain; Clear, then Restore while the clear is queued (and the reverse); both jobs' whole-table reads fail.
+  // Before P7 the second's `before` was the first's target — a saved week deleted, or the snapshot's copy written — and
+  // both said "nothing was changed". Now the second is refused at its tap: nothing asked, read or written, and the table
+  // is unchanged. (b) the checks after the awaits: a job requested while the second waits on its snapshot read, its blob
+  // write or its own snapshot capture refuses it there — nothing of it committed, no job of its own. (c) a publish
+  // refused during a clear (at its tap, after its snapshot), Generate & Publish (at its tap, after its search, after its
+  // snapshot) — a Generate preview is never held back. (d) factory reset: at its tap, after its snapshot, and after the
+  // stored-data clears (then the setup WAS reset, the weeks not — said so).
+  await run("SE-X15", async () => {
+    if (!gotG("SE-X15 19/n P7", ["runAuth", "clear", "reset", "restore", "finish", "gen"])) return;
+    const BUSY = (label) => `${label} is still running — wait for it to finish, then try again.`;
+    const CLEARING = BUSY("Clearing the schedule"), RESTORING = BUSY("Restoring the snapshot"), PUBLISHING = BUSY("Publishing the new weeks");
+    const READ = "Couldn't read the saved schedule — nothing was changed.";
+    const SNAP = () => ({ [X[0]]: wkX("s6", ["s1", "s2", "s3", "s4", "s5"]) });
+    const WEEKS = () => ({ [X[0]]: wkX("s4", ["s1", "s2", "s3", "s5", "s6"]), [XNEW]: wkX("s3", ["s1", "s2", "s4", "s5", "s6"]) });
+    const toastsOf = (A) => A.toasts.map(x => x[0]);
+    const wire = (t, from) => writesOf(t, from).map(e => e.method + " " + e.url.replace(/^.*schedule_weeks\??/, "").split("&")[0]);
+    // (a) R2V-1
+    const stacked = async (order) => {
+      const { t, A } = await pair(); await ticks(A);
+      const rec = mkRec(), J = appJobs(A, rec);
+      const hold = t.control.pause({ method: "PATCH", count: 1 });  // an ordinary save holds the chain (a slow save)
+      const from = t.log.length;
+      A.edit(X[3], w => (w.dayCall = "s7", w));
+      const pp = A.eng.push(); await hold.arrived;
+      const expect = dc(Object.assign(tableOf(t), { [X[3]]: A.ref.current[X[3]] }));
+      A.toasts.length = 0;
+      let p1, p2;
+      if (order === "clear-then-restore") { p1 = J.clear(); for (let j = 0; j < 20; j++) await null; p2 = J.restore(SNAP()); }
+      else { p1 = J.restore(SNAP()); for (let j = 0; j < 20; j++) await null; p2 = J.clear(); }
+      for (let j = 0; j < 20; j++) await null;
+      const pend = A.eng.jobPending();
+      t.control.fail({ method: "GET", week: "limit=5000", kind: "5xx-before", count: 2 }); // the jobs' whole-table reads
+      hold.release(); await pp; await p1; await p2; await ticks(A, 4);
+      return { pend, rec, expect, table: dc(tableOf(t)), screen: dc(A.ref.current), toasts: toastsOf(A), pending: A.eng.pending(), writes: wire(t, from), history: A.history.length };
+    };
+    const showS = (x) => JSON.stringify(Object.assign({}, x, { rec: { calls: x.rec.calls, blobWrites: x.rec.blobWrites, confirms: x.rec.confirms, snaps: x.rec.snaps } }));
+    const cr = await stacked("clear-then-restore");
+    check("SE-X15 19/n P7 (R2V-1) the real clearSchedule, then the real restoreSnapshot while the clear is still queued (an ordinary save holds the chain), both whole-table reads failing: the restore is refused at its tap — '" + CLEARING + "' — reading, asking and writing nothing (no snapshot read, no blob, no job); the clear is refused as before; the table is unchanged (the ordinary save its only write), the screen equals it, nothing pending",
+      cr.pend === "clear" && cr.rec.calls === 0 && cr.rec.blobWrites === 0 && cr.toasts.length === 2 && cr.toasts[0] === CLEARING && cr.toasts[1] === "The schedule was NOT cleared — " + READ
+        && cr.table === cr.expect && cr.screen === cr.expect && cr.writes.join() === "PATCH week_monday=eq." + X[3] && cr.pending.length === 0, showS(cr));
+    const rc = await stacked("restore-then-clear");
+    check("SE-X15 19/n P7 (R2V-1) …the reverse — the real restoreSnapshot queued, then the real clearSchedule: the clear is refused at its tap — '" + RESTORING + "' — before its question (no confirm, no snapshot, no Undo step); the restore is refused (its weeks NOT restored, said so); the snapshot's copy is never written — the table unchanged, the screen equals it, nothing pending",
+      rc.pend === "restore" && rc.rec.confirms === 1 && rc.rec.snaps === 0 && rc.toasts.length === 2 && rc.toasts[0] === RESTORING && /^Restore: the roster and setup were restored, but the schedule weeks were NOT restored: /.test(rc.toasts[1])
+        && rc.table === rc.expect && rc.screen === rc.expect && rc.writes.join() === "PATCH week_monday=eq." + X[3] && rc.pending.length === 0 && rc.history === 0, showS(rc));
+    // (b) the re-checks after the awaits
+    { const { t, A } = await pair(); await ticks(A);
+      let openRead; const slowRead = new Promise(r => { openRead = r; });
+      const rec = mkRec(), J = appJobs(A, rec);
+      A.toasts.length = 0;
+      const holdC = t.control.pause({ method: "DELETE", count: 1 });
+      const pr = J.restore(SNAP(), { beforeConfirm: slowRead });   // the restore tapped first (nothing queued): its snapshot read is slow
+      for (let j = 0; j < 6; j++) await null;
+      const pc = J.clear(); await holdC.arrived;                    // …a clear meanwhile: its job runs
+      openRead(); for (let j = 0; j < 20; j++) await null;
+      const at = { calls: rec.calls, blobWrites: rec.blobWrites, confirms: rec.confirms, toasts: toastsOf(A) };
+      holdC.release(); await pc; await pr; await ticks(A, 3);
+      check("SE-X15 19/n P7 …a restore tapped while nothing was queued, a clear requested while its snapshot was being read: the restore is refused once the snapshot has been read — before its question ('" + CLEARING + "') — nothing written (no blob, no job); the clear lands, and the snapshot's copy is never written",
+        at.calls === 1 && at.blobWrites === 0 && at.confirms === 1 && at.toasts.join("|") === CLEARING && t.rows().length === 0 && Object.keys(A.ref.current).length === 0 && toastsOf(A).length === 1,
+        JSON.stringify({ at, rows: t.rows().length, toasts: toastsOf(A) }));
+    }
+    { const { t, A } = await pair(); await ticks(A);
+      let openBlob; const slowBlob = new Promise(r => { openBlob = r; });
+      const rec = mkRec(), J = appJobs(A, rec);
+      A.toasts.length = 0;
+      const shown = []; A.onSchedule = (n) => shown.push(dc(n));
+      const holdC = t.control.pause({ method: "DELETE", count: 1 });
+      const pr = J.restore(SNAP(), { beforeApply: slowBlob, blob: { numWeeks: 20 } }); // past its question: its before_restore snapshot and blob being written
+      for (let j = 0; j < 6; j++) await null;
+      const pc = J.clear(); await holdC.arrived;                    // …a clear meanwhile: its job runs
+      openBlob(); for (let j = 0; j < 20; j++) await null;
+      const at = { toasts: toastsOf(A), snapShown: shown.some(x => x.includes(X[0] + "=s6")), adopted: rec.adopted.slice(), blobWrites: rec.blobWrites };
+      holdC.release(); await pc; await pr; await ticks(A, 3);
+      const RB = "Restore: the roster and setup were restored, but the schedule weeks were NOT restored: Clearing the schedule is still running — wait for it to finish. Try the restore again.";
+      check("SE-X15 19/n P7 …a restore past its question, a clear requested while its before_restore snapshot and blob were written: the check right before its commit — the weeks are left as they are (never on screen, no job of the restore's), the setup it wrote is adopted (numWeeks 20), and ONE message says so: '" + RB + "'; the clear lands, the snapshot's copy never written",
+        at.toasts.join("|") === RB && !at.snapShown && at.adopted.join() === "20" && at.blobWrites === 1 && t.rows().length === 0 && Object.keys(A.ref.current).length === 0 && !shown.some(x => x.includes(X[0] + "=s6")),
+        JSON.stringify({ at, rows: t.rows().length, shown }));
+    }
+    { const { t, A } = await pair(); await ticks(A);
+      let openSnap; const slowSnap = new Promise(r => { openSnap = r; });
+      const rec = mkRec(), Jc = appJobs(A, rec, { captureGate: slowSnap }), rec2 = mkRec(), Jp = appJobs(A, rec2);
+      A.toasts.length = 0;
+      const pc = Jc.clear(); for (let j = 0; j < 20; j++) await null; // the clear: asked; its snapshot being written (slow)
+      const holdP = t.control.pause({ method: "GET", week: "in.(", count: 1 });
+      const pa = Jp.accept(WEEKS()); await holdP.arrived;           // an Accept & Publish meanwhile: its job runs (its re-read out)
+      openSnap(); for (let j = 0; j < 20; j++) await null;
+      const at = { toasts: toastsOf(A), history: A.history.length, shown: dc(A.ref.current) };
+      holdP.release(); await pa; await pc; await ticks(A, 3);
+      check("SE-X15 19/n P7 …a clear asked, an Accept & Publish requested while the clear's snapshot was being written: the clear is refused after its snapshot — '" + PUBLISHING + "' — no Undo step of its own, nothing committed (the published weeks stay on screen); the publish lands, nothing deleted",
+        rec.confirms === 1 && rec.snaps === 1 && at.toasts.join("|") === PUBLISHING && at.history === 1 && at.shown.includes(X[0] + "=s4") && t.rows().length === 5 && t.get(X[0]).data.dayCall === "s4" && !!t.get(XNEW) && rec.upserts.length === 0,
+        JSON.stringify({ at, rows: t.rows().map(r => r.week_monday + "=" + r.data.dayCall), toasts: toastsOf(A) }));
+    }
+    // (c) the publish paths
+    { const { t, A } = await pair(); await ticks(A);
+      const rec = mkRec(), J = appJobs(A, rec);
+      const holdC = t.control.pause({ method: "DELETE", count: 1 });
+      const pc = J.clear(); await holdC.arrived; A.toasts.length = 0; // the clear's job runs
+      const snaps0 = rec.snaps;
+      const pa = J.accept(WEEKS()); for (let j = 0; j < 20; j++) await null;
+      const fin = await J.finish(WEEKS());                          // Generate & Publish, its search done
+      const g1 = await J.gen(false), g0 = await J.gen(true);        // Generate & Publish tapped; Generate (a preview) tapped
+      const at = { toasts: toastsOf(A), snaps: rec.snaps - snaps0, published: rec.published, fin, g1, g0, prefs: rec.prefs };
+      holdC.release(); await pc; await pa; await ticks(A, 3);
+      check("SE-X15 19/n P7 …during a clear: Accept & Publish refused at its tap, Generate & Publish refused at its tap and after its search — each '" + CLEARING + "', no snapshot taken, nothing published; a Generate PREVIEW is not held back (it goes on); the clear lands, no published week in the table",
+        at.toasts.length === 3 && at.toasts.every(m => m === CLEARING) && at.snaps === 0 && at.published === 0 && at.fin === "refused" && at.g1 === "refused" && at.g0 === "stopped:STOP" && at.prefs === 1 && t.rows().length === 0,
+        JSON.stringify({ at, rows: t.rows().length }));
+    }
+    { const { t, A } = await pair(); await ticks(A);
+      let openSnap; const slowSnap = new Promise(r => { openSnap = r; });
+      const rec = mkRec(), Ja = appJobs(A, rec, { captureGate: slowSnap }), rec2 = mkRec(), Jc = appJobs(A, rec2);
+      A.toasts.length = 0;
+      const pa = Ja.accept(WEEKS()), pf = Ja.finish(WEEKS()); for (let j = 0; j < 20; j++) await null; // both asked; their snapshots being written (slow)
+      const holdC = t.control.pause({ method: "DELETE", count: 1 });
+      const pc = Jc.clear(); await holdC.arrived;                    // …a clear meanwhile: its job runs
+      openSnap(); for (let j = 0; j < 20; j++) await null;
+      const at = { toasts: toastsOf(A), published: rec.published, snaps: rec.snaps };
+      holdC.release(); await pc; const fin = await pf; await pa; await ticks(A, 3);
+      check("SE-X15 19/n P7 …Accept & Publish and Generate & Publish past their taps, a clear requested while their snapshots were being written: both refused after the snapshot ('" + CLEARING + "'), nothing published; the clear lands",
+        at.snaps === 2 && at.toasts.length === 2 && at.toasts.every(m => m === CLEARING) && at.published === 0 && fin === "refused" && t.rows().length === 0, JSON.stringify({ at, fin, rows: t.rows().length }));
+    }
+    // (d) factory reset
+    { const { t, A } = await pair(); await ticks(A);
+      const rec = mkRec(), J = appJobs(A, rec);
+      const holdC = t.control.pause({ method: "DELETE", count: 1 });
+      const pc = J.clear(); await holdC.arrived; A.toasts.length = 0;
+      const rs0 = mkRec(), Jr = appJobs(A, rs0);
+      await Jr.reset(); for (let j = 0; j < 6; j++) await null;
+      const at = { toasts: toastsOf(A), prompts: rs0.prompts, snaps: rs0.snaps, upserts: rs0.upserts.length, setup: rs0.setupReset };
+      holdC.release(); await pc; await ticks(A, 3);
+      check("SE-X15 19/n P7 …a factory reset tapped during a clear: refused at its tap — '" + CLEARING + "' — before its typed confirmation; nothing captured, cleared or written",
+        at.toasts.join("|") === CLEARING && at.prompts === 0 && at.snaps === 0 && at.upserts === 0 && at.setup === 0, JSON.stringify(at));
+    }
+    { const { t, A } = await pair(); await ticks(A);
+      let openSnap; const slowSnap = new Promise(r => { openSnap = r; });
+      const rs0 = mkRec(), Jr = appJobs(A, rs0, { captureGate: slowSnap }), rec = mkRec(), J = appJobs(A, rec);
+      A.toasts.length = 0;
+      const pr = Jr.reset(); for (let j = 0; j < 20; j++) await null; // confirmed; its snapshot being written (slow)
+      const holdC = t.control.pause({ method: "DELETE", count: 1 });
+      const pc = J.clear(); await holdC.arrived;
+      openSnap(); await pr; for (let j = 0; j < 6; j++) await null;
+      const at = { toasts: toastsOf(A), upserts: rs0.upserts.length, setup: rs0.setupReset, status: rs0.status.slice() };
+      holdC.release(); await pc; await ticks(A, 3);
+      check("SE-X15 19/n P7 …a factory reset past its question, a clear requested while its snapshot was being written: refused after the snapshot, before the first write ('" + CLEARING + "', 'Reset cancelled') — the setup not cleared, nothing written",
+        at.toasts.join("|") === CLEARING && at.upserts === 0 && at.setup === 0 && at.status.includes("Reset cancelled"), JSON.stringify(at));
+    }
+    { const { t, A } = await pair(); await ticks(A);
+      let openUp; const slowUp = new Promise(r => { openUp = r; });
+      const rs0 = mkRec(), Jr = appJobs(A, rs0, { upsertGate: slowUp }), rec = mkRec(), J = appJobs(A, rec);
+      A.toasts.length = 0;
+      const pr = Jr.reset(); for (let j = 0; j < 20; j++) await null; // its stored-data clears under way (the first one slow)
+      const holdC = t.control.pause({ method: "DELETE", count: 1 });
+      const pc = J.clear(); await holdC.arrived;
+      openUp(); await pr; for (let j = 0; j < 6; j++) await null;
+      const at = { toasts: toastsOf(A), upserts: rs0.upserts.slice(), setup: rs0.setupReset, timeOff: rs0.timeOff, job: rs0.jobP !== null };
+      holdC.release(); await pc; await ticks(A, 3);
+      const RSB = "Factory reset: the setup, APP shifts and time off were reset, but the schedule weeks were NOT cleared: Clearing the schedule is still running — wait for it to finish. Run the reset again, or restore the \"Before factory reset\" snapshot.";
+      check("SE-X15 19/n P7 …a factory reset whose stored-data clears were under way when a clear was requested: the check right before its commit — no weeks job of its own (the weeks left as they are, to the clear), and ONE message says what DID happen: '" + RSB + "'",
+        at.toasts.join("|") === RSB && at.upserts.join() === "call_schedule_data,app_shifts_data" && at.setup === 1 && at.timeOff === 1 && at.job === false && t.rows().length === 0, JSON.stringify(at));
+    }
+  });
+
+  // SE-X16 — 19/n P8 (review r2 fixes-1; 17/n's open item "a refused restore says nothing was changed"): a factory reset
+  // or a restore whose weeks job is refused — in time, or after its deadline (opts.late, E8) — says what really
+  // happened, never "nothing was changed": the setup was reset / restored, the weeks NOT, and why. The restore's setup
+  // (written before the weeks job) is adopted, so no autosave writes the pre-restore setup back over it.
+  await run("SE-X16", async () => {
+    if (!gotG("SE-X16 19/n P8", ["runAuth", "reset", "restore", "commit", "autosave", "bundle"])) return;
+    const LATE_T = { deadline: 40 };
+    const WHOLE = "select=week_monday,data";                       // a whole-table read (the job's own; not the pull's version list)
+    const RUNNING = (label) => `${label} is taking longer than expected. It's still running — keep the app open; you'll see a message when it ends.`;
+    const RESET_NOT = (why) => `Factory reset: the setup, APP shifts and time off were reset, but the schedule weeks were NOT cleared: ${why} Run the reset again, or restore the "Before factory reset" snapshot.`;
+    const RESTORE_NOT = (why) => `Restore: the roster and setup were restored, but the schedule weeks were NOT restored: ${why} Try the restore again.`;
+    const READ_WHY = "Couldn't read the saved schedule.", AUTH_WHY = "Your sign-in has expired — tap \"Sign in again\", then retry.";
+    const lateApp = async () => { const t = mkT(), A = mkApp(t, { timeouts: LATE_T }); await A.eng.load(); return { t, A }; };
+    // (a) the factory reset's weeks job STARTS in time and is refused after its deadline (r2-verify-fixes v1-reset-late)
+    { const { t, A } = await lateApp(); await ticks(A); const rec = mkRec(), J = appJobs(A, rec);
+      t.control.fail({ method: "GET", week: WHOLE, kind: "5xx-before", count: 1 });
+      const hold = t.control.pause({ method: "GET", week: WHOLE, count: 1 });  // its whole-table read: out — it answers 503 once released
+      A.toasts.length = 0;
+      await J.reset(); await hold.arrived; await nap(LATE_T.deadline + 40);
+      const atDeadline = A.toasts.map(x => x.join(":"));
+      hold.release(); if (rec.jobP) await rec.jobP; await ticks(A, 3); await nap(5); await ticks(A);
+      const all = A.toasts.map(x => x[0]);
+      check("SE-X16 19/n P8 (review r2 fixes-1) the real resetAllData, its weeks job started in time and refused AFTER its deadline: first 'still running' (info), then ONE message in the reset's own words (opts.late) — '" + RESET_NOT(READ_WHY) + "' — never the engine's 'Clearing the schedule stopped — … nothing was changed.'; the weeks unchanged",
+        atDeadline.join("|") === RUNNING("Clearing the schedule") + ":info" && A.toasts.length === 2 && A.toasts[1][0] === RESET_NOT(READ_WHY) && A.toasts[1][1] === "error"
+          && !all.some(m => /nothing was changed/i.test(m)) && rec.upserts.length === 2 && rec.timeOff === 1 && t.rows().length === 4, JSON.stringify({ toasts: A.toasts, rows: t.rows().length }));
+    }
+    // (b) r2-tests-5: refused for the SIGN-IN at its own whole-table read (the server refuses A's token; the device didn't know)
+    { const { t, A } = await pair(); await ticks(A); const rec = mkRec(), J = appJobs(A, rec);
+      t.control.expiredTokens.add("TOK_A"); A.toasts.length = 0;
+      await J.reset(); if (rec.jobP) await rec.jobP; for (let j = 0; j < 6; j++) await null;
+      const msg = (A.toasts.find(x => /^Factory reset/.test(x[0])) || [""])[0];
+      check("SE-X16 19/n P8 (r2-tests-5) …a factory reset refused for the SIGN-IN (the token refused at the job's own whole-table read — the gate had passed): exactly '" + RESET_NOT(AUTH_WHY) + "' — no 'Nothing was changed.' after the setup was reset",
+        rec.upserts.length === 2 && msg === RESET_NOT(AUTH_WHY) && !A.toasts.some(x => /nothing was changed/i.test(x[0])), JSON.stringify(A.toasts));
+      await A.settle();
+    }
+    // (c) – (f) a restore: its weeks job refused in time / for the sign-in / after its deadline / partly failed — in a
+    // component (the setup autosave running), its snapshot's setup numWeeks 20 (the screen's: 13)
+    const restoreIn = async (o) => {
+      const { t, A } = o.late ? await lateApp() : await pair(); await ticks(A);
+      const c = mkComp(A); c.render(); await c.fire(); c.upserts.length = 0; A.toasts.length = 0;
+      const orig = dc(tableOf(t));
+      const rec = mkRec(), J = appJobs(A, rec, { env: { setNumWeeks: c.set("numWeeks"), lastSyncRef: c.lastSyncRef, everHadRealDataRef: c.everRef } });
+      const SN = { [X[0]]: wkX("s6", ["s1", "s2", "s3", "s4", "s5"]), [X[1]]: wkX("s5", ["s1", "s2", "s3", "s4", "s6"]) };
+      if (o.inject) o.inject(t);
+      const hold = o.late ? t.control.pause({ method: "GET", week: WHOLE, count: 1 }) : null;
+      const p = J.restore(SN, { blob: { numWeeks: 20 } });
+      if (hold) { await hold.arrived; await nap(LATE_T.deadline + 40); }
+      const atDeadline = A.toasts.map(x => x.join(":"));
+      if (hold) hold.release();
+      await p; await ticks(A, 3); await nap(5); await ticks(A, 2);
+      c.loadedAtRef.current = 1; await c.fire();                   // the setup autosave, re-run by the adoption and by the weeks put back
+      return { t, A, c, rec, orig, atDeadline, toasts: A.toasts.map(x => x.join(":")), blobs: c.blobs(), numWeeks: c.st.numWeeks, table: dc(tableOf(t)), rows: t.rows().length };
+    };
+    const showR = (x) => JSON.stringify({ toasts: x.toasts, atDeadline: x.atDeadline, blobs: x.blobs, numWeeks: x.numWeeks, table: x.table, orig: x.orig, alerts: x.rec.alerts });
+    const setupKept = (x) => x.numWeeks === 20 && x.blobs.length >= 1 && x.blobs.every(b => b.numWeeks === 20 && b.as === "TOK_A");
+    const inTime = await restoreIn({ inject: (t) => t.control.fail({ method: "GET", week: WHOLE, kind: "5xx-before", count: 1 }) });
+    check("SE-X16 19/n P8 a restore whose weeks job is refused IN time (its read fails): ONE message — '" + RESTORE_NOT(READ_WHY) + "' (never 'Restore failed … nothing was changed': the roster and setup were written first); the restored setup is ADOPTED (numWeeks 20), so the setup autosave writes it — never the pre-restore one; the weeks unchanged",
+      inTime.toasts.join("|") === RESTORE_NOT(READ_WHY) + ":error" && setupKept(inTime) && inTime.table === inTime.orig && inTime.rec.alerts === 0, showR(inTime));
+    const auth = await restoreIn({ inject: (t) => t.control.expiredTokens.add("TOK_A") });
+    check("SE-X16 19/n P8 …refused for the SIGN-IN: '" + RESTORE_NOT(AUTH_WHY) + "' — its 'Nothing was changed.' dropped; the setup adopted",
+      auth.toasts.filter(m => /^Restore/.test(m)).join("|") === RESTORE_NOT(AUTH_WHY) + ":error" && auth.numWeeks === 20 && !auth.toasts.some(m => /nothing was changed/i.test(m)), showR(auth));
+    const late = await restoreIn({ late: true, inject: (t) => t.control.fail({ method: "GET", week: WHOLE, kind: "5xx-before", count: 1 }) });
+    check("SE-X16 19/n P8 …its weeks job started in time and refused AFTER its deadline: 'The roster and setup are restored. " + RUNNING("Restoring the snapshot") + "' (info), then ONE message in the restore's words (opts.late) — '" + RESTORE_NOT(READ_WHY) + "' — never the engine's 'Restoring the snapshot stopped — … nothing was changed.'; the setup adopted, never written back as it was",
+      late.atDeadline.join("|") === "The roster and setup are restored. " + RUNNING("Restoring the snapshot") + ":info" && late.toasts.length === 2 && late.toasts[1] === RESTORE_NOT(READ_WHY) + ":error"
+        && setupKept(late) && late.table === late.orig, showR(late));
+    const part = await restoreIn({ inject: (t) => t.control.fail({ method: "PATCH", week: X[1], kind: "5xx-before", count: 1 }) });
+    check("SE-X16 19/n P8 …a restore whose weeks job PARTLY failed (one week's write refused, retried): 'Restore: the roster and setup were restored, but not every schedule week is saved yet: Couldn't save 1 week yet — retrying every minute while the app is open.' (not 'Restore failed'); the setup adopted; the follow-up push lands the week",
+      part.toasts.join("|") === "Restore: the roster and setup were restored, but not every schedule week is saved yet: Couldn't save 1 week yet — retrying every minute while the app is open.:error"
+        && setupKept(part) && part.rows === 2 && part.t.get(X[1]).data.dayCall === "s5", showR(part));
+  });
+
+  // SE-X17 — 19/n P10: the small message and status fixes. (a) review r2 fixes-2: the setup autosave's "☁ Saved" doesn't
+  // render beside a job's busy line either — the real clearSchedule with its job running, the autosave re-run by its
+  // commit and saved meanwhile. (b) a clear cancelled at its deadline says the schedule is as it was and to try again in a
+  // minute — never "reload" (edits waiting to save are back on screen; a phone's reload doesn't ask). (c) a job fenced by
+  // a sign-out (running: skipped "reset"; still queued: cancelled) says nothing on the sign-in screen — clear, factory
+  // reset, restore (nothing adopted either) and a publish.
+  await run("SE-X17", async () => {
+    if (!gotG("SE-X17 19/n P10", ["runAuth", "clear", "reset", "restore", "commit", "autosave", "bundle", "boundary", "saveShown"])) return;
+    // (a)
+    { const { t, A } = await pair(); await ticks(A); const c = mkComp(A); c.render(); await c.fire(); c.status.length = 0; c.upserts.length = 0;
+      const rec = mkRec(), J = appJobs(A, rec, { env: { setSaveStatus: (s) => c.status.push(s), lastSyncRef: c.lastSyncRef, stateBundleRef: c.bundleRef, setupReadRef: c.setupReadRef, supabase: c.supabase } });
+      const hold = t.control.pause({ method: "DELETE", count: 1 });  // the clear's first DELETE on the wire: its job runs
+      const p = J.clear(); await hold.arrived;
+      for (let j = 0; j < 6; j++) await null; await c.fireOnce();   // the autosave's 800 ms pass while the job runs: it saves the setup
+      const kind = LV(A.sync).split(":")[0], last = c.status[c.status.length - 1], saved = c.blobs().length;
+      const shown = G.saveShown({ saveStatus: last, saveError: c.saveError, schedLineKind: kind });
+      hold.release(); await p; await ticks(A, 2);
+      check("SE-X17 19/n P10 (review r2 fixes-2) the real clearSchedule with its job running — the setup autosave re-run by its commit and saved meanwhile ('Saved'): the header's line is the engine's busy one, and the real saveStatusShown does NOT render '☁ Saved' beside it",
+        kind === "busy" && last === "Saved" && saved === 1 && shown === false, JSON.stringify({ kind, status: c.status, saved, shown }));
+    }
+    // (b)
+    { const t = mkT(), A = mkApp(t, { timeouts: { deadline: 40 } }); await A.eng.load(); await ticks(A);
+      const rec = mkRec(), J = appJobs(A, rec);
+      const hold = t.control.pause({ method: "PATCH", count: 1 });   // an ordinary save holds the chain past the clear's deadline
+      A.edit(X[3], w => (w.dayCall = "s7", w)); const pp = A.eng.push(); await hold.arrived;
+      A.toasts.length = 0;
+      const p = J.clear(); await nap(90);
+      const at = { toasts: A.toasts.map(x => x[0]), shown: dc(A.ref.current) };
+      hold.release(); await pp; await p; await ticks(A, 3);
+      const CANCEL = "The schedule was NOT cleared — The sync is stuck behind an earlier save — nothing was changed. The schedule on screen is as it was; try again in a minute.";
+      check("SE-X17 19/n P10 the real clearSchedule cancelled at its deadline (stuck behind a slow save): '" + CANCEL + "' — the schedule back on screen as it was (the edit waiting to save included), never 'reload'; then the save lands and nothing is deleted",
+        at.toasts.length === 1 && at.toasts[0] === CANCEL && !/reload/i.test(at.toasts[0]) && at.shown.includes(X[3] + "=s7") && Object.keys(A.ref.current).length === 4
+          && t.rows().length === 4 && t.get(X[3]).data.dayCall === "s7" && !t.log.some(e => e.method === "DELETE"), JSON.stringify({ at, rows: t.rows().length }));
+    }
+    // (c)
+    const fenced = async (start, o = {}) => {
+      const { t, A } = await pair(); await ticks(A); const c = mkComp(A); c.render(); await c.fire(); A.toasts.length = 0;
+      const rec = mkRec(), J = appJobs(A, rec);
+      let pp = null;
+      const hold = t.control.pause({ method: o.queued ? "PATCH" : o.wire, count: 1 });
+      if (o.queued) { A.edit(X[3], w => (w.dayCall = "s7", w)); pp = A.eng.push(); await hold.arrived; } // an ordinary save holds the chain: the job only QUEUED
+      const p = start(J);
+      if (o.queued) for (let j = 0; j < 20; j++) await null; else await hold.arrived; // its job queued / on the wire
+      await G.boundary(bEnv(A, c)).handleSignOut(); for (let j = 0; j < 6; j++) await null;
+      hold.release(); await p; if (pp) await pp; if (rec.jobP) await rec.jobP; await ticks(A, 3);
+      return { toasts: A.toasts.map(x => x[0]), adopted: rec.adopted.slice(), signOuts: A.signOuts };
+    };
+    const SN = { [X[0]]: wkX("s6", ["s1", "s2", "s3", "s4", "s5"]) };
+    const fc = await fenced((J) => J.clear(), { wire: "DELETE" }), fq = await fenced((J) => J.clear(), { queued: true });
+    const fr = await fenced((J) => J.reset(), { wire: "DELETE" }), fv = await fenced((J) => J.restore(SN, { blob: { numWeeks: 20 } }), { wire: "PATCH" });
+    const fp = await fenced((J) => J.accept({ [X[0]]: wkX("s4", ["s1", "s2", "s3", "s5", "s6"]) }), { wire: "PATCH" });
+    check("SE-X17 19/n P10 a job fenced by a sign-out says NOTHING on the sign-in screen: a clear running (skipped 'reset') — no 'wasn't fully cleared…' — or still queued (cancelled) — no 'NOT cleared — It was cancelled…'; a factory reset; a restore (and adopts nothing of its setup); a publish (no 'Published on this screen…')",
+      [fc, fq, fr, fv, fp].every(x => x.toasts.length === 0 && x.signOuts === 1) && fv.adopted.length === 0,
+      JSON.stringify({ clear: fc.toasts, queued: fq.toasts, reset: fr.toasts, restore: [fv.toasts, fv.adopted], publish: fp.toasts }));
   });
 
   // SE-X-I — the harness rule (A17(c)).
