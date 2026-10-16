@@ -27,6 +27,8 @@ const W = ["2026-10-12", "2026-10-19", "2026-10-26", "2026-11-02", "2026-11-09",
 // them back reordered).
 const wk = (dc, extra) => Object.assign({ dayCall: dc, nights: { mon: "s2", tue: "s3", wed: "s4", thu: "s5", wknd: "s6" }, off: "s7", isBackup: false, isFierceBackup: false, holidayCoverage: {} }, extra || {});
 const clone = (x) => JSON.parse(JSON.stringify(x));
+// 16/n (E5): a publish refused for the sign-in — its weeks stay, pending, and are sent once signed in again.
+const PUB_AUTH = "Your sign-in has expired — the new weeks stay on this screen and will be saved once you sign in again (tap \"Sign in again\" at the top). Nobody was notified.";
 
 function extractEngine(src) {
   const nsrc = src.replace(/\r\n/g, "\n");
@@ -48,6 +50,17 @@ const recConsole = (into) => { const f = (lvl) => (...a) => into.push(lvl + ": "
 const caughtLog = (into) => (...a) => { if (/ threw$/.test(String(a[0]))) into.push(a.map(x => (x && x.stack ? String(x.message) : String(x))).join(" ")); };
 const compile = (code) => vm.runInContext(`${code}; createSchedSync`, vm.createContext({ AbortController, setTimeout, clearTimeout, console: recConsole(engineConsole) }), { filename: "createSchedSync.js" });
 const compileMerge = (code) => vm.runInContext(`${code}; mergeEditorEdits`, vm.createContext({}), { filename: "mergeEditorEdits.js" });
+// The header's ONE line (A16) — the module-scope schedSyncLine, outside the
+// engine's anchors (so an engine mutant never touches it): the scenarios read
+// it off the onStatus REPORTS, as the header does (16/n, review r1 app-2).
+function extractLine(src) {
+  const nsrc = src.replace(/\r\n/g, "\n"), START = "function schedSyncLine(st, o) {";
+  const a = nsrc.indexOf(START);
+  if (a === -1 || nsrc.indexOf(START, a + 1) !== -1) return null;
+  const b = nsrc.indexOf("\n}\n", a);
+  if (b === -1) return null;
+  try { return vm.runInContext(`(${nsrc.slice(a, b + 2)})`, vm.createContext({}), { filename: "schedSyncLine.js" }); } catch (ex) { return null; }
+}
 
 module.exports = async function runSE({ src, check }) {
   console.log("\nSE. sync engine v2 (the real createSchedSync on an emulated schedule_weeks)");
@@ -57,7 +70,10 @@ module.exports = async function runSE({ src, check }) {
   let createSchedSync, merge;
   try { createSchedSync = compile(engSrc); merge = compileMerge(engSrc); }
   catch (ex) { check("SE0 createSchedSync compiles standalone", false, String(ex)); return; }
-  await scenarios(createSchedSync, check);
+  const line = extractLine(src);
+  check("SE0 schedSyncLine (the header's one line) is extractable by its anchor and compiles standalone", typeof line === "function");
+  if (typeof line !== "function") return;
+  await scenarios(createSchedSync, check, line);
   console.log("\nSE-X. the app's code around the engine — the REAL component slices on the real engine and the emulated table");
   await appScenarios(src, createSchedSync, merge, check);
 
@@ -82,7 +98,7 @@ module.exports = async function runSE({ src, check }) {
     const quiet = (name, cond) => { if (!cond) red++; };
     const log = console.log; console.log = () => {};
     try {
-      if (!m.app) await scenarios(mutant, quiet);
+      if (!m.app) await scenarios(mutant, quiet, line);
       if (red === 0) await appScenarios(m.app ? mutated : src, mutant, mMerge, quiet);
     } finally { console.log = log; }
     check(`SE-M ${m.id} killed: ${m.what}`, red > 0, "every SE check still passes with this bug in place");
@@ -236,13 +252,13 @@ const MUTANTS = [
     from: 'const extra = r && r.notice ? " " + r.notice : "";', to: 'const extra = "";' },
   // 14/n — a clear / reset / restore that writes nothing puts the screen back IN the job (SE67)
   { id: "M68", what: "a refused clear / restore leaves its target on screen (the follow-up push sends a refused restore; a refused clear trips the wipe guard)",
-    from: "const refuse = (out) => { if (!keys && gen === g) showKnown(startShown); return out; };", to: "const refuse = (out) => out;" },
+    from: "const refuse = (out) => { if (!keys && gen === g) showKnown(startShown, null, before); return out; };", to: "const refuse = (out) => out;" },
   { id: "M69", what: "putting the screen back overwrites a week edited after the tap",
-    from: "      if (shownNow !== startShown[k]) return;\n      const want = known[k] ? known[k].canon : DEL;\n      if (shownNow !== want) { changed = true;", to: "      const want = known[k] ? known[k].canon : DEL;\n      if (shownNow !== want) { changed = true;" },
+    from: "      if (shownNow !== startShown[k]) return;\n      const has = before ? k in before", to: "      const has = before ? k in before" },
   { id: "M70", what: "a clear cancelled at its deadline leaves its target on screen",
-    from: "owner.release(); if (!keys) showKnown(startShown); report(); return { ok: false, wrote: false, reason: \"timeout\"", to: "owner.release(); report(); return { ok: false, wrote: false, reason: \"timeout\"" },
+    from: "owner.release(); if (!keys) showKnown(startShown, null, before); report(); return { ok: false, wrote: false, reason: \"timeout\"", to: "owner.release(); report(); return { ok: false, wrote: false, reason: \"timeout\"" },
   { id: "M71", what: "a refused publish takes its generated weeks off screen (they'd never be retried — A14)",
-    from: "const refuse = (out) => { if (!keys && gen === g) showKnown(startShown); return out; };", to: "const refuse = (out) => { if (gen === g) showKnown(startShown); return out; };" },
+    from: "const refuse = (out) => { if (!keys && gen === g) showKnown(startShown, null, before); return out; };", to: "const refuse = (out) => { if (gen === g) showKnown(startShown, null, before); return out; };" },
   // 15/n — A17(f): the list's missing ones, and the new emulator capabilities' (A17(d))
   { id: "M72", what: "no ledger at all: nothing sent is remembered (our own lost-response writes read as someone else's — A1)",
     from: "const addSent = (k, c) => { (sent[k] = sent[k] || []).push(c); if (sent[k].length > 20) sent[k].shift(); };", to: "const addSent = (k, c) => {};" },
@@ -265,6 +281,58 @@ const MUTANTS = [
     from: "if ([404, 408, 413, 429].includes(r.status)", to: "if ([408, 413, 429].includes(r.status)" },
   { id: "M81", what: "the same data under a new token is someone else's (an old build's unchanged re-send costs the edit — A2)",
     from: '    if (kn && row && c === kn.canon) return "refreshed";\n', to: "" },
+  // 16/n — review round 1, the engine items (E1–E5) and the test gaps (T1–T3: the reviewer's T24b, T2, N37)
+  { id: "M82", what: "E1: a push already in its re-read when a clear / restore is requested doesn't re-check for an owner (it sends the job's target: a false wipe block, a refused restore's writes landing — A11)",
+    from: '    if (job.mode !== "force" && authoritativeQueued > 0) { if (results.length) toasts(results); report(); return { ok: false, skipped: "authoritative-queued", results }; }\n', to: "" },
+  { id: "M83", what: "E2: a read the server refuses for the stored token never marks it dead (a session with nothing pending: no authNeeded, no sign-in line — I5)",
+    from: "    deadToken = tok; report();\n", to: "    report();\n" },
+  { id: "M84", what: "E2: a read refused for the stored token isn't retried as anon (the pull adopts nothing for as long as the clock calls the token fresh — I5)",
+    from: '    deadToken = tok; report();\n    return req(url, { method: "GET", headers: Object.assign({}, d.anonHeaders()) }, T.read);\n', to: "    deadToken = tok; report();\n    return r;\n" },
+  { id: "M85", what: "E2: a read refused for the token is reported only when its job ends (the sign-in line waits for the anon retry's answer)",
+    from: "    deadToken = tok; report();\n", to: "    deadToken = tok;\n" },
+  { id: "M86", what: "E2: a 42501 permission error on a read counts as a dead token (RLS refusing the role is not the sign-in)",
+    from: 'kindOf(r) !== "auth" || perm || canon(h)', to: 'kindOf(r) !== "auth" || canon(h)' },
+  { id: "M87", what: "E2: a read that already went out as ANON marks the stored token dead when it's refused (not the token's answer)",
+    from: " || canon(h) === canon(Object.assign({}, d.anonHeaders()))) return r;", to: ") return r;" },
+  { id: "M88", what: "E2: the pull's version list bypasses the shared read (its refused token is never marked dead)",
+    from: "const r = await readReq(`${base()}?select=week_monday,version,updated_at&order=week_monday.asc&limit=5000`);",
+    to: 'const r = await req(`${base()}?select=week_monday,version,updated_at&order=week_monday.asc&limit=5000`, { method: "GET", headers: rh() }, T.read);' },
+  { id: "M89", what: "E2: readAll (the load, a clear / restore) bypasses the shared read",
+    from: "const r = await readReq(`${base()}?select=week_monday,data,version,updated_at&order=week_monday.asc&limit=5000`);",
+    to: 'const r = await req(`${base()}?select=week_monday,data,version,updated_at&order=week_monday.asc&limit=5000`, { method: "GET", headers: rh() }, T.read);' },
+  { id: "M90", what: "E2: readSome (the pull's week fetch, a publish) bypasses the shared read",
+    from: "const r = await readReq(`${base()}?week_monday=in.(${chunk.join(\",\")})&select=week_monday,data,version,updated_at`);",
+    to: 'const r = await req(`${base()}?week_monday=in.(${chunk.join(",")})&select=week_monday,data,version,updated_at`, { method: "GET", headers: rh() }, T.read);' },
+  { id: "M91", what: "E2: a write's read-back bypasses the shared read",
+    from: "const r = await readReq(`${base()}?week_monday=eq.${k}&select=week_monday,data,version,updated_at`);",
+    to: 'const r = await req(`${base()}?week_monday=eq.${k}&select=week_monday,data,version,updated_at`, { method: "GET", headers: rh() }, T.read);' },
+  { id: "M92", what: "E2 × E4: a clear whose own read found the token refused takes the table's rows as known before refusing (a pending edit put back slips under someone else's newer row — I2)",
+    from: '        if (authState() !== "ok") return refuse({ ok: false, wrote: false, error: signIn });\n        if (!rows) return refuse(', to: "        if (!rows) return refuse(" },
+  { id: "M93", what: "E3: a push request isn't reported until the push runs (the header keeps an earlier 'Synced' over the edit — A16)",
+    from: "    push() {\n      report();\n      if (queuedPush)", to: "    push() {\n      if (queuedPush)" },
+  { id: "M94", what: "E3: a push doesn't report as it starts (after a pull that failed early, 'Synced' stays over a week being saved — A16)",
+    from: '    report();\n    if (!seeded) { report(); return { ok: false, skipped: "not-loaded" }; }', to: '    if (!seeded) { report(); return { ok: false, skipped: "not-loaded" }; }' },
+  { id: "M95", what: "E4: a refused clear / restore puts back what the table holds, not the screen as it was (edits pending from before the tap are lost — I6)",
+    from: "const refuse = (out) => { if (!keys && gen === g) showKnown(startShown, null, before); return out; };", to: "const refuse = (out) => { if (!keys && gen === g) showKnown(startShown); return out; };" },
+  { id: "M96", what: "E4: a clear cancelled at its deadline puts back what the table holds (a slow save's landed edit is then reverted by the follow-up push)",
+    from: "if (!keys) showKnown(startShown, null, before); report(); return", to: "if (!keys) showKnown(startShown); report(); return" },
+  { id: "M97", what: "E4: the weeks only the screen-as-it-was holds (new local weeks) are left out of what is put back",
+    from: "...(keysArr || []), ...Object.keys(before || {})])]);", to: "...(keysArr || [])])]);" },
+  { id: "M98", what: "E5: a publish whose re-read fails says 'nothing was published' (its weeks are then saved anyway — A14)",
+    from: '"Couldn\'t read the saved weeks first — the new weeks stay on this screen and will be saved automatically. Nobody was notified."', to: '"Couldn\'t read the saved weeks — nothing was published."' },
+  { id: "M99", what: "E5: a publish refused for the sign-in says 'Nothing was changed' (its weeks are saved once signed in again)",
+    from: "const signIn = keys ? PUB_AUTH : ", to: "const signIn = " },
+  { id: "M100", what: "E5: a publish before the first load says 'nothing was changed' without saying the weeks aren't saved and why",
+    from: '"The schedule hasn\'t loaded yet, so the new weeks weren\'t saved — loading it will replace them. Publish again once it has loaded. Nobody was notified."', to: '"The schedule hasn\'t loaded yet — nothing was changed."' },
+  { id: "M101", what: "E5: a publish cancelled at its deadline says 'nothing was changed' (its weeks stay pending and are saved)",
+    from: 'error: keys ? "The sync is stuck behind an earlier save — the new weeks stay', to: 'error: false ? "The sync is stuck behind an earlier save — the new weeks stay' },
+  { id: "T24b", what: "T1: the pull never fetches / adopts a week created elsewhere (known weeks only)",
+    from: "const moved = list.filter(x => !known[x.week_monday] || known[x.week_monday].version !== (x.version === undefined ? null : x.version) || known[x.week_monday].updated_at !== (x.updated_at || null))",
+    to: "const moved = list.filter(x => !!known[x.week_monday] && (known[x.week_monday].version !== (x.version === undefined ? null : x.version) || known[x.week_monday].updated_at !== (x.updated_at || null)))" },
+  { id: "T2", what: "T2: pending ignores the ledger (a sent but unconfirmed body reads as saved after an Undo)",
+    from: "return [...new Set([...changed, ...deletes, ...Object.keys(sent).filter(unconfirmed)])].sort();", to: "return [...new Set([...changed, ...deletes])].sort();" },
+  { id: "N37", what: "T3: the pull adopts someone else's NEW week over this session's unsent new week (no dirty test for never-known weeks)",
+    from: "(known[k] ? (!(k in cur0) || canon(cur0[k]) !== known[k].canon) : (k in cur0));", to: "(known[k] ? (!(k in cur0) || canon(cur0[k]) !== known[k].canon) : false);" },
   // App mutants (A17(b)/(f)): the component code around the engine, killed by SE-X.
   { id: "X1", app: true, what: "Undo ignores the engine's blocked list (reverts a week someone else changed since — R15)",
     from: "    if (plan.blocked.length) {\n      showToast(`Can't undo", to: "    if (false) {\n      showToast(`Can't undo" },
@@ -289,7 +357,8 @@ const MUTANTS = [
     from: "        const sr = await schedSyncRef.current.load();", to: "        const sr = { ok: false }; schedSyncRef.current.load();" },
 ];
 
-async function scenarios(createSchedSync, check) {
+async function scenarios(createSchedSync, check, line) {
+  const VIEW = { loaded: true, readOnly: false, blobStatus: false }; // a scheduler's header, no blob status showing
   // ── fixtures ──
   let ms = Date.UTC(2026, 9, 12, 12, 0, 0);
   const clockIso = () => new Date(ms += 1000).toISOString();
@@ -309,7 +378,7 @@ async function scenarios(createSchedSync, check) {
     s.engine = createSchedSync({
       getState: () => s.mirror,
       commit: (next) => { s.mirror = next; s.commits++; },
-      fetch: (u, i) => table.fetch(u, i),
+      fetch: (u, i) => (s.fetchHook ? s.fetchHook(u, i) : table.fetch(u, i)), // fetchHook: a scenario answers / holds one request itself
       url: BASE,
       writeHeaders: () => hdr(s.token),
       readHeaders: () => hdr(s.readAsAnon ? null : s.token),   // the app's dbReadHeaders falls back to anon for a stale token
@@ -331,6 +400,8 @@ async function scenarios(createSchedSync, check) {
     s.edit = (k, fn) => { s.mirror = Object.assign({}, s.mirror, { [k]: fn(clone(s.mirror[k] || {})) }); };
     s.drop = (k) => { const n = Object.assign({}, s.mirror); delete n[k]; s.mirror = n; };
     s.st = () => s.engine.status();
+    s.last = () => s.statuses[s.statuses.length - 1] || {};   // the last onStatus REPORT — what the header shows
+    s.line = () => line(s.last(), VIEW);
     return s;
   };
   const writes = (t, from) => t.log.slice(from || 0).filter(e => e.method !== "GET");
@@ -1471,12 +1542,18 @@ async function scenarios(createSchedSync, check) {
     const from1 = P.statuses.length;
     const rp = P.engine.authoritative(gen, false, "publish", period); await holdP.arrived;
     const midP = { st: P.st(), raw: P.engine.pending() };
+    const rel = P.statuses.length;
     holdP.release(); const r2 = await rp;
-    const reps2 = P.statuses.slice(from1), lastPub = reps2.map(s => s.busy).lastIndexOf("publish"), endRep = reps2[lastPub + 1] || {};
+    // (16/n: the follow-up push's request reports at once now (E3), so "the
+    // report after the last 'publish' one" could be ITS report; the job's own
+    // end report is the one right after its push's end report — the first
+    // report since the held PATCH was released.)
+    const reps2 = P.statuses.slice(from1), afterRel = P.statuses.slice(rel), endRep = afterRel[1] || {};
     check("SE58 …a publish: mid-job only the edit OUTSIDE its period is pending (the period's weeks — one failed, one on the wire — are its own), pending() still names all three",
       midP.st.pendingKeys.join() === W[4] && midP.st.busy === "publish" && midP.raw.join() === [W[1], W[2], W[4]].join(), JSON.stringify(midP));
-    check("SE58 …and the report it makes as it ends hands them back: busy cleared, the week it couldn't write pending (and failing) again beside the outside edit",
-      r2.ok === false && lastPub >= 0 && endRep.busy === null && (endRep.pendingKeys || []).join() === [W[1], W[4]].join() && endRep.failing === 1, JSON.stringify({ lastPub, endRep, reps2: reps2.map(s => [s.busy, (s.pendingKeys || []).join("|")]) }));
+    check("SE58 …and the report it makes as it ends hands them back: its push's end report still says 'publish'; the very next — the job's own end report — has busy cleared, the week it couldn't write pending (and failing) again beside the outside edit",
+      r2.ok === false && (afterRel[0] || {}).busy === "publish" && endRep.busy === null && (endRep.pendingKeys || []).join() === [W[1], W[4]].join() && endRep.failing === 1,
+      JSON.stringify({ afterRel: afterRel.map(s => [s.busy, (s.pendingKeys || []).join("|"), s.failing]), reps2: reps2.length }));
     // A restore owns its snapshot's weeks and every week the table holds — not a brand-new local week it won't write.
     const t3 = mkTable(seedRows(4));
     const R = mkSession(t3); await R.engine.load();
@@ -2022,6 +2099,371 @@ async function scenarios(createSchedSync, check) {
       JSON.stringify({ late: late.map(x => x.init.method + " " + x.url.split("?")[1]), row: t2.get(W[4]) }));
   });
 
+  // ── 16/n: review round 1 — the engine items E1–E5 and the test gaps T1–T3 ──
+  const sleep = (n) => new Promise(res => setTimeout(res, n));
+  const kindOfLine = (st) => { const l = line(st, VIEW); return l ? l.kind : null; };
+  // W1 left UNCONFIRMED: its PATCH throws and so does the read-back (a flaky network).
+  const unconfirmedW0 = async (t, S) => {
+    t.control.fail({ method: "PATCH", week: W[0], kind: "throw" });
+    t.control.fail({ method: "GET", week: W[0], kind: "throw" });
+    S.edit(W[0], w => (w.dayCall = "mine", w)); await S.engine.push();
+    return S.engine.pending().join() === W[0] && S.st().failing === 1;
+  };
+
+  // SE73 — E1 (review r1 engine-1, A11): a push already IN its re-read of an
+  // unconfirmed week when a clear / restore is requested (the app's order:
+  // the target committed, then authoritative()) checks for an owner again
+  // after that await, and stops — it never reads the job's target as its own:
+  // no false wipe block during a clear (no onWipeBlocked, no 'deletions
+  // blocked' report); no restore writes before the restore's own whole-table
+  // read refuses it.
+  await run("SE73", async () => {
+    const t = mkTable(seedRows(5));
+    const A = mkSession(t); await A.engine.load();
+    const setup = await unconfirmedW0(t, A);
+    const hold = t.control.pause({ method: "GET", week: W[0], count: 1 });
+    const P = A.engine.push(); await hold.arrived;               // P is in its re-read of W1
+    const n0 = A.statuses.length;
+    const before = clone(A.mirror);
+    A.mirror = {};                                                // clearSchedule: commitSchedule({})
+    const C = A.engine.authoritative({}, true, "clear", undefined, { before });
+    hold.release();
+    const pr = await P, cr = await C; await A.engine.idle(); await A.engine.idle();
+    const reps = A.statuses.slice(n0), lines = reps.map(kindOfLine);
+    check("SE73 E1 a push paused in its re-read when a clear is requested stops after that await (skipped — it never reads the clear's target as its own): no onWipeBlocked, no report with blocked deletions, no 'blocked' header line; the clear empties the table",
+      setup && pr.skipped === "authoritative-queued" && A.wipeBlocked.length === 0 && reps.every(s => !s.blockedDeletes) && !lines.includes("blocked") && cr.ok === true && t.rows().length === 0 && A.engine.pending().length === 0,
+      JSON.stringify({ setup, pr: { ok: pr.ok, skipped: pr.skipped, blocked: pr.blocked }, wb: A.wipeBlocked, lines, cr: { ok: cr.ok, error: cr.error }, rows: t.rows().length }));
+    const t2 = mkTable(seedRows(6));
+    const B = mkSession(t2); await B.engine.load();
+    const setup2 = await unconfirmedW0(t2, B);
+    const others = () => JSON.stringify(t2.rows().filter(r => r.week_monday !== W[0]));  // (W1's pending edit is the user's own: the follow-up push sends it)
+    const tableBefore = others();
+    const hold2 = t2.control.pause({ method: "GET", week: W[0], count: 1 });
+    const P2 = B.engine.push(); await hold2.arrived;
+    const snap = tableSched(t2); [1, 2, 3].forEach(i => { snap[W[i]] = wk("restored"); }); delete snap[W[5]];
+    const before2 = clone(B.mirror);
+    B.mirror = clone(snap);                                       // restoreSnapshot: commitSchedule(sched)
+    const R = B.engine.authoritative(snap, true, "restore", undefined, { before: before2 });
+    t2.control.fail({ method: "GET", week: "limit=5000", kind: "5xx-before" }); // ONLY the restore's whole-table read fails
+    const from2 = t2.log.length;
+    hold2.release();
+    const pr2 = await P2;
+    const w2 = writes(t2, from2).map(e => e.method + " " + e.url.split("?")[1]);   // everything written while P2 ran
+    const rr = await R, atAnswer = others();
+    const snapWrites = writes(t2, from2).filter(e => e.method === "DELETE" || (e.body && e.body.data && e.body.data.dayCall === "restored"));
+    await B.engine.idle(); await B.engine.idle();
+    check("SE73 E1 …a restore requested while the push is in its re-read, whose own whole-table read then fails: the paused push writes NOTHING (not one PATCH or DELETE), nothing of the snapshot's is ever written, the restore is refused with nothing written, and the snapshot's weeks are exactly as they were when the caller is answered",
+      setup2 && pr2.skipped === "authoritative-queued" && (pr2.results || []).length === 0 && w2.length === 0 && snapWrites.length === 0 && rr.ok === false && rr.wrote === false && /nothing was changed/.test(rr.error || "") && atAnswer === tableBefore,
+      JSON.stringify({ pr2: { ok: pr2.ok, skipped: pr2.skipped, results: (pr2.results || []).map(x => x.k + ":" + x.outcome) }, w2, snapWrites: snapWrites.map(e => e.method + " " + e.url.split("?")[1]), rr }));
+    check("SE73 …and the screen is back as it was before the tap, the pending edit to W1 included, which the follow-up push then saves: the table holds that edit and nothing of the snapshot",
+      sameData(B.mirror, before2) && t2.get(W[0]).data.dayCall === "mine" && [1, 2, 3].every(i => t2.get(W[i]).data.dayCall !== "restored") && !!t2.get(W[5]) && B.engine.pending().length === 0,
+      JSON.stringify({ shown: Object.keys(B.mirror).map(k => k + "=" + B.mirror[k].dayCall), rows: t2.rows().map(r => r.week_monday + "=" + r.data.dayCall), pending: B.engine.pending() }));
+  });
+
+  // SE74 — E2 (review r1 engine-2 / tests-1, I5 / A7): a READ the server
+  // refuses for the stored token marks it dead too, not only a write's 401.
+  // A session with NOTHING pending (a member who only views), whose device
+  // clock still calls the token fresh: its next pull's refused read is
+  // reported at once (authNeeded — the edit gate and the sign-in line, with
+  // no week counted) and sent once more as anon, so it keeps adopting other
+  // people's changes. One shared read: the load, the pull's week fetch and a
+  // write's read-back do the same. A read that went out as anon already, or
+  // a 42501 permission error, is not the token's.
+  await run("SE74", async () => {
+    const t = mkTable(seedRows(3));
+    const A = mkSession(t), B = mkSession(t, { token: "TOK_B", user: "user-b" });
+    await A.engine.load(); await B.engine.load();
+    t.control.expiredTokens.add("TOK_A");   // the server: expired. A.readAsAnon stays false — the device clock calls it fresh.
+    B.edit(W[1], w => (w.dayCall = "peer", w)); await B.engine.push();
+    const from = t.log.length;
+    const r = await A.engine.pull();
+    const reqs = t.log.slice(from).map(e => [e.method, e.headers.authorization, e.status].join(" ")), rep = A.last();
+    check("SE74 E2 nothing pending, the stored token refused for a READ (the pull's version list, 401): marked dead and sent ONCE more as anon — B's change adopted; the REPORT says authNeeded (auth 'expired', 0 pending) and the header's line is the sign-in one with no week counted; no toast, nothing written",
+      r.ok === true && reqs.join() === ["GET Bearer TOK_A 401", "GET Bearer ANON 200", "GET Bearer ANON 200"].join() && A.mirror[W[1]].dayCall === "peer" && A.engine.authBlocked()
+        && rep.authNeeded === true && rep.auth === "expired" && rep.pending === 0 && JSON.stringify(line(rep, VIEW)) === JSON.stringify({ kind: "auth", n: 0 }) && A.toasts.length === 0 && writes(t, from).length === 0,
+      JSON.stringify({ r, reqs, rep: { authNeeded: rep.authNeeded, auth: rep.auth, pending: rep.pending }, line: line(rep, VIEW), toasts: A.toasts }));
+    B.edit(W[2], w => (w.dayCall = "peer2", w)); await B.engine.push();
+    const from2 = t.log.length; await A.engine.pull();
+    const reqs2 = t.log.slice(from2);
+    t.control.users.TOK_A2 = "user-a"; A.token = "TOK_A2"; A.engine.report();   // "Sign in again" stored a new token
+    const from3 = t.log.length; await A.engine.pull();
+    const reqs3 = t.log.slice(from3);
+    check("SE74 E2 …every later read goes out as anon (the refused token never re-sent) and keeps adopting; a new token is read with again, and the sign-in line goes",
+      reqs2.length >= 2 && reqs2.every(e => e.method === "GET" && e.headers.authorization === "Bearer ANON" && e.status === 200) && A.mirror[W[2]].dayCall === "peer2"
+        && reqs3.length >= 1 && reqs3.every(e => e.headers.authorization === "Bearer TOK_A2" && e.status === 200) && A.last().authNeeded === false && !A.engine.authBlocked(),
+      JSON.stringify({ reqs2: reqs2.map(e => [e.method, e.headers.authorization, e.status]), reqs3: reqs3.map(e => [e.method, e.headers.authorization, e.status]) }));
+    // the LOAD (readAll): a fresh tab whose stored token the server refuses
+    const C = mkSession(t), fromC = t.log.length;
+    const lr = await C.engine.load();
+    const reqsC = t.log.slice(fromC).map(e => [e.method, e.headers.authorization, e.status].join(" "));
+    check("SE74 E2 …the LOAD's whole-table read the same: refused with the token → dead, re-read as anon → seeded with the table; the report says authNeeded",
+      lr.ok === true && C.engine.isSeeded() && sameData(C.mirror, tableSched(t)) && reqsC.join() === ["GET Bearer TOK_A 401", "GET Bearer ANON 200"].join() && C.last().authNeeded === true && C.last().seeded === true,
+      JSON.stringify({ lr, reqsC }));
+    // the pull's week fetch (readSome)
+    const t2 = mkTable(seedRows(3));
+    const D = mkSession(t2), E = mkSession(t2, { token: "TOK_B", user: "user-b" });
+    await D.engine.load(); await E.engine.load();
+    E.edit(W[0], w => (w.dayCall = "peer", w)); await E.engine.push();
+    t2.control.fail({ method: "GET", week: "in.(", kind: "401" });   // the week fetch answered 401 / PGRST303 for D's token
+    const fromD = t2.log.length;
+    const rd = await D.engine.pull();
+    const reqsD = t2.log.slice(fromD).map(e => [e.method, e.headers.authorization, e.status].join(" "));
+    check("SE74 E2 …the pull's WEEK FETCH (readSome) the same: refused with the token → dead, re-sent as anon → adopted; the report says authNeeded",
+      rd.ok === true && D.mirror[W[0]].dayCall === "peer" && reqsD.join() === ["GET Bearer TOK_A 200", "GET Bearer TOK_A 401", "GET Bearer ANON 200"].join() && D.engine.authBlocked() && D.last().authNeeded === true,
+      JSON.stringify({ rd, reqsD }));
+    // a write's READ-BACK
+    const t3 = mkTable(seedRows(2));
+    const F = mkSession(t3); await F.engine.load();
+    t3.control.fail({ method: "PATCH", week: W[0], kind: "5xx-before" });
+    t3.control.fail({ method: "GET", week: W[0], kind: "401" });
+    F.edit(W[0], w => (w.dayCall = "mine", w));
+    const fromF = t3.log.length;
+    await F.engine.push();
+    const reqsF = t3.log.slice(fromF).map(e => [e.method, e.headers.authorization, e.status].join(" "));
+    check("SE74 E2 …a write's READ-BACK the same: the PATCH answered 503 (unknown), its read-back refused with the token → dead, re-read as anon (the row unchanged: still pending, the edit kept); authNeeded reported, and the one toast is the sign-in one",
+      reqsF.join() === ["PATCH Bearer TOK_A 503", "GET Bearer TOK_A 401", "GET Bearer ANON 200"].join() && F.engine.authBlocked() && F.last().authNeeded === true && F.engine.pending().join() === W[0] && F.mirror[W[0]].dayCall === "mine"
+        && F.toasts.length === 1 && /sign-in has expired/i.test(F.toasts[0]), JSON.stringify({ reqsF, toasts: F.toasts }));
+    // not the token's: a read already sent as anon, and a 42501
+    const t4 = mkTable(seedRows(2));
+    const G = mkSession(t4); await G.engine.load();
+    G.readAsAnon = true;                     // the device clock calls the token stale: reads go out as anon
+    t4.control.fail({ method: "GET", kind: "401" });
+    const fromG = t4.log.length;
+    const rg = await G.engine.pull();
+    const anonRefused = rg.ok === false && t4.log.length - fromG === 1 && !G.engine.authBlocked() && G.st().authNeeded === false;
+    G.readAsAnon = false;
+    let hookCalls = 0;
+    G.fetchHook = () => { hookCalls++; G.fetchHook = null; return Promise.resolve({ ok: false, status: 401, text: () => Promise.resolve(JSON.stringify({ code: "42501", details: null, hint: null, message: "permission denied for table schedule_weeks" })) }); };
+    const fromG2 = t4.log.length;
+    const rg2 = await G.engine.pull();
+    check("SE74 E2 …not the token's: a read already sent as ANON and answered 401 isn't marked dead or retried (one request); nor is a 42501 permission error (RLS refusing the role) answered to a read WITH the token",
+      anonRefused && rg2.ok === false && hookCalls === 1 && t4.log.length === fromG2 && !G.engine.authBlocked() && G.st().authNeeded === false,
+      JSON.stringify({ anonRefused, rg, rg2, hookCalls, logged: t4.log.length - fromG2 }));
+    // reported AT ONCE — while the anon retry is still out
+    const t5 = mkTable(seedRows(2));
+    const H = mkSession(t5); await H.engine.load();
+    t5.control.expiredTokens.add("TOK_A");
+    let release5 = null, arrived5 = null;
+    const gate5 = new Promise(res => { release5 = res; }), arr5 = new Promise(res => { arrived5 = res; });
+    H.fetchHook = (u, i) => { if (i && i.headers && i.headers.Authorization === "Bearer ANON") { H.fetchHook = null; arrived5(); return gate5.then(() => t5.fetch(u, i)); } return t5.fetch(u, i); };
+    const p5 = H.engine.pull();
+    const retried = await Promise.race([arr5.then(() => true), p5.then(() => false)]);   // (no retry at all: the pull just ends)
+    const mid5 = H.last();
+    release5(); await p5;
+    check("SE74 E2 …and it is REPORTED at once: while the anon retry is still out, the last report already says authNeeded (auth 'expired')",
+      retried && mid5.authNeeded === true && mid5.auth === "expired" && H.last().authNeeded === true, JSON.stringify({ retried, mid: { authNeeded: mid5.authNeeded, auth: mid5.auth } }));
+    // E2 × E4: a clear whose OWN read finds the token refused (then goes on as anon) is refused before the table's rows become what the engine knows
+    const t6 = mkTable(seedRows(3));
+    const J = mkSession(t6), K = mkSession(t6, { token: "TOK_B", user: "user-b" });
+    await J.engine.load(); await K.engine.load();
+    K.edit(W[2], w => (w.dayCall = "peer", w)); await K.engine.push();     // J hasn't pulled it
+    J.edit(W[2], w => (w.dayCall = "mine", w));                            // J's unsent edit, made on the old copy
+    t6.control.expiredTokens.add("TOK_A");
+    const beforeJ = clone(J.mirror);
+    J.mirror = {};
+    const fromJ = t6.log.length;
+    const cj = await J.engine.authoritative({}, true, "clear", undefined, { before: beforeJ });
+    const refusedJ = cj.ok === false && cj.wrote === false && /sign-in has expired/i.test(cj.error || "") && /Nothing was changed/.test(cj.error || "") && sameData(J.mirror, beforeJ) && writes(t6, fromJ).length === 0;
+    await J.engine.idle(); await J.engine.idle();
+    t6.control.users.TOK_A2 = "user-a"; J.token = "TOK_A2";
+    await J.engine.pull(); await J.engine.idle();
+    check("SE74 E2×E4 a clear whose own whole-table read finds the token refused (it goes on as anon) is refused BEFORE the table's rows become what the engine knows: the screen is back as before the tap (the unsent edit included), nothing written; once signed in again that edit meets its CAS — someone else's newer change to the week stands, shown and told as a conflict, never overwritten",
+      refusedJ && t6.get(W[2]).data.dayCall === "peer" && J.mirror[W[2]].dayCall === "peer" && J.st().conflicts.map(c => c.k).join() === W[2] && J.toasts.some(m => /changed by someone else/.test(m)) && J.engine.pending().length === 0,
+      JSON.stringify({ cj, refusedJ, table: t6.get(W[2]).data.dayCall, shown: J.mirror[W[2]] && J.mirror[W[2]].dayCall, toasts: J.toasts }));
+  });
+
+  // SE75 — E3 (review r1 app-2, A16): the header reads the onStatus REPORTS,
+  // never engine.status(). A push request reports at once, so between the
+  // commit + push request and the PATCH's answer the last report counts the
+  // week (pending > 0) and schedSyncLine says "saving" — never a stale
+  // "synced" — and "synced" once it answers. A push that runs after a pull
+  // failed early (which reports nothing) reports as it starts.
+  await run("SE75", async () => {
+    const t = mkTable(seedRows(3));
+    const A = mkSession(t); await A.engine.load();
+    const k0 = A.line() && A.line().kind;
+    const hold = t.control.pause({ method: "PATCH", week: W[0], count: 1 });
+    A.edit(W[0], w => (w.dayCall = "x", w));
+    const n0 = A.statuses.length;
+    const p = A.engine.push();
+    const atRequest = A.statuses.length > n0 ? { pending: A.last().pending, kind: kindOfLine(A.last()) } : null;
+    await hold.arrived;
+    const inFlight = { pending: A.last().pending, saving: A.last().saving, kind: kindOfLine(A.last()) };
+    hold.release(); await p;
+    const after = { pending: A.last().pending, kind: kindOfLine(A.last()) };
+    check("SE75 E3 the REPORTS during a save: 'synced' before; the push REQUEST reports synchronously — pending 1, 'saving'; still 'saving' while its PATCH is out; 'synced' once it answers",
+      k0 === "synced" && !!atRequest && atRequest.pending === 1 && atRequest.kind === "saving" && inFlight.pending === 1 && inFlight.saving === 1 && inFlight.kind === "saving"
+        && after.pending === 0 && after.kind === "synced" && t.get(W[0]).data.dayCall === "x", JSON.stringify({ k0, atRequest, inFlight, after }));
+    A.edit(W[1], w => (w.dayCall = "y", w));
+    t.control.fail({ method: "GET", kind: "5xx-before" });                // the pull's version list: 503 (it returns without a report)
+    const hold2 = t.control.pause({ method: "PATCH", week: W[1], count: 1 });
+    const pl = A.engine.pull(); await hold2.arrived;
+    const mid = { pending: A.last().pending, kind: kindOfLine(A.last()) };
+    hold2.release(); await pl;
+    check("SE75 E3 …a pull whose version list fails returns without a report, and then pushes the edit: that push reports as it starts — 'saving' while its PATCH is out, 'synced' after",
+      mid.pending === 1 && mid.kind === "saving" && kindOfLine(A.last()) === "synced" && t.get(W[1]).data.dayCall === "y", JSON.stringify({ mid, after: kindOfLine(A.last()) }));
+  });
+
+  // SE76 — E4 (review r1 app-1, I6): a clear / restore refused or cancelled
+  // with nothing written puts back the screen AS IT WAS before the caller
+  // committed the target (opts.before) — not what the table holds. (a) An
+  // edited week and a new local week pending from before the tap (the edit's
+  // PATCH threw, and its read-back; the new week was never sent), then a
+  // clear whose whole-table read fails: both shown again, still pending, and
+  // the follow-up push lands them. (b) An edit whose PATCH lands but answers
+  // slowly, then a clear cancelled at its deadline: the edit is put back, so
+  // when the slow answer comes nothing reverts it — the table keeps MY-EDIT.
+  await run("SE76", async () => {
+    const t = mkTable(seedRows(4));
+    const A = mkSession(t); await A.engine.load();
+    t.control.fail({ method: "PATCH", week: W[1], kind: "throw" });
+    t.control.fail({ method: "GET", week: W[1], kind: "throw" });
+    A.edit(W[1], w => (w.dayCall = "my-edit", w)); A.edit(W[6], () => wk("new-week"));
+    await A.engine.push();       // W2's PATCH throws (its read-back too): the push stops there, the new week isn't sent
+    const setup = A.engine.pending().join() === [W[1], W[6]].join() && t.get(W[1]).data.dayCall !== "my-edit" && !t.get(W[6]);
+    const before = clone(A.mirror);
+    A.mirror = {};
+    t.control.fail({ method: "GET", week: "limit=5000", kind: "5xx-before" });
+    const hold = t.control.pause({ method: "GET", week: W[1], count: 1 });   // the follow-up push's re-read of W2: the state in between can be seen
+    const from = t.log.length;
+    const c = await A.engine.authoritative({}, true, "clear", undefined, { before });
+    await hold.arrived;
+    const between = { shown: sameData(A.mirror, before), pending: A.engine.pending().join(), w: writes(t, from).length };
+    hold.release(); await A.engine.idle(); await A.engine.idle();
+    check("SE76 E4 (a) a clear refused (its whole-table read failed) with an edited week and a NEW local week pending from before the tap: the screen is back as it was before the tap — both shown, still pending, nothing written — and the follow-up push lands them",
+      setup && c.ok === false && c.wrote === false && between.shown && between.pending === [W[1], W[6]].join() && between.w === 0
+        && t.get(W[1]).data.dayCall === "my-edit" && !!t.get(W[6]) && t.get(W[6]).data.dayCall === "new-week" && t.rows().length === 5 && A.engine.pending().length === 0,
+      JSON.stringify({ setup, c, between, rows: t.rows().map(r => r.week_monday + "=" + r.data.dayCall), pending: A.engine.pending() }));
+    const t2 = mkTable(seedRows(4));
+    const B = mkSession(t2, { timeouts: { read: 60000, write: 60000, stall: 15, deadline: 60 } }); await B.engine.load();
+    const slow = t2.control.pause({ method: "PATCH", week: W[1], count: 1, when: "after" });   // it LANDS; its answer is slow
+    B.edit(W[1], w => (w.dayCall = "MY-EDIT", w));
+    const pp = B.engine.push(); await slow.arrived;
+    const landed = t2.get(W[1]).data.dayCall === "MY-EDIT";
+    const before2 = clone(B.mirror);
+    B.mirror = {};
+    const cc = B.engine.authoritative({}, true, "clear", undefined, { before: before2 });
+    const r2 = await Promise.race([cc, sleep(600).then(() => "no answer")]);   // queued behind the slow save: cancelled at its deadline
+    const shownAtCancel = B.mirror[W[1]] ? B.mirror[W[1]].dayCall : null;
+    slow.release(); await pp; await B.engine.idle(); await B.engine.idle(); await sleep(5); await B.engine.idle();
+    check("SE76 E4 (b) a save whose PATCH lands but answers slowly, then a clear cancelled at its deadline: the screen as it was before the tap is put back (MY-EDIT, not the table's old copy), and once the slow answer comes the table KEEPS MY-EDIT — one PATCH in all, nothing reverts it, nothing pending",
+      landed && r2 !== "no answer" && r2.reason === "timeout" && r2.wrote === false && shownAtCancel === "MY-EDIT" && t2.get(W[1]).data.dayCall === "MY-EDIT" && B.mirror[W[1]].dayCall === "MY-EDIT"
+        && Object.keys(B.mirror).length === 4 && writes(t2).length === 1 && B.engine.pending().length === 0 && t2.rows().length === 4,
+      JSON.stringify({ landed, r2, shownAtCancel, table: t2.get(W[1]).data.dayCall, w: writes(t2).map(e => e.method + " " + e.url.split("?")[1]), pending: B.engine.pending() }));
+  });
+
+  // SE77 — E5 (review r1 app-3, A14): a refused publish keeps its weeks on
+  // screen and pending, and the follow-up push writes them — so no publish
+  // refusal says "nothing was published" (or "nothing was changed"): each
+  // says what happens to the new weeks and, once, that nobody was notified.
+  // And each claim is checked against what then happens.
+  await run("SE77", async () => {
+    const once = (s) => (String(s || "").match(/Nobody was notified\./g) || []).length === 1;
+    const claimsNothing = (s) => /nothing was (published|changed)/i.test(String(s || ""));
+    const gen = { [W[0]]: wk("gen0"), [W[1]]: wk("gen1") }, period = [W[0], W[1]];
+    // its re-read of the period's weeks fails
+    const t = mkTable(seedRows(4));
+    const A = mkSession(t); await A.engine.load();
+    A.mirror = Object.assign({}, A.mirror, clone(gen));
+    t.control.fail({ method: "GET", week: "in.(", kind: "5xx-before" });
+    const r1 = await A.engine.authoritative(clone(A.mirror), false, "publish", period);
+    const kept1 = A.mirror[W[0]].dayCall === "gen0" && A.engine.pending().join() === period.join();
+    await A.engine.idle(); await A.engine.idle();
+    check("SE77 E5 a publish whose re-read of its weeks fails says they stay on this screen and will be saved automatically, and (once) that nobody was notified — never 'nothing was published'; and so it is: pending, and the follow-up push writes them",
+      r1.ok === false && r1.wrote === false && r1.error === "Couldn't read the saved weeks first — the new weeks stay on this screen and will be saved automatically. Nobody was notified." && once(r1.error) && !claimsNothing(r1.error)
+        && kept1 && t.get(W[0]).data.dayCall === "gen0" && t.get(W[1]).data.dayCall === "gen1" && A.engine.pending().length === 0, JSON.stringify({ r1, kept1 }));
+    // the sign-in: the server refuses the token at the publish's own read (I5: dead, the read goes on as anon) — its push is skipped for the sign-in
+    const t2 = mkTable(seedRows(4));
+    const B = mkSession(t2); await B.engine.load();
+    B.mirror = Object.assign({}, B.mirror, clone(gen));
+    t2.control.expiredTokens.add("TOK_A");
+    const r2 = await B.engine.authoritative(clone(B.mirror), false, "publish", period);
+    await B.engine.idle(); await B.engine.idle();
+    const waited = !t2.log.some(e => e.method !== "GET") && B.engine.pending().join() === period.join() && B.mirror[W[0]].dayCall === "gen0";
+    t2.control.users.TOK_A2 = "user-a"; B.token = "TOK_A2"; await B.engine.pull(); await B.engine.idle();
+    check("SE77 E5 …refused for the sign-in (the token refused at the publish's own read): says they stay on this screen and are saved once signed in again, nobody notified (once) — not 'Nothing was changed'; they wait, pending, and land after 'Sign in again'",
+      r2.ok === false && r2.wrote === false && r2.error === PUB_AUTH && once(r2.error) && !claimsNothing(r2.error) && waited && t2.get(W[0]).data.dayCall === "gen0" && t2.get(W[1]).data.dayCall === "gen1" && B.engine.pending().length === 0,
+      JSON.stringify({ r2, waited }));
+    // not loaded yet: the first load REPLACES the screen — not saved, and it says so
+    const t3 = mkTable(seedRows(4));
+    const C = mkSession(t3);
+    C.mirror = clone(gen);
+    const r3 = await C.engine.authoritative(clone(C.mirror), false, "publish", period);
+    await C.engine.idle(); await C.engine.load();
+    check("SE77 E5 …before the first load: says the new weeks weren't saved and why (the load replaces them), nobody notified (once) — and so it is: nothing written, and the load shows the table instead",
+      r3.ok === false && r3.error === "The schedule hasn't loaded yet, so the new weeks weren't saved — loading it will replace them. Publish again once it has loaded. Nobody was notified." && once(r3.error) && !claimsNothing(r3.error)
+        && writes(t3).length === 0 && sameData(C.mirror, tableSched(t3)) && C.mirror[W[0]].dayCall !== "gen0", JSON.stringify({ r3, shown: C.mirror[W[0]] && C.mirror[W[0]].dayCall }));
+    // cancelled at its deadline (stuck behind a pull that never answers): still pending, saved once the chain moves
+    const t4 = mkTable(seedRows(4));
+    const D = mkSession(t4, { timeouts: { read: 60000, write: 60000, stall: 15, deadline: 60 } }); await D.engine.load();
+    const hang = t4.control.pause({ method: "GET", count: 1 });
+    const pl = D.engine.pull(); await hang.arrived;
+    D.mirror = Object.assign({}, D.mirror, clone(gen));
+    const r4 = await Promise.race([D.engine.authoritative(clone(D.mirror), false, "publish", period), sleep(600).then(() => "no answer")]);
+    const kept4 = D.mirror[W[0]].dayCall === "gen0" && D.engine.pending().join() === period.join();
+    hang.release(); await pl; await D.engine.idle(); await D.engine.idle(); await sleep(5); await D.engine.idle();
+    check("SE77 E5 …cancelled at its deadline (stuck behind an earlier job): says they stay on this screen and will be saved once it gets through, nobody notified (once) — and the chain, once moving, writes them",
+      r4 !== "no answer" && r4.reason === "timeout" && r4.error === "The sync is stuck behind an earlier save — the new weeks stay on this screen and will be saved automatically once it gets through; keep the app open. Nobody was notified." && once(r4.error) && !claimsNothing(r4.error)
+        && kept4 && t4.get(W[0]).data.dayCall === "gen0" && t4.get(W[1]).data.dayCall === "gen1" && D.engine.pending().length === 0, JSON.stringify({ r4, kept4 }));
+  });
+
+  // SE78 — T1 (review r1 tests-2): a pull adopts a week CREATED on another
+  // device (a scheduler's publish, as every other open session sees it):
+  // shown, known at its row's version, onAdopted names it, no toast, nothing
+  // pending — the report too.
+  await run("SE78", async () => {
+    const t = mkTable(seedRows(3));
+    const A = mkSession(t), B = mkSession(t, { token: "TOK_B", user: "user-b" });
+    await A.engine.load(); await B.engine.load();
+    B.edit(W[5], () => wk("created-by-B")); await B.engine.push();
+    const r = await A.engine.pull();
+    check("SE78 T1 a week created on another device is adopted by the next pull: on screen, known at v1, onAdopted names it; no toast, no conflict, nothing pending (in the report too)",
+      !!t.get(W[5]) && r.ok === true && (r.adopted || []).includes(W[5]) && !!A.mirror[W[5]] && A.mirror[W[5]].dayCall === "created-by-B" && A.engine.knownVersion(W[5]) === 1 && A.adopted.some(x => x.weeks.includes(W[5]))
+        && A.toasts.length === 0 && A.st().conflicts.length === 0 && A.engine.pending().length === 0 && A.last().pending === 0,
+      JSON.stringify({ r, shown: A.mirror[W[5]] && A.mirror[W[5]].dayCall, v: A.engine.knownVersion(W[5]), toasts: A.toasts }));
+  });
+
+  // SE79 — T2 (review r1 tests-3, I1 / I4): a body SENT but not confirmed
+  // keeps its week pending. The PATCH lands but its answer is lost, the
+  // read-back can't get out, then Undo puts the screen back to what this
+  // session last confirmed — the table still holds the edit, so pending(),
+  // failing and the header's line ('not saved', off the report) stay set
+  // until a read-back settles it; then the Undo itself is sent.
+  await run("SE79", async () => {
+    const t = mkTable(seedRows(2));
+    const A = mkSession(t); await A.engine.load();
+    const orig = clone(A.mirror[W[0]]);
+    t.control.fail({ method: "PATCH", week: W[0], kind: "throw-after" });   // it lands; the answer is lost
+    t.control.fail({ method: "GET", week: W[0], kind: "throw" });           // …and the read-back can't get out
+    A.edit(W[0], w => (w.dayCall = "edit", w)); await A.engine.push();
+    const landed = t.get(W[0]).data.dayCall === "edit";
+    A.mirror = Object.assign({}, A.mirror, { [W[0]]: clone(orig) });       // Undo: the screen equals what this session last confirmed
+    A.engine.report();                                                       // (the app reports on every mirror change)
+    const rep = A.last();
+    const held = A.engine.pending().join() === W[0] && A.st().failing === 1 && rep.pending === 1 && rep.failing === 1 && kindOfLine(rep) === "notSaved";
+    await A.engine.push();
+    check("SE79 T2 a sent-but-unconfirmed body keeps the week pending through a failed read-back and an Undo — pending(), failing and the header's line ('not saved', from the report) stay set; the next push's re-read settles it (ours) and sends the Undo: the table back to the original, nothing pending",
+      landed && held && sameData(t.get(W[0]).data, orig) && A.engine.pending().length === 0 && A.last().pending === 0,
+      JSON.stringify({ landed, held, rep: { pending: rep.pending, failing: rep.failing, line: kindOfLine(rep) }, table: t.get(W[0]).data.dayCall }));
+  });
+
+  // SE80 — T3 (review r1 tests-4, R21): a pull never silently adopts a week
+  // this session CREATED and hasn't sent yet (inside the debounce) over
+  // someone else's insert of it: the pull leaves it (a never-known week shown
+  // here is dirty), and its follow-up push's INSERT meets the duplicate and
+  // makes it a LOUD conflict — their copy shown, told once, a conflicts entry.
+  await run("SE80", async () => {
+    const t = mkTable(seedRows(2));
+    const A = mkSession(t), B = mkSession(t, { token: "TOK_B", user: "user-b" });
+    await A.engine.load(); await B.engine.load();
+    A.edit(W[4], () => wk("mine-new"));                                    // not sent yet
+    B.edit(W[4], () => wk("theirs-new")); await B.engine.push();
+    const r = await A.engine.pull();
+    check("SE80 T3 an unsent new week here + someone else's insert of it + a pull: the pull doesn't take it (not among its adoptions); its follow-up push's INSERT meets theirs → a conflict: their copy shown, ONE toast 'changed by someone else', one conflicts entry; nothing pending",
+      r.ok === true && !(r.adopted || []).includes(W[4]) && t.get(W[4]).data.dayCall === "theirs-new" && A.mirror[W[4]].dayCall === "theirs-new" && A.toasts.length === 1 && /changed by someone else/.test(A.toasts[0])
+        && A.st().conflicts.map(c => c.k).join() === W[4] && A.engine.pending().length === 0, JSON.stringify({ r, shown: A.mirror[W[4]] && A.mirror[W[4]].dayCall, toasts: A.toasts, c: A.st().conflicts }));
+  });
+
   // SE-I — no scenario above produced an internal error, a caught callback
   // error, or console output from the engine (A17(c)).
   check("SE-I no internal (non-network) error, no caught callback error, and no console output from the engine in any scenario",
@@ -2466,6 +2908,43 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
       ok.r.snaps === 1 && ok.r.published === 1 && ok.w.length === 2 && same({ [X[0]]: ok.t.get(X[0]).data, [X[1]]: ok.t.get(X[1]).data }, ok.weeks) && ok.r.status.includes("Published — totals updated") && ok.A.toasts.length === 0, sh(ok));
     check("SE-X7 …a change to a week OUTSIDE the preview doesn't stop it: published, and zero writes to that week (their change stands)",
       out.r.published === 1 && out.w.length === 2 && out.w.every(e => !e.url.includes(X[3])) && out.t.get(X[3]).data.nights.thu === "s7" && out.A.ref.current[X[3]].nights.thu === "s7", sh(out));
+  });
+
+  // SE-X8 — 16/n E5 (review r1 app-3): what a REFUSED publish tells, through
+  // the real acceptPreview, runPublish and publishNotLanded on the real engine:
+  // ONE message, with "Nobody was notified." exactly once and never "nothing
+  // was published" — that the new weeks stay on this screen and are saved
+  // automatically (its re-read failed), or once signed in again (the server
+  // refused the token at that read). And that is what happens: they land.
+  await run("SE-X8", async () => {
+    const go = async (inject) => {
+      const { t, A } = await pair();
+      const weeks = { [X[0]]: wkX("s4", ["s1", "s2", "s3", "s5", "s6"]), [X[1]]: wkX("s3", ["s1", "s2", "s4", "s5", "s6"]) };
+      const r = { snaps: 0, status: [], published: 0 };
+      inject(t);
+      await F.acceptPreview({ publishSearchRunning: () => false, showToast: A.showToast, cancelSearch: () => {}, previewSchedule: weeks, previewNeedsOk: { items: [], cost: 0 }, previewAck: true,
+        publishingRef: { current: false }, schedEditable: A.schedEditable, schedSyncRef: A.schedSyncRef, previewEpochRef: { current: A.eng.epochNow() }, previewOrigin: "generated", startMonth: 0, startYear: 2030, numWeeks: 2,
+        setPublishing: () => {}, setSaveStatus: (s) => r.status.push(s), snapshots: { capture: async () => { r.snaps++; return { ok: true }; } }, previewSchedRef: { current: weeks },
+        publishWeeks: (w) => { r.published++; A.pushUndo(); A.commitSchedule(Object.assign({}, A.ref.current, w)); return {}; },
+        MO: HX.MO, runPublish: F.runPublish({ schedSyncRef: A.schedSyncRef }), setPreviewSchedule: () => {}, setShowPreview: () => {}, setCalMonth: () => {}, setCalYear: () => {}, setView: () => {}, setTimeout: () => 0,
+        publishNotLanded: F.notLanded({ showToast: A.showToast }) })();
+      const msg = (A.toasts.find(x => /^Published on this screen/.test(x[0])) || [""])[0];
+      const shown = same({ [X[0]]: A.ref.current[X[0]], [X[1]]: A.ref.current[X[1]] }, weeks), pending = A.eng.pending().join();
+      await A.settle();
+      return { t, A, r, weeks, msg, shown, pending };
+    };
+    const once = (m) => (m.match(/Nobody was notified\./g) || []).length === 1;
+    const landed = (x) => same({ [X[0]]: x.t.get(X[0]).data, [X[1]]: x.t.get(X[1]).data }, x.weeks) && x.A.eng.pending().length === 0;
+    const rd = await go(t => t.control.fail({ method: "GET", week: "in.(", kind: "5xx-before" }));
+    check("SE-X8 E5 the real acceptPreview + publishNotLanded, the publish's re-read FAILS: ONE message — 'Published on this screen: Couldn't read the saved weeks first — the new weeks stay on this screen and will be saved automatically. Nobody was notified.' (that once; no 'nothing was published'), the weeks still shown and pending; and the follow-up push lands them, with no other toast",
+      rd.r.published === 1 && rd.msg === "Published on this screen: Couldn't read the saved weeks first — the new weeks stay on this screen and will be saved automatically. Nobody was notified." && once(rd.msg) && !/nothing was published/i.test(rd.msg)
+        && rd.shown && rd.pending === [X[0], X[1]].join() && landed(rd) && rd.A.toasts.length === 1 && rd.A.toasts[0][1] === "error", JSON.stringify({ msg: rd.msg, toasts: rd.A.toasts, pending: rd.pending, status: rd.r.status }));
+    const au = await go(t => t.control.fail({ method: "GET", week: "in.(", kind: "401" }));
+    const auMsg = au.msg, waited = au.A.eng.authBlocked() && au.A.eng.pending().join() === [X[0], X[1]].join() && !au.t.log.some(e => e.method !== "GET" && e.headers.authorization === "Bearer TOK_A" && e.url.includes(X[0]));
+    au.t.control.users.TOK_A2 = "user-a"; au.A.token = "TOK_A2"; await au.A.eng.pull(); await au.A.settle();
+    check("SE-X8 E5 …the server refuses the token at the publish's own read (I5: dead, the read goes on as anon): the message is 'Published on this screen: Your sign-in has expired — the new weeks stay on this screen and will be saved once you sign in again (tap \"Sign in again\" at the top). Nobody was notified.' (that once); the weeks wait, pending, and land after 'Sign in again'",
+      au.r.published === 1 && auMsg === "Published on this screen: " + PUB_AUTH && once(auMsg) && !/nothing was (published|changed)/i.test(auMsg) && au.shown && waited && landed(au),
+      JSON.stringify({ msg: auMsg, toasts: au.A.toasts, waited, pending: au.A.eng.pending() }));
   });
 
   // SE-X-I — the harness rule (A17(c)).

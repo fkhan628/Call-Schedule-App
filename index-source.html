@@ -12242,20 +12242,38 @@ function createSchedSync(deps) {
     say(r && r.error ? `${jobLabel(what)} stopped — ${r.error}` : extra ? `${jobLabel(what)} has finished, but not every week is saved.${extra}` : `${jobLabel(what)} has finished, but ${n ? n + " week" + (n === 1 ? " isn't" : "s aren't") : "not every week is"} saved yet — retrying automatically.`, "error");
   };
 
+  // ONE engine read (the pull's version list, readAll, readSome, readBack —
+  // so load, pull, a clear / restore / publish and a read-back all behave the
+  // same). A read sent WITH the stored token that the server refuses for it
+  // (kindOf's auth class: a 401, PGRST301–303, "JWT expired" — never a 42501
+  // permission error, RLS refusing the role) marks that token dead, as a
+  // write's 401 does: reported at once, so authNeeded — the edit gate and
+  // "Sign in again" — follows even with nothing pending; then the read is
+  // sent once more as anon, so a device clock that still calls the token
+  // fresh can't stop the pull (I5). A read that went out as anon already
+  // isn't the token's to blame: its answer stands.
+  const readReq = async (url) => {
+    const g = gen, tok = tokenNow(), h = rh();
+    const r = await req(url, { method: "GET", headers: h }, T.read);
+    const perm = r.json && r.body && typeof r.body === "object" && String(r.body.code || "") === "42501";
+    if (gen !== g || !tok || kindOf(r) !== "auth" || perm || canon(h) === canon(Object.assign({}, d.anonHeaders()))) return r;
+    deadToken = tok; report();
+    return req(url, { method: "GET", headers: Object.assign({}, d.anonHeaders()) }, T.read);
+  };
   const readBack = async (k) => {
-    const r = await req(`${base()}?week_monday=eq.${k}&select=week_monday,data,version,updated_at`, { method: "GET", headers: rh() }, T.read);
+    const r = await readReq(`${base()}?week_monday=eq.${k}&select=week_monday,data,version,updated_at`);
     if (r.thrown || !r.ok || !Array.isArray(r.body)) return { ok: false };
     return { ok: true, row: r.body[0] || null };
   };
   const readAll = async () => {
-    const r = await req(`${base()}?select=week_monday,data,version,updated_at&order=week_monday.asc&limit=5000`, { method: "GET", headers: rh() }, T.read);
+    const r = await readReq(`${base()}?select=week_monday,data,version,updated_at&order=week_monday.asc&limit=5000`);
     return (r.thrown || !r.ok || !Array.isArray(r.body)) ? null : r.body;
   };
   const readSome = async (keys) => {
     const out = [];
     for (let i = 0; i < keys.length; i += 60) {
       const chunk = keys.slice(i, i + 60);
-      const r = await req(`${base()}?week_monday=in.(${chunk.join(",")})&select=week_monday,data,version,updated_at`, { method: "GET", headers: rh() }, T.read);
+      const r = await readReq(`${base()}?week_monday=in.(${chunk.join(",")})&select=week_monday,data,version,updated_at`);
       if (r.thrown || !r.ok || !Array.isArray(r.body)) return null;
       out.push(...r.body);
     }
@@ -12403,6 +12421,11 @@ function createSchedSync(deps) {
   // comes back as `notice` instead) }
   const runPush = async (job) => {
     const g = gen;
+    // What's pending is reported as the push starts — "Saving N weeks…" until
+    // they land, never the "Synced" of an earlier report (A16): a pull that
+    // failed early, a load, a job ahead in the queue report nothing about an
+    // edit made since.
+    report();
     if (!seeded) { report(); return { ok: false, skipped: "not-loaded" }; }
     if (!d.canWrite()) { report(); return { ok: false, skipped: "read-only" }; }
     if (job.mode !== "force" && authoritativeQueued > 0) return { ok: false, skipped: "authoritative-queued" };
@@ -12430,6 +12453,13 @@ function createSchedSync(deps) {
       else if (how === "theirs" && (job.mode !== "force" || (job.keys && !job.keys.has(k)))) { const cur = d.getState() || {}; if (adoptInto({ [k]: rb.row }, "conflict", { [k]: k in cur ? canon(cur[k]) : DEL }).length) results.push({ k, outcome: "conflict" }); }
       else if (how === "theirs") { if (rb.row) known[k] = fromRow(rb.row); else delete known[k]; settle(k); }
     }
+    // A11 again, after the re-read's awaits: a clear / reset / restore /
+    // publish requested meanwhile owns the weeks now, and the mirror holds ITS
+    // target — read as this push's, a clear tripped the wipe guard, and a
+    // restore's writes went out (and landed) before the job's own read could
+    // refuse it. Stop here; the job's follow-up push sends what's edited
+    // meanwhile. (A conflict the re-read adopted is still told.)
+    if (job.mode !== "force" && authoritativeQueued > 0) { if (results.length) toasts(results); report(); return { ok: false, skipped: "authoritative-queued", results }; }
     // The target is read only NOW: the re-read above may have adopted someone
     // else's copy of a week into the mirror, and that must not be re-sent over.
     const target = job.target !== undefined ? job.target : (d.getState() || {});
@@ -12553,7 +12583,7 @@ function createSchedSync(deps) {
     const g = gen;
     if (!seeded) return runLoad();
     if (authoritativeQueued > 0) return { ok: false, skipped: "authoritative-queued" }; // A11: it owns the weeks
-    const r = await req(`${base()}?select=week_monday,version,updated_at&order=week_monday.asc&limit=5000`, { method: "GET", headers: rh() }, T.read);
+    const r = await readReq(`${base()}?select=week_monday,version,updated_at&order=week_monday.asc&limit=5000`);
     if (gen !== g) return { ok: false, skipped: "reset" };
     if (r.thrown || !r.ok || !Array.isArray(r.body)) { log("schedule pull: version list failed", r.thrown || r.status); return { ok: false }; }
     const list = r.body;
@@ -12628,42 +12658,58 @@ function createSchedSync(deps) {
   // re-inserted), never a delete. Afterwards every week the user hasn't
   // touched since shows exactly what was written (A11).
   // A clear / reset / restore that writes NOTHING (read-only, signed out, the
-  // table unreadable, a bug) puts the screen back to what the table holds —
-  // here, in the job, with no await before the follow-up push can read the
-  // mirror: left to the caller, that push ran first and sent the refused
-  // target as an ordinary push (a refused restore's weeks written anyway; a
-  // refused clear tripping the wipe guard). A publish keeps its weeks on
-  // screen, pending (A14).
-  // showKnown: what the table holds (known) for these weeks — only where the
-  // screen still shows what it showed when the job was requested (an edit
-  // made since stays, and is pushed). One commit.
-  const showKnown = (startShown, only) => {
+  // table unreadable, cancelled at its deadline) puts the screen back as it
+  // was before the caller committed the target — here, in the job, with no
+  // await before the follow-up push can read the mirror: left to the caller,
+  // that push ran first and sent the refused target as an ordinary push (a
+  // refused restore's weeks written anyway; a refused clear tripping the wipe
+  // guard). A publish keeps its weeks on screen, pending (A14) — and its
+  // refusals say so: they are saved automatically (or once signed in again);
+  // nobody was notified.
+  // showKnown: for these weeks, only where the screen still shows what it
+  // showed when the job was requested (the target — an edit made since
+  // stays, and is pushed), put back `before[k]` — the screen as it was before
+  // the caller committed the target (`opts.before`): edits pending from
+  // before the tap and new local weeks stay pending and go out in the
+  // follow-up push, and a slow save's landed edit isn't reverted by it —
+  // or, without `before`, what the table holds (known). One commit.
+  const showKnown = (startShown, only, before) => {
     const cur = d.getState() || {}, next = Object.assign({}, cur); let changed = false;
     Object.keys(startShown).filter(k => !only || only.has(k)).forEach(k => {
       const shownNow = k in cur ? canon(cur[k]) : DEL;
       if (shownNow !== startShown[k]) return;
-      const want = known[k] ? known[k].canon : DEL;
-      if (shownNow !== want) { changed = true; if (known[k]) next[k] = clone(known[k].data); else delete next[k]; }
+      const has = before ? k in before : !!known[k], data = before ? before[k] : has ? known[k].data : undefined;
+      if (shownNow !== (has ? canon(data) : DEL)) { changed = true; if (has) next[k] = clone(data); else delete next[k]; }
     });
     if (changed) d.commit(next);
   };
-  const runAuthoritative = async (target, grant, what, keys, startShown, release) => {
+  // A publish's refusals (keys): its weeks stay on screen and pending — the
+  // follow-up push writes them — so none of them says "nothing was published".
+  const PUB_AUTH = "Your sign-in has expired — the new weeks stay on this screen and will be saved once you sign in again (tap \"Sign in again\" at the top). Nobody was notified.";
+  const runAuthoritative = async (target, grant, what, keys, startShown, release, before) => {
     const g = gen;
-    const refuse = (out) => { if (!keys && gen === g) showKnown(startShown); return out; };
+    const refuse = (out) => { if (!keys && gen === g) showKnown(startShown, null, before); return out; };
+    const signIn = keys ? PUB_AUTH : "Your sign-in has expired — tap \"Sign in again\", then retry. Nothing was changed.";
     busy = what || "saving"; report();
     try {
       if (!d.canWrite()) return refuse({ ok: false, wrote: false, error: "This view is read-only." });
-      if (authState() !== "ok") return refuse({ ok: false, wrote: false, error: "Your sign-in has expired — tap \"Sign in again\", then retry. Nothing was changed." });
+      if (authState() !== "ok") return refuse({ ok: false, wrote: false, error: signIn });
       if (keys) {
-        if (!seeded) return refuse({ ok: false, wrote: false, error: "The schedule hasn't loaded yet — nothing was changed." });
+        // Not loaded: the first load REPLACES the screen with the table, so these weeks are not saved.
+        if (!seeded) return refuse({ ok: false, wrote: false, error: "The schedule hasn't loaded yet, so the new weeks weren't saved — loading it will replace them. Publish again once it has loaded. Nobody was notified." });
         const rows = await readSome([...keys]);
         if (gen !== g) return { ok: false, wrote: false, skipped: "reset" };
-        if (rows === null) return refuse({ ok: false, wrote: false, error: "Couldn't read the saved weeks — nothing was published." });
+        if (rows === null) return refuse({ ok: false, wrote: false, error: "Couldn't read the saved weeks first — the new weeks stay on this screen and will be saved automatically. Nobody was notified." });
         const got = {}; rows.forEach(x => { got[x.week_monday] = x; });
         keys.forEach(k => { if (got[k]) known[k] = fromRow(got[k]); else delete known[k]; delete sent[k]; });
       } else {
         const rows = await readAll();
         if (gen !== g) return { ok: false, wrote: false, skipped: "reset" };
+        // The read itself can find the token refused (it then went on as
+        // anon): refuse BEFORE `known` takes the table's rows — the weeks put
+        // back from `before` were edited against the old ones, and must meet
+        // their CAS, not slip under someone else's newer row (I2).
+        if (authState() !== "ok") return refuse({ ok: false, wrote: false, error: signIn });
         if (!rows) return refuse({ ok: false, wrote: false, error: "Couldn't read the saved schedule — nothing was changed." });
         known = {}; rows.forEach(x => { known[x.week_monday] = fromRow(x); });
         seeded = true; loadFailed = false; staleRemovals = 0; removalSig = "";
@@ -12677,9 +12723,9 @@ function createSchedSync(deps) {
       // retried, R7) for weeks the user hasn't touched since the request.
       const saved = new Set((res.results || []).filter(x => x.outcome === "saved").map(x => x.k));
       showKnown(startShown, saved);
-      if (res.skipped === "auth") return refuse({ ok: false, wrote: false, error: "Your sign-in has expired — tap \"Sign in again\", then retry. Nothing was changed." });
+      if (res.skipped === "auth") return refuse({ ok: false, wrote: false, error: signIn });
       return Object.assign({ wrote }, res);
-    } catch (e) { refuse(null); throw e; } // a bug mid-job: the screen shows what the table holds; the chain reports it
+    } catch (e) { if (!keys && gen === g) showKnown(startShown); throw e; } // a bug mid-job (it may have written): the screen shows what the table holds; the chain reports it
     finally { release(); busy = null; report(); }
   };
 
@@ -12708,7 +12754,11 @@ function createSchedSync(deps) {
     // (A5f: the caller has its answer by the deadline; a load still queued
     // then stays queued, and seeds or pulls when its turn comes.)
     load() { return settleBy(enqueue(async () => { const r = await runLoad(); if (r.ok && seeded && d.canWrite() && pendingKeys().length) await runPush({ mode: "normal" }); return r; }), () => ({ ok: false, reason: "timeout" })); },
+    // A push request is reported at once (synchronously): the week it's for
+    // counts as pending — "Saving…" — from the moment it's requested, through
+    // the debounce, the queue and the write, until its answer (A16).
     push() {
+      report();
       if (queuedPush) return queuedPush;
       const p = enqueue(async () => { queuedPush = null; return runPush({ mode: "normal" }); });
       queuedPush = p;
@@ -12724,10 +12774,14 @@ function createSchedSync(deps) {
     // synchronously, so a push or pull that starts after this call (even one
     // queued earlier) defers to it; when it's done it requests one ordinary
     // push for anything edited meanwhile.
-    authoritative(target, grant, what, keysArr) {
+    // opts.before (clear / reset / restore): the mirror as it was BEFORE the
+    // caller committed `target` — what a refusal or a deadline cancel puts
+    // back (showKnown). Without it, what the table holds.
+    authoritative(target, grant, what, keysArr, opts) {
       const t = clone(target || {});
       const keys = keysArr ? new Set(keysArr) : null;
-      const startShown = shownMap([...new Set([...Object.keys(t), ...Object.keys(known), ...(keysArr || [])])]);
+      const before = !keys && opts && opts.before ? clone(opts.before) : null;
+      const startShown = shownMap([...new Set([...Object.keys(t), ...Object.keys(known), ...(keysArr || []), ...Object.keys(before || {})])]);
       // The weeks it owns from now until it's done (A11): a publish, its
       // period's; a clear / reset (an empty target), every week; a restore,
       // its target's and every week the table holds.
@@ -12737,7 +12791,7 @@ function createSchedSync(deps) {
       const p = enqueue(async () => {
         if (owner.state.cancelled) return { ok: false, wrote: false, skipped: "cancelled", error: "It was cancelled before its turn came — nothing was changed." }; // past its deadline, or a sign-out, before its turn: it never runs
         owner.state.started = true;
-        try { return await runAuthoritative(t, !!grant, what, keys, startShown, owner.release); } finally { owner.release(); }
+        try { return await runAuthoritative(t, !!grant, what, keys, startShown, owner.release, before); } finally { owner.release(); }
       });
       report();
       p.then(() => { if (!authoritativeQueued) api.push(); }, () => {});
@@ -12747,7 +12801,7 @@ function createSchedSync(deps) {
       // Started: "still running" (a job is never cut short mid-write), and
       // its outcome is toasted when it ends.
       return settleBy(p, () => {
-        if (!owner.state.started) { owner.state.cancelled = true; owner.release(); if (!keys) showKnown(startShown); report(); return { ok: false, wrote: false, reason: "timeout", error: "The sync is stuck behind an earlier save — nothing was changed. Reload the app, then try again." }; }
+        if (!owner.state.started) { owner.state.cancelled = true; owner.release(); if (!keys) showKnown(startShown, null, before); report(); return { ok: false, wrote: false, reason: "timeout", error: keys ? "The sync is stuck behind an earlier save — the new weeks stay on this screen and will be saved automatically once it gets through; keep the app open. Nobody was notified." : "The sync is stuck behind an earlier save — nothing was changed. Reload the app, then try again." }; }
         p.then(r => lateOutcome(owner.what, r));
         return { ok: false, wrote: false, running: true, reason: "timeout", error: `${jobLabel(owner.what)} is taking longer than expected. It's still running — keep the app open; you'll see a message when it ends.` };
       });

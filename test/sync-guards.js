@@ -6020,10 +6020,13 @@ await (async () => {
         && clPart.toasts.length === 1 && /^The schedule wasn't fully cleared\. 2 week\(s\) not deleted yet/.test(clPart.toasts[0][0]) && clPart.upserts === 1 && clOk.toasts.length === 0 && clOk.status.includes("Schedule cleared") && clOk.upserts === 1,
       JSON.stringify({ clRun, clErr, clPart, clOk }));
     const pn = (pr) => { const t = []; pnFn({ showToast: (m, tone) => t.push([String(m), tone]) })(pr, "Regenerated on this screen"); return t[0] || []; };
-    const pnRun = pn(RUNNING("Publishing the new weeks")), pnErr = pn({ ok: false, wrote: false, error: "Couldn't read the saved weeks — nothing was published." }), pnN = pn({ ok: false, results: [{ outcome: "saved" }, { outcome: "pending" }] });
-    check("SE-C A5(f) a publish still running past its deadline: the toast says so, and that nobody was notified, as info; the other not-landed toasts are unchanged",
+    // (16/n E5: the engine's publish refusal says itself that nobody was notified — publishNotLanded adds it only for a job still running.)
+    const PN_READ = "Couldn't read the saved weeks first — the new weeks stay on this screen and will be saved automatically. Nobody was notified.";
+    const pnRun = pn(RUNNING("Publishing the new weeks")), pnErr = pn({ ok: false, wrote: false, error: PN_READ }), pnN = pn({ ok: false, results: [{ outcome: "saved" }, { outcome: "pending" }] });
+    check("SE-C A5(f) a publish still running past its deadline: the toast says so, and that nobody was notified, as info; a refused one is the engine's text as it is — 'Nobody was notified.' exactly once; the other not-landed toasts are unchanged",
       pnRun[1] === "info" && /^Regenerated on this screen: Publishing the new weeks is taking longer than expected\. It's still running/.test(pnRun[0]) && / Nobody was notified\.$/.test(pnRun[0])
-        && pnErr[1] === "error" && !/Nobody/.test(pnErr[0]) && pnN[1] === "error" && /— 1 week isn't saved yet; retrying automatically\. Nobody was notified\.$/.test(pnN[0]), JSON.stringify({ pnRun, pnErr, pnN }));
+        && pnErr[1] === "error" && pnErr[0] === "Regenerated on this screen: " + PN_READ && (pnErr[0].match(/Nobody was notified\./g) || []).length === 1
+        && pnN[1] === "error" && /— 1 week isn't saved yet; retrying automatically\. Nobody was notified\.$/.test(pnN[0]), JSON.stringify({ pnRun, pnErr, pnN }));
     check("SE-C A5(f) the factory reset's schedule job: still running → said so (info), not 'the schedule was NOT cleared'",
       count('runAuthoritativeSchedule({}, "reset").then(r => { if (r.running) showToast(r.error, "info"); else if (!r.ok) showToast(r.error ? "Factory reset: the schedule was NOT cleared — " + r.error') === 1);
   }
@@ -6166,6 +6169,13 @@ await (async () => {
       n(schH, '⚠ {schedLine.n} week{schedLine.n === 1 ? "" : "s"} couldn' + "'" + 't be saved ({schedSync.rejectCodes.join(", ")}) — reload/update the app <button onClick={reloadToResync}') === 1
         && n(schH, "⚠ {schedLine.n} week{schedLine.n === 1 ? \"\" : \"s\"} replaced by someone else's change — tap for details</button>}") === 1 && n(schH, "schedSyncRef.current.dismissConflicts();") === 1
         && count("confirmReloadWithPending(") === 3);
+    // 16/n E2: a READ refused for the token turns authNeeded on with NOTHING
+    // pending (a member who only views; SE74 — the line is { kind: "auth", n: 0 }).
+    // Every sign-in text then reads right with 0: no week is counted.
+    check("SE-H 16/n E2 with 0 pending the sign-in texts count no week: the header's auth line says 'Sign-in expired — sign in again' (a count only when n > 0), the red banner just 'Your sign-in has expired.' (its count only when weeks are pending), the password sheet 'nothing on this screen is lost'",
+      n(schH, '⚠ {schedLine.n ? `${schedLine.n} week${schedLine.n === 1 ? "" : "s"} not saved — sign in again` : "Sign-in expired — sign in again"}</span>}') === 1
+        && count('<span>⚠ Your sign-in has expired{schedSync.pending ? ` — ${schedSync.pending} week${schedSync.pending === 1 ? "" : "s"} of the schedule not saved yet` : ""}.</span>') === 1
+        && count('sent once you\'re in.` : "nothing on this screen is lost."}</p>') === 1);
   }
 
   // ── writeFailReason: the reason a rejection's toast gives ──
