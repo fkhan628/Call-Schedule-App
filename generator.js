@@ -2422,7 +2422,11 @@ function ruleCompare(A, B) {
    generateOnce deals a starting schedule (the deal + the exact mildest-bend
    search + the fairness passes); a LOCAL SEARCH then improves it under the
    scheduleRules tiers: it proposes small changes — two slots of a kind trade
-   holders (counts kept), any two slots trade, one slot changes hands, two
+   holders (counts kept), any two slots trade, one slot changes hands (while
+   the totals are uneven, a quarter of those give the busiest surgeon's
+   weeknight to the least busy — 2026-10-18: without it an 11/13 split, every
+   tier above it at its floor, outlasted generate()'s 60,000 schedules in
+   about 1 of 5,400 of the regression test's vacation and squeeze rolls), two
    surgeons trade everything they hold in a week, three slots of a kind
    rotate — keeps every change that ranks no worse, and from time to time
    "kicks" the best schedule (a few random changes) to leave a local optimum.
@@ -2452,6 +2456,7 @@ function createImprover(R, a0, rnd) {
   const revert = () => { while (nc > 0) { nc--; a[cx[nc]] = cv[nc]; } };
   const ok = (x, p) => p < 0 || ft[x * P + p] === 1;
   const pick = (arr) => arr[(rnd() * arr.length) | 0];
+  const tl = new Int16Array(P), hiX = new Int16Array(X), loP = new Int8Array(P);
   let evals = 0, since = 0, kicks = 0;
   function propose() {
     nc = 0;
@@ -2465,8 +2470,21 @@ function createImprover(R, a0, rnd) {
       const x = pick(mov), y = pick(mov), px = a[x], py = a[y];
       if (x === y || px === py || !ok(x, py) || !ok(y, px)) return false;
       set(x, py); set(y, px);
-    } else if (r < 0.75) {                // one slot changes hands
-      const x = pick(mov), q = (rnd() * P) | 0;
+    } else if (r < 0.75) {                // one slot changes hands — a quarter of the time, while the totals
+      let x = -1, q = -1;                 // are uneven, the busiest surgeon's weeknight to the least busy
+      if (r >= 0.70) {
+        tl.fill(0);
+        for (let y = 0; y < X; y++) if (a[y] >= 0 && R.present[(y / 6) | 0]) tl[a[y]]++;
+        let mx = -1, mn = 1e9;
+        for (let p = 0; p < P; p++) { if (tl[p] > mx) mx = tl[p]; if (tl[p] < mn) mn = tl[p]; }
+        if (mx - mn >= 2) {
+          let nh = 0, nl = 0;
+          for (const y of byT[1]) if (a[y] >= 0 && tl[a[y]] === mx) hiX[nh++] = y;
+          for (let p = 0; p < P; p++) if (tl[p] === mn) loP[nl++] = p;
+          if (nh) { x = hiX[(rnd() * nh) | 0]; q = loP[(rnd() * nl) | 0]; }
+        }
+      }
+      if (x < 0) { x = pick(mov); q = (rnd() * P) | 0; } // otherwise the old move, same draws
       if (q === a[x] || !ok(x, q)) return false;
       set(x, q);
     } else if (r < 0.87) {                // two surgeons trade their week
@@ -2597,8 +2615,12 @@ function createScheduleSearch(surgeons, mondays, vac, backupMondays, priorCounts
 // time slices (SEARCH_MS, a progress line, "🔍 Search more"); this entry
 // point serves the tests and any caller without a clock. opts { proposals,
 // ms, random } — by default GENERATE_PROPOSALS schedules, or fewer when the
-// schedule is perfect (every tier at its floor) sooner.
-const GENERATE_PROPOSALS = 60000;
+// schedule is perfect (every tier at its floor) sooner. 100,000 since
+// 2026-10-18 (was 60,000; about 1–3% more test time): with the totals move
+// above, none of 400,080 seeded vacation and squeeze rolls of the regression
+// test is short of perfect at 100,000; at 60,000 one still ended on the 11/13
+// split. The app never calls this (SEARCH_MS).
+const GENERATE_PROPOSALS = 100000;
 function generate(surgeons, mondays, vac, backupMondays, priorCounts, preferences, fierceBackupMondays, holAssignments, locks, prevWeekSeed, vacationsOnly, yearCounts, opts) {
   const o = opts || {};
   const search = createScheduleSearch(surgeons, mondays, vac, backupMondays, priorCounts, preferences, fierceBackupMondays, holAssignments, locks, prevWeekSeed, vacationsOnly, yearCounts, o);

@@ -71,14 +71,18 @@ const FUZZ_N = 2000; // broken copies of a live schedule for the agreement fuzz 
 // unseeded every run rolled different schedules and a rare roll failed a
 // build with nothing changed — vacation roll 38 (2026-10-15): total spread 2,
 // generate()'s 60,000 schedules spent with every tier above totals at its
-// floor (2026-10-18: about 1 vacation roll in 6,000 and 1 squeeze roll in
-// 4,000, each perfect within 28,000 more schedules; 5 of seeds 1–50 fail).
+// floor (2026-10-18, seeds 1–1667: 74 of the 400,080 vacation and squeeze
+// rolls, failing 73 of the seeds; of seeds 1–50, 13, 20, 26, 36 and 46).
 // Now every loaded copy of the app draws from a seeded PRNG, reseeded at the
 // start of each roll from (RUN_SEED, scenario, roll): a run is the same on
 // every machine, a roll's draws don't move when other rolls or scenarios
 // change, and REGRESSION_SEED=<the printed seed> replays a failure exactly.
 // The bars are unchanged. REGRESSION_SEED=<n> runs another seed ("random"
-// picks one); the seed is printed either way.
+// picks one); the seed is printed either way. The tail itself is fixed in
+// generator.js since the same day: while the totals are uneven the search
+// also gives the busiest surgeon's weeknight to the least busy, and
+// generate() checks 100,000 schedules — none of those 400,080 rolls is short
+// of perfect.
 const RUN_SEED = (() => {
   const e = process.env.REGRESSION_SEED;
   if (e === undefined || e === "") return 20261018;
@@ -755,11 +759,11 @@ const sunday = runSundayControl();
 //    weeks and the owner's preferences (DJA avoids Thu, MCC prefers Tue). The
 //    search must never STOP before the 1st-call-only splits are as even as 12
 //    regular weeks allow (soft ≤ 11: service weeks and weekends each Δ ≤ 1):
-//    every roll that ends before its budget is there (exact). Within generate()'s
-//    budget (GENERATE_PROPOSALS, 60,000 — the app checks millions) it gets
-//    there in ≥ 90% of rolls (main CI 2026-10-13: 39/40), then polishes the
-//    preferences (avoided − preferred nights ≤ −4 in ≥ 90% of rolls; without
-//    the polish it is about 1 in 10).
+//    every roll that ends before its budget is there (exact). Within 60,000
+//    schedules (BUDGET below, generate()'s budget until 2026-10-18 — the app
+//    checks millions) it gets there in ≥ 90% of rolls (main CI 2026-10-13:
+//    39/40), then polishes the preferences (avoided − preferred nights ≤ −4
+//    in ≥ 90% of rolls; without the polish it is about 1 in 10).
 function runSoft() {
   const PREFS = { s1: { avoidShift: "thu" }, s2: { preferShift: "tue" } }, BK = new Set([MONDAY_KEYS[3], MONDAY_KEYS[9]]);
   const ROLLS_J = 40, BUDGET = 60000, soft = {}, prefs = {}, failures = [];
