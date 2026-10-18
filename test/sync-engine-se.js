@@ -685,9 +685,30 @@ const MUTANTS = [
   { id: "I3b", what: "I3: settle() forgets a keepalive still on the wire (an Undo settled by a re-read before it lands: its edit adopted back silently at the next pull — matrix-3 (a))",
     from: "  const settle = (k) => { keepLive(k);", to: "  const settle = (k) => { delete sent[k];" },
   { id: "I3c", what: "I3: a keepalive is never recorded as on the wire (settle() and a read that finds the week unchanged forget it: SE87 (e), (f))",
-    from: "      (kaLive[k] = kaLive[k] || []).push(canon(target[k]));\n", to: "" },
-  { id: "I3d", what: "I3: a keepalive's done() never takes it off the wire (its week stays unconfirmed — 'Saving…' — for good)",
-    from: "      const i = kaLive[k].indexOf(c); if (i >= 0) kaLive[k].splice(i, 1);", to: "      const i = -1;" },
+    // (re-pinned 23/n: an entry with its token now — the same mutation)
+    from: "      (kaLive[k] = kaLive[k] || []).push(ent);\n", to: "" },
+  { id: "I3d", what: "I3: a keepalive's done() never marks it settled (no read can prove it: an Undo after a failed one leaves its week 'Saving…' for good — SE88 (h))",
+    // (re-pinned 23/n: done() stamps the read sequence now; the same bug)
+    from: "      ent.done = rseq; // settled: a read of k sent from now on tells whether it landed\n", to: "" },
+  // 23/n — review round 6: a keepalive may still land only while the row is at the token its CAS names, and only a read
+  // sent after it settled proves it didn't — SE88 (a)–(d), (h); I2 with a failed re-read — SE88 (e); reset() — (f);
+  // a re-sent week edited again — (g).
+  { id: "J1a", what: "r6-fix-1: a keepalive counts as possibly landing after the row moved past its CAS (our own save of the edit landed: the week stuck 'Saving…', a false conflict, another device's Undo sent over — SE88 (a)–(c))",
+    from: "    const l = (kaLive[k] || []).filter(e => e.tok === t && !(e.done !== null && e.done < seen));", to: "    const l = (kaLive[k] || []).filter(e => !(e.done !== null && e.done < seen));" },
+  { id: "J1b", what: "r6-broke-2: a settled keepalive is proven by any read taken in after it settled, even one sent before (the user's newer edit replaced by their own older one, as someone else's — SE88 (d))",
+    from: "    const l = (kaLive[k] || []).filter(e => e.tok === t && !(e.done !== null && e.done < seen));", to: "    const l = (kaLive[k] || []).filter(e => e.tok === t && e.done === null);" },
+  { id: "J1c", what: "r6 (I3): no read is ever recorded as taken in (a settled keepalive never proven: SE88 (h))",
+    from: "    if (s > (readSeen[k] || 0)) readSeen[k] = s;\n", to: "" },
+  { id: "J2a", what: "r6-fix-2: a failed re-read of a week whose DELETE of ours is unproven doesn't hold it (the re-add PATCHed, met the deletion, re-inserted without I2's message — SE88 (e))",
+    from: "      if (!rb.ok && known[k] && (sent[k] || []).includes(DEL)) { unread.add(k); continue; }\n", to: "" },
+  { id: "J3a", what: "r6-matrix-2: a force DELETE sent again at the server's token keeps no grant (its answer lost, the follow-up push's wipe guard blocks it for good — SE88 (i))",
+    from: "      if (del && mode === \"force\" && attempt === 1) approvedDeletes.set(k, kn.version);\n", to: "" },
+  { id: "I7c", what: "r6-fix-5 (MX2): a re-sent week the user edited again (the re-read finds it 'ours') is settled without being told — SE88 (g)",
+    edits: [["      if (resend.has(k) && rb.row && (how === \"mirror\" || how === \"ours\")) results.push(", "      if (resend.has(k) && rb.row && how === \"ours\") resend.delete(k);\n      if (resend.has(k) && rb.row && (how === \"mirror\" || how === \"ours\")) results.push("]] },
+  // (r6-fix-4's MX1 — reset() restoring the keepalives it forgets — survives every suite under 23/n's token rule and
+  // was found equivalent in every path traced: a restored entry enters the next session's ledger only through
+  // keepLive while known is still at its token, and only for a week that session is writing (its write moves known
+  // past it) or a publish forcing over it either way. See r23-report. SE88 (f) pins the property.)
   // I7 (fix-2): a re-send whose own answer is lost is still told once — SE87 (k), (l).
   { id: "I7a", what: "I7: a re-sent week confirmed by a later re-read is settled without being told (H3's / I2's message never said — fix-2)",
     from: "      if (resend.has(k) && rb.row && (how === \"mirror\" || how === \"ours\")) results.push({ k, outcome: \"saved\", resent: true, putBack: putBack.has(k) });\n", to: "" },
@@ -910,6 +931,39 @@ const MUTANTS = [
     from: "      setReauthNeeded(!back);\n", to: "      if (!back) setReauthNeeded(true);\n" },
   { id: "I6b", app: true, what: "I6: the same account back in another tab doesn't nudge a setup change held while signed out (it waits for an unrelated change, or is lost on reload)",
     from: "      if (back && pendingSaveRef.current) setSetupSaveNudge(n => n + 1);\n", to: "" },
+  // ── 23/n, the app half ──
+  // r6-broke-1 (review r6): the factory reset's hold on the setup autosave (resetBusyRef) — SE-X21 (j), (h).
+  { id: "R6a", app: true, what: "r6-broke-1: the reset never holds the setup autosave (a render in its gaps re-arms the guard; its debounce writes the OLD setup over the cleared blob and uses up the one-shot bypass)",
+    from: "    resetBusyRef.current = true;\n", to: "" },
+  { id: "R6b", app: true, what: "r6-broke-1: the autosave's timer doesn't check the reset's hold (the gap's debounce writes the OLD setup over the cleared blob)",
+    from: "      if (resetBusyRef.current) return;\n      // Never across the session boundary", to: "      // Never across the session boundary" },
+  { id: "R6c", app: true, what: "r6-broke-1: the reset's final run doesn't disarm the guard again (a time-off read in its gaps armed it: every setup change after the reset '⚠ Save blocked')",
+    from: "    everHadRealDataRef.current = false;\n    resetSetupHere(); setAppShifts({});\n", to: "    resetSetupHere(); setAppShifts({});\n" },
+  { id: "R6d", app: true, what: "r6-broke-1: the reset's final run keeps its hold on the setup autosave (nothing written after a successful reset)",
+    from: "    resetBusyRef.current = false;\n    everHadRealDataRef.current = false;\n", to: "    everHadRealDataRef.current = false;\n" },
+  { id: "R6e", app: true, what: "r6-broke-1: unarm() keeps the reset's hold on the setup autosave (after a reset that stopped, no setup change is ever written)",
+    from: "const unarm = () => { resetBusyRef.current = false; allowWipeSaveRef.current = false;", to: "const unarm = () => { allowWipeSaveRef.current = false;" },
+  // r6-fix-3 (review r6): the session boundary forgets the APP day-off state (forgetDayOffs) — SE-X25.
+  { id: "R6f", app: true, what: "r6-fix-3: the session boundary doesn't forget the APP day-off state (the previous account's dropped taps saved as the next account with its first chip tap)",
+    from: "setEditWeekModal(null); forgetDayOffs(); setReauthNeeded(false);", to: "setEditWeekModal(null); setReauthNeeded(false);" },
+  { id: "R6g", app: true, what: "r6-fix-3: the boundary keeps this device's day-off write watermark (the next account's read skips the stored row: its save drops the stored day-offs)",
+    from: "    dayOffLastWriteTsRef.current = null; // the watermark", to: "    // the watermark" },
+  { id: "R6h", app: true, what: "r6-fix-3: the boundary leaves the day-off chips enabled (a tap before the next account's read saves over the stored row)",
+    from: "    setAppDayOffLoaded(false); // and the chips", to: "    // and the chips" },
+  { id: "R6i", app: true, what: "r6-fix-3: the boundary keeps the day-off map (with no stored row, the previous account's dropped taps go out with the next account's first tap)",
+    from: "    appDayOffRef.current = {}; setAppDayOff({}); // the map shown,", to: "    // the map shown," },
+  { id: "R6j", app: true, what: "r6-fix-3: the boundary leaves the unsaved day-off taps flagged (dirty: the next account's read never adopts the stored row)",
+    from: "    dayOffDirtyRef.current = false; // the unsaved taps,", to: "    // the unsaved taps," },
+  { id: "R6k", app: true, what: "r6-fix-3: a day-off save that lands after the boundary sets this device's watermark (the next account's read skips the row it wrote: A's committed day-off wiped by B's next save)",
+    from: "        if (here) dayOffLastWriteTsRef.current = ts;", to: "        dayOffLastWriteTsRef.current = ts;" },
+  { id: "R6l", app: true, what: "r6-fix-3: a day-off save that lands after the boundary looks for its audit lines in the forgotten array (A's committed day-off unaudited)",
+    edits: [["const carried = dayOffPendingAuditRef.current, auditCount = carried.length;", "const carried = null, auditCount = dayOffPendingAuditRef.current.length;"],
+      ["        carried.splice(0, auditCount).forEach(a =>", "        dayOffPendingAuditRef.current.splice(0, auditCount).forEach(a =>"]] },
+  // r6-fix-6 (review r6): the approval's set-back only for a row this tap wrote — the reviewer's MX7, and its edit twin — SE-X23 (h).
+  { id: "MX7", app: true, what: "I4 (r6-fix-6): the approval's set-back is sent after a boundary even when its PATCH matched 0 rows (another scheduler's approval set back to pending)",
+    from: "      const approveRows = await approveRes.json().catch(() => []);\n", to: "      const approveRows = await approveRes.json().catch(() => []);\n      if (!live() && Array.isArray(approveRows) && !approveRows.length) approveRows.push({});\n" },
+  { id: "MX7c", app: true, what: "I4 (r6-fix-6): the request edit's set-back is sent after a boundary even when its PATCH matched 0 rows (another scheduler's edit reverted)",
+    from: "      const editRows = await editRes.json().catch(() => []);\n", to: "      const editRows = await editRes.json().catch(() => []);\n      if (!live() && Array.isArray(editRows) && !editRows.length) editRows.push({});\n" },
 ];
 
 async function scenarios(createSchedSync, check, line) {
@@ -4197,6 +4251,246 @@ async function scenarios(createSchedSync, check, line) {
     }
   });
 
+  // SE88 — 23/n, review round 6. A keepalive may still land only while the row is at the token its CAS names, and
+  // only a read sent AFTER its request settled can prove it didn't (r6-fix-1, r6-broke-2, r6-broke-3): kept past that,
+  // a dead keepalive's body read as ours or out — a week stuck "Saving…", false conflicts, another device's Undo of
+  // the same edit sent over silently; and a read on the wire while one landed took the user's own older edit for
+  // someone else's. I2 with the re-read failing (r6-fix-2): the re-add waits for a re-read that works, and is then
+  // put back and told. reset() forgets the keepalives on the wire (r6-fix-4); a re-sent week edited again is still
+  // told (r6-fix-5).
+  await run("SE88", async () => {
+    const K = W[2];
+    const PUTBACK = (k) => `The week of ${new Date(...k.split("-").map((x, i) => i === 1 ? +x - 1 : +x)).toLocaleDateString(undefined, { month: "short", day: "numeric" })} was saved again — your deletion of it couldn't be confirmed. If it was removed on another device on purpose, remove it again.`;
+    const gate = () => { let open; const p = new Promise(r => { open = r; }); return { p, open }; };
+    // (a) r6-fix-1 (p6): the page survives its unload with the keepalive held; its own chain push saves a1 (v3 → v4):
+    // the keepalive can never land now. Nothing stays pending; B's edit is adopted quietly; B's Undo back to a1 stands.
+    {
+      const t = mkTable(seedRows(6, 3));
+      const A = mkSession(t), B = mkSession(t, { token: "TOK_B", user: "user-b" });
+      await A.engine.load(); await B.engine.load();
+      A.edit(K, w => (w.dayCall = "a1", w));
+      const reqs = A.engine.keepaliveRequests();                     // fired, held in the radio (done() never called)
+      await A.engine.push(); await A.engine.idle();                  // the page is back: the chain saves a1
+      const saved = t.get(K).data.dayCall === "a1" && t.get(K).version === 4, pendingAfter = A.engine.pending().join();
+      await B.engine.pull(); const undoSnap = clone(B.mirror);
+      B.edit(K, w => (w.dayCall = "b3", w)); await B.engine.push();
+      const tA = A.toasts.length;
+      await A.engine.pull(); await A.engine.idle();
+      const quiet = A.toasts.length === tA && A.st().conflicts.length === 0 && A.mirror[K].dayCall === "b3";
+      B.mirror = clone(undoSnap); await B.engine.push();             // B taps Undo: a1 again, at a new token
+      const from = t.log.length;
+      await A.engine.pull(); await A.engine.idle();
+      const res = { n: reqs.length, saved, pendingAfter, quiet, aW: writes(t, from).filter(e => e.headers.authorization === "Bearer TOK_A").length, row: t.get(K).data.dayCall + " by " + t.get(K).updated_by, toasts: A.toasts.slice(tA), pending: A.engine.pending() };
+      check("SE88 r6-fix-1 (a) a keepalive held while the page's own push saves the same edit (v3 → v4) can never land: nothing stays pending ('Saving…'), B's later edit is adopted quietly (no false conflict), and B's Undo back to that edit stands — A writes nothing over it, nothing pending",
+        res.n === 1 && saved && pendingAfter === "" && quiet && res.aW === 0 && res.row === "a1 by user-b" && res.toasts.length === 0 && res.pending.length === 0, JSON.stringify(res));
+    }
+    // (b) r6-fix-1 (p6b): the keepalive arrives (0 rows) and settles after the chain saved the same edit.
+    {
+      const t = mkTable(seedRows(6, 3));
+      const A = mkSession(t), B = mkSession(t, { token: "TOK_B", user: "user-b" });
+      await A.engine.load(); await B.engine.load();
+      A.edit(K, w => (w.dayCall = "a1", w));
+      const [ka] = A.engine.keepaliveRequests();
+      await A.engine.push(); await A.engine.idle();
+      await (await t.fetch(ka.url, ka.init)).text(); if (ka.done) ka.done();   // late: its CAS matches nothing
+      const pendingAfter = A.engine.pending().join();
+      await B.engine.pull(); B.edit(K, w => (w.dayCall = "b3", w)); await B.engine.push();
+      const tA = A.toasts.length;
+      await A.engine.pull(); await A.engine.idle();
+      check("SE88 r6-fix-1 (b) …a keepalive that settles AFTER the chain saved the same edit (0 rows): nothing pending, and B's later edit is adopted quietly",
+        pendingAfter === "" && A.toasts.length === tA && A.st().conflicts.length === 0 && A.mirror[K].dayCall === "b3",
+        JSON.stringify({ pendingAfter, toasts: A.toasts.slice(tA), c: A.st().conflicts }));
+    }
+    // (c) r6-broke-3 (p-ka-dead): the keepalive held, the page's push of the same edit lands, then the keepalive is
+    // released (0 rows) and settles; B edits the week: adopted quietly.
+    {
+      const t = mkTable(seedRows(3));
+      const A = mkSession(t), B = mkSession(t, { token: "TOK_B", user: "user-b" });
+      await A.engine.load(); await B.engine.load();
+      A.edit(W[0], w => (w.dayCall = "a1", w));
+      const hold = t.control.pause({ method: "PATCH", week: W[0], count: 1 });
+      const reqs = A.engine.keepaliveRequests();
+      const pk = Promise.all(reqs.map(x => t.fetch(x.url, x.init).catch(() => {}).then(() => { if (x.done) x.done(); })));
+      await hold.arrived;
+      await A.engine.push(); await A.engine.idle();
+      const afterPush = { row: t.get(W[0]).data.dayCall + "@v" + t.get(W[0]).version, pending: A.engine.pending().join() };
+      hold.release(); await pk;
+      const afterDone = A.engine.pending().join();
+      await B.engine.pull(); B.edit(W[0], w => (w.dayCall = "b1", w)); await B.engine.push();
+      const t0 = A.toasts.length;
+      await A.engine.pull(); await A.engine.idle();
+      const res = { afterPush, afterDone, shown: A.mirror[W[0]].dayCall, toasts: A.toasts.slice(t0), c: A.st().conflicts.map(x => x.k) };
+      check("SE88 r6-broke-3 (c) a keepalive held while the page's own push of that edit lands, then settled (0 rows): nothing pending after the push or after done(), and B's later change is adopted quietly — no 'changed by someone else'",
+        afterPush.row === "a1@v4" && afterPush.pending === "" && afterDone === "" && res.shown === "b1" && res.toasts.length === 0 && res.c.length === 0, JSON.stringify(res));
+    }
+    // (d) r6-broke-2 (p-ka-stale-read): a read on the wire while the keepalive lands and settles proves nothing about
+    // it. (d1) the push's re-read: the user's newer edit a2 saved over their own landed keepalive; (d2) the same with
+    // an Undo: the saved copy stays; (d3) writeWeek's read-back after a 503: a2 saved. Never "changed by someone else".
+    const staleRead = async (variant) => {
+      const t = mkTable(seedRows(3));
+      const A = mkSession(t); await A.engine.load();
+      const k = W[0];
+      A.edit(k, w => (w.dayCall = "a1", w));
+      const hold = t.control.pause({ method: "PATCH", week: k, count: 1 });
+      const reqs = A.engine.keepaliveRequests();
+      const pk = Promise.all(reqs.map(x => t.fetch(x.url, x.init).catch(() => {}).then(() => { if (x.done) x.done(); })));
+      await hold.arrived;
+      if (variant === "edit") A.edit(k, w => (w.dayCall = "a2", w)); else A.mirror = Object.assign({}, A.mirror, { [k]: A.engine.knownData(k) });
+      const g = gate(); let stale = 0;
+      A.fetchHook = async (u, i) => {
+        const res = await t.fetch(u, i);
+        if (!stale && (!i || !i.method || i.method === "GET") && u.indexOf("week_monday=eq." + k) >= 0) { stale++; await g.p; }
+        return res;
+      };
+      const pp = A.engine.push();
+      for (let n = 0; n < 50 && !stale; n++) await sleep(0);
+      hold.release(); await pk;          // the keepalive applies (a1) and settles (done())…
+      g.open();                          // …and only then does the read's (older) answer reach the engine
+      await pp; await A.engine.idle(); A.fetchHook = null;
+      await A.engine.pull(); await A.engine.idle(); await A.engine.pull(); await A.engine.idle();
+      return { variant, stale, table: t.get(k).data.dayCall, shown: A.mirror[k].dayCall, toasts: A.toasts, c: A.st().conflicts.map(x => x.k), pending: A.engine.pending() };
+    };
+    const staleReadBack = async () => {
+      const t = mkTable(seedRows(3));
+      const A = mkSession(t); await A.engine.load();
+      const k = W[0];
+      t.control.fail({ method: "PATCH", week: k, kind: "5xx-before" });
+      A.edit(k, w => (w.dayCall = "a1", w));
+      let stale = 0;
+      A.fetchHook = async (u, i) => {
+        if (!stale && (!i || !i.method || i.method === "GET") && u.indexOf("week_monday=eq." + k) >= 0) {
+          stale++;
+          const res = await t.fetch(u, i);                                  // answered now: the row as it was
+          const reqs = A.engine.keepaliveRequests();                        // beforeunload while it's on its way
+          await Promise.all(reqs.map(x => t.fetch(x.url, x.init).catch(() => {}).then(() => { if (x.done) x.done(); })));
+          return res;                                                       // …taken in only after the keepalive settled
+        }
+        return t.fetch(u, i);
+      };
+      await A.engine.push(); await A.engine.idle(); A.fetchHook = null;
+      A.edit(k, w => (w.dayCall = "a2", w));                                // "Leave site?" cancelled: edited again
+      await A.engine.push(); await A.engine.idle(); await A.engine.pull(); await A.engine.idle();
+      return { variant: "read-back", stale, table: t.get(k).data.dayCall, shown: A.mirror[k].dayCall, toasts: A.toasts, c: A.st().conflicts.map(x => x.k), pending: A.engine.pending() };
+    };
+    {
+      const d1 = await staleRead("edit"), d2 = await staleRead("undo"), d3 = await staleReadBack();
+      const noTheirs = (x) => !x.toasts.some(m => /someone else/.test(m)) && x.c.length === 0 && x.pending.length === 0;
+      check("SE88 r6-broke-2 (d) a read on the wire while a keepalive landed and settled proves nothing about it: the push's re-read — the user's newer edit is saved over their own landed keepalive; with an Undo instead, the saved copy stays (the keepalive's edit put back, never adopted over the Undo); writeWeek's read-back after a 503 — the newer edit saved; never 'changed by someone else', nothing pending",
+        d1.stale === 1 && d1.table === "a2" && d1.shown === "a2" && noTheirs(d1) && d2.stale === 1 && d2.table === "s1" && d2.shown === "s1" && noTheirs(d2) && d3.stale === 1 && d3.table === "a2" && d3.shown === "a2" && noTheirs(d3),
+        JSON.stringify({ d1, d2, d3 }));
+    }
+    // (e) r6-fix-2 (p7): A's DELETE's outcome unknown (never reached / landed, its read-back lost); B deletes or clears
+    // the week; A re-adds it with other data; A's first re-read FAILS — the week waits (no PATCH, no POST) for a re-read
+    // that works, then is put back and told once.
+    for (const world of ["not-landed", "landed"]) for (const others of ["delete", "clear"]) {
+      const t = mkTable(seedRows(6, 3));
+      const A = mkSession(t), B = mkSession(t, { token: "TOK_B", user: "user-b" });
+      await A.engine.load(); await B.engine.load();
+      A.drop(K);
+      t.control.fail({ method: "DELETE", week: K, kind: world === "landed" ? "throw-after" : "throw" }); t.control.fail({ method: "GET", week: K, kind: "throw" });
+      await A.engine.push(); await A.engine.idle();
+      const lost = A.engine.pending().includes(K);
+      if (others === "delete") { B.drop(K); await B.engine.push(); } else { const bb = clone(B.mirror); B.mirror = {}; await B.engine.authoritative({}, true, "clear", null, { before: bb }); await B.engine.idle(); }
+      const gone = !t.get(K);
+      A.mirror = Object.assign({}, A.mirror, { [K]: wk("n1") });
+      t.control.fail({ method: "GET", week: K, kind: "throw" });            // this push's re-read fails
+      const from = t.log.length, tA = A.toasts.length;
+      const r1 = await A.engine.push(); await A.engine.idle();
+      const first = { w: writes(t, from).map(e => e.method), pending: A.engine.pending().join(), ok: r1.ok };
+      await A.engine.push(); await A.engine.idle();                         // the next one's works
+      const all = A.toasts.slice(tA);
+      const res = { world, others, lost, gone, first, row: t.get(K) && t.get(K).data.dayCall, all, pending: A.engine.pending() };
+      check(`SE88 r6-fix-2 (e) (${world}, B's ${others}) A's DELETE with its outcome unknown, the week gone elsewhere, A re-adds it and its re-read FAILS: nothing is written yet (the week waits, pending, not ok); once a re-read works it is put back and told once — '${PUTBACK(K)}'; nothing pending`,
+        lost && gone && first.w.length === 0 && first.pending === K && first.ok === false && res.row === "n1" && all.filter(m => m.includes(PUTBACK(K))).length === 1 && all.filter(m => /saved again/.test(m)).length === 1 && res.pending.length === 0, JSON.stringify(res));
+    }
+    // (f) r6-fix-4 (p10): a keepalive held across a sign-out / another account (reset()): the next session saves that
+    // week, and nothing of the previous session's stays pending in it.
+    {
+      const t = mkTable(seedRows(6, 3));
+      const S = mkSession(t); await S.engine.load();
+      S.edit(K, w => (w.dayCall = "a1", w));
+      const reqs = S.engine.keepaliveRequests();
+      S.token = "TOK_B"; S.user = "user-b";
+      await S.engine.reset(); await S.engine.idle();
+      const loaded = S.engine.isSeeded() && S.mirror[K] && S.mirror[K].dayCall !== "a1";
+      S.edit(K, w => (w.dayCall = "b2", w)); await S.engine.push(); await S.engine.idle(); await S.engine.pull(); await S.engine.idle();
+      check("SE88 r6-fix-4 (f) a keepalive still held when the session ends (reset()) is forgotten: the next session saves that week and nothing stays pending in it (status and api.pending())",
+        reqs.length === 1 && loaded && t.get(K).data.dayCall === "b2" && S.st().pending === 0 && S.engine.pending().length === 0, JSON.stringify({ pending: S.engine.pending(), row: t.get(K).data.dayCall }));
+    }
+    // (g) r6-fix-5 (p9): H3's re-send lands with its own answer and read-back lost, and A edits the week again before
+    // reconnecting — the re-read then finds the row "ours" (not "mirror"): still told, once.
+    {
+      const t = mkTable(seedRows(3));
+      const A = mkSession(t), B = mkSession(t, { token: "TOK_B", user: "user-b" });
+      await A.engine.load(); await B.engine.load();
+      t.control.fail({ method: "POST", week: W[7], kind: "throw-after" }); t.control.fail({ method: "GET", week: W[7], kind: "throw" });
+      A.edit(W[7], () => wk("s3")); await A.engine.push();
+      await B.engine.pull(); B.mirror = {}; await B.engine.authoritative({}, true, "clear");
+      const toasts0 = A.toasts.length;
+      t.control.fail({ method: "POST", week: W[7], kind: "throw-after" });
+      let n = 0;
+      A.fetchHook = (u, i) => { if ((!i || !i.method || i.method === "GET") && u.includes("week_monday=eq." + W[7]) && ++n === 2) return Promise.reject(new TypeError("Failed to fetch")); return t.fetch(u, i); };
+      await A.engine.pull(); await A.engine.idle(); A.fetchHook = null;
+      const quietYet = !A.toasts.slice(toasts0).some(m => /saved again/.test(m)) && A.engine.pending().includes(W[7]);
+      A.edit(W[7], w => (w.dayCall = "s5", w));
+      for (let i = 0; i < 3; i++) { await A.engine.push(); await A.engine.idle(); await A.engine.pull(); await A.engine.idle(); }
+      const all = A.toasts.slice(toasts0);
+      check("SE88 r6-fix-5 (g) H3's re-send lands with its own answer lost, and the user edits the week again before reconnecting (the re-read finds it 'ours', not 'mirror'): told once — 'saved again' — and the edit saved; nothing pending",
+        quietYet && all.filter(m => /saved again/.test(m)).length === 1 && t.get(W[7]).data.dayCall === "s5" && A.engine.pending().length === 0, JSON.stringify({ all, pending: A.engine.pending() }));
+    }
+    // (i) r6-matrix-2 (p6-clear-race): another device edits K between a clear's read and its CAS'd DELETE of K; the
+    // DELETE meets it (0 rows), is read back and sent again at their token — and that retry never arrives (the network
+    // goes). At reconnect the follow-up push sends it, under the clear's grant: K deleted, no wipe block, nothing pending.
+    {
+      const t = mkTable(seedRows(6, 3));
+      const A = mkSession(t, { timeouts: { read: 40, write: 40 } }); await A.engine.load();
+      const before = clone(A.mirror);
+      let raced = false, down = false, n = 0;
+      A.fetchHook = async (u, i) => {
+        if (down) throw new TypeError("Failed to fetch");
+        const m = (i && i.method) || "GET";
+        if (m === "DELETE" && decodeURIComponent(u).includes("week_monday=eq." + K)) {
+          n++;
+          if (!raced) {
+            raced = true;   // another device's edit of K lands just before our DELETE of K
+            await t.fetch(BASE + "/rest/v1/schedule_weeks?week_monday=eq." + K, { method: "PATCH", headers: { apikey: "ANON", Authorization: "Bearer TOK_B", "Content-Type": "application/json", Prefer: "return=minimal" }, body: JSON.stringify({ data: wk("br"), version: 4, updated_by: "user-b", updated_at: "2026-10-12T13:00:00.000Z" }) });
+            return t.fetch(u, i);
+          }
+          if (n === 2) { down = true; throw new TypeError("Failed to fetch"); }   // attempt 1: never arrives
+        }
+        return t.fetch(u, i);
+      };
+      A.mirror = {};
+      await A.engine.authoritative({}, true, "clear", null, { before });
+      await A.engine.idle(); await sleep(0); await A.engine.idle();
+      const setup = raced && n === 2 && !!t.get(K) && t.get(K).data.dayCall === "br";
+      down = false;
+      for (let i = 0; i < 3; i++) { await A.engine.pull(); await A.engine.idle(); await sleep(0); await A.engine.idle(); }
+      A.fetchHook = null;
+      const res = { setup, k: t.get(K) && t.get(K).data.dayCall, shown: !!A.mirror[K], wipe: A.wipeBlocked.length, pending: A.engine.pending(), rows: t.rows().length };
+      check("SE88 r6-matrix-2 (i) a clear's CAS'd DELETE that met another device's edit is sent again at their token under the clear's grant: that retry lost, the follow-up push sends it once reconnected — the week deleted, no wipe block, nothing pending",
+        setup && res.k == null && !res.shown && res.wipe === 0 && res.pending.length === 0 && res.rows === 0, JSON.stringify(res));
+    }
+    // (h) a keepalive that FAILED (thrown — it never reached the server) and settled: the next read, sent after that,
+    // finds the week unchanged and proves it — the user's Undo (the screen back to the saved copy) leaves nothing
+    // pending.
+    {
+      const t = mkTable(seedRows(3));
+      const A = mkSession(t); await A.engine.load();
+      const saved = clone(A.mirror);
+      A.edit(W[0], w => (w.dayCall = "a1", w));
+      t.control.fail({ method: "PATCH", week: W[0], kind: "throw" });
+      const [ka] = A.engine.keepaliveRequests();
+      await t.fetch(ka.url, ka.init).catch(() => {}).then(() => { if (ka.done) ka.done(); });   // the app's chain: settled (failed)
+      const whileUnknown = A.engine.pending().join();
+      A.mirror = clone(saved);                                                                   // ↩ Undo
+      await A.engine.push(); await A.engine.idle();
+      const afterUndo = A.engine.pending().join(), tA = A.toasts.length;
+      check("SE88 (h) a keepalive that failed and settled is proven by the next read sent after it (the week unchanged): the Undo leaves nothing pending, nothing said, nothing written",
+        !!ka && whileUnknown === W[0] && afterUndo === "" && A.toasts.length === tA && t.get(W[0]).data.dayCall === "s1" && t.get(W[0]).version === 3, JSON.stringify({ whileUnknown, afterUndo }));
+    }
+  });
+
   // SE67b — review r2 tests-2 (E4, M69) on the app's path, WITH `before`
   // (17/n P2 always passes it): a week edited AFTER the tap — while a clear's
   // or a restore's whole-table read is out, or while a clear waits for its
@@ -4350,7 +4644,8 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
   // review r3 G7): the env's (a component's), or a private one.
   const sess = (mk) => (mk ? (env) => mk(Object.assign({}, env, {
     sessionEpochRef: env.sessionEpochRef || (env.schedSyncRef && env.schedSyncRef.sessionEpochRef) || { current: 0 },
-    setupBaseRef: env.setupBaseRef || { current: null } })) : mk);
+    setupBaseRef: env.setupBaseRef || { current: null },
+    resetBusyRef: env.resetBusyRef || { current: false }, forgetDayOffs: env.forgetDayOffs || (() => {}) })) : mk); // (23/n: the reset's hold on the setup autosave — review r6 broke-1; the boundary's day-off forget — r6 fix-3)
   const HX = appHelpers();
   const F = {
     wire: fnX("isPublicMode, userProfile, showToast, setEditWeekModal, swapSuggestions, swapTarget, setSwapSuggestions, setSwapTarget, schedSyncBridgeRef, useRef, createSchedSync, scheduleRef, commitSchedule, fetch, SUPABASE_URL, dbAuthHeaders, dbReadHeaders, dbHeaders, auth, setSchedSync, console",
@@ -4391,13 +4686,13 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
     // the weeks push effect (its 800-ms debounce)
     pushFx: fnX("loaded, isPublicMode, schedSyncRef, setTimeout, clearTimeout", wrap("() => {", after("  // for edits (the pull and the authoritative jobs request their own).\n  useEffect(() => {", "\n  }, [loaded, schedule]);"), "\n  }")),
     // the session boundary + sign-out, and the re-auth that can land on another account (P4)
-    boundary: sess(fnX("searchRef, setSearching, setSearchStats, setPreviewSchedule, setShowPreview, schedSyncRef, setScheduleHistory, setEditWeekModal, setReauthNeeded, setStaleTokenWarn, setIsScheduler, setupReadRef, lastSyncRef, confirm, auth, biometric, setAuthUser, setUserProfile, setNeedsProfile, setMySurgeon, setBiometricEnrolled, setBiometricPending, sessionEpochRef",
+    boundary: sess(fnX("searchRef, setSearching, setSearchStats, setPreviewSchedule, setShowPreview, schedSyncRef, setScheduleHistory, setEditWeekModal, setReauthNeeded, setStaleTokenWarn, setIsScheduler, setupReadRef, lastSyncRef, confirm, auth, biometric, setAuthUser, setUserProfile, setNeedsProfile, setMySurgeon, setBiometricEnrolled, setBiometricPending, sessionEpochRef, forgetDayOffs",
       wrap("(() => { const sessionBoundary = () => {", after("  const sessionBoundary = () => {", "\n  // ════"), "\n  return { sessionBoundary, handleSignOut }; })()"))),
     reauth: fnX("schedSyncRef, authUser, setReauthNeeded, setStaleTokenWarn, showToast, sessionBoundary, biometric, setBiometricEnrolled, setBiometricPending, setAuthUser, dbAuth, setUserProfile, setMySurgeon, setNeedsProfile, setIsScheduler, setReloadTrigger, pendingSaveRef, setSetupSaveNudge, auth",
       decl("reauthLanded", "\n  };\n")),
     // the setup autosave effect and the edge-URL save effect (P4), and the bundle they write — with the latest-render ref (P5)
-    autosave: fnX("loaded, isPublicMode, loadedAtRef, loadFailedRef, setSaveError, setSaveStatus, setupReadRef, auth, buildStateBundle, pendingSaveRef, payloadLooksWiped, everHadRealDataRef, setTimeout, clearTimeout, allowWipeSaveRef, canWriteBlob, supabase, lastSyncRef, showToast, console, setReauthNeeded, setupBaseRef, setupSig",
-      wrap("() => {", after("  // ─── Supabase: Auto-save on changes ───\n  useEffect(() => {", "\n  }, [loaded, surgeons, apps,"), "\n  }")),
+    autosave: sess(fnX("loaded, isPublicMode, loadedAtRef, loadFailedRef, setSaveError, setSaveStatus, setupReadRef, auth, buildStateBundle, pendingSaveRef, payloadLooksWiped, everHadRealDataRef, setTimeout, clearTimeout, allowWipeSaveRef, canWriteBlob, supabase, lastSyncRef, showToast, console, setReauthNeeded, setupBaseRef, setupSig, resetBusyRef",
+      wrap("() => {", after("  // ─── Supabase: Auto-save on changes ───\n  useEffect(() => {", "\n  }, [loaded, surgeons, apps,"), "\n  }"))),
     urlSave: fnX("loaded, isPublicMode, loadFailedRef, edgeFunctionUrl, canWriteBlob, setupReadRef, setTimeout, clearTimeout, supabase, showToast, console",
       wrap("() => {", after("  // ─── Supabase: Save edge function URL ───\n  useEffect(() => {", "\n  }, [loaded, edgeFunctionUrl, canWriteBlob]);"), "\n  }")),
     bundle: fnX("surgeons, apps, vacations, noCallDays, backupMondaySet, fierceBackupSet, schedule, priorCounts, year1Counts, startMonth, startYear, numWeeks, holidayAssignments, startMondayOverride, pendingLocks, silvisRule, dismissedWarnings, useRef",
@@ -4406,7 +4701,7 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
     runAuth: fnX("schedSyncRef, setScheduleHistory", decl("runAuthoritativeSchedule", "\n  };\n")),
     clear: sess(fnX("schedEditable, confirm, snapshots, schedSyncRef, showToast, scheduleRef, pushUndo, commitSchedule, setSaveStatus, runAuthoritativeSchedule, setTimeout, lastSyncRef, buildStateBundle, stateBundleRef, setupReadRef, auth, supabase, console, sessionEpochRef, setupBaseRef",
       decl("clearSchedule", "\n  };\n\n  // ─── Snapshot restore"))),
-    reset: sess(fnX("isScheduler, userProfile, alert, schedEditable, prompt, setSaveStatus, setTimeout, snapshots, schedSyncRef, showToast, logAudit, allowWipeSaveRef, everHadRealDataRef, supabase, console, setSurgeons, INIT_SURGEONS, setApps, INIT_APPS, toClearAll, setBackupMondaySet, setFierceBackupSet, scheduleRef, commitSchedule, runAuthoritativeSchedule, setAppShifts, setPriorCounts, setYear1Counts, setStartMonth, setStartYear, sessionEpochRef",
+    reset: sess(fnX("isScheduler, userProfile, alert, schedEditable, prompt, setSaveStatus, setTimeout, snapshots, schedSyncRef, showToast, logAudit, allowWipeSaveRef, everHadRealDataRef, supabase, console, setSurgeons, INIT_SURGEONS, setApps, INIT_APPS, toClearAll, setBackupMondaySet, setFierceBackupSet, scheduleRef, commitSchedule, runAuthoritativeSchedule, setAppShifts, setPriorCounts, setYear1Counts, setStartMonth, setStartYear, sessionEpochRef, resetBusyRef",
       decl("resetAllData", "\n  };\n\n  // ─── Push Notifications"))),
     restore: sess(fnX("schedEditable, isScheduler, userProfile, setRestoreBusyId, setSaveStatus, snapshots, scheduleRef, pushUndo, commitSchedule, runAuthoritativeSchedule, schedSyncRef, confirm, snapshotReasonLabel, showToast, setSurgeons, setApps, setBackupMondaySet, setFierceBackupSet, setAppShifts, setPriorCounts, setYear1Counts, setStartMonth, setStartYear, setNumWeeks, setStartMondayOverride, setHolidayAssignments, setPendingLocks, setSilvisRule, sfRule, SF_RULE_DEFAULT, setDismissedWarnings, lastSyncRef, everHadRealDataRef, logAudit, loadSnapshots, setTimeout, alert, sessionEpochRef",
       wrap("(() => { const restoreConfirmText = ", after("  const restoreConfirmText = ", "\n  // ─── Roll forward counts"), "\n  return restoreSnapshot; })()"))),
@@ -4926,7 +5221,7 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
   const bEnv = (A, c) => { const noop = () => {}; return { searchRef: { current: null }, setSearching: noop, setSearchStats: noop, setPreviewSchedule: noop, setShowPreview: noop, schedSyncRef: A.schedSyncRef,
     setScheduleHistory: A.setScheduleHistory, setEditWeekModal: A.setModal, setReauthNeeded: noop, setStaleTokenWarn: noop, setIsScheduler: c.set("isScheduler"), setupReadRef: c.setupReadRef, lastSyncRef: c.lastSyncRef,
     confirm: () => true, auth: A.auth, biometric: { unenroll: noop }, setAuthUser: c.set("authUser"), setUserProfile: c.set("userProfile"), setNeedsProfile: noop, setMySurgeon: noop, setBiometricEnrolled: noop, setBiometricPending: noop,
-    pendingSaveRef: c.pendingSaveRef, setSetupSaveNudge: c.set("setupSaveNudge") }; };
+    pendingSaveRef: c.pendingSaveRef, setSetupSaveNudge: c.set("setupSaveNudge"), forgetDayOffs: c.forgetDayOffs || noop }; }; // (23/n: the boundary's day-off forget — review r6 fix-3)
   // …and "Sign in again" landing on the SAME account (a renewed session — the real reauthLanded's same-account branch).
   const sameAccount = (A, c) => Object.assign(bEnv(A, c), { authUser: { id: "auth-a" }, showToast: A.showToast, dbAuth: { getProfile: async () => null }, setReloadTrigger: () => { c.reloads++; } });
   // …and "Sign in again" landing on ANOTHER account, a scheduler (the real reauthLanded, crossing that boundary).
@@ -6322,13 +6617,19 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
     // The REAL resetAllData, toClearAll, deleteTimeOff, buildStateBundle, setupSig and payloadLooksWiped; the real
     // engine and its weeks job on the emulated table. The time_off DELETE is held, and React renders while it is out;
     // (fast) it answers before the debounce fires; (slow — slower than 800 ms) the debounce fires while it is out.
-    const rearm = async (slow) => {
+    // (23/n, review r6 broke-1) o.gap: a time-off read — the REAL loadTimeOff, as the 60-s poll calls it, answering with
+    // the rows as they were before the DELETE committed — lands while the reset's setup clear ("blob"), its APP-shifts
+    // clear ("app") or its time_off DELETE ("delete") is out (that request held); o.del: the DELETE's status (503: the
+    // reset stops there). The setup autosave and the reset share resetBusyRef, as the component does.
+    const LT = { load: fnX("db, buildTimeOffMaps, setVacations, setNoCallDays, everHadRealDataRef, console, showToast", decl("loadTimeOff", "\n  };\n")), maps: fnX("", decl("buildTimeOffMaps", "\n  };\n")) };
+    const OLD_TO = () => [{ id: 1, person_id: "s2", kind: "vacation", start_date: "2030-01-08", end_date: "2030-01-10" }, { id: 2, person_id: "s3", kind: "nocall", start_date: "2030-01-09", end_date: "2030-01-09" }];
+    const rearm = async (slow, o = {}) => {
       const { t, A } = await pair(); await ticks(A); A.toasts.length = 0;
       const st = { loaded: true, surgeons: S7, apps: [{ id: "a1", name: "AP1" }], vacations: { s2: [["2030-01-08", "2030-01-10", 1]] }, noCallDays: { s3: [["2030-01-09", "2030-01-09", 2]] },
         backupMondaySet: new Set([X[0]]), fierceBackupSet: new Set(), schedule: A.ref.current, setupSaveNudge: 0, priorCounts: { s1: { dc: 3 } }, year1Counts: { s1: { dc: 1 } },
         startMonth: 0, startYear: 2030, numWeeks: 13, holidayAssignments: {}, startMondayOverride: "", pendingLocks: [], silvisRule: null, dismissedWarnings: [], appShifts: { "2030-01-08": "a1" } };
       const refs = { ever: { current: true }, allow: { current: false }, setupRead: { current: true }, lastSync: { current: "2026-10-01T08:00:00+00:00" }, loadedAt: { current: 1 }, loadFailed: { current: false },
-        pending: { current: null }, base: { current: null }, bundle: { current: null } };
+        pending: { current: null }, base: { current: null }, bundle: { current: null }, busy: { current: false } };
       const timers = new Map(); let tid = 0;
       const sT = (f) => { const id = ++tid; timers.set(id, f); return id; }, cT = (id) => { timers.delete(id); };
       const fire = async () => { for (let n = 0; n < 4 && timers.size; n++) { const fs = [...timers.values()]; timers.clear(); for (const f of fs) await f(); } };
@@ -6336,7 +6637,13 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
       const status = [], writes = [], renders = [];
       let saveError = false, queued = false, aDeps = null, aClean = null;
       const set = (k) => (v) => { const nv = typeof v === "function" ? v(st[k]) : v; if (nv === st[k]) return; st[k] = nv; if (!queued) { queued = true; setImmediate(() => { queued = false; render(); }); } };
-      const sup = { from: (tb) => ({ upsert: async (row) => { const s = A.auth.getSession(); writes.push({ tb, as: s ? s.access_token : "ANON", clear: !!(row.data && row.data._intentionalClear), startMonth: row.data && row.data.startMonth }); return { error: null }; } }) };
+      const at = o.gap || "delete"; let open, out = false; const gate = new Promise(r => { open = r; });   // the request held: the gap the read lands in
+      const sup = { from: (tb) => ({ upsert: async (row) => {
+        const s = A.auth.getSession(), clearing = !!(row.data && row.data._intentionalClear);
+        writes.push({ tb, as: s ? s.access_token : "ANON", clear: clearing, startMonth: row.data && row.data.startMonth });
+        if ((at === "blob" && tb === "call_schedule_data" && clearing) || (at === "app" && tb === "app_shifts_data")) { out = true; await gate; }
+        return { error: null };
+      } }) };
       const render = () => {
         renders.push(`weeks=${Object.keys(st.schedule || {}).length} vac=${Object.keys(st.vacations).length} surg=${st.surgeons.length}`);
         const bundle = G.bundle(Object.assign({}, st, { useRef: () => refs.bundle }));
@@ -6345,14 +6652,14 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
           aDeps = ad; if (aClean) aClean();
           aClean = G.autosave({ loaded: st.loaded, isPublicMode: false, loadedAtRef: refs.loadedAt, loadFailedRef: refs.loadFailed, setSaveError: (x) => { saveError = x; }, setSaveStatus: (x) => status.push(x), setupReadRef: refs.setupRead,
             auth: A.auth, buildStateBundle: bundle, pendingSaveRef: refs.pending, payloadLooksWiped: HX.payloadLooksWiped, everHadRealDataRef: refs.ever, setTimeout: sT, clearTimeout: cT, allowWipeSaveRef: refs.allow,
-            canWriteBlob: true, supabase: sup, lastSyncRef: refs.lastSync, showToast: A.showToast, console: quiet, setReauthNeeded: noopX, setupBaseRef: refs.base, setupSig: SETUP_SIG })() || null;
+            canWriteBlob: true, supabase: sup, lastSyncRef: refs.lastSync, showToast: A.showToast, console: quiet, setReauthNeeded: noopX, setupBaseRef: refs.base, setupSig: SETUP_SIG, resetBusyRef: refs.busy })() || null;
         }
       };
       A.onSchedule = set("schedule");
       render(); await fire(); await macro(); status.length = 0; renders.length = 0; const w0 = writes.length;
-      let open; const gate = new Promise(r => { open = r; }); const sent = [];
+      const sent = [];
       const del = G.delTO({ SUPABASE_URL: BASE, dbAuthHeaders: () => ({ Authorization: "Bearer " + (A.token || "ANON") }), console: quiet, showToast: A.showToast, sessionEpochRef: A.sessionEpochRef,
-        fetch: async (url, init) => { sent.push(init.method + " " + init.headers.Authorization); await gate; return { ok: true, status: 204, text: async () => "" }; } });
+        fetch: async (url, init) => { sent.push(init.method + " " + init.headers.Authorization); if (at === "delete") { out = true; await gate; } const st0 = o.del || 204; return { ok: st0 < 300, status: st0, text: async () => "" }; } });
       const tca = G.clearTO({ setVacations: set("vacations"), setNoCallDays: set("noCallDays"), logAudit: noopX, USE_TIME_OFF: true, deleteTimeOff: del, sessionEpochRef: A.sessionEpochRef, dbAuthHeaders: () => ({ Authorization: "Bearer " + (A.token || "ANON") }) });
       let jobP = null;
       const ra = G.runAuth({ schedSyncRef: A.schedSyncRef, setScheduleHistory: A.setScheduleHistory });
@@ -6360,8 +6667,9 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
         snapshots: { capture: async () => ({ ok: true }) }, schedSyncRef: A.schedSyncRef, showToast: A.showToast, logAudit: noopX, allowWipeSaveRef: refs.allow, everHadRealDataRef: refs.ever, supabase: sup, console: quiet,
         setSurgeons: set("surgeons"), INIT_SURGEONS: [{ id: "s1", name: "AAA" }, { id: "s2", name: "BBB" }], setApps: set("apps"), INIT_APPS: [], toClearAll: tca, setBackupMondaySet: set("backupMondaySet"), setFierceBackupSet: set("fierceBackupSet"),
         scheduleRef: A.ref, commitSchedule: A.commitSchedule, runAuthoritativeSchedule: (...a) => (jobP = ra(...a)), setAppShifts: set("appShifts"), setPriorCounts: set("priorCounts"), setYear1Counts: set("year1Counts"),
-        setStartMonth: set("startMonth"), setStartYear: set("startYear"), sessionEpochRef: A.sessionEpochRef })();
-      for (let i = 0; i < 200 && !sent.length; i++) await macro();                      // …until its time_off DELETE is out
+        setStartMonth: set("startMonth"), setStartYear: set("startYear"), sessionEpochRef: A.sessionEpochRef, resetBusyRef: refs.busy })();
+      for (let i = 0; i < 200 && !out; i++) await macro();                               // …until the held request is out
+      if (o.gap) await LT.load({ db: { query: async () => OLD_TO() }, buildTimeOffMaps: LT.maps({}), setVacations: set("vacations"), setNoCallDays: set("noCallDays"), everHadRealDataRef: refs.ever, console: quiet, showToast: A.showToast })(true); // the poll's answer
       await macro(); await macro(); await macro();                                       // React renders what's pending meanwhile
       const gap = { renders: renders.slice(), ever: refs.ever.current };
       if (slow) await fire();                                                            // (slow) the debounce fires while the DELETE is out
@@ -6372,7 +6680,8 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
       status.length = 0; const w1 = writes.length;
       set("startMonth")(8); for (let i = 0; i < 3; i++) await macro(); await fire(); await macro();   // the scheduler's first setup change after the reset
       const edit = { saved: writes.slice(w1).some(w => w.tb === "call_schedule_data" && !w.clear && w.startMonth === 8 && w.as === "TOK_A"), status: status.slice(), saveError, ever: refs.ever.current };
-      return { gap, after, edit, sent };
+      const blobs = writes.slice(w0, w1).filter(w => w.tb === "call_schedule_data" && !w.clear).map(w => w.startMonth);   // the setup written from the reset's start to the edit (0: the OLD one; 4: the reset's)
+      return { gap, after, edit, sent, blobs, server: blobs.length ? blobs[blobs.length - 1] : "cleared", busy: refs.busy.current };
     };
     const rf = await rearm(false), rs = await rearm(true);
     const BLOCKED = "⚠ Save blocked — empty data not written";
@@ -6382,6 +6691,23 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
       clean(rf), JSON.stringify(rf));
     check("SE-X21 r5-regress-1 (h) (I5) …the DELETE answering AFTER the debounce (slower than 800 ms): the same — nothing written from the gap uses up the reset's one-shot bypass, the reset's own write is not blocked ('Reset complete', no '⚠ Save blocked' after it), the guard stays disarmed and the next setup change is written",
       clean(rs), JSON.stringify(rs));
+    // (j) 23/n, review r6 broke-1: the same, with a render in the gap — a time-off read (the 60-s poll's loadTimeOff,
+    // answering with the rows read before the DELETE committed: new objects, and it arms the guard itself) landing while
+    // each of the reset's three requests is out. Before the debounce (fast) and after it (slow): the old setup is never
+    // written over the cleared blob (the server's setup after the reset is the reset's), the guard is disarmed after
+    // it, 'Reset complete', no '⚠ Save blocked', and the next setup change is written.
+    const safe = (x) => clean(x) && !x.blobs.includes(0) && x.server === 4 && x.busy === false;
+    const RJ = {};
+    for (const g of ["delete", "app", "blob"]) RJ[g] = [await rearm(false, { gap: g }), await rearm(true, { gap: g })];
+    check("SE-X21 r6-broke-1 (j) the REAL reset + the REAL autosave, a time-off read (the real loadTimeOff, the 60-s poll's) answering while its time_off DELETE is out — before the 800-ms debounce, and after it: the OLD setup is never written over the cleared blob (the server holds the reset's), the empty-save guard is disarmed after the reset, 'Reset complete', no '⚠ Save blocked'; the next setup change is written",
+      RJ.delete.every(safe), JSON.stringify(RJ.delete));
+    check("SE-X21 r6-broke-1 (j) …the same while its APP-shifts clear is out (the setup already cleared on the server)",
+      RJ.app.every(safe), JSON.stringify(RJ.app));
+    check("SE-X21 r6-broke-1 (j) …the same while its setup clear itself is out",
+      RJ.blob.every(safe), JSON.stringify(RJ.blob));
+    const stop = await rearm(false, { del: 503 });
+    check("SE-X21 r6-broke-1 (j) …a reset that STOPS at its time-off clear (the DELETE answers 503): its hold on the setup autosave ends with it — the scheduler's next setup change is written (no '⚠ Save blocked'), the guard re-armed (the time off is still there)",
+      stop.edit.saved && !stop.edit.status.includes(BLOCKED) && stop.busy === false && stop.after.ever === true && !stop.after.status.includes("Reset complete"), JSON.stringify(stop));
     // (i) 22/n (the 21/n open item, review r5 regress-1): the time-off clear-all's audit line only once its DELETE has
     // landed — none for a failed one — and, when the session changed while it was out, written as the account that
     // tapped (the tap's headers), never under the next token.
@@ -6593,6 +6919,7 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
           if (first) {
             if (o.at === "status") await crossNow();
             if (o.statusFails) return r(500, { message: "upstream" });
+            if (o.zero) return r(200, []);   // (23/n) it matched no row: another scheduler handled the request first (or it was withdrawn)
             return r(200, [Object.assign({}, REQ, { status: "x" })]);
           }
           if (o.back === "fail") return r(500, { message: "upstream" });
@@ -6677,6 +7004,13 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
     check("SE-X23 I4 (f) the real toEdit with no row id yet (delete the old dates, insert the new — the Setup editor's path too), the session changing while its DELETE is out: the new dates are added WITH THE TAP'S HEADERS (A's token), never as B nor refused as anon (the vacation lost); nothing said",
       F4.every(x => x.crossed && x.to.join() === "DELETE Bearer TOK_A,POST Bearer TOK_A" && x.toasts.length === 0 && x.errors === 0), JSON.stringify(F4));
     const G4 = [await vacRun("approve", { direct: "toAdd", insertFails: true, at: "insert", how: "signout" }), await vacRun("edit", { direct: "toEdit", at: "update", how: "other", updateFails: true })], G40 = await vacRun("approve", { direct: "toAdd", insertFails: true });
+    // (h) 23/n, review r6 fix-6: the status PATCH matched NO row (another scheduler approved / revoked / edited it first) while
+    // the session changed — the reviewer's p11-vac-zero: this tap wrote nothing, so nothing is set back (the other
+    // scheduler's write stands), nothing logged, audited, written or said.
+    const H4z = [];
+    for (const which of ["approve", "revoke", "edit"]) for (const how of ["other", "signout"]) H4z.push([which, how, await vacRun(which, { at: "status", how, zero: true })]);
+    check("SE-X23 I4 (h) (r6-fix-6) …the status PATCH matching NO row (another scheduler handled the request first) while the session changes (another account; a sign-out), for each of the three: nothing is set back — the other scheduler's approval / revoke / edit stands — and nothing logged, audited, written or said",
+      H4z.every(([w, h, x]) => nothingNext(x) && statusAsA(x) && x.reqs.length === 1 && x.errors === 0 && x.audits.length === 0), JSON.stringify(H4z));
     check("SE-X23 I4 (g) the real toAdd's / toEdit's own failure (its time_off insert / update, sent as A) after a session change during it: nothing said on the next session's screen; control — in one session it is said",
       G4.every(x => x.crossed && x.toasts.length === 0) && G4[0].to.join() === "INSERT Bearer TOK_A" && G4[1].to.join() === "UPDATE Bearer TOK_A"
         && G40.toasts.join("|") === "Couldn't save that — check your connection and try again.", JSON.stringify({ G4, G40 }));
@@ -6896,6 +7230,115 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
         quietNext(x) && quietNext(xs) && f.crossed && [x, xs, f].every(y => y.audits.every(a => /@Bearer TOK_A$/.test(a)) && !y.writes.some(w => / Bearer (TOK_B|ANON)$/.test(w)))
           && !!c.expect(x, x0, f, f0, { x, xs }), JSON.stringify(res[c.id]).slice(0, 2400));
     }
+  });
+
+  // SE-X25 — 23/n, review r6 fix-3: the session boundary forgets this session's APP day-off state. The REAL
+  // toggleAppDayOff, enqueueDayOffSave, scheduleDayOffRetry, adoptDayOffRow and forgetDayOffs, and the REAL boundary
+  // (another account's "Sign in again" via reauthLanded; or handleSignOut). The day-off row as the server keeps it,
+  // every save recorded with its token. (a) the reviewers' p14b: A's earlier save landed (the stored row); A taps a1,
+  // its save fails (a retry scheduled); the session changes; the next account's read; later, its own tap — A's a1 is
+  // never written as B: B's save is the stored row plus B's tap; and between the boundary and B's read the chips are
+  // refused. (b) p14: no stored row; A's a1 failing, its retry pending; B taps before its read (refused), then after it
+  // — A's a1 never written or audited as B. (c) a save of A's in flight across the boundary: it lands as A (its audit
+  // line as A), and B's read adopts that row — B's later tap keeps A's committed day-off (not wiped).
+  await run("SE-X25", async () => {
+    if (!gotG("SE-X25 23/n r6-fix-3", ["boundary", "reauth", "commit", "autosave", "bundle"])) return;
+    const D = {
+      tap: fnX("appDayOffLoaded, showToast, appDayOffRef, dayOffId, setAppDayOff, dayOffDirtyRef, dayOffEpochRef, sessionEpochRef, dayOffPendingAuditRef, nameOf, dayOffSaveTimerRef, clearTimeout, setTimeout, enqueueDayOffSave", decl("toggleAppDayOff", "\n  };\n")),
+      save: fnX("dayOffSaveChainRef, dayOffDirtyRef, dayOffEpochRef, sessionEpochRef, dbAuthHeaders, dayOffPendingAuditRef, supabase, appDayOffRef, dayOffLastWriteTsRef, logAudit, scheduleDayOffRetry, setSaveError, setSaveStatus, setTimeout, console, showToast", decl("enqueueDayOffSave", "\n  };\n")),
+      retry: fnX("dayOffRetryTimerRef, clearTimeout, setTimeout, dayOffDirtyRef, enqueueDayOffSave", decl("scheduleDayOffRetry", "\n  };\n")),
+      adopt: fnX("setAppDayOffLoaded, dayOffDirtyRef, dayOffLastWriteTsRef, appDayOffRef, setAppDayOff", decl("adoptDayOffRow", "\n  };\n")),
+      forget: fnX("dayOffDirtyRef, dayOffPendingAuditRef, dayOffSaveTimerRef, dayOffRetryTimerRef, dayOffLastWriteTsRef, appDayOffRef, setAppDayOff, setAppDayOffLoaded, clearTimeout", decl("forgetDayOffs", "\n  };\n")), // (23/n — none before it)
+    };
+    const dMiss = ["tap", "save", "retry", "adopt"].filter(k => typeof D[k] !== "function");
+    if (dMiss.length) { check("SE-X25 23/n r6-fix-3 — the APP day-off slices are extractable", false, dMiss.join(", ")); return; }
+    const spin = async (n) => { for (let j = 0; j < (n || 20); j++) await null; };
+    const sorted = (m) => JSON.stringify(Object.keys(m || {}).sort().reduce((o, k) => (o[k] = (m[k] || []).map(x => (typeof x === "string" ? x : x && x.id)).sort(), o), {}));
+    // One app session (the real engine, its component), its day-off state as the component holds it, and the server's row.
+    const dayRig = async () => {
+      const { A } = await pair(); await ticks(A); const c = mkComp(A); c.render(); await c.fire(); A.toasts.length = 0;
+      const r = { A, c, writes: [], audits: [], toasts: [], stored: null, loaded: false, fail: false, hold: null, timers: new Map(), tid: 0 };
+      const tok = () => "Bearer " + (A.token || "ANON");
+      const refs = { map: { current: {} }, dirty: { current: false }, epoch: { current: 0 }, pend: { current: [] }, timer: { current: null }, retry: { current: null }, chain: { current: Promise.resolve() }, ts: { current: null } };
+      r.refs = refs;
+      const sT = (f) => { const id = ++r.tid; r.timers.set(id, f); return id; }, cT = (id) => { r.timers.delete(id); };
+      r.fire = async () => { for (let n = 0; n < 4 && r.timers.size; n++) { const fs_ = [...r.timers.values()]; r.timers.clear(); for (const f of fs_) await f(); await refs.chain.current; await spin(6); } };
+      const con = { error: noopX, warn: noopX, log: noopX, info: noopX };
+      const sup = { from: () => ({ upsert: async (row) => {
+        const au = tok(); r.writes.push(sorted(row.data) + " " + au);
+        if (r.hold) await r.hold;
+        if (r.fail) return { error: "HTTP 401 JWT expired" };
+        r.stored = { data: JSON.parse(JSON.stringify(row.data)), updated_at: row.updated_at };
+        return { error: null };
+      } }) };
+      const logAudit = (action, summary, details, hdrs) => r.audits.push(action + " " + details.date + " @" + (hdrs ? hdrs.Authorization : "now:" + (A.token || "ANON")));
+      let save = null;
+      const retry = D.retry({ dayOffRetryTimerRef: refs.retry, clearTimeout: cT, setTimeout: sT, dayOffDirtyRef: refs.dirty, enqueueDayOffSave: () => save() });
+      save = D.save({ dayOffSaveChainRef: refs.chain, dayOffDirtyRef: refs.dirty, dayOffEpochRef: refs.epoch, sessionEpochRef: A.sessionEpochRef, dbAuthHeaders: () => ({ Authorization: tok() }), dayOffPendingAuditRef: refs.pend,
+        supabase: sup, appDayOffRef: refs.map, dayOffLastWriteTsRef: refs.ts, logAudit, scheduleDayOffRetry: retry, setSaveError: noopX, setSaveStatus: noopX, setTimeout: sT, console: con, showToast: (m) => r.toasts.push(String(m)) });
+      const setLoaded = (v) => { r.loaded = v; };
+      r.tap = (ds, aid) => D.tap({ appDayOffLoaded: r.loaded, showToast: (m) => r.toasts.push(String(m)), appDayOffRef: refs.map, dayOffId: (x) => (typeof x === "string" ? x : (x && x.id) || ""), setAppDayOff: noopX,
+        dayOffDirtyRef: refs.dirty, dayOffEpochRef: refs.epoch, sessionEpochRef: A.sessionEpochRef, dayOffPendingAuditRef: refs.pend, nameOf: (x) => x, dayOffSaveTimerRef: refs.timer, clearTimeout: cT, setTimeout: sT,
+        enqueueDayOffSave: () => save() })(ds, aid);   // (as rendered now: it reads appDayOffLoaded as the screen has it)
+      r.read = () => D.adopt({ setAppDayOffLoaded: setLoaded, dayOffDirtyRef: refs.dirty, dayOffLastWriteTsRef: refs.ts, appDayOffRef: refs.map, setAppDayOff: noopX })(r.stored ? JSON.parse(JSON.stringify(r.stored)) : null); // a load / poll of the row
+      c.forgetDayOffs = D.forget ? D.forget({ dayOffDirtyRef: refs.dirty, dayOffPendingAuditRef: refs.pend, dayOffSaveTimerRef: refs.timer, dayOffRetryTimerRef: refs.retry, dayOffLastWriteTsRef: refs.ts, appDayOffRef: refs.map,
+        setAppDayOff: noopX, setAppDayOffLoaded: setLoaded, clearTimeout: cT }) : undefined;
+      r.cross = async (how) => { if (how === "other") await otherAccount(A, c); else await G.boundary(bEnv(A, c)).handleSignOut(); await spin(6); };
+      r.read();   // A's own load (no row yet)
+      return r;
+    };
+    const asB = (r) => r.writes.filter(w => !/ Bearer TOK_A$/.test(w));
+    const notA = (a) => !/@(Bearer |now:)TOK_A$/.test(a);   // an audit line written as anyone but A
+    const NOT_LOADED = "Day-offs haven't loaded yet — editing is disabled so saved entries can't be overwritten.";
+    // (a) p14b
+    const runA = async (how) => {
+      const r = await dayRig();
+      r.tap("2030-01-07", "a0"); await r.fire();                       // A's earlier tap: saved (the stored row)
+      r.fail = true; r.tap("2030-01-08", "a1"); await r.fire();        // A's tap a1: its save fails — a retry scheduled
+      const retryPending = !!r.refs.retry.current;
+      await r.cross(how); r.fail = false;                               // the session changes
+      await r.fire();                                                   // (the retry, if it was left)
+      r.toasts.length = 0; const w0 = r.writes.length;
+      r.tap("2030-01-10", "a3"); await r.fire();                       // a tap before the next account's read
+      const early = { refused: r.toasts.includes(NOT_LOADED), writes: r.writes.slice(w0) };
+      r.read();                                                         // the next account's read of the row
+      const w1 = r.writes.length, a1 = r.audits.length;
+      r.tap("2030-01-09", "a2"); await r.fire();                       // later, its own tap
+      return { retryPending, early, bSave: r.writes.slice(w1), bAudits: r.audits.slice(a1), asB: asB(r), audits: r.audits };
+    };
+    const A1 = [await runA("other"), await runA("signout")];
+    const STORED_A2 = sorted({ "2030-01-07": ["a0"], "2030-01-09": ["a2"] });
+    check("SE-X25 r6-fix-3 (a) (p14b) the REAL day-off chain and the REAL boundary (another account's 'Sign in again'; a sign-out): A's tap whose save failed is never written as the next account — its later save is exactly the stored row plus its own tap (A's a1 nowhere, the stored a0 kept) — and between the boundary and its read the chips are refused ('Day-offs haven't loaded yet'), nothing saved",
+      A1.every(x => x.retryPending && x.early.refused && x.early.writes.length === 0 && x.bSave.length === 1 && x.bSave[0].startsWith(STORED_A2 + " ") && !x.asB.some(w => w.includes("2030-01-08")) && !x.audits.some(a => a.startsWith("app_dayoff.add 2030-01-08") && notA(a))), JSON.stringify(A1));
+    // (b) p14
+    const runB = async (how) => {
+      const r = await dayRig();
+      r.fail = true; r.tap("2030-01-08", "a1"); await r.fire();        // A's tap: its save fails — a retry scheduled (no row on the server)
+      await r.cross(how); r.fail = false;
+      r.toasts.length = 0;
+      r.tap("2030-01-09", "a2");                                      // B taps before A's retry ran, before its own read
+      const early = r.toasts.includes(NOT_LOADED);
+      await r.fire();
+      r.read(); r.tap("2030-01-09", "a2"); await r.fire();             // its read (no row), then its tap
+      return { early, writes: r.writes, audits: r.audits, asB: asB(r) };
+    };
+    const B1 = [await runB("other"), await runB("signout")];
+    check("SE-X25 r6-fix-3 (b) (p14) no stored row; A's failing save's retry still pending when the session changes, and the next account taps at once: that tap is refused until its own read; A's a1 is never written or audited as the next account; after the read its save is its own tap alone",
+      B1.every(x => x.early && !x.asB.some(w => w.includes("2030-01-08")) && x.asB.length === 1 && x.asB[0].startsWith(sorted({ "2030-01-09": ["a2"] }) + " ") && !x.audits.some(a => a.includes("2030-01-08") && notA(a))), JSON.stringify(B1));
+    // (c) a save in flight across the boundary
+    const runC = async (how) => {
+      const r = await dayRig();
+      let open; r.hold = new Promise(res => { open = res; });
+      r.tap("2030-01-08", "a1"); const f = r.fire(); await spin(10);   // A's save is out
+      await r.cross(how); r.hold = null; open(); await f;               // the session changes; then it lands (as A)
+      const stored = r.stored && sorted(r.stored.data);
+      r.read(); const w1 = r.writes.length;
+      r.tap("2030-01-09", "a2"); await r.fire();
+      return { stored, bSave: r.writes.slice(w1), audits: r.audits };
+    };
+    const C1 = [await runC("other"), await runC("signout")];
+    check("SE-X25 r6-fix-3 (c) a save of A's in flight when the session changes: it lands as A (its audit line written as A), and the next account's read adopts that row — its later tap keeps A's committed day-off (the save is both, never B's alone over it)",
+      C1.every(x => x.stored === sorted({ "2030-01-08": ["a1"] }) && x.audits.includes("app_dayoff.add 2030-01-08 @Bearer TOK_A") && x.bSave.length === 1 && x.bSave[0].startsWith(sorted({ "2030-01-08": ["a1"], "2030-01-09": ["a2"] }) + " ")), JSON.stringify(C1));
   });
 
   // SE-X-I — the harness rule (A17(c)).

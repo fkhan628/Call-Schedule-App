@@ -5660,7 +5660,7 @@ await (async () => {
   // ── the component's re-auth, for real ──
   const sbSrc = after("  const sessionBoundary = ", "\n  };\n"), soSrc = after("  const handleSignOut = ", "\n  };\n"),
     rlSrc = after("  const reauthLanded = ", "\n  };\n"), raSrc = after("  const reauthForSync = ", "\n  };\n"), smSrc = after("  const submitReauth = ", "\n  };\n");
-  const sbFn = sbSrc && fnR("searchRef, setSearching, setSearchStats, setPreviewSchedule, setShowPreview, schedSyncRef, setScheduleHistory, setEditWeekModal, setReauthNeeded, setStaleTokenWarn, setIsScheduler, setupReadRef, lastSyncRef, sessionEpochRef", sbSrc + "\n  }");
+  const sbFn = sbSrc && fnR("searchRef, setSearching, setSearchStats, setPreviewSchedule, setShowPreview, schedSyncRef, setScheduleHistory, setEditWeekModal, setReauthNeeded, setStaleTokenWarn, setIsScheduler, setupReadRef, lastSyncRef, sessionEpochRef, forgetDayOffs", sbSrc + "\n  }"); // (23/n: + the day-off forget — review r6 fix-3)
   const soFn = soSrc && fnR("schedSyncRef, confirm, sessionBoundary, auth, biometric, setAuthUser, setUserProfile, setNeedsProfile, setMySurgeon, setBiometricEnrolled, setBiometricPending", soSrc + "\n  }");
   const rlFn = rlSrc && fnR("schedSyncRef, authUser, setReauthNeeded, setStaleTokenWarn, showToast, sessionBoundary, biometric, setBiometricEnrolled, setBiometricPending, setAuthUser, dbAuth, setUserProfile, setMySurgeon, setNeedsProfile, setIsScheduler, setReloadTrigger, handleSignOut, auth, pendingSaveRef, setSetupSaveNudge", rlSrc + "\n  }");
   const raFn = raSrc && fnR("reauthBusy, setReauthBusy, auth, authUser, reauthLanded, setReauthPassword, setReauthError, setReauthSheet", raSrc + "\n  }");
@@ -5692,6 +5692,7 @@ await (async () => {
     env.setupReadRef = { set current(v) { w.log.push("setupReadRef:" + v); }, get current() { return true; } };
     env.lastSyncRef = { set current(v) { w.log.push("lastSyncRef:" + JSON.stringify(v)); }, get current() { return "2026-10-01T08:00:00+00:00"; } };
     env.pendingSaveRef = { current: o.pendingSave || null }; // (19/n P9) a setup change kept pending while signed out
+    env.forgetDayOffs = () => {}; // (23/n, review r6 fix-3: the boundary forgets the APP day-off state — SE-X25 runs the real one)
     env.sessionEpochRef = { current: 0 }; w.epoch = env.sessionEpochRef; // (20/n, review r3) the session's identity, which the boundary moves
     env.sessionBoundary = sbFn(env);
     env.reauthLanded = rlFn(env);
@@ -6661,8 +6662,8 @@ await (async () => {
 
   // ── (3) Factory reset: the gate, one message ──
   const rstSrc = after("  const resetAllData = async () => {", "\n  };\n\n  // ─── Push Notifications");
-  const rstF = rstSrc && fnG("isScheduler, userProfile, alert, schedEditable, prompt, setSaveStatus, setTimeout, snapshots, schedSyncRef, showToast, logAudit, allowWipeSaveRef, everHadRealDataRef, supabase, console, setSurgeons, INIT_SURGEONS, setApps, INIT_APPS, toClearAll, setBackupMondaySet, setFierceBackupSet, scheduleRef, commitSchedule, runAuthoritativeSchedule, setAppShifts, setPriorCounts, setYear1Counts, setStartMonth, setStartYear, sessionEpochRef",
-    "async () => {" + rstSrc + "\n  }");
+  const rstF = rstSrc && fnG("isScheduler, userProfile, alert, schedEditable, prompt, setSaveStatus, setTimeout, snapshots, schedSyncRef, showToast, logAudit, allowWipeSaveRef, everHadRealDataRef, supabase, console, setSurgeons, INIT_SURGEONS, setApps, INIT_APPS, toClearAll, setBackupMondaySet, setFierceBackupSet, scheduleRef, commitSchedule, runAuthoritativeSchedule, setAppShifts, setPriorCounts, setYear1Counts, setStartMonth, setStartYear, sessionEpochRef, resetBusyRef",
+    "async () => {" + rstSrc + "\n  }"); // (23/n: + the reset's hold on the setup autosave — review r6 broke-1)
   if (!rstF) check("SE-G resetAllData is extractable", false, "anchor / compile");
   else {
     const reset = async (a, o = {}) => {
@@ -6670,7 +6671,7 @@ await (async () => {
       const noop = () => {};
       await rstF({ isScheduler: true, userProfile: null, alert: noop, schedEditable: a.schedEditable, prompt: () => { w.prompts++; return "RESET"; }, setSaveStatus: (s) => w.status.push(s), setTimeout: () => 0, sessionEpochRef: { current: 0 },
         snapshots: { capture: async () => { w.snaps++; if (o.duringSnap) o.duringSnap(); return { ok: true }; } }, schedSyncRef: a.schedSyncRef, showToast: a.showToast, logAudit: () => { w.audits++; },
-        allowWipeSaveRef: { current: false }, everHadRealDataRef: { current: true }, supabase: { from: () => ({ upsert: async () => { w.upserts++; return { error: null }; } }) },
+        allowWipeSaveRef: { current: false }, everHadRealDataRef: { current: true }, resetBusyRef: { current: false }, supabase: { from: () => ({ upsert: async () => { w.upserts++; return { error: null }; } }) },
         console: { error: (...x) => a.errors.push(x.map(String).join(" ")), warn: noop }, setSurgeons: () => { w.cleared++; }, INIT_SURGEONS: [], setApps: noop, INIT_APPS: [], toClearAll: async () => ({ ok: true }), // (21/n: it answers { ok } — review r4 fixes-2)
         setBackupMondaySet: noop, setFierceBackupSet: noop, scheduleRef: a.ref, commitSchedule: a.commitSchedule, runAuthoritativeSchedule: a.runAuthoritativeSchedule,
         setAppShifts: noop, setPriorCounts: noop, setYear1Counts: noop, setStartMonth: noop, setStartYear: noop })();
