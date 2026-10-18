@@ -28,6 +28,8 @@
 //      — and checks generator.js's listScheduleBends agrees on every roll.
 //
 // Run: node test/generator-regression.js   (exit 0 = pass, 1 = regression)
+//      REGRESSION_SEED=<n> node test/generator-regression.js   (another seed;
+//      "random" picks one — see "Seeded randomness" below)
 // CI runs this on every push that touches the generator or its data files.
 // Do NOT weaken the assertions to make a failing generator change pass.
 
@@ -64,6 +66,33 @@ const FLEX_STRAIN_COST = 10; // restated: a FLEX strain unit in the bend tier
 const LIVE_ROLLS = 30, LIVE_PROPOSALS = 1000000;
 const FUZZ_N = 2000; // broken copies of a live schedule for the agreement fuzz (scenario H)
 
+// ─── Seeded randomness (2026-10-18) ───
+// generator.js draws Math.random (the deal, the search's moves and kicks), so
+// unseeded every run rolled different schedules and a rare roll failed a
+// build with nothing changed — vacation roll 38 (2026-10-15): total spread 2,
+// generate()'s 60,000 schedules spent with every tier above totals at its
+// floor (2026-10-18: about 1 vacation roll in 6,000 and 1 squeeze roll in
+// 4,000, each perfect within 28,000 more schedules; 5 of seeds 1–50 fail).
+// Now every loaded copy of the app draws from a seeded PRNG, reseeded at the
+// start of each roll from (RUN_SEED, scenario, roll): a run is the same on
+// every machine, a roll's draws don't move when other rolls or scenarios
+// change, and REGRESSION_SEED=<the printed seed> replays a failure exactly.
+// The bars are unchanged. REGRESSION_SEED=<n> runs another seed ("random"
+// picks one); the seed is printed either way.
+const RUN_SEED = (() => {
+  const e = process.env.REGRESSION_SEED;
+  if (e === undefined || e === "") return 20261018;
+  if (e === "random") return Math.floor(Math.random() * 2 ** 32);
+  const n = Number(e);
+  if (!Number.isInteger(n) || n < 0 || n >= 2 ** 32) { console.error(`FAIL: REGRESSION_SEED=${e} — an integer 0..4294967295, or "random"`); process.exit(1); }
+  return n;
+})();
+function mulberry32(a) { return () => { a = (a + 0x6D2B79F5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
+let rand = mulberry32(RUN_SEED);
+// this roll's own stream: FNV-1a of "seed|scenario|roll" — the scenario and roll as the failure line names them
+function seedRoll(scenario, roll) { let h = 0x811c9dc5; for (const ch of `${RUN_SEED}|${scenario}|${roll}`) h = Math.imul(h ^ ch.charCodeAt(0), 0x01000193); rand = mulberry32(h >>> 0); }
+console.log(`seed ${RUN_SEED}${process.env.REGRESSION_SEED ? "" : " (default)"} — each roll reseeded from (seed, scenario, roll)`);
+
 // ─── Load the real app modules as browser globals ───
 function loadApp(transform, label) {
   const sb = {
@@ -77,6 +106,7 @@ function loadApp(transform, label) {
   };
   sb.globalThis = sb;
   vm.createContext(sb);
+  vm.runInContext("Math", sb).random = () => rand(); // the context's own Math: seeded (RUN_SEED)
   for (const f of ["helpers.js", "config.js"]) vm.runInContext(fs.readFileSync(path.join(ROOT, f), "utf8"), sb, { filename: f });
   let gen = fs.readFileSync(path.join(ROOT, "generator.js"), "utf8");
   if (transform) gen = transform(gen);
@@ -335,6 +365,7 @@ function runScenario(name, vac, opts, yearCounts) {
   const imperfect = []; // rolls short of perfect (strain, a bend, a spread over its limit) — a rate, not a per-roll bar (2026-10-13)
   const FAKID = (SURGEONS.find(s => FLEX_CODES.includes(String(s.name || "").toUpperCase())) || {}).id;
   for (let roll = 0; roll < ROLLS; roll++) {
+    seedRoll(name, roll);
     const sched = generate(SURGEONS, MONDAYS, vac, new Set(), {}, {}, new Set(), null, [], null, vac, yearCounts);
     const label = `${name} roll ${roll}`;
     const gs = gapStatsOf(sched, MONDAY_KEYS, null);
@@ -421,6 +452,7 @@ function runStress() {
   const failures = [];
   let redFired = 0;
   for (let roll = 0; roll < ROLLS; roll++) {
+    seedRoll("stress", roll);
     const g = generate(SURGEONS, D_MONDAYS, vac, new Set(), {}, {}, new Set(), null, [], seed, vac, COUNTS_1YR);
     if (!g[D_KEYS[0]] || g[D_KEYS[0]].dayCall !== Z) failures.push(`stress roll ${roll}: week 0 DC is ${g[D_KEYS[0]] && g[D_KEYS[0]].dayCall} — the spacing rule should have left only ${Z}`);
     const gv = gapStatsOf(g, D_KEYS, seed).violations;
@@ -521,6 +553,7 @@ function runSilvis() {
   const given = openNeighbors.map(() => 0);
   let redFired = 0, trailingAllowed = 0, adjWith = 0, adjWithout = 0, cleanWith = 0, dayMonWith = 0;
   for (let roll = 0; roll < ROLLS; roll++) {
+    seedRoll("silvis", roll);
     // GREEN — vac = vacations ∪ Silvis days; vacationsOnly = vacations ONLY
     const g = generate(SURGEONS, MONDAYS, withSilvis, new Set(), {}, {}, new Set(), null, [], null, LIGHT_VACATIONS, COUNTS_1YR);
     const hits = silvisOverlapSlots(g, SILVIS_DAYS, FAK);
@@ -637,6 +670,7 @@ function runLive() {
   const stats = { timeOff: 0, empty: 0, eves: EVES.map(() => 0), xmas: 0, locks: 0, ms: 0, checked: 0, starts: 0, svcHist: H(), wkndHist: H(), strainHist: H(), bendHist: H(), totHist: H(), ladderMin: Infinity, sundayARW: 0, sundayREH: 0 };
   const inc = (h, k) => { h[k] = (h[k] || 0) + 1; };
   for (let roll = 0; roll < LIVE_ROLLS; roll++) {
+    seedRoll("live", roll);
     const t = Date.now();
     const search = createScheduleSearch(...args, {});
     search.run({ proposals: LIVE_PROPOSALS });
@@ -704,6 +738,7 @@ function runSundayControl() {
   const failures = [];
   let fired = 0;
   for (let roll = 0; roll < ROLLS; roll++) {
+    seedRoll("sunday", roll);
     const g = generate(SURGEONS, G_MONDAYS, vac, new Set(), {}, {}, new Set(), null, [], null, vac, COUNTS_1YR);
     if (!g[G_KEYS[0]] || g[G_KEYS[0]].dayCall !== Z) failures.push(`sunday roll ${roll}: week 0's service week is ${g[G_KEYS[0]] && g[G_KEYS[0]].dayCall} — its surgeon must be free that Sunday, which leaves only ${Z}`);
     floorHits(g, G_KEYS, vac, vac).forEach(h => failures.push(`sunday roll ${roll}: FLOOR ${h}`));
@@ -730,6 +765,7 @@ function runSoft() {
   const ROLLS_J = 40, BUDGET = 60000, soft = {}, prefs = {}, failures = [];
   let early = 0, atSoft = 0;
   for (let r = 0; r < ROLLS_J; r++) {
+    seedRoll("soft", r);
     const search = createScheduleSearch(SURGEONS, MONDAYS, {}, BK, {}, PREFS, new Set(), null, [], null, {}, COUNTS_1YR, {});
     search.run({ proposals: BUDGET });
     const st = search.status(), g = search.best();
@@ -770,6 +806,7 @@ function runFuzz() {
   const DESIGNED_RUNS = new Set(["2026-12-24", "2026-12-25", "2026-12-26"].map(d => d + "|" + P.FAK));
   const seeds = [L.prevWeekSeed, { ...L.prevWeekSeed, nights: { mon: P.FAK, tue: P.DJA, wed: P.RPC, thu: P.KJH } }, null,
     { ...L.prevWeekSeed, nights: { mon: P.FAK, tue: P.DJA, wed: P.RPC, thu: P.KJH }, holidayCoverage: { "2026-11-15": { surgeonId: P.ARW } }, dayCallOverrides: { "2026-11-14": P.KJH } }];
+  seedRoll("fuzz", 0);
   const base = generate(L.surgeons, keys.map(parse), L.avail, new Set(L.backupMondays), L.priorCounts, L.prefs, new Set(L.fierceBackupMondays), L.holAssignments, [], L.prevWeekSeed, L.vacationsOnly, L.yearCounts, { proposals: 30000 });
   const SL = oracle.SLOTS;
   const get = (s, m, k) => k === "dayCall" ? s[m].dayCall : s[m].nights[k];
@@ -817,6 +854,7 @@ function runLastResort() {
     const vac = {}; for (const id of IDS) if (id !== X) vac[id] = [[FRI, FRI]];
     const hist = {};
     for (let roll = 0; roll < ROLLS_I; roll++) {
+      seedRoll(`lastResort ${flexCase ? "FAK" : "partner"}`, roll);
       const g = generate(SURGEONS, LR_MONDAYS, vac, new Set(), {}, {}, new Set(), null, [], null, {}, COUNTS_1YR);
       const wk = g[LR_KEYS[1]];
       const lst = listScheduleBends(g, { surgeons: SURGEONS, mondays: LR_MONDAYS, vac, vacationsOnly: {}, holAssignments: null, prevWeekSeed: null });
@@ -859,7 +897,7 @@ console.log(`          rule 2 across the two jobs (opts.silvisPrimary): no Daven
 
 const failures = [...clean.failures, ...cleanProxy.failures, ...light.failures, ...squeeze.failures, ...stress.failures, ...silvis.failures, ...live.failures, ...sunday.failures, ...fuzz.failures, ...lastResort.failures, ...softJ.failures];
 if (failures.length) {
-  console.error(`\nFAIL — ${failures.length} violation(s):`);
+  console.error(`\nFAIL — ${failures.length} violation(s) at seed ${RUN_SEED} (replay: REGRESSION_SEED=${RUN_SEED} node test/generator-regression.js):`);
   failures.slice(0, 25).forEach(f => console.error("  • " + f));
   if (failures.length > 25) console.error(`  … and ${failures.length - 25} more`);
   process.exit(1);
