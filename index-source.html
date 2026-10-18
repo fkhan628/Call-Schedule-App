@@ -301,6 +301,7 @@ function CallSchedule() {
   const dayOffSaveTimerRef = useRef(null);  // debounce: one enqueue per tap burst
   const dayOffRetryTimerRef = useRef(null); // auto-retry for failed/unconfirmed saves
   const dayOffPendingAuditRef = useRef([]); // audit entries logged only after their save COMMITS
+  const dayOffEpochRef = useRef(0);         // the session the unsaved taps were made in (sessionEpochRef at the tap — review r5 fix-1)
   // Latest-closure bridge for the []-deps unload effect (review round 3): the
   // effect pins first-render closures, so calling enqueueDayOffSave directly
   // from it would log audits through a logAudit that captured userProfile at
@@ -955,9 +956,16 @@ function CallSchedule() {
   };
 
   // Biometric enrollment handler (call from Settings)
+  // The session at the tap (review r5 fix-1), for both enrolments: the Face
+  // ID prompt can stay up. A session change meanwhile — a sign-out (which
+  // unenrols), or "Sign in again" on another account — and an enrolment
+  // landing after it is undone (this device never keeps the previous
+  // account's Face ID sign-in into the next session), nothing said.
   const handleBiometricEnroll = async () => {
     if (!authUser) return;
+    const ep = sessionEpochRef.current;
     const result = await biometric.enroll(authUser.id, authUser.email);
+    if (sessionEpochRef.current !== ep) { if (result.success) biometric.unenroll(); return; }
     if (result.success) {
       setBiometricEnrolled(true);
     } else {
@@ -972,7 +980,9 @@ function CallSchedule() {
   // possible — far more actionable than "API said no."
   const handleBiometricForceEnroll = async () => {
     if (!authUser) { alert("Please log in first."); return; }
+    const ep = sessionEpochRef.current;
     const result = await biometric.enroll(authUser.id, authUser.email);
+    if (sessionEpochRef.current !== ep) { if (result.success) biometric.unenroll(); return; } // (review r5 fix-1 — as handleBiometricEnroll's)
     if (result.success) {
       setBiometricEnrolled(true);
       setBiometricAvail(true);
@@ -1095,9 +1105,16 @@ function CallSchedule() {
 
   const handleSetProfile = async () => {
     if (!signupPersonId || !authUser) return;
+    // The session at the tap (review r5 fix-1): a sign-out from this screen
+    // while its reads / its profile write are out — and this account's
+    // profile, roles and reload are never taken into the next session
+    // (the sign-in screen, then whoever signs in); nothing said there.
+    const ep = sessionEpochRef.current;
+    const gone = () => { if (sessionEpochRef.current === ep) return false; setAuthBusy(false); return true; };
     setAuthBusy(true); setAuthError("");
     try {
       const profiles = await dbAuth.getAllProfiles();
+      if (gone()) return;
       if (profiles.some(p => p.person_id === signupPersonId && p.id !== authUser.id)) {
         setAuthError("This name is already registered to another account");
         setAuthBusy(false); return;
@@ -1114,6 +1131,7 @@ function CallSchedule() {
       const { data: savedProfile, error: profileErr } = await dbAuth.upsertProfile({
         id: authUser.id, person_id: signupPersonId, display_name: personName,
       });
+      if (gone()) { if (profileErr) console.error("Profile save failed:", profileErr); return; }
       if (profileErr) {
         console.error("Profile save failed:", profileErr);
         setAuthError("Couldn't save your profile — please try again.");
@@ -1129,7 +1147,7 @@ function CallSchedule() {
       setReloadTrigger(t => t + 1);
       setAuthBusy(false);
       return;
-    } catch(e) { setAuthError(e.message); }
+    } catch(e) { if (gone()) return; setAuthError(e.message); }
     setAuthBusy(false);
   };
 
@@ -1364,11 +1382,16 @@ function CallSchedule() {
       return;
     }
     setSilvisRefreshing(true);
+    // (review r5 fix-1) The Refresh button's outcome is never said on the
+    // next session's screen (the session at the tap; the re-pull itself went
+    // out with its headers, h).
+    const ep = sessionEpochRef.current;
     try {
       // quiet (app load / poll) rides the function's 15-min freshness gate;
       // the Refresh button forces a real re-pull.
       const r = await sfRefreshFeed(SUPABASE_URL, h, !quiet);
       const ok = await loadSilvisFeed(quiet);
+      if (sessionEpochRef.current !== ep) return;
       if (!quiet) showToast(!ok
         ? "Silvis was re-pulled on the server, but this device could not re-read the cache — still showing the previous days (see the Silvis feed card)."
         : r && r.skipped
@@ -1376,7 +1399,7 @@ function CallSchedule() {
           : `Silvis feed refreshed — ${r.days} days cached, ${silvisRule.code} primary on ${r.fak_primary}, backup on ${r.fak_backup}.`, ok ? "success" : "error");
     } catch (e) {
       console.warn("Silvis feed refresh failed — cache kept", e);
-      if (!quiet) showToast("Silvis feed refresh FAILED — the cached Silvis days are kept and nothing changed (a failed fetch never means 'no Silvis call'). " + String(e?.message || e).slice(0, 120), "error");
+      if (sessionEpochRef.current === ep && !quiet) showToast("Silvis feed refresh FAILED — the cached Silvis days are kept and nothing changed (a failed fetch never means 'no Silvis call'). " + String(e?.message || e).slice(0, 120), "error");
     } finally { setSilvisRefreshing(false); }
   };
 
@@ -1456,9 +1479,15 @@ function CallSchedule() {
   // Each does an optimistic local update + the DB op when ON; when OFF it does
   // the old local-only mutation (the blob autosave persists it, as before).
   const setterFor = (kind) => kind === "nocall" ? setNoCallDays : setVacations;
+  // (review r5 fix-1) Each of these writes with the headers of its call (the
+  // session at the tap — db.insert / db.update / deleteTimeOff build them
+  // there); a failure is never told on the next session's screen (the
+  // session at the call, checked after the await — as deleteTimeOff's).
 
   const toAdd = async (personId, kind, start, end) => {
     if (!personId || !start || !end) return;
+    const ep = sessionEpochRef.current;
+    const tell = () => { if (sessionEpochRef.current === ep) showToast("Couldn't save that — check your connection and try again.", "error"); };
     setterFor(kind)(p => ({ ...p, [personId]: [...(p[personId] || []), [start, end]] }));
     logAudit(kind + ".add", `Added ${kind === "nocall" ? "no-call" : "vacation"} for ${nameOf(personId)}: ${start}${start !== end ? " → " + end : ""}`, { person_id: personId, kind, start, end });
     if (!USE_TIME_OFF) return;
@@ -1467,9 +1496,9 @@ function CallSchedule() {
         person_id: personId, kind, start_date: start, end_date: end,
         created_by: userProfile?.person_id || null,
       });
-      if (error) { console.error("time_off insert error", error); showToast("Couldn't save that — check your connection and try again.", "error"); }
+      if (error) { console.error("time_off insert error", error); tell(); }
       // realtime reload canonicalizes the optimistic entry (adds its id)
-    } catch (e) { console.error("time_off insert ex", e); showToast("Couldn't save that — check your connection and try again.", "error"); }
+    } catch (e) { console.error("time_off insert ex", e); tell(); }
   };
 
   const toRemove = async (personId, kind, start, end) => {
@@ -1494,6 +1523,8 @@ function CallSchedule() {
 
   const toEdit = async (personId, kind, oldStart, oldEnd, newStart, newEnd) => {
     if (!newStart || !newEnd) return;
+    const ep = sessionEpochRef.current, tapH = dbAuthHeaders();
+    const tell = () => { if (sessionEpochRef.current === ep) showToast("Couldn't save that change — check your connection and try again.", "error"); };
     const map = kind === "nocall" ? noCallDays : vacations;
     const arr = map[personId] || [];
     const idx = arr.findIndex(([s, e]) => s === oldStart && e === oldEnd);
@@ -1510,13 +1541,26 @@ function CallSchedule() {
     try {
       if (rowId) {
         const { error } = await db.update("time_off", rowId, { start_date: newStart, end_date: newEnd });
-        if (error) { console.error("time_off update error", error); showToast("Couldn't save that change — check your connection and try again.", "error"); }
+        if (error) { console.error("time_off update error", error); tell(); }
       } else {
         // No id yet (optimistic): fall back to delete-old + insert-new (delete toasts on its own failure)
         await deleteTimeOff(`person_id=eq.${encodeURIComponent(personId)}&kind=eq.${kind}&start_date=eq.${oldStart}&end_date=eq.${oldEnd}`);
-        await db.insert("time_off", { person_id: personId, kind, start_date: newStart, end_date: newEnd, created_by: userProfile?.person_id || null });
+        const row = { person_id: personId, kind, start_date: newStart, end_date: newEnd, created_by: userProfile?.person_id || null };
+        if (sessionEpochRef.current === ep) await db.insert("time_off", row);
+        else {
+          // (review r5 fix-1) Another session now — the old dates were removed
+          // as this account, between the two awaits: the new ones are added as
+          // it too (the tap's headers), never as the next account (nor refused
+          // as anon, the time off lost). Nothing said; a failure is logged (the
+          // console, and an audit line as this account) for a manual fix.
+          const res = await fetch(`${SUPABASE_URL}/rest/v1/time_off`, { method: "POST", headers: { ...tapH, Prefer: "return=minimal" }, body: JSON.stringify(row) }).catch((e) => ({ ok: false, status: String(e && e.message || e) }));
+          if (!res.ok) {
+            console.error("time_off edit not finished (the session changed): the old dates were removed, the new ones could NOT be added — needs a manual fix", personId, kind, newStart, newEnd, res.status);
+            logAudit(kind + ".edit_unfinished", `Changing ${kind === "nocall" ? "no-call" : "vacation"} for ${nameOf(personId)} ${oldStart}→${oldEnd} to ${newStart}→${newEnd}: the old dates were removed, the new ones could NOT be added (the session changed) — needs a manual fix`, { person_id: personId, kind, newStart, newEnd }, tapH);
+          }
+        }
       }
-    } catch (e) { console.error("time_off edit ex", e); showToast("Couldn't save that change — check your connection and try again.", "error"); }
+    } catch (e) { console.error("time_off edit ex", e); tell(); }
   };
 
   // Wipe time_off rows + clear local maps. kind omitted = both; else just that
@@ -1526,9 +1570,16 @@ function CallSchedule() {
   // failed one leaves the time off showing — as the server still holds it —
   // instead of an empty screen until the 60-s poll brings it back.
   // opts.quiet: as deleteTimeOff's.
+  // Its audit line (review r5 regress-1; the 21/n open item) is written only
+  // once the clear has landed — a failed DELETE logged no "Cleared ALL" — and
+  // as the account that tapped (its headers, taken at the call) when the
+  // session changed while the DELETE was out (never under the next token).
   const toClearAll = async (kind, opts) => {
-    const clearHere = () => { if (!kind || kind === "vacation") setVacations({}); if (!kind || kind === "nocall") setNoCallDays({}); };
-    logAudit("timeoff.clearall", `Cleared ALL ${kind ? (kind === "nocall" ? "no-call days" : "vacations") : "vacations and no-call days"} for everyone`, { kind: kind || "both" });
+    const ep = sessionEpochRef.current, tapH = dbAuthHeaders();
+    const clearHere = () => {
+      if (!kind || kind === "vacation") setVacations({}); if (!kind || kind === "nocall") setNoCallDays({});
+      logAudit("timeoff.clearall", `Cleared ALL ${kind ? (kind === "nocall" ? "no-call days" : "vacations") : "vacations and no-call days"} for everyone`, { kind: kind || "both" }, sessionEpochRef.current === ep ? undefined : tapH);
+    };
     if (!USE_TIME_OFF) { clearHere(); return { ok: true }; }
     const r = await deleteTimeOff(`id=not.is.null${kind ? `&kind=eq.${kind}` : ""}`, opts);
     if (r.ok) clearHere();
@@ -2029,12 +2080,21 @@ function CallSchedule() {
   // says "Sign in again" now; and when this tab's own session is gone, or is
   // now another account's, the "Sign in again" banner shows even with nothing
   // pending. (A renewal of this account's own session changes nothing.)
+  // The banner follows the session both ways (review r5 regress-2): when
+  // this tab's own account is back — another tab signed in again as it — it
+  // is lowered (it only ever rose here: a tab signed in and saving still said
+  // its sign-in had expired). A token the server refused stays said by the
+  // engine's own authNeeded (the banner shows on either); a new token is a
+  // new one to try. And a setup change held while signed out goes out now,
+  // under that session — as reauthLanded's same-account branch does.
   useEffect(() => {
     if (!authUser) return;
     const onStorage = (e) => {
       if (e && e.key !== null && e.key !== "dsg-auth-token") return; // (key null: the whole storage cleared)
       schedSyncRef.current.report();
-      if (!auth.getSession()) setReauthNeeded(true);
+      const back = !!auth.getSession(); // (this tab's account's — another account's stored session is none here: config.js bindUser)
+      setReauthNeeded(!back);
+      if (back && pendingSaveRef.current) setSetupSaveNudge(n => n + 1);
     };
     window.addEventListener("storage", onStorage);
     return () => window.removeEventListener("storage", onStorage);
@@ -2394,11 +2454,15 @@ function CallSchedule() {
     // known (version, updated_at) — through refs, so this []-closure is never
     // stale (R6). A week someone else changed matches 0 rows and changes
     // nothing; no INSERT and no delete is ever sent this way (R1, R2, R4).
+    // Each one's done() is called when its request settles (review r5
+    // matrix-3): until then the engine counts its body as possibly landing —
+    // the page may survive the unload (a cancelled "Leave site?", the
+    // back-forward cache) with it still held in the radio.
     const flushSchedWeeks = (source) => {
       if (isPublicMode) return;
       try {
         if (source === "visibilitychange") { schedSyncRef.current.push(); return; }
-        schedSyncRef.current.keepaliveRequests().forEach(x => { fetch(x.url, x.init).catch(() => {}); });
+        schedSyncRef.current.keepaliveRequests().forEach(x => { fetch(x.url, x.init).catch(() => {}).then(() => { if (x.done) x.done(); }); });
       } catch (e) { console.warn(`schedule_weeks flush (${source}) failed:`, e); }
     };
 
@@ -2591,19 +2655,29 @@ function CallSchedule() {
       setTimeout(() => setSaveStatus(""), 2000);
       return;
     }
-    // Both landed: this screen takes the reset's setup and APP shifts now (it
-    // matches the server).
-    resetSetupHere(); setAppShifts({});
-    // The third clear, the time off (review r4 fixes-2: it used to be sent
-    // un-awaited and unchecked, and "Reset complete" followed whatever it
-    // did): awaited and checked, in the same chain — sent only once the setup
-    // and the APP shifts are cleared, and the weeks job only once it has
-    // landed. Failed, the reset stops there and says exactly what was reset —
-    // the setup and the APP shifts — and what wasn't: the time off (still
-    // shown, as the server still holds it) and the weeks. No answer: it may
-    // have landed — said so. Its own generic toast is this message instead
-    // (quiet); and nothing at all after a session change.
+    // Both landed. The third clear, the time off (review r4 fixes-2: it used
+    // to be sent un-awaited and unchecked, and "Reset complete" followed
+    // whatever it did): awaited and checked, in the same chain — sent only
+    // once the setup and the APP shifts are cleared, and the weeks job only
+    // once it has landed. Failed, the reset stops there and says exactly what
+    // was reset — the setup and the APP shifts — and what wasn't: the time off
+    // (still shown, as the server still holds it) and the weeks. No answer:
+    // it may have landed — said so. Its own generic toast is this message
+    // instead (quiet); and nothing at all after a session change.
     const toClear = await toClearAll(undefined, { quiet: true });
+    // The reset's setup and APP shifts go on this screen only AFTER that
+    // await (review r5 regress-1). Put there before it (21/n), a render in the
+    // gap — the reset's setup beside the OLD weeks and time off, not a wiped
+    // payload — re-armed the empty-save guard (everHadRealDataRef, disarmed
+    // above on purpose): every setup change after the reset was then blocked
+    // ("⚠ Save blocked — empty data not written"), and with a DELETE slower
+    // than the autosave's debounce the gap's write used up the one-shot
+    // bypass, so the reset's own final write was blocked too. Stopped here —
+    // the session changed, or the time-off clear failed — they go on screen
+    // now, before unarm() and the message (the server holds them); landed,
+    // below, in the same synchronous run as the empty schedule: ONE render,
+    // with the weeks and the time off already empty (as before 21/n).
+    if (sessionEpochRef.current !== ep || !toClear || !toClear.ok) { resetSetupHere(); setAppShifts({}); }
     if (sessionEpochRef.current !== ep) { unarm(); return; } // another session now: no weeks job as the next account, nothing said
     if (!toClear || !toClear.ok) {
       console.error("Factory reset: clearing the time off failed", toClear && toClear.unanswered ? "(no answer)" : "");
@@ -2613,6 +2687,9 @@ function CallSchedule() {
         : "Factory reset: the setup and the APP shifts were reset, but clearing the time off failed — so the time off and the schedule weeks were left as they are. Run the reset again, or restore the \"Before factory reset\" snapshot.", "error");
       return;
     }
+    // All three landed: this screen takes the reset's setup and APP shifts
+    // now, with the empty schedule below (no await between: one render).
+    resetSetupHere(); setAppShifts({});
     // Every week deleted: an authoritative engine job with its own grant. If
     // it can't write (table unreadable, signed out, cancelled at its deadline)
     // the weeks on screen go back as they were (`before`) — and ONE message
@@ -2828,6 +2905,12 @@ function CallSchedule() {
     }
     if (vacReqEnd < vacReqStart) { showToast("The end date is before the start date.", "error"); return; }
     vacSubmitBusyRef.current = true;
+    // This session, at the tap (review r5 fix-1): the request is sent with
+    // this account's headers (db.insert's, at the call); after a session
+    // change during it, nothing more of it is done, sent or said in the next
+    // session — no list update, no form cleared, no toast, no notice or e-mail.
+    const ep = sessionEpochRef.current;
+    const live = () => sessionEpochRef.current === ep;
     try {
       const req = {
         surgeon_id: vacReqSurgeon, surgeon_name: surgeonName,
@@ -2840,6 +2923,7 @@ function CallSchedule() {
       // throw): a 401 / 403 / RLS refusal used to clear the form and say
       // nothing (fail-loud contract, 2026-10-11). Now it says why and keeps it.
       const { data: inserted, error: insertErr } = await db.insert("vacation_requests", req);
+      if (!live()) { if (!inserted) console.error("vacation request insert failed:", insertErr); return; } // (review r5 fix-1) another session now
       if (!inserted) {
         console.error("vacation request insert failed:", insertErr);
         showToast(`Couldn't send your ${kindLabel} request — ${writeFailReason(insertErr)}. Nothing was sent; your entries are still here.`, "error");
@@ -2851,14 +2935,53 @@ function CallSchedule() {
       setVacReqStart(""); setVacReqEnd(""); setVacReqReason(""); setVacReqType("vacation");
       showToast(`${isNoCall ? "No-call" : "Vacation"} request sent.`, "success");
       await addNotification("vacation_submitted", isNoCall ? "No-Call Request" : "Vacation Request",
-        `${surgeonName} requested ${kindLabel} ${vacReqStart} to ${vacReqEnd}`, { surgeon_id: vacReqSurgeon }, schedulerAdminIds);
-      sendEmailNotif("vacation_submitted", { surgeon_name: surgeonName, surgeon_id: vacReqSurgeon, start_date: vacReqStart, end_date: vacReqEnd, reason: vacReqReason, request_type: vacReqType }, schedulerAdminIds);
-    } catch(e) { console.error("Submit request error:", e); showToast("Couldn't submit your request — check your connection and try again.", "error"); }
+        `${surgeonName} requested ${kindLabel} ${vacReqStart} to ${vacReqEnd}`, { surgeon_id: vacReqSurgeon }, schedulerAdminIds, ep);
+      if (!live()) return; // (review r5 fix-1) another session now: no e-mail sent from it
+      sendEmailNotif("vacation_submitted", { surgeon_name: surgeonName, surgeon_id: vacReqSurgeon, start_date: vacReqStart, end_date: vacReqEnd, reason: vacReqReason, request_type: vacReqType }, schedulerAdminIds, ep);
+    } catch(e) { console.error("Submit request error:", e); if (live()) showToast("Couldn't submit your request — check your connection and try again.", "error"); }
     finally { vacSubmitBusyRef.current = false; }
   }, [vacReqSurgeon, vacReqStart, vacReqEnd, vacReqReason, vacReqType, surgeons, apps, addNotification, sendEmailNotif, schedulerAdminIds]);
 
+  // ─── A request's status, set back after a session change (review r5 fix-1) ───
+  // A vacation request's approve / revoke / edit whose status write landed
+  // while the session ended (a sign-out, or "Sign in again" landing on another
+  // account — the tap's sessionEpochRef moved) is not carried on in the next
+  // session: its write is set back here WITH THE TAP'S HEADERS (tapH — the
+  // account that tapped, never the next one's token), only from the value
+  // this tap wrote (`filter`), and believed only when exactly that one row
+  // comes back (a 200 with no row is RLS refusing it, or the row changed
+  // meanwhile). If it can't be, it is logged — the console, and an audit line
+  // written as the account that tapped — for a manual fix. Nothing is said:
+  // the screen is the next session's. As acceptTradeRequest's abandon (H2).
+  const setBackRequest = async (id, filter, body, tapH, what, audit) => {
+    let why = "";
+    try {
+      const b = await fetch(`${SUPABASE_URL}/rest/v1/vacation_requests?id=eq.${id}&${filter}`, {
+        method: "PATCH",
+        headers: { ...tapH, "Content-Type": "application/json", Prefer: "return=representation" },
+        body: JSON.stringify(body),
+      });
+      const back = b.ok ? await b.json().catch(() => null) : null;
+      if (Array.isArray(back) && back.length === 1) return true;
+      why = b.ok ? `${Array.isArray(back) ? back.length : "no"} row(s) came back` : `HTTP ${b.status} ${await b.text().catch(() => "")}`;
+    } catch (e) { why = String(e && e.message || e); }
+    console.error(`${what} abandoned (the session changed while it was being saved), and the request could NOT be set back:`, id, why);
+    logAudit(audit.action, `${audit.summary} — NOT applied: the session changed (a sign-out, or another account) while it was being saved; setting the request back failed — needs a manual fix`, { request_id: id, reverted: false }, tapH);
+    return false;
+  };
+
   // ─── Vacation Request: Approve ───
   const approveVacRequest = useCallback(async (req) => {
+    // This session, at the tap (review r5 fix-1 — H2's pattern, as the
+    // trade's accept), and its headers: after EVERY await below, a session
+    // change meanwhile stops the approval there, silently — no time_off row
+    // written (as the next account; or refused as anon, leaving an approved
+    // request with no time off, which the generator schedules over), no
+    // notice or e-mail, nothing said on the next session's screen. A request
+    // this tap already marked approved is set back to pending with the tap's
+    // headers (setBackRequest: logged and audited as this account if it can't be).
+    const ep = sessionEpochRef.current, tapH = dbAuthHeaders();
+    const live = () => sessionEpochRef.current === ep;
     const isNoCall = req.request_type === "nocall";
     // Check if approving would exceed 4 surgeons off/unavailable
     const reqStart = parse(req.start_date);
@@ -2884,15 +3007,23 @@ function CallSchedule() {
       // matched = already handled elsewhere (two-device race / withdrawn).
       const approveRes = await fetch(`${SUPABASE_URL}/rest/v1/vacation_requests?id=eq.${req.id}&status=eq.pending`, {
         method: "PATCH",
-        headers: { ...dbAuthHeaders(), "Content-Type": "application/json", Prefer: "return=representation" },
+        headers: { ...tapH, "Content-Type": "application/json", Prefer: "return=representation" },
         body: JSON.stringify({ status: "approved", reviewed_at: new Date().toISOString(), reviewed_by: reviewerName }),
       });
       if (!approveRes.ok) {
         console.error("Vacation approve status write failed:", approveRes.status, await approveRes.text().catch(() => ""));
-        showToast("Couldn't approve the request — nothing was changed. Check your connection and try again.", "error");
+        if (live()) showToast("Couldn't approve the request — nothing was changed. Check your connection and try again.", "error");
         return; // fail closed: no time_off write, no audit, no notifications
       }
       const approveRows = await approveRes.json().catch(() => []);
+      // (review r5 fix-1) another session now — while the status PATCH was
+      // out: no time_off row, no notice, nothing said in it; this tap's
+      // approval set back to pending (with the tap's headers).
+      if (!live()) {
+        if (Array.isArray(approveRows) && approveRows.length) await setBackRequest(req.id, "status=eq.approved", { status: "pending", reviewed_at: null, reviewed_by: null }, tapH, "Vacation approval",
+          { action: "request.approve_unapplied", summary: `Approval of ${req.surgeon_name}'s ${isNoCall ? "no-call" : "vacation"} request ${req.start_date} → ${req.end_date}` });
+        return;
+      }
       if (!Array.isArray(approveRows) || approveRows.length === 0) {
         showToast("This request was already handled or withdrawn — nothing was changed.", "error");
         return; // realtime/60s poll will refresh the visible status
@@ -2905,15 +3036,24 @@ function CallSchedule() {
       const approveTargets = [...new Set([req.surgeon_id, ...schedulerAdminIds].filter(Boolean))];
       await addNotification("vacation_approved", isNoCall ? "No-Call Approved" : "Vacation Approved",
         `${req.surgeon_name}'s ${kindLabel} ${req.start_date} to ${req.end_date} was approved`,
-        { surgeon_id: req.surgeon_id }, approveTargets);
-      sendEmailNotif("vacation_approved", { surgeon_name: req.surgeon_name, surgeon_id: req.surgeon_id, start_date: req.start_date, end_date: req.end_date, request_type: req.request_type }, approveTargets);
-    } catch(e) { console.error("Approve error:", e); showToast("Couldn't approve the request — check your connection and try again.", "error"); }
+        { surgeon_id: req.surgeon_id }, approveTargets, ep);
+      if (!live()) return; // (review r5 fix-1) another session now: no e-mail sent from it
+      sendEmailNotif("vacation_approved", { surgeon_name: req.surgeon_name, surgeon_id: req.surgeon_id, start_date: req.start_date, end_date: req.end_date, request_type: req.request_type }, approveTargets, ep);
+    } catch(e) { console.error("Approve error:", e); if (live()) showToast("Couldn't approve the request — check your connection and try again.", "error"); }
   }, [addNotification, sendEmailNotif, schedulerAdminIds, userProfile, surgeons, mySurgeon, vacations, noCallDays]);
 
   // ─── Vacation Request: Deny ───
   const denyVacRequest = useCallback(async (req, note = "") => {
+    // This session, at the tap (review r5 fix-1 — as the trade's decline):
+    // the denial (its status write) is this account's, done — but after a
+    // session change meanwhile nothing more of it is done, sent or said in
+    // the next session: no list update, no notice, no e-mail, no toast. Its
+    // audit line is still written — as this account (the tap's headers).
+    const ep = sessionEpochRef.current, tapH = dbAuthHeaders();
+    const live = () => sessionEpochRef.current === ep;
     const isNoCall = req.request_type === "nocall";
     const kindLabel = isNoCall ? "no-call days" : "vacation";
+    const denyAudit = (hdrs) => logAudit("request.deny", `Denied ${req.surgeon_name}'s ${isNoCall ? "no-call" : "vacation"} request: ${req.start_date} → ${req.end_date}${note ? " (" + note + ")" : ""}`, { request_id: req.id, surgeon_id: req.surgeon_id }, hdrs);
     try {
       const reviewerName = userProfile?.display_name || surgeons.find(s => s.id === mySurgeon)?.name || "A colleague";
       // Fail-closed status write — same pattern as approve above (no bucket
@@ -2921,27 +3061,29 @@ function CallSchedule() {
       // pending: re-actionable, duplicate notifications/emails on re-deny).
       const denyRes = await fetch(`${SUPABASE_URL}/rest/v1/vacation_requests?id=eq.${req.id}&status=eq.pending`, {
         method: "PATCH",
-        headers: { ...dbAuthHeaders(), "Content-Type": "application/json", Prefer: "return=representation" },
+        headers: { ...tapH, "Content-Type": "application/json", Prefer: "return=representation" },
         body: JSON.stringify({ status: "denied", reviewed_at: new Date().toISOString(), reviewed_by: reviewerName, review_note: note }),
       });
       if (!denyRes.ok) {
         console.error("Vacation deny status write failed:", denyRes.status, await denyRes.text().catch(() => ""));
-        showToast("Couldn't deny the request — nothing was changed. Check your connection and try again.", "error");
+        if (live()) showToast("Couldn't deny the request — nothing was changed. Check your connection and try again.", "error");
         return;
       }
       const denyRows = await denyRes.json().catch(() => []);
+      if (!live()) { if (Array.isArray(denyRows) && denyRows.length) denyAudit(tapH); return; } // (review r5 fix-1) another session now: recorded as this account, nothing more
       if (!Array.isArray(denyRows) || denyRows.length === 0) {
         showToast("This request was already handled or withdrawn — nothing was changed.", "error");
         return;
       }
       setVacRequests(prev => prev.map(r => r.id === req.id ? { ...r, status: "denied", review_note: note } : r));
-      logAudit("request.deny", `Denied ${req.surgeon_name}'s ${isNoCall ? "no-call" : "vacation"} request: ${req.start_date} → ${req.end_date}${note ? " (" + note + ")" : ""}`, { request_id: req.id, surgeon_id: req.surgeon_id });
+      denyAudit();
       const denyTargets = [...new Set([req.surgeon_id, ...schedulerAdminIds].filter(Boolean))];
       await addNotification("vacation_denied", isNoCall ? "No-Call Denied" : "Vacation Denied",
         `${req.surgeon_name}'s ${kindLabel} ${req.start_date} to ${req.end_date} was denied${note ? ": " + note : ""}`,
-        { surgeon_id: req.surgeon_id }, denyTargets);
-      sendEmailNotif("vacation_denied", { surgeon_name: req.surgeon_name, surgeon_id: req.surgeon_id, start_date: req.start_date, end_date: req.end_date, note, request_type: req.request_type }, denyTargets);
-    } catch(e) { console.error("Deny error:", e); showToast("Couldn't deny the request — check your connection and try again.", "error"); }
+        { surgeon_id: req.surgeon_id }, denyTargets, ep);
+      if (!live()) return; // (review r5 fix-1) another session now: no e-mail sent from it
+      sendEmailNotif("vacation_denied", { surgeon_name: req.surgeon_name, surgeon_id: req.surgeon_id, start_date: req.start_date, end_date: req.end_date, note, request_type: req.request_type }, denyTargets, ep);
+    } catch(e) { console.error("Deny error:", e); if (live()) showToast("Couldn't deny the request — check your connection and try again.", "error"); }
   }, [addNotification, sendEmailNotif, schedulerAdminIds, userProfile, surgeons, mySurgeon]);
 
   // ─── Shift Trade Request: Submit ───
@@ -2974,6 +3116,13 @@ function CallSchedule() {
     const toName = surgeons.find(s => s.id === tradeTo)?.name || tradeTo;
     const shiftLabel = SHIFT_LABELS[tradeShift] || tradeShift;
     tradeSubmitBusyRef.current = true;
+    // This session, at the tap (review r5 fix-1 — as the vacation submit): the
+    // proposal is sent with this account's headers; after a session change
+    // during it, it is recorded as this account (its audit line, with the
+    // tap's headers) and nothing more of it is done, sent or said in the next
+    // session — no list update, no form cleared, no toast, no notice or e-mail.
+    const ep = sessionEpochRef.current, tapH = dbAuthHeaders();
+    const live = () => sessionEpochRef.current === ep;
     try {
       const req = {
         from_surgeon_id: tradeFrom, from_surgeon_name: fromName,
@@ -2986,6 +3135,11 @@ function CallSchedule() {
       // HTTP failures come back as { data:null, error } (fail-loud, 2026-10-11):
       // say why and keep the form, never clear it silently.
       const { data: inserted, error: insertErr } = await db.insert("shift_trade_requests", req);
+      if (!live()) { // (review r5 fix-1) another session now
+        if (inserted) logAudit("trade.propose", tradeProposeMsg(req), { from: tradeFrom, to: tradeTo, shift: tradeShift, week: tradeWeek }, tapH);
+        else console.error("trade request insert failed:", insertErr);
+        return;
+      }
       if (!inserted) {
         console.error("trade request insert failed:", insertErr);
         showToast(`Couldn't propose the trade — ${writeFailReason(insertErr)}. Nothing was sent; your choices are still here.`, "error");
@@ -3005,10 +3159,11 @@ function CallSchedule() {
         await addNotification("trade_submitted", "Shift Trade Proposed",
           proposeMsg,
           { from_surgeon_id: tradeFrom, to_surgeon_id: tradeTo },
-          [tradeFrom, tradeTo]);
-        sendEmailNotif("trade_submitted", { from_name: fromName, to_name: toName, shift: shiftLabel, week: tradeWeek, detail: proposeMsg }, [tradeFrom, tradeTo]);
+          [tradeFrom, tradeTo], ep);
+        if (!live()) return; // (review r5 fix-1) another session now: no e-mail sent from it
+        sendEmailNotif("trade_submitted", { from_name: fromName, to_name: toName, shift: shiftLabel, week: tradeWeek, detail: proposeMsg }, [tradeFrom, tradeTo], ep);
       }
-    } catch(e) { console.error("Submit trade error:", e); showToast("Couldn't submit the trade — check your connection and try again.", "error"); }
+    } catch(e) { console.error("Submit trade error:", e); if (live()) showToast("Couldn't submit the trade — check your connection and try again.", "error"); }
     finally { tradeSubmitBusyRef.current = false; }
   }, [tradeFrom, tradeTo, tradeWeek, tradeShift, tradeReturnWeek, tradeReturnShift, surgeons, addNotification, sendEmailNotif, isScheduler, schedule, silvisActive, silvisBlock, silvisRefuse]);
 
@@ -3422,15 +3577,20 @@ function CallSchedule() {
   }, [addNotification, sendEmailNotif]);
 
   // ─── Delete Trade Request ───
+  // (review r5 fix-1) This one and the two request deletes below: sent with
+  // this account's headers at the tap; after a session change during the
+  // DELETE, nothing of it is said or changed on the next session's screen.
   const deleteTradeRequest = useCallback(async (reqId) => {
     if (!confirm("Delete this trade request?")) return;
+    const ep = sessionEpochRef.current;
     try {
       const res = await fetch(`${SUPABASE_URL}/rest/v1/shift_trade_requests?id=eq.${reqId}`, { method: "DELETE", headers: { ...dbAuthHeaders(), Prefer: "return=minimal" } });
+      if (sessionEpochRef.current !== ep) { if (!res.ok) console.error("Delete trade request failed:", res.status); return; } // another session now
       if (!res.ok) { console.error("Delete trade request failed:", res.status); showToast("Couldn't delete the trade request — check your connection and try again.", "error"); }
       setTradeRequests(prev => prev.filter(r => r.id !== reqId));
     } catch(e) {
       console.error("Delete trade request failed:", e);
-      showToast("Couldn't delete the trade request — check your connection and try again.", "error");
+      if (sessionEpochRef.current === ep) showToast("Couldn't delete the trade request — check your connection and try again.", "error");
     }
   }, []);
 
@@ -3462,11 +3622,13 @@ function CallSchedule() {
   // ─── Delete a Single Vacation Request ───
   const deleteVacRequest = useCallback(async (reqId) => {
     if (!confirm("Delete this request?")) return;
+    const ep = sessionEpochRef.current; // (review r5 fix-1 — as deleteTradeRequest's)
     try {
       const res = await fetch(`${SUPABASE_URL}/rest/v1/vacation_requests?id=eq.${reqId}`, { method: "DELETE", headers: { ...dbAuthHeaders(), Prefer: "return=minimal" } });
+      if (sessionEpochRef.current !== ep) { if (!res.ok) console.error("Delete vacation request failed:", res.status); return; } // another session now
       if (!res.ok) { console.error("Delete vacation request failed:", res.status); showToast("Couldn't delete the request — check your connection and try again.", "error"); }
       setVacRequests(prev => prev.filter(r => r.id !== reqId));
-    } catch(e) { console.error("Delete vacation request error:", e); showToast("Couldn't delete the request — check your connection and try again.", "error"); }
+    } catch(e) { console.error("Delete vacation request error:", e); if (sessionEpochRef.current === ep) showToast("Couldn't delete the request — check your connection and try again.", "error"); }
   }, []);
 
   // ─── Edit Vacation Request ───
@@ -3487,6 +3649,17 @@ function CallSchedule() {
         return;
       }
     }
+    // This session, at the tap (review r5 fix-1 — as the approval): after
+    // the edit's PATCH, a session change meanwhile stops it there, silently —
+    // the approved vacation's time_off row is not moved (as the next account,
+    // or refused as anon: the request's dates and the time off then disagree),
+    // nothing said; the request's edit is set back to its old dates and reason
+    // with the tap's headers — only from the dates this tap wrote.
+    const ep = sessionEpochRef.current, tapH = dbAuthHeaders();
+    const live = () => sessionEpochRef.current === ep;
+    // The request as it was (its old dates — what a set-back restores, and
+    // what an approved one's time off is moved from).
+    const req = vacRequests.find(r => r.id === editingVacReq.id);
     try {
       const updates = { start_date: editingVacReq.start_date, end_date: editingVacReq.end_date, reason: editingVacReq.reason };
       // Fail-closed row update. Id-only precondition — edits are valid on both
@@ -3496,28 +3669,35 @@ function CallSchedule() {
       // carries new dates while the request records the old ones.
       const editRes = await fetch(`${SUPABASE_URL}/rest/v1/vacation_requests?id=eq.${editingVacReq.id}`, {
         method: "PATCH",
-        headers: { ...dbAuthHeaders(), "Content-Type": "application/json", Prefer: "return=representation" },
+        headers: { ...tapH, "Content-Type": "application/json", Prefer: "return=representation" },
         body: JSON.stringify(updates),
       });
       if (!editRes.ok) {
         console.error("Vacation edit write failed:", editRes.status, await editRes.text().catch(() => ""));
-        showToast("Couldn't save the changes — nothing was changed. Check your connection and try again.", "error");
+        if (live()) showToast("Couldn't save the changes — nothing was changed. Check your connection and try again.", "error");
         return;
       }
       const editRows = await editRes.json().catch(() => []);
+      if (!live()) { // (review r5 fix-1) another session now
+        const summary = `Edit of ${req ? req.surgeon_name + "'s request" : "request " + editingVacReq.id} to ${updates.start_date} → ${updates.end_date}`;
+        if (Array.isArray(editRows) && editRows.length) {
+          if (req) await setBackRequest(editingVacReq.id, `start_date=eq.${updates.start_date}&end_date=eq.${updates.end_date}`, { start_date: req.start_date, end_date: req.end_date, reason: req.reason ?? null }, tapH, "Vacation request edit", { action: "request.edit_unapplied", summary });
+          else { console.error("Vacation request edit abandoned (the session changed while it was being saved); its old dates are unknown here, so it could NOT be set back:", editingVacReq.id); logAudit("request.edit_unapplied", `${summary} — NOT applied: the session changed while it was being saved; it could not be set back — needs a manual fix`, { request_id: editingVacReq.id, reverted: false }, tapH); }
+        }
+        return;
+      }
       if (!Array.isArray(editRows) || editRows.length === 0) {
         showToast("This request no longer exists — nothing was changed.", "error");
         return;
       }
       setVacRequests(prev => prev.map(r => r.id === editingVacReq.id ? { ...r, ...updates } : r));
       // If approved, also update the bucket it landed in (vacations or no-call)
-      const req = vacRequests.find(r => r.id === editingVacReq.id);
       if (req?.status === "approved") {
         toEdit(req.surgeon_id, req.request_type === "nocall" ? "nocall" : "vacation",
           req.start_date, req.end_date, editingVacReq.start_date, editingVacReq.end_date);
       }
       setEditingVacReq(null);
-    } catch(e) { console.error("Edit vacation error:", e); showToast("Couldn't save the changes — check your connection and try again.", "error"); }
+    } catch(e) { console.error("Edit vacation error:", e); if (live()) showToast("Couldn't save the changes — check your connection and try again.", "error"); }
   }, [editingVacReq, vacRequests, isScheduler]);
 
   // ─── Revoke Approved Vacation (scheduler only) ───
@@ -3525,6 +3705,14 @@ function CallSchedule() {
     const isNoCall = req.request_type === "nocall";
     const kindLabel = isNoCall ? "no-call days" : "vacation";
     if (!confirm(`Revoke ${req.surgeon_name}'s approved ${kindLabel} ${req.start_date} → ${req.end_date}? This will remove it from the schedule.`)) return;
+    // This session, at the tap (review r5 fix-1 — as the approval): after the
+    // revoke's status PATCH, a session change meanwhile stops it there,
+    // silently — the time_off row is not deleted (as the next account; or
+    // refused as anon, leaving a revoked request whose vacation still blocks
+    // the surgeon), no notice, nothing said; this tap's revoke is set back to
+    // approved with the tap's headers (only from the 'revoked' it wrote).
+    const ep = sessionEpochRef.current, tapH = dbAuthHeaders();
+    const live = () => sessionEpochRef.current === ep;
     try {
       // Fail-closed status write with an APPROVED precondition. The most
       // consequential of the four: unchecked, a failed status write here still
@@ -3535,15 +3723,20 @@ function CallSchedule() {
       // road — and it lands on a person, not just a table.
       const revokeRes = await fetch(`${SUPABASE_URL}/rest/v1/vacation_requests?id=eq.${req.id}&status=eq.approved`, {
         method: "PATCH",
-        headers: { ...dbAuthHeaders(), "Content-Type": "application/json", Prefer: "return=representation" },
+        headers: { ...tapH, "Content-Type": "application/json", Prefer: "return=representation" },
         body: JSON.stringify({ status: "revoked", reviewed_at: new Date().toISOString() }),
       });
       if (!revokeRes.ok) {
         console.error("Vacation revoke status write failed:", revokeRes.status, await revokeRes.text().catch(() => ""));
-        showToast("Couldn't revoke the vacation — nothing was changed. Check your connection and try again.", "error");
+        if (live()) showToast("Couldn't revoke the vacation — nothing was changed. Check your connection and try again.", "error");
         return; // fail closed: the time_off entry stays; record and reality agree
       }
       const revokeRows = await revokeRes.json().catch(() => []);
+      if (!live()) { // (review r5 fix-1) another session now: set back to approved (the time off still holds it)
+        if (Array.isArray(revokeRows) && revokeRows.length) await setBackRequest(req.id, "status=eq.revoked", { status: "approved", reviewed_at: req.reviewed_at ?? null }, tapH, "Vacation revoke",
+          { action: "request.revoke_unapplied", summary: `Revoke of ${req.surgeon_name}'s approved ${isNoCall ? "no-call" : "vacation"} ${req.start_date} → ${req.end_date}` });
+        return;
+      }
       if (!Array.isArray(revokeRows) || revokeRows.length === 0) {
         showToast("This vacation is no longer approved (already revoked or changed) — nothing was changed.", "error");
         return;
@@ -3554,18 +3747,20 @@ function CallSchedule() {
       const revokeTargets = [...new Set([req.surgeon_id, ...schedulerAdminIds].filter(Boolean))];
       await addNotification("vacation_revoked", isNoCall ? "No-Call Revoked" : "Vacation Revoked",
         `${req.surgeon_name}'s ${kindLabel} ${req.start_date} → ${req.end_date} was revoked`,
-        {}, revokeTargets);
-    } catch(e) { console.error("Revoke error:", e); showToast("Couldn't revoke the vacation — check your connection and try again.", "error"); }
+        {}, revokeTargets, ep);
+    } catch(e) { console.error("Revoke error:", e); if (live()) showToast("Couldn't revoke the vacation — check your connection and try again.", "error"); }
   }, [addNotification, schedulerAdminIds]);
 
   // ─── Clear All Reviewed Vacation Requests ───
   const clearReviewedRequests = useCallback(async () => {
     if (!confirm("Clear all reviewed (approved/denied) requests? Pending requests will be kept.")) return;
+    const ep = sessionEpochRef.current; // (review r5 fix-1 — as deleteTradeRequest's)
     try {
       const res = await fetch(`${SUPABASE_URL}/rest/v1/vacation_requests?status=neq.pending`, { method: "DELETE", headers: { ...dbAuthHeaders(), Prefer: "return=minimal" } });
+      if (sessionEpochRef.current !== ep) { if (!res.ok) console.error("Clear reviewed requests failed:", res.status); return; } // another session now
       if (!res.ok) { console.error("Clear reviewed requests failed:", res.status); showToast("Couldn't clear reviewed requests — check your connection and try again.", "error"); }
       setVacRequests(prev => prev.filter(r => r.status === "pending"));
-    } catch(e) { console.error("Clear reviewed requests error:", e); showToast("Couldn't clear reviewed requests — check your connection and try again.", "error"); }
+    } catch(e) { console.error("Clear reviewed requests error:", e); if (sessionEpochRef.current === ep) showToast("Couldn't clear reviewed requests — check your connection and try again.", "error"); }
   }, []);
 
   // ─── OneSignal Push Notifications ───
@@ -3640,6 +3835,12 @@ function CallSchedule() {
   // user gesture lost, subscription didn't register) and surfaces them to the
   // user instead of silently doing nothing.
   const requestPushPermission = useCallback(async () => {
+    // The session at the tap (review r5 fix-1): after a session change while
+    // the prompt (or OneSignal's login) is out — a sign-out, or "Sign in
+    // again" on another account — this device's push subscription is never
+    // associated with the previous account (OneSignal.login with its
+    // person_id) in the next session, and nothing of it is said there.
+    const ep = sessionEpochRef.current;
     setPushDiag({ msg: "Requesting permission…", loading: true });
     try {
       // iOS Safari requires the app to be installed as a PWA (home screen) for
@@ -3662,7 +3863,10 @@ function CallSchedule() {
         return;
       }
 
+      // (review r5 fix-1) The permission prompt can stay up for minutes: a
+      // session change meanwhile stops it here (ep, at the tap — above).
       await window.OneSignal.Notifications.requestPermission();
+      if (sessionEpochRef.current !== ep) return;
       const perm = window.OneSignal.Notifications.permission;
       setOneSignalSubscribed(perm);
       setPushPermission(perm ? "granted" : "denied");
@@ -3677,11 +3881,13 @@ function CallSchedule() {
       // Without this, only broadcast pushes arrive.
       if (mySurgeon && mySurgeon !== "admin" && window.OneSignal?.login) {
         try { await window.OneSignal.login(mySurgeon); } catch(e) { console.error("OneSignal login after permission:", e); }
+        if (sessionEpochRef.current !== ep) return; // (review r5 fix-1) another session now: nothing said on its screen
       }
 
       // Read back the subscription ID and external ID so the Settings panel can
       // prove the device is fully registered.
       setTimeout(() => {
+        if (sessionEpochRef.current !== ep) return; // (review r5 fix-1) another session now
         try {
           const subId = window.OneSignal?.User?.PushSubscription?.id || null;
           const extId = window.OneSignal?.User?.externalId || null;
@@ -3696,6 +3902,7 @@ function CallSchedule() {
       }, 1500);
     } catch(e) {
       console.error("Push permission error:", e);
+      if (sessionEpochRef.current !== ep) return; // (review r5 fix-1) another session now: nothing said on its screen
       setPushPermission("unsupported");
       setPushDiag({ msg: `Error: ${e.message || e}. Check browser console for details.`, loading: false });
     }
@@ -3872,8 +4079,16 @@ function CallSchedule() {
     });
     // Debounce the DB save (500ms) — per surgeonId, so concurrent edits to
     // different people's rows can't cancel each other's pending writes.
+    // The session at the change (review r5 fix-1): a save whose debounce ends
+    // after a session change is never written as the next account (nor
+    // refused as anon, and said on the sign-in screen) — the next account's
+    // own prefs are read by its load; one that crosses it while its write is
+    // out: its audit line as this account (its headers), nothing said.
+    const ep = sessionEpochRef.current;
     if (notifSaveTimerRef.current[surgeonId]) clearTimeout(notifSaveTimerRef.current[surgeonId]);
     notifSaveTimerRef.current[surgeonId] = setTimeout(async () => {
+      if (sessionEpochRef.current !== ep) return;
+      const tapH = dbAuthHeaders();
       setNotifPrefsSaving(true);
       try {
         const cur = notifPrefsRef.current[surgeonId] || {};
@@ -3921,8 +4136,8 @@ function CallSchedule() {
         auditRef.current.logAudit(
           src === "signup" ? "prefs.signup_populate" : "prefs.save",
           `${src === "signup" ? "Signup filled" : "Saved"} notification prefs for ${auditRef.current.nameOf(surgeonId)} — email: ${emailMasked}`,
-          { surgeon_id: surgeonId, email_masked: emailMasked, source: src });
-      } catch(e) { console.error("Save notif pref error:", e); showToast("Couldn't save notification settings — check your connection and try again.", "error"); }
+          { surgeon_id: surgeonId, email_masked: emailMasked, source: src }, sessionEpochRef.current === ep ? undefined : tapH);
+      } catch(e) { console.error("Save notif pref error:", e); if (sessionEpochRef.current === ep) showToast("Couldn't save notification settings — check your connection and try again.", "error"); }
       setNotifPrefsSaving(false);
     }, 500);
   }, []);
@@ -3957,10 +4172,13 @@ function CallSchedule() {
     // server-side recipient resolution an untargeted send is a broadcast,
     // which would make the test button email the whole group.
     if (edgeFunctionUrl && mySurgeon && notifPrefs[mySurgeon]?.email) {
+      const ep = sessionEpochRef.current; // (review r5 fix-1) the test's outcome is never said on the next session's screen
       try {
-        await sendEmailNotif("test", { message: "This is a test email from DSG Call Schedule." }, [mySurgeon]);
+        await sendEmailNotif("test", { message: "This is a test email from DSG Call Schedule." }, [mySurgeon], ep);
+        if (sessionEpochRef.current !== ep) return;
         setNotifTestSent("Browser + email notifications sent!");
       } catch(e) {
+        if (sessionEpochRef.current !== ep) return;
         setNotifTestSent("Browser sent! Email failed — check Edge Function URL.");
       }
     }
@@ -4024,6 +4242,11 @@ function CallSchedule() {
   // Upload filled template (CSV or Excel)
   const handleTemplateUpload = useCallback(async (file) => {
     if (!file) return;
+    // The session at the pick (review r5 fix-1): the file's read (and the
+    // spreadsheet library's import) is awaited — after a session change
+    // meanwhile its counts are never merged into the next account's setup
+    // (which its autosave would then write as that account), nothing said.
+    const ep = sessionEpochRef.current;
     setScanning(true);
     setScanMsg("Reading file…");
 
@@ -4090,13 +4313,14 @@ function CallSchedule() {
         matched++;
       });
 
+      if (sessionEpochRef.current !== ep) return; // another session now (review r5 fix-1)
       setPriorCounts(prev => ({ ...prev, ...newCounts }));
       setScanMsg(matched > 0
         ? `Imported counts for ${matched} surgeon${matched>1?"s":""}. Review and adjust if needed.`
         : "Could not match surgeon names. Make sure the first column has initials matching: " + surgeons.map(s=>s.name).join(", "));
     } catch (err) {
       console.error("Upload error:", err);
-      setScanMsg("Could not parse the file. Use the CSV template or an Excel file with matching columns.");
+      if (sessionEpochRef.current === ep) setScanMsg("Could not parse the file. Use the CSV template or an Excel file with matching columns.");
     } finally {
       setScanning(false);
       if (fileRef.current) fileRef.current.value = "";
@@ -4163,11 +4387,15 @@ function CallSchedule() {
   };
 
   // ─── Office Contact Handlers ───
+  // (review r5 fix-1) Each is sent with the headers of its tap; after a
+  // session change during it, nothing of it is said (no alert, no toast) or
+  // put on the next session's screen.
   const addOfficeContact = async () => {
     const name = (newOfficeName || "").trim();
     const email = (newOfficeEmail || "").trim();
     if (!name || !email) { alert("Name and email are required."); return; }
     if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) { alert("Please enter a valid email address."); return; }
+    const ep = sessionEpochRef.current;
     setOfficeNotifBusy(true);
     try {
       const { data, error } = await db.insert("office_contacts", {
@@ -4175,29 +4403,33 @@ function CallSchedule() {
         departments: newOfficeDepts,
         active: true,
       });
+      if (sessionEpochRef.current !== ep) { if (error) console.error("Office contact add failed:", error); return; } // another session now
       if (error) { alert("Failed to add: " + JSON.stringify(error)); return; }
       if (data) setOfficeContacts(prev => [...prev, data].sort((a,b)=>(a.name||"").localeCompare(b.name||"")));
       setNewOfficeName(""); setNewOfficeEmail(""); setNewOfficeDepts([]);
     } finally { setOfficeNotifBusy(false); }
   };
   const updateOfficeContact = async (id, patch) => {
+    const ep = sessionEpochRef.current;
     setOfficeContacts(prev => prev.map(c => c.id === id ? { ...c, ...patch } : c));
     try {
       const { error } = await db.update("office_contacts", id, { ...patch, updated_at: new Date().toISOString() });
+      if (sessionEpochRef.current !== ep) { if (error) console.error("Office contact update failed:", error); return; } // another session now
       if (error) { alert("Failed to update: " + error); }
-    } catch(e) { console.error("Office contact update failed:", e); showToast("Couldn't update the contact — check your connection and try again.", "error"); }
+    } catch(e) { console.error("Office contact update failed:", e); if (sessionEpochRef.current === ep) showToast("Couldn't update the contact — check your connection and try again.", "error"); }
   };
   const deleteOfficeContact = async (id) => {
     const c = officeContacts.find(x => x.id === id);
     if (!c) return;
     if (!confirm(`Remove ${c.name} (${c.email}) from the office distribution list?`)) return;
+    const ep = sessionEpochRef.current;
     setOfficeContacts(prev => prev.filter(x => x.id !== id));
     try {
       const res = await fetch(`${SUPABASE_URL}/rest/v1/office_contacts?id=eq.${id}`, {
         method: "DELETE", headers: dbAuthHeaders(),
       });
-      if (!res.ok) { console.error("Office contact delete failed:", res.status); showToast("Couldn't remove the contact — check your connection and try again.", "error"); }
-    } catch(e) { console.error("Office contact delete failed:", e); showToast("Couldn't remove the contact — check your connection and try again.", "error"); }
+      if (!res.ok) { console.error("Office contact delete failed:", res.status); if (sessionEpochRef.current === ep) showToast("Couldn't remove the contact — check your connection and try again.", "error"); }
+    } catch(e) { console.error("Office contact delete failed:", e); if (sessionEpochRef.current === ep) showToast("Couldn't remove the contact — check your connection and try again.", "error"); }
   };
   const toggleOfficeContactDept = (id, dept) => {
     const c = officeContacts.find(x => x.id === id);
@@ -4226,6 +4458,7 @@ function CallSchedule() {
   };
   const triggerPublishNotify = async () => {
     if (!confirm(`Send a "new schedule published" email to all ${officeContacts.filter(c=>c.active).length} active office contact(s)?`)) return;
+    const ep = sessionEpochRef.current; // (review r5 fix-1 — as the office contacts': its outcome never said on the next session's screen)
     setOfficeNotifBusy(true);
     try {
       const url = `${SUPABASE_URL}/functions/v1/office-notifications`;
@@ -4239,14 +4472,16 @@ function CallSchedule() {
         body: JSON.stringify({ mode: "publish", period_label: publishLabel || "" }),
       });
       const body = await res.json().catch(() => ({}));
+      if (sessionEpochRef.current !== ep) { if (!res.ok) console.error("Office publish notice failed:", JSON.stringify(body)); return; } // another session now
       if (!res.ok) { alert("Publish failed: " + JSON.stringify(body)); return; }
       showToast(`Sent ${body.sent ?? 0} email(s).`, "success");
       setShowPublishDialog(false);
-    } catch(e) { alert("Publish error: " + (e?.message || e)); }
+    } catch(e) { if (sessionEpochRef.current === ep) alert("Publish error: " + (e?.message || e)); else console.error("Office publish notice error:", e); }
     finally { setOfficeNotifBusy(false); }
   };
   const triggerDigestTest = async () => {
     if (!confirm("Manually fire the Saturday digest now? This will send emails if any changes are detected since the last digest snapshot.")) return;
+    const ep = sessionEpochRef.current; // (review r5 fix-1 — as the publish notice's)
     setOfficeNotifBusy(true);
     try {
       const url = `${SUPABASE_URL}/functions/v1/office-notifications`;
@@ -4257,10 +4492,11 @@ function CallSchedule() {
         body: JSON.stringify({ mode: "digest" }),
       });
       const body = await res.json().catch(() => ({}));
+      if (sessionEpochRef.current !== ep) { if (!res.ok) console.error("Digest run failed:", JSON.stringify(body)); return; } // another session now
       if (!res.ok) { alert("Digest failed: " + JSON.stringify(body)); return; }
       const surgeons = (body.affected_surgeons || []).join(", ");
       alert(`Digest run: ${body.sent ?? 0} email(s) sent.\nAffected surgeons: ${surgeons || "(none)"}`);
-    } catch(e) { alert("Digest error: " + (e?.message || e)); }
+    } catch(e) { if (sessionEpochRef.current === ep) alert("Digest error: " + (e?.message || e)); else console.error("Digest run error:", e); }
     finally { setOfficeNotifBusy(false); }
   };
 
@@ -4290,10 +4526,14 @@ function CallSchedule() {
   // APP shifts persist to their own table (app_shifts_data), gated by
   // can_assign_apps — so an APP lead can save them without schedule-write
   // permission, and an APP assigner can never touch the schedule blob.
+  // (review r5 fix-1) Sent with the headers of its call; after a session
+  // change during it, nothing of it is said on the next session's screen.
   const saveAppShifts = async (next) => {
+    const ep = sessionEpochRef.current;
     try {
       const { error } = await supabase.from("app_shifts_data")
         .upsert({ id: "main", data: next, updated_at: new Date().toISOString() });
+      if (sessionEpochRef.current !== ep) { if (error) console.error("APP shift save failed (the session changed meanwhile):", error); return; } // another session now
       if (error) {
         setSaveError(true);
         setSaveStatus("⚠ APP shift save failed");
@@ -4303,6 +4543,7 @@ function CallSchedule() {
         setTimeout(() => setSaveStatus(""), 1500);
       }
     } catch(e) {
+      if (sessionEpochRef.current !== ep) { console.error("APP shift save failed (the session changed meanwhile):", e); return; } // another session now
       setSaveError(true);
       setSaveStatus("⚠ APP shift save failed");
       showToast("Couldn't save APP shifts — check your connection and try again.", "error");
@@ -4346,6 +4587,11 @@ function CallSchedule() {
     // basing on current state (not a sheet-open-time snapshot) keeps the
     // clobber window no wider than the existing per-tap path's.
     if (!appShiftsLoaded) return { ok: false, error: APP_SHIFTS_NOT_LOADED }; // the sheet keeps its draft
+    // (review r5 fix-1) The session at the commit, and its headers: after a
+    // session change during the write, its audit line is written as this
+    // account (never under the next token) and nothing of it is put on the
+    // next session's screen (its own load reads the row).
+    const ep = sessionEpochRef.current, tapH = dbAuthHeaders();
     const next = { ...appShifts };
     let assigns = 0, clears = 0;
     for (const [ds, aid] of Object.entries(draft)) {
@@ -4356,10 +4602,11 @@ function CallSchedule() {
       const { error } = await supabase.from("app_shifts_data")
         .upsert({ id: "main", data: next, updated_at: new Date().toISOString() });
       if (error) throw new Error(String(error).slice(0, 200));
-      setAppShifts(next);
+      const here = sessionEpochRef.current === ep;
+      if (here) setAppShifts(next);
       logAudit("app_shift.paint",
         `Painted APP call shifts: ${assigns} assigned, ${clears} cleared`,
-        { assigns, clears, dates: Object.keys(draft).sort() });
+        { assigns, clears, dates: Object.keys(draft).sort() }, here ? undefined : tapH);
       return { ok: true };
     } catch (e) {
       return { ok: false, error: String(e?.message || e) };
@@ -4368,6 +4615,7 @@ function CallSchedule() {
   const commitTimeOffPaint = async (entries) => {
     // entries: [{ personId, kind: "vacation"|"nocall", start, end }]
     if (!USE_TIME_OFF) return { ok: false, error: "time_off writes are disabled" }; // parity with toAdd's guard
+    const ep = sessionEpochRef.current, tapH = dbAuthHeaders(); // (review r5 fix-1 — as commitAppPaint's)
     try {
       const rows = entries.map(en => ({
         person_id: en.personId, kind: en.kind,
@@ -4376,10 +4624,11 @@ function CallSchedule() {
       }));
       const { error } = await db.insert("time_off", rows);
       if (error) throw new Error(JSON.stringify(error).slice(0, 200));
+      const here = sessionEpochRef.current === ep;
       logAudit("timeoff.paint",
         `Painted ${rows.length} time-off entr${rows.length === 1 ? "y" : "ies"} (bulk)`,
-        { entries: rows.map(r => ({ person_id: r.person_id, kind: r.kind, start: r.start_date, end: r.end_date })) });
-      loadTimeOff(); // canonicalize immediately (realtime would also catch it)
+        { entries: rows.map(r => ({ person_id: r.person_id, kind: r.kind, start: r.start_date, end: r.end_date })) }, here ? undefined : tapH);
+      if (here) loadTimeOff(); // canonicalize immediately (realtime would also catch it)
       return { ok: true };
     } catch (e) {
       return { ok: false, error: String(e?.message || e) };
@@ -4395,26 +4644,38 @@ function CallSchedule() {
   // Saves are SERIALIZED on a promise chain (two upserts can never be in
   // flight, so commits can't reorder) and each save sends the map as it is at
   // execution time — one debounced enqueue per tap burst carries everything.
+  // (review r5 fix-1) The taps' session (dayOffEpochRef, set at each tap):
+  // a save — the debounced one, a retry, the unload flush — that runs after a
+  // session change (a sign-out, or "Sign in again" on another account) never
+  // writes those taps as the next account, nor retries them as anon on the
+  // sign-in screen (a toast every 5 s); they are dropped, so the next
+  // account's own day-offs are adopted (dirty blocks adoption). A save that
+  // crosses one while its write is out: its audit lines as the account that
+  // tapped (its headers), nothing said on the next screen.
   const enqueueDayOffSave = () => {
     dayOffSaveChainRef.current = dayOffSaveChainRef.current.then(async () => {
       if (!dayOffDirtyRef.current) return; // an earlier chained save already confirmed everything
+      if (dayOffEpochRef.current !== sessionEpochRef.current) { dayOffDirtyRef.current = false; dayOffPendingAuditRef.current = []; return; } // another session's taps: dropped, never sent from this one
+      const ep = sessionEpochRef.current, tapH = dbAuthHeaders();
       const auditCount = dayOffPendingAuditRef.current.length;
       const ts = new Date().toISOString();
       try {
         const { error } = await supabase.from("app_shifts_data")
           .upsert({ id: "dayoff", data: appDayOffRef.current, updated_at: ts });
         if (error) throw new Error(String(error).slice(0, 200));
+        const here = sessionEpochRef.current === ep;
         dayOffLastWriteTsRef.current = ts;
         // Audit only what this save actually CARRIED and COMMITTED; entries
         // queued by taps landing mid-save wait for the next confirmed save.
         dayOffPendingAuditRef.current.splice(0, auditCount).forEach(a =>
           logAudit(a.was ? "app_dayoff.remove" : "app_dayoff.add",
-            `${a.was ? "Removed" : "Marked"} APP ${a.name} day off ${a.ds}`, { date: a.ds, app_id: a.aid }));
+            `${a.was ? "Removed" : "Marked"} APP ${a.name} day off ${a.ds}`, { date: a.ds, app_id: a.aid }, here ? undefined : tapH));
         if (dayOffPendingAuditRef.current.length === 0) {
           dayOffDirtyRef.current = false; // fully confirmed — server adoption may resume
         } else {
           scheduleDayOffRetry(600); // mid-save taps still need a confirming save
         }
+        if (!here) return; // (review r5 fix-1) another session now: nothing said on the next screen
         setSaveError(false);
         setSaveStatus("APP day-offs saved");
         setTimeout(() => setSaveStatus(""), 1500);
@@ -4423,10 +4684,11 @@ function CallSchedule() {
         // dirty blocks any refresh from reverting it). Loud + AUTO-retried —
         // recovery must not depend on the user tapping again.
         console.error("APP day-off save failed (auto-retry in 5s):", e);
+        scheduleDayOffRetry(5000); // (after a session change: the retry drops them, above)
+        if (sessionEpochRef.current !== ep) return; // another session now: nothing said on its screen
         setSaveError(true);
         setSaveStatus("⚠ APP day-off save failed — retrying…");
         showToast("Couldn't save APP day-offs — retrying automatically. Check your connection if this persists.", "error");
-        scheduleDayOffRetry(5000);
       }
     });
   };
@@ -4457,6 +4719,7 @@ function CallSchedule() {
     appDayOffRef.current = next;
     setAppDayOff(next);
     dayOffDirtyRef.current = true; // from here until a confirmed commit, local state is the truth
+    dayOffEpochRef.current = sessionEpochRef.current; // …this session's (review r5 fix-1: never saved from the next one)
     dayOffPendingAuditRef.current.push({ was, aid, ds, name: nameOf(aid) });
     // One enqueue per tap burst (600ms after the last tap); the chain
     // serializes it behind any in-flight save.
@@ -11506,7 +11769,9 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                         <input type="checkbox" checked={!!p.can_assign_apps} onChange={async (e)=>{
                           const newVal = e.target.checked;
                           const updated = { ...p, can_assign_apps: newVal };
+                          const ep = sessionEpochRef.current; // (review r5 fix-1) after a session change during the write: this account's own profile never set as the next session's, nothing said
                           const { error } = await dbAuth.upsertProfile(updated);
+                          if (sessionEpochRef.current !== ep) { if (error) console.error("APP-access update failed:", error); return; }
                           if (error) { alert("Failed to update: " + error); return; }
                           setAllProfiles(prev => prev.map(x => x.id === p.id ? updated : x));
                           // If updating the current user, refresh their own profile too
@@ -11705,6 +11970,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   </div>
                   {edgeFunctionUrl && (
                     <button onClick={async ()=>{
+                      const ep = sessionEpochRef.current; // (review r5 fix-1) its result is never said on the next session's screen
                       try {
                         const pushUrl = edgeFunctionUrl.replace(/\/[^/]+$/, "/send-push");
                         const resp = await fetch(pushUrl, {
@@ -11716,12 +11982,13 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                           }),
                         });
                         const data = await resp.json().catch(()=>({}));
+                        if (sessionEpochRef.current !== ep) return;
                         // Key success off resp.ok — a gateway 401 body is {code,message}
                         // (no `errors`/`error`), so the old fallthrough reported "Success" on failure.
                         alert(resp.ok
                           ? `Push test result:\nStatus: ${resp.status}\nSuccess — check your devices for the test push.`
                           : `Push test FAILED\nStatus: ${resp.status}\n${data.error || data.message || (data.errors ? "Errors: " + JSON.stringify(data.errors) : "unknown error")}`);
-                      } catch(e) { alert("Push test error: " + e.message); }
+                      } catch(e) { if (sessionEpochRef.current === ep) alert("Push test error: " + e.message); }
                     }} style={{...css.btn(false),padding:"4px 10px",fontSize:10,marginTop:4}}>
                       Test Push to All Devices
                     </button>
@@ -11729,6 +11996,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   {edgeFunctionUrl && (
                     <button onClick={async ()=>{
                       if (!confirm("This will trigger the vacation deadline reminder Edge Function.\n\nIt will only send a push if today + 2 days = the auto-detected deadline AND no reminder has been sent for that deadline yet.\n\nProceed?")) return;
+                      const ep = sessionEpochRef.current; // (review r5 fix-1) its result is never said on the next session's screen
                       try {
                         const url = edgeFunctionUrl.replace(/\/[^/]+$/, "/vacation-deadline-reminder");
                         const resp = await fetch(url, {
@@ -11736,8 +12004,9 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                           headers: { "Content-Type": "application/json" },
                         });
                         const data = await resp.json().catch(()=>({}));
+                        if (sessionEpochRef.current !== ep) return;
                         alert(`Vacation deadline reminder result:\nStatus: ${resp.status}\n${JSON.stringify(data, null, 2)}`);
-                      } catch(e) { alert("Test error: " + e.message); }
+                      } catch(e) { if (sessionEpochRef.current === ep) alert("Test error: " + e.message); }
                     }} style={{...css.btn(false),padding:"4px 10px",fontSize:10,marginTop:4,marginLeft:6}}>
                       Test Vacation Deadline Reminder
                     </button>
@@ -12483,6 +12752,8 @@ function createSchedSync(deps) {
   const inFlight = new Set();      // K with a chain request on the wire (the keepalive skips them)
   const lostIns = new Set();       // K whose INSERT went out and its outcome stayed unknown (no trusted answer, and its read-back failed too) — H3
   const resend = new Set();        // K of those a later re-read found NO row for: re-sent, and told once when it lands (H3)
+  const putBack = new Set();       // K of those that are a week shown again after a DELETE of ours whose outcome stayed unknown, its row then found gone (I2): told in a deletion's words
+  const kaLive = {};               // K -> [canon] keepalive bodies whose request hasn't settled (the app calls its done()): they may still land, so no read disproves them and settle() keeps them (I3)
   const live = new Set();          // { ctl, start, ms } of requests in flight (aborted when stale on resume)
   const adoptEpoch = {}; let epoch = 0; // never reset (Undo / intents compare against it)
   let conflicts = [];              // [{ k, at }] weeks replaced by someone else's copy, until dismissed
@@ -12503,7 +12774,14 @@ function createSchedSync(deps) {
   const weekLabel = (k) => { try { const [y, m, dd] = k.split("-").map(Number); return new Date(y, m - 1, dd).toLocaleDateString(undefined, { month: "short", day: "numeric" }); } catch (e) { return k; } };
   const weekList = (ks) => ks.slice(0, 4).map(weekLabel).join(", ") + (ks.length > 4 ? ` and ${ks.length - 4} more` : "");
   const addSent = (k, c) => { (sent[k] = sent[k] || []).push(c); if (sent[k].length > 20) sent[k].shift(); };
-  const settle = (k) => { delete sent[k]; failed.delete(k); noPermission.delete(k); delete rejected[k]; lostIns.delete(k); resend.delete(k); };
+  // The ledger of k once it is settled (confirmed, adopted) — or once a read
+  // PROVED that none of our bodies for it landed (I1, below): only keepalive
+  // bodies still on the wire stay in it. One of those may land yet, and its
+  // row must then read as ours (review r5 matrix-3: an Undo settled by a
+  // re-read before the keepalive landed got its edit back, silently, at the
+  // next pull — now the landed row is "ours" and the Undo is sent over it).
+  const keepLive = (k) => { if (kaLive[k] && kaLive[k].length) sent[k] = kaLive[k].slice(); else delete sent[k]; };
+  const settle = (k) => { keepLive(k); failed.delete(k); noPermission.delete(k); delete rejected[k]; lostIns.delete(k); resend.delete(k); putBack.delete(k); };
   const tokenNow = () => { try { return d.token ? d.token() : null; } catch (e) { return null; } };
   const authState = () => { const t = tokenNow(); return !t ? "none" : t === deadToken ? "expired" : "ok"; };
   // Every READ (the pull, its week fetch, read-backs, whole-table reads)
@@ -12733,29 +13011,43 @@ function createSchedSync(deps) {
     // be someone's REVERT of our landed write — X0, ours X1 lands (the answer
     // lost), another device puts X0 back — and re-sending ours over it
     // overwrote their change silently (a DELETE of ours, then the week put
-    // back as it was, likewise). While one is out, it is "refreshed" only when
-    // the row's version is still known's: our landed write would have moved it
-    // (kn.version + 1), and every write after that moves it on — except a
-    // deletion and a re-insert as it was, which restarts at 1, so a week known
-    // at v1 is not "refreshed" then. Otherwise it is theirs: a conflict, their
-    // copy shown and told. (An old build's version-keeping re-send is the
-    // version-kept case; under a write of ours that landed, that re-send is
-    // itself a revert of it: a conflict, loudly.)
+    // back as it was, likewise). Then it is theirs: a conflict, their copy
+    // shown and told.
+    // I1 (review r5 matrix-1, CRITICAL): the VERSION is never proof that our
+    // body didn't land. 21/n still called it "refreshed" while one was out
+    // when the row's version was the known one (not 1) — but a deletion and a
+    // re-insert restart it at 1, and edits after that climb back to exactly
+    // the version we knew (an Undo of a deletion, or a Clear + Restore, then a
+    // revert in the editor): our lost write overwrote that revert, silently.
+    // An old build's unchanged re-send and such a revert look the same in
+    // every column we read. So it is "refreshed" only when NO body of ours
+    // that may have landed is out — each one proven not to have landed: the
+    // body just answered with 0 rows (`missed`: its CAS matched nothing), or
+    // any body a later read found the week UNCHANGED after (disproved: taken
+    // out of the ledger, keepLive). Otherwise theirs. The cost, accepted: an
+    // old build re-sending a week unchanged while a lost write of ours that
+    // never landed is out (and unproven) is a LOUD false conflict — never a
+    // silent overwrite.
     if (kn && row && c === kn.canon) {
       const out = (sent[k] || []).filter((x, i, a) => !(missed !== undefined && x === missed && i === a.lastIndexOf(x)));
-      if (!out.length || ((row.version === undefined ? null : row.version) === kn.version && kn.version !== 1)) return "refreshed";
+      if (!out.length) return "refreshed";
     }
     return "theirs";
   };
   // `mine`: the row is the answer to our own write. A row read back is ours
   // when it holds a body we sent (the ledger, before settle() forgets it).
-  const confirm = (k, row, mine) => {
+  // `how`: classify()'s word for a row read back.
+  const confirm = (k, row, mine, how) => {
     const ours = !!mine || (!!sent[k] && sent[k].includes(row ? canon(row.data) : DEL));
     if (row) known[k] = fromRow(row); else delete known[k];
     // E7: a clear / reset / restore waiting to put back `before` records
     // which saved copies are OURS — so its refusal never takes our own body,
     // landing meanwhile, for someone else's change.
     owners.forEach(o => { if (o.knownAt) { if (ours) o.knownAt.landed[k] = tokOf(known[k]); else delete o.knownAt.landed[k]; } });
+    // …and which were taken as "refreshed" — the data known, under a new
+    // token, with every body of ours PROVEN not to have landed (I1): nobody
+    // changed it, so its refusal puts `before` back over it (savedMoved).
+    owners.forEach(o => { if (o.knownAt) { if (how === "refreshed") o.knownAt.refreshed[k] = tokOf(known[k]); else delete o.knownAt.refreshed[k]; } });
     settle(k);
     const ad = approvedDeletes.get(k);
     if (!row || !known[k] || ad !== known[k].version) approvedDeletes.delete(k);
@@ -12769,6 +13061,11 @@ function createSchedSync(deps) {
   //   row?, sent?, thrown?, code?, reason? }
   // mode "force" (clear / restore / publish): a conflict is rewritten at the
   // server's version, and a week found deleted is re-inserted.
+  // I3 (review r5 matrix-3): a force DELETE carries the CAS too — of the row
+  // the job just read. Sent with none, one the server applied late (after our
+  // timeout gave up on it) deleted a week re-created or rewritten after it.
+  // Its 0 rows now mean someone changed the week since that read: read back,
+  // then deleted again at the server's token (attempt 1), as a force PATCH is.
   const writeWeek = async (k, target, mode, by, g) => {
     const del = target === undefined;
     for (let attempt = 0; attempt < 2; attempt++) {
@@ -12777,7 +13074,7 @@ function createSchedSync(deps) {
       if (del && !kn) return { k, outcome: "saved" };
       const c = del ? DEL : canon(target), ts = d.now(), tok = tokenNow();
       let url, init;
-      if (del) { url = `${base()}?week_monday=eq.${k}${mode === "force" ? "" : "&" + cas(kn)}`; init = { method: "DELETE", headers: wh({ Prefer: "return=representation" }) }; }
+      if (del) { url = `${base()}?week_monday=eq.${k}&${cas(kn)}`; init = { method: "DELETE", headers: wh({ Prefer: "return=representation" }) }; }
       else if (kn) { url = `${base()}?week_monday=eq.${k}&${cas(kn)}`; init = { method: "PATCH", headers: wh({ Prefer: "return=representation" }), body: JSON.stringify({ data: target, version: (kn.version || 0) + 1, updated_by: by, updated_at: ts }) }; }
       else { url = base(); init = { method: "POST", headers: wh({ Prefer: "return=representation" }), body: JSON.stringify({ week_monday: k, data: target, version: 1, updated_by: by, updated_at: ts }) }; }
       addSent(k, c);
@@ -12816,8 +13113,12 @@ function createSchedSync(deps) {
       // under it unchanged): send this one at the new token — unless the
       // screen has moved on since (e.g. an Undo during the read-back); then
       // the week stays pending and the next push sends the newer copy.
-      if (how === "ours" || how === "refreshed") { confirm(k, rb.row); if (mode !== "force" && canon((d.getState() || {})[k]) !== c) return { k, outcome: "superseded" }; continue; }
-      if (how === "unchanged") { if (kind === "ok") noPermission.add(k); failed.add(k); return { k, outcome: "pending", thrown: !!r.thrown }; }
+      if (how === "ours" || how === "refreshed") { confirm(k, rb.row, false, how); if (mode !== "force" && canon((d.getState() || {})[k]) !== c) return { k, outcome: "superseded" }; continue; }
+      // Unchanged: nothing of ours landed — this body, and every earlier one
+      // (each had its answer, or timed out, before this read): none of them
+      // counts as out any more (I1), nor as ours (I2: a DELETE of ours that
+      // didn't land never takes a later deletion elsewhere for its own).
+      if (how === "unchanged") { if (kind === "ok") noPermission.add(k); failed.add(k); keepLive(k); return { k, outcome: "pending", thrown: !!r.thrown }; }
       if (mode === "force" && attempt === 0) { if (rb.row) known[k] = fromRow(rb.row); else delete known[k]; continue; } // rewrite at the server's version / re-insert
       return { k, outcome: "conflict", sent: c, row: rb.row };
     }
@@ -12882,8 +13183,27 @@ function createSchedSync(deps) {
       // pending, for a re-read that works).
       if (!rb.ok) { if (lostIns.has(k) && !known[k]) unread.add(k); continue; }
       if (!rb.row && !known[k] && lostIns.has(k)) resend.add(k);
+      // I2 (review r5 matrix-2 — the same decision as H3): no row for a week
+      // whose DELETE of ours went out with its outcome unknown (still in the
+      // ledger: no read has proven it didn't land), while the screen shows the
+      // week again (an Undo, a re-add). Our deletion landed, or another
+      // device's (a clear, a restore, a delete) — no tombstones tell which.
+      // Taken for ours it went out as a plain INSERT and undid their deletion
+      // without a word. It is the user's own intended week, so it is put back
+      // (below, as before) — told once, in a deletion's words. (One PROVEN
+      // not to have landed is out of the ledger: then the missing row is
+      // theirs — adopted and told as a conflict, as for an edit of ours.)
+      const delBack = !rb.row && !!known[k] && (sent[k] || []).includes(DEL); // (classify() says "ours" for it only while the screen shows the week)
       const how = classify(k, rb.row);
-      if (how === "mirror" || how === "ours" || how === "refreshed") confirm(k, rb.row);
+      // I7 (review r5 fix-2): a re-sent week (H3 / I2) whose re-send landed
+      // with its answer lost too is told here, as it is confirmed — settle()
+      // would forget it before anything said so, and the deletion elsewhere
+      // stayed undone without a word.
+      if (resend.has(k) && rb.row && (how === "mirror" || how === "ours")) results.push({ k, outcome: "saved", resent: true, putBack: putBack.has(k) });
+      if (how === "mirror" || how === "ours" || how === "refreshed") confirm(k, rb.row, false, how);
+      // Unchanged: none of our bodies for k landed (each had its answer, or
+      // timed out, before this read) — none counts as out or ours any more (I1).
+      else if (how === "unchanged") keepLive(k);
       // Someone else's copy. A force job takes it as known (and so rewrites
       // over it) only for a week it OWNS — a publish only its period's. Any
       // other week is a conflict exactly as in a normal push: their copy is
@@ -12891,6 +13211,7 @@ function createSchedSync(deps) {
       // from their row (I2).
       else if (how === "theirs" && (job.mode !== "force" || (job.keys && !job.keys.has(k)))) { const cur = d.getState() || {}; if (adoptInto({ [k]: rb.row }, "conflict", { [k]: k in cur ? canon(cur[k]) : DEL }).length) results.push({ k, outcome: "conflict" }); }
       else if (how === "theirs") { if (rb.row) known[k] = fromRow(rb.row); else delete known[k]; settle(k); }
+      if (delBack && how === "ours") { resend.add(k); putBack.add(k); } // (after confirm(): settle() clears both)
     }
     // A11 again, after the re-read's awaits: a clear / reset / restore /
     // publish requested meanwhile owns the weeks now, and the mirror holds ITS
@@ -12939,10 +13260,11 @@ function createSchedSync(deps) {
       if (moved(k)) continue;
       if (unread.has(k)) { results.push({ k, outcome: "pending" }); continue; }
       const again = resend.has(k); // (H3: the re-read found no row for its lost INSERT — settle() forgets it as it lands)
+      const back = putBack.has(k); // (I2: …or for a week shown again after its lost DELETE)
       const x = await writeWeek(k, clone(target[k]), job.mode, by, g);
       results.push(x);
       if (x.outcome === "auth" || x.thrown) stop = true;
-      if (again && x.outcome === "saved") x.resent = true;
+      if (again && x.outcome === "saved") { x.resent = true; x.putBack = back; }
     }
     let heldDeletes = 0;
     for (const k of sendDeletes) {
@@ -12989,10 +13311,16 @@ function createSchedSync(deps) {
     if (conf.length) parts.push(`${conf.length === 1 ? "The week of " + weekList(conf) + " was" : "The weeks of " + weekList(conf) + " were"} changed by someone else — showing the latest. Reapply your change if it's still needed.`);
     if (ref.length) parts.push(`The server refused the change to ${weekList(ref)} (no permission) — showing what is saved.`);
     // H3: a week saved again after a re-read found no row for its lost INSERT.
-    const again = results.filter(x => x.resent).map(x => x.k);
+    const again = results.filter(x => x.resent && !x.putBack).map(x => x.k);
     if (again.length) parts.push(again.length === 1
       ? `The week of ${weekList(again)} was saved again — its first save couldn't be confirmed. If it was removed on another device on purpose, remove it again.`
       : `The weeks of ${weekList(again)} were saved again — their first saves couldn't be confirmed. If they were removed on another device on purpose, remove them again.`);
+    // I2: …or for a week shown again (an Undo, a re-add) after a DELETE of
+    // ours whose outcome was lost: ours may be the deletion it was missing for.
+    const back = results.filter(x => x.resent && x.putBack).map(x => x.k);
+    if (back.length) parts.push(back.length === 1
+      ? `The week of ${weekList(back)} was saved again — your deletion of it couldn't be confirmed. If it was removed on another device on purpose, remove it again.`
+      : `The weeks of ${weekList(back)} were saved again — your deletions of them couldn't be confirmed. If they were removed on another device on purpose, remove them again.`);
     // A rejection (A4) is told once per NEW code, with writeFailReason's
     // reason: a retried body rejected again with that code says nothing more
     // (the header line stays). A code is forgotten once no week is rejected
@@ -13055,7 +13383,10 @@ function createSchedSync(deps) {
     const cur0 = d.getState() || {};
     rows.forEach(x => {
       const k = x.week_monday, how = classify(k, x);
-      if (how === "mirror" || how === "ours") { confirm(k, x); return; }      // what we show / what we sent
+      // (A re-sent week — H3 / I2 — is left to the push that follows: its
+      // re-read tells it as it confirms it, I7. Confirmed here, it was
+      // settled before anything said so.)
+      if ((how === "mirror" || how === "ours") && !resend.has(k)) { confirm(k, x); return; }      // what we show / what we sent
       const dirty = unconfirmed(k) || (known[k] ? (!(k in cur0) || canon(cur0[k]) !== known[k].canon) : (k in cur0));
       if (dirty) return; // an unsaved local edit wins here; the next push settles it by read-back (R21)
       adopt[k] = x; expect[k] = k in cur0 ? canon(cur0[k]) : DEL;
@@ -13090,7 +13421,7 @@ function createSchedSync(deps) {
     known = {}; const next = {};
     rows.forEach(x => { known[x.week_monday] = fromRow(x); next[x.week_monday] = clone(x.data); });
     seeded = true; loadFailed = false; staleRemovals = 0; removalSig = "";
-    Object.keys(sent).forEach(k => delete sent[k]); failed.clear(); noPermission.clear(); approvedDeletes.clear(); lostIns.clear(); resend.clear();
+    Object.keys(sent).forEach(k => delete sent[k]); failed.clear(); noPermission.clear(); approvedDeletes.clear(); lostIns.clear(); resend.clear(); putBack.clear();
     Object.keys(rejected).forEach(k => delete rejected[k]); toldCodes.clear();
     d.commit(next);
     report();
@@ -13161,14 +13492,18 @@ function createSchedSync(deps) {
   // landing under a later one, which is put back and sent at that token).
   // H1 (review r4 branch-1), as in classify(): the data known then under a
   // new token is "refreshed" only when no body of ours that may have landed
-  // was out for k at the request (was.out) — or when the version is still the
-  // one known then (and not 1: a deletion + re-insert restarts there). Else
-  // it can be someone's revert of our landed write, and putting `back` over it
-  // re-sent ours silently. (A body sent after the request can't move `known`
-  // before the job runs: nothing re-reads it while the job is queued.)
+  // was out for k at the request (was.out). Else it can be someone's revert
+  // of our landed write, and putting `back` over it re-sent ours silently.
+  // I1 (review r5 matrix-1): never on the version's word — it climbs back to
+  // the known one after a deletion and a re-insert. Only on PROOF: the token
+  // it moved to is one classify() took as "refreshed" (knownAt.refreshed —
+  // every body of ours out then proven not to have landed: a 0-row answer, or
+  // a read that found the week unchanged). (A body sent after the request
+  // can't move `known` before the job runs: nothing re-reads it while the job
+  // is queued.)
   const savedMoved = (k, back, knownAt) => {
     const was = knownAt.was[k], kn = known[k], tok = tokOf(kn), now = kn ? kn.canon : DEL;
-    const stillKnown = !!was && now === was.canon && (!was.out || (!!kn && kn.version === was.v && was.v !== 1));
+    const stillKnown = !!was && now === was.canon && (!was.out || knownAt.refreshed[k] === tok);
     return !!was && tok !== was.tok && now !== back && !stillKnown && knownAt.landed[k] !== tok;
   };
   // E7: the weeks a refusal / cancel found someone else's change on are told
@@ -13240,7 +13575,7 @@ function createSchedSync(deps) {
         if (gen !== g) return { ok: false, wrote: false, skipped: "reset" };
         if (rows === null) return refuse({ ok: false, wrote: false, error: "Couldn't read the saved weeks first — the new weeks stay on this screen and will be saved automatically. Nobody was notified." });
         const got = {}; rows.forEach(x => { got[x.week_monday] = x; });
-        keys.forEach(k => { if (got[k]) known[k] = fromRow(got[k]); else delete known[k]; delete sent[k]; lostIns.delete(k); resend.delete(k); }); // (its weeks are the publish's to write: re-reading one isn't a re-send — H3)
+        keys.forEach(k => { if (got[k]) known[k] = fromRow(got[k]); else delete known[k]; keepLive(k); lostIns.delete(k); resend.delete(k); putBack.delete(k); }); // (its weeks are the publish's to write: re-reading one isn't a re-send — H3; a keepalive still on the wire stays in the ledger — I3)
       } else {
         const rows = await readAll();
         if (gen !== g) return { ok: false, wrote: false, skipped: "reset" };
@@ -13252,7 +13587,7 @@ function createSchedSync(deps) {
         if (!rows) return refuse({ ok: false, wrote: false, error: "Couldn't read the saved schedule — nothing was changed." });
         known = {}; rows.forEach(x => { known[x.week_monday] = fromRow(x); });
         seeded = true; loadFailed = false; staleRemovals = 0; removalSig = "";
-        Object.keys(sent).forEach(k => delete sent[k]); lostIns.clear(); resend.clear();
+        Object.keys(sent).forEach(keepLive); lostIns.clear(); resend.clear(); putBack.clear(); // (a keepalive still on the wire stays in the ledger — I3)
       }
       const res = await runPush({ target, grant, mode: "force", keys, quiet: true }); // its caller tells the outcome (res.notice), in ONE toast
       if (gen !== g) return { ok: false, wrote: false, skipped: "reset" };
@@ -13275,13 +13610,33 @@ function createSchedSync(deps) {
   // wire are skipped (a week whose earlier save failed is NOT skipped — R4;
   // the CAS keeps it harmless if that earlier body landed after all). Every
   // body goes into the ledger.
+  // I3 (review r5 matrix-3): …and is LIVE until its request settles — the
+  // app calls each request's done() then (a keepalive has no timeout, and its
+  // answer is never read: return=minimal says nothing of the rows). The page
+  // can survive its unload (a cancelled "Leave site?", a page restored from
+  // the back-forward cache) with one still held in the radio: no read proves
+  // a live one didn't land (it may yet), and settle() keeps it in the ledger,
+  // so its row, landing after an Undo the re-read settled, reads as OURS — the
+  // Undo is sent over it — never as someone else's to adopt silently. Once
+  // done, its outcome is unknown, as a lost answer's: the week stays
+  // unconfirmed until the next push reads it back.
+  const kaDone = (k, c, g) => {
+    let open = true;
+    return () => {
+      if (!open) return; open = false;
+      if (gen !== g || !kaLive[k]) return; // (another session now: reset() forgot it)
+      const i = kaLive[k].indexOf(c); if (i >= 0) kaLive[k].splice(i, 1);
+      if (!kaLive[k].length) delete kaLive[k];
+    };
+  };
   const keepaliveRequests = () => {
     if (!seeded || !d.canWrite() || authState() !== "ok") return [];
-    const target = d.getState() || {}, by = d.userId ? d.userId() : null, ts = d.now();
+    const target = d.getState() || {}, by = d.userId ? d.userId() : null, ts = d.now(), g = gen;
     return diff(target).changed.filter(k => known[k] && !inFlight.has(k) && !(rejected[k] && rejected[k].canon === canon(target[k]))).map(k => {
+      (kaLive[k] = kaLive[k] || []).push(canon(target[k]));
       const kn = known[k];
       addSent(k, canon(target[k]));
-      return { url: `${base()}?week_monday=eq.${k}&${cas(kn)}`, init: { method: "PATCH", keepalive: true, headers: wh({ Prefer: "return=minimal" }), body: JSON.stringify({ data: target[k], version: (kn.version || 0) + 1, updated_by: by, updated_at: ts }) } };
+      return { url: `${base()}?week_monday=eq.${k}&${cas(kn)}`, init: { method: "PATCH", keepalive: true, headers: wh({ Prefer: "return=minimal" }), body: JSON.stringify({ data: target[k], version: (kn.version || 0) + 1, updated_by: by, updated_at: ts }) }, done: kaDone(k, canon(target[k]), g) };
     });
   };
 
@@ -13335,9 +13690,10 @@ function createSchedSync(deps) {
       const late = opts && typeof opts.late === "function" ? opts.late : null;
       const startShown = shownMap([...new Set([...Object.keys(t), ...Object.keys(known), ...(keysArr || []), ...Object.keys(before || {})])]);
       // E7: the saved copy of each of those weeks now — its token, its data,
-      // its version, and whether a body of ours is out for it (H1) — and
-      // (filled by confirm()) the ones of ours confirmed meanwhile.
-      const knownAt = before ? { was: Object.keys(startShown).reduce((m, k) => (m[k] = { tok: tokOf(known[k]), canon: known[k] ? known[k].canon : DEL, v: known[k] ? known[k].version : undefined, out: unconfirmed(k) }, m), {}), landed: {} } : null;
+      // and whether a body of ours is out for it (H1) — and (filled by
+      // confirm()) the ones of ours confirmed meanwhile, and the ones taken as
+      // "refreshed" on proof (I1).
+      const knownAt = before ? { was: Object.keys(startShown).reduce((m, k) => (m[k] = { tok: tokOf(known[k]), canon: known[k] ? known[k].canon : DEL, out: unconfirmed(k) }, m), {}), landed: {}, refreshed: {} } : null;
       // The weeks it owns from now until it's done (A11): a publish, its
       // period's; a clear / reset (an empty target), every week; a restore,
       // its target's and every week the table holds.
@@ -13393,7 +13749,7 @@ function createSchedSync(deps) {
       gen++; known = {}; seeded = false; loadFailed = false; deadToken = null; blocked = 0; lastBlockSig = ""; removalSig = ""; staleRemovals = 0; conflicts = [];
       [...owners].forEach(o => { if (!o.state.started) { o.state.cancelled = true; o.release(); } }); // queued before the boundary: never runs under the next session
       Object.keys(sent).forEach(k => delete sent[k]); Object.keys(rejected).forEach(k => delete rejected[k]); toldCodes.clear();
-      failed.clear(); noPermission.clear(); approvedDeletes.clear(); inFlight.clear(); lostIns.clear(); resend.clear();
+      failed.clear(); noPermission.clear(); approvedDeletes.clear(); inFlight.clear(); lostIns.clear(); resend.clear(); putBack.clear(); Object.keys(kaLive).forEach(k => delete kaLive[k]);
       d.commit({});
       report();
       return api.load();

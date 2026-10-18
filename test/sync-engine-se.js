@@ -281,8 +281,8 @@ const MUTANTS = [
   { id: "M80", what: "a 404 PGRST205 is a client error (no read-back; 'reload/update the app' — A4: unknown)",
     from: "if ([404, 408, 413, 429].includes(r.status)", to: "if ([408, 413, 429].includes(r.status)" },
   { id: "M81", what: "the same data under a new token is someone else's (an old build's unchanged re-send costs the edit — A2)",
-    // (re-pinned 21/n: "refreshed" now has H1's condition; the same mutation — its return removed)
-    from: '      if (!out.length || ((row.version === undefined ? null : row.version) === kn.version && kn.version !== 1)) return "refreshed";\n', to: "" },
+    // (re-pinned 21/n: "refreshed" now has H1's condition; 22/n: I1's — the same mutation, its return removed)
+    from: '      if (!out.length) return "refreshed";\n', to: "" },
   // 16/n — review round 1, the engine items (E1–E5) and the test gaps (T1–T3: the reviewer's T24b, T2, N37)
   { id: "M82", what: "E1: a push already in its re-read when a clear / restore is requested doesn't re-check for an owner (it sends the job's target: a false wipe block, a refused restore's writes landing — A11)",
     from: '    if (job.mode !== "force" && authoritativeQueued > 0) { if (results.length) toasts(results); report(); return { ok: false, skipped: "authoritative-queued", results }; }\n', to: "" },
@@ -653,17 +653,57 @@ const MUTANTS = [
   // 21/n — review round 4. H1 (CRITICAL, branch-1): a lost-answer save never re-sent over another device's revert —
   // killed in SE86 (a)–(h) by behaviour.
   { id: "H1a", what: "H1: the data we knew under a new token is 'refreshed' even while a body of ours that may have landed is out (the 20/n line: a revert of our lost write overwritten silently — p1 / p2a / p4)",
-    from: '      if (!out.length || ((row.version === undefined ? null : row.version) === kn.version && kn.version !== 1)) return "refreshed";\n', to: '      return "refreshed";\n' },
-  { id: "H1b", what: "H1 (anchor-keeping variant): …'refreshed' while out only when updated_at is unchanged, not the version (an old build's version-keeping re-send under our lost edit that never landed: a false conflict)",
-    from: '      if (!out.length || ((row.version === undefined ? null : row.version) === kn.version && kn.version !== 1)) return "refreshed";\n', to: '      if (!out.length || ((row.updated_at || null) === kn.updated_at && kn.version !== 1)) return "refreshed";\n' },
-  { id: "H1c", what: "H1 (variant): the version rule without its v1 exception (a week known at v1, deleted and re-inserted as it was elsewhere — v1 again — taken for 'refreshed': our lost write re-sent over it)",
-    from: '      if (!out.length || ((row.version === undefined ? null : row.version) === kn.version && kn.version !== 1)) return "refreshed";\n', to: '      if (!out.length || (row.version === undefined ? null : row.version) === kn.version) return "refreshed";\n' },
-  { id: "H1d", what: "H1 (variant, over-strict): never 'refreshed' while a body of ours is out (an old build's unchanged re-send under our lost edit that never landed costs the edit)",
-    from: '      if (!out.length || ((row.version === undefined ? null : row.version) === kn.version && kn.version !== 1)) return "refreshed";\n', to: '      if (!out.length) return "refreshed";\n' },
+    // (re-pinned 22/n: the line is now I1's; the same mutation. H1b–H1d retired with the version rule they varied:
+    // I1a restores it whole, and H1d — "never 'refreshed' while out" — is what 22/n does, short of proof.)
+    from: '      if (!out.length) return "refreshed";\n', to: '      return "refreshed";\n' },
   { id: "H1e", what: "H1: a body answered with 0 rows still counts as out (SE71 at v1: an old build's unchanged re-send under an unsaved edit is a false conflict)",
     from: "      const out = (sent[k] || []).filter((x, i, a) => !(missed !== undefined && x === missed && i === a.lastIndexOf(x)));", to: "      const out = (sent[k] || []);" },
   { id: "H1f", what: "H1: E7's savedMoved keeps the 20/n exemption (the data known at the tap under a new token is never someone else's — a refused restore puts our lost write back over a revert)",
-    from: "    const stillKnown = !!was && now === was.canon && (!was.out || (!!kn && kn.version === was.v && was.v !== 1));", to: "    const stillKnown = !!was && now === was.canon;" },
+    from: "    const stillKnown = !!was && now === was.canon && (!was.out || knownAt.refreshed[k] === tok);", to: "    const stillKnown = !!was && now === was.canon;" },
+  // 22/n — review round 5. I1 (CRITICAL, matrix-1): the version is never proof that our lost-answer body didn't land —
+  // SE87 (a)–(e), SE86 (f)–(f3), SE82 (e).
+  { id: "I1a", what: "I1: the 21/n version rule restored — 'refreshed' while out when the row's version is the known one (not 1): after a deletion + re-insert + a revert climbing back to it, our lost write overwrites the revert silently (matrix-1)",
+    from: '      if (!out.length) return "refreshed";\n', to: '      if (!out.length || ((row.version === undefined ? null : row.version) === kn.version && kn.version !== 1)) return "refreshed";\n' },
+  { id: "I1b", what: "I1: E7's savedMoved keeps the 21/n version rule (a refused restore puts our lost write back over a revert at the version known at the tap)",
+    edits: [["    const stillKnown = !!was && now === was.canon && (!was.out || knownAt.refreshed[k] === tok);", "    const stillKnown = !!was && now === was.canon && (!was.out || (!!kn && kn.version === was.v && was.v !== 1));"],
+      ["canon: known[k] ? known[k].canon : DEL, out: unconfirmed(k) }", "canon: known[k] ? known[k].canon : DEL, v: known[k] ? known[k].version : undefined, out: unconfirmed(k) }"]] },
+  { id: "I1c", what: "I1: a read-back that finds the week UNCHANGED proves nothing (our 503'd edit stays 'out': an old build's unchanged re-send is a false conflict; a 503'd DELETE stays 'ours' — I2's online re-add re-inserted silently)",
+    from: "failed.add(k); keepLive(k); return { k, outcome: \"pending\", thrown: !!r.thrown }; }", to: "failed.add(k); return { k, outcome: \"pending\", thrown: !!r.thrown }; }" },
+  { id: "I1d", what: "I1: a later push's re-read that finds the week UNCHANGED proves nothing (SE86 (f3): a false conflict)",
+    from: "      else if (how === \"unchanged\") keepLive(k);\n", to: "" },
+  { id: "I1e", what: "I1: E7 ignores the proof — the data known at the tap under a token classify() took as 'refreshed' (our body answered 0 rows) is someone else's change (SE82 (e): a false conflict, the edit not put back)",
+    from: "(!was.out || knownAt.refreshed[k] === tok)", to: "!was.out" },
+  // I2 (matrix-2 — H3's decision): a week shown again after a DELETE of ours with its outcome unknown, the row then
+  // found gone, is put back and told once — SE87 (h)–(j), (l).
+  { id: "I2a", what: "I2: the re-read doesn't mark a put-back (A's Undo after its lost DELETE re-inserted over a clear / restore / delete elsewhere, nothing told — matrix-2)",
+    from: "      if (delBack && how === \"ours\") { resend.add(k); putBack.add(k); } // (after confirm(): settle() clears both)\n", to: "" },
+  { id: "I2b", what: "I2: a put-back is told in H3's words (\"its first save couldn't be confirmed\" — for a deletion of ours)",
+    from: "if (again && x.outcome === \"saved\") { x.resent = true; x.putBack = back; }", to: "if (again && x.outcome === \"saved\") { x.resent = true; }" },
+  // I3 (matrix-3): a keepalive on the wire stays ours; a force DELETE carries the CAS — SE87 (e)–(g), SE24.
+  { id: "I3a", what: "I3: a clear's / restore's force DELETE carries no CAS (one applied late deletes a week re-created after it — matrix-3 (b))",
+    from: "      if (del) { url = `${base()}?week_monday=eq.${k}&${cas(kn)}`;", to: "      if (del) { url = `${base()}?week_monday=eq.${k}${mode === \"force\" ? \"\" : \"&\" + cas(kn)}`;" },
+  { id: "I3b", what: "I3: settle() forgets a keepalive still on the wire (an Undo settled by a re-read before it lands: its edit adopted back silently at the next pull — matrix-3 (a))",
+    from: "  const settle = (k) => { keepLive(k);", to: "  const settle = (k) => { delete sent[k];" },
+  { id: "I3c", what: "I3: a keepalive is never recorded as on the wire (settle() and a read that finds the week unchanged forget it: SE87 (e), (f))",
+    from: "      (kaLive[k] = kaLive[k] || []).push(canon(target[k]));\n", to: "" },
+  { id: "I3d", what: "I3: a keepalive's done() never takes it off the wire (its week stays unconfirmed — 'Saving…' — for good)",
+    from: "      const i = kaLive[k].indexOf(c); if (i >= 0) kaLive[k].splice(i, 1);", to: "      const i = -1;" },
+  // I7 (fix-2): a re-send whose own answer is lost is still told once — SE87 (k), (l).
+  { id: "I7a", what: "I7: a re-sent week confirmed by a later re-read is settled without being told (H3's / I2's message never said — fix-2)",
+    from: "      if (resend.has(k) && rb.row && (how === \"mirror\" || how === \"ours\")) results.push({ k, outcome: \"saved\", resent: true, putBack: putBack.has(k) });\n", to: "" },
+  { id: "I7b", what: "I7: the pull confirms a re-sent week itself (settled before the push's re-read could tell it)",
+    from: "if ((how === \"mirror\" || how === \"ours\") && !resend.has(k)) { confirm(k, x); return; }", to: "if (how === \"mirror\" || how === \"ours\") { confirm(k, x); return; }" },
+  // I8 — the round-5 test gaps (the reviewers' anchor-keeping survivors), each now killed by behaviour.
+  { id: "MU1", what: "I8 (fix-6): settle() forgets lostIns but not the re-send (a week told 'saved again' is told again at its next ordinary save — SE86 (i))",
+    from: "lostIns.delete(k); resend.delete(k); putBack.delete(k); };", to: "lostIns.delete(k); putBack.delete(k); };" },
+  { id: "MU2", what: "I8 (fix-3): E7's knownAt.was.out records a FAILED write at the tap, not any body out (a PATCH in flight at the tap isn't 'out': its lost write put back over a revert — SE86 (h2))",
+    from: "out: unconfirmed(k) }", to: "out: failed.has(k) }" },
+  { id: "MU3", what: "I8 (fix-4): H8's runner is ANY started job (a running publish taken as owning the screen: a cancelled restore puts back the publish's request-time screen, a pending edit lost — SE85 (g))",
+    from: "      for (const o of owners) { if (o !== owner && o.withKnown && o.state.started && !o.state.cancelled) { runner = o; break; } }", to: "      for (const o of owners) { if (o !== owner && o.state.started && !o.state.cancelled) { runner = o; break; } }" },
+  { id: "MU4", what: "I8 (fix-4): H8's runner put-back ignores weeks edited since the stacked job's request (an edit made while it waited wiped, never saved — SE85 (h))",
+    from: "        if (shownNow !== owner.startShown[k] || back === shownNow) return; // (edited since: stays, as any edit does)", to: "        if (back === shownNow) return; // (edited since: stays, as any edit does)" },
+  { id: "MU8", what: "I8 (fix-6): a lost INSERT whose re-read failed is skipped without a pending result (the push reports ok, the failure never told again — SE86 (k2))",
+    from: "      if (unread.has(k)) { results.push({ k, outcome: \"pending\" }); continue; }", to: "      if (unread.has(k)) continue;" },
   // H3 (branch-3, a decision): a lost INSERT re-sent after a deletion elsewhere is never silent — SE86 (e), (i)–(k).
   { id: "H3a", what: "H3: a re-read that finds no row for a lost INSERT doesn't mark it (re-sent silently over a clear / restore elsewhere)",
     from: "      if (!rb.row && !known[k] && lostIns.has(k)) resend.add(k);\n", to: "" },
@@ -712,10 +752,11 @@ const MUTANTS = [
   // side — the sub check itself — is mutated in sync-guards' config battery, CB.)
   { id: "H4a", app: true, what: "H4: 'Sign in again' landing on another account doesn't bind the tab to it (the renewed account's own writes go out as anon)",
     from: "    auth.bindUser(user.id); // this tab is the new account's now", to: "    // this tab is the new account's now" },
+  // (H4b / H4c re-pinned 22/n: the listener sets the banner both ways now — review r5 regress-2; the same mutations)
   { id: "H4b", app: true, what: "H4: the storage listener doesn't make the engine report (the stale tab says 'Sign in again' only at its next pull)",
-    from: "      schedSyncRef.current.report();\n      if (!auth.getSession()) setReauthNeeded(true);", to: "      if (!auth.getSession()) setReauthNeeded(true);" },
+    from: "      schedSyncRef.current.report();\n      const back = !!auth.getSession();", to: "      const back = !!auth.getSession();" },
   { id: "H4c", app: true, what: "H4: the storage listener doesn't raise the banner (nothing said in the stale tab until it tries to write)",
-    from: "      if (!auth.getSession()) setReauthNeeded(true);\n    };", to: "    };" },
+    from: "      setReauthNeeded(!back);\n", to: "      if (back) setReauthNeeded(false);\n" },
   { id: "H4d", app: true, what: "H4: the password sign-in doesn't bind the tab (another tab's later sign-in is used here as if it were this account's)",
     from: "        auth.bindUser(user && user.id); // (review r4 branch-4: the sign-in's own request ran unbound", to: "        // (review r4 branch-4: the sign-in's own request ran unbound" },
   { id: "H4e", app: true, what: "H4: the Face ID unlock doesn't bind the tab",
@@ -738,7 +779,9 @@ const MUTANTS = [
     from: "    if (!USE_TIME_OFF) { clearHere(); return { ok: true }; }\n    const r = await deleteTimeOff(", to: "    clearHere();\n    if (!USE_TIME_OFF) { return { ok: true }; }\n    const r = await deleteTimeOff(" },
   { id: "H6g", app: true, what: "H6: a time-off clear that got no answer is said to have failed ('left as they are' — though it may have landed)",
     from: "      showToast(toClear && toClear.unanswered\n", to: "      showToast(false\n" },
-  { id: "H6h", app: true, what: "H6: once the setup and APP-shifts clears landed, this screen keeps its old APP shifts (a time-off failure stops the reset with them still shown)",
+  // (H6h re-pinned 22/n: the screen takes the reset's setup and APP shifts only once all three clears landed — review
+  // r5 regress-1; this anchor is that line now, killed by SE-X21 (c); its stop-branch twin is I5b)
+  { id: "H6h", app: true, what: "H6 / I5: once all three stored-data clears landed, this screen keeps its old APP shifts",
     from: "    resetSetupHere(); setAppShifts({});\n", to: "    resetSetupHere();\n" },
   { id: "R4M6", app: true, what: "r4-fix-5 (G3 refactor): the factory reset no longer resets the counts (resetSetupHere without setPriorCounts / setYear1Counts)",
     from: "setFierceBackupSet(new Set()); setPriorCounts({}); setYear1Counts({}); setStartMonth(4);", to: "setFierceBackupSet(new Set()); setStartMonth(4);" },
@@ -766,6 +809,107 @@ const MUTANTS = [
     from: "      heir.before = owner.before; heir.knownAt = owner.knownAt;\n", to: "      heir.before = owner.before;\n" },
   { id: "R4M3", what: "r4-fix-8 (G6): the heir's weeks aren't extended with the handed-over put-back's (a new local week pending from before the first tap lost when both are refused — R4-E3)",
     from: "      Object.keys(owner.before).forEach(k => { if (!(k in heir.startShown)) heir.startShown[k] = DEL; });", to: "      Object.keys(owner.before).forEach(k => { if (!(k in heir.startShown)) void 0; });" },
+  // ── 22/n, the app half ──
+  // r5-fix-5 (review r5): H2's set-back believed on a 200 with no row, and a failed status PATCH told after a boundary —
+  // the reviewer's exact MU5 / MU6, killed by SE-X20 (j), (k).
+  { id: "MU5", app: true, what: "H2 (r5-fix-5): abandon() believes any 2xx set-back (a 200 with 0 rows — RLS / already changed — taken as set back: no console error, no audit line; the trade left accepted with no swap, unrecorded)",
+    from: "        if (Array.isArray(back) && back.length === 1) return;\n        why = b.ok", to: "        if (b.ok) return;\n        why = b.ok" },
+  { id: "MU6", app: true, what: "H2 (r5-fix-5): a failed accept status PATCH across a session change is still toasted (on the next session's screen)",
+    from: "        if (live()) showToast(\"Couldn't accept the trade — nothing was changed. Check your connection and try again.\", \"error\");", to: "        showToast(\"Couldn't accept the trade — nothing was changed. Check your connection and try again.\", \"error\");" },
+  // I4 (review r5 fix-1): a vacation request's approve / revoke / edit never acts in the next session — SE-X23.
+  { id: "I4a", app: true, what: "I4: the approval doesn't check the session after its status PATCH (time_off written as B / refused as anon, its notice, push and e-mail from the next session — R5-VAC)",
+    from: "      if (!live()) {\n        if (Array.isArray(approveRows) && approveRows.length) await setBackRequest(", to: "      if (false) {\n        if (Array.isArray(approveRows) && approveRows.length) await setBackRequest(" },
+  { id: "I4b", app: true, what: "I4: the revoke doesn't check the session after its status PATCH (the time_off row deleted as B / refused as anon, its notice from the next session)",
+    from: "      if (!live()) { // (review r5 fix-1) another session now: set back to approved", to: "      if (false) { // (review r5 fix-1) another session now: set back to approved" },
+  { id: "I4c", app: true, what: "I4: the request edit doesn't check the session after its PATCH (an approved request's time off moved as B / refused as anon)",
+    from: "      if (!live()) { // (review r5 fix-1) another session now\n        const summary", to: "      if (false) { // (review r5 fix-1) another session now\n        const summary" },
+  { id: "I4d", app: true, what: "I4: setBackRequest believes any 2xx (a 200 with no row — RLS, or the request changed — taken as set back: nothing logged or audited)",
+    from: "      if (Array.isArray(back) && back.length === 1) return true;", to: "      if (b.ok) return true;" },
+  { id: "I4e", app: true, what: "I4: the set-back is sent with the headers of NOW (the next account's token, or anon), not the tap's",
+    from: "      const b = await fetch(`${SUPABASE_URL}/rest/v1/vacation_requests?id=eq.${id}&${filter}`, {\n        method: \"PATCH\",\n        headers: { ...tapH,", to: "      const b = await fetch(`${SUPABASE_URL}/rest/v1/vacation_requests?id=eq.${id}&${filter}`, {\n        method: \"PATCH\",\n        headers: { ...dbAuthHeaders()," },
+  { id: "I4f", app: true, what: "I4: the approval stops after a session change but never sets the request back (left approved with no time_off row — the half-landed approval)",
+    from: "        if (Array.isArray(approveRows) && approveRows.length) await setBackRequest(", to: "        if (false) await setBackRequest(" },
+  { id: "I4g", app: true, what: "I4: toEdit's no-id fallback inserts the new dates with the headers of NOW after a session change between its two writes (as B, or refused as anon: the vacation lost)",
+    from: "        if (sessionEpochRef.current === ep) await db.insert(\"time_off\", row);", to: "        if (true) await db.insert(\"time_off\", row);" },
+  { id: "I4h", app: true, what: "I4: toAdd's failure toast isn't fenced by the session (said on the next session's screen)",
+    from: "    const tell = () => { if (sessionEpochRef.current === ep) showToast(\"Couldn't save that — check", to: "    const tell = () => { showToast(\"Couldn't save that — check" },
+  // I4's audit — every other user action with an await before a write or a notice — SE-X24.
+  { id: "I4i", app: true, what: "I4 audit: the vacation submit goes on after its insert though the session changed (the list, the form, its toast, the notice and e-mail in the next session)",
+    from: "      if (!live()) { if (!inserted) console.error(\"vacation request insert failed:\", insertErr); return; } // (review r5 fix-1) another session now\n", to: "" },
+  { id: "I4j", app: true, what: "I4 audit: the deny goes on after its status PATCH though the session changed (the list, the notice and e-mail, the audit line as B)",
+    from: "      if (!live()) { if (Array.isArray(denyRows) && denyRows.length) denyAudit(tapH); return; }", to: "      if (false) { if (Array.isArray(denyRows) && denyRows.length) denyAudit(tapH); return; }" },
+  { id: "I4j2", app: true, what: "I4 audit: the deny's audit line after a session change written with the headers of NOW (as B)",
+    from: "denyAudit(tapH); return; }", to: "denyAudit(); return; }" },
+  { id: "I4k", app: true, what: "I4 audit: the trade proposal goes on after its insert though the session changed (the list, the form, its toast, notice, e-mail; its audit line as B)",
+    from: "      if (!live()) { // (review r5 fix-1) another session now\n        if (inserted) logAudit(\"trade.propose\"", to: "      if (false) { // (review r5 fix-1) another session now\n        if (inserted) logAudit(\"trade.propose\"" },
+  { id: "I4l", app: true, what: "I4 audit: the trade request delete's failure told (and the list changed) on the next session's screen",
+    from: "      if (sessionEpochRef.current !== ep) { if (!res.ok) console.error(\"Delete trade request failed:\", res.status); return; } // another session now\n", to: "" },
+  { id: "I4l2", app: true, what: "I4 audit: the vacation request delete's failure told (and the list changed) on the next session's screen",
+    from: "      if (sessionEpochRef.current !== ep) { if (!res.ok) console.error(\"Delete vacation request failed:\", res.status); return; } // another session now\n", to: "" },
+  { id: "I4l3", app: true, what: "I4 audit: 'clear reviewed requests' — its failure told (and the list changed) on the next session's screen",
+    from: "      if (sessionEpochRef.current !== ep) { if (!res.ok) console.error(\"Clear reviewed requests failed:\", res.status); return; } // another session now\n", to: "" },
+  { id: "I4m", app: true, what: "I4 audit: the APP day-off save chain sends another session's taps (as B, or retried as anon on the sign-in screen)",
+    from: "      if (dayOffEpochRef.current !== sessionEpochRef.current) { dayOffDirtyRef.current = false; dayOffPendingAuditRef.current = []; return; }", to: "      if (false) { dayOffDirtyRef.current = false; dayOffPendingAuditRef.current = []; return; }" },
+  { id: "I4m2", app: true, what: "I4 audit: a day-off tap doesn't record its session (a later session's own taps are then dropped as another session's)",
+    from: "    dayOffEpochRef.current = sessionEpochRef.current; // …this session's", to: "    // …this session's" },
+  { id: "I4m3", app: true, what: "I4 audit: a day-off save that crosses a session change says 'APP day-offs saved' on the next screen",
+    from: "        if (!here) return; // (review r5 fix-1) another session now: nothing said on the next screen\n        setSaveError(false);\n        setSaveStatus(\"APP day-offs saved\");", to: "        setSaveError(false);\n        setSaveStatus(\"APP day-offs saved\");" },
+  { id: "I4n", app: true, what: "I4 audit: the notification preference save writes after a session change (as B, or refused as anon and told on the sign-in screen)",
+    from: "      if (sessionEpochRef.current !== ep) return;\n      const tapH = dbAuthHeaders();\n      setNotifPrefsSaving(true);", to: "      const tapH = dbAuthHeaders();\n      setNotifPrefsSaving(true);" },
+  { id: "I4n2", app: true, what: "I4 audit: the notification preference's audit line after a session change written with the headers of NOW",
+    from: "{ surgeon_id: surgeonId, email_masked: emailMasked, source: src }, sessionEpochRef.current === ep ? undefined : tapH);", to: "{ surgeon_id: surgeonId, email_masked: emailMasked, source: src });" },
+  { id: "I4o", app: true, what: "I4 audit: the push permission goes on after its prompt though the session changed (this device's subscription logged in to OneSignal as the previous account)",
+    from: "      await window.OneSignal.Notifications.requestPermission();\n      if (sessionEpochRef.current !== ep) return;\n", to: "      await window.OneSignal.Notifications.requestPermission();\n" },
+  { id: "I4p", app: true, what: "I4 audit: saveAppShifts says its outcome on the next session's screen",
+    from: "      if (sessionEpochRef.current !== ep) { if (error) console.error(\"APP shift save failed (the session changed meanwhile):\", error); return; } // another session now\n", to: "" },
+  { id: "I4q", app: true, what: "I4 audit: the APP month painter's audit line after a session change written with the headers of NOW",
+    from: "{ assigns, clears, dates: Object.keys(draft).sort() }, here ? undefined : tapH);", to: "{ assigns, clears, dates: Object.keys(draft).sort() });" },
+  { id: "I4q2", app: true, what: "I4 audit: the time-off month painter's audit line after a session change written with the headers of NOW",
+    from: "{ entries: rows.map(r => ({ person_id: r.person_id, kind: r.kind, start: r.start_date, end: r.end_date })) }, here ? undefined : tapH);", to: "{ entries: rows.map(r => ({ person_id: r.person_id, kind: r.kind, start: r.start_date, end: r.end_date })) });" },
+  { id: "I4r", app: true, what: "I4 audit: an office contact added after a session change: the list and the form changed on the next screen (or its failure alerted there)",
+    from: "      if (sessionEpochRef.current !== ep) { if (error) console.error(\"Office contact add failed:\", error); return; } // another session now\n", to: "" },
+  { id: "I4r2", app: true, what: "I4 audit: an office contact update's failure alerted on the next session's screen",
+    from: "      if (sessionEpochRef.current !== ep) { if (error) console.error(\"Office contact update failed:\", error); return; } // another session now\n", to: "" },
+  { id: "I4r3", app: true, what: "I4 audit: the office 'new schedule published' e-mail's result said on the next session's screen",
+    from: "      if (sessionEpochRef.current !== ep) { if (!res.ok) console.error(\"Office publish notice failed:\", JSON.stringify(body)); return; } // another session now\n", to: "" },
+  { id: "I4s", app: true, what: "I4 audit: the counts template's counts merged into the next account's setup after a session change during the file read",
+    from: "      if (sessionEpochRef.current !== ep) return; // another session now (review r5 fix-1)\n      setPriorCounts(", to: "      setPriorCounts(" },
+  { id: "I4t", app: true, what: "I4 audit: a Face ID enrolment that lands after a session change is kept (and said) in the next session",
+    from: "    if (sessionEpochRef.current !== ep) { if (result.success) biometric.unenroll(); return; }\n", to: "" },
+  { id: "I4u", app: true, what: "I4 audit: the Silvis Refresh button's outcome said on the next session's screen",
+    from: "      if (sessionEpochRef.current !== ep) return;\n      if (!quiet) showToast(!ok", to: "      if (!quiet) showToast(!ok" },
+  { id: "I4v", app: true, what: "I4 audit: the sign-up profile taken into the next session (its profile, roles and reload) after a sign-out during its write",
+    from: "      if (gone()) { if (profileErr) console.error(\"Profile save failed:\", profileErr); return; }\n", to: "" },
+  { id: "I4w", app: true, what: "I4 audit: the APP-access toggle sets this account's profile in the next session (and its failure alerted there)",
+    from: "if (sessionEpochRef.current !== ep) { if (error) console.error(\"APP-access update failed:\", error); return; }", to: "if (false) { if (error) console.error(\"APP-access update failed:\", error); return; }" },
+  { id: "I4x", app: true, what: "I4 audit: the test notification's outcome said on the next session's screen",
+    from: "        if (sessionEpochRef.current !== ep) return;\n        setNotifTestSent(\"Browser + email notifications sent!\");", to: "        setNotifTestSent(\"Browser + email notifications sent!\");" },
+  { id: "I4y", app: true, what: "I4 audit: the Settings panel's push test alerts its result on the next session's screen",
+    from: "                        const data = await resp.json().catch(()=>({}));\n                        if (sessionEpochRef.current !== ep) return;\n                        // Key success", to: "                        const data = await resp.json().catch(()=>({}));\n                        // Key success" },
+  { id: "I4y2", app: true, what: "I4 audit: the Settings panel's reminder test alerts its result on the next session's screen",
+    from: "                        if (sessionEpochRef.current !== ep) return;\n                        alert(`Vacation deadline reminder result:", to: "                        alert(`Vacation deadline reminder result:" },
+  { id: "I4r4", app: true, what: "I4 audit: an office contact removal's failure told on the next session's screen",
+    from: "console.error(\"Office contact delete failed:\", res.status); if (sessionEpochRef.current === ep) showToast(", to: "console.error(\"Office contact delete failed:\", res.status); showToast(" },
+  { id: "I4r5", app: true, what: "I4 audit: the office digest run's result alerted on the next session's screen",
+    from: "      if (sessionEpochRef.current !== ep) { if (!res.ok) console.error(\"Digest run failed:\", JSON.stringify(body)); return; } // another session now\n", to: "" },
+  { id: "I4t2", app: true, what: "I4 audit: the forced Face ID enrolment ('Try Enable Anyway') that lands after a session change is kept (and said) in the next session",
+    from: "    if (sessionEpochRef.current !== ep) { if (result.success) biometric.unenroll(); return; } // (review r5 fix-1 — as handleBiometricEnroll's)\n", to: "" },
+  // I5 (review r5 regress-1): one render for the factory reset — SE-X21 (h), (a), (c), (i).
+  { id: "I5a", app: true, what: "I5: the 21/n order — the reset's setup and APP shifts put on screen BEFORE the time-off DELETE's await (a gap render re-arms the empty-save guard: every later setup change '⚠ Save blocked')",
+    from: "    const toClear = await toClearAll(undefined, { quiet: true });\n", to: "    resetSetupHere(); setAppShifts({});\n    const toClear = await toClearAll(undefined, { quiet: true });\n" },
+  { id: "I5b", app: true, what: "I5: a reset stopped at its time-off clear keeps the old APP shifts on screen (the server's are cleared)",
+    from: "{ resetSetupHere(); setAppShifts({}); }", to: "{ resetSetupHere(); }" },
+  { id: "I5c", app: true, what: "I5: a reset stopped at its time-off clear (or by a session change) never puts the reset's setup on screen (the server holds it; a later autosave writes the old setup back)",
+    from: "    if (sessionEpochRef.current !== ep || !toClear || !toClear.ok) { resetSetupHere(); setAppShifts({}); }\n", to: "" },
+  { id: "I5d", app: true, what: "I5 (the 21/n open item): the time-off clear-all's audit line written with the headers of NOW after a session change during its DELETE",
+    from: "{ kind: kind || \"both\" }, sessionEpochRef.current === ep ? undefined : tapH);", to: "{ kind: kind || \"both\" });" },
+  { id: "I5e", app: true, what: "I5 (the 21/n open item): the time-off clear-all's audit line written BEFORE its DELETE (a refused clear logged as done)",
+    from: "    if (!USE_TIME_OFF) { clearHere(); return { ok: true }; }\n    const r = await deleteTimeOff(", to: "    logAudit(\"timeoff.clearall\", \"Cleared ALL\", { kind: kind || \"both\" });\n    if (!USE_TIME_OFF) { clearHere(); return { ok: true }; }\n    const r = await deleteTimeOff(" },
+  // I6 (review r5 regress-2): the storage listener lowers the banner and nudges a held setup change — SE-X22 (g).
+  { id: "I6a", app: true, what: "I6: the 21/n listener — it only ever RAISES the banner (signed in again as the same account in another tab: 'Your sign-in has expired' stays)",
+    from: "      setReauthNeeded(!back);\n", to: "      if (!back) setReauthNeeded(true);\n" },
+  { id: "I6b", app: true, what: "I6: the same account back in another tab doesn't nudge a setup change held while signed out (it waits for an unrelated change, or is lost on reload)",
+    from: "      if (back && pendingSaveRef.current) setSetupSaveNudge(n => n + 1);\n", to: "" },
 ];
 
 async function scenarios(createSchedSync, check, line) {
@@ -1177,8 +1321,11 @@ async function scenarios(createSchedSync, check, line) {
   await run("SE20", async () => {
     const t = mkTable(seedRows(6));
     const A = mkSession(t); await A.engine.load();
-    t.control.fail({ method: "DELETE", week: W[0], kind: "5xx-before" });
-    t.control.fail({ method: "DELETE", week: W[1], kind: "5xx-before" });
+    // (22/n: count 2 — the clear's DELETE and its follow-up push's. A 503's
+    // read-back now PROVES the DELETE didn't land (I1), so that push sends it
+    // at once, with no re-read first.)
+    t.control.fail({ method: "DELETE", week: W[0], kind: "5xx-before", count: 2 });
+    t.control.fail({ method: "DELETE", week: W[1], kind: "5xx-before", count: 2 });
     A.mirror = {};
     const c = await A.engine.authoritative({}, true, "clear");
     check("SE20 the clear deleted 4, 2 failed and stay pending (not ok, but it wrote)", !c.ok && c.wrote && t.rows().length === 2 && A.engine.pending().length === 2, JSON.stringify(t.rows().map(r => r.week_monday)));
@@ -1239,8 +1386,10 @@ async function scenarios(createSchedSync, check, line) {
     const from = t.log.length;
     const c = await A.engine.authoritative(snap, true, "restore");
     const dels = writes(t, from).filter(e => e.method === "DELETE");
-    check("SE24 force: the restore overwrites B's later W1 and deletes W3 + a week A never knew about; deletes carry no version",
-      c.ok && sameData(tableSched(t), snap) && dels.length === 2 && dels.every(e => !/version=/.test(e.url)), JSON.stringify({ c: c.results, dels: dels.map(e => e.url) }));
+    // (22/n, I3 — review r5 matrix-3: a force DELETE carries the CAS of the row the job just read, so one the
+    // server applies late can't delete a week written after it; these meet it and land.)
+    check("SE24 force: the restore overwrites B's later W1 and deletes W3 + a week A never knew about; each delete carries the CAS (version, updated_at) of the row the job just read",
+      c.ok && sameData(tableSched(t), snap) && dels.length === 2 && dels.every(e => /version=eq\.\d+&updated_at=eq\./.test(e.url)) && dels.every(e => e.applied === true), JSON.stringify({ c: c.results, dels: dels.map(e => e.url) }));
   });
 
   // SE25/SE26 — auth (R27, I4).
@@ -1356,7 +1505,7 @@ async function scenarios(createSchedSync, check, line) {
     check("SE30 keepalive: one CAS PATCH (version + updated_at) per edited known week, keepalive:true — NO insert, NO delete",
       reqs.length === 2 && reqs.every(x => x.init.keepalive === true && x.init.method === "PATCH" && /version=eq\.3&updated_at=eq\./.test(x.url) && !/merge-duplicates/.test(x.init.headers.Prefer || "")),
       JSON.stringify(reqs.map(x => x.init.method + " " + x.url.split("?")[1])));
-    for (const x of reqs) await t.fetch(x.url, x.init);
+    for (const x of reqs) { await t.fetch(x.url, x.init); if (x.done) x.done(); } // (22/n: the app calls done() as each settles — I3)
     check("SE30 R1: fired, they save W1 but leave B's newer W2 alone (CAS 0 rows), and keep W3",
       t.get(W[0]).data.dayCall === "a0" && t.get(W[1]).data.dayCall === "sB" && !!t.get(W[2]), JSON.stringify(tableSched(t)[W[1]]));
     await A.engine.pull(); await A.engine.idle();
@@ -1373,7 +1522,7 @@ async function scenarios(createSchedSync, check, line) {
     const t = mkTable(seedRows(2));
     const A = mkSession(t); await A.engine.load();
     A.edit(W[0], w => (w.dayCall = "k1", w));
-    for (const x of A.engine.keepaliveRequests()) await t.fetch(x.url, x.init);
+    for (const x of A.engine.keepaliveRequests()) { await t.fetch(x.url, x.init); if (x.done) x.done(); }
     A.edit(W[0], w => (w.dayCall = "k2", w));
     await A.engine.pull(); await A.engine.idle();
     check("SE30b the landed keepalive (k1) is OURS: no conflict, the newer edit k2 is sent at the new version and lands",
@@ -1389,7 +1538,7 @@ async function scenarios(createSchedSync, check, line) {
     A.edit(W[0], w => (w.dayCall = "first", w)); await A.engine.push();
     A.edit(W[0], w => (w.dayCall = "second", w));
     const reqs = A.engine.keepaliveRequests();
-    for (const x of reqs) await t.fetch(x.url, x.init);
+    for (const x of reqs) { await t.fetch(x.url, x.init); if (x.done) x.done(); }
     check("SE31 R4: a week whose push failed is NOT skipped — the re-edit goes out on unload and lands", t.get(W[0]).data.dayCall === "second");
   });
 
@@ -1765,7 +1914,7 @@ async function scenarios(createSchedSync, check, line) {
     A.mirror = {}; await A.engine.authoritative({}, true, "clear");
     await B.engine.pull();
     check("SE51 B's pull sees an empty table while it knows 6 weeks: not adopted, and the status says the screen is out of date", B.st().staleRemovals === 6 && Object.keys(B.mirror).length === 6);
-    t.control.fail({ method: "POST", week: W[8], kind: "5xx-before", count: 1 });
+    t.control.fail({ method: "POST", week: W[8], kind: "5xx-before", count: 2 }); // (22/n: and the publish's follow-up push's — I1 proof: it's sent at once, no re-read first)
     B.edit(W[8], () => wk("outside")); await B.engine.push(); // a pending NEW week outside the period
     const period = [W[0], W[1], W[2]];
     const gen = {}; period.forEach(k => { gen[k] = wk("regen"); });
@@ -1814,8 +1963,8 @@ async function scenarios(createSchedSync, check, line) {
   await run("SE54", async () => {
     const t = mkTable(seedRows(6));
     const A = mkSession(t); await A.engine.load();
-    t.control.fail({ method: "DELETE", week: W[0], kind: "5xx-before" });
-    t.control.fail({ method: "DELETE", week: W[1], kind: "5xx-before" });
+    t.control.fail({ method: "DELETE", week: W[0], kind: "5xx-before", count: 2 }); // (22/n: the follow-up push's too — proven not landed, it is re-sent at once)
+    t.control.fail({ method: "DELETE", week: W[1], kind: "5xx-before", count: 2 });
     A.mirror = {};
     await A.engine.authoritative({}, true, "clear");
     t.control.fail({ method: "DELETE", kind: "5xx-before", count: 10 }); // keep the follow-up push from finishing the clear
@@ -1871,13 +2020,13 @@ async function scenarios(createSchedSync, check, line) {
     const period = [W[0], W[1], W[2]];
     const gen = {}; period.forEach(k => { gen[k] = wk("regen"); });
     A.mirror = Object.assign({}, A.mirror, gen);
-    t.control.fail({ method: "PATCH", week: W[1], kind: "5xx-before" });
+    t.control.fail({ method: "PATCH", week: W[1], kind: "5xx-before", count: 2 }); // (22/n: and the follow-up push's — proven not landed, it is re-sent at once)
     const r = await A.engine.authoritative(gen, false, "publish", period);
     check("SE56 one period week 503s → the publish outcome is NOT ok (no Regenerated!, no broadcast); the other weeks landed; W2 still shows the generated week and is pending",
       r.ok === false && t.get(W[0]).data.dayCall === "regen" && t.get(W[2]).data.dayCall === "regen" && t.get(W[1]).data.dayCall !== "regen"
         && A.mirror[W[1]].dayCall === "regen" && A.engine.pending().join() === W[1], JSON.stringify({ r: r.results, pending: A.engine.pending() }));
     await A.engine.idle(); await A.engine.push();
-    check("SE56 …the follow-up push lands it", t.get(W[1]).data.dayCall === "regen" && A.engine.pending().length === 0);
+    check("SE56 …the next push lands it", t.get(W[1]).data.dayCall === "regen" && A.engine.pending().length === 0);
   });
 
   // SE57 — A14(1): the stale-removal status as the HEADER sees it — through
@@ -2088,7 +2237,9 @@ async function scenarios(createSchedSync, check, line) {
     const t = mkTable(seedRows(4));
     const A = mkSession(t), B = mkSession(t, { token: "TOK_B", user: "user-b" });
     await A.engine.load(); await B.engine.load();
-    t.control.fail({ method: "PATCH", week: W[3], kind: "5xx-before" });
+    // (22/n: thrown, its read-back too — its outcome UNKNOWN, so A's body stays unconfirmed in the ledger. A 503 whose
+    // read-back works now proves it didn't land and takes it out — (b) below.)
+    t.control.fail({ method: "PATCH", week: W[3], kind: "throw" }); t.control.fail({ method: "GET", week: W[3], kind: "throw" });
     A.edit(W[3], w => (w.dayCall = "A-edit", w)); await A.engine.push();   // not written: A's body stays unconfirmed in the ledger
     B.edit(W[3], w => (w.dayCall = "B-edit", w)); await B.engine.push();   // B's change lands (v4)
     check("SE61 (setup) A's edit to W4 is unsaved (pending, unconfirmed); B's change to it is on the table", A.engine.pending().join() === W[3] && t.get(W[3]).data.dayCall === "B-edit" && t.get(W[3]).version === 4);
@@ -2106,6 +2257,24 @@ async function scenarios(createSchedSync, check, line) {
       JSON.stringify({ table: t.get(W[3]).data.dayCall, shown: A.mirror[W[3]].dayCall, conflicts: A.st().conflicts, notice: r.notice, toasts: A.toasts.slice(toasts0) }));
     check("SE61 …and the publish itself landed and answers ok (another week's conflict doesn't withhold 'Regenerated!' or the broadcast); A's only W4 PATCH was the first, failed one",
       r.ok === true && period.every(k => t.get(k).data.dayCall === "regen") && aW3.length === 1, JSON.stringify({ ok: r.ok, results: r.results, aW3: aW3.length }));
+    // (b) 22/n (I1): A's PATCH answered 503 and its read-back found the week UNCHANGED — proof it didn't land, so it is
+    // no longer in the ledger and the publish doesn't re-read it. B's change is still never overwritten: the follow-up
+    // push sends A's edit at the CAS A knew, meets B's row (0 rows), and tells it — as any edit meeting a change.
+    {
+      const t2 = mkTable(seedRows(4));
+      const A2 = mkSession(t2), B2 = mkSession(t2, { token: "TOK_B", user: "user-b" });
+      await A2.engine.load(); await B2.engine.load();
+      t2.control.fail({ method: "PATCH", week: W[3], kind: "5xx-before" });
+      A2.edit(W[3], w => (w.dayCall = "A-edit", w)); await A2.engine.push();
+      B2.edit(W[3], w => (w.dayCall = "B-edit", w)); await B2.engine.push();
+      const gen2 = {}; period.forEach(k => { gen2[k] = wk("regen"); });
+      A2.mirror = Object.assign({}, A2.mirror, gen2);
+      const r2 = await A2.engine.authoritative(clone(A2.mirror), false, "publish", period);
+      await A2.engine.idle(); await A2.engine.idle();
+      const res = { ok: r2.ok, table: t2.get(W[3]).data.dayCall, v: t2.get(W[3]).version, shown: A2.mirror[W[3]].dayCall, conflicts: A2.st().conflicts.map(c => c.k), toasts: A2.toasts, pending: A2.engine.pending() };
+      check("SE61 (b) 22/n …A's body PROVEN not landed (503, read back unchanged): the publish lands; B's change to W4 survives the follow-up push (its CAS meets B's row: 0 rows), shown on A's screen and told once; nothing pending",
+        r2.ok === true && res.table === "B-edit" && res.v === 4 && res.shown === "B-edit" && res.conflicts.join() === W[3] && res.toasts.filter(m => /changed by someone else/.test(m)).length === 1 && res.pending.length === 0, JSON.stringify(res));
+    }
   });
 
   // SE62 — A7 / I5: the SERVER refuses a token this device's clock calls
@@ -2430,7 +2599,7 @@ async function scenarios(createSchedSync, check, line) {
     const stamped = /^2026-10-12T09:/.test(t.get(W[0]).updated_at) && Date.parse(t.get(W[0]).updated_at) !== Date.parse(t.log.filter(e => e.method === "PATCH").pop().body.updated_at); // the server's clock, not the body's
     A.edit(W[0], w => (w.dayCall = "e4", w));
     const ka = A.engine.keepaliveRequests();
-    for (const x of ka) await t.fetch(x.url, x.init);
+    for (const x of ka) { await t.fetch(x.url, x.init); if (x.done) x.done(); }
     const kaLanded = t.get(W[0]).data.dayCall === "e4";
     const from = t.log.length;
     await A.engine.pull(); await A.engine.idle();
@@ -2485,7 +2654,7 @@ async function scenarios(createSchedSync, check, line) {
     A.edit(W[0], w => (w.dayCall = "unload-edit", w));
     const reqs = A.engine.keepaliveRequests();
     const hold = t.control.pause({ method: "PATCH", week: W[0], count: 1 });
-    const pk = Promise.all(reqs.map(x => t.fetch(x.url, x.init)));
+    const pk = Promise.all(reqs.map(x => t.fetch(x.url, x.init).then(r => { if (x.done) x.done(); return r; })));
     await Promise.race([hold.arrived, pk]); // (a keepalive that isn't a PATCH isn't held — it answers at once)
     await t.recreate("TOK_B", W[0], wk("regenerated"), { by: "user-b" });
     hold.release(); await pk;
@@ -3391,6 +3560,48 @@ async function scenarios(createSchedSync, check, line) {
       check("SE85 G6 (f) (r4-fix-8, R4-E3) both stacked jobs refused, a NEW local week pending from before the clear's tap (never saved): the handed-over put-back covers it — back on screen, and the follow-up push saves it; the screen equals the table, nothing pending",
         setup && r1.ok === false && r2.ok === false && res.newOnScreen && res.newSaved && t.get(NEW).data.dayCall === "new-local" && sameData(A.mirror, tableSched(t)) && A.engine.pending().length === 0, JSON.stringify(res));
     }
+    // (g) 22/n (review r5 fix-4, MU3): H8's RUNNER is a running clear / reset / restore — never a publish. A publish
+    // runs (its read held); W3 is edited (pending); a restore is tapped (its own `before`: a publish ahead doesn't
+    // stack it — E6) and cancelled at its deadline while the publish still runs: it puts back ITS `before`, the pending
+    // edit included, saved by the follow-up push — not the screen as it was at the publish's request.
+    {
+      const t = mkTable(seedRows(4));
+      const A = mkSession(t, { timeouts: { read: 60000, write: 60000, stall: 15, deadline: 80 } }); await A.engine.load();
+      const hold = t.control.pause({ method: "GET", week: W[6], count: 1 });     // the publish's readSome of W7
+      A.mirror = Object.assign({}, A.mirror, { [W[6]]: wk("gen6") });
+      const p1 = A.engine.authoritative(clone(A.mirror), false, "publish", [W[6]]);
+      await hold.arrived;                                                       // the publish RUNS
+      A.edit(W[2], w => (w.dayCall = "pending-edit", w));                       // an edit, pending behind the publish
+      const SNAP = { [W[0]]: wk("snap0"), [W[2]]: wk("snap2") };
+      const before = clone(A.mirror); A.mirror = clone(SNAP);
+      const r2 = await A.engine.authoritative(clone(SNAP), true, "restore", undefined, { before });   // cancelled at its deadline
+      const atCancel = { W3: A.mirror[W[2]] ? A.mirror[W[2]].dayCall : null, W7: A.mirror[W[6]] ? A.mirror[W[6]].dayCall : null };
+      hold.release();
+      const r1 = await p1; for (let i = 0; i < 4; i++) await A.engine.idle(); await sleep(5); await A.engine.idle();
+      const res = { r1: r1.ok, r2: r2.reason, atCancel, rows: t.rows().map(r => r.week_monday + "=" + r.data.dayCall), pending: A.engine.pending() };
+      check("SE85 H8 (g) (22/n, review r5 fix-4) a restore cancelled at its deadline while a PUBLISH runs (no clear / reset / restore running: no runner) puts back the screen as it was before ITS tap — the pending W3 edit on screen, then saved by the follow-up push; the publish's week published; nothing pending",
+        r2.reason === "timeout" && atCancel.W3 === "pending-edit" && atCancel.W7 === "gen6" && t.get(W[2]).data.dayCall === "pending-edit" && !!t.get(W[6]) && t.get(W[6]).data.dayCall === "gen6" && res.pending.length === 0, JSON.stringify(res));
+    }
+    // (h) 22/n (review r5 fix-4, MU4): (d)'s shape — a clear RUNNING, a restore stacked behind it cancelled at its
+    // deadline — with W6 (one of the restore's weeks) edited AFTER both taps, while the restore waits: that edit stays
+    // (the runner's put-back covers only weeks still showing the cancelled job's target) and is saved after the clear.
+    {
+      const t = mkTable(seedRows(4));
+      const A = mkSession(t, { timeouts: { read: 60000, write: 60000, stall: 15, deadline: 80 } }); await A.engine.load();
+      const hold = t.control.pause({ method: "GET", week: "limit=5000", count: 1 });
+      const b1 = clone(A.mirror); A.mirror = {}; const p1 = A.engine.authoritative({}, true, "clear", undefined, { before: b1 });
+      await hold.arrived;
+      const SNAP = { [W[0]]: wk("snap0"), [W[5]]: wk("snap5") };
+      const b2 = clone(A.mirror); A.mirror = clone(SNAP); const p2 = A.engine.authoritative(clone(SNAP), true, "restore", undefined, { before: b2 });
+      A.edit(W[5], w => (w.dayCall = "my-edit", w));                       // edited AFTER both taps, while the restore waits
+      const r2 = await p2;
+      const atCancel = { W6: A.mirror[W[5]] ? A.mirror[W[5]].dayCall : null, keys: Object.keys(A.mirror).sort() };
+      hold.release();
+      const r1 = await p1; for (let i = 0; i < 4; i++) await A.engine.idle(); await sleep(5); await A.engine.idle();
+      const res = { r1: r1.ok, r2: r2.reason, atCancel, shown: Object.keys(A.mirror).map(k => k + "=" + A.mirror[k].dayCall), rows: t.rows().map(r => r.week_monday + "=" + r.data.dayCall), pending: A.engine.pending() };
+      check("SE85 H8 (h) (22/n, review r5 fix-4) …a week edited AFTER both taps, while the stacked restore waits: the cancel leaves that edit on screen (W6 = my-edit; the restore's other week back to the clear's view), and once the clear lands it is saved — the only week left, nothing pending",
+        r2.reason === "timeout" && atCancel.W6 === "my-edit" && atCancel.keys.join() === W[5] && res.rows.join() === W[5] + "=my-edit" && res.pending.length === 0, JSON.stringify(res));
+    }
   });
 
   // SE86 — H1 (review r4 branch-1, CRITICAL): a save whose answer was lost is never re-sent over another device's
@@ -3505,19 +3716,39 @@ async function scenarios(createSchedSync, check, line) {
       check("SE86 H3 (e) …and W5 — the publish's NEW week, its INSERT's outcome lost, deleted by the restore — is sent again (the user's own intended week) but no longer silently: in the phone's ONE message, once: '" + RESENT(W[5]) + "'",
         res.w5 === "p6" && res.ws.filter(w => w.startsWith("POST")).length === 1 && pt.length === 1 && resentTold(pt, W[5]) === 1, JSON.stringify(res));
     }
-    // (f) control: an old build re-sends the week unchanged (version kept) under a lost edit of ours that did NOT land
-    {
+    // (f) 22/n (I1, review r5 matrix-1): an old build re-sends the week unchanged (version kept) under a lost edit of
+    // ours that did NOT land — but nothing PROVES it didn't (thrown, its read-back too). The version is no proof (a
+    // deletion + re-insert + edits climb back to it): a LOUD false conflict — the accepted cost — never a silent
+    // overwrite. (f2) / (f3): the same once a read PROVED it didn't land — quiet again: the edit lands.
+    const oldBuildUnder = async (how) => {
       const t = mkTable(seedRows(3));
       const A = mkSession(t); await A.engine.load();
-      t.control.fail({ method: "PATCH", week: W[0], kind: "throw" }); t.control.fail({ method: "GET", week: W[0], kind: "throw" });   // never landed; its outcome unknown
+      if (how === "unproven") { t.control.fail({ method: "PATCH", week: W[0], kind: "throw" }); t.control.fail({ method: "GET", week: W[0], kind: "throw" }); }   // never landed; its outcome unknown
+      else if (how === "readback") t.control.fail({ method: "PATCH", week: W[0], kind: "5xx-before" });                                                         // 503; its read-back finds the week unchanged
+      else { t.control.fail({ method: "PATCH", week: W[0], kind: "throw" }); t.control.fail({ method: "GET", week: W[0], kind: "throw" }); }                     // (reread: as unproven, then a re-read finds it unchanged)
       A.edit(W[0], w => (w.dayCall = "mine", w)); await A.engine.push();
       const setup = A.engine.pending().join() === W[0] && t.get(W[0]).data.dayCall === "s1";
-      await t.oldBuild("TOK_B", "user-b").upsert({ [W[0]]: clone(t.get(W[0]).data) });   // version 3 kept, updated_at moved
+      const toasts0 = A.toasts.length;
+      let hold = null;
+      if (how === "reread") hold = t.control.pause({ method: "PATCH", week: W[0], count: 1 });   // the next push's re-read (unchanged) runs; its PATCH is held…
+      const pp = how === "reread" ? A.engine.push() : null;
+      if (hold) await hold.arrived;
+      await t.oldBuild("TOK_B", "user-b").upsert({ [W[0]]: clone(t.get(W[0]).data) });   // …while an old build re-sends the week: version 3 kept, updated_at moved
       const moved = t.get(W[0]).version === 3 && t.get(W[0]).updated_at !== "2026-10-01T08:00:00+00:00", from = t.log.length;
+      if (hold) { hold.release(); await pp; }
       await A.engine.pull(); await A.engine.idle();
-      check("SE86 H1 (f) control: an old build re-sends the week UNCHANGED (version kept, updated_at moved) under a lost edit of ours that did NOT land — the version is still the one known: 'refreshed', the edit lands at v4 (one PATCH, at the new token), no conflict, no toast",
-        setup && moved && t.get(W[0]).data.dayCall === "mine" && t.get(W[0]).version === 4 && ws(t, from).join() === "PATCH week_monday=eq." + W[0] + " 200" && A.st().conflicts.length === 0 && A.toasts.length === 1 && A.engine.pending().length === 0,
-        JSON.stringify({ setup, moved, ws: ws(t, from), toasts: A.toasts, c: A.st().conflicts, row: t.get(W[0]) }));
+      return { setup, moved, ws: ws(t, from), toasts: A.toasts.slice(toasts0), c: A.st().conflicts.map(x => x.k), shown: A.mirror[W[0]].dayCall, row: t.get(W[0]), pending: A.engine.pending() };
+    };
+    {
+      const x = await oldBuildUnder("unproven");
+      check("SE86 I1 (f) (re-pinned, 22/n) an old build re-sends the week UNCHANGED (version kept) under a lost edit of ours whose outcome is UNKNOWN: the version is no proof it didn't land — a loud (false) conflict, the accepted cost: the re-sent copy shown and told once, the edit not written over it (no write by A), nothing pending",
+        x.setup && x.moved && x.ws.length === 0 && x.row.data.dayCall === "s1" && x.row.version === 3 && x.shown === "s1" && x.c.join() === W[0] && x.toasts.length === 1 && theirsTold(x.toasts) === 1 && x.pending.length === 0, JSON.stringify(x));
+      const y = await oldBuildUnder("readback");
+      check("SE86 I1 (f2) control: …the edit PROVEN not to have landed — answered 503, its read-back found the week UNCHANGED: 'refreshed' on that proof — the edit lands at v4 (its CAS PATCH at the old token answers 0 rows, then one at the new token), no conflict, no toast",
+        y.setup && y.moved && y.row.data.dayCall === "mine" && y.row.version === 4 && y.ws.join() === ["PATCH week_monday=eq." + W[0] + " 200 (0 rows)", "PATCH week_monday=eq." + W[0] + " 200"].join() && y.c.length === 0 && y.toasts.length === 0 && y.pending.length === 0, JSON.stringify(y));
+      const z = await oldBuildUnder("reread");
+      check("SE86 I1 (f3) control: …proven by a LATER push's re-read (the outcome unknown at first; the re-read finds the week unchanged) — the old build's re-send lands while that push's PATCH is out: 0 rows, 'refreshed', the edit lands at v4, no conflict, no toast",
+        z.setup && z.moved && z.row.data.dayCall === "mine" && z.row.version === 4 && z.c.length === 0 && z.toasts.filter(m => !/Couldn't save/.test(m)).length === 0 && z.pending.length === 0, JSON.stringify(z));
     }
     // (g) control: SE71 at v1 — the 0-row answer proves our body didn't land
     {
@@ -3558,6 +3789,35 @@ async function scenarios(createSchedSync, check, line) {
         setup && /changed by someone else/.test(String(r.error || "")) && mid.shown === "s2" && mid.conflicts.join() === W[1] && res.row.data.dayCall === "s2" && res.row.version === 5
           && !res.ws.some(w => w.startsWith("PATCH")) && res.pending.length === 0, JSON.stringify(res));
     }
+    // (h2) 22/n (review r5 fix-3, MU2): (h)'s shape with A's PATCH still IN FLIGHT (not yet failed) at the restore tap
+    // — a body out then (unconfirmed), though nothing has failed: E7 must count it as out (knownAt.was.out).
+    {
+      const t = mkTable(seedRows(3)); t.control.users.TOK_A2 = "user-a";
+      const A = mkSession(t), B = mkSession(t, { token: "TOK_B", user: "user-b" });
+      await A.engine.load(); await B.engine.load();
+      const x0 = t.get(W[1]).data.dayCall;
+      const holdPatch = t.control.pause({ method: "PATCH", week: W[1], count: 1 });
+      t.control.fail({ method: "PATCH", week: W[1], kind: "throw-after" });
+      A.edit(W[1], w => (w.dayCall = "a-edit", w));
+      const pp = A.engine.push(); await holdPatch.arrived;                 // A's PATCH is on the wire
+      const SNAP = clone(A.engine.knownSchedule());                          // a snapshot: W2 as known (x0)
+      const before = clone(A.mirror); A.mirror = clone(SNAP);
+      const cp = A.engine.authoritative(clone(SNAP), true, "restore", undefined, { before });   // tapped while the PATCH is out
+      const holdGet = t.control.pause({ method: "GET", week: W[1], count: 1 });
+      holdPatch.release(); await holdGet.arrived;                            // the PATCH landed (answer lost); A's read-back is out
+      await B.engine.pull(); B.edit(W[1], w => (w.dayCall = x0, w)); await B.engine.push();   // B reverts it (v5)
+      const setup = t.get(W[1]).data.dayCall === x0 && t.get(W[1]).version === 5;
+      A.token = null;                                                        // signed out elsewhere: the restore is refused at its turn
+      holdGet.release();
+      const r = await cp; await pp; await A.engine.idle();
+      const mid = { shown: A.mirror[W[1]].dayCall, conflicts: A.st().conflicts.map(c => c.k), err: r.error };
+      A.token = "TOK_A2"; const from = t.log.length;
+      await A.engine.pull(); await A.engine.idle(); await A.engine.idle();
+      const res = { setup, mid, row: t.get(W[1]), ws: ws(t, from), pending: A.engine.pending() };
+      check("SE86 H1 (h2) (22/n, review r5 fix-3) …A's PATCH still IN FLIGHT at the restore tap (out, though nothing had failed yet): it lands, its answer lost; a peer reverts the week; the refused restore does NOT put A's lost write back over the revert — their copy shown, the conflict told in the refusal's message; once signed in again nothing is re-sent: the revert stands at v5",
+        setup && /changed by someone else/.test(String(r.error || "")) && mid.shown === x0 && mid.conflicts.join() === W[1] && res.row.data.dayCall === x0 && res.row.version === 5
+          && !res.ws.some(w => w.startsWith("PATCH")) && res.pending.length === 0, JSON.stringify(res));
+    }
     // (i) H3 the clear-elsewhere case (p2b): A's new week's INSERT lands, its answer and read-back lost; B clears
     {
       const t = mkTable(seedRows(3));
@@ -3578,6 +3838,12 @@ async function scenarios(createSchedSync, check, line) {
         setup && cleared && res.rows.join() === W[7] && res.ws.filter(w => w.startsWith("POST")).length === 1 && first.length === 1 && first[0] === RESENT(W[7]) && res.pending.length === 0, JSON.stringify(res));
       check("SE86 H3 (i) …told EXACTLY once: later pulls and pushes say nothing more",
         all.length === 1 && resentTold(all, W[7]) === 1, JSON.stringify(res));
+      // 22/n (review r5 fix-6, MU1): …nor a later ORDINARY edit of the week that lands (settle() forgets the re-send)
+      const t1 = A.toasts.length;
+      A.edit(W[7], w => (w.dayCall = "s5", w)); const r1 = await A.engine.push(); await A.engine.idle();
+      const later = A.toasts.slice(t1);
+      check("SE86 H3 (i) (22/n, review r5 fix-6) …and a later ordinary edit of that week, landing with its answer, says nothing about a re-send ('saved again' told once, ever)",
+        r1.ok && t.get(W[7]).data.dayCall === "s5" && !(r1.results || []).some(x => x.resent) && later.length === 0, JSON.stringify({ r1: r1.results, later }));
     }
     // (j) controls: an INSERT whose answer arrives; one answered 5xx whose read-back found no row (it didn't land)
     {
@@ -3591,6 +3857,19 @@ async function scenarios(createSchedSync, check, line) {
       check("SE86 H3 (j) control: an ordinary INSERT whose answer arrives says nothing; nor does one answered 503 whose read-back found no row (it didn't land — nothing anyone could have deleted) when its retry lands",
         r1.ok && t.get(W[6]).data.dayCall === "new6" && !r2.ok && mid === W[7] && t.get(W[7]).data.dayCall === "new7" && A.engine.pending().length === 0 && A.toasts.every(m => !/saved again/.test(m)),
         JSON.stringify({ r1: r1.ok, r2: r2.results, mid, toasts: A.toasts, pending: A.engine.pending() }));
+      // (j2) 22/n: …nor when that INSERT, proven not to have landed (503, read back: no row), is then REFUSED (a 400:
+      // kept, pending — in the ledger again) and edited: the next push re-reads the week (no row) and saves the edit —
+      // nothing could have been deleted, so nothing is said about a re-send. (A 503 whose read-back found no row is no
+      // lost INSERT — H3f — and a later re-read must not take it for one.)
+      A.edit(W[8], () => wk("new8"));
+      t.control.fail({ method: "POST", week: W[8], kind: "5xx-before" }); await A.engine.push();   // 503: read back, no row (proven)
+      t.control.fail({ method: "POST", week: W[8], kind: "400" }); await A.engine.push();          // refused (400): kept, pending, in the ledger
+      const midJ2 = A.engine.pending().join(), toastsJ2 = A.toasts.length;
+      A.edit(W[8], () => wk("new8b")); const r3 = await A.engine.push();                           // edited: re-read (no row), then saved
+      const told3 = A.toasts.slice(toastsJ2);
+      check("SE86 H3 (j2) (22/n) …an INSERT proven not to have landed (503, read back: no row), then refused (400) and edited: the edit is saved — and nothing is said about a re-send ('saved again')",
+        midJ2 === W[8] && r3.ok && t.get(W[8]) && t.get(W[8]).data.dayCall === "new8b" && !(r3.results || []).some(x => x.resent) && told3.every(m => !/saved again/.test(m)) && A.engine.pending().length === 0,
+        JSON.stringify({ midJ2, r3: r3.results, told3, pending: A.engine.pending() }));
     }
     // (k) the re-read itself fails: nothing told, nothing sent; once it works, told once
     {
@@ -3608,6 +3887,313 @@ async function scenarios(createSchedSync, check, line) {
       check("SE86 H3 (k) …a re-read that simply FAILS says nothing and sends nothing (the outcome still unknown); once a re-read works and finds no row: sent again, told once",
         whileFailing.toasts.every(m => !/saved again/.test(m)) && whileFailing.posts === 0 && whileFailing.pending === W[7] && !!t.get(W[7]) && resentTold(later, W[7]) === 1 && A.engine.pending().length === 0,
         JSON.stringify({ whileFailing, later, pending: A.engine.pending() }));
+    }
+    // (k2) 22/n (review r5 fix-6, MU8): (k)'s failing re-read, MORE than 5 minutes after the last failure message — the
+    // week still isn't saved: the push is not ok, and says so again.
+    {
+      const t = mkTable(seedRows(3));
+      const A = mkSession(t); await A.engine.load();
+      t.control.fail({ method: "POST", week: W[7], kind: "throw-after" }); t.control.fail({ method: "GET", week: W[7], kind: "throw" });
+      A.edit(W[7], () => wk("s3")); await A.engine.push();
+      t.del(W[7]);
+      ms += 6 * 60 * 1000;                                                   // past the 5-min cap of the earlier failure message
+      t.control.fail({ method: "GET", week: W[7], kind: "5xx-before" });
+      const toasts0 = A.toasts.length;
+      const r = await A.engine.push(); await A.engine.idle();
+      const res = { ok: r.ok, results: r.results, toasts: A.toasts.slice(toasts0), pending: A.engine.pending() };
+      check("SE86 H3 (k2) (22/n, review r5 fix-6) …a lost INSERT whose re-read keeps failing, more than 5 minutes after the last failure message: the push is NOT ok, its result for the week 'pending', and it says again that the week isn't saved yet",
+        r.ok === false && (r.results || []).some(x => x.k === W[7] && x.outcome === "pending") && res.toasts.length === 1 && /Couldn't save 1 week yet/.test(res.toasts[0]) && res.pending.join() === W[7], JSON.stringify(res));
+    }
+  });
+
+  // SE87 — 22/n, review round 5. I1 (matrix-1, CRITICAL): the VERSION is never proof that a lost-answer body of ours
+  // didn't land. A deletion + re-insert restarts a week at v1 and edits climb back to exactly the version we knew — an
+  // Undo of a delete, or a Clear + Restore, then a revert in the editor: our lost write (an edit, a DELETE, a
+  // keepalive) and E7's put-back must not overwrite that revert. Only proof (a 0-row answer; a read that found the
+  // week unchanged) makes the data we knew under a new token "refreshed" — and a keepalive still on the wire is never
+  // proven (it may land yet). I3 (matrix-3): a keepalive still on the wire keeps its week in the ledger past a re-read
+  // that settles it (an Undo is then sent over its late landing); a force DELETE carries the CAS (a late one can't
+  // delete a week re-created after it). I2 (matrix-2 — H3's decision): a week shown again after a DELETE of ours whose
+  // outcome is unknown, its row then found gone, is put back and TOLD once; one proven not to have landed reads the
+  // missing row as theirs (adopted, or told as a conflict). I7 (fix-2): a re-send whose own answer is lost is still
+  // told, once.
+  await run("SE87", async () => {
+    const lbl = (k) => new Date(...k.split("-").map((x, i) => i === 1 ? +x - 1 : +x)).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+    const RESENT = (k) => `The week of ${lbl(k)} was saved again — its first save couldn't be confirmed. If it was removed on another device on purpose, remove it again.`;
+    const PUTBACK = (k) => `The week of ${lbl(k)} was saved again — your deletion of it couldn't be confirmed. If it was removed on another device on purpose, remove it again.`;
+    const toldN = (msgs, m) => msgs.filter(x => String(x).includes(m)).length;
+    const aW = (t, from) => writes(t, from).filter(e => e.headers.authorization === "Bearer TOK_A").map(e => e.method + (e.applied ? " applied" : " 0 rows"));
+    const offline = () => Promise.reject(new TypeError("Failed to fetch"));
+    const K = W[2];
+    // (a) the version-ABA over an EDIT of ours: A knows K at v2; its PATCH lands (v3), the answer and read-back lost;
+    // B deletes K and puts it back (an Undo of the delete: v1) — or clears and restores "Before clear" — then reverts
+    // A's change in the editor: the old copy at v2, the very version A knew.
+    for (const story of ["undo-of-delete", "clear-then-restore"]) {
+      const t = mkTable(seedRows(6, 2));
+      const A = mkSession(t), B = mkSession(t, { token: "TOK_B", user: "user-b" });
+      await A.engine.load(); await B.engine.load();
+      const x0 = clone(t.get(K).data);
+      t.control.fail({ method: "PATCH", week: K, kind: "throw-after" }); t.control.fail({ method: "GET", week: K, kind: "throw" });
+      A.edit(K, w => (w.dayCall = "a1", w)); await A.engine.push();
+      const landed = t.get(K).data.dayCall === "a1" && t.get(K).version === 3 && A.engine.pending().includes(K);
+      A.fetchHook = offline;
+      await B.engine.pull();
+      const snap = clone(B.mirror);
+      if (story === "undo-of-delete") { B.drop(K); await B.engine.push(); B.mirror = Object.assign({}, B.mirror, { [K]: clone(snap[K]) }); await B.engine.push(); }
+      else { const b = clone(B.mirror); B.mirror = {}; await B.engine.authoritative({}, true, "clear", null, { before: b }); await B.engine.idle(); B.mirror = clone(snap); await B.engine.authoritative(clone(snap), true, "restore", null, { before: {} }); await B.engine.idle(); }
+      const reins = t.get(K) && t.get(K).data.dayCall === "a1" && t.get(K).version === 1;
+      B.edit(K, () => clone(x0)); await B.engine.push(); await B.engine.idle();
+      const atKnown = t.get(K).data.dayCall === x0.dayCall && t.get(K).version === 2;
+      A.fetchHook = null; const toasts0 = A.toasts.length, from = t.log.length;
+      await A.engine.pull(); await A.engine.idle();
+      await B.engine.pull(); await B.engine.idle();
+      const res = { story, landed, reins, atKnown, row: t.get(K).data.dayCall + "@v" + t.get(K).version, aW: aW(t, from), toasts: A.toasts.slice(toasts0), c: A.st().conflicts.map(x => x.k), shown: A.mirror[K].dayCall, pending: A.engine.pending(), bShown: B.mirror[K].dayCall, bToasts: B.toasts };
+      check(`SE87 I1 (a) (${story}) A's PATCH lands at v3, its answer lost; elsewhere the week is deleted and put back (v1), then reverted to the old copy — at v2, the very version A knew: A reconnects and its lost write is NOT re-sent over the revert — the revert stands at v2, A shows it and is told once (a conflict); B still shows its revert, told nothing; nothing pending`,
+        landed && reins && atKnown && res.row === x0.dayCall + "@v2" && res.aW.length === 0 && theirsTold(res.toasts) === 1 && res.toasts.length === 1 && res.c.join() === K && res.shown === x0.dayCall && res.pending.length === 0 && res.bShown === x0.dayCall && res.bToasts.length === 0, JSON.stringify(res));
+    }
+    // (b) …over a DELETE of ours: A's DELETE lands, its answer lost; B puts the week back with other data (v1), then
+    // edits it to the old copy (v2, the version A knew). A's DELETE isn't re-sent over it: kept, shown, told.
+    {
+      const t = mkTable(seedRows(6, 2));
+      const A = mkSession(t), B = mkSession(t, { token: "TOK_B", user: "user-b" });
+      await A.engine.load(); await B.engine.load();
+      const x0 = clone(t.get(K).data);
+      t.control.fail({ method: "DELETE", week: K, kind: "throw-after" }); t.control.fail({ method: "GET", week: K, kind: "throw" });
+      A.drop(K); await A.engine.push();
+      const landed = !t.get(K) && A.engine.pending().includes(K);
+      A.fetchHook = offline;
+      await B.engine.pull();
+      B.edit(K, () => wk("bf1")); await B.engine.push();                    // re-created with other data (v1)…
+      B.edit(K, () => clone(x0)); await B.engine.push();                    // …then put back to the old copy (v2)
+      const atKnown = t.get(K) && t.get(K).data.dayCall === x0.dayCall && t.get(K).version === 2;
+      A.fetchHook = null; const toasts0 = A.toasts.length, from = t.log.length;
+      await A.engine.pull(); await A.engine.idle();
+      const res = { landed, atKnown, row: t.get(K) && t.get(K).data.dayCall + "@v" + t.get(K).version, aW: aW(t, from), toasts: A.toasts.slice(toasts0), c: A.st().conflicts.map(x => x.k), shown: A.mirror[K] && A.mirror[K].dayCall, pending: A.engine.pending() };
+      check("SE87 I1 (b) A's DELETE lands, its answer lost; the week is re-created elsewhere and edited back to the old copy at the version A knew: A's DELETE is NOT re-sent — the week stands, shown on A's screen, told once; nothing pending",
+        landed && atKnown && res.row === x0.dayCall + "@v2" && res.aW.length === 0 && res.shown === x0.dayCall && res.c.join() === K && theirsTold(res.toasts) === 1 && res.pending.length === 0, JSON.stringify(res));
+    }
+    // (c) …over a KEEPALIVE of ours (answered; the page survived, then went offline): the same version-ABA elsewhere.
+    {
+      const t = mkTable(seedRows(6, 2));
+      const A = mkSession(t), B = mkSession(t, { token: "TOK_B", user: "user-b" });
+      await A.engine.load(); await B.engine.load();
+      const x0 = clone(t.get(K).data);
+      A.edit(K, w => (w.dayCall = "a1", w));
+      const reqs = A.engine.keepaliveRequests();
+      for (const x of reqs) { await (await t.fetch(x.url, x.init)).text(); if (x.done) x.done(); }
+      const landed = reqs.length === 1 && t.get(K).data.dayCall === "a1" && t.get(K).version === 3;
+      A.fetchHook = offline;
+      await t.recreate("TOK_B", K, wk("a1"), { by: "user-b" });             // deleted + re-inserted as it was (v1)
+      await B.engine.pull(); B.edit(K, () => clone(x0)); await B.engine.push();   // then reverted to the old copy (v2)
+      const atKnown = t.get(K).data.dayCall === x0.dayCall && t.get(K).version === 2;
+      A.fetchHook = null; const toasts0 = A.toasts.length, from = t.log.length;
+      await A.engine.pull(); await A.engine.idle();
+      const res = { landed, atKnown, row: t.get(K).data.dayCall + "@v" + t.get(K).version, aW: aW(t, from), toasts: A.toasts.slice(toasts0), c: A.st().conflicts.map(x => x.k), shown: A.mirror[K].dayCall, pending: A.engine.pending() };
+      check("SE87 I1 (c) A's KEEPALIVE lands (the page survived); the week is deleted, re-inserted and reverted to the old copy at the version A knew: the keepalive's edit is NOT re-sent over it — the revert stands, A shows it, told once; nothing pending",
+        landed && atKnown && res.row === x0.dayCall + "@v2" && res.aW.length === 0 && res.shown === x0.dayCall && res.c.join() === K && theirsTold(res.toasts) === 1 && res.pending.length === 0, JSON.stringify(res));
+    }
+    // (d) E7's savedMoved, the same: A's lost PATCH (landed at v3); elsewhere the week is deleted, put back (v1) and
+    // reverted to the old copy (v2 — the version A knew); A's push re-read (held) confirms that revert as the copy the
+    // restore A tapped meanwhile shows ("mirror" — not proof); the restore is refused (signed out): A's lost write is
+    // not put back over the revert — the conflict told in the refusal's message; once signed in, nothing re-sent.
+    {
+      const t = mkTable(seedRows(3, 2)); t.control.users.TOK_A2 = "user-a";
+      const A = mkSession(t), B = mkSession(t, { token: "TOK_B", user: "user-b" });
+      await A.engine.load(); await B.engine.load();
+      const x0 = clone(t.get(W[1]).data);
+      t.control.fail({ method: "PATCH", week: W[1], kind: "throw-after" }); t.control.fail({ method: "GET", week: W[1], kind: "throw" });
+      A.edit(W[1], w => (w.dayCall = "a-edit", w)); await A.engine.push();
+      await B.engine.pull(); const bs = clone(B.mirror);
+      B.drop(W[1]); await B.engine.push(); B.mirror = Object.assign({}, B.mirror, { [W[1]]: clone(bs[W[1]]) }); await B.engine.push();   // deleted, put back (v1)
+      B.edit(W[1], () => clone(x0)); await B.engine.push();                                                                              // reverted (v2)
+      const setup = t.get(W[1]).data.dayCall === x0.dayCall && t.get(W[1]).version === 2 && A.engine.pending().join() === W[1];
+      const hold = t.control.pause({ method: "GET", week: W[1], count: 1 });
+      const pp = A.engine.push(); await hold.arrived;
+      const SNAP = clone(A.engine.knownSchedule());
+      const before = clone(A.mirror); A.mirror = clone(SNAP);
+      const cp = A.engine.authoritative(clone(SNAP), true, "restore", undefined, { before });
+      A.token = null;
+      hold.release();
+      const r = await cp; await pp; await A.engine.idle();
+      const mid = { shown: A.mirror[W[1]].dayCall, conflicts: A.st().conflicts.map(c => c.k), err: r.error };
+      A.token = "TOK_A2"; const from = t.log.length;
+      await A.engine.pull(); await A.engine.idle(); await A.engine.idle();
+      const res = { setup, mid, row: t.get(W[1]).data.dayCall + "@v" + t.get(W[1]).version, aW: aW(t, from), pending: A.engine.pending() };
+      check("SE87 I1 (d) E7: a refused restore after the version-ABA (the revert at the version A knew, confirmed by a re-read as the restore's own copy): A's lost write is NOT put back over it — their copy shown, the conflict told in the refusal's message; once signed in again nothing is re-sent: the revert stands at v2",
+        setup && /changed by someone else/.test(String(r.error || "")) && mid.shown === x0.dayCall && mid.conflicts.join() === W[1] && res.row === x0.dayCall + "@v2" && !res.aW.some(w => /^PATCH/.test(w)) && res.pending.length === 0, JSON.stringify(res));
+    }
+    // (e) a keepalive still ON THE WIRE is never proven not to have landed: a later re-read (e1) or a read-back (e2)
+    // that finds the week unchanged before it lands keeps it out. It lands; a peer reverts the week; our later edit is
+    // then NOT written over the revert ("refreshed" would have: our other bodies were proven).
+    for (const where of ["re-read", "read-back"]) {
+      const t = mkTable(seedRows(3));
+      const A = mkSession(t), B = mkSession(t, { token: "TOK_B", user: "user-b" });
+      await A.engine.load(); await B.engine.load();
+      const x0 = t.get(W[0]).data.dayCall;
+      A.edit(W[0], w => (w.dayCall = "a1", w));
+      const [ka] = A.engine.keepaliveRequests();
+      const holdKa = t.control.pause({ method: "PATCH", week: W[0], count: 1 });
+      const kp = t.fetch(ka.url, ka.init).then(r => r.text(), () => {}).then(() => { if (ka.done) ka.done(); });   // the app's fetch(…).catch(…).then(done)
+      await holdKa.arrived;                                                                       // the radio holds it
+      A.edit(W[0], w => (w.dayCall = "a2", w));
+      let holdA = null, pa;
+      if (where === "re-read") {
+        t.control.fail({ method: "PATCH", week: W[0], kind: "throw" }); t.control.fail({ method: "GET", week: W[0], kind: "throw" });
+        await A.engine.push();                                     // a2 lost, unknown
+        holdA = t.control.pause({ method: "PATCH", week: W[0], count: 1 });
+        pa = A.engine.push(); await holdA.arrived;                 // its re-read found W1 unchanged (proving a2); a2 again is on the wire
+      } else {
+        t.control.fail({ method: "PATCH", week: W[0], kind: "5xx-before" });
+        await A.engine.push();                                     // 503: the read-back finds W1 unchanged (proving a2)
+      }
+      holdKa.release(); await kp;                                  // the keepalive lands (a1, v4)
+      await B.engine.pull(); B.edit(W[0], w => (w.dayCall = x0, w)); await B.engine.push();   // a peer reverts it (v5)
+      const setup = t.get(W[0]).data.dayCall === x0 && t.get(W[0]).version === 5;
+      const toasts0 = A.toasts.length;
+      if (holdA) { holdA.release(); await pa; } else { await A.engine.push(); }
+      await A.engine.idle(); await A.engine.pull(); await A.engine.idle();
+      const res = { where, setup, row: t.get(W[0]).data.dayCall + "@v" + t.get(W[0]).version, toasts: A.toasts.slice(toasts0), c: A.st().conflicts.map(x => x.k), shown: A.mirror[W[0]].dayCall, pending: A.engine.pending() };
+      check(`SE87 I1 (e) (${where}) a keepalive held in the radio when a ${where} finds the week unchanged is NOT proven (it may land yet): it lands, a peer reverts the week — our later edit is not written over the revert: it stands at v5, A shows it, told once; nothing pending`,
+        setup && res.row === x0 + "@v5" && res.shown === x0 && res.c.join() === W[0] && theirsTold(res.toasts) === 1 && res.pending.length === 0, JSON.stringify(res));
+    }
+    // (f) I3: the page survives its unload with the keepalive held; the user taps Undo; the push's re-read (before the
+    // keepalive lands) finds the screen's copy — "mirror" — but the week stays unconfirmed while its keepalive is on the
+    // wire; it lands; the next pull reads it as OURS and sends the Undo over it.
+    {
+      const t = mkTable(seedRows(6, 3));
+      const A = mkSession(t), B = mkSession(t, { token: "TOK_B", user: "user-b" });
+      await A.engine.load(); await B.engine.load();
+      const before = clone(A.mirror);
+      A.edit(K, w => (w.dayCall = "a1", w));
+      const [ka] = A.engine.keepaliveRequests();
+      const holdKa = t.control.pause({ method: "PATCH", week: K, count: 1 });
+      const kp = t.fetch(ka.url, ka.init).then(r => r.text(), () => {}).then(() => { if (ka.done) ka.done(); });
+      await holdKa.arrived;
+      A.mirror = clone(before); await A.engine.push(); await A.engine.idle();   // ↩ Undo: back to the saved copy
+      const whileOut = A.engine.pending().join();
+      holdKa.release(); await kp;                                                // the keepalive lands (a1, v4)
+      const kaLanded = t.get(K).data.dayCall === "a1" && t.get(K).version === 4;
+      const toasts0 = A.toasts.length;
+      await A.engine.pull(); await A.engine.idle();
+      await B.engine.pull(); await B.engine.idle();
+      const res = { whileOut, kaLanded, row: t.get(K).data.dayCall + "@v" + t.get(K).version, shown: A.mirror[K].dayCall, toasts: A.toasts.slice(toasts0), c: A.st().conflicts.length, pending: A.engine.pending(), b: B.mirror[K].dayCall };
+      check("SE87 I3 (f) (review r5 matrix-3 (a)) a keepalive held in the radio, the page survives, the user taps Undo: the week stays unconfirmed (pending) while the keepalive is on the wire; it lands; the next pull reads it as ours and sends the Undo over it — the table, A and B all end on the Undo's copy, nothing told, nothing pending",
+        whileOut === K && kaLanded && res.row === before[K].dayCall + "@v5" && res.shown === before[K].dayCall && res.toasts.length === 0 && res.c === 0 && res.pending.length === 0 && res.b === before[K].dayCall, JSON.stringify(res));
+    }
+    // (g) I3: a clear's force DELETE of K the server applies AFTER our timeout gave up on it — after the follow-up push's
+    // CAS DELETE landed and the user's Undo re-inserted every week: it carries the CAS of the row the clear read, so it
+    // matches nothing — K stays.
+    {
+      const t = mkTable(seedRows(6, 3));
+      const A = mkSession(t, { timeouts: { read: 40, write: 40 } }); await A.engine.load();
+      const before = clone(A.mirror);
+      let held = null;
+      A.fetchHook = (u, i) => {
+        if (i && i.method === "DELETE" && decodeURIComponent(u).includes("week_monday=eq." + K) && !held) {
+          held = { u, i: Object.assign({}, i, { signal: undefined }) };
+          return new Promise((res, rej) => { i.signal.addEventListener("abort", () => { const e = new Error("aborted"); e.name = "AbortError"; rej(e); }); });
+        }
+        return t.fetch(u, i);
+      };
+      A.mirror = {};
+      await A.engine.authoritative({}, true, "clear", null, { before: clone(before) });
+      await A.engine.idle(); await sleep(0); await A.engine.idle();
+      const cleared = !!held && !t.get(K) && t.rows().length === 0;
+      A.mirror = clone(before); await A.engine.push(); await A.engine.idle();    // ↩ Undo the clear: every week re-inserted (v1)
+      const undone = t.rows().length === 6 && A.engine.pending().length === 0;
+      const r = await t.fetch(held.u, held.i); await r.text();                   // the server runs the stalled DELETE now
+      const late = t.log[t.log.length - 1];
+      await A.engine.pull(); await A.engine.idle();
+      const res = { cleared, undone, heldUrl: held && held.u.split("?")[1], lateApplied: late.applied, k: !!t.get(K), shown: !!A.mirror[K], toasts: A.toasts, pending: A.engine.pending() };
+      check("SE87 I3 (g) (review r5 matrix-3 (b)) a clear's force DELETE carries the CAS of the row it read: one the server applies after our timeout — after the follow-up push deleted the week and the Undo re-inserted it — matches nothing; the week stays in the table and on A's screen, nothing pending",
+        cleared && undone && /version=eq\.3&updated_at=eq\./.test(res.heldUrl || "") && res.lateApplied === false && res.k && res.shown && res.pending.length === 0, JSON.stringify(res));
+    }
+    // (h) I2: A deletes K — the DELETE never reached the server, its read-back failed (outcome unknown); A taps Undo /
+    // re-adds K while offline; elsewhere K is deleted (a clear, a restore without it, a delete); A reconnects: K is put
+    // back — the user's own intended week — but no longer silently: told ONCE, in a deletion's words.
+    for (const elsewhere of ["clear", "restore-without-K", "delete-K"]) for (const ours of ["undo", "re-add"]) {
+      const t = mkTable(seedRows(6, 3));
+      const A = mkSession(t), B = mkSession(t, { token: "TOK_B", user: "user-b" });
+      await A.engine.load(); await B.engine.load();
+      const before = clone(A.mirror);
+      t.control.fail({ method: "DELETE", week: K, kind: "throw" }); t.control.fail({ method: "GET", week: K, kind: "throw" });
+      A.drop(K); await A.engine.push();
+      const lost = !!t.get(K) && A.engine.pending().includes(K);
+      A.fetchHook = offline;
+      if (ours === "undo") A.mirror = clone(before); else A.edit(K, w => (w.dayCall = "a3", w));
+      await A.engine.push();
+      await B.engine.pull();
+      if (elsewhere === "clear") { const b = clone(B.mirror); B.mirror = {}; await B.engine.authoritative({}, true, "clear", null, { before: b }); }
+      else if (elsewhere === "restore-without-K") { const snap = clone(B.mirror); delete snap[K]; const b = clone(B.mirror); B.mirror = clone(snap); await B.engine.authoritative(clone(snap), true, "restore", null, { before: b }); }
+      else { B.drop(K); await B.engine.push(); }
+      await B.engine.idle();
+      const gone = !t.get(K);
+      A.fetchHook = null; const toasts0 = A.toasts.length, from = t.log.length;
+      await A.engine.pull(); await A.engine.idle(); await A.engine.pull(); await A.engine.idle();
+      const all = A.toasts.slice(toasts0), want = ours === "undo" ? before[K].dayCall : "a3";
+      const res = { elsewhere, ours, lost, gone, aW: aW(t, from), row: t.get(K) && t.get(K).data.dayCall + "@v" + t.get(K).version, toasts: all, pending: A.engine.pending() };
+      check(`SE87 I2 (h) (${elsewhere}, ${ours}) A's DELETE never reached the server (its outcome unknown), A ${ours === "undo" ? "taps Undo" : "re-adds the week"} offline, the week is deleted elsewhere: A reconnects — the week A shows is put back (one POST) and A is told ONCE: '${PUTBACK(K)}'; nothing pending`,
+        lost && gone && res.aW.join() === "POST applied" && t.get(K) && t.get(K).data.dayCall === want && toldN(all, PUTBACK(K)) === 1 && all.length === 1 && res.pending.length === 0, JSON.stringify(res));
+    }
+    // (i) I2's other side: the DELETE PROVEN not to have landed (503 before commit, its read-back finds K still there)
+    // is out of the ledger — B then deletes K: A's Undo leaves nothing unsaved, so the deletion is adopted quietly
+    // (no re-insert); A's re-add (an edit of the week) meets the deletion: adopted and told as a conflict.
+    for (const ours of ["undo", "re-add"]) {
+      const t = mkTable(seedRows(6, 3));
+      const A = mkSession(t), B = mkSession(t, { token: "TOK_B", user: "user-b" });
+      await A.engine.load(); await B.engine.load();
+      const before = clone(A.mirror);
+      t.control.fail({ method: "DELETE", week: K, kind: "5xx-before" });
+      A.drop(K); await A.engine.push();
+      const refused = !!t.get(K) && A.engine.pending().includes(K);
+      await B.engine.pull(); B.drop(K); await B.engine.push();
+      const toasts0 = A.toasts.length, from = t.log.length;
+      if (ours === "undo") A.mirror = clone(before); else A.edit(K, w => (w.dayCall = "a3", w));
+      await A.engine.push(); await A.engine.idle(); await A.engine.pull(); await A.engine.idle();
+      const all = A.toasts.slice(toasts0);
+      const res = { ours, refused, aW: aW(t, from), k: !!t.get(K), shown: !!A.mirror[K], toasts: all, c: A.st().conflicts.map(x => x.k), pending: A.engine.pending() };
+      check(`SE87 I2 (i) (${ours}) A's DELETE answered 503 and read back UNCHANGED (proven not to have landed); B deletes the week; A ${ours === "undo" ? "taps Undo: nothing of A's is unsaved — the deletion is adopted quietly (no POST, nothing told)" : "re-adds it: its CAS PATCH meets the deletion — adopted, told once as a conflict (no POST)"}; the week off the table and off A's screen; nothing pending`,
+        refused && !res.aW.some(w => /^POST/.test(w)) && !res.k && !res.shown && res.pending.length === 0
+          && (ours === "undo" ? all.length === 0 && res.c.length === 0 : theirsTold(all) === 1 && all.length === 1 && res.c.join() === K), JSON.stringify(res));
+    }
+    // (j) the decision's cost (flagged in the PR): A's OWN DELETE landed (its answer lost) and A taps Undo — there are
+    // no tombstones to tell that from a deletion elsewhere: the week is put back, and told once in the same words.
+    {
+      const t = mkTable(seedRows(6, 3));
+      const A = mkSession(t); await A.engine.load();
+      const before = clone(A.mirror);
+      t.control.fail({ method: "DELETE", week: K, kind: "throw-after" }); t.control.fail({ method: "GET", week: K, kind: "throw" });
+      A.drop(K); await A.engine.push();
+      const landed = !t.get(K) && A.engine.pending().includes(K);
+      A.fetchHook = offline; A.mirror = clone(before); await A.engine.push(); A.fetchHook = null;
+      const toasts0 = A.toasts.length;
+      await A.engine.pull(); await A.engine.idle(); await A.engine.pull(); await A.engine.idle();
+      const all = A.toasts.slice(toasts0);
+      check("SE87 I2 (j) the decision's cost: A's OWN DELETE landed, its answer lost, and A taps Undo offline — indistinguishable from a deletion elsewhere: the week is put back and told once, in the same words; nothing pending",
+        landed && t.get(K) && t.get(K).data.dayCall === before[K].dayCall && toldN(all, PUTBACK(K)) === 1 && all.length === 1 && A.engine.pending().length === 0, JSON.stringify({ landed, toasts: all, pending: A.engine.pending() }));
+    }
+    // (k) I7: H3's re-send lands with ITS answer and read-back lost too (the same flaky connection) — the next push's
+    // re-read finds the row: told then, once. (l) …the same for I2's put-back.
+    for (const kind of ["insert", "put-back"]) {
+      const t = mkTable(seedRows(6, 3));
+      const A = mkSession(t), B = mkSession(t, { token: "TOK_B", user: "user-b" });
+      await A.engine.load(); await B.engine.load();
+      const k = kind === "insert" ? W[7] : K, before = clone(A.mirror);
+      if (kind === "insert") { t.control.fail({ method: "POST", week: k, kind: "throw-after" }); t.control.fail({ method: "GET", week: k, kind: "throw" }); A.edit(k, () => wk("s3")); await A.engine.push(); }
+      else { t.control.fail({ method: "DELETE", week: k, kind: "throw" }); t.control.fail({ method: "GET", week: k, kind: "throw" }); A.drop(k); await A.engine.push(); A.fetchHook = offline; A.mirror = clone(before); await A.engine.push(); A.fetchHook = null; }
+      await B.engine.pull(); const b = clone(B.mirror); B.mirror = {}; await B.engine.authoritative({}, true, "clear", null, { before: b }); await B.engine.idle();
+      const cleared = t.rows().length === 0;
+      const toasts0 = A.toasts.length;
+      t.control.fail({ method: "POST", week: k, kind: "throw-after" });
+      let n = 0;   // the push's re-read WORKS (no row); the re-sent POST's own read-back fails
+      A.fetchHook = (u, i) => { if ((!i || !i.method || i.method === "GET") && u.includes("week_monday=eq." + k) && ++n === 2) return offline(); return t.fetch(u, i); };
+      await A.engine.pull(); await A.engine.idle();
+      const mid = { rows: t.rows().map(r => r.week_monday), toasts: A.toasts.slice(toasts0), pending: A.engine.pending() };
+      A.fetchHook = null;
+      for (let i = 0; i < 3; i++) { await A.engine.pull(); await A.engine.idle(); }
+      const all = A.toasts.slice(toasts0), msg = kind === "insert" ? RESENT(k) : PUTBACK(k);
+      check(`SE87 I7 (${kind === "insert" ? "k" : "l"}) (review r5 fix-2) ${kind === "insert" ? "H3's re-sent INSERT" : "I2's put-back"} lands with its own answer and read-back lost too: when the next push's re-read finds the row, A is told then — exactly once ('${msg}'); nothing pending`,
+        cleared && mid.rows.join() === k && mid.pending.join() === k && toldN(all, msg) === 1 && all.filter(m => /saved again/.test(m)).length === 1 && A.engine.pending().length === 0, JSON.stringify({ mid, all, pending: A.engine.pending() }));
     }
   });
 
@@ -3841,14 +4427,14 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
     pushNote: sess(fnX("edgeFunctionUrl, fetch, dbAuthHeaders, console, showToast, sessionEpochRef", after("  const sendPushNotif = useCallback(", ", [edgeFunctionUrl]);"))),
     // (21/n) "Sign in again" (reauthForSync) and the listener for another tab's change of the stored session (review r4 branch-4)
     raSync: fnX("reauthBusy, setReauthBusy, auth, reauthLanded, authUser, setReauthPassword, setReauthError, setReauthSheet", decl("reauthForSync", "\n  };\n")),
-    storageFx: fnX("authUser, window, schedSyncRef, auth, setReauthNeeded", wrap("() => {\n    if (!authUser) return;\n    const onStorage = (e) => {", after("    const onStorage = (e) => {", "\n  }, [authUser]);"), "\n  }")),
+    storageFx: fnX("authUser, window, schedSyncRef, auth, setReauthNeeded, pendingSaveRef, setSetupSaveNudge", wrap("() => {\n    if (!authUser) return;\n    const onStorage = (e) => {", after("    const onStorage = (e) => {", "\n  }, [authUser]);"), "\n  }")),
     // (21/n) the sign-in form's submit and the Face ID unlock: each binds the tab to its account (review r4 branch-4)
     authSubmit: fnX("setAuthError, setAuthBusy, authMode, signupPersonId, dbAuth, auth, authEmail, authPassword, allPeople, setAuthUser, setUserProfile, setMySurgeon, setNeedsProfile, setIsScheduler, setReloadTrigger, setAuthEmail, setAuthPassword, fetch, SUPABASE_URL, dbAuthHeaders, saveNotifPref, showToast, console",
       decl("handleAuthSubmit", "\n  };\n")),
     bioUnlock: fnX("setAuthError, setAuthBusy, biometric, auth, setAuthUser, dbAuth, setUserProfile, setMySurgeon, setNeedsProfile, setBiometricPending, setReloadTrigger", decl("handleBiometricUnlock", "\n  };\n")),
     // (21/n) the time off's DELETE and its clear-all (the factory reset's third clear — review r4 fixes-2)
     delTO: sess(fnX("fetch, SUPABASE_URL, dbAuthHeaders, console, showToast, sessionEpochRef", decl("deleteTimeOff", "\n  };\n"))),
-    clearTO: fnX("setVacations, setNoCallDays, logAudit, USE_TIME_OFF, deleteTimeOff", decl("toClearAll", "\n  };\n")),
+    clearTO: sess(fnX("setVacations, setNoCallDays, logAudit, USE_TIME_OFF, deleteTimeOff, sessionEpochRef, dbAuthHeaders", decl("toClearAll", "\n  };\n"))), // (22/n: its audit line once landed, as the tapping account — review r5 regress-1)
     email: sess(fnX("edgeFunctionUrl, fetch, dbAuthHeaders, console, showToast, sessionEpochRef", after("  const sendEmailNotif = useCallback(", ", [edgeFunctionUrl]);"))),
     // the header: does the save-status span render (P6)?
     saveShown: fnX("saveStatus, saveError, schedLineKind", wrap("(() => { const SCHED_LINE_RED = ", after("  const SCHED_LINE_RED = ", "\n  // Clear / factory reset / restore: an authoritative"), "\n  return saveStatusShown; })()")),
@@ -5520,10 +6106,12 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
           if (/status=eq\.pending$/.test(u)) {
             if (o.change) { await P.eng.pull(); P.edit(X[1], w => (w.nights.tue = "s7", w)); await P.eng.push(); await A.eng.pull(); } // someone changes a cascade slot meanwhile: the trade no longer holds
             if (o.at === "status") { await cross(A, c, o.how); if (!o.loadHeld) await A.settle(); await spin(6); crossed = { epoch: A.sessionEpochRef.current, seeded: A.eng.isSeeded(), weeks: Object.keys(A.ref.current).length }; }
+            if (o.statusFails) return resp(500, { message: "upstream" });   // (22/n, r5-fix-5) the status PATCH itself fails
             return resp(200, [Object.assign({}, REQ, { status: "accepted" })]);
           }
           if (/status=eq\.accepted$/.test(u)) {
             if (o.at === "back") { await cross(A, c, o.how); await spin(6); }
+            if (o.backZero) return resp(200, []);                            // (22/n, r5-fix-5) the set-back answers 200 with no row (RLS refusing it, or the trade changed)
             return o.backFails ? resp(500, { message: "upstream" }) : resp(200, [Object.assign({}, REQ, { status: "pending", reviewed_at: null })]);
           }
           throw new Error("unrouted: " + u);
@@ -5545,6 +6133,15 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
     const af = await acceptRun({ at: "status", how: "other", backFails: true });
     check("SE-X20 H2 (c) …the set-back FAILING: logged (console) and an audit line written AS A (the tap's headers — 'trade.accept_unapplied', for a manual fix), and still nothing said on the next screen",
       af.w === 0 && af.notes.length === 0 && af.emails.length === 0 && af.toasts.length === 0 && af.reqs[1] === BACK_A && af.errors === 1 && af.audits.join() === "trade.accept_unapplied@Bearer TOK_A", JSON.stringify(af));
+    // (j), (k) 22/n — review r5 fix-5 (the reviewer's p-mu56 shapes): the set-back answering 200 with ZERO rows, and the
+    // status PATCH itself failing, each with the session changing while the status PATCH is out.
+    const bz = [await acceptRun({ at: "status", how: "other", backZero: true }), await acceptRun({ at: "status", how: "signout", backZero: true })];
+    check("SE-X20 H2 (j) (r5-fix-5) …the set-back answering 200 with ZERO rows (RLS refusing it, or the trade changed meanwhile: still accepted, no swap), after another account's 'Sign in again' or a sign-out during the status PATCH: logged (console) and an audit line written AS A ('trade.accept_unapplied', for a manual fix) — exactly as a failed one; nothing applied, nothing said",
+      bz.every(z => z.w === 0 && z.undo === 0 && z.notes.length === 0 && z.emails.length === 0 && z.toasts.length === 0 && z.reqs.length === 2 && z.reqs[1] === BACK_A && z.errors === 1 && z.audits.join() === "trade.accept_unapplied@Bearer TOK_A"), JSON.stringify(bz));
+    const sfx = [await acceptRun({ at: "status", how: "other", statusFails: true }), await acceptRun({ at: "status", how: "signout", statusFails: true })], sf0 = await acceptRun({ statusFails: true });
+    check("SE-X20 H2 (k) (r5-fix-5) …the status PATCH itself failing (500) after the session changed during it (another account; a sign-out): nothing said on the next session's screen (no 'Couldn't accept the trade…'), nothing applied, nothing set back; control — in one session that failure is said, once",
+      sfx.every(f => f.w === 0 && f.undo === 0 && f.toasts.length === 0 && f.notes.length === 0 && f.reqs.length === 1 && f.audits.length === 0)
+        && sf0.toasts.join("|") === "Couldn't accept the trade — nothing was changed. Check your connection and try again." && sf0.w === 0 && sf0.reqs.length === 1, JSON.stringify({ sfx, sf0 }));
     const an = await acceptRun({ at: "notice1", how: "other" }), an2 = await acceptRun({ at: "notice2", how: "other" });
     check("SE-X20 H2 (d) …the session changing during the trade's FIRST notice (the trade applied in A's session): no more notices (no cascade notices) and no e-mail from the next session, nothing said; during the FIRST CASCADE's notice: that cascade's e-mail and the second cascade's notice never go out",
       an.notes.join() === "trade_accepted@TOK_A" && an.emails.length === 0 && an.toasts.length === 0 && an.wB === 0
@@ -5657,14 +6254,17 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
           if (o.del >= 200 && o.del < 300) server.time_off = 0;
           return { ok: o.del >= 200 && o.del < 300, status: o.del, text: async () => "upstream connect error" };
         } });
-      const tca = G.clearTO({ setVacations: (v) => { screen.vac = v; }, setNoCallDays: (v) => { screen.nc = v; }, logAudit: noopX, USE_TIME_OFF: true, deleteTimeOff: del });
-      if (o.button) { await tca("vacation"); await spin(6); return { toasts: ours(A.toasts.map(x => x[0])), sent, vac: Object.keys(screen.vac).length, nc: Object.keys(screen.nc).length }; }
+      const audits = []; // (22/n) the clear-all's audit line: written when, and with whose headers (review r5 regress-1)
+      const tca = G.clearTO({ setVacations: (v) => { screen.vac = v; }, setNoCallDays: (v) => { screen.nc = v; }, USE_TIME_OFF: true, deleteTimeOff: del,
+        logAudit: (action, summary, details, hdrs) => audits.push(action + "@" + (hdrs ? hdrs.Authorization : "now:" + (A.token || "ANON")) + (sent.length ? "" : " (before its DELETE)")),
+        sessionEpochRef: A.sessionEpochRef, dbAuthHeaders: () => ({ Authorization: "Bearer " + (A.token || "ANON") }) });
+      if (o.button) { await tca("vacation"); await spin(6); return { toasts: ours(A.toasts.map(x => x[0])), sent, audits, vac: Object.keys(screen.vac).length, nc: Object.keys(screen.nc).length }; }
       const rec = mkRec(), J = appJobs(A, rec, { server, upsertFails: o.upsertFails, env: Object.assign({ toClearAll: tca, console: quiet, allowWipeSaveRef: refs.allow, everHadRealDataRef: refs.ever,
         setAppShifts: (v) => { screen.appShifts = v; }, setPriorCounts: (v) => screen.counts.prior.push(JSON.stringify(v)), setYear1Counts: (v) => screen.counts.y1.push(JSON.stringify(v)),
         setStartMonth: (v) => screen.counts.m.push(v), setStartYear: (v) => screen.counts.y.push(v) }, o.env || {}) });
       await J.reset(); if (rec.jobP) await rec.jobP; await ticks(A, 3); await nap(5); await ticks(A, 2);
       return { toasts: ours(A.toasts.map(x => x[0] + " :" + x[1])), status: rec.status.slice(), sent, server: clone(server), rows: t.rows().length, vac: Object.keys(screen.vac).length, nc: Object.keys(screen.nc).length,
-        appShifts: screen.appShifts, counts: screen.counts, job: rec.jobP !== null, setup: rec.setupReset, ups: rec.upserts.slice(), allow: refs.allow.current, ever: refs.ever.current };
+        appShifts: screen.appShifts, counts: screen.counts, job: rec.jobP !== null, setup: rec.setupReset, ups: rec.upserts.slice(), allow: refs.allow.current, ever: refs.ever.current, audits };
     };
     const stopped = (x) => x.ups.join() === "call_schedule_data,app_shifts_data" && x.server.time_off === 3 && x.vac === 1 && x.nc === 1 && !x.job && x.rows === 4 && x.setup === 1
       && JSON.stringify(x.appShifts) === "{}" && !x.status.includes("Reset complete") && x.allow === false && x.ever === true && x.sent.length === 1 && /^DELETE time_off\?id=not\.is\.null Bearer TOK_A$/.test(x.sent[0]);
@@ -5673,8 +6273,8 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
       stopped(f5) && f5.toasts.join("|") === REFUSED + " :error", JSON.stringify(f5));
     check("SE-X21 H6 (b) …the DELETE getting NO answer (thrown): '" + UNANSWERED + "' (it may have landed — said so), the rest as (a)",
       stopped(ft) && ft.toasts.join("|") === UNANSWERED + " :error", JSON.stringify(ft));
-    check("SE-X21 H6 (c) control: the time_off DELETE lands — the time off cleared on the server and on this screen, the weeks job runs (every week deleted), 'Reset complete', no toast",
-      ok.server.time_off === 0 && ok.vac === 0 && ok.nc === 0 && ok.job && ok.rows === 0 && ok.status.includes("Reset complete") && ok.toasts.length === 0, JSON.stringify(ok));
+    check("SE-X21 H6 (c) control: the time_off DELETE lands — the time off cleared on the server and on this screen, the weeks job runs (every week deleted), 'Reset complete', no toast; this screen takes the reset's setup and APP shifts too (22/n: after that clear — review r5 regress-1)",
+      ok.server.time_off === 0 && ok.vac === 0 && ok.nc === 0 && ok.job && ok.rows === 0 && ok.status.includes("Reset complete") && ok.toasts.length === 0 && JSON.stringify(ok.appShifts) === "{}" && ok.setup === 1, JSON.stringify(ok));
     const xo = await go({ del: 503, cross: "other" }), xs = await go({ del: 204, cross: "signout" });
     check("SE-X21 H6 (d) …the session changing while the time_off DELETE is out (another account; a sign-out): the reset goes no further — no weeks job as the next account, nothing said (none of its messages, not deleteTimeOff's), no 'Reset complete'; the guard refs back",
       [xo, xs].every(x => !x.job && x.toasts.length === 0 && !x.status.includes("Reset complete") && x.rows === 4 && x.allow === false && x.ever === true), JSON.stringify({ xo, xs }));
@@ -5715,6 +6315,79 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
       && x.server.time_off === 3 && !x.job && x.rows === 4 && x.setup === 0 && !x.calls.some(c => c.startsWith("POST"));
     check("SE-X21 r4-fix-10 the REAL snapshots.capture for the factory reset (reset_all_data), its time_off read answering 503, throwing, or hanging past its timeout: it fails closed — no snapshot without the time off it is about to delete — so the reset is refused ('Couldn't save a backup snapshot — reset cancelled. Nothing was deleted.'): nothing cleared, no time_off DELETE sent, the weeks untouched; control: the read answers — the snapshot inserted (with the vacations) and the reset runs",
       refused(c503) && refused(cth) && refused(chg) && cok.calls.filter(c => c.startsWith("POST")).length === 1 && cok.status.includes("Reset complete"), JSON.stringify({ c503, cth, chg, cok: { status: cok.status, calls: cok.calls } }));
+    // (h) 22/n, review r5 regress-1 (I5): the factory reset with the REAL setup autosave running across it — the shape of
+    // the reviewer's p-reset-rearm. A component that renders as React 18 does after an await: updates batched and
+    // rendered on a MACROTASK (setImmediate), the autosave effect re-run (cleanup first) when one of its deps — as the
+    // source lists them — changed; its timers held and fired by hand (the 800-ms debounce, "Saved" clearing itself).
+    // The REAL resetAllData, toClearAll, deleteTimeOff, buildStateBundle, setupSig and payloadLooksWiped; the real
+    // engine and its weeks job on the emulated table. The time_off DELETE is held, and React renders while it is out;
+    // (fast) it answers before the debounce fires; (slow — slower than 800 ms) the debounce fires while it is out.
+    const rearm = async (slow) => {
+      const { t, A } = await pair(); await ticks(A); A.toasts.length = 0;
+      const st = { loaded: true, surgeons: S7, apps: [{ id: "a1", name: "AP1" }], vacations: { s2: [["2030-01-08", "2030-01-10", 1]] }, noCallDays: { s3: [["2030-01-09", "2030-01-09", 2]] },
+        backupMondaySet: new Set([X[0]]), fierceBackupSet: new Set(), schedule: A.ref.current, setupSaveNudge: 0, priorCounts: { s1: { dc: 3 } }, year1Counts: { s1: { dc: 1 } },
+        startMonth: 0, startYear: 2030, numWeeks: 13, holidayAssignments: {}, startMondayOverride: "", pendingLocks: [], silvisRule: null, dismissedWarnings: [], appShifts: { "2030-01-08": "a1" } };
+      const refs = { ever: { current: true }, allow: { current: false }, setupRead: { current: true }, lastSync: { current: "2026-10-01T08:00:00+00:00" }, loadedAt: { current: 1 }, loadFailed: { current: false },
+        pending: { current: null }, base: { current: null }, bundle: { current: null } };
+      const timers = new Map(); let tid = 0;
+      const sT = (f) => { const id = ++tid; timers.set(id, f); return id; }, cT = (id) => { timers.delete(id); };
+      const fire = async () => { for (let n = 0; n < 4 && timers.size; n++) { const fs = [...timers.values()]; timers.clear(); for (const f of fs) await f(); } };
+      const macro = () => new Promise(r => setImmediate(r));
+      const status = [], writes = [], renders = [];
+      let saveError = false, queued = false, aDeps = null, aClean = null;
+      const set = (k) => (v) => { const nv = typeof v === "function" ? v(st[k]) : v; if (nv === st[k]) return; st[k] = nv; if (!queued) { queued = true; setImmediate(() => { queued = false; render(); }); } };
+      const sup = { from: (tb) => ({ upsert: async (row) => { const s = A.auth.getSession(); writes.push({ tb, as: s ? s.access_token : "ANON", clear: !!(row.data && row.data._intentionalClear), startMonth: row.data && row.data.startMonth }); return { error: null }; } }) };
+      const render = () => {
+        renders.push(`weeks=${Object.keys(st.schedule || {}).length} vac=${Object.keys(st.vacations).length} surg=${st.surgeons.length}`);
+        const bundle = G.bundle(Object.assign({}, st, { useRef: () => refs.bundle }));
+        const ad = AUTO_DEPS.map(n => st[n]);
+        if (!aDeps || ad.some((v, i) => v !== aDeps[i])) {
+          aDeps = ad; if (aClean) aClean();
+          aClean = G.autosave({ loaded: st.loaded, isPublicMode: false, loadedAtRef: refs.loadedAt, loadFailedRef: refs.loadFailed, setSaveError: (x) => { saveError = x; }, setSaveStatus: (x) => status.push(x), setupReadRef: refs.setupRead,
+            auth: A.auth, buildStateBundle: bundle, pendingSaveRef: refs.pending, payloadLooksWiped: HX.payloadLooksWiped, everHadRealDataRef: refs.ever, setTimeout: sT, clearTimeout: cT, allowWipeSaveRef: refs.allow,
+            canWriteBlob: true, supabase: sup, lastSyncRef: refs.lastSync, showToast: A.showToast, console: quiet, setReauthNeeded: noopX, setupBaseRef: refs.base, setupSig: SETUP_SIG })() || null;
+        }
+      };
+      A.onSchedule = set("schedule");
+      render(); await fire(); await macro(); status.length = 0; renders.length = 0; const w0 = writes.length;
+      let open; const gate = new Promise(r => { open = r; }); const sent = [];
+      const del = G.delTO({ SUPABASE_URL: BASE, dbAuthHeaders: () => ({ Authorization: "Bearer " + (A.token || "ANON") }), console: quiet, showToast: A.showToast, sessionEpochRef: A.sessionEpochRef,
+        fetch: async (url, init) => { sent.push(init.method + " " + init.headers.Authorization); await gate; return { ok: true, status: 204, text: async () => "" }; } });
+      const tca = G.clearTO({ setVacations: set("vacations"), setNoCallDays: set("noCallDays"), logAudit: noopX, USE_TIME_OFF: true, deleteTimeOff: del, sessionEpochRef: A.sessionEpochRef, dbAuthHeaders: () => ({ Authorization: "Bearer " + (A.token || "ANON") }) });
+      let jobP = null;
+      const ra = G.runAuth({ schedSyncRef: A.schedSyncRef, setScheduleHistory: A.setScheduleHistory });
+      const pR = G.reset({ isScheduler: true, userProfile: null, alert: noopX, schedEditable: A.schedEditable, prompt: () => "RESET", setSaveStatus: (x) => status.push(x), setTimeout: sT,
+        snapshots: { capture: async () => ({ ok: true }) }, schedSyncRef: A.schedSyncRef, showToast: A.showToast, logAudit: noopX, allowWipeSaveRef: refs.allow, everHadRealDataRef: refs.ever, supabase: sup, console: quiet,
+        setSurgeons: set("surgeons"), INIT_SURGEONS: [{ id: "s1", name: "AAA" }, { id: "s2", name: "BBB" }], setApps: set("apps"), INIT_APPS: [], toClearAll: tca, setBackupMondaySet: set("backupMondaySet"), setFierceBackupSet: set("fierceBackupSet"),
+        scheduleRef: A.ref, commitSchedule: A.commitSchedule, runAuthoritativeSchedule: (...a) => (jobP = ra(...a)), setAppShifts: set("appShifts"), setPriorCounts: set("priorCounts"), setYear1Counts: set("year1Counts"),
+        setStartMonth: set("startMonth"), setStartYear: set("startYear"), sessionEpochRef: A.sessionEpochRef })();
+      for (let i = 0; i < 200 && !sent.length; i++) await macro();                      // …until its time_off DELETE is out
+      await macro(); await macro(); await macro();                                       // React renders what's pending meanwhile
+      const gap = { renders: renders.slice(), ever: refs.ever.current };
+      if (slow) await fire();                                                            // (slow) the debounce fires while the DELETE is out
+      open(); await pR; if (jobP) await jobP; await ticks(A, 2);
+      for (let i = 0; i < 4; i++) await macro();
+      await fire(); await macro();                                                       // the reset's own final write, its timers
+      const after = { ever: refs.ever.current, allow: refs.allow.current, status: status.slice(), saveError, writes: writes.slice(w0).filter(w => w.tb === "call_schedule_data" && !w.clear).length, renders: renders.slice(), toasts: A.toasts.map(x => x[0]), rows: t.rows().length };
+      status.length = 0; const w1 = writes.length;
+      set("startMonth")(8); for (let i = 0; i < 3; i++) await macro(); await fire(); await macro();   // the scheduler's first setup change after the reset
+      const edit = { saved: writes.slice(w1).some(w => w.tb === "call_schedule_data" && !w.clear && w.startMonth === 8 && w.as === "TOK_A"), status: status.slice(), saveError, ever: refs.ever.current };
+      return { gap, after, edit, sent };
+    };
+    const rf = await rearm(false), rs = await rearm(true);
+    const BLOCKED = "⚠ Save blocked — empty data not written";
+    const clean = (x) => x.after.ever === false && x.after.allow === false && x.after.status.includes("Reset complete") && !x.after.status.includes(BLOCKED) && x.after.saveError === false && x.after.writes >= 1
+      && x.after.rows === 0 && x.after.toasts.length === 0 && x.edit.saved && !x.edit.status.includes(BLOCKED) && x.edit.status.includes("Saved") && x.edit.saveError === false && x.edit.ever === false && x.sent.length === 1;
+    check("SE-X21 r5-regress-1 (h) (I5) the REAL resetAllData with the REAL setup autosave running across it (React 18: rendered on a macrotask after an await), its time_off DELETE answering BEFORE the 800-ms debounce: no render shows the reset's setup beside the old weeks and time off while it is out — the empty-save guard stays disarmed (everHadRealDataRef false after the reset), 'Reset complete' and the reset's own final write saves (no '⚠ Save blocked'); the scheduler's next setup change (the start month) is written",
+      clean(rf), JSON.stringify(rf));
+    check("SE-X21 r5-regress-1 (h) (I5) …the DELETE answering AFTER the debounce (slower than 800 ms): the same — nothing written from the gap uses up the reset's one-shot bypass, the reset's own write is not blocked ('Reset complete', no '⚠ Save blocked' after it), the guard stays disarmed and the next setup change is written",
+      clean(rs), JSON.stringify(rs));
+    // (i) 22/n (the 21/n open item, review r5 regress-1): the time-off clear-all's audit line only once its DELETE has
+    // landed — none for a failed one — and, when the session changed while it was out, written as the account that
+    // tapped (the tap's headers), never under the next token.
+    const ab = await go({ button: true, del: 503 }), ok2 = await go({ button: true, del: 204 }), abx = await go({ button: true, del: 204, cross: "other" });
+    check("SE-X21 r5-regress-1 (i) the 'delete all vacations' button (the real toClearAll): its 'timeoff.clearall' audit line written only once the DELETE has landed — a refused DELETE (503) logs no 'Cleared ALL'; landed: one line, after it; the session changing while it was out (another account): written with the TAP's headers (A's token), not B's",
+      ab.audits.length === 0 && ok2.audits.join() === "timeoff.clearall@now:TOK_A" && ok2.vac === 0 && abx.audits.join() === "timeoff.clearall@Bearer TOK_A", JSON.stringify({ ab: ab.audits, ok2: ok2.audits, abx: abx.audits }));
   });
 
   // SE-X22 — H4 (review r4 branch-4): a tab never writes with another account's token. Two tabs of ONE browser — each
@@ -5771,7 +6444,7 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
     // (b) the storage event in tab 2
     const fx = { reauth: [], reports: 0 }; let listener = null;
     if (G.storageFx) G.storageFx({ authUser: { id: "auth-a" }, window: { addEventListener: (k, f) => { if (k === "storage") listener = f; }, removeEventListener: noopX },
-      schedSyncRef: { current: { report: () => { fx.reports++; T2.eng.report(); } } }, auth: tab2.auth, setReauthNeeded: (v) => fx.reauth.push(v) })();
+      schedSyncRef: { current: { report: () => { fx.reports++; T2.eng.report(); } } }, auth: tab2.auth, setReauthNeeded: (v) => fx.reauth.push(v), pendingSaveRef: { current: null }, setSetupSaveNudge: noopX })();
     if (listener) listener({ key: "dsg-auth-token" });
     const heard = { listener: !!listener, reports: fx.reports, reauth: fx.reauth.slice(), line: LV(T2.sync) };
     // (a) tab 2's 60-s pull
@@ -5825,6 +6498,404 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
     const afterBio = boundOf(tab4); ls.setItem("dsg-auth-token", JC); const foreign4 = tab4.dbAuthHeaders().Authorization;
     check("SE-X22 H4 (e) the sign-in form's submit (its own request unbound) binds the tab to the account it signed in — its own token used, another account's stored after that is no session there (anon); the Face ID unlock the same",
       afterSignIn.bound === "auth-b" && afterSignIn.user === "auth-b" && afterSignIn.own === "Bearer " + JB && foreign3 === ANONH && afterBio === "auth-b" && foreign4 === ANONH, JSON.stringify({ afterSignIn, foreign3, afterBio, foreign4 }));
+    // (g) 22/n, review r5 regress-2 (I6): the listener lowers the banner too — the shape of the reviewer's
+    // p-storage-banner, on the REAL listener, the REAL config.js (tab 6's own: its auth, bindUser, getSession), the real
+    // engine and the real setup autosave. Tab 6 is A's; tab 1 (another tab of the same browser) signs out — tab 6's
+    // banner is raised; a setup change in tab 6 is held ('⚠ Not saved — you're signed out'); tab 1 signs straight back
+    // in as A (A's new session stored) — tab 6's banner is lowered, and the held setup change goes out at once, as A.
+    // Then tab 1 signs in as B (another account's session stored): tab 6 says "Sign in again" again, and writes nothing.
+    {
+      store.clear();
+      const JA2 = jwt("auth-a", 2), JA3 = jwt("auth-a", 3);
+      ls.setItem("dsg-auth-token", JA2); ls.setItem("dsg-auth-refresh", "RA2");
+      const tab6 = tabCfg(); bind(tab6, "auth-a"); const tab1b = tabCfg(); bind(tab1b, "auth-a");
+      const t6 = createFakeWeeksTable({ baseUrl: BASE, anonKey: tab6.SUPABASE_ANON_KEY, users: { [JA2]: "user-a", [JA3]: "user-a" }, rows: ROWS(), clock: () => new Date(xms += 1000).toISOString() });
+      const T6 = mkApp(t6, { cfg: tab6 }); await T6.eng.load(); await ticks(T6);
+      const c6 = mkComp(T6); c6.render(); await c6.fire();
+      const seen = []; let on = null;
+      G.storageFx({ authUser: { id: "auth-a" }, window: { addEventListener: (k, f) => { if (k === "storage") on = f; }, removeEventListener: noopX }, schedSyncRef: T6.schedSyncRef, auth: tab6.auth,
+        setReauthNeeded: (v) => seen.push(v), pendingSaveRef: c6.pendingSaveRef, setSetupSaveNudge: c6.set("setupSaveNudge") })();
+      const banner = () => (seen.length ? seen[seen.length - 1] : false) || !!(T6.sync && T6.sync.authNeeded); // (the bar: schedSync.authNeeded || reauthNeeded)
+      const step = (label) => ({ label, banner: banner(), session: !!tab6.auth.getSession(), writesAs: tab6.dbAuthHeaders().Authorization === ANONH ? "anon" : "A" });
+      const log6 = [step("signed in as A")];
+      await tab1b.auth.signOut(); if (on) on({ key: "dsg-auth-token" }); await ticks(T6);                // tab 1 signs out
+      log6.push(step("the other tab signed out"));
+      c6.upserts.length = 0; c6.status.length = 0;
+      c6.set("numWeeks")(21); await ticks(T6); await c6.fire();                                         // a setup change in tab 6, while signed out
+      const held = { ups: c6.upserts.length, said: c6.status.includes("⚠ Not saved — you're signed out. Sign in again"), pending: !!c6.pendingSaveRef.current };
+      ls.setItem("dsg-auth-token", JA3); ls.setItem("dsg-auth-refresh", "RA3"); if (on) on({ key: "dsg-auth-token" });   // tab 1 signs straight back in as A
+      await ticks(T6); await c6.fire();
+      log6.push(step("the other tab signed in again as A"));
+      const sent6 = c6.upserts.filter(u => u.tb === "call_schedule_data").map(u => u.as === JA3 ? "A:" + u.numWeeks : u.as + ":" + u.numWeeks);
+      ls.setItem("dsg-auth-token", JB); if (on) on({ key: "dsg-auth-token" }); await ticks(T6);       // …then tab 1 signs in as B
+      c6.upserts.length = 0; c6.set("numWeeks")(22); await ticks(T6); await c6.fire();
+      log6.push(step("the other tab signed in as B"));
+      check("SE-X22 r5-regress-2 (g) (I6) the real storage listener with tab 6's real config.js: the other tab signs out — 'Sign in again' raised; signs straight back in as the SAME account — the banner is LOWERED (signed in and saving: not 'expired'), and the setup change held while signed out goes out at once, as A ('⚠ Not saved' before it); signs in as another account (B) — raised again, nothing written",
+        log6.map(x => x.banner).join() === "false,true,false,true" && log6[2].session && log6[2].writesAs === "A" && held.ups === 0 && held.said && held.pending
+          && sent6.join() === "A:21" && c6.upserts.length === 0 && !log6[3].session, JSON.stringify({ log6, held, sent6, seen, after: c6.upserts }));
+    }
+  });
+
+  // SE-X23 — 22/n, I4 (review r5 fix-1): approving, revoking or editing a vacation request never acts in the next
+  // session — H2's pattern, as the trade's accept. The REAL approveVacRequest / revokeApprovedVac / saveVacRequestEdit
+  // with the REAL setBackRequest, toAdd, toRemove, toEdit, deleteTimeOff, addNotification, sendPushNotif and
+  // sendEmailNotif, the real session boundary (another account's "Sign in again" — B's table loaded; or a sign-out),
+  // crossed while the request's status PATCH is out (the reviewer's p-vac-approve shape). (a) Nothing more in the next
+  // session — no time_off write (none as B, none refused as anon), no notice, push or e-mail, no list or editor change,
+  // nothing said — and the status this tap wrote is set back WITH THE TAP'S HEADERS (A's token), only from the value it
+  // wrote (approved→pending, revoked→approved, the edit back to its old dates and reason); (b) the set-back failing, or
+  // answering 200 with no row: logged (console) and an audit line written AS A for a manual fix; (c) the status PATCH
+  // itself failing after the boundary: nothing said; (d) the approval's notice crossing it: no e-mail from the next
+  // session; (e) the control: in one session each lands (its time_off write, notice, push, e-mail — all as A); (f) the
+  // time-off edit's no-id fallback (delete the old dates, add the new), the session changing between the two: the new
+  // dates added as A (the tap's headers), never as B or refused as anon; (g) toAdd's failure after a boundary: nothing said.
+  await run("SE-X23", async () => {
+    if (!gotG("SE-X23 22/n I4", ["boundary", "reauth", "commit", "autosave", "bundle", "delTO", "addNote", "pushNote", "email"])) return;
+    const V = {
+      setBack: fnX("fetch, SUPABASE_URL, console, logAudit, dbAuthHeaders", decl("setBackRequest", "\n  };\n")),   // (22/n — none before it)
+      approve: fnX("sessionEpochRef, dbAuthHeaders, parse, fmt, addD, surgeons, onVac, vacations, noCallDays, confirm, userProfile, mySurgeon, fetch, SUPABASE_URL, console, showToast, setBackRequest, setVacRequests, toAdd, logAudit, schedulerAdminIds, addNotification, sendEmailNotif",
+        after("  const approveVacRequest = useCallback(", ", [addNotification, sendEmailNotif, schedulerAdminIds, userProfile, surgeons, mySurgeon, vacations, noCallDays]);")),
+      revoke: fnX("sessionEpochRef, dbAuthHeaders, confirm, fetch, SUPABASE_URL, console, showToast, setBackRequest, setVacRequests, toRemove, schedulerAdminIds, addNotification",
+        after("  const revokeApprovedVac = useCallback(", ", [addNotification, schedulerAdminIds]);")),
+      edit: fnX("sessionEpochRef, dbAuthHeaders, editingVacReq, isScheduler, fmt, showToast, vacRequests, fetch, SUPABASE_URL, console, setBackRequest, logAudit, setVacRequests, toEdit, setEditingVacReq",
+        after("  const saveVacRequestEdit = useCallback(", ", [editingVacReq, vacRequests, isScheduler]);")),
+      toAdd: fnX("sessionEpochRef, showToast, setterFor, logAudit, nameOf, USE_TIME_OFF, db, userProfile, console", decl("toAdd", "\n  };\n")),
+      toRemove: fnX("noCallDays, vacations, setterFor, logAudit, nameOf, USE_TIME_OFF, deleteTimeOff", decl("toRemove", "\n  };\n")),
+      toEdit: fnX("sessionEpochRef, dbAuthHeaders, showToast, noCallDays, vacations, setterFor, logAudit, nameOf, USE_TIME_OFF, db, deleteTimeOff, userProfile, fetch, SUPABASE_URL, console", decl("toEdit", "\n  };\n")),
+    };
+    const vMiss = ["approve", "revoke", "edit", "toAdd", "toRemove", "toEdit"].filter(k => typeof V[k] !== "function");
+    if (vMiss.length) { check("SE-X23 22/n I4 — the vacation request slices are extractable", false, vMiss.join(", ")); return; }
+    const EDGE = "https://fn.test/functions/v1/send-notification";
+    const spin = async (n) => { for (let j = 0; j < (n || 20); j++) await null; };
+    const cross = async (A, c, how) => { if (how === "other") await otherAccount(A, c); else await G.boundary(bEnv(A, c)).handleSignOut(); };
+    const ours = (ts) => ts.filter(m => !/^Signed in as a different account than before/.test(m));
+    const REQ0 = (which) => ({ id: 7, surgeon_id: "s3", surgeon_name: "CCC", start_date: "2030-03-04", end_date: "2030-03-08", request_type: "vacation", reason: "trip",
+      status: which === "approve" ? "pending" : "approved", reviewed_at: which === "approve" ? null : "2026-10-01T08:00:00Z" });
+    const NEW = { start_date: "2030-03-11", end_date: "2030-03-15" };
+    // o: { at: "status" | "notice" | "delete", how: "other" | "signout", statusFails, back: "fail" | "zero", insertFails, noId, direct }
+    const vacRun = async (which, o) => {
+      const { A } = await pair(); await ticks(A); const c = mkComp(A); c.render(); await c.fire(); A.toasts.length = 0;
+      const REQ = REQ0(which);
+      const rec = { reqs: [], to: [], notes: [], pushes: [], emails: [], audits: [], errors: [], early: [], late: [] };
+      let crossed = false;
+      const crossNow = async () => { crossed = true; await cross(A, c, o.how); await spin(6); };
+      const tok = () => "Bearer " + (A.token || "ANON");
+      const hdr = () => ({ apikey: "ANON", Authorization: tok(), "Content-Type": "application/json" });
+      const con = { error: (...x) => rec.errors.push(x.map(String).join(" ").slice(0, 160)), warn: noopX, log: noopX, info: noopX };
+      const mark = (name) => () => { (crossed ? rec.late : rec.early).push(name); };
+      const logAudit = (action, summary, details, hdrs) => rec.audits.push(action + "@" + (hdrs ? hdrs.Authorization : "now:" + (A.token || "ANON")));
+      const r = (status, json) => ({ ok: status >= 200 && status < 300, status, json: async () => json, text: async () => JSON.stringify(json) });
+      const net = async (url, init = {}) => {
+        const u = String(url).replace(/^https:\/\/[^/]+/, ""), m = init.method || "GET", au = init.headers && init.headers.Authorization;
+        if (/\/rest\/v1\/vacation_requests\?/.test(u)) {
+          const first = rec.reqs.length === 0;
+          rec.reqs.push(m + " " + u.replace("/rest/v1/", "") + " " + au + (first ? "" : " " + init.body));
+          if (first) {
+            if (o.at === "status") await crossNow();
+            if (o.statusFails) return r(500, { message: "upstream" });
+            return r(200, [Object.assign({}, REQ, { status: "x" })]);
+          }
+          if (o.back === "fail") return r(500, { message: "upstream" });
+          return r(200, o.back === "zero" ? [] : [Object.assign({}, REQ)]);   // the set-back
+        }
+        if (/\/rest\/v1\/time_off/.test(u)) {
+          rec.to.push(m + " " + au);
+          if (m === "DELETE" && o.at === "delete") await crossNow();
+          return au === "Bearer ANON" ? r(401, { message: "JWT required" }) : r(m === "DELETE" ? 204 : 201, []);
+        }
+        if (/send-push$/.test(u)) { rec.pushes.push(au); return r(200, {}); }
+        if (/send-notification$/.test(u)) { rec.emails.push(au); return r(200, { failed: 0 }); }
+        throw new Error("unrouted " + m + " " + u);
+      };
+      const db = {   // config.js's db: the headers of the call (dbAuthHeaders, as the session is then)
+        insert: async (table, row) => {
+          const au = tok();
+          if (table === "time_off") rec.to.push("INSERT " + au); else rec.notes.push(au);
+          if (table === "notifications" && o.at === "notice") await crossNow();
+          if (table === "time_off" && o.insertFails) { if (o.at === "insert") await crossNow(); return { data: null, error: { message: "upstream" } }; }
+          return au === "Bearer ANON" ? { data: null, error: { message: "new row violates row-level security policy" } } : { data: Object.assign({ id: 1 }, row), error: null };
+        },
+        update: async (table, id, data) => { const au = tok(); rec.to.push("UPDATE " + au); if (o.at === "update") await crossNow(); return o.updateFails || au === "Bearer ANON" ? { error: "upstream" } : { error: null }; },
+      };
+      const ep = A.sessionEpochRef;
+      const delTO = G.delTO({ fetch: net, SUPABASE_URL: BASE, dbAuthHeaders: hdr, console: con, showToast: A.showToast, sessionEpochRef: ep });
+      const push = G.pushNote({ edgeFunctionUrl: EDGE, fetch: net, dbAuthHeaders: hdr, console: con, showToast: A.showToast, sessionEpochRef: ep });
+      const email = G.email({ edgeFunctionUrl: EDGE, fetch: net, dbAuthHeaders: hdr, console: con, showToast: A.showToast, sessionEpochRef: ep });
+      const note = G.addNote({ db, showToast: A.showToast, setNotifications: mark("notices list"), buildDeepLink: () => "#", filterPushTargetsByType: (ty, ids) => ids, sendPushNotif: push, console: con, sessionEpochRef: ep });
+      const vac = { s3: which === "approve" ? [] : [o.noId ? [REQ.start_date, REQ.end_date] : [REQ.start_date, REQ.end_date, 99]] };
+      const tEnv = { sessionEpochRef: ep, dbAuthHeaders: hdr, showToast: A.showToast, noCallDays: {}, vacations: vac, setterFor: () => mark("time off on screen"), logAudit, nameOf: (x) => x, USE_TIME_OFF: true, db,
+        deleteTimeOff: delTO, userProfile: { person_id: "s1" }, fetch: net, SUPABASE_URL: BASE, console: con };
+      const toAdd = V.toAdd(tEnv), toRemove = V.toRemove(tEnv), toEdit = V.toEdit(tEnv);
+      const setBackRequest = V.setBack ? V.setBack({ fetch: net, SUPABASE_URL: BASE, console: con, logAudit, dbAuthHeaders: hdr }) : undefined;
+      const common = { sessionEpochRef: ep, dbAuthHeaders: hdr, fetch: net, SUPABASE_URL: BASE, console: con, showToast: A.showToast, logAudit, setVacRequests: mark("request list"), schedulerAdminIds: ["s7"],
+        addNotification: note, sendEmailNotif: email, setBackRequest, confirm: () => true };
+      if (o.direct === "toEdit") await toEdit("s3", "vacation", REQ.start_date, REQ.end_date, NEW.start_date, NEW.end_date);
+      else if (o.direct === "toAdd") await toAdd("s3", "vacation", NEW.start_date, NEW.end_date);
+      else if (which === "approve") await V.approve(Object.assign({}, common, { parse: HX.parse, fmt: HX.fmt, addD: HX.addD, surgeons: S7, onVac: () => false, vacations: vac, noCallDays: {},
+        userProfile: { person_id: "s1", display_name: "AAA" }, mySurgeon: "s1", toAdd }))(Object.assign({}, REQ));
+      else if (which === "revoke") await V.revoke(Object.assign({}, common, { toRemove }))(Object.assign({}, REQ));
+      else await V.edit(Object.assign({}, common, { editingVacReq: Object.assign({ id: 7, reason: "trip, longer" }, NEW), isScheduler: true, fmt: HX.fmt, vacRequests: [Object.assign({}, REQ)], toEdit,
+        setEditingVacReq: mark("editor closed") }))();
+      await spin(40); await ticks(A);
+      return { reqs: rec.reqs, to: rec.to, notes: rec.notes, pushes: rec.pushes, emails: rec.emails, audits: rec.audits, errors: rec.errors.length, early: rec.early, late: rec.late,
+        toasts: ours(A.toasts.map(x => x[0])), crossed };
+    };
+    const SB = { // the set-back each sends: its filter (only from the value this tap wrote) and its body — with A's token
+      approve: "PATCH vacation_requests?id=eq.7&status=eq.approved Bearer TOK_A {\"status\":\"pending\",\"reviewed_at\":null,\"reviewed_by\":null}",
+      revoke: "PATCH vacation_requests?id=eq.7&status=eq.revoked Bearer TOK_A {\"status\":\"approved\",\"reviewed_at\":\"2026-10-01T08:00:00Z\"}",
+      edit: "PATCH vacation_requests?id=eq.7&start_date=eq.2030-03-11&end_date=eq.2030-03-15 Bearer TOK_A {\"start_date\":\"2030-03-04\",\"end_date\":\"2030-03-08\",\"reason\":\"trip\"}" };
+    const nothingNext = (x) => x.crossed && x.to.length === 0 && x.notes.length === 0 && x.pushes.length === 0 && x.emails.length === 0 && x.late.length === 0 && x.toasts.length === 0;
+    const statusAsA = (x) => /^PATCH vacation_requests\?id=eq\.7(&status=eq\.(pending|approved))? Bearer TOK_A$/.test(x.reqs[0] || "");
+    const A4 = {};
+    for (const which of ["approve", "revoke", "edit"]) A4[which] = [await vacRun(which, { at: "status", how: "other" }), await vacRun(which, { at: "status", how: "signout" })];
+    check("SE-X23 I4 (a) (R5-VAC) the real approveVacRequest, the session changing during its status PATCH ('Sign in again' on another account, B's table loaded; or a sign-out): no time_off row written (none as B, none refused as anon — no half-landed approval), no notice, push or e-mail, no list change, nothing said on the next screen — and the approval is set back to pending WITH THE TAP'S HEADERS (A's token), only from the 'approved' it wrote",
+      A4.approve.every(x => nothingNext(x) && statusAsA(x) && x.reqs.length === 2 && x.reqs[1] === SB.approve && x.errors === 0 && x.audits.length === 0), JSON.stringify(A4.approve));
+    check("SE-X23 I4 (a) …the real revokeApprovedVac the same: the time_off row is NOT deleted (as B, or refused as anon — a revoked request whose vacation still blocks the surgeon), no notice, nothing said; the revoke set back to approved with A's token (only from the 'revoked' it wrote; the approval's own reviewed_at put back)",
+      A4.revoke.every(x => nothingNext(x) && statusAsA(x) && x.reqs.length === 2 && x.reqs[1] === SB.revoke && x.errors === 0 && x.audits.length === 0), JSON.stringify(A4.revoke));
+    check("SE-X23 I4 (a) …the real saveVacRequestEdit (an approved request) the same: its time_off row not moved in the next session, the editor and the list left alone, nothing said; the request's edit set back to its old dates and reason with A's token — only from the dates this tap wrote",
+      A4.edit.every(x => nothingNext(x) && statusAsA(x) && x.reqs.length === 2 && x.reqs[1] === SB.edit && x.errors === 0 && x.audits.length === 0), JSON.stringify(A4.edit));
+    const B4 = [];
+    for (const which of ["approve", "revoke", "edit"]) for (const back of ["fail", "zero"]) B4.push([which, back, await vacRun(which, { at: "status", how: back === "fail" ? "other" : "signout", back })]);
+    const UNAPPLIED = { approve: "request.approve_unapplied", revoke: "request.revoke_unapplied", edit: "request.edit_unapplied" };
+    check("SE-X23 I4 (b) …the set-back FAILING (500), or answering 200 with ZERO rows (RLS refusing it, or the request changed meanwhile), for each of the three: logged (console) and an audit line written AS A (the tap's headers — '…_unapplied', for a manual fix); still nothing done or said in the next session",
+      B4.every(([w, b, x]) => nothingNext(x) && x.reqs.length === 2 && x.reqs[1] === SB[w] && x.errors === 1 && x.audits.join() === UNAPPLIED[w] + "@Bearer TOK_A"), JSON.stringify(B4));
+    const C4 = [await vacRun("approve", { at: "status", how: "other", statusFails: true }), await vacRun("revoke", { at: "status", how: "signout", statusFails: true }), await vacRun("edit", { at: "status", how: "other", statusFails: true })];
+    const C40 = await vacRun("approve", { statusFails: true });
+    check("SE-X23 I4 (c) …the status PATCH itself failing (500) after the session changed during it (approve, revoke, edit): nothing said on the next session's screen, nothing set back or written; control — in one session that failure is said",
+      C4.every(x => nothingNext(x) && x.reqs.length === 1 && x.audits.length === 0) && C40.toasts.join("|") === "Couldn't approve the request — nothing was changed. Check your connection and try again." && C40.to.length === 0, JSON.stringify({ C4, C40 }));
+    const D4 = await vacRun("approve", { at: "notice", how: "other" });
+    check("SE-X23 I4 (d) …the session changing while the approval's notice is being inserted (the approval and its time off landed in A's session, as A): no device push and no e-mail from the next session, nothing said",
+      D4.crossed && D4.to.join() === "INSERT Bearer TOK_A" && D4.notes.join() === "Bearer TOK_A" && D4.pushes.length === 0 && D4.emails.length === 0 && D4.toasts.length === 0 && D4.late.length === 0, JSON.stringify(D4));
+    const E4 = { approve: await vacRun("approve", {}), revoke: await vacRun("revoke", {}), edit: await vacRun("edit", {}), editNoId: await vacRun("edit", { noId: true }) };
+    check("SE-X23 I4 (e) control: in one session each lands — the approval's time_off row inserted, its notice, push and e-mail, all as A; the revoke's time_off row deleted and its notice, as A; the edit's time_off row updated as A (with no id yet: its old dates deleted and the new ones inserted, as A), the editor closed; no set-back, nothing logged",
+      E4.approve.reqs.length === 1 && E4.approve.to.join() === "INSERT Bearer TOK_A" && E4.approve.notes.join() === "Bearer TOK_A" && E4.approve.pushes.join() === "Bearer TOK_A" && E4.approve.emails.join() === "Bearer TOK_A"
+        && E4.approve.early.includes("request list") && E4.approve.audits.includes("request.approve@now:TOK_A")
+        && E4.revoke.reqs.length === 1 && E4.revoke.to.join() === "DELETE Bearer TOK_A" && E4.revoke.notes.join() === "Bearer TOK_A" && E4.revoke.pushes.join() === "Bearer TOK_A"
+        && E4.edit.reqs.length === 1 && E4.edit.to.join() === "UPDATE Bearer TOK_A" && E4.edit.early.includes("editor closed") && E4.editNoId.to.join() === "DELETE Bearer TOK_A,INSERT Bearer TOK_A"
+        && Object.values(E4).every(x => x.toasts.length === 0 && x.errors === 0 && !x.crossed), JSON.stringify(E4));
+    const F4 = [await vacRun("edit", { direct: "toEdit", noId: true, at: "delete", how: "other" }), await vacRun("edit", { direct: "toEdit", noId: true, at: "delete", how: "signout" })];
+    check("SE-X23 I4 (f) the real toEdit with no row id yet (delete the old dates, insert the new — the Setup editor's path too), the session changing while its DELETE is out: the new dates are added WITH THE TAP'S HEADERS (A's token), never as B nor refused as anon (the vacation lost); nothing said",
+      F4.every(x => x.crossed && x.to.join() === "DELETE Bearer TOK_A,POST Bearer TOK_A" && x.toasts.length === 0 && x.errors === 0), JSON.stringify(F4));
+    const G4 = [await vacRun("approve", { direct: "toAdd", insertFails: true, at: "insert", how: "signout" }), await vacRun("edit", { direct: "toEdit", at: "update", how: "other", updateFails: true })], G40 = await vacRun("approve", { direct: "toAdd", insertFails: true });
+    check("SE-X23 I4 (g) the real toAdd's / toEdit's own failure (its time_off insert / update, sent as A) after a session change during it: nothing said on the next session's screen; control — in one session it is said",
+      G4.every(x => x.crossed && x.toasts.length === 0) && G4[0].to.join() === "INSERT Bearer TOK_A" && G4[1].to.join() === "UPDATE Bearer TOK_A"
+        && G40.toasts.join("|") === "Couldn't save that — check your connection and try again.", JSON.stringify({ G4, G40 }));
+  });
+
+  // SE-X24 — 22/n, I4's audit (review r5 fix-1: "every other user action with an await before a write or a notice").
+  // Each REAL handler below, sliced from the component, is run with the session changing (sessionEpochRef moved, the
+  // stored session gone — a sign-out — or another account's) while its first await is out, and then once in one session
+  // (the control: it still does all it did). Across the boundary: nothing more of it is written as the next account
+  // (or refused as anon), sent, put on the next session's screen or said there; a line it audits is written with the
+  // TAP's headers. Rows: the vacation submit and deny, the trade proposal, the three request deletes, saveAppShifts and
+  // the two month-painter commits, the APP day-off save chain (its debounce, its retry), the notification preference
+  // save, the office contacts and the office e-mails, the push permission, the test notification, the template upload,
+  // the two Face ID enrolments, the Silvis refresh, the sign-up profile, and the Settings panel's APP-access toggle and
+  // two test buttons.
+  await run("SE-X24", async () => {
+    const nsx = nsrc;
+    const jsx = (marker, head) => { const i = nsx.indexOf(marker); if (i < 0 || nsx.indexOf(marker, i + 1) !== -1) return null; const a = nsx.lastIndexOf(head, i); const e = nsx.indexOf("\n                    }} style=", i); return a < 0 || e < 0 ? null : "async () => {" + nsx.slice(a + head.length, e) + "\n}"; };
+    const cbody = (name, deps) => after(`  const ${name} = useCallback(`, `, ${deps});`);
+    const H = {
+      submitVac: fnX("vacReqSurgeon, vacReqStart, vacReqEnd, vacReqReason, vacReqType, surgeons, apps, showToast, db, setVacRequests, addNotification, schedulerAdminIds, sendEmailNotif, setVacReqStart, setVacReqEnd, setVacReqReason, setVacReqType, vacSubmitBusyRef, fmt, writeFailReason, console, sessionEpochRef",
+        cbody("submitVacRequest", "[vacReqSurgeon, vacReqStart, vacReqEnd, vacReqReason, vacReqType, surgeons, apps, addNotification, sendEmailNotif, schedulerAdminIds]")),
+      deny: fnX("sessionEpochRef, dbAuthHeaders, logAudit, userProfile, surgeons, mySurgeon, fetch, SUPABASE_URL, console, showToast, setVacRequests, schedulerAdminIds, addNotification, sendEmailNotif",
+        cbody("denyVacRequest", "[addNotification, sendEmailNotif, schedulerAdminIds, userProfile, surgeons, mySurgeon]")),
+      submitTrade: fnX("tradeSubmitBusyRef, showToast, tradeFrom, tradeTo, tradeWeek, tradeShift, tradeReturnWeek, tradeReturnShift, isScheduler, alert, confirm, silvisActive, silvisBlock, silvisRefuse, schedule, scheduleRef, surgeons, SHIFT_LABELS, db, writeFailReason, setTradeRequests, setTradeWeek, setTradeShift, setTradeReturnWeek, setTradeReturnShift, tradeProposeMsg, logAudit, addNotification, sendEmailNotif, console, sessionEpochRef, dbAuthHeaders",
+        cbody("submitTradeRequest", "[tradeFrom, tradeTo, tradeWeek, tradeShift, tradeReturnWeek, tradeReturnShift, surgeons, addNotification, sendEmailNotif, isScheduler, schedule, silvisActive, silvisBlock, silvisRefuse]")),
+      delTrade: fnX("confirm, fetch, SUPABASE_URL, dbAuthHeaders, console, showToast, setTradeRequests, sessionEpochRef", cbody("deleteTradeRequest", "[]")),
+      delVac: fnX("confirm, fetch, SUPABASE_URL, dbAuthHeaders, console, showToast, setVacRequests, sessionEpochRef", cbody("deleteVacRequest", "[]")),
+      clearReviewed: fnX("confirm, fetch, SUPABASE_URL, dbAuthHeaders, console, showToast, setVacRequests, sessionEpochRef", cbody("clearReviewedRequests", "[]")),
+      saveApp: fnX("supabase, setSaveError, setSaveStatus, showToast, setTimeout, sessionEpochRef, console", decl("saveAppShifts", "\n  };\n")),
+      paintApp: fnX("appShiftsLoaded, appShifts, APP_SHIFTS_NOT_LOADED, supabase, setAppShifts, logAudit, sessionEpochRef, dbAuthHeaders", decl("commitAppPaint", "\n  };\n")),
+      paintTO: fnX("USE_TIME_OFF, userProfile, db, logAudit, loadTimeOff, sessionEpochRef, dbAuthHeaders", decl("commitTimeOffPaint", "\n  };\n")),
+      dayTap: fnX("appDayOffLoaded, showToast, appDayOffRef, dayOffId, setAppDayOff, dayOffDirtyRef, dayOffEpochRef, sessionEpochRef, dayOffPendingAuditRef, nameOf, dayOffSaveTimerRef, clearTimeout, setTimeout, enqueueDayOffSave", decl("toggleAppDayOff", "\n  };\n")),
+      daySave: fnX("dayOffSaveChainRef, dayOffDirtyRef, dayOffEpochRef, sessionEpochRef, dbAuthHeaders, dayOffPendingAuditRef, supabase, appDayOffRef, dayOffLastWriteTsRef, logAudit, scheduleDayOffRetry, setSaveError, setSaveStatus, setTimeout, console, showToast", decl("enqueueDayOffSave", "\n  };\n")),
+      pref: fnX("setNotifPrefs, notifPrefsRef, notifSaveTimerRef, setTimeout, clearTimeout, setNotifPrefsSaving, db, auditRef, showToast, console, sessionEpochRef, dbAuthHeaders", cbody("saveNotifPref", "[]")),
+      officeAdd: fnX("newOfficeName, newOfficeEmail, newOfficeDepts, alert, setOfficeNotifBusy, db, setOfficeContacts, setNewOfficeName, setNewOfficeEmail, setNewOfficeDepts, sessionEpochRef, console", decl("addOfficeContact", "\n  };\n")),
+      officeUpd: fnX("setOfficeContacts, db, alert, console, showToast, sessionEpochRef", decl("updateOfficeContact", "\n  };\n")),
+      officeDel: fnX("officeContacts, confirm, setOfficeContacts, fetch, SUPABASE_URL, dbAuthHeaders, console, showToast, sessionEpochRef", decl("deleteOfficeContact", "\n  };\n")),
+      officePub: fnX("confirm, officeContacts, setOfficeNotifBusy, SUPABASE_URL, fetch, dbAuthHeaders, publishLabel, alert, showToast, setShowPublishDialog, sessionEpochRef, console", decl("triggerPublishNotify", "\n  };\n")),
+      officeDigest: fnX("confirm, setOfficeNotifBusy, SUPABASE_URL, fetch, dbAuthHeaders, alert, sessionEpochRef, console", decl("triggerDigestTest", "\n  };\n")),
+      pushPerm: fnX("setPushDiag, navigator, window, setPushPermission, setOneSignalSubscribed, mySurgeon, console, setTimeout, setPushSubscriptionId, setPushExternalId, sessionEpochRef", cbody("requestPushPermission", "[mySurgeon]")),
+      testNote: fnX("sendBrowserNotif, setNotifTestSent, edgeFunctionUrl, mySurgeon, notifPrefs, sendEmailNotif, setTimeout, sessionEpochRef", cbody("sendTestNotification", "[sendBrowserNotif, sendEmailNotif, edgeFunctionUrl, notifPrefs, mySurgeon]")),
+      upload: fnX("setScanning, setScanMsg, surgeons, setPriorCounts, console, fileRef, sessionEpochRef", cbody("handleTemplateUpload", "[surgeons]")),
+      bioEnroll: fnX("authUser, biometric, setBiometricEnrolled, alert, sessionEpochRef", decl("handleBiometricEnroll", "\n  };\n")),
+      bioForce: fnX("authUser, biometric, setBiometricEnrolled, setBiometricAvail, setBiometricReason, alert, sessionEpochRef", decl("handleBiometricForceEnroll", "\n  };\n")),
+      silvis: fnX("dbAuthHeaders, SUPABASE_ANON_KEY, showToast, setSilvisRefreshing, sfRefreshFeed, SUPABASE_URL, loadSilvisFeed, silvisRule, sessionEpochRef, console", decl("refreshSilvisFeed", "\n  };\n")),
+      profile: fnX("signupPersonId, authUser, setAuthBusy, setAuthError, dbAuth, allPeople, setUserProfile, setMySurgeon, setNeedsProfile, setIsScheduler, setReloadTrigger, console, sessionEpochRef", decl("handleSetProfile", "\n  };\n")),
+      appAccess: fnX("p, dbAuth, alert, setAllProfiles, authUser, setUserProfile, sessionEpochRef, console",
+        (() => { const h = "<input type=\"checkbox\" checked={!!p.can_assign_apps} onChange={async (e)=>{", i = nsx.indexOf(h), e = i < 0 ? -1 : nsx.indexOf("\n                        }} style={{cursor:\"pointer\",width:16,height:16}}/>", i);
+          return i < 0 || e < 0 || nsx.indexOf(h, i + 1) !== -1 ? null : "async (e) => {" + nsx.slice(i + h.length, e) + "\n}"; })()),
+      testPush: fnX("edgeFunctionUrl, fetch, dbAuthHeaders, alert, confirm, sessionEpochRef", jsx("/send-push\");\n                        const resp = await fetch(pushUrl", "<button onClick={async ()=>{")),
+      testRemind: fnX("edgeFunctionUrl, fetch, dbAuthHeaders, alert, confirm, sessionEpochRef", jsx("/vacation-deadline-reminder\");", "<button onClick={async ()=>{")),
+    };
+    const hMiss = Object.keys(H).filter(k => typeof H[k] !== "function");
+    check("SE-X24 22/n I4 audit — every handler's slice is extractable and compiles", hMiss.length === 0, hMiss.join(", "));
+    if (hMiss.length) return;
+    const spin = async (n) => { for (let j = 0; j < (n || 20); j++) await null; };
+    // One session and its boundary, as these handlers see it: sessionEpochRef moved; the stored session gone (a
+    // sign-out) or another account's (bound to A: none here). Every write recorded with the headers it goes out with.
+    const rig = (how) => {
+      const r = { ep: { current: 0 }, token: "TOK_A", crossed: false, early: [], late: [], writes: [], audits: [], timers: new Map(), tid: 0 };
+      r.auth = () => "Bearer " + (r.token || "ANON");
+      r.hdr = () => ({ apikey: "ANON", Authorization: r.auth(), "Content-Type": "application/json" });
+      r.cross = async () => { if (!how) return; r.ep.current++; r.token = how === "signout" ? null : (how === "other" ? "TOK_B" : r.token); r.crossed = true; await spin(4); };
+      r.mark = (name) => () => { (r.crossed ? r.late : r.early).push(name); };
+      r.say = (name) => (m) => { (r.crossed ? r.late : r.early).push(name + ": " + String(m).slice(0, 60)); };
+      r.write = (what) => r.writes.push(what + " " + r.auth());
+      r.logAudit = (action, summary, details, hdrs) => r.audits.push(action + "@" + (hdrs ? hdrs.Authorization : "now:" + (r.token || "ANON")));
+      r.console = { error: noopX, warn: noopX, log: noopX, info: noopX };
+      r.resp = (status, json) => ({ ok: status >= 200 && status < 300, status, json: async () => json, text: async () => JSON.stringify(json) });
+      r.setTimeout = (f) => { const id = ++r.tid; r.timers.set(id, f); return id; };
+      r.clearTimeout = (id) => { r.timers.delete(id); };
+      r.fire = async () => { for (let n = 0; n < 4 && r.timers.size; n++) { const fs = [...r.timers.values()]; r.timers.clear(); for (const f of fs) await f(); } };
+      r.out = () => ({ crossed: r.crossed, early: r.early, late: r.late, writes: r.writes, audits: r.audits });
+      return r;
+    };
+    const quietNext = (x) => x.crossed && x.late.length === 0;
+    const CASES = [];
+    const add = (id, what, fn, expect) => CASES.push({ id, what, fn, expect });
+    // the vacation submit
+    add("submitVac", "the vacation submit (its insert): no list update, no form cleared, no toast, no notice or e-mail in the next session", async (r, fail) => {
+      await H.submitVac({ vacReqSurgeon: "s3", vacReqStart: "2099-01-05", vacReqEnd: "2099-01-09", vacReqReason: "", vacReqType: "vacation", surgeons: S7, apps: [], showToast: r.say("toast"),
+        db: { insert: async () => { r.write("INSERT vacation_requests"); await r.cross(); return fail ? { data: null, error: { message: "upstream" } } : { data: { id: 7 }, error: null }; } },
+        setVacRequests: r.mark("list"), addNotification: async () => { r.write("notice"); r.mark("notice")(); }, schedulerAdminIds: ["s7"], sendEmailNotif: () => { r.write("e-mail"); r.mark("e-mail")(); },
+        setVacReqStart: r.mark("form"), setVacReqEnd: noopX, setVacReqReason: noopX, setVacReqType: noopX, vacSubmitBusyRef: { current: false }, fmt: HX.fmt, writeFailReason: () => "the server refused it", console: r.console, sessionEpochRef: r.ep })();
+    }, (x, x0, f, f0) => x.writes.join() === "INSERT vacation_requests Bearer TOK_A" && f.late.length === 0 && ["list", "form", "toast: Vacation request sent.", "notice", "e-mail"].every(k => x0.early.includes(k)) && f0.early.some(k => /^toast: Couldn't send your vacation request/.test(k)));
+    add("deny", "the vacation deny (its status PATCH): no list update, no notice or e-mail, nothing said in the next session — its audit line written as A", async (r, fail) => {
+      await H.deny({ sessionEpochRef: r.ep, dbAuthHeaders: r.hdr, logAudit: r.logAudit, userProfile: { display_name: "AAA" }, surgeons: S7, mySurgeon: "s1", SUPABASE_URL: BASE, console: r.console, showToast: r.say("toast"),
+        fetch: async (url, init) => { r.writes.push("PATCH " + init.headers.Authorization); await r.cross(); return fail ? r.resp(500, {}) : r.resp(200, [{ id: 7 }]); },
+        setVacRequests: r.mark("list"), schedulerAdminIds: ["s7"], addNotification: async () => r.mark("notice")(), sendEmailNotif: () => r.mark("e-mail")() })({ id: 7, surgeon_id: "s3", surgeon_name: "CCC", start_date: "2099-01-05", end_date: "2099-01-09", request_type: "vacation" }, "");
+    }, (x, x0, f, f0) => x.writes.join() === "PATCH Bearer TOK_A" && x.audits.join() === "request.deny@Bearer TOK_A" && f.late.length === 0 && f.audits.length === 0
+      && ["list", "notice", "e-mail"].every(k => x0.early.includes(k)) && x0.audits.join() === "request.deny@now:TOK_A" && f0.early.some(k => /^toast: Couldn't deny the request/.test(k)));
+    add("submitTrade", "the trade proposal (its insert): no list update, no form cleared, no toast, no notice or e-mail in the next session — its audit line written as A", async (r, fail) => {
+      await H.submitTrade({ tradeSubmitBusyRef: { current: false }, showToast: r.say("toast"), tradeFrom: "s4", tradeTo: "s6", tradeWeek: X[0], tradeShift: "tue", tradeReturnWeek: X[1], tradeReturnShift: "wed", isScheduler: true,
+        alert: r.say("alert"), confirm: () => true, silvisActive: false, silvisBlock: () => null, silvisRefuse: () => false, schedule: {}, scheduleRef: { current: {} }, surgeons: S7, SHIFT_LABELS: HX.SHIFT_LABELS,
+        db: { insert: async () => { r.write("INSERT shift_trade_requests"); await r.cross(); return fail ? { data: null, error: { message: "upstream" } } : { data: { id: 9 }, error: null }; } }, writeFailReason: () => "the server refused it",
+        setTradeRequests: r.mark("list"), setTradeWeek: r.mark("form"), setTradeShift: noopX, setTradeReturnWeek: noopX, setTradeReturnShift: noopX, tradeProposeMsg: () => "DDD ↔ FFF", logAudit: r.logAudit,
+        addNotification: async () => r.mark("notice")(), sendEmailNotif: () => r.mark("e-mail")(), console: r.console, sessionEpochRef: r.ep, dbAuthHeaders: r.hdr })();
+    }, (x, x0, f, f0) => x.writes.join() === "INSERT shift_trade_requests Bearer TOK_A" && x.audits.join() === "trade.propose@Bearer TOK_A" && f.late.length === 0 && f.audits.length === 0
+      && ["list", "form", "notice", "e-mail"].every(k => x0.early.includes(k)) && x0.audits.join() === "trade.propose@now:TOK_A" && f0.early.some(k => /^toast: Couldn't propose the trade/.test(k)));
+    for (const [id, fnK, setK, msg] of [["delTrade", "delTrade", "setTradeRequests", "Couldn't delete the trade request"], ["delVac", "delVac", "setVacRequests", "Couldn't delete the request"], ["clearReviewed", "clearReviewed", "setVacRequests", "Couldn't clear reviewed requests"]]) {
+      add(id, `the ${id === "delTrade" ? "trade request delete" : id === "delVac" ? "vacation request delete" : "'clear reviewed requests'"} (its DELETE, failing): nothing said, the list left alone, on the next session's screen`, async (r, fail) => {
+        await H[fnK]({ confirm: () => true, SUPABASE_URL: BASE, dbAuthHeaders: r.hdr, console: r.console, showToast: r.say("toast"), [setK]: r.mark("list"), sessionEpochRef: r.ep,
+          fetch: async (url, init) => { r.writes.push("DELETE " + init.headers.Authorization); await r.cross(); return fail ? r.resp(500, {}) : r.resp(204, null); } })(7);
+      }, (x, x0, f, f0) => x.writes.join() === "DELETE Bearer TOK_A" && f.late.length === 0 && x0.early.includes("list") && f0.early.some(k => k.startsWith("toast: " + msg)) && f0.early.includes("list"));
+    }
+    add("saveApp", "saveAppShifts (its upsert): nothing said on the next session's screen ('APP shifts saved', or its failure)", async (r, fail) => {
+      await H.saveApp({ supabase: { from: () => ({ upsert: async () => { r.write("UPSERT app_shifts_data"); await r.cross(); return { error: fail ? "HTTP 503" : null }; } }) }, setSaveError: r.mark("saveError"), setSaveStatus: r.say("status"),
+        showToast: r.say("toast"), setTimeout: r.setTimeout, sessionEpochRef: r.ep, console: r.console })({ "2030-01-08": "a1" });
+    }, (x, x0, f, f0) => x.writes.join() === "UPSERT app_shifts_data Bearer TOK_A" && f.late.length === 0 && x0.early.includes("status: APP shifts saved") && f0.early.some(k => /^toast: Couldn't save APP shifts/.test(k)));
+    add("paintApp", "the APP month painter's commit (its upsert): nothing put on the next session's screen — its audit line written as A", async (r, fail) => {
+      r.result = await H.paintApp({ appShiftsLoaded: true, appShifts: { "2030-01-08": "a1" }, APP_SHIFTS_NOT_LOADED: "not loaded", setAppShifts: r.mark("appShifts"), logAudit: r.logAudit, sessionEpochRef: r.ep, dbAuthHeaders: r.hdr,
+        supabase: { from: () => ({ upsert: async () => { r.write("UPSERT app_shifts_data"); await r.cross(); return { error: fail ? "HTTP 503" : null }; } }) } })({ "2030-01-09": "a2" });
+    }, (x, x0, f, f0) => x.writes.join() === "UPSERT app_shifts_data Bearer TOK_A" && x.late.length === 0 && x.audits.join() === "app_shift.paint@Bearer TOK_A" && f.audits.length === 0 && x0.early.includes("appShifts") && x0.audits.join() === "app_shift.paint@now:TOK_A");
+    add("paintTO", "the time-off month painter's commit (its insert): no re-read in the next session — its audit line written as A", async (r, fail) => {
+      await H.paintTO({ USE_TIME_OFF: true, userProfile: { person_id: "s1" }, logAudit: r.logAudit, loadTimeOff: r.mark("time off re-read"), sessionEpochRef: r.ep, dbAuthHeaders: r.hdr,
+        db: { insert: async () => { r.write("INSERT time_off"); await r.cross(); return fail ? { data: null, error: { message: "upstream" } } : { data: [], error: null }; } } })([{ personId: "s2", kind: "vacation", start: "2030-01-08", end: "2030-01-09" }]);
+    }, (x, x0, f, f0) => x.writes.join() === "INSERT time_off Bearer TOK_A" && x.late.length === 0 && x.audits.join() === "timeoff.paint@Bearer TOK_A" && f.audits.length === 0 && x0.early.includes("time off re-read") && x0.audits.join() === "timeoff.paint@now:TOK_A");
+    // the APP day-off chain: (at) "debounce" — the session changes after the tap, before its 600-ms debounce fires; "save" — while the upsert is out
+    const dayRun = async (r, fail, at) => {
+      const refs = { map: { current: {} }, dirty: { current: false }, epoch: { current: 0 }, pend: { current: [] }, timer: { current: null }, chain: { current: Promise.resolve() }, ts: { current: null } };
+      r.retries = 0;
+      const daySave = H.daySave({ dayOffSaveChainRef: refs.chain, dayOffDirtyRef: refs.dirty, dayOffEpochRef: refs.epoch, sessionEpochRef: r.ep, dbAuthHeaders: r.hdr, dayOffPendingAuditRef: refs.pend, appDayOffRef: refs.map, dayOffLastWriteTsRef: refs.ts,
+        logAudit: r.logAudit, scheduleDayOffRetry: () => { r.retries++; }, setSaveError: r.mark("saveError"), setSaveStatus: r.say("status"), setTimeout: r.setTimeout, console: r.console, showToast: r.say("toast"),
+        supabase: { from: () => ({ upsert: async () => { r.write("UPSERT dayoff"); if (at === "save" && !r.crossed) await r.cross(); return { error: fail ? "HTTP 503" : null }; } }) } });
+      H.dayTap({ appDayOffLoaded: true, showToast: r.say("toast"), appDayOffRef: refs.map, dayOffId: (x) => (typeof x === "string" ? x : (x && x.id) || ""), setAppDayOff: noopX, dayOffDirtyRef: refs.dirty, dayOffEpochRef: refs.epoch,
+        sessionEpochRef: r.ep, dayOffPendingAuditRef: refs.pend, nameOf: (x) => x, dayOffSaveTimerRef: refs.timer, clearTimeout: r.clearTimeout, setTimeout: r.setTimeout, enqueueDayOffSave: daySave })("2030-01-08", "a1");
+      if (at === "debounce") await r.cross();
+      await r.fire(); await refs.chain.current; await spin(10);
+      if (r.retries) { daySave(); await refs.chain.current; await spin(10); }   // the retry it scheduled (5 s), run
+      r.dirty = refs.dirty.current;
+    };
+    add("dayDebounce", "the APP day-off save chain, the session changing after the tap, before its debounce fires: the tap is never written from the next session (as B, or as anon); dropped — the next account's own day-offs may be adopted", async (r, fail) => dayRun(r, fail, "debounce"),
+      (x, x0, f, f0, R) => x.writes.length === 0 && R.x.dirty === false && f.writes.length === 0 && x0.writes.join() === "UPSERT dayoff Bearer TOK_A" && x0.early.includes("status: APP day-offs saved") && x0.audits.join() === "app_dayoff.add@now:TOK_A");
+    add("daySave", "…the session changing while its upsert is out: its audit line written as A; its failure not said on the next screen, and its retry never sends it from the next session", async (r, fail) => dayRun(r, fail, "save"),
+      (x, x0, f, f0) => x.writes.join() === "UPSERT dayoff Bearer TOK_A" && x.late.length === 0 && x.audits.join() === "app_dayoff.add@Bearer TOK_A" && f.writes.join() === "UPSERT dayoff Bearer TOK_A" && f.late.length === 0
+        && f0.early.some(k => /^toast: Couldn't save APP day-offs/.test(k)) && f0.writes.length === 2);
+    add("dayLater", "…in a session that began after an earlier boundary (not the page's first): its taps are its own — saved as usual (the tap records its session)", async (r, fail) => { r.ep.current = 3; await dayRun(r, fail, "save"); },
+      (x, x0) => x.writes.join() === "UPSERT dayoff Bearer TOK_A" && x0.writes.join() === "UPSERT dayoff Bearer TOK_A" && x0.early.includes("status: APP day-offs saved") && x0.audits.join() === "app_dayoff.add@now:TOK_A");
+    // the notification preference: (at) "debounce" — the session changes before its 500-ms debounce fires; "save" — while its upsert is out
+    const prefRun = async (r, fail, at) => {
+      const timers = { current: {} };
+      H.pref({ setNotifPrefs: noopX, notifPrefsRef: { current: { s1: { email: "a@dsg.test" } } }, notifSaveTimerRef: timers, setTimeout: r.setTimeout, clearTimeout: r.clearTimeout, setNotifPrefsSaving: noopX,
+        auditRef: { current: { logAudit: r.logAudit, nameOf: (x) => x } }, showToast: r.say("toast"), console: r.console, sessionEpochRef: r.ep, dbAuthHeaders: r.hdr,
+        db: { upsert: async () => { r.write("UPSERT notification_preferences"); if (at === "save") await r.cross(); return { error: fail ? "HTTP 503" : null }; } } })("s1", { email: "a2@dsg.test" });
+      if (at === "debounce") await r.cross();
+      await r.fire(); await spin(10);
+    };
+    add("prefDebounce", "the notification preference save, the session changing before its debounce fires: never written from the next session", async (r, fail) => prefRun(r, fail, "debounce"),
+      (x, x0, f, f0) => x.writes.length === 0 && f.writes.length === 0 && x0.writes.join() === "UPSERT notification_preferences Bearer TOK_A" && x0.audits.join() === "prefs.save@now:TOK_A");
+    add("prefSave", "…the session changing while its upsert is out: its audit line written as A; its failure not said", async (r, fail) => prefRun(r, fail, "save"),
+      (x, x0, f, f0) => x.audits.join() === "prefs.save@Bearer TOK_A" && f.late.length === 0 && f0.early.some(k => /^toast: Couldn't save notification settings/.test(k)));
+    add("officeAdd", "an office contact added (its insert): no list update, no form cleared, no alert on the next screen", async (r, fail) => {
+      await H.officeAdd({ newOfficeName: "Desk", newOfficeEmail: "desk@dsg.test", newOfficeDepts: [], alert: r.say("alert"), setOfficeNotifBusy: noopX, setOfficeContacts: r.mark("list"), setNewOfficeName: r.mark("form"), setNewOfficeEmail: noopX, setNewOfficeDepts: noopX,
+        sessionEpochRef: r.ep, console: r.console, db: { insert: async () => { r.write("INSERT office_contacts"); await r.cross(); return fail ? { data: null, error: { message: "RLS" } } : { data: { id: 3, name: "Desk" }, error: null }; } } })();
+    }, (x, x0, f, f0) => x.late.length === 0 && f.late.length === 0 && ["list", "form"].every(k => x0.early.includes(k)) && f0.early.some(k => /^alert: Failed to add/.test(k)));
+    add("officeUpd", "an office contact updated (its update, failing): no alert on the next screen", async (r, fail) => {
+      await H.officeUpd({ setOfficeContacts: noopX, alert: r.say("alert"), console: r.console, showToast: r.say("toast"), sessionEpochRef: r.ep,
+        db: { update: async () => { r.write("UPDATE office_contacts"); await r.cross(); return { error: fail ? "RLS" : null }; } } })(3, { active: false });
+    }, (x, x0, f, f0) => f.late.length === 0 && f0.early.some(k => /^alert: Failed to update/.test(k)));
+    add("officeDel", "an office contact removed (its DELETE, failing): nothing said on the next screen", async (r, fail) => {
+      await H.officeDel({ officeContacts: [{ id: 3, name: "Desk", email: "desk@dsg.test" }], confirm: () => true, setOfficeContacts: noopX, SUPABASE_URL: BASE, dbAuthHeaders: r.hdr, console: r.console, showToast: r.say("toast"), sessionEpochRef: r.ep,
+        fetch: async (url, init) => { r.writes.push("DELETE " + init.headers.Authorization); await r.cross(); return fail ? r.resp(500, {}) : r.resp(204, null); } })(3);
+    }, (x, x0, f, f0) => f.late.length === 0 && f0.early.some(k => /^toast: Couldn't remove the contact/.test(k)));
+    for (const [id, fnK, okSaid, failSaid] of [["officePub", "officePub", /^toast: Sent 2 email/, /^alert: Publish failed/], ["officeDigest", "officeDigest", /^alert: Digest run: 2 email/, /^alert: Digest failed/]]) {
+      add(id, `the office ${id === "officePub" ? "'new schedule published' e-mail" : "digest run"} (its POST): its result never said on the next screen`, async (r, fail) => {
+        await H[fnK]({ confirm: () => true, officeContacts: [], setOfficeNotifBusy: noopX, SUPABASE_URL: BASE, dbAuthHeaders: r.hdr, publishLabel: "Jan", alert: r.say("alert"), showToast: r.say("toast"), setShowPublishDialog: r.mark("dialog"),
+          sessionEpochRef: r.ep, console: r.console, fetch: async (url, init) => { r.writes.push("POST " + init.headers.Authorization); await r.cross(); return fail ? r.resp(500, { error: "x" }) : r.resp(200, { sent: 2, affected_surgeons: [] }); } })();
+      }, (x, x0, f, f0) => x.late.length === 0 && f.late.length === 0 && x0.early.some(k => okSaid.test(k)) && f0.early.some(k => failSaid.test(k)));
+    }
+    add("pushPerm", "the push permission (its prompt, then OneSignal's login): this device's push subscription never associated with A in the next session (no OneSignal.login), nothing said there", async (r) => {
+      const win = { OneSignal: { Notifications: { requestPermission: async () => { await r.cross(); }, permission: true }, login: async (id) => { r.write("OneSignal.login " + id); }, User: { PushSubscription: { id: "sub1" }, externalId: "s1" } }, navigator: {}, matchMedia: () => ({ matches: false }) };
+      await H.pushPerm({ setPushDiag: r.say("diag"), navigator: { userAgent: "node-test" }, window: win, setPushPermission: r.mark("permission"), setOneSignalSubscribed: r.mark("subscribed"), mySurgeon: "s1", console: r.console,
+        setTimeout: r.setTimeout, setPushSubscriptionId: r.mark("subId"), setPushExternalId: noopX, sessionEpochRef: r.ep })();
+      await r.fire();
+    }, (x, x0) => x.writes.length === 0 && x.late.length === 0 && x0.writes.join() === "OneSignal.login s1 Bearer TOK_A" && x0.early.includes("subId"), true);
+    add("testNote", "the test notification (its e-mail): nothing said on the next screen", async (r) => {
+      await H.testNote({ sendBrowserNotif: noopX, setNotifTestSent: r.say("said"), edgeFunctionUrl: "https://fn.test/x", mySurgeon: "s1", notifPrefs: { s1: { email: "a@dsg.test" } }, setTimeout: r.setTimeout, sessionEpochRef: r.ep,
+        sendEmailNotif: async () => { r.write("e-mail"); await r.cross(); } })();
+    }, (x, x0) => x.late.length === 0 && x0.early.includes("said: Browser + email notifications sent!"), true);
+    add("upload", "the counts template upload (its file read): its counts never merged into the next account's setup (which its autosave would write as that account), nothing said", async (r) => {
+      await H.upload({ setScanning: noopX, setScanMsg: r.say("said"), surgeons: S7, setPriorCounts: r.mark("counts"), console: r.console, fileRef: { current: null }, sessionEpochRef: r.ep })(
+        { name: "counts.csv", text: async () => { await r.cross(); return "Surgeon,Service Weeks,Night Shifts\nAAA,3,9\n"; } });
+    }, (x, x0) => x.late.length === 0 && x0.early.includes("counts") && x0.early.some(k => /^said: Imported counts for 1 surgeon/.test(k)), true);
+    for (const id of ["bioEnroll", "bioForce"]) {
+      add(id, `the Face ID enrolment (${id === "bioEnroll" ? "Settings" : "'Try Enable Anyway'"}), its prompt crossing the session: the enrolment that lands after it is undone (never kept into the next session), nothing said`, async (r) => {
+        await H[id]({ authUser: { id: "auth-a", email: "a@dsg.test" }, alert: r.say("alert"), setBiometricEnrolled: r.mark("enrolled"), setBiometricAvail: noopX, setBiometricReason: r.say("reason"), sessionEpochRef: r.ep,
+          biometric: { enroll: async () => { r.write("enroll"); await r.cross(); return { success: true }; }, unenroll: () => r.writes.push("unenroll (this device)") } })();
+      }, (x, x0) => x.writes.join() === "enroll Bearer TOK_A,unenroll (this device)" && x.late.length === 0 && x0.early.includes("enrolled") && x0.writes.join() === "enroll Bearer TOK_A", true);
+    }
+    add("silvis", "the Silvis feed's Refresh button (the re-pull): its outcome never said on the next screen", async (r, fail) => {
+      await H.silvis({ dbAuthHeaders: r.hdr, SUPABASE_ANON_KEY: "ANON", showToast: r.say("toast"), setSilvisRefreshing: noopX, SUPABASE_URL: BASE, silvisRule: { code: "FAK" }, sessionEpochRef: r.ep, console: r.console,
+        sfRefreshFeed: async () => { r.write("silvis re-pull"); await r.cross(); if (fail) throw new Error("upstream"); return { days: 30, fak_primary: 4, fak_backup: 2 }; }, loadSilvisFeed: async () => true })(false);
+    }, (x, x0, f, f0) => x.late.length === 0 && f.late.length === 0 && x0.early.some(k => /^toast: Silvis feed refreshed/.test(k)) && f0.early.some(k => /^toast: Silvis feed refresh FAILED/.test(k)));
+    add("profile", "the sign-up profile (its write), a sign-out meanwhile: this account's profile, roles and reload never taken into the next session; the form not left busy", async (r) => {
+      r.busy = [];
+      await H.profile({ signupPersonId: "s2", authUser: { id: "auth-a" }, setAuthBusy: (v) => r.busy.push(v), setAuthError: r.say("error"), allPeople: [{ id: "s2", name: "BBB" }], console: r.console, sessionEpochRef: r.ep,
+        setUserProfile: r.mark("profile"), setMySurgeon: r.mark("surgeon"), setNeedsProfile: r.mark("needsProfile"), setIsScheduler: r.mark("scheduler"), setReloadTrigger: r.mark("reload"),
+        dbAuth: { getAllProfiles: async () => [], upsertProfile: async () => { r.write("UPSERT user_profiles"); await r.cross(); return { data: { person_id: "s2", role: "scheduler" }, error: null }; } } })();
+    }, (x, x0, f, f0, R) => x.late.length === 0 && R.x.busy[R.x.busy.length - 1] === false && ["profile", "surgeon", "needsProfile", "scheduler", "reload"].every(k => x0.early.includes(k)), true);
+    add("appAccess", "the Settings panel's APP-access toggle (its profile write), for this account's own row: that profile never set as the next session's, nothing said", async (r, fail) => {
+      await H.appAccess({ p: { id: "auth-a", person_id: "s1", can_assign_apps: false }, alert: r.say("alert"), setAllProfiles: r.mark("list"), authUser: { id: "auth-a" }, setUserProfile: r.mark("profile"), sessionEpochRef: r.ep, console: r.console,
+        dbAuth: { upsertProfile: async () => { r.write("UPSERT user_profiles"); await r.cross(); return { error: fail ? "RLS" : null }; } } })({ target: { checked: true } });
+    }, (x, x0, f, f0) => x.late.length === 0 && f.late.length === 0 && ["list", "profile"].every(k => x0.early.includes(k)) && f0.early.some(k => /^alert: Failed to update/.test(k)));
+    for (const id of ["testPush", "testRemind"]) {
+      add(id, `the Settings panel's '${id === "testPush" ? "Test Push to All Devices" : "Test Vacation Deadline Reminder"}' button: its result never said on the next screen`, async (r) => {
+        await H[id]({ edgeFunctionUrl: "https://fn.test/functions/v1/send-notification", dbAuthHeaders: r.hdr, alert: r.say("alert"), confirm: () => true, sessionEpochRef: r.ep,
+          fetch: async () => { r.write("POST"); await r.cross(); return r.resp(200, {}); } })();
+      }, (x, x0) => x.late.length === 0 && x0.early.some(k => /^alert: /.test(k)), true);
+    }
+    const res = {};
+    for (const c of CASES) {
+      const go = async (how, fail) => { const r = rig(how); await c.fn(r, fail); const o = r.out(); if (r.dirty !== undefined) o.dirty = r.dirty; if (r.busy) o.busy = r.busy; return o; };
+      const x = await go("other", false), xs = await go("signout", false), f = await go("signout", true), x0 = await go(null, false), f0 = await go(null, true);
+      res[c.id] = { x, xs, f, x0, f0 };
+      check(`SE-X24 I4 audit (${c.id}) the real ${c.what}; control — in one session it does all it did`,
+        quietNext(x) && quietNext(xs) && f.crossed && [x, xs, f].every(y => y.audits.every(a => /@Bearer TOK_A$/.test(a)) && !y.writes.some(w => / Bearer (TOK_B|ANON)$/.test(w)))
+          && !!c.expect(x, x0, f, f0, { x, xs }), JSON.stringify(res[c.id]).slice(0, 2400));
+    }
   });
 
   // SE-X-I — the harness rule (A17(c)).

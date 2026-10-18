@@ -3664,8 +3664,8 @@ check("prefs audit never logs the plaintext email (masked only)",
   const wfrSrc = (() => { const a = nsrcAA.indexOf("function writeFailReason(err) {"); const b = a < 0 ? -1 : nsrcAA.indexOf("\n}\n", a); return a < 0 || b < 0 ? null : nsrcAA.slice(a, b + 2); })();
   const vacSrc = bodyOf("const submitVacRequest = useCallback(", "vacReqSurgeon, vacReqStart");
   const tradeSrc = bodyOf("const submitTradeRequest = useCallback(", "tradeFrom, tradeTo");
-  const ENV_V = "vacReqSurgeon, vacReqStart, vacReqEnd, vacReqReason, vacReqType, surgeons, apps, showToast, db, setVacRequests, addNotification, schedulerAdminIds, sendEmailNotif, setVacReqStart, setVacReqEnd, setVacReqReason, setVacReqType, vacSubmitBusyRef";
-  const ENV_T = "tradeFrom, tradeTo, tradeWeek, tradeShift, tradeReturnWeek, tradeReturnShift, isScheduler, silvisActive, silvisBlock, silvisRefuse, surgeons, schedule, logAudit, addNotification, sendEmailNotif, setTradeRequests, setTradeWeek, setTradeShift, setTradeReturnWeek, setTradeReturnShift, tradeSubmitBusyRef, showToast, db, alert, confirm";
+  const ENV_V = "vacReqSurgeon, vacReqStart, vacReqEnd, vacReqReason, vacReqType, surgeons, apps, showToast, db, setVacRequests, addNotification, schedulerAdminIds, sendEmailNotif, setVacReqStart, setVacReqEnd, setVacReqReason, setVacReqType, vacSubmitBusyRef, sessionEpochRef";
+  const ENV_T = "tradeFrom, tradeTo, tradeWeek, tradeShift, tradeReturnWeek, tradeReturnShift, isScheduler, silvisActive, silvisBlock, silvisRefuse, surgeons, schedule, logAudit, addNotification, sendEmailNotif, setTradeRequests, setTradeWeek, setTradeShift, setTradeReturnWeek, setTradeReturnShift, tradeSubmitBusyRef, showToast, db, alert, confirm, sessionEpochRef";
   let mkV = null, mkT = null;
   try {
     if (wfrSrc && vacSrc) mkV = vm.runInContext(`(function () { ${wfrSrc}\n return function (env) { const { ${ENV_V} } = env; return (${vacSrc}); }; })()`, sandbox);
@@ -3684,6 +3684,7 @@ check("prefs audit never logs the plaintext email (masked only)",
       setVacRequests: () => { rec.added++; }, addNotification: async () => { rec.notifs++; }, sendEmailNotif: () => {},
       setVacReqStart: () => { rec.cleared++; }, setVacReqEnd: () => {}, setVacReqReason: () => {}, setVacReqType: () => {},
       vacSubmitBusyRef: { current: false },
+      sessionEpochRef: { current: 0 }, // (22/n, review r5 fix-1: the submit takes the session's identity at the tap — one session here)
     }, over.env || {});
     return { run: mkV ? mkV(env) : null, rec, env, release };
   };
@@ -3720,6 +3721,7 @@ check("prefs audit never logs the plaintext email (masked only)",
       surgeons: SURG, schedule: {}, logAudit: () => {}, addNotification: async () => { rec.notifs++; }, sendEmailNotif: () => {},
       setTradeRequests: () => { rec.added++; }, setTradeWeek: () => { rec.cleared++; }, setTradeShift: () => {}, setTradeReturnWeek: () => {}, setTradeReturnShift: () => {},
       tradeSubmitBusyRef: { current: false },
+      sessionEpochRef: { current: 0 }, // (22/n: as the vacation submit's)
       showToast: (m, t) => rec.toasts.push((t || "info") + ": " + m),
       db: { insert: async () => { rec.inserts++; if (over.slowInsert) await gate; return insertResult; } },
       alert: () => {}, confirm: () => true,
@@ -3794,7 +3796,7 @@ check("prefs audit never logs the plaintext email (masked only)",
   const rmBody = arrowBody("const rmAppShift = (ds) => {", "(ds) => {");
   const paintBody = arrowBody("const commitAppPaint = async (draft) => {", "async (draft) => {");
   const saveBody = arrowBody("const saveAppShifts = async (next) => {", "async (next) => {");
-  const ENV = "appShiftsLoaded, appShifts, appDate, appPerson, showToast, setAppShifts, saveAppShifts, logAudit, nameOf, setAppDate, supabase, APP_SHIFTS_NOT_LOADED, setSaveError, setSaveStatus";
+  const ENV = "appShiftsLoaded, appShifts, appDate, appPerson, showToast, setAppShifts, saveAppShifts, logAudit, nameOf, setAppDate, supabase, APP_SHIFTS_NOT_LOADED, setSaveError, setSaveStatus, sessionEpochRef"; // (22/n: saveAppShifts / commitAppPaint read the session at the call — review r5 fix-1)
   const mk = (body) => { try { return body ? vm.runInContext(`(function (env) { const { ${ENV} } = env; return (${body}); })`, sandbox) : null; } catch (ex) { return null; } };
   const mkAdd = mk(addSrc), mkRm = mk(rmBody), mkPaint = mk(paintBody), mkSave = mk(saveBody);
   const envAB = (loaded, over = {}) => {
@@ -3805,6 +3807,7 @@ check("prefs audit never logs the plaintext email (masked only)",
       logAudit: () => {}, nameOf: (x) => x, setAppDate: () => {}, setSaveError: () => {}, setSaveStatus: () => {},
       supabase: { from: () => ({ upsert: async (row) => { rec.upserts++; rec.rows.push(row); return { error: null }; } }) },
       APP_SHIFTS_NOT_LOADED: "APP shifts haven't loaded yet",
+      sessionEpochRef: { current: 0 },
     }, over) };
   };
   {
