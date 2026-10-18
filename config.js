@@ -10,6 +10,28 @@ const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 // Lightweight Supabase REST client (no SDK dependency needed)
 const dbHeaders = { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}`, "Content-Type": "application/json" };
 
+// The account THIS TAB is signed in as (auth.bindUser — review r4 branch-4).
+// Every tab of a browser shares localStorage's one stored session: after tab 1
+// signs out and signs in as B, tab 2 — still showing A, A's role, A's unsaved
+// weeks — read B's token on every request, and sent A's pending weeks and every
+// later edit with B's JWT. While a user is bound, a stored session whose JWT
+// `sub` is someone else's is NO session here: getSession() answers null,
+// dbReadHeaders() reads as anon, dbAuthHeaders() sends nothing authenticated
+// (anon — RLS refuses it). The tab then shows "Sign in again", and that renews
+// the STORED session (refreshKeep), landing as another account: the session
+// boundary runs and this tab's unsaved weeks are discarded, said so. The app
+// binds on every sign-in (the password, the stored session at app open, Face
+// ID, "Sign in again") and unbinds at its sign-out — nothing is bound while the
+// sign-in form's own request runs. An undecodable token while bound: no session.
+let _authBoundUser = null;
+const _jwtSub = (token) => {
+  try { const p = JSON.parse(atob(String(token).split(".")[1].replace(/-/g, "+").replace(/_/g, "/"))); return p && typeof p.sub === "string" ? p.sub : null; }
+  catch (e) { return null; }
+};
+// The stored token as THIS tab may use it: itself, or null when it belongs to
+// another account than the bound one.
+const _tokenForTab = (token) => (!token ? null : (!_authBoundUser || _jwtSub(token) === _authBoundUser) ? token : null);
+
 // Session-aware headers: returns headers with the logged-in user's JWT when a
 // session is stored in localStorage, else falls back to anon-key headers.
 // This is what every authenticated WRITE must use so RLS sees the real user.
@@ -19,7 +41,7 @@ const dbHeaders = { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE
 // dbReadHeaders() below, which IS expiry-aware.
 function dbAuthHeaders() {
   try {
-    const token = localStorage.getItem("dsg-auth-token");
+    const token = _tokenForTab(localStorage.getItem("dsg-auth-token")); // (another account's — another tab's — is none here: anon)
     if (token) return { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
   } catch(e) { console.warn("dbAuthHeaders: session read failed, using anon:", e); }
   return dbHeaders;
@@ -45,7 +67,7 @@ function jwtIsFresh(token) {
 // pass. WRITES must never use this — see dbAuthHeaders above.
 function dbReadHeaders() {
   try {
-    const token = localStorage.getItem("dsg-auth-token");
+    const token = _tokenForTab(localStorage.getItem("dsg-auth-token")); // (another account's: anon)
     if (token && jwtIsFresh(token)) return { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
     if (token) console.warn("dbReadHeaders: stored token is expired/undecodable — reading as anon (auth refresh will restore it).");
   } catch(e) { console.warn("dbReadHeaders: session read failed, using anon:", e); }
@@ -299,8 +321,15 @@ const snapshots = {
       // Vacations/no-call live in the time_off table (the blob mirror was
       // retired in PR #18), so fold them back in under the old mirror keys —
       // without this, snapshots carry NO vacations and a time_off wipe would
-      // be unrecoverable. Best-effort like the schedule_weeks fold above; the
-      // explicit order makes consecutive snapshots byte-stable on ties.
+      // be unrecoverable. Best-effort for most reasons — EXCEPT the one whose
+      // caller then deletes the time off (review r4 fixes-10): the factory
+      // reset's snapshot is its only way back to the vacations, so a time_off
+      // read that fails, times out or returns no list fails the capture
+      // (ok:false — the reset is refused: "Couldn't save a backup snapshot").
+      // (The schedule_weeks fold above is strict for every destructive reason.)
+      // The explicit order makes consecutive snapshots byte-stable on ties.
+      const timeOffStrict = reason === "reset_all_data";
+      let timeOffErr = null;
       try {
         const tres = await snapReq(
           `${SUPABASE_URL}/rest/v1/time_off?select=id,person_id,kind,start_date,end_date&order=start_date.asc`,
@@ -308,12 +337,17 @@ const snapshots = {
         );
         if (tres.ok) {
           const trows = await tres.json();
-          if (Array.isArray(trows) && trows.length) {
+          if (!Array.isArray(trows)) timeOffErr = "time_off read returned no list";
+          else if (trows.length) {
             const { vac, nc } = buildTimeOffMaps(trows);
             current = { ...(current || {}), vacations: vac, noCallDays: nc };
           }
-        }
-      } catch (e) { console.warn("Snapshot: time_off fetch failed:", e); }
+        } else timeOffErr = `time_off read failed: HTTP ${tres.status}`;
+      } catch (e) { timeOffErr = "time_off read failed: " + String(e); }
+      if (timeOffErr) {
+        console.warn("Snapshot: time_off fold failed:", timeOffErr);
+        if (timeOffStrict) return { ok: false, error: timeOffErr };
+      }
       // Don't bother snapshotting an already-empty row. This exit is now
       // reached ONLY on a genuine 200 with nothing worth keeping — a real
       // failure returned above — so an empty DB still doesn't block a
@@ -675,14 +709,26 @@ const AUTH_TOKEN_KEY = "dsg-auth-token";
 const AUTH_REFRESH_KEY = "dsg-auth-refresh";
 
 const auth = {
-  // Get stored session
+  // Get stored session — as THIS tab may use it: none while another account's
+  // is stored (bindUser, review r4 branch-4).
   getSession() {
+    const s = auth._storedSession();
+    return s && _tokenForTab(s.access_token) ? s : null;
+  },
+  // The stored session itself, whoever's (the shared localStorage): only
+  // refreshKeep renews it (it lands as whichever account it is), and signOut
+  // asks whose it is.
+  _storedSession() {
     try {
       const token = localStorage.getItem(AUTH_TOKEN_KEY);
       const refresh = localStorage.getItem(AUTH_REFRESH_KEY);
       return token ? { access_token: token, refresh_token: refresh } : null;
     } catch(e) { return null; }
   },
+  // Bind this tab to its signed-in account's auth id (null: unbind — at the
+  // sign-out, so the sign-in form's own requests run unbound).
+  bindUser(id) { _authBoundUser = id || null; },
+  boundUser() { return _authBoundUser; },
 
   // Store session
   _saveSession(data) {
@@ -781,7 +827,10 @@ const auth = {
   // Returns { ok: true, user, session } or
   // { ok: false, error: "no-session" | "refused" | "network" }.
   async refreshKeep() {
-    const session = auth.getSession();
+    // The STORED session, whoever's: renewed, it lands as its own account —
+    // another tab's sign-in (review r4 branch-4) lands as "another account",
+    // and the app's session boundary runs.
+    const session = auth._storedSession();
     if (!session || !session.refresh_token) return { ok: false, error: "no-session" };
     try {
       const res = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`, {
@@ -797,9 +846,11 @@ const auth = {
     } catch(e) { return { ok: false, error: "network" }; }
   },
 
-  // Sign out
+  // Sign out. Only THIS tab's session (review r4 branch-4): another account's
+  // stored session (another tab signed in as it) is neither logged out on the
+  // server — that would be a request as that account — nor cleared here.
   async signOut() {
-    const session = auth.getSession();
+    const stored = auth._storedSession(), session = auth.getSession();
     if (session?.access_token) {
       try {
         await fetch(`${SUPABASE_URL}/auth/v1/logout`, {
@@ -808,7 +859,7 @@ const auth = {
         });
       } catch(e) { console.warn("Server-side logout failed (session cleared locally anyway):", e); }
     }
-    auth._clearSession();
+    if (!stored || session) auth._clearSession();
   },
 
   // Send password reset email

@@ -900,6 +900,7 @@ function CallSchedule() {
           // Has session but no biometric — auto-login (legacy behavior)
           const { user } = await auth.getUser();
           if (user) {
+            auth.bindUser(user.id); // this tab is this account's (review r4 branch-4: another tab's sign-in is no session here)
             setAuthUser(user);
             const profile = await dbAuth.getProfile(user.id);
             if (profile) { setUserProfile(profile); setMySurgeon(profile.person_id); }
@@ -926,6 +927,7 @@ function CallSchedule() {
       // Biometric passed — use stored session
       const { user } = await auth.getUser();
       if (user) {
+        auth.bindUser(user.id); // (review r4 branch-4)
         setAuthUser(user);
         const profile = await dbAuth.getProfile(user.id);
         if (profile) { setUserProfile(profile); setMySurgeon(profile.person_id); }
@@ -1001,6 +1003,7 @@ function CallSchedule() {
         if (error) { setAuthError(error); setAuthBusy(false); return; }
         const userId = user?.id || session?.user?.id;
         if (userId) {
+          auth.bindUser(userId); // (review r4 branch-4: the new account's own session, if signUp stored one)
           // Create profile
           const personName = allPeople.find(p=>p.id===signupPersonId)?.name || signupPersonId;
           // The client NEVER writes a privileged role. Removing "admin" from
@@ -1066,6 +1069,7 @@ function CallSchedule() {
       } else {
         const { user, error } = await auth.signIn(authEmail, authPassword);
         if (error) { setAuthError(error); setAuthBusy(false); return; }
+        auth.bindUser(user && user.id); // (review r4 branch-4: the sign-in's own request ran unbound; from here this tab is this account's)
         setAuthUser(user);
         // Load profile
         const profile = await dbAuth.getProfile(user.id);
@@ -1157,7 +1161,8 @@ function CallSchedule() {
     const unsaved = schedSyncRef.current.pending().length;
     if (unsaved && !confirm(`${unsaved} week${unsaved === 1 ? "" : "s"} of the schedule ${unsaved === 1 ? "isn't" : "aren't"} saved yet — signing out loses ${unsaved === 1 ? "it" : "them"}.\n\nSign out anyway?`)) return;
     sessionBoundary();
-    await auth.signOut();
+    await auth.signOut(); // (this tab's session only — another account's, stored by another tab, is left alone: review r4 branch-4)
+    auth.bindUser(null);  // …and unbound: the sign-in form's requests run as nobody's
     biometric.unenroll();
     setAuthUser(null); setUserProfile(null); setNeedsProfile(false); setMySurgeon("");
     setBiometricEnrolled(false); setBiometricPending(false);
@@ -1185,16 +1190,23 @@ function CallSchedule() {
   // never blocks or breaks an action; if the table doesn't exist yet, the insert
   // just fails quietly. Called from the mutation choke points below.
   const nameOf = (id) => surgeons.find(s => s.id === id)?.name || apps.find(a => a.id === id)?.name || id || "?";
-  const logAudit = (action, summary, details) => {
+  // `hdrs` (review r4 branch-2): written with THOSE headers — the line of an
+  // action whose session ended while it ran (a trade accept) is recorded as
+  // the account that tapped it, never under the next one's token.
+  const logAudit = (action, summary, details, hdrs) => {
     (async () => {
       try {
-        await db.insert("audit_log", {
+        const row = {
           actor_id: userProfile?.person_id || null,
           actor_name: userProfile?.display_name || surgeons.find(s => s.id === userProfile?.person_id)?.name || mySurgeon || "Unknown",
           action: action,
           summary: summary,
           details: details || null,
-        });
+        };
+        if (hdrs) {
+          const res = await fetch(`${SUPABASE_URL}/rest/v1/audit_log`, { method: "POST", headers: { ...hdrs, "Content-Type": "application/json", Prefer: "return=minimal" }, body: JSON.stringify(row) });
+          if (!res.ok) throw new Error(`audit_log insert: HTTP ${res.status}`);
+        } else await db.insert("audit_log", row);
       } catch (e) { console.error("audit log failed", e); }
     })();
   };
@@ -1418,7 +1430,13 @@ function CallSchedule() {
   // wrapper that implements only select/upsert (no .delete()), so we issue the
   // DELETE directly with the same authenticated headers the db.* helpers use —
   // dbAuthHeaders() carries the logged-in user's token so RLS permits it.
-  const deleteTimeOff = async (filter) => {
+  // → { ok } — and `unanswered` when no answer came (the outcome unknown).
+  // opts.quiet: its caller tells the failure (the factory reset's one
+  // message); otherwise it toasts — never on the next session's screen (the
+  // session at the call, checked after the await — review r4 fixes-2).
+  const deleteTimeOff = async (filter, opts) => {
+    const ep = sessionEpochRef.current, quiet = !!(opts && opts.quiet);
+    const tell = () => { if (!quiet && sessionEpochRef.current === ep) showToast("Couldn't remove that — check your connection and try again.", "error"); };
     try {
       const res = await fetch(`${SUPABASE_URL}/rest/v1/time_off?${filter}`, {
         method: "DELETE",
@@ -1427,11 +1445,11 @@ function CallSchedule() {
       if (!res.ok) {
         const t = await res.text().catch(() => "");
         console.error("time_off delete failed", res.status, t);
-        showToast("Couldn't remove that — check your connection and try again.", "error");
+        tell();
         return { ok: false };
       }
       return { ok: true };
-    } catch (e) { console.error("time_off delete ex", e); showToast("Couldn't remove that — check your connection and try again.", "error"); return { ok: false }; }
+    } catch (e) { console.error("time_off delete ex", e); tell(); return { ok: false, unanswered: true }; }
   };
 
   // ─── Write helpers (the ONLY paths that mutate time_off) ───
@@ -1503,12 +1521,18 @@ function CallSchedule() {
 
   // Wipe time_off rows + clear local maps. kind omitted = both; else just that
   // kind (the "delete all vacations" button clears vacations only).
-  const toClearAll = async (kind) => {
-    if (!kind || kind === "vacation") setVacations({});
-    if (!kind || kind === "nocall") setNoCallDays({});
+  // → { ok, unanswered? } (review r4 fixes-2: the factory reset awaits and
+  // checks it). The screen is cleared only once the DELETE has landed: a
+  // failed one leaves the time off showing — as the server still holds it —
+  // instead of an empty screen until the 60-s poll brings it back.
+  // opts.quiet: as deleteTimeOff's.
+  const toClearAll = async (kind, opts) => {
+    const clearHere = () => { if (!kind || kind === "vacation") setVacations({}); if (!kind || kind === "nocall") setNoCallDays({}); };
     logAudit("timeoff.clearall", `Cleared ALL ${kind ? (kind === "nocall" ? "no-call days" : "vacations") : "vacations and no-call days"} for everyone`, { kind: kind || "both" });
-    if (!USE_TIME_OFF) return;
-    await deleteTimeOff(`id=not.is.null${kind ? `&kind=eq.${kind}` : ""}`);
+    if (!USE_TIME_OFF) { clearHere(); return { ok: true }; }
+    const r = await deleteTimeOff(`id=not.is.null${kind ? `&kind=eq.${kind}` : ""}`, opts);
+    if (r.ok) clearHere();
+    return r;
   };
 
   // ─── Supabase: Load on mount + real-time sync ───
@@ -1943,6 +1967,7 @@ function CallSchedule() {
     }
     const lost = eng.pending().length;
     sessionBoundary();
+    auth.bindUser(user.id); // this tab is the new account's now (review r4 branch-4) — e.g. another tab's sign-in, renewed here
     biometric.unenroll(); setBiometricEnrolled(false); setBiometricPending(false); // the previous account's enrolment (sign-out drops it too)
     setAuthUser(user);
     let profile = null;
@@ -1995,6 +2020,26 @@ function CallSchedule() {
       await reauthLanded(res.user);
     } finally { setReauthBusy(false); }
   };
+  // ─── This tab's session, changed by another tab ───
+  // (review r4 branch-4) Tabs share the stored session. When another tab
+  // changes it — signs out, signs in as another account, or renews it — this
+  // tab looks at once, not at its next pull: the engine reports again (its
+  // token() reads the stored session as THIS tab may use it — none while
+  // another account's is stored: config.js bindUser), so anything pending
+  // says "Sign in again" now; and when this tab's own session is gone, or is
+  // now another account's, the "Sign in again" banner shows even with nothing
+  // pending. (A renewal of this account's own session changes nothing.)
+  useEffect(() => {
+    if (!authUser) return;
+    const onStorage = (e) => {
+      if (e && e.key !== null && e.key !== "dsg-auth-token") return; // (key null: the whole storage cleared)
+      schedSyncRef.current.report();
+      if (!auth.getSession()) setReauthNeeded(true);
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, [authUser]);
+
   // The reload guard: any path that reloads the page while weeks aren't
   // saved asks first ("No data is lost" is only true when nothing is pending).
   const confirmReloadWithPending = (base) => {
@@ -2506,7 +2551,8 @@ function CallSchedule() {
     // to (the full reset below; and a half-landed one, so the screen matches
     // the server and no later autosave quietly writes the old setup back).
     const resetSetupHere = () => { setSurgeons(INIT_SURGEONS); setApps(INIT_APPS); setBackupMondaySet(new Set()); setFierceBackupSet(new Set()); setPriorCounts({}); setYear1Counts({}); setStartMonth(4); setStartYear(2026); };
-    // The two stored-data clears, ONE AT A TIME (review r3 fixes-2): the APP
+    // The stored-data clears, ONE AT A TIME (review r3 fixes-2; the time off,
+    // third, review r4 fixes-2 — below): the APP
     // shifts only once the setup is cleared — sent together, either could land
     // while the other failed, and the reset still said "Nothing was changed".
     // Both fail closed. upsert returns {error} on HTTP failure WITHOUT
@@ -2545,8 +2591,28 @@ function CallSchedule() {
       setTimeout(() => setSaveStatus(""), 2000);
       return;
     }
-    resetSetupHere();
-    toClearAll(); // clears vacations + no-call locally, and the time_off table when on
+    // Both landed: this screen takes the reset's setup and APP shifts now (it
+    // matches the server).
+    resetSetupHere(); setAppShifts({});
+    // The third clear, the time off (review r4 fixes-2: it used to be sent
+    // un-awaited and unchecked, and "Reset complete" followed whatever it
+    // did): awaited and checked, in the same chain — sent only once the setup
+    // and the APP shifts are cleared, and the weeks job only once it has
+    // landed. Failed, the reset stops there and says exactly what was reset —
+    // the setup and the APP shifts — and what wasn't: the time off (still
+    // shown, as the server still holds it) and the weeks. No answer: it may
+    // have landed — said so. Its own generic toast is this message instead
+    // (quiet); and nothing at all after a session change.
+    const toClear = await toClearAll(undefined, { quiet: true });
+    if (sessionEpochRef.current !== ep) { unarm(); return; } // another session now: no weeks job as the next account, nothing said
+    if (!toClear || !toClear.ok) {
+      console.error("Factory reset: clearing the time off failed", toClear && toClear.unanswered ? "(no answer)" : "");
+      unarm();
+      showToast(toClear && toClear.unanswered
+        ? "Factory reset: the setup and the APP shifts were reset, but the time-off clear got no answer — so the time off may have been cleared, and the schedule weeks were left as they are. Run the reset again, or restore the \"Before factory reset\" snapshot."
+        : "Factory reset: the setup and the APP shifts were reset, but clearing the time off failed — so the time off and the schedule weeks were left as they are. Run the reset again, or restore the \"Before factory reset\" snapshot.", "error");
+      return;
+    }
     // Every week deleted: an authoritative engine job with its own grant. If
     // it can't write (table unreadable, signed out, cancelled at its deadline)
     // the weeks on screen go back as they were (`before`) — and ONE message
@@ -2581,7 +2647,6 @@ function CallSchedule() {
       commitSchedule({});
       runAuthoritativeSchedule({}, "reset", null, before, weeksNotCleared).then(tellWeeks);
     }
-    setAppShifts({});
   };
 
   // ─── Push Notifications — sent via send-push Edge Function ───
@@ -2593,7 +2658,12 @@ function CallSchedule() {
   //
   // deepLinkUrl: if provided, Edge Function forwards to OneSignal as the
   // click-action URL so tapping the push opens the app at the relevant tab/week.
-  const sendPushNotif = useCallback(async (title, message, targetIds = null, deepLinkUrl = null) => {
+  // ep (review r4 fixes-3): the session it is sent for (sessionEpochRef, at
+  // the call by default) — its failure is never told on the next session's
+  // screen (signed out, or another account, while it was out). The same for
+  // addNotification and sendEmailNotif below: every notice path (a publish's,
+  // a trade's, a swap's) is fenced inside them, after each of their awaits.
+  const sendPushNotif = useCallback(async (title, message, targetIds = null, deepLinkUrl = null, ep = sessionEpochRef.current) => {
     if (!edgeFunctionUrl) return;
     // Derive send-push URL from the configured send-notification URL
     // (they share the /functions/v1/ base path).
@@ -2609,7 +2679,7 @@ function CallSchedule() {
         headers: dbAuthHeaders(), // send the user's JWT (or anon fallback) — send-push gateway is verify_jwt=true and rejects no-auth
         body: JSON.stringify(body),
       });
-    } catch(e) { console.error("Push notification error:", e); showToast("Couldn't send the push notification — check your connection.", "error"); }
+    } catch(e) { console.error("Push notification error:", e); if (sessionEpochRef.current === ep) showToast("Couldn't send the push notification — check your connection.", "error"); }
   }, [edgeFunctionUrl]);
 
   // Build a deep-link URL for a notification. Routes users to the relevant
@@ -2672,10 +2742,16 @@ function CallSchedule() {
   // "Schedule Published"). Targeted push is used for manual edits, trades, etc.
   // Per-channel push gating: if pushTargetIds is provided, it's filtered by
   // each user's per-category push flag before send.
-  const addNotification = useCallback(async (type, title, message, data = {}, pushTargetIds = null) => {
+  // ep (review r4 fixes-3): the session it is for — sessionEpochRef at the
+  // call unless the caller passes the one it took at its tap. The push goes
+  // out AFTER the notice's insert is awaited: a session change meanwhile (a
+  // sign-out, "Sign in again" on another account) stops it there — no push,
+  // nothing put in the next session's list, nothing said on its screen.
+  const addNotification = useCallback(async (type, title, message, data = {}, pushTargetIds = null, ep = sessionEpochRef.current) => {
     try {
       const notif = { type, title, message, data, created_at: new Date().toISOString() };
       const { data: inserted, error: insertErr } = await db.insert("notifications", notif);
+      if (sessionEpochRef.current !== ep) { if (insertErr) console.error("Notification insert failed:", insertErr); return; } // another session now
       if (insertErr) { console.error("Notification insert failed:", insertErr); showToast("Couldn't save that notification.", "error"); }
       if (inserted) setNotifications(prev => [inserted, ...prev].slice(0, 50));
       // Also send as device push via OneSignal, with a deep-link URL so tap
@@ -2687,9 +2763,9 @@ function CallSchedule() {
       if (pushTargetIds && (!filteredTargets || filteredTargets.length === 0)) {
         console.log(`[push-skip] all ${pushTargetIds.length} target(s) opted out for type=${type}`);
       } else {
-        sendPushNotif(title, message, filteredTargets, deepLinkUrl);
+        sendPushNotif(title, message, filteredTargets, deepLinkUrl, ep);
       }
-    } catch(e) { console.error("Notification error:", e); showToast("Couldn't send the notification — check your connection.", "error"); }
+    } catch(e) { console.error("Notification error:", e); if (sessionEpochRef.current === ep) showToast("Couldn't send the notification — check your connection.", "error"); }
   }, [sendPushNotif, buildDeepLink, filterPushTargetsByType]);
 
   // ─── Email Notifications via Supabase Edge Function ───
@@ -2698,8 +2774,9 @@ function CallSchedule() {
   // sends only the notification type, template data, and optional targetIds.
   // This is what makes cross-user emails work from non-scheduler devices, whose
   // JWT can only read their own notification_preferences row.
-  const sendEmailNotif = useCallback(async (type, data, targetIds = null) => {
+  const sendEmailNotif = useCallback(async (type, data, targetIds = null, ep = sessionEpochRef.current) => { // (ep: as addNotification's — review r4 fixes-3)
     if (!edgeFunctionUrl) return;
+    if (sessionEpochRef.current !== ep) return; // (a caller's tap from another session: nothing sent from this one)
     // A targeted send with an EMPTY target list means "no recipients", not
     // broadcast — e.g. schedulerAdminIds is [] until profiles load. Omitting
     // targetIds is what requests a broadcast, so never send an empty list's
@@ -2721,9 +2798,9 @@ function CallSchedule() {
       const result = await res.json().catch(() => null);
       if (!res.ok || (result && result.failed > 0)) {
         console.warn("Email notification issue:", type, res.status, JSON.stringify(result));
-        showToast("Some notification emails didn't send.", "error");
+        if (sessionEpochRef.current === ep) showToast("Some notification emails didn't send.", "error");
       }
-    } catch(e) { console.error("Email notification error:", e); showToast("Couldn't send email notifications — check your connection.", "error"); }
+    } catch(e) { console.error("Email notification error:", e); if (sessionEpochRef.current === ep) showToast("Couldn't send email notifications — check your connection.", "error"); }
   }, [edgeFunctionUrl]);
 
   // ─── Vacation Request: Submit ───
@@ -3078,6 +3155,36 @@ function CallSchedule() {
 
   // ─── Shift Trade Request: Accept (with cascade) ───
   const acceptTradeRequest = useCallback(async (req) => {
+    // This session, at the tap (review r4 branch-2), and its headers: after
+    // EVERY await below, a session change meanwhile — a sign-out, or "Sign in
+    // again" landing on another account — stops the accept there, silently:
+    // no schedule write, no Undo step, no notice or e-mail, nothing said on
+    // the next session's screen. A trade this tap already marked accepted is
+    // set back to pending WITH THE TAP'S HEADERS (this account's token), so
+    // it is never left accepted with no swap; if that fails, it is logged
+    // (the console and an audit line, written as this account) for a manual
+    // fix — never toasted on the next screen.
+    const ep = sessionEpochRef.current, tapH = dbAuthHeaders();
+    const live = () => sessionEpochRef.current === ep;
+    // Composed ONCE here and reused by every audit line, the notification and
+    // the email below, matching the propose/decline siblings.
+    const acceptMsg = tradeAcceptMsg(req);
+    const abandon = async (rows) => {
+      if (!Array.isArray(rows) || rows.length === 0) return; // this tap accepted nothing: nothing to set back
+      let why = "";
+      try {
+        const b = await fetch(`${SUPABASE_URL}/rest/v1/shift_trade_requests?id=eq.${req.id}&status=eq.accepted`, {
+          method: "PATCH",
+          headers: { ...tapH, "Content-Type": "application/json", Prefer: "return=representation" },
+          body: JSON.stringify({ status: "pending", reviewed_at: null }),
+        });
+        const back = b.ok ? await b.json().catch(() => null) : null;
+        if (Array.isArray(back) && back.length === 1) return;
+        why = b.ok ? `${Array.isArray(back) ? back.length : "no"} row(s) came back` : `HTTP ${b.status} ${await b.text().catch(() => "")}`;
+      } catch (e) { why = String(e && e.message || e); }
+      console.error("Trade accept abandoned (the session changed while it was being accepted), and the request could NOT be set back to pending:", req.id, why);
+      logAudit("trade.accept_unapplied", `${acceptMsg} — NOT applied: the session changed (a sign-out, or another account) while it was being accepted; still marked accepted (setting it back failed) — needs a manual fix`, { request_id: req.id, reverted: false }, tapH);
+    };
     try {
       // TIME-MOVED RE-VALIDATION (owner ruling 2026-09-06, item 4): a trade
       // can be accepted days after it was proposed — the pickers filter at
@@ -3153,22 +3260,24 @@ function CallSchedule() {
       // return 200 with zero rows matched.
       const acceptRes = await fetch(`${SUPABASE_URL}/rest/v1/shift_trade_requests?id=eq.${req.id}&status=eq.pending`, {
         method: "PATCH",
-        headers: { ...dbAuthHeaders(), "Content-Type": "application/json", Prefer: "return=representation" },
+        headers: { ...tapH, "Content-Type": "application/json", Prefer: "return=representation" },
         body: JSON.stringify({ status: "accepted", reviewed_at: new Date().toISOString() }),
       });
       if (!acceptRes.ok) {
         console.error("Trade accept status write failed:", acceptRes.status, await acceptRes.text().catch(() => ""));
-        showToast("Couldn't accept the trade — nothing was changed. Check your connection and try again.", "error");
+        if (live()) showToast("Couldn't accept the trade — nothing was changed. Check your connection and try again.", "error");
         return; // fail closed: no swap, no cascades, no undo, no notifications
       }
       const acceptRows = await acceptRes.json().catch(() => []);
+      // (review r4 branch-2) another session now — signed out, or "Sign in
+      // again" landed on another account, while the status PATCH was out:
+      // nothing of this trade is applied, sent or said in it (set back, above).
+      if (!live()) return abandon(acceptRows);
       if (!Array.isArray(acceptRows) || acceptRows.length === 0) {
         showToast("This trade was already handled or withdrawn — nothing was changed.", "error");
         return; // realtime/60s poll will refresh the visible status
       }
-      // Composed ONCE here and reused by the audit line, the notification and
-      // the email below, matching the propose/decline siblings.
-      const acceptMsg = tradeAcceptMsg(req);
+      // (acceptMsg: composed once, at the tap — above.)
       // RE-CHECKED AT COMMIT (A13). The status PATCH was awaited, and a pull
       // can adopt someone else's change to these weeks meanwhile. Nothing
       // awaits from here to updateSchedule, so what is checked is what is
@@ -3192,9 +3301,11 @@ function CallSchedule() {
           else why = `HTTP ${backRes.status} ${await backRes.text().catch(() => "")}`;
         } catch (e) { why = String(e && e.message || e); }
         const reverted = Array.isArray(back) && back.length === 1;
-        if (reverted) setTradeRequests(prev => prev.map(r => r.id === req.id ? { ...r, status: "pending" } : r));
-        else console.error("Trade accept not applied (the schedule changed), and the request could NOT be set back to pending:", req.id, why || `${Array.isArray(back) ? back.length : "no"} row(s) came back`);
-        logAudit("trade.accept_unapplied", `${acceptMsg} — NOT applied: the schedule for those shifts changed while it was being accepted; ${reverted ? "set back to pending" : "still marked accepted (setting it back failed) — needs a manual fix"}`, { request_id: req.id, reverted });
+        const here = live(); // (review r4 branch-2) still this session after the set-back's awaits?
+        if (reverted && here) setTradeRequests(prev => prev.map(r => r.id === req.id ? { ...r, status: "pending" } : r));
+        else if (!reverted) console.error("Trade accept not applied (the schedule changed), and the request could NOT be set back to pending:", req.id, why || `${Array.isArray(back) ? back.length : "no"} row(s) came back`);
+        logAudit("trade.accept_unapplied", `${acceptMsg} — NOT applied: the schedule for those shifts changed while it was being accepted; ${reverted ? "set back to pending" : "still marked accepted (setting it back failed) — needs a manual fix"}`, { request_id: req.id, reverted }, here ? undefined : tapH);
+        if (!here) return; // another session now: nothing said on its screen
         showToast(reverted
           ? "This trade was not applied — the schedule for those shifts changed while it was being accepted. Nothing was changed, and the trade is pending again: look it over and accept it again if it still fits."
           : "This trade was not applied — the schedule for those shifts changed while it was being accepted. The schedule was not changed, but the request is still marked accepted and needs a manual fix (it couldn't be set back to pending).", "error");
@@ -3241,12 +3352,14 @@ function CallSchedule() {
         return n;
       });
 
-      // Notify about the primary trade
+      // Notify about the primary trade (the tap's session passed in: each
+      // notice stops at a session change — review r4 branch-2 / fixes-3)
       await addNotification("trade_accepted", "Shift Trade Accepted",
         acceptMsg,
         { from_surgeon_id: req.from_surgeon_id, to_surgeon_id: req.to_surgeon_id },
-        [req.from_surgeon_id, req.to_surgeon_id]);
-      sendEmailNotif("trade_accepted", { from_name: req.from_surgeon_name, to_name: req.to_surgeon_name, shift: req.shift_label, week: req.week_monday, detail: acceptMsg }, [req.from_surgeon_id, req.to_surgeon_id]);
+        [req.from_surgeon_id, req.to_surgeon_id], ep);
+      if (!live()) return; // another session now: no more notices or e-mails from it
+      sendEmailNotif("trade_accepted", { from_name: req.from_surgeon_name, to_name: req.to_surgeon_name, shift: req.shift_label, week: req.week_monday, detail: acceptMsg }, [req.from_surgeon_id, req.to_surgeon_id], ep);
 
       // Notify about each cascade change — affected surgeons + scheduler/admin
       for (const ch of cascadesNow) {
@@ -3260,14 +3373,21 @@ function CallSchedule() {
         await addNotification("schedule_changed", "Shift Reassigned",
           cascadeDetail,
           { from_surgeon_id: ch.from, to_surgeon_id: ch.to, surgeon_id: ch.to, week: ch.week },
-          cascadeTargets);
-        sendEmailNotif("schedule_changed", { shift: SHIFT_LABELS[ch.shiftKey] || ch.shiftKey, week: ch.week, old_surgeon: fromName, new_surgeon: toName, detail: cascadeDetail }, cascadeTargets);
+          cascadeTargets, ep);
+        if (!live()) return; // another session now
+        sendEmailNotif("schedule_changed", { shift: SHIFT_LABELS[ch.shiftKey] || ch.shiftKey, week: ch.week, old_surgeon: fromName, new_surgeon: toName, detail: cascadeDetail }, cascadeTargets, ep);
       }
-    } catch(e) { console.error("Accept trade error:", e); showToast("Couldn't accept the trade — check your connection and try again.", "error"); }
+    } catch(e) { console.error("Accept trade error:", e); if (live()) showToast("Couldn't accept the trade — check your connection and try again.", "error"); }
   }, [schedule, surgeons, pushUndo, addNotification, sendEmailNotif, detectCascadeChanges, schedulerAdminIds, silvisActive, silvisBlock, silvisRefuse]);
 
   // ─── Shift Trade Request: Decline ───
   const declineTradeRequest = useCallback(async (req) => {
+    // This session, at the tap (review r4 branch-2): the decline (its status
+    // write) is this account's, done — but after a session change meanwhile
+    // nothing more of it is done, sent or said in the next session: no list
+    // update, no notice, no e-mail, no toast.
+    const ep = sessionEpochRef.current;
+    const live = () => sessionEpochRef.current === ep;
     try {
       // Fail-closed status write with a status precondition — same pattern
       // (and same reasons) as acceptTradeRequest above: HTTP failure must not
@@ -3280,10 +3400,11 @@ function CallSchedule() {
       });
       if (!declineRes.ok) {
         console.error("Trade decline status write failed:", declineRes.status, await declineRes.text().catch(() => ""));
-        showToast("Couldn't decline the trade — nothing was changed. Check your connection and try again.", "error");
+        if (live()) showToast("Couldn't decline the trade — nothing was changed. Check your connection and try again.", "error");
         return;
       }
       const declineRows = await declineRes.json().catch(() => []);
+      if (!live()) return; // another session now
       if (!Array.isArray(declineRows) || declineRows.length === 0) {
         showToast("This trade was already handled or withdrawn — nothing was changed.", "error");
         return; // realtime/60s poll will refresh the visible status
@@ -3294,9 +3415,10 @@ function CallSchedule() {
       await addNotification("trade_declined", "Shift Trade Declined",
         declineMsg,
         { from_surgeon_id: req.from_surgeon_id, to_surgeon_id: req.to_surgeon_id },
-        [req.from_surgeon_id, req.to_surgeon_id]);
-      sendEmailNotif("trade_declined", { from_name: req.from_surgeon_name, to_name: req.to_surgeon_name, shift: req.shift_label, week: req.week_monday, detail: declineMsg }, [req.from_surgeon_id, req.to_surgeon_id]);
-    } catch(e) { console.error("Decline trade error:", e); showToast("Couldn't decline the trade — check your connection and try again.", "error"); }
+        [req.from_surgeon_id, req.to_surgeon_id], ep);
+      if (!live()) return; // another session now: no e-mail from it
+      sendEmailNotif("trade_declined", { from_name: req.from_surgeon_name, to_name: req.to_surgeon_name, shift: req.shift_label, week: req.week_monday, detail: declineMsg }, [req.from_surgeon_id, req.to_surgeon_id], ep);
+    } catch(e) { console.error("Decline trade error:", e); if (live()) showToast("Couldn't decline the trade — check your connection and try again.", "error"); }
   }, [addNotification, sendEmailNotif]);
 
   // ─── Delete Trade Request ───
@@ -3857,11 +3979,13 @@ function CallSchedule() {
     if ((await doGenerate(false)) !== "published") return;
     if (sessionEpochRef.current !== ep) return;
     // (The counts roll forward inside doGenerate's publish, at commit — net
-    // of any weeks it replaced.)
+    // of any weeks it replaced.) The tap's session is passed in (review r4
+    // fixes-3): the notice's device push, sent after its insert's await, and
+    // its failure toasts are fenced inside addNotification too.
     await addNotification("schedule_published", "Schedule Published",
-      "A new call schedule has been generated. Check the Schedule or Calendar tab.");
+      "A new call schedule has been generated. Check the Schedule or Calendar tab.", {}, null, ep);
     if (sessionEpochRef.current !== ep) return;
-    sendEmailNotif("schedule_published", { period: `${MO[startMonth]} – ${MO[endMoIdx]} ${startYear}` });
+    sendEmailNotif("schedule_published", { period: `${MO[startMonth]} – ${MO[endMoIdx]} ${startYear}` }, null, ep);
   };
 
   // ─── Build Individual ICS for a surgeon (their shifts + vacations only) ───
@@ -12357,6 +12481,8 @@ function createSchedSync(deps) {
   const noPermission = new Set();  // K whose writes match 0 rows while the row is unchanged (RLS)
   const approvedDeletes = new Map(); // K -> the version a delete was authorized at (R7, R9; outstanding only)
   const inFlight = new Set();      // K with a chain request on the wire (the keepalive skips them)
+  const lostIns = new Set();       // K whose INSERT went out and its outcome stayed unknown (no trusted answer, and its read-back failed too) — H3
+  const resend = new Set();        // K of those a later re-read found NO row for: re-sent, and told once when it lands (H3)
   const live = new Set();          // { ctl, start, ms } of requests in flight (aborted when stale on resume)
   const adoptEpoch = {}; let epoch = 0; // never reset (Undo / intents compare against it)
   let conflicts = [];              // [{ k, at }] weeks replaced by someone else's copy, until dismissed
@@ -12377,7 +12503,7 @@ function createSchedSync(deps) {
   const weekLabel = (k) => { try { const [y, m, dd] = k.split("-").map(Number); return new Date(y, m - 1, dd).toLocaleDateString(undefined, { month: "short", day: "numeric" }); } catch (e) { return k; } };
   const weekList = (ks) => ks.slice(0, 4).map(weekLabel).join(", ") + (ks.length > 4 ? ` and ${ks.length - 4} more` : "");
   const addSent = (k, c) => { (sent[k] = sent[k] || []).push(c); if (sent[k].length > 20) sent[k].shift(); };
-  const settle = (k) => { delete sent[k]; failed.delete(k); noPermission.delete(k); delete rejected[k]; };
+  const settle = (k) => { delete sent[k]; failed.delete(k); noPermission.delete(k); delete rejected[k]; lostIns.delete(k); resend.delete(k); };
   const tokenNow = () => { try { return d.token ? d.token() : null; } catch (e) { return null; } };
   const authState = () => { const t = tokenNow(); return !t ? "none" : t === deadToken ? "expired" : "ok"; };
   // Every READ (the pull, its week fetch, read-backs, whole-table reads)
@@ -12586,8 +12712,10 @@ function createSchedSync(deps) {
   // already holds what's on screen) | "ours" (an earlier body of ours landed;
   // the screen has moved on since) | "unchanged" (nothing of ours landed) |
   // "refreshed" (the data we knew, under a new token: nobody changed it) |
-  // "theirs" (someone else wrote it).
-  const classify = (k, row) => {
+  // "theirs" (someone else wrote it). `missed`: the canon of OUR body just
+  // answered with 0 rows (writeWeek's own read-back: its CAS matched nothing,
+  // so that body did not land).
+  const classify = (k, row, missed) => {
     const c = row ? canon(row.data) : DEL;
     const cur = d.getState() || {};
     if (c === (k in cur ? canon(cur[k]) : DEL)) return "mirror";
@@ -12600,7 +12728,23 @@ function createSchedSync(deps) {
     // anyone changed is lost by writing over it, so it isn't a conflict: take
     // the new token and retry (A2) — else every old tab closing would cost the
     // open sessions their unsaved edits to those weeks.
-    if (kn && row && c === kn.canon) return "refreshed";
+    // H1 (review r4 branch-1): …but not while a body of ours that may have
+    // landed is unconfirmed (sent, its answer lost). Then the data we knew can
+    // be someone's REVERT of our landed write — X0, ours X1 lands (the answer
+    // lost), another device puts X0 back — and re-sending ours over it
+    // overwrote their change silently (a DELETE of ours, then the week put
+    // back as it was, likewise). While one is out, it is "refreshed" only when
+    // the row's version is still known's: our landed write would have moved it
+    // (kn.version + 1), and every write after that moves it on — except a
+    // deletion and a re-insert as it was, which restarts at 1, so a week known
+    // at v1 is not "refreshed" then. Otherwise it is theirs: a conflict, their
+    // copy shown and told. (An old build's version-keeping re-send is the
+    // version-kept case; under a write of ours that landed, that re-send is
+    // itself a revert of it: a conflict, loudly.)
+    if (kn && row && c === kn.canon) {
+      const out = (sent[k] || []).filter((x, i, a) => !(missed !== undefined && x === missed && i === a.lastIndexOf(x)));
+      if (!out.length || ((row.version === undefined ? null : row.version) === kn.version && kn.version !== 1)) return "refreshed";
+    }
     return "theirs";
   };
   // `mine`: the row is the answer to our own write. A row read back is ours
@@ -12662,8 +12806,11 @@ function createSchedSync(deps) {
       if (kind === "refused") { const rb = await readBack(k); return { k, outcome: "refused", sent: c, row: rb.ok ? rb.row : undefined }; }
       // unknown: read it back
       const rb = await readBack(k);
-      if (!rb.ok) { failed.add(k); return { k, outcome: "pending", thrown: !!r.thrown }; }
-      const how = classify(k, rb.row);
+      // H3: an INSERT whose outcome stays unknown — its read-back failed too —
+      // may have landed (and be deleted elsewhere before we look again):
+      // lostIns. One whose read-back finds no row didn't land.
+      if (!rb.ok) { failed.add(k); if (!del && !kn) lostIns.add(k); return { k, outcome: "pending", thrown: !!r.thrown }; }
+      const how = classify(k, rb.row, kind === "ok" && Array.isArray(r.body) && r.body.length === 0 ? c : undefined); // (0 rows: this body did not land — H1)
       if (how === "mirror") { confirm(k, rb.row); return { k, outcome: "saved" }; }
       // Our earlier body landed (or the row only took a new token, our data
       // under it unchanged): send this one at the new token — unless the
@@ -12720,12 +12867,21 @@ function createSchedSync(deps) {
       report(); return { ok: false, skipped: "auth" };
     }
     const by = d.userId ? d.userId() : null;
-    const results = [];
+    const results = [], unread = new Set(); // (unread: a lost INSERT's week whose re-read failed — not re-sent this time, H3)
     // Unconfirmed weeks are re-read first: what the table holds for them is unknown.
     for (const k of Object.keys(sent).filter(unconfirmed)) {
       const rb = await readBack(k);
       if (gen !== g) return { ok: false, skipped: "reset" };
-      if (!rb.ok) continue;
+      // H3 (review r4 branch-3 — a decision, flagged in the PR): no row for a
+      // week whose INSERT went out with its outcome unknown. Never landed, or
+      // landed and deleted elsewhere (a clear, a restore) — there are no
+      // tombstones to tell them apart. It is the user's own intended week, so
+      // it is sent again (below, as before) — but no longer silently: once it
+      // lands, the job's one message says so, once for that week. While its
+      // re-read FAILS it isn't re-sent at all (nothing is known: it waits,
+      // pending, for a re-read that works).
+      if (!rb.ok) { if (lostIns.has(k) && !known[k]) unread.add(k); continue; }
+      if (!rb.row && !known[k] && lostIns.has(k)) resend.add(k);
       const how = classify(k, rb.row);
       if (how === "mirror" || how === "ours" || how === "refreshed") confirm(k, rb.row);
       // Someone else's copy. A force job takes it as known (and so rewrites
@@ -12781,9 +12937,12 @@ function createSchedSync(deps) {
       if (gen !== g) return { ok: false, skipped: "reset" };
       if (stop) break;
       if (moved(k)) continue;
+      if (unread.has(k)) { results.push({ k, outcome: "pending" }); continue; }
+      const again = resend.has(k); // (H3: the re-read found no row for its lost INSERT — settle() forgets it as it lands)
       const x = await writeWeek(k, clone(target[k]), job.mode, by, g);
       results.push(x);
       if (x.outcome === "auth" || x.thrown) stop = true;
+      if (again && x.outcome === "saved") x.resent = true;
     }
     let heldDeletes = 0;
     for (const k of sendDeletes) {
@@ -12829,6 +12988,11 @@ function createSchedSync(deps) {
     const parts = [];
     if (conf.length) parts.push(`${conf.length === 1 ? "The week of " + weekList(conf) + " was" : "The weeks of " + weekList(conf) + " were"} changed by someone else — showing the latest. Reapply your change if it's still needed.`);
     if (ref.length) parts.push(`The server refused the change to ${weekList(ref)} (no permission) — showing what is saved.`);
+    // H3: a week saved again after a re-read found no row for its lost INSERT.
+    const again = results.filter(x => x.resent).map(x => x.k);
+    if (again.length) parts.push(again.length === 1
+      ? `The week of ${weekList(again)} was saved again — its first save couldn't be confirmed. If it was removed on another device on purpose, remove it again.`
+      : `The weeks of ${weekList(again)} were saved again — their first saves couldn't be confirmed. If they were removed on another device on purpose, remove them again.`);
     // A rejection (A4) is told once per NEW code, with writeFailReason's
     // reason: a retried body rejected again with that code says nothing more
     // (the header line stays). A code is forgotten once no week is rejected
@@ -12926,7 +13090,7 @@ function createSchedSync(deps) {
     known = {}; const next = {};
     rows.forEach(x => { known[x.week_monday] = fromRow(x); next[x.week_monday] = clone(x.data); });
     seeded = true; loadFailed = false; staleRemovals = 0; removalSig = "";
-    Object.keys(sent).forEach(k => delete sent[k]); failed.clear(); noPermission.clear(); approvedDeletes.clear();
+    Object.keys(sent).forEach(k => delete sent[k]); failed.clear(); noPermission.clear(); approvedDeletes.clear(); lostIns.clear(); resend.clear();
     Object.keys(rejected).forEach(k => delete rejected[k]); toldCodes.clear();
     d.commit(next);
     report();
@@ -12995,9 +13159,17 @@ function createSchedSync(deps) {
   // "refreshed": an old build's unchanged re-send — nobody changed it); nor
   // a body of OURS confirmed meanwhile (knownAt.landed — an earlier edit
   // landing under a later one, which is put back and sent at that token).
+  // H1 (review r4 branch-1), as in classify(): the data known then under a
+  // new token is "refreshed" only when no body of ours that may have landed
+  // was out for k at the request (was.out) — or when the version is still the
+  // one known then (and not 1: a deletion + re-insert restarts there). Else
+  // it can be someone's revert of our landed write, and putting `back` over it
+  // re-sent ours silently. (A body sent after the request can't move `known`
+  // before the job runs: nothing re-reads it while the job is queued.)
   const savedMoved = (k, back, knownAt) => {
     const was = knownAt.was[k], kn = known[k], tok = tokOf(kn), now = kn ? kn.canon : DEL;
-    return !!was && tok !== was.tok && now !== back && now !== was.canon && knownAt.landed[k] !== tok;
+    const stillKnown = !!was && now === was.canon && (!was.out || (!!kn && kn.version === was.v && was.v !== 1));
+    return !!was && tok !== was.tok && now !== back && !stillKnown && knownAt.landed[k] !== tok;
   };
   // E7: the weeks a refusal / cancel found someone else's change on are told
   // in its ONE message — the caller's, from `error` — as any conflict is.
@@ -13017,10 +13189,32 @@ function createSchedSync(deps) {
   // job, which, requested behind it, has none of its own (E6): if that one
   // writes nothing either, it puts THAT back — both refused, the screen is as
   // it was before the first tap, edits pending from before it included.
-  // → whether a later job took the screen over.
+  // H8 (review r4 fixes-4): …nor while an EARLIER one is still RUNNING (a job
+  // stacked behind it — no `before` of its own, E6 — cancelled at its
+  // deadline): the running job owns the screen. Put back, the table's weeks
+  // came back on screen where the running clear was deleting them, its commit
+  // then skipped them (the screen no longer showed its request's), and the
+  // follow-up push re-inserted every week it deleted; left alone, the
+  // cancelled job's target was sent instead. So the screen goes back to the
+  // running job's — what it showed at that job's request — wherever it still
+  // shows this one's target, and that job's own outcome settles it.
+  // → whether a later job took the screen over, or a running one has it.
   const handOver = (owner) => {
     let heir = null;
     for (const o of owners) { if (o !== owner && o.withKnown && !o.state.started && !o.state.cancelled) { heir = o; break; } }
+    if (!heir && owner) {
+      let runner = null;
+      for (const o of owners) { if (o !== owner && o.withKnown && o.state.started && !o.state.cancelled) { runner = o; break; } }
+      if (!runner) return false;
+      const cur = d.getState() || {}, next = Object.assign({}, cur); let changed = false;
+      Object.keys(owner.startShown).forEach(k => {
+        const shownNow = k in cur ? canon(cur[k]) : DEL, back = k in runner.startShown ? runner.startShown[k] : DEL;
+        if (shownNow !== owner.startShown[k] || back === shownNow) return; // (edited since: stays, as any edit does)
+        changed = true; if (back === DEL) delete next[k]; else next[k] = JSON.parse(back);
+      });
+      if (changed) d.commit(next);
+      return true;
+    }
     if (!heir) return false;
     if (!heir.before && owner && owner.before) {
       heir.before = owner.before; heir.knownAt = owner.knownAt;
@@ -13046,7 +13240,7 @@ function createSchedSync(deps) {
         if (gen !== g) return { ok: false, wrote: false, skipped: "reset" };
         if (rows === null) return refuse({ ok: false, wrote: false, error: "Couldn't read the saved weeks first — the new weeks stay on this screen and will be saved automatically. Nobody was notified." });
         const got = {}; rows.forEach(x => { got[x.week_monday] = x; });
-        keys.forEach(k => { if (got[k]) known[k] = fromRow(got[k]); else delete known[k]; delete sent[k]; });
+        keys.forEach(k => { if (got[k]) known[k] = fromRow(got[k]); else delete known[k]; delete sent[k]; lostIns.delete(k); resend.delete(k); }); // (its weeks are the publish's to write: re-reading one isn't a re-send — H3)
       } else {
         const rows = await readAll();
         if (gen !== g) return { ok: false, wrote: false, skipped: "reset" };
@@ -13058,7 +13252,7 @@ function createSchedSync(deps) {
         if (!rows) return refuse({ ok: false, wrote: false, error: "Couldn't read the saved schedule — nothing was changed." });
         known = {}; rows.forEach(x => { known[x.week_monday] = fromRow(x); });
         seeded = true; loadFailed = false; staleRemovals = 0; removalSig = "";
-        Object.keys(sent).forEach(k => delete sent[k]);
+        Object.keys(sent).forEach(k => delete sent[k]); lostIns.clear(); resend.clear();
       }
       const res = await runPush({ target, grant, mode: "force", keys, quiet: true }); // its caller tells the outcome (res.notice), in ONE toast
       if (gen !== g) return { ok: false, wrote: false, skipped: "reset" };
@@ -13140,9 +13334,10 @@ function createSchedSync(deps) {
       const before = !keys && !stacked && opts && opts.before ? clone(opts.before) : null;
       const late = opts && typeof opts.late === "function" ? opts.late : null;
       const startShown = shownMap([...new Set([...Object.keys(t), ...Object.keys(known), ...(keysArr || []), ...Object.keys(before || {})])]);
-      // E7: the saved copy of each of those weeks now — its token and its
-      // data — and (filled by confirm()) the ones of ours confirmed meanwhile.
-      const knownAt = before ? { was: Object.keys(startShown).reduce((m, k) => (m[k] = { tok: tokOf(known[k]), canon: known[k] ? known[k].canon : DEL }, m), {}), landed: {} } : null;
+      // E7: the saved copy of each of those weeks now — its token, its data,
+      // its version, and whether a body of ours is out for it (H1) — and
+      // (filled by confirm()) the ones of ours confirmed meanwhile.
+      const knownAt = before ? { was: Object.keys(startShown).reduce((m, k) => (m[k] = { tok: tokOf(known[k]), canon: known[k] ? known[k].canon : DEL, v: known[k] ? known[k].version : undefined, out: unconfirmed(k) }, m), {}), landed: {} } : null;
       // The weeks it owns from now until it's done (A11): a publish, its
       // period's; a clear / reset (an empty target), every week; a restore,
       // its target's and every week the table holds.
@@ -13198,7 +13393,7 @@ function createSchedSync(deps) {
       gen++; known = {}; seeded = false; loadFailed = false; deadToken = null; blocked = 0; lastBlockSig = ""; removalSig = ""; staleRemovals = 0; conflicts = [];
       [...owners].forEach(o => { if (!o.state.started) { o.state.cancelled = true; o.release(); } }); // queued before the boundary: never runs under the next session
       Object.keys(sent).forEach(k => delete sent[k]); Object.keys(rejected).forEach(k => delete rejected[k]); toldCodes.clear();
-      failed.clear(); noPermission.clear(); approvedDeletes.clear(); inFlight.clear();
+      failed.clear(); noPermission.clear(); approvedDeletes.clear(); inFlight.clear(); lostIns.clear(); resend.clear();
       d.commit({});
       report();
       return api.load();

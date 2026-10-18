@@ -112,7 +112,8 @@ const MUTANTS = [
     from: 'const cas = (kn) => `version=${kn.version === null ? "is.null" : "eq." + kn.version}&updated_at=${kn.updated_at === null ? "is.null" : "eq." + encodeURIComponent(kn.updated_at)}`;',
     to: "const cas = (kn) => `version=eq.${kn.version}`;" },
   { id: "M2", what: "no read-back: an unknown outcome is guessed as someone else's (R8, R12, R23, R24)",
-    from: '      const how = classify(k, rb.row);\n      if (how === "mirror") { confirm(k, rb.row); return { k, outcome: "saved" }; }', to: '      const how = "theirs";\n      if (how === "mirror") { confirm(k, rb.row); return { k, outcome: "saved" }; }' },
+    // (re-pinned 21/n: the call now passes the 0-row body — H1; the same mutation)
+    from: '      const how = classify(k, rb.row, kind === "ok" && Array.isArray(r.body) && r.body.length === 0 ? c : undefined); // (0 rows: this body did not land — H1)\n      if (how === "mirror") { confirm(k, rb.row); return { k, outcome: "saved" }; }', to: '      const how = "theirs";\n      if (how === "mirror") { confirm(k, rb.row); return { k, outcome: "saved" }; }' },
   { id: "M2b", what: "the sent-ledger is ignored: our own lost-response write reads as someone else's (D: own writes)",
     from: '    if (sent[k] && sent[k].includes(c)) return "ours";\n', to: "" },
   { id: "M3", what: "plain JSON equality (jsonb key order reads as an edit)",
@@ -280,7 +281,8 @@ const MUTANTS = [
   { id: "M80", what: "a 404 PGRST205 is a client error (no read-back; 'reload/update the app' — A4: unknown)",
     from: "if ([404, 408, 413, 429].includes(r.status)", to: "if ([408, 413, 429].includes(r.status)" },
   { id: "M81", what: "the same data under a new token is someone else's (an old build's unchanged re-send costs the edit — A2)",
-    from: '    if (kn && row && c === kn.canon) return "refreshed";\n', to: "" },
+    // (re-pinned 21/n: "refreshed" now has H1's condition; the same mutation — its return removed)
+    from: '      if (!out.length || ((row.version === undefined ? null : row.version) === kn.version && kn.version !== 1)) return "refreshed";\n', to: "" },
   // 16/n — review round 1, the engine items (E1–E5) and the test gaps (T1–T3: the reviewer's T24b, T2, N37)
   { id: "M82", what: "E1: a push already in its re-read when a clear / restore is requested doesn't re-check for an owner (it sends the job's target: a false wipe block, a refused restore's writes landing — A11)",
     from: '    if (job.mode !== "force" && authoritativeQueued > 0) { if (results.length) toasts(results); report(); return { ok: false, skipped: "authoritative-queued", results }; }\n', to: "" },
@@ -360,7 +362,8 @@ const MUTANTS = [
   { id: "M106", what: "E7: our own earlier body, confirmed while the job waits, is taken for someone else's change (the later edit lost, a false conflict)",
     from: " && knownAt.landed[k] !== tok;", to: ";" },
   { id: "M107", what: "E7: the data known at the request under a new token (an old build's unchanged re-send — A2's 'refreshed') is taken for someone else's change",
-    from: " && now !== was.canon", to: "" },
+    // (re-pinned 21/n: that exemption is now `stillKnown`, with H1's condition; the same mutation — the exemption dropped)
+    from: " && !stillKnown", to: "" },
   { id: "M108", what: "E7: a saved copy that now holds exactly what is put back is taken for someone else's change",
     from: " && now !== back", to: "" },
   { id: "M109", what: "E7: our own write's answer counts as ours only when it repeats the body sent (a server-normalised copy reads as someone else's)",
@@ -613,7 +616,8 @@ const MUTANTS = [
   { id: "G2e", app: true, what: "G2: Generate & Publish's own setup save, failing after a session change during it, is told on the next session's screen",
     from: "if (sessionEpochRef.current === ep) showToast(\"Couldn't save the regenerated schedule — check your connection.\", \"error\");", to: "showToast(\"Couldn't save the regenerated schedule — check your connection.\", \"error\");" },
   { id: "G2f", app: true, what: "G2: Generate & Publish's e-mail goes out after a session change while its notice was written (sent from the next session)",
-    from: "      \"A new call schedule has been generated. Check the Schedule or Calendar tab.\");\n    if (sessionEpochRef.current !== ep) return;\n", to: "      \"A new call schedule has been generated. Check the Schedule or Calendar tab.\");\n" },
+    // (re-pinned 21/n: the call now passes the tap's session — review r4 fixes-3; the same mutation)
+    from: "      \"A new call schedule has been generated. Check the Schedule or Calendar tab.\", {}, null, ep);\n    if (sessionEpochRef.current !== ep) return;\n", to: "      \"A new call schedule has been generated. Check the Schedule or Calendar tab.\", {}, null, ep);\n" },
   { id: "G2g", app: true, what: "G2: Accept & Publish goes on after its snapshot though the session changed (published as the next account)",
     from: "        if (sessionEpochRef.current !== ep) { setSaveStatus(\"\"); return; } // nothing published as the next session", to: "        // nothing published as the next session" },
   { id: "G2g2", app: true, what: "G2 (variant): Accept & Publish takes the session's identity after its snapshot's await",
@@ -646,6 +650,122 @@ const MUTANTS = [
     from: "    token: () => auth.getSession()?.access_token || null,", to: "    token: () => \"T\"," },
   { id: "N19b", app: true, what: "T4: the engine's token() is the one stored at creation (captured once)",
     from: "    token: () => auth.getSession()?.access_token || null,", to: "    token: ((t0) => () => t0)(auth.getSession()?.access_token || null)," },
+  // 21/n — review round 4. H1 (CRITICAL, branch-1): a lost-answer save never re-sent over another device's revert —
+  // killed in SE86 (a)–(h) by behaviour.
+  { id: "H1a", what: "H1: the data we knew under a new token is 'refreshed' even while a body of ours that may have landed is out (the 20/n line: a revert of our lost write overwritten silently — p1 / p2a / p4)",
+    from: '      if (!out.length || ((row.version === undefined ? null : row.version) === kn.version && kn.version !== 1)) return "refreshed";\n', to: '      return "refreshed";\n' },
+  { id: "H1b", what: "H1 (anchor-keeping variant): …'refreshed' while out only when updated_at is unchanged, not the version (an old build's version-keeping re-send under our lost edit that never landed: a false conflict)",
+    from: '      if (!out.length || ((row.version === undefined ? null : row.version) === kn.version && kn.version !== 1)) return "refreshed";\n', to: '      if (!out.length || ((row.updated_at || null) === kn.updated_at && kn.version !== 1)) return "refreshed";\n' },
+  { id: "H1c", what: "H1 (variant): the version rule without its v1 exception (a week known at v1, deleted and re-inserted as it was elsewhere — v1 again — taken for 'refreshed': our lost write re-sent over it)",
+    from: '      if (!out.length || ((row.version === undefined ? null : row.version) === kn.version && kn.version !== 1)) return "refreshed";\n', to: '      if (!out.length || (row.version === undefined ? null : row.version) === kn.version) return "refreshed";\n' },
+  { id: "H1d", what: "H1 (variant, over-strict): never 'refreshed' while a body of ours is out (an old build's unchanged re-send under our lost edit that never landed costs the edit)",
+    from: '      if (!out.length || ((row.version === undefined ? null : row.version) === kn.version && kn.version !== 1)) return "refreshed";\n', to: '      if (!out.length) return "refreshed";\n' },
+  { id: "H1e", what: "H1: a body answered with 0 rows still counts as out (SE71 at v1: an old build's unchanged re-send under an unsaved edit is a false conflict)",
+    from: "      const out = (sent[k] || []).filter((x, i, a) => !(missed !== undefined && x === missed && i === a.lastIndexOf(x)));", to: "      const out = (sent[k] || []);" },
+  { id: "H1f", what: "H1: E7's savedMoved keeps the 20/n exemption (the data known at the tap under a new token is never someone else's — a refused restore puts our lost write back over a revert)",
+    from: "    const stillKnown = !!was && now === was.canon && (!was.out || (!!kn && kn.version === was.v && was.v !== 1));", to: "    const stillKnown = !!was && now === was.canon;" },
+  // H3 (branch-3, a decision): a lost INSERT re-sent after a deletion elsewhere is never silent — SE86 (e), (i)–(k).
+  { id: "H3a", what: "H3: a re-read that finds no row for a lost INSERT doesn't mark it (re-sent silently over a clear / restore elsewhere)",
+    from: "      if (!rb.row && !known[k] && lostIns.has(k)) resend.add(k);\n", to: "" },
+  { id: "H3b", what: "H3 (variant): every new week's INSERT that lands is told 'saved again' (the ordinary first insert too)",
+    from: "      const again = resend.has(k);", to: "      const again = !known[k];" },
+  { id: "H3c", what: "H3: a re-read that simply FAILS marks the week as re-sent (and it is sent: 'saved again' though nothing was seen)",
+    from: "      if (!rb.ok) { if (lostIns.has(k) && !known[k]) unread.add(k); continue; }", to: "      if (!rb.ok) { if (lostIns.has(k) && !known[k]) resend.add(k); continue; }" },
+  { id: "H3d", what: "H3: a lost INSERT whose re-read fails is re-sent blindly (re-inserted after a deletion elsewhere, nothing told)",
+    from: "      if (!rb.ok) { if (lostIns.has(k) && !known[k]) unread.add(k); continue; }", to: "      if (!rb.ok) continue;" },
+  { id: "H3e", what: "H3: an INSERT whose read-back failed isn't remembered as lost (the p4 / p2b re-insert silent again)",
+    from: "      if (!rb.ok) { failed.add(k); if (!del && !kn) lostIns.add(k); return", to: "      if (!rb.ok) { failed.add(k); return" },
+  { id: "H3f", what: "H3: an answered INSERT whose read-back found NO row is taken as lost too (its retry says 'saved again' though it never landed)",
+    from: "      const how = classify(k, rb.row, kind === \"ok\"", to: "      if (!del && !kn) lostIns.add(k);\n      const how = classify(k, rb.row, kind === \"ok\"" },
+  // H8 (fixes-4): a job stacked behind a RUNNING clear / reset / restore, cancelled at its deadline — SE85 (d).
+  { id: "H8a", what: "H8: a stacked job cancelled while an earlier one RUNS puts its own put-back on screen (the table's weeks back where the clear was deleting them: the follow-up push re-inserts every one — R4-E2)",
+    from: "      if (!runner) return false;\n", to: "      return false;\n" },
+  { id: "H8b", what: "H8 (variant, R4M2): …the running job takes the screen over but the cancelled job's target is left on it (the cancelled restore's weeks written by the follow-up push)",
+    from: "      if (changed) d.commit(next);\n      return true;\n", to: "      return true;\n" },
+  // H2 (branch-2): a trade's accept / decline never acts in the next session — SE-X20 (a)–(f), (i).
+  { id: "H2a", app: true, what: "H2: the accept doesn't check the session after its status PATCH (A's trade applied in B's session, pushed as B, its notices from B — R4-TRADE)",
+    from: "      if (!live()) return abandon(acceptRows);\n", to: "" },
+  { id: "H2b", app: true, what: "H2 (variant): …it stops after a session change but never sets the trade back (left accepted with no swap)",
+    from: "      if (!Array.isArray(rows) || rows.length === 0) return; // this tap accepted nothing: nothing to set back", to: "      return; // this tap accepted nothing: nothing to set back" },
+  { id: "H2c", app: true, what: "H2 (variant): the set-back is sent with the headers of NOW (the next account's token, or anon), not the tap's",
+    from: "          headers: { ...tapH, \"Content-Type\": \"application/json\", Prefer: \"return=representation\" },\n          body: JSON.stringify({ status: \"pending\", reviewed_at: null }),", to: "          headers: { ...dbAuthHeaders(), \"Content-Type\": \"application/json\", Prefer: \"return=representation\" },\n          body: JSON.stringify({ status: \"pending\", reviewed_at: null })," },
+  { id: "H2d", app: true, what: "H2: a failed set-back's audit line is written under the next session's token (not as the account that tapped)",
+    from: "{ request_id: req.id, reverted: false }, tapH);", to: "{ request_id: req.id, reverted: false });" },
+  { id: "H2e", app: true, what: "H2: the accept goes on after its first notice though the session changed (the cascade notices and every e-mail from the next session)",
+    from: "      if (!live()) return; // another session now: no more notices or e-mails from it\n", to: "" },
+  { id: "H2f", app: true, what: "H2: the accept's cascade loop doesn't check the session after each notice (the next cascade's notice and its e-mail from the next session)",
+    from: "        if (!live()) return; // another session now\n        sendEmailNotif(\"schedule_changed\"", to: "        sendEmailNotif(\"schedule_changed\"" },
+  { id: "H2g", app: true, what: "H2: a trade not holding at commit, its set-back crossing a session change: 'This trade was not applied…' told on the next screen",
+    from: "        if (!here) return; // another session now: nothing said on its screen\n", to: "" },
+  { id: "H2h", app: true, what: "H2: the decline goes on after its status PATCH though the session changed (the list, the notice and the e-mail in the next session)",
+    from: "      const declineRows = await declineRes.json().catch(() => []);\n      if (!live()) return; // another session now\n", to: "      const declineRows = await declineRes.json().catch(() => []);\n" },
+  { id: "H2i", app: true, what: "H2: the decline's e-mail goes out after its notice though the session changed",
+    from: "      if (!live()) return; // another session now: no e-mail from it\n", to: "" },
+  // H7 (fixes-3): the notice paths fenced inside them — SE-X20 (g), (h).
+  { id: "H7a", app: true, what: "H7: addNotification doesn't check the session after its insert (Generate & Publish's / a swap's device push from the next session — R4-N1)",
+    from: "      if (sessionEpochRef.current !== ep) { if (insertErr) console.error(\"Notification insert failed:\", insertErr); return; } // another session now\n", to: "" },
+  { id: "H7b", app: true, what: "H7: sendPushNotif's failure is told on the next session's screen",
+    from: "if (sessionEpochRef.current === ep) showToast(\"Couldn't send the push notification — check your connection.\", \"error\");", to: "showToast(\"Couldn't send the push notification — check your connection.\", \"error\");" },
+  { id: "H7c", app: true, what: "H7: sendEmailNotif's failure is told on the next session's screen",
+    from: "        if (sessionEpochRef.current === ep) showToast(\"Some notification emails didn't send.\", \"error\");", to: "        showToast(\"Some notification emails didn't send.\", \"error\");" },
+  // H4 (branch-4): the tab bound to its account (the app's side: binding, the storage listener) — SE-X22. (config.js's
+  // side — the sub check itself — is mutated in sync-guards' config battery, CB.)
+  { id: "H4a", app: true, what: "H4: 'Sign in again' landing on another account doesn't bind the tab to it (the renewed account's own writes go out as anon)",
+    from: "    auth.bindUser(user.id); // this tab is the new account's now", to: "    // this tab is the new account's now" },
+  { id: "H4b", app: true, what: "H4: the storage listener doesn't make the engine report (the stale tab says 'Sign in again' only at its next pull)",
+    from: "      schedSyncRef.current.report();\n      if (!auth.getSession()) setReauthNeeded(true);", to: "      if (!auth.getSession()) setReauthNeeded(true);" },
+  { id: "H4c", app: true, what: "H4: the storage listener doesn't raise the banner (nothing said in the stale tab until it tries to write)",
+    from: "      if (!auth.getSession()) setReauthNeeded(true);\n    };", to: "    };" },
+  { id: "H4d", app: true, what: "H4: the password sign-in doesn't bind the tab (another tab's later sign-in is used here as if it were this account's)",
+    from: "        auth.bindUser(user && user.id); // (review r4 branch-4: the sign-in's own request ran unbound", to: "        // (review r4 branch-4: the sign-in's own request ran unbound" },
+  { id: "H4e", app: true, what: "H4: the Face ID unlock doesn't bind the tab",
+    from: "        auth.bindUser(user.id); // (review r4 branch-4)\n", to: "" },
+  { id: "H4f", app: true, what: "H4: the sign-out unbinds BEFORE signing out (another account's stored session is then logged out on the server as that account, and cleared)",
+    from: "    await auth.signOut(); // (this tab's session only — another account's, stored by another tab, is left alone: review r4 branch-4)\n    auth.bindUser(null);  // …and unbound: the sign-in form's requests run as nobody's\n",
+    to: "    auth.bindUser(null);\n    await auth.signOut();\n" },
+  // H6 (fixes-2): the factory reset's time-off clear, an awaited, checked step — SE-X21 (a)–(e); r4-fix-5 — SE-X21 (f).
+  { id: "H6a", app: true, what: "H6: the time-off clear isn't awaited or checked (R4-T1: 'Reset complete' though the time_off DELETE failed, the weeks deleted anyway)",
+    from: "    const toClear = await toClearAll(undefined, { quiet: true });\n", to: "    const toClear = (toClearAll(undefined, { quiet: true }), { ok: true });\n" },
+  { id: "H6b", app: true, what: "H6 (variant): the time-off clear is awaited but its failure not checked (the weeks job runs, 'Reset complete')",
+    from: "    if (!toClear || !toClear.ok) {\n", to: "    if (false) {\n" },
+  { id: "H6c", app: true, what: "H6: the reset's time-off clear isn't quiet (deleteTimeOff's generic toast beside the reset's one message)",
+    from: "    const toClear = await toClearAll(undefined, { quiet: true });\n", to: "    const toClear = await toClearAll(undefined);\n" },
+  { id: "H6d", app: true, what: "H6: deleteTimeOff's failure toast isn't fenced by the session (said on the next session's screen)",
+    from: "if (!quiet && sessionEpochRef.current === ep) showToast(", to: "if (!quiet) showToast(" },
+  { id: "H6e", app: true, what: "H6: the reset goes on after its time-off clear though the session changed (its weeks job as the next account, its message on the next screen)",
+    from: "    if (sessionEpochRef.current !== ep) { unarm(); return; } // another session now: no weeks job as the next account, nothing said\n", to: "" },
+  { id: "H6f", app: true, what: "H6: toClearAll clears the screen before the DELETE has landed (a failed one leaves the vacations off screen though the server keeps them)",
+    from: "    if (!USE_TIME_OFF) { clearHere(); return { ok: true }; }\n    const r = await deleteTimeOff(", to: "    clearHere();\n    if (!USE_TIME_OFF) { return { ok: true }; }\n    const r = await deleteTimeOff(" },
+  { id: "H6g", app: true, what: "H6: a time-off clear that got no answer is said to have failed ('left as they are' — though it may have landed)",
+    from: "      showToast(toClear && toClear.unanswered\n", to: "      showToast(false\n" },
+  { id: "H6h", app: true, what: "H6: once the setup and APP-shifts clears landed, this screen keeps its old APP shifts (a time-off failure stops the reset with them still shown)",
+    from: "    resetSetupHere(); setAppShifts({});\n", to: "    resetSetupHere();\n" },
+  { id: "R4M6", app: true, what: "r4-fix-5 (G3 refactor): the factory reset no longer resets the counts (resetSetupHere without setPriorCounts / setYear1Counts)",
+    from: "setFierceBackupSet(new Set()); setPriorCounts({}); setYear1Counts({}); setStartMonth(4);", to: "setFierceBackupSet(new Set()); setStartMonth(4);" },
+  // r4-fix-9: setupSig leaves the time off out — SE-X11 (r4-fix-9).
+  { id: "R4M4", app: true, what: "r4-fix-9 (G7): vacations / no-call stay in setupSig (time off reloaded while signed out reads as an unsaved setup change: a false 'Not saved' and banner — R4-D4)",
+    from: "const b = Object.assign({}, p); [\"schedule\", \"vacations\", \"noCallDays\", \"_intentionalClear\"].forEach", to: "const b = Object.assign({}, p); [\"schedule\", \"_intentionalClear\"].forEach" },
+  // r4-fix-6: a snapshot capture that FAILS across a session change, each caller — SE-X18 (k).
+  { id: "R4M7", app: true, what: "r4-fix-6 (G2): Generate & Publish tells a FAILED snapshot before checking the session (on the next session's screen — R4-D7)",
+    from: "        const snap = await snapshots.capture(\"regenerate\", { minWeeks: Object.keys(schedSyncRef.current.knownSchedule()).length ? 1 : 0 });\n        if (sessionEpochRef.current !== ep) { setSaveStatus(\"\"); return \"refused\"; }",
+    to: "        const snap = await snapshots.capture(\"regenerate\", { minWeeks: Object.keys(schedSyncRef.current.knownSchedule()).length ? 1 : 0 });\n        if (!snap.ok) { showToast(\"Couldn't save a backup snapshot — regenerate cancelled. Schedule unchanged.\", \"error\"); setSaveStatus(\"\"); return \"no-snapshot\"; }\n        if (sessionEpochRef.current !== ep) { setSaveStatus(\"\"); return \"refused\"; }" },
+  { id: "R4M7b", app: true, what: "r4-fix-6 (variant V7, the line kept): Generate & Publish's session check moved below its snapshot-failure branch",
+    from: "        if (sessionEpochRef.current !== ep) { setSaveStatus(\"\"); return \"refused\"; } // a sign-out / another account during the snapshot: nothing published as the next session, nothing said on its screen\n        if (!snap.ok) {\n          showToast(\"Couldn't save a backup snapshot — regenerate cancelled. Schedule unchanged.\", \"error\");\n          setSaveStatus(\"\");\n          return \"no-snapshot\";\n        }\n",
+    to: "        if (!snap.ok) {\n          showToast(\"Couldn't save a backup snapshot — regenerate cancelled. Schedule unchanged.\", \"error\");\n          setSaveStatus(\"\");\n          return \"no-snapshot\";\n        }\n        if (sessionEpochRef.current !== ep) { setSaveStatus(\"\"); return \"refused\"; } // a sign-out / another account during the snapshot: nothing published as the next session, nothing said on its screen\n" },
+  { id: "R4M7c", app: true, what: "r4-fix-6 (variant): Clear's session check moved below its snapshot-failure branch ('Couldn't save a backup snapshot — clear cancelled' on the sign-in screen)",
+    from: "    if (sessionEpochRef.current !== ep) return;\n    if (!clearSnap.ok) {\n      showToast(\"Couldn't save a backup snapshot — clear cancelled. Schedule unchanged.\", \"error\");\n      return;\n    }\n",
+    to: "    if (!clearSnap.ok) {\n      showToast(\"Couldn't save a backup snapshot — clear cancelled. Schedule unchanged.\", \"error\");\n      return;\n    }\n    if (sessionEpochRef.current !== ep) return;\n" },
+  { id: "R4M7d", app: true, what: "r4-fix-6 (variant): the factory reset's session check moved below its snapshot-failure branch (its message and 'Reset cancelled' on the next screen)",
+    from: "    if (sessionEpochRef.current !== ep) return;\n    if (!resetSnap.ok) {\n      showToast(\"Couldn't save a backup snapshot — reset cancelled. Nothing was deleted.\", \"error\");\n      setSaveStatus(\"Reset cancelled\");\n      setTimeout(() => setSaveStatus(\"\"), 2000);\n      return;\n    }\n",
+    to: "    if (!resetSnap.ok) {\n      showToast(\"Couldn't save a backup snapshot — reset cancelled. Nothing was deleted.\", \"error\");\n      setSaveStatus(\"Reset cancelled\");\n      setTimeout(() => setSaveStatus(\"\"), 2000);\n      return;\n    }\n    if (sessionEpochRef.current !== ep) return;\n" },
+  { id: "R4M7e", app: true, what: "r4-fix-6 (variant): Accept & Publish's session check moved below its snapshot-failure branch",
+    from: "        if (sessionEpochRef.current !== ep) { setSaveStatus(\"\"); return; } // nothing published as the next session, nothing said on its screen\n        if (!snap.ok) { showToast(\"Couldn't save a backup snapshot — nothing was published.\", \"error\"); setSaveStatus(\"\"); return; }\n",
+    to: "        if (!snap.ok) { showToast(\"Couldn't save a backup snapshot — nothing was published.\", \"error\"); setSaveStatus(\"\"); return; }\n        if (sessionEpochRef.current !== ep) { setSaveStatus(\"\"); return; } // nothing published as the next session, nothing said on its screen\n" },
+  // r4-fix-8: G6's hand-over details, each by behaviour — SE85 (e), (f).
+  { id: "R4M5", what: "r4-fix-8 (G6): the heir is handed `before` but not `knownAt` (E7 skipped on its put-back: B's deletion overwritten by the follow-up push, no conflict — R4-E5)",
+    from: "      heir.before = owner.before; heir.knownAt = owner.knownAt;\n", to: "      heir.before = owner.before;\n" },
+  { id: "R4M3", what: "r4-fix-8 (G6): the heir's weeks aren't extended with the handed-over put-back's (a new local week pending from before the first tap lost when both are refused — R4-E3)",
+    from: "      Object.keys(owner.before).forEach(k => { if (!(k in heir.startShown)) heir.startShown[k] = DEL; });", to: "      Object.keys(owner.before).forEach(k => { if (!(k in heir.startShown)) void 0; });" },
 ];
 
 async function scenarios(createSchedSync, check, line) {
@@ -3208,6 +3328,287 @@ async function scenarios(createSchedSync, check, line) {
           && Object.keys(A.mirror).length === 5 && sameData(A.mirror, tableSched(t)) && A.engine.pending().length === 0 && A.wipeBlocked.length === 0,
         JSON.stringify({ setup, r1: r1.error, r2: r2.ok, shown: Object.keys(A.mirror).sort(), rows: t.rows().map(r => r.week_monday + "=" + r.data.dayCall), pending: A.engine.pending(), w: ws(t) }));
     }
+    // (d) H8 (review r4 fixes-4, R4-E2): a clear RUNNING (its whole-table read held), a restore stacked behind it
+    // (E6: no `before`) cancelled at its deadline first; then the clear lands. The cancelled restore puts nothing of
+    // its own back — the running clear owns the screen: it shows the clear's again — and the clear's own commit
+    // settles it: every week deleted and none re-inserted by the follow-up push, none of the restore's written.
+    {
+      const t = mkTable(seedRows(4));
+      const A = mkSession(t, { timeouts: { read: 60000, write: 60000, stall: 15, deadline: 80 } }); await A.engine.load();
+      const hold = t.control.pause({ method: "GET", week: "limit=5000", count: 1 });
+      const b1 = clone(A.mirror); A.mirror = {}; const p1 = A.engine.authoritative({}, true, "clear", undefined, { before: b1 });
+      await hold.arrived;                                                 // the clear RUNS: its read is out
+      const SNAP = { [W[0]]: wk("snap0"), [W[5]]: wk("snap5") };
+      const b2 = clone(A.mirror); A.mirror = clone(SNAP); const p2 = A.engine.authoritative(clone(SNAP), true, "restore", undefined, { before: b2 });
+      const r2 = await p2;                                                // its deadline (80 ms) passes, the clear still running
+      const atCancel = Object.keys(A.mirror).sort(), from = t.log.length;
+      hold.release();
+      const r1 = await p1; for (let i = 0; i < 4; i++) await A.engine.idle(); await sleep(5); await A.engine.idle();
+      const res = { r1: r1.ok, r1run: r1.running, r2: r2.reason, r2e: r2.error, atCancel, shown: Object.keys(A.mirror).sort(), rows: t.rows().map(r => r.week_monday + "=" + r.data.dayCall), w: writes(t, from).map(e => e.method + " " + e.url.replace(/^.*schedule_weeks\??/, "").split("&")[0]), toasts: A.toasts, pending: A.engine.pending() };
+      check("SE85 H8 (d) (R4-E2) a clear RUNNING, a restore stacked behind it cancelled at its deadline: the cancelled restore puts nothing of its own back — the screen shows the running clear's again (empty), not the table's weeks nor its own snapshot — and when the clear lands every week is deleted and NONE re-inserted (no POST), none of the restore's weeks written; the screen equals the table (empty), nothing pending; the clear's late outcome says it finished",
+        r2.reason === "timeout" && atCancel.length === 0 && t.rows().length === 0 && !res.w.some(w => w.startsWith("POST") || w.startsWith("PATCH")) && res.w.filter(w => w.startsWith("DELETE")).length === 4
+          && Object.keys(A.mirror).length === 0 && A.engine.pending().length === 0 && A.toasts.join("|") === "Clearing the schedule has finished — every week is saved.", JSON.stringify(res));
+    }
+    // (e) r4-fix-8 (R4-E5, R4M5): SE82 (a)'s shape with a restore stacked behind the clear, both refused — the put-back
+    // handed over WITH its saved copies at the tap (knownAt): B's deletion of the week A's edit was out for stands,
+    // told as a conflict — never re-inserted by the follow-up push.
+    {
+      const { t, A, B } = await twoSessions();
+      const hold = t.control.pause({ method: "PATCH", week: W[2], count: 1 });
+      A.edit(W[2], w => (w.dayCall = "a-edit", w));
+      const pp = A.engine.push(); await hold.arrived;
+      B.drop(W[2]); await B.engine.push();
+      const SNAP = { [W[0]]: wk("snap0") };
+      const b1 = clone(A.mirror); A.mirror = {}; const p1 = A.engine.authoritative({}, true, "clear", undefined, { before: b1 });
+      const b2 = clone(A.mirror); A.mirror = clone(SNAP); const p2 = A.engine.authoritative(clone(SNAP), true, "restore", undefined, { before: b2 });
+      t.control.fail({ method: "GET", week: "limit=5000", kind: "5xx-before", count: 2 });
+      const from = t.log.length;
+      hold.release();
+      const r1 = await p1, r2 = await p2; await pp; for (let i = 0; i < 4; i++) await A.engine.idle(); await sleep(5); await A.engine.idle();
+      const res = { r1: r1.error, r2: r2.error, tableHasW3: !!t.get(W[2]), shown: Object.keys(A.mirror).sort(), posts: writes(t, from).filter(e => e.method === "POST").length, conflicts: A.st().conflicts.map(c => c.k), toasts: A.toasts };
+      check("SE85 G6 (e) (r4-fix-8, R4-E5) both stacked jobs refused after B deleted the week A's edit was out for: the restore's put-back (handed over from the clear, with the saved copies at its tap — knownAt) keeps B's deletion — no re-insert, the week off A's screen, told as a conflict",
+        r1.ok === false && r2.ok === false && !res.tableHasW3 && res.posts === 0 && !(W[2] in A.mirror) && res.conflicts.includes(W[2]) && theirsTold([r2.error]) === 1, JSON.stringify(res));
+    }
+    // (f) r4-fix-8 (R4-E3, R4M3): both refused, with a NEW local week pending from before the first tap (never saved):
+    // the handed-over put-back covers it (the later job's weeks extended with it): back on screen, saved by the follow-up push.
+    {
+      const t = mkTable(seedRows(6));
+      const A = mkSession(t); await A.engine.load();
+      const NEW = W[8];
+      t.control.fail({ method: "POST", week: NEW, kind: "throw" }); t.control.fail({ method: "GET", week: NEW, kind: "throw" });
+      A.mirror = Object.assign({}, A.mirror, { [NEW]: wk("new-local") }); await A.engine.push();
+      const setup = A.engine.pending().join() === NEW && !t.get(NEW);
+      const hold = t.control.pause({ method: "PATCH", week: W[3], count: 1 });
+      A.edit(W[3], w => (w.nights.mon = "zz", w));
+      const pp = A.engine.push(); await hold.arrived;
+      const SNAP = { [W[0]]: wk("snap0"), [W[1]]: wk("snap1") };
+      const b1 = clone(A.mirror); A.mirror = {}; const p1 = A.engine.authoritative({}, true, "clear", undefined, { before: b1 });
+      const b2 = clone(A.mirror); A.mirror = clone(SNAP); const p2 = A.engine.authoritative(clone(SNAP), true, "restore", undefined, { before: b2 });
+      t.control.fail({ method: "GET", week: "limit=5000", kind: "5xx-before", count: 2 });
+      hold.release();
+      const r1 = await p1, r2 = await p2; await pp; for (let i = 0; i < 4; i++) await A.engine.idle(); await sleep(5); await A.engine.idle();
+      const res = { setup, r1: r1.error, r2: r2.error, shown: Object.keys(A.mirror).sort(), newOnScreen: !!A.mirror[NEW], newSaved: !!t.get(NEW), pending: A.engine.pending() };
+      check("SE85 G6 (f) (r4-fix-8, R4-E3) both stacked jobs refused, a NEW local week pending from before the clear's tap (never saved): the handed-over put-back covers it — back on screen, and the follow-up push saves it; the screen equals the table, nothing pending",
+        setup && r1.ok === false && r2.ok === false && res.newOnScreen && res.newSaved && t.get(NEW).data.dayCall === "new-local" && sameData(A.mirror, tableSched(t)) && A.engine.pending().length === 0, JSON.stringify(res));
+    }
+  });
+
+  // SE86 — H1 (review r4 branch-1, CRITICAL): a save whose answer was lost is never re-sent over another device's
+  // REVERT of it. A's write lands, its answer and its read-back are lost (A still has it pending); another device puts
+  // the week back as it was. When A reconnects, its re-read finds the data A knew under a new token — "refreshed" used
+  // to take that for an old build's unchanged re-send and re-send A's write over the revert, silently. Now: while a body
+  // of ours that may have landed is out, "refreshed" only when the version is still the one known (an old build's
+  // version-keeping re-send), never at v1 (a deletion + re-insert restarts there) — else theirs: a conflict, their copy
+  // shown and told, nothing re-sent. (a) a peer reverts; (b) the same user's second device; (c) a DELETE, the week put
+  // back as it was; (d) both at v1 (deleted and re-inserted as it was); (e) the recovery story (p4): a publish from a
+  // phone half-lands, "Before regenerate" is restored on the desktop — W0 stays restored, the conflict told on the
+  // phone. Controls: (f) an old build's unchanged re-send under a lost edit of ours that did NOT land (same version) is
+  // still "refreshed" — the edit lands, no conflict; (g) SE71 at v1: a 0-row answer proves our body didn't land —
+  // "refreshed", no false conflict. (h) E7's savedMoved, the same rule: a refused restore never puts our lost write
+  // back over a revert its push re-read confirmed. (i–l) H3 (review r4 branch-3, a decision): a new week whose INSERT
+  // went out with its outcome unknown, then a re-read finds NO row (a clear or a restore elsewhere deleted it — or it
+  // never landed): it is sent again, the user's own intended week, and told ONCE: "The week of … was saved again — its
+  // first save couldn't be confirmed. If it was removed on another device on purpose, remove it again." Never for an
+  // ordinary insert, nor when the read-back simply failed, nor for one whose answered read-back already found no row.
+  await run("SE86", async () => {
+    const RESENT = (k) => `The week of ${new Date(...k.split("-").map((x, i) => i === 1 ? +x - 1 : +x)).toLocaleDateString(undefined, { month: "short", day: "numeric" })} was saved again — its first save couldn't be confirmed. If it was removed on another device on purpose, remove it again.`;
+    const resentTold = (msgs, k) => msgs.filter(m => String(m).includes(RESENT(k))).length;
+    const ws = (t, from) => writes(t, from).map(e => e.method + " " + e.url.replace(/^.*schedule_weeks\??/, "").split("&")[0] + " " + e.status + (e.applied ? "" : " (0 rows)"));
+    // (a) / (b): A's PATCH lands, the answer and the read-back lost; the other device reverts it; A reconnects (its pull)
+    const revert = async (other, v) => {
+      const t = mkTable(seedRows(3, v)); t.control.users.TOK_A2 = "user-a";
+      const A = mkSession(t), B = mkSession(t, other);
+      await A.engine.load(); await B.engine.load();
+      const x0 = t.get(W[0]).data.dayCall;
+      t.control.fail({ method: "PATCH", week: W[0], kind: "throw-after" }); t.control.fail({ method: "GET", week: W[0], kind: "throw" });
+      A.edit(W[0], w => (w.dayCall = "s9", w)); await A.engine.push();
+      const setup = t.get(W[0]).data.dayCall === "s9" && A.engine.pending().join() === W[0];
+      await B.engine.pull(); B.edit(W[0], w => (w.dayCall = x0, w)); const rb = await B.engine.push();   // B puts it back as it was
+      const reverted = rb.ok && t.get(W[0]).data.dayCall === x0;
+      const revV = t.get(W[0]).version, toasts0 = A.toasts.length, from = t.log.length;
+      await A.engine.pull(); await A.engine.idle();
+      await B.engine.pull();
+      return { x0, setup: setup && reverted, revV, after: t.get(W[0]), ws: ws(t, from), aw: writes(t, from).filter(e => e.headers.authorization === "Bearer TOK_A").length,
+        toasts: A.toasts.slice(toasts0), conflicts: A.st().conflicts.map(c => c.k), shown: A.mirror[W[0]].dayCall, pending: A.engine.pending(), bShown: B.mirror[W[0]].dayCall, bToasts: B.toasts.slice() };
+    };
+    const told = (x, k) => x.toasts.length === 1 && theirsTold(x.toasts) === 1 && x.toasts[0].startsWith("The week of " + new Date(2026, 9, 12).toLocaleDateString(undefined, { month: "short", day: "numeric" }) + " was changed by someone else");
+    const kept = (x) => x.setup && x.after.data.dayCall === x.x0 && x.after.version === x.revV && x.aw === 0 && told(x) && x.conflicts.join() === W[0] && x.shown === x.x0 && x.pending.length === 0 && x.bShown === x.x0 && x.bToasts.length === 0;
+    const pa = await revert({ token: "TOK_B", user: "user-b" });
+    check("SE86 H1 (a) (p1) A's PATCH LANDS, its answer and read-back lost; a PEER puts the week back as it was (v5); A reconnects: its re-read sees the data it knew under a new token — while A's own body may have landed that is NOT 'refreshed': a conflict, their copy shown and told once ('The week of … was changed by someone else …'), nothing re-sent (no write by A) — the table keeps the revert at its version; nothing pending; the peer still shows its revert, told nothing",
+      kept(pa), JSON.stringify(pa));
+    const pb = await revert({ token: "TOK_A2", user: "user-a" });
+    check("SE86 H1 (b) (p1) …the same when the revert is the SAME user's second device (TOK_A2, user-a): the revert stands, A told the conflict, nothing re-sent",
+      kept(pb), JSON.stringify(pb));
+    // (c) A's DELETE lands, the answer lost; the other device puts the week back as it was (an INSERT at v1)
+    const reins = async (v) => {
+      const t = mkTable(seedRows(6, v));
+      const A = mkSession(t), B = mkSession(t, { token: "TOK_B", user: "user-b" });
+      await A.engine.load(); await B.engine.load();
+      const was = clone(t.get(W[2]).data);
+      t.control.fail({ method: "DELETE", week: W[2], kind: "throw-after" }); t.control.fail({ method: "GET", week: W[2], kind: "throw" });
+      A.drop(W[2]); await A.engine.push();
+      const setup = t.get(W[2]) === null && A.engine.pending().join() === W[2];
+      await B.engine.pull(); B.mirror = Object.assign({}, B.mirror, { [W[2]]: was }); await B.engine.push();   // B re-creates it as it was (v1)
+      const back = !!t.get(W[2]) && t.get(W[2]).version === 1, toasts0 = A.toasts.length, from = t.log.length;
+      await A.engine.pull(); await A.engine.idle();
+      return { setup: setup && back, row: t.get(W[2]), ws: ws(t, from), dels: writes(t, from).filter(e => e.method === "DELETE").length, toasts: A.toasts.slice(toasts0), conflicts: A.st().conflicts.map(c => c.k), shown: !!A.mirror[W[2]] && sameData(A.mirror[W[2]], was), pending: A.engine.pending() };
+    };
+    const pc = await reins(3);
+    check("SE86 H1 (c) (p2a) A's DELETE lands, its answer lost; another device puts the week back exactly as it was (re-inserted at v1); A reconnects: not 'refreshed' — a conflict: the week stays (no DELETE sent again), shown on A's screen, told once; nothing pending",
+      pc.setup && !!pc.row && pc.dels === 0 && pc.shown && pc.conflicts.join() === W[2] && pc.toasts.length === 1 && theirsTold(pc.toasts) === 1 && pc.pending.length === 0, JSON.stringify(pc));
+    // (d) at v1 (every published week sits there until edited): deleted + re-inserted as it was restarts the version at 1
+    const recr = async () => {
+      const t = mkTable(seedRows(3, 1));
+      const A = mkSession(t); await A.engine.load();
+      const x0 = clone(t.get(W[0]).data);
+      t.control.fail({ method: "PATCH", week: W[0], kind: "throw-after" }); t.control.fail({ method: "GET", week: W[0], kind: "throw" });
+      A.edit(W[0], w => (w.dayCall = "s9", w)); await A.engine.push();
+      const setup = t.get(W[0]).data.dayCall === "s9" && t.get(W[0]).version === 2 && A.engine.pending().join() === W[0];
+      await t.recreate("TOK_B", W[0], x0, { by: "user-b" });   // deleted, then re-inserted AS IT WAS (a clear + a restore of an older snapshot elsewhere): v1 again
+      const re = t.get(W[0]).version === 1 && sameData(t.get(W[0]).data, x0), from = t.log.length;
+      await A.engine.pull(); await A.engine.idle();
+      return { setup: setup && re, row: t.get(W[0]), ws: ws(t, from), aw: writes(t, from).filter(e => e.headers.authorization === "Bearer TOK_A").length, toasts: A.toasts.slice(1), conflicts: A.st().conflicts.map(c => c.k), shown: A.mirror[W[0]].dayCall, pending: A.engine.pending() };
+    };
+    const pd = await recr(), pd2 = await reins(1);
+    check("SE86 H1 (d) …at v1 (a published week not yet edited): A's PATCH lands (v2), its answer lost; elsewhere the week is deleted and re-inserted AS IT WAS — v1 again, the very token-version A knew: still a conflict (a v1 week is never 'refreshed' while a body of ours is out), the re-insert stands, nothing re-sent; and A's lost DELETE of a v1 week, the week put back as it was: kept, told",
+      pd.setup && pd.row.data.dayCall === "s1" && pd.row.version === 1 && pd.aw === 0 && pd.conflicts.join() === W[0] && pd.shown === "s1" && theirsTold(pd.toasts) === 1 && pd.pending.length === 0
+        && pd2.setup && !!pd2.row && pd2.dels === 0 && pd2.shown && pd2.conflicts.join() === W[2] && theirsTold(pd2.toasts) === 1 && pd2.pending.length === 0, JSON.stringify({ pd, pd2 }));
+    // (e) the recovery story (p4): a publish from the phone half-lands — W0 (existing) PATCHed, W5 (new) INSERTed, both
+    // committed, every answer and read-back lost — and the desktop restores "Before regenerate" (W0 back, W5 deleted)
+    {
+      const t = mkTable(seedRows(4));
+      const phone = mkSession(t), desk = mkSession(t, { token: "TOK_A2", user: "user-a" });
+      t.control.users.TOK_A2 = "user-a";
+      await phone.engine.load(); await desk.engine.load();
+      const snapshot = clone(phone.mirror);
+      const pub = { [W[0]]: wk("p1"), [W[5]]: wk("p6") };
+      phone.mirror = Object.assign({}, phone.mirror, pub);
+      t.control.fail({ method: "PATCH", week: W[0], kind: "5xx-after" }); t.control.fail({ method: "POST", week: W[5], kind: "throw-after" });
+      let offline = true;
+      phone.fetchHook = (u, i) => (offline && (!i || !i.method || i.method === "GET") && /week_monday=eq./.test(u)) ? Promise.reject(new TypeError("Failed to fetch")) : t.fetch(u, i);
+      const pr = await phone.engine.authoritative(clone(pub), false, "publish", Object.keys(pub));
+      await phone.engine.idle(); await phone.engine.idle();
+      const setup = t.get(W[0]).data.dayCall === "p1" && !!t.get(W[5]) && phone.engine.pending().join() === [W[0], W[5]].join();
+      await desk.engine.pull();
+      const before = clone(desk.mirror); desk.mirror = clone(snapshot);
+      const rr = await desk.engine.authoritative(clone(snapshot), true, "restore", null, { before });
+      const restored = rr.ok && t.get(W[0]).data.dayCall === snapshot[W[0]].dayCall && !t.get(W[5]);
+      offline = false; const toasts0 = phone.toasts.length, from = t.log.length;
+      await phone.engine.pull(); await phone.engine.idle(); await phone.engine.idle();
+      const pt = phone.toasts.slice(toasts0);
+      await desk.engine.pull();
+      const res = { pr: pr.ok, setup, restored, w0: t.get(W[0]).data.dayCall, w5: t.get(W[5]) ? t.get(W[5]).data.dayCall : null, ws: ws(t, from), toasts: pt, conflicts: phone.st().conflicts.map(c => c.k), phoneW0: phone.mirror[W[0]].dayCall,
+        pending: phone.engine.pending(), deskW0: desk.mirror[W[0]].dayCall, deskToasts: desk.toasts.slice() };
+      check("SE86 H1 (e) (p4) the recovery story: a publish from the phone half-lands (W0's PATCH and W5's INSERT committed, every answer and read-back lost); the desktop restores 'Before regenerate'; the phone reconnects: W0 STAYS restored — the phone shows the restored copy, the conflict told — nothing PATCHed over it; the desktop shows the restored W0, told nothing",
+        setup && restored && res.w0 === snapshot[W[0]].dayCall && !res.ws.some(w => w.startsWith("PATCH week_monday=eq." + W[0])) && res.conflicts.join() === W[0] && res.phoneW0 === snapshot[W[0]].dayCall
+          && pt.length === 1 && theirsTold(pt) === 1 && res.pending.length === 0 && res.deskW0 === snapshot[W[0]].dayCall && res.deskToasts.length === 0, JSON.stringify(res));
+      check("SE86 H3 (e) …and W5 — the publish's NEW week, its INSERT's outcome lost, deleted by the restore — is sent again (the user's own intended week) but no longer silently: in the phone's ONE message, once: '" + RESENT(W[5]) + "'",
+        res.w5 === "p6" && res.ws.filter(w => w.startsWith("POST")).length === 1 && pt.length === 1 && resentTold(pt, W[5]) === 1, JSON.stringify(res));
+    }
+    // (f) control: an old build re-sends the week unchanged (version kept) under a lost edit of ours that did NOT land
+    {
+      const t = mkTable(seedRows(3));
+      const A = mkSession(t); await A.engine.load();
+      t.control.fail({ method: "PATCH", week: W[0], kind: "throw" }); t.control.fail({ method: "GET", week: W[0], kind: "throw" });   // never landed; its outcome unknown
+      A.edit(W[0], w => (w.dayCall = "mine", w)); await A.engine.push();
+      const setup = A.engine.pending().join() === W[0] && t.get(W[0]).data.dayCall === "s1";
+      await t.oldBuild("TOK_B", "user-b").upsert({ [W[0]]: clone(t.get(W[0]).data) });   // version 3 kept, updated_at moved
+      const moved = t.get(W[0]).version === 3 && t.get(W[0]).updated_at !== "2026-10-01T08:00:00+00:00", from = t.log.length;
+      await A.engine.pull(); await A.engine.idle();
+      check("SE86 H1 (f) control: an old build re-sends the week UNCHANGED (version kept, updated_at moved) under a lost edit of ours that did NOT land — the version is still the one known: 'refreshed', the edit lands at v4 (one PATCH, at the new token), no conflict, no toast",
+        setup && moved && t.get(W[0]).data.dayCall === "mine" && t.get(W[0]).version === 4 && ws(t, from).join() === "PATCH week_monday=eq." + W[0] + " 200" && A.st().conflicts.length === 0 && A.toasts.length === 1 && A.engine.pending().length === 0,
+        JSON.stringify({ setup, moved, ws: ws(t, from), toasts: A.toasts, c: A.st().conflicts, row: t.get(W[0]) }));
+    }
+    // (g) control: SE71 at v1 — the 0-row answer proves our body didn't land
+    {
+      const t = mkTable(seedRows(2, 1));
+      const A = mkSession(t); await A.engine.load();
+      A.edit(W[0], w => (w.dayCall = "mine", w));
+      await t.oldBuild("TOK_B", "user-b").upsert({ [W[0]]: clone(t.get(W[0]).data) });
+      const from = t.log.length;
+      const r = await A.engine.push();
+      const w = writes(t, from);
+      check("SE86 H1 (g) control: SE71 on a week at v1 — an old build re-sends it unchanged under an unsaved edit: our CAS PATCH answers 0 rows (that body did NOT land), so it is 'refreshed' even at v1: the edit lands at v2, no conflict, no toast",
+        r.ok && w.length === 2 && w[0].applied === false && w[1].applied === true && t.get(W[0]).data.dayCall === "mine" && t.get(W[0]).version === 2 && A.toasts.length === 0 && A.st().conflicts.length === 0,
+        JSON.stringify({ r: r.results, w: w.map(e => [e.method, e.applied]), toasts: A.toasts, row: t.get(W[0]) }));
+    }
+    // (h) E7's savedMoved, the same rule: A's lost PATCH (landed), B's revert; A's push re-read (held) confirms the revert
+    // as the screen's own copy ("mirror": the restore A tapped meanwhile shows that data); the restore is refused —
+    // putting A's lost write back would send it over the revert
+    {
+      const { t, A, B } = await twoSessions();
+      t.control.fail({ method: "PATCH", week: W[1], kind: "throw-after" }); t.control.fail({ method: "GET", week: W[1], kind: "throw" });
+      A.edit(W[1], w => (w.dayCall = "a-edit", w)); await A.engine.push();
+      const x1 = clone(t.get(W[1]).data);
+      await B.engine.pull(); B.edit(W[1], w => (w.dayCall = "s2", w)); await B.engine.push();   // B reverts W2 (v5): back to the data A knew
+      const setup = x1.dayCall === "a-edit" && t.get(W[1]).data.dayCall === "s2" && t.get(W[1]).version === 5 && A.engine.pending().join() === W[1];
+      const hold = t.control.pause({ method: "GET", week: W[1], count: 1 });
+      const pp = A.engine.push(); await hold.arrived;                      // A's push re-reads W2 (held)
+      const SNAP = clone(A.engine.knownSchedule());                        // a snapshot: the weeks as A knew them (W2 = s2)
+      const before = clone(A.mirror); A.mirror = clone(SNAP);
+      const cp = A.engine.authoritative(clone(SNAP), true, "restore", undefined, { before });
+      A.token = null;                                                      // signed out elsewhere: the restore is refused when its turn comes
+      hold.release();
+      const r = await cp; await pp; await A.engine.idle();
+      const mid = { shown: A.mirror[W[1]].dayCall, conflicts: A.st().conflicts.map(c => c.k) };
+      t.control.users.TOK_A2 = "user-a"; A.token = "TOK_A2"; const from = t.log.length;   // signed in again
+      await A.engine.pull(); await A.engine.idle(); await A.engine.idle();
+      const res = { setup, r: r.error, mid, row: t.get(W[1]), ws: ws(t, from), toasts: A.toasts, pending: A.engine.pending() };
+      check("SE86 H1 (h) E7's savedMoved: A's lost PATCH (landed), a peer's revert — then, A's push re-read confirming that revert as the copy the restore A tapped shows, the restore REFUSED (signed out): A's lost write is NOT put back over the revert (that is someone else's change since the tap, not the data A knew) — their copy shown, the conflict told in the refusal's message; and once signed in again nothing is re-sent: the revert stands",
+        setup && /changed by someone else/.test(String(r.error || "")) && mid.shown === "s2" && mid.conflicts.join() === W[1] && res.row.data.dayCall === "s2" && res.row.version === 5
+          && !res.ws.some(w => w.startsWith("PATCH")) && res.pending.length === 0, JSON.stringify(res));
+    }
+    // (i) H3 the clear-elsewhere case (p2b): A's new week's INSERT lands, its answer and read-back lost; B clears
+    {
+      const t = mkTable(seedRows(3));
+      const A = mkSession(t), B = mkSession(t, { token: "TOK_B", user: "user-b" });
+      await A.engine.load(); await B.engine.load();
+      t.control.fail({ method: "POST", week: W[7], kind: "throw-after" }); t.control.fail({ method: "GET", week: W[7], kind: "throw" });
+      A.edit(W[7], () => wk("s3")); await A.engine.push();
+      const setup = !!t.get(W[7]) && A.engine.pending().join() === W[7];
+      await B.engine.pull(); B.mirror = {};
+      const c = await B.engine.authoritative({}, true, "clear");
+      const cleared = c.ok && t.rows().length === 0, toasts0 = A.toasts.length, from = t.log.length;
+      await A.engine.pull(); await A.engine.idle();
+      const first = A.toasts.slice(toasts0);
+      await A.engine.pull(); await A.engine.idle(); A.engine.push(); await A.engine.idle(); await A.engine.pull(); await A.engine.idle();   // later pulls and pushes: nothing more
+      const all = A.toasts.slice(toasts0);
+      const res = { setup, cleared, rows: t.rows().map(r => r.week_monday), ws: ws(t, from), first, all, pending: A.engine.pending() };
+      check("SE86 H3 (i) (p2b) A's new week: its INSERT landed, the answer and read-back lost; another device CLEARS the schedule; A reconnects: the re-read finds no row — the week is sent again (one POST: the user's own intended week) and told, in ONE message: '" + RESENT(W[7]) + "'",
+        setup && cleared && res.rows.join() === W[7] && res.ws.filter(w => w.startsWith("POST")).length === 1 && first.length === 1 && first[0] === RESENT(W[7]) && res.pending.length === 0, JSON.stringify(res));
+      check("SE86 H3 (i) …told EXACTLY once: later pulls and pushes say nothing more",
+        all.length === 1 && resentTold(all, W[7]) === 1, JSON.stringify(res));
+    }
+    // (j) controls: an INSERT whose answer arrives; one answered 5xx whose read-back found no row (it didn't land)
+    {
+      const t = mkTable(seedRows(2));
+      const A = mkSession(t); await A.engine.load();
+      A.edit(W[6], () => wk("new6")); const r1 = await A.engine.push();
+      t.control.fail({ method: "POST", week: W[7], kind: "5xx-before" });
+      A.edit(W[7], () => wk("new7")); const r2 = await A.engine.push();       // 503, read back: no row → pending
+      const mid = A.engine.pending().join();
+      await A.engine.pull(); await A.engine.idle();                          // the retry lands
+      check("SE86 H3 (j) control: an ordinary INSERT whose answer arrives says nothing; nor does one answered 503 whose read-back found no row (it didn't land — nothing anyone could have deleted) when its retry lands",
+        r1.ok && t.get(W[6]).data.dayCall === "new6" && !r2.ok && mid === W[7] && t.get(W[7]).data.dayCall === "new7" && A.engine.pending().length === 0 && A.toasts.every(m => !/saved again/.test(m)),
+        JSON.stringify({ r1: r1.ok, r2: r2.results, mid, toasts: A.toasts, pending: A.engine.pending() }));
+    }
+    // (k) the re-read itself fails: nothing told, nothing sent; once it works, told once
+    {
+      const t = mkTable(seedRows(3));
+      const A = mkSession(t); await A.engine.load();
+      t.control.fail({ method: "POST", week: W[7], kind: "throw-after" }); t.control.fail({ method: "GET", week: W[7], kind: "throw" });
+      A.edit(W[7], () => wk("s3")); await A.engine.push();
+      t.del(W[7]);                                                           // deleted elsewhere
+      t.control.fail({ method: "GET", week: W[7], kind: "5xx-before" });
+      const toasts0 = A.toasts.length, from = t.log.length;
+      A.engine.push(); await A.engine.idle();                                // the re-read fails
+      const whileFailing = { toasts: A.toasts.slice(toasts0), posts: writes(t, from).filter(e => e.method === "POST").length, pending: A.engine.pending().join() };
+      A.engine.push(); await A.engine.idle();                                // it works now
+      const later = A.toasts.slice(toasts0);
+      check("SE86 H3 (k) …a re-read that simply FAILS says nothing and sends nothing (the outcome still unknown); once a re-read works and finds no row: sent again, told once",
+        whileFailing.toasts.every(m => !/saved again/.test(m)) && whileFailing.posts === 0 && whileFailing.pending === W[7] && !!t.get(W[7]) && resentTold(later, W[7]) === 1 && A.engine.pending().length === 0,
+        JSON.stringify({ whileFailing, later, pending: A.engine.pending() }));
+    }
   });
 
   // SE67b — review r2 tests-2 (E4, M69) on the app's path, WITH `before`
@@ -3345,7 +3746,7 @@ const appHelpers = () => {
   g.globalThis = g;
   vm.createContext(g);
   for (const f of ["helpers.js", "config.js"]) vm.runInContext(fs.readFileSync(path.join(__dirname, "..", f), "utf8"), g, { filename: f });
-  HELPERS = vm.runInContext("({ fmt, parse, addD, shiftStartDate, SHIFT_LABELS, swapMsg, cascadeMsg, tradeAcceptMsg, MO, payloadLooksWiped })", g);
+  HELPERS = vm.runInContext("({ fmt, parse, addD, shiftStartDate, SHIFT_LABELS, swapMsg, cascadeMsg, tradeAcceptMsg, tradeDeclineMsg, MO, payloadLooksWiped })", g);
   return HELPERS;
 };
 
@@ -3380,8 +3781,8 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
       wrap("", after("  const swapShift = ", "\n  };\n"), "\n  }")),
     swapTwo: fnX("fmt, shiftStartDate, swapMsg, SHIFT_LABELS, schedEditable, schedule, scheduleRef, showToast, silvisActive, silvisBlock, silvisRefuse, pushUndo, updateSchedule, surgeons, setEditShift, setEditingWeek, setSwapSuggestions, setSwapTarget, sMap, schedulerAdminIds, addNotification, sendEmailNotif",
       wrap("", after("  const executeTwoWaySwap = useCallback(", "\n  }, [surgeons, sMap, addNotification, sendEmailNotif, schedulerAdminIds, silvisActive, silvisBlock, silvisRefuse]);"), "\n  }")),
-    accept: fnX("fmt, shiftStartDate, showToast, schedEditable, scheduleRef, detectCascadeChanges, surgeons, silvisActive, silvisBlock, silvisRefuse, confirm, fetch, SUPABASE_URL, dbAuthHeaders, console, setTradeRequests, tradeAcceptMsg, logAudit, pushUndo, updateSchedule, addNotification, sendEmailNotif, SHIFT_LABELS, schedulerAdminIds, cascadeMsg, schedule",
-      wrap("async (req) => {", after("  const acceptTradeRequest = useCallback(async (req) => {", "\n  }, [schedule, surgeons, pushUndo, addNotification, sendEmailNotif, detectCascadeChanges, schedulerAdminIds, silvisActive, silvisBlock, silvisRefuse]);"), "\n  }")),
+    accept: sess(fnX("fmt, shiftStartDate, showToast, schedEditable, scheduleRef, detectCascadeChanges, surgeons, silvisActive, silvisBlock, silvisRefuse, confirm, fetch, SUPABASE_URL, dbAuthHeaders, console, setTradeRequests, tradeAcceptMsg, logAudit, pushUndo, updateSchedule, addNotification, sendEmailNotif, SHIFT_LABELS, schedulerAdminIds, cascadeMsg, schedule, sessionEpochRef",
+      wrap("async (req) => {", after("  const acceptTradeRequest = useCallback(async (req) => {", "\n  }, [schedule, surgeons, pushUndo, addNotification, sendEmailNotif, detectCascadeChanges, schedulerAdminIds, silvisActive, silvisBlock, silvisRefuse]);"), "\n  }"))),
     cascades: fnX("surgeons, SHIFT_LABELS", wrap("(sched, req) => {", after("  const detectCascadeChanges = useCallback((sched, req) => {", "\n  }, [surgeons]);"), "\n  }")),
     openEditor: fnX("scheduleRef, parse, addD, fmt, appShifts, appShiftsLoaded, setEditWeekModal, schedSyncRef", wrap("(mondayStr) => {", after("  const openWeekEditor = useCallback((mondayStr) => {", "\n  }, [appShifts, appShiftsLoaded]);"), "\n  }")),
     saveEditor: fnX("editWeekModal, schedule, appShifts, appShiftsLoaded, openWeekEditor, setEditWeekModal, silvisActive, silvisFakId, silvisDays, silvisBlock, silvisRefuse, sfSlotDays, confirm, pushUndo, updateSchedule, scheduleRef, schedEditable, schedSyncRef, mergeEditorEdits, SHIFT_LABELS, backupMondaySet, fierceBackupSet, surgeons, showToast, APP_SHIFTS_NOT_LOADED, setAppShifts, saveAppShifts, logAudit, nameOf, aMap, sMap, schedulerAdminIds, addNotification, sendEmailNotif, setTimeout",
@@ -3406,7 +3807,7 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
     // the session boundary + sign-out, and the re-auth that can land on another account (P4)
     boundary: sess(fnX("searchRef, setSearching, setSearchStats, setPreviewSchedule, setShowPreview, schedSyncRef, setScheduleHistory, setEditWeekModal, setReauthNeeded, setStaleTokenWarn, setIsScheduler, setupReadRef, lastSyncRef, confirm, auth, biometric, setAuthUser, setUserProfile, setNeedsProfile, setMySurgeon, setBiometricEnrolled, setBiometricPending, sessionEpochRef",
       wrap("(() => { const sessionBoundary = () => {", after("  const sessionBoundary = () => {", "\n  // ════"), "\n  return { sessionBoundary, handleSignOut }; })()"))),
-    reauth: fnX("schedSyncRef, authUser, setReauthNeeded, setStaleTokenWarn, showToast, sessionBoundary, biometric, setBiometricEnrolled, setBiometricPending, setAuthUser, dbAuth, setUserProfile, setMySurgeon, setNeedsProfile, setIsScheduler, setReloadTrigger, pendingSaveRef, setSetupSaveNudge",
+    reauth: fnX("schedSyncRef, authUser, setReauthNeeded, setStaleTokenWarn, showToast, sessionBoundary, biometric, setBiometricEnrolled, setBiometricPending, setAuthUser, dbAuth, setUserProfile, setMySurgeon, setNeedsProfile, setIsScheduler, setReloadTrigger, pendingSaveRef, setSetupSaveNudge, auth",
       decl("reauthLanded", "\n  };\n")),
     // the setup autosave effect and the edge-URL save effect (P4), and the bundle they write — with the latest-render ref (P5)
     autosave: fnX("loaded, isPublicMode, loadedAtRef, loadFailedRef, setSaveError, setSaveStatus, setupReadRef, auth, buildStateBundle, pendingSaveRef, payloadLooksWiped, everHadRealDataRef, setTimeout, clearTimeout, allowWipeSaveRef, canWriteBlob, supabase, lastSyncRef, showToast, console, setReauthNeeded, setupBaseRef, setupSig",
@@ -3432,6 +3833,23 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
     notify: sess(fnX("sessionEpochRef, doGenerate, addNotification, sendEmailNotif, MO, startMonth, endMoIdx, startYear", decl("doGenerateAndNotify", "\n  };\n"))),
     setupSig: fnX("", after("  const setupSig = ", ";\n")),
     gen: fnX("searchRef, showToast, schedEditable, schedSyncRef, buildPrefs", decl("doGenerate", "\n  };\n")), // (only its first statements are reached here: the gates, then buildPrefs)
+    // (21/n) the trade's decline, and the notice paths (addNotification, sendPushNotif, sendEmailNotif) — review r4 branch-2 / fixes-3
+    decline: sess(fnX("fetch, SUPABASE_URL, dbAuthHeaders, console, showToast, setTradeRequests, tradeDeclineMsg, logAudit, addNotification, sendEmailNotif, sessionEpochRef",
+      wrap("async (req) => {", after("  const declineTradeRequest = useCallback(async (req) => {", "\n  }, [addNotification, sendEmailNotif]);"), "\n  }"))),
+    addNote: sess(fnX("db, showToast, setNotifications, buildDeepLink, filterPushTargetsByType, sendPushNotif, console, sessionEpochRef",
+      after("  const addNotification = useCallback(", ", [sendPushNotif, buildDeepLink, filterPushTargetsByType]);"))),
+    pushNote: sess(fnX("edgeFunctionUrl, fetch, dbAuthHeaders, console, showToast, sessionEpochRef", after("  const sendPushNotif = useCallback(", ", [edgeFunctionUrl]);"))),
+    // (21/n) "Sign in again" (reauthForSync) and the listener for another tab's change of the stored session (review r4 branch-4)
+    raSync: fnX("reauthBusy, setReauthBusy, auth, reauthLanded, authUser, setReauthPassword, setReauthError, setReauthSheet", decl("reauthForSync", "\n  };\n")),
+    storageFx: fnX("authUser, window, schedSyncRef, auth, setReauthNeeded", wrap("() => {\n    if (!authUser) return;\n    const onStorage = (e) => {", after("    const onStorage = (e) => {", "\n  }, [authUser]);"), "\n  }")),
+    // (21/n) the sign-in form's submit and the Face ID unlock: each binds the tab to its account (review r4 branch-4)
+    authSubmit: fnX("setAuthError, setAuthBusy, authMode, signupPersonId, dbAuth, auth, authEmail, authPassword, allPeople, setAuthUser, setUserProfile, setMySurgeon, setNeedsProfile, setIsScheduler, setReloadTrigger, setAuthEmail, setAuthPassword, fetch, SUPABASE_URL, dbAuthHeaders, saveNotifPref, showToast, console",
+      decl("handleAuthSubmit", "\n  };\n")),
+    bioUnlock: fnX("setAuthError, setAuthBusy, biometric, auth, setAuthUser, dbAuth, setUserProfile, setMySurgeon, setNeedsProfile, setBiometricPending, setReloadTrigger", decl("handleBiometricUnlock", "\n  };\n")),
+    // (21/n) the time off's DELETE and its clear-all (the factory reset's third clear — review r4 fixes-2)
+    delTO: sess(fnX("fetch, SUPABASE_URL, dbAuthHeaders, console, showToast, sessionEpochRef", decl("deleteTimeOff", "\n  };\n"))),
+    clearTO: fnX("setVacations, setNoCallDays, logAudit, USE_TIME_OFF, deleteTimeOff", decl("toClearAll", "\n  };\n")),
+    email: sess(fnX("edgeFunctionUrl, fetch, dbAuthHeaders, console, showToast, sessionEpochRef", after("  const sendEmailNotif = useCallback(", ", [edgeFunctionUrl]);"))),
     // the header: does the save-status span render (P6)?
     saveShown: fnX("saveStatus, saveError, schedLineKind", wrap("(() => { const SCHED_LINE_RED = ", after("  const SCHED_LINE_RED = ", "\n  // Clear / factory reset / restore: an authoritative"), "\n  return saveStatusShown; })()")),
   };
@@ -3470,12 +3888,13 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
     a.showToast = (m, tone) => a.toasts.push([String(m), tone || "info"]);
     a.setModal = (x) => { a.modal = typeof x === "function" ? x(a.modal) : x; };
     const hdr = () => ({ apikey: "ANON", Authorization: "Bearer " + (a.token || "ANON") });
-    a.auth = { getSession: () => (a.token ? { access_token: a.token } : null), signOut: async () => { a.signOuts++; a.token = null; } };
+    a.auth = { getSession: () => (a.token ? { access_token: a.token } : null), signOut: async () => { a.signOuts++; a.token = null; }, bindUser: (id) => { a.bound = id; } }; // (21/n: the tab's account binding — review r4 branch-4; SE-X22 runs config.js's real one)
+    if (o.cfg) a.auth = o.cfg.auth; // (21/n) a tab wired with a REAL config.js (its auth and headers, over a shared localStorage — SE-X22)
     a.bridge = { current: null };
     a.schedSyncRef = F.wire({ isPublicMode: false, userProfile: { person_id: o.person || "s1" }, showToast: a.showToast, setEditWeekModal: a.setModal,
       swapSuggestions: null, swapTarget: null, setSwapSuggestions: (v) => { a.sug = v; }, setSwapTarget: (v) => { a.target = v; },
       schedSyncBridgeRef: a.bridge, useRef: () => engRef, createSchedSync: o.timeouts ? (d) => createSchedSync(Object.assign({}, d, { timeouts: o.timeouts })) : createSchedSync, scheduleRef: a.ref, commitSchedule: a.commitSchedule, fetch: (u, i) => t.fetch(u, i), SUPABASE_URL: BASE,
-      dbAuthHeaders: hdr, dbReadHeaders: hdr, dbHeaders: { apikey: "ANON", Authorization: "Bearer ANON", "Content-Type": "application/json" },
+      dbAuthHeaders: o.cfg ? o.cfg.dbAuthHeaders : hdr, dbReadHeaders: o.cfg ? o.cfg.dbReadHeaders : hdr, dbHeaders: o.cfg ? o.cfg.dbHeaders : { apikey: "ANON", Authorization: "Bearer ANON", "Content-Type": "application/json" },
       auth: a.auth, setSchedSync: (f) => { a.sync = typeof f === "function" ? f(a.sync) : f; a.syncs.push(a.sync); if (a.onSync) a.onSync(a.sync); }, console: a.console });
     a.eng = a.schedSyncRef.current;
     a.schedSyncRef.sessionEpochRef = a.sessionEpochRef; // (the harness: this session's identity, for every slice wired to it — sess)
@@ -3898,7 +4317,7 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
     c.render = () => {
       c.renders++;
       const s = c.st;
-      c.bundle = G.bundle({ surgeons: s.surgeons, apps: [], vacations: VAC, noCallDays: {}, backupMondaySet: NOSET, fierceBackupSet: NOSET, schedule: s.schedule, priorCounts: {}, year1Counts: {},
+      c.bundle = G.bundle({ surgeons: s.surgeons, apps: [], vacations: s.vacations || VAC, noCallDays: s.noCallDays || {}, backupMondaySet: NOSET, fierceBackupSet: NOSET, schedule: s.schedule, priorCounts: {}, year1Counts: {},
         startMonth: 0, startYear: 2030, numWeeks: s.numWeeks, holidayAssignments: {}, startMondayOverride: "", pendingLocks: [], silvisRule: null, dismissedWarnings: [], useRef: () => c.bundleRef });
       const ad = AUTO_DEPS.map(n => s[n]); // (the autosave's deps, by the source's list: those that move here — loaded, surgeons, schedule, numWeeks, the nudge — and the others, which stay put)
       if (!aDeps || ad.some((v, i) => v !== aDeps[i])) {
@@ -3995,7 +4414,7 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
       if (o.server && row) o.server[tb] = row.data;
       return { error: null };
     } }) };
-    const capture = async () => { rec.snaps++; if (o.captureGate) await o.captureGate; return { ok: true }; };
+    const capture = async () => { rec.snaps++; if (o.captureGate) await o.captureGate; return o.captureFails ? { ok: false, error: "snapshot insert failed: HTTP 401" } : { ok: true }; }; // (21/n o.captureFails: its insert refused — r4-fix-6)
     const confirm = () => { rec.confirms++; return true; };
     const env = (base) => Object.assign(base, o.env || {});
     return {
@@ -4009,7 +4428,7 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
         lastSyncRef: { current: null }, everHadRealDataRef: { current: false }, logAudit: noopX, loadSnapshots: noopX, setTimeout: () => 0, alert: () => { rec.alerts++; } }))({ id: 9, reason: "manual", created_at: "2026-10-13T00:00:00Z" }),
       reset: () => G.reset(env({ isScheduler: true, userProfile: null, alert: noopX, schedEditable: A.schedEditable, prompt: () => { rec.prompts++; return "RESET"; }, setSaveStatus: (s) => rec.status.push(s), setTimeout: () => 0,
         snapshots: { capture }, schedSyncRef: A.schedSyncRef, showToast: A.showToast, logAudit: noopX, allowWipeSaveRef: { current: false }, everHadRealDataRef: { current: true },
-        supabase: sup, console: A.console, setSurgeons: () => { rec.setupReset++; }, INIT_SURGEONS: [], setApps: noopX, INIT_APPS: [], toClearAll: () => { rec.timeOff++; },
+        supabase: sup, console: A.console, setSurgeons: () => { rec.setupReset++; }, INIT_SURGEONS: [], setApps: noopX, INIT_APPS: [], toClearAll: async () => { rec.timeOff++; return { ok: true }; }, // (21/n: it answers { ok } — review r4 fixes-2)
         setBackupMondaySet: noopX, setFierceBackupSet: noopX, scheduleRef: A.ref, commitSchedule: A.commitSchedule, runAuthoritativeSchedule: (...a) => (rec.jobP = ra(...a)),
         setAppShifts: noopX, setPriorCounts: noopX, setYear1Counts: noopX, setStartMonth: noopX, setStartYear: noopX }))(),
       accept: (weeks) => F.acceptPreview(env({ publishSearchRunning: () => false, showToast: A.showToast, cancelSearch: noopX, previewSchedule: weeks, previewNeedsOk: { items: [], cost: 0 }, previewAck: true,
@@ -4088,7 +4507,7 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
       lastSyncRef: { current: null }, everHadRealDataRef: { current: false }, logAudit: noop, loadSnapshots: noop, setTimeout: () => 0, alert: () => { rec.alerts++; } })({ id: 9, reason: "manual", created_at: "2026-10-13T00:00:00Z" });
     const resetJob = (A, ra, rec) => G.reset({ isScheduler: true, userProfile: null, alert: noop, schedEditable: A.schedEditable, prompt: () => "RESET", setSaveStatus: (s) => rec.status.push(s), setTimeout: () => 0,
       snapshots: { capture: async () => ({ ok: true }) }, schedSyncRef: A.schedSyncRef, showToast: A.showToast, logAudit: noop, allowWipeSaveRef: { current: false }, everHadRealDataRef: { current: true },
-      supabase: upsertStub(rec), console: A.console, setSurgeons: noop, INIT_SURGEONS: [], setApps: noop, INIT_APPS: [], toClearAll: () => { rec.timeOff++; },
+      supabase: upsertStub(rec), console: A.console, setSurgeons: noop, INIT_SURGEONS: [], setApps: noop, INIT_APPS: [], toClearAll: async () => { rec.timeOff++; return { ok: true }; }, // (21/n: it answers { ok })
       setBackupMondaySet: noop, setFierceBackupSet: noop, scheduleRef: A.ref, commitSchedule: A.commitSchedule, runAuthoritativeSchedule: ra, setAppShifts: noop, setPriorCounts: noop, setYear1Counts: noop, setStartMonth: noop, setStartYear: noop })();
     const go = async (job, o = {}) => {
       const { t, A } = await pair();
@@ -4305,17 +4724,41 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
     }
     check("SE-X11 (review r3, G7) …the session going DURING the autosave's debounce of an UNCHANGED setup (a peer's week adopted): nothing said, nothing kept, nothing written",
       sh.armed === 1 && sh.said === 0 && sh.err === false && sh.reauth === 0 && sh.pending === null && sh.ups === 0, JSON.stringify(sh));
+    // (21/n, H5 — review r4 fixes-1: this control used to depend on the clock. A write before the clear (the mount's
+    // autosave) and the clear's own write landing in the SAME millisecond made the G7e mutant behave like the real
+    // code, so nothing killed it — a random red CI gate on a clean tree. Now there is no write before the clear: the
+    // baseline's moment is mkComp's fixed one, which no fresh timestamp can equal; and the baseline itself is checked:
+    // the clear keeps its SETUP and takes the clear's write as its moment — at === lastSyncRef.)
     let si;
-    { const { t, A } = await pair(); await ticks(A); const c = mkComp(A); c.render(); await c.fire(); c.upserts.length = 0; c.status.length = 0; c.reauth = 0; c.saveError = false;
+    { const { t, A } = await pair(); await ticks(A); const c = mkComp(A); c.render(); c.timers.clear(); c.upserts.length = 0; c.status.length = 0; c.reauth = 0; c.saveError = false; // (the mount's debounced writes never come due before the clear)
+      const base0 = c.setupBaseRef.current ? { at: c.setupBaseRef.current.at, sig: c.setupBaseRef.current.sig } : null;
       const rec = mkRec(), J = appJobs(A, rec, { env: { setSaveStatus: (s) => c.status.push(s), lastSyncRef: c.lastSyncRef, stateBundleRef: c.bundleRef, setupReadRef: c.setupReadRef, supabase: c.supabase, setupBaseRef: c.setupBaseRef } });
       await J.clear(); await ticks(A, 2);                          // the clear lands, with its own setup save
       const clearSaved = c.blobs().filter(b => b.clear).length;
+      const after = c.setupBaseRef.current ? { at: c.setupBaseRef.current.at, sig: c.setupBaseRef.current.sig } : null, last = c.lastSyncRef.current;
       c.status.length = 0; A.token = null;                         // another tab signed out
       c.set("numWeeks")(22); await ticks(A); await c.fire();       // a setting change
-      si = { clearSaved, rows: t.rows().length, said: said(c), pending: c.pendingSaveRef.current ? c.pendingSaveRef.current.numWeeks : null };
+      si = { base0, after, last, clearSaved, rows: t.rows().length, said: said(c), pending: c.pendingSaveRef.current ? c.pendingSaveRef.current.numWeeks : null };
     }
-    check("SE-X11 (review r3, G7) …the clear's own setup save isn't a read: a setting change after it, signed out, is said ('" + SIGNED + "') and kept",
-      si.clearSaved === 1 && si.rows === 0 && si.said === 1 && si.pending === 22, JSON.stringify(si));
+    check("SE-X11 (review r3, G7) …the clear's own setup save isn't a read: a setting change after it, signed out, is said ('" + SIGNED + "') and kept — (H5, re-pinned 21/n) clock-independent: the baseline keeps its setup (the signature before the clear) and takes the clear's write as its moment (at === lastSyncRef, the clear's)",
+      si.clearSaved === 1 && si.rows === 0 && si.said === 1 && si.pending === 22
+        && !!si.base0 && si.base0.at === "2026-10-01T08:00:00+00:00" && !!si.after && si.after.sig === si.base0.sig && si.after.at === si.last && si.last !== si.base0.at, JSON.stringify(si));
+    // (r4-fix-9) …and with no session, time off reloaded — a new vacations / no-call object (the 60-s poll's
+    // loadTimeOff: a peer's vacation) — with the setup unchanged: nothing said, nothing kept (setupSig leaves the
+    // time off out: it isn't the blob's).
+    let sj;
+    { const { A } = await pair(); const c = mkComp(A); c.render(); await c.fire();
+      const R = { blob: { data: { numWeeks: 13 }, updated_at: "2026-10-14T09:00:00+00:00" } };
+      const L = loadRig(A, c, R); await L.loaded; await ticks(A); c.loadedAtRef.current = 1; await c.fire();
+      c.upserts.length = 0; A.toasts.length = 0; c.status.length = 0; c.reauth = 0; c.saveError = false; c.pendingSaveRef.current = null;
+      A.token = null;                                              // another tab signed out
+      c.set("vacations")({ s2: [["2030-01-08", "2030-01-10", 1]], s3: [["2030-02-04", "2030-02-06", 2]] }); await ticks(A); await c.fire();
+      const vac = { said: said(c), err: c.saveError, reauth: c.reauth, pending: c.pendingSaveRef.current };
+      c.set("noCallDays")({ s4: [["2030-01-15", "2030-01-15", 3]] }); await ticks(A); await c.fire();
+      sj = { vac, nc: { said: said(c), err: c.saveError, reauth: c.reauth, pending: c.pendingSaveRef.current }, renders: c.renders, ups: c.upserts.length };
+    }
+    check("SE-X11 (r4-fix-9) no session, the TIME OFF reloaded (a peer's vacation, then a no-call day — new objects, as loadTimeOff sets them) and the setup unchanged: no '" + SIGNED + "', no banner, nothing kept to send, nothing written",
+      sj.vac.said === 0 && sj.vac.err === false && sj.vac.reauth === 0 && sj.vac.pending === null && sj.nc.said === 0 && sj.nc.err === false && sj.nc.reauth === 0 && sj.nc.pending === null && sj.ups === 0, JSON.stringify(sj));
   });
 
   // SE-X12 — 17/n P5 (review r1 regress-clear-stale-blob): the clear's own
@@ -4982,6 +5425,24 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
     const jr = await lateRun((J) => J.reset(), "DELETE"), jv = await lateRun((J) => J.restore(SNAPX, { blob: { numWeeks: 20 } }), "PATCH"), jp = await lateRun((J) => J.accept(WEEKS()), "PATCH");
     check("SE-X18 G2 (19/n open item 1) a factory reset / restore / publish STARTED before a sign-out and still running at its deadline: nothing on the sign-in screen — no 'taking longer than expected', no 'The roster and setup are restored', no 'Published on this screen' — then or when it ends; nothing of the restore adopted",
       [jr, jv, jp].every(x => x.atDeadline.length === 0 && x.toasts.length === 0) && jv.adopted.length === 0, JSON.stringify({ reset: jr, restore: jv, publish: jp }));
+    // (k) r4-fix-6 (R4-D7): the snapshot capture FAILS across a session change — its insert went out with no session,
+    // RLS refused it — for each of the four callers: nothing said on the next session's screen, no status left there.
+    // Control: the same failure in one session is told.
+    const failX = async (start, how) => {
+      const { t, A } = await pair(); await ticks(A); const c = mkComp(A); c.render(); await c.fire(); A.toasts.length = 0;
+      const g = gated(), rec = mkRec(), J = appJobs(A, rec, { captureGate: g.gate, captureFails: true });
+      const p = start(J); await spin();
+      if (how) { await cross(A, c, how); A.toasts.length = 0; }
+      const from = t.log.length;
+      g.open(); const out = await p; await ticks(A, 2);
+      return { out, toasts: quiet(A), status: rec.status.slice(), published: rec.published, wB: asB(t, from), rows: t.rows().length, ups: rec.upserts.length };
+    };
+    const fc = await failX((J) => J.clear(), "signout"), fr = await failX((J) => J.reset(), "other"), ff = await failX((J) => J.finish(WEEKS()), "signout"), fa = await failX((J) => J.accept(WEEKS()), "other");
+    const fc0 = await failX((J) => J.clear(), null), ff0 = await failX((J) => J.finish(WEEKS()), null);
+    const silentEnd = (x) => x.toasts.length === 0 && (x.status.length === 0 || x.status[x.status.length - 1] === "") && x.published === 0 && x.wB.length === 0 && x.rows === 4 && x.ups === 0;
+    check("SE-X18 G2 (k) (r4-fix-6, R4-D7) the snapshot capture FAILING after a session change during it (a sign-out, or another account) — the real clearSchedule, resetAllData, finishGenerate (Generate & Publish) and acceptPreview (Accept & Publish): nothing said on the next session's screen (no 'Couldn't save a backup snapshot…'), no status left there, nothing cleared or published; control: in one session the failure is told",
+      [fc, fr, ff, fa].every(silentEnd) && fc0.toasts.join() === "Couldn't save a backup snapshot — clear cancelled. Schedule unchanged." && ff0.toasts.join() === "Couldn't save a backup snapshot — regenerate cancelled. Schedule unchanged.",
+      JSON.stringify({ fc, fr, ff, fa, fc0: fc0.toasts, ff0: ff0.toasts }));
   });
 
   // SE-X19 — G3 (review r3 fixes-2): a factory reset whose stored-data clears half-land tells the truth. The setup
@@ -5015,6 +5476,355 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
       [hb, hu].every(x => x.ups.join() === "call_schedule_data" && x.server.app_shifts_data["2030-01-08"] === "a1" && x.server.call_schedule_data.numWeeks === 13 && x.setup === 0 && x.timeOff === 0 && x.appShiftsCleared === 0 && !x.job && x.rows === 4
         && x.status.includes("Reset cancelled") && x.errs === 1 && x.allow === false && x.ever === true) && hb.toasts.join("|") === NONE + " :error" && hu.toasts.join("|") === UNKNOWN + " :error",
       JSON.stringify({ hb, hu }));
+  });
+
+  // SE-X20 — H2 (review r4 branch-2) and H7 (fixes-3): a trade's accept / decline, and every notice path, never act
+  // in the NEXT session. The REAL acceptTradeRequest and declineTradeRequest, the real sessionBoundary / handleSignOut
+  // / reauthLanded, on the app's engine; the REAL addNotification, sendPushNotif and sendEmailNotif under the real
+  // doGenerateAndNotify and swapShift. The session changes while a request is out — "Sign in again" lands on another
+  // account (B), or a sign-out: (a) during the accept's status PATCH, B's table already loaded — A's trade is NOT
+  // applied in B's session (no schedule write as B, no Undo step there, no notice or e-mail), its status set back to
+  // pending WITH THE TAP'S HEADERS (A's token), nothing said; (b) the same before B's table has loaded (no "This trade
+  // was not applied" on B's screen); (c) the set-back failing: logged, an audit line written AS A, still nothing said;
+  // (d) during its first notice: no more notices, no e-mail. (e) the control: in one session it all lands. (f) the
+  // decline: nothing more after its status write. (g) Generate & Publish's notice: no device push, no e-mail, no toast
+  // from the next session — the notice's insert held across the boundary (and failing after it); the push's and the
+  // e-mail's own requests failing after a boundary: nothing said. (h) the swap tool's notices the same.
+  await run("SE-X20", async () => {
+    if (!gotG("SE-X20 21/n H2 / H7", ["boundary", "reauth", "commit", "autosave", "bundle", "decline", "addNote", "pushNote", "email", "notify"])) return;
+    const REQ = { id: 42, from_surgeon_id: "s1", to_surgeon_id: "s2", from_surgeon_name: "AAA", to_surgeon_name: "BBB", week_monday: X[0], shift_key: "dayCall", shift_label: "Service Week",
+      return_week: X[1], return_shift: "dayCall", status: "pending" };
+    const detect = F.cascades({ surgeons: S7, SHIFT_LABELS: HX.SHIFT_LABELS });
+    const resp = (status, json) => ({ ok: status >= 200 && status < 300, status, json: async () => json, text: async () => JSON.stringify(json) });
+    const spin = async (n) => { for (let j = 0; j < (n || 20); j++) await null; };
+    const cross = async (A, c, how) => { if (how === "other") await otherAccount(A, c); else await G.boundary(bEnv(A, c)).handleSignOut(); };
+    const ours = (ts) => ts.filter(m => !/^Signed in as a different account than before/.test(m)); // (the switch's own message, from reauthLanded — not the job's)
+    const hdr = (A) => () => ({ apikey: "ANON", Authorization: "Bearer " + (A.token || "ANON") });
+    const acceptRun = async (o) => {
+      const { t, A, P } = await pair(); await ticks(A); const c = mkComp(A); c.render(); await c.fire(); A.toasts.length = 0;
+      const rec = { reqs: [], audits: [], notes: [], emails: [], list: [Object.assign({}, REQ)], errors: [] };
+      const holdL = o.loadHeld ? t.control.pause({ method: "GET", count: 1 }) : null;   // (b): the next session's table read held
+      const from = t.log.length;
+      let crossed = null;
+      await F.accept({ fmt: HX.fmt, shiftStartDate: HX.shiftStartDate, SHIFT_LABELS: HX.SHIFT_LABELS, tradeAcceptMsg: HX.tradeAcceptMsg, cascadeMsg: HX.cascadeMsg,
+        showToast: A.showToast, schedEditable: A.schedEditable, scheduleRef: A.ref, surgeons: S7, schedule: {}, detectCascadeChanges: detect,
+        silvisActive: false, silvisBlock: () => null, silvisRefuse: () => false, confirm: () => true,
+        SUPABASE_URL: BASE, dbAuthHeaders: hdr(A), console: { error: (...x) => rec.errors.push(x.map(String).join(" ")), warn: noopX, log: noopX },
+        setTradeRequests: (f) => { rec.list = f(rec.list); }, logAudit: (action, summary, details, hdrs) => rec.audits.push(action + "@" + (hdrs ? hdrs.Authorization : "now:" + (A.token || "ANON"))),
+        pushUndo: A.pushUndo, updateSchedule: A.updateSchedule, schedulerAdminIds: ["s7"], sessionEpochRef: A.sessionEpochRef,
+        addNotification: async (type) => { rec.notes.push(type + "@" + (A.token || "ANON")); if (o.at === "notice" + rec.notes.length) { await cross(A, c, o.how); await spin(6); } },
+        sendEmailNotif: (type) => { rec.emails.push(type + "@" + (A.token || "ANON")); },
+        fetch: async (url, init) => {
+          const u = String(url).replace(/^.*\/rest\/v1\//, "");
+          rec.reqs.push(((init && init.method) || "GET") + " " + u + " " + (init && init.headers && init.headers.Authorization));
+          if (/status=eq\.pending$/.test(u)) {
+            if (o.change) { await P.eng.pull(); P.edit(X[1], w => (w.nights.tue = "s7", w)); await P.eng.push(); await A.eng.pull(); } // someone changes a cascade slot meanwhile: the trade no longer holds
+            if (o.at === "status") { await cross(A, c, o.how); if (!o.loadHeld) await A.settle(); await spin(6); crossed = { epoch: A.sessionEpochRef.current, seeded: A.eng.isSeeded(), weeks: Object.keys(A.ref.current).length }; }
+            return resp(200, [Object.assign({}, REQ, { status: "accepted" })]);
+          }
+          if (/status=eq\.accepted$/.test(u)) {
+            if (o.at === "back") { await cross(A, c, o.how); await spin(6); }
+            return o.backFails ? resp(500, { message: "upstream" }) : resp(200, [Object.assign({}, REQ, { status: "pending", reviewed_at: null })]);
+          }
+          throw new Error("unrouted: " + u);
+        } })(Object.assign({}, REQ));
+      if (holdL) holdL.release();
+      await A.eng.push(); await ticks(A, 2);
+      return { crossed, reqs: rec.reqs, audits: rec.audits, notes: rec.notes, emails: rec.emails, list: rec.list.map(r => r.status), errors: rec.errors.length, toasts: ours(A.toasts.map(x => x[0])),
+        undo: A.history.length, w: writesOf(t, from).length, wB: writesOf(t, from, "TOK_B").length, x0: t.get(X[0]).data.dayCall };
+    };
+    const BACK_A = "PATCH shift_trade_requests?id=eq.42&status=eq.accepted Bearer TOK_A";
+    const abandoned = (x) => x.w === 0 && x.wB === 0 && x.undo === 0 && x.notes.length === 0 && x.emails.length === 0 && x.toasts.length === 0 && x.x0 === "s1"
+      && x.reqs[0] === "PATCH shift_trade_requests?id=eq.42&status=eq.pending Bearer TOK_A" && x.reqs[1] === BACK_A && x.reqs.length === 2;
+    const ao = await acceptRun({ at: "status", how: "other" }), as = await acceptRun({ at: "status", how: "signout" });
+    check("SE-X20 H2 (a) (R4-TRADE) the real acceptTradeRequest, the session changing during its status PATCH ('Sign in again' on another account, B's table loaded; or a sign-out): A's trade is NOT applied in the next session — no schedule write (none as B), no Undo step there, no notice or e-mail — and its status is set back to pending with the TAP's headers (A's token); nothing said on the next screen",
+      ao.crossed && ao.crossed.seeded && ao.crossed.weeks === 4 && abandoned(ao) && abandoned(as), JSON.stringify({ ao, as }));
+    const al = await acceptRun({ at: "status", how: "other", loadHeld: true });
+    check("SE-X20 H2 (b) …the same when B's table hasn't loaded yet (its screen empty, the trade not 'holding' there): set back with A's token by the abandoned tap — not by the 'not applied' path as B — and no 'This trade was not applied…' on B's screen",
+      al.crossed && al.crossed.seeded === false && abandoned(al) && al.audits.length === 0, JSON.stringify(al));
+    const af = await acceptRun({ at: "status", how: "other", backFails: true });
+    check("SE-X20 H2 (c) …the set-back FAILING: logged (console) and an audit line written AS A (the tap's headers — 'trade.accept_unapplied', for a manual fix), and still nothing said on the next screen",
+      af.w === 0 && af.notes.length === 0 && af.emails.length === 0 && af.toasts.length === 0 && af.reqs[1] === BACK_A && af.errors === 1 && af.audits.join() === "trade.accept_unapplied@Bearer TOK_A", JSON.stringify(af));
+    const an = await acceptRun({ at: "notice1", how: "other" }), an2 = await acceptRun({ at: "notice2", how: "other" });
+    check("SE-X20 H2 (d) …the session changing during the trade's FIRST notice (the trade applied in A's session): no more notices (no cascade notices) and no e-mail from the next session, nothing said; during the FIRST CASCADE's notice: that cascade's e-mail and the second cascade's notice never go out",
+      an.notes.join() === "trade_accepted@TOK_A" && an.emails.length === 0 && an.toasts.length === 0 && an.wB === 0
+        && an2.notes.join() === "trade_accepted@TOK_A,schedule_changed@TOK_A" && an2.emails.join() === "trade_accepted@TOK_A" && an2.toasts.length === 0 && an2.wB === 0, JSON.stringify({ an, an2 }));
+    const ab = await acceptRun({ change: true, at: "back", how: "other" });
+    check("SE-X20 H2 (i) …the trade NOT holding at commit (a cascade slot changed while its status PATCH was out), and the session changing while its set-back to pending is out: no 'This trade was not applied' on the next screen; its audit line written as A (the tap's headers)",
+      ab.reqs.length === 2 && /status=eq\.accepted Bearer TOK_A$/.test(ab.reqs[1]) && ab.toasts.length === 0 && ab.notes.length === 0 && ab.emails.length === 0 && ab.w === 1 && ab.x0 === "s1" && ab.audits.join() === "trade.accept_unapplied@Bearer TOK_A", JSON.stringify(ab)); // (w: the peer's own edit, nothing else)
+    const ac = await acceptRun({});
+    check("SE-X20 H2 (e) control: in one session the trade lands — its status accepted (sent as A), both weeks written as A, one Undo step, the trade notice and both cascade notices, three e-mails, no set-back",
+      ac.list.join() === "accepted" && ac.w === 2 && ac.wB === 0 && ac.x0 === "s2" && ac.undo === 1 && ac.notes.join() === "trade_accepted@TOK_A,schedule_changed@TOK_A,schedule_changed@TOK_A"
+        && ac.emails.length === 3 && !ac.reqs.includes(BACK_A) && ac.toasts.length === 0, JSON.stringify(ac));
+    // (f) the decline
+    const declineRun = async (at) => {
+      const { t, A } = await pair(); await ticks(A); const c = mkComp(A); c.render(); await c.fire(); A.toasts.length = 0;
+      const rec = { reqs: [], notes: [], emails: [], list: [Object.assign({}, REQ)] };
+      await G.decline({ SUPABASE_URL: BASE, dbAuthHeaders: hdr(A), console: { error: noopX, warn: noopX, log: noopX }, showToast: A.showToast, setTradeRequests: (f) => { rec.list = f(rec.list); },
+        tradeDeclineMsg: HX.tradeDeclineMsg, logAudit: noopX, sessionEpochRef: A.sessionEpochRef, sendEmailNotif: (type) => { rec.emails.push(type); },
+        addNotification: async (type) => { rec.notes.push(type); if (at === "notice") { await cross(A, c, "other"); await spin(6); } },
+        fetch: async (url, init) => { rec.reqs.push(init.method + " " + init.headers.Authorization); if (at === "status") { await cross(A, c, "other"); await spin(6); } return resp(200, [Object.assign({}, REQ, { status: "declined" })]); } })(Object.assign({}, REQ));
+      await ticks(A);
+      return { reqs: rec.reqs, notes: rec.notes, emails: rec.emails, list: rec.list.map(r => r.status), toasts: ours(A.toasts.map(x => x[0])) };
+    };
+    const dx = await declineRun("status"), dn = await declineRun("notice"), dc0 = await declineRun(null);
+    check("SE-X20 H2 (f) the real declineTradeRequest, the session changing during its status PATCH (sent as A): nothing more of it in the next session — no list update, no notice, no e-mail, no toast; during its notice: no e-mail; control: in one session its notice and e-mail go out",
+      dx.reqs.join() === "PATCH Bearer TOK_A" && dx.list.join() === "pending" && dx.notes.length === 0 && dx.emails.length === 0 && dx.toasts.length === 0
+        && dn.notes.join() === "trade_declined" && dn.emails.length === 0 && dn.toasts.length === 0
+        && dc0.list.join() === "declined" && dc0.notes.join() === "trade_declined" && dc0.emails.join() === "trade_declined", JSON.stringify({ dx, dn, dc0 }));
+    // (g) the REAL notice chain under the real doGenerateAndNotify
+    const EDGE = "https://fn.test/functions/v1/send-notification";
+    const chain = (A, sent, o) => {
+      const quiet = { error: noopX, warn: noopX, log: noopX };
+      const net = async (url, init) => {
+        const kind = /send-push$/.test(url) ? "push" : "email";
+        sent[kind].push(init.headers.Authorization);
+        if (o.hold && o.hold[kind]) await o.hold[kind];
+        if (o.fail && o.fail[kind]) { if (kind === "push") throw new TypeError("Failed to fetch"); return resp(500, { failed: 1 }); }
+        return resp(200, { failed: 0 });
+      };
+      const push = G.pushNote({ edgeFunctionUrl: EDGE, fetch: net, dbAuthHeaders: hdr(A), console: quiet, showToast: A.showToast, sessionEpochRef: A.sessionEpochRef });
+      const email = G.email({ edgeFunctionUrl: EDGE, fetch: net, dbAuthHeaders: hdr(A), console: quiet, showToast: A.showToast, sessionEpochRef: A.sessionEpochRef });
+      const note = G.addNote({ db: { insert: async (tb, row) => { sent.inserts.push(tb + ":" + (A.token || "ANON")); if (o.hold && o.hold.insert) await o.hold.insert; return o.fail && o.fail.insert ? { data: null, error: "TypeError: Failed to fetch" } : { data: row, error: null }; } },
+        showToast: A.showToast, setNotifications: () => { sent.listed++; }, buildDeepLink: () => "#", filterPushTargetsByType: (ty, ids) => ids, sendPushNotif: push, console: quiet, sessionEpochRef: A.sessionEpochRef });
+      return { push, email, note };
+    };
+    const gated = () => { let open; const gate = new Promise(r => { open = r; }); return { gate, open }; };
+    const notifyRun = async (how, at, fail) => {
+      const { A } = await pair(); await ticks(A); const c = mkComp(A); c.render(); await c.fire(); A.toasts.length = 0;
+      const sent = { inserts: [], push: [], email: [], listed: 0 }, g = gated(), hold = at ? { [at]: g.gate } : null;
+      const ch = chain(A, sent, { hold, fail });
+      const p = G.notify({ schedSyncRef: A.schedSyncRef, sessionEpochRef: A.sessionEpochRef, doGenerate: async () => "published", addNotification: ch.note, sendEmailNotif: ch.email, MO: HX.MO, startMonth: 0, endMoIdx: 2, startYear: 2030 })();
+      await spin(30);
+      if (how) { await cross(A, c, how); await spin(6); }
+      g.open(); await p; await spin(30);
+      return { sent, toasts: ours(A.toasts.map(x => x[0])) };
+    };
+    const n0 = await notifyRun(null, null), nso = await notifyRun("signout", "insert"), nob = await notifyRun("other", "insert");
+    check("SE-X20 H7 (g) (R4-N1) the real doGenerateAndNotify with the REAL addNotification / sendPushNotif / sendEmailNotif: control — the notice inserted, its device push and the e-mail sent as A; a sign-out, or another account, while the notice's insert is out: NO device push and no e-mail from the next session, nothing put in its list, nothing said",
+      n0.sent.inserts.join() === "notifications:TOK_A" && n0.sent.push.join() === "Bearer TOK_A" && n0.sent.email.join() === "Bearer TOK_A" && n0.toasts.length === 0
+        && [nso, nob].every(x => x.sent.inserts.join() === "notifications:TOK_A" && x.sent.push.length === 0 && x.sent.email.length === 0 && x.sent.listed === 0 && x.toasts.length === 0), JSON.stringify({ n0, nso, nob }));
+    const nf0 = await notifyRun(null, "insert", { insert: true }), nf = await notifyRun("signout", "insert", { insert: true });
+    const pf = await notifyRun("signout", "push", { push: true }), ef = await notifyRun("other", "email", { email: true });
+    check("SE-X20 H7 (g) (V3N) …the notice's insert FAILING after the sign-out during it: nothing said on the sign-in screen (in one session: 'Couldn't save that notification.'); the push's own request failing after a boundary during it, and the e-mail's: nothing said either",
+      nf0.toasts.join("|") === "Couldn't save that notification." && nf.toasts.length === 0 && nf.sent.push.length === 0
+        && pf.sent.push.join() === "Bearer TOK_A" && pf.toasts.length === 0 && ef.sent.email.join() === "Bearer TOK_A" && ef.toasts.length === 0, JSON.stringify({ nf0, nf, pf, ef }));
+    // (h) the swap tool (swapShift): its notices fenced the same way
+    { const { A } = await pair(); await ticks(A); const c = mkComp(A); c.render(); await c.fire(); A.toasts.length = 0;
+      const sent = { inserts: [], push: [], email: [], listed: 0 }, gi = gated(), ge = gated();
+      const ch = chain(A, sent, { hold: { insert: gi.gate, email: ge.gate }, fail: { email: true } });
+      F.swapOne({ fmt: HX.fmt, shiftStartDate: HX.shiftStartDate, swapMsg: HX.swapMsg, SHIFT_LABELS: HX.SHIFT_LABELS, schedEditable: A.schedEditable, schedule: A.ref.current, scheduleRef: A.ref, showToast: A.showToast,
+        silvisActive: false, silvisBlock: () => null, silvisRefuse: () => false, pushUndo: A.pushUndo, updateSchedule: A.updateSchedule, surgeons: S7, setEditShift: noopX, setEditingWeek: noopX,
+        setSwapSuggestions: noopX, setSwapTarget: noopX, sMap: S7MAP, schedulerAdminIds: ["s7"], addNotification: ch.note, sendEmailNotif: ch.email })(X[2], "wed", "s7");
+      await spin(20);
+      await cross(A, c, "signout"); await spin(6);
+      gi.open(); ge.open(); await spin(40);
+      check("SE-X20 H7 (h) the real swapShift's notices (the real addNotification and sendEmailNotif): a sign-out while the notice's insert and the e-mail are out — no device push from the next session, and the e-mail's failure isn't said on the sign-in screen",
+        sent.inserts.join() === "notifications:TOK_A" && sent.email.join() === "Bearer TOK_A" && sent.push.length === 0 && ours(A.toasts.map(x => x[0])).length === 0, JSON.stringify({ sent, toasts: A.toasts }));
+    }
+  });
+
+  // SE-X21 — H6 (review r4 fixes-2 / fixes-10) and r4-fix-5: the factory reset's THIRD stored-data clear, the time
+  // off, is an awaited, checked step of its chain (setup → APP shifts → time off → the weeks job), through the REAL
+  // toClearAll and deleteTimeOff. (a) Its DELETE answers 503: exactly what was reset and what wasn't — one toast —
+  // no "Reset complete", the server's time off unchanged and still on this screen, no weeks job; (b) no answer: it
+  // may have been cleared, said so; (c) the control: it lands — "Reset complete", the time off cleared there and on
+  // screen; (d) the session changing during it: no weeks job, nothing said, the guard refs back; (e) the "delete all
+  // vacations" button's own toast never on the next session's screen. (f) r4-fix-5: every path that resets the setup
+  // here resets the counts too (prior, year-1) and the period — the full reset, the half-landed one (G3), the one
+  // whose time off failed. (g) r4-fix-10: the REAL snapshots.capture whose time_off read fails, throws or hangs past
+  // its timeout, for the reset (reason reset_all_data): the capture fails closed, so the reset is refused — nothing
+  // cleared, no time_off DELETE sent.
+  await run("SE-X21", async () => {
+    if (!gotG("SE-X21 21/n H6", ["runAuth", "reset", "delTO", "clearTO", "boundary", "reauth", "commit", "autosave", "bundle"])) return;
+    const REFUSED = "Factory reset: the setup and the APP shifts were reset, but clearing the time off failed — so the time off and the schedule weeks were left as they are. Run the reset again, or restore the \"Before factory reset\" snapshot.";
+    const UNANSWERED = "Factory reset: the setup and the APP shifts were reset, but the time-off clear got no answer — so the time off may have been cleared, and the schedule weeks were left as they are. Run the reset again, or restore the \"Before factory reset\" snapshot.";
+    const spin = async (n) => { for (let j = 0; j < (n || 20); j++) await null; };
+    const ours = (ts) => ts.filter(m => !/^Signed in as a different account than before/.test(m));
+    const quiet = { error: noopX, warn: noopX, log: noopX };
+    const go = async (o) => {
+      const { t, A } = await pair(); await ticks(A);
+      const c = o.cross ? mkComp(A) : null; if (c) { c.render(); await c.fire(); }
+      A.toasts.length = 0;
+      const sent = [], server = { call_schedule_data: { numWeeks: 13 }, app_shifts_data: { "2030-01-08": "a1" }, time_off: 3 };
+      const screen = { vac: { s2: [["2030-01-08", "2030-01-10", 1]] }, nc: { s3: [["2030-01-09", "2030-01-09", 2]] }, appShifts: null, counts: { prior: [], y1: [], m: [], y: [] } };
+      const refs = { allow: { current: false }, ever: { current: true } };
+      const del = G.delTO({ SUPABASE_URL: BASE, dbAuthHeaders: () => ({ Authorization: "Bearer " + (A.token || "ANON") }), console: quiet, showToast: A.showToast, sessionEpochRef: A.sessionEpochRef,
+        fetch: async (url, init) => {
+          sent.push(init.method + " " + String(url).replace(/^.*rest\/v1\//, "") + " " + init.headers.Authorization);
+          if (o.cross) { await (o.cross === "other" ? otherAccount(A, c) : G.boundary(bEnv(A, c)).handleSignOut()); await spin(6); }
+          if (o.del === "throw") throw new TypeError("Failed to fetch");
+          if (o.del >= 200 && o.del < 300) server.time_off = 0;
+          return { ok: o.del >= 200 && o.del < 300, status: o.del, text: async () => "upstream connect error" };
+        } });
+      const tca = G.clearTO({ setVacations: (v) => { screen.vac = v; }, setNoCallDays: (v) => { screen.nc = v; }, logAudit: noopX, USE_TIME_OFF: true, deleteTimeOff: del });
+      if (o.button) { await tca("vacation"); await spin(6); return { toasts: ours(A.toasts.map(x => x[0])), sent, vac: Object.keys(screen.vac).length, nc: Object.keys(screen.nc).length }; }
+      const rec = mkRec(), J = appJobs(A, rec, { server, upsertFails: o.upsertFails, env: Object.assign({ toClearAll: tca, console: quiet, allowWipeSaveRef: refs.allow, everHadRealDataRef: refs.ever,
+        setAppShifts: (v) => { screen.appShifts = v; }, setPriorCounts: (v) => screen.counts.prior.push(JSON.stringify(v)), setYear1Counts: (v) => screen.counts.y1.push(JSON.stringify(v)),
+        setStartMonth: (v) => screen.counts.m.push(v), setStartYear: (v) => screen.counts.y.push(v) }, o.env || {}) });
+      await J.reset(); if (rec.jobP) await rec.jobP; await ticks(A, 3); await nap(5); await ticks(A, 2);
+      return { toasts: ours(A.toasts.map(x => x[0] + " :" + x[1])), status: rec.status.slice(), sent, server: clone(server), rows: t.rows().length, vac: Object.keys(screen.vac).length, nc: Object.keys(screen.nc).length,
+        appShifts: screen.appShifts, counts: screen.counts, job: rec.jobP !== null, setup: rec.setupReset, ups: rec.upserts.slice(), allow: refs.allow.current, ever: refs.ever.current };
+    };
+    const stopped = (x) => x.ups.join() === "call_schedule_data,app_shifts_data" && x.server.time_off === 3 && x.vac === 1 && x.nc === 1 && !x.job && x.rows === 4 && x.setup === 1
+      && JSON.stringify(x.appShifts) === "{}" && !x.status.includes("Reset complete") && x.allow === false && x.ever === true && x.sent.length === 1 && /^DELETE time_off\?id=not\.is\.null Bearer TOK_A$/.test(x.sent[0]);
+    const f5 = await go({ del: 503 }), ft = await go({ del: "throw" }), ok = await go({ del: 204 });
+    check("SE-X21 H6 (a) (R4-T1) the real resetAllData + toClearAll + deleteTimeOff, the time_off DELETE answering 503 after the setup and APP shifts were cleared: exactly '" + REFUSED + "' — ONE toast (not deleteTimeOff's generic one beside it), no 'Reset complete'; the server's time off unchanged, and still on this screen (vacations and no-call); no weeks job (the weeks stay); this screen takes the reset's setup and APP shifts; the guard refs back",
+      stopped(f5) && f5.toasts.join("|") === REFUSED + " :error", JSON.stringify(f5));
+    check("SE-X21 H6 (b) …the DELETE getting NO answer (thrown): '" + UNANSWERED + "' (it may have landed — said so), the rest as (a)",
+      stopped(ft) && ft.toasts.join("|") === UNANSWERED + " :error", JSON.stringify(ft));
+    check("SE-X21 H6 (c) control: the time_off DELETE lands — the time off cleared on the server and on this screen, the weeks job runs (every week deleted), 'Reset complete', no toast",
+      ok.server.time_off === 0 && ok.vac === 0 && ok.nc === 0 && ok.job && ok.rows === 0 && ok.status.includes("Reset complete") && ok.toasts.length === 0, JSON.stringify(ok));
+    const xo = await go({ del: 503, cross: "other" }), xs = await go({ del: 204, cross: "signout" });
+    check("SE-X21 H6 (d) …the session changing while the time_off DELETE is out (another account; a sign-out): the reset goes no further — no weeks job as the next account, nothing said (none of its messages, not deleteTimeOff's), no 'Reset complete'; the guard refs back",
+      [xo, xs].every(x => !x.job && x.toasts.length === 0 && !x.status.includes("Reset complete") && x.rows === 4 && x.allow === false && x.ever === true), JSON.stringify({ xo, xs }));
+    const bx = await go({ button: true, del: 503, cross: "other" }), b0 = await go({ button: true, del: 503 });
+    check("SE-X21 H6 (e) the 'delete all vacations' button (toClearAll('vacation')), its DELETE failing: in one session 'Couldn't remove that — check your connection and try again.' and the vacations still shown; after a session change during it, nothing said on the next screen",
+      b0.toasts.join("|") === "Couldn't remove that — check your connection and try again." && b0.vac === 1 && bx.toasts.length === 0, JSON.stringify({ b0, bx }));
+    const half = await go({ del: 204, upsertFails: { app_shifts_data: "HTTP 503 upstream" } });
+    const reset = (x) => x.counts.prior.includes("{}") && x.counts.y1.includes("{}") && x.counts.m.includes(4) && x.counts.y.includes(2026);
+    check("SE-X21 r4-fix-5 every path that resets the setup on this screen resets the counts (prior and year-1: {}) and the period (April 2026): the full reset, the half-landed one (the APP-shifts clear failed — G3), the one whose time-off clear failed",
+      reset(ok) && reset(half) && reset(f5) && half.toasts.length === 1 && /clearing the APP shifts failed/.test(half.toasts[0]), JSON.stringify({ ok: ok.counts, half: half.counts, f5: f5.counts }));
+    // (g) r4-fix-10: the REAL snapshots.capture (config.js), its time_off read failing for reset_all_data
+    const cfgOf = (net) => {
+      const g = { console: { log() {}, warn() {}, error() {}, info() {} }, window: {}, document: undefined, navigator: { userAgent: "node-test" }, setTimeout, clearTimeout, AbortController,
+        localStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {} }, fetch: net, atob: (s) => Buffer.from(s, "base64").toString("binary") };
+      g.globalThis = g; vm.createContext(g);
+      for (const f of ["helpers.js", "config.js"]) vm.runInContext(fs.readFileSync(path.join(__dirname, "..", f), "utf8"), g, { filename: f });
+      return vm.runInContext("snapshots", g);
+    };
+    const capRun = async (mode) => {
+      const ok1 = (json) => Promise.resolve({ ok: true, status: 200, json: async () => json, text: async () => JSON.stringify(json) });
+      const calls = [];
+      const snaps = cfgOf((url, init = {}) => {
+        const u = String(url), m = (init.method || "GET").toUpperCase(); calls.push(m + " " + u.replace(/^.*\/rest\/v1\//, "").split("?")[0]);
+        if (m === "POST") return Promise.resolve({ ok: true, status: 201, json: async () => [], text: async () => "" });
+        if (/call_schedule_data/.test(u)) return ok1([{ data: { surgeons: S7, numWeeks: 13 }, updated_at: "2026-10-14T08:00:00Z" }]);
+        if (/schedule_weeks/.test(u)) return ok1(ROWS().map(r => ({ week_monday: r.week_monday, data: r.data })));
+        if (mode === "ok") return ok1([{ id: 1, person_id: "s2", kind: "vacation", start_date: "2030-01-08", end_date: "2030-01-10" }]);
+        if (mode === "503") return Promise.resolve({ ok: false, status: 503, json: async () => ({}), text: async () => "upstream" });
+        if (mode === "throw") return Promise.reject(new TypeError("Failed to fetch"));
+        return new Promise((_, rej) => { if (init.signal) init.signal.addEventListener("abort", () => rej(new Error("AbortError"))); });   // hang: until its timeout aborts it
+      });
+      snaps.timeoutMs = 30;
+      const x = await go({ del: 204, env: { snapshots: snaps } });
+      return Object.assign(x, { calls });
+    };
+    const c503 = await capRun("503"), cth = await capRun("throw"), chg = await capRun("hang"), cok = await capRun("ok");
+    const refused = (x) => x.toasts.join("|") === "Couldn't save a backup snapshot — reset cancelled. Nothing was deleted. :error" && x.status.includes("Reset cancelled") && x.ups.length === 0 && x.sent.length === 0
+      && x.server.time_off === 3 && !x.job && x.rows === 4 && x.setup === 0 && !x.calls.some(c => c.startsWith("POST"));
+    check("SE-X21 r4-fix-10 the REAL snapshots.capture for the factory reset (reset_all_data), its time_off read answering 503, throwing, or hanging past its timeout: it fails closed — no snapshot without the time off it is about to delete — so the reset is refused ('Couldn't save a backup snapshot — reset cancelled. Nothing was deleted.'): nothing cleared, no time_off DELETE sent, the weeks untouched; control: the read answers — the snapshot inserted (with the vacations) and the reset runs",
+      refused(c503) && refused(cth) && refused(chg) && cok.calls.filter(c => c.startsWith("POST")).length === 1 && cok.status.includes("Reset complete"), JSON.stringify({ c503, cth, chg, cok: { status: cok.status, calls: cok.calls } }));
+  });
+
+  // SE-X22 — H4 (review r4 branch-4): a tab never writes with another account's token. Two tabs of ONE browser — each
+  // its own REAL config.js (its own auth, its own binding), sharing one localStorage — and tab 2's app wired with its
+  // real auth and headers on the real engine. Tab 2 is A's, with an unsaved week (A's token refused: "Sign in again").
+  // Tab 1 signs out and signs in as B. (a) Tab 2's next pull sends NOTHING as B (nor anything at all): it reads the
+  // stored session as no session — the header says "Sign in again"; (b) it hears the change at once (the storage
+  // event): the engine reports, the banner shows; (c) a setup change in tab 2 is never written (said: not saved —
+  // signed out), a time-off edit and every direct write (dbAuthHeaders) go out as anon — never as B; (d) its "Sign
+  // in again" renews the STORED session — B's — and lands as another account: the real boundary runs, A's unsaved
+  // week discarded and said so, the tab bound to B from then on. (e) The sign-in form and the Face ID unlock bind the
+  // tab to their account (another account's token stored after that is no session there).
+  await run("SE-X22", async () => {
+    if (!gotG("SE-X22 21/n H4", ["boundary", "reauth", "commit", "autosave", "bundle", "raSync", "authSubmit", "bioUnlock"])) return;
+    const b64 = (o) => Buffer.from(JSON.stringify(o)).toString("base64").replace(/=+$/, "").replace(/\+/g, "-").replace(/\//g, "_");
+    const jwt = (sub, n) => "eyJhbGciOiJIUzI1NiJ9." + b64({ sub, exp: Math.floor(Date.now() / 1000) + 3600, n }) + ".sig";
+    const subOf = (tok) => { try { return JSON.parse(Buffer.from(String(tok).split(".")[1], "base64").toString()).sub; } catch (e) { return null; } };
+    const JA = jwt("auth-a", 1), JB = jwt("auth-b", 1), JB2 = jwt("auth-b", 2), JC = jwt("auth-c", 1);
+    const store = new Map();
+    const ls = { getItem: (k) => (store.has(k) ? store.get(k) : null), setItem: (k, v) => { store.set(k, String(v)); }, removeItem: (k) => { store.delete(k); } };
+    const calls = [];
+    const net = async (url, init = {}) => {   // the auth server, and the tables these tabs write directly (time off, notices…)
+      const u = String(url), body = init.body ? JSON.parse(init.body) : null, au = (init.headers && init.headers.Authorization) || "-";
+      calls.push((init.method || "GET") + " " + u.replace(/^https:\/\/[^/]+/, "").split("?")[0] + (u.includes("grant_type=") ? "?" + u.split("grant_type=")[1] : "") + " " + au + (body && body.refresh_token ? " rt=" + body.refresh_token : ""));
+      const resp = (status, json) => ({ ok: status >= 200 && status < 300, status, json: async () => json, text: async () => JSON.stringify(json) });
+      if (/grant_type=password/.test(u)) return resp(200, { access_token: JB, refresh_token: "RB", user: { id: "auth-b", email: "b@dsg.test" } });
+      if (/grant_type=refresh_token/.test(u)) return body && body.refresh_token === "RB" ? resp(200, { access_token: JB2, refresh_token: "RB2", user: { id: "auth-b", email: "b@dsg.test" } }) : resp(400, { error: "invalid_grant" });
+      if (/\/auth\/v1\/logout/.test(u)) return resp(204, null);
+      if (/\/auth\/v1\/user/.test(u)) return resp(200, { id: subOf(au.replace(/^Bearer /, "")) });
+      if (/user_profiles/.test(u)) return resp(200, []);
+      return resp(201, [Object.assign({ id: 9 }, body)]);
+    };
+    const tabCfg = () => {
+      const g = { console: { log() {}, warn() {}, error() {}, info() {} }, window: {}, document: undefined, navigator: { userAgent: "node-test" }, setTimeout, clearTimeout, AbortController,
+        localStorage: ls, fetch: net, atob: (s) => Buffer.from(s, "base64").toString("binary") };
+      g.globalThis = g; vm.createContext(g);
+      for (const f of ["helpers.js", "config.js"]) vm.runInContext(fs.readFileSync(path.join(__dirname, "..", f), "utf8"), g, { filename: f });
+      return vm.runInContext("({ auth, dbAuthHeaders, dbReadHeaders, dbHeaders, db, SUPABASE_ANON_KEY })", g);
+    };
+    const bind = (cfg, id) => { if (typeof cfg.auth.bindUser === "function") cfg.auth.bindUser(id); };
+    const boundOf = (cfg) => (typeof cfg.auth.boundUser === "function" ? cfg.auth.boundUser() : "no boundUser()");
+    const tab1 = tabCfg(), tab2 = tabCfg(), ANONH = "Bearer " + tab2.SUPABASE_ANON_KEY;
+    const t = createFakeWeeksTable({ baseUrl: BASE, anonKey: tab2.SUPABASE_ANON_KEY, users: { [JA]: "user-a", [JB]: "user-b", [JB2]: "user-b" }, rows: ROWS(), clock: () => new Date(xms += 1000).toISOString() });
+    ls.setItem("dsg-auth-token", JA); ls.setItem("dsg-auth-refresh", "RA");                   // A is signed in, in both tabs
+    bind(tab1, "auth-a"); bind(tab2, "auth-a");
+    const T2 = mkApp(t, { cfg: tab2 }); await T2.eng.load(); await ticks(T2);
+    const c = mkComp(T2); c.render(); await c.fire();                                          // tab 2's component (its setup autosave, as A)
+    t.control.expiredTokens.add(JA);                                                           // A's token refused by the server…
+    T2.edit(X[0], w => (w.dayCall = "s7", w)); await T2.eng.push(); await ticks(T2);          // …tab 2's edit waits: "Sign in again"
+    const setup = T2.eng.status().authNeeded && T2.eng.pending().join() === X[0];
+    await tab1.auth.signOut(); bind(tab1, null);                                              // tab 1: signs out…
+    const si = await tab1.auth.signIn("b@dsg.test", "pw"); bind(tab1, si.user.id);           // …and in as B: B's session stored
+    const storedB = ls.getItem("dsg-auth-token") === JB;
+    // (b) the storage event in tab 2
+    const fx = { reauth: [], reports: 0 }; let listener = null;
+    if (G.storageFx) G.storageFx({ authUser: { id: "auth-a" }, window: { addEventListener: (k, f) => { if (k === "storage") listener = f; }, removeEventListener: noopX },
+      schedSyncRef: { current: { report: () => { fx.reports++; T2.eng.report(); } } }, auth: tab2.auth, setReauthNeeded: (v) => fx.reauth.push(v) })();
+    if (listener) listener({ key: "dsg-auth-token" });
+    const heard = { listener: !!listener, reports: fx.reports, reauth: fx.reauth.slice(), line: LV(T2.sync) };
+    // (a) tab 2's 60-s pull
+    const from = t.log.length;
+    await T2.eng.pull(); await ticks(T2);
+    const pulled = { wB: writesOf(t, from, JB).length + writesOf(t, from, JB2).length, w: writesOf(t, from).length, authNeeded: T2.eng.status().authNeeded, line: LV(T2.sync), pending: T2.eng.pending().join() };
+    check("SE-X22 H4 (a) (p3) two tabs share the stored session: tab 1 signs out and signs in as B; tab 2 (A's, a week unsaved) pulls — it sends NOTHING as B (nor anything else): another account's stored session is no session in a tab bound to A — the week still pending, the header 'Sign in again'",
+      setup && storedB && pulled.wB === 0 && pulled.w === 0 && pulled.authNeeded === true && pulled.line === "auth:1" && pulled.pending === X[0], JSON.stringify({ setup, storedB, pulled }));
+    check("SE-X22 H4 (b) …and tab 2 hears the change at once (the storage event on the session's key): the engine reports — 'Sign in again' — and the banner is raised, before any pull",
+      heard.listener && heard.reports === 1 && heard.reauth.includes(true) && heard.line === "auth:1", JSON.stringify(heard));
+    // (c) a setup change and a time-off edit in the stale tab
+    c.upserts.length = 0; c.status.length = 0;
+    c.set("numWeeks")(20); await ticks(T2); await c.fire();
+    const setupRes = { ups: c.upserts.map(u => u.tb + ":" + u.as), said: c.status.includes("⚠ Not saved — you're signed out. Sign in again") };
+    calls.length = 0;
+    await tab2.db.insert("time_off", { person_id: "s1", kind: "vacation", start_date: "2030-01-08", end_date: "2030-01-09" });
+    const toCall = calls.slice(), hdrs = { write: tab2.dbAuthHeaders().Authorization, read: tab2.dbReadHeaders().Authorization, session: tab2.auth.getSession() };
+    check("SE-X22 H4 (c) …a setup change in tab 2 is never written (the autosave sees no session: '⚠ Not saved — you're signed out. Sign in again'), and a time-off edit — like every direct write (trade requests, notices, APP shifts: dbAuthHeaders) — goes out as anon, never with B's token; its reads as anon too",
+      setupRes.ups.length === 0 && setupRes.said && toCall.length === 1 && toCall[0].endsWith(ANONH) && hdrs.write === ANONH && hdrs.read === ANONH && hdrs.session === null, JSON.stringify({ setupRes, toCall, hdrs }));
+    // (d) "Sign in again" in tab 2
+    calls.length = 0; T2.toasts.length = 0;
+    const env = Object.assign(bEnv(T2, c), { authUser: { id: "auth-a", email: "a@dsg.test" }, showToast: T2.showToast, dbAuth: { getProfile: async () => ({ person_id: "s2", role: "scheduler" }) }, setReloadTrigger: () => { c.reloads++; },
+      auth: tab2.auth, reauthBusy: false, setReauthBusy: noopX, setReauthPassword: noopX, setReauthError: noopX, setReauthSheet: (v) => { c.sheet = v; } });
+    env.sessionBoundary = G.boundary(env).sessionBoundary;
+    env.reauthLanded = G.reauth(env);
+    await G.raSync(env)(); await ticks(T2, 2);
+    const renewed = { calls: calls.slice(), bound: boundOf(tab2), toasts: T2.toasts.map(x => x[0]), epoch: T2.sessionEpochRef.current, pending: T2.eng.pending(), table: t.get(X[0]).data.dayCall, now: tab2.dbAuthHeaders().Authorization };
+    check("SE-X22 H4 (d) …tab 2's 'Sign in again' renews the STORED session (B's refresh token) and lands as ANOTHER account: the real session boundary runs, A's unsaved week is discarded — 'Signed in as a different account than before — the 1 week not saved was discarded.' — never sent; from then on the tab is B's (bound to B, its writes as B)",
+      renewed.calls.some(x => x === "POST /auth/v1/token?refresh_token - rt=RB") && renewed.bound === "auth-b" && renewed.epoch === 1 && renewed.pending.length === 0
+        && renewed.toasts.includes("Signed in as a different account than before — the 1 week not saved was discarded.") && renewed.table === "s1" && renewed.now === "Bearer " + JB2, JSON.stringify(renewed));
+    // (f) a sign-out in a tab bound to A while ANOTHER account's session is stored (another tab's): that session is
+    // neither logged out on the server (a request as B) nor cleared — and the tab is unbound after it (signed out)
+    const tab5 = tabCfg(); bind(tab5, "auth-a");                                              // (JB2 — B's renewed session — is what's stored now)
+    calls.length = 0;
+    await G.boundary(Object.assign(bEnv(T2, c), { auth: tab5.auth })).handleSignOut();
+    const so = { calls: calls.slice(), stored: ls.getItem("dsg-auth-token") === JB2, bound: boundOf(tab5) };
+    check("SE-X22 H4 (f) the real handleSignOut in a tab bound to A while another account's session (B's, stored by another tab) is in the shared storage: no server logout as B, B's session left in place — and the tab unbound after its sign-out (the sign-in form's requests run as nobody's)",
+      !so.calls.some(x => /auth\/v1\/logout/.test(x)) && so.stored && so.bound === null, JSON.stringify(so));
+    // (e) the sign-in form's submit and the Face ID unlock bind the tab
+    const tab3 = tabCfg(); ls.removeItem("dsg-auth-token"); ls.removeItem("dsg-auth-refresh");
+    const rec3 = { user: null };
+    await G.authSubmit({ setAuthError: noopX, setAuthBusy: noopX, authMode: "login", signupPersonId: "", dbAuth: { getProfile: async () => ({ person_id: "s2", role: "member" }) }, auth: tab3.auth, authEmail: "b@dsg.test", authPassword: "pw", allPeople: [],
+      setAuthUser: (u) => { rec3.user = u; }, setUserProfile: noopX, setMySurgeon: noopX, setNeedsProfile: noopX, setIsScheduler: noopX, setReloadTrigger: noopX, setAuthEmail: noopX, setAuthPassword: noopX,
+      fetch: net, SUPABASE_URL: BASE, dbAuthHeaders: tab3.dbAuthHeaders, saveNotifPref: noopX, showToast: noopX, console: { error: noopX, warn: noopX, log: noopX } })();
+    const afterSignIn = { bound: boundOf(tab3), user: rec3.user && rec3.user.id, own: tab3.dbAuthHeaders().Authorization };
+    ls.setItem("dsg-auth-token", JC);                                                          // another tab stores account C's session
+    const foreign3 = tab3.dbAuthHeaders().Authorization;
+    const tab4 = tabCfg(); ls.setItem("dsg-auth-token", JB2); ls.setItem("dsg-auth-refresh", "RB2");
+    await G.bioUnlock({ setAuthError: noopX, setAuthBusy: noopX, biometric: { authenticate: async () => ({ success: true }) }, auth: tab4.auth, setAuthUser: noopX, dbAuth: { getProfile: async () => null },
+      setUserProfile: noopX, setMySurgeon: noopX, setNeedsProfile: noopX, setBiometricPending: noopX, setReloadTrigger: noopX })();
+    const afterBio = boundOf(tab4); ls.setItem("dsg-auth-token", JC); const foreign4 = tab4.dbAuthHeaders().Authorization;
+    check("SE-X22 H4 (e) the sign-in form's submit (its own request unbound) binds the tab to the account it signed in — its own token used, another account's stored after that is no session there (anon); the Face ID unlock the same",
+      afterSignIn.bound === "auth-b" && afterSignIn.user === "auth-b" && afterSignIn.own === "Bearer " + JB && foreign3 === ANONH && afterBio === "auth-b" && foreign4 === ANONH, JSON.stringify({ afterSignIn, foreign3, afterBio, foreign4 }));
   });
 
   // SE-X-I — the harness rule (A17(c)).

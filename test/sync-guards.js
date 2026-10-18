@@ -326,10 +326,13 @@ await (async () => {
   //    tap waiting on it (clear, Generate & Publish, factory reset, Accept & Publish, restore's before_restore) —
   //    open for ever: each of its requests has a timeout (snapshots.timeoutMs, 15 s), is aborted at it, and the
   //    capture fails closed (ok:false, nothing inserted after it) — its caller's "Couldn't save a backup snapshot"
-  //    path (executed with the real clearSchedule in SE-G (2)). The time_off fold stays best-effort.
+  //    path (executed with the real clearSchedule in SE-G (2)). The time_off fold stays best-effort — for every
+  //    reason but the factory reset's (21/n, review r4 fixes-10: reset_all_data then DELETES the time off, and its
+  //    snapshot is the only way back to it — there a time_off read that fails or times out fails the capture; SE-X21
+  //    runs the real reset on it, CB below every failure mode and the body read).
   {
     const ms0 = snapshots.timeoutMs; snapshots.timeoutMs = 30;
-    const hangAt = async (which) => {
+    const hangAt = async (which, reason) => {
       const calls = [];
       setFetch((url, opts = {}) => {
         const method = (opts.method || "GET").toUpperCase(); calls.push(method + " " + String(url).replace(/^.*\/rest\/v1\//, "").split("?")[0]);
@@ -338,14 +341,156 @@ await (async () => {
         const json = /call_schedule_data/.test(String(url)) ? BLOB_ROW : /schedule_weeks/.test(String(url)) ? WEEK_ROWS : [];
         return Promise.resolve({ ok: true, status: method === "POST" ? 201 : 200, json: async () => json, text: async () => JSON.stringify(json) });
       });
-      const t0 = Date.now(); const res = await Promise.race([snapshots.capture("clear_schedule"), new Promise(r => setTimeout(() => r({ held: "no answer in 1 s" }), 1000))]); return { r: res, ms: Date.now() - t0, calls, inserts: calls.filter(c => c.startsWith("POST")).length };
+      const t0 = Date.now(); const res = await Promise.race([snapshots.capture(reason || "clear_schedule"), new Promise(r => setTimeout(() => r({ held: "no answer in 1 s" }), 1000))]); return { r: res, ms: Date.now() - t0, calls, inserts: calls.filter(c => c.startsWith("POST")).length };
     };
-    const hb = await hangAt("call_schedule_data"), hw = await hangAt("schedule_weeks"), hi = await hangAt("insert"), ht = await hangAt("time_off");
+    const hb = await hangAt("call_schedule_data"), hw = await hangAt("schedule_weeks"), hi = await hangAt("insert"), ht = await hangAt("time_off"), htr = await hangAt("time_off", "reset_all_data");
     snapshots.timeoutMs = ms0;
     check("B 20/n a capture request that never answers TIMES OUT (snapshots.timeoutMs, 15 s by default): the blob read, the schedule fold or the insert hanging → ok:false within the timeout, nothing inserted after it — the tap waiting on it is refused, not held open",
       ms0 === 15000 && [hb, hw, hi].every(x => x.r.ok === false && x.ms < 1000) && hb.inserts === 0 && hw.inserts === 0 && hi.inserts === 1, JSON.stringify({ ms0, hb, hw, hi }));
-    check("B 20/n …the time_off fold hanging stays best-effort: it times out and the capture still lands (ok:true, one insert)",
+    check("B 20/n …the time_off fold hanging stays best-effort (a clear's capture): it times out and the capture still lands (ok:true, one insert)",
       ht.r.ok === true && ht.inserts === 1 && ht.ms < 1000, JSON.stringify(ht));
+    check("B 21/n (review r4 fixes-10) …but for the FACTORY RESET's capture (reset_all_data — the reset deletes the time off next) a hanging time_off read fails it: ok:false within the timeout, NOTHING inserted (the reset is refused, not run without its vacations)",
+      htr.r.ok === false && htr.inserts === 0 && htr.ms < 1000 && /time_off/.test(String(htr.r.error || "")), JSON.stringify(htr));
+  }
+})();
+
+// ══════════════════════════════════════════════════════════════
+// CB. config.js (21/n, review r4): the tab bound to its account (auth.bindUser — branch-4), the capture's timeout
+//     over the BODY read (fixes-7), its time_off fold strict for the factory reset (fixes-10) — and their mutant
+//     battery: each mutant of config.js below is loaded into a fresh context and must turn a CB check red (the SE
+//     battery mutates index-source.html only). SE-X22 runs the binding in two real tabs; SE-X21 the real reset.
+// ══════════════════════════════════════════════════════════════
+console.log("\nCB. config.js — the tab's account binding, the capture's body timeout, its strict time_off fold (+ mutant battery)");
+await (async () => {
+  const helpersSrc = fs.readFileSync(path.join(ROOT, "helpers.js"), "utf8"), cfgSrc = fs.readFileSync(path.join(ROOT, "config.js"), "utf8");
+  const b64 = (o) => Buffer.from(JSON.stringify(o)).toString("base64").replace(/=+$/, "").replace(/\+/g, "-").replace(/\//g, "_");
+  const jwt = (sub) => "eyJhbGciOiJIUzI1NiJ9." + b64({ sub, exp: Math.floor(Date.now() / 1000) + 3600 }) + ".sig";
+  const JA = jwt("auth-a"), JB = jwt("auth-b");
+  // One fresh context per run: the code given (the real config.js, or a mutant), its own localStorage and fetch.
+  const load = (code) => {
+    const store = new Map(), calls = [];
+    const sb = { console: { log() {}, warn() {}, error() {}, info() {} }, window: {}, document: undefined, navigator: { userAgent: "node-test" }, setTimeout, clearTimeout, AbortController,
+      localStorage: { getItem: (k) => (store.has(k) ? store.get(k) : null), setItem: (k, v) => { store.set(k, String(v)); }, removeItem: (k) => { store.delete(k); } },
+      atob: (s) => Buffer.from(s, "base64").toString("binary"), fetch: null };
+    sb.globalThis = sb; vm.createContext(sb);
+    vm.runInContext(helpersSrc, sb, { filename: "helpers.js" }); vm.runInContext(code, sb, { filename: "config.js" });
+    const x = vm.runInContext("({ auth, dbAuthHeaders, dbReadHeaders, dbHeaders, db, supabase, snapshots, SUPABASE_ANON_KEY })", sb);
+    x.store = store; x.calls = calls; x.setFetch = (f) => { sb.fetch = (u, i) => { calls.push(((i && i.method) || "GET") + " " + String(u).replace(/^https:\/\/[^/]+/, "").split("?")[0] + " " + ((i && i.headers && i.headers.Authorization) || "-") + (i && i.body && /refresh_token/.test(i.body) ? " rt=" + JSON.parse(i.body).refresh_token : "")); return f(u, i || {}); }; };
+    x.signIn = (tok, rt) => { store.set("dsg-auth-token", tok); store.set("dsg-auth-refresh", rt || "R"); };
+    return x;
+  };
+  const ok200 = (json, status) => Promise.resolve({ ok: true, status: status || 200, json: async () => json, text: async () => JSON.stringify(json) });
+  const cbChecks = async (code) => {
+    const out = [], ck = (name, cond, detail) => out.push({ name, cond: !!cond, detail: detail === undefined ? "" : JSON.stringify(detail) });
+    let c;
+    try { c = load(code); } catch (e) { ck("loads", false, String(e)); return out; }
+    const ANONH = "Bearer " + c.SUPABASE_ANON_KEY;
+    // (1) the binding
+    try {
+    c.signIn(JB, "RB");
+    const unbound = { s: c.auth.getSession() && c.auth.getSession().access_token, w: c.dbAuthHeaders().Authorization, r: c.dbReadHeaders().Authorization };
+    c.auth.bindUser("auth-b");
+    const own = { s: c.auth.getSession() && c.auth.getSession().access_token, w: c.dbAuthHeaders().Authorization, r: c.dbReadHeaders().Authorization };
+    c.auth.bindUser("auth-a");                                      // this tab is A's; B's session is the one stored (another tab's)
+    const foreign = { s: c.auth.getSession(), w: c.dbAuthHeaders().Authorization, r: c.dbReadHeaders().Authorization, g: c.auth.getAuthHeaders().Authorization };
+    ck("branch-4 the stored session as this tab may use it: unbound → the stored one; bound to its own account → its own; bound to A while B's is stored → NO session (getSession null), reads and writes as anon (dbReadHeaders, dbAuthHeaders, getAuthHeaders)",
+      unbound.s === JB && unbound.w === "Bearer " + JB && unbound.r === "Bearer " + JB && own.s === JB && own.w === "Bearer " + JB && own.r === "Bearer " + JB
+        && foreign.s === null && foreign.w === ANONH && foreign.r === ANONH && foreign.g === ANONH, { unbound, own, foreign });
+    c.setFetch(() => ok200([{ id: 1 }], 201));
+    await c.db.insert("time_off", { person_id: "s1" }); await c.supabase.from("call_schedule_data").upsert({ id: "main", data: {} }); await c.db.update("time_off", 1, { end_date: "2030-01-09" });
+    ck("branch-4 …every direct write while another account's session is stored goes out as anon, never with that account's token (db.insert, the setup upsert, db.update)",
+      c.calls.length === 3 && c.calls.every(x => x.endsWith(ANONH)), c.calls.slice());
+    c.store.set("dsg-auth-token", "not-a-jwt");
+    ck("branch-4 …an undecodable stored token while bound is no session either", c.auth.getSession() === null && c.dbAuthHeaders().Authorization === ANONH, c.dbAuthHeaders());
+    c.signIn(JB, "RB"); c.calls.length = 0;
+    c.setFetch((u) => /grant_type=refresh_token/.test(String(u)) ? ok200({ access_token: jwt("auth-b"), refresh_token: "RB2", user: { id: "auth-b" } }) : ok200({}));
+    const rk = await c.auth.refreshKeep();
+    ck("branch-4 'Sign in again' (refreshKeep) renews the STORED session — B's, with B's refresh token — and answers its account (B): the app's boundary runs on it",
+      rk.ok === true && rk.user && rk.user.id === "auth-b" && c.calls.length === 1 && / rt=RB$/.test(c.calls[0]) && c.store.get("dsg-auth-refresh") === "RB2", { rk, calls: c.calls.slice() });
+    c.signIn(JB, "RB"); c.calls.length = 0; c.setFetch(() => ok200({}, 204));
+    await c.auth.signOut();
+    const soForeign = { calls: c.calls.slice(), stored: c.store.get("dsg-auth-token") };
+    c.signIn(JA, "RA"); c.calls.length = 0;
+    await c.auth.signOut();
+    const soOwn = { calls: c.calls.slice(), stored: c.store.has("dsg-auth-token") };
+    ck("branch-4 signOut in a tab bound to A: with B's session stored (another tab's) — no server logout as B, B's session left stored; with its own — the logout sent with A's token and the session cleared",
+      soForeign.calls.length === 0 && soForeign.stored === JB && soOwn.calls.length === 1 && soOwn.calls[0] === "POST /auth/v1/logout Bearer " + JA && soOwn.stored === false, { soForeign, soOwn });
+    c.auth.bindUser(null); c.signIn(JB, "RB");
+    ck("branch-4 unbound again (bindUser(null)): the stored session is this tab's to use", c.auth.getSession() && c.auth.getSession().access_token === JB && c.dbAuthHeaders().Authorization === "Bearer " + JB);
+    } catch (e) { ck("branch-4 the binding (crashed)", false, String(e && e.message || e)); }
+    // (2) the capture: a request whose headers arrive but whose BODY stalls (fixes-7); the time_off fold per reason (fixes-10)
+    try {
+    c.snapshots.timeoutMs = 30;
+    const BLOB = [{ data: { surgeons: [{ id: "s1", name: "A" }], numWeeks: 13 }, updated_at: "2026-10-01T00:00:00Z" }], WEEKS = [{ week_monday: "2026-10-12", data: { dayCall: "s1" } }];
+    const capture = async (reason, mode) => {
+      c.calls.length = 0;
+      c.setFetch((url, init) => {
+        const u = String(url), m = (init.method || "GET").toUpperCase();
+        const json = /call_schedule_data/.test(u) ? BLOB : /schedule_weeks/.test(u) ? WEEKS : [{ id: 1, person_id: "s2", kind: "vacation", start_date: "2030-01-08", end_date: "2030-01-10" }];
+        const hit = mode.at === "insert" ? m === "POST" : m === "GET" && u.includes(mode.at);
+        const stall = () => new Promise((_, rej) => { if (init.signal) init.signal.addEventListener("abort", () => rej(new Error("AbortError: body aborted"))); });
+        if (hit && mode.kind === "body") return Promise.resolve({ ok: true, status: m === "POST" ? 201 : 200, text: stall, json: async () => JSON.parse(await stall()) });
+        if (hit && mode.kind === "hang") return stall();
+        if (hit && mode.kind === "500") return Promise.resolve({ ok: false, status: 500, json: async () => ({}), text: async () => "boom" });
+        if (hit && mode.kind === "throw") return Promise.reject(new TypeError("Failed to fetch"));
+        if (hit && mode.kind === "nolist") return ok200({ message: "not a list" });
+        return ok200(m === "POST" ? [] : json, m === "POST" ? 201 : 200);
+      });
+      const t0 = Date.now();
+      const r = await Promise.race([c.snapshots.capture(reason, { minWeeks: 1 }), new Promise(res => setTimeout(() => res({ held: "no answer in 1 s" }), 1000))]);
+      return { r, ms: Date.now() - t0, inserts: c.calls.filter(x => x.startsWith("POST")).length };
+    };
+    const bb = await capture("clear_schedule", { at: "call_schedule_data", kind: "body" }), bw = await capture("clear_schedule", { at: "schedule_weeks", kind: "body" }), bi = await capture("clear_schedule", { at: "insert", kind: "body" });
+    ck("fixes-7 a capture request whose headers arrive but whose BODY stalls (a stalled stream) is aborted at snapshots.timeoutMs too — the blob read, the schedule fold, the insert: ok:false within the timeout, nothing inserted after a failed read",
+      [bb, bw, bi].every(x => x.r.ok === false && x.ms < 1000) && bb.inserts === 0 && bw.inserts === 0 && bi.inserts === 1, { bb, bw, bi });
+    const tBody = await capture("clear_schedule", { at: "time_off", kind: "body" }), t500 = await capture("clear_schedule", { at: "time_off", kind: "500" });
+    ck("fixes-10 …a clear's time_off fold stays best-effort: its body stalling, or a 500 — the capture still lands (ok:true, one insert)",
+      [tBody, t500].every(x => x.r.ok === true && x.inserts === 1 && x.ms < 1000), { tBody, t500 });
+    const strict = [];
+    for (const kind of ["500", "throw", "hang", "body", "nolist"]) strict.push(Object.assign({ kind }, await capture("reset_all_data", { at: "time_off", kind })));
+    const rOk = await capture("reset_all_data", { at: "none", kind: "none" });
+    ck("fixes-10 …the FACTORY RESET's capture (reset_all_data) fails closed on its time_off read — a 500, a throw, a hang, a stalled body, an answer that is no list: ok:false within the timeout, nothing inserted; control: the read answers — one insert, the vacations in it",
+      strict.every(x => x.r.ok === false && x.inserts === 0 && x.ms < 1000) && rOk.r.ok === true && rOk.inserts === 1, { strict, rOk });
+    } catch (e) { ck("the capture (crashed)", false, String(e && e.message || e)); }
+    return out;
+  };
+  const real = await cbChecks(cfgSrc);
+  for (const r of real) check("CB " + r.name, r.cond, r.detail);
+  // The battery: config.js mutants, each re-breaking one of the above (anchor-keeping variants included).
+  const CB_MUTANTS = [
+    { id: "R4M1", what: "fixes-7: snapReq's timer is cleared once the headers arrive (a stalled body holds the capture, and the tap, open)",
+      from: "    const res = await fetch(url, ctl ? { ...init, signal: ctl.signal } : init);\n    const text = await res.text();", to: "    const res = await fetch(url, ctl ? { ...init, signal: ctl.signal } : init);\n    if (timer) clearTimeout(timer);\n    const text = await res.text();" },
+    { id: "CB1", what: "branch-4: dbAuthHeaders without the sub check (another tab's account's token on every write)",
+      from: "    const token = _tokenForTab(localStorage.getItem(\"dsg-auth-token\")); // (another account's — another tab's — is none here: anon)", to: "    const token = localStorage.getItem(\"dsg-auth-token\");" },
+    { id: "CB2", what: "branch-4: dbReadHeaders without the sub check",
+      from: "    const token = _tokenForTab(localStorage.getItem(\"dsg-auth-token\")); // (another account's: anon)", to: "    const token = localStorage.getItem(\"dsg-auth-token\");" },
+    { id: "CB3", what: "branch-4: getSession without the sub check (the engine's token() and the setup autosave take another account's session)",
+      from: "    return s && _tokenForTab(s.access_token) ? s : null;", to: "    return s;" },
+    { id: "CB4", what: "branch-4 (variant): the sub check ignores the binding (the stored token is always this tab's)",
+      from: "(!token ? null : (!_authBoundUser || _jwtSub(token) === _authBoundUser) ? token : null)", to: "(!token ? null : token)" },
+    { id: "CB5", what: "branch-4 (variant): an undecodable token passes the sub check while bound",
+      from: "(!_authBoundUser || _jwtSub(token) === _authBoundUser)", to: "(!_authBoundUser || _jwtSub(token) === _authBoundUser || _jwtSub(token) === null)" },
+    { id: "CB6", what: "branch-4: refreshKeep renews only this tab's session (another tab's sign-in can never land here as another account: stuck on 'Sign in again')",
+      from: "    const session = auth._storedSession();\n    if (!session || !session.refresh_token) return { ok: false, error: \"no-session\" };", to: "    const session = auth.getSession();\n    if (!session || !session.refresh_token) return { ok: false, error: \"no-session\" };" },
+    { id: "CB7", what: "branch-4: signOut clears another account's stored session (another tab signed out under it)",
+      from: "    if (!stored || session) auth._clearSession();", to: "    auth._clearSession();" },
+    { id: "CB8", what: "branch-4: signOut logs out whatever session is stored (a server request as another account)",
+      from: "    const stored = auth._storedSession(), session = auth.getSession();", to: "    const stored = auth._storedSession(), session = stored;" },
+    { id: "CB9", what: "fixes-10: the time_off fold is best-effort for the factory reset too (its snapshot without the vacations it then deletes)",
+      from: "      const timeOffStrict = reason === \"reset_all_data\";", to: "      const timeOffStrict = false;" },
+    { id: "CB10", what: "fixes-10 (variant, over-strict): the time_off fold is strict for every reason (a clear refused by a time_off hiccup)",
+      from: "      const timeOffStrict = reason === \"reset_all_data\";", to: "      const timeOffStrict = true;" },
+    { id: "CB11", what: "fixes-10 (variant): a time_off answer that is no list is taken as no time off (the reset's snapshot without its vacations)",
+      from: "          if (!Array.isArray(trows)) timeOffErr = \"time_off read returned no list\";\n          else if (trows.length) {", to: "          if (Array.isArray(trows) && trows.length) {" },
+  ];
+  const cfgLF = cfgSrc.replace(/\r\n/g, "\n");
+  for (const m of CB_MUTANTS) {
+    const n = cfgLF.split(m.from).length - 1;
+    if (n !== 1) { check(`CB-M ${m.id} anchor present exactly once (${m.what})`, false, `found ${n}`); continue; }
+    const res = await cbChecks(cfgLF.replace(m.from, () => m.to));
+    const red = res.filter(r => !r.cond).map(r => r.name.slice(0, 70));
+    check(`CB-M ${m.id} killed: ${m.what}`, red.length > 0, "every CB check still passes with this bug in place");
+    if (process.env.CB_WHO) console.log("     " + m.id + " ← " + JSON.stringify(red));
   }
 })();
 
@@ -1105,7 +1250,7 @@ check("prefs audit never logs the plaintext email (masked only)",
       acceptFn = vm.runInContext(`(function (env) {
         const { schedule, surgeons, showToast, detectCascadeChanges, setTradeRequests, logAudit,
                 pushUndo, updateSchedule, scheduleRef, schedEditable, addNotification, sendEmailNotif, schedulerAdminIds, confirm,
-                silvisActive, silvisBlock, silvisRefuse } = env;
+                silvisActive, silvisBlock, silvisRefuse, sessionEpochRef } = env;
         return (async (req) => {${body}});
       })`, sandbox, { filename: "accept-trade-extract.js" });
       check("accept-trade handler compiles standalone", true);
@@ -1129,6 +1274,7 @@ check("prefs audit never logs the plaintext email (masked only)",
           confirm: () => true,
           // silvisBusy (section O owns its behavior): inert here
           silvisActive: false, silvisBlock: () => null, silvisRefuse: () => false,
+          sessionEpochRef: { current: 0 }, // (21/n, review r4 branch-2: the accept takes the session's identity at the tap — one session here)
         } };
       };
       const baseReq = (weekMon, retWeek) => ({
@@ -5535,7 +5681,7 @@ await (async () => {
     env.biometric = { unenroll: () => { w.log.push("biometric.unenroll"); } };
     env.dbAuth = { getProfile: async (id) => { w.log.push("getProfile:" + id); return o.profile || null; } };
     env.handleSignOut = async () => { w.log.push("handleSignOut"); };
-    env.auth = Object.assign(Object.create(o.auth || {}), { signOut: async () => { w.log.push("auth.signOut"); } });
+    env.auth = Object.assign(Object.create(o.auth || {}), { signOut: async () => { w.log.push("auth.signOut"); }, bindUser: (id) => { w.bound = id; } }); // (21/n: the tab's account binding — review r4 branch-4)
     env.authUser = o.authUser === undefined ? UA : o.authUser;
     env.reauthBusy = !!o.busy;
     env.reauthPassword = o.password === undefined ? "pw-a" : o.password;
@@ -5746,7 +5892,7 @@ await (async () => {
   const { createFakeWeeksTable } = require("./fake-weeks-table.js");
   const accSrc = after("  const acceptTradeRequest = useCallback(async (req) => {", "\n  }, [schedule, surgeons, pushUndo, addNotification, sendEmailNotif, detectCascadeChanges, schedulerAdminIds, silvisActive, silvisBlock, silvisRefuse]);");
   const dcSrc = after("  const detectCascadeChanges = useCallback((sched, req) => {", "\n  }, [surgeons]);");
-  const accFn = accSrc && fnK("fmt, shiftStartDate, showToast, schedEditable, scheduleRef, detectCascadeChanges, surgeons, silvisActive, silvisBlock, silvisRefuse, confirm, fetch, SUPABASE_URL, dbAuthHeaders, console, setTradeRequests, tradeAcceptMsg, logAudit, pushUndo, updateSchedule, addNotification, sendEmailNotif, SHIFT_LABELS, schedulerAdminIds, cascadeMsg, schedule", "async (req) => {" + accSrc + "\n  }");
+  const accFn = accSrc && fnK("fmt, shiftStartDate, showToast, schedEditable, scheduleRef, detectCascadeChanges, surgeons, silvisActive, silvisBlock, silvisRefuse, confirm, fetch, SUPABASE_URL, dbAuthHeaders, console, setTradeRequests, tradeAcceptMsg, logAudit, pushUndo, updateSchedule, addNotification, sendEmailNotif, SHIFT_LABELS, schedulerAdminIds, cascadeMsg, schedule, sessionEpochRef", "async (req) => {" + accSrc + "\n  }");
   const dcFn = dcSrc && fnK("surgeons, SHIFT_LABELS", "(sched, req) => {" + dcSrc + "\n  }");
   if (!accFn || !dcFn) { check("SE-K acceptTradeRequest and detectCascadeChanges are extractable", false, JSON.stringify({ acc: !!accFn, dc: !!dcFn })); return; }
   const HK = vm.runInContext("({ fmt, shiftStartDate, SHIFT_LABELS, tradeAcceptMsg, cascadeMsg })", sandbox);
@@ -5790,6 +5936,7 @@ await (async () => {
       addNotification: async (type, title, msg, data, targets) => { w.notes.push(type); },
       sendEmailNotif: (type) => { w.emails.push(type); },
       schedulerAdminIds: ["s9"],
+      sessionEpochRef: { current: 0 }, // (21/n: the accept's session at the tap — one session here; SE-X20 crosses one)
       fetch: async (url, init) => {
         const r = { url: String(url), method: (init && init.method) || "GET", headers: (init && init.headers) || {}, body: init && init.body ? JSON.parse(init.body) : null };
         w.reqs.push(r);
@@ -6521,7 +6668,7 @@ await (async () => {
       await rstF({ isScheduler: true, userProfile: null, alert: noop, schedEditable: a.schedEditable, prompt: () => { w.prompts++; return "RESET"; }, setSaveStatus: (s) => w.status.push(s), setTimeout: () => 0, sessionEpochRef: { current: 0 },
         snapshots: { capture: async () => { w.snaps++; if (o.duringSnap) o.duringSnap(); return { ok: true }; } }, schedSyncRef: a.schedSyncRef, showToast: a.showToast, logAudit: () => { w.audits++; },
         allowWipeSaveRef: { current: false }, everHadRealDataRef: { current: true }, supabase: { from: () => ({ upsert: async () => { w.upserts++; return { error: null }; } }) },
-        console: { error: (...x) => a.errors.push(x.map(String).join(" ")), warn: noop }, setSurgeons: () => { w.cleared++; }, INIT_SURGEONS: [], setApps: noop, INIT_APPS: [], toClearAll: noop,
+        console: { error: (...x) => a.errors.push(x.map(String).join(" ")), warn: noop }, setSurgeons: () => { w.cleared++; }, INIT_SURGEONS: [], setApps: noop, INIT_APPS: [], toClearAll: async () => ({ ok: true }), // (21/n: it answers { ok } — review r4 fixes-2)
         setBackupMondaySet: noop, setFierceBackupSet: noop, scheduleRef: a.ref, commitSchedule: a.commitSchedule, runAuthoritativeSchedule: a.runAuthoritativeSchedule,
         setAppShifts: noop, setPriorCounts: noop, setYear1Counts: noop, setStartMonth: noop, setStartYear: noop })();
       await a.settle();
