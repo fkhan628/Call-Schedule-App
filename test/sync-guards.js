@@ -60,6 +60,7 @@ const sandbox = {
   fetch: () => { throw new Error("fetch called before a stub was installed"); },
   navigator: { userAgent: "node-test" },
   setTimeout, clearTimeout,
+  AbortController, // (20/n: snapshots.capture arms a timeout per request with it — section B 8.)
 };
 sandbox.globalThis = sandbox;
 vm.createContext(sandbox);
@@ -320,6 +321,32 @@ await (async () => {
   ]);
   r = await snapshots.capture("test");
   check("time_off fetch fails, blob real → still ok:true (best-effort)", r.ok === true, JSON.stringify(r));
+
+  // 8. (20/n, review r3 regress-3) A request that never answers no longer holds the capture — and the destructive
+  //    tap waiting on it (clear, Generate & Publish, factory reset, Accept & Publish, restore's before_restore) —
+  //    open for ever: each of its requests has a timeout (snapshots.timeoutMs, 15 s), is aborted at it, and the
+  //    capture fails closed (ok:false, nothing inserted after it) — its caller's "Couldn't save a backup snapshot"
+  //    path (executed with the real clearSchedule in SE-G (2)). The time_off fold stays best-effort.
+  {
+    const ms0 = snapshots.timeoutMs; snapshots.timeoutMs = 30;
+    const hangAt = async (which) => {
+      const calls = [];
+      setFetch((url, opts = {}) => {
+        const method = (opts.method || "GET").toUpperCase(); calls.push(method + " " + String(url).replace(/^.*\/rest\/v1\//, "").split("?")[0]);
+        const hit = which === "insert" ? method === "POST" : method === "GET" && String(url).includes(which);
+        if (hit) return new Promise((_, rej) => { if (opts.signal) opts.signal.addEventListener("abort", () => rej(new Error("AbortError: the request was aborted"))); });
+        const json = /call_schedule_data/.test(String(url)) ? BLOB_ROW : /schedule_weeks/.test(String(url)) ? WEEK_ROWS : [];
+        return Promise.resolve({ ok: true, status: method === "POST" ? 201 : 200, json: async () => json, text: async () => JSON.stringify(json) });
+      });
+      const t0 = Date.now(); const res = await Promise.race([snapshots.capture("clear_schedule"), new Promise(r => setTimeout(() => r({ held: "no answer in 1 s" }), 1000))]); return { r: res, ms: Date.now() - t0, calls, inserts: calls.filter(c => c.startsWith("POST")).length };
+    };
+    const hb = await hangAt("call_schedule_data"), hw = await hangAt("schedule_weeks"), hi = await hangAt("insert"), ht = await hangAt("time_off");
+    snapshots.timeoutMs = ms0;
+    check("B 20/n a capture request that never answers TIMES OUT (snapshots.timeoutMs, 15 s by default): the blob read, the schedule fold or the insert hanging → ok:false within the timeout, nothing inserted after it — the tap waiting on it is refused, not held open",
+      ms0 === 15000 && [hb, hw, hi].every(x => x.r.ok === false && x.ms < 1000) && hb.inserts === 0 && hw.inserts === 0 && hi.inserts === 1, JSON.stringify({ ms0, hb, hw, hi }));
+    check("B 20/n …the time_off fold hanging stays best-effort: it times out and the capture still lands (ok:true, one insert)",
+      ht.r.ok === true && ht.inserts === 1 && ht.ms < 1000, JSON.stringify(ht));
+  }
 })();
 
 // ══════════════════════════════════════════════════════════════
@@ -467,6 +494,17 @@ await (async () => {
   r = await snapshots.restore(7, async () => { callsAtApply = writesIn(f).map(c => c.url.replace(/^.*\/rest\/v1\//, "").replace(/\?.*$/, "")).join(); return { ok: true }; }, { confirm: async () => { askedYes++; return true; } });
   check("A15 …a 'yes' (an async one too) proceeds as before: the before_restore snapshot first, then the blob, then the applier",
     r.ok === true && askedYes === 1 && callsAtApply === "call_schedule_snapshots,call_schedule_data", JSON.stringify({ r, callsAtApply }));
+  // (20/n, review r3 regress-3) opts.proceed(): asked once the before_restore snapshot is written, right before the
+  // blob — a "no" (the caller's session changed meanwhile: a sign-out, another account) stops the restore there.
+  const urlsOf = (fn) => writesIn(fn).map(c => c.url.replace(/^.*\/rest\/v1\//, "").replace(/\?.*$/, "")).join();
+  f = fullRestore();
+  const askedP = []; let appliedP = 0;
+  r = await snapshots.restore(7, async () => { appliedP++; return { ok: true }; }, { confirm: () => true, proceed: () => { askedP.push(urlsOf(f)); return false; } });
+  check("C 20/n restore opts.proceed(): asked once — after the before_restore snapshot, before the blob; a 'no' → cancelled: the blob NOT written, the applier never called",
+    r.ok === false && r.cancelled === true && askedP.length === 1 && askedP[0] === "call_schedule_snapshots" && urlsOf(f) === "call_schedule_snapshots" && appliedP === 0, JSON.stringify({ r, askedP, writes: urlsOf(f) }));
+  f = fullRestore(); appliedP = 0;
+  r = await snapshots.restore(7, async () => { appliedP++; return { ok: true }; }, { confirm: () => true, proceed: () => true });
+  check("C 20/n …a 'yes' proceeds: the blob written, then the applier", r.ok === true && appliedP === 1 && urlsOf(f) === "call_schedule_snapshots,call_schedule_data", JSON.stringify({ r, writes: urlsOf(f) }));
   f = stubFetch([{ m: "GET", url: snapUrl, json: [{ id: 7, reason: "periodic_session", created_at: "c", data: { surgeons: INIT_SURGEONS, vacations: { s5: [["2026-09-12", "2026-09-21"]] } } }] }]);
   let askedNone = 0;
   r = await snapshots.restore(7, async () => ({ ok: true }), { confirm: () => { askedNone++; return true; } });
@@ -658,6 +696,7 @@ await (async () => {
         const everHadRealDataRef = { current: true };
         const pendingSaveRef = { current: payload };
         const lastSyncRef = { current: null };
+        const setupBaseRef = { current: null }, payloadSig = "SIG"; // (20/n, review r3 G7: the body records what it wrote)
         const payloadLooksWiped = () => false;
         const syncSchedWeeks = () => { calls.weeks++; };
         const supabase = { from: () => ({ upsert: async () => { calls.blob++; return blobOutcome; } }) };
@@ -3753,7 +3792,7 @@ check("prefs audit never logs the plaintext email (masked only)",
   const A0 = "  const acceptPreview = async () => {";
   const i = nsrcAE.indexOf(A0), e = i < 0 ? -1 : nsrcAE.indexOf("\n  };\n", i);
   const body = i < 0 || e < 0 ? null : "async () => {" + nsrcAE.slice(i + A0.length, e) + "\n  }";
-  const ENV = "previewSchedule, previewSchedRef, previewNeedsOk, previewAck, previewOrigin, publishWeeks, runPublish, publishNotLanded, publishingRef, setPublishing, snapshots, showToast, schedEditable, schedSyncRef, previewEpochRef, setPreviewSchedule, setShowPreview, setCalMonth, setCalYear, setView, setSaveStatus, setTimeout, numWeeks, MO, startMonth, startYear, cancelSearch, publishSearchRunning";
+  const ENV = "previewSchedule, previewSchedRef, previewNeedsOk, previewAck, previewOrigin, publishWeeks, runPublish, publishNotLanded, publishingRef, setPublishing, snapshots, showToast, schedEditable, schedSyncRef, previewEpochRef, setPreviewSchedule, setShowPreview, setCalMonth, setCalYear, setView, setSaveStatus, setTimeout, numWeeks, MO, startMonth, startYear, cancelSearch, publishSearchRunning, sessionEpochRef";
   let mk = null; try { mk = body ? vm.runInContext(`(function (env) { const { ${ENV} } = env; return (${body}); })`, sandbox) : null; } catch (ex) { mk = null; }
   // o: busy (a publish in progress) · pubSearch (a Generate & Publish search running) · moved (a week of the preview adopted
   // since it was made) · movedAfter (…adopted during the snapshot's await) · gated (the edit gate refuses) · snapFail · landed:false
@@ -3762,7 +3801,7 @@ check("prefs audit never logs the plaintext email (masked only)",
     const PS = { "2026-11-16": { dayCall: "s1", nights: {} }, "2026-11-23": { dayCall: "s2", nights: {} } };
     let snapped = false;
     await mk({
-      schedEditable: () => !o.gated, previewEpochRef: { current: 3 },
+      schedEditable: () => !o.gated, previewEpochRef: { current: 3 }, sessionEpochRef: { current: 0 },
       // bites only if acceptPreview asks with previewEpochRef.current
       schedSyncRef: { current: { changedSince: (keys, since) => (since === 3 && (o.moved || (o.movedAfter && snapped))) ? keys.slice(0, 1) : [], knownSchedule: () => ({ "2026-11-09": {} }) } },
       previewSchedule: PS, previewSchedRef: { current: PS }, previewNeedsOk: { cost: items.length * 6, items }, previewAck: ack,
@@ -4604,13 +4643,13 @@ await (async () => {
 await (async () => {
   const nsrcF = src.replace(/\r\n/g, "\n");
   const i = nsrcF.indexOf("  const finishGenerate = (result, preview, clickSig, clickLocks, genEpoch) => {"), e = i < 0 ? -1 : nsrcF.indexOf("\n  };\n", i);
-  const ENV = "pendingLocks, nameOf, slotLabel, showToast, setPreviewSchedule, setPreviewOrigin, setShowPreview, genInputsSig, listScheduleBends, surgeons, mondays, buildGenAvailability, buildSilvisPrimary, vacations, holidayAssignments, buildPrevWeekSeed, publishingRef, setPublishing, setSaveStatus, snapshots, genCommitRef, previewEpochRef, schedEditable, schedSyncRef";
+  const ENV = "pendingLocks, nameOf, slotLabel, showToast, setPreviewSchedule, setPreviewOrigin, setShowPreview, genInputsSig, listScheduleBends, surgeons, mondays, buildGenAvailability, buildSilvisPrimary, vacations, holidayAssignments, buildPrevWeekSeed, publishingRef, setPublishing, setSaveStatus, snapshots, genCommitRef, previewEpochRef, schedEditable, schedSyncRef, sessionEpochRef";
   let mk = null; try { mk = i < 0 ? null : vm.runInContext("(function (env) { const { " + ENV + " } = env; return (" + nsrcF.slice(i + "  const finishGenerate = ".length, e) + "\n  }); })", sandbox); } catch (ex) { mk = null; }
   if (!mk) { check("AH9 finishGenerate extractable for execution", false, "anchor / compile"); return; }
   const RES = { "2099-03-02": { dayCall: "s1", nights: {} } };
   const go = async (o) => {
     const rec = { toasts: [], preview: null, shown: false, captured: 0, committed: 0 }, pub = { current: false }, pe = { current: -1 };
-    const fn = mk({ pendingLocks: o.locksNow || [], nameOf: (x) => x, slotLabel: () => "slot", showToast: (m) => rec.toasts.push(String(m)), setPreviewSchedule: (x) => { rec.preview = x; }, setPreviewOrigin: () => {}, setShowPreview: (x) => { rec.shown = x; },
+    const fn = mk({ sessionEpochRef: { current: 0 }, pendingLocks: o.locksNow || [], nameOf: (x) => x, slotLabel: () => "slot", showToast: (m) => rec.toasts.push(String(m)), setPreviewSchedule: (x) => { rec.preview = x; }, setPreviewOrigin: () => {}, setShowPreview: (x) => { rec.shown = x; },
       genInputsSig: () => o.sigNow, listScheduleBends: () => ({ items: o.items || [] }), surgeons: [], mondays: [], buildGenAvailability: () => ({}), buildSilvisPrimary: () => null, vacations: {}, holidayAssignments: {}, buildPrevWeekSeed: () => null,
       publishingRef: pub, setPublishing: () => {}, setSaveStatus: () => {}, snapshots: { capture: async () => { rec.captured++; if (o.gateAfter) o.gated = true; return { ok: !o.snapFail }; } }, genCommitRef: { current: async () => { rec.committed++; return { ok: !o.notLanded }; } },
       previewEpochRef: pe, schedEditable: () => !o.gated, schedSyncRef: { current: { knownSchedule: () => ({}), changedSince: (keys, since) => (o.moved && since === 5) ? keys.slice() : [] } } });
@@ -5472,7 +5511,7 @@ await (async () => {
   // ── the component's re-auth, for real ──
   const sbSrc = after("  const sessionBoundary = ", "\n  };\n"), soSrc = after("  const handleSignOut = ", "\n  };\n"),
     rlSrc = after("  const reauthLanded = ", "\n  };\n"), raSrc = after("  const reauthForSync = ", "\n  };\n"), smSrc = after("  const submitReauth = ", "\n  };\n");
-  const sbFn = sbSrc && fnR("searchRef, setSearching, setSearchStats, setPreviewSchedule, setShowPreview, schedSyncRef, setScheduleHistory, setEditWeekModal, setReauthNeeded, setStaleTokenWarn, setIsScheduler, setupReadRef, lastSyncRef", sbSrc + "\n  }");
+  const sbFn = sbSrc && fnR("searchRef, setSearching, setSearchStats, setPreviewSchedule, setShowPreview, schedSyncRef, setScheduleHistory, setEditWeekModal, setReauthNeeded, setStaleTokenWarn, setIsScheduler, setupReadRef, lastSyncRef, sessionEpochRef", sbSrc + "\n  }");
   const soFn = soSrc && fnR("schedSyncRef, confirm, sessionBoundary, auth, biometric, setAuthUser, setUserProfile, setNeedsProfile, setMySurgeon, setBiometricEnrolled, setBiometricPending", soSrc + "\n  }");
   const rlFn = rlSrc && fnR("schedSyncRef, authUser, setReauthNeeded, setStaleTokenWarn, showToast, sessionBoundary, biometric, setBiometricEnrolled, setBiometricPending, setAuthUser, dbAuth, setUserProfile, setMySurgeon, setNeedsProfile, setIsScheduler, setReloadTrigger, handleSignOut, auth, pendingSaveRef, setSetupSaveNudge", rlSrc + "\n  }");
   const raFn = raSrc && fnR("reauthBusy, setReauthBusy, auth, authUser, reauthLanded, setReauthPassword, setReauthError, setReauthSheet", raSrc + "\n  }");
@@ -5504,6 +5543,7 @@ await (async () => {
     env.setupReadRef = { set current(v) { w.log.push("setupReadRef:" + v); }, get current() { return true; } };
     env.lastSyncRef = { set current(v) { w.log.push("lastSyncRef:" + JSON.stringify(v)); }, get current() { return "2026-10-01T08:00:00+00:00"; } };
     env.pendingSaveRef = { current: o.pendingSave || null }; // (19/n P9) a setup change kept pending while signed out
+    env.sessionEpochRef = { current: 0 }; w.epoch = env.sessionEpochRef; // (20/n, review r3) the session's identity, which the boundary moves
     env.sessionBoundary = sbFn(env);
     env.reauthLanded = rlFn(env);
     w.env = env; w.signOut = soFn(env); w.reauth = raFn(env);
@@ -5930,7 +5970,7 @@ await (async () => {
 
   // ── A15: the restore confirm states the week change; busy cleared in finally; A5(f) still running ──
   const rsSrc = after("  const restoreConfirmText = ", "\n  // ─── Roll forward counts");
-  const RS_ENV = "schedEditable, isScheduler, userProfile, setRestoreBusyId, setSaveStatus, snapshots, scheduleRef, pushUndo, commitSchedule, runAuthoritativeSchedule, schedSyncRef, confirm, snapshotReasonLabel, showToast, setSurgeons, setApps, setBackupMondaySet, setFierceBackupSet, setAppShifts, setPriorCounts, setYear1Counts, setStartMonth, setStartYear, setNumWeeks, setStartMondayOverride, setHolidayAssignments, setPendingLocks, setSilvisRule, sfRule, SF_RULE_DEFAULT, setDismissedWarnings, lastSyncRef, everHadRealDataRef, logAudit, loadSnapshots, setTimeout, alert";
+  const RS_ENV = "schedEditable, isScheduler, userProfile, setRestoreBusyId, setSaveStatus, snapshots, scheduleRef, pushUndo, commitSchedule, runAuthoritativeSchedule, schedSyncRef, confirm, snapshotReasonLabel, showToast, setSurgeons, setApps, setBackupMondaySet, setFierceBackupSet, setAppShifts, setPriorCounts, setYear1Counts, setStartMonth, setStartYear, setNumWeeks, setStartMondayOverride, setHolidayAssignments, setPendingLocks, setSilvisRule, sfRule, SF_RULE_DEFAULT, setDismissedWarnings, lastSyncRef, everHadRealDataRef, logAudit, loadSnapshots, setTimeout, alert, sessionEpochRef";
   const rsFn = rsSrc && fnC(RS_ENV, "(() => { const restoreConfirmText = " + rsSrc + "\n  return { restoreConfirmText, restoreSnapshot }; })()");
   if (!rsFn) check("SE-C restoreConfirmText + restoreSnapshot are extractable", false, "anchor / compile");
   else {
@@ -5950,7 +5990,7 @@ await (async () => {
       const w = { f, confirms: [], toasts: [], busy: [], status: [], undo: 0, commits: [], auth: [], audits: [], alerts: 0, adopted: [], snaps: 0, threw: null };
       const noop = () => {};
       const env = {
-        schedEditable: () => true, isScheduler: true, userProfile: null, setRestoreBusyId: (v) => w.busy.push(v), setSaveStatus: (v) => w.status.push(v),
+        schedEditable: () => true, isScheduler: true, userProfile: null, setRestoreBusyId: (v) => w.busy.push(v), setSaveStatus: (v) => w.status.push(v), sessionEpochRef: { current: 0 },
         snapshots: o.snapshots || snapshots,
         scheduleRef: { current: { "2026-01-05": WEEK } }, // on screen: ONE week — the count must come from what's SAVED (three)
         pushUndo: () => { w.undo++; }, commitSchedule: (s) => w.commits.push(Object.keys(s).length),
@@ -6021,7 +6061,7 @@ await (async () => {
   const raSrc = after("  const runAuthoritativeSchedule = ", "\n  };\n");
   const raFn = raSrc && fnC("schedSyncRef, commitSchedule, setScheduleHistory", raSrc + "\n  }");
   const clSrc = after("  const clearSchedule = async () => {", "\n  };\n\n  // ─── Snapshot restore");
-  const clFn = clSrc && fnC("schedEditable, confirm, snapshots, schedSyncRef, showToast, scheduleRef, pushUndo, commitSchedule, setSaveStatus, runAuthoritativeSchedule, setTimeout, lastSyncRef, stateBundleRef, setupReadRef, auth, supabase, console", "async () => {" + clSrc + "\n  }");
+  const clFn = clSrc && fnC("schedEditable, confirm, snapshots, schedSyncRef, showToast, scheduleRef, pushUndo, commitSchedule, setSaveStatus, runAuthoritativeSchedule, setTimeout, lastSyncRef, stateBundleRef, setupReadRef, auth, supabase, console, sessionEpochRef, setupBaseRef", "async () => {" + clSrc + "\n  }");
   const pnSrc = after("  const publishNotLanded = (pr, what) => {", "\n  };\n");
   const pnFn = pnSrc && fnC("showToast", "(pr, what) => {" + pnSrc + "\n  }");
   if (!raFn || !clFn || !pnFn) check("SE-C runAuthoritativeSchedule / clearSchedule / publishNotLanded are extractable", false, JSON.stringify({ ra: !!raFn, cl: !!clFn, pn: !!pnFn }));
@@ -6040,7 +6080,7 @@ await (async () => {
       const w = { toasts: [], status: [], upserts: 0 };
       await clFn({ schedEditable: () => true, confirm: () => true, snapshots: { capture: async () => ({ ok: true }) }, schedSyncRef: { current: { knownSchedule: () => ({}), pending: () => ["a", "b"] } }, showToast: (m, t) => w.toasts.push([String(m), t]),
         scheduleRef: { current: {} }, pushUndo: () => {}, commitSchedule: () => {}, setSaveStatus: (s) => w.status.push(s), runAuthoritativeSchedule: async () => cr, setTimeout: () => 0, lastSyncRef: { current: null },
-        stateBundleRef: { current: (x) => Object.assign({}, x) }, setupReadRef: { current: true }, auth: { getSession: () => ({ access_token: "TOK" }) },
+        stateBundleRef: { current: (x) => Object.assign({}, x) }, setupReadRef: { current: true }, auth: { getSession: () => ({ access_token: "TOK" }) }, sessionEpochRef: { current: 0 }, setupBaseRef: { current: null },
         supabase: { from: () => ({ upsert: async () => { w.upserts++; return { error: null }; } }) }, console: watchC.console })();
       await null; await null;
       return w;
@@ -6062,7 +6102,7 @@ await (async () => {
     check("SE-C A5(f) the factory reset's schedule job: still running → said so (info), not 'the schedule was NOT cleared'",
       // (17/n P3: the reset's other outcomes — refused, landed — are executed in SE-X10; 19/n: its late / fenced / stacked ones in SE-X15–17)
       nsrcC.split('runAuthoritativeSchedule({}, "reset", null, before, weeksNotCleared).then(tellWeeks);').length === 2
-        && /\n    const tellWeeks = \(r\) => \{\n[^\n]*\n      if \(r\.running\) \{ showToast\(r\.error, "info"\); return; \}\n      if \(r\.ok\) \{ setSaveStatus\("Reset complete"\);/.test(nsrcC) && count("Factory reset: the schedule was NOT cleared") === 0);
+        && /\n    const tellWeeks = \(r\) => \{\n      if \(sessionEpochRef\.current !== ep\) return;[^\n]*\n      if \(r\.skipped === "reset" \|\| r\.skipped === "cancelled"\) return;[^\n]*\n      if \(r\.running\) \{ showToast\(r\.error, "info"\); return; \}\n      if \(r\.ok\) \{ setSaveStatus\("Reset complete"\);/.test(nsrcC) && count("Factory reset: the schedule was NOT cleared") === 0);
   }
 
   // ── A13: an open week editor is told when its week is adopted (engine.onAdopted) ──
@@ -6414,13 +6454,13 @@ await (async () => {
 
   // ── (2) Clear: the gate, the Undo step, one message ──
   const clSrc = after("  const clearSchedule = async () => {", "\n  };\n\n  // ─── Snapshot restore");
-  const clF = clSrc && fnG("schedEditable, confirm, snapshots, schedSyncRef, showToast, scheduleRef, pushUndo, commitSchedule, setSaveStatus, runAuthoritativeSchedule, setTimeout, lastSyncRef, stateBundleRef, setupReadRef, auth, supabase, console", "async () => {" + clSrc + "\n  }");
+  const clF = clSrc && fnG("schedEditable, confirm, snapshots, schedSyncRef, showToast, scheduleRef, pushUndo, commitSchedule, setSaveStatus, runAuthoritativeSchedule, setTimeout, lastSyncRef, stateBundleRef, setupReadRef, auth, supabase, console, sessionEpochRef, setupBaseRef", "async () => {" + clSrc + "\n  }");
   if (!clF) check("SE-G clearSchedule is extractable", false, "anchor / compile");
   else {
     const clear = async (a, o = {}) => {
       const w = { confirms: 0, snaps: 0, status: [], upserts: 0 };
-      await clF({ schedEditable: a.schedEditable, confirm: () => { w.confirms++; return true; },
-        snapshots: { capture: async () => { w.snaps++; if (o.duringSnap) o.duringSnap(); return { ok: !o.snapFails }; } },
+      await clF({ schedEditable: a.schedEditable, confirm: () => { w.confirms++; return true; }, sessionEpochRef: { current: 0 }, setupBaseRef: { current: null },
+        snapshots: o.realSnapshots ? snapshots : { capture: async () => { w.snaps++; if (o.duringSnap) o.duringSnap(); return { ok: !o.snapFails }; } },
         schedSyncRef: a.schedSyncRef, showToast: a.showToast, scheduleRef: a.ref, pushUndo: a.pushUndo, commitSchedule: a.commitSchedule, setSaveStatus: (s) => w.status.push(s),
         runAuthoritativeSchedule: a.runAuthoritativeSchedule, setTimeout: () => 0, lastSyncRef: { current: null }, stateBundleRef: { current: (x) => Object.assign({}, x) },
         setupReadRef: { current: true }, auth: { getSession: () => (a.token ? { access_token: a.token } : null) },
@@ -6438,6 +6478,15 @@ await (async () => {
     { const t = mkTableG(), a = mkApp(t); await a.eng.load(); const from = t.log.length; const w = await clear(a, { snapFails: true });
       check("SE-G 14/n …a snapshot that fails: refused — no Undo step, the screen untouched, nothing written",
         w.snaps === 1 && a.history.length === 0 && writesG(t, from).length === 0 && Object.keys(a.ref.current).length === 4 && a.toasts.length === 1 && /Couldn't save a backup snapshot/.test(a.toasts[0][0]), show(a, w, t)); }
+    { const t = mkTableG(), a = mkApp(t); await a.eng.load(); const from = t.log.length;
+      // (20/n, review r3 regress-3) the REAL config.js capture, its first request never answering: it times out
+      // (snapshots.timeoutMs), and the clear says what it says for any failed snapshot — never held open
+      const ms0 = snapshots.timeoutMs; snapshots.timeoutMs = 30;
+      setFetch((url, opts = {}) => new Promise((_, rej) => { if (opts.signal) opts.signal.addEventListener("abort", () => rej(new Error("AbortError: the request was aborted"))); }));
+      const t0 = Date.now(); const w = await Promise.race([clear(a, { realSnapshots: true }), new Promise(r => setTimeout(() => r({ held: "no answer in 1 s" }), 1000))]); const ms = Date.now() - t0;
+      snapshots.timeoutMs = ms0;
+      check("SE-G 20/n …the REAL capture with a request that never answers: it times out, and the clear is refused as for any failed snapshot — 'Couldn't save a backup snapshot — clear cancelled. Schedule unchanged.' — no Undo step, the screen untouched, nothing written",
+        ms < 1000 && a.history.length === 0 && writesG(t, from).length === 0 && Object.keys(a.ref.current).length === 4 && a.toasts.length === 1 && a.toasts[0][0] === "Couldn't save a backup snapshot — clear cancelled. Schedule unchanged." && w.upserts === 0, show(a, w, t)); }
     { const t = mkTableG(), a = mkApp(t); await a.eng.load(); const from = t.log.length; const w = await clear(a, { duringSnap: () => { a.token = null; } });
       check("SE-G 14/n …the sign-in gone DURING the snapshot's await: the gate again, after it — no Undo step, the screen untouched, nothing written, no 'Clearing…'",
         w.confirms === 1 && w.snaps === 1 && a.history.length === 0 && writesG(t, from).length === 0 && Object.keys(a.ref.current).length === 4 && a.toasts.length === 1 && SIGNED_OUT.test(a.toasts[0][0]) && w.status.length === 0, show(a, w, t)); }
@@ -6462,14 +6511,14 @@ await (async () => {
 
   // ── (3) Factory reset: the gate, one message ──
   const rstSrc = after("  const resetAllData = async () => {", "\n  };\n\n  // ─── Push Notifications");
-  const rstF = rstSrc && fnG("isScheduler, userProfile, alert, schedEditable, prompt, setSaveStatus, setTimeout, snapshots, schedSyncRef, showToast, logAudit, allowWipeSaveRef, everHadRealDataRef, supabase, console, setSurgeons, INIT_SURGEONS, setApps, INIT_APPS, toClearAll, setBackupMondaySet, setFierceBackupSet, scheduleRef, commitSchedule, runAuthoritativeSchedule, setAppShifts, setPriorCounts, setYear1Counts, setStartMonth, setStartYear",
+  const rstF = rstSrc && fnG("isScheduler, userProfile, alert, schedEditable, prompt, setSaveStatus, setTimeout, snapshots, schedSyncRef, showToast, logAudit, allowWipeSaveRef, everHadRealDataRef, supabase, console, setSurgeons, INIT_SURGEONS, setApps, INIT_APPS, toClearAll, setBackupMondaySet, setFierceBackupSet, scheduleRef, commitSchedule, runAuthoritativeSchedule, setAppShifts, setPriorCounts, setYear1Counts, setStartMonth, setStartYear, sessionEpochRef",
     "async () => {" + rstSrc + "\n  }");
   if (!rstF) check("SE-G resetAllData is extractable", false, "anchor / compile");
   else {
     const reset = async (a, o = {}) => {
       const w = { prompts: 0, snaps: 0, status: [], upserts: 0, audits: 0, cleared: 0 };
       const noop = () => {};
-      await rstF({ isScheduler: true, userProfile: null, alert: noop, schedEditable: a.schedEditable, prompt: () => { w.prompts++; return "RESET"; }, setSaveStatus: (s) => w.status.push(s), setTimeout: () => 0,
+      await rstF({ isScheduler: true, userProfile: null, alert: noop, schedEditable: a.schedEditable, prompt: () => { w.prompts++; return "RESET"; }, setSaveStatus: (s) => w.status.push(s), setTimeout: () => 0, sessionEpochRef: { current: 0 },
         snapshots: { capture: async () => { w.snaps++; if (o.duringSnap) o.duringSnap(); return { ok: true }; } }, schedSyncRef: a.schedSyncRef, showToast: a.showToast, logAudit: () => { w.audits++; },
         allowWipeSaveRef: { current: false }, everHadRealDataRef: { current: true }, supabase: { from: () => ({ upsert: async () => { w.upserts++; return { error: null }; } }) },
         console: { error: (...x) => a.errors.push(x.map(String).join(" ")), warn: noop }, setSurgeons: () => { w.cleared++; }, INIT_SURGEONS: [], setApps: noop, INIT_APPS: [], toClearAll: noop,
@@ -6495,7 +6544,7 @@ await (async () => {
 
   // ── (4) Restore: the gate (at the tap, and again once the snapshot is read), the Undo step, one message ──
   const rvSrc = after("  const restoreConfirmText = ", "\n  // ─── Roll forward counts");
-  const rvF = rvSrc && fnG("schedEditable, isScheduler, userProfile, setRestoreBusyId, setSaveStatus, snapshots, scheduleRef, pushUndo, commitSchedule, runAuthoritativeSchedule, schedSyncRef, confirm, snapshotReasonLabel, showToast, setSurgeons, setApps, setBackupMondaySet, setFierceBackupSet, setAppShifts, setPriorCounts, setYear1Counts, setStartMonth, setStartYear, setNumWeeks, setStartMondayOverride, setHolidayAssignments, setPendingLocks, setSilvisRule, sfRule, SF_RULE_DEFAULT, setDismissedWarnings, lastSyncRef, everHadRealDataRef, logAudit, loadSnapshots, setTimeout, alert",
+  const rvF = rvSrc && fnG("schedEditable, isScheduler, userProfile, setRestoreBusyId, setSaveStatus, snapshots, scheduleRef, pushUndo, commitSchedule, runAuthoritativeSchedule, schedSyncRef, confirm, snapshotReasonLabel, showToast, setSurgeons, setApps, setBackupMondaySet, setFierceBackupSet, setAppShifts, setPriorCounts, setYear1Counts, setStartMonth, setStartYear, setNumWeeks, setStartMondayOverride, setHolidayAssignments, setPendingLocks, setSilvisRule, sfRule, SF_RULE_DEFAULT, setDismissedWarnings, lastSyncRef, everHadRealDataRef, logAudit, loadSnapshots, setTimeout, alert, sessionEpochRef",
     "(() => { const restoreConfirmText = " + rvSrc + "\n  return { restoreSnapshot }; })()");
   if (!rvF) check("SE-G restoreSnapshot is extractable", false, "anchor / compile");
   else {
@@ -6508,7 +6557,7 @@ await (async () => {
       ]);
       const w = { f, confirms: 0, busy: [], status: [], alerts: 0, atGate: [], adopted: 0 };
       const noop = () => {};
-      await rvF({ schedEditable: () => { w.atGate.push(f.calls.length); return o.gate ? o.gate(w.atGate.length) : a.schedEditable(); }, isScheduler: true, userProfile: null,
+      await rvF({ schedEditable: () => { w.atGate.push(f.calls.length); return o.gate ? o.gate(w.atGate.length) : a.schedEditable(); }, isScheduler: true, userProfile: null, sessionEpochRef: { current: 0 },
         setRestoreBusyId: (v) => w.busy.push(v), setSaveStatus: (v) => w.status.push(v), snapshots, scheduleRef: a.ref, pushUndo: a.pushUndo, commitSchedule: a.commitSchedule,
         runAuthoritativeSchedule: a.runAuthoritativeSchedule, schedSyncRef: a.schedSyncRef, confirm: () => { w.confirms++; return true; }, snapshotReasonLabel: (r) => r, showToast: a.showToast,
         setSurgeons: () => { w.adopted++; }, setApps: noop, setBackupMondaySet: noop, setFierceBackupSet: noop, setAppShifts: noop, setPriorCounts: noop, setYear1Counts: noop, setStartMonth: noop, setStartYear: noop,
@@ -6541,14 +6590,14 @@ await (async () => {
   // ── (5) Generate & Publish: one message with the job's notice ──
   const pnSrcG = after("  const publishNotLanded = (pr, what) => {", "\n  };\n");
   const cgSrc = after("  const commitGenerated = async (result) => {", "\n  };\n  genFinishRef.current = finishGenerate;");
-  const cgF = pnSrcG && cgSrc && fnG("publishWeeks, numWeeks, MO, startMonth, startYear, runPublish, setPreviewSchedule, setShowPreview, setSaveStatus, lastSyncRef, buildStateBundle, supabase, console, showToast, setTimeout",
+  const cgF = pnSrcG && cgSrc && fnG("publishWeeks, numWeeks, MO, startMonth, startYear, runPublish, setPreviewSchedule, setShowPreview, setSaveStatus, lastSyncRef, buildStateBundle, supabase, console, showToast, setTimeout, sessionEpochRef",
     "(() => { const publishNotLanded = (pr, what) => {" + pnSrcG + "\n  };\n  return async (result) => {" + cgSrc + "\n  }; })()");
   if (!cgF) check("SE-G commitGenerated + publishNotLanded are extractable", false, "anchor / compile");
   else {
     const NOTICE = "The week of Oct 26 was changed by someone else — showing the latest. Reapply your change if it's still needed.";
     const cg = async (pr) => {
       const w = { toasts: [], status: [] };
-      const out = await cgF({ publishWeeks: () => ({ merged: {}, prior: {}, y1: {} }), numWeeks: 2, MO: ["Jan"], startMonth: 0, startYear: 2026, runPublish: () => Promise.resolve(pr),
+      const out = await cgF({ publishWeeks: () => ({ merged: {}, prior: {}, y1: {} }), numWeeks: 2, MO: ["Jan"], startMonth: 0, startYear: 2026, runPublish: () => Promise.resolve(pr), sessionEpochRef: { current: 0 },
         setPreviewSchedule: () => {}, setShowPreview: () => {}, setSaveStatus: (s) => w.status.push(s), lastSyncRef: { current: null }, buildStateBundle: (x) => Object.assign({}, x),
         supabase: { from: () => ({ upsert: async () => ({ error: null }) }) }, console: watchG.console, showToast: (m, tone) => w.toasts.push([String(m), tone]), setTimeout: () => 0 })({ [WG[0]]: wkG("g") });
       w.out = out; return w;

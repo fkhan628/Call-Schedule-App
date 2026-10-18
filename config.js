@@ -226,12 +226,30 @@ const buildTimeOffMaps = (rows) => {
 // same way (A15): a schedule-less snapshot can't put the schedule back, and
 // inserting one would reset captureIfStale's 6-hour clock.
 const SNAPSHOT_STRICT_REASONS = ["clear_schedule", "regenerate", "reset_all_data", "before_restore"];
+// One request of a capture, with its timeout (snapshots.timeoutMs, 15 s —
+// review r3 regress-3). It used to wait for ever: a hung read or insert held
+// the destructive tap waiting on it (clear, Generate & Publish, factory reset,
+// Accept & Publish, restore's before_restore) open indefinitely — across a
+// sign-out too. The timer covers reading the body; at the timeout the request
+// is aborted, and the capture fails closed as on any failed request (its
+// caller refuses: "Couldn't save a backup snapshot — … cancelled"). Answers a
+// settled response (its body already read), or throws.
+const snapReq = async (url, init) => {
+  const ctl = typeof AbortController === "function" ? new AbortController() : null;
+  const timer = ctl ? setTimeout(() => { try { ctl.abort(); } catch (e) { /* already settled */ } }, snapshots.timeoutMs) : null;
+  try {
+    const res = await fetch(url, ctl ? { ...init, signal: ctl.signal } : init);
+    const text = await res.text();
+    return { ok: res.ok, status: res.status, text: async () => text, json: async () => JSON.parse(text) };
+  } finally { if (timer) clearTimeout(timer); }
+};
 const snapshots = {
+  timeoutMs: 15000,
   async capture(reason, opts) {
     const strict = SNAPSHOT_STRICT_REASONS.includes(reason);
     const minWeeks = (opts && opts.minWeeks) || 0;
     try {
-      const res = await fetch(
+      const res = await snapReq(
         `${SUPABASE_URL}/rest/v1/call_schedule_data?id=eq.main&select=data,updated_at`,
         { headers: dbAuthHeaders() }
       );
@@ -256,7 +274,7 @@ const snapshots = {
       // best-effort otherwise.
       let foldErr = null;
       try {
-        const wres = await fetch(
+        const wres = await snapReq(
           `${SUPABASE_URL}/rest/v1/schedule_weeks?select=week_monday,data&order=week_monday.asc&limit=5000`,
           { headers: dbAuthHeaders() }
         );
@@ -284,7 +302,7 @@ const snapshots = {
       // be unrecoverable. Best-effort like the schedule_weeks fold above; the
       // explicit order makes consecutive snapshots byte-stable on ties.
       try {
-        const tres = await fetch(
+        const tres = await snapReq(
           `${SUPABASE_URL}/rest/v1/time_off?select=id,person_id,kind,start_date,end_date&order=start_date.asc`,
           { headers: dbAuthHeaders() }
         );
@@ -301,7 +319,7 @@ const snapshots = {
       // failure returned above — so an empty DB still doesn't block a
       // legitimate reset.
       if (current && !payloadLooksWiped(current)) {
-        const ins = await fetch(`${SUPABASE_URL}/rest/v1/call_schedule_snapshots`, {
+        const ins = await snapReq(`${SUPABASE_URL}/rest/v1/call_schedule_snapshots`, {
           method: "POST",
           headers: { ...dbAuthHeaders(), Prefer: "return=minimal" },
           body: JSON.stringify({
@@ -367,6 +385,10 @@ const snapshots = {
   // restore aborts if that capture fails. opts.confirm(schedule, snap), when
   // given, is asked once the snapshot is read and before anything is written
   // (A15: the caller states the week change); a "no" returns { cancelled }.
+  // opts.proceed(), when given, is asked after the before_restore snapshot and
+  // right before the blob is written (review r3 regress-3: the caller's session
+  // still the one that asked — a sign-out or another account's sign-in during
+  // that snapshot); false returns { cancelled } with nothing written.
   async restore(snapshotId, applySchedule, opts) {
     if (!snapshotId) return { ok: false, error: "No snapshot id" };
     if (typeof applySchedule !== "function") {
@@ -391,6 +413,7 @@ const snapshots = {
       if (opts && typeof opts.confirm === "function" && !(await opts.confirm(payload.schedule, snap))) return { ok: false, cancelled: true };
       const pre = await this.capture("before_restore", opts && opts.minWeeks ? { minWeeks: opts.minWeeks } : undefined);
       if (!pre.ok) return { ok: false, error: "Couldn't snapshot the current state first — restore aborted, nothing changed" };
+      if (opts && typeof opts.proceed === "function" && !opts.proceed()) return { ok: false, cancelled: true };
       const schedule = payload.schedule;
       const blob = { ...payload }; delete blob.schedule;
       const ts = new Date().toISOString();
