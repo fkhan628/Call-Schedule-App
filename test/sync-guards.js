@@ -7765,6 +7765,99 @@ console.log("\nAJ. owner decisions 2026-10-13");
   }
 }
 
+// ─── BB. Setup: ✕ on time off asks first, Clear All wants DELETE typed, the backup pickers snap to Monday (UX audit 2026-10-19) ───
+// Time off (time_off rows) is in neither Undo nor a Restore. Setup's ✕ on a
+// vacation or a no-call deleted it with no question, one tap on a small ✕;
+// "Clear All" vacations took one OK; the Backup / Fierce Backup week pickers
+// stored any day, and a non-Monday mark matched no week (silently nothing).
+// The real code, sliced and run with stubs:
+//   BB1 rmVac: Cancel → nothing removed; OK → toRemove once, (person, "vacation", start, end); the question
+//       names the person (the real nameOf) and readable dates, the year only when it isn't this year
+//   BB2 rmNoCall: the same, "no-call day" / "no-call days"
+//   BB3 clearAllVacations: Cancel, "", "delete", " DELETE", "DELETE " → no clear; "DELETE" → toClearAll("vacation") once
+//   BB4 snapBkMonday: a day → its week's Monday (Sunday → the Monday before, as mondayOfToday counts it), a Monday
+//       stays, "" stays, a part-typed year is kept as typed
+//   BB5 pins: both week pickers snap on blur (raw on change: a typed date arrives in pieces), no other bkMonday
+//       picker; the ✕ buttons and Clear All go through these handlers
+console.log("\nBB. Setup time-off deletes ask first; backup pickers snap to Monday");
+{
+  const nsrcB = src.replace(/\r\n/g, "\n");
+  // The text from `start` (exactly one occurrence) up to the first `end` after it; null when absent.
+  const cutB = (start, end) => { const i = nsrcB.indexOf(start); if (i < 0 || nsrcB.indexOf(start, i + 1) !== -1) return null; const e = nsrcB.indexOf(end, i + start.length); return e < 0 ? null : nsrcB.slice(i, e); };
+  const compileB = (names, body, ret) => { try { return vm.runInContext(`(function (env) { const { ${names} } = env;\n${body}\n return ${ret}; })`, sandbox); } catch (ex) { return null; } };
+  // "Today" is Mon 10/19/2026 for these checks (the year rule), via the slice's own `new Date()`.
+  class TodayB extends Date { constructor(...a) { if (a.length) super(...a); else super(2026, 9, 19, 12, 0, 0); } }
+  const nameOfB = cutB("\n  const nameOf = (id) => ", "\n");
+  const todB = cutB("  const timeOffDates = (s, e) => {", "\n  };\n");
+  const rmVacB = cutB("  const rmVac = (sid,idx) => ", "\n");
+  const rmNcB = cutB("  const rmNoCall = (sid,idx) => ", "\n");
+  const tf = nameOfB && rmVacB && rmNcB && compileB("vacations, noCallDays, confirm, toRemove, surgeons, apps, Date",
+    nameOfB + "\n" + (todB ? todB + "\n  };\n" : "") + rmVacB + "\n" + rmNcB, "{ rmVac, rmNoCall }");
+  const runTO = (which, sid, idx, answer) => {
+    const r = { asked: [], removed: [] };
+    const h = tf({
+      vacations: { s6: [["2026-10-14", "2026-10-16", 101], ["2026-12-28", "2027-01-04", 102]] },
+      noCallDays: { a1: [["2026-11-03", "2026-11-03", 201], ["2027-02-01", "2027-02-02", 202]] },
+      confirm: (m) => { r.asked.push(String(m)); return answer; }, toRemove: (...a) => { r.removed.push(a); },
+      surgeons: [{ id: "s1", name: "DJA" }, { id: "s6", name: "FAK" }], apps: [{ id: "a1", name: "KMB" }], Date: TodayB,
+    });
+    h[which](sid, idx);
+    return r;
+  };
+  if (!tf) check("BB rmVac / rmNoCall (with nameOf) are extractable", false, JSON.stringify({ nameOf: !!nameOfB, rmVac: !!rmVacB, rmNoCall: !!rmNcB }));
+  else {
+    const v0 = runTO("rmVac", "s6", 0, false), v1 = runTO("rmVac", "s6", 0, true), v2 = runTO("rmVac", "s6", 1, true), v3 = runTO("rmVac", "s6", 7, true);
+    check("BB1 rmVac (the ✕ on a Setup vacation) asks first: Cancel removes nothing; OK removes it once with (person, \"vacation\", start, end); the question names the person and the dates — \"Remove FAK's vacation Wed 10/14 → Fri 10/16?\", a date not in this year with its year (\"Mon 12/28 → Mon 1/4/2027\"); a stale index asks nothing",
+      v0.asked.length === 1 && v0.removed.length === 0
+        && v0.asked[0] === "Remove FAK's vacation Wed 10/14 → Fri 10/16?"
+        && v1.removed.length === 1 && JSON.stringify(v1.removed[0]) === JSON.stringify(["s6", "vacation", "2026-10-14", "2026-10-16"])
+        && v2.asked[0] === "Remove FAK's vacation Mon 12/28 → Mon 1/4/2027?" && JSON.stringify(v2.removed) === JSON.stringify([["s6", "vacation", "2026-12-28", "2027-01-04"]])
+        && v3.asked.length === 0 && v3.removed.length === 0,
+      JSON.stringify({ v0, v1, v2, v3 }));
+    const n0 = runTO("rmNoCall", "a1", 0, false), n1 = runTO("rmNoCall", "a1", 0, true), n2 = runTO("rmNoCall", "a1", 1, true);
+    check("BB2 rmNoCall (the ✕ on a no-call) asks the same way: \"Remove KMB's no-call day Tue 11/3?\" — Cancel removes nothing, OK removes it once with (person, \"nocall\", start, end); a range next year reads \"no-call days Mon 2/1/2027 → Tue 2/2/2027\"",
+      n0.asked.length === 1 && n0.removed.length === 0 && n0.asked[0] === "Remove KMB's no-call day Tue 11/3?"
+        && JSON.stringify(n1.removed) === JSON.stringify([["a1", "nocall", "2026-11-03", "2026-11-03"]])
+        && n2.asked[0] === "Remove KMB's no-call days Mon 2/1/2027 → Tue 2/2/2027?" && JSON.stringify(n2.removed) === JSON.stringify([["a1", "nocall", "2027-02-01", "2027-02-02"]]),
+      JSON.stringify({ n0, n1, n2 }));
+  }
+
+  const caB = cutB("  const clearAllVacations = () => {", "\n  };\n");
+  const caF = caB && compileB("prompt, confirm, toClearAll", caB + "\n  };", "clearAllVacations");
+  if (!caF) check("BB clearAllVacations is extractable", false, "anchor / compile");
+  else {
+    const runCA = (typed) => {
+      const r = { prompts: [], confirms: 0, cleared: [] };
+      caF({ prompt: (m) => { r.prompts.push(String(m)); return typed; }, confirm: () => { r.confirms++; return true; }, toClearAll: (...a) => { r.cleared.push(a); } })();
+      return r;
+    };
+    const no = [null, "", "delete", " DELETE", "DELETE "].map(runCA), yes = runCA("DELETE");
+    check("BB3 Clear All vacations wants DELETE typed: Cancel, an empty answer, \"delete\" and DELETE with a space clear nothing; \"DELETE\" clears once (toClearAll(\"vacation\")); the question says so, and no plain OK can clear",
+      no.every(r => r.cleared.length === 0 && r.prompts.length === 1) && JSON.stringify(yes.cleared) === JSON.stringify([["vacation"]])
+        && yes.prompts[0] === "Delete ALL vacations for ALL surgeons and APPs? This cannot be undone. Type DELETE to confirm." && no.concat([yes]).every(r => r.confirms === 0),
+      JSON.stringify({ no: no.map(r => r.cleared.length), yes }));
+  }
+
+  const snB = cutB("  const snapBkMonday = ", "\n");
+  const snF = snB && compileB("setBkMonday", snB, "snapBkMonday");
+  if (!snF) check("BB snapBkMonday is extractable", false, "anchor / compile");
+  else {
+    const snap = (v) => { let out = "(not set)"; snF({ setBkMonday: (u) => { out = typeof u === "function" ? u(v) : u; } })(); return out; };
+    const ins = ["2026-10-14", "2026-10-18", "2026-10-19", "2026-11-01", "2027-01-01", "", "0002-10-14", "0202-10-14"];
+    const got = ins.map(snap);
+    check("BB4 the backup week picker snaps to that week's Monday: Wed 10/14 → Mon 10/12, Sun 10/18 → Mon 10/12 (as mondayOfToday counts a Sunday), Mon 10/19 stays, Sun 11/1 → 10/26, Fri 1/1/2027 → Mon 12/28/2026; \"\" stays \"\"; a part-typed year (0002, 0202) is kept as typed",
+      JSON.stringify(got) === JSON.stringify(["2026-10-12", "2026-10-12", "2026-10-19", "2026-10-26", "2026-12-28", "", "0002-10-14", "0202-10-14"]), JSON.stringify(got));
+  }
+
+  const picker = "<input type=\"date\" value={bkMonday} onChange={e=>setBkMonday(e.target.value)} onBlur={snapBkMonday} style={{...css.inp,width:160}}/>";
+  check("BB5 both week pickers (Backup, Fierce Backup) snap on blur — the change keeps what is typed, as a keyboard date arrives in pieces — and no other picker sets bkMonday; the ✕ buttons and Clear All go through rmVac / rmNoCall / clearAllVacations",
+    count(picker) === 2 && count("value={bkMonday}") === 2 && count("onBlur={snapBkMonday}") === 2 && count("setBkMonday(e.target.value)") === 2
+      && src.indexOf(picker) < src.indexOf("+ Mark Backup</button>") && src.lastIndexOf(picker) < src.indexOf("+ Mark Fierce Backup</button>") && src.lastIndexOf(picker) > src.indexOf("+ Mark Backup</button>")
+      && count("rmVac(p.id,originalIdx);") === 1 && count("rmNoCall(p.id,origIdx)") === 1 && count("<button onClick={clearAllVacations}") === 1
+      && count('toRemove(sid,"vacation",') === 1 && count('toRemove(sid,"nocall",') === 1,
+    JSON.stringify({ pickers: count(picker), blur: count("onBlur={snapBkMonday}") }));
+}
+
 // ─── AK. The calendar's Today button (owner 2026-10-14) ───
 console.log("\nAK. calendar Today button");
 check("AK1 the calendar has a Today button beside the month arrows: it sets the month AND the year from a fresh Date (not a stale render), then scrolls today's cell into view",

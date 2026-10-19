@@ -542,6 +542,14 @@ function CallSchedule() {
   // Backup Monday defaults to the CURRENT week's Monday (same Bucket-B rule).
   const mondayOfToday = () => { const t = new Date(); return fmt(addD(t, t.getDay() === 0 ? -6 : 1 - t.getDay())); };
   const [bkMonday, setBkMonday] = useState(mondayOfToday);
+  // The Backup / Fierce Backup week pickers snap to that week's Monday (UX
+  // audit 2026-10-19): a week is stored by its Monday, so a picked Wednesday
+  // was marked and matched no week — silently nothing. The snap is on leaving
+  // the picker (blur), not on each change: a date typed on a keyboard arrives
+  // in pieces (the "1" of "15" is the 1st), and snapping those moved the field
+  // mid-typing. Tapping "+ Mark" leaves the picker first. Only a whole date
+  // (year 1000+) is snapped; anything else is kept as typed.
+  const snapBkMonday = () => setBkMonday(v => (/^[1-9]\d{3}-\d\d-\d\d$/.test(v) ? fmt(monOf(parse(v))) : v));
   const [appDate, setAppDate] = useState(() => fmt(new Date()));
   const [appPerson, setAppPerson] = useState("");
   const [scanning, setScanning] = useState(false);
@@ -4636,21 +4644,33 @@ function CallSchedule() {
     toAdd(vacSurgeon, "vacation", vacStart, vacEnd);
     setVacStart(fmt(new Date())); setVacEnd(fmt(new Date()));
   };
-  const rmVac = (sid,idx) => { const r=(vacations[sid]||[])[idx]; if(r) toRemove(sid,"vacation",r[0],r[1]); };
+  // Setup's ✕ on a vacation or a no-call asks first (UX audit 2026-10-19): it
+  // deletes the time_off row, and time off is in neither Undo nor a Restore —
+  // one mis-tap on the small ✕ took a surgeon's vacation. The question names
+  // the person and the dates ("Wed 10/14 → Fri 10/16", the year added when it
+  // isn't this year, as Mine writes it).
+  const timeOffDates = (s, e) => {
+    const day = (ds) => (!/^\d{4}-\d\d-\d\d$/.test(ds) ? String(ds) : ds.slice(0, 4) === fmt(new Date()).slice(0, 4) ? dayMonthLabel(ds) : `${dayMonthLabel(ds)}/${ds.slice(0, 4)}`);
+    return s === e ? day(s) : `${day(s)} → ${day(e)}`;
+  };
+  const rmVac = (sid,idx) => { const r=(vacations[sid]||[])[idx]; if(!r) return; if(!confirm(`Remove ${nameOf(sid)}'s vacation ${timeOffDates(r[0],r[1])}?`)) return; toRemove(sid,"vacation",r[0],r[1]); };
   const addNoCall = () => {
     if(!ncSurgeon||!ncStart||!ncEnd) return;
     toAdd(ncSurgeon, "nocall", ncStart, ncEnd);
     setNcStart(fmt(new Date())); setNcEnd(fmt(new Date()));
   };
-  const rmNoCall = (sid,idx) => { const r=(noCallDays[sid]||[])[idx]; if(r) toRemove(sid,"nocall",r[0],r[1]); };
+  const rmNoCall = (sid,idx) => { const r=(noCallDays[sid]||[])[idx]; if(!r) return; if(!confirm(`Remove ${nameOf(sid)}'s no-call ${r[0]===r[1]?"day":"days"} ${timeOffDates(r[0],r[1])}?`)) return; toRemove(sid,"nocall",r[0],r[1]); };
   const saveEditVac = () => {
     if (!editVac || !editVac.start || !editVac.end) return;
     const old = (vacations[editVac.sid] || [])[editVac.idx];
     if (old) toEdit(editVac.sid, "vacation", old[0], old[1], editVac.start, editVac.end);
     setEditVac(null);
   };
+  // A typed word, not a tap (UX audit 2026-10-19): this deletes every
+  // vacation for everyone, and time off is in neither Undo nor a Restore.
+  // Anything but DELETE (Cancel, "delete") does nothing.
   const clearAllVacations = () => {
-    if (!confirm("Delete ALL vacations for ALL surgeons and APPs? This cannot be undone.")) return;
+    if (prompt("Delete ALL vacations for ALL surgeons and APPs? This cannot be undone. Type DELETE to confirm.") !== "DELETE") return;
     toClearAll("vacation");
   };
 
@@ -8490,7 +8510,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             <div style={{display:"flex",gap:6,alignItems:"end",flexWrap:"wrap",marginBottom:12}}>
               <div>
                 <label style={{fontSize:10,color:"#7a8a98",display:"block",marginBottom:2}}>Add manually — Week Starting (Monday)</label>
-                <input type="date" value={bkMonday} onChange={e=>setBkMonday(e.target.value)} style={{...css.inp,width:160}}/>
+                <input type="date" value={bkMonday} onChange={e=>setBkMonday(e.target.value)} onBlur={snapBkMonday} style={{...css.inp,width:160}}/>
               </div>
               <button onClick={markBackupWeek} style={css.btn(true)}>+ Mark Backup</button>
             </div>
@@ -8508,7 +8528,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               <div style={{display:"flex",gap:6,alignItems:"end",flexWrap:"wrap",marginBottom:10}}>
                 <div>
                   <label style={{fontSize:10,color:"#7a8a98",display:"block",marginBottom:2}}>Week Starting (Monday)</label>
-                  <input type="date" value={bkMonday} onChange={e=>setBkMonday(e.target.value)} style={{...css.inp,width:160}}/>
+                  <input type="date" value={bkMonday} onChange={e=>setBkMonday(e.target.value)} onBlur={snapBkMonday} style={{...css.inp,width:160}}/>
                 </div>
                 <button onClick={markFierceBackupWeek} style={{...css.btn(true),background:"linear-gradient(135deg,#e0ecf8,#d0e0f0)",borderColor:"#a0c0e0",color:"#1a6fa8",padding:"7px 16px",fontSize:12}}>+ Mark Fierce Backup</button>
               </div>
