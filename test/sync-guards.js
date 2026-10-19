@@ -4079,6 +4079,124 @@ console.log("\nAP. Mine → Find Swap lands on the swap options");
     cardSrc ? `show(r.k ×${(cardSrc.match(/\{show\(r\.k, /g) || []).length}; raw cell( in JSX: ${/\{cell\(/.test(cardSrc)}` : "component not found");
 }
 
+// ─── AQ. The calendar says why a month is blank (UX audit, 2026-10-18) ───
+// An empty month grid looked the same while the schedule was loading, after a
+// failed or empty read, and for a month that simply isn't published yet —
+// members paging ahead to the holiday months couldn't tell "free" from "not
+// out yet". calMonthStatus (helpers.js) says which; one line above the
+// Calendar's weekday header shows it.
+//   AQ1 calMonthStatus, executed: empty / ok / unscheduled with the published
+//       range; a week counts by any of its 7 days; a blank week entry neither
+//       counts nor widens the range; pure (input untouched, no clock)
+//   AQ2 AQ1 again under TZ=America/Chicago and TZ=Asia/Tokyo (offsets proven)
+//   AQ3 the Calendar's line — the REAL code sliced from index-source.html and
+//       run in the sandbox: loading / nothing loaded / not published (with the
+//       range, "yet" except before it, a Go-to button only past its end) /
+//       a month with call shows nothing
+//   AQ4 placement: once, in the Calendar view, after the warnings, right
+//       before the weekday header; render-only (no write path)
+console.log("\nAQ. calendar says why a month is blank");
+{
+  const cms = vm.runInContext('typeof calMonthStatus === "function" ? calMonthStatus : null', sandbox);
+  const NONE = "calMonthStatus is not defined in helpers.js";
+  const sig = (o) => (o ? JSON.stringify([o.kind, o.from === undefined ? null : o.from, o.to === undefined ? null : o.to]) : "null");
+  // Fixture: Mondays 2026-04-06 … 2026-12-28, each with a dayCall (the 12-28 week holds Jan 1–3, 2027).
+  const weeks = {};
+  for (let d = new Date(Date.UTC(2026, 3, 6)); d <= new Date(Date.UTC(2026, 11, 28)); d.setUTCDate(d.getUTCDate() + 7)) weeks[d.toISOString().slice(0, 10)] = { dayCall: "s1", nights: { mon: "s2", tue: null, wed: null, thu: null, wknd: null } };
+  const blank = { dayCall: null, nights: { mon: null, tue: null, wed: null, thu: null, wknd: null }, holidayCoverage: {}, isBackup: false, isFierceBackup: false };
+  const withBlank = Object.assign({}, weeks, { "2027-02-01": blank, "2027-02-08": {} });
+  const straddle = { "2026-08-31": { dayCall: "s5" } };
+  const RANGE = { kind: "unscheduled", from: "2026-04-06", to: "2027-01-03" };
+  const cases = [
+    ["{} → empty", {}, 2026, 11, { kind: "empty" }],
+    ["null → empty", null, 2026, 11, { kind: "empty" }],
+    ["only non-date keys → empty", { meta: { dayCall: "s1" } }, 2026, 11, { kind: "empty" }],
+    ["Dec 2026 → ok", weeks, 2026, 11, { kind: "ok" }],
+    ["Jan 2027 → ok (the 12-28 week holds Jan 1–3)", weeks, 2027, 0, { kind: "ok" }],
+    ["Feb 2027 → unscheduled, the range 2026-04-06 → 2027-01-03", weeks, 2027, 1, RANGE],
+    ["Apr 2026 → ok", weeks, 2026, 3, { kind: "ok" }],
+    ["Mar 2026 (before the first week) → unscheduled, same range", weeks, 2026, 2, RANGE],
+    ["Feb 2027 with blank week entries 02-01 and 02-08 → still unscheduled, range NOT widened", withBlank, 2027, 1, RANGE],
+    ["a nights-only week counts", { "2027-03-01": { dayCall: null, nights: { wknd: "s3" } } }, 2027, 2, { kind: "ok" }],
+    ["a holidayCoverage-only week counts", { "2027-05-31": { dayCall: null, nights: {}, holidayCoverage: { "2027-05-31": { surgeonId: "s4", name: "Memorial Day 24h" } } } }, 2027, 4, { kind: "ok" }],
+    ["the 8/31–9/6 week counts in August", straddle, 2026, 7, { kind: "ok" }],
+    ["… and in September", straddle, 2026, 8, { kind: "ok" }],
+    ["… not in October (range 8/31 → 9/6)", straddle, 2026, 9, { kind: "unscheduled", from: "2026-08-31", to: "2026-09-06" }],
+    ["only blank weeks → unscheduled with no range", { "2026-11-02": blank }, 2026, 10, { kind: "unscheduled", from: null, to: null }],
+  ];
+  const before = JSON.stringify(withBlank);
+  const got = cms ? cases.map(([, s, y, m]) => sig(cms(s, y, m))) : null;
+  const bad = got ? cases.map((c, i) => (got[i] === sig(c[4]) ? null : `${c[0]}: got ${got[i]}`)).filter(Boolean) : [NONE];
+  check(`AQ1 calMonthStatus: no weeks → empty; a month with a dayCall / night / holiday week (by any of its 7 days) → ok; otherwise unscheduled with the first counting Monday → the last counting Sunday; a blank week entry neither counts nor widens the range (${cases.length} cases)`,
+    !!got && bad.length === 0, bad.join(" | "));
+  check("AQ1 calMonthStatus is pure: the schedule passed in is untouched and it reads no clock (no Date.now, no new Date())",
+    !!cms && JSON.stringify(withBlank) === before && !/Date\.now|new Date\(\s*\)/.test(String(cms)), cms ? String(cms).slice(0, 120) : NONE);
+
+  // AQ2 — AQ1 under America/Chicago and Asia/Tokyo
+  {
+    const { execFileSync } = require("child_process");
+    const code = [
+      'const vm = require("vm"), fs = require("fs"), path = require("path");',
+      'const sb = { console, window: {}, document: undefined, navigator: { userAgent: "node-test" }, localStorage: { getItem: () => null, setItem() {}, removeItem() {} }, fetch: () => { throw new Error("no fetch"); }, setTimeout, clearTimeout };',
+      "sb.globalThis = sb; vm.createContext(sb);",
+      `for (const f of ["helpers.js", "config.js"]) vm.runInContext(fs.readFileSync(path.join(${JSON.stringify(ROOT)}, f), "utf8"), sb, { filename: f });`,
+      'const f = vm.runInContext("typeof calMonthStatus === \\"function\\" ? calMonthStatus : null", sb);',
+      `const sig = ${sig.toString()};`,
+      `const cases = ${JSON.stringify(cases.map(([, s, y, m]) => [s, y, m]))};`,
+      'process.stdout.write(JSON.stringify({ off: new Date(2026, 9, 24).getTimezoneOffset(), naive: new Date("2026-10-14").getDate(), out: f ? cases.map(([s, y, m]) => sig(f(s, y, m))) : null }));',
+    ].join("\n");
+    const inZone = (TZ) => { try { return JSON.parse(execFileSync(process.execPath, ["-e", code], { env: Object.assign({}, process.env, { TZ }), encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })); } catch (ex) { return { err: String(ex).slice(0, 300) }; } };
+    const chi = inZone("America/Chicago"), tok = inZone("Asia/Tokyo");
+    const want = JSON.stringify(cases.map((c) => sig(c[4])));
+    check("AQ2 the children really run in America/Chicago (offset 300; the naive new Date('2026-10-14') is the 13th there) and Asia/Tokyo (offset −540)",
+      !!chi && chi.off === 300 && chi.naive === 13 && !!tok && tok.off === -540, JSON.stringify({ chi: chi && { off: chi.off, naive: chi.naive, err: chi.err }, tok: tok && { off: tok.off, err: tok.err } }));
+    check("AQ2 under TZ=America/Chicago and TZ=Asia/Tokyo every AQ1 case gives the same status",
+      !!chi && !!chi.out && JSON.stringify(chi.out) === want && !!tok && !!tok.out && JSON.stringify(tok.out) === want,
+      JSON.stringify({ chi: chi && (chi.out || chi.err || NONE), tok: tok && (tok.out || tok.err || NONE) }).slice(0, 300));
+  }
+
+  // AQ3 — the Calendar's line, run as written (the slice reads only loaded, schedule, calYear and calMonth;
+  // any other component variable would throw a ReferenceError in the sandbox)
+  const START = 'const st = loaded && typeof calMonthStatus === "function" ? calMonthStatus(schedule, calYear, calMonth) : null;';
+  const END = "if (!text) return null;";
+  const iS = src.indexOf(START), iE = iS < 0 ? -1 : src.indexOf(END, iS);
+  let lineFn = null;
+  try { lineFn = iS >= 0 && iE > iS && count(START) === 1 ? vm.runInContext(`(function (env) { const { loaded, schedule, calYear, calMonth } = env; ${src.slice(iS, iE)} return { text, goTo }; })`, sandbox) : null; } catch (ex) { lineFn = null; }
+  const L = (loaded, schedule, calYear, calMonth) => { try { const r = lineFn({ loaded, schedule, calYear, calMonth }); return JSON.stringify([r.text, r.goTo]); } catch (ex) { return "threw: " + String(ex).slice(0, 120); } };
+  const RUNS = "the published schedule runs Mon 4/6/2026 → Sun 1/3/2027.";
+  const lineCases = lineFn ? [
+    ["still loading", L(false, weeks, 2027, 1), ["Loading the schedule…", null]],
+    ["loaded, nothing in it", L(true, {}, 2026, 11), ["No call schedule loaded — if you expected one, reload the app.", null]],
+    ["Dec 2026 has call → nothing", L(true, weeks, 2026, 11), ["", null]],
+    ["Jan 2027 (Jan 1–3 only) → nothing", L(true, weeks, 2027, 0), ["", null]],
+    ["Feb 2027, past the end → not yet + Go to January 2027", L(true, weeks, 2027, 1), [`No surgeon call scheduled for February 2027 yet — ${RUNS}`, { y: 2027, m: 0 }]],
+    ["June 2027, past the end → Go to January 2027", L(true, weeks, 2027, 5), [`No surgeon call scheduled for June 2027 yet — ${RUNS}`, { y: 2027, m: 0 }]],
+    ["Mar 2026, before the start → no 'yet', no button", L(true, weeks, 2026, 2), [`No surgeon call scheduled for March 2026 — ${RUNS}`, null]],
+    ["a gap month inside the range → no button", L(true, { "2027-01-04": { dayCall: "s1" }, "2027-03-01": { dayCall: "s2" } }, 2027, 1), ["No surgeon call scheduled for February 2027 yet — the published schedule runs Mon 1/4/2027 → Sun 3/7/2027.", null]],
+    ["only blank weeks → not yet, no range", L(true, { "2026-11-02": blank }, 2026, 10), ["No surgeon call scheduled for November 2026 yet.", null]],
+  ] : [];
+  const lineBad = lineCases.filter(([, g, w]) => g !== JSON.stringify(w)).map(([n, g]) => `${n}: ${g}`);
+  check("AQ3 the Calendar's line, run as written: 'Loading the schedule…' / 'No call schedule loaded — … reload the app.' / 'No surgeon call scheduled for <Month Year> yet — the published schedule runs <from> → <to>.' with a Go-to button only past the end (no 'yet' before the start) / nothing for a month with call",
+    lineCases.length === 9 && lineBad.length === 0, lineFn ? lineBad.join(" | ") : "the line's code was not found exactly once in index-source.html");
+
+  // AQ4 — placement and render-only
+  const HDR = '{DAY_HDR.map(d=><div key={d} style={{textAlign:"center",fontSize:10,fontWeight:700,color:"#8a94a0",padding:"5px 0",letterSpacing:1}}>{d}</div>)}';
+  const iCal = src.indexOf('{view==="calendar"&&<>'), iNext = iCal < 0 ? -1 : src.indexOf("{view===", iCal + 5);
+  const iWarn = src.indexOf("⚠️ Schedule Warnings — {shownTotal}"), iUse = src.indexOf("calMonthStatus(schedule, calYear, calMonth)"), iHdr = src.indexOf(HDR);
+  const iOpen = src.lastIndexOf("{(() => {", iUse), iClose = iUse < 0 ? -1 : src.indexOf("})()}", iUse);
+  const body = iOpen >= 0 && iClose > iUse ? src.slice(iOpen, iClose) : "";
+  const between = iClose >= 0 && iHdr > iClose ? src.slice(iClose + 5, iHdr) : "";
+  check("AQ4 the line is in the Calendar view once, after the Schedule Warnings and right before the weekday header (nothing in between but the header's grid)",
+    count("calMonthStatus(schedule, calYear, calMonth)") === 1 && count(HDR) === 1 && iCal >= 0 && iCal < iWarn && iWarn < iUse && iUse < iHdr && iHdr < iNext
+      && /^\s*<div style=\{\{display:"grid",gridTemplateColumns:"repeat\(7,minmax\(0,1fr\)\)",gap:1,marginBottom:1\}\}>\s*$/.test(between),
+    `${iCal} < ${iWarn} < ${iUse} < ${iHdr} < ${iNext}; between: ${JSON.stringify(between.slice(0, 120))}`);
+  check("AQ4 render-only: a role=\"status\" line whose only action is the Go-to button (setCalMonth + setCalYear); no write path, no preview, no other data",
+    !!body && body.includes('<div role="status"') && body.includes("{goTo && <button onClick={()=>{setCalMonth(goTo.m);setCalYear(goTo.y);}}")
+      && body.includes("Go to {MO[goTo.m]} {goTo.y}</button>}") && (body.match(/onClick=/g) || []).length === 1
+      && !/fetch\(|setSchedule|commitSchedule|schedSync|localStorage|previewSchedule|calData|appShifts|dbAuthHeaders/.test(body),
+    body ? (body.match(/fetch\(|setSchedule|commitSchedule|schedSync|localStorage|previewSchedule|calData|appShifts|dbAuthHeaders/) || ["button or status wrapper missing"])[0] : "line not found");
+}
+
 // ─── Z. silvisBusy keeps reading v6's rows (spec item 1; decisions 2026-10-11) ───
 // silvis-feed v7 keeps up to 12 months of Silvis history in silvis_feed and pulls up to today + 400, for
 // the totals card only. Every EXISTING Silvis consumer — the rule (editor, swaps, trades, holidays,

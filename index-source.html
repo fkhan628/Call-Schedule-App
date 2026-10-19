@@ -9461,6 +9461,30 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             );
           })()}
 
+          {/* Why the month is blank (UX audit, 2026-10-18): the grid looks the same
+              while the schedule is still loading, when nothing loaded, and when this
+              month simply isn't published yet — say which. Reads only loaded and the
+              published schedule (calMonthStatus, helpers.js); a month with any surgeon
+              call shows nothing here. Past the last published week, a button goes back
+              to that week's month. */}
+          {(() => {
+            const st = loaded && typeof calMonthStatus === "function" ? calMonthStatus(schedule, calYear, calMonth) : null;
+            const ym = (ds) => Number(ds.slice(0, 4)) * 12 + Number(ds.slice(5, 7)) - 1, here = calYear * 12 + calMonth;
+            const dated = (ds) => `${dayMonthLabel(ds)}/${ds.slice(0, 4)}`;
+            const text = !loaded ? "Loading the schedule…"
+              : !st || st.kind === "ok" ? ""
+              : st.kind === "empty" ? "No call schedule loaded — if you expected one, reload the app."
+              : `No surgeon call scheduled for ${MO[calMonth]} ${calYear}${st.from && here < ym(st.from) ? "" : " yet"}${st.from ? ` — the published schedule runs ${dated(st.from)} → ${dated(st.to)}` : ""}.`;
+            const goTo = st && st.kind === "unscheduled" && st.to && here > ym(st.to) ? { y: Number(st.to.slice(0, 4)), m: Number(st.to.slice(5, 7)) - 1 } : null;
+            if (!text) return null;
+            return (
+              <div role="status" style={{display:"flex",alignItems:"center",flexWrap:"wrap",gap:8,marginBottom:10,padding:"8px 12px",fontSize:12,lineHeight:1.4,color:dk?"#b0b8d0":"#4a5a6a",background:dk?"#16213e":"#f4f6fa",border:`1px solid ${dkCardBorder}`,borderRadius:8}}>
+                <span style={{flex:"1 1 200px",minWidth:0}}>{text}</span>
+                {goTo && <button onClick={()=>{setCalMonth(goTo.m);setCalYear(goTo.y);}} style={{...css.btn(false),padding:"6px 12px",flexShrink:0}}>Go to {MO[goTo.m]} {goTo.y}</button>}
+              </div>
+            );
+          })()}
+
           <div style={{display:"grid",gridTemplateColumns:"repeat(7,minmax(0,1fr))",gap:1,marginBottom:1}}>
             {DAY_HDR.map(d=><div key={d} style={{textAlign:"center",fontSize:10,fontWeight:700,color:"#8a94a0",padding:"5px 0",letterSpacing:1}}>{d}</div>)}
           </div>
