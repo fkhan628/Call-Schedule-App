@@ -783,6 +783,8 @@ function CallSchedule() {
   const [mySurgeon, setMySurgeon] = useState(() => {
     try { return localStorage.getItem("dsg-my-surgeon") || ""; } catch(e) { return ""; }
   });
+  const [mineViewId, setMineViewId] = useState(""); // Mine's view-someone-else pick: NOT identity, not persisted
+  const mineId = mineViewId || mySurgeon;
   // Inline editor for "My Vacations" — { idx, start, end } | null
   const [myVacEdit, setMyVacEdit] = useState(null);
 
@@ -790,6 +792,8 @@ function CallSchedule() {
   useEffect(() => {
     try { if(mySurgeon) localStorage.setItem("dsg-my-surgeon", mySurgeon); } catch(e) { console.warn("Couldn't persist selected surgeon:", e); }
   }, [mySurgeon]);
+  // A Mine view pick belongs to the identity it was made under: a sign-out or another account drops it
+  useEffect(() => { setMineViewId(""); }, [mySurgeon]);
 
   // Auto-set vacation requester and trade initiator to logged-in user
   useEffect(() => {
@@ -10758,24 +10762,29 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           <div style={css.card}>
             <div style={css.cardT}>My Call Schedule</div>
             <p style={{fontSize:13,color:"#5a6a78",margin:"0 0 12px",lineHeight:1.5}}>
-              {userProfile ? `Showing schedule for ${userProfile.display_name}.` : "Select your name to see only your shifts and vacations."}
-              {isScheduler && " As scheduler, you can view any surgeon's schedule."}
+              {mineViewId ? <>
+                {`Viewing ${sMap[mineViewId]?.name || mineViewId}'s schedule.`}
+                <button onClick={()=>setMineViewId("")} style={{...css.btn(false),padding:"3px 10px",fontSize:12,marginLeft:8}}>Back to mine</button>
+              </> : <>
+                {userProfile ? `Showing schedule for ${userProfile.display_name}.` : "Select your name to see only your shifts and vacations."}
+                {isScheduler && " As scheduler, you can view any surgeon's schedule."}
+              </>}
             </p>
             <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap",marginBottom:16}}>
-              <select value={mySurgeon} onChange={e=>setMySurgeon(e.target.value)} style={{...css.inp,width:180,fontSize:14}}>
+              <select value={mineId} onChange={e=>setMineViewId(e.target.value === mySurgeon ? "" : e.target.value)} style={{...css.inp,width:180,fontSize:14}}>
                 <option value="">Select your name…</option>
                 {surgeons.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
               </select>
-              {mySurgeon && (
-                <button onClick={()=>downloadMyCal(mySurgeon)} style={{...css.btn(true),padding:"8px 18px"}}>
+              {mineId && (
+                <button onClick={()=>downloadMyCal(mineId)} style={{...css.btn(true),padding:"8px 18px"}}>
                   📅 Download My Calendar (.ics)
                 </button>
               )}
             </div>
           </div>
 
-          {mySurgeon && Object.keys(schedule).length > 0 && (() => {
-            const myId = mySurgeon;
+          {mineId && Object.keys(schedule).length > 0 && (() => {
+            const myId = mineId;
             const myName = sMap[myId]?.name || "?";
             const myVacs = vacations[myId] || [];
             const myNoCall = noCallDays[myId] || [];
@@ -11096,7 +11105,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             );
           })()}
 
-          {!mySurgeon && (
+          {!mineId && (
             <div style={{...css.card,textAlign:"center",color:"#8a94a0",padding:30}}>Select your name above to view your schedule.</div>
           )}
         </>}

@@ -2742,6 +2742,178 @@ check("prefs audit never logs the plaintext email (masked only)",
   }
 }
 
+// ─── AM. Mine's name picker views a colleague; it never signs this device in as them (UX audit 2026-10-18) ───
+// The Mine select called setMySurgeon, the app-wide identity, so every
+// identity effect followed a pick: OneSignal.login and the surgeon_id tag moved
+// this phone's push subscription to the colleague (their pushes arrived here,
+// the user's own stopped), a member's vacation requester and trade initiator
+// became the colleague, and the pick was saved as "dsg-my-surgeon". The pick is
+// now a view only (mineViewId: not identity, not persisted) and the Mine page
+// reads mineId = mineViewId || mySurgeon. A view pick is dropped when the
+// identity changes (a sign-out, another account).
+//   AM1 source: the select writes the view, never identity (setMySurgeon( has
+//       one site fewer, 9 → 8; the auth paths keep theirs); mineViewId and
+//       mineId are declared after mySurgeon and before the Mine render; the
+//       Mine block reads mineId for the select, the download, the gate, myId
+//       and the empty state; neither name is in a hook deps array or stored
+//   AM2 EXECUTED: the real select handler, the real mineId line, the Mine
+//       block's real expressions (select value, myId, download, gate, empty
+//       state) and the identity effects sliced verbatim (persist, the view
+//       reset, auto-fill, OneSignal login, OneSignal tags) in a tiny hook
+//       runner: the scheduler and a member each pick a colleague — the page
+//       shows the colleague; identity, storage, OneSignal and the
+//       request/trade fields do not move
+//   AM3 EXECUTED: the header names who is viewed; "Back to mine", picking
+//       yourself and picking the placeholder all return to your own schedule
+//   AM4 EXECUTED: a view pick does not survive a sign-out into another
+//       account (control: without the reset effect it would)
+console.log("\nAM. Mine's name picker is a view, not a sign-in");
+{
+  const AMa = '{view==="myschedule" && !isPublicMode && <>', AMb = "{/* ════════════════ REQUESTS ════════════════ */}";
+  const amA = src.indexOf(AMa), amB = amA < 0 ? -1 : src.indexOf(AMb, amA);
+  const mineBlk = amA < 0 || amB < 0 ? "" : src.slice(amA, amB);
+  const between = (text, a, b) => { if (text == null) return null; const i = text.indexOf(a); if (i < 0) return null; const j = text.indexOf(b, i + a.length); return j < 0 ? null : text.slice(i + a.length, j); };
+
+  // AM1 — source
+  check("AM1 the Mine select writes the view pick, never identity: setMySurgeon( has 8 sites (main's 9 minus the select; the auth paths keep theirs), no setMySurgeon(e.target.value) handler is left, and the Mine block calls no setMySurgeon",
+    !!mineBlk && count("setMySurgeon(") === 8 && count("onChange={e=>setMySurgeon(e.target.value)}") === 0 && !mineBlk.includes("setMySurgeon("),
+    `setMySurgeon( x${count("setMySurgeon(")}, Mine block ${mineBlk.length} chars`);
+  const iMy = src.indexOf("const [mySurgeon, setMySurgeon] = useState("), iState = src.indexOf('const [mineViewId, setMineViewId] = useState("")'),
+    iMine = src.indexOf("const mineId = mineViewId || mySurgeon;"), iView = src.indexOf('{view==="myschedule"');
+  check("AM1 the view pick is its own state, declared once right after mySurgeon, then mineId, both before the Mine render",
+    count('const [mineViewId, setMineViewId] = useState("")') === 1 && count("const mineId = mineViewId || mySurgeon;") === 1
+      && iMy > 0 && iMy < iState && iState < iMine && iMine < iView, [iMy, iState, iMine, iView].join(" < "));
+  check("AM1 the Mine block reads mineId: the select's value, the download, the gate, myId and the empty state — none of them reads mySurgeon any more",
+    mineBlk.includes('<select value={mineId} onChange={e=>setMineViewId(e.target.value === mySurgeon ? "" : e.target.value)}')
+      && mineBlk.includes("downloadMyCal(mineId)") && mineBlk.includes("{mineId && Object.keys(schedule).length > 0 && (() => {")
+      && mineBlk.includes("const myId = mineId;") && mineBlk.includes("{!mineId && (")
+      && !mineBlk.includes("downloadMyCal(mySurgeon)") && !mineBlk.includes("{mySurgeon && Object.keys(schedule).length > 0")
+      && !mineBlk.includes("value={mySurgeon}") && !mineBlk.includes("{!mySurgeon && ("));
+  const amDeps = []; { const re = /[})]\s*,\s*\[([^\]]*)\]\s*\)/g; let m; while ((m = re.exec(src)) !== null) amDeps.push(m[1]); }
+  const amInDeps = amDeps.filter((d) => /\b(mineViewId|mineId)\b/.test(d));
+  check("AM1 neither mineViewId nor mineId is in any hook deps array (a view pick moves no effect) and neither is written to storage",
+    iState > 0 && amDeps.length >= 40 && amInDeps.length === 0 && !/setItem\([^)]*\b(mineViewId|mineId)\b/.test(src), amInDeps.join(" | ") || `${amDeps.length} deps arrays`);
+
+  // AM2–AM4 — the real code, executed. Each effect is sliced verbatim, from its useEffect( through its "])".
+  const effectAt = (anchor) => { const i = src.indexOf(anchor); if (i < 0 || src.indexOf(anchor, i + 1) >= 0) return null; const a = src.lastIndexOf("useEffect(", i), b = src.indexOf("]);", i); return a >= 0 && b > i && b - a < 900 ? src.slice(a, b + 2) : null; };
+  const EFF = { // (source order)
+    persist: effectAt('localStorage.setItem("dsg-my-surgeon", mySurgeon)'),
+    viewReset: effectAt('useEffect(() => { setMineViewId(""); }, [mySurgeon]);'),
+    autofill: effectAt("setTradeFrom(mySurgeon);"),
+    osLogin: effectAt("window.OneSignal.login(mySurgeon).catch("),
+    osTag: effectAt('window.OneSignal.User.addTag("surgeon_id", mySurgeon);'),
+  };
+  const NAMES = "useEffect, mySurgeon, mineViewId, mineId, isScheduler, oneSignalReady, surgeons, sMap, localStorage, window, console, setMySurgeon, setMineViewId, setVacReqSurgeon, setTradeFrom";
+  const amFn = (code) => { if (code == null) return null; try { return vm.runInContext(`(function (env) { const { ${NAMES} } = env; return (${code}); })`, sandbox); } catch (ex) { return null; } };
+  const effFns = Object.fromEntries(Object.entries(EFF).map(([k, c]) => [k, amFn(c)]));
+  const gi = mineBlk.indexOf(" && Object.keys(schedule).length > 0 && (() => {"), ei = mineBlk.indexOf("Select your name above to view your schedule.");
+  const eo = ei < 0 ? -1 : mineBlk.lastIndexOf("{!", ei);
+  const backAt = mineBlk.indexOf(">Back to mine</button>"), backOn = backAt < 0 ? -1 : mineBlk.lastIndexOf("onClick={", backAt);
+  const hdrT = between(mineBlk, "{`Viewing ", "`}");
+  const X = {
+    mineId: amFn(between(src, "  const mineId = ", ";")),
+    value: amFn(between(mineBlk, "<select value={", "} onChange={")),
+    onChange: amFn(between(mineBlk, "} onChange={", "} style={{...css.inp,width:180")),
+    myId: amFn(between(mineBlk, "const myId = ", ";")),
+    download: amFn(between(mineBlk, "downloadMyCal(", ")}")),
+    gate: amFn(gi < 0 ? null : mineBlk.slice(mineBlk.lastIndexOf("{", gi) + 1, gi)),
+    empty: amFn(eo < 0 ? null : between(mineBlk.slice(eo), "{!", " && (")),
+    back: amFn(backOn < 0 ? null : between(mineBlk.slice(backOn), "onClick={", "} style={{")),
+    header: amFn(hdrT == null ? null : "`Viewing " + hdrT + "`"),
+  };
+  const amReady = ["value", "onChange", "myId", "download", "gate", "empty"].every((k) => !!X[k]) && ["persist", "autofill", "osLogin", "osTag"].every((k) => !!effFns[k]);
+  const amWhy = amReady ? "" : " — a slice is missing: " + JSON.stringify(Object.fromEntries(Object.entries(X).map(([k, f]) => [k, !!f]))) + " " + JSON.stringify(Object.fromEntries(Object.entries(effFns).map(([k, f]) => [k, !!f])));
+  const ROSTER = ["DJA", "MCC", "RPC", "KJH", "REH", "FAK", "ARW"].map((name, i) => ({ id: "s" + (i + 1), name }));
+  const sMapAM = Object.fromEntries(ROSTER.map((s, i) => [s.id, { ...s, idx: i }]));
+  // One component instance: its state, the effects' side effects (storage, OneSignal, the request/trade fields), every identity write.
+  const amWorld = (me, scheduler, without) => {
+    const w = { st: { mySurgeon: me, mineViewId: "", isScheduler: !!scheduler }, ls: {}, os: [], idCalls: [], vacReq: null, tradeFrom: null, errs: [], prev: {}, dirty: false };
+    const set = (k) => (v) => { const nv = typeof v === "function" ? v(w.st[k]) : v; if (!Object.is(nv, w.st[k])) { w.st[k] = nv; w.dirty = true; } };
+    const win = { OneSignal: { login: (id) => { w.os.push("login:" + id); return Promise.resolve(); }, User: { addTag: (k, v) => { w.os.push(k + "=" + v); } } } };
+    const store = { setItem: (k, v) => { w.ls[k] = String(v); }, getItem: (k) => (k in w.ls ? w.ls[k] : null), removeItem: (k) => { delete w.ls[k]; } };
+    const con = { error: (...a) => w.errs.push(a.map(String).join(" ")), warn: (...a) => w.errs.push(a.map(String).join(" ")), log() {} };
+    w.env = () => {
+      const env = { ...w.st, oneSignalReady: true, surgeons: ROSTER, sMap: sMapAM, localStorage: store, window: win, console: con,
+        setMySurgeon: (v) => { w.idCalls.push(v); set("mySurgeon")(v); }, setMineViewId: set("mineViewId"),
+        setVacReqSurgeon: (v) => { w.vacReq = v; }, setTradeFrom: (v) => { w.tradeFrom = v; } };
+      env.mineId = X.mineId ? X.mineId(env) : undefined;
+      return env;
+    };
+    // React's loop, small: render, run the effects whose deps changed, again while an effect set state
+    w.render = () => {
+      for (let pass = 0; pass < 6; pass++) {
+        w.dirty = false;
+        const env = w.env();
+        for (const k of Object.keys(effFns)) {
+          if (!effFns[k] || (without || []).includes(k)) continue;
+          let rec = null; env.useEffect = (fn, deps) => { rec = { fn, deps }; };
+          effFns[k](env);
+          const old = w.prev[k];
+          if (rec && (!old || rec.deps.some((d, i) => !Object.is(d, old[i])))) { w.prev[k] = rec.deps; rec.fn(); }
+        }
+        if (!w.dirty) return true;
+      }
+      return false;
+    };
+    w.pick = (id) => { X.onChange(w.env())({ target: { value: id } }); return w.render(); };
+    w.page = () => { const env = w.env(); return { value: X.value(env), shown: X.myId(env), download: X.download(env), gate: !!X.gate(env), empty: !X.empty(env), view: w.st.mineViewId }; };
+    w.render();
+    return w;
+  };
+  const amTry = (f) => { try { return f(); } catch (ex) { return { threw: String((ex && ex.message) || ex) }; } };
+  const snap = (w) => ({ page: w.page(), me: w.st.mySurgeon, os: w.os.slice(), ls: Object.assign({}, w.ls), idCalls: w.idCalls.slice(), vacReq: w.vacReq, tradeFrom: w.tradeFrom, errs: w.errs.slice() });
+
+  // AM2 — the scheduler (FAK, s6) views RPC (s3); a member (RPC) views FAK
+  const A = amReady ? amTry(() => { const w = amWorld("s6", true); const mount = snap(w); const settled = w.pick("s3"); return Object.assign(snap(w), { mount, settled }); }) : null;
+  check("AM2 executed — the hook runner is live: FAK's mount signs this device's push in as FAK (OneSignal.login s6, both surgeon tags), saves s6, and Mine shows FAK",
+    !!A && !A.threw && A.mount.os.join() === "login:s6,surgeon_id=s6,surgeon_name=FAK" && A.mount.ls["dsg-my-surgeon"] === "s6" && A.mount.page.shown === "s6" && A.mount.page.value === "s6",
+    JSON.stringify(A && (A.threw || A.mount)) + amWhy);
+  check("AM2 executed — FAK picks RPC in Mine: the page shows RPC (the select, the shifts, the download; no empty state)",
+    !!A && !A.threw && A.settled === true && A.page.value === "s3" && A.page.shown === "s3" && A.page.download === "s3" && A.page.gate && !A.page.empty,
+    JSON.stringify(A && (A.threw || A.page)) + amWhy);
+  check("AM2 executed — …and this device is still FAK: no setMySurgeon call, identity s6, no OneSignal login or tag for RPC (FAK's pushes keep arriving here, RPC's do not), \"dsg-my-surgeon\" still s6",
+    !!A && !A.threw && A.idCalls.length === 0 && A.me === "s6" && A.os.join() === A.mount.os.join() && A.ls["dsg-my-surgeon"] === "s6" && A.errs.length === 0,
+    JSON.stringify(A && (A.threw || { idCalls: A.idCalls, me: A.me, os: A.os, ls: A.ls, errs: A.errs })) + amWhy);
+  const Bm = amReady ? amTry(() => { const w = amWorld("s3", false); const mount = snap(w); w.pick("s6"); return Object.assign(snap(w), { mount }); }) : null;
+  check("AM2 executed — a member (RPC) picks FAK: the page shows FAK, while the vacation requester and the trade initiator stay RPC, and push, storage and identity stay RPC's",
+    !!Bm && !Bm.threw && Bm.mount.vacReq === "s3" && Bm.mount.tradeFrom === "s3" && Bm.page.shown === "s6" && Bm.page.value === "s6"
+      && Bm.vacReq === "s3" && Bm.tradeFrom === "s3" && Bm.idCalls.length === 0 && Bm.me === "s3" && Bm.os.join() === Bm.mount.os.join() && Bm.ls["dsg-my-surgeon"] === "s3" && Bm.errs.length === 0,
+    JSON.stringify(Bm && (Bm.threw || { page: Bm.page, vacReq: Bm.vacReq, tradeFrom: Bm.tradeFrom, idCalls: Bm.idCalls, me: Bm.me, os: Bm.os, ls: Bm.ls })) + amWhy);
+
+  // AM3 — the header, and the three ways back to your own schedule
+  const C = amReady && X.back && X.header ? amTry(() => {
+    const w = amWorld("s6", true);
+    w.pick("s3"); const viewing = w.st.mineViewId, hdr = X.header(w.env());
+    X.back(w.env())(); w.render(); const afterBack = w.page();
+    w.pick("s4"); w.pick("s6"); const afterSelf = w.page();
+    w.pick("s4"); w.pick(""); const afterBlank = w.page();
+    return { viewing, hdr, afterBack, afterSelf, afterBlank, idCalls: w.idCalls.slice(), me: w.st.mySurgeon };
+  }) : null;
+  const amOwn = (p) => !!p && p.view === "" && p.shown === "s6" && p.value === "s6" && p.download === "s6" && p.gate && !p.empty;
+  const hOrder = (() => { const at = (s) => mineBlk.indexOf(s); const seq = [at("{mineViewId ? <>"), at("{`Viewing "), at('<button onClick={()=>setMineViewId("")} style={{...css.btn(false),'), at(">Back to mine</button>"), at("</> : <>"),
+    at("{userProfile ? `Showing schedule for ${userProfile.display_name}.` : \"Select your name to see only your shifts and vacations.\"}"), at("{isScheduler && \" As scheduler, you can view any surgeon's schedule.\"}"), at("<select value={")];
+    return seq.every((x, i) => x >= 0 && (i === 0 || x > seq[i - 1])); })();
+  check("AM3 executed — while a pick is on, the header says \"Viewing RPC's schedule.\" with a Back to mine button; with none, today's text (in that order, before the select)",
+    !!C && !C.threw && C.viewing === "s3" && C.hdr === "Viewing RPC's schedule." && hOrder, JSON.stringify(C && (C.threw || { viewing: C.viewing, hdr: C.hdr, hOrder })) + amWhy);
+  check("AM3 executed — Back to mine, picking yourself, and picking the placeholder each return to your own schedule (the view pick cleared, identity never touched)",
+    !!C && !C.threw && amOwn(C.afterBack) && amOwn(C.afterSelf) && amOwn(C.afterBlank) && C.idCalls.length === 0 && C.me === "s6", JSON.stringify(C) + amWhy);
+
+  // AM4 — FAK views RPC, signs out (handleSignOut's setMySurgeon(""), the boundary's scheduler flag), REH (s5) signs in on this phone
+  const D = amReady ? amTry(() => {
+    const run = (without) => {
+      const w = amWorld("s6", true, without); w.pick("s3");
+      w.env().setMySurgeon(""); w.st.isScheduler = false; w.render(); const out = w.page();
+      w.env().setMySurgeon("s5"); w.render(); return { out, inn: w.page(), os: w.os.slice() };
+    };
+    return { real: run([]), control: run(["viewReset"]) };
+  }) : null;
+  check("AM4 executed — FAK views RPC, signs out, REH signs in on this phone: the pick is gone (signed out: the empty state; then REH's own Mine) and push follows REH; the reset effect, sliced, does it",
+    !!D && !D.threw && !!effFns.viewReset && D.real.out.view === "" && D.real.out.empty && D.real.inn.view === "" && D.real.inn.shown === "s5" && D.real.inn.value === "s5" && D.real.os.includes("login:s5"),
+    JSON.stringify(D && (D.threw || D.real)) + amWhy);
+  check("AM4 control — the same run without the reset effect leaves RPC on REH's Mine (so the check above has teeth)",
+    !!D && !D.threw && D.control.inn.view === "s3" && D.control.inn.shown === "s3", JSON.stringify(D && (D.threw || D.control)) + amWhy);
+}
+
 // ─── V. Stats → Billing honors holiday coverage (owner rule + decisions 2026-10-01) ───
 // A holiday 24h bills the COVERING surgeon 2 days (the day and the night) on
 // the holiday's date, in a "Holiday" column, and every regular credit on that
