@@ -5078,6 +5078,94 @@ console.log("\nAU. Mine: readable dates, Published through, empty states by role
       && count('{vacList.length>0&&<div style={{fontSize:8,color:"#a07070",marginTop:1,overflowWrap:"anywhere"}}>🏖{vacList.map(v=>v.name).join(", ")}</div>}') === 1);
 }
 
+// ─── AV. Pending requests: a collapsed group still shows a coverage-floor breach (UX audit 2026-10-19) ───
+// Pending requests are grouped by person and every group starts CLOSED (expandedVacGroups = {}). The
+// "⚠ Coverage below minimum" warning renders only inside an open group, so an approver could miss that
+// approving would leave fewer than MIN_AVAILABLE_SURGEONS surgeons available. The closed header now carries
+// a "⚠ below floor" chip when any request in the group breaches. Render-only: the open/closed default, the
+// in-group warning and every handler are unchanged. JSX can't run here (no Babel in CI), so the chip's
+// condition and the REAL vacRequestCoverage are sliced and EXECUTED on fixtures; the markup is pinned.
+//   AV1 the chip's condition, executed with the real vacRequestCoverage and the app's own sMap on the real
+//       roster: four colleagues off + a vacation request → chip; exactly at the floor, a no-call request,
+//       an APP's request, a colleague's PENDING (not approved) overlap → no chip; one breach in a mixed
+//       group → chip; vacRequestCoverage missing → no chip and no throw
+//   AV2 the chip renders once, on the PENDING group's collapsed header (not inside the open group, not on a
+//       Reviewed group), gated by that condition; readable in dark mode (its own light background, text
+//       contrast ≥ 4.5 — executed)
+//   AV3 unchanged: groups still start closed, the one toggle, the in-group warning and its gate
+console.log("\nAV. Pending requests: a collapsed group shows a coverage-floor breach");
+{
+  const nsrcAV = src.replace(/\r\n/g, "\n");   // a Windows checkout is CRLF, CI's is LF
+  const fnAV = (names, code) => { try { return vm.runInContext(`(function (env) { const { ${names} } = env; return (${code}); })`, sandbox); } catch (ex) { return null; } };
+  // the REAL vacRequestCoverage (parse / fmt / addD / MIN_AVAILABLE_SURGEONS come from helpers.js + config.js)
+  const DECL_AV = "const vacRequestCoverage = (req) => {";
+  const iCov = nsrcAV.indexOf(DECL_AV), eCov = iCov < 0 ? -1 : nsrcAV.indexOf("\n  };\n", iCov);
+  const covBody = iCov < 0 || eCov < 0 ? null : "(req) => {" + nsrcAV.slice(iCov + DECL_AV.length, eCov) + "\n  }";
+  const mkCov = covBody ? fnAV("sMap, surgeons, vacations, vacRequests", covBody) : null;
+  const sMapSrcAV = (nsrcAV.match(/const sMap = useMemo\((\(\) => \{[^\n]*?return m; \}), \[surgeons\]\);/) || [])[1];
+  const mkSMapAV = sMapSrcAV ? fnAV("surgeons", sMapSrcAV) : null;
+  // the chip's condition, sliced from the pending group's map (declared right after its expanded flag)
+  const condAV = nsrcAV.match(/const expanded = expandedVacGroups\["p_"\+pid\];\n(?:[ ]*\/\/[^\n]*\n)*[ ]*const belowFloor = ([^\n]*);\n/);
+  const chipIf = condAV ? fnAV("reqs, vacRequestCoverage", condAV[1]) : null;
+
+  // AV1 — executed
+  const WK = ["2026-11-02", "2026-11-06"];
+  const fourOff = { s1: [WK], s2: [WK], s3: [WK], s4: [WK] }, threeOff = { s1: [WK], s2: [WK], s3: [WK] };
+  const rq = (id, sid, s, e, type) => ({ id, surgeon_id: sid, start_date: s, end_date: e, status: "pending", request_type: type || "vacation" });
+  const r5 = rq(1, "s5", "2026-11-04", "2026-11-05"), r5nc = rq(2, "s5", "2026-11-04", "2026-11-05", "nocall");
+  const r5late = rq(3, "s5", "2026-11-16", "2026-11-18"), rApp = rq(4, "a1", "2026-11-04", "2026-11-05");
+  const r4pend = rq(5, "s4", "2026-11-02", "2026-11-06");   // a colleague's request still PENDING: not counted against the floor
+  let av1 = null;
+  if (mkCov && mkSMapAV && chipIf) {
+    try {
+      const sMap = mkSMapAV({ surgeons: INIT_SURGEONS })();
+      const covFor = (vacations, others) => mkCov({ sMap, surgeons: INIT_SURGEONS, vacations, vacRequests: others });
+      const chip = (vacations, reqs, others = []) => chipIf({ reqs, vacRequestCoverage: covFor(vacations, [...reqs, ...others]) });
+      const worst = covFor(fourOff, [r5])(r5);
+      av1 = {
+        breach: chip(fourOff, [r5]), worstAvail: worst && worst.worst && worst.worst.available,
+        atFloor: chip(threeOff, [r5]), noCall: chip(fourOff, [r5nc]), app: chip(fourOff, [rApp]),
+        pendingOnly: chip(threeOff, [r5], [r4pend]), mixed: chip(fourOff, [r5late, r5]), quiet: chip(fourOff, [r5late]),
+        noFn: chipIf({ reqs: [r5], vacRequestCoverage: undefined }),
+      };
+    } catch (ex) { av1 = { threw: String(ex).slice(0, 160) }; }
+  }
+  check("AV1 the collapsed header's '⚠ below floor' condition, executed with the REAL vacRequestCoverage + the app's sMap on the real roster: four colleagues off and a vacation request (2 of 7 left) → chip; exactly at the floor (3 left), a no-call request, an APP's request, a colleague's pending (not approved) overlap → no chip; one breach in a mixed group → chip; vacRequestCoverage missing → no chip, no throw",
+    !!av1 && av1.breach === true && av1.worstAvail === 2 && av1.atFloor === false && av1.noCall === false && av1.app === false
+      && av1.pendingOnly === false && av1.mixed === true && av1.quiet === false && av1.noFn === false,
+    av1 ? JSON.stringify(av1) : `vacRequestCoverage ${mkCov ? "found" : "not extractable"} · sMap builder ${mkSMapAV ? "found" : "not found"} · chip condition ${chipIf ? "found" : "not found after the pending group's expanded flag"}`);
+
+  // AV2 — where the chip renders, and that it reads in dark mode
+  const CHIP = "⚠ below floor";
+  const iPend = nsrcAV.indexOf('const expanded = expandedVacGroups["p_"+pid];');
+  const iHead = iPend < 0 ? -1 : nsrcAV.indexOf('{/* Collapsed header row */}\n                    <div onClick={()=>toggleVacGroup("p_"+pid)}', iPend);
+  const iDetail = iPend < 0 ? -1 : nsrcAV.indexOf("{/* Expanded detail rows */}", iPend);
+  const iRev = nsrcAV.indexOf('const expanded = expandedVacGroups["r_"+pid];');
+  const iChip = nsrcAV.indexOf(CHIP);
+  const chipM = nsrcAV.match(/\n[ ]*\{belowFloor && <span [^\n]*?style=\{\{([^\n]*?)\}\}>⚠ below floor<\/span>\}\n/);
+  const css2 = (k) => { const m = chipM && chipM[1].match(new RegExp("(?:^|,)" + k + ':"(#[0-9a-fA-F]{6})"')); return m ? m[1] : null; };
+  const lumAV = (hex) => { const v = hex.slice(1).match(/../g).map(h => parseInt(h, 16) / 255).map(c => (c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4))); return 0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2]; };
+  const fg = css2("color"), bg = css2("background");
+  const ratio = fg && bg ? (Math.max(lumAV(fg), lumAV(bg)) + 0.05) / (Math.min(lumAV(fg), lumAV(bg)) + 0.05) : 0;
+  check("AV2 the chip renders ONCE, on the pending group's collapsed header row (after its toggle, before the expanded detail rows), gated by belowFloor — the one new vacRequestCoverage call; no Reviewed group carries it",
+    count(CHIP) === 1 && count("belowFloor") === 2 && count("vacRequestCoverage(r)") === 2 && !!chipM && iPend >= 0 && iHead > iPend && iChip > iHead && iDetail > iChip && iRev > iDetail
+      && nsrcAV.indexOf("{belowFloor && <span") > iHead && nsrcAV.indexOf("{belowFloor && <span") < iDetail,
+    JSON.stringify({ chips: count(CHIP), belowFloor: count("belowFloor"), covCalls: count("vacRequestCoverage(r)"), iPend, iHead, iChip, iDetail, iRev }));
+  check("AV2 the chip is readable in dark mode: a span with its own light amber background (dark mode re-colours only divs' backgrounds, so it stays a light chip like 'N pending') and text contrast ≥ 4.5 — executed",
+    !!chipM && !!fg && !!bg && ratio >= 4.5 && /fontSize:11,/.test(chipM[1]) && /borderRadius:10,/.test(chipM[1]),
+    JSON.stringify({ fg, bg, ratio: Math.round(ratio * 100) / 100 }));
+
+  // AV3 — unchanged
+  check("AV3 unchanged: groups still start closed (expandedVacGroups = {}), opened only by the one toggle; the in-group '⚠ Coverage below minimum' block is still inside the open group and reads the same breach flag",
+    count("const [expandedVacGroups, setExpandedVacGroups] = useState({});") === 1 && count("setExpandedVacGroups(") === 1
+      && count('const toggleVacGroup = (id) => setExpandedVacGroups(prev => ({ ...prev, [id]: !prev[id] }));') === 1
+      && count('{expanded && <div style={{borderTop:"1px solid #e8d8c0",padding:"4px 12px 8px"}}>') === 1
+      && count("const cov = vacRequestCoverage(r);") === 1 && count("{cov.breach && (") === 1
+      && count("⚠ Coverage below minimum — only {cov.worst.available} of {surgeons.length} surgeons available on {cov.worst.date} if approved (floor: {MIN_AVAILABLE_SURGEONS})") === 1
+      && nsrcAV.indexOf("const cov = vacRequestCoverage(r);") > iDetail && nsrcAV.indexOf("const cov = vacRequestCoverage(r);") < iRev,
+    JSON.stringify({ toggles: count("setExpandedVacGroups("), iDetail, iRev }));
+}
+
 // ─── AE. Generator: "Needs your OK" before publish + Setup holiday text (2026-10-11) ───
 // Owner decisions 2026-10-11: time off is a hard stop, card eves are night
 // shifts, Christmas week is FAK's, and a squeezed week takes the mildest bend.

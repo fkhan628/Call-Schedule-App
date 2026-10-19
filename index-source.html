@@ -11353,12 +11353,15 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                 ) : groupOrder.map(pid => {
                   const reqs = pendingGroups[pid];
                   const expanded = expandedVacGroups["p_"+pid];
+                  // Groups start closed and the "⚠ Coverage below minimum" warning is inside — flag it on the header too.
+                  const belowFloor = typeof vacRequestCoverage === "function" && reqs.some(r => { const c = vacRequestCoverage(r); return !!(c && c.breach); });
                   return <div key={pid} style={{marginBottom:6,border:"1px solid #e8d8c0",borderRadius:8,overflow:"hidden",background:"#fef8f0"}}>
                     {/* Collapsed header row */}
                     <div onClick={()=>toggleVacGroup("p_"+pid)} style={{display:"flex",alignItems:"center",gap:10,padding:"9px 12px",cursor:"pointer",flexWrap:"wrap"}}>
                       <span style={{fontSize:10,color:"#b0a080",transition:"transform 0.15s",transform:expanded?"rotate(90deg)":"rotate(0deg)"}}>▶</span>
                       {sMap[pid] ? <Badge id={pid}/> : <AppBadge id={pid}/>}
                       <span style={{fontSize:11,color:"#c09030",fontWeight:600,background:"#fef3e0",padding:"1px 8px",borderRadius:10,border:"1px solid #e8d090"}}>{reqs.length} pending</span>
+                      {belowFloor && <span title="Approving would leave fewer surgeons available than the minimum — open to see the day" style={{fontSize:11,color:"#8a4a00",fontWeight:700,background:"#fde8c4",padding:"1px 8px",borderRadius:10,border:"1px solid #e0a850",whiteSpace:"nowrap"}}>⚠ below floor</span>}
                       <div style={{display:"flex",gap:4,flexWrap:"wrap",marginLeft:"auto"}}>
                         {reqs.map(r => <span key={r.id} style={{fontFamily:mono,fontSize:11,color:"#8a7a60",background:"#f8f0e0",padding:"1px 7px",borderRadius:4,border:"1px solid #e8dcc0"}}>{shortRange(r.start_date,r.end_date)}</span>)}
                       </div>
