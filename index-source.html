@@ -400,6 +400,20 @@ function CallSchedule() {
   const updateBannerRef = useRef(null); // the update banner (fixed to the bottom), measured for the sheet
   const [calSheetLift, setCalSheetLift] = useState(0); // px the sheet sits above the bottom: the banner's height
   const bannerLift = () => { const el = updateBannerRef.current; return el && el.isConnected ? Math.ceil(el.getBoundingClientRect().height) : 0; };
+  // The toast stack's lift (UX review fix 2026-10-19): above the update banner AND above any open bottom sheet or
+  // action bar marked data-toast-floor="1" — the Calendar's day sheet, the month painter's Save / Discard bar — so a
+  // toast never lands on their buttons (a tap there only dismissed the toast). At most the screen less 120px, so the
+  // newest toast stays in view above a tall sheet. Measured by showToast and by the effect beside the toasts.
+  const toastLiftNow = () => {
+    let lift = bannerLift();
+    const vh = window.innerHeight || 0;
+    Array.from(document.querySelectorAll('[data-toast-floor="1"]')).forEach(el => {
+      if (!el.isConnected) return;
+      const r = el.getBoundingClientRect();
+      if (r.height > 0) lift = Math.max(lift, Math.ceil(vh - r.top));
+    });
+    return vh > 120 ? Math.min(lift, vh - 120) : lift;
+  };
   const openCalDay = (ds, el) => { calDayOpenerRef.current = el || null; setCalSheetLift(bannerLift()); setCalDayOpen(ds); };
   const closeCalDay = (refocus) => {
     const el = calDayOpenerRef.current;
@@ -855,10 +869,12 @@ function CallSchedule() {
   useEffect(() => { notifPrefsRef.current = notifPrefs; }, [notifPrefs]);
   const [notifPrefsLoaded, setNotifPrefsLoaded] = useState(false);
   const [notifPrefsSaving, setNotifPrefsSaving] = useState(false);
-  // When a preference save last landed (this session's own): Settings says "Saved ✓" for 3 s after it, so a member
-  // sees their change was kept (UX audit 2026-10-19 — only the scheduler's list showed even "Saving…").
-  const [notifPrefsSavedAt, setNotifPrefsSavedAt] = useState(0);
-  useEffect(() => { if (!notifPrefsSavedAt) return; const t = setTimeout(() => setNotifPrefsSavedAt(0), 3000); return () => clearTimeout(t); }, [notifPrefsSavedAt]);
+  // The preference save that last landed (this session's own): { id: whose prefs, at }. Settings says "Saved ✓" for
+  // 3 s after it, so a member sees their change was kept (UX audit 2026-10-19 — only the scheduler's list showed even
+  // "Saving…"). Review fix: cleared when the next save starts (a failed save never leaves an earlier "Saved ✓" up),
+  // and shown only for the signed-in person's OWN prefs (not the scheduler's save of someone else's e-mail).
+  const [notifPrefsSaved, setNotifPrefsSaved] = useState(null);
+  useEffect(() => { if (!notifPrefsSaved) return; const t = setTimeout(() => setNotifPrefsSaved(null), 3000); return () => clearTimeout(t); }, [notifPrefsSaved]);
   const [notifTestSent, setNotifTestSent] = useState("");
   const lastNotifCountRef = useRef(null); // track notification count for browser push on new ones
   const [edgeFunctionUrl, setEdgeFunctionUrl] = useState(""); // Supabase Edge Function URL for email
@@ -1195,7 +1211,7 @@ function CallSchedule() {
         }
       }
       setAuthEmail(""); setAuthPassword("");
-    } catch(e) { setAuthError(authErrorText(e)); } // (UX audit 2026-10-19: plain words — offline says "No connection", not Safari's "Load failed")
+    } catch(e) { setAuthError(typeof authErrorText === "function" ? authErrorText(e) : (e && e.message) || "Something went wrong — please try again."); } // (UX audit 2026-10-19: plain words — offline says "No connection", not Safari's "Load failed"; an old cached helpers.js: the raw message, as before)
     setAuthBusy(false);
   };
 
@@ -1243,7 +1259,7 @@ function CallSchedule() {
       setReloadTrigger(t => t + 1);
       setAuthBusy(false);
       return;
-    } catch(e) { if (gone()) return; setAuthError(authErrorText(e)); }
+    } catch(e) { if (gone()) return; setAuthError(typeof authErrorText === "function" ? authErrorText(e) : (e && e.message) || "Something went wrong — please try again."); }
     setAuthBusy(false);
   };
 
@@ -2015,13 +2031,15 @@ function CallSchedule() {
   // is unchanged for its callers.
   const [toasts, setToasts] = useState([]); // [{ id, msg, tone }], oldest first, at most 3
   const toastSeqRef = useRef(0); // the last toast's id
-  const [toastLift, setToastLift] = useState(0); // px the stack sits above the bottom: the update banner's height (0 with none)
+  const [toastLift, setToastLift] = useState(0); // px the stack sits above the bottom: the update banner / an open bottom sheet (toastLiftNow; 0 with none)
   const dismissToast = (id) => setToasts(list => list.some(t => t.id === id) ? list.filter(t => t.id !== id) : list);
   const showToast = (msg, tone) => {
     const t = { id: ++toastSeqRef.current, msg: msg, tone: tone || "info" };
-    setToastLift(bannerLift()); // its first frame already above the banner (as openCalDay does for the day sheet)
-    setToasts(list => toastAdd(list, t));
-    setTimeout(() => dismissToast(t.id), toastMs(t.tone, t.msg));
+    setToastLift(toastLiftNow()); // its first frame already above the banner and any open bottom sheet (as openCalDay does for the day sheet)
+    // An old cached helpers.js (from before the stack) has no toastAdd / toastMs: then one toast at a time for 4 s, as
+    // before the stack — never a crash at the root (UX review fix 2026-10-19; the typeof guard the app uses for new helpers).
+    setToasts(list => typeof toastAdd === "function" ? toastAdd(list, t) : [t]);
+    setTimeout(() => dismissToast(t.id), typeof toastMs === "function" ? toastMs(t.tone, t.msg) : 4000);
   };
 
   // ─── Sync engine v2: the ONE reader/writer of schedule_weeks ───
@@ -3956,7 +3974,9 @@ function CallSchedule() {
         return;
       }
       setVacRequests(prev => prev.map(r => r.id === req.id ? { ...r, status: "revoked" } : r));
-      showToast(`Revoked — ${req.surgeon_name}'s ${kindLabel}, ${req.start_date} to ${req.end_date}, is off the schedule.`, "success"); // before the time off and the notice (as approve's)
+      // Before the time off and the notice (as approve's) — so it claims only the revoke: the time off's removal can
+      // still fail after it, and its own toast says so (review fix 2026-10-19: it read "…, is off the schedule.").
+      showToast(`Revoked — ${req.surgeon_name}'s ${kindLabel}, ${req.start_date} to ${req.end_date}.`, "success");
       // Remove from the bucket it landed in
       toRemove(req.surgeon_id, isNoCall ? "nocall" : "vacation", req.start_date, req.end_date);
       const revokeTargets = [...new Set([req.surgeon_id, ...schedulerAdminIds].filter(Boolean))];
@@ -4307,7 +4327,7 @@ function CallSchedule() {
     notifSaveTimerRef.current[surgeonId] = setTimeout(async () => {
       if (sessionEpochRef.current !== ep) return;
       const tapH = dbAuthHeaders();
-      setNotifPrefsSaving(true);
+      setNotifPrefsSaving(true); setNotifPrefsSaved(null); // (a new save clears the last "Saved ✓" — review fix 2026-10-19)
       try {
         const cur = notifPrefsRef.current[surgeonId] || {};
         const row = {
@@ -4355,8 +4375,9 @@ function CallSchedule() {
           src === "signup" ? "prefs.signup_populate" : "prefs.save",
           `${src === "signup" ? "Signup filled" : "Saved"} notification prefs for ${auditRef.current.nameOf(surgeonId)} — email: ${emailMasked}`,
           { surgeon_id: surgeonId, email_masked: emailMasked, source: src }, sessionEpochRef.current === ep ? undefined : tapH);
-        // "Saved ✓" — only once the write is known-good, and only in the session that made it.
-        if (sessionEpochRef.current === ep) setNotifPrefsSavedAt(Date.now());
+        // "Saved ✓" — only once the write is known-good, and only in the session that made it; whose prefs it was
+        // goes with it (the Settings line shows it for the signed-in person's own).
+        if (sessionEpochRef.current === ep) setNotifPrefsSaved({ id: surgeonId, at: Date.now() });
       } catch(e) { console.error("Save notif pref error:", e); if (sessionEpochRef.current === ep) showToast("Couldn't save notification settings — check your connection and try again.", "error"); }
       setNotifPrefsSaving(false);
     }, 500);
@@ -4414,10 +4435,10 @@ function CallSchedule() {
     // The e-mail's period, taken at the tap: the Mondays doGenerate searches
     // and publishes (a settings change during the search sends the result to
     // the preview, not here), first Monday → last Sunday, with the year
-    // (helpers.js periodLabel; UX audit 2026-10-19). It was built from the
+    // (periodText — helpers.js periodLabel, guarded; UX audit 2026-10-19). It was built from the
     // start month/year selects, which a start-Monday override leaves behind:
     // "May – April 2026" for a Jan 4 – Apr 11, 2027 publish.
-    const period = periodLabel(mondays[0], mondays[mondays.length - 1]);
+    const period = periodText;
     // Notify only when something was actually published — not when the Silvis
     // confirm was cancelled, and not when the result went to the preview for
     // "Needs your OK" review (2026-10-11).
@@ -4589,6 +4610,10 @@ function CallSchedule() {
   const endDate = mondays.length > 0 ? addD(mondays[mondays.length-1], 6) : null;
   const endMoIdx = endDate ? endDate.getMonth() : (startMonth+2)%12;
   const endYr = endDate ? endDate.getFullYear() : startYear;
+  // The Generate period, said ONE way (UX audit 2026-10-19): its first Monday → last Sunday, with the year (helpers.js
+  // periodLabel) — the "Schedule Published" e-mail, the office prefill, Stats, the Generate panel and the HTML export.
+  // An old cached helpers.js has no periodLabel (review fix): then the plain dates, "2027-01-04 – 2027-04-11".
+  const periodText = mondays.length === 0 ? "" : typeof periodLabel === "function" ? periodLabel(mondays[0], mondays[mondays.length - 1]) : `${fmt(mondays[0])} – ${fmt(addD(mondays[mondays.length - 1], 6))}`;
 
   const rename = (id,name) => setSurgeons(p=>p.map(s=>s.id===id?{...s,name}:s));
   const renameApp = (id,name) => setApps(p=>p.map(a=>a.id===id?{...a,name}:a));
@@ -4670,11 +4695,28 @@ function CallSchedule() {
     const next = cur.includes(dept) ? cur.filter(d => d !== dept) : [...cur, dept];
     updateOfficeContact(id, { departments: next });
   };
-  // The office e-mail's period, prefilled (UX audit 2026-10-19): the Generate
-  // tab's period — the one just published — first Monday → last Sunday, with
-  // the year (helpers.js periodLabel). It used to run from the WHOLE
-  // schedule's first week to its last (every period ever published), with no year.
-  const computePeriodLabel = () => periodLabel(mondays[0], mondays[mondays.length - 1]);
+  // The office e-mail's period, prefilled (UX audit 2026-10-19): first Monday
+  // → last Sunday, with the year (helpers.js periodLabel). It used to run from
+  // the WHOLE schedule's first week to its last (every period ever published),
+  // with no year. Review fix: the Generate tab's period only when EVERY one of
+  // its weeks is published — after a publish the Generate tab may already be
+  // set up for the next period (→ Continue), which is not published yet.
+  // Otherwise the latest published run: the last weeks published back to back,
+  // at most as many as the Generate period has (nothing records where one
+  // publish ended and the one before it began, and periods follow each other
+  // back to back, so the whole run would be every period ever published). The
+  // field stays editable, shown before Send. An old cached helpers.js (no
+  // periodLabel): the plain dates.
+  const computePeriodLabel = () => {
+    const label = (a, b) => (typeof periodLabel === "function" ? periodLabel(a, b) : `${a} – ${fmt(addD(parse(b), 6))}`);
+    const gen = mondays.map(m => fmt(m));
+    if (gen.length && gen.every(m => schedule[m])) return label(gen[0], gen[gen.length - 1]);
+    const pub = Object.keys(schedule || {}).filter(k => /^\d{4}-\d{2}-\d{2}$/.test(k) && schedule[k]).sort();
+    if (!pub.length) return "";
+    let i = pub.length - 1;
+    while (i > 0 && pub.length - i < (gen.length || pub.length) && fmt(addD(parse(pub[i - 1]), 7)) === pub[i]) i--;
+    return label(pub[i], pub[pub.length - 1]);
+  };
   const openPublishDialog = () => {
     setPublishLabel(computePeriodLabel());
     setShowPublishDialog(true);
@@ -4883,17 +4925,21 @@ function CallSchedule() {
   // banner's own resize, and when the banner comes or goes (dismissed, or
   // hidden while the month painter is open). It is here, not beside the
   // toasts' state, because it lists paintSheet, declared above (§P: TDZ).
+  // Review fix (2026-10-19): it also clears whatever bottom sheet or action
+  // bar is open (toastLiftNow: data-toast-floor="1" — the Calendar's day
+  // sheet, the month painter's Save / Discard bar), remeasured when one opens
+  // or closes (calDayOpen, paintSheet) and when its own size changes.
   const toastsShown = toasts.length > 0;
   useEffect(() => {
     if (!toastsShown) return;
-    const remeasure = () => setToastLift(bannerLift());
+    const remeasure = () => setToastLift(toastLiftNow());
     remeasure();
     window.addEventListener("resize", remeasure);
-    const el = updateBannerRef.current;
-    const ro = el && typeof ResizeObserver === "function" ? new ResizeObserver(remeasure) : null;
-    if (ro) ro.observe(el);
+    const els = [updateBannerRef.current, ...Array.from(document.querySelectorAll('[data-toast-floor="1"]'))].filter(Boolean);
+    const ro = els.length && typeof ResizeObserver === "function" ? new ResizeObserver(remeasure) : null;
+    if (ro) els.forEach(el => ro.observe(el));
     return () => { window.removeEventListener("resize", remeasure); if (ro) ro.disconnect(); };
-  }, [toastsShown, updateAvailable, paintSheet]);
+  }, [toastsShown, updateAvailable, paintSheet, calDayOpen]);
 
   // APP day-offs (display-only) — row id="dayoff" of app_shifts_data; same
   // checked-write pattern and can_assign_apps gate as saveAppShifts above.
@@ -5289,8 +5335,12 @@ function CallSchedule() {
         // Accumulate: the new period merges into the existing schedule so
         // prior periods are preserved; regenerating the same weeks cleanly
         // overwrites just those keys.
+        // The audit line names the weeks it publishes (review fix 2026-10-19): their first Monday → last Sunday
+        // (helpers.js periodLabel, guarded), not the start month/year selects a start-Monday override leaves behind.
+        const pubMs = Object.keys(result).sort();
+        const pubPeriod = typeof periodLabel === "function" ? periodLabel(pubMs[0], pubMs[pubMs.length - 1]) : `weeks of ${pubMs[0]} – ${pubMs[pubMs.length - 1]}`;
         const { merged, prior, y1 } = publishWeeks(result, {
-          label: `${numWeeks} weeks from ${MO[startMonth]} ${startYear}, Generate & Publish`,
+          label: `${pubMs.length} weeks, ${pubPeriod}, Generate & Publish`,
           meta: { startMonth, startYear, numWeeks, origin: "generated" },
         });
         const job = runPublish(result); // the period's weeks → the table, as ONE engine job (A14) — registered now, before any await
@@ -5380,6 +5430,14 @@ function CallSchedule() {
   // compact; tapping a card's title row expands it.
   const [openSettingsCards, setOpenSettingsCards] = useState({});
   const toggleSettingsCard = (key) => setOpenSettingsCards(p => ({ ...p, [key]: !p[key] }));
+  // A ▸ card header's keys (review fix 2026-10-19 — as Collapsible's header): it is a role=button, so Enter (on
+  // keydown) and Space (on release, as a native button; its keydown only stops the page scrolling) toggle it like a
+  // tap. A key that comes from inside it is left alone. One handler for onKeyDown and onKeyUp.
+  const settingsCardKey = (key) => (e) => {
+    if (e.target !== e.currentTarget) return;
+    if (e.type === "keydown") { if (e.key === "Enter") { e.preventDefault(); toggleSettingsCard(key); } else if (e.key === " ") e.preventDefault(); }
+    else if (e.type === "keyup" && e.key === " ") toggleSettingsCard(key);
+  };
   const loadSnapshots = async () => {
     setSnapshotsLoading(true);
     try {
@@ -5682,8 +5740,11 @@ function CallSchedule() {
         // Weeks already published get their counts replaced, not added again;
         // the published period merges into the existing schedule so prior
         // periods are preserved.
+        // (the audit line names the weeks it publishes — as Generate & Publish's, review fix 2026-10-19)
+        const pubMs = Object.keys(weeks).sort();
+        const pubPeriod = typeof periodLabel === "function" ? periodLabel(pubMs[0], pubMs[pubMs.length - 1]) : `weeks of ${pubMs[0]} – ${pubMs[pubMs.length - 1]}`;
         publishWeeks(weeks, {
-          label: `${nW} weeks from ${MO[sM]} ${sY}${origin === "json" ? ", loaded from JSON" : ""}`,
+          label: `${pubMs.length} weeks, ${pubPeriod}${origin === "json" ? ", loaded from JSON" : ""}`,
           extra: needsOkN ? ` — ${needsOkN} item${needsOkN === 1 ? "" : "s"} reviewed in Needs your OK` : "",
           meta: { startMonth: sM, startYear: sY, numWeeks: nW, needsOk: needsOkN, bendCost: bend, origin },
         });
@@ -6768,7 +6829,7 @@ function CallSchedule() {
     const icsJSON = JSON.stringify(icsMap);
 
     const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>DSG Call Schedule — ${MO[startMonth]} to ${MO[endMoIdx]} ${startYear}</title>
+<title>DSG Call Schedule — ${periodText}</title>
 <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;700&display=swap" rel="stylesheet">
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
@@ -6809,23 +6870,29 @@ body{font-family:'Outfit',sans-serif;background:#f0f2f5;color:#2c3e50;padding:16
 .footer{text-align:center;margin-top:20px;font-size:10px;color:#a0a8b0}
 @media print{body{background:#fff;padding:8px}.mo{break-inside:avoid}.cs{display:none}}
 ${"</"}style>${"</"}head><body>
-<div class="hd"><h1><span style="background:linear-gradient(135deg,#1a6fa8,#2488c8);color:#fff;padding:2px 8px;border-radius:5px;font-size:14px;font-weight:800;margin-right:8px">DSG</span> Davenport Surgical Group</h1><p>Call Schedule · ${MO[startMonth]} – ${MO[endMoIdx]} ${startYear} · ${mondays.length} Weeks</p></div>
+<div class="hd"><h1><span style="background:linear-gradient(135deg,#1a6fa8,#2488c8);color:#fff;padding:2px 8px;border-radius:5px;font-size:14px;font-weight:800;margin-right:8px">DSG</span> Davenport Surgical Group</h1><p>Call Schedule · ${periodText} · ${mondays.length} Weeks</p></div>
 <div class="cs"><div class="ct">📅 Add to Your Calendar</div><div class="cd-desc">Tap your name to download your shifts as a calendar file (.ics). Import into Google Calendar, Outlook, or Apple Calendar.</div><div class="cb">${calBtns}</div></div>
 <div class="ro">📋 Read-Only Calendar · Contact the scheduler for any changes</div>
 ${calendarHTML}
 <div class="footer">Generated ${new Date().toLocaleDateString()} · DSG Call Schedule</div>
 ${"<"}script>
 var D=${icsJSON};
-function dlCal(k){var c=D[k];if(!c){alert("Not found");return;}var f=k==="__full__"?"call-schedule-full.ics":"call-schedule-"+k.toLowerCase()+".ics";var b=new Blob([c],{type:"text/calendar;charset=utf-8"});var u=URL.createObjectURL(b);var a=document.createElement("a");a.href=u;a.download=f;a.click();URL.revokeObjectURL(u);}
+function dlCal(k){var c=D[k];if(!c){alert("Not found");return;}var f=k==="__full__"?"call-schedule-full.ics":"call-schedule-"+k.toLowerCase()+".ics";var b=new Blob([c],{type:"text/calendar;charset=utf-8"});var u=URL.createObjectURL(b);var a=document.createElement("a");a.href=u;a.download=f;document.body.appendChild(a);a.click();document.body.removeChild(a);setTimeout(function(){URL.revokeObjectURL(u);},1000);}
 ${"</"}script>${"</"}body>${"</"}html>`;
 
+    // Named for the period's real weeks (review fix 2026-10-19: periodText, not the start month/year selects a
+    // start-Monday override leaves behind), and downloaded as downloadICS does (helpers.js): the link in the document
+    // for the click and the URL revoked a second later — iOS Safari can ignore a click on a detached link, and
+    // revoking at once can cancel the download before it starts. (The page's own dlCal above, the same.)
     const blob = new Blob([html], {type:"text/html"});
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `dsg-call-schedule-${MO[startMonth].toLowerCase()}-${MO[endMoIdx].toLowerCase()}-${startYear}.html`;
+    a.download = mondays.length ? `dsg-call-schedule-${fmt(mondays[0])}-to-${fmt(addD(mondays[mondays.length - 1], 6))}.html` : "dsg-call-schedule.html";
+    document.body.appendChild(a);
     a.click();
-    URL.revokeObjectURL(url);
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
 
   // Stats
@@ -7699,14 +7766,15 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         />
       )}
       {/* Non-blocking toasts: up to 3 stacked, oldest on top, newest nearest the
-          bottom; tap one to dismiss it. Above the update banner (toastLift, its
-          measured height) or, with none, above the iPhone home bar. The live
+          bottom; tap one to dismiss it. Above the update banner and any open bottom
+          sheet or action bar (toastLift, measured) or, with none, above the iPhone
+          home bar. An old cached helpers.js (no toastText): the plain prefix. The live
           region is always mounted, so each new toast is announced; the stack
           itself lets taps through to the page (only the pills catch them). */}
       <div role="status" aria-live="polite" style={{position:"fixed",left:0,right:0,bottom:toastLift ? toastLift + 10 : "calc(env(safe-area-inset-bottom, 0px) + 24px)",zIndex:9999,display:"flex",flexDirection:"column",alignItems:"center",gap:6,pointerEvents:"none"}}>
         {toasts.map(t => (
           <div key={t.id} onClick={()=>dismissToast(t.id)} style={{pointerEvents:"auto",maxWidth:"min(90vw, 600px)",boxSizing:"border-box",background:t.tone==="success"?"#1a7a4a":t.tone==="error"?"#a83232":"#1a2a3a",color:"#fff",borderRadius:9,padding:"10px 18px",fontSize:13,fontWeight:600,fontFamily:font,boxShadow:"0 4px 16px rgba(0,0,0,0.25)",cursor:"pointer",letterSpacing:0.2}}>
-            {toastText(t)}
+            {typeof toastText === "function" ? toastText(t) : `${t.tone==="success"?"✓ ":t.tone==="error"?"⚠ ":""}${t.msg}`}
           </div>
         ))}
       </div>
@@ -7774,7 +7842,9 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         button { color: #c0c8d8 !important; }
         button[style*="background: linear-gradient"] { color: #fff !important; }
         /* Secondary buttons: css.btn(false) in app-styles.js, a light grey fill the forced light text above could not be read on. As the browser writes it. */
-        button[style*="background: rgb(240, 242, 245)"] { background: #22304e !important; border-color: #3a4a6e !important; }
+        button[style*="background: rgb(240, 242, 245)"] { background: #22304e !important; }
+        /* …and a dark border only where it is still css.btn(false)'s own grey (#c8d0d8): a button that sets its own border colour keeps it — ✕ Clear's red. */
+        button[style*="background: rgb(240, 242, 245)"][style*="rgb(200, 208, 216)"] { border-color: #3a4a6e !important; }
         /* Tables */
         table { color: #c0c0d0 !important; }
         th { color: #8a8aaa !important; }
@@ -7870,7 +7940,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                       setAuthBusy(false);
                       if(r.error){setAuthError(r.error);}
                       else{setAuthMode("login");setAuthError("");setNewPassword("");setNewPasswordConfirm("");alert("Password updated! Please sign in with your new password.");auth.signOut();}
-                    }).catch(e=>{setAuthBusy(false);setAuthError(authErrorText(e));});
+                    }).catch(e=>{setAuthBusy(false);setAuthError(typeof authErrorText === "function" ? authErrorText(e) : (e && e.message) || "Something went wrong — please try again.");});
                   }}}
                   style={{...css.inp,width:"100%",padding:"10px 12px",fontSize:14}}/>
                 {authError && <div style={{fontSize:12,color:"#c04040",padding:"6px 10px",background:"#fce8e8",borderRadius:6,border:"1px solid #e8c0c0"}}>{authError}</div>}
@@ -7882,7 +7952,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                     setAuthBusy(false);
                     if(r.error){setAuthError(r.error);}
                     else{setAuthMode("login");setAuthError("");setNewPassword("");setNewPasswordConfirm("");alert("Password updated! Please sign in with your new password.");auth.signOut();}
-                  }).catch(e=>{setAuthBusy(false);setAuthError(authErrorText(e));});
+                  }).catch(e=>{setAuthBusy(false);setAuthError(typeof authErrorText === "function" ? authErrorText(e) : (e && e.message) || "Something went wrong — please try again.");});
                 }} disabled={authBusy}
                   style={{...css.btn(true),width:"100%",padding:"11px 16px",fontSize:14,fontWeight:700,opacity:authBusy?0.6:1}}>
                   {authBusy ? "Updating…" : "Update Password"}
@@ -7913,7 +7983,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                           setAuthBusy(false);
                           if(r.error){setAuthError(r.error);}
                           else{setResetSent(true);}
-                        }).catch(e=>{setAuthBusy(false);setAuthError(authErrorText(e));});
+                        }).catch(e=>{setAuthBusy(false);setAuthError(typeof authErrorText === "function" ? authErrorText(e) : (e && e.message) || "Something went wrong — please try again.");});
                       }}}
                       style={{...css.inp,width:"100%",padding:"10px 12px",fontSize:14}}/>
                     {authError && <div style={{fontSize:12,color:"#c04040",padding:"6px 10px",background:"#fce8e8",borderRadius:6,border:"1px solid #e8c0c0"}}>{authError}</div>}
@@ -7924,7 +7994,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                         setAuthBusy(false);
                         if(r.error){setAuthError(r.error);}
                         else{setResetSent(true);}
-                      }).catch(e=>{setAuthBusy(false);setAuthError(authErrorText(e));});
+                      }).catch(e=>{setAuthBusy(false);setAuthError(typeof authErrorText === "function" ? authErrorText(e) : (e && e.message) || "Something went wrong — please try again.");});
                     }} disabled={authBusy}
                       style={{...css.btn(true),width:"100%",padding:"11px 16px",fontSize:14,fontWeight:700,opacity:authBusy?0.6:1}}>
                       {authBusy ? "Sending…" : "Send Reset Link"}
@@ -8185,8 +8255,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
 
             // 5. Holidays in upcoming period without surgeon assignments — the
             //    one check the Generate tab's banner uses too (helpers.js
-            //    periodHolidayGaps, UX audit 2026-10-19)
-            periodHolidayGaps(mondays, holidayAssignments, getHolidays).forEach(g => {
+            //    periodHolidayGaps, UX audit 2026-10-19; an old cached helpers.js: none listed, not a crash)
+            (typeof periodHolidayGaps === "function" ? periodHolidayGaps(mondays, holidayAssignments, getHolidays) : []).forEach(g => {
               issues.push({ sev: "warn", msg: `${g.name} (${g.date}) — no surgeon assigned` });
             });
 
@@ -8891,9 +8961,11 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               })()}
             </div>
             {/* The period's exact dates, where it sits against the published schedule, and its holidays with no
-                holiday card (UX audit 2026-10-19 — helpers.js periodLabel / periodSeam / periodHolidayGaps; no hook) */}
+                holiday card (UX audit 2026-10-19 — helpers.js periodLabel (periodText) / periodSeam / periodHolidayGaps, each
+                guarded against an old cached helpers.js; no hook) */}
             {mondays.length > 0 && (() => {
-              const seam = periodSeam(Object.keys(schedule).filter(m => schedule[m]), mondays, fmt(new Date()));
+              // (an old cached helpers.js has no periodSeam / periodHolidayGaps: then no seam lines and no banner, not a crash)
+              const seam = typeof periodSeam === "function" ? periodSeam(Object.keys(schedule).filter(m => schedule[m]), mondays, fmt(new Date())) : { overlap: 0, started: false, over: false, gap: null, after: null };
               const weeksTxt = (n) => `${n} week${n === 1 ? "" : "s"}`;
               const seamLines = [];
               if (seam.overlap > 0) seamLines.push({ ok: false, text: `⚠ Overlaps ${seam.overlap} published week${seam.overlap === 1 ? "" : "s"} — publishing replaces ${seam.overlap === 1 ? "it" : "them"}` });
@@ -8901,7 +8973,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               if (seam.overlap === 0 && seam.gap === 0) seamLines.push({ ok: true, text: "✓ Continues from the published schedule" });
               if (seam.over) seamLines.push({ ok: false, text: "⚠ This whole period is already over" });
               else if (seam.started) seamLines.push({ ok: false, text: "⚠ This period has already started" });
-              const holGaps = periodHolidayGaps(mondays, holidayAssignments, getHolidays);
+              const holGaps = typeof periodHolidayGaps === "function" ? periodHolidayGaps(mondays, holidayAssignments, getHolidays) : [];
               const holText = holGaps.map(g => `${g.name} (${monthDayLabel(g.date, true)})`).join(", ");
               const toHolidays = () => {
                 setHolidayYear(holGaps[0].year); setView("setup");
@@ -8909,7 +8981,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               };
               return (
                 <div style={{marginTop:10,paddingTop:10,borderTop:`1px solid ${dk?"#2a3a5e":"#e8ecf0"}`,fontSize:12,lineHeight:1.6}}>
-                  <div style={{color:dk?"#e0e0f0":"#2c3e50"}}><strong>This period:</strong> {periodLabel(mondays[0], mondays[mondays.length - 1])} · {weeksTxt(mondays.length)}</div>
+                  <div style={{color:dk?"#e0e0f0":"#2c3e50"}}><strong>This period:</strong> {periodText} · {weeksTxt(mondays.length)}</div>
                   {seamLines.map((l, i) => <div key={i} style={{fontWeight:600,color:l.ok?(dk?"#8ad0a0":"#1a8040"):(dk?"#f0c890":"#a05010")}}>{l.text}</div>)}
                   {holGaps.length > 0 && (
                     <div role="status" style={{marginTop:8,background:dk?"#3a2410":"#fdf0e3",border:"1px solid #d09050",borderRadius:8,padding:"8px 12px",color:dk?"#f0c890":"#7a4010"}}>
@@ -10169,9 +10241,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             const ico = {width:22,textAlign:"center",flexShrink:0};
             // Lifted above the update banner by its measured height (calSheetLift; 0 with no banner): the
             // banner wraps to two rows on a 375px phone and used to cover the sheet's bottom lines.
+            // data-toast-floor: toasts sit above the sheet, never on its "Edit this week" (toastLiftNow).
             return (
               <div onClick={close} style={{position:"fixed",inset:0,zIndex:9000,background:"rgba(0,0,0,0.45)",display:"flex",alignItems:"flex-end",justifyContent:"center"}}>
-                <div role="dialog" aria-modal="true" aria-label={`${title} — details`} onClick={e=>e.stopPropagation()}
+                <div role="dialog" aria-modal="true" aria-label={`${title} — details`} data-toast-floor="1" onClick={e=>e.stopPropagation()}
                   style={{width:"100%",maxWidth:520,maxHeight:"70vh",overflowY:"auto",overscrollBehavior:"contain",WebkitOverflowScrolling:"touch",boxSizing:"border-box",
                     background:dk?"#1a1f2a":"#fff",borderRadius:"14px 14px 0 0",boxShadow:"0 -6px 24px rgba(0,0,0,0.25)",padding:"10px 16px",
                     paddingBottom:"calc(env(safe-area-inset-bottom, 0px) + 16px)",marginBottom:calSheetLift,fontFamily:font}}>
@@ -10771,7 +10844,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           </div>
           {/* Surgeon stats — This Period or Year to Date (statsScope) */}
           <div style={css.card}>
-            <div style={css.cardT}>{statsScope==="ytd" ? <>Current Period — {ytdRange.start} → {ytdRange.end}</> : <>This Period — {periodLabel(mondays[0], mondays[mondays.length - 1])}</>}</div>
+            <div style={css.cardT}>{statsScope==="ytd" ? <>Current Period — {ytdRange.start} → {ytdRange.end}</> : <>This Period — {periodText}</>}</div>
             {!Object.values(statsScope==="ytd"?statsYTD:stats).some(s=>s.dc>0||s.nights>0) ? (
               <p style={{color:"#7a8a98",fontSize:13}}>Generate a schedule first.</p>
             ) : (
@@ -12085,7 +12158,9 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               )}
               <div>
                 <label style={{fontSize:10,color:"#7a8a98",display:"block",marginBottom:2}}>Trade with</label>
-                <select value={tradeTo} onChange={e=>setTradeTo(e.target.value)} style={{...css.inp,width:100}}>
+                {/* A member's return pick is one of the partner's own shifts: another partner drops it (review fix
+                    2026-10-19 — it stayed in state, unseen, was named by the note below and sent with the proposal) */}
+                <select value={tradeTo} onChange={e=>{ setTradeTo(e.target.value); if (!isScheduler) { setTradeReturnWeek(""); setTradeReturnShift(""); } }} style={{...css.inp,width:100}}>
                   <option value="">Who…</option>
                   {surgeons.filter(s=>s.id!==tradeFrom).map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
                 </select>
@@ -12093,11 +12168,13 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               {isScheduler ? <>
                 <div>
                   <label style={{fontSize:10,color:"#7a8a98",display:"block",marginBottom:2}}>Week</label>
-                  {/* "Wk of Oct 19", and each shift names who holds it now (UX audit 2026-10-19 — helpers.js,
-                      guarded against an old cached helpers.js): the scheduler picks for two other people. */}
-                  <select value={tradeWeek} onChange={e=>setTradeWeek(e.target.value)} style={{...css.inp,width:160}}>
+                  {/* "Wk of Oct 19" (with its year when that isn't this year's — a 56-week period spans two), and each
+                      shift names who holds it now, FIRST so a phone's closed select still shows it (UX audit + review
+                      fix 2026-10-19 — helpers.js, guarded against an old cached helpers.js): the scheduler picks for
+                      two other people. */}
+                  <select value={tradeWeek} onChange={e=>setTradeWeek(e.target.value)} style={{...css.inp,width:190}}>
                     <option value="">Select…</option>
-                    {Object.keys(schedule).sort().filter(m => fmt(addD(parse(m), 6)) >= todayStr).map(m=><option key={m} value={m}>Wk of {typeof monthDayLabel === "function" ? monthDayLabel(m) : m}{m <= todayStr ? " (this week)" : ""}</option>)}
+                    {Object.keys(schedule).sort().filter(m => fmt(addD(parse(m), 6)) >= todayStr).map(m=><option key={m} value={m}>Wk of {typeof monthDayLabel === "function" ? monthDayLabel(m, m.slice(0, 4) !== todayStr.slice(0, 4)) : m}{m <= todayStr ? " (this week)" : ""}</option>)}
                   </select>
                 </div>
                 <div>
@@ -12105,7 +12182,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   <select value={tradeShift} onChange={e=>setTradeShift(e.target.value)} style={{...css.inp,width:190}}>
                     <option value="">Select…</option>
                     {ALL_SHIFT_KEYS.map(sk=>{ const h = tradeWeek && typeof tradeSlotHolder === "function" ? tradeSlotHolder(schedule, tradeWeek, sk) : "";
-                      return <option key={sk} value={sk}>{tradeWeek ? slotLabel(tradeWeek, sk) : SHIFT_LABELS[sk]}{h ? ` · ${sMap[h]?.name || h}` : ""}</option>; })}
+                      return <option key={sk} value={sk}>{h ? `${sMap[h]?.name || h} · ` : ""}{tradeWeek ? slotLabel(tradeWeek, sk) : SHIFT_LABELS[sk]}</option>; })}
                   </select>
                 </div>
               </> : (
@@ -12149,9 +12226,9 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               {isScheduler ? <>
                 <div>
                   <label style={{fontSize:10,color:"#7a8a98",display:"block",marginBottom:2}}>Return week</label>
-                  <select value={tradeReturnWeek} onChange={e=>setTradeReturnWeek(e.target.value)} style={{...css.inp,width:160}}>
+                  <select value={tradeReturnWeek} onChange={e=>setTradeReturnWeek(e.target.value)} style={{...css.inp,width:190}}>
                     <option value="">Select…</option>
-                    {Object.keys(schedule).sort().filter(m => fmt(addD(parse(m), 6)) >= todayStr).map(m=><option key={m} value={m}>Wk of {typeof monthDayLabel === "function" ? monthDayLabel(m) : m}{m <= todayStr ? " (this week)" : ""}</option>)}
+                    {Object.keys(schedule).sort().filter(m => fmt(addD(parse(m), 6)) >= todayStr).map(m=><option key={m} value={m}>Wk of {typeof monthDayLabel === "function" ? monthDayLabel(m, m.slice(0, 4) !== todayStr.slice(0, 4)) : m}{m <= todayStr ? " (this week)" : ""}</option>)}
                   </select>
                 </div>
                 <div>
@@ -12159,7 +12236,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   <select value={tradeReturnShift} onChange={e=>setTradeReturnShift(e.target.value)} style={{...css.inp,width:190}}>
                     <option value="">Select…</option>
                     {ALL_SHIFT_KEYS.map(sk=>{ const h = tradeReturnWeek && typeof tradeSlotHolder === "function" ? tradeSlotHolder(schedule, tradeReturnWeek, sk) : "";
-                      return <option key={sk} value={sk}>{tradeReturnWeek ? slotLabel(tradeReturnWeek, sk) : SHIFT_LABELS[sk]}{h ? ` · ${sMap[h]?.name || h}` : ""}</option>; })}
+                      return <option key={sk} value={sk}>{h ? `${sMap[h]?.name || h} · ` : ""}{tradeReturnWeek ? slotLabel(tradeReturnWeek, sk) : SHIFT_LABELS[sk]}</option>; })}
                   </select>
                 </div>
               </> : (
@@ -12201,8 +12278,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               <button onClick={submitTradeRequest} disabled={tradeSubmitting} style={{...css.btn(true),padding:"7px 18px",background:"linear-gradient(135deg,#6030a0,#8050c0)",borderColor:"#6030a0",...(tradeSubmitting ? {opacity:0.6,cursor:"default"} : {})}}>{tradeSubmitting ? "Sending…" : "Propose Trade"}</button>
             </div>
             {/* A leg whose giver doesn't hold it (UX audit 2026-10-19): the scheduler picks any week and shift, and the
-                accept refuses such a trade as out of date — said here, before it is proposed (helpers.js tradePickNotes). */}
-            {(()=>{ const notes = typeof tradePickNotes === "function" ? tradePickNotes(schedule, { from: tradeFrom, to: tradeTo, week: tradeWeek, shift: tradeShift, returnWeek: tradeReturnWeek, returnShift: tradeReturnShift }, id => sMap[id]?.name || id) : [];
+                accept refuses such a trade as out of date — said here, before it is proposed (helpers.js tradePickNotes).
+                The scheduler's only (review fix 2026-10-19): a member's pickers list only shifts the giver holds, so a
+                note there could only name a pick its select no longer shows. */}
+            {(()=>{ const notes = isScheduler && typeof tradePickNotes === "function" ? tradePickNotes(schedule, { from: tradeFrom, to: tradeTo, week: tradeWeek, shift: tradeShift, returnWeek: tradeReturnWeek, returnShift: tradeReturnShift }, id => sMap[id]?.name || id) : [];
               return notes.length ? (
                 <div style={{marginBottom:10,padding:"8px 12px",background:dk?"#2a1a0a":"#fef8e8",border:`1px solid ${dk?"#5a4520":"#e8d090"}`,borderRadius:8}}>
                   <div style={{fontSize:12,fontWeight:700,color:dk?"#e0c070":"#8a6a10",marginBottom:4}}>⚠️ This trade couldn't be accepted as picked:</div>
@@ -12516,9 +12595,9 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           {/* Office Notifications — scheduler/admin only */}
           {(isScheduler || userProfile?.role === "admin") && (
             <div style={css.card}>
-              <div onClick={()=>toggleSettingsCard("officeNotif")} style={{...css.cardT,margin:openSettingsCards.officeNotif?"0 0 12px":0,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"space-between",userSelect:"none"}}>
+              <div role="button" tabIndex={0} aria-expanded={!!openSettingsCards.officeNotif} onClick={()=>toggleSettingsCard("officeNotif")} onKeyDown={settingsCardKey("officeNotif")} onKeyUp={settingsCardKey("officeNotif")} style={{...css.cardT,margin:openSettingsCards.officeNotif?"0 0 12px":0,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"space-between",userSelect:"none"}}>
                 <span>📧 Office Notifications</span>
-                <span style={{fontSize:12,color:"#7a8a98"}}>{openSettingsCards.officeNotif ? "▾" : "▸"}</span>
+                <span aria-hidden="true" style={{fontSize:12,color:"#7a8a98"}}>{openSettingsCards.officeNotif ? "▾" : "▸"}</span>
               </div>
               {openSettingsCards.officeNotif && <>
               <p style={{fontSize:12,color:"#7a8a98",margin:"0 0 12px",lineHeight:1.5}}>
@@ -12633,9 +12712,9 @@ ${"</"}script>${"</"}body>${"</"}html>`;
 
           {/* Notifications */}
           <div style={css.card}>
-            <div onClick={()=>toggleSettingsCard("notifSettings")} style={{...css.cardT,margin:openSettingsCards.notifSettings?"0 0 12px":0,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"space-between",userSelect:"none"}}>
+            <div role="button" tabIndex={0} aria-expanded={!!openSettingsCards.notifSettings} onClick={()=>toggleSettingsCard("notifSettings")} onKeyDown={settingsCardKey("notifSettings")} onKeyUp={settingsCardKey("notifSettings")} style={{...css.cardT,margin:openSettingsCards.notifSettings?"0 0 12px":0,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"space-between",userSelect:"none"}}>
               <span>🔔 Notification Settings</span>
-              <span style={{fontSize:12,color:"#7a8a98"}}>{openSettingsCards.notifSettings ? "▾" : "▸"}</span>
+              <span aria-hidden="true" style={{fontSize:12,color:"#7a8a98"}}>{openSettingsCards.notifSettings ? "▾" : "▸"}</span>
             </div>
             {openSettingsCards.notifSettings && <>
 
@@ -12814,7 +12893,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                     <p style={{fontSize:10,color:"#8a94a0",margin:"4px 0 0",fontStyle:"italic"}}>
                       Reminders fire only on days you're on call (for call reminder) or 2 days before the vacation deadline.
                     </p>
-                    <div aria-live="polite" style={{fontSize:10,color:"#1a8040",marginTop:6,minHeight:14}}>{notifPrefsSaving ? "Saving…" : notifPrefsSavedAt ? "Saved ✓" : ""}</div>
+                    {/* "Saved ✓" for this person's own prefs only; readable in dark mode too (review fix 2026-10-19) */}
+                    <div aria-live="polite" style={{fontSize:10,color:dk?"#8ad0a0":"#1a8040",marginTop:6,minHeight:14}}>{notifPrefsSaving ? "Saving…" : notifPrefsSaved && notifPrefsSaved.id === mySurgeon ? "Saved ✓" : ""}</div>
                   </div>
                 );
               })()}
@@ -12929,12 +13009,16 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           {/* Calendar Sync - Subscribable URLs */}
           <div style={css.card}>
             <div style={css.cardT}>📅 Live Calendar Sync</div>
-            <p style={{fontSize:12,color:"#5a6a78",margin:"0 0 10px",lineHeight:1.5}}>
-              Subscribe to {isScheduler ? "these URLs" : "your personal URL"} in Google Calendar, Outlook, or Apple Calendar. The calendar auto-updates when the schedule changes — no need to re-download.
-            </p>
-            <div style={{fontSize:11,color:"#7a8a98",marginBottom:8}}>
-              <strong>How to subscribe:</strong> In Google Calendar: Other calendars (+) → From URL → paste the link below.
-            </div>
+            {/* The intro and the how-to only where a link follows — the scheduler's list or a surgeon's own; an APP gets
+                the note below instead (review fix 2026-10-19: it said "paste the link below" with no link) */}
+            {(isScheduler || (!!sMap[mySurgeon] && typeof calendarFeedUrls === "function")) && <>
+              <p style={{fontSize:12,color:"#5a6a78",margin:"0 0 10px",lineHeight:1.5}}>
+                Subscribe to {isScheduler ? "these URLs" : "your personal URL"} in Google Calendar, Outlook, or Apple Calendar. The calendar auto-updates when the schedule changes — no need to re-download.
+              </p>
+              <div style={{fontSize:11,color:"#7a8a98",marginBottom:8}}>
+                <strong>How to subscribe:</strong> In Google Calendar: Other calendars (+) → From URL → paste the link below.
+              </div>
+            </>}
 
             {/* Personal calendar link — a surgeon's only (UX audit 2026-10-19): calendar-sync matches ?surgeon= against
                 surgeon codes, so an APP's link would 404; an APP is told so instead */}
@@ -13052,9 +13136,9 @@ ${"</"}script>${"</"}body>${"</"}html>`;
 
           {/* Restore from snapshot — scheduler/admin only */}
           {(isScheduler || userProfile?.role === "admin") && <div style={css.card}>
-            <div onClick={()=>toggleSettingsCard("restoreSnap")} style={{...css.cardT,margin:openSettingsCards.restoreSnap?"0 0 12px":0,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"space-between",userSelect:"none"}}>
+            <div role="button" tabIndex={0} aria-expanded={!!openSettingsCards.restoreSnap} onClick={()=>toggleSettingsCard("restoreSnap")} onKeyDown={settingsCardKey("restoreSnap")} onKeyUp={settingsCardKey("restoreSnap")} style={{...css.cardT,margin:openSettingsCards.restoreSnap?"0 0 12px":0,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"space-between",userSelect:"none"}}>
               <span>📼 Restore from Snapshot</span>
-              <span style={{fontSize:12,color:"#7a8a98"}}>{openSettingsCards.restoreSnap ? "▾" : "▸"}</span>
+              <span aria-hidden="true" style={{fontSize:12,color:"#7a8a98"}}>{openSettingsCards.restoreSnap ? "▾" : "▸"}</span>
             </div>
             {openSettingsCards.restoreSnap && <>
             <p style={{fontSize:12,color:"#5a6a78",marginBottom:10,lineHeight:1.4}}>
@@ -13397,8 +13481,9 @@ function MonthPainterSheet({ mode, css, dk, surgeons, apps, appShifts, vacations
         })}
       </div>
 
-      {/* Sticky footer — the unsaved indicator lives here, always visible */}
-      <div style={{ background: panelBg, borderTop: `1px solid ${border}`, padding: "10px 14px", paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 10px)", flexShrink: 0 }}>
+      {/* Sticky footer — the unsaved indicator lives here, always visible. data-toast-floor: the app's toasts sit
+          above it, never on Discard / Save (the app's toastLiftNow). */}
+      <div data-toast-floor="1" style={{ background: panelBg, borderTop: `1px solid ${border}`, padding: "10px 14px", paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 10px)", flexShrink: 0 }}>
         {commitError && (
           <div role="alert" style={{ marginBottom: 8, padding: "8px 10px", borderRadius: 8, background: dk ? "#3a1a1a" : "#fdeaea", border: "1px solid #c05050", maxHeight: 130, overflowY: "auto" }}>
             <div style={{ fontSize: 12, fontWeight: 800, color: "#c04040" }}>⚠ Nothing was saved — {commitError.items.length} entr{commitError.items.length === 1 ? "y is" : "ies are"} still unsaved:</div>
@@ -14852,17 +14937,21 @@ function Collapsible({ title, ck, defaultOpen = false, forceOpen = false, heldNo
   const shown = open || forceOpen;
   // The header is a real button (UX audit 2026-10-19): focusable, announced as expanded or collapsed, and
   // Enter (keydown) or Space (on release, as a native button — its keydown only stops the page scrolling)
-  // toggles it like a tap. A key on a control inside the header (the ↻ in `right`) stays that control's.
+  // toggles it like a tap. A key that comes from inside it is left alone (ownKey).
   // Held open, a key does what a tap does there: nothing (toggle's guard); the header says it is disabled.
+  // Review fix (2026-10-19): the button is the chevron and the title ONLY; `right` (the ↻ refresh) is its
+  // sibling in the header row — a button's children are presentational, so VoiceOver hid the ↻ inside it.
   const ownKey = (e) => e.target === e.currentTarget;
   const onHeadKeyDown = (e) => { if (!ownKey(e)) return; if (e.key === "Enter") { e.preventDefault(); toggle(); } else if (e.key === " ") e.preventDefault(); };
   const onHeadKeyUp = (e) => { if (ownKey(e) && e.key === " ") toggle(); };
   return (
     <div style={style ? { ...css.card, ...style } : css.card}>
-      <div role="button" tabIndex={0} aria-expanded={shown} aria-disabled={forceOpen || undefined} onClick={toggle} onKeyDown={onHeadKeyDown} onKeyUp={onHeadKeyUp}
-        style={{ display: "flex", alignItems: "center", gap: 8, cursor: forceOpen ? "default" : "pointer", userSelect: "none", padding: "9px 0", margin: "-9px 0", minHeight: 36 }}>
-        <span style={{ fontSize: 11, color: "#8a94a0", transition: "transform .15s", transform: shown ? "rotate(90deg)" : "rotate(0deg)", display: "inline-block", width: 10, flexShrink: 0 }}>▶</span>
-        <div style={{ ...css.cardT, marginBottom: 0, flex: 1 }}>{title}</div>
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <div role="button" tabIndex={0} aria-expanded={shown} aria-disabled={forceOpen || undefined} onClick={toggle} onKeyDown={onHeadKeyDown} onKeyUp={onHeadKeyUp}
+          style={{ display: "flex", alignItems: "center", gap: 8, flex: 1, minWidth: 0, cursor: forceOpen ? "default" : "pointer", userSelect: "none", padding: "9px 0", margin: "-9px 0", minHeight: 36 }}>
+          <span aria-hidden="true" style={{ fontSize: 11, color: "#8a94a0", transition: "transform .15s", transform: shown ? "rotate(90deg)" : "rotate(0deg)", display: "inline-block", width: 10, flexShrink: 0 }}>▶</span>
+          <div style={{ ...css.cardT, marginBottom: 0, flex: 1 }}>{title}</div>
+        </div>
         {right}
       </div>
       {forceOpen && heldNote && <div style={{ fontSize: 10, color: "#8a94a0", marginTop: 4 }}>{heldNote}</div>}

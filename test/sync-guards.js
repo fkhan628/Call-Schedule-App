@@ -1503,6 +1503,27 @@ check("prefs audit never logs the plaintext email (masked only)",
   }
 }
 
+// ─── An OLD cached helpers.js, for the batch's guards (UX review fixes 2026-10-19; BD8, BF7, BG5, BJ5) ───
+// The page loads helpers.js?v=APP_VERSION, but a page can still meet a helpers.js from before this batch (the case
+// the app guards against: every call of a NEWER helper sits behind typeof — calMonthStatus, onCallNow, …). Before the
+// review fixes the toast, period and sign-in helpers were called bare: with main's helpers.js the first toast threw
+// "toastAdd is not defined" and the error boundary replaced the app. OLD_SB has the page's modules in the page's
+// order with helpers.js WITHOUT the batch's twelve helpers (each declaration renamed away, as main's lacks them):
+// the real call sites, sliced, are run in it and must fall back, never throw.
+const BATCH4_HELPERS = ["toastAdd", "toastMs", "toastText", "periodLabel", "periodSeam", "periodHolidayGaps", "authErrorText", "rangeSummary", "tradeSlotHolder", "tradePickNotes", "calMonthWeekMondays", "calendarFeedUrls"];
+const OLD_SB = (() => {
+  let h = fs.readFileSync(path.join(ROOT, "helpers.js"), "utf8");
+  for (const n of BATCH4_HELPERS) h = h.split(`function ${n}(`).join(`function __preBatch4_${n}(`);
+  const sb = { console, window: {}, document: undefined, navigator: { userAgent: "node-test" }, localStorage: { getItem: () => null, setItem() {}, removeItem() {} }, fetch: () => { throw new Error("no fetch in OLD_SB"); }, setTimeout, clearTimeout };
+  sb.globalThis = sb; vm.createContext(sb);
+  vm.runInContext(fs.readFileSync(path.join(ROOT, "config.js"), "utf8"), sb, { filename: "config.js" });
+  vm.runInContext(h, sb, { filename: "helpers-before-batch4.js" });
+  vm.runInContext(fs.readFileSync(path.join(ROOT, "generator.js"), "utf8"), sb, { filename: "generator.js" });
+  return sb;
+})();
+// The component's ONE period line (const periodText = …), compiled in a context: (mondays as Dates) → the period said one way.
+const periodTextIn = (ctx) => { const m = src.replace(/\r\n/g, "\n").match(/\n  const periodText = ([^\n]*);\n/); try { return m ? vm.runInContext(`(function (mondays) { return (${m[1]}); })`, ctx, { filename: "period-text.js" }) : null; } catch (ex) { return null; } };
+
 // ─── BD. Generate: one period label with years, the period's dates and seam, holidays with no card (UX audit 2026-10-19) ───
 // The "Schedule Published" e-mail built its period from the Generate tab's
 // start month/year selects, which a start-Monday override leaves behind: it
@@ -1531,6 +1552,14 @@ check("prefs audit never logs the plaintext email (masked only)",
 //       cards and scrolls to them
 //   BD7 pins: the old templates are gone; both holiday sites call the one
 //       helper; Stats → This Period says periodLabel; the panel adds no hook
+// Review fixes (2026-10-19):
+//   BD2 the office prefill (the REAL computePeriodLabel) is the Generate period only when every one of its weeks is
+//       published; otherwise the latest published run — the last weeks published back to back, at most the Generate
+//       period's length (the Generate tab set up for the NEXT, unpublished period no longer names it)
+//   BD8 the period's ONE line (periodText, guarded) and every period call site run against an OLD cached helpers.js
+//       (OLD_SB): a plain label, no seam lines, no holiday banner or Setup issue — never a throw; the HTML export and
+//       the publish audit lines name the real weeks (periodText / their own Mondays), not the start month/year
+//       selects; the export downloads as downloadICS does (in the document, revoked ~1 s later)
 console.log("\nBD. Generate: one period label, the period's seam, holidays with no card");
 {
   const nsrc = src.replace(/\r\n/g, "\n");
@@ -1576,14 +1605,16 @@ console.log("\nBD. Generate: one period label, the period's seam, holidays with 
   const mk = (code, ctx, filename) => { try { return code ? vm.runInContext(code, ctx, { filename }) : null; } catch (ex) { return null; } };
   const runMemo = memoBody && mk(`(function (env) { const { startMondayOverride, numWeeks, startYear, startMonth } = env; return (() => {${memoBody}\n  })(); })`, sandbox, "bd-mondays.js");
   const runEnd = endSrc && mk(`(function (env) { const { mondays, startMonth } = env;\n${endSrc}\n return { endDate, endMoIdx }; })`, sandbox, "bd-enddate.js");
-  // (every name the e-mail's period was ever built from — main's selects and endMoIdx, and the Mondays)
-  const mkDgn = dgnSrc && mk(`(function (env) { const { sessionEpochRef, doGenerate, addNotification, sendEmailNotif, MO, startMonth, endMoIdx, startYear, mondays } = env;\n${dgnSrc}\n  };\n return doGenerateAndNotify; })`, sandbox, "bd-dgn.js");
+  // (every name the e-mail's period was ever built from — main's selects and endMoIdx, the Mondays — and periodText,
+  // the component's one line for it since the review fixes, run for real from the Mondays the memo made)
+  const mkDgn = dgnSrc && mk(`(function (env) { const { sessionEpochRef, doGenerate, addNotification, sendEmailNotif, MO, startMonth, endMoIdx, startYear, mondays, periodText } = env;\n${dgnSrc}\n  };\n return doGenerateAndNotify; })`, sandbox, "bd-dgn.js");
+  const ptNew = periodTextIn(sandbox);
   const publishRun = async (settings) => {
-    if (!runMemo || !runEnd || !mkDgn) return null;
+    if (!runMemo || !runEnd || !mkDgn || !ptNew) return null;
     try {
       const mondays = runMemo(settings), { endMoIdx } = runEnd({ mondays, startMonth: settings.startMonth });
       const sent = [];
-      await mkDgn({ sessionEpochRef: { current: 0 }, doGenerate: async () => "published", MO: H.MO, startMonth: settings.startMonth, endMoIdx, startYear: settings.startYear, mondays,
+      await mkDgn({ sessionEpochRef: { current: 0 }, doGenerate: async () => "published", MO: H.MO, startMonth: settings.startMonth, endMoIdx, startYear: settings.startYear, mondays, periodText: ptNew(mondays),
         addNotification: async (type, title, msg) => { sent.push(["notice", type, msg]); },
         sendEmailNotif: (type, data, targets) => { sent.push(["e-mail", type, J(data), targets]); } })();
       return { first: H.fmt(mondays[0]), n: mondays.length, sent };
@@ -1602,9 +1633,27 @@ console.log("\nBD. Generate: one period label, the period's seam, holidays with 
   // The office e-mail's prefill — the REAL computePeriodLabel, after a period was published on top of 28 earlier weeks
   const cplSrc = after("  const computePeriodLabel = ", "\n  const openPublishDialog = ");
   const mkCpl = cplSrc && mk(`(function (env) { const { schedule, mondays, parse, MO, periodLabel } = env; const computePeriodLabel = ${cplSrc}\n return computePeriodLabel; })`, sandbox, "bd-cpl.js");
-  const cpl = mkCpl ? tryRun(() => mkCpl({ schedule: pub(weeksFrom("2026-05-04", 42)), mondays: NOV.map(H.parse), parse: H.parse, MO: H.MO, periodLabel: H.pl })()) : null;
+  const cplRun = (sched, ms, label) => (mkCpl ? tryRun(() => mkCpl({ schedule: sched, mondays: ms.map(H.parse), parse: H.parse, MO: H.MO, periodLabel: label === undefined ? H.pl : label })()) : null);
+  const cpl = cplRun(pub(weeksFrom("2026-05-04", 42)), NOV);
   check("BD2 the office e-mail's prefill (the REAL computePeriodLabel) is the Generate period with its years, \"Nov 16, 2026 – Feb 21, 2027\" — not every week ever published (main: \"May 4 – Feb 21\")",
     cpl === "Nov 16, 2026 – Feb 21, 2027", J(cpl));
+  // (review fix) …only when EVERY week of the Generate period is published. 42 weeks from May 4, 2026 are published,
+  // back to back, through Feb 15 – 21, 2027 (the last period: Nov 16 – Feb 21, 14 weeks); the Generate tab is then set
+  // up for the next period (→ Continue: Feb 22 × 14), which is not published.
+  const NEXTP = weeksFrom("2027-02-22", 14), PUB42 = pub(weeksFrom("2026-05-04", 42));
+  const CPL = [
+    ["the Generate tab on the NEXT, unpublished period → the latest published run, at most the Generate period's 14 weeks (not every week since May)", [PUB42, NEXTP], "Nov 16, 2026 – Feb 21, 2027"],
+    ["3 of the Generate period's 14 weeks published → the last 14 published back to back", [pub(weeksFrom("2026-08-03", 15).concat(NOV.slice(0, 3))), NOV], "Aug 31 – Dec 6, 2026"],
+    ["a gap before the last run → that run only", [pub(weeksFrom("2026-08-03", 10).concat(weeksFrom("2026-11-02", 2))), NOV], "Nov 2 – Nov 15, 2026"],
+    ["keys that are not weeks, and a week holding nothing, are not published", [Object.assign({}, PUB42, { meta: { x: 1 }, lastPublish: "2027-01-01", "2027-02-22": null }), NEXTP], "Nov 16, 2026 – Feb 21, 2027"],
+    ["an older period, every week of it published, stays the prefill", [PUB42, weeksFrom("2026-05-04", 14)], "May 4 – Aug 9, 2026"],
+    ["nothing published → empty (the field's placeholder shows)", [{}, NOV], ""],
+  ];
+  const badC = CPL.filter(([, [s, ms], want]) => cplRun(s, ms) !== want);
+  check("BD2 (review fix) the REAL computePeriodLabel prefills the Generate period only when every one of its weeks is published; otherwise the latest published run — the last weeks published back to back, at most as many as the Generate period has — exact (main of this batch: the Generate period always, so → Continue made it \"Feb 22 – May 30, 2027\", not published)",
+    !!mkCpl && badC.length === 0, badC.map(([what, [s, ms]]) => `${what}: ${J(cplRun(s, ms))}`).join(" | "));
+  check("BD2 (review fix) …with an OLD cached helpers.js (no periodLabel) it falls back to the plain dates, never a throw: \"2026-11-16 – 2027-02-21\" for the next-period case, the same run",
+    cplRun(PUB42, NEXTP, null) === "2026-11-16 – 2027-02-21" && cplRun(PUB42, NOV, null) === "2026-11-16 – 2027-02-21", J([cplRun(PUB42, NEXTP, null), cplRun(PUB42, NOV, null)]));
 
   // BD3 — periodSeam, exact
   const ps = (a) => tryRun(() => (H.ps ? J(H.ps(...a)) : "missing"));
@@ -1688,7 +1737,7 @@ console.log("\nBD. Generate: one period label, the period's seam, holidays with 
   check("BD6 the REAL Setup Issues holiday block lists exactly periodHolidayGaps' holidays, in its words (\"<name> (<date>) — no surgeon assigned\"), by date — main missed New Year's day 2 and a 56-week period's middle year",
     !!runSetup && badS.length === 0, badS.map(([what, [ms, cards]]) => `${what}: ${setupMsgs(ms, cards)}`).join(" | "));
   // …and the REAL Generate panel's computations (up to its JSX), today pinned to 2026-10-19
-  const panelSrc = span("              const seam = periodSeam(", "\n              return (");
+  const panelSrc = span("              const seam = typeof periodSeam === \"function\" ? periodSeam(", "\n              return (");
   const runPanel = panelSrc && mk(`(function (env) { const { schedule, mondays, holidayAssignments, setHolidayYear, setView, setTimeout, document, Date } = env;\n${panelSrc}\n return { seamLines, holGaps, holText, toHolidays }; })`, hsb, "bd-generate-panel.js");
   function Oct19() { return new H.RealDate(2026, 9, 19); }
   const doc = { asked: [], el: null, querySelector(sel) { this.asked.push(sel); return this.el; } };
@@ -1743,14 +1792,46 @@ console.log("\nBD. Generate: one period label, the period's seam, holidays with 
   check("BD7 both holiday checks call the ONE helper — Setup Issues, then the Generate panel inside the Period card (before Manual Locks) — and Setup's inline copy is gone",
     sites.length === 2 && sites[0] > iSetup && sites[0] < iIssues && sites[1] > iGen && sites[1] < iLocks
       && count("const yrA = holidayAssignments[String(y)] || [];") === 0 && count("const years = new Set([periodStart.getFullYear()-1") === 0, J({ sites, iSetup, iIssues, iGen, iLocks }));
-  check("BD7 the old period templates are gone — the e-mail's from the selects, Stats' \"This Period — {MO[startMonth]} to …\", the prefill's whole-schedule span — and each says periodLabel of the Generate Mondays",
+  check("BD7 the old period templates are gone — the e-mail's from the selects, Stats' \"This Period — {MO[startMonth]} to …\", the prefill's whole-schedule span — and each says the Generate Mondays' period (periodText: periodLabel, guarded — review fix)",
     count("{ period: `${MO[startMonth]} – ${MO[endMoIdx]} ${startYear}` }") === 0 && count("This Period — {MO[startMonth]} to {MO[endMoIdx]} {startYear}") === 0 && count("const fmtNice = (d) =>") === 0
-      && count("const period = periodLabel(mondays[0], mondays[mondays.length - 1]);") === 1 && count('sendEmailNotif("schedule_published", { period }, null, ep);') === 1
-      && count("const computePeriodLabel = () => periodLabel(mondays[0], mondays[mondays.length - 1]);") === 1
-      && count("<>This Period — {periodLabel(mondays[0], mondays[mondays.length - 1])}</>") === 1);
+      && count("const period = periodText;") === 1 && count('sendEmailNotif("schedule_published", { period }, null, ep);') === 1
+      && count("const computePeriodLabel = () => {") === 1 && count("if (gen.length && gen.every(m => schedule[m])) return label(gen[0], gen[gen.length - 1]);") === 1
+      && count("<>This Period — {periodText}</>") === 1);
   check("BD7 the Generate panel adds no hook (the 2026.09.24a TDZ class): plain code in a JSX IIFE; it shows the exact dates and the week count",
     !!panelSrc && !/\buse(State|Memo|Effect|Callback|Ref|LayoutEffect)\(/.test(panelSrc)
-      && count("<strong>This period:</strong> {periodLabel(mondays[0], mondays[mondays.length - 1])} · {weeksTxt(mondays.length)}") === 1);
+      && count("<strong>This period:</strong> {periodText} · {weeksTxt(mondays.length)}") === 1);
+
+  // BD8 — an OLD cached helpers.js (OLD_SB), and the export / audit lines (review fixes)
+  const ptOld = periodTextIn(OLD_SB);
+  const PT = { now: ptNew ? tryRun(() => ptNew(NOV.map(H.parse))) : null, old: ptOld ? tryRun(() => ptOld(NOV.map(H.parse))) : null, none: ptNew ? tryRun(() => ptNew([])) : null, oldNone: ptOld ? tryRun(() => ptOld([])) : null,
+    olderOk: vm.runInContext("typeof periodLabel + typeof periodSeam + typeof periodHolidayGaps + typeof fmt + typeof addD", OLD_SB) };
+  check("BD8 the period's ONE line (periodText), executed: \"Nov 16, 2026 – Feb 21, 2027\"; with an OLD cached helpers.js (no periodLabel — OLD_SB) the plain dates \"2026-11-16 – 2027-02-21\", not a throw (main of this batch: \"periodLabel is not defined\" at the e-mail, Stats and the Generate panel); no Mondays → \"\" in both",
+    PT.now === "Nov 16, 2026 – Feb 21, 2027" && PT.old === "2026-11-16 – 2027-02-21" && PT.none === "" && PT.oldNone === "" && PT.olderOk === "undefinedundefinedundefinedfunctionfunction"
+      && count("const periodText = mondays.length === 0 ? \"\" : typeof periodLabel === \"function\" ? periodLabel(mondays[0], mondays[mondays.length - 1]) : `${fmt(mondays[0])} – ${fmt(addD(mondays[mondays.length - 1], 6))}`;") === 1, J(PT));
+  const runPanelOld = panelSrc && mk(`(function (env) { const { schedule, mondays, holidayAssignments, setHolidayYear, setView, setTimeout, document, Date } = env;\n${panelSrc}\n return { seamLines, holGaps, holText, toHolidays }; })`, OLD_SB, "bd-generate-panel-old.js");
+  const runSetupOld = setupSrc && mk(`(function (env) { const { mondays, holidayAssignments } = env; const issues = [];\n${setupSrc}\n return issues; })`, OLD_SB, "bd-setup-issues-old.js");
+  const oldPanel = runPanelOld ? tryRun(() => J((({ seamLines: l, holGaps: g, holText: t }) => ({ l, g, t }))(runPanelOld({ schedule: pub(weeksFrom("2026-08-03", 13)), mondays: NOV.map(H.parse), holidayAssignments: {}, document: doc, Date: Oct19, setHolidayYear() {}, setView() {}, setTimeout() {} })))) : null;
+  const oldSetup = runSetupOld ? tryRun(() => J(runSetupOld({ mondays: NOV.map(H.parse), holidayAssignments: {} }))) : null;
+  check("BD8 the REAL Generate panel and Setup Issues with an OLD cached helpers.js (no periodSeam / periodHolidayGaps): no seam lines, no holiday banner, no holiday issue — not a throw (the same inputs give a gap line and three holidays with this helpers.js, BD6)",
+    oldPanel === J({ l: [], g: [], t: "" }) && oldSetup === "[]" && lines(pub(weeksFrom("2026-08-03", 13)), NOV) !== "[]", J({ oldPanel, oldSetup }));
+  // the HTML export (generateShareHTML) and the publish audit lines: the real weeks, not the start month / year selects
+  const shareSrc = span("  const generateShareHTML = () => {", "\n  };\n");
+  check("BD8 the HTML export names the period's real weeks — title and heading periodText, the file dsg-call-schedule-<first Monday>-to-<last Sunday>.html — not the start month/year selects (\"May to April 2026\" for a Jan 4, 2027 period); it downloads as downloadICS does: the link in the document for the click, the URL revoked ~1 s later (iOS Safari) — the page's own dlCal too",
+    !!shareSrc && shareSrc.includes("<title>DSG Call Schedule — ${periodText}</title>") && shareSrc.includes("<p>Call Schedule · ${periodText} · ${mondays.length} Weeks</p>")
+      && shareSrc.includes("a.download = mondays.length ? `dsg-call-schedule-${fmt(mondays[0])}-to-${fmt(addD(mondays[mondays.length - 1], 6))}.html` : \"dsg-call-schedule.html\";")
+      && shareSrc.includes("document.body.appendChild(a);\n    a.click();\n    document.body.removeChild(a);\n    setTimeout(() => URL.revokeObjectURL(url), 1000);")
+      && shareSrc.includes("document.body.appendChild(a);a.click();document.body.removeChild(a);setTimeout(function(){URL.revokeObjectURL(u);},1000);")
+      && !/MO\[startMonth\]|MO\[endMoIdx\]|startYear/.test(shareSrc) && !/a\.click\(\);\s*URL\.revokeObjectURL/.test(shareSrc), shareSrc ? "" : "generateShareHTML not found");
+  // …the export's file name, its own expression run: Jan 4, 2027 × 14 → dsg-call-schedule-2027-01-04-to-2027-04-11.html
+  const fnM = shareSrc ? shareSrc.match(/a\.download = (mondays\.length \? `dsg-call-schedule-[^\n]*);\n/) : null;
+  let fileName = null; try { fileName = fnM ? vm.runInContext(`(function (mondays) { return (${fnM[1]}); })`, sandbox)(weeksFrom("2027-01-04", 14).map(H.parse)) : null; } catch (ex) { fileName = "threw " + ex; }
+  const pubLbl = [...nsrc.matchAll(/\n\s*const pubPeriod = (typeof periodLabel === "function" \? periodLabel\(pubMs\[0\], pubMs\[pubMs\.length - 1\]\) : [^\n]*);\n/g)];
+  const lbl = (ctx) => { try { return vm.runInContext(`(function (pubMs) { return (${pubLbl[0][1]}); })`, ctx)(weeksFrom("2027-01-04", 14)); } catch (ex) { return "threw " + ex; } };
+  check("BD8 …its file name, run: dsg-call-schedule-2027-01-04-to-2027-04-11.html; the Generate & Publish and Accept & Publish audit lines name the weeks they publish (\"14 weeks, Jan 4 – Apr 11, 2027, Generate & Publish\" — they said \"14 weeks from May 2026\" from the selects), plain dates with an old helpers.js",
+    fileName === "dsg-call-schedule-2027-01-04-to-2027-04-11.html" && pubLbl.length === 2 && lbl(sandbox) === "Jan 4 – Apr 11, 2027" && lbl(OLD_SB) === "weeks of 2027-01-04 – 2027-04-05"
+      && count("label: `${pubMs.length} weeks, ${pubPeriod}, Generate & Publish`,") === 1 && count("label: `${pubMs.length} weeks, ${pubPeriod}${origin === \"json\" ? \", loaded from JSON\" : \"\"}`,") === 1
+      && count("weeks from ${MO[startMonth]} ${startYear}") === 0 && count("weeks from ${MO[sM]} ${sY}") === 0 && count("const pubMs = Object.keys(result).sort();") === 1 && count("const pubMs = Object.keys(weeks).sort();") === 1,
+    J({ fileName, n: pubLbl.length, now: pubLbl.length && lbl(sandbox), old: pubLbl.length && lbl(OLD_SB) }));
 }
 
 // ─── N. Swap family: swapMsg / cascadeMsg (2026-09-07) ───
@@ -1858,6 +1939,13 @@ console.log("\nBD. Generate: one period label, the period's seam, holidays with 
 //   BE4 the edit: an empty or inverted range makes ZERO requests and says why; a save says so (not after a session change)
 //   BE5 the trade builder's holder IS the accept's holderIn (sliced) on every slot; its notes, executed
 //   BE6 the markup: the range line, Reason before Submit, Sending…, the holders, the note, slotLabel( ×23
+// Review fixes (2026-10-19):
+//   BE3 the revoke's success toast claims only the revoke ("…, is off the schedule." was false when removing the time
+//       off then failed — that failure's own toast follows it)
+//   BE7 the scheduler's week pickers carry the year for a week outside this year (a 56-week period spans two); each
+//       shift option names its holder FIRST ("KJH · Tue Oct 27 — Night"), so a phone's closed 190px select shows it
+//   BE8 a member's partner change drops their return pick (it stayed in state unseen, the note named it, and the
+//       proposal sent it); the note is the scheduler's only — a member's pickers list only shifts the giver holds
 {
   console.log("\nBE. Requests: decisions confirm, the revoked person is told, Sending…, the edit's range gate, the trade builder's holders");
   const nsrcBE = src.replace(/\r\n/g, "\n");   // a Windows checkout is CRLF, CI's is LF
@@ -1969,7 +2057,7 @@ console.log("\nBD. Generate: one period label, the period's seam, holidays with 
     // One tap, as the app makes it, every step it takes in order: its requests, the list update, toasts, the time
     // off / schedule write, its notices (with their data) and e-mails. cross: the session changes while the
     // status write is out (sessionEpochRef moved).
-    const decide = async (which, cross) => {
+    const decide = async (which, cross, removeFails) => {
       const ev = [], ep = { current: 0 };
       let sent = 0;
       const env = {
@@ -1979,7 +2067,9 @@ console.log("\nBD. Generate: one period label, the period's seam, holidays with 
         addNotification: async (type, title, msg, data) => { ev.push("notice " + type + " " + JSON.stringify(data)); },
         sendEmailNotif: (type) => ev.push("email " + type),
         logAudit: () => {}, setBackRequest: async () => { ev.push("set back"); return true; },
-        setVacRequests: () => ev.push("list"), setTradeRequests: () => ev.push("list"), toAdd: () => ev.push("time off"), toRemove: () => ev.push("time off"),
+        setVacRequests: () => ev.push("list"), setTradeRequests: () => ev.push("list"), toAdd: () => ev.push("time off"),
+        // (removeFails: the time_off DELETE fails — the real toRemove's own toast, deleteTimeOff's tell())
+        toRemove: () => { ev.push("time off"); if (removeFails) ev.push("toast error: Couldn't remove that — check your connection and try again."); },
         surgeons: SURG_BE, vacations: {}, noCallDays: {}, userProfile: { display_name: "FAK" }, mySurgeon: "s1", schedulerAdminIds: ["s6"],
         // the accept: the trade still holds (FAK holds the Tuesday), no cascades, nothing Silvis
         schedule: {}, scheduleRef: { current: { "2099-01-05": { dayCall: "s3", nights: { tue: "s6" }, off: null } } }, schedEditable: () => true, detectCascadeChanges: () => [],
@@ -1998,7 +2088,7 @@ console.log("\nBD. Generate: one period label, the period's seam, holidays with 
       deny: "toast success: Denied — CCC's vacation, 2099-03-02 to 2099-03-06.",
       accept: "toast success: Trade accepted — the schedule is updated.",
       decline: "toast success: Trade declined.",
-      revoke: "toast success: Revoked — CCC's vacation, 2099-03-02 to 2099-03-06, is off the schedule.",
+      revoke: "toast success: Revoked — CCC's vacation, 2099-03-02 to 2099-03-06.", // (review fix: no "…, is off the schedule." — BE3 below)
     };
     const out = {};
     for (const which of Object.keys(SAID)) out[which] = { one: await decide(which, false), crossed: await decide(which, true) };
@@ -2015,6 +2105,13 @@ console.log("\nBD. Generate: one period label, the period's seam, holidays with 
     check("BE3 the revoke's notice names the surgeon (data.surgeon_id — the bell's member filter), as approve's and deny's do: the person whose vacation was revoked sees it",
       rv.includes('notice vacation_revoked {"surgeon_id":"s3"}') && (out.approve.one || []).includes('notice vacation_approved {"surgeon_id":"s3"}') && (out.deny.one || []).includes('notice vacation_denied {"surgeon_id":"s3"}'),
       JSON.stringify(rv.filter((e) => e.startsWith("notice "))));
+    // (review fix) the time off's removal failing after the revoke landed: the screen must not say the vacation is off
+    // the schedule — the success toast claims the revoke only, and the removal's own failure toast follows it
+    const rvFail = (await decide("revoke", false, true)) || [];
+    const rvToasts = rvFail.filter((e) => e.startsWith("toast "));
+    check("BE3 (review fix) the REAL revoke whose time-off removal then fails: \"✓ Revoked — CCC's vacation, 2099-03-02 to 2099-03-06.\" then the removal's \"⚠ Couldn't remove that …\" — nothing on screen says the vacation is off the schedule (it read \"…, is off the schedule.\", and the time_off row still blocked the surgeon)",
+      JSON.stringify(rvToasts) === JSON.stringify([SAID.revoke, "toast error: Couldn't remove that — check your connection and try again."]) && !rvFail.some((e) => /off the schedule/.test(e))
+        && count("is off the schedule.`") === 0, JSON.stringify(rvFail));
   }
 
   // BE4 — the edit's range gate, and its toast
@@ -2090,16 +2187,54 @@ console.log("\nBD. Generate: one period label, the period's seam, holidays with 
         && count("vacSubmitBusyRef.current = true; setVacSubmitting(true);") === 1 && count("finally { vacSubmitBusyRef.current = false; setVacSubmitting(false); }") === 1
         && count("tradeSubmitBusyRef.current = true; setTradeSubmitting(true);") === 1 && count("finally { tradeSubmitBusyRef.current = false; setTradeSubmitting(false); }") === 1);
     const card = (() => { const a = nsrcBE.indexOf("🔄 Propose a Shift Trade</div>"), b = a < 0 ? -1 : nsrcBE.indexOf("{/* silvisBusy: a proposal that could never be accepted is flagged here", a); return a < 0 || b < 0 ? "" : nsrcBE.slice(a, b); })();
-    const HOLD = "{h ? ` · ${sMap[h]?.name || h}` : \"\"}</option>";
-    check("BE6 the scheduler's trade builder: both week pickers read \"Wk of Oct 19\" (monthDayLabel, guarded); both shift pickers append the holder (tradeSlotHolder, guarded) to the SAME slotLabel( call — slotLabel( still ×23 (L); the amber note (tradePickNotes, dark-mode colors) sits in the card, before the Silvis preview",
-      (card.match(/Wk of \{typeof monthDayLabel === "function" \? monthDayLabel\(m\) : m\}\{m <= todayStr \? " \(this week\)" : ""\}<\/option>/g) || []).length === 2
+    const HOLD = "<option key={sk} value={sk}>{h ? `${sMap[h]?.name || h} · ` : \"\"}"; // (review fix: the holder FIRST — BE7)
+    check("BE6 the scheduler's trade builder: both week pickers read \"Wk of Oct 19\" (monthDayLabel, guarded — the year when it isn't this year's, BE7); both shift pickers put the holder (tradeSlotHolder, guarded) before the SAME slotLabel( call — slotLabel( still ×23 (L); the amber note (tradePickNotes, dark-mode colors, the scheduler's only — BE8) sits in the card, before the Silvis preview",
+      (card.match(/Wk of \{typeof monthDayLabel === "function" \? monthDayLabel\(m, m\.slice\(0, 4\) !== todayStr\.slice\(0, 4\)\) : m\}\{m <= todayStr \? " \(this week\)" : ""\}<\/option>/g) || []).length === 2
         && card.includes('tradeWeek && typeof tradeSlotHolder === "function" ? tradeSlotHolder(schedule, tradeWeek, sk) : ""')
         && card.includes('tradeReturnWeek && typeof tradeSlotHolder === "function" ? tradeSlotHolder(schedule, tradeReturnWeek, sk) : ""')
-        && card.split(HOLD).length - 1 === 2 && card.includes("{tradeWeek ? slotLabel(tradeWeek, sk) : SHIFT_LABELS[sk]}" + HOLD) && card.includes("{tradeReturnWeek ? slotLabel(tradeReturnWeek, sk) : SHIFT_LABELS[sk]}" + HOLD)
+        && card.split(HOLD).length - 1 === 2 && card.includes(HOLD + "{tradeWeek ? slotLabel(tradeWeek, sk) : SHIFT_LABELS[sk]}</option>") && card.includes(HOLD + "{tradeReturnWeek ? slotLabel(tradeReturnWeek, sk) : SHIFT_LABELS[sk]}</option>")
         && count("slotLabel(") === 23
-        && card.includes('typeof tradePickNotes === "function" ? tradePickNotes(schedule, { from: tradeFrom, to: tradeTo, week: tradeWeek, shift: tradeShift, returnWeek: tradeReturnWeek, returnShift: tradeReturnShift }, id => sMap[id]?.name || id) : []')
+        && card.includes('isScheduler && typeof tradePickNotes === "function" ? tradePickNotes(schedule, { from: tradeFrom, to: tradeTo, week: tradeWeek, shift: tradeShift, returnWeek: tradeReturnWeek, returnShift: tradeReturnShift }, id => sMap[id]?.name || id) : []')
         && card.includes('background:dk?"#2a1a0a":"#fef8e8"') && count("tradePickNotes(") === 1,
       `slotLabel( ×${count("slotLabel(")} · card ${card.length} chars`);
+
+    // BE7 — the week labels' year and the holder first, each option's own expressions run
+    const wkRe = /\.map\(m=><option key=\{m\} value=\{m\}>Wk of \{([^\n]*?)\}\{(m <= todayStr \? " \(this week\)" : "")\}<\/option>\)\}/g;
+    const wkLabels = [...card.matchAll(wkRe)].map((mm) => { try { return vm.runInContext(`(function (m, todayStr, monthDayLabel) { return "Wk of " + (${mm[1]}) + (${mm[2]}); })`, sandbox); } catch (ex) { return null; } });
+    const WK_IN = ["2026-10-19", "2026-10-26", "2026-12-28", "2027-01-04", "2027-10-25"];
+    const WK_WANT = ["Wk of Oct 19 (this week)", "Wk of Oct 26", "Wk of Dec 28", "Wk of Jan 4, 2027", "Wk of Oct 25, 2027"];
+    const MDL = helperBE("monthDayLabel");
+    const wkGot = wkLabels.map((f) => (f ? WK_IN.map((m) => f(m, "2026-10-19", MDL)) : null));
+    check("BE7 (review fix) both of the scheduler's week pickers, their option text run (today 2026-10-19): \"Wk of Oct 19 (this week)\", \"Wk of Dec 28\" — and a week outside this year carries its year: \"Wk of Jan 4, 2027\", \"Wk of Oct 25, 2027\" (it read \"Wk of Oct 25\": a 56-week period lists Oct 26, 2026 and Oct 25, 2027 alike); each select 190px wide so the year fits",
+      wkLabels.length === 2 && wkGot.every((g) => JSON.stringify(g) === JSON.stringify(WK_WANT))
+        && card.includes("<select value={tradeWeek} onChange={e=>setTradeWeek(e.target.value)} style={{...css.inp,width:190}}>") && card.includes("<select value={tradeReturnWeek} onChange={e=>setTradeReturnWeek(e.target.value)} style={{...css.inp,width:190}}>"),
+      JSON.stringify({ n: wkLabels.length, wkGot }));
+    const shRe = /return <option key=\{sk\} value=\{sk\}>\{(h \? [^\n]*?)\}\{(trade(?:Return)?Week \? slotLabel\(trade(?:Return)?Week, sk\) : SHIFT_LABELS\[sk\])\}<\/option>; \}\)\}/g;
+    const shOpts = [...card.matchAll(shRe)].map((mm) => { try { return vm.runInContext(`(function (h, sMap, tradeWeek, tradeReturnWeek, sk) { return String(${mm[1]}) + String(${mm[2]}); })`, sandbox); } catch (ex) { return null; } });
+    const SM7 = { s4: { name: "KJH" }, s2: { name: "MCC" } };
+    const shGot = shOpts.map((f) => (f ? [f("s4", SM7, "2026-10-26", "2026-10-26", "tue"), f("s2", SM7, "2026-10-26", "2026-10-26", "dayCall"), f("", SM7, "2026-10-26", "2026-10-26", "wed"), f("s9", SM7, "2026-10-26", "2026-10-26", "mon")] : null));
+    const SH_WANT = ["KJH · Tue Oct 27 — Night", "MCC · Service Wk of Oct 26", "Wed Oct 28 — Night", "s9 · Mon Oct 26 — Night"];
+    check("BE7 (review fix) both shift pickers, their option text run: the holder FIRST — \"KJH · Tue Oct 27 — Night\", \"MCC · Service Wk of Oct 26\" — so the closed 190px select at a phone's 16px still shows who holds it (\"Tue Oct 27 — Night · KJH\" was cut to \"Tue Oct 27 — Night ·\"); no holder, just the shift",
+      shOpts.length === 2 && shGot.every((g) => JSON.stringify(g) === JSON.stringify(SH_WANT)), JSON.stringify({ n: shOpts.length, shGot }));
+
+    // BE8 — the member's stale return pick, and the note's audience
+    const toM = card.match(/<select value=\{tradeTo\} onChange=\{([^\n]*?)\} style=\{\{\.\.\.css\.inp,width:100\}\}>/);
+    const partner = (isSched) => { if (!toM) return null; const log = []; try { vm.runInContext(`(function (isScheduler, setTradeTo, setTradeReturnWeek, setTradeReturnShift) { return (${toM[1]}); })`, sandbox)(isSched, (v) => log.push("to " + v), (v) => log.push("returnWeek " + J8(v)), (v) => log.push("returnShift " + J8(v)))({ target: { value: "s4" } }); } catch (ex) { log.push("threw " + ex); } return log; };
+    const J8 = (x) => JSON.stringify(x);
+    const ntM = card.match(/\{\(\(\)=>\{ const notes = ([^\n]*?);\n/);
+    const notesFor = (isSched, st) => { if (!ntM) return null; try { return vm.runInContext(`(function (isScheduler, tradePickNotes, schedule, sMap, tradeFrom, tradeTo, tradeWeek, tradeShift, tradeReturnWeek, tradeReturnShift) { return (${ntM[1]}); })`, sandbox)(isSched, helperBE("tradePickNotes"), st.schedule, { s2: { name: "MCC" }, s3: { name: "RPC" }, s4: { name: "KJH" } }, st.from, st.to, st.week, st.shift, st.rw, st.rs); } catch (ex) { return "threw " + ex; } };
+    // B5's taps: MCC (s2) trades with RPC (s3), gives his Monday night, picks RPC's Tuesday night as the return — then switches the partner to KJH
+    const SCH8 = { "2026-10-19": { dayCall: "s1", nights: { mon: "s2", tue: "s3", wed: "s4" } } };
+    const st = { schedule: SCH8, from: "s2", to: "s3", week: "2026-10-19", shift: "mon", rw: "2026-10-19", rs: "tue" };
+    const before8 = notesFor(false, st);
+    const mem = partner(false), sch = partner(true);
+    const after8 = Object.assign({}, st, { to: "s4" }); mem.forEach((l) => { if (l === 'returnWeek ""') after8.rw = ""; if (l === 'returnShift ""') after8.rs = ""; });
+    const memNotes = notesFor(false, after8), memStale = notesFor(false, Object.assign({}, st, { to: "s4" })), schNotes = notesFor(true, Object.assign({}, st, { to: "s4" }));
+    check("BE8 (review fix) a member switching the trade partner (MCC: RPC → KJH, RPC's Tuesday picked as the return): the REAL partner select drops the return pick (setTradeReturnWeek(\"\"), setTradeReturnShift(\"\")) — it stayed in state, unseen, the note named it (\"KJH doesn't hold the return shift — RPC does.\") and Propose Trade sent it; the scheduler's change keeps the return pick (its pickers show it)",
+      J8(mem) === J8(["to s4", 'returnWeek ""', 'returnShift ""']) && J8(sch) === J8(["to s4"]) && after8.rw === "" && after8.rs === "" && J8(before8) === "[]" && J8(memNotes) === "[]",
+      J8({ mem, sch, before8, memNotes }));
+    check("BE8 (review fix) the amber note is the scheduler's only: a member's pickers list only shifts the giver holds, so a note there could only name a pick the select no longer shows — a member with that stale pick: no note; the scheduler with it (a free pick on screen): the note",
+      J8(memStale) === "[]" && J8(schNotes) === J8(["KJH doesn't hold the return shift — RPC does."]), J8({ memStale, schNotes }));
   }
 }
 
@@ -2644,6 +2779,14 @@ console.log("\nBD. Generate: one period label, the period's seam, holidays with 
 //       it lists updateAvailable and paintSheet (the banner comes and goes with them), declared before it (§P)
 //   BF6 the stack's real style, evaluated: with the banner it sits 10px above it, without, 24px above the home bar
 //       (safe area); z above the banner; the stack lets taps through, its pills catch them; the single slot is gone
+// Review fixes (2026-10-19):
+//   BF5 the lift also clears any open bottom sheet or action bar (toastLiftNow: data-toast-floor="1" — the Calendar's
+//       day sheet, the month painter's Save / Discard bar), executed: a toast lands above the sheet, never on "Edit
+//       this week" or Save; capped so the newest toast stays on screen; remeasured when either opens (calDayOpen,
+//       paintSheet) and on their own resize
+//   BF7 an OLD cached helpers.js (OLD_SB: no toastAdd / toastMs / toastText): the real showToast keeps one toast at a
+//       time for 4 s and the pill shows "⚠ …" — no crash at the root (main of this batch: "toastAdd is not defined",
+//       the error boundary); every call of the batch's twelve helpers in index-source.html sits behind its typeof
 console.log("\nBF. toasts stack (up to 3), errors stay longer, no doubled ⚠");
 {
   const H = vm.runInContext("({ toastAdd: typeof toastAdd === 'function' ? toastAdd : null, toastMs: typeof toastMs === 'function' ? toastMs : null, toastText: typeof toastText === 'function' ? toastText : null })", sandbox);
@@ -2691,13 +2834,13 @@ console.log("\nBF. toasts stack (up to 3), errors stay longer, no doubled ⚠");
   const nsrcF = src.replace(/\r\n/g, "\n");
   // The text from `start` (exactly one occurrence) through the first `end` after it; null when absent.
   const cutF = (start, end) => { const i = nsrcF.indexOf(start); if (i < 0 || nsrcF.indexOf(start, i + 1) !== -1) return null; const e = nsrcF.indexOf(end, i + start.length); return e < 0 ? null : nsrcF.slice(i, e + end.length); };
-  const showB = cutF("  const [toasts, setToasts] = useState([]);", "toastMs(t.tone, t.msg));\n  };\n");
-  let mkShow = null;
-  try { mkShow = showB && showB.length < 2500 ? vm.runInContext("(function (env) { const { useState, useRef, setTimeout, bannerLift } = env;\n" + showB + "\n return { showToast, dismissToast }; })", sandbox, { filename: "bf-show.js" }) : null; } catch (ex) { mkShow = null; }
-  const showRig = (lift) => {
+  const showB = cutF("  const [toasts, setToasts] = useState([]);", "toastMs(t.tone, t.msg) : 4000);\n  };\n");
+  const mkShowIn = (ctx) => { try { return showB && showB.length < 3000 ? vm.runInContext("(function (env) { const { useState, useRef, setTimeout, toastLiftNow } = env;\n" + showB + "\n return { showToast, dismissToast }; })", ctx, { filename: "bf-show.js" }) : null; } catch (ex) { return null; } };
+  const mkShow = mkShowIn(sandbox);
+  const showRig = (lift, mk) => {
     const R = { boxes: [], timers: [], measured: 0 };
     const useState = (init) => { const box = { init, v: init }; R.boxes.push(box); return [box.v, (u) => { box.v = typeof u === "function" ? u(box.v) : u; }]; };
-    R.api = mkShow({ useState, useRef: (v) => ({ current: v }), setTimeout: (fn, ms) => { R.timers.push({ fn, ms }); return R.timers.length; }, bannerLift: () => { R.measured++; return lift; } });
+    R.api = (mk || mkShow)({ useState, useRef: (v) => ({ current: v }), setTimeout: (fn, ms) => { R.timers.push({ fn, ms }); return R.timers.length; }, toastLiftNow: () => { R.measured++; return lift; } });
     R.list = () => R.boxes.find(b => Array.isArray(b.init)).v;
     R.lift = () => R.boxes.find(b => b.init === 0).v;
     R.msgs = () => R.list().map(t => t.tone + ": " + t.msg).join(" | ");
@@ -2744,18 +2887,23 @@ console.log("\nBF. toasts stack (up to 3), errors stay longer, no doubled ⚠");
   }
 
   // BF5 — the lift effect
-  const LF0 = nsrcF.indexOf("  const toastsShown = toasts.length > 0;\n"), LFD = "  }, [toastsShown, updateAvailable, paintSheet]);", LF1 = nsrcF.indexOf(LFD);
+  const LF0 = nsrcF.indexOf("  const toastsShown = toasts.length > 0;\n"), LFD = "  }, [toastsShown, updateAvailable, paintSheet, calDayOpen]);", LF1 = nsrcF.indexOf(LFD);
   const BLf = nsrcF.match(/\n  (const bannerLift = \(\) => \{[^\n]*\};)\n/);
+  const TLf = nsrcF.match(/\n  (const toastLiftNow = \(\) => \{\n[\s\S]*?\n  \};)\n/);
   let mkLiftF = null;
-  try { mkLiftF = LF0 > 0 && LF1 > LF0 && LF1 - LF0 < 1500 && BLf ? vm.runInContext("(function (env) { const { toasts, updateAvailable, paintSheet, setToastLift, updateBannerRef, window, ResizeObserver, useEffect } = env;\n" + BLf[1] + "\n" + nsrcF.slice(LF0, LF1 + LFD.length) + "\n })", sandbox, { filename: "bf-lift.js" }) : null; } catch (ex) { mkLiftF = null; }
-  const liftRunF = (toasts, el, withRO) => {
-    const L = { sets: [], added: [], removed: [], observed: [], disconnected: 0, eff: null, roCb: null };
+  try { mkLiftF = LF0 > 0 && LF1 > LF0 && LF1 - LF0 < 1500 && BLf && TLf && TLf[1].length < 1200 ? vm.runInContext("(function (env) { const { toasts, updateAvailable, paintSheet, calDayOpen, setToastLift, updateBannerRef, window, document, ResizeObserver, useEffect } = env;\n" + BLf[1] + "\n" + TLf[1] + "\n" + nsrcF.slice(LF0, LF1 + LFD.length) + "\n })", sandbox, { filename: "bf-lift.js" }) : null; } catch (ex) { mkLiftF = null; }
+  // floors: the elements marked data-toast-floor="1" on screen ({ top, height, gone }); vh: the window's height
+  const liftRunF = (toasts, el, withRO, floors, vh, opened) => {
+    const L = { sets: [], added: [], removed: [], observed: [], disconnected: 0, eff: null, roCb: null, asked: [] };
     const RO = withRO ? class { constructor(cb) { L.roCb = cb; } observe(t) { L.observed.push(t); } disconnect() { L.disconnected++; } } : undefined;
-    mkLiftF({ toasts, updateAvailable: el ? "2026.10.20a" : null, paintSheet: null, setToastLift: (v) => L.sets.push(v), updateBannerRef: { current: el }, ResizeObserver: RO,
-      window: { addEventListener: (t, f) => L.added.push([t, f]), removeEventListener: (t, f) => L.removed.push([t, f]) }, useEffect: (fn, deps) => { L.eff = { fn, deps }; } });
+    const els = (floors || []).map((f) => ({ isConnected: !f.gone, getBoundingClientRect: () => ({ top: f.top, height: f.height }), floor: f }));
+    mkLiftF({ toasts, updateAvailable: el ? "2026.10.20a" : null, paintSheet: (opened && opened.paint) || null, calDayOpen: (opened && opened.day) || null, setToastLift: (v) => L.sets.push(v), updateBannerRef: { current: el }, ResizeObserver: RO,
+      document: { querySelectorAll: (sel) => { L.asked.push(sel); return els; } },
+      window: { innerHeight: vh || 812, addEventListener: (t, f) => L.added.push([t, f]), removeEventListener: (t, f) => L.removed.push([t, f]) }, useEffect: (fn, deps) => { L.eff = { fn, deps }; } });
+    L.els = els;
     return L;
   };
-  if (!mkLiftF) check("BF5 the toast stack's lift effect (with bannerLift) is extractable", false, JSON.stringify({ LF0, LF1, bannerLift: !!BLf }));
+  if (!mkLiftF) check("BF5 the toast stack's lift effect (with bannerLift and toastLiftNow) is extractable", false, JSON.stringify({ LF0, LF1, bannerLift: !!BLf, toastLiftNow: !!TLf }));
   else {
     const BAN = { isConnected: true, getBoundingClientRect: () => ({ height: 99.2 }) };
     const on = liftRunF([T(1, "x", "error")], BAN, true);
@@ -2772,18 +2920,41 @@ console.log("\nBF. toasts stack (up to 3), errors stay longer, no doubled ⚠");
         && offRet === undefined && off.sets.length === 0 && off.added.length === 0 && off.observed.length === 0
         && JSON.stringify(noBan.sets) === "[0]" && noBan.observed.length === 0 && JSON.stringify(gone.sets) === "[0]",
       JSON.stringify({ first, re, off: off.sets, noBan: noBan.sets, gone: gone.sets }));
-    check("BF5 …it re-runs when a toast first shows and when the banner comes or goes (updateAvailable; paintSheet hides it): deps [toastsShown, updateAvailable, paintSheet]",
-      JSON.stringify(on.eff.deps) === JSON.stringify([true, "2026.10.20a", null]) && JSON.stringify(off.eff.deps) === JSON.stringify([false, "2026.10.20a", null]));
+    check("BF5 …it re-runs when a toast first shows, when the banner comes or goes (updateAvailable; paintSheet hides it) and when a bottom sheet opens or closes (paintSheet, calDayOpen — review fix): deps [toastsShown, updateAvailable, paintSheet, calDayOpen]",
+      JSON.stringify(on.eff.deps) === JSON.stringify([true, "2026.10.20a", null, null]) && JSON.stringify(off.eff.deps) === JSON.stringify([false, "2026.10.20a", null, null]));
+    // (review fix) the bottom sheets and action bars: data-toast-floor="1". A 375 × 812 phone: the update banner 100px;
+    // the Calendar's day sheet lifted above it, its top at 400 ("Edit this week" its last row, just above 712); the
+    // month painter (the banner hidden) with its Save / Discard bar from 740 down.
+    const FLOOR = '[data-toast-floor="1"]';
+    const day = liftRunF([T(1, "x", "error")], BAN, true, [{ top: 400, height: 312 }], 812, { day: "2026-10-22" }); const dayOff = day.eff.fn();
+    const dayLift = day.sets[0], dayBottomEdge = 812 - (dayLift + 10); // the stack's lowest pixel (its style: bottom = lift + 10, BF6)
+    const paint = liftRunF([T(1, "x", "error")], null, true, [{ top: 740, height: 72 }], 812, { paint: { kind: "timeoff" } }); paint.eff.fn();
+    const tall = liftRunF([T(1, "x", "error")], BAN, false, [{ top: 50, height: 662 }], 812, { day: "2026-10-22" }); tall.eff.fn();
+    const stale = liftRunF([T(1, "x", "error")], BAN, false, [{ top: 300, height: 400, gone: true }, { top: 500, height: 0 }], 812); stale.eff.fn();
+    day.roCb(); const dayRe = day.sets.slice(); if (typeof dayOff === "function") dayOff();
+    check("BF5 (review fix) the real lift with the Calendar's day sheet open (its top at 400 on an 812px phone, the banner 100px): the lift is 412 — the stack's lowest pixel at 390, above the sheet, so a toast never lands on \"Edit this week\" (it was 100: the toast sat on the sheet's last row and a tap there only dismissed it); remeasured on the sheet's own resize too (ResizeObserver on the banner AND the sheet)",
+      dayLift === 412 && dayBottomEdge < 400 && JSON.stringify(dayRe) === "[412,412]" && day.asked.every((s) => s === FLOOR) && day.asked.length >= 2 && day.observed.length === 2 && day.observed[0] === BAN && day.observed[1] === day.els[0]
+        && JSON.stringify(day.eff.deps) === JSON.stringify([true, "2026.10.20a", null, "2026-10-22"]) && day.disconnected === 1,
+      JSON.stringify({ dayLift, dayBottomEdge, dayRe, asked: day.asked, observed: day.observed.length, deps: day.eff.deps }));
+    check("BF5 (review fix) …the month painter open (no banner — it hides while painting): the lift is its Save / Discard bar's height, 72 (the stack's lowest pixel at 730, above the bar at 740; it was 0 — the toast sat on Save and Discard); a sheet taller than the screen allows: capped at 812 − 120 = 692 so the newest toast stays in view; a floor no longer on the page, or with no height, is ignored (the banner's 100)",
+      JSON.stringify(paint.sets) === "[72]" && 812 - (72 + 10) < 740 && JSON.stringify(paint.eff.deps) === JSON.stringify([true, null, { kind: "timeoff" }, null])
+        && JSON.stringify(tall.sets) === "[692]" && JSON.stringify(stale.sets) === "[100]",
+      JSON.stringify({ paint: paint.sets, tall: tall.sets, stale: stale.sets }));
   }
   const iTo = src.indexOf("const [toasts, setToasts] = useState([]);"), iLift = src.indexOf("const [toastLift, setToastLift] = useState(0);"), iUA = src.indexOf("const [updateAvailable, setUpdateAvailable] = useState(null);");
-  const iPS = src.indexOf("const [paintSheet, setPaintSheet] = useState(null);"), iBL = src.indexOf("const bannerLift = () => {"), iShown = src.indexOf("const toastsShown = toasts.length > 0;"), iDeps = src.indexOf("}, [toastsShown, updateAvailable, paintSheet]);");
-  check("BF5 …§P for this state: the toasts and their lift, updateAvailable, paintSheet and bannerLift are each declared once and BEFORE the effect that lists them (the 2026.09.24a TDZ class)",
-    count("const [toasts, setToasts] = useState([]);") === 1 && count("const [toastLift, setToastLift] = useState(0);") === 1 && count("}, [toastsShown, updateAvailable, paintSheet]);") === 1
-      && [iTo, iLift, iUA, iPS, iBL].every(i => i > 0 && i < iShown) && iShown < iDeps && iTo < src.indexOf("const showToast = (msg, tone) => {") && iBL < src.indexOf("const showToast = (msg, tone) => {"),
-    JSON.stringify({ iTo, iLift, iUA, iPS, iBL, iShown, iDeps }));
+  const iPS = src.indexOf("const [paintSheet, setPaintSheet] = useState(null);"), iBL = src.indexOf("const bannerLift = () => {"), iShown = src.indexOf("const toastsShown = toasts.length > 0;"), iDeps = src.indexOf("}, [toastsShown, updateAvailable, paintSheet, calDayOpen]);");
+  const iCD = src.indexOf("const [calDayOpen, setCalDayOpen] = useState(null);"), iTL = src.indexOf("const toastLiftNow = () => {");
+  check("BF5 …§P for this state: the toasts and their lift, updateAvailable, paintSheet, calDayOpen, bannerLift and toastLiftNow are each declared once and BEFORE the effect that lists them (the 2026.09.24a TDZ class); showToast measures with toastLiftNow (declared before it)",
+    count("const [toasts, setToasts] = useState([]);") === 1 && count("const [toastLift, setToastLift] = useState(0);") === 1 && count("}, [toastsShown, updateAvailable, paintSheet, calDayOpen]);") === 1 && count("const toastLiftNow = () => {") === 1
+      && [iTo, iLift, iUA, iPS, iBL, iCD, iTL].every(i => i > 0 && i < iShown) && iShown < iDeps && iTo < src.indexOf("const showToast = (msg, tone) => {") && iTL < src.indexOf("const showToast = (msg, tone) => {")
+      && count("setToastLift(toastLiftNow());") === 2 && count("setToastLift(bannerLift())") === 0,
+    JSON.stringify({ iTo, iLift, iUA, iPS, iBL, iCD, iTL, iShown, iDeps }));
+  check("BF5 (review fix) the floors are marked where they are: the day sheet's dialog and the painter's sticky Save / Discard bar — data-toast-floor=\"1\" on each, once",
+    count('aria-label={`${title} — details`} data-toast-floor="1" onClick={e=>e.stopPropagation()}') === 1 && count('<div data-toast-floor="1" style={{ background: panelBg, borderTop: `1px solid ${border}`, padding: "10px 14px", paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 10px)", flexShrink: 0 }}>') === 1
+      && (src.match(/\sdata-toast-floor="1"\s+(?:onClick|style)=/g) || []).length === 2);
 
   // BF6 — the stack's real style, evaluated
-  const stackM = nsrcF.match(/\n      <div role="status" aria-live="polite" style=\{(\{position:"fixed",left:0,right:0,bottom:toastLift [^\n]*?\})\}>\n\s*\{toasts\.map\(t => \(\n\s*<div key=\{t\.id\} onClick=\{\(\)=>dismissToast\(t\.id\)\} style=\{(\{pointerEvents:"auto",[^\n]*?\})\}>\n\s*\{toastText\(t\)\}\n/);
+  const stackM = nsrcF.match(/\n      <div role="status" aria-live="polite" style=\{(\{position:"fixed",left:0,right:0,bottom:toastLift [^\n]*?\})\}>\n\s*\{toasts\.map\(t => \(\n\s*<div key=\{t\.id\} onClick=\{\(\)=>dismissToast\(t\.id\)\} style=\{(\{pointerEvents:"auto",[^\n]*?\})\}>\n\s*\{(typeof toastText === "function" \? toastText\(t\) : [^\n]*)\}\n/);
   let stackSt = null, pillSt = null;
   try { stackSt = stackM ? vm.runInContext(`(function (toastLift) { return (${stackM[1]}); })`, sandbox) : null; pillSt = stackM ? vm.runInContext(`(function (t, font) { return (${stackM[2]}); })`, sandbox) : null; } catch (ex) { stackSt = pillSt = null; }
   const zBanF = +((nsrcF.match(/<div ref=\{updateBannerRef\} role="status" aria-live="polite" style=\{\{position:"fixed",left:0,right:0,bottom:0,zIndex:(\d+),/) || [])[1] || NaN);
@@ -2797,11 +2968,50 @@ console.log("\nBF. toasts stack (up to 3), errors stay longer, no doubled ⚠");
         && pe.background === "#a83232" && ps.background === "#1a7a4a" && pi.background === "#1a2a3a" && pe.cursor === "pointer",
       JSON.stringify({ s0: s0.bottom, s54: s54.bottom, s100: s100.bottom, z: s0.zIndex, zBanF }));
   }
-  check("BF6 …the single slot is gone (no setToast / toastTimerRef / {toast && …}); one live region renders the list; each pill shows toastText(t) and a tap dismisses that one; showToast keeps its signature (its 100+ callers unchanged)",
+  check("BF6 …the single slot is gone (no setToast / toastTimerRef / {toast && …}); one live region renders the list; each pill shows toastText(t) (guarded — BF7) and a tap dismisses that one; showToast keeps its signature (its 100+ callers unchanged)",
     count("setToast(") === 0 && count("toastTimerRef") === 0 && count("{toast && (") === 0 && count("const [toast, setToast]") === 0
-      && count("{toasts.map(t => (") === 1 && count("{toastText(t)}") === 1 && count("onClick={()=>dismissToast(t.id)}") === 1
+      && count("{toasts.map(t => (") === 1 && count("{typeof toastText === \"function\" ? toastText(t) : `${t.tone===\"success\"?\"✓ \":t.tone===\"error\"?\"⚠ \":\"\"}${t.msg}`}") === 1 && count("onClick={()=>dismissToast(t.id)}") === 1
       && count("const showToast = (msg, tone) => {") === 1 && count("showToast(") > 100,
     JSON.stringify({ setToast: count("setToast("), timer: count("toastTimerRef"), map: count("{toasts.map(t => ("), calls: count("showToast(") }));
+
+  // BF7 — an OLD cached helpers.js (review fix): the toast path falls back instead of crashing the root
+  const OLDH = vm.runInContext(`(${JSON.stringify(BATCH4_HELPERS)}).map(n => typeof globalThis[n] === "function" ? n : null).filter(Boolean).join() + "|" + typeof monthDayLabel + typeof slotLabel + typeof fmt`, OLD_SB);
+  check("BF7 OLD_SB is a helpers.js from before the batch: none of its twelve helpers is defined, the older ones are (monthDayLabel, slotLabel, fmt)",
+    OLDH === "|functionfunctionfunction" && BATCH4_HELPERS.every((n) => vm.runInContext(`typeof ${n}`, sandbox) === "function"), OLDH);
+  const mkShowOld = mkShowIn(OLD_SB);
+  let oldShow = null;
+  if (mkShowOld) {
+    oldShow = {};
+    try {
+      const o = showRig(0, mkShowOld);
+      o.api.showToast("Couldn't load the schedule — check your connection.", "error"); o.api.showToast("Couldn't load time off — check your connection.", "error"); o.api.showToast("⚠ 1 lock was NOT honored", "error");
+      oldShow.list = o.msgs(); oldShow.ms = o.timers.map((t) => t.ms); oldShow.ids = ids(o.list());
+      o.timers[2].fn(); oldShow.after = o.list().length;
+    } catch (ex) { oldShow.threw = String(ex).slice(0, 160); }
+  }
+  let pillOld = null, pillNew = null;
+  try { pillOld = stackM ? vm.runInContext(`(function (t) { return (${stackM[3]}); })`, OLD_SB) : null; pillNew = stackM ? vm.runInContext(`(function (t) { return (${stackM[3]}); })`, sandbox) : null; } catch (ex) { pillOld = pillNew = null; }
+  const pillTexts = (f) => (f ? [f(T(1, "Saved.", "success")), f(T(2, "Couldn't save.", "error")), f(T(3, "Plain", "info")), f(T(4, "⚠ 2 locks were NOT honored", "error"))] : null);
+  check("BF7 (review fix) the REAL showToast with an OLD cached helpers.js (no toastAdd / toastMs): three errors in a row (an offline open) leave ONE toast — the newest, as the single slot did — each on a 4 s timer; its timer takes it; nothing throws (main of this batch: \"toastAdd is not defined\" in the state update — the error boundary replaced the app)",
+    !!oldShow && !oldShow.threw && oldShow.list === "error: ⚠ 1 lock was NOT honored" && JSON.stringify(oldShow.ms) === "[4000,4000,4000]" && oldShow.ids === "3" && oldShow.after === 0,
+    JSON.stringify(oldShow));
+  check("BF7 (review fix) …and its pill, the real text expression run: with no toastText the plain prefix (\"✓ Saved.\", \"⚠ Couldn't save.\", \"Plain\"); with this helpers.js toastText (the doubled ⚠ dropped)",
+    JSON.stringify(pillTexts(pillOld)) === JSON.stringify(["✓ Saved.", "⚠ Couldn't save.", "Plain", "⚠ ⚠ 2 locks were NOT honored"]) && JSON.stringify(pillTexts(pillNew)) === JSON.stringify(["✓ Saved.", "⚠ Couldn't save.", "Plain", "⚠ 2 locks were NOT honored"]),
+    JSON.stringify({ old: pillTexts(pillOld), now: pillTexts(pillNew) }));
+  // every call of the twelve in the page's script sits behind its own typeof (on the same line, before the call)
+  const unguarded = [], callsOf = {};
+  for (const n of BATCH4_HELPERS) {
+    callsOf[n] = 0;
+    for (const m of nsrcF.matchAll(new RegExp(`(?<![\\w.])${n}\\(`, "g"))) {
+      const lineStart = nsrcF.lastIndexOf("\n", m.index) + 1, before = nsrcF.slice(lineStart, m.index), lineNo = nsrcF.slice(0, m.index).split("\n").length;
+      if (/^\s*(\/\/|\/\*|\*|\{\/\*)/.test(before)) continue; // a comment line naming it
+      callsOf[n]++;
+      if (!before.includes(`typeof ${n} === "function"`)) unguarded.push(`${n} @${lineNo}`);
+    }
+  }
+  check("BF7 (review fix) every call of the batch's twelve helpers in index-source.html sits behind its own `typeof … === \"function\"` (the app's convention for a newer helper), each of them called somewhere — toastAdd / toastMs / toastText, periodLabel ×4 (periodText, the office prefill, both publish audit lines), periodSeam, periodHolidayGaps ×2, authErrorText ×6, rangeSummary, tradeSlotHolder ×2, tradePickNotes, calMonthWeekMondays, calendarFeedUrls ×2",
+    unguarded.length === 0 && BATCH4_HELPERS.every((n) => callsOf[n] > 0) && callsOf.authErrorText === 6 && callsOf.periodLabel === 4 && callsOf.periodHolidayGaps === 2 && callsOf.tradeSlotHolder === 2 && callsOf.calendarFeedUrls === 2,
+    JSON.stringify({ unguarded, callsOf }));
 }
 
 // ─── Q. Dismissable Schedule Warnings (owner request 2026-09-24) ───
@@ -3012,6 +3222,11 @@ console.log("\nBF. toasts stack (up to 3), errors stay longer, no doubled ⚠");
 //       autocorrect (username count = email-input count; elsewhere only the reauth sheet's read-only email
 //       says username — the Settings notification e-mails do not); sign-in's password says current-password,
 //       sign-up's and both new-password fields new-password (the expression run); every card input has a hint
+// Review fix (2026-10-19):
+//   BG5 an OLD cached helpers.js (no authErrorText): every sign-in catch — the four card chains, the submit, the
+//       profile screen — falls back to the error's own message (as before the batch); busy back to false, no throw,
+//       no unhandled rejection (main of this batch: "authErrorText is not a function" inside the catch, the button
+//       stuck on "Signing in…" / "Sending…")
 console.log("\nBG. Sign-in: iPhone autofill hints, plain network errors, no stuck \"Sending…\" offline");
 await (async () => {
   const nsrcBG = src.replace(/\r\n/g, "\n");   // a Windows checkout is CRLF, CI's is LF
@@ -3073,10 +3288,10 @@ await (async () => {
   const onUnhandled = (reason) => { unhandled.push(String((reason && reason.message) || reason)); };
   process.on("unhandledRejection", onUnhandled);
   try {
-    const runH = async (h, outcome) => {
+    const runH = async (h, outcome, noHelper) => {
       const log = [];
       const answer = () => (outcome === "offline" ? Promise.reject(new TypeError("Load failed")) : Promise.resolve(outcome === "refused" ? { error: "User not found" } : { error: null }));
-      const env = { newPassword: "hunter22", newPasswordConfirm: "hunter22", resetEmail: "fak@dsg.test", authErrorText: aet,
+      const env = { newPassword: "hunter22", newPasswordConfirm: "hunter22", resetEmail: "fak@dsg.test", authErrorText: noHelper ? undefined : aet, // (noHelper: an old cached helpers.js — BG5)
         auth: { updatePassword: () => { log.push("updatePassword"); return answer(); }, resetPassword: () => { log.push("resetPassword"); return answer(); }, signOut: async () => { log.push("signOut"); } },
         setAuthBusy: (v) => log.push("busy:" + v), setAuthError: (v) => log.push("error:" + v), setAuthMode: (v) => log.push("mode:" + v), setResetSent: (v) => log.push("sent:" + v),
         setNewPassword: () => {}, setNewPasswordConfirm: () => {}, alert: () => log.push("alert") };
@@ -3102,6 +3317,14 @@ await (async () => {
       offline.length === 4 && offline.every(([, , good]) => good), why(offline));
     check("BG2 unchanged otherwise: a server refusal shows the server's words, busy false; a success sends the reset link (resetSent) or updates the password (back to sign-in, the alert, signed out)",
       refused.length === 4 && ok.length === 4 && refused.concat(ok).every(([, , good]) => good), why(refused.concat(ok)));
+    // BG5 — the same four chains offline with an OLD cached helpers.js (no authErrorText)
+    const oldOff = [];
+    for (const h of handlers.filter((x) => x.code)) {
+      const o = await runH(h, "offline", true);
+      oldOff.push([`${h.call.startsWith("auth.update") ? "new password" : "reset"} ${h.kind}`, o, o.log[0] === "busy:true" && lastBusy(o.log) === "busy:false" && o.log[o.log.length - 1] === "error:Load failed" && o.unhandled === 0 && !o.log.some((x) => /^threw /.test(x))]);
+    }
+    check("BG5 (review fix) offline with an OLD cached helpers.js (no authErrorText), all four card chains: busy back to false, the form shows the error's own message (\"Load failed\", as before the batch), no throw and no unhandled rejection (main of this batch: the catch threw — the button stuck on \"Sending…\" / \"Updating…\")",
+      oldOff.length === 4 && oldOff.every(([, , good]) => good), why(oldOff));
   } finally { process.removeListener("unhandledRejection", onUnhandled); }
 
   // BG3 — the sign-in / sign-up submit and the profile screen's Continue, executed
@@ -3113,7 +3336,7 @@ await (async () => {
   const quietBG = { error() {}, warn() {}, log() {}, info() {} };
   const submit = async (mode, o) => {
     const log = [];
-    const env = { authMode: mode, signupPersonId: mode === "signup" ? "s3" : "", authEmail: "rpc@dsg.test", authPassword: "pw123456", allPeople: [{ id: "s3", name: "RPC" }], authErrorText: aet, console: quietBG,
+    const env = { authMode: mode, signupPersonId: mode === "signup" ? "s3" : "", authEmail: "rpc@dsg.test", authPassword: "pw123456", allPeople: [{ id: "s3", name: "RPC" }], authErrorText: o.noHelper ? undefined : aet, console: quietBG,
       auth: { signIn: o.signIn, signUp: o.signUp || (async () => { throw new Error("signUp not expected"); }), bindUser: (id) => log.push("bind:" + id) },
       dbAuth: { getAllProfiles: o.getAllProfiles || (async () => []), getProfile: async () => null, upsertProfile: async () => ({ error: null }) },
       setAuthError: (v) => log.push("error:" + v), setAuthBusy: (v) => log.push("busy:" + v), setAuthUser: (u) => log.push("user:" + (u && u.id)),
@@ -3143,6 +3366,21 @@ await (async () => {
   }
   check("BG3 the profile screen's Continue, offline: \"No connection …\" (not \"Load failed\"), busy ends false, no profile written or set",
     !!p3 && errOf(p3) === "error:" + NO_CONN && p3[p3.length - 1] === "busy:false" && !p3.includes("upsert") && !p3.includes("profile"), JSON.stringify(p3));
+  // BG5 — the submit and the profile screen with an OLD cached helpers.js (no authErrorText)
+  const s5 = mkSubmit ? [await submit("login", { noHelper: true, signIn: async () => { throw new TypeError("Load failed"); } }), await submit("signup", { noHelper: true, getAllProfiles: async () => { throw new TypeError("Failed to fetch"); } })] : null;
+  let p5 = null;
+  if (mkProfile) {
+    p5 = [];
+    try {
+      await mkProfile({ signupPersonId: "s3", authUser: { id: "auth-rpc" }, allPeople: [{ id: "s3", name: "RPC" }], console: quietBG, sessionEpochRef: { current: 0 }, authErrorText: undefined,
+        dbAuth: { getAllProfiles: async () => { throw new TypeError("Load failed"); }, upsertProfile: async () => { p5.push("upsert"); return { error: null }; } },
+        setAuthBusy: (v) => p5.push("busy:" + v), setAuthError: (v) => p5.push("error:" + v), setUserProfile: () => p5.push("profile"), setMySurgeon: () => {}, setNeedsProfile: () => {}, setIsScheduler: () => {}, setReloadTrigger: () => {} })();
+    } catch (ex) { p5.push("threw " + String(ex)); }
+  }
+  check("BG5 (review fix) the REAL sign-in / sign-up submit and the profile screen's Continue, offline with an OLD cached helpers.js (no authErrorText): the error's own message (\"Load failed\" / \"Failed to fetch\", as before the batch), busy ends false, nobody signed in, no throw (main of this batch: the catch threw — busy stuck on)",
+    !!s5 && errOf(s5[0]) === "error:Load failed" && errOf(s5[1]) === "error:Failed to fetch" && s5.every((log) => log[log.length - 1] === "busy:false" && !log.some((x) => /^(user|bind):/.test(x) || /^threw /.test(x)))
+      && !!p5 && errOf(p5) === "error:Load failed" && p5[p5.length - 1] === "busy:false" && !p5.some((x) => /^threw /.test(x)) && !p5.includes("upsert"),
+    JSON.stringify({ s5, p5 }));
 
   // BG4 — the card's inputs, read as tags; the password hint's expression run
   const inputsBG = (s) => {
@@ -3187,7 +3425,7 @@ await (async () => {
     JSON.stringify({ sign: signPwd && signPwd.autoComplete, newPwds: newPwds.map((a) => strOf(a, "autoComplete")) }));
   check("BG4 every input on the card carries an autoComplete hint; the card's auth chains each end in the plain-words catch (4 .then, 4 .catch)",
     cardInputs.length > 0 && cardInputs.every((a) => a && a.autoComplete)
-    && (card.match(/\.then\(r=>\{/g) || []).length === 4 && card.split(".catch(e=>{setAuthBusy(false);setAuthError(authErrorText(e));});").length - 1 === 4);
+    && (card.match(/\.then\(r=>\{/g) || []).length === 4 && card.split(".catch(e=>{setAuthBusy(false);setAuthError(typeof authErrorText === \"function\" ? authErrorText(e) : (e && e.message) || \"Something went wrong — please try again.\");});").length - 1 === 4);
 })().catch(ex => check("BG harness ran without crashing", false, String(ex && ex.stack || ex).split("\n").slice(0, 3).join(" | ")));
 
 // ─── R. Silvis on demand: the 🚑 calendar switch + FAK's Mine section (2026-09-24) ───
@@ -3355,10 +3593,18 @@ await (async () => {
 //   BH3 the REAL Collapsible, executed: its head (state + key handlers) run with a stub React and localStorage, and
 //       the header tag's OWN attribute expressions evaluated in that scope — role/tabIndex; aria-expanded is what is
 //       shown; Enter (keydown) and Space (on release, as a native button) toggle and persist as a tap does, Space's
-//       keydown only stops the page scrolling, a key from a control inside the header (the ↻) is left to it. Held
+//       keydown only stops the page scrolling, a key that comes from inside the header is left alone. Held
 //       open (forceOpen): keys and taps change nothing, aria-disabled, a plain cursor, the held note shown (only
 //       cal_tools passes one); the strip is ≥ 36 px tall (padding 9 / margin −9 keep the layout)
 //   BH4 the roster ✕ buttons say whom they remove (executed) and get a bigger tap target
+// Review fixes (2026-10-19):
+//   BH2 "Saved ✓" is cleared when the next save starts (a failed save never leaves an earlier tick up), carries whose
+//       prefs it was and shows only for the signed-in person's own (not the scheduler's save of another surgeon's
+//       e-mail); its dark-mode colour reads ≥ 4.5:1 on the Email Notifications box (#1a8040 there was ~2.9:1)
+//   BH3 the Collapsible's role=button is the chevron and the title ONLY; `right` (the ↻ refresh) is its sibling in the
+//       header row — a button's children are presentational, so VoiceOver hid the ↻ inside it; the chevron is aria-hidden
+//   BH5 Settings' ▸ cards (Notification Settings, Office Notifications, Restore from Snapshot): their headers were
+//       click-only divs — now role=button, focusable, aria-expanded, Enter / Space (on release) as Collapsible's, executed
 console.log("\nBH. Settings: reminder picker, 'Saved ✓', Collapsible headers as buttons");
 await (async () => {
   const nsrcBH = src.replace(/\r\n/g, "\n");
@@ -3375,62 +3621,86 @@ await (async () => {
   const SN0 = "  const saveNotifPref = useCallback(", iSN = nsrcBH.indexOf(SN0), iSNE = iSN < 0 ? -1 : nsrcBH.indexOf("\n  }, []);\n", iSN);
   const snBody = iSN >= 0 && iSNE > iSN && nsrcBH.indexOf(SN0, iSN + 1) < 0 ? nsrcBH.slice(iSN + SN0.length, iSNE + "\n  }".length) : null;
   let snMk = null;
-  try { snMk = snBody ? vm.runInContext(`(function (env) { const { setNotifPrefs, notifPrefsRef, notifSaveTimerRef, setTimeout, clearTimeout, setNotifPrefsSaving, setNotifPrefsSavedAt, db, auditRef, showToast, console, sessionEpochRef, dbAuthHeaders } = env; return (${snBody}); })`, sandbox) : null; } catch (ex) { snMk = null; }
+  try { snMk = snBody ? vm.runInContext(`(function (env) { const { setNotifPrefs, notifPrefsRef, notifSaveTimerRef, setTimeout, clearTimeout, setNotifPrefsSaving, setNotifPrefsSaved, db, auditRef, showToast, console, sessionEpochRef, dbAuthHeaders } = env; return (${snBody}); })`, sandbox) : null; } catch (ex) { snMk = null; }
+  // o: { fail, cross: "write" | "debounce", who: whose prefs are saved (s3, or s1's e-mail from the scheduler's list), box: the screen's saved state }
   const snRun = async (o) => {
     if (!snMk) return "not extracted";
-    const log = [], timers = [], ep = { current: 0 };
-    const env = { notifPrefsRef: { current: { s3: { email: "c@dsg.test", daily_reminder_hour: 7 } } }, notifSaveTimerRef: { current: {} },
+    const log = [], timers = [], ep = { current: 0 }, box = o.box || { v: null };
+    const env = { notifPrefsRef: { current: { s3: { email: "c@dsg.test", daily_reminder_hour: 7 }, s1: { email: "a@dsg.test" } } }, notifSaveTimerRef: { current: {} },
       setTimeout: (fn, ms) => { timers.push({ fn, ms }); return timers.length; }, clearTimeout: () => {},
       setNotifPrefsSaving: (v) => log.push("saving:" + v),
-      setNotifPrefsSavedAt: (t) => log.push("saved:" + (typeof t === "number" && t > 0 ? "time" : JSON.stringify(t))),
+      setNotifPrefsSaved: (v) => { box.v = v; log.push("saved:" + (v && typeof v.at === "number" && v.at > 0 ? v.id + "@time" : JSON.stringify(v))); },
       db: { upsert: async (table, row) => { log.push("upsert " + table + " h" + row.daily_reminder_hour); if (o.cross === "write") ep.current++; return { error: o.fail ? "HTTP 503" : null }; } },
       auditRef: { current: { logAudit: (action, summary, details, hdrs) => log.push("audit " + action + (hdrs ? " as " + hdrs.Authorization : "")), nameOf: (x) => x } },
       showToast: () => log.push("toast"), console: { error() {}, warn() {}, log() {} }, sessionEpochRef: ep, dbAuthHeaders: () => ({ Authorization: "Bearer TOK_A" }) };
     env.setNotifPrefs = (u) => { u(env.notifPrefsRef.current); };
     try {
-      snMk(env)("s3", { daily_reminder_hour: 6 });
+      snMk(env)(o.who || "s3", o.who === "s1" ? { email: "a2@dsg.test" } : { daily_reminder_hour: 6 });
       if (o.cross === "debounce") ep.current++;
       for (const t of timers.splice(0)) { log.push("timer:" + t.ms); await t.fn(); }
     } catch (ex) { log.push("threw: " + String(ex).slice(0, 100)); }
     return log.join(" | ");
   };
   const snOk = await snRun({}), snFail = await snRun({ fail: true }), snCross = await snRun({ cross: "write" }), snEarly = await snRun({ cross: "debounce" });
-  check("BH2 the REAL saveNotifPref, executed: a save that lands sets the saved time only AFTER its write and its audit line",
-    snOk === "timer:500 | saving:true | upsert notification_preferences h6 | audit prefs.save | saved:time | saving:false", snOk);
-  check("BH2 …a failed save never says 'Saved ✓' (its toast instead, no audit line)",
-    snFail === "timer:500 | saving:true | upsert notification_preferences h6 | toast | saving:false", snFail);
+  check("BH2 the REAL saveNotifPref, executed: a save that lands sets 'Saved ✓' — whose prefs, and when — only AFTER its write and its audit line; (review fix) every save first clears the last one",
+    snOk === "timer:500 | saving:true | saved:null | upsert notification_preferences h6 | audit prefs.save | saved:s3@time | saving:false", snOk);
+  check("BH2 …a failed save never says 'Saved ✓' (its toast instead, no audit line) — and (review fix) the tick an earlier save left is cleared as it starts",
+    snFail === "timer:500 | saving:true | saved:null | upsert notification_preferences h6 | toast | saving:false", snFail);
   check("BH2 …a session change while its write is out: its audit line as the tap's account, and no 'Saved ✓' on the next screen; one before its debounce: nothing at all",
-    snCross === "timer:500 | saving:true | upsert notification_preferences h6 | audit prefs.save as Bearer TOK_A | saving:false" && snEarly === "timer:500",
+    snCross === "timer:500 | saving:true | saved:null | upsert notification_preferences h6 | audit prefs.save as Bearer TOK_A | saving:false" && snEarly === "timer:500",
     JSON.stringify({ snCross, snEarly }));
   // the hide effect (the real line), executed
-  const iSavedState = nsrcBH.indexOf("  const [notifPrefsSavedAt, setNotifPrefsSavedAt] = useState(0);\n");
-  const efM = /\n  useEffect\((\(\) => \{ if \(!notifPrefsSavedAt\) return;[^\n]*?\}), \[notifPrefsSavedAt\]\);\n/.exec(nsrcBH);
-  let efMk = null; try { efMk = efM ? vm.runInContext(`(function (notifPrefsSavedAt, setNotifPrefsSavedAt, setTimeout, clearTimeout) { return (${efM[1]}); })`, sandbox) : null; } catch (ex) { efMk = null; }
-  const efRun = (at) => {
+  const iSavedState = nsrcBH.indexOf("  const [notifPrefsSaved, setNotifPrefsSaved] = useState(null);\n");
+  const efM = /\n  useEffect\((\(\) => \{ if \(!notifPrefsSaved\) return;[^\n]*?\}), \[notifPrefsSaved\]\);\n/.exec(nsrcBH);
+  let efMk = null; try { efMk = efM ? vm.runInContext(`(function (notifPrefsSaved, setNotifPrefsSaved, setTimeout, clearTimeout) { return (${efM[1]}); })`, sandbox) : null; } catch (ex) { efMk = null; }
+  const efRun = (saved) => {
     if (!efMk) return "not extracted";
     const log = [], timers = [];
     try {
-      const undo = efMk(at, (v) => log.push("set:" + v), (fn, ms) => { timers.push(fn); log.push("timer:" + ms); return 7; }, (id) => log.push("clear:" + id))();
+      const undo = efMk(saved, (v) => log.push("set:" + JSON.stringify(v)), (fn, ms) => { timers.push(fn); log.push("timer:" + ms); return 7; }, (id) => log.push("clear:" + id))();
       timers.forEach((fn) => fn());
       if (typeof undo === "function") undo();
     } catch (ex) { log.push("threw: " + String(ex).slice(0, 80)); }
     return log.join(" ");
   };
-  check("BH2 the hide effect, executed: 'Saved ✓' clears itself 3 s after a save (a newer save restarts the clock: the old timer is cleared); nothing runs while there is none — the state declared before its effect, and set only there and by a landed save",
-    efRun(1760000000000) === "timer:3000 set:0 clear:7" && efRun(0) === "" && iSavedState >= 0 && !!efM && efM.index > iSavedState && count("setNotifPrefsSavedAt(") === 2,
-    JSON.stringify({ on: efRun(1760000000000), off: efRun(0), iSavedState, ef: efM && efM.index, sets: count("setNotifPrefsSavedAt(") }));
-  // the status line: its own expression, executed; where it is
-  const stM = /<div aria-live="polite" style=\{\{fontSize:10,color:"#1a8040",marginTop:6,minHeight:14\}\}>\{(notifPrefsSaving \?[^\n]*?)\}<\/div>/.exec(nsrcBH);
-  let stFn = null; try { stFn = stM ? vm.runInContext(`(function (notifPrefsSaving, notifPrefsSavedAt) { return (${stM[1]}); })`, sandbox) : null; } catch (ex) { stFn = null; }
-  const stCases = stFn ? [stFn(true, 0), stFn(true, 1760000000000), stFn(false, 1760000000000), stFn(false, 0)] : null;
+  const S3 = { id: "s3", at: 1760000000000 };
+  check("BH2 the hide effect, executed: 'Saved ✓' clears itself 3 s after a save (a newer save restarts the clock: the old timer is cleared); nothing runs while there is none — the state declared before its effect, and set only there, as a save starts (cleared) and by a landed save",
+    efRun(S3) === "timer:3000 set:null clear:7" && efRun(null) === "" && iSavedState >= 0 && !!efM && efM.index > iSavedState && count("setNotifPrefsSaved(") === 3
+      && count("setNotifPrefsSaving(true); setNotifPrefsSaved(null);") === 1 && count("if (sessionEpochRef.current === ep) setNotifPrefsSaved({ id: surgeonId, at: Date.now() });") === 1 && count("notifPrefsSavedAt") === 0,
+    JSON.stringify({ on: efRun(S3), off: efRun(null), iSavedState, ef: efM && efM.index, sets: count("setNotifPrefsSaved(") }));
+  // the status line: its own expressions (text and colour), executed; where it is
+  const stM = /<div aria-live="polite" style=\{\{fontSize:10,color:(dk\?"#8ad0a0":"#1a8040"),marginTop:6,minHeight:14\}\}>\{(notifPrefsSaving \?[^\n]*?)\}<\/div>/.exec(nsrcBH);
+  let stFn = null, stCol = null;
+  try { stFn = stM ? vm.runInContext(`(function (notifPrefsSaving, notifPrefsSaved, mySurgeon) { return (${stM[2]}); })`, sandbox) : null; stCol = stM ? vm.runInContext(`(function (dk) { return (${stM[1]}); })`, sandbox) : null; } catch (ex) { stFn = stCol = null; }
+  const stCases = stFn ? [stFn(true, null, "s3"), stFn(true, S3, "s3"), stFn(false, S3, "s3"), stFn(false, null, "s3"), stFn(false, { id: "s1", at: 1 }, "s6")] : null;
+  check("BH2 the personal block's line shows 'Saving…' then 'Saved ✓' for this person's own save, and nothing otherwise; announced politely",
+    JSON.stringify(stCases) === JSON.stringify(["Saving…", "Saving…", "Saved ✓", "", ""]) && count('<div aria-live="polite" style={{fontSize:10,color:dk?"#8ad0a0":"#1a8040",marginTop:6,minHeight:14}}>') === 1,
+    JSON.stringify(stCases));
+  // (review fix) the screen across saves: the REAL save writes the state; the REAL line reads it
+  const line = (box, me) => (stFn ? stFn(false, box.v, me) : null);
+  const shared = { v: null };
+  await snRun({ box: shared }); const afterOk = line(shared, "s3");
+  await snRun({ box: shared, fail: true }); const afterFail = line(shared, "s3");
+  const sched = { v: null };
+  await snRun({ box: sched, who: "s1" }); const schedOwn = line(sched, "s6"), surgeonOwn = line(sched, "s1");
+  check("BH2 (review fix) a member's save lands ('Saved ✓'), then their next save FAILS within the 3 s: the line is empty beside the error toast (it kept saying 'Saved ✓' — the old tick was never cleared); the scheduler saving another surgeon's e-mail (s1) from the list: no 'Saved ✓' under the scheduler's own pickers (s6) — it is shown for the signed-in person's own prefs only",
+    afterOk === "Saved ✓" && afterFail === "" && schedOwn === "" && surgeonOwn === "Saved ✓", JSON.stringify({ afterOk, afterFail, schedOwn, surgeonOwn }));
+  // (review fix) its colour in dark mode, on the Email Notifications box it sits in (the box's own background expression, run)
+  const lumBH = (h) => { const v = h.slice(1).match(/../g).map((x) => parseInt(x, 16) / 255).map((c) => (c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4))); return 0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2]; };
+  const crBH = (a, b) => +((Math.max(lumBH(a), lumBH(b)) + 0.05) / (Math.min(lumBH(a), lumBH(b)) + 0.05)).toFixed(2);
+  const boxM = nsrcBH.match(/\{\/\* Email Notifications \*\/\}\n\s*<div style=\{\{background:(dk\?"#[0-9a-f]{6}":"#[0-9a-f]{6}"),/);
+  let boxBg = null; try { boxBg = boxM ? vm.runInContext(`(function (dk) { return (${boxM[1]}); })`, sandbox) : null; } catch (ex) { boxBg = null; }
+  const cols = stCol && boxBg ? { dark: stCol(true), light: stCol(false), boxDark: boxBg(true), boxLight: boxBg(false) } : null;
+  const crs = cols ? { dark: crBH(cols.dark, cols.boxDark), light: crBH(cols.light, cols.boxLight), was: crBH("#1a8040", cols.boxDark) } : null;
+  check("BH2 (review fix) the line's colour, its own expression run: in dark mode ≥ 4.5:1 on the Email Notifications box it sits in (#1a8040 there, as before, ~2.9:1); light mode unchanged",
+    !!crs && crs.dark >= 4.5 && crs.light >= 4.5 && crs.was < 4.5 && cols.light === "#1a8040", JSON.stringify({ cols, crs }));
   // its block: the personal one ("shown to everyone" with a roster id), not the scheduler-only list after it
   const stAt = stM ? stM.index : -1, PG = '{/* Personal notification settings (shown to everyone) */}\n              {mySurgeon && mySurgeon !== "admin" && (() => {\n';
   const iGate = stAt < 0 ? -1 : nsrcBH.lastIndexOf(PG, stAt), iMine = stAt < 0 ? -1 : nsrcBH.lastIndexOf("My Email for Notifications</div>", stAt);
   const iEnd = iGate < 0 ? -1 : nsrcBH.indexOf("\n              })()}\n", iGate), iSchedOnly = iGate < 0 ? -1 : nsrcBH.indexOf("{/* Scheduler-only: all surgeon emails */}", iGate);
-  check("BH2 the personal block (every account with a roster id — a member's own settings) shows 'Saving…' then 'Saved ✓', and nothing otherwise; announced politely",
-    JSON.stringify(stCases) === JSON.stringify(["Saving…", "Saving…", "Saved ✓", ""]) && count('<div aria-live="polite" style={{fontSize:10,color:"#1a8040",marginTop:6,minHeight:14}}>') === 1
-      && nsrcBH.split(PG).length - 1 === 1 && iGate >= 0 && iMine > iGate && stAt > iMine && iEnd > stAt && iSchedOnly > iEnd,
-    JSON.stringify({ stCases, iGate, iMine, stAt, iEnd, iSchedOnly }));
+  check("BH2 the line sits in the personal block (every account with a roster id — a member's own settings), not the scheduler-only list after it",
+    nsrcBH.split(PG).length - 1 === 1 && iGate >= 0 && iMine > iGate && stAt > iMine && iEnd > stAt && iSchedOnly > iEnd,
+    JSON.stringify({ iGate, iMine, stAt, iEnd, iSchedOnly }));
 
   // BH3 — the REAL Collapsible, executed
   const cA = nsrcBH.indexOf("function Collapsible({"), cR = cA < 0 ? -1 : nsrcBH.indexOf("\n  return (\n", cA), cZ = cA < 0 ? -1 : nsrcBH.indexOf("\n}\n", cA);
@@ -3483,12 +3753,23 @@ await (async () => {
   })();
   check("BH3 held open by the swap options: aria-expanded, aria-disabled, a plain cursor and the held note; Enter, Space and a tap change nothing and save nothing; when they close, back to collapsed, enabled, a pointer, no note — the strip padded 9 px with −9 px margins and at least 36 px tall",
     held === "true,true,default,Close the swap options to collapse,true,0,false,undefined,pointer,false,9px 0,-9px 0,36", held);
-  check("BH3 the markup: the held note renders only while held and only where one is passed (cal_tools alone, with the Close hint); the chevron is unchanged; the header is the only click target",
+  check("BH3 the markup: the held note renders only while held and only where one is passed (cal_tools alone, with the Close hint); the chevron is unchanged but aria-hidden (review fix: it was read into the button's name); the header is the only click target",
     cJsx.includes('{forceOpen && heldNote && <div style={{ fontSize: 10, color: "#8a94a0", marginTop: 4 }}>{heldNote}</div>}')
-      && cJsx.includes('<span style={{ fontSize: 11, color: "#8a94a0", transition: "transform .15s", transform: shown ? "rotate(90deg)" : "rotate(0deg)", display: "inline-block", width: 10, flexShrink: 0 }}>▶</span>')
+      && cJsx.includes('<span aria-hidden="true" style={{ fontSize: 11, color: "#8a94a0", transition: "transform .15s", transform: shown ? "rotate(90deg)" : "rotate(0deg)", display: "inline-block", width: 10, flexShrink: 0 }}>▶</span>')
       && !!cHead && cHead.includes("forceOpen = false, heldNote = null,") && count('heldNote="') === 1
       && count('forceOpen={!!swapSuggestions} heldNote="Close the swap options to collapse" title="🔧 Schedule Tools & Export"') === 1 && (cJsx.match(/onClick=/g) || []).length === 1,
     JSON.stringify({ head: !!cHead, notes: count('heldNote="'), clicks: (cJsx.match(/onClick=/g) || []).length }));
+  // (review fix) what the role=button element holds: its open tag to its matching </div> (a <div / </div> depth walk —
+  // JSX can't run here); `right` must be OUTSIDE it, its sibling in the header row
+  const divClose = (s, at) => { let d = 0; const re = /<div\b|<\/div>/g; re.lastIndex = at; let m; while ((m = re.exec(s))) { d += m[0] === "</div>" ? -1 : 1; if (d === 0) return m.index; } return -1; };
+  const iBtnClose = hS < 0 ? -1 : divClose(cJsx, hS), btnInner = iBtnClose > hS ? cJsx.slice(hS, iBtnClose) : "";
+  const ROW = '<div style={{ display: "flex", alignItems: "center", gap: 8 }}>', iRow = cJsx.indexOf(ROW), iRowClose = iRow < 0 ? -1 : divClose(cJsx, iRow);
+  const iRight = cJsx.indexOf("{right}");
+  check("BH3 (review fix) the role=button element is the chevron and the title ONLY — `right` (the ↻ refresh of Activity Log / Client Versions) is its sibling in the header row, outside it (a button's children are presentational: VoiceOver flattened the ↻ into the header and a tap on it toggled the section); the button spans the row (flex 1) and keeps its ≥ 36px strip",
+    !!btnInner && btnInner.includes("{title}") && btnInner.includes("▶</span>") && !btnInner.includes("{right}") && (cJsx.match(/\{right\}/g) || []).length === 1
+      && iRow >= 0 && iRow < hS && iRowClose > iBtnClose && iRight > iBtnClose && iRight < iRowClose && cJsx.indexOf(ROW, iRow + 1) === -1
+      && /flex: 1, minWidth: 0,/.test(headTag) && /minHeight: 36/.test(headTag) && count("right={<button") === 2,
+    JSON.stringify({ hS, iBtnClose, iRow, iRowClose, iRight, rights: count("right={<button") }));
 
   // BH4 — the roster ✕ buttons
   const rx = (fn, v) => new RegExp("<button aria-label=\\{(`[^`]*`)\\} onClick=\\{\\(\\)=>" + fn + "\\(" + v + "\\.id\\)\\} style=\\{(\\{[^{}]*\\})\\}>✕</button>").exec(nsrcBH);
@@ -3500,6 +3781,36 @@ await (async () => {
     !!rs && rs[0] === "Remove surgeon RPC" && rs[1].padding === "6px 8px" && !!ra && ra[0] === "Remove APP JDS" && ra[1].padding === "6px 8px"
       && count("onClick={()=>removeSurgeon(s.id)}") === 1 && count("onClick={()=>removeApp(a.id)}") === 1,
     JSON.stringify({ rs, ra }));
+
+  // BH5 — Settings' ▸ card headers (review fix): the real toggle and key handler, sliced, and each header tag's OWN
+  // attribute expressions evaluated against them, a keyboard user stepping through as in BH3
+  const TSC = nsrcBH.match(/\n  (const toggleSettingsCard = \(key\) => [^\n]*;)\n/);
+  const SCK = nsrcBH.match(/\n  (const settingsCardKey = \(key\) => \(e\) => \{\n[\s\S]*?\n  \};)\n/);
+  let mkCards = null;
+  try { mkCards = TSC && SCK && SCK[1].length < 900 ? vm.runInContext(`(function (setOpenSettingsCards) { ${TSC[1]}\n${SCK[1]}\n return { toggleSettingsCard, settingsCardKey }; })`, sandbox) : null; } catch (ex) { mkCards = null; }
+  const CARDS = [["notifSettings", "🔔 Notification Settings"], ["officeNotif", "📧 Office Notifications"], ["restoreSnap", "📼 Restore from Snapshot"]];
+  const cardRun = (key, label) => {
+    const m = nsrcBH.match(new RegExp(`\\n\\s*<div ([^\\n]*?onClick=\\{\\(\\)=>toggleSettingsCard\\("${key}"\\)\\}[^\\n]*?)>\\n\\s*<span>${label}</span>\\n\\s*<span ([^\\n]*?)>\\{openSettingsCards\\.${key} \\? "▾" : "▸"\\}</span>`));
+    if (!m) return "header not found";
+    if (!mkCards) return "handlers not extracted";
+    const at = {}; for (const a of (" " + m[1]).matchAll(/\s([a-zA-Z][\w-]*)=(?:"([^"]*)"|\{([^{}]*)\}(?!\}))/g)) at[a[1]] = a[2] !== undefined ? { str: a[2] } : { expr: a[3] };
+    let state = {}; const api = mkCards((u) => { state = typeof u === "function" ? u(state) : u; });
+    const A = (k) => (at[k] ? (at[k].str !== undefined ? at[k].str : vm.runInContext(`(function (openSettingsCards, toggleSettingsCard, settingsCardKey) { return (${at[k].expr}); })`, sandbox)(state, api.toggleSettingsCard, api.settingsCardKey)) : "(no " + k + ")");
+    const ev = (type, key2, own) => { const el = {}; return { type, key: key2, target: own === false ? {} : el, currentTarget: el, prevented: false, preventDefault() { this.prevented = true; } }; };
+    try {
+      const out = [String(A("aria-expanded"))];
+      const step = (name, attr, type, key2, own) => { const e = ev(type, key2, own); A(attr)(e); out.push(name + ":" + (e.prevented ? "P" : "-") + (A("aria-expanded") === true ? "E" : A("aria-expanded") === false ? "c" : "?")); };
+      step("Enter", "onKeyDown", "keydown", "Enter"); step("SpaceDown", "onKeyDown", "keydown", " "); step("SpaceUp", "onKeyUp", "keyup", " "); step("a", "onKeyDown", "keydown", "a");
+      step("childEnter", "onKeyDown", "keydown", "Enter", false); step("childSpaceUp", "onKeyUp", "keyup", " ", false); step("EnterUp", "onKeyUp", "keyup", "Enter");
+      A("onClick")(); out.push("tap:" + (A("aria-expanded") === true ? "E" : "c"));
+      return out.join(" ") + " | " + [A("role"), A("tabIndex"), m[2].includes('aria-hidden="true"')].join(",");
+    } catch (ex) { return "threw: " + String(ex).slice(0, 120); }
+  };
+  const cardsGot = CARDS.map(([k, l]) => cardRun(k, l));
+  check("BH5 (review fix) Settings' three ▸ cards (Notification Settings, Office Notifications, Restore from Snapshot), each header executed through its own attributes: a button (role, tabIndex 0) whose aria-expanded is the card's open state; Enter on keydown and Space on release toggle it (Space's keydown only stops the scroll); other keys, a key from inside it and Enter's release do nothing; a tap toggles as before; the ▸ / ▾ is aria-hidden (they were click-only divs: no keyboard, nothing announced)",
+    cardsGot.every((g) => g === "false Enter:PE SpaceDown:PE SpaceUp:-c a:-c childEnter:-c childSpaceUp:-c EnterUp:-c tap:E | button,0,true"), JSON.stringify(cardsGot));
+  check("BH5 …no click-only ▸ header is left: every toggleSettingsCard header carries role=\"button\" and the key handler (3 of each)",
+    count("<div onClick={()=>toggleSettingsCard(") === 0 && count("onClick={()=>toggleSettingsCard(") === 3 && (src.match(/<div role="button" tabIndex=\{0\} aria-expanded=\{!!openSettingsCards\.\w+\} onClick=\{\(\)=>toggleSettingsCard\("\w+"\)\} onKeyDown=\{settingsCardKey\("\w+"\)\} onKeyUp=\{settingsCardKey\("\w+"\)\}/g) || []).length === 3);
 })();
 
 // ─── S. Silvis feed-health warnings cannot be dismissed (owner decision 2026-09-24) ───
@@ -3712,11 +4023,11 @@ console.log("\nBC. Generate & Publish asks once; Billing opens on the newest mon
       && dgBody.length > 0 && !dgBody.includes("confirm("), JSON.stringify({ bare: count("onClick={doGenerateAndNotify}"), calls: count("doGenerateAndNotify()"), body: dgBody.length }));
   // What the question's last line says, held true (review fix): the REAL doGenerateAndNotify, run on each doGenerate result
   let mkDgn = null;
-  // (mondays: the e-mail's period is taken from the Generate Mondays since BD — UX audit 2026-10-19)
-  try { mkDgn = dgBody ? vm.runInContext(`(function (env) { const { sessionEpochRef, doGenerate, addNotification, sendEmailNotif, MO, startMonth, endMoIdx, startYear, mondays } = env;\n${dgBody}\n  };\n return doGenerateAndNotify; })`, sandbox, { filename: "bc-dgn.js" }) : null; } catch (ex) { mkDgn = null; }
+  // (mondays, periodText: the e-mail's period is taken from the Generate Mondays since BD — UX audit 2026-10-19 — through the component's one line, periodText, since its review fixes)
+  try { mkDgn = dgBody ? vm.runInContext(`(function (env) { const { sessionEpochRef, doGenerate, addNotification, sendEmailNotif, MO, startMonth, endMoIdx, startYear, mondays, periodText } = env;\n${dgBody}\n  };\n return doGenerateAndNotify; })`, sandbox, { filename: "bc-dgn.js" }) : null; } catch (ex) { mkDgn = null; }
   const dgn = async (result) => {
     const log = [];
-    await mkDgn({ sessionEpochRef: { current: 0 }, doGenerate: async () => result, MO: ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"], startMonth: 10, endMoIdx: 1, startYear: 2026, mondays: NOV.map(H.parse),
+    await mkDgn({ sessionEpochRef: { current: 0 }, doGenerate: async () => result, MO: ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"], startMonth: 10, endMoIdx: 1, startYear: 2026, mondays: NOV.map(H.parse), periodText: "Nov 16, 2026 – Feb 21, 2027",
       addNotification: async (type, title, msg, data, targets) => { log.push(`notice ${type} to ${targets === null ? "everyone" : JSON.stringify(targets)}`); },
       sendEmailNotif: (type, data, targets) => { log.push(`e-mail ${type} to ${targets === null ? "everyone" : JSON.stringify(targets)}`); } })();
     return log;
@@ -3915,6 +4226,10 @@ console.log("\nBC. Generate & Publish asks once; Billing opens on the newest mon
 //       (DARK_SHEET's text; selectors split bracket-aware, as the new one holds commas): ONE rule's dark fill, the
 //       forced text ≥ 4.5:1 on it (1.5:1 without the rule); the primary gradient and light mode untouched
 //   BI6 the holiday chip's text, its real JSX children evaluated: "🦃 MCC 7a–7a" (main: "🦃 MCC7a–7a")
+// Review fix (2026-10-19):
+//   BI5 the fill rule no longer forces border-color on every secondary button (it erased ✕ Clear's red border, its one
+//       red cue in dark mode): a second rule gives the dark border only where the border is still css.btn(false)'s own
+//       grey; the real ✕ Clear style, run through the sheet, keeps its red border
 console.log("\nBI. Manual Adjustments weeks, dark mode title + secondary buttons, Light / Dark, the holiday chip");
 {
   const J = (x) => JSON.stringify(x);
@@ -4012,21 +4327,30 @@ console.log("\nBI. Manual Adjustments weeks, dark mode title + secondary buttons
   const declBI = (decl, prop) => { const m = decl.match(new RegExp("(?:^|;)\\s*" + prop + "\\s*:\\s*([^;!]+?)\\s*(?:!important)?\\s*(?:;|$)")); return m ? m[1].trim() : null; };
   const UNITLESS = new Set(["fontWeight", "lineHeight", "opacity", "zIndex", "flex", "flexGrow", "flexShrink"]);
   const rgbOf = (hex) => `rgb(${hex.slice(1).match(/../g).map((h) => parseInt(h, 16)).join(", ")})`;
-  // React sets each property through the CSSOM, which writes a hex colour as rgb() and a number as px (as BA4)
-  const ser = (o) => Object.entries(o).map(([k, v]) => `${k.replace(/[A-Z]/g, (c) => "-" + c.toLowerCase())}: ${typeof v === "number" && !UNITLESS.has(k) ? v + "px" : String(v).replace(/#[0-9a-fA-F]{6}\b/g, rgbOf)};`).join(" ");
-  // what the sheet makes of a <tag> with this inline style: `tag { … }`, and `tag[style*="…"] { … }` when the written
-  // style holds it (more specific; all !important, so each beats the inline value; a later rule beats an earlier one)
+  // React sets each property through the CSSOM, which writes a hex colour as rgb() and a number as px (as BA4); a
+  // borderColor set after a border shorthand is folded into it — Chrome and WebKit write "border: 1px solid rgb(…)"
+  // with the later colour (review fix: ✕ Clear's {...css.btn(false), borderColor:"#e0a0a0"} holds no rgb(200, 208, 216))
+  const ser = (o0) => {
+    const o = Object.assign({}, o0);
+    if (typeof o.border === "string" && o.borderColor) { o.border = o.border.replace(/#[0-9a-fA-F]{6}\b/, o.borderColor); delete o.borderColor; }
+    return Object.entries(o).map(([k, v]) => `${k.replace(/[A-Z]/g, (c) => "-" + c.toLowerCase())}: ${typeof v === "number" && !UNITLESS.has(k) ? v + "px" : String(v).replace(/#[0-9a-fA-F]{6}\b/g, rgbOf)};`).join(" ");
+  };
+  // what the sheet makes of a <tag> with this inline style: `tag { … }`, and `tag[style*="…"]…[style*="…"] { … }` when the
+  // written style holds every one of them (more specific; all !important, so each beats the inline value; a later rule
+  // beats an earlier one). border: the sheet's forced border colour, or null (the button keeps its own).
   const onTag = (tag, st, rules) => {
-    const s = ser(st); let color = null, colorBy = null, bg = null, border = null; const bgBy = [];
+    const s = ser(st); let color = null, colorBy = null, bg = null, border = null; const bgBy = [], borderBy = [];
     for (const r of rules) for (const sel of r.sels) {
-      const m = sel.match(new RegExp("^" + tag + '(?:\\[style\\*="([^"]+)"\\])?$'));
-      if (!m || (m[1] && !s.includes(m[1])) || !/!important/.test(r.decl)) continue;
+      const m = sel.match(new RegExp("^" + tag + '((?:\\[style\\*="[^"]+"\\])*)$'));
+      if (!m || !/!important/.test(r.decl)) continue;
+      const needs = [...m[1].matchAll(/\[style\*="([^"]+)"\]/g)].map((x) => x[1]);
+      if (!needs.every((n) => s.includes(n))) continue;
       const c = declBI(r.decl, "color"), b = declBI(r.decl, "background"), bc = declBI(r.decl, "border-color");
-      if (c && (!colorBy || m[1])) { color = c; colorBy = sel; }
+      if (c && (!colorBy || needs.length)) { color = c; colorBy = sel; }
       if (b) { bg = b; bgBy.push(sel); }
-      if (bc) border = bc;
+      if (bc) { border = bc; borderBy.push(sel); }
     }
-    return { color: color || st.color, colorBy, bg: bg || st.background, bgBy, border };
+    return { color: color || st.color, colorBy, bg: bg || st.background, bgBy, border, borderBy };
   };
   const hex = DARK_SHEET.hex, lum = (h) => (hex(h) ? DARK_SHEET.lum(h) : NaN), cr = DARK_SHEET.cr;
 
@@ -4058,6 +4382,16 @@ console.log("\nBI. Manual Adjustments weeks, dark mode title + secondary buttons
   check("BI5 the rule touches only that fill: the primary gradient button keeps its own background and the sheet's white text; the rule lives in the dark sheet only; css.btn(false) itself is unchanged (light mode as before)",
     pri.bgBy.length === 0 && pri.bg === PRI.background && pri.color === "#fff" && DARK_SHEET.css.includes(sec.bgBy[0] || "\u0000")
       && J([SEC.background, SEC.border, SEC.color]) === J(["#f0f2f5", "1px solid #c8d0d8", "#5a6a78"]), J({ pri, SEC }));
+  // (review fix) the dark border is forced only where the border is still css.btn(false)'s own grey: ✕ Clear's real
+  // style ({...css.btn(false), color:"#c04040", borderColor:"#e0a0a0"}, sliced and run) keeps its red border
+  const clrM = nsrcBI.match(/<button onClick=\{clearSchedule\} style=\{(\{\.\.\.css\.btn\(false\),[^\n]*?\})\}>✕ Clear<\/button>/);
+  let clrSt = null; try { clrSt = clrM ? vm.runInContext(`(${clrM[1]})`, bisb) : null; } catch (ex) { clrSt = null; }
+  const clr = clrSt ? onTag("button", clrSt, RULES) : null;
+  const FILL = `button[style*="background: ${rgbOf(SEC.background)}"]`, GREY = `${FILL}[style*="${rgbOf("#c8d0d8")}"]`;
+  check("BI5 (review fix) the dark sheet's border goes only on a secondary button whose border is still css.btn(false)'s grey (#c8d0d8, as the browser writes it): the plain secondary gets the dark border; the REAL ✕ Clear (its own red border, #e0a0a0) gets the dark fill and KEEPS its red border — the one red cue it had in dark mode (the rule forced border-color on every secondary: Clear looked like \"← Setup\")",
+    !!clr && clr.bg === sec.bg && clr.border === null && clrSt.borderColor === "#e0a0a0" && clr.color === textForced
+      && J(sec.borderBy) === J([GREY]) && sec.bgBy[0] === FILL && DARK_SHEET.css.includes(GREY + " { border-color:") && !/background: rgb\(240, 242, 245\)"\] \{[^}]*border-color/.test(DARK_SHEET.css),
+    J({ clr, clrSt, secBorderBy: sec.borderBy }));
 
   // BI6 — the holiday chip's text (what a screen reader reads as part of the cell's name, AX6)
   const HC0 = nsrcBI.indexOf("{/* Holiday coverage entries */}"), HC1 = HC0 < 0 ? -1 : nsrcBI.indexOf("{/* Silvis (trauma) day", HC0);
@@ -7477,7 +7811,8 @@ console.log("\nAX. calendar day sheet + 👤 Me filter");
     mkLift ? JSON.stringify(liftOut) : "the lift effect / bannerLift was not found");
   // The geometry, from the panel's real style (evaluated): at 375×812 the measured banner was 100px; at 393×852, 54px (one row,
   // the real Outfit font) or 100px (the fallback font). The sheet's content must end at or above the banner's top.
-  const panelM = sheetSrc.replace(/\r\n/g, "\n").match(/role="dialog" aria-modal="true" aria-label=\{`\$\{title\} — details`\} onClick=\{e=>e\.stopPropagation\(\)\}\n\s*style=\{(\{[\s\S]*?fontFamily:font\})\}>/);
+  // (UX review fix 2026-10-19: the dialog also carries data-toast-floor="1" — toasts sit above it, sync-guards BF5)
+  const panelM = sheetSrc.replace(/\r\n/g, "\n").match(/role="dialog" aria-modal="true" aria-label=\{`\$\{title\} — details`\} data-toast-floor="1" onClick=\{e=>e\.stopPropagation\(\)\}\n\s*style=\{(\{[\s\S]*?fontFamily:font\})\}>/);
   let panelSt = null;
   try { panelSt = panelM ? vm.runInContext(`(function (calSheetLift, dk, font, updateAvailable) { return (${panelM[1]}); })`, axsb) : null; } catch (ex) { panelSt = null; }
   const geo = (vh, bannerH) => {
@@ -8658,6 +8993,9 @@ await (async () => {
 //       (surgeon → their feed, APP → none); an APP gets the "surgeon call only"
 //       note; no APP code goes into a feed URL; the developer line is the
 //       scheduler's branch only
+//   BJ5 (review fix) the card's intro and how-to ("… paste the link below.")
+//       are gated on a link following (the scheduler's list, a surgeon's own
+//       feed): an APP no longer reads them above the "no link" note
 console.log("\nBJ. Mine: Subscribe in Calendar; the download is a one-time copy");
 await (async () => {
   const nsrcJ = src.replace(/\r\n/g, "\n");
@@ -8798,6 +9136,16 @@ await (async () => {
   const iSch = setJ.indexOf("{isScheduler ? (\n"), iDev = setJ.indexOf(DEV), iSur = setJ.indexOf(") : sMap[mySurgeon] ? (\n"), iPaste = setJ.indexOf("Paste this URL into your calendar app to subscribe."), iNull = iPaste < 0 ? -1 : setJ.indexOf(") : null}", iPaste);
   check("BJ5 \"" + DEV + "\" is the scheduler's line only (once, in the isScheduler branch); a surgeon gets the paste how-to; anyone else (an APP) no line",
     count(DEV) === 1 && iSch > 0 && iDev > iSch && iSur > iDev && iPaste > iSur && iNull > iPaste && iNull - iSch < 600, J({ iSch, iDev, iSur, iPaste, iNull }));
+  // (review fix) the card's intro and how-to ("… paste the link below.") only where a link follows: the scheduler's
+  // list, or a surgeon's own (with calendarFeedUrls to build it) — an APP read them above the "no link for APP days" note
+  const BELOW = "→ paste the link below.";
+  const INTRO = setJ.match(/\n\s*\{(\(isScheduler \|\| [^\n]*?\)) && <>\n\s*<p style=\{\{fontSize:12,color:"#5a6a78",margin:"0 0 10px",lineHeight:1\.5\}\}>\n\s*Subscribe to /);
+  const introEnd = INTRO ? setJ.indexOf("</>}", INTRO.index) : -1;
+  let introFn = null; try { introFn = INTRO ? vm.runInContext(`(function (isScheduler, sMap, mySurgeon, calendarFeedUrls) { return !!(${INTRO[1]}); })`, sandbox) : null; } catch (ex) { introFn = null; }
+  const intro = introFn ? { sched: introFn(true, SMAPJ, "s6", H), admin: introFn(true, SMAPJ, "admin", H), rpc: introFn(false, SMAPJ, "s3", H), app: introFn(false, SMAPJ, "a1", H), app5: introFn(false, SMAPJ, "a5", H), oldHelpers: introFn(false, SMAPJ, "s3", undefined) } : null;
+  check("BJ5 (review fix) the intro and the how-to (\"" + BELOW + "\") show only where a link follows — the scheduler (and admin), a surgeon with their feed — never for an APP (it read \"paste the link below\" with no link, then the APP note), nor with an old helpers.js that builds no link; the how-to sits inside that gate, once",
+    !!intro && J(intro) === J({ sched: true, admin: true, rpc: true, app: false, app5: false, oldHelpers: false }) && introEnd > INTRO.index && setJ.indexOf(BELOW) > INTRO.index && setJ.indexOf(BELOW) < introEnd && count(BELOW) === 1
+      && introEnd < iNoFeed, J({ intro, at: INTRO && INTRO.index, introEnd, iNoFeed }));
 })();
 
 // ─── AH9. The REAL finishGenerate: Generate's end, with the LATEST state (2026-10-13) ───

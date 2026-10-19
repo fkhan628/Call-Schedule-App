@@ -4971,7 +4971,7 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
     finish: sess(fnX("pendingLocks, nameOf, slotLabel, showToast, setPreviewSchedule, setPreviewOrigin, setShowPreview, genInputsSig, listScheduleBends, surgeons, mondays, buildGenAvailability, buildSilvisPrimary, vacations, holidayAssignments, buildPrevWeekSeed, publishingRef, setPublishing, setSaveStatus, snapshots, genCommitRef, previewEpochRef, schedEditable, schedSyncRef, sessionEpochRef",
       decl("finishGenerate", "\n  };\n"))),
     // (20/n) Generate & Publish's notice and e-mail (doGenerateAndNotify), and the setup's signature (setupSig — review r3 G7)
-    notify: sess(fnX("sessionEpochRef, doGenerate, addNotification, sendEmailNotif, MO, startMonth, endMoIdx, startYear, mondays, periodLabel", decl("doGenerateAndNotify", "\n  };\n"))), // (mondays, periodLabel: the e-mail's period since sync-guards BD — UX audit 2026-10-19)
+    notify: sess(fnX("sessionEpochRef, doGenerate, addNotification, sendEmailNotif, MO, startMonth, endMoIdx, startYear, mondays, periodLabel, periodText", decl("doGenerateAndNotify", "\n  };\n"))), // (mondays, periodLabel: the e-mail's period since sync-guards BD — UX audit 2026-10-19; periodText, the component's one guarded line for it, since the review fixes)
     setupSig: fnX("", after("  const setupSig = ", ";\n")),
     gen: fnX("searchRef, showToast, schedEditable, schedSyncRef, buildPrefs", decl("doGenerate", "\n  };\n")), // (only its first statements are reached here: the gates, then buildPrefs)
     // (21/n) the trade's decline, and the notice paths (addNotification, sendPushNotif, sendEmailNotif) — review r4 branch-2 / fixes-3
@@ -6532,7 +6532,7 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
         const { A } = await pair(); const c = mkComp(A); c.render(); await c.fire();
         const g = gated(), sent = { notes: 0, emails: 0 };
         const p = G.notify({ schedSyncRef: A.schedSyncRef, doGenerate: async () => "published", addNotification: async () => { sent.notes++; await g.gate; }, sendEmailNotif: () => { sent.emails++; },
-          MO: HX.MO, startMonth: 0, endMoIdx: 2, startYear: 2030, mondays: ["2030-01-07", "2030-03-25"].map(HX.parse), periodLabel: HX.periodLabel })();
+          MO: HX.MO, startMonth: 0, endMoIdx: 2, startYear: 2030, mondays: ["2030-01-07", "2030-03-25"].map(HX.parse), periodLabel: HX.periodLabel, periodText: HX.periodLabel("2030-01-07", "2030-03-25") })();
         await spin();
         if (signOut) { await G.boundary(bEnv(A, c)).handleSignOut(); await spin(6); }
         g.open(); await p;
@@ -6755,7 +6755,7 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
       const { A } = await pair(); await ticks(A); const c = mkComp(A); c.render(); await c.fire(); A.toasts.length = 0;
       const sent = { inserts: [], push: [], email: [], listed: 0 }, g = gated(), hold = at ? { [at]: g.gate } : null;
       const ch = chain(A, sent, { hold, fail });
-      const p = G.notify({ schedSyncRef: A.schedSyncRef, sessionEpochRef: A.sessionEpochRef, doGenerate: async () => "published", addNotification: ch.note, sendEmailNotif: ch.email, MO: HX.MO, startMonth: 0, endMoIdx: 2, startYear: 2030, mondays: ["2030-01-07", "2030-03-25"].map(HX.parse), periodLabel: HX.periodLabel })();
+      const p = G.notify({ schedSyncRef: A.schedSyncRef, sessionEpochRef: A.sessionEpochRef, doGenerate: async () => "published", addNotification: ch.note, sendEmailNotif: ch.email, MO: HX.MO, startMonth: 0, endMoIdx: 2, startYear: 2030, mondays: ["2030-01-07", "2030-03-25"].map(HX.parse), periodLabel: HX.periodLabel, periodText: HX.periodLabel("2030-01-07", "2030-03-25") })();
       await spin(30);
       if (how) { await cross(A, c, how); await spin(6); }
       g.open(); await p; await spin(30);
@@ -7384,8 +7384,9 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
         && E4.revoke.reqs.length === 1 && E4.revoke.to.join() === "DELETE Bearer TOK_A" && E4.revoke.notes.join() === "Bearer TOK_A" && E4.revoke.pushes.join() === "Bearer TOK_A"
         && E4.edit.reqs.length === 1 && E4.edit.to.join() === "UPDATE Bearer TOK_A" && E4.edit.early.includes("editor closed") && E4.editNoId.to.join() === "DELETE Bearer TOK_A,INSERT Bearer TOK_A"
         && Object.values(E4).every(x => x.errors === 0 && !x.crossed)
-        // (UX 2026-10-19, sync-guards BE3/BE4: each that lands says so, once — it said nothing before)
-        && E4.approve.toasts.join("|") === "Approved — CCC's vacation, 2030-03-04 to 2030-03-08." && E4.revoke.toasts.join("|") === "Revoked — CCC's vacation, 2030-03-04 to 2030-03-08, is off the schedule."
+        // (UX 2026-10-19, sync-guards BE3/BE4: each that lands says so, once — it said nothing before; the revoke's claims
+        // only the revoke — its time off's removal can still fail after it, review fix, sync-guards BE3)
+        && E4.approve.toasts.join("|") === "Approved — CCC's vacation, 2030-03-04 to 2030-03-08." && E4.revoke.toasts.join("|") === "Revoked — CCC's vacation, 2030-03-04 to 2030-03-08."
         && E4.edit.toasts.join("|") === "Changes saved." && E4.editNoId.toasts.join("|") === "Changes saved.", JSON.stringify(E4));
     const F4 = [await vacRun("edit", { direct: "toEdit", noId: true, at: "delete", how: "other" }), await vacRun("edit", { direct: "toEdit", noId: true, at: "delete", how: "signout" })];
     check("SE-X23 I4 (f) the real toEdit with no row id yet (delete the old dates, insert the new — the Setup editor's path too), the session changing while its DELETE is out: the new dates are added WITH THE TAP'S HEADERS (A's token), never as B nor refused as anon (the vacation lost); nothing said",
@@ -7432,7 +7433,7 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
       paintTO: fnX("USE_TIME_OFF, userProfile, db, logAudit, loadTimeOff, sessionEpochRef, dbAuthHeaders", decl("commitTimeOffPaint", "\n  };\n")),
       dayTap: fnX("appDayOffLoaded, showToast, appDayOffRef, dayOffId, setAppDayOff, dayOffDirtyRef, dayOffEpochRef, sessionEpochRef, dayOffPendingAuditRef, nameOf, dayOffSaveTimerRef, clearTimeout, setTimeout, enqueueDayOffSave", decl("toggleAppDayOff", "\n  };\n")),
       daySave: fnX("dayOffSaveChainRef, dayOffDirtyRef, dayOffEpochRef, sessionEpochRef, dbAuthHeaders, dayOffPendingAuditRef, supabase, appDayOffRef, dayOffLastWriteTsRef, logAudit, scheduleDayOffRetry, setSaveError, setSaveStatus, setTimeout, console, showToast, dayOffInFlightRef, setAppDayOff, dayOffHeldRowRef, adoptDayOffRow", decl("enqueueDayOffSave", "\n  };\n")),
-      pref: fnX("setNotifPrefs, notifPrefsRef, notifSaveTimerRef, setTimeout, clearTimeout, setNotifPrefsSaving, setNotifPrefsSavedAt, db, auditRef, showToast, console, sessionEpochRef, dbAuthHeaders", cbody("saveNotifPref", "[]")),
+      pref: fnX("setNotifPrefs, notifPrefsRef, notifSaveTimerRef, setTimeout, clearTimeout, setNotifPrefsSaving, setNotifPrefsSaved, db, auditRef, showToast, console, sessionEpochRef, dbAuthHeaders", cbody("saveNotifPref", "[]")),
       officeAdd: fnX("newOfficeName, newOfficeEmail, newOfficeDepts, alert, setOfficeNotifBusy, db, setOfficeContacts, setNewOfficeName, setNewOfficeEmail, setNewOfficeDepts, sessionEpochRef, console", decl("addOfficeContact", "\n  };\n")),
       officeUpd: fnX("setOfficeContacts, db, alert, console, showToast, sessionEpochRef", decl("updateOfficeContact", "\n  };\n")),
       officeDel: fnX("officeContacts, confirm, setOfficeContacts, fetch, SUPABASE_URL, dbAuthHeaders, console, showToast, sessionEpochRef", decl("deleteOfficeContact", "\n  };\n")),
@@ -7545,7 +7546,7 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
     // the notification preference: (at) "debounce" — the session changes before its 500-ms debounce fires; "save" — while its upsert is out
     const prefRun = async (r, fail, at) => {
       const timers = { current: {} };
-      H.pref({ setNotifPrefs: noopX, notifPrefsRef: { current: { s1: { email: "a@dsg.test" } } }, notifSaveTimerRef: timers, setTimeout: r.setTimeout, clearTimeout: r.clearTimeout, setNotifPrefsSaving: noopX, setNotifPrefsSavedAt: r.mark("saved"),
+      H.pref({ setNotifPrefs: noopX, notifPrefsRef: { current: { s1: { email: "a@dsg.test" } } }, notifSaveTimerRef: timers, setTimeout: r.setTimeout, clearTimeout: r.clearTimeout, setNotifPrefsSaving: noopX, setNotifPrefsSaved: (v) => { if (v) r.mark("saved")(); }, // ("saved" = a "Saved ✓" set; the clear at each save's start is null)
         auditRef: { current: { logAudit: r.logAudit, nameOf: (x) => x } }, showToast: r.say("toast"), console: r.console, sessionEpochRef: r.ep, dbAuthHeaders: r.hdr,
         db: { upsert: async () => { r.write("UPSERT notification_preferences"); if (at === "save") await r.cross(); return { error: fail ? "HTTP 503" : null }; } } })("s1", { email: "a2@dsg.test" });
       if (at === "debounce") await r.cross();
