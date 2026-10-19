@@ -5577,6 +5577,310 @@ console.log("\nAV. Pending requests: a collapsed group shows a coverage-floor br
       && count("Eves stay on the regular schedule") === 0 && count("two days exactly, then the regular service-week doctor resumes") === 0);
 }
 
+// ─── AX. Calendar: tap a day for its details, and a one-tap 👤 Me filter (UX audit 2026-10-19) ───
+// A day cell had no onClick: the holiday's name, the Silvis details, a weekend's
+// hours and a single-day cover lived only in title attributes (an iPhone never
+// shows them) or nowhere. A tapped cell now opens a bottom sheet listing the day.
+// And a member had to find their own name in the surgeon filter to see only
+// their call; 👤 Me does it in one tap.
+//   AX1 dayDetailLines (helpers.js) names exactly the holders calData holds for the
+//       date (the real memo, sliced as §O4 slices it): every date of the 46 live
+//       weeks, and synthetic Tue / Fri / Sat / Sun, a two-day holiday, single-day
+//       overrides, a backup week, a Fierce backup week, a cover stored in the next
+//       week, APP shifts (+ a control: a moved holder is caught)
+//   AX2 its lines word for word on the worked dates
+//   AX3 every hour range comes from config or data: an edited SHIFT_TIMES moves
+//       every line; a holiday shows its stored hours; APP hours = buildAppICSEvents'
+//   AX4 the two gated layers (APP day-offs, Silvis) are ONE definition read by the
+//       cell and the sheet, executed: the public link → no day-offs, the OR board
+//       and internal → shown, Silvis only with 🚑 on; no second gate site
+//   AX5 the sheet's data (the real slice), executed: Thanksgiving as a member, a
+//       scheduler, an admin and the public link; Edit only for scheduler/admin, on
+//       the Manual Adjustments card's own gate and opener; no write path
+//   AX6 the cell is a button (role, tabIndex, Enter, Space on release) and the sheet
+//       a dialog (fixed, max 70vh, scrolls; ✕, backdrop and Escape close it), executed
+//   AX7 👤 Me: one button in the Show bar after the "|", signed-in roster members
+//       only, its toggle executed — only the existing filter setters
+//   AX8 calDayOpen is declared before the hook that lists it (§P's TDZ rule)
+console.log("\nAX. calendar day sheet + 👤 Me filter");
+{
+  // Its own context, the app's modules in the app's order (+ generator.js: getHolidays; silvis-feed.js: sfCellChip)
+  const axsb = { console, window: {}, document: undefined, navigator: { userAgent: "node-test" }, localStorage: { getItem: () => null, setItem() {}, removeItem() {} }, fetch: () => { throw new Error("no fetch in AX"); }, setTimeout, clearTimeout };
+  axsb.globalThis = axsb; vm.createContext(axsb);
+  for (const f of ["helpers.js", "config.js", "generator.js", "silvis-feed.js"]) vm.runInContext(fs.readFileSync(path.join(ROOT, f), "utf8"), axsb, { filename: f });
+  const ddl = vm.runInContext('typeof dayDetailLines === "function" ? dayDetailLines : null', axsb);
+  const NONE = "dayDetailLines is not defined in helpers.js";
+  const H = vm.runInContext("({ fmt, parse, addD, buildAppICSEvents, sfDaysFromRows, INIT_APPS })", axsb);
+  const SURG = ["DJA", "MCC", "RPC", "KJH", "REH", "FAK", "ARW"].map((name, i) => ({ id: "s" + (i + 1), name }));
+  const APPS = H.INIT_APPS.map((a) => ({ id: a.id, name: a.name })); // a1 MA, a2 SJ, a3 MS, …
+  const nameOf = (id) => ([...SURG, ...APPS].find((p) => p.id === id) || {}).name || "?";
+  const LIVE = JSON.parse(fs.readFileSync(path.join(ROOT, "test", "fixtures", "schedule-weeks-live-2026-10-02.json"), "utf8"));
+  const SYN = {
+    "2026-10-19": { dayCall: "s7", nights: { mon: "s1", tue: "s3", wed: "s2", thu: "s4", wknd: "s1" } },
+    "2026-10-26": { dayCall: "s5", dayCallOverrides: { "2026-10-30": "s6", "2026-10-31": "s2" }, nights: { mon: "s1", tue: "s2", wed: "s3", thu: "s4", wknd: "s6" } },
+    "2026-11-23": { dayCall: "s2", nights: { mon: "s1", tue: "s3", wed: "s4", thu: "s5", wknd: "s7" }, holidayCoverage: {
+      "2026-11-26": { surgeonId: "s3", role: "holiday_24h", hours: "7a–7a", name: "Thanksgiving 24h", type: "major", holiday: "Thanksgiving" },
+      "2026-11-27": { surgeonId: "s4", role: "holiday_24h", hours: "7a–7a", name: "Fri 24h", type: "major", holiday: "Thanksgiving" } } },
+    // a backup week holding a cover dated the PREVIOUS week's Sunday (the calendar draws it on its date)
+    "2026-11-30": { dayCall: "s1", isBackup: true, nights: { wknd: "s2" }, holidayCoverage: { "2026-11-29": { surgeonId: "s6", hours: "24h", name: "Eve 24h", type: "minor", holiday: "Test Holiday" } } },
+    "2026-12-07": { dayCall: "s4", isFierceBackup: true, nights: { mon: "s5" } },
+  };
+  const SYN_APP = { "2026-10-20": "a1", "2026-10-24": "a2", "2026-10-25": "a3", "2026-11-26": "a1" };
+
+  // AX1 — vs the calendar's own memo
+  const CD = "  const calData = useMemo(() => {";
+  const c0 = src.indexOf(CD), c1 = c0 < 0 ? -1 : src.indexOf("\n  }, [", c0);
+  let calRun = null;
+  try { calRun = c0 >= 0 && c1 > c0 && count(CD) === 1 ? vm.runInContext("(function (env) { const { schedule, appShifts } = env; return (() => {" + src.slice(c0 + CD.length, c1) + "})(); })", axsb, { filename: "ax-caldata.js" }) : null; } catch (ex) { calRun = null; }
+  const BSLOTS = ["svc", "sat", "night", "wkndFri", "wkndSun"];
+  const calKeys = (cal, ds) => (cal[ds] || []).map((e) => {
+    const t = String(e.type).replace(/^B-/, ""), B = /^B-/.test(e.type) ? "B" : "";
+    if (t === "Svc") return `svc:${e.surgeon}:${B}`;
+    if (t === "Ngt") return `night:${e.surgeon}:${B}`;
+    if (t === "Wknd") return `${e.note === "Sat 7a–7a" ? "sat" : e.note === "5p–7a" ? "wkndFri" : e.note === "7a–7a" ? "wkndSun" : "wknd?"}:${e.surgeon}:${B}`;
+    if (t === "Holiday") return `cover:${e.surgeon || ""}:`;
+    if (t === "APP") return `app:${e.appId}:`;
+    if (t === "Fierce") return "fierce::";
+    if (t === "FierceBkp") return "fierceBkp::";
+    return `foreign:${e.type}`;
+  }).sort();
+  const lineKeys = (lines) => lines.map((l) => `${l.slot}:${l.sid || ""}:${BSLOTS.includes(l.slot) && l.backup ? "B" : ""}`).sort();
+  const datesOf = (sched, apps, cal) => {
+    const set = new Set([...Object.keys(cal), ...Object.keys(apps)]);
+    Object.keys(sched).forEach((m) => { for (let i = 0; i < 7; i++) set.add(H.fmt(H.addD(H.parse(m), i))); });
+    return [...set].sort();
+  };
+  let compared = 0;
+  const diffOf = (sched, apps) => {
+    if (!ddl || !calRun) return [ddl ? "the calData memo was not found exactly once" : NONE];
+    const cal = calRun({ schedule: sched, appShifts: apps });
+    return datesOf(sched, apps, cal).map((ds) => {
+      compared++;
+      const a = JSON.stringify(calKeys(cal, ds)), b = JSON.stringify(lineKeys(ddl(sched, ds, { appShifts: apps, nameOf })));
+      return a === b ? null : `${ds}: calendar ${a} vs sheet ${b}`;
+    }).filter(Boolean);
+  };
+  const ax1live = diffOf(LIVE, {}), ax1syn = diffOf(SYN, SYN_APP);
+  check(`AX1 dayDetailLines names exactly the holders the calendar (calData, the real memo) holds, slot by slot with the backup mark, on every date of all ${Object.keys(LIVE).length} live weeks`,
+    Object.keys(LIVE).length === 46 && ax1live.length === 0, ax1live.slice(0, 3).join(" | "));
+  check(`AX1 …and on synthetic Tue / Fri / Sat / Sun, a two-day holiday, single-day overrides (Fri + Sat), a backup week, a Fierce backup week, a cover stored in the next week, APP shifts (${compared} dates compared)`,
+    ax1syn.length === 0 && compared >= 46 * 7 + 35, ax1syn.slice(0, 3).join(" | "));
+  const moved = JSON.parse(JSON.stringify(SYN)); moved["2026-10-19"].nights.tue = "s5";
+  check("AX1 control: the comparison is not vacuous — a night moved to another surgeon (or a missing APP) differs from the calendar's",
+    !!ddl && !!calRun && JSON.stringify(calKeys(calRun({ schedule: SYN, appShifts: SYN_APP }), "2026-10-20")) !== JSON.stringify(lineKeys(ddl(moved, "2026-10-20", { appShifts: SYN_APP, nameOf })))
+      && JSON.stringify(calKeys(calRun({ schedule: SYN, appShifts: SYN_APP }), "2026-10-20")) !== JSON.stringify(lineKeys(ddl(SYN, "2026-10-20", { appShifts: {}, nameOf }))));
+
+  // AX2 — the lines, word for word
+  const T = (sched, apps, ds) => (ddl ? ddl(sched, ds, { appShifts: apps, nameOf }).map((l) => l.text) : [NONE]);
+  const WANT = [
+    [SYN, SYN_APP, "2026-10-20", ["Service week: ARW (7a–5p)", "Night: RPC (5p–7a)", "APP: MA (5p–7a)"]],
+    [SYN, SYN_APP, "2026-10-23", ["Service week: ARW (7a–5p)", "Weekend: DJA (5p–Sat 7a)"]],
+    [SYN, SYN_APP, "2026-10-24", ["Service week: ARW (7a–Sun 7a)", "APP: SJ (7a–7a)"]],
+    [SYN, SYN_APP, "2026-10-25", ["Weekend: DJA (7a–Mon 7a)", "APP: MS (7a–7a)"]],
+    [SYN, SYN_APP, "2026-10-30", ["Service day: FAK (7a–5p) — covering REH's service week", "Weekend: FAK (5p–Sat 7a)"]],
+    [SYN, SYN_APP, "2026-10-31", ["Service day: MCC (7a–Sun 7a) — covering REH's service week"]],
+    [SYN, SYN_APP, "2026-11-26", ["Thanksgiving 24h: RPC (7a–7a)", "APP: MA (5p–7a)"]],
+    [SYN, SYN_APP, "2026-11-27", ["Thanksgiving 24h: KJH (7a–7a)"]],
+    [SYN, SYN_APP, "2026-11-29", ["Test Holiday 24h (backup): FAK", "Weekend: ARW (7a–Mon 7a)"]],
+    [SYN, SYN_APP, "2026-11-30", ["Service week (backup): DJA (7a–5p)", "Fierce Primary week — the group is backup"]],
+    [SYN, SYN_APP, "2026-12-07", ["Service week: KJH (7a–5p)", "Night: REH (5p–7a)", "Fierce Backup week"]],
+    [LIVE, {}, "2026-09-07", ["Labor Day 24h: RPC (7a–7a)"]],
+    [LIVE, {}, "2026-07-03", ["Service day: FAK (7a–5p) — covering REH's service week", "Weekend: FAK (5p–Sat 7a)"]],
+    [LIVE, {}, "2026-01-24", ["Saturday swap coverage: ARW (24h)", "Fierce Backup week"]],
+    [LIVE, {}, "2026-05-25", ["Memorial Day 24h (backup): DJA", "Fierce Primary week — the group is backup"]],
+    [LIVE, {}, "2030-01-07", []],
+  ];
+  const ax2bad = WANT.map(([s, a, ds, w]) => { const g = T(s, a, ds); return JSON.stringify(g) === JSON.stringify(w) ? null : `${ds}: ${JSON.stringify(g)}`; }).filter(Boolean);
+  check(`AX2 the sheet's lines word for word: Tue service + night + APP, Fri weekend leg, Sat service 24h, Sun weekend, single-day covers, a two-day holiday, a cover from the next week, backup and Fierce weeks, Labor Day / the 7/3 cover / the 1/24 swap / Memorial Day (live), no week (${WANT.length} dates)`,
+    ax2bad.length === 0, ax2bad.slice(0, 3).join(" | "));
+  const before = JSON.stringify(SYN);
+  check("AX2 dayDetailLines is pure: the schedule is untouched and it reads no clock",
+    !!ddl && (T(SYN, SYN_APP, "2026-11-29"), JSON.stringify(SYN) === before) && !/Date\.now|new Date\(\s*\)/.test(String(ddl)), ddl ? "" : NONE);
+
+  // AX3 — the hours come from SHIFT_TIMES (an edited copy), the stored holiday hours, and the APP rule of buildAppICSEvents
+  {
+    const cfg = fs.readFileSync(path.join(ROOT, "config.js"), "utf8");
+    const ST = (cfg.match(/\nconst SHIFT_TIMES = \{[^\n]*\};/) || [])[0];
+    const ST2 = '\nconst SHIFT_TIMES = { dayCall:"M–F 6a–4p + Sat 6a–Sun 6a", mon:"Mon 4p–6a", tue:"Tue 4p–6a", wed:"Wed 4p–6a", thu:"Thu 4p–6a", wknd:"Fri 4p–Sat 6a & Sun 6a–Mon 6a" };';
+    let ddl2 = null;
+    try {
+      const sb2 = { console, window: {}, navigator: { userAgent: "node-test" }, localStorage: { getItem: () => null, setItem() {}, removeItem() {} }, setTimeout, clearTimeout };
+      sb2.globalThis = sb2; vm.createContext(sb2);
+      vm.runInContext(fs.readFileSync(path.join(ROOT, "helpers.js"), "utf8"), sb2, { filename: "helpers.js" });
+      vm.runInContext(cfg.replace(ST, ST2), sb2, { filename: "config-edited.js" });
+      ddl2 = ST ? vm.runInContext('typeof dayDetailLines === "function" ? dayDetailLines : null', sb2) : null;
+    } catch (ex) { ddl2 = null; }
+    const T2 = (ds) => (ddl2 ? ddl2(SYN, ds, { appShifts: SYN_APP, nameOf }).map((l) => l.text) : [ST ? NONE : "SHIFT_TIMES not found in config.js"]);
+    const got2 = ["2026-10-20", "2026-10-23", "2026-10-24", "2026-10-25"].map(T2);
+    check("AX3 every service / night / weekend hour range comes from SHIFT_TIMES (config.js): with an edited copy loaded, each line follows it",
+      JSON.stringify(got2) === JSON.stringify([
+        ["Service week: ARW (6a–4p)", "Night: RPC (4p–6a)", "APP: MA (5p–7a)"], ["Service week: ARW (6a–4p)", "Weekend: DJA (4p–Sat 6a)"],
+        ["Service week: ARW (6a–Sun 6a)", "APP: SJ (7a–7a)"], ["Weekend: DJA (6a–Mon 6a)", "APP: MS (7a–7a)"]]), JSON.stringify(got2));
+    const hol = (hours) => { const s = JSON.parse(JSON.stringify(SYN)); if (hours === undefined) delete s["2026-11-23"].holidayCoverage["2026-11-26"].hours; else s["2026-11-23"].holidayCoverage["2026-11-26"].hours = hours; return T(s, {}, "2026-11-26"); };
+    check("AX3 a holiday shows the hours stored with it (none stored → none shown), never an invented range",
+      JSON.stringify([hol("6a–6a"), hol(undefined)]) === JSON.stringify([["Thanksgiving 24h: RPC (6a–6a)"], ["Thanksgiving 24h: RPC"]]), JSON.stringify([hol("6a–6a"), hol(undefined)]));
+    const appBad = ["2026-10-19", "2026-10-20", "2026-10-23", "2026-10-24", "2026-10-25"].map((d) => {
+      const ev = H.buildAppICSEvents({ [d]: "a1" }, {})[0];
+      const l = ddl ? ddl(SYN, d, { appShifts: { [d]: "a1" }, nameOf }).find((x) => x.slot === "app") : null;
+      const ok = !!ev && !!l && (l.hours === "7a–7a") === /^7:00 AM – 7:00 AM next day \(24h\)/.test(ev.desc) && (l.hours === "5p–7a") === /^5:00 PM – 7:00 AM next day/.test(ev.desc);
+      return ok ? null : `${d}: ${l && l.hours} vs ${ev && ev.desc.split("\n")[0]}`;
+    }).filter(Boolean);
+    check("AX3 an APP shift's hours agree with buildAppICSEvents (Sat / Sun 7a–7a = its 24h event; Mon–Fri 5p–7a)", appBad.length === 0, appBad.join(" | "));
+  }
+
+  // AX4 — the gated layers: ONE definition, the cell's and the sheet's, executed from the real code
+  const AOV = "const appOffVisible = !isPublicMode || isOrView;";
+  const DOI = src.match(/\n  const dayOffId = \(x\) => [^\n]*\n/);
+  const CFD = (src.match(/\nconst CAL_FILTER_DEFAULTS = Object\.freeze\(\{[^\n]*\}\);/) || [])[0];
+  const G0 = src.indexOf("  const calAppOffNames = (ds) => {"), G1 = G0 < 0 ? -1 : src.indexOf("  const calSilvisChip = (ds) => {", G0), G2 = G1 < 0 ? -1 : src.indexOf("\n  };", G1);
+  let mkGates = null, DEF = null;
+  try {
+    DEF = CFD ? vm.runInContext("(() => {" + CFD + "\n return CAL_FILTER_DEFAULTS; })()", axsb) : null;
+    mkGates = G0 >= 0 && G1 > G0 && G2 > G1 && DOI && count(AOV) === 1 ? vm.runInContext(`(function (env) { const { isPublicMode, isOrView, calSurgeonFilter, calFilters, calAppFilter, calDeptFilter, appDayOff, aMap, silvisDays, silvisFakId, sMap, silvisActive } = env; ${AOV}${DOI[0]}${src.slice(G0, G2 + 5)}\n return { appOffVisible, calAppOffNames, calSilvisChip }; })`, axsb, { filename: "ax-gates.js" }) : null;
+  } catch (ex) { mkGates = null; }
+  const SD = H.sfDaysFromRows([{ day: "2026-10-24", primary_code: "FAK", backup_code: "ABC", fetched_at: "2026-10-19T10:00:00Z" }, { day: "2026-10-21", primary_code: "ABC", backup_code: "FAK", fetched_at: "2026-10-19T10:00:00Z" }], "FAK");
+  const sMapFull = {}, aMapFull = {};
+  SURG.forEach((s, i) => { sMapFull[s.id] = Object.assign({}, s, { idx: i }); });
+  APPS.forEach((a, i) => { aMapFull[a.id] = Object.assign({}, a, { idx: i }); });
+  const GBASE = { isPublicMode: false, isOrView: false, calSurgeonFilter: "", calFilters: Object.assign({}, DEF || {}), calAppFilter: "all", calDeptFilter: "",
+    appDayOff: { "2026-10-20": ["a1", { id: "a2", note: "pm" }], "2026-11-26": ["a3"] }, aMap: aMapFull, silvisDays: SD, silvisFakId: "s6", sMap: sMapFull, silvisActive: true };
+  const G = (over) => (mkGates ? mkGates(Object.assign({}, GBASE, over || {}, { calFilters: Object.assign({}, GBASE.calFilters, (over || {}).calFilters || {}) })) : null);
+  const off = (over, ds) => { const g = G(over); return g ? JSON.stringify(g.calAppOffNames(ds || "2026-10-20")) : "gates not found"; };
+  const silv = (over, ds) => { const g = G(over); if (!g) return "gates not found"; const c = g.calSilvisChip(ds || "2026-10-24"); return c ? c.label : null; };
+  check("AX4 APP day-offs, executed from the real definition: internal and the OR board show them (a v2 {id, note} entry too); the plain public link never does",
+    !!DEF && DEF.appOff === true && DEF.silvis === false && off({}) === '["MA","SJ"]' && off({ isPublicMode: true, isOrView: true }) === '["MA","SJ"]' && off({ isPublicMode: true }) === "[]"
+      && G({ isPublicMode: true }).appOffVisible === false, JSON.stringify([off({}), off({ isPublicMode: true, isOrView: true }), off({ isPublicMode: true })]));
+  check("AX4 …and they follow the cell's filters as before: ☕ off, a surgeon filter, No APPs, a department → none; one APP picked → only that APP",
+    off({ calFilters: { appOff: false } }) === "[]" && off({ calSurgeonFilter: "s3" }) === "[]" && off({ calAppFilter: "none" }) === "[]" && off({ calDeptFilter: "CWM" }) === "[]" && off({ calAppFilter: "a2" }) === '["SJ"]',
+    JSON.stringify([off({ calFilters: { appOff: false } }), off({ calSurgeonFilter: "s3" }), off({ calAppFilter: "a2" })]));
+  check("AX4 FAK's Silvis day, executed: never with the 🚑 switch off (the default); with it on, the P chip (public link too), the B chip, and not under another surgeon's filter",
+    silv({}) === null && silv({ isPublicMode: true }) === null && silv({ calFilters: { silvis: true } }) === "🚑 Silvis P · FAK" && silv({ isPublicMode: true, calFilters: { silvis: true } }) === "🚑 Silvis P · FAK"
+      && silv({ calFilters: { silvis: true } }, "2026-10-21") === "🚑 Silvis B · FAK" && silv({ calFilters: { silvis: true }, calSurgeonFilter: "s4" }) === null,
+    JSON.stringify([silv({}), silv({ calFilters: { silvis: true } }), silv({ calFilters: { silvis: true }, calSurgeonFilter: "s4" })]));
+  const gridA = src.indexOf("return calGrid.map((day,i)=>{");
+  const SH0 = src.indexOf("{calDayOpen && (() => {"), SH1 = SH0 < 0 ? -1 : src.indexOf("\n          })()}", SH0);
+  const sheetSrc = SH0 >= 0 && SH1 > SH0 ? src.slice(SH0, SH1) : "";
+  const gridSrc = gridA >= 0 && SH0 > gridA ? src.slice(gridA, SH0) : "";
+  check("AX4 the cell and the sheet read the SAME two gates (calAppOffNames(ds), calSilvisChip(ds) — once each in the grid, once each in the sheet); neither keeps a copy, and the gate sites stay as E3 / R3 pin them (5 appOffVisible, 1 sfCellChip call)",
+    count("calAppOffNames(ds)") === 2 && count("calSilvisChip(ds)") === 2 && gridSrc.split("calAppOffNames(ds)").length === 2 && gridSrc.split("calSilvisChip(ds)").length === 2
+      && sheetSrc.split("calAppOffNames(ds)").length === 2 && sheetSrc.split("calSilvisChip(ds)").length === 2
+      && !/appDayOff\[|sfCellChip\(|appOffVisible|calFilters\.silvis/.test(gridSrc + sheetSrc) && count("appOffVisible") === 5 && count("sfCellChip(") === 1,
+    JSON.stringify({ off: count("calAppOffNames(ds)"), silvis: count("calSilvisChip(ds)"), grid: gridSrc.length, sheet: sheetSrc.length, aov: count("appOffVisible"), sfc: count("sfCellChip(") }));
+
+  // AX5 — the sheet's data, the real slice, executed
+  const HL = "  const calHolidayLabels = useMemo(() => {";
+  const h0 = src.indexOf(HL), h1 = h0 < 0 ? -1 : src.indexOf("\n  }, [calYear]);", h0);
+  let labels2026 = null;
+  try { labels2026 = h0 >= 0 && h1 > h0 ? vm.runInContext(`(function (calYear) { return (() => {${src.slice(h0 + HL.length, h1)}})(); })`, axsb, { filename: "ax-hollabels.js" })(2026) : null; } catch (ex) { labels2026 = null; }
+  const D0 = src.indexOf("// ── day sheet data (plain JS; sync-guards AX runs this slice) ──"), D1 = D0 < 0 ? -1 : src.indexOf("// ── end day sheet data ──", D0);
+  let sheetRun = null;
+  try { sheetRun = D0 >= 0 && D1 > D0 && count("// ── day sheet data (plain JS") === 1 ? vm.runInContext(`(function (env) { const { ds, schedule, appShifts, sMap, aMap, calHolidayLabels, surgeons, apps, vacations, calAppOffNames, calSilvisChip, isScheduler, userProfile } = env; ${src.slice(D0, D1)}\n return { lines, holLabel, onVacNames, offNames, chip, canEdit, mondayStr }; })`, axsb, { filename: "ax-sheet.js" }) : null; } catch (ex) { sheetRun = null; }
+  const VAC = { s1: [["2026-11-25", "2026-11-27"]], a2: [["2026-11-26", "2026-11-26"]], s4: [["2026-12-01", "2026-12-04"]] };
+  const sheet = (who, gOver, over) => {
+    const g = G(gOver);
+    if (!sheetRun || !g) return null;
+    try { return JSON.parse(JSON.stringify(sheetRun(Object.assign({ ds: "2026-11-26", schedule: SYN, appShifts: SYN_APP, sMap: sMapFull, aMap: aMapFull, calHolidayLabels: labels2026 || {}, surgeons: SURG, apps: APPS, vacations: VAC, calAppOffNames: g.calAppOffNames, calSilvisChip: g.calSilvisChip }, who, over || {})), (k, v) => (k === "lines" ? v.map((l) => l.text) : v))); } catch (ex) { return { err: String(ex).slice(0, 200) }; }
+  };
+  const MEMBER = { isScheduler: false, userProfile: { person_id: "s3", role: "member" } };
+  const m = sheet(MEMBER, {});
+  check("AX5 Thanksgiving 11/26 as a member (the real slice): the holiday's own name (getHolidays, via the calendar's label memo), its 24h holder with hours, the APP, who is on vacation, the APP off that day — and no Edit",
+    !!m && JSON.stringify(m.lines) === JSON.stringify(["Thanksgiving 24h: RPC (7a–7a)", "APP: MA (5p–7a)"]) && !!m.holLabel && m.holLabel.name === "Thanksgiving" && m.holLabel.emoji === "🦃"
+      && JSON.stringify(m.onVacNames) === '["DJA","SJ"]' && JSON.stringify(m.offNames) === '["MS"]' && m.chip === null && m.canEdit === false && m.mondayStr === "2026-11-23", JSON.stringify(m));
+  const sch = sheet({ isScheduler: true, userProfile: { person_id: "s6", role: "scheduler" } }, {}), adm = sheet({ isScheduler: false, userProfile: { person_id: "admin", role: "admin" } }, {});
+  const pub = sheet({ isScheduler: false, userProfile: null }, { isPublicMode: true, calFilters: { silvis: true } }, { ds: "2026-10-24" });
+  const orb = sheet({ isScheduler: false, userProfile: null }, { isPublicMode: true, isOrView: true });
+  check("AX5 Edit this week: scheduler yes, admin yes, member no, the public link no; a Sunday's week is the Monday before",
+    !!sch && sch.canEdit === true && !!adm && adm.canEdit === true && !!pub && pub.canEdit === false && (sheet(MEMBER, {}, { ds: "2026-11-29" }) || {}).mondayStr === "2026-11-23",
+    JSON.stringify([sch && sch.canEdit, adm && adm.canEdit, pub && pub.canEdit]));
+  check("AX5 the public link: no APP day-offs in the sheet (the OR board has them); FAK's Silvis day only because the viewer turned 🚑 on",
+    !!pub && JSON.stringify(pub.offNames) === "[]" && !!pub.chip && pub.chip.label === "🚑 Silvis P · FAK" && /07:00 → 07:00 next day/.test(pub.chip.title)
+      && !!orb && JSON.stringify(orb.offNames) === '["MS"]' && orb.chip === null, JSON.stringify({ pub: pub && [pub.offNames, pub.chip], orb: orb && [orb.offNames, orb.chip] }));
+  // the card: {(isScheduler || userProfile?.role === "admin") && ( … ✏️ Manual Adjustments … openWeekEditor(editWeekPick)
+  const iCard = src.indexOf("<div style={css.cardT}>✏️ Manual Adjustments</div>"), iGate = iCard < 0 ? -1 : src.lastIndexOf("{(isScheduler", iCard);
+  const cardExpr = iGate < 0 ? null : src.slice(iGate + 1, src.indexOf(" && (", iGate));
+  const sheetExpr = (sheetSrc.match(/const canEdit = (\([^;\n]*\));/) || [])[1] || null;
+  check("AX5 the sheet's Edit gate is the Manual Adjustments card's gate, word for word, and it opens the same week editor (openWeekEditor) after closing the sheet",
+    !!cardExpr && cardExpr === sheetExpr && cardExpr === '(isScheduler || userProfile?.role === "admin")' && iCard - iGate < 300 && count("openWeekEditor(editWeekPick)") === 1
+      && sheetSrc.includes("{canEdit && (")
+      && sheetSrc.split("openWeekEditor(").length === 2 && sheetSrc.includes("onClick={()=>{ close(); openWeekEditor(mondayStr); }}") && count("✏️ Edit this week") === 1,
+    JSON.stringify({ cardExpr, sheetExpr }));
+  check("AX5 the sheet is read-only: no fetch / save / schedule write / audit / notification in it; the only state it sets is calDayOpen (close)",
+    !!sheetSrc && !/fetch\(|db\.|setSchedule|commitSchedule|updateSchedule|schedSync|localStorage|saveAppShifts|logAudit|addNotification|sendEmailNotif/.test(sheetSrc)
+      && (sheetSrc.match(/\bset[A-Z]\w*/g) || []).every((n) => n === "setCalDayOpen") && sheetSrc.includes("const close = () => setCalDayOpen(null);"),
+    (sheetSrc.match(/fetch\(|db\.|setSchedule|commitSchedule|updateSchedule|schedSync|localStorage|saveAppShifts|logAudit|addNotification|sendEmailNotif|\bset[A-Z]\w*/g) || []).filter((n) => n !== "setCalDayOpen").join(","));
+
+  // AX6 — the cell is a button, the sheet a dialog; the keys and Escape, executed
+  const CELL = 'role="button" tabIndex={0} aria-haspopup="dialog" aria-label={`${dayMonthLabel(ds)} — day details`}';
+  check("AX6 the day cell is a button: role=button, tabIndex 0, a dialog popup, an aria-label with its date, a pointer; a tap opens the sheet on that date",
+    count(CELL) === 1 && gridSrc.includes(CELL) && gridSrc.includes("onClick={()=>setCalDayOpen(ds)}") && count("onClick={()=>setCalDayOpen(ds)}") === 1 && gridSrc.includes('minWidth:0, cursor:"pointer",'));
+  const KD = src.match(/onKeyDown=\{(e=>\{ if \(e\.key === "Enter"\)[^\n]*?)\}\r?\n/), KU = src.match(/onKeyUp=\{(e=>\{ if \(e\.key === " "\)[^\n]*?)\}\r?\n/);
+  const keyRun = (m1, key) => {
+    if (!m1) return "handler not found";
+    const log = []; let prevented = false;
+    try { vm.runInContext(`(function (setCalDayOpen, ds) { return (${m1[1]}); })`, axsb)((v) => log.push(v), "2026-10-20")({ key, preventDefault: () => { prevented = true; } }); } catch (ex) { return "threw: " + String(ex).slice(0, 100); }
+    return JSON.stringify({ log, prevented });
+  };
+  check("AX6 keys, executed: Enter opens the sheet (default prevented); Space only prevents the page scroll on keydown and opens on keyup, as a native button (so the focused ✕ never gets it); other keys do nothing",
+    keyRun(KD, "Enter") === '{"log":["2026-10-20"],"prevented":true}' && keyRun(KD, " ") === '{"log":[],"prevented":true}' && keyRun(KU, " ") === '{"log":["2026-10-20"],"prevented":false}'
+      && keyRun(KD, "a") === '{"log":[],"prevented":false}' && keyRun(KU, "Enter") === '{"log":[],"prevented":false}' && count("onKeyDown={e=>{ if (e.key === \"Enter\")") === 1,
+    JSON.stringify([keyRun(KD, "Enter"), keyRun(KD, " "), keyRun(KU, " ")]));
+  const EF = src.indexOf("    if (!calDayOpen) return;"), EU = EF < 0 ? -1 : src.lastIndexOf("useEffect(", EF), EE = EF < 0 ? -1 : src.indexOf(", [calDayOpen]);", EF);
+  const esc = (open) => {
+    if (EU < 0 || EE < 0 || EF - EU > 40) return "effect not found";
+    const added = [], removed = [], set = [];
+    const win = { addEventListener: (t, f) => added.push([t, f]), removeEventListener: (t, f) => removed.push([t, f]) };
+    try {
+      const eff = vm.runInContext(`(function (calDayOpen, setCalDayOpen, window) { return (${src.slice(EU + "useEffect(".length, EE)}); })`, axsb)(open, (v) => set.push(v), win);
+      const cleanup = eff();
+      if (added.length) { added[0][1]({ key: "Enter" }); added[0][1]({ key: "Escape" }); }
+      if (typeof cleanup === "function") cleanup();
+      return JSON.stringify({ added: added.map((a) => a[0]), set, removedSame: removed.length === 1 && !!added[0] && removed[0][1] === added[0][1] });
+    } catch (ex) { return "threw: " + String(ex).slice(0, 100); }
+  };
+  check("AX6 Escape, executed: while the sheet is open one keydown listener closes it on Escape (not on other keys) and is removed on cleanup; closed, none is added",
+    esc("2026-10-20") === '{"added":["keydown"],"set":[null],"removedSame":true}' && esc(null) === '{"added":[],"set":[],"removedSame":false}', JSON.stringify([esc("2026-10-20"), esc(null)]));
+  check("AX6 the sheet is a bottom-sheet dialog: fixed backdrop (a tap on it closes), the panel stops the tap, max 70vh and scrolls, a ✕ button (44px) that closes, safe-area padding; once, in the Calendar view, after the grid and before the legend",
+    count("{calDayOpen && (() => {") === 1 && sheetSrc.includes('<div onClick={close} style={{position:"fixed",inset:0,zIndex:9000,') && sheetSrc.includes('role="dialog" aria-modal="true"')
+      && sheetSrc.includes("onClick={e=>e.stopPropagation()}") && sheetSrc.includes('maxHeight:"70vh",overflowY:"auto"') && sheetSrc.includes('<button autoFocus aria-label="Close" onClick={close}')
+      && sheetSrc.includes("minWidth:44,minHeight:44") && sheetSrc.includes("env(safe-area-inset-bottom, 0px)")
+      && src.indexOf('{view==="calendar"&&<>') < gridA && gridA < SH0 && SH0 < src.indexOf('<span><span style={{color:"#3080a8",fontWeight:700}}>S</span> Service Wk</span>'));
+
+  // AX7 — 👤 Me
+  const ME = "{!isPublicMode && (sMap[mySurgeon] || aMap[mySurgeon]) && (() => {";
+  const iMe = src.indexOf(ME), iBar = src.indexOf('<span style={{margin:"0 4px",color:dkSubtext}}>|</span>'), iSel = src.indexOf("<select value={calSurgeonFilter}"), iShow = src.indexOf(">Show:</span>");
+  check("AX7 one 👤 Me button, in the Show bar right after the \"|\" and before the surgeon filter; signed-in roster members only (never the public link)",
+    count(ME) === 1 && (src.match(/>\s*👤 Me\s*<\/button>/g) || []).length === 1 && iShow >= 0 && iShow < iBar && iBar < iMe && iMe < iSel && iSel - iMe < 1800);
+  const meGate = iMe < 0 ? null : vm.runInContext(`(function (isPublicMode, mySurgeon, sMap, aMap) { return !!(${ME.slice(1, ME.indexOf(" && (() => {"))}); })`, axsb);
+  check("AX7 the gate, executed: a surgeon and an APP see it signed in; not on the public link, not for 'admin' or no one, not for an id off the roster",
+    !!meGate && meGate(false, "s3", sMapFull, aMapFull) === true && meGate(false, "a1", sMapFull, aMapFull) === true && meGate(true, "s3", sMapFull, aMapFull) === false
+      && meGate(false, "admin", sMapFull, aMapFull) === false && meGate(false, "", sMapFull, aMapFull) === false && meGate(false, "s9", sMapFull, aMapFull) === false);
+  const TM0 = src.indexOf("const meIsApp = !sMap[mySurgeon];"), TM1 = TM0 < 0 ? -1 : src.indexOf("\n", src.indexOf("const toggleMe = () =>", TM0));
+  const meSrc = TM0 >= 0 && TM1 > TM0 ? src.slice(TM0, TM1) : "";
+  const meRun = (mySurgeon, calSurgeonFilter, calAppFilter) => {
+    if (!meSrc) return "toggle not found";
+    const calls = [];
+    const rec = (n) => (v) => calls.push([n, v]);
+    try {
+      const r = vm.runInContext(`(function (env) { const { mySurgeon, sMap, calSurgeonFilter, calAppFilter, setCalSurgeonFilter, setCalAppFilter, setCalDeptFilter } = env; ${meSrc}\n return { meOn, toggleMe }; })`, axsb)(
+        { mySurgeon, sMap: sMapFull, calSurgeonFilter, calAppFilter, setCalSurgeonFilter: rec("surgeon"), setCalAppFilter: rec("app"), setCalDeptFilter: rec("dept") });
+      r.toggleMe();
+      return JSON.stringify({ on: r.meOn, calls });
+    } catch (ex) { return "threw: " + String(ex).slice(0, 100); }
+  };
+  check("AX7 a surgeon (RPC): Me sets the surgeon filter to them and clears the department; again → All Surgeons",
+    meRun("s3", "", "all") === '{"on":false,"calls":[["surgeon","s3"],["dept",""]]}' && meRun("s3", "s3", "all") === '{"on":true,"calls":[["surgeon",""]]}', JSON.stringify([meRun("s3", "", "all"), meRun("s3", "s3", "all")]));
+  check("AX7 an APP (MA): Me sets the APP filter to them (clearing the surgeon and department filters, which hide every APP chip); again → All APPs",
+    meRun("a1", "s2", "all") === '{"on":false,"calls":[["app","a1"],["surgeon",""],["dept",""]]}' && meRun("a1", "", "a1") === '{"on":true,"calls":[["app","all"]]}', JSON.stringify([meRun("a1", "s2", "all"), meRun("a1", "", "a1")]));
+  check("AX7 the toggle calls only the existing filter setters (surgeon, APP, department) — no new state, no save, no restyling of anyone's chips",
+    !!meSrc && (meSrc.match(/\bset[A-Z]\w*/g) || []).every((n) => ["setCalSurgeonFilter", "setCalAppFilter", "setCalDeptFilter"].includes(n)) && !/fetch\(|localStorage|setCalFilters|toggleFilter/.test(meSrc)
+      && count("const [calSurgeonFilter, setCalSurgeonFilter] = useState(") === 1 && count("const [calAppFilter, setCalAppFilter] = useState(") === 1, meSrc.slice(0, 160));
+
+  // AX8 — §P's rule, for this state
+  const iDecl = src.indexOf("const [calDayOpen, setCalDayOpen] = useState(null);");
+  check("AX8 calDayOpen is declared once, beside the other calendar filters, BEFORE the Escape effect that lists it (the 2026.09.24a TDZ class)",
+    count("const [calDayOpen, setCalDayOpen] = useState(null);") === 1 && count("}, [calDayOpen]);") === 1 && iDecl > src.indexOf("const [calDeptFilter, setCalDeptFilter] = useState(") && iDecl < EE && EE - iDecl < 600);
+}
+
 // ─── AF. Schedule Warnings: on call while off (2026-10-11, owner decision G) ───
 // Time off entered AFTER publishing lands under existing shifts. The real
 // `conflicts` memo now adds, per DATE by weekHolders (a holiday-covered date

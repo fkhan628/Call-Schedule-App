@@ -266,6 +266,72 @@ function overnightHolderOn(schedule, ds) {
   return day.night || day.wkndFri || day.sat || day.wkndSun || null;
 }
 
+// The Calendar's day sheet (UX audit 2026-10-19): what one date holds, as
+// plain lines. A tapped day shows these; an iPhone never shows the cells'
+// title tooltips, and a cell has no room for hours or coverage notes.
+// Who holds what is weekHolders' rule (the calendar's own; sync-guards X1),
+// so the lines name exactly the holders the cell draws for that date —
+// a holiday entry stored in a neighbouring week included, since the
+// calendar draws it on its date too. Hours come from SHIFT_TIMES (config.js)
+// with the leading day dropped (the sheet is headed with its date): service
+// "7a–5p", the service Saturday "7a–Sun 7a", a night "5p–7a", the weekend's
+// Friday "5p–Sat 7a" and its Sunday "7a–Mon 7a". A holiday entry shows the
+// hours stored with it; an APP shift is 7a–7a on a Sat or Sun and 5p–7a on
+// a weekday (the rule of buildAppICSEvents and the On Call Today banner).
+// Each line is { slot, sid, backup, label, who, hours, note, holiday, text }:
+//   slot    cover | svc | sat | night | wkndFri | wkndSun | app | fierce | fierceBkp
+//   sid     the holder's id (the APP's id for "app"); null for an unassigned
+//           cover and the two Fierce lines
+//   backup  the week is a Fierce primary week, the group is backup (the cell's "B")
+//   text    e.g. "Service week: ARW (7a–5p)", "Labor Day 24h: RPC (7a–7a)"
+// opts = { appShifts, nameOf }. Pure: no clock, no state.
+function dayDetailLines(schedule, ds, opts) {
+  const o = opts || {};
+  const nameOf = typeof o.nameOf === "function" ? o.nameOf : (id => id);
+  const sched = schedule || {};
+  const x = parse(ds), dow = x.getDay(), mStr = fmt(addD(x, dow === 0 ? -6 : 1 - dow));
+  const T = typeof SHIFT_TIMES === "object" && SHIFT_TIMES ? SHIFT_TIMES : {};
+  const hrs = (seg) => String(seg || "").replace(/^\S+\s+/, ""); // "Tue 5p–7a" → "5p–7a"
+  const [svcSeg, satSeg] = String(T.dayCall || "").split(" + ");
+  const [friSeg, sunSeg] = String(T.wknd || "").split(" & ");
+  const lines = [];
+  const add = (slot, sid, backup, label, hours, extra) => {
+    const fierce = slot === "fierce" || slot === "fierceBkp";
+    const line = Object.assign({ slot, sid: sid || null, backup: !!backup, label: label + (backup ? " (backup)" : ""),
+      who: fierce ? null : sid ? nameOf(sid) : "Unassigned", hours: hours || "", note: "", holiday: null }, extra || {});
+    line.text = fierce ? line.label : `${line.label}: ${line.who}${line.hours ? ` (${line.hours})` : ""}${line.note ? ` — ${line.note}` : ""}`;
+    lines.push(line);
+  };
+  // A holiday or coverage entry dated ds, from whichever week stores it
+  Object.keys(sched).sort().forEach(m => {
+    const w = sched[m];
+    if (!w || typeof w !== "object" || !/^\d{4}-\d{2}-\d{2}$/.test(m)) return;
+    weekHolders(m, w).covers.filter(c => c.ds === ds).forEach(c => {
+      const label = c.type === "swap" ? (c.label || "Coverage") : `${holidayTitleName(c)} 24h`;
+      const stored = String(((w.holidayCoverage || {})[ds] || {}).hours || "");
+      // "Memorial Day 24h" needs no second "(24h)"; "7a–7a", or a swap's "24h", is shown
+      add("cover", c.sid, w.isBackup, label, /24h$/.test(label) && stored.trim() === "24h" ? "" : stored, { holiday: c.holiday || c.label || "" });
+    });
+  });
+  const wk = sched[mStr];
+  if (wk && typeof wk === "object") {
+    const day = weekHolders(mStr, wk).days[(dow + 6) % 7];
+    const bk = !!wk.isBackup;
+    const ovr = (wk.dayCallOverrides || {})[ds];
+    const note = ovr && wk.dayCall && ovr !== wk.dayCall ? `covering ${nameOf(wk.dayCall)}'s service week` : "";
+    if (day.svc) add("svc", day.svc, bk, note ? "Service day" : "Service week", hrs(svcSeg), { note });
+    if (day.sat) add("sat", day.sat, bk, note ? "Service day" : "Service week", hrs(satSeg), { note });
+    if (day.night) add("night", day.night, bk, "Night", hrs(T[day.nightKey]));
+    if (day.wkndFri) add("wkndFri", day.wkndFri, bk, "Weekend", hrs(friSeg));
+    if (day.wkndSun) add("wkndSun", day.wkndSun, bk, "Weekend", hrs(sunSeg));
+  }
+  const aid = (o.appShifts || {})[ds];
+  if (aid) add("app", aid, false, "APP", dow === 0 || dow === 6 ? "7a–7a" : "5p–7a");
+  if (wk && wk.isBackup) add("fierce", null, false, "Fierce Primary week — the group is backup");
+  if (wk && wk.isFierceBackup) add("fierceBkp", null, false, "Fierce Backup week");
+  return lines;
+}
+
 // Why a calendar month is blank (UX audit, 2026-10-18). A month with no
 // surgeon call looks the same whether nothing loaded or the month is simply
 // not published yet, so the Calendar tab asks this for the month it shows

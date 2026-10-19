@@ -385,6 +385,15 @@ function CallSchedule() {
   const [calSurgeonFilter, setCalSurgeonFilter] = useState(""); // "" = all, or surgeon ID
   const [calAppFilter, setCalAppFilter] = useState("all"); // "all" | "none" | APP id
   const [calDeptFilter, setCalDeptFilter] = useState(""); // "" = no dept filter, "CWM" or "CBH"
+  // The Calendar's day sheet (UX audit 2026-10-19): the date ("YYYY-MM-DD") a tap
+  // opened, or null. Escape closes it (as do its ✕ and the backdrop).
+  const [calDayOpen, setCalDayOpen] = useState(null);
+  useEffect(() => {
+    if (!calDayOpen) return;
+    const onKey = (e) => { if (e.key === "Escape") setCalDayOpen(null); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [calDayOpen]);
   const rememberSilvisToggle = (v) => {
     try { if (v === null) localStorage.removeItem(CAL_SILVIS_STORE_KEY); else localStorage.setItem(CAL_SILVIS_STORE_KEY, String(v)); }
     catch (e) { console.warn("Couldn't remember the Silvis calendar switch:", e); }
@@ -7399,6 +7408,28 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     return c;
   }, [calYear,calMonth]);
 
+  // A calendar day's two GATED layers (UX audit 2026-10-19): the APP day-offs
+  // (internal and the OR board only — plain ?public=1 never shows them) and
+  // FAK's Silvis day (only while the viewer's 🚑 switch is on). ONE definition,
+  // read by the month cell AND the day sheet, so the sheet shows either layer
+  // exactly where the cell does and nowhere else. Each also follows the cell's
+  // surgeon / APP / department filters, as before. Render-time helpers, not hooks.
+  const calAppOffNames = (ds) => {
+    const sf = calSurgeonFilter;
+    if (!(appOffVisible && calFilters.appOff && !sf && calAppFilter!=="none" && !calDeptFilter)) return [];
+    return (appDayOff[ds]||[]).map(dayOffId)
+      .filter(aid => aid && (calAppFilter==="all"||aid===calAppFilter))
+      .map(aid => aMap[aid]?.name||aid);
+  };
+  const calSilvisChip = (ds) => {
+    const sf = calSurgeonFilter;
+    const chip = sfCellChip(silvisDays, ds, silvisFakId, {
+      on: calFilters.silvis, sf, fakName: sMap[silvisFakId]?.name, ruleOn: silvisActive,
+      deptOk: !calDeptFilter || (SURGEON_DEPTS[sMap[silvisFakId]?.name]||[]).includes(calDeptFilter),
+    });
+    return chip;
+  };
+
   // ─── On Call Today ───
   const todayStr = fmt(new Date());
   // A pending trade Accept can still take: neither leg has started (acceptTradeRequest's own
@@ -9479,6 +9510,21 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               </button>
             ))}
             <span style={{margin:"0 4px",color:dkSubtext}}>|</span>
+            {/* 👤 Me (UX audit 2026-10-19): one tap shows only my own call — a surgeon gets the
+                surgeon filter set to them (the department filter cleared, as picking a name does),
+                an APP the APP filter (the surgeon and department filters cleared: either hides
+                every APP chip). Tapped again, back to All. Signed-in roster members only. */}
+            {!isPublicMode && (sMap[mySurgeon] || aMap[mySurgeon]) && (() => {
+              const meIsApp = !sMap[mySurgeon];
+              const meOn = meIsApp ? calAppFilter === mySurgeon : calSurgeonFilter === mySurgeon;
+              const toggleMe = () => { if (meIsApp) { setCalAppFilter(meOn ? "all" : mySurgeon); if (!meOn) { setCalSurgeonFilter(""); setCalDeptFilter(""); } } else { setCalSurgeonFilter(meOn ? "" : mySurgeon); if (!meOn) setCalDeptFilter(""); } };
+              return (
+                <button onClick={toggleMe} aria-pressed={meOn} aria-label="Me — show only my call"
+                  style={{background:meOn?"#1a6fa818":"transparent",border:`1px solid ${meOn?"#1a6fa8":dk?"#3a4a6e":"#d0d8e0"}`,color:meOn?(dk?"#7ab8e8":"#1a6fa8"):dkSubtext,borderRadius:5,padding:"3px 8px",fontSize:10,fontWeight:600,cursor:"pointer",fontFamily:font,opacity:meOn?1:0.75}}>
+                  👤 Me
+                </button>
+              );
+            })()}
             <select value={calSurgeonFilter} onChange={e=>{setCalSurgeonFilter(e.target.value);if(e.target.value)setCalDeptFilter("");}}
               style={{...css.inp,padding:"3px 6px",fontSize:10,width:100,...dkInp}}>
               <option value="">All Surgeons</option>
@@ -9688,12 +9734,20 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                 cellBorder = "1px solid #e8ecf0";
               }
 
+              // Tap (or Enter, or Space on release, as a native button) opens the day sheet: the
+              // day's holders with their hours, the holiday's name and the coverage notes a cell has
+              // no room for (UX audit 2026-10-19).
               return (
-                <div key={ds} data-cal-today={isToday ? "1" : undefined} style={{
+                <div key={ds} data-cal-today={isToday ? "1" : undefined}
+                  role="button" tabIndex={0} aria-haspopup="dialog" aria-label={`${dayMonthLabel(ds)} — day details`}
+                  onClick={()=>setCalDayOpen(ds)}
+                  onKeyDown={e=>{ if (e.key === "Enter") { e.preventDefault(); setCalDayOpen(ds); } else if (e.key === " ") e.preventDefault(); }}
+                  onKeyUp={e=>{ if (e.key === " ") setCalDayOpen(ds); }}
+                  style={{
                   background: cellBg,
                   border: cellBorder,
                   minHeight:82, padding:"3px 4px", borderRadius:2,
-                  display:"flex", flexDirection:"column", minWidth:0,
+                  display:"flex", flexDirection:"column", minWidth:0, cursor:"pointer",
                 }}>
                   <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:2}}>
                     {isToday ? (
@@ -9755,12 +9809,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
 
                   {/* Silvis (trauma) day — ON DEMAND (🚑 switch). Reads silvisDays
                       DIRECTLY via sfCellChip — never a calData row (a non-Davenport
-                      row there renders as a phantom "N" night: #57). FAK only. */}
+                      row there renders as a phantom "N" night: #57). FAK only.
+                      calSilvisChip is the one gate the day sheet shares. */}
                   {(() => {
-                    const chip = sfCellChip(silvisDays, ds, silvisFakId, {
-                      on: calFilters.silvis, sf, fakName: sMap[silvisFakId]?.name, ruleOn: silvisActive,
-                      deptOk: !calDeptFilter || (SURGEON_DEPTS[sMap[silvisFakId]?.name]||[]).includes(calDeptFilter),
-                    });
+                    const chip = calSilvisChip(ds);
                     if (!chip) return null;
                     const P = chip.role === "P";
                     return (
@@ -9792,11 +9844,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                       is self-teaching. Deliberately the least-loud element in
                       the cell (it's the least important); an APP off during
                       the day can still take call that night — both render.
-                      Entries tolerate the planned v2 {id, note} shape. */}
-                  {appOffVisible && calFilters.appOff && !sf && calAppFilter!=="none" && !calDeptFilter && (() => {
-                    const offNames = (appDayOff[ds]||[]).map(dayOffId)
-                      .filter(aid => aid && (calAppFilter==="all"||aid===calAppFilter))
-                      .map(aid => aMap[aid]?.name||aid);
+                      Entries tolerate the planned v2 {id, note} shape.
+                      calAppOffNames is the one gate the day sheet shares. */}
+                  {(() => {
+                    const offNames = calAppOffNames(ds);
                     return offNames.length ? (
                       <div style={{marginTop:1,fontSize:8.5,color:"#8a94a0",whiteSpace:"nowrap"}}>
                         ☕ {offNames.join(", ")}
@@ -9879,6 +9930,78 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             });
             })()}
           </div>
+
+          {/* ─── Day sheet (UX audit 2026-10-19) ─── One tapped day in full: who holds it and when
+              (dayDetailLines, helpers.js: the calendar's own holders, hours from SHIFT_TIMES), the
+              holiday's name, who is on vacation, and the two gated layers exactly where the cell
+              shows them (calAppOffNames, calSilvisChip). Read-only; a scheduler or admin also gets
+              Edit this week, the Manual Adjustments card's own gate and opener. ✕, the backdrop
+              and Escape close it. */}
+          {calDayOpen && (() => {
+            const ds = calDayOpen;
+            // ── day sheet data (plain JS; sync-guards AX runs this slice) ──
+            const lines = dayDetailLines(schedule, ds, { appShifts, nameOf: (id) => sMap[id]?.name || aMap[id]?.name || "?" });
+            const holLabel = calHolidayLabels[ds] || null;
+            const onVacNames = [...surgeons, ...apps].filter(s => onVac(s.id, ds, vacations)).map(s => s.name);
+            const offNames = calAppOffNames(ds);
+            const chip = calSilvisChip(ds);
+            const canEdit = (isScheduler || userProfile?.role === "admin");
+            const mondayStr = fmt(monOf(parse(ds)));
+            // ── end day sheet data ──
+            const title = `${["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"][parse(ds).getDay()]}, ${monthDayLabel(ds, true)}`;
+            const ICON = { svc:"☀️", sat:"☀️", night:"🌙", wkndFri:"🌗", wkndSun:"🌗", app:"👩‍⚕️", fierce:"⚡", fierceBkp:"🛡" };
+            const TONE = dk
+              ? { svc:"#7ab8e0", sat:"#7ab8e0", night:"#b8a0e8", wkndFri:"#d8c890", wkndSun:"#d8c890", app:"#e0a070", cover:"#f0a060", fierce:"#e0c060", fierceBkp:"#7ab8e8" }
+              : { svc:"#3080a8", sat:"#3080a8", night:"#6850a0", wkndFri:"#908050", wkndSun:"#908050", app:"#985020", cover:"#c06020", fierce:"#8a6a10", fierceBkp:"#1a6fa8" };
+            const close = () => setCalDayOpen(null);
+            const row = {display:"flex",alignItems:"flex-start",gap:8,padding:"8px 0",borderTop:`1px solid ${dkCardBorder}`,fontSize:14,lineHeight:1.4,color:dkText};
+            const ico = {width:22,textAlign:"center",flexShrink:0};
+            return (
+              <div onClick={close} style={{position:"fixed",inset:0,zIndex:9000,background:"rgba(0,0,0,0.45)",display:"flex",alignItems:"flex-end",justifyContent:"center"}}>
+                <div role="dialog" aria-modal="true" aria-label={`${title} — details`} onClick={e=>e.stopPropagation()}
+                  style={{width:"100%",maxWidth:520,maxHeight:"70vh",overflowY:"auto",overscrollBehavior:"contain",WebkitOverflowScrolling:"touch",boxSizing:"border-box",
+                    background:dk?"#1a1f2a":"#fff",borderRadius:"14px 14px 0 0",boxShadow:"0 -6px 24px rgba(0,0,0,0.25)",padding:"10px 16px",
+                    paddingBottom:`calc(env(safe-area-inset-bottom, 0px) + ${updateAvailable ? 64 : 16}px)`,fontFamily:font}}>
+                  <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:4}}>
+                    <div style={{flex:1,minWidth:0}}>
+                      <div style={{fontSize:16,fontWeight:700,color:dk?"#e8e8f0":"#2c5a80"}}>{title}</div>
+                      {holLabel && <div style={{fontSize:13,fontWeight:600,color:dk?"#f0a060":"#c06020",marginTop:2}}>{holLabel.emoji} {holLabel.name}</div>}
+                    </div>
+                    <button autoFocus aria-label="Close" onClick={close}
+                      style={{minWidth:44,minHeight:44,background:"none",border:"none",fontSize:20,cursor:"pointer",color:dk?"#8a94a0":"#5a6a78",flexShrink:0,fontFamily:font}}>✕</button>
+                  </div>
+                  {lines.length === 0 && <div style={{...row,color:dkSubtext}}>No call scheduled for this day.</div>}
+                  {lines.map((l, i) => (
+                    <div key={i} style={row}>
+                      <span style={ico}>{l.slot === "cover" ? holidayEmoji(l.holiday) : ICON[l.slot]}</span>
+                      <span style={{flex:1,minWidth:0,overflowWrap:"anywhere"}}>
+                        <span style={{color:TONE[l.slot],fontWeight:600}}>{l.label}</span>
+                        {l.who !== null && <>: <b>{l.who}</b></>}
+                        {l.hours && <span style={{color:dkSubtext,fontFamily:mono,fontSize:12,whiteSpace:"nowrap"}}> {l.hours}</span>}
+                        {l.note && <span style={{display:"block",fontSize:12,color:dkSubtext,marginTop:1}}>{l.note}</span>}
+                      </span>
+                    </div>
+                  ))}
+                  {onVacNames.length > 0 && (
+                    <div style={row}><span style={ico}>🏖</span><span style={{flex:1,minWidth:0,overflowWrap:"anywhere"}}>On vacation: <b>{onVacNames.join(", ")}</b></span></div>
+                  )}
+                  {offNames.length > 0 && (
+                    <div style={row}><span style={ico}>☕</span><span style={{flex:1,minWidth:0,overflowWrap:"anywhere"}}>APP off (daytime): <b>{offNames.join(", ")}</b></span></div>
+                  )}
+                  {chip && (
+                    <div style={row}><span style={ico}>🚑</span><span style={{flex:1,minWidth:0,overflowWrap:"anywhere"}}>
+                      <b style={{color:chip.role==="P"?(dk?"#8ab0f0":"#1a4a9a"):dkSubtext}}>{chip.label.replace(/^🚑\s*/, "")}</b>
+                      <span style={{display:"block",fontSize:12,color:dkSubtext,marginTop:1}}>{chip.title}</span>
+                    </span></div>
+                  )}
+                  {canEdit && (
+                    <button onClick={()=>{ close(); openWeekEditor(mondayStr); }}
+                      style={{...css.btn(true),width:"100%",marginTop:12,padding:"10px 14px",fontSize:14,minHeight:44}}>✏️ Edit this week</button>
+                  )}
+                </div>
+              </div>
+            );
+          })()}
 
           <div style={{marginTop:10,display:"flex",gap:12,fontSize:10,color:"#8a94a0",flexWrap:"wrap"}}>
             <span><span style={{color:"#3080a8",fontWeight:700}}>S</span> Service Wk</span>
