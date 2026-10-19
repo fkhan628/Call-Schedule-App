@@ -3739,6 +3739,111 @@ console.log("\nAO. On Call Today banner on a covered holiday");
   }
 }
 
+// ─── AP. Mine → Find Swap lands on the swap options (UX audit 2026-10-18) ───
+// Mine's 🔄 Find Swap found the options and switched to the calendar, but the
+// options render in the Shift Swap Tool card inside "🔧 Schedule Tools &
+// Export", collapsed by default, and a Collapsible renders its body only when
+// open: anyone who had never opened Schedule Tools tapped and saw nothing
+// happen. Now the section shows while swap options exist (its stored
+// open/closed state untouched, so Close puts it back) and the tap scrolls the
+// card into view (the Today button's idiom).
+//   AP1 Collapsible, executed: its real state code (sliced up to the JSX), run
+//       with a stub React.useState and localStorage over a mount and its
+//       re-renders. forceOpen shows the body over a never-opened or
+//       stored-closed section and writes nothing; when it drops, the section
+//       is back to its stored state; toggle still persists; without forceOpen
+//       nothing changes. JSX can't run here (no Babel in CI), so the markup's
+//       use of `shown` is pinned.
+//   AP2 cal_tools is the one section forced open, by the swap options (an
+//       empty list too: its "no candidates" line must show), and the options
+//       render inside the tagged card inside that section
+//   AP3 the Mine Find Swap tap, executed: the real onClick, sliced and run with
+//       stubs, finds the options, switches to the calendar, and only 60 ms
+//       later scrolls the tagged card into view (safe when it is absent)
+console.log("\nAP. Mine → Find Swap lands on the swap options");
+{
+  const nsrcAP = src.replace(/\r\n/g, "\n");
+
+  // AP1 — the Collapsible's state code, executed
+  const cA = nsrcAP.indexOf("function Collapsible({"), cR = cA < 0 ? -1 : nsrcAP.indexOf("\n  return (\n", cA), cZ = cA < 0 ? -1 : nsrcAP.indexOf("\n}\n", cA);
+  const cHead = cA >= 0 && cR > cA && cZ > cR ? nsrcAP.slice(cA, cR) : null, cJsx = cR > 0 && cZ > cR ? nsrcAP.slice(cR, cZ) : "";
+  let Coll = null;
+  try { Coll = cHead ? vm.runInContext(`(function (React, localStorage, console) { return ${cHead}\n  return { open, shown, toggle };\n}; })`, sandbox) : null; } catch (ex) { Coll = null; }
+  // One mounted instance: a useState cell that survives re-renders, and a recording localStorage.
+  const mount = (stored) => {
+    const store = Object.assign({}, stored), writes = [], cell = { set: false, v: undefined };
+    const React = { useState: (init) => { if (!cell.set) { cell.v = typeof init === "function" ? init() : init; cell.set = true; } return [cell.v, (u) => { cell.v = typeof u === "function" ? u(cell.v) : u; }]; } };
+    const ls = { getItem: (k) => (Object.prototype.hasOwnProperty.call(store, k) ? store[k] : null), setItem: (k, v) => { writes.push(k + "=" + v); store[k] = String(v); } };
+    const comp = Coll ? Coll(React, ls, { warn: () => {} }) : null;
+    let last = null;
+    const render = (props) => { try { last = comp(Object.assign({ title: "t", ck: "cal_tools", css: {}, children: "body" }, props)); return (last.shown ? "S" : "-") + (last.open ? "o" : "c"); } catch (ex) { last = null; return "ERR"; } };
+    const toggle = () => { try { last.toggle(); } catch (ex) { /* fails below by its signature */ } };
+    return { render, toggle, writes, store };
+  };
+  const flow = (() => { // the real flow: never opened; the calendar mounts after the tap with the options set; then Close
+    const m = mount({}); return [m.render({ defaultOpen: false, forceOpen: true }), m.render({ defaultOpen: false, forceOpen: false }), m.render({ defaultOpen: false, forceOpen: false })].join(" ") + " w" + m.writes.length;
+  })();
+  const closed0 = (() => { // stored closed, options found while on the calendar, then Close
+    const m = mount({ dsg_collapse_cal_tools: "0" }); return [m.render({ forceOpen: false }), m.render({ forceOpen: true }), m.render({ forceOpen: false })].join(" ") + " w" + m.writes.length + " " + m.store.dsg_collapse_cal_tools;
+  })();
+  const open1 = (() => { const m = mount({ dsg_collapse_cal_tools: "1" }); return [m.render({ forceOpen: true }), m.render({ forceOpen: false })].join(" ") + " w" + m.writes.length; })();
+  check("AP1 Collapsible, executed: forceOpen shows the body of a never-opened section and writes nothing; once it drops (Close), the section is back to closed",
+    flow === "Sc -c -c w0", flow);
+  check("AP1 Collapsible, executed: over a stored-closed section forceOpen shows it and leaves the stored \"0\"; over a stored-open one it stays open either way",
+    closed0 === "-c Sc -c w0 0" && open1 === "So So w0", closed0 + " | " + open1);
+  const tog = (() => { const m = mount({}), s = [m.render({})]; m.toggle(); s.push(m.render({})); m.toggle(); s.push(m.render({})); return s.join(" ") + " " + m.writes.join(","); })();
+  const plain = (() => [mount({}).render({}), mount({}).render({ defaultOpen: true }), mount({ dsg_collapse_cal_tools: "0" }).render({ defaultOpen: true })].join(" "))();
+  check("AP1 Collapsible, executed: the header toggle still flips and persists the state, and a section with no forceOpen behaves as before (defaultOpen, then storage)",
+    tog === "-c So -c dsg_collapse_cal_tools=1,dsg_collapse_cal_tools=0" && plain === "-c So -c", tog + " | " + plain);
+  check("AP1 the signature takes forceOpen (default false), shown = open || forceOpen, and the markup follows shown: chevron, collapsed summary, body (no bare open left in the JSX)",
+    !!cHead && cHead.includes("defaultOpen = false, forceOpen = false,") && cHead.includes("const shown = open || forceOpen;")
+      && cJsx.includes('transform: shown ? "rotate(90deg)" : "rotate(0deg)"') && cJsx.includes("{!shown && summary != null && <div") && cJsx.includes("{shown && <div style={{ marginTop: 12 }}>{children}</div>}") && !/\bopen\b/.test(cJsx),
+    JSON.stringify({ head: !!cHead, jsxOpen: /\bopen\b/.test(cJsx) }));
+
+  // AP2 — the section the options live in is forced open by them
+  const tagAt = nsrcAP.indexOf('<Collapsible css={css} ck="cal_tools"'), tagLine = tagAt < 0 ? "" : nsrcAP.slice(tagAt, nsrcAP.indexOf("\n", tagAt));
+  const closeAt = tagAt < 0 ? -1 : nsrcAP.indexOf("</Collapsible>", tagAt), nextOpen = tagAt < 0 ? -1 : nsrcAP.indexOf("<Collapsible ", tagAt + 1);
+  const fm = /forceOpen=\{([^}]*)\}/.exec(tagLine);
+  let force = null; try { force = fm ? vm.runInContext(`(function (swapSuggestions) { return ${fm[1]}; })`, sandbox) : null; } catch (ex) { force = null; }
+  check("AP2 the cal_tools section (and only it) is forced open by the swap options: none → its stored state; a list, even an empty one (its \"no candidates\" line must show) → open",
+    count('ck="cal_tools"') === 1 && count("forceOpen={") === 1 && tagLine.includes("forceOpen={!!swapSuggestions}")
+      && !!force && force(null) === false && force(undefined) === false && force([]) === true && force([{ candidateId: "s2" }]) === true, tagLine.slice(0, 140));
+  const cardAt = nsrcAP.indexOf('<div data-swap-tool="1" style='), optsAt = cardAt < 0 ? -1 : nsrcAP.indexOf("{swapSuggestions && (", cardAt), icsAt = cardAt < 0 ? -1 : nsrcAP.indexOf("{/* Calendar App Integration", cardAt);
+  check("AP2 the Shift Swap Tool card is tagged data-swap-tool=\"1\" (the tag and the tap's selector, nothing else), and the swap options render inside that card, inside the cal_tools section",
+    count('data-swap-tool="1"') === 2 && tagAt >= 0 && cardAt > tagAt && closeAt > cardAt && (nextOpen < 0 || nextOpen > closeAt) && nsrcAP.indexOf("🔄 Shift Swap Tool", cardAt) - cardAt < 220
+      && count("{swapSuggestions && (") === 1 && optsAt > cardAt && icsAt > optsAt && closeAt > icsAt,
+    JSON.stringify({ tagAt, cardAt, optsAt, icsAt, closeAt, nextOpen, tags: count('data-swap-tool="1"') }));
+
+  // AP3 — the Mine tap, executed
+  const tapNeedle = 'findSwapSuggestions(wk.mStr, r.shiftKey, myId); setView("calendar");';
+  const tapAt = nsrcAP.indexOf(tapNeedle), tapLine = tapAt < 0 ? "" : nsrcAP.slice(nsrcAP.lastIndexOf("\n", tapAt) + 1, nsrcAP.indexOf("\n", tapAt));
+  const onAt = tapLine.indexOf("<button onClick={");
+  const handlerSrc = onAt >= 0 && tapLine.endsWith("}}") ? tapLine.slice(onAt + "<button onClick={".length, -1) : null;
+  let tapFn = null; try { tapFn = handlerSrc ? vm.runInContext(`(function (env) { const { findSwapSuggestions, setView, setTimeout, document, wk, r, myId } = env; return (${handlerSrc}); })`, sandbox) : null; } catch (ex) { tapFn = null; }
+  const tap = (el) => {
+    const log = [], timers = [], sel = [];
+    const env = { wk: { mStr: "2026-10-26" }, r: { shiftKey: "mon" }, myId: "s6",
+      findSwapSuggestions: (...a) => log.push("find:" + a.join(",")), setView: (v) => log.push("view:" + v),
+      setTimeout: (fn, ms) => { log.push("timer:" + ms); timers.push(fn); },
+      document: { querySelector: (q) => { sel.push(q); log.push("query"); return el; } } };
+    let err = null, beforeTimer = null;
+    try { tapFn(env)(); beforeTimer = log.join(" "); timers.forEach((fn) => fn()); } catch (ex) { err = String(ex).slice(0, 120); }
+    return { beforeTimer, after: log.join(" "), sel: sel.join(" "), err };
+  };
+  const scrolls = [];
+  const hit = tapFn ? tap({ scrollIntoView: (o) => scrolls.push(JSON.stringify(o)) }) : null;
+  check("AP3 the Mine Find Swap tap, executed: finds the options for that shift, switches to the calendar, and defers the scroll 60 ms (nothing queried before the calendar renders)",
+    !!hit && !hit.err && hit.beforeTimer === "find:2026-10-26,mon,s6 view:calendar timer:60", JSON.stringify(hit));
+  check("AP3 …then scrolls the tagged Shift Swap Tool card to the top of the screen, smoothly",
+    !!hit && !hit.err && hit.after === "find:2026-10-26,mon,s6 view:calendar timer:60 query" && hit.sel === '[data-swap-tool="1"]' && JSON.stringify(scrolls) === JSON.stringify(['{"behavior":"smooth","block":"start"}']),
+    JSON.stringify({ hit, scrolls }));
+  const none = tapFn ? tap(null) : null, bare = tapFn ? tap({}) : null;
+  check("AP3 the deferred scroll is safe when the card is not on screen, or the browser has no scrollIntoView",
+    !!none && !none.err && none.after.endsWith("query") && !!bare && !bare.err && bare.after.endsWith("query"), JSON.stringify({ none, bare }));
+  check("AP3 the tap keeps U4's exact call and appends the scroll after it (U4 pins the rest of the My Shifts row)",
+    count(tapNeedle + " setTimeout(") === 1 && count(tapNeedle) === 1);
+}
+
 // ─── Y. DSG + Silvis personal totals card: the ONE counting function (Faraz 10/9; decisions 2026-10-11) ───
 // callTotalsFor({ weeks, roster, silvisRows, code, today }) in helpers.js — pure, no clock — is the only
 // counter behind FAK's totals card here AND the Silvis app's copy of the card (Silvis Prompt 31 copies

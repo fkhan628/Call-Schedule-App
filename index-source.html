@@ -9750,7 +9750,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           </div>
 
           {/* Calendar tools — collapsed by default so the calendar itself stays front and center */}
-          <Collapsible css={css} ck="cal_tools" defaultOpen={false} title="🔧 Schedule Tools & Export" style={{background:"transparent",border:"none",boxShadow:"none",padding:"4px 2px",marginTop:8}}>
+          <Collapsible css={css} ck="cal_tools" defaultOpen={false} forceOpen={!!swapSuggestions} title="🔧 Schedule Tools & Export" style={{background:"transparent",border:"none",boxShadow:"none",padding:"4px 2px",marginTop:8}}>
           {/* ─── Silvis (trauma) feed — read-only mirror; rule silvisBusy (internal views only) ─── */}
           {!isPublicMode && (()=>{
             const st = sfStatus(silvisDays.fetchedAt);
@@ -9830,7 +9830,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
 
           {/* ─── Shift Swap Tool ─── */}
           {!isPublicMode && Object.keys(schedule).length > 0 && (
-            <div style={{...css.card,marginTop:14,background:"linear-gradient(135deg,#f8f0ff,#f4f0f8)",border:"1px solid #d0c0e4"}}>
+            <div data-swap-tool="1" style={{...css.card,marginTop:14,background:"linear-gradient(135deg,#f8f0ff,#f4f0f8)",border:"1px solid #d0c0e4"}}>
               <div style={css.cardT}>🔄 Shift Swap Tool</div>
               <p style={{fontSize:12,color:"#5a6a78",margin:"0 0 12px",lineHeight:1.5}}>
                 Need to change a shift? All swaps must be <strong>two-way</strong> — the other surgeon takes your shift and you take one of theirs.
@@ -11100,7 +11100,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                         <span style={{fontSize:13,fontWeight:600,color:r.color}}>{r.type}</span>
                         <span style={{fontSize:11,color:"#8a94a0",fontFamily:mono}}>{r.detail}</span>
                         {r.canSwap ? (
-                          <button onClick={()=>{findSwapSuggestions(wk.mStr, r.shiftKey, myId); setView("calendar");}}
+                          <button onClick={()=>{findSwapSuggestions(wk.mStr, r.shiftKey, myId); setView("calendar"); setTimeout(() => { const el = document.querySelector('[data-swap-tool="1"]'); if (el && el.scrollIntoView) el.scrollIntoView({ behavior: "smooth", block: "start" }); }, 60);}}
                             style={{marginLeft:"auto",background:"#f0e8fc",border:"1px solid #c8b0e0",color:"#6030a0",borderRadius:5,padding:"2px 10px",fontSize:10,fontWeight:600,cursor:"pointer",fontFamily:font}}>
                             🔄 Find Swap
                           </button>
@@ -14163,7 +14163,10 @@ function CallTotalsCard({ totals, silvisNote, css, dk }) {
 // (keyed by `ck`), so a scheduler's layout choices stick across reloads. Defined
 // at module scope so it never remounts on parent re-render. Uses React.* hooks
 // because the destructured hook names live inside CallSchedule, not out here.
-function Collapsible({ title, ck, defaultOpen = false, summary = null, children, css, right = null, style = null }) {
+// forceOpen shows the body without touching the stored state: Mine's Find Swap
+// opens Schedule Tools while its swap options are up, and Close puts the
+// section back the way the user left it.
+function Collapsible({ title, ck, defaultOpen = false, forceOpen = false, summary = null, children, css, right = null, style = null }) {
   const [open, setOpen] = React.useState(() => {
     try {
       const v = localStorage.getItem("dsg_collapse_" + ck);
@@ -14177,15 +14180,16 @@ function Collapsible({ title, ck, defaultOpen = false, summary = null, children,
     try { localStorage.setItem("dsg_collapse_" + ck, n ? "1" : "0"); } catch (e) { console.warn("Couldn't persist panel collapse state:", e); }
     return n;
   });
+  const shown = open || forceOpen;
   return (
     <div style={style ? { ...css.card, ...style } : css.card}>
       <div onClick={toggle} style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", userSelect: "none" }}>
-        <span style={{ fontSize: 11, color: "#8a94a0", transition: "transform .15s", transform: open ? "rotate(90deg)" : "rotate(0deg)", display: "inline-block", width: 10, flexShrink: 0 }}>▶</span>
+        <span style={{ fontSize: 11, color: "#8a94a0", transition: "transform .15s", transform: shown ? "rotate(90deg)" : "rotate(0deg)", display: "inline-block", width: 10, flexShrink: 0 }}>▶</span>
         <div style={{ ...css.cardT, marginBottom: 0, flex: 1 }}>{title}</div>
         {right}
       </div>
-      {!open && summary != null && <div style={{ marginTop: 10 }}>{summary}</div>}
-      {open && <div style={{ marginTop: 12 }}>{children}</div>}
+      {!shown && summary != null && <div style={{ marginTop: 10 }}>{summary}</div>}
+      {shown && <div style={{ marginTop: 12 }}>{children}</div>}
     </div>
   );
 }
