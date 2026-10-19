@@ -1503,6 +1503,337 @@ check("prefs audit never logs the plaintext email (masked only)",
   }
 }
 
+// ─── An OLD cached helpers.js, for the batch's guards (UX review fixes 2026-10-19; BD8, BF7, BG5, BJ5) ───
+// The page loads helpers.js?v=APP_VERSION, but a page can still meet a helpers.js from before this batch (the case
+// the app guards against: every call of a NEWER helper sits behind typeof — calMonthStatus, onCallNow, …). Before the
+// review fixes the toast, period and sign-in helpers were called bare: with main's helpers.js the first toast threw
+// "toastAdd is not defined" and the error boundary replaced the app. OLD_SB has the page's modules in the page's
+// order with helpers.js WITHOUT the batch's twelve helpers (each declaration renamed away, as main's lacks them):
+// the real call sites, sliced, are run in it and must fall back, never throw.
+const BATCH4_HELPERS = ["toastAdd", "toastMs", "toastText", "periodLabel", "periodSeam", "periodHolidayGaps", "authErrorText", "rangeSummary", "tradeSlotHolder", "tradePickNotes", "calMonthWeekMondays", "calendarFeedUrls"];
+const OLD_SB = (() => {
+  let h = fs.readFileSync(path.join(ROOT, "helpers.js"), "utf8");
+  for (const n of BATCH4_HELPERS) h = h.split(`function ${n}(`).join(`function __preBatch4_${n}(`);
+  const sb = { console, window: {}, document: undefined, navigator: { userAgent: "node-test" }, localStorage: { getItem: () => null, setItem() {}, removeItem() {} }, fetch: () => { throw new Error("no fetch in OLD_SB"); }, setTimeout, clearTimeout };
+  sb.globalThis = sb; vm.createContext(sb);
+  vm.runInContext(fs.readFileSync(path.join(ROOT, "config.js"), "utf8"), sb, { filename: "config.js" });
+  vm.runInContext(h, sb, { filename: "helpers-before-batch4.js" });
+  vm.runInContext(fs.readFileSync(path.join(ROOT, "generator.js"), "utf8"), sb, { filename: "generator.js" });
+  return sb;
+})();
+// The component's ONE period line (const periodText = …), compiled in a context: (mondays as Dates) → the period said one way.
+const periodTextIn = (ctx) => { const m = src.replace(/\r\n/g, "\n").match(/\n  const periodText = ([^\n]*);\n/); try { return m ? vm.runInContext(`(function (mondays) { return (${m[1]}); })`, ctx, { filename: "period-text.js" }) : null; } catch (ex) { return null; } };
+
+// ─── BD. Generate: one period label with years, the period's dates and seam, holidays with no card (UX audit 2026-10-19) ───
+// The "Schedule Published" e-mail built its period from the Generate tab's
+// start month/year selects, which a start-Monday override leaves behind: it
+// said "May – April 2026" for a Jan 4 – Apr 11, 2027 publish. The period was
+// said several ways (the e-mail, the office e-mail's prefill, Stats), mostly
+// with no year. Generate never showed the period's exact dates, whether it
+// overlaps the published schedule or leaves a gap, or that a holiday in it has
+// no holiday card (it then generates with no holiday 24h coverage, silently).
+//   BD1 the real periodLabel (helpers.js), exact strings: one year, across
+//       the year (its last Sunday decides), the DST weeks, Dates = strings
+//   BD2 the REAL publish path, sliced and run — the mondays useMemo, the
+//       endDate/endMoIdx lines and doGenerateAndNotify — with a start-Monday
+//       override the selects lag behind: the e-mail's period is
+//       "Jan 4 – Apr 11, 2027" (main: "May – April 2026"); the REAL office
+//       prefill (computePeriodLabel) is the Generate period, not every week
+//       ever published
+//   BD3 the real periodSeam: continues, overlap, gap, started / over, nothing
+//       before it, the DST weeks, unsorted / Date / non-week input
+//   BD4 BD1 + BD3 again under TZ=America/Chicago (a UTC run has no DST week)
+//   BD5 the real periodHolidayGaps with generator.js's getHolidays: the
+//       holidays with no card (or a card with no Surgeon A), by date; New
+//       Year's day 2 counts; a 56-week period's middle year is looked up
+//   BD6 the REAL Setup Issues holiday block and the REAL Generate panel (its
+//       computations, sliced and run): the same holidays; the seam lines'
+//       exact text; the banner's button opens Setup on that year's holiday
+//       cards and scrolls to them
+//   BD7 pins: the old templates are gone; both holiday sites call the one
+//       helper; Stats → This Period says periodLabel; the panel adds no hook
+// Review fixes (2026-10-19):
+//   BD2 the office prefill (the REAL computePeriodLabel) is the Generate period only when every one of its weeks is
+//       published; otherwise the latest published run — the last weeks published back to back, at most the Generate
+//       period's length (the Generate tab set up for the NEXT, unpublished period no longer names it)
+//   BD8 the period's ONE line (periodText, guarded) and every period call site run against an OLD cached helpers.js
+//       (OLD_SB): a plain label, no seam lines, no holiday banner or Setup issue — never a throw; the HTML export and
+//       the publish audit lines name the real weeks (periodText / their own Mondays), not the start month/year
+//       selects; the export downloads as downloadICS does (in the document, revoked ~1 s later)
+console.log("\nBD. Generate: one period label, the period's seam, holidays with no card");
+{
+  const nsrc = src.replace(/\r\n/g, "\n");
+  // The text from `a` (exactly one occurrence) up to the first `b` after it — with `a` (span) or without it (after)
+  const span = (a, b) => { const i = nsrc.indexOf(a); if (i < 0 || nsrc.indexOf(a, i + 1) !== -1) return null; const j = nsrc.indexOf(b, i + a.length); return j < 0 ? null : nsrc.slice(i, j); };
+  const after = (a, b) => { const s = span(a, b); return s === null ? null : s.slice(a.length); };
+  const H = vm.runInContext('({ fmt, parse, addD, MO, RealDate: Date, pl: typeof periodLabel === "function" ? periodLabel : null, ps: typeof periodSeam === "function" ? periodSeam : null })', sandbox);
+  // The holiday context: the page's modules in the page's order (generator.js: the real getHolidays)
+  const hsb = { console, window: {}, document: undefined, navigator: { userAgent: "node-test" }, localStorage: { getItem: () => null, setItem() {}, removeItem() {} }, fetch: () => { throw new Error("no fetch in BD"); }, setTimeout, clearTimeout };
+  hsb.globalThis = hsb; vm.createContext(hsb);
+  for (const f of ["config.js", "helpers.js", "generator.js"]) vm.runInContext(fs.readFileSync(path.join(ROOT, f), "utf8"), hsb, { filename: f });
+  const G = vm.runInContext('({ getHolidays, phg: typeof periodHolidayGaps === "function" ? periodHolidayGaps : null })', hsb);
+  check("BD0 periodLabel, periodSeam and periodHolidayGaps are defined in helpers.js", !!H.pl && !!H.ps && !!G.phg);
+  const J = (o) => JSON.stringify(o);
+  const tryRun = (fn) => { try { return fn(); } catch (ex) { return "threw: " + String((ex && ex.message) || ex).slice(0, 120); } };
+  const weeksFrom = (m, n) => Array.from({ length: n }, (_, i) => H.fmt(H.addD(H.parse(m), 7 * i)));
+  const pub = (ms) => Object.fromEntries(ms.map((m) => [m, { dayCall: "s1", nights: { mon: "s2" } }]));
+  const NOV = weeksFrom("2026-11-16", 14);
+
+  // BD1 — periodLabel, exact
+  const PL = [
+    ["one year", ["2027-01-04", "2027-04-05"], "Jan 4 – Apr 11, 2027"],
+    ["across the year", ["2026-11-16", "2027-02-15"], "Nov 16, 2026 – Feb 21, 2027"],
+    ["its last Sunday decides (the last Monday is Dec 28)", ["2026-10-05", "2026-12-28"], "Oct 5, 2026 – Jan 3, 2027"],
+    ["one week across New Year", ["2026-12-28", "2026-12-28"], "Dec 28, 2026 – Jan 3, 2027"],
+    ["the spring DST week (Sun Mar 14, 2027)", ["2027-03-08", "2027-03-08"], "Mar 8 – Mar 14, 2027"],
+    ["the fall DST week (Sun Nov 1, 2026)", ["2026-10-26", "2026-10-26"], "Oct 26 – Nov 1, 2026"],
+    ["28 weeks across the spring change", ["2027-02-15", "2027-08-23"], "Feb 15 – Aug 29, 2027"],
+    ["no Mondays", [null, null], ""],
+    ["no last Monday", ["2027-01-04", null], ""],
+  ];
+  const pl = (a) => tryRun(() => (H.pl ? H.pl(...a) : "missing"));
+  const bad1 = PL.filter(([, a, want]) => pl(a) !== want);
+  check("BD1 periodLabel: first Monday → last Sunday with the year (once when both ends share it), exact strings — across the year, the DST weeks, nothing to name",
+    !!H.pl && bad1.length === 0, bad1.map(([what, a]) => `${what}: ${J(pl(a))}`).join(" | "));
+  check("BD1 Dates (as the Generate tab's useMemo passes them) give the same text as strings",
+    !!H.pl && PL.slice(0, 7).every(([, a, want]) => pl(a.map(H.parse)) === want), J(PL.slice(0, 7).map(([, a]) => pl(a.map(H.parse)))));
+
+  // BD2 — the REAL publish path: the mondays useMemo, the endDate/endMoIdx lines, doGenerateAndNotify
+  const memoBody = after("  const mondays = useMemo(() => {", "\n  }, [startYear, startMonth, numWeeks, startMondayOverride]);");
+  const endSrc = span("  const endDate = mondays.length > 0", "\n  const endYr = ");
+  const dgnSrc = span("  const doGenerateAndNotify = async () => {", "\n  };");
+  const mk = (code, ctx, filename) => { try { return code ? vm.runInContext(code, ctx, { filename }) : null; } catch (ex) { return null; } };
+  const runMemo = memoBody && mk(`(function (env) { const { startMondayOverride, numWeeks, startYear, startMonth } = env; return (() => {${memoBody}\n  })(); })`, sandbox, "bd-mondays.js");
+  const runEnd = endSrc && mk(`(function (env) { const { mondays, startMonth } = env;\n${endSrc}\n return { endDate, endMoIdx }; })`, sandbox, "bd-enddate.js");
+  // (every name the e-mail's period was ever built from — main's selects and endMoIdx, the Mondays — and periodText,
+  // the component's one line for it since the review fixes, run for real from the Mondays the memo made)
+  const mkDgn = dgnSrc && mk(`(function (env) { const { sessionEpochRef, doGenerate, addNotification, sendEmailNotif, MO, startMonth, endMoIdx, startYear, mondays, periodText } = env;\n${dgnSrc}\n  };\n return doGenerateAndNotify; })`, sandbox, "bd-dgn.js");
+  const ptNew = periodTextIn(sandbox);
+  const publishRun = async (settings) => {
+    if (!runMemo || !runEnd || !mkDgn || !ptNew) return null;
+    try {
+      const mondays = runMemo(settings), { endMoIdx } = runEnd({ mondays, startMonth: settings.startMonth });
+      const sent = [];
+      await mkDgn({ sessionEpochRef: { current: 0 }, doGenerate: async () => "published", MO: H.MO, startMonth: settings.startMonth, endMoIdx, startYear: settings.startYear, mondays, periodText: ptNew(mondays),
+        addNotification: async (type, title, msg) => { sent.push(["notice", type, msg]); },
+        sendEmailNotif: (type, data, targets) => { sent.push(["e-mail", type, J(data), targets]); } })();
+      return { first: H.fmt(mondays[0]), n: mondays.length, sent };
+    } catch (ex) { return { threw: String(ex) }; }
+  };
+  const override = await publishRun({ startMondayOverride: "2027-01-04", numWeeks: 14, startMonth: 4, startYear: 2026 });
+  const midweek = await publishRun({ startMondayOverride: "2027-01-06", numWeeks: 14, startMonth: 4, startYear: 2026 });
+  const selects = await publishRun({ startMondayOverride: "", numWeeks: 14, startMonth: 10, startYear: 2026 });
+  const emailOf = (r) => (r && r.sent ? (r.sent.find((x) => x[0] === "e-mail") || [])[2] : null);
+  check("BD2 the REAL publish path with a start-Monday override (Jan 4, 2027 × 14) the selects lag behind (May 2026): the e-mail's period is the published weeks, \"Jan 4 – Apr 11, 2027\" (main sent \"May – April 2026\"); a mid-week pick snaps to the same Monday",
+    !!override && emailOf(override) === J({ period: "Jan 4 – Apr 11, 2027" }) && emailOf(midweek) === emailOf(override) && override.first === "2027-01-04" && override.n === 14, J({ override, midweek }));
+  check("BD2 without an override (the selects: November 2026 × 14) the period names its end year too: \"Nov 2, 2026 – Feb 7, 2027\" (main: \"November – February 2026\")",
+    emailOf(selects) === J({ period: "Nov 2, 2026 – Feb 7, 2027" }), J(selects));
+  check("BD2 the notice is unchanged — sent first, the same text — and the e-mail goes to everyone (no target list)",
+    !!override && !!override.sent && override.sent.length === 2 && J(override.sent[0]) === J(["notice", "schedule_published", "A new call schedule has been generated. Check the Schedule or Calendar tab."]) && override.sent[1][3] === null, J(override));
+  // The office e-mail's prefill — the REAL computePeriodLabel, after a period was published on top of 28 earlier weeks
+  const cplSrc = after("  const computePeriodLabel = ", "\n  const openPublishDialog = ");
+  const mkCpl = cplSrc && mk(`(function (env) { const { schedule, mondays, parse, MO, periodLabel } = env; const computePeriodLabel = ${cplSrc}\n return computePeriodLabel; })`, sandbox, "bd-cpl.js");
+  const cplRun = (sched, ms, label) => (mkCpl ? tryRun(() => mkCpl({ schedule: sched, mondays: ms.map(H.parse), parse: H.parse, MO: H.MO, periodLabel: label === undefined ? H.pl : label })()) : null);
+  const cpl = cplRun(pub(weeksFrom("2026-05-04", 42)), NOV);
+  check("BD2 the office e-mail's prefill (the REAL computePeriodLabel) is the Generate period with its years, \"Nov 16, 2026 – Feb 21, 2027\" — not every week ever published (main: \"May 4 – Feb 21\")",
+    cpl === "Nov 16, 2026 – Feb 21, 2027", J(cpl));
+  // (review fix) …only when EVERY week of the Generate period is published. 42 weeks from May 4, 2026 are published,
+  // back to back, through Feb 15 – 21, 2027 (the last period: Nov 16 – Feb 21, 14 weeks); the Generate tab is then set
+  // up for the next period (→ Continue: Feb 22 × 14), which is not published.
+  const NEXTP = weeksFrom("2027-02-22", 14), PUB42 = pub(weeksFrom("2026-05-04", 42));
+  const CPL = [
+    ["the Generate tab on the NEXT, unpublished period → the latest published run, at most the Generate period's 14 weeks (not every week since May)", [PUB42, NEXTP], "Nov 16, 2026 – Feb 21, 2027"],
+    ["3 of the Generate period's 14 weeks published → the last 14 published back to back", [pub(weeksFrom("2026-08-03", 15).concat(NOV.slice(0, 3))), NOV], "Aug 31 – Dec 6, 2026"],
+    ["a gap before the last run → that run only", [pub(weeksFrom("2026-08-03", 10).concat(weeksFrom("2026-11-02", 2))), NOV], "Nov 2 – Nov 15, 2026"],
+    ["keys that are not weeks, and a week holding nothing, are not published", [Object.assign({}, PUB42, { meta: { x: 1 }, lastPublish: "2027-01-01", "2027-02-22": null }), NEXTP], "Nov 16, 2026 – Feb 21, 2027"],
+    ["an older period, every week of it published, stays the prefill", [PUB42, weeksFrom("2026-05-04", 14)], "May 4 – Aug 9, 2026"],
+    ["nothing published → empty (the field's placeholder shows)", [{}, NOV], ""],
+  ];
+  const badC = CPL.filter(([, [s, ms], want]) => cplRun(s, ms) !== want);
+  check("BD2 (review fix) the REAL computePeriodLabel prefills the Generate period only when every one of its weeks is published; otherwise the latest published run — the last weeks published back to back, at most as many as the Generate period has — exact (main of this batch: the Generate period always, so → Continue made it \"Feb 22 – May 30, 2027\", not published)",
+    !!mkCpl && badC.length === 0, badC.map(([what, [s, ms]]) => `${what}: ${J(cplRun(s, ms))}`).join(" | "));
+  check("BD2 (review fix) …with an OLD cached helpers.js (no periodLabel) it falls back to the plain dates, never a throw: \"2026-11-16 – 2027-02-21\" for the next-period case, the same run",
+    cplRun(PUB42, NEXTP, null) === "2026-11-16 – 2027-02-21" && cplRun(PUB42, NOV, null) === "2026-11-16 – 2027-02-21", J([cplRun(PUB42, NEXTP, null), cplRun(PUB42, NOV, null)]));
+
+  // BD3 — periodSeam, exact
+  const ps = (a) => tryRun(() => (H.ps ? J(H.ps(...a)) : "missing"));
+  const S = (overlap, started, over, gap, afterDay) => J({ overlap, started, over, gap, after: afterDay });
+  const SEAM = [
+    ["continues (published through the week before)", [weeksFrom("2026-08-03", 15), NOV, "2026-10-19"], S(0, false, false, 0, "2026-11-15")],
+    ["overlaps 3 published weeks", [weeksFrom("2026-08-03", 15).concat(NOV.slice(0, 3)), NOV, "2026-10-19"], S(3, false, false, 0, "2026-11-15")],
+    ["a gap of 2 weeks", [weeksFrom("2026-08-03", 13), NOV, "2026-10-19"], S(0, false, false, 2, "2026-11-01")],
+    ["a gap of 1 week", [weeksFrom("2026-08-03", 14), NOV, "2026-10-19"], S(0, false, false, 1, "2026-11-08")],
+    ["started (its first Monday is before today)", [weeksFrom("2026-08-03", 10), weeksFrom("2026-10-12", 14), "2026-10-19"], S(0, true, false, 0, "2026-10-11")],
+    ["its first Monday IS today: not started", [weeksFrom("2026-08-03", 11), weeksFrom("2026-10-19", 14), "2026-10-19"], S(0, false, false, 0, "2026-10-18")],
+    ["wholly over, every week published", [weeksFrom("2026-05-04", 14), weeksFrom("2026-05-04", 14), "2026-10-19"], S(14, true, true, null, null)],
+    ["nothing published", [[], NOV, "2026-10-19"], S(0, false, false, null, null)],
+    ["only weeks after it are published", [weeksFrom("2027-03-01", 4), NOV, "2026-10-19"], S(0, false, false, null, null)],
+    ["a gap of 1 week across the spring change", [["2027-03-01"], weeksFrom("2027-03-15", 4), "2026-10-19"], S(0, false, false, 1, "2027-03-07")],
+    ["continues across the spring change", [["2027-03-08"], weeksFrom("2027-03-15", 4), "2026-10-19"], S(0, false, false, 0, "2027-03-14")],
+    ["a gap of 1 week across the fall change", [["2026-10-26"], weeksFrom("2026-11-09", 4), "2026-10-19"], S(0, false, false, 1, "2026-11-01")],
+    ["no period", [weeksFrom("2026-08-03", 15), [], "2026-10-19"], S(0, false, false, null, null)],
+  ];
+  const bad3 = SEAM.filter(([, a, want]) => ps(a) !== want);
+  check("BD3 periodSeam: continues / overlaps N published weeks / leaves a gap of N weeks after the last published Sunday / started / over, exact — across both DST changes",
+    !!H.ps && bad3.length === 0, bad3.map(([what, a]) => `${what}: ${ps(a)}`).join(" | "));
+  const messy = ps([["meta", "lastPublish"].concat(weeksFrom("2026-08-03", 15), NOV.slice(0, 3)).reverse().concat([NOV[0]]), NOV.slice().reverse().map(H.parse), "2026-10-19"]);
+  check("BD3 unsorted input, the period as Dates, a week listed twice and keys that are not weeks give the same answer",
+    messy === SEAM[1][2], messy);
+
+  // BD4 — BD1 + BD3 again under TZ=America/Chicago
+  {
+    const { execFileSync } = require("child_process");
+    const code = [
+      'const vm = require("vm"), fs = require("fs"), path = require("path");',
+      'const sb = { console, window: {}, document: undefined, navigator: { userAgent: "node-test" }, localStorage: { getItem: () => null, setItem() {}, removeItem() {} }, fetch: () => { throw new Error("no fetch"); }, setTimeout, clearTimeout };',
+      "sb.globalThis = sb; vm.createContext(sb);",
+      `for (const f of ["helpers.js", "config.js"]) vm.runInContext(fs.readFileSync(path.join(${J(ROOT)}, f), "utf8"), sb, { filename: f });`,
+      'const pl = vm.runInContext("typeof periodLabel === \'function\' ? periodLabel : null", sb), ps = vm.runInContext("typeof periodSeam === \'function\' ? periodSeam : null", sb);',
+      `const PL = ${J(PL.map(([, a]) => a))}, SEAM = ${J(SEAM.map(([, a]) => a))};`,
+      'const run = (f) => { try { return f(); } catch (ex) { return "threw: " + String((ex && ex.message) || ex).slice(0, 80); } };',
+      'process.stdout.write(JSON.stringify({ off: new Date(2026, 9, 24).getTimezoneOffset(), pl: PL.map((a) => run(() => (pl ? pl(...a) : "missing"))), ps: SEAM.map((a) => run(() => (ps ? JSON.stringify(ps(...a)) : "missing"))) }));',
+    ].join("\n");
+    let out = null;
+    try { out = JSON.parse(execFileSync(process.execPath, ["-e", code], { env: Object.assign({}, process.env, { TZ: "America/Chicago" }), encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })); } catch (ex) { out = { err: String(ex).slice(0, 300) }; }
+    const tzBad = out && out.pl && out.ps
+      ? PL.map(([what, , want], i) => (out.pl[i] === want ? null : `${what}: ${J(out.pl[i])}`)).concat(SEAM.map(([what, , want], i) => (out.ps[i] === want ? null : `${what}: ${out.ps[i]}`))).filter(Boolean)
+      : ["no output: " + J(out).slice(0, 200)];
+    check("BD4 under TZ=America/Chicago (the child's CDT offset is 300) every BD1 and BD3 case gives the same answer",
+      !!out && out.off === 300 && tzBad.length === 0, tzBad.slice(0, 3).join(" | "));
+  }
+
+  // BD5 — periodHolidayGaps with generator.js's getHolidays
+  const phg = (ms, cards, gh) => tryRun(() => (G.phg ? J(G.phg(ms, cards, gh === undefined ? G.getHolidays : gh)) : "missing"));
+  const gapOf = (year, name, date) => ({ year, name, date });
+  const card = (name, date, surgeonA) => ({ name, date, type: "major", surgeonA, surgeonB: surgeonA ? "s2" : null });
+  const HOL = [
+    ["no cards: the three 2026 holidays in Nov 16 – Feb 21, by date", [NOV, {}],
+      [gapOf(2026, "Thanksgiving", "2026-11-26"), gapOf(2026, "Christmas Day", "2026-12-25"), gapOf(2026, "New Year's", "2026-12-31")]],
+    ["two cards; New Year's card has no Surgeon A", [NOV, { "2026": [card("Thanksgiving", "2026-11-26", "s3"), card("Christmas Day", "2026-12-25", "s6"), card("New Year's", "2026-12-31", null)] }],
+      [gapOf(2026, "New Year's", "2026-12-31")]],
+    ["every card set: none", [NOV, { "2026": [card("Thanksgiving", "2026-11-26", "s3"), card("Christmas Day", "2026-12-25", "s6"), card("New Year's", "2026-12-31", "s1")] }], []],
+    ["a card filed under another year does not count", [NOV, { "2027": [card("Thanksgiving", "2026-11-26", "s3")], "2026": [card("Christmas Day", "2026-12-25", "s6"), card("New Year's", "2026-12-31", "s1")] }],
+      [gapOf(2026, "Thanksgiving", "2026-11-26")]],
+    ["none in Jan 4 – Apr 11, 2027 (New Year's ended Jan 1)", [weeksFrom("2027-01-04", 14), {}], []],
+    ["New Year's day 2 (Mon Jan 1, 2029) is in a period from Jan 1", [weeksFrom("2029-01-01", 2), {}], [gapOf(2028, "New Year's", "2028-12-31")]],
+    ["56 weeks from Dec 28, 2026: the middle year (2027) is looked up", [weeksFrom("2026-12-28", 56), { "2026": [card("New Year's", "2026-12-31", "s1")] }],
+      [gapOf(2027, "Memorial Day", "2027-05-31"), gapOf(2027, "July 4th", "2027-07-04"), gapOf(2027, "Labor Day", "2027-09-06"), gapOf(2027, "Thanksgiving", "2027-11-25"), gapOf(2027, "Christmas Day", "2027-12-25"), gapOf(2027, "New Year's", "2027-12-31")]],
+    ["its last Sunday counts (July 4th, 2027 is a Sunday)", [weeksFrom("2027-06-28", 1), {}], [gapOf(2027, "July 4th", "2027-07-04")]],
+    ["the Monday after it does not (Labor Day, Sep 6, 2027)", [weeksFrom("2027-08-30", 1), {}], []],
+  ];
+  const badH = HOL.filter(([, [ms, cards], want]) => phg(ms, cards) !== J(want));
+  check("BD5 periodHolidayGaps (generator.js's getHolidays): the period's holidays with no card, or a card with no Surgeon A, by date — New Year's day 2 counts, a 56-week period's middle year is looked up, its last Sunday counts",
+    !!G.phg && badH.length === 0, badH.map(([what, [ms, cards]]) => `${what}: ${phg(ms, cards)}`).join(" | "));
+  check("BD5 the period as Dates gives the same; no cards object, a year that is not a list, no getHolidays or no period never throw",
+    phg(NOV.map(H.parse), {}) === J(HOL[0][2]) && phg(NOV, null) === J(HOL[0][2]) && phg(NOV, { "2026": "?" }) === J(HOL[0][2]) && phg(NOV, {}, null) === "[]" && phg([], {}) === "[]",
+    J([phg(NOV.map(H.parse), {}), phg(NOV, null), phg(NOV, { "2026": "?" }), phg(NOV, {}, null), phg([], {})]));
+
+  // BD6 — the REAL Setup Issues holiday block, sliced and run
+  const setupSrc = span("            // 5. Holidays in upcoming period without surgeon assignments", "\n            if (issues.length === 0) return null;");
+  const runSetup = setupSrc && mk(`(function (env) { const { mondays, holidayAssignments } = env; const issues = [];\n${setupSrc}\n return issues; })`, hsb, "bd-setup-issues.js");
+  const setupMsgs = (ms, cards) => tryRun(() => (runSetup ? J(runSetup({ mondays: ms.map(H.parse), holidayAssignments: cards }).map((i) => `${i.sev}: ${i.msg}`)) : "missing"));
+  const wantMsgs = (gaps) => J(gaps.map((g) => `warn: ${g.name} (${g.date}) — no surgeon assigned`));
+  const badS = HOL.filter(([, [ms, cards], want]) => setupMsgs(ms, cards) !== wantMsgs(want));
+  check("BD6 the REAL Setup Issues holiday block lists exactly periodHolidayGaps' holidays, in its words (\"<name> (<date>) — no surgeon assigned\"), by date — main missed New Year's day 2 and a 56-week period's middle year",
+    !!runSetup && badS.length === 0, badS.map(([what, [ms, cards]]) => `${what}: ${setupMsgs(ms, cards)}`).join(" | "));
+  // …and the REAL Generate panel's computations (up to its JSX), today pinned to 2026-10-19
+  const panelSrc = span("              const seam = typeof periodSeam === \"function\" ? periodSeam(", "\n              return (");
+  const runPanel = panelSrc && mk(`(function (env) { const { schedule, mondays, holidayAssignments, setHolidayYear, setView, setTimeout, document, Date } = env;\n${panelSrc}\n return { seamLines, holGaps, holText, toHolidays }; })`, hsb, "bd-generate-panel.js");
+  function Oct19() { return new H.RealDate(2026, 9, 19); }
+  const doc = { asked: [], el: null, querySelector(sel) { this.asked.push(sel); return this.el; } };
+  const panel = (sched, ms, cards) => {
+    if (!runPanel) return null;
+    const log = [];
+    try {
+      const r = runPanel({ schedule: sched, mondays: ms.map(H.parse), holidayAssignments: cards || {}, document: doc, Date: Oct19,
+        setHolidayYear: (y) => log.push("year " + y), setView: (v) => log.push("view " + v), setTimeout: (fn, ms2) => { log.push("timeout " + ms2); log.fn = fn; } });
+      return Object.assign({}, r, { log });
+    } catch (ex) { return { threw: String(ex) }; }
+  };
+  const lines = (sched, ms) => { const p = panel(sched, ms); return p && p.seamLines ? J(p.seamLines.map((l) => (l.ok ? "ok: " : "warn: ") + l.text)) : J(p); };
+  const UPTO = pub(weeksFrom("2026-08-03", 15)); // published through the week of Nov 9, the week before NOV
+  const PANEL = [
+    ["continues", [UPTO, NOV], ["ok: ✓ Continues from the published schedule"]],
+    ["overlaps 3", [Object.assign({}, UPTO, pub(NOV.slice(0, 3))), NOV], ["warn: ⚠ Overlaps 3 published weeks — publishing replaces them"]],
+    ["overlaps 1", [Object.assign({}, UPTO, pub([NOV[13]])), NOV], ["warn: ⚠ Overlaps 1 published week — publishing replaces it"]],
+    ["a gap of 2 weeks", [pub(weeksFrom("2026-08-03", 13)), NOV], ["warn: ⚠ Leaves a gap of 2 weeks after Nov 1, 2026, the last published day before it"]],
+    ["a gap of 1 week", [pub(weeksFrom("2026-08-03", 14)), NOV], ["warn: ⚠ Leaves a gap of 1 week after Nov 8, 2026, the last published day before it"]],
+    ["started", [pub(weeksFrom("2026-08-03", 10)), weeksFrom("2026-10-12", 14)], ["ok: ✓ Continues from the published schedule", "warn: ⚠ This period has already started"]],
+    ["wholly over, every week published", [pub(weeksFrom("2026-05-04", 14)), weeksFrom("2026-05-04", 14)], ["warn: ⚠ Overlaps 14 published weeks — publishing replaces them", "warn: ⚠ This whole period is already over"]],
+    ["nothing published: the dates only", [{}, NOV], []],
+    ["a week key holding nothing is not published", [Object.assign({}, UPTO, { [NOV[0]]: null }), NOV], ["ok: ✓ Continues from the published schedule"]],
+  ];
+  const badP = PANEL.filter(([, [s, ms], want]) => lines(s, ms) !== J(want));
+  check("BD6 the REAL Generate panel (sliced and run, today 2026-10-19): ✓ continues / ⚠ overlaps N published weeks / ⚠ leaves a gap of N weeks after the last published day / started / over — exact text, from the weeks the screen holds",
+    !!runPanel && badP.length === 0, runPanel ? badP.map(([what, [s, ms]]) => `${what}: ${lines(s, ms)}`).join(" | ") : "the panel's slice was not found or did not compile");
+  const hp = panel(UPTO, NOV, {}), filled = panel(UPTO, NOV, HOL[2][1][1]), wide = panel(UPTO, HOL[6][1][0], HOL[6][1][1]);
+  check("BD6 the banner names the period's holidays with no card, with the year — \"Thanksgiving (Nov 26, 2026), Christmas Day (Dec 25, 2026), New Year's (Dec 31, 2026)\" — from periodHolidayGaps; with every card set there are none",
+    !!hp && hp.holText === "Thanksgiving (Nov 26, 2026), Christmas Day (Dec 25, 2026), New Year's (Dec 31, 2026)" && J(hp.holGaps) === J(HOL[0][2]) && !!filled && J(filled.holGaps) === "[]",
+    J({ hp: hp && hp.holText, filled: filled && filled.holGaps }));
+  const scrolls = [];
+  if (hp && hp.toHolidays) {
+    tryRun(() => hp.toHolidays());
+    doc.el = { scrollIntoView: (o) => scrolls.push(J(o)) }; tryRun(() => hp.log.fn && hp.log.fn());
+    doc.el = null; tryRun(() => hp.log.fn && hp.log.fn()); // no card on screen (another view by then): nothing to scroll, no throw
+  }
+  if (wide && wide.toHolidays) tryRun(() => wide.toHolidays());
+  const iCard = nsrc.indexOf('<div style={css.card} data-setup-holidays="1">');
+  check("BD6 its button opens Setup on that year's holiday cards — setHolidayYear(the first gap's year), setView(\"setup\"), then 60 ms later scrolls to the Holiday Call Assignments card ([data-setup-holidays=\"1\"]); a gap in 2027 opens 2027",
+    !!hp && J(hp.log) === J(["year 2026", "view setup", "timeout 60"]) && J(doc.asked) === J(['[data-setup-holidays="1"]', '[data-setup-holidays="1"]']) && J(scrolls) === J([J({ behavior: "smooth", block: "start" })])
+      && !!wide && J(wide.log) === J(["year 2027", "view setup", "timeout 60"])
+      && count('data-setup-holidays="1"') === 2 && iCard > 0 && nsrc.indexOf("📅 Holiday Call Assignments", iCard) === nsrc.indexOf("📅 Holiday Call Assignments") && nsrc.indexOf("📅 Holiday Call Assignments") - iCard < 200,
+    J({ log: hp && hp.log, asked: doc.asked, scrolls, wide: wide && wide.log, iCard }));
+
+  // BD7 — pins
+  const ONE = "periodHolidayGaps(mondays, holidayAssignments, getHolidays)";
+  const sites = []; for (let i = nsrc.indexOf(ONE); i >= 0; i = nsrc.indexOf(ONE, i + 1)) sites.push(i);
+  const iSetup = nsrc.indexOf('{view==="setup" && !isPublicMode && <>'), iIssues = nsrc.indexOf("Setup Issues ({issues.length})");
+  const iGen = nsrc.indexOf('{view==="generate" && !isPublicMode'), iLocks = nsrc.indexOf("{/* Manual Locks — pin specific surgeons");
+  check("BD7 both holiday checks call the ONE helper — Setup Issues, then the Generate panel inside the Period card (before Manual Locks) — and Setup's inline copy is gone",
+    sites.length === 2 && sites[0] > iSetup && sites[0] < iIssues && sites[1] > iGen && sites[1] < iLocks
+      && count("const yrA = holidayAssignments[String(y)] || [];") === 0 && count("const years = new Set([periodStart.getFullYear()-1") === 0, J({ sites, iSetup, iIssues, iGen, iLocks }));
+  check("BD7 the old period templates are gone — the e-mail's from the selects, Stats' \"This Period — {MO[startMonth]} to …\", the prefill's whole-schedule span — and each says the Generate Mondays' period (periodText: periodLabel, guarded — review fix)",
+    count("{ period: `${MO[startMonth]} – ${MO[endMoIdx]} ${startYear}` }") === 0 && count("This Period — {MO[startMonth]} to {MO[endMoIdx]} {startYear}") === 0 && count("const fmtNice = (d) =>") === 0
+      && count("const period = periodText;") === 1 && count('sendEmailNotif("schedule_published", { period }, null, ep);') === 1
+      && count("const computePeriodLabel = () => {") === 1 && count("if (gen.length && gen.every(m => schedule[m])) return label(gen[0], gen[gen.length - 1]);") === 1
+      && count("<>This Period — {periodText}</>") === 1);
+  check("BD7 the Generate panel adds no hook (the 2026.09.24a TDZ class): plain code in a JSX IIFE; it shows the exact dates and the week count",
+    !!panelSrc && !/\buse(State|Memo|Effect|Callback|Ref|LayoutEffect)\(/.test(panelSrc)
+      && count("<strong>This period:</strong> {periodText} · {weeksTxt(mondays.length)}") === 1);
+
+  // BD8 — an OLD cached helpers.js (OLD_SB), and the export / audit lines (review fixes)
+  const ptOld = periodTextIn(OLD_SB);
+  const PT = { now: ptNew ? tryRun(() => ptNew(NOV.map(H.parse))) : null, old: ptOld ? tryRun(() => ptOld(NOV.map(H.parse))) : null, none: ptNew ? tryRun(() => ptNew([])) : null, oldNone: ptOld ? tryRun(() => ptOld([])) : null,
+    olderOk: vm.runInContext("typeof periodLabel + typeof periodSeam + typeof periodHolidayGaps + typeof fmt + typeof addD", OLD_SB) };
+  check("BD8 the period's ONE line (periodText), executed: \"Nov 16, 2026 – Feb 21, 2027\"; with an OLD cached helpers.js (no periodLabel — OLD_SB) the plain dates \"2026-11-16 – 2027-02-21\", not a throw (main of this batch: \"periodLabel is not defined\" at the e-mail, Stats and the Generate panel); no Mondays → \"\" in both",
+    PT.now === "Nov 16, 2026 – Feb 21, 2027" && PT.old === "2026-11-16 – 2027-02-21" && PT.none === "" && PT.oldNone === "" && PT.olderOk === "undefinedundefinedundefinedfunctionfunction"
+      && count("const periodText = mondays.length === 0 ? \"\" : typeof periodLabel === \"function\" ? periodLabel(mondays[0], mondays[mondays.length - 1]) : `${fmt(mondays[0])} – ${fmt(addD(mondays[mondays.length - 1], 6))}`;") === 1, J(PT));
+  const runPanelOld = panelSrc && mk(`(function (env) { const { schedule, mondays, holidayAssignments, setHolidayYear, setView, setTimeout, document, Date } = env;\n${panelSrc}\n return { seamLines, holGaps, holText, toHolidays }; })`, OLD_SB, "bd-generate-panel-old.js");
+  const runSetupOld = setupSrc && mk(`(function (env) { const { mondays, holidayAssignments } = env; const issues = [];\n${setupSrc}\n return issues; })`, OLD_SB, "bd-setup-issues-old.js");
+  const oldPanel = runPanelOld ? tryRun(() => J((({ seamLines: l, holGaps: g, holText: t }) => ({ l, g, t }))(runPanelOld({ schedule: pub(weeksFrom("2026-08-03", 13)), mondays: NOV.map(H.parse), holidayAssignments: {}, document: doc, Date: Oct19, setHolidayYear() {}, setView() {}, setTimeout() {} })))) : null;
+  const oldSetup = runSetupOld ? tryRun(() => J(runSetupOld({ mondays: NOV.map(H.parse), holidayAssignments: {} }))) : null;
+  check("BD8 the REAL Generate panel and Setup Issues with an OLD cached helpers.js (no periodSeam / periodHolidayGaps): no seam lines, no holiday banner, no holiday issue — not a throw (the same inputs give a gap line and three holidays with this helpers.js, BD6)",
+    oldPanel === J({ l: [], g: [], t: "" }) && oldSetup === "[]" && lines(pub(weeksFrom("2026-08-03", 13)), NOV) !== "[]", J({ oldPanel, oldSetup }));
+  // the HTML export (generateShareHTML) and the publish audit lines: the real weeks, not the start month / year selects
+  const shareSrc = span("  const generateShareHTML = () => {", "\n  };\n");
+  check("BD8 the HTML export names the period's real weeks — title and heading periodText, the file dsg-call-schedule-<first Monday>-to-<last Sunday>.html — not the start month/year selects (\"May to April 2026\" for a Jan 4, 2027 period); it downloads as downloadICS does: the link in the document for the click, the URL revoked ~1 s later (iOS Safari) — the page's own dlCal too",
+    !!shareSrc && shareSrc.includes("<title>DSG Call Schedule — ${periodText}</title>") && shareSrc.includes("<p>Call Schedule · ${periodText} · ${mondays.length} Weeks</p>")
+      && shareSrc.includes("a.download = mondays.length ? `dsg-call-schedule-${fmt(mondays[0])}-to-${fmt(addD(mondays[mondays.length - 1], 6))}.html` : \"dsg-call-schedule.html\";")
+      && shareSrc.includes("document.body.appendChild(a);\n    a.click();\n    document.body.removeChild(a);\n    setTimeout(() => URL.revokeObjectURL(url), 1000);")
+      && shareSrc.includes("document.body.appendChild(a);a.click();document.body.removeChild(a);setTimeout(function(){URL.revokeObjectURL(u);},1000);")
+      && !/MO\[startMonth\]|MO\[endMoIdx\]|startYear/.test(shareSrc) && !/a\.click\(\);\s*URL\.revokeObjectURL/.test(shareSrc), shareSrc ? "" : "generateShareHTML not found");
+  // …the export's file name, its own expression run: Jan 4, 2027 × 14 → dsg-call-schedule-2027-01-04-to-2027-04-11.html
+  const fnM = shareSrc ? shareSrc.match(/a\.download = (mondays\.length \? `dsg-call-schedule-[^\n]*);\n/) : null;
+  let fileName = null; try { fileName = fnM ? vm.runInContext(`(function (mondays) { return (${fnM[1]}); })`, sandbox)(weeksFrom("2027-01-04", 14).map(H.parse)) : null; } catch (ex) { fileName = "threw " + ex; }
+  const pubLbl = [...nsrc.matchAll(/\n\s*const pubPeriod = (typeof periodLabel === "function" \? periodLabel\(pubMs\[0\], pubMs\[pubMs\.length - 1\]\) : [^\n]*);\n/g)];
+  const lbl = (ctx) => { try { return vm.runInContext(`(function (pubMs) { return (${pubLbl[0][1]}); })`, ctx)(weeksFrom("2027-01-04", 14)); } catch (ex) { return "threw " + ex; } };
+  check("BD8 …its file name, run: dsg-call-schedule-2027-01-04-to-2027-04-11.html; the Generate & Publish and Accept & Publish audit lines name the weeks they publish (\"14 weeks, Jan 4 – Apr 11, 2027, Generate & Publish\" — they said \"14 weeks from May 2026\" from the selects), plain dates with an old helpers.js",
+    fileName === "dsg-call-schedule-2027-01-04-to-2027-04-11.html" && pubLbl.length === 2 && lbl(sandbox) === "Jan 4 – Apr 11, 2027" && lbl(OLD_SB) === "weeks of 2027-01-04 – 2027-04-05"
+      && count("label: `${pubMs.length} weeks, ${pubPeriod}, Generate & Publish`,") === 1 && count("label: `${pubMs.length} weeks, ${pubPeriod}${origin === \"json\" ? \", loaded from JSON\" : \"\"}`,") === 1
+      && count("weeks from ${MO[startMonth]} ${startYear}") === 0 && count("weeks from ${MO[sM]} ${sY}") === 0 && count("const pubMs = Object.keys(result).sort();") === 1 && count("const pubMs = Object.keys(weeks).sort();") === 1,
+    J({ fileName, n: pubLbl.length, now: pubLbl.length && lbl(sandbox), old: pubLbl.length && lbl(OLD_SB) }));
+}
+
 // ─── N. Swap family: swapMsg / cascadeMsg (2026-09-07) ───
 // The swap-suggestion tool was the last surface speaking in undated labels
 // and week-Monday dates, and the cascade path gave the least notice to the
@@ -1584,6 +1915,327 @@ check("prefs audit never logs the plaintext email (masked only)",
     `found ${count('"This trade\'s shift has already passed — propose a new one."')}`);
   check("executeTwoWaySwap re-validates before pushUndo",
     /executeTwoWaySwap = useCallback\(\(targetMon[\s\S]{0,900}shiftStartDate\(targetMon, targetShift\)[\s\S]{0,2600}pushUndo\(\);/.test(src) && /executeTwoWaySwap = useCallback\(\(targetMon[\s\S]{0,2600}if \(!schedEditable\(\)\) return;[\s\S]{0,900}out of date[\s\S]{0,1200}pushUndo\(\);/.test(src)); // window 400→900→2600 (sync v2: the edit gate + the holder precondition sit between); order unchanged for the silvisBusy block (2026-09-24); order unchanged
+}
+
+// ─── BE. Requests: decisions say they landed, the revoked person is told, Sending…, the edit's range gate, the trade builder's holders (UX audit 2026-10-19) ───
+// (1) Approve / deny / accept / decline / revoke said nothing on success. Each now toasts once it has landed:
+//     after its list update, inside its session fence (a session change while its status write is out: nothing
+//     said), and BEFORE its first notice (AA3's order: a notification failure toasts after it, the last word).
+//     The revoke's notice carried {}: the bell shows a member only the notices whose data names them, so the
+//     person whose vacation was revoked never saw it. It now carries surgeon_id, as approve's and deny's do.
+// (2) The request form: Reason before Submit; Submit and Propose Trade read "Sending…" and are disabled while
+//     the submit is out (vacSubmitting / tradeSubmitting, set and cleared WITH the busy refs, which stay the
+//     double-tap gate); a line under the dates reads the range back (helpers.js rangeSummary).
+// (3) saveVacRequestEdit refuses an empty or inverted range before anything is sent; a save says so.
+// (4) The scheduler's trade builder: weeks read "Wk of Oct 19", each shift names who holds it (" · FAK", by the
+//     accept's own rule), and an amber note says when a leg's giver doesn't hold it (the accept would refuse it
+//     as out of date) — with no new slotLabel( call (L pins 23).
+// Executed on the REAL handler bodies, sliced from index-source.html, and the REAL helpers.js; the markup is
+// pinned (JSX can't run here — no Babel in CI).
+//   BE1 rangeSummary, here and under TZ=America/Chicago across both DST changes
+//   BE2 the submits' busy state: [true, false] around every submit that sends; never set by a refused one
+//   BE3 the five decisions: one success toast in one session, after the list update and before the notice;
+//       none after a session change; the revoke's notice names the surgeon
+//   BE4 the edit: an empty or inverted range makes ZERO requests and says why; a save says so (not after a session change)
+//   BE5 the trade builder's holder IS the accept's holderIn (sliced) on every slot; its notes, executed
+//   BE6 the markup: the range line, Reason before Submit, Sending…, the holders, the note, slotLabel( ×23
+// Review fixes (2026-10-19):
+//   BE3 the revoke's success toast claims only the revoke ("…, is off the schedule." was false when removing the time
+//       off then failed — that failure's own toast follows it)
+//   BE7 the scheduler's week pickers carry the year for a week outside this year (a 56-week period spans two); each
+//       shift option names its holder FIRST ("KJH · Tue Oct 27 — Night"), so a phone's closed 190px select shows it
+//   BE8 a member's partner change drops their return pick (it stayed in state unseen, the note named it, and the
+//       proposal sent it); the note is the scheduler's only — a member's pickers list only shifts the giver holds
+{
+  console.log("\nBE. Requests: decisions confirm, the revoked person is told, Sending…, the edit's range gate, the trade builder's holders");
+  const nsrcBE = src.replace(/\r\n/g, "\n");   // a Windows checkout is CRLF, CI's is LF
+  const afterBE = (start, end) => { const i = nsrcBE.indexOf(start); if (i < 0 || nsrcBE.indexOf(start, i + 1) !== -1) return null; const e = nsrcBE.indexOf(end, i + start.length); return e < 0 ? null : nsrcBE.slice(i + start.length, e); };
+  const wfrBE = (() => { const a = nsrcBE.indexOf("function writeFailReason(err) {"); const b = a < 0 ? -1 : nsrcBE.indexOf("\n}\n", a); return a < 0 || b < 0 ? "" : nsrcBE.slice(a, b + 2); })();
+  // A slice compiled in the sandbox (the helpers.js / config.js globals it reads: fmt, parse, addD, onVac,
+  // shiftStartDate, SHIFT_LABELS, tradeAcceptMsg, tradeDeclineMsg, tradeProposeMsg …); every name listed comes
+  // from the env — fetch and SUPABASE_URL included, so nothing here reaches the network.
+  const fnBE = (names, code) => { if (!code) return null; try { return vm.runInContext(`(function () { ${wfrBE}\n return function (env) { const { ${names} } = env; return (${code}); }; })()`, sandbox, { filename: "be-extract.js" }); } catch (ex) { console.log("  (BE compile error) " + String(ex).slice(0, 200)); return null; } };
+  const helperBE = (name) => vm.runInContext(`typeof ${name} === "function" ? ${name} : null`, sandbox);
+  const quietBE = { error: () => {}, warn: () => {}, log: () => {}, info: () => {} };
+  const respBE = (status, json) => ({ ok: status >= 200 && status < 300, status, json: async () => json, text: async () => JSON.stringify(json) });
+  const SURG_BE = [{ id: "s1", name: "AAA" }, { id: "s3", name: "CCC" }, { id: "s6", name: "FAK" }];
+
+  // BE1 — rangeSummary
+  {
+    const RS = helperBE("rangeSummary");
+    const CASES = [
+      ["2026-12-14", "2026-12-18", "5 days, Mon Dec 14 – Fri Dec 18"],
+      ["2026-12-14", "2026-12-14", "1 day, Mon Dec 14"],
+      ["2026-12-28", "2027-01-01", "5 days, Mon Dec 28, 2026 – Fri Jan 1, 2027"],
+      ["2026-03-06", "2026-03-09", "4 days, Fri Mar 6 – Mon Mar 9"],     // across the spring DST change (Sun Mar 8)
+      ["2026-10-30", "2026-11-02", "4 days, Fri Oct 30 – Mon Nov 2"],    // and the fall one (Sun Nov 1)
+      ["2026-12-18", "2026-12-14", null], ["", "2026-12-14", null], ["2026-12-14", "", null], [null, null, null],
+    ];
+    const here = RS ? CASES.map(([a, b]) => RS(a, b)) : null;
+    let chicago = null;
+    if (RS) {
+      const { execFileSync } = require("child_process");
+      const code = [
+        'const vm = require("vm"), fs = require("fs"), path = require("path");',
+        'const sb = { console, window: {}, document: undefined, navigator: { userAgent: "node-test" }, localStorage: { getItem: () => null, setItem() {}, removeItem() {} }, fetch: () => { throw new Error("no fetch"); }, setTimeout, clearTimeout };',
+        "sb.globalThis = sb; vm.createContext(sb);",
+        `for (const f of ["helpers.js", "config.js"]) vm.runInContext(fs.readFileSync(path.join(${JSON.stringify(ROOT)}, f), "utf8"), sb, { filename: f });`,
+        `const RS = vm.runInContext("rangeSummary", sb), C = ${JSON.stringify(CASES.map(([a, b]) => [a, b]))};`,
+        "process.stdout.write(JSON.stringify({ off: new Date(2026, 2, 6).getTimezoneOffset() - new Date(2026, 2, 9).getTimezoneOffset(), got: C.map(([a, b]) => RS(a, b)) }));",
+      ].join("\n");
+      try { chicago = JSON.parse(execFileSync(process.execPath, ["-e", code], { env: Object.assign({}, process.env, { TZ: "America/Chicago" }), encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })); } catch (ex) { chicago = { err: String(ex).slice(0, 300) }; }
+    }
+    const want = JSON.stringify(CASES.map((c) => c[2]));
+    check("BE1 rangeSummary (helpers.js, executed): \"5 days, Mon Dec 14 – Fri Dec 18\"; one day; across a new year each date has its year; null while a date is missing or the end is before the start — here, and under TZ=America/Chicago across both DST changes (the offset change proven)",
+      !!here && JSON.stringify(here) === want && !!chicago && chicago.off === 60 && JSON.stringify(chicago.got) === want,
+      RS ? JSON.stringify({ here, chicago }) : "rangeSummary is not defined in helpers.js");
+  }
+
+  // BE2 — the submits' busy state
+  {
+    const vacMk = fnBE("vacReqSurgeon, vacReqStart, vacReqEnd, vacReqReason, vacReqType, surgeons, apps, showToast, db, setVacRequests, addNotification, schedulerAdminIds, sendEmailNotif, setVacReqStart, setVacReqEnd, setVacReqReason, setVacReqType, vacSubmitBusyRef, sessionEpochRef, setVacSubmitting, console",
+      afterBE("  const submitVacRequest = useCallback(", ", [vacReqSurgeon, vacReqStart, vacReqEnd, vacReqReason, vacReqType, surgeons, apps, addNotification, sendEmailNotif, schedulerAdminIds]);"));
+    const tradeMk = fnBE("tradeFrom, tradeTo, tradeWeek, tradeShift, tradeReturnWeek, tradeReturnShift, isScheduler, silvisActive, silvisBlock, silvisRefuse, surgeons, schedule, scheduleRef, logAudit, addNotification, sendEmailNotif, setTradeRequests, setTradeWeek, setTradeShift, setTradeReturnWeek, setTradeReturnShift, tradeSubmitBusyRef, showToast, db, alert, confirm, sessionEpochRef, dbAuthHeaders, setTradeSubmitting, console",
+      afterBE("  const submitTradeRequest = useCallback(", ", [tradeFrom, tradeTo, tradeWeek, tradeShift, tradeReturnWeek, tradeReturnShift, surgeons, addNotification, sendEmailNotif, isScheduler, schedule, silvisActive, silvisBlock, silvisRefuse]);"));
+    // o: { insert: "rls" | "throw", cross: the session changes while the insert is out, hold: the insert held open, busy: a submit already out, env }
+    const runSubmit = (mk, kind, o = {}) => {
+      const rec = { busy: [], toasts: [], inserts: 0, midBusy: null, midRef: null };
+      let release; const gate = new Promise((r) => (release = r));
+      const ref = { current: !!o.busy }, ep = { current: 0 };
+      const insert = async () => {
+        rec.inserts++; rec.midBusy = rec.busy.slice(); rec.midRef = ref.current;
+        if (o.hold) await gate;
+        if (o.cross) ep.current++;
+        if (o.insert === "throw") throw new TypeError("Failed to fetch");
+        return o.insert === "rls" ? { data: null, error: { code: "42501", message: "new row violates row-level security policy" } } : { data: { id: 7 }, error: null };
+      };
+      const common = { surgeons: SURG_BE, showToast: (m, t) => rec.toasts.push((t || "info") + ": " + m), db: { insert }, addNotification: async () => {}, sendEmailNotif: () => {}, schedulerAdminIds: ["s6"], sessionEpochRef: ep, console: quietBE };
+      const env = kind === "vac"
+        ? Object.assign(common, { vacReqSurgeon: "s3", vacReqStart: "2099-01-05", vacReqEnd: "2099-01-09", vacReqReason: "", vacReqType: "vacation", apps: [], setVacRequests: () => {},
+            setVacReqStart: () => {}, setVacReqEnd: () => {}, setVacReqReason: () => {}, setVacReqType: () => {}, vacSubmitBusyRef: ref, setVacSubmitting: (v) => rec.busy.push(v) }, o.env || {})
+        : Object.assign(common, { tradeFrom: "s6", tradeTo: "s1", tradeWeek: "2099-01-05", tradeShift: "mon", tradeReturnWeek: "2099-01-12", tradeReturnShift: "tue", isScheduler: false,
+            silvisActive: false, silvisBlock: () => null, silvisRefuse: () => false, schedule: {}, scheduleRef: { current: {} }, logAudit: () => {}, setTradeRequests: () => {}, setTradeWeek: () => {}, setTradeShift: () => {},
+            setTradeReturnWeek: () => {}, setTradeReturnShift: () => {}, tradeSubmitBusyRef: ref, alert: () => {}, confirm: () => true, dbAuthHeaders: () => ({ Authorization: "Bearer A" }),
+            setTradeSubmitting: (v) => rec.busy.push(v) }, o.env || {});
+      return { fn: mk ? mk(env) : null, rec, ref, release };
+    };
+    const res = {};
+    for (const [kind, mk, empty] of [["vac", vacMk, { vacReqEnd: "" }], ["trade", tradeMk, { tradeShift: "" }]]) {
+      const r = {};
+      for (const [k, o] of [["ok", {}], ["rls", { insert: "rls" }], ["throw", { insert: "throw" }], ["cross", { cross: true }], ["refused", { env: empty }], ["inFlight", { busy: true }]]) {
+        const x = runSubmit(mk, kind, o); if (x.fn) await x.fn();
+        r[k] = { busy: x.rec.busy, mid: x.rec.midBusy, midRef: x.rec.midRef, ref: x.ref.current, inserts: x.rec.inserts, toasts: x.rec.toasts };
+      }
+      const h = runSubmit(mk, kind, { hold: true });
+      if (h.fn) { const p = h.fn(); await null; await null; r.held = { busy: h.rec.busy.slice(), ref: h.ref.current }; h.release(); await p; r.held.after = h.rec.busy.slice(); }
+      res[kind] = r;
+    }
+    const TF = JSON.stringify([true, false]);
+    const busyOk = (r) => !!r && ["ok", "rls", "throw", "cross"].every((k) => JSON.stringify(r[k].busy) === TF && JSON.stringify(r[k].mid) === "[true]" && r[k].midRef === true && r[k].ref === false && r[k].inserts === 1)
+      && r.refused.busy.length === 0 && r.refused.inserts === 0 && r.inFlight.busy.length === 0 && r.inFlight.inserts === 0 && r.inFlight.ref === true
+      && !!r.held && JSON.stringify(r.held.busy) === "[true]" && r.held.ref === true && JSON.stringify(r.held.after) === TF && r.cross.toasts.length === 0;
+    check("BE2 the REAL submitVacRequest and submitTradeRequest: the button's busy state is set with the ref (true while the insert is out — held open here) and cleared with it — [true, false] around a success, an RLS refusal, a thrown insert, and a session change during the insert (released, so the next session's button isn't stuck on \"Sending…\"; nothing said there); a refused submit (an empty field) or a tap while one is out never touches it",
+      !!vacMk && !!tradeMk && busyOk(res.vac) && busyOk(res.trade), JSON.stringify(res).slice(0, 1600));
+  }
+
+  // BE3 — the five decisions
+  const VREQ_BE = (status) => ({ id: 7, surgeon_id: "s3", surgeon_name: "CCC", start_date: "2099-03-02", end_date: "2099-03-06", request_type: "vacation", reason: "trip", status, reviewed_at: status === "approved" ? "2099-01-01T08:00:00Z" : null });
+  {
+    const mk = {
+      approve: fnBE("sessionEpochRef, dbAuthHeaders, surgeons, vacations, noCallDays, confirm, userProfile, mySurgeon, fetch, SUPABASE_URL, console, showToast, setBackRequest, setVacRequests, toAdd, logAudit, schedulerAdminIds, addNotification, sendEmailNotif",
+        afterBE("  const approveVacRequest = useCallback(", ", [addNotification, sendEmailNotif, schedulerAdminIds, userProfile, surgeons, mySurgeon, vacations, noCallDays]);")),
+      deny: fnBE("sessionEpochRef, dbAuthHeaders, logAudit, userProfile, surgeons, mySurgeon, fetch, SUPABASE_URL, console, showToast, setVacRequests, schedulerAdminIds, addNotification, sendEmailNotif",
+        afterBE("  const denyVacRequest = useCallback(", ", [addNotification, sendEmailNotif, schedulerAdminIds, userProfile, surgeons, mySurgeon]);")),
+      accept: fnBE("showToast, schedEditable, scheduleRef, surgeons, schedule, detectCascadeChanges, silvisActive, silvisBlock, silvisRefuse, confirm, SUPABASE_URL, dbAuthHeaders, console, setTradeRequests, logAudit, pushUndo, updateSchedule, schedulerAdminIds, sessionEpochRef, addNotification, sendEmailNotif, fetch",
+        afterBE("  const acceptTradeRequest = useCallback(", ", [schedule, surgeons, pushUndo, addNotification, sendEmailNotif, detectCascadeChanges, schedulerAdminIds, silvisActive, silvisBlock, silvisRefuse]);")),
+      decline: fnBE("SUPABASE_URL, dbAuthHeaders, console, showToast, setTradeRequests, logAudit, sessionEpochRef, sendEmailNotif, userProfile, surgeons, mySurgeon, addNotification, fetch",
+        afterBE("  const declineTradeRequest = useCallback(", ", [addNotification, sendEmailNotif, userProfile, surgeons, mySurgeon]);")),
+      revoke: fnBE("sessionEpochRef, dbAuthHeaders, confirm, fetch, SUPABASE_URL, console, showToast, setBackRequest, setVacRequests, toRemove, schedulerAdminIds, addNotification",
+        afterBE("  const revokeApprovedVac = useCallback(", ", [addNotification, schedulerAdminIds]);")),
+    };
+    const TREQ = { id: 9, from_surgeon_id: "s6", to_surgeon_id: "s1", from_surgeon_name: "FAK", to_surgeon_name: "AAA", week_monday: "2099-01-05", shift_key: "tue", shift_label: "Tue Night", return_week: null, return_shift: null, status: "pending" };
+    // One tap, as the app makes it, every step it takes in order: its requests, the list update, toasts, the time
+    // off / schedule write, its notices (with their data) and e-mails. cross: the session changes while the
+    // status write is out (sessionEpochRef moved).
+    const decide = async (which, cross, removeFails) => {
+      const ev = [], ep = { current: 0 };
+      let sent = 0;
+      const env = {
+        sessionEpochRef: ep, dbAuthHeaders: () => ({ Authorization: "Bearer A" }), SUPABASE_URL: "https://x.test", console: quietBE, confirm: () => true,
+        fetch: async (url, init) => { ev.push("request " + ((init && init.method) || "GET")); if (cross && ++sent === 1) ep.current++; return respBE(200, [{ id: 7 }]); },
+        showToast: (m, t) => ev.push("toast " + (t || "info") + ": " + m),
+        addNotification: async (type, title, msg, data) => { ev.push("notice " + type + " " + JSON.stringify(data)); },
+        sendEmailNotif: (type) => ev.push("email " + type),
+        logAudit: () => {}, setBackRequest: async () => { ev.push("set back"); return true; },
+        setVacRequests: () => ev.push("list"), setTradeRequests: () => ev.push("list"), toAdd: () => ev.push("time off"),
+        // (removeFails: the time_off DELETE fails — the real toRemove's own toast, deleteTimeOff's tell())
+        toRemove: () => { ev.push("time off"); if (removeFails) ev.push("toast error: Couldn't remove that — check your connection and try again."); },
+        surgeons: SURG_BE, vacations: {}, noCallDays: {}, userProfile: { display_name: "FAK" }, mySurgeon: "s1", schedulerAdminIds: ["s6"],
+        // the accept: the trade still holds (FAK holds the Tuesday), no cascades, nothing Silvis
+        schedule: {}, scheduleRef: { current: { "2099-01-05": { dayCall: "s3", nights: { tue: "s6" }, off: null } } }, schedEditable: () => true, detectCascadeChanges: () => [],
+        silvisActive: false, silvisBlock: () => null, silvisRefuse: () => false, pushUndo: () => {}, updateSchedule: () => ev.push("schedule write"),
+      };
+      const fn = mk[which] ? mk[which](env) : null;
+      if (!fn) return null;
+      if (which === "approve") await fn(VREQ_BE("pending"));
+      else if (which === "deny") await fn(VREQ_BE("pending"), "");
+      else if (which === "revoke") await fn(VREQ_BE("approved"));
+      else await fn(Object.assign({}, TREQ));
+      return ev;
+    };
+    const SAID = {
+      approve: "toast success: Approved — CCC's vacation, 2099-03-02 to 2099-03-06.",
+      deny: "toast success: Denied — CCC's vacation, 2099-03-02 to 2099-03-06.",
+      accept: "toast success: Trade accepted — the schedule is updated.",
+      decline: "toast success: Trade declined.",
+      revoke: "toast success: Revoked — CCC's vacation, 2099-03-02 to 2099-03-06.", // (review fix: no "…, is off the schedule." — BE3 below)
+    };
+    const out = {};
+    for (const which of Object.keys(SAID)) out[which] = { one: await decide(which, false), crossed: await decide(which, true) };
+    const firstAt = (ev, re) => ev.findIndex((e) => re.test(e));
+    const sameSession = Object.keys(SAID).every((w) => {
+      const ev = out[w].one; if (!ev) return false;
+      const t = ev.indexOf(SAID[w]), n = firstAt(ev, /^notice /), l = ev.indexOf("list"), wr = firstAt(ev, /^(time off|schedule write)$/);
+      return ev.filter((e) => e.startsWith("toast ")).length === 1 && l >= 0 && t > l && n > t && (w === "deny" || w === "decline" ? wr === -1 : wr > t);
+    });
+    const crossed = Object.keys(SAID).every((w) => { const ev = out[w].crossed; return !!ev && !ev.some((e) => /^(toast|notice|email|list|time off|schedule write)/.test(e)); });
+    check("BE3 the REAL approve / deny / accept / decline / revoke, in one session: ONE success toast each, after the list update, before the time off / swap is written and before the first notice (AA3's order — a notice failure is the last word); the session changing while the status write is out: nothing said (no toast, notice, e-mail or list update)",
+      sameSession && crossed, JSON.stringify(out).slice(0, 2400));
+    const rv = out.revoke.one || [];
+    check("BE3 the revoke's notice names the surgeon (data.surgeon_id — the bell's member filter), as approve's and deny's do: the person whose vacation was revoked sees it",
+      rv.includes('notice vacation_revoked {"surgeon_id":"s3"}') && (out.approve.one || []).includes('notice vacation_approved {"surgeon_id":"s3"}') && (out.deny.one || []).includes('notice vacation_denied {"surgeon_id":"s3"}'),
+      JSON.stringify(rv.filter((e) => e.startsWith("notice "))));
+    // (review fix) the time off's removal failing after the revoke landed: the screen must not say the vacation is off
+    // the schedule — the success toast claims the revoke only, and the removal's own failure toast follows it
+    const rvFail = (await decide("revoke", false, true)) || [];
+    const rvToasts = rvFail.filter((e) => e.startsWith("toast "));
+    check("BE3 (review fix) the REAL revoke whose time-off removal then fails: \"✓ Revoked — CCC's vacation, 2099-03-02 to 2099-03-06.\" then the removal's \"⚠ Couldn't remove that …\" — nothing on screen says the vacation is off the schedule (it read \"…, is off the schedule.\", and the time_off row still blocked the surgeon)",
+      JSON.stringify(rvToasts) === JSON.stringify([SAID.revoke, "toast error: Couldn't remove that — check your connection and try again."]) && !rvFail.some((e) => /off the schedule/.test(e))
+        && count("is off the schedule.`") === 0, JSON.stringify(rvFail));
+  }
+
+  // BE4 — the edit's range gate, and its toast
+  {
+    const editMk = fnBE("sessionEpochRef, dbAuthHeaders, editingVacReq, isScheduler, showToast, vacRequests, fetch, SUPABASE_URL, console, setBackRequest, logAudit, setVacRequests, toEdit, setEditingVacReq",
+      afterBE("  const saveVacRequestEdit = useCallback(", ", [editingVacReq, vacRequests, isScheduler]);"));
+    const edit = async (draft, o = {}) => {
+      if (!editMk) return null;
+      const ev = [], ep = { current: 0 };
+      await editMk({ sessionEpochRef: ep, dbAuthHeaders: () => ({ Authorization: "Bearer A" }), editingVacReq: Object.assign({ id: 7, reason: "trip" }, draft), isScheduler: o.member ? false : true,
+        showToast: (m, t) => ev.push("toast " + (t || "info") + ": " + m), vacRequests: [VREQ_BE("approved")], SUPABASE_URL: "https://x.test", console: quietBE,
+        fetch: async () => { ev.push("request"); if (o.cross) ep.current++; return respBE(200, [{ id: 7 }]); },
+        setBackRequest: async () => { ev.push("set back"); return true; }, logAudit: () => {}, setVacRequests: () => ev.push("list"), toEdit: () => ev.push("time off"), setEditingVacReq: () => ev.push("editor closed") })();
+      return ev;
+    };
+    const NEED = JSON.stringify(["toast error: Both dates are needed."]), INV = JSON.stringify(["toast error: The end date is before the start date."]);
+    const bad = [];
+    for (const member of [false, true]) {
+      bad.push([member, "no start", await edit({ start_date: "", end_date: "2099-03-06" }, { member }), NEED]);
+      bad.push([member, "no end", await edit({ start_date: "2099-03-02", end_date: "" }, { member }), NEED]);
+      bad.push([member, "inverted", await edit({ start_date: "2099-03-06", end_date: "2099-03-02" }, { member }), INV]);
+    }
+    check("BE4 the REAL saveVacRequestEdit (the scheduler's editor and a member's): an empty start or end, or an end before the start, is refused BEFORE anything is sent — zero requests, no time-off write, the editor left open — and says why",
+      !!editMk && bad.every(([, , ev, want]) => JSON.stringify(ev) === want), JSON.stringify(bad));
+    const ok = await edit({ start_date: "2099-03-09", end_date: "2099-03-13" }), gone = await edit({ start_date: "2099-03-09", end_date: "2099-03-13" }, { cross: true });
+    check("BE4 …a save that lands says so (\"Changes saved.\") after the list update and before the approved request's time off is moved; the session changing while it is out: nothing said (set back, as before)",
+      !!ok && JSON.stringify(ok) === JSON.stringify(["request", "list", "toast success: Changes saved.", "time off", "editor closed"]) && !!gone && JSON.stringify(gone) === JSON.stringify(["request", "set back"]),
+      JSON.stringify({ ok, gone }));
+  }
+
+  // BE5 — the trade builder's holders and its note
+  {
+    const TSH = helperBE("tradeSlotHolder"), TPN = helperBE("tradePickNotes");
+    const accBody = afterBE("  const acceptTradeRequest = useCallback(", ", [schedule, surgeons, pushUndo,");
+    const hl = accBody ? accBody.match(/\n\s*const holderIn = ([^\n]*);\n/) : null;
+    let holderIn = null; try { holderIn = hl ? vm.runInContext("(" + hl[1] + ")", sandbox) : null; } catch (ex) { holderIn = null; }
+    const SCH = { "2026-11-02": { dayCall: "s1", nights: { mon: "s2", tue: "s3", wed: "s4", thu: "s5", wknd: "s6" } }, "2026-11-09": { dayCall: "s2", nights: { mon: "s6", tue: "" } }, "2026-11-16": { nights: {} } };
+    const slots = []; for (const w of [...Object.keys(SCH), "2026-11-23"]) for (const k of ["dayCall", "mon", "tue", "wed", "thu", "wknd"]) slots.push([w, k]);
+    const spot = TSH ? [TSH(SCH, "2026-11-02", "dayCall"), TSH(SCH, "2026-11-02", "wknd"), TSH(SCH, "2026-11-02", "tue"), TSH(SCH, "2026-11-09", "tue"), TSH(SCH, "2026-11-23", "mon")] : null;
+    check("BE5 tradeSlotHolder (helpers.js) IS the accept's own holderIn (sliced from acceptTradeRequest and run) on every slot of every week — the service week, each night, the weekend, an empty slot, a missing week",
+      !!TSH && typeof holderIn === "function" && slots.every(([w, k]) => TSH(SCH, w, k) === holderIn(SCH, w, k)) && JSON.stringify(spot) === JSON.stringify(["s1", "s6", "s3", "", ""]),
+      JSON.stringify({ spot, holderIn: typeof holderIn, n: slots.length }));
+    const NM = { s1: "AAA", s3: "CCC", s4: "DDD", s6: "FAK" }, nm = (id) => NM[id] || id;
+    const P = (o) => Object.assign({ from: "s3", to: "s1", week: "2026-11-02", shift: "tue", returnWeek: "2026-11-02", returnShift: "dayCall" }, o);
+    const got = TPN ? [
+      TPN(SCH, P({}), nm),                                             // both givers hold their legs
+      TPN(SCH, P({ from: "s4" }), nm),                                 // DDD picked as giver of CCC's Tuesday
+      TPN(SCH, P({ to: "s6" }), nm),                                   // FAK picked as giver of AAA's service week
+      TPN(SCH, P({ week: "2026-11-09", returnWeek: "2026-11-09" }), nm), // an empty Tuesday; the 11/9 service week is s2's
+      TPN(SCH, P({ returnWeek: "", returnShift: "" }), nm),            // one-way, its one leg held
+      TPN(SCH, P({ from: "", returnShift: "" }), nm),                  // nothing complete to check yet
+    ] : null;
+    const WANT = [[], ["DDD doesn't hold the shift to give — CCC does."], ["FAK doesn't hold the return shift — AAA does."],
+      ["CCC doesn't hold the shift to give — no one does.", "AAA doesn't hold the return shift — s2 does."], [], []];
+    check("BE5 tradePickNotes (helpers.js, executed): a leg whose giver doesn't hold it is named with who does (or no one) — the shift to give and the return shift; nothing while the picks hold or are incomplete",
+      !!got && JSON.stringify(got) === JSON.stringify(WANT), JSON.stringify(got));
+  }
+
+  // BE6 — the markup
+  {
+    const form = (() => { const a = nsrcBE.indexOf("🏖 Request Time Off</div>"), b = a < 0 ? -1 : nsrcBE.indexOf("{/* Pending Requests — Grouped by Person */}", a); return a < 0 || b < 0 ? "" : nsrcBE.slice(a, b); })();
+    const iEnd = form.indexOf("value={vacReqEnd}"), iSum = form.indexOf("rangeSummary(vacReqStart, vacReqEnd)"), iReason = form.indexOf('placeholder="Conference, personal, etc."'), iBtn = form.indexOf("<button onClick={submitVacRequest}");
+    check("BE6 the request form: the range line under the dates (rangeSummary, guarded against an old cached helpers.js, dark-mode color), then Reason, then the ONE Submit — disabled and reading \"Sending…\" while vacSubmitting",
+      iEnd > 0 && iSum > iEnd && iReason > iSum && iBtn > iReason && count("<button onClick={submitVacRequest}") === 1
+        && form.includes('typeof rangeSummary === "function" ? rangeSummary(vacReqStart, vacReqEnd) : null') && form.includes('color:dk?"#9aa0b8":"#5a6a78"')
+        && form.includes("<button onClick={submitVacRequest} disabled={vacSubmitting}") && form.includes('{vacSubmitting ? "Sending…" : "Submit Request"}'),
+      JSON.stringify({ iEnd, iSum, iReason, iBtn }));
+    check("BE6 Propose Trade the same (disabled, \"Sending…\" while tradeSubmitting); both busy states declared once, before the submits that set them (§P's order), each set and cleared on the line that sets and clears its ref",
+      count("<button onClick={submitTradeRequest} disabled={tradeSubmitting}") === 1 && count('{tradeSubmitting ? "Sending…" : "Propose Trade"}') === 1
+        && count("const [vacSubmitting, setVacSubmitting] = useState(false);") === 1 && count("const [tradeSubmitting, setTradeSubmitting] = useState(false);") === 1
+        && src.indexOf("const [vacSubmitting, setVacSubmitting] = useState(false);") < src.indexOf("const submitVacRequest = useCallback(")
+        && src.indexOf("const [tradeSubmitting, setTradeSubmitting] = useState(false);") < src.indexOf("const submitVacRequest = useCallback(")
+        && count("vacSubmitBusyRef.current = true; setVacSubmitting(true);") === 1 && count("finally { vacSubmitBusyRef.current = false; setVacSubmitting(false); }") === 1
+        && count("tradeSubmitBusyRef.current = true; setTradeSubmitting(true);") === 1 && count("finally { tradeSubmitBusyRef.current = false; setTradeSubmitting(false); }") === 1);
+    const card = (() => { const a = nsrcBE.indexOf("🔄 Propose a Shift Trade</div>"), b = a < 0 ? -1 : nsrcBE.indexOf("{/* silvisBusy: a proposal that could never be accepted is flagged here", a); return a < 0 || b < 0 ? "" : nsrcBE.slice(a, b); })();
+    const HOLD = "<option key={sk} value={sk}>{h ? `${sMap[h]?.name || h} · ` : \"\"}"; // (review fix: the holder FIRST — BE7)
+    check("BE6 the scheduler's trade builder: both week pickers read \"Wk of Oct 19\" (monthDayLabel, guarded — the year when it isn't this year's, BE7); both shift pickers put the holder (tradeSlotHolder, guarded) before the SAME slotLabel( call — slotLabel( still ×23 (L); the amber note (tradePickNotes, dark-mode colors, the scheduler's only — BE8) sits in the card, before the Silvis preview",
+      (card.match(/Wk of \{typeof monthDayLabel === "function" \? monthDayLabel\(m, m\.slice\(0, 4\) !== todayStr\.slice\(0, 4\)\) : m\}\{m <= todayStr \? " \(this week\)" : ""\}<\/option>/g) || []).length === 2
+        && card.includes('tradeWeek && typeof tradeSlotHolder === "function" ? tradeSlotHolder(schedule, tradeWeek, sk) : ""')
+        && card.includes('tradeReturnWeek && typeof tradeSlotHolder === "function" ? tradeSlotHolder(schedule, tradeReturnWeek, sk) : ""')
+        && card.split(HOLD).length - 1 === 2 && card.includes(HOLD + "{tradeWeek ? slotLabel(tradeWeek, sk) : SHIFT_LABELS[sk]}</option>") && card.includes(HOLD + "{tradeReturnWeek ? slotLabel(tradeReturnWeek, sk) : SHIFT_LABELS[sk]}</option>")
+        && count("slotLabel(") === 23
+        && card.includes('isScheduler && typeof tradePickNotes === "function" ? tradePickNotes(schedule, { from: tradeFrom, to: tradeTo, week: tradeWeek, shift: tradeShift, returnWeek: tradeReturnWeek, returnShift: tradeReturnShift }, id => sMap[id]?.name || id) : []')
+        && card.includes('background:dk?"#2a1a0a":"#fef8e8"') && count("tradePickNotes(") === 1,
+      `slotLabel( ×${count("slotLabel(")} · card ${card.length} chars`);
+
+    // BE7 — the week labels' year and the holder first, each option's own expressions run
+    const wkRe = /\.map\(m=><option key=\{m\} value=\{m\}>Wk of \{([^\n]*?)\}\{(m <= todayStr \? " \(this week\)" : "")\}<\/option>\)\}/g;
+    const wkLabels = [...card.matchAll(wkRe)].map((mm) => { try { return vm.runInContext(`(function (m, todayStr, monthDayLabel) { return "Wk of " + (${mm[1]}) + (${mm[2]}); })`, sandbox); } catch (ex) { return null; } });
+    const WK_IN = ["2026-10-19", "2026-10-26", "2026-12-28", "2027-01-04", "2027-10-25"];
+    const WK_WANT = ["Wk of Oct 19 (this week)", "Wk of Oct 26", "Wk of Dec 28", "Wk of Jan 4, 2027", "Wk of Oct 25, 2027"];
+    const MDL = helperBE("monthDayLabel");
+    const wkGot = wkLabels.map((f) => (f ? WK_IN.map((m) => f(m, "2026-10-19", MDL)) : null));
+    check("BE7 (review fix) both of the scheduler's week pickers, their option text run (today 2026-10-19): \"Wk of Oct 19 (this week)\", \"Wk of Dec 28\" — and a week outside this year carries its year: \"Wk of Jan 4, 2027\", \"Wk of Oct 25, 2027\" (it read \"Wk of Oct 25\": a 56-week period lists Oct 26, 2026 and Oct 25, 2027 alike); each select 190px wide so the year fits",
+      wkLabels.length === 2 && wkGot.every((g) => JSON.stringify(g) === JSON.stringify(WK_WANT))
+        && card.includes("<select value={tradeWeek} onChange={e=>setTradeWeek(e.target.value)} style={{...css.inp,width:190}}>") && card.includes("<select value={tradeReturnWeek} onChange={e=>setTradeReturnWeek(e.target.value)} style={{...css.inp,width:190}}>"),
+      JSON.stringify({ n: wkLabels.length, wkGot }));
+    const shRe = /return <option key=\{sk\} value=\{sk\}>\{(h \? [^\n]*?)\}\{(trade(?:Return)?Week \? slotLabel\(trade(?:Return)?Week, sk\) : SHIFT_LABELS\[sk\])\}<\/option>; \}\)\}/g;
+    const shOpts = [...card.matchAll(shRe)].map((mm) => { try { return vm.runInContext(`(function (h, sMap, tradeWeek, tradeReturnWeek, sk) { return String(${mm[1]}) + String(${mm[2]}); })`, sandbox); } catch (ex) { return null; } });
+    const SM7 = { s4: { name: "KJH" }, s2: { name: "MCC" } };
+    const shGot = shOpts.map((f) => (f ? [f("s4", SM7, "2026-10-26", "2026-10-26", "tue"), f("s2", SM7, "2026-10-26", "2026-10-26", "dayCall"), f("", SM7, "2026-10-26", "2026-10-26", "wed"), f("s9", SM7, "2026-10-26", "2026-10-26", "mon")] : null));
+    const SH_WANT = ["KJH · Tue Oct 27 — Night", "MCC · Service Wk of Oct 26", "Wed Oct 28 — Night", "s9 · Mon Oct 26 — Night"];
+    check("BE7 (review fix) both shift pickers, their option text run: the holder FIRST — \"KJH · Tue Oct 27 — Night\", \"MCC · Service Wk of Oct 26\" — so the closed 190px select at a phone's 16px still shows who holds it (\"Tue Oct 27 — Night · KJH\" was cut to \"Tue Oct 27 — Night ·\"); no holder, just the shift",
+      shOpts.length === 2 && shGot.every((g) => JSON.stringify(g) === JSON.stringify(SH_WANT)), JSON.stringify({ n: shOpts.length, shGot }));
+
+    // BE8 — the member's stale return pick, and the note's audience
+    const toM = card.match(/<select value=\{tradeTo\} onChange=\{([^\n]*?)\} style=\{\{\.\.\.css\.inp,width:100\}\}>/);
+    const partner = (isSched) => { if (!toM) return null; const log = []; try { vm.runInContext(`(function (isScheduler, setTradeTo, setTradeReturnWeek, setTradeReturnShift) { return (${toM[1]}); })`, sandbox)(isSched, (v) => log.push("to " + v), (v) => log.push("returnWeek " + J8(v)), (v) => log.push("returnShift " + J8(v)))({ target: { value: "s4" } }); } catch (ex) { log.push("threw " + ex); } return log; };
+    const J8 = (x) => JSON.stringify(x);
+    const ntM = card.match(/\{\(\(\)=>\{ const notes = ([^\n]*?);\n/);
+    const notesFor = (isSched, st) => { if (!ntM) return null; try { return vm.runInContext(`(function (isScheduler, tradePickNotes, schedule, sMap, tradeFrom, tradeTo, tradeWeek, tradeShift, tradeReturnWeek, tradeReturnShift) { return (${ntM[1]}); })`, sandbox)(isSched, helperBE("tradePickNotes"), st.schedule, { s2: { name: "MCC" }, s3: { name: "RPC" }, s4: { name: "KJH" } }, st.from, st.to, st.week, st.shift, st.rw, st.rs); } catch (ex) { return "threw " + ex; } };
+    // B5's taps: MCC (s2) trades with RPC (s3), gives his Monday night, picks RPC's Tuesday night as the return — then switches the partner to KJH
+    const SCH8 = { "2026-10-19": { dayCall: "s1", nights: { mon: "s2", tue: "s3", wed: "s4" } } };
+    const st = { schedule: SCH8, from: "s2", to: "s3", week: "2026-10-19", shift: "mon", rw: "2026-10-19", rs: "tue" };
+    const before8 = notesFor(false, st);
+    const mem = partner(false), sch = partner(true);
+    const after8 = Object.assign({}, st, { to: "s4" }); mem.forEach((l) => { if (l === 'returnWeek ""') after8.rw = ""; if (l === 'returnShift ""') after8.rs = ""; });
+    const memNotes = notesFor(false, after8), memStale = notesFor(false, Object.assign({}, st, { to: "s4" })), schNotes = notesFor(true, Object.assign({}, st, { to: "s4" }));
+    check("BE8 (review fix) a member switching the trade partner (MCC: RPC → KJH, RPC's Tuesday picked as the return): the REAL partner select drops the return pick (setTradeReturnWeek(\"\"), setTradeReturnShift(\"\")) — it stayed in state, unseen, the note named it (\"KJH doesn't hold the return shift — RPC does.\") and Propose Trade sent it; the scheduler's change keeps the return pick (its pickers show it)",
+      J8(mem) === J8(["to s4", 'returnWeek ""', 'returnShift ""']) && J8(sch) === J8(["to s4"]) && after8.rw === "" && after8.rs === "" && J8(before8) === "[]" && J8(memNotes) === "[]",
+      J8({ mem, sch, before8, memNotes }));
+    check("BE8 (review fix) the amber note is the scheduler's only: a member's pickers list only shifts the giver holds, so a note there could only name a pick the select no longer shows — a member with that stale pick: no note; the scheduler with it (a free pick on screen): the note",
+      J8(memStale) === "[]" && J8(schNotes) === J8(["KJH doesn't hold the return shift — RPC does."]), J8({ memStale, schNotes }));
+  }
 }
 
 // ─── O. silvisBusy (2026-09-24, revised after the post-merge review): FAK's Silvis primary days block Davenport call ───
@@ -2107,6 +2759,261 @@ check("prefs audit never logs the plaintext email (masked only)",
   }
 }
 
+// ─── BF. Toasts stack: up to 3 at once, an error stays longer, no doubled ⚠ (UX audit 2026-10-19) ───
+// The app had ONE toast slot: each showToast replaced the message before it,
+// so a burst — opening the app offline fires three errors — left only the
+// last; an error went after 4 s like an info toast; doGenerate's dropped-locks
+// error ("⚠ 2 locks were NOT honored…") read "⚠ ⚠ …" under the error style's
+// own ⚠; and the toast, 24px up, sat over the update banner's buttons.
+//   BF1 toastAdd (helpers.js), executed: appends in order; past 3 the oldest go; the same words in the same
+//       style show once, as the newest; another style is another toast; the list given is never changed
+//   BF2 toastMs (helpers.js), executed: an error 8 s, info / success 4 s, a long text longer, at most 15 s
+//   BF3 toastText (helpers.js), executed: ✓ / ⚠ before a success / an error; an error's own leading ⚠ (or ⚠️) is
+//       dropped; info keeps its words; a non-string message can't break the render
+//   BF4 the REAL showToast / dismissToast, sliced and run with a state stub and recorded timers: three errors in a
+//       row (the offline open) all stay; a fourth pushes the oldest out; each has its own timer (toastMs); a tap
+//       takes just that one; a timer for a toast already gone changes nothing; AA3's order (success, then a
+//       notification failure) leaves the failure on screen once the success has gone; the banner is measured first
+//   BF5 the REAL lift effect, sliced and run: while a toast shows, the stack's lift is the banner's measured height,
+//       remeasured on a resize and on the banner's own resize, listeners removed after; nothing while none shows;
+//       it lists updateAvailable and paintSheet (the banner comes and goes with them), declared before it (§P)
+//   BF6 the stack's real style, evaluated: with the banner it sits 10px above it, without, 24px above the home bar
+//       (safe area); z above the banner; the stack lets taps through, its pills catch them; the single slot is gone
+// Review fixes (2026-10-19):
+//   BF5 the lift also clears any open bottom sheet or action bar (toastLiftNow: data-toast-floor="1" — the Calendar's
+//       day sheet, the month painter's Save / Discard bar), executed: a toast lands above the sheet, never on "Edit
+//       this week" or Save; capped so the newest toast stays on screen; remeasured when either opens (calDayOpen,
+//       paintSheet) and on their own resize
+//   BF7 an OLD cached helpers.js (OLD_SB: no toastAdd / toastMs / toastText): the real showToast keeps one toast at a
+//       time for 4 s and the pill shows "⚠ …" — no crash at the root (main of this batch: "toastAdd is not defined",
+//       the error boundary); every call of the batch's twelve helpers in index-source.html sits behind its typeof
+console.log("\nBF. toasts stack (up to 3), errors stay longer, no doubled ⚠");
+{
+  const H = vm.runInContext("({ toastAdd: typeof toastAdd === 'function' ? toastAdd : null, toastMs: typeof toastMs === 'function' ? toastMs : null, toastText: typeof toastText === 'function' ? toastText : null })", sandbox);
+  const T = (id, msg, tone) => ({ id, msg, tone });
+  const ids = (l) => (l || []).map(t => t.id).join();
+
+  if (!H.toastAdd || !H.toastText) check("BF1 toastAdd / toastText are in helpers.js", false, "not defined");
+  else {
+    const l0 = [];
+    const l1 = H.toastAdd(l0, T(1, "A", "error")), l2 = H.toastAdd(l1, T(2, "B", "error")), l3 = H.toastAdd(l2, T(3, "C", "error"));
+    const l4 = H.toastAdd(l3, T(4, "D", "info"));
+    const dup = H.toastAdd(l3, T(5, "A", "error"));          // A again → once, as the newest
+    const other = H.toastAdd(l3, T(6, "A", "info"));         // the same words in another style → another toast
+    const warn = H.toastAdd([T(7, "X", "error")], T(8, "⚠ X", "error")); // both read "⚠ X" on screen → once
+    const two = H.toastAdd(l3, T(9, "E", "info"), 2), none = H.toastAdd(null, T(10, "Z", "success"));
+    check("BF1 toastAdd: appends in order (1 → 1,2 → 1,2,3); a 4th pushes the oldest out (2,3,4); the same message again shows once, as the newest (2,3,5); the same words as info are another toast (2,3,6); \"⚠ X\" and \"X\" as errors read the same → once; max is a parameter (3 by default); the lists given are never changed",
+      ids(l1) === "1" && ids(l2) === "1,2" && ids(l3) === "1,2,3" && ids(l4) === "2,3,4" && ids(dup) === "2,3,5" && ids(other) === "2,3,6"
+        && ids(warn) === "8" && ids(two) === "3,9" && ids(none) === "10" && l0.length === 0 && l1 !== l0 && l4 !== l3,
+      JSON.stringify({ l1: ids(l1), l2: ids(l2), l3: ids(l3), l4: ids(l4), dup: ids(dup), other: ids(other), warn: ids(warn), two: ids(two) }));
+  }
+
+  if (!H.toastMs) check("BF2 toastMs is in helpers.js", false, "not defined");
+  else {
+    const x = (n) => "x".repeat(n);
+    const ms = { e: H.toastMs("error", "Couldn't save."), i: H.toastMs("info", "Saved."), s: H.toastMs("success", "Vacation request sent."), u: H.toastMs(undefined, "x"),
+      i60: H.toastMs("info", x(60)), i100: H.toastMs("info", x(100)), i200: H.toastMs("info", x(200)), e200: H.toastMs("error", x(200)), e300: H.toastMs("error", x(300)), e2000: H.toastMs("error", x(2000)), eNull: H.toastMs("error", null) };
+    check("BF2 toastMs: an error stays 8 s, info / success 4 s (as before); a long text longer — 100 chars 6 s, 200 chars 11 s, for an error too — and never past 15 s",
+      ms.e === 8000 && ms.i === 4000 && ms.s === 4000 && ms.u === 4000 && ms.i60 === 4000 && ms.i100 === 6000 && ms.i200 === 11000 && ms.e200 === 11000 && ms.e300 === 15000 && ms.e2000 === 15000 && ms.eNull === 8000,
+      JSON.stringify(ms));
+  }
+
+  if (!H.toastText) check("BF3 toastText is in helpers.js", false, "not defined");
+  else {
+    const DROPPED = "⚠ 2 locks were NOT honored by the generator: FAK — Thu Oct 22 — Night; DJA — Service Wk of Oct 26 (the surgeon is unavailable there — vacation, no-call or Silvis).";
+    const tt = [H.toastText(T(1, "Saved.", "success")), H.toastText(T(2, "Couldn't save.", "error")), H.toastText(T(3, DROPPED, "error")), H.toastText(T(4, "⚠️  Two", "error")),
+      H.toastText(T(5, "⚠ Heads up", "info")), H.toastText(T(6, "Plain", "info")), H.toastText(T(7, undefined, "error")), H.toastText(T(8, new Error("boom"), "error")), H.toastText(T(9, "Saving ⚠ midway", "error"))];
+    check("BF3 toastText: \"✓ \" before a success, \"⚠ \" before an error; an error's own leading ⚠ / ⚠️ is dropped — doGenerate's dropped-locks toast reads \"⚠ 2 locks were NOT honored…\", not \"⚠ ⚠ …\"; a ⚠ later in the text stays; info is shown as written; no message / an Error object still render text",
+      JSON.stringify(tt) === JSON.stringify(["✓ Saved.", "⚠ Couldn't save.", DROPPED, "⚠ Two", "⚠ Heads up", "Plain", "⚠ ", "⚠ Error: boom", "⚠ Saving ⚠ midway"]),
+      JSON.stringify(tt));
+    const nsrcF0 = src.replace(/\r\n/g, "\n");
+    check("BF3 …the dropped-locks toast is still an ERROR that starts with its own ⚠ (so toastText's strip is what keeps it from doubling)",
+      /showToast\(`⚠ \$\{droppedLocks\.length\} lock[^\n]*\(the surgeon is unavailable there — vacation, no-call or Silvis\)\.`, "error"\);/.test(nsrcF0));
+  }
+
+  const nsrcF = src.replace(/\r\n/g, "\n");
+  // The text from `start` (exactly one occurrence) through the first `end` after it; null when absent.
+  const cutF = (start, end) => { const i = nsrcF.indexOf(start); if (i < 0 || nsrcF.indexOf(start, i + 1) !== -1) return null; const e = nsrcF.indexOf(end, i + start.length); return e < 0 ? null : nsrcF.slice(i, e + end.length); };
+  const showB = cutF("  const [toasts, setToasts] = useState([]);", "toastMs(t.tone, t.msg) : 4000);\n  };\n");
+  const mkShowIn = (ctx) => { try { return showB && showB.length < 3000 ? vm.runInContext("(function (env) { const { useState, useRef, setTimeout, toastLiftNow } = env;\n" + showB + "\n return { showToast, dismissToast }; })", ctx, { filename: "bf-show.js" }) : null; } catch (ex) { return null; } };
+  const mkShow = mkShowIn(sandbox);
+  const showRig = (lift, mk) => {
+    const R = { boxes: [], timers: [], measured: 0 };
+    const useState = (init) => { const box = { init, v: init }; R.boxes.push(box); return [box.v, (u) => { box.v = typeof u === "function" ? u(box.v) : u; }]; };
+    R.api = (mk || mkShow)({ useState, useRef: (v) => ({ current: v }), setTimeout: (fn, ms) => { R.timers.push({ fn, ms }); return R.timers.length; }, toastLiftNow: () => { R.measured++; return lift; } });
+    R.list = () => R.boxes.find(b => Array.isArray(b.init)).v;
+    R.lift = () => R.boxes.find(b => b.init === 0).v;
+    R.msgs = () => R.list().map(t => t.tone + ": " + t.msg).join(" | ");
+    return R;
+  };
+  if (!mkShow) check("BF4 the real showToast / dismissToast are extractable (toasts state through showToast)", false, showB ? "compile" : "anchor");
+  else {
+    const E1 = "Couldn't load the schedule — check your connection.", E2 = "Couldn't load time off — check your connection.", E3 = "Silvis call days couldn't be read — the saved copy is kept.";
+    const r = showRig(100);
+    r.api.showToast(E1, "error"); r.api.showToast(E2, "error"); r.api.showToast(E3, "error");
+    const three = r.msgs(), threeMs = r.timers.map(t => t.ms), threeIds = ids(r.list()), lift = r.lift(), measured = r.measured;
+    r.api.showToast("Saved.");
+    const four = r.msgs(), fourMs = r.timers[3].ms;
+    const [idE2, idE3] = r.list().map(t => t.id);
+    r.api.dismissToast(idE3);
+    const tapped = r.msgs();
+    const before = r.list(); r.timers[0].fn(); const goneNoop = r.list() === before;  // E1's timer: E1 was already pushed out
+    r.timers[1].fn();                                                                 // E2's timer
+    const afterE2 = r.msgs();
+    check("BF4 the real showToast: three errors in a row (opening the app offline) ALL stay, in order — each with its own timer (8 s, toastMs) and id; a 4th (no tone → info, 4 s) pushes the oldest out; a tap takes just that toast; a timer for a toast already gone changes nothing; the next timer takes its own; the update banner is measured at each (the stack's first frame is already above it)",
+      three === "error: " + E1 + " | error: " + E2 + " | error: " + E3 && JSON.stringify(threeMs) === JSON.stringify([8000, 8000, 8000]) && threeIds === "1,2,3"
+        && four === "error: " + E2 + " | error: " + E3 + " | info: Saved." && fourMs === 4000 && idE2 === 2 && idE3 === 3
+        && tapped === "error: " + E2 + " | info: Saved." && goneNoop && afterE2 === "info: Saved." && lift === 100 && measured === 3,
+      JSON.stringify({ three, threeMs, threeIds, four, tapped, afterE2, lift, measured }));
+
+    // AA3's convention (section AA): a successful submit toasts BEFORE notifying, so a notification failure is the
+    // last word. Stacked, both show; the success goes first (4 s) and the failure is what's left (8 s).
+    const a = showRig(0);
+    a.api.showToast("Vacation request sent.", "success"); a.api.showToast("Couldn't save that notification.", "error");
+    const both = a.msgs();
+    const order = a.timers.map((t, i) => ({ t, i })).sort((p, q) => p.t.ms - q.t.ms);
+    order[0].t.fn();
+    const left = a.msgs();
+    check("BF4 AA3's order through the real showToast: \"Vacation request sent.\" then \"Couldn't save that notification.\" — both on screen at once, the success times out first, and the failure is the message left on screen",
+      both === "success: Vacation request sent. | error: Couldn't save that notification." && order[0].i === 0 && order[0].t.ms < order[1].t.ms && left === "error: Couldn't save that notification.",
+      JSON.stringify({ both, left, ms: a.timers.map(t => t.ms) }));
+
+    const d = showRig(0);
+    d.api.showToast("Couldn't refresh — check your connection.", "error"); d.api.showToast("Couldn't refresh — check your connection.", "error");
+    const once = d.list().map(t => t.id).join(), onceMsgs = d.msgs();
+    d.timers[0].fn(); const stillThere = d.list().length === 1;
+    check("BF4 the same message twice (a retry that fails again) shows ONCE, on the newer timer — the first one's timer no longer takes it down",
+      once === "2" && onceMsgs === "error: Couldn't refresh — check your connection." && stillThere, JSON.stringify({ once, onceMsgs, stillThere }));
+  }
+
+  // BF5 — the lift effect
+  const LF0 = nsrcF.indexOf("  const toastsShown = toasts.length > 0;\n"), LFD = "  }, [toastsShown, updateAvailable, paintSheet, calDayOpen]);", LF1 = nsrcF.indexOf(LFD);
+  const BLf = nsrcF.match(/\n  (const bannerLift = \(\) => \{[^\n]*\};)\n/);
+  const TLf = nsrcF.match(/\n  (const toastLiftNow = \(\) => \{\n[\s\S]*?\n  \};)\n/);
+  let mkLiftF = null;
+  try { mkLiftF = LF0 > 0 && LF1 > LF0 && LF1 - LF0 < 1500 && BLf && TLf && TLf[1].length < 1200 ? vm.runInContext("(function (env) { const { toasts, updateAvailable, paintSheet, calDayOpen, setToastLift, updateBannerRef, window, document, ResizeObserver, useEffect } = env;\n" + BLf[1] + "\n" + TLf[1] + "\n" + nsrcF.slice(LF0, LF1 + LFD.length) + "\n })", sandbox, { filename: "bf-lift.js" }) : null; } catch (ex) { mkLiftF = null; }
+  // floors: the elements marked data-toast-floor="1" on screen ({ top, height, gone }); vh: the window's height
+  const liftRunF = (toasts, el, withRO, floors, vh, opened) => {
+    const L = { sets: [], added: [], removed: [], observed: [], disconnected: 0, eff: null, roCb: null, asked: [] };
+    const RO = withRO ? class { constructor(cb) { L.roCb = cb; } observe(t) { L.observed.push(t); } disconnect() { L.disconnected++; } } : undefined;
+    const els = (floors || []).map((f) => ({ isConnected: !f.gone, getBoundingClientRect: () => ({ top: f.top, height: f.height }), floor: f }));
+    mkLiftF({ toasts, updateAvailable: el ? "2026.10.20a" : null, paintSheet: (opened && opened.paint) || null, calDayOpen: (opened && opened.day) || null, setToastLift: (v) => L.sets.push(v), updateBannerRef: { current: el }, ResizeObserver: RO,
+      document: { querySelectorAll: (sel) => { L.asked.push(sel); return els; } },
+      window: { innerHeight: vh || 812, addEventListener: (t, f) => L.added.push([t, f]), removeEventListener: (t, f) => L.removed.push([t, f]) }, useEffect: (fn, deps) => { L.eff = { fn, deps }; } });
+    L.els = els;
+    return L;
+  };
+  if (!mkLiftF) check("BF5 the toast stack's lift effect (with bannerLift and toastLiftNow) is extractable", false, JSON.stringify({ LF0, LF1, bannerLift: !!BLf, toastLiftNow: !!TLf }));
+  else {
+    const BAN = { isConnected: true, getBoundingClientRect: () => ({ height: 99.2 }) };
+    const on = liftRunF([T(1, "x", "error")], BAN, true);
+    const cleanup = on.eff.fn();
+    const first = on.sets.slice();
+    on.added[0][1](); on.roCb(); const re = on.sets.slice();
+    cleanup();
+    const off = liftRunF([], BAN, true), offRet = off.eff.fn();
+    const noBan = liftRunF([T(1, "x", "info")], null, true); noBan.eff.fn();
+    const gone = liftRunF([T(1, "x", "info")], { isConnected: false, getBoundingClientRect: () => ({ height: 50 }) }, false); gone.eff.fn();
+    check("BF5 the real lift effect: while a toast shows, the lift is the banner's measured height (99.2 → 100), again on a resize and on the banner's own resize (ResizeObserver on the banner); both listeners removed after; with no toast it does nothing; no banner, or one no longer on the page → 0",
+      JSON.stringify(first) === "[100]" && JSON.stringify(re) === "[100,100,100]" && on.added.length === 1 && on.added[0][0] === "resize" && on.observed.length === 1 && on.observed[0] === BAN
+        && on.removed.length === 1 && on.removed[0][1] === on.added[0][1] && on.disconnected === 1
+        && offRet === undefined && off.sets.length === 0 && off.added.length === 0 && off.observed.length === 0
+        && JSON.stringify(noBan.sets) === "[0]" && noBan.observed.length === 0 && JSON.stringify(gone.sets) === "[0]",
+      JSON.stringify({ first, re, off: off.sets, noBan: noBan.sets, gone: gone.sets }));
+    check("BF5 …it re-runs when a toast first shows, when the banner comes or goes (updateAvailable; paintSheet hides it) and when a bottom sheet opens or closes (paintSheet, calDayOpen — review fix): deps [toastsShown, updateAvailable, paintSheet, calDayOpen]",
+      JSON.stringify(on.eff.deps) === JSON.stringify([true, "2026.10.20a", null, null]) && JSON.stringify(off.eff.deps) === JSON.stringify([false, "2026.10.20a", null, null]));
+    // (review fix) the bottom sheets and action bars: data-toast-floor="1". A 375 × 812 phone: the update banner 100px;
+    // the Calendar's day sheet lifted above it, its top at 400 ("Edit this week" its last row, just above 712); the
+    // month painter (the banner hidden) with its Save / Discard bar from 740 down.
+    const FLOOR = '[data-toast-floor="1"]';
+    const day = liftRunF([T(1, "x", "error")], BAN, true, [{ top: 400, height: 312 }], 812, { day: "2026-10-22" }); const dayOff = day.eff.fn();
+    const dayLift = day.sets[0], dayBottomEdge = 812 - (dayLift + 10); // the stack's lowest pixel (its style: bottom = lift + 10, BF6)
+    const paint = liftRunF([T(1, "x", "error")], null, true, [{ top: 740, height: 72 }], 812, { paint: { kind: "timeoff" } }); paint.eff.fn();
+    const tall = liftRunF([T(1, "x", "error")], BAN, false, [{ top: 50, height: 662 }], 812, { day: "2026-10-22" }); tall.eff.fn();
+    const stale = liftRunF([T(1, "x", "error")], BAN, false, [{ top: 300, height: 400, gone: true }, { top: 500, height: 0 }], 812); stale.eff.fn();
+    day.roCb(); const dayRe = day.sets.slice(); if (typeof dayOff === "function") dayOff();
+    check("BF5 (review fix) the real lift with the Calendar's day sheet open (its top at 400 on an 812px phone, the banner 100px): the lift is 412 — the stack's lowest pixel at 390, above the sheet, so a toast never lands on \"Edit this week\" (it was 100: the toast sat on the sheet's last row and a tap there only dismissed it); remeasured on the sheet's own resize too (ResizeObserver on the banner AND the sheet)",
+      dayLift === 412 && dayBottomEdge < 400 && JSON.stringify(dayRe) === "[412,412]" && day.asked.every((s) => s === FLOOR) && day.asked.length >= 2 && day.observed.length === 2 && day.observed[0] === BAN && day.observed[1] === day.els[0]
+        && JSON.stringify(day.eff.deps) === JSON.stringify([true, "2026.10.20a", null, "2026-10-22"]) && day.disconnected === 1,
+      JSON.stringify({ dayLift, dayBottomEdge, dayRe, asked: day.asked, observed: day.observed.length, deps: day.eff.deps }));
+    check("BF5 (review fix) …the month painter open (no banner — it hides while painting): the lift is its Save / Discard bar's height, 72 (the stack's lowest pixel at 730, above the bar at 740; it was 0 — the toast sat on Save and Discard); a sheet taller than the screen allows: capped at 812 − 120 = 692 so the newest toast stays in view; a floor no longer on the page, or with no height, is ignored (the banner's 100)",
+      JSON.stringify(paint.sets) === "[72]" && 812 - (72 + 10) < 740 && JSON.stringify(paint.eff.deps) === JSON.stringify([true, null, { kind: "timeoff" }, null])
+        && JSON.stringify(tall.sets) === "[692]" && JSON.stringify(stale.sets) === "[100]",
+      JSON.stringify({ paint: paint.sets, tall: tall.sets, stale: stale.sets }));
+  }
+  const iTo = src.indexOf("const [toasts, setToasts] = useState([]);"), iLift = src.indexOf("const [toastLift, setToastLift] = useState(0);"), iUA = src.indexOf("const [updateAvailable, setUpdateAvailable] = useState(null);");
+  const iPS = src.indexOf("const [paintSheet, setPaintSheet] = useState(null);"), iBL = src.indexOf("const bannerLift = () => {"), iShown = src.indexOf("const toastsShown = toasts.length > 0;"), iDeps = src.indexOf("}, [toastsShown, updateAvailable, paintSheet, calDayOpen]);");
+  const iCD = src.indexOf("const [calDayOpen, setCalDayOpen] = useState(null);"), iTL = src.indexOf("const toastLiftNow = () => {");
+  check("BF5 …§P for this state: the toasts and their lift, updateAvailable, paintSheet, calDayOpen, bannerLift and toastLiftNow are each declared once and BEFORE the effect that lists them (the 2026.09.24a TDZ class); showToast measures with toastLiftNow (declared before it)",
+    count("const [toasts, setToasts] = useState([]);") === 1 && count("const [toastLift, setToastLift] = useState(0);") === 1 && count("}, [toastsShown, updateAvailable, paintSheet, calDayOpen]);") === 1 && count("const toastLiftNow = () => {") === 1
+      && [iTo, iLift, iUA, iPS, iBL, iCD, iTL].every(i => i > 0 && i < iShown) && iShown < iDeps && iTo < src.indexOf("const showToast = (msg, tone) => {") && iTL < src.indexOf("const showToast = (msg, tone) => {")
+      && count("setToastLift(toastLiftNow());") === 2 && count("setToastLift(bannerLift())") === 0,
+    JSON.stringify({ iTo, iLift, iUA, iPS, iBL, iCD, iTL, iShown, iDeps }));
+  check("BF5 (review fix) the floors are marked where they are: the day sheet's dialog and the painter's sticky Save / Discard bar — data-toast-floor=\"1\" on each, once",
+    count('aria-label={`${title} — details`} data-toast-floor="1" onClick={e=>e.stopPropagation()}') === 1 && count('<div data-toast-floor="1" style={{ background: panelBg, borderTop: `1px solid ${border}`, padding: "10px 14px", paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 10px)", flexShrink: 0 }}>') === 1
+      && (src.match(/\sdata-toast-floor="1"\s+(?:onClick|style)=/g) || []).length === 2);
+
+  // BF6 — the stack's real style, evaluated
+  const stackM = nsrcF.match(/\n      <div role="status" aria-live="polite" style=\{(\{position:"fixed",left:0,right:0,bottom:toastLift [^\n]*?\})\}>\n\s*\{toasts\.map\(t => \(\n\s*<div key=\{t\.id\} onClick=\{\(\)=>dismissToast\(t\.id\)\} style=\{(\{pointerEvents:"auto",[^\n]*?\})\}>\n\s*\{(typeof toastText === "function" \? toastText\(t\) : [^\n]*)\}\n/);
+  let stackSt = null, pillSt = null;
+  try { stackSt = stackM ? vm.runInContext(`(function (toastLift) { return (${stackM[1]}); })`, sandbox) : null; pillSt = stackM ? vm.runInContext(`(function (t, font) { return (${stackM[2]}); })`, sandbox) : null; } catch (ex) { stackSt = pillSt = null; }
+  const zBanF = +((nsrcF.match(/<div ref=\{updateBannerRef\} role="status" aria-live="polite" style=\{\{position:"fixed",left:0,right:0,bottom:0,zIndex:(\d+),/) || [])[1] || NaN);
+  if (!stackSt || !pillSt) check("BF6 the toast stack and its pills render from toasts (role=status, aria-live) and are evaluable", false, stackM ? "eval" : "markup not found");
+  else {
+    const s0 = stackSt(0), s100 = stackSt(100), s54 = stackSt(54);
+    const pe = pillSt(T(1, "x", "error"), "Outfit"), ps = pillSt(T(2, "x", "success"), "Outfit"), pi = pillSt(T(3, "x", "info"), "Outfit");
+    check("BF6 the stack's real style: with the update banner measured at 100px (two rows on a 375px phone) its bottom is 110 — above the banner, not over its buttons; at 54px, 64; with no banner, 24px above the iPhone home bar (safe area); stacked in a column, z above the banner; the stack lets taps through, each pill catches its own",
+      s100.bottom === 110 && s54.bottom === 64 && s0.bottom === "calc(env(safe-area-inset-bottom, 0px) + 24px)" && s0.position === "fixed" && s0.flexDirection === "column"
+        && s0.zIndex > zBanF && zBanF === 9998 && s0.pointerEvents === "none" && pe.pointerEvents === "auto"
+        && pe.background === "#a83232" && ps.background === "#1a7a4a" && pi.background === "#1a2a3a" && pe.cursor === "pointer",
+      JSON.stringify({ s0: s0.bottom, s54: s54.bottom, s100: s100.bottom, z: s0.zIndex, zBanF }));
+  }
+  check("BF6 …the single slot is gone (no setToast / toastTimerRef / {toast && …}); one live region renders the list; each pill shows toastText(t) (guarded — BF7) and a tap dismisses that one; showToast keeps its signature (its 100+ callers unchanged)",
+    count("setToast(") === 0 && count("toastTimerRef") === 0 && count("{toast && (") === 0 && count("const [toast, setToast]") === 0
+      && count("{toasts.map(t => (") === 1 && count("{typeof toastText === \"function\" ? toastText(t) : `${t.tone===\"success\"?\"✓ \":t.tone===\"error\"?\"⚠ \":\"\"}${t.msg}`}") === 1 && count("onClick={()=>dismissToast(t.id)}") === 1
+      && count("const showToast = (msg, tone) => {") === 1 && count("showToast(") > 100,
+    JSON.stringify({ setToast: count("setToast("), timer: count("toastTimerRef"), map: count("{toasts.map(t => ("), calls: count("showToast(") }));
+
+  // BF7 — an OLD cached helpers.js (review fix): the toast path falls back instead of crashing the root
+  const OLDH = vm.runInContext(`(${JSON.stringify(BATCH4_HELPERS)}).map(n => typeof globalThis[n] === "function" ? n : null).filter(Boolean).join() + "|" + typeof monthDayLabel + typeof slotLabel + typeof fmt`, OLD_SB);
+  check("BF7 OLD_SB is a helpers.js from before the batch: none of its twelve helpers is defined, the older ones are (monthDayLabel, slotLabel, fmt)",
+    OLDH === "|functionfunctionfunction" && BATCH4_HELPERS.every((n) => vm.runInContext(`typeof ${n}`, sandbox) === "function"), OLDH);
+  const mkShowOld = mkShowIn(OLD_SB);
+  let oldShow = null;
+  if (mkShowOld) {
+    oldShow = {};
+    try {
+      const o = showRig(0, mkShowOld);
+      o.api.showToast("Couldn't load the schedule — check your connection.", "error"); o.api.showToast("Couldn't load time off — check your connection.", "error"); o.api.showToast("⚠ 1 lock was NOT honored", "error");
+      oldShow.list = o.msgs(); oldShow.ms = o.timers.map((t) => t.ms); oldShow.ids = ids(o.list());
+      o.timers[2].fn(); oldShow.after = o.list().length;
+    } catch (ex) { oldShow.threw = String(ex).slice(0, 160); }
+  }
+  let pillOld = null, pillNew = null;
+  try { pillOld = stackM ? vm.runInContext(`(function (t) { return (${stackM[3]}); })`, OLD_SB) : null; pillNew = stackM ? vm.runInContext(`(function (t) { return (${stackM[3]}); })`, sandbox) : null; } catch (ex) { pillOld = pillNew = null; }
+  const pillTexts = (f) => (f ? [f(T(1, "Saved.", "success")), f(T(2, "Couldn't save.", "error")), f(T(3, "Plain", "info")), f(T(4, "⚠ 2 locks were NOT honored", "error"))] : null);
+  check("BF7 (review fix) the REAL showToast with an OLD cached helpers.js (no toastAdd / toastMs): three errors in a row (an offline open) leave ONE toast — the newest, as the single slot did — each on a 4 s timer; its timer takes it; nothing throws (main of this batch: \"toastAdd is not defined\" in the state update — the error boundary replaced the app)",
+    !!oldShow && !oldShow.threw && oldShow.list === "error: ⚠ 1 lock was NOT honored" && JSON.stringify(oldShow.ms) === "[4000,4000,4000]" && oldShow.ids === "3" && oldShow.after === 0,
+    JSON.stringify(oldShow));
+  check("BF7 (review fix) …and its pill, the real text expression run: with no toastText the plain prefix (\"✓ Saved.\", \"⚠ Couldn't save.\", \"Plain\"); with this helpers.js toastText (the doubled ⚠ dropped)",
+    JSON.stringify(pillTexts(pillOld)) === JSON.stringify(["✓ Saved.", "⚠ Couldn't save.", "Plain", "⚠ ⚠ 2 locks were NOT honored"]) && JSON.stringify(pillTexts(pillNew)) === JSON.stringify(["✓ Saved.", "⚠ Couldn't save.", "Plain", "⚠ 2 locks were NOT honored"]),
+    JSON.stringify({ old: pillTexts(pillOld), now: pillTexts(pillNew) }));
+  // every call of the twelve in the page's script sits behind its own typeof (on the same line, before the call)
+  const unguarded = [], callsOf = {};
+  for (const n of BATCH4_HELPERS) {
+    callsOf[n] = 0;
+    for (const m of nsrcF.matchAll(new RegExp(`(?<![\\w.])${n}\\(`, "g"))) {
+      const lineStart = nsrcF.lastIndexOf("\n", m.index) + 1, before = nsrcF.slice(lineStart, m.index), lineNo = nsrcF.slice(0, m.index).split("\n").length;
+      if (/^\s*(\/\/|\/\*|\*|\{\/\*)/.test(before)) continue; // a comment line naming it
+      callsOf[n]++;
+      if (!before.includes(`typeof ${n} === "function"`)) unguarded.push(`${n} @${lineNo}`);
+    }
+  }
+  check("BF7 (review fix) every call of the batch's twelve helpers in index-source.html sits behind its own `typeof … === \"function\"` (the app's convention for a newer helper), each of them called somewhere — toastAdd / toastMs / toastText, periodLabel ×4 (periodText, the office prefill, both publish audit lines), periodSeam, periodHolidayGaps ×2, authErrorText ×6, rangeSummary, tradeSlotHolder ×2, tradePickNotes, calMonthWeekMondays, calendarFeedUrls ×2",
+    unguarded.length === 0 && BATCH4_HELPERS.every((n) => callsOf[n] > 0) && callsOf.authErrorText === 6 && callsOf.periodLabel === 4 && callsOf.periodHolidayGaps === 2 && callsOf.tradeSlotHolder === 2 && callsOf.calendarFeedUrls === 2,
+    JSON.stringify({ unguarded, callsOf }));
+}
+
 // ─── Q. Dismissable Schedule Warnings (owner request 2026-09-24) ───
 // A scheduler/admin can dismiss one exact warning for EVERYONE (blob field
 // dismissedWarnings [{key, text, by, at}]); every viewer's panel is filtered;
@@ -2296,6 +3203,231 @@ check("prefs audit never logs the plaintext email (masked only)",
   }
 }
 
+// ─── BG. Sign-in: iPhone autofill hints, plain network errors, no stuck "Sending…" offline (UX audit 2026-10-19) ───
+// The sign-in, sign-up and reset forms gave the iPhone no autofill hints (its saved passwords and account
+// suggestions are offered on fields that say what they hold). Offline, the reset and new-password chains had no
+// catch: the button stayed on "Sending…" / "Updating…" for good and the rejection went unhandled; the sign-in's
+// own catch showed the raw exception ("Load failed" on an iPhone).
+//   BG1 the real authErrorText (helpers.js): a network failure (Chrome's, Safari's and Firefox's wording, an
+//       error from either realm) → "No connection …"; an auth answer (config.js auth's { error }, a GoTrue
+//       body's msg / error_description, the text itself) → the server's words; anything else → one generic
+//       line, never the raw exception text
+//   BG2 the REAL reset and new-password handlers — all four (each form's button and its Enter key), sliced
+//       from the sign-in card and run with auth rejecting offline: busy back to false, "No connection …"
+//       shown, no unhandled rejection; a server refusal and a success behave as before
+//   BG3 the REAL handleAuthSubmit (sign-in and sign-up) and handleSetProfile, offline or answered with a
+//       non-JSON reply: plain words, not the raw text, busy false; a wrong password still shows the server's
+//       words and signs nobody in
+//   BG4 the card's inputs: every email input says username / email keyboard / no auto-capitalize / no
+//       autocorrect (username count = email-input count; elsewhere only the reauth sheet's read-only email
+//       says username — the Settings notification e-mails do not); sign-in's password says current-password,
+//       sign-up's and both new-password fields new-password (the expression run); every card input has a hint
+// Review fix (2026-10-19):
+//   BG5 an OLD cached helpers.js (no authErrorText): every sign-in catch — the four card chains, the submit, the
+//       profile screen — falls back to the error's own message (as before the batch); busy back to false, no throw,
+//       no unhandled rejection (main of this batch: "authErrorText is not a function" inside the catch, the button
+//       stuck on "Signing in…" / "Sending…")
+console.log("\nBG. Sign-in: iPhone autofill hints, plain network errors, no stuck \"Sending…\" offline");
+await (async () => {
+  const nsrcBG = src.replace(/\r\n/g, "\n");   // a Windows checkout is CRLF, CI's is LF
+  const NO_CONN = "No connection — check your internet and try again.", GENERIC = "Something went wrong — please try again.";
+  const aet = vm.runInContext('typeof authErrorText === "function" ? authErrorText : null', sandbox);
+  check("BG0 authErrorText is defined in helpers.js", !!aet);
+
+  // BG1 — the helper, exact strings
+  const say = (e) => { try { return aet ? aet(e) : null; } catch (ex) { return "threw " + String(ex); } };
+  const appErr = (ctor, msg) => vm.runInContext(`new ${ctor}(${JSON.stringify(msg)})`, sandbox); // an error made in the app's own realm
+  const t1 = [
+    ["Chrome offline: TypeError('Failed to fetch')", new TypeError("Failed to fetch"), NO_CONN],
+    ["an iPhone offline: TypeError('Load failed')", new TypeError("Load failed"), NO_CONN],
+    ["the app realm's TypeError('Load failed')", appErr("TypeError", "Load failed"), NO_CONN],
+    ["Firefox offline", new TypeError("NetworkError when attempting to fetch resource."), NO_CONN],
+    ["an older Safari offline", new TypeError("The Internet connection appears to be offline."), NO_CONN],
+    ["config.js auth's answer { user: null, error }", { user: null, error: "Invalid login credentials" }, "Invalid login credentials"],
+    ["a GoTrue body { code, msg }", { code: 422, msg: "User already registered" }, "User already registered"],
+    ["a GoTrue body { error, error_description }", { error: "invalid_grant", error_description: "Email not confirmed" }, "Email not confirmed"],
+    ["the server's text as a string", "Password should be at least 6 characters", "Password should be at least 6 characters"],
+    ["a reply that wasn't JSON (SyntaxError)", new SyntaxError("Unexpected token '<', \"<html>\" is not valid JSON"), GENERIC],
+    ["Safari's non-JSON reply, from the app realm", appErr("SyntaxError", "The string did not match the expected pattern."), GENERIC],
+    ["a code error (a TypeError, not a network one)", new TypeError("Cannot read properties of undefined (reading 'id')"), GENERIC],
+    ["a thrown Error with a message (not a server answer)", new Error("HTTP 500"), GENERIC],
+    ["undefined", undefined, GENERIC], ["null", null, GENERIC], ["{}", {}, GENERIC], ["{ error: null }", { error: null }, GENERIC], ["a blank string", "  ", GENERIC], ["a number", 42, GENERIC],
+  ];
+  const bad1 = t1.filter(([, e, want]) => say(e) !== want);
+  check("BG1 authErrorText: offline (Chrome / iPhone / Firefox / older Safari wording, either realm) → \"No connection — check your internet and try again.\"; an auth answer → the server's words; a non-JSON reply, a code error, unknown → one generic line — exact strings",
+    !!aet && bad1.length === 0, bad1.map(([what, e]) => `${what}: ${JSON.stringify(say(e))}`).join(" | "));
+
+  // the sign-in card (its render branch, up to the profile screen's), and a string-aware bracket matcher
+  const cardA = nsrcBG.indexOf(") : !authUser && !isPublicMode ? ("), cardB = cardA < 0 ? -1 : nsrcBG.indexOf(") : needsProfile ? (", cardA);
+  const card = cardA >= 0 && cardB > cardA && nsrcBG.indexOf(") : !authUser && !isPublicMode ? (", cardA + 1) === -1 ? nsrcBG.slice(cardA, cardB) : "";
+  check("BG2 the sign-in card's render branch found, once", card.length > 0);
+  const closeBG = (s, open) => { // s[open] is ( { or [ → the index of its partner; strings skipped; -1 if none
+    const want = [];
+    for (let i = open; i < s.length; i++) {
+      const c = s[i];
+      if (c === '"' || c === "'" || c === "`") { for (i++; i < s.length && s[i] !== c; i++) if (s[i] === "\\") i++; continue; }
+      if (c === "(" || c === "{" || c === "[") want.push(c === "(" ? ")" : c === "{" ? "}" : "]");
+      else if (c === ")" || c === "}" || c === "]") { if (want.pop() !== c) return -1; if (!want.length) return i; }
+    }
+    return -1;
+  };
+
+  // BG2 — each auth chain on the card, run inside the onClick / onKeyDown handler that holds it
+  const handlers = [];
+  for (const call of ["auth.updatePassword(newPassword)", "auth.resetPassword(resetEmail)"]) {
+    for (let i = card.indexOf(call); i >= 0; i = card.indexOf(call, i + call.length)) {
+      const k = Math.max(card.lastIndexOf("onClick={", i), card.lastIndexOf("onKeyDown={", i)), open = k < 0 ? -1 : card.indexOf("{", k), close = open < 0 ? -1 : closeBG(card, open);
+      handlers.push({ call, kind: card.startsWith("onClick", k) ? "button" : "Enter key", code: close > i ? card.slice(open + 1, close) : null });
+    }
+  }
+  check("BG2 four handlers hold an auth chain — each form's button and its Enter key (new password: updatePassword; reset: resetPassword)",
+    handlers.length === 4 && handlers.every((h) => h.code) && ["auth.updatePassword(newPassword)", "auth.resetPassword(resetEmail)"].every((c) => ["button", "Enter key"].every((kd) => handlers.filter((h) => h.call === c && h.kind === kd).length === 1)),
+    JSON.stringify(handlers.map((h) => [h.call, h.kind, !!h.code])));
+  const HANDLER_ENV = "auth, newPassword, newPasswordConfirm, resetEmail, setAuthBusy, setAuthError, setAuthMode, setNewPassword, setNewPasswordConfirm, setResetSent, alert, authErrorText";
+  const unhandled = [];
+  const onUnhandled = (reason) => { unhandled.push(String((reason && reason.message) || reason)); };
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    const runH = async (h, outcome, noHelper) => {
+      const log = [];
+      const answer = () => (outcome === "offline" ? Promise.reject(new TypeError("Load failed")) : Promise.resolve(outcome === "refused" ? { error: "User not found" } : { error: null }));
+      const env = { newPassword: "hunter22", newPasswordConfirm: "hunter22", resetEmail: "fak@dsg.test", authErrorText: noHelper ? undefined : aet, // (noHelper: an old cached helpers.js — BG5)
+        auth: { updatePassword: () => { log.push("updatePassword"); return answer(); }, resetPassword: () => { log.push("resetPassword"); return answer(); }, signOut: async () => { log.push("signOut"); } },
+        setAuthBusy: (v) => log.push("busy:" + v), setAuthError: (v) => log.push("error:" + v), setAuthMode: (v) => log.push("mode:" + v), setResetSent: (v) => log.push("sent:" + v),
+        setNewPassword: () => {}, setNewPasswordConfirm: () => {}, alert: () => log.push("alert") };
+      let fn = null;
+      try { fn = vm.runInContext(`(function (env) { const { ${HANDLER_ENV} } = env; return (${h.code}); })`, sandbox, { filename: "bg-auth-handler.js" }); } catch (ex) { return { log: ["did not compile: " + String(ex).slice(0, 120)], unhandled: 0 }; }
+      const before = unhandled.length;
+      try { fn(env)(h.kind === "Enter key" ? { key: "Enter" } : undefined); } catch (ex) { log.push("threw " + String(ex)); }
+      await new Promise((r) => setTimeout(r, 15)); // the chain settles; an unhandled rejection is reported by now
+      return { log, unhandled: unhandled.length - before };
+    };
+    const lastBusy = (log) => log.filter((x) => x.startsWith("busy:")).pop();
+    const offline = [], refused = [], ok = [];
+    for (const h of handlers.filter((x) => x.code)) {
+      const name = `${h.call.startsWith("auth.update") ? "new password" : "reset"} ${h.kind}`;
+      const o = await runH(h, "offline"), r = await runH(h, "refused"), s = await runH(h, "ok");
+      offline.push([name, o, o.log[0] === "busy:true" && lastBusy(o.log) === "busy:false" && o.log[o.log.length - 1] === "error:" + NO_CONN && o.unhandled === 0 && !o.log.some((x) => /Load failed/.test(x))]);
+      refused.push([name, r, lastBusy(r.log) === "busy:false" && r.log[r.log.length - 1] === "error:User not found" && r.unhandled === 0]);
+      ok.push([name, s, lastBusy(s.log) === "busy:false" && s.unhandled === 0 && !s.log.some((x) => x.startsWith("error:") && x !== "error:")
+        && (h.call.startsWith("auth.update") ? ["mode:login", "alert", "signOut"].every((x) => s.log.includes(x)) : s.log.includes("sent:true"))]);
+    }
+    const why = (rows) => rows.filter(([, , good]) => !good).map(([name, x]) => `${name}: ${JSON.stringify(x)}`).join(" | ");
+    check("BG2 offline (auth rejects with Safari's TypeError('Load failed')), all four handlers: busy goes true then back to false (the button leaves \"Sending…\" / \"Updating…\"), the form says \"No connection — check your internet and try again.\", no unhandled rejection, never the raw \"Load failed\"",
+      offline.length === 4 && offline.every(([, , good]) => good), why(offline));
+    check("BG2 unchanged otherwise: a server refusal shows the server's words, busy false; a success sends the reset link (resetSent) or updates the password (back to sign-in, the alert, signed out)",
+      refused.length === 4 && ok.length === 4 && refused.concat(ok).every(([, , good]) => good), why(refused.concat(ok)));
+    // BG5 — the same four chains offline with an OLD cached helpers.js (no authErrorText)
+    const oldOff = [];
+    for (const h of handlers.filter((x) => x.code)) {
+      const o = await runH(h, "offline", true);
+      oldOff.push([`${h.call.startsWith("auth.update") ? "new password" : "reset"} ${h.kind}`, o, o.log[0] === "busy:true" && lastBusy(o.log) === "busy:false" && o.log[o.log.length - 1] === "error:Load failed" && o.unhandled === 0 && !o.log.some((x) => /^threw /.test(x))]);
+    }
+    check("BG5 (review fix) offline with an OLD cached helpers.js (no authErrorText), all four card chains: busy back to false, the form shows the error's own message (\"Load failed\", as before the batch), no throw and no unhandled rejection (main of this batch: the catch threw — the button stuck on \"Sending…\" / \"Updating…\")",
+      oldOff.length === 4 && oldOff.every(([, , good]) => good), why(oldOff));
+  } finally { process.removeListener("unhandledRejection", onUnhandled); }
+
+  // BG3 — the sign-in / sign-up submit and the profile screen's Continue, executed
+  const declBG = (name) => { const head = `  const ${name} = `, a = nsrcBG.indexOf(head), e = a < 0 ? -1 : nsrcBG.indexOf("\n  };\n", a); return a < 0 || e < 0 || nsrcBG.indexOf(head, a + 1) !== -1 ? null : nsrcBG.slice(a + head.length, e) + "\n  }"; };
+  const mkBG = (names, code) => { if (!code) return null; try { return vm.runInContext(`(function (env) { const { ${names} } = env; return (${code}); })`, sandbox, { filename: "bg-auth-submit.js" }); } catch (ex) { return null; } };
+  const mkSubmit = mkBG("setAuthError, setAuthBusy, authMode, signupPersonId, dbAuth, auth, authEmail, authPassword, allPeople, setAuthUser, setUserProfile, setMySurgeon, setNeedsProfile, setIsScheduler, setReloadTrigger, setAuthEmail, setAuthPassword, fetch, SUPABASE_URL, dbAuthHeaders, saveNotifPref, showToast, console, authErrorText", declBG("handleAuthSubmit"));
+  const mkProfile = mkBG("signupPersonId, authUser, setAuthBusy, setAuthError, dbAuth, allPeople, setUserProfile, setMySurgeon, setNeedsProfile, setIsScheduler, setReloadTrigger, console, sessionEpochRef, authErrorText", declBG("handleSetProfile"));
+  check("BG3 handleAuthSubmit and handleSetProfile sliced and compiled", !!mkSubmit && !!mkProfile);
+  const quietBG = { error() {}, warn() {}, log() {}, info() {} };
+  const submit = async (mode, o) => {
+    const log = [];
+    const env = { authMode: mode, signupPersonId: mode === "signup" ? "s3" : "", authEmail: "rpc@dsg.test", authPassword: "pw123456", allPeople: [{ id: "s3", name: "RPC" }], authErrorText: o.noHelper ? undefined : aet, console: quietBG,
+      auth: { signIn: o.signIn, signUp: o.signUp || (async () => { throw new Error("signUp not expected"); }), bindUser: (id) => log.push("bind:" + id) },
+      dbAuth: { getAllProfiles: o.getAllProfiles || (async () => []), getProfile: async () => null, upsertProfile: async () => ({ error: null }) },
+      setAuthError: (v) => log.push("error:" + v), setAuthBusy: (v) => log.push("busy:" + v), setAuthUser: (u) => log.push("user:" + (u && u.id)),
+      setUserProfile: () => {}, setMySurgeon: () => {}, setNeedsProfile: () => {}, setIsScheduler: () => {}, setReloadTrigger: () => {}, setAuthEmail: () => {}, setAuthPassword: () => {},
+      fetch: async () => { throw new Error("no fetch expected"); }, SUPABASE_URL: "https://x.test", dbAuthHeaders: () => ({}), saveNotifPref: () => {}, showToast: () => {} };
+    try { await mkSubmit(env)(); } catch (ex) { log.push("threw " + String(ex)); }
+    return log;
+  };
+  const errOf = (log) => log.filter((x) => x.startsWith("error:")).pop();
+  const s3 = mkSubmit ? [
+    ["sign-in offline", await submit("login", { signIn: async () => { throw new TypeError("Load failed"); } }), "error:" + NO_CONN],
+    ["sign-in, a non-JSON reply", await submit("login", { signIn: async () => { throw new SyntaxError("The string did not match the expected pattern."); } }), "error:" + GENERIC],
+    ["sign-up offline (its name check)", await submit("signup", { getAllProfiles: async () => { throw new TypeError("Failed to fetch"); } }), "error:" + NO_CONN],
+    ["sign-in, a wrong password (control)", await submit("login", { signIn: async () => ({ user: null, error: "Invalid login credentials" }) }), "error:Invalid login credentials"],
+  ] : [];
+  const bad3 = s3.filter(([, log, want]) => !(errOf(log) === want && log[log.length - 1] === "busy:false" && !log.some((x) => /^(user|bind):/.test(x) || /^threw /.test(x))));
+  check("BG3 the sign-in / sign-up submit: offline says \"No connection …\", a non-JSON reply the generic line (never Safari's raw text), a wrong password the server's words; busy ends false, nobody signed in or bound",
+    s3.length === 4 && bad3.length === 0, bad3.map(([what, log]) => `${what}: ${JSON.stringify(log)}`).join(" | "));
+  let p3 = null;
+  if (mkProfile) {
+    p3 = [];
+    try {
+      await mkProfile({ signupPersonId: "s3", authUser: { id: "auth-rpc" }, allPeople: [{ id: "s3", name: "RPC" }], console: quietBG, sessionEpochRef: { current: 0 }, authErrorText: aet,
+        dbAuth: { getAllProfiles: async () => { throw new TypeError("Load failed"); }, upsertProfile: async () => { p3.push("upsert"); return { error: null }; } },
+        setAuthBusy: (v) => p3.push("busy:" + v), setAuthError: (v) => p3.push("error:" + v), setUserProfile: () => p3.push("profile"), setMySurgeon: () => {}, setNeedsProfile: () => {}, setIsScheduler: () => {}, setReloadTrigger: () => {} })();
+    } catch (ex) { p3.push("threw " + String(ex)); }
+  }
+  check("BG3 the profile screen's Continue, offline: \"No connection …\" (not \"Load failed\"), busy ends false, no profile written or set",
+    !!p3 && errOf(p3) === "error:" + NO_CONN && p3[p3.length - 1] === "busy:false" && !p3.includes("upsert") && !p3.includes("profile"), JSON.stringify(p3));
+  // BG5 — the submit and the profile screen with an OLD cached helpers.js (no authErrorText)
+  const s5 = mkSubmit ? [await submit("login", { noHelper: true, signIn: async () => { throw new TypeError("Load failed"); } }), await submit("signup", { noHelper: true, getAllProfiles: async () => { throw new TypeError("Failed to fetch"); } })] : null;
+  let p5 = null;
+  if (mkProfile) {
+    p5 = [];
+    try {
+      await mkProfile({ signupPersonId: "s3", authUser: { id: "auth-rpc" }, allPeople: [{ id: "s3", name: "RPC" }], console: quietBG, sessionEpochRef: { current: 0 }, authErrorText: undefined,
+        dbAuth: { getAllProfiles: async () => { throw new TypeError("Load failed"); }, upsertProfile: async () => { p5.push("upsert"); return { error: null }; } },
+        setAuthBusy: (v) => p5.push("busy:" + v), setAuthError: (v) => p5.push("error:" + v), setUserProfile: () => p5.push("profile"), setMySurgeon: () => {}, setNeedsProfile: () => {}, setIsScheduler: () => {}, setReloadTrigger: () => {} })();
+    } catch (ex) { p5.push("threw " + String(ex)); }
+  }
+  check("BG5 (review fix) the REAL sign-in / sign-up submit and the profile screen's Continue, offline with an OLD cached helpers.js (no authErrorText): the error's own message (\"Load failed\" / \"Failed to fetch\", as before the batch), busy ends false, nobody signed in, no throw (main of this batch: the catch threw — busy stuck on)",
+    !!s5 && errOf(s5[0]) === "error:Load failed" && errOf(s5[1]) === "error:Failed to fetch" && s5.every((log) => log[log.length - 1] === "busy:false" && !log.some((x) => /^(user|bind):/.test(x) || /^threw /.test(x)))
+      && !!p5 && errOf(p5) === "error:Load failed" && p5[p5.length - 1] === "busy:false" && !p5.some((x) => /^threw /.test(x)) && !p5.includes("upsert"),
+    JSON.stringify({ s5, p5 }));
+
+  // BG4 — the card's inputs, read as tags; the password hint's expression run
+  const inputsBG = (s) => {
+    const out = [];
+    for (let i = s.indexOf("<input"); i >= 0; i = s.indexOf("<input", i + 6)) {
+      const attrs = {}; let j = i + 6, bad = false;
+      while (j < s.length) {
+        while (/\s/.test(s[j])) j++;
+        if (s.startsWith("/>", j)) break;
+        const m = /^[A-Za-z][\w-]*/.exec(s.slice(j, j + 40)); if (!m) { bad = true; break; }
+        j += m[0].length;
+        if (s[j] !== "=") { attrs[m[0]] = { str: "true" }; continue; }
+        j++;
+        if (s[j] === '"') { const e = s.indexOf('"', j + 1); attrs[m[0]] = { str: s.slice(j + 1, e) }; j = e + 1; }
+        else if (s[j] === "{") { const e = closeBG(s, j); if (e < 0) { bad = true; break; } attrs[m[0]] = { expr: s.slice(j + 1, e) }; j = e + 1; }
+        else { bad = true; break; }
+      }
+      out.push(bad ? null : Object.defineProperty(attrs, "at", { value: i })); // (where the tag starts — not an attribute)
+    }
+    return out;
+  };
+  const cardInputs = inputsBG(card), allInputs = inputsBG(nsrcBG), offCard = allInputs.filter((a) => a && (a.at < cardA || a.at >= cardB));
+  const strOf = (a, k) => (a && a[k] && a[k].str !== undefined ? a[k].str : null);
+  const emails = cardInputs.filter((a) => strOf(a, "type") === "email"), pwds = cardInputs.filter((a) => strOf(a, "type") === "password");
+  check("BG4 the card's inputs read: 2 email (sign-in/sign-up, reset), 3 password (sign-in/sign-up, new + confirm)",
+    cardInputs.length === 5 && cardInputs.every(Boolean) && emails.length === 2 && pwds.length === 3, JSON.stringify(cardInputs.map((a) => a && strOf(a, "type"))));
+  check("BG4 every email input on the card: autoComplete=\"username\", inputMode=\"email\", autoCapitalize=\"none\", autoCorrect=\"off\" — and the username count equals the email-input count",
+    emails.length === 2 && emails.every((a) => strOf(a, "autoComplete") === "username" && strOf(a, "inputMode") === "email" && strOf(a, "autoCapitalize") === "none" && strOf(a, "autoCorrect") === "off")
+    && cardInputs.filter((a) => strOf(a, "autoComplete") === "username").length === emails.length && (card.match(/autoComplete="username"/g) || []).length === emails.length,
+    JSON.stringify(emails.map((a) => ["autoComplete", "inputMode", "autoCapitalize", "autoCorrect"].map((k) => strOf(a, k)))));
+  const userElsewhere = offCard.filter((a) => strOf(a, "autoComplete") === "username");
+  const reauthEmail = userElsewhere.filter((a) => a.readOnly && a.value && /^authUser\.email\b/.test(a.value.expr || ""));
+  const settingsEmails = offCard.filter((a) => strOf(a, "type") === "email" && !reauthEmail.includes(a));
+  check("BG4 outside the card only the reauth sheet's read-only account email says username; the Settings notification e-mail fields do not (they are not the sign-in)",
+    allInputs.filter((a) => a && a.at >= cardA && a.at < cardB).length === cardInputs.length && userElsewhere.length === 1 && reauthEmail.length === 1 && settingsEmails.length >= 1 && settingsEmails.every((a) => strOf(a, "autoComplete") !== "username"),
+    JSON.stringify({ userElsewhere: userElsewhere.length, reauth: reauthEmail.length, settings: settingsEmails.map((a) => strOf(a, "autoComplete")) }));
+  const signPwd = pwds.find((a) => strOf(a, "placeholder") === "Password"), newPwds = pwds.filter((a) => /new password/i.test(strOf(a, "placeholder") || ""));
+  let hint = null;
+  try { hint = signPwd && signPwd.autoComplete && signPwd.autoComplete.expr ? vm.runInContext(`(function (authMode) { return (${signPwd.autoComplete.expr}); })`, sandbox) : null; } catch (ex) { hint = null; }
+  check("BG4 passwords: the sign-in form's says current-password, on sign-up new-password (its expression run); both new-password fields say new-password",
+    !!hint && hint("login") === "current-password" && hint("signup") === "new-password" && newPwds.length === 2 && newPwds.every((a) => strOf(a, "autoComplete") === "new-password"),
+    JSON.stringify({ sign: signPwd && signPwd.autoComplete, newPwds: newPwds.map((a) => strOf(a, "autoComplete")) }));
+  check("BG4 every input on the card carries an autoComplete hint; the card's auth chains each end in the plain-words catch (4 .then, 4 .catch)",
+    cardInputs.length > 0 && cardInputs.every((a) => a && a.autoComplete)
+    && (card.match(/\.then\(r=>\{/g) || []).length === 4 && card.split(".catch(e=>{setAuthBusy(false);setAuthError(typeof authErrorText === \"function\" ? authErrorText(e) : (e && e.message) || \"Something went wrong — please try again.\");});").length - 1 === 4);
+})().catch(ex => check("BG harness ran without crashing", false, String(ex && ex.stack || ex).split("\n").slice(0, 3).join(" | ")));
+
 // ─── R. Silvis on demand: the 🚑 calendar switch + FAK's Mine section (2026-09-24) ───
 // Owner decision: FAK's Silvis days stay OFF the calendar by default for
 // everyone; a "🚑 Silvis" Show-bar switch turns them on (partners, and office
@@ -2445,6 +3577,241 @@ check("prefs audit never logs the plaintext email (masked only)",
     count("Office link (opens with 🚑 Silvis on): <span style={{fontFamily:mono}}>fkhan628.github.io/Call-Schedule-App/?public=1&silvis=1</span>") === 1
     && count("Public link: <span style={{fontFamily:mono}}>fkhan628.github.io/Call-Schedule-App/?public=1</span>") === 1);
 }
+
+// ─── BH. Settings: the reminder-hour picker stays put and says Central time, a member sees "Saved ✓"; Collapsible headers are real buttons (UX audit 2026-10-19) ───
+// The reminder-hour <select> was a component (HourPicker) defined inside the render: a new type every render, so
+// React remounted it on each re-render (a poll, a save) and an open picker lost its place. The hours are Central and
+// said nothing. A member saving their notification settings got no word it was kept (only the scheduler's list
+// showed even "Saving…"). Collapsible headers were bare clickable divs: no keyboard, nothing announced, a ~16 px
+// tap strip; and while Schedule Tools is held open by swap options its header looked tappable but did nothing.
+//   BH1 the picker is a plain function called inline (no component left), under "Reminder Times (Central time)"
+//   BH2 the REAL saveNotifPref, executed with one ordered log: a save that lands sets the saved time AFTER its write
+//       and its audit line; a failed one never does (its toast instead); a session change while its write is out —
+//       its audit line as the tap's account, no "Saved ✓"; one before its debounce — nothing. The REAL hide effect
+//       (3 s) and the status line's own expression, executed; the line sits in the personal block every account with
+//       a roster id sees. (SE-X24 runs the same save across every boundary, its `saved` mark included.)
+//   BH3 the REAL Collapsible, executed: its head (state + key handlers) run with a stub React and localStorage, and
+//       the header tag's OWN attribute expressions evaluated in that scope — role/tabIndex; aria-expanded is what is
+//       shown; Enter (keydown) and Space (on release, as a native button) toggle and persist as a tap does, Space's
+//       keydown only stops the page scrolling, a key that comes from inside the header is left alone. Held
+//       open (forceOpen): keys and taps change nothing, aria-disabled, a plain cursor, the held note shown (only
+//       cal_tools passes one); the strip is ≥ 36 px tall (padding 9 / margin −9 keep the layout)
+//   BH4 the roster ✕ buttons say whom they remove (executed) and get a bigger tap target
+// Review fixes (2026-10-19):
+//   BH2 "Saved ✓" is cleared when the next save starts (a failed save never leaves an earlier tick up), carries whose
+//       prefs it was and shows only for the signed-in person's own (not the scheduler's save of another surgeon's
+//       e-mail); its dark-mode colour reads ≥ 4.5:1 on the Email Notifications box (#1a8040 there was ~2.9:1)
+//   BH3 the Collapsible's role=button is the chevron and the title ONLY; `right` (the ↻ refresh) is its sibling in the
+//       header row — a button's children are presentational, so VoiceOver hid the ↻ inside it; the chevron is aria-hidden
+//   BH5 Settings' ▸ cards (Notification Settings, Office Notifications, Restore from Snapshot): their headers were
+//       click-only divs — now role=button, focusable, aria-expanded, Enter / Space (on release) as Collapsible's, executed
+console.log("\nBH. Settings: reminder picker, 'Saved ✓', Collapsible headers as buttons");
+await (async () => {
+  const nsrcBH = src.replace(/\r\n/g, "\n");
+
+  // BH1 — the picker
+  check("BH1 the reminder-hour picker is a plain function called inline — no HourPicker component is defined or rendered (it remounted every render)",
+    count("<HourPicker") === 0 && count("const HourPicker") === 0 && count("const hourPicker = (field, label) => (") === 1
+      && count('{hourPicker("daily_reminder_hour", "Daily call reminder")}') === 1 && count('{hourPicker("vac_deadline_hour", "Vacation deadline reminder")}') === 1,
+    JSON.stringify({ comp: count("<HourPicker"), fn: count("const hourPicker = (field, label) => (") }));
+  check("BH1 the reminder times say they are Central time",
+    count('marginBottom:6}}>Reminder Times (Central time)</div>') === 1 && count(">Reminder Times</div>") === 0);
+
+  // BH2 — the REAL save, executed
+  const SN0 = "  const saveNotifPref = useCallback(", iSN = nsrcBH.indexOf(SN0), iSNE = iSN < 0 ? -1 : nsrcBH.indexOf("\n  }, []);\n", iSN);
+  const snBody = iSN >= 0 && iSNE > iSN && nsrcBH.indexOf(SN0, iSN + 1) < 0 ? nsrcBH.slice(iSN + SN0.length, iSNE + "\n  }".length) : null;
+  let snMk = null;
+  try { snMk = snBody ? vm.runInContext(`(function (env) { const { setNotifPrefs, notifPrefsRef, notifSaveTimerRef, setTimeout, clearTimeout, setNotifPrefsSaving, setNotifPrefsSaved, db, auditRef, showToast, console, sessionEpochRef, dbAuthHeaders } = env; return (${snBody}); })`, sandbox) : null; } catch (ex) { snMk = null; }
+  // o: { fail, cross: "write" | "debounce", who: whose prefs are saved (s3, or s1's e-mail from the scheduler's list), box: the screen's saved state }
+  const snRun = async (o) => {
+    if (!snMk) return "not extracted";
+    const log = [], timers = [], ep = { current: 0 }, box = o.box || { v: null };
+    const env = { notifPrefsRef: { current: { s3: { email: "c@dsg.test", daily_reminder_hour: 7 }, s1: { email: "a@dsg.test" } } }, notifSaveTimerRef: { current: {} },
+      setTimeout: (fn, ms) => { timers.push({ fn, ms }); return timers.length; }, clearTimeout: () => {},
+      setNotifPrefsSaving: (v) => log.push("saving:" + v),
+      setNotifPrefsSaved: (v) => { box.v = v; log.push("saved:" + (v && typeof v.at === "number" && v.at > 0 ? v.id + "@time" : JSON.stringify(v))); },
+      db: { upsert: async (table, row) => { log.push("upsert " + table + " h" + row.daily_reminder_hour); if (o.cross === "write") ep.current++; return { error: o.fail ? "HTTP 503" : null }; } },
+      auditRef: { current: { logAudit: (action, summary, details, hdrs) => log.push("audit " + action + (hdrs ? " as " + hdrs.Authorization : "")), nameOf: (x) => x } },
+      showToast: () => log.push("toast"), console: { error() {}, warn() {}, log() {} }, sessionEpochRef: ep, dbAuthHeaders: () => ({ Authorization: "Bearer TOK_A" }) };
+    env.setNotifPrefs = (u) => { u(env.notifPrefsRef.current); };
+    try {
+      snMk(env)(o.who || "s3", o.who === "s1" ? { email: "a2@dsg.test" } : { daily_reminder_hour: 6 });
+      if (o.cross === "debounce") ep.current++;
+      for (const t of timers.splice(0)) { log.push("timer:" + t.ms); await t.fn(); }
+    } catch (ex) { log.push("threw: " + String(ex).slice(0, 100)); }
+    return log.join(" | ");
+  };
+  const snOk = await snRun({}), snFail = await snRun({ fail: true }), snCross = await snRun({ cross: "write" }), snEarly = await snRun({ cross: "debounce" });
+  check("BH2 the REAL saveNotifPref, executed: a save that lands sets 'Saved ✓' — whose prefs, and when — only AFTER its write and its audit line; (review fix) every save first clears the last one",
+    snOk === "timer:500 | saving:true | saved:null | upsert notification_preferences h6 | audit prefs.save | saved:s3@time | saving:false", snOk);
+  check("BH2 …a failed save never says 'Saved ✓' (its toast instead, no audit line) — and (review fix) the tick an earlier save left is cleared as it starts",
+    snFail === "timer:500 | saving:true | saved:null | upsert notification_preferences h6 | toast | saving:false", snFail);
+  check("BH2 …a session change while its write is out: its audit line as the tap's account, and no 'Saved ✓' on the next screen; one before its debounce: nothing at all",
+    snCross === "timer:500 | saving:true | saved:null | upsert notification_preferences h6 | audit prefs.save as Bearer TOK_A | saving:false" && snEarly === "timer:500",
+    JSON.stringify({ snCross, snEarly }));
+  // the hide effect (the real line), executed
+  const iSavedState = nsrcBH.indexOf("  const [notifPrefsSaved, setNotifPrefsSaved] = useState(null);\n");
+  const efM = /\n  useEffect\((\(\) => \{ if \(!notifPrefsSaved\) return;[^\n]*?\}), \[notifPrefsSaved\]\);\n/.exec(nsrcBH);
+  let efMk = null; try { efMk = efM ? vm.runInContext(`(function (notifPrefsSaved, setNotifPrefsSaved, setTimeout, clearTimeout) { return (${efM[1]}); })`, sandbox) : null; } catch (ex) { efMk = null; }
+  const efRun = (saved) => {
+    if (!efMk) return "not extracted";
+    const log = [], timers = [];
+    try {
+      const undo = efMk(saved, (v) => log.push("set:" + JSON.stringify(v)), (fn, ms) => { timers.push(fn); log.push("timer:" + ms); return 7; }, (id) => log.push("clear:" + id))();
+      timers.forEach((fn) => fn());
+      if (typeof undo === "function") undo();
+    } catch (ex) { log.push("threw: " + String(ex).slice(0, 80)); }
+    return log.join(" ");
+  };
+  const S3 = { id: "s3", at: 1760000000000 };
+  check("BH2 the hide effect, executed: 'Saved ✓' clears itself 3 s after a save (a newer save restarts the clock: the old timer is cleared); nothing runs while there is none — the state declared before its effect, and set only there, as a save starts (cleared) and by a landed save",
+    efRun(S3) === "timer:3000 set:null clear:7" && efRun(null) === "" && iSavedState >= 0 && !!efM && efM.index > iSavedState && count("setNotifPrefsSaved(") === 3
+      && count("setNotifPrefsSaving(true); setNotifPrefsSaved(null);") === 1 && count("if (sessionEpochRef.current === ep) setNotifPrefsSaved({ id: surgeonId, at: Date.now() });") === 1 && count("notifPrefsSavedAt") === 0,
+    JSON.stringify({ on: efRun(S3), off: efRun(null), iSavedState, ef: efM && efM.index, sets: count("setNotifPrefsSaved(") }));
+  // the status line: its own expressions (text and colour), executed; where it is
+  const stM = /<div aria-live="polite" style=\{\{fontSize:10,color:(dk\?"#8ad0a0":"#1a8040"),marginTop:6,minHeight:14\}\}>\{(notifPrefsSaving \?[^\n]*?)\}<\/div>/.exec(nsrcBH);
+  let stFn = null, stCol = null;
+  try { stFn = stM ? vm.runInContext(`(function (notifPrefsSaving, notifPrefsSaved, mySurgeon) { return (${stM[2]}); })`, sandbox) : null; stCol = stM ? vm.runInContext(`(function (dk) { return (${stM[1]}); })`, sandbox) : null; } catch (ex) { stFn = stCol = null; }
+  const stCases = stFn ? [stFn(true, null, "s3"), stFn(true, S3, "s3"), stFn(false, S3, "s3"), stFn(false, null, "s3"), stFn(false, { id: "s1", at: 1 }, "s6")] : null;
+  check("BH2 the personal block's line shows 'Saving…' then 'Saved ✓' for this person's own save, and nothing otherwise; announced politely",
+    JSON.stringify(stCases) === JSON.stringify(["Saving…", "Saving…", "Saved ✓", "", ""]) && count('<div aria-live="polite" style={{fontSize:10,color:dk?"#8ad0a0":"#1a8040",marginTop:6,minHeight:14}}>') === 1,
+    JSON.stringify(stCases));
+  // (review fix) the screen across saves: the REAL save writes the state; the REAL line reads it
+  const line = (box, me) => (stFn ? stFn(false, box.v, me) : null);
+  const shared = { v: null };
+  await snRun({ box: shared }); const afterOk = line(shared, "s3");
+  await snRun({ box: shared, fail: true }); const afterFail = line(shared, "s3");
+  const sched = { v: null };
+  await snRun({ box: sched, who: "s1" }); const schedOwn = line(sched, "s6"), surgeonOwn = line(sched, "s1");
+  check("BH2 (review fix) a member's save lands ('Saved ✓'), then their next save FAILS within the 3 s: the line is empty beside the error toast (it kept saying 'Saved ✓' — the old tick was never cleared); the scheduler saving another surgeon's e-mail (s1) from the list: no 'Saved ✓' under the scheduler's own pickers (s6) — it is shown for the signed-in person's own prefs only",
+    afterOk === "Saved ✓" && afterFail === "" && schedOwn === "" && surgeonOwn === "Saved ✓", JSON.stringify({ afterOk, afterFail, schedOwn, surgeonOwn }));
+  // (review fix) its colour in dark mode, on the Email Notifications box it sits in (the box's own background expression, run)
+  const lumBH = (h) => { const v = h.slice(1).match(/../g).map((x) => parseInt(x, 16) / 255).map((c) => (c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4))); return 0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2]; };
+  const crBH = (a, b) => +((Math.max(lumBH(a), lumBH(b)) + 0.05) / (Math.min(lumBH(a), lumBH(b)) + 0.05)).toFixed(2);
+  const boxM = nsrcBH.match(/\{\/\* Email Notifications \*\/\}\n\s*<div style=\{\{background:(dk\?"#[0-9a-f]{6}":"#[0-9a-f]{6}"),/);
+  let boxBg = null; try { boxBg = boxM ? vm.runInContext(`(function (dk) { return (${boxM[1]}); })`, sandbox) : null; } catch (ex) { boxBg = null; }
+  const cols = stCol && boxBg ? { dark: stCol(true), light: stCol(false), boxDark: boxBg(true), boxLight: boxBg(false) } : null;
+  const crs = cols ? { dark: crBH(cols.dark, cols.boxDark), light: crBH(cols.light, cols.boxLight), was: crBH("#1a8040", cols.boxDark) } : null;
+  check("BH2 (review fix) the line's colour, its own expression run: in dark mode ≥ 4.5:1 on the Email Notifications box it sits in (#1a8040 there, as before, ~2.9:1); light mode unchanged",
+    !!crs && crs.dark >= 4.5 && crs.light >= 4.5 && crs.was < 4.5 && cols.light === "#1a8040", JSON.stringify({ cols, crs }));
+  // its block: the personal one ("shown to everyone" with a roster id), not the scheduler-only list after it
+  const stAt = stM ? stM.index : -1, PG = '{/* Personal notification settings (shown to everyone) */}\n              {mySurgeon && mySurgeon !== "admin" && (() => {\n';
+  const iGate = stAt < 0 ? -1 : nsrcBH.lastIndexOf(PG, stAt), iMine = stAt < 0 ? -1 : nsrcBH.lastIndexOf("My Email for Notifications</div>", stAt);
+  const iEnd = iGate < 0 ? -1 : nsrcBH.indexOf("\n              })()}\n", iGate), iSchedOnly = iGate < 0 ? -1 : nsrcBH.indexOf("{/* Scheduler-only: all surgeon emails */}", iGate);
+  check("BH2 the line sits in the personal block (every account with a roster id — a member's own settings), not the scheduler-only list after it",
+    nsrcBH.split(PG).length - 1 === 1 && iGate >= 0 && iMine > iGate && stAt > iMine && iEnd > stAt && iSchedOnly > iEnd,
+    JSON.stringify({ iGate, iMine, stAt, iEnd, iSchedOnly }));
+
+  // BH3 — the REAL Collapsible, executed
+  const cA = nsrcBH.indexOf("function Collapsible({"), cR = cA < 0 ? -1 : nsrcBH.indexOf("\n  return (\n", cA), cZ = cA < 0 ? -1 : nsrcBH.indexOf("\n}\n", cA);
+  const cHead = cA >= 0 && cR > cA && cZ > cR ? nsrcBH.slice(cA, cR) : null, cJsx = cR > 0 && cZ > cR ? nsrcBH.slice(cR, cZ) : "";
+  let Coll = null;
+  // `ev` evaluates an expression in the component's own scope (a direct eval in the sliced function): the header tag's attributes as written.
+  try { Coll = cHead ? vm.runInContext(`(function (React, localStorage, console) { return ${cHead}\n  return { open, shown, toggle, ev: (x) => eval(x) };\n}; })`, sandbox) : null; } catch (ex) { Coll = null; }
+  const hS = cJsx.indexOf('<div role="button"'), hE = hS < 0 ? -1 : cJsx.indexOf("}}>\n", hS), headTag = hS >= 0 && hE > hS ? cJsx.slice(hS, hE + 3) : "";
+  const attrs = {};
+  for (const m of headTag.matchAll(/\s([a-zA-Z][\w-]*)=(?:"([^"]*)"|\{([^{}]*)\}(?!\}))/g)) attrs[m[1]] = m[2] !== undefined ? { str: m[2] } : { expr: m[3] };
+  const styleM = /\sstyle=\{(\{[^{}]*\})\}>$/.exec(headTag);
+  const mountBH = (stored, props) => {
+    const store = Object.assign({}, stored), writes = [], cell = { set: false, v: undefined };
+    const React = { useState: (init) => { if (!cell.set) { cell.v = typeof init === "function" ? init() : init; cell.set = true; } return [cell.v, (u) => { cell.v = typeof u === "function" ? u(cell.v) : u; }]; } };
+    const ls = { getItem: (k) => (Object.prototype.hasOwnProperty.call(store, k) ? store[k] : null), setItem: (k, v) => { writes.push(k + "=" + v); store[k] = String(v); } };
+    const comp = Coll(React, ls, { warn: () => {} });
+    const render = () => comp(Object.assign({ title: "t", ck: "cal_tools", css: {}, children: "body" }, props));
+    return { render, writes };
+  };
+  const A = (r, k) => (attrs[k] ? (attrs[k].str !== undefined ? attrs[k].str : r.ev(attrs[k].expr)) : "(no " + k + ")");
+  const keyEv = (key, own) => { const el = {}; return { key, target: own === false ? {} : el, currentTarget: el, prevented: false, preventDefault() { this.prevented = true; } }; };
+  // A keyboard user on a plain section (never opened): each step through the header tag's own onKeyDown / onKeyUp, then a re-render.
+  const kb = (() => {
+    if (!Coll || !headTag) return "not extracted";
+    try {
+      const m = mountBH({}, { defaultOpen: false }); let r = m.render();
+      const out = [String(A(r, "aria-expanded"))];
+      const step = (name, attr, key, own) => { const e = keyEv(key, own); A(r, attr)(e); r = m.render(); out.push(name + ":" + (e.prevented ? "P" : "-") + (A(r, "aria-expanded") === true ? "E" : A(r, "aria-expanded") === false ? "c" : "?")); };
+      step("Enter", "onKeyDown", "Enter"); step("SpaceDown", "onKeyDown", " "); step("SpaceUp", "onKeyUp", " "); step("a", "onKeyDown", "a");
+      step("childEnter", "onKeyDown", "Enter", false); step("childSpaceUp", "onKeyUp", " ", false); step("EnterUp", "onKeyUp", "Enter");
+      return out.join(" ") + " | " + m.writes.join(",") + " | " + [A(r, "role"), A(r, "tabIndex"), A(r, "onClick") === r.toggle, A(r, "aria-disabled")].join(",");
+    } catch (ex) { return "threw: " + String(ex).slice(0, 120); }
+  })();
+  check("BH3 the REAL Collapsible header, executed through its own attributes: a button (role, tabIndex 0, the tap is toggle) whose aria-expanded is what is shown; Enter on keydown and Space on release toggle and persist; Space's keydown only stops the scroll; other keys, a key from a control inside it, and Enter's release do nothing",
+    kb === "false Enter:PE SpaceDown:PE SpaceUp:-c a:-c childEnter:-c childSpaceUp:-c EnterUp:-c | dsg_collapse_cal_tools=1,dsg_collapse_cal_tools=0 | button,0,true,", kb);
+  const held = (() => {
+    if (!Coll || !headTag || !styleM) return "not extracted";
+    try {
+      const props = { defaultOpen: false, forceOpen: true, heldNote: "Close the swap options to collapse" };
+      const m = mountBH({}, props); let r = m.render();
+      const st = r.ev("(" + styleM[1] + ")");
+      const out = [A(r, "aria-expanded"), A(r, "aria-disabled"), st.cursor, r.ev("forceOpen && heldNote")];
+      const e1 = keyEv("Enter"); A(r, "onKeyDown")(e1); r = m.render(); A(r, "onKeyUp")(keyEv(" ")); r = m.render(); A(r, "onClick")(); r = m.render();
+      out.push(A(r, "aria-expanded"), m.writes.length);
+      props.forceOpen = false; r = m.render(); // the swap options closed: back to the stored (never opened) state
+      const st2 = r.ev("(" + styleM[1] + ")");
+      out.push(A(r, "aria-expanded"), String(A(r, "aria-disabled")), st2.cursor, String(r.ev("forceOpen && heldNote")), st2.padding, st2.margin, st2.minHeight);
+      return out.join(",");
+    } catch (ex) { return "threw: " + String(ex).slice(0, 120); }
+  })();
+  check("BH3 held open by the swap options: aria-expanded, aria-disabled, a plain cursor and the held note; Enter, Space and a tap change nothing and save nothing; when they close, back to collapsed, enabled, a pointer, no note — the strip padded 9 px with −9 px margins and at least 36 px tall",
+    held === "true,true,default,Close the swap options to collapse,true,0,false,undefined,pointer,false,9px 0,-9px 0,36", held);
+  check("BH3 the markup: the held note renders only while held and only where one is passed (cal_tools alone, with the Close hint); the chevron is unchanged but aria-hidden (review fix: it was read into the button's name); the header is the only click target",
+    cJsx.includes('{forceOpen && heldNote && <div style={{ fontSize: 10, color: "#8a94a0", marginTop: 4 }}>{heldNote}</div>}')
+      && cJsx.includes('<span aria-hidden="true" style={{ fontSize: 11, color: "#8a94a0", transition: "transform .15s", transform: shown ? "rotate(90deg)" : "rotate(0deg)", display: "inline-block", width: 10, flexShrink: 0 }}>▶</span>')
+      && !!cHead && cHead.includes("forceOpen = false, heldNote = null,") && count('heldNote="') === 1
+      && count('forceOpen={!!swapSuggestions} heldNote="Close the swap options to collapse" title="🔧 Schedule Tools & Export"') === 1 && (cJsx.match(/onClick=/g) || []).length === 1,
+    JSON.stringify({ head: !!cHead, notes: count('heldNote="'), clicks: (cJsx.match(/onClick=/g) || []).length }));
+  // (review fix) what the role=button element holds: its open tag to its matching </div> (a <div / </div> depth walk —
+  // JSX can't run here); `right` must be OUTSIDE it, its sibling in the header row
+  const divClose = (s, at) => { let d = 0; const re = /<div\b|<\/div>/g; re.lastIndex = at; let m; while ((m = re.exec(s))) { d += m[0] === "</div>" ? -1 : 1; if (d === 0) return m.index; } return -1; };
+  const iBtnClose = hS < 0 ? -1 : divClose(cJsx, hS), btnInner = iBtnClose > hS ? cJsx.slice(hS, iBtnClose) : "";
+  const ROW = '<div style={{ display: "flex", alignItems: "center", gap: 8 }}>', iRow = cJsx.indexOf(ROW), iRowClose = iRow < 0 ? -1 : divClose(cJsx, iRow);
+  const iRight = cJsx.indexOf("{right}");
+  check("BH3 (review fix) the role=button element is the chevron and the title ONLY — `right` (the ↻ refresh of Activity Log / Client Versions) is its sibling in the header row, outside it (a button's children are presentational: VoiceOver flattened the ↻ into the header and a tap on it toggled the section); the button spans the row (flex 1) and keeps its ≥ 36px strip",
+    !!btnInner && btnInner.includes("{title}") && btnInner.includes("▶</span>") && !btnInner.includes("{right}") && (cJsx.match(/\{right\}/g) || []).length === 1
+      && iRow >= 0 && iRow < hS && iRowClose > iBtnClose && iRight > iBtnClose && iRight < iRowClose && cJsx.indexOf(ROW, iRow + 1) === -1
+      && /flex: 1, minWidth: 0,/.test(headTag) && /minHeight: 36/.test(headTag) && count("right={<button") === 2,
+    JSON.stringify({ hS, iBtnClose, iRow, iRowClose, iRight, rights: count("right={<button") }));
+
+  // BH4 — the roster ✕ buttons
+  const rx = (fn, v) => new RegExp("<button aria-label=\\{(`[^`]*`)\\} onClick=\\{\\(\\)=>" + fn + "\\(" + v + "\\.id\\)\\} style=\\{(\\{[^{}]*\\})\\}>✕</button>").exec(nsrcBH);
+  const rsM = rx("removeSurgeon", "s"), raM = rx("removeApp", "a");
+  let rs = null, ra = null;
+  try { rs = rsM ? vm.runInContext(`(function (s) { return [${rsM[1]}, ${rsM[2]}]; })`, sandbox)({ id: "s3", name: "RPC" }) : null; } catch (ex) { rs = null; }
+  try { ra = raM ? vm.runInContext(`(function (a) { return [${raM[1]}, ${raM[2]}]; })`, sandbox)({ id: "a2", name: "JDS" }) : null; } catch (ex) { ra = null; }
+  check("BH4 the roster ✕ buttons, executed: each says whom it removes ('Remove surgeon RPC', 'Remove APP JDS') and is padded to a bigger tap target",
+    !!rs && rs[0] === "Remove surgeon RPC" && rs[1].padding === "6px 8px" && !!ra && ra[0] === "Remove APP JDS" && ra[1].padding === "6px 8px"
+      && count("onClick={()=>removeSurgeon(s.id)}") === 1 && count("onClick={()=>removeApp(a.id)}") === 1,
+    JSON.stringify({ rs, ra }));
+
+  // BH5 — Settings' ▸ card headers (review fix): the real toggle and key handler, sliced, and each header tag's OWN
+  // attribute expressions evaluated against them, a keyboard user stepping through as in BH3
+  const TSC = nsrcBH.match(/\n  (const toggleSettingsCard = \(key\) => [^\n]*;)\n/);
+  const SCK = nsrcBH.match(/\n  (const settingsCardKey = \(key\) => \(e\) => \{\n[\s\S]*?\n  \};)\n/);
+  let mkCards = null;
+  try { mkCards = TSC && SCK && SCK[1].length < 900 ? vm.runInContext(`(function (setOpenSettingsCards) { ${TSC[1]}\n${SCK[1]}\n return { toggleSettingsCard, settingsCardKey }; })`, sandbox) : null; } catch (ex) { mkCards = null; }
+  const CARDS = [["notifSettings", "🔔 Notification Settings"], ["officeNotif", "📧 Office Notifications"], ["restoreSnap", "📼 Restore from Snapshot"]];
+  const cardRun = (key, label) => {
+    const m = nsrcBH.match(new RegExp(`\\n\\s*<div ([^\\n]*?onClick=\\{\\(\\)=>toggleSettingsCard\\("${key}"\\)\\}[^\\n]*?)>\\n\\s*<span>${label}</span>\\n\\s*<span ([^\\n]*?)>\\{openSettingsCards\\.${key} \\? "▾" : "▸"\\}</span>`));
+    if (!m) return "header not found";
+    if (!mkCards) return "handlers not extracted";
+    const at = {}; for (const a of (" " + m[1]).matchAll(/\s([a-zA-Z][\w-]*)=(?:"([^"]*)"|\{([^{}]*)\}(?!\}))/g)) at[a[1]] = a[2] !== undefined ? { str: a[2] } : { expr: a[3] };
+    let state = {}; const api = mkCards((u) => { state = typeof u === "function" ? u(state) : u; });
+    const A = (k) => (at[k] ? (at[k].str !== undefined ? at[k].str : vm.runInContext(`(function (openSettingsCards, toggleSettingsCard, settingsCardKey) { return (${at[k].expr}); })`, sandbox)(state, api.toggleSettingsCard, api.settingsCardKey)) : "(no " + k + ")");
+    const ev = (type, key2, own) => { const el = {}; return { type, key: key2, target: own === false ? {} : el, currentTarget: el, prevented: false, preventDefault() { this.prevented = true; } }; };
+    try {
+      const out = [String(A("aria-expanded"))];
+      const step = (name, attr, type, key2, own) => { const e = ev(type, key2, own); A(attr)(e); out.push(name + ":" + (e.prevented ? "P" : "-") + (A("aria-expanded") === true ? "E" : A("aria-expanded") === false ? "c" : "?")); };
+      step("Enter", "onKeyDown", "keydown", "Enter"); step("SpaceDown", "onKeyDown", "keydown", " "); step("SpaceUp", "onKeyUp", "keyup", " "); step("a", "onKeyDown", "keydown", "a");
+      step("childEnter", "onKeyDown", "keydown", "Enter", false); step("childSpaceUp", "onKeyUp", "keyup", " ", false); step("EnterUp", "onKeyUp", "keyup", "Enter");
+      A("onClick")(); out.push("tap:" + (A("aria-expanded") === true ? "E" : "c"));
+      return out.join(" ") + " | " + [A("role"), A("tabIndex"), m[2].includes('aria-hidden="true"')].join(",");
+    } catch (ex) { return "threw: " + String(ex).slice(0, 120); }
+  };
+  const cardsGot = CARDS.map(([k, l]) => cardRun(k, l));
+  check("BH5 (review fix) Settings' three ▸ cards (Notification Settings, Office Notifications, Restore from Snapshot), each header executed through its own attributes: a button (role, tabIndex 0) whose aria-expanded is the card's open state; Enter on keydown and Space on release toggle it (Space's keydown only stops the scroll); other keys, a key from inside it and Enter's release do nothing; a tap toggles as before; the ▸ / ▾ is aria-hidden (they were click-only divs: no keyboard, nothing announced)",
+    cardsGot.every((g) => g === "false Enter:PE SpaceDown:PE SpaceUp:-c a:-c childEnter:-c childSpaceUp:-c EnterUp:-c tap:E | button,0,true"), JSON.stringify(cardsGot));
+  check("BH5 …no click-only ▸ header is left: every toggleSettingsCard header carries role=\"button\" and the key handler (3 of each)",
+    count("<div onClick={()=>toggleSettingsCard(") === 0 && count("onClick={()=>toggleSettingsCard(") === 3 && (src.match(/<div role="button" tabIndex=\{0\} aria-expanded=\{!!openSettingsCards\.\w+\} onClick=\{\(\)=>toggleSettingsCard\("\w+"\)\} onKeyDown=\{settingsCardKey\("\w+"\)\} onKeyUp=\{settingsCardKey\("\w+"\)\}/g) || []).length === 3);
+})();
 
 // ─── S. Silvis feed-health warnings cannot be dismissed (owner decision 2026-09-24) ───
 // "feed EMPTY", "last read FAILED" and "STALE" describe the DATA SOURCE and
@@ -2656,10 +4023,11 @@ console.log("\nBC. Generate & Publish asks once; Billing opens on the newest mon
       && dgBody.length > 0 && !dgBody.includes("confirm("), JSON.stringify({ bare: count("onClick={doGenerateAndNotify}"), calls: count("doGenerateAndNotify()"), body: dgBody.length }));
   // What the question's last line says, held true (review fix): the REAL doGenerateAndNotify, run on each doGenerate result
   let mkDgn = null;
-  try { mkDgn = dgBody ? vm.runInContext(`(function (env) { const { sessionEpochRef, doGenerate, addNotification, sendEmailNotif, MO, startMonth, endMoIdx, startYear } = env;\n${dgBody}\n  };\n return doGenerateAndNotify; })`, sandbox, { filename: "bc-dgn.js" }) : null; } catch (ex) { mkDgn = null; }
+  // (mondays, periodText: the e-mail's period is taken from the Generate Mondays since BD — UX audit 2026-10-19 — through the component's one line, periodText, since its review fixes)
+  try { mkDgn = dgBody ? vm.runInContext(`(function (env) { const { sessionEpochRef, doGenerate, addNotification, sendEmailNotif, MO, startMonth, endMoIdx, startYear, mondays, periodText } = env;\n${dgBody}\n  };\n return doGenerateAndNotify; })`, sandbox, { filename: "bc-dgn.js" }) : null; } catch (ex) { mkDgn = null; }
   const dgn = async (result) => {
     const log = [];
-    await mkDgn({ sessionEpochRef: { current: 0 }, doGenerate: async () => result, MO: ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"], startMonth: 10, endMoIdx: 1, startYear: 2026,
+    await mkDgn({ sessionEpochRef: { current: 0 }, doGenerate: async () => result, MO: ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"], startMonth: 10, endMoIdx: 1, startYear: 2026, mondays: NOV.map(H.parse), periodText: "Nov 16, 2026 – Feb 21, 2027",
       addNotification: async (type, title, msg, data, targets) => { log.push(`notice ${type} to ${targets === null ? "everyone" : JSON.stringify(targets)}`); },
       sendEmailNotif: (type, data, targets) => { log.push(`e-mail ${type} to ${targets === null ? "everyone" : JSON.stringify(targets)}`); } })();
     return log;
@@ -2831,6 +4199,227 @@ console.log("\nBC. Generate & Publish asks once; Billing opens on the newest mon
     !/transparent\s*:\s*true/.test(src) && (isrc.match(/transparent: true/g) || []).length === 2);
   check("T4 the timed builder is gone from both files (no icsDate helper, no hand-built APP events)",
     !src.includes("icsDate(") && !isrc.includes("icsDate(") && !src.includes("APP Call - "));
+}
+
+// ─── BI. Manual Adjustments lists the week that starts in the previous month; dark mode's header title and secondary buttons read; Light / Dark set the theme (UX audit 2026-10-19) ───
+// (1) The Manual Adjustments week picker listed only the weeks whose MONDAY fell in the viewed month, so the
+//     week of Sep 28 – Oct 4 could not be picked from October. It lists every week holding a day of the month
+//     (helpers.js calMonthWeekMondays), the one that starts in the previous month first.
+// (2) Dark mode: the header title kept css.h1's #1a2a3a on the dark header (~1.1:1 — the sheet's
+//     h1[style*="color:#1a2a3a"] never matches, React writes rgb()); every secondary button (css.btn(false)) kept
+//     its light grey fill under the sheet's forced light button text (~1.5:1). The title takes dkText in dark mode;
+//     ONE sheet rule gives that exact fill, as the browser writes it, a dark one. Light and Dark both toggled (Dark
+//     tapped while dark went light): each now sets its theme, and aria-pressed says which is on.
+// (3) A holiday chip's holder and hours were adjacent spans (a margin between them), so the cell's name — its
+//     content, AX6 — ran them together: "MCC7a–7a". A space separates them now.
+//   BI1 the real calMonthWeekMondays: Oct 2026 (from Sep 28), Nov 2026, Jun 2026, Feb 2027 (exactly four),
+//       Jan 2027 (from Dec 28) exact; every month 2025–2030: consecutive Mondays, the first week holds the 1st and
+//       the last the month's last day (so each day is in exactly one listed week), every week main listed still
+//       listed; the same lists in a child pinned to TZ=America/Chicago (the DST months)
+//   BI2 the REAL picker, sliced and run: October 2026 opens with "Wk of Sep 28 – Oct 4"; the labels and suffixes
+//       as before; no helper (a stale cache) → no weeks, not a crash; the inline loop is gone
+//   BI3 Light / Dark, the real buttons executed from either theme: Light sets light, Dark sets dark; aria-pressed
+//       says which is on; no toggle left
+//   BI4 the header title, its real style evaluated against the real dark sheet: ≥ 4.5:1 on both stops of the dark
+//       header (main's ~1.1:1); only the colour changes; light mode exactly css.h1
+//   BI5 the secondary buttons, the real css.btn(false) as the browser writes it, against the app's real dark sheet
+//       (DARK_SHEET's text; selectors split bracket-aware, as the new one holds commas): ONE rule's dark fill, the
+//       forced text ≥ 4.5:1 on it (1.5:1 without the rule); the primary gradient and light mode untouched
+//   BI6 the holiday chip's text, its real JSX children evaluated: "🦃 MCC 7a–7a" (main: "🦃 MCC7a–7a")
+// Review fix (2026-10-19):
+//   BI5 the fill rule no longer forces border-color on every secondary button (it erased ✕ Clear's red border, its one
+//       red cue in dark mode): a second rule gives the dark border only where the border is still css.btn(false)'s own
+//       grey; the real ✕ Clear style, run through the sheet, keeps its red border
+console.log("\nBI. Manual Adjustments weeks, dark mode title + secondary buttons, Light / Dark, the holiday chip");
+{
+  const J = (x) => JSON.stringify(x);
+  const nsrcBI = src.replace(/\r\n/g, "\n");   // a Windows checkout is CRLF, CI's is LF
+  const bisb = { console, window: {}, document: undefined, navigator: { userAgent: "node-test" }, localStorage: { getItem: () => null, setItem() {}, removeItem() {} }, fetch: () => { throw new Error("no fetch in BI"); }, setTimeout, clearTimeout };
+  bisb.globalThis = bisb; vm.createContext(bisb);
+  for (const f of ["helpers.js", "config.js", "app-styles.js"]) vm.runInContext(fs.readFileSync(path.join(ROOT, f), "utf8"), bisb, { filename: f });
+  const H = vm.runInContext("({ fmt, parse, addD, css })", bisb);
+  const cmw = vm.runInContext('typeof calMonthWeekMondays === "function" ? calMonthWeekMondays : null', bisb);
+  const NONE = "calMonthWeekMondays is not defined in helpers.js";
+
+  // BI1 — the helper
+  const WANT1 = {
+    "2026-9": ["2026-09-28", "2026-10-05", "2026-10-12", "2026-10-19", "2026-10-26"],
+    "2026-10": ["2026-10-26", "2026-11-02", "2026-11-09", "2026-11-16", "2026-11-23", "2026-11-30"],
+    "2026-5": ["2026-06-01", "2026-06-08", "2026-06-15", "2026-06-22", "2026-06-29"],
+    "2027-1": ["2027-02-01", "2027-02-08", "2027-02-15", "2027-02-22"],
+    "2027-0": ["2026-12-28", "2027-01-04", "2027-01-11", "2027-01-18", "2027-01-25"],
+  };
+  const run1 = (k) => { const [y, m] = k.split("-").map(Number); try { return cmw ? cmw(y, m) : null; } catch (ex) { return "threw: " + String(ex).slice(0, 80); } };
+  const bad1 = Object.keys(WANT1).filter((k) => J(run1(k)) !== J(WANT1[k])).map((k) => `${k}: ${J(run1(k))}`);
+  check("BI1 the real calMonthWeekMondays: October 2026 starts with the week of Sep 28 (its Monday is in September), then Oct 5 … Oct 26; November 2026 from Oct 26 through Nov 30 (six weeks); June 2026 from Jun 1 (the 1st is a Monday); February 2027 exactly four (Mon Feb 1 – Sun Feb 28); January 2027 from Dec 28 (the year before)",
+    !!cmw && bad1.length === 0, cmw ? bad1.join(" | ") : NONE);
+  const lists = {}, bad1s = [];
+  if (cmw) for (let y = 2025; y <= 2030; y++) for (let m = 0; m < 12; m++) {
+    const list = cmw(y, m), first = H.fmt(new Date(y, m, 1)), last = H.fmt(new Date(y, m + 1, 0));
+    lists[`${y}-${m}`] = list;
+    const sunOf = (d) => H.fmt(H.addD(H.parse(d), 6));
+    const mains = []; for (let d = new Date(y, m, 1); d.getMonth() === m; d = H.addD(d, 1)) if (d.getDay() === 1) mains.push(H.fmt(d)); // main's picker: the Mondays in the month
+    const ok = Array.isArray(list) && list.length >= 4 && list.length <= 6
+      && list.every((d, i) => H.parse(d).getDay() === 1 && (i === 0 || H.fmt(H.addD(H.parse(list[i - 1]), 7)) === d))
+      && list[0] <= first && sunOf(list[0]) >= first && list[list.length - 1] <= last && sunOf(list[list.length - 1]) >= last
+      && list.every((d) => d <= last && sunOf(d) >= first) && mains.every((d) => list.includes(d));
+    if (!ok) bad1s.push(`${y}-${m + 1}: ${J(list)}`);
+  }
+  check("BI1 every month of 2025–2030 (72): consecutive Mondays 7 days apart; the first week holds the 1st and the last week the month's last day, so every day of the month is in exactly one listed week; every listed week holds a day of the month; every week main listed (its Monday in the month) is still listed",
+    !!cmw && Object.keys(lists).length === 72 && bad1s.length === 0, cmw ? bad1s.slice(0, 3).join(" | ") : NONE);
+  {
+    const { execFileSync } = require("child_process");
+    const code = [
+      'const vm = require("vm"), fs = require("fs"), path = require("path");',
+      'const sb = { console, window: {}, document: undefined, navigator: { userAgent: "node-test" }, localStorage: { getItem: () => null, setItem() {}, removeItem() {} }, fetch: () => { throw new Error("no fetch"); }, setTimeout, clearTimeout };',
+      "sb.globalThis = sb; vm.createContext(sb);",
+      `vm.runInContext(fs.readFileSync(path.join(${J(ROOT)}, "helpers.js"), "utf8"), sb, { filename: "helpers.js" });`,
+      "const f = vm.runInContext('typeof calMonthWeekMondays === \"function\" ? calMonthWeekMondays : null', sb);",
+      "const out = {}; if (f) for (let y = 2025; y <= 2030; y++) for (let m = 0; m < 12; m++) out[y + \"-\" + m] = f(y, m);",
+      "process.stdout.write(JSON.stringify({ off: new Date(2026, 9, 24).getTimezoneOffset(), offW: new Date(2026, 0, 15).getTimezoneOffset(), out }));",
+    ].join("\n");
+    let out = null;
+    try { out = JSON.parse(execFileSync(process.execPath, ["-e", code], { env: Object.assign({}, process.env, { TZ: "America/Chicago" }), encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })); } catch (ex) { out = { err: String(ex).slice(0, 300) }; }
+    check("BI1 in a child pinned to TZ=America/Chicago (CDT 300 / CST 360, so the spring-forward and fall-back months are real): the same 72 lists, the named months included",
+      !!cmw && !!out && out.off === 300 && out.offW === 360 && J(out.out) === J(lists) && Object.keys(WANT1).every((k) => J(out.out[k]) === J(WANT1[k])), J(out).slice(0, 300));
+  }
+
+  // BI2 — the real picker
+  const pickM = nsrcBI.match(/\{(\(typeof calMonthWeekMondays === "function" \? calMonthWeekMondays\(calYear, calMonth\) : \[\]\))\.map\(m => \{\n([\s\S]*?)\n\s*return <option key=\{m\} value=\{m\}>\{label\}<\/option>;/);
+  let pick = null;
+  try { pick = pickM ? vm.runInContext(`(function (calYear, calMonth, schedule, calMonthWeekMondays) { return ${pickM[1]}.map(m => {\n${pickM[2]}\n return [m, label]; }); })`, bisb, { filename: "bi-picker.js" }) : null; } catch (ex) { pick = null; }
+  const SCHED2 = { "2026-09-28": { dayCall: "s6" }, "2026-10-05": { dayCall: "s2", isBackup: true } };
+  const runPick = (y, m, fn) => { try { return pick ? pick(y, m, SCHED2, fn) : null; } catch (ex) { return "threw: " + String(ex).slice(0, 80); } };
+  const oct2 = runPick(2026, 9, cmw), nov2 = runPick(2026, 10, cmw);
+  check("BI2 the REAL picker, sliced and run for October 2026: the week of Sep 28 – Oct 4 comes first (published, so no suffix), then the Oct 5 backup week, the unpublished weeks marked (new), through Oct 26 – Nov 1; November opens with that same Oct 26 week; its weeks are exactly calMonthWeekMondays'",
+    !!pick && J(oct2) === J([["2026-09-28", "Wk of Sep 28 – Oct 4"], ["2026-10-05", "Wk of Oct 5 – Oct 11 (Backup)"], ["2026-10-12", "Wk of Oct 12 – Oct 18 (new)"], ["2026-10-19", "Wk of Oct 19 – Oct 25 (new)"], ["2026-10-26", "Wk of Oct 26 – Nov 1 (new)"]])
+      && Array.isArray(nov2) && J(nov2[0]) === J(["2026-10-26", "Wk of Oct 26 – Nov 1 (new)"]) && J(nov2.map((x) => x[0])) === J(WANT1["2026-10"]),
+    pick ? J({ oct2, nov2 }) : "the picker's week list was not found as calMonthWeekMondays(calYear, calMonth) …map(m => { … })");
+  check("BI2 no helper (a stale cached helpers.js) → the picker lists no weeks rather than throwing; the inline Monday-in-the-month loop is gone; the pick still resets when the month changes",
+    !!pick && J(runPick(2026, 9, undefined)) === "[]" && count("calMonthWeekMondays(calYear, calMonth)") === 1
+      && count("Find all Mondays whose week STARTS in the viewed calendar month") === 0 && count("while (mon.getMonth() === calMonth && mon.getFullYear() === calYear)") === 0
+      && count('useEffect(() => { setEditWeekPick(""); }, [calMonth, calYear]);') === 1);
+
+  // BI3 — Light / Dark
+  const themeBtn = (label) => {
+    const m = nsrcBI.match(new RegExp('<button onClick=\\{(\\(\\)=>setDarkMode\\([^\\n]*?\\))\\}(?: aria-pressed=\\{([^}\\n]*)\\})? style=\\{(\\{[^\\n]*?\\})\\}>\\n\\s*' + label + "\\n"));
+    if (!m) return null;
+    try {
+      const click = (cur) => { const calls = []; vm.runInContext(`(function (setDarkMode) { return (${m[1]}); })`, bisb)((v) => calls.push(v))(); return calls.map((v) => (typeof v === "function" ? v(cur) : v)); };
+      const pressed = (dm) => (m[2] ? vm.runInContext(`(function (darkMode) { return (${m[2]}); })`, bisb)(dm) : "none");
+      const style = (dm) => vm.runInContext(`(function (darkMode) { return (${m[3]}); })`, bisb)(dm);
+      return { fromLight: click(false), fromDark: click(true), pressedLight: pressed(false), pressedDark: pressed(true), style };
+    } catch (ex) { return { threw: String(ex).slice(0, 120) }; }
+  };
+  const lightB = themeBtn("☀️ Light"), darkB = themeBtn("🌙 Dark");
+  const sum3 = (b) => (b && !b.threw ? { fromLight: b.fromLight, fromDark: b.fromDark, pressed: [b.pressedLight, b.pressedDark] } : b);
+  check("BI3 the real Light / Dark buttons, executed from either theme: Light sets light (false) and Dark sets dark (true) whichever is on — a tap on the theme already on keeps it (main toggled: Dark tapped while dark went light); aria-pressed is on for the theme in use",
+    !!lightB && !!darkB && !lightB.threw && !darkB.threw && J(lightB.fromLight) === "[false]" && J(lightB.fromDark) === "[false]" && J(darkB.fromLight) === "[true]" && J(darkB.fromDark) === "[true]"
+      && lightB.pressedLight === true && lightB.pressedDark === false && darkB.pressedLight === false && darkB.pressedDark === true,
+    J({ light: sum3(lightB), dark: sum3(darkB) }));
+  check("BI3 no toggle left: setDarkMode(d=>!d) appears nowhere; one ☀️ Light and one 🌙 Dark button, each with aria-pressed",
+    count("setDarkMode(d=>!d)") === 0 && count("aria-pressed={!darkMode}") === 1 && count("aria-pressed={darkMode}") === 1 && (nsrcBI.match(/\n\s*☀️ Light\n/g) || []).length === 1 && (nsrcBI.match(/\n\s*🌙 Dark\n/g) || []).length === 1);
+
+  // The real dark sheet (DARK_SHEET's text, comments off), its selector lists split bracket-aware: the new
+  // selector's attribute value holds commas (rgb(240, 242, 245)), which DARK_SHEET's split(",") cuts apart.
+  const splitSels = (s) => (s.match(/(?:[^,["]|\[[^\]]*\]|"[^"]*")+/g) || []).map((x) => x.trim()).filter(Boolean);
+  const RULES = [...DARK_SHEET.css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((m) => ({ sels: splitSels(m[1]), decl: m[2] }));
+  const declBI = (decl, prop) => { const m = decl.match(new RegExp("(?:^|;)\\s*" + prop + "\\s*:\\s*([^;!]+?)\\s*(?:!important)?\\s*(?:;|$)")); return m ? m[1].trim() : null; };
+  const UNITLESS = new Set(["fontWeight", "lineHeight", "opacity", "zIndex", "flex", "flexGrow", "flexShrink"]);
+  const rgbOf = (hex) => `rgb(${hex.slice(1).match(/../g).map((h) => parseInt(h, 16)).join(", ")})`;
+  // React sets each property through the CSSOM, which writes a hex colour as rgb() and a number as px (as BA4); a
+  // borderColor set after a border shorthand is folded into it — Chrome and WebKit write "border: 1px solid rgb(…)"
+  // with the later colour (review fix: ✕ Clear's {...css.btn(false), borderColor:"#e0a0a0"} holds no rgb(200, 208, 216))
+  const ser = (o0) => {
+    const o = Object.assign({}, o0);
+    if (typeof o.border === "string" && o.borderColor) { o.border = o.border.replace(/#[0-9a-fA-F]{6}\b/, o.borderColor); delete o.borderColor; }
+    return Object.entries(o).map(([k, v]) => `${k.replace(/[A-Z]/g, (c) => "-" + c.toLowerCase())}: ${typeof v === "number" && !UNITLESS.has(k) ? v + "px" : String(v).replace(/#[0-9a-fA-F]{6}\b/g, rgbOf)};`).join(" ");
+  };
+  // what the sheet makes of a <tag> with this inline style: `tag { … }`, and `tag[style*="…"]…[style*="…"] { … }` when the
+  // written style holds every one of them (more specific; all !important, so each beats the inline value; a later rule
+  // beats an earlier one). border: the sheet's forced border colour, or null (the button keeps its own).
+  const onTag = (tag, st, rules) => {
+    const s = ser(st); let color = null, colorBy = null, bg = null, border = null; const bgBy = [], borderBy = [];
+    for (const r of rules) for (const sel of r.sels) {
+      const m = sel.match(new RegExp("^" + tag + '((?:\\[style\\*="[^"]+"\\])*)$'));
+      if (!m || !/!important/.test(r.decl)) continue;
+      const needs = [...m[1].matchAll(/\[style\*="([^"]+)"\]/g)].map((x) => x[1]);
+      if (!needs.every((n) => s.includes(n))) continue;
+      const c = declBI(r.decl, "color"), b = declBI(r.decl, "background"), bc = declBI(r.decl, "border-color");
+      if (c && (!colorBy || needs.length)) { color = c; colorBy = sel; }
+      if (b) { bg = b; bgBy.push(sel); }
+      if (bc) { border = bc; borderBy.push(sel); }
+    }
+    return { color: color || st.color, colorBy, bg: bg || st.background, bgBy, border, borderBy };
+  };
+  const hex = DARK_SHEET.hex, lum = (h) => (hex(h) ? DARK_SHEET.lum(h) : NaN), cr = DARK_SHEET.cr;
+
+  // BI4 — the header title
+  const h1M = nsrcBI.match(/<h1 style=\{([^\n]*?)\}>\{isPublicMode \? "DSG Call Schedule" : "Davenport Surgical Group"\}<\/h1>/);
+  const dkTextM = nsrcBI.match(/\n  const dkText = (dk \? "#[0-9a-fA-F]{6}" : "#[0-9a-fA-F]{6}");\n/);
+  const hdrM = nsrcBI.match(/\n  const dkHdr = dk \? "linear-gradient\(180deg,(#[0-9a-fA-F]{6}),(#[0-9a-fA-F]{6})\)" :/);
+  const h1Of = (dk) => { try { const dkText = vm.runInContext(`(function (dk) { return ${dkTextM[1]}; })`, bisb)(dk); return vm.runInContext(`(function (dk, dkText) { return (${h1M[1]}); })`, bisb)(dk, dkText); } catch (ex) { return null; } };
+  const h1D = h1M && dkTextM ? h1Of(true) : null, h1L = h1M && dkTextM ? h1Of(false) : null;
+  const stops = hdrM ? [hdrM[1], hdrM[2]] : [];
+  const h1Eff = h1D ? onTag("h1", h1D, RULES).color : null, h1Main = onTag("h1", H.css.h1, RULES).color;
+  const bi4 = { h1Eff, crs: stops.map((s) => cr(h1Eff, s)), mainCrs: stops.map((s) => cr(h1Main, s)), stops };
+  check("BI4 dark mode: the header title, its real style evaluated, read through the real dark sheet — ≥ 4.5:1 on both stops of the dark header's gradient (main: css.h1's #1a2a3a, ~1.1:1, the sheet's h1[style*=\"color:#1a2a3a\"] never matching what React writes)",
+    !!h1D && stops.length === 2 && hex(h1Eff) && bi4.crs.every((c) => c >= 4.5) && bi4.mainCrs.every((c) => c < 4.5) && count("<div style={{...css.hdr,background:dkHdr,") === 1, J(bi4));
+  check("BI4 only the colour changes (size, weight, spacing as css.h1); light mode is exactly css.h1",
+    !!h1D && !!h1L && J(Object.assign({}, h1D, { color: null })) === J(Object.assign({}, H.css.h1, { color: null })) && J(h1L) === J(H.css.h1) && H.css.h1.color === "#1a2a3a", J({ h1D, h1L }));
+
+  // BI5 — the secondary buttons
+  const SEC = H.css.btn(false), PRI = H.css.btn(true), textForced = DARK_SHEET.forced("button", "color");
+  const sec = onTag("button", SEC, RULES), pri = onTag("button", PRI, RULES);
+  const lightBtnDark = lightB && !lightB.threw ? onTag("button", lightB.style(true), RULES) : null;
+  const MAIN_RULES = RULES.filter((r) => !r.sels.some((s) => /^button\[style\*=/.test(s) && declBI(r.decl, "background")));
+  const secMain = onTag("button", SEC, MAIN_RULES);
+  const bi5 = { sec, crSec: cr(sec.color, sec.bg), lightBtnDark, crMain: cr(secMain.color, secMain.bg), pri, textForced };
+  check("BI5 dark mode: a secondary button — the real css.btn(false), written as the browser writes it — gets ONE rule's dark fill and a dark border from the real dark sheet; the sheet's forced button text reads ≥ 4.5:1 on it (main: that text on the light grey fill, ~1.5:1); the ☀️ Light button shown in dark mode is one of them",
+    hex(textForced) && sec.color === textForced && sec.colorBy === "button" && sec.bgBy.length === 1 && sec.bgBy[0] === `button[style*="background: ${rgbOf(SEC.background)}"]`
+      && hex(sec.bg) && lum(sec.bg) < 0.05 && hex(sec.border) && lum(sec.border) < 0.1 && bi5.crSec >= 4.5 && secMain.bg === "#f0f2f5" && bi5.crMain < 4.5
+      && !!lightBtnDark && lightBtnDark.bg === sec.bg && lightBtnDark.color === textForced, J(bi5));
+  check("BI5 the rule touches only that fill: the primary gradient button keeps its own background and the sheet's white text; the rule lives in the dark sheet only; css.btn(false) itself is unchanged (light mode as before)",
+    pri.bgBy.length === 0 && pri.bg === PRI.background && pri.color === "#fff" && DARK_SHEET.css.includes(sec.bgBy[0] || "\u0000")
+      && J([SEC.background, SEC.border, SEC.color]) === J(["#f0f2f5", "1px solid #c8d0d8", "#5a6a78"]), J({ pri, SEC }));
+  // (review fix) the dark border is forced only where the border is still css.btn(false)'s own grey: ✕ Clear's real
+  // style ({...css.btn(false), color:"#c04040", borderColor:"#e0a0a0"}, sliced and run) keeps its red border
+  const clrM = nsrcBI.match(/<button onClick=\{clearSchedule\} style=\{(\{\.\.\.css\.btn\(false\),[^\n]*?\})\}>✕ Clear<\/button>/);
+  let clrSt = null; try { clrSt = clrM ? vm.runInContext(`(${clrM[1]})`, bisb) : null; } catch (ex) { clrSt = null; }
+  const clr = clrSt ? onTag("button", clrSt, RULES) : null;
+  const FILL = `button[style*="background: ${rgbOf(SEC.background)}"]`, GREY = `${FILL}[style*="${rgbOf("#c8d0d8")}"]`;
+  check("BI5 (review fix) the dark sheet's border goes only on a secondary button whose border is still css.btn(false)'s grey (#c8d0d8, as the browser writes it): the plain secondary gets the dark border; the REAL ✕ Clear (its own red border, #e0a0a0) gets the dark fill and KEEPS its red border — the one red cue it had in dark mode (the rule forced border-color on every secondary: Clear looked like \"← Setup\")",
+    !!clr && clr.bg === sec.bg && clr.border === null && clrSt.borderColor === "#e0a0a0" && clr.color === textForced
+      && J(sec.borderBy) === J([GREY]) && sec.bgBy[0] === FILL && DARK_SHEET.css.includes(GREY + " { border-color:") && !/background: rgb\(240, 242, 245\)"\] \{[^}]*border-color/.test(DARK_SHEET.css),
+    J({ clr, clrSt, secBorderBy: sec.borderBy }));
+
+  // BI6 — the holiday chip's text (what a screen reader reads as part of the cell's name, AX6)
+  const HC0 = nsrcBI.indexOf("{/* Holiday coverage entries */}"), HC1 = HC0 < 0 ? -1 : nsrcBI.indexOf("{/* Silvis (trauma) day", HC0);
+  const chipSrc = HC0 >= 0 && HC1 > HC0 ? nsrcBI.slice(HC0, HC1) : "";
+  const chipIn = (chipSrc.match(/background:"#fef0e8",border:"1px solid #e0a868",fontWeight:600\}\}>(\n[\s\S]*?\n)\s*<\/div>/) || [])[1] || "";
+  const HE = nsrcBI.match(/\n  (const holidayEmoji = \(label\) => \{[\s\S]*?\n  \};)\n/);
+  let holidayEmojiBI = null;
+  try { holidayEmojiBI = HE ? vm.runInContext(`(function () { ${HE[1]}\n return holidayEmoji; })()`, bisb) : null; } catch (ex) { holidayEmojiBI = null; }
+  // the element's children in order: tags dropped, {expressions} evaluated ({/* comments */} are nothing), text kept —
+  // except whitespace holding a line break, which JSX drops
+  const chipText = (e, sMap) => {
+    if (!chipIn || !holidayEmojiBI) return null;
+    try {
+      return chipIn.split(/(<\/?span\b[^>]*>|\{[^{}]*\})/).map((t) => {
+        if (!t || /^<\/?span\b/.test(t)) return "";
+        if (t[0] === "{") { const x = t.slice(1, -1).trim(); return /^\/\*[\s\S]*\*\/$/.test(x) ? "" : String(vm.runInContext(`(function (e, sMap, holidayEmoji) { return (${x}); })`, bisb)(e, sMap, holidayEmojiBI)); }
+        return /\n/.test(t) && !t.trim() ? "" : t;
+      }).join("");
+    } catch (ex) { return "threw: " + String(ex).slice(0, 100); }
+  };
+  const SM6 = { s2: { name: "MCC", idx: 1 }, s6: { name: "FAK", idx: 5 } };
+  const t6a = chipText({ holName: "Thanksgiving 24h", surgeon: "s2", hours: "7a–7a" }, SM6), t6b = chipText({ holName: "Christmas Eve 24h", surgeon: "s6", hours: "24h" }, SM6);
+  const hrsM = chipIn.match(/<span style=\{(\{[^\n]*?\})\}>\{e\.hours\}<\/span>/);
+  let hrsSt = null;
+  try { hrsSt = hrsM ? vm.runInContext(`(${hrsM[1]})`, bisb) : null; } catch (ex) { hrsSt = null; }
+  check("BI6 a holiday chip in the calendar cell, its real children evaluated: \"🦃 MCC 7a–7a\" and \"🎄 FAK 24h\" — the holder and the hours are separate words (main ran them together: \"🦃 MCC7a–7a\"); the space replaces the hours' 2px margin, so the gap looks the same",
+    count("{/* Holiday coverage entries */}") === 1 && t6a === "🦃 MCC 7a–7a" && t6b === "🎄 FAK 24h" && !!hrsSt && J(hrsSt) === J({ color: "#a07030", fontSize: 8 }),
+    J({ t6a, t6b, hrsSt }));
 }
 
 // ─── U. Mine tab "My Shifts" lists only shifts not yet done (owner request 2026-09-25) ───
@@ -4610,8 +6199,8 @@ console.log("\nAR. Requests tab copy + the APP trade note");
   const wfrSrc = (() => { const a = nsrcAA.indexOf("function writeFailReason(err) {"); const b = a < 0 ? -1 : nsrcAA.indexOf("\n}\n", a); return a < 0 || b < 0 ? null : nsrcAA.slice(a, b + 2); })();
   const vacSrc = bodyOf("const submitVacRequest = useCallback(", "vacReqSurgeon, vacReqStart");
   const tradeSrc = bodyOf("const submitTradeRequest = useCallback(", "tradeFrom, tradeTo");
-  const ENV_V = "vacReqSurgeon, vacReqStart, vacReqEnd, vacReqReason, vacReqType, surgeons, apps, showToast, db, setVacRequests, addNotification, schedulerAdminIds, sendEmailNotif, setVacReqStart, setVacReqEnd, setVacReqReason, setVacReqType, vacSubmitBusyRef, sessionEpochRef";
-  const ENV_T = "tradeFrom, tradeTo, tradeWeek, tradeShift, tradeReturnWeek, tradeReturnShift, isScheduler, silvisActive, silvisBlock, silvisRefuse, surgeons, schedule, logAudit, addNotification, sendEmailNotif, setTradeRequests, setTradeWeek, setTradeShift, setTradeReturnWeek, setTradeReturnShift, tradeSubmitBusyRef, showToast, db, alert, confirm, sessionEpochRef";
+  const ENV_V = "vacReqSurgeon, vacReqStart, vacReqEnd, vacReqReason, vacReqType, surgeons, apps, showToast, db, setVacRequests, addNotification, schedulerAdminIds, sendEmailNotif, setVacReqStart, setVacReqEnd, setVacReqReason, setVacReqType, vacSubmitBusyRef, sessionEpochRef, setVacSubmitting";
+  const ENV_T = "tradeFrom, tradeTo, tradeWeek, tradeShift, tradeReturnWeek, tradeReturnShift, isScheduler, silvisActive, silvisBlock, silvisRefuse, surgeons, schedule, logAudit, addNotification, sendEmailNotif, setTradeRequests, setTradeWeek, setTradeShift, setTradeReturnWeek, setTradeReturnShift, tradeSubmitBusyRef, showToast, db, alert, confirm, sessionEpochRef, setTradeSubmitting";
   let mkV = null, mkT = null;
   try {
     if (wfrSrc && vacSrc) mkV = vm.runInContext(`(function () { ${wfrSrc}\n return function (env) { const { ${ENV_V} } = env; return (${vacSrc}); }; })()`, sandbox);
@@ -4631,6 +6220,7 @@ console.log("\nAR. Requests tab copy + the APP trade note");
       setVacReqStart: () => { rec.cleared++; }, setVacReqEnd: () => {}, setVacReqReason: () => {}, setVacReqType: () => {},
       vacSubmitBusyRef: { current: false },
       sessionEpochRef: { current: 0 }, // (22/n, review r5 fix-1: the submit takes the session's identity at the tap — one session here)
+      setVacSubmitting: (v) => { rec.busy = (rec.busy || []).concat([v]); }, // (UX 2026-10-19: the button's busy state; BE reads it)
     }, over.env || {});
     return { run: mkV ? mkV(env) : null, rec, env, release };
   };
@@ -4668,6 +6258,7 @@ console.log("\nAR. Requests tab copy + the APP trade note");
       setTradeRequests: () => { rec.added++; }, setTradeWeek: () => { rec.cleared++; }, setTradeShift: () => {}, setTradeReturnWeek: () => {}, setTradeReturnShift: () => {},
       tradeSubmitBusyRef: { current: false },
       sessionEpochRef: { current: 0 }, // (22/n: as the vacation submit's)
+      setTradeSubmitting: (v) => { rec.busy = (rec.busy || []).concat([v]); }, // (UX 2026-10-19: as the vacation submit's)
       showToast: (m, t) => rec.toasts.push((t || "info") + ": " + m),
       db: { insert: async () => { rec.inserts++; if (over.slowInsert) await gate; return insertResult; } },
       alert: () => {}, confirm: () => true,
@@ -4771,7 +6362,8 @@ console.log("\nAS. The UX batch's review fixes");
   // AS4 — the small things
   check("AS4 the swap card clears the iPhone status bar when scrolled to; Download names whose calendar it is while viewing a colleague; 'Back to mine' and 'Go to <Month>' have dark-mode colors",
     count('data-swap-tool="1" style={{...css.card,marginTop:14,scrollMarginTop:"calc(env(safe-area-inset-top, 0px) + 12px)",') === 1
-      && count('📅 {mineViewId ? `Download ${sMap[mineViewId]?.name || mineViewId}\'s Calendar` : "Download My Calendar"} (.ics)') === 1
+      // (BJ, 2026-10-19: the label now says the file is a one-time copy; it still names a colleague's calendar)
+      && count('📥 {mineViewId ? `Download a one-time copy of ${sMap[mineViewId]?.name || mineViewId}\'s calendar` : "Download a one-time copy"} (.ics)') === 1
       && count('...(dk ? {background:"#0f3460",color:"#e0e0f0",border:"1px solid #2a3a5e"} : {})}}>Back to mine</button>') === 1
       && count('...(dk ? {background:"#0f3460",color:"#e0e0f0",border:"1px solid #2a3a5e"} : {})}}>Go to {MO[goTo.m]} {goTo.y}</button>') === 1);
 }
@@ -6219,7 +7811,8 @@ console.log("\nAX. calendar day sheet + 👤 Me filter");
     mkLift ? JSON.stringify(liftOut) : "the lift effect / bannerLift was not found");
   // The geometry, from the panel's real style (evaluated): at 375×812 the measured banner was 100px; at 393×852, 54px (one row,
   // the real Outfit font) or 100px (the fallback font). The sheet's content must end at or above the banner's top.
-  const panelM = sheetSrc.replace(/\r\n/g, "\n").match(/role="dialog" aria-modal="true" aria-label=\{`\$\{title\} — details`\} onClick=\{e=>e\.stopPropagation\(\)\}\n\s*style=\{(\{[\s\S]*?fontFamily:font\})\}>/);
+  // (UX review fix 2026-10-19: the dialog also carries data-toast-floor="1" — toasts sit above it, sync-guards BF5)
+  const panelM = sheetSrc.replace(/\r\n/g, "\n").match(/role="dialog" aria-modal="true" aria-label=\{`\$\{title\} — details`\} data-toast-floor="1" onClick=\{e=>e\.stopPropagation\(\)\}\n\s*style=\{(\{[\s\S]*?fontFamily:font\})\}>/);
   let panelSt = null;
   try { panelSt = panelM ? vm.runInContext(`(function (calSheetLift, dk, font, updateAvailable) { return (${panelM[1]}); })`, axsb) : null; } catch (ex) { panelSt = null; }
   const geo = (vh, bannerH) => {
@@ -7366,6 +8959,195 @@ await (async () => {
   }
 })();
 
+// ─── BJ. Mine: Subscribe in Calendar (the live feed) for a surgeon; the download is a one-time copy (UX audit 2026-10-19) ───
+// A downloaded .ics is a snapshot: its UIDs are random, so importing it again
+// adds every shift twice, and it never hears of a swap. The live calendar-sync
+// feed updates itself, but it sat in Settings → Live Calendar Sync, which also
+// handed an APP a link that 404s (calendar-sync matches ?surgeon= against
+// SURGEON codes only). Now helpers.js calendarFeedUrls(base, code) builds the
+// feed's https + webcal URLs (the code encoded); a surgeon's OWN Mine shows
+// "📅 Subscribe in Calendar" (the webcal:// link — iPhone's Subscribe sheet)
+// and Copy link (the https URL, through copyText and its fallbacks), and the
+// download reads "📥 Download a one-time copy (.ics)". Settings offers the
+// personal link to a surgeon only, tells an APP why there is none, and keeps
+// "Requires deploying …" for the scheduler. downloadICS puts its link in the
+// document for the click and revokes the URL a second later (iOS Safari).
+// calendar-sync itself is unchanged. JSX can't run here (no Babel in CI): the
+// helpers and the plain-JS lines the markup decides on are EXECUTED; the
+// markup is pinned.
+//   BJ1 calendarFeedUrls, executed: FAK's exact https / webcal URLs (Settings'
+//       old string); a code with & space / ? # é encoded and read back whole;
+//       a trailing slash dropped, http → webcal; no base / no code → null
+//   BJ2 downloadICS, executed against a fake document / URL / Blob / timer:
+//       the link is in the document when clicked and taken out after; the URL
+//       is revoked by a ~1 s timer, never in the same tick
+//   BJ3 Mine's real mineFeed line, sliced and run: a surgeon's own view gets
+//       their feed; a colleague's view (mineViewId), an APP, "admin", no
+//       identity and an old cached helpers.js get none, and nothing throws;
+//       the markup in order: Subscribe = the webcal link, Copy link = the https
+//       URL, the relabelled download, the hint; mineFeed lives in that block only
+//   BJ4 Copy link, executed: the button's real onClick through the real
+//       copyText — the clipboard in a secure context, else the hidden-textarea
+//       copy, else a prompt holding the URL
+//   BJ5 Settings → Live Calendar Sync: the real myFeed line, sliced and run
+//       (surgeon → their feed, APP → none); an APP gets the "surgeon call only"
+//       note; no APP code goes into a feed URL; the developer line is the
+//       scheduler's branch only
+//   BJ5 (review fix) the card's intro and how-to ("… paste the link below.")
+//       are gated on a link following (the scheduler's list, a surgeon's own
+//       feed): an APP no longer reads them above the "no link" note
+console.log("\nBJ. Mine: Subscribe in Calendar; the download is a one-time copy");
+await (async () => {
+  const nsrcJ = src.replace(/\r\n/g, "\n");
+  const J = (x) => JSON.stringify(x);
+  const tryJ = (f) => { try { return f(); } catch (ex) { return { threw: String((ex && ex.message) || ex).slice(0, 160) }; } };
+  const feedFn = vm.runInContext('typeof calendarFeedUrls === "function" ? calendarFeedUrls : null', sandbox);
+  const NOFEED = feedFn ? "" : "calendarFeedUrls is not defined in helpers.js — ";
+  const SB_URL = vm.runInContext("SUPABASE_URL", sandbox);
+  const feedOf = (code) => { const https = SB_URL + "/functions/v1/calendar-sync?surgeon=" + code; return { https, webcal: https.replace(/^https:\/\//, "webcal://") }; };
+
+  // BJ1 — calendarFeedUrls
+  const f1 = feedFn ? {
+    fak: tryJ(() => feedFn(SB_URL, "FAK")),
+    odd: tryJ(() => feedFn("https://x.test/", "A&B C/?#é")),
+    http: tryJ(() => feedFn("http://localhost:54321//", "RPC")),
+    none: [["", "FAK"], [null, "FAK"], [undefined, "FAK"], [SB_URL, ""], [SB_URL, null], [SB_URL, undefined], [SB_URL, "   "]].map((a) => tryJ(() => feedFn(...a))),
+  } : null;
+  check("BJ1 calendarFeedUrls(SUPABASE_URL, \"FAK\") is exactly { https: <SUPABASE_URL>/functions/v1/calendar-sync?surgeon=FAK — the URL Settings always built — and webcal: the same address as webcal:// }",
+    !!f1 && SB_URL.startsWith("https://") && J(f1.fak) === J(feedOf("FAK")) && f1.fak.webcal === SB_URL.replace("https://", "webcal://") + "/functions/v1/calendar-sync?surgeon=FAK",
+    NOFEED + J(f1 && f1.fak));
+  const ODD = "A%26B%20C%2F%3F%23%C3%A9";
+  let oddBack = null;
+  try { oddBack = f1 && f1.odd && f1.odd.https ? new URL(f1.odd.https).searchParams.get("surgeon") : null; } catch (ex) { oddBack = null; }
+  check("BJ1 …the code is URL-encoded (\"A&B C/?#é\" → surgeon=" + ODD + ", read back whole as the one surgeon param); a trailing slash on the base is dropped; an http:// base becomes webcal:// too",
+    !!f1 && J(f1.odd) === J({ https: "https://x.test/functions/v1/calendar-sync?surgeon=" + ODD, webcal: "webcal://x.test/functions/v1/calendar-sync?surgeon=" + ODD }) && oddBack === "A&B C/?#é"
+      && J(f1.http) === J({ https: "http://localhost:54321/functions/v1/calendar-sync?surgeon=RPC", webcal: "webcal://localhost:54321/functions/v1/calendar-sync?surgeon=RPC" }),
+    NOFEED + J(f1 && [f1.odd, f1.http, oddBack]));
+  check("BJ1 …no base or no code (\"\", null, undefined, blank) → null, never a URL with an empty surgeon=",
+    !!f1 && J(f1.none) === J([null, null, null, null, null, null, null]), NOFEED + J(f1 && f1.none));
+
+  // BJ2 — downloadICS, the real function run against a fake document / URL / Blob / timer
+  const dlReal = vm.runInContext('typeof downloadICS === "function" ? downloadICS : null', sandbox);
+  const runDl = (fnSrc) => {
+    const log = [], timers = [];
+    const body = { kids: [], appendChild(n) { this.kids.push(n); log.push("append"); return n; }, removeChild(n) { this.kids = this.kids.filter((k) => k !== n); log.push("remove"); return n; } };
+    const doc = { body, createElement: (tag) => { log.push("create:" + tag); const a = { href: "", download: "", click() { log.push(`click attached=${body.kids.includes(a)} href=${a.href} download=${a.download}`); } }; return a; } };
+    const ctx = vm.createContext({
+      document: doc,
+      Blob: class { constructor(parts, opts) { log.push(`blob ${opts && opts.type} ${J(parts)}`); } },
+      URL: { createObjectURL: () => { log.push("createObjectURL"); return "blob:fake/1"; }, revokeObjectURL: (u) => { log.push("revoke " + u); } },
+      setTimeout: (fn, ms) => { timers.push({ fn, ms }); log.push("timer"); return timers.length; },
+    });
+    vm.runInContext("(" + fnSrc + ")", ctx)("BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n", "my-schedule-fak.ics");
+    const sync = log.slice();
+    timers.forEach((t) => t.fn());
+    return { sync, later: log.slice(sync.length), ms: timers.map((t) => t.ms) };
+  };
+  const dz = dlReal ? tryJ(() => runDl(String(dlReal))) : null;
+  const CLICK = "click attached=true href=blob:fake/1 download=my-schedule-fak.ics";
+  check("BJ2 executed — downloadICS builds the text/calendar blob, puts the link in the document, clicks it there (href = the blob URL, download = the file name) and takes it out again",
+    !!dz && !dz.threw && J(dz.sync.slice(0, 6)) === J([`blob text/calendar;charset=utf-8 ${J(["BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n"])}`, "createObjectURL", "create:a", "append", CLICK, "remove"]),
+    J(dz));
+  check("BJ2 executed — …and the blob URL is NOT revoked in the same tick (iOS Safari can drop the download): one timer of 0.5–5 s revokes exactly that URL, once",
+    !!dz && !dz.threw && !dz.sync.some((l) => l.startsWith("revoke")) && dz.ms.length === 1 && dz.ms[0] >= 500 && dz.ms[0] <= 5000 && J(dz.later) === J(["revoke blob:fake/1"]),
+    J(dz));
+
+  // BJ3 — Mine: the real mineFeed line, sliced and run; the markup pinned
+  const mA = nsrcJ.indexOf('{view==="myschedule" && !isPublicMode && <>'), mB = mA < 0 ? -1 : nsrcJ.indexOf("{/* ════════════════ REQUESTS ════════════════ */}", mA);
+  const mineJ = mA < 0 || mB < 0 ? "" : nsrcJ.slice(mA, mB);
+  const MF = mineJ.match(/\n[ ]*const mineFeed = ([^\n]*);\n/);
+  let mfFn = null;
+  try { mfFn = MF ? vm.runInContext(`(function (env) { const { mineViewId, mySurgeon, sMap, SUPABASE_URL, calendarFeedUrls } = env; return (${MF[1]}); })`, sandbox) : null; } catch (ex) { mfFn = null; }
+  const ROSTERJ = ["DJA", "MCC", "RPC", "KJH", "REH", "FAK", "ARW"].map((name, i) => ({ id: "s" + (i + 1), name }));
+  const SMAPJ = Object.fromEntries(ROSTERJ.map((s, idx) => [s.id, Object.assign({ idx }, s)]));
+  const AMAPJ = Object.fromEntries([["a1", "MA"], ["a2", "SJ"], ["a3", "MS"], ["a4", "SS"], ["a5", "JH"]].map(([id, name], idx) => [id, { id, name, idx }]));
+  const H = feedFn || undefined;
+  const mf = (mineViewId, mySurgeon, helper) => (mfFn ? tryJ(() => mfFn({ mineViewId, mySurgeon, sMap: SMAPJ, SUPABASE_URL: SB_URL, calendarFeedUrls: helper })) : "no mineFeed line");
+  const mz = { fakOwn: mf("", "s6", H), rpcOwn: mf("", "s3", H), fakViewsRpc: mf("s3", "s6", H), rpcViewsFak: mf("s6", "s3", H),
+    app: mf("", "a1", H), admin: mf("", "admin", H), nobody: mf("", "", H), oldHelpers: mf("", "s6", undefined) };
+  check("BJ3 executed — Mine's real mineFeed line: FAK's own Mine → FAK's feed, RPC's own → RPC's; FAK viewing RPC, or RPC viewing FAK → none (a colleague's view never offers a subscribe)",
+    !!mfFn && !!feedFn && J(mz.fakOwn) === J(feedOf("FAK")) && J(mz.rpcOwn) === J(feedOf("RPC")) && mz.fakViewsRpc === null && mz.rpcViewsFak === null,
+    (mfFn ? "" : "const mineFeed = …; not found in the Mine block — ") + NOFEED + J(mz));
+  check("BJ3 executed — …an APP (a1), \"admin\" and no identity → none (calendar-sync knows surgeon codes only: an APP's link would 404); an old cached helpers.js (no calendarFeedUrls) → none, and nothing throws",
+    !!mfFn && mz.app === null && mz.admin === null && mz.nobody === null && mz.oldHelpers === null, J(mz));
+  const LABEL = '📥 {mineViewId ? `Download a one-time copy of ${sMap[mineViewId]?.name || mineViewId}\'s calendar` : "Download a one-time copy"} (.ics)';
+  const iSel = mineJ.indexOf("</select>"), iIife = iSel < 0 ? -1 : mineJ.indexOf("{(() => {", iSel);
+  const PARTS = [
+    "const mineFeed = ", "{mineFeed && <>", '<a href={mineFeed.webcal} style={{...css.btn(true),', ">📅 Subscribe in Calendar</a>",
+    '<button onClick={()=>copyText(mineFeed.https, "my")} style={{...css.btn(false),', '{copiedUrl==="my" ? "✓ Copied" : "Copy link"}</button>', "</>}",
+    "{mineId && (", '<button onClick={()=>downloadMyCal(mineId)} style={{...css.btn(!mineFeed),', LABEL,
+    "{mineFeed && (", "Copy link, then Other calendars (+) → From URL. A downloaded copy never updates, and importing it again adds every shift twice.", "})()}",
+  ];
+  const at = []; { let from = iIife; for (const p of PARTS) { const i = from < 0 ? -1 : mineJ.indexOf(p, from); at.push(i); from = i < 0 ? -1 : i + p.length; } }
+  const iEnd = at[at.length - 1], iife = iIife >= 0 && iEnd > iIife ? mineJ.slice(iIife, iEnd) : "";
+  check("BJ3 the Mine row, after the name picker and in order: mineFeed; then, only when it is set, the 📅 Subscribe in Calendar link (the primary button, href = the webcal URL) and Copy link (the https URL, ✓ Copied after); the download for any mineId, now \"📥 Download a one-time copy (.ics)\" (\"… of RPC's calendar\" for a colleague; a secondary button beside Subscribe); the Android / Google how-to under them, only with mineFeed",
+    iSel > 0 && iIife > iSel && at.every((i) => i >= 0) && count("📅 Subscribe in Calendar") === 1 && count(LABEL) === 1 && count('copyText(mineFeed.https, "my")') === 1,
+    J(PARTS.map((p, k) => [p.slice(0, 28), at[k]])));
+  check("BJ3 the old labels are gone (\"Download My Calendar\", \"Download <code>'s Calendar\"); mineFeed exists only inside that render block, with no hook there (no state, nothing in a deps array)",
+    count('"Download My Calendar"') === 0 && count("'s Calendar` :") === 0 && !!iife && src.split("mineFeed").length === iife.split("mineFeed").length && !/\buse(State|Effect|Memo|Callback|Ref)\(/.test(iife),
+    J({ old: count('"Download My Calendar"'), feedRefs: [src.split("mineFeed").length - 1, iife.split("mineFeed").length - 1] }));
+
+  // BJ4 — Copy link: the button's real onClick through the real copyText (sliced), with each of its fallbacks
+  const CT0 = nsrcJ.indexOf("  const copyText = async (text, label) => {"), CT1 = CT0 < 0 ? -1 : nsrcJ.indexOf("\n  };\n", CT0);
+  const ctSrc = CT0 >= 0 && CT1 > CT0 ? nsrcJ.slice(CT0 + "  const copyText = ".length, CT1 + "\n  }".length) : null;
+  const OC = mineJ.match(/<button onClick=\{(\(\)=>copyText\(mineFeed\.https, "my"\))\}/);
+  const copyRun = async (mode) => {
+    const log = [], ta = { value: "", style: {}, select() { log.push("select " + ta.value); } };
+    const ctx = vm.createContext({
+      navigator: mode === "clipboard" ? { clipboard: { writeText: async (t) => { log.push("clipboard " + t); } } } : {},
+      window: { isSecureContext: mode === "clipboard" },
+      document: { createElement: (t) => { log.push("create:" + t); return ta; }, body: { appendChild: () => { log.push("append"); }, removeChild: () => { log.push("remove"); } },
+        execCommand: (c) => { if (mode === "prompt") throw new Error("execCommand unavailable"); log.push("execCommand " + c); return true; } },
+      prompt: (m, t) => { log.push(`prompt ${m} ${t}`); },
+      setTimeout: () => 0,
+    });
+    const copyText = vm.runInContext(`(function (setCopiedUrl) { return (${ctSrc}); })`, ctx)((l) => { log.push("copied " + l); });
+    await vm.runInContext(`(function (copyText, mineFeed) { return (${OC[1]}); })`, ctx)(copyText, feedOf("FAK"))();
+    return log;
+  };
+  const cz = {};
+  for (const mode of ["clipboard", "textarea", "prompt"]) cz[mode] = ctSrc && OC ? await copyRun(mode).catch((ex) => ({ threw: String(ex && ex.message || ex) })) : null;
+  const U = feedOf("FAK").https;
+  check("BJ4 executed — Copy link (its real onClick, through the real copyText): in a secure context the https feed URL goes to the clipboard and the button reads ✓ Copied (\"my\")",
+    J(cz.clipboard) === J(["clipboard " + U, "copied my"]), (OC ? "" : "the Copy link button was not found in the Mine block — ") + J(cz.clipboard));
+  check("BJ4 executed — …without the clipboard API it copies through a hidden textarea; if even that fails, a prompt holds the URL to copy by hand",
+    J(cz.textarea) === J(["create:textarea", "append", "select " + U, "execCommand copy", "remove", "copied my"]) && J(cz.prompt) === J(["create:textarea", "append", "select " + U, "prompt Copy this URL: " + U]),
+    J([cz.textarea, cz.prompt]));
+
+  // BJ5 — Settings → Live Calendar Sync
+  const sA = nsrcJ.indexOf("📅 Live Calendar Sync</div>"), sB = sA < 0 ? -1 : nsrcJ.indexOf("{/* Refresh App */}", sA);
+  const setJ = sA < 0 || sB < 0 ? "" : nsrcJ.slice(sA, sB);
+  const SF = setJ.match(/\n[ ]*const myFeed = ([^\n]*);\n/);
+  let sfFn = null;
+  try { sfFn = SF ? vm.runInContext(`(function (env) { const { mySurgeon, sMap, SUPABASE_URL, calendarFeedUrls } = env; return (${SF[1]}); })`, sandbox) : null; } catch (ex) { sfFn = null; }
+  const sf = (me, helper) => (sfFn ? tryJ(() => sfFn({ mySurgeon: me, sMap: SMAPJ, SUPABASE_URL: SB_URL, calendarFeedUrls: helper })) : "no myFeed line");
+  const szs = { fak: sf("s6", H), rpc: sf("s3", H), app: sf("a1", H), app5: sf("a5", H), zz: sf("zz", H), oldHelpers: sf("s6", undefined) };
+  check("BJ5 executed — Settings' real myFeed line: a surgeon (FAK, RPC) → their feed (the same URL as before); an APP (MA a1, JH a5) → none (it was …?surgeon=MA, a 404); an id off the roster or an old helpers.js → none, no throw",
+    !!sfFn && !!feedFn && J(szs.fak) === J(feedOf("FAK")) && J(szs.rpc) === J(feedOf("RPC")) && szs.app === null && szs.app5 === null && szs.zz === null && szs.oldHelpers === null,
+    (sfFn ? "" : "const myFeed = …; not found in the Live Calendar Sync card — ") + J(szs));
+  const NOTE = "The live feed covers surgeon call only, so there's no link for APP days yet.";
+  const iNoFeed = setJ.indexOf("if (!myFeed) return aMap[mySurgeon] ? ("), iNote = setJ.indexOf(NOTE), iUrl = setJ.indexOf("const myUrl = myFeed.https;");
+  const PER = "{surgeons.map(s => (\n                  <button key={s.id} onClick={()=>copyText(`${SUPABASE_URL}/functions/v1/calendar-sync?surgeon=${s.name}`, s.id)}";
+  check("BJ5 an APP reads the note instead of a link (no myFeed → aMap[mySurgeon] ? the \"surgeon call only\" note), before the surgeon's URL; the old [...surgeons, ...apps] lookup is gone; the only hand-built calendar-sync?surgeon= left is the scheduler's per-surgeon list (surgeons.map)",
+    !!SF && iNoFeed > setJ.indexOf(SF[0]) && iNote > iNoFeed && iUrl > iNote && count(NOTE) === 1 && count("[...surgeons, ...apps].find(p => p.id === mySurgeon)") === 0
+      && count("calendar-sync?surgeon=") === 1 && setJ.split(PER).length === 2,
+    J({ iNoFeed, iNote, iUrl, note: count(NOTE), hand: count("calendar-sync?surgeon="), per: setJ.split(PER).length - 1 }));
+  const DEV = "Requires deploying the calendar-sync Edge Function.";
+  const iSch = setJ.indexOf("{isScheduler ? (\n"), iDev = setJ.indexOf(DEV), iSur = setJ.indexOf(") : sMap[mySurgeon] ? (\n"), iPaste = setJ.indexOf("Paste this URL into your calendar app to subscribe."), iNull = iPaste < 0 ? -1 : setJ.indexOf(") : null}", iPaste);
+  check("BJ5 \"" + DEV + "\" is the scheduler's line only (once, in the isScheduler branch); a surgeon gets the paste how-to; anyone else (an APP) no line",
+    count(DEV) === 1 && iSch > 0 && iDev > iSch && iSur > iDev && iPaste > iSur && iNull > iPaste && iNull - iSch < 600, J({ iSch, iDev, iSur, iPaste, iNull }));
+  // (review fix) the card's intro and how-to ("… paste the link below.") only where a link follows: the scheduler's
+  // list, or a surgeon's own (with calendarFeedUrls to build it) — an APP read them above the "no link for APP days" note
+  const BELOW = "→ paste the link below.";
+  const INTRO = setJ.match(/\n\s*\{(\(isScheduler \|\| [^\n]*?\)) && <>\n\s*<p style=\{\{fontSize:12,color:"#5a6a78",margin:"0 0 10px",lineHeight:1\.5\}\}>\n\s*Subscribe to /);
+  const introEnd = INTRO ? setJ.indexOf("</>}", INTRO.index) : -1;
+  let introFn = null; try { introFn = INTRO ? vm.runInContext(`(function (isScheduler, sMap, mySurgeon, calendarFeedUrls) { return !!(${INTRO[1]}); })`, sandbox) : null; } catch (ex) { introFn = null; }
+  const intro = introFn ? { sched: introFn(true, SMAPJ, "s6", H), admin: introFn(true, SMAPJ, "admin", H), rpc: introFn(false, SMAPJ, "s3", H), app: introFn(false, SMAPJ, "a1", H), app5: introFn(false, SMAPJ, "a5", H), oldHelpers: introFn(false, SMAPJ, "s3", undefined) } : null;
+  check("BJ5 (review fix) the intro and the how-to (\"" + BELOW + "\") show only where a link follows — the scheduler (and admin), a surgeon with their feed — never for an APP (it read \"paste the link below\" with no link, then the APP note), nor with an old helpers.js that builds no link; the how-to sits inside that gate, once",
+    !!intro && J(intro) === J({ sched: true, admin: true, rpc: true, app: false, app5: false, oldHelpers: false }) && introEnd > INTRO.index && setJ.indexOf(BELOW) > INTRO.index && setJ.indexOf(BELOW) < introEnd && count(BELOW) === 1
+      && introEnd < iNoFeed, J({ intro, at: INTRO && INTRO.index, introEnd, iNoFeed }));
+})();
+
 // ─── AH9. The REAL finishGenerate: Generate's end, with the LATEST state (2026-10-13) ───
 await (async () => {
   const nsrcF = src.replace(/\r\n/g, "\n");
@@ -7861,9 +9643,10 @@ await (async () => {
   const NONE_BA = "declineTradeRequest / logAudit / tradeDeclineMsg not extractable";
   // BA1
   const b1 = mkDecline && TDM ? await declineBA({}) : null;
-  check("BA1 the real declineTradeRequest (its useCallback deps included) with the real logAudit, rendered as React does — first before the profile loads, then signed in as RPC (s3) — and tapped: its audit line names RPC (s3), not \"Unknown\"; the decline itself as before (its status PATCH as RPC, the list, one notice, one e-mail, nothing said)",
+  // (UX 2026-10-19, BE3: a decline that lands now says so — "Trade declined.", once; it said nothing before)
+  check("BA1 the real declineTradeRequest (its useCallback deps included) with the real logAudit, rendered as React does — first before the profile loads, then signed in as RPC (s3) — and tapped: its audit line names RPC (s3), not \"Unknown\"; the decline itself as before (its status PATCH as RPC, the list, one notice, one e-mail) and it says so once (BE3)",
     !!b1 && JSON.stringify(b1.audits) === AS_RPC("now:TOK_RPC") && b1.reqs.join() === "PATCH shift_trade_requests Bearer TOK_RPC" && b1.lists === 1 && b1.listAfter === "declined"
-      && b1.notes.join() === "trade_declined@TOK_RPC" && b1.emails.join() === "trade_declined@TOK_RPC" && b1.toasts.length === 0,
+      && b1.notes.join() === "trade_declined@TOK_RPC" && b1.emails.join() === "trade_declined@TOK_RPC" && b1.toasts.join("|") === "Trade declined.",
     b1 ? JSON.stringify(outBA(b1)) : NONE_BA);
   // BA2
   const b2 = [];
@@ -9116,7 +10899,9 @@ await (async () => {
     && r.headers.Prefer === "return=representation" && /Bearer TOK/.test(r.headers.Authorization || "");
   const applied = (w, extra) => w.reqs.length === 1 && isAccept(w.reqs[0]) && w.writes === 1 && w.undo === 1 && w.trades.join() === "accepted"
     && w.audits.length === 1 && w.audits[0].action === "trade.accept" && / \(\+2 cascade changes\)$/.test(w.audits[0].summary) && w.audits[0].details.cascades === 2
-    && w.notes.join() === "trade_accepted,schedule_changed,schedule_changed" && w.emails.length === 3 && w.toasts.length === 0 && w.errors.length === 0
+    && w.notes.join() === "trade_accepted,schedule_changed,schedule_changed" && w.emails.length === 3 && w.errors.length === 0
+    // (UX 2026-10-19, BE3: an accept that lands says so, once — with the cascades it moved; it said nothing before)
+    && w.toasts.length === 1 && w.toasts[0][0] === "Trade accepted — the schedule is updated (2 other shifts moved too)." && w.toasts[0][1] === "success"
     && w.ref.current[W1].dayCall === "s2" && w.ref.current[W1].nights.tue === "s1" && w.ref.current[W2].dayCall === "s1" && w.ref.current[W2].nights.tue === "s2"
     && w.ref.current[W1].off === "s7" && w.ref.current[W2].off === "s7" && (!extra || extra(w));
   // Not applied: the status PATCH, then the compensating one; nothing else.
@@ -9132,7 +10917,7 @@ await (async () => {
 
   // GREEN: nothing changes while the status PATCH is in flight.
   const g1 = await world().run();
-  check("SE-K nothing changes during the status PATCH → applied: the two cascades the confirm listed come from the MIRROR (not the stale render), and land with both legs in ONE schedule write after ONE undo step; accepted locally, audited (+2 cascade changes), the trade notice + both cascade notices + 3 emails; no toast, no error",
+  check("SE-K nothing changes during the status PATCH → applied: the two cascades the confirm listed come from the MIRROR (not the stale render), and land with both legs in ONE schedule write after ONE undo step; accepted locally, audited (+2 cascade changes), the trade notice + both cascade notices + 3 emails; one success toast (BE3), no error",
     applied(g1, (w) => w.confirms.length === 1 && w.confirms[0].includes("BBB is now Service Week — Tue Night moves to AAA") && w.confirms[0].includes("AAA is now Service Week — Tue Night moves to BBB")
       && w.silvis.length === 4 && w.silvis.every(x => x === "mirror")), show(g1));
   const adoptW3 = with1(MIRROR(), W3, wk("s7", ["s1", "s2", "s3", "s4", "s6"], "s5"));
@@ -9148,7 +10933,8 @@ await (async () => {
   check("SE-K a cascade that moves a slot the leg just filled (Wed night → the service-week holder → the off surgeon) is checked as it stands AFTER the legs → applied: one write, the Wed night is EEE's, one cascade notice; no refusal",
     g3.reqs.length === 1 && isAccept(g3.reqs[0]) && g3.writes === 1 && g3.undo === 1 && g3.ref.current[W1].nights.wed === "s5" && g3.ref.current[W1].dayCall === "s1" && g3.ref.current[W1].off === "s7"
       && g3.confirms.length === 1 && /Wed Night moves to EEE \(off surgeon\)/.test(g3.confirms[0]) && /EEE will be notified/.test(g3.confirms[0])
-      && g3.notes.join() === "trade_accepted,schedule_changed" && / \(\+1 cascade change\)$/.test(g3.audits[0].summary) && g3.toasts.length === 0 && g3.errors.length === 0, show(g3));
+      && g3.notes.join() === "trade_accepted,schedule_changed" && / \(\+1 cascade change\)$/.test(g3.audits[0].summary) && g3.errors.length === 0
+      && g3.toasts.length === 1 && g3.toasts[0][0] === "Trade accepted — the schedule is updated (1 other shift moved too).", show(g3)); // (UX 2026-10-19, BE3: it says so, once)
 
   // RED: a pull adopts a change to what the trade needs while the PATCH is in flight.
   const during = (k, row) => ({ adopted: with1(MIRROR(), k, row), during: (ref) => { ref.current = with1(ref.current, k, row); } });

@@ -468,6 +468,19 @@ function calMonthStatus(schedule, year, month) {
   return { kind: "unscheduled", from: counted[0], to: fmt(addD(parse(counted[counted.length - 1]), 6)) };
 }
 
+// The weeks of a calendar month, for the Manual Adjustments week picker (UX
+// audit 2026-10-19): every week (Mon–Sun) holding a day of the month, as its
+// Monday "YYYY-MM-DD", in order — from the Monday of the week holding the 1st,
+// which may be in the previous month (October 2026 starts with Sep 28), through
+// the last Monday on or before the month's last day. The picker listed only the
+// weeks whose Monday fell in the month, so the week of Sep 28 – Oct 4 could not
+// be picked from October. month is 0-based, like Date. Pure: no clock, no state.
+function calMonthWeekMondays(year, month) {
+  const out = [], last = new Date(year, month + 1, 0);
+  for (let m = monOf(new Date(year, month, 1)); m <= last; m = addD(m, 7)) out.push(fmt(m));
+  return out;
+}
+
 // ═══ HOLIDAY PAIRS — who takes which holiday each year (owner 2026-10-13) ═══
 // FAK (the Christmas surgeon) takes Christmas Eve + Christmas Day, both slots,
 // every year — his major and his minor; the app sets that card itself. Every
@@ -672,6 +685,44 @@ function weekRangeLabel(mStr) {
   return `${monthDayLabel(mStr)} – ${monthDayLabel(fmt(addD(parse(mStr), 6)))}`;
 }
 
+// The time-off request form's one line under its dates (UX audit 2026-10-19),
+// so the range is read back before it is sent. Days counted inclusive, by date.
+//   rangeSummary("2026-12-14", "2026-12-18") → "5 days, Mon Dec 14 – Fri Dec 18"
+//   rangeSummary("2026-12-14", "2026-12-14") → "1 day, Mon Dec 14"
+//   across a new year each date carries its year ("Mon Dec 28, 2026 – Fri Jan 1, 2027")
+// null while a date is missing or the end is before the start (the submit says why).
+function rangeSummary(start, end) {
+  if (!start || !end || end < start) return null;
+  const a = parse(start), b = parse(end);
+  const withYear = a.getFullYear() !== b.getFullYear();
+  const day = (ds, d) => `${["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][d.getDay()]} ${monthDayLabel(ds, withYear)}`;
+  const n = Math.round((Date.UTC(b.getFullYear(), b.getMonth(), b.getDate()) - Date.UTC(a.getFullYear(), a.getMonth(), a.getDate())) / 86400000) + 1;
+  return n === 1 ? `1 day, ${day(start, a)}` : `${n} days, ${day(start, a)} – ${day(end, b)}`;
+}
+
+// The scheduler's trade builder (UX audit 2026-10-19). Who holds a week's
+// shift, by the accept's own rule (acceptTradeRequest's holderIn: the service
+// week's dayCall, else that night or the weekend); "" when no one does.
+function tradeSlotHolder(schedule, mondayStr, shiftKey) {
+  const wk = schedule && schedule[mondayStr];
+  return (shiftKey === "dayCall" ? wk && wk.dayCall : wk && wk.nights && wk.nights[shiftKey]) || "";
+}
+// What the builder warns about before a trade is proposed: a leg whose giver
+// doesn't hold it can never be accepted (the accept refuses it as out of date).
+// t: { from, to, week, shift, returnWeek, returnShift }; nameOf(id) → a code.
+function tradePickNotes(schedule, t, nameOf) {
+  const notes = [], nm = (id) => (id ? nameOf(id) : "no one");
+  if (t.from && t.week && t.shift) {
+    const h = tradeSlotHolder(schedule, t.week, t.shift);
+    if (h !== t.from) notes.push(`${nm(t.from)} doesn't hold the shift to give — ${nm(h)} does.`);
+  }
+  if (t.to && t.returnWeek && t.returnShift) {
+    const h = tradeSlotHolder(schedule, t.returnWeek, t.returnShift);
+    if (h !== t.to) notes.push(`${nm(t.to)} doesn't hold the return shift — ${nm(h)} does.`);
+  }
+  return notes;
+}
+
 // The date chip on a My Shifts row (role = the Mine builder's role object):
 //   a Mon–Thu night  → its own date, "Tue 10/20" (shiftStartDate's rule)
 //   the weekend      → the legs this surgeon holds (role.held), "Fri 10/23 + Sun 10/25";
@@ -750,6 +801,87 @@ function publishConfirmText(mondays, opts) {
   if (typeof o.today === "string" && end < o.today) warn.push("⚠ This whole period is already over — publishing it changes past call history, counts and billing.");
   else if (typeof o.today === "string" && first < o.today) warn.push("⚠ This period has already started.");
   return `Generate and publish ${monthDayLabel(first, true)} → ${monthDayLabel(end, true)} (${n} week${n === 1 ? "" : "s"})?\n\n${warn.length ? warn.join("\n") + "\n\n" : ""}${notify}`;
+}
+
+// A schedule period, said one way (UX audit 2026-10-19): its first Monday
+// through its last Sunday (the last Monday + 6 days), with the year — once,
+// at the end, when both ends share it.
+//   periodLabel("2027-01-04", "2027-04-05") → "Jan 4 – Apr 11, 2027"
+//   periodLabel("2026-11-16", "2027-02-15") → "Nov 16, 2026 – Feb 21, 2027"
+// The "Schedule Published" e-mail, the office e-mail's prefill and Stats →
+// This Period use it. They were built from the Generate tab's start month and
+// year selects, which a start-Monday override leaves behind (the e-mail said
+// "May – April 2026" for a Jan 4 – Apr 11, 2027 publish), with no end year.
+// Mondays as Dates or "YYYY-MM-DD"; "" when either is missing.
+// Pure: no clock, no state; dates are local, via parse.
+function periodLabel(firstMonday, lastMonday) {
+  const ds = (m) => (typeof m === "string" ? m : m ? fmt(m) : "");
+  const first = ds(firstMonday), last = ds(lastMonday);
+  if (!first || !last) return "";
+  const end = fmt(addD(parse(last), 6));
+  return `${monthDayLabel(first, first.slice(0, 4) !== end.slice(0, 4))} – ${monthDayLabel(end, true)}`;
+}
+
+// Where the Generate tab's period sits against the published schedule (UX
+// audit 2026-10-19), for the line under its settings:
+//   overlap — how many of the period's Mondays the schedule already holds
+//             (publishConfirmText's rule: publishing replaces those weeks)
+//   started — its first Monday is before today (the app's "started" rule)
+//   over    — its last Sunday is before today
+//   gap     — whole weeks between the last published week BEFORE the period
+//             and its first Monday: 0 = it continues straight on; null = no
+//             published week before it
+//   after   — that last published week's Sunday ("YYYY-MM-DD"), or null
+//   publishedMondays: the schedule's weeks ("YYYY-MM-DD"; other keys ignored)
+//   periodMondays:    the period's Mondays, Dates or "YYYY-MM-DD"
+// Pure: no clock, no state.
+function periodSeam(publishedMondays, periodMondays, todayStr) {
+  const out = { overlap: 0, started: false, over: false, gap: null, after: null };
+  const ms = (periodMondays || []).map(m => (typeof m === "string" ? m : fmt(m))).sort();
+  if (!ms.length) return out;
+  const first = ms[0], end = fmt(addD(parse(ms[ms.length - 1]), 6));
+  const pub = [...new Set((publishedMondays || []).filter(k => /^\d{4}-\d{2}-\d{2}$/.test(k)))].sort();
+  const inPeriod = new Set(ms);
+  out.overlap = pub.filter(m => inPeriod.has(m)).length;
+  if (typeof todayStr === "string") { out.started = first < todayStr; out.over = end < todayStr; }
+  const before = pub.filter(m => m < first);
+  if (before.length) {
+    const last = before[before.length - 1];
+    out.gap = Math.max(0, Math.round((parse(first) - parse(last)) / 6048e5) - 1); // (rounded: a DST week is an hour short or long)
+    out.after = fmt(addD(parse(last), 6));
+  }
+  return out;
+}
+
+// The holidays in a period that have no holiday card (UX audit 2026-10-19):
+// ONE check, for Setup → Setup Issues and the Generate tab's banner. A holiday
+// counts when any day of it falls in the period (first Monday … last Sunday;
+// New Year's runs Dec 31 → Jan 1). It has no card when its year's cards
+// (holidayAssignments["YYYY"]) hold no entry for its date with a Surgeon A —
+// and then the generator gives it no holiday 24h coverage (generator.js
+// holidayCoverageMap reads only the cards). Every calendar year the period
+// touches is looked up, and the year before (its New Year's ends on Jan 1);
+// Setup's check used to look up the start year − 1, the start year and the
+// end year, so a 56-week period from late December skipped the middle year.
+//   getHolidays: generator.js's, passed in (the page loads helpers.js first)
+// → [{ year, name, date }], by date.
+function periodHolidayGaps(periodMondays, holidayAssignments, getHolidays) {
+  const ms = (periodMondays || []).map(m => (typeof m === "string" ? m : fmt(m))).sort();
+  if (!ms.length || typeof getHolidays !== "function") return [];
+  const start = ms[0], end = fmt(addD(parse(ms[ms.length - 1]), 6));
+  const cards = holidayAssignments || {};
+  const out = [];
+  for (let y = +start.slice(0, 4) - 1; y <= +end.slice(0, 4); y++) {
+    let defs = [];
+    try { const h = getHolidays(y); defs = [...h.major, ...h.minor]; } catch (e) { console.warn("Holiday preset lookup failed:", e); }
+    defs.forEach(hol => {
+      if (hol.date > end || (hol.endDate || hol.date) < start) return; // no day of it in the period
+      const yr = Array.isArray(cards[String(y)]) ? cards[String(y)] : [];
+      const card = yr.find(a => a && a.date === hol.date);
+      if (!card || !card.surgeonA) out.push({ year: y, name: hol.name, date: hol.date });
+    });
+  }
+  return out.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
 }
 
 // The line a service week or weekend carries for a date someone else holds,
@@ -867,6 +999,62 @@ function slotLabel(mondayStr, shiftKey) {
   if (shiftKey === "dayCall") return `Service Wk of ${md}`;
   if (shiftKey === "wknd") return `Wknd — ${DOW[d.getDay()]} ${md}`;
   return `${DOW[d.getDay()]} ${md} — Night`;
+}
+
+/* ═══ Toasts: the app's short messages stack (UX audit 2026-10-19) ═══
+   The app had ONE toast slot: each message replaced the one before, so a
+   burst — opening the app offline fires three errors — left only the last.
+   Now up to three show at once, oldest on top; each goes by itself after
+   toastMs or when tapped. */
+// toastAdd(list, toast, max) → a NEW list with `toast` ({ id, msg, tone })
+// last. A toast already showing the same words in the same style (toastText)
+// is taken out first, so a repeated message shows once, as the newest, on a
+// fresh timer; then the oldest beyond `max` go. `list` is never changed.
+function toastAdd(list, toast, max = 3) {
+  const same = toastText(toast);
+  const next = (list || []).filter(t => toastText(t) !== same);
+  next.push(toast);
+  return next.length > max ? next.slice(next.length - max) : next;
+}
+// How long a toast stays, in ms: an error 8 s, info or success 4 s — and a
+// long text longer (about 50 ms a character past what fits in that), at most
+// 15 s.
+function toastMs(type, text) {
+  const floor = type === "error" ? 8000 : 4000;
+  const n = String(text == null ? "" : text).length;
+  return Math.min(15000, Math.max(floor, 1000 + 50 * n));
+}
+// The words a toast shows: "✓ " before a success, "⚠ " before an error. An
+// error that already starts with its own ⚠ loses it, so it never reads
+// "⚠ ⚠ 2 locks were NOT honored…" (doGenerate's dropped-locks toast).
+function toastText(t) {
+  const msg = String(t && t.msg != null ? t.msg : "");
+  const tone = t && t.tone;
+  return tone === "success" ? "✓ " + msg : tone === "error" ? "⚠ " + msg.replace(/^\s*⚠\uFE0F?\s*/, "") : msg;
+}
+
+// The sign-in, sign-up and password-reset forms' error line, in plain words
+// (UX audit 2026-10-19). A request that never reached the server makes fetch
+// throw ("Load failed" on an iPhone, "Failed to fetch" in Chrome,
+// "NetworkError …" in Firefox): that reads as no connection. An answer from
+// the auth server — config.js auth's { error } text, a GoTrue body's msg /
+// error_description / message, or the text itself — is shown as it said it.
+// Anything else (a reply that wasn't JSON, a code error) gets one generic
+// line, never the raw exception text.
+function authErrorText(e) {
+  const NO_CONNECTION = "No connection — check your internet and try again.";
+  const GENERIC = "Something went wrong — please try again.";
+  if (typeof e === "string") return e.trim() || GENERIC;
+  if (!e || typeof e !== "object") return GENERIC;
+  // A thrown Error (from any realm) or DOMException is never a server answer.
+  if (Object.prototype.toString.call(e) !== "[object Object]") {
+    const m = typeof e.message === "string" ? e.message : "";
+    return /failed to fetch|load failed|networkerror|network request failed|network connection was lost|internet connection appears to be offline/i.test(m) ? NO_CONNECTION : GENERIC;
+  }
+  for (const k of ["msg", "error_description", "message", "error"]) {
+    if (typeof e[k] === "string" && e[k].trim()) return e[k].trim();
+  }
+  return GENERIC;
 }
 
 /* ═══ ICS Calendar Generation ═══ */
@@ -1000,12 +1188,34 @@ function generateICS(events, calName) {
   return lines.map(icsFold).join("\r\n") + "\r\n";
 }
 
+// The live calendar-sync feed for one surgeon (UX audit 2026-10-19), the URL
+// Settings → Live Calendar Sync has always offered: { https } to paste into a
+// calendar app ("From URL"), and the same address as { webcal }, which an
+// iPhone opens as Calendar's "Subscribe" sheet. A subscribed calendar updates
+// itself; a downloaded .ics is a snapshot whose random UIDs add every shift
+// again on a re-import. calendar-sync matches ?surgeon= against a SURGEON's
+// code (or id) only — an APP's code would 404 — so callers offer it to
+// surgeons only. The code is URL-encoded; no base or no code → null.
+function calendarFeedUrls(base, code) {
+  const b = String(base == null ? "" : base).trim().replace(/\/+$/, ""), c = String(code == null ? "" : code).trim();
+  if (!b || !c) return null;
+  const https = `${b}/functions/v1/calendar-sync?surgeon=${encodeURIComponent(c)}`;
+  return { https, webcal: https.replace(/^https?:\/\//i, "webcal://") };
+}
+
 function downloadICS(content, filename) {
   const blob = new Blob([content], { type: "text/calendar;charset=utf-8" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
-  a.href = url; a.download = filename; a.click();
-  URL.revokeObjectURL(url);
+  a.href = url; a.download = filename;
+  // In the document for the click, and the URL revoked a second later, not in
+  // the same tick (UX audit 2026-10-19; downloadJSON below does the same):
+  // iOS Safari can ignore a click on a detached link, and revoking at once can
+  // cancel the download before it starts.
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 // Download an arbitrary object as a pretty-printed JSON file. Used for the
