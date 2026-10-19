@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.10.19a";
+    var APP_VERSION = "2026.10.19b";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -6513,6 +6513,17 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       breach: req.request_type !== "nocall" && !!worst && worst.available < MIN_AVAILABLE_SURGEONS
     };
   };
+  const pendingFloorBreach = useMemo(() => {
+    const ids = new Set();
+    vacRequests.forEach(r => {
+      if (r.status !== "pending" || !r.start_date || !r.end_date) return;
+      const days = Math.round((parse(r.end_date) - parse(r.start_date)) / 86400000) + 1;
+      if (!(days <= 120)) return;
+      const c = vacRequestCoverage(r);
+      if (c && c.breach) ids.add(r.id);
+    });
+    return ids;
+  }, [vacRequests, vacations, surgeons, sMap]);
   const buildCum = prior => {
     const c = {};
     const estTotal = s => (s.dc || 0) * 6 + (s.nights || 0) + (s.wknd || 0) * 1 + (s.svcAdj6 || 0);
@@ -7124,6 +7135,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     return c;
   }, [calYear, calMonth]);
   const todayStr = fmt(new Date());
+  const tradeLegsNotStarted = r => shiftStartDate(r.week_monday, r.shift_key) >= todayStr && (!(r.return_week && r.return_shift) || shiftStartDate(r.return_week, r.return_shift) >= todayStr);
   const todayDow = new Date().getDay();
   const todayEntries = calData[todayStr] || [];
   const todayCall = useMemo(() => {
@@ -15116,6 +15128,21 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     });
     _nextUp.sort((a, b) => a.start - b.start);
     const _upNext = _nextUp.slice(0, 3);
+    const mineDates = typeof weekRangeLabel === "function" && typeof roleDateLabel === "function" && typeof publishedThrough === "function" && typeof monthDayLabel === "function";
+    const pubThrough = mineDates ? publishedThrough(schedule) : null;
+    const weekHead = w => mineDates ? weekRangeLabel(w.mStr) : `${w.mStr} → ${w.endStr}`;
+    const rowDate = (mStr, r) => mineDates ? roleDateLabel(mStr, r) : null;
+    const mineDateChip = {
+      fontSize: 11,
+      fontWeight: 600,
+      color: "#2c4a68",
+      background: "#e6eef6",
+      border: "1px solid #c8d8e8",
+      borderRadius: 4,
+      padding: "1px 6px",
+      whiteSpace: "nowrap"
+    };
+    const mineDay = ds => ds.slice(0, 4) === myToday.slice(0, 4) ? dayMonthLabel(ds) : `${dayMonthLabel(ds)}/${ds.slice(0, 4)}`;
     return React.createElement(React.Fragment, null, React.createElement("div", {
       style: {
         fontSize: 15,
@@ -15125,11 +15152,14 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       }
     }, React.createElement(Badge, {
       id: myId
-    }), " ", React.createElement("span", {
+    }), " ", pubThrough && React.createElement("span", {
       style: {
-        marginLeft: 8
+        marginLeft: 8,
+        fontSize: 13,
+        fontWeight: 600,
+        color: dk ? "#9aa8b6" : "#5a6a78"
       }
-    }, MO[startMonth], " – ", MO[endMoIdx], " ", startYear)), React.createElement("div", {
+    }, "Published through ", monthDayLabel(pubThrough, true))), React.createElement("div", {
       style: _objectSpread(_objectSpread({}, css.card), {}, {
         padding: 0,
         overflow: "hidden",
@@ -15442,7 +15472,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             flex: 1,
             minWidth: 140
           }
-        }, vs, " → ", ve), canEditTimeOff && React.createElement(React.Fragment, null, React.createElement("button", {
+        }, mineDay(vs), " → ", mineDay(ve)), canEditTimeOff && React.createElement(React.Fragment, null, React.createElement("button", {
           onClick: () => setMyVacEdit({
             idx: origIdx,
             start: vs,
@@ -15525,7 +15555,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           fontFamily: mono,
           marginBottom: 3
         }
-      }, ns, ns !== ne ? ` → ${ne}` : "")), myNoCallView.length > NC_LIMIT && React.createElement("button", {
+      }, mineDay(ns), ns !== ne ? ` → ${mineDay(ne)}` : "")), myNoCallView.length > NC_LIMIT && React.createElement("button", {
         onClick: () => setShowAllMyNoCall(v => !v),
         style: {
           background: "none",
@@ -15564,12 +15594,11 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       }
     }, React.createElement("span", {
       style: {
-        fontFamily: mono,
         fontSize: 13,
         color: wk.isBackup ? "#8a6a10" : "#1a6fa8",
         fontWeight: 600
       }
-    }, wk.mStr, " → ", wk.endStr), wk.isBackup && React.createElement("span", {
+    }, weekHead(wk)), wk.isBackup && React.createElement("span", {
       style: css.backupBanner
     }, "⚡ BACKUP"), wk.isFierceBackup && React.createElement("span", {
       style: {
@@ -15585,8 +15614,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       key: i,
       style: {
         display: "flex",
+        flexWrap: "wrap",
         alignItems: "center",
         gap: 8,
+        rowGap: 3,
         padding: "5px 10px",
         background: "#f8f9fb",
         borderRadius: 5,
@@ -15603,7 +15634,9 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         fontWeight: 600,
         color: r.color
       }
-    }, r.type), React.createElement("span", {
+    }, r.type), rowDate(wk.mStr, r) && React.createElement("span", {
+      style: mineDateChip
+    }, rowDate(wk.mStr, r)), React.createElement("span", {
       style: {
         fontSize: 11,
         color: "#8a94a0",
@@ -15651,20 +15684,66 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         color: "#8a94a0",
         padding: 30
       })
-    }, "No shifts assigned yet. Generate a schedule first."), myShifts.length > 0 && myShiftsView.length === 0 && React.createElement("div", {
+    }, isScheduler ? "No shifts assigned yet. Generate a schedule first." : "No shifts assigned yet."), myShifts.length > 0 && myShiftsView.length === 0 && React.createElement("div", {
       style: _objectSpread(_objectSpread({}, css.card), {}, {
         textAlign: "center",
         color: "#8a94a0",
         padding: 30
       })
     }, "No upcoming shifts in the current schedule."));
-  })(), !mineId && React.createElement("div", {
+  })(), mineId && Object.keys(schedule).length === 0 && React.createElement("div", {
+    role: "status",
+    style: _objectSpread(_objectSpread({}, css.card), {}, {
+      textAlign: "center",
+      color: "#8a94a0",
+      padding: 20,
+      fontSize: 13
+    })
+  }, !loaded || !schedSync.seeded && !schedSync.loadFailed ? "Loading the schedule…" : schedSync.loadFailed ? "The schedule didn't load — it retries every minute; reload the app if this stays." : isScheduler ? "No call schedule is published yet. Generate a schedule first." : "No call schedule is published yet."), !mineId && React.createElement("div", {
     style: _objectSpread(_objectSpread({}, css.card), {}, {
       textAlign: "center",
       color: "#8a94a0",
       padding: 30
     })
-  }, "Select your name above to view your schedule.")), view === "requests" && !isPublicMode && React.createElement(React.Fragment, null, vacationDeadline && (() => {
+  }, "Select your name above to view your schedule.")), view === "requests" && !isPublicMode && React.createElement(React.Fragment, null, (() => {
+    const waitingOnMe = myTradeRequests.filter(r => r.status === "pending" && r.to_surgeon_id === mySurgeon && tradeLegsNotStarted(r)).length;
+    if (!waitingOnMe) return null;
+    return React.createElement("div", {
+      role: "status",
+      style: {
+        display: "flex",
+        alignItems: "center",
+        gap: 10,
+        flexWrap: "wrap",
+        background: dk ? "#2a2040" : "#f3ecff",
+        border: `1px solid ${dk ? "#5a4a90" : "#b8a0e0"}`,
+        borderRadius: 10,
+        padding: "10px 12px",
+        marginBottom: 14
+      }
+    }, React.createElement("span", {
+      style: {
+        flex: "1 1 180px",
+        minWidth: 0,
+        fontSize: 13.5,
+        fontWeight: 700,
+        lineHeight: 1.4,
+        color: dk ? "#e8dcff" : "#3a2060"
+      }
+    }, "🔄 ", waitingOnMe === 1 ? "A shift trade is waiting for your answer." : `${waitingOnMe} shift trades are waiting for your answer.`), React.createElement("button", {
+      onClick: () => {
+        const el = document.getElementById("pending-trades");
+        if (el && el.scrollIntoView) el.scrollIntoView({
+          behavior: "smooth",
+          block: "start"
+        });
+      },
+      style: _objectSpread(_objectSpread({}, css.btn(true)), {}, {
+        padding: "8px 14px",
+        whiteSpace: "nowrap"
+      })
+    }, "Review ↓"));
+  })(), vacationDeadline && (() => {
     const {
       nextPeriodStart,
       nextPeriodEnd,
@@ -15938,6 +16017,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     }, "No pending requests.") : groupOrder.map(pid => {
       const reqs = pendingGroups[pid];
       const expanded = expandedVacGroups["p_" + pid];
+      const belowFloor = reqs.some(r => pendingFloorBreach.has(r.id));
       return React.createElement("div", {
         key: pid,
         style: {
@@ -15978,7 +16058,19 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           borderRadius: 10,
           border: "1px solid #e8d090"
         }
-      }, reqs.length, " pending"), React.createElement("div", {
+      }, reqs.length, " pending"), belowFloor && React.createElement("span", {
+        title: "Approving would leave fewer surgeons available than the minimum — open to see the day",
+        style: {
+          fontSize: 11,
+          color: "#8a4a00",
+          fontWeight: 700,
+          background: "#fde8c4",
+          padding: "1px 8px",
+          borderRadius: 10,
+          border: "1px solid #e0a850",
+          whiteSpace: "nowrap"
+        }
+      }, "⚠ below floor"), React.createElement("div", {
         style: {
           display: "flex",
           gap: 4,
@@ -16876,8 +16968,18 @@ ${"</"}script>${"</"}body>${"</"}html>`;
   }, "Shift trades are for the surgeon call schedule. For an APP shift change, ask the scheduler.")), (() => {
     const pendingTrades = myTradeRequests.filter(r => r.status === "pending");
     const reviewedTrades = myTradeRequests.filter(r => r.status !== "pending");
+    const canAnswer = r => mySurgeon === r.to_surgeon_id || isScheduler;
+    const passedNote = r => `This trade's shift has passed — ${mySurgeon === r.from_surgeon_id ? "withdraw it." : canAnswer(r) ? "decline it." : "it can't be accepted."}`;
+    const knockOnNote = r => {
+      const n = tradeLegsNotStarted(r) ? detectCascadeChanges(schedule, r).length : 0;
+      return n ? `plus ${n} knock-on change${n === 1 ? "" : "s"} to other shifts ${canAnswer(r) ? "— listed when you accept" : `when ${r.to_surgeon_name} accepts`}` : null;
+    };
+    const knockOns = new Map(pendingTrades.map(r => [r.id, knockOnNote(r)]));
     return React.createElement(React.Fragment, null, pendingTrades.length > 0 && React.createElement("div", {
-      style: css.card
+      id: "pending-trades",
+      style: _objectSpread(_objectSpread({}, css.card), {}, {
+        scrollMarginTop: "calc(env(safe-area-inset-top, 0px) + 12px)"
+      })
     }, React.createElement("div", {
       style: css.cardT
     }, "⏳ Pending Trades ", React.createElement("span", {
@@ -16930,7 +17032,26 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         fontSize: 11,
         color: "#a08040"
       }
-    }, "(one-way — no return shift)")), React.createElement("div", {
+    }, "(one-way — no return shift)")), typeof tradeLegsFor === "function" && React.createElement("div", {
+      style: {
+        fontSize: 12.5,
+        fontWeight: 600,
+        lineHeight: 1.4,
+        color: "#3a2060",
+        background: "#fcf9ff",
+        border: "1px solid #e0d4f0",
+        borderRadius: 6,
+        padding: "5px 8px",
+        marginBottom: 6
+      }
+    }, tradeLegsNotStarted(r) ? tradeLegsFor(r, mySurgeon) : passedNote(r), knockOns.get(r.id) && React.createElement("div", {
+      style: {
+        fontSize: 11,
+        fontWeight: 500,
+        color: "#6a4a90",
+        marginTop: 2
+      }
+    }, knockOns.get(r.id))), React.createElement("div", {
       style: {
         display: "flex",
         gap: 6,
@@ -16967,7 +17088,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           padding: "1px 6px"
         }
       }, "🔴 Silvis conflict — ", isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.role) === "admin" ? "scheduler override only" : "cannot be accepted");
-    })(), (mySurgeon === r.to_surgeon_id || isScheduler) && React.createElement(React.Fragment, null, React.createElement("button", {
+    })(), canAnswer(r) && React.createElement(React.Fragment, null, tradeLegsNotStarted(r) && React.createElement("button", {
       onClick: () => acceptTradeRequest(r),
       style: {
         background: "#e8f8e8",
@@ -16993,7 +17114,13 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         cursor: "pointer",
         fontFamily: font
       }
-    }, "✕ Decline")), mySurgeon === r.from_surgeon_id && React.createElement("button", {
+    }, "✕ Decline")), mySurgeon === r.from_surgeon_id && !canAnswer(r) && tradeLegsNotStarted(r) && React.createElement("span", {
+      style: {
+        fontSize: 10,
+        color: "#8a6a10",
+        fontWeight: 600
+      }
+    }, "Waiting for ", r.to_surgeon_name, "'s answer"), mySurgeon === r.from_surgeon_id && React.createElement("button", {
       onClick: () => deleteTradeRequest(r.id),
       style: {
         background: "none",
