@@ -7432,7 +7432,7 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
       paintTO: fnX("USE_TIME_OFF, userProfile, db, logAudit, loadTimeOff, sessionEpochRef, dbAuthHeaders", decl("commitTimeOffPaint", "\n  };\n")),
       dayTap: fnX("appDayOffLoaded, showToast, appDayOffRef, dayOffId, setAppDayOff, dayOffDirtyRef, dayOffEpochRef, sessionEpochRef, dayOffPendingAuditRef, nameOf, dayOffSaveTimerRef, clearTimeout, setTimeout, enqueueDayOffSave", decl("toggleAppDayOff", "\n  };\n")),
       daySave: fnX("dayOffSaveChainRef, dayOffDirtyRef, dayOffEpochRef, sessionEpochRef, dbAuthHeaders, dayOffPendingAuditRef, supabase, appDayOffRef, dayOffLastWriteTsRef, logAudit, scheduleDayOffRetry, setSaveError, setSaveStatus, setTimeout, console, showToast, dayOffInFlightRef, setAppDayOff, dayOffHeldRowRef, adoptDayOffRow", decl("enqueueDayOffSave", "\n  };\n")),
-      pref: fnX("setNotifPrefs, notifPrefsRef, notifSaveTimerRef, setTimeout, clearTimeout, setNotifPrefsSaving, db, auditRef, showToast, console, sessionEpochRef, dbAuthHeaders", cbody("saveNotifPref", "[]")),
+      pref: fnX("setNotifPrefs, notifPrefsRef, notifSaveTimerRef, setTimeout, clearTimeout, setNotifPrefsSaving, setNotifPrefsSavedAt, db, auditRef, showToast, console, sessionEpochRef, dbAuthHeaders", cbody("saveNotifPref", "[]")),
       officeAdd: fnX("newOfficeName, newOfficeEmail, newOfficeDepts, alert, setOfficeNotifBusy, db, setOfficeContacts, setNewOfficeName, setNewOfficeEmail, setNewOfficeDepts, sessionEpochRef, console", decl("addOfficeContact", "\n  };\n")),
       officeUpd: fnX("setOfficeContacts, db, alert, console, showToast, sessionEpochRef", decl("updateOfficeContact", "\n  };\n")),
       officeDel: fnX("officeContacts, confirm, setOfficeContacts, fetch, SUPABASE_URL, dbAuthHeaders, console, showToast, sessionEpochRef", decl("deleteOfficeContact", "\n  };\n")),
@@ -7545,16 +7545,20 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
     // the notification preference: (at) "debounce" — the session changes before its 500-ms debounce fires; "save" — while its upsert is out
     const prefRun = async (r, fail, at) => {
       const timers = { current: {} };
-      H.pref({ setNotifPrefs: noopX, notifPrefsRef: { current: { s1: { email: "a@dsg.test" } } }, notifSaveTimerRef: timers, setTimeout: r.setTimeout, clearTimeout: r.clearTimeout, setNotifPrefsSaving: noopX,
+      H.pref({ setNotifPrefs: noopX, notifPrefsRef: { current: { s1: { email: "a@dsg.test" } } }, notifSaveTimerRef: timers, setTimeout: r.setTimeout, clearTimeout: r.clearTimeout, setNotifPrefsSaving: noopX, setNotifPrefsSavedAt: r.mark("saved"),
         auditRef: { current: { logAudit: r.logAudit, nameOf: (x) => x } }, showToast: r.say("toast"), console: r.console, sessionEpochRef: r.ep, dbAuthHeaders: r.hdr,
         db: { upsert: async () => { r.write("UPSERT notification_preferences"); if (at === "save") await r.cross(); return { error: fail ? "HTTP 503" : null }; } } })("s1", { email: "a2@dsg.test" });
       if (at === "debounce") await r.cross();
       await r.fire(); await spin(10);
     };
-    add("prefDebounce", "the notification preference save, the session changing before its debounce fires: never written from the next session", async (r, fail) => prefRun(r, fail, "debounce"),
-      (x, x0, f, f0) => x.writes.length === 0 && f.writes.length === 0 && x0.writes.join() === "UPSERT notification_preferences Bearer TOK_A" && x0.audits.join() === "prefs.save@now:TOK_A");
-    add("prefSave", "…the session changing while its upsert is out: its audit line written as A; its failure not said", async (r, fail) => prefRun(r, fail, "save"),
-      (x, x0, f, f0) => x.audits.join() === "prefs.save@Bearer TOK_A" && f.late.length === 0 && f0.early.some(k => /^toast: Couldn't save notification settings/.test(k)));
+    // (UX 2026-10-19, sync-guards BH: in one session a save that landed sets "Saved ✓" — `saved` — and nothing else is
+    // said; a failed one never does.)
+    add("prefDebounce", "the notification preference save, the session changing before its debounce fires: never written from the next session; in one session a landed save shows 'Saved ✓' (a failed one doesn't)", async (r, fail) => prefRun(r, fail, "debounce"),
+      (x, x0, f, f0) => x.writes.length === 0 && f.writes.length === 0 && x0.writes.join() === "UPSERT notification_preferences Bearer TOK_A" && x0.audits.join() === "prefs.save@now:TOK_A"
+        && JSON.stringify(x0.early) === '["saved"]' && !f0.early.includes("saved"));
+    add("prefSave", "…the session changing while its upsert is out: its audit line written as A; its failure not said, nor 'Saved ✓' on the next screen", async (r, fail) => prefRun(r, fail, "save"),
+      (x, x0, f, f0) => x.audits.join() === "prefs.save@Bearer TOK_A" && f.late.length === 0 && f0.early.some(k => /^toast: Couldn't save notification settings/.test(k))
+        && !x.early.concat(x.late).includes("saved") && JSON.stringify(x0.early) === '["saved"]');
     add("officeAdd", "an office contact added (its insert): no list update, no form cleared, no alert on the next screen", async (r, fail) => {
       await H.officeAdd({ newOfficeName: "Desk", newOfficeEmail: "desk@dsg.test", newOfficeDepts: [], alert: r.say("alert"), setOfficeNotifBusy: noopX, setOfficeContacts: r.mark("list"), setNewOfficeName: r.mark("form"), setNewOfficeEmail: noopX, setNewOfficeDepts: noopX,
         sessionEpochRef: r.ep, console: r.console, db: { insert: async () => { r.write("INSERT office_contacts"); await r.cross(); return fail ? { data: null, error: { message: "RLS" } } : { data: { id: 3, name: "Desk" }, error: null }; } } })();

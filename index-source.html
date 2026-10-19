@@ -855,6 +855,10 @@ function CallSchedule() {
   useEffect(() => { notifPrefsRef.current = notifPrefs; }, [notifPrefs]);
   const [notifPrefsLoaded, setNotifPrefsLoaded] = useState(false);
   const [notifPrefsSaving, setNotifPrefsSaving] = useState(false);
+  // When a preference save last landed (this session's own): Settings says "Saved ✓" for 3 s after it, so a member
+  // sees their change was kept (UX audit 2026-10-19 — only the scheduler's list showed even "Saving…").
+  const [notifPrefsSavedAt, setNotifPrefsSavedAt] = useState(0);
+  useEffect(() => { if (!notifPrefsSavedAt) return; const t = setTimeout(() => setNotifPrefsSavedAt(0), 3000); return () => clearTimeout(t); }, [notifPrefsSavedAt]);
   const [notifTestSent, setNotifTestSent] = useState("");
   const lastNotifCountRef = useRef(null); // track notification count for browser push on new ones
   const [edgeFunctionUrl, setEdgeFunctionUrl] = useState(""); // Supabase Edge Function URL for email
@@ -4351,6 +4355,8 @@ function CallSchedule() {
           src === "signup" ? "prefs.signup_populate" : "prefs.save",
           `${src === "signup" ? "Signup filled" : "Saved"} notification prefs for ${auditRef.current.nameOf(surgeonId)} — email: ${emailMasked}`,
           { surgeon_id: surgeonId, email_masked: emailMasked, source: src }, sessionEpochRef.current === ep ? undefined : tapH);
+        // "Saved ✓" — only once the write is known-good, and only in the session that made it.
+        if (sessionEpochRef.current === ep) setNotifPrefsSavedAt(Date.now());
       } catch(e) { console.error("Save notif pref error:", e); if (sessionEpochRef.current === ep) showToast("Couldn't save notification settings — check your connection and try again.", "error"); }
       setNotifPrefsSaving(false);
     }, 500);
@@ -8226,7 +8232,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   <div style={{width:8,height:8,borderRadius:2,background:surgeonColors(s.name, i).tx,flexShrink:0}}/>
                   <input value={s.name} onChange={e=>rename(s.id,e.target.value)}
                     style={{...css.inp,border:"none",padding:"3px 4px",background:"transparent",width:"100%",fontWeight:600,letterSpacing:0.5}}/>
-                  <button onClick={()=>removeSurgeon(s.id)} style={{background:"none",border:"none",color:"#c04040",cursor:"pointer",fontSize:14,flexShrink:0,padding:"0 2px"}}>✕</button>
+                  <button aria-label={`Remove surgeon ${s.name}`} onClick={()=>removeSurgeon(s.id)} style={{background:"none",border:"none",color:"#c04040",cursor:"pointer",fontSize:14,flexShrink:0,padding:"6px 8px"}}>✕</button>
                 </div>
               ))}
             </div>
@@ -8253,7 +8259,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   <div style={{width:8,height:8,borderRadius:2,background:APP_PAL[i%APP_PAL.length].tx,flexShrink:0}}/>
                   <input value={a.name} onChange={e=>renameApp(a.id,e.target.value)}
                     style={{...css.inp,border:"none",padding:"3px 4px",background:"transparent",width:"100%",fontWeight:600,letterSpacing:0.5}}/>
-                  <button onClick={()=>removeApp(a.id)} style={{background:"none",border:"none",color:"#c04040",cursor:"pointer",fontSize:14,flexShrink:0,padding:"0 2px"}}>✕</button>
+                  <button aria-label={`Remove APP ${a.name}`} onClick={()=>removeApp(a.id)} style={{background:"none",border:"none",color:"#c04040",cursor:"pointer",fontSize:14,flexShrink:0,padding:"6px 8px"}}>✕</button>
                 </div>
               ))}
             </div>
@@ -10219,7 +10225,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           </div>
 
           {/* Calendar tools — collapsed by default so the calendar itself stays front and center */}
-          <Collapsible css={css} ck="cal_tools" defaultOpen={false} forceOpen={!!swapSuggestions} title="🔧 Schedule Tools & Export" style={{background:"transparent",border:"none",boxShadow:"none",padding:"4px 2px",marginTop:8}}>
+          <Collapsible css={css} ck="cal_tools" defaultOpen={false} forceOpen={!!swapSuggestions} heldNote="Close the swap options to collapse" title="🔧 Schedule Tools & Export" style={{background:"transparent",border:"none",boxShadow:"none",padding:"4px 2px",marginTop:8}}>
           {/* ─── Silvis (trauma) feed — read-only mirror; rule silvisBusy (internal views only) ─── */}
           {!isPublicMode && (()=>{
             const st = sfStatus(silvisDays.fetchedAt);
@@ -12737,7 +12743,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               {/* Personal notification settings (shown to everyone) */}
               {mySurgeon && mySurgeon !== "admin" && (() => {
                 const myPref = notifPrefs[mySurgeon] || {};
-                const HourPicker = ({field, label}) => (
+                // A plain function called inline, not a component: a component defined here is a new
+                // type every render, so React remounted the <select> on each re-render (a poll, a save)
+                // and an open picker lost its place (UX audit 2026-10-19).
+                const hourPicker = (field, label) => (
                   <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}>
                     <span style={{fontSize:12,color:"#3a4a58",minWidth:180}}>{label}:</span>
                     <select
@@ -12792,12 +12801,13 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                       <span style={{fontSize:12,color:"#3a4a58"}}>Show pop-up alerts on <strong>this device</strong> <span style={{color:"#8a94a0"}}>— the in-app/browser notification banner while the app is open. Separate from the cross-device Push and Email categories above.</span></span>
                     </label>
 
-                    <div style={{fontSize:11,fontWeight:600,color:"#5a6a78",marginBottom:6}}>Reminder Times</div>
-                    <HourPicker field="daily_reminder_hour" label="Daily call reminder"/>
-                    <HourPicker field="vac_deadline_hour" label="Vacation deadline reminder"/>
+                    <div style={{fontSize:11,fontWeight:600,color:"#5a6a78",marginBottom:6}}>Reminder Times (Central time)</div>
+                    {hourPicker("daily_reminder_hour", "Daily call reminder")}
+                    {hourPicker("vac_deadline_hour", "Vacation deadline reminder")}
                     <p style={{fontSize:10,color:"#8a94a0",margin:"4px 0 0",fontStyle:"italic"}}>
                       Reminders fire only on days you're on call (for call reminder) or 2 days before the vacation deadline.
                     </p>
+                    <div aria-live="polite" style={{fontSize:10,color:"#1a8040",marginTop:6,minHeight:14}}>{notifPrefsSaving ? "Saving…" : notifPrefsSavedAt ? "Saved ✓" : ""}</div>
                   </div>
                 );
               })()}
@@ -14805,8 +14815,9 @@ function CallTotalsCard({ totals, silvisNote, css, dk }) {
 // because the destructured hook names live inside CallSchedule, not out here.
 // forceOpen shows the body without touching the stored state: Mine's Find Swap
 // opens Schedule Tools while its swap options are up, and Close puts the
-// section back the way the user left it.
-function Collapsible({ title, ck, defaultOpen = false, forceOpen = false, summary = null, children, css, right = null, style = null }) {
+// section back the way the user left it; heldNote, under the header while it is
+// held, says how to let go.
+function Collapsible({ title, ck, defaultOpen = false, forceOpen = false, heldNote = null, summary = null, children, css, right = null, style = null }) {
   const [open, setOpen] = React.useState(() => {
     try {
       const v = localStorage.getItem("dsg_collapse_" + ck);
@@ -14822,13 +14833,22 @@ function Collapsible({ title, ck, defaultOpen = false, forceOpen = false, summar
     return n;
   }); };
   const shown = open || forceOpen;
+  // The header is a real button (UX audit 2026-10-19): focusable, announced as expanded or collapsed, and
+  // Enter (keydown) or Space (on release, as a native button — its keydown only stops the page scrolling)
+  // toggles it like a tap. A key on a control inside the header (the ↻ in `right`) stays that control's.
+  // Held open, a key does what a tap does there: nothing (toggle's guard); the header says it is disabled.
+  const ownKey = (e) => e.target === e.currentTarget;
+  const onHeadKeyDown = (e) => { if (!ownKey(e)) return; if (e.key === "Enter") { e.preventDefault(); toggle(); } else if (e.key === " ") e.preventDefault(); };
+  const onHeadKeyUp = (e) => { if (ownKey(e) && e.key === " ") toggle(); };
   return (
     <div style={style ? { ...css.card, ...style } : css.card}>
-      <div onClick={toggle} style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", userSelect: "none" }}>
+      <div role="button" tabIndex={0} aria-expanded={shown} aria-disabled={forceOpen || undefined} onClick={toggle} onKeyDown={onHeadKeyDown} onKeyUp={onHeadKeyUp}
+        style={{ display: "flex", alignItems: "center", gap: 8, cursor: forceOpen ? "default" : "pointer", userSelect: "none", padding: "9px 0", margin: "-9px 0", minHeight: 36 }}>
         <span style={{ fontSize: 11, color: "#8a94a0", transition: "transform .15s", transform: shown ? "rotate(90deg)" : "rotate(0deg)", display: "inline-block", width: 10, flexShrink: 0 }}>▶</span>
         <div style={{ ...css.cardT, marginBottom: 0, flex: 1 }}>{title}</div>
         {right}
       </div>
+      {forceOpen && heldNote && <div style={{ fontSize: 10, color: "#8a94a0", marginTop: 4 }}>{heldNote}</div>}
       {!shown && summary != null && <div style={{ marginTop: 10 }}>{summary}</div>}
       {shown && <div style={{ marginTop: 12 }}>{children}</div>}
     </div>

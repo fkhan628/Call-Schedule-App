@@ -3340,6 +3340,168 @@ await (async () => {
     && count("Public link: <span style={{fontFamily:mono}}>fkhan628.github.io/Call-Schedule-App/?public=1</span>") === 1);
 }
 
+// ─── BH. Settings: the reminder-hour picker stays put and says Central time, a member sees "Saved ✓"; Collapsible headers are real buttons (UX audit 2026-10-19) ───
+// The reminder-hour <select> was a component (HourPicker) defined inside the render: a new type every render, so
+// React remounted it on each re-render (a poll, a save) and an open picker lost its place. The hours are Central and
+// said nothing. A member saving their notification settings got no word it was kept (only the scheduler's list
+// showed even "Saving…"). Collapsible headers were bare clickable divs: no keyboard, nothing announced, a ~16 px
+// tap strip; and while Schedule Tools is held open by swap options its header looked tappable but did nothing.
+//   BH1 the picker is a plain function called inline (no component left), under "Reminder Times (Central time)"
+//   BH2 the REAL saveNotifPref, executed with one ordered log: a save that lands sets the saved time AFTER its write
+//       and its audit line; a failed one never does (its toast instead); a session change while its write is out —
+//       its audit line as the tap's account, no "Saved ✓"; one before its debounce — nothing. The REAL hide effect
+//       (3 s) and the status line's own expression, executed; the line sits in the personal block every account with
+//       a roster id sees. (SE-X24 runs the same save across every boundary, its `saved` mark included.)
+//   BH3 the REAL Collapsible, executed: its head (state + key handlers) run with a stub React and localStorage, and
+//       the header tag's OWN attribute expressions evaluated in that scope — role/tabIndex; aria-expanded is what is
+//       shown; Enter (keydown) and Space (on release, as a native button) toggle and persist as a tap does, Space's
+//       keydown only stops the page scrolling, a key from a control inside the header (the ↻) is left to it. Held
+//       open (forceOpen): keys and taps change nothing, aria-disabled, a plain cursor, the held note shown (only
+//       cal_tools passes one); the strip is ≥ 36 px tall (padding 9 / margin −9 keep the layout)
+//   BH4 the roster ✕ buttons say whom they remove (executed) and get a bigger tap target
+console.log("\nBH. Settings: reminder picker, 'Saved ✓', Collapsible headers as buttons");
+await (async () => {
+  const nsrcBH = src.replace(/\r\n/g, "\n");
+
+  // BH1 — the picker
+  check("BH1 the reminder-hour picker is a plain function called inline — no HourPicker component is defined or rendered (it remounted every render)",
+    count("<HourPicker") === 0 && count("const HourPicker") === 0 && count("const hourPicker = (field, label) => (") === 1
+      && count('{hourPicker("daily_reminder_hour", "Daily call reminder")}') === 1 && count('{hourPicker("vac_deadline_hour", "Vacation deadline reminder")}') === 1,
+    JSON.stringify({ comp: count("<HourPicker"), fn: count("const hourPicker = (field, label) => (") }));
+  check("BH1 the reminder times say they are Central time",
+    count('marginBottom:6}}>Reminder Times (Central time)</div>') === 1 && count(">Reminder Times</div>") === 0);
+
+  // BH2 — the REAL save, executed
+  const SN0 = "  const saveNotifPref = useCallback(", iSN = nsrcBH.indexOf(SN0), iSNE = iSN < 0 ? -1 : nsrcBH.indexOf("\n  }, []);\n", iSN);
+  const snBody = iSN >= 0 && iSNE > iSN && nsrcBH.indexOf(SN0, iSN + 1) < 0 ? nsrcBH.slice(iSN + SN0.length, iSNE + "\n  }".length) : null;
+  let snMk = null;
+  try { snMk = snBody ? vm.runInContext(`(function (env) { const { setNotifPrefs, notifPrefsRef, notifSaveTimerRef, setTimeout, clearTimeout, setNotifPrefsSaving, setNotifPrefsSavedAt, db, auditRef, showToast, console, sessionEpochRef, dbAuthHeaders } = env; return (${snBody}); })`, sandbox) : null; } catch (ex) { snMk = null; }
+  const snRun = async (o) => {
+    if (!snMk) return "not extracted";
+    const log = [], timers = [], ep = { current: 0 };
+    const env = { notifPrefsRef: { current: { s3: { email: "c@dsg.test", daily_reminder_hour: 7 } } }, notifSaveTimerRef: { current: {} },
+      setTimeout: (fn, ms) => { timers.push({ fn, ms }); return timers.length; }, clearTimeout: () => {},
+      setNotifPrefsSaving: (v) => log.push("saving:" + v),
+      setNotifPrefsSavedAt: (t) => log.push("saved:" + (typeof t === "number" && t > 0 ? "time" : JSON.stringify(t))),
+      db: { upsert: async (table, row) => { log.push("upsert " + table + " h" + row.daily_reminder_hour); if (o.cross === "write") ep.current++; return { error: o.fail ? "HTTP 503" : null }; } },
+      auditRef: { current: { logAudit: (action, summary, details, hdrs) => log.push("audit " + action + (hdrs ? " as " + hdrs.Authorization : "")), nameOf: (x) => x } },
+      showToast: () => log.push("toast"), console: { error() {}, warn() {}, log() {} }, sessionEpochRef: ep, dbAuthHeaders: () => ({ Authorization: "Bearer TOK_A" }) };
+    env.setNotifPrefs = (u) => { u(env.notifPrefsRef.current); };
+    try {
+      snMk(env)("s3", { daily_reminder_hour: 6 });
+      if (o.cross === "debounce") ep.current++;
+      for (const t of timers.splice(0)) { log.push("timer:" + t.ms); await t.fn(); }
+    } catch (ex) { log.push("threw: " + String(ex).slice(0, 100)); }
+    return log.join(" | ");
+  };
+  const snOk = await snRun({}), snFail = await snRun({ fail: true }), snCross = await snRun({ cross: "write" }), snEarly = await snRun({ cross: "debounce" });
+  check("BH2 the REAL saveNotifPref, executed: a save that lands sets the saved time only AFTER its write and its audit line",
+    snOk === "timer:500 | saving:true | upsert notification_preferences h6 | audit prefs.save | saved:time | saving:false", snOk);
+  check("BH2 …a failed save never says 'Saved ✓' (its toast instead, no audit line)",
+    snFail === "timer:500 | saving:true | upsert notification_preferences h6 | toast | saving:false", snFail);
+  check("BH2 …a session change while its write is out: its audit line as the tap's account, and no 'Saved ✓' on the next screen; one before its debounce: nothing at all",
+    snCross === "timer:500 | saving:true | upsert notification_preferences h6 | audit prefs.save as Bearer TOK_A | saving:false" && snEarly === "timer:500",
+    JSON.stringify({ snCross, snEarly }));
+  // the hide effect (the real line), executed
+  const iSavedState = nsrcBH.indexOf("  const [notifPrefsSavedAt, setNotifPrefsSavedAt] = useState(0);\n");
+  const efM = /\n  useEffect\((\(\) => \{ if \(!notifPrefsSavedAt\) return;[^\n]*?\}), \[notifPrefsSavedAt\]\);\n/.exec(nsrcBH);
+  let efMk = null; try { efMk = efM ? vm.runInContext(`(function (notifPrefsSavedAt, setNotifPrefsSavedAt, setTimeout, clearTimeout) { return (${efM[1]}); })`, sandbox) : null; } catch (ex) { efMk = null; }
+  const efRun = (at) => {
+    if (!efMk) return "not extracted";
+    const log = [], timers = [];
+    try {
+      const undo = efMk(at, (v) => log.push("set:" + v), (fn, ms) => { timers.push(fn); log.push("timer:" + ms); return 7; }, (id) => log.push("clear:" + id))();
+      timers.forEach((fn) => fn());
+      if (typeof undo === "function") undo();
+    } catch (ex) { log.push("threw: " + String(ex).slice(0, 80)); }
+    return log.join(" ");
+  };
+  check("BH2 the hide effect, executed: 'Saved ✓' clears itself 3 s after a save (a newer save restarts the clock: the old timer is cleared); nothing runs while there is none — the state declared before its effect, and set only there and by a landed save",
+    efRun(1760000000000) === "timer:3000 set:0 clear:7" && efRun(0) === "" && iSavedState >= 0 && !!efM && efM.index > iSavedState && count("setNotifPrefsSavedAt(") === 2,
+    JSON.stringify({ on: efRun(1760000000000), off: efRun(0), iSavedState, ef: efM && efM.index, sets: count("setNotifPrefsSavedAt(") }));
+  // the status line: its own expression, executed; where it is
+  const stM = /<div aria-live="polite" style=\{\{fontSize:10,color:"#1a8040",marginTop:6,minHeight:14\}\}>\{(notifPrefsSaving \?[^\n]*?)\}<\/div>/.exec(nsrcBH);
+  let stFn = null; try { stFn = stM ? vm.runInContext(`(function (notifPrefsSaving, notifPrefsSavedAt) { return (${stM[1]}); })`, sandbox) : null; } catch (ex) { stFn = null; }
+  const stCases = stFn ? [stFn(true, 0), stFn(true, 1760000000000), stFn(false, 1760000000000), stFn(false, 0)] : null;
+  // its block: the personal one ("shown to everyone" with a roster id), not the scheduler-only list after it
+  const stAt = stM ? stM.index : -1, PG = '{/* Personal notification settings (shown to everyone) */}\n              {mySurgeon && mySurgeon !== "admin" && (() => {\n';
+  const iGate = stAt < 0 ? -1 : nsrcBH.lastIndexOf(PG, stAt), iMine = stAt < 0 ? -1 : nsrcBH.lastIndexOf("My Email for Notifications</div>", stAt);
+  const iEnd = iGate < 0 ? -1 : nsrcBH.indexOf("\n              })()}\n", iGate), iSchedOnly = iGate < 0 ? -1 : nsrcBH.indexOf("{/* Scheduler-only: all surgeon emails */}", iGate);
+  check("BH2 the personal block (every account with a roster id — a member's own settings) shows 'Saving…' then 'Saved ✓', and nothing otherwise; announced politely",
+    JSON.stringify(stCases) === JSON.stringify(["Saving…", "Saving…", "Saved ✓", ""]) && count('<div aria-live="polite" style={{fontSize:10,color:"#1a8040",marginTop:6,minHeight:14}}>') === 1
+      && nsrcBH.split(PG).length - 1 === 1 && iGate >= 0 && iMine > iGate && stAt > iMine && iEnd > stAt && iSchedOnly > iEnd,
+    JSON.stringify({ stCases, iGate, iMine, stAt, iEnd, iSchedOnly }));
+
+  // BH3 — the REAL Collapsible, executed
+  const cA = nsrcBH.indexOf("function Collapsible({"), cR = cA < 0 ? -1 : nsrcBH.indexOf("\n  return (\n", cA), cZ = cA < 0 ? -1 : nsrcBH.indexOf("\n}\n", cA);
+  const cHead = cA >= 0 && cR > cA && cZ > cR ? nsrcBH.slice(cA, cR) : null, cJsx = cR > 0 && cZ > cR ? nsrcBH.slice(cR, cZ) : "";
+  let Coll = null;
+  // `ev` evaluates an expression in the component's own scope (a direct eval in the sliced function): the header tag's attributes as written.
+  try { Coll = cHead ? vm.runInContext(`(function (React, localStorage, console) { return ${cHead}\n  return { open, shown, toggle, ev: (x) => eval(x) };\n}; })`, sandbox) : null; } catch (ex) { Coll = null; }
+  const hS = cJsx.indexOf('<div role="button"'), hE = hS < 0 ? -1 : cJsx.indexOf("}}>\n", hS), headTag = hS >= 0 && hE > hS ? cJsx.slice(hS, hE + 3) : "";
+  const attrs = {};
+  for (const m of headTag.matchAll(/\s([a-zA-Z][\w-]*)=(?:"([^"]*)"|\{([^{}]*)\}(?!\}))/g)) attrs[m[1]] = m[2] !== undefined ? { str: m[2] } : { expr: m[3] };
+  const styleM = /\sstyle=\{(\{[^{}]*\})\}>$/.exec(headTag);
+  const mountBH = (stored, props) => {
+    const store = Object.assign({}, stored), writes = [], cell = { set: false, v: undefined };
+    const React = { useState: (init) => { if (!cell.set) { cell.v = typeof init === "function" ? init() : init; cell.set = true; } return [cell.v, (u) => { cell.v = typeof u === "function" ? u(cell.v) : u; }]; } };
+    const ls = { getItem: (k) => (Object.prototype.hasOwnProperty.call(store, k) ? store[k] : null), setItem: (k, v) => { writes.push(k + "=" + v); store[k] = String(v); } };
+    const comp = Coll(React, ls, { warn: () => {} });
+    const render = () => comp(Object.assign({ title: "t", ck: "cal_tools", css: {}, children: "body" }, props));
+    return { render, writes };
+  };
+  const A = (r, k) => (attrs[k] ? (attrs[k].str !== undefined ? attrs[k].str : r.ev(attrs[k].expr)) : "(no " + k + ")");
+  const keyEv = (key, own) => { const el = {}; return { key, target: own === false ? {} : el, currentTarget: el, prevented: false, preventDefault() { this.prevented = true; } }; };
+  // A keyboard user on a plain section (never opened): each step through the header tag's own onKeyDown / onKeyUp, then a re-render.
+  const kb = (() => {
+    if (!Coll || !headTag) return "not extracted";
+    try {
+      const m = mountBH({}, { defaultOpen: false }); let r = m.render();
+      const out = [String(A(r, "aria-expanded"))];
+      const step = (name, attr, key, own) => { const e = keyEv(key, own); A(r, attr)(e); r = m.render(); out.push(name + ":" + (e.prevented ? "P" : "-") + (A(r, "aria-expanded") === true ? "E" : A(r, "aria-expanded") === false ? "c" : "?")); };
+      step("Enter", "onKeyDown", "Enter"); step("SpaceDown", "onKeyDown", " "); step("SpaceUp", "onKeyUp", " "); step("a", "onKeyDown", "a");
+      step("childEnter", "onKeyDown", "Enter", false); step("childSpaceUp", "onKeyUp", " ", false); step("EnterUp", "onKeyUp", "Enter");
+      return out.join(" ") + " | " + m.writes.join(",") + " | " + [A(r, "role"), A(r, "tabIndex"), A(r, "onClick") === r.toggle, A(r, "aria-disabled")].join(",");
+    } catch (ex) { return "threw: " + String(ex).slice(0, 120); }
+  })();
+  check("BH3 the REAL Collapsible header, executed through its own attributes: a button (role, tabIndex 0, the tap is toggle) whose aria-expanded is what is shown; Enter on keydown and Space on release toggle and persist; Space's keydown only stops the scroll; other keys, a key from a control inside it, and Enter's release do nothing",
+    kb === "false Enter:PE SpaceDown:PE SpaceUp:-c a:-c childEnter:-c childSpaceUp:-c EnterUp:-c | dsg_collapse_cal_tools=1,dsg_collapse_cal_tools=0 | button,0,true,", kb);
+  const held = (() => {
+    if (!Coll || !headTag || !styleM) return "not extracted";
+    try {
+      const props = { defaultOpen: false, forceOpen: true, heldNote: "Close the swap options to collapse" };
+      const m = mountBH({}, props); let r = m.render();
+      const st = r.ev("(" + styleM[1] + ")");
+      const out = [A(r, "aria-expanded"), A(r, "aria-disabled"), st.cursor, r.ev("forceOpen && heldNote")];
+      const e1 = keyEv("Enter"); A(r, "onKeyDown")(e1); r = m.render(); A(r, "onKeyUp")(keyEv(" ")); r = m.render(); A(r, "onClick")(); r = m.render();
+      out.push(A(r, "aria-expanded"), m.writes.length);
+      props.forceOpen = false; r = m.render(); // the swap options closed: back to the stored (never opened) state
+      const st2 = r.ev("(" + styleM[1] + ")");
+      out.push(A(r, "aria-expanded"), String(A(r, "aria-disabled")), st2.cursor, String(r.ev("forceOpen && heldNote")), st2.padding, st2.margin, st2.minHeight);
+      return out.join(",");
+    } catch (ex) { return "threw: " + String(ex).slice(0, 120); }
+  })();
+  check("BH3 held open by the swap options: aria-expanded, aria-disabled, a plain cursor and the held note; Enter, Space and a tap change nothing and save nothing; when they close, back to collapsed, enabled, a pointer, no note — the strip padded 9 px with −9 px margins and at least 36 px tall",
+    held === "true,true,default,Close the swap options to collapse,true,0,false,undefined,pointer,false,9px 0,-9px 0,36", held);
+  check("BH3 the markup: the held note renders only while held and only where one is passed (cal_tools alone, with the Close hint); the chevron is unchanged; the header is the only click target",
+    cJsx.includes('{forceOpen && heldNote && <div style={{ fontSize: 10, color: "#8a94a0", marginTop: 4 }}>{heldNote}</div>}')
+      && cJsx.includes('<span style={{ fontSize: 11, color: "#8a94a0", transition: "transform .15s", transform: shown ? "rotate(90deg)" : "rotate(0deg)", display: "inline-block", width: 10, flexShrink: 0 }}>▶</span>')
+      && !!cHead && cHead.includes("forceOpen = false, heldNote = null,") && count('heldNote="') === 1
+      && count('forceOpen={!!swapSuggestions} heldNote="Close the swap options to collapse" title="🔧 Schedule Tools & Export"') === 1 && (cJsx.match(/onClick=/g) || []).length === 1,
+    JSON.stringify({ head: !!cHead, notes: count('heldNote="'), clicks: (cJsx.match(/onClick=/g) || []).length }));
+
+  // BH4 — the roster ✕ buttons
+  const rx = (fn, v) => new RegExp("<button aria-label=\\{(`[^`]*`)\\} onClick=\\{\\(\\)=>" + fn + "\\(" + v + "\\.id\\)\\} style=\\{(\\{[^{}]*\\})\\}>✕</button>").exec(nsrcBH);
+  const rsM = rx("removeSurgeon", "s"), raM = rx("removeApp", "a");
+  let rs = null, ra = null;
+  try { rs = rsM ? vm.runInContext(`(function (s) { return [${rsM[1]}, ${rsM[2]}]; })`, sandbox)({ id: "s3", name: "RPC" }) : null; } catch (ex) { rs = null; }
+  try { ra = raM ? vm.runInContext(`(function (a) { return [${raM[1]}, ${raM[2]}]; })`, sandbox)({ id: "a2", name: "JDS" }) : null; } catch (ex) { ra = null; }
+  check("BH4 the roster ✕ buttons, executed: each says whom it removes ('Remove surgeon RPC', 'Remove APP JDS') and is padded to a bigger tap target",
+    !!rs && rs[0] === "Remove surgeon RPC" && rs[1].padding === "6px 8px" && !!ra && ra[0] === "Remove APP JDS" && ra[1].padding === "6px 8px"
+      && count("onClick={()=>removeSurgeon(s.id)}") === 1 && count("onClick={()=>removeApp(a.id)}") === 1,
+    JSON.stringify({ rs, ra }));
+})();
+
 // ─── S. Silvis feed-health warnings cannot be dismissed (owner decision 2026-09-24) ───
 // "feed EMPTY", "last read FAILED" and "STALE" describe the DATA SOURCE and
 // clear themselves once the feed is healthy; hiding one lets trades and edits
