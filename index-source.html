@@ -8888,7 +8888,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               </button>
               <input ref={loadJsonInputRef} type="file" accept=".json,application/json" onChange={onLoadJsonFile} style={{display:"none"}} aria-label="Load schedule (JSON)" />
             </>}
-            <button onClick={doGenerateAndNotify} disabled={publishing || !!searching} style={{...css.btn(true),padding:"13px 24px",fontSize:14,fontWeight:700,borderRadius:9,letterSpacing:0.3,flex:1,opacity:publishing||searching?0.55:1}}>
+            {/* Asks once before it starts (UX audit 2026-10-19): a publish notifies everyone, so a mis-tap must not publish. helpers.js publishConfirmText */}
+            <button onClick={()=>{ if (confirm(publishConfirmText(mondays, { schedule: scheduleRef.current, today: fmt(new Date()) }))) doGenerateAndNotify(); }} disabled={publishing || !!searching} style={{...css.btn(true),padding:"13px 24px",fontSize:14,fontWeight:700,borderRadius:9,letterSpacing:0.3,flex:1,opacity:publishing||searching?0.55:1}}>
               {publishing ? "Publishing…" : searching === "publish" ? "🔍 Searching…" : "Generate & Publish →"}
             </button>
           </div>
@@ -10837,18 +10838,20 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             const sortedMonths = [...allMonths].sort();
             const moLabel = (mk) => { const [y,mo] = mk.split("-"); return `${MO[parseInt(mo)-1]} ${y}`; };
             const billingDays = (r) => (r.dc||0) + (r.nights||0) + (r.wknd||0) + (r.hol||0);
-            return (
-            <div style={css.card}>
-              <div style={css.cardT}>💰 Billing Summary <span style={{fontWeight:400,fontSize:11,color:"#7a8a98"}}>— Monthly, 1st Call Only</span></div>
-              <p style={{fontSize:11,color:"#7a8a98",margin:"0 0 14px",lineHeight:1.5}}>
-                Breakdown by calendar month. Backup weeks are excluded — only 1st-call shifts count toward billing. Each call day is counted in the month it actually falls in (a service week or weekend spanning a month boundary is split across both months). A covered holiday bills 2 days (the day and the night) to the surgeon who covers it, and that date's regular credits don't count.
-              </p>
-              {sortedMonths.map(mk => {
+            // A month is listed only when someone shown has a billing day in it.
+            const hasAny = (mk) => {
                 const monthData = monthly[mk] || {};
-                const hasAny = billVisible.some(s => {
+                return billVisible.some(s => {
                   return billingDays(monthData[s.id] || {}) > 0;
                 });
-                if (!hasAny) return null;
+            };
+            // Newest first, from this month back (UX audit 2026-10-19): the month
+            // being billed is at the top, not a year of history down. Months after
+            // this one sit in a collapsed "Upcoming months". Order only — every
+            // number is the same. helpers.js billingMonthOrder
+            const billOrder = billingMonthOrder(sortedMonths.filter(hasAny), fmt(new Date()));
+            const billMonth = (mk) => {
+                const monthData = monthly[mk] || {};
                 return (
                   <div key={mk} style={{marginBottom:16}}>
                     <div style={{fontSize:12,fontWeight:700,color:"#1a6fa8",marginBottom:4,textTransform:"uppercase",letterSpacing:0.8}}>{moLabel(mk)}</div>
@@ -10885,7 +10888,22 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                     </div>
                   </div>
                 );
-              })}
+            };
+            return (
+            <div style={css.card}>
+              <div style={css.cardT}>💰 Billing Summary <span style={{fontWeight:400,fontSize:11,color:"#7a8a98"}}>— Monthly, 1st Call Only</span></div>
+              <p style={{fontSize:11,color:"#7a8a98",margin:"0 0 14px",lineHeight:1.5}}>
+                Breakdown by calendar month. Backup weeks are excluded — only 1st-call shifts count toward billing. Each call day is counted in the month it actually falls in (a service week or weekend spanning a month boundary is split across both months). A covered holiday bills 2 days (the day and the night) to the surgeon who covers it, and that date's regular credits don't count.
+              </p>
+              {billOrder.done.map(billMonth)}
+              {billOrder.ahead.length > 0 && (
+                <details open={billOrder.done.length === 0} style={{background:dk?"#1a1f2a":"#f4f6f8",border:"1px solid #d0d8e0",borderRadius:6,padding:"6px 10px",marginBottom:16}}>
+                  <summary style={{cursor:"pointer",fontSize:12,fontWeight:700,color:dk?"#a0b0c0":"#5a6a78"}}>
+                    Upcoming months ({billOrder.ahead.length})
+                  </summary>
+                  <div style={{marginTop:10}}>{billOrder.ahead.map(billMonth)}</div>
+                </details>
+              )}
               <div style={{fontSize:11,color:"#7a8a98",lineHeight:1.5,marginTop:6}}>
                 <strong style={{color:"#2c5a80"}}>Formula:</strong> Svc Days + Nights + Wknd Days + Holiday Days = Total Call Days. Each day counted in the month it falls in. Billed monthly.
               </div>

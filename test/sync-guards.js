@@ -2526,6 +2526,146 @@ check("prefs audit never logs the plaintext email (masked only)",
   }
 }
 
+// ─── BC. Generate & Publish asks once; Stats → Billing opens on the newest months (UX audit 2026-10-19) ───
+// Generate & Publish ran on the tap and a publish pushes and emails everyone,
+// so one mis-tap published. Stats → Billing listed its months oldest first, so
+// the scheduler scrolled past a year of history to reach this month.
+//   BC1 the real publishConfirmText (helpers.js), exact strings: the period
+//       named (first Monday → last Sunday, the week count), the overlap with
+//       the published schedule (publishWeeks' rule: a period Monday the
+//       schedule holds is replaced), a period already started (the app's
+//       rule, first Monday < today), who is notified
+//   BC2 the REAL Generate & Publish onClick, sliced and run: Cancel runs
+//       nothing, OK runs doGenerateAndNotify once, the question is the
+//       helper's for this period; doGenerateAndNotify itself asks nothing
+//   BC3 the real billingMonthOrder: this month and earlier newest first,
+//       later months soonest first, nothing added or dropped
+//   BC4 the REAL Stats → Billing block (sliced, the clock pinned at
+//       2026-05-15) on the 19 live weeks: the months main listed, May back to
+//       December 2025, then August and September in Upcoming; a member's view
+//       drops their empty months
+//   BC5 the render: done months first, the upcoming ones in a collapsed
+//       <details>; the oldest-first loop is gone (V8 updated with it)
+console.log("\nBC. Generate & Publish asks once; Billing opens on the newest months");
+{
+  const H = vm.runInContext('({ pct: typeof publishConfirmText === "function" ? publishConfirmText : null, bmo: typeof billingMonthOrder === "function" ? billingMonthOrder : null, fmt, parse, addD, RealDate: Date })', sandbox);
+  check("BC0 publishConfirmText and billingMonthOrder are defined in helpers.js", !!H.pct && !!H.bmo);
+  const weeksFrom = (m, n) => Array.from({ length: n }, (_, i) => H.fmt(H.addD(H.parse(m), 7 * i)));
+  const pub = (ms) => Object.fromEntries(ms.map((m) => [m, { dayCall: "s1", nights: { mon: "s2" } }]));
+  const pct = (ms, o) => { try { return H.pct ? H.pct(ms, o) : null; } catch (ex) { return "threw " + String(ex); } };
+  const NOTE = "Everyone will be notified by push and email.";
+  const NOV = weeksFrom("2026-11-16", 14), OCT12 = weeksFrom("2026-10-12", 14);
+  const upTo = pub(weeksFrom("2026-08-03", 15)); // published through the week of 11/9, the week before NOV
+
+  // BC1 — the text, exact
+  const t1 = [
+    ["no overlap, not started (the published weeks end the week before)", pct(NOV, { schedule: upTo, today: "2026-10-19" }),
+      `Generate and publish Nov 16, 2026 → Feb 21, 2027 (14 weeks)?\n\n${NOTE}`],
+    ["3 weeks already published", pct(NOV, { schedule: Object.assign({}, upTo, pub(NOV.slice(0, 3))), today: "2026-10-19" }),
+      `Generate and publish Nov 16, 2026 → Feb 21, 2027 (14 weeks)?\n\n⚠ 3 of the 14 weeks are already published and will be replaced.\n\n${NOTE}`],
+    ["1 week already published (singular)", pct(NOV, { schedule: pub([NOV[13]]), today: "2026-10-19" }),
+      `Generate and publish Nov 16, 2026 → Feb 21, 2027 (14 weeks)?\n\n⚠ 1 of the 14 weeks is already published and will be replaced.\n\n${NOTE}`],
+    ["every week published and the period started", pct(OCT12, { schedule: pub(OCT12), today: "2026-10-19" }),
+      `Generate and publish Oct 12, 2026 → Jan 17, 2027 (14 weeks)?\n\n⚠ All 14 weeks are already published and will be replaced.\n⚠ This period has already started.\n\n${NOTE}`],
+    ["started, nothing published", pct(OCT12, { schedule: {}, today: "2026-10-13" }),
+      `Generate and publish Oct 12, 2026 → Jan 17, 2027 (14 weeks)?\n\n⚠ This period has already started.\n\n${NOTE}`],
+    ["first Monday IS today: not started (shiftStartDate(m) < today, as trades and swaps)", pct(weeksFrom("2026-10-19", 14), { schedule: {}, today: "2026-10-19" }),
+      `Generate and publish Oct 19, 2026 → Jan 24, 2027 (14 weeks)?\n\n${NOTE}`],
+    ["one week, across the March DST change", pct(weeksFrom("2027-03-08", 1), { schedule: {}, today: "2026-10-19" }),
+      `Generate and publish Mar 8, 2027 → Mar 14, 2027 (1 week)?\n\n${NOTE}`],
+    ["one week, already published", pct(["2027-03-08"], { schedule: pub(["2027-03-08"]), today: "2026-10-19" }),
+      `Generate and publish Mar 8, 2027 → Mar 14, 2027 (1 week)?\n\n⚠ This week is already published and will be replaced.\n\n${NOTE}`],
+    ["28 weeks across the March DST change", pct(weeksFrom("2027-02-15", 28), { schedule: {}, today: "2026-10-19" }),
+      `Generate and publish Feb 15, 2027 → Aug 29, 2027 (28 weeks)?\n\n${NOTE}`],
+    ["no weeks", pct([], { schedule: {}, today: "2026-10-19" }), `Generate and publish the schedule?\n\n${NOTE}`],
+  ];
+  const bad1 = t1.filter(([, got, want]) => got !== want);
+  check("BC1 publishConfirmText names the period and the weeks, warns on published weeks (1 / some / all / a one-week period) and on a started period, and says everyone is notified by push and email — exact strings",
+    bad1.length === 0, bad1.map(([what, got]) => `${what}: ${JSON.stringify(got)}`).join(" | "));
+  // The app passes its mondays as Dates (the Generate tab's useMemo), unsorted input is sorted, and a key holding nothing is not a published week (publishWeeks: cur[m])
+  const asDates = pct(NOV.map(H.parse), { schedule: Object.assign(pub(NOV.slice(0, 3)), { [NOV[5]]: null }), today: "2026-10-19" });
+  const shuffled = pct(NOV.slice().reverse(), { schedule: pub(NOV.slice(0, 3)), today: "2026-10-19" });
+  check("BC1 Dates and strings give the same text; the order of the input does not matter; a week key holding nothing is not counted as published",
+    asDates === t1[1][2] && shuffled === t1[1][2], JSON.stringify({ asDates, shuffled }));
+
+  // BC2 — the real button, sliced from its onClick to its disabled= and run
+  const BTN_END = "} disabled={publishing || !!searching}";
+  const be = src.indexOf(BTN_END), bs = be < 0 ? -1 : src.lastIndexOf("<button onClick={", be);
+  const handler = bs < 0 || src.indexOf(BTN_END, be + 1) !== -1 ? null : src.slice(bs + "<button onClick={".length, be);
+  let mkTap = null;
+  try { mkTap = handler ? vm.runInContext(`(function (env) { const { confirm, mondays, scheduleRef, doGenerateAndNotify } = env; return (${handler}); })`, sandbox, { filename: "bc-publish-onclick.js" }) : null; } catch (ex) { check("BC2 the Generate & Publish onClick compiles", false, String(ex)); }
+  const tap = (answer) => {
+    const log = { asked: [], ran: 0 };
+    if (!mkTap) return log;
+    mkTap({ confirm: (m) => { log.asked.push(m); return answer; }, mondays: NOV.map(H.parse), scheduleRef: { current: pub(NOV.slice(0, 3)) }, doGenerateAndNotify: () => { log.ran++; } })();
+    return log;
+  };
+  const cancel = tap(false), ok = tap(true);
+  const wantAsk = pct(NOV, { schedule: pub(NOV.slice(0, 3)), today: H.fmt(new H.RealDate()) });
+  check("BC2 the REAL Generate & Publish tap asks ONE question first: Cancel publishes nothing (doGenerateAndNotify never runs); OK runs it once",
+    !!handler && cancel.asked.length === 1 && cancel.ran === 0 && ok.asked.length === 1 && ok.ran === 1, JSON.stringify({ handler: handler && handler.slice(0, 80), cancel, ok }));
+  check("BC2 the question is publishConfirmText for the period on screen, the published weeks as the mirror holds them (scheduleRef) and today's date",
+    ok.asked[0] === wantAsk && /Nov 16, 2026 → Feb 21, 2027 \(14 weeks\)/.test(ok.asked[0] || "") && /3 of the 14 weeks/.test(ok.asked[0] || ""), JSON.stringify(ok.asked[0]));
+  const dg = src.indexOf("  const doGenerateAndNotify = async () => {"), dge = dg < 0 ? -1 : src.indexOf("\n  };", dg);
+  const dgBody = dg < 0 || dge < 0 ? "" : src.slice(dg, dge);
+  check("BC2 pins: no bare onClick={doGenerateAndNotify}; ONE call site, behind the confirm; doGenerateAndNotify itself asks nothing (one question, not two)",
+    count("onClick={doGenerateAndNotify}") === 0 && count("doGenerateAndNotify()") === 1
+      && count("if (confirm(publishConfirmText(mondays, { schedule: scheduleRef.current, today: fmt(new Date()) }))) doGenerateAndNotify();") === 1
+      && dgBody.length > 0 && !dgBody.includes("confirm("), JSON.stringify({ bare: count("onClick={doGenerateAndNotify}"), calls: count("doGenerateAndNotify()"), body: dgBody.length }));
+
+  // BC3 — billingMonthOrder, executed
+  const MONTHS = ["2026-03", "2025-12", "2026-10", "2027-01", "2026-11", "2026-09", "2026-01", "2026-12"];
+  const input = MONTHS.slice();
+  const ord = (ms, today) => { try { return H.bmo ? JSON.parse(JSON.stringify(H.bmo(ms, today))) : null; } catch (ex) { return { threw: String(ex) }; } };
+  const J = (o) => JSON.stringify(o);
+  const SPLIT = { done: ["2026-10", "2026-09", "2026-03", "2026-01", "2025-12"], ahead: ["2026-11", "2026-12", "2027-01"] };
+  const o1 = ord(input, "2026-10-19");
+  check("BC3 billingMonthOrder: this month first, then back in time; the later months soonest first; the input array is not changed",
+    J(o1) === J(SPLIT) && J(input) === J(MONTHS), J(o1));
+  check("BC3 the first and the last day of the month split the same way (the current month is in done); a new month moves into done",
+    J(ord(MONTHS, "2026-10-01")) === J(SPLIT) && J(ord(MONTHS, "2026-10-31")) === J(SPLIT)
+      && J(ord(MONTHS, "2026-11-01")) === J({ done: ["2026-11", "2026-10", "2026-09", "2026-03", "2026-01", "2025-12"], ahead: ["2026-12", "2027-01"] }),
+    J([ord(MONTHS, "2026-10-01"), ord(MONTHS, "2026-11-01")]));
+  const allNewest = MONTHS.slice().sort().reverse();
+  check("BC3 a today that is not a date hides nothing (every month in done, newest first); no months → nothing; every month after today → all ahead",
+    ["", undefined, "2026-10", "Oct 19"].every((t) => J(ord(MONTHS, t)) === J({ done: allNewest, ahead: [] }))
+      && J(ord([], "2026-10-19")) === J({ done: [], ahead: [] }) && J(ord(MONTHS, "2025-11-30")) === J({ done: [], ahead: MONTHS.slice().sort() }),
+    J([ord(MONTHS, ""), ord(MONTHS, "2025-11-30")]));
+
+  // BC4 — the real Stats → Billing block (from its monthly map up to the month renderer; no JSX in it), the clock pinned
+  const FIXB = path.join(ROOT, "test", "fixtures");
+  const liveB = JSON.parse(fs.readFileSync(path.join(FIXB, "billing-live-weeks-2026-10-01.json"), "utf8"));
+  const oldBlockB = fs.readFileSync(path.join(FIXB, "billing-block-main-591391f.txt"), "utf8");
+  const ba = src.indexOf("const monthly = {};"), bb = ba < 0 ? -1 : src.indexOf("const billMonth = (mk) => {", ba);
+  const billBlock = ba < 0 || bb < 0 ? null : src.slice(ba, bb);
+  // new Date() inside the block is the device clock: a stand-in returns 2026-05-15 (helpers' own Date is untouched)
+  function PinnedDate() { return new H.RealDate(2026, 4, 15); }
+  let runBill = null;
+  try { runBill = billBlock ? vm.runInContext(`(function (schedule, surgeons, billVisible, Date) { ${billBlock}\n return { monthly, billOrder }; })`, sandbox, { filename: "bc-billing-block.js" }) : null; } catch (ex) { check("BC4 the billing block compiles", false, String(ex)); }
+  const SURGB = ["DJA", "MCC", "RPC", "KJH", "REH", "FAK", "ARW"].map((name, i) => ({ id: "s" + (i + 1), name }));
+  const oldMonthly = JSON.parse(JSON.stringify(vm.runInContext("(function (schedule, surgeons) { " + oldBlockB + "\n return monthly; })", sandbox)(liveB, SURGB)));
+  const daysOf = (r) => (r ? (r.dc || 0) + (r.nights || 0) + (r.wknd || 0) + (r.hol || 0) : 0);
+  const shownByMain = (vis) => Object.keys(oldMonthly).sort().filter((mk) => vis.some((s) => daysOf(oldMonthly[mk][s.id]) > 0)); // main's loop: oldest first, a month with nothing for anyone shown skipped
+  const runFor = (vis) => { try { return runBill ? JSON.parse(JSON.stringify(runBill(liveB, SURGB, vis, PinnedDate).billOrder)) : null; } catch (ex) { return { threw: String(ex) }; } };
+  const allView = runFor(SURGB), mainAll = shownByMain(SURGB);
+  const LIVE_ORDER = { done: ["2026-05", "2026-04", "2026-03", "2026-02", "2026-01", "2025-12"], ahead: ["2026-08", "2026-09"] };
+  check("BC4 the REAL billing block on the 19 live weeks, today 2026-05-15: May first, back to December 2025; August and September under Upcoming — exactly the months main listed (October bills nothing, as on main), none added or dropped",
+    J(allView) === J(LIVE_ORDER) && J(allView && allView.done.concat(allView.ahead).sort()) === J(mainAll), J({ allView, mainAll }));
+  const memberView = runFor([SURGB[1]]), mainMember = shownByMain([SURGB[1]]);
+  check("BC4 a member's view (MCC's own row): only the months with a billing day for MCC, newest first — the same months main listed for them",
+    !!memberView && J(memberView.done.concat(memberView.ahead).sort()) === J(mainMember) && J(memberView.done) === J(mainMember.filter((m) => m <= "2026-05").reverse())
+      && J(memberView.ahead) === J(mainMember.filter((m) => m > "2026-05")) && memberView.ahead.length > 0 && mainMember.length < mainAll.length, J({ memberView, mainMember }));
+
+  // BC5 — the render
+  const iDone = src.indexOf("{billOrder.done.map(billMonth)}"), iDet = src.indexOf("<details open={billOrder.done.length === 0}"), iAhead = src.indexOf("{billOrder.ahead.map(billMonth)}"), iFormula = src.indexOf("Svc Days + Nights + Wknd Days + Holiday Days = Total Call Days.");
+  check("BC5 the card lists the done months, then a collapsed <details> \"Upcoming months (n)\" holding the later ones (open only when there is no done month), then the formula note",
+    count("{billOrder.done.map(billMonth)}") === 1 && count("{billOrder.ahead.map(billMonth)}") === 1 && count("<details open={billOrder.done.length === 0}") === 1
+      && count("Upcoming months ({billOrder.ahead.length})") === 1 && count("{billOrder.ahead.length > 0 && (") === 1
+      && iDone > 0 && iDet > iDone && iAhead > iDet && iFormula > iAhead, J({ iDone, iDet, iAhead, iFormula }));
+  check("BC5 the oldest-first month loop is gone; the order comes from billingMonthOrder over the months with a billing day, today's device date",
+    count("{sortedMonths.map(mk => {") === 0 && count("const billOrder = billingMonthOrder(sortedMonths.filter(hasAny), fmt(new Date()));") === 1 && count("billingMonthOrder(") === 1);
+}
+
 // ─── T. The app's .ics exports are ALL-DAY (owner request 2026-09-25) ───
 // Same format as the calendar-sync v15 feed. A service week is one Mon–Sat
 // event, each weeknight one event, the weekend two events (Friday night and
@@ -3102,10 +3242,14 @@ console.log("\nAM. Mine's name picker is a view, not a sign-in");
     (src.match(/<th style=\{thS2\}>Wknd Days<\/th>\r?\n[ \t]*<th style=\{thS2\}>Holiday<\/th>/g) || []).length === 1
     && (src.match(/<td style=\{tdS\}>\{r\.wknd\|\|"–"\}<\/td>\r?\n[ \t]*<td style=\{tdS\}>\{r\.hol\|\|"–"\}<\/td>/g) || []).length === 1
     && count("{dc:0,nights:0,wknd:0,hol:0}") === 1 && count("{ dc:0, nights:0, wknd:0, hol:0 }") === 1);
-  check("V8 billingDays includes Holiday and feeds both the Total Days cell and hasAny; the formula note and explainer name it; row visibility by authenticated identity and the month loop are unchanged",
+  // (2026-10-19, section BC: the month ORDER changed deliberately — newest first, later months in a
+  // collapsed "Upcoming months" — through helpers.js billingMonthOrder; which months are listed and every number are unchanged)
+  check("V8 billingDays includes Holiday and feeds both the Total Days cell and hasAny; the formula note and explainer name it; row visibility by authenticated identity is unchanged; the months are listed through billingMonthOrder (section BC)",
     count("const billingDays = (r) => (r.dc||0) + (r.nights||0) + (r.wknd||0) + (r.hol||0);") === 1 && count("return billingDays(monthData[s.id] || {}) > 0;") === 1
     && /const days = billingDays\(r\);[\s\S]{0,700}\{days\|\|"–"\}/.test(src) && count("const days = billingDays(r);") === 1
-    && count("const billVisible = canSeeAllBilling ? surgeons : surgeons.filter(s => s.id === ownBillId);") === 1 && count("{sortedMonths.map(mk => {") === 1
+    && count("const billVisible = canSeeAllBilling ? surgeons : surgeons.filter(s => s.id === ownBillId);") === 1
+    && count("const billOrder = billingMonthOrder(sortedMonths.filter(hasAny), fmt(new Date()));") === 1
+    && count("{billOrder.done.map(billMonth)}") === 1 && count("{billOrder.ahead.map(billMonth)}") === 1
     && count("Svc Days + Nights + Wknd Days + Holiday Days = Total Call Days.") === 1
     && count("A covered holiday bills 2 days (the day and the night) to the surgeon who covers it, and that date's regular credits don't count.") === 1);
 

@@ -105,6 +105,21 @@ function weekBillingCredits(mondayStr, wk) {
   return credits;
 }
 
+// The order Stats → Billing lists its months in (UX audit 2026-10-19). Oldest
+// first meant scrolling past a year of history to reach the month being
+// billed. months: "YYYY-MM" keys; todayStr: "YYYY-MM-DD" (the device date).
+//   done:  this month and every month before it, NEWEST first
+//   ahead: the months after this one, soonest first (shown collapsed)
+// Order only: no month is added or dropped. A todayStr that is not a date
+// puts every month in done, newest first, so nothing is hidden. Pure: no
+// clock, no state; the input is not changed.
+function billingMonthOrder(months, todayStr) {
+  const ms = (months || []).slice().sort();
+  const cur = /^\d{4}-\d{2}-\d{2}$/.test(String(todayStr || "")) ? String(todayStr).slice(0, 7) : null;
+  if (!cur) return { done: ms.reverse(), ahead: [] };
+  return { done: ms.filter(m => m <= cur).reverse(), ahead: ms.filter(m => m > cur) };
+}
+
 /* ═══ Personal call totals: DSG + Silvis (owner request 2026-10-09; decisions 2026-10-11) ═══
    The ONE counter behind the FAK-only totals card in the Mine tab AND the Silvis
    app's copy of that card, so both apps show the same numbers for the same period.
@@ -650,6 +665,34 @@ function publishedThrough(schedule) {
   const holds = (w) => !!w && (!!w.dayCall || Object.values(w.nights || {}).some(Boolean) || Object.values(w.holidayCoverage || {}).some(Boolean));
   const keys = Object.keys(schedule || {}).filter(k => /^\d{4}-\d{2}-\d{2}$/.test(k) && holds(schedule[k])).sort();
   return keys.length ? fmt(addD(parse(keys[keys.length - 1]), 6)) : null;
+}
+
+// The one question Generate & Publish asks before it starts (UX audit
+// 2026-10-19): it used to run on the tap, and a publish notifies everyone, so
+// one mis-tap published. Names the period (its first Monday through its last
+// Sunday) and the number of weeks, warns when weeks of it are already
+// published (publishWeeks' rule: a period Monday the schedule already holds
+// is replaced) or when it has already started (its first Monday is before
+// today: the app's own "started" rule, shiftStartDate(m) < today, as trades
+// and swaps use), and says who is notified. Generate & Publish broadcasts
+// both the push and the email (doGenerateAndNotify).
+//   mondays: the period's Mondays, as Dates or "YYYY-MM-DD"
+//   opts:    { schedule: the published weeks by Monday, today: "YYYY-MM-DD" }
+// Pure: no clock, no state.
+function publishConfirmText(mondays, opts) {
+  const o = opts || {};
+  const ms = (mondays || []).map(m => (typeof m === "string" ? m : fmt(m))).sort();
+  const notify = "Everyone will be notified by push and email.";
+  if (!ms.length) return `Generate and publish the schedule?\n\n${notify}`;
+  const n = ms.length, first = ms[0], end = fmt(addD(parse(ms[n - 1]), 6));
+  const sched = o.schedule || {};
+  const k = ms.filter(m => sched[m]).length;
+  const warn = [];
+  if (k > 0) warn.push(n === 1 ? "⚠ This week is already published and will be replaced."
+    : k === n ? `⚠ All ${n} weeks are already published and will be replaced.`
+    : `⚠ ${k} of the ${n} weeks ${k === 1 ? "is" : "are"} already published and will be replaced.`);
+  if (typeof o.today === "string" && first < o.today) warn.push("⚠ This period has already started.");
+  return `Generate and publish ${monthDayLabel(first, true)} → ${monthDayLabel(end, true)} (${n} week${n === 1 ? "" : "s"})?\n\n${warn.length ? warn.join("\n") + "\n\n" : ""}${notify}`;
 }
 
 // The line a service week or weekend carries for a date someone else holds,
