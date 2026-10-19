@@ -4884,7 +4884,7 @@ const appHelpers = () => {
   g.globalThis = g;
   vm.createContext(g);
   for (const f of ["helpers.js", "config.js"]) vm.runInContext(fs.readFileSync(path.join(__dirname, "..", f), "utf8"), g, { filename: f });
-  HELPERS = vm.runInContext("({ fmt, parse, addD, shiftStartDate, SHIFT_LABELS, swapMsg, cascadeMsg, tradeAcceptMsg, tradeDeclineMsg, MO, payloadLooksWiped })", g);
+  HELPERS = vm.runInContext("({ fmt, parse, addD, shiftStartDate, SHIFT_LABELS, swapMsg, cascadeMsg, tradeAcceptMsg, tradeDeclineMsg, MO, payloadLooksWiped, periodLabel })", g);
   return HELPERS;
 };
 
@@ -4971,7 +4971,7 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
     finish: sess(fnX("pendingLocks, nameOf, slotLabel, showToast, setPreviewSchedule, setPreviewOrigin, setShowPreview, genInputsSig, listScheduleBends, surgeons, mondays, buildGenAvailability, buildSilvisPrimary, vacations, holidayAssignments, buildPrevWeekSeed, publishingRef, setPublishing, setSaveStatus, snapshots, genCommitRef, previewEpochRef, schedEditable, schedSyncRef, sessionEpochRef",
       decl("finishGenerate", "\n  };\n"))),
     // (20/n) Generate & Publish's notice and e-mail (doGenerateAndNotify), and the setup's signature (setupSig — review r3 G7)
-    notify: sess(fnX("sessionEpochRef, doGenerate, addNotification, sendEmailNotif, MO, startMonth, endMoIdx, startYear", decl("doGenerateAndNotify", "\n  };\n"))),
+    notify: sess(fnX("sessionEpochRef, doGenerate, addNotification, sendEmailNotif, MO, startMonth, endMoIdx, startYear, mondays, periodLabel", decl("doGenerateAndNotify", "\n  };\n"))), // (mondays, periodLabel: the e-mail's period since sync-guards BD — UX audit 2026-10-19)
     setupSig: fnX("", after("  const setupSig = ", ";\n")),
     gen: fnX("searchRef, showToast, schedEditable, schedSyncRef, buildPrefs", decl("doGenerate", "\n  };\n")), // (only its first statements are reached here: the gates, then buildPrefs)
     // (21/n) the trade's decline, and the notice paths (addNotification, sendPushNotif, sendEmailNotif) — review r4 branch-2 / fixes-3
@@ -6530,7 +6530,7 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
         const { A } = await pair(); const c = mkComp(A); c.render(); await c.fire();
         const g = gated(), sent = { notes: 0, emails: 0 };
         const p = G.notify({ schedSyncRef: A.schedSyncRef, doGenerate: async () => "published", addNotification: async () => { sent.notes++; await g.gate; }, sendEmailNotif: () => { sent.emails++; },
-          MO: HX.MO, startMonth: 0, endMoIdx: 2, startYear: 2030 })();
+          MO: HX.MO, startMonth: 0, endMoIdx: 2, startYear: 2030, mondays: ["2030-01-07", "2030-03-25"].map(HX.parse), periodLabel: HX.periodLabel })();
         await spin();
         if (signOut) { await G.boundary(bEnv(A, c)).handleSignOut(); await spin(6); }
         g.open(); await p;
@@ -6749,7 +6749,7 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
       const { A } = await pair(); await ticks(A); const c = mkComp(A); c.render(); await c.fire(); A.toasts.length = 0;
       const sent = { inserts: [], push: [], email: [], listed: 0 }, g = gated(), hold = at ? { [at]: g.gate } : null;
       const ch = chain(A, sent, { hold, fail });
-      const p = G.notify({ schedSyncRef: A.schedSyncRef, sessionEpochRef: A.sessionEpochRef, doGenerate: async () => "published", addNotification: ch.note, sendEmailNotif: ch.email, MO: HX.MO, startMonth: 0, endMoIdx: 2, startYear: 2030 })();
+      const p = G.notify({ schedSyncRef: A.schedSyncRef, sessionEpochRef: A.sessionEpochRef, doGenerate: async () => "published", addNotification: ch.note, sendEmailNotif: ch.email, MO: HX.MO, startMonth: 0, endMoIdx: 2, startYear: 2030, mondays: ["2030-01-07", "2030-03-25"].map(HX.parse), periodLabel: HX.periodLabel })();
       await spin(30);
       if (how) { await cross(A, c, how); await spin(6); }
       g.open(); await p; await spin(30);

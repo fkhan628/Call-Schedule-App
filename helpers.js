@@ -752,6 +752,87 @@ function publishConfirmText(mondays, opts) {
   return `Generate and publish ${monthDayLabel(first, true)} → ${monthDayLabel(end, true)} (${n} week${n === 1 ? "" : "s"})?\n\n${warn.length ? warn.join("\n") + "\n\n" : ""}${notify}`;
 }
 
+// A schedule period, said one way (UX audit 2026-10-19): its first Monday
+// through its last Sunday (the last Monday + 6 days), with the year — once,
+// at the end, when both ends share it.
+//   periodLabel("2027-01-04", "2027-04-05") → "Jan 4 – Apr 11, 2027"
+//   periodLabel("2026-11-16", "2027-02-15") → "Nov 16, 2026 – Feb 21, 2027"
+// The "Schedule Published" e-mail, the office e-mail's prefill and Stats →
+// This Period use it. They were built from the Generate tab's start month and
+// year selects, which a start-Monday override leaves behind (the e-mail said
+// "May – April 2026" for a Jan 4 – Apr 11, 2027 publish), with no end year.
+// Mondays as Dates or "YYYY-MM-DD"; "" when either is missing.
+// Pure: no clock, no state; dates are local, via parse.
+function periodLabel(firstMonday, lastMonday) {
+  const ds = (m) => (typeof m === "string" ? m : m ? fmt(m) : "");
+  const first = ds(firstMonday), last = ds(lastMonday);
+  if (!first || !last) return "";
+  const end = fmt(addD(parse(last), 6));
+  return `${monthDayLabel(first, first.slice(0, 4) !== end.slice(0, 4))} – ${monthDayLabel(end, true)}`;
+}
+
+// Where the Generate tab's period sits against the published schedule (UX
+// audit 2026-10-19), for the line under its settings:
+//   overlap — how many of the period's Mondays the schedule already holds
+//             (publishConfirmText's rule: publishing replaces those weeks)
+//   started — its first Monday is before today (the app's "started" rule)
+//   over    — its last Sunday is before today
+//   gap     — whole weeks between the last published week BEFORE the period
+//             and its first Monday: 0 = it continues straight on; null = no
+//             published week before it
+//   after   — that last published week's Sunday ("YYYY-MM-DD"), or null
+//   publishedMondays: the schedule's weeks ("YYYY-MM-DD"; other keys ignored)
+//   periodMondays:    the period's Mondays, Dates or "YYYY-MM-DD"
+// Pure: no clock, no state.
+function periodSeam(publishedMondays, periodMondays, todayStr) {
+  const out = { overlap: 0, started: false, over: false, gap: null, after: null };
+  const ms = (periodMondays || []).map(m => (typeof m === "string" ? m : fmt(m))).sort();
+  if (!ms.length) return out;
+  const first = ms[0], end = fmt(addD(parse(ms[ms.length - 1]), 6));
+  const pub = [...new Set((publishedMondays || []).filter(k => /^\d{4}-\d{2}-\d{2}$/.test(k)))].sort();
+  const inPeriod = new Set(ms);
+  out.overlap = pub.filter(m => inPeriod.has(m)).length;
+  if (typeof todayStr === "string") { out.started = first < todayStr; out.over = end < todayStr; }
+  const before = pub.filter(m => m < first);
+  if (before.length) {
+    const last = before[before.length - 1];
+    out.gap = Math.max(0, Math.round((parse(first) - parse(last)) / 6048e5) - 1); // (rounded: a DST week is an hour short or long)
+    out.after = fmt(addD(parse(last), 6));
+  }
+  return out;
+}
+
+// The holidays in a period that have no holiday card (UX audit 2026-10-19):
+// ONE check, for Setup → Setup Issues and the Generate tab's banner. A holiday
+// counts when any day of it falls in the period (first Monday … last Sunday;
+// New Year's runs Dec 31 → Jan 1). It has no card when its year's cards
+// (holidayAssignments["YYYY"]) hold no entry for its date with a Surgeon A —
+// and then the generator gives it no holiday 24h coverage (generator.js
+// holidayCoverageMap reads only the cards). Every calendar year the period
+// touches is looked up, and the year before (its New Year's ends on Jan 1);
+// Setup's check used to look up the start year − 1, the start year and the
+// end year, so a 56-week period from late December skipped the middle year.
+//   getHolidays: generator.js's, passed in (the page loads helpers.js first)
+// → [{ year, name, date }], by date.
+function periodHolidayGaps(periodMondays, holidayAssignments, getHolidays) {
+  const ms = (periodMondays || []).map(m => (typeof m === "string" ? m : fmt(m))).sort();
+  if (!ms.length || typeof getHolidays !== "function") return [];
+  const start = ms[0], end = fmt(addD(parse(ms[ms.length - 1]), 6));
+  const cards = holidayAssignments || {};
+  const out = [];
+  for (let y = +start.slice(0, 4) - 1; y <= +end.slice(0, 4); y++) {
+    let defs = [];
+    try { const h = getHolidays(y); defs = [...h.major, ...h.minor]; } catch (e) { console.warn("Holiday preset lookup failed:", e); }
+    defs.forEach(hol => {
+      if (hol.date > end || (hol.endDate || hol.date) < start) return; // no day of it in the period
+      const yr = Array.isArray(cards[String(y)]) ? cards[String(y)] : [];
+      const card = yr.find(a => a && a.date === hol.date);
+      if (!card || !card.surgeonA) out.push({ year: y, name: hol.name, date: hol.date });
+    });
+  }
+  return out.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+}
+
 // The line a service week or weekend carries for a date someone else holds,
 // e.g. "Mon 9/7 covered by RPC (Labor Day)". holderSid is who holds it; a swap
 // names its own label; a single-day override has no parenthesis.

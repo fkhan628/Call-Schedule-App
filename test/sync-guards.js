@@ -1503,6 +1503,256 @@ check("prefs audit never logs the plaintext email (masked only)",
   }
 }
 
+// ─── BD. Generate: one period label with years, the period's dates and seam, holidays with no card (UX audit 2026-10-19) ───
+// The "Schedule Published" e-mail built its period from the Generate tab's
+// start month/year selects, which a start-Monday override leaves behind: it
+// said "May – April 2026" for a Jan 4 – Apr 11, 2027 publish. The period was
+// said several ways (the e-mail, the office e-mail's prefill, Stats), mostly
+// with no year. Generate never showed the period's exact dates, whether it
+// overlaps the published schedule or leaves a gap, or that a holiday in it has
+// no holiday card (it then generates with no holiday 24h coverage, silently).
+//   BD1 the real periodLabel (helpers.js), exact strings: one year, across
+//       the year (its last Sunday decides), the DST weeks, Dates = strings
+//   BD2 the REAL publish path, sliced and run — the mondays useMemo, the
+//       endDate/endMoIdx lines and doGenerateAndNotify — with a start-Monday
+//       override the selects lag behind: the e-mail's period is
+//       "Jan 4 – Apr 11, 2027" (main: "May – April 2026"); the REAL office
+//       prefill (computePeriodLabel) is the Generate period, not every week
+//       ever published
+//   BD3 the real periodSeam: continues, overlap, gap, started / over, nothing
+//       before it, the DST weeks, unsorted / Date / non-week input
+//   BD4 BD1 + BD3 again under TZ=America/Chicago (a UTC run has no DST week)
+//   BD5 the real periodHolidayGaps with generator.js's getHolidays: the
+//       holidays with no card (or a card with no Surgeon A), by date; New
+//       Year's day 2 counts; a 56-week period's middle year is looked up
+//   BD6 the REAL Setup Issues holiday block and the REAL Generate panel (its
+//       computations, sliced and run): the same holidays; the seam lines'
+//       exact text; the banner's button opens Setup on that year's holiday
+//       cards and scrolls to them
+//   BD7 pins: the old templates are gone; both holiday sites call the one
+//       helper; Stats → This Period says periodLabel; the panel adds no hook
+console.log("\nBD. Generate: one period label, the period's seam, holidays with no card");
+{
+  const nsrc = src.replace(/\r\n/g, "\n");
+  // The text from `a` (exactly one occurrence) up to the first `b` after it — with `a` (span) or without it (after)
+  const span = (a, b) => { const i = nsrc.indexOf(a); if (i < 0 || nsrc.indexOf(a, i + 1) !== -1) return null; const j = nsrc.indexOf(b, i + a.length); return j < 0 ? null : nsrc.slice(i, j); };
+  const after = (a, b) => { const s = span(a, b); return s === null ? null : s.slice(a.length); };
+  const H = vm.runInContext('({ fmt, parse, addD, MO, RealDate: Date, pl: typeof periodLabel === "function" ? periodLabel : null, ps: typeof periodSeam === "function" ? periodSeam : null })', sandbox);
+  // The holiday context: the page's modules in the page's order (generator.js: the real getHolidays)
+  const hsb = { console, window: {}, document: undefined, navigator: { userAgent: "node-test" }, localStorage: { getItem: () => null, setItem() {}, removeItem() {} }, fetch: () => { throw new Error("no fetch in BD"); }, setTimeout, clearTimeout };
+  hsb.globalThis = hsb; vm.createContext(hsb);
+  for (const f of ["config.js", "helpers.js", "generator.js"]) vm.runInContext(fs.readFileSync(path.join(ROOT, f), "utf8"), hsb, { filename: f });
+  const G = vm.runInContext('({ getHolidays, phg: typeof periodHolidayGaps === "function" ? periodHolidayGaps : null })', hsb);
+  check("BD0 periodLabel, periodSeam and periodHolidayGaps are defined in helpers.js", !!H.pl && !!H.ps && !!G.phg);
+  const J = (o) => JSON.stringify(o);
+  const tryRun = (fn) => { try { return fn(); } catch (ex) { return "threw: " + String((ex && ex.message) || ex).slice(0, 120); } };
+  const weeksFrom = (m, n) => Array.from({ length: n }, (_, i) => H.fmt(H.addD(H.parse(m), 7 * i)));
+  const pub = (ms) => Object.fromEntries(ms.map((m) => [m, { dayCall: "s1", nights: { mon: "s2" } }]));
+  const NOV = weeksFrom("2026-11-16", 14);
+
+  // BD1 — periodLabel, exact
+  const PL = [
+    ["one year", ["2027-01-04", "2027-04-05"], "Jan 4 – Apr 11, 2027"],
+    ["across the year", ["2026-11-16", "2027-02-15"], "Nov 16, 2026 – Feb 21, 2027"],
+    ["its last Sunday decides (the last Monday is Dec 28)", ["2026-10-05", "2026-12-28"], "Oct 5, 2026 – Jan 3, 2027"],
+    ["one week across New Year", ["2026-12-28", "2026-12-28"], "Dec 28, 2026 – Jan 3, 2027"],
+    ["the spring DST week (Sun Mar 14, 2027)", ["2027-03-08", "2027-03-08"], "Mar 8 – Mar 14, 2027"],
+    ["the fall DST week (Sun Nov 1, 2026)", ["2026-10-26", "2026-10-26"], "Oct 26 – Nov 1, 2026"],
+    ["28 weeks across the spring change", ["2027-02-15", "2027-08-23"], "Feb 15 – Aug 29, 2027"],
+    ["no Mondays", [null, null], ""],
+    ["no last Monday", ["2027-01-04", null], ""],
+  ];
+  const pl = (a) => tryRun(() => (H.pl ? H.pl(...a) : "missing"));
+  const bad1 = PL.filter(([, a, want]) => pl(a) !== want);
+  check("BD1 periodLabel: first Monday → last Sunday with the year (once when both ends share it), exact strings — across the year, the DST weeks, nothing to name",
+    !!H.pl && bad1.length === 0, bad1.map(([what, a]) => `${what}: ${J(pl(a))}`).join(" | "));
+  check("BD1 Dates (as the Generate tab's useMemo passes them) give the same text as strings",
+    !!H.pl && PL.slice(0, 7).every(([, a, want]) => pl(a.map(H.parse)) === want), J(PL.slice(0, 7).map(([, a]) => pl(a.map(H.parse)))));
+
+  // BD2 — the REAL publish path: the mondays useMemo, the endDate/endMoIdx lines, doGenerateAndNotify
+  const memoBody = after("  const mondays = useMemo(() => {", "\n  }, [startYear, startMonth, numWeeks, startMondayOverride]);");
+  const endSrc = span("  const endDate = mondays.length > 0", "\n  const endYr = ");
+  const dgnSrc = span("  const doGenerateAndNotify = async () => {", "\n  };");
+  const mk = (code, ctx, filename) => { try { return code ? vm.runInContext(code, ctx, { filename }) : null; } catch (ex) { return null; } };
+  const runMemo = memoBody && mk(`(function (env) { const { startMondayOverride, numWeeks, startYear, startMonth } = env; return (() => {${memoBody}\n  })(); })`, sandbox, "bd-mondays.js");
+  const runEnd = endSrc && mk(`(function (env) { const { mondays, startMonth } = env;\n${endSrc}\n return { endDate, endMoIdx }; })`, sandbox, "bd-enddate.js");
+  // (every name the e-mail's period was ever built from — main's selects and endMoIdx, and the Mondays)
+  const mkDgn = dgnSrc && mk(`(function (env) { const { sessionEpochRef, doGenerate, addNotification, sendEmailNotif, MO, startMonth, endMoIdx, startYear, mondays } = env;\n${dgnSrc}\n  };\n return doGenerateAndNotify; })`, sandbox, "bd-dgn.js");
+  const publishRun = async (settings) => {
+    if (!runMemo || !runEnd || !mkDgn) return null;
+    try {
+      const mondays = runMemo(settings), { endMoIdx } = runEnd({ mondays, startMonth: settings.startMonth });
+      const sent = [];
+      await mkDgn({ sessionEpochRef: { current: 0 }, doGenerate: async () => "published", MO: H.MO, startMonth: settings.startMonth, endMoIdx, startYear: settings.startYear, mondays,
+        addNotification: async (type, title, msg) => { sent.push(["notice", type, msg]); },
+        sendEmailNotif: (type, data, targets) => { sent.push(["e-mail", type, J(data), targets]); } })();
+      return { first: H.fmt(mondays[0]), n: mondays.length, sent };
+    } catch (ex) { return { threw: String(ex) }; }
+  };
+  const override = await publishRun({ startMondayOverride: "2027-01-04", numWeeks: 14, startMonth: 4, startYear: 2026 });
+  const midweek = await publishRun({ startMondayOverride: "2027-01-06", numWeeks: 14, startMonth: 4, startYear: 2026 });
+  const selects = await publishRun({ startMondayOverride: "", numWeeks: 14, startMonth: 10, startYear: 2026 });
+  const emailOf = (r) => (r && r.sent ? (r.sent.find((x) => x[0] === "e-mail") || [])[2] : null);
+  check("BD2 the REAL publish path with a start-Monday override (Jan 4, 2027 × 14) the selects lag behind (May 2026): the e-mail's period is the published weeks, \"Jan 4 – Apr 11, 2027\" (main sent \"May – April 2026\"); a mid-week pick snaps to the same Monday",
+    !!override && emailOf(override) === J({ period: "Jan 4 – Apr 11, 2027" }) && emailOf(midweek) === emailOf(override) && override.first === "2027-01-04" && override.n === 14, J({ override, midweek }));
+  check("BD2 without an override (the selects: November 2026 × 14) the period names its end year too: \"Nov 2, 2026 – Feb 7, 2027\" (main: \"November – February 2026\")",
+    emailOf(selects) === J({ period: "Nov 2, 2026 – Feb 7, 2027" }), J(selects));
+  check("BD2 the notice is unchanged — sent first, the same text — and the e-mail goes to everyone (no target list)",
+    !!override && !!override.sent && override.sent.length === 2 && J(override.sent[0]) === J(["notice", "schedule_published", "A new call schedule has been generated. Check the Schedule or Calendar tab."]) && override.sent[1][3] === null, J(override));
+  // The office e-mail's prefill — the REAL computePeriodLabel, after a period was published on top of 28 earlier weeks
+  const cplSrc = after("  const computePeriodLabel = ", "\n  const openPublishDialog = ");
+  const mkCpl = cplSrc && mk(`(function (env) { const { schedule, mondays, parse, MO, periodLabel } = env; const computePeriodLabel = ${cplSrc}\n return computePeriodLabel; })`, sandbox, "bd-cpl.js");
+  const cpl = mkCpl ? tryRun(() => mkCpl({ schedule: pub(weeksFrom("2026-05-04", 42)), mondays: NOV.map(H.parse), parse: H.parse, MO: H.MO, periodLabel: H.pl })()) : null;
+  check("BD2 the office e-mail's prefill (the REAL computePeriodLabel) is the Generate period with its years, \"Nov 16, 2026 – Feb 21, 2027\" — not every week ever published (main: \"May 4 – Feb 21\")",
+    cpl === "Nov 16, 2026 – Feb 21, 2027", J(cpl));
+
+  // BD3 — periodSeam, exact
+  const ps = (a) => tryRun(() => (H.ps ? J(H.ps(...a)) : "missing"));
+  const S = (overlap, started, over, gap, afterDay) => J({ overlap, started, over, gap, after: afterDay });
+  const SEAM = [
+    ["continues (published through the week before)", [weeksFrom("2026-08-03", 15), NOV, "2026-10-19"], S(0, false, false, 0, "2026-11-15")],
+    ["overlaps 3 published weeks", [weeksFrom("2026-08-03", 15).concat(NOV.slice(0, 3)), NOV, "2026-10-19"], S(3, false, false, 0, "2026-11-15")],
+    ["a gap of 2 weeks", [weeksFrom("2026-08-03", 13), NOV, "2026-10-19"], S(0, false, false, 2, "2026-11-01")],
+    ["a gap of 1 week", [weeksFrom("2026-08-03", 14), NOV, "2026-10-19"], S(0, false, false, 1, "2026-11-08")],
+    ["started (its first Monday is before today)", [weeksFrom("2026-08-03", 10), weeksFrom("2026-10-12", 14), "2026-10-19"], S(0, true, false, 0, "2026-10-11")],
+    ["its first Monday IS today: not started", [weeksFrom("2026-08-03", 11), weeksFrom("2026-10-19", 14), "2026-10-19"], S(0, false, false, 0, "2026-10-18")],
+    ["wholly over, every week published", [weeksFrom("2026-05-04", 14), weeksFrom("2026-05-04", 14), "2026-10-19"], S(14, true, true, null, null)],
+    ["nothing published", [[], NOV, "2026-10-19"], S(0, false, false, null, null)],
+    ["only weeks after it are published", [weeksFrom("2027-03-01", 4), NOV, "2026-10-19"], S(0, false, false, null, null)],
+    ["a gap of 1 week across the spring change", [["2027-03-01"], weeksFrom("2027-03-15", 4), "2026-10-19"], S(0, false, false, 1, "2027-03-07")],
+    ["continues across the spring change", [["2027-03-08"], weeksFrom("2027-03-15", 4), "2026-10-19"], S(0, false, false, 0, "2027-03-14")],
+    ["a gap of 1 week across the fall change", [["2026-10-26"], weeksFrom("2026-11-09", 4), "2026-10-19"], S(0, false, false, 1, "2026-11-01")],
+    ["no period", [weeksFrom("2026-08-03", 15), [], "2026-10-19"], S(0, false, false, null, null)],
+  ];
+  const bad3 = SEAM.filter(([, a, want]) => ps(a) !== want);
+  check("BD3 periodSeam: continues / overlaps N published weeks / leaves a gap of N weeks after the last published Sunday / started / over, exact — across both DST changes",
+    !!H.ps && bad3.length === 0, bad3.map(([what, a]) => `${what}: ${ps(a)}`).join(" | "));
+  const messy = ps([["meta", "lastPublish"].concat(weeksFrom("2026-08-03", 15), NOV.slice(0, 3)).reverse().concat([NOV[0]]), NOV.slice().reverse().map(H.parse), "2026-10-19"]);
+  check("BD3 unsorted input, the period as Dates, a week listed twice and keys that are not weeks give the same answer",
+    messy === SEAM[1][2], messy);
+
+  // BD4 — BD1 + BD3 again under TZ=America/Chicago
+  {
+    const { execFileSync } = require("child_process");
+    const code = [
+      'const vm = require("vm"), fs = require("fs"), path = require("path");',
+      'const sb = { console, window: {}, document: undefined, navigator: { userAgent: "node-test" }, localStorage: { getItem: () => null, setItem() {}, removeItem() {} }, fetch: () => { throw new Error("no fetch"); }, setTimeout, clearTimeout };',
+      "sb.globalThis = sb; vm.createContext(sb);",
+      `for (const f of ["helpers.js", "config.js"]) vm.runInContext(fs.readFileSync(path.join(${J(ROOT)}, f), "utf8"), sb, { filename: f });`,
+      'const pl = vm.runInContext("typeof periodLabel === \'function\' ? periodLabel : null", sb), ps = vm.runInContext("typeof periodSeam === \'function\' ? periodSeam : null", sb);',
+      `const PL = ${J(PL.map(([, a]) => a))}, SEAM = ${J(SEAM.map(([, a]) => a))};`,
+      'const run = (f) => { try { return f(); } catch (ex) { return "threw: " + String((ex && ex.message) || ex).slice(0, 80); } };',
+      'process.stdout.write(JSON.stringify({ off: new Date(2026, 9, 24).getTimezoneOffset(), pl: PL.map((a) => run(() => (pl ? pl(...a) : "missing"))), ps: SEAM.map((a) => run(() => (ps ? JSON.stringify(ps(...a)) : "missing"))) }));',
+    ].join("\n");
+    let out = null;
+    try { out = JSON.parse(execFileSync(process.execPath, ["-e", code], { env: Object.assign({}, process.env, { TZ: "America/Chicago" }), encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })); } catch (ex) { out = { err: String(ex).slice(0, 300) }; }
+    const tzBad = out && out.pl && out.ps
+      ? PL.map(([what, , want], i) => (out.pl[i] === want ? null : `${what}: ${J(out.pl[i])}`)).concat(SEAM.map(([what, , want], i) => (out.ps[i] === want ? null : `${what}: ${out.ps[i]}`))).filter(Boolean)
+      : ["no output: " + J(out).slice(0, 200)];
+    check("BD4 under TZ=America/Chicago (the child's CDT offset is 300) every BD1 and BD3 case gives the same answer",
+      !!out && out.off === 300 && tzBad.length === 0, tzBad.slice(0, 3).join(" | "));
+  }
+
+  // BD5 — periodHolidayGaps with generator.js's getHolidays
+  const phg = (ms, cards, gh) => tryRun(() => (G.phg ? J(G.phg(ms, cards, gh === undefined ? G.getHolidays : gh)) : "missing"));
+  const gapOf = (year, name, date) => ({ year, name, date });
+  const card = (name, date, surgeonA) => ({ name, date, type: "major", surgeonA, surgeonB: surgeonA ? "s2" : null });
+  const HOL = [
+    ["no cards: the three 2026 holidays in Nov 16 – Feb 21, by date", [NOV, {}],
+      [gapOf(2026, "Thanksgiving", "2026-11-26"), gapOf(2026, "Christmas Day", "2026-12-25"), gapOf(2026, "New Year's", "2026-12-31")]],
+    ["two cards; New Year's card has no Surgeon A", [NOV, { "2026": [card("Thanksgiving", "2026-11-26", "s3"), card("Christmas Day", "2026-12-25", "s6"), card("New Year's", "2026-12-31", null)] }],
+      [gapOf(2026, "New Year's", "2026-12-31")]],
+    ["every card set: none", [NOV, { "2026": [card("Thanksgiving", "2026-11-26", "s3"), card("Christmas Day", "2026-12-25", "s6"), card("New Year's", "2026-12-31", "s1")] }], []],
+    ["a card filed under another year does not count", [NOV, { "2027": [card("Thanksgiving", "2026-11-26", "s3")], "2026": [card("Christmas Day", "2026-12-25", "s6"), card("New Year's", "2026-12-31", "s1")] }],
+      [gapOf(2026, "Thanksgiving", "2026-11-26")]],
+    ["none in Jan 4 – Apr 11, 2027 (New Year's ended Jan 1)", [weeksFrom("2027-01-04", 14), {}], []],
+    ["New Year's day 2 (Mon Jan 1, 2029) is in a period from Jan 1", [weeksFrom("2029-01-01", 2), {}], [gapOf(2028, "New Year's", "2028-12-31")]],
+    ["56 weeks from Dec 28, 2026: the middle year (2027) is looked up", [weeksFrom("2026-12-28", 56), { "2026": [card("New Year's", "2026-12-31", "s1")] }],
+      [gapOf(2027, "Memorial Day", "2027-05-31"), gapOf(2027, "July 4th", "2027-07-04"), gapOf(2027, "Labor Day", "2027-09-06"), gapOf(2027, "Thanksgiving", "2027-11-25"), gapOf(2027, "Christmas Day", "2027-12-25"), gapOf(2027, "New Year's", "2027-12-31")]],
+    ["its last Sunday counts (July 4th, 2027 is a Sunday)", [weeksFrom("2027-06-28", 1), {}], [gapOf(2027, "July 4th", "2027-07-04")]],
+    ["the Monday after it does not (Labor Day, Sep 6, 2027)", [weeksFrom("2027-08-30", 1), {}], []],
+  ];
+  const badH = HOL.filter(([, [ms, cards], want]) => phg(ms, cards) !== J(want));
+  check("BD5 periodHolidayGaps (generator.js's getHolidays): the period's holidays with no card, or a card with no Surgeon A, by date — New Year's day 2 counts, a 56-week period's middle year is looked up, its last Sunday counts",
+    !!G.phg && badH.length === 0, badH.map(([what, [ms, cards]]) => `${what}: ${phg(ms, cards)}`).join(" | "));
+  check("BD5 the period as Dates gives the same; no cards object, a year that is not a list, no getHolidays or no period never throw",
+    phg(NOV.map(H.parse), {}) === J(HOL[0][2]) && phg(NOV, null) === J(HOL[0][2]) && phg(NOV, { "2026": "?" }) === J(HOL[0][2]) && phg(NOV, {}, null) === "[]" && phg([], {}) === "[]",
+    J([phg(NOV.map(H.parse), {}), phg(NOV, null), phg(NOV, { "2026": "?" }), phg(NOV, {}, null), phg([], {})]));
+
+  // BD6 — the REAL Setup Issues holiday block, sliced and run
+  const setupSrc = span("            // 5. Holidays in upcoming period without surgeon assignments", "\n            if (issues.length === 0) return null;");
+  const runSetup = setupSrc && mk(`(function (env) { const { mondays, holidayAssignments } = env; const issues = [];\n${setupSrc}\n return issues; })`, hsb, "bd-setup-issues.js");
+  const setupMsgs = (ms, cards) => tryRun(() => (runSetup ? J(runSetup({ mondays: ms.map(H.parse), holidayAssignments: cards }).map((i) => `${i.sev}: ${i.msg}`)) : "missing"));
+  const wantMsgs = (gaps) => J(gaps.map((g) => `warn: ${g.name} (${g.date}) — no surgeon assigned`));
+  const badS = HOL.filter(([, [ms, cards], want]) => setupMsgs(ms, cards) !== wantMsgs(want));
+  check("BD6 the REAL Setup Issues holiday block lists exactly periodHolidayGaps' holidays, in its words (\"<name> (<date>) — no surgeon assigned\"), by date — main missed New Year's day 2 and a 56-week period's middle year",
+    !!runSetup && badS.length === 0, badS.map(([what, [ms, cards]]) => `${what}: ${setupMsgs(ms, cards)}`).join(" | "));
+  // …and the REAL Generate panel's computations (up to its JSX), today pinned to 2026-10-19
+  const panelSrc = span("              const seam = periodSeam(", "\n              return (");
+  const runPanel = panelSrc && mk(`(function (env) { const { schedule, mondays, holidayAssignments, setHolidayYear, setView, setTimeout, document, Date } = env;\n${panelSrc}\n return { seamLines, holGaps, holText, toHolidays }; })`, hsb, "bd-generate-panel.js");
+  function Oct19() { return new H.RealDate(2026, 9, 19); }
+  const doc = { asked: [], el: null, querySelector(sel) { this.asked.push(sel); return this.el; } };
+  const panel = (sched, ms, cards) => {
+    if (!runPanel) return null;
+    const log = [];
+    try {
+      const r = runPanel({ schedule: sched, mondays: ms.map(H.parse), holidayAssignments: cards || {}, document: doc, Date: Oct19,
+        setHolidayYear: (y) => log.push("year " + y), setView: (v) => log.push("view " + v), setTimeout: (fn, ms2) => { log.push("timeout " + ms2); log.fn = fn; } });
+      return Object.assign({}, r, { log });
+    } catch (ex) { return { threw: String(ex) }; }
+  };
+  const lines = (sched, ms) => { const p = panel(sched, ms); return p && p.seamLines ? J(p.seamLines.map((l) => (l.ok ? "ok: " : "warn: ") + l.text)) : J(p); };
+  const UPTO = pub(weeksFrom("2026-08-03", 15)); // published through the week of Nov 9, the week before NOV
+  const PANEL = [
+    ["continues", [UPTO, NOV], ["ok: ✓ Continues from the published schedule"]],
+    ["overlaps 3", [Object.assign({}, UPTO, pub(NOV.slice(0, 3))), NOV], ["warn: ⚠ Overlaps 3 published weeks — publishing replaces them"]],
+    ["overlaps 1", [Object.assign({}, UPTO, pub([NOV[13]])), NOV], ["warn: ⚠ Overlaps 1 published week — publishing replaces it"]],
+    ["a gap of 2 weeks", [pub(weeksFrom("2026-08-03", 13)), NOV], ["warn: ⚠ Leaves a gap of 2 weeks after Nov 1, 2026, the last published day before it"]],
+    ["a gap of 1 week", [pub(weeksFrom("2026-08-03", 14)), NOV], ["warn: ⚠ Leaves a gap of 1 week after Nov 8, 2026, the last published day before it"]],
+    ["started", [pub(weeksFrom("2026-08-03", 10)), weeksFrom("2026-10-12", 14)], ["ok: ✓ Continues from the published schedule", "warn: ⚠ This period has already started"]],
+    ["wholly over, every week published", [pub(weeksFrom("2026-05-04", 14)), weeksFrom("2026-05-04", 14)], ["warn: ⚠ Overlaps 14 published weeks — publishing replaces them", "warn: ⚠ This whole period is already over"]],
+    ["nothing published: the dates only", [{}, NOV], []],
+    ["a week key holding nothing is not published", [Object.assign({}, UPTO, { [NOV[0]]: null }), NOV], ["ok: ✓ Continues from the published schedule"]],
+  ];
+  const badP = PANEL.filter(([, [s, ms], want]) => lines(s, ms) !== J(want));
+  check("BD6 the REAL Generate panel (sliced and run, today 2026-10-19): ✓ continues / ⚠ overlaps N published weeks / ⚠ leaves a gap of N weeks after the last published day / started / over — exact text, from the weeks the screen holds",
+    !!runPanel && badP.length === 0, runPanel ? badP.map(([what, [s, ms]]) => `${what}: ${lines(s, ms)}`).join(" | ") : "the panel's slice was not found or did not compile");
+  const hp = panel(UPTO, NOV, {}), filled = panel(UPTO, NOV, HOL[2][1][1]), wide = panel(UPTO, HOL[6][1][0], HOL[6][1][1]);
+  check("BD6 the banner names the period's holidays with no card, with the year — \"Thanksgiving (Nov 26, 2026), Christmas Day (Dec 25, 2026), New Year's (Dec 31, 2026)\" — from periodHolidayGaps; with every card set there are none",
+    !!hp && hp.holText === "Thanksgiving (Nov 26, 2026), Christmas Day (Dec 25, 2026), New Year's (Dec 31, 2026)" && J(hp.holGaps) === J(HOL[0][2]) && !!filled && J(filled.holGaps) === "[]",
+    J({ hp: hp && hp.holText, filled: filled && filled.holGaps }));
+  const scrolls = [];
+  if (hp && hp.toHolidays) {
+    tryRun(() => hp.toHolidays());
+    doc.el = { scrollIntoView: (o) => scrolls.push(J(o)) }; tryRun(() => hp.log.fn && hp.log.fn());
+    doc.el = null; tryRun(() => hp.log.fn && hp.log.fn()); // no card on screen (another view by then): nothing to scroll, no throw
+  }
+  if (wide && wide.toHolidays) tryRun(() => wide.toHolidays());
+  const iCard = nsrc.indexOf('<div style={css.card} data-setup-holidays="1">');
+  check("BD6 its button opens Setup on that year's holiday cards — setHolidayYear(the first gap's year), setView(\"setup\"), then 60 ms later scrolls to the Holiday Call Assignments card ([data-setup-holidays=\"1\"]); a gap in 2027 opens 2027",
+    !!hp && J(hp.log) === J(["year 2026", "view setup", "timeout 60"]) && J(doc.asked) === J(['[data-setup-holidays="1"]', '[data-setup-holidays="1"]']) && J(scrolls) === J([J({ behavior: "smooth", block: "start" })])
+      && !!wide && J(wide.log) === J(["year 2027", "view setup", "timeout 60"])
+      && count('data-setup-holidays="1"') === 2 && iCard > 0 && nsrc.indexOf("📅 Holiday Call Assignments", iCard) === nsrc.indexOf("📅 Holiday Call Assignments") && nsrc.indexOf("📅 Holiday Call Assignments") - iCard < 200,
+    J({ log: hp && hp.log, asked: doc.asked, scrolls, wide: wide && wide.log, iCard }));
+
+  // BD7 — pins
+  const ONE = "periodHolidayGaps(mondays, holidayAssignments, getHolidays)";
+  const sites = []; for (let i = nsrc.indexOf(ONE); i >= 0; i = nsrc.indexOf(ONE, i + 1)) sites.push(i);
+  const iSetup = nsrc.indexOf('{view==="setup" && !isPublicMode && <>'), iIssues = nsrc.indexOf("Setup Issues ({issues.length})");
+  const iGen = nsrc.indexOf('{view==="generate" && !isPublicMode'), iLocks = nsrc.indexOf("{/* Manual Locks — pin specific surgeons");
+  check("BD7 both holiday checks call the ONE helper — Setup Issues, then the Generate panel inside the Period card (before Manual Locks) — and Setup's inline copy is gone",
+    sites.length === 2 && sites[0] > iSetup && sites[0] < iIssues && sites[1] > iGen && sites[1] < iLocks
+      && count("const yrA = holidayAssignments[String(y)] || [];") === 0 && count("const years = new Set([periodStart.getFullYear()-1") === 0, J({ sites, iSetup, iIssues, iGen, iLocks }));
+  check("BD7 the old period templates are gone — the e-mail's from the selects, Stats' \"This Period — {MO[startMonth]} to …\", the prefill's whole-schedule span — and each says periodLabel of the Generate Mondays",
+    count("{ period: `${MO[startMonth]} – ${MO[endMoIdx]} ${startYear}` }") === 0 && count("This Period — {MO[startMonth]} to {MO[endMoIdx]} {startYear}") === 0 && count("const fmtNice = (d) =>") === 0
+      && count("const period = periodLabel(mondays[0], mondays[mondays.length - 1]);") === 1 && count('sendEmailNotif("schedule_published", { period }, null, ep);') === 1
+      && count("const computePeriodLabel = () => periodLabel(mondays[0], mondays[mondays.length - 1]);") === 1
+      && count("<>This Period — {periodLabel(mondays[0], mondays[mondays.length - 1])}</>") === 1);
+  check("BD7 the Generate panel adds no hook (the 2026.09.24a TDZ class): plain code in a JSX IIFE; it shows the exact dates and the week count",
+    !!panelSrc && !/\buse(State|Memo|Effect|Callback|Ref|LayoutEffect)\(/.test(panelSrc)
+      && count("<strong>This period:</strong> {periodLabel(mondays[0], mondays[mondays.length - 1])} · {weeksTxt(mondays.length)}") === 1);
+}
+
 // ─── N. Swap family: swapMsg / cascadeMsg (2026-09-07) ───
 // The swap-suggestion tool was the last surface speaking in undated labels
 // and week-Monday dates, and the cascade path gave the least notice to the
@@ -2656,10 +2906,11 @@ console.log("\nBC. Generate & Publish asks once; Billing opens on the newest mon
       && dgBody.length > 0 && !dgBody.includes("confirm("), JSON.stringify({ bare: count("onClick={doGenerateAndNotify}"), calls: count("doGenerateAndNotify()"), body: dgBody.length }));
   // What the question's last line says, held true (review fix): the REAL doGenerateAndNotify, run on each doGenerate result
   let mkDgn = null;
-  try { mkDgn = dgBody ? vm.runInContext(`(function (env) { const { sessionEpochRef, doGenerate, addNotification, sendEmailNotif, MO, startMonth, endMoIdx, startYear } = env;\n${dgBody}\n  };\n return doGenerateAndNotify; })`, sandbox, { filename: "bc-dgn.js" }) : null; } catch (ex) { mkDgn = null; }
+  // (mondays: the e-mail's period is taken from the Generate Mondays since BD — UX audit 2026-10-19)
+  try { mkDgn = dgBody ? vm.runInContext(`(function (env) { const { sessionEpochRef, doGenerate, addNotification, sendEmailNotif, MO, startMonth, endMoIdx, startYear, mondays } = env;\n${dgBody}\n  };\n return doGenerateAndNotify; })`, sandbox, { filename: "bc-dgn.js" }) : null; } catch (ex) { mkDgn = null; }
   const dgn = async (result) => {
     const log = [];
-    await mkDgn({ sessionEpochRef: { current: 0 }, doGenerate: async () => result, MO: ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"], startMonth: 10, endMoIdx: 1, startYear: 2026,
+    await mkDgn({ sessionEpochRef: { current: 0 }, doGenerate: async () => result, MO: ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"], startMonth: 10, endMoIdx: 1, startYear: 2026, mondays: NOV.map(H.parse),
       addNotification: async (type, title, msg, data, targets) => { log.push(`notice ${type} to ${targets === null ? "everyone" : JSON.stringify(targets)}`); },
       sendEmailNotif: (type, data, targets) => { log.push(`e-mail ${type} to ${targets === null ? "everyone" : JSON.stringify(targets)}`); } })();
     return log;

@@ -4370,6 +4370,13 @@ function CallSchedule() {
     // e-mail go out only from it — never from the next one, after a sign-out
     // or a switch to another account meanwhile.
     const ep = sessionEpochRef.current;
+    // The e-mail's period, taken at the tap: the Mondays doGenerate searches
+    // and publishes (a settings change during the search sends the result to
+    // the preview, not here), first Monday → last Sunday, with the year
+    // (helpers.js periodLabel; UX audit 2026-10-19). It was built from the
+    // start month/year selects, which a start-Monday override leaves behind:
+    // "May – April 2026" for a Jan 4 – Apr 11, 2027 publish.
+    const period = periodLabel(mondays[0], mondays[mondays.length - 1]);
     // Notify only when something was actually published — not when the Silvis
     // confirm was cancelled, and not when the result went to the preview for
     // "Needs your OK" review (2026-10-11).
@@ -4382,7 +4389,7 @@ function CallSchedule() {
     await addNotification("schedule_published", "Schedule Published",
       "A new call schedule has been generated. Check the Schedule or Calendar tab.", {}, null, ep);
     if (sessionEpochRef.current !== ep) return;
-    sendEmailNotif("schedule_published", { period: `${MO[startMonth]} – ${MO[endMoIdx]} ${startYear}` }, null, ep);
+    sendEmailNotif("schedule_published", { period }, null, ep);
   };
 
   // ─── Build Individual ICS for a surgeon (their shifts + vacations only) ───
@@ -4622,20 +4629,11 @@ function CallSchedule() {
     const next = cur.includes(dept) ? cur.filter(d => d !== dept) : [...cur, dept];
     updateOfficeContact(id, { departments: next });
   };
-  const computePeriodLabel = () => {
-    try {
-      const sched = schedule || {};
-      const weeks = Object.keys(sched).sort();
-      if (weeks.length === 0) return "";
-      const first = weeks[0];
-      const last = weeks[weeks.length - 1];
-      const firstDate = parse(first);
-      const lastDate = parse(last);
-      lastDate.setDate(lastDate.getDate() + 6); // Sunday end of last week
-      const fmtNice = (d) => `${MO[d.getMonth()].slice(0,3)} ${d.getDate()}`;
-      return `${fmtNice(firstDate)} – ${fmtNice(lastDate)}`;
-    } catch(e) { return ""; }
-  };
+  // The office e-mail's period, prefilled (UX audit 2026-10-19): the Generate
+  // tab's period — the one just published — first Monday → last Sunday, with
+  // the year (helpers.js periodLabel). It used to run from the WHOLE
+  // schedule's first week to its last (every period ever published), with no year.
+  const computePeriodLabel = () => periodLabel(mondays[0], mondays[mondays.length - 1]);
   const openPublishDialog = () => {
     setPublishLabel(computePeriodLabel());
     setShowPublishDialog(true);
@@ -8113,26 +8111,12 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               issues.push({ sev: "info", msg: `${pendingCount} pending vacation request${pendingCount === 1 ? "" : "s"} awaiting review` });
             }
 
-            // 5. Holidays in upcoming period without surgeon assignments
-            if (mondays.length > 0) {
-              const periodStart = mondays[0];
-              const periodEnd = addD(mondays[mondays.length-1], 6);
-              const years = new Set([periodStart.getFullYear()-1, periodStart.getFullYear(), periodEnd.getFullYear()]);
-              years.forEach(y => {
-                let defs = [];
-                try { const h = getHolidays(y); defs = [...h.major, ...h.minor]; } catch(e) { console.warn("Holiday preset lookup failed:", e); }
-                defs.forEach(hol => {
-                  const hd = parse(hol.date);
-                  if (hd >= periodStart && hd <= periodEnd) {
-                    const yrA = holidayAssignments[String(y)] || [];
-                    const match = yrA.find(a => a.date === hol.date);
-                    if (!match || !match.surgeonA) {
-                      issues.push({ sev: "warn", msg: `${hol.name} (${hol.date}) — no surgeon assigned` });
-                    }
-                  }
-                });
-              });
-            }
+            // 5. Holidays in upcoming period without surgeon assignments — the
+            //    one check the Generate tab's banner uses too (helpers.js
+            //    periodHolidayGaps, UX audit 2026-10-19)
+            periodHolidayGaps(mondays, holidayAssignments, getHolidays).forEach(g => {
+              issues.push({ sev: "warn", msg: `${g.name} (${g.date}) — no surgeon assigned` });
+            });
 
             if (issues.length === 0) return null;
 
@@ -8598,8 +8582,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             </div>
           </div>
 
-          {/* Holiday Assignments */}
-          <div style={css.card}>
+          {/* Holiday Assignments (data-setup-holidays: the Generate tab's "Set up … holidays" button scrolls here) */}
+          <div style={css.card} data-setup-holidays="1">
             <div style={css.cardT}>📅 Holiday Call Assignments</div>
             <p style={{fontSize:12,color:"#5a6a78",margin:"0 0 10px",lineHeight:1.5}}>
               Generate yearly holiday assignments. Each holiday gets 2 surgeons who alternate 24h blocks.
@@ -8834,6 +8818,36 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                 );
               })()}
             </div>
+            {/* The period's exact dates, where it sits against the published schedule, and its holidays with no
+                holiday card (UX audit 2026-10-19 — helpers.js periodLabel / periodSeam / periodHolidayGaps; no hook) */}
+            {mondays.length > 0 && (() => {
+              const seam = periodSeam(Object.keys(schedule).filter(m => schedule[m]), mondays, fmt(new Date()));
+              const weeksTxt = (n) => `${n} week${n === 1 ? "" : "s"}`;
+              const seamLines = [];
+              if (seam.overlap > 0) seamLines.push({ ok: false, text: `⚠ Overlaps ${seam.overlap} published week${seam.overlap === 1 ? "" : "s"} — publishing replaces ${seam.overlap === 1 ? "it" : "them"}` });
+              if (seam.gap > 0) seamLines.push({ ok: false, text: `⚠ Leaves a gap of ${weeksTxt(seam.gap)} after ${monthDayLabel(seam.after, true)}, the last published day before it` });
+              if (seam.overlap === 0 && seam.gap === 0) seamLines.push({ ok: true, text: "✓ Continues from the published schedule" });
+              if (seam.over) seamLines.push({ ok: false, text: "⚠ This whole period is already over" });
+              else if (seam.started) seamLines.push({ ok: false, text: "⚠ This period has already started" });
+              const holGaps = periodHolidayGaps(mondays, holidayAssignments, getHolidays);
+              const holText = holGaps.map(g => `${g.name} (${monthDayLabel(g.date, true)})`).join(", ");
+              const toHolidays = () => {
+                setHolidayYear(holGaps[0].year); setView("setup");
+                setTimeout(() => { const el = document.querySelector('[data-setup-holidays="1"]'); if (el && el.scrollIntoView) el.scrollIntoView({ behavior: "smooth", block: "start" }); }, 60);
+              };
+              return (
+                <div style={{marginTop:10,paddingTop:10,borderTop:`1px solid ${dk?"#2a3a5e":"#e8ecf0"}`,fontSize:12,lineHeight:1.6}}>
+                  <div style={{color:dk?"#e0e0f0":"#2c3e50"}}><strong>This period:</strong> {periodLabel(mondays[0], mondays[mondays.length - 1])} · {weeksTxt(mondays.length)}</div>
+                  {seamLines.map((l, i) => <div key={i} style={{fontWeight:600,color:l.ok?(dk?"#8ad0a0":"#1a8040"):(dk?"#f0c890":"#a05010")}}>{l.text}</div>)}
+                  {holGaps.length > 0 && (
+                    <div role="status" style={{marginTop:8,background:dk?"#3a2410":"#fdf0e3",border:"1px solid #d09050",borderRadius:8,padding:"8px 12px",color:dk?"#f0c890":"#7a4010"}}>
+                      <div>⚠ No holiday card for {holText}. Generating now gives {holGaps.length === 1 ? "it" : "them"} no holiday 24h coverage.</div>
+                      <button onClick={toHolidays} style={{...css.btn(false),marginTop:6,padding:"6px 12px",fontSize:12}}>Set up {holGaps[0].year} holidays in Setup →</button>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
           </div>
 
 
@@ -10699,7 +10713,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           </div>
           {/* Surgeon stats — This Period or Year to Date (statsScope) */}
           <div style={css.card}>
-            <div style={css.cardT}>{statsScope==="ytd" ? <>Current Period — {ytdRange.start} → {ytdRange.end}</> : <>This Period — {MO[startMonth]} to {MO[endMoIdx]} {startYear}</>}</div>
+            <div style={css.cardT}>{statsScope==="ytd" ? <>Current Period — {ytdRange.start} → {ytdRange.end}</> : <>This Period — {periodLabel(mondays[0], mondays[mondays.length - 1])}</>}</div>
             {!Object.values(statsScope==="ytd"?statsYTD:stats).some(s=>s.dc>0||s.nights>0) ? (
               <p style={{color:"#7a8a98",fontSize:13}}>Generate a schedule first.</p>
             ) : (
@@ -12509,7 +12523,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                       Sends a "new schedule published" email to all <strong>{officeContacts.filter(c=>c.active).length}</strong> active office contact(s). They'll get a link to the public calendar.
                     </p>
                     <label style={{fontSize:11,color:"#7a8a98",fontWeight:600,textTransform:"uppercase",letterSpacing:0.5,display:"block",marginBottom:4}}>Period Label (shown in subject line)</label>
-                    <input value={publishLabel} onChange={e=>setPublishLabel(e.target.value)} placeholder="e.g. Aug 11 – Nov 15" style={{...css.inp,width:"100%",marginBottom:16}}/>
+                    <input value={publishLabel} onChange={e=>setPublishLabel(e.target.value)} placeholder="e.g. Nov 16, 2026 – Feb 21, 2027" style={{...css.inp,width:"100%",marginBottom:16}}/>
                     <div style={{display:"flex",justifyContent:"flex-end",gap:8}}>
                       <button onClick={()=>setShowPublishDialog(false)} style={{...css.btn(false),padding:"7px 14px",fontSize:12}}>Cancel</button>
                       <button onClick={triggerPublishNotify} disabled={officeNotifBusy} style={{...css.btn(true),padding:"7px 16px",fontSize:12,opacity:officeNotifBusy?0.6:1}}>
