@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.10.19d";
+    var APP_VERSION = "2026.10.19e";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -131,7 +131,7 @@ const CAL_FILTER_DEFAULTS = Object.freeze({
 });
 const CAL_SILVIS_STORE_KEY = "dsg-cal-silvis";
 function CallSchedule() {
-  var _sMap$callNow$sid, _sMap$mineViewId, _sMap$mineViewId2, _find, _surgeons$find17;
+  var _sMap$callNow$sid, _sMap$mineViewId, _find, _surgeons$find17;
   const isPublicMode = useMemo(() => {
     try {
       const params = new URLSearchParams(window.location.search);
@@ -243,6 +243,16 @@ function CallSchedule() {
   const bannerLift = () => {
     const el = updateBannerRef.current;
     return el && el.isConnected ? Math.ceil(el.getBoundingClientRect().height) : 0;
+  };
+  const toastLiftNow = () => {
+    let lift = bannerLift();
+    const vh = window.innerHeight || 0;
+    Array.from(document.querySelectorAll('[data-toast-floor="1"]')).forEach(el => {
+      if (!el.isConnected) return;
+      const r = el.getBoundingClientRect();
+      if (r.height > 0) lift = Math.max(lift, Math.ceil(vh - r.top));
+    });
+    return vh > 120 ? Math.min(lift, vh - 120) : lift;
   };
   const openCalDay = (ds, el) => {
     calDayOpenerRef.current = el || null;
@@ -588,6 +598,12 @@ function CallSchedule() {
   }, [notifPrefs]);
   const [notifPrefsLoaded, setNotifPrefsLoaded] = useState(false);
   const [notifPrefsSaving, setNotifPrefsSaving] = useState(false);
+  const [notifPrefsSaved, setNotifPrefsSaved] = useState(null);
+  useEffect(() => {
+    if (!notifPrefsSaved) return;
+    const t = setTimeout(() => setNotifPrefsSaved(null), 3000);
+    return () => clearTimeout(t);
+  }, [notifPrefsSaved]);
   const [notifTestSent, setNotifTestSent] = useState("");
   const lastNotifCountRef = useRef(null);
   const [edgeFunctionUrl, setEdgeFunctionUrl] = useState("");
@@ -897,7 +913,7 @@ function CallSchedule() {
       setAuthEmail("");
       setAuthPassword("");
     } catch (e) {
-      setAuthError(e.message || "Auth error");
+      setAuthError(typeof authErrorText === "function" ? authErrorText(e) : e && e.message || "Something went wrong — please try again.");
     }
     setAuthBusy(false);
   };
@@ -953,7 +969,7 @@ function CallSchedule() {
       return;
     } catch (e) {
       if (gone()) return;
-      setAuthError(e.message);
+      setAuthError(typeof authErrorText === "function" ? authErrorText(e) : e && e.message || "Something went wrong — please try again.");
     }
     setAuthBusy(false);
   };
@@ -1677,15 +1693,19 @@ function CallSchedule() {
       }
     };
   }, [reloadTrigger]);
-  const [toast, setToast] = useState(null);
-  const toastTimerRef = useRef(null);
+  const [toasts, setToasts] = useState([]);
+  const toastSeqRef = useRef(0);
+  const [toastLift, setToastLift] = useState(0);
+  const dismissToast = id => setToasts(list => list.some(t => t.id === id) ? list.filter(t => t.id !== id) : list);
   const showToast = (msg, tone) => {
-    setToast({
+    const t = {
+      id: ++toastSeqRef.current,
       msg: msg,
       tone: tone || "info"
-    });
-    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
-    toastTimerRef.current = setTimeout(() => setToast(null), 4000);
+    };
+    setToastLift(toastLiftNow());
+    setToasts(list => typeof toastAdd === "function" ? toastAdd(list, t) : [t]);
+    setTimeout(() => dismissToast(t.id), typeof toastMs === "function" ? toastMs(t.tone, t.msg) : 4000);
   };
   const [schedSync, setSchedSync] = useState({
     seeded: false,
@@ -2437,6 +2457,8 @@ function CallSchedule() {
   }, [edgeFunctionUrl]);
   const vacSubmitBusyRef = useRef(false);
   const tradeSubmitBusyRef = useRef(false);
+  const [vacSubmitting, setVacSubmitting] = useState(false);
+  const [tradeSubmitting, setTradeSubmitting] = useState(false);
   const submitVacRequest = useCallback(async () => {
     var _surgeons$find4, _apps$find2;
     if (vacSubmitBusyRef.current) {
@@ -2460,6 +2482,7 @@ function CallSchedule() {
       return;
     }
     vacSubmitBusyRef.current = true;
+    setVacSubmitting(true);
     const ep = sessionEpochRef.current;
     const live = () => sessionEpochRef.current === ep;
     try {
@@ -2509,6 +2532,7 @@ function CallSchedule() {
       if (live()) showToast("Couldn't submit your request — check your connection and try again.", "error");
     } finally {
       vacSubmitBusyRef.current = false;
+      setVacSubmitting(false);
     }
   }, [vacReqSurgeon, vacReqStart, vacReqEnd, vacReqReason, vacReqType, surgeons, apps, addNotification, sendEmailNotif, schedulerAdminIds]);
   const setBackRequest = async (id, filter, body, tapH, what, audit) => {
@@ -2592,6 +2616,7 @@ function CallSchedule() {
       setVacRequests(prev => prev.map(r => r.id === req.id ? _objectSpread(_objectSpread({}, r), {}, {
         status: "approved"
       }) : r));
+      showToast(`Approved — ${req.surgeon_name}'s ${isNoCall ? "no-call days" : "vacation"}, ${req.start_date} to ${req.end_date}.`, "success");
       toAdd(req.surgeon_id, isNoCall ? "nocall" : "vacation", req.start_date, req.end_date);
       logAudit("request.approve", `Approved ${req.surgeon_name}'s ${isNoCall ? "no-call" : "vacation"} request: ${req.start_date} → ${req.end_date}`, {
         request_id: req.id,
@@ -2659,6 +2684,7 @@ function CallSchedule() {
         status: "denied",
         review_note: note
       }) : r));
+      showToast(`Denied — ${req.surgeon_name}'s ${kindLabel}, ${req.start_date} to ${req.end_date}.`, "success");
       denyAudit();
       const denyTargets = [...new Set([req.surgeon_id, ...schedulerAdminIds].filter(Boolean))];
       await addNotification("vacation_denied", isNoCall ? "No-Call Denied" : "Vacation Denied", `${req.surgeon_name}'s ${kindLabel} ${req.start_date} to ${req.end_date} was denied${note ? ": " + note : ""}`, {
@@ -2710,6 +2736,7 @@ function CallSchedule() {
     const toName = ((_surgeons$find8 = surgeons.find(s => s.id === tradeTo)) === null || _surgeons$find8 === void 0 ? void 0 : _surgeons$find8.name) || tradeTo;
     const shiftLabel = SHIFT_LABELS[tradeShift] || tradeShift;
     tradeSubmitBusyRef.current = true;
+    setTradeSubmitting(true);
     const ep = sessionEpochRef.current,
       tapH = dbAuthHeaders();
     const live = () => sessionEpochRef.current === ep;
@@ -2778,6 +2805,7 @@ function CallSchedule() {
       if (live()) showToast("Couldn't submit the trade — check your connection and try again.", "error");
     } finally {
       tradeSubmitBusyRef.current = false;
+      setTradeSubmitting(false);
     }
   }, [tradeFrom, tradeTo, tradeWeek, tradeShift, tradeReturnWeek, tradeReturnShift, surgeons, addNotification, sendEmailNotif, isScheduler, schedule, silvisActive, silvisBlock, silvisRefuse]);
   const detectCascadeChanges = useCallback((sched, req) => {
@@ -3066,6 +3094,7 @@ function CallSchedule() {
       setTradeRequests(prev => prev.map(r => r.id === req.id ? _objectSpread(_objectSpread({}, r), {}, {
         status: "accepted"
       }) : r));
+      showToast(`Trade accepted — the schedule is updated${cascadesNow.length ? ` (${cascadesNow.length} other shift${cascadesNow.length === 1 ? "" : "s"} moved too)` : ""}.`, "success");
       logAudit("trade.accept", `${acceptMsg}${cascadesNow.length ? ` (+${cascadesNow.length} cascade change${cascadesNow.length === 1 ? "" : "s"})` : ""}`, {
         request_id: req.id,
         cascades: cascadesNow.length
@@ -3183,6 +3212,7 @@ function CallSchedule() {
       setTradeRequests(prev => prev.map(r => r.id === req.id ? _objectSpread(_objectSpread({}, r), {}, {
         status: "declined"
       }) : r));
+      showToast("Trade declined.", "success");
       declineAudit();
       await addNotification("trade_declined", "Shift Trade Declined", declineMsg, {
         from_surgeon_id: req.from_surgeon_id,
@@ -3275,6 +3305,14 @@ function CallSchedule() {
   const [editingVacReq, setEditingVacReq] = useState(null);
   const saveVacRequestEdit = useCallback(async () => {
     if (!editingVacReq) return;
+    if (!editingVacReq.start_date || !editingVacReq.end_date) {
+      showToast("Both dates are needed.", "error");
+      return;
+    }
+    if (editingVacReq.end_date < editingVacReq.start_date) {
+      showToast("The end date is before the start date.", "error");
+      return;
+    }
     if (!isScheduler) {
       const editTodayStr = fmt(new Date());
       if (editingVacReq.start_date < editTodayStr || editingVacReq.end_date < editTodayStr) {
@@ -3332,6 +3370,7 @@ function CallSchedule() {
         return;
       }
       setVacRequests(prev => prev.map(r => r.id === editingVacReq.id ? _objectSpread(_objectSpread({}, r), updates) : r));
+      showToast("Changes saved.", "success");
       if ((req === null || req === void 0 ? void 0 : req.status) === "approved") {
         toEdit(req.surgeon_id, req.request_type === "nocall" ? "nocall" : "vacation", req.start_date, req.end_date, editingVacReq.start_date, editingVacReq.end_date);
       }
@@ -3384,9 +3423,12 @@ function CallSchedule() {
       setVacRequests(prev => prev.map(r => r.id === req.id ? _objectSpread(_objectSpread({}, r), {}, {
         status: "revoked"
       }) : r));
+      showToast(`Revoked — ${req.surgeon_name}'s ${kindLabel}, ${req.start_date} to ${req.end_date}.`, "success");
       toRemove(req.surgeon_id, isNoCall ? "nocall" : "vacation", req.start_date, req.end_date);
       const revokeTargets = [...new Set([req.surgeon_id, ...schedulerAdminIds].filter(Boolean))];
-      await addNotification("vacation_revoked", isNoCall ? "No-Call Revoked" : "Vacation Revoked", `${req.surgeon_name}'s ${kindLabel} ${req.start_date} → ${req.end_date} was revoked`, {}, revokeTargets, ep);
+      await addNotification("vacation_revoked", isNoCall ? "No-Call Revoked" : "Vacation Revoked", `${req.surgeon_name}'s ${kindLabel} ${req.start_date} → ${req.end_date} was revoked`, {
+        surgeon_id: req.surgeon_id
+      }, revokeTargets, ep);
     } catch (e) {
       console.error("Revoke error:", e);
       if (live()) showToast("Couldn't revoke the vacation — check your connection and try again.", "error");
@@ -3735,6 +3777,7 @@ function CallSchedule() {
       if (sessionEpochRef.current !== ep) return;
       const tapH = dbAuthHeaders();
       setNotifPrefsSaving(true);
+      setNotifPrefsSaved(null);
       try {
         const cur = notifPrefsRef.current[surgeonId] || {};
         const row = {
@@ -3768,6 +3811,10 @@ function CallSchedule() {
           email_masked: emailMasked,
           source: src
         }, sessionEpochRef.current === ep ? undefined : tapH);
+        if (sessionEpochRef.current === ep) setNotifPrefsSaved({
+          id: surgeonId,
+          at: Date.now()
+        });
       } catch (e) {
         console.error("Save notif pref error:", e);
         if (sessionEpochRef.current === ep) showToast("Couldn't save notification settings — check your connection and try again.", "error");
@@ -3812,12 +3859,13 @@ function CallSchedule() {
   }, [sendBrowserNotif, sendEmailNotif, edgeFunctionUrl, notifPrefs, mySurgeon]);
   const doGenerateAndNotify = async () => {
     const ep = sessionEpochRef.current;
+    const period = periodText;
     if ((await doGenerate(false)) !== "published") return;
     if (sessionEpochRef.current !== ep) return;
     await addNotification("schedule_published", "Schedule Published", "A new call schedule has been generated. Check the Schedule or Calendar tab.", {}, null, ep);
     if (sessionEpochRef.current !== ep) return;
     sendEmailNotif("schedule_published", {
-      period: `${MO[startMonth]} – ${MO[endMoIdx]} ${startYear}`
+      period
     }, null, ep);
   };
   const downloadMyCal = surgeonId => {
@@ -3975,6 +4023,7 @@ function CallSchedule() {
   const endDate = mondays.length > 0 ? addD(mondays[mondays.length - 1], 6) : null;
   const endMoIdx = endDate ? endDate.getMonth() : (startMonth + 2) % 12;
   const endYr = endDate ? endDate.getFullYear() : startYear;
+  const periodText = mondays.length === 0 ? "" : typeof periodLabel === "function" ? periodLabel(mondays[0], mondays[mondays.length - 1]) : `${fmt(mondays[0])} – ${fmt(addD(mondays[mondays.length - 1], 6))}`;
   const rename = (id, name) => setSurgeons(p => p.map(s => s.id === id ? _objectSpread(_objectSpread({}, s), {}, {
     name
   }) : s));
@@ -4107,20 +4156,14 @@ function CallSchedule() {
     });
   };
   const computePeriodLabel = () => {
-    try {
-      const sched = schedule || {};
-      const weeks = Object.keys(sched).sort();
-      if (weeks.length === 0) return "";
-      const first = weeks[0];
-      const last = weeks[weeks.length - 1];
-      const firstDate = parse(first);
-      const lastDate = parse(last);
-      lastDate.setDate(lastDate.getDate() + 6);
-      const fmtNice = d => `${MO[d.getMonth()].slice(0, 3)} ${d.getDate()}`;
-      return `${fmtNice(firstDate)} – ${fmtNice(lastDate)}`;
-    } catch (e) {
-      return "";
-    }
+    const label = (a, b) => typeof periodLabel === "function" ? periodLabel(a, b) : `${a} – ${fmt(addD(parse(b), 6))}`;
+    const gen = mondays.map(m => fmt(m));
+    if (gen.length && gen.every(m => schedule[m])) return label(gen[0], gen[gen.length - 1]);
+    const pub = Object.keys(schedule || {}).filter(k => /^\d{4}-\d{2}-\d{2}$/.test(k) && schedule[k]).sort();
+    if (!pub.length) return "";
+    let i = pub.length - 1;
+    while (i > 0 && pub.length - i < (gen.length || pub.length) && fmt(addD(parse(pub[i - 1]), 7)) === pub[i]) i--;
+    return label(pub[i], pub[pub.length - 1]);
   };
   const openPublishDialog = () => {
     setPublishLabel(computePeriodLabel());
@@ -4381,6 +4424,20 @@ function CallSchedule() {
       };
     }
   };
+  const toastsShown = toasts.length > 0;
+  useEffect(() => {
+    if (!toastsShown) return;
+    const remeasure = () => setToastLift(toastLiftNow());
+    remeasure();
+    window.addEventListener("resize", remeasure);
+    const els = [updateBannerRef.current, ...Array.from(document.querySelectorAll('[data-toast-floor="1"]'))].filter(Boolean);
+    const ro = els.length && typeof ResizeObserver === "function" ? new ResizeObserver(remeasure) : null;
+    if (ro) els.forEach(el => ro.observe(el));
+    return () => {
+      window.removeEventListener("resize", remeasure);
+      if (ro) ro.disconnect();
+    };
+  }, [toastsShown, updateAvailable, paintSheet, calDayOpen]);
   const dayOffId = x => typeof x === "string" ? x : x && x.id || "";
   const enqueueDayOffSave = () => {
     dayOffSaveChainRef.current = dayOffSaveChainRef.current.then(async () => {
@@ -4750,12 +4807,14 @@ function CallSchedule() {
   };
   const commitGenerated = async result => {
     const ep = sessionEpochRef.current;
+    const pubMs = Object.keys(result).sort();
+    const pubPeriod = typeof periodLabel === "function" ? periodLabel(pubMs[0], pubMs[pubMs.length - 1]) : `weeks of ${pubMs[0]} – ${pubMs[pubMs.length - 1]}`;
     const {
       merged,
       prior,
       y1
     } = publishWeeks(result, {
-      label: `${numWeeks} weeks from ${MO[startMonth]} ${startYear}, Generate & Publish`,
+      label: `${pubMs.length} weeks, ${pubPeriod}, Generate & Publish`,
       meta: {
         startMonth,
         startYear,
@@ -4874,6 +4933,15 @@ function CallSchedule() {
   const toggleSettingsCard = key => setOpenSettingsCards(p => _objectSpread(_objectSpread({}, p), {}, {
     [key]: !p[key]
   }));
+  const settingsCardKey = key => e => {
+    if (e.target !== e.currentTarget) return;
+    if (e.type === "keydown") {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        toggleSettingsCard(key);
+      } else if (e.key === " ") e.preventDefault();
+    } else if (e.type === "keyup" && e.key === " ") toggleSettingsCard(key);
+  };
   const loadSnapshots = async () => {
     setSnapshotsLoading(true);
     try {
@@ -5196,8 +5264,10 @@ function CallSchedule() {
           setSaveStatus("");
           return;
         }
+        const pubMs = Object.keys(weeks).sort();
+        const pubPeriod = typeof periodLabel === "function" ? periodLabel(pubMs[0], pubMs[pubMs.length - 1]) : `weeks of ${pubMs[0]} – ${pubMs[pubMs.length - 1]}`;
         publishWeeks(weeks, {
-          label: `${nW} weeks from ${MO[sM]} ${sY}${origin === "json" ? ", loaded from JSON" : ""}`,
+          label: `${pubMs.length} weeks, ${pubPeriod}${origin === "json" ? ", loaded from JSON" : ""}`,
           extra: needsOkN ? ` — ${needsOkN} item${needsOkN === 1 ? "" : "s"} reviewed in Needs your OK` : "",
           meta: {
             startMonth: sM,
@@ -6401,7 +6471,7 @@ function CallSchedule() {
     calendarHTML += `<div class="lg"><span><b class="dc-l">S</b> Service Wk</span><span><b class="ng-l">N</b> Night</span><span><b class="wk-l">W</b> Weekend</span><span><b class="ap-l">A</b> APP</span><span><b class="bk-l">B</b> Backup</span><span>⚡ Fierce Primary</span><span>🛡 Fierce Backup</span><span>🏖 Vacation</span></div>`;
     const icsJSON = JSON.stringify(icsMap);
     const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>DSG Call Schedule — ${MO[startMonth]} to ${MO[endMoIdx]} ${startYear}</title>
+<title>DSG Call Schedule — ${periodText}</title>
 <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;700&display=swap" rel="stylesheet">
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
@@ -6442,14 +6512,14 @@ body{font-family:'Outfit',sans-serif;background:#f0f2f5;color:#2c3e50;padding:16
 .footer{text-align:center;margin-top:20px;font-size:10px;color:#a0a8b0}
 @media print{body{background:#fff;padding:8px}.mo{break-inside:avoid}.cs{display:none}}
 ${"</"}style>${"</"}head><body>
-<div class="hd"><h1><span style="background:linear-gradient(135deg,#1a6fa8,#2488c8);color:#fff;padding:2px 8px;border-radius:5px;font-size:14px;font-weight:800;margin-right:8px">DSG</span> Davenport Surgical Group</h1><p>Call Schedule · ${MO[startMonth]} – ${MO[endMoIdx]} ${startYear} · ${mondays.length} Weeks</p></div>
+<div class="hd"><h1><span style="background:linear-gradient(135deg,#1a6fa8,#2488c8);color:#fff;padding:2px 8px;border-radius:5px;font-size:14px;font-weight:800;margin-right:8px">DSG</span> Davenport Surgical Group</h1><p>Call Schedule · ${periodText} · ${mondays.length} Weeks</p></div>
 <div class="cs"><div class="ct">📅 Add to Your Calendar</div><div class="cd-desc">Tap your name to download your shifts as a calendar file (.ics). Import into Google Calendar, Outlook, or Apple Calendar.</div><div class="cb">${calBtns}</div></div>
 <div class="ro">📋 Read-Only Calendar · Contact the scheduler for any changes</div>
 ${calendarHTML}
 <div class="footer">Generated ${new Date().toLocaleDateString()} · DSG Call Schedule</div>
 ${"<"}script>
 var D=${icsJSON};
-function dlCal(k){var c=D[k];if(!c){alert("Not found");return;}var f=k==="__full__"?"call-schedule-full.ics":"call-schedule-"+k.toLowerCase()+".ics";var b=new Blob([c],{type:"text/calendar;charset=utf-8"});var u=URL.createObjectURL(b);var a=document.createElement("a");a.href=u;a.download=f;a.click();URL.revokeObjectURL(u);}
+function dlCal(k){var c=D[k];if(!c){alert("Not found");return;}var f=k==="__full__"?"call-schedule-full.ics":"call-schedule-"+k.toLowerCase()+".ics";var b=new Blob([c],{type:"text/calendar;charset=utf-8"});var u=URL.createObjectURL(b);var a=document.createElement("a");a.href=u;a.download=f;document.body.appendChild(a);a.click();document.body.removeChild(a);setTimeout(function(){URL.revokeObjectURL(u);},1000);}
 ${"</"}script>${"</"}body>${"</"}html>`;
     const blob = new Blob([html], {
       type: "text/html"
@@ -6457,9 +6527,11 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `dsg-call-schedule-${MO[startMonth].toLowerCase()}-${MO[endMoIdx].toLowerCase()}-${startYear}.html`;
+    a.download = mondays.length ? `dsg-call-schedule-${fmt(mondays[0])}-to-${fmt(addD(mondays[mondays.length - 1], 6))}.html` : "dsg-call-schedule.html";
+    document.body.appendChild(a);
     a.click();
-    URL.revokeObjectURL(url);
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
   const tallySchedule = includeWeek => {
     const s = {};
@@ -7463,18 +7535,29 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     dayOffId: dayOffId,
     onCommit: paintSheet === "app" ? commitAppPaint : commitTimeOffPaint,
     onClose: () => setPaintSheet(null)
-  }), toast && React.createElement("div", {
+  }), React.createElement("div", {
     role: "status",
     "aria-live": "polite",
-    onClick: () => setToast(null),
     style: {
       position: "fixed",
-      left: "50%",
-      bottom: 24,
-      transform: "translateX(-50%)",
+      left: 0,
+      right: 0,
+      bottom: toastLift ? toastLift + 10 : "calc(env(safe-area-inset-bottom, 0px) + 24px)",
       zIndex: 9999,
-      maxWidth: "90vw",
-      background: toast.tone === "success" ? "#1a7a4a" : toast.tone === "error" ? "#a83232" : "#1a2a3a",
+      display: "flex",
+      flexDirection: "column",
+      alignItems: "center",
+      gap: 6,
+      pointerEvents: "none"
+    }
+  }, toasts.map(t => React.createElement("div", {
+    key: t.id,
+    onClick: () => dismissToast(t.id),
+    style: {
+      pointerEvents: "auto",
+      maxWidth: "min(90vw, 600px)",
+      boxSizing: "border-box",
+      background: t.tone === "success" ? "#1a7a4a" : t.tone === "error" ? "#a83232" : "#1a2a3a",
       color: "#fff",
       borderRadius: 9,
       padding: "10px 18px",
@@ -7485,7 +7568,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       cursor: "pointer",
       letterSpacing: 0.2
     }
-  }, toast.tone === "success" ? "✓ " : toast.tone === "error" ? "⚠ " : "", toast.msg), !isPublicMode && authUser && (schedSync.authNeeded || reauthNeeded) && React.createElement("div", {
+  }, typeof toastText === "function" ? toastText(t) : `${t.tone === "success" ? "✓ " : t.tone === "error" ? "⚠ " : ""}${t.msg}`))), !isPublicMode && authUser && (schedSync.authNeeded || reauthNeeded) && React.createElement("div", {
     role: "alert",
     style: {
       position: "fixed",
@@ -7740,6 +7823,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         select, input[type="date"], input[type="number"], input[type="text"], input[type="password"], input[type="email"] { background: #0f3460 !important; border-color: #2a3a5e !important; color: #e0e0f0 !important; }
         button { color: #c0c8d8 !important; }
         button[style*="background: linear-gradient"] { color: #fff !important; }
+        /* Secondary buttons: css.btn(false) in app-styles.js, a light grey fill the forced light text above could not be read on. As the browser writes it. */
+        button[style*="background: rgb(240, 242, 245)"] { background: #22304e !important; }
+        /* …and a dark border only where it is still css.btn(false)'s own grey (#c8d0d8): a button that sets its own border colour keeps it — ✕ Clear's red. */
+        button[style*="background: rgb(240, 242, 245)"][style*="rgb(200, 208, 216)"] { border-color: #3a4a6e !important; }
         /* Tables */
         table { color: #c0c0d0 !important; }
         th { color: #8a8aaa !important; }
@@ -7956,6 +8043,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     placeholder: "New password",
     value: newPassword,
     onChange: e => setNewPassword(e.target.value),
+    autoComplete: "new-password",
     style: _objectSpread(_objectSpread({}, css.inp), {}, {
       width: "100%",
       padding: "10px 12px",
@@ -7966,6 +8054,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     placeholder: "Confirm new password",
     value: newPasswordConfirm,
     onChange: e => setNewPasswordConfirm(e.target.value),
+    autoComplete: "new-password",
     onKeyDown: e => {
       if (e.key === "Enter") {
         if (!newPassword || newPassword.length < 6) {
@@ -7990,6 +8079,9 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             alert("Password updated! Please sign in with your new password.");
             auth.signOut();
           }
+        }).catch(e => {
+          setAuthBusy(false);
+          setAuthError(typeof authErrorText === "function" ? authErrorText(e) : e && e.message || "Something went wrong — please try again.");
         });
       }
     },
@@ -8031,6 +8123,9 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           alert("Password updated! Please sign in with your new password.");
           auth.signOut();
         }
+      }).catch(e => {
+        setAuthBusy(false);
+        setAuthError(typeof authErrorText === "function" ? authErrorText(e) : e && e.message || "Something went wrong — please try again.");
       });
     },
     disabled: authBusy,
@@ -8085,6 +8180,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     placeholder: "Email address",
     value: resetEmail,
     onChange: e => setResetEmail(e.target.value),
+    autoComplete: "username",
+    inputMode: "email",
+    autoCapitalize: "none",
+    autoCorrect: "off",
     onKeyDown: e => {
       if (e.key === "Enter" && resetEmail) {
         setAuthBusy(true);
@@ -8096,6 +8195,9 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           } else {
             setResetSent(true);
           }
+        }).catch(e => {
+          setAuthBusy(false);
+          setAuthError(typeof authErrorText === "function" ? authErrorText(e) : e && e.message || "Something went wrong — please try again.");
         });
       }
     },
@@ -8128,6 +8230,9 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         } else {
           setResetSent(true);
         }
+      }).catch(e => {
+        setAuthBusy(false);
+        setAuthError(typeof authErrorText === "function" ? authErrorText(e) : e && e.message || "Something went wrong — please try again.");
       });
     },
     disabled: authBusy,
@@ -8169,6 +8274,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     placeholder: "Email address",
     value: authEmail,
     onChange: e => setAuthEmail(e.target.value),
+    autoComplete: "username",
+    inputMode: "email",
+    autoCapitalize: "none",
+    autoCorrect: "off",
     onKeyDown: e => e.key === "Enter" && handleAuthSubmit(),
     style: _objectSpread(_objectSpread({}, css.inp), {}, {
       width: "100%",
@@ -8180,6 +8289,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     placeholder: "Password",
     value: authPassword,
     onChange: e => setAuthPassword(e.target.value),
+    autoComplete: authMode === "login" ? "current-password" : "new-password",
     onKeyDown: e => e.key === "Enter" && handleAuthSubmit(),
     style: _objectSpread(_objectSpread({}, css.inp), {}, {
       width: "100%",
@@ -8367,7 +8477,9 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       fontFamily: font
     }
   }, "DSG")), React.createElement("div", null, React.createElement("h1", {
-    style: css.h1
+    style: dk ? _objectSpread(_objectSpread({}, css.h1), {}, {
+      color: dkText
+    }) : css.h1
   }, isPublicMode ? "DSG Call Schedule" : "Davenport Surgical Group"), React.createElement("p", {
     style: css.sub
   }, isPublicMode ? React.createElement(React.Fragment, null, React.createElement("span", {
@@ -8849,33 +8961,12 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         msg: `${pendingCount} pending vacation request${pendingCount === 1 ? "" : "s"} awaiting review`
       });
     }
-    if (mondays.length > 0) {
-      const periodStart = mondays[0];
-      const periodEnd = addD(mondays[mondays.length - 1], 6);
-      const years = new Set([periodStart.getFullYear() - 1, periodStart.getFullYear(), periodEnd.getFullYear()]);
-      years.forEach(y => {
-        let defs = [];
-        try {
-          const h = getHolidays(y);
-          defs = [...h.major, ...h.minor];
-        } catch (e) {
-          console.warn("Holiday preset lookup failed:", e);
-        }
-        defs.forEach(hol => {
-          const hd = parse(hol.date);
-          if (hd >= periodStart && hd <= periodEnd) {
-            const yrA = holidayAssignments[String(y)] || [];
-            const match = yrA.find(a => a.date === hol.date);
-            if (!match || !match.surgeonA) {
-              issues.push({
-                sev: "warn",
-                msg: `${hol.name} (${hol.date}) — no surgeon assigned`
-              });
-            }
-          }
-        });
+    (typeof periodHolidayGaps === "function" ? periodHolidayGaps(mondays, holidayAssignments, getHolidays) : []).forEach(g => {
+      issues.push({
+        sev: "warn",
+        msg: `${g.name} (${g.date}) — no surgeon assigned`
       });
-    }
+    });
     if (issues.length === 0) return null;
     const sevColor = sev => sev === "error" ? "#a82020" : sev === "warn" ? "#a05010" : "#506070";
     const sevIcon = sev => sev === "error" ? "❗" : sev === "warn" ? "🚩" : "ℹ️";
@@ -9007,6 +9098,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       letterSpacing: 0.5
     })
   }), React.createElement("button", {
+    "aria-label": `Remove surgeon ${s.name}`,
     onClick: () => removeSurgeon(s.id),
     style: {
       background: "none",
@@ -9015,7 +9107,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       cursor: "pointer",
       fontSize: 14,
       flexShrink: 0,
-      padding: "0 2px"
+      padding: "6px 8px"
     }
   }, "✕"))))), React.createElement(Collapsible, {
     css: css,
@@ -9110,6 +9202,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       letterSpacing: 0.5
     })
   }), React.createElement("button", {
+    "aria-label": `Remove APP ${a.name}`,
     onClick: () => removeApp(a.id),
     style: {
       background: "none",
@@ -9118,7 +9211,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       cursor: "pointer",
       fontSize: 14,
       flexShrink: 0,
-      padding: "0 2px"
+      padding: "6px 8px"
     }
   }, "✕"))))), React.createElement("div", {
     style: css.card
@@ -10147,7 +10240,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       fontSize: 12
     }
   }, "✕"))))), React.createElement("div", {
-    style: css.card
+    style: css.card,
+    "data-setup-holidays": "1"
   }, React.createElement("div", {
     style: css.cardT
   }, "📅 Holiday Call Assignments"), React.createElement("p", {
@@ -10626,7 +10720,85 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         opacity: alreadyAtNext ? 0.5 : 1
       })
     }, alreadyAtNext ? "✓ Set" : `→ Continue from ${MO[nextMonday.getMonth()].slice(0, 3)} ${nextMonday.getDate()}`));
-  })())), (() => {
+  })()), mondays.length > 0 && (() => {
+    const seam = typeof periodSeam === "function" ? periodSeam(Object.keys(schedule).filter(m => schedule[m]), mondays, fmt(new Date())) : {
+      overlap: 0,
+      started: false,
+      over: false,
+      gap: null,
+      after: null
+    };
+    const weeksTxt = n => `${n} week${n === 1 ? "" : "s"}`;
+    const seamLines = [];
+    if (seam.overlap > 0) seamLines.push({
+      ok: false,
+      text: `⚠ Overlaps ${seam.overlap} published week${seam.overlap === 1 ? "" : "s"} — publishing replaces ${seam.overlap === 1 ? "it" : "them"}`
+    });
+    if (seam.gap > 0) seamLines.push({
+      ok: false,
+      text: `⚠ Leaves a gap of ${weeksTxt(seam.gap)} after ${monthDayLabel(seam.after, true)}, the last published day before it`
+    });
+    if (seam.overlap === 0 && seam.gap === 0) seamLines.push({
+      ok: true,
+      text: "✓ Continues from the published schedule"
+    });
+    if (seam.over) seamLines.push({
+      ok: false,
+      text: "⚠ This whole period is already over"
+    });else if (seam.started) seamLines.push({
+      ok: false,
+      text: "⚠ This period has already started"
+    });
+    const holGaps = typeof periodHolidayGaps === "function" ? periodHolidayGaps(mondays, holidayAssignments, getHolidays) : [];
+    const holText = holGaps.map(g => `${g.name} (${monthDayLabel(g.date, true)})`).join(", ");
+    const toHolidays = () => {
+      setHolidayYear(holGaps[0].year);
+      setView("setup");
+      setTimeout(() => {
+        const el = document.querySelector('[data-setup-holidays="1"]');
+        if (el && el.scrollIntoView) el.scrollIntoView({
+          behavior: "smooth",
+          block: "start"
+        });
+      }, 60);
+    };
+    return React.createElement("div", {
+      style: {
+        marginTop: 10,
+        paddingTop: 10,
+        borderTop: `1px solid ${dk ? "#2a3a5e" : "#e8ecf0"}`,
+        fontSize: 12,
+        lineHeight: 1.6
+      }
+    }, React.createElement("div", {
+      style: {
+        color: dk ? "#e0e0f0" : "#2c3e50"
+      }
+    }, React.createElement("strong", null, "This period:"), " ", periodText, " · ", weeksTxt(mondays.length)), seamLines.map((l, i) => React.createElement("div", {
+      key: i,
+      style: {
+        fontWeight: 600,
+        color: l.ok ? dk ? "#8ad0a0" : "#1a8040" : dk ? "#f0c890" : "#a05010"
+      }
+    }, l.text)), holGaps.length > 0 && React.createElement("div", {
+      role: "status",
+      style: {
+        marginTop: 8,
+        background: dk ? "#3a2410" : "#fdf0e3",
+        border: "1px solid #d09050",
+        borderRadius: 8,
+        padding: "8px 12px",
+        color: dk ? "#f0c890" : "#7a4010"
+      }
+    }, React.createElement("div", null, "⚠ No holiday card for ", holText, ". Generating now gives ", holGaps.length === 1 ? "it" : "them", " no holiday 24h coverage."), React.createElement("button", {
+      onClick: toHolidays,
+      style: _objectSpread(_objectSpread({}, css.btn(false)), {}, {
+        marginTop: 6,
+        padding: "6px 12px",
+        fontSize: 12
+      })
+    }, "Set up ", holGaps[0].year, " holidays in Setup →")));
+  })()), (() => {
     const slotLabels = {
       dc: "Service Week",
       mon: "Mon Night",
@@ -12926,11 +13098,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           style: {
             color: surgeonColors((_sMap$e$surgeon11 = sMap[e.surgeon]) === null || _sMap$e$surgeon11 === void 0 ? void 0 : _sMap$e$surgeon11.name, (_sMap$e$surgeon12 = sMap[e.surgeon]) === null || _sMap$e$surgeon12 === void 0 ? void 0 : _sMap$e$surgeon12.idx).tx || "#4a5868"
           }
-        }, ((_sMap$e$surgeon13 = sMap[e.surgeon]) === null || _sMap$e$surgeon13 === void 0 ? void 0 : _sMap$e$surgeon13.name) || "?"), React.createElement("span", {
+        }, ((_sMap$e$surgeon13 = sMap[e.surgeon]) === null || _sMap$e$surgeon13 === void 0 ? void 0 : _sMap$e$surgeon13.name) || "?"), " ", React.createElement("span", {
           style: {
             color: "#a07030",
-            fontSize: 8,
-            marginLeft: 2
+            fontSize: 8
           }
         }, e.hours));
       }), (() => {
@@ -13124,6 +13295,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       role: "dialog",
       "aria-modal": "true",
       "aria-label": `${title} — details`,
+      "data-toast-floor": "1",
       onClick: e => e.stopPropagation(),
       style: {
         width: "100%",
@@ -13320,6 +13492,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     ck: "cal_tools",
     defaultOpen: false,
     forceOpen: !!swapSuggestions,
+    heldNote: "Close the swap options to collapse",
     title: "🔧 Schedule Tools & Export",
     style: {
       background: "transparent",
@@ -13434,21 +13607,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     })
   }, React.createElement("option", {
     value: ""
-  }, "Select a week in ", MO[calMonth], " ", calYear, "…"), (() => {
-    const first = new Date(calYear, calMonth, 1);
-    let mon = new Date(first);
-    if (mon.getDay() !== 1) {
-      const dow = mon.getDay();
-      const offset = dow === 0 ? 1 : 8 - dow;
-      mon = addD(mon, offset);
-    }
-    const results = [];
-    while (mon.getMonth() === calMonth && mon.getFullYear() === calYear) {
-      results.push(fmt(mon));
-      mon = addD(mon, 7);
-    }
-    return results;
-  })().map(m => {
+  }, "Select a week in ", MO[calMonth], " ", calYear, "…"), (typeof calMonthWeekMondays === "function" ? calMonthWeekMondays(calYear, calMonth) : []).map(m => {
     const mon = parse(m);
     const sun = addD(mon, 6);
     const exists = !!schedule[m];
@@ -14449,7 +14608,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     style: css.card
   }, React.createElement("div", {
     style: css.cardT
-  }, statsScope === "ytd" ? React.createElement(React.Fragment, null, "Current Period — ", ytdRange.start, " → ", ytdRange.end) : React.createElement(React.Fragment, null, "This Period — ", MO[startMonth], " to ", MO[endMoIdx], " ", startYear)), !Object.values(statsScope === "ytd" ? statsYTD : stats).some(s => s.dc > 0 || s.nights > 0) ? React.createElement("p", {
+  }, statsScope === "ytd" ? React.createElement(React.Fragment, null, "Current Period — ", ytdRange.start, " → ", ytdRange.end) : React.createElement(React.Fragment, null, "This Period — ", periodText)), !Object.values(statsScope === "ytd" ? statsYTD : stats).some(s => s.dc > 0 || s.nights > 0) ? React.createElement("p", {
     style: {
       color: "#7a8a98",
       fontSize: 13
@@ -15423,12 +15582,39 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     value: s.id
   }, s.name)), aMap[mySurgeon] && React.createElement("option", {
     value: aMap[mySurgeon].id
-  }, aMap[mySurgeon].name)), mineId && React.createElement("button", {
-    onClick: () => downloadMyCal(mineId),
-    style: _objectSpread(_objectSpread({}, css.btn(true)), {}, {
-      padding: "8px 18px"
-    })
-  }, "📅 ", mineViewId ? `Download ${((_sMap$mineViewId2 = sMap[mineViewId]) === null || _sMap$mineViewId2 === void 0 ? void 0 : _sMap$mineViewId2.name) || mineViewId}'s Calendar` : "Download My Calendar", " (.ics)"))), mineId && Object.keys(schedule).length > 0 && ((_sMap$myId, _aMap$myId) => {
+  }, aMap[mySurgeon].name)), (_sMap$mineViewId2 => {
+    const mineFeed = !mineViewId && sMap[mySurgeon] && typeof calendarFeedUrls === "function" ? calendarFeedUrls(SUPABASE_URL, sMap[mySurgeon].name) : null;
+    const dkBtn = dk ? {
+      background: "#0f3460",
+      color: "#e0e0f0",
+      border: "1px solid #2a3a5e"
+    } : {};
+    return React.createElement(React.Fragment, null, mineFeed && React.createElement(React.Fragment, null, React.createElement("a", {
+      href: mineFeed.webcal,
+      style: _objectSpread(_objectSpread({}, css.btn(true)), {}, {
+        padding: "8px 18px",
+        textDecoration: "none",
+        display: "inline-block"
+      })
+    }, "📅 Subscribe in Calendar"), React.createElement("button", {
+      onClick: () => copyText(mineFeed.https, "my"),
+      style: _objectSpread(_objectSpread({}, css.btn(false)), {}, {
+        padding: "8px 14px"
+      }, dkBtn)
+    }, copiedUrl === "my" ? "✓ Copied" : "Copy link")), mineId && React.createElement("button", {
+      onClick: () => downloadMyCal(mineId),
+      style: _objectSpread(_objectSpread({}, css.btn(!mineFeed)), {}, {
+        padding: "8px 18px"
+      }, mineFeed ? dkBtn : {})
+    }, "📥 ", mineViewId ? `Download a one-time copy of ${((_sMap$mineViewId2 = sMap[mineViewId]) === null || _sMap$mineViewId2 === void 0 ? void 0 : _sMap$mineViewId2.name) || mineViewId}'s calendar` : "Download a one-time copy", " (.ics)"), mineFeed && React.createElement("div", {
+      style: {
+        flexBasis: "100%",
+        fontSize: 11,
+        color: dk ? "#9aa0b8" : "#5a6a78",
+        lineHeight: 1.5
+      }
+    }, "Subscribed, your calendar updates itself when the schedule changes. On Android or in Google Calendar: Copy link, then Other calendars (+) → From URL. A downloaded copy never updates, and importing it again adds every shift twice."));
+  })())), mineId && Object.keys(schedule).length > 0 && ((_sMap$myId, _aMap$myId) => {
     const myId = mineId;
     const myName = ((_sMap$myId = sMap[myId]) === null || _sMap$myId === void 0 ? void 0 : _sMap$myId.name) || ((_aMap$myId = aMap[myId]) === null || _aMap$myId === void 0 ? void 0 : _aMap$myId.name) || "?";
     const myVacs = vacations[myId] || [];
@@ -16598,12 +16784,20 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     style: _objectSpread(_objectSpread({}, css.inp), {}, {
       width: 150
     })
-  })), React.createElement("button", {
-    onClick: submitVacRequest,
-    style: _objectSpread(_objectSpread({}, css.btn(true)), {}, {
-      padding: "7px 18px"
-    })
-  }, "Submit Request")), React.createElement("div", null, React.createElement("label", {
+  }))), (() => {
+    const sum = typeof rangeSummary === "function" ? rangeSummary(vacReqStart, vacReqEnd) : null;
+    return sum ? React.createElement("div", {
+      style: {
+        fontSize: 12,
+        color: dk ? "#9aa0b8" : "#5a6a78",
+        margin: "0 0 8px"
+      }
+    }, sum) : null;
+  })(), React.createElement("div", {
+    style: {
+      marginBottom: 10
+    }
+  }, React.createElement("label", {
     style: {
       fontSize: 11,
       color: "#7a8a98",
@@ -16618,7 +16812,16 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       width: "100%",
       maxWidth: 400
     })
-  }))), (() => {
+  })), React.createElement("button", {
+    onClick: submitVacRequest,
+    disabled: vacSubmitting,
+    style: _objectSpread(_objectSpread({}, css.btn(true)), {}, {
+      padding: "7px 18px"
+    }, vacSubmitting ? {
+      opacity: 0.6,
+      cursor: "default"
+    } : {})
+  }, vacSubmitting ? "Sending…" : "Submit Request")), (() => {
     const pending = myVacRequests.filter(r => r.status === "pending");
     const reviewed = myVacRequests.filter(r => r.status !== "pending");
     const pendingGroups = {};
@@ -17333,7 +17536,13 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     }
   }, "Trade with"), React.createElement("select", {
     value: tradeTo,
-    onChange: e => setTradeTo(e.target.value),
+    onChange: e => {
+      setTradeTo(e.target.value);
+      if (!isScheduler) {
+        setTradeReturnWeek("");
+        setTradeReturnShift("");
+      }
+    },
     style: _objectSpread(_objectSpread({}, css.inp), {}, {
       width: 100
     })
@@ -17353,14 +17562,14 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     value: tradeWeek,
     onChange: e => setTradeWeek(e.target.value),
     style: _objectSpread(_objectSpread({}, css.inp), {}, {
-      width: 140
+      width: 190
     })
   }, React.createElement("option", {
     value: ""
   }, "Select…"), Object.keys(schedule).sort().filter(m => fmt(addD(parse(m), 6)) >= todayStr).map(m => React.createElement("option", {
     key: m,
     value: m
-  }, m, m <= todayStr ? " (this week)" : "")))), React.createElement("div", null, React.createElement("label", {
+  }, "Wk of ", typeof monthDayLabel === "function" ? monthDayLabel(m, m.slice(0, 4) !== todayStr.slice(0, 4)) : m, m <= todayStr ? " (this week)" : "")))), React.createElement("div", null, React.createElement("label", {
     style: {
       fontSize: 10,
       color: "#7a8a98",
@@ -17371,14 +17580,18 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     value: tradeShift,
     onChange: e => setTradeShift(e.target.value),
     style: _objectSpread(_objectSpread({}, css.inp), {}, {
-      width: 130
+      width: 190
     })
   }, React.createElement("option", {
     value: ""
-  }, "Select…"), ALL_SHIFT_KEYS.map(sk => React.createElement("option", {
-    key: sk,
-    value: sk
-  }, tradeWeek ? slotLabel(tradeWeek, sk) : SHIFT_LABELS[sk]))))) : React.createElement("div", null, React.createElement("label", {
+  }, "Select…"), ALL_SHIFT_KEYS.map(sk => {
+    var _sMap$h;
+    const h = tradeWeek && typeof tradeSlotHolder === "function" ? tradeSlotHolder(schedule, tradeWeek, sk) : "";
+    return React.createElement("option", {
+      key: sk,
+      value: sk
+    }, h ? `${((_sMap$h = sMap[h]) === null || _sMap$h === void 0 ? void 0 : _sMap$h.name) || h} · ` : "", tradeWeek ? slotLabel(tradeWeek, sk) : SHIFT_LABELS[sk]);
+  })))) : React.createElement("div", null, React.createElement("label", {
     style: {
       fontSize: 10,
       color: "#7a8a98",
@@ -17445,14 +17658,14 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     value: tradeReturnWeek,
     onChange: e => setTradeReturnWeek(e.target.value),
     style: _objectSpread(_objectSpread({}, css.inp), {}, {
-      width: 140
+      width: 190
     })
   }, React.createElement("option", {
     value: ""
   }, "Select…"), Object.keys(schedule).sort().filter(m => fmt(addD(parse(m), 6)) >= todayStr).map(m => React.createElement("option", {
     key: m,
     value: m
-  }, m, m <= todayStr ? " (this week)" : "")))), React.createElement("div", null, React.createElement("label", {
+  }, "Wk of ", typeof monthDayLabel === "function" ? monthDayLabel(m, m.slice(0, 4) !== todayStr.slice(0, 4)) : m, m <= todayStr ? " (this week)" : "")))), React.createElement("div", null, React.createElement("label", {
     style: {
       fontSize: 10,
       color: "#7a8a98",
@@ -17463,14 +17676,18 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     value: tradeReturnShift,
     onChange: e => setTradeReturnShift(e.target.value),
     style: _objectSpread(_objectSpread({}, css.inp), {}, {
-      width: 130
+      width: 190
     })
   }, React.createElement("option", {
     value: ""
-  }, "Select…"), ALL_SHIFT_KEYS.map(sk => React.createElement("option", {
-    key: sk,
-    value: sk
-  }, tradeReturnWeek ? slotLabel(tradeReturnWeek, sk) : SHIFT_LABELS[sk]))))) : React.createElement("div", null, React.createElement("label", {
+  }, "Select…"), ALL_SHIFT_KEYS.map(sk => {
+    var _sMap$h2;
+    const h = tradeReturnWeek && typeof tradeSlotHolder === "function" ? tradeSlotHolder(schedule, tradeReturnWeek, sk) : "";
+    return React.createElement("option", {
+      key: sk,
+      value: sk
+    }, h ? `${((_sMap$h2 = sMap[h]) === null || _sMap$h2 === void 0 ? void 0 : _sMap$h2.name) || h} · ` : "", tradeReturnWeek ? slotLabel(tradeReturnWeek, sk) : SHIFT_LABELS[sk]);
+  })))) : React.createElement("div", null, React.createElement("label", {
     style: {
       fontSize: 10,
       color: "#7a8a98",
@@ -17524,12 +17741,51 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     }, o.label)));
   })()), React.createElement("button", {
     onClick: submitTradeRequest,
+    disabled: tradeSubmitting,
     style: _objectSpread(_objectSpread({}, css.btn(true)), {}, {
       padding: "7px 18px",
       background: "linear-gradient(135deg,#6030a0,#8050c0)",
       borderColor: "#6030a0"
-    })
-  }, "Propose Trade")), silvisActive && tradeFrom && tradeTo && tradeWeek && tradeShift && (() => {
+    }, tradeSubmitting ? {
+      opacity: 0.6,
+      cursor: "default"
+    } : {})
+  }, tradeSubmitting ? "Sending…" : "Propose Trade")), (() => {
+    const notes = isScheduler && typeof tradePickNotes === "function" ? tradePickNotes(schedule, {
+      from: tradeFrom,
+      to: tradeTo,
+      week: tradeWeek,
+      shift: tradeShift,
+      returnWeek: tradeReturnWeek,
+      returnShift: tradeReturnShift
+    }, id => {
+      var _sMap$id3;
+      return ((_sMap$id3 = sMap[id]) === null || _sMap$id3 === void 0 ? void 0 : _sMap$id3.name) || id;
+    }) : [];
+    return notes.length ? React.createElement("div", {
+      style: {
+        marginBottom: 10,
+        padding: "8px 12px",
+        background: dk ? "#2a1a0a" : "#fef8e8",
+        border: `1px solid ${dk ? "#5a4520" : "#e8d090"}`,
+        borderRadius: 8
+      }
+    }, React.createElement("div", {
+      style: {
+        fontSize: 12,
+        fontWeight: 700,
+        color: dk ? "#e0c070" : "#8a6a10",
+        marginBottom: 4
+      }
+    }, "⚠️ This trade couldn't be accepted as picked:"), notes.map((n, i) => React.createElement("div", {
+      key: i,
+      style: {
+        fontSize: 11,
+        color: dk ? "#e8d8b0" : "#5a4a10",
+        paddingLeft: 8
+      }
+    }, "• ", n))) : null;
+  })(), silvisActive && tradeFrom && tradeTo && tradeWeek && tradeShift && (() => {
     const previewReq = {
       from_surgeon_id: tradeFrom,
       to_surgeon_id: tradeTo,
@@ -17888,13 +18144,15 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       color: "#5a6a78"
     }
   }, "Theme"), React.createElement("button", {
-    onClick: () => setDarkMode(d => !d),
+    onClick: () => setDarkMode(false),
+    "aria-pressed": !darkMode,
     style: _objectSpread(_objectSpread({}, css.btn(!darkMode)), {}, {
       padding: "6px 16px",
       fontSize: 12
     })
   }, "☀️ Light"), React.createElement("button", {
-    onClick: () => setDarkMode(d => !d),
+    onClick: () => setDarkMode(true),
+    "aria-pressed": darkMode,
     style: _objectSpread(_objectSpread({}, css.btn(darkMode)), {}, {
       padding: "6px 16px",
       fontSize: 12
@@ -18321,7 +18579,12 @@ ${"</"}script>${"</"}body>${"</"}html>`;
   })))))), (isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.role) === "admin") && React.createElement("div", {
     style: css.card
   }, React.createElement("div", {
+    role: "button",
+    tabIndex: 0,
+    "aria-expanded": !!openSettingsCards.officeNotif,
     onClick: () => toggleSettingsCard("officeNotif"),
+    onKeyDown: settingsCardKey("officeNotif"),
+    onKeyUp: settingsCardKey("officeNotif"),
     style: _objectSpread(_objectSpread({}, css.cardT), {}, {
       margin: openSettingsCards.officeNotif ? "0 0 12px" : 0,
       cursor: "pointer",
@@ -18331,6 +18594,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       userSelect: "none"
     })
   }, React.createElement("span", null, "📧 Office Notifications"), React.createElement("span", {
+    "aria-hidden": "true",
     style: {
       fontSize: 12,
       color: "#7a8a98"
@@ -18640,7 +18904,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
   }, "Period Label (shown in subject line)"), React.createElement("input", {
     value: publishLabel,
     onChange: e => setPublishLabel(e.target.value),
-    placeholder: "e.g. Aug 11 – Nov 15",
+    placeholder: "e.g. Nov 16, 2026 – Feb 21, 2027",
     style: _objectSpread(_objectSpread({}, css.inp), {}, {
       width: "100%",
       marginBottom: 16
@@ -18668,7 +18932,12 @@ ${"</"}script>${"</"}body>${"</"}html>`;
   }, officeNotifBusy ? "Sending…" : "Send Emails")))))), React.createElement("div", {
     style: css.card
   }, React.createElement("div", {
+    role: "button",
+    tabIndex: 0,
+    "aria-expanded": !!openSettingsCards.notifSettings,
     onClick: () => toggleSettingsCard("notifSettings"),
+    onKeyDown: settingsCardKey("notifSettings"),
+    onKeyUp: settingsCardKey("notifSettings"),
     style: _objectSpread(_objectSpread({}, css.cardT), {}, {
       margin: openSettingsCards.notifSettings ? "0 0 12px" : 0,
       cursor: "pointer",
@@ -18678,6 +18947,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       userSelect: "none"
     })
   }, React.createElement("span", null, "🔔 Notification Settings"), React.createElement("span", {
+    "aria-hidden": "true",
     style: {
       fontSize: 12,
       color: "#7a8a98"
@@ -18910,10 +19180,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     }
   }, "📧 Email Notifications"), mySurgeon && mySurgeon !== "admin" && (() => {
     const myPref = notifPrefs[mySurgeon] || {};
-    const HourPicker = ({
-      field,
-      label
-    }) => React.createElement("div", {
+    const hourPicker = (field, label) => React.createElement("div", {
       style: {
         display: "flex",
         alignItems: "center",
@@ -19091,20 +19358,22 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         color: "#5a6a78",
         marginBottom: 6
       }
-    }, "Reminder Times"), React.createElement(HourPicker, {
-      field: "daily_reminder_hour",
-      label: "Daily call reminder"
-    }), React.createElement(HourPicker, {
-      field: "vac_deadline_hour",
-      label: "Vacation deadline reminder"
-    }), React.createElement("p", {
+    }, "Reminder Times (Central time)"), hourPicker("daily_reminder_hour", "Daily call reminder"), hourPicker("vac_deadline_hour", "Vacation deadline reminder"), React.createElement("p", {
       style: {
         fontSize: 10,
         color: "#8a94a0",
         margin: "4px 0 0",
         fontStyle: "italic"
       }
-    }, "Reminders fire only on days you're on call (for call reminder) or 2 days before the vacation deadline."));
+    }, "Reminders fire only on days you're on call (for call reminder) or 2 days before the vacation deadline."), React.createElement("div", {
+      "aria-live": "polite",
+      style: {
+        fontSize: 10,
+        color: dk ? "#8ad0a0" : "#1a8040",
+        marginTop: 6,
+        minHeight: 14
+      }
+    }, notifPrefsSaving ? "Saving…" : notifPrefsSaved && notifPrefsSaved.id === mySurgeon ? "Saved ✓" : ""));
   })(), isScheduler && React.createElement("div", {
     style: {
       marginTop: 12,
@@ -19349,7 +19618,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     style: css.card
   }, React.createElement("div", {
     style: css.cardT
-  }, "📅 Live Calendar Sync"), React.createElement("p", {
+  }, "📅 Live Calendar Sync"), (isScheduler || !!sMap[mySurgeon] && typeof calendarFeedUrls === "function") && React.createElement(React.Fragment, null, React.createElement("p", {
     style: {
       fontSize: 12,
       color: "#5a6a78",
@@ -19362,10 +19631,17 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       color: "#7a8a98",
       marginBottom: 8
     }
-  }, React.createElement("strong", null, "How to subscribe:"), " In Google Calendar: Other calendars (+) → From URL → paste the link below."), mySurgeon && mySurgeon !== "admin" && (_find3 => {
-    const myName = (_find3 = [...surgeons, ...apps].find(p => p.id === mySurgeon)) === null || _find3 === void 0 ? void 0 : _find3.name;
-    if (!myName) return null;
-    const myUrl = `${SUPABASE_URL}/functions/v1/calendar-sync?surgeon=${myName}`;
+  }, React.createElement("strong", null, "How to subscribe:"), " In Google Calendar: Other calendars (+) → From URL → paste the link below.")), mySurgeon && mySurgeon !== "admin" && (() => {
+    const myFeed = sMap[mySurgeon] && typeof calendarFeedUrls === "function" ? calendarFeedUrls(SUPABASE_URL, sMap[mySurgeon].name) : null;
+    if (!myFeed) return aMap[mySurgeon] ? React.createElement("div", {
+      style: {
+        fontSize: 11,
+        color: dk ? "#9aa0b8" : "#5a6a78",
+        lineHeight: 1.5,
+        marginBottom: 10
+      }
+    }, "The live feed covers surgeon call only, so there's no link for APP days yet. For a copy of yours, use Mine → 📥 Download a one-time copy (.ics).") : null;
+    const myUrl = myFeed.https;
     return React.createElement("div", {
       style: {
         marginBottom: 10
@@ -19470,13 +19746,19 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       fontWeight: 600,
       marginLeft: 6
     }
-  }, "URL copied to clipboard"))), React.createElement("p", {
+  }, "URL copied to clipboard"))), isScheduler ? React.createElement("p", {
     style: {
       fontSize: 10,
       color: "#8a94a0",
       marginTop: 6
     }
-  }, isScheduler ? "Click a name to copy their subscribe URL." : "Paste this URL into your calendar app to subscribe.", " Requires deploying the calendar-sync Edge Function.")), React.createElement("div", {
+  }, "Click a name to copy their subscribe URL. Requires deploying the calendar-sync Edge Function.") : sMap[mySurgeon] ? React.createElement("p", {
+    style: {
+      fontSize: 10,
+      color: "#8a94a0",
+      marginTop: 6
+    }
+  }, "Paste this URL into your calendar app to subscribe.") : null), React.createElement("div", {
     style: css.card
   }, React.createElement("div", {
     style: css.cardT
@@ -19568,7 +19850,12 @@ ${"</"}script>${"</"}body>${"</"}html>`;
   }, "Reset All Data"))), (isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.role) === "admin") && React.createElement("div", {
     style: css.card
   }, React.createElement("div", {
+    role: "button",
+    tabIndex: 0,
+    "aria-expanded": !!openSettingsCards.restoreSnap,
     onClick: () => toggleSettingsCard("restoreSnap"),
+    onKeyDown: settingsCardKey("restoreSnap"),
+    onKeyUp: settingsCardKey("restoreSnap"),
     style: _objectSpread(_objectSpread({}, css.cardT), {}, {
       margin: openSettingsCards.restoreSnap ? "0 0 12px" : 0,
       cursor: "pointer",
@@ -19578,6 +19865,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       userSelect: "none"
     })
   }, React.createElement("span", null, "📼 Restore from Snapshot"), React.createElement("span", {
+    "aria-hidden": "true",
     style: {
       fontSize: 12,
       color: "#7a8a98"
@@ -20238,6 +20526,7 @@ function MonthPainterSheet({
       })
     }, o.kind === "vacation" ? "🏖" : o.kind === "nocall" ? "🚫" : "☕", personName(o.id))))));
   })), React.createElement("div", {
+    "data-toast-floor": "1",
     style: {
       background: panelBg,
       borderTop: `1px solid ${border}`,
@@ -22245,6 +22534,7 @@ function Collapsible({
   ck,
   defaultOpen = false,
   forceOpen = false,
+  heldNote = null,
   summary = null,
   children,
   css,
@@ -22274,18 +22564,47 @@ function Collapsible({
     });
   };
   const shown = open || forceOpen;
+  const ownKey = e => e.target === e.currentTarget;
+  const onHeadKeyDown = e => {
+    if (!ownKey(e)) return;
+    if (e.key === "Enter") {
+      e.preventDefault();
+      toggle();
+    } else if (e.key === " ") e.preventDefault();
+  };
+  const onHeadKeyUp = e => {
+    if (ownKey(e) && e.key === " ") toggle();
+  };
   return React.createElement("div", {
     style: style ? _objectSpread(_objectSpread({}, css.card), style) : css.card
   }, React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 8
+    }
+  }, React.createElement("div", {
+    role: "button",
+    tabIndex: 0,
+    "aria-expanded": shown,
+    "aria-disabled": forceOpen || undefined,
     onClick: toggle,
+    onKeyDown: onHeadKeyDown,
+    onKeyUp: onHeadKeyUp,
     style: {
       display: "flex",
       alignItems: "center",
       gap: 8,
-      cursor: "pointer",
-      userSelect: "none"
+      flex: 1,
+      minWidth: 0,
+      cursor: forceOpen ? "default" : "pointer",
+      userSelect: "none",
+      padding: "9px 0",
+      margin: "-9px 0",
+      minHeight: 36
     }
   }, React.createElement("span", {
+    "aria-hidden": "true",
     style: {
       fontSize: 11,
       color: "#8a94a0",
@@ -22300,7 +22619,13 @@ function Collapsible({
       marginBottom: 0,
       flex: 1
     })
-  }, title), right), !shown && summary != null && React.createElement("div", {
+  }, title)), right), forceOpen && heldNote && React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: "#8a94a0",
+      marginTop: 4
+    }
+  }, heldNote), !shown && summary != null && React.createElement("div", {
     style: {
       marginTop: 10
     }
