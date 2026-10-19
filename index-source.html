@@ -11770,7 +11770,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                         })()}
                         {canAnswer(r) && (
                           <>
-                            <button onClick={()=>acceptTradeRequest(r)} style={{background:"#e8f8e8",border:"1px solid #a0d8a0",color:"#1a8040",borderRadius:6,padding:"3px 10px",fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:font}}>✓ Accept</button>
+                            {tradeLegsNotStarted(r) && <button onClick={()=>acceptTradeRequest(r)} style={{background:"#e8f8e8",border:"1px solid #a0d8a0",color:"#1a8040",borderRadius:6,padding:"3px 10px",fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:font}}>✓ Accept</button>}
                             <button onClick={()=>declineTradeRequest(r)} style={{background:"#fce8e8",border:"1px solid #e0b0b0",color:"#c04040",borderRadius:6,padding:"3px 10px",fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:font}}>✕ Decline</button>
                           </>
                         )}

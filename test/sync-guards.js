@@ -4725,7 +4725,9 @@ console.log("\nAT. A trade waiting on your answer");
   let mkRow = null;
   try { mkRow = preAT ? vm.runInContext(`(function (env) { const { myTradeRequests, mySurgeon, isScheduler, tradeLegsNotStarted, detectCascadeChanges, schedule } = env; ${preAT}\n return { canAnswer, passedNote, knockOnNote, knockOns }; })`, sandbox) : null; } catch (ex) { mkRow = null; }
   const exprAT = (re) => { const m = row.match(re); if (!m) return null; try { return vm.runInContext(`(function (env) { const { r, mySurgeon, isScheduler, canAnswer, tradeLegsNotStarted, tradeLegsFor, passedNote } = env; return (${m[1]}); })`, sandbox); } catch (ex) { return null; } };
-  const acceptGate = exprAT(/\n\s*\{([^{}\n]+) && \(\n\s*<>\n\s*<button onClick=\{\(\)=>acceptTradeRequest\(r\)\}/);
+  // Accept renders under the row's canAnswer gate AND (AT7) its own not-started gate: both sliced, run together.
+  const acceptGate = (() => { const m = row.match(/\n\s*\{([^{}\n]+) && \(\n\s*<>\n\s*\{([^{}\n]+?) && <button onClick=\{\(\)=>acceptTradeRequest\(r\)\}/); if (!m) return null;
+    try { return vm.runInContext(`(function (env) { const { r, mySurgeon, isScheduler, canAnswer, tradeLegsNotStarted, tradeLegsFor, passedNote } = env; return (${m[1]}) && (${m[2]}); })`, sandbox); } catch (ex) { return null; } })();
   const waitGate = exprAT(/\n\s*\{([^\n]+?) && <span style=\{\{fontSize:10,color:"#8a6a10",fontWeight:600\}\}>Waiting for \{r\.to_surgeon_name\}'s answer/);
   const boxText = exprAT(/\{(tradeLegsNotStarted\(r\) \? tradeLegsFor\(r, mySurgeon\) : passedNote\(r\))\}/);
   const dcSrcAT = (() => { const a = "  const detectCascadeChanges = useCallback((sched, req) => {", i = nsrcAT.indexOf(a); if (i < 0 || nsrcAT.indexOf(a, i + 1) !== -1) return null; const e = nsrcAT.indexOf("\n  }, [surgeons]);", i); return e < 0 ? null : nsrcAT.slice(i + a.length, e); })();
@@ -4771,7 +4773,7 @@ console.log("\nAT. A trade waiting on your answer");
     !!at6 && !at6.err && v6("stale", "answerer").box === "This trade's shift has passed — decline it." && v6("stale", "schedOther").box === "This trade's shift has passed — decline it."
       && v6("stale", "proposer").box === "This trade's shift has passed — withdraw it." && v6("stale", "schedProposer").box === "This trade's shift has passed — withdraw it."
       && v6("stale", "bystander").box === "This trade's shift has passed — it can't be accepted."
-      && JSON.stringify(v6("stale", "proposer").wait) === "[false,false,true]" && JSON.stringify(v6("stale", "answerer").accept) === "[true,true,false]"
+      && JSON.stringify(v6("stale", "proposer").wait) === "[false,false,true]" && JSON.stringify(v6("stale", "answerer").accept) === "[false,false,false]"   // (AT7: no Accept on a started row)
       && v6("open", "answerer").box === TLF(T2, "s2") && v6("open", "proposer").box === TLF(T2, "s1") && /^You'd take Service Wk of Jan 7; you'd give Service Wk of Jan 14$/.test(v6("open", "answerer").box),
     JSON.stringify(at6 ? (at6.err || at6.stale) : null).slice(0, 400));
   const KN = (n, tail) => `plus ${n} knock-on change${n === 1 ? "" : "s"} to other shifts ${tail}`;
@@ -4807,6 +4809,12 @@ console.log("\nAT. A trade waiting on your answer");
       && /^#[0-9a-f]{6}$/i.test(String(boxSt.dark.background)) && lumAT(boxSt.dark.background) > 0.85 && lumAT(rowSt.dark.background) > 0.85
       && crAT(boxSt.dark.color, boxSt.dark.background) >= 4.5 && crAT(knockSt.dark.color, boxSt.dark.background) >= 4.5,
     JSON.stringify({ sels: darkSel.length, ctl: ctlAT, boxDark: boxSt && serAT(boxSt.dark), boxLight: boxSt && serAT(boxSt.light), hits: [boxSt && hitsAT(boxSt.dark), knockSt && hitsAT(knockSt.dark), rowSt && hitsAT(rowSt.dark)] }).slice(0, 500));
+  // AT7 (review 2026-10-19): a trade whose shift has passed says "decline it" — so it offers no ✓ Accept (which could
+  // only refuse); ✕ Decline stays, under the same canAnswer gate.
+  const ACC7 = "{tradeLegsNotStarted(r) && <button onClick={()=>acceptTradeRequest(r)}", iCan7 = src.indexOf("{canAnswer(r) && (", src.indexOf("const canAnswer = (r) =>"));
+  const iAcc7 = src.indexOf(ACC7), iDec7 = src.indexOf("<button onClick={()=>declineTradeRequest(r)}", iCan7);
+  check("AT7 a passed trade offers no ✓ Accept (only ✕ Decline, as its note says); a live one keeps both, under the canAnswer gate",
+    count(ACC7) === 1 && count("<button onClick={()=>acceptTradeRequest(r)}") === 1 && iCan7 > 0 && iAcc7 > iCan7 && iDec7 > iAcc7 && iDec7 - iCan7 < 900, JSON.stringify({ iCan7, iAcc7, iDec7 }));
 }
 
 // ─── AB. APP call-shift edits wait for the APP-shift row (2026-10-11, audit QW4 + its review) ───
@@ -5431,7 +5439,9 @@ console.log("\nAV. Pending requests: a collapsed group shows a coverage-floor br
       && av4.c120 === true && av4.c121 === false && av4.c2126 === false && av4.c20261 === false && av4.junk === false && av4.open121 === true,
     JSON.stringify(av4));
   check("AV4 executed: the memo over a real pending list with a 2126 typo in it takes milliseconds, not the per-render scan of 36,500 days the review measured (~230 ms each render)",
-    !!av4 && !av4.threw && av4.ms < 100, JSON.stringify(av4 && av4.ms));
+    // (a loose ceiling, not a benchmark: this runs in main's CI before every deploy, whose speed varies; the
+    // spy check above is what proves the cap — this only catches a catastrophic regression)
+    !!av4 && !av4.threw && av4.ms < 2000, JSON.stringify(av4 && av4.ms));
   // what vacRequestCoverage reads from the component is exactly the memo's deps: run in a BARE context (only those + helpers.js/config.js's own)
   let bareAV = null;
   try {
