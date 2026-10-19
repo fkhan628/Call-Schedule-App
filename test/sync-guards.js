@@ -1925,7 +1925,9 @@ console.log("\nBD. Generate: one period label, the period's seam, holidays with 
 //     person whose vacation was revoked never saw it. It now carries surgeon_id, as approve's and deny's do.
 // (2) The request form: Reason before Submit; Submit and Propose Trade read "Sending…" and are disabled while
 //     the submit is out (vacSubmitting / tradeSubmitting, set and cleared WITH the busy refs, which stay the
-//     double-tap gate); a line under the dates reads the range back (helpers.js rangeSummary).
+//     double-tap gate); a line under the dates reads the range back (helpers.js rangeSummary). (Moved by BK,
+//     2026-10-19: the form's ONE date field now reads the range back itself, so that line is gone — rangeSummary
+//     stays in helpers.js, BE1 still runs it; BE6 pins the new order.)
 // (3) saveVacRequestEdit refuses an empty or inverted range before anything is sent; a save says so.
 // (4) The scheduler's trade builder: weeks read "Wk of Oct 19", each shift names who holds it (" · FAK", by the
 //     accept's own rule), and an amber note says when a leg's giver doesn't hold it (the accept would refuse it
@@ -1938,7 +1940,7 @@ console.log("\nBD. Generate: one period label, the period's seam, holidays with 
 //       none after a session change; the revoke's notice names the surgeon
 //   BE4 the edit: an empty or inverted range makes ZERO requests and says why; a save says so (not after a session change)
 //   BE5 the trade builder's holder IS the accept's holderIn (sliced) on every slot; its notes, executed
-//   BE6 the markup: the range line, Reason before Submit, Sending…, the holders, the note, slotLabel( ×23
+//   BE6 the markup: the date field (it reads the range back — BK), Reason before Submit, Sending…, the holders, the note, slotLabel( ×23
 // Review fixes (2026-10-19):
 //   BE3 the revoke's success toast claims only the revoke ("…, is off the schedule." was false when removing the time
 //       off then failed — that failure's own toast follows it)
@@ -2173,12 +2175,13 @@ console.log("\nBD. Generate: one period label, the period's seam, holidays with 
   // BE6 — the markup
   {
     const form = (() => { const a = nsrcBE.indexOf("🏖 Request Time Off</div>"), b = a < 0 ? -1 : nsrcBE.indexOf("{/* Pending Requests — Grouped by Person */}", a); return a < 0 || b < 0 ? "" : nsrcBE.slice(a, b); })();
-    const iEnd = form.indexOf("value={vacReqEnd}"), iSum = form.indexOf("rangeSummary(vacReqStart, vacReqEnd)"), iReason = form.indexOf('placeholder="Conference, personal, etc."'), iBtn = form.indexOf("<button onClick={submitVacRequest}");
-    check("BE6 the request form: the range line under the dates (rangeSummary, guarded against an old cached helpers.js, dark-mode color), then Reason, then the ONE Submit — disabled and reading \"Sending…\" while vacSubmitting",
-      iEnd > 0 && iSum > iEnd && iReason > iSum && iBtn > iReason && count("<button onClick={submitVacRequest}") === 1
-        && form.includes('typeof rangeSummary === "function" ? rangeSummary(vacReqStart, vacReqEnd) : null') && form.includes('color:dk?"#9aa0b8":"#5a6a78"')
+    // (Moved by BK, 2026-10-19 — deliberately: the two date boxes and the rangeSummary line under them are now ONE
+    // field that reads the range back itself — "Mon Dec 14 → Fri Dec 18 · 5 days", BK3. The order is kept.)
+    const iField = form.indexOf("<DateRangeField label={vacReqType"), iReason = form.indexOf('placeholder="Conference, personal, etc."'), iBtn = form.indexOf("<button onClick={submitVacRequest}");
+    check("BE6 the request form: its ONE date field (it reads the range back in words, so the separate rangeSummary line is gone), then Reason, then the ONE Submit — disabled and reading \"Sending…\" while vacSubmitting",
+      iField > 0 && iReason > iField && iBtn > iReason && count("<button onClick={submitVacRequest}") === 1 && !form.includes("rangeSummary(") && !form.includes("value={vacReqEnd}")
         && form.includes("<button onClick={submitVacRequest} disabled={vacSubmitting}") && form.includes('{vacSubmitting ? "Sending…" : "Submit Request"}'),
-      JSON.stringify({ iEnd, iSum, iReason, iBtn }));
+      JSON.stringify({ iField, iReason, iBtn }));
     check("BE6 Propose Trade the same (disabled, \"Sending…\" while tradeSubmitting); both busy states declared once, before the submits that set them (§P's order), each set and cleared on the line that sets and clears its ref",
       count("<button onClick={submitTradeRequest} disabled={tradeSubmitting}") === 1 && count('{tradeSubmitting ? "Sending…" : "Propose Trade"}') === 1
         && count("const [vacSubmitting, setVacSubmitting] = useState(false);") === 1 && count("const [tradeSubmitting, setTradeSubmitting] = useState(false);") === 1
@@ -9148,6 +9151,498 @@ await (async () => {
       && introEnd < iNoFeed, J({ intro, at: INTRO && INTRO.index, introEnd, iNoFeed }));
 })();
 
+// ─── BK. One-calendar date ranges (owner 2026-10-19) ───
+// "Can we make it so that when we pick dates in the calendar - we can pick the start date and then pick the end
+// date in the same calendar and it will mark all the dates in between." Each of the 7 start/end pairs was two
+// native date boxes, an iPhone date wheel each (AL made the end follow the start). Each is now ONE field
+// (DateRangeField, at module scope like Collapsible) that opens a month calendar as a bottom sheet: the 1st tap sets
+// the start (a one-day range), the 2nd the end (an earlier day: tapped → old start; the same day: one day), a 3rd
+// starts again; the days between are a band. Done hands (start, end) to the SAME state each save already reads —
+// addVac, addNoCall, saveEditVac, saveMyVacEdit, submitVacRequest and saveVacRequestEdit are untouched and stay
+// the real gate. Executed on the REAL helpers.js and the REAL component code sliced from index-source.html (JSX
+// can't run here — no Babel in CI — so the component's plain-JS logic block runs with a hook stub and the markup
+// is pinned):
+//   BK1 rangeTap (helpers.js): the 1st tap, a later / earlier / same 2nd, a 3rd, a day before min, a phase "end"
+//       with no start, a 7-tap sequence; 2000 random sequences keep start ≤ end and nothing before min (+ a control)
+//   BK2 monthCells (helpers.js) IS the Calendar tab's calGrid (sliced and run) for every month of 2026–2028
+//   BK3 rangeLabel / rangeSheetLine word for word — here and under TZ=America/Chicago across both DST changes
+//   BK4 the component's logic (sliced, with a hook stub): it opens on the start's month (or min's, or today's),
+//       already lifted above the update banner, the page behind held still, the focus on a day; taps; ◀ stops at
+//       min; Done (one day with only a start) / Clear / Escape; the focus back on the field; arrow keys across a
+//       month; the banner re-measured; an unmount releases the page; an old cached helpers.js → not ready
+//   BK5 the 7 sites: one field each, in its own form before its own save; its onChange run against the site's
+//       own state and read back by its start/end; then the site's REAL save handler run on that state writes the
+//       picked dates; its min for a scheduler and for a member (+ a control: crossed setters are caught)
+//   BK6 the markup: one module-scope component, a dialog (80vh, safe area, portal, ✕ / backdrop / Escape), day
+//       buttons (aria-label "Mon, Dec 14, 2026" — executed — aria-pressed, aria-disabled, ≥ 44px tall), the
+//       old-helpers fallback (its end rule IS endOnOrAfter, executed); both themes' colors measured (WCAG)
+console.log("\nBK. one-calendar date ranges");
+await (async () => {
+  const nsrcBK = src.replace(/\r\n/g, "\n");
+  const J = JSON.stringify;
+  const helperBK = (name) => vm.runInContext(`typeof ${name} === "function" ? ${name} : null`, sandbox);
+  const RT = helperBK("rangeTap"), MC = helperBK("monthCells"), RL = helperBK("rangeLabel"), RSL = helperBK("rangeSheetLine");
+  const HB = vm.runInContext("({ fmt, parse, addD })", sandbox);
+  const quietBK = { error: () => {}, warn: () => {}, log: () => {}, info: () => {} };
+  // A fixed clock for the component's "today" (Mon Oct 19, 2026, 10:00 local); a Date with arguments is a Date.
+  const FIX_BK = new Date(2026, 9, 19, 10, 0).getTime();
+  class FixedDateBK extends Date { constructor(...a) { if (a.length) super(...a); else super(FIX_BK); } static now() { return FIX_BK; } }
+  const TODAY_BK = "2026-10-19";
+
+  // BK1 — rangeTap
+  {
+    const fold = (taps, min) => { let s = { start: "", end: "", phase: "start" }; return taps.map((t) => { s = RT(s.start, s.end, t, s.phase, min); return `${s.start}→${s.end} ${s.phase}`; }); };
+    const got = RT ? {
+      first: RT("", "", "2026-12-14", "start"),
+      later: RT("2026-12-14", "2026-12-14", "2026-12-18", "end"),
+      earlier: RT("2026-12-14", "2026-12-14", "2026-12-10", "end"),
+      same: RT("2026-12-14", "2026-12-14", "2026-12-14", "end"),
+      third: RT("2026-12-10", "2026-12-14", "2026-12-20", "start"),
+      offStart: RT("", "", "2026-10-18", "start", TODAY_BK),
+      offEnd: RT("2026-11-02", "2026-11-02", "2026-10-01", "end", TODAY_BK),
+      atMin: RT("", "", TODAY_BK, "start", TODAY_BK),
+      endNoStart: RT("", "", "2026-12-14", "end"),
+      seq: fold(["2026-12-14", "2026-12-10", "2026-12-20", "2026-12-20", "2026-12-25", "2026-10-01", "2026-12-31"], TODAY_BK),
+    } : null;
+    const WANT = {
+      first: { start: "2026-12-14", end: "2026-12-14", phase: "end" },
+      later: { start: "2026-12-14", end: "2026-12-18", phase: "start" },
+      earlier: { start: "2026-12-10", end: "2026-12-14", phase: "start" },
+      same: { start: "2026-12-14", end: "2026-12-14", phase: "start" },
+      third: { start: "2026-12-20", end: "2026-12-20", phase: "end" },
+      offStart: { start: "", end: "", phase: "start" },
+      offEnd: { start: "2026-11-02", end: "2026-11-02", phase: "end" },
+      atMin: { start: TODAY_BK, end: TODAY_BK, phase: "end" },
+      endNoStart: { start: "2026-12-14", end: "2026-12-14", phase: "end" },
+      seq: ["2026-12-14→2026-12-14 end", "2026-12-10→2026-12-14 start", "2026-12-20→2026-12-20 end", "2026-12-20→2026-12-20 start",
+        "2026-12-25→2026-12-25 end", "2026-12-25→2026-12-25 end", "2026-12-25→2026-12-31 start"],
+    };
+    check("BK1 rangeTap (helpers.js, executed): the 1st tap is a one-day range waiting for its end; a later 2nd tap is the end, an EARLIER one makes it tapped → old start, the same day keeps one day; a 3rd starts a new range; a day before min changes nothing in either phase (min itself is pickable); a phase \"end\" with no start acts as a 1st tap; folded over a 7-tap sequence",
+      !!RT && J(got) === J(WANT), RT ? J(got) : "rangeTap is not defined in helpers.js");
+    let bad = null, runs = 0;
+    if (RT) {
+      let seed = 20261019; const rnd = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648;
+      for (let k = 0; k < 2000 && !bad; k++) {
+        const min = rnd() < 0.5 ? "" : TODAY_BK; let s = { start: "", end: "", phase: "start" };
+        for (let n = 0; n < 8 && !bad; n++) {
+          const t = HB.fmt(HB.addD(HB.parse("2026-10-01"), Math.floor(rnd() * 90)));
+          const nx = RT(s.start, s.end, t, s.phase, min); runs++;
+          const ok = (!min || t >= min) ? nx.phase !== s.phase && (nx.start === t || nx.end === t) : J(nx) === J(s);
+          if (!ok || (nx.start && (nx.end < nx.start || (min && nx.start < min)))) bad = { min, s, t, nx };
+          s = nx;
+        }
+      }
+    }
+    check("BK1 …2000 random tap sequences (8 taps each, half with today's floor): every pickable tap lands on an end of the range and flips the phase, an unpickable one changes nothing; never an end before the start, never a start before min",
+      !!RT && !bad && runs === 16000, J({ bad, runs }));
+    // Control: the two-box reflex — an earlier 2nd tap moving only the end — would invert the range; BK1's expectation catches it.
+    const mutant = (start, end, tapped, phase) => (phase === "end" && start ? { start, end: tapped, phase: "start" } : { start: tapped, end: tapped, phase: "end" });
+    check("BK1 control: a rule whose earlier 2nd tap only moves the end (an inverted range) fails BK1's expectation", J(mutant("2026-12-14", "2026-12-14", "2026-12-10", "end")) !== J(WANT.earlier));
+  }
+
+  // BK2 — monthCells IS calGrid
+  {
+    const gb = (() => { const a = nsrcBK.indexOf("  const calGrid = useMemo(() => {\n"), b = a < 0 ? -1 : nsrcBK.indexOf("\n  }, [calYear,calMonth]);", a); return a < 0 || b < 0 ? null : nsrcBK.slice(a + "  const calGrid = useMemo(() => {\n".length, b); })();
+    let calGrid = null; try { calGrid = gb ? vm.runInContext(`(function (calYear, calMonth) {\n${gb}\n})`, sandbox) : null; } catch (ex) { calGrid = null; }
+    const diffs = [];
+    if (MC && calGrid) {
+      for (let y = 2026; y <= 2028; y++) for (let m = 0; m < 12; m++) {
+        const cells = MC(y, m), grid = calGrid(y, m);
+        const asDays = cells.map((ds) => (ds ? Number(ds.slice(8)) : null));
+        const dated = cells.every((ds, i) => !ds || (ds === HB.fmt(new Date(y, m, Number(ds.slice(8)))) && HB.parse(ds).getDay() === i % 7));
+        if (J(asDays) !== J(grid) || !dated || cells.length % 7) diffs.push(`${y}-${m + 1}`);
+      }
+    }
+    const spot = MC ? { dec26: [MC(2026, 11).length, MC(2026, 11)[2], MC(2026, 11)[32], MC(2026, 11)[34]], feb26: [MC(2026, 1).length, MC(2026, 1)[0], MC(2026, 1)[27]], feb28: MC(2028, 1).filter(Boolean).length, aug26: [MC(2026, 7).length, MC(2026, 7)[6]] } : null;
+    check("BK2 monthCells (helpers.js, executed) IS the Calendar tab's calGrid (its memo body, sliced and run) for all 36 months of 2026–2028 — the same blanks, Sunday first, whole weeks — and each cell is its own date on its own weekday (Dec 2026 opens on a Tuesday; Feb 2026 is exactly 4 rows; Feb 2028 has 29 days; Aug 2026 opens on a Saturday, 6 rows)",
+      !!MC && !!calGrid && diffs.length === 0 && J(spot) === J({ dec26: [35, "2026-12-01", "2026-12-31", null], feb26: [28, "2026-02-01", "2026-02-28"], feb28: 29, aug26: [42, "2026-08-01"] }),
+      J({ mc: !!MC, calGrid: !!calGrid, diffs, spot }));
+  }
+
+  // BK3 — the words
+  {
+    const T = TODAY_BK;
+    const LABELS = [
+      [["2026-12-14", "2026-12-18", T], "Mon Dec 14 → Fri Dec 18 · 5 days"],
+      [["2026-12-14", "2026-12-14", T], "Mon Dec 14 · 1 day"],
+      [["2026-12-28", "2027-01-01", T], "Mon Dec 28 → Fri Jan 1, 2027 · 5 days"],
+      [["2027-03-08", "2027-03-12", T], "Mon Mar 8, 2027 → Fri Mar 12, 2027 · 5 days"],
+      [["2027-03-08", "2027-03-12", "2027-01-05"], "Mon Mar 8 → Fri Mar 12 · 5 days"],
+      [["2025-12-29", "2026-01-02", T], "Mon Dec 29, 2025 → Fri Jan 2 · 5 days"],
+      [["2026-03-06", "2026-03-09", T], "Fri Mar 6 → Mon Mar 9 · 4 days"],     // across the spring DST change (Sun Mar 8)
+      [["2026-10-30", "2026-11-02", T], "Fri Oct 30 → Mon Nov 2 · 4 days"],    // and the fall one (Sun Nov 1)
+      [["2026-12-14", "", T], "Mon Dec 14 → …"],
+      [["2026-12-18", "2026-12-14", T], "Fri Dec 18 → Mon Dec 14"],
+      [["", "", T], ""], [["", "2026-12-14", T], ""],
+    ];
+    const LINES = [
+      [["", "", "start", T], "Pick the start date"],
+      [["2026-12-14", "2026-12-14", "end", T], "Mon Dec 14 → pick the end date"],
+      [["2026-12-14", "2026-12-18", "start", T], "Mon Dec 14 → Fri Dec 18 · 5 days"],
+      [["2026-12-14", "", "start", T], "Mon Dec 14 · 1 day"],
+      [["2027-01-04", "2027-01-04", "end", T], "Mon Jan 4, 2027 → pick the end date"],
+    ];
+    const here = RL && RSL ? { labels: LABELS.map(([a]) => RL(...a)), lines: LINES.map(([a]) => RSL(...a)) } : null;
+    let chicago = null;
+    if (RL && RSL) {
+      const { execFileSync } = require("child_process");
+      const code = [
+        'const vm = require("vm"), fs = require("fs"), path = require("path");',
+        'const sb = { console, window: {}, document: undefined, navigator: { userAgent: "node-test" }, localStorage: { getItem: () => null, setItem() {}, removeItem() {} }, fetch: () => { throw new Error("no fetch"); }, setTimeout, clearTimeout };',
+        "sb.globalThis = sb; vm.createContext(sb);",
+        `for (const f of ["helpers.js", "config.js"]) vm.runInContext(fs.readFileSync(path.join(${J(ROOT)}, f), "utf8"), sb, { filename: f });`,
+        `const RL = vm.runInContext("rangeLabel", sb), RSL = vm.runInContext("rangeSheetLine", sb), A = ${J(LABELS.map((c) => c[0]))}, B = ${J(LINES.map((c) => c[0]))};`,
+        "process.stdout.write(JSON.stringify({ off: new Date(2026, 2, 6).getTimezoneOffset() - new Date(2026, 2, 9).getTimezoneOffset(), labels: A.map((a) => RL(...a)), lines: B.map((a) => RSL(...a)) }));",
+      ].join("\n");
+      try { chicago = JSON.parse(execFileSync(process.execPath, ["-e", code], { env: Object.assign({}, process.env, { TZ: "America/Chicago" }), encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })); } catch (ex) { chicago = { err: String(ex).slice(0, 300) }; }
+    }
+    const want = J({ labels: LABELS.map((c) => c[1]), lines: LINES.map((c) => c[1]) });
+    check("BK3 rangeLabel / rangeSheetLine (helpers.js, executed): \"Mon Dec 14 → Fri Dec 18 · 5 days\", one day \"Mon Dec 14 · 1 day\", a year on each date outside today's year (next year's and a back-dated one), DST-proof day counts; only a start \"Mon Dec 14 → …\", an inverted pair uncounted, nothing without a start; the sheet's line \"Pick the start date\" → \"Mon Dec 14 → pick the end date\" → the range — here, and under TZ=America/Chicago across both DST changes (the offset change proven)",
+      !!here && J(here) === want && !!chicago && chicago.off === 60 && J({ labels: chicago.labels, lines: chicago.lines }) === want,
+      RL && RSL ? J({ here, chicago }) : "rangeLabel / rangeSheetLine are not defined in helpers.js");
+  }
+
+  // BK4 — the component's logic, sliced and run with a hook stub
+  const fnA = nsrcBK.indexOf("\nfunction DateRangeField({ start, end, onChange, min = \"\", label = \"Dates\", placeholder = \"Pick dates\", dk = false, css, compact = false, bannerRef = null, bannerOn = null, style = null }) {\n");
+  const L0 = "  // ── range sheet logic (plain JS; sync-guards BK runs this slice with a hook stub) ──\n", L1 = "  // ── end range sheet logic ──\n";
+  const la = fnA < 0 ? -1 : nsrcBK.indexOf(L0, fnA), lb = la < 0 ? -1 : nsrcBK.indexOf(L1, la);
+  const fnEnd = fnA < 0 ? -1 : nsrcBK.indexOf("\n}\n", fnA);
+  const logicBK = la > 0 && lb > la && lb < fnEnd ? nsrcBK.slice(la + L0.length, lb) : null;
+  const OUT_BK = "sheet, lift, focusDs, open, ready, openSheet, close, tap, clear, done, shiftMonth, onGridKey, prevOff, cells, tabDs, fieldRef, gridRef";
+  const compileBK = (ctx) => { if (!logicBK) return null; try { return vm.runInContext(`(function (env) { const { React, start, end, onChange, min, bannerRef, bannerOn, window, document, ResizeObserver, Date } = env;\n${logicBK}\n return { ${OUT_BK} }; })`, ctx, { filename: "bk-range-logic.js" }); } catch (ex) { console.log("  (BK compile error) " + String(ex).slice(0, 200)); return null; } };
+  const mkBK = compileBK(sandbox);
+  // A small hook runtime: state and refs by call order, effects after each render when their deps change (the
+  // previous cleanup first), re-rendered until no state changes. window / document.body / ResizeObserver are
+  // recorders; the field and the grid get the elements React would attach (each focus() is recorded).
+  const mountBK = (props, mk = mkBK) => {
+    const st = { slots: [], effects: [], renders: [], rec: [], listeners: {}, ros: [] };
+    let idx = 0, eidx = 0, dirty = false, queue = [], out = null;
+    const React = {
+      useState: (init) => { const i = idx++; if (!(i in st.slots)) st.slots[i] = typeof init === "function" ? init() : init; return [st.slots[i], (v) => { const nv = typeof v === "function" ? v(st.slots[i]) : v; if (!Object.is(nv, st.slots[i])) { st.slots[i] = nv; dirty = true; } }]; },
+      useRef: (init) => { const i = idx++; if (!(i in st.slots)) st.slots[i] = { current: init }; return st.slots[i]; },
+      useEffect: (fn, deps) => { const i = eidx++; const prev = st.effects[i]; if (!prev || !deps || deps.some((d, k) => !Object.is(d, prev.deps[k]))) queue.push(() => { if (prev && prev.cleanup) prev.cleanup(); const c = fn(); st.effects[i] = { deps, cleanup: typeof c === "function" ? c : null }; }); },
+    };
+    const win = { addEventListener: (t, f) => { (st.listeners[t] = st.listeners[t] || []).push(f); }, removeEventListener: (t, f) => { st.listeners[t] = (st.listeners[t] || []).filter((x) => x !== f); } };
+    const doc = { body: { style: { overflow: "auto" } } };
+    class RO { constructor(cb) { this.cb = cb; this.on = false; st.ros.push(this); } observe() { this.on = true; } disconnect() { this.on = false; } }
+    const banner = { isConnected: true, h: 99.2, getBoundingClientRect() { return { height: this.h }; } };
+    const env = Object.assign({ React, window: win, document: doc, ResizeObserver: RO, Date: FixedDateBK, bannerRef: { current: banner }, bannerOn: "2099.01.01a",
+      start: "", end: "", min: "", onChange: (s, e) => st.rec.push(`onChange ${s} ${e}`) }, props);
+    const render = () => {
+      for (let n = 0; n < 25; n++) {
+        idx = 0; eidx = 0; dirty = false; queue = [];
+        out = mk(env);
+        st.renders.push({ open: out.open, lift: out.lift });
+        if (!out.fieldRef.current) out.fieldRef.current = { isConnected: true, focus: (o) => st.rec.push("focus field" + (o && o.preventScroll ? " (no scroll)" : "")) };
+        out.gridRef.current = out.open ? { querySelector: (sel) => ({ focus: () => st.rec.push("focus " + sel) }) } : null;
+        queue.forEach((f) => f());
+        if (!dirty) return out;
+      }
+      throw new Error("BK: render loop");
+    };
+    const act = (fn) => { fn(out); return render(); };
+    const unmount = () => st.effects.forEach((e) => e && e.cleanup && e.cleanup());
+    render();
+    return { st, env, doc, banner, act, render, unmount, get out() { return out; } };
+  };
+  const sheetOf = (o) => (o.sheet ? `${o.sheet.start}→${o.sheet.end} ${o.sheet.phase} ${o.sheet.y}-${o.sheet.m + 1}` : "closed");
+  const evBK = (k) => { const e = { key: k, prevented: false, preventDefault() { this.prevented = true; } }; return e; };
+  {
+    let r = null;
+    if (mkBK) {
+      try {
+        // (a) The request form, a member: min = today, nothing picked yet.
+        const A = mountBK({ min: TODAY_BK });
+        const a = { idle: [A.out.open, A.out.ready, A.st.listeners.keydown ? A.st.listeners.keydown.length : 0] };
+        A.act((o) => o.openSheet());
+        a.open = { sheet: sheetOf(A.out), lift: A.out.lift, firstFrameLift: A.st.renders.filter((x) => x.open).map((x) => x.lift)[0], overflow: A.doc.body.style.overflow,
+          keydown: A.st.listeners.keydown.length, resize: A.st.listeners.resize.length, ro: A.st.ros.map((x) => x.on), tabDs: A.out.tabDs, prevOff: A.out.prevOff, rec: A.st.rec.slice() };
+        A.act((o) => o.shiftMonth(-1)); a.prevStays = sheetOf(A.out);
+        A.act((o) => o.tap("2026-10-12")); a.offTap = sheetOf(A.out);
+        A.act((o) => o.done()); a.doneEmpty = [sheetOf(A.out), A.st.rec.filter((x) => x.startsWith("onChange")).length];
+        A.act((o) => o.shiftMonth(1)); a.next = [sheetOf(A.out), A.out.prevOff];
+        A.act((o) => o.tap("2026-11-09")); a.tap1 = sheetOf(A.out);
+        A.act((o) => o.tap("2026-11-02")); a.tap2 = sheetOf(A.out);
+        a.focusWhilePicking = A.st.rec.filter((x) => x.startsWith("focus")).length; // only the open's
+        A.st.rec.length = 0;
+        A.act((o) => o.done());
+        a.done = { sheet: sheetOf(A.out), rec: A.st.rec.slice(), overflow: A.doc.body.style.overflow, keydown: A.st.listeners.keydown.length, resize: A.st.listeners.resize.length, ro: A.st.ros.map((x) => x.on) };
+        // (b) Setup (the scheduler): a whole range, back-dating allowed; Escape abandons the draft; reopening shows the range again.
+        const B = mountBK({ start: "2026-12-14", end: "2026-12-18" });
+        const b = {};
+        B.act((o) => o.openSheet()); b.open = [sheetOf(B.out), B.out.tabDs, B.out.prevOff, B.st.rec.slice()];
+        B.act((o) => o.shiftMonth(-1)); B.act((o) => o.shiftMonth(-1)); B.act((o) => o.shiftMonth(-1));
+        B.act((o) => o.tap("2026-09-07")); b.back = sheetOf(B.out);
+        B.st.rec.length = 0;
+        B.act(() => B.st.listeners.keydown[0]({ key: "Enter" })); b.enterOnWindow = sheetOf(B.out);
+        B.act(() => B.st.listeners.keydown[0]({ key: "Escape" })); b.esc = [sheetOf(B.out), B.st.rec.slice(), B.doc.body.style.overflow, B.st.listeners.keydown.length];
+        B.act((o) => o.openSheet()); b.reopen = sheetOf(B.out);
+        B.act((o) => o.clear()); b.clear = sheetOf(B.out);
+        B.act((o) => o.done()); b.doneCleared = [sheetOf(B.out) !== "closed", B.st.rec.filter((x) => x.startsWith("onChange")).length];
+        B.act((o) => o.tap("2026-12-01")); B.st.rec.length = 0; B.act((o) => o.done()); b.oneDay = B.st.rec.slice();
+        // (c) Only a start, and an inverted pair: each waits for its end; Done with only the start is one day.
+        const C1 = mountBK({ start: "2026-12-14", end: "" }); C1.act((o) => o.openSheet()); const c = { startOnly: sheetOf(C1.out) };
+        C1.act((o) => o.tap("2026-12-20")); c.startOnlyTap = sheetOf(C1.out);
+        const C2 = mountBK({ start: "2026-12-18", end: "2026-12-14" }); C2.act((o) => o.openSheet()); c.inverted = sheetOf(C2.out); C2.act((o) => o.done()); c.invertedDone = C2.st.rec.filter((x) => x.startsWith("onChange"));
+        // (d) The month it opens on: min later than today → min's month (its first open day takes the focus); no start, no min → today's.
+        const D1 = mountBK({ min: "2027-02-10" }); D1.act((o) => o.openSheet());
+        const D2 = mountBK({}); D2.act((o) => o.openSheet());
+        const d = { minLater: [sheetOf(D1.out), D1.out.tabDs, D1.st.rec.filter((x) => x.startsWith("focus"))], plain: [sheetOf(D2.out), D2.out.tabDs, D2.out.prevOff] };
+        // (e) Arrow keys move the one Tab stop (and the focus) day by day and week by week, across a month and back; other keys do nothing.
+        const E = mountBK({ start: "2026-12-14", end: "2026-12-18" }); E.act((o) => o.openSheet()); E.st.rec.length = 0;
+        const keys = [];
+        for (const k of ["ArrowRight", "ArrowDown", "ArrowDown", "ArrowDown", "ArrowUp", "ArrowLeft", "a"]) { const ev = evBK(k); E.act((o) => o.onGridKey(ev)); keys.push(`${k}:${E.out.tabDs} ${E.out.sheet.y}-${E.out.sheet.m + 1}${ev.prevented ? "" : " (not handled)"}`); }
+        const e = { keys, focus: E.st.rec.slice() };
+        // (f) The banner (its ref set and cleared as React does): it appears while the sheet is open (bannerOn) → lifted by its
+        //     height; re-measured on a resize and when its size changes; dismissed → the sheet drops to the bottom.
+        const F = mountBK({ bannerRef: { current: null }, bannerOn: null }); F.act((o) => o.openSheet()); const f = { open: [F.out.lift, F.st.ros.length] };
+        F.env.bannerRef.current = F.banner; F.env.bannerOn = "2099.01.01a"; F.render(); f.appears = [F.out.lift, F.st.ros.map((x) => x.on)];
+        F.banner.h = 40; F.act(() => F.st.listeners.resize[0]()); f.resize = F.out.lift;
+        F.banner.h = 60.4; F.act(() => F.st.ros[0].cb()); f.ro = F.out.lift;
+        F.env.bannerRef.current = null; F.env.bannerOn = null; F.render(); f.gone = [F.out.lift, F.st.ros.map((x) => x.on)];
+        // (g) The field goes away while the sheet is open (a tab change): the page is released, no listener left.
+        const G = mountBK({}); G.act((o) => o.openSheet()); G.unmount(); const g = [G.doc.body.style.overflow, G.st.listeners.keydown.length, G.st.listeners.resize.length, G.st.ros.map((x) => x.on)];
+        r = { a, b, c, d, e, f, g };
+      } catch (ex) { r = { threw: String(ex).slice(0, 300) }; }
+    }
+    const W4 = {
+      a: {
+        idle: [false, true, 0],
+        open: { sheet: "→ start 2026-10", lift: 100, firstFrameLift: 100, overflow: "hidden", keydown: 1, resize: 1, ro: [true], tabDs: TODAY_BK, prevOff: true, rec: ['focus [data-ds="2026-10-19"]'] },
+        prevStays: "→ start 2026-10", offTap: "→ start 2026-10", doneEmpty: ["→ start 2026-10", 0],
+        next: ["→ start 2026-11", false], tap1: "2026-11-09→2026-11-09 end 2026-11", tap2: "2026-11-02→2026-11-09 start 2026-11", focusWhilePicking: 1,
+        done: { sheet: "closed", rec: ["onChange 2026-11-02 2026-11-09", "focus field (no scroll)"], overflow: "auto", keydown: 0, resize: 0, ro: [false] },
+      },
+      b: {
+        open: ["2026-12-14→2026-12-18 start 2026-12", "2026-12-14", false, ['focus [data-ds="2026-12-14"]']],
+        back: "2026-09-07→2026-09-07 end 2026-9", enterOnWindow: "2026-09-07→2026-09-07 end 2026-9",
+        esc: ["closed", ["focus field (no scroll)"], "auto", 0],
+        reopen: "2026-12-14→2026-12-18 start 2026-12", clear: "→ start 2026-12", doneCleared: [true, 0], oneDay: ["onChange 2026-12-01 2026-12-01", "focus field (no scroll)"],
+      },
+      c: { startOnly: "2026-12-14→ end 2026-12", startOnlyTap: "2026-12-14→2026-12-20 start 2026-12", inverted: "2026-12-18→ end 2026-12", invertedDone: ["onChange 2026-12-18 2026-12-18"] },
+      d: { minLater: ["→ start 2027-2", "2027-02-10", ['focus [data-ds="2027-02-10"]']], plain: ["→ start 2026-10", TODAY_BK, false] },
+      e: { keys: ["ArrowRight:2026-12-15 2026-12", "ArrowDown:2026-12-22 2026-12", "ArrowDown:2026-12-29 2026-12", "ArrowDown:2027-01-05 2027-1", "ArrowUp:2026-12-29 2026-12", "ArrowLeft:2026-12-28 2026-12", "a:2026-12-28 2026-12 (not handled)"],
+        focus: ['focus [data-ds="2026-12-15"]', 'focus [data-ds="2026-12-22"]', 'focus [data-ds="2026-12-29"]', 'focus [data-ds="2027-01-05"]', 'focus [data-ds="2026-12-29"]', 'focus [data-ds="2026-12-28"]'] },
+      f: { open: [0, 0], appears: [100, [true]], resize: 40, ro: 61, gone: [0, [false]] },
+      g: ["auto", 0, 0, [false]],
+    };
+    const part = (k) => !!r && !r.threw && J(r[k]) === J(W4[k]);
+    check("BK4 the REAL DateRangeField logic (sliced, a hook stub) — the request form as a member: the sheet opens on today's month, already lifted above the update banner in its FIRST open frame (99.2px → 100), the page behind held still, Escape listened for, the focus on today; ◀ stops at today's month and a day before today does nothing; Done with nothing picked does nothing; Nov 9 then Nov 2 → Nov 2 → Nov 9; picking never moves the focus; Done hands (2026-11-02, 2026-11-09) to onChange ONCE, puts the focus back on the field and releases the page, the listeners and the banner observer",
+      !!mkBK && part("a"), mkBK ? J(r && (r.threw || r.a)) : "the range sheet logic block was not found in DateRangeField");
+    check("BK4 …Setup as the scheduler: a whole range opens on its start's month with the start focused; ◀ goes back months (back-dating) and a tap there starts a new range; Enter on the page does nothing, Escape closes WITHOUT applying (no onChange), focus back on the field, the page released; reopening shows the range as it was; Clear empties the draft and Done is then a no-op; Done with only a start is a one-day range",
+      !!mkBK && part("b"), J(r && (r.threw || r.b)));
+    check("BK4 …a start with no end (or an end before it) opens waiting for its end — a tap sets the end, Done keeps one day; it opens on min's month when min is later than today (min's day focused), else today's",
+      !!mkBK && part("c") && part("d"), J(r && (r.threw || { c: r.c, d: r.d })));
+    check("BK4 …the arrow keys move the grid's one Tab stop and the focus a day / a week at a time, into January 2027 and back (the month follows); any other key is left alone",
+      !!mkBK && part("e"), J(r && (r.threw || r.e)));
+    check("BK4 …the lift follows the banner while the sheet is open — none at first (0), the banner appearing (99.2 → 100, observed), a resize (40), a size change seen by the observer (60.4 → 61), the banner dismissed (0, its observer disconnected); the field going away while open releases the page and every listener",
+      !!mkBK && part("f") && part("g"), J(r && (r.threw || { f: r.f, g: r.g })));
+    // An old cached helpers.js (no rangeTap): the component is not ready → its two native date boxes (BK6 pins them).
+    let oldReady = null;
+    try {
+      const old = { console, window: {}, document: undefined, navigator: { userAgent: "node-test" }, localStorage: { getItem: () => null, setItem() {}, removeItem() {} }, fetch: () => { throw new Error("no fetch"); }, setTimeout, clearTimeout };
+      old.globalThis = old; vm.createContext(old);
+      for (const f of ["helpers.js", "config.js"]) vm.runInContext(fs.readFileSync(path.join(ROOT, f), "utf8"), old, { filename: f });
+      vm.runInContext("rangeTap = undefined; monthCells = undefined;", old);
+      const mkOld = compileBK(old);
+      oldReady = mkOld ? (() => { const O = mountBK({}, mkOld); return [O.out.ready, O.out.cells.length]; })() : null;
+    } catch (ex) { oldReady = String(ex).slice(0, 200); }
+    check("BK4 …with an old cached helpers.js (no rangeTap / monthCells) it is not ready and builds no grid — it renders the two native date boxes instead (BK6)",
+      J(oldReady) === J([false, 0]), J(oldReady));
+  }
+
+  // BK5 — the 7 sites
+  {
+    // The whole page: a field is written `<DateRangeField `; the component's own definition and comments never are.
+    const body = nsrcBK;
+    const els = []; { let i = -1; while ((i = body.indexOf("<DateRangeField ", i + 1)) !== -1) { const e = body.indexOf("/>", i); const nl = body.indexOf("\n", i); els.push({ at: i, text: e > 0 && (nl < 0 || e < nl) ? body.slice(i, e + 2) : null }); } }
+    // An attribute's JS expression: name="x" → the string literal, name={…} → the braces' content, a bare name → true.
+    const attrBK = (el, name) => {
+      const m = new RegExp("\\s" + name + "=([\"{])").exec(el);
+      if (!m) return new RegExp("\\s" + name + "(?=[\\s/>])").test(el) ? "true" : null;
+      const i = m.index + m[0].length;
+      if (m[1] === '"') return J(el.slice(i, el.indexOf('"', i)));
+      let depth = 1, j = i; while (j < el.length && depth) { if (el[j] === "{") depth++; else if (el[j] === "}") depth--; j++; }
+      return depth ? null : el.slice(i, j - 1);
+    };
+    const at = (s) => body.indexOf(s);
+    const R = { setupAdd: at("Add vacations:</div>"), nc: at("{/* No-Call Days */}"), mine: at("{/* My Vacations — completed (past) ones hidden; shown in date order */}"), form: at("🏖 Request Time Off</div>"),
+      pending: at("{/* Pending Requests — Grouped by Person */}"), reviewed: at("📋 Reviewed <span") };
+    const PICK = ["2099-05-03", "2099-05-07"];
+    const SETTERS = "setVacStart, setVacEnd, setNcStart, setNcEnd, setEditVac, setMyVacEdit, setVacReqStart, setVacReqEnd, setEditingVacReq";
+    const STATE = "vacStart, vacEnd, ncStart, ncEnd, editVac, myVacEdit, vacReqStart, vacReqEnd, editingVacReq";
+    const state0 = () => ({ vacStart: TODAY_BK, vacEnd: TODAY_BK, ncStart: TODAY_BK, ncEnd: TODAY_BK, editVac: { sid: "s3", idx: 1, start: "2099-11-09", end: "2099-11-13" },
+      myVacEdit: { idx: 0, start: "2099-11-02", end: "2099-11-06" }, vacReqStart: "", vacReqEnd: "", editingVacReq: { id: 7, start_date: "2099-03-02", end_date: "2099-03-06", reason: "trip" } });
+    const fnBK = (names, code, ctxCode = "") => { if (!code) return null; try { return vm.runInContext(`(function () { ${ctxCode}\n return function (env) { const { ${names} } = env; return (${code}); }; })()`, sandbox, { filename: "bk-site.js" }); } catch (ex) { console.log("  (BK compile error) " + String(ex).slice(0, 200)); return null; } };
+    const sliceBK = (decl, end) => { const a = nsrcBK.indexOf(decl); if (a < 0 || nsrcBK.indexOf(decl, a + 1) !== -1) return null; const b = nsrcBK.indexOf(end, a + decl.length); return b < 0 ? null : nsrcBK.slice(a, b + end.length); };
+    const wfrBK = (() => { const a = nsrcBK.indexOf("function writeFailReason(err) {"); const b = a < 0 ? -1 : nsrcBK.indexOf("\n}\n", a); return a < 0 || b < 0 ? "" : nsrcBK.slice(a, b + 2); })();
+    const asFn = (code) => (code ? code.replace(/^\s*const \w+ = (useCallback\()?/, "").replace(/(, \[[^\]]*\]\);|;)\s*$/, "") : null);
+    const respBK = (status, json) => ({ ok: status >= 200 && status < 300, status, json: async () => json, text: async () => J(json) });
+    // Each site's REAL save handler, run on the state the pick left: what it writes.
+    const SAVES = {
+      addVac: async (S) => { const w = []; const f = fnBK("vacSurgeon, vacStart, vacEnd, toAdd, setVacStart, setVacEnd", asFn(sliceBK("  const addVac = () => {", "\n  };")));
+        if (!f) return null; f({ vacSurgeon: "s3", vacStart: S.vacStart, vacEnd: S.vacEnd, toAdd: (...a) => w.push(["toAdd", ...a]), setVacStart: () => {}, setVacEnd: () => {} })(); return w; },
+      addNoCall: async (S) => { const w = []; const f = fnBK("ncSurgeon, ncStart, ncEnd, toAdd, setNcStart, setNcEnd", asFn(sliceBK("  const addNoCall = () => {", "\n  };")));
+        if (!f) return null; f({ ncSurgeon: "s3", ncStart: S.ncStart, ncEnd: S.ncEnd, toAdd: (...a) => w.push(["toAdd", ...a]), setNcStart: () => {}, setNcEnd: () => {} })(); return w; },
+      saveEditVac: async (S) => { const w = []; const f = fnBK("editVac, vacations, toEdit, setEditVac", asFn(sliceBK("  const saveEditVac = () => {", "\n  };")));
+        if (!f) return null; f({ editVac: S.editVac, vacations: { s3: [["2099-01-04", "2099-01-08"], ["2099-11-09", "2099-11-13"]] }, toEdit: (...a) => w.push(["toEdit", ...a]), setEditVac: () => {} })(); return w; },
+      saveMyVacEdit: async (S) => { const w = []; const f = fnBK("myVacEdit, myVacs, isScheduler, showToast, setMyVacEdit, toEdit, addNotification, myId, myName, schedulerAdminIds, alert, console",
+        asFn(sliceBK("            const saveMyVacEdit = () => {", "\n            };")));
+        if (!f) return null; f({ myVacEdit: S.myVacEdit, myVacs: [["2099-11-02", "2099-11-06"]], isScheduler: false, showToast: (m) => w.push(["toast", m]), setMyVacEdit: () => {}, toEdit: (...a) => w.push(["toEdit", ...a]),
+          addNotification: () => {}, myId: "s3", myName: "RPC", schedulerAdminIds: ["s6"], alert: (m) => w.push(["alert", m]), console: quietBK })(); return w; },
+      submitVacRequest: async (S) => { const w = [];
+        const f = fnBK("vacReqSurgeon, vacReqStart, vacReqEnd, vacReqReason, vacReqType, surgeons, apps, showToast, db, setVacRequests, addNotification, schedulerAdminIds, sendEmailNotif, setVacReqStart, setVacReqEnd, setVacReqReason, setVacReqType, vacSubmitBusyRef, sessionEpochRef, setVacSubmitting, console",
+          (() => { const s = sliceBK("  const submitVacRequest = useCallback(", ", [vacReqSurgeon, vacReqStart, vacReqEnd, vacReqReason, vacReqType, surgeons, apps, addNotification, sendEmailNotif, schedulerAdminIds]);"); return s ? s.slice("  const submitVacRequest = useCallback(".length, s.lastIndexOf(", [vacReqSurgeon")) : null; })(), wfrBK);
+        if (!f) return null;
+        await f({ vacReqSurgeon: "s3", vacReqStart: S.vacReqStart, vacReqEnd: S.vacReqEnd, vacReqReason: "", vacReqType: "vacation", surgeons: [{ id: "s3", name: "RPC" }], apps: [], showToast: () => {},
+          db: { insert: async (t, row) => { w.push(["insert", t, row.start_date, row.end_date]); return { data: Object.assign({ id: 9 }, row), error: null }; } }, setVacRequests: () => {}, addNotification: async () => {}, schedulerAdminIds: ["s6"], sendEmailNotif: () => {},
+          setVacReqStart: () => {}, setVacReqEnd: () => {}, setVacReqReason: () => {}, setVacReqType: () => {}, vacSubmitBusyRef: { current: false }, sessionEpochRef: { current: 0 }, setVacSubmitting: () => {}, console: quietBK })();
+        return w; },
+      saveVacRequestEdit: async (S, member) => { const w = [];
+        const f = fnBK("sessionEpochRef, dbAuthHeaders, editingVacReq, isScheduler, showToast, vacRequests, fetch, SUPABASE_URL, console, setBackRequest, logAudit, setVacRequests, toEdit, setEditingVacReq",
+          (() => { const s = sliceBK("  const saveVacRequestEdit = useCallback(", ", [editingVacReq, vacRequests, isScheduler]);"); return s ? s.slice("  const saveVacRequestEdit = useCallback(".length, s.lastIndexOf(", [editingVacReq")) : null; })());
+        if (!f) return null;
+        await f({ sessionEpochRef: { current: 0 }, dbAuthHeaders: () => ({}), editingVacReq: S.editingVacReq, isScheduler: !member, showToast: () => {}, SUPABASE_URL: "https://x.test", console: quietBK,
+          vacRequests: [{ id: 7, surgeon_id: "s3", surgeon_name: "RPC", start_date: "2099-03-02", end_date: "2099-03-06", request_type: "vacation", reason: "trip", status: member ? "pending" : "approved" }],
+          fetch: async (url, init) => { const b = JSON.parse(init.body); w.push(["PATCH", b.start_date, b.end_date]); return respBK(200, [{ id: 7 }]); },
+          setBackRequest: async () => true, logAudit: () => {}, setVacRequests: () => {}, toEdit: (...a) => w.push(["toEdit", ...a]), setEditingVacReq: () => {} })();
+        return w; },
+    };
+    const [P0, P1] = PICK;
+    const SITES = [
+      { name: "Setup vacation", lo: R.setupAdd, hi: R.nc, start: "vacStart", end: "vacEnd", min: ["", ""], save: "<button onClick={addVac}", run: (S) => SAVES.addVac(S),
+        keys: ["vacStart", "vacEnd"], wrote: [["toAdd", "s3", "vacation", P0, P1]] },
+      { name: "Setup vacation edit", lo: R.setupAdd, hi: R.nc, start: "editVac.start", end: "editVac.end", min: ["", ""], save: "<button onClick={saveEditVac}", run: (S) => SAVES.saveEditVac(S),
+        keys: ["editVac"], wrote: [["toEdit", "s3", "vacation", "2099-11-09", "2099-11-13", P0, P1]] },
+      { name: "Setup no-call", lo: R.nc, hi: R.mine, start: "ncStart", end: "ncEnd", min: ["", ""], save: "<button onClick={addNoCall}", run: (S) => SAVES.addNoCall(S),
+        keys: ["ncStart", "ncEnd"], wrote: [["toAdd", "s3", "nocall", P0, P1]] },
+      { name: "My vacations edit", lo: R.mine, hi: R.form, start: "myVacEdit.start", end: "myVacEdit.end", min: ["", ""], save: "<button onClick={saveMyVacEdit}", run: (S) => SAVES.saveMyVacEdit(S),
+        keys: ["myVacEdit"], wrote: [["toEdit", "s3", "vacation", "2099-11-02", "2099-11-06", P0, P1]] },
+      { name: "Request form", lo: R.form, hi: R.pending, start: "vacReqStart", end: "vacReqEnd", min: [TODAY_BK, TODAY_BK], save: "<button onClick={submitVacRequest}", run: (S) => SAVES.submitVacRequest(S),
+        keys: ["vacReqStart", "vacReqEnd"], wrote: [["insert", "vacation_requests", P0, P1]] },
+      { name: "Request edit (requester)", lo: R.pending, hi: R.reviewed, start: "editingVacReq.start_date", end: "editingVacReq.end_date", min: ["", TODAY_BK], save: "<button onClick={saveVacRequestEdit}", run: (S) => SAVES.saveVacRequestEdit(S, true),
+        keys: ["editingVacReq"], wrote: [["PATCH", P0, P1]] },
+      { name: "Request edit (scheduler)", lo: R.reviewed, hi: body.length, start: "editingVacReq.start_date", end: "editingVacReq.end_date", min: ["", ""], save: "<button onClick={saveVacRequestEdit}", run: (S) => SAVES.saveVacRequestEdit(S, false),
+        keys: ["editingVacReq"], wrote: [["PATCH", P0, P1], ["toEdit", "s3", "vacation", "2099-03-02", "2099-03-06", P0, P1]] },
+    ];
+    const res = {};
+    const wireSite = async (site, el, setterOverride) => {
+      const out = { el: !!el };
+      if (!el) return out;
+      const onCh = attrBK(el, "onChange"), sE = attrBK(el, "start"), eE = attrBK(el, "end"), mE = attrBK(el, "min");
+      const S = state0(), log = [];
+      const mk = (k) => (v) => { S[k] = typeof v === "function" ? v(S[k]) : v; log.push(k); };
+      const setters = { setVacStart: mk("vacStart"), setVacEnd: mk("vacEnd"), setNcStart: mk("ncStart"), setNcEnd: mk("ncEnd"), setEditVac: mk("editVac"), setMyVacEdit: mk("myVacEdit"), setVacReqStart: mk("vacReqStart"), setVacReqEnd: mk("vacReqEnd"), setEditingVacReq: mk("editingVacReq") };
+      const cb = fnBK(SETTERS, onCh && setterOverride ? setterOverride(onCh) : onCh);
+      if (!cb) return out;
+      cb(setters)(P0, P1);
+      out.set = log;
+      const back = fnBK(STATE, sE && eE ? `[${sE}, ${eE}]` : null);
+      out.readBack = back ? back(S) : null;
+      const s0 = state0(); out.others = Object.keys(s0).filter((k) => !site.keys.includes(k) && J(S[k]) !== J(s0[k]));
+      out.kept = site.keys.map((k) => (typeof s0[k] === "object" && s0[k] ? Object.keys(s0[k]).filter((x) => !["start", "end", "start_date", "end_date"].includes(x)).every((x) => S[k][x] === s0[k][x]) : true)).every(Boolean);
+      const minF = fnBK("todayStr, isScheduler, fmt, Date", mE);
+      out.min = minF ? [minF({ todayStr: TODAY_BK, isScheduler: true, fmt: HB.fmt, Date: FixedDateBK }), minF({ todayStr: TODAY_BK, isScheduler: false, fmt: HB.fmt, Date: FixedDateBK })] : null;
+      out.wrote = await site.run(S);
+      out.common = ["dk={dk}", "css={css}", "bannerRef={updateBannerRef}", "bannerOn={updateAvailable}"].every((x) => el.includes(" " + x)) && !!attrBK(el, "label");
+      return out;
+    };
+    for (const site of SITES) {
+      const inRange = els.filter((x) => x.at > site.lo && x.at < site.hi && site.lo >= 0);
+      const el = inRange.find((x) => (attrBK(x.text || "", "start") || "") === site.start) || null;
+      const r = await wireSite(site, el && el.text);
+      const sv = el ? body.indexOf(site.save, el.at) : -1, nextEl = el ? body.indexOf("<DateRangeField ", el.at + 1) : -1;
+      r.beforeSave = !!el && sv > el.at && sv - el.at < 1600 && (nextEl < 0 || nextEl > sv);
+      res[site.name] = r;
+    }
+    const okSite = (site) => { const r = res[site.name]; return !!r && r.el && J(r.set) === J(site.keys) && J(r.readBack) === J(PICK) && r.others.length === 0 && r.kept && J(r.min) === J(site.min) && J(r.wrote) === J(site.wrote) && r.common && r.beforeSave; };
+    const bad = SITES.filter((s) => !okSite(s)).map((s) => s.name);
+    check("BK5 each of the 7 date pairs is ONE DateRangeField (7, one line each, no other in the component): Setup vacation, its edit, Setup no-call, My vacations edit, the request form, the request edit (requester) and (scheduler) — each in its own form, before its own save button",
+      els.length === 7 && els.every((x) => !!x.text) && SITES.every((s) => res[s.name] && res[s.name].el && res[s.name].beforeSave), J({ n: els.length, found: SITES.map((s) => [s.name, !!(res[s.name] && res[s.name].el), res[s.name] && res[s.name].beforeSave]) }));
+    check("BK5 …each one's onChange, run on its site's REAL state: sets only that site's state (an edit keeps its id / sid / idx / reason), and its start / end read back exactly the picked range; then the site's REAL save handler, run on that state, writes the picked dates — toAdd / toEdit / the request insert / the request PATCH (+ an approved request's time off), as before",
+      bad.length === 0, "wrong: " + bad.join(", ") + " · " + J(res).slice(0, 2400));
+    check("BK5 …each one's min, evaluated: Setup (vacation, its edit, no-call), My vacations and the scheduler's request edit — none (back-dating allowed); the request form — today for everyone (as before); the requester's edit — today for a member, none for the scheduler (as before)",
+      SITES.every((s) => res[s.name] && J(res[s.name].min) === J(s.min)), J(SITES.map((s) => [s.name, res[s.name] && res[s.name].min])));
+    // Control: crossed setters (the end into the start) are caught by the same comparison.
+    const ctl = await wireSite(SITES[0], (els.find((x) => x.at > R.setupAdd && x.at < R.nc) || {}).text, (code) => code.replace("setVacStart(s); setVacEnd(e);", "setVacStart(e); setVacEnd(s);"));
+    check("BK5 control: the Setup vacation field with its setters crossed fails the same read-back and write comparison", !!ctl.el && (J(ctl.readBack) !== J(PICK) || J(ctl.wrote) !== J(SITES[0].wrote)), J(ctl));
+  }
+
+  // BK6 — the markup, the fallback, the colors
+  {
+    const comp = fnA < 0 ? "" : nsrcBK.slice(fnA, nsrcBK.indexOf("\n}\n", fnA) + 3);
+    const cs0 = nsrcBK.indexOf("function CallSchedule() {"), cs1 = cs0 < 0 ? -1 : nsrcBK.indexOf("\nfunction ", cs0 + 1);
+    const PIN = [
+      // one module-scope component, after CallSchedule (§P's component bounds unchanged), React.* hooks only
+      fnA > cs1 && cs1 > 0, count("function DateRangeField(") === 1, !/[^.]\buse(State|Effect|Ref|Memo|Callback)\(/.test(comp), (comp.match(/React\.useEffect\(/g) || []).length === 3,
+      // the field: a button showing the range or "Pick dates"
+      comp.includes('<button type="button" ref={fieldRef} onClick={openSheet} aria-haspopup="dialog" aria-expanded={open} aria-label={`${label}: ${text || placeholder}`}'),
+      comp.includes('const text = rangeLabel(start || "", start ? end || "" : "", today);') && comp.includes("{text || placeholder}</span>"),
+      // the sheet: portaled, a backdrop that closes, a modal dialog with the label, 80vh, its own scroll, the safe area, lifted
+      comp.includes("{open && ReactDOM.createPortal(") && comp.includes("document.body)}"),
+      comp.includes('<div onClick={(e) => { e.stopPropagation(); close(); }} style={{ position: "fixed", inset: 0, zIndex: 9000, background: "rgba(0,0,0,0.45)", display: "flex", alignItems: "flex-end", justifyContent: "center" }}>'),
+      comp.includes('<div role="dialog" aria-modal="true" aria-label={label} onClick={(e) => e.stopPropagation()}'),
+      comp.includes('maxHeight: "80vh", overflowY: "auto", overscrollBehavior: "contain"') && comp.includes('paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 16px)", marginBottom: lift'),
+      comp.includes('<button type="button" aria-label="Close" onClick={() => close()}'),
+      comp.includes('<div aria-live="polite" style={{ fontSize: 14, color: C.line, marginTop: 2 }}>{rangeSheetLine(sheet.start, sheet.end, sheet.phase, today)}</div>'),
+      comp.includes('aria-label="Previous month" aria-disabled={prevOff || undefined} onClick={() => shiftMonth(-1)}') && comp.includes('aria-label="Next month" onClick={() => shiftMonth(1)}') && comp.includes("{MO[sheet.m]} {sheet.y}"),
+      comp.includes("{DAY_HDR.map(d => <div key={d}") && (comp.match(/gridTemplateColumns:"repeat\(7,minmax\(0,1fr\)\)"/g) || []).length === 2, // AD's phone-safe columns
+      comp.includes('<div ref={gridRef} role="group" aria-label={`${MO[sheet.m]} ${sheet.y}`} onKeyDown={onGridKey}'),
+      // the days: buttons with a date label, pressed for the ends, disabled before min, today marked, ≥ 44px tall; the band between
+      comp.includes('<button key={ds} type="button" data-ds={ds} tabIndex={ds === tabDs ? 0 : -1} aria-label={dayLabel(ds)} aria-pressed={edge} aria-disabled={off || undefined} aria-current={isToday ? "date" : undefined}'),
+      comp.includes("onClick={() => tap(ds)}") && comp.includes('style={{ height: 44, width: "100%", padding: 0, margin: 0, border: "none", background: "transparent"'),
+      comp.includes("const edge = !!lo && (ds === lo || ds === hi), between = !!lo && ds > lo && ds < hi, off = !pickable(ds), isToday = ds === today;"),
+      comp.includes("const band = between ? C.band") && comp.includes('`linear-gradient(to ${ds === lo ? "right" : "left"}, transparent 50%, ${C.band} 50%)`'),
+      // Clear, and Done — disabled until a start exists
+      comp.includes("<button type=\"button\" onClick={clear} style={{ ...css.btn(false), flex: 1, minHeight: 44, fontSize: 14 }}>Clear</button>"),
+      comp.includes('<button type="button" onClick={done} disabled={!sheet.start} style={{ ...css.btn(true), background: "#1a6fa8", flex: 2, minHeight: 44, fontSize: 14,') && comp.includes('<span style={{ color: "#fff" }}>Done</span>'),
+      // an old cached helpers.js: the guard, and the two native boxes
+      comp.includes('const ready = typeof rangeTap === "function" && typeof monthCells === "function" && typeof rangeLabel === "function" && typeof rangeSheetLine === "function" && typeof monthDayLabel === "function";'),
+      comp.includes("  if (!ready) {") && (comp.match(/<input type="date"/g) || []).length === 2,
+    ];
+    const pinBad = PIN.map((ok, i) => (ok ? null : i)).filter((x) => x !== null);
+    check("BK6 the markup: ONE module-scope DateRangeField (after CallSchedule, React.* hooks); the field is a button reading the range or \"Pick dates\"; the sheet is portaled to <body>, a modal dialog with its label over a backdrop that closes it, 80vh with its own scroll, the safe area, lifted by `lift`; ✕; the live line; ◀ (off before min) / ▶ and the month; Sun–Sat; a 7-column grid of day buttons (date label, aria-pressed ends, aria-disabled before min, aria-current today, 44px tall, a tap is tap(ds)); the band; Clear; Done disabled until a start; the old-helpers guard and its two native boxes",
+      !!comp && pinBad.length === 0, "failing pins: " + J(pinBad));
+    // The day's label, executed: "Mon, Dec 14, 2026".
+    const dl = comp.match(/\n  const dayLabel = (\(ds\) => [^\n]*);\n/);
+    let dayLabels = null; try { const f = dl ? vm.runInContext("(" + dl[1] + ")", sandbox) : null; dayLabels = f ? [f("2026-12-14"), f("2027-01-01"), f(TODAY_BK)] : null; } catch (ex) { dayLabels = String(ex).slice(0, 120); }
+    check("BK6 each day button's aria-label (dayLabel, executed): \"Mon, Dec 14, 2026\", \"Fri, Jan 1, 2027\", \"Mon, Oct 19, 2026\"",
+      J(dayLabels) === J(["Mon, Dec 14, 2026", "Fri, Jan 1, 2027", "Mon, Oct 19, 2026"]), J(dayLabels));
+    // The fallback's end rule IS endOnOrAfter (AL1's cases), executed.
+    const fb = comp.match(/onChange=\{e => \{ const v = e\.target\.value; onChange\(v, (v && \(!end \|\| end < v \|\| end === start\) \? v : end)\); \}\}/);
+    const eoa = helperBK("endOnOrAfter");
+    let fbSame = null;
+    try { const f = fb ? vm.runInContext("(function (v, end, start) { return " + fb[1] + "; })", sandbox) : null;
+      const CASES = [["2026-11-03", "", ""], ["2026-11-03", "2026-11-01", "2026-10-30"], ["2026-10-01", "2026-10-18", "2026-10-18"], ["2026-11-03", "2026-11-07", "2026-11-01"], ["", "2026-11-07", "2026-11-03"], ["2026-11-03", "2026-11-03", "2026-11-03"]];
+      fbSame = f && eoa ? CASES.every(([v, e, s]) => f(v, e, s) === eoa(v, e, s)) : null; } catch (ex) { fbSame = String(ex).slice(0, 120); }
+    check("BK6 the old-helpers fallback's end follows its start by endOnOrAfter's own rule (inline, executed against it on AL1's cases), and its end box's floor is the later of the start and min",
+      fbSame === true && comp.includes('min={[start || "", min || ""].sort().pop() || undefined} value={end || ""} onChange={e => onChange(start, e.target.value)}'), J({ found: !!fb, fbSame }));
+    // Both themes' colors, measured (the dark sheet forces button text to #c0c8d8, so every label sits in its own colored span).
+    const cm = comp.match(/\n  const C = dk\n    \? (\{[^\n]*\})\n    : (\{[^\n]*\});\n/);
+    const lumBK = (hex) => { let h = hex.replace("#", ""); if (h.length === 3) h = h.split("").map((x) => x + x).join(""); const n = parseInt(h, 16); return [n >> 16, (n >> 8) & 255, n & 255].map((v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); }).reduce((a, v, i) => a + v * [0.2126, 0.7152, 0.0722][i], 0); };
+    const crBK = (a, b) => { const x = lumBK(a), y = lumBK(b); return Math.round(((Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05)) * 100) / 100; };
+    let theme = null;
+    try {
+      if (cm) {
+        theme = {};
+        for (const [name, lit] of [["dark", cm[1]], ["light", cm[2]]]) {
+          const C = vm.runInContext("(" + lit + ")", sandbox);
+          theme[name] = { text: crBK(C.text, C.sheet), title: crBK(C.title, C.sheet), line: crBK(C.line, C.sheet), sub: crBK(C.sub, C.sheet), band: crBK(C.onBand, C.band), ends: crBK(C.onAccent, C.accent),
+            field: crBK(C.text, C.field), placeholder: crBK(C.placeholder, C.field), ring: crBK(C.accent, C.sheet), done: crBK("#fff", "#1a6fa8") };
+        }
+      }
+    } catch (ex) { theme = String(ex).slice(0, 120); }
+    const themeOk = !!theme && typeof theme === "object" && ["dark", "light"].every((k) => theme[k] && Object.entries(theme[k]).every(([n, v]) => v >= (n === "ring" ? 3 : 4.5)));
+    check("BK6 both themes' colors, measured (WCAG): every day number, the title, the live line, the weekday letters, a day in the band, the filled ends, the field's text and its placeholder, and Done's white on its solid fill ≥ 4.5:1; today's ring / the end circles ≥ 3:1 against the sheet — each label in its own colored span (the dark sheet forces button text)",
+      themeOk && comp.includes('<span style={{ color: text ? C.text : C.placeholder, whiteSpace: "nowrap"') && comp.includes("color: edge ? C.onAccent : off ? C.off : between ? C.onBand : C.text"), J(theme));
+    // The old pairs are gone: no two-box range left in the component.
+    check("BK6 no start/end pair of native date boxes is left (the 7 value bindings are gone, endOnOrAfter( is no longer called in the page — helpers.js keeps it for an old cached page, AL1), and the request form's separate range line is gone (the field reads the range back)",
+      ["value={vacStart}", "value={vacEnd}", "value={ncStart}", "value={ncEnd}", "value={editVac.start}", "value={myVacEdit.start}", "value={vacReqStart}", "value={vacReqEnd}", "value={editingVacReq.start_date}", "value={editingVacReq.end_date}"].every((x) => count(x) === 0)
+        && count("endOnOrAfter(") === 0 && count("rangeSummary(") === 0,
+      J({ endOnOrAfter: count("endOnOrAfter("), rangeSummary: count("rangeSummary(") }));
+  }
+})();
+
 // ─── AH9. The REAL finishGenerate: Generate's end, with the LATEST state (2026-10-13) ───
 await (async () => {
   const nsrcF = src.replace(/\r\n/g, "\n");
@@ -10198,8 +10693,13 @@ check("AK1 the calendar has a Today button beside the month arrows: it sets the 
 // still on the previous start (a form's today/today default) to the start;
 // an end the user set later is kept. The end input's min is the start.
 //   AL1 endOnOrAfter (helpers.js), executed
-//   AL2 every start/end pair calls it with the previous start, and every end
-//       input's min follows its start (the request forms keep today's floor)
+//   AL2 (moved by BK, 2026-10-19 — deliberately) the 7 start/end pairs are no
+//       longer two date boxes: each is ONE calendar (DateRangeField), whose
+//       2nd tap can't leave the end before the start (rangeTap, BK1). So no
+//       pair calls endOnOrAfter any more; it stays in helpers.js for an old
+//       cached page, and the field's own fallback (an old cached helpers.js)
+//       keeps its rule inline — BK6 executes it against endOnOrAfter. The
+//       request forms keep today's floor as the field's min (BK5).
 console.log("\nAL. date range end follows the start");
 {
   const eoa = vm.runInContext(`typeof endOnOrAfter === "function" ? endOnOrAfter : null`, sandbox);
@@ -10209,18 +10709,13 @@ console.log("\nAL. date range end follows the start");
   ] : null;
   check("AL1 endOnOrAfter: an empty end, an end before the start, and an end still on the previous start (today/today, then a back-dated start) become the start; a later end and a cleared start leave it",
     !!got && JSON.stringify(got) === JSON.stringify(["2026-11-03", "2026-11-03", "2026-10-01", "2026-11-07", "2026-11-07", "2026-11-03"]), JSON.stringify(got));
-  const pairs = {
-    "Setup vacation": ["setVacEnd(end=>endOnOrAfter(v,end,vacStart))", "min={vacStart||undefined} value={vacEnd}"],
-    "Setup vacation edit": ["setEditVac(pr=>({...pr,start:v,end:endOnOrAfter(v,pr.end,pr.start)}))", "min={editVac.start||undefined} value={editVac.end}"],
-    "Setup no-call": ["setNcEnd(end=>endOnOrAfter(v,end,ncStart))", "min={ncStart||undefined} value={ncEnd}"],
-    "My vacations edit": ["setMyVacEdit(p=>({...p,start:v,end:endOnOrAfter(v,p.end,p.start)}))", "value={myVacEdit.end} min={myVacEdit.start}"],
-    "Request form": ["setVacReqEnd(end=>endOnOrAfter(v,end,vacReqStart))", "min={vacReqStart && vacReqStart > todayStr ? vacReqStart : todayStr} value={vacReqEnd}"],
-    "Request edit (requester)": ["setEditingVacReq(p=>({...p,start_date:v,end_date:endOnOrAfter(v,p.end_date,p.start_date)}))", 'min={[editingVacReq.start_date || "", isScheduler ? "" : fmt(new Date())].sort().pop() || undefined} value={editingVacReq.end_date}'],
-    "Request edit (scheduler)": ["setEditingVacReq(p=>({...p,start_date:v,end_date:endOnOrAfter(v,p.end_date,p.start_date)}))", "min={editingVacReq.start_date || undefined} value={editingVacReq.end_date}"],
-  };
-  const bad = Object.entries(pairs).filter(([, [s, e]]) => !count(s) || count(e) !== 1).map(([k]) => k);
-  check("AL2 every start/end date pair moves its end with the start (passing the previous start) and caps the end's calendar at the start: Setup vacation, its edit, Setup no-call, My vacations edit, the request form and both request edits (the requester's keeps today's floor)",
-    bad.length === 0 && count("endOnOrAfter(v,") === 7 && count("max={myVacEdit.end}") === 0, "missing: " + bad.join(", ") + " · calls " + count("endOnOrAfter(v,"));
+  // The 7 pairs, as BK5 finds them (one DateRangeField each, by its start); the old two-box bindings are gone.
+  const fields = ["start={vacStart} end={vacEnd}", "start={editVac.start} end={editVac.end}", "start={ncStart} end={ncEnd}", "start={myVacEdit.start} end={myVacEdit.end}",
+    "start={vacReqStart} end={vacReqEnd}", "start={editingVacReq.start_date} end={editingVacReq.end_date}"];
+  const oldPairs = ["setVacEnd(end=>endOnOrAfter(", "end:endOnOrAfter(v,pr.end,pr.start)", "setNcEnd(end=>endOnOrAfter(", "end:endOnOrAfter(v,p.end,p.start)", "setVacReqEnd(end=>endOnOrAfter(", "end_date:endOnOrAfter(v,p.end_date,p.start_date)"];
+  check("AL2 (moved by BK) every start/end pair is ONE calendar field — Setup vacation, its edit, Setup no-call, My vacations edit, the request form, both request edits (×2 on editingVacReq) — so none moves an end with endOnOrAfter any more (the calendar's 2nd tap can't leave the end before the start: BK1); the page no longer calls it",
+    fields.every((f) => count(f) === (f.startsWith("start={editingVacReq") ? 2 : 1)) && count("<DateRangeField ") === 7 && oldPairs.every((p) => count(p) === 0) && count("endOnOrAfter(") === 0 && count("max={myVacEdit.end}") === 0,
+    JSON.stringify({ fields: fields.map((f) => count(f)), dr: count("<DateRangeField "), endOnOrAfter: count("endOnOrAfter(") }));
 }
 
 // ══════════════════════════════════════════════════════════════

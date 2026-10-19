@@ -700,6 +700,78 @@ function rangeSummary(start, end) {
   return n === 1 ? `1 day, ${day(start, a)}` : `${n} days, ${day(start, a)} – ${day(end, b)}`;
 }
 
+// One calendar for a date range (owner 2026-10-19: "when we pick dates in the
+// calendar - we can pick the start date and then pick the end date in the same
+// calendar and it will mark all the dates in between"). Every start/end pair
+// was two native date boxes, an iPhone date wheel each; it is now ONE month
+// calendar (DateRangeField in index-source.html). These are its rules. Pure:
+// no clock (today is passed in), no state; dates are "YYYY-MM-DD" (string order
+// is date order), local, via parse.
+//
+// rangeTap(start, end, tapped, phase, min) → { start, end, phase }: one tap.
+//   phase "start": the tap begins a range (the first tap, or the one after a
+//     finished range): start = end = tapped (a one-day range); the next tap
+//     ends it (phase "end").
+//   phase "end": the tap ends it — a later day is the end; an EARLIER day
+//     makes the range tapped → the old start; the start again keeps a one-day
+//     range. The tap after that begins a new range (phase "start").
+//   A day before min (the request forms: today) is not tappable — nothing
+//   changes. A phase "end" with no start acts as phase "start".
+//     rangeTap("", "", "2026-12-14", "start")                   → 12-14 → 12-14, "end"
+//     rangeTap("2026-12-14", "2026-12-14", "2026-12-18", "end") → 12-14 → 12-18, "start"
+//     rangeTap("2026-12-14", "2026-12-14", "2026-12-10", "end") → 12-10 → 12-14, "start"
+function rangeTap(start, end, tapped, phase, min) {
+  if (!tapped || (min && tapped < min)) return { start: start || "", end: end || "", phase: phase === "end" ? "end" : "start" };
+  if (phase !== "end" || !start) return { start: tapped, end: tapped, phase: "end" };
+  return tapped < start ? { start: tapped, end: start, phase: "start" } : { start, end: tapped, phase: "start" };
+}
+
+// monthCells(year, month) → one month's grid, Sunday first (DAY_HDR, as the
+// Calendar tab's calGrid): null for each blank before the 1st and after the
+// last day, else the day's "YYYY-MM-DD"; whole weeks (a multiple of 7).
+// month is 0-based, as Date's.
+function monthCells(year, month) {
+  const days = new Date(year, month + 1, 0).getDate(), first = new Date(year, month, 1).getDay();
+  const c = [];
+  for (let i = 0; i < first; i++) c.push(null);
+  for (let d = 1; d <= days; d++) c.push(fmt(new Date(year, month, d)));
+  while (c.length % 7) c.push(null);
+  return c;
+}
+
+// A day as the range field writes it: "Mon Dec 14", with its year when that
+// isn't today's year ("Fri Jan 1, 2027"). A value that isn't a date is shown as
+// it is.
+function rangeDayLabel(ds, today) {
+  if (!/^\d{4}-\d\d-\d\d$/.test(String(ds || ""))) return String(ds || "");
+  return `${["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][parse(ds).getDay()]} ${monthDayLabel(ds, ds.slice(0, 4) !== String(today || "").slice(0, 4))}`;
+}
+
+// rangeLabel(start, end, today) → the range on the field (and in its sheet):
+//   "Mon Dec 14 → Fri Dec 18 · 5 days"; one day: "Mon Dec 14 · 1 day";
+//   a date outside today's year carries it: "Mon Dec 28 → Fri Jan 1, 2027 · 5 days".
+//   Only a start: "Mon Dec 14 → …". "" with no start (the field's placeholder
+//   shows). An end before the start is shown as it is, uncounted — the save
+//   refuses it and says why. Days counted inclusive, by date (DST-proof).
+function rangeLabel(start, end, today) {
+  if (!start) return "";
+  if (!end) return `${rangeDayLabel(start, today)} → …`;
+  if (end < start || !/^\d{4}-\d\d-\d\d$/.test(start) || !/^\d{4}-\d\d-\d\d$/.test(end)) return `${rangeDayLabel(start, today)} → ${rangeDayLabel(end, today)}`;
+  const a = parse(start), b = parse(end);
+  const n = Math.round((Date.UTC(b.getFullYear(), b.getMonth(), b.getDate()) - Date.UTC(a.getFullYear(), a.getMonth(), a.getDate())) / 86400000) + 1;
+  return n === 1 ? `${rangeDayLabel(start, today)} · 1 day` : `${rangeDayLabel(start, today)} → ${rangeDayLabel(end, today)} · ${n} days`;
+}
+
+// rangeSheetLine(start, end, phase, today) → the sheet's live line above the
+// month: "Pick the start date" before a tap; "Mon Dec 14 → pick the end date"
+// after the first (the day is a one-day range already — Done keeps it);
+// otherwise the range, as rangeLabel writes it.
+function rangeSheetLine(start, end, phase, today) {
+  if (!start) return "Pick the start date";
+  if (phase === "end") return `${rangeDayLabel(start, today)} → pick the end date`;
+  return rangeLabel(start, end || start, today);
+}
+
 // The scheduler's trade builder (UX audit 2026-10-19). Who holds a week's
 // shift, by the accept's own rule (acceptTradeRequest's holderIn: the service
 // week's dayCall, else that night or the weekend); "" when no one does.

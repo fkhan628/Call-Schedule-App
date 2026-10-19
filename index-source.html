@@ -8355,13 +8355,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   </optgroup>
                 </select>
               </div>
-              <div>
-                <label style={{fontSize:10,color:"#7a8a98",display:"block",marginBottom:2}}>Start</label>
-                <input type="date" value={vacStart} onChange={e=>{const v=e.target.value; setVacStart(v); setVacEnd(end=>endOnOrAfter(v,end,vacStart));}} style={{...css.inp,width:140}}/>
-              </div>
-              <div>
-                <label style={{fontSize:10,color:"#7a8a98",display:"block",marginBottom:2}}>End</label>
-                <input type="date" min={vacStart||undefined} value={vacEnd} onChange={e=>setVacEnd(e.target.value)} style={{...css.inp,width:140}}/>
+              <div style={{minWidth:0,maxWidth:"100%"}}>
+                <label style={{fontSize:10,color:"#7a8a98",display:"block",marginBottom:2}}>Dates</label>
+                {/* One calendar for start and end (DateRangeField); back-dating allowed here. */}
+                <DateRangeField label="Vacation dates" start={vacStart} end={vacEnd} min="" onChange={(s, e) => { setVacStart(s); setVacEnd(e); }} dk={dk} css={css} bannerRef={updateBannerRef} bannerOn={updateAvailable} style={{minWidth:230}}/>
               </div>
               <button onClick={addVac} style={css.btn(true)}>+ Add</button>
               <button onClick={()=>setPaintSheet("timeoff")} style={{...css.btn(false),fontWeight:700}}>🖌 Paint Month</button>
@@ -8447,10 +8444,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                         const originalIdx = (vacations[p.id]||[]).findIndex(([avs,ave]) => avs===vs && ave===ve);
                         const isPast = ve < todayStr;
                         return editVac && editVac.sid===p.id && editVac.idx===originalIdx ? (
-                          <div key={i} style={{display:"inline-flex",gap:4,alignItems:"center",background:"#f0f8ff",border:"1px solid #a0c0e0",borderRadius:5,padding:"3px 6px",marginBottom:4,marginRight:4}}>
-                            <input type="date" value={editVac.start} onChange={e=>{const v=e.target.value; setEditVac(pr=>({...pr,start:v,end:endOnOrAfter(v,pr.end,pr.start)}));}} style={{...css.inp,width:120,fontSize:11,padding:"2px 4px"}}/>
-                            <span style={{fontSize:11,color:"#7a8a98"}}>→</span>
-                            <input type="date" min={editVac.start||undefined} value={editVac.end} onChange={e=>setEditVac(pr=>({...pr,end:e.target.value}))} style={{...css.inp,width:120,fontSize:11,padding:"2px 4px"}}/>
+                          <div key={i} style={{display:"inline-flex",gap:4,alignItems:"center",flexWrap:"wrap",maxWidth:"100%",boxSizing:"border-box",background:dk?"#16213e":"#f0f8ff",border:`1px solid ${dk?"#2a4a6e":"#a0c0e0"}`,borderRadius:5,padding:"3px 6px",marginBottom:4,marginRight:4}}>
+                            <DateRangeField label="Vacation dates" compact start={editVac.start} end={editVac.end} min="" onChange={(s, e) => setEditVac(pr => ({ ...pr, start: s, end: e }))} dk={dk} css={css} bannerRef={updateBannerRef} bannerOn={updateAvailable}/>
                             <button onClick={saveEditVac} style={{background:"none",border:"none",color:"#1a8040",cursor:"pointer",fontSize:13,fontWeight:700}}>✓</button>
                             <button onClick={()=>setEditVac(null)} style={{background:"none",border:"none",color:"#904040",cursor:"pointer",fontSize:11}}>✕</button>
                           </div>
@@ -8490,13 +8485,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   </optgroup>
                 </select>
               </div>
-              <div>
-                <label style={{fontSize:10,color:"#7a8a98",display:"block",marginBottom:2}}>Start</label>
-                <input type="date" value={ncStart} onChange={e=>{const v=e.target.value; setNcStart(v); setNcEnd(end=>endOnOrAfter(v,end,ncStart));}} style={{...css.inp,width:140}}/>
-              </div>
-              <div>
-                <label style={{fontSize:10,color:"#7a8a98",display:"block",marginBottom:2}}>End</label>
-                <input type="date" min={ncStart||undefined} value={ncEnd} onChange={e=>setNcEnd(e.target.value)} style={{...css.inp,width:140}}/>
+              <div style={{minWidth:0,maxWidth:"100%"}}>
+                <label style={{fontSize:10,color:"#7a8a98",display:"block",marginBottom:2}}>Dates</label>
+                {/* One calendar for start and end (DateRangeField); back-dating allowed here. */}
+                <DateRangeField label="No-call dates" start={ncStart} end={ncEnd} min="" onChange={(s, e) => { setNcStart(s); setNcEnd(e); }} dk={dk} css={css} bannerRef={updateBannerRef} bannerOn={updateAvailable} style={{minWidth:230}}/>
               </div>
               <button onClick={addNoCall} style={css.btn(true)}>+ Add</button>
             </div>
@@ -11692,9 +11684,9 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                         <div key={origIdx} style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap",padding:"4px 0",borderBottom:i<shown.length-1?"1px solid #f0e4d0":"none"}}>
                           {editing ? (
                             <>
-                              <input type="date" value={myVacEdit.start} onChange={e=>{const v=e.target.value; setMyVacEdit(p=>({...p,start:v,end:endOnOrAfter(v,p.end,p.start)}));}} style={{...css.inp,padding:"3px 6px",fontSize:12,width:148}}/>
-                              <span style={{color:"#8a94a0"}}>→</span>
-                              <input type="date" value={myVacEdit.end} min={myVacEdit.start} onChange={e=>setMyVacEdit(p=>({...p,end:e.target.value}))} style={{...css.inp,padding:"3px 6px",fontSize:12,width:148}}/>
+                              {/* One calendar for start and end (DateRangeField). No floor: trimming an ongoing vacation to an end
+                                  already past stays allowed (saveMyVacEdit's bounded self-serve rule is the gate). */}
+                              <DateRangeField label="Vacation dates" compact start={myVacEdit.start} end={myVacEdit.end} min="" onChange={(s, e) => setMyVacEdit(p => ({ ...p, start: s, end: e }))} dk={dk} css={css} bannerRef={updateBannerRef} bannerOn={updateAvailable}/>
                               <button onClick={saveMyVacEdit} style={{background:"#2a7a40",color:"#fff",border:"none",borderRadius:5,padding:"3px 12px",fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:font}}>Save</button>
                               <button onClick={()=>setMyVacEdit(null)} style={{background:"#f0f0f0",color:"#5a6a78",border:"1px solid #d0d8e0",borderRadius:5,padding:"3px 10px",fontSize:11,cursor:"pointer",fontFamily:font}}>Cancel</button>
                             </>
@@ -11903,20 +11895,14 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   <div style={{fontSize:13,fontWeight:600,color:"#1a6fa8",padding:"6px 0"}}>{[...surgeons,...apps].find(p=>p.id===mySurgeon)?.name || "—"}</div>
                 </div>
               )}
-              <div>
-                <label style={{fontSize:11,color:"#7a8a98",display:"block",marginBottom:2}}>Start Date</label>
-                {/* min is UI-only (a typed date bypasses it) — submitVacRequest
-                    carries the real gate and its rejection message. */}
-                <input type="date" min={todayStr} value={vacReqStart} onChange={e=>{const v=e.target.value; setVacReqStart(v); setVacReqEnd(end=>endOnOrAfter(v,end,vacReqStart));}} style={{...css.inp,width:150}}/>
-              </div>
-              <div>
-                <label style={{fontSize:11,color:"#7a8a98",display:"block",marginBottom:2}}>End Date</label>
-                <input type="date" min={vacReqStart && vacReqStart > todayStr ? vacReqStart : todayStr} value={vacReqEnd} onChange={e=>setVacReqEnd(e.target.value)} style={{...css.inp,width:150}}/>
+              <div style={{minWidth:0,maxWidth:"100%"}}>
+                <label style={{fontSize:11,color:"#7a8a98",display:"block",marginBottom:2}}>Dates</label>
+                {/* One calendar for start and end (DateRangeField); the field reads the range back in words
+                    ("Mon Dec 14 → Fri Dec 18 · 5 days"), so the separate line that did (rangeSummary) is gone.
+                    min is UI-only — submitVacRequest carries the real gate and its rejection message. */}
+                <DateRangeField label={vacReqType === "nocall" ? "No-call dates" : "Vacation dates"} start={vacReqStart} end={vacReqEnd} min={todayStr} onChange={(s, e) => { setVacReqStart(s); setVacReqEnd(e); }} dk={dk} css={css} bannerRef={updateBannerRef} bannerOn={updateAvailable} style={{minWidth:230}}/>
               </div>
             </div>
-            {/* The range read back in words before it is sent (helpers.js; guarded against an old cached helpers.js). */}
-            {(()=>{ const sum = typeof rangeSummary === "function" ? rangeSummary(vacReqStart, vacReqEnd) : null;
-              return sum ? <div style={{fontSize:12,color:dk?"#9aa0b8":"#5a6a78",margin:"0 0 8px"}}>{sum}</div> : null; })()}
             {/* Reason, then Submit (UX audit 2026-10-19): the button used to sit before the Reason field. */}
             <div style={{marginBottom:10}}>
               <label style={{fontSize:11,color:"#7a8a98",display:"block",marginBottom:2}}>Reason (optional)</label>
@@ -11986,13 +11972,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                       {reqs.map(r => <div key={r.id} style={{padding:"8px 0",borderBottom:"1px solid #f0e8d8"}}>
                         {editingVacReq?.id === r.id ? (
                           <div style={{display:"flex",gap:6,alignItems:"end",flexWrap:"wrap"}}>
-                            <div>
-                              <label style={{fontSize:10,color:"#7a8a98",display:"block"}}>Start</label>
-                              <input type="date" min={isScheduler ? undefined : fmt(new Date())} value={editingVacReq.start_date} onChange={e=>{const v=e.target.value; setEditingVacReq(p=>({...p,start_date:v,end_date:endOnOrAfter(v,p.end_date,p.start_date)}));}} style={{...css.inp,width:140,fontSize:12}}/>
-                            </div>
-                            <div>
-                              <label style={{fontSize:10,color:"#7a8a98",display:"block"}}>End</label>
-                              <input type="date" min={[editingVacReq.start_date || "", isScheduler ? "" : fmt(new Date())].sort().pop() || undefined} value={editingVacReq.end_date} onChange={e=>setEditingVacReq(p=>({...p,end_date:e.target.value}))} style={{...css.inp,width:140,fontSize:12}}/>
+                            <div style={{minWidth:0,maxWidth:"100%"}}>
+                              <label style={{fontSize:10,color:"#7a8a98",display:"block"}}>Dates</label>
+                              {/* One calendar (DateRangeField): a member can't pick before today (saveVacRequestEdit is the real gate); the scheduler can. */}
+                              <DateRangeField label="Request dates" compact start={editingVacReq.start_date} end={editingVacReq.end_date} min={isScheduler ? "" : fmt(new Date())} onChange={(s, e) => setEditingVacReq(p => ({ ...p, start_date: s, end_date: e }))} dk={dk} css={css} bannerRef={updateBannerRef} bannerOn={updateAvailable}/>
                             </div>
                             <div>
                               <label style={{fontSize:10,color:"#7a8a98",display:"block"}}>Reason</label>
@@ -12091,13 +12074,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                         {reqs.map(r => <div key={r.id} style={{padding:"6px 0",borderBottom:"1px solid #e8f0e8"}}>
                           {editingVacReq?.id === r.id ? (
                             <div style={{display:"flex",gap:6,alignItems:"end",flexWrap:"wrap"}}>
-                              <div>
-                                <label style={{fontSize:10,color:"#7a8a98",display:"block"}}>Start</label>
-                                <input type="date" value={editingVacReq.start_date} onChange={e=>{const v=e.target.value; setEditingVacReq(p=>({...p,start_date:v,end_date:endOnOrAfter(v,p.end_date,p.start_date)}));}} style={{...css.inp,width:140,fontSize:12}}/>
-                              </div>
-                              <div>
-                                <label style={{fontSize:10,color:"#7a8a98",display:"block"}}>End</label>
-                                <input type="date" min={editingVacReq.start_date || undefined} value={editingVacReq.end_date} onChange={e=>setEditingVacReq(p=>({...p,end_date:e.target.value}))} style={{...css.inp,width:140,fontSize:12}}/>
+                              <div style={{minWidth:0,maxWidth:"100%"}}>
+                                <label style={{fontSize:10,color:"#7a8a98",display:"block"}}>Dates</label>
+                                {/* One calendar (DateRangeField); the scheduler's record correction, back-dating allowed. */}
+                                <DateRangeField label="Request dates" compact start={editingVacReq.start_date} end={editingVacReq.end_date} min="" onChange={(s, e) => setEditingVacReq(p => ({ ...p, start_date: s, end_date: e }))} dk={dk} css={css} bannerRef={updateBannerRef} bannerOn={updateAvailable}/>
                               </div>
                               <button onClick={saveVacRequestEdit} style={{...css.btn(true),padding:"4px 10px",fontSize:11}}>Save</button>
                               <button onClick={()=>setEditingVacReq(null)} style={{...css.btn(false),padding:"4px 10px",fontSize:11}}>Cancel</button>
@@ -14958,6 +14938,177 @@ function Collapsible({ title, ck, defaultOpen = false, forceOpen = false, heldNo
       {!shown && summary != null && <div style={{ marginTop: 10 }}>{summary}</div>}
       {shown && <div style={{ marginTop: 12 }}>{children}</div>}
     </div>
+  );
+}
+
+// One calendar for a date range (owner 2026-10-19: "when we pick dates in the calendar - we can pick the start date
+// and then pick the end date in the same calendar and it will mark all the dates in between"). Each start/end pair
+// was two native date boxes, an iPhone date wheel each; each is now this ONE field — a button showing the range
+// ("Mon Dec 14 → Fri Dec 18 · 5 days", helpers.js rangeLabel) that opens a month calendar as a bottom sheet. The
+// first tap sets the start (a one-day range), the second the end — an earlier day makes it tapped → old start —
+// and a third starts again (helpers.js rangeTap); the days between are a band. Done hands the range to
+// onChange(start, end): the SAME state each site's save already reads (the saves and their checks are unchanged).
+// ✕, the backdrop and Escape leave it as it was. min: a day before it is disabled (the request forms: today);
+// "" = back-dating allowed (Setup). The sheet is the Calendar day sheet's pattern: fixed, backdrop, ✕, Escape,
+// ~80vh with its own scroll, the safe area, lifted above the update banner (bannerRef: measured on open, on a
+// resize, when the banner's size changes, and when it comes or goes — bannerOn), the page behind it held still
+// while it is open, and the focus back on the field after. Module scope (like Collapsible) so a parent render
+// never remounts it; React.* hooks for that reason. It is portaled to <body>, so no card's overflow clips it.
+// An old cached helpers.js without these helpers gets the two native date boxes, as before.
+function DateRangeField({ start, end, onChange, min = "", label = "Dates", placeholder = "Pick dates", dk = false, css, compact = false, bannerRef = null, bannerOn = null, style = null }) {
+  // ── range sheet logic (plain JS; sync-guards BK runs this slice with a hook stub) ──
+  const today = fmt(new Date());
+  const ready = typeof rangeTap === "function" && typeof monthCells === "function" && typeof rangeLabel === "function" && typeof rangeSheetLine === "function" && typeof monthDayLabel === "function";
+  const [sheet, setSheet] = React.useState(null); // null while closed; open: { start, end, phase, y, m } — the draft and the month shown
+  const [lift, setLift] = React.useState(0); // px the sheet sits above the bottom: the update banner's height
+  const [focusDs, setFocusDs] = React.useState(""); // the grid's one Tab stop (the arrow keys move it)
+  const fieldRef = React.useRef(null), gridRef = React.useRef(null), focusWantRef = React.useRef(false);
+  const open = !!sheet;
+  const bannerHeight = () => { const el = bannerRef && bannerRef.current; return el && el.isConnected ? Math.ceil(el.getBoundingClientRect().height) : 0; };
+  // Opens on the start's month (else min's, when min is later than today, else today's). A start with no end (or an
+  // end before it) waits for its end; a whole range shows as it is, and the next tap starts a new one.
+  const openSheet = () => {
+    const s = start || "", e = s && end && end >= s ? end : "";
+    const at = parse(s || (min && min > today ? min : today));
+    focusWantRef.current = true;
+    setLift(bannerHeight());
+    setFocusDs(s);
+    setSheet({ start: s, end: e, phase: s && !e ? "end" : "start", y: at.getFullYear(), m: at.getMonth() });
+  };
+  const close = (refocus) => {
+    setSheet(null);
+    const el = fieldRef.current;
+    if (refocus !== false && el && el.isConnected && typeof el.focus === "function") { try { el.focus({ preventScroll: true }); } catch (err) { /* nothing to put it back on */ } }
+  };
+  const tap = (ds) => { if (min && ds < min) return; setFocusDs(ds); setSheet(s => s ? { ...s, ...rangeTap(s.start, s.end, ds, s.phase, min) } : s); };
+  const clear = () => setSheet(s => s ? { ...s, start: "", end: "", phase: "start" } : s);
+  const done = () => { if (!sheet || !sheet.start) return; onChange(sheet.start, sheet.end || sheet.start); close(); };
+  const prevOff = !!sheet && !!min && fmt(new Date(sheet.y, sheet.m, 0)) < min; // the month before ends before min: nothing in it to pick
+  const shiftMonth = (k) => { if (k < 0 && prevOff) return; setSheet(s => { if (!s) return s; const d = new Date(s.y, s.m + k, 1); return { ...s, y: d.getFullYear(), m: d.getMonth() }; }); };
+  const cells = sheet && ready ? monthCells(sheet.y, sheet.m) : [];
+  const pickable = (ds) => !!ds && (!min || ds >= min);
+  const tabDs = (focusDs && cells.indexOf(focusDs) !== -1 ? focusDs : "") || (sheet && [sheet.start, today].find(d => !!d && cells.indexOf(d) !== -1 && pickable(d))) || cells.find(pickable) || cells.find(Boolean) || "";
+  const onGridKey = (e) => {
+    const step = { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -7, ArrowDown: 7 }[e.key];
+    if (!step || !sheet || !tabDs) return;
+    e.preventDefault();
+    const d = addD(parse(tabDs), step);
+    focusWantRef.current = true;
+    setFocusDs(fmt(d));
+    if (d.getFullYear() !== sheet.y || d.getMonth() !== sheet.m) setSheet(s => s ? { ...s, y: d.getFullYear(), m: d.getMonth() } : s);
+  };
+  // While it is open: Escape closes it, and the page behind it does not scroll (restored on close, or if the field goes).
+  React.useEffect(() => {
+    if (!open) return;
+    const onKey = (e) => { if (e.key === "Escape") close(); };
+    window.addEventListener("keydown", onKey);
+    const body = document.body, prevOverflow = body.style.overflow;
+    body.style.overflow = "hidden";
+    return () => { window.removeEventListener("keydown", onKey); body.style.overflow = prevOverflow; };
+  }, [open]);
+  // Above the update banner, as the day sheet: re-measured on a resize or a rotation, when the banner's own size
+  // changes, and when it appears or is dismissed while the sheet is open.
+  React.useEffect(() => {
+    if (!open) return;
+    const remeasure = () => setLift(bannerHeight());
+    remeasure();
+    window.addEventListener("resize", remeasure);
+    const el = bannerRef && bannerRef.current;
+    const ro = el && typeof ResizeObserver === "function" ? new ResizeObserver(remeasure) : null;
+    if (ro) ro.observe(el);
+    return () => { window.removeEventListener("resize", remeasure); if (ro) ro.disconnect(); };
+  }, [open, bannerOn]);
+  // The focus lands on the start (else today, else the month's first open day) when the sheet opens, and follows
+  // the arrow keys; a tap or ◀ ▶ leaves it where it is.
+  React.useEffect(() => {
+    if (!open || !focusWantRef.current) return;
+    focusWantRef.current = false;
+    const b = gridRef.current && gridRef.current.querySelector('[data-ds="' + tabDs + '"]');
+    if (b && typeof b.focus === "function") { try { b.focus({ preventScroll: true }); } catch (err) { /* nothing to focus */ } }
+  }, [open, tabDs]);
+  // ── end range sheet logic ──
+
+  if (!ready) {
+    // An old cached helpers.js: the two native date boxes, as before — the end follows the start (endOnOrAfter's
+    // rule, inline: that helper may be missing too) and the end's calendar starts at the start, or at min.
+    const inp = { ...css.inp, ...(compact ? { padding: "3px 6px", fontSize: 12 } : {}), width: compact ? 130 : 140 };
+    return (
+      <span style={{ display: "inline-flex", gap: 4, alignItems: "center", flexWrap: "wrap" }}>
+        <input type="date" aria-label={label + ", start"} min={min || undefined} value={start || ""} onChange={e => { const v = e.target.value; onChange(v, v && (!end || end < v || end === start) ? v : end); }} style={inp} />
+        <span aria-hidden="true" style={{ color: "#8a94a0" }}>→</span>
+        <input type="date" aria-label={label + ", end"} min={[start || "", min || ""].sort().pop() || undefined} value={end || ""} onChange={e => onChange(start, e.target.value)} style={inp} />
+      </span>
+    );
+  }
+
+  // Colors set for both themes here: the dark sheet forces every button's text to #c0c8d8 and matches few inline
+  // backgrounds, so each label sits in a span with its own color, on a background chosen for it.
+  const C = dk
+    ? { sheet: "#1a1f2a", title: "#e8e8f0", line: "#c8d0e0", text: "#e0e0f0", sub: "#9aa4bc", off: "#5c6478", accent: "#5aafe8", onAccent: "#0b1a2a", band: "#1f3b5c", onBand: "#e6eefa", field: "#0f3460", fieldBorder: "#2a3a5e", placeholder: "#9aa0b8" }
+    : { sheet: "#fff", title: "#2c5a80", line: "#3a4a58", text: "#2c3e50", sub: "#5a6a78", off: "#b8c0c8", accent: "#1a6fa8", onAccent: "#fff", band: "#d8e8f6", onBand: "#123a5c", field: "#f8f9fb", fieldBorder: "#d0d8e0", placeholder: "#5a6a78" };
+  const text = rangeLabel(start || "", start ? end || "" : "", today);
+  const navBtn = { minWidth: 44, minHeight: 44, background: "none", border: "none", fontSize: 16, cursor: "pointer", fontFamily: font, padding: 0 };
+  const lo = sheet ? sheet.start : "", hi = sheet ? sheet.end || sheet.start : "";
+  const dayLabel = (ds) => `${DAY_HDR[parse(ds).getDay()]}, ${monthDayLabel(ds, true)}`;
+  return (
+    <>
+      <button type="button" ref={fieldRef} onClick={openSheet} aria-haspopup="dialog" aria-expanded={open} aria-label={`${label}: ${text || placeholder}`}
+        style={{ ...css.inp, background: C.field, border: `1px solid ${C.fieldBorder}`, display: "inline-flex", alignItems: "center", gap: 6, maxWidth: "100%", boxSizing: "border-box",
+          minHeight: compact ? 32 : 38, cursor: "pointer", textAlign: "left", ...(compact ? { padding: "3px 8px", fontSize: 12 } : {}), ...(style || {}) }}>
+        <span aria-hidden="true" style={{ flexShrink: 0 }}>📅</span>
+        <span style={{ color: text ? C.text : C.placeholder, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", minWidth: 0 }}>{text || placeholder}</span>
+      </button>
+      {open && ReactDOM.createPortal(
+        <div onClick={(e) => { e.stopPropagation(); close(); }} style={{ position: "fixed", inset: 0, zIndex: 9000, background: "rgba(0,0,0,0.45)", display: "flex", alignItems: "flex-end", justifyContent: "center" }}>
+          <div role="dialog" aria-modal="true" aria-label={label} onClick={(e) => e.stopPropagation()}
+            style={{ width: "100%", maxWidth: 420, maxHeight: "80vh", overflowY: "auto", overscrollBehavior: "contain", WebkitOverflowScrolling: "touch", boxSizing: "border-box",
+              background: C.sheet, borderRadius: "14px 14px 0 0", boxShadow: "0 -6px 24px rgba(0,0,0,0.25)", padding: "10px 16px",
+              paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 16px)", marginBottom: lift, fontFamily: font }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 16, fontWeight: 700, color: C.title }}>{label}</div>
+                <div aria-live="polite" style={{ fontSize: 14, color: C.line, marginTop: 2 }}>{rangeSheetLine(sheet.start, sheet.end, sheet.phase, today)}</div>
+              </div>
+              <button type="button" aria-label="Close" onClick={() => close()} style={{ ...navBtn, fontSize: 20, flexShrink: 0 }}><span style={{ color: C.sub }}>✕</span></button>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 4 }}>
+              <button type="button" aria-label="Previous month" aria-disabled={prevOff || undefined} onClick={() => shiftMonth(-1)} style={{ ...navBtn, cursor: prevOff ? "default" : "pointer" }}><span style={{ color: prevOff ? C.off : C.text }}>◀</span></button>
+              <div style={{ fontSize: 15, fontWeight: 700, color: C.text }}>{MO[sheet.m]} {sheet.y}</div>
+              <button type="button" aria-label="Next month" onClick={() => shiftMonth(1)} style={navBtn}><span style={{ color: C.text }}>▶</span></button>
+            </div>
+            <div aria-hidden="true" style={{ display: "grid", gridTemplateColumns:"repeat(7,minmax(0,1fr))", marginTop: 2 }}>
+              {DAY_HDR.map(d => <div key={d} style={{ textAlign: "center", fontSize: 11, fontWeight: 700, color: C.sub, padding: "4px 0", letterSpacing: 0.5 }}>{d}</div>)}
+            </div>
+            <div ref={gridRef} role="group" aria-label={`${MO[sheet.m]} ${sheet.y}`} onKeyDown={onGridKey} style={{ display: "grid", gridTemplateColumns:"repeat(7,minmax(0,1fr))", rowGap: 2 }}>
+              {cells.map((ds, i) => {
+                if (!ds) return <span key={"b" + i} aria-hidden="true" />;
+                const edge = !!lo && (ds === lo || ds === hi), between = !!lo && ds > lo && ds < hi, off = !pickable(ds), isToday = ds === today;
+                const dow = i % 7;
+                const band = between ? C.band
+                  : edge && lo !== hi ? `linear-gradient(to ${ds === lo ? "right" : "left"}, transparent 50%, ${C.band} 50%)` : "transparent";
+                return (
+                  <button key={ds} type="button" data-ds={ds} tabIndex={ds === tabDs ? 0 : -1} aria-label={dayLabel(ds)} aria-pressed={edge} aria-disabled={off || undefined} aria-current={isToday ? "date" : undefined}
+                    onClick={() => tap(ds)}
+                    style={{ height: 44, width: "100%", padding: 0, margin: 0, border: "none", background: "transparent", display: "flex", alignItems: "center", justifyContent: "center", cursor: off ? "default" : "pointer", fontFamily: font, touchAction: "manipulation" }}>
+                    <span aria-hidden="true" style={{ width: "100%", height: 38, display: "flex", alignItems: "center", justifyContent: "center", background: band,
+                      borderRadius: between && dow === 0 ? "19px 0 0 19px" : between && dow === 6 ? "0 19px 19px 0" : 0 }}>
+                      <span style={{ width: 38, height: 38, borderRadius: "50%", display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 15,
+                        background: edge ? C.accent : "transparent", color: edge ? C.onAccent : off ? C.off : between ? C.onBand : C.text, fontWeight: edge || isToday ? 700 : 500,
+                        boxShadow: isToday && !edge ? `inset 0 0 0 1.5px ${C.accent}` : "none" }}>{Number(ds.slice(8))}</span>
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+            <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+              <button type="button" onClick={clear} style={{ ...css.btn(false), flex: 1, minHeight: 44, fontSize: 14 }}>Clear</button>
+              {/* A solid fill, its label in its own white span: white on the gradient's light end measured 3.9:1; on #1a6fa8 it is 5.4:1, in both themes. */}
+              <button type="button" onClick={done} disabled={!sheet.start} style={{ ...css.btn(true), background: "#1a6fa8", flex: 2, minHeight: 44, fontSize: 14, ...(sheet.start ? {} : { opacity: 0.5, cursor: "default" }) }}><span style={{ color: "#fff" }}>Done</span></button>
+            </div>
+          </div>
+        </div>,
+        document.body)}
+    </>
   );
 }
 
