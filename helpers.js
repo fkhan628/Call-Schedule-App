@@ -468,6 +468,19 @@ function calMonthStatus(schedule, year, month) {
   return { kind: "unscheduled", from: counted[0], to: fmt(addD(parse(counted[counted.length - 1]), 6)) };
 }
 
+// The weeks of a calendar month, for the Manual Adjustments week picker (UX
+// audit 2026-10-19): every week (Mon–Sun) holding a day of the month, as its
+// Monday "YYYY-MM-DD", in order — from the Monday of the week holding the 1st,
+// which may be in the previous month (October 2026 starts with Sep 28), through
+// the last Monday on or before the month's last day. The picker listed only the
+// weeks whose Monday fell in the month, so the week of Sep 28 – Oct 4 could not
+// be picked from October. month is 0-based, like Date. Pure: no clock, no state.
+function calMonthWeekMondays(year, month) {
+  const out = [], last = new Date(year, month + 1, 0);
+  for (let m = monOf(new Date(year, month, 1)); m <= last; m = addD(m, 7)) out.push(fmt(m));
+  return out;
+}
+
 // ═══ HOLIDAY PAIRS — who takes which holiday each year (owner 2026-10-13) ═══
 // FAK (the Christmas surgeon) takes Christmas Eve + Christmas Day, both slots,
 // every year — his major and his minor; the app sets that card itself. Every

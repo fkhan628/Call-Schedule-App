@@ -7773,6 +7773,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         select, input[type="date"], input[type="number"], input[type="text"], input[type="password"], input[type="email"] { background: #0f3460 !important; border-color: #2a3a5e !important; color: #e0e0f0 !important; }
         button { color: #c0c8d8 !important; }
         button[style*="background: linear-gradient"] { color: #fff !important; }
+        /* Secondary buttons: css.btn(false) in app-styles.js, a light grey fill the forced light text above could not be read on. As the browser writes it. */
+        button[style*="background: rgb(240, 242, 245)"] { background: #22304e !important; border-color: #3a4a6e !important; }
         /* Tables */
         table { color: #c0c0d0 !important; }
         th { color: #8a8aaa !important; }
@@ -8023,7 +8025,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             <span style={{color:"#fff",fontSize:15,fontWeight:800,letterSpacing:-0.5,fontFamily:font}}>DSG</span>
           </div>
           <div>
-            <h1 style={css.h1}>{isPublicMode ? "DSG Call Schedule" : "Davenport Surgical Group"}</h1>
+            <h1 style={dk ? {...css.h1, color:dkText} : css.h1}>{isPublicMode ? "DSG Call Schedule" : "Davenport Surgical Group"}</h1>
             <p style={css.sub}>
               {isPublicMode ? (
                 <>
@@ -10008,7 +10010,9 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                       <span style={{color:"#c06020",fontWeight:700}} title={e.holName||""}>{holidayEmoji(e.holName)}</span>
                       {" "}
                       <span style={{color:surgeonColors(sMap[e.surgeon]?.name, sMap[e.surgeon]?.idx).tx||"#4a5868"}}>{sMap[e.surgeon]?.name||"?"}</span>
-                      <span style={{color:"#a07030",fontSize:8,marginLeft:2}}>{e.hours}</span>
+                      {/* a space, not a margin: the cell's name read "MCC7a–7a" (UX audit 2026-10-19) */}
+                      {" "}
+                      <span style={{color:"#a07030",fontSize:8}}>{e.hours}</span>
                     </div>
                   ))}
 
@@ -10265,25 +10269,9 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
                 <select value={editWeekPick} onChange={e=>setEditWeekPick(e.target.value)} style={{...css.inp,flex:1,minWidth:180}}>
                   <option value="">Select a week in {MO[calMonth]} {calYear}…</option>
-                  {(()=>{
-                    // Find all Mondays whose week STARTS in the viewed calendar month.
-                    // Week is "in" a month if its Monday falls in that month.
-                    const first = new Date(calYear, calMonth, 1);
-                    // Find the first Monday on or after the 1st of the month
-                    let mon = new Date(first);
-                    if (mon.getDay() !== 1) {
-                      // day=0 (Sun) → +1; day=2 (Tue) → +6; day=3 (Wed) → +5; etc.
-                      const dow = mon.getDay();
-                      const offset = (dow === 0) ? 1 : (8 - dow);
-                      mon = addD(mon, offset);
-                    }
-                    const results = [];
-                    while (mon.getMonth() === calMonth && mon.getFullYear() === calYear) {
-                      results.push(fmt(mon));
-                      mon = addD(mon, 7);
-                    }
-                    return results;
-                  })().map(m => {
+                  {/* Every week holding a day of the viewed month, the one starting in the previous
+                      month included (Sep 28 – Oct 4 under October) — helpers.js calMonthWeekMondays */}
+                  {(typeof calMonthWeekMondays === "function" ? calMonthWeekMondays(calYear, calMonth) : []).map(m => {
                     const mon = parse(m);
                     const sun = addD(mon, 6);
                     const exists = !!schedule[m];
@@ -12336,10 +12324,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             <div style={css.cardT}>🎨 Appearance</div>
             <div style={{display:"flex",alignItems:"center",gap:12}}>
               <span style={{fontSize:13,color:"#5a6a78"}}>Theme</span>
-              <button onClick={()=>setDarkMode(d=>!d)} style={{...css.btn(!darkMode),padding:"6px 16px",fontSize:12}}>
+              <button onClick={()=>setDarkMode(false)} aria-pressed={!darkMode} style={{...css.btn(!darkMode),padding:"6px 16px",fontSize:12}}>
                 ☀️ Light
               </button>
-              <button onClick={()=>setDarkMode(d=>!d)} style={{...css.btn(darkMode),padding:"6px 16px",fontSize:12}}>
+              <button onClick={()=>setDarkMode(true)} aria-pressed={darkMode} style={{...css.btn(darkMode),padding:"6px 16px",fontSize:12}}>
                 🌙 Dark
               </button>
             </div>

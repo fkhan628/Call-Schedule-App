@@ -3890,6 +3890,204 @@ console.log("\nBC. Generate & Publish asks once; Billing opens on the newest mon
     !src.includes("icsDate(") && !isrc.includes("icsDate(") && !src.includes("APP Call - "));
 }
 
+// ─── BI. Manual Adjustments lists the week that starts in the previous month; dark mode's header title and secondary buttons read; Light / Dark set the theme (UX audit 2026-10-19) ───
+// (1) The Manual Adjustments week picker listed only the weeks whose MONDAY fell in the viewed month, so the
+//     week of Sep 28 – Oct 4 could not be picked from October. It lists every week holding a day of the month
+//     (helpers.js calMonthWeekMondays), the one that starts in the previous month first.
+// (2) Dark mode: the header title kept css.h1's #1a2a3a on the dark header (~1.1:1 — the sheet's
+//     h1[style*="color:#1a2a3a"] never matches, React writes rgb()); every secondary button (css.btn(false)) kept
+//     its light grey fill under the sheet's forced light button text (~1.5:1). The title takes dkText in dark mode;
+//     ONE sheet rule gives that exact fill, as the browser writes it, a dark one. Light and Dark both toggled (Dark
+//     tapped while dark went light): each now sets its theme, and aria-pressed says which is on.
+// (3) A holiday chip's holder and hours were adjacent spans (a margin between them), so the cell's name — its
+//     content, AX6 — ran them together: "MCC7a–7a". A space separates them now.
+//   BI1 the real calMonthWeekMondays: Oct 2026 (from Sep 28), Nov 2026, Jun 2026, Feb 2027 (exactly four),
+//       Jan 2027 (from Dec 28) exact; every month 2025–2030: consecutive Mondays, the first week holds the 1st and
+//       the last the month's last day (so each day is in exactly one listed week), every week main listed still
+//       listed; the same lists in a child pinned to TZ=America/Chicago (the DST months)
+//   BI2 the REAL picker, sliced and run: October 2026 opens with "Wk of Sep 28 – Oct 4"; the labels and suffixes
+//       as before; no helper (a stale cache) → no weeks, not a crash; the inline loop is gone
+//   BI3 Light / Dark, the real buttons executed from either theme: Light sets light, Dark sets dark; aria-pressed
+//       says which is on; no toggle left
+//   BI4 the header title, its real style evaluated against the real dark sheet: ≥ 4.5:1 on both stops of the dark
+//       header (main's ~1.1:1); only the colour changes; light mode exactly css.h1
+//   BI5 the secondary buttons, the real css.btn(false) as the browser writes it, against the app's real dark sheet
+//       (DARK_SHEET's text; selectors split bracket-aware, as the new one holds commas): ONE rule's dark fill, the
+//       forced text ≥ 4.5:1 on it (1.5:1 without the rule); the primary gradient and light mode untouched
+//   BI6 the holiday chip's text, its real JSX children evaluated: "🦃 MCC 7a–7a" (main: "🦃 MCC7a–7a")
+console.log("\nBI. Manual Adjustments weeks, dark mode title + secondary buttons, Light / Dark, the holiday chip");
+{
+  const J = (x) => JSON.stringify(x);
+  const nsrcBI = src.replace(/\r\n/g, "\n");   // a Windows checkout is CRLF, CI's is LF
+  const bisb = { console, window: {}, document: undefined, navigator: { userAgent: "node-test" }, localStorage: { getItem: () => null, setItem() {}, removeItem() {} }, fetch: () => { throw new Error("no fetch in BI"); }, setTimeout, clearTimeout };
+  bisb.globalThis = bisb; vm.createContext(bisb);
+  for (const f of ["helpers.js", "config.js", "app-styles.js"]) vm.runInContext(fs.readFileSync(path.join(ROOT, f), "utf8"), bisb, { filename: f });
+  const H = vm.runInContext("({ fmt, parse, addD, css })", bisb);
+  const cmw = vm.runInContext('typeof calMonthWeekMondays === "function" ? calMonthWeekMondays : null', bisb);
+  const NONE = "calMonthWeekMondays is not defined in helpers.js";
+
+  // BI1 — the helper
+  const WANT1 = {
+    "2026-9": ["2026-09-28", "2026-10-05", "2026-10-12", "2026-10-19", "2026-10-26"],
+    "2026-10": ["2026-10-26", "2026-11-02", "2026-11-09", "2026-11-16", "2026-11-23", "2026-11-30"],
+    "2026-5": ["2026-06-01", "2026-06-08", "2026-06-15", "2026-06-22", "2026-06-29"],
+    "2027-1": ["2027-02-01", "2027-02-08", "2027-02-15", "2027-02-22"],
+    "2027-0": ["2026-12-28", "2027-01-04", "2027-01-11", "2027-01-18", "2027-01-25"],
+  };
+  const run1 = (k) => { const [y, m] = k.split("-").map(Number); try { return cmw ? cmw(y, m) : null; } catch (ex) { return "threw: " + String(ex).slice(0, 80); } };
+  const bad1 = Object.keys(WANT1).filter((k) => J(run1(k)) !== J(WANT1[k])).map((k) => `${k}: ${J(run1(k))}`);
+  check("BI1 the real calMonthWeekMondays: October 2026 starts with the week of Sep 28 (its Monday is in September), then Oct 5 … Oct 26; November 2026 from Oct 26 through Nov 30 (six weeks); June 2026 from Jun 1 (the 1st is a Monday); February 2027 exactly four (Mon Feb 1 – Sun Feb 28); January 2027 from Dec 28 (the year before)",
+    !!cmw && bad1.length === 0, cmw ? bad1.join(" | ") : NONE);
+  const lists = {}, bad1s = [];
+  if (cmw) for (let y = 2025; y <= 2030; y++) for (let m = 0; m < 12; m++) {
+    const list = cmw(y, m), first = H.fmt(new Date(y, m, 1)), last = H.fmt(new Date(y, m + 1, 0));
+    lists[`${y}-${m}`] = list;
+    const sunOf = (d) => H.fmt(H.addD(H.parse(d), 6));
+    const mains = []; for (let d = new Date(y, m, 1); d.getMonth() === m; d = H.addD(d, 1)) if (d.getDay() === 1) mains.push(H.fmt(d)); // main's picker: the Mondays in the month
+    const ok = Array.isArray(list) && list.length >= 4 && list.length <= 6
+      && list.every((d, i) => H.parse(d).getDay() === 1 && (i === 0 || H.fmt(H.addD(H.parse(list[i - 1]), 7)) === d))
+      && list[0] <= first && sunOf(list[0]) >= first && list[list.length - 1] <= last && sunOf(list[list.length - 1]) >= last
+      && list.every((d) => d <= last && sunOf(d) >= first) && mains.every((d) => list.includes(d));
+    if (!ok) bad1s.push(`${y}-${m + 1}: ${J(list)}`);
+  }
+  check("BI1 every month of 2025–2030 (72): consecutive Mondays 7 days apart; the first week holds the 1st and the last week the month's last day, so every day of the month is in exactly one listed week; every listed week holds a day of the month; every week main listed (its Monday in the month) is still listed",
+    !!cmw && Object.keys(lists).length === 72 && bad1s.length === 0, cmw ? bad1s.slice(0, 3).join(" | ") : NONE);
+  {
+    const { execFileSync } = require("child_process");
+    const code = [
+      'const vm = require("vm"), fs = require("fs"), path = require("path");',
+      'const sb = { console, window: {}, document: undefined, navigator: { userAgent: "node-test" }, localStorage: { getItem: () => null, setItem() {}, removeItem() {} }, fetch: () => { throw new Error("no fetch"); }, setTimeout, clearTimeout };',
+      "sb.globalThis = sb; vm.createContext(sb);",
+      `vm.runInContext(fs.readFileSync(path.join(${J(ROOT)}, "helpers.js"), "utf8"), sb, { filename: "helpers.js" });`,
+      "const f = vm.runInContext('typeof calMonthWeekMondays === \"function\" ? calMonthWeekMondays : null', sb);",
+      "const out = {}; if (f) for (let y = 2025; y <= 2030; y++) for (let m = 0; m < 12; m++) out[y + \"-\" + m] = f(y, m);",
+      "process.stdout.write(JSON.stringify({ off: new Date(2026, 9, 24).getTimezoneOffset(), offW: new Date(2026, 0, 15).getTimezoneOffset(), out }));",
+    ].join("\n");
+    let out = null;
+    try { out = JSON.parse(execFileSync(process.execPath, ["-e", code], { env: Object.assign({}, process.env, { TZ: "America/Chicago" }), encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })); } catch (ex) { out = { err: String(ex).slice(0, 300) }; }
+    check("BI1 in a child pinned to TZ=America/Chicago (CDT 300 / CST 360, so the spring-forward and fall-back months are real): the same 72 lists, the named months included",
+      !!cmw && !!out && out.off === 300 && out.offW === 360 && J(out.out) === J(lists) && Object.keys(WANT1).every((k) => J(out.out[k]) === J(WANT1[k])), J(out).slice(0, 300));
+  }
+
+  // BI2 — the real picker
+  const pickM = nsrcBI.match(/\{(\(typeof calMonthWeekMondays === "function" \? calMonthWeekMondays\(calYear, calMonth\) : \[\]\))\.map\(m => \{\n([\s\S]*?)\n\s*return <option key=\{m\} value=\{m\}>\{label\}<\/option>;/);
+  let pick = null;
+  try { pick = pickM ? vm.runInContext(`(function (calYear, calMonth, schedule, calMonthWeekMondays) { return ${pickM[1]}.map(m => {\n${pickM[2]}\n return [m, label]; }); })`, bisb, { filename: "bi-picker.js" }) : null; } catch (ex) { pick = null; }
+  const SCHED2 = { "2026-09-28": { dayCall: "s6" }, "2026-10-05": { dayCall: "s2", isBackup: true } };
+  const runPick = (y, m, fn) => { try { return pick ? pick(y, m, SCHED2, fn) : null; } catch (ex) { return "threw: " + String(ex).slice(0, 80); } };
+  const oct2 = runPick(2026, 9, cmw), nov2 = runPick(2026, 10, cmw);
+  check("BI2 the REAL picker, sliced and run for October 2026: the week of Sep 28 – Oct 4 comes first (published, so no suffix), then the Oct 5 backup week, the unpublished weeks marked (new), through Oct 26 – Nov 1; November opens with that same Oct 26 week; its weeks are exactly calMonthWeekMondays'",
+    !!pick && J(oct2) === J([["2026-09-28", "Wk of Sep 28 – Oct 4"], ["2026-10-05", "Wk of Oct 5 – Oct 11 (Backup)"], ["2026-10-12", "Wk of Oct 12 – Oct 18 (new)"], ["2026-10-19", "Wk of Oct 19 – Oct 25 (new)"], ["2026-10-26", "Wk of Oct 26 – Nov 1 (new)"]])
+      && Array.isArray(nov2) && J(nov2[0]) === J(["2026-10-26", "Wk of Oct 26 – Nov 1 (new)"]) && J(nov2.map((x) => x[0])) === J(WANT1["2026-10"]),
+    pick ? J({ oct2, nov2 }) : "the picker's week list was not found as calMonthWeekMondays(calYear, calMonth) …map(m => { … })");
+  check("BI2 no helper (a stale cached helpers.js) → the picker lists no weeks rather than throwing; the inline Monday-in-the-month loop is gone; the pick still resets when the month changes",
+    !!pick && J(runPick(2026, 9, undefined)) === "[]" && count("calMonthWeekMondays(calYear, calMonth)") === 1
+      && count("Find all Mondays whose week STARTS in the viewed calendar month") === 0 && count("while (mon.getMonth() === calMonth && mon.getFullYear() === calYear)") === 0
+      && count('useEffect(() => { setEditWeekPick(""); }, [calMonth, calYear]);') === 1);
+
+  // BI3 — Light / Dark
+  const themeBtn = (label) => {
+    const m = nsrcBI.match(new RegExp('<button onClick=\\{(\\(\\)=>setDarkMode\\([^\\n]*?\\))\\}(?: aria-pressed=\\{([^}\\n]*)\\})? style=\\{(\\{[^\\n]*?\\})\\}>\\n\\s*' + label + "\\n"));
+    if (!m) return null;
+    try {
+      const click = (cur) => { const calls = []; vm.runInContext(`(function (setDarkMode) { return (${m[1]}); })`, bisb)((v) => calls.push(v))(); return calls.map((v) => (typeof v === "function" ? v(cur) : v)); };
+      const pressed = (dm) => (m[2] ? vm.runInContext(`(function (darkMode) { return (${m[2]}); })`, bisb)(dm) : "none");
+      const style = (dm) => vm.runInContext(`(function (darkMode) { return (${m[3]}); })`, bisb)(dm);
+      return { fromLight: click(false), fromDark: click(true), pressedLight: pressed(false), pressedDark: pressed(true), style };
+    } catch (ex) { return { threw: String(ex).slice(0, 120) }; }
+  };
+  const lightB = themeBtn("☀️ Light"), darkB = themeBtn("🌙 Dark");
+  const sum3 = (b) => (b && !b.threw ? { fromLight: b.fromLight, fromDark: b.fromDark, pressed: [b.pressedLight, b.pressedDark] } : b);
+  check("BI3 the real Light / Dark buttons, executed from either theme: Light sets light (false) and Dark sets dark (true) whichever is on — a tap on the theme already on keeps it (main toggled: Dark tapped while dark went light); aria-pressed is on for the theme in use",
+    !!lightB && !!darkB && !lightB.threw && !darkB.threw && J(lightB.fromLight) === "[false]" && J(lightB.fromDark) === "[false]" && J(darkB.fromLight) === "[true]" && J(darkB.fromDark) === "[true]"
+      && lightB.pressedLight === true && lightB.pressedDark === false && darkB.pressedLight === false && darkB.pressedDark === true,
+    J({ light: sum3(lightB), dark: sum3(darkB) }));
+  check("BI3 no toggle left: setDarkMode(d=>!d) appears nowhere; one ☀️ Light and one 🌙 Dark button, each with aria-pressed",
+    count("setDarkMode(d=>!d)") === 0 && count("aria-pressed={!darkMode}") === 1 && count("aria-pressed={darkMode}") === 1 && (nsrcBI.match(/\n\s*☀️ Light\n/g) || []).length === 1 && (nsrcBI.match(/\n\s*🌙 Dark\n/g) || []).length === 1);
+
+  // The real dark sheet (DARK_SHEET's text, comments off), its selector lists split bracket-aware: the new
+  // selector's attribute value holds commas (rgb(240, 242, 245)), which DARK_SHEET's split(",") cuts apart.
+  const splitSels = (s) => (s.match(/(?:[^,["]|\[[^\]]*\]|"[^"]*")+/g) || []).map((x) => x.trim()).filter(Boolean);
+  const RULES = [...DARK_SHEET.css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((m) => ({ sels: splitSels(m[1]), decl: m[2] }));
+  const declBI = (decl, prop) => { const m = decl.match(new RegExp("(?:^|;)\\s*" + prop + "\\s*:\\s*([^;!]+?)\\s*(?:!important)?\\s*(?:;|$)")); return m ? m[1].trim() : null; };
+  const UNITLESS = new Set(["fontWeight", "lineHeight", "opacity", "zIndex", "flex", "flexGrow", "flexShrink"]);
+  const rgbOf = (hex) => `rgb(${hex.slice(1).match(/../g).map((h) => parseInt(h, 16)).join(", ")})`;
+  // React sets each property through the CSSOM, which writes a hex colour as rgb() and a number as px (as BA4)
+  const ser = (o) => Object.entries(o).map(([k, v]) => `${k.replace(/[A-Z]/g, (c) => "-" + c.toLowerCase())}: ${typeof v === "number" && !UNITLESS.has(k) ? v + "px" : String(v).replace(/#[0-9a-fA-F]{6}\b/g, rgbOf)};`).join(" ");
+  // what the sheet makes of a <tag> with this inline style: `tag { … }`, and `tag[style*="…"] { … }` when the written
+  // style holds it (more specific; all !important, so each beats the inline value; a later rule beats an earlier one)
+  const onTag = (tag, st, rules) => {
+    const s = ser(st); let color = null, colorBy = null, bg = null, border = null; const bgBy = [];
+    for (const r of rules) for (const sel of r.sels) {
+      const m = sel.match(new RegExp("^" + tag + '(?:\\[style\\*="([^"]+)"\\])?$'));
+      if (!m || (m[1] && !s.includes(m[1])) || !/!important/.test(r.decl)) continue;
+      const c = declBI(r.decl, "color"), b = declBI(r.decl, "background"), bc = declBI(r.decl, "border-color");
+      if (c && (!colorBy || m[1])) { color = c; colorBy = sel; }
+      if (b) { bg = b; bgBy.push(sel); }
+      if (bc) border = bc;
+    }
+    return { color: color || st.color, colorBy, bg: bg || st.background, bgBy, border };
+  };
+  const hex = DARK_SHEET.hex, lum = (h) => (hex(h) ? DARK_SHEET.lum(h) : NaN), cr = DARK_SHEET.cr;
+
+  // BI4 — the header title
+  const h1M = nsrcBI.match(/<h1 style=\{([^\n]*?)\}>\{isPublicMode \? "DSG Call Schedule" : "Davenport Surgical Group"\}<\/h1>/);
+  const dkTextM = nsrcBI.match(/\n  const dkText = (dk \? "#[0-9a-fA-F]{6}" : "#[0-9a-fA-F]{6}");\n/);
+  const hdrM = nsrcBI.match(/\n  const dkHdr = dk \? "linear-gradient\(180deg,(#[0-9a-fA-F]{6}),(#[0-9a-fA-F]{6})\)" :/);
+  const h1Of = (dk) => { try { const dkText = vm.runInContext(`(function (dk) { return ${dkTextM[1]}; })`, bisb)(dk); return vm.runInContext(`(function (dk, dkText) { return (${h1M[1]}); })`, bisb)(dk, dkText); } catch (ex) { return null; } };
+  const h1D = h1M && dkTextM ? h1Of(true) : null, h1L = h1M && dkTextM ? h1Of(false) : null;
+  const stops = hdrM ? [hdrM[1], hdrM[2]] : [];
+  const h1Eff = h1D ? onTag("h1", h1D, RULES).color : null, h1Main = onTag("h1", H.css.h1, RULES).color;
+  const bi4 = { h1Eff, crs: stops.map((s) => cr(h1Eff, s)), mainCrs: stops.map((s) => cr(h1Main, s)), stops };
+  check("BI4 dark mode: the header title, its real style evaluated, read through the real dark sheet — ≥ 4.5:1 on both stops of the dark header's gradient (main: css.h1's #1a2a3a, ~1.1:1, the sheet's h1[style*=\"color:#1a2a3a\"] never matching what React writes)",
+    !!h1D && stops.length === 2 && hex(h1Eff) && bi4.crs.every((c) => c >= 4.5) && bi4.mainCrs.every((c) => c < 4.5) && count("<div style={{...css.hdr,background:dkHdr,") === 1, J(bi4));
+  check("BI4 only the colour changes (size, weight, spacing as css.h1); light mode is exactly css.h1",
+    !!h1D && !!h1L && J(Object.assign({}, h1D, { color: null })) === J(Object.assign({}, H.css.h1, { color: null })) && J(h1L) === J(H.css.h1) && H.css.h1.color === "#1a2a3a", J({ h1D, h1L }));
+
+  // BI5 — the secondary buttons
+  const SEC = H.css.btn(false), PRI = H.css.btn(true), textForced = DARK_SHEET.forced("button", "color");
+  const sec = onTag("button", SEC, RULES), pri = onTag("button", PRI, RULES);
+  const lightBtnDark = lightB && !lightB.threw ? onTag("button", lightB.style(true), RULES) : null;
+  const MAIN_RULES = RULES.filter((r) => !r.sels.some((s) => /^button\[style\*=/.test(s) && declBI(r.decl, "background")));
+  const secMain = onTag("button", SEC, MAIN_RULES);
+  const bi5 = { sec, crSec: cr(sec.color, sec.bg), lightBtnDark, crMain: cr(secMain.color, secMain.bg), pri, textForced };
+  check("BI5 dark mode: a secondary button — the real css.btn(false), written as the browser writes it — gets ONE rule's dark fill and a dark border from the real dark sheet; the sheet's forced button text reads ≥ 4.5:1 on it (main: that text on the light grey fill, ~1.5:1); the ☀️ Light button shown in dark mode is one of them",
+    hex(textForced) && sec.color === textForced && sec.colorBy === "button" && sec.bgBy.length === 1 && sec.bgBy[0] === `button[style*="background: ${rgbOf(SEC.background)}"]`
+      && hex(sec.bg) && lum(sec.bg) < 0.05 && hex(sec.border) && lum(sec.border) < 0.1 && bi5.crSec >= 4.5 && secMain.bg === "#f0f2f5" && bi5.crMain < 4.5
+      && !!lightBtnDark && lightBtnDark.bg === sec.bg && lightBtnDark.color === textForced, J(bi5));
+  check("BI5 the rule touches only that fill: the primary gradient button keeps its own background and the sheet's white text; the rule lives in the dark sheet only; css.btn(false) itself is unchanged (light mode as before)",
+    pri.bgBy.length === 0 && pri.bg === PRI.background && pri.color === "#fff" && DARK_SHEET.css.includes(sec.bgBy[0] || "\u0000")
+      && J([SEC.background, SEC.border, SEC.color]) === J(["#f0f2f5", "1px solid #c8d0d8", "#5a6a78"]), J({ pri, SEC }));
+
+  // BI6 — the holiday chip's text (what a screen reader reads as part of the cell's name, AX6)
+  const HC0 = nsrcBI.indexOf("{/* Holiday coverage entries */}"), HC1 = HC0 < 0 ? -1 : nsrcBI.indexOf("{/* Silvis (trauma) day", HC0);
+  const chipSrc = HC0 >= 0 && HC1 > HC0 ? nsrcBI.slice(HC0, HC1) : "";
+  const chipIn = (chipSrc.match(/background:"#fef0e8",border:"1px solid #e0a868",fontWeight:600\}\}>(\n[\s\S]*?\n)\s*<\/div>/) || [])[1] || "";
+  const HE = nsrcBI.match(/\n  (const holidayEmoji = \(label\) => \{[\s\S]*?\n  \};)\n/);
+  let holidayEmojiBI = null;
+  try { holidayEmojiBI = HE ? vm.runInContext(`(function () { ${HE[1]}\n return holidayEmoji; })()`, bisb) : null; } catch (ex) { holidayEmojiBI = null; }
+  // the element's children in order: tags dropped, {expressions} evaluated ({/* comments */} are nothing), text kept —
+  // except whitespace holding a line break, which JSX drops
+  const chipText = (e, sMap) => {
+    if (!chipIn || !holidayEmojiBI) return null;
+    try {
+      return chipIn.split(/(<\/?span\b[^>]*>|\{[^{}]*\})/).map((t) => {
+        if (!t || /^<\/?span\b/.test(t)) return "";
+        if (t[0] === "{") { const x = t.slice(1, -1).trim(); return /^\/\*[\s\S]*\*\/$/.test(x) ? "" : String(vm.runInContext(`(function (e, sMap, holidayEmoji) { return (${x}); })`, bisb)(e, sMap, holidayEmojiBI)); }
+        return /\n/.test(t) && !t.trim() ? "" : t;
+      }).join("");
+    } catch (ex) { return "threw: " + String(ex).slice(0, 100); }
+  };
+  const SM6 = { s2: { name: "MCC", idx: 1 }, s6: { name: "FAK", idx: 5 } };
+  const t6a = chipText({ holName: "Thanksgiving 24h", surgeon: "s2", hours: "7a–7a" }, SM6), t6b = chipText({ holName: "Christmas Eve 24h", surgeon: "s6", hours: "24h" }, SM6);
+  const hrsM = chipIn.match(/<span style=\{(\{[^\n]*?\})\}>\{e\.hours\}<\/span>/);
+  let hrsSt = null;
+  try { hrsSt = hrsM ? vm.runInContext(`(${hrsM[1]})`, bisb) : null; } catch (ex) { hrsSt = null; }
+  check("BI6 a holiday chip in the calendar cell, its real children evaluated: \"🦃 MCC 7a–7a\" and \"🎄 FAK 24h\" — the holder and the hours are separate words (main ran them together: \"🦃 MCC7a–7a\"); the space replaces the hours' 2px margin, so the gap looks the same",
+    count("{/* Holiday coverage entries */}") === 1 && t6a === "🦃 MCC 7a–7a" && t6b === "🎄 FAK 24h" && !!hrsSt && J(hrsSt) === J({ color: "#a07030", fontSize: 8 }),
+    J({ t6a, t6b, hrsSt }));
+}
+
 // ─── U. Mine tab "My Shifts" lists only shifts not yet done (owner request 2026-09-25) ───
 // A role is DONE once its last day is before today: a Mon–Thu night ends on
 // its own date; the service week, the weekend and an OFF week run to the
