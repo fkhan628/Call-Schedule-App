@@ -2003,12 +2003,21 @@ function CallSchedule() {
   // errors and destructive confirms deliberately stay as native dialogs — an
   // auto-dismissing toast would be the wrong tool for "are you sure?" or "fix
   // this field". role=status + aria-live announces it to screen readers.
-  const [toast, setToast] = useState(null); // { msg, tone } | null
-  const toastTimerRef = useRef(null);
+  // Toasts STACK (UX audit 2026-10-19): there was one slot, so a burst —
+  // opening the app offline fires three errors — showed only the last. Now up
+  // to 3 at once, oldest on top (toastAdd, helpers.js; the same message twice
+  // shows once); each goes by itself after toastMs (an error ~8 s, info or
+  // success ~4 s, longer for a long text) or when tapped. showToast(msg, tone)
+  // is unchanged for its callers.
+  const [toasts, setToasts] = useState([]); // [{ id, msg, tone }], oldest first, at most 3
+  const toastSeqRef = useRef(0); // the last toast's id
+  const [toastLift, setToastLift] = useState(0); // px the stack sits above the bottom: the update banner's height (0 with none)
+  const dismissToast = (id) => setToasts(list => list.some(t => t.id === id) ? list.filter(t => t.id !== id) : list);
   const showToast = (msg, tone) => {
-    setToast({ msg: msg, tone: tone || "info" });
-    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
-    toastTimerRef.current = setTimeout(() => setToast(null), 4000);
+    const t = { id: ++toastSeqRef.current, msg: msg, tone: tone || "info" };
+    setToastLift(bannerLift()); // its first frame already above the banner (as openCalDay does for the day sheet)
+    setToasts(list => toastAdd(list, t));
+    setTimeout(() => dismissToast(t.id), toastMs(t.tone, t.msg));
   };
 
   // ─── Sync engine v2: the ONE reader/writer of schedule_weeks ───
@@ -4860,6 +4869,26 @@ function CallSchedule() {
     }
   };
 
+  // The toast stack sits ABOVE the update banner (UX audit 2026-10-19): the
+  // banner (fixed to the bottom, z 9998) wraps to ~100px on a phone, and a
+  // toast 24px up covered its words and its buttons. Its height is measured as
+  // for the Calendar's day sheet (bannerLift): when a toast is shown
+  // (showToast), then here while any is on screen — on a resize, on the
+  // banner's own resize, and when the banner comes or goes (dismissed, or
+  // hidden while the month painter is open). It is here, not beside the
+  // toasts' state, because it lists paintSheet, declared above (§P: TDZ).
+  const toastsShown = toasts.length > 0;
+  useEffect(() => {
+    if (!toastsShown) return;
+    const remeasure = () => setToastLift(bannerLift());
+    remeasure();
+    window.addEventListener("resize", remeasure);
+    const el = updateBannerRef.current;
+    const ro = el && typeof ResizeObserver === "function" ? new ResizeObserver(remeasure) : null;
+    if (ro) ro.observe(el);
+    return () => { window.removeEventListener("resize", remeasure); if (ro) ro.disconnect(); };
+  }, [toastsShown, updateAvailable, paintSheet]);
+
   // APP day-offs (display-only) — row id="dayoff" of app_shifts_data; same
   // checked-write pattern and can_assign_apps gate as saveAppShifts above.
   // NEVER read by the generator, canTakeSlot, or any assignment path.
@@ -7663,12 +7692,18 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           onClose={() => setPaintSheet(null)}
         />
       )}
-      {/* Non-blocking toast */}
-      {toast && (
-        <div role="status" aria-live="polite" onClick={()=>setToast(null)} style={{position:"fixed",left:"50%",bottom:24,transform:"translateX(-50%)",zIndex:9999,maxWidth:"90vw",background:toast.tone==="success"?"#1a7a4a":toast.tone==="error"?"#a83232":"#1a2a3a",color:"#fff",borderRadius:9,padding:"10px 18px",fontSize:13,fontWeight:600,fontFamily:font,boxShadow:"0 4px 16px rgba(0,0,0,0.25)",cursor:"pointer",letterSpacing:0.2}}>
-          {toast.tone==="success"?"✓ ":toast.tone==="error"?"⚠ ":""}{toast.msg}
-        </div>
-      )}
+      {/* Non-blocking toasts: up to 3 stacked, oldest on top, newest nearest the
+          bottom; tap one to dismiss it. Above the update banner (toastLift, its
+          measured height) or, with none, above the iPhone home bar. The live
+          region is always mounted, so each new toast is announced; the stack
+          itself lets taps through to the page (only the pills catch them). */}
+      <div role="status" aria-live="polite" style={{position:"fixed",left:0,right:0,bottom:toastLift ? toastLift + 10 : "calc(env(safe-area-inset-bottom, 0px) + 24px)",zIndex:9999,display:"flex",flexDirection:"column",alignItems:"center",gap:6,pointerEvents:"none"}}>
+        {toasts.map(t => (
+          <div key={t.id} onClick={()=>dismissToast(t.id)} style={{pointerEvents:"auto",maxWidth:"min(90vw, 600px)",boxSizing:"border-box",background:t.tone==="success"?"#1a7a4a":t.tone==="error"?"#a83232":"#1a2a3a",color:"#fff",borderRadius:9,padding:"10px 18px",fontSize:13,fontWeight:600,fontFamily:font,boxShadow:"0 4px 16px rgba(0,0,0,0.25)",cursor:"pointer",letterSpacing:0.2}}>
+            {toastText(t)}
+          </div>
+        ))}
+      </div>
       {/* "Sign in again" (sync v2): its own banner ABOVE every sheet and modal
           (z 10000). A button in the header would be covered while e.g. the
           week editor is open — and tapping there closes the editor and drops

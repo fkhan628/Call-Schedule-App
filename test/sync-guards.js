@@ -2624,6 +2624,186 @@ console.log("\nBD. Generate: one period label, the period's seam, holidays with 
   }
 }
 
+// ─── BF. Toasts stack: up to 3 at once, an error stays longer, no doubled ⚠ (UX audit 2026-10-19) ───
+// The app had ONE toast slot: each showToast replaced the message before it,
+// so a burst — opening the app offline fires three errors — left only the
+// last; an error went after 4 s like an info toast; doGenerate's dropped-locks
+// error ("⚠ 2 locks were NOT honored…") read "⚠ ⚠ …" under the error style's
+// own ⚠; and the toast, 24px up, sat over the update banner's buttons.
+//   BF1 toastAdd (helpers.js), executed: appends in order; past 3 the oldest go; the same words in the same
+//       style show once, as the newest; another style is another toast; the list given is never changed
+//   BF2 toastMs (helpers.js), executed: an error 8 s, info / success 4 s, a long text longer, at most 15 s
+//   BF3 toastText (helpers.js), executed: ✓ / ⚠ before a success / an error; an error's own leading ⚠ (or ⚠️) is
+//       dropped; info keeps its words; a non-string message can't break the render
+//   BF4 the REAL showToast / dismissToast, sliced and run with a state stub and recorded timers: three errors in a
+//       row (the offline open) all stay; a fourth pushes the oldest out; each has its own timer (toastMs); a tap
+//       takes just that one; a timer for a toast already gone changes nothing; AA3's order (success, then a
+//       notification failure) leaves the failure on screen once the success has gone; the banner is measured first
+//   BF5 the REAL lift effect, sliced and run: while a toast shows, the stack's lift is the banner's measured height,
+//       remeasured on a resize and on the banner's own resize, listeners removed after; nothing while none shows;
+//       it lists updateAvailable and paintSheet (the banner comes and goes with them), declared before it (§P)
+//   BF6 the stack's real style, evaluated: with the banner it sits 10px above it, without, 24px above the home bar
+//       (safe area); z above the banner; the stack lets taps through, its pills catch them; the single slot is gone
+console.log("\nBF. toasts stack (up to 3), errors stay longer, no doubled ⚠");
+{
+  const H = vm.runInContext("({ toastAdd: typeof toastAdd === 'function' ? toastAdd : null, toastMs: typeof toastMs === 'function' ? toastMs : null, toastText: typeof toastText === 'function' ? toastText : null })", sandbox);
+  const T = (id, msg, tone) => ({ id, msg, tone });
+  const ids = (l) => (l || []).map(t => t.id).join();
+
+  if (!H.toastAdd || !H.toastText) check("BF1 toastAdd / toastText are in helpers.js", false, "not defined");
+  else {
+    const l0 = [];
+    const l1 = H.toastAdd(l0, T(1, "A", "error")), l2 = H.toastAdd(l1, T(2, "B", "error")), l3 = H.toastAdd(l2, T(3, "C", "error"));
+    const l4 = H.toastAdd(l3, T(4, "D", "info"));
+    const dup = H.toastAdd(l3, T(5, "A", "error"));          // A again → once, as the newest
+    const other = H.toastAdd(l3, T(6, "A", "info"));         // the same words in another style → another toast
+    const warn = H.toastAdd([T(7, "X", "error")], T(8, "⚠ X", "error")); // both read "⚠ X" on screen → once
+    const two = H.toastAdd(l3, T(9, "E", "info"), 2), none = H.toastAdd(null, T(10, "Z", "success"));
+    check("BF1 toastAdd: appends in order (1 → 1,2 → 1,2,3); a 4th pushes the oldest out (2,3,4); the same message again shows once, as the newest (2,3,5); the same words as info are another toast (2,3,6); \"⚠ X\" and \"X\" as errors read the same → once; max is a parameter (3 by default); the lists given are never changed",
+      ids(l1) === "1" && ids(l2) === "1,2" && ids(l3) === "1,2,3" && ids(l4) === "2,3,4" && ids(dup) === "2,3,5" && ids(other) === "2,3,6"
+        && ids(warn) === "8" && ids(two) === "3,9" && ids(none) === "10" && l0.length === 0 && l1 !== l0 && l4 !== l3,
+      JSON.stringify({ l1: ids(l1), l2: ids(l2), l3: ids(l3), l4: ids(l4), dup: ids(dup), other: ids(other), warn: ids(warn), two: ids(two) }));
+  }
+
+  if (!H.toastMs) check("BF2 toastMs is in helpers.js", false, "not defined");
+  else {
+    const x = (n) => "x".repeat(n);
+    const ms = { e: H.toastMs("error", "Couldn't save."), i: H.toastMs("info", "Saved."), s: H.toastMs("success", "Vacation request sent."), u: H.toastMs(undefined, "x"),
+      i60: H.toastMs("info", x(60)), i100: H.toastMs("info", x(100)), i200: H.toastMs("info", x(200)), e200: H.toastMs("error", x(200)), e300: H.toastMs("error", x(300)), e2000: H.toastMs("error", x(2000)), eNull: H.toastMs("error", null) };
+    check("BF2 toastMs: an error stays 8 s, info / success 4 s (as before); a long text longer — 100 chars 6 s, 200 chars 11 s, for an error too — and never past 15 s",
+      ms.e === 8000 && ms.i === 4000 && ms.s === 4000 && ms.u === 4000 && ms.i60 === 4000 && ms.i100 === 6000 && ms.i200 === 11000 && ms.e200 === 11000 && ms.e300 === 15000 && ms.e2000 === 15000 && ms.eNull === 8000,
+      JSON.stringify(ms));
+  }
+
+  if (!H.toastText) check("BF3 toastText is in helpers.js", false, "not defined");
+  else {
+    const DROPPED = "⚠ 2 locks were NOT honored by the generator: FAK — Thu Oct 22 — Night; DJA — Service Wk of Oct 26 (the surgeon is unavailable there — vacation, no-call or Silvis).";
+    const tt = [H.toastText(T(1, "Saved.", "success")), H.toastText(T(2, "Couldn't save.", "error")), H.toastText(T(3, DROPPED, "error")), H.toastText(T(4, "⚠️  Two", "error")),
+      H.toastText(T(5, "⚠ Heads up", "info")), H.toastText(T(6, "Plain", "info")), H.toastText(T(7, undefined, "error")), H.toastText(T(8, new Error("boom"), "error")), H.toastText(T(9, "Saving ⚠ midway", "error"))];
+    check("BF3 toastText: \"✓ \" before a success, \"⚠ \" before an error; an error's own leading ⚠ / ⚠️ is dropped — doGenerate's dropped-locks toast reads \"⚠ 2 locks were NOT honored…\", not \"⚠ ⚠ …\"; a ⚠ later in the text stays; info is shown as written; no message / an Error object still render text",
+      JSON.stringify(tt) === JSON.stringify(["✓ Saved.", "⚠ Couldn't save.", DROPPED, "⚠ Two", "⚠ Heads up", "Plain", "⚠ ", "⚠ Error: boom", "⚠ Saving ⚠ midway"]),
+      JSON.stringify(tt));
+    const nsrcF0 = src.replace(/\r\n/g, "\n");
+    check("BF3 …the dropped-locks toast is still an ERROR that starts with its own ⚠ (so toastText's strip is what keeps it from doubling)",
+      /showToast\(`⚠ \$\{droppedLocks\.length\} lock[^\n]*\(the surgeon is unavailable there — vacation, no-call or Silvis\)\.`, "error"\);/.test(nsrcF0));
+  }
+
+  const nsrcF = src.replace(/\r\n/g, "\n");
+  // The text from `start` (exactly one occurrence) through the first `end` after it; null when absent.
+  const cutF = (start, end) => { const i = nsrcF.indexOf(start); if (i < 0 || nsrcF.indexOf(start, i + 1) !== -1) return null; const e = nsrcF.indexOf(end, i + start.length); return e < 0 ? null : nsrcF.slice(i, e + end.length); };
+  const showB = cutF("  const [toasts, setToasts] = useState([]);", "toastMs(t.tone, t.msg));\n  };\n");
+  let mkShow = null;
+  try { mkShow = showB && showB.length < 2500 ? vm.runInContext("(function (env) { const { useState, useRef, setTimeout, bannerLift } = env;\n" + showB + "\n return { showToast, dismissToast }; })", sandbox, { filename: "bf-show.js" }) : null; } catch (ex) { mkShow = null; }
+  const showRig = (lift) => {
+    const R = { boxes: [], timers: [], measured: 0 };
+    const useState = (init) => { const box = { init, v: init }; R.boxes.push(box); return [box.v, (u) => { box.v = typeof u === "function" ? u(box.v) : u; }]; };
+    R.api = mkShow({ useState, useRef: (v) => ({ current: v }), setTimeout: (fn, ms) => { R.timers.push({ fn, ms }); return R.timers.length; }, bannerLift: () => { R.measured++; return lift; } });
+    R.list = () => R.boxes.find(b => Array.isArray(b.init)).v;
+    R.lift = () => R.boxes.find(b => b.init === 0).v;
+    R.msgs = () => R.list().map(t => t.tone + ": " + t.msg).join(" | ");
+    return R;
+  };
+  if (!mkShow) check("BF4 the real showToast / dismissToast are extractable (toasts state through showToast)", false, showB ? "compile" : "anchor");
+  else {
+    const E1 = "Couldn't load the schedule — check your connection.", E2 = "Couldn't load time off — check your connection.", E3 = "Silvis call days couldn't be read — the saved copy is kept.";
+    const r = showRig(100);
+    r.api.showToast(E1, "error"); r.api.showToast(E2, "error"); r.api.showToast(E3, "error");
+    const three = r.msgs(), threeMs = r.timers.map(t => t.ms), threeIds = ids(r.list()), lift = r.lift(), measured = r.measured;
+    r.api.showToast("Saved.");
+    const four = r.msgs(), fourMs = r.timers[3].ms;
+    const [idE2, idE3] = r.list().map(t => t.id);
+    r.api.dismissToast(idE3);
+    const tapped = r.msgs();
+    const before = r.list(); r.timers[0].fn(); const goneNoop = r.list() === before;  // E1's timer: E1 was already pushed out
+    r.timers[1].fn();                                                                 // E2's timer
+    const afterE2 = r.msgs();
+    check("BF4 the real showToast: three errors in a row (opening the app offline) ALL stay, in order — each with its own timer (8 s, toastMs) and id; a 4th (no tone → info, 4 s) pushes the oldest out; a tap takes just that toast; a timer for a toast already gone changes nothing; the next timer takes its own; the update banner is measured at each (the stack's first frame is already above it)",
+      three === "error: " + E1 + " | error: " + E2 + " | error: " + E3 && JSON.stringify(threeMs) === JSON.stringify([8000, 8000, 8000]) && threeIds === "1,2,3"
+        && four === "error: " + E2 + " | error: " + E3 + " | info: Saved." && fourMs === 4000 && idE2 === 2 && idE3 === 3
+        && tapped === "error: " + E2 + " | info: Saved." && goneNoop && afterE2 === "info: Saved." && lift === 100 && measured === 3,
+      JSON.stringify({ three, threeMs, threeIds, four, tapped, afterE2, lift, measured }));
+
+    // AA3's convention (section AA): a successful submit toasts BEFORE notifying, so a notification failure is the
+    // last word. Stacked, both show; the success goes first (4 s) and the failure is what's left (8 s).
+    const a = showRig(0);
+    a.api.showToast("Vacation request sent.", "success"); a.api.showToast("Couldn't save that notification.", "error");
+    const both = a.msgs();
+    const order = a.timers.map((t, i) => ({ t, i })).sort((p, q) => p.t.ms - q.t.ms);
+    order[0].t.fn();
+    const left = a.msgs();
+    check("BF4 AA3's order through the real showToast: \"Vacation request sent.\" then \"Couldn't save that notification.\" — both on screen at once, the success times out first, and the failure is the message left on screen",
+      both === "success: Vacation request sent. | error: Couldn't save that notification." && order[0].i === 0 && order[0].t.ms < order[1].t.ms && left === "error: Couldn't save that notification.",
+      JSON.stringify({ both, left, ms: a.timers.map(t => t.ms) }));
+
+    const d = showRig(0);
+    d.api.showToast("Couldn't refresh — check your connection.", "error"); d.api.showToast("Couldn't refresh — check your connection.", "error");
+    const once = d.list().map(t => t.id).join(), onceMsgs = d.msgs();
+    d.timers[0].fn(); const stillThere = d.list().length === 1;
+    check("BF4 the same message twice (a retry that fails again) shows ONCE, on the newer timer — the first one's timer no longer takes it down",
+      once === "2" && onceMsgs === "error: Couldn't refresh — check your connection." && stillThere, JSON.stringify({ once, onceMsgs, stillThere }));
+  }
+
+  // BF5 — the lift effect
+  const LF0 = nsrcF.indexOf("  const toastsShown = toasts.length > 0;\n"), LFD = "  }, [toastsShown, updateAvailable, paintSheet]);", LF1 = nsrcF.indexOf(LFD);
+  const BLf = nsrcF.match(/\n  (const bannerLift = \(\) => \{[^\n]*\};)\n/);
+  let mkLiftF = null;
+  try { mkLiftF = LF0 > 0 && LF1 > LF0 && LF1 - LF0 < 1500 && BLf ? vm.runInContext("(function (env) { const { toasts, updateAvailable, paintSheet, setToastLift, updateBannerRef, window, ResizeObserver, useEffect } = env;\n" + BLf[1] + "\n" + nsrcF.slice(LF0, LF1 + LFD.length) + "\n })", sandbox, { filename: "bf-lift.js" }) : null; } catch (ex) { mkLiftF = null; }
+  const liftRunF = (toasts, el, withRO) => {
+    const L = { sets: [], added: [], removed: [], observed: [], disconnected: 0, eff: null, roCb: null };
+    const RO = withRO ? class { constructor(cb) { L.roCb = cb; } observe(t) { L.observed.push(t); } disconnect() { L.disconnected++; } } : undefined;
+    mkLiftF({ toasts, updateAvailable: el ? "2026.10.20a" : null, paintSheet: null, setToastLift: (v) => L.sets.push(v), updateBannerRef: { current: el }, ResizeObserver: RO,
+      window: { addEventListener: (t, f) => L.added.push([t, f]), removeEventListener: (t, f) => L.removed.push([t, f]) }, useEffect: (fn, deps) => { L.eff = { fn, deps }; } });
+    return L;
+  };
+  if (!mkLiftF) check("BF5 the toast stack's lift effect (with bannerLift) is extractable", false, JSON.stringify({ LF0, LF1, bannerLift: !!BLf }));
+  else {
+    const BAN = { isConnected: true, getBoundingClientRect: () => ({ height: 99.2 }) };
+    const on = liftRunF([T(1, "x", "error")], BAN, true);
+    const cleanup = on.eff.fn();
+    const first = on.sets.slice();
+    on.added[0][1](); on.roCb(); const re = on.sets.slice();
+    cleanup();
+    const off = liftRunF([], BAN, true), offRet = off.eff.fn();
+    const noBan = liftRunF([T(1, "x", "info")], null, true); noBan.eff.fn();
+    const gone = liftRunF([T(1, "x", "info")], { isConnected: false, getBoundingClientRect: () => ({ height: 50 }) }, false); gone.eff.fn();
+    check("BF5 the real lift effect: while a toast shows, the lift is the banner's measured height (99.2 → 100), again on a resize and on the banner's own resize (ResizeObserver on the banner); both listeners removed after; with no toast it does nothing; no banner, or one no longer on the page → 0",
+      JSON.stringify(first) === "[100]" && JSON.stringify(re) === "[100,100,100]" && on.added.length === 1 && on.added[0][0] === "resize" && on.observed.length === 1 && on.observed[0] === BAN
+        && on.removed.length === 1 && on.removed[0][1] === on.added[0][1] && on.disconnected === 1
+        && offRet === undefined && off.sets.length === 0 && off.added.length === 0 && off.observed.length === 0
+        && JSON.stringify(noBan.sets) === "[0]" && noBan.observed.length === 0 && JSON.stringify(gone.sets) === "[0]",
+      JSON.stringify({ first, re, off: off.sets, noBan: noBan.sets, gone: gone.sets }));
+    check("BF5 …it re-runs when a toast first shows and when the banner comes or goes (updateAvailable; paintSheet hides it): deps [toastsShown, updateAvailable, paintSheet]",
+      JSON.stringify(on.eff.deps) === JSON.stringify([true, "2026.10.20a", null]) && JSON.stringify(off.eff.deps) === JSON.stringify([false, "2026.10.20a", null]));
+  }
+  const iTo = src.indexOf("const [toasts, setToasts] = useState([]);"), iLift = src.indexOf("const [toastLift, setToastLift] = useState(0);"), iUA = src.indexOf("const [updateAvailable, setUpdateAvailable] = useState(null);");
+  const iPS = src.indexOf("const [paintSheet, setPaintSheet] = useState(null);"), iBL = src.indexOf("const bannerLift = () => {"), iShown = src.indexOf("const toastsShown = toasts.length > 0;"), iDeps = src.indexOf("}, [toastsShown, updateAvailable, paintSheet]);");
+  check("BF5 …§P for this state: the toasts and their lift, updateAvailable, paintSheet and bannerLift are each declared once and BEFORE the effect that lists them (the 2026.09.24a TDZ class)",
+    count("const [toasts, setToasts] = useState([]);") === 1 && count("const [toastLift, setToastLift] = useState(0);") === 1 && count("}, [toastsShown, updateAvailable, paintSheet]);") === 1
+      && [iTo, iLift, iUA, iPS, iBL].every(i => i > 0 && i < iShown) && iShown < iDeps && iTo < src.indexOf("const showToast = (msg, tone) => {") && iBL < src.indexOf("const showToast = (msg, tone) => {"),
+    JSON.stringify({ iTo, iLift, iUA, iPS, iBL, iShown, iDeps }));
+
+  // BF6 — the stack's real style, evaluated
+  const stackM = nsrcF.match(/\n      <div role="status" aria-live="polite" style=\{(\{position:"fixed",left:0,right:0,bottom:toastLift [^\n]*?\})\}>\n\s*\{toasts\.map\(t => \(\n\s*<div key=\{t\.id\} onClick=\{\(\)=>dismissToast\(t\.id\)\} style=\{(\{pointerEvents:"auto",[^\n]*?\})\}>\n\s*\{toastText\(t\)\}\n/);
+  let stackSt = null, pillSt = null;
+  try { stackSt = stackM ? vm.runInContext(`(function (toastLift) { return (${stackM[1]}); })`, sandbox) : null; pillSt = stackM ? vm.runInContext(`(function (t, font) { return (${stackM[2]}); })`, sandbox) : null; } catch (ex) { stackSt = pillSt = null; }
+  const zBanF = +((nsrcF.match(/<div ref=\{updateBannerRef\} role="status" aria-live="polite" style=\{\{position:"fixed",left:0,right:0,bottom:0,zIndex:(\d+),/) || [])[1] || NaN);
+  if (!stackSt || !pillSt) check("BF6 the toast stack and its pills render from toasts (role=status, aria-live) and are evaluable", false, stackM ? "eval" : "markup not found");
+  else {
+    const s0 = stackSt(0), s100 = stackSt(100), s54 = stackSt(54);
+    const pe = pillSt(T(1, "x", "error"), "Outfit"), ps = pillSt(T(2, "x", "success"), "Outfit"), pi = pillSt(T(3, "x", "info"), "Outfit");
+    check("BF6 the stack's real style: with the update banner measured at 100px (two rows on a 375px phone) its bottom is 110 — above the banner, not over its buttons; at 54px, 64; with no banner, 24px above the iPhone home bar (safe area); stacked in a column, z above the banner; the stack lets taps through, each pill catches its own",
+      s100.bottom === 110 && s54.bottom === 64 && s0.bottom === "calc(env(safe-area-inset-bottom, 0px) + 24px)" && s0.position === "fixed" && s0.flexDirection === "column"
+        && s0.zIndex > zBanF && zBanF === 9998 && s0.pointerEvents === "none" && pe.pointerEvents === "auto"
+        && pe.background === "#a83232" && ps.background === "#1a7a4a" && pi.background === "#1a2a3a" && pe.cursor === "pointer",
+      JSON.stringify({ s0: s0.bottom, s54: s54.bottom, s100: s100.bottom, z: s0.zIndex, zBanF }));
+  }
+  check("BF6 …the single slot is gone (no setToast / toastTimerRef / {toast && …}); one live region renders the list; each pill shows toastText(t) and a tap dismisses that one; showToast keeps its signature (its 100+ callers unchanged)",
+    count("setToast(") === 0 && count("toastTimerRef") === 0 && count("{toast && (") === 0 && count("const [toast, setToast]") === 0
+      && count("{toasts.map(t => (") === 1 && count("{toastText(t)}") === 1 && count("onClick={()=>dismissToast(t.id)}") === 1
+      && count("const showToast = (msg, tone) => {") === 1 && count("showToast(") > 100,
+    JSON.stringify({ setToast: count("setToast("), timer: count("toastTimerRef"), map: count("{toasts.map(t => ("), calls: count("showToast(") }));
+}
+
 // ─── Q. Dismissable Schedule Warnings (owner request 2026-09-24) ───
 // A scheduler/admin can dismiss one exact warning for EVERYONE (blob field
 // dismissedWarnings [{key, text, by, at}]); every viewer's panel is filtered;

@@ -988,6 +988,38 @@ function slotLabel(mondayStr, shiftKey) {
   return `${DOW[d.getDay()]} ${md} — Night`;
 }
 
+/* ═══ Toasts: the app's short messages stack (UX audit 2026-10-19) ═══
+   The app had ONE toast slot: each message replaced the one before, so a
+   burst — opening the app offline fires three errors — left only the last.
+   Now up to three show at once, oldest on top; each goes by itself after
+   toastMs or when tapped. */
+// toastAdd(list, toast, max) → a NEW list with `toast` ({ id, msg, tone })
+// last. A toast already showing the same words in the same style (toastText)
+// is taken out first, so a repeated message shows once, as the newest, on a
+// fresh timer; then the oldest beyond `max` go. `list` is never changed.
+function toastAdd(list, toast, max = 3) {
+  const same = toastText(toast);
+  const next = (list || []).filter(t => toastText(t) !== same);
+  next.push(toast);
+  return next.length > max ? next.slice(next.length - max) : next;
+}
+// How long a toast stays, in ms: an error 8 s, info or success 4 s — and a
+// long text longer (about 50 ms a character past what fits in that), at most
+// 15 s.
+function toastMs(type, text) {
+  const floor = type === "error" ? 8000 : 4000;
+  const n = String(text == null ? "" : text).length;
+  return Math.min(15000, Math.max(floor, 1000 + 50 * n));
+}
+// The words a toast shows: "✓ " before a success, "⚠ " before an error. An
+// error that already starts with its own ⚠ loses it, so it never reads
+// "⚠ ⚠ 2 locks were NOT honored…" (doGenerate's dropped-locks toast).
+function toastText(t) {
+  const msg = String(t && t.msg != null ? t.msg : "");
+  const tone = t && t.tone;
+  return tone === "success" ? "✓ " + msg : tone === "error" ? "⚠ " + msg.replace(/^\s*⚠\uFE0F?\s*/, "") : msg;
+}
+
 /* ═══ ICS Calendar Generation ═══ */
 // ALL-DAY events (2026-09-25, same format as the calendar-sync v15 feed): a
 // service week is one Mon–Sat event, each weeknight one event on its date, the
