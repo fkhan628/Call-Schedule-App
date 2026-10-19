@@ -1836,6 +1836,273 @@ console.log("\nBD. Generate: one period label, the period's seam, holidays with 
     /executeTwoWaySwap = useCallback\(\(targetMon[\s\S]{0,900}shiftStartDate\(targetMon, targetShift\)[\s\S]{0,2600}pushUndo\(\);/.test(src) && /executeTwoWaySwap = useCallback\(\(targetMon[\s\S]{0,2600}if \(!schedEditable\(\)\) return;[\s\S]{0,900}out of date[\s\S]{0,1200}pushUndo\(\);/.test(src)); // window 400→900→2600 (sync v2: the edit gate + the holder precondition sit between); order unchanged for the silvisBusy block (2026-09-24); order unchanged
 }
 
+// ─── BE. Requests: decisions say they landed, the revoked person is told, Sending…, the edit's range gate, the trade builder's holders (UX audit 2026-10-19) ───
+// (1) Approve / deny / accept / decline / revoke said nothing on success. Each now toasts once it has landed:
+//     after its list update, inside its session fence (a session change while its status write is out: nothing
+//     said), and BEFORE its first notice (AA3's order: a notification failure toasts after it, the last word).
+//     The revoke's notice carried {}: the bell shows a member only the notices whose data names them, so the
+//     person whose vacation was revoked never saw it. It now carries surgeon_id, as approve's and deny's do.
+// (2) The request form: Reason before Submit; Submit and Propose Trade read "Sending…" and are disabled while
+//     the submit is out (vacSubmitting / tradeSubmitting, set and cleared WITH the busy refs, which stay the
+//     double-tap gate); a line under the dates reads the range back (helpers.js rangeSummary).
+// (3) saveVacRequestEdit refuses an empty or inverted range before anything is sent; a save says so.
+// (4) The scheduler's trade builder: weeks read "Wk of Oct 19", each shift names who holds it (" · FAK", by the
+//     accept's own rule), and an amber note says when a leg's giver doesn't hold it (the accept would refuse it
+//     as out of date) — with no new slotLabel( call (L pins 23).
+// Executed on the REAL handler bodies, sliced from index-source.html, and the REAL helpers.js; the markup is
+// pinned (JSX can't run here — no Babel in CI).
+//   BE1 rangeSummary, here and under TZ=America/Chicago across both DST changes
+//   BE2 the submits' busy state: [true, false] around every submit that sends; never set by a refused one
+//   BE3 the five decisions: one success toast in one session, after the list update and before the notice;
+//       none after a session change; the revoke's notice names the surgeon
+//   BE4 the edit: an empty or inverted range makes ZERO requests and says why; a save says so (not after a session change)
+//   BE5 the trade builder's holder IS the accept's holderIn (sliced) on every slot; its notes, executed
+//   BE6 the markup: the range line, Reason before Submit, Sending…, the holders, the note, slotLabel( ×23
+{
+  console.log("\nBE. Requests: decisions confirm, the revoked person is told, Sending…, the edit's range gate, the trade builder's holders");
+  const nsrcBE = src.replace(/\r\n/g, "\n");   // a Windows checkout is CRLF, CI's is LF
+  const afterBE = (start, end) => { const i = nsrcBE.indexOf(start); if (i < 0 || nsrcBE.indexOf(start, i + 1) !== -1) return null; const e = nsrcBE.indexOf(end, i + start.length); return e < 0 ? null : nsrcBE.slice(i + start.length, e); };
+  const wfrBE = (() => { const a = nsrcBE.indexOf("function writeFailReason(err) {"); const b = a < 0 ? -1 : nsrcBE.indexOf("\n}\n", a); return a < 0 || b < 0 ? "" : nsrcBE.slice(a, b + 2); })();
+  // A slice compiled in the sandbox (the helpers.js / config.js globals it reads: fmt, parse, addD, onVac,
+  // shiftStartDate, SHIFT_LABELS, tradeAcceptMsg, tradeDeclineMsg, tradeProposeMsg …); every name listed comes
+  // from the env — fetch and SUPABASE_URL included, so nothing here reaches the network.
+  const fnBE = (names, code) => { if (!code) return null; try { return vm.runInContext(`(function () { ${wfrBE}\n return function (env) { const { ${names} } = env; return (${code}); }; })()`, sandbox, { filename: "be-extract.js" }); } catch (ex) { console.log("  (BE compile error) " + String(ex).slice(0, 200)); return null; } };
+  const helperBE = (name) => vm.runInContext(`typeof ${name} === "function" ? ${name} : null`, sandbox);
+  const quietBE = { error: () => {}, warn: () => {}, log: () => {}, info: () => {} };
+  const respBE = (status, json) => ({ ok: status >= 200 && status < 300, status, json: async () => json, text: async () => JSON.stringify(json) });
+  const SURG_BE = [{ id: "s1", name: "AAA" }, { id: "s3", name: "CCC" }, { id: "s6", name: "FAK" }];
+
+  // BE1 — rangeSummary
+  {
+    const RS = helperBE("rangeSummary");
+    const CASES = [
+      ["2026-12-14", "2026-12-18", "5 days, Mon Dec 14 – Fri Dec 18"],
+      ["2026-12-14", "2026-12-14", "1 day, Mon Dec 14"],
+      ["2026-12-28", "2027-01-01", "5 days, Mon Dec 28, 2026 – Fri Jan 1, 2027"],
+      ["2026-03-06", "2026-03-09", "4 days, Fri Mar 6 – Mon Mar 9"],     // across the spring DST change (Sun Mar 8)
+      ["2026-10-30", "2026-11-02", "4 days, Fri Oct 30 – Mon Nov 2"],    // and the fall one (Sun Nov 1)
+      ["2026-12-18", "2026-12-14", null], ["", "2026-12-14", null], ["2026-12-14", "", null], [null, null, null],
+    ];
+    const here = RS ? CASES.map(([a, b]) => RS(a, b)) : null;
+    let chicago = null;
+    if (RS) {
+      const { execFileSync } = require("child_process");
+      const code = [
+        'const vm = require("vm"), fs = require("fs"), path = require("path");',
+        'const sb = { console, window: {}, document: undefined, navigator: { userAgent: "node-test" }, localStorage: { getItem: () => null, setItem() {}, removeItem() {} }, fetch: () => { throw new Error("no fetch"); }, setTimeout, clearTimeout };',
+        "sb.globalThis = sb; vm.createContext(sb);",
+        `for (const f of ["helpers.js", "config.js"]) vm.runInContext(fs.readFileSync(path.join(${JSON.stringify(ROOT)}, f), "utf8"), sb, { filename: f });`,
+        `const RS = vm.runInContext("rangeSummary", sb), C = ${JSON.stringify(CASES.map(([a, b]) => [a, b]))};`,
+        "process.stdout.write(JSON.stringify({ off: new Date(2026, 2, 6).getTimezoneOffset() - new Date(2026, 2, 9).getTimezoneOffset(), got: C.map(([a, b]) => RS(a, b)) }));",
+      ].join("\n");
+      try { chicago = JSON.parse(execFileSync(process.execPath, ["-e", code], { env: Object.assign({}, process.env, { TZ: "America/Chicago" }), encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })); } catch (ex) { chicago = { err: String(ex).slice(0, 300) }; }
+    }
+    const want = JSON.stringify(CASES.map((c) => c[2]));
+    check("BE1 rangeSummary (helpers.js, executed): \"5 days, Mon Dec 14 – Fri Dec 18\"; one day; across a new year each date has its year; null while a date is missing or the end is before the start — here, and under TZ=America/Chicago across both DST changes (the offset change proven)",
+      !!here && JSON.stringify(here) === want && !!chicago && chicago.off === 60 && JSON.stringify(chicago.got) === want,
+      RS ? JSON.stringify({ here, chicago }) : "rangeSummary is not defined in helpers.js");
+  }
+
+  // BE2 — the submits' busy state
+  {
+    const vacMk = fnBE("vacReqSurgeon, vacReqStart, vacReqEnd, vacReqReason, vacReqType, surgeons, apps, showToast, db, setVacRequests, addNotification, schedulerAdminIds, sendEmailNotif, setVacReqStart, setVacReqEnd, setVacReqReason, setVacReqType, vacSubmitBusyRef, sessionEpochRef, setVacSubmitting, console",
+      afterBE("  const submitVacRequest = useCallback(", ", [vacReqSurgeon, vacReqStart, vacReqEnd, vacReqReason, vacReqType, surgeons, apps, addNotification, sendEmailNotif, schedulerAdminIds]);"));
+    const tradeMk = fnBE("tradeFrom, tradeTo, tradeWeek, tradeShift, tradeReturnWeek, tradeReturnShift, isScheduler, silvisActive, silvisBlock, silvisRefuse, surgeons, schedule, scheduleRef, logAudit, addNotification, sendEmailNotif, setTradeRequests, setTradeWeek, setTradeShift, setTradeReturnWeek, setTradeReturnShift, tradeSubmitBusyRef, showToast, db, alert, confirm, sessionEpochRef, dbAuthHeaders, setTradeSubmitting, console",
+      afterBE("  const submitTradeRequest = useCallback(", ", [tradeFrom, tradeTo, tradeWeek, tradeShift, tradeReturnWeek, tradeReturnShift, surgeons, addNotification, sendEmailNotif, isScheduler, schedule, silvisActive, silvisBlock, silvisRefuse]);"));
+    // o: { insert: "rls" | "throw", cross: the session changes while the insert is out, hold: the insert held open, busy: a submit already out, env }
+    const runSubmit = (mk, kind, o = {}) => {
+      const rec = { busy: [], toasts: [], inserts: 0, midBusy: null, midRef: null };
+      let release; const gate = new Promise((r) => (release = r));
+      const ref = { current: !!o.busy }, ep = { current: 0 };
+      const insert = async () => {
+        rec.inserts++; rec.midBusy = rec.busy.slice(); rec.midRef = ref.current;
+        if (o.hold) await gate;
+        if (o.cross) ep.current++;
+        if (o.insert === "throw") throw new TypeError("Failed to fetch");
+        return o.insert === "rls" ? { data: null, error: { code: "42501", message: "new row violates row-level security policy" } } : { data: { id: 7 }, error: null };
+      };
+      const common = { surgeons: SURG_BE, showToast: (m, t) => rec.toasts.push((t || "info") + ": " + m), db: { insert }, addNotification: async () => {}, sendEmailNotif: () => {}, schedulerAdminIds: ["s6"], sessionEpochRef: ep, console: quietBE };
+      const env = kind === "vac"
+        ? Object.assign(common, { vacReqSurgeon: "s3", vacReqStart: "2099-01-05", vacReqEnd: "2099-01-09", vacReqReason: "", vacReqType: "vacation", apps: [], setVacRequests: () => {},
+            setVacReqStart: () => {}, setVacReqEnd: () => {}, setVacReqReason: () => {}, setVacReqType: () => {}, vacSubmitBusyRef: ref, setVacSubmitting: (v) => rec.busy.push(v) }, o.env || {})
+        : Object.assign(common, { tradeFrom: "s6", tradeTo: "s1", tradeWeek: "2099-01-05", tradeShift: "mon", tradeReturnWeek: "2099-01-12", tradeReturnShift: "tue", isScheduler: false,
+            silvisActive: false, silvisBlock: () => null, silvisRefuse: () => false, schedule: {}, scheduleRef: { current: {} }, logAudit: () => {}, setTradeRequests: () => {}, setTradeWeek: () => {}, setTradeShift: () => {},
+            setTradeReturnWeek: () => {}, setTradeReturnShift: () => {}, tradeSubmitBusyRef: ref, alert: () => {}, confirm: () => true, dbAuthHeaders: () => ({ Authorization: "Bearer A" }),
+            setTradeSubmitting: (v) => rec.busy.push(v) }, o.env || {});
+      return { fn: mk ? mk(env) : null, rec, ref, release };
+    };
+    const res = {};
+    for (const [kind, mk, empty] of [["vac", vacMk, { vacReqEnd: "" }], ["trade", tradeMk, { tradeShift: "" }]]) {
+      const r = {};
+      for (const [k, o] of [["ok", {}], ["rls", { insert: "rls" }], ["throw", { insert: "throw" }], ["cross", { cross: true }], ["refused", { env: empty }], ["inFlight", { busy: true }]]) {
+        const x = runSubmit(mk, kind, o); if (x.fn) await x.fn();
+        r[k] = { busy: x.rec.busy, mid: x.rec.midBusy, midRef: x.rec.midRef, ref: x.ref.current, inserts: x.rec.inserts, toasts: x.rec.toasts };
+      }
+      const h = runSubmit(mk, kind, { hold: true });
+      if (h.fn) { const p = h.fn(); await null; await null; r.held = { busy: h.rec.busy.slice(), ref: h.ref.current }; h.release(); await p; r.held.after = h.rec.busy.slice(); }
+      res[kind] = r;
+    }
+    const TF = JSON.stringify([true, false]);
+    const busyOk = (r) => !!r && ["ok", "rls", "throw", "cross"].every((k) => JSON.stringify(r[k].busy) === TF && JSON.stringify(r[k].mid) === "[true]" && r[k].midRef === true && r[k].ref === false && r[k].inserts === 1)
+      && r.refused.busy.length === 0 && r.refused.inserts === 0 && r.inFlight.busy.length === 0 && r.inFlight.inserts === 0 && r.inFlight.ref === true
+      && !!r.held && JSON.stringify(r.held.busy) === "[true]" && r.held.ref === true && JSON.stringify(r.held.after) === TF && r.cross.toasts.length === 0;
+    check("BE2 the REAL submitVacRequest and submitTradeRequest: the button's busy state is set with the ref (true while the insert is out — held open here) and cleared with it — [true, false] around a success, an RLS refusal, a thrown insert, and a session change during the insert (released, so the next session's button isn't stuck on \"Sending…\"; nothing said there); a refused submit (an empty field) or a tap while one is out never touches it",
+      !!vacMk && !!tradeMk && busyOk(res.vac) && busyOk(res.trade), JSON.stringify(res).slice(0, 1600));
+  }
+
+  // BE3 — the five decisions
+  const VREQ_BE = (status) => ({ id: 7, surgeon_id: "s3", surgeon_name: "CCC", start_date: "2099-03-02", end_date: "2099-03-06", request_type: "vacation", reason: "trip", status, reviewed_at: status === "approved" ? "2099-01-01T08:00:00Z" : null });
+  {
+    const mk = {
+      approve: fnBE("sessionEpochRef, dbAuthHeaders, surgeons, vacations, noCallDays, confirm, userProfile, mySurgeon, fetch, SUPABASE_URL, console, showToast, setBackRequest, setVacRequests, toAdd, logAudit, schedulerAdminIds, addNotification, sendEmailNotif",
+        afterBE("  const approveVacRequest = useCallback(", ", [addNotification, sendEmailNotif, schedulerAdminIds, userProfile, surgeons, mySurgeon, vacations, noCallDays]);")),
+      deny: fnBE("sessionEpochRef, dbAuthHeaders, logAudit, userProfile, surgeons, mySurgeon, fetch, SUPABASE_URL, console, showToast, setVacRequests, schedulerAdminIds, addNotification, sendEmailNotif",
+        afterBE("  const denyVacRequest = useCallback(", ", [addNotification, sendEmailNotif, schedulerAdminIds, userProfile, surgeons, mySurgeon]);")),
+      accept: fnBE("showToast, schedEditable, scheduleRef, surgeons, schedule, detectCascadeChanges, silvisActive, silvisBlock, silvisRefuse, confirm, SUPABASE_URL, dbAuthHeaders, console, setTradeRequests, logAudit, pushUndo, updateSchedule, schedulerAdminIds, sessionEpochRef, addNotification, sendEmailNotif, fetch",
+        afterBE("  const acceptTradeRequest = useCallback(", ", [schedule, surgeons, pushUndo, addNotification, sendEmailNotif, detectCascadeChanges, schedulerAdminIds, silvisActive, silvisBlock, silvisRefuse]);")),
+      decline: fnBE("SUPABASE_URL, dbAuthHeaders, console, showToast, setTradeRequests, logAudit, sessionEpochRef, sendEmailNotif, userProfile, surgeons, mySurgeon, addNotification, fetch",
+        afterBE("  const declineTradeRequest = useCallback(", ", [addNotification, sendEmailNotif, userProfile, surgeons, mySurgeon]);")),
+      revoke: fnBE("sessionEpochRef, dbAuthHeaders, confirm, fetch, SUPABASE_URL, console, showToast, setBackRequest, setVacRequests, toRemove, schedulerAdminIds, addNotification",
+        afterBE("  const revokeApprovedVac = useCallback(", ", [addNotification, schedulerAdminIds]);")),
+    };
+    const TREQ = { id: 9, from_surgeon_id: "s6", to_surgeon_id: "s1", from_surgeon_name: "FAK", to_surgeon_name: "AAA", week_monday: "2099-01-05", shift_key: "tue", shift_label: "Tue Night", return_week: null, return_shift: null, status: "pending" };
+    // One tap, as the app makes it, every step it takes in order: its requests, the list update, toasts, the time
+    // off / schedule write, its notices (with their data) and e-mails. cross: the session changes while the
+    // status write is out (sessionEpochRef moved).
+    const decide = async (which, cross) => {
+      const ev = [], ep = { current: 0 };
+      let sent = 0;
+      const env = {
+        sessionEpochRef: ep, dbAuthHeaders: () => ({ Authorization: "Bearer A" }), SUPABASE_URL: "https://x.test", console: quietBE, confirm: () => true,
+        fetch: async (url, init) => { ev.push("request " + ((init && init.method) || "GET")); if (cross && ++sent === 1) ep.current++; return respBE(200, [{ id: 7 }]); },
+        showToast: (m, t) => ev.push("toast " + (t || "info") + ": " + m),
+        addNotification: async (type, title, msg, data) => { ev.push("notice " + type + " " + JSON.stringify(data)); },
+        sendEmailNotif: (type) => ev.push("email " + type),
+        logAudit: () => {}, setBackRequest: async () => { ev.push("set back"); return true; },
+        setVacRequests: () => ev.push("list"), setTradeRequests: () => ev.push("list"), toAdd: () => ev.push("time off"), toRemove: () => ev.push("time off"),
+        surgeons: SURG_BE, vacations: {}, noCallDays: {}, userProfile: { display_name: "FAK" }, mySurgeon: "s1", schedulerAdminIds: ["s6"],
+        // the accept: the trade still holds (FAK holds the Tuesday), no cascades, nothing Silvis
+        schedule: {}, scheduleRef: { current: { "2099-01-05": { dayCall: "s3", nights: { tue: "s6" }, off: null } } }, schedEditable: () => true, detectCascadeChanges: () => [],
+        silvisActive: false, silvisBlock: () => null, silvisRefuse: () => false, pushUndo: () => {}, updateSchedule: () => ev.push("schedule write"),
+      };
+      const fn = mk[which] ? mk[which](env) : null;
+      if (!fn) return null;
+      if (which === "approve") await fn(VREQ_BE("pending"));
+      else if (which === "deny") await fn(VREQ_BE("pending"), "");
+      else if (which === "revoke") await fn(VREQ_BE("approved"));
+      else await fn(Object.assign({}, TREQ));
+      return ev;
+    };
+    const SAID = {
+      approve: "toast success: Approved — CCC's vacation, 2099-03-02 to 2099-03-06.",
+      deny: "toast success: Denied — CCC's vacation, 2099-03-02 to 2099-03-06.",
+      accept: "toast success: Trade accepted — the schedule is updated.",
+      decline: "toast success: Trade declined.",
+      revoke: "toast success: Revoked — CCC's vacation, 2099-03-02 to 2099-03-06, is off the schedule.",
+    };
+    const out = {};
+    for (const which of Object.keys(SAID)) out[which] = { one: await decide(which, false), crossed: await decide(which, true) };
+    const firstAt = (ev, re) => ev.findIndex((e) => re.test(e));
+    const sameSession = Object.keys(SAID).every((w) => {
+      const ev = out[w].one; if (!ev) return false;
+      const t = ev.indexOf(SAID[w]), n = firstAt(ev, /^notice /), l = ev.indexOf("list"), wr = firstAt(ev, /^(time off|schedule write)$/);
+      return ev.filter((e) => e.startsWith("toast ")).length === 1 && l >= 0 && t > l && n > t && (w === "deny" || w === "decline" ? wr === -1 : wr > t);
+    });
+    const crossed = Object.keys(SAID).every((w) => { const ev = out[w].crossed; return !!ev && !ev.some((e) => /^(toast|notice|email|list|time off|schedule write)/.test(e)); });
+    check("BE3 the REAL approve / deny / accept / decline / revoke, in one session: ONE success toast each, after the list update, before the time off / swap is written and before the first notice (AA3's order — a notice failure is the last word); the session changing while the status write is out: nothing said (no toast, notice, e-mail or list update)",
+      sameSession && crossed, JSON.stringify(out).slice(0, 2400));
+    const rv = out.revoke.one || [];
+    check("BE3 the revoke's notice names the surgeon (data.surgeon_id — the bell's member filter), as approve's and deny's do: the person whose vacation was revoked sees it",
+      rv.includes('notice vacation_revoked {"surgeon_id":"s3"}') && (out.approve.one || []).includes('notice vacation_approved {"surgeon_id":"s3"}') && (out.deny.one || []).includes('notice vacation_denied {"surgeon_id":"s3"}'),
+      JSON.stringify(rv.filter((e) => e.startsWith("notice "))));
+  }
+
+  // BE4 — the edit's range gate, and its toast
+  {
+    const editMk = fnBE("sessionEpochRef, dbAuthHeaders, editingVacReq, isScheduler, showToast, vacRequests, fetch, SUPABASE_URL, console, setBackRequest, logAudit, setVacRequests, toEdit, setEditingVacReq",
+      afterBE("  const saveVacRequestEdit = useCallback(", ", [editingVacReq, vacRequests, isScheduler]);"));
+    const edit = async (draft, o = {}) => {
+      if (!editMk) return null;
+      const ev = [], ep = { current: 0 };
+      await editMk({ sessionEpochRef: ep, dbAuthHeaders: () => ({ Authorization: "Bearer A" }), editingVacReq: Object.assign({ id: 7, reason: "trip" }, draft), isScheduler: o.member ? false : true,
+        showToast: (m, t) => ev.push("toast " + (t || "info") + ": " + m), vacRequests: [VREQ_BE("approved")], SUPABASE_URL: "https://x.test", console: quietBE,
+        fetch: async () => { ev.push("request"); if (o.cross) ep.current++; return respBE(200, [{ id: 7 }]); },
+        setBackRequest: async () => { ev.push("set back"); return true; }, logAudit: () => {}, setVacRequests: () => ev.push("list"), toEdit: () => ev.push("time off"), setEditingVacReq: () => ev.push("editor closed") })();
+      return ev;
+    };
+    const NEED = JSON.stringify(["toast error: Both dates are needed."]), INV = JSON.stringify(["toast error: The end date is before the start date."]);
+    const bad = [];
+    for (const member of [false, true]) {
+      bad.push([member, "no start", await edit({ start_date: "", end_date: "2099-03-06" }, { member }), NEED]);
+      bad.push([member, "no end", await edit({ start_date: "2099-03-02", end_date: "" }, { member }), NEED]);
+      bad.push([member, "inverted", await edit({ start_date: "2099-03-06", end_date: "2099-03-02" }, { member }), INV]);
+    }
+    check("BE4 the REAL saveVacRequestEdit (the scheduler's editor and a member's): an empty start or end, or an end before the start, is refused BEFORE anything is sent — zero requests, no time-off write, the editor left open — and says why",
+      !!editMk && bad.every(([, , ev, want]) => JSON.stringify(ev) === want), JSON.stringify(bad));
+    const ok = await edit({ start_date: "2099-03-09", end_date: "2099-03-13" }), gone = await edit({ start_date: "2099-03-09", end_date: "2099-03-13" }, { cross: true });
+    check("BE4 …a save that lands says so (\"Changes saved.\") after the list update and before the approved request's time off is moved; the session changing while it is out: nothing said (set back, as before)",
+      !!ok && JSON.stringify(ok) === JSON.stringify(["request", "list", "toast success: Changes saved.", "time off", "editor closed"]) && !!gone && JSON.stringify(gone) === JSON.stringify(["request", "set back"]),
+      JSON.stringify({ ok, gone }));
+  }
+
+  // BE5 — the trade builder's holders and its note
+  {
+    const TSH = helperBE("tradeSlotHolder"), TPN = helperBE("tradePickNotes");
+    const accBody = afterBE("  const acceptTradeRequest = useCallback(", ", [schedule, surgeons, pushUndo,");
+    const hl = accBody ? accBody.match(/\n\s*const holderIn = ([^\n]*);\n/) : null;
+    let holderIn = null; try { holderIn = hl ? vm.runInContext("(" + hl[1] + ")", sandbox) : null; } catch (ex) { holderIn = null; }
+    const SCH = { "2026-11-02": { dayCall: "s1", nights: { mon: "s2", tue: "s3", wed: "s4", thu: "s5", wknd: "s6" } }, "2026-11-09": { dayCall: "s2", nights: { mon: "s6", tue: "" } }, "2026-11-16": { nights: {} } };
+    const slots = []; for (const w of [...Object.keys(SCH), "2026-11-23"]) for (const k of ["dayCall", "mon", "tue", "wed", "thu", "wknd"]) slots.push([w, k]);
+    const spot = TSH ? [TSH(SCH, "2026-11-02", "dayCall"), TSH(SCH, "2026-11-02", "wknd"), TSH(SCH, "2026-11-02", "tue"), TSH(SCH, "2026-11-09", "tue"), TSH(SCH, "2026-11-23", "mon")] : null;
+    check("BE5 tradeSlotHolder (helpers.js) IS the accept's own holderIn (sliced from acceptTradeRequest and run) on every slot of every week — the service week, each night, the weekend, an empty slot, a missing week",
+      !!TSH && typeof holderIn === "function" && slots.every(([w, k]) => TSH(SCH, w, k) === holderIn(SCH, w, k)) && JSON.stringify(spot) === JSON.stringify(["s1", "s6", "s3", "", ""]),
+      JSON.stringify({ spot, holderIn: typeof holderIn, n: slots.length }));
+    const NM = { s1: "AAA", s3: "CCC", s4: "DDD", s6: "FAK" }, nm = (id) => NM[id] || id;
+    const P = (o) => Object.assign({ from: "s3", to: "s1", week: "2026-11-02", shift: "tue", returnWeek: "2026-11-02", returnShift: "dayCall" }, o);
+    const got = TPN ? [
+      TPN(SCH, P({}), nm),                                             // both givers hold their legs
+      TPN(SCH, P({ from: "s4" }), nm),                                 // DDD picked as giver of CCC's Tuesday
+      TPN(SCH, P({ to: "s6" }), nm),                                   // FAK picked as giver of AAA's service week
+      TPN(SCH, P({ week: "2026-11-09", returnWeek: "2026-11-09" }), nm), // an empty Tuesday; the 11/9 service week is s2's
+      TPN(SCH, P({ returnWeek: "", returnShift: "" }), nm),            // one-way, its one leg held
+      TPN(SCH, P({ from: "", returnShift: "" }), nm),                  // nothing complete to check yet
+    ] : null;
+    const WANT = [[], ["DDD doesn't hold the shift to give — CCC does."], ["FAK doesn't hold the return shift — AAA does."],
+      ["CCC doesn't hold the shift to give — no one does.", "AAA doesn't hold the return shift — s2 does."], [], []];
+    check("BE5 tradePickNotes (helpers.js, executed): a leg whose giver doesn't hold it is named with who does (or no one) — the shift to give and the return shift; nothing while the picks hold or are incomplete",
+      !!got && JSON.stringify(got) === JSON.stringify(WANT), JSON.stringify(got));
+  }
+
+  // BE6 — the markup
+  {
+    const form = (() => { const a = nsrcBE.indexOf("🏖 Request Time Off</div>"), b = a < 0 ? -1 : nsrcBE.indexOf("{/* Pending Requests — Grouped by Person */}", a); return a < 0 || b < 0 ? "" : nsrcBE.slice(a, b); })();
+    const iEnd = form.indexOf("value={vacReqEnd}"), iSum = form.indexOf("rangeSummary(vacReqStart, vacReqEnd)"), iReason = form.indexOf('placeholder="Conference, personal, etc."'), iBtn = form.indexOf("<button onClick={submitVacRequest}");
+    check("BE6 the request form: the range line under the dates (rangeSummary, guarded against an old cached helpers.js, dark-mode color), then Reason, then the ONE Submit — disabled and reading \"Sending…\" while vacSubmitting",
+      iEnd > 0 && iSum > iEnd && iReason > iSum && iBtn > iReason && count("<button onClick={submitVacRequest}") === 1
+        && form.includes('typeof rangeSummary === "function" ? rangeSummary(vacReqStart, vacReqEnd) : null') && form.includes('color:dk?"#9aa0b8":"#5a6a78"')
+        && form.includes("<button onClick={submitVacRequest} disabled={vacSubmitting}") && form.includes('{vacSubmitting ? "Sending…" : "Submit Request"}'),
+      JSON.stringify({ iEnd, iSum, iReason, iBtn }));
+    check("BE6 Propose Trade the same (disabled, \"Sending…\" while tradeSubmitting); both busy states declared once, before the submits that set them (§P's order), each set and cleared on the line that sets and clears its ref",
+      count("<button onClick={submitTradeRequest} disabled={tradeSubmitting}") === 1 && count('{tradeSubmitting ? "Sending…" : "Propose Trade"}') === 1
+        && count("const [vacSubmitting, setVacSubmitting] = useState(false);") === 1 && count("const [tradeSubmitting, setTradeSubmitting] = useState(false);") === 1
+        && src.indexOf("const [vacSubmitting, setVacSubmitting] = useState(false);") < src.indexOf("const submitVacRequest = useCallback(")
+        && src.indexOf("const [tradeSubmitting, setTradeSubmitting] = useState(false);") < src.indexOf("const submitVacRequest = useCallback(")
+        && count("vacSubmitBusyRef.current = true; setVacSubmitting(true);") === 1 && count("finally { vacSubmitBusyRef.current = false; setVacSubmitting(false); }") === 1
+        && count("tradeSubmitBusyRef.current = true; setTradeSubmitting(true);") === 1 && count("finally { tradeSubmitBusyRef.current = false; setTradeSubmitting(false); }") === 1);
+    const card = (() => { const a = nsrcBE.indexOf("🔄 Propose a Shift Trade</div>"), b = a < 0 ? -1 : nsrcBE.indexOf("{/* silvisBusy: a proposal that could never be accepted is flagged here", a); return a < 0 || b < 0 ? "" : nsrcBE.slice(a, b); })();
+    const HOLD = "{h ? ` · ${sMap[h]?.name || h}` : \"\"}</option>";
+    check("BE6 the scheduler's trade builder: both week pickers read \"Wk of Oct 19\" (monthDayLabel, guarded); both shift pickers append the holder (tradeSlotHolder, guarded) to the SAME slotLabel( call — slotLabel( still ×23 (L); the amber note (tradePickNotes, dark-mode colors) sits in the card, before the Silvis preview",
+      (card.match(/Wk of \{typeof monthDayLabel === "function" \? monthDayLabel\(m\) : m\}\{m <= todayStr \? " \(this week\)" : ""\}<\/option>/g) || []).length === 2
+        && card.includes('tradeWeek && typeof tradeSlotHolder === "function" ? tradeSlotHolder(schedule, tradeWeek, sk) : ""')
+        && card.includes('tradeReturnWeek && typeof tradeSlotHolder === "function" ? tradeSlotHolder(schedule, tradeReturnWeek, sk) : ""')
+        && card.split(HOLD).length - 1 === 2 && card.includes("{tradeWeek ? slotLabel(tradeWeek, sk) : SHIFT_LABELS[sk]}" + HOLD) && card.includes("{tradeReturnWeek ? slotLabel(tradeReturnWeek, sk) : SHIFT_LABELS[sk]}" + HOLD)
+        && count("slotLabel(") === 23
+        && card.includes('typeof tradePickNotes === "function" ? tradePickNotes(schedule, { from: tradeFrom, to: tradeTo, week: tradeWeek, shift: tradeShift, returnWeek: tradeReturnWeek, returnShift: tradeReturnShift }, id => sMap[id]?.name || id) : []')
+        && card.includes('background:dk?"#2a1a0a":"#fef8e8"') && count("tradePickNotes(") === 1,
+      `slotLabel( ×${count("slotLabel(")} · card ${card.length} chars`);
+  }
+}
+
 // ─── O. silvisBusy (2026-09-24, revised after the post-merge review): FAK's Silvis primary days block Davenport call ───
 // FAK is also primary trauma call at Silvis (separate app + Supabase project).
 // On a Silvis PRIMARY day D (one 24h shift, 07:00 D → 07:00 D+1) no Davenport
@@ -4861,8 +5128,8 @@ console.log("\nAR. Requests tab copy + the APP trade note");
   const wfrSrc = (() => { const a = nsrcAA.indexOf("function writeFailReason(err) {"); const b = a < 0 ? -1 : nsrcAA.indexOf("\n}\n", a); return a < 0 || b < 0 ? null : nsrcAA.slice(a, b + 2); })();
   const vacSrc = bodyOf("const submitVacRequest = useCallback(", "vacReqSurgeon, vacReqStart");
   const tradeSrc = bodyOf("const submitTradeRequest = useCallback(", "tradeFrom, tradeTo");
-  const ENV_V = "vacReqSurgeon, vacReqStart, vacReqEnd, vacReqReason, vacReqType, surgeons, apps, showToast, db, setVacRequests, addNotification, schedulerAdminIds, sendEmailNotif, setVacReqStart, setVacReqEnd, setVacReqReason, setVacReqType, vacSubmitBusyRef, sessionEpochRef";
-  const ENV_T = "tradeFrom, tradeTo, tradeWeek, tradeShift, tradeReturnWeek, tradeReturnShift, isScheduler, silvisActive, silvisBlock, silvisRefuse, surgeons, schedule, logAudit, addNotification, sendEmailNotif, setTradeRequests, setTradeWeek, setTradeShift, setTradeReturnWeek, setTradeReturnShift, tradeSubmitBusyRef, showToast, db, alert, confirm, sessionEpochRef";
+  const ENV_V = "vacReqSurgeon, vacReqStart, vacReqEnd, vacReqReason, vacReqType, surgeons, apps, showToast, db, setVacRequests, addNotification, schedulerAdminIds, sendEmailNotif, setVacReqStart, setVacReqEnd, setVacReqReason, setVacReqType, vacSubmitBusyRef, sessionEpochRef, setVacSubmitting";
+  const ENV_T = "tradeFrom, tradeTo, tradeWeek, tradeShift, tradeReturnWeek, tradeReturnShift, isScheduler, silvisActive, silvisBlock, silvisRefuse, surgeons, schedule, logAudit, addNotification, sendEmailNotif, setTradeRequests, setTradeWeek, setTradeShift, setTradeReturnWeek, setTradeReturnShift, tradeSubmitBusyRef, showToast, db, alert, confirm, sessionEpochRef, setTradeSubmitting";
   let mkV = null, mkT = null;
   try {
     if (wfrSrc && vacSrc) mkV = vm.runInContext(`(function () { ${wfrSrc}\n return function (env) { const { ${ENV_V} } = env; return (${vacSrc}); }; })()`, sandbox);
@@ -4882,6 +5149,7 @@ console.log("\nAR. Requests tab copy + the APP trade note");
       setVacReqStart: () => { rec.cleared++; }, setVacReqEnd: () => {}, setVacReqReason: () => {}, setVacReqType: () => {},
       vacSubmitBusyRef: { current: false },
       sessionEpochRef: { current: 0 }, // (22/n, review r5 fix-1: the submit takes the session's identity at the tap — one session here)
+      setVacSubmitting: (v) => { rec.busy = (rec.busy || []).concat([v]); }, // (UX 2026-10-19: the button's busy state; BE reads it)
     }, over.env || {});
     return { run: mkV ? mkV(env) : null, rec, env, release };
   };
@@ -4919,6 +5187,7 @@ console.log("\nAR. Requests tab copy + the APP trade note");
       setTradeRequests: () => { rec.added++; }, setTradeWeek: () => { rec.cleared++; }, setTradeShift: () => {}, setTradeReturnWeek: () => {}, setTradeReturnShift: () => {},
       tradeSubmitBusyRef: { current: false },
       sessionEpochRef: { current: 0 }, // (22/n: as the vacation submit's)
+      setTradeSubmitting: (v) => { rec.busy = (rec.busy || []).concat([v]); }, // (UX 2026-10-19: as the vacation submit's)
       showToast: (m, t) => rec.toasts.push((t || "info") + ": " + m),
       db: { insert: async () => { rec.inserts++; if (over.slowInsert) await gate; return insertResult; } },
       alert: () => {}, confirm: () => true,
@@ -8112,9 +8381,10 @@ await (async () => {
   const NONE_BA = "declineTradeRequest / logAudit / tradeDeclineMsg not extractable";
   // BA1
   const b1 = mkDecline && TDM ? await declineBA({}) : null;
-  check("BA1 the real declineTradeRequest (its useCallback deps included) with the real logAudit, rendered as React does — first before the profile loads, then signed in as RPC (s3) — and tapped: its audit line names RPC (s3), not \"Unknown\"; the decline itself as before (its status PATCH as RPC, the list, one notice, one e-mail, nothing said)",
+  // (UX 2026-10-19, BE3: a decline that lands now says so — "Trade declined.", once; it said nothing before)
+  check("BA1 the real declineTradeRequest (its useCallback deps included) with the real logAudit, rendered as React does — first before the profile loads, then signed in as RPC (s3) — and tapped: its audit line names RPC (s3), not \"Unknown\"; the decline itself as before (its status PATCH as RPC, the list, one notice, one e-mail) and it says so once (BE3)",
     !!b1 && JSON.stringify(b1.audits) === AS_RPC("now:TOK_RPC") && b1.reqs.join() === "PATCH shift_trade_requests Bearer TOK_RPC" && b1.lists === 1 && b1.listAfter === "declined"
-      && b1.notes.join() === "trade_declined@TOK_RPC" && b1.emails.join() === "trade_declined@TOK_RPC" && b1.toasts.length === 0,
+      && b1.notes.join() === "trade_declined@TOK_RPC" && b1.emails.join() === "trade_declined@TOK_RPC" && b1.toasts.join("|") === "Trade declined.",
     b1 ? JSON.stringify(outBA(b1)) : NONE_BA);
   // BA2
   const b2 = [];
@@ -9367,7 +9637,9 @@ await (async () => {
     && r.headers.Prefer === "return=representation" && /Bearer TOK/.test(r.headers.Authorization || "");
   const applied = (w, extra) => w.reqs.length === 1 && isAccept(w.reqs[0]) && w.writes === 1 && w.undo === 1 && w.trades.join() === "accepted"
     && w.audits.length === 1 && w.audits[0].action === "trade.accept" && / \(\+2 cascade changes\)$/.test(w.audits[0].summary) && w.audits[0].details.cascades === 2
-    && w.notes.join() === "trade_accepted,schedule_changed,schedule_changed" && w.emails.length === 3 && w.toasts.length === 0 && w.errors.length === 0
+    && w.notes.join() === "trade_accepted,schedule_changed,schedule_changed" && w.emails.length === 3 && w.errors.length === 0
+    // (UX 2026-10-19, BE3: an accept that lands says so, once — with the cascades it moved; it said nothing before)
+    && w.toasts.length === 1 && w.toasts[0][0] === "Trade accepted — the schedule is updated (2 other shifts moved too)." && w.toasts[0][1] === "success"
     && w.ref.current[W1].dayCall === "s2" && w.ref.current[W1].nights.tue === "s1" && w.ref.current[W2].dayCall === "s1" && w.ref.current[W2].nights.tue === "s2"
     && w.ref.current[W1].off === "s7" && w.ref.current[W2].off === "s7" && (!extra || extra(w));
   // Not applied: the status PATCH, then the compensating one; nothing else.
@@ -9383,7 +9655,7 @@ await (async () => {
 
   // GREEN: nothing changes while the status PATCH is in flight.
   const g1 = await world().run();
-  check("SE-K nothing changes during the status PATCH → applied: the two cascades the confirm listed come from the MIRROR (not the stale render), and land with both legs in ONE schedule write after ONE undo step; accepted locally, audited (+2 cascade changes), the trade notice + both cascade notices + 3 emails; no toast, no error",
+  check("SE-K nothing changes during the status PATCH → applied: the two cascades the confirm listed come from the MIRROR (not the stale render), and land with both legs in ONE schedule write after ONE undo step; accepted locally, audited (+2 cascade changes), the trade notice + both cascade notices + 3 emails; one success toast (BE3), no error",
     applied(g1, (w) => w.confirms.length === 1 && w.confirms[0].includes("BBB is now Service Week — Tue Night moves to AAA") && w.confirms[0].includes("AAA is now Service Week — Tue Night moves to BBB")
       && w.silvis.length === 4 && w.silvis.every(x => x === "mirror")), show(g1));
   const adoptW3 = with1(MIRROR(), W3, wk("s7", ["s1", "s2", "s3", "s4", "s6"], "s5"));
@@ -9399,7 +9671,8 @@ await (async () => {
   check("SE-K a cascade that moves a slot the leg just filled (Wed night → the service-week holder → the off surgeon) is checked as it stands AFTER the legs → applied: one write, the Wed night is EEE's, one cascade notice; no refusal",
     g3.reqs.length === 1 && isAccept(g3.reqs[0]) && g3.writes === 1 && g3.undo === 1 && g3.ref.current[W1].nights.wed === "s5" && g3.ref.current[W1].dayCall === "s1" && g3.ref.current[W1].off === "s7"
       && g3.confirms.length === 1 && /Wed Night moves to EEE \(off surgeon\)/.test(g3.confirms[0]) && /EEE will be notified/.test(g3.confirms[0])
-      && g3.notes.join() === "trade_accepted,schedule_changed" && / \(\+1 cascade change\)$/.test(g3.audits[0].summary) && g3.toasts.length === 0 && g3.errors.length === 0, show(g3));
+      && g3.notes.join() === "trade_accepted,schedule_changed" && / \(\+1 cascade change\)$/.test(g3.audits[0].summary) && g3.errors.length === 0
+      && g3.toasts.length === 1 && g3.toasts[0][0] === "Trade accepted — the schedule is updated (1 other shift moved too).", show(g3)); // (UX 2026-10-19, BE3: it says so, once)
 
   // RED: a pull adopts a change to what the trade needs while the PATCH is in flight.
   const during = (k, row) => ({ adopted: with1(MIRROR(), k, row), during: (ref) => { ref.current = with1(ref.current, k, row); } });

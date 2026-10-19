@@ -3052,11 +3052,17 @@ function CallSchedule() {
   // In-flight guards for the two request submits (a double tap files once).
   const vacSubmitBusyRef = useRef(false);
   const tradeSubmitBusyRef = useRef(false);
+  // The same in-flight state, for the buttons to show (UX audit 2026-10-19):
+  // "Sending…" and disabled while a submit is out. Set and cleared with the
+  // refs (the refs stay the double-tap gate: a state update is not seen by a
+  // second tap in the same render).
+  const [vacSubmitting, setVacSubmitting] = useState(false);
+  const [tradeSubmitting, setTradeSubmitting] = useState(false);
   const submitVacRequest = useCallback(async () => {
     // A double tap must not file the request twice (2026-10-11) — checked
     // first, so a tap during the insert runs no validation; it says it is
-    // still sending (the button has no busy state, and on bad wifi a silent
-    // no-op looks like a dead button).
+    // still sending (the button shows "Sending…" once it re-renders, but a
+    // tap before that lands here, and a silent no-op looks like a dead button).
     if (vacSubmitBusyRef.current) { showToast("Still sending your last request — one moment.", "info"); return; }
     if (!vacReqSurgeon || !vacReqStart || !vacReqEnd) { showToast("Pick who it's for and both dates first.", "error"); return; }
     const surgeonName = surgeons.find(s => s.id === vacReqSurgeon)?.name || apps.find(a => a.id === vacReqSurgeon)?.name || vacReqSurgeon;
@@ -3072,7 +3078,7 @@ function CallSchedule() {
       return;
     }
     if (vacReqEnd < vacReqStart) { showToast("The end date is before the start date.", "error"); return; }
-    vacSubmitBusyRef.current = true;
+    vacSubmitBusyRef.current = true; setVacSubmitting(true);
     // This session, at the tap (review r5 fix-1): the request is sent with
     // this account's headers (db.insert's, at the call); after a session
     // change during it, nothing more of it is done, sent or said in the next
@@ -3107,7 +3113,7 @@ function CallSchedule() {
       if (!live()) return; // (review r5 fix-1) another session now: no e-mail sent from it
       sendEmailNotif("vacation_submitted", { surgeon_name: surgeonName, surgeon_id: vacReqSurgeon, start_date: vacReqStart, end_date: vacReqEnd, reason: vacReqReason, request_type: vacReqType }, schedulerAdminIds, ep);
     } catch(e) { console.error("Submit request error:", e); if (live()) showToast("Couldn't submit your request — check your connection and try again.", "error"); }
-    finally { vacSubmitBusyRef.current = false; }
+    finally { vacSubmitBusyRef.current = false; setVacSubmitting(false); }
   }, [vacReqSurgeon, vacReqStart, vacReqEnd, vacReqReason, vacReqType, surgeons, apps, addNotification, sendEmailNotif, schedulerAdminIds]);
 
   // ─── A request's status, set back after a session change (review r5 fix-1) ───
@@ -3197,6 +3203,10 @@ function CallSchedule() {
         return; // realtime/60s poll will refresh the visible status
       }
       setVacRequests(prev => prev.map(r => r.id === req.id ? { ...r, status: "approved" } : r));
+      // Said once it is approved, BEFORE the time off is written and anyone is
+      // notified — a failure of either toasts after this, so it is the message
+      // left on screen (the submits' order, sync-guards AA3). This session only.
+      showToast(`Approved — ${req.surgeon_name}'s ${isNoCall ? "no-call days" : "vacation"}, ${req.start_date} to ${req.end_date}.`, "success");
       // Auto-add to the right bucket: no-call requests go to noCallDays, vacations to vacations
       toAdd(req.surgeon_id, isNoCall ? "nocall" : "vacation", req.start_date, req.end_date);
       logAudit("request.approve", `Approved ${req.surgeon_name}'s ${isNoCall ? "no-call" : "vacation"} request: ${req.start_date} → ${req.end_date}`, { request_id: req.id, surgeon_id: req.surgeon_id });
@@ -3244,6 +3254,7 @@ function CallSchedule() {
         return;
       }
       setVacRequests(prev => prev.map(r => r.id === req.id ? { ...r, status: "denied", review_note: note } : r));
+      showToast(`Denied — ${req.surgeon_name}'s ${kindLabel}, ${req.start_date} to ${req.end_date}.`, "success"); // before the notice (as approve's)
       denyAudit();
       const denyTargets = [...new Set([req.surgeon_id, ...schedulerAdminIds].filter(Boolean))];
       await addNotification("vacation_denied", isNoCall ? "No-Call Denied" : "Vacation Denied",
@@ -3283,7 +3294,7 @@ function CallSchedule() {
     const fromName = surgeons.find(s => s.id === tradeFrom)?.name || tradeFrom;
     const toName = surgeons.find(s => s.id === tradeTo)?.name || tradeTo;
     const shiftLabel = SHIFT_LABELS[tradeShift] || tradeShift;
-    tradeSubmitBusyRef.current = true;
+    tradeSubmitBusyRef.current = true; setTradeSubmitting(true);
     // This session, at the tap (review r5 fix-1 — as the vacation submit): the
     // proposal is sent with this account's headers; after a session change
     // during it, it is recorded as this account (its audit line, with the
@@ -3332,7 +3343,7 @@ function CallSchedule() {
         sendEmailNotif("trade_submitted", { from_name: fromName, to_name: toName, shift: shiftLabel, week: tradeWeek, detail: proposeMsg }, [tradeFrom, tradeTo], ep);
       }
     } catch(e) { console.error("Submit trade error:", e); if (live()) showToast("Couldn't submit the trade — check your connection and try again.", "error"); }
-    finally { tradeSubmitBusyRef.current = false; }
+    finally { tradeSubmitBusyRef.current = false; setTradeSubmitting(false); }
   }, [tradeFrom, tradeTo, tradeWeek, tradeShift, tradeReturnWeek, tradeReturnShift, surgeons, addNotification, sendEmailNotif, isScheduler, schedule, silvisActive, silvisBlock, silvisRefuse]);
 
   // ─── Shift Trade: Cascade Detection ───
@@ -3635,6 +3646,9 @@ function CallSchedule() {
         return; // no undo, no schedule write, no notifications
       }
       setTradeRequests(prev => prev.map(r => r.id === req.id ? { ...r, status: "accepted" } : r));
+      // Said once it is accepted, before the swap is written and anyone is
+      // notified — a failure after this toasts last (sync-guards AA3's order).
+      showToast(`Trade accepted — the schedule is updated${cascadesNow.length ? ` (${cascadesNow.length} other shift${cascadesNow.length === 1 ? "" : "s"} moved too)` : ""}.`, "success");
       logAudit("trade.accept", `${acceptMsg}${cascadesNow.length ? ` (+${cascadesNow.length} cascade change${cascadesNow.length === 1 ? "" : "s"})` : ""}`, { request_id: req.id, cascades: cascadesNow.length });
       pushUndo();
       updateSchedule(p => {
@@ -3743,6 +3757,7 @@ function CallSchedule() {
         return; // realtime/60s poll will refresh the visible status
       }
       setTradeRequests(prev => prev.map(r => r.id === req.id ? { ...r, status: "declined" } : r));
+      showToast("Trade declined.", "success"); // before the notice (as the accept's)
       declineAudit();
       await addNotification("trade_declined", "Shift Trade Declined",
         declineMsg,
@@ -3815,6 +3830,12 @@ function CallSchedule() {
 
   const saveVacRequestEdit = useCallback(async () => {
     if (!editingVacReq) return;
+    // A broken range is refused here, before anything is sent (UX audit
+    // 2026-10-19): the editor's end follows its start (#84), but a typed or
+    // cleared date still reached the PATCH and saved an empty or inverted
+    // range — and an approved one's time off with it. Same words as the submit.
+    if (!editingVacReq.start_date || !editingVacReq.end_date) { showToast("Both dates are needed.", "error"); return; }
+    if (editingVacReq.end_date < editingVacReq.start_date) { showToast("The end date is before the start date.", "error"); return; }
     // MEMBER PATH GATE (owner ruling 2026-09-06, item 3): the same two-layer
     // rule as submitVacRequest — the pending-list editor's inputs carry
     // min={today} for members, and this is the real gate behind it (min is
@@ -3870,6 +3891,7 @@ function CallSchedule() {
         return;
       }
       setVacRequests(prev => prev.map(r => r.id === editingVacReq.id ? { ...r, ...updates } : r));
+      showToast("Changes saved.", "success"); // before the time off is moved: its failure toasts after this
       // If approved, also update the bucket it landed in (vacations or no-call)
       if (req?.status === "approved") {
         toEdit(req.surgeon_id, req.request_type === "nocall" ? "nocall" : "vacation",
@@ -3921,12 +3943,16 @@ function CallSchedule() {
         return;
       }
       setVacRequests(prev => prev.map(r => r.id === req.id ? { ...r, status: "revoked" } : r));
+      showToast(`Revoked — ${req.surgeon_name}'s ${kindLabel}, ${req.start_date} to ${req.end_date}, is off the schedule.`, "success"); // before the time off and the notice (as approve's)
       // Remove from the bucket it landed in
       toRemove(req.surgeon_id, isNoCall ? "nocall" : "vacation", req.start_date, req.end_date);
       const revokeTargets = [...new Set([req.surgeon_id, ...schedulerAdminIds].filter(Boolean))];
+      // The notice carries surgeon_id like approve's and deny's: the bell shows
+      // a member only notices whose data names them, so with {} the person
+      // whose vacation was revoked never saw it (UX audit 2026-10-19).
       await addNotification("vacation_revoked", isNoCall ? "No-Call Revoked" : "Vacation Revoked",
         `${req.surgeon_name}'s ${kindLabel} ${req.start_date} → ${req.end_date} was revoked`,
-        {}, revokeTargets, ep);
+        { surgeon_id: req.surgeon_id }, revokeTargets, ep);
     } catch(e) { console.error("Revoke error:", e); if (live()) showToast("Couldn't revoke the vacation — check your connection and try again.", "error"); }
   }, [addNotification, schedulerAdminIds]);
 
@@ -11763,13 +11789,17 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                 <label style={{fontSize:11,color:"#7a8a98",display:"block",marginBottom:2}}>End Date</label>
                 <input type="date" min={vacReqStart && vacReqStart > todayStr ? vacReqStart : todayStr} value={vacReqEnd} onChange={e=>setVacReqEnd(e.target.value)} style={{...css.inp,width:150}}/>
               </div>
-              <button onClick={submitVacRequest} style={{...css.btn(true),padding:"7px 18px"}}>Submit Request</button>
             </div>
-            <div>
+            {/* The range read back in words before it is sent (helpers.js; guarded against an old cached helpers.js). */}
+            {(()=>{ const sum = typeof rangeSummary === "function" ? rangeSummary(vacReqStart, vacReqEnd) : null;
+              return sum ? <div style={{fontSize:12,color:dk?"#9aa0b8":"#5a6a78",margin:"0 0 8px"}}>{sum}</div> : null; })()}
+            {/* Reason, then Submit (UX audit 2026-10-19): the button used to sit before the Reason field. */}
+            <div style={{marginBottom:10}}>
               <label style={{fontSize:11,color:"#7a8a98",display:"block",marginBottom:2}}>Reason (optional)</label>
               <input value={vacReqReason} onChange={e=>setVacReqReason(e.target.value)} placeholder="Conference, personal, etc."
                 style={{...css.inp,width:"100%",maxWidth:400}}/>
             </div>
+            <button onClick={submitVacRequest} disabled={vacSubmitting} style={{...css.btn(true),padding:"7px 18px",...(vacSubmitting ? {opacity:0.6,cursor:"default"} : {})}}>{vacSubmitting ? "Sending…" : "Submit Request"}</button>
           </div>
 
           {/* Pending Requests — Grouped by Person */}
@@ -12012,16 +12042,19 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               {isScheduler ? <>
                 <div>
                   <label style={{fontSize:10,color:"#7a8a98",display:"block",marginBottom:2}}>Week</label>
-                  <select value={tradeWeek} onChange={e=>setTradeWeek(e.target.value)} style={{...css.inp,width:140}}>
+                  {/* "Wk of Oct 19", and each shift names who holds it now (UX audit 2026-10-19 — helpers.js,
+                      guarded against an old cached helpers.js): the scheduler picks for two other people. */}
+                  <select value={tradeWeek} onChange={e=>setTradeWeek(e.target.value)} style={{...css.inp,width:160}}>
                     <option value="">Select…</option>
-                    {Object.keys(schedule).sort().filter(m => fmt(addD(parse(m), 6)) >= todayStr).map(m=><option key={m} value={m}>{m}{m <= todayStr ? " (this week)" : ""}</option>)}
+                    {Object.keys(schedule).sort().filter(m => fmt(addD(parse(m), 6)) >= todayStr).map(m=><option key={m} value={m}>Wk of {typeof monthDayLabel === "function" ? monthDayLabel(m) : m}{m <= todayStr ? " (this week)" : ""}</option>)}
                   </select>
                 </div>
                 <div>
                   <label style={{fontSize:10,color:"#7a8a98",display:"block",marginBottom:2}}>Shift to give</label>
-                  <select value={tradeShift} onChange={e=>setTradeShift(e.target.value)} style={{...css.inp,width:130}}>
+                  <select value={tradeShift} onChange={e=>setTradeShift(e.target.value)} style={{...css.inp,width:190}}>
                     <option value="">Select…</option>
-                    {ALL_SHIFT_KEYS.map(sk=><option key={sk} value={sk}>{tradeWeek ? slotLabel(tradeWeek, sk) : SHIFT_LABELS[sk]}</option>)}
+                    {ALL_SHIFT_KEYS.map(sk=>{ const h = tradeWeek && typeof tradeSlotHolder === "function" ? tradeSlotHolder(schedule, tradeWeek, sk) : "";
+                      return <option key={sk} value={sk}>{tradeWeek ? slotLabel(tradeWeek, sk) : SHIFT_LABELS[sk]}{h ? ` · ${sMap[h]?.name || h}` : ""}</option>; })}
                   </select>
                 </div>
               </> : (
@@ -12065,16 +12098,17 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               {isScheduler ? <>
                 <div>
                   <label style={{fontSize:10,color:"#7a8a98",display:"block",marginBottom:2}}>Return week</label>
-                  <select value={tradeReturnWeek} onChange={e=>setTradeReturnWeek(e.target.value)} style={{...css.inp,width:140}}>
+                  <select value={tradeReturnWeek} onChange={e=>setTradeReturnWeek(e.target.value)} style={{...css.inp,width:160}}>
                     <option value="">Select…</option>
-                    {Object.keys(schedule).sort().filter(m => fmt(addD(parse(m), 6)) >= todayStr).map(m=><option key={m} value={m}>{m}{m <= todayStr ? " (this week)" : ""}</option>)}
+                    {Object.keys(schedule).sort().filter(m => fmt(addD(parse(m), 6)) >= todayStr).map(m=><option key={m} value={m}>Wk of {typeof monthDayLabel === "function" ? monthDayLabel(m) : m}{m <= todayStr ? " (this week)" : ""}</option>)}
                   </select>
                 </div>
                 <div>
                   <label style={{fontSize:10,color:"#7a8a98",display:"block",marginBottom:2}}>Return shift</label>
-                  <select value={tradeReturnShift} onChange={e=>setTradeReturnShift(e.target.value)} style={{...css.inp,width:130}}>
+                  <select value={tradeReturnShift} onChange={e=>setTradeReturnShift(e.target.value)} style={{...css.inp,width:190}}>
                     <option value="">Select…</option>
-                    {ALL_SHIFT_KEYS.map(sk=><option key={sk} value={sk}>{tradeReturnWeek ? slotLabel(tradeReturnWeek, sk) : SHIFT_LABELS[sk]}</option>)}
+                    {ALL_SHIFT_KEYS.map(sk=>{ const h = tradeReturnWeek && typeof tradeSlotHolder === "function" ? tradeSlotHolder(schedule, tradeReturnWeek, sk) : "";
+                      return <option key={sk} value={sk}>{tradeReturnWeek ? slotLabel(tradeReturnWeek, sk) : SHIFT_LABELS[sk]}{h ? ` · ${sMap[h]?.name || h}` : ""}</option>; })}
                   </select>
                 </div>
               </> : (
@@ -12113,8 +12147,17 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   })()}
                 </div>
               )}
-              <button onClick={submitTradeRequest} style={{...css.btn(true),padding:"7px 18px",background:"linear-gradient(135deg,#6030a0,#8050c0)",borderColor:"#6030a0"}}>Propose Trade</button>
+              <button onClick={submitTradeRequest} disabled={tradeSubmitting} style={{...css.btn(true),padding:"7px 18px",background:"linear-gradient(135deg,#6030a0,#8050c0)",borderColor:"#6030a0",...(tradeSubmitting ? {opacity:0.6,cursor:"default"} : {})}}>{tradeSubmitting ? "Sending…" : "Propose Trade"}</button>
             </div>
+            {/* A leg whose giver doesn't hold it (UX audit 2026-10-19): the scheduler picks any week and shift, and the
+                accept refuses such a trade as out of date — said here, before it is proposed (helpers.js tradePickNotes). */}
+            {(()=>{ const notes = typeof tradePickNotes === "function" ? tradePickNotes(schedule, { from: tradeFrom, to: tradeTo, week: tradeWeek, shift: tradeShift, returnWeek: tradeReturnWeek, returnShift: tradeReturnShift }, id => sMap[id]?.name || id) : [];
+              return notes.length ? (
+                <div style={{marginBottom:10,padding:"8px 12px",background:dk?"#2a1a0a":"#fef8e8",border:`1px solid ${dk?"#5a4520":"#e8d090"}`,borderRadius:8}}>
+                  <div style={{fontSize:12,fontWeight:700,color:dk?"#e0c070":"#8a6a10",marginBottom:4}}>⚠️ This trade couldn't be accepted as picked:</div>
+                  {notes.map((n,i) => <div key={i} style={{fontSize:11,color:dk?"#e8d8b0":"#5a4a10",paddingLeft:8}}>• {n}</div>)}
+                </div>
+              ) : null; })()}
             {/* silvisBusy: a proposal that could never be accepted is flagged here, before it is sent */}
             {silvisActive && tradeFrom && tradeTo && tradeWeek && tradeShift && (()=>{
               const previewReq = { from_surgeon_id: tradeFrom, to_surgeon_id: tradeTo, week_monday: tradeWeek, shift_key: tradeShift, return_week: tradeReturnWeek || null, return_shift: tradeReturnShift || null };

@@ -5312,7 +5312,9 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
     check("SE-X5 …control: nothing changes → applied: one status PATCH, then both legs + both cascades land on the table by CAS (X0, X1 at v3 → 4), the notices and emails sent",
       ok.rec.reqs.length === 1 && ok.w.length === 2 && ok.w.every(e => e.method === "PATCH" && /version=eq\.3/.test(e.url) && e.status === 200) && ok.rec.list[0].status === "accepted"
         && ok.t.get(X[0]).data.dayCall === "s2" && ok.t.get(X[0]).data.nights.tue === "s1" && ok.t.get(X[1]).data.dayCall === "s1" && ok.t.get(X[1]).data.nights.tue === "s2"
-        && ok.rec.notes.join() === "trade_accepted,schedule_changed,schedule_changed" && ok.rec.emails.length === 3 && ok.A.toasts.length === 0, sh(ok));
+        && ok.rec.notes.join() === "trade_accepted,schedule_changed,schedule_changed" && ok.rec.emails.length === 3
+        // (UX 2026-10-19, sync-guards BE: an accept that lands says so — once, success, with the cascades it moved; it said nothing before)
+        && ok.A.toasts.length === 1 && ok.A.toasts[0][0] === "Trade accepted — the schedule is updated (2 other shifts moved too)." && ok.A.toasts[0][1] === "success", sh(ok));
   });
 
   // SE-X6 — the REAL openWeekEditor + saveWeekEdits + mergeEditorEdits on the
@@ -6699,16 +6701,19 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
       sfx.every(f => f.w === 0 && f.undo === 0 && f.toasts.length === 0 && f.notes.length === 0 && f.reqs.length === 1 && f.audits.length === 0)
         && sf0.toasts.join("|") === "Couldn't accept the trade — nothing was changed. Check your connection and try again." && sf0.w === 0 && sf0.reqs.length === 1, JSON.stringify({ sfx, sf0 }));
     const an = await acceptRun({ at: "notice1", how: "other" }), an2 = await acceptRun({ at: "notice2", how: "other" });
+    // (UX 2026-10-19, sync-guards BE3: an accept that lands says so in ITS session, before its first notice — so the one
+    // toast here is that, said before the session changed; nothing is said after it.)
+    const ACC_SAID = "Trade accepted — the schedule is updated (2 other shifts moved too).";
     check("SE-X20 H2 (d) …the session changing during the trade's FIRST notice (the trade applied in A's session): no more notices (no cascade notices) and no e-mail from the next session, nothing said; during the FIRST CASCADE's notice: that cascade's e-mail and the second cascade's notice never go out",
-      an.notes.join() === "trade_accepted@TOK_A" && an.emails.length === 0 && an.toasts.length === 0 && an.wB === 0
-        && an2.notes.join() === "trade_accepted@TOK_A,schedule_changed@TOK_A" && an2.emails.join() === "trade_accepted@TOK_A" && an2.toasts.length === 0 && an2.wB === 0, JSON.stringify({ an, an2 }));
+      an.notes.join() === "trade_accepted@TOK_A" && an.emails.length === 0 && an.toasts.join("|") === ACC_SAID && an.wB === 0
+        && an2.notes.join() === "trade_accepted@TOK_A,schedule_changed@TOK_A" && an2.emails.join() === "trade_accepted@TOK_A" && an2.toasts.join("|") === ACC_SAID && an2.wB === 0, JSON.stringify({ an, an2 }));
     const ab = await acceptRun({ change: true, at: "back", how: "other" });
     check("SE-X20 H2 (i) …the trade NOT holding at commit (a cascade slot changed while its status PATCH was out), and the session changing while its set-back to pending is out: no 'This trade was not applied' on the next screen; its audit line written as A (the tap's headers)",
       ab.reqs.length === 2 && /status=eq\.accepted Bearer TOK_A$/.test(ab.reqs[1]) && ab.toasts.length === 0 && ab.notes.length === 0 && ab.emails.length === 0 && ab.w === 1 && ab.x0 === "s1" && ab.audits.join() === "trade.accept_unapplied@Bearer TOK_A", JSON.stringify(ab)); // (w: the peer's own edit, nothing else)
     const ac = await acceptRun({});
     check("SE-X20 H2 (e) control: in one session the trade lands — its status accepted (sent as A), both weeks written as A, one Undo step, the trade notice and both cascade notices, three e-mails, no set-back",
       ac.list.join() === "accepted" && ac.w === 2 && ac.wB === 0 && ac.x0 === "s2" && ac.undo === 1 && ac.notes.join() === "trade_accepted@TOK_A,schedule_changed@TOK_A,schedule_changed@TOK_A"
-        && ac.emails.length === 3 && !ac.reqs.includes(BACK_A) && ac.toasts.length === 0, JSON.stringify(ac));
+        && ac.emails.length === 3 && !ac.reqs.includes(BACK_A) && ac.toasts.join("|") === ACC_SAID, JSON.stringify(ac)); // (UX 2026-10-19: it says so, once)
     // (f) the decline
     const declineRun = async (at) => {
       const { t, A } = await pair(); await ticks(A); const c = mkComp(A); c.render(); await c.fire(); A.toasts.length = 0;
@@ -6725,8 +6730,9 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
     const dx = await declineRun("status"), dn = await declineRun("notice"), dc0 = await declineRun(null);
     check("SE-X20 H2 (f) the real declineTradeRequest, the session changing during its status PATCH (sent as A): nothing more of it in the next session — no list update, no notice, no e-mail, no toast; during its notice: no e-mail; control: in one session its notice and e-mail go out",
       dx.reqs.join() === "PATCH Bearer TOK_A" && dx.list.join() === "pending" && dx.notes.length === 0 && dx.emails.length === 0 && dx.toasts.length === 0
-        && dn.notes.join() === "trade_declined" && dn.emails.length === 0 && dn.toasts.length === 0
-        && dc0.list.join() === "declined" && dc0.notes.join() === "trade_declined" && dc0.emails.join() === "trade_declined", JSON.stringify({ dx, dn, dc0 }));
+        // (UX 2026-10-19, sync-guards BE3: a decline that lands says so in its session, before its notice — once; never after a session change)
+        && dn.notes.join() === "trade_declined" && dn.emails.length === 0 && dn.toasts.join("|") === "Trade declined."
+        && dc0.list.join() === "declined" && dc0.notes.join() === "trade_declined" && dc0.emails.join() === "trade_declined" && dc0.toasts.join("|") === "Trade declined.", JSON.stringify({ dx, dn, dc0 }));
     // (g) the REAL notice chain under the real doGenerateAndNotify
     const EDGE = "https://fn.test/functions/v1/send-notification";
     const chain = (A, sent, o) => {
@@ -7368,14 +7374,19 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
       C4.every(x => nothingNext(x) && x.reqs.length === 1 && x.audits.length === 0) && C40.toasts.join("|") === "Couldn't approve the request — nothing was changed. Check your connection and try again." && C40.to.length === 0, JSON.stringify({ C4, C40 }));
     const D4 = await vacRun("approve", { at: "notice", how: "other" });
     check("SE-X23 I4 (d) …the session changing while the approval's notice is being inserted (the approval and its time off landed in A's session, as A): no device push and no e-mail from the next session, nothing said",
-      D4.crossed && D4.to.join() === "INSERT Bearer TOK_A" && D4.notes.join() === "Bearer TOK_A" && D4.pushes.length === 0 && D4.emails.length === 0 && D4.toasts.length === 0 && D4.late.length === 0, JSON.stringify(D4));
+      // (UX 2026-10-19, sync-guards BE3: the approval says so in A's session, before its notice — that one toast; nothing after the change)
+      D4.crossed && D4.to.join() === "INSERT Bearer TOK_A" && D4.notes.join() === "Bearer TOK_A" && D4.pushes.length === 0 && D4.emails.length === 0
+        && D4.toasts.join("|") === "Approved — CCC's vacation, 2030-03-04 to 2030-03-08." && D4.late.length === 0, JSON.stringify(D4));
     const E4 = { approve: await vacRun("approve", {}), revoke: await vacRun("revoke", {}), edit: await vacRun("edit", {}), editNoId: await vacRun("edit", { noId: true }) };
     check("SE-X23 I4 (e) control: in one session each lands — the approval's time_off row inserted, its notice, push and e-mail, all as A; the revoke's time_off row deleted and its notice, as A; the edit's time_off row updated as A (with no id yet: its old dates deleted and the new ones inserted, as A), the editor closed; no set-back, nothing logged",
       E4.approve.reqs.length === 1 && E4.approve.to.join() === "INSERT Bearer TOK_A" && E4.approve.notes.join() === "Bearer TOK_A" && E4.approve.pushes.join() === "Bearer TOK_A" && E4.approve.emails.join() === "Bearer TOK_A"
         && E4.approve.early.includes("request list") && E4.approve.audits.includes("request.approve@now:TOK_A")
         && E4.revoke.reqs.length === 1 && E4.revoke.to.join() === "DELETE Bearer TOK_A" && E4.revoke.notes.join() === "Bearer TOK_A" && E4.revoke.pushes.join() === "Bearer TOK_A"
         && E4.edit.reqs.length === 1 && E4.edit.to.join() === "UPDATE Bearer TOK_A" && E4.edit.early.includes("editor closed") && E4.editNoId.to.join() === "DELETE Bearer TOK_A,INSERT Bearer TOK_A"
-        && Object.values(E4).every(x => x.toasts.length === 0 && x.errors === 0 && !x.crossed), JSON.stringify(E4));
+        && Object.values(E4).every(x => x.errors === 0 && !x.crossed)
+        // (UX 2026-10-19, sync-guards BE3/BE4: each that lands says so, once — it said nothing before)
+        && E4.approve.toasts.join("|") === "Approved — CCC's vacation, 2030-03-04 to 2030-03-08." && E4.revoke.toasts.join("|") === "Revoked — CCC's vacation, 2030-03-04 to 2030-03-08, is off the schedule."
+        && E4.edit.toasts.join("|") === "Changes saved." && E4.editNoId.toasts.join("|") === "Changes saved.", JSON.stringify(E4));
     const F4 = [await vacRun("edit", { direct: "toEdit", noId: true, at: "delete", how: "other" }), await vacRun("edit", { direct: "toEdit", noId: true, at: "delete", how: "signout" })];
     check("SE-X23 I4 (f) the real toEdit with no row id yet (delete the old dates, insert the new — the Setup editor's path too), the session changing while its DELETE is out: the new dates are added WITH THE TAP'S HEADERS (A's token), never as B nor refused as anon (the vacation lost); nothing said",
       F4.every(x => x.crossed && x.to.join() === "DELETE Bearer TOK_A,POST Bearer TOK_A" && x.toasts.length === 0 && x.errors === 0), JSON.stringify(F4));
@@ -7407,11 +7418,11 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
     const jsx = (marker, head) => { const i = nsx.indexOf(marker); if (i < 0 || nsx.indexOf(marker, i + 1) !== -1) return null; const a = nsx.lastIndexOf(head, i); const e = nsx.indexOf("\n                    }} style=", i); return a < 0 || e < 0 ? null : "async () => {" + nsx.slice(a + head.length, e) + "\n}"; };
     const cbody = (name, deps) => after(`  const ${name} = useCallback(`, `, ${deps});`);
     const H = {
-      submitVac: fnX("vacReqSurgeon, vacReqStart, vacReqEnd, vacReqReason, vacReqType, surgeons, apps, showToast, db, setVacRequests, addNotification, schedulerAdminIds, sendEmailNotif, setVacReqStart, setVacReqEnd, setVacReqReason, setVacReqType, vacSubmitBusyRef, fmt, writeFailReason, console, sessionEpochRef",
+      submitVac: fnX("vacReqSurgeon, vacReqStart, vacReqEnd, vacReqReason, vacReqType, surgeons, apps, showToast, db, setVacRequests, addNotification, schedulerAdminIds, sendEmailNotif, setVacReqStart, setVacReqEnd, setVacReqReason, setVacReqType, vacSubmitBusyRef, fmt, writeFailReason, console, sessionEpochRef, setVacSubmitting",
         cbody("submitVacRequest", "[vacReqSurgeon, vacReqStart, vacReqEnd, vacReqReason, vacReqType, surgeons, apps, addNotification, sendEmailNotif, schedulerAdminIds]")),
       deny: fnX("sessionEpochRef, dbAuthHeaders, logAudit, userProfile, surgeons, mySurgeon, fetch, SUPABASE_URL, console, showToast, setVacRequests, schedulerAdminIds, addNotification, sendEmailNotif",
         cbody("denyVacRequest", "[addNotification, sendEmailNotif, schedulerAdminIds, userProfile, surgeons, mySurgeon]")),
-      submitTrade: fnX("tradeSubmitBusyRef, showToast, tradeFrom, tradeTo, tradeWeek, tradeShift, tradeReturnWeek, tradeReturnShift, isScheduler, alert, confirm, silvisActive, silvisBlock, silvisRefuse, schedule, scheduleRef, surgeons, SHIFT_LABELS, db, writeFailReason, setTradeRequests, setTradeWeek, setTradeShift, setTradeReturnWeek, setTradeReturnShift, tradeProposeMsg, logAudit, addNotification, sendEmailNotif, console, sessionEpochRef, dbAuthHeaders",
+      submitTrade: fnX("tradeSubmitBusyRef, showToast, tradeFrom, tradeTo, tradeWeek, tradeShift, tradeReturnWeek, tradeReturnShift, isScheduler, alert, confirm, silvisActive, silvisBlock, silvisRefuse, schedule, scheduleRef, surgeons, SHIFT_LABELS, db, writeFailReason, setTradeRequests, setTradeWeek, setTradeShift, setTradeReturnWeek, setTradeReturnShift, tradeProposeMsg, logAudit, addNotification, sendEmailNotif, console, sessionEpochRef, dbAuthHeaders, setTradeSubmitting",
         cbody("submitTradeRequest", "[tradeFrom, tradeTo, tradeWeek, tradeShift, tradeReturnWeek, tradeReturnShift, surgeons, addNotification, sendEmailNotif, isScheduler, schedule, silvisActive, silvisBlock, silvisRefuse]")),
       delTrade: fnX("confirm, fetch, SUPABASE_URL, dbAuthHeaders, console, showToast, setTradeRequests, sessionEpochRef", cbody("deleteTradeRequest", "[]")),
       delVac: fnX("confirm, fetch, SUPABASE_URL, dbAuthHeaders, console, showToast, setVacRequests, sessionEpochRef", cbody("deleteVacRequest", "[]")),
@@ -7471,20 +7482,23 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
       await H.submitVac({ vacReqSurgeon: "s3", vacReqStart: "2099-01-05", vacReqEnd: "2099-01-09", vacReqReason: "", vacReqType: "vacation", surgeons: S7, apps: [], showToast: r.say("toast"),
         db: { insert: async () => { r.write("INSERT vacation_requests"); await r.cross(); return fail ? { data: null, error: { message: "upstream" } } : { data: { id: 7 }, error: null }; } },
         setVacRequests: r.mark("list"), addNotification: async () => { r.write("notice"); r.mark("notice")(); }, schedulerAdminIds: ["s7"], sendEmailNotif: () => { r.write("e-mail"); r.mark("e-mail")(); },
-        setVacReqStart: r.mark("form"), setVacReqEnd: noopX, setVacReqReason: noopX, setVacReqType: noopX, vacSubmitBusyRef: { current: false }, fmt: HX.fmt, writeFailReason: () => "the server refused it", console: r.console, sessionEpochRef: r.ep })();
+        setVacReqStart: r.mark("form"), setVacReqEnd: noopX, setVacReqReason: noopX, setVacReqType: noopX, vacSubmitBusyRef: { current: false }, fmt: HX.fmt, writeFailReason: () => "the server refused it", console: r.console, sessionEpochRef: r.ep,
+        setVacSubmitting: noopX })(); // (UX 2026-10-19: the button's busy state — released with the ref, a session change or not; sync-guards BE)
     }, (x, x0, f, f0) => x.writes.join() === "INSERT vacation_requests Bearer TOK_A" && f.late.length === 0 && ["list", "form", "toast: Vacation request sent.", "notice", "e-mail"].every(k => x0.early.includes(k)) && f0.early.some(k => /^toast: Couldn't send your vacation request/.test(k)));
     add("deny", "the vacation deny (its status PATCH): no list update, no notice or e-mail, nothing said in the next session — its audit line written as A", async (r, fail) => {
       await H.deny({ sessionEpochRef: r.ep, dbAuthHeaders: r.hdr, logAudit: r.logAudit, userProfile: { display_name: "AAA" }, surgeons: S7, mySurgeon: "s1", SUPABASE_URL: BASE, console: r.console, showToast: r.say("toast"),
         fetch: async (url, init) => { r.writes.push("PATCH " + init.headers.Authorization); await r.cross(); return fail ? r.resp(500, {}) : r.resp(200, [{ id: 7 }]); },
         setVacRequests: r.mark("list"), schedulerAdminIds: ["s7"], addNotification: async () => r.mark("notice")(), sendEmailNotif: () => r.mark("e-mail")() })({ id: 7, surgeon_id: "s3", surgeon_name: "CCC", start_date: "2099-01-05", end_date: "2099-01-09", request_type: "vacation" }, "");
     }, (x, x0, f, f0) => x.writes.join() === "PATCH Bearer TOK_A" && x.audits.join() === "request.deny@Bearer TOK_A" && f.late.length === 0 && f.audits.length === 0
-      && ["list", "notice", "e-mail"].every(k => x0.early.includes(k)) && x0.audits.join() === "request.deny@now:TOK_A" && f0.early.some(k => /^toast: Couldn't deny the request/.test(k)));
+      && ["list", "notice", "e-mail"].every(k => x0.early.includes(k)) && x0.audits.join() === "request.deny@now:TOK_A" && f0.early.some(k => /^toast: Couldn't deny the request/.test(k))
+      // (UX 2026-10-19, sync-guards BE: in one session the deny says so, before its notice; across the boundary it is not said — f.late / x.late above)
+      && x0.early.filter(k => /^toast: Denied — CCC's vacation/.test(k)).length === 1 && x0.early.findIndex(k => /^toast: Denied/.test(k)) < x0.early.indexOf("notice"));
     add("submitTrade", "the trade proposal (its insert): no list update, no form cleared, no toast, no notice or e-mail in the next session — its audit line written as A", async (r, fail) => {
       await H.submitTrade({ tradeSubmitBusyRef: { current: false }, showToast: r.say("toast"), tradeFrom: "s4", tradeTo: "s6", tradeWeek: X[0], tradeShift: "tue", tradeReturnWeek: X[1], tradeReturnShift: "wed", isScheduler: true,
         alert: r.say("alert"), confirm: () => true, silvisActive: false, silvisBlock: () => null, silvisRefuse: () => false, schedule: {}, scheduleRef: { current: {} }, surgeons: S7, SHIFT_LABELS: HX.SHIFT_LABELS,
         db: { insert: async () => { r.write("INSERT shift_trade_requests"); await r.cross(); return fail ? { data: null, error: { message: "upstream" } } : { data: { id: 9 }, error: null }; } }, writeFailReason: () => "the server refused it",
         setTradeRequests: r.mark("list"), setTradeWeek: r.mark("form"), setTradeShift: noopX, setTradeReturnWeek: noopX, setTradeReturnShift: noopX, tradeProposeMsg: () => "DDD ↔ FFF", logAudit: r.logAudit,
-        addNotification: async () => r.mark("notice")(), sendEmailNotif: () => r.mark("e-mail")(), console: r.console, sessionEpochRef: r.ep, dbAuthHeaders: r.hdr })();
+        addNotification: async () => r.mark("notice")(), sendEmailNotif: () => r.mark("e-mail")(), console: r.console, sessionEpochRef: r.ep, dbAuthHeaders: r.hdr, setTradeSubmitting: noopX })();
     }, (x, x0, f, f0) => x.writes.join() === "INSERT shift_trade_requests Bearer TOK_A" && x.audits.join() === "trade.propose@Bearer TOK_A" && f.late.length === 0 && f.audits.length === 0
       && ["list", "form", "notice", "e-mail"].every(k => x0.early.includes(k)) && x0.audits.join() === "trade.propose@now:TOK_A" && f0.early.some(k => /^toast: Couldn't propose the trade/.test(k)));
     // (UX 2026-10-19, flipped deliberately — sync-guards BA: in one session a FAILED DELETE says so once and leaves the

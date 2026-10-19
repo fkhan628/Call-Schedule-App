@@ -672,6 +672,44 @@ function weekRangeLabel(mStr) {
   return `${monthDayLabel(mStr)} – ${monthDayLabel(fmt(addD(parse(mStr), 6)))}`;
 }
 
+// The time-off request form's one line under its dates (UX audit 2026-10-19),
+// so the range is read back before it is sent. Days counted inclusive, by date.
+//   rangeSummary("2026-12-14", "2026-12-18") → "5 days, Mon Dec 14 – Fri Dec 18"
+//   rangeSummary("2026-12-14", "2026-12-14") → "1 day, Mon Dec 14"
+//   across a new year each date carries its year ("Mon Dec 28, 2026 – Fri Jan 1, 2027")
+// null while a date is missing or the end is before the start (the submit says why).
+function rangeSummary(start, end) {
+  if (!start || !end || end < start) return null;
+  const a = parse(start), b = parse(end);
+  const withYear = a.getFullYear() !== b.getFullYear();
+  const day = (ds, d) => `${["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][d.getDay()]} ${monthDayLabel(ds, withYear)}`;
+  const n = Math.round((Date.UTC(b.getFullYear(), b.getMonth(), b.getDate()) - Date.UTC(a.getFullYear(), a.getMonth(), a.getDate())) / 86400000) + 1;
+  return n === 1 ? `1 day, ${day(start, a)}` : `${n} days, ${day(start, a)} – ${day(end, b)}`;
+}
+
+// The scheduler's trade builder (UX audit 2026-10-19). Who holds a week's
+// shift, by the accept's own rule (acceptTradeRequest's holderIn: the service
+// week's dayCall, else that night or the weekend); "" when no one does.
+function tradeSlotHolder(schedule, mondayStr, shiftKey) {
+  const wk = schedule && schedule[mondayStr];
+  return (shiftKey === "dayCall" ? wk && wk.dayCall : wk && wk.nights && wk.nights[shiftKey]) || "";
+}
+// What the builder warns about before a trade is proposed: a leg whose giver
+// doesn't hold it can never be accepted (the accept refuses it as out of date).
+// t: { from, to, week, shift, returnWeek, returnShift }; nameOf(id) → a code.
+function tradePickNotes(schedule, t, nameOf) {
+  const notes = [], nm = (id) => (id ? nameOf(id) : "no one");
+  if (t.from && t.week && t.shift) {
+    const h = tradeSlotHolder(schedule, t.week, t.shift);
+    if (h !== t.from) notes.push(`${nm(t.from)} doesn't hold the shift to give — ${nm(h)} does.`);
+  }
+  if (t.to && t.returnWeek && t.returnShift) {
+    const h = tradeSlotHolder(schedule, t.returnWeek, t.returnShift);
+    if (h !== t.to) notes.push(`${nm(t.to)} doesn't hold the return shift — ${nm(h)} does.`);
+  }
+  return notes;
+}
+
 // The date chip on a My Shifts row (role = the Mine builder's role object):
 //   a Mon–Thu night  → its own date, "Tue 10/20" (shiftStartDate's rule)
 //   the weekend      → the legs this surgeon holds (role.held), "Fri 10/23 + Sun 10/25";
