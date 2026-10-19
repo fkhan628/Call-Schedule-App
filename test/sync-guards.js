@@ -5288,6 +5288,38 @@ check("AK1 the calendar has a Today button beside the month arrows: it sets the 
     && count('document.querySelector("[data-cal-today=\\"1\\"]")') === 1 && count('data-cal-today={isToday ? "1" : undefined}') === 1
     && src.indexOf('aria-label="Go to today"') > src.indexOf('aria-label="Next month"'));
 
+// ─── AL. A date range's end follows its start (owner 2026-10-18) ───
+// "The end date calendar should start where the start date was placed": a
+// native date input's calendar opens at its value (today when empty), so
+// picking a start moves an empty end, an end before the new start, or an end
+// still on the previous start (a form's today/today default) to the start;
+// an end the user set later is kept. The end input's min is the start.
+//   AL1 endOnOrAfter (helpers.js), executed
+//   AL2 every start/end pair calls it with the previous start, and every end
+//       input's min follows its start (the request forms keep today's floor)
+console.log("\nAL. date range end follows the start");
+{
+  const eoa = vm.runInContext(`typeof endOnOrAfter === "function" ? endOnOrAfter : null`, sandbox);
+  const got = eoa ? [
+    eoa("2026-11-03", "", ""), eoa("2026-11-03", "2026-11-01", "2026-10-30"), eoa("2026-10-01", "2026-10-18", "2026-10-18"),
+    eoa("2026-11-03", "2026-11-07", "2026-11-01"), eoa("", "2026-11-07", "2026-11-03"), eoa("2026-11-03", "2026-11-03", "2026-11-03"),
+  ] : null;
+  check("AL1 endOnOrAfter: an empty end, an end before the start, and an end still on the previous start (today/today, then a back-dated start) become the start; a later end and a cleared start leave it",
+    !!got && JSON.stringify(got) === JSON.stringify(["2026-11-03", "2026-11-03", "2026-10-01", "2026-11-07", "2026-11-07", "2026-11-03"]), JSON.stringify(got));
+  const pairs = {
+    "Setup vacation": ["setVacEnd(end=>endOnOrAfter(v,end,vacStart))", "min={vacStart||undefined} value={vacEnd}"],
+    "Setup vacation edit": ["setEditVac(pr=>({...pr,start:v,end:endOnOrAfter(v,pr.end,pr.start)}))", "min={editVac.start||undefined} value={editVac.end}"],
+    "Setup no-call": ["setNcEnd(end=>endOnOrAfter(v,end,ncStart))", "min={ncStart||undefined} value={ncEnd}"],
+    "My vacations edit": ["setMyVacEdit(p=>({...p,start:v,end:endOnOrAfter(v,p.end,p.start)}))", "value={myVacEdit.end} min={myVacEdit.start}"],
+    "Request form": ["setVacReqEnd(end=>endOnOrAfter(v,end,vacReqStart))", "min={vacReqStart && vacReqStart > todayStr ? vacReqStart : todayStr} value={vacReqEnd}"],
+    "Request edit (requester)": ["setEditingVacReq(p=>({...p,start_date:v,end_date:endOnOrAfter(v,p.end_date,p.start_date)}))", 'min={[editingVacReq.start_date || "", isScheduler ? "" : fmt(new Date())].sort().pop() || undefined} value={editingVacReq.end_date}'],
+    "Request edit (scheduler)": ["setEditingVacReq(p=>({...p,start_date:v,end_date:endOnOrAfter(v,p.end_date,p.start_date)}))", "min={editingVacReq.start_date || undefined} value={editingVacReq.end_date}"],
+  };
+  const bad = Object.entries(pairs).filter(([, [s, e]]) => !count(s) || count(e) !== 1).map(([k]) => k);
+  check("AL2 every start/end date pair moves its end with the start (passing the previous start) and caps the end's calendar at the start: Setup vacation, its edit, Setup no-call, My vacations edit, the request form and both request edits (the requester's keeps today's floor)",
+    bad.length === 0 && count("endOnOrAfter(v,") === 7 && count("max={myVacEdit.end}") === 0, "missing: " + bad.join(", ") + " · calls " + count("endOnOrAfter(v,"));
+}
+
 // ══════════════════════════════════════════════════════════════
 // SE. Sync engine v2 — test/sync-engine-se.js (the real createSchedSync on an
 // emulated schedule_weeks table, plus its mutant battery), and the emulated

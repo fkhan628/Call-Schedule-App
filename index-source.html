@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.10.18c";
+    var APP_VERSION = "2026.10.18d";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -8060,11 +8060,11 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               </div>
               <div>
                 <label style={{fontSize:10,color:"#7a8a98",display:"block",marginBottom:2}}>Start</label>
-                <input type="date" value={vacStart} onChange={e=>setVacStart(e.target.value)} style={{...css.inp,width:140}}/>
+                <input type="date" value={vacStart} onChange={e=>{const v=e.target.value; setVacStart(v); setVacEnd(end=>endOnOrAfter(v,end,vacStart));}} style={{...css.inp,width:140}}/>
               </div>
               <div>
                 <label style={{fontSize:10,color:"#7a8a98",display:"block",marginBottom:2}}>End</label>
-                <input type="date" value={vacEnd} onChange={e=>setVacEnd(e.target.value)} style={{...css.inp,width:140}}/>
+                <input type="date" min={vacStart||undefined} value={vacEnd} onChange={e=>setVacEnd(e.target.value)} style={{...css.inp,width:140}}/>
               </div>
               <button onClick={addVac} style={css.btn(true)}>+ Add</button>
               <button onClick={()=>setPaintSheet("timeoff")} style={{...css.btn(false),fontWeight:700}}>🖌 Paint Month</button>
@@ -8151,9 +8151,9 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                         const isPast = ve < todayStr;
                         return editVac && editVac.sid===p.id && editVac.idx===originalIdx ? (
                           <div key={i} style={{display:"inline-flex",gap:4,alignItems:"center",background:"#f0f8ff",border:"1px solid #a0c0e0",borderRadius:5,padding:"3px 6px",marginBottom:4,marginRight:4}}>
-                            <input type="date" value={editVac.start} onChange={e=>setEditVac(pr=>({...pr,start:e.target.value}))} style={{...css.inp,width:120,fontSize:11,padding:"2px 4px"}}/>
+                            <input type="date" value={editVac.start} onChange={e=>{const v=e.target.value; setEditVac(pr=>({...pr,start:v,end:endOnOrAfter(v,pr.end,pr.start)}));}} style={{...css.inp,width:120,fontSize:11,padding:"2px 4px"}}/>
                             <span style={{fontSize:11,color:"#7a8a98"}}>→</span>
-                            <input type="date" value={editVac.end} onChange={e=>setEditVac(pr=>({...pr,end:e.target.value}))} style={{...css.inp,width:120,fontSize:11,padding:"2px 4px"}}/>
+                            <input type="date" min={editVac.start||undefined} value={editVac.end} onChange={e=>setEditVac(pr=>({...pr,end:e.target.value}))} style={{...css.inp,width:120,fontSize:11,padding:"2px 4px"}}/>
                             <button onClick={saveEditVac} style={{background:"none",border:"none",color:"#1a8040",cursor:"pointer",fontSize:13,fontWeight:700}}>✓</button>
                             <button onClick={()=>setEditVac(null)} style={{background:"none",border:"none",color:"#904040",cursor:"pointer",fontSize:11}}>✕</button>
                           </div>
@@ -8195,11 +8195,11 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               </div>
               <div>
                 <label style={{fontSize:10,color:"#7a8a98",display:"block",marginBottom:2}}>Start</label>
-                <input type="date" value={ncStart} onChange={e=>setNcStart(e.target.value)} style={{...css.inp,width:140}}/>
+                <input type="date" value={ncStart} onChange={e=>{const v=e.target.value; setNcStart(v); setNcEnd(end=>endOnOrAfter(v,end,ncStart));}} style={{...css.inp,width:140}}/>
               </div>
               <div>
                 <label style={{fontSize:10,color:"#7a8a98",display:"block",marginBottom:2}}>End</label>
-                <input type="date" value={ncEnd} onChange={e=>setNcEnd(e.target.value)} style={{...css.inp,width:140}}/>
+                <input type="date" min={ncStart||undefined} value={ncEnd} onChange={e=>setNcEnd(e.target.value)} style={{...css.inp,width:140}}/>
               </div>
               <button onClick={addNoCall} style={css.btn(true)}>+ Add</button>
             </div>
@@ -11099,7 +11099,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                         <div key={origIdx} style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap",padding:"4px 0",borderBottom:i<shown.length-1?"1px solid #f0e4d0":"none"}}>
                           {editing ? (
                             <>
-                              <input type="date" value={myVacEdit.start} max={myVacEdit.end} onChange={e=>setMyVacEdit(p=>({...p,start:e.target.value}))} style={{...css.inp,padding:"3px 6px",fontSize:12,width:148}}/>
+                              <input type="date" value={myVacEdit.start} onChange={e=>{const v=e.target.value; setMyVacEdit(p=>({...p,start:v,end:endOnOrAfter(v,p.end,p.start)}));}} style={{...css.inp,padding:"3px 6px",fontSize:12,width:148}}/>
                               <span style={{color:"#8a94a0"}}>→</span>
                               <input type="date" value={myVacEdit.end} min={myVacEdit.start} onChange={e=>setMyVacEdit(p=>({...p,end:e.target.value}))} style={{...css.inp,padding:"3px 6px",fontSize:12,width:148}}/>
                               <button onClick={saveMyVacEdit} style={{background:"#2a7a40",color:"#fff",border:"none",borderRadius:5,padding:"3px 12px",fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:font}}>Save</button>
@@ -11291,11 +11291,11 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                 <label style={{fontSize:11,color:"#7a8a98",display:"block",marginBottom:2}}>Start Date</label>
                 {/* min is UI-only (a typed date bypasses it) — submitVacRequest
                     carries the real gate and its rejection message. */}
-                <input type="date" min={todayStr} value={vacReqStart} onChange={e=>setVacReqStart(e.target.value)} style={{...css.inp,width:150}}/>
+                <input type="date" min={todayStr} value={vacReqStart} onChange={e=>{const v=e.target.value; setVacReqStart(v); setVacReqEnd(end=>endOnOrAfter(v,end,vacReqStart));}} style={{...css.inp,width:150}}/>
               </div>
               <div>
                 <label style={{fontSize:11,color:"#7a8a98",display:"block",marginBottom:2}}>End Date</label>
-                <input type="date" min={todayStr} value={vacReqEnd} onChange={e=>setVacReqEnd(e.target.value)} style={{...css.inp,width:150}}/>
+                <input type="date" min={vacReqStart && vacReqStart > todayStr ? vacReqStart : todayStr} value={vacReqEnd} onChange={e=>setVacReqEnd(e.target.value)} style={{...css.inp,width:150}}/>
               </div>
               <button onClick={submitVacRequest} style={{...css.btn(true),padding:"7px 18px"}}>Submit Request</button>
             </div>
@@ -11364,11 +11364,11 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                           <div style={{display:"flex",gap:6,alignItems:"end",flexWrap:"wrap"}}>
                             <div>
                               <label style={{fontSize:10,color:"#7a8a98",display:"block"}}>Start</label>
-                              <input type="date" min={isScheduler ? undefined : fmt(new Date())} value={editingVacReq.start_date} onChange={e=>setEditingVacReq(p=>({...p,start_date:e.target.value}))} style={{...css.inp,width:140,fontSize:12}}/>
+                              <input type="date" min={isScheduler ? undefined : fmt(new Date())} value={editingVacReq.start_date} onChange={e=>{const v=e.target.value; setEditingVacReq(p=>({...p,start_date:v,end_date:endOnOrAfter(v,p.end_date,p.start_date)}));}} style={{...css.inp,width:140,fontSize:12}}/>
                             </div>
                             <div>
                               <label style={{fontSize:10,color:"#7a8a98",display:"block"}}>End</label>
-                              <input type="date" min={isScheduler ? undefined : fmt(new Date())} value={editingVacReq.end_date} onChange={e=>setEditingVacReq(p=>({...p,end_date:e.target.value}))} style={{...css.inp,width:140,fontSize:12}}/>
+                              <input type="date" min={[editingVacReq.start_date || "", isScheduler ? "" : fmt(new Date())].sort().pop() || undefined} value={editingVacReq.end_date} onChange={e=>setEditingVacReq(p=>({...p,end_date:e.target.value}))} style={{...css.inp,width:140,fontSize:12}}/>
                             </div>
                             <div>
                               <label style={{fontSize:10,color:"#7a8a98",display:"block"}}>Reason</label>
@@ -11467,11 +11467,11 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                             <div style={{display:"flex",gap:6,alignItems:"end",flexWrap:"wrap"}}>
                               <div>
                                 <label style={{fontSize:10,color:"#7a8a98",display:"block"}}>Start</label>
-                                <input type="date" value={editingVacReq.start_date} onChange={e=>setEditingVacReq(p=>({...p,start_date:e.target.value}))} style={{...css.inp,width:140,fontSize:12}}/>
+                                <input type="date" value={editingVacReq.start_date} onChange={e=>{const v=e.target.value; setEditingVacReq(p=>({...p,start_date:v,end_date:endOnOrAfter(v,p.end_date,p.start_date)}));}} style={{...css.inp,width:140,fontSize:12}}/>
                               </div>
                               <div>
                                 <label style={{fontSize:10,color:"#7a8a98",display:"block"}}>End</label>
-                                <input type="date" value={editingVacReq.end_date} onChange={e=>setEditingVacReq(p=>({...p,end_date:e.target.value}))} style={{...css.inp,width:140,fontSize:12}}/>
+                                <input type="date" min={editingVacReq.start_date || undefined} value={editingVacReq.end_date} onChange={e=>setEditingVacReq(p=>({...p,end_date:e.target.value}))} style={{...css.inp,width:140,fontSize:12}}/>
                               </div>
                               <button onClick={saveVacRequestEdit} style={{...css.btn(true),padding:"4px 10px",fontSize:11}}>Save</button>
                               <button onClick={()=>setEditingVacReq(null)} style={{...css.btn(false),padding:"4px 10px",fontSize:11}}>Cancel</button>
