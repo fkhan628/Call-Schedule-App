@@ -4545,6 +4545,278 @@ console.log("\nAS. The UX batch's review fixes");
       && count('...(dk ? {background:"#0f3460",color:"#e0e0f0",border:"1px solid #2a3a5e"} : {})}}>Go to {MO[goTo.m]} {goTo.y}</button>') === 1);
 }
 
+// ─── AT. A trade waiting on your answer is said first, in your own words (UX audit 2026-10-19) ───
+// Requests → Pending Trades showed two badges and two dated legs; nothing said which leg the reader
+// would take and which they would give, and nothing at the top of Requests said a trade was waiting
+// on them. Render-only plus one pure helper (helpers.js tradeLegsFor, composed with slotLabel THERE
+// so L's ledger stays 23); the accept / decline / withdraw handlers, the state and every write are
+// unchanged. JSX can't run here (no Babel in CI), so the helper and the decisions the markup makes
+// are EXECUTED on the real code and the markup is pinned.
+//   AT1 tradeLegsFor, executed on a two-way trade (FAK s6 gives Mon night 11/2, DJA s1 gives back
+//       Tue night 11/10) and its one-way variant, for the answerer, the proposer and anyone else
+//   AT2 each Pending Trades row says it in words, under the badges line and above the buttons; the
+//       proposer reads "Waiting for <name>'s answer" beside Withdraw; the row keeps its 3 handlers
+//   AT3 the banner is the FIRST thing in the Requests view (before the Vacation Request Deadline
+//       card); its condition, sliced and executed, counts pending trades whose to_surgeon is you
+//   AT4 Review ↓, executed: scrolls the one #pending-trades card (the Pending Trades card) into view;
+//       render-only, phone-wrapping, dark-mode colors
+// The review's fixes (2026-10-19):
+//   AT1 a one-way row says "(one-way — no return shift)" once (the badge line), not again in the legs
+//   AT3 the banner counts only a trade Accept can still take (tradeLegsNotStarted)
+//   AT5 tradeLegsNotStarted, sliced and executed, agrees with acceptTradeRequest's own sliced refusal
+//       on every leg kind either side of today (and a one-way trade)
+//   AT6 the row's decisions, sliced and executed: the proposer reads "Waiting for …" only when the row
+//       gives them no Accept / Decline (the same canAnswer gate — never both); a row whose leg has
+//       started asks to be declined or withdrawn instead of "You'd take …"; "plus N knock-on
+//       change(s)" from the REAL detectCascadeChanges, once per row; the legs box is light in both
+//       themes like its row — their browser-serialized styles matched against the real dark sheet
+console.log("\nAT. A trade waiting on your answer");
+{
+  const nsrcAT = src.replace(/\r\n/g, "\n");   // a Windows checkout is CRLF, CI's is LF
+  // AT1 — the helper, executed
+  const TLF = vm.runInContext('typeof tradeLegsFor === "function" ? tradeLegsFor : null', sandbox);
+  const TWO = {
+    from_surgeon_id: "s6", from_surgeon_name: "FAK", to_surgeon_id: "s1", to_surgeon_name: "DJA",
+    week_monday: "2026-11-02", shift_key: "mon", return_week: "2026-11-09", return_shift: "tue", status: "pending",
+  };
+  const ONE = { ...TWO, return_week: null, return_shift: null };
+  const said = TLF ? {
+    to: TLF(TWO, "s1"), from: TLF(TWO, "s6"), other: TLF(TWO, "s3"), nobody: TLF(TWO, ""),
+    oneTo: TLF(ONE, "s1"), oneFrom: TLF(ONE, "s6"), oneOther: TLF(ONE, "s3"),
+  } : null;
+  const wantAT1 = {
+    to: "You'd take Mon Nov 2 — Night; you'd give Tue Nov 10 — Night",
+    from: "You'd give Mon Nov 2 — Night; you'd take Tue Nov 10 — Night",
+    other: "DJA would take Mon Nov 2 — Night; FAK would take Tue Nov 10 — Night",
+    nobody: "DJA would take Mon Nov 2 — Night; FAK would take Tue Nov 10 — Night",
+    oneTo: "You'd take Mon Nov 2 — Night",
+    oneFrom: "You'd give Mon Nov 2 — Night",
+    oneOther: "DJA would take Mon Nov 2 — Night",
+  };
+  check("AT1 tradeLegsFor (helpers.js), executed: the answerer (DJA s1) reads \"You'd take Mon Nov 2 — Night; you'd give Tue Nov 10 — Night\", the proposer (FAK s6) the mirror, anyone else (s3, or no surgeon) tradeLegsText's third-person line; a one-way trade names its one leg (the badge line above says one-way)",
+    !!said && JSON.stringify(said) === JSON.stringify(wantAT1), said ? JSON.stringify(said) : "tradeLegsFor not found in helpers.js");
+  check("AT1 the return leg is dated by its own shift (Tue Nov 10), never its week's Monday (Nov 9); the helper lives in helpers.js only, and L's slotLabel ledger in index-source.html stays 23",
+    !!said && Object.values(said).every(s => !s.includes("Nov 9") && !s.includes("2026-11")) && count("function tradeLegsFor") === 0 && count("slotLabel(") === 23,
+    `slotLabel( ×${count("slotLabel(")} · tradeLegsFor defined in the app ×${count("function tradeLegsFor")}`);
+
+  // AT2 — the Pending Trades row
+  const iMap = nsrcAT.indexOf("{pendingTrades.map(r => ("), iRev = iMap < 0 ? -1 : nsrcAT.indexOf("{reviewedTrades.length > 0 && (", iMap);
+  const row = iMap >= 0 && iRev > iMap ? nsrcAT.slice(iMap, iRev) : "";
+  const BOX_TEXT = "{tradeLegsNotStarted(r) ? tradeLegsFor(r, mySurgeon) : passedNote(r)}";
+  const KNOCK_LINE = "{knockOns.get(r.id) && <div style={{fontSize:11,fontWeight:500,color:\"#6a4a90\",marginTop:2}}>{knockOns.get(r.id)}</div>}";
+  const at2 = {
+    badgesEnd: row.indexOf("(one-way — no return shift)</span>}"), guard: row.indexOf('{typeof tradeLegsFor === "function" && ('),
+    call: row.indexOf(BOX_TEXT), knock: row.indexOf(KNOCK_LINE), proposed: row.indexOf("Proposed {new Date(r.submitted_at).toLocaleDateString()}"),
+    onClicks: (row.match(/onClick=/g) || []).length,
+  };
+  // the box: its <div …> opens right after the guard, holds the legs text then the knock-on line, and closes before the Proposed line
+  const boxOpen = at2.guard < 0 ? -1 : row.indexOf("<div style={{", at2.guard), boxClose = at2.knock < 0 ? -1 : row.indexOf("</div>\n", at2.knock + KNOCK_LINE.length);
+  const WAIT_RE = />Waiting for \{r\.to_surgeon_name\}'s answer<\/span>\}\n\s*\{mySurgeon === r\.from_surgeon_id && <button onClick=\{\(\)=>deleteTradeRequest\(r\.id\)\}/;
+  check("AT2 each Pending Trades row says the legs in words for whoever reads it — tradeLegsFor(r, mySurgeon), guarded by typeof (a started trade says so instead: AT6) — then its knock-on line, in one box under the badges line and above the Proposed date and buttons; one call site",
+    !!row && at2.badgesEnd > 0 && at2.guard > at2.badgesEnd && boxOpen > at2.guard && at2.call > boxOpen && at2.knock > at2.call && boxClose > at2.knock && at2.proposed > boxClose
+      && count("tradeLegsFor(") === 1 && count(BOX_TEXT) === 1 && count(KNOCK_LINE) === 1,
+    JSON.stringify(Object.assign({ boxOpen, boxClose }, at2)));
+  check("AT2 the proposer's \"Waiting for <name>'s answer\" sits beside Withdraw (its gate is executed in AT6); the row's handlers are unchanged: Accept, Decline, Withdraw and nothing else",
+    !!row && WAIT_RE.test(row) && at2.onClicks === 3 && row.includes("onClick={()=>acceptTradeRequest(r)}") && row.includes("onClick={()=>declineTradeRequest(r)}")
+      && row.includes("onClick={()=>deleteTradeRequest(r.id)}"),
+    `wait line ${WAIT_RE.test(row) ? "found" : "missing"} · onClick ×${at2.onClicks}`);
+  {
+    const TLT = vm.runInContext('typeof tradeLegsText === "function" ? tradeLegsText : null', sandbox);
+    const notice = TLT ? TLT(ONE, "would take") : null;
+    check("AT1 a one-way row says \"(one-way — no return shift)\" ONCE: the badge line says it (once in the row), tradeLegsFor never does, for any reader; tradeLegsText keeps it for the notifications",
+      !!said && !Object.values(said).some((s) => /one-way/.test(s)) && row.split("(one-way — no return shift)").length - 1 === 1
+        && notice === "DJA would take Mon Nov 2 — Night (one-way — no return shift)",
+      JSON.stringify({ said: said && [said.oneTo, said.oneFrom, said.oneOther], inRow: row.split("(one-way — no return shift)").length - 1, notice }));
+  }
+
+  // AT3 — the banner: first in the Requests view, and its condition, executed
+  const OPEN = '{view==="requests" && !isPublicMode && <>';
+  const iReq = nsrcAT.indexOf(OPEN), iSet = nsrcAT.indexOf('{view==="settings" && !isPublicMode && <>');
+  const iCond = iReq < 0 ? -1 : nsrcAT.indexOf("const waitingOnMe = ", iReq);
+  const iBan = iCond < 0 ? -1 : nsrcAT.lastIndexOf("{(() => {", iCond), iBanEnd = iCond < 0 ? -1 : nsrcAT.indexOf("})()}", iCond);
+  const iDead = iReq < 0 ? -1 : nsrcAT.indexOf("{/* Vacation Request Deadline", iReq);
+  const banner = iBan > iReq && iBanEnd > iCond ? nsrcAT.slice(iBan, iBanEnd + 5) : "";
+  const placed = iReq >= 0 && iBan > iReq && iBanEnd > iBan && iDead > iBanEnd && iSet > iDead
+    && /^\n\s*\{\/\*[^\n]*\*\/\}\n\s*$/.test(nsrcAT.slice(iReq + OPEN.length, iBan)) && /^\s*$/.test(nsrcAT.slice(iBanEnd + 5, iDead));
+  const condSrc = iCond < 0 ? null : (nsrcAT.slice(iCond).match(/^const waitingOnMe = ([^\n;]*);/) || [])[1];
+  // the app's own "neither leg has started" rule (the CallSchedule body, after todayStr), sliced; todayStr is injected
+  const nsExpr = (nsrcAT.match(/\n  const tradeLegsNotStarted = (\(r\) => [^;]*);\n/) || [])[1];
+  const mkNS = (todayStr) => { try { return nsExpr ? vm.runInContext(`(function (todayStr) { return (${nsExpr}); })`, sandbox)(todayStr) : null; } catch (ex) { return null; } };
+  const TODAY_AT = "2026-10-19";   // a Monday; TWO's legs (Mon 11/2, Tue 11/10) are ahead of it
+  let waiting = null, waitingStale = null;
+  try {
+    const f = condSrc ? vm.runInContext(`(function (myTradeRequests, mySurgeon, tradeLegsNotStarted) { return (${condSrc}); })`, sandbox) : null;
+    const ns = mkNS(TODAY_AT);
+    if (f) {
+      const T = [TWO, { ...TWO, id: 2, status: "accepted" }, { ...TWO, id: 3, to_surgeon_id: "s3", to_surgeon_name: "RPC" }];
+      waiting = { s1: f(T, "s1", ns), s3: f(T, "s3", ns), s6: f(T, "s6", ns), s2: f(T, "s2", ns), none: f([], "s1", ns), two: f([TWO, { ...TWO, id: 4 }], "s1", ns) };
+      // Accept would refuse these (a leg already started): Thu night 10/15; a return weekend that began Fri 10/16; a service week begun Mon 10/12
+      const STALE_AT = [{ ...TWO, id: 5, week_monday: "2026-10-12", shift_key: "thu" }, { ...TWO, id: 6, return_week: "2026-10-12", return_shift: "wknd" },
+        { ...TWO, id: 7, week_monday: "2026-10-12", shift_key: "dayCall", return_week: null, return_shift: null }];
+      // …and these it would take: a night that starts today, a service week that starts today
+      const TODAY_OK = [{ ...TWO, id: 8, week_monday: "2026-10-19", shift_key: "mon", return_week: null, return_shift: null }, { ...TWO, id: 9, week_monday: "2026-10-19", shift_key: "dayCall" }];
+      waitingStale = { stale: f(STALE_AT, "s1", ns), today: f(TODAY_OK, "s1", ns), mixed: f([...STALE_AT, TWO], "s1", ns) };
+    }
+  } catch (ex) { waiting = { err: String(ex).slice(0, 120) }; }
+  check("AT3 the banner is the first thing in the Requests view, before the Vacation Request Deadline card; it shows only when it has something to say",
+    placed && count("const waitingOnMe = ") === 1 && banner.includes("if (!waitingOnMe) return null;")
+      && banner.includes('"A shift trade is waiting for your answer."') && banner.includes("shift trades are waiting for your answer."),
+    JSON.stringify({ iReq, iBan, iBanEnd, iDead, iSet }));
+  check("AT3 its condition, sliced and executed: counts PENDING trades whose to_surgeon is you — DJA (s1) 1, RPC (s3) 1, the proposer FAK (s6) 0, a bystander 0, none 0, two waiting 2 (an accepted one never counts)",
+    !!condSrc && /r\.status === "pending"/.test(condSrc) && /r\.to_surgeon_id === mySurgeon/.test(condSrc)
+      && JSON.stringify(waiting) === JSON.stringify({ s1: 1, s3: 1, s6: 0, s2: 0, none: 0, two: 2 }),
+    condSrc ? JSON.stringify(waiting) : "no waitingOnMe condition in the Requests view");
+  check("AT3 (review) …and only a trade Accept can still take (tradeLegsNotStarted, the app's own rule — AT5): three whose leg already started (Thu night 10/15, a return weekend from Fri 10/16, a service week from Mon 10/12) count 0 on 10/19; a night or service week starting that day counts; mixed with an open one → 1",
+    !!condSrc && /&& tradeLegsNotStarted\(r\)/.test(condSrc) && !!waitingStale && JSON.stringify(waitingStale) === JSON.stringify({ stale: 0, today: 2, mixed: 1 }),
+    JSON.stringify({ condSrc, waitingStale, nsFound: !!nsExpr }));
+
+  // AT4 — Review ↓, executed against a fake document; the target is the Pending Trades card
+  const click = (banner.match(/<button onClick=\{\(\)=>\{ ([^\n]*?) \}\} style=\{\{\.\.\.css\.btn\(true\),[^\n]*\}\}>Review ↓<\/button>/) || [])[1];
+  let scrolled = null;
+  try {
+    if (click) {
+      const run = vm.runInContext(`(function (document) { ${click} })`, sandbox);
+      const asked = [], calls = [];
+      run({ getElementById: (id) => { asked.push(id); return id === "pending-trades" ? { scrollIntoView: (o) => calls.push(o) } : null; } });
+      let missingOk = true; try { run({ getElementById: () => null }); } catch (ex) { missingOk = false; }
+      scrolled = { asked, calls, missingOk };
+    }
+  } catch (ex) { scrolled = { err: String(ex).slice(0, 120) }; }
+  check("AT4 Review ↓, executed: asks for #pending-trades and scrolls it smoothly to the top of the screen; no card (nothing pending) is not an error",
+    !!scrolled && JSON.stringify(scrolled) === JSON.stringify({ asked: ["pending-trades"], calls: [{ behavior: "smooth", block: "start" }], missingOk: true }),
+    click ? JSON.stringify(scrolled) : "no Review ↓ button in the banner");
+  const PEND = '<div id="pending-trades" style={{...css.card,scrollMarginTop:"calc(env(safe-area-inset-top, 0px) + 12px)"}}>\n                  <div style={css.cardT}>⏳ Pending Trades';
+  const iPend = nsrcAT.indexOf(PEND);
+  check("AT4 #pending-trades is the Pending Trades card (once, after the banner, inside the Requests view; clears the iPhone status bar when scrolled to)",
+    count('id="pending-trades"') === 1 && iPend > iBanEnd && iPend < iSet && iPend < iMap,
+    `id ×${count('id="pending-trades"')} · card at ${iPend} (banner ends ${iBanEnd}, rows ${iMap}, settings ${iSet})`);
+  check("AT4 the banner is render-only (one button, no write, no notification, no handler) and fits a phone (wraps; the text shrinks, the button doesn't) in both themes",
+    !!banner && (banner.match(/onClick=/g) || []).length === 1
+      && !/fetch\(|db\.|supabase|set[A-Z]\w*\(|localStorage|addNotification|sendEmailNotif|acceptTradeRequest|declineTradeRequest|deleteTradeRequest|dbAuthHeaders/.test(banner)
+      && banner.includes('flexWrap:"wrap"') && banner.includes('flex:"1 1 180px",minWidth:0') && banner.includes('whiteSpace:"nowrap"')
+      && banner.includes('background:dk?"#2a2040":"#f3ecff"') && banner.includes('color:dk?"#e8dcff":"#3a2060"'),
+    banner ? ((banner.match(/fetch\(|db\.|supabase|set[A-Z]\w*\(|localStorage|addNotification|sendEmailNotif|acceptTradeRequest|declineTradeRequest|deleteTradeRequest|dbAuthHeaders/) || ["layout or colors"])[0]) : "banner not found");
+
+  // AT5 — the banner's rule IS Accept's: tradeLegsNotStarted vs acceptTradeRequest's elapsed-leg refusal, both sliced and run
+  const accRefuse = (nsrcAT.match(/if \((shiftStartDate\(req\.week_monday, req\.shift_key\) < accToday\n\s*\|\| \(req\.return_week && req\.return_shift && shiftStartDate\(req\.return_week, req\.return_shift\) < accToday\))\) \{\n\s*showToast\("This trade's shift has already passed — propose a new one\.", "error"\);/) || [])[1];
+  let refusesFn = null; try { refusesFn = accRefuse ? vm.runInContext(`(function (req, accToday) { return (${accRefuse}); })`, sandbox) : null; } catch (ex) { refusesFn = null; }
+  const at5 = { n: 0, open: 0, refused: 0, bad: [] };
+  if (refusesFn && nsExpr) {
+    const KEYS = ["dayCall", "mon", "tue", "wed", "thu", "wknd"], legsAT = [];
+    for (const w of ["2026-10-12", "2026-10-19", "2026-10-26"]) for (const k of KEYS) legsAT.push([w, k]);
+    for (const today of ["2026-10-19", "2026-10-21", "2026-10-23", "2026-10-26"]) {
+      const ns = mkNS(today);
+      for (const [w, k] of legsAT) for (const ret of [null, [w, null], ...legsAT]) {
+        const r = { ...TWO, week_monday: w, shift_key: k, return_week: ret ? ret[0] : null, return_shift: ret ? ret[1] : null };
+        const open = ns(r), refused = refusesFn(r, today);
+        at5.n++; if (open) at5.open++; if (refused) at5.refused++;
+        if (open !== !refused && at5.bad.length < 4) at5.bad.push(`${today} ${w}/${k} ↔ ${ret ? ret.join("/") : "one-way"}: open ${open}, Accept refuses ${refused}`);
+      }
+    }
+  }
+  check(`AT5 tradeLegsNotStarted (sliced from the app) is true exactly when acceptTradeRequest's elapsed-leg refusal (sliced) is false — ${at5.n} trades: every leg kind on three weeks, one-way, a return week with no shift, every return leg, on four days either side of them`,
+    !!refusesFn && !!nsExpr && at5.n === 4 * 18 * 20 && at5.open > 100 && at5.refused > 100 && at5.bad.length === 0,
+    JSON.stringify({ accept: !!refusesFn, rule: !!nsExpr, n: at5.n, open: at5.open, refused: at5.refused, bad: at5.bad }));
+
+  // AT6 — the row's decisions, executed: the Pending Trades block's own consts (sliced) and the row's own gates (sliced)
+  const iPre = nsrcAT.indexOf('const pendingTrades = myTradeRequests.filter(r => r.status === "pending");');
+  const iPreEnd = iPre < 0 ? -1 : nsrcAT.indexOf("\n            return <>", iPre);
+  const preAT = iPre >= 0 && iPreEnd > iPre && iPreEnd < iMap ? nsrcAT.slice(iPre, iPreEnd) : null;
+  let mkRow = null;
+  try { mkRow = preAT ? vm.runInContext(`(function (env) { const { myTradeRequests, mySurgeon, isScheduler, tradeLegsNotStarted, detectCascadeChanges, schedule } = env; ${preAT}\n return { canAnswer, passedNote, knockOnNote, knockOns }; })`, sandbox) : null; } catch (ex) { mkRow = null; }
+  const exprAT = (re) => { const m = row.match(re); if (!m) return null; try { return vm.runInContext(`(function (env) { const { r, mySurgeon, isScheduler, canAnswer, tradeLegsNotStarted, tradeLegsFor, passedNote } = env; return (${m[1]}); })`, sandbox); } catch (ex) { return null; } };
+  // Accept renders under the row's canAnswer gate AND (AT7) its own not-started gate: both sliced, run together.
+  const acceptGate = (() => { const m = row.match(/\n\s*\{([^{}\n]+) && \(\n\s*<>\n\s*\{([^{}\n]+?) && <button onClick=\{\(\)=>acceptTradeRequest\(r\)\}/); if (!m) return null;
+    try { return vm.runInContext(`(function (env) { const { r, mySurgeon, isScheduler, canAnswer, tradeLegsNotStarted, tradeLegsFor, passedNote } = env; return (${m[1]}) && (${m[2]}); })`, sandbox); } catch (ex) { return null; } })();
+  const waitGate = exprAT(/\n\s*\{([^\n]+?) && <span style=\{\{fontSize:10,color:"#8a6a10",fontWeight:600\}\}>Waiting for \{r\.to_surgeon_name\}'s answer/);
+  const boxText = exprAT(/\{(tradeLegsNotStarted\(r\) \? tradeLegsFor\(r, mySurgeon\) : passedNote\(r\))\}/);
+  const dcSrcAT = (() => { const a = "  const detectCascadeChanges = useCallback((sched, req) => {", i = nsrcAT.indexOf(a); if (i < 0 || nsrcAT.indexOf(a, i + 1) !== -1) return null; const e = nsrcAT.indexOf("\n  }, [surgeons]);", i); return e < 0 ? null : nsrcAT.slice(i + a.length, e); })();
+  const SURG_AT = ["AAA", "BBB", "CCC", "DDD", "EEE", "FFF", "GGG"].map((name, i) => ({ id: "s" + (i + 1), name }));
+  let detectAT = null; try { detectAT = dcSrcAT ? vm.runInContext(`(function (surgeons) { return (sched, req) => {${dcSrcAT}\n  }; })`, sandbox)(SURG_AT) : null; } catch (ex) { detectAT = null; }
+  const W1 = "2030-01-07", W2 = "2030-01-14", W3 = "2030-01-21";
+  const wkAT = (dc, n) => ({ dayCall: dc, nights: { mon: n[0], tue: n[1], wed: n[2], thu: n[3], wknd: n[4] } });
+  // each new service-week holder also has that week's Tue night, so a service-week trade moves Tue nights (SE-K's fixture)
+  const SCHED_AT = { [W1]: wkAT("s1", ["s3", "s2", "s4", "s5", "s6"]), [W2]: wkAT("s2", ["s4", "s1", "s3", "s5", "s6"]), [W3]: wkAT("s5", ["s1", "s2", "s3", "s4", "s6"]) };
+  const trAT = (id, from, to, w, k, rw, rk) => ({ id, from_surgeon_id: from, to_surgeon_id: to, from_surgeon_name: SURG_AT.find((s) => s.id === from).name, to_surgeon_name: SURG_AT.find((s) => s.id === to).name,
+    week_monday: w, shift_key: k, return_week: rw || null, return_shift: rk || null, status: "pending" });
+  const T2 = trAT(1, "s1", "s2", W1, "dayCall", W2, "dayCall");   // AAA ↔ BBB service weeks: both Tue nights move (2 knock-ons)
+  const T1 = trAT(2, "s1", "s2", W1, "dayCall");                  // one-way: BBB's W1 Tue night moves to AAA (1)
+  const T0 = trAT(3, "s1", "s7", W3, "mon");                      // a night: nothing else moves
+  const DONE = { ...T2, id: 4, status: "accepted" };
+  const VIEWERS = { answerer: ["s2", false], proposer: ["s1", false], schedProposer: ["s1", true], schedOther: ["s3", true], bystander: ["admin", false] };
+  let at6 = null;
+  if (mkRow && acceptGate && waitGate && boxText && detectAT && nsExpr && TLF) {
+    try {
+      const runAT6 = (day) => {
+        const ns = mkNS(day), out = {};
+        for (const [v, [mySurgeon, isScheduler]] of Object.entries(VIEWERS)) {
+          let calls = 0;
+          const spy = (s, r) => { calls++; return detectAT(s, r); };
+          const R = mkRow({ myTradeRequests: [T2, T1, T0, DONE], mySurgeon, isScheduler, tradeLegsNotStarted: ns, detectCascadeChanges: spy, schedule: SCHED_AT });
+          const env = (r) => ({ r, mySurgeon, isScheduler, canAnswer: R.canAnswer, tradeLegsNotStarted: ns, tradeLegsFor: TLF, passedNote: R.passedNote });
+          out[v] = { accept: [T2, T1, T0].map((r) => !!acceptGate(env(r))), wait: [T2, T1, T0].map((r) => !!waitGate(env(r))), box: boxText(env(T2)), knock: [T2, T1, T0].map((r) => R.knockOns.get(r.id)), calls };
+        }
+        return out;
+      };
+      at6 = { open: runAT6("2026-10-19"), stale: runAT6("2030-01-08") };   // on 1/8 the W1 legs have started; W3's Mon night hasn't
+    } catch (ex) { at6 = { err: String(ex && ex.stack || ex).slice(0, 200) }; }
+  }
+  const v6 = (when, v) => (at6 && at6[when] && at6[when][v]) || {};
+  const neverBoth = !!at6 && !at6.err && ["open", "stale"].every((w) => Object.keys(VIEWERS).every((v) => v6(w, v).accept.every((a, i) => !(a && v6(w, v).wait[i]))));
+  check("AT6 the proposer reads \"Waiting for <name>'s answer\" only when the row gives them no Accept / Decline (the row's own canAnswer gate, executed): a scheduler on their own proposal gets Accept / Decline and no Waiting line; a member proposer gets Waiting and no Accept; never both, for anyone, on any row",
+    neverBoth && JSON.stringify(v6("open", "schedProposer").accept) === "[true,true,true]" && JSON.stringify(v6("open", "schedProposer").wait) === "[false,false,false]"
+      && JSON.stringify(v6("open", "proposer").wait) === "[true,true,true]" && JSON.stringify(v6("open", "proposer").accept) === "[false,false,false]"
+      && JSON.stringify(v6("open", "answerer").accept) === "[true,true,false]" && JSON.stringify(v6("open", "answerer").wait) === "[false,false,false]"
+      && JSON.stringify(v6("open", "bystander").accept) === "[false,false,false]" && JSON.stringify(v6("open", "bystander").wait) === "[false,false,false]",
+    JSON.stringify(at6 ? (at6.err || at6.open) : { row: !!mkRow, accept: !!acceptGate, wait: !!waitGate, box: !!boxText, detect: !!detectAT }).slice(0, 400));
+  check("AT6 a row whose leg has started (Accept refuses it) asks to be declined or withdrawn instead of \"You'd take …\" — the answerer and a scheduler \"decline it.\", the proposer \"withdraw it.\", a bystander \"it can't be accepted.\" — and its proposer isn't told they're waiting; an open row says the legs (tradeLegsFor)",
+    !!at6 && !at6.err && v6("stale", "answerer").box === "This trade's shift has passed — decline it." && v6("stale", "schedOther").box === "This trade's shift has passed — decline it."
+      && v6("stale", "proposer").box === "This trade's shift has passed — withdraw it." && v6("stale", "schedProposer").box === "This trade's shift has passed — withdraw it."
+      && v6("stale", "bystander").box === "This trade's shift has passed — it can't be accepted."
+      && JSON.stringify(v6("stale", "proposer").wait) === "[false,false,true]" && JSON.stringify(v6("stale", "answerer").accept) === "[false,false,false]"   // (AT7: no Accept on a started row)
+      && v6("open", "answerer").box === TLF(T2, "s2") && v6("open", "proposer").box === TLF(T2, "s1") && /^You'd take Service Wk of Jan 7; you'd give Service Wk of Jan 14$/.test(v6("open", "answerer").box),
+    JSON.stringify(at6 ? (at6.err || at6.stale) : null).slice(0, 400));
+  const KN = (n, tail) => `plus ${n} knock-on change${n === 1 ? "" : "s"} to other shifts ${tail}`;
+  check("AT6 a trade that moves other shifts says how many, from the REAL detectCascadeChanges (the list the Accept confirm shows): \"plus 2 knock-on changes to other shifts — listed when you accept\" to whoever can accept, \"… when BBB accepts\" to the others; 1 → singular; none, or a started trade → no line; one detectCascadeChanges per open pending row",
+    !!at6 && !at6.err
+      && JSON.stringify(v6("open", "answerer").knock) === JSON.stringify([KN(2, "— listed when you accept"), KN(1, "— listed when you accept"), null])
+      && JSON.stringify(v6("open", "schedProposer").knock) === JSON.stringify([KN(2, "— listed when you accept"), KN(1, "— listed when you accept"), null])
+      && JSON.stringify(v6("open", "proposer").knock) === JSON.stringify([KN(2, "when BBB accepts"), KN(1, "when BBB accepts"), null])
+      && JSON.stringify(v6("open", "bystander").knock) === JSON.stringify([KN(2, "when BBB accepts"), KN(1, "when BBB accepts"), null])
+      && Object.keys(VIEWERS).every((v) => JSON.stringify(v6("stale", v).knock) === "[null,null,null]" && v6("open", v).calls === 3 && v6("stale", v).calls === 1)
+      && count("detectCascadeChanges(schedule, r)") === 2,
+    JSON.stringify(at6 ? (at6.err || { answerer: v6("open", "answerer"), proposer: v6("open", "proposer").knock, stale: v6("stale", "answerer") }) : null).slice(0, 400));
+
+  // AT6 — dark mode: what the browser writes into the style attributes, matched against the app's real dark sheet
+  const darkCss = (nsrcAT.match(/\{darkMode && <style>\{`([\s\S]*?)`\}<\/style>\}/) || [])[1] || "";
+  const darkSel = [...darkCss.matchAll(/\[style\*="([^"]+)"\]/g)].map((m) => m[1]);
+  const UNITLESS_AT = new Set(["fontWeight", "lineHeight", "opacity", "zIndex", "flex", "flexGrow", "flexShrink"]);
+  const rgbAT = (hex) => `rgb(${hex.slice(1).match(/../g).map((h) => parseInt(h, 16)).join(", ")})`;
+  // React sets each property through the CSSOM, which serializes a hex colour as rgb() and a number as px (the reviews saw "background: rgb(248, 240, 255)")
+  const serAT = (o) => Object.entries(o).map(([k, v]) => `${k.replace(/[A-Z]/g, (c) => "-" + c.toLowerCase())}: ${typeof v === "number" && !UNITLESS_AT.has(k) ? v + "px" : String(v).replace(/#[0-9a-fA-F]{6}\b/g, rgbAT)};`).join(" ");
+  const hitsAT = (o) => darkSel.filter((s) => serAT(o).includes(s));
+  const styleAT = (re) => { const m = row.match(re); if (!m) return null; try { const f = vm.runInContext(`(function (dk) { return (${m[1]}); })`, sandbox); return { light: f(false), dark: f(true) }; } catch (ex) { return null; } };
+  const boxSt = styleAT(/\{typeof tradeLegsFor === "function" && \(\n\s*<div style=\{(\{[^\n]*?\})\}>/);
+  const knockSt = styleAT(/\{knockOns\.get\(r\.id\) && <div style=\{(\{[^\n]*?\})\}>/);
+  const rowSt = styleAT(/<div key=\{r\.id\} style=\{(\{[^\n]*?\})\}>/);
+  const lumAT = (hex) => { const v = hex.slice(1).match(/../g).map((h) => parseInt(h, 16) / 255).map((c) => (c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4))); return 0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2]; };
+  const crAT = (a, b) => (Math.max(lumAT(a), lumAT(b)) + 0.05) / (Math.min(lumAT(a), lumAT(b)) + 0.05);
+  const ctlAT = hitsAT({ background: "#ffffff" });   // the control: plain white IS repainted navy by the sheet
+  check("AT6 dark mode: the legs box and its knock-on line are the same light box in both themes, like the row they sit in — no selector of the app's real dark sheet matches what the browser writes for the box, the line or the row (so the row stays light lavender in dark mode, and the box with it); plain #ffffff is matched (the control); text contrast ≥ 4.5 on the box",
+    !!boxSt && !!knockSt && !!rowSt && darkSel.length > 20 && ctlAT.length > 0
+      && JSON.stringify(boxSt.light) === JSON.stringify(boxSt.dark) && JSON.stringify(knockSt.light) === JSON.stringify(knockSt.dark)
+      && hitsAT(boxSt.dark).length === 0 && hitsAT(knockSt.dark).length === 0 && hitsAT(rowSt.dark).length === 0
+      && /^#[0-9a-f]{6}$/i.test(String(boxSt.dark.background)) && lumAT(boxSt.dark.background) > 0.85 && lumAT(rowSt.dark.background) > 0.85
+      && crAT(boxSt.dark.color, boxSt.dark.background) >= 4.5 && crAT(knockSt.dark.color, boxSt.dark.background) >= 4.5,
+    JSON.stringify({ sels: darkSel.length, ctl: ctlAT, boxDark: boxSt && serAT(boxSt.dark), boxLight: boxSt && serAT(boxSt.light), hits: [boxSt && hitsAT(boxSt.dark), knockSt && hitsAT(knockSt.dark), rowSt && hitsAT(rowSt.dark)] }).slice(0, 500));
+  // AT7 (review 2026-10-19): a trade whose shift has passed says "decline it" — so it offers no ✓ Accept (which could
+  // only refuse); ✕ Decline stays, under the same canAnswer gate.
+  const ACC7 = "{tradeLegsNotStarted(r) && <button onClick={()=>acceptTradeRequest(r)}", iCan7 = src.indexOf("{canAnswer(r) && (", src.indexOf("const canAnswer = (r) =>"));
+  const iAcc7 = src.indexOf(ACC7), iDec7 = src.indexOf("<button onClick={()=>declineTradeRequest(r)}", iCan7);
+  check("AT7 a passed trade offers no ✓ Accept (only ✕ Decline, as its note says); a live one keeps both, under the canAnswer gate",
+    count(ACC7) === 1 && count("<button onClick={()=>acceptTradeRequest(r)}") === 1 && iCan7 > 0 && iAcc7 > iCan7 && iDec7 > iAcc7 && iDec7 - iCan7 < 900, JSON.stringify({ iCan7, iAcc7, iDec7 }));
+}
+
 // ─── AB. APP call-shift edits wait for the APP-shift row (2026-10-11, audit QW4 + its review) ───
 // Every APP write upserts the WHOLE app_shifts_data 'main' map (no CAS, no
 // snapshot, no restore path). If the read failed, appShifts stayed at its
@@ -4675,6 +4947,357 @@ console.log("\nAS. The UX batch's review fixes");
   }
 }
 
+// ─── AU. Mine: readable dates, "Published through …", empty states by role (UX audit 2026-10-19) ───
+// My Shifts headed each week "2026-10-19 → 2026-10-25" and listed rows like
+// "Tue Night 5p–7a" with no date, so a member had to work out which night was
+// theirs. The Mine header printed the Generate tab's setup window ("October –
+// December 2026"), not what is published. Members were told "Generate a
+// schedule first.", which only a scheduler can do, and an empty schedule
+// (still loading, or a failed read) left the page blank. Render-only, plus pure
+// helpers (helpers.js); the Mine builder's roles are unchanged (X3/X4 hold).
+//   AU1 the helpers, executed: weekRangeLabel / monthDayLabel / roleDateLabel on
+//       the 2026-10-19 week, the fall-back week 2026-10-26 (DST), the spring-
+//       forward week and a year boundary; every role kind (a night's own date,
+//       the weekend's held legs, the service week's held range; a dated role,
+//       an OFF week or nothing held → no chip); pure (input untouched, no clock)
+//   AU2 roleDateLabel on the REAL Mine builder's roles (sliced, as X3 does):
+//       worked examples, and every role of every surgeon on the 46 live weeks
+//       gets dates inside its own week, on its own weekdays
+//   AU3 publishedThrough, executed: no counting week → null; else the last
+//       counting week's Sunday; blank entries ignored; it equals the end of the
+//       Calendar's published range (calMonthStatus) on every case
+//   AU4 AU1 + AU3 again in a child pinned to TZ=America/Chicago (proven)
+//   AU5 the Mine render, sliced and run: the setup-window header is gone; the
+//       header, week-header and row-date code run on the live weeks, and
+//       degrade to today's text with an old cached helpers.js; the chip's style
+//       is one const outside the map; vacation and no-call rows print
+//       dayMonthLabel; U4's in-order span stays under its 2500 bound
+//   AU6 the empty states, executed as written: a member is never told to
+//       generate; an empty schedule says loading / didn't load / nothing
+//       published (by role), and never shows alongside the shifts list
+// The review's fixes (2026-10-19):
+//   AU1 the service-week chip is the held days as runs of consecutive days
+//       ("Mon 11/23 – Wed 11/25 + Sat 11/28"), never one range across a day
+//       someone else holds; a full week stays one range (AU4 runs these too)
+//   AU2 Thanksgiving and Christmas weeks through the REAL Mine builder, the
+//       live weeks with a covered Friday, and every chip on every live role
+//       read back into days = exactly the days the role holds
+//   AU5 vacation and no-call dates name their year when it isn't this year
+//       (mineDay, sliced and executed against an injected today)
+console.log("\nAU. Mine: readable dates, Published through, empty states by role");
+{
+  const AU_FN = ["weekRangeLabel", "monthDayLabel", "roleDateLabel", "publishedThrough", "calMonthStatus"];
+  const H = vm.runInContext(`({ ${AU_FN.map((f) => `${f}: typeof ${f} === "function" ? ${f} : null`).join(", ")} })`, sandbox);
+  const NONE = AU_FN.filter((f) => !H[f]).length ? "not defined in helpers.js: " + AU_FN.filter((f) => !H[f]).join(", ") : "";
+  const tryRun = (f) => { try { return f(); } catch (ex) { return "threw: " + String((ex && ex.message) || ex).slice(0, 120); } };
+  const FIXD = path.join(ROOT, "test", "fixtures");
+  const LIVE = JSON.parse(fs.readFileSync(path.join(FIXD, "schedule-weeks-live-2026-10-02.json"), "utf8"));
+  const argOf = (x) => (x === "@LIVE" ? LIVE : JSON.parse(JSON.stringify(x)));
+  const runCases = (cases) => cases.map(([f, args]) => (H[f] ? tryRun(() => H[f](...args.map(argOf))) : "missing " + f));
+  const badOf = (cases, got) => cases.map((c, i) => (JSON.stringify(got[i]) === JSON.stringify(c[2]) ? null : `${c[0]}(${JSON.stringify(c[1]).slice(1, 80)}) → ${JSON.stringify(got[i])}, want ${JSON.stringify(c[2])}`)).filter(Boolean);
+
+  // AU1 — the helpers
+  const rl = (shiftKey, extra) => Object.assign({ type: "role", shiftKey }, extra || {});
+  const AU1 = [
+    ["weekRangeLabel", ["2026-10-19"], "Oct 19 – Oct 25"],
+    ["weekRangeLabel", ["2026-10-26"], "Oct 26 – Nov 1"],
+    ["weekRangeLabel", ["2027-03-08"], "Mar 8 – Mar 14"],
+    ["weekRangeLabel", ["2026-12-28"], "Dec 28 – Jan 3"],
+    ["monthDayLabel", ["2026-10-19"], "Oct 19"],
+    ["monthDayLabel", ["2026-11-01", true], "Nov 1, 2026"],
+    ["monthDayLabel", ["2027-01-03", true], "Jan 3, 2027"],
+    // [7..22] wk 2026-10-19
+    ["roleDateLabel", ["2026-10-19", rl("mon")], "Mon 10/19"],
+    ["roleDateLabel", ["2026-10-19", rl("tue")], "Tue 10/20"],
+    ["roleDateLabel", ["2026-10-19", rl("wed")], "Wed 10/21"],
+    ["roleDateLabel", ["2026-10-19", rl("thu")], "Thu 10/22"],
+    ["roleDateLabel", ["2026-10-19", rl("wknd")], "Fri 10/23 + Sun 10/25"],
+    ["roleDateLabel", ["2026-10-19", rl("wknd", { held: ["2026-10-25", "2026-10-23"] })], "Fri 10/23 + Sun 10/25"],
+    ["roleDateLabel", ["2026-10-19", rl("wknd", { held: ["2026-10-23"] })], "Fri 10/23"],
+    ["roleDateLabel", ["2026-10-19", rl("wknd", { held: ["2026-10-25"] })], "Sun 10/25"],
+    ["roleDateLabel", ["2026-10-19", rl("wknd", { held: [] })], null],
+    ["roleDateLabel", ["2026-10-19", rl("dayCall")], "Mon 10/19 – Sat 10/24"],
+    ["roleDateLabel", ["2026-10-19", rl("dayCall", { held: ["2026-10-20", "2026-10-21", "2026-10-22", "2026-10-23", "2026-10-24"] })], "Tue 10/20 – Sat 10/24"],
+    ["roleDateLabel", ["2026-10-19", rl("dayCall", { held: ["2026-10-24"] })], "Sat 10/24"],
+    ["roleDateLabel", ["2026-10-19", rl("dayCall", { held: [] })], null],
+    ["roleDateLabel", ["2026-10-19", rl(null, { date: "2026-10-21" })], null],
+    ["roleDateLabel", ["2026-10-19", rl("wed", { date: "2026-10-21" })], null],
+    ["roleDateLabel", ["2026-10-19", rl(null)], null],
+    // [23..] the fall-back week, the spring-forward weekend, New Year's
+    ["roleDateLabel", ["2026-10-26", rl("thu")], "Thu 10/29"],
+    ["roleDateLabel", ["2026-10-26", rl("wknd")], "Fri 10/30 + Sun 11/1"],
+    ["roleDateLabel", ["2026-10-26", rl("dayCall")], "Mon 10/26 – Sat 10/31"],
+    ["roleDateLabel", ["2027-03-08", rl("wknd")], "Fri 3/12 + Sun 3/14"],
+    ["roleDateLabel", ["2026-12-28", rl("wknd")], "Fri 1/1 + Sun 1/3"],
+  ];
+  // the service week as runs of the days held (review 2026-10-19): a day someone else holds splits the chip
+  const AU1R = [
+    ["roleDateLabel", ["2026-11-23", rl("dayCall", { held: ["2026-11-23", "2026-11-24", "2026-11-25", "2026-11-28"] })], "Mon 11/23 – Wed 11/25 + Sat 11/28"],
+    ["roleDateLabel", ["2026-12-21", rl("dayCall", { held: ["2026-12-26", "2026-12-21", "2026-12-23", "2026-12-22"] })], "Mon 12/21 – Wed 12/23 + Sat 12/26"],
+    ["roleDateLabel", ["2026-10-19", rl("dayCall", { held: ["2026-10-24", "2026-10-21", "2026-10-19"] })], "Mon 10/19 + Wed 10/21 + Sat 10/24"],
+    ["roleDateLabel", ["2026-10-19", rl("dayCall", { held: ["2026-10-20", "2026-10-21", "2026-10-20", "2026-10-22"] })], "Tue 10/20 – Thu 10/22"],
+    ["roleDateLabel", ["2026-10-19", rl("dayCall", { held: ["2026-10-19", "2026-10-20", "2026-10-21", "2026-10-22", "2026-10-23", "2026-10-24"] })], "Mon 10/19 – Sat 10/24"],
+    ["roleDateLabel", ["2026-10-26", rl("dayCall", { held: ["2026-10-26", "2026-10-27", "2026-10-31"] })], "Mon 10/26 – Tue 10/27 + Sat 10/31"],
+    ["roleDateLabel", ["2026-11-30", rl("dayCall", { held: ["2026-11-30", "2026-12-01", "2026-12-02"] })], "Mon 11/30 – Wed 12/2"],
+    ["roleDateLabel", ["2026-12-28", rl("dayCall", { held: ["2026-12-28", "2026-12-29", "2026-12-30", "2026-12-31", "2027-01-02"] })], "Mon 12/28 – Thu 12/31 + Sat 1/2"],
+    ["roleDateLabel", ["2026-12-28", rl("dayCall")], "Mon 12/28 – Sat 1/2"],
+    ["roleDateLabel", ["2027-03-08", rl("dayCall", { held: ["2027-03-08", "2027-03-13"] })], "Mon 3/8 + Sat 3/13"],
+  ];
+  const au1Got = runCases(AU1);
+  const b1 = badOf(AU1.slice(0, 7), au1Got.slice(0, 7)), b2 = badOf(AU1.slice(7, 23), au1Got.slice(7, 23)), b3 = badOf(AU1.slice(23), au1Got.slice(23));
+  const bR = badOf(AU1R, runCases(AU1R));
+  check("AU1 a My Shifts week heads \"Oct 19 – Oct 25\" (Monday → Sunday), also across the fall-back week (Oct 26 – Nov 1), the spring-forward week and a year boundary (Dec 28 – Jan 3); with the year a date reads \"Nov 1, 2026\"",
+    !NONE && b1.length === 0, NONE || b1.join(" | "));
+  check("AU1 a row's date on wk 2026-10-19: a night → its own date (Tue 10/20); the weekend → the legs held (Fri 10/23 + Sun 10/25, or one leg, none → no chip); the service week → the days held (Mon 10/19 – Sat 10/24, from Tue when Monday was given away; gaps: the review cases below); a dated role or an OFF week → no chip",
+    !NONE && b2.length === 0, NONE || b2.join(" | "));
+  check("AU1 …and across the fall-back week 2026-10-26 (Thu 10/29; Fri 10/30 + Sun 11/1; Mon 10/26 – Sat 10/31), the spring-forward weekend (Fri 3/12 + Sun 3/14) and New Year's (Fri 1/1 + Sun 1/3)",
+    !NONE && b3.length === 0, NONE || b3.join(" | "));
+  check(`AU1 (review) the service week reads as runs of the days held, never one range across a day someone else holds: Thanksgiving \"Mon 11/23 – Wed 11/25 + Sat 11/28\", Christmas \"Mon 12/21 – Wed 12/23 + Sat 12/26\" (held list unsorted), single days joined by +, a repeated day once, a full week one range, across a month, a year and the DST weeks (${AU1R.length} cases)`,
+    !NONE && bR.length === 0, NONE || bR.join(" | "));
+  const pureIn = [rl("wknd", { held: ["2026-10-25", "2026-10-23"] }), rl("dayCall", { held: ["2026-10-24", "2026-10-20"] })];
+  const pureBefore = JSON.stringify(pureIn);
+  const pureOut = H.roleDateLabel ? pureIn.map((r) => tryRun(() => H.roleDateLabel("2026-10-19", r))) : [];
+  const clocked = ["weekRangeLabel", "monthDayLabel", "roleDateLabel", "publishedThrough"].filter((f) => H[f] && /Date\.now|new Date\(\s*\)/.test(String(H[f])));
+  check("AU1 pure: an unsorted held list is read in date order and left as it was; none of the four reads a clock (no Date.now, no new Date())",
+    !NONE && JSON.stringify(pureIn) === pureBefore && JSON.stringify(pureOut) === JSON.stringify(["Fri 10/23 + Sun 10/25", "Tue 10/20 + Sat 10/24"]) && clocked.length === 0,
+    NONE || JSON.stringify({ pureIn, pureOut, clocked }));
+
+  // AU2 — the REAL Mine builder's roles (sliced, as X3 does)
+  const SURG = ["DJA", "MCC", "RPC", "KJH", "REH", "FAK", "ARW"].map((name, i) => ({ id: "s" + (i + 1), name }));
+  const nameOf = (id) => (SURG.find((s) => s.id === id) || {}).name || id || "?";
+  const MA = "            const myShifts = [];", MB = "            const myShiftsView = mineUpcoming(myShifts, myToday);";
+  const ma = src.indexOf(MA), mb = ma < 0 ? -1 : src.indexOf(MB, ma);
+  const ha = src.indexOf("const holidayEmoji = (label) => {"), hb = ha < 0 ? -1 : src.indexOf("\n  };", ha);
+  let mineRun = null;
+  try {
+    const holidayEmoji = ha > 0 && hb > 0 ? vm.runInContext(`(function () { ${src.slice(ha, hb + 4)}\n return holidayEmoji; })()`, sandbox) : null;
+    const build = ma > 0 && mb > 0 && holidayEmoji ? vm.runInContext(`(function (schedule, myId, nameOf, holidayEmoji, myToday) { ${src.slice(ma, mb + MB.length)}\n return myShifts; })`, sandbox) : null;
+    mineRun = build ? (sched, sid) => JSON.parse(JSON.stringify(build(sched, sid, nameOf, holidayEmoji, "2016-01-01"))) : null;
+  } catch (ex) { mineRun = null; }
+  const roleOf = (sid, sched, mStr, pred) => { const w = mineRun ? mineRun(sched, sid).find((x) => x.mStr === mStr) : null; return w ? w.roles.find(pred) || null : null; };
+  const lab = (mStr, r) => (H.roleDateLabel && r ? tryRun(() => H.roleDateLabel(mStr, r)) : "no role / no helper");
+  const COVSUN = { "2026-08-17": { dayCall: "s2", nights: { wknd: "s4" }, holidayCoverage: { "2026-08-23": { surgeonId: "s6", type: "major", name: "Sun 24h", holiday: "Test Sunday" } } } };
+  const ex2 = {
+    fakLaborSvc: lab("2026-09-07", roleOf("s6", LIVE, "2026-09-07", (r) => r.shiftKey === "dayCall")),
+    rpcLaborDay: lab("2026-09-07", roleOf("s3", LIVE, "2026-09-07", (r) => r.date === "2026-09-07")),
+    fakMonNight: lab("2026-06-29", roleOf("s6", LIVE, "2026-06-29", (r) => r.shiftKey === "mon")),
+    fakWknd: lab("2026-06-29", roleOf("s6", LIVE, "2026-06-29", (r) => r.shiftKey === "wknd")),
+    fakSvcDay: lab("2026-06-29", roleOf("s6", LIVE, "2026-06-29", (r) => r.date === "2026-07-03")),
+    kjhCovSun: lab("2026-08-17", roleOf("s4", COVSUN, "2026-08-17", (r) => r.shiftKey === "wknd")),
+  };
+  check("AU2 the real Mine builder's roles: FAK's Labor Day service week reads Tue 9/8 – Sat 9/12 (RPC holds Mon 9/7); RPC's Labor Day 24h and FAK's 7/3 Service Day get no chip (their detail leads with the date); FAK's 6/29 Mon night and weekend read Mon 6/29 and Fri 7/3 + Sun 7/5; a weekend whose Sunday is covered reads Fri 8/21",
+    !!mineRun && !NONE && JSON.stringify(ex2) === JSON.stringify({ fakLaborSvc: "Tue 9/8 – Sat 9/12", rpcLaborDay: null, fakMonNight: "Mon 6/29", fakWknd: "Fri 7/3 + Sun 7/5", fakSvcDay: null, kjhCovSun: "Fri 8/21" }),
+    JSON.stringify(ex2) + (mineRun ? "" : " — the Mine builder slice is missing"));
+  const ALLOWED = { mon: ["Mon"], tue: ["Tue"], wed: ["Wed"], thu: ["Thu"], wknd: ["Fri", "Sun"], dayCall: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] };
+  const dowInWeek = vm.runInContext("(function (mStr, m, d) { for (let i = 0; i < 7; i++) { const x = addD(parse(mStr), i); if (x.getMonth() + 1 === m && x.getDate() === d) return x.getDay(); } return -1; })", sandbox);
+  const propBad = []; let propN = 0, propNull = 0;
+  if (mineRun && H.roleDateLabel) for (const s of SURG) for (const w of mineRun(LIVE, s.id)) for (const r of w.roles) {
+    const t = tryRun(() => H.roleDateLabel(w.mStr, r));
+    if (r.date || !r.shiftKey || (Array.isArray(r.held) && r.held.length === 0)) { propNull++; if (t !== null) propBad.push(`${s.name} ${w.mStr} ${r.type}: ${t}`); continue; }
+    propN++;
+    const toks = typeof t === "string" ? [...t.matchAll(/(\w{3}) (\d{1,2})\/(\d{1,2})/g)] : [];
+    const ok = toks.length > 0 && (toks.length === 1 || r.shiftKey === "wknd" || r.shiftKey === "dayCall")
+      && toks.every(([, dw, m, d]) => { const k = dowInWeek(w.mStr, +m, +d); return k >= 0 && ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][k] === dw && (ALLOWED[r.shiftKey] || []).includes(dw); });
+    if (!ok) propBad.push(`${s.name} ${w.mStr} ${r.type}: ${t}`);
+  }
+  check(`AU2 every role of every surgeon on the ${Object.keys(LIVE).length} live weeks (${propN} dated by the chip, ${propNull} without one): the chip's dates fall inside the role's own week, on its own weekdays (a night on its day, the weekend Fri / Sun, the service week Mon–Sat); dated and OFF roles get none`,
+    !!mineRun && !NONE && propN >= 200 && propNull > 0 && propBad.length === 0, propBad.slice(0, 4).join(" | ") || NONE || (mineRun ? `only ${propN} roles` : "the Mine builder slice is missing"));
+  // (review 2026-10-19) holiday weeks through the REAL builder: the service-week holder doesn't hold the covered days
+  const hcAU = (sid, name, holiday) => Object.assign({ name, role: "holiday_24h", type: "major", hours: "7a–7a", surgeonId: sid }, holiday ? { holiday } : {});
+  const HOLAU = {
+    "2026-11-23": { dayCall: "s1", nights: { mon: "s2", tue: "s3", wed: "s4", thu: "s5", wknd: "s6" },
+      holidayCoverage: { "2026-11-26": hcAU("s3", "Thanksgiving"), "2026-11-27": hcAU("s7", "Fri 24h", "Thanksgiving") } },
+    "2026-12-21": { dayCall: "s2", nights: { mon: "s1", tue: "s3", wed: "s4", thu: "s5", wknd: "s7" },
+      holidayCoverage: { "2026-12-24": hcAU("s6", "Christmas Eve"), "2026-12-25": hcAU("s6", "Christmas Day") } },
+  };
+  const exH = {
+    djaThanksgiving: lab("2026-11-23", roleOf("s1", HOLAU, "2026-11-23", (r) => r.shiftKey === "dayCall")),
+    mccChristmas: lab("2026-12-21", roleOf("s2", HOLAU, "2026-12-21", (r) => r.shiftKey === "dayCall")),
+    rehJul3: lab("2026-06-29", roleOf("s5", LIVE, "2026-06-29", (r) => r.shiftKey === "dayCall")),
+    arwJun19: lab("2026-06-15", roleOf("s7", LIVE, "2026-06-15", (r) => r.shiftKey === "dayCall")),
+    fakChristmasDay: lab("2026-12-21", roleOf("s6", HOLAU, "2026-12-21", (r) => r.date === "2026-12-25")),
+  };
+  check("AU2 (review) holiday weeks, through the REAL Mine builder: DJA's Thanksgiving service week (Thu + Fri covered) reads \"Mon 11/23 – Wed 11/25 + Sat 11/28\", MCC's Christmas week (Eve + Day covered) \"Mon 12/21 – Wed 12/23 + Sat 12/26\"; on the live weeks REH's (Fri 7/3 covered) \"Mon 6/29 – Thu 7/2 + Sat 7/4\" and ARW's (Fri 6/19 covered) \"Mon 6/15 – Thu 6/18 + Sat 6/20\"; the coverer's own 24h keeps no chip",
+    !!mineRun && !NONE && JSON.stringify(exH) === JSON.stringify({ djaThanksgiving: "Mon 11/23 – Wed 11/25 + Sat 11/28", mccChristmas: "Mon 12/21 – Wed 12/23 + Sat 12/26",
+      rehJul3: "Mon 6/29 – Thu 7/2 + Sat 7/4", arwJun19: "Mon 6/15 – Thu 6/18 + Sat 6/20", fakChristmasDay: null }),
+    JSON.stringify(exH));
+  // every chip read back into days must be EXACTLY the days the role holds (its held list)
+  const readBack = vm.runInContext(`(function (mStr, t) {
+    const dsOf = (m, d) => { for (let i = 0; i < 7; i++) { const x = addD(parse(mStr), i); if (x.getMonth() + 1 === m && x.getDate() === d) return fmt(x); } return null; };
+    const out = [];
+    for (const part of String(t).split(" + ")) {
+      const ends = part.split(" – ").map((p) => { const m = p.match(/^\\w{3} (\\d{1,2})\\/(\\d{1,2})$/); return m ? dsOf(+m[1], +m[2]) : null; });
+      if (!ends.length || ends.length > 2 || ends.some((e) => !e)) return null;
+      for (let x = parse(ends[0]); fmt(x) <= ends[ends.length - 1]; x = addD(x, 1)) out.push(fmt(x));
+    }
+    return out;
+  })`, sandbox);
+  const heldBad = []; let heldN = 0;
+  if (mineRun && H.roleDateLabel) for (const [sched, tag] of [[LIVE, "live"], [HOLAU, "holiday"]]) for (const s of SURG) for (const w of mineRun(sched, s.id)) for (const r of w.roles) {
+    if (!Array.isArray(r.held) || !r.held.length || r.date) continue;
+    heldN++;
+    const t = tryRun(() => H.roleDateLabel(w.mStr, r)), back = t ? readBack(w.mStr, t) : null, want = [...new Set(r.held)].sort();
+    if (JSON.stringify(back) !== JSON.stringify(want)) heldBad.push(`${tag} ${s.name} ${w.mStr} ${r.type}: "${t}" reads ${JSON.stringify(back)}, holds ${JSON.stringify(want)}`);
+  }
+  check(`AU2 (review) every service-week and weekend chip on the live weeks and the holiday weeks (${heldN} roles), read back into days, is exactly the days that role holds — no covered day inside a range`,
+    !!mineRun && !NONE && heldN >= 90 && heldBad.length === 0, heldBad.slice(0, 3).join(" | ") || NONE || `only ${heldN} roles`);
+
+  // AU3 — publishedThrough
+  const wkAQ = {};
+  for (let d = new Date(Date.UTC(2026, 3, 6)); d <= new Date(Date.UTC(2026, 11, 28)); d.setUTCDate(d.getUTCDate() + 7)) wkAQ[d.toISOString().slice(0, 10)] = { dayCall: "s1", nights: { mon: "s2", tue: null, wed: null, thu: null, wknd: null } };
+  const blankWk = { dayCall: null, nights: { mon: null, tue: null, wed: null, thu: null, wknd: null }, holidayCoverage: {}, isBackup: false, isFierceBackup: false };
+  const withBlank = Object.assign({}, wkAQ, { "2027-02-01": blankWk, "2027-02-08": {} });
+  const AU3 = [
+    ["publishedThrough", [{}], null],
+    ["publishedThrough", [null], null],
+    ["publishedThrough", [{ meta: { dayCall: "s1" } }], null],
+    ["publishedThrough", [{ "2026-11-02": blankWk }], null],
+    ["publishedThrough", [wkAQ], "2027-01-03"],
+    ["publishedThrough", [withBlank], "2027-01-03"],
+    ["publishedThrough", [{ "2026-10-26": { dayCall: "s2" }, "2026-10-19": { dayCall: "s1" } }], "2026-11-01"],
+    ["publishedThrough", [{ "2027-03-08": { dayCall: null, nights: { wknd: "s3" } } }], "2027-03-14"],
+    ["publishedThrough", [{ "2027-05-31": { dayCall: null, nights: {}, holidayCoverage: { "2027-05-31": { surgeonId: "s4", name: "Memorial Day 24h" } } } }], "2027-06-06"],
+    ["publishedThrough", ["@LIVE"], "2026-11-15"],
+  ];
+  const au3Got = runCases(AU3), b4 = badOf(AU3, au3Got);
+  check(`AU3 publishedThrough: no week that holds call → null ({}, null, non-date keys, blank weeks); else the last such week's Sunday, in date order (the fall-back week ends 11/1), blank entries after it ignored, a nights-only or holiday-only week counted; the live weeks → 2026-11-15 (${AU3.length} cases)`,
+    !NONE && b4.length === 0, NONE || b4.join(" | "));
+  const blankBefore = JSON.stringify(withBlank);
+  const agree = H.calMonthStatus && H.publishedThrough ? AU3.map(([, [s]]) => { const sc = argOf(s); const c = H.calMonthStatus(sc, 2040, 0); const want = c && c.to ? c.to : null; const got = tryRun(() => H.publishedThrough(sc)); return got === want ? null : `${JSON.stringify(s).slice(0, 40)}: ${JSON.stringify(got)} vs the Calendar's ${JSON.stringify(want)}`; }).filter(Boolean) : ["missing"];
+  if (H.publishedThrough) tryRun(() => H.publishedThrough(withBlank));
+  check("AU3 …it is the end of the Calendar's published range (calMonthStatus) on every case, so Mine and the Calendar name the same last day; the schedule passed in is untouched",
+    !NONE && agree.length === 0 && JSON.stringify(withBlank) === blankBefore, NONE || agree.join(" | "));
+
+  // AU4 — AU1 + AU3 again under TZ=America/Chicago
+  {
+    const { execFileSync } = require("child_process");
+    const ALL = AU1.concat(AU1R, AU3);
+    const code = [
+      'const vm = require("vm"), fs = require("fs"), path = require("path");',
+      'const sb = { console, window: {}, document: undefined, navigator: { userAgent: "node-test" }, localStorage: { getItem: () => null, setItem() {}, removeItem() {} }, fetch: () => { throw new Error("no fetch"); }, setTimeout, clearTimeout };',
+      "sb.globalThis = sb; vm.createContext(sb);",
+      `for (const f of ["helpers.js", "config.js"]) vm.runInContext(fs.readFileSync(path.join(${JSON.stringify(ROOT)}, f), "utf8"), sb, { filename: f });`,
+      `const LIVE = JSON.parse(fs.readFileSync(${JSON.stringify(path.join(FIXD, "schedule-weeks-live-2026-10-02.json"))}, "utf8"));`,
+      `const h = {}; for (const f of ${JSON.stringify(AU_FN)}) h[f] = vm.runInContext("typeof " + f + " === 'function' ? " + f + " : null", sb);`,
+      `const cases = ${JSON.stringify(ALL.map(([f, a]) => [f, a]))};`,
+      'const run = (f, a) => { try { return h[f] ? h[f](...a.map((x) => (x === "@LIVE" ? LIVE : x))) : "missing " + f; } catch (ex) { return "threw: " + String((ex && ex.message) || ex).slice(0, 80); } };',
+      'process.stdout.write(JSON.stringify({ off: new Date(2026, 9, 24).getTimezoneOffset(), naive: new Date("2026-10-11").getDay(), out: cases.map(([f, a]) => run(f, a)) }));',
+    ].join("\n");
+    let out = null;
+    try { out = JSON.parse(execFileSync(process.execPath, ["-e", code], { env: Object.assign({}, process.env, { TZ: "America/Chicago" }), encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })); } catch (ex) { out = { err: String(ex).slice(0, 300) }; }
+    check("AU4 the child really runs in America/Chicago (CDT offset 300) and there the NAIVE new Date('2026-10-11') is a Saturday — the trap is visible",
+      !!out && out.off === 300 && out.naive === 6, JSON.stringify(out).slice(0, 300));
+    const tzBad = out && Array.isArray(out.out) ? badOf(ALL, out.out) : ["no output: " + JSON.stringify(out).slice(0, 200)];
+    check(`AU4 under TZ=America/Chicago every AU1 and AU3 case gives the same answer (${ALL.length} cases: week headers, row dates across both DST weeks, the service week's runs, publishedThrough)`,
+      !!out && tzBad.length === 0, tzBad.slice(0, 3).join(" | "));
+  }
+
+  // AU5 — the Mine render, sliced
+  const AMa = '{view==="myschedule" && !isPublicMode && <>', AMb = "{/* ════════════════ REQUESTS ════════════════ */}";
+  const mA = src.indexOf(AMa), mB = mA < 0 ? -1 : src.indexOf(AMb, mA);
+  const mine = mA < 0 || mB < 0 ? "" : src.slice(mA, mB).replace(/\r\n/g, "\n");
+  const betweenAU = (text, a, b) => { const i = text.indexOf(a); if (i < 0) return null; const j = text.indexOf(b, i + a.length); return j < 0 ? null : text.slice(i + a.length, j); };
+  check("AU5 the Mine header no longer prints the Generate tab's setup window (no MO[startMonth], MO[endMoIdx] or startYear in the Mine page); after the badge it reads \"Published through …\" only when something is published",
+    !!mine && !/MO\[startMonth\]|MO\[endMoIdx\]|startYear/.test(mine) && mine.includes("<Badge id={myId}/> {pubThrough && <span style={{") && mine.includes(">Published through {monthDayLabel(pubThrough, true)}</span>}"),
+    mine ? (mine.match(/MO\[startMonth\][^\n]{0,60}/) || ["header line not found"])[0] : "the Mine block was not found");
+  const D0 = "const mineDates = ", D1 = "const mineDateChip = ";
+  const dA = mine.indexOf(D0), dB = dA < 0 ? -1 : mine.indexOf(D1, dA);
+  let declFn = null;
+  try { declFn = dA >= 0 && dB > dA ? vm.runInContext(`(function (env) { const { schedule, weekRangeLabel, roleDateLabel, publishedThrough, monthDayLabel } = env; ${mine.slice(dA, dB)} return { mineDates, pubThrough, weekHead, rowDate }; })`, sandbox) : null; } catch (ex) { declFn = null; }
+  const hdrExpr = betweenAU(mine, ">Published through {", "}</span>}");
+  let hdrFn = null; try { hdrFn = hdrExpr ? vm.runInContext(`(function (pubThrough, monthDayLabel) { return "Published through " + (${hdrExpr}); })`, sandbox) : null; } catch (ex) { hdrFn = null; }
+  const wk1019 = { mStr: "2026-10-19", endStr: "2026-10-25" };
+  const viewOf = (env) => { if (!declFn) return null; const d = tryRun(() => declFn(env)); if (!d || typeof d !== "object") return d; return tryRun(() => ({ on: d.mineDates, pub: d.pubThrough, hdr: d.pubThrough && hdrFn ? hdrFn(d.pubThrough, env.monthDayLabel) : null, week: d.weekHead(wk1019), row: d.rowDate("2026-10-19", rl("tue")), dated: d.rowDate("2026-10-19", rl(null, { date: "2026-10-21" })) })); };
+  const Rv = viewOf({ schedule: LIVE, weekRangeLabel: H.weekRangeLabel, roleDateLabel: H.roleDateLabel, publishedThrough: H.publishedThrough, monthDayLabel: H.monthDayLabel });
+  const Ov = viewOf({ schedule: LIVE }); // an old cached helpers.js: none of the four exists
+  check("AU5 executed — the Mine page's own date code on the live weeks: the header reads \"Published through Nov 15, 2026\", a week heads \"Oct 19 – Oct 25\", a Tuesday night's chip reads \"Tue 10/20\", a dated role gets none",
+    !!Rv && Rv.on === true && Rv.hdr === "Published through Nov 15, 2026" && Rv.week === "Oct 19 – Oct 25" && Rv.row === "Tue 10/20" && Rv.dated === null,
+    JSON.stringify(Rv) + (declFn ? "" : " — the Mine date consts were not found") + (hdrFn ? "" : " — the header expression was not found"));
+  check("AU5 executed — with an old cached helpers.js (none of the new helpers defined) Mine still renders: no header line, the week heads in today's ISO form, no chips, nothing throws",
+    !!Ov && Ov.on === false && Ov.pub === null && Ov.hdr === null && Ov.week === "2026-10-19 → 2026-10-25" && Ov.row === null, JSON.stringify(Ov));
+  const mapAt = mine.indexOf("{myShiftsView.map(wk => ("), rolesAt = mapAt < 0 ? -1 : mine.indexOf("{wk.roles.map((r,i) => (", mapAt);
+  const typeAt = rolesAt < 0 ? -1 : mine.indexOf("{r.type}</span>", rolesAt);
+  const CHIP = "{rowDate(wk.mStr, r) && <span style={mineDateChip}>{rowDate(wk.mStr, r)}</span>}";
+  const chipAt = typeAt < 0 ? -1 : mine.indexOf(CHIP, typeAt), detAt = chipAt < 0 ? -1 : mine.indexOf("{r.detail}</span>", chipAt);
+  const headSeg = mapAt >= 0 && rolesAt > mapAt ? mine.slice(mapAt, rolesAt) : "";
+  check("AU5 inside the My Shifts map: the week header is weekHead(wk) (the ISO \"{wk.mStr} → {wk.endStr}\" is gone), and each row shows its date chip right after the role's name, before its detail",
+    headSeg.includes("{weekHead(wk)}</span>") && !headSeg.includes("{wk.mStr} → {wk.endStr}") && typeAt > rolesAt && chipAt > typeAt && chipAt - typeAt < 80 && detAt > chipAt && detAt - chipAt < CHIP.length + 120 && count(CHIP) === 1,
+    JSON.stringify({ mapAt, rolesAt, typeAt, chipAt, detAt }));
+  const declAt = mine.indexOf("const mineDateChip = {"), retAt = declAt < 0 ? -1 : mine.indexOf("return (", declAt);
+  const chipLit = betweenAU(mine, "const mineDateChip = ", ";\n");
+  const chipStyle = chipLit ? tryRun(() => vm.runInContext("(" + chipLit + ")", sandbox)) : null;
+  const rowStyle = rolesAt < 0 ? "" : betweenAU(mine.slice(rolesAt), "<div key={i} style={{", "}}>") || "";
+  check("AU5 the chip's style is ONE const, declared before the Mine page's return and outside the map (no per-row style object); the chip doesn't wrap, and the row wraps instead so a long row fits a phone",
+    count("const mineDateChip = {") === 1 && declAt >= 0 && retAt > declAt && mapAt > retAt && !mine.slice(mapAt).includes('color:"#2c4a68",background:"#e6eef6"')
+      && !!chipStyle && typeof chipStyle === "object" && chipStyle.whiteSpace === "nowrap" && /(^|,)flexWrap:"wrap"(,|$)/.test(rowStyle),
+    JSON.stringify({ declAt, retAt, mapAt, chipStyle, rowStyle }));
+  const u4span = (() => {
+    const at = src.indexOf("{myShiftsView.map(wk => (");
+    const seq = ["{r.canSwap ? (", 'findSwapSuggestions(wk.mStr, r.shiftKey, myId); setView("calendar");', "🔄 Find Swap", ") : r.shiftKey ? (", ">in progress</span>", ") : null}"];
+    let pos = at, last = -1;
+    for (const s of seq) { const i = at < 0 ? -1 : src.indexOf(s, pos); if (i < 0) return -1; last = i - at; pos = i + s.length; }
+    return last;
+  })();
+  check(`AU5 U4's in-order span (the My Shifts map to its last branch) is ${u4span} characters, inside U4's 2500 bound`,
+    u4span > 0 && u4span <= 2500, String(u4span));
+  check("AU5 My Vacations and My No-Call Days print readable dates (mineDay: \"Mon 12/21 → Fri 12/25\"), not ISO dates",
+    mine.includes("minWidth:140}}>{mineDay(vs)} → {mineDay(ve)}</span>") && !mine.includes(">{vs} → {ve}</span>") && !mine.includes("{dayMonthLabel(vs)}")
+      && mine.includes("{mineDay(ns)}{ns!==ne ? ` → ${mineDay(ne)}` : \"\"}") && !mine.includes("{ns}{ns!==ne ? ` → ${ne}` : \"\"}") && !mine.includes("{dayMonthLabel(ns)}"));
+  // (review 2026-10-19) …with the year when it isn't this year: mineDay, sliced, run against an injected today
+  const mdExpr = (mine.match(/\n[ ]*const mineDay = (\(ds\) => [^\n]*);\n/) || [])[1];
+  const mdAt = mine.indexOf("const mineDay = "), todayAt = mine.indexOf("const myToday = fmt(new Date());");
+  let md = null;
+  try {
+    const mk = mdExpr ? vm.runInContext(`(function (myToday) { return (${mdExpr}); })`, sandbox) : null;
+    if (mk) {
+      const in26 = mk("2026-10-19"), in27 = mk("2027-01-02");
+      md = { soon: in26("2026-10-25"), yearOut: in26("2027-10-25"), dec: in26("2026-12-28"), jan: in26("2027-01-03"), lastYear: in26("2025-12-30"), nextJan: in27("2027-01-03"), prevDec: in27("2026-12-28") };
+    }
+  } catch (ex) { md = { err: String(ex).slice(0, 120) }; }
+  check("AU5 (review) a vacation or no-call date names its year when it isn't this year (the Calendar's \"Mon 10/25/2027\" form) — executed on 10/19/2026: 10/25 → \"Sun 10/25\", 2027-10-25 → \"Mon 10/25/2027\" (not next week), Jan 3 → \"Sun 1/3/2027\", a vacation begun last year → \"Tue 12/30/2025\"; on 1/2/2027 the same Jan 3 → \"Sun 1/3\"; declared after myToday, before the page's return",
+    !!md && JSON.stringify(md) === JSON.stringify({ soon: "Sun 10/25", yearOut: "Mon 10/25/2027", dec: "Mon 12/28", jan: "Sun 1/3/2027", lastYear: "Tue 12/30/2025", nextJan: "Sun 1/3", prevDec: "Mon 12/28/2026" })
+      && count("const mineDay = ") === 1 && todayAt >= 0 && mdAt > todayAt && mdAt < retAt && (mine.match(/\{mineDay\((vs|ve|ns|ne)\)\}/g) || []).length === 4 && (mine.match(/\$\{mineDay\(ne\)\}/g) || []).length === 1,
+    JSON.stringify({ md, mdAt, todayAt, retAt }));
+
+  // AU6 — the empty states, executed as written
+  const noAt = mine.indexOf("{myShifts.length === 0 && (");
+  const noExpr = noAt < 0 ? null : betweenAU(mine.slice(noAt), "padding:30}}>{", "}</div>");
+  const GATE0 = "{mineId && Object.keys(schedule).length === 0 && (", GATE1 = "{mineId && Object.keys(schedule).length > 0 && (() => {";
+  const g0At = mine.indexOf(GATE0);
+  const emptyExpr = g0At < 0 ? null : betweenAU(mine.slice(g0At), "fontSize:13}}>{", "}</div>");
+  const fn6 = (code) => { if (!code) return null; try { return vm.runInContext(`(function (env) { const { isScheduler, loaded, schedSync, mineId, schedule } = env; return (${code}); })`, sandbox); } catch (ex) { return null; } };
+  const noFn = fn6(noExpr), emptyFn = fn6(emptyExpr);
+  // each gate is the text between its "{" and its " && (": exactly what the page evaluates
+  const gate0 = mine.split(GATE0).length === 2 ? fn6(GATE0.slice(1, GATE0.indexOf(" && ("))) : null, gate1 = mine.split(GATE1).length === 2 ? fn6(GATE1.slice(1, GATE1.indexOf(" && (() => {"))) : null;
+  const E = (o) => (emptyFn ? tryRun(() => emptyFn(Object.assign({ isScheduler: false, loaded: true, schedSync: { seeded: true, loadFailed: false }, mineId: "s3", schedule: {} }, o))) : "the empty-schedule line was not found");
+  const SS = (seeded, loadFailed) => ({ seeded, loadFailed });
+  const ec = {
+    loadingMember: E({ loaded: false, schedSync: SS(false, false) }), loadingSched: E({ loaded: false, schedSync: SS(false, false), isScheduler: true }),
+    loadedNotSeeded: E({ schedSync: SS(false, false) }),
+    failedMember: E({ schedSync: SS(false, true) }), failedSched: E({ schedSync: SS(false, true), isScheduler: true }),
+    noneMember: E({}), noneSched: E({ isScheduler: true }),
+  };
+  const LOADING = "Loading the schedule…", FAILED = "The schedule didn't load — it retries every minute; reload the app if this stays.";
+  check("AU6 executed — an empty schedule says why, as written: loading (before the first read, and until it lands), the read failed (retrying), or nothing published — a scheduler is told to generate, a member is not",
+    ec.loadingMember === LOADING && ec.loadingSched === LOADING && ec.loadedNotSeeded === LOADING && ec.failedMember === FAILED && ec.failedSched === FAILED
+      && ec.noneMember === "No call schedule is published yet." && ec.noneSched === "No call schedule is published yet. Generate a schedule first.",
+    JSON.stringify(ec));
+  const nc = noFn ? { sched: tryRun(() => noFn({ isScheduler: true })), member: tryRun(() => noFn({ isScheduler: false })) } : null;
+  check("AU6 executed — weeks are published but none is this person's: the scheduler keeps U4's sentence (\"No shifts assigned yet. Generate a schedule first.\", still once in the file), a member reads \"No shifts assigned yet.\"",
+    !!nc && nc.sched === "No shifts assigned yet. Generate a schedule first." && nc.member === "No shifts assigned yet." && count("No shifts assigned yet. Generate a schedule first.") === 1,
+    JSON.stringify(nc) + (noFn ? "" : " — the no-shifts line was not found"));
+  const genAts = []; { let i = -1; while ((i = mine.indexOf("Generate a schedule first.", i + 1)) >= 0) genAts.push(i); }
+  const genGuarded = genAts.length > 0 && genAts.every((i) => /isScheduler \? "[^"]*$/.test(mine.slice(Math.max(0, i - 120), i)));
+  check("AU6 every \"Generate a schedule first.\" on the Mine page sits in a scheduler-only branch (isScheduler ? \"…\"), and none of a member's lines above mentions generating",
+    genAts.length === 2 && genGuarded && [ec.loadingMember, ec.failedMember, ec.noneMember, nc && nc.member].every((t) => typeof t === "string" && !/generat/i.test(t)),
+    JSON.stringify({ found: genAts.length, genGuarded }));
+  const G = gate0 && gate1 ? [["s3", {}], ["s3", LIVE], ["", {}], ["", LIVE]].map(([mineId, schedule]) => [!!gate0({ mineId, schedule }), !!gate1({ mineId, schedule })]) : null;
+  check("AU6 for a picked person exactly one of the two shows — the empty-schedule line with no weeks, the shifts page with weeks (with nobody picked, neither; the pick-your-name line shows) — and the line sits after the shifts page, before the pick-your-name line",
+    !!G && JSON.stringify(G) === JSON.stringify([[true, false], [false, true], [false, false], [false, false]])
+      && g0At > mine.indexOf("No upcoming shifts in the current schedule.") && g0At < mine.indexOf("{!mineId && ("),
+    JSON.stringify({ G, g0At }));
+}
+
 // ─── AD. Month grids fit a phone (2026-10-11, Generate preview overflow) ───
 // A bare `repeat(7,1fr)` column can't shrink below its content: in the Generate
 // preview a long vacation list ("🏖DJA,FAK,JH", no spaces) widened its column and
@@ -4687,6 +5310,157 @@ console.log("\nAS. The UX batch's review fixes");
   check("AD the Generate preview's day cells can shrink (minWidth 0, overflow hidden) and its vacation list wraps (', ' + overflowWrap)",
     count('minHeight:70,padding:"2px 2px",borderRadius:2,minWidth:0,overflow:"hidden"}}>') === 1
       && count('{vacList.length>0&&<div style={{fontSize:8,color:"#a07070",marginTop:1,overflowWrap:"anywhere"}}>🏖{vacList.map(v=>v.name).join(", ")}</div>}') === 1);
+}
+
+// ─── AV. Pending requests: a collapsed group still shows a coverage-floor breach (UX audit 2026-10-19) ───
+// Pending requests are grouped by person and every group starts CLOSED (expandedVacGroups = {}). The
+// "⚠ Coverage below minimum" warning renders only inside an open group, so an approver could miss that
+// approving would leave fewer than MIN_AVAILABLE_SURGEONS surgeons available. The closed header now carries
+// a "⚠ below floor" chip when any request in the group breaches. Render-only: the open/closed default, the
+// in-group warning and every handler are unchanged. JSX can't run here (no Babel in CI), so the chip's
+// condition and the REAL vacRequestCoverage are sliced and EXECUTED on fixtures; the markup is pinned.
+//   AV1 the chip's condition and the pendingFloorBreach memo it reads, executed with the real
+//       vacRequestCoverage and the app's own sMap on the real roster: four colleagues off + a vacation
+//       request → chip; exactly at the floor, a no-call request, an APP's request, a colleague's PENDING
+//       (not approved) overlap, an approved request → no chip; one breach in a mixed group → chip
+//   AV2 the chip renders once, on the PENDING group's collapsed header (not inside the open group, not on a
+//       Reviewed group), gated by that condition; readable in dark mode (its own light background, text
+//       contrast ≥ 4.5 — executed)
+//   AV3 unchanged: groups still start closed, the one toggle, the in-group warning and its gate
+// The review's fix (2026-10-19): the chip scanned every day of every pending request on every Requests
+// render (a keystroke, a toast, the 60-s pull), and a mistyped year (2126, 20261) made that thousands to
+// millions of days. Now:
+//   AV4 the scan is a useMemo keyed on exactly what vacRequestCoverage reads (proved by running it in a bare
+//       context), declared after it; the header reads only the memo's Set; a request over 120 days is never
+//       scanned for the chip (a spy counts the calls), the 120-day one still is; the open group's own
+//       warning still checks every request as before
+console.log("\nAV. Pending requests: a collapsed group shows a coverage-floor breach");
+{
+  const nsrcAV = src.replace(/\r\n/g, "\n");   // a Windows checkout is CRLF, CI's is LF
+  const fnAV = (names, code) => { try { return vm.runInContext(`(function (env) { const { ${names} } = env; return (${code}); })`, sandbox); } catch (ex) { return null; } };
+  // the REAL vacRequestCoverage (parse / fmt / addD / MIN_AVAILABLE_SURGEONS come from helpers.js + config.js)
+  const DECL_AV = "const vacRequestCoverage = (req) => {";
+  const iCov = nsrcAV.indexOf(DECL_AV), eCov = iCov < 0 ? -1 : nsrcAV.indexOf("\n  };\n", iCov);
+  const covBody = iCov < 0 || eCov < 0 ? null : "(req) => {" + nsrcAV.slice(iCov + DECL_AV.length, eCov) + "\n  }";
+  const mkCov = covBody ? fnAV("sMap, surgeons, vacations, vacRequests", covBody) : null;
+  const sMapSrcAV = (nsrcAV.match(/const sMap = useMemo\((\(\) => \{[^\n]*?return m; \}), \[surgeons\]\);/) || [])[1];
+  const mkSMapAV = sMapSrcAV ? fnAV("surgeons", sMapSrcAV) : null;
+  // the chip's condition, sliced from the pending group's map (declared right after its expanded flag)
+  const condAV = nsrcAV.match(/const expanded = expandedVacGroups\["p_"\+pid\];\n(?:[ ]*\/\/[^\n]*\n)*[ ]*const belowFloor = ([^\n]*);\n/);
+  const chipIf = condAV ? fnAV("reqs, pendingFloorBreach", condAV[1]) : null;
+  // the memo it reads (review 2026-10-19), sliced from the component: its body runs with the real vacRequestCoverage
+  const MEMO_AV = "  const pendingFloorBreach = useMemo(() => {", DEPS_AV = "\n  }, [vacRequests, vacations, surgeons, sMap]);";
+  const iMemo = nsrcAV.indexOf(MEMO_AV), eMemo = iMemo < 0 ? -1 : nsrcAV.indexOf(DEPS_AV, iMemo);
+  const memoBody = iMemo < 0 || eMemo < 0 ? null : "(() => {" + nsrcAV.slice(iMemo + MEMO_AV.length, eMemo) + "\n  })()";
+  const mkMemo = memoBody ? fnAV("vacRequests, vacRequestCoverage", memoBody) : null;
+
+  // AV1 — executed
+  const WK = ["2026-11-02", "2026-11-06"];
+  const fourOff = { s1: [WK], s2: [WK], s3: [WK], s4: [WK] }, threeOff = { s1: [WK], s2: [WK], s3: [WK] };
+  const rq = (id, sid, s, e, type) => ({ id, surgeon_id: sid, start_date: s, end_date: e, status: "pending", request_type: type || "vacation" });
+  const r5 = rq(1, "s5", "2026-11-04", "2026-11-05"), r5nc = rq(2, "s5", "2026-11-04", "2026-11-05", "nocall");
+  const r5late = rq(3, "s5", "2026-11-16", "2026-11-18"), rApp = rq(4, "a1", "2026-11-04", "2026-11-05");
+  const r4pend = rq(5, "s4", "2026-11-02", "2026-11-06");   // a colleague's request still PENDING: not counted against the floor
+  const r5done = { ...r5, id: 6, status: "approved" };       // not pending: never flagged
+  let av1 = null, sMapAV = null;
+  const covFor = (vacations, others) => mkCov({ sMap: sMapAV, surgeons: INIT_SURGEONS, vacations, vacRequests: others });
+  if (mkCov && mkSMapAV && chipIf && mkMemo) {
+    try {
+      sMapAV = mkSMapAV({ surgeons: INIT_SURGEONS })();
+      // what the header shows: the memo over every request (the app's vacRequests), then the group's condition
+      const chip = (vacations, reqs, others = []) => { const all = [...reqs, ...others]; return chipIf({ reqs, pendingFloorBreach: mkMemo({ vacRequests: all, vacRequestCoverage: covFor(vacations, all) }) }); };
+      const worst = covFor(fourOff, [r5])(r5);
+      av1 = {
+        breach: chip(fourOff, [r5]), worstAvail: worst && worst.worst && worst.worst.available,
+        atFloor: chip(threeOff, [r5]), noCall: chip(fourOff, [r5nc]), app: chip(fourOff, [rApp]),
+        pendingOnly: chip(threeOff, [r5], [r4pend]), mixed: chip(fourOff, [r5late, r5]), quiet: chip(fourOff, [r5late]),
+        approved: chip(fourOff, [r5done]), empty: chipIf({ reqs: [r5], pendingFloorBreach: new Set() }),
+      };
+    } catch (ex) { av1 = { threw: String(ex).slice(0, 160) }; }
+  }
+  check("AV1 the collapsed header's '⚠ below floor' (its condition + the pendingFloorBreach memo it reads), executed with the REAL vacRequestCoverage + the app's sMap on the real roster: four colleagues off and a vacation request (2 of 7 left) → chip; exactly at the floor (3 left), a no-call request, an APP's request, a colleague's pending (not approved) overlap, an approved request → no chip; one breach in a mixed group → chip; nothing flagged → no chip",
+    !!av1 && av1.breach === true && av1.worstAvail === 2 && av1.atFloor === false && av1.noCall === false && av1.app === false
+      && av1.pendingOnly === false && av1.mixed === true && av1.quiet === false && av1.approved === false && av1.empty === false,
+    av1 ? JSON.stringify(av1) : `vacRequestCoverage ${mkCov ? "found" : "not extractable"} · sMap builder ${mkSMapAV ? "found" : "not found"} · chip condition ${chipIf ? "found" : "not found after the pending group's expanded flag"} · pendingFloorBreach memo ${mkMemo ? "found" : "not found"}`);
+
+  // AV2 — where the chip renders, and that it reads in dark mode
+  const CHIP = "⚠ below floor";
+  const iPend = nsrcAV.indexOf('const expanded = expandedVacGroups["p_"+pid];');
+  const iHead = iPend < 0 ? -1 : nsrcAV.indexOf('{/* Collapsed header row */}\n                    <div onClick={()=>toggleVacGroup("p_"+pid)}', iPend);
+  const iDetail = iPend < 0 ? -1 : nsrcAV.indexOf("{/* Expanded detail rows */}", iPend);
+  const iRev = nsrcAV.indexOf('const expanded = expandedVacGroups["r_"+pid];');
+  const iChip = nsrcAV.indexOf(CHIP);
+  const chipM = nsrcAV.match(/\n[ ]*\{belowFloor && <span [^\n]*?style=\{\{([^\n]*?)\}\}>⚠ below floor<\/span>\}\n/);
+  const css2 = (k) => { const m = chipM && chipM[1].match(new RegExp("(?:^|,)" + k + ':"(#[0-9a-fA-F]{6})"')); return m ? m[1] : null; };
+  const lumAV = (hex) => { const v = hex.slice(1).match(/../g).map(h => parseInt(h, 16) / 255).map(c => (c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4))); return 0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2]; };
+  const fg = css2("color"), bg = css2("background");
+  const ratio = fg && bg ? (Math.max(lumAV(fg), lumAV(bg)) + 0.05) / (Math.min(lumAV(fg), lumAV(bg)) + 0.05) : 0;
+  check("AV2 the chip renders ONCE, on the pending group's collapsed header row (after its toggle, before the expanded detail rows), gated by belowFloor — the one new vacRequestCoverage call is the pendingFloorBreach memo's (AV4); no Reviewed group carries it",
+    count(CHIP) === 1 && count("belowFloor") === 2 && count("vacRequestCoverage(r)") === 2 && !!chipM && iPend >= 0 && iHead > iPend && iChip > iHead && iDetail > iChip && iRev > iDetail
+      && nsrcAV.indexOf("{belowFloor && <span") > iHead && nsrcAV.indexOf("{belowFloor && <span") < iDetail,
+    JSON.stringify({ chips: count(CHIP), belowFloor: count("belowFloor"), covCalls: count("vacRequestCoverage(r)"), iPend, iHead, iChip, iDetail, iRev }));
+  check("AV2 the chip is readable in dark mode: a span with its own light amber background (dark mode re-colours only divs' backgrounds, so it stays a light chip like 'N pending') and text contrast ≥ 4.5 — executed",
+    !!chipM && !!fg && !!bg && ratio >= 4.5 && /fontSize:11,/.test(chipM[1]) && /borderRadius:10,/.test(chipM[1]),
+    JSON.stringify({ fg, bg, ratio: Math.round(ratio * 100) / 100 }));
+
+  // AV3 — unchanged
+  check("AV3 unchanged: groups still start closed (expandedVacGroups = {}), opened only by the one toggle; the in-group '⚠ Coverage below minimum' block is still inside the open group and reads the same breach flag",
+    count("const [expandedVacGroups, setExpandedVacGroups] = useState({});") === 1 && count("setExpandedVacGroups(") === 1
+      && count('const toggleVacGroup = (id) => setExpandedVacGroups(prev => ({ ...prev, [id]: !prev[id] }));') === 1
+      && count('{expanded && <div style={{borderTop:"1px solid #e8d8c0",padding:"4px 12px 8px"}}>') === 1
+      && count("const cov = vacRequestCoverage(r);") === 1 && count("{cov.breach && (") === 1
+      && count("⚠ Coverage below minimum — only {cov.worst.available} of {surgeons.length} surgeons available on {cov.worst.date} if approved (floor: {MIN_AVAILABLE_SURGEONS})") === 1
+      && nsrcAV.indexOf("const cov = vacRequestCoverage(r);") > iDetail && nsrcAV.indexOf("const cov = vacRequestCoverage(r);") < iRev,
+    JSON.stringify({ toggles: count("setExpandedVacGroups("), iDetail, iRev }));
+
+  // AV4 — the scan is bounded and memoized (review 2026-10-19)
+  // 120 days across the fall-back weekend (one 25-hour day: the count is rounded); 121; a slipped year (2126); a five-digit year; an unreadable end
+  const r120 = rq(11, "s5", "2026-10-30", "2027-02-26"), r121 = rq(12, "s5", "2026-10-30", "2027-02-27");
+  const r2126 = rq(13, "s5", "2026-11-03", "2126-11-05"), r20261 = rq(14, "s5", "2026-11-04", "20261-11-04"), rJunk = rq(15, "s5", "2026-11-04", "not-a-date");
+  const LONG_AV = [r121.id, r2126.id, r20261.id];
+  let av4 = null;
+  if (mkCov && mkMemo && chipIf && sMapAV) {
+    try {
+      const all = [r5, r120, r121, r2126, r20261, rJunk];
+      const real = covFor(fourOff, all), calls = [];
+      // the spy never scans a long range itself: if the memo asked, it answers "breach" and the chip would show
+      const spy = (r) => { calls.push(r.id); return LONG_AV.includes(r.id) ? { breach: true, worst: null, conflicts: [], pendingOverlaps: [] } : real(r); };
+      const set = mkMemo({ vacRequests: all, vacRequestCoverage: spy });
+      const chipOf = (reqs) => chipIf({ reqs, pendingFloorBreach: set });
+      const t0 = Date.now();
+      mkMemo({ vacRequests: [r5, r2126], vacRequestCoverage: covFor(fourOff, [r5, r2126]) });   // the REAL scan: 2126 is skipped, so this is quick
+      const ms = Date.now() - t0;
+      av4 = { calls, flagged: [...set].sort((a, b) => a - b), c120: chipOf([r120]), c121: chipOf([r121]), c2126: chipOf([r2126]), c20261: chipOf([r20261]), junk: chipOf([rJunk]),
+        open121: (real(r121) || {}).breach === true, ms };
+    } catch (ex) { av4 = { threw: String(ex).slice(0, 160) }; }
+  }
+  check("AV4 the chip never scans a range over 120 days (a slipped year 2126, a five-digit year, 121 days — vacRequestCoverage is not even called for them; a spy counts), the 120-day one still is (across the fall-back weekend) and still flags; an unreadable end flags nothing and throws nothing; the open group's own warning still sees the 121-day breach (vacRequestCoverage unchanged)",
+    !!av4 && !av4.threw && JSON.stringify(av4.calls) === JSON.stringify([r5.id, r120.id]) && JSON.stringify(av4.flagged) === JSON.stringify([r5.id, r120.id])
+      && av4.c120 === true && av4.c121 === false && av4.c2126 === false && av4.c20261 === false && av4.junk === false && av4.open121 === true,
+    JSON.stringify(av4));
+  check("AV4 executed: the memo over a real pending list with a 2126 typo in it takes milliseconds, not the per-render scan of 36,500 days the review measured (~230 ms each render)",
+    // (a loose ceiling, not a benchmark: this runs in main's CI before every deploy, whose speed varies; the
+    // spy check above is what proves the cap — this only catches a catastrophic regression)
+    !!av4 && !av4.threw && av4.ms < 2000, JSON.stringify(av4 && av4.ms));
+  // what vacRequestCoverage reads from the component is exactly the memo's deps: run in a BARE context (only those + helpers.js/config.js's own)
+  let bareAV = null;
+  try {
+    const G = vm.runInContext("({ parse, fmt, addD, MIN_AVAILABLE_SURGEONS })", sandbox);
+    const bare = vm.createContext(Object.assign({}, G));
+    const covBare = covBody ? vm.runInContext(`(function (env) { const { sMap, surgeons, vacations, vacRequests } = env; return (${covBody}); })`, bare) : null;
+    const memoBare = memoBody ? vm.runInContext(`(function (env) { const { vacRequests, vacRequestCoverage } = env; return (${memoBody}); })`, bare) : null;
+    if (covBare && memoBare && sMapAV) {
+      const all = [r5, r4pend, r5late];
+      const cb = covBare({ sMap: sMapAV, surgeons: INIT_SURGEONS, vacations: fourOff, vacRequests: all });
+      const got = cb(r5), want = covFor(fourOff, all)(r5);
+      bareAV = { same: JSON.stringify(got) === JSON.stringify(want), conflicts: got.conflicts.length, overlaps: got.pendingOverlaps.length, memo: [...memoBare({ vacRequests: all, vacRequestCoverage: cb })] };
+    }
+  } catch (ex) { bareAV = { threw: String(ex).slice(0, 160) }; }
+  const iReqView = nsrcAV.indexOf('{view==="requests" && !isPublicMode && <>');
+  check("AV4 the memo is keyed on exactly what vacRequestCoverage reads — [vacRequests, vacations, surgeons, sMap]: both run in a bare context holding only those (and helpers.js / config.js's parse, fmt, addD, MIN_AVAILABLE_SURGEONS) with no ReferenceError and the same answer; it is declared after vacRequestCoverage and before the Requests view; the header reads only its Set (no vacRequestCoverage call on the header)",
+    !!bareAV && bareAV.same === true && bareAV.conflicts > 0 && bareAV.overlaps === 1 && JSON.stringify(bareAV.memo) === JSON.stringify([r5.id])
+      && count("const pendingFloorBreach = useMemo(() => {") === 1 && iMemo > iCov && iMemo < iReqView && !!condAV && !/vacRequestCoverage/.test(condAV[1]) && /pendingFloorBreach\.has\(r\.id\)/.test(condAV[1]),
+    JSON.stringify({ bareAV, iCov, iMemo, iReqView, cond: condAV && condAV[1] }));
 }
 
 // ─── AE. Generator: "Needs your OK" before publish + Setup holiday text (2026-10-11) ───

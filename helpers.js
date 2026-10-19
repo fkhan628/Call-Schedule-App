@@ -478,6 +478,66 @@ function dayMonthLabel(ds) {
   return `${["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][d.getDay()]} ${d.getMonth() + 1}/${d.getDate()}`;
 }
 
+// Mine tab dates (UX audit 2026-10-19). My Shifts headed each week with ISO
+// dates ("2026-10-19 → 2026-10-25") and listed rows like "Tue Night 5p–7a"
+// with no date, so a member had to work out which night was theirs; the
+// header showed the Generate tab's setup window, not what is published.
+// Pure: no clock, no state; dates are local, via parse.
+//   monthDayLabel("2026-10-19")       → "Oct 19"
+//   monthDayLabel("2026-12-27", true) → "Dec 27, 2026"
+//   weekRangeLabel("2026-10-19")      → "Oct 19 – Oct 25" (the week's Monday → Sunday)
+function monthDayLabel(ds, withYear) {
+  const d = parse(ds);
+  return `${["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][d.getMonth()]} ${d.getDate()}${withYear ? `, ${d.getFullYear()}` : ""}`;
+}
+function weekRangeLabel(mStr) {
+  return `${monthDayLabel(mStr)} – ${monthDayLabel(fmt(addD(parse(mStr), 6)))}`;
+}
+
+// The date chip on a My Shifts row (role = the Mine builder's role object):
+//   a Mon–Thu night  → its own date, "Tue 10/20" (shiftStartDate's rule)
+//   the weekend      → the legs this surgeon holds (role.held), "Fri 10/23 + Sun 10/25";
+//                      with no held list, both legs
+//   the service week → the days held, as runs of consecutive days: "Mon 10/19 – Sat 10/24";
+//                      a day someone else holds (a covered holiday) splits it, so the chip
+//                      never spans it: "Mon 11/23 – Wed 11/25 + Sat 11/28" (review 2026-10-19);
+//                      with no held list, Monday to Saturday
+//   null for a dated role (a holiday 24h, a single service day: its detail
+//   already starts with the date), an OFF week (the week header has it), and a
+//   held list that is empty (every day covered by someone else; the detail says so).
+function roleDateLabel(mStr, role) {
+  const r = role || {};
+  if (r.date || !r.shiftKey) return null;
+  if (NIGHT_KEYS.includes(r.shiftKey)) return dayMonthLabel(shiftStartDate(mStr, r.shiftKey));
+  const held = (offsets) => (Array.isArray(r.held) ? r.held.slice().sort() : offsets.map(i => fmt(addD(parse(mStr), i))));
+  if (r.shiftKey === "wknd") {
+    const legs = held([4, 6]);
+    return legs.length ? legs.map(dayMonthLabel).join(" + ") : null;
+  }
+  if (r.shiftKey === "dayCall") {
+    const runs = []; // [first, last] of each run of consecutive held days
+    for (const d of held([0, 1, 2, 3, 4, 5])) {
+      const run = runs[runs.length - 1];
+      if (run && d <= run[1]) continue; // a day listed twice
+      if (run && fmt(addD(parse(run[1]), 1)) === d) run[1] = d;
+      else runs.push([d, d]);
+    }
+    return runs.length ? runs.map(([a, b]) => (a === b ? dayMonthLabel(a) : `${dayMonthLabel(a)} – ${dayMonthLabel(b)}`)).join(" + ") : null;
+  }
+  return null;
+}
+
+// The last date of the published schedule, for the Mine header ("Published
+// through Jan 3, 2027"): the Sunday of the last week that holds any call — a
+// dayCall, a night or a holidayCoverage entry, calMonthStatus's rule, so this
+// header and the Calendar's "the published schedule runs … → …" agree. Only
+// YYYY-MM-DD keys are weeks. null when no week counts. Pure: no clock, no state.
+function publishedThrough(schedule) {
+  const holds = (w) => !!w && (!!w.dayCall || Object.values(w.nights || {}).some(Boolean) || Object.values(w.holidayCoverage || {}).some(Boolean));
+  const keys = Object.keys(schedule || {}).filter(k => /^\d{4}-\d{2}-\d{2}$/.test(k) && holds(schedule[k])).sort();
+  return keys.length ? fmt(addD(parse(keys[keys.length - 1]), 6)) : null;
+}
+
 // The line a service week or weekend carries for a date someone else holds,
 // e.g. "Mon 9/7 covered by RPC (Labor Day)". holderSid is who holds it; a swap
 // names its own label; a single-day override has no parenthesis.
@@ -512,6 +572,29 @@ function tradeLegsText(req, tense) {
   }
   const back = slotLabel(req.return_week, req.return_shift);
   return `${req.to_surgeon_name} ${tense} ${gets}; ${req.from_surgeon_name} ${tense} ${back}`;
+}
+/* The same two legs, said to the person reading them (UX audit 2026-10-19),
+   for each row of Requests → Pending Trades. The surgeon who has to answer
+   reads what they would take and what they would give; the proposer reads
+   the mirror; anyone else (the scheduler on two colleagues' trade) reads
+   tradeLegsText's line. Who gets what is the rule above: to_surgeon takes
+   shift_key @ week_monday, from_surgeon takes return_shift @ return_week.
+   Composed with slotLabel HERE, so the card adds no slotLabel call site to
+   index-source.html (sync-guards L keeps its ledger). A one-way trade names
+   its one leg only: the row's badge line right above already says
+   "(one-way — no return shift)", so the row says it once (review
+   2026-10-19); tradeLegsText keeps the suffix for the notifications. */
+function tradeLegsFor(req, viewerId) {
+  const gets = slotLabel(req.week_monday, req.shift_key);
+  const oneWay = !req.return_week || !req.return_shift;
+  const back = oneWay ? "" : slotLabel(req.return_week, req.return_shift);
+  if (viewerId && viewerId === req.to_surgeon_id) {
+    return oneWay ? `You'd take ${gets}` : `You'd take ${gets}; you'd give ${back}`;
+  }
+  if (viewerId && viewerId === req.from_surgeon_id) {
+    return oneWay ? `You'd give ${gets}` : `You'd give ${gets}; you'd take ${back}`;
+  }
+  return oneWay ? `${req.to_surgeon_name} would take ${gets}` : tradeLegsText(req, "would take");
 }
 /* The SWAP family (2026-09-07), same doctrine as the trade composers above.
    executeTwoWaySwap's semantics, read off its own apply:
