@@ -405,7 +405,7 @@ function CallSchedule() {
     const el = calDayOpenerRef.current;
     calDayOpenerRef.current = null;
     setCalDayOpen(null);
-    if (refocus !== false && el && el.isConnected && typeof el.focus === "function") { try { el.focus(); } catch (e) { /* nothing to put it back on */ } }
+    if (refocus !== false && el && el.isConnected && typeof el.focus === "function") { try { el.focus({ preventScroll: true }); } catch (e) { /* nothing to put it back on */ } }
   };
   useEffect(() => {
     if (!calDayOpen) return;
@@ -415,6 +415,9 @@ function CallSchedule() {
     body.style.overflow = "hidden"; // the page behind stays put; restored on close
     return () => { window.removeEventListener("keydown", onKey); body.style.overflow = prevOverflow; };
   }, [calDayOpen]);
+  // Leaving the Calendar tab (a keyboard user can reach the tabs behind the sheet) closes the sheet, so its
+  // scroll lock never outlives it on another tab.
+  useEffect(() => { if (view !== "calendar") closeCalDay(false); }, [view]);
   const rememberSilvisToggle = (v) => {
     try { if (v === null) localStorage.removeItem(CAL_SILVIS_STORE_KEY); else localStorage.setItem(CAL_SILVIS_STORE_KEY, String(v)); }
     catch (e) { console.warn("Couldn't remember the Silvis calendar switch:", e); }

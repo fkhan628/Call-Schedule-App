@@ -6233,6 +6233,20 @@ console.log("\nAX. calendar day sheet + 👤 Me filter");
   check("AX9 the geometry, from the panel's real style: at 375×812 with the measured 100px banner the sheet ends at its top (712) and its content above it — so the last line and Edit this week are not covered (they were: 36px under it); the same at 393×852 with a 54px or a 100px banner; no banner → the bottom of the screen; the banner (ref={updateBannerRef}, z above the sheet's 9000) stays tappable over the backdrop",
     !!g375 && g375.ok && g375.panelBottom === 712 && g393a.ok && g393a.panelBottom === 798 && g393b.ok && g0.ok && g0.panelBottom === 812 && count("ref={updateBannerRef}") === 1 && zBan > 9000,
     JSON.stringify({ g375, g393a, g393b, g0, zBan }));
+  // AX10 (verification 2026-10-19): leaving the Calendar tab closes the sheet (its scroll lock goes with it), and
+  // focus goes back to the cell without scrolling the page — executed from the real lines.
+  {
+    const nsx = src.replace(/\r\n/g, "\n");
+    const VIEW_FX = 'useEffect(() => { if (view !== "calendar") closeCalDay(false); }, [view]);';
+    const iClose = nsx.indexOf("  const closeCalDay = (refocus) => {"), iCloseEnd = iClose < 0 ? -1 : nsx.indexOf("\n  };\n", iClose), iFx = nsx.indexOf(VIEW_FX);
+    let closeFn = null;
+    try { closeFn = iClose >= 0 && iCloseEnd > iClose ? vm.runInContext(`(function (env) { const { calDayOpenerRef, setCalDayOpen } = env; ${nsx.slice(iClose, iCloseEnd + 5)}\n return closeCalDay; })`, sandbox) : null; } catch (ex) { closeFn = null; }
+    const run = (refocus) => { const calls = [], focusArgs = []; const el = { isConnected: true, focus: (o) => focusArgs.push(o || null) }; const fn = closeFn({ calDayOpenerRef: { current: el }, setCalDayOpen: (v) => calls.push(v) }); fn(refocus); return { calls, focusArgs }; };
+    const viaX = closeFn ? run(undefined) : null, viaTab = closeFn ? run(false) : null;
+    check("AX10 leaving the Calendar tab closes the day sheet (so its scroll lock is released), with no refocus; a normal close refocuses the cell with preventScroll",
+      count(VIEW_FX) === 1 && iFx > iCloseEnd && iClose > 0 && !!viaX && JSON.stringify(viaX.calls) === "[null]" && JSON.stringify(viaX.focusArgs) === JSON.stringify([{ preventScroll: true }])
+        && !!viaTab && JSON.stringify(viaTab.calls) === "[null]" && viaTab.focusArgs.length === 0, JSON.stringify({ iClose, iCloseEnd, iFx, viaX, viaTab }));
+  }
 }
 
 // ─── AF. Schedule Warnings: on call while off (2026-10-11, owner decision G) ───
