@@ -3136,6 +3136,157 @@ console.log("\nAM. Mine's name picker is a view, not a sign-in");
   }
 }
 
+// ─── AN. The bell's notification panel (UX audit 2026-10-18) ───
+// Opening the bell marked everything seen in the SAME tap, so the "new" tint
+// (created after the seen watermark) was false on every row the first time
+// the panel drew. The panel now keeps the watermark as it was when it opened
+// and tints against that; the badge still clears on open. The in-app tap map
+// lacked vacation_revoked and shift_reminder (buildDeepLink routes both, so a
+// push could be tapped but the bell row could not), and a schedule-change tap
+// opened the calendar on the CURRENT month, not the week the notice names
+// (the push deep-link handler jumps there). Rows show a time; the bell has a
+// name. Navigation and local display only: no writes, no hook deps.
+//   AN1 the tap map agrees with the REAL buildDeepLink, executed, on the tab AND the week, for every case it routes
+//   AN2 the week jump: a valid YYYY-MM-DD week, calendar rows only
+//   AN3 a row tap with a week sets the month and year, then the tab; it closes the panel and marks seen
+//   AN4 open → the rows the badge counted stay tinted; the badge clears; close marks nothing; reopen → only what came since
+//   AN5 a row shows a time; the bell's name says the count, aria-expanded; the panel fits a phone; pins
+console.log("\nAN. bell notification panel");
+{
+  const p0 = src.indexOf("{/* ─── Notification Panel ─── */}");
+  const p1 = p0 === -1 ? -1 : src.indexOf("{/* ════════════════ SETUP ════════════════ */}", p0);
+  const panel = p0 !== -1 && p1 > p0 ? src.slice(p0, p1) : "";
+  const b0 = src.indexOf("{/* Notification Bell */}");
+  const b1 = b0 === -1 ? -1 : src.indexOf("</button>", b0);
+  const bell = b0 !== -1 && b1 > b0 ? src.slice(b0, b1) : "";
+  check("AN0 the bell button and the notification panel are found", !!panel && !!bell, p0 + ".." + p1 + " / " + b0 + ".." + b1);
+  const between = (hay, a, b) => { const i = hay.indexOf(a); if (i === -1) return null; const j = hay.indexOf(b, i + a.length); return j === -1 ? null : hay.slice(i + a.length, j); };
+  const restOfLine = (hay, a) => { const i = hay.indexOf(a); if (i === -1) return null; const j = hay.indexOf("\n", i); return hay.slice(i + a.length, j === -1 ? undefined : j).replace(/\s+$/, ""); };
+  // Compile a sliced piece of the real code as a function body and call it; a missing or broken slice comes back as { err }.
+  const run = (params, body, args) => { try { return vm.runInNewContext("(function (" + params + ") {\n" + body + "\n})", { URL, URLSearchParams })(...args); } catch (e) { return { err: String(e).slice(0, 200) }; } };
+  const fnOrNull = (v) => (typeof v === "function" ? v : null);
+
+  // The real pieces, sliced from the source
+  const tmSrc = between(panel, "const tabMap = ", ";");
+  const tabMap = tmSrc ? run("", "return (" + tmSrc + ");", []) : null;
+  const d0 = src.indexOf("  const buildDeepLink = useCallback((type, data) => {");
+  const d1 = d0 === -1 ? -1 : src.indexOf("\n  }, []);", d0);
+  const bdlSrc = d0 !== -1 && d1 > d0 ? src.slice(d0, d1) + "\n  }, []);" : null;
+  const bdl = bdlSrc ? fnOrNull(run("useCallback, window", bdlSrc + "\nreturn buildDeepLink;", [(f) => f, { location: { origin: "https://dsg.test", pathname: "/app/" } }])) : null;
+  const sw = bdlSrc ? between(bdlSrc, "switch (type) {", "default:") : null;
+  const cases = sw ? [...sw.matchAll(/case "([a-z_]+)":/g)].map((m) => m[1]) : [];
+  const jwSrc = restOfLine(panel, "const jumpWeek = ");
+  const jump = (targetTab, n) => (jwSrc ? run("targetTab, n", "const jumpWeek = " + jwSrc + "\nreturn jumpWeek;", [targetTab, n]) : { err: "no jumpWeek in the panel" });
+
+  // AN1 — every case buildDeepLink routes: the bell row goes to the same tab, and (calendar) the same week
+  {
+    const route = (type, week) => { const u = bdl(type, week === undefined ? {} : { week }); if (!u) return null; const q = new URL(u).searchParams; return { tab: q.get("tab"), week: q.get("week") }; };
+    const bad = [];
+    if (bdl && tabMap && !tabMap.err) {
+      for (const c of cases) for (const w of ["2026-12-07", "bad", undefined]) {
+        const r = route(c, w), tab = tabMap[c] || null, jw = jump(tab, w === undefined ? {} : { data: { week: w } });
+        if (!r || r.tab !== tab || (r.week || null) !== jw) bad.push(c + "/" + w + ": push " + JSON.stringify(r) + ", bell " + JSON.stringify({ tab, week: jw }));
+      }
+      for (const k of Object.keys(tabMap)) if (!cases.includes(k)) bad.push("bell routes " + k + " but buildDeepLink does not");
+    }
+    check("AN1 the bell's tap map agrees with the real buildDeepLink (executed) for every case it routes — the tab, and for calendar rows the week (12/7 jumps, a bad or missing week does not); vacation_revoked → requests and shift_reminder → calendar are tappable now",
+      !!bdl && !!tabMap && !tabMap.err && cases.length >= 10 && cases.includes("vacation_revoked") && cases.includes("shift_reminder") && bad.length === 0,
+      (!bdl ? "buildDeepLink not found · " : "") + (tabMap && tabMap.err ? tabMap.err + " · " : "") + cases.length + " cases · " + bad.join(" | "));
+  }
+
+  // AN2 — the week jump itself
+  {
+    const got = [jump("calendar", { data: { week: "2026-12-07" } }), jump("calendar", { data: { week: "bad" } }), jump("calendar", { data: { week: "2026-12-07T00:00" } }),
+      jump("calendar", { data: {} }), jump("calendar", {}), jump("requests", { data: { week: "2026-12-07" } }), jump(null, { data: { week: "2026-12-07" } })];
+    check("AN2 the row's week jump: '2026-12-07' on a calendar row; 'bad', a timestamp, no week, no data, a requests row and an untappable row give none",
+      JSON.stringify(got) === JSON.stringify(["2026-12-07", null, null, null, null, null, null]), JSON.stringify(got));
+  }
+
+  // AN3 — the row tap, executed with recording setters
+  {
+    const rowLine = restOfLine(panel, "<div key={n.id} onClick={");
+    const rowSrc = rowLine ? rowLine.replace(/\}$/, "") : null; // drop the JSX expression's closing brace
+    const tap = (targetTab, jumpWeek) => {
+      const calls = [];
+      const rec = (name) => (v) => calls.push(name + "(" + (typeof v === "function" ? "fn" : JSON.stringify(v)) + ")");
+      const fn = rowSrc ? run("targetTab, jumpWeek, setCalMonth, setCalYear, setView, setShowNotifs, markNotifsSeen", "return " + rowSrc + ";",
+        [targetTab, jumpWeek, rec("setCalMonth"), rec("setCalYear"), rec("setView"), rec("setShowNotifs"), () => calls.push("markNotifsSeen()")]) : { err: "no row onClick" };
+      if (typeof fn !== "function") return "ERR " + (fn && fn.err);
+      fn(); return calls.join(" ");
+    };
+    const got = [tap("calendar", "2026-12-07"), tap("calendar", "2027-01-04"), tap("calendar", null), tap("requests", null), tap(null, null)];
+    const want = ['setCalMonth(11) setCalYear(2026) setView("calendar") setShowNotifs(false) markNotifsSeen()',
+      'setCalMonth(0) setCalYear(2027) setView("calendar") setShowNotifs(false) markNotifsSeen()',
+      'setView("calendar") setShowNotifs(false) markNotifsSeen()', 'setView("requests") setShowNotifs(false) markNotifsSeen()', ""];
+    check("AN3 a row tap with a week opens the calendar on THAT month (12/7 → December 2026, 1/4 → January 2027), without one on the tab as before; it closes the panel and marks seen; an untappable row does nothing",
+      JSON.stringify(got) === JSON.stringify(want), JSON.stringify(got));
+  }
+
+  // AN4 — open / close / reopen through the real bell onClick, isNew and the badge's predicate
+  {
+    const bellLine = restOfLine(bell, "<button onClick={");
+    const bellSrc = bellLine ? bellLine.replace(/\}$/, "") : null;
+    const isNewSrc = restOfLine(panel, "const isNew = ");
+    const predSrc = between(src, "const myUnreadCount = useMemo(() => myNotifications.filter(", ").length, [myNotifications, notifLastSeen]);");
+    const st = { showNotifs: false, notifLastSeen: "2026-10-01T00:00:00.000Z", notifSeenAtOpen: null, marks: 0 };
+    let now = "2026-10-18T12:00:00.000Z";
+    // One render's closure: the values are this render's, the setters change the next render's state (as React does).
+    const clickBell = () => {
+      const fn = bellSrc ? run("showNotifs, notifLastSeen, setShowNotifs, markNotifsSeen, setNotifSeenAtOpen", "return " + bellSrc + ";",
+        [st.showNotifs, st.notifLastSeen, (v) => { st.showNotifs = typeof v === "function" ? v(st.showNotifs) : v; }, () => { st.marks++; st.notifLastSeen = now; }, (v) => { st.notifSeenAtOpen = v; }]) : { err: "no bell onClick" };
+      if (typeof fn !== "function") throw new Error(fn && fn.err);
+      fn();
+    };
+    const isNew = (n) => { const v = isNewSrc ? run("n, notifSeenAtOpen, notifLastSeen", "const isNew = " + isNewSrc + "\nreturn isNew;", [n, st.notifSeenAtOpen, st.notifLastSeen]) : { err: "no isNew" }; if (typeof v !== "boolean") throw new Error("isNew: " + JSON.stringify(v)); return v; };
+    const unread = (rows) => { const p = predSrc ? run("notifLastSeen", "return (" + predSrc + ");", [st.notifLastSeen]) : null; if (typeof p !== "function") throw new Error("no badge predicate"); return rows.filter(p).map((r) => r.id); };
+    const fresh = { id: "fresh", created_at: "2026-10-10T09:00:00.000Z" }, old = { id: "old", created_at: "2026-09-20T09:00:00.000Z" }, late = { id: "late", created_at: "2026-10-18T12:00:30.000Z" };
+    let steps;
+    try {
+      const s = [];
+      const tinted = (rows) => rows.filter(isNew).map((r) => r.id);
+      s.push("badge " + unread([fresh, old]));
+      clickBell(); // open
+      s.push("open " + st.showNotifs + " marks " + st.marks + " tinted " + tinted([fresh, old]) + " badge " + unread([fresh, old]));
+      s.push("arrives tinted " + tinted([late, fresh, old]) + " badge " + unread([late, fresh, old]));
+      clickBell(); // close
+      s.push("close " + st.showNotifs + " marks " + st.marks);
+      now = "2026-10-18T13:00:00.000Z";
+      s.push("badge " + unread([late, fresh, old]));
+      clickBell(); // reopen
+      s.push("reopen " + st.showNotifs + " marks " + st.marks + " tinted " + tinted([late, fresh, old]) + " badge " + unread([late, fresh, old]));
+      steps = s.join(" · ");
+    } catch (e) { steps = "ERR " + String(e.message || e).slice(0, 200); }
+    check("AN4 opening the bell keeps the rows the badge counted tinted (the first draw showed none) and clears the badge; one arriving while open is tinted; closing marks nothing; reopening tints only what came since the last open",
+      steps === "badge fresh · open true marks 1 tinted fresh badge  · arrives tinted late,fresh badge late · close false marks 1 · badge late · reopen true marks 2 tinted late badge ", steps);
+  }
+
+  // AN5 — the time, the bell's name, the phone width, and pins
+  {
+    const dateSrc = between(panel, '<span style={{fontSize:10,color:"#a0a8b0"}}>{', "}</span>");
+    const when = dateSrc ? run("n", "return " + dateSrc + ";", [{ created_at: "2026-10-18T17:05:00.000Z" }]) : null;
+    check("AN5 a row's stamp shows the time as well as the date (the real expression, executed)",
+      typeof when === "string" && /\d:\d\d/.test(when), JSON.stringify(when));
+    const ariaSrc = between(bell, "aria-label={", "} aria-expanded={showNotifs}");
+    const names = ariaSrc ? [3, 0].map((k) => run("myUnreadCount", "return " + ariaSrc + ";", [k])) : null;
+    check("AN5 the bell is named for screen readers with the unread count ('Notifications, 3 unread' / 'Notifications') and says whether the panel is open",
+      !!names && names[0] === "Notifications, 3 unread" && names[1] === "Notifications" && count("aria-expanded={showNotifs}") === 1, JSON.stringify(names));
+    check("AN5 the panel is never wider than the screen less its gutters",
+      count('width:340,maxWidth:"calc(100vw - 28px)",maxHeight:400,') === 1);
+    const decl = "const [notifSeenAtOpen, setNotifSeenAtOpen] = useState(null);";
+    const c0 = src.indexOf("function CallSchedule() {");
+    check("AN5 pins: the bell keeps the watermark then marks seen, once; the tint reads the kept watermark (not the just-advanced one) for the background and the border; its state is declared in the component before the bell",
+      count("setNotifSeenAtOpen(notifLastSeen); markNotifsSeen();") === 1 && count("n.created_at > notifLastSeen ?") === 0
+        && count("n.created_at > (notifSeenAtOpen || notifLastSeen)") === 1 && count("background:isNew ?") === 1 && count("${isNew ?") === 1
+        && count(decl) === 1 && c0 !== -1 && c0 < src.indexOf(decl) && src.indexOf(decl) < b0);
+    check("AN5 unchanged: the badge count, the seen marker on this device, Clear All and buildDeepLink's routes",
+      count("const myUnreadCount = useMemo(() => myNotifications.filter(n => n.created_at > notifLastSeen).length, [myNotifications, notifLastSeen]);") === 1
+        // \r?\n: a Windows checkout has CRLF, CI's has LF
+        && (src.match(/  const markNotifsSeen = \(\) => \{\r?\n    const now = new Date\(\)\.toISOString\(\);\r?\n    setNotifLastSeen\(now\);\r?\n    try \{ localStorage\.setItem\("dsg-notif-seen", now\); \}/g) || []).length === 1
+        && count('localStorage.setItem("dsg-notif-seen", now)') === 2 && count("onClick={clearAllNotifications}") === 1
+        && count("const deepLinkUrl = buildDeepLink(type, data);") === 1);
+  }
+}
+
 // ─── W. Christmas two-day cap on STORED holiday assignments (2026-10-02) ───
 // The standing cap (2026-08-06, buildCoverage): when one surgeon holds both
 // halves of Christmas, coverage is the Eve + the day itself and nothing more.

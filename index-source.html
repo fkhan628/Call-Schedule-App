@@ -758,6 +758,7 @@ function CallSchedule() {
   const [notifLastSeen, setNotifLastSeen] = useState(() => {
     try { return localStorage.getItem("dsg-notif-seen") || "2000-01-01T00:00:00Z"; } catch(e) { return "2000-01-01T00:00:00Z"; }
   });
+  const [notifSeenAtOpen, setNotifSeenAtOpen] = useState(null); // the watermark as it was when the panel opened
   // Per-device "cleared" watermark. "Clear notifications" is a local-view op
   // (notifications is a shared feed with no per-user rows), so instead of a DB
   // delete we hide everything at/before this timestamp. Persisted so it survives
@@ -7762,7 +7763,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             );
           })()}
           {/* Notification Bell */}
-          <button onClick={()=>{setShowNotifs(p=>!p); if(!showNotifs) markNotifsSeen();}}
+          <button onClick={()=>{ if (!showNotifs) { setNotifSeenAtOpen(notifLastSeen); markNotifsSeen(); } setShowNotifs(p=>!p); }}
+            aria-label={myUnreadCount ? `Notifications, ${myUnreadCount} unread` : "Notifications"} aria-expanded={showNotifs}
             style={{...css.tab(showNotifs),position:"relative",fontSize:15,padding:"4px 10px"}}>
             🔔
             {myUnreadCount > 0 && (
@@ -7781,7 +7783,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
 
         {/* ─── Notification Panel ─── */}
         {!isPublicMode && showNotifs && (
-          <div style={{position:"absolute",top:0,right:14,width:340,maxHeight:400,overflowY:"auto",background:"#fff",border:"1px solid #dce2e8",borderRadius:10,boxShadow:"0 4px 20px rgba(0,0,0,0.12)",zIndex:100,padding:12}}>
+          <div style={{position:"absolute",top:0,right:14,width:340,maxWidth:"calc(100vw - 28px)",maxHeight:400,overflowY:"auto",background:"#fff",border:"1px solid #dce2e8",borderRadius:10,boxShadow:"0 4px 20px rgba(0,0,0,0.12)",zIndex:100,padding:12}}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
               <span style={{fontSize:14,fontWeight:700,color:"#1a2a3a"}}>Notifications</span>
               <div style={{display:"flex",gap:6,alignItems:"center"}}>
@@ -7794,14 +7796,16 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             {myNotifications.length === 0 ? (
               <p style={{color:"#8a94a0",fontSize:13,textAlign:"center",padding:20}}>No notifications yet</p>
             ) : myNotifications.map(n => {
-              const tabMap = {vacation_submitted:"requests",vacation_approved:"requests",vacation_denied:"requests",schedule_published:"calendar",schedule_changed:"calendar",trade_submitted:"requests",trade_accepted:"requests",trade_declined:"requests"};
+              const tabMap = {vacation_submitted:"requests",vacation_approved:"requests",vacation_denied:"requests",schedule_published:"calendar",schedule_changed:"calendar",trade_submitted:"requests",trade_accepted:"requests",trade_declined:"requests",vacation_revoked:"requests",shift_reminder:"calendar"};
               const targetTab = tabMap[n.type] || null;
+              const jumpWeek = targetTab === "calendar" && /^\d{4}-\d{2}-\d{2}$/.test(n.data?.week || "") ? n.data.week : null;
+              const isNew = n.created_at > (notifSeenAtOpen || notifLastSeen);
               return (
-              <div key={n.id} onClick={()=>{if(targetTab){setView(targetTab);setShowNotifs(false);markNotifsSeen();}}}
-                style={{padding:"8px 10px",marginBottom:6,borderRadius:6,cursor:targetTab?"pointer":"default",background:n.created_at > notifLastSeen ? "#f0f8ff" : "#f8f9fb",border:`1px solid ${n.created_at > notifLastSeen ? "#c0d8f0" : "#e8ecf0"}`,transition:"background 0.15s"}}>
+              <div key={n.id} onClick={()=>{if(targetTab){ if (jumpWeek) { const [y, m] = jumpWeek.split("-").map(Number); setCalMonth(m - 1); setCalYear(y); } setView(targetTab); setShowNotifs(false); markNotifsSeen(); }}}
+                style={{padding:"8px 10px",marginBottom:6,borderRadius:6,cursor:targetTab?"pointer":"default",background:isNew ? "#f0f8ff" : "#f8f9fb",border:`1px solid ${isNew ? "#c0d8f0" : "#e8ecf0"}`,transition:"background 0.15s"}}>
                 <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
                   <span style={{fontSize:12,fontWeight:600,color:"#1a2a3a"}}>{n.title}</span>
-                  <span style={{fontSize:10,color:"#a0a8b0"}}>{new Date(n.created_at).toLocaleDateString()}</span>
+                  <span style={{fontSize:10,color:"#a0a8b0"}}>{new Date(n.created_at).toLocaleString(undefined, {month:"short", day:"numeric", hour:"numeric", minute:"2-digit"})}</span>
                 </div>
                 <p style={{fontSize:12,color:"#5a6a78",margin:"3px 0 0",lineHeight:1.4}}>{n.message}</p>
                 {targetTab && <span style={{fontSize:10,color:"#1a6fa8",marginTop:3,display:"inline-block"}}>Tap to view →</span>}
