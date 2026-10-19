@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.10.19b";
+    var APP_VERSION = "2026.10.19c";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -178,12 +178,18 @@ function CallSchedule() {
   const dayOffDirtyRef = useRef(false);
   const dayOffLastWriteTsRef = useRef(null);
   const dayOffSaveChainRef = useRef(Promise.resolve());
+  const dayOffInFlightRef = useRef(0);
+  const dayOffHeldRowRef = useRef(null);
   const dayOffSaveTimerRef = useRef(null);
   const dayOffRetryTimerRef = useRef(null);
   const dayOffPendingAuditRef = useRef([]);
   const dayOffEpochRef = useRef(0);
   const dayOffEnqueueRef = useRef(() => {});
   const adoptDayOffRow = offRow => {
+    if (dayOffInFlightRef.current && !dayOffDirtyRef.current) {
+      if (offRow !== null && offRow !== void 0 && offRow.data && typeof offRow.data === "object" && (!dayOffHeldRowRef.current || (offRow.updated_at || "") > (dayOffHeldRowRef.current.updated_at || ""))) dayOffHeldRowRef.current = offRow;
+      return;
+    }
     setAppDayOffLoaded(true);
     if (!(offRow !== null && offRow !== void 0 && offRow.data) || typeof offRow.data !== "object") return;
     if (dayOffDirtyRef.current) return;
@@ -324,6 +330,11 @@ function CallSchedule() {
   const [vacStart, setVacStart] = useState(() => fmt(new Date()));
   const [vacEnd, setVacEnd] = useState(() => fmt(new Date()));
   const [noCallDays, setNoCallDays] = useState({});
+  const timeOffLoadSeqRef = useRef({
+    read: 0,
+    del: 0,
+    shown: 0
+  });
   const [ncSurgeon, setNcSurgeon] = useState("");
   const [ncStart, setNcStart] = useState(() => fmt(new Date()));
   const [ncEnd, setNcEnd] = useState(() => fmt(new Date()));
@@ -1055,11 +1066,20 @@ function CallSchedule() {
       nc
     };
   };
-  const loadTimeOff = async quiet => {
+  const loadTimeOff = async function readTimeOff(quiet) {
+    const sq = timeOffLoadSeqRef.current,
+      seq = ++sq.read,
+      del = sq.del;
     try {
       const rows = await db.query("time_off", {
         select: "id,person_id,kind,start_date,end_date"
       });
+      if (seq < sq.shown) return;
+      if (del !== sq.del) {
+        await readTimeOff(quiet);
+        return;
+      }
+      sq.shown = seq;
       const {
         vac,
         nc
@@ -1143,10 +1163,15 @@ function CallSchedule() {
       if (!quiet && sessionEpochRef.current === ep) showToast("Couldn't remove that — check your connection and try again.", "error");
     };
     try {
-      const res = await fetch(`${SUPABASE_URL}/rest/v1/time_off?${filter}`, {
-        method: "DELETE",
-        headers: dbAuthHeaders()
-      });
+      let res;
+      try {
+        res = await fetch(`${SUPABASE_URL}/rest/v1/time_off?${filter}`, {
+          method: "DELETE",
+          headers: dbAuthHeaders()
+        });
+      } finally {
+        timeOffLoadSeqRef.current.del++;
+      }
       if (!res.ok) {
         const t = await res.text().catch(() => "");
         console.error("time_off delete failed", res.status, t);
@@ -2092,6 +2117,7 @@ function CallSchedule() {
       resetBusyRef.current = false;
       allowWipeSaveRef.current = false;
       everHadRealDataRef.current = true;
+      if (pendingSaveRef.current) setSetupSaveNudge(n => n + 1);
     };
     const resetSetupHere = () => {
       setSurgeons(INIT_SURGEONS);
@@ -2126,15 +2152,37 @@ function CallSchedule() {
         };
       }
     };
+    const CLEAR_WAIT_MS = 20000;
+    const bounded = (p, onLate) => {
+      let settled = false;
+      p.then(() => {
+        settled = true;
+      });
+      return Promise.race([p, new Promise(r => setTimeout(() => {
+        if (settled) return;
+        r({
+          ok: false,
+          unanswered: true,
+          error: `no answer in ${CLEAR_WAIT_MS / 1000} s`
+        });
+        if (onLate) p.then(x => {
+          if (x && x.ok && sessionEpochRef.current === ep) onLate();
+        });
+      }, CLEAR_WAIT_MS))]);
+    };
+    const lateBlob = () => setSetupSaveNudge(n => n + 1),
+      lateTimeOff = () => {
+        everHadRealDataRef.current = false;
+      };
     resetBusyRef.current = true;
-    const blobClear = await clearRow("call_schedule_data", {
+    const blobClear = await bounded(clearRow("call_schedule_data", {
       _intentionalClear: true
-    });
+    }), lateBlob);
     if (sessionEpochRef.current !== ep) {
       unarm();
       return;
     }
-    const appClear = blobClear.ok ? await clearRow("app_shifts_data", {}) : null;
+    const appClear = blobClear.ok ? await bounded(clearRow("app_shifts_data", {})) : null;
     if (sessionEpochRef.current !== ep) {
       unarm();
       return;
@@ -2144,7 +2192,7 @@ function CallSchedule() {
       unarm();
       if (blobClear.ok) {
         resetSetupHere();
-        showToast("Factory reset: the setup was reset, but clearing the APP shifts failed — so the time off and the schedule weeks were left as they are. Run the reset again, or restore the \"Before factory reset\" snapshot.", "error");
+        showToast("Factory reset: the setup was reset, but clearing the APP shifts " + (appClear.unanswered ? "got no answer — so the APP shifts may have been cleared, and the" : "failed — so the") + " time off and the schedule weeks were left as they are. Run the reset again, or restore the \"Before factory reset\" snapshot.", "error");
         return;
       }
       showToast(blobClear.unanswered ? "Couldn't clear the stored data — reset cancelled. The server didn't answer, so the setup may have been reset; nothing else was. Run the reset again, or restore the \"Before factory reset\" snapshot." : "Couldn't clear the stored data — reset cancelled. Nothing was changed.", "error");
@@ -2152,9 +2200,9 @@ function CallSchedule() {
       setTimeout(() => setSaveStatus(""), 2000);
       return;
     }
-    const toClear = await toClearAll(undefined, {
+    const toClear = await bounded(toClearAll(undefined, {
       quiet: true
-    });
+    }), lateTimeOff);
     if (sessionEpochRef.current !== ep || !toClear || !toClear.ok) {
       resetSetupHere();
       setAppShifts({});
@@ -4263,18 +4311,33 @@ function CallSchedule() {
         tapH = dbAuthHeaders();
       const carried = dayOffPendingAuditRef.current,
         auditCount = carried.length;
-      const ts = new Date().toISOString();
+      const ts = new Date().toISOString(),
+        sentMap = appDayOffRef.current;
       try {
+        dayOffInFlightRef.current++;
+        let res, held;
+        try {
+          res = await supabase.from("app_shifts_data").upsert({
+            id: "dayoff",
+            data: sentMap,
+            updated_at: ts
+          });
+        } finally {
+          dayOffInFlightRef.current--;
+          held = dayOffHeldRowRef.current;
+          dayOffHeldRowRef.current = null;
+        }
         const {
           error
-        } = await supabase.from("app_shifts_data").upsert({
-          id: "dayoff",
-          data: appDayOffRef.current,
-          updated_at: ts
-        });
+        } = res;
         if (error) throw new Error(String(error).slice(0, 200));
         const here = sessionEpochRef.current === ep;
-        if (here) dayOffLastWriteTsRef.current = ts;
+        if (here) dayOffLastWriteTsRef.current = ts;else if (!dayOffDirtyRef.current) {
+          appDayOffRef.current = sentMap;
+          setAppDayOff(sentMap);
+          dayOffLastWriteTsRef.current = ts;
+          if (held) adoptDayOffRow(held);
+        }
         carried.splice(0, auditCount).forEach(a => logAudit(a.was ? "app_dayoff.remove" : "app_dayoff.add", `${a.was ? "Removed" : "Marked"} APP ${a.name} day off ${a.ds}`, {
           date: a.ds,
           app_id: a.aid
