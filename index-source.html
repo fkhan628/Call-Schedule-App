@@ -1191,7 +1191,7 @@ function CallSchedule() {
         }
       }
       setAuthEmail(""); setAuthPassword("");
-    } catch(e) { setAuthError(e.message || "Auth error"); }
+    } catch(e) { setAuthError(authErrorText(e)); } // (UX audit 2026-10-19: plain words — offline says "No connection", not Safari's "Load failed")
     setAuthBusy(false);
   };
 
@@ -1239,7 +1239,7 @@ function CallSchedule() {
       setReloadTrigger(t => t + 1);
       setAuthBusy(false);
       return;
-    } catch(e) { if (gone()) return; setAuthError(e.message); }
+    } catch(e) { if (gone()) return; setAuthError(authErrorText(e)); }
     setAuthBusy(false);
   };
 
@@ -7851,9 +7851,9 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             {authMode==="newpassword" ? (
               <div style={{display:"flex",flexDirection:"column",gap:10}}>
                 <p style={{fontSize:13,color:"#2c5a80",margin:0}}>Enter your new password below.</p>
-                <input type="password" placeholder="New password" value={newPassword} onChange={e=>setNewPassword(e.target.value)}
+                <input type="password" placeholder="New password" value={newPassword} onChange={e=>setNewPassword(e.target.value)} autoComplete="new-password"
                   style={{...css.inp,width:"100%",padding:"10px 12px",fontSize:14}}/>
-                <input type="password" placeholder="Confirm new password" value={newPasswordConfirm} onChange={e=>setNewPasswordConfirm(e.target.value)}
+                <input type="password" placeholder="Confirm new password" value={newPasswordConfirm} onChange={e=>setNewPasswordConfirm(e.target.value)} autoComplete="new-password"
                   onKeyDown={e=>{if(e.key==="Enter"){
                     if(!newPassword||newPassword.length<6){setAuthError("Password must be at least 6 characters");return;}
                     if(newPassword!==newPasswordConfirm){setAuthError("Passwords don't match");return;}
@@ -7862,7 +7862,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                       setAuthBusy(false);
                       if(r.error){setAuthError(r.error);}
                       else{setAuthMode("login");setAuthError("");setNewPassword("");setNewPasswordConfirm("");alert("Password updated! Please sign in with your new password.");auth.signOut();}
-                    });
+                    }).catch(e=>{setAuthBusy(false);setAuthError(authErrorText(e));});
                   }}}
                   style={{...css.inp,width:"100%",padding:"10px 12px",fontSize:14}}/>
                 {authError && <div style={{fontSize:12,color:"#c04040",padding:"6px 10px",background:"#fce8e8",borderRadius:6,border:"1px solid #e8c0c0"}}>{authError}</div>}
@@ -7874,7 +7874,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                     setAuthBusy(false);
                     if(r.error){setAuthError(r.error);}
                     else{setAuthMode("login");setAuthError("");setNewPassword("");setNewPasswordConfirm("");alert("Password updated! Please sign in with your new password.");auth.signOut();}
-                  });
+                  }).catch(e=>{setAuthBusy(false);setAuthError(authErrorText(e));});
                 }} disabled={authBusy}
                   style={{...css.btn(true),width:"100%",padding:"11px 16px",fontSize:14,fontWeight:700,opacity:authBusy?0.6:1}}>
                   {authBusy ? "Updating…" : "Update Password"}
@@ -7898,13 +7898,14 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   <>
                     <p style={{fontSize:13,color:"#5a6a78",margin:0}}>Enter the email address you signed up with. We'll send you a link to reset your password.</p>
                     <input type="email" placeholder="Email address" value={resetEmail} onChange={e=>setResetEmail(e.target.value)}
+                      autoComplete="username" inputMode="email" autoCapitalize="none" autoCorrect="off"
                       onKeyDown={e=>{if(e.key==="Enter"&&resetEmail){
                         setAuthBusy(true);setAuthError("");
                         auth.resetPassword(resetEmail).then(r=>{
                           setAuthBusy(false);
                           if(r.error){setAuthError(r.error);}
                           else{setResetSent(true);}
-                        });
+                        }).catch(e=>{setAuthBusy(false);setAuthError(authErrorText(e));});
                       }}}
                       style={{...css.inp,width:"100%",padding:"10px 12px",fontSize:14}}/>
                     {authError && <div style={{fontSize:12,color:"#c04040",padding:"6px 10px",background:"#fce8e8",borderRadius:6,border:"1px solid #e8c0c0"}}>{authError}</div>}
@@ -7915,7 +7916,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                         setAuthBusy(false);
                         if(r.error){setAuthError(r.error);}
                         else{setResetSent(true);}
-                      });
+                      }).catch(e=>{setAuthBusy(false);setAuthError(authErrorText(e));});
                     }} disabled={authBusy}
                       style={{...css.btn(true),width:"100%",padding:"11px 16px",fontSize:14,fontWeight:700,opacity:authBusy?0.6:1}}>
                       {authBusy ? "Sending…" : "Send Reset Link"}
@@ -7934,9 +7935,11 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               /* ─── Normal Login / Signup Mode ─── */
               <div style={{display:"flex",flexDirection:"column",gap:10}}>
               <input type="email" placeholder="Email address" value={authEmail} onChange={e=>setAuthEmail(e.target.value)}
+                autoComplete="username" inputMode="email" autoCapitalize="none" autoCorrect="off"
                 onKeyDown={e=>e.key==="Enter"&&handleAuthSubmit()}
                 style={{...css.inp,width:"100%",padding:"10px 12px",fontSize:14}}/>
               <input type="password" placeholder="Password" value={authPassword} onChange={e=>setAuthPassword(e.target.value)}
+                autoComplete={authMode==="login" ? "current-password" : "new-password"}
                 onKeyDown={e=>e.key==="Enter"&&handleAuthSubmit()}
                 style={{...css.inp,width:"100%",padding:"10px 12px",fontSize:14}}/>
               {authMode==="signup" && (

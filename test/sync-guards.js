@@ -2993,6 +2993,203 @@ console.log("\nBF. toasts stack (up to 3), errors stay longer, no doubled ⚠");
   }
 }
 
+// ─── BG. Sign-in: iPhone autofill hints, plain network errors, no stuck "Sending…" offline (UX audit 2026-10-19) ───
+// The sign-in, sign-up and reset forms gave the iPhone no autofill hints (its saved passwords and account
+// suggestions are offered on fields that say what they hold). Offline, the reset and new-password chains had no
+// catch: the button stayed on "Sending…" / "Updating…" for good and the rejection went unhandled; the sign-in's
+// own catch showed the raw exception ("Load failed" on an iPhone).
+//   BG1 the real authErrorText (helpers.js): a network failure (Chrome's, Safari's and Firefox's wording, an
+//       error from either realm) → "No connection …"; an auth answer (config.js auth's { error }, a GoTrue
+//       body's msg / error_description, the text itself) → the server's words; anything else → one generic
+//       line, never the raw exception text
+//   BG2 the REAL reset and new-password handlers — all four (each form's button and its Enter key), sliced
+//       from the sign-in card and run with auth rejecting offline: busy back to false, "No connection …"
+//       shown, no unhandled rejection; a server refusal and a success behave as before
+//   BG3 the REAL handleAuthSubmit (sign-in and sign-up) and handleSetProfile, offline or answered with a
+//       non-JSON reply: plain words, not the raw text, busy false; a wrong password still shows the server's
+//       words and signs nobody in
+//   BG4 the card's inputs: every email input says username / email keyboard / no auto-capitalize / no
+//       autocorrect (username count = email-input count; elsewhere only the reauth sheet's read-only email
+//       says username — the Settings notification e-mails do not); sign-in's password says current-password,
+//       sign-up's and both new-password fields new-password (the expression run); every card input has a hint
+console.log("\nBG. Sign-in: iPhone autofill hints, plain network errors, no stuck \"Sending…\" offline");
+await (async () => {
+  const nsrcBG = src.replace(/\r\n/g, "\n");   // a Windows checkout is CRLF, CI's is LF
+  const NO_CONN = "No connection — check your internet and try again.", GENERIC = "Something went wrong — please try again.";
+  const aet = vm.runInContext('typeof authErrorText === "function" ? authErrorText : null', sandbox);
+  check("BG0 authErrorText is defined in helpers.js", !!aet);
+
+  // BG1 — the helper, exact strings
+  const say = (e) => { try { return aet ? aet(e) : null; } catch (ex) { return "threw " + String(ex); } };
+  const appErr = (ctor, msg) => vm.runInContext(`new ${ctor}(${JSON.stringify(msg)})`, sandbox); // an error made in the app's own realm
+  const t1 = [
+    ["Chrome offline: TypeError('Failed to fetch')", new TypeError("Failed to fetch"), NO_CONN],
+    ["an iPhone offline: TypeError('Load failed')", new TypeError("Load failed"), NO_CONN],
+    ["the app realm's TypeError('Load failed')", appErr("TypeError", "Load failed"), NO_CONN],
+    ["Firefox offline", new TypeError("NetworkError when attempting to fetch resource."), NO_CONN],
+    ["an older Safari offline", new TypeError("The Internet connection appears to be offline."), NO_CONN],
+    ["config.js auth's answer { user: null, error }", { user: null, error: "Invalid login credentials" }, "Invalid login credentials"],
+    ["a GoTrue body { code, msg }", { code: 422, msg: "User already registered" }, "User already registered"],
+    ["a GoTrue body { error, error_description }", { error: "invalid_grant", error_description: "Email not confirmed" }, "Email not confirmed"],
+    ["the server's text as a string", "Password should be at least 6 characters", "Password should be at least 6 characters"],
+    ["a reply that wasn't JSON (SyntaxError)", new SyntaxError("Unexpected token '<', \"<html>\" is not valid JSON"), GENERIC],
+    ["Safari's non-JSON reply, from the app realm", appErr("SyntaxError", "The string did not match the expected pattern."), GENERIC],
+    ["a code error (a TypeError, not a network one)", new TypeError("Cannot read properties of undefined (reading 'id')"), GENERIC],
+    ["a thrown Error with a message (not a server answer)", new Error("HTTP 500"), GENERIC],
+    ["undefined", undefined, GENERIC], ["null", null, GENERIC], ["{}", {}, GENERIC], ["{ error: null }", { error: null }, GENERIC], ["a blank string", "  ", GENERIC], ["a number", 42, GENERIC],
+  ];
+  const bad1 = t1.filter(([, e, want]) => say(e) !== want);
+  check("BG1 authErrorText: offline (Chrome / iPhone / Firefox / older Safari wording, either realm) → \"No connection — check your internet and try again.\"; an auth answer → the server's words; a non-JSON reply, a code error, unknown → one generic line — exact strings",
+    !!aet && bad1.length === 0, bad1.map(([what, e]) => `${what}: ${JSON.stringify(say(e))}`).join(" | "));
+
+  // the sign-in card (its render branch, up to the profile screen's), and a string-aware bracket matcher
+  const cardA = nsrcBG.indexOf(") : !authUser && !isPublicMode ? ("), cardB = cardA < 0 ? -1 : nsrcBG.indexOf(") : needsProfile ? (", cardA);
+  const card = cardA >= 0 && cardB > cardA && nsrcBG.indexOf(") : !authUser && !isPublicMode ? (", cardA + 1) === -1 ? nsrcBG.slice(cardA, cardB) : "";
+  check("BG2 the sign-in card's render branch found, once", card.length > 0);
+  const closeBG = (s, open) => { // s[open] is ( { or [ → the index of its partner; strings skipped; -1 if none
+    const want = [];
+    for (let i = open; i < s.length; i++) {
+      const c = s[i];
+      if (c === '"' || c === "'" || c === "`") { for (i++; i < s.length && s[i] !== c; i++) if (s[i] === "\\") i++; continue; }
+      if (c === "(" || c === "{" || c === "[") want.push(c === "(" ? ")" : c === "{" ? "}" : "]");
+      else if (c === ")" || c === "}" || c === "]") { if (want.pop() !== c) return -1; if (!want.length) return i; }
+    }
+    return -1;
+  };
+
+  // BG2 — each auth chain on the card, run inside the onClick / onKeyDown handler that holds it
+  const handlers = [];
+  for (const call of ["auth.updatePassword(newPassword)", "auth.resetPassword(resetEmail)"]) {
+    for (let i = card.indexOf(call); i >= 0; i = card.indexOf(call, i + call.length)) {
+      const k = Math.max(card.lastIndexOf("onClick={", i), card.lastIndexOf("onKeyDown={", i)), open = k < 0 ? -1 : card.indexOf("{", k), close = open < 0 ? -1 : closeBG(card, open);
+      handlers.push({ call, kind: card.startsWith("onClick", k) ? "button" : "Enter key", code: close > i ? card.slice(open + 1, close) : null });
+    }
+  }
+  check("BG2 four handlers hold an auth chain — each form's button and its Enter key (new password: updatePassword; reset: resetPassword)",
+    handlers.length === 4 && handlers.every((h) => h.code) && ["auth.updatePassword(newPassword)", "auth.resetPassword(resetEmail)"].every((c) => ["button", "Enter key"].every((kd) => handlers.filter((h) => h.call === c && h.kind === kd).length === 1)),
+    JSON.stringify(handlers.map((h) => [h.call, h.kind, !!h.code])));
+  const HANDLER_ENV = "auth, newPassword, newPasswordConfirm, resetEmail, setAuthBusy, setAuthError, setAuthMode, setNewPassword, setNewPasswordConfirm, setResetSent, alert, authErrorText";
+  const unhandled = [];
+  const onUnhandled = (reason) => { unhandled.push(String((reason && reason.message) || reason)); };
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    const runH = async (h, outcome) => {
+      const log = [];
+      const answer = () => (outcome === "offline" ? Promise.reject(new TypeError("Load failed")) : Promise.resolve(outcome === "refused" ? { error: "User not found" } : { error: null }));
+      const env = { newPassword: "hunter22", newPasswordConfirm: "hunter22", resetEmail: "fak@dsg.test", authErrorText: aet,
+        auth: { updatePassword: () => { log.push("updatePassword"); return answer(); }, resetPassword: () => { log.push("resetPassword"); return answer(); }, signOut: async () => { log.push("signOut"); } },
+        setAuthBusy: (v) => log.push("busy:" + v), setAuthError: (v) => log.push("error:" + v), setAuthMode: (v) => log.push("mode:" + v), setResetSent: (v) => log.push("sent:" + v),
+        setNewPassword: () => {}, setNewPasswordConfirm: () => {}, alert: () => log.push("alert") };
+      let fn = null;
+      try { fn = vm.runInContext(`(function (env) { const { ${HANDLER_ENV} } = env; return (${h.code}); })`, sandbox, { filename: "bg-auth-handler.js" }); } catch (ex) { return { log: ["did not compile: " + String(ex).slice(0, 120)], unhandled: 0 }; }
+      const before = unhandled.length;
+      try { fn(env)(h.kind === "Enter key" ? { key: "Enter" } : undefined); } catch (ex) { log.push("threw " + String(ex)); }
+      await new Promise((r) => setTimeout(r, 15)); // the chain settles; an unhandled rejection is reported by now
+      return { log, unhandled: unhandled.length - before };
+    };
+    const lastBusy = (log) => log.filter((x) => x.startsWith("busy:")).pop();
+    const offline = [], refused = [], ok = [];
+    for (const h of handlers.filter((x) => x.code)) {
+      const name = `${h.call.startsWith("auth.update") ? "new password" : "reset"} ${h.kind}`;
+      const o = await runH(h, "offline"), r = await runH(h, "refused"), s = await runH(h, "ok");
+      offline.push([name, o, o.log[0] === "busy:true" && lastBusy(o.log) === "busy:false" && o.log[o.log.length - 1] === "error:" + NO_CONN && o.unhandled === 0 && !o.log.some((x) => /Load failed/.test(x))]);
+      refused.push([name, r, lastBusy(r.log) === "busy:false" && r.log[r.log.length - 1] === "error:User not found" && r.unhandled === 0]);
+      ok.push([name, s, lastBusy(s.log) === "busy:false" && s.unhandled === 0 && !s.log.some((x) => x.startsWith("error:") && x !== "error:")
+        && (h.call.startsWith("auth.update") ? ["mode:login", "alert", "signOut"].every((x) => s.log.includes(x)) : s.log.includes("sent:true"))]);
+    }
+    const why = (rows) => rows.filter(([, , good]) => !good).map(([name, x]) => `${name}: ${JSON.stringify(x)}`).join(" | ");
+    check("BG2 offline (auth rejects with Safari's TypeError('Load failed')), all four handlers: busy goes true then back to false (the button leaves \"Sending…\" / \"Updating…\"), the form says \"No connection — check your internet and try again.\", no unhandled rejection, never the raw \"Load failed\"",
+      offline.length === 4 && offline.every(([, , good]) => good), why(offline));
+    check("BG2 unchanged otherwise: a server refusal shows the server's words, busy false; a success sends the reset link (resetSent) or updates the password (back to sign-in, the alert, signed out)",
+      refused.length === 4 && ok.length === 4 && refused.concat(ok).every(([, , good]) => good), why(refused.concat(ok)));
+  } finally { process.removeListener("unhandledRejection", onUnhandled); }
+
+  // BG3 — the sign-in / sign-up submit and the profile screen's Continue, executed
+  const declBG = (name) => { const head = `  const ${name} = `, a = nsrcBG.indexOf(head), e = a < 0 ? -1 : nsrcBG.indexOf("\n  };\n", a); return a < 0 || e < 0 || nsrcBG.indexOf(head, a + 1) !== -1 ? null : nsrcBG.slice(a + head.length, e) + "\n  }"; };
+  const mkBG = (names, code) => { if (!code) return null; try { return vm.runInContext(`(function (env) { const { ${names} } = env; return (${code}); })`, sandbox, { filename: "bg-auth-submit.js" }); } catch (ex) { return null; } };
+  const mkSubmit = mkBG("setAuthError, setAuthBusy, authMode, signupPersonId, dbAuth, auth, authEmail, authPassword, allPeople, setAuthUser, setUserProfile, setMySurgeon, setNeedsProfile, setIsScheduler, setReloadTrigger, setAuthEmail, setAuthPassword, fetch, SUPABASE_URL, dbAuthHeaders, saveNotifPref, showToast, console, authErrorText", declBG("handleAuthSubmit"));
+  const mkProfile = mkBG("signupPersonId, authUser, setAuthBusy, setAuthError, dbAuth, allPeople, setUserProfile, setMySurgeon, setNeedsProfile, setIsScheduler, setReloadTrigger, console, sessionEpochRef, authErrorText", declBG("handleSetProfile"));
+  check("BG3 handleAuthSubmit and handleSetProfile sliced and compiled", !!mkSubmit && !!mkProfile);
+  const quietBG = { error() {}, warn() {}, log() {}, info() {} };
+  const submit = async (mode, o) => {
+    const log = [];
+    const env = { authMode: mode, signupPersonId: mode === "signup" ? "s3" : "", authEmail: "rpc@dsg.test", authPassword: "pw123456", allPeople: [{ id: "s3", name: "RPC" }], authErrorText: aet, console: quietBG,
+      auth: { signIn: o.signIn, signUp: o.signUp || (async () => { throw new Error("signUp not expected"); }), bindUser: (id) => log.push("bind:" + id) },
+      dbAuth: { getAllProfiles: o.getAllProfiles || (async () => []), getProfile: async () => null, upsertProfile: async () => ({ error: null }) },
+      setAuthError: (v) => log.push("error:" + v), setAuthBusy: (v) => log.push("busy:" + v), setAuthUser: (u) => log.push("user:" + (u && u.id)),
+      setUserProfile: () => {}, setMySurgeon: () => {}, setNeedsProfile: () => {}, setIsScheduler: () => {}, setReloadTrigger: () => {}, setAuthEmail: () => {}, setAuthPassword: () => {},
+      fetch: async () => { throw new Error("no fetch expected"); }, SUPABASE_URL: "https://x.test", dbAuthHeaders: () => ({}), saveNotifPref: () => {}, showToast: () => {} };
+    try { await mkSubmit(env)(); } catch (ex) { log.push("threw " + String(ex)); }
+    return log;
+  };
+  const errOf = (log) => log.filter((x) => x.startsWith("error:")).pop();
+  const s3 = mkSubmit ? [
+    ["sign-in offline", await submit("login", { signIn: async () => { throw new TypeError("Load failed"); } }), "error:" + NO_CONN],
+    ["sign-in, a non-JSON reply", await submit("login", { signIn: async () => { throw new SyntaxError("The string did not match the expected pattern."); } }), "error:" + GENERIC],
+    ["sign-up offline (its name check)", await submit("signup", { getAllProfiles: async () => { throw new TypeError("Failed to fetch"); } }), "error:" + NO_CONN],
+    ["sign-in, a wrong password (control)", await submit("login", { signIn: async () => ({ user: null, error: "Invalid login credentials" }) }), "error:Invalid login credentials"],
+  ] : [];
+  const bad3 = s3.filter(([, log, want]) => !(errOf(log) === want && log[log.length - 1] === "busy:false" && !log.some((x) => /^(user|bind):/.test(x) || /^threw /.test(x))));
+  check("BG3 the sign-in / sign-up submit: offline says \"No connection …\", a non-JSON reply the generic line (never Safari's raw text), a wrong password the server's words; busy ends false, nobody signed in or bound",
+    s3.length === 4 && bad3.length === 0, bad3.map(([what, log]) => `${what}: ${JSON.stringify(log)}`).join(" | "));
+  let p3 = null;
+  if (mkProfile) {
+    p3 = [];
+    try {
+      await mkProfile({ signupPersonId: "s3", authUser: { id: "auth-rpc" }, allPeople: [{ id: "s3", name: "RPC" }], console: quietBG, sessionEpochRef: { current: 0 }, authErrorText: aet,
+        dbAuth: { getAllProfiles: async () => { throw new TypeError("Load failed"); }, upsertProfile: async () => { p3.push("upsert"); return { error: null }; } },
+        setAuthBusy: (v) => p3.push("busy:" + v), setAuthError: (v) => p3.push("error:" + v), setUserProfile: () => p3.push("profile"), setMySurgeon: () => {}, setNeedsProfile: () => {}, setIsScheduler: () => {}, setReloadTrigger: () => {} })();
+    } catch (ex) { p3.push("threw " + String(ex)); }
+  }
+  check("BG3 the profile screen's Continue, offline: \"No connection …\" (not \"Load failed\"), busy ends false, no profile written or set",
+    !!p3 && errOf(p3) === "error:" + NO_CONN && p3[p3.length - 1] === "busy:false" && !p3.includes("upsert") && !p3.includes("profile"), JSON.stringify(p3));
+
+  // BG4 — the card's inputs, read as tags; the password hint's expression run
+  const inputsBG = (s) => {
+    const out = [];
+    for (let i = s.indexOf("<input"); i >= 0; i = s.indexOf("<input", i + 6)) {
+      const attrs = {}; let j = i + 6, bad = false;
+      while (j < s.length) {
+        while (/\s/.test(s[j])) j++;
+        if (s.startsWith("/>", j)) break;
+        const m = /^[A-Za-z][\w-]*/.exec(s.slice(j, j + 40)); if (!m) { bad = true; break; }
+        j += m[0].length;
+        if (s[j] !== "=") { attrs[m[0]] = { str: "true" }; continue; }
+        j++;
+        if (s[j] === '"') { const e = s.indexOf('"', j + 1); attrs[m[0]] = { str: s.slice(j + 1, e) }; j = e + 1; }
+        else if (s[j] === "{") { const e = closeBG(s, j); if (e < 0) { bad = true; break; } attrs[m[0]] = { expr: s.slice(j + 1, e) }; j = e + 1; }
+        else { bad = true; break; }
+      }
+      out.push(bad ? null : Object.defineProperty(attrs, "at", { value: i })); // (where the tag starts — not an attribute)
+    }
+    return out;
+  };
+  const cardInputs = inputsBG(card), allInputs = inputsBG(nsrcBG), offCard = allInputs.filter((a) => a && (a.at < cardA || a.at >= cardB));
+  const strOf = (a, k) => (a && a[k] && a[k].str !== undefined ? a[k].str : null);
+  const emails = cardInputs.filter((a) => strOf(a, "type") === "email"), pwds = cardInputs.filter((a) => strOf(a, "type") === "password");
+  check("BG4 the card's inputs read: 2 email (sign-in/sign-up, reset), 3 password (sign-in/sign-up, new + confirm)",
+    cardInputs.length === 5 && cardInputs.every(Boolean) && emails.length === 2 && pwds.length === 3, JSON.stringify(cardInputs.map((a) => a && strOf(a, "type"))));
+  check("BG4 every email input on the card: autoComplete=\"username\", inputMode=\"email\", autoCapitalize=\"none\", autoCorrect=\"off\" — and the username count equals the email-input count",
+    emails.length === 2 && emails.every((a) => strOf(a, "autoComplete") === "username" && strOf(a, "inputMode") === "email" && strOf(a, "autoCapitalize") === "none" && strOf(a, "autoCorrect") === "off")
+    && cardInputs.filter((a) => strOf(a, "autoComplete") === "username").length === emails.length && (card.match(/autoComplete="username"/g) || []).length === emails.length,
+    JSON.stringify(emails.map((a) => ["autoComplete", "inputMode", "autoCapitalize", "autoCorrect"].map((k) => strOf(a, k)))));
+  const userElsewhere = offCard.filter((a) => strOf(a, "autoComplete") === "username");
+  const reauthEmail = userElsewhere.filter((a) => a.readOnly && a.value && /^authUser\.email\b/.test(a.value.expr || ""));
+  const settingsEmails = offCard.filter((a) => strOf(a, "type") === "email" && !reauthEmail.includes(a));
+  check("BG4 outside the card only the reauth sheet's read-only account email says username; the Settings notification e-mail fields do not (they are not the sign-in)",
+    allInputs.filter((a) => a && a.at >= cardA && a.at < cardB).length === cardInputs.length && userElsewhere.length === 1 && reauthEmail.length === 1 && settingsEmails.length >= 1 && settingsEmails.every((a) => strOf(a, "autoComplete") !== "username"),
+    JSON.stringify({ userElsewhere: userElsewhere.length, reauth: reauthEmail.length, settings: settingsEmails.map((a) => strOf(a, "autoComplete")) }));
+  const signPwd = pwds.find((a) => strOf(a, "placeholder") === "Password"), newPwds = pwds.filter((a) => /new password/i.test(strOf(a, "placeholder") || ""));
+  let hint = null;
+  try { hint = signPwd && signPwd.autoComplete && signPwd.autoComplete.expr ? vm.runInContext(`(function (authMode) { return (${signPwd.autoComplete.expr}); })`, sandbox) : null; } catch (ex) { hint = null; }
+  check("BG4 passwords: the sign-in form's says current-password, on sign-up new-password (its expression run); both new-password fields say new-password",
+    !!hint && hint("login") === "current-password" && hint("signup") === "new-password" && newPwds.length === 2 && newPwds.every((a) => strOf(a, "autoComplete") === "new-password"),
+    JSON.stringify({ sign: signPwd && signPwd.autoComplete, newPwds: newPwds.map((a) => strOf(a, "autoComplete")) }));
+  check("BG4 every input on the card carries an autoComplete hint; the card's auth chains each end in the plain-words catch (4 .then, 4 .catch)",
+    cardInputs.length > 0 && cardInputs.every((a) => a && a.autoComplete)
+    && (card.match(/\.then\(r=>\{/g) || []).length === 4 && card.split(".catch(e=>{setAuthBusy(false);setAuthError(authErrorText(e));});").length - 1 === 4);
+})().catch(ex => check("BG harness ran without crashing", false, String(ex && ex.stack || ex).split("\n").slice(0, 3).join(" | ")));
+
 // ─── R. Silvis on demand: the 🚑 calendar switch + FAK's Mine section (2026-09-24) ───
 // Owner decision: FAK's Silvis days stay OFF the calendar by default for
 // everyone; a "🚑 Silvis" Show-bar switch turns them on (partners, and office

@@ -1020,6 +1020,30 @@ function toastText(t) {
   return tone === "success" ? "✓ " + msg : tone === "error" ? "⚠ " + msg.replace(/^\s*⚠\uFE0F?\s*/, "") : msg;
 }
 
+// The sign-in, sign-up and password-reset forms' error line, in plain words
+// (UX audit 2026-10-19). A request that never reached the server makes fetch
+// throw ("Load failed" on an iPhone, "Failed to fetch" in Chrome,
+// "NetworkError …" in Firefox): that reads as no connection. An answer from
+// the auth server — config.js auth's { error } text, a GoTrue body's msg /
+// error_description / message, or the text itself — is shown as it said it.
+// Anything else (a reply that wasn't JSON, a code error) gets one generic
+// line, never the raw exception text.
+function authErrorText(e) {
+  const NO_CONNECTION = "No connection — check your internet and try again.";
+  const GENERIC = "Something went wrong — please try again.";
+  if (typeof e === "string") return e.trim() || GENERIC;
+  if (!e || typeof e !== "object") return GENERIC;
+  // A thrown Error (from any realm) or DOMException is never a server answer.
+  if (Object.prototype.toString.call(e) !== "[object Object]") {
+    const m = typeof e.message === "string" ? e.message : "";
+    return /failed to fetch|load failed|networkerror|network request failed|network connection was lost|internet connection appears to be offline/i.test(m) ? NO_CONNECTION : GENERIC;
+  }
+  for (const k of ["msg", "error_description", "message", "error"]) {
+    if (typeof e[k] === "string" && e[k].trim()) return e[k].trim();
+  }
+  return GENERIC;
+}
+
 /* ═══ ICS Calendar Generation ═══ */
 // ALL-DAY events (2026-09-25, same format as the calendar-sync v15 feed): a
 // service week is one Mon–Sat event, each weeknight one event on its date, the
