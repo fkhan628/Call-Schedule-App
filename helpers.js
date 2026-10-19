@@ -15,6 +15,16 @@ function getMondays(yr,mo,numWeeks) {
 
 function onVac(id,ds,v){ return (v[id]||[]).some(([a,b])=>ds>=a&&ds<=b); }
 
+// A date range's end once its start is picked (owner 2026-10-18: "the end
+// date calendar should start where the start date was placed"). A native
+// date input's calendar opens at its value, or at today when it is empty, so
+// the end follows the start when it is empty, now before the start, or still
+// on the previous start (a one-day range, or a form's default of today/today)
+// — then the end's calendar opens on the start. An end the user set later
+// than the start is kept. Dates are "YYYY-MM-DD", so string order is date
+// order. A cleared start leaves the end alone.
+function endOnOrAfter(start, end, prevStart) { return start && (!end || end < start || end === prevStart) ? start : end; }
+
 // Start date of a shift, for time-based gating (nav cleanup 2026-09-06):
 // a night = its own date, the weekend = its Friday, a service week = its
 // Monday — once a shift has STARTED it is history and trade/swap paths
