@@ -6207,6 +6207,276 @@ await (async () => {
   }
 })();
 
+// ─── AY. On Call Today: an "On call now" line names who holds call this minute (UX audit 2026-10-19) ───
+// The banner reads only today's date, so between midnight and 7a it named
+// TONIGHT's holder, not the one on call since last evening: the OR board and
+// members checking at night were misled. helpers.js onCallNow(schedule, now)
+// answers by the scheduler's own handover rule, weekHolders' slots at
+// SHIFT_TIMES' hours, and invents nothing:
+//   before 7a  the PREVIOUS date's overnight (overnightHolderOn's rule): its
+//              holiday 24h, Mon–Thu night, Fri-night / Sun-24h weekend leg, or
+//              the service Saturday 24h, until 7a
+//   7a–5p      today's holiday 24h, else Mon–Fri the service holder (the
+//              date's override, else the dayCall) until 5p; Sat the service
+//              Saturday and Sun the weekend's Sunday, both 24h until 7a
+//   5p–12a     today's overnight, the same rule, until 7a
+// The banner's top line reads "🟢 On call now: {name} — {slot}, until {7a|5p}"
+// and shows only when there is a holder; the rest of the banner is unchanged.
+//   AY1 onCallNow executed: the plan's nine fixture times, the 7a / 5p / midnight
+//       edges, an override day, a backup week, a swap, an unassigned holiday, an
+//       unpublished or blank week (null); SHIFT_TIMES still says these hours; pure
+//   AY2 cross-checks over nine weeks: every 18:00 and next-03:00 answer is
+//       overnightHolderOn's, and every 10:00 / 18:00 / next-03:00 answer is the
+//       holder the calendar's own rows (the real calData memo, sliced) show
+//   AY3 AY1 + the overnight cross-check again in children pinned to TZ=UTC and
+//       TZ=America/Chicago (offsets proven)
+//   AY4 the component's real lines, run at a pinned clock: callNow / callNowName
+//       map the holder through sMap; the window tick arms a 60-s interval, hands
+//       React a new key exactly when the answer can change, and cleans up
+//   AY5 source pins: the line is the banner's first child, gated on callNowName;
+//       the banner's own gate (hasCallToday) and the share message are untouched
+console.log("\nAY. On Call Today: an \"On call now\" line");
+{
+  const ocn = vm.runInContext('typeof onCallNow === "function" ? onCallNow : null', sandbox);
+  const ohn = vm.runInContext('typeof overnightHolderOn === "function" ? overnightHolderOn : null', sandbox);
+  const fmtS = vm.runInContext("fmt", sandbox);
+  const NONE = "onCallNow is not defined in helpers.js";
+  const J = (o) => JSON.stringify(o);
+  const sig = (r) => (r ? r.sid + "|" + r.slot + "|" + r.until : "null");
+  const HOL = (sid, holiday, name) => ({ surgeonId: sid, role: "holiday_24h", hours: "7a–7a", name, type: "major", holiday });
+  // Weeks 10/19 → 12/6. 10/12 and 11/9 are unpublished (no entry), 11/16 is a blank entry, 11/2 is a backup (Fierce primary) week.
+  const SCHED = {
+    "2026-10-19": { dayCall: "s1", dayCallOverrides: { "2026-10-23": "s6" }, nights: { mon: "s2", tue: "s3", wed: "s4", thu: "s5", wknd: "s7" }, holidayCoverage: {}, isBackup: false },
+    "2026-10-26": { dayCall: "s3", dayCallOverrides: { "2026-10-31": "s2" }, nights: { mon: "s4", tue: "s1", wed: null, thu: "s2", wknd: "s5" }, holidayCoverage: {} },
+    "2026-11-02": { dayCall: "s5", nights: { mon: "s1", tue: "s2", wed: "s3", thu: "s4", wknd: "s6" }, isBackup: true },
+    "2026-11-16": {},
+    "2026-11-23": { dayCall: "s1", nights: { mon: "s2", tue: "s3", wed: "s2", thu: "s5", wknd: "s7" }, holidayCoverage: { "2026-11-26": HOL("s4", "Thanksgiving", "Thanksgiving 24h") } },
+    "2026-11-30": { dayCall: "s3", nights: { mon: "s1", thu: "s5", wknd: "s2" }, holidayCoverage: { "2026-12-03": HOL(null, "Test Day", "Thu 24h"), "2026-12-05": { surgeonId: "s7", type: "swap", name: "Saturday swap coverage" } } },
+  };
+  // [group, label, [y, month0, d, h, min] local, want "sid|slot|until" or "null"]
+  const CASES = [
+    ["plan", "Tue 10/20 03:00 → Monday night's holder, not tonight's", [2026, 9, 20, 3, 0], "s2|Mon Night|7a"],
+    ["plan", "Tue 10/20 10:00 → the service week", [2026, 9, 20, 10, 0], "s1|Service Week|5p"],
+    ["plan", "Tue 10/20 18:00 → Tuesday night", [2026, 9, 20, 18, 0], "s3|Tue Night|7a"],
+    ["plan", "Sat 10/24 03:00 → the weekend's Friday-night leg", [2026, 9, 24, 3, 0], "s7|Weekend|7a"],
+    ["plan", "Sun 10/25 12:00 → the weekend's Sunday 24h (SHIFT_TIMES: Sun 7a–Mon 7a)", [2026, 9, 25, 12, 0], "s7|Weekend|7a"],
+    ["plan", "Mon 10/26 03:00 → the weekend's last leg", [2026, 9, 26, 3, 0], "s7|Weekend|7a"],
+    ["plan", "Thanksgiving Thu 11/26 10:00 → the holiday 24h", [2026, 10, 26, 10, 0], "s4|Thanksgiving 24h|7a"],
+    ["plan", "Fri 11/27 03:00 → Thanksgiving's 24h, which ends at 7a", [2026, 10, 27, 3, 0], "s4|Thanksgiving 24h|7a"],
+    ["plan", "Tue 11/10 03:00, an unpublished week → null", [2026, 10, 10, 3, 0], "null"],
+    ["edge", "Tue 10/20 06:59 → still Monday night", [2026, 9, 20, 6, 59], "s2|Mon Night|7a"],
+    ["edge", "Tue 10/20 07:00 → the service week", [2026, 9, 20, 7, 0], "s1|Service Week|5p"],
+    ["edge", "Tue 10/20 16:59 → still the service week", [2026, 9, 20, 16, 59], "s1|Service Week|5p"],
+    ["edge", "Tue 10/20 17:00 → Tuesday night", [2026, 9, 20, 17, 0], "s3|Tue Night|7a"],
+    ["edge", "Tue 10/20 23:59 → Tuesday night", [2026, 9, 20, 23, 59], "s3|Tue Night|7a"],
+    ["edge", "Wed 10/21 00:00 → still Tuesday night after midnight", [2026, 9, 21, 0, 0], "s3|Tue Night|7a"],
+    ["edge", "Thu 11/26 03:00 → the Wednesday night before Thanksgiving runs to 7a", [2026, 10, 26, 3, 0], "s2|Wed Night|7a"],
+    ["edge", "Thu 11/26 18:00 → the holiday holder all evening (that Thu night is dropped)", [2026, 10, 26, 18, 0], "s4|Thanksgiving 24h|7a"],
+    ["edge", "Fri 11/27 07:00 → back to the service week", [2026, 10, 27, 7, 0], "s1|Service Week|5p"],
+    ["slot", "Fri 10/23 10:00 → a single-day override is a Service Day", [2026, 9, 23, 10, 0], "s6|Service Day|5p"],
+    ["slot", "Fri 10/23 18:00 → the weekend's Friday night", [2026, 9, 23, 18, 0], "s7|Weekend|7a"],
+    ["slot", "Sat 10/24 10:00 → the service Saturday 24h", [2026, 9, 24, 10, 0], "s1|Service Week (Sat 24h)|7a"],
+    ["slot", "Sun 10/25 03:00 → the service Saturday runs to Sun 7a", [2026, 9, 25, 3, 0], "s1|Service Week (Sat 24h)|7a"],
+    ["slot", "Mon 10/26 10:00 → the next week's service", [2026, 9, 26, 10, 0], "s3|Service Week|5p"],
+    ["slot", "Sat 10/31 10:00 → a Saturday override is a Service Day 24h", [2026, 9, 31, 10, 0], "s2|Service Day (Sat 24h)|7a"],
+    ["slot", "Sun 11/1 01:30, the fall-back night → that Saturday's holder", [2026, 10, 1, 1, 30], "s2|Service Day (Sat 24h)|7a"],
+    ["slot", "Mon 11/2 03:00 → the weekend before a backup week", [2026, 10, 2, 3, 0], "s5|Weekend|7a"],
+    ["slot", "Tue 11/3 03:00 → a backup week's night says (backup)", [2026, 10, 3, 3, 0], "s1|Mon Night (backup)|7a"],
+    ["slot", "Tue 11/3 10:00 → a backup week's service says (backup)", [2026, 10, 3, 10, 0], "s5|Service Week (backup)|5p"],
+    ["slot", "Mon 11/9 03:00 → the backup week's Sunday 24h, into an unpublished Monday", [2026, 10, 9, 3, 0], "s6|Weekend (backup)|7a"],
+    ["slot", "Mon 11/30 03:00 → Thanksgiving week's Sunday 24h", [2026, 10, 30, 3, 0], "s7|Weekend|7a"],
+    ["slot", "Fri 12/4 18:00 → the weekend", [2026, 11, 4, 18, 0], "s2|Weekend|7a"],
+    ["slot", "Sat 12/5 10:00 → a swap is named by its own label", [2026, 11, 5, 10, 0], "s7|Saturday swap coverage|7a"],
+    ["slot", "Sun 12/6 03:00 → the swap runs to 7a", [2026, 11, 6, 3, 0], "s7|Saturday swap coverage|7a"],
+    ["null", "Mon 11/9 10:00 → the unpublished week's service", [2026, 10, 9, 10, 0], "null"],
+    ["null", "Mon 10/19 03:00 → the night of Sun 10/18 is in an unpublished week", [2026, 9, 19, 3, 0], "null"],
+    ["null", "Tue 11/17 03:00 → a blank week entry", [2026, 10, 17, 3, 0], "null"],
+    ["null", "Thu 10/29 03:00 → nobody holds that Wednesday night", [2026, 9, 29, 3, 0], "null"],
+    ["null", "Wed 12/2 03:00 → no Tuesday night that week", [2026, 11, 2, 3, 0], "null"],
+    ["null", "Thu 12/3 10:00 → an unassigned holiday 24h", [2026, 11, 3, 10, 0], "null"],
+    ["null", "Fri 12/4 03:00 → the unassigned holiday's overnight (not the dropped Thu night holder)", [2026, 11, 4, 3, 0], "null"],
+  ];
+  const at = ([y, m, d, h, mi]) => new Date(y, m, d, h, mi);
+  const before = J(SCHED);
+  const got = ocn ? CASES.map((c) => { try { return sig(ocn(SCHED, at(c[2]))); } catch (ex) { return "threw: " + String(ex).slice(0, 100); } }) : null;
+  const badIn = (grp) => (got ? CASES.map((c, i) => (c[0] !== grp || got[i] === c[3] ? null : `${c[1]}: got ${got[i]}`)).filter(Boolean) : [NONE]);
+  const nIn = (grp) => CASES.filter((c) => c[0] === grp).length;
+  check(`AY1 onCallNow, the plan's ${nIn("plan")} fixtures: Tue 03:00 Mon night's holder, Tue 10:00 the service week (until 5p), Tue 18:00 Tue night, Sat 03:00 / Sun 12:00 / Mon 03:00 the weekend's legs, Thanksgiving 10:00 and Fri 03:00 the holiday 24h (until 7a), an unpublished week null`,
+    !!got && badIn("plan").length === 0, badIn("plan").join(" | "));
+  check(`AY1 the edges (${nIn("edge")}): 06:59 last night / 07:00 the day / 16:59 the day / 17:00 tonight / 23:59 and 00:00 still tonight; the night before a holiday runs to 7a and the holiday holds the evening`,
+    !!got && badIn("edge").length === 0, badIn("edge").join(" | "));
+  check(`AY1 the other slots (${nIn("slot")}): an override is a Service Day, the service Saturday 24h, the fall-back night, a backup week says (backup), a swap by its own label`,
+    !!got && badIn("slot").length === 0, badIn("slot").join(" | "));
+  check(`AY1 nobody to name → null (${nIn("null")}): an unpublished or blank week, an empty night, an unassigned holiday and its overnight`,
+    !!got && badIn("null").length === 0, badIn("null").join(" | "));
+  let junk = null;
+  try { junk = ocn ? [ocn(SCHED, null), ocn(SCHED, new Date(NaN)), ocn(SCHED, "2026-10-20"), ocn(null, at([2026, 9, 20, 3, 0])), ocn({}, at([2026, 9, 20, 3, 0]))] : null; } catch (ex) { junk = ["threw: " + String(ex).slice(0, 100)]; }
+  check("AY1 no time, a bad time, a date string, no schedule or an empty one → null (never a throw)",
+    !!junk && junk.length === 5 && junk.every((r) => r === null), J(junk));
+  check("AY1 the hours onCallNow uses are still SHIFT_TIMES' (M–F 7a–5p + Sat 7a–Sun 7a; nights 5p–7a; Fri 5p–Sat 7a & Sun 7a–Mon 7a) and its slot names SHIFT_LABELS' — a change there must revisit onCallNow",
+    vm.runInContext("JSON.stringify(SHIFT_TIMES)", sandbox) === J({ dayCall: "M–F 7a–5p + Sat 7a–Sun 7a", mon: "Mon 5p–7a", tue: "Tue 5p–7a", wed: "Wed 5p–7a", thu: "Thu 5p–7a", wknd: "Fri 5p–Sat 7a & Sun 7a–Mon 7a" })
+      && vm.runInContext("[SHIFT_LABELS.mon, SHIFT_LABELS.tue, SHIFT_LABELS.wed, SHIFT_LABELS.thu, SHIFT_LABELS.wknd].join()", sandbox) === "Mon Night,Tue Night,Wed Night,Thu Night,Weekend",
+    vm.runInContext("JSON.stringify(SHIFT_TIMES)", sandbox));
+  check("AY1 onCallNow is pure: the schedule passed in is untouched and it reads no clock (no Date.now, no new Date())",
+    !!ocn && J(SCHED) === before && !/Date\.now|new Date\(\s*\)/.test(String(ocn)), ocn ? String(ocn).slice(0, 120) : NONE);
+
+  // AY2 — cross-checks, every date 10/12 → 12/13 (nine weeks, two of them unpublished and one blank)
+  const days = [];
+  for (let d = new Date(2026, 9, 12); d < new Date(2026, 11, 14); d.setDate(d.getDate() + 1)) days.push([d.getFullYear(), d.getMonth(), d.getDate()]);
+  const sidAt = (y, m, d, h) => { try { const r = ocn(SCHED, new Date(y, m, d, h, 0)); return r ? r.sid : null; } catch (ex) { return "threw"; } };
+  const overBad = [];
+  let overNamed = 0;
+  if (ocn && ohn) for (const [y, m, d] of days) {
+    const ds = fmtS(new Date(y, m, d)), want = ohn(SCHED, ds), eve = sidAt(y, m, d, 18), pre = sidAt(y, m, d + 1, 3);
+    if (want) overNamed++;
+    if (eve !== want || pre !== want) overBad.push(`${ds}: overnightHolderOn ${want}, 18:00 ${eve}, next 03:00 ${pre}`);
+  }
+  check(`AY2 every evening (18:00) and every pre-7a (next day 03:00) answer is overnightHolderOn's for that date (${days.length} dates, ${overNamed} with a holder)`,
+    !!ocn && !!ohn && overBad.length === 0 && overNamed >= 25, ocn ? overBad.slice(0, 4).join(" | ") : NONE);
+  const CD = "  const calData = useMemo(() => {";
+  const c0 = src.indexOf(CD), c1 = c0 < 0 ? -1 : src.indexOf("\n  }, [schedule, appShifts]);", c0);
+  let cal = null;
+  try { cal = c0 > 0 && c1 > c0 ? vm.runInContext("(function (schedule, appShifts) {" + src.slice(c0 + CD.length, c1) + "\n})", sandbox, { filename: "on-call-now-caldata.js" })(SCHED, {}) : null; } catch (ex) { cal = null; }
+  // The calendar's rows for a date, read the way the banner's chips read them: a Holiday row holds the date;
+  // else by day the Svc row (weekday daytime), the Ngt row (Mon–Thu evening), the "5p–7a" Wknd row (Fri
+  // evening), and the one Wknd row on Sat (the service Saturday) and Sun (the weekend's Sunday).
+  const calHolder = (rows, dow, evening) => {
+    const of = (t) => rows.filter((e) => e.type === t || e.type === "B-" + t);
+    const hol = rows.find((e) => e.type === "Holiday");
+    if (hol) return hol.surgeon || null;
+    const r = dow >= 1 && dow <= 5 && !evening ? of("Svc")[0] : dow >= 1 && dow <= 4 ? of("Ngt")[0] : dow === 5 ? of("Wknd").find((e) => e.note === "5p–7a") : of("Wknd")[0];
+    return r ? r.surgeon || null : null;
+  };
+  const calBad = [];
+  let calNamed = 0;
+  if (ocn && cal) for (const [y, m, d] of days) {
+    const ds = fmtS(new Date(y, m, d)), dow = new Date(y, m, d).getDay(), rows = cal[ds] || [];
+    const day = calHolder(rows, dow, false), eve = calHolder(rows, dow, true);
+    const g = [sidAt(y, m, d, 10), sidAt(y, m, d, 18), sidAt(y, m, d + 1, 3)];
+    if (day) calNamed++;
+    if (g[0] !== day || g[1] !== eve || g[2] !== eve) calBad.push(`${ds}: calendar day ${day} / evening ${eve}; onCallNow ${g.join(" / ")}`);
+  }
+  check(`AY2 every 10:00, 18:00 and next-03:00 answer is the holder the calendar's own rows show for that date (the real calData memo, sliced; ${days.length} dates, ${calNamed} daytimes with a holder)`,
+    !!ocn && !!cal && calBad.length === 0 && calNamed >= 30, !cal ? "calData memo not found / did not run" : calBad.slice(0, 4).join(" | "));
+
+  // AY3 — AY1 + the overnight cross-check under TZ=UTC and TZ=America/Chicago
+  {
+    const { execFileSync } = require("child_process");
+    const code = [
+      'const vm = require("vm"), fs = require("fs"), path = require("path");',
+      'const sb = { console, window: {}, document: undefined, navigator: { userAgent: "node-test" }, localStorage: { getItem: () => null, setItem() {}, removeItem() {} }, fetch: () => { throw new Error("no fetch"); }, setTimeout, clearTimeout };',
+      "sb.globalThis = sb; vm.createContext(sb);",
+      `for (const f of ["helpers.js", "config.js"]) vm.runInContext(fs.readFileSync(path.join(${J(ROOT)}, f), "utf8"), sb, { filename: f });`,
+      'const f = vm.runInContext("typeof onCallNow === \\"function\\" ? onCallNow : null", sb), o = vm.runInContext("overnightHolderOn", sb), fmt = vm.runInContext("fmt", sb);',
+      `const S = ${J(SCHED)}, T = ${J(CASES.map((c) => c[2]))};`,
+      `const sig = ${sig.toString()};`,
+      "const out = f ? T.map(([y, m, d, h, mi]) => sig(f(S, new Date(y, m, d, h, mi)))) : null, over = [];",
+      "if (f) for (let d = new Date(2026, 9, 12); d < new Date(2026, 11, 14); d.setDate(d.getDate() + 1)) {",
+      "  const e = f(S, new Date(d.getFullYear(), d.getMonth(), d.getDate(), 18)), p = f(S, new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1, 3)), w = o(S, fmt(d));",
+      "  if ((e ? e.sid : null) !== w || (p ? p.sid : null) !== w) over.push(fmt(d));",
+      "}",
+      'process.stdout.write(JSON.stringify({ off: new Date(2026, 9, 24).getTimezoneOffset(), utc3: new Date("2026-10-20T03:00:00Z").getHours(), out, over }));',
+    ].join("\n");
+    const inZone = (TZ) => { try { return JSON.parse(execFileSync(process.execPath, ["-e", code], { env: Object.assign({}, process.env, { TZ }), encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })); } catch (ex) { return { err: String(ex).slice(0, 300) }; } };
+    const utc = inZone("UTC"), chi = inZone("America/Chicago");
+    const want = J(CASES.map((c) => c[3]));
+    check("AY3 the children really run in UTC (offset 0; 03:00Z reads 3) and America/Chicago (CDT offset 300; 03:00Z reads 22, the evening before)",
+      !!utc && utc.off === 0 && utc.utc3 === 3 && !!chi && chi.off === 300 && chi.utc3 === 22, J({ utc: utc && { off: utc.off, utc3: utc.utc3, err: utc.err }, chi: chi && { off: chi.off, utc3: chi.utc3, err: chi.err } }));
+    check("AY3 under TZ=UTC and TZ=America/Chicago every AY1 case gives the same answer, and every evening / pre-7a answer is overnightHolderOn's",
+      !!utc && !!utc.out && J(utc.out) === want && J(utc.over) === "[]" && !!chi && !!chi.out && J(chi.out) === want && J(chi.over) === "[]",
+      J({ utc: utc && (utc.err || (utc.out ? utc.out.filter((s, i) => s !== CASES[i][3]) : NONE)), chi: chi && (chi.err || (chi.out ? chi.out.filter((s, i) => s !== CASES[i][3]) : NONE)), over: [utc && utc.over, chi && chi.over] }).slice(0, 300));
+  }
+
+  // AY4 — the component's real lines, run with a pinned clock (a Date whose no-argument form reads clock.ms)
+  const DECL = '  const callNow = typeof onCallNow === "function" ? onCallNow(schedule, new Date()) : null;';
+  const EFF = "  useEffect(() => { const t = setInterval(() => setNowWindow(nowWindowKey()), 60000); return () => clearInterval(t); }, []);";
+  const HCT = "  const hasCallToday = todayCall.dayCall || todayCall.night || todayCall.weekend || todayCall.holiday;";
+  const w0 = src.indexOf(DECL), w1 = w0 < 0 ? -1 : src.indexOf(EFF, w0), hc = src.indexOf(HCT);
+  const wiredOk = w0 > 0 && w1 > w0 && w1 - w0 < 2000 && count(DECL) === 1 && count(EFF) === 1;
+  check("AY4 the wiring (callNow, callNowName, the window key, its state, its tick) is one block, each line once, right after hasCallToday (only comments between)",
+    wiredOk && count(HCT) === 1 && hc > 0 && /^  const hasCallToday = [^\n]*\n(?:[ \t]*\/\/[^\n]*\n)*$/.test(src.slice(hc, w0)), `${hc} < ${w0} < ${w1}`);
+  let wire = null;
+  try {
+    wire = wiredOk ? vm.runInContext("(function (env) {\n  const { schedule, sMap, useState, useEffect, setInterval, clearInterval } = env;\n  const Date = env.Date;\n"
+      + src.slice(w0, w1 + EFF.length) + "\n  return { callNow, callNowName, key: nowWindowKey() };\n})", sandbox, { filename: "on-call-now-wiring.js" }) : null;
+  } catch (ex) { check("AY4 …and it compiles standalone", false, String(ex)); }
+  const clock = { ms: 0 };
+  const PinnedDate = vm.runInContext("(function (clock) { return class extends Date { constructor(...a) { if (a.length) super(...a); else super(clock.ms); } }; })", sandbox)(clock);
+  const mount = (sMap, when) => {
+    clock.ms = when.getTime();
+    const st = { init: [], sets: [], effects: [], intervals: [], cleared: [] };
+    try {
+      const r = wire({ schedule: SCHED, sMap, Date: PinnedDate,
+        useState: (i) => { const v = typeof i === "function" ? i() : i; st.init.push(v); return [v, (nv) => st.sets.push(nv)]; },
+        useEffect: (fn, deps) => { st.effects.push({ fn, deps }); },
+        setInterval: (fn, ms) => { st.intervals.push({ fn, ms }); return 4242; },
+        clearInterval: (id) => { st.cleared.push(id); } });
+      return { r, st };
+    } catch (ex) { return { err: String(ex).slice(0, 200), st }; }
+  };
+  const SM = { s1: { name: "DJA" }, s2: { name: "MCC" }, s3: { name: "RPC" }, s4: { name: "KJH" }, s5: { name: "REH" }, s6: { name: "FAK" }, s7: { name: "ARW" } };
+  const m1 = wire ? mount(SM, new Date(2026, 9, 20, 3, 0)) : null;
+  check("AY4 at a pinned Tue 10/20 03:00 the real lines give callNow = Monday night (\"Mon Night\", until 7a) and callNowName \"MCC\", the name the line shows",
+    !!m1 && !!m1.r && sig(m1.r.callNow) === "s2|Mon Night|7a" && m1.r.callNowName === "MCC", J(m1 && (m1.r || m1.err)));
+  const m2 = wire ? mount({}, new Date(2026, 9, 20, 3, 0)) : null, m3 = wire ? mount(SM, new Date(2026, 10, 10, 3, 0)) : null;
+  check("AY4 the gate: a holder missing from the roster, or no holder at all (an unpublished week), leaves callNowName null, so no line",
+    !!m2 && !!m2.r && !!m2.r.callNow && m2.r.callNowName === null && !!m3 && !!m3.r && m3.r.callNow === null && m3.r.callNowName === null, J([m2 && (m2.r || m2.err), m3 && (m3.r || m3.err)]));
+  let tick = null;
+  if (m1 && m1.r) {
+    const st = m1.st;
+    const armed = st.init.length === 1 && st.init[0] === "2026-10-20a" && st.effects.length === 1 && Array.isArray(st.effects[0].deps) && st.effects[0].deps.length === 0;
+    const cleanup = armed ? st.effects[0].fn() : null;
+    const keyAt = (y, m, d, h, mi) => { clock.ms = new Date(y, m, d, h, mi).getTime(); st.intervals[0].fn(); return st.sets[st.sets.length - 1]; };
+    const seq = st.intervals.length === 1 ? [keyAt(2026, 9, 20, 6, 59), keyAt(2026, 9, 20, 7, 0), keyAt(2026, 9, 20, 16, 59), keyAt(2026, 9, 20, 17, 0), keyAt(2026, 9, 20, 23, 59), keyAt(2026, 9, 21, 0, 0)] : [];
+    if (typeof cleanup === "function") cleanup();
+    tick = { armed, ms: st.intervals.map((i) => i.ms), seq, cleared: st.cleared };
+  }
+  check("AY4 the tick: its state starts at this window's key; ONE effect with [] deps arms a 60-s interval whose tick hands React the current window's key (06:59 a, 07:00 b, 16:59 b, 17:00 c, 23:59 c, next 00:00 a); the cleanup clears it",
+    !!tick && tick.armed && J(tick.ms) === "[60000]" && J(tick.seq) === J(["2026-10-20a", "2026-10-20b", "2026-10-20b", "2026-10-20c", "2026-10-20c", "2026-10-21a"]) && J(tick.cleared) === "[4242]", J(tick));
+  // Minute by minute: a new on-call answer must always come with a new key (React re-renders only on a new value)
+  const sweep = (from, to) => {
+    const out = { minutes: 0, answerChanges: 0, keyChanges: 0, missed: [] };
+    let prev = null;
+    for (let t = from.getTime(); t < to.getTime(); t += 60000) {
+      clock.ms = t;
+      let r;
+      try { r = wire({ schedule: SCHED, sMap: SM, Date: PinnedDate, useState: (i) => [typeof i === "function" ? i() : i, () => {}], useEffect: () => {}, setInterval: () => 0, clearInterval: () => {} }); } catch (ex) { out.missed.push(String(ex).slice(0, 80)); break; }
+      const cur = { a: sig(r.callNow), k: r.key };
+      if (prev) {
+        if (cur.a !== prev.a) out.answerChanges++;
+        if (cur.k !== prev.k) out.keyChanges++;
+        if (cur.a !== prev.a && cur.k === prev.k) out.missed.push(new Date(t).toString().slice(0, 21));
+      }
+      prev = cur; out.minutes++;
+    }
+    return out;
+  };
+  const sw1 = wire ? sweep(new Date(2026, 9, 19), new Date(2026, 10, 9)) : null, sw2 = wire ? sweep(new Date(2026, 10, 23), new Date(2026, 11, 7)) : null;
+  check("AY4 minute by minute over five weeks (the fall-back night included): every change of the on-call answer comes with a new window key, so the banner re-renders within a minute; the key changes only 3 times a day (midnight, 7a, 5p)",
+    !!sw1 && !!sw2 && sw1.missed.length === 0 && sw2.missed.length === 0 && sw1.answerChanges >= 30 && sw2.answerChanges >= 15
+      && sw1.keyChanges === 21 * 3 - 1 && sw2.keyChanges === 14 * 3 - 1 && sw1.minutes >= 21 * 1440 && sw2.minutes === 14 * 1440,
+    J({ sw1, sw2 }).slice(0, 300));
+
+  // AY5 — placement and gate (source), and what stays as it was
+  const B0 = src.indexOf("{/* ─── On Call Today Banner ─── */}"), BH = B0 < 0 ? -1 : src.indexOf("📋 On Call Today — ", B0);
+  const head = B0 > 0 && BH > B0 ? src.slice(B0, BH) : "";
+  const LINE = "🟢 On call now: {callNowName} — {callNow.slot}, until {callNow.until}";
+  check("AY5 the line is the banner's FIRST child, above the \"On Call Today\" heading, gated on callNowName, reading \"🟢 On call now: {name} — {slot}, until {7a|5p}\" (once in the app)",
+    /^\{\/\* ─── On Call Today Banner ─── \*\/\}\s*\{hasCallToday && \(\s*<div style=\{\{background:"linear-gradient\(135deg,#ffffff,#f0f8ff\)"[^\n]*>\s*\{callNowName && \(\s*<div style=\{\{fontSize:13,fontWeight:700,color:"#1a6e3c",marginBottom:8\}\}>\s*🟢 On call now: \{callNowName\} — \{callNow\.slot\}, until \{callNow\.until\}\s*<\/div>\s*\)\}\s*<div style=\{\{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10,flexWrap:"wrap",gap:8\}\}>\s*<div style=\{\{fontSize:15,fontWeight:700,color:"#1a2a3a"\}\}>\s*$/.test(head)
+      && count(LINE) === 1 && count("On call now") === 1,
+    head.slice(0, 400));
+  check("AY5 callNow is read only there: onCallNow is called once in the app, callNowName three times (declared, gate, text), callNow's fields only for the name, the slot and the hours",
+    count("onCallNow(") === 1 && count("callNowName") === 3 && count("callNow.") === 3 && count("callNow.sid") === 1 && count("callNow.slot") === 1 && count("callNow.until") === 1,
+    J({ call: count("onCallNow("), name: count("callNowName"), fields: count("callNow.") }));
+  const BM = "  const buildTonightMsg = () => {", b0 = src.indexOf(BM), b1 = b0 < 0 ? -1 : src.indexOf("\n  };", b0);
+  check("AY5 the rest stays as it was: the banner is still gated on hasCallToday alone, todayCall / hasCallToday unchanged, and the share message (buildTonightMsg) does not read callNow",
+    count("{hasCallToday && (") === 1 && count(HCT) === 1 && b0 > 0 && b1 > b0 && !src.slice(b0, b1).includes("callNow"), `${count("{hasCallToday && (")} ${count(HCT)} ${b0}..${b1}`);
+  const iKey = src.indexOf("  const nowWindowKey = () => {"), iState = src.indexOf("  const [, setNowWindow] = useState(nowWindowKey);");
+  check("AY5 the tick's key and state are declared before the effect that uses them, all at the component's top level (2-space indent, never inside a condition)",
+    count("const nowWindowKey = () => {") === 1 && count("const [, setNowWindow] = useState(nowWindowKey);") === 1 && iKey > 0 && iKey < iState && iState < w1
+      && src.slice(iKey - 1, iKey) === "\n" && src.slice(iState - 1, iState) === "\n" && src.slice(w1 - 1, w1) === "\n", `${iKey} < ${iState} < ${w1}`);
+}
+
 // ─── AH. The search, strain and the floor in the app (owner brief 2026-10-12, PR 2) ───
 // The generator's side is pinned by test/generator-regression.js (live
 // scenario + benchmark + oracle). Here, the app's side:

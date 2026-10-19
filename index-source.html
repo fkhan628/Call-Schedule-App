@@ -7457,6 +7457,16 @@ ${"</"}script>${"</"}body>${"</"}html>`;
   }, [todayEntries, sMap, aMap]);
 
   const hasCallToday = todayCall.dayCall || todayCall.night || todayCall.weekend || todayCall.holiday;
+  // Who is on call at this moment (UX audit 2026-10-19): before 7a that is LAST night's holder, not
+  // tonight's — helpers.js onCallNow has the handover rule. The banner's top line names them.
+  const callNow = typeof onCallNow === "function" ? onCallNow(schedule, new Date()) : null;
+  const callNowName = callNow ? (sMap[callNow.sid]?.name || null) : null;
+  // Re-render when the on-call window turns over (midnight, 7a, 5p), so a phone left open or the OR
+  // board never keeps the last window's holder. The 60-s data poll re-renders only while its reads
+  // succeed; this needs no network. Same window = same value, so React skips the render.
+  const nowWindowKey = () => { const n = new Date(), h = n.getHours(); return fmt(n) + (h < 7 ? "a" : h < 17 ? "b" : "c"); };
+  const [, setNowWindow] = useState(nowWindowKey);
+  useEffect(() => { const t = setInterval(() => setNowWindow(nowWindowKey()), 60000); return () => clearInterval(t); }, []);
 
   // Build notification message for tonight
   const buildTonightMsg = () => {
@@ -9393,6 +9403,11 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           {/* ─── On Call Today Banner ─── */}
           {hasCallToday && (
             <div style={{background:"linear-gradient(135deg,#ffffff,#f0f8ff)",border:"1px solid #b0d0f0",borderRadius:12,padding:"14px 18px",marginBottom:14,boxShadow:"0 2px 8px rgba(26,111,168,0.08)"}}>
+              {callNowName && (
+                <div style={{fontSize:13,fontWeight:700,color:"#1a6e3c",marginBottom:8}}>
+                  🟢 On call now: {callNowName} — {callNow.slot}, until {callNow.until}
+                </div>
+              )}
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10,flexWrap:"wrap",gap:8}}>
                 <div style={{fontSize:15,fontWeight:700,color:"#1a2a3a"}}>
                   📋 On Call Today — {["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][todayDow]} {new Date().getMonth()+1}/{new Date().getDate()}

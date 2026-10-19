@@ -332,6 +332,39 @@ function dayDetailLines(schedule, ds, opts) {
   return lines;
 }
 
+// Who is on call RIGHT NOW (UX audit 2026-10-19). The On Call Today banner
+// reads only today's date, so between midnight and 7a it named TONIGHT's
+// holder instead of the one on call since last evening. The handover hours
+// are weekHolders' slots (SHIFT_TIMES in config.js gives the same hours):
+//   before 7a    the PREVIOUS date's overnight, overnightHolderOn's rule: a
+//                holiday 24h on that date, else its Mon–Thu night, the Fri
+//                night or Sun 24h weekend leg, or the service Saturday 24h
+//   7a – 5p      today: a holiday 24h, else Mon–Fri the daytime service
+//                holder (the date's override, else the dayCall) until 5p;
+//                Sat the service Saturday 24h, Sun the weekend's Sunday 24h
+//   5p – 12a     today's overnight, overnightHolderOn's rule again
+// Every overnight and 24h slot runs to 7a. Returns { sid, slot, until } with
+// until "7a" or "5p", or null when nobody holds that window (no week entry, a
+// blank slot, an unassigned holiday). A backup (Fierce primary) week's slot
+// says "(backup)". now is read in local time like every date in the app;
+// it is passed in, so there is no clock here.
+function onCallNow(schedule, now) {
+  if (!now || typeof now.getHours !== "function" || isNaN(now.getTime())) return null;
+  const h = now.getHours();
+  const x = parse(fmt(h < 7 ? addD(now, -1) : now)), dow = x.getDay(), mStr = fmt(addD(x, dow === 0 ? -6 : 1 - dow));
+  const wk = schedule && schedule[mStr];
+  if (!wk) return null;
+  const day = weekHolders(mStr, wk).days[(dow + 6) % 7];
+  const svc = (sid) => (sid === wk.dayCall ? "Service Week" : "Service Day");
+  let sid = null, slot = "", until = "7a";
+  if (day.cover) { sid = day.cover.sid; slot = day.cover.type === "swap" ? (day.cover.label || "Coverage") : `${holidayTitleName(day.cover)} 24h`; }
+  else if (h >= 7 && h < 17 && day.i <= 4) { sid = day.svc; slot = svc(sid); until = "5p"; }
+  else if (day.night) { sid = day.night; slot = SHIFT_LABELS[day.nightKey]; }
+  else if (day.wkndFri || day.wkndSun) { sid = day.wkndFri || day.wkndSun; slot = SHIFT_LABELS.wknd; }
+  else if (day.sat) { sid = day.sat; slot = `${svc(day.sat)} (Sat 24h)`; }
+  return sid ? { sid, slot: slot + (wk.isBackup ? " (backup)" : ""), until } : null;
+}
+
 // Why a calendar month is blank (UX audit, 2026-10-18). A month with no
 // surgeon call looks the same whether nothing loaded or the month is simply
 // not published yet, so the Calendar tab asks this for the month it shows
