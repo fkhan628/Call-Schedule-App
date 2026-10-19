@@ -6797,6 +6797,22 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       breach: req.request_type !== "nocall" && !!worst && worst.available < MIN_AVAILABLE_SURGEONS,
     };
   };
+  // The ids of the pending requests that breach the floor, for the below-floor chip on a closed
+  // Requests group (UX review 2026-10-19). vacRequestCoverage walks every day of a range, so the chip
+  // reads it once per change of what it reads (these deps), not on every render (a keystroke, a toast,
+  // the 60-s pull), and only for a range of at most 120 days: a mistyped year (2126, 20261) would be
+  // tens of thousands of days. Such a request gets no chip; its open group still checks it as before.
+  const pendingFloorBreach = useMemo(() => {
+    const ids = new Set();
+    vacRequests.forEach(r => {
+      if (r.status !== "pending" || !r.start_date || !r.end_date) return;
+      const days = Math.round((parse(r.end_date) - parse(r.start_date)) / 86400000) + 1;
+      if (!(days <= 120)) return;
+      const c = vacRequestCoverage(r);
+      if (c && c.breach) ids.add(r.id);
+    });
+    return ids;
+  }, [vacRequests, vacations, surgeons, sMap]);
 
   // Cumulative stats: 1-year, 2-year, multi-year (each = prior tier + current schedule)
   const buildCum = (prior) => {
@@ -7297,6 +7313,12 @@ ${"</"}script>${"</"}body>${"</"}html>`;
 
   // ─── On Call Today ───
   const todayStr = fmt(new Date());
+  // A pending trade Accept can still take: neither leg has started (acceptTradeRequest's own
+  // refusal, shiftStartDate < today, read the other way round). Requests counts only these in its
+  // "waiting for your answer" banner, and a row whose leg has started asks to be declined or
+  // withdrawn instead of "You'd take …" (UX review 2026-10-19). Nothing expires a pending trade.
+  const tradeLegsNotStarted = (r) => shiftStartDate(r.week_monday, r.shift_key) >= todayStr
+    && (!(r.return_week && r.return_shift) || shiftStartDate(r.return_week, r.return_shift) >= todayStr);
   const todayDow = new Date().getDay(); // 0=Sun
   const todayEntries = calData[todayStr] || [];
   const todayCall = useMemo(() => {
@@ -10985,6 +11007,9 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             const weekHead = (w) => (mineDates ? weekRangeLabel(w.mStr) : `${w.mStr} → ${w.endStr}`);
             const rowDate = (mStr, r) => (mineDates ? roleDateLabel(mStr, r) : null);
             const mineDateChip = {fontSize:11,fontWeight:600,color:"#2c4a68",background:"#e6eef6",border:"1px solid #c8d8e8",borderRadius:4,padding:"1px 6px",whiteSpace:"nowrap"};
+            // A vacation or no-call date names its year when it isn't this year ("Mon 10/25/2027", the Calendar's form):
+            // one booked a year ahead must not read as next week (review 2026-10-19).
+            const mineDay = (ds) => (ds.slice(0, 4) === myToday.slice(0, 4) ? dayMonthLabel(ds) : `${dayMonthLabel(ds)}/${ds.slice(0, 4)}`);
 
             return (
               <>
@@ -11093,7 +11118,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                             </>
                           ) : (
                             <>
-                              <span style={{fontSize:13,color:"#5a5030",fontFamily:mono,flex:1,minWidth:140}}>{dayMonthLabel(vs)} → {dayMonthLabel(ve)}</span>
+                              <span style={{fontSize:13,color:"#5a5030",fontFamily:mono,flex:1,minWidth:140}}>{mineDay(vs)} → {mineDay(ve)}</span>
                               {canEditTimeOff && <>
                                 <button onClick={()=>setMyVacEdit({idx:origIdx,start:vs,end:ve})} style={{background:"#e8f0fc",border:"1px solid #a8c8e0",color:"#1a6fa8",borderRadius:5,padding:"2px 10px",fontSize:10,fontWeight:600,cursor:"pointer",fontFamily:font}}>✏️ Edit</button>
                                 <button onClick={()=>removeMyVac(origIdx)} style={{background:"#fdecec",border:"1px solid #e8a0a0",color:"#a82828",borderRadius:5,padding:"2px 10px",fontSize:10,fontWeight:600,cursor:"pointer",fontFamily:font}}>Remove</button>
@@ -11121,7 +11146,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   <div style={{...css.card,background:"#f4f0fb",border:"1px solid #d8cdec"}}>
                     <div style={{fontSize:12,fontWeight:700,color:"#5a3a90",marginBottom:6}}>🚫 My No-Call Days <span style={{fontWeight:400,color:"#9a82c0"}}>({myNoCallView.length})</span></div>
                     {shown.map(({ns,ne},i) => (
-                      <div key={i} style={{fontSize:13,color:"#4a3a60",fontFamily:mono,marginBottom:3}}>{dayMonthLabel(ns)}{ns!==ne ? ` → ${dayMonthLabel(ne)}` : ""}</div>
+                      <div key={i} style={{fontSize:13,color:"#4a3a60",fontFamily:mono,marginBottom:3}}>{mineDay(ns)}{ns!==ne ? ` → ${mineDay(ne)}` : ""}</div>
                     ))}
                     {myNoCallView.length > NC_LIMIT && (
                       <button onClick={()=>setShowAllMyNoCall(v=>!v)} style={{background:"none",border:"none",color:"#6a4aa0",fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:font,padding:"4px 0 0",textDecoration:"underline"}}>
@@ -11185,9 +11210,9 @@ ${"</"}script>${"</"}body>${"</"}html>`;
 
         {/* ════════════════ REQUESTS ════════════════ */}
         {view==="requests" && !isPublicMode && <>
-          {/* A trade waiting on this person's answer is said at the top (UX audit 2026-10-19); Review scrolls to Pending Trades */}
+          {/* A trade waiting on this person's answer (one Accept can still take) is said at the top (UX audit 2026-10-19); Review scrolls to Pending Trades */}
           {(() => {
-            const waitingOnMe = myTradeRequests.filter(r => r.status === "pending" && r.to_surgeon_id === mySurgeon).length;
+            const waitingOnMe = myTradeRequests.filter(r => r.status === "pending" && r.to_surgeon_id === mySurgeon && tradeLegsNotStarted(r)).length;
             if (!waitingOnMe) return null;
             return (
               <div role="status" style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap",background:dk?"#2a2040":"#f3ecff",border:`1px solid ${dk?"#5a4a90":"#b8a0e0"}`,borderRadius:10,padding:"10px 12px",marginBottom:14}}>
@@ -11353,8 +11378,9 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                 ) : groupOrder.map(pid => {
                   const reqs = pendingGroups[pid];
                   const expanded = expandedVacGroups["p_"+pid];
-                  // Groups start closed and the "⚠ Coverage below minimum" warning is inside — flag it on the header too.
-                  const belowFloor = typeof vacRequestCoverage === "function" && reqs.some(r => { const c = vacRequestCoverage(r); return !!(c && c.breach); });
+                  // Groups start closed and the "⚠ Coverage below minimum" warning is inside — flag it on the header too
+                  // (pendingFloorBreach: the same breach flag, computed once per data change, not here on every render).
+                  const belowFloor = reqs.some(r => pendingFloorBreach.has(r.id));
                   return <div key={pid} style={{marginBottom:6,border:"1px solid #e8d8c0",borderRadius:8,overflow:"hidden",background:"#fef8f0"}}>
                     {/* Collapsed header row */}
                     <div onClick={()=>toggleVacGroup("p_"+pid)} style={{display:"flex",alignItems:"center",gap:10,padding:"9px 12px",cursor:"pointer",flexWrap:"wrap"}}>
@@ -11699,6 +11725,14 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           {(()=>{
             const pendingTrades = myTradeRequests.filter(r => r.status === "pending");
             const reviewedTrades = myTradeRequests.filter(r => r.status !== "pending");
+            // What each pending row says (UX review 2026-10-19). canAnswer is the row's Accept / Decline
+            // gate. A trade with a leg already started (Accept refuses it) asks to be declined or withdrawn
+            // instead of "You'd take …". A trade that moves other shifts says how many — the knock-on
+            // changes detectCascadeChanges finds and the Accept confirm lists — counted once per row.
+            const canAnswer = (r) => mySurgeon === r.to_surgeon_id || isScheduler;
+            const passedNote = (r) => `This trade's shift has passed — ${mySurgeon === r.from_surgeon_id ? "withdraw it." : canAnswer(r) ? "decline it." : "it can't be accepted."}`;
+            const knockOnNote = (r) => { const n = tradeLegsNotStarted(r) ? detectCascadeChanges(schedule, r).length : 0; return n ? `plus ${n} knock-on change${n === 1 ? "" : "s"} to other shifts ${canAnswer(r) ? "— listed when you accept" : `when ${r.to_surgeon_name} accepts`}` : null; };
+            const knockOns = new Map(pendingTrades.map(r => [r.id, knockOnNote(r)]));
             return <>
               {pendingTrades.length > 0 && (
                 <div id="pending-trades" style={{...css.card,scrollMarginTop:"calc(env(safe-area-inset-top, 0px) + 12px)"}}>
@@ -11714,9 +11748,14 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                           ? <span style={{fontSize:11,color:"#8a94a0"}}>↔ {slotLabel(r.return_week, r.return_shift)}</span>
                           : <span style={{fontSize:11,color:"#a08040"}}>(one-way — no return shift)</span>}
                       </div>
-                      {/* The legs in words for whoever reads the row: "You'd take …; you'd give …" (helpers.js tradeLegsFor) */}
+                      {/* The legs in words for whoever reads the row: "You'd take …; you'd give …" (helpers.js tradeLegsFor), and
+                          its knock-on changes. Light in both themes, like the row it sits in: the dark sheet's hex selectors
+                          never match React's rgb() styles, so this row stays light in dark mode (and not #ffffff, which they do). */}
                       {typeof tradeLegsFor === "function" && (
-                        <div style={{fontSize:12.5,fontWeight:600,lineHeight:1.4,color:dk?"#e8dcff":"#3a2060",background:dk?"#2a2040":"#ffffff",border:`1px solid ${dk?"#4a3a70":"#e0d4f0"}`,borderRadius:6,padding:"5px 8px",marginBottom:6}}>{tradeLegsFor(r, mySurgeon)}</div>
+                        <div style={{fontSize:12.5,fontWeight:600,lineHeight:1.4,color:"#3a2060",background:"#fcf9ff",border:"1px solid #e0d4f0",borderRadius:6,padding:"5px 8px",marginBottom:6}}>
+                          {tradeLegsNotStarted(r) ? tradeLegsFor(r, mySurgeon) : passedNote(r)}
+                          {knockOns.get(r.id) && <div style={{fontSize:11,fontWeight:500,color:"#6a4a90",marginTop:2}}>{knockOns.get(r.id)}</div>}
+                        </div>
                       )}
                       <div style={{display:"flex",gap:6,alignItems:"center",flexWrap:"wrap"}}>
                         <span style={{fontSize:10,color:"#a0a8b0"}}>Proposed {new Date(r.submitted_at).toLocaleDateString()}</span>
@@ -11729,13 +11768,13 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                           if (!hits.length) return null;
                           return <span title={hits.join("\n")} style={{fontSize:10,fontWeight:700,color:"#c04040",background:"#fce8e8",border:"1px solid #e0b0b0",borderRadius:5,padding:"1px 6px"}}>🔴 Silvis conflict — {(isScheduler || userProfile?.role === "admin") ? "scheduler override only" : "cannot be accepted"}</span>;
                         })()}
-                        {(mySurgeon === r.to_surgeon_id || isScheduler) && (
+                        {canAnswer(r) && (
                           <>
                             <button onClick={()=>acceptTradeRequest(r)} style={{background:"#e8f8e8",border:"1px solid #a0d8a0",color:"#1a8040",borderRadius:6,padding:"3px 10px",fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:font}}>✓ Accept</button>
                             <button onClick={()=>declineTradeRequest(r)} style={{background:"#fce8e8",border:"1px solid #e0b0b0",color:"#c04040",borderRadius:6,padding:"3px 10px",fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:font}}>✕ Decline</button>
                           </>
                         )}
-                        {mySurgeon === r.from_surgeon_id && <span style={{fontSize:10,color:"#8a6a10",fontWeight:600}}>Waiting for {r.to_surgeon_name}'s answer</span>}
+                        {mySurgeon === r.from_surgeon_id && !canAnswer(r) && tradeLegsNotStarted(r) && <span style={{fontSize:10,color:"#8a6a10",fontWeight:600}}>Waiting for {r.to_surgeon_name}'s answer</span>}
                         {mySurgeon === r.from_surgeon_id && <button onClick={()=>deleteTradeRequest(r.id)} style={{background:"none",border:"1px solid #d0d8e0",color:"#8a94a0",borderRadius:5,padding:"2px 8px",fontSize:10,cursor:"pointer",fontFamily:font}}>Withdraw</button>}
                         {mySurgeon !== r.to_surgeon_id && mySurgeon !== r.from_surgeon_id && !isScheduler && (
                           <span style={{fontSize:10,color:"#8a6a10",fontWeight:600}}>Awaiting {r.to_surgeon_name}'s response</span>

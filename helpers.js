@@ -498,7 +498,9 @@ function weekRangeLabel(mStr) {
 //   a Mon–Thu night  → its own date, "Tue 10/20" (shiftStartDate's rule)
 //   the weekend      → the legs this surgeon holds (role.held), "Fri 10/23 + Sun 10/25";
 //                      with no held list, both legs
-//   the service week → its first to last held day, "Mon 10/19 – Sat 10/24";
+//   the service week → the days held, as runs of consecutive days: "Mon 10/19 – Sat 10/24";
+//                      a day someone else holds (a covered holiday) splits it, so the chip
+//                      never spans it: "Mon 11/23 – Wed 11/25 + Sat 11/28" (review 2026-10-19);
 //                      with no held list, Monday to Saturday
 //   null for a dated role (a holiday 24h, a single service day: its detail
 //   already starts with the date), an OFF week (the week header has it), and a
@@ -513,10 +515,14 @@ function roleDateLabel(mStr, role) {
     return legs.length ? legs.map(dayMonthLabel).join(" + ") : null;
   }
   if (r.shiftKey === "dayCall") {
-    const days = held([0, 5]);
-    if (!days.length) return null;
-    const a = days[0], b = days[days.length - 1];
-    return a === b ? dayMonthLabel(a) : `${dayMonthLabel(a)} – ${dayMonthLabel(b)}`;
+    const runs = []; // [first, last] of each run of consecutive held days
+    for (const d of held([0, 1, 2, 3, 4, 5])) {
+      const run = runs[runs.length - 1];
+      if (run && d <= run[1]) continue; // a day listed twice
+      if (run && fmt(addD(parse(run[1]), 1)) === d) run[1] = d;
+      else runs.push([d, d]);
+    }
+    return runs.length ? runs.map(([a, b]) => (a === b ? dayMonthLabel(a) : `${dayMonthLabel(a)} – ${dayMonthLabel(b)}`)).join(" + ") : null;
   }
   return null;
 }
@@ -574,18 +580,21 @@ function tradeLegsText(req, tense) {
    tradeLegsText's line. Who gets what is the rule above: to_surgeon takes
    shift_key @ week_monday, from_surgeon takes return_shift @ return_week.
    Composed with slotLabel HERE, so the card adds no slotLabel call site to
-   index-source.html (sync-guards L keeps its ledger). */
+   index-source.html (sync-guards L keeps its ledger). A one-way trade names
+   its one leg only: the row's badge line right above already says
+   "(one-way — no return shift)", so the row says it once (review
+   2026-10-19); tradeLegsText keeps the suffix for the notifications. */
 function tradeLegsFor(req, viewerId) {
   const gets = slotLabel(req.week_monday, req.shift_key);
   const oneWay = !req.return_week || !req.return_shift;
   const back = oneWay ? "" : slotLabel(req.return_week, req.return_shift);
   if (viewerId && viewerId === req.to_surgeon_id) {
-    return oneWay ? `You'd take ${gets} (one-way — no return shift)` : `You'd take ${gets}; you'd give ${back}`;
+    return oneWay ? `You'd take ${gets}` : `You'd take ${gets}; you'd give ${back}`;
   }
   if (viewerId && viewerId === req.from_surgeon_id) {
-    return oneWay ? `You'd give ${gets} (one-way — no return shift)` : `You'd give ${gets}; you'd take ${back}`;
+    return oneWay ? `You'd give ${gets}` : `You'd give ${gets}; you'd take ${back}`;
   }
-  return tradeLegsText(req, "would take");
+  return oneWay ? `${req.to_surgeon_name} would take ${gets}` : tradeLegsText(req, "would take");
 }
 /* The SWAP family (2026-09-07), same doctrine as the trade composers above.
    executeTwoWaySwap's semantics, read off its own apply:
