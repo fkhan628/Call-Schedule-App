@@ -63,6 +63,21 @@ function mineUpcoming(myShifts, todayStr) {
     .filter(w => w.roles.length > 0);
 }
 
+// The Mine tab for an APP (UX audit 2026-10-19): two of the seven users are
+// APPs, and Mine read only the surgeon schedule. appShifts maps a date to the
+// APP on call that day ({ "2026-10-20": "a1", ... }: the Calendar's and the
+// full export's source). Returns that APP's days from todayStr on (today
+// included), oldest first, as { ds, weekend }: a Saturday or Sunday is the
+// 7a–7a 24h shift, a weekday the 5p–7a night (buildAppICSEvents' rule).
+// Pure: todayStr is passed in, nothing is read but the arguments.
+function appUpcoming(appShifts, appId, todayStr) {
+  if (!appShifts || typeof appShifts !== "object" || !appId || typeof todayStr !== "string") return [];
+  return Object.keys(appShifts)
+    .filter(ds => appShifts[ds] === appId && /^\d{4}-\d{2}-\d{2}$/.test(ds) && ds >= todayStr)
+    .sort()
+    .map(ds => { const dow = parse(ds).getDay(); return { ds, weekend: dow === 0 || dow === 6 }; });
+}
+
 // Billing credits for one week (Stats → Billing, owner rule 2026-10-01). Each
 // credit is { ds, sid, kind, n }: kind "dc" for a service day (each of the 7
 // days Mon–Sun, a single-day override winning its date), "nights" for a Mon–Thu

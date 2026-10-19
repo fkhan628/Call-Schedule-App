@@ -382,6 +382,7 @@ function CallSchedule() {
   const [showAllMyVacs, setShowAllMyVacs] = useState(false); // Mine: expand vacation list beyond first few
   const [showAllMyNoCall, setShowAllMyNoCall] = useState(false); // Mine: expand no-call list beyond first few
   const [showAllMySilvis, setShowAllMySilvis] = useState(false); // Mine (FAK): expand the Silvis list beyond the first few
+  const [showAllMyApp, setShowAllMyApp] = useState(false); // Mine (an APP): expand the APP call-day list beyond the first few
   const [calSurgeonFilter, setCalSurgeonFilter] = useState(""); // "" = all, or surgeon ID
   const [calAppFilter, setCalAppFilter] = useState("all"); // "all" | "none" | APP id
   const [calDeptFilter, setCalDeptFilter] = useState(""); // "" = no dept filter, "CWM" or "CBH"
@@ -4325,10 +4326,15 @@ function CallSchedule() {
   };
 
   // ─── Build Individual ICS for a surgeon (their shifts + vacations only) ───
+  // An APP (UX audit 2026-10-19) gets their own APP call days instead — the full export's
+  // builder on just their dates — plus their vacations; this used to return without a file.
   const downloadMyCal = (surgeonId) => {
-    const s = surgeons.find(x => x.id === surgeonId);
+    const myApp = surgeons.some(x => x.id === surgeonId) ? null : apps.find(x => x.id === surgeonId);
+    const s = myApp || surgeons.find(x => x.id === surgeonId);
     if (!s) return;
-    const events = buildICSEvents(schedule, s.id, s.name, { nameOf });
+    const events = myApp
+      ? buildAppICSEvents(Object.fromEntries(Object.entries(appShifts || {}).filter(([, aid]) => aid === myApp.id)), { [myApp.id]: myApp })
+      : buildICSEvents(schedule, s.id, s.name, { nameOf });
     // Vacations as all-day events; the end date is exclusive, so the day after the last vacation day
     const vacRanges = vacations[s.id] || [];
     vacRanges.forEach(([vs, ve]) => {
@@ -11077,6 +11083,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               <select value={mineId} onChange={e=>setMineViewId(e.target.value === mySurgeon ? "" : e.target.value)} style={{...css.inp,width:180,fontSize:14}}>
                 <option value="">Select your name…</option>
                 {surgeons.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
+                {/* A signed-in APP's own name, so their picker shows it instead of the placeholder (picking it = Back to mine) */}
+                {aMap[mySurgeon] && <option value={aMap[mySurgeon].id}>{aMap[mySurgeon].name}</option>}
               </select>
               {mineId && (
                 <button onClick={()=>downloadMyCal(mineId)} style={{...css.btn(true),padding:"8px 18px"}}>
@@ -11190,6 +11198,11 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             // The My Shifts list shows only shifts not yet done, and offers Find Swap only before a
             // shift starts (the helper owns both rules). The full list stays for the Next call card.
             const myShiftsView = mineUpcoming(myShifts, myToday);
+            // An APP (UX audit 2026-10-19; two of the seven users) holds no surgeon shift: their Mine shows
+            // their APP call days (appShifts, the Calendar's source) in place of the surgeon Next call card
+            // and My Shifts. Guarded like the dates below, against an old cached helpers.js.
+            const mineApp = !!aMap[myId];
+            const myAppDays = mineApp && typeof appUpcoming === "function" ? appUpcoming(appShifts, myId, myToday) : [];
 
             // ─── Next call at-a-glance ───
             // Flatten each upcoming role to a concrete start date (a night lands on
@@ -11240,10 +11253,62 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             return (
               <>
                 <div style={{fontSize:15,fontWeight:700,color:"#1a2a3a",marginBottom:12}}>
-                  <Badge id={myId}/> {pubThrough && <span style={{marginLeft:8,fontSize:13,fontWeight:600,color:dk?"#9aa8b6":"#5a6a78"}}>Published through {monthDayLabel(pubThrough, true)}</span>}
+                  {mineApp ? <AppBadge id={myId}/> : <><Badge id={myId}/> {pubThrough && <span style={{marginLeft:8,fontSize:13,fontWeight:600,color:dk?"#9aa8b6":"#5a6a78"}}>Published through {monthDayLabel(pubThrough, true)}</span>}</>}
                 </div>
 
-                {/* Next call at-a-glance — pinned summary of upcoming assignments */}
+                {/* An APP's call days (UX audit 2026-10-19), in the Next call card's place: the next one, then the rest, soonest first */}
+                {mineApp && (() => {
+                  const APP_LIMIT = 5;
+                  const nextA = myAppDays[0], restA = myAppDays.slice(1);
+                  const shownA = showAllMyApp ? restA : restA.slice(0, APP_LIMIT);
+                  const inDays = (ds) => Math.round((parse(ds) - _today0) / _DAY);
+                  const appIcon = (d) => (d.weekend ? "🌗" : "🌙");
+                  const appHours = (d) => (d.weekend ? "7a–7a (24h)" : "5p–7a");
+                  return (
+                  <div style={{...css.card, padding:0, overflow:"hidden", marginBottom:16, border:"1px solid "+(dk?"#2a3a48":"#dfe6ec")}}>
+                    <div style={{background:dk?"linear-gradient(135deg,#16202c,#1b2735)":"linear-gradient(135deg,#f3f7fb,#e9f1f8)", padding:"9px 14px", borderBottom:"1px solid "+(dk?"#243240":"#e4ebf1"), fontSize:11, fontWeight:800, letterSpacing:0.6, color:dk?"#9fb4c8":"#3a5a78", textTransform:"uppercase"}}>
+                      🗓 Next APP Call{myAppDays.length > 0 && <span style={{fontWeight:600}}> · {myAppDays.length} upcoming</span>}
+                    </div>
+                    {!nextA ? (
+                      <div style={{padding:"16px 14px", fontSize:13, color:"#8a94a0"}}>No upcoming APP call days in the current schedule.</div>
+                    ) : (
+                      <div style={{padding:"13px 14px"}}>
+                        <div style={{display:"flex", alignItems:"center", gap:12}}>
+                          <div style={{fontSize:30, lineHeight:1}}>{appIcon(nextA)}</div>
+                          <div style={{flex:1, minWidth:0}}>
+                            <div style={{display:"flex", alignItems:"center", gap:8, flexWrap:"wrap"}}>
+                              <span style={{fontSize:16, fontWeight:800, color:dk?"#dde6ef":"#1a2a3a"}}>APP Call</span>
+                              <span style={{fontSize:12, fontWeight:800, padding:"2px 9px", borderRadius:20, background:_whenTone(inDays(nextA.ds))+"1f", color:_whenTone(inDays(nextA.ds))}}>{_whenTxt(inDays(nextA.ds))}</span>
+                            </div>
+                            <div style={{fontSize:13, color:dk?"#9aa8b6":"#4a5a68", marginTop:3}}>{mineDay(nextA.ds)}</div>
+                            <div style={{fontSize:11, color:"#9aa4ae", marginTop:1}}>{appHours(nextA)}</div>
+                          </div>
+                        </div>
+                        {restA.length > 0 && (
+                          <div style={{marginTop:12, paddingTop:10, borderTop:"1px dashed "+(dk?"#2a3a48":"#e4ebf1"), display:"flex", flexDirection:"column", gap:9}}>
+                            {shownA.map(d => (
+                              <div key={d.ds} style={{display:"flex", alignItems:"center", gap:10}}>
+                                <span style={{fontSize:16}}>{appIcon(d)}</span>
+                                <span style={{flex:1, minWidth:0, fontSize:13, fontWeight:600, color:dk?"#c8d2dc":"#3a4a58", whiteSpace:"nowrap"}}>{mineDay(d.ds)}</span>
+                                <span style={{fontSize:12, color:dk?"#9aa8b6":"#5a6a78", whiteSpace:"nowrap"}}>{appHours(d)}</span>
+                                <span style={{fontSize:11, fontWeight:700, color:_whenTone(inDays(d.ds)), minWidth:60, textAlign:"right"}}>{_whenTxt(inDays(d.ds))}</span>
+                              </div>
+                            ))}
+                            {restA.length > APP_LIMIT && (
+                              <button onClick={()=>setShowAllMyApp(v=>!v)} style={{alignSelf:"flex-start",background:"none",border:"none",color:"#1a6fa8",fontSize:11,fontWeight:600,cursor:"pointer",padding:"6px 0",fontFamily:font}}>
+                                {showAllMyApp ? "Show fewer" : `Show all ${myAppDays.length}`}
+                              </button>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                  );
+                })()}
+
+                {/* Next call at-a-glance — pinned summary of upcoming assignments (a surgeon's; an APP has the card above) */}
+                {!mineApp && (
                 <div style={{...css.card, padding:0, overflow:"hidden", marginBottom:16, border:"1px solid "+(dk?"#2a3a48":"#dfe6ec")}}>
                   <div style={{background:dk?"linear-gradient(135deg,#16202c,#1b2735)":"linear-gradient(135deg,#f3f7fb,#e9f1f8)", padding:"9px 14px", borderBottom:"1px solid "+(dk?"#243240":"#e4ebf1"), fontSize:11, fontWeight:800, letterSpacing:0.6, color:dk?"#9fb4c8":"#3a5a78", textTransform:"uppercase"}}>
                     🗓 Next Call
@@ -11284,6 +11349,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                     </div>
                   )}
                 </div>
+                )}
 
                 {/* 🚑 Silvis — FAK only: his upcoming Silvis days, soonest first */}
                 {myId && silvisFakId && myId === silvisFakId && (() => {
@@ -11411,13 +11477,16 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   </div>
                 ))}
 
-                {/* Only a scheduler can generate, so only a scheduler is told to (UX audit 2026-10-19) */}
+                {/* Only a scheduler can generate, so only a scheduler is told to (UX audit 2026-10-19).
+                    An APP never holds a surgeon shift, so these two lines are a surgeon's; the APP card above stands in. */}
+                {!mineApp && <>
                 {myShifts.length === 0 && (
                   <div style={{...css.card,textAlign:"center",color:"#8a94a0",padding:30}}>{isScheduler ? "No shifts assigned yet. Generate a schedule first." : "No shifts assigned yet."}</div>
                 )}
                 {myShifts.length > 0 && myShiftsView.length === 0 && (
                   <div style={{...css.card,textAlign:"center",color:"#8a94a0",padding:30}}>No upcoming shifts in the current schedule.</div>
                 )}
+                </>}
               </>
             );
           })()}

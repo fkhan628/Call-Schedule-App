@@ -6949,6 +6949,204 @@ await (async () => {
     /\n  \};\n  genFinishRef\.current = finishGenerate; genCommitRef\.current = commitGenerated;\n/.test(nsrcF) && (nsrcF.match(/genFinishRef\.current = /g) || []).length === 1);
 })();
 
+// ─── AZ. Mine works for an APP: their APP call days, next call, and a calendar download (UX audit 2026-10-19) ───
+// Two of the seven users are APPs, and Mine read only the surgeon schedule: an
+// APP saw a "—" badge, "No upcoming call shifts" and "No shifts assigned yet."
+// while the Calendar showed their APP days, their picker sat on the
+// placeholder, and Download My Calendar did nothing (downloadMyCal returned
+// when the id wasn't a surgeon's). appUpcoming (helpers.js) now lists an APP's
+// days from today on; Mine shows them in the surgeon Next call card's place
+// (that card and the two My Shifts empty lines are a surgeon's only); and
+// downloadMyCal builds an APP's .ics through the shared buildAppICSEvents on
+// their dates only (T4's export-site counts unchanged). A scheduler still picks
+// surgeons only: the download label and the header name a pick through sMap
+// (AS4, AM3), so an APP pick would read "a1".
+//   AZ1 appUpcoming, executed: only that APP, today on, oldest first whatever
+//       the key order, weekend = Sat/Sun (buildAppICSEvents' hours rule); other
+//       APPs, cleared ("") days, junk keys and bad input give nothing; pure
+//   AZ2 AZ1 and the card's day counts again in a child pinned to
+//       TZ=America/Chicago (proven), across the fall-back weekend
+//   AZ3 the Mine page's own APP lines, sliced from after X3's anchor and run:
+//       an APP gets their days, a surgeon and "admin" none, an old cached
+//       helpers.js throws nothing; the APP card's own code (sliced) prints the
+//       next day, its hours and "today / in N days", then five more until
+//       Show all
+//   AZ4 source order and gates: the APP lines sit after X3's anchor (X3's
+//       slice holds no APP name) and before the page's return; header, APP
+//       card, surgeon card, My Shifts and its empty lines in order, each gated;
+//       the picker adds only a signed-in APP's own name, and picking it is
+//       Back to mine (AM's real onChange, executed)
+//   AZ5 downloadMyCal, executed (the real function, sliced; the download
+//       stubbed): an APP's file holds their own APP days only (past included,
+//       like a surgeon's), "DSG APP Call — <code>" with the hours, plus their
+//       vacation; a surgeon's file is exactly main's (UIDs aside); an unknown
+//       id still downloads nothing
+console.log("\nAZ. Mine works for an APP");
+{
+  const nsrcZ = src.replace(/\r\n/g, "\n");
+  const J = (x) => JSON.stringify(x);
+  const tryZ = (f) => { try { return f(); } catch (ex) { return { threw: String((ex && ex.message) || ex).slice(0, 160) }; } };
+  const appUp = vm.runInContext('typeof appUpcoming === "function" ? appUpcoming : null', sandbox);
+  const NOFN = appUp ? "" : "appUpcoming is not defined in helpers.js";
+  const sigA = (r) => (Array.isArray(r) ? r.map((d) => [d.ds, d.weekend]) : r);
+
+  // AZ1 — appUpcoming. 2026-10-19 is a Monday; 11/1 is the fall-back Sunday; 1/2/2027 a Saturday.
+  const FXA = { "2026-11-02": "a1", "2026-10-25": "a1", "2026-10-19": "a1", "2026-10-18": "a1", "2026-10-20": "a2", "2026-10-24": "a1", "2026-10-21": "",
+    "2027-01-02": "a1", "2026-12-31": "a1", "2026-11-01": "a1", meta: "a1", "2026-1-5": "a1" };
+  const A1_WANT = [["2026-10-19", false], ["2026-10-24", true], ["2026-10-25", true], ["2026-11-01", true], ["2026-11-02", false], ["2026-12-31", false], ["2027-01-02", true]];
+  const A1_LATER = A1_WANT.slice(3);
+  const fxBefore = J(FXA);
+  const az1 = appUp ? {
+    a1: sigA(tryZ(() => appUp(FXA, "a1", "2026-10-19"))), a1Later: sigA(tryZ(() => appUp(FXA, "a1", "2026-10-26"))),
+    a2: sigA(tryZ(() => appUp(FXA, "a2", "2026-10-19"))), a2After: sigA(tryZ(() => appUp(FXA, "a2", "2026-10-21"))), a3: sigA(tryZ(() => appUp(FXA, "a3", "2026-10-19"))),
+    bad: [[null, "a1", "2026-10-19"], [undefined, "a1", "2026-10-19"], [{}, "a1", "2026-10-19"], [FXA, "", "2026-10-19"], [FXA, "a1", undefined]].map((a) => sigA(tryZ(() => appUp(...a)))),
+  } : null;
+  check("AZ1 appUpcoming(appShifts, \"a1\", \"2026-10-19\") — only a1's days, today included and 10/18 out, oldest first whatever the key order, each with weekend = Saturday or Sunday (the 7a–7a 24h shift; a weekday is the 5p–7a night), across the fall-back weekend and New Year's",
+    !!az1 && J(az1.a1) === J(A1_WANT), NOFN || J(az1 && az1.a1));
+  check("AZ1 …a later today drops what has passed; another APP gets only theirs (a2: Tue 10/20); an APP with no days, a cleared (\"\") day, junk keys and bad input (null, undefined, {}, no id, no today) give []",
+    !!az1 && J(az1.a1Later) === J(A1_LATER) && J(az1.a2) === J([["2026-10-20", false]]) && J(az1.a2After) === "[]" && J(az1.a3) === "[]" && J(az1.bad) === J([[], [], [], [], []]),
+    NOFN || J(az1));
+  check("AZ1 pure: the appShifts passed in is untouched, and the helper reads no clock (no Date.now, no new Date())",
+    !!appUp && J(FXA) === fxBefore && !/Date\.now|new Date\(\s*\)/.test(String(appUp)), NOFN || J(FXA));
+
+  // AZ3 — the Mine page's own APP lines (sliced from after X3's anchor), and the APP card's own code
+  const mA = nsrcZ.indexOf('{view==="myschedule" && !isPublicMode && <>'), mB = mA < 0 ? -1 : nsrcZ.indexOf("{/* ════════════════ REQUESTS ════════════════ */}", mA);
+  const mineZ = mA < 0 || mB < 0 ? "" : nsrcZ.slice(mA, mB);
+  const L0 = mineZ.indexOf("            const mineApp = "), L1 = L0 < 0 ? -1 : mineZ.indexOf("\n", mineZ.indexOf("const myAppDays = ", L0));
+  const linesZ = L0 >= 0 && L1 > L0 ? mineZ.slice(L0, L1) : null;
+  let pageFn = null;
+  try { pageFn = linesZ ? vm.runInContext(`(function (env) { const { aMap, myId, appShifts, myToday, appUpcoming } = env; ${linesZ}\n return { mineApp, myAppDays }; })`, sandbox) : null; } catch (ex) { pageFn = null; }
+  const AMAPZ = Object.fromEntries([["a1", "MA"], ["a2", "SJ"], ["a3", "MS"], ["a4", "SS"], ["a5", "JH"]].map(([id, name], idx) => [id, { id, name, idx }]));
+  const pageOf = (myId, helper) => (pageFn ? tryZ(() => { const r = pageFn({ aMap: AMAPZ, myId, appShifts: FXA, myToday: "2026-10-19", appUpcoming: helper }); return { mineApp: r.mineApp, days: sigA(r.myAppDays) }; }) : null);
+  const pz = { a1: pageOf("a1", appUp || undefined), s3: pageOf("s3", appUp || undefined), admin: pageOf("admin", appUp || undefined), oldHelpers: pageOf("a1", undefined) };
+  check("AZ3 executed — the Mine page's APP lines (sliced as written): viewing a1 → an APP with a1's days from today; RPC (s3) and \"admin\" → not an APP, no days; with an old cached helpers.js (no appUpcoming) a1 is still an APP, with no days, and nothing throws",
+    !!pageFn && !!appUp && J(pz.a1) === J({ mineApp: true, days: A1_WANT }) && J(pz.s3) === J({ mineApp: false, days: [] }) && J(pz.admin) === J({ mineApp: false, days: [] }) && J(pz.oldHelpers) === J({ mineApp: true, days: [] }),
+    (pageFn ? "" : "the Mine page's APP lines were not found — ") + J(pz));
+  const C0 = mineZ.indexOf("const APP_LIMIT = 5;"), C1 = C0 < 0 ? -1 : mineZ.indexOf("\n                  return (", C0);
+  const preZ = C0 >= 0 && C1 > C0 ? mineZ.slice(C0, C1) : null;
+  let cardFn = null;
+  try { cardFn = preZ ? vm.runInContext(`(function (env) { const { myAppDays, showAllMyApp, _today0, _DAY } = env; ${preZ}\n return { APP_LIMIT, nextA, restA, shownA, inDays, appIcon, appHours }; })`, sandbox) : null; } catch (ex) { cardFn = null; }
+  const wtM = nsrcZ.match(/\n[ ]*const _whenTxt = (\(d\) => [^\n]*);\n/), mdM = nsrcZ.match(/\n[ ]*const mineDay = (\(ds\) => [^\n]*);\n/);
+  let whenTxt = null, mkDay = null;
+  try { whenTxt = wtM ? vm.runInContext("(" + wtM[1] + ")", sandbox) : null; mkDay = mdM ? vm.runInContext(`(function (myToday) { return (${mdM[1]}); })`, sandbox) : null; } catch (ex) { whenTxt = null; mkDay = null; }
+  const T0 = vm.runInContext('parse("2026-10-19")', sandbox);
+  const cardOf = (days, showAll) => (cardFn && whenTxt && mkDay ? tryZ(() => {
+    const c = cardFn({ myAppDays: days, showAllMyApp: showAll, _today0: T0, _DAY: 86400000 }), md = mkDay("2026-10-19");
+    const line = (d) => [c.appIcon(d), md(d.ds), c.appHours(d), whenTxt(c.inDays(d.ds))].join(" ");
+    return { next: c.nextA ? line(c.nextA) : null, rows: c.shownA.map(line), showAllButton: c.restA.length > c.APP_LIMIT };
+  }) : null);
+  const days1 = appUp ? appUp(FXA, "a1", "2026-10-19") : [];
+  const cz = { shut: cardOf(days1, false), open: cardOf(days1, true), none: cardOf([], false) };
+  const ROWS5 = ["🌗 Sat 10/24 7a–7a (24h) in 5 days", "🌗 Sun 10/25 7a–7a (24h) in 6 days", "🌗 Sun 11/1 7a–7a (24h) in 13 days", "🌙 Mon 11/2 5p–7a in 14 days", "🌙 Thu 12/31 5p–7a in 73 days"];
+  check("AZ3 executed — the APP card's own code (sliced) on a1's days, today 10/19: the next call reads \"🌙 Mon 10/19 5p–7a today\"; then five more (weekends 7a–7a (24h), weeknights 5p–7a, \"in N days\" across the fall-back week) and a Show all button; open, the sixth names its year (\"Sat 1/2/2027\"); no days → no next call, no rows",
+    !!cz.shut && cz.shut.next === "🌙 Mon 10/19 5p–7a today" && J(cz.shut.rows) === J(ROWS5) && cz.shut.showAllButton === true
+      && !!cz.open && J(cz.open.rows) === J(ROWS5.concat(["🌗 Sat 1/2/2027 7a–7a (24h) in 75 days"])) && !!cz.none && cz.none.next === null && cz.none.rows.length === 0 && cz.none.showAllButton === false,
+    (cardFn ? "" : "the APP card's code was not found — ") + J(cz));
+  const USES = ["{appIcon(nextA)}", "{_whenTxt(inDays(nextA.ds))}", "{mineDay(nextA.ds)}", "{appHours(nextA)}", "{shownA.map(d => (", "{appIcon(d)}", "{mineDay(d.ds)}", "{appHours(d)}", "{_whenTxt(inDays(d.ds))}",
+    "{restA.length > APP_LIMIT && (", "onClick={()=>setShowAllMyApp(v=>!v)}", '{showAllMyApp ? "Show fewer" : `Show all ${myAppDays.length}`}'];
+  const cardSrc = C0 >= 0 ? mineZ.slice(C0, mineZ.indexOf("})()}", C0)) : "";
+  check("AZ3 the APP card renders exactly those expressions (icon, when, date, hours for the next call; the same for each row; Show all toggles its own state)",
+    USES.every((u) => cardSrc.split(u).length === 2) && count("const [showAllMyApp, setShowAllMyApp] = useState(false);") === 1, USES.filter((u) => cardSrc.split(u).length !== 2).join(" | "));
+
+  // AZ4 — source order and gates
+  const MBz = "            const myShiftsView = mineUpcoming(myShifts, myToday);";
+  const iX3 = nsrcZ.indexOf(MBz), iApp = nsrcZ.indexOf("const mineApp = !!aMap[myId];"), iDays = nsrcZ.indexOf("appUpcoming(appShifts, myId, myToday)");
+  const iChip = nsrcZ.indexOf("const mineDateChip = {"), iRet = iChip < 0 ? -1 : nsrcZ.indexOf("return (", iChip);
+  const x3a = nsrcZ.indexOf("            const myShifts = [];"), x3slice = x3a >= 0 && iX3 > x3a ? nsrcZ.slice(x3a, iX3 + MBz.length) : "";
+  check("AZ4 the APP lines come right after X3's anchor (the surgeon builder line) and before the page's return; X3's slice (const myShifts = [] through that line) holds no APP name, so X3/X4/AU2 run the same builder",
+    count("const mineApp = !!aMap[myId];") === 1 && count("appUpcoming(appShifts, myId, myToday)") === 1 && iX3 > 0 && iApp > iX3 && iApp - iX3 < 600 && iDays > iApp && iRet > iDays
+      && !!x3slice && !/mineApp|myAppDays|appUpcoming/.test(x3slice), J({ iX3, iApp, iDays, iRet, x3: x3slice.length }));
+  const SEQ = [
+    "{mineApp ? <AppBadge id={myId}/> : <><Badge id={myId}/> {pubThrough && <span style={{",
+    "{mineApp && (() => {", "🗓 Next APP Call", "No upcoming APP call days in the current schedule.",
+    '{!mineApp && (\n                <div style={{...css.card, padding:0, overflow:"hidden"', "🗓 Next Call\n", "No upcoming call shifts in the current schedule.",
+    "                </div>\n                )}\n\n                {/* 🚑 Silvis",
+    "{myShiftsView.map(wk => (",
+    "{!mineApp && <>\n                {myShifts.length === 0 && (", "No shifts assigned yet.", "No upcoming shifts in the current schedule.", "                </>}\n              </>\n            );",
+  ];
+  const seqAt = SEQ.map((s) => mineZ.indexOf(s));
+  check("AZ4 in the Mine page, in order and each once: the header (an APP's own badge; a surgeon's badge and Published through), the APP card (gated mineApp), the surgeon Next call card (gated !mineApp, closed before Silvis), My Shifts, and the two surgeon empty lines (gated !mineApp)",
+    !!mineZ && seqAt.every((x, i) => x >= 0 && (i === 0 || x > seqAt[i - 1])) && SEQ.filter((s) => s !== "No shifts assigned yet.").every((s) => mineZ.split(s).length === 2),
+    J(SEQ.map((s, i) => [s.slice(0, 30), seqAt[i]])));
+  const selA = mineZ.indexOf("<select value={mineId}"), selB = selA < 0 ? -1 : mineZ.indexOf("</select>", selA);
+  const sel = selA >= 0 && selB > selA ? mineZ.slice(selA, selB) : "";
+  // (its value is aMap[mySurgeon].id, the same id: AM1 bans the text value={mySurgeon} in the Mine block)
+  const OWN = "{aMap[mySurgeon] && <option value={aMap[mySurgeon].id}>{aMap[mySurgeon].name}</option>}";
+  const ocA = mineZ.indexOf("} onChange={"), ocB = ocA < 0 ? -1 : mineZ.indexOf("} style={{...css.inp,width:180", ocA);
+  let onFn = null;
+  try { onFn = ocA >= 0 && ocB > ocA ? vm.runInContext(`(function (env) { const { mySurgeon, setMineViewId } = env; return (${mineZ.slice(ocA + "} onChange={".length, ocB)}); })`, sandbox) : null; } catch (ex) { onFn = null; }
+  const picks = onFn ? ["a1", "s3", ""].map((v) => { let got = "unset"; onFn({ mySurgeon: "a1", setMineViewId: (x) => { got = x; } })({ target: { value: v } }); return got; }) : null;
+  check("AZ4 the Mine picker adds only a signed-in APP's own name, after the surgeons (no apps.map: a scheduler still views surgeons only); for an APP, AM's real onChange makes picking their own name Back to mine (\"\"), a surgeon a view (\"s3\"), the placeholder \"\" — never an identity write",
+    sel.split(OWN).length === 2 && count(OWN) === 1 && sel.indexOf(OWN) > sel.indexOf("{surgeons.map(s=><option") && !sel.includes("apps.map(") && !sel.includes("setMySurgeon(") && J(picks) === J(["", "s3", ""]),
+    J({ own: sel.includes(OWN), picks }));
+
+  // AZ5 — downloadMyCal, the real function, sliced; the download stubbed
+  const D0 = nsrcZ.indexOf("  const downloadMyCal = (surgeonId) => {"), D1 = D0 < 0 ? -1 : nsrcZ.indexOf("\n  };\n", D0);
+  const dlSrc = D0 >= 0 && D1 > D0 ? nsrcZ.slice(D0 + "  const downloadMyCal = ".length, D1 + "\n  }".length) : null;
+  let dlMk = null;
+  try { dlMk = dlSrc ? vm.runInContext(`(function (env) { const { surgeons, apps, appShifts, schedule, vacations, nameOf, downloadICS } = env; return (${dlSrc}); })`, sandbox) : null; } catch (ex) { dlMk = null; }
+  const ROSTERZ = ["DJA", "MCC", "RPC", "KJH", "REH", "FAK", "ARW"].map((name, i) => ({ id: "s" + (i + 1), name }));
+  const APPSZ = [["a1", "MA"], ["a2", "SJ"], ["a3", "MS"], ["a4", "SS"], ["a5", "JH"]].map(([id, name]) => ({ id, name }));
+  const nameOfZ = (id) => (ROSTERZ.find((s) => s.id === id) || APPSZ.find((a) => a.id === id) || {}).name || id || "?";
+  const SHIFTSZ = { "2026-10-12": "a1", "2026-10-17": "a1", "2026-10-20": "a2", "2026-10-24": "a1", "2026-10-27": "a1", "2026-10-28": "", "2026-10-31": "a3" };
+  const SCHEDZ = { "2026-10-19": { dayCall: "s6", nights: { mon: "s1", tue: "s6", wknd: "s3" } }, "2026-10-26": { dayCall: "s2", nights: { wed: "s6", wknd: "s6" } } };
+  const VACZ = { a1: [["2026-11-09", "2026-11-13"]], a2: [["2026-10-01", "2026-10-02"]], s6: [["2026-12-21", "2026-12-25"]] };
+  const dl = (id) => {
+    const files = [];
+    const r = dlMk ? tryZ(() => dlMk({ surgeons: ROSTERZ, apps: APPSZ, appShifts: SHIFTSZ, schedule: SCHEDZ, vacations: VACZ, nameOf: nameOfZ, downloadICS: (content, filename) => files.push({ content: String(content), filename }) })(id)) : { threw: "downloadMyCal not found" };
+    return { files, threw: (r && r.threw) || null };
+  };
+  const evOf = (ics) => ics.replace(/\r\n /g, "").split("BEGIN:VEVENT").slice(1).map((e) => ({ start: (e.match(/DTSTART;VALUE=DATE:(\d{8})/) || [])[1], end: (e.match(/DTEND;VALUE=DATE:(\d{8})/) || [])[1],
+    summary: (e.match(/\r\nSUMMARY:([^\r]*)/) || [])[1], desc: (e.match(/\r\nDESCRIPTION:([^\r]*)/) || [])[1], free: e.includes("\r\nTRANSP:TRANSPARENT\r\n") }));
+  const a1File = dl("a1"), a1Ev = a1File.files.length === 1 ? evOf(a1File.files[0].content) : [];
+  const NIGHT = "5:00 PM – 7:00 AM next day\\nTimes are Central.", DAY24 = "7:00 AM – 7:00 AM next day (24h)\\nTimes are Central.";
+  const A1_EV = [["20261012", "20261013", "DSG APP Call — MA", NIGHT, true], ["20261017", "20261018", "DSG APP Call — MA", DAY24, true], ["20261024", "20261025", "DSG APP Call — MA", DAY24, true],
+    ["20261027", "20261028", "DSG APP Call — MA", NIGHT, true], ["20261109", "20261114", "DSG Vacation", "2026-11-09 to 2026-11-13", false]];
+  check("AZ5 executed — Download My Calendar for an APP (MA, a1) now downloads my-schedule-ma.ics (\"MA Call Schedule\"): their four APP days, past ones included like a surgeon's file, each \"DSG APP Call — MA\" with the weekday 5p–7a / weekend 24h hours and shown as free, then their vacation (busy)",
+    !a1File.threw && a1File.files.length === 1 && a1File.files[0].filename === "my-schedule-ma.ics" && a1File.files[0].content.includes("\r\nX-WR-CALNAME:MA Call Schedule\r\n")
+      && J(a1Ev.map((e) => [e.start, e.end, e.summary, e.desc, e.free])) === J(A1_EV),
+    J({ threw: a1File.threw, files: a1File.files.map((f) => f.filename), ev: a1Ev.map((e) => `${e.start} ${e.summary}`) }));
+  check("AZ5 executed — …and nothing of anyone else's: no other APP's day (SJ 10/20, MS 10/31), not the cleared 10/28, no surgeon call, not another APP's vacation",
+    a1File.files.length === 1 && !/DTSTART;VALUE=DATE:(20261020|20261028|20261031|20261001)|— SJ|— MS|DSG Service|DSG Night|DSG Weekend/.test(a1File.files[0].content), a1File.files.length ? a1File.files[0].content.slice(0, 200) : "no file");
+  const noUid = (s) => String(s).replace(/\r\nUID:[^\r]*/g, "");
+  const s6Want = vm.runInContext(`(function (schedule, nameOf) { const events = buildICSEvents(schedule, "s6", "FAK", { nameOf });
+    events.push({ allDay: true, start: icsDay(parse("2026-12-21")), end: icsDay(addD(parse("2026-12-25"), 1)), summary: "DSG Vacation", desc: "2026-12-21 to 2026-12-25" });
+    return generateICS(events, "FAK Call Schedule"); })`, sandbox)(SCHEDZ, nameOfZ);
+  const s6File = dl("s6");
+  check("AZ5 executed — a surgeon's download is unchanged: FAK's file is main's (buildICSEvents with nameOf, then his vacation) byte-for-byte apart from the random UIDs, with no APP call in it",
+    !s6File.threw && s6File.files.length === 1 && s6File.files[0].filename === "my-schedule-fak.ics" && noUid(s6File.files[0].content) === noUid(s6Want) && evOf(s6Want).length === 6 && !s6File.files[0].content.includes("APP Call"),
+    J({ threw: s6File.threw, files: s6File.files.map((f) => f.filename) }));
+  const none = ["zz", "admin", ""].map((id) => { const r = dl(id); return r.threw || r.files.length; });
+  check("AZ5 executed — an id that is neither a surgeon nor an APP (\"zz\", \"admin\", \"\") still downloads nothing and throws nothing",
+    !!dlMk && J(none) === J([0, 0, 0]), J(none));
+
+  // AZ2 — AZ1 and the card's day counts again under TZ=America/Chicago
+  {
+    const { execFileSync } = require("child_process");
+    const code = [
+      'const vm = require("vm"), fs = require("fs"), path = require("path");',
+      'const sb = { console, window: {}, document: undefined, navigator: { userAgent: "node-test" }, localStorage: { getItem: () => null, setItem() {}, removeItem() {} }, fetch: () => { throw new Error("no fetch"); }, setTimeout, clearTimeout };',
+      "sb.globalThis = sb; vm.createContext(sb);",
+      `for (const f of ["helpers.js", "config.js"]) vm.runInContext(fs.readFileSync(path.join(${J(ROOT)}, f), "utf8"), sb, { filename: f });`,
+      `const up = vm.runInContext(${J("typeof appUpcoming === 'function' ? appUpcoming : null")}, sb);`,
+      `const FXA = ${J(FXA)}, pre = ${J(preZ || "")};`,
+      "const sig = (r) => (Array.isArray(r) ? r.map((d) => [d.ds, d.weekend]) : r);",
+      `let card = null; try { card = pre ? vm.runInContext(${J("(function (env) { const { myAppDays, showAllMyApp, _today0, _DAY } = env; ")} + pre + ${J("\n return { inDays, appHours }; })")}, sb) : null; } catch (e) { card = null; }`,
+      'const days = up ? up(FXA, "a1", "2026-10-19") : null;',
+      `const c = card && days ? card({ myAppDays: days, showAllMyApp: true, _today0: vm.runInContext(${J('parse("2026-10-19")')}, sb), _DAY: 86400000 }) : null;`,
+      'process.stdout.write(JSON.stringify({ off: new Date(2026, 9, 24).getTimezoneOffset(), naive: new Date("2026-10-24").getDay(), a1: up ? sig(days) : null, a1Later: up ? sig(up(FXA, "a1", "2026-10-26")) : null,',
+      "  inDays: c ? days.map((d) => c.inDays(d.ds)) : null, hours: c ? days.map((d) => c.appHours(d)) : null }));",
+    ].join("\n");
+    let out = null;
+    try { out = JSON.parse(execFileSync(process.execPath, ["-e", code], { env: Object.assign({}, process.env, { TZ: "America/Chicago" }), encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })); } catch (ex) { out = { err: String(ex).slice(0, 300) }; }
+    check("AZ2 the child really runs in America/Chicago (CDT offset 300), where the NAIVE new Date('2026-10-24') is a FRIDAY — so a helper that read the weekday that way would call Saturday a weeknight",
+      !!out && out.off === 300 && out.naive === 5, J(out).slice(0, 300));
+    check("AZ2 under TZ=America/Chicago appUpcoming gives AZ1's exact days and weekend flags, and the APP card counts 0, 5, 6, 13, 14, 73, 75 days (across the fall-back Sunday 11/1) with the matching hours",
+      !!out && J(out.a1) === J(A1_WANT) && J(out.a1Later) === J(A1_LATER) && J(out.inDays) === J([0, 5, 6, 13, 14, 73, 75])
+        && J(out.hours) === J(["5p–7a", "7a–7a (24h)", "7a–7a (24h)", "7a–7a (24h)", "5p–7a", "5p–7a", "7a–7a (24h)"]), J(out).slice(0, 400));
+  }
+}
+
 // ─── AI. NEVER RE-APPLY (owner rule, 2026-10-12/13) ───
 // A previewed schedule — generated, or loaded from a JSON file such as the
 // CP-SAT benchmark that is now the published period — reaches the schedule
