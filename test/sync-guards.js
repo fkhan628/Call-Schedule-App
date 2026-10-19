@@ -2742,6 +2742,181 @@ check("prefs audit never logs the plaintext email (masked only)",
   }
 }
 
+// ─── AM. Mine's name picker views a colleague; it never signs this device in as them (UX audit 2026-10-18) ───
+// The Mine select called setMySurgeon, the app-wide identity, so every
+// identity effect followed a pick: OneSignal.login and the surgeon_id tag moved
+// this phone's push subscription to the colleague (their pushes arrived here,
+// the user's own stopped), a member's vacation requester and trade initiator
+// became the colleague, and the pick was saved as "dsg-my-surgeon". The pick is
+// now a view only (mineViewId: not identity, not persisted) and the Mine page
+// reads mineId = mineViewId || mySurgeon. A view pick is dropped when the
+// identity changes (a sign-out, another account).
+//   AM1 source: the select writes the view, never identity (setMySurgeon( has
+//       one site fewer, 9 → 8; the auth paths keep theirs); mineViewId and
+//       mineId are declared after mySurgeon and before the Mine render; the
+//       Mine block reads mineId for the select, the download, the gate, myId
+//       and the empty state; neither name is in a hook deps array or stored
+//   AM2 EXECUTED: the real select handler, the real mineId line, the Mine
+//       block's real expressions (select value, myId, download, gate, empty
+//       state) and the identity effects sliced verbatim (persist, the view
+//       reset, auto-fill, OneSignal login, OneSignal tags) in a tiny hook
+//       runner: the scheduler and a member each pick a colleague — the page
+//       shows the colleague; identity, storage, OneSignal and the
+//       request/trade fields do not move
+//   AM3 EXECUTED: the header names who is viewed; "Back to mine", picking
+//       yourself and picking the placeholder all return to your own schedule
+//   AM4 EXECUTED: a view pick does not survive a sign-out into another
+//       account (control: without the reset effect it would)
+console.log("\nAM. Mine's name picker is a view, not a sign-in");
+{
+  const AMa = '{view==="myschedule" && !isPublicMode && <>', AMb = "{/* ════════════════ REQUESTS ════════════════ */}";
+  const amA = src.indexOf(AMa), amB = amA < 0 ? -1 : src.indexOf(AMb, amA);
+  const mineBlk = amA < 0 || amB < 0 ? "" : src.slice(amA, amB);
+  const between = (text, a, b) => { if (text == null) return null; const i = text.indexOf(a); if (i < 0) return null; const j = text.indexOf(b, i + a.length); return j < 0 ? null : text.slice(i + a.length, j); };
+
+  // AM1 — source
+  check("AM1 the Mine select writes the view pick, never identity: setMySurgeon( has 8 sites (main's 9 minus the select; the auth paths keep theirs), no setMySurgeon(e.target.value) handler is left, and the Mine block calls no setMySurgeon",
+    !!mineBlk && count("setMySurgeon(") === 8 && count("onChange={e=>setMySurgeon(e.target.value)}") === 0 && !mineBlk.includes("setMySurgeon("),
+    `setMySurgeon( x${count("setMySurgeon(")}, Mine block ${mineBlk.length} chars`);
+  const iMy = src.indexOf("const [mySurgeon, setMySurgeon] = useState("), iState = src.indexOf('const [mineViewId, setMineViewId] = useState("")'),
+    iMine = src.indexOf("const mineId = mineViewId || mySurgeon;"), iView = src.indexOf('{view==="myschedule"');
+  check("AM1 the view pick is its own state, declared once right after mySurgeon, then mineId, both before the Mine render",
+    count('const [mineViewId, setMineViewId] = useState("")') === 1 && count("const mineId = mineViewId || mySurgeon;") === 1
+      && iMy > 0 && iMy < iState && iState < iMine && iMine < iView, [iMy, iState, iMine, iView].join(" < "));
+  check("AM1 the Mine block reads mineId: the select's value, the download, the gate, myId and the empty state — none of them reads mySurgeon any more",
+    mineBlk.includes('<select value={mineId} onChange={e=>setMineViewId(e.target.value === mySurgeon ? "" : e.target.value)}')
+      && mineBlk.includes("downloadMyCal(mineId)") && mineBlk.includes("{mineId && Object.keys(schedule).length > 0 && (() => {")
+      && mineBlk.includes("const myId = mineId;") && mineBlk.includes("{!mineId && (")
+      && !mineBlk.includes("downloadMyCal(mySurgeon)") && !mineBlk.includes("{mySurgeon && Object.keys(schedule).length > 0")
+      && !mineBlk.includes("value={mySurgeon}") && !mineBlk.includes("{!mySurgeon && ("));
+  // The one effect a view pick may move (batch review 2026-10-19): it only closes an open My Vacations edit.
+  const AM_EDIT_RESET = "useEffect(() => { setMyVacEdit(null); }, [mineViewId, mySurgeon]);";
+  const srcAM = src.split(AM_EDIT_RESET).join("");
+  const amDeps = []; { const re = /[})]\s*,\s*\[([^\]]*)\]\s*\)/g; let m; while ((m = re.exec(srcAM)) !== null) amDeps.push(m[1]); }
+  const amInDeps = amDeps.filter((d) => /\b(mineViewId|mineId)\b/.test(d));
+  check("AM1 neither mineViewId nor mineId is in any hook deps array (a view pick moves no effect — except the one that closes an open My Vacations edit) and neither is written to storage",
+    iState > 0 && amDeps.length >= 40 && amInDeps.length === 0 && count(AM_EDIT_RESET) <= 1 && !/setItem\([^)]*\b(mineViewId|mineId)\b/.test(src), amInDeps.join(" | ") || `${amDeps.length} deps arrays`);
+
+  // AM2–AM4 — the real code, executed. Each effect is sliced verbatim, from its useEffect( through its "])".
+  const effectAt = (anchor) => { const i = src.indexOf(anchor); if (i < 0 || src.indexOf(anchor, i + 1) >= 0) return null; const a = src.lastIndexOf("useEffect(", i), b = src.indexOf("]);", i); return a >= 0 && b > i && b - a < 900 ? src.slice(a, b + 2) : null; };
+  const EFF = { // (source order)
+    persist: effectAt('localStorage.setItem("dsg-my-surgeon", mySurgeon)'),
+    viewReset: effectAt('useEffect(() => { setMineViewId(""); }, [mySurgeon]);'),
+    autofill: effectAt("setTradeFrom(mySurgeon);"),
+    osLogin: effectAt("window.OneSignal.login(mySurgeon).catch("),
+    osTag: effectAt('window.OneSignal.User.addTag("surgeon_id", mySurgeon);'),
+  };
+  const NAMES = "useEffect, mySurgeon, mineViewId, mineId, isScheduler, oneSignalReady, surgeons, sMap, localStorage, window, console, setMySurgeon, setMineViewId, setVacReqSurgeon, setTradeFrom";
+  const amFn = (code) => { if (code == null) return null; try { return vm.runInContext(`(function (env) { const { ${NAMES} } = env; return (${code}); })`, sandbox); } catch (ex) { return null; } };
+  const effFns = Object.fromEntries(Object.entries(EFF).map(([k, c]) => [k, amFn(c)]));
+  const gi = mineBlk.indexOf(" && Object.keys(schedule).length > 0 && (() => {"), ei = mineBlk.indexOf("Select your name above to view your schedule.");
+  const eo = ei < 0 ? -1 : mineBlk.lastIndexOf("{!", ei);
+  const backAt = mineBlk.indexOf(">Back to mine</button>"), backOn = backAt < 0 ? -1 : mineBlk.lastIndexOf("onClick={", backAt);
+  const hdrT = between(mineBlk, "{`Viewing ", "`}");
+  const X = {
+    mineId: amFn(between(src, "  const mineId = ", ";")),
+    value: amFn(between(mineBlk, "<select value={", "} onChange={")),
+    onChange: amFn(between(mineBlk, "} onChange={", "} style={{...css.inp,width:180")),
+    myId: amFn(between(mineBlk, "const myId = ", ";")),
+    download: amFn(between(mineBlk, "downloadMyCal(", ")}")),
+    gate: amFn(gi < 0 ? null : mineBlk.slice(mineBlk.lastIndexOf("{", gi) + 1, gi)),
+    empty: amFn(eo < 0 ? null : between(mineBlk.slice(eo), "{!", " && (")),
+    back: amFn(backOn < 0 ? null : between(mineBlk.slice(backOn), "onClick={", "} style={{")),
+    header: amFn(hdrT == null ? null : "`Viewing " + hdrT + "`"),
+  };
+  const amReady = ["value", "onChange", "myId", "download", "gate", "empty"].every((k) => !!X[k]) && ["persist", "autofill", "osLogin", "osTag"].every((k) => !!effFns[k]);
+  const amWhy = amReady ? "" : " — a slice is missing: " + JSON.stringify(Object.fromEntries(Object.entries(X).map(([k, f]) => [k, !!f]))) + " " + JSON.stringify(Object.fromEntries(Object.entries(effFns).map(([k, f]) => [k, !!f])));
+  const ROSTER = ["DJA", "MCC", "RPC", "KJH", "REH", "FAK", "ARW"].map((name, i) => ({ id: "s" + (i + 1), name }));
+  const sMapAM = Object.fromEntries(ROSTER.map((s, i) => [s.id, { ...s, idx: i }]));
+  // One component instance: its state, the effects' side effects (storage, OneSignal, the request/trade fields), every identity write.
+  const amWorld = (me, scheduler, without) => {
+    const w = { st: { mySurgeon: me, mineViewId: "", isScheduler: !!scheduler }, ls: {}, os: [], idCalls: [], vacReq: null, tradeFrom: null, errs: [], prev: {}, dirty: false };
+    const set = (k) => (v) => { const nv = typeof v === "function" ? v(w.st[k]) : v; if (!Object.is(nv, w.st[k])) { w.st[k] = nv; w.dirty = true; } };
+    const win = { OneSignal: { login: (id) => { w.os.push("login:" + id); return Promise.resolve(); }, User: { addTag: (k, v) => { w.os.push(k + "=" + v); } } } };
+    const store = { setItem: (k, v) => { w.ls[k] = String(v); }, getItem: (k) => (k in w.ls ? w.ls[k] : null), removeItem: (k) => { delete w.ls[k]; } };
+    const con = { error: (...a) => w.errs.push(a.map(String).join(" ")), warn: (...a) => w.errs.push(a.map(String).join(" ")), log() {} };
+    w.env = () => {
+      const env = { ...w.st, oneSignalReady: true, surgeons: ROSTER, sMap: sMapAM, localStorage: store, window: win, console: con,
+        setMySurgeon: (v) => { w.idCalls.push(v); set("mySurgeon")(v); }, setMineViewId: set("mineViewId"),
+        setVacReqSurgeon: (v) => { w.vacReq = v; }, setTradeFrom: (v) => { w.tradeFrom = v; } };
+      env.mineId = X.mineId ? X.mineId(env) : undefined;
+      return env;
+    };
+    // React's loop, small: render, run the effects whose deps changed, again while an effect set state
+    w.render = () => {
+      for (let pass = 0; pass < 6; pass++) {
+        w.dirty = false;
+        const env = w.env();
+        for (const k of Object.keys(effFns)) {
+          if (!effFns[k] || (without || []).includes(k)) continue;
+          let rec = null; env.useEffect = (fn, deps) => { rec = { fn, deps }; };
+          effFns[k](env);
+          const old = w.prev[k];
+          if (rec && (!old || rec.deps.some((d, i) => !Object.is(d, old[i])))) { w.prev[k] = rec.deps; rec.fn(); }
+        }
+        if (!w.dirty) return true;
+      }
+      return false;
+    };
+    w.pick = (id) => { X.onChange(w.env())({ target: { value: id } }); return w.render(); };
+    w.page = () => { const env = w.env(); return { value: X.value(env), shown: X.myId(env), download: X.download(env), gate: !!X.gate(env), empty: !X.empty(env), view: w.st.mineViewId }; };
+    w.render();
+    return w;
+  };
+  const amTry = (f) => { try { return f(); } catch (ex) { return { threw: String((ex && ex.message) || ex) }; } };
+  const snap = (w) => ({ page: w.page(), me: w.st.mySurgeon, os: w.os.slice(), ls: Object.assign({}, w.ls), idCalls: w.idCalls.slice(), vacReq: w.vacReq, tradeFrom: w.tradeFrom, errs: w.errs.slice() });
+
+  // AM2 — the scheduler (FAK, s6) views RPC (s3); a member (RPC) views FAK
+  const A = amReady ? amTry(() => { const w = amWorld("s6", true); const mount = snap(w); const settled = w.pick("s3"); return Object.assign(snap(w), { mount, settled }); }) : null;
+  check("AM2 executed — the hook runner is live: FAK's mount signs this device's push in as FAK (OneSignal.login s6, both surgeon tags), saves s6, and Mine shows FAK",
+    !!A && !A.threw && A.mount.os.join() === "login:s6,surgeon_id=s6,surgeon_name=FAK" && A.mount.ls["dsg-my-surgeon"] === "s6" && A.mount.page.shown === "s6" && A.mount.page.value === "s6",
+    JSON.stringify(A && (A.threw || A.mount)) + amWhy);
+  check("AM2 executed — FAK picks RPC in Mine: the page shows RPC (the select, the shifts, the download; no empty state)",
+    !!A && !A.threw && A.settled === true && A.page.value === "s3" && A.page.shown === "s3" && A.page.download === "s3" && A.page.gate && !A.page.empty,
+    JSON.stringify(A && (A.threw || A.page)) + amWhy);
+  check("AM2 executed — …and this device is still FAK: no setMySurgeon call, identity s6, no OneSignal login or tag for RPC (FAK's pushes keep arriving here, RPC's do not), \"dsg-my-surgeon\" still s6",
+    !!A && !A.threw && A.idCalls.length === 0 && A.me === "s6" && A.os.join() === A.mount.os.join() && A.ls["dsg-my-surgeon"] === "s6" && A.errs.length === 0,
+    JSON.stringify(A && (A.threw || { idCalls: A.idCalls, me: A.me, os: A.os, ls: A.ls, errs: A.errs })) + amWhy);
+  const Bm = amReady ? amTry(() => { const w = amWorld("s3", false); const mount = snap(w); w.pick("s6"); return Object.assign(snap(w), { mount }); }) : null;
+  check("AM2 executed — a member (RPC) picks FAK: the page shows FAK, while the vacation requester and the trade initiator stay RPC, and push, storage and identity stay RPC's",
+    !!Bm && !Bm.threw && Bm.mount.vacReq === "s3" && Bm.mount.tradeFrom === "s3" && Bm.page.shown === "s6" && Bm.page.value === "s6"
+      && Bm.vacReq === "s3" && Bm.tradeFrom === "s3" && Bm.idCalls.length === 0 && Bm.me === "s3" && Bm.os.join() === Bm.mount.os.join() && Bm.ls["dsg-my-surgeon"] === "s3" && Bm.errs.length === 0,
+    JSON.stringify(Bm && (Bm.threw || { page: Bm.page, vacReq: Bm.vacReq, tradeFrom: Bm.tradeFrom, idCalls: Bm.idCalls, me: Bm.me, os: Bm.os, ls: Bm.ls })) + amWhy);
+
+  // AM3 — the header, and the three ways back to your own schedule
+  const C = amReady && X.back && X.header ? amTry(() => {
+    const w = amWorld("s6", true);
+    w.pick("s3"); const viewing = w.st.mineViewId, hdr = X.header(w.env());
+    X.back(w.env())(); w.render(); const afterBack = w.page();
+    w.pick("s4"); w.pick("s6"); const afterSelf = w.page();
+    w.pick("s4"); w.pick(""); const afterBlank = w.page();
+    return { viewing, hdr, afterBack, afterSelf, afterBlank, idCalls: w.idCalls.slice(), me: w.st.mySurgeon };
+  }) : null;
+  const amOwn = (p) => !!p && p.view === "" && p.shown === "s6" && p.value === "s6" && p.download === "s6" && p.gate && !p.empty;
+  const hOrder = (() => { const at = (s) => mineBlk.indexOf(s); const seq = [at("{mineViewId ? <>"), at("{`Viewing "), at('<button onClick={()=>setMineViewId("")} style={{...css.btn(false),'), at(">Back to mine</button>"), at("</> : <>"),
+    at("{userProfile ? `Showing schedule for ${userProfile.display_name}.` : \"Select your name to see only your shifts and vacations.\"}"), at("{isScheduler && \" As scheduler, you can view any surgeon's schedule.\"}"), at("<select value={")];
+    return seq.every((x, i) => x >= 0 && (i === 0 || x > seq[i - 1])); })();
+  check("AM3 executed — while a pick is on, the header says \"Viewing RPC's schedule.\" with a Back to mine button; with none, today's text (in that order, before the select)",
+    !!C && !C.threw && C.viewing === "s3" && C.hdr === "Viewing RPC's schedule." && hOrder, JSON.stringify(C && (C.threw || { viewing: C.viewing, hdr: C.hdr, hOrder })) + amWhy);
+  check("AM3 executed — Back to mine, picking yourself, and picking the placeholder each return to your own schedule (the view pick cleared, identity never touched)",
+    !!C && !C.threw && amOwn(C.afterBack) && amOwn(C.afterSelf) && amOwn(C.afterBlank) && C.idCalls.length === 0 && C.me === "s6", JSON.stringify(C) + amWhy);
+
+  // AM4 — FAK views RPC, signs out (handleSignOut's setMySurgeon(""), the boundary's scheduler flag), REH (s5) signs in on this phone
+  const D = amReady ? amTry(() => {
+    const run = (without) => {
+      const w = amWorld("s6", true, without); w.pick("s3");
+      w.env().setMySurgeon(""); w.st.isScheduler = false; w.render(); const out = w.page();
+      w.env().setMySurgeon("s5"); w.render(); return { out, inn: w.page(), os: w.os.slice() };
+    };
+    return { real: run([]), control: run(["viewReset"]) };
+  }) : null;
+  check("AM4 executed — FAK views RPC, signs out, REH signs in on this phone: the pick is gone (signed out: the empty state; then REH's own Mine) and push follows REH; the reset effect, sliced, does it",
+    !!D && !D.threw && !!effFns.viewReset && D.real.out.view === "" && D.real.out.empty && D.real.inn.view === "" && D.real.inn.shown === "s5" && D.real.inn.value === "s5" && D.real.os.includes("login:s5"),
+    JSON.stringify(D && (D.threw || D.real)) + amWhy);
+  check("AM4 control — the same run without the reset effect leaves RPC on REH's Mine (so the check above has teeth)",
+    !!D && !D.threw && D.control.inn.view === "s3" && D.control.inn.shown === "s3", JSON.stringify(D && (D.threw || D.control)) + amWhy);
+}
+
 // ─── V. Stats → Billing honors holiday coverage (owner rule + decisions 2026-10-01) ───
 // A holiday 24h bills the COVERING surgeon 2 days (the day and the night) on
 // the holiday's date, in a "Holiday" column, and every regular credit on that
@@ -2964,6 +3139,157 @@ check("prefs audit never logs the plaintext email (masked only)",
   }
 }
 
+// ─── AN. The bell's notification panel (UX audit 2026-10-18) ───
+// Opening the bell marked everything seen in the SAME tap, so the "new" tint
+// (created after the seen watermark) was false on every row the first time
+// the panel drew. The panel now keeps the watermark as it was when it opened
+// and tints against that; the badge still clears on open. The in-app tap map
+// lacked vacation_revoked and shift_reminder (buildDeepLink routes both, so a
+// push could be tapped but the bell row could not), and a schedule-change tap
+// opened the calendar on the CURRENT month, not the week the notice names
+// (the push deep-link handler jumps there). Rows show a time; the bell has a
+// name. Navigation and local display only: no writes, no hook deps.
+//   AN1 the tap map agrees with the REAL buildDeepLink, executed, on the tab AND the week, for every case it routes
+//   AN2 the week jump: a valid YYYY-MM-DD week, calendar rows only
+//   AN3 a row tap with a week sets the month and year, then the tab; it closes the panel and marks seen
+//   AN4 open → the rows the badge counted stay tinted; the badge clears; close marks nothing; reopen → only what came since
+//   AN5 a row shows a time; the bell's name says the count, aria-expanded; the panel fits a phone; pins
+console.log("\nAN. bell notification panel");
+{
+  const p0 = src.indexOf("{/* ─── Notification Panel ─── */}");
+  const p1 = p0 === -1 ? -1 : src.indexOf("{/* ════════════════ SETUP ════════════════ */}", p0);
+  const panel = p0 !== -1 && p1 > p0 ? src.slice(p0, p1) : "";
+  const b0 = src.indexOf("{/* Notification Bell */}");
+  const b1 = b0 === -1 ? -1 : src.indexOf("</button>", b0);
+  const bell = b0 !== -1 && b1 > b0 ? src.slice(b0, b1) : "";
+  check("AN0 the bell button and the notification panel are found", !!panel && !!bell, p0 + ".." + p1 + " / " + b0 + ".." + b1);
+  const between = (hay, a, b) => { const i = hay.indexOf(a); if (i === -1) return null; const j = hay.indexOf(b, i + a.length); return j === -1 ? null : hay.slice(i + a.length, j); };
+  const restOfLine = (hay, a) => { const i = hay.indexOf(a); if (i === -1) return null; const j = hay.indexOf("\n", i); return hay.slice(i + a.length, j === -1 ? undefined : j).replace(/\s+$/, ""); };
+  // Compile a sliced piece of the real code as a function body and call it; a missing or broken slice comes back as { err }.
+  const run = (params, body, args) => { try { return vm.runInNewContext("(function (" + params + ") {\n" + body + "\n})", { URL, URLSearchParams })(...args); } catch (e) { return { err: String(e).slice(0, 200) }; } };
+  const fnOrNull = (v) => (typeof v === "function" ? v : null);
+
+  // The real pieces, sliced from the source
+  const tmSrc = between(panel, "const tabMap = ", ";");
+  const tabMap = tmSrc ? run("", "return (" + tmSrc + ");", []) : null;
+  const d0 = src.indexOf("  const buildDeepLink = useCallback((type, data) => {");
+  const d1 = d0 === -1 ? -1 : src.indexOf("\n  }, []);", d0);
+  const bdlSrc = d0 !== -1 && d1 > d0 ? src.slice(d0, d1) + "\n  }, []);" : null;
+  const bdl = bdlSrc ? fnOrNull(run("useCallback, window", bdlSrc + "\nreturn buildDeepLink;", [(f) => f, { location: { origin: "https://dsg.test", pathname: "/app/" } }])) : null;
+  const sw = bdlSrc ? between(bdlSrc, "switch (type) {", "default:") : null;
+  const cases = sw ? [...sw.matchAll(/case "([a-z_]+)":/g)].map((m) => m[1]) : [];
+  const jwSrc = restOfLine(panel, "const jumpWeek = ");
+  const jump = (targetTab, n) => (jwSrc ? run("targetTab, n", "const jumpWeek = " + jwSrc + "\nreturn jumpWeek;", [targetTab, n]) : { err: "no jumpWeek in the panel" });
+
+  // AN1 — every case buildDeepLink routes: the bell row goes to the same tab, and (calendar) the same week
+  {
+    const route = (type, week) => { const u = bdl(type, week === undefined ? {} : { week }); if (!u) return null; const q = new URL(u).searchParams; return { tab: q.get("tab"), week: q.get("week") }; };
+    const bad = [];
+    if (bdl && tabMap && !tabMap.err) {
+      for (const c of cases) for (const w of ["2026-12-07", "bad", undefined]) {
+        const r = route(c, w), tab = tabMap[c] || null, jw = jump(tab, w === undefined ? {} : { data: { week: w } });
+        if (!r || r.tab !== tab || (r.week || null) !== jw) bad.push(c + "/" + w + ": push " + JSON.stringify(r) + ", bell " + JSON.stringify({ tab, week: jw }));
+      }
+      for (const k of Object.keys(tabMap)) if (!cases.includes(k)) bad.push("bell routes " + k + " but buildDeepLink does not");
+    }
+    check("AN1 the bell's tap map agrees with the real buildDeepLink (executed) for every case it routes — the tab, and for calendar rows the week (12/7 jumps, a bad or missing week does not); vacation_revoked → requests and shift_reminder → calendar are tappable now",
+      !!bdl && !!tabMap && !tabMap.err && cases.length >= 10 && cases.includes("vacation_revoked") && cases.includes("shift_reminder") && bad.length === 0,
+      (!bdl ? "buildDeepLink not found · " : "") + (tabMap && tabMap.err ? tabMap.err + " · " : "") + cases.length + " cases · " + bad.join(" | "));
+  }
+
+  // AN2 — the week jump itself
+  {
+    const got = [jump("calendar", { data: { week: "2026-12-07" } }), jump("calendar", { data: { week: "bad" } }), jump("calendar", { data: { week: "2026-12-07T00:00" } }),
+      jump("calendar", { data: {} }), jump("calendar", {}), jump("requests", { data: { week: "2026-12-07" } }), jump(null, { data: { week: "2026-12-07" } })];
+    check("AN2 the row's week jump: '2026-12-07' on a calendar row; 'bad', a timestamp, no week, no data, a requests row and an untappable row give none",
+      JSON.stringify(got) === JSON.stringify(["2026-12-07", null, null, null, null, null, null]), JSON.stringify(got));
+  }
+
+  // AN3 — the row tap, executed with recording setters
+  {
+    const rowLine = restOfLine(panel, "<div key={n.id} onClick={");
+    const rowSrc = rowLine ? rowLine.replace(/\}$/, "") : null; // drop the JSX expression's closing brace
+    const tap = (targetTab, jumpWeek) => {
+      const calls = [];
+      const rec = (name) => (v) => calls.push(name + "(" + (typeof v === "function" ? "fn" : JSON.stringify(v)) + ")");
+      const fn = rowSrc ? run("targetTab, jumpWeek, setCalMonth, setCalYear, setView, setShowNotifs, markNotifsSeen", "return " + rowSrc + ";",
+        [targetTab, jumpWeek, rec("setCalMonth"), rec("setCalYear"), rec("setView"), rec("setShowNotifs"), () => calls.push("markNotifsSeen()")]) : { err: "no row onClick" };
+      if (typeof fn !== "function") return "ERR " + (fn && fn.err);
+      fn(); return calls.join(" ");
+    };
+    const got = [tap("calendar", "2026-12-07"), tap("calendar", "2027-01-04"), tap("calendar", null), tap("requests", null), tap(null, null)];
+    const want = ['setCalMonth(11) setCalYear(2026) setView("calendar") setShowNotifs(false) markNotifsSeen()',
+      'setCalMonth(0) setCalYear(2027) setView("calendar") setShowNotifs(false) markNotifsSeen()',
+      'setView("calendar") setShowNotifs(false) markNotifsSeen()', 'setView("requests") setShowNotifs(false) markNotifsSeen()', ""];
+    check("AN3 a row tap with a week opens the calendar on THAT month (12/7 → December 2026, 1/4 → January 2027), without one on the tab as before; it closes the panel and marks seen; an untappable row does nothing",
+      JSON.stringify(got) === JSON.stringify(want), JSON.stringify(got));
+  }
+
+  // AN4 — open / close / reopen through the real bell onClick, isNew and the badge's predicate
+  {
+    const bellLine = restOfLine(bell, "<button onClick={");
+    const bellSrc = bellLine ? bellLine.replace(/\}$/, "") : null;
+    const isNewSrc = restOfLine(panel, "const isNew = ");
+    const predSrc = between(src, "const myUnreadCount = useMemo(() => myNotifications.filter(", ").length, [myNotifications, notifLastSeen]);");
+    const st = { showNotifs: false, notifLastSeen: "2026-10-01T00:00:00.000Z", notifSeenAtOpen: null, marks: 0 };
+    let now = "2026-10-18T12:00:00.000Z";
+    // One render's closure: the values are this render's, the setters change the next render's state (as React does).
+    const clickBell = () => {
+      const fn = bellSrc ? run("showNotifs, notifLastSeen, setShowNotifs, markNotifsSeen, setNotifSeenAtOpen", "return " + bellSrc + ";",
+        [st.showNotifs, st.notifLastSeen, (v) => { st.showNotifs = typeof v === "function" ? v(st.showNotifs) : v; }, () => { st.marks++; st.notifLastSeen = now; }, (v) => { st.notifSeenAtOpen = v; }]) : { err: "no bell onClick" };
+      if (typeof fn !== "function") throw new Error(fn && fn.err);
+      fn();
+    };
+    const isNew = (n) => { const v = isNewSrc ? run("n, notifSeenAtOpen, notifLastSeen", "const isNew = " + isNewSrc + "\nreturn isNew;", [n, st.notifSeenAtOpen, st.notifLastSeen]) : { err: "no isNew" }; if (typeof v !== "boolean") throw new Error("isNew: " + JSON.stringify(v)); return v; };
+    const unread = (rows) => { const p = predSrc ? run("notifLastSeen", "return (" + predSrc + ");", [st.notifLastSeen]) : null; if (typeof p !== "function") throw new Error("no badge predicate"); return rows.filter(p).map((r) => r.id); };
+    const fresh = { id: "fresh", created_at: "2026-10-10T09:00:00.000Z" }, old = { id: "old", created_at: "2026-09-20T09:00:00.000Z" }, late = { id: "late", created_at: "2026-10-18T12:00:30.000Z" };
+    let steps;
+    try {
+      const s = [];
+      const tinted = (rows) => rows.filter(isNew).map((r) => r.id);
+      s.push("badge " + unread([fresh, old]));
+      clickBell(); // open
+      s.push("open " + st.showNotifs + " marks " + st.marks + " tinted " + tinted([fresh, old]) + " badge " + unread([fresh, old]));
+      s.push("arrives tinted " + tinted([late, fresh, old]) + " badge " + unread([late, fresh, old]));
+      clickBell(); // close
+      s.push("close " + st.showNotifs + " marks " + st.marks);
+      now = "2026-10-18T13:00:00.000Z";
+      s.push("badge " + unread([late, fresh, old]));
+      clickBell(); // reopen
+      s.push("reopen " + st.showNotifs + " marks " + st.marks + " tinted " + tinted([late, fresh, old]) + " badge " + unread([late, fresh, old]));
+      steps = s.join(" · ");
+    } catch (e) { steps = "ERR " + String(e.message || e).slice(0, 200); }
+    check("AN4 opening the bell keeps the rows the badge counted tinted (the first draw showed none) and clears the badge; one arriving while open is tinted; closing marks nothing; reopening tints only what came since the last open",
+      steps === "badge fresh · open true marks 1 tinted fresh badge  · arrives tinted late,fresh badge late · close false marks 1 · badge late · reopen true marks 2 tinted late badge ", steps);
+  }
+
+  // AN5 — the time, the bell's name, the phone width, and pins
+  {
+    const dateSrc = between(panel, '<span style={{fontSize:10,color:"#a0a8b0"}}>{', "}</span>");
+    const when = dateSrc ? run("n", "return " + dateSrc + ";", [{ created_at: "2026-10-18T17:05:00.000Z" }]) : null;
+    check("AN5 a row's stamp shows the time as well as the date (the real expression, executed)",
+      typeof when === "string" && /\d:\d\d/.test(when), JSON.stringify(when));
+    const ariaSrc = between(bell, "aria-label={", "} aria-expanded={showNotifs}");
+    const names = ariaSrc ? [3, 0].map((k) => run("myUnreadCount", "return " + ariaSrc + ";", [k])) : null;
+    check("AN5 the bell is named for screen readers with the unread count ('Notifications, 3 unread' / 'Notifications') and says whether the panel is open",
+      !!names && names[0] === "Notifications, 3 unread" && names[1] === "Notifications" && count("aria-expanded={showNotifs}") === 1, JSON.stringify(names));
+    check("AN5 the panel is never wider than the screen less its gutters",
+      count('width:340,maxWidth:"calc(100vw - 28px)",maxHeight:400,') === 1);
+    const decl = "const [notifSeenAtOpen, setNotifSeenAtOpen] = useState(null);";
+    const c0 = src.indexOf("function CallSchedule() {");
+    check("AN5 pins: the bell keeps the watermark then marks seen, once; the tint reads the kept watermark (not the just-advanced one) for the background and the border; its state is declared in the component before the bell",
+      count("setNotifSeenAtOpen(notifLastSeen); markNotifsSeen();") === 1 && count("n.created_at > notifLastSeen ?") === 0
+        && count("n.created_at > (notifSeenAtOpen || notifLastSeen)") === 1 && count("background:isNew ?") === 1 && count("${isNew ?") === 1
+        && count(decl) === 1 && c0 !== -1 && c0 < src.indexOf(decl) && src.indexOf(decl) < b0);
+    check("AN5 unchanged: the badge count, the seen marker on this device, Clear All and buildDeepLink's routes",
+      count("const myUnreadCount = useMemo(() => myNotifications.filter(n => n.created_at > notifLastSeen).length, [myNotifications, notifLastSeen]);") === 1
+        // \r?\n: a Windows checkout has CRLF, CI's has LF
+        && (src.match(/  const markNotifsSeen = \(\) => \{\r?\n    const now = new Date\(\)\.toISOString\(\);\r?\n    setNotifLastSeen\(now\);\r?\n    try \{ localStorage\.setItem\("dsg-notif-seen", now\); \}/g) || []).length === 1
+        && count('localStorage.setItem("dsg-notif-seen", now)') === 2 && count("onClick={clearAllNotifications}") === 1
+        && count("const deepLinkUrl = buildDeepLink(type, data);") === 1);
+  }
+}
+
 // ─── W. Christmas two-day cap on STORED holiday assignments (2026-10-02) ───
 // The standing cap (2026-08-06, buildCoverage): when one surgeon holds both
 // halves of Christmas, coverage is the Eve + the day itself and nothing more.
@@ -3036,6 +3362,90 @@ check("prefs audit never logs the plaintext email (masked only)",
     !!effFn && rowsOf(solo) === storedOf(solo) && rowsOf(noB) === storedOf(noB) && JSON.stringify(effFn({ name: "Christmas Day", date: "2026-12-25", surgeonA: "s6", surgeonB: "s6" })) === "[]"
     && JSON.stringify(effFn({ name: "Christmas Day", date: "2026-12-25", surgeonA: "s6", surgeonB: "s6", coverage: "bad" })) === "[]"
     && JSON.stringify(liveXmas) === before && liveXmas.coverage.length === 3);
+}
+
+// ─── AO. On Call Today banner on a covered holiday (UX audit, 2026-10-18) ───
+// On a holidayCoverage date calData drops that date's Svc / Ngt / Wknd rows and
+// adds ONE {type:"Holiday"} row. todayCall never read that row, so on a covered
+// holiday hasCallToday was falsy and the On Call Today banner — with the Send
+// Notification button — disappeared for everyone, ?public=1 and the OR board
+// too (Thanksgiving 11/26 is next). todayCall now names the holiday holder; the
+// label is the holiday's own name (calData copies cov.holiday: a multi-day
+// holiday's coverage name is only "Fri 24h" / "Sat 24h", generator.js), and the
+// banner chip and the share message lead with it.
+//   AO1 executed: the real calData + todayCall memo bodies and hasCallToday, sliced
+//       verbatim, on a Thanksgiving week (+ a plain-day control, a Fri/Sat pair, a swap, an unassigned date)
+//   AO2 executed: the real buildTonightMsg on those days
+//   AO3 source pins: the banner's holiday chip (colors, label, fallback) sits before the Service Week chip
+console.log("\nAO. On Call Today banner on a covered holiday");
+{
+  const CD = "  const calData = useMemo(() => {", TC = "  const todayCall = useMemo(() => {", HC = "  const hasCallToday = ", BM = "  const buildTonightMsg = () => {";
+  const c0 = src.indexOf(CD), c1 = c0 < 0 ? -1 : src.indexOf("\n  }, [schedule, appShifts]);", c0);
+  const t0 = src.indexOf(TC), t1 = t0 < 0 ? -1 : src.indexOf("\n  }, [todayEntries, sMap, aMap]);", t0);
+  const h0 = src.indexOf(HC), h1 = h0 < 0 ? -1 : src.indexOf(";", h0);
+  const b0 = src.indexOf(BM), b1 = b0 < 0 ? -1 : src.indexOf("\n  };", b0);
+  const e0 = src.indexOf("const holidayEmoji = (label) => {"), e1 = e0 < 0 ? -1 : src.indexOf("\n  };", e0);
+  const marks = [c0, c1, t0, t1, h0, h1, b0, b1, e0, e1];
+  const found = marks.every((i) => i > 0) && [CD, TC, HC, BM].every((k) => src.indexOf(k, src.indexOf(k) + 1) === -1);
+  check("AO0 the calData memo, the todayCall memo, hasCallToday, buildTonightMsg and holidayEmoji are extractable (each declared once)", found, marks.join(","));
+  let run = null;
+  if (found) {
+    try {
+      run = vm.runInContext("(function (env) {\n"
+        + "  const { schedule, appShifts, todayStr, sMap, aMap, silvisDays, silvisFakId, silvisActive, isPublicMode } = env;\n"
+        + "  const holidayEmoji = (function () { " + src.slice(e0, e1 + 4) + "\n return holidayEmoji; })();\n"
+        + "  const calData = (() => {" + src.slice(c0 + CD.length, c1) + "\n  })();\n"
+        + "  const todayEntries = calData[todayStr] || [];\n"
+        + "  const todayCall = (() => {" + src.slice(t0 + TC.length, t1) + "\n  })();\n"
+        + src.slice(h0, h1 + 1) + "\n"
+        + "  const buildTonightMsg = () => {" + src.slice(b0 + BM.length, b1) + "\n  };\n"
+        + "  return { entries: JSON.parse(JSON.stringify(todayEntries)), todayCall: JSON.parse(JSON.stringify(todayCall)), hasCallToday: !!hasCallToday, msg: buildTonightMsg() };\n"
+        + "})", sandbox, { filename: "today-call-extract.js" });
+    } catch (ex) { check("AO0 …and they compile standalone", false, String(ex)); }
+  }
+  const SM = { s1: { name: "DJA" }, s2: { name: "MCC" }, s3: { name: "RPC" }, s4: { name: "KJH" }, s5: { name: "REH" }, s6: { name: "FAK" }, s7: { name: "ARW" } };
+  const SCHED = {
+    "2026-11-23": { dayCall: "s1", nights: { mon: "s2", tue: "s3", wed: "s4", thu: "s5", wknd: "s7" },
+      holidayCoverage: { "2026-11-26": { surgeonId: "s4", role: "holiday_24h", hours: "7a–7a", name: "Thanksgiving 24h", type: "major", holiday: "Thanksgiving" } } },
+    "2026-11-30": { dayCall: "s3", nights: { mon: "s1", wknd: "s2" }, holidayCoverage: { "2026-12-05": { surgeonId: "s7", type: "swap", name: "Saturday swap coverage" } } },
+    "2027-03-15": { dayCall: "s5", nights: { wknd: "s1" }, holidayCoverage: {
+      "2027-03-19": { surgeonId: "s2", role: "holiday_24h", hours: "7a–7a", name: "Fri 24h", type: "major", holiday: "Test Friday" },
+      "2027-03-20": { surgeonId: null, role: "holiday_24h", hours: "7a–7a", name: "Sat 24h", type: "major", holiday: "Test Friday" } } },
+  };
+  const day = (ds) => { try { return run ? run({ schedule: SCHED, appShifts: { "2026-11-26": "a1" }, todayStr: ds, sMap: SM, aMap: { a1: { name: "APP1" } } }) : null; } catch (ex) { return { error: String(ex) }; } };
+  const tg = day("2026-11-26"), wed = day("2026-11-25"), fri = day("2027-03-19"), sat = day("2027-03-20"), swp = day("2026-12-05");
+  const J = (o) => JSON.stringify(o);
+  const tc = (r) => (r && r.todayCall) || {};
+  const types = (r) => ((r && r.entries) || []).map((e) => e.type).sort();
+  check("AO1 Thanksgiving 11/26: calData holds only the Holiday row (+ the APP), no service / night / weekend row, and the row carries the holiday's own name",
+    J(types(tg)) === J(["APP", "Holiday"]) && ((tg && tg.entries) || []).some((e) => e.type === "Holiday" && e.surgeon === "s4" && e.holiday === "Thanksgiving"), J(tg && (tg.entries || tg.error)));
+  check("AO1 Thanksgiving 11/26: todayCall names the holder (KJH) as \"Thanksgiving\" with 🦃, no service / night / weekend, the APP kept, and hasCallToday is true (the banner shows)",
+    J(tc(tg).holiday) === J({ who: "KJH", label: "Thanksgiving", emoji: "🦃" }) && tc(tg).dayCall === null && tc(tg).night === null && tc(tg).weekend === null
+    && tc(tg).app === "APP1" && !!tg && tg.hasCallToday === true, J(tg && (tg.todayCall || tg.error)));
+  check("AO1 control, Wed 11/25 (no coverage): service DJA, night KJH, no holiday — unchanged",
+    tc(wed).dayCall === "DJA" && tc(wed).night === "KJH" && !tc(wed).holiday && !!wed && wed.hasCallToday === true, J(wed && (wed.todayCall || wed.error)));
+  check("AO1 a Fri + Sat holiday pair: Fri is labeled with the holiday's name (\"Test Friday\", not \"Fri\"); an unassigned Sat still shows the banner with who = null",
+    J(tc(fri).holiday) === J({ who: "MCC", label: "Test Friday", emoji: "📅" }) && tc(fri).weekend === null && tc(fri).dayCall === null
+    && J(tc(sat).holiday) === J({ who: null, label: "Test Friday", emoji: "📅" }) && !!sat && sat.hasCallToday === true, J({ fri: fri && (fri.todayCall || fri.error), sat: sat && (sat.todayCall || sat.error) }));
+  check("AO1 a swap coverage date is labeled with its own name (as the Mine tab does)",
+    tc(swp).holiday && tc(swp).holiday.who === "ARW" && tc(swp).holiday.label === "Saturday swap coverage" && tc(swp).weekend === null, J(swp && (swp.todayCall || swp.error)));
+  const lines = (r) => String((r && r.msg) || "").split("\n");
+  check("AO2 the share message on Thanksgiving leads with \"🦃 Thanksgiving 24h (7a–7a): KJH\" (first line after the header), keeps the APP line, and no longer says \"No call assignments\"",
+    lines(tg)[2] === "🦃 Thanksgiving 24h (7a–7a): KJH" && lines(tg).some((l) => l.startsWith("👩‍⚕️ APP (") && l.endsWith("): APP1"))
+    && !String(tg && tg.msg).includes("No call assignments found for today."), J(lines(tg)));
+  check("AO2 control: the Wed 11/25 message is unchanged (no holiday line; service, then night)",
+    !lines(wed).some((l) => l.includes("24h (7a–7a)")) && lines(wed)[2] === "🏥 Service Week: DJA" && lines(wed)[3] === "🌙 Night (5p–7a): KJH", J(lines(wed)));
+  check("AO2 an unassigned holiday reads \"Unassigned\" (and is not \"No call assignments\")",
+    lines(sat)[2] === "📅 Test Friday 24h (7a–7a): Unassigned" && !String(sat && sat.msg).includes("No call assignments found for today."), J(lines(sat)));
+  check("AO2 exactly one holiday line in buildTonightMsg", count("if (todayCall.holiday) msg +=") === 1, `×${count("if (todayCall.holiday) msg +=")}`);
+  const B0 = src.indexOf("{/* ─── On Call Today Banner ─── */}"), B1 = B0 < 0 ? -1 : src.indexOf("{(todayCall.fierce || todayCall.fierceBkp) && (", B0);
+  const ban = B0 > 0 && B1 > B0 ? src.slice(B0, B1) : "";
+  const hi = ban.indexOf("{todayCall.holiday && ("), di = ban.indexOf("{todayCall.dayCall && (");
+  const chip = hi > 0 && di > hi ? ban.slice(hi, di) : "";
+  check("AO3 the banner is still gated on hasCallToday and its holiday chip comes BEFORE the Service Week chip",
+    /^\{\/\* ─── On Call Today Banner ─── \*\/\}\s*\{hasCallToday && \(/.test(ban) && count("{todayCall.holiday && (") === 1 && hi > 0 && di > hi, `holiday chip at ${hi}, service chip at ${di}`);
+  check("AO3 the holiday chip: the holiday colors (the 10px label darkened to #a04810 for contrast — batch review), \"<label> · 24h 7a–7a\", the emoji, and \"Unassigned\" when nobody holds it",
+    ['background:"#fef0e8"', 'border:"1px solid #e0a868"', 'color:"#a04810"', "{todayCall.holiday.label} · 24h 7a–7a", "{todayCall.holiday.emoji}", '{todayCall.holiday.who || "Unassigned"}'].every((s) => chip.includes(s)), chip.slice(0, 200));
 }
 
 // ─── X. Holidays + single-day coverage in the downloads and the Mine tab (2 of 3, 2026-10-02) ───
@@ -3332,6 +3742,111 @@ check("prefs audit never logs the plaintext email (masked only)",
   }
 }
 
+// ─── AP. Mine → Find Swap lands on the swap options (UX audit 2026-10-18) ───
+// Mine's 🔄 Find Swap found the options and switched to the calendar, but the
+// options render in the Shift Swap Tool card inside "🔧 Schedule Tools &
+// Export", collapsed by default, and a Collapsible renders its body only when
+// open: anyone who had never opened Schedule Tools tapped and saw nothing
+// happen. Now the section shows while swap options exist (its stored
+// open/closed state untouched, so Close puts it back) and the tap scrolls the
+// card into view (the Today button's idiom).
+//   AP1 Collapsible, executed: its real state code (sliced up to the JSX), run
+//       with a stub React.useState and localStorage over a mount and its
+//       re-renders. forceOpen shows the body over a never-opened or
+//       stored-closed section and writes nothing; when it drops, the section
+//       is back to its stored state; toggle still persists; without forceOpen
+//       nothing changes. JSX can't run here (no Babel in CI), so the markup's
+//       use of `shown` is pinned.
+//   AP2 cal_tools is the one section forced open, by the swap options (an
+//       empty list too: its "no candidates" line must show), and the options
+//       render inside the tagged card inside that section
+//   AP3 the Mine Find Swap tap, executed: the real onClick, sliced and run with
+//       stubs, finds the options, switches to the calendar, and only 60 ms
+//       later scrolls the tagged card into view (safe when it is absent)
+console.log("\nAP. Mine → Find Swap lands on the swap options");
+{
+  const nsrcAP = src.replace(/\r\n/g, "\n");
+
+  // AP1 — the Collapsible's state code, executed
+  const cA = nsrcAP.indexOf("function Collapsible({"), cR = cA < 0 ? -1 : nsrcAP.indexOf("\n  return (\n", cA), cZ = cA < 0 ? -1 : nsrcAP.indexOf("\n}\n", cA);
+  const cHead = cA >= 0 && cR > cA && cZ > cR ? nsrcAP.slice(cA, cR) : null, cJsx = cR > 0 && cZ > cR ? nsrcAP.slice(cR, cZ) : "";
+  let Coll = null;
+  try { Coll = cHead ? vm.runInContext(`(function (React, localStorage, console) { return ${cHead}\n  return { open, shown, toggle };\n}; })`, sandbox) : null; } catch (ex) { Coll = null; }
+  // One mounted instance: a useState cell that survives re-renders, and a recording localStorage.
+  const mount = (stored) => {
+    const store = Object.assign({}, stored), writes = [], cell = { set: false, v: undefined };
+    const React = { useState: (init) => { if (!cell.set) { cell.v = typeof init === "function" ? init() : init; cell.set = true; } return [cell.v, (u) => { cell.v = typeof u === "function" ? u(cell.v) : u; }]; } };
+    const ls = { getItem: (k) => (Object.prototype.hasOwnProperty.call(store, k) ? store[k] : null), setItem: (k, v) => { writes.push(k + "=" + v); store[k] = String(v); } };
+    const comp = Coll ? Coll(React, ls, { warn: () => {} }) : null;
+    let last = null;
+    const render = (props) => { try { last = comp(Object.assign({ title: "t", ck: "cal_tools", css: {}, children: "body" }, props)); return (last.shown ? "S" : "-") + (last.open ? "o" : "c"); } catch (ex) { last = null; return "ERR"; } };
+    const toggle = () => { try { last.toggle(); } catch (ex) { /* fails below by its signature */ } };
+    return { render, toggle, writes, store };
+  };
+  const flow = (() => { // the real flow: never opened; the calendar mounts after the tap with the options set; then Close
+    const m = mount({}); return [m.render({ defaultOpen: false, forceOpen: true }), m.render({ defaultOpen: false, forceOpen: false }), m.render({ defaultOpen: false, forceOpen: false })].join(" ") + " w" + m.writes.length;
+  })();
+  const closed0 = (() => { // stored closed, options found while on the calendar, then Close
+    const m = mount({ dsg_collapse_cal_tools: "0" }); return [m.render({ forceOpen: false }), m.render({ forceOpen: true }), m.render({ forceOpen: false })].join(" ") + " w" + m.writes.length + " " + m.store.dsg_collapse_cal_tools;
+  })();
+  const open1 = (() => { const m = mount({ dsg_collapse_cal_tools: "1" }); return [m.render({ forceOpen: true }), m.render({ forceOpen: false })].join(" ") + " w" + m.writes.length; })();
+  check("AP1 Collapsible, executed: forceOpen shows the body of a never-opened section and writes nothing; once it drops (Close), the section is back to closed",
+    flow === "Sc -c -c w0", flow);
+  check("AP1 Collapsible, executed: over a stored-closed section forceOpen shows it and leaves the stored \"0\"; over a stored-open one it stays open either way",
+    closed0 === "-c Sc -c w0 0" && open1 === "So So w0", closed0 + " | " + open1);
+  const tog = (() => { const m = mount({}), s = [m.render({})]; m.toggle(); s.push(m.render({})); m.toggle(); s.push(m.render({})); return s.join(" ") + " " + m.writes.join(","); })();
+  const plain = (() => [mount({}).render({}), mount({}).render({ defaultOpen: true }), mount({ dsg_collapse_cal_tools: "0" }).render({ defaultOpen: true })].join(" "))();
+  check("AP1 Collapsible, executed: the header toggle still flips and persists the state, and a section with no forceOpen behaves as before (defaultOpen, then storage)",
+    tog === "-c So -c dsg_collapse_cal_tools=1,dsg_collapse_cal_tools=0" && plain === "-c So -c", tog + " | " + plain);
+  check("AP1 the signature takes forceOpen (default false), shown = open || forceOpen, and the markup follows shown: chevron, collapsed summary, body (no bare open left in the JSX)",
+    !!cHead && cHead.includes("defaultOpen = false, forceOpen = false,") && cHead.includes("const shown = open || forceOpen;")
+      && cJsx.includes('transform: shown ? "rotate(90deg)" : "rotate(0deg)"') && cJsx.includes("{!shown && summary != null && <div") && cJsx.includes("{shown && <div style={{ marginTop: 12 }}>{children}</div>}") && !/\bopen\b/.test(cJsx),
+    JSON.stringify({ head: !!cHead, jsxOpen: /\bopen\b/.test(cJsx) }));
+
+  // AP2 — the section the options live in is forced open by them
+  const tagAt = nsrcAP.indexOf('<Collapsible css={css} ck="cal_tools"'), tagLine = tagAt < 0 ? "" : nsrcAP.slice(tagAt, nsrcAP.indexOf("\n", tagAt));
+  const closeAt = tagAt < 0 ? -1 : nsrcAP.indexOf("</Collapsible>", tagAt), nextOpen = tagAt < 0 ? -1 : nsrcAP.indexOf("<Collapsible ", tagAt + 1);
+  const fm = /forceOpen=\{([^}]*)\}/.exec(tagLine);
+  let force = null; try { force = fm ? vm.runInContext(`(function (swapSuggestions) { return ${fm[1]}; })`, sandbox) : null; } catch (ex) { force = null; }
+  check("AP2 the cal_tools section (and only it) is forced open by the swap options: none → its stored state; a list, even an empty one (its \"no candidates\" line must show) → open",
+    count('ck="cal_tools"') === 1 && count("forceOpen={") === 1 && tagLine.includes("forceOpen={!!swapSuggestions}")
+      && !!force && force(null) === false && force(undefined) === false && force([]) === true && force([{ candidateId: "s2" }]) === true, tagLine.slice(0, 140));
+  const cardAt = nsrcAP.indexOf('<div data-swap-tool="1" style='), optsAt = cardAt < 0 ? -1 : nsrcAP.indexOf("{swapSuggestions && (", cardAt), icsAt = cardAt < 0 ? -1 : nsrcAP.indexOf("{/* Calendar App Integration", cardAt);
+  check("AP2 the Shift Swap Tool card is tagged data-swap-tool=\"1\" (the tag and the tap's selector, nothing else), and the swap options render inside that card, inside the cal_tools section",
+    count('data-swap-tool="1"') === 2 && tagAt >= 0 && cardAt > tagAt && closeAt > cardAt && (nextOpen < 0 || nextOpen > closeAt) && nsrcAP.indexOf("🔄 Shift Swap Tool", cardAt) - cardAt < 300
+      && count("{swapSuggestions && (") === 1 && optsAt > cardAt && icsAt > optsAt && closeAt > icsAt,
+    JSON.stringify({ tagAt, cardAt, optsAt, icsAt, closeAt, nextOpen, tags: count('data-swap-tool="1"') }));
+
+  // AP3 — the Mine tap, executed
+  const tapNeedle = 'findSwapSuggestions(wk.mStr, r.shiftKey, myId); setView("calendar");';
+  const tapAt = nsrcAP.indexOf(tapNeedle), tapLine = tapAt < 0 ? "" : nsrcAP.slice(nsrcAP.lastIndexOf("\n", tapAt) + 1, nsrcAP.indexOf("\n", tapAt));
+  const onAt = tapLine.indexOf("<button onClick={");
+  const handlerSrc = onAt >= 0 && tapLine.endsWith("}}") ? tapLine.slice(onAt + "<button onClick={".length, -1) : null;
+  let tapFn = null; try { tapFn = handlerSrc ? vm.runInContext(`(function (env) { const { findSwapSuggestions, setView, setTimeout, document, wk, r, myId } = env; return (${handlerSrc}); })`, sandbox) : null; } catch (ex) { tapFn = null; }
+  const tap = (el) => {
+    const log = [], timers = [], sel = [];
+    const env = { wk: { mStr: "2026-10-26" }, r: { shiftKey: "mon" }, myId: "s6",
+      findSwapSuggestions: (...a) => log.push("find:" + a.join(",")), setView: (v) => log.push("view:" + v),
+      setTimeout: (fn, ms) => { log.push("timer:" + ms); timers.push(fn); },
+      document: { querySelector: (q) => { sel.push(q); log.push("query"); return el; } } };
+    let err = null, beforeTimer = null;
+    try { tapFn(env)(); beforeTimer = log.join(" "); timers.forEach((fn) => fn()); } catch (ex) { err = String(ex).slice(0, 120); }
+    return { beforeTimer, after: log.join(" "), sel: sel.join(" "), err };
+  };
+  const scrolls = [];
+  const hit = tapFn ? tap({ scrollIntoView: (o) => scrolls.push(JSON.stringify(o)) }) : null;
+  check("AP3 the Mine Find Swap tap, executed: finds the options for that shift, switches to the calendar, and defers the scroll 60 ms (nothing queried before the calendar renders)",
+    !!hit && !hit.err && hit.beforeTimer === "find:2026-10-26,mon,s6 view:calendar timer:60", JSON.stringify(hit));
+  check("AP3 …then scrolls the tagged Shift Swap Tool card to the top of the screen, smoothly",
+    !!hit && !hit.err && hit.after === "find:2026-10-26,mon,s6 view:calendar timer:60 query" && hit.sel === '[data-swap-tool="1"]' && JSON.stringify(scrolls) === JSON.stringify(['{"behavior":"smooth","block":"start"}']),
+    JSON.stringify({ hit, scrolls }));
+  const none = tapFn ? tap(null) : null, bare = tapFn ? tap({}) : null;
+  check("AP3 the deferred scroll is safe when the card is not on screen, or the browser has no scrollIntoView",
+    !!none && !none.err && none.after.endsWith("query") && !!bare && !bare.err && bare.after.endsWith("query"), JSON.stringify({ none, bare }));
+  check("AP3 the tap keeps U4's exact call and appends the scroll after it (U4 pins the rest of the My Shifts row)",
+    count(tapNeedle + " setTimeout(") === 1 && count(tapNeedle) === 1);
+}
+
 // ─── Y. DSG + Silvis personal totals card: the ONE counting function (Faraz 10/9; decisions 2026-10-11) ───
 // callTotalsFor({ weeks, roster, silvisRows, code, today }) in helpers.js — pure, no clock — is the only
 // counter behind FAK's totals card here AND the Silvis app's copy of the card (Silvis Prompt 31 copies
@@ -3567,6 +4082,125 @@ check("prefs audit never logs the plaintext email (masked only)",
     cardSrc ? `show(r.k ×${(cardSrc.match(/\{show\(r\.k, /g) || []).length}; raw cell( in JSX: ${/\{cell\(/.test(cardSrc)}` : "component not found");
 }
 
+// ─── AQ. The calendar says why a month is blank (UX audit, 2026-10-18) ───
+// An empty month grid looked the same while the schedule was loading, after a
+// failed or empty read, and for a month that simply isn't published yet —
+// members paging ahead to the holiday months couldn't tell "free" from "not
+// out yet". calMonthStatus (helpers.js) says which; one line above the
+// Calendar's weekday header shows it.
+//   AQ1 calMonthStatus, executed: empty / ok / unscheduled with the published
+//       range; a week counts by any of its 7 days; a blank week entry neither
+//       counts nor widens the range; pure (input untouched, no clock)
+//   AQ2 AQ1 again under TZ=America/Chicago and TZ=Asia/Tokyo (offsets proven)
+//   AQ3 the Calendar's line — the REAL code sliced from index-source.html and
+//       run in the sandbox: loading / nothing loaded / not published (with the
+//       range, "yet" except before it, a Go-to button only past its end) /
+//       a month with call shows nothing
+//   AQ4 placement: once, in the Calendar view, after the warnings, right
+//       before the weekday header; render-only (no write path)
+console.log("\nAQ. calendar says why a month is blank");
+{
+  const cms = vm.runInContext('typeof calMonthStatus === "function" ? calMonthStatus : null', sandbox);
+  const NONE = "calMonthStatus is not defined in helpers.js";
+  const sig = (o) => (o ? JSON.stringify([o.kind, o.from === undefined ? null : o.from, o.to === undefined ? null : o.to]) : "null");
+  // Fixture: Mondays 2026-04-06 … 2026-12-28, each with a dayCall (the 12-28 week holds Jan 1–3, 2027).
+  const weeks = {};
+  for (let d = new Date(Date.UTC(2026, 3, 6)); d <= new Date(Date.UTC(2026, 11, 28)); d.setUTCDate(d.getUTCDate() + 7)) weeks[d.toISOString().slice(0, 10)] = { dayCall: "s1", nights: { mon: "s2", tue: null, wed: null, thu: null, wknd: null } };
+  const blank = { dayCall: null, nights: { mon: null, tue: null, wed: null, thu: null, wknd: null }, holidayCoverage: {}, isBackup: false, isFierceBackup: false };
+  const withBlank = Object.assign({}, weeks, { "2027-02-01": blank, "2027-02-08": {} });
+  const straddle = { "2026-08-31": { dayCall: "s5" } };
+  const RANGE = { kind: "unscheduled", from: "2026-04-06", to: "2027-01-03" };
+  const cases = [
+    ["{} → empty", {}, 2026, 11, { kind: "empty" }],
+    ["null → empty", null, 2026, 11, { kind: "empty" }],
+    ["only non-date keys → empty", { meta: { dayCall: "s1" } }, 2026, 11, { kind: "empty" }],
+    ["Dec 2026 → ok", weeks, 2026, 11, { kind: "ok" }],
+    ["Jan 2027 → ok (the 12-28 week holds Jan 1–3)", weeks, 2027, 0, { kind: "ok" }],
+    ["Feb 2027 → unscheduled, the range 2026-04-06 → 2027-01-03", weeks, 2027, 1, RANGE],
+    ["Apr 2026 → ok", weeks, 2026, 3, { kind: "ok" }],
+    ["Mar 2026 (before the first week) → unscheduled, same range", weeks, 2026, 2, RANGE],
+    ["Feb 2027 with blank week entries 02-01 and 02-08 → still unscheduled, range NOT widened", withBlank, 2027, 1, RANGE],
+    ["a nights-only week counts", { "2027-03-01": { dayCall: null, nights: { wknd: "s3" } } }, 2027, 2, { kind: "ok" }],
+    ["a holidayCoverage-only week counts", { "2027-05-31": { dayCall: null, nights: {}, holidayCoverage: { "2027-05-31": { surgeonId: "s4", name: "Memorial Day 24h" } } } }, 2027, 4, { kind: "ok" }],
+    ["the 8/31–9/6 week counts in August", straddle, 2026, 7, { kind: "ok" }],
+    ["… and in September", straddle, 2026, 8, { kind: "ok" }],
+    ["… not in October (range 8/31 → 9/6)", straddle, 2026, 9, { kind: "unscheduled", from: "2026-08-31", to: "2026-09-06" }],
+    ["only blank weeks → unscheduled with no range", { "2026-11-02": blank }, 2026, 10, { kind: "unscheduled", from: null, to: null }],
+  ];
+  const before = JSON.stringify(withBlank);
+  const got = cms ? cases.map(([, s, y, m]) => sig(cms(s, y, m))) : null;
+  const bad = got ? cases.map((c, i) => (got[i] === sig(c[4]) ? null : `${c[0]}: got ${got[i]}`)).filter(Boolean) : [NONE];
+  check(`AQ1 calMonthStatus: no weeks → empty; a month with a dayCall / night / holiday week (by any of its 7 days) → ok; otherwise unscheduled with the first counting Monday → the last counting Sunday; a blank week entry neither counts nor widens the range (${cases.length} cases)`,
+    !!got && bad.length === 0, bad.join(" | "));
+  check("AQ1 calMonthStatus is pure: the schedule passed in is untouched and it reads no clock (no Date.now, no new Date())",
+    !!cms && JSON.stringify(withBlank) === before && !/Date\.now|new Date\(\s*\)/.test(String(cms)), cms ? String(cms).slice(0, 120) : NONE);
+
+  // AQ2 — AQ1 under America/Chicago and Asia/Tokyo
+  {
+    const { execFileSync } = require("child_process");
+    const code = [
+      'const vm = require("vm"), fs = require("fs"), path = require("path");',
+      'const sb = { console, window: {}, document: undefined, navigator: { userAgent: "node-test" }, localStorage: { getItem: () => null, setItem() {}, removeItem() {} }, fetch: () => { throw new Error("no fetch"); }, setTimeout, clearTimeout };',
+      "sb.globalThis = sb; vm.createContext(sb);",
+      `for (const f of ["helpers.js", "config.js"]) vm.runInContext(fs.readFileSync(path.join(${JSON.stringify(ROOT)}, f), "utf8"), sb, { filename: f });`,
+      'const f = vm.runInContext("typeof calMonthStatus === \\"function\\" ? calMonthStatus : null", sb);',
+      `const sig = ${sig.toString()};`,
+      `const cases = ${JSON.stringify(cases.map(([, s, y, m]) => [s, y, m]))};`,
+      'process.stdout.write(JSON.stringify({ off: new Date(2026, 9, 24).getTimezoneOffset(), naive: new Date("2026-10-14").getDate(), out: f ? cases.map(([s, y, m]) => sig(f(s, y, m))) : null }));',
+    ].join("\n");
+    const inZone = (TZ) => { try { return JSON.parse(execFileSync(process.execPath, ["-e", code], { env: Object.assign({}, process.env, { TZ }), encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })); } catch (ex) { return { err: String(ex).slice(0, 300) }; } };
+    const chi = inZone("America/Chicago"), tok = inZone("Asia/Tokyo");
+    const want = JSON.stringify(cases.map((c) => sig(c[4])));
+    check("AQ2 the children really run in America/Chicago (offset 300; the naive new Date('2026-10-14') is the 13th there) and Asia/Tokyo (offset −540)",
+      !!chi && chi.off === 300 && chi.naive === 13 && !!tok && tok.off === -540, JSON.stringify({ chi: chi && { off: chi.off, naive: chi.naive, err: chi.err }, tok: tok && { off: tok.off, err: tok.err } }));
+    check("AQ2 under TZ=America/Chicago and TZ=Asia/Tokyo every AQ1 case gives the same status",
+      !!chi && !!chi.out && JSON.stringify(chi.out) === want && !!tok && !!tok.out && JSON.stringify(tok.out) === want,
+      JSON.stringify({ chi: chi && (chi.out || chi.err || NONE), tok: tok && (tok.out || tok.err || NONE) }).slice(0, 300));
+  }
+
+  // AQ3 — the Calendar's line, run as written (the slice reads only loaded, schedule, calYear and calMonth;
+  // any other component variable would throw a ReferenceError in the sandbox)
+  const START = 'const st = loaded && typeof calMonthStatus === "function" ? calMonthStatus(schedule, calYear, calMonth) : null;';
+  const END = "if (!text) return null;";
+  const iS = src.indexOf(START), iE = iS < 0 ? -1 : src.indexOf(END, iS);
+  let lineFn = null;
+  try { lineFn = iS >= 0 && iE > iS && count(START) === 1 ? vm.runInContext(`(function (env) { const { loaded, schedule, calYear, calMonth } = env; ${src.slice(iS, iE)} return { text, goTo }; })`, sandbox) : null; } catch (ex) { lineFn = null; }
+  const L = (loaded, schedule, calYear, calMonth) => { try { const r = lineFn({ loaded, schedule, calYear, calMonth }); return JSON.stringify([r.text, r.goTo]); } catch (ex) { return "threw: " + String(ex).slice(0, 120); } };
+  const RUNS = "the published schedule runs Mon 4/6/2026 → Sun 1/3/2027.";
+  const lineCases = lineFn ? [
+    ["still loading, nothing drawn yet", L(false, {}, 2027, 1), ["Loading the schedule…", null]],
+    ["still loading but weeks already drawn → nothing (batch review)", L(false, weeks, 2027, 1), ["", null]],
+    ["loaded, nothing in it", L(true, {}, 2026, 11), ["No call schedule to show — it may not be published yet; if you expected one, reload the app.", null]],
+    ["Dec 2026 has call → nothing", L(true, weeks, 2026, 11), ["", null]],
+    ["Jan 2027 (Jan 1–3 only) → nothing", L(true, weeks, 2027, 0), ["", null]],
+    ["Feb 2027, past the end → not yet + Go to January 2027", L(true, weeks, 2027, 1), [`No surgeon call scheduled for February 2027 yet — ${RUNS}`, { y: 2027, m: 0 }]],
+    ["June 2027, past the end → Go to January 2027", L(true, weeks, 2027, 5), [`No surgeon call scheduled for June 2027 yet — ${RUNS}`, { y: 2027, m: 0 }]],
+    ["Mar 2026, before the start → no 'yet', no button", L(true, weeks, 2026, 2), [`No surgeon call scheduled for March 2026 — ${RUNS}`, null]],
+    ["a gap month inside the range → no 'yet', no range quoted, no button (batch review)", L(true, { "2027-01-04": { dayCall: "s1" }, "2027-03-01": { dayCall: "s2" } }, 2027, 1), ["No surgeon call scheduled for February 2027.", null]],
+    ["only blank weeks → not yet, no range", L(true, { "2026-11-02": blank }, 2026, 10), ["No surgeon call scheduled for November 2026 yet.", null]],
+  ] : [];
+  const lineBad = lineCases.filter(([, g, w]) => g !== JSON.stringify(w)).map(([n, g]) => `${n}: ${g}`);
+  check("AQ3 the Calendar's line, run as written: 'Loading the schedule…' only while nothing is drawn / 'No call schedule to show — … reload the app.' / 'No surgeon call scheduled for <Month Year> yet — the published schedule runs <from> → <to>.' with a Go-to button only past the end (no 'yet' before the start; a gap month inside the range quotes no range) / nothing for a month with call",
+    lineCases.length === 10 && lineBad.length === 0, lineFn ? lineBad.join(" | ") : "the line's code was not found exactly once in index-source.html");
+
+  // AQ4 — placement and render-only
+  const HDR = '{DAY_HDR.map(d=><div key={d} style={{textAlign:"center",fontSize:10,fontWeight:700,color:"#8a94a0",padding:"5px 0",letterSpacing:1}}>{d}</div>)}';
+  const iCal = src.indexOf('{view==="calendar"&&<>'), iNext = iCal < 0 ? -1 : src.indexOf("{view===", iCal + 5);
+  const iWarn = src.indexOf("⚠️ Schedule Warnings — {shownTotal}"), iUse = src.indexOf("calMonthStatus(schedule, calYear, calMonth)"), iHdr = src.indexOf(HDR);
+  const iOpen = src.lastIndexOf("{(() => {", iUse), iClose = iUse < 0 ? -1 : src.indexOf("})()}", iUse);
+  const body = iOpen >= 0 && iClose > iUse ? src.slice(iOpen, iClose) : "";
+  const between = iClose >= 0 && iHdr > iClose ? src.slice(iClose + 5, iHdr) : "";
+  check("AQ4 the line is in the Calendar view once, after the Schedule Warnings and right before the weekday header (nothing in between but the header's grid)",
+    count("calMonthStatus(schedule, calYear, calMonth)") === 1 && count(HDR) === 1 && iCal >= 0 && iCal < iWarn && iWarn < iUse && iUse < iHdr && iHdr < iNext
+      && /^\s*<div style=\{\{display:"grid",gridTemplateColumns:"repeat\(7,minmax\(0,1fr\)\)",gap:1,marginBottom:1\}\}>\s*$/.test(between),
+    `${iCal} < ${iWarn} < ${iUse} < ${iHdr} < ${iNext}; between: ${JSON.stringify(between.slice(0, 120))}`);
+  check("AQ4 render-only: a role=\"status\" line whose only action is the Go-to button (setCalMonth + setCalYear); no write path, no preview, no other data",
+    !!body && body.includes('<div role="status"') && body.includes("{goTo && <button onClick={()=>{setCalMonth(goTo.m);setCalYear(goTo.y);}}")
+      && body.includes("Go to {MO[goTo.m]} {goTo.y}</button>}") && (body.match(/onClick=/g) || []).length === 1
+      && !/fetch\(|setSchedule|commitSchedule|schedSync|localStorage|previewSchedule|calData|appShifts|dbAuthHeaders/.test(body),
+    body ? (body.match(/fetch\(|setSchedule|commitSchedule|schedSync|localStorage|previewSchedule|calData|appShifts|dbAuthHeaders/) || ["button or status wrapper missing"])[0] : "line not found");
+}
+
 // ─── Z. silvisBusy keeps reading v6's rows (spec item 1; decisions 2026-10-11) ───
 // silvis-feed v7 keeps up to 12 months of Silvis history in silvis_feed and pulls up to today + 400, for
 // the totals card only. Every EXISTING Silvis consumer — the rule (editor, swaps, trades, holidays,
@@ -3643,6 +4277,87 @@ check("prefs audit never logs the plaintext email (masked only)",
       && src.indexOf("const silvisRuleRows = useMemo(") < src.indexOf("const silvisDays = useMemo("));
   check("Z7 the feed card's 'days cached' counts the rule's window (same number as before v7), next to the unchanged covers line",
     count("<b>{silvisRuleRows.length}</b> days cached") === 1 && count("<b>{silvisRows.length}</b> days cached") === 0 && count("covers {silvisDays.from} → {silvisDays.to}") === 1);
+}
+
+// ─── AR. Requests tab: no "scheduler PIN" line; an APP gets a note, not a trade form it can't use (UX audit 2026-10-18) ───
+// The pending-requests footnote told every non-scheduler to "Enter the scheduler PIN in ⚙️ Settings to unlock".
+// There is no PIN (the gate is the profile's role), and the same card shows members ✓ Approve / ✕ Deny on
+// colleagues' rows. An APP (a* id) got "Propose a Shift Trade" with From "—" and an always-empty "Shift to
+// give": trades are of surgeon call shifts. Copy plus one render gate; the handlers, the state and the Pending /
+// Completed Trades cards are unchanged. JSX can't run here (no Babel in CI), so the markup is pinned and the
+// decisions it renders are executed on the sliced source.
+//   AR1 the footnote says what the code allows: the Approve/Deny gate, sliced and EXECUTED (a colleague, or the scheduler)
+//   AR2 the trade form's gate, sliced and EXECUTED with the app's own sMap builder on the real roster: every
+//       surgeon and the scheduler get the form, no APP does, and no non-scheduler who gets it sees From "—"
+//   AR3 an APP's note is the gate's else branch, closing just before Pending Trades (still shown to everyone);
+//       the form in the true branch keeps its one submit and its From line (L's slotLabel ledger unchanged)
+//   AR4 the deadline note's week count is config.js's VACATION_DEADLINE_WEEKS_BEFORE, EXECUTED; no hard-coded 6
+console.log("\nAR. Requests tab copy + the APP trade note");
+{
+  const nsrcAR = src.replace(/\r\n/g, "\n");   // a Windows checkout is CRLF, CI's is LF
+  const fnAR = (names, code) => { try { return vm.runInContext(`(function (env) { const { ${names} } = env; return (${code}); })`, sandbox); } catch (ex) { return null; } };
+  const FROM_AR = 'surgeons.find(s=>s.id===mySurgeon)?.name || "—"'; // the form's From line for a non-scheduler
+
+  // AR1 — the sentence, and the gate it describes (unchanged; executed so the sentence stays true)
+  const apGate = nsrcAR.match(/\{\(([^\n]*?)\) && \(\n\s*<div style=\{\{marginLeft:"auto",display:"flex",gap:6\}\}>\n\s*<button onClick=\{\(\)=>approveVacRequest\(r\)\}/);
+  const canDecide = apGate ? fnAR("r, mySurgeon, isScheduler", apGate[1]) : null;
+  const decide = canDecide ? [
+    canDecide({ r: { surgeon_id: "s1" }, mySurgeon: "s3", isScheduler: false }), // a member, a colleague's request
+    canDecide({ r: { surgeon_id: "s1" }, mySurgeon: "a2", isScheduler: false }), // an APP, a colleague's request
+    canDecide({ r: { surgeon_id: "s3" }, mySurgeon: "s3", isScheduler: false }), // a member's own request
+    canDecide({ r: { surgeon_id: "s6" }, mySurgeon: "s6", isScheduler: true }),  // the scheduler's own
+  ] : null;
+  check("AR1 the pending-requests footnote no longer sends anyone to a 'scheduler PIN' (there is none): for a non-scheduler it says requests are approved or denied by a colleague or the scheduler — true of the Approve/Deny gate, executed: a colleague's row yes (member and APP), your own row no, the scheduler yes",
+    count("scheduler PIN") === 0 && count("Requests are approved or denied by a colleague or the scheduler.") === 1
+      && /\{pending\.length > 0 && !isScheduler && \(\n\s*<p [^\n]*>\n\s*Requests are approved or denied by a colleague or the scheduler\.\n\s*<\/p>/.test(nsrcAR)
+      && JSON.stringify(decide) === JSON.stringify([true, true, false, true]),
+    `"scheduler PIN" ×${count("scheduler PIN")} · new sentence ×${count("Requests are approved or denied by a colleague or the scheduler.")} · decide ${JSON.stringify(decide)}`);
+
+  // AR2 — the trade form's gate, executed
+  const tradeGate = nsrcAR.match(/\{\/\* ─── Shift Trade Requests ─── \*\/\}\n(?:[ ]*\{\/\*[^\n]*\*\/\}\n)?[ ]*\{\(([^\n]*?)\) \? \(\n[ ]*<div style=\{css\.card\}>\n[ ]*<div style=\{css\.cardT\}>🔄 Propose a Shift Trade<\/div>/);
+  const sMapSrc = (nsrcAR.match(/const sMap = useMemo\((\(\) => \{[^\n]*?return m; \}), \[surgeons\]\);/) || [])[1];
+  const mkSMap = sMapSrc ? fnAR("surgeons", sMapSrc) : null;
+  const showForm = tradeGate ? fnAR("isScheduler, sMap, mySurgeon", "!!(" + tradeGate[1] + ")") : null;
+  const fromOf = fnAR("surgeons, mySurgeon", FROM_AR);
+  let ar2 = null;
+  if (mkSMap && showForm && fromOf) {
+    const sMap = mkSMap({ surgeons: INIT_SURGEONS })();
+    const tiny = { s3: { id: "s3", name: "RPC", idx: 0 } };
+    ar2 = {
+      surgeons: INIT_SURGEONS.map(s => showForm({ isScheduler: false, sMap, mySurgeon: s.id })),
+      apps: INIT_APPS.map(a => showForm({ isScheduler: false, sMap, mySurgeon: a.id })),
+      scheduler: showForm({ isScheduler: true, sMap, mySurgeon: "s6" }),
+      tiny: [showForm({ isScheduler: false, sMap: tiny, mySurgeon: "s3" }), showForm({ isScheduler: false, sMap: tiny, mySurgeon: "a1" })],
+      fromDash: [...INIT_SURGEONS, ...INIT_APPS].filter(p => showForm({ isScheduler: false, sMap, mySurgeon: p.id }) && fromOf({ surgeons: INIT_SURGEONS, mySurgeon: p.id }) === "—").map(p => p.id),
+    };
+  }
+  check("AR2 the Propose-a-Shift-Trade form renders only for the scheduler or a surgeon — its gate, executed with the app's own sMap builder on the real roster: s1–s7 and the scheduler yes, a1–a5 no (a minimal {s3} map: s3 yes, a1 no), and no non-scheduler who gets the form sees From \"—\"",
+    !!ar2 && ar2.surgeons.length === 7 && ar2.surgeons.every(x => x === true) && ar2.apps.length === 5 && ar2.apps.every(x => x === false)
+      && ar2.scheduler === true && JSON.stringify(ar2.tiny) === "[true,false]" && ar2.fromDash.length === 0,
+    ar2 ? JSON.stringify(ar2) : `gate ${tradeGate ? "found" : "not found ahead of the form"} · sMap builder ${mkSMap ? "found" : "not found"}`);
+
+  // AR3 — the note is the gate's else branch; Pending Trades stays outside it
+  const iGate = src.indexOf("(isScheduler || sMap[mySurgeon]) ? ("), iForm = src.indexOf("Propose a Shift Trade");
+  const elseRe = /\n {10}\) : \(\n {10}<div style=\{css\.card\}>\n {12}<div style=\{css\.cardT\}>🔄 Shift Trades<\/div>\n {12}<p style=\{\{[^\n]*\}\}>Shift trades are for the surgeon call schedule\. For an APP shift change, ask the scheduler\.<\/p>\n {10}<\/div>\n {10}\)\}\n\n {10}\{\/\* Pending Trades \*\/\}/;
+  const nGate = nsrcAR.indexOf("(isScheduler || sMap[mySurgeon]) ? ("), mElse = elseRe.exec(nsrcAR), nPending = nsrcAR.indexOf("{/* Pending Trades */}");
+  const formBody = nGate >= 0 && mElse && mElse.index > nGate ? nsrcAR.slice(nGate, mElse.index) : "";
+  check("AR3 an APP sees a '🔄 Shift Trades' note instead: the gate's else branch, closing just before Pending Trades (outside the gate, so an APP still sees trades it is part of); the form in the true branch keeps its one Propose Trade submit and its From line; L's slotLabel ledger stays 23",
+    count("(isScheduler || sMap[mySurgeon]) ? (") === 1 && count("Propose a Shift Trade") === 1 && iGate >= 0 && iForm > iGate && iForm - iGate <= 400
+      && count("Shift trades are for the surgeon call schedule.") === 1 && !!mElse && formBody.length > 0
+      && count("{/* Pending Trades */}") === 1 && nPending === mElse.index + mElse[0].length - "{/* Pending Trades */}".length
+      && !formBody.includes("\n          ) : (\n") && formBody.includes("onClick={submitTradeRequest}") && count("onClick={submitTradeRequest}") === 1
+      && formBody.includes("{" + FROM_AR + "}") && count("{" + FROM_AR + "}") === 1 && count("slotLabel(") === 23,
+    JSON.stringify({ gate: iGate, form: iForm, elseBranch: !!mElse, pending: nPending, slotLabel: count("slotLabel(") }));
+
+  // AR4 — the deadline note follows config.js, executed
+  const dl = nsrcAR.match(/Requests are typically due \{([^\n{}]*)\} weeks before each new schedule period\./);
+  const dlIn = (prelude) => { try { const c = vm.createContext({}); vm.runInContext(prelude + "\nvar __ar4 = (" + dl[1] + ");", c); return c.__ar4; } catch (ex) { return "threw: " + String(ex).slice(0, 80); } };
+  let ar4 = null;
+  if (dl) { try { ar4 = { real: vm.runInContext("(" + dl[1] + ")", sandbox), cfg: vm.runInContext("VACATION_DEADLINE_WEEKS_BEFORE", sandbox), four: dlIn("const VACATION_DEADLINE_WEEKS_BEFORE = 4;"), none: dlIn("") }; } catch (ex) { ar4 = { err: String(ex).slice(0, 120) }; } }
+  check("AR4 the deadline note's week count is config.js's VACATION_DEADLINE_WEEKS_BEFORE (the constant the deadline itself is computed from), executed: the real config gives its 6, a config of 4 gives 4, none gives 6; no hard-coded 'typically due 6 weeks'",
+    count("typically due 6 weeks") === 0 && !!ar4 && ar4.cfg === 6 && ar4.real === ar4.cfg && ar4.four === 4 && ar4.none === 6
+      && count('const deadlineWeeksBefore = (typeof VACATION_DEADLINE_WEEKS_BEFORE !== "undefined") ? VACATION_DEADLINE_WEEKS_BEFORE : 6;') === 1,
+    ar4 ? JSON.stringify(ar4) : `"typically due 6 weeks" ×${count("typically due 6 weeks")} · no expression in the note`);
 }
 
 // ─── AA. Request submits fail loud (2026-10-11, audit QW7) ───
@@ -3775,6 +4490,59 @@ check("prefs audit never logs the plaintext email (masked only)",
   }
   check("AA writeFailReason is defined once at module scope and both submits use it",
     count("function writeFailReason(err) {") === 1 && count("writeFailReason(insertErr)") === 2);
+}
+
+// ─── AS. The UX batch's review fixes (2026-10-19) ───
+// The batch (AM–AR) was reviewed adversarially before merging. Fixed here:
+//   AS1 a member viewing a colleague on Mine gets no Find Swap (the view is
+//       only a view), and the swap card shows options for someone else's shift
+//       to a member without the two-way buttons (the tool's own picker offers
+//       a member only their own shifts) — executed
+//   AS2 an open My Vacations edit closes when the view (or the account)
+//       changes, so Save can't write one person's dates over another's
+//       vacation; swap options are cleared when the account changes
+//   AS3 while Schedule Tools is held open by swap options, a header tap
+//       changes nothing (it no longer flips the saved state unseen) — executed
+//   AS4 small things: the swap card clears the iPhone status bar when scrolled
+//       to; the download button names whose calendar it is; the new buttons
+//       are readable in dark mode
+console.log("\nAS. The UX batch's review fixes");
+{
+  const nsrcAS = src.replace(/\r\n/g, "\n");
+  // AS1 — the Mine row's gate and the swap card's backstop, executed as written
+  const ROW = "{r.canSwap ? (mineViewId && !isScheduler ? null : (";
+  const rowGate = (canSwap, mineViewId, isScheduler) => { const r = { canSwap }; return r.canSwap ? (mineViewId && !isScheduler ? null : "FIND_SWAP") : "other"; };
+  const rowCases = [rowGate(true, "", false), rowGate(true, "s3", false), rowGate(true, "s3", true), rowGate(false, "s3", false)];
+  check("AS1 Mine: a member viewing a colleague gets no Find Swap (their own Mine, and a scheduler's view of anyone, still do)",
+    count(ROW) === 1 && count(")) : r.shiftKey ? (") === 1 && JSON.stringify(rowCases) === JSON.stringify(["FIND_SWAP", null, "FIND_SWAP", "other"]), JSON.stringify(rowCases));
+  const BACK = "{s.returnSwaps.length > 0 && !isScheduler && swapTarget.surgeonId !== mySurgeon ? (";
+  const iBack = nsrcAS.indexOf(BACK), iElse = iBack < 0 ? -1 : nsrcAS.indexOf(") : s.returnSwaps.length > 0 ? (", iBack), iExec = nsrcAS.indexOf("executeTwoWaySwap(swapTarget.mondayStr, swapTarget.shift, swapTarget.surgeonId,");
+  const gate = (n, isScheduler, target, me) => (n > 0 && !isScheduler && target !== me ? "NOTE" : n > 0 ? "BUTTONS" : "NONE");
+  const gateCases = [gate(2, false, "s3", "s3"), gate(2, false, "s4", "s3"), gate(2, true, "s4", "s6"), gate(0, false, "s4", "s3")];
+  check("AS1 the swap card: for a member, options for someone else's shift show a note instead of the two-way buttons; their own shift and a scheduler's view keep the buttons",
+    count(BACK) === 1 && iElse > iBack && iExec > iElse && iExec - iElse < 1200 && count("can make this swap.") === 1
+      && JSON.stringify(gateCases) === JSON.stringify(["BUTTONS", "NOTE", "BUTTONS", "NONE"]), JSON.stringify({ iBack, iElse, iExec, gateCases }));
+  // AS2 — the resets
+  const EV = "useEffect(() => { setMyVacEdit(null); }, [mineViewId, mySurgeon]);", ES = "useEffect(() => { setSwapTarget(null); setSwapSuggestions(null); }, [mySurgeon]);";
+  const iVacState = nsrcAS.indexOf("const [myVacEdit, setMyVacEdit] = useState(null);"), iView = nsrcAS.indexOf('const [mineViewId, setMineViewId] = useState("")'), iEV = nsrcAS.indexOf(EV);
+  const iSwapState = nsrcAS.indexOf("const [swapSuggestions, setSwapSuggestions] = useState(null);"), iES = nsrcAS.indexOf(ES);
+  check("AS2 an open My Vacations edit closes when the Mine view or the account changes; swap options clear when the account changes (each effect after the state it names)",
+    count(EV) === 1 && iVacState >= 0 && iView >= 0 && iEV > iVacState && iEV > iView && count(ES) === 1 && iSwapState >= 0 && iES > iSwapState,
+    JSON.stringify({ iVacState, iView, iEV, iSwapState, iES }));
+  // AS3 — the Collapsible's toggle, executed: held open, a tap neither re-renders nor persists
+  const TG0 = "const toggle = () => { if (forceOpen) return; setOpen(o => {", iT = nsrcAS.indexOf(TG0), iTE = iT < 0 ? -1 : nsrcAS.indexOf("const shown = open || forceOpen;", iT);
+  let tgl = null;
+  try { tgl = iT >= 0 && iTE > iT ? vm.runInContext(`(function (forceOpen, ck, setOpen, localStorage, console) { ${nsrcAS.slice(iT, iTE)} return toggle; })`, sandbox) : null; } catch (ex) { tgl = null; }
+  const tap = (forced) => { const calls = [], writes = []; let v = false; const t = tgl(forced, "cal_tools", (u) => { calls.push(1); v = u(v); }, { setItem: (k, x) => writes.push(k + "=" + x) }, { warn() {} }); t(); return { calls: calls.length, writes, v }; };
+  const held = tgl ? tap(true) : null, free = tgl ? tap(false) : null;
+  check("AS3 while held open, a Schedule Tools header tap changes nothing (no state change, nothing saved); otherwise it toggles and saves as before",
+    !!held && held.calls === 0 && held.writes.length === 0 && !!free && free.calls === 1 && free.v === true && JSON.stringify(free.writes) === JSON.stringify(["dsg_collapse_cal_tools=1"]), JSON.stringify({ held, free }));
+  // AS4 — the small things
+  check("AS4 the swap card clears the iPhone status bar when scrolled to; Download names whose calendar it is while viewing a colleague; 'Back to mine' and 'Go to <Month>' have dark-mode colors",
+    count('data-swap-tool="1" style={{...css.card,marginTop:14,scrollMarginTop:"calc(env(safe-area-inset-top, 0px) + 12px)",') === 1
+      && count('📅 {mineViewId ? `Download ${sMap[mineViewId]?.name || mineViewId}\'s Calendar` : "Download My Calendar"} (.ics)') === 1
+      && count('...(dk ? {background:"#0f3460",color:"#e0e0f0",border:"1px solid #2a3a5e"} : {})}}>Back to mine</button>') === 1
+      && count('...(dk ? {background:"#0f3460",color:"#e0e0f0",border:"1px solid #2a3a5e"} : {})}}>Go to {MO[goTo.m]} {goTo.y}</button>') === 1);
 }
 
 // ─── AB. APP call-shift edits wait for the APP-shift row (2026-10-11, audit QW4 + its review) ───

@@ -758,6 +758,7 @@ function CallSchedule() {
   const [notifLastSeen, setNotifLastSeen] = useState(() => {
     try { return localStorage.getItem("dsg-notif-seen") || "2000-01-01T00:00:00Z"; } catch(e) { return "2000-01-01T00:00:00Z"; }
   });
+  const [notifSeenAtOpen, setNotifSeenAtOpen] = useState(null); // the watermark as it was when the panel opened
   // Per-device "cleared" watermark. "Clear notifications" is a local-view op
   // (notifications is a shared feed with no per-user rows), so instead of a DB
   // delete we hide everything at/before this timestamp. Persisted so it survives
@@ -783,6 +784,8 @@ function CallSchedule() {
   const [mySurgeon, setMySurgeon] = useState(() => {
     try { return localStorage.getItem("dsg-my-surgeon") || ""; } catch(e) { return ""; }
   });
+  const [mineViewId, setMineViewId] = useState(""); // Mine's view-someone-else pick: NOT identity, not persisted
+  const mineId = mineViewId || mySurgeon;
   // Inline editor for "My Vacations" — { idx, start, end } | null
   const [myVacEdit, setMyVacEdit] = useState(null);
 
@@ -790,6 +793,11 @@ function CallSchedule() {
   useEffect(() => {
     try { if(mySurgeon) localStorage.setItem("dsg-my-surgeon", mySurgeon); } catch(e) { console.warn("Couldn't persist selected surgeon:", e); }
   }, [mySurgeon]);
+  // A Mine view pick belongs to the identity it was made under: a sign-out or another account drops it
+  useEffect(() => { setMineViewId(""); }, [mySurgeon]);
+  // …and an open My Vacations edit belongs to the person it was opened on: switching the view (or the
+  // account) closes it, so Save can never write one person's dates over another's vacation.
+  useEffect(() => { setMyVacEdit(null); }, [mineViewId, mySurgeon]);
 
   // Auto-set vacation requester and trade initiator to logged-in user
   useEffect(() => {
@@ -5882,6 +5890,9 @@ function CallSchedule() {
   // ─── Smart Swap Suggestions ───
   const [swapTarget, setSwapTarget] = useState(null); // { mondayStr, shift, surgeonId }
   const [swapSuggestions, setSwapSuggestions] = useState(null); // [{ candidateId, score, reasons, returnSwaps }]
+  // Swap options belong to the account that asked for them: a sign-out or another account clears them
+  // (they force Schedule Tools open — batch review 2026-10-19).
+  useEffect(() => { setSwapTarget(null); setSwapSuggestions(null); }, [mySurgeon]);
   const [editWeekModal, setEditWeekModal] = useState(null); // { mondayStr, appsBase, appsLoaded, openWeek, openEpoch, draft: { dayCall, nights, dayCallOverrides, apps, reason }, adoptedAway? } or null
   const [editWeekPick, setEditWeekPick] = useState(""); // dropdown selection on the Manual Adjustments card
   // Clear stale selection when the user navigates to a different month
@@ -7230,7 +7241,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       // Holiday coverage
       if (wk.holidayCoverage) {
         Object.entries(wk.holidayCoverage).forEach(([ds, cov]) => {
-          d[ds]=[...(d[ds]||[]),{type:"Holiday",surgeon:cov.surgeonId,cls:"holiday",role:cov.role,hours:cov.hours,holName:cov.name,holType:cov.type}];
+          d[ds]=[...(d[ds]||[]),{type:"Holiday",surgeon:cov.surgeonId,cls:"holiday",role:cov.role,hours:cov.hours,holName:cov.name,holType:cov.type,holiday:cov.holiday}];
         });
       }
     });
@@ -7289,8 +7300,11 @@ ${"</"}script>${"</"}body>${"</"}html>`;
   const todayDow = new Date().getDay(); // 0=Sun
   const todayEntries = calData[todayStr] || [];
   const todayCall = useMemo(() => {
-    const info = { dayCall: null, night: null, weekend: null, app: null, fierce: false, fierceBkp: false };
+    const info = { dayCall: null, night: null, weekend: null, app: null, fierce: false, fierceBkp: false, holiday: null };
     todayEntries.forEach(e => {
+      // A covered holiday replaces that date's Svc/Ngt/Wknd rows in calData, so it is the day's 24h holder.
+      // The label comes from the holiday's own name (a multi-day holiday's coverage name is only "Fri 24h").
+      if (e.type === "Holiday") info.holiday = { who: sMap[e.surgeon]?.name || null, label: e.holType === "swap" ? (e.holName || "Coverage") : holidayTitleName({ holiday: e.holiday, label: e.holName }), emoji: holidayEmoji(e.holiday || e.holName) };
       if (e.type === "Svc" || e.type === "B-Svc") info.dayCall = sMap[e.surgeon]?.name || null;
       if (e.type === "Ngt" || e.type === "B-Ngt") info.night = sMap[e.surgeon]?.name || null;
       if (e.type === "Wknd" || e.type === "B-Wknd") info.weekend = sMap[e.surgeon]?.name || null;
@@ -7301,7 +7315,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     return info;
   }, [todayEntries, sMap, aMap]);
 
-  const hasCallToday = todayCall.dayCall || todayCall.night || todayCall.weekend;
+  const hasCallToday = todayCall.dayCall || todayCall.night || todayCall.weekend || todayCall.holiday;
 
   // Build notification message for tonight
   const buildTonightMsg = () => {
@@ -7312,6 +7326,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     const dow = today.getDay();
     const appTimeLabel = (dow === 0 || dow === 6) ? "7a–7a" : "5p–7a";
     let msg = `🏥 DSG Call — ${dayName} ${mo}/${dy}\n\n`;
+    if (todayCall.holiday) msg += `${todayCall.holiday.emoji} ${todayCall.holiday.label} 24h (7a–7a): ${todayCall.holiday.who || "Unassigned"}\n`;
     if (todayCall.dayCall) msg += `🏥 Service Week: ${todayCall.dayCall}\n`;
     if (todayCall.night) msg += `🌙 Night (5p–7a): ${todayCall.night}\n`;
     if (todayCall.weekend) msg += `🌗 Weekend: ${todayCall.weekend}\n`;
@@ -7758,7 +7773,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             );
           })()}
           {/* Notification Bell */}
-          <button onClick={()=>{setShowNotifs(p=>!p); if(!showNotifs) markNotifsSeen();}}
+          <button onClick={()=>{ if (!showNotifs) { setNotifSeenAtOpen(notifLastSeen); markNotifsSeen(); } setShowNotifs(p=>!p); }}
+            aria-label={myUnreadCount ? `Notifications, ${myUnreadCount} unread` : "Notifications"} aria-expanded={showNotifs}
             style={{...css.tab(showNotifs),position:"relative",fontSize:15,padding:"4px 10px"}}>
             🔔
             {myUnreadCount > 0 && (
@@ -7777,7 +7793,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
 
         {/* ─── Notification Panel ─── */}
         {!isPublicMode && showNotifs && (
-          <div style={{position:"absolute",top:0,right:14,width:340,maxHeight:400,overflowY:"auto",background:"#fff",border:"1px solid #dce2e8",borderRadius:10,boxShadow:"0 4px 20px rgba(0,0,0,0.12)",zIndex:100,padding:12}}>
+          <div style={{position:"absolute",top:0,right:14,width:340,maxWidth:"calc(100vw - 28px)",maxHeight:400,overflowY:"auto",background:"#fff",border:"1px solid #dce2e8",borderRadius:10,boxShadow:"0 4px 20px rgba(0,0,0,0.12)",zIndex:100,padding:12}}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
               <span style={{fontSize:14,fontWeight:700,color:"#1a2a3a"}}>Notifications</span>
               <div style={{display:"flex",gap:6,alignItems:"center"}}>
@@ -7790,14 +7806,16 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             {myNotifications.length === 0 ? (
               <p style={{color:"#8a94a0",fontSize:13,textAlign:"center",padding:20}}>No notifications yet</p>
             ) : myNotifications.map(n => {
-              const tabMap = {vacation_submitted:"requests",vacation_approved:"requests",vacation_denied:"requests",schedule_published:"calendar",schedule_changed:"calendar",trade_submitted:"requests",trade_accepted:"requests",trade_declined:"requests"};
+              const tabMap = {vacation_submitted:"requests",vacation_approved:"requests",vacation_denied:"requests",schedule_published:"calendar",schedule_changed:"calendar",trade_submitted:"requests",trade_accepted:"requests",trade_declined:"requests",vacation_revoked:"requests",shift_reminder:"calendar"};
               const targetTab = tabMap[n.type] || null;
+              const jumpWeek = targetTab === "calendar" && /^\d{4}-\d{2}-\d{2}$/.test(n.data?.week || "") ? n.data.week : null;
+              const isNew = n.created_at > (notifSeenAtOpen || notifLastSeen);
               return (
-              <div key={n.id} onClick={()=>{if(targetTab){setView(targetTab);setShowNotifs(false);markNotifsSeen();}}}
-                style={{padding:"8px 10px",marginBottom:6,borderRadius:6,cursor:targetTab?"pointer":"default",background:n.created_at > notifLastSeen ? "#f0f8ff" : "#f8f9fb",border:`1px solid ${n.created_at > notifLastSeen ? "#c0d8f0" : "#e8ecf0"}`,transition:"background 0.15s"}}>
+              <div key={n.id} onClick={()=>{if(targetTab){ if (jumpWeek) { const [y, m] = jumpWeek.split("-").map(Number); setCalMonth(m - 1); setCalYear(y); } setView(targetTab); setShowNotifs(false); markNotifsSeen(); }}}
+                style={{padding:"8px 10px",marginBottom:6,borderRadius:6,cursor:targetTab?"pointer":"default",background:isNew ? "#f0f8ff" : "#f8f9fb",border:`1px solid ${isNew ? "#c0d8f0" : "#e8ecf0"}`,transition:"background 0.15s"}}>
                 <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
                   <span style={{fontSize:12,fontWeight:600,color:"#1a2a3a"}}>{n.title}</span>
-                  <span style={{fontSize:10,color:"#a0a8b0"}}>{new Date(n.created_at).toLocaleDateString()}</span>
+                  <span style={{fontSize:10,color:"#a0a8b0"}}>{new Date(n.created_at).toLocaleString(undefined, {month:"short", day:"numeric", hour:"numeric", minute:"2-digit"})}</span>
                 </div>
                 <p style={{fontSize:12,color:"#5a6a78",margin:"3px 0 0",lineHeight:1.4}}>{n.message}</p>
                 {targetTab && <span style={{fontSize:10,color:"#1a6fa8",marginTop:3,display:"inline-block"}}>Tap to view →</span>}
@@ -9244,6 +9262,15 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                 </button>}
               </div>
               <div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
+                {todayCall.holiday && (
+                  <div style={{display:"flex",alignItems:"center",gap:6,padding:"6px 12px",background:"#fef0e8",borderRadius:8,border:"1px solid #e0a868"}}>
+                    <span style={{fontSize:16}}>{todayCall.holiday.emoji}</span>
+                    <div>
+                      <div style={{fontSize:10,color:"#a04810",fontWeight:600,textTransform:"uppercase",letterSpacing:0.5}}>{todayCall.holiday.label} · 24h 7a–7a</div>
+                      <div style={{fontSize:15,fontWeight:700,color:"#1a2a3a"}}>{todayCall.holiday.who || "Unassigned"}</div>
+                    </div>
+                  </div>
+                )}
                 {todayCall.dayCall && (
                   <div style={{display:"flex",alignItems:"center",gap:6,padding:"6px 12px",background:"#f0f8ff",borderRadius:8,border:"1px solid #c0d8f0"}}>
                     <span style={{fontSize:16}}>☀️</span>
@@ -9437,6 +9464,33 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               {warnShown.vac.length > 10 && <p style={{fontSize:11,color:"#8a94a0",marginTop:4}}>+ {warnShown.vac.length - 10} more vacation-overlap line{warnShown.vac.length - 10 === 1 ? "" : "s"}…</p>}
               {dismissedBar}
             </div>
+            );
+          })()}
+
+          {/* Why the month is blank (UX audit, 2026-10-18): the grid looks the same
+              while the schedule is still loading, when nothing loaded, and when this
+              month simply isn't published yet — say which. Reads only loaded and the
+              published schedule (calMonthStatus, helpers.js); a month with any surgeon
+              call shows nothing here. Past the last published week, a button goes back
+              to that week's month. */}
+          {(() => {
+            const st = loaded && typeof calMonthStatus === "function" ? calMonthStatus(schedule, calYear, calMonth) : null;
+            const ym = (ds) => Number(ds.slice(0, 4)) * 12 + Number(ds.slice(5, 7)) - 1, here = calYear * 12 + calMonth;
+            const dated = (ds) => `${dayMonthLabel(ds)}/${ds.slice(0, 4)}`;
+            // A gap month inside the published range doesn't quote the range (it would contradict itself);
+            // "Loading" only while nothing is drawn yet (batch review 2026-10-19).
+            const inRange = !!(st && st.from && here >= ym(st.from) && here <= ym(st.to));
+            const text = !loaded ? (Object.keys(schedule || {}).length ? "" : "Loading the schedule…")
+              : !st || st.kind === "ok" ? ""
+              : st.kind === "empty" ? "No call schedule to show — it may not be published yet; if you expected one, reload the app."
+              : `No surgeon call scheduled for ${MO[calMonth]} ${calYear}${(st.from && here < ym(st.from)) || inRange ? "" : " yet"}${st.from && !inRange ? ` — the published schedule runs ${dated(st.from)} → ${dated(st.to)}` : ""}.`;
+            const goTo = st && st.kind === "unscheduled" && st.to && here > ym(st.to) ? { y: Number(st.to.slice(0, 4)), m: Number(st.to.slice(5, 7)) - 1 } : null;
+            if (!text) return null;
+            return (
+              <div role="status" style={{display:"flex",alignItems:"center",flexWrap:"wrap",gap:8,marginBottom:10,padding:"8px 12px",fontSize:12,lineHeight:1.4,color:dk?"#b0b8d0":"#4a5a6a",background:dk?"#16213e":"#f4f6fa",border:`1px solid ${dkCardBorder}`,borderRadius:8}}>
+                <span style={{flex:"1 1 200px",minWidth:0}}>{text}</span>
+                {goTo && <button onClick={()=>{setCalMonth(goTo.m);setCalYear(goTo.y);}} style={{...css.btn(false),padding:"6px 12px",flexShrink:0,...(dk ? {background:"#0f3460",color:"#e0e0f0",border:"1px solid #2a3a5e"} : {})}}>Go to {MO[goTo.m]} {goTo.y}</button>}
+              </div>
             );
           })()}
 
@@ -9729,7 +9783,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           </div>
 
           {/* Calendar tools — collapsed by default so the calendar itself stays front and center */}
-          <Collapsible css={css} ck="cal_tools" defaultOpen={false} title="🔧 Schedule Tools & Export" style={{background:"transparent",border:"none",boxShadow:"none",padding:"4px 2px",marginTop:8}}>
+          <Collapsible css={css} ck="cal_tools" defaultOpen={false} forceOpen={!!swapSuggestions} title="🔧 Schedule Tools & Export" style={{background:"transparent",border:"none",boxShadow:"none",padding:"4px 2px",marginTop:8}}>
           {/* ─── Silvis (trauma) feed — read-only mirror; rule silvisBusy (internal views only) ─── */}
           {!isPublicMode && (()=>{
             const st = sfStatus(silvisDays.fetchedAt);
@@ -9809,7 +9863,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
 
           {/* ─── Shift Swap Tool ─── */}
           {!isPublicMode && Object.keys(schedule).length > 0 && (
-            <div style={{...css.card,marginTop:14,background:"linear-gradient(135deg,#f8f0ff,#f4f0f8)",border:"1px solid #d0c0e4"}}>
+            <div data-swap-tool="1" style={{...css.card,marginTop:14,scrollMarginTop:"calc(env(safe-area-inset-top, 0px) + 12px)",background:"linear-gradient(135deg,#f8f0ff,#f4f0f8)",border:"1px solid #d0c0e4"}}>
               <div style={css.cardT}>🔄 Shift Swap Tool</div>
               <p style={{fontSize:12,color:"#5a6a78",margin:"0 0 12px",lineHeight:1.5}}>
                 Need to change a shift? All swaps must be <strong>two-way</strong> — the other surgeon takes your shift and you take one of theirs.
@@ -9931,7 +9985,12 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                       <div style={{fontSize:11,color:"#5a6a78",lineHeight:1.6,marginBottom:4}}>
                         {s.reasons.map((r,j)=><div key={j}>• {r}</div>)}
                       </div>
-                      {s.returnSwaps.length > 0 ? (
+                      {/* A member swaps only their own shift (the tool's own picker offers only theirs);
+                          options for someone else's shift — Mine's view of a colleague — are shown,
+                          not actionable (batch review 2026-10-19). */}
+                      {s.returnSwaps.length > 0 && !isScheduler && swapTarget.surgeonId !== mySurgeon ? (
+                        <div style={{marginTop:6,paddingTop:6,borderTop:"1px solid #e8ecf0",fontSize:11,color:"#5a6a78"}}>Only {swapTarget.surgeonName || "the shift's holder"} or the scheduler can make this swap.</div>
+                      ) : s.returnSwaps.length > 0 ? (
                         <div style={{marginTop:6,paddingTop:6,borderTop:"1px solid #e8ecf0"}}>
                           <div style={{fontSize:10,fontWeight:700,color:"#6030a0",marginBottom:4}}>↔ Two-way swap — {s.candidateName} takes this shift, {swapTarget.surgeonName} takes one of theirs:</div>
                           <div style={{display:"flex",gap:4,flexWrap:"wrap"}}>
@@ -10758,24 +10817,29 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           <div style={css.card}>
             <div style={css.cardT}>My Call Schedule</div>
             <p style={{fontSize:13,color:"#5a6a78",margin:"0 0 12px",lineHeight:1.5}}>
-              {userProfile ? `Showing schedule for ${userProfile.display_name}.` : "Select your name to see only your shifts and vacations."}
-              {isScheduler && " As scheduler, you can view any surgeon's schedule."}
+              {mineViewId ? <>
+                {`Viewing ${sMap[mineViewId]?.name || mineViewId}'s schedule.`}
+                <button onClick={()=>setMineViewId("")} style={{...css.btn(false),padding:"3px 10px",fontSize:12,marginLeft:8,...(dk ? {background:"#0f3460",color:"#e0e0f0",border:"1px solid #2a3a5e"} : {})}}>Back to mine</button>
+              </> : <>
+                {userProfile ? `Showing schedule for ${userProfile.display_name}.` : "Select your name to see only your shifts and vacations."}
+                {isScheduler && " As scheduler, you can view any surgeon's schedule."}
+              </>}
             </p>
             <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap",marginBottom:16}}>
-              <select value={mySurgeon} onChange={e=>setMySurgeon(e.target.value)} style={{...css.inp,width:180,fontSize:14}}>
+              <select value={mineId} onChange={e=>setMineViewId(e.target.value === mySurgeon ? "" : e.target.value)} style={{...css.inp,width:180,fontSize:14}}>
                 <option value="">Select your name…</option>
                 {surgeons.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
               </select>
-              {mySurgeon && (
-                <button onClick={()=>downloadMyCal(mySurgeon)} style={{...css.btn(true),padding:"8px 18px"}}>
-                  📅 Download My Calendar (.ics)
+              {mineId && (
+                <button onClick={()=>downloadMyCal(mineId)} style={{...css.btn(true),padding:"8px 18px"}}>
+                  📅 {mineViewId ? `Download ${sMap[mineViewId]?.name || mineViewId}'s Calendar` : "Download My Calendar"} (.ics)
                 </button>
               )}
             </div>
           </div>
 
-          {mySurgeon && Object.keys(schedule).length > 0 && (() => {
-            const myId = mySurgeon;
+          {mineId && Object.keys(schedule).length > 0 && (() => {
+            const myId = mineId;
             const myName = sMap[myId]?.name || "?";
             const myVacs = vacations[myId] || [];
             const myNoCall = noCallDays[myId] || [];
@@ -11073,12 +11137,12 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                         <span style={{fontSize:14}}>{r.icon}</span>
                         <span style={{fontSize:13,fontWeight:600,color:r.color}}>{r.type}</span>
                         <span style={{fontSize:11,color:"#8a94a0",fontFamily:mono}}>{r.detail}</span>
-                        {r.canSwap ? (
-                          <button onClick={()=>{findSwapSuggestions(wk.mStr, r.shiftKey, myId); setView("calendar");}}
+                        {r.canSwap ? (mineViewId && !isScheduler ? null : (
+                          <button onClick={()=>{findSwapSuggestions(wk.mStr, r.shiftKey, myId); setView("calendar"); setTimeout(() => { const el = document.querySelector('[data-swap-tool="1"]'); if (el && el.scrollIntoView) el.scrollIntoView({ behavior: "smooth", block: "start" }); }, 60);}}
                             style={{marginLeft:"auto",background:"#f0e8fc",border:"1px solid #c8b0e0",color:"#6030a0",borderRadius:5,padding:"2px 10px",fontSize:10,fontWeight:600,cursor:"pointer",fontFamily:font}}>
                             🔄 Find Swap
                           </button>
-                        ) : r.shiftKey ? (
+                        )) : r.shiftKey ? (
                           <span style={{marginLeft:"auto",background:"#e8f5ec",border:"1px solid #b0d8bc",color:"#1a8040",borderRadius:5,padding:"2px 8px",fontSize:10,fontWeight:600,fontFamily:font}}>in progress</span>
                         ) : null}
                       </div>
@@ -11096,7 +11160,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             );
           })()}
 
-          {!mySurgeon && (
+          {!mineId && (
             <div style={{...css.card,textAlign:"center",color:"#8a94a0",padding:30}}>Select your name above to view your schedule.</div>
           )}
         </>}
@@ -11158,7 +11222,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                     </div>
                     {!isPast && daysRemaining > 7 && (
                       <div style={{fontSize:11,color:"#7a8a98",marginTop:6,fontStyle:"italic"}}>
-                        Requests are typically due 6 weeks before each new schedule period.
+                        Requests are typically due {typeof VACATION_DEADLINE_WEEKS_BEFORE !== "undefined" ? VACATION_DEADLINE_WEEKS_BEFORE : 6} weeks before each new schedule period.
                       </div>
                     )}
                   </div>
@@ -11343,7 +11407,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                 })}
                 {pending.length > 0 && !isScheduler && (
                   <p style={{fontSize:12,color:"#8a94a0",margin:"10px 0 0",lineHeight:1.5}}>
-                    Only the scheduler can approve or deny requests. Enter the scheduler PIN in ⚙️ Settings to unlock.
+                    Requests are approved or denied by a colleague or the scheduler.
                   </p>
                 )}
               </div>
@@ -11421,6 +11485,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           })()}
 
           {/* ─── Shift Trade Requests ─── */}
+          {/* Trades are of surgeon call shifts: an APP (a* id) has no shift to give, so an APP sees a note instead of a form it can't use. */}
+          {(isScheduler || sMap[mySurgeon]) ? (
           <div style={css.card}>
             <div style={css.cardT}>🔄 Propose a Shift Trade</div>
             <p style={{fontSize:13,color:"#5a6a78",margin:"0 0 12px",lineHeight:1.5}}>
@@ -11590,6 +11656,12 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               );
             })()}
           </div>
+          ) : (
+          <div style={css.card}>
+            <div style={css.cardT}>🔄 Shift Trades</div>
+            <p style={{fontSize:13,color:"#5a6a78",margin:0,lineHeight:1.5}}>Shift trades are for the surgeon call schedule. For an APP shift change, ask the scheduler.</p>
+          </div>
+          )}
 
           {/* Pending Trades */}
           {(()=>{
@@ -14137,7 +14209,10 @@ function CallTotalsCard({ totals, silvisNote, css, dk }) {
 // (keyed by `ck`), so a scheduler's layout choices stick across reloads. Defined
 // at module scope so it never remounts on parent re-render. Uses React.* hooks
 // because the destructured hook names live inside CallSchedule, not out here.
-function Collapsible({ title, ck, defaultOpen = false, summary = null, children, css, right = null, style = null }) {
+// forceOpen shows the body without touching the stored state: Mine's Find Swap
+// opens Schedule Tools while its swap options are up, and Close puts the
+// section back the way the user left it.
+function Collapsible({ title, ck, defaultOpen = false, forceOpen = false, summary = null, children, css, right = null, style = null }) {
   const [open, setOpen] = React.useState(() => {
     try {
       const v = localStorage.getItem("dsg_collapse_" + ck);
@@ -14146,20 +14221,22 @@ function Collapsible({ title, ck, defaultOpen = false, summary = null, children,
     } catch (e) { console.warn("Couldn't read panel collapse state:", e); }
     return defaultOpen;
   });
-  const toggle = () => setOpen(o => {
+  // While held open (forceOpen), a header tap changes nothing — it must not flip the saved state unseen.
+  const toggle = () => { if (forceOpen) return; setOpen(o => {
     const n = !o;
     try { localStorage.setItem("dsg_collapse_" + ck, n ? "1" : "0"); } catch (e) { console.warn("Couldn't persist panel collapse state:", e); }
     return n;
-  });
+  }); };
+  const shown = open || forceOpen;
   return (
     <div style={style ? { ...css.card, ...style } : css.card}>
       <div onClick={toggle} style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", userSelect: "none" }}>
-        <span style={{ fontSize: 11, color: "#8a94a0", transition: "transform .15s", transform: open ? "rotate(90deg)" : "rotate(0deg)", display: "inline-block", width: 10, flexShrink: 0 }}>▶</span>
+        <span style={{ fontSize: 11, color: "#8a94a0", transition: "transform .15s", transform: shown ? "rotate(90deg)" : "rotate(0deg)", display: "inline-block", width: 10, flexShrink: 0 }}>▶</span>
         <div style={{ ...css.cardT, marginBottom: 0, flex: 1 }}>{title}</div>
         {right}
       </div>
-      {!open && summary != null && <div style={{ marginTop: 10 }}>{summary}</div>}
-      {open && <div style={{ marginTop: 12 }}>{children}</div>}
+      {!shown && summary != null && <div style={{ marginTop: 10 }}>{summary}</div>}
+      {shown && <div style={{ marginTop: 12 }}>{children}</div>}
     </div>
   );
 }

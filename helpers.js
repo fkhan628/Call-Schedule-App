@@ -266,6 +266,30 @@ function overnightHolderOn(schedule, ds) {
   return day.night || day.wkndFri || day.sat || day.wkndSun || null;
 }
 
+// Why a calendar month is blank (UX audit, 2026-10-18). A month with no
+// surgeon call looks the same whether nothing loaded or the month is simply
+// not published yet, so the Calendar tab asks this for the month it shows
+// (month is 0-based, like Date) and says which. A week counts for the month
+// when any of its 7 days (Mon–Sun) falls in it AND it holds a dayCall, any
+// night, or a holidayCoverage entry; a week entry holding none of these does
+// not count, and does not widen the range either.
+//   { kind: "empty" }                  no weeks at all (a failed or empty read)
+//   { kind: "ok" }                     the month has a counting week
+//   { kind: "unscheduled", from, to }  it has none: from = the first counting
+//                                      week's Monday, to = the last one's
+//                                      Sunday (both null when no week counts)
+// Only YYYY-MM-DD keys are weeks, read in date order. Pure: no clock, no state.
+function calMonthStatus(schedule, year, month) {
+  const keys = Object.keys(schedule || {}).filter(k => /^\d{4}-\d{2}-\d{2}$/.test(k)).sort();
+  if (!keys.length) return { kind: "empty" };
+  const first = fmt(new Date(year, month, 1)), last = fmt(new Date(year, month + 1, 0));
+  const holds = (w) => !!w && (!!w.dayCall || Object.values(w.nights || {}).some(Boolean) || Object.values(w.holidayCoverage || {}).some(Boolean));
+  const counted = keys.filter(k => holds(schedule[k]));
+  if (counted.some(k => k <= last && fmt(addD(parse(k), 6)) >= first)) return { kind: "ok" };
+  if (!counted.length) return { kind: "unscheduled", from: null, to: null };
+  return { kind: "unscheduled", from: counted[0], to: fmt(addD(parse(counted[counted.length - 1]), 6)) };
+}
+
 // ═══ HOLIDAY PAIRS — who takes which holiday each year (owner 2026-10-13) ═══
 // FAK (the Christmas surgeon) takes Christmas Eve + Christmas Day, both slots,
 // every year — his major and his minor; the app sets that card itself. Every
