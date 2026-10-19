@@ -2789,10 +2789,13 @@ console.log("\nAM. Mine's name picker is a view, not a sign-in");
       && mineBlk.includes("const myId = mineId;") && mineBlk.includes("{!mineId && (")
       && !mineBlk.includes("downloadMyCal(mySurgeon)") && !mineBlk.includes("{mySurgeon && Object.keys(schedule).length > 0")
       && !mineBlk.includes("value={mySurgeon}") && !mineBlk.includes("{!mySurgeon && ("));
-  const amDeps = []; { const re = /[})]\s*,\s*\[([^\]]*)\]\s*\)/g; let m; while ((m = re.exec(src)) !== null) amDeps.push(m[1]); }
+  // The one effect a view pick may move (batch review 2026-10-19): it only closes an open My Vacations edit.
+  const AM_EDIT_RESET = "useEffect(() => { setMyVacEdit(null); }, [mineViewId, mySurgeon]);";
+  const srcAM = src.split(AM_EDIT_RESET).join("");
+  const amDeps = []; { const re = /[})]\s*,\s*\[([^\]]*)\]\s*\)/g; let m; while ((m = re.exec(srcAM)) !== null) amDeps.push(m[1]); }
   const amInDeps = amDeps.filter((d) => /\b(mineViewId|mineId)\b/.test(d));
-  check("AM1 neither mineViewId nor mineId is in any hook deps array (a view pick moves no effect) and neither is written to storage",
-    iState > 0 && amDeps.length >= 40 && amInDeps.length === 0 && !/setItem\([^)]*\b(mineViewId|mineId)\b/.test(src), amInDeps.join(" | ") || `${amDeps.length} deps arrays`);
+  check("AM1 neither mineViewId nor mineId is in any hook deps array (a view pick moves no effect — except the one that closes an open My Vacations edit) and neither is written to storage",
+    iState > 0 && amDeps.length >= 40 && amInDeps.length === 0 && count(AM_EDIT_RESET) <= 1 && !/setItem\([^)]*\b(mineViewId|mineId)\b/.test(src), amInDeps.join(" | ") || `${amDeps.length} deps arrays`);
 
   // AM2–AM4 — the real code, executed. Each effect is sliced verbatim, from its useEffect( through its "])".
   const effectAt = (anchor) => { const i = src.indexOf(anchor); if (i < 0 || src.indexOf(anchor, i + 1) >= 0) return null; const a = src.lastIndexOf("useEffect(", i), b = src.indexOf("]);", i); return a >= 0 && b > i && b - a < 900 ? src.slice(a, b + 2) : null; };
@@ -3441,8 +3444,8 @@ console.log("\nAO. On Call Today banner on a covered holiday");
   const chip = hi > 0 && di > hi ? ban.slice(hi, di) : "";
   check("AO3 the banner is still gated on hasCallToday and its holiday chip comes BEFORE the Service Week chip",
     /^\{\/\* ─── On Call Today Banner ─── \*\/\}\s*\{hasCallToday && \(/.test(ban) && count("{todayCall.holiday && (") === 1 && hi > 0 && di > hi, `holiday chip at ${hi}, service chip at ${di}`);
-  check("AO3 the holiday chip: the holiday colors, \"<label> · 24h 7a–7a\", the emoji, and \"Unassigned\" when nobody holds it",
-    ['background:"#fef0e8"', 'border:"1px solid #e0a868"', 'color:"#c06020"', "{todayCall.holiday.label} · 24h 7a–7a", "{todayCall.holiday.emoji}", '{todayCall.holiday.who || "Unassigned"}'].every((s) => chip.includes(s)), chip.slice(0, 200));
+  check("AO3 the holiday chip: the holiday colors (the 10px label darkened to #a04810 for contrast — batch review), \"<label> · 24h 7a–7a\", the emoji, and \"Unassigned\" when nobody holds it",
+    ['background:"#fef0e8"', 'border:"1px solid #e0a868"', 'color:"#a04810"', "{todayCall.holiday.label} · 24h 7a–7a", "{todayCall.holiday.emoji}", '{todayCall.holiday.who || "Unassigned"}'].every((s) => chip.includes(s)), chip.slice(0, 200));
 }
 
 // ─── X. Holidays + single-day coverage in the downloads and the Mine tab (2 of 3, 2026-10-02) ───
@@ -3810,7 +3813,7 @@ console.log("\nAP. Mine → Find Swap lands on the swap options");
       && !!force && force(null) === false && force(undefined) === false && force([]) === true && force([{ candidateId: "s2" }]) === true, tagLine.slice(0, 140));
   const cardAt = nsrcAP.indexOf('<div data-swap-tool="1" style='), optsAt = cardAt < 0 ? -1 : nsrcAP.indexOf("{swapSuggestions && (", cardAt), icsAt = cardAt < 0 ? -1 : nsrcAP.indexOf("{/* Calendar App Integration", cardAt);
   check("AP2 the Shift Swap Tool card is tagged data-swap-tool=\"1\" (the tag and the tap's selector, nothing else), and the swap options render inside that card, inside the cal_tools section",
-    count('data-swap-tool="1"') === 2 && tagAt >= 0 && cardAt > tagAt && closeAt > cardAt && (nextOpen < 0 || nextOpen > closeAt) && nsrcAP.indexOf("🔄 Shift Swap Tool", cardAt) - cardAt < 220
+    count('data-swap-tool="1"') === 2 && tagAt >= 0 && cardAt > tagAt && closeAt > cardAt && (nextOpen < 0 || nextOpen > closeAt) && nsrcAP.indexOf("🔄 Shift Swap Tool", cardAt) - cardAt < 300
       && count("{swapSuggestions && (") === 1 && optsAt > cardAt && icsAt > optsAt && closeAt > icsAt,
     JSON.stringify({ tagAt, cardAt, optsAt, icsAt, closeAt, nextOpen, tags: count('data-swap-tool="1"') }));
 
@@ -4165,19 +4168,20 @@ console.log("\nAQ. calendar says why a month is blank");
   const L = (loaded, schedule, calYear, calMonth) => { try { const r = lineFn({ loaded, schedule, calYear, calMonth }); return JSON.stringify([r.text, r.goTo]); } catch (ex) { return "threw: " + String(ex).slice(0, 120); } };
   const RUNS = "the published schedule runs Mon 4/6/2026 → Sun 1/3/2027.";
   const lineCases = lineFn ? [
-    ["still loading", L(false, weeks, 2027, 1), ["Loading the schedule…", null]],
-    ["loaded, nothing in it", L(true, {}, 2026, 11), ["No call schedule loaded — if you expected one, reload the app.", null]],
+    ["still loading, nothing drawn yet", L(false, {}, 2027, 1), ["Loading the schedule…", null]],
+    ["still loading but weeks already drawn → nothing (batch review)", L(false, weeks, 2027, 1), ["", null]],
+    ["loaded, nothing in it", L(true, {}, 2026, 11), ["No call schedule to show — it may not be published yet; if you expected one, reload the app.", null]],
     ["Dec 2026 has call → nothing", L(true, weeks, 2026, 11), ["", null]],
     ["Jan 2027 (Jan 1–3 only) → nothing", L(true, weeks, 2027, 0), ["", null]],
     ["Feb 2027, past the end → not yet + Go to January 2027", L(true, weeks, 2027, 1), [`No surgeon call scheduled for February 2027 yet — ${RUNS}`, { y: 2027, m: 0 }]],
     ["June 2027, past the end → Go to January 2027", L(true, weeks, 2027, 5), [`No surgeon call scheduled for June 2027 yet — ${RUNS}`, { y: 2027, m: 0 }]],
     ["Mar 2026, before the start → no 'yet', no button", L(true, weeks, 2026, 2), [`No surgeon call scheduled for March 2026 — ${RUNS}`, null]],
-    ["a gap month inside the range → no button", L(true, { "2027-01-04": { dayCall: "s1" }, "2027-03-01": { dayCall: "s2" } }, 2027, 1), ["No surgeon call scheduled for February 2027 yet — the published schedule runs Mon 1/4/2027 → Sun 3/7/2027.", null]],
+    ["a gap month inside the range → no 'yet', no range quoted, no button (batch review)", L(true, { "2027-01-04": { dayCall: "s1" }, "2027-03-01": { dayCall: "s2" } }, 2027, 1), ["No surgeon call scheduled for February 2027.", null]],
     ["only blank weeks → not yet, no range", L(true, { "2026-11-02": blank }, 2026, 10), ["No surgeon call scheduled for November 2026 yet.", null]],
   ] : [];
   const lineBad = lineCases.filter(([, g, w]) => g !== JSON.stringify(w)).map(([n, g]) => `${n}: ${g}`);
-  check("AQ3 the Calendar's line, run as written: 'Loading the schedule…' / 'No call schedule loaded — … reload the app.' / 'No surgeon call scheduled for <Month Year> yet — the published schedule runs <from> → <to>.' with a Go-to button only past the end (no 'yet' before the start) / nothing for a month with call",
-    lineCases.length === 9 && lineBad.length === 0, lineFn ? lineBad.join(" | ") : "the line's code was not found exactly once in index-source.html");
+  check("AQ3 the Calendar's line, run as written: 'Loading the schedule…' only while nothing is drawn / 'No call schedule to show — … reload the app.' / 'No surgeon call scheduled for <Month Year> yet — the published schedule runs <from> → <to>.' with a Go-to button only past the end (no 'yet' before the start; a gap month inside the range quotes no range) / nothing for a month with call",
+    lineCases.length === 10 && lineBad.length === 0, lineFn ? lineBad.join(" | ") : "the line's code was not found exactly once in index-source.html");
 
   // AQ4 — placement and render-only
   const HDR = '{DAY_HDR.map(d=><div key={d} style={{textAlign:"center",fontSize:10,fontWeight:700,color:"#8a94a0",padding:"5px 0",letterSpacing:1}}>{d}</div>)}';
@@ -4486,6 +4490,59 @@ console.log("\nAR. Requests tab copy + the APP trade note");
   }
   check("AA writeFailReason is defined once at module scope and both submits use it",
     count("function writeFailReason(err) {") === 1 && count("writeFailReason(insertErr)") === 2);
+}
+
+// ─── AS. The UX batch's review fixes (2026-10-19) ───
+// The batch (AM–AR) was reviewed adversarially before merging. Fixed here:
+//   AS1 a member viewing a colleague on Mine gets no Find Swap (the view is
+//       only a view), and the swap card shows options for someone else's shift
+//       to a member without the two-way buttons (the tool's own picker offers
+//       a member only their own shifts) — executed
+//   AS2 an open My Vacations edit closes when the view (or the account)
+//       changes, so Save can't write one person's dates over another's
+//       vacation; swap options are cleared when the account changes
+//   AS3 while Schedule Tools is held open by swap options, a header tap
+//       changes nothing (it no longer flips the saved state unseen) — executed
+//   AS4 small things: the swap card clears the iPhone status bar when scrolled
+//       to; the download button names whose calendar it is; the new buttons
+//       are readable in dark mode
+console.log("\nAS. The UX batch's review fixes");
+{
+  const nsrcAS = src.replace(/\r\n/g, "\n");
+  // AS1 — the Mine row's gate and the swap card's backstop, executed as written
+  const ROW = "{r.canSwap ? (mineViewId && !isScheduler ? null : (";
+  const rowGate = (canSwap, mineViewId, isScheduler) => { const r = { canSwap }; return r.canSwap ? (mineViewId && !isScheduler ? null : "FIND_SWAP") : "other"; };
+  const rowCases = [rowGate(true, "", false), rowGate(true, "s3", false), rowGate(true, "s3", true), rowGate(false, "s3", false)];
+  check("AS1 Mine: a member viewing a colleague gets no Find Swap (their own Mine, and a scheduler's view of anyone, still do)",
+    count(ROW) === 1 && count(")) : r.shiftKey ? (") === 1 && JSON.stringify(rowCases) === JSON.stringify(["FIND_SWAP", null, "FIND_SWAP", "other"]), JSON.stringify(rowCases));
+  const BACK = "{s.returnSwaps.length > 0 && !isScheduler && swapTarget.surgeonId !== mySurgeon ? (";
+  const iBack = nsrcAS.indexOf(BACK), iElse = iBack < 0 ? -1 : nsrcAS.indexOf(") : s.returnSwaps.length > 0 ? (", iBack), iExec = nsrcAS.indexOf("executeTwoWaySwap(swapTarget.mondayStr, swapTarget.shift, swapTarget.surgeonId,");
+  const gate = (n, isScheduler, target, me) => (n > 0 && !isScheduler && target !== me ? "NOTE" : n > 0 ? "BUTTONS" : "NONE");
+  const gateCases = [gate(2, false, "s3", "s3"), gate(2, false, "s4", "s3"), gate(2, true, "s4", "s6"), gate(0, false, "s4", "s3")];
+  check("AS1 the swap card: for a member, options for someone else's shift show a note instead of the two-way buttons; their own shift and a scheduler's view keep the buttons",
+    count(BACK) === 1 && iElse > iBack && iExec > iElse && iExec - iElse < 1200 && count("can make this swap.") === 1
+      && JSON.stringify(gateCases) === JSON.stringify(["BUTTONS", "NOTE", "BUTTONS", "NONE"]), JSON.stringify({ iBack, iElse, iExec, gateCases }));
+  // AS2 — the resets
+  const EV = "useEffect(() => { setMyVacEdit(null); }, [mineViewId, mySurgeon]);", ES = "useEffect(() => { setSwapTarget(null); setSwapSuggestions(null); }, [mySurgeon]);";
+  const iVacState = nsrcAS.indexOf("const [myVacEdit, setMyVacEdit] = useState(null);"), iView = nsrcAS.indexOf('const [mineViewId, setMineViewId] = useState("")'), iEV = nsrcAS.indexOf(EV);
+  const iSwapState = nsrcAS.indexOf("const [swapSuggestions, setSwapSuggestions] = useState(null);"), iES = nsrcAS.indexOf(ES);
+  check("AS2 an open My Vacations edit closes when the Mine view or the account changes; swap options clear when the account changes (each effect after the state it names)",
+    count(EV) === 1 && iVacState >= 0 && iView >= 0 && iEV > iVacState && iEV > iView && count(ES) === 1 && iSwapState >= 0 && iES > iSwapState,
+    JSON.stringify({ iVacState, iView, iEV, iSwapState, iES }));
+  // AS3 — the Collapsible's toggle, executed: held open, a tap neither re-renders nor persists
+  const TG0 = "const toggle = () => { if (forceOpen) return; setOpen(o => {", iT = nsrcAS.indexOf(TG0), iTE = iT < 0 ? -1 : nsrcAS.indexOf("const shown = open || forceOpen;", iT);
+  let tgl = null;
+  try { tgl = iT >= 0 && iTE > iT ? vm.runInContext(`(function (forceOpen, ck, setOpen, localStorage, console) { ${nsrcAS.slice(iT, iTE)} return toggle; })`, sandbox) : null; } catch (ex) { tgl = null; }
+  const tap = (forced) => { const calls = [], writes = []; let v = false; const t = tgl(forced, "cal_tools", (u) => { calls.push(1); v = u(v); }, { setItem: (k, x) => writes.push(k + "=" + x) }, { warn() {} }); t(); return { calls: calls.length, writes, v }; };
+  const held = tgl ? tap(true) : null, free = tgl ? tap(false) : null;
+  check("AS3 while held open, a Schedule Tools header tap changes nothing (no state change, nothing saved); otherwise it toggles and saves as before",
+    !!held && held.calls === 0 && held.writes.length === 0 && !!free && free.calls === 1 && free.v === true && JSON.stringify(free.writes) === JSON.stringify(["dsg_collapse_cal_tools=1"]), JSON.stringify({ held, free }));
+  // AS4 — the small things
+  check("AS4 the swap card clears the iPhone status bar when scrolled to; Download names whose calendar it is while viewing a colleague; 'Back to mine' and 'Go to <Month>' have dark-mode colors",
+    count('data-swap-tool="1" style={{...css.card,marginTop:14,scrollMarginTop:"calc(env(safe-area-inset-top, 0px) + 12px)",') === 1
+      && count('📅 {mineViewId ? `Download ${sMap[mineViewId]?.name || mineViewId}\'s Calendar` : "Download My Calendar"} (.ics)') === 1
+      && count('...(dk ? {background:"#0f3460",color:"#e0e0f0",border:"1px solid #2a3a5e"} : {})}}>Back to mine</button>') === 1
+      && count('...(dk ? {background:"#0f3460",color:"#e0e0f0",border:"1px solid #2a3a5e"} : {})}}>Go to {MO[goTo.m]} {goTo.y}</button>') === 1);
 }
 
 // ─── AB. APP call-shift edits wait for the APP-shift row (2026-10-11, audit QW4 + its review) ───
