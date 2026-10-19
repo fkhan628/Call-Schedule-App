@@ -8236,8 +8236,8 @@ await (async () => {
 
   // ── (3) Factory reset: the gate, one message ──
   const rstSrc = after("  const resetAllData = async () => {", "\n  };\n\n  // ─── Push Notifications");
-  const rstF = rstSrc && fnG("isScheduler, userProfile, alert, schedEditable, prompt, setSaveStatus, setTimeout, snapshots, schedSyncRef, showToast, logAudit, allowWipeSaveRef, everHadRealDataRef, supabase, console, setSurgeons, INIT_SURGEONS, setApps, INIT_APPS, toClearAll, setBackupMondaySet, setFierceBackupSet, scheduleRef, commitSchedule, runAuthoritativeSchedule, setAppShifts, setPriorCounts, setYear1Counts, setStartMonth, setStartYear, sessionEpochRef, resetBusyRef",
-    "async () => {" + rstSrc + "\n  }"); // (23/n: + the reset's hold on the setup autosave — review r6 broke-1)
+  const rstF = rstSrc && fnG("isScheduler, userProfile, alert, schedEditable, prompt, setSaveStatus, setTimeout, snapshots, schedSyncRef, showToast, logAudit, allowWipeSaveRef, everHadRealDataRef, supabase, console, setSurgeons, INIT_SURGEONS, setApps, INIT_APPS, toClearAll, setBackupMondaySet, setFierceBackupSet, scheduleRef, commitSchedule, runAuthoritativeSchedule, setAppShifts, setPriorCounts, setYear1Counts, setStartMonth, setStartYear, sessionEpochRef, resetBusyRef, pendingSaveRef, setSetupSaveNudge",
+    "async () => {" + rstSrc + "\n  }"); // (23/n: + the reset's hold on the setup autosave — review r6 broke-1; 26/n: + unarm()'s nudge of a held setup change — r7 broke-2)
   if (!rstF) check("SE-G resetAllData is extractable", false, "anchor / compile");
   else {
     const reset = async (a, o = {}) => {
@@ -8245,7 +8245,7 @@ await (async () => {
       const noop = () => {};
       await rstF({ isScheduler: true, userProfile: null, alert: noop, schedEditable: a.schedEditable, prompt: () => { w.prompts++; return "RESET"; }, setSaveStatus: (s) => w.status.push(s), setTimeout: () => 0, sessionEpochRef: { current: 0 },
         snapshots: { capture: async () => { w.snaps++; if (o.duringSnap) o.duringSnap(); return { ok: true }; } }, schedSyncRef: a.schedSyncRef, showToast: a.showToast, logAudit: () => { w.audits++; },
-        allowWipeSaveRef: { current: false }, everHadRealDataRef: { current: true }, resetBusyRef: { current: false }, supabase: { from: () => ({ upsert: async () => { w.upserts++; return { error: null }; } }) },
+        allowWipeSaveRef: { current: false }, everHadRealDataRef: { current: true }, resetBusyRef: { current: false }, pendingSaveRef: { current: null }, setSetupSaveNudge: noop, supabase: { from: () => ({ upsert: async () => { w.upserts++; return { error: null }; } }) },
         console: { error: (...x) => a.errors.push(x.map(String).join(" ")), warn: noop }, setSurgeons: () => { w.cleared++; }, INIT_SURGEONS: [], setApps: noop, INIT_APPS: [], toClearAll: async () => ({ ok: true }), // (21/n: it answers { ok } — review r4 fixes-2)
         setBackupMondaySet: noop, setFierceBackupSet: noop, scheduleRef: a.ref, commitSchedule: a.commitSchedule, runAuthoritativeSchedule: a.runAuthoritativeSchedule,
         setAppShifts: noop, setPriorCounts: noop, setYear1Counts: noop, setStartMonth: noop, setStartYear: noop })();

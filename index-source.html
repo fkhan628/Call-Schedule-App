@@ -290,6 +290,9 @@ function CallSchedule() {
   //     resurrect the pre-commit map after dirty clears.
   //   • dayOffSaveChainRef — saves serialize on a promise chain; two upserts
   //     can never be in flight together, so commits can't reorder.
+  //   • dayOffInFlightRef — the upserts on the wire. Within one session a
+  //     save in flight is always dirty; after a session boundary (which
+  //     forgets dirty) one still out blocks adoption until it settles.
   //   • Audits queue per tap, logged only when the save that CARRIED them
   //     commits. Page-death keepalive flushes are best-effort: the data write
   //     usually lands, its audit entries die with the page (accepted — an
@@ -298,6 +301,8 @@ function CallSchedule() {
   const dayOffDirtyRef = useRef(false);
   const dayOffLastWriteTsRef = useRef(null);
   const dayOffSaveChainRef = useRef(Promise.resolve());
+  const dayOffInFlightRef = useRef(0);       // day-off upserts on the wire (review r7 fix-1 — see adoptDayOffRow)
+  const dayOffHeldRowRef = useRef(null);     // the newest row read (and refused) while one was out after a boundary — taken in at its landing (26/n review)
   const dayOffSaveTimerRef = useRef(null);  // debounce: one enqueue per tap burst
   const dayOffRetryTimerRef = useRef(null); // auto-retry for failed/unconfirmed saves
   const dayOffPendingAuditRef = useRef([]); // audit entries logged only after their save COMMITS
@@ -312,6 +317,20 @@ function CallSchedule() {
   // hole: the mount path lacked the guard the refresh had, and reloadTrigger
   // re-runs the mount load seconds into an interactive session).
   const adoptDayOffRow = (offRow) => {
+    // Not while the PREVIOUS session's save is still on the wire (review r7
+    // fix-1 / broke-1). The boundary forgot the dirty flag and the watermark
+    // (forgetDayOffs), so a read served before that save commits was adopted
+    // and armed the chips — and the next account's first tap saved that older
+    // map over the committed one, nobody told. Within one session a save in
+    // flight is always dirty, so this bites only after a forget: the chips stay
+    // refused; a save that commits puts its own row on screen (enqueueDayOffSave),
+    // and the read after it settles (its own realtime event, or the 60-s poll)
+    // arms them. The newest row refused meanwhile is kept: that landing takes it
+    // in against its own (another device's later commit is never lost to it).
+    if (dayOffInFlightRef.current && !dayOffDirtyRef.current) {
+      if (offRow?.data && typeof offRow.data === "object" && (!dayOffHeldRowRef.current || (offRow.updated_at || "") > (dayOffHeldRowRef.current.updated_at || ""))) dayOffHeldRowRef.current = offRow;
+      return;
+    }
     setAppDayOffLoaded(true); // ANY successful read arms the edit gate — missing row included
     if (!offRow?.data || typeof offRow.data !== "object") return;
     if (dayOffDirtyRef.current) return; // unsaved local edits win
@@ -505,6 +524,7 @@ function CallSchedule() {
   // No-call days: person is working but should NOT be assigned call. Tracked
   // separately from vacations; the generator treats them the same (block call).
   const [noCallDays, setNoCallDays] = useState({}); // { personId: [[start,end],...] }
+  const timeOffLoadSeqRef = useRef({ read: 0, del: 0, shown: 0 }); // time-off reads sent, time_off DELETEs answered, the newest read shown: the newest read wins, and one a DELETE answered during is read again (review r7 fix-2 — loadTimeOff, deleteTimeOff)
   const [ncSurgeon, setNcSurgeon] = useState("");
   const [ncStart, setNcStart] = useState(() => fmt(new Date()));
   const [ncEnd, setNcEnd] = useState(() => fmt(new Date()));
@@ -1346,9 +1366,23 @@ function CallSchedule() {
   // Load the whole time_off table and project it into the two maps.
   // quiet=true (the 60s poll) logs failures console-only — a transient outage
   // must not toast once a minute; the initial load and realtime path stay loud.
-  const loadTimeOff = async (quiet) => {
+  // The newest read wins (review r7 fix-2): an answer is dropped when a newer
+  // read's answer is already shown — not merely sent: one that then fails
+  // must not cost the older, good answer (26/n review). And one a time_off
+  // DELETE answered during (deleteTimeOff counts them) may have been served
+  // before that DELETE committed: it is dropped and the table read again —
+  // sent now, so served after it. Taken in, a 60-s poll's answer landing
+  // after the factory reset's final run put the deleted time off back on
+  // screen and re-armed the empty-save guard (every setup change after the
+  // next poll "⚠ Save blocked"); a single removal's came back until the next
+  // poll.
+  const loadTimeOff = async function readTimeOff(quiet) {
+    const sq = timeOffLoadSeqRef.current, seq = ++sq.read, del = sq.del;
     try {
       const rows = await db.query("time_off", { select: "id,person_id,kind,start_date,end_date" });
+      if (seq < sq.shown) return; // superseded — a newer read's answer is already shown
+      if (del !== sq.del) { await readTimeOff(quiet); return; } // a DELETE answered meanwhile — read again
+      sq.shown = seq;
       const { vac, nc } = buildTimeOffMaps(rows || []);
       setVacations(vac);
       setNoCallDays(nc);
@@ -1472,14 +1506,21 @@ function CallSchedule() {
   // opts.quiet: its caller tells the failure (the factory reset's one
   // message); otherwise it toasts — never on the next session's screen (the
   // session at the call, checked after the await — review r4 fixes-2).
+  // A time-off read sent before this DELETE answered — before it was sent, or
+  // while it was out — may have been served before it committed: it is counted
+  // when it answers, so loadTimeOff reads again when such a read's answer
+  // lands later (review r7 fix-2).
   const deleteTimeOff = async (filter, opts) => {
     const ep = sessionEpochRef.current, quiet = !!(opts && opts.quiet);
     const tell = () => { if (!quiet && sessionEpochRef.current === ep) showToast("Couldn't remove that — check your connection and try again.", "error"); };
     try {
-      const res = await fetch(`${SUPABASE_URL}/rest/v1/time_off?${filter}`, {
-        method: "DELETE",
-        headers: dbAuthHeaders(),
-      });
+      let res;
+      try {
+        res = await fetch(`${SUPABASE_URL}/rest/v1/time_off?${filter}`, {
+          method: "DELETE",
+          headers: dbAuthHeaders(),
+        });
+      } finally { timeOffLoadSeqRef.current.del++; } // (answered or not)
       if (!res.ok) {
         const t = await res.text().catch(() => "");
         console.error("time_off delete failed", res.status, t);
@@ -2633,8 +2674,12 @@ function CallSchedule() {
     // everHadRealDataRef=false would disarm the empty-save guard — exactly the
     // transient-empty race the guard exists to close.
     // (It also ends the reset's hold on the setup autosave — resetBusyRef,
-    // review r6 broke-1: the screen and the server agree again by then.)
-    const unarm = () => { resetBusyRef.current = false; allowWipeSaveRef.current = false; everHadRealDataRef.current = true; };
+    // review r6 broke-1: the screen and the server agree again by then — and
+    // re-runs the autosave for a setup change the hold kept back, as
+    // reauthLanded does: review r7 broke-2. A stop path that puts the reset's
+    // setup on screen renders anyway; the one that doesn't — the setup clear
+    // refused or unanswered — wrote the held change only at the next poll.)
+    const unarm = () => { resetBusyRef.current = false; allowWipeSaveRef.current = false; everHadRealDataRef.current = true; if (pendingSaveRef.current) setSetupSaveNudge(n => n + 1); };
     // The reset's own setup, on this screen — what the stored setup is cleared
     // to (the full reset below; and a half-landed one, so the screen matches
     // the server and no later autosave quietly writes the old setup back).
@@ -2653,6 +2698,31 @@ function CallSchedule() {
       try { const { error } = await supabase.from(table).upsert({ id: "main", data, updated_at: new Date().toISOString() }); return error ? { ok: false, error } : { ok: true }; }
       catch (e) { return { ok: false, error: e, unanswered: true }; }
     };
+    // Each of the three clears is bounded (review r7 broke-2): none has a
+    // timeout of its own (config.js's upsert and deleteTimeOff are bare
+    // fetches), so one on a dead connection held the setup autosave (below)
+    // for as long as it was out, with nothing on screen — and the reset never
+    // finished or said anything. After CLEAR_WAIT_MS it counts as no answer:
+    // that clear's stop path runs (unarm(), and a message that says it may
+    // have landed). The request itself is not cancelled; nothing after it is
+    // sent. If it does land later (onLate — in this session only), the screen
+    // and the server are brought back in line with what was said (26/n
+    // review): the setup clear's — the reset was cancelled — by writing this
+    // screen's setup back over the cleared blob; the time off's (toClearAll
+    // has cleared it here) by disarming the empty-save guard, as the full
+    // reset does — the time off is really gone. (The APP-shifts clear's needs
+    // nothing: its realtime event, or the 60-s poll, adopts the stored map —
+    // clearing this screen's at the landing could blank a newer one.)
+    const CLEAR_WAIT_MS = 20000;
+    const bounded = (p, onLate) => {
+      let settled = false; p.then(() => { settled = true; });
+      return Promise.race([p, new Promise(r => setTimeout(() => {
+        if (settled) return; // (answered in time: its timer is left to run out)
+        r({ ok: false, unanswered: true, error: `no answer in ${CLEAR_WAIT_MS / 1000} s` });
+        if (onLate) p.then(x => { if (x && x.ok && sessionEpochRef.current === ep) onLate(); });
+      }, CLEAR_WAIT_MS))]);
+    };
+    const lateBlob = () => setSetupSaveNudge(n => n + 1), lateTimeOff = () => { everHadRealDataRef.current = false; };
     // From the setup clear to the final run the setup autosave writes nothing
     // (review r6 broke-1): a render in any of the three clears' gaps — a
     // pulled week, the 60-s poll's time off, a realtime event — shows the OLD
@@ -2660,9 +2730,9 @@ function CallSchedule() {
     // reset ends, wrote that old setup back over the cleared blob (and used
     // up the one-shot bypass, so the reset's own write was then blocked).
     resetBusyRef.current = true;
-    const blobClear = await clearRow("call_schedule_data", { _intentionalClear: true });
+    const blobClear = await bounded(clearRow("call_schedule_data", { _intentionalClear: true }), lateBlob);
     if (sessionEpochRef.current !== ep) { unarm(); return; } // another session now: the APP shifts are not cleared as the next account
-    const appClear = blobClear.ok ? await clearRow("app_shifts_data", {}) : null;
+    const appClear = blobClear.ok ? await bounded(clearRow("app_shifts_data", {})) : null;
     if (sessionEpochRef.current !== ep) { unarm(); return; } // …nor anything after it: no weeks job as the next account, no message
     if (!blobClear.ok || !appClear.ok) {
       console.error("Factory reset: clearing stored data failed:", (blobClear.ok ? appClear : blobClear).error);
@@ -2671,9 +2741,10 @@ function CallSchedule() {
         // The setup WAS cleared on the server — the APP shifts not: the reset
         // stops there. The screen takes the reset's setup too (it matches the
         // server); the APP shifts, time off and weeks stay as they are. Said
-        // exactly so — never "Nothing was changed".
+        // exactly so — never "Nothing was changed". No answer (thrown, or past
+        // its bound): the APP-shifts clear may have landed — said so (26/n review).
         resetSetupHere();
-        showToast("Factory reset: the setup was reset, but clearing the APP shifts failed — so the time off and the schedule weeks were left as they are. Run the reset again, or restore the \"Before factory reset\" snapshot.", "error");
+        showToast("Factory reset: the setup was reset, but clearing the APP shifts " + (appClear.unanswered ? "got no answer — so the APP shifts may have been cleared, and the" : "failed — so the") + " time off and the schedule weeks were left as they are. Run the reset again, or restore the \"Before factory reset\" snapshot.", "error");
         return;
       }
       // The setup clear failed — so nothing else was sent. Refused (an HTTP
@@ -2695,7 +2766,7 @@ function CallSchedule() {
     // (still shown, as the server still holds it) and the weeks. No answer:
     // it may have landed — said so. Its own generic toast is this message
     // instead (quiet); and nothing at all after a session change.
-    const toClear = await toClearAll(undefined, { quiet: true });
+    const toClear = await bounded(toClearAll(undefined, { quiet: true }), lateTimeOff);
     // The reset's setup and APP shifts go on this screen only AFTER that
     // await (review r5 regress-1). Put there before it (21/n), a render in the
     // gap — the reset's setup beside the OLD weeks and time off, not a wiped
@@ -4696,13 +4767,30 @@ function CallSchedule() {
       if (dayOffEpochRef.current !== sessionEpochRef.current) { dayOffDirtyRef.current = false; dayOffPendingAuditRef.current = []; return; } // another session's taps: dropped, never sent from this one
       const ep = sessionEpochRef.current, tapH = dbAuthHeaders();
       const carried = dayOffPendingAuditRef.current, auditCount = carried.length; // (the array of this save's taps — kept if a session boundary forgets them meanwhile: review r6 fix-3)
-      const ts = new Date().toISOString();
+      const ts = new Date().toISOString(), sentMap = appDayOffRef.current;
       try {
-        const { error } = await supabase.from("app_shifts_data")
-          .upsert({ id: "dayoff", data: appDayOffRef.current, updated_at: ts });
+        dayOffInFlightRef.current++; // counted while it is out, settled or not (review r7 fix-1: adoptDayOffRow waits for it after a boundary)
+        let res, held;
+        try {
+          res = await supabase.from("app_shifts_data")
+            .upsert({ id: "dayoff", data: sentMap, updated_at: ts });
+        } finally { dayOffInFlightRef.current--; held = dayOffHeldRowRef.current; dayOffHeldRowRef.current = null; } // (a row read while it was out: taken in at the landing below, else dropped)
+        const { error } = res;
         if (error) throw new Error(String(error).slice(0, 200));
         const here = sessionEpochRef.current === ep;
-        if (here) dayOffLastWriteTsRef.current = ts; // (another session now: its read adopts this row — the watermark was forgotten at the boundary, review r6 fix-3)
+        if (here) dayOffLastWriteTsRef.current = ts;
+        // Committed after a session boundary (26/n review): this row is the
+        // stored one, the newest this device knows — so it goes on screen with
+        // its watermark, and a read answered later with an older row (served
+        // before this commit; or the read of this very commit refused while its
+        // answer was still out, so no other read follows) is refused as stale,
+        // never adopted under the next account's taps. (Nothing is dirty here:
+        // adoptDayOffRow kept the chips refused while it was out.)
+        else if (!dayOffDirtyRef.current) {
+          appDayOffRef.current = sentMap; setAppDayOff(sentMap);
+          dayOffLastWriteTsRef.current = ts;
+          if (held) adoptDayOffRow(held); // the newest row read while it was out: taken in only if newer than this one (another device's commit after it), and the chips armed
+        }
         // Audit only what this save actually CARRIED and COMMITTED; entries
         // queued by taps landing mid-save wait for the next confirmed save.
         carried.splice(0, auditCount).forEach(a =>
