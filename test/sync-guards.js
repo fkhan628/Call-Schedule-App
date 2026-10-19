@@ -3361,6 +3361,90 @@ console.log("\nAN. bell notification panel");
     && JSON.stringify(liveXmas) === before && liveXmas.coverage.length === 3);
 }
 
+// ─── AO. On Call Today banner on a covered holiday (UX audit, 2026-10-18) ───
+// On a holidayCoverage date calData drops that date's Svc / Ngt / Wknd rows and
+// adds ONE {type:"Holiday"} row. todayCall never read that row, so on a covered
+// holiday hasCallToday was falsy and the On Call Today banner — with the Send
+// Notification button — disappeared for everyone, ?public=1 and the OR board
+// too (Thanksgiving 11/26 is next). todayCall now names the holiday holder; the
+// label is the holiday's own name (calData copies cov.holiday: a multi-day
+// holiday's coverage name is only "Fri 24h" / "Sat 24h", generator.js), and the
+// banner chip and the share message lead with it.
+//   AO1 executed: the real calData + todayCall memo bodies and hasCallToday, sliced
+//       verbatim, on a Thanksgiving week (+ a plain-day control, a Fri/Sat pair, a swap, an unassigned date)
+//   AO2 executed: the real buildTonightMsg on those days
+//   AO3 source pins: the banner's holiday chip (colors, label, fallback) sits before the Service Week chip
+console.log("\nAO. On Call Today banner on a covered holiday");
+{
+  const CD = "  const calData = useMemo(() => {", TC = "  const todayCall = useMemo(() => {", HC = "  const hasCallToday = ", BM = "  const buildTonightMsg = () => {";
+  const c0 = src.indexOf(CD), c1 = c0 < 0 ? -1 : src.indexOf("\n  }, [schedule, appShifts]);", c0);
+  const t0 = src.indexOf(TC), t1 = t0 < 0 ? -1 : src.indexOf("\n  }, [todayEntries, sMap, aMap]);", t0);
+  const h0 = src.indexOf(HC), h1 = h0 < 0 ? -1 : src.indexOf(";", h0);
+  const b0 = src.indexOf(BM), b1 = b0 < 0 ? -1 : src.indexOf("\n  };", b0);
+  const e0 = src.indexOf("const holidayEmoji = (label) => {"), e1 = e0 < 0 ? -1 : src.indexOf("\n  };", e0);
+  const marks = [c0, c1, t0, t1, h0, h1, b0, b1, e0, e1];
+  const found = marks.every((i) => i > 0) && [CD, TC, HC, BM].every((k) => src.indexOf(k, src.indexOf(k) + 1) === -1);
+  check("AO0 the calData memo, the todayCall memo, hasCallToday, buildTonightMsg and holidayEmoji are extractable (each declared once)", found, marks.join(","));
+  let run = null;
+  if (found) {
+    try {
+      run = vm.runInContext("(function (env) {\n"
+        + "  const { schedule, appShifts, todayStr, sMap, aMap, silvisDays, silvisFakId, silvisActive, isPublicMode } = env;\n"
+        + "  const holidayEmoji = (function () { " + src.slice(e0, e1 + 4) + "\n return holidayEmoji; })();\n"
+        + "  const calData = (() => {" + src.slice(c0 + CD.length, c1) + "\n  })();\n"
+        + "  const todayEntries = calData[todayStr] || [];\n"
+        + "  const todayCall = (() => {" + src.slice(t0 + TC.length, t1) + "\n  })();\n"
+        + src.slice(h0, h1 + 1) + "\n"
+        + "  const buildTonightMsg = () => {" + src.slice(b0 + BM.length, b1) + "\n  };\n"
+        + "  return { entries: JSON.parse(JSON.stringify(todayEntries)), todayCall: JSON.parse(JSON.stringify(todayCall)), hasCallToday: !!hasCallToday, msg: buildTonightMsg() };\n"
+        + "})", sandbox, { filename: "today-call-extract.js" });
+    } catch (ex) { check("AO0 …and they compile standalone", false, String(ex)); }
+  }
+  const SM = { s1: { name: "DJA" }, s2: { name: "MCC" }, s3: { name: "RPC" }, s4: { name: "KJH" }, s5: { name: "REH" }, s6: { name: "FAK" }, s7: { name: "ARW" } };
+  const SCHED = {
+    "2026-11-23": { dayCall: "s1", nights: { mon: "s2", tue: "s3", wed: "s4", thu: "s5", wknd: "s7" },
+      holidayCoverage: { "2026-11-26": { surgeonId: "s4", role: "holiday_24h", hours: "7a–7a", name: "Thanksgiving 24h", type: "major", holiday: "Thanksgiving" } } },
+    "2026-11-30": { dayCall: "s3", nights: { mon: "s1", wknd: "s2" }, holidayCoverage: { "2026-12-05": { surgeonId: "s7", type: "swap", name: "Saturday swap coverage" } } },
+    "2027-03-15": { dayCall: "s5", nights: { wknd: "s1" }, holidayCoverage: {
+      "2027-03-19": { surgeonId: "s2", role: "holiday_24h", hours: "7a–7a", name: "Fri 24h", type: "major", holiday: "Test Friday" },
+      "2027-03-20": { surgeonId: null, role: "holiday_24h", hours: "7a–7a", name: "Sat 24h", type: "major", holiday: "Test Friday" } } },
+  };
+  const day = (ds) => { try { return run ? run({ schedule: SCHED, appShifts: { "2026-11-26": "a1" }, todayStr: ds, sMap: SM, aMap: { a1: { name: "APP1" } } }) : null; } catch (ex) { return { error: String(ex) }; } };
+  const tg = day("2026-11-26"), wed = day("2026-11-25"), fri = day("2027-03-19"), sat = day("2027-03-20"), swp = day("2026-12-05");
+  const J = (o) => JSON.stringify(o);
+  const tc = (r) => (r && r.todayCall) || {};
+  const types = (r) => ((r && r.entries) || []).map((e) => e.type).sort();
+  check("AO1 Thanksgiving 11/26: calData holds only the Holiday row (+ the APP), no service / night / weekend row, and the row carries the holiday's own name",
+    J(types(tg)) === J(["APP", "Holiday"]) && ((tg && tg.entries) || []).some((e) => e.type === "Holiday" && e.surgeon === "s4" && e.holiday === "Thanksgiving"), J(tg && (tg.entries || tg.error)));
+  check("AO1 Thanksgiving 11/26: todayCall names the holder (KJH) as \"Thanksgiving\" with 🦃, no service / night / weekend, the APP kept, and hasCallToday is true (the banner shows)",
+    J(tc(tg).holiday) === J({ who: "KJH", label: "Thanksgiving", emoji: "🦃" }) && tc(tg).dayCall === null && tc(tg).night === null && tc(tg).weekend === null
+    && tc(tg).app === "APP1" && !!tg && tg.hasCallToday === true, J(tg && (tg.todayCall || tg.error)));
+  check("AO1 control, Wed 11/25 (no coverage): service DJA, night KJH, no holiday — unchanged",
+    tc(wed).dayCall === "DJA" && tc(wed).night === "KJH" && !tc(wed).holiday && !!wed && wed.hasCallToday === true, J(wed && (wed.todayCall || wed.error)));
+  check("AO1 a Fri + Sat holiday pair: Fri is labeled with the holiday's name (\"Test Friday\", not \"Fri\"); an unassigned Sat still shows the banner with who = null",
+    J(tc(fri).holiday) === J({ who: "MCC", label: "Test Friday", emoji: "📅" }) && tc(fri).weekend === null && tc(fri).dayCall === null
+    && J(tc(sat).holiday) === J({ who: null, label: "Test Friday", emoji: "📅" }) && !!sat && sat.hasCallToday === true, J({ fri: fri && (fri.todayCall || fri.error), sat: sat && (sat.todayCall || sat.error) }));
+  check("AO1 a swap coverage date is labeled with its own name (as the Mine tab does)",
+    tc(swp).holiday && tc(swp).holiday.who === "ARW" && tc(swp).holiday.label === "Saturday swap coverage" && tc(swp).weekend === null, J(swp && (swp.todayCall || swp.error)));
+  const lines = (r) => String((r && r.msg) || "").split("\n");
+  check("AO2 the share message on Thanksgiving leads with \"🦃 Thanksgiving 24h (7a–7a): KJH\" (first line after the header), keeps the APP line, and no longer says \"No call assignments\"",
+    lines(tg)[2] === "🦃 Thanksgiving 24h (7a–7a): KJH" && lines(tg).some((l) => l.startsWith("👩‍⚕️ APP (") && l.endsWith("): APP1"))
+    && !String(tg && tg.msg).includes("No call assignments found for today."), J(lines(tg)));
+  check("AO2 control: the Wed 11/25 message is unchanged (no holiday line; service, then night)",
+    !lines(wed).some((l) => l.includes("24h (7a–7a)")) && lines(wed)[2] === "🏥 Service Week: DJA" && lines(wed)[3] === "🌙 Night (5p–7a): KJH", J(lines(wed)));
+  check("AO2 an unassigned holiday reads \"Unassigned\" (and is not \"No call assignments\")",
+    lines(sat)[2] === "📅 Test Friday 24h (7a–7a): Unassigned" && !String(sat && sat.msg).includes("No call assignments found for today."), J(lines(sat)));
+  check("AO2 exactly one holiday line in buildTonightMsg", count("if (todayCall.holiday) msg +=") === 1, `×${count("if (todayCall.holiday) msg +=")}`);
+  const B0 = src.indexOf("{/* ─── On Call Today Banner ─── */}"), B1 = B0 < 0 ? -1 : src.indexOf("{(todayCall.fierce || todayCall.fierceBkp) && (", B0);
+  const ban = B0 > 0 && B1 > B0 ? src.slice(B0, B1) : "";
+  const hi = ban.indexOf("{todayCall.holiday && ("), di = ban.indexOf("{todayCall.dayCall && (");
+  const chip = hi > 0 && di > hi ? ban.slice(hi, di) : "";
+  check("AO3 the banner is still gated on hasCallToday and its holiday chip comes BEFORE the Service Week chip",
+    /^\{\/\* ─── On Call Today Banner ─── \*\/\}\s*\{hasCallToday && \(/.test(ban) && count("{todayCall.holiday && (") === 1 && hi > 0 && di > hi, `holiday chip at ${hi}, service chip at ${di}`);
+  check("AO3 the holiday chip: the holiday colors, \"<label> · 24h 7a–7a\", the emoji, and \"Unassigned\" when nobody holds it",
+    ['background:"#fef0e8"', 'border:"1px solid #e0a868"', 'color:"#c06020"', "{todayCall.holiday.label} · 24h 7a–7a", "{todayCall.holiday.emoji}", '{todayCall.holiday.who || "Unassigned"}'].every((s) => chip.includes(s)), chip.slice(0, 200));
+}
+
 // ─── X. Holidays + single-day coverage in the downloads and the Mine tab (2 of 3, 2026-10-02) ───
 // The calendar (calData) already shows who really holds each date: a
 // holidayCoverage entry (any type, backup weeks included) replaces that date's

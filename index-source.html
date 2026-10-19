@@ -7235,7 +7235,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       // Holiday coverage
       if (wk.holidayCoverage) {
         Object.entries(wk.holidayCoverage).forEach(([ds, cov]) => {
-          d[ds]=[...(d[ds]||[]),{type:"Holiday",surgeon:cov.surgeonId,cls:"holiday",role:cov.role,hours:cov.hours,holName:cov.name,holType:cov.type}];
+          d[ds]=[...(d[ds]||[]),{type:"Holiday",surgeon:cov.surgeonId,cls:"holiday",role:cov.role,hours:cov.hours,holName:cov.name,holType:cov.type,holiday:cov.holiday}];
         });
       }
     });
@@ -7294,8 +7294,11 @@ ${"</"}script>${"</"}body>${"</"}html>`;
   const todayDow = new Date().getDay(); // 0=Sun
   const todayEntries = calData[todayStr] || [];
   const todayCall = useMemo(() => {
-    const info = { dayCall: null, night: null, weekend: null, app: null, fierce: false, fierceBkp: false };
+    const info = { dayCall: null, night: null, weekend: null, app: null, fierce: false, fierceBkp: false, holiday: null };
     todayEntries.forEach(e => {
+      // A covered holiday replaces that date's Svc/Ngt/Wknd rows in calData, so it is the day's 24h holder.
+      // The label comes from the holiday's own name (a multi-day holiday's coverage name is only "Fri 24h").
+      if (e.type === "Holiday") info.holiday = { who: sMap[e.surgeon]?.name || null, label: e.holType === "swap" ? (e.holName || "Coverage") : holidayTitleName({ holiday: e.holiday, label: e.holName }), emoji: holidayEmoji(e.holiday || e.holName) };
       if (e.type === "Svc" || e.type === "B-Svc") info.dayCall = sMap[e.surgeon]?.name || null;
       if (e.type === "Ngt" || e.type === "B-Ngt") info.night = sMap[e.surgeon]?.name || null;
       if (e.type === "Wknd" || e.type === "B-Wknd") info.weekend = sMap[e.surgeon]?.name || null;
@@ -7306,7 +7309,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     return info;
   }, [todayEntries, sMap, aMap]);
 
-  const hasCallToday = todayCall.dayCall || todayCall.night || todayCall.weekend;
+  const hasCallToday = todayCall.dayCall || todayCall.night || todayCall.weekend || todayCall.holiday;
 
   // Build notification message for tonight
   const buildTonightMsg = () => {
@@ -7317,6 +7320,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     const dow = today.getDay();
     const appTimeLabel = (dow === 0 || dow === 6) ? "7a–7a" : "5p–7a";
     let msg = `🏥 DSG Call — ${dayName} ${mo}/${dy}\n\n`;
+    if (todayCall.holiday) msg += `${todayCall.holiday.emoji} ${todayCall.holiday.label} 24h (7a–7a): ${todayCall.holiday.who || "Unassigned"}\n`;
     if (todayCall.dayCall) msg += `🏥 Service Week: ${todayCall.dayCall}\n`;
     if (todayCall.night) msg += `🌙 Night (5p–7a): ${todayCall.night}\n`;
     if (todayCall.weekend) msg += `🌗 Weekend: ${todayCall.weekend}\n`;
@@ -9252,6 +9256,15 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                 </button>}
               </div>
               <div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
+                {todayCall.holiday && (
+                  <div style={{display:"flex",alignItems:"center",gap:6,padding:"6px 12px",background:"#fef0e8",borderRadius:8,border:"1px solid #e0a868"}}>
+                    <span style={{fontSize:16}}>{todayCall.holiday.emoji}</span>
+                    <div>
+                      <div style={{fontSize:10,color:"#c06020",fontWeight:600,textTransform:"uppercase",letterSpacing:0.5}}>{todayCall.holiday.label} · 24h 7a–7a</div>
+                      <div style={{fontSize:15,fontWeight:700,color:"#1a2a3a"}}>{todayCall.holiday.who || "Unassigned"}</div>
+                    </div>
+                  </div>
+                )}
                 {todayCall.dayCall && (
                   <div style={{display:"flex",alignItems:"center",gap:6,padding:"6px 12px",background:"#f0f8ff",borderRadius:8,border:"1px solid #c0d8f0"}}>
                     <span style={{fontSize:16}}>☀️</span>
