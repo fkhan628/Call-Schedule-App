@@ -4928,17 +4928,21 @@ function CallSchedule() {
   // Review fix (2026-10-19): it also clears whatever bottom sheet or action
   // bar is open (toastLiftNow: data-toast-floor="1" — the Calendar's day
   // sheet, the month painter's Save / Discard bar), remeasured when one opens
-  // or closes (calDayOpen, paintSheet) and when its own size changes.
+  // or closes (calDayOpen, paintSheet) and when its own size changes. A date
+  // range field's sheet (DateRangeField, its own state) says when it opens or
+  // closes with a "toastfloorchange" event (range review fix 2026-10-19: a toast
+  // already up when the sheet opened sat on its Done — the tap only dismissed it).
   const toastsShown = toasts.length > 0;
   useEffect(() => {
     if (!toastsShown) return;
     const remeasure = () => setToastLift(toastLiftNow());
     remeasure();
     window.addEventListener("resize", remeasure);
+    window.addEventListener("toastfloorchange", remeasure);
     const els = [updateBannerRef.current, ...Array.from(document.querySelectorAll('[data-toast-floor="1"]'))].filter(Boolean);
     const ro = els.length && typeof ResizeObserver === "function" ? new ResizeObserver(remeasure) : null;
     if (ro) els.forEach(el => ro.observe(el));
-    return () => { window.removeEventListener("resize", remeasure); if (ro) ro.disconnect(); };
+    return () => { window.removeEventListener("resize", remeasure); window.removeEventListener("toastfloorchange", remeasure); if (ro) ro.disconnect(); };
   }, [toastsShown, updateAvailable, paintSheet, calDayOpen]);
 
   // APP day-offs (display-only) — row id="dayoff" of app_shifts_data; same
@@ -8444,10 +8448,14 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                         const originalIdx = (vacations[p.id]||[]).findIndex(([avs,ave]) => avs===vs && ave===ve);
                         const isPast = ve < todayStr;
                         return editVac && editVac.sid===p.id && editVac.idx===originalIdx ? (
-                          <div key={i} style={{display:"inline-flex",gap:4,alignItems:"center",flexWrap:"wrap",maxWidth:"100%",boxSizing:"border-box",background:dk?"#16213e":"#f0f8ff",border:`1px solid ${dk?"#2a4a6e":"#a0c0e0"}`,borderRadius:5,padding:"3px 6px",marginBottom:4,marginRight:4}}>
-                            <DateRangeField label="Vacation dates" compact start={editVac.start} end={editVac.end} min="" onChange={(s, e) => setEditVac(pr => ({ ...pr, start: s, end: e }))} dk={dk} css={css} bannerRef={updateBannerRef} bannerOn={updateAvailable}/>
-                            <button onClick={saveEditVac} style={{background:"none",border:"none",color:"#1a8040",cursor:"pointer",fontSize:13,fontWeight:700}}>✓</button>
-                            <button onClick={()=>setEditVac(null)} style={{background:"none",border:"none",color:"#904040",cursor:"pointer",fontSize:11}}>✕</button>
+                          // The edit row is pale in both themes, like the group box it sits in (whose background:"#f8f9fb" the
+                          // dark stylesheet never matches — the browser writes it rgb(248, 249, 251) — so it stays pale in
+                          // dark mode too; a navy row inside it looked broken). ✓ and ✕ keep their colors in their own spans:
+                          // the dark stylesheet forces every button's text to #c0c8d8, unreadable on this pale row.
+                          <div key={i} style={{display:"inline-flex",gap:4,alignItems:"center",flexWrap:"wrap",maxWidth:"100%",boxSizing:"border-box",background:"#f0f8ff",border:"1px solid #a0c0e0",borderRadius:5,padding:"3px 6px",marginBottom:4,marginRight:4}}>
+                            <DateRangeField label="Vacation dates" compact editing start={editVac.start} end={editVac.end} min="" onChange={(s, e) => setEditVac(pr => ({ ...pr, start: s, end: e }))} dk={dk} css={css} bannerRef={updateBannerRef} bannerOn={updateAvailable}/>
+                            <button onClick={saveEditVac} style={{background:"none",border:"none",cursor:"pointer",fontSize:13,fontWeight:700}}><span style={{color:"#1a8040"}}>✓</span></button>
+                            <button onClick={()=>setEditVac(null)} style={{background:"none",border:"none",cursor:"pointer",fontSize:11}}><span style={{color:"#904040"}}>✕</span></button>
                           </div>
                         ) : (
                           <span key={i} style={{display:"inline-flex",alignItems:"center",fontFamily:mono,fontSize:11,color:isPast?"#a8a8a8":"#5a6a78",cursor:"pointer",padding:"2px 6px",borderRadius:4,border:`1px solid ${isPast?"#d8d8d8":"#e8ecf0"}`,background:isPast?"#f8f8f8":"#fff",marginBottom:4,marginRight:4,textDecoration:isPast?"line-through":"none"}}
@@ -9720,8 +9728,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             </div>
           )}
 
+          {/* The month row wraps (review fix 2026-10-19): ◀ month ▶ Today was ~348px wide and scrolled a 320px phone
+              sideways; Today now drops below the arrows there, which keep their fixed places (the month's minWidth). */}
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14,flexWrap:"wrap",gap:8}}>
-            <div style={{display:"flex",alignItems:"center",gap:10}}>
+            <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap",minWidth:0,maxWidth:"100%"}}>
               <button aria-label="Previous month" onClick={()=>{if(calMonth===0){setCalMonth(11);setCalYear(y=>y-1);}else setCalMonth(m=>m-1);}} style={css.btn(false)}>◀</button>
               <span style={{fontSize:15,fontWeight:700,color:"#2c5a80",minWidth:170,textAlign:"center"}}>{MO[calMonth]} {calYear}</span>
               <button aria-label="Next month" onClick={()=>{if(calMonth===11){setCalMonth(0);setCalYear(y=>y+1);}else setCalMonth(m=>m+1);}} style={css.btn(false)}>▶</button>
@@ -9733,7 +9743,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   setTimeout(() => { const el = document.querySelector("[data-cal-today=\"1\"]"); if (el && el.scrollIntoView) el.scrollIntoView({ behavior: "smooth", block: "center" }); }, 60);
                 }} style={{...css.btn(away),padding:"7px 10px"}}>Today</button>; })()}
             </div>
-            <div style={{display:"flex",gap:5}}>
+            <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
               {isScheduler && <>
                 <button onClick={()=>setView("setup")} style={css.btn(false)}>← Setup</button>
                 <button onClick={()=>doGenerate(false)} disabled={!!searching} style={{...css.btn(true),opacity:searching?0.55:1}}>{searching === "publish" ? "🔍 Searching…" : "↻ Regenerate"}</button>
@@ -10234,10 +10244,11 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             // Lifted above the update banner by its measured height (calSheetLift; 0 with no banner): the
             // banner wraps to two rows on a 375px phone and used to cover the sheet's bottom lines.
             // data-toast-floor: toasts sit above the sheet, never on its "Edit this week" (toastLiftNow).
+            // Tab stays inside it (sheetTabTrap, review fix 2026-10-19: it walked out onto the page behind).
             return (
               <div onClick={close} style={{position:"fixed",inset:0,zIndex:9000,background:"rgba(0,0,0,0.45)",display:"flex",alignItems:"flex-end",justifyContent:"center"}}>
-                <div role="dialog" aria-modal="true" aria-label={`${title} — details`} data-toast-floor="1" onClick={e=>e.stopPropagation()}
-                  style={{width:"100%",maxWidth:520,maxHeight:"70vh",overflowY:"auto",overscrollBehavior:"contain",WebkitOverflowScrolling:"touch",boxSizing:"border-box",
+                <div role="dialog" aria-modal="true" aria-label={`${title} — details`} data-toast-floor="1" onClick={e=>e.stopPropagation()} onKeyDown={sheetTabTrap} tabIndex={-1}
+                  style={{width:"100%",maxWidth:520,maxHeight:"70vh",overflowY:"auto",overscrollBehavior:"contain",WebkitOverflowScrolling:"touch",boxSizing:"border-box",outline:"none",
                     background:dk?"#1a1f2a":"#fff",borderRadius:"14px 14px 0 0",boxShadow:"0 -6px 24px rgba(0,0,0,0.25)",padding:"10px 16px",
                     paddingBottom:"calc(env(safe-area-inset-bottom, 0px) + 16px)",marginBottom:calSheetLift,fontFamily:font}}>
                   <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:4}}>
@@ -11684,9 +11695,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                         <div key={origIdx} style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap",padding:"4px 0",borderBottom:i<shown.length-1?"1px solid #f0e4d0":"none"}}>
                           {editing ? (
                             <>
-                              {/* One calendar for start and end (DateRangeField). No floor: trimming an ongoing vacation to an end
+                              {/* One calendar for start and end (DateRangeField); editing: one tap moves one end (a new last day
+                                  shortens or extends it). No floor: trimming an ongoing vacation to an end
                                   already past stays allowed (saveMyVacEdit's bounded self-serve rule is the gate). */}
-                              <DateRangeField label="Vacation dates" compact start={myVacEdit.start} end={myVacEdit.end} min="" onChange={(s, e) => setMyVacEdit(p => ({ ...p, start: s, end: e }))} dk={dk} css={css} bannerRef={updateBannerRef} bannerOn={updateAvailable}/>
+                              <DateRangeField label="Vacation dates" compact editing start={myVacEdit.start} end={myVacEdit.end} min="" onChange={(s, e) => setMyVacEdit(p => ({ ...p, start: s, end: e }))} dk={dk} css={css} bannerRef={updateBannerRef} bannerOn={updateAvailable}/>
                               <button onClick={saveMyVacEdit} style={{background:"#2a7a40",color:"#fff",border:"none",borderRadius:5,padding:"3px 12px",fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:font}}>Save</button>
                               <button onClick={()=>setMyVacEdit(null)} style={{background:"#f0f0f0",color:"#5a6a78",border:"1px solid #d0d8e0",borderRadius:5,padding:"3px 10px",fontSize:11,cursor:"pointer",fontFamily:font}}>Cancel</button>
                             </>
@@ -11974,8 +11986,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                           <div style={{display:"flex",gap:6,alignItems:"end",flexWrap:"wrap"}}>
                             <div style={{minWidth:0,maxWidth:"100%"}}>
                               <label style={{fontSize:10,color:"#7a8a98",display:"block"}}>Dates</label>
-                              {/* One calendar (DateRangeField): a member can't pick before today (saveVacRequestEdit is the real gate); the scheduler can. */}
-                              <DateRangeField label="Request dates" compact start={editingVacReq.start_date} end={editingVacReq.end_date} min={isScheduler ? "" : fmt(new Date())} onChange={(s, e) => setEditingVacReq(p => ({ ...p, start_date: s, end_date: e }))} dk={dk} css={css} bannerRef={updateBannerRef} bannerOn={updateAvailable}/>
+                              {/* One calendar (DateRangeField; editing: one tap moves one end): a member can't pick before today (saveVacRequestEdit is the real gate); the scheduler can. */}
+                              <DateRangeField label="Request dates" compact editing start={editingVacReq.start_date} end={editingVacReq.end_date} min={isScheduler ? "" : fmt(new Date())} onChange={(s, e) => setEditingVacReq(p => ({ ...p, start_date: s, end_date: e }))} dk={dk} css={css} bannerRef={updateBannerRef} bannerOn={updateAvailable}/>
                             </div>
                             <div>
                               <label style={{fontSize:10,color:"#7a8a98",display:"block"}}>Reason</label>
@@ -12076,8 +12088,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                             <div style={{display:"flex",gap:6,alignItems:"end",flexWrap:"wrap"}}>
                               <div style={{minWidth:0,maxWidth:"100%"}}>
                                 <label style={{fontSize:10,color:"#7a8a98",display:"block"}}>Dates</label>
-                                {/* One calendar (DateRangeField); the scheduler's record correction, back-dating allowed. */}
-                                <DateRangeField label="Request dates" compact start={editingVacReq.start_date} end={editingVacReq.end_date} min="" onChange={(s, e) => setEditingVacReq(p => ({ ...p, start_date: s, end_date: e }))} dk={dk} css={css} bannerRef={updateBannerRef} bannerOn={updateAvailable}/>
+                                {/* One calendar (DateRangeField; editing: one tap moves one end); the scheduler's record correction, back-dating allowed. */}
+                                <DateRangeField label="Request dates" compact editing start={editingVacReq.start_date} end={editingVacReq.end_date} min="" onChange={(s, e) => setEditingVacReq(p => ({ ...p, start_date: s, end_date: e }))} dk={dk} css={css} bannerRef={updateBannerRef} bannerOn={updateAvailable}/>
                               </div>
                               <button onClick={saveVacRequestEdit} style={{...css.btn(true),padding:"4px 10px",fontSize:11}}>Save</button>
                               <button onClick={()=>setEditingVacReq(null)} style={{...css.btn(false),padding:"4px 10px",fontSize:11}}>Cancel</button>
@@ -14941,6 +14953,23 @@ function Collapsible({ title, ck, defaultOpen = false, forceOpen = false, heldNo
   );
 }
 
+// Tab and Shift+Tab stay inside an open bottom sheet (review fix 2026-10-19): an aria-modal dialog let Tab walk out
+// onto the page behind it — on to a second range field, whose sheet then opened over the first. The dialog's
+// onKeyDown: Tab from its last focusable control (or from the dialog itself, or from outside it) goes to the first,
+// Shift+Tab from the first to the last; in between, the browser's own order. The range sheet and the Calendar's day
+// sheet use it. A disabled control (Done before a start) and a day button off the grid's one Tab stop are skipped.
+function sheetTabTrap(e) {
+  if (e.key !== "Tab" || !e.currentTarget) return;
+  const box = e.currentTarget, doc = box.ownerDocument, at = doc ? doc.activeElement : null;
+  const els = Array.from(box.querySelectorAll("button, [href], input, select, textarea, [tabindex]")).filter(el => el !== box && !el.disabled && el.tabIndex >= 0);
+  if (!els.length) { e.preventDefault(); return; }
+  const first = els[0], last = els[els.length - 1], inside = !!at && at !== box && box.contains(at);
+  if (e.shiftKey ? (!inside || at === first) : (!inside || at === last)) {
+    e.preventDefault();
+    try { (e.shiftKey ? last : first).focus(); } catch (err) { /* nothing to focus */ }
+  }
+}
+
 // One calendar for a date range (owner 2026-10-19: "when we pick dates in the calendar - we can pick the start date
 // and then pick the end date in the same calendar and it will mark all the dates in between"). Each start/end pair
 // was two native date boxes, an iPhone date wheel each; each is now this ONE field — a button showing the range
@@ -14955,25 +14984,37 @@ function Collapsible({ title, ck, defaultOpen = false, forceOpen = false, heldNo
 // while it is open, and the focus back on the field after. Module scope (like Collapsible) so a parent render
 // never remounts it; React.* hooks for that reason. It is portaled to <body>, so no card's overflow clips it.
 // An old cached helpers.js without these helpers gets the two native date boxes, as before.
-function DateRangeField({ start, end, onChange, min = "", label = "Dates", placeholder = "Pick dates", dk = false, css, compact = false, bannerRef = null, bannerOn = null, style = null }) {
+// Review fixes (2026-10-19): editing — the 4 sites that change an EXISTING range (Setup's inline edit, My vacations,
+// the requester's and the scheduler's request edits) — opens a whole range in rangeTap's phase "edit": one tap moves
+// one end (a day before the start moves the start, the start or a later day the end), where the add rule made one
+// tap a new one-day range that Done + Save then wrote; the line under the range says so (rangeEditHint), and
+// "Start over" (it only ever restarted the draft — it was "Clear") goes back to the add rule. The month is always
+// six week rows, so ◀ ▶ and ✕ never move under a finger tapping ▶ again (a 2nd ▶ used to land on ✕ or a day); Start
+// over / Done stay in view at the sheet's bottom (sticky) on a short phone; the arrow keys stop at min; Tab stays
+// inside the sheet (sheetTabTrap); a toast lifts above it (data-toast-floor, "toastfloorchange"); the field's text
+// wraps rather than hiding the end date and the day count.
+function DateRangeField({ start, end, onChange, min = "", label = "Dates", placeholder = "Pick dates", dk = false, css, compact = false, editing = false, bannerRef = null, bannerOn = null, style = null }) {
   // ── range sheet logic (plain JS; sync-guards BK runs this slice with a hook stub) ──
   const today = fmt(new Date());
-  const ready = typeof rangeTap === "function" && typeof monthCells === "function" && typeof rangeLabel === "function" && typeof rangeSheetLine === "function" && typeof monthDayLabel === "function";
+  const ready = typeof rangeTap === "function" && typeof monthCells === "function" && typeof rangeLabel === "function" && typeof rangeSheetLine === "function" && typeof rangeEditHint === "function" && typeof monthDayLabel === "function";
   const [sheet, setSheet] = React.useState(null); // null while closed; open: { start, end, phase, y, m } — the draft and the month shown
   const [lift, setLift] = React.useState(0); // px the sheet sits above the bottom: the update banner's height
   const [focusDs, setFocusDs] = React.useState(""); // the grid's one Tab stop (the arrow keys move it)
   const fieldRef = React.useRef(null), gridRef = React.useRef(null), focusWantRef = React.useRef(false);
   const open = !!sheet;
   const bannerHeight = () => { const el = bannerRef && bannerRef.current; return el && el.isConnected ? Math.ceil(el.getBoundingClientRect().height) : 0; };
-  // Opens on the start's month (else min's, when min is later than today, else today's). A start with no end (or an
-  // end before it) waits for its end; a whole range shows as it is, and the next tap starts a new one.
+  const pickable = (ds) => !!ds && (!min || ds >= min);
+  // Opens on the start's month, focused on the start — or, when the start can't be picked (before min: a member's
+  // request already under way), on the first day that can (today, or min when it is later), focused there. A start
+  // with no end (or an end before it) waits for its end. A whole range shows as it is: the next tap starts a new
+  // one — or, editing, moves one of its ends (phase "edit").
   const openSheet = () => {
     const s = start || "", e = s && end && end >= s ? end : "";
-    const at = parse(s || (min && min > today ? min : today));
+    const at = s && pickable(s) ? s : (min && min > today ? min : today), d = parse(at);
     focusWantRef.current = true;
     setLift(bannerHeight());
-    setFocusDs(s);
-    setSheet({ start: s, end: e, phase: s && !e ? "end" : "start", y: at.getFullYear(), m: at.getMonth() });
+    setFocusDs(at);
+    setSheet({ start: s, end: e, phase: s && e ? (editing ? "edit" : "start") : s ? "end" : "start", y: d.getFullYear(), m: d.getMonth() });
   };
   const close = (refocus) => {
     setSheet(null);
@@ -14981,22 +15022,37 @@ function DateRangeField({ start, end, onChange, min = "", label = "Dates", place
     if (refocus !== false && el && el.isConnected && typeof el.focus === "function") { try { el.focus({ preventScroll: true }); } catch (err) { /* nothing to put it back on */ } }
   };
   const tap = (ds) => { if (min && ds < min) return; setFocusDs(ds); setSheet(s => s ? { ...s, ...rangeTap(s.start, s.end, ds, s.phase, min) } : s); };
+  // "Start over": the draft empties and the add rule is back (tap the start, then the end) — the field keeps its
+  // range until Done (✕ leaves it as it was).
   const clear = () => setSheet(s => s ? { ...s, start: "", end: "", phase: "start" } : s);
   const done = () => { if (!sheet || !sheet.start) return; onChange(sheet.start, sheet.end || sheet.start); close(); };
   const prevOff = !!sheet && !!min && fmt(new Date(sheet.y, sheet.m, 0)) < min; // the month before ends before min: nothing in it to pick
   const shiftMonth = (k) => { if (k < 0 && prevOff) return; setSheet(s => { if (!s) return s; const d = new Date(s.y, s.m + k, 1); return { ...s, y: d.getFullYear(), m: d.getMonth() }; }); };
+  // Always six week rows — 42 cells, blanks after the last day — so a 4-, 5- or 6-row month is the same height and
+  // nothing above the grid moves when the month changes (the sheet sits on the bottom: a 6-row month pushed the
+  // header up 46px, and the next tap where ▶ had been landed on ✕ — the draft thrown away — or on a day).
   const cells = sheet && ready ? monthCells(sheet.y, sheet.m) : [];
-  const pickable = (ds) => !!ds && (!min || ds >= min);
-  const tabDs = (focusDs && cells.indexOf(focusDs) !== -1 ? focusDs : "") || (sheet && [sheet.start, today].find(d => !!d && cells.indexOf(d) !== -1 && pickable(d))) || cells.find(pickable) || cells.find(Boolean) || "";
+  while (cells.length && cells.length < 42) cells.push(null);
+  const line = sheet && ready ? rangeSheetLine(sheet.start, sheet.end, sheet.phase, today) : "";
+  const hint = sheet && ready && sheet.phase === "edit" ? rangeEditHint(sheet.start, today, min) : "";
+  const tabDs = (focusDs && cells.indexOf(focusDs) !== -1 && pickable(focusDs) ? focusDs : "") || (sheet && [sheet.start, today].find(d => !!d && cells.indexOf(d) !== -1 && pickable(d))) || cells.find(pickable) || cells.find(Boolean) || "";
+  // The arrow keys move the one Tab stop a day / a week, across months — never before min: a step past it stops on
+  // min itself, the first day that can be picked (so never into the month before it, which ◀ won't show either).
   const onGridKey = (e) => {
     const step = { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -7, ArrowDown: 7 }[e.key];
     if (!step || !sheet || !tabDs) return;
     e.preventDefault();
-    const d = addD(parse(tabDs), step);
+    let d = addD(parse(tabDs), step);
+    if (min && fmt(d) < min) d = parse(min);
+    if (fmt(d) === tabDs) return; // already on the first day that can be picked
     focusWantRef.current = true;
     setFocusDs(fmt(d));
     if (d.getFullYear() !== sheet.y || d.getMonth() !== sheet.m) setSheet(s => s ? { ...s, y: d.getFullYear(), m: d.getMonth() } : s);
   };
+  // The app's toast stack sits above an open sheet (toastLiftNow measures the dialog: data-toast-floor). A toast
+  // shown while the sheet is open is measured then; one already on screen re-measures when told (the app listens
+  // for "toastfloorchange" while a toast shows) — on open, and on close (the dialog gone by then: an effect's cleanup).
+  const floorMoved = () => { try { window.dispatchEvent(new Event("toastfloorchange")); } catch (err) { /* nothing listens: the toasts keep their lift */ } };
   // While it is open: Escape closes it, and the page behind it does not scroll (restored on close, or if the field goes).
   React.useEffect(() => {
     if (!open) return;
@@ -15004,7 +15060,8 @@ function DateRangeField({ start, end, onChange, min = "", label = "Dates", place
     window.addEventListener("keydown", onKey);
     const body = document.body, prevOverflow = body.style.overflow;
     body.style.overflow = "hidden";
-    return () => { window.removeEventListener("keydown", onKey); body.style.overflow = prevOverflow; };
+    floorMoved();
+    return () => { window.removeEventListener("keydown", onKey); body.style.overflow = prevOverflow; floorMoved(); };
   }, [open]);
   // Above the update banner, as the day sheet: re-measured on a resize or a rotation, when the banner's own size
   // changes, and when it appears or is dismissed while the sheet is open.
@@ -15018,8 +15075,8 @@ function DateRangeField({ start, end, onChange, min = "", label = "Dates", place
     if (ro) ro.observe(el);
     return () => { window.removeEventListener("resize", remeasure); if (ro) ro.disconnect(); };
   }, [open, bannerOn]);
-  // The focus lands on the start (else today, else the month's first open day) when the sheet opens, and follows
-  // the arrow keys; a tap or ◀ ▶ leaves it where it is.
+  // The focus lands on the start when it can be picked (else today, or min when later) when the sheet opens, and
+  // follows the arrow keys; a tap or ◀ ▶ leaves it where it is.
   React.useEffect(() => {
     if (!open || !focusWantRef.current) return;
     focusWantRef.current = false;
@@ -15047,6 +15104,10 @@ function DateRangeField({ start, end, onChange, min = "", label = "Dates", place
     ? { sheet: "#1a1f2a", title: "#e8e8f0", line: "#c8d0e0", text: "#e0e0f0", sub: "#9aa4bc", off: "#5c6478", accent: "#5aafe8", onAccent: "#0b1a2a", band: "#1f3b5c", onBand: "#e6eefa", field: "#0f3460", fieldBorder: "#2a3a5e", placeholder: "#9aa0b8" }
     : { sheet: "#fff", title: "#2c5a80", line: "#3a4a58", text: "#2c3e50", sub: "#5a6a78", off: "#b8c0c8", accent: "#1a6fa8", onAccent: "#fff", band: "#d8e8f6", onBand: "#123a5c", field: "#f8f9fb", fieldBorder: "#d0d8e0", placeholder: "#5a6a78" };
   const text = rangeLabel(start || "", start ? end || "" : "", today);
+  // The field's words wrap (two lines on a narrow phone) rather than hide the end date and the day count; "· 5 days"
+  // never splits — on the field and in the sheet's line (an ellipsis cut next year's ranges at 320px, and the compact
+  // ones at 375).
+  const keepCount = (t) => { const cut = t.lastIndexOf(" · "); return cut > 0 ? <>{t.slice(0, cut)}{" "}<span style={{ whiteSpace: "nowrap" }}>{t.slice(cut + 1)}</span></> : t; };
   const navBtn = { minWidth: 44, minHeight: 44, background: "none", border: "none", fontSize: 16, cursor: "pointer", fontFamily: font, padding: 0 };
   const lo = sheet ? sheet.start : "", hi = sheet ? sheet.end || sheet.start : "";
   const dayLabel = (ds) => `${DAY_HDR[parse(ds).getDay()]}, ${monthDayLabel(ds, true)}`;
@@ -15054,20 +15115,26 @@ function DateRangeField({ start, end, onChange, min = "", label = "Dates", place
     <>
       <button type="button" ref={fieldRef} onClick={openSheet} aria-haspopup="dialog" aria-expanded={open} aria-label={`${label}: ${text || placeholder}`}
         style={{ ...css.inp, background: C.field, border: `1px solid ${C.fieldBorder}`, display: "inline-flex", alignItems: "center", gap: 6, maxWidth: "100%", boxSizing: "border-box",
-          minHeight: compact ? 32 : 38, cursor: "pointer", textAlign: "left", ...(compact ? { padding: "3px 8px", fontSize: 12 } : {}), ...(style || {}) }}>
+          minHeight: 40, cursor: "pointer", textAlign: "left", ...(compact ? { padding: "3px 8px", fontSize: 12 } : {}), ...(style || {}) }}>
         <span aria-hidden="true" style={{ flexShrink: 0 }}>📅</span>
-        <span style={{ color: text ? C.text : C.placeholder, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", minWidth: 0 }}>{text || placeholder}</span>
+        <span style={{ color: text ? C.text : C.placeholder, whiteSpace: "normal", lineHeight: 1.3, minWidth: 0 }}>{text ? keepCount(text) : placeholder}</span>
       </button>
       {open && ReactDOM.createPortal(
         <div onClick={(e) => { e.stopPropagation(); close(); }} style={{ position: "fixed", inset: 0, zIndex: 9000, background: "rgba(0,0,0,0.45)", display: "flex", alignItems: "flex-end", justifyContent: "center" }}>
-          <div role="dialog" aria-modal="true" aria-label={label} onClick={(e) => e.stopPropagation()}
-            style={{ width: "100%", maxWidth: 420, maxHeight: "80vh", overflowY: "auto", overscrollBehavior: "contain", WebkitOverflowScrolling: "touch", boxSizing: "border-box",
-              background: C.sheet, borderRadius: "14px 14px 0 0", boxShadow: "0 -6px 24px rgba(0,0,0,0.25)", padding: "10px 16px",
-              paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 16px)", marginBottom: lift, fontFamily: font }}>
+          {/* data-toast-floor: the app's toasts sit above the sheet, never on Start over / Done (toastLiftNow). Tab stays
+              inside it (sheetTabTrap; tabIndex -1 so a tap on its background keeps the focus in it). Up to the whole
+              screen less the banner's lift and a 24px strip of backdrop: 80vh hid Done on a 320×568 phone. */}
+          <div role="dialog" aria-modal="true" aria-label={label} data-toast-floor="1" onClick={(e) => e.stopPropagation()} onKeyDown={sheetTabTrap} tabIndex={-1}
+            style={{ width: "100%", maxWidth: 420, maxHeight: `calc(100% - ${lift + 24}px)`, overflowY: "auto", overscrollBehavior: "contain", WebkitOverflowScrolling: "touch", boxSizing: "border-box",
+              background: C.sheet, borderRadius: "14px 14px 0 0", boxShadow: "0 -6px 24px rgba(0,0,0,0.25)", padding: "10px 16px 0", outline: "none",
+              marginBottom: lift, fontFamily: font }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: 16, fontWeight: 700, color: C.title }}>{label}</div>
-                <div aria-live="polite" style={{ fontSize: 14, color: C.line, marginTop: 2 }}>{rangeSheetLine(sheet.start, sheet.end, sheet.phase, today)}</div>
+                <div aria-live="polite" style={{ marginTop: 2 }}>
+                  <div style={{ fontSize: 14, color: C.line }}>{keepCount(line)}</div>
+                  {hint && <div style={{ fontSize: 12.5, color: C.sub, marginTop: 2 }}>{hint}</div>}
+                </div>
               </div>
               <button type="button" aria-label="Close" onClick={() => close()} style={{ ...navBtn, fontSize: 20, flexShrink: 0 }}><span style={{ color: C.sub }}>✕</span></button>
             </div>
@@ -15079,7 +15146,7 @@ function DateRangeField({ start, end, onChange, min = "", label = "Dates", place
             <div aria-hidden="true" style={{ display: "grid", gridTemplateColumns:"repeat(7,minmax(0,1fr))", marginTop: 2 }}>
               {DAY_HDR.map(d => <div key={d} style={{ textAlign: "center", fontSize: 11, fontWeight: 700, color: C.sub, padding: "4px 0", letterSpacing: 0.5 }}>{d}</div>)}
             </div>
-            <div ref={gridRef} role="group" aria-label={`${MO[sheet.m]} ${sheet.y}`} onKeyDown={onGridKey} style={{ display: "grid", gridTemplateColumns:"repeat(7,minmax(0,1fr))", rowGap: 2 }}>
+            <div ref={gridRef} role="group" aria-label={`${MO[sheet.m]} ${sheet.y}`} onKeyDown={onGridKey} style={{ display: "grid", gridTemplateColumns:"repeat(7,minmax(0,1fr))", gridTemplateRows: "repeat(6, 44px)", rowGap: 2 }}>
               {cells.map((ds, i) => {
                 if (!ds) return <span key={"b" + i} aria-hidden="true" />;
                 const edge = !!lo && (ds === lo || ds === hi), between = !!lo && ds > lo && ds < hi, off = !pickable(ds), isToday = ds === today;
@@ -15100,8 +15167,11 @@ function DateRangeField({ start, end, onChange, min = "", label = "Dates", place
                 );
               })}
             </div>
-            <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
-              <button type="button" onClick={clear} style={{ ...css.btn(false), flex: 1, minHeight: 44, fontSize: 14 }}>Clear</button>
+            {/* Sticky at the sheet's bottom, inside its scroll: on a short phone (320×568, or with the banner up) the six
+                rows overflow the sheet, and Start over / Done stay in view; it carries the sheet's bottom padding and the
+                safe area. */}
+            <div style={{ position: "sticky", bottom: 0, display: "flex", gap: 8, marginTop: 4, paddingTop: 8, paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 16px)", background: C.sheet }}>
+              <button type="button" onClick={clear} style={{ ...css.btn(false), flex: 1, minHeight: 44, fontSize: 14 }}>Start over</button>
               {/* A solid fill, its label in its own white span: white on the gradient's light end measured 3.9:1; on #1a6fa8 it is 5.4:1, in both themes. */}
               <button type="button" onClick={done} disabled={!sheet.start} style={{ ...css.btn(true), background: "#1a6fa8", flex: 2, minHeight: 44, fontSize: 14, ...(sheet.start ? {} : { opacity: 0.5, cursor: "default" }) }}><span style={{ color: "#fff" }}>Done</span></button>
             </div>

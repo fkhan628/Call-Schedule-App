@@ -715,15 +715,35 @@ function rangeSummary(start, end) {
 //   phase "end": the tap ends it — a later day is the end; an EARLIER day
 //     makes the range tapped → the old start; the start again keeps a one-day
 //     range. The tap after that begins a new range (phase "start").
+//   phase "edit" (review fix 2026-10-19 — the 4 edits of an EXISTING range:
+//     Setup's inline edit, My vacations, and the request edits): one tap
+//     changes one end. A day BEFORE the start moves the start (the end
+//     stays); the start or any later day moves the end (shortening or
+//     extending). The phase stays "edit", so each tap adjusts again. (With
+//     the add rule, one tap on the new last day of Oct 14 → Oct 23 began a
+//     NEW one-day range, and Done + Save wrote Oct 21 → Oct 21.) A phase
+//     "edit" without a whole range acts as "end" (a start) or "start" (none).
 //   A day before min (the request forms: today) is not tappable — nothing
 //   changes. A phase "end" with no start acts as phase "start".
 //     rangeTap("", "", "2026-12-14", "start")                   → 12-14 → 12-14, "end"
 //     rangeTap("2026-12-14", "2026-12-14", "2026-12-18", "end") → 12-14 → 12-18, "start"
 //     rangeTap("2026-12-14", "2026-12-14", "2026-12-10", "end") → 12-10 → 12-14, "start"
+//     rangeTap("2026-10-14", "2026-10-23", "2026-10-21", "edit") → 10-14 → 10-21, "edit"
+//     rangeTap("2026-10-14", "2026-10-23", "2026-10-10", "edit") → 10-10 → 10-23, "edit"
 function rangeTap(start, end, tapped, phase, min) {
-  if (!tapped || (min && tapped < min)) return { start: start || "", end: end || "", phase: phase === "end" ? "end" : "start" };
-  if (phase !== "end" || !start) return { start: tapped, end: tapped, phase: "end" };
+  if (!tapped || (min && tapped < min)) return { start: start || "", end: end || "", phase: phase === "end" || phase === "edit" ? phase : "start" };
+  if (phase === "edit" && start && end) return tapped < start ? { start: tapped, end, phase: "edit" } : { start, end: tapped, phase: "edit" };
+  if ((phase !== "end" && phase !== "edit") || !start) return { start: tapped, end: tapped, phase: "end" };
   return tapped < start ? { start: tapped, end: start, phase: "start" } : { start, end: tapped, phase: "start" };
+}
+
+// rangeEditHint(start, today, min) → the line under the range while an
+// existing range is being edited (phase "edit"): "Tap a new end date — or a
+// day before Wed Oct 14 to move the start"; just "Tap a new end date" when no
+// day before the start can be picked (min at or after it).
+function rangeEditHint(start, today, min) {
+  if (!start || (min && start <= min)) return "Tap a new end date";
+  return `Tap a new end date — or a day before ${rangeDayLabel(start, today)} to move the start`;
 }
 
 // monthCells(year, month) → one month's grid, Sunday first (DAY_HDR, as the
@@ -765,7 +785,8 @@ function rangeLabel(start, end, today) {
 // rangeSheetLine(start, end, phase, today) → the sheet's live line above the
 // month: "Pick the start date" before a tap; "Mon Dec 14 → pick the end date"
 // after the first (the day is a one-day range already — Done keeps it);
-// otherwise the range, as rangeLabel writes it.
+// otherwise the range, as rangeLabel writes it (phase "edit" too — its
+// rangeEditHint is the line under it).
 function rangeSheetLine(start, end, phase, today) {
   if (!start) return "Pick the start date";
   if (phase === "end") return `${rangeDayLabel(start, today)} → pick the end date`;
