@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.10.19c";
+    var APP_VERSION = "2026.10.19d";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -131,7 +131,7 @@ const CAL_FILTER_DEFAULTS = Object.freeze({
 });
 const CAL_SILVIS_STORE_KEY = "dsg-cal-silvis";
 function CallSchedule() {
-  var _sMap$mineViewId, _sMap$mineViewId2, _find, _surgeons$find16;
+  var _sMap$callNow$sid, _sMap$mineViewId, _sMap$mineViewId2, _find, _surgeons$find17;
   const isPublicMode = useMemo(() => {
     try {
       const params = new URLSearchParams(window.location.search);
@@ -232,9 +232,52 @@ function CallSchedule() {
   const [showAllMyVacs, setShowAllMyVacs] = useState(false);
   const [showAllMyNoCall, setShowAllMyNoCall] = useState(false);
   const [showAllMySilvis, setShowAllMySilvis] = useState(false);
+  const [showAllMyApp, setShowAllMyApp] = useState(false);
   const [calSurgeonFilter, setCalSurgeonFilter] = useState("");
   const [calAppFilter, setCalAppFilter] = useState("all");
   const [calDeptFilter, setCalDeptFilter] = useState("");
+  const [calDayOpen, setCalDayOpen] = useState(null);
+  const calDayOpenerRef = useRef(null);
+  const updateBannerRef = useRef(null);
+  const [calSheetLift, setCalSheetLift] = useState(0);
+  const bannerLift = () => {
+    const el = updateBannerRef.current;
+    return el && el.isConnected ? Math.ceil(el.getBoundingClientRect().height) : 0;
+  };
+  const openCalDay = (ds, el) => {
+    calDayOpenerRef.current = el || null;
+    setCalSheetLift(bannerLift());
+    setCalDayOpen(ds);
+  };
+  const closeCalDay = refocus => {
+    const el = calDayOpenerRef.current;
+    calDayOpenerRef.current = null;
+    setCalDayOpen(null);
+    if (refocus !== false && el && el.isConnected && typeof el.focus === "function") {
+      try {
+        el.focus({
+          preventScroll: true
+        });
+      } catch (e) {}
+    }
+  };
+  useEffect(() => {
+    if (!calDayOpen) return;
+    const onKey = e => {
+      if (e.key === "Escape") closeCalDay();
+    };
+    window.addEventListener("keydown", onKey);
+    const body = document.body,
+      prevOverflow = body.style.overflow;
+    body.style.overflow = "hidden";
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      body.style.overflow = prevOverflow;
+    };
+  }, [calDayOpen]);
+  useEffect(() => {
+    if (view !== "calendar") closeCalDay(false);
+  }, [view]);
   const rememberSilvisToggle = v => {
     try {
       if (v === null) localStorage.removeItem(CAL_SILVIS_STORE_KEY);else localStorage.setItem(CAL_SILVIS_STORE_KEY, String(v));
@@ -344,6 +387,7 @@ function CallSchedule() {
     return fmt(addD(t, t.getDay() === 0 ? -6 : 1 - t.getDay()));
   };
   const [bkMonday, setBkMonday] = useState(mondayOfToday);
+  const snapBkMonday = () => setBkMonday(v => /^[1-9]\d{3}-\d\d-\d\d$/.test(v) ? fmt(monOf(parse(v))) : v);
   const [appDate, setAppDate] = useState(() => fmt(new Date()));
   const [appPerson, setAppPerson] = useState("");
   const [scanning, setScanning] = useState(false);
@@ -486,6 +530,19 @@ function CallSchedule() {
       document.removeEventListener("visibilitychange", onVisible);
     };
   }, []);
+  useEffect(() => {
+    if (!calDayOpen) return;
+    const remeasure = () => setCalSheetLift(bannerLift());
+    remeasure();
+    window.addEventListener("resize", remeasure);
+    const el = updateBannerRef.current;
+    const ro = el && typeof ResizeObserver === "function" ? new ResizeObserver(remeasure) : null;
+    if (ro) ro.observe(el);
+    return () => {
+      window.removeEventListener("resize", remeasure);
+      if (ro) ro.disconnect();
+    };
+  }, [calDayOpen, updateAvailable]);
   useEffect(() => {
     const isAdmin = (userProfile === null || userProfile === void 0 ? void 0 : userProfile.role) === "admin";
     const canAssignApps = (userProfile === null || userProfile === void 0 ? void 0 : userProfile.can_assign_apps) === true;
@@ -3088,12 +3145,19 @@ function CallSchedule() {
     }
   }, [schedule, surgeons, pushUndo, addNotification, sendEmailNotif, detectCascadeChanges, schedulerAdminIds, silvisActive, silvisBlock, silvisRefuse]);
   const declineTradeRequest = useCallback(async req => {
-    const ep = sessionEpochRef.current;
+    var _surgeons$find1;
+    const ep = sessionEpochRef.current,
+      tapH = dbAuthHeaders();
     const live = () => sessionEpochRef.current === ep;
+    const declinedBy = mySurgeon === req.to_surgeon_id ? null : ((_surgeons$find1 = surgeons.find(s => s.id === mySurgeon)) === null || _surgeons$find1 === void 0 ? void 0 : _surgeons$find1.name) || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.display_name) || "A scheduler";
+    const declineMsg = tradeDeclineMsg(req, declinedBy);
+    const declineAudit = hdrs => logAudit("trade.decline", declineMsg, {
+      request_id: req.id
+    }, hdrs);
     try {
       const declineRes = await fetch(`${SUPABASE_URL}/rest/v1/shift_trade_requests?id=eq.${req.id}&status=eq.pending`, {
         method: "PATCH",
-        headers: _objectSpread(_objectSpread({}, dbAuthHeaders()), {}, {
+        headers: _objectSpread(_objectSpread({}, tapH), {}, {
           "Content-Type": "application/json",
           Prefer: "return=representation"
         }),
@@ -3108,7 +3172,10 @@ function CallSchedule() {
         return;
       }
       const declineRows = await declineRes.json().catch(() => []);
-      if (!live()) return;
+      if (!live()) {
+        if (Array.isArray(declineRows) && declineRows.length) declineAudit(tapH);
+        return;
+      }
       if (!Array.isArray(declineRows) || declineRows.length === 0) {
         showToast("This trade was already handled or withdrawn — nothing was changed.", "error");
         return;
@@ -3116,10 +3183,7 @@ function CallSchedule() {
       setTradeRequests(prev => prev.map(r => r.id === req.id ? _objectSpread(_objectSpread({}, r), {}, {
         status: "declined"
       }) : r));
-      const declineMsg = tradeDeclineMsg(req);
-      logAudit("trade.decline", declineMsg, {
-        request_id: req.id
-      });
+      declineAudit();
       await addNotification("trade_declined", "Shift Trade Declined", declineMsg, {
         from_surgeon_id: req.from_surgeon_id,
         to_surgeon_id: req.to_surgeon_id
@@ -3136,7 +3200,7 @@ function CallSchedule() {
       console.error("Decline trade error:", e);
       if (live()) showToast("Couldn't decline the trade — check your connection and try again.", "error");
     }
-  }, [addNotification, sendEmailNotif]);
+  }, [addNotification, sendEmailNotif, userProfile, surgeons, mySurgeon]);
   const deleteTradeRequest = useCallback(async reqId => {
     if (!confirm("Delete this trade request?")) return;
     const ep = sessionEpochRef.current;
@@ -3154,6 +3218,7 @@ function CallSchedule() {
       if (!res.ok) {
         console.error("Delete trade request failed:", res.status);
         showToast("Couldn't delete the trade request — check your connection and try again.", "error");
+        return;
       }
       setTradeRequests(prev => prev.filter(r => r.id !== reqId));
     } catch (e) {
@@ -3199,6 +3264,7 @@ function CallSchedule() {
       if (!res.ok) {
         console.error("Delete vacation request failed:", res.status);
         showToast("Couldn't delete the request — check your connection and try again.", "error");
+        return;
       }
       setVacRequests(prev => prev.filter(r => r.id !== reqId));
     } catch (e) {
@@ -3343,6 +3409,7 @@ function CallSchedule() {
       if (!res.ok) {
         console.error("Clear reviewed requests failed:", res.status);
         showToast("Couldn't clear reviewed requests — check your connection and try again.", "error");
+        return;
       }
       setVacRequests(prev => prev.filter(r => r.status === "pending"));
     } catch (e) {
@@ -3551,9 +3618,9 @@ function CallSchedule() {
   useEffect(() => {
     if (!oneSignalReady || !mySurgeon || !window.OneSignal) return;
     try {
-      var _surgeons$find1;
+      var _surgeons$find10;
       window.OneSignal.User.addTag("surgeon_id", mySurgeon);
-      const surgeonName = ((_surgeons$find1 = surgeons.find(s => s.id === mySurgeon)) === null || _surgeons$find1 === void 0 ? void 0 : _surgeons$find1.name) || mySurgeon;
+      const surgeonName = ((_surgeons$find10 = surgeons.find(s => s.id === mySurgeon)) === null || _surgeons$find10 === void 0 ? void 0 : _surgeons$find10.name) || mySurgeon;
       window.OneSignal.User.addTag("surgeon_name", surgeonName);
     } catch (e) {
       console.error("OneSignal tag error:", e);
@@ -3754,9 +3821,12 @@ function CallSchedule() {
     }, null, ep);
   };
   const downloadMyCal = surgeonId => {
-    const s = surgeons.find(x => x.id === surgeonId);
+    const myApp = surgeons.some(x => x.id === surgeonId) ? null : apps.find(x => x.id === surgeonId);
+    const s = myApp || surgeons.find(x => x.id === surgeonId);
     if (!s) return;
-    const events = buildICSEvents(schedule, s.id, s.name, {
+    const events = myApp ? buildAppICSEvents(Object.fromEntries(Object.entries(appShifts || {}).filter(([, aid]) => aid === myApp.id)), {
+      [myApp.id]: myApp
+    }) : buildICSEvents(schedule, s.id, s.name, {
       nameOf
     });
     const vacRanges = vacations[s.id] || [];
@@ -4125,9 +4195,15 @@ function CallSchedule() {
     setVacStart(fmt(new Date()));
     setVacEnd(fmt(new Date()));
   };
+  const timeOffDates = (s, e) => {
+    const day = ds => !/^\d{4}-\d\d-\d\d$/.test(ds) ? String(ds) : ds.slice(0, 4) === fmt(new Date()).slice(0, 4) ? dayMonthLabel(ds) : `${dayMonthLabel(ds)}/${ds.slice(0, 4)}`;
+    return s === e ? day(s) : `${day(s)} → ${day(e)}`;
+  };
   const rmVac = (sid, idx) => {
     const r = (vacations[sid] || [])[idx];
-    if (r) toRemove(sid, "vacation", r[0], r[1]);
+    if (!r) return;
+    if (!confirm(`Remove ${nameOf(sid)}'s vacation ${timeOffDates(r[0], r[1])}?`)) return;
+    toRemove(sid, "vacation", r[0], r[1]);
   };
   const addNoCall = () => {
     if (!ncSurgeon || !ncStart || !ncEnd) return;
@@ -4137,7 +4213,9 @@ function CallSchedule() {
   };
   const rmNoCall = (sid, idx) => {
     const r = (noCallDays[sid] || [])[idx];
-    if (r) toRemove(sid, "nocall", r[0], r[1]);
+    if (!r) return;
+    if (!confirm(`Remove ${nameOf(sid)}'s no-call ${r[0] === r[1] ? "day" : "days"} ${timeOffDates(r[0], r[1])}?`)) return;
+    toRemove(sid, "nocall", r[0], r[1]);
   };
   const saveEditVac = () => {
     if (!editVac || !editVac.start || !editVac.end) return;
@@ -4146,7 +4224,12 @@ function CallSchedule() {
     setEditVac(null);
   };
   const clearAllVacations = () => {
-    if (!confirm("Delete ALL vacations for ALL surgeons and APPs? This cannot be undone.")) return;
+    const typed = prompt("Delete ALL vacations for ALL surgeons and APPs? This cannot be undone. Type DELETE to confirm.");
+    if (typed === null) return;
+    if (String(typed).trim().toLowerCase() !== "delete") {
+      showToast("Nothing deleted — type DELETE to confirm.", "error");
+      return;
+    }
     toClearAll("vacation");
   };
   const saveAppShifts = async next => {
@@ -5269,8 +5352,8 @@ function CallSchedule() {
     const DAYNAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
     const startOf = {};
     ids.forEach(id => {
-      var _surgeons$find10, _INIT_SURGEONS$find;
-      const rosterStart = (_surgeons$find10 = surgeons.find(s => s.id === id)) === null || _surgeons$find10 === void 0 ? void 0 : _surgeons$find10.start;
+      var _surgeons$find11, _INIT_SURGEONS$find;
+      const rosterStart = (_surgeons$find11 = surgeons.find(s => s.id === id)) === null || _surgeons$find11 === void 0 ? void 0 : _surgeons$find11.start;
       startOf[id] = rosterStart || ((_INIT_SURGEONS$find = INIT_SURGEONS.find(s => s.id === id)) === null || _INIT_SURGEONS$find === void 0 ? void 0 : _INIT_SURGEONS$find.start) || null;
     });
     const lifetimeCt = {};
@@ -5505,18 +5588,18 @@ function CallSchedule() {
     const arr = holidayAssignments[String(year)] || [];
     const targetHol = arr[holidayIdx];
     if (targetHol) {
-      var _surgeons$find11;
+      var _surgeons$find12;
       const sameGroup = arr.filter((h, i) => i !== holidayIdx && h.type === targetHol.type);
       const usedInGroup = new Set();
       sameGroup.forEach(h => {
         usedInGroup.add(h.surgeonA);
         usedInGroup.add(h.surgeonB);
       });
-      const fakSwap = (_surgeons$find11 = surgeons.find(s => (s.name || "").toUpperCase() === "FAK")) === null || _surgeons$find11 === void 0 ? void 0 : _surgeons$find11.id;
+      const fakSwap = (_surgeons$find12 = surgeons.find(s => (s.name || "").toUpperCase() === "FAK")) === null || _surgeons$find12 === void 0 ? void 0 : _surgeons$find12.id;
       if (usedInGroup.has(newSurgeonId) && newSurgeonId !== fakSwap) {
-        var _surgeons$find12;
+        var _surgeons$find13;
         const conflictHol = sameGroup.find(h => h.surgeonA === newSurgeonId || h.surgeonB === newSurgeonId);
-        const surgeonName = ((_surgeons$find12 = surgeons.find(s => s.id === newSurgeonId)) === null || _surgeons$find12 === void 0 ? void 0 : _surgeons$find12.name) || newSurgeonId;
+        const surgeonName = ((_surgeons$find13 = surgeons.find(s => s.id === newSurgeonId)) === null || _surgeons$find13 === void 0 ? void 0 : _surgeons$find13.name) || newSurgeonId;
         if (!confirm(`⚠️ ${surgeonName} is already assigned to ${conflictHol === null || conflictHol === void 0 ? void 0 : conflictHol.name} (${targetHol.type} group).\n\nEach partner takes at most one ${targetHol.type} holiday a year. Assign anyway?`)) return;
       }
       if (newSurgeonId && newSurgeonId === fakSwap && targetHol.name !== "Christmas Day" && !confirm(`${nameOf(newSurgeonId)}'s holidays are Christmas Eve + Christmas Day (his major and his minor). Put him on ${targetHol.name} too?`)) return;
@@ -7000,8 +7083,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
   }, [silvisConflicts, conflicts, vacOverlapWarnings, dismissedWarnings]);
   const warnLineText = x => (x.week && x.week !== "feed" ? x.week + " · " : "") + x.message;
   const warnActor = () => {
-    var _surgeons$find13;
-    return (userProfile === null || userProfile === void 0 ? void 0 : userProfile.display_name) || ((_surgeons$find13 = surgeons.find(s => s.id === (userProfile === null || userProfile === void 0 ? void 0 : userProfile.person_id))) === null || _surgeons$find13 === void 0 ? void 0 : _surgeons$find13.name) || "a scheduler";
+    var _surgeons$find14;
+    return (userProfile === null || userProfile === void 0 ? void 0 : userProfile.display_name) || ((_surgeons$find14 = surgeons.find(s => s.id === (userProfile === null || userProfile === void 0 ? void 0 : userProfile.person_id))) === null || _surgeons$find14 === void 0 ? void 0 : _surgeons$find14.name) || "a scheduler";
   };
   const dismissWarning = x => {
     if (!canWriteBlob || !x || !x.key || x.dismissable === false) return;
@@ -7197,6 +7280,26 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     while (c.length % 7) c.push(null);
     return c;
   }, [calYear, calMonth]);
+  const calAppOffNames = ds => {
+    const sf = calSurgeonFilter;
+    if (!(appOffVisible && calFilters.appOff && !sf && calAppFilter !== "none" && !calDeptFilter)) return [];
+    return (appDayOff[ds] || []).map(dayOffId).filter(aid => aid && (calAppFilter === "all" || aid === calAppFilter)).map(aid => {
+      var _aMap$aid;
+      return ((_aMap$aid = aMap[aid]) === null || _aMap$aid === void 0 ? void 0 : _aMap$aid.name) || aid;
+    });
+  };
+  const calSilvisChip = ds => {
+    var _sMap$silvisFakId, _sMap$silvisFakId2;
+    const sf = calSurgeonFilter;
+    const chip = sfCellChip(silvisDays, ds, silvisFakId, {
+      on: calFilters.silvis,
+      sf,
+      fakName: (_sMap$silvisFakId = sMap[silvisFakId]) === null || _sMap$silvisFakId === void 0 ? void 0 : _sMap$silvisFakId.name,
+      ruleOn: silvisActive,
+      deptOk: !calDeptFilter || (SURGEON_DEPTS[(_sMap$silvisFakId2 = sMap[silvisFakId]) === null || _sMap$silvisFakId2 === void 0 ? void 0 : _sMap$silvisFakId2.name] || []).includes(calDeptFilter)
+    });
+    return chip;
+  };
   const todayStr = fmt(new Date());
   const tradeLegsNotStarted = r => shiftStartDate(r.week_monday, r.shift_key) >= todayStr && (!(r.return_week && r.return_shift) || shiftStartDate(r.return_week, r.return_shift) >= todayStr);
   const todayDow = new Date().getDay();
@@ -7231,6 +7334,15 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     return info;
   }, [todayEntries, sMap, aMap]);
   const hasCallToday = todayCall.dayCall || todayCall.night || todayCall.weekend || todayCall.holiday;
+  const callNow = typeof onCallNow === "function" ? onCallNow(schedule, new Date()) : null;
+  const callNowName = callNow ? ((_sMap$callNow$sid = sMap[callNow.sid]) === null || _sMap$callNow$sid === void 0 ? void 0 : _sMap$callNow$sid.name) || null : null;
+  const callNowLine = callNowName && typeof onCallNowText === "function" ? onCallNowText(callNow, callNowName) : null;
+  const nowWindowKey = () => typeof onCallWindowKey === "function" ? onCallWindowKey(new Date()) : "";
+  const [, setNowWindow] = useState(nowWindowKey);
+  useEffect(() => {
+    const t = setInterval(() => setNowWindow(nowWindowKey()), 60000);
+    return () => clearInterval(t);
+  }, []);
   const buildTonightMsg = () => {
     const today = new Date();
     const dayName = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"][today.getDay()];
@@ -7567,6 +7679,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       opacity: reauthBusy ? 0.6 : 1
     })
   }, reauthBusy ? "Signing in…" : "Sign in")))), updateAvailable && !paintSheet && React.createElement("div", {
+    ref: updateBannerRef,
     role: "status",
     "aria-live": "polite",
     style: {
@@ -9918,6 +10031,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     type: "date",
     value: bkMonday,
     onChange: e => setBkMonday(e.target.value),
+    onBlur: snapBkMonday,
     style: _objectSpread(_objectSpread({}, css.inp), {}, {
       width: 160
     })
@@ -9986,6 +10100,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     type: "date",
     value: bkMonday,
     onChange: e => setBkMonday(e.target.value),
+    onBlur: snapBkMonday,
     style: _objectSpread(_objectSpread({}, css.inp), {}, {
       width: 160
     })
@@ -10267,18 +10382,18 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         marginBottom: 6,
         marginTop: 14
       }
-    }, "📌 Minor Holidays"), minors.map((h, i) => renderCard(h, assignments.indexOf(h))), (_surgeons$find14 => {
+    }, "📌 Minor Holidays"), minors.map((h, i) => renderCard(h, assignments.indexOf(h))), (_surgeons$find15 => {
       const rc = holidayRotationCheck({
         assignments,
         prior: holidayAssignments[String(holidayYear - 1)] || [],
         surgeons,
         year: holidayYear,
-        fakId: (_surgeons$find14 = surgeons.find(s => (s.name || "").toUpperCase() === "FAK")) === null || _surgeons$find14 === void 0 ? void 0 : _surgeons$find14.id,
+        fakId: (_surgeons$find15 = surgeons.find(s => (s.name || "").toUpperCase() === "FAK")) === null || _surgeons$find15 === void 0 ? void 0 : _surgeons$find15.id,
         preset: typeof HOLIDAY_PRESETS !== "undefined" && !!HOLIDAY_PRESETS[String(holidayYear)]
       });
       const nm = id => {
-        var _surgeons$find15;
-        return ((_surgeons$find15 = surgeons.find(s => s.id === id)) === null || _surgeons$find15 === void 0 ? void 0 : _surgeons$find15.name) || id;
+        var _surgeons$find16;
+        return ((_surgeons$find16 = surgeons.find(s => s.id === id)) === null || _surgeons$find16 === void 0 ? void 0 : _surgeons$find16.name) || id;
       };
       return React.createElement("div", {
         style: {
@@ -10729,7 +10844,12 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     },
     "aria-label": "Load schedule (JSON)"
   })), React.createElement("button", {
-    onClick: doGenerateAndNotify,
+    onClick: () => {
+      if (confirm(publishConfirmText(mondays, {
+        schedule: scheduleRef.current,
+        today: fmt(new Date())
+      }))) doGenerateAndNotify();
+    },
     disabled: publishing || !!searching,
     style: _objectSpread(_objectSpread({}, css.btn(true)), {}, {
       padding: "13px 24px",
@@ -11841,7 +11961,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     style: {
       color: "#2c5a80"
     }
-  }, "B-SW"), " = backup service week days. Type breakdown (Svc Wk, Nights, Wknds) used by generator for balancing."))), view === "calendar" && React.createElement(React.Fragment, null, hasCallToday && React.createElement("div", {
+  }, "B-SW"), " = backup service week days. Type breakdown (Svc Wk, Nights, Wknds) used by generator for balancing."))), view === "calendar" && React.createElement(React.Fragment, null, (hasCallToday || callNowLine) && React.createElement("div", {
     style: {
       background: "linear-gradient(135deg,#ffffff,#f0f8ff)",
       border: "1px solid #b0d0f0",
@@ -11850,7 +11970,14 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       marginBottom: 14,
       boxShadow: "0 2px 8px rgba(26,111,168,0.08)"
     }
-  }, React.createElement("div", {
+  }, callNowLine && React.createElement("div", {
+    style: {
+      fontSize: 13,
+      fontWeight: 700,
+      color: callNowLine.backup ? "#8a6a10" : "#1a6e3c",
+      marginBottom: hasCallToday ? 8 : 0
+    }
+  }, callNowLine.text), hasCallToday && React.createElement(React.Fragment, null, React.createElement("div", {
     style: {
       display: "flex",
       justifyContent: "space-between",
@@ -12028,7 +12155,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       fontWeight: 600,
       color: todayCall.fierce ? "#8a6a10" : "#1a6fa8"
     }
-  }, todayCall.fierce ? "⚡ Fierce Primary Week — Group is backup" : "🛡 Fierce Backup Week")), React.createElement("div", {
+  }, todayCall.fierce ? "⚡ Fierce Primary Week — Group is backup" : "🛡 Fierce Backup Week"))), React.createElement("div", {
     style: {
       display: "flex",
       justifyContent: "space-between",
@@ -12193,7 +12320,41 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       margin: "0 4px",
       color: dkSubtext
     }
-  }, "|"), React.createElement("select", {
+  }, "|"), !isPublicMode && (sMap[mySurgeon] || aMap[mySurgeon]) && (() => {
+    const meIsApp = !sMap[mySurgeon];
+    const meOn = meIsApp ? calAppFilter === mySurgeon : calSurgeonFilter === mySurgeon;
+    const meLabel = meIsApp ? "Me — show only my APP shifts (the surgeons' call stays shown)" : "Me — show only my call";
+    const toggleMe = () => {
+      if (meIsApp) {
+        setCalAppFilter(meOn ? "all" : mySurgeon);
+        if (!meOn) {
+          setCalSurgeonFilter("");
+          setCalDeptFilter("");
+        }
+      } else {
+        setCalSurgeonFilter(meOn ? "" : mySurgeon);
+        if (!meOn) setCalDeptFilter("");
+      }
+    };
+    return React.createElement("button", {
+      onClick: toggleMe,
+      "aria-pressed": meOn,
+      "aria-label": meLabel,
+      title: meLabel,
+      style: {
+        background: meOn ? dk ? "#1a4a78" : "#1a6fa818" : "transparent",
+        border: `1px solid ${meOn ? dk ? "#7ab8e8" : "#1a6fa8" : dk ? "#3a4a6e" : "#d0d8e0"}`,
+        color: meOn ? dk ? "#7ab8e8" : "#1a6fa8" : dkSubtext,
+        borderRadius: 5,
+        padding: "3px 8px",
+        fontSize: 10,
+        fontWeight: 600,
+        cursor: "pointer",
+        fontFamily: font,
+        opacity: meOn ? 1 : 0.75
+      }
+    }, "👤 Me");
+  })(), React.createElement("select", {
     value: calSurgeonFilter,
     onChange: e => {
       setCalSurgeonFilter(e.target.value);
@@ -12558,6 +12719,17 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         isLast
       };
     };
+    const SR_ONLY = {
+      position: "absolute",
+      width: 1,
+      height: 1,
+      padding: 0,
+      margin: -1,
+      overflow: "hidden",
+      clip: "rect(0 0 0 0)",
+      whiteSpace: "nowrap",
+      border: 0
+    };
     return calGrid.map((day, i) => {
       if (!day) return React.createElement("div", {
         key: `e${i}`,
@@ -12603,6 +12775,19 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       return React.createElement("div", {
         key: ds,
         "data-cal-today": isToday ? "1" : undefined,
+        role: "button",
+        tabIndex: 0,
+        "aria-haspopup": "dialog",
+        onClick: e => openCalDay(ds, e.currentTarget),
+        onKeyDown: e => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            openCalDay(ds, e.currentTarget);
+          } else if (e.key === " ") e.preventDefault();
+        },
+        onKeyUp: e => {
+          if (e.key === " ") openCalDay(ds, e.currentTarget);
+        },
         style: {
           background: cellBg,
           border: cellBorder,
@@ -12611,9 +12796,12 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           borderRadius: 2,
           display: "flex",
           flexDirection: "column",
-          minWidth: 0
+          minWidth: 0,
+          cursor: "pointer"
         }
-      }, React.createElement("div", {
+      }, React.createElement("span", {
+        style: SR_ONLY
+      }, `${dayMonthLabel(ds)}${isToday ? ", today" : ""}: `), React.createElement("div", {
         style: {
           display: "flex",
           justifyContent: "space-between",
@@ -12621,6 +12809,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           marginBottom: 2
         }
       }, isToday ? React.createElement("span", {
+        "aria-hidden": "true",
         style: {
           fontSize: 11,
           fontWeight: 700,
@@ -12636,6 +12825,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           lineHeight: 1
         }
       }, day) : React.createElement("span", {
+        "aria-hidden": "true",
         style: {
           fontSize: 11,
           fontWeight: 600,
@@ -12743,14 +12933,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             marginLeft: 2
           }
         }, e.hours));
-      }), ((_sMap$silvisFakId, _sMap$silvisFakId2) => {
-        const chip = sfCellChip(silvisDays, ds, silvisFakId, {
-          on: calFilters.silvis,
-          sf,
-          fakName: (_sMap$silvisFakId = sMap[silvisFakId]) === null || _sMap$silvisFakId === void 0 ? void 0 : _sMap$silvisFakId.name,
-          ruleOn: silvisActive,
-          deptOk: !calDeptFilter || (SURGEON_DEPTS[(_sMap$silvisFakId2 = sMap[silvisFakId]) === null || _sMap$silvisFakId2 === void 0 ? void 0 : _sMap$silvisFakId2.name] || []).includes(calDeptFilter)
-        });
+      }), (() => {
+        const chip = calSilvisChip(ds);
         if (!chip) return null;
         const P = chip.role === "P";
         return React.createElement("div", {
@@ -12794,11 +12978,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             color: ((_APP_PAL = APP_PAL[((_aMap$e$appId3 = aMap[e.appId]) === null || _aMap$e$appId3 === void 0 ? void 0 : _aMap$e$appId3.idx) % APP_PAL.length]) === null || _APP_PAL === void 0 ? void 0 : _APP_PAL.tx) || "#5a6878"
           }
         }, ((_aMap$e$appId4 = aMap[e.appId]) === null || _aMap$e$appId4 === void 0 ? void 0 : _aMap$e$appId4.name) || "?"));
-      }), appOffVisible && calFilters.appOff && !sf && calAppFilter !== "none" && !calDeptFilter && (() => {
-        const offNames = (appDayOff[ds] || []).map(dayOffId).filter(aid => aid && (calAppFilter === "all" || aid === calAppFilter)).map(aid => {
-          var _aMap$aid;
-          return ((_aMap$aid = aMap[aid]) === null || _aMap$aid === void 0 ? void 0 : _aMap$aid.name) || aid;
-        });
+      }), (() => {
+        const offNames = calAppOffNames(ds);
         return offNames.length ? React.createElement("div", {
           style: {
             marginTop: 1,
@@ -12865,7 +13046,230 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         }, "🏖 ", displayNames);
       })());
     });
-  })()), React.createElement("div", {
+  })()), calDayOpen && (() => {
+    const ds = calDayOpen;
+    const lines = dayDetailLines(schedule, ds, {
+      appShifts,
+      nameOf: id => {
+        var _sMap$id2, _aMap$id;
+        return ((_sMap$id2 = sMap[id]) === null || _sMap$id2 === void 0 ? void 0 : _sMap$id2.name) || ((_aMap$id = aMap[id]) === null || _aMap$id === void 0 ? void 0 : _aMap$id.name) || "?";
+      }
+    });
+    const holLabel = calHolidayLabels[ds] || null;
+    const onVacNames = [...surgeons, ...apps].filter(s => onVac(s.id, ds, vacations)).map(s => s.name);
+    const offNames = calAppOffNames(ds);
+    const chip = calSilvisChip(ds);
+    const canEdit = isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.role) === "admin";
+    const mondayStr = fmt(monOf(parse(ds)));
+    const title = `${["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"][parse(ds).getDay()]}, ${monthDayLabel(ds, true)}`;
+    const ICON = {
+      svc: "☀️",
+      sat: "☀️",
+      night: "🌙",
+      wkndFri: "🌗",
+      wkndSun: "🌗",
+      app: "👩‍⚕️",
+      fierce: "⚡",
+      fierceBkp: "🛡"
+    };
+    const TONE = dk ? {
+      svc: "#7ab8e0",
+      sat: "#7ab8e0",
+      night: "#b8a0e8",
+      wkndFri: "#d8c890",
+      wkndSun: "#d8c890",
+      app: "#e0a070",
+      cover: "#f0a060",
+      fierce: "#e0c060",
+      fierceBkp: "#7ab8e8"
+    } : {
+      svc: "#3080a8",
+      sat: "#3080a8",
+      night: "#6850a0",
+      wkndFri: "#908050",
+      wkndSun: "#908050",
+      app: "#985020",
+      cover: "#c06020",
+      fierce: "#8a6a10",
+      fierceBkp: "#1a6fa8"
+    };
+    const close = () => closeCalDay();
+    const row = {
+      display: "flex",
+      alignItems: "flex-start",
+      gap: 8,
+      padding: "8px 0",
+      borderTop: `1px solid ${dkCardBorder}`,
+      fontSize: 14,
+      lineHeight: 1.4,
+      color: dkText
+    };
+    const ico = {
+      width: 22,
+      textAlign: "center",
+      flexShrink: 0
+    };
+    return React.createElement("div", {
+      onClick: close,
+      style: {
+        position: "fixed",
+        inset: 0,
+        zIndex: 9000,
+        background: "rgba(0,0,0,0.45)",
+        display: "flex",
+        alignItems: "flex-end",
+        justifyContent: "center"
+      }
+    }, React.createElement("div", {
+      role: "dialog",
+      "aria-modal": "true",
+      "aria-label": `${title} — details`,
+      onClick: e => e.stopPropagation(),
+      style: {
+        width: "100%",
+        maxWidth: 520,
+        maxHeight: "70vh",
+        overflowY: "auto",
+        overscrollBehavior: "contain",
+        WebkitOverflowScrolling: "touch",
+        boxSizing: "border-box",
+        background: dk ? "#1a1f2a" : "#fff",
+        borderRadius: "14px 14px 0 0",
+        boxShadow: "0 -6px 24px rgba(0,0,0,0.25)",
+        padding: "10px 16px",
+        paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 16px)",
+        marginBottom: calSheetLift,
+        fontFamily: font
+      }
+    }, React.createElement("div", {
+      style: {
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        marginBottom: 4
+      }
+    }, React.createElement("div", {
+      style: {
+        flex: 1,
+        minWidth: 0
+      }
+    }, React.createElement("div", {
+      style: {
+        fontSize: 16,
+        fontWeight: 700,
+        color: dk ? "#e8e8f0" : "#2c5a80"
+      }
+    }, title), holLabel && React.createElement("div", {
+      style: {
+        fontSize: 13,
+        fontWeight: 600,
+        color: dk ? "#f0a060" : "#c06020",
+        marginTop: 2
+      }
+    }, holLabel.emoji, " ", holLabel.name)), React.createElement("button", {
+      autoFocus: true,
+      "aria-label": "Close",
+      onClick: close,
+      style: {
+        minWidth: 44,
+        minHeight: 44,
+        background: "none",
+        border: "none",
+        fontSize: 20,
+        cursor: "pointer",
+        color: dk ? "#8a94a0" : "#5a6a78",
+        flexShrink: 0,
+        fontFamily: font
+      }
+    }, "✕")), lines.length === 0 && React.createElement("div", {
+      style: _objectSpread(_objectSpread({}, row), {}, {
+        color: dkSubtext
+      })
+    }, "No call scheduled for this day."), lines.map((l, i) => React.createElement("div", {
+      key: i,
+      style: row
+    }, React.createElement("span", {
+      style: ico
+    }, l.slot === "cover" ? holidayEmoji(l.holiday) : ICON[l.slot]), React.createElement("span", {
+      style: {
+        flex: 1,
+        minWidth: 0,
+        overflowWrap: "anywhere"
+      }
+    }, React.createElement("span", {
+      style: {
+        color: TONE[l.slot],
+        fontWeight: 600
+      }
+    }, l.label), l.who !== null && React.createElement(React.Fragment, null, ": ", React.createElement("b", null, l.who)), l.hours && React.createElement("span", {
+      style: {
+        color: dkSubtext,
+        fontFamily: mono,
+        fontSize: 12,
+        whiteSpace: "nowrap"
+      }
+    }, " ", l.hours), l.note && React.createElement("span", {
+      style: {
+        display: "block",
+        fontSize: 12,
+        color: dkSubtext,
+        marginTop: 1
+      }
+    }, l.note)))), onVacNames.length > 0 && React.createElement("div", {
+      style: row
+    }, React.createElement("span", {
+      style: ico
+    }, "🏖"), React.createElement("span", {
+      style: {
+        flex: 1,
+        minWidth: 0,
+        overflowWrap: "anywhere"
+      }
+    }, "On vacation: ", React.createElement("b", null, onVacNames.join(", ")))), offNames.length > 0 && React.createElement("div", {
+      style: row
+    }, React.createElement("span", {
+      style: ico
+    }, "☕"), React.createElement("span", {
+      style: {
+        flex: 1,
+        minWidth: 0,
+        overflowWrap: "anywhere"
+      }
+    }, "APP off (daytime): ", React.createElement("b", null, offNames.join(", ")))), chip && React.createElement("div", {
+      style: row
+    }, React.createElement("span", {
+      style: ico
+    }, "🚑"), React.createElement("span", {
+      style: {
+        flex: 1,
+        minWidth: 0,
+        overflowWrap: "anywhere"
+      }
+    }, React.createElement("b", {
+      style: {
+        color: chip.role === "P" ? dk ? "#8ab0f0" : "#1a4a9a" : dkSubtext
+      }
+    }, chip.label.replace(/^🚑\s*/, "")), React.createElement("span", {
+      style: {
+        display: "block",
+        fontSize: 12,
+        color: dkSubtext,
+        marginTop: 1
+      }
+    }, chip.title))), canEdit && React.createElement("button", {
+      onClick: () => {
+        closeCalDay(false);
+        openWeekEditor(mondayStr);
+      },
+      style: _objectSpread(_objectSpread({}, css.btn(true)), {}, {
+        width: "100%",
+        marginTop: 12,
+        padding: "10px 14px",
+        fontSize: 14,
+        minHeight: 44
+      })
+    }, "✏️ Edit this week")));
+  })(), React.createElement("div", {
     style: {
       marginTop: 10,
       display: "flex",
@@ -14452,29 +14856,15 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       return `${MO[parseInt(mo) - 1]} ${y}`;
     };
     const billingDays = r => (r.dc || 0) + (r.nights || 0) + (r.wknd || 0) + (r.hol || 0);
-    return React.createElement("div", {
-      style: css.card
-    }, React.createElement("div", {
-      style: css.cardT
-    }, "💰 Billing Summary ", React.createElement("span", {
-      style: {
-        fontWeight: 400,
-        fontSize: 11,
-        color: "#7a8a98"
-      }
-    }, "— Monthly, 1st Call Only")), React.createElement("p", {
-      style: {
-        fontSize: 11,
-        color: "#7a8a98",
-        margin: "0 0 14px",
-        lineHeight: 1.5
-      }
-    }, "Breakdown by calendar month. Backup weeks are excluded — only 1st-call shifts count toward billing. Each call day is counted in the month it actually falls in (a service week or weekend spanning a month boundary is split across both months). A covered holiday bills 2 days (the day and the night) to the surgeon who covers it, and that date's regular credits don't count."), sortedMonths.map(mk => {
+    const hasAny = mk => {
       const monthData = monthly[mk] || {};
-      const hasAny = billVisible.some(s => {
+      return billVisible.some(s => {
         return billingDays(monthData[s.id] || {}) > 0;
       });
-      if (!hasAny) return null;
+    };
+    const billOrder = billingMonthOrder(sortedMonths.filter(hasAny), fmt(new Date()));
+    const billMonth = mk => {
+      const monthData = monthly[mk] || {};
       return React.createElement("div", {
         key: mk,
         style: {
@@ -14555,7 +14945,48 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           style: tdS
         }, r.hol || "–"));
       })))));
-    }), React.createElement("div", {
+    };
+    return React.createElement("div", {
+      style: css.card
+    }, React.createElement("div", {
+      style: css.cardT
+    }, "💰 Billing Summary ", React.createElement("span", {
+      style: {
+        fontWeight: 400,
+        fontSize: 11,
+        color: "#7a8a98"
+      }
+    }, "— Monthly, 1st Call Only")), React.createElement("p", {
+      style: {
+        fontSize: 11,
+        color: "#7a8a98",
+        margin: "0 0 14px",
+        lineHeight: 1.5
+      }
+    }, "Breakdown by calendar month. Backup weeks are excluded — only 1st-call shifts count toward billing. Each call day is counted in the month it actually falls in (a service week or weekend spanning a month boundary is split across both months). A covered holiday bills 2 days (the day and the night) to the surgeon who covers it, and that date's regular credits don't count."), billOrder.done.map(billMonth), billOrder.ahead.length > 0 && React.createElement("details", {
+      open: billOrder.done.length === 0,
+      style: {
+        background: dk ? "#12161e" : "#f4f6f8",
+        border: `1px solid ${dk ? "#2a3a5e" : "#d0d8e0"}`,
+        borderRadius: 6,
+        padding: "0 10px",
+        marginBottom: 16
+      }
+    }, React.createElement("summary", {
+      style: {
+        cursor: "pointer",
+        fontSize: 12,
+        fontWeight: 700,
+        color: dk ? "#a0b0c0" : "#5a6a78",
+        padding: "14px 0",
+        lineHeight: "16px"
+      }
+    }, "Upcoming months (", billOrder.ahead.length, ")"), React.createElement("div", {
+      style: {
+        marginTop: 4,
+        paddingBottom: 6
+      }
+    }, billOrder.ahead.map(billMonth))), React.createElement("div", {
       style: {
         fontSize: 11,
         color: "#7a8a98",
@@ -14990,14 +15421,16 @@ ${"</"}script>${"</"}body>${"</"}html>`;
   }, "Select your name…"), surgeons.map(s => React.createElement("option", {
     key: s.id,
     value: s.id
-  }, s.name))), mineId && React.createElement("button", {
+  }, s.name)), aMap[mySurgeon] && React.createElement("option", {
+    value: aMap[mySurgeon].id
+  }, aMap[mySurgeon].name)), mineId && React.createElement("button", {
     onClick: () => downloadMyCal(mineId),
     style: _objectSpread(_objectSpread({}, css.btn(true)), {}, {
       padding: "8px 18px"
     })
-  }, "📅 ", mineViewId ? `Download ${((_sMap$mineViewId2 = sMap[mineViewId]) === null || _sMap$mineViewId2 === void 0 ? void 0 : _sMap$mineViewId2.name) || mineViewId}'s Calendar` : "Download My Calendar", " (.ics)"))), mineId && Object.keys(schedule).length > 0 && (_sMap$myId => {
+  }, "📅 ", mineViewId ? `Download ${((_sMap$mineViewId2 = sMap[mineViewId]) === null || _sMap$mineViewId2 === void 0 ? void 0 : _sMap$mineViewId2.name) || mineViewId}'s Calendar` : "Download My Calendar", " (.ics)"))), mineId && Object.keys(schedule).length > 0 && ((_sMap$myId, _aMap$myId) => {
     const myId = mineId;
-    const myName = ((_sMap$myId = sMap[myId]) === null || _sMap$myId === void 0 ? void 0 : _sMap$myId.name) || "?";
+    const myName = ((_sMap$myId = sMap[myId]) === null || _sMap$myId === void 0 ? void 0 : _sMap$myId.name) || ((_aMap$myId = aMap[myId]) === null || _aMap$myId === void 0 ? void 0 : _aMap$myId.name) || "?";
     const myVacs = vacations[myId] || [];
     const myNoCall = noCallDays[myId] || [];
     const myToday = fmt(new Date());
@@ -15137,6 +15570,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       }
     });
     const myShiftsView = mineUpcoming(myShifts, myToday);
+    const mineApp = !!aMap[myId];
+    const myAppDays = mineApp && typeof appUpcoming === "function" ? appUpcoming(appShifts, myId, myToday) : [];
     const _today0 = new Date();
     _today0.setHours(0, 0, 0, 0);
     const _DAY = 86400000;
@@ -15213,7 +15648,9 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         color: "#1a2a3a",
         marginBottom: 12
       }
-    }, React.createElement(Badge, {
+    }, mineApp ? React.createElement(AppBadge, {
+      id: myId
+    }) : React.createElement(React.Fragment, null, React.createElement(Badge, {
       id: myId
     }), " ", pubThrough && React.createElement("span", {
       style: {
@@ -15222,7 +15659,154 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         fontWeight: 600,
         color: dk ? "#9aa8b6" : "#5a6a78"
       }
-    }, "Published through ", monthDayLabel(pubThrough, true))), React.createElement("div", {
+    }, "Published through ", monthDayLabel(pubThrough, true)))), mineApp && (() => {
+      const APP_LIMIT = 5;
+      const nextA = myAppDays[0],
+        restA = myAppDays.slice(1);
+      const shownA = showAllMyApp ? restA : restA.slice(0, APP_LIMIT);
+      const inDays = ds => Math.round((parse(ds) - _today0) / _DAY);
+      const appIcon = d => d.weekend ? "🌗" : "🌙";
+      const appHours = d => d.weekend ? "7a–7a (24h)" : "5p–7a";
+      return React.createElement("div", {
+        style: _objectSpread(_objectSpread({}, css.card), {}, {
+          padding: 0,
+          overflow: "hidden",
+          marginBottom: 16,
+          border: "1px solid " + (dk ? "#2a3a48" : "#dfe6ec")
+        })
+      }, React.createElement("div", {
+        style: {
+          background: dk ? "linear-gradient(135deg,#16202c,#1b2735)" : "linear-gradient(135deg,#f3f7fb,#e9f1f8)",
+          padding: "9px 14px",
+          borderBottom: "1px solid " + (dk ? "#243240" : "#e4ebf1"),
+          fontSize: 11,
+          fontWeight: 800,
+          letterSpacing: 0.6,
+          color: dk ? "#9fb4c8" : "#3a5a78",
+          textTransform: "uppercase"
+        }
+      }, "🗓 Next APP Call", myAppDays.length > 0 && React.createElement("span", {
+        style: {
+          fontWeight: 600
+        }
+      }, " · ", myAppDays.length, " upcoming")), !nextA ? React.createElement("div", {
+        style: {
+          padding: "16px 14px",
+          fontSize: 13,
+          color: "#8a94a0"
+        }
+      }, "No upcoming APP call days in the current schedule.") : React.createElement("div", {
+        style: {
+          padding: "13px 14px"
+        }
+      }, React.createElement("div", {
+        style: {
+          display: "flex",
+          alignItems: "center",
+          gap: 12
+        }
+      }, React.createElement("div", {
+        style: {
+          fontSize: 30,
+          lineHeight: 1
+        }
+      }, appIcon(nextA)), React.createElement("div", {
+        style: {
+          flex: 1,
+          minWidth: 0
+        }
+      }, React.createElement("div", {
+        style: {
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          flexWrap: "wrap"
+        }
+      }, React.createElement("span", {
+        style: {
+          fontSize: 16,
+          fontWeight: 800,
+          color: dk ? "#dde6ef" : "#1a2a3a"
+        }
+      }, "APP Call"), React.createElement("span", {
+        style: {
+          fontSize: 12,
+          fontWeight: 800,
+          padding: "2px 9px",
+          borderRadius: 20,
+          background: _whenTone(inDays(nextA.ds)) + "1f",
+          color: _whenTone(inDays(nextA.ds))
+        }
+      }, _whenTxt(inDays(nextA.ds)))), React.createElement("div", {
+        style: {
+          fontSize: 13,
+          color: dk ? "#9aa8b6" : "#4a5a68",
+          marginTop: 3
+        }
+      }, mineDay(nextA.ds)), React.createElement("div", {
+        style: {
+          fontSize: 11,
+          color: "#9aa4ae",
+          marginTop: 1
+        }
+      }, appHours(nextA)))), restA.length > 0 && React.createElement("div", {
+        style: {
+          marginTop: 12,
+          paddingTop: 10,
+          borderTop: "1px dashed " + (dk ? "#2a3a48" : "#e4ebf1"),
+          display: "flex",
+          flexDirection: "column",
+          gap: 9
+        }
+      }, shownA.map(d => React.createElement("div", {
+        key: d.ds,
+        style: {
+          display: "flex",
+          alignItems: "center",
+          gap: 10
+        }
+      }, React.createElement("span", {
+        style: {
+          fontSize: 16
+        }
+      }, appIcon(d)), React.createElement("span", {
+        style: {
+          flex: 1,
+          minWidth: 0,
+          fontSize: 13,
+          fontWeight: 600,
+          color: dk ? "#c8d2dc" : "#3a4a58",
+          whiteSpace: "nowrap"
+        }
+      }, mineDay(d.ds)), React.createElement("span", {
+        style: {
+          fontSize: 12,
+          color: dk ? "#9aa8b6" : "#5a6a78",
+          whiteSpace: "nowrap"
+        }
+      }, appHours(d)), React.createElement("span", {
+        style: {
+          fontSize: 11,
+          fontWeight: 700,
+          color: _whenTone(inDays(d.ds)),
+          minWidth: 60,
+          textAlign: "right"
+        }
+      }, _whenTxt(inDays(d.ds))))), restA.length > APP_LIMIT && React.createElement("button", {
+        onClick: () => setShowAllMyApp(v => !v),
+        style: {
+          alignSelf: "flex-start",
+          background: "none",
+          border: "none",
+          color: "#1a6fa8",
+          fontSize: 11,
+          fontWeight: 600,
+          cursor: "pointer",
+          padding: "6px 0",
+          fontFamily: font
+        }
+      }, showAllMyApp ? "Show fewer" : `Show all ${myAppDays.length}`))));
+    })(), !mineApp && React.createElement("div", {
       style: _objectSpread(_objectSpread({}, css.card), {}, {
         padding: 0,
         overflow: "hidden",
@@ -15741,7 +16325,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         fontWeight: 600,
         fontFamily: font
       }
-    }, "in progress") : null)))), myShifts.length === 0 && React.createElement("div", {
+    }, "in progress") : null)))), !mineApp && React.createElement(React.Fragment, null, myShifts.length === 0 && React.createElement("div", {
       style: _objectSpread(_objectSpread({}, css.card), {}, {
         textAlign: "center",
         color: "#8a94a0",
@@ -15753,7 +16337,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         color: "#8a94a0",
         padding: 30
       })
-    }, "No upcoming shifts in the current schedule."));
+    }, "No upcoming shifts in the current schedule.")));
   })(), mineId && Object.keys(schedule).length === 0 && React.createElement("div", {
     role: "status",
     style: _objectSpread(_objectSpread({}, css.card), {}, {
@@ -16289,7 +16873,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         }
       }, React.createElement("button", {
         onClick: () => approveVacRequest(r),
-        style: {
+        style: _objectSpread({
           background: "#e8f8e8",
           border: "1px solid #a0d8a0",
           color: "#1a8040",
@@ -16299,13 +16883,17 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           fontWeight: 600,
           cursor: "pointer",
           fontFamily: font
-        }
+        }, dk ? {
+          background: "#1b4d2c",
+          border: "1px solid #3a8a55",
+          color: "#d6f5e0"
+        } : {})
       }, "✓ Approve"), React.createElement("button", {
         onClick: () => {
           const note = prompt("Reason for denial (optional):");
           if (note !== null) denyVacRequest(r, note);
         },
-        style: {
+        style: _objectSpread({
           background: "#fce8e8",
           border: "1px solid #e0b0b0",
           color: "#c04040",
@@ -16315,7 +16903,11 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           fontWeight: 600,
           cursor: "pointer",
           fontFamily: font
-        }
+        }, dk ? {
+          background: "#5c1f1f",
+          border: "1px solid #a04848",
+          color: "#fadada"
+        } : {})
       }, "✕ Deny")), r.surgeon_id === mySurgeon && !isScheduler && React.createElement("span", {
         style: {
           marginLeft: "auto",
@@ -16732,7 +17324,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       color: "#6030a0",
       padding: "6px 0"
     }
-  }, ((_surgeons$find16 = surgeons.find(s => s.id === mySurgeon)) === null || _surgeons$find16 === void 0 ? void 0 : _surgeons$find16.name) || "—")), React.createElement("div", null, React.createElement("label", {
+  }, ((_surgeons$find17 = surgeons.find(s => s.id === mySurgeon)) === null || _surgeons$find17 === void 0 ? void 0 : _surgeons$find17.name) || "—")), React.createElement("div", null, React.createElement("label", {
     style: {
       fontSize: 10,
       color: "#7a8a98",
@@ -17153,7 +17745,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       }, "🔴 Silvis conflict — ", isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.role) === "admin" ? "scheduler override only" : "cannot be accepted");
     })(), canAnswer(r) && React.createElement(React.Fragment, null, tradeLegsNotStarted(r) && React.createElement("button", {
       onClick: () => acceptTradeRequest(r),
-      style: {
+      style: _objectSpread({
         background: "#e8f8e8",
         border: "1px solid #a0d8a0",
         color: "#1a8040",
@@ -17163,10 +17755,14 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         fontWeight: 600,
         cursor: "pointer",
         fontFamily: font
-      }
+      }, dk ? {
+        background: "#1b4d2c",
+        border: "1px solid #3a8a55",
+        color: "#d6f5e0"
+      } : {})
     }, "✓ Accept"), React.createElement("button", {
       onClick: () => declineTradeRequest(r),
-      style: {
+      style: _objectSpread({
         background: "#fce8e8",
         border: "1px solid #e0b0b0",
         color: "#c04040",
@@ -17176,7 +17772,11 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         fontWeight: 600,
         cursor: "pointer",
         fontFamily: font
-      }
+      }, dk ? {
+        background: "#5c1f1f",
+        border: "1px solid #a04848",
+        color: "#fadada"
+      } : {})
     }, "✕ Decline")), mySurgeon === r.from_surgeon_id && !canAnswer(r) && tradeLegsNotStarted(r) && React.createElement("span", {
       style: {
         fontSize: 10,
@@ -17185,7 +17785,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       }
     }, "Waiting for ", r.to_surgeon_name, "'s answer"), mySurgeon === r.from_surgeon_id && React.createElement("button", {
       onClick: () => deleteTradeRequest(r.id),
-      style: {
+      style: _objectSpread({
         background: "none",
         border: "1px solid #d0d8e0",
         color: "#8a94a0",
@@ -17194,7 +17794,11 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         fontSize: 10,
         cursor: "pointer",
         fontFamily: font
-      }
+      }, dk ? {
+        background: "#2a3448",
+        border: "1px solid #4a5670",
+        color: "#e0e6f0"
+      } : {})
     }, "Withdraw"), mySurgeon !== r.to_surgeon_id && mySurgeon !== r.from_surgeon_id && !isScheduler && React.createElement("span", {
       style: {
         fontSize: 10,
