@@ -628,7 +628,7 @@ const MUTANTS = [
   // G3: a factory reset's stored-data clears, one at a time, and what a half-landed one says and shows.
   { id: "G3a", app: true, what: "G3: the APP-shifts clear is sent even when the setup clear failed (the APP shifts wiped while it says 'Nothing was changed' — p-reset-partial2)",
     // (re-pinned 26/n: the clear is bounded now — review r7 broke-2; the same mutation)
-    from: "    const appClear = blobClear.ok ? await bounded(clearRow(\"app_shifts_data\", {}), lateApp) : null;", to: "    const appClear = await bounded(clearRow(\"app_shifts_data\", {}), lateApp);" },
+    from: "    const appClear = blobClear.ok ? await bounded(clearRow(\"app_shifts_data\", {})) : null;", to: "    const appClear = await bounded(clearRow(\"app_shifts_data\", {}));" },
   { id: "G3b", app: true, what: "G3: a half-landed reset (the setup cleared, the APP shifts not) says 'Nothing was changed' (p-reset-partial)",
     from: "      if (blobClear.ok) {\n", to: "      if (false) {\n" },
   { id: "G3c", app: true, what: "G3 (variant, the message kept): a half-landed reset leaves the old setup on this screen (its next autosave writes it back over the cleared one)",
@@ -1013,7 +1013,7 @@ const MUTANTS = [
   { id: "R7j", app: true, what: "r7-broke-2: the setup clear alone unbounded",
     from: "    const blobClear = await bounded(clearRow(\"call_schedule_data\", { _intentionalClear: true }), lateBlob);", to: "    const blobClear = await clearRow(\"call_schedule_data\", { _intentionalClear: true });" },
   { id: "R7e", app: true, what: "r7-broke-2: the APP-shifts clear alone unbounded",
-    from: "    const appClear = blobClear.ok ? await bounded(clearRow(\"app_shifts_data\", {}), lateApp) : null;", to: "    const appClear = blobClear.ok ? await (clearRow(\"app_shifts_data\", {})) : null;" },
+    from: "    const appClear = blobClear.ok ? await bounded(clearRow(\"app_shifts_data\", {})) : null;", to: "    const appClear = blobClear.ok ? await (clearRow(\"app_shifts_data\", {})) : null;" },
   { id: "R7f", app: true, what: "r7-broke-2: the time-off clear alone unbounded",
     from: "    const toClear = await bounded(toClearAll(undefined, { quiet: true }), lateTimeOff);\n", to: "    const toClear = await (toClearAll(undefined, { quiet: true }));\n" },
   { id: "R7g", app: true, what: "r7-broke-2: unarm() doesn't nudge the setup change the hold kept back (after the setup clear's stop path it is written only at the next poll — lost if the page closes first)",
@@ -1053,11 +1053,16 @@ const MUTANTS = [
     from: "      if (del !== sq.del) { await readTimeOff(quiet); return; }", to: "      if (del !== sq.del) { const m0 = buildTimeOffMaps(rows || []); setVacations(m0.vac); setNoCallDays(m0.nc); await readTimeOff(quiet); return; }" },
   // ── the 26/n review, round 4 (the what-it-broke lens) ──
   { id: "R7x", app: true, what: "r26-broke-1/-2: a reset clear that lands after its bound is not followed up (the cleared blob left under the 'cancelled' setup; the APP shifts shown though cleared; an empty season's setup changes '⚠ Save blocked') — SE-X21 26/n (j)",
-    from: "        p.then(x => { if (x && x.ok && sessionEpochRef.current === ep) onLate(); });\n", to: "" },
+    from: "        if (onLate) p.then(x => { if (x && x.ok && sessionEpochRef.current === ep) onLate(); });\n", to: "" },
   { id: "R7y", app: true, what: "r26-broke-1: a clear that answered in time still runs its late follow-up when its bound runs out (a stray setup write 20 s after the reset) — SE-X21 26/n (j) control",
     from: "        if (settled) return;", to: "" },
   { id: "R7z", app: true, what: "r26-broke-3: the newest SENT time-off read wins (a newer read that fails drops the older good answer: the page's time off missing, nothing said) — SE-X26 (m8)",
     from: "      if (seq < sq.shown) return;", to: "      if (seq !== sq.read) return;" },
+  // ── the 26/n review, round 5 (the what-it-broke lens's skeptic) ──
+  { id: "R7aa", app: true, what: "r26-skb-3 (H3): a reset clear whose late answer is a REFUSAL still runs its follow-up (a stray setup write after it) — SE-X21 26/n (j)",
+    from: "if (x && x.ok && sessionEpochRef.current === ep) onLate();", to: "if (x && sessionEpochRef.current === ep) onLate();" },
+  { id: "R7ab", app: true, what: "r26-skb-3 (H4): the shown mark set to the newest SENT read (an older answer shown first holds back a newer one; the newest then failing leaves the old one) — SE-X26 (m9)",
+    from: "      sq.shown = seq;\n", to: "      sq.shown = sq.read;\n" },
 ];
 
 async function scenarios(createSchedSync, check, line) {
@@ -6886,7 +6891,7 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
     const rearm = async (slow, o = {}) => {
       const { t, A } = await pair(); await ticks(A); A.toasts.length = 0;
       const st = { loaded: true, surgeons: S7, apps: [{ id: "a1", name: "AP1" }], vacations: { s2: [["2030-01-08", "2030-01-10", 1]] }, noCallDays: { s3: [["2030-01-09", "2030-01-09", 2]] },
-        backupMondaySet: new Set([X[0]]), fierceBackupSet: new Set(), schedule: o.noWeeks ? {} : A.ref.current,   // (o.noWeeks, 26/n: a season with no weeks on screen) setupSaveNudge: 0, priorCounts: { s1: { dc: 3 } }, year1Counts: { s1: { dc: 1 } },
+        backupMondaySet: new Set([X[0]]), fierceBackupSet: new Set(), schedule: o.noWeeks ? {} : A.ref.current, setupSaveNudge: 0, priorCounts: { s1: { dc: 3 } }, year1Counts: { s1: { dc: 1 } },   // (o.noWeeks, 26/n: a season with no weeks on screen)
         startMonth: 0, startYear: 2030, numWeeks: 13, holidayAssignments: {}, startMondayOverride: "", pendingLocks: [], silvisRule: null, dismissedWarnings: [], appShifts: { "2030-01-08": "a1" } };
       const refs = { ever: { current: true }, allow: { current: false }, setupRead: { current: true }, lastSync: { current: "2026-10-01T08:00:00+00:00" }, loadedAt: { current: 1 }, loadFailed: { current: false },
         pending: { current: null }, base: { current: null }, bundle: { current: null }, busy: { current: false }, toSeq: { current: { read: 0, del: 0, shown: 0 } } };
@@ -6903,7 +6908,7 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
       const sup = { from: (tb) => ({ upsert: async (row) => {
         const s = A.auth.getSession(), clearing = !!(row.data && row.data._intentionalClear);
         writes.push({ tb, as: s ? s.access_token : "ANON", clear: clearing, startMonth: row.data && row.data.startMonth });
-        if ((at === "blob" && tb === "call_schedule_data" && clearing) || (at === "app" && tb === "app_shifts_data")) { out = true; await gate; }
+        if ((at === "blob" && tb === "call_schedule_data" && clearing) || (at === "app" && tb === "app_shifts_data")) { out = true; await gate; if (o.hangFail) return { error: "HTTP 503 upstream" }; }   // (o.hangFail, 26/n: it answers at last — refused)
         return { error: null };
       } }) };
       const render = () => {
@@ -7058,11 +7063,11 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
       // over the cleared blob (not left cleared until some later change); the APP-shifts clear's — the APP shifts
       // cleared on this screen too; the time off's — gone here (toClearAll) and the empty-save guard disarmed, as the
       // full reset does (an empty season's setup changes are not '⚠ Save blocked').
-      const HN = await rearm(false, { at: "delete", hang: true, edit: 7, noWeeks: true });
-      check("SE-X21 26/n (j) …a clear that LANDS after its bound: the setup clear — this screen's setup (the old one, with the change) written back over the cleared blob; the APP-shifts clear — the APP shifts cleared here too; the time-off DELETE — the time off cleared here, and in a season with no weeks the scheduler's next setup change is written (the guard disarmed — no '⚠ Save blocked')",
-        H.blob.late.blobs.join() === "7@TOK_A" && H.app.late.appShifts === "{}" && H.app.late.blobs.every(b => b === "4@TOK_A") && H.delete.late.vac === 0 && H.delete.late.blobs.every(b => b === "4@TOK_A")
-          && HN.late.vac === 0 && !HN.late.status.includes(BLOCKED) && HN.late.edit.saved && !HN.late.edit.status.includes(BLOCKED),
-        JSON.stringify({ blob: H.blob.late, app: H.app.late, del: H.delete.late, noWeeks: HN.late }));
+      const HN = await rearm(false, { at: "delete", hang: true, edit: 7, noWeeks: true }), HF = await rearm(false, { at: "blob", hang: true, edit: 7, hangFail: true });
+      check("SE-X21 26/n (j) …a clear that LANDS after its bound: the setup clear — this screen's setup (the old one, with the change) written back over the cleared blob; the time-off DELETE — the time off cleared here, and in a season with no weeks the scheduler's next setup change is written (the guard disarmed — no '⚠ Save blocked'); the APP-shifts clear — nothing but the reset's setup written (its realtime event / the poll adopts the stored map); and a setup clear that answers at last REFUSED is followed by nothing (no write after it)",
+        H.blob.late.blobs.join() === "7@TOK_A" && H.app.late.blobs.every(b => b === "4@TOK_A") && H.delete.late.vac === 0 && H.delete.late.blobs.every(b => b === "4@TOK_A")
+          && HN.late.vac === 0 && !HN.late.status.includes(BLOCKED) && HN.late.edit.saved && !HN.late.edit.status.includes(BLOCKED) && HF.bound.blobs.join() === "7@TOK_A" && HF.late.blobs.length === 0,
+        JSON.stringify({ blob: H.blob.late, app: H.app.late, del: H.delete.late, noWeeks: HN.late, refused: HF.late }));
       const W25 = [await rearm(false, { wait25: true }), await rearm(false, { del: 503, wait25: true })];
       check("SE-X21 26/n (j) …control: the bounds of clears that answered in time run out 25 s later and change nothing — a complete reset, and one stopped at its time-off clear (503): no setup write, no status, the APP shifts and the guard as they were",
         W25.every(x => x.wait25 && x.wait25.writes === 0 && x.wait25.status.length === 0 && x.wait25.appSame && x.wait25.everSame), JSON.stringify(W25.map(x => x.wait25)));
@@ -7972,6 +7977,13 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
       if (failFirst) { g2.open(); await quietRead; g1.open(); await mount; } else { g1.open(); await mount; g2.open(); await quietRead; }
       await turn();
       out[failFirst ? "m8b" : "m8"] = { shown: r.ids(), ever: r.ever.current, toasts: r.toasts.length }; }
+    { // (m9) three reads: R1 (V1 + V2) answers first, R2 (served after another device removed V2) answers next, R3 fails
+      const r = rig(ROWS()); await r.load(); const g1 = r.readGate(), g2 = r.readGate(), g3 = r.readGate();
+      const R1 = r.load();                                              // served now: V1 + V2
+      r.setTable(r.table().filter(x => x.id !== 2));                    // another device removes V2
+      const R2 = r.load(); r.failNextRead(); const R3 = r.load();      // R2 served now (V1); R3 will fail
+      g1.open(); await R1; g2.open(); await R2; g3.open(); await R3; await turn();
+      out.m9 = { shown: r.ids() }; }
     check("SE-X26 26/n (n) the time-off reads: the newest wins — an older read (served before another device removed V1) answering last never brings V1 back",
       out.n.shown === "[2]", JSON.stringify(out.n));
     check("SE-X26 26/n (r) …a single removal: the 60-s poll served before its DELETE committed, answering after the DELETE answered — V1 never back on screen, not even for a moment (read again first)",
@@ -7990,6 +8002,8 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
       out.m7.shown === "[2]", JSON.stringify(out.m7));
     check("SE-X26 26/n (m8) …(r26-broke-3) the newest SHOWN answer wins, not the newest sent: the page's loud load read answering OK while a quiet read sent after it fails (before or after it) — the time off shown and the guard armed, nothing said",
       [out.m8, out.m8b].every(x => x.shown === "[1,2]" && x.ever === true && x.toasts === 0), JSON.stringify({ m8: out.m8, m8b: out.m8b }));
+    check("SE-X26 26/n (m9) …three reads, answering in order, the newest failing: the middle one's newer answer is shown (V2's removal), never held back by the older one's",
+      out.m9.shown === "[1]", JSON.stringify(out.m9));
   });
 
   // SE-X-I — the harness rule (A17(c)).

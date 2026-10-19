@@ -2700,20 +2700,21 @@ function CallSchedule() {
     // sent. If it does land later (onLate — in this session only), the screen
     // and the server are brought back in line with what was said (26/n
     // review): the setup clear's — the reset was cancelled — by writing this
-    // screen's setup back over the cleared blob; the APP-shifts clear's by
-    // clearing them here too; the time off's (toClearAll has cleared it here)
-    // by disarming the empty-save guard, as the full reset does — the time off
-    // is really gone.
+    // screen's setup back over the cleared blob; the time off's (toClearAll
+    // has cleared it here) by disarming the empty-save guard, as the full
+    // reset does — the time off is really gone. (The APP-shifts clear's needs
+    // nothing: its realtime event, or the 60-s poll, adopts the stored map —
+    // clearing this screen's at the landing could blank a newer one.)
     const CLEAR_WAIT_MS = 20000;
     const bounded = (p, onLate) => {
       let settled = false; p.then(() => { settled = true; });
       return Promise.race([p, new Promise(r => setTimeout(() => {
         if (settled) return; // (answered in time: its timer is left to run out)
         r({ ok: false, unanswered: true, error: `no answer in ${CLEAR_WAIT_MS / 1000} s` });
-        p.then(x => { if (x && x.ok && sessionEpochRef.current === ep) onLate(); });
+        if (onLate) p.then(x => { if (x && x.ok && sessionEpochRef.current === ep) onLate(); });
       }, CLEAR_WAIT_MS))]);
     };
-    const lateBlob = () => setSetupSaveNudge(n => n + 1), lateApp = () => setAppShifts({}), lateTimeOff = () => { everHadRealDataRef.current = false; };
+    const lateBlob = () => setSetupSaveNudge(n => n + 1), lateTimeOff = () => { everHadRealDataRef.current = false; };
     // From the setup clear to the final run the setup autosave writes nothing
     // (review r6 broke-1): a render in any of the three clears' gaps — a
     // pulled week, the 60-s poll's time off, a realtime event — shows the OLD
@@ -2723,7 +2724,7 @@ function CallSchedule() {
     resetBusyRef.current = true;
     const blobClear = await bounded(clearRow("call_schedule_data", { _intentionalClear: true }), lateBlob);
     if (sessionEpochRef.current !== ep) { unarm(); return; } // another session now: the APP shifts are not cleared as the next account
-    const appClear = blobClear.ok ? await bounded(clearRow("app_shifts_data", {}), lateApp) : null;
+    const appClear = blobClear.ok ? await bounded(clearRow("app_shifts_data", {})) : null;
     if (sessionEpochRef.current !== ep) { unarm(); return; } // …nor anything after it: no weeks job as the next account, no message
     if (!blobClear.ok || !appClear.ok) {
       console.error("Factory reset: clearing stored data failed:", (blobClear.ok ? appClear : blobClear).error);
