@@ -4275,6 +4275,87 @@ console.log("\nAQ. calendar says why a month is blank");
     count("<b>{silvisRuleRows.length}</b> days cached") === 1 && count("<b>{silvisRows.length}</b> days cached") === 0 && count("covers {silvisDays.from} → {silvisDays.to}") === 1);
 }
 
+// ─── AR. Requests tab: no "scheduler PIN" line; an APP gets a note, not a trade form it can't use (UX audit 2026-10-18) ───
+// The pending-requests footnote told every non-scheduler to "Enter the scheduler PIN in ⚙️ Settings to unlock".
+// There is no PIN (the gate is the profile's role), and the same card shows members ✓ Approve / ✕ Deny on
+// colleagues' rows. An APP (a* id) got "Propose a Shift Trade" with From "—" and an always-empty "Shift to
+// give": trades are of surgeon call shifts. Copy plus one render gate; the handlers, the state and the Pending /
+// Completed Trades cards are unchanged. JSX can't run here (no Babel in CI), so the markup is pinned and the
+// decisions it renders are executed on the sliced source.
+//   AR1 the footnote says what the code allows: the Approve/Deny gate, sliced and EXECUTED (a colleague, or the scheduler)
+//   AR2 the trade form's gate, sliced and EXECUTED with the app's own sMap builder on the real roster: every
+//       surgeon and the scheduler get the form, no APP does, and no non-scheduler who gets it sees From "—"
+//   AR3 an APP's note is the gate's else branch, closing just before Pending Trades (still shown to everyone);
+//       the form in the true branch keeps its one submit and its From line (L's slotLabel ledger unchanged)
+//   AR4 the deadline note's week count is config.js's VACATION_DEADLINE_WEEKS_BEFORE, EXECUTED; no hard-coded 6
+console.log("\nAR. Requests tab copy + the APP trade note");
+{
+  const nsrcAR = src.replace(/\r\n/g, "\n");   // a Windows checkout is CRLF, CI's is LF
+  const fnAR = (names, code) => { try { return vm.runInContext(`(function (env) { const { ${names} } = env; return (${code}); })`, sandbox); } catch (ex) { return null; } };
+  const FROM_AR = 'surgeons.find(s=>s.id===mySurgeon)?.name || "—"'; // the form's From line for a non-scheduler
+
+  // AR1 — the sentence, and the gate it describes (unchanged; executed so the sentence stays true)
+  const apGate = nsrcAR.match(/\{\(([^\n]*?)\) && \(\n\s*<div style=\{\{marginLeft:"auto",display:"flex",gap:6\}\}>\n\s*<button onClick=\{\(\)=>approveVacRequest\(r\)\}/);
+  const canDecide = apGate ? fnAR("r, mySurgeon, isScheduler", apGate[1]) : null;
+  const decide = canDecide ? [
+    canDecide({ r: { surgeon_id: "s1" }, mySurgeon: "s3", isScheduler: false }), // a member, a colleague's request
+    canDecide({ r: { surgeon_id: "s1" }, mySurgeon: "a2", isScheduler: false }), // an APP, a colleague's request
+    canDecide({ r: { surgeon_id: "s3" }, mySurgeon: "s3", isScheduler: false }), // a member's own request
+    canDecide({ r: { surgeon_id: "s6" }, mySurgeon: "s6", isScheduler: true }),  // the scheduler's own
+  ] : null;
+  check("AR1 the pending-requests footnote no longer sends anyone to a 'scheduler PIN' (there is none): for a non-scheduler it says requests are approved or denied by a colleague or the scheduler — true of the Approve/Deny gate, executed: a colleague's row yes (member and APP), your own row no, the scheduler yes",
+    count("scheduler PIN") === 0 && count("Requests are approved or denied by a colleague or the scheduler.") === 1
+      && /\{pending\.length > 0 && !isScheduler && \(\n\s*<p [^\n]*>\n\s*Requests are approved or denied by a colleague or the scheduler\.\n\s*<\/p>/.test(nsrcAR)
+      && JSON.stringify(decide) === JSON.stringify([true, true, false, true]),
+    `"scheduler PIN" ×${count("scheduler PIN")} · new sentence ×${count("Requests are approved or denied by a colleague or the scheduler.")} · decide ${JSON.stringify(decide)}`);
+
+  // AR2 — the trade form's gate, executed
+  const tradeGate = nsrcAR.match(/\{\/\* ─── Shift Trade Requests ─── \*\/\}\n(?:[ ]*\{\/\*[^\n]*\*\/\}\n)?[ ]*\{\(([^\n]*?)\) \? \(\n[ ]*<div style=\{css\.card\}>\n[ ]*<div style=\{css\.cardT\}>🔄 Propose a Shift Trade<\/div>/);
+  const sMapSrc = (nsrcAR.match(/const sMap = useMemo\((\(\) => \{[^\n]*?return m; \}), \[surgeons\]\);/) || [])[1];
+  const mkSMap = sMapSrc ? fnAR("surgeons", sMapSrc) : null;
+  const showForm = tradeGate ? fnAR("isScheduler, sMap, mySurgeon", "!!(" + tradeGate[1] + ")") : null;
+  const fromOf = fnAR("surgeons, mySurgeon", FROM_AR);
+  let ar2 = null;
+  if (mkSMap && showForm && fromOf) {
+    const sMap = mkSMap({ surgeons: INIT_SURGEONS })();
+    const tiny = { s3: { id: "s3", name: "RPC", idx: 0 } };
+    ar2 = {
+      surgeons: INIT_SURGEONS.map(s => showForm({ isScheduler: false, sMap, mySurgeon: s.id })),
+      apps: INIT_APPS.map(a => showForm({ isScheduler: false, sMap, mySurgeon: a.id })),
+      scheduler: showForm({ isScheduler: true, sMap, mySurgeon: "s6" }),
+      tiny: [showForm({ isScheduler: false, sMap: tiny, mySurgeon: "s3" }), showForm({ isScheduler: false, sMap: tiny, mySurgeon: "a1" })],
+      fromDash: [...INIT_SURGEONS, ...INIT_APPS].filter(p => showForm({ isScheduler: false, sMap, mySurgeon: p.id }) && fromOf({ surgeons: INIT_SURGEONS, mySurgeon: p.id }) === "—").map(p => p.id),
+    };
+  }
+  check("AR2 the Propose-a-Shift-Trade form renders only for the scheduler or a surgeon — its gate, executed with the app's own sMap builder on the real roster: s1–s7 and the scheduler yes, a1–a5 no (a minimal {s3} map: s3 yes, a1 no), and no non-scheduler who gets the form sees From \"—\"",
+    !!ar2 && ar2.surgeons.length === 7 && ar2.surgeons.every(x => x === true) && ar2.apps.length === 5 && ar2.apps.every(x => x === false)
+      && ar2.scheduler === true && JSON.stringify(ar2.tiny) === "[true,false]" && ar2.fromDash.length === 0,
+    ar2 ? JSON.stringify(ar2) : `gate ${tradeGate ? "found" : "not found ahead of the form"} · sMap builder ${mkSMap ? "found" : "not found"}`);
+
+  // AR3 — the note is the gate's else branch; Pending Trades stays outside it
+  const iGate = src.indexOf("(isScheduler || sMap[mySurgeon]) ? ("), iForm = src.indexOf("Propose a Shift Trade");
+  const elseRe = /\n {10}\) : \(\n {10}<div style=\{css\.card\}>\n {12}<div style=\{css\.cardT\}>🔄 Shift Trades<\/div>\n {12}<p style=\{\{[^\n]*\}\}>Shift trades are for the surgeon call schedule\. For an APP shift change, ask the scheduler\.<\/p>\n {10}<\/div>\n {10}\)\}\n\n {10}\{\/\* Pending Trades \*\/\}/;
+  const nGate = nsrcAR.indexOf("(isScheduler || sMap[mySurgeon]) ? ("), mElse = elseRe.exec(nsrcAR), nPending = nsrcAR.indexOf("{/* Pending Trades */}");
+  const formBody = nGate >= 0 && mElse && mElse.index > nGate ? nsrcAR.slice(nGate, mElse.index) : "";
+  check("AR3 an APP sees a '🔄 Shift Trades' note instead: the gate's else branch, closing just before Pending Trades (outside the gate, so an APP still sees trades it is part of); the form in the true branch keeps its one Propose Trade submit and its From line; L's slotLabel ledger stays 23",
+    count("(isScheduler || sMap[mySurgeon]) ? (") === 1 && count("Propose a Shift Trade") === 1 && iGate >= 0 && iForm > iGate && iForm - iGate <= 400
+      && count("Shift trades are for the surgeon call schedule.") === 1 && !!mElse && formBody.length > 0
+      && count("{/* Pending Trades */}") === 1 && nPending === mElse.index + mElse[0].length - "{/* Pending Trades */}".length
+      && !formBody.includes("\n          ) : (\n") && formBody.includes("onClick={submitTradeRequest}") && count("onClick={submitTradeRequest}") === 1
+      && formBody.includes("{" + FROM_AR + "}") && count("{" + FROM_AR + "}") === 1 && count("slotLabel(") === 23,
+    JSON.stringify({ gate: iGate, form: iForm, elseBranch: !!mElse, pending: nPending, slotLabel: count("slotLabel(") }));
+
+  // AR4 — the deadline note follows config.js, executed
+  const dl = nsrcAR.match(/Requests are typically due \{([^\n{}]*)\} weeks before each new schedule period\./);
+  const dlIn = (prelude) => { try { const c = vm.createContext({}); vm.runInContext(prelude + "\nvar __ar4 = (" + dl[1] + ");", c); return c.__ar4; } catch (ex) { return "threw: " + String(ex).slice(0, 80); } };
+  let ar4 = null;
+  if (dl) { try { ar4 = { real: vm.runInContext("(" + dl[1] + ")", sandbox), cfg: vm.runInContext("VACATION_DEADLINE_WEEKS_BEFORE", sandbox), four: dlIn("const VACATION_DEADLINE_WEEKS_BEFORE = 4;"), none: dlIn("") }; } catch (ex) { ar4 = { err: String(ex).slice(0, 120) }; } }
+  check("AR4 the deadline note's week count is config.js's VACATION_DEADLINE_WEEKS_BEFORE (the constant the deadline itself is computed from), executed: the real config gives its 6, a config of 4 gives 4, none gives 6; no hard-coded 'typically due 6 weeks'",
+    count("typically due 6 weeks") === 0 && !!ar4 && ar4.cfg === 6 && ar4.real === ar4.cfg && ar4.four === 4 && ar4.none === 6
+      && count('const deadlineWeeksBefore = (typeof VACATION_DEADLINE_WEEKS_BEFORE !== "undefined") ? VACATION_DEADLINE_WEEKS_BEFORE : 6;') === 1,
+    ar4 ? JSON.stringify(ar4) : `"typically due 6 weeks" ×${count("typically due 6 weeks")} · no expression in the note`);
+}
+
 // ─── AA. Request submits fail loud (2026-10-11, audit QW7) ───
 // db.insert returns { data:null, error } on an HTTP failure — it does not throw.
 // submitVacRequest / submitTradeRequest read only `data`, so a 401 / 403 / RLS

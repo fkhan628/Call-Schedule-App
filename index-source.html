@@ -11208,7 +11208,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                     </div>
                     {!isPast && daysRemaining > 7 && (
                       <div style={{fontSize:11,color:"#7a8a98",marginTop:6,fontStyle:"italic"}}>
-                        Requests are typically due 6 weeks before each new schedule period.
+                        Requests are typically due {typeof VACATION_DEADLINE_WEEKS_BEFORE !== "undefined" ? VACATION_DEADLINE_WEEKS_BEFORE : 6} weeks before each new schedule period.
                       </div>
                     )}
                   </div>
@@ -11393,7 +11393,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                 })}
                 {pending.length > 0 && !isScheduler && (
                   <p style={{fontSize:12,color:"#8a94a0",margin:"10px 0 0",lineHeight:1.5}}>
-                    Only the scheduler can approve or deny requests. Enter the scheduler PIN in ⚙️ Settings to unlock.
+                    Requests are approved or denied by a colleague or the scheduler.
                   </p>
                 )}
               </div>
@@ -11471,6 +11471,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           })()}
 
           {/* ─── Shift Trade Requests ─── */}
+          {/* Trades are of surgeon call shifts: an APP (a* id) has no shift to give, so an APP sees a note instead of a form it can't use. */}
+          {(isScheduler || sMap[mySurgeon]) ? (
           <div style={css.card}>
             <div style={css.cardT}>🔄 Propose a Shift Trade</div>
             <p style={{fontSize:13,color:"#5a6a78",margin:"0 0 12px",lineHeight:1.5}}>
@@ -11640,6 +11642,12 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               );
             })()}
           </div>
+          ) : (
+          <div style={css.card}>
+            <div style={css.cardT}>🔄 Shift Trades</div>
+            <p style={{fontSize:13,color:"#5a6a78",margin:0,lineHeight:1.5}}>Shift trades are for the surgeon call schedule. For an APP shift change, ask the scheduler.</p>
+          </div>
+          )}
 
           {/* Pending Trades */}
           {(()=>{
