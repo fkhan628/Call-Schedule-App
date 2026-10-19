@@ -30,6 +30,9 @@ on:
       - "test/generator-regression.js"
       - "test/sync-guards.js"
       - "test/consistency-checks.js"
+      - "test/sync-engine-se.js"
+      - "test/fake-weeks-table.js"
+      - "test/fake-weeks-table.test.js"
       # the regression's independent oracle and its fixtures (live inputs,
       # the owner's CP-SAT benchmark) — a change there must re-run it too
       - "test/bend-oracle.js"

@@ -10,6 +10,28 @@ const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 // Lightweight Supabase REST client (no SDK dependency needed)
 const dbHeaders = { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}`, "Content-Type": "application/json" };
 
+// The account THIS TAB is signed in as (auth.bindUser — review r4 branch-4).
+// Every tab of a browser shares localStorage's one stored session: after tab 1
+// signs out and signs in as B, tab 2 — still showing A, A's role, A's unsaved
+// weeks — read B's token on every request, and sent A's pending weeks and every
+// later edit with B's JWT. While a user is bound, a stored session whose JWT
+// `sub` is someone else's is NO session here: getSession() answers null,
+// dbReadHeaders() reads as anon, dbAuthHeaders() sends nothing authenticated
+// (anon — RLS refuses it). The tab then shows "Sign in again", and that renews
+// the STORED session (refreshKeep), landing as another account: the session
+// boundary runs and this tab's unsaved weeks are discarded, said so. The app
+// binds on every sign-in (the password, the stored session at app open, Face
+// ID, "Sign in again") and unbinds at its sign-out — nothing is bound while the
+// sign-in form's own request runs. An undecodable token while bound: no session.
+let _authBoundUser = null;
+const _jwtSub = (token) => {
+  try { const p = JSON.parse(atob(String(token).split(".")[1].replace(/-/g, "+").replace(/_/g, "/"))); return p && typeof p.sub === "string" ? p.sub : null; }
+  catch (e) { return null; }
+};
+// The stored token as THIS tab may use it: itself, or null when it belongs to
+// another account than the bound one.
+const _tokenForTab = (token) => (!token ? null : (!_authBoundUser || _jwtSub(token) === _authBoundUser) ? token : null);
+
 // Session-aware headers: returns headers with the logged-in user's JWT when a
 // session is stored in localStorage, else falls back to anon-key headers.
 // This is what every authenticated WRITE must use so RLS sees the real user.
@@ -19,7 +41,7 @@ const dbHeaders = { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE
 // dbReadHeaders() below, which IS expiry-aware.
 function dbAuthHeaders() {
   try {
-    const token = localStorage.getItem("dsg-auth-token");
+    const token = _tokenForTab(localStorage.getItem("dsg-auth-token")); // (another account's — another tab's — is none here: anon)
     if (token) return { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
   } catch(e) { console.warn("dbAuthHeaders: session read failed, using anon:", e); }
   return dbHeaders;
@@ -45,7 +67,7 @@ function jwtIsFresh(token) {
 // pass. WRITES must never use this — see dbAuthHeaders above.
 function dbReadHeaders() {
   try {
-    const token = localStorage.getItem("dsg-auth-token");
+    const token = _tokenForTab(localStorage.getItem("dsg-auth-token")); // (another account's: anon)
     if (token && jwtIsFresh(token)) return { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
     if (token) console.warn("dbReadHeaders: stored token is expired/undecodable — reading as anon (auth refresh will restore it).");
   } catch(e) { console.warn("dbReadHeaders: session read failed, using anon:", e); }
@@ -213,12 +235,43 @@ const buildTimeOffMaps = (rows) => {
 
 // Snapshot helper. Before any destructive write, copy the row that is CURRENTLY
 // persisted (not local state) into call_schedule_snapshots so it can always be
-// restored by hand. Best-effort: never throws — a snapshot failure must not
-// block the user, but it is surfaced to the console.
+// restored by hand. Never throws; callers gate destructive actions on .ok.
+//
+// The schedule (schedule_weeks) fold is REQUIRED when the capture comes right
+// before a destructive operation (sync v2, 2026-10-12): clear, regenerate,
+// factory reset, and the restore's own before_restore. A snapshot without the
+// schedule can't put it back — and restoring such a snapshot used to delete
+// every week. A genuine empty table is recorded as schedule: {}. opts.minWeeks
+// (the caller's count of weeks it knows exist) turns an EMPTY read into a
+// failure too: schedule_weeks is anon-readable, so 200 + [] while weeks exist
+// is the RLS/anon shape, not an empty schedule. A periodic capture fails the
+// same way (A15): a schedule-less snapshot can't put the schedule back, and
+// inserting one would reset captureIfStale's 6-hour clock.
+const SNAPSHOT_STRICT_REASONS = ["clear_schedule", "regenerate", "reset_all_data", "before_restore"];
+// One request of a capture, with its timeout (snapshots.timeoutMs, 15 s —
+// review r3 regress-3). It used to wait for ever: a hung read or insert held
+// the destructive tap waiting on it (clear, Generate & Publish, factory reset,
+// Accept & Publish, restore's before_restore) open indefinitely — across a
+// sign-out too. The timer covers reading the body; at the timeout the request
+// is aborted, and the capture fails closed as on any failed request (its
+// caller refuses: "Couldn't save a backup snapshot — … cancelled"). Answers a
+// settled response (its body already read), or throws.
+const snapReq = async (url, init) => {
+  const ctl = typeof AbortController === "function" ? new AbortController() : null;
+  const timer = ctl ? setTimeout(() => { try { ctl.abort(); } catch (e) { /* already settled */ } }, snapshots.timeoutMs) : null;
+  try {
+    const res = await fetch(url, ctl ? { ...init, signal: ctl.signal } : init);
+    const text = await res.text();
+    return { ok: res.ok, status: res.status, text: async () => text, json: async () => JSON.parse(text) };
+  } finally { if (timer) clearTimeout(timer); }
+};
 const snapshots = {
-  async capture(reason) {
+  timeoutMs: 15000,
+  async capture(reason, opts) {
+    const strict = SNAPSHOT_STRICT_REASONS.includes(reason);
+    const minWeeks = (opts && opts.minWeeks) || 0;
     try {
-      const res = await fetch(
+      const res = await snapReq(
         `${SUPABASE_URL}/rest/v1/call_schedule_data?id=eq.main&select=data,updated_at`,
         { headers: dbAuthHeaders() }
       );
@@ -237,48 +290,70 @@ const snapshots = {
       }
       const rows = await res.json();
       let current = rows?.[0]?.data ?? null;
-      // The schedule now lives in the schedule_weeks table, not the blob, so
-      // fold it back in here — otherwise the snapshot would have no schedule and
-      // couldn't restore one. Best-effort: if this fetch fails we still snapshot
-      // whatever the blob has.
+      // The schedule lives in the schedule_weeks table, not the blob, so fold
+      // it back in here — otherwise the snapshot would have no schedule and
+      // couldn't restore one. Required for a destructive reason (see above);
+      // best-effort otherwise.
+      let foldErr = null;
       try {
-        const wres = await fetch(
-          `${SUPABASE_URL}/rest/v1/schedule_weeks?select=week_monday,data&order=week_monday.asc`,
+        const wres = await snapReq(
+          `${SUPABASE_URL}/rest/v1/schedule_weeks?select=week_monday,data&order=week_monday.asc&limit=5000`,
           { headers: dbAuthHeaders() }
         );
         if (wres.ok) {
           const wrows = await wres.json();
-          if (Array.isArray(wrows) && wrows.length) {
+          if (!Array.isArray(wrows)) foldErr = "schedule read returned no list";
+          else if (wrows.length < minWeeks) foldErr = `schedule read came back with ${wrows.length} weeks while ${minWeeks}+ exist (an anon/RLS-filtered read?)`;
+          else {
             const sched = {};
             wrows.forEach(r => { sched[r.week_monday] = r.data; });
-            current = { ...(current || {}), schedule: sched };
+            current = { ...(current || {}), schedule: sched }; // {} for a genuinely empty table
           }
-        }
-      } catch (e) { console.warn("Snapshot: schedule_weeks fetch failed:", e); }
+        } else foldErr = `schedule read failed: HTTP ${wres.status}`;
+      } catch (e) { foldErr = "schedule read failed: " + String(e); }
+      // A15: a snapshot without the schedule can't put it back — for ANY
+      // reason (a periodic one included: inserting it would reset the 6-hour
+      // clock on a backup that can't restore the schedule).
+      if (foldErr) {
+        console.warn("Snapshot: schedule_weeks fold failed:", foldErr);
+        return { ok: false, error: foldErr };
+      }
       // Vacations/no-call live in the time_off table (the blob mirror was
       // retired in PR #18), so fold them back in under the old mirror keys —
       // without this, snapshots carry NO vacations and a time_off wipe would
-      // be unrecoverable. Best-effort like the schedule_weeks fold above; the
-      // explicit order makes consecutive snapshots byte-stable on ties.
+      // be unrecoverable. Best-effort for most reasons — EXCEPT the one whose
+      // caller then deletes the time off (review r4 fixes-10): the factory
+      // reset's snapshot is its only way back to the vacations, so a time_off
+      // read that fails, times out or returns no list fails the capture
+      // (ok:false — the reset is refused: "Couldn't save a backup snapshot").
+      // (The schedule_weeks fold above is strict for every destructive reason.)
+      // The explicit order makes consecutive snapshots byte-stable on ties.
+      const timeOffStrict = reason === "reset_all_data";
+      let timeOffErr = null;
       try {
-        const tres = await fetch(
+        const tres = await snapReq(
           `${SUPABASE_URL}/rest/v1/time_off?select=id,person_id,kind,start_date,end_date&order=start_date.asc`,
           { headers: dbAuthHeaders() }
         );
         if (tres.ok) {
           const trows = await tres.json();
-          if (Array.isArray(trows) && trows.length) {
+          if (!Array.isArray(trows)) timeOffErr = "time_off read returned no list";
+          else if (trows.length) {
             const { vac, nc } = buildTimeOffMaps(trows);
             current = { ...(current || {}), vacations: vac, noCallDays: nc };
           }
-        }
-      } catch (e) { console.warn("Snapshot: time_off fetch failed:", e); }
+        } else timeOffErr = `time_off read failed: HTTP ${tres.status}`;
+      } catch (e) { timeOffErr = "time_off read failed: " + String(e); }
+      if (timeOffErr) {
+        console.warn("Snapshot: time_off fold failed:", timeOffErr);
+        if (timeOffStrict) return { ok: false, error: timeOffErr };
+      }
       // Don't bother snapshotting an already-empty row. This exit is now
       // reached ONLY on a genuine 200 with nothing worth keeping — a real
       // failure returned above — so an empty DB still doesn't block a
       // legitimate reset.
       if (current && !payloadLooksWiped(current)) {
-        const ins = await fetch(`${SUPABASE_URL}/rest/v1/call_schedule_snapshots`, {
+        const ins = await snapReq(`${SUPABASE_URL}/rest/v1/call_schedule_snapshots`, {
           method: "POST",
           headers: { ...dbAuthHeaders(), Prefer: "return=minimal" },
           body: JSON.stringify({
@@ -323,23 +398,32 @@ const snapshots = {
   },
   // Periodic safety net: capture at most once per maxAgeHours (default 6), so
   // corruption that never passes through a destructive button still has a
-  // recent restore point without flooding the table.
-  async captureIfStale(reason, maxAgeHours) {
+  // recent restore point without flooding the table. opts go to capture()
+  // (A15: minWeeks, so an empty schedule read while weeks are known fails the
+  // capture instead of saving schedule: {}).
+  async captureIfStale(reason, maxAgeHours, opts) {
     try {
       const hours = maxAgeHours || 6;
       const recent = await this.list(1);
       const newest = recent?.[0]?.created_at ? new Date(recent[0].created_at).getTime() : 0;
       if (Date.now() - newest < hours * 3600 * 1000) return { ok: true, skipped: "fresh" };
-      return await this.capture(reason || "periodic");
+      return await this.capture(reason || "periodic", opts);
     } catch (e) { return { ok: false, error: String(e) }; }
   },
   // Restore a snapshot: roster/config back into the call_schedule_data blob,
   // schedule back into schedule_weeks. The schedule leg MUST go through the
-  // app's own sync (syncSchedWeeks: per-week compare-and-swap + wipe guard),
-  // which lives in the component — the caller passes it in as applySchedule.
-  // A restore is itself destructive, so the CURRENT state is snapshotted
-  // first and the restore aborts if that capture fails.
-  async restore(snapshotId, applySchedule) {
+  // app's own sync (the sync engine's authoritative job: a fresh whole-table
+  // read, then per-week writes, the outcome reported honestly), which lives
+  // in the component — the caller passes it in as applySchedule. A restore is
+  // itself destructive, so the CURRENT state is snapshotted first and the
+  // restore aborts if that capture fails. opts.confirm(schedule, snap), when
+  // given, is asked once the snapshot is read and before anything is written
+  // (A15: the caller states the week change); a "no" returns { cancelled }.
+  // opts.proceed(), when given, is asked after the before_restore snapshot and
+  // right before the blob is written (review r3 regress-3: the caller's session
+  // still the one that asked — a sign-out or another account's sign-in during
+  // that snapshot); false returns { cancelled } with nothing written.
+  async restore(snapshotId, applySchedule, opts) {
     if (!snapshotId) return { ok: false, error: "No snapshot id" };
     if (typeof applySchedule !== "function") {
       return { ok: false, error: "restore() requires the app's schedule applier (the CAS sync path) — refusing to bypass it" };
@@ -355,16 +439,30 @@ const snapshots = {
       const payload = snap && (typeof snap.data === "string" ? JSON.parse(snap.data) : snap.data);
       if (!payload) return { ok: false, error: "Snapshot not found or has no data" };
       if (payloadLooksWiped(payload)) return { ok: false, error: "Snapshot looks empty — refusing to restore it" };
-      const pre = await this.capture("before_restore");
+      // A snapshot taken while the schedule couldn't be read has no schedule
+      // key. Restoring it would mean "make the schedule empty" — every week
+      // deleted. Refuse it (sync v2, I6); {} (a genuinely empty schedule) is a
+      // real value and is allowed.
+      if (!payload.schedule || typeof payload.schedule !== "object") return { ok: false, error: "This snapshot has no schedule in it (the schedule couldn't be read when it was taken) — restoring it would delete every week, so it was refused. Nothing was changed." };
+      if (opts && typeof opts.confirm === "function" && !(await opts.confirm(payload.schedule, snap))) return { ok: false, cancelled: true };
+      const pre = await this.capture("before_restore", opts && opts.minWeeks ? { minWeeks: opts.minWeeks } : undefined);
       if (!pre.ok) return { ok: false, error: "Couldn't snapshot the current state first — restore aborted, nothing changed" };
-      const schedule = payload.schedule || {};
+      if (opts && typeof opts.proceed === "function" && !opts.proceed()) return { ok: false, cancelled: true };
+      const schedule = payload.schedule;
       const blob = { ...payload }; delete blob.schedule;
       const ts = new Date().toISOString();
       const up = await db.upsert("call_schedule_data", { id: "main", data: blob, updated_at: ts });
       if (up && up.error) return { ok: false, error: "Config write failed: " + up.error };
       const applied = await applySchedule(schedule);
+      // Still writing past its deadline (A5(f)): the blob is back, the
+      // schedule's outcome comes later — the caller adopts the blob as on success.
+      if (applied && applied.running) return { ok: false, running: true, error: applied.error, blobRestored: true, blob, schedule, ts, reason: snap.reason, created_at: snap.created_at };
+      // The schedule leg refused or not fully landed: the blob is back all the
+      // same — the caller adopts it too (left un-adopted, its next autosave
+      // wrote the pre-restore setup over it — review r2 fixes-1) and says the
+      // setup was restored, the weeks not.
       if (applied && applied.ok === false) {
-        return { ok: false, error: applied.error || "Schedule apply failed", blobRestored: true };
+        return { ok: false, error: applied.error || "Schedule apply failed", blobRestored: true, blob, schedule, ts, reason: snap.reason, created_at: snap.created_at };
       }
       return { ok: true, blob, schedule, ts, reason: snap.reason, created_at: snap.created_at };
     } catch (e) {
@@ -611,14 +709,26 @@ const AUTH_TOKEN_KEY = "dsg-auth-token";
 const AUTH_REFRESH_KEY = "dsg-auth-refresh";
 
 const auth = {
-  // Get stored session
+  // Get stored session — as THIS tab may use it: none while another account's
+  // is stored (bindUser, review r4 branch-4).
   getSession() {
+    const s = auth._storedSession();
+    return s && _tokenForTab(s.access_token) ? s : null;
+  },
+  // The stored session itself, whoever's (the shared localStorage): only
+  // refreshKeep renews it (it lands as whichever account it is), and signOut
+  // asks whose it is.
+  _storedSession() {
     try {
       const token = localStorage.getItem(AUTH_TOKEN_KEY);
       const refresh = localStorage.getItem(AUTH_REFRESH_KEY);
       return token ? { access_token: token, refresh_token: refresh } : null;
     } catch(e) { return null; }
   },
+  // Bind this tab to its signed-in account's auth id (null: unbind — at the
+  // sign-out, so the sign-in form's own requests run unbound).
+  bindUser(id) { _authBoundUser = id || null; },
+  boundUser() { return _authBoundUser; },
 
   // Store session
   _saveSession(data) {
@@ -710,9 +820,37 @@ const auth = {
     } catch(e) { auth._clearSession(); return { user: null }; }
   },
 
-  // Sign out
+  // Refresh that KEEPS the stored session on failure (sync v2 "Sign in
+  // again", A7(2)). The same refresh call as _refresh, but a refused answer or
+  // a network error never clears the stored session: the app keeps the
+  // user's unsaved work on screen and offers a password sign-in instead.
+  // Returns { ok: true, user, session } or
+  // { ok: false, error: "no-session" | "refused" | "network" }.
+  async refreshKeep() {
+    // The STORED session, whoever's: renewed, it lands as its own account —
+    // another tab's sign-in (review r4 branch-4) lands as "another account",
+    // and the app's session boundary runs.
+    const session = auth._storedSession();
+    if (!session || !session.refresh_token) return { ok: false, error: "no-session" };
+    try {
+      const res = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`, {
+        method: "POST",
+        headers: { apikey: SUPABASE_ANON_KEY, "Content-Type": "application/json" },
+        body: JSON.stringify({ refresh_token: session.refresh_token }),
+      });
+      if (!res.ok) return { ok: false, error: "refused" };
+      const data = await res.json();
+      if (!data || !data.access_token) return { ok: false, error: "refused" };
+      auth._saveSession(data);
+      return { ok: true, user: data.user || null, session: data };
+    } catch(e) { return { ok: false, error: "network" }; }
+  },
+
+  // Sign out. Only THIS tab's session (review r4 branch-4): another account's
+  // stored session (another tab signed in as it) is neither logged out on the
+  // server — that would be a request as that account — nor cleared here.
   async signOut() {
-    const session = auth.getSession();
+    const stored = auth._storedSession(), session = auth.getSession();
     if (session?.access_token) {
       try {
         await fetch(`${SUPABASE_URL}/auth/v1/logout`, {
@@ -721,7 +859,7 @@ const auth = {
         });
       } catch(e) { console.warn("Server-side logout failed (session cleared locally anyway):", e); }
     }
-    auth._clearSession();
+    if (!stored || session) auth._clearSession();
   },
 
   // Send password reset email

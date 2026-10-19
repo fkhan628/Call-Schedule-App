@@ -60,6 +60,7 @@ const sandbox = {
   fetch: () => { throw new Error("fetch called before a stub was installed"); },
   navigator: { userAgent: "node-test" },
   setTimeout, clearTimeout,
+  AbortController, // (20/n: snapshots.capture arms a timeout per request with it — section B 8.)
 };
 sandbox.globalThis = sandbox;
 vm.createContext(sandbox);
@@ -77,6 +78,12 @@ const setFetch = (fn) => { sandbox.fetch = fn; };
 // ─── Tiny check harness (mirrors generator-regression.js conventions) ───
 const failures = [];
 let checks = 0;
+// An await that never settles empties the event loop and Node exits 0 —
+// a hung test would read as a PASS. No verdict printed = failure.
+let verdictReached = false;
+process.on("exit", (code) => {
+  if (!verdictReached && code === 0) { console.error("\nFAIL — sync-guards ended without a verdict (a hung await)"); process.exitCode = 1; }
+});
 function check(name, cond, detail) {
   checks++;
   if (cond) { console.log(`  ✓ ${name}`); }
@@ -268,7 +275,41 @@ await (async () => {
     { m: "POST", url: "call_schedule_snapshots", status: 201, json: [] },
   ]);
   r = await snapshots.capture("test");
-  check("schedule_weeks fetch fails, blob real → still ok:true (best-effort)", r.ok === true);
+  check("A15 schedule_weeks fetch fails, blob real → ok:false, nothing inserted (no schedule-less snapshot, any reason)", r.ok === false && writesIn(f).length === 0, JSON.stringify(r));
+  // 6b. …but NOT for a capture that precedes a destructive operation (sync
+  //     v2, I6): the schedule fold is required there, or the snapshot can't
+  //     put the schedule back. Every strict reason, and nothing inserted.
+  for (const reason of ["clear_schedule", "regenerate", "reset_all_data", "before_restore"]) {
+    f = stubFetch([
+      { m: "GET", url: "call_schedule_data", json: BLOB_ROW },
+      { m: "GET", url: "schedule_weeks", status: 503, text: "boom" },
+      { m: "GET", url: "time_off", json: TIME_OFF_ROWS },
+      { m: "POST", url: "call_schedule_snapshots", status: 201, json: [] },
+    ]);
+    r = await snapshots.capture(reason);
+    check(`strict capture (${reason}): schedule_weeks fold fails → ok:false, nothing inserted`, r.ok === false && writesIn(f).length === 0, JSON.stringify(r));
+  }
+  // 6c. A strict capture whose schedule read is EMPTY while the caller knows
+  //     weeks exist (the anon/RLS shape) fails too; a genuinely empty table
+  //     (minWeeks 0) is recorded as schedule: {}.
+  f = stubFetch([
+    { m: "GET", url: "call_schedule_data", json: BLOB_ROW },
+    { m: "GET", url: "schedule_weeks", json: [] },
+    { m: "GET", url: "time_off", json: TIME_OFF_ROWS },
+    { m: "POST", url: "call_schedule_snapshots", status: 201, json: [] },
+  ]);
+  r = await snapshots.capture("clear_schedule", { minWeeks: 3 });
+  check("strict capture: 200 + [] while 3 weeks are known → ok:false (RLS-empty shape), nothing inserted", r.ok === false && writesIn(f).length === 0, JSON.stringify(r));
+  f = stubFetch([
+    { m: "GET", url: "call_schedule_data", json: BLOB_ROW },
+    { m: "GET", url: "schedule_weeks", json: [] },
+    { m: "GET", url: "time_off", json: TIME_OFF_ROWS },
+    { m: "POST", url: "call_schedule_snapshots", status: 201, json: [] },
+  ]);
+  r = await snapshots.capture("clear_schedule");
+  const emptyIns = writesIn(f)[0];
+  check("strict capture of a genuinely empty table records schedule: {} (restorable, not 'missing')",
+    r.ok === true && !!emptyIns && JSON.parse(emptyIns.body).data.schedule && Object.keys(JSON.parse(emptyIns.body).data.schedule).length === 0, JSON.stringify(r));
 
   // 7. time_off read fails but blob is real → same best-effort contract,
   //    symmetric with 6.
@@ -280,6 +321,177 @@ await (async () => {
   ]);
   r = await snapshots.capture("test");
   check("time_off fetch fails, blob real → still ok:true (best-effort)", r.ok === true, JSON.stringify(r));
+
+  // 8. (20/n, review r3 regress-3) A request that never answers no longer holds the capture — and the destructive
+  //    tap waiting on it (clear, Generate & Publish, factory reset, Accept & Publish, restore's before_restore) —
+  //    open for ever: each of its requests has a timeout (snapshots.timeoutMs, 15 s), is aborted at it, and the
+  //    capture fails closed (ok:false, nothing inserted after it) — its caller's "Couldn't save a backup snapshot"
+  //    path (executed with the real clearSchedule in SE-G (2)). The time_off fold stays best-effort — for every
+  //    reason but the factory reset's (21/n, review r4 fixes-10: reset_all_data then DELETES the time off, and its
+  //    snapshot is the only way back to it — there a time_off read that fails or times out fails the capture; SE-X21
+  //    runs the real reset on it, CB below every failure mode and the body read).
+  {
+    const ms0 = snapshots.timeoutMs; snapshots.timeoutMs = 30;
+    const hangAt = async (which, reason) => {
+      const calls = [];
+      setFetch((url, opts = {}) => {
+        const method = (opts.method || "GET").toUpperCase(); calls.push(method + " " + String(url).replace(/^.*\/rest\/v1\//, "").split("?")[0]);
+        const hit = which === "insert" ? method === "POST" : method === "GET" && String(url).includes(which);
+        if (hit) return new Promise((_, rej) => { if (opts.signal) opts.signal.addEventListener("abort", () => rej(new Error("AbortError: the request was aborted"))); });
+        const json = /call_schedule_data/.test(String(url)) ? BLOB_ROW : /schedule_weeks/.test(String(url)) ? WEEK_ROWS : [];
+        return Promise.resolve({ ok: true, status: method === "POST" ? 201 : 200, json: async () => json, text: async () => JSON.stringify(json) });
+      });
+      const t0 = Date.now(); const res = await Promise.race([snapshots.capture(reason || "clear_schedule"), new Promise(r => setTimeout(() => r({ held: "no answer in 1 s" }), 1000))]); return { r: res, ms: Date.now() - t0, calls, inserts: calls.filter(c => c.startsWith("POST")).length };
+    };
+    const hb = await hangAt("call_schedule_data"), hw = await hangAt("schedule_weeks"), hi = await hangAt("insert"), ht = await hangAt("time_off"), htr = await hangAt("time_off", "reset_all_data");
+    snapshots.timeoutMs = ms0;
+    check("B 20/n a capture request that never answers TIMES OUT (snapshots.timeoutMs, 15 s by default): the blob read, the schedule fold or the insert hanging → ok:false within the timeout, nothing inserted after it — the tap waiting on it is refused, not held open",
+      ms0 === 15000 && [hb, hw, hi].every(x => x.r.ok === false && x.ms < 1000) && hb.inserts === 0 && hw.inserts === 0 && hi.inserts === 1, JSON.stringify({ ms0, hb, hw, hi }));
+    check("B 20/n …the time_off fold hanging stays best-effort (a clear's capture): it times out and the capture still lands (ok:true, one insert)",
+      ht.r.ok === true && ht.inserts === 1 && ht.ms < 1000, JSON.stringify(ht));
+    check("B 21/n (review r4 fixes-10) …but for the FACTORY RESET's capture (reset_all_data — the reset deletes the time off next) a hanging time_off read fails it: ok:false within the timeout, NOTHING inserted (the reset is refused, not run without its vacations)",
+      htr.r.ok === false && htr.inserts === 0 && htr.ms < 1000 && /time_off/.test(String(htr.r.error || "")), JSON.stringify(htr));
+  }
+})();
+
+// ══════════════════════════════════════════════════════════════
+// CB. config.js (21/n, review r4): the tab bound to its account (auth.bindUser — branch-4), the capture's timeout
+//     over the BODY read (fixes-7), its time_off fold strict for the factory reset (fixes-10) — and their mutant
+//     battery: each mutant of config.js below is loaded into a fresh context and must turn a CB check red (the SE
+//     battery mutates index-source.html only). SE-X22 runs the binding in two real tabs; SE-X21 the real reset.
+// ══════════════════════════════════════════════════════════════
+console.log("\nCB. config.js — the tab's account binding, the capture's body timeout, its strict time_off fold (+ mutant battery)");
+await (async () => {
+  const helpersSrc = fs.readFileSync(path.join(ROOT, "helpers.js"), "utf8"), cfgSrc = fs.readFileSync(path.join(ROOT, "config.js"), "utf8");
+  const b64 = (o) => Buffer.from(JSON.stringify(o)).toString("base64").replace(/=+$/, "").replace(/\+/g, "-").replace(/\//g, "_");
+  const jwt = (sub) => "eyJhbGciOiJIUzI1NiJ9." + b64({ sub, exp: Math.floor(Date.now() / 1000) + 3600 }) + ".sig";
+  const JA = jwt("auth-a"), JB = jwt("auth-b");
+  // One fresh context per run: the code given (the real config.js, or a mutant), its own localStorage and fetch.
+  const load = (code) => {
+    const store = new Map(), calls = [];
+    const sb = { console: { log() {}, warn() {}, error() {}, info() {} }, window: {}, document: undefined, navigator: { userAgent: "node-test" }, setTimeout, clearTimeout, AbortController,
+      localStorage: { getItem: (k) => (store.has(k) ? store.get(k) : null), setItem: (k, v) => { store.set(k, String(v)); }, removeItem: (k) => { store.delete(k); } },
+      atob: (s) => Buffer.from(s, "base64").toString("binary"), fetch: null };
+    sb.globalThis = sb; vm.createContext(sb);
+    vm.runInContext(helpersSrc, sb, { filename: "helpers.js" }); vm.runInContext(code, sb, { filename: "config.js" });
+    const x = vm.runInContext("({ auth, dbAuthHeaders, dbReadHeaders, dbHeaders, db, supabase, snapshots, SUPABASE_ANON_KEY })", sb);
+    x.store = store; x.calls = calls; x.setFetch = (f) => { sb.fetch = (u, i) => { calls.push(((i && i.method) || "GET") + " " + String(u).replace(/^https:\/\/[^/]+/, "").split("?")[0] + " " + ((i && i.headers && i.headers.Authorization) || "-") + (i && i.body && /refresh_token/.test(i.body) ? " rt=" + JSON.parse(i.body).refresh_token : "")); return f(u, i || {}); }; };
+    x.signIn = (tok, rt) => { store.set("dsg-auth-token", tok); store.set("dsg-auth-refresh", rt || "R"); };
+    return x;
+  };
+  const ok200 = (json, status) => Promise.resolve({ ok: true, status: status || 200, json: async () => json, text: async () => JSON.stringify(json) });
+  const cbChecks = async (code) => {
+    const out = [], ck = (name, cond, detail) => out.push({ name, cond: !!cond, detail: detail === undefined ? "" : JSON.stringify(detail) });
+    let c;
+    try { c = load(code); } catch (e) { ck("loads", false, String(e)); return out; }
+    const ANONH = "Bearer " + c.SUPABASE_ANON_KEY;
+    // (1) the binding
+    try {
+    c.signIn(JB, "RB");
+    const unbound = { s: c.auth.getSession() && c.auth.getSession().access_token, w: c.dbAuthHeaders().Authorization, r: c.dbReadHeaders().Authorization };
+    c.auth.bindUser("auth-b");
+    const own = { s: c.auth.getSession() && c.auth.getSession().access_token, w: c.dbAuthHeaders().Authorization, r: c.dbReadHeaders().Authorization };
+    c.auth.bindUser("auth-a");                                      // this tab is A's; B's session is the one stored (another tab's)
+    const foreign = { s: c.auth.getSession(), w: c.dbAuthHeaders().Authorization, r: c.dbReadHeaders().Authorization, g: c.auth.getAuthHeaders().Authorization };
+    ck("branch-4 the stored session as this tab may use it: unbound → the stored one; bound to its own account → its own; bound to A while B's is stored → NO session (getSession null), reads and writes as anon (dbReadHeaders, dbAuthHeaders, getAuthHeaders)",
+      unbound.s === JB && unbound.w === "Bearer " + JB && unbound.r === "Bearer " + JB && own.s === JB && own.w === "Bearer " + JB && own.r === "Bearer " + JB
+        && foreign.s === null && foreign.w === ANONH && foreign.r === ANONH && foreign.g === ANONH, { unbound, own, foreign });
+    c.setFetch(() => ok200([{ id: 1 }], 201));
+    await c.db.insert("time_off", { person_id: "s1" }); await c.supabase.from("call_schedule_data").upsert({ id: "main", data: {} }); await c.db.update("time_off", 1, { end_date: "2030-01-09" });
+    ck("branch-4 …every direct write while another account's session is stored goes out as anon, never with that account's token (db.insert, the setup upsert, db.update)",
+      c.calls.length === 3 && c.calls.every(x => x.endsWith(ANONH)), c.calls.slice());
+    c.store.set("dsg-auth-token", "not-a-jwt");
+    ck("branch-4 …an undecodable stored token while bound is no session either", c.auth.getSession() === null && c.dbAuthHeaders().Authorization === ANONH, c.dbAuthHeaders());
+    c.signIn(JB, "RB"); c.calls.length = 0;
+    c.setFetch((u) => /grant_type=refresh_token/.test(String(u)) ? ok200({ access_token: jwt("auth-b"), refresh_token: "RB2", user: { id: "auth-b" } }) : ok200({}));
+    const rk = await c.auth.refreshKeep();
+    ck("branch-4 'Sign in again' (refreshKeep) renews the STORED session — B's, with B's refresh token — and answers its account (B): the app's boundary runs on it",
+      rk.ok === true && rk.user && rk.user.id === "auth-b" && c.calls.length === 1 && / rt=RB$/.test(c.calls[0]) && c.store.get("dsg-auth-refresh") === "RB2", { rk, calls: c.calls.slice() });
+    c.signIn(JB, "RB"); c.calls.length = 0; c.setFetch(() => ok200({}, 204));
+    await c.auth.signOut();
+    const soForeign = { calls: c.calls.slice(), stored: c.store.get("dsg-auth-token") };
+    c.signIn(JA, "RA"); c.calls.length = 0;
+    await c.auth.signOut();
+    const soOwn = { calls: c.calls.slice(), stored: c.store.has("dsg-auth-token") };
+    ck("branch-4 signOut in a tab bound to A: with B's session stored (another tab's) — no server logout as B, B's session left stored; with its own — the logout sent with A's token and the session cleared",
+      soForeign.calls.length === 0 && soForeign.stored === JB && soOwn.calls.length === 1 && soOwn.calls[0] === "POST /auth/v1/logout Bearer " + JA && soOwn.stored === false, { soForeign, soOwn });
+    c.auth.bindUser(null); c.signIn(JB, "RB");
+    ck("branch-4 unbound again (bindUser(null)): the stored session is this tab's to use", c.auth.getSession() && c.auth.getSession().access_token === JB && c.dbAuthHeaders().Authorization === "Bearer " + JB);
+    } catch (e) { ck("branch-4 the binding (crashed)", false, String(e && e.message || e)); }
+    // (2) the capture: a request whose headers arrive but whose BODY stalls (fixes-7); the time_off fold per reason (fixes-10)
+    try {
+    c.snapshots.timeoutMs = 30;
+    const BLOB = [{ data: { surgeons: [{ id: "s1", name: "A" }], numWeeks: 13 }, updated_at: "2026-10-01T00:00:00Z" }], WEEKS = [{ week_monday: "2026-10-12", data: { dayCall: "s1" } }];
+    const capture = async (reason, mode) => {
+      c.calls.length = 0;
+      c.setFetch((url, init) => {
+        const u = String(url), m = (init.method || "GET").toUpperCase();
+        const json = /call_schedule_data/.test(u) ? BLOB : /schedule_weeks/.test(u) ? WEEKS : [{ id: 1, person_id: "s2", kind: "vacation", start_date: "2030-01-08", end_date: "2030-01-10" }];
+        const hit = mode.at === "insert" ? m === "POST" : m === "GET" && u.includes(mode.at);
+        const stall = () => new Promise((_, rej) => { if (init.signal) init.signal.addEventListener("abort", () => rej(new Error("AbortError: body aborted"))); });
+        if (hit && mode.kind === "body") return Promise.resolve({ ok: true, status: m === "POST" ? 201 : 200, text: stall, json: async () => JSON.parse(await stall()) });
+        if (hit && mode.kind === "hang") return stall();
+        if (hit && mode.kind === "500") return Promise.resolve({ ok: false, status: 500, json: async () => ({}), text: async () => "boom" });
+        if (hit && mode.kind === "throw") return Promise.reject(new TypeError("Failed to fetch"));
+        if (hit && mode.kind === "nolist") return ok200({ message: "not a list" });
+        return ok200(m === "POST" ? [] : json, m === "POST" ? 201 : 200);
+      });
+      const t0 = Date.now();
+      const r = await Promise.race([c.snapshots.capture(reason, { minWeeks: 1 }), new Promise(res => setTimeout(() => res({ held: "no answer in 1 s" }), 1000))]);
+      return { r, ms: Date.now() - t0, inserts: c.calls.filter(x => x.startsWith("POST")).length };
+    };
+    const bb = await capture("clear_schedule", { at: "call_schedule_data", kind: "body" }), bw = await capture("clear_schedule", { at: "schedule_weeks", kind: "body" }), bi = await capture("clear_schedule", { at: "insert", kind: "body" });
+    ck("fixes-7 a capture request whose headers arrive but whose BODY stalls (a stalled stream) is aborted at snapshots.timeoutMs too — the blob read, the schedule fold, the insert: ok:false within the timeout, nothing inserted after a failed read",
+      [bb, bw, bi].every(x => x.r.ok === false && x.ms < 1000) && bb.inserts === 0 && bw.inserts === 0 && bi.inserts === 1, { bb, bw, bi });
+    const tBody = await capture("clear_schedule", { at: "time_off", kind: "body" }), t500 = await capture("clear_schedule", { at: "time_off", kind: "500" });
+    ck("fixes-10 …a clear's time_off fold stays best-effort: its body stalling, or a 500 — the capture still lands (ok:true, one insert)",
+      [tBody, t500].every(x => x.r.ok === true && x.inserts === 1 && x.ms < 1000), { tBody, t500 });
+    const strict = [];
+    for (const kind of ["500", "throw", "hang", "body", "nolist"]) strict.push(Object.assign({ kind }, await capture("reset_all_data", { at: "time_off", kind })));
+    const rOk = await capture("reset_all_data", { at: "none", kind: "none" });
+    ck("fixes-10 …the FACTORY RESET's capture (reset_all_data) fails closed on its time_off read — a 500, a throw, a hang, a stalled body, an answer that is no list: ok:false within the timeout, nothing inserted; control: the read answers — one insert, the vacations in it",
+      strict.every(x => x.r.ok === false && x.inserts === 0 && x.ms < 1000) && rOk.r.ok === true && rOk.inserts === 1, { strict, rOk });
+    } catch (e) { ck("the capture (crashed)", false, String(e && e.message || e)); }
+    return out;
+  };
+  const real = await cbChecks(cfgSrc);
+  for (const r of real) check("CB " + r.name, r.cond, r.detail);
+  // The battery: config.js mutants, each re-breaking one of the above (anchor-keeping variants included).
+  const CB_MUTANTS = [
+    { id: "R4M1", what: "fixes-7: snapReq's timer is cleared once the headers arrive (a stalled body holds the capture, and the tap, open)",
+      from: "    const res = await fetch(url, ctl ? { ...init, signal: ctl.signal } : init);\n    const text = await res.text();", to: "    const res = await fetch(url, ctl ? { ...init, signal: ctl.signal } : init);\n    if (timer) clearTimeout(timer);\n    const text = await res.text();" },
+    { id: "CB1", what: "branch-4: dbAuthHeaders without the sub check (another tab's account's token on every write)",
+      from: "    const token = _tokenForTab(localStorage.getItem(\"dsg-auth-token\")); // (another account's — another tab's — is none here: anon)", to: "    const token = localStorage.getItem(\"dsg-auth-token\");" },
+    { id: "CB2", what: "branch-4: dbReadHeaders without the sub check",
+      from: "    const token = _tokenForTab(localStorage.getItem(\"dsg-auth-token\")); // (another account's: anon)", to: "    const token = localStorage.getItem(\"dsg-auth-token\");" },
+    { id: "CB3", what: "branch-4: getSession without the sub check (the engine's token() and the setup autosave take another account's session)",
+      from: "    return s && _tokenForTab(s.access_token) ? s : null;", to: "    return s;" },
+    { id: "CB4", what: "branch-4 (variant): the sub check ignores the binding (the stored token is always this tab's)",
+      from: "(!token ? null : (!_authBoundUser || _jwtSub(token) === _authBoundUser) ? token : null)", to: "(!token ? null : token)" },
+    { id: "CB5", what: "branch-4 (variant): an undecodable token passes the sub check while bound",
+      from: "(!_authBoundUser || _jwtSub(token) === _authBoundUser)", to: "(!_authBoundUser || _jwtSub(token) === _authBoundUser || _jwtSub(token) === null)" },
+    { id: "CB6", what: "branch-4: refreshKeep renews only this tab's session (another tab's sign-in can never land here as another account: stuck on 'Sign in again')",
+      from: "    const session = auth._storedSession();\n    if (!session || !session.refresh_token) return { ok: false, error: \"no-session\" };", to: "    const session = auth.getSession();\n    if (!session || !session.refresh_token) return { ok: false, error: \"no-session\" };" },
+    { id: "CB7", what: "branch-4: signOut clears another account's stored session (another tab signed out under it)",
+      from: "    if (!stored || session) auth._clearSession();", to: "    auth._clearSession();" },
+    { id: "CB8", what: "branch-4: signOut logs out whatever session is stored (a server request as another account)",
+      from: "    const stored = auth._storedSession(), session = auth.getSession();", to: "    const stored = auth._storedSession(), session = stored;" },
+    { id: "CB9", what: "fixes-10: the time_off fold is best-effort for the factory reset too (its snapshot without the vacations it then deletes)",
+      from: "      const timeOffStrict = reason === \"reset_all_data\";", to: "      const timeOffStrict = false;" },
+    { id: "CB10", what: "fixes-10 (variant, over-strict): the time_off fold is strict for every reason (a clear refused by a time_off hiccup)",
+      from: "      const timeOffStrict = reason === \"reset_all_data\";", to: "      const timeOffStrict = true;" },
+    { id: "CB11", what: "fixes-10 (variant): a time_off answer that is no list is taken as no time off (the reset's snapshot without its vacations)",
+      from: "          if (!Array.isArray(trows)) timeOffErr = \"time_off read returned no list\";\n          else if (trows.length) {", to: "          if (Array.isArray(trows) && trows.length) {" },
+  ];
+  const cfgLF = cfgSrc.replace(/\r\n/g, "\n");
+  for (const m of CB_MUTANTS) {
+    const n = cfgLF.split(m.from).length - 1;
+    if (n !== 1) { check(`CB-M ${m.id} anchor present exactly once (${m.what})`, false, `found ${n}`); continue; }
+    const res = await cbChecks(cfgLF.replace(m.from, () => m.to));
+    const red = res.filter(r => !r.cond).map(r => r.name.slice(0, 70));
+    check(`CB-M ${m.id} killed: ${m.what}`, red.length > 0, "every CB check still passes with this bug in place");
+    if (process.env.CB_WHO) console.log("     " + m.id + " ← " + JSON.stringify(red));
+  }
 })();
 
 // ══════════════════════════════════════════════════════════════
@@ -346,6 +558,17 @@ await (async () => {
     r.ok === false && /looks empty/.test(r.error || "") && applied === 0 && writesIn(f).length === 0,
     JSON.stringify(r));
 
+  // A snapshot whose schedule fold had failed but whose time_off fold
+  // worked: vacations make it NOT look empty, so payloadLooksWiped let it
+  // through — and the applier ran with schedule {} and the grant: every
+  // week deleted (critic, live on main). Refused on the missing key now.
+  f = stubFetch([{ m: "GET", url: snapUrl, json: [{ id: 7, reason: "periodic_session", created_at: "c",
+    data: { surgeons: INIT_SURGEONS, vacations: { s5: [["2026-09-12", "2026-09-21"]] } } }] }]);
+  applied = 0;
+  r = await snapshots.restore(7, async () => { applied++; return { ok: true }; });
+  check("snapshot with vacations but NO schedule key → REFUSED (would delete every week), zero writes, applier never called",
+    r.ok === false && /no schedule/.test(r.error || "") && applied === 0 && writesIn(f).length === 0, JSON.stringify(r));
+
   // Blob write fails → ok:false and the schedule applier is never reached.
   f = stubFetch([
     { m: "GET", url: snapUrl, json: GOOD_SNAP },
@@ -369,8 +592,9 @@ await (async () => {
     { m: "POST", url: "call_schedule_data", status: 201, json: [] },
   ]);
   r = await snapshots.restore(7, async () => ({ ok: false, error: "CAS conflict" }));
-  check("applier failure → ok:false + blobRestored:true",
-    r.ok === false && r.blobRestored === true && /CAS conflict/.test(r.error || ""), JSON.stringify(r));
+  check("applier failure → ok:false + blobRestored:true — and (19/n P8, review r2 fixes-1) the restored blob (no schedule key), its schedule and ts, for the caller to adopt: the blob IS back, and left un-adopted the next autosave wrote the pre-restore setup over it",
+    r.ok === false && r.blobRestored === true && /CAS conflict/.test(r.error || "") && !!r.blob && Array.isArray(r.blob.surgeons) && !("schedule" in r.blob) && !!r.schedule && !!r.schedule["2026-01-05"] && typeof r.ts === "string",
+    JSON.stringify({ ok: r.ok, blobRestored: r.blobRestored, error: r.error, blob: !!r.blob, schedule: !!r.schedule, ts: r.ts }));
 
   // Full success: pre-capture ok → blob written WITHOUT schedule key →
   // applier called with the snapshot's schedule.
@@ -391,6 +615,50 @@ await (async () => {
     blobBody && blobBody.data && !("schedule" in blobBody.data));
   check("success → applier received the snapshot's schedule",
     appliedSchedule && appliedSchedule["2026-01-05"] && appliedSchedule["2026-01-05"].dayCall === "s1");
+
+  // A15: opts.confirm(schedule, snap) is asked once the snapshot is read —
+  // so the caller can state the week change — and BEFORE anything is
+  // written, the before_restore capture included. A "no" changes nothing.
+  const fullRestore = () => stubFetch([
+    { m: "GET", url: snapUrl, json: GOOD_SNAP },
+    { m: "GET", url: "call_schedule_data", json: BLOB_ROW },
+    { m: "GET", url: "schedule_weeks", json: WEEK_ROWS },
+    { m: "GET", url: "time_off", json: [] },
+    { m: "POST", url: "call_schedule_snapshots", status: 201, json: [] },
+    { m: "POST", url: "call_schedule_data", status: 201, json: [] },
+  ]);
+  f = fullRestore();
+  const asked = [];
+  applied = 0;
+  r = await snapshots.restore(7, async () => { applied++; return { ok: true }; }, { confirm: (sched, s) => { asked.push({ sched, calls: f.calls.length, id: s && s.id }); return false; } });
+  check("A15 restore confirm: asked ONCE, with the snapshot's schedule, right after the one read of the snapshot; a 'no' → cancelled — nothing captured, nothing written, the applier never called",
+    r.ok === false && r.cancelled === true && asked.length === 1 && asked[0].calls === 1 && asked[0].id === 7 && asked[0].sched["2026-01-05"].dayCall === "s1"
+      && f.calls.length === 1 && writesIn(f).length === 0 && applied === 0, JSON.stringify({ r, asked: asked.map(a => a.calls), calls: f.calls.map(c => c.method + " " + c.url) }));
+  f = fullRestore();
+  let askedYes = 0, callsAtApply = -1;
+  r = await snapshots.restore(7, async () => { callsAtApply = writesIn(f).map(c => c.url.replace(/^.*\/rest\/v1\//, "").replace(/\?.*$/, "")).join(); return { ok: true }; }, { confirm: async () => { askedYes++; return true; } });
+  check("A15 …a 'yes' (an async one too) proceeds as before: the before_restore snapshot first, then the blob, then the applier",
+    r.ok === true && askedYes === 1 && callsAtApply === "call_schedule_snapshots,call_schedule_data", JSON.stringify({ r, callsAtApply }));
+  // (20/n, review r3 regress-3) opts.proceed(): asked once the before_restore snapshot is written, right before the
+  // blob — a "no" (the caller's session changed meanwhile: a sign-out, another account) stops the restore there.
+  const urlsOf = (fn) => writesIn(fn).map(c => c.url.replace(/^.*\/rest\/v1\//, "").replace(/\?.*$/, "")).join();
+  f = fullRestore();
+  const askedP = []; let appliedP = 0;
+  r = await snapshots.restore(7, async () => { appliedP++; return { ok: true }; }, { confirm: () => true, proceed: () => { askedP.push(urlsOf(f)); return false; } });
+  check("C 20/n restore opts.proceed(): asked once — after the before_restore snapshot, before the blob; a 'no' → cancelled: the blob NOT written, the applier never called",
+    r.ok === false && r.cancelled === true && askedP.length === 1 && askedP[0] === "call_schedule_snapshots" && urlsOf(f) === "call_schedule_snapshots" && appliedP === 0, JSON.stringify({ r, askedP, writes: urlsOf(f) }));
+  f = fullRestore(); appliedP = 0;
+  r = await snapshots.restore(7, async () => { appliedP++; return { ok: true }; }, { confirm: () => true, proceed: () => true });
+  check("C 20/n …a 'yes' proceeds: the blob written, then the applier", r.ok === true && appliedP === 1 && urlsOf(f) === "call_schedule_snapshots,call_schedule_data", JSON.stringify({ r, writes: urlsOf(f) }));
+  f = stubFetch([{ m: "GET", url: snapUrl, json: [{ id: 7, reason: "periodic_session", created_at: "c", data: { surgeons: INIT_SURGEONS, vacations: { s5: [["2026-09-12", "2026-09-21"]] } } }] }]);
+  let askedNone = 0;
+  r = await snapshots.restore(7, async () => ({ ok: true }), { confirm: () => { askedNone++; return true; } });
+  check("A15 …a snapshot with no schedule is refused BEFORE the confirm (there is no week change to state)", r.ok === false && /no schedule/.test(r.error || "") && askedNone === 0 && writesIn(f).length === 0, JSON.stringify(r));
+  // A5(f): the applier's job is still running past its deadline.
+  f = fullRestore();
+  r = await snapshots.restore(7, async () => ({ ok: false, running: true, error: "Restoring the snapshot is taking longer than expected. It's still running." }));
+  check("A5(f) restore: a schedule job still running past its deadline → ok:false, running:true, with the restored blob (blobRestored) for the caller to adopt as on success",
+    r.ok === false && r.running === true && r.blobRestored === true && !!r.blob && Array.isArray(r.blob.surgeons) && !("schedule" in r.blob) && /still running/.test(r.error || ""), JSON.stringify({ ok: r.ok, running: r.running, blob: !!r.blob }));
 })();
 
 // ══════════════════════════════════════════════════════════════
@@ -428,6 +696,36 @@ await (async () => {
   ]);
   r = await snapshots.captureIfStale("periodic", 6);
   check("list() fails → still attempts capture (fails toward capturing)", r.ok === true && !r.skipped, JSON.stringify(r));
+  // A15: a periodic capture whose schedule fold fails inserts NOTHING and is
+  // ok:false, so the 6-hour clock does not reset on a schedule-less snapshot.
+  let f2 = stubFetch([
+    { m: "GET", url: "call_schedule_snapshots?select=", json: [{ created_at: "2026-01-01T00:00:00Z" }] },
+    { m: "GET", url: "call_schedule_data", json: BLOB_ROW },
+    { m: "GET", url: "schedule_weeks", status: 503, text: "boom" },
+    { m: "GET", url: "time_off", json: [] },
+    { m: "POST", url: "call_schedule_snapshots", status: 201, json: [] },
+  ]);
+  r = await snapshots.captureIfStale("periodic_session", 6);
+  check("A15 periodic capture, schedule fold 503 → ok:false, nothing inserted", r.ok === false && writesIn(f2).length === 0, JSON.stringify(r));
+  // A15: captureIfStale hands its options to capture(). The app's periodic
+  // call passes minWeeks, so an EMPTY schedule read while weeks are known
+  // (the anon/RLS shape) fails the capture — never a snapshot whose schedule
+  // is {}, which restore would accept as "delete every week".
+  const emptyFold = () => stubFetch([
+    { m: "GET", url: "call_schedule_snapshots?select=", json: [{ created_at: "2026-01-01T00:00:00Z" }] },
+    { m: "GET", url: "call_schedule_data", json: BLOB_ROW },
+    { m: "GET", url: "schedule_weeks", json: [] },
+    { m: "GET", url: "time_off", json: [] },
+    { m: "POST", url: "call_schedule_snapshots", status: 201, json: [] },
+  ]);
+  let f3 = emptyFold();
+  r = await snapshots.captureIfStale("periodic_session", 6, { minWeeks: 1 });
+  check("A15 captureIfStale forwards its options: minWeeks 1 + an EMPTY schedule read → ok:false, nothing inserted (never schedule: {})", r.ok === false && writesIn(f3).length === 0, JSON.stringify(r));
+  f3 = emptyFold();
+  r = await snapshots.captureIfStale("periodic_session", 6);
+  const ins3 = writesIn(f3)[0];
+  check("A15 …control: with no minWeeks the same empty read is a genuinely empty table, recorded as schedule: {}",
+    r.ok === true && !!ins3 && JSON.parse(ins3.body).data.schedule && Object.keys(JSON.parse(ins3.body).data.schedule).length === 0, JSON.stringify(r));
 })();
 
 // ══════════════════════════════════════════════════════════════
@@ -441,7 +739,7 @@ const count = (needle) => src.split(needle).length - 1;
 // the immediate flush path). Exactly 2 — a third path means a new save site
 // that must consciously adopt the guard.
 const GATE = "payloadLooksWiped(payload) && everHadRealDataRef.current && !allowWipeSaveRef.current";
-check("empty-save gate present at exactly 2 save paths", count(GATE) === 2, `found ${count(GATE)}`);
+check("empty-save gate present at exactly 1 save path (the autosave; the blob keepalive is removed — A10)", count(GATE) === 1, `found ${count(GATE)}`);
 
 // Exactly ONE grant site (factory reset). A new `= true` site is a new wipe
 // authorization — the tripwire forces that to be a reviewed decision.
@@ -454,7 +752,13 @@ check("allowWipeSaveRef cleared at exactly 2 sites (consume + failure-restore)",
 
 // The consume must come AFTER the gate in the autosave body — a consume
 // before the gate would let a blocked save eat the authorization.
-check("consume follows the gate (order)", src.indexOf(GATE) < src.indexOf("allowWipeSaveRef.current = false"));
+// (Both must be PRESENT, and in order: the bare `indexOf(a) < indexOf(b)` this
+// was passed with the gate gone — -1 is less than anything (A17(e); E2's own
+// order pin, "weeks leg before the blob gate", became counts in 5/n).)
+{
+  const g = src.indexOf(GATE), c = src.indexOf("allowWipeSaveRef.current = false");
+  check("consume follows the gate (order — both present: a missing one can't pass as -1)", g >= 0 && c > g, `gate at ${g}, consume at ${c}`);
+}
 
 // Factory-reset FAILURE must restore the refs (PR #23): the adjacent
 // disarm-undo pair after the single grant site.
@@ -478,56 +782,30 @@ check("year2Counts stays retired (no setYear2Counts in source)",
 check("restore states the time-off caveat at both surfaces (confirm + report)",
   count("re-entered or recovered manually") === 2, `found ${count("re-entered or recovered manually")}`);
 
-// intentionalScheduleWipeRef (the schedule_weeks full-delete authorization):
-// gate present; the grant census NAMES its three sites so a future fourth
-// grant without a matching disarm fails loudly rather than arithmetically.
-check("schedule-wipe gate present", count("!intentionalScheduleWipeRef.current") >= 1);
-check("intentionalScheduleWipeRef granted at exactly the 3 known sites: clearSchedule, factory reset, restore applier — a 4th grant needs its own disarm story AND this census updated",
-  count("intentionalScheduleWipeRef.current = true") === 3, `found ${count("intentionalScheduleWipeRef.current = true")}`);
-check("intentionalScheduleWipeRef consumed at exactly 2 sites (unconditional syncSchedWeeks consume + restore's finally)",
-  count("intentionalScheduleWipeRef.current = false") === 2, `found ${count("intentionalScheduleWipeRef.current = false")}`);
-
-// BEHAVIOR: the empty-reset dangle (fixed 2026-08-08). The consume used to be
-// conditional on (wipingAll || wipingMost); wipingAll needs baseCount > 0, so
-// reset/clear against an ALREADY-EMPTY schedule left the ref armed — silently
-// pre-authorizing the next accidental wipe-shaped call. Extract the REAL
-// syncSchedWeeks from the component source and drive that exact case:
-// prev = {}, currentSchedule = {}, ref armed → the ref must read false after,
-// with zero network traffic. A source pin cannot catch a future early return
-// added above the consume; executing the function catches it by construction.
-await (async () => {
-  const nsrc = src.replace(/\r\n/g, "\n");
-  const START = "const syncSchedWeeks = async (currentSchedule) => {";
-  const END = `catch (e) { console.error("schedule_weeks dual-write error", e); showToast("Couldn't save schedule changes — check your connection.", "error"); }
-  };`;
-  const s = nsrc.indexOf(START), e = nsrc.indexOf(END);
-  if (s === -1 || e === -1) { check("syncSchedWeeks extractable for execution", false, "anchors not found"); return; }
-  const fnSrc = nsrc.slice(s, e + END.length);
-  let h;
-  try {
-    h = vm.runInContext(`(function(){
-      const SCHED_DUAL_WRITE = false, SCHED_READ_TABLE = true;
-      const SUPABASE_URL = "https://stub.invalid";
-      const dbAuthHeaders = () => ({});
-      const schedWeeksSyncRef = { current: {} };          // prev = {} (empty table baseline)
-      const schedWeekVersionsRef = { current: {} };
-      const intentionalScheduleWipeRef = { current: true }; // ARMED — the dangle setup
-      const userProfile = null;
-      const netCalls = [];
-      const fetch = (...a) => { netCalls.push(a); throw new Error("unexpected network in {}->{} scenario"); };
-      const setSaveError = () => {}, setSaveStatus = () => {}, setSchedule = () => {}, showToast = () => {};
-      const loadSchedFromTable = async () => null;
-      ${fnSrc}
-      return { syncSchedWeeks, intentionalScheduleWipeRef, netCalls };
-    })()`, sandbox);
-  } catch (ex) { check("syncSchedWeeks compiles standalone", false, String(ex)); return; }
-  await h.syncSchedWeeks({});
-  check("empty reset consumes the wipe authorization (prev {} → current {}, ref armed → false)",
-    h.intentionalScheduleWipeRef.current === false,
-    `ref still ${JSON.stringify(h.intentionalScheduleWipeRef.current)} after syncSchedWeeks({}) on an empty baseline`);
-  check("the {}→{} scenario issues ZERO network calls", h.netCalls.length === 0,
-    `unexpected calls: ${h.netCalls.length}`);
-})();
+// The schedule_weeks full-delete authorization (sync v2). It used to be a
+// shared one-shot ref (intentionalScheduleWipeRef) granted at 3 sites and
+// consumed at 2 — and a path that skipped the consume left it ARMED (the
+// 2026-08-08 empty-reset dangle). Now the grant travels WITH the engine's
+// authoritative request (clear, factory reset, restore), so there is nothing
+// to leave armed. Behaviour is executed in section SE against the emulated
+// table: SE19 (a wipe-shaped push without the grant deletes nothing), SE19b
+// (a push queued before a clear defers to it — no false block), SE19c (the
+// grant never lingers: after clear + regenerate a wipe is blocked again —
+// the dangle's equivalent), SE19e, SE20, SE22. These pins keep the call
+// sites honest: one place starts authoritative jobs, three call it.
+check("the shared armed wipe grant is gone (no intentionalScheduleWipeRef anywhere)",
+  count("intentionalScheduleWipeRef") === 0, `found ${count("intentionalScheduleWipeRef")}`);
+check("the engine's wipe guard: a wipe-shaped push WITHOUT the request's grant is blocked (one guard)",
+  count("if ((wipingAll || wipingMost) && !job.grant) {") === 1);
+check("authoritative jobs start at exactly 2 sites — runAuthoritativeSchedule (the grant holders: clear, factory reset, restore) and runPublish (the period's weeks, no grant, no delete: Generate & Publish, Accept & Publish — A14) — a new caller needs this census updated",
+  count(".authoritative(") === 2 && count("runAuthoritativeSchedule(") === 3
+    && count('const runPublish = (weeks) => schedSyncRef.current.authoritative(weeks, false, "publish", Object.keys(weeks));') === 1 && count("runPublish(") === 2 && count("const job = runPublish(") === 2
+    // (clear and restore hand it their Undo step, taken back when the job wrote nothing — executed in SE-G; all three
+    // hand it `before`, the screen as it was before their commit, which a refused job puts back — 17/n P2, executed in SE-X10)
+    // (19/n P8: the factory reset and the restore also hand it their words for an outcome after the deadline — late(r), executed in SE-X16)
+    && count('runAuthoritativeSchedule({}, "clear", undoStep, before)') === 1 && count('runAuthoritativeSchedule({}, "reset", null, before, weeksNotCleared)') === 1 && count('runAuthoritativeSchedule(sched, "restore", undoStep, before, weeksNotRestored)') === 1
+    && count("schedSyncRef.current.authoritative(target, true, what, null, { before, late })") === 1,
+  `.authoritative( ×${count(".authoritative(")}, runAuthoritativeSchedule( ×${count("runAuthoritativeSchedule(")}`);
 
 // ══════════════════════════════════════════════════════════════
 // E2. Member session: blob leg gated, weeks leg NEVER coupled to it
@@ -563,6 +841,7 @@ await (async () => {
         const everHadRealDataRef = { current: true };
         const pendingSaveRef = { current: payload };
         const lastSyncRef = { current: null };
+        const setupBaseRef = { current: null }, payloadSig = "SIG"; // (20/n, review r3 G7: the body records what it wrote)
         const payloadLooksWiped = () => false;
         const syncSchedWeeks = () => { calls.weeks++; };
         const supabase = { from: () => ({ upsert: async () => { calls.blob++; return blobOutcome; } }) };
@@ -583,10 +862,11 @@ await (async () => {
 
   const denial = { error: '{"code":"42501","message":"new row violates row-level security policy for table \\"call_schedule_data\\""}' };
 
-  // 1. MEMBER: blob leg must not be attempted at all; weeks leg must fire.
+  // 1. MEMBER: blob leg must not be attempted at all. The weeks are no longer
+  //    in this body at all (sync v2): their own effect is executed below.
   const member = await run(false, denial);
-  check("member: schedule_weeks write STILL happens (the data-loss regression test)",
-    member.weeks === 1, `weeks writes = ${member.weeks}`);
+  check("member: the blob autosave body carries NO schedule_weeks write (the weeks have their own effect, executed below)",
+    member.weeks === 0 && !/schedSyncRef|syncSchedWeeks\(/.test(bodySrc), `weeks writes = ${member.weeks}`);
   check("member: ZERO blob write attempts", member.blob === 0);
   check("member: no save-failure toast, no red status churn",
     member.toasts.length === 0 && member.status.length === 0,
@@ -595,8 +875,6 @@ await (async () => {
   // 2. SCHEDULER whose blob write FAILS: weeks leg must STILL fire (the
   //    coupling also bit schedulers on any transient 5xx).
   const schedFail = await run(true, { error: "500 upstream boom" });
-  check("scheduler + failed blob: weeks leg still fired (decoupled both directions)",
-    schedFail.weeks === 1, `weeks writes = ${schedFail.weeks}`);
   check("scheduler + failed blob: connection toast (not a permissions one)",
     schedFail.toasts.some(t => /check your connection/.test(t)));
 
@@ -612,55 +890,46 @@ await (async () => {
 
   // 4. SCHEDULER, blob OK: unchanged happy path.
   const schedOk = await run(true, { error: null });
-  check("scheduler + blob OK: both legs fire, status 'Saved'",
-    schedOk.weeks === 1 && schedOk.status.includes("Saved"));
+  check("scheduler + blob OK: the blob leg fires, status 'Saved'",
+    schedOk.blob === 1 && schedOk.status.includes("Saved"));
 })();
 
-// ── Baseline-ref invariant: now load-bearing ──
-// With syncSchedWeeks running in member sessions, the only thing stopping
-// every member's phone from echo-writing the table on every adopted foreign
-// change is that the adoption sites update schedWeeksSyncRef alongside
-// setSchedule. Execute the REAL syncSchedWeeks with state == baseline.
+// ── The weeks push (sync v2): its OWN effect — the 2026-08-17 regression
+// test's successor, executed: a loaded member or scheduler session pushes
+// whatever the blob does (it isn't consulted), public / OR board never do. ──
 await (async () => {
   const nsrc = src.replace(/\r\n/g, "\n");
-  const START = "const syncSchedWeeks = async (currentSchedule) => {";
-  const END = `catch (e) { console.error("schedule_weeks dual-write error", e); showToast("Couldn't save schedule changes — check your connection.", "error"); }
-  };`;
-  const s = nsrc.indexOf(START), e = nsrc.indexOf(END);
-  if (s === -1 || e === -1) { check("syncSchedWeeks extractable (adoption test)", false, "anchors not found"); return; }
-  const fnSrc = nsrc.slice(s, e + END.length);
-  const adopted = { "2026-08-17": { dayCall: "s1", nights: { mon: "s2" } } };
-  const h = vm.runInContext(`(function(){
-    const SCHED_DUAL_WRITE = false, SCHED_READ_TABLE = true;
-    const SUPABASE_URL = "https://stub.invalid";
-    const dbAuthHeaders = () => ({});
-    const adopted = ${JSON.stringify(adopted)};
-    // Exactly what the realtime handler does: state AND baseline updated together.
-    const schedWeeksSyncRef = { current: JSON.parse(JSON.stringify(adopted)) };
-    const schedWeekVersionsRef = { current: { "2026-08-17": 3 } };
-    const intentionalScheduleWipeRef = { current: false };
-    const userProfile = { person_id: "s7" };   // a MEMBER
-    const netCalls = [];
-    const fetch = (...a) => { netCalls.push(a[0]); throw new Error("no network expected"); };
-    const setSaveError = () => {}, setSaveStatus = () => {}, setSchedule = () => {}, showToast = () => {};
-    const loadSchedFromTable = async () => null;
-    ${fnSrc}
-    return { syncSchedWeeks, netCalls, adopted };
-  })()`, sandbox);
-  await h.syncSchedWeeks(h.adopted);
-  check("adopted foreign schedule state produces ZERO schedule_weeks writes in a member session",
-    h.netCalls.length === 0, `unexpected requests: ${JSON.stringify(h.netCalls)}`);
+  const START = "  useEffect(() => {\n    if (!loaded || isPublicMode) return;\n    const t = setTimeout(() => { schedSyncRef.current.push(); }, 800);";
+  const i = nsrc.indexOf(START), e = i < 0 ? -1 : nsrc.indexOf("  }, [loaded, schedule]);", i);
+  if (i < 0 || e < 0 || nsrc.indexOf(START, i + 1) !== -1) { check("weeks push effect extractable (exactly one)", false, "anchors not found"); return; }
+  const body = nsrc.slice(i + "  useEffect(() => {".length, e);
+  const mk = vm.runInContext(`(function (env) { const { loaded, isPublicMode, schedSyncRef, setTimeout, clearTimeout } = env; return (() => {${body}}); })`, sandbox);
+  const go = (loaded, pub) => { let pushes = 0; const timers = []; const fx = mk({ loaded, isPublicMode: pub, schedSyncRef: { current: { push: () => { pushes++; } } }, setTimeout: (f) => { timers.push(f); return timers.length; }, clearTimeout: () => {} }); fx(); timers.forEach(f => f()); return pushes; };
+  check("weeks push effect: a loaded member / scheduler session pushes (member AND failed-blob cases: the blob isn't consulted)", go(true, false) === 1);
+  check("weeks push effect: public / OR board never pushes; nothing before the load", go(true, true) === 0 && go(false, false) === 0);
+  check("weeks push effect has none of the blob leg's gates (canWriteBlob, isScheduler, loadFailedRef, payloadLooksWiped, the 3-s skip)",
+    !/canWriteBlob|isScheduler|loadFailedRef|payloadLooksWiped|loadedAtRef/.test(body), body.slice(0, 200));
 })();
+
+// ── Adopted foreign weeks produce ZERO echo writes (the old baseline-ref
+// invariant). Since sync v2 the engine is the ONE adopter (the pull), and
+// what it adopts becomes what it knows in the same step — executed in SE13
+// ("the adopted W1 caused ZERO echo writes") and SE36 (two writers converge).
+// This pin keeps it the only adopter: no realtime schedule_weeks handler.
+// The pull triggers: the 60-s refresh, resume, reconnect, and a re-auth as
+// the same account (reauthLanded, A7(2) — executed in SE-R).
+check("schedule_weeks has no second adopter (no realtime handler; the engine's pull is the one)",
+  count('table: "schedule_weeks" }') === 0 && count("schedSyncRef.current.pull()") === 4,
+  `realtime: ${count('table: "schedule_weeks" }')}, pull triggers: ${count("schedSyncRef.current.pull()")}`);
 
 // Source pins: the gate exists, mirrors the DB predicate, and is applied at
 // all three write sites (autosave blob leg, keepalive blob leg, edge-URL).
 check("canWriteBlob defined once, mirroring is_scheduler_or_admin()",
   count("const canWriteBlob = isScheduler;") === 1);
-check("blob gate applied at exactly 3 sites (autosave, keepalive flush, edge-URL)",
-  count("if (!canWriteBlob) return;") === 3, `found ${count("if (!canWriteBlob) return;")}`);
-check("weeks leg runs BEFORE the blob gate (decoupling is structural, not incidental)",
-  src.replace(/\r\n/g, "\n").indexOf("syncSchedWeeks(payload.schedule);") <
-  src.replace(/\r\n/g, "\n").indexOf("if (!canWriteBlob) return;"));
+check("blob gate applied at exactly 2 sites (autosave, edge-URL; the blob keepalive is removed — A10)",
+  count("if (!canWriteBlob) return;") === 2, `found ${count("if (!canWriteBlob) return;")}`);
+check("the weeks are pushed from exactly one effect, never from inside the blob autosave (decoupling is structural, not incidental)",
+  count("schedSyncRef.current.push(); }, 800);") === 1 && count("const syncSchedWeeks") === 0);
 
 // ══════════════════════════════════════════════════════════════
 // E3. OR board (?public=1&view=or) is a LAYER on public mode, not a mode
@@ -683,8 +952,10 @@ check("appOffVisible used at exactly 4 sites (2 fetch, 2 render)",
 
 // The four write guards must still key on isPublicMode ALONE — never on the
 // OR flag, which would let a nurse's link write.
-check("all 4 public-mode write guards remain `if (isPublicMode) return;`",
+check("all 4 public-mode write guards remain `if (isPublicMode) return;` (autosave, day-off flush, schedule_weeks flush, config; the blob keepalive is removed — A10)",
   count("if (isPublicMode) return;") === 4, `found ${count("if (isPublicMode) return;")}`);
+check("the sync engine's write gate keys on isPublicMode ALONE (never the OR flag); its push effect too",
+  count("canWrite: !isPublicMode,") === 1 && count("if (!loaded || isPublicMode) return;") === 1);
 check("isOrView never appears on a write path (no isOrView in any write guard)",
   !/isOrView[^\n]*\breturn;/.test(src) && !/if\s*\(\s*!?\s*isOrView\s*\)\s*\{?\s*(await|supabase|fetch)/.test(src));
 // The day-off SAVE path stays internal regardless of the flag.
@@ -978,8 +1249,8 @@ check("prefs audit never logs the plaintext email (masked only)",
     try {
       acceptFn = vm.runInContext(`(function (env) {
         const { schedule, surgeons, showToast, detectCascadeChanges, setTradeRequests, logAudit,
-                pushUndo, setSchedule, addNotification, sendEmailNotif, schedulerAdminIds, confirm,
-                silvisActive, silvisBlock, silvisRefuse } = env;
+                pushUndo, updateSchedule, scheduleRef, schedEditable, addNotification, sendEmailNotif, schedulerAdminIds, confirm,
+                silvisActive, silvisBlock, silvisRefuse, sessionEpochRef } = env;
         return (async (req) => {${body}});
       })`, sandbox, { filename: "accept-trade-extract.js" });
       check("accept-trade handler compiles standalone", true);
@@ -996,13 +1267,14 @@ check("prefs audit never logs the plaintext email (masked only)",
           setTradeRequests: () => {},
           logAudit: () => {},
           pushUndo: () => { log.undo++; },
-          setSchedule: () => { log.schedWrites++; },
+          updateSchedule: () => { log.schedWrites++; }, scheduleRef: { current: {} }, schedEditable: () => true,
           addNotification: async () => {},
           sendEmailNotif: () => {},
           schedulerAdminIds: [],
           confirm: () => true,
           // silvisBusy (section O owns its behavior): inert here
           silvisActive: false, silvisBlock: () => null, silvisRefuse: () => false,
+          sessionEpochRef: { current: 0 }, // (21/n, review r4 branch-2: the accept takes the session's identity at the tap — one session here)
         } };
       };
       const baseReq = (weekMon, retWeek) => ({
@@ -1031,12 +1303,31 @@ check("prefs audit never logs the plaintext email (masked only)",
       // GREEN: valid future trade → status PATCH attempted and swap applied
       t = mkEnv();
       t.env.schedule = { [futureMon]: { dayCall: "s9", nights: { tue: "s1", wed: "s2" }, off: null } };
+      t.env.scheduleRef = { current: t.env.schedule };
       fetchStub = stubFetch([{ m: "PATCH", url: "shift_trade_requests", json: [{ id: 9 }] }]);
       await acceptFn(t.env)(baseReq(futureMon));
       check("valid future trade → status PATCH attempted and swap applied",
         writesIn(fetchStub).length === 1 && t.log.schedWrites === 1 && t.log.undo === 1
         && !t.log.toasts.some(x => /already passed/.test(x.msg)),
         `writes=${writesIn(fetchStub).length} sched=${t.log.schedWrites} toasts=${JSON.stringify(t.log.toasts)}`);
+      // RED (sync v2, stale intents): the proposer no longer holds the shift —
+      // someone changed the week since the trade was proposed (v2's pull now
+      // shows that here). Refused BEFORE the status PATCH: the trade stays
+      // pending, zero writes, zero notifications.
+      t = mkEnv();
+      t.env.schedule = { [futureMon]: { dayCall: "s9", nights: { tue: "s7", wed: "s2" }, off: null } };
+      t.env.scheduleRef = { current: t.env.schedule };
+      fetchStub = stubFetch([]);
+      await acceptFn(t.env)(baseReq(futureMon));
+      check("out-of-date trade (the proposer no longer holds the shift) → refused with ZERO writes, before the status PATCH",
+        fetchStub.calls.length === 0 && t.log.schedWrites === 0 && t.log.undo === 0 && t.log.toasts.length === 1 && /out of date/.test(t.log.toasts[0].msg), JSON.stringify(t.log.toasts));
+      // RED: the sign-in / load gate refuses before anything (nothing pending can be lost).
+      t = mkEnv();
+      t.env.schedule = { [futureMon]: { dayCall: "s9", nights: { tue: "s1", wed: "s2" }, off: null } };
+      t.env.scheduleRef = { current: t.env.schedule }; t.env.schedEditable = () => false;
+      fetchStub = stubFetch([]);
+      await acceptFn(t.env)(baseReq(futureMon));
+      check("the edit gate (not loaded / sign-in expired) refuses the accept before the status PATCH", fetchStub.calls.length === 0 && t.log.schedWrites === 0);
     }
   }
 }
@@ -1292,7 +1583,7 @@ check("prefs audit never logs the plaintext email (masked only)",
     count('"This trade\'s shift has already passed — propose a new one."') === 3,
     `found ${count('"This trade\'s shift has already passed — propose a new one."')}`);
   check("executeTwoWaySwap re-validates before pushUndo",
-    /executeTwoWaySwap = useCallback\(\(targetMon[\s\S]{0,900}shiftStartDate\(targetMon, targetShift\)[\s\S]{0,900}pushUndo\(schedule\);/.test(src)); // window 400→900 for the silvisBusy block (2026-09-24); order unchanged
+    /executeTwoWaySwap = useCallback\(\(targetMon[\s\S]{0,900}shiftStartDate\(targetMon, targetShift\)[\s\S]{0,2600}pushUndo\(\);/.test(src) && /executeTwoWaySwap = useCallback\(\(targetMon[\s\S]{0,2600}if \(!schedEditable\(\)\) return;[\s\S]{0,900}out of date[\s\S]{0,1200}pushUndo\(\);/.test(src)); // window 400→900→2600 (sync v2: the edit gate + the holder precondition sit between); order unchanged for the silvisBusy block (2026-09-24); order unchanged
 }
 
 // ─── O. silvisBusy (2026-09-24, revised after the post-merge review): FAK's Silvis primary days block Davenport call ───
@@ -1416,7 +1707,8 @@ check("prefs audit never logs the plaintext email (masked only)",
         const { silvisActive, silvisFakId, silvisDays, nameOf, isScheduler, userProfile, showToast, confirm, alert, logAudit } = env;
         const silvisBlock = (id, mondayStr, slotKey, wk) => {${blockBody}};
         const silvisRefuse = (reasons) => {${refuseBody}};
-        return (draft, oldWk, mondayStr) => {${editorBody}
+        // (the block reads the week AS WRITTEN, the editor's merge "next", against the old week)
+        return (next, oldWk, mondayStr) => {${editorBody}
           return "CONTINUED"; };
       })`, sandbox, { filename: "silvis-editor-extract.js" });
       check("editor silvisBusy block + silvisBlock/silvisRefuse compile standalone", true);
@@ -1628,18 +1920,21 @@ check("prefs audit never logs the plaintext email (masked only)",
   check("silvisBlock/silvisRefuse are stable useCallbacks with their own deps",
     count("}, [silvisActive, silvisFakId, silvisDays]);") >= 1 && count("}, [isScheduler, userProfile]);") === 1);
   check("every refusal call site hands silvisBlock the week row (holiday/override precedence): accept ×3, two-way ×2, one-way, lock, pending rows, propose ×2, submit ×2",
-    count("silvisBlock(req.to_surgeon_id, req.week_monday, req.shift_key, schedule[req.week_monday])") === 1
-    && count("silvisBlock(req.from_surgeon_id, req.return_week, req.return_shift, schedule[req.return_week])") === 1
-    && count("silvisBlock(ch.to, ch.week, ch.shiftKey, schedule[ch.week])") === 3
-    && count("silvisBlock(candId, targetMon, targetShift, schedule[targetMon])") === 1
-    && count("silvisBlock(targetOldId, returnMon, returnShift, schedule[returnMon])") === 1
-    && count("silvisBlock(newId, mStr, shift, schedule[mStr])") === 1
-    && count("silvisBlock(newLockSurgeon, newLockWeek, newLockSlot, schedule[newLockWeek])") === 1
-    && count("silvisBlock(tradeTo, tradeWeek, tradeShift, schedule[tradeWeek])") === 2
-    && count("silvisBlock(tradeFrom, tradeReturnWeek, tradeReturnShift, schedule[tradeReturnWeek])") === 2
+    // accept reads the mirror (cur = scheduleRef.current, sync v2 11/n, A13); so do the one-way swap, the
+    // lock and the proposal's submit (14/n — the one-way swap executed in SE-G); the card previews still read the render
+    count("silvisBlock(req.to_surgeon_id, req.week_monday, req.shift_key, cur[req.week_monday])") === 1
+    && count("silvisBlock(req.from_surgeon_id, req.return_week, req.return_shift, cur[req.return_week])") === 1
+    && count("silvisBlock(ch.to, ch.week, ch.shiftKey, cur[ch.week])") === 1 && count("silvisBlock(ch.to, ch.week, ch.shiftKey, schedule[ch.week])") === 2
+    && count("silvisBlock(candId, targetMon, targetShift, cur[targetMon])") === 1
+    && count("silvisBlock(targetOldId, returnMon, returnShift, cur[returnMon])") === 1
+    && count("silvisBlock(newId, mStr, shift, cur[mStr])") === 1 && count("const oldId = shift === \"dayCall\" ? cur[mStr]?.dayCall : cur[mStr]?.nights?.[shift];") === 1
+    && count("silvisBlock(newLockSurgeon, newLockWeek, newLockSlot, cur[newLockWeek])") === 1 && count("const cur = scheduleRef.current; // the week as the mirror holds it (sync v2 §2.1)") === 1
+    && count("silvisBlock(tradeTo, tradeWeek, tradeShift, schedule[tradeWeek])") === 1 && count("silvisBlock(tradeTo, tradeWeek, tradeShift, cur[tradeWeek])") === 1
+    && count("silvisBlock(tradeFrom, tradeReturnWeek, tradeReturnShift, schedule[tradeReturnWeek])") === 1 && count("silvisBlock(tradeFrom, tradeReturnWeek, tradeReturnShift, cur[tradeReturnWeek])") === 1
+    && count("const hits = [], cur = scheduleRef.current;") === 2 // the proposal's submit, and the two-way swap's
     && count("silvisBlock(r.to_surgeon_id, r.week_monday, r.shift_key, schedule[r.week_monday])") === 1
-    && (src.match(/silvisBlock\([^)]*\)/g) || []).every(c => /schedule\[|, oldWk\)/.test(c) || /silvisBlock\(id, mondayStr, slotKey, wk\)/.test(c)),
-    (src.match(/silvisBlock\([^)]*\)/g) || []).filter(c => !/schedule\[|, oldWk\)|slotKey, wk\)/.test(c)).join(" | "));
+    && (src.match(/silvisBlock\([^)]*\)/g) || []).every(c => /schedule\[|cur\[|, oldWk\)/.test(c) || /silvisBlock\(id, mondayStr, slotKey, wk\)/.test(c)),
+    (src.match(/silvisBlock\([^)]*\)/g) || []).filter(c => !/schedule\[|cur\[|, oldWk\)|slotKey, wk\)/.test(c)).join(" | "));
   check("the generic calendar cell renderer skips Silvis rows (they drew as a bogus 'N FAK' night)",
     count('||e.type==="Holiday"||e.type==="Silvis") return false;') === 1);
   // calData holds DAVENPORT call types only (owner decision 2026-09-24: Silvis
@@ -3369,8 +3664,8 @@ check("prefs audit never logs the plaintext email (masked only)",
   const wfrSrc = (() => { const a = nsrcAA.indexOf("function writeFailReason(err) {"); const b = a < 0 ? -1 : nsrcAA.indexOf("\n}\n", a); return a < 0 || b < 0 ? null : nsrcAA.slice(a, b + 2); })();
   const vacSrc = bodyOf("const submitVacRequest = useCallback(", "vacReqSurgeon, vacReqStart");
   const tradeSrc = bodyOf("const submitTradeRequest = useCallback(", "tradeFrom, tradeTo");
-  const ENV_V = "vacReqSurgeon, vacReqStart, vacReqEnd, vacReqReason, vacReqType, surgeons, apps, showToast, db, setVacRequests, addNotification, schedulerAdminIds, sendEmailNotif, setVacReqStart, setVacReqEnd, setVacReqReason, setVacReqType, vacSubmitBusyRef";
-  const ENV_T = "tradeFrom, tradeTo, tradeWeek, tradeShift, tradeReturnWeek, tradeReturnShift, isScheduler, silvisActive, silvisBlock, silvisRefuse, surgeons, schedule, logAudit, addNotification, sendEmailNotif, setTradeRequests, setTradeWeek, setTradeShift, setTradeReturnWeek, setTradeReturnShift, tradeSubmitBusyRef, showToast, db, alert, confirm";
+  const ENV_V = "vacReqSurgeon, vacReqStart, vacReqEnd, vacReqReason, vacReqType, surgeons, apps, showToast, db, setVacRequests, addNotification, schedulerAdminIds, sendEmailNotif, setVacReqStart, setVacReqEnd, setVacReqReason, setVacReqType, vacSubmitBusyRef, sessionEpochRef";
+  const ENV_T = "tradeFrom, tradeTo, tradeWeek, tradeShift, tradeReturnWeek, tradeReturnShift, isScheduler, silvisActive, silvisBlock, silvisRefuse, surgeons, schedule, logAudit, addNotification, sendEmailNotif, setTradeRequests, setTradeWeek, setTradeShift, setTradeReturnWeek, setTradeReturnShift, tradeSubmitBusyRef, showToast, db, alert, confirm, sessionEpochRef";
   let mkV = null, mkT = null;
   try {
     if (wfrSrc && vacSrc) mkV = vm.runInContext(`(function () { ${wfrSrc}\n return function (env) { const { ${ENV_V} } = env; return (${vacSrc}); }; })()`, sandbox);
@@ -3389,6 +3684,7 @@ check("prefs audit never logs the plaintext email (masked only)",
       setVacRequests: () => { rec.added++; }, addNotification: async () => { rec.notifs++; }, sendEmailNotif: () => {},
       setVacReqStart: () => { rec.cleared++; }, setVacReqEnd: () => {}, setVacReqReason: () => {}, setVacReqType: () => {},
       vacSubmitBusyRef: { current: false },
+      sessionEpochRef: { current: 0 }, // (22/n, review r5 fix-1: the submit takes the session's identity at the tap — one session here)
     }, over.env || {});
     return { run: mkV ? mkV(env) : null, rec, env, release };
   };
@@ -3425,6 +3721,7 @@ check("prefs audit never logs the plaintext email (masked only)",
       surgeons: SURG, schedule: {}, logAudit: () => {}, addNotification: async () => { rec.notifs++; }, sendEmailNotif: () => {},
       setTradeRequests: () => { rec.added++; }, setTradeWeek: () => { rec.cleared++; }, setTradeShift: () => {}, setTradeReturnWeek: () => {}, setTradeReturnShift: () => {},
       tradeSubmitBusyRef: { current: false },
+      sessionEpochRef: { current: 0 }, // (22/n: as the vacation submit's)
       showToast: (m, t) => rec.toasts.push((t || "info") + ": " + m),
       db: { insert: async () => { rec.inserts++; if (over.slowInsert) await gate; return insertResult; } },
       alert: () => {}, confirm: () => true,
@@ -3499,7 +3796,7 @@ check("prefs audit never logs the plaintext email (masked only)",
   const rmBody = arrowBody("const rmAppShift = (ds) => {", "(ds) => {");
   const paintBody = arrowBody("const commitAppPaint = async (draft) => {", "async (draft) => {");
   const saveBody = arrowBody("const saveAppShifts = async (next) => {", "async (next) => {");
-  const ENV = "appShiftsLoaded, appShifts, appDate, appPerson, showToast, setAppShifts, saveAppShifts, logAudit, nameOf, setAppDate, supabase, APP_SHIFTS_NOT_LOADED, setSaveError, setSaveStatus";
+  const ENV = "appShiftsLoaded, appShifts, appDate, appPerson, showToast, setAppShifts, saveAppShifts, logAudit, nameOf, setAppDate, supabase, APP_SHIFTS_NOT_LOADED, setSaveError, setSaveStatus, sessionEpochRef"; // (22/n: saveAppShifts / commitAppPaint read the session at the call — review r5 fix-1)
   const mk = (body) => { try { return body ? vm.runInContext(`(function (env) { const { ${ENV} } = env; return (${body}); })`, sandbox) : null; } catch (ex) { return null; } };
   const mkAdd = mk(addSrc), mkRm = mk(rmBody), mkPaint = mk(paintBody), mkSave = mk(saveBody);
   const envAB = (loaded, over = {}) => {
@@ -3510,6 +3807,7 @@ check("prefs audit never logs the plaintext email (masked only)",
       logAudit: () => {}, nameOf: (x) => x, setAppDate: () => {}, setSaveError: () => {}, setSaveStatus: () => {},
       supabase: { from: () => ({ upsert: async (row) => { rec.upserts++; rec.rows.push(row); return { error: null }; } }) },
       APP_SHIFTS_NOT_LOADED: "APP shifts haven't loaded yet",
+      sessionEpochRef: { current: 0 },
     }, over) };
   };
   {
@@ -3532,20 +3830,25 @@ check("prefs audit never logs the plaintext email (masked only)",
   {
     const i = nsrcAB.indexOf("const saveWeekEdits = useCallback((openAfter) => {"), e = i < 0 ? -1 : nsrcAB.indexOf("\n  }, [editWeekModal,", i);
     const weBody = i < 0 || e < 0 ? null : "(openAfter) => {" + nsrcAB.slice(i + "const saveWeekEdits = useCallback((openAfter) => {".length, e) + "\n  }";
-    const WE_ENV = "editWeekModal, schedule, appShifts, appShiftsLoaded, openWeekEditor, setEditWeekModal, silvisActive, silvisFakId, silvisDays, silvisBlock, silvisRefuse, sfSlotDays, confirm, pushUndo, setSchedule, backupMondaySet, fierceBackupSet, surgeons, showToast, APP_SHIFTS_NOT_LOADED, setAppShifts, saveAppShifts, logAudit, nameOf, aMap, sMap, schedulerAdminIds, addNotification, sendEmailNotif, setTimeout";
+    // (sync v2 14/n: the save is the editor's pure merge, mergeEditorEdits — the real one, from the engine's anchors)
+    const WE_ENV = "editWeekModal, schedule, appShifts, appShiftsLoaded, openWeekEditor, setEditWeekModal, silvisActive, silvisFakId, silvisDays, silvisBlock, silvisRefuse, sfSlotDays, confirm, pushUndo, updateSchedule, scheduleRef, schedEditable, schedSyncRef, mergeEditorEdits, SHIFT_LABELS, backupMondaySet, fierceBackupSet, surgeons, showToast, APP_SHIFTS_NOT_LOADED, setAppShifts, saveAppShifts, logAudit, nameOf, aMap, sMap, schedulerAdminIds, addNotification, sendEmailNotif, setTimeout";
     let mkWE = null; try { mkWE = weBody ? vm.runInContext(`(function (env) { const { ${WE_ENV} } = env; return (${weBody}); })`, sandbox) : null; } catch (ex) { mkWE = null; }
+    let mergeAB = null; try { const seAB = require("./sync-engine-se.js"); mergeAB = seAB.compileMerge(seAB.extractEngine(src)); } catch (ex) { mergeAB = null; }
     const MON = "2026-10-12", DAYS = ["2026-10-12", "2026-10-13", "2026-10-14", "2026-10-15", "2026-10-16", "2026-10-17", "2026-10-18"];
     const blanks = Object.fromEntries(DAYS.map(d => [d, ""]));
     const real = { "2026-10-12": "a1", "2026-10-13": "a2", "2026-10-20": "a4" };   // the stored map (incl. a day outside this week)
     const realWk = Object.fromEntries(DAYS.map(d => [d, real[d] || ""]));
-    const runWE = ({ loaded, appsBase, draftApps, surgeonChange }) => {
+    const runWE = ({ loaded, appsBase, draftApps, surgeonChange, movedUnderneath }) => {
       const rec = { toasts: [], appSets: [], saves: [], schedSets: 0, closed: 0, audits: [], notifs: [] };
       const wk = { dayCall: "s1", nights: { mon: "s2", tue: "s3", wed: "s4", thu: "s5", wknd: "s6" } };
+      // movedUnderneath: someone else's change to the slot this editor edits (the service week) was adopted after it opened
+      const latest = movedUnderneath ? { ...wk, dayCall: "s5" } : wk;
       const env = {
-        editWeekModal: { mondayStr: MON, appsBase, draft: { dayCall: surgeonChange ? "s7" : "s1", nights: { ...wk.nights }, dayCallOverrides: {}, apps: draftApps, reason: "" } },
-        schedule: { [MON]: wk }, appShifts: real, appShiftsLoaded: loaded, openWeekEditor: () => {}, setEditWeekModal: (x) => { if (x === null) rec.closed++; },
+        editWeekModal: { mondayStr: MON, appsBase, openWeek: wk, openEpoch: 3, draft: { dayCall: surgeonChange ? "s7" : "s1", nights: { ...wk.nights }, dayCallOverrides: {}, apps: draftApps, reason: "" } },
+        schedule: { [MON]: latest }, appShifts: real, appShiftsLoaded: loaded, openWeekEditor: () => {}, setEditWeekModal: (x) => { if (x === null) rec.closed++; },
         silvisActive: false, silvisFakId: null, silvisDays: { primary: new Set() }, silvisBlock: () => null, silvisRefuse: () => false, sfSlotDays: () => [],
-        confirm: () => true, pushUndo: () => {}, setSchedule: () => { rec.schedSets++; }, backupMondaySet: new Set(), fierceBackupSet: new Set(),
+        confirm: () => true, pushUndo: () => {}, updateSchedule: () => { rec.schedSets++; }, scheduleRef: { current: { [MON]: latest } }, schedEditable: () => true,
+        schedSyncRef: { current: { epochOf: () => movedUnderneath ? 4 : 0 } }, mergeEditorEdits: mergeAB, SHIFT_LABELS: { dayCall: "Service Week (incl. Sat)" }, backupMondaySet: new Set(), fierceBackupSet: new Set(),
         surgeons: ["s1", "s2", "s3", "s4", "s5", "s6", "s7"].map(id => ({ id, name: id.toUpperCase() })),
         showToast: (m) => rec.toasts.push(String(m)), APP_SHIFTS_NOT_LOADED: "APP shifts haven't loaded yet",
         setAppShifts: (u) => rec.appSets.push(u), saveAppShifts: (x) => rec.saves.push(x),
@@ -3557,7 +3860,7 @@ check("prefs audit never logs the plaintext email (masked only)",
       return { rec, merged };
     };
     const sortedJSON = (o) => JSON.stringify(o && Object.keys(o).sort().map(k => [k, o[k]]));
-    if (mkWE) {
+    if (mkWE && mergeAB) {
       const opened = runWE({ loaded: true, appsBase: blanks, draftApps: { ...blanks }, surgeonChange: true });
       check("AB2 an editor OPENED before the APP row loaded (all blanks), saved after it loaded, writes NO APP change — the week's real assignments stay (the review's data-loss case)",
         opened.rec.appSets.length === 0 && opened.rec.saves.length === 0 && opened.rec.schedSets === 1, JSON.stringify(opened.rec).slice(0, 300));
@@ -3573,14 +3876,18 @@ check("prefs audit never logs the plaintext email (masked only)",
       const appOnly = runWE({ loaded: false, appsBase: blanks, draftApps: { ...blanks, "2026-10-14": "a3" }, surgeonChange: false });
       check("AB2 unloaded with ONLY an APP change: refused with the reason, nothing written or audited, and the editor stays open",
         appOnly.rec.schedSets === 0 && appOnly.rec.appSets.length === 0 && appOnly.rec.audits.length === 0 && appOnly.rec.closed === 0 && /APP changes were NOT saved/.test(appOnly.rec.toasts.join(" ")), JSON.stringify(appOnly.rec));
+      const moved = runWE({ loaded: true, appsBase: realWk, draftApps: { ...realWk, "2026-10-14": "a3" }, surgeonChange: true, movedUnderneath: true });
+      check("AB2 sync v2 (R15): the week was changed by someone else while the editor was open, in a slot edited there → NOTHING is saved (surgeon slots or APP days), the editor stays open, and it says why — naming the slot (14/n; the merge of untouched slots is executed in SE-G)",
+        moved.rec.schedSets === 0 && moved.rec.appSets.length === 0 && moved.rec.saves.length === 0 && moved.rec.closed === 0 && /changed by someone else while the editor was open/.test(moved.rec.toasts.join(" ")) && /They changed the Service Week \(incl\. Sat\) you edited here/.test(moved.rec.toasts.join(" ")), JSON.stringify(moved.rec));
       const none = runWE({ loaded: false, appsBase: realWk, draftApps: { ...realWk }, surgeonChange: false });
       check("AB2 no edits at all closes the editor quietly — even unloaded (no toast, no write)",
         none.rec.closed === 1 && none.rec.toasts.length === 0 && none.rec.appSets.length === 0 && none.rec.schedSets === 0, JSON.stringify(none.rec));
-    } else check("AB2 saveWeekEdits extractable for execution", false, "anchors not found");
+    } else check("AB2 saveWeekEdits (and mergeEditorEdits) extractable for execution", false, JSON.stringify({ we: !!mkWE, merge: !!mergeAB }));
     check("AB2 the editor keeps a COPY of what its APP rows showed on open (the base the save diffs against), and it is the only place a week editor is created",
       count('appsDraft[ds] = appShifts[ds] || "";') === 1 && count("appsBase: { ...appsDraft },") === 1 && count("setEditWeekModal({") === 1);
     check("AB2 an editor opened before the row loaded LOCKS its APP selects and says why (records appsLoaded, in the deps); '• unsaved' diffs the APP days against appsBase, not the live map",
-      count("appsLoaded: appShiftsLoaded,") === 1 && count("}, [schedule, appShifts, appShiftsLoaded]);") === 1
+      count("appsLoaded: appShiftsLoaded,") === 1 && count("}, [appShifts, appShiftsLoaded]);") === 1 && count("openEpoch: schedSyncRef.current.epochNow(),") === 1
+        && count("openWeek: scheduleRef.current[mondayStr] ? JSON.parse(JSON.stringify(wk)) : null,") === 1 // the copy the save diffs its edited slots against (14/n)
         && count("const appsLocked = !editWeekModal.appsLoaded;") === 1 && count("disabled={appsLocked}") === 1 && count("{appsLocked && <div") === 1
         && count('Object.entries(draft.apps).some(([ds, aid]) => (appsBase[ds] || "") !== (aid || ""))') === 1
         && count('Object.entries(draft.apps).some(([ds, aid]) => (appShifts[ds] || "") !== (aid || ""))') === 0);
@@ -3631,45 +3938,78 @@ check("prefs audit never logs the plaintext email (masked only)",
 //   AE5 Setup → Holidays says eves are night shifts and Christmas week is FAK's
 {
   const nsrcAE = src.replace(/\r\n/g, "\n");
-  const i = nsrcAE.indexOf("  const acceptPreview = () => {"), e = i < 0 ? -1 : nsrcAE.indexOf("\n  };\n", i);
-  const body = i < 0 || e < 0 ? null : "() => {" + nsrcAE.slice(i + "  const acceptPreview = () => {".length, e) + "\n  }";
-  const ENV = "previewSchedule, previewNeedsOk, previewAck, previewOrigin, publishWeeks, publishingRef, showToast, setPreviewSchedule, setShowPreview, setCalMonth, setCalYear, setView, setSaveStatus, setTimeout, numWeeks, MO, startMonth, startYear, cancelSearch, publishSearchRunning";
+  const A0 = "  const acceptPreview = async () => {";
+  const i = nsrcAE.indexOf(A0), e = i < 0 ? -1 : nsrcAE.indexOf("\n  };\n", i);
+  const body = i < 0 || e < 0 ? null : "async () => {" + nsrcAE.slice(i + A0.length, e) + "\n  }";
+  const ENV = "previewSchedule, previewSchedRef, previewNeedsOk, previewAck, previewOrigin, publishWeeks, runPublish, publishNotLanded, publishingRef, setPublishing, snapshots, showToast, schedEditable, schedSyncRef, previewEpochRef, setPreviewSchedule, setShowPreview, setCalMonth, setCalYear, setView, setSaveStatus, setTimeout, numWeeks, MO, startMonth, startYear, cancelSearch, publishSearchRunning, sessionEpochRef";
   let mk = null; try { mk = body ? vm.runInContext(`(function (env) { const { ${ENV} } = env; return (${body}); })`, sandbox) : null; } catch (ex) { mk = null; }
-  const run = (items, ack, busy, pubSearch) => {
-    const rec = { published: 0, toasts: [], audits: [], cancelled: 0 };
-    mk({
-      previewSchedule: { "2026-11-16": { dayCall: "s1", nights: {} }, "2026-11-23": { dayCall: "s2", nights: {} } }, previewNeedsOk: { cost: items.length * 6, items }, previewAck: ack,
-      previewOrigin: "generated", publishingRef: { current: !!busy },
+  // o: busy (a publish in progress) · pubSearch (a Generate & Publish search running) · moved (a week of the preview adopted
+  // since it was made) · movedAfter (…adopted during the snapshot's await) · gated (the edit gate refuses) · snapFail · landed:false
+  const run = async (items, ack, o = {}) => {
+    const rec = { published: 0, toasts: [], audits: [], cancelled: 0, jobs: 0, snaps: 0, status: [], order: [] };
+    const PS = { "2026-11-16": { dayCall: "s1", nights: {} }, "2026-11-23": { dayCall: "s2", nights: {} } };
+    let snapped = false;
+    await mk({
+      schedEditable: () => !o.gated, previewEpochRef: { current: 3 }, sessionEpochRef: { current: 0 },
+      // bites only if acceptPreview asks with previewEpochRef.current
+      schedSyncRef: { current: { changedSince: (keys, since) => (since === 3 && (o.moved || (o.movedAfter && snapped))) ? keys.slice(0, 1) : [], knownSchedule: () => ({ "2026-11-09": {} }) } },
+      previewSchedule: PS, previewSchedRef: { current: PS }, previewNeedsOk: { cost: items.length * 6, items }, previewAck: ack,
+      previewOrigin: "generated", publishingRef: { current: !!o.busy }, setPublishing: () => {},
+      snapshots: { capture: async () => { rec.snaps++; rec.order.push("snapshot"); snapped = true; return { ok: !o.snapFail }; } },
       // publishWeeks (the one publish step) is executed for real in AG5; here it records what acceptPreview hands it
-      publishWeeks: (weeks, how) => { rec.published++; rec.audits.push({ msg: `Published schedule (${how.label})${how.extra || ""}`, meta: how.meta, weeks }); return {}; },
+      publishWeeks: (weeks, how) => { rec.published++; rec.order.push("publishWeeks"); rec.audits.push({ msg: `Published schedule (${how.label})${how.extra || ""}`, meta: how.meta, weeks }); return {}; },
+      runPublish: (w) => { rec.jobs++; rec.order.push("job"); rec.jobWeeks = Object.keys(w).join(); return Promise.resolve(o.landed === false ? { ok: false, results: [{ k: "2026-11-23", outcome: "pending" }] } : { ok: true, results: [], notice: o.notice || null }); },
+      publishNotLanded: (pr, what) => rec.toasts.push("NOT LANDED: " + what),
       showToast: (m) => rec.toasts.push(String(m)), setPreviewSchedule: () => {}, setShowPreview: () => {}, setCalMonth: () => {}, setCalYear: () => {},
-      setView: () => {}, setSaveStatus: () => {}, setTimeout: () => {},
+      setView: () => {}, setSaveStatus: (x) => rec.status.push(x), setTimeout: () => {},
       numWeeks: 14, MO: ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"], startMonth: 10, startYear: 2026,
-      cancelSearch: () => { rec.cancelled++; }, publishSearchRunning: () => !!pubSearch,
+      cancelSearch: () => { rec.cancelled++; }, publishSearchRunning: () => !!o.pubSearch,
     })();
     return rec;
   };
   if (mk) {
     const two = [{ kind: "bend", text: "a" }, { kind: "crowded", text: "b" }];
-    const blocked = run(two, false), ticked = run(two, true), clean = run([], false);
+    const blocked = await run(two, false), ticked = await run(two, true), clean = await run([], false);
     check("AE1 the REAL acceptPreview: with items and the box unticked nothing is published (and it says why)",
       blocked.published === 0 && blocked.audits.length === 0 && /reviewed/.test(blocked.toasts.join(" ")), JSON.stringify(blocked));
     check("AE1 ticked: it publishes, and the publish audit entry records N (and the bend cost)",
       ticked.published === 1 && ticked.audits.length === 1 && ticked.audits[0].meta.needsOk === 2 && ticked.audits[0].meta.bendCost === 12 && /2 items reviewed/.test(ticked.audits[0].msg), JSON.stringify(ticked.audits));
+    const stale = await run([], false, { moved: true });
+    check("AE1 sync v2: a preview whose week someone else changed since it was generated is NOT published (it would overwrite that change) — and it says so",
+      stale.published === 0 && stale.audits.length === 0 && stale.snaps === 0 && /changed since this preview was generated/.test(stale.toasts.join(" ")), JSON.stringify(stale));
+    const gatedRun = await run([], false, { gated: true });
+    check("AE1 sync v2: the edit gate (not loaded / sign-in expired) refuses before the publish step — nothing published", gatedRun.published === 0 && gatedRun.audits.length === 0 && gatedRun.snaps === 0, JSON.stringify(gatedRun));
     check("AE1 an empty box publishes exactly as before — no checkbox needed, needsOk 0, no extra wording",
       clean.published === 1 && clean.toasts.length === 0 && clean.audits[0].meta.needsOk === 0 && !/reviewed/.test(clean.audits[0].msg), JSON.stringify(clean.audits));
-    // PR 1: Accept & Publish goes through the one publish step (AG5 runs it),
-    // with the whole preview, and refuses while another publish is in progress.
-    check("AE1 Accept & Publish hands the WHOLE preview to publishWeeks (the one publish step — net counts, undo, audit: AG5)",
-      ticked.audits[0] && Object.keys(ticked.audits[0].weeks).join() === "2026-11-16,2026-11-23" && ticked.audits[0].meta.origin === "generated");
+    check("AE1 Accept & Publish hands the WHOLE preview to publishWeeks (the one publish step — net counts, undo, audit: AG5) and to the engine's publish job",
+      ticked.audits[0] && Object.keys(ticked.audits[0].weeks).join() === "2026-11-16,2026-11-23" && ticked.audits[0].meta.origin === "generated" && ticked.jobWeeks === "2026-11-16,2026-11-23");
     check("AE1 Accept & Publish first cancels a running search (\"Search more\"), so its late result can't reopen the published preview (2026-10-12)",
       ticked.cancelled === 1 && clean.cancelled === 1, JSON.stringify([ticked.cancelled, clean.cancelled]));
-    const during = run([], false, false, true);
+    const during = await run([], false, { pubSearch: true });
     check("AE1 while a Generate & Publish SEARCH runs (it publishes its own schedule when it ends), Accept & Publish publishes NOTHING and says why — never two publishes racing",
       during.published === 0 && during.cancelled === 0 && /still searching/.test(during.toasts.join(" ")), JSON.stringify(during));
-    const busy = run([], false, true);
+    const busy = await run([], false, { busy: true });
     check("AE1 while a publish is in progress (Generate & Publish waiting for its snapshot), Accept & Publish publishes NOTHING and says why",
       busy.published === 0 && /already in progress/.test(busy.toasts.join(" ")), JSON.stringify(busy));
+    // A14 — a backup snapshot first (fail closed), the checks again after its await, the period as ONE engine job, the outcome said
+    // 17/n P6 (review r1 regress-dup-status-line): while the job runs the engine's line says "Publishing… keep the app open" —
+    // the header's ONE line — so the snapshot's status ends as the job starts ("") and no "Publishing…" of its own (executed in SE-X13)
+    check("AE1 A14: the order is snapshot → publishWeeks → the engine's publish job, and \"Published — totals updated\" only after the job landed every week; the status: 'Saving backup snapshot…', then nothing while the job runs (17/n P6), then 'Published — totals updated'",
+      clean.order.join() === "snapshot,publishWeeks,job" && clean.status.join("|") === "Saving backup snapshot…||Published — totals updated" && !clean.status.includes("Publishing…"),
+      JSON.stringify({ order: clean.order, status: clean.status }));
+    const noSnap = await run([], false, { snapFail: true }), movedAfter = await run([], false, { movedAfter: true }), notLanded = await run([], false, { landed: false });
+    check("AE1 A14: no backup snapshot → nothing published (and it says so); a week changed by someone else DURING the snapshot's await → nothing published either",
+      noSnap.snaps === 1 && noSnap.published === 0 && noSnap.jobs === 0 && /backup snapshot/.test(noSnap.toasts.join(" "))
+        && movedAfter.snaps === 1 && movedAfter.published === 0 && movedAfter.jobs === 0 && /changed since this preview was generated/.test(movedAfter.toasts.join(" ")),
+      JSON.stringify([noSnap, movedAfter]));
+    check("AE1 A14: a publish job that didn't land every week → no \"Published\", the scheduler is told (retrying, nobody notified)",
+      notLanded.published === 1 && notLanded.jobs === 1 && !notLanded.status.includes("Published — totals updated") && /NOT LANDED: Published on this screen/.test(notLanded.toasts.join(" ")),
+      JSON.stringify(notLanded));
+    // 14/n: the publish job is quiet — what it met on ANOTHER week (someone else's change) comes back as its notice, and this is the one toast that says it
+    const NOTICE = "The week of Nov 30 was changed by someone else — showing the latest. Reapply your change if it's still needed.";
+    const noticed = await run([], false, { notice: NOTICE });
+    check("AE1 14/n: a publish that landed but met someone else's change on another week (the job's notice): \"Published — totals updated\" AND that notice — once, the one toast",
+      noticed.status.includes("Published — totals updated") && noticed.toasts.length === 1 && noticed.toasts[0] === NOTICE && clean.toasts.length === 0, JSON.stringify(noticed.toasts));
   } else check("AE1 acceptPreview extractable for execution", false, "anchors not found");
   check("AE2 ✓ Accept & Publish is disabled while the box has items and is unticked; the checkbox drives previewAck; a new preview resets it",
     count('<button onClick={acceptPreview} disabled={publishing || searching === "publish" || (previewNeedsOk.items.length > 0 && !previewAck)}') === 1
@@ -3682,8 +4022,9 @@ check("prefs audit never logs the plaintext email (masked only)",
       && nsrcAE.indexOf("{/* Spacing-exception disclosure") < nsrcAE.indexOf("{/* Preview Calendar Grid */}")
       && count('color:dk?"#f0c890":"#7a4010",overflowWrap:"anywhere"}}>') === 1);
   check("AE3 Generate & Publish: a result with items opens the preview (\"review\") instead of saving; only \"published\" sends the notice; a cancelled Silvis confirm sends nothing",
-    count('    if (needsOkN > 0) {\n      setPreviewSchedule(result); setPreviewOrigin("generated");\n      setShowPreview(true);'.replace(/\n/g, src.includes("\r\n") ? "\r\n" : "\n")) === 1
-      && count('return "review";') === 2 && count('return "published";') === 1 && count('return "cancelled";') === 2 // review: + inputs changed during the search (2026-10-12) — // the Silvis confirm; a cancelled / empty search (2026-10-12)
+    count('    if (needsOkN > 0) {\n      setPreviewSchedule(result); setPreviewOrigin("generated"); previewEpochRef.current = genEpoch;\n      setShowPreview(true);'.replace(/\n/g, src.includes("\r\n") ? "\r\n" : "\n")) === 1
+      && count('previewEpochRef.current = genEpoch;') === 3 // preview · inputs changed · Needs your OK (sync v2)
+      && count('return "review";') === 2 && count('return out && out.ok ? "published" : "not-published";') === 1 && count('return "published";') === 0 && count('return "cancelled";') === 2 // review: + inputs changed during the search (2026-10-12) — // the Silvis confirm; a cancelled / empty search (2026-10-12)
       && count('if ((await doGenerate(false)) !== "published") return;') === 1);
   check("AE4 the box and the generator share ONE availability builder (vacations ∪ no-call ∪ Silvis), and the box reads the bends from generator.js",
     count("const availability = buildGenAvailability();") === 1 && count("vac: buildGenAvailability(), vacationsOnly: vacations,") === 2 // the box + Generate & Publish's gate (today's inputs, 2026-10-12)
@@ -3908,16 +4249,17 @@ await (async () => {
     if (i < 0 || e < 0) check("AG3 loadScheduleJson extractable", false, "anchors not found");
     else {
       const body = nsrc.slice(i, e) + "\n  };";
-      const mk = vm.runInContext(`(function (env) { const { showToast, validateScheduleJson, shapeScheduleWeeks, mondays, fmt, surgeons, backupMondaySet, fierceBackupSet, holidayAssignments, setPreviewSchedule, setPreviewOrigin, setPreviewCalMonth, setShowPreview, cancelSearch, setSearchStats, publishSearchRunning } = env; ${body}; return loadScheduleJson; })`, sandbox);
+      const mk = vm.runInContext(`(function (env) { const { showToast, validateScheduleJson, shapeScheduleWeeks, mondays, fmt, surgeons, backupMondaySet, fierceBackupSet, holidayAssignments, setPreviewSchedule, setPreviewOrigin, setPreviewCalMonth, setShowPreview, cancelSearch, setSearchStats, publishSearchRunning, previewEpochRef, schedSyncRef } = env; ${body}; return loadScheduleJson; })`, sandbox);
       const go = (text) => {
-        const rec = { toasts: [], preview: null, origin: null, shown: false, cancelled: 0 };
+        const rec = { toasts: [], preview: null, origin: null, shown: false, cancelled: 0 }, pe = { current: -1 };
         const load = mk({ showToast: (m, t) => rec.toasts.push([String(m), t]), validateScheduleJson: G.validateScheduleJson, shapeScheduleWeeks: G.shapeScheduleWeeks, mondays: MON, fmt: G.fmt, surgeons: SUR,
-          backupMondaySet: BK, fierceBackupSet: FB, holidayAssignments: HOL, setPreviewSchedule: (x) => { rec.preview = x; }, setPreviewOrigin: (x) => { rec.origin = x; }, setPreviewCalMonth: () => {}, setShowPreview: (x) => { rec.shown = x; }, cancelSearch: () => { rec.cancelled++; }, setSearchStats: (x) => { rec.stats = x; }, publishSearchRunning: () => false });
-        rec.ret = load(text, "bench.json");
+          backupMondaySet: BK, fierceBackupSet: FB, holidayAssignments: HOL, setPreviewSchedule: (x) => { rec.preview = x; }, setPreviewOrigin: (x) => { rec.origin = x; }, setPreviewCalMonth: () => {}, setShowPreview: (x) => { rec.shown = x; }, cancelSearch: () => { rec.cancelled++; }, setSearchStats: (x) => { rec.stats = x; }, publishSearchRunning: () => false, previewEpochRef: pe, schedSyncRef: { current: { epochNow: () => 7 } } });
+        rec.ret = load(text, "bench.json"); rec.epoch = pe.current;
         return rec;
       };
       const good = go(JSON.stringify(asFile)), bad = go(JSON.stringify(Object.assign({}, asFile, { numWeeks: 9 }))), junk = go("{not json");
       const bom = go("﻿" + JSON.stringify(asFile, null, 2));
+      check("AG3 sync v2: a loaded preview is judged from the engine epoch at the load; a refused file leaves the epoch alone", good.epoch === 7 && bad.epoch === -1 && junk.epoch === -1, JSON.stringify([good.epoch, bad.epoch, junk.epoch]));
       check("AG3 a file saved with a byte-order mark (Windows editors) loads like any other", bom.ret === true && JSON.stringify(bom.preview) === JSON.stringify(shaped), JSON.stringify(bom.toasts));
       check("AG3 the REAL loader: a good file fills the preview with the shaped weeks, origin \"json\", shown, and says nothing is published yet",
         good.ret === true && JSON.stringify(good.preview) === JSON.stringify(shaped) && good.origin === "json" && good.shown === true && /nothing is published until/.test(good.toasts[0][0]), JSON.stringify(good.toasts));
@@ -3936,12 +4278,12 @@ await (async () => {
       && count('{previewOrigin === "json" && <span') === 1 && count("Loaded from JSON — not generated") === 1
       && count('setPreviewSchedule(result); setPreviewOrigin("generated");') === 3 && count('setPreviewOrigin("json")') === 1); // preview · inputs changed · Needs your OK
   check("AG4 both publish paths go through the ONE publish step (Accept & Publish; Generate & Publish at commit), the only roll-forward — no 100 ms timer, no 'skip if any schedule exists'",
-    count("publishWeeks(previewSchedule, {") === 1 && count("publishWeeks(result, {") === 1 && count("publishWeeks(") === 2
+    count("publishWeeks(weeks, {") === 1 && count("publishWeeks(result, {") === 1 && count("publishWeeks(") === 2
       && count("const r = rollForwardCounts(newWeeks, replacedWeeks);") === 1 && count("rollForwardCounts(") === 1
       && count("hadExistingSchedule") === 0 && !/rollForwardCounts\(latest\)/.test(nsrc));
   {
     // since 2026-10-12 the publish runs after the search, in finishGenerate → commitGenerated (with the latest state)
-    const g = nsrc.indexOf("  const finishGenerate = (result, preview, clickSig, clickLocks) => {"), ge = nsrc.indexOf("\n  genFinishRef.current = finishGenerate; genCommitRef.current = commitGenerated;", g), body = g < 0 || ge < 0 ? "" : nsrc.slice(g, ge);
+    const g = nsrc.indexOf("  const finishGenerate = (result, preview, clickSig, clickLocks, genEpoch) => {"), ge = nsrc.indexOf("\n  genFinishRef.current = finishGenerate; genCommitRef.current = commitGenerated;", g), body = g < 0 || ge < 0 ? "" : nsrc.slice(g, ge);
     const busy = body.indexOf("if (publishingRef.current) {"), arm = body.indexOf("publishingRef.current = true; setPublishing(true);"), iife = body.indexOf("(async () => {", arm);
     const snapOk = body.indexOf("if (!snap.ok) {"), commit = body.indexOf("await genCommitRef.current(result);"), fin = body.indexOf("} finally { publishingRef.current = false; setPublishing(false); }"), pub = body.indexOf("publishWeeks(result, {");
     check("AG4 Generate & Publish: refused while a publish is in progress, armed BEFORE the snapshot's await, released in finally; the counts move only AFTER a good snapshot (a refused publish moves nothing), in commitGenerated — with the state as it is after the await",
@@ -3956,15 +4298,15 @@ await (async () => {
       && count('{previewOrigin === "json" ? "These are in the loaded file. Accepting publishes them as shown') === 1 && count('seedDebug && previewOrigin !== "json" && (') === 1);
   // ── AG5: the REAL publish step, undo and audit text, on a simulated component state ──
   {
-    const iU = nsrc.indexOf("  const pushUndo = useCallback((sched, counts) => {"), eU = iU < 0 ? -1 : nsrc.indexOf("}, [scheduleHistory]);", iU);
+    const iU = nsrc.indexOf("  const pushUndo = useCallback((counts) => {"), eU = iU < 0 ? -1 : nsrc.indexOf("\n  // ─── What-If Preview ───", iU);
     const iC = nsrc.indexOf("  const countsOfWeeks = (weeks, pick) => {"), kC = iC < 0 ? -1 : nsrc.indexOf("  const rollForwardCounts = useCallback((sched, replaced) => {", iC), eC = kC < 0 ? -1 : nsrc.indexOf("\n  }, [", kC);
     const iP = nsrc.indexOf("  const publishWeeks = (newWeeks, how) => {"), eP = iP < 0 ? -1 : nsrc.indexOf("\n\n  // ─── Load a schedule from JSON", iP);
     let factory = null;
     if ([iU, eU, iC, kC, eC, iP, eP].every(x => x >= 0)) {
       try {
         factory = vm.runInContext(`(function (env) {
-          const { surgeons, parse, useCallback, scheduleRef, setSchedule, priorCounts, year1Counts, setPriorCounts, setYear1Counts, scheduleHistory, setScheduleHistory, logAudit } = env;
-          ${nsrc.slice(iU, eU) + "}, [scheduleHistory]);"}
+          const { surgeons, parse, useCallback, scheduleRef, commitSchedule, schedSyncRef, schedEditable, showToast, priorCounts, year1Counts, setPriorCounts, setYear1Counts, scheduleHistory, setScheduleHistory, logAudit } = env;
+          ${nsrc.slice(iU, eU)}
           ${nsrc.slice(iC, eC) + "\n  });"}
           ${nsrc.slice(iP, eP)}
           return { pushUndo, undoLastChange, rollForwardCounts, publishWeeks, netCountsText, applyCountsDelta };
@@ -3974,11 +4316,13 @@ await (async () => {
     if (!factory) check("AG5 the publish step, undo and counts are extractable and compile", false, "anchors not found or compile error");
     else {
       const sur = ["s1", "s2", "s3", "s4", "s5", "s6", "s7"].map(id => ({ id, name: id.toUpperCase() }));
-      const st = { schedule: {}, prior: { s1: { dc: 9, nights: 30, wknd: 10, off: 4, dcB: 0, nightsB: 0, wkndB: 0, offB: 0, totalDays: 120, totalDaysB: 0 } }, y1: {}, history: [], audits: [] };
+      const st = { schedule: {}, prior: { s1: { dc: 9, nights: 30, wknd: 10, off: 4, dcB: 0, nightsB: 0, wkndB: 0, offB: 0, totalDays: 120, totalDaysB: 0 } }, y1: {}, history: [], audits: [], toasts: [] };
+      const eng = { epoch: 4, blocked: [] }; // the engine stub: its epoch, and the weeks its undoPlan reports as adopted since a step
       const ref = { current: st.schedule };
       const upd = (k) => (f) => { st[k] = typeof f === "function" ? f(st[k]) : f; };
       const render = () => factory({ surgeons: sur, parse: vm.runInContext("parse", sandbox), useCallback: (f) => f, scheduleRef: ref,
-        setSchedule: (v) => { st.schedule = typeof v === "function" ? v(st.schedule) : v; ref.current = st.schedule; }, priorCounts: st.prior, year1Counts: st.y1,
+        commitSchedule: (v) => { st.schedule = v; ref.current = v; }, schedEditable: () => true, showToast: (m) => st.toasts.push(String(m)),
+        schedSyncRef: { current: { epochNow: () => eng.epoch, undoPlan: (snap) => ({ next: JSON.parse(JSON.stringify(snap)), touched: [], blocked: eng.blocked.slice() }) } }, priorCounts: st.prior, year1Counts: st.y1,
         setPriorCounts: upd("prior"), setYear1Counts: upd("y1"), scheduleHistory: st.history, setScheduleHistory: upd("history"),
         logAudit: (a, msg, meta) => st.audits.push({ a, msg, meta }) });
       const wk = (dc, n) => ({ dayCall: dc, nights: { wknd: n[4], mon: n[0], tue: n[1], wed: n[2], thu: n[3] }, off: "s7", isBackup: false, isFierceBackup: false, holidayCoverage: null });
@@ -4000,6 +4344,10 @@ await (async () => {
       check("AG5 ↩ Undo twice takes BOTH publishes back off: the schedule AND the counts are as before the first publish", counts() === c0 && JSON.stringify(st.schedule) === JSON.stringify(OLD), counts());
       render().publishWeeks(JSON.parse(JSON.stringify(P)), { label: "test", meta: {} });
       check("AG5 publish → ↩ Undo → publish counts the period ONCE (Undo used to put the schedule back but not the counts)", counts() === c1, counts());
+      check("AG5 sync v2: the publish step carries the engine epoch with its counts", st.history.length >= 1 && st.history[st.history.length - 1].epoch === 4 && !!st.history[st.history.length - 1].counts, JSON.stringify(st.history.map(h => h.epoch)));
+      { const s0 = JSON.stringify(st.schedule), k0 = counts(), h0 = st.history.length; eng.blocked = ["2026-11-16"]; render().undoLastChange(); eng.blocked = [];
+        check("AG5 sync v2: an Undo the engine refuses (a week adopted since) changes NOTHING — schedule, counts and history — and says why",
+          JSON.stringify(st.schedule) === s0 && counts() === k0 && st.history.length === h0 && /Can't undo/.test(st.toasts.join(" ")), JSON.stringify({ toasts: st.toasts, h: [h0, st.history.length] })); }
       const P2 = { "2026-11-16": wk("s3", ["s2", "s1", "s4", "s5", "s6"]) };
       render().publishWeeks(P2, { label: "test", meta: {} });
       const last = st.audits[st.audits.length - 1].msg;
@@ -4213,9 +4561,9 @@ await (async () => {
   {
     const dg = nsrcAH.indexOf("  const doGenerate = async (preview) => {"), dge = nsrcAH.indexOf("\n  };\n", dg), dgb = dg < 0 ? "" : nsrcAH.slice(dg, dge);
     check("AH6 Generate goes through the search for SEARCH_MS and refuses a second search while one runs",
-      dgb.indexOf('if (searchRef.current) { showToast("A schedule search is already running') > 0 && dgb.indexOf('const done = await runSearch(search, preview ? "generate" : "publish", SEARCH_MS);') > dgb.indexOf("const search = createScheduleSearch(") && dgb.indexOf("return genFinishRef.current(result, preview, clickSig, pendingLocks);") > 0 && dgb.indexOf("const result = done && done.session.best();") > 0);
+      dgb.indexOf('if (searchRef.current) { showToast("A schedule search is already running') > 0 && dgb.indexOf('const done = await runSearch(search, preview ? "generate" : "publish", SEARCH_MS);') > dgb.indexOf("const search = createScheduleSearch(") && dgb.indexOf("return genFinishRef.current(result, preview, clickSig, pendingLocks, genEpoch);") > 0 && dgb.indexOf("const result = done && done.session.best();") > 0);
     check("AH6 Accept, Discard and a JSON load cancel a running search first (Discard and a load also clear the last search's count, which no longer applies)",
-      /const acceptPreview = \(\) => \{\n[^]*?if \(publishSearchRunning\(\)\) \{[^\n]*return; \}\n    cancelSearch\(\);/.test(nsrcAH) && /const discardPreview = \(\) => \{\n    cancelSearch\(\); setSearchStats\(null\);/.test(nsrcAH)
+      /const acceptPreview = async \(\) => \{\n[^]*?if \(publishSearchRunning\(\)\) \{[^\n]*return; \}\n    cancelSearch\(\);/.test(nsrcAH) && /const discardPreview = \(\) => \{\n    cancelSearch\(\); setSearchStats\(null\);/.test(nsrcAH)
         && /const loadScheduleJson = \(text, fileName\) => \{\n    if \(publishSearchRunning\(\)\) \{[^\n]*return false; \}\n    cancelSearch\(\); setSearchStats\(null\);/.test(nsrcAH)
         && count('const cancelSearch = () => { const sr = searchRef.current; if (sr && sr.purpose !== "publish") { searchRef.current = null; setSearching(null); } };') === 1);
     const sm = nsrcAH.indexOf("  const searchMore = async () => {"), sme = nsrcAH.indexOf("\n  };\n", sm), smb = sm < 0 ? "" : nsrcAH.slice(sm, sme);
@@ -4443,17 +4791,18 @@ await (async () => {
 // ─── AH9. The REAL finishGenerate: Generate's end, with the LATEST state (2026-10-13) ───
 await (async () => {
   const nsrcF = src.replace(/\r\n/g, "\n");
-  const i = nsrcF.indexOf("  const finishGenerate = (result, preview, clickSig, clickLocks) => {"), e = i < 0 ? -1 : nsrcF.indexOf("\n  };\n", i);
-  const ENV = "pendingLocks, nameOf, slotLabel, showToast, setPreviewSchedule, setPreviewOrigin, setShowPreview, genInputsSig, listScheduleBends, surgeons, mondays, buildGenAvailability, buildSilvisPrimary, vacations, holidayAssignments, buildPrevWeekSeed, publishingRef, setPublishing, setSaveStatus, snapshots, genCommitRef";
+  const i = nsrcF.indexOf("  const finishGenerate = (result, preview, clickSig, clickLocks, genEpoch) => {"), e = i < 0 ? -1 : nsrcF.indexOf("\n  };\n", i);
+  const ENV = "pendingLocks, nameOf, slotLabel, showToast, setPreviewSchedule, setPreviewOrigin, setShowPreview, genInputsSig, listScheduleBends, surgeons, mondays, buildGenAvailability, buildSilvisPrimary, vacations, holidayAssignments, buildPrevWeekSeed, publishingRef, setPublishing, setSaveStatus, snapshots, genCommitRef, previewEpochRef, schedEditable, schedSyncRef, sessionEpochRef";
   let mk = null; try { mk = i < 0 ? null : vm.runInContext("(function (env) { const { " + ENV + " } = env; return (" + nsrcF.slice(i + "  const finishGenerate = ".length, e) + "\n  }); })", sandbox); } catch (ex) { mk = null; }
   if (!mk) { check("AH9 finishGenerate extractable for execution", false, "anchor / compile"); return; }
   const RES = { "2099-03-02": { dayCall: "s1", nights: {} } };
   const go = async (o) => {
-    const rec = { toasts: [], preview: null, shown: false, captured: 0, committed: 0 }, pub = { current: false };
-    const fn = mk({ pendingLocks: o.locksNow || [], nameOf: (x) => x, slotLabel: () => "slot", showToast: (m) => rec.toasts.push(String(m)), setPreviewSchedule: (x) => { rec.preview = x; }, setPreviewOrigin: () => {}, setShowPreview: (x) => { rec.shown = x; },
+    const rec = { toasts: [], preview: null, shown: false, captured: 0, committed: 0 }, pub = { current: false }, pe = { current: -1 };
+    const fn = mk({ sessionEpochRef: { current: 0 }, pendingLocks: o.locksNow || [], nameOf: (x) => x, slotLabel: () => "slot", showToast: (m) => rec.toasts.push(String(m)), setPreviewSchedule: (x) => { rec.preview = x; }, setPreviewOrigin: () => {}, setShowPreview: (x) => { rec.shown = x; },
       genInputsSig: () => o.sigNow, listScheduleBends: () => ({ items: o.items || [] }), surgeons: [], mondays: [], buildGenAvailability: () => ({}), buildSilvisPrimary: () => null, vacations: {}, holidayAssignments: {}, buildPrevWeekSeed: () => null,
-      publishingRef: pub, setPublishing: () => {}, setSaveStatus: () => {}, snapshots: { capture: async () => { rec.captured++; return { ok: true }; } }, genCommitRef: { current: async () => { rec.committed++; } } });
-    rec.ret = fn(RES, !!o.preview, "SIG0", o.locksAtClick || []);
+      publishingRef: pub, setPublishing: () => {}, setSaveStatus: () => {}, snapshots: { capture: async () => { rec.captured++; if (o.gateAfter) o.gated = true; return { ok: !o.snapFail }; } }, genCommitRef: { current: async () => { rec.committed++; return { ok: !o.notLanded }; } },
+      previewEpochRef: pe, schedEditable: () => !o.gated, schedSyncRef: { current: { knownSchedule: () => ({}), changedSince: (keys, since) => (o.moved && since === 5) ? keys.slice() : [] } } });
+    rec.ret = await fn(RES, !!o.preview, "SIG0", o.locksAtClick || [], 5); rec.epoch = pe.current; // a publish resolves to its OUTCOME (A14)
     await new Promise(r => setTimeout(r, 30)); // let a publish run through its snapshot
     rec.armed = pub.current;
     return rec;
@@ -4466,6 +4815,16 @@ await (async () => {
   const clean = await go({ sigNow: "SIG0" });
   check("AH9 …unchanged and clean → published: the snapshot first, then the commit through genCommitRef (the state after the snapshot's await), and the publish flag released",
     clean.ret === "published" && clean.captured === 1 && clean.committed === 1 && clean.armed === false, JSON.stringify(clean));
+  check("AH9 sync v2: every preview it opens is judged from the click's engine epoch", changed.epoch === 5 && items.epoch === 5, JSON.stringify([changed.epoch, items.epoch]));
+  const moved = await go({ sigNow: "SIG0", moved: true }), gatedNow = await go({ sigNow: "SIG0", gated: true }), gatedLater = await go({ sigNow: "SIG0", gateAfter: true });
+  check("AH9 sync v2: a week of the period adopted since the CLICK → after the snapshot NOTHING is committed, it says why, and the publish flag is released",
+    moved.captured === 1 && moved.committed === 0 && /changed while generating/.test(moved.toasts.join(" ")) && moved.armed === false, JSON.stringify(moved));
+  check("AH9 sync v2: the edit gate before the snapshot (\"refused\", no snapshot) and again after it (signed out during the await: nothing committed, flag released)",
+    gatedNow.ret === "refused" && gatedNow.captured === 0 && gatedNow.committed === 0 && gatedLater.captured === 1 && gatedLater.committed === 0 && gatedLater.armed === false, JSON.stringify([gatedNow, gatedLater]));
+  const notLanded = await go({ sigNow: "SIG0", notLanded: true }), noSnap = await go({ sigNow: "SIG0", snapFail: true });
+  check("AH9 A14: Generate & Publish resolves to its OUTCOME — \"published\" only when the commit's publish job landed every week (\"not-published\" otherwise), \"no-snapshot\" / \"moved\" / \"refused\" when it stopped; so only a real publish notifies",
+    notLanded.ret === "not-published" && notLanded.committed === 1 && notLanded.armed === false && noSnap.ret === "no-snapshot" && noSnap.committed === 0 && moved.ret === "moved" && gatedLater.ret === "refused",
+    JSON.stringify([notLanded.ret, noSnap.ret, moved.ret, gatedLater.ret]));
   const lk = [{ mondayStr: "2099-03-02", slot: "dc", surgeonId: "s1" }];
   const prev = await go({ preview: true, sigNow: "SIGx", locksAtClick: lk, locksNow: lk.concat([{ mondayStr: "2099-03-02", slot: "mon", surgeonId: "s2" }]) });
   check("AH9 …a Preview: it opens; a lock ADDED during the search is not blamed on time off ('NOT honored') — the scheduler is told the preview used the earlier locks",
@@ -4565,7 +4924,7 @@ await (async () => {
       return out;
     };
     // …and ANY storage write inside the paths that hold the preview or the search's result under another name
-    const PREVIEW_PATHS = ["  const runSearch = (session, purpose, budgetMs) => new Promise(resolve => {", "  const doGenerate = async (preview) => {", "  const finishGenerate = (result, preview, clickSig, clickLocks) => {", "  const commitGenerated = async (result) => {", "  const searchMore = async () => {", "  const acceptPreview = () => {", "  const discardPreview = () => {", "  const loadScheduleJson = (text, fileName) => {", "  const onLoadJsonFile = (e) => {"];
+    const PREVIEW_PATHS = ["  const runSearch = (session, purpose, budgetMs) => new Promise(resolve => {", "  const doGenerate = async (preview) => {", "  const finishGenerate = (result, preview, clickSig, clickLocks, genEpoch) => {", "  const commitGenerated = async (result) => {", "  const searchMore = async () => {", "  const acceptPreview = async () => {", "  const discardPreview = () => {", "  const loadScheduleJson = (text, fileName) => {", "  const onLoadJsonFile = (e) => {"];
     const pathBodies = (text) => PREVIEW_PATHS.map(a => { const i = text.indexOf(a); if (i < 0) return ""; const e = text.indexOf("\n  };\n", i); return text.slice(i, e < 0 ? i : e); });
     const guardStore = (fs_) => {
       const bad = [];
@@ -4581,7 +4940,7 @@ await (async () => {
     twoSided("AI3 no localStorage / sessionStorage / IndexedDB write in any app file mentions the preview",
       guardStore, files, Object.assign({}, files, { "index-source.html": plant(src0, "  const discardPreview = () => {\n", "  const discardPreview = () => {\n    try { localStorage.setItem(\"dsg-last-preview\", JSON.stringify(previewSchedule)); } catch (e) {}\n", "AI3a") }));
     twoSided("AI3 …nor one that keeps the search's result under its own name (result / better / shaped) in a preview path",
-      guardStore, files, Object.assign({}, files, { "index-source.html": plant(src0, "  const finishGenerate = (result, preview, clickSig, clickLocks) => {\n", "  const finishGenerate = (result, preview, clickSig, clickLocks) => {\n    try { localStorage.setItem(\"dsg-gen\", JSON.stringify(result)); } catch (e) {}\n", "AI3d") }));
+      guardStore, files, Object.assign({}, files, { "index-source.html": plant(src0, "  const finishGenerate = (result, preview, clickSig, clickLocks, genEpoch) => {\n", "  const finishGenerate = (result, preview, clickSig, clickLocks, genEpoch) => {\n    try { localStorage.setItem(\"dsg-gen\", JSON.stringify(result)); } catch (e) {}\n", "AI3d") }));
     twoSided("AI3 …nor a helper that stores something under its own key (the storage keys are an allowlist)",
       guardStore, files, Object.assign({}, files, { "index-source.html": plant(src0, "  const discardPreview = () => {\n", "  const stash = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} };\n  const discardPreview = () => {\n", "AI3e") }));
     twoSided("AI3 …nor one inside the search runner",
@@ -4929,7 +5288,1697 @@ check("AK1 the calendar has a Today button beside the month arrows: it sets the 
     && count('document.querySelector("[data-cal-today=\\"1\\"]")') === 1 && count('data-cal-today={isToday ? "1" : undefined}') === 1
     && src.indexOf('aria-label="Go to today"') > src.indexOf('aria-label="Next month"'));
 
+// ══════════════════════════════════════════════════════════════
+// SE. Sync engine v2 — test/sync-engine-se.js (the real createSchedSync on an
+// emulated schedule_weeks table, plus its mutant battery), and the emulated
+// table's own contract tests, so a drift in the fake can't hide a bug.
+// ══════════════════════════════════════════════════════════════
+await require("./sync-engine-se.js")({ src, check });
+
+// A17(c) — the harness rule, for every SE-* harness below: each records
+// console.error (its fresh context's console, or the one it hands in as a
+// dep), the app's showToast and the engine's onToast, the engine's internal
+// errors and its CAUGHT callback errors (the `log` dep's "… threw"), and
+// fails — in its own check — on an unexpected one. (SE's SE-I and SE-X-I in
+// sync-engine-se.js do the same.)
+const seRec = require("./sync-engine-se.js");
+const harnessWatch = () => {
+  const w = { con: [], caught: [] };
+  w.console = seRec.recConsole(w.con);
+  w.log = seRec.caughtLog(w.caught);
+  w.unexpected = () => w.con.filter(x => /^error: /.test(x) || / threw /.test(x)).concat(w.caught);
+  return w;
+};
+
+// SE-W. The engine's wiring in the component. The behaviour is executed in SE
+// (the engine) and E2 (the push effect); these pins keep the integration the
+// design depends on from drifting quietly.
+{
+  const nsrcW = src.replace(/\r\n/g, "\n");
+  const bodyOf = (decl, endMark) => { const i = nsrcW.indexOf(decl); if (i < 0) return ""; const e = nsrcW.indexOf(endMark, i); return e < 0 ? "" : nsrcW.slice(i, e); };
+  check("SE-W the schedule mirror has ONE writer: setSchedule( appears only inside commitSchedule, and scheduleRef.current is assigned only there (no passive-effect writer); it asks the engine to report, in a microtask (17/n P1 — executed in SE-X9)",
+    count("setSchedule(") === 1 && count("scheduleRef.current =") === 1 && count("const commitSchedule = useCallback((next) => { scheduleRef.current = next; setSchedule(next); Promise.resolve().then(() => { if (schedSyncRef.current) schedSyncRef.current.report(); }); }, []);") === 1,
+    `setSchedule( ×${count("setSchedule(")}, scheduleRef.current = ×${count("scheduleRef.current =")}`);
+  check("SE-W one engine per session (created once, in a ref), with reads that fall back to anon (and go as anon once the server refused the token — executed in SE62 / SE-H) and writes that never do",
+    count("createSchedSync({") === 1 && count("if (!schedSyncRef.current) schedSyncRef.current = createSchedSync({") === 1
+      && count("writeHeaders: () => dbAuthHeaders(),") === 1 && count("readHeaders: () => dbReadHeaders(),") === 1 && count("anonHeaders: () => dbHeaders,") === 1);
+  // The edit gate sits at the START of every user-initiated schedule action,
+  // before its first side effect (status PATCH, undo step, schedule write).
+  const gateBefore = (decl, endMark, firstEffect) => { const b = bodyOf(decl, endMark); const g = b.indexOf("schedEditable("), f = b.indexOf(firstEffect); return g !== -1 && f !== -1 && g < f; };
+  check("SE-W the edit gate (load + sign-in) runs before the first side effect in: undo, trade accept, one-way swap, two-way swap, week editor, accept-preview, generate",
+    gateBefore("  const undoLastChange = () => {", "\n  };\n", "commitSchedule(")
+      && gateBefore("  const acceptTradeRequest = useCallback(", "\n  }, [", "Fail-closed status write")
+      && gateBefore("  const swapShift = (mStr, shift, newId, expectOldId) => {", "\n  };\n", "pushUndo();")
+      && gateBefore("  const executeTwoWaySwap = useCallback(", "\n  }, [", "pushUndo();")
+      && gateBefore("  const saveWeekEdits = useCallback(", "\n  }, [", "pushUndo();")
+      && gateBefore("  const acceptPreview = async () => {", "\n  };\n", "snapshots.capture(")
+      && gateBefore("  const doGenerate = async (preview) => {", "\n  };\n", "buildPrefs()")
+      && gateBefore("  const finishGenerate = (result, preview, clickSig, clickLocks, genEpoch) => {", "\n  };\n", "publishingRef.current = true;")
+      // 14/n (all executed in SE-G): clear, factory reset and restore before anything is asked, read or written; the four backup / fierce mark handlers before their set changes
+      && gateBefore("  const clearSchedule = async () => {", "\n  };\n", "confirm(")
+      && gateBefore("  const resetAllData = async () => {", "\n  };\n", "prompt(")
+      && gateBefore("  const restoreSnapshot = async (snap) => {", "\n  };\n", "setRestoreBusyId(")
+      && gateBefore("  const markBackupWeek = () => {", "\n  };\n", "setBackupMondaySet(") && gateBefore("  const unmarkBackupWeek = (m) => {", "\n  };\n", "setBackupMondaySet(")
+      && gateBefore("  const markFierceBackupWeek = () => {", "\n  };\n", "setFierceBackupSet(") && gateBefore("  const unmarkFierceBackupWeek = (m) => {", "\n  };\n", "setFierceBackupSet("));
+  {
+    const fb = bodyOf("  const finishGenerate = (result, preview, clickSig, clickLocks, genEpoch) => {", "\n  };\n");
+    const snapOk = fb.indexOf("if (!snap.ok) {"), gate = fb.indexOf('if (!schedEditable("job")) { setSaveStatus(""); return "refused"; }'), stale = fb.indexOf("changedSince(Object.keys(result), genEpoch)"), commit = fb.indexOf("await genCommitRef.current(result);");
+    check("SE-W Generate & Publish re-checks AFTER the snapshot's await and before the commit: the edit gate (with the job gate — 19/n P7, executed in SE-X15), then the click's engine epoch",
+      snapOk > 0 && gate > snapOk && stale > gate && commit > stale, JSON.stringify({ snapOk, gate, stale, commit }));
+  }
+  check("SE-W stale intents carry preconditions: trade accept + both swaps check the slot holder; preview / publish / editor check the engine epoch",
+    count("This trade is out of date") === 1 && count("This swap is out of date") === 2
+      && count("changedSince(Object.keys(previewSchedule), previewEpochRef.current)") === 1 && count("changedSince(Object.keys(weeks), previewEpochRef.current)") === 1 && count("changedSince(Object.keys(result), genEpoch)") === 1
+      // the editor: its epoch through the pure merge (14/n — executed in AB2 and SE-G), the save's and the note's
+      && count("mergeEditorEdits({ week: editWeekModal.openWeek, apps: editWeekModal.appsBase || {} }, draft, scheduleRef.current[mondayStr], editWeekModal.openEpoch || 0, schedSyncRef.current.epochOf(mondayStr),") === 1
+      && count("mergeEditorEdits({ week: editWeekModal.openWeek, apps: ") === 2 && count("swapShift(swapTarget.mondayStr, swapTarget.shift, s.candidateId, swapTarget.surgeonId)") === 1
+      && count("previewEpochRef.current = genEpoch;") === 3 && count("previewEpochRef.current = schedSyncRef.current.epochNow();") === 1 && count("return genFinishRef.current(result, preview, clickSig, pendingLocks, genEpoch);") === 1);
+  check("SE-W unload: the weeks keepalive comes ONLY from the engine (CAS, no insert, no delete) and only on pagehide/beforeunload; hide pushes through the chain",
+    count("keepaliveRequests()") === 1 && count('if (source === "visibilitychange") { schedSyncRef.current.push(); return; }') === 1 && count("on_conflict=week_monday") === 0);
+  check("SE-W reload / sign-out guards: every reload button (update banner, Settings → Refresh, the stale-removal Reload — A14) asks while weeks are unsaved; sign-out asks, then resets the engine (mirror too), undo and editor BEFORE signing out",
+    count("confirmReloadWithPending(") === 3 && count("const reloadToResync = () => { if (confirmReloadWithPending()) window.location.reload(); };") === 1 // reloadToResync is executed in SE-A
+      && /searchRef\.current = null; setSearching\(null\); setSearchStats\(null\); setPreviewSchedule\(null\); setShowPreview\(false\);[^\n]*\n\s*schedSyncRef\.current\.reset\(\);/.test(nsrcW)
+      // the boundary is ONE helper, crossed by sign-out (before signing out) and by a re-auth that lands on a different account (both executed in SE-R)
+      // (17/n P4: the boundary's last line clears the scheduler flag and disarms the setup autosave — executed in SE-X11 / SE-R)
+      && /const sessionBoundary = \(\) => \{\n[^\n]*\n\s*schedSyncRef\.current\.reset\(\);\s*setScheduleHistory\(\[\]\); setEditWeekModal\(null\);[^\n]*\n    setIsScheduler\(false\); setupReadRef\.current = false; lastSyncRef\.current = null;\n  \};\n  const handleSignOut = async \(\) => \{[\s\S]{0,900}\n    sessionBoundary\(\);\n    await auth\.signOut\(\);/.test(nsrcW)
+      && count("sessionBoundary();") === 2);
+  check("SE-W Undo is all-or-nothing through the engine's undoPlan (each step carries its epoch)",
+    count("const plan = schedSyncRef.current.undoPlan(step.sched, step.epoch);") === 1 && count("epoch: schedSyncRef.current ? schedSyncRef.current.epochNow() : 0") === 1
+      && count("const pushUndo = useCallback((counts) => {") === 1 && count("pushUndo({ prior: priorCounts, y1: year1Counts })") === 1 && (src.match(/pushUndo\([a-z]/g) || []).length === 0);
+  check("SE-W every snapshot capture passes minWeeks (an RLS-empty schedule read fails the capture): clear, regenerate, reset, Accept & Publish's backup (A14), the periodic one (A15 — executed in SE-C), and restore's before_restore through its options",
+    count("minWeeks: Object.keys(schedSyncRef.current.knownSchedule()).length ? 1 : 0") === 6
+      && count("{ minWeeks: Object.keys(schedSyncRef.current.knownSchedule()).length ? 1 : 0 }") === 5 // clear, regenerate ×2, reset, periodic
+      && count('snapshots.captureIfStale("periodic_session", 6, { minWeeks: Object.keys(schedSyncRef.current.knownSchedule()).length ? 1 : 0 });') === 1
+      && count("        minWeeks: Object.keys(schedSyncRef.current.knownSchedule()).length ? 1 : 0,") === 1); // restore's options, beside its confirm
+}
+
+// SE-A. Sync v2 app wiring, EXECUTED (9/n). The real component code, sliced
+// by its anchors and run with stubs — and, for the header, the real engine on
+// the emulated table: the stale-removal line (A14(1)), the resume hook
+// (A5(b)), the soft stale-token warning (A7(3)) and the swap refusals that
+// drop the stale suggestions (A13). JSX can't run here (no Babel in CI), so
+// the markup is pinned and the decisions it renders are executed.
+console.log("\nSE-A. sync v2 app wiring, executed");
+const watchA = harnessWatch(), conA0 = sandbox.console;
+sandbox.console = watchA.console; // SE-A slices run in the shared sandbox: its console records while SE-A runs (A17(c))
+await (async () => {
+  const nsrcA = src.replace(/\r\n/g, "\n");
+  // The text after `start` (exactly one occurrence) up to the first `end` after it.
+  const after = (start, end) => { const i = nsrcA.indexOf(start); if (i < 0 || nsrcA.indexOf(start, i + 1) !== -1) return null; const e = nsrcA.indexOf(end, i + start.length); return e < 0 ? null : nsrcA.slice(i + start.length, e); };
+  const fnIn = (names, code) => { try { return vm.runInContext(`(function (env) { const { ${names} } = env; return (${code}); })`, sandbox); } catch (ex) { return null; } };
+  const se = require("./sync-engine-se.js");
+  const { createFakeWeeksTable } = require("./fake-weeks-table.js");
+  const internalA = [];
+
+  // ── A14(1): the stale-removal header line ──
+  // The component's status state starts as EXACTLY the engine's own first
+  // report (onStatus dedupes by JSON, so the keys AND their order matter).
+  const defSrc = after("  const [schedSync, setSchedSync] = useState(", ");\n");
+  let def = null; try { def = defSrc ? vm.runInContext("(" + defSrc + ")", sandbox) : null; } catch (ex) { def = null; }
+  let createSchedSync = null; try { createSchedSync = se.compileEngine(se.extractEngine(src)); } catch (ex) { createSchedSync = null; }
+  const engineFor = (o) => createSchedSync(Object.assign({ getState: () => ({}), commit: () => {}, fetch: () => new Promise(() => {}), url: "https://x.supabase.co",
+    writeHeaders: () => ({}), readHeaders: () => ({}), anonHeaders: () => ({}), canWrite: () => true, token: () => "TOK", userId: () => "p1", now: () => new Date().toISOString(), nowMs: () => Date.now(),
+    onStatus: () => {}, onToast: () => {}, onWipeBlocked: () => {}, onInternalError: (e) => internalA.push(String(e && e.message || e)), log: watchA.log }, o || {}));
+  if (!def || !createSchedSync) { check("SE-A the schedSync default and the engine are extractable", false, JSON.stringify({ def: !!def, engine: !!createSchedSync })); return; }
+  check("SE-A A14(1) the header's schedSync state starts as EXACTLY the engine's own first status — staleRemovals: 0 included (same keys, same order)",
+    JSON.stringify(def) === JSON.stringify(engineFor().status()), JSON.stringify({ def, engine: engineFor().status() }));
+
+  // The header's decisions (the reload helper + the two flags), executed.
+  const hdrSrc = after("  const reloadToResync = ", "\n  // The amber");
+  // 13/n: the block asks the module-scope schedSyncLine (A16's one line) — the real one, extracted.
+  const sslSrc = (() => { const a = nsrcA.indexOf("function schedSyncLine(st, o) {"); const b = a < 0 ? -1 : nsrcA.indexOf("\n}\n", a); return a < 0 || b < 0 ? null : nsrcA.slice(a, b + 2); })();
+  let sslA = null; try { sslA = sslSrc ? vm.runInContext("(" + sslSrc + ")", sandbox) : null; } catch (ex) { sslA = null; }
+  const hdrFn = hdrSrc && sslA ? fnIn("loaded, saveStatus, schedSync, confirmReloadWithPending, window, isPublicMode, schedSyncLine", `(() => { const reloadToResync = ${hdrSrc}\n return { reloadToResync, schedStaleShown, schedSyncedShown }; })()`) : null;
+  if (!hdrFn) { check("SE-A the header's sync decisions are extractable", false, "anchor / compile"); return; }
+  const HS = (st, o = {}) => hdrFn({ loaded: o.loaded !== false, saveStatus: o.saveStatus || "", schedSync: st, confirmReloadWithPending: o.confirm || (() => true), window: o.window || { location: { reload: () => {} } }, isPublicMode: !!o.pub, schedSyncLine: sslA });
+  const clean = Object.assign({}, def, { seeded: true });
+  const H = (extra, o) => HS(Object.assign({}, clean, extra), o);
+  check("SE-A A14(1) the header decides: staleRemovals > 0 → the 'fewer weeks' line and NOT \"☁ Synced\"; 0 and clean → Synced alone; nothing before the load; Synced still waits for pending / busy / the blob's status",
+    H({ staleRemovals: 6 }).schedStaleShown === true && H({ staleRemovals: 6 }).schedSyncedShown === false && H({}).schedStaleShown === false && H({}).schedSyncedShown === true
+      && H({ staleRemovals: 6 }, { loaded: false }).schedStaleShown === false && H({ pending: 1 }).schedSyncedShown === false && H({ busy: "clear" }).schedSyncedShown === false && H({}, { saveStatus: "Saved" }).schedSyncedShown === false,
+    JSON.stringify([H({ staleRemovals: 6 }), H({})]));
+  // …and over a real lifecycle: the REAL engine on the emulated table, the
+  // header fed by onStatus as the component's state is — a scheduler session
+  // and an OR board (read-only, no token), while another device clears.
+  {
+    let ms = Date.UTC(2026, 9, 14, 12, 0, 0);
+    const clock = () => new Date(ms += 1000).toISOString();
+    const WK = ["2026-10-12", "2026-10-19", "2026-10-26", "2026-11-02", "2026-11-09", "2026-11-16"];
+    const wkA = (dc) => ({ dayCall: dc, nights: { mon: "s2", tue: "s3", wed: "s4", thu: "s5", wknd: "s6" }, off: "s1" });
+    const t = createFakeWeeksTable({ baseUrl: "https://x.supabase.co", anonKey: "ANON", users: { TOK_A: "user-a", TOK_B: "user-b" }, clock,
+      rows: WK.map((k, i) => ({ week_monday: k, data: wkA("s" + (i + 1)), version: 2, updated_by: "user-a", updated_at: "2026-10-01T08:00:00.000Z" })) });
+    const mkS = (tok, canWrite) => {
+      const s = { mirror: {}, st: def, toasts: [] };
+      const h = () => ({ apikey: "ANON", Authorization: "Bearer " + (tok || "ANON") });
+      s.engine = engineFor({ getState: () => s.mirror, commit: (n) => { s.mirror = n; }, fetch: (u, i) => t.fetch(u, i), writeHeaders: h, readHeaders: h,
+        canWrite: () => canWrite, token: () => tok, now: clock, nowMs: () => ms, onStatus: (st) => { s.st = st; }, onToast: (m) => s.toasts.push(String(m)) });
+      return s;
+    };
+    const A = mkS("TOK_A", true), B = mkS("TOK_B", true), OR = mkS(null, false);
+    await A.engine.load(); await B.engine.load(); await OR.engine.load();
+    const loadedB = HS(B.st), loadedOR = HS(OR.st);
+    A.mirror = {}; await A.engine.authoritative({}, true, "clear");
+    await B.engine.pull(); await OR.engine.pull();
+    const staleB = HS(B.st), staleOR = HS(OR.st), keptB = Object.keys(B.mirror).length, keptOR = Object.keys(OR.mirror).length;
+    A.mirror = {}; WK.forEach(k => { A.mirror[k] = wkA("regen"); }); await A.engine.push();
+    await B.engine.pull(); await OR.engine.pull();
+    const backB = HS(B.st), backOR = HS(OR.st);
+    check("SE-A A14(1) a real clear elsewhere: the scheduler and the OR board both show the line (not \"☁ Synced\"; 6 weeks still on screen), and both clear it once a later pull sees the weeks again",
+      !loadedB.schedStaleShown && loadedB.schedSyncedShown && !loadedOR.schedStaleShown && staleB.schedStaleShown && !staleB.schedSyncedShown && staleOR.schedStaleShown && keptB === 6 && keptOR === 6
+        && !backB.schedStaleShown && backB.schedSyncedShown && !backOR.schedStaleShown && B.mirror[WK[0]].dayCall === "regen" && OR.mirror[WK[0]].dayCall === "regen" && writesIn({ calls: t.log }).length > 0,
+      JSON.stringify({ loadedB, staleB, staleOR, backB, backOR, keptB, keptOR }));
+    check("SE-A …the OR board never wrote, no session hit an internal error, and none was told anything (no toast: a clear elsewhere is a status line, not a message)",
+      t.log.filter(e => e.method !== "GET" && /Bearer ANON/.test(JSON.stringify(e.headers || {}))).length === 0 && internalA.length === 0 && [A, B, OR].every(x => x.toasts.length === 0),
+      internalA.concat(A.toasts, B.toasts, OR.toasts).join(" | "));
+  }
+  const rl = (ok) => { const r = { asked: 0, reloads: 0 }; H({ staleRemovals: 6 }, { confirm: (b) => { r.asked++; r.arg = b; return ok; }, window: { location: { reload: () => { r.reloads++; } } } }).reloadToResync(); return r; };
+  const yes = rl(true), no = rl(false);
+  check("SE-A A14(1) its Reload goes through the reload guard (which asks only while weeks are unsaved): reloads on yes, not on no",
+    yes.asked === 1 && yes.arg === undefined && yes.reloads === 1 && no.asked === 1 && no.reloads === 0, JSON.stringify({ yes, no }));
+  {
+    const LINE = "⚠ The schedule on the server has fewer weeks than this screen — reload to resync <button onClick={reloadToResync}";
+    const pub0 = nsrcA.indexOf('isOrView ? "OR board · read-only" : "Read-only view"'), sch0 = nsrcA.indexOf("Call Schedule · Surgeons + APPs"), conn = nsrcA.indexOf("Connecting…</span>}");
+    const at1 = nsrcA.indexOf(LINE), at2 = nsrcA.indexOf(LINE, at1 + 1);
+    check("SE-A A14(1) the line is rendered in BOTH headers — the public / OR-board branch and the scheduler's — each gated by schedStaleShown, with its Reload; \"☁ Synced\" renders only through schedSyncedShown",
+      count(LINE) === 2 && count('{schedStaleShown && <span role="status"') === 2 && pub0 > 0 && at1 > pub0 && at1 < sch0 && at2 > sch0 && at2 < conn
+        && count(">☁ Synced</span>") === 1 && count("{schedSyncedShown && <span") === 1 && count("schedSync.staleRemovals") === 0 && count('["stale", st.staleRemovals > 0, st.staleRemovals]') === 2, // read once per view, by schedSyncLine
+      JSON.stringify({ n: count(LINE), pub0, at1, sch0, at2, conn }));
+  }
+  {
+    const decl = (s) => nsrcA.indexOf(s), at = decl("  const schedLine = schedSyncLine(");
+    const reads = ["const isPublicMode = useMemo(", "const [loaded, setLoaded]", "const [saveStatus, setSaveStatus]", "const [authUser, setAuthUser]", "const [schedSync, setSchedSync]", "const [reauthNeeded, setReauthNeeded]", "const [staleTokenWarn, setStaleTokenWarn]", "const confirmReloadWithPending = "];
+    check("SE-A the header decisions are computed AFTER every state they read is declared (a later const would be a TDZ crash at render)",
+      at > 0 && reads.every(s => decl(s) > 0 && decl(s) < at), JSON.stringify(reads.map(s => [s, decl(s)]).concat([["flags", at]])));
+  }
+
+  // ── A5(b) + A7(3): the resume hook ──
+  const visBody = after("  useEffect(() => {\n    if (!loaded) return;\n    const onVisible = () => {", "\n  }, [loaded]);");
+  const visFx = visBody ? fnIn("loaded, document, window, schedSyncRef, auth, jwtIsFresh, schedSyncBridgeRef, setStaleTokenWarn", `() => {\n    if (!loaded) return;\n    const onVisible = () => {${visBody}\n}`) : null;
+  if (!visFx) { check("SE-A the resume / reconnect effect is extractable", false, "anchor / compile"); return; }
+  const resume = (o = {}) => {
+    const r = { calls: [], warn: [], on: {} };
+    const doc = { hidden: true, addEventListener: (ev, f) => { r.on["doc:" + ev] = f; }, removeEventListener: () => {} };
+    const win = { addEventListener: (ev, f) => { r.on["win:" + ev] = f; }, removeEventListener: () => {} };
+    visFx({ loaded: o.loaded !== false, document: doc, window: win,
+      schedSyncRef: { current: { onResume: () => { r.calls.push("onResume"); }, pull: () => { r.calls.push("pull"); return Promise.resolve({ ok: true }); } } },
+      auth: { getSession: () => (o.token ? { access_token: o.token, refresh_token: "R" } : null) },
+      jwtIsFresh: (tok) => tok === "FRESH", schedSyncBridgeRef: { current: { canWrite: o.canWrite !== false } },
+      setStaleTokenWarn: (v) => { r.warn.push(v); } })();
+    doc.hidden = !!o.hidden;
+    if (o.event === "online") { if (r.on["win:online"]) r.on["win:online"](); }
+    else if (r.on["doc:visibilitychange"]) r.on["doc:visibilitychange"]();
+    return r;
+  };
+  const vFresh = resume({ token: "FRESH" }), vStale = resume({ token: "STALE" }), vPub = resume({ token: "STALE", canWrite: false }), vNone = resume({}), vHidden = resume({ token: "STALE", hidden: true }), vOnline = resume({ token: "STALE", event: "online" }), vUnloaded = resume({ token: "STALE", loaded: false });
+  check("SE-A A5(b) visible → engine.onResume() FIRST (abort requests older than their timeout — timers froze while suspended), THEN the pull; hidden → neither",
+    vFresh.calls.join() === "onResume,pull" && vStale.calls.join() === "onResume,pull" && vHidden.calls.length === 0 && vHidden.warn.length === 0, JSON.stringify([vFresh, vHidden]));
+  check("SE-A A7(3) on resume a stored token stale by the device clock, in a view that writes → the soft warning; a fresh token clears it; no token / a public or OR view → none",
+    vStale.warn.join() === "true" && vFresh.warn.join() === "false" && vNone.warn.join() === "false" && vPub.warn.join() === "false", JSON.stringify([vStale.warn, vFresh.warn, vNone.warn, vPub.warn]));
+  check("SE-A …and it never stops the resume: the pull still runs with the warning set; reconnecting (online) just pulls; nothing is wired before the load",
+    vStale.calls.includes("pull") && vOnline.calls.join() === "pull" && vOnline.warn.length === 0 && Object.keys(vUnloaded.on).length === 0, JSON.stringify([vOnline, vUnloaded.on]));
+  check("SE-A the resume pull keeps its literal (the pull-trigger census in E2 counts it)",
+    /if \(document\.hidden\) return;\n      schedSyncRef\.current\.onResume\(\);[\s\S]{0,260}\n      schedSyncRef\.current\.pull\(\);\n    \};/.test(nsrcA) && count("schedSyncRef.current.onResume()") === 1);
+
+  // ── A7(3): the amber banner's decision, its button, and what clears it ──
+  const stSrc = after("  const staleTokenShown = ", ";\n");
+  const stFn = stSrc ? fnIn("isPublicMode, authUser, staleTokenWarn, schedSync, reauthNeeded", stSrc) : null;
+  if (!stFn) { check("SE-A the soft-warning decision is extractable", false, "anchor / compile"); return; }
+  const ST = (o) => stFn(Object.assign({ isPublicMode: false, authUser: { id: "u1" }, staleTokenWarn: true, schedSync: { authNeeded: false }, reauthNeeded: false }, o));
+  check("SE-A A7(3) the amber \"Sign in again\" shows for a signed-in writer with the warning set — and NOT while the red one shows (authNeeded / an edit refused), in a public view, or signed out",
+    ST({}) === true && ST({ schedSync: { authNeeded: true } }) === false && ST({ reauthNeeded: true }) === false && ST({ isPublicMode: true }) === false && ST({ authUser: null }) === false && ST({ staleTokenWarn: false }) === false);
+  {
+    const amber = after("      {staleTokenShown && (", "\n      )}");
+    check("SE-A A7(3) the amber banner: non-blocking (role=status, dismissible), the same reauthForSync button as the red one; the red banner's condition is unchanged",
+      !!amber && /^\n        <div role="status"/.test(amber) && amber.includes("<button onClick={reauthForSync} disabled={reauthBusy}") && amber.includes('onClick={()=>setStaleTokenWarn(false)}')
+        && count("onClick={reauthForSync}") === 2 && count("{!isPublicMode && authUser && (schedSync.authNeeded || reauthNeeded) && (") === 1, (amber || "").slice(0, 120));
+  }
+  // reauthForSync with the real reauthLanded behind it (10/n moved it from
+  // auth.getUser to auth.refreshKeep, and a failed renewal to the password
+  // sheet — every branch is executed in SE-R).
+  const raSrc = after("  const reauthForSync = ", "\n  };\n"), rlSrc = after("  const reauthLanded = ", "\n  };\n");
+  const raFn = raSrc ? fnIn("reauthBusy, setReauthBusy, auth, authUser, reauthLanded, setReauthPassword, setReauthError, setReauthSheet", raSrc + "\n  }") : null;
+  const rlFn = rlSrc ? fnIn("schedSyncRef, authUser, setReauthNeeded, setStaleTokenWarn, showToast, sessionBoundary, biometric, setBiometricEnrolled, setBiometricPending, setAuthUser, dbAuth, setUserProfile, setMySurgeon, setNeedsProfile, setIsScheduler, setReloadTrigger, pendingSaveRef, setSetupSaveNudge", rlSrc + "\n  }") : null;
+  if (!raFn || !rlFn) { check("SE-A reauthForSync and reauthLanded are extractable", false, "anchor / compile"); return; }
+  const ra = async (res) => {
+    const r = { warn: [], need: [], pulls: 0, toasts: [], sheet: [], err: [] };
+    const env = { reauthBusy: false, setReauthBusy: () => {}, authUser: { id: "u1", email: "u1@dsg.test" }, auth: { refreshKeep: async () => res },
+      setReauthNeeded: (v) => r.need.push(v), setStaleTokenWarn: (v) => r.warn.push(v), showToast: (m) => r.toasts.push(String(m)),
+      schedSyncRef: { current: { pending: () => [], report: () => {}, pull: () => { r.pulls++; } } },
+      setReauthPassword: () => {}, setReauthError: (v) => r.err.push(v), setReauthSheet: (v) => r.sheet.push(v), pendingSaveRef: { current: null }, setSetupSaveNudge: () => {} };
+    env.reauthLanded = rlFn(env);
+    await raFn(env)();
+    return r;
+  };
+  const raOk = await ra({ ok: true, user: { id: "u1" } }), raDead = await ra({ ok: false, error: "refused" }), raNet = await ra({ ok: false, error: "network" });
+  check("SE-A A7(3) \"Sign in again\" that renews the session clears BOTH banners and sends what's pending (a pull, which pushes after it); one that can't renew clears nothing (the warning stays) and opens the password sheet instead",
+    raOk.warn.join() === "false" && raOk.need.join() === "false" && raOk.pulls === 1 && raOk.sheet.length === 0
+      && raDead.warn.length === 0 && raDead.need.length === 0 && raDead.pulls === 0 && raDead.sheet.join() === "true"
+      && raNet.warn.length === 0 && raNet.pulls === 0 && raNet.sheet.join() === "true" && /reach the server/.test(raNet.err.join(" ")),
+    JSON.stringify([raOk, raDead, raNet]));
+  const geSrc = after("  const schedEditable = ", "\n  };\n");
+  const geFn = geSrc ? fnIn("schedSyncRef, showToast, setReauthNeeded, staleTokenWarn, jwtIsFresh", geSrc + "\n  }") : null;
+  if (!geFn) { check("SE-A schedEditable is extractable", false, "anchor / compile"); return; }
+  const ge = (blocked) => { const r = { toasts: 0 }; r.ok = geFn({ schedSyncRef: { current: { isSeeded: () => true, authBlocked: () => blocked } }, showToast: () => { r.toasts++; }, setReauthNeeded: () => {}, staleTokenWarn: true, jwtIsFresh: () => false })(); return r; };
+  check("SE-A A7(3) the soft warning is NOT an edit gate: with it set (the token stale by the clock) an edit is allowed; only the server's 401 (authBlocked) refuses",
+    ge(false).ok === true && ge(false).toasts === 0 && ge(true).ok === false, JSON.stringify([ge(false), ge(true)]));
+  check("SE-A A7(3) signing out (the session boundary, crossed before signing out) and a renewed sign-in both drop the soft warning",
+    count("setReauthNeeded(false); setStaleTokenWarn(false);") === 2
+      && /const sessionBoundary = \(\) => \{[\s\S]{0,400}setReauthNeeded\(false\); setStaleTokenWarn\(false\);\n    setIsScheduler\(false\); setupReadRef\.current = false; lastSyncRef\.current = null;\n  \};\n  const handleSignOut = async \(\) => \{[\s\S]{0,900}\n    sessionBoundary\(\);\n    await auth\.signOut\(\);/.test(nsrcA)
+      && /const reauthLanded = async \(user\) => \{\n[^\n]*\n[^\n]*\n      setReauthNeeded\(false\); setStaleTokenWarn\(false\);/.test(nsrcA));
+
+  // ── A13: an out-of-date swap also drops the stale suggestions ──
+  const MON = "2030-01-07", MON2 = "2030-01-14";
+  const mkCur = (tue, wed2) => ({ [MON]: { dayCall: "s3", nights: { mon: "s3", tue, wed: "s2", thu: "s2", wknd: "s3" }, off: null }, [MON2]: { dayCall: "s2", nights: { mon: "s2", tue: "s2", wed: wed2, thu: "s2", wknd: "s2" }, off: null } });
+  const swapEnv = (rec, cur) => ({ schedEditable: () => true, schedule: cur, scheduleRef: { current: cur }, showToast: (m) => rec.toasts.push(String(m)),
+    silvisActive: false, silvisBlock: () => null, silvisRefuse: () => false, pushUndo: () => { rec.undo++; }, updateSchedule: (f) => { rec.writes++; rec.next = f(cur); },
+    surgeons: [{ id: "s1" }, { id: "s2" }, { id: "s3" }], setEditShift: () => {}, setEditingWeek: () => {},
+    setSwapSuggestions: (v) => rec.cleared.push("suggestions:" + v), setSwapTarget: (v) => rec.cleared.push("target:" + v),
+    sMap: { s1: { name: "AAA" }, s2: { name: "BBB" }, s3: { name: "CCC" } }, schedulerAdminIds: [], addNotification: () => { rec.notes++; }, sendEmailNotif: () => { rec.emails++; } });
+  const newRec = () => ({ toasts: [], undo: 0, writes: 0, notes: 0, emails: 0, cleared: [] });
+  const SWAP_ENV = "schedEditable, schedule, scheduleRef, showToast, silvisActive, silvisBlock, silvisRefuse, pushUndo, updateSchedule, surgeons, setEditShift, setEditingWeek, setSwapSuggestions, setSwapTarget, sMap, schedulerAdminIds, addNotification, sendEmailNotif";
+  const ssSrc = after("  const swapShift = ", "\n  };\n");
+  const ssFn = ssSrc ? fnIn(SWAP_ENV, ssSrc + "\n  }") : null;
+  const twSrc = after("  const executeTwoWaySwap = useCallback(", "\n  }, [surgeons, sMap, addNotification, sendEmailNotif, schedulerAdminIds, silvisActive, silvisBlock, silvisRefuse]);");
+  const twFn = twSrc ? fnIn(SWAP_ENV, twSrc + "\n  }") : null;
+  if (!ssFn || !twFn) { check("SE-A swapShift and executeTwoWaySwap are extractable", false, JSON.stringify({ ssFn: !!ssFn, twFn: !!twFn })); return; }
+  const oneWay = (holder) => { const rec = newRec(); ssFn(swapEnv(rec, mkCur(holder, "s3")))(MON, "tue", "s3", "s1"); return rec; };
+  const twoWay = (holder, ret) => { const rec = newRec(); twFn(swapEnv(rec, mkCur(holder, ret)))(MON, "tue", "s1", "s3", MON2, "wed"); return rec; };
+  const refusedClean = (r) => /This swap is out of date/.test(r.toasts.join(" ")) && r.cleared.join() === "suggestions:null,target:null" && r.undo === 0 && r.writes === 0 && r.notes === 0 && r.emails === 0;
+  const owStale = oneWay("s2"), owOk = oneWay("s1"), twStale = twoWay("s2", "s3"), twRet = twoWay("s1", "s2"), twOk = twoWay("s1", "s3");
+  check("SE-A A13 an out-of-date one-way swap (the slot no longer holds the surgeon it was suggested for) → refused, zero writes / undo / notices, AND the stale suggestions + target are cleared",
+    refusedClean(owStale), JSON.stringify(owStale));
+  check("SE-A A13 an out-of-date two-way swap (target holder or return holder changed) → refused, zero writes / undo / notices, AND the suggestions + target are cleared",
+    refusedClean(twStale) && refusedClean(twRet), JSON.stringify([twStale, twRet]));
+  check("SE-A A13 positive controls: a current one-way and two-way swap still land (one write, one undo step, the notices) and clear the suggestions as before",
+    owOk.writes === 1 && owOk.undo === 1 && owOk.notes === 1 && owOk.emails === 1 && owOk.next[MON].nights.tue === "s3" && owOk.cleared.join() === "suggestions:null,target:null" && owOk.toasts.length === 0
+      && twOk.writes === 1 && twOk.undo === 1 && twOk.notes === 1 && twOk.emails === 1 && twOk.next[MON].nights.tue === "s3" && twOk.next[MON2].nights.wed === "s1" && twOk.cleared.join() === "suggestions:null,target:null" && twOk.toasts.length === 0,
+    JSON.stringify([owOk, twOk].map(r => ({ w: r.writes, u: r.undo, n: r.notes, c: r.cleared, t: r.toasts }))));
+  check("SE-A A17(c) no unexpected error in any run: no console.error from the sliced code, no internal or caught callback error in an engine", watchA.unexpected().length === 0 && internalA.length === 0, watchA.unexpected().concat(internalA).slice(0, 3).join(" | "));
+})().catch(ex => check("SE-A harness ran without crashing", false, String(ex && ex.stack || ex).split("\n").slice(0, 3).join(" | ")));
+sandbox.console = conA0;
+
+// SE-R. Sync v2 "Sign in again" (10/n, A7(2)), EXECUTED.
+//  - config.js's REAL auth, loaded in its own context on a stubbed fetch and
+//    an in-memory localStorage: refreshKeep keeps the stored session on
+//    every failure (getUser / _refresh clear it on the same answers — the
+//    control, which also proves this harness sees a clear), and signIn's
+//    failure paths leave it alone (A7(2): "verify that signIn's failure path
+//    leaves the stored session intact").
+//  - the component's sessionBoundary, handleSignOut, reauthLanded,
+//    reauthForSync and submitReauth, sliced by their anchors and run in a
+//    FRESH context (a free identifier throws instead of resolving to a real
+//    config.js object), wired to that auth and, for the sheet's three
+//    outcomes, to the REAL engine on the emulated table. Every setter and
+//    call lands in one ordered log; toasts and the engine's internal errors
+//    are recorded too.
+// JSX can't run here (no Babel in CI), so the sheet's markup is pinned.
+console.log("\nSE-R. sync v2 re-auth (A7(2)), executed");
+await (async () => {
+  const nsrcR = src.replace(/\r\n/g, "\n");
+  const after = (start, end) => { const i = nsrcR.indexOf(start); if (i < 0 || nsrcR.indexOf(start, i + 1) !== -1) return null; const e = nsrcR.indexOf(end, i + start.length); return e < 0 ? null : nsrcR.slice(i + start.length, e); };
+  const watchR = harnessWatch();
+  const rctx = vm.createContext({ console: watchR.console });
+  const fnR = (names, code) => { try { return vm.runInContext(`(function (env) { const { ${names} } = env; return (${code}); })`, rctx); } catch (ex) { return null; } };
+  const se = require("./sync-engine-se.js");
+  const { createFakeWeeksTable } = require("./fake-weeks-table.js");
+
+  // ── config.js's auth, for real ──
+  const KEYS = ["dsg-auth-token", "dsg-auth-refresh"];
+  const SESS = { "dsg-auth-token": "TOK_OLD", "dsg-auth-refresh": "REF_OLD" };
+  const mkAuth = (store) => {
+    const ls = new Map(Object.entries(store || {})), calls = [];
+    let route = () => { throw new Error("no auth route installed"); };
+    const g = { console: watchR.console, window: {}, document: undefined, navigator: { userAgent: "node-test" }, setTimeout, clearTimeout,
+      localStorage: { getItem: (k) => (ls.has(k) ? ls.get(k) : null), setItem: (k, v) => { ls.set(k, String(v)); }, removeItem: (k) => { ls.delete(k); } },
+      fetch: async (url, init) => { calls.push({ url: String(url), method: (init && init.method) || "GET", body: init && init.body }); return route(String(url)); } };
+    g.globalThis = g;
+    vm.createContext(g);
+    for (const f of ["helpers.js", "config.js"]) vm.runInContext(fs.readFileSync(path.join(ROOT, f), "utf8"), g, { filename: f });
+    return { auth: vm.runInContext("auth", g), ls, calls, on: (fn) => { route = fn; } };
+  };
+  const resp = (status, json) => ({ ok: status >= 200 && status < 300, status, json: async () => json, text: async () => JSON.stringify(json) });
+  const rt = (table) => (url) => { for (const [k, v] of table) if (url.includes(k)) return v; throw new Error("unrouted auth request: " + url); };
+  const offline = () => { throw new TypeError("Failed to fetch"); };
+  const REFRESH = "/auth/v1/token?grant_type=refresh_token", PASSWORD = "/auth/v1/token?grant_type=password";
+  const refused = rt([[REFRESH, resp(400, { error: "invalid_grant", error_description: "Invalid Refresh Token: Already Used" })], ["/auth/v1/user", resp(403, { msg: "invalid JWT" })]]);
+  const kept = (A) => A.ls.get(KEYS[0]) === "TOK_OLD" && A.ls.get(KEYS[1]) === "REF_OLD";
+  const gone = (A) => !A.ls.has(KEYS[0]) && !A.ls.has(KEYS[1]);
+  const UA = { id: "auth-a", email: "a@dsg.test" };
+  {
+    const A1 = mkAuth(SESS); A1.on(refused);
+    const r1 = typeof A1.auth.refreshKeep === "function" ? await A1.auth.refreshKeep() : null;
+    const A2 = mkAuth(SESS); A2.on(offline);
+    const r2 = r1 ? await A2.auth.refreshKeep() : null;
+    check("SE-R config.js auth.refreshKeep: a REFUSED refresh (400) and a NETWORK error both report failure and leave the stored session exactly as it was (one refresh request, with the stored refresh token)",
+      !!r1 && r1.ok === false && r1.error === "refused" && kept(A1) && A1.calls.length === 1 && A1.calls[0].method === "POST" && A1.calls[0].url.includes(REFRESH) && JSON.parse(A1.calls[0].body).refresh_token === "REF_OLD"
+        && !!r2 && r2.ok === false && r2.error === "network" && kept(A2),
+      JSON.stringify({ r1, r2, ls1: [...A1.ls], ls2: [...A2.ls], calls: A1.calls.map(c => c.url) }));
+    if (!r1) return;
+    const A3 = mkAuth(SESS); A3.on(rt([[REFRESH, resp(200, { access_token: "TOK_NEW", refresh_token: "REF_NEW", user: UA })]]));
+    const r3 = await A3.auth.refreshKeep();
+    const A4 = mkAuth({}); A4.on(offline);
+    const r4 = await A4.auth.refreshKeep();
+    check("SE-R …a renewed refresh stores the new session and returns its user; with no stored session it sends nothing",
+      r3.ok === true && !!r3.user && r3.user.id === "auth-a" && A3.ls.get(KEYS[0]) === "TOK_NEW" && A3.ls.get(KEYS[1]) === "REF_NEW" && r4.ok === false && r4.error === "no-session" && A4.calls.length === 0,
+      JSON.stringify({ r3, r4, ls3: [...A3.ls] }));
+    // The control: the refresh behind auth.getUser() — what "Sign in again"
+    // ran before 10/n — CLEARS the stored session on the same answers.
+    const C1 = mkAuth(SESS); C1.on(refused);
+    const c1 = await C1.auth.getUser();
+    const C2 = mkAuth(SESS); C2.on(offline);
+    const c2 = await C2.auth._refresh("REF_OLD");
+    check("SE-R control: auth.getUser() and _refresh CLEAR the stored session on the same refused / failed refresh (why the re-auth no longer uses them; and this harness sees a clear)",
+      !c1.user && gone(C1) && !c2.user && gone(C2), JSON.stringify({ c1, ls1: [...C1.ls], ls2: [...C2.ls] }));
+    const S1 = mkAuth(SESS); S1.on(rt([[PASSWORD, resp(400, { error: "invalid_grant", error_description: "Invalid login credentials" })]]));
+    const s1 = await S1.auth.signIn("a@dsg.test", "wrong");
+    const S2 = mkAuth(SESS); S2.on(offline);
+    let s2threw = false; try { await S2.auth.signIn("a@dsg.test", "pw"); } catch (e) { s2threw = true; }
+    check("SE-R A7(2) signIn's failure paths leave the stored session intact: a wrong password returns the error (nothing stored or cleared); offline it throws (the sheet catches it), nothing cleared",
+      s1.user === null && s1.error === "Invalid login credentials" && kept(S1) && s2threw && kept(S2), JSON.stringify({ s1, ls1: [...S1.ls], ls2: [...S2.ls] }));
+  }
+
+  // ── the component's re-auth, for real ──
+  const sbSrc = after("  const sessionBoundary = ", "\n  };\n"), soSrc = after("  const handleSignOut = ", "\n  };\n"),
+    rlSrc = after("  const reauthLanded = ", "\n  };\n"), raSrc = after("  const reauthForSync = ", "\n  };\n"), smSrc = after("  const submitReauth = ", "\n  };\n");
+  const sbFn = sbSrc && fnR("searchRef, setSearching, setSearchStats, setPreviewSchedule, setShowPreview, schedSyncRef, setScheduleHistory, setEditWeekModal, setReauthNeeded, setStaleTokenWarn, setIsScheduler, setupReadRef, lastSyncRef, sessionEpochRef, forgetDayOffs", sbSrc + "\n  }"); // (23/n: + the day-off forget — review r6 fix-3)
+  const soFn = soSrc && fnR("schedSyncRef, confirm, sessionBoundary, auth, biometric, setAuthUser, setUserProfile, setNeedsProfile, setMySurgeon, setBiometricEnrolled, setBiometricPending", soSrc + "\n  }");
+  const rlFn = rlSrc && fnR("schedSyncRef, authUser, setReauthNeeded, setStaleTokenWarn, showToast, sessionBoundary, biometric, setBiometricEnrolled, setBiometricPending, setAuthUser, dbAuth, setUserProfile, setMySurgeon, setNeedsProfile, setIsScheduler, setReloadTrigger, handleSignOut, auth, pendingSaveRef, setSetupSaveNudge", rlSrc + "\n  }");
+  const raFn = raSrc && fnR("reauthBusy, setReauthBusy, auth, authUser, reauthLanded, setReauthPassword, setReauthError, setReauthSheet", raSrc + "\n  }");
+  const smFn = smSrc && fnR("reauthBusy, setReauthBusy, authUser, reauthPassword, setReauthError, auth, setReauthSheet, setReauthPassword, reauthLanded", smSrc + "\n  }");
+  if (!sbFn || !soFn || !rlFn || !raFn || !smFn) { check("SE-R the re-auth wiring is extractable (sessionBoundary, handleSignOut, reauthLanded, reauthForSync, submitReauth)", false, JSON.stringify({ sbFn: !!sbFn, soFn: !!soFn, rlFn: !!rlFn, raFn: !!raFn, smFn: !!smFn })); return; }
+  const SETTERS = ["setSearching", "setSearchStats", "setPreviewSchedule", "setShowPreview", "setScheduleHistory", "setEditWeekModal", "setReauthNeeded", "setStaleTokenWarn",
+    "setAuthUser", "setUserProfile", "setNeedsProfile", "setMySurgeon", "setBiometricEnrolled", "setBiometricPending", "setIsScheduler", "setReloadTrigger",
+    "setReauthBusy", "setReauthPassword", "setReauthError", "setReauthSheet", "setSetupSaveNudge"];
+  // One component instance: every setter and call it makes, in order, in w.log.
+  const world = (o) => {
+    const w = { log: [], toasts: [], bumped: null, threw: null };
+    const env = {};
+    SETTERS.forEach(n => { env[n] = (v) => { w.log.push(n + ":" + (typeof v === "function" ? "fn" : JSON.stringify(v === undefined ? null : v))); if (n === "setReloadTrigger" && typeof v === "function") w.bumped = v(0); }; });
+    const eng = o.engine;
+    env.schedSyncRef = { current: Object.assign({}, eng, {
+      pull: () => { w.log.push("pull"); return eng.pull(); }, push: () => { w.log.push("push"); return eng.push(); },
+      reset: () => { w.log.push("reset"); return eng.reset(); }, report: () => { w.log.push("report"); return eng.report(); } }) };
+    env.searchRef = { current: { purpose: "search" } };
+    env.confirm = () => { w.log.push("confirm"); return o.confirm !== false; };
+    env.showToast = (m, tone) => { w.toasts.push([String(m), tone]); };
+    env.biometric = { unenroll: () => { w.log.push("biometric.unenroll"); } };
+    env.dbAuth = { getProfile: async (id) => { w.log.push("getProfile:" + id); return o.profile || null; } };
+    env.handleSignOut = async () => { w.log.push("handleSignOut"); };
+    env.auth = Object.assign(Object.create(o.auth || {}), { signOut: async () => { w.log.push("auth.signOut"); }, bindUser: (id) => { w.bound = id; } }); // (21/n: the tab's account binding — review r4 branch-4)
+    env.authUser = o.authUser === undefined ? UA : o.authUser;
+    env.reauthBusy = !!o.busy;
+    env.reauthPassword = o.password === undefined ? "pw-a" : o.password;
+    // (17/n P4) the setup autosave's arm and the blob row the boundary forgets — recorded in the log when the boundary sets them
+    env.setupReadRef = { set current(v) { w.log.push("setupReadRef:" + v); }, get current() { return true; } };
+    env.lastSyncRef = { set current(v) { w.log.push("lastSyncRef:" + JSON.stringify(v)); }, get current() { return "2026-10-01T08:00:00+00:00"; } };
+    env.pendingSaveRef = { current: o.pendingSave || null }; // (19/n P9) a setup change kept pending while signed out
+    env.forgetDayOffs = () => {}; // (23/n, review r6 fix-3: the boundary forgets the APP day-off state — SE-X25 runs the real one)
+    env.sessionEpochRef = { current: 0 }; w.epoch = env.sessionEpochRef; // (20/n, review r3) the session's identity, which the boundary moves
+    env.sessionBoundary = sbFn(env);
+    env.reauthLanded = rlFn(env);
+    w.env = env; w.signOut = soFn(env); w.reauth = raFn(env);
+    w.submit = async () => { try { await smFn(env)(); } catch (e) { w.threw = String(e && e.message || e); } };
+    return w;
+  };
+  const stubEng = (pend) => ({ pending: () => (pend || []).slice(), reset: () => Promise.resolve({ ok: true }), report: () => {}, pull: () => Promise.resolve({ ok: true }), push: () => Promise.resolve({ ok: true }) });
+  const hit = (x, m) => x === m || x.startsWith(m);
+  const seq = (log, ...marks) => { let at = -1; for (const m of marks) { const i = log.findIndex((x, j) => j > at && hit(x, m)); if (i < 0) return false; at = i; } return true; };
+  const none = (log, ...marks) => !log.some(x => marks.some(m => hit(x, m)));
+  const contig = (log, part) => { for (let i = 0; i + part.length <= log.length; i++) if (part.every((x, j) => log[i + j] === x)) return i; return -1; };
+
+  // The session boundary on its own, then sign-out around it.
+  const B = world({ engine: stubEng() }); B.env.sessionBoundary();
+  const B0 = B.log.slice();
+  check("SE-R the session boundary, executed: search / preview dropped, the engine reset (the mirror too), the undo history and the week editor cleared, both banners down; then (17/n P4) the scheduler flag cleared, the setup autosave disarmed and the blob row forgotten — in that order",
+    JSON.stringify(B0) === JSON.stringify(["setSearching:null", "setSearchStats:null", "setPreviewSchedule:null", "setShowPreview:false", "reset", "setScheduleHistory:[]", "setEditWeekModal:null", "setReauthNeeded:false", "setStaleTokenWarn:false",
+      "setIsScheduler:false", "setupReadRef:false", "lastSyncRef:null"]) && B.env.searchRef.current === null,
+    JSON.stringify(B0));
+  const O1 = world({ engine: stubEng([]) }); await O1.signOut();
+  const O2 = world({ engine: stubEng(["2026-10-12", "2026-10-19"]), confirm: false }); await O2.signOut();
+  const O3 = world({ engine: stubEng(["2026-10-12"]) }); await O3.signOut();
+  check("SE-R sign-out crosses that boundary BEFORE signing out; with weeks unsaved it asks first, and a no changes nothing",
+    contig(O1.log, B0) === 0 && O1.log.indexOf("auth.signOut") === B0.length && O1.log.includes("setAuthUser:null") && !O1.log.includes("confirm")
+      && O2.log.join() === "confirm" && O3.log[0] === "confirm" && contig(O3.log, B0) === 1 && O3.log.indexOf("auth.signOut") === B0.length + 1,
+    JSON.stringify({ O1: O1.log, O2: O2.log, O3: O3.log }));
+
+  // reauthForSync's branches, on config.js's real auth.
+  const RA = async (route, o) => { const A = mkAuth(SESS); A.on(route); const w = world(Object.assign({ engine: stubEng(), auth: A.auth }, o || {})); await w.reauth(); return { w, A }; };
+  const raRef = await RA(refused), raNet = await RA(offline), raBusy = await RA(offline, { busy: true });
+  const raSame = await RA(rt([[REFRESH, resp(200, { access_token: "TOK_NEW", refresh_token: "REF_NEW", user: UA })]]));
+  const raNoUser = await RA(rt([[REFRESH, resp(200, { access_token: "TOK_NEW", refresh_token: "REF_NEW" })]]));
+  const raOther = await RA(rt([[REFRESH, resp(200, { access_token: "TOK_B", refresh_token: "REF_B", user: { id: "auth-b", email: "b@dsg.test" } })]]), { profile: { person_id: "s5", role: "member" } });
+  const QUIET = ["setReauthNeeded", "setStaleTokenWarn", "report", "pull", "push", "reset", "setScheduleHistory", "setEditWeekModal", "setAuthUser", "setUserProfile", "setReloadTrigger", "handleSignOut", "auth.signOut", "biometric.unenroll"];
+  check("SE-R reauthForSync: a refresh that can't renew (refused, or offline) opens the password sheet and clears NOTHING — the stored session, both banners, the engine, undo, the editor — and never asks auth.getUser (which would clear it)",
+    seq(raRef.w.log, "setReauthBusy:true", 'setReauthPassword:""', 'setReauthError:""', "setReauthSheet:true", "setReauthBusy:false") && none(raRef.w.log, ...QUIET) && kept(raRef.A)
+      && raRef.A.calls.length === 1 && raRef.A.calls[0].url.includes(REFRESH)
+      && seq(raNet.w.log, "setReauthBusy:true", 'setReauthPassword:""', 'setReauthError:"Couldn', "setReauthSheet:true") && raNet.w.log.some(x => /^setReauthError:".*reach the server/.test(x)) && none(raNet.w.log, ...QUIET) && kept(raNet.A)
+      && raBusy.w.log.length === 0 && raBusy.A.calls.length === 0,
+    JSON.stringify({ ref: raRef.w.log, net: raNet.w.log, calls: raRef.A.calls.map(c => c.url) }));
+  const sameOk = (r) => seq(r.w.log, "setReauthBusy:true", "setReauthNeeded:false", "setStaleTokenWarn:false", "report", "pull", "setReauthBusy:false")
+    && none(r.w.log, "setReauthSheet", "reset", "setScheduleHistory", "setEditWeekModal", "setSearching", "setAuthUser", "setReloadTrigger", "handleSignOut", "auth.signOut", "biometric.unenroll") && r.A.ls.get(KEYS[0]) === "TOK_NEW";
+  check("SE-R reauthForSync: a renewed session as the SAME account (or an answer naming no user — a refresh token renews its own session) clears both banners, then pulls (which sends what's pending); no sheet, no boundary, no reload",
+    sameOk(raSame) && sameOk(raNoUser), JSON.stringify({ same: raSame.w.log, noUser: raNoUser.w.log }));
+  const oB = contig(raOther.w.log, B0);
+  check("SE-R reauthForSync: a renewed session that is ANOTHER account (the stored refresh token was someone else's) crosses the boundary, then takes that account in — never a sign-out",
+    oB > 0 && seq(raOther.w.log.slice(oB + B0.length), 'setAuthUser:{"id":"auth-b"', "getProfile:auth-b", 'setUserProfile:{"person_id":"s5"', "setReloadTrigger:fn") && raOther.w.bumped === 1
+      && none(raOther.w.log, "handleSignOut", "auth.signOut", "setAuthUser:null", "pull", "setReauthSheet"),
+    JSON.stringify(raOther.w.log));
+  // 17/n P4 (review r1 app-5): the roles follow the account — the boundary clears the scheduler flag FIRST, and the
+  // new account's profile sets it again (a scheduler → on; a member → stays off): never the previous account's.
+  const raSch = await RA(rt([[REFRESH, resp(200, { access_token: "TOK_B", refresh_token: "REF_B", user: { id: "auth-b", email: "b@dsg.test" } })]]), { profile: { person_id: "s5", role: "scheduler" } });
+  const roleLog = (w) => w.log.filter(x => /^setIsScheduler:/.test(x)).join();
+  check("SE-R 17/n P4 a renewed session that is ANOTHER account: the scheduler flag is cleared at the boundary, before the new profile is even asked for, and then set from it — a scheduler on (false, then true), a member left off (false, false)",
+    roleLog(raSch.w) === "setIsScheduler:false,setIsScheduler:true" && roleLog(raOther.w) === "setIsScheduler:false,setIsScheduler:false"
+      && raSch.w.log.indexOf("setIsScheduler:false") < raSch.w.log.indexOf("getProfile:auth-b") && raSch.w.log.indexOf("getProfile:auth-b") < raSch.w.log.indexOf("setIsScheduler:true"),
+    JSON.stringify({ sch: raSch.w.log, member: raOther.w.log }));
+  // 19/n P9 (review r2 regress-2): a setup change kept pending while signed out (another tab) goes out once the SAME account
+  // signs in again — the nudge (the setup autosave depends on it: none of its other deps change on a sign-in); nothing
+  // pending: no nudge; a renewal that is ANOTHER account: no nudge (the boundary — not this session's to send).
+  const raPend = await RA(rt([[REFRESH, resp(200, { access_token: "TOK_NEW", refresh_token: "REF_NEW", user: UA })]]), { pendingSave: { numWeeks: 21 } });
+  const raPendOther = await RA(rt([[REFRESH, resp(200, { access_token: "TOK_B", refresh_token: "REF_B", user: { id: "auth-b", email: "b@dsg.test" } })]]), { pendingSave: { numWeeks: 21 }, profile: { person_id: "s5", role: "scheduler" } });
+  check("SE-R 19/n P9 'Sign in again' renewing the SAME account with a setup change kept pending nudges the setup autosave once — after the banners and the report, before the pull; with nothing pending, no nudge; a renewal that is ANOTHER account, no nudge",
+    sameOk(raPend) && raPend.w.log.filter(x => x === "setSetupSaveNudge:fn").length === 1 && seq(raPend.w.log, "setReauthNeeded:false", "report", "setSetupSaveNudge:fn", "pull")
+      && none(raSame.w.log, "setSetupSaveNudge") && none(raPendOther.w.log, "setSetupSaveNudge"), JSON.stringify({ pend: raPend.w.log, other: raPendOther.w.log }));
+
+  // The sheet's submit: its three outcomes, with the REAL engine on the
+  // emulated table. A signed-in session whose token the server stopped
+  // accepting after it loaded: an edit made since is pending (auth-needed),
+  // and a peer changed another week meanwhile.
+  let createSchedSyncR = null; try { createSchedSyncR = se.compileEngine(se.extractEngine(src)); } catch (ex) { createSchedSyncR = null; }
+  if (!createSchedSyncR) { check("SE-R the engine is extractable", false, "anchor / compile"); return; }
+  const WKR = ["2026-10-12", "2026-10-19", "2026-10-26"];
+  const wkR = (dc) => ({ dayCall: dc, nights: { mon: "s2", tue: "s3", wed: "s4", thu: "s5", wknd: "s6" }, off: "s1" });
+  let msR = Date.UTC(2026, 9, 14, 12, 0, 0);
+  const clockR = () => new Date(msR += 1000).toISOString();
+  const internalR = [];
+  const expired = async () => {
+    const t = createFakeWeeksTable({ baseUrl: "https://x.supabase.co", anonKey: "ANON", users: { TOK_OLD: "user-a", TOK_A2: "user-a", TOK_B: "user-b" }, clock: clockR,
+      rows: WKR.map((k, i) => ({ week_monday: k, data: wkR("s" + (i + 1)), version: 2, updated_by: "user-a", updated_at: "2026-10-01T08:00:00.000Z" })) });
+    const A = mkAuth(SESS);
+    const s = { mirror: {}, st: null, toasts: [] };
+    const anon = { apikey: "ANON", Authorization: "Bearer ANON" };
+    const tok = () => (A.auth.getSession() || {}).access_token || null; // the app's token(): whatever the stored session holds
+    s.engine = createSchedSyncR({ getState: () => s.mirror, commit: (n) => { s.mirror = n; }, fetch: (u, i) => t.fetch(u, i), url: "https://x.supabase.co",
+      writeHeaders: () => (tok() ? { apikey: "ANON", Authorization: "Bearer " + tok() } : anon),
+      readHeaders: () => anon, // dbReadHeaders: anon once the token is stale (the table is anon-readable)
+      anonHeaders: () => anon, // dbHeaders: reads once the server refused the token
+      canWrite: () => true, token: tok, userId: () => "s1", now: clockR, nowMs: () => msR,
+      onStatus: (st) => { s.st = st; }, onToast: (m) => s.toasts.push(String(m)), onWipeBlocked: () => {}, onInternalError: (e) => internalR.push(String(e && e.message || e)), log: watchR.log });
+    await s.engine.load();
+    t.control.expiredTokens.add("TOK_OLD");
+    s.mirror = Object.assign({}, s.mirror, { [WKR[0]]: wkR("mine") });
+    await s.engine.push();
+    const peer = t.get(WKR[1]);
+    t.put(Object.assign({}, peer, { data: wkR("peer"), version: peer.version + 1, updated_by: "user-p", updated_at: "2026-10-14T11:00:00+00:00" }));
+    return { t, A, s, from: t.log.length };
+  };
+  const pre = await expired();
+  check("SE-R setup: the session is auth-needed with ONE week pending (the 401 answered the old token; the edit kept on screen)",
+    pre.s.engine.authBlocked() && pre.s.engine.pending().join() === WKR[0] && pre.s.st && pre.s.st.authNeeded === true && pre.s.mirror[WKR[0]].dayCall === "mine" && pre.t.get(WKR[0]).data.dayCall === "s1",
+    JSON.stringify({ pend: pre.s.engine.pending(), st: pre.s.st && pre.s.st.authNeeded }));
+
+  // (1) an ERROR: a wrong password, or offline (signIn throws).
+  const E1 = await expired(); E1.A.on(rt([[PASSWORD, resp(400, { error: "invalid_grant", error_description: "Invalid login credentials" })]]));
+  const we1 = world({ engine: E1.s.engine, auth: E1.A.auth }); await we1.submit(); await E1.s.engine.idle();
+  const E2 = await expired(); E2.A.on(offline);
+  const we2 = world({ engine: E2.s.engine, auth: E2.A.auth }); await we2.submit(); await E2.s.engine.idle();
+  const untouched = (E, w) => kept(E.A) && E.t.log.length === E.from && E.s.engine.pending().join() === WKR[0] && E.s.engine.authBlocked() && E.s.mirror[WKR[0]].dayCall === "mine" && E.t.get(WKR[0]).data.dayCall === "s1"
+    && none(w.log, "setReauthSheet", ...QUIET);
+  check("SE-R the sheet's submit, outcome 1 — an ERROR (a wrong password; offline, where signIn throws): shown in the sheet, and NOTHING is cleared — the stored session, the sheet itself, both banners, the pending week (still pending, still on screen), the engine, undo, the editor; no request reaches the table",
+    !we1.threw && !we2.threw && we1.log.includes('setReauthError:"Invalid login credentials"') && we2.log.some(x => /^setReauthError:".*reach the server/.test(x)) && untouched(E1, we1) && untouched(E2, we2)
+      && E1.A.calls.length === 1 && E1.A.calls[0].url.includes(PASSWORD) && JSON.parse(E1.A.calls[0].body).email === UA.email && JSON.parse(E1.A.calls[0].body).password === "pw-a",
+    JSON.stringify({ we1: we1.log, we2: we2.log, threw: [we1.threw, we2.threw], pend: E1.s.engine.pending() }));
+
+  // (2) the SAME account.
+  const S = await expired(); S.A.on(rt([[PASSWORD, resp(200, { access_token: "TOK_A2", refresh_token: "REF_A2", user: UA })]]));
+  const ws = world({ engine: S.s.engine, auth: S.A.auth }); await ws.submit(); await S.s.engine.idle();
+  const sNew = S.t.log.slice(S.from), sGet = sNew.findIndex(e => e.method === "GET"), sPatch = sNew.findIndex(e => e.method === "PATCH");
+  check("SE-R the sheet's submit, outcome 2 — the SAME account (authUser.id): the sheet closes, both banners clear, THEN a pull, which adopts the peer's week and then sends the pending one under the new token, by CAS",
+    !ws.threw && seq(ws.log, "setReauthSheet:false", "setReauthNeeded:false", "setStaleTokenWarn:false", "report", "pull") && sGet === 0 && sPatch > sGet
+      && /version=eq\.2/.test(sNew[sPatch].url) && /Bearer TOK_A2/.test(JSON.stringify(sNew[sPatch].headers || {})) && S.t.get(WKR[0]).data.dayCall === "mine" && S.t.get(WKR[0]).version === 3
+      && S.s.mirror[WKR[1]].dayCall === "peer" && S.s.engine.pending().length === 0 && !S.s.engine.authBlocked() && !!S.s.st && S.s.st.authNeeded === false && S.A.ls.get(KEYS[0]) === "TOK_A2",
+    JSON.stringify({ log: ws.log, reqs: sNew.map(e => e.method + " " + e.status), st: S.s.st && S.s.st.authNeeded }));
+  check("SE-R …and it KEEPS the session: no boundary (no engine reset; undo, the editor, a search untouched), no new authUser, no reload trigger, never handleSignOut or a sign-out; the edit is still on screen",
+    none(ws.log, "reset", "setScheduleHistory", "setEditWeekModal", "setSearching", "setAuthUser", "setUserProfile", "setReloadTrigger", "handleSignOut", "auth.signOut", "biometric.unenroll") && ws.env.searchRef.current !== null
+      && S.s.mirror[WKR[0]].dayCall === "mine" && /sending what wasn't saved/.test(ws.toasts.map(x => x[0]).join(" ")),
+    JSON.stringify(ws.log));
+
+  // (3) a DIFFERENT account: the same email, another auth id.
+  const D = await expired(); D.A.on(rt([[PASSWORD, resp(200, { access_token: "TOK_B", refresh_token: "REF_B", user: { id: "auth-b", email: UA.email } })]]));
+  const wd = world({ engine: D.s.engine, auth: D.A.auth, profile: { person_id: "s5", role: "member" } }); await wd.submit(); await D.s.engine.idle();
+  const dShut = wd.log.indexOf("setReauthSheet:false"), dB = contig(wd.log, B0), dNew = D.t.log.slice(D.from);
+  check("SE-R the sheet's submit, outcome 3 — a DIFFERENT account: the sheet closes, the SAME boundary sign-out crosses (engine reset, undo, editor, search), then the new account in (authUser, its profile, the reload trigger bumped) — and never a sign-out",
+    !wd.threw && dShut >= 0 && dB > dShut && seq(wd.log.slice(dB + B0.length), 'setAuthUser:{"id":"auth-b"', "getProfile:auth-b", 'setUserProfile:{"person_id":"s5"', 'setMySurgeon:"s5"', "setIsScheduler:false", "setReloadTrigger:fn")
+      && wd.bumped === 1 && wd.log.includes("biometric.unenroll") && none(wd.log, "handleSignOut", "auth.signOut", "setAuthUser:null", "pull"),
+    JSON.stringify(wd.log));
+  check("SE-R …and nothing of the old session is sent as the new account: the pending week is dropped (never written, under any token), the screen refills from the table, and the toast says it was discarded",
+    dNew.filter(e => e.method !== "GET").length === 0 && D.t.get(WKR[0]).data.dayCall === "s1" && !!D.s.mirror[WKR[0]] && D.s.mirror[WKR[0]].dayCall === "s1" && D.s.mirror[WKR[1]].dayCall === "peer"
+      && D.s.engine.pending().length === 0 && /discarded/.test(wd.toasts.map(x => x[0]).join(" ")),
+    JSON.stringify({ reqs: dNew.map(e => e.method), toasts: wd.toasts, mirror: Object.keys(D.s.mirror) }));
+  const wn = world({ engine: stubEng(), profile: null });
+  const rn = await wn.env.reauthLanded({ id: "auth-c", email: "c@dsg.test" });
+  check("SE-R …a different account with no profile yet → the profile screen, the previous profile dropped, no reload trigger (choosing a name bumps it), as a password sign-in does",
+    rn === "switched" && seq(wn.log, 'setAuthUser:{"id":"auth-c"', "getProfile:auth-c", "setUserProfile:null", 'setMySurgeon:""', "setIsScheduler:false", "setNeedsProfile:true") && none(wn.log, "setReloadTrigger", "handleSignOut", "auth.signOut"),
+    JSON.stringify(wn.log));
+  const wp = world({ engine: stubEng(), auth: { signIn: async () => { throw new Error("signIn must not be called"); } }, password: "" }); await wp.submit();
+  check("SE-R the sheet with no password typed asks for it and calls nothing", !wp.threw && wp.log.join() === 'setReauthError:"Enter your password."', JSON.stringify([wp.log, wp.threw]));
+  check("SE-R no session hit an engine internal error, and no harness call threw", internalR.length === 0 && [we1, we2, ws, wd, wp].every(w => !w.threw), internalR.join(" | "));
+
+  // (4) "Sign in again" IN PLACE — reauthForSync through config.js's real
+  // refreshKeep — on the real engine (the §7b loop: auth.getUser could hand
+  // back the very token the server refused, so the banner never cleared).
+  // A renewed session stores a NEW access token, never the refused one
+  // (deadToken): the engine unblocks at once and the pending week lands.
+  const RF = await expired(); RF.A.on(rt([[REFRESH, resp(200, { access_token: "TOK_A2", refresh_token: "REF_A2", user: UA })]]));
+  const wr = world({ engine: RF.s.engine, auth: RF.A.auth }); await wr.reauth(); await RF.s.engine.idle();
+  const rNew = RF.t.log.slice(RF.from), rPatch = rNew.find(e => e.method === "PATCH");
+  check("SE-R reauthForSync on the real engine: refreshKeep stores a NEW token (not the refused one), so the engine is unblocked at once, both banners clear, and after the pull the pending week lands under it by CAS — no loop back to 'Sign in again'",
+    !wr.threw && RF.A.ls.get(KEYS[0]) === "TOK_A2" && !RF.s.engine.authBlocked() && !!RF.s.st && RF.s.st.authNeeded === false
+      && seq(wr.log, "setReauthBusy:true", "setReauthNeeded:false", "setStaleTokenWarn:false", "report", "pull", "setReauthBusy:false") && none(wr.log, "setReauthSheet", "reset", "setAuthUser")
+      && !!rPatch && /Bearer TOK_A2/.test(JSON.stringify(rPatch.headers || {})) && rPatch.status === 200 && RF.t.get(WKR[0]).data.dayCall === "mine" && RF.s.engine.pending().length === 0,
+    JSON.stringify({ log: wr.log, tok: RF.A.ls.get(KEYS[0]), reqs: rNew.map(e => e.method + " " + e.status) }));
+
+  // The sheet's markup (pinned — JSX can't run here).
+  {
+    const sheet = after("      {!isPublicMode && authUser && reauthSheet && (", "\n      )}");
+    const amberAt = nsrcR.indexOf("      {staleTokenShown && ("), sheetAt = nsrcR.indexOf("      {!isPublicMode && authUser && reauthSheet && ("), updAt = nsrcR.indexOf("      {updateAvailable && !paintSheet && (");
+    check("SE-R the sheet's markup: a dialog ABOVE both banners (z 10001 > 10000), rendered beside them (outside the view conditionals); the email is the signed-in account's, read-only; a password field; the form submits submitReauth; Cancel only closes it; no biometric or sign-out inside",
+      !!sheet && /^\n        <div role="dialog" aria-modal="true"[^\n]*zIndex:10001/.test(sheet) && count("zIndex:10000") === 2 && amberAt > 0 && sheetAt > amberAt && updAt > sheetAt
+        && sheet.includes('<input type="email" value={authUser.email || ""} readOnly') && sheet.includes('<input type="password" value={reauthPassword} onChange={e=>setReauthPassword(e.target.value)}')
+        && sheet.includes("<form onSubmit={e=>{ e.preventDefault(); submitReauth(); }}") && sheet.includes('onClick={()=>{ setReauthSheet(false); setReauthPassword(""); setReauthError(""); }}')
+        && !/biometric|signOut|reloadTrigger/i.test(sheet) && count("submitReauth()") === 1 && count("setReauthSheet(true)") === 1 && count("auth.refreshKeep()") === 1,
+      (sheet || "").slice(0, 160));
+  }
+  check("SE-R A17(c) no unexpected error in any run: no console.error (the component's context, config.js's auth), no caught callback error in an engine", watchR.unexpected().length === 0, watchR.unexpected().slice(0, 3).join(" | "));
+})().catch(ex => check("SE-R harness ran without crashing", false, String(ex && ex.stack || ex).split("\n").slice(0, 3).join(" | ")));
+
+// SE-K. Sync v2 trade accept, re-checked at commit (11/n, A13; A17(b)), EXECUTED.
+// The real acceptTradeRequest and the real detectCascadeChanges, sliced by
+// their anchors and run in a FRESH context (a free identifier throws instead
+// of resolving to a sandbox global), with helpers.js / config.js's real
+// fmt, shiftStartDate, SHIFT_LABELS and message composers. The status PATCH
+// is scripted: while it is in flight the mirror (scheduleRef) changes the way
+// a pull adopting someone else's week changes it — by value, from a stub, and
+// once from the REAL engine pulling the emulated table. The compensating
+// PATCH answers one row, zero rows, a 500, or throws. The render's `schedule`
+// handed in is deliberately STALE (it gives no cascades), so a read of it
+// shows as a wrong cascade set. Every request, confirm, toast, audit line,
+// console.error, trade-status setter, undo step, schedule write and notice
+// is recorded; console.error is expected only where a check names it.
+console.log("\nSE-K. sync v2 trade accept re-checked at commit (A13), executed");
+await (async () => {
+  const nsrcK = src.replace(/\r\n/g, "\n");
+  const after = (start, end) => { const i = nsrcK.indexOf(start); if (i < 0 || nsrcK.indexOf(start, i + 1) !== -1) return null; const e = nsrcK.indexOf(end, i + start.length); return e < 0 ? null : nsrcK.slice(i + start.length, e); };
+  const watchK = harnessWatch();
+  const kctx = vm.createContext({ console: watchK.console });
+  const fnK = (names, code) => { try { return vm.runInContext(`(function (env) { const { ${names} } = env; return (${code}); })`, kctx); } catch (ex) { return null; } };
+  const se = require("./sync-engine-se.js");
+  const { createFakeWeeksTable } = require("./fake-weeks-table.js");
+  const accSrc = after("  const acceptTradeRequest = useCallback(async (req) => {", "\n  }, [schedule, surgeons, pushUndo, addNotification, sendEmailNotif, detectCascadeChanges, schedulerAdminIds, silvisActive, silvisBlock, silvisRefuse]);");
+  const dcSrc = after("  const detectCascadeChanges = useCallback((sched, req) => {", "\n  }, [surgeons]);");
+  const accFn = accSrc && fnK("fmt, shiftStartDate, showToast, schedEditable, scheduleRef, detectCascadeChanges, surgeons, silvisActive, silvisBlock, silvisRefuse, confirm, fetch, SUPABASE_URL, dbAuthHeaders, console, setTradeRequests, tradeAcceptMsg, logAudit, pushUndo, updateSchedule, addNotification, sendEmailNotif, SHIFT_LABELS, schedulerAdminIds, cascadeMsg, schedule, sessionEpochRef", "async (req) => {" + accSrc + "\n  }");
+  const dcFn = dcSrc && fnK("surgeons, SHIFT_LABELS", "(sched, req) => {" + dcSrc + "\n  }");
+  if (!accFn || !dcFn) { check("SE-K acceptTradeRequest and detectCascadeChanges are extractable", false, JSON.stringify({ acc: !!accFn, dc: !!dcFn })); return; }
+  const HK = vm.runInContext("({ fmt, shiftStartDate, SHIFT_LABELS, tradeAcceptMsg, cascadeMsg })", sandbox);
+  const SURG = ["AAA", "BBB", "CCC", "DDD", "EEE", "FFF", "GGG"].map((name, i) => ({ id: "s" + (i + 1), name }));
+  const detect = dcFn({ surgeons: SURG, SHIFT_LABELS: HK.SHIFT_LABELS });
+  const W1 = "2030-01-07", W2 = "2030-01-14", W3 = "2030-01-21";
+  const wk = (dc, n, off) => ({ dayCall: dc, nights: { mon: n[0], tue: n[1], wed: n[2], thu: n[3], wknd: n[4] }, off });
+  // AAA (s1) gives BBB (s2) the service week of W1 and takes BBB's of W2.
+  // Each new service-week holder also has that week's Tue night, so the
+  // trade cascades: both Tue nights move (W1's to AAA, W2's to BBB).
+  const MIRROR = () => ({ [W1]: wk("s1", ["s3", "s2", "s4", "s5", "s6"], "s7"), [W2]: wk("s2", ["s4", "s1", "s3", "s5", "s6"], "s7"), [W3]: wk("s5", ["s1", "s2", "s3", "s4", "s6"], "s7") });
+  // The render's copy, from before someone else's two Tue nights were adopted: it gives no cascades.
+  const STALE = () => ({ [W1]: wk("s1", ["s3", "s7", "s4", "s5", "s6"], "s2"), [W2]: wk("s2", ["s4", "s7", "s3", "s5", "s6"], "s1"), [W3]: wk("s5", ["s1", "s2", "s3", "s4", "s6"], "s7") });
+  const REQ = { id: 42, from_surgeon_id: "s1", to_surgeon_id: "s2", from_surgeon_name: "AAA", to_surgeon_name: "BBB", week_monday: W1, shift_key: "dayCall", shift_label: "Service Week",
+    return_week: W2, return_shift: "dayCall", status: "pending" };
+  const sig = (cs) => JSON.stringify(cs.map(c => [c.week, c.shiftKey, c.from, c.to]));
+  const WANT = JSON.stringify([[W1, "tue", "s2", "s1"], [W2, "tue", "s1", "s2"]]);
+  const with1 = (base, k, row) => Object.assign({}, base, { [k]: row });
+  check("SE-K setup: the real detectCascadeChanges gives this trade its two cascades on the mirror and NONE on the stale render copy (so reading the render shows up)",
+    sig(detect(MIRROR(), REQ)) === WANT && detect(STALE(), REQ).length === 0, JSON.stringify([detect(MIRROR(), REQ), detect(STALE(), REQ)]));
+
+  const resp = (status, json) => ({ ok: status >= 200 && status < 300, status, json: async () => json, text: async () => JSON.stringify(json) });
+  // One component instance. o.during(ref): runs while the status PATCH is in
+  // flight. o.back: how the compensating PATCH answers (one row by default).
+  const world = (o = {}) => {
+    const w = { reqs: [], confirms: [], toasts: [], audits: [], errors: [], trades: [], undo: 0, writes: 0, notes: [], emails: [], silvis: [] };
+    const ref = o.ref || { current: MIRROR() };
+    let list = [Object.assign({}, REQ)];
+    w.ref = ref;
+    const env = {
+      fmt: HK.fmt, shiftStartDate: HK.shiftStartDate, SHIFT_LABELS: HK.SHIFT_LABELS, tradeAcceptMsg: HK.tradeAcceptMsg, cascadeMsg: HK.cascadeMsg,
+      showToast: (m, tone) => w.toasts.push([String(m), tone]), schedEditable: () => true, scheduleRef: ref, surgeons: SURG, schedule: STALE(), detectCascadeChanges: detect,
+      silvisActive: true, silvisBlock: (id, mon, sk, row) => { w.silvis.push(row === ref.current[mon] ? "mirror" : "other"); return null; }, silvisRefuse: (hits) => hits.length > 0,
+      confirm: (m) => { w.confirms.push(String(m)); return true; },
+      SUPABASE_URL: "https://x.supabase.co", dbAuthHeaders: () => ({ apikey: "ANON", Authorization: "Bearer TOK" }),
+      console: { error: (...a) => w.errors.push(a.map(String).join(" ")), warn: () => {}, log: () => {} },
+      setTradeRequests: (f) => { list = f(list); w.trades.push(list.find(r => r.id === REQ.id).status); },
+      logAudit: (action, summary, details) => w.audits.push({ action, summary, details }),
+      pushUndo: () => { w.undo++; },
+      updateSchedule: (fn) => { const cur = ref.current, next = fn(cur); if (next !== cur) { w.writes++; ref.current = next; } return next; }, // the real one's contract
+      addNotification: async (type, title, msg, data, targets) => { w.notes.push(type); },
+      sendEmailNotif: (type) => { w.emails.push(type); },
+      schedulerAdminIds: ["s9"],
+      sessionEpochRef: { current: 0 }, // (21/n: the accept's session at the tap — one session here; SE-X20 crosses one)
+      fetch: async (url, init) => {
+        const r = { url: String(url), method: (init && init.method) || "GET", headers: (init && init.headers) || {}, body: init && init.body ? JSON.parse(init.body) : null };
+        w.reqs.push(r);
+        if (/\/rest\/v1\/shift_trade_requests\?id=eq\.42&status=eq\.pending$/.test(r.url)) {
+          if (o.during) { await null; await o.during(ref); }
+          return resp(200, [Object.assign({}, REQ, { status: "accepted" })]);
+        }
+        if (/\/rest\/v1\/shift_trade_requests\?id=eq\.42&status=eq\.accepted$/.test(r.url)) {
+          if (o.back === "throw") throw new TypeError("Failed to fetch");
+          if (o.back === "http") return resp(500, { message: "upstream" });
+          return resp(200, o.back === "none" ? [] : [Object.assign({}, REQ, { status: "pending", reviewed_at: null })]);
+        }
+        throw new Error("unrouted request: " + r.method + " " + r.url);
+      },
+    };
+    w.run = async (req) => { await accFn(env)(Object.assign({}, req || REQ)); return w; };
+    return w;
+  };
+  const isAccept = (r) => !!r && r.method === "PATCH" && /status=eq\.pending$/.test(r.url) && !!r.body && r.body.status === "accepted";
+  const isBack = (r) => !!r && r.method === "PATCH" && /\/shift_trade_requests\?id=eq\.42&status=eq\.accepted$/.test(r.url) && JSON.stringify(r.body) === '{"status":"pending","reviewed_at":null}'
+    && r.headers.Prefer === "return=representation" && /Bearer TOK/.test(r.headers.Authorization || "");
+  const applied = (w, extra) => w.reqs.length === 1 && isAccept(w.reqs[0]) && w.writes === 1 && w.undo === 1 && w.trades.join() === "accepted"
+    && w.audits.length === 1 && w.audits[0].action === "trade.accept" && / \(\+2 cascade changes\)$/.test(w.audits[0].summary) && w.audits[0].details.cascades === 2
+    && w.notes.join() === "trade_accepted,schedule_changed,schedule_changed" && w.emails.length === 3 && w.toasts.length === 0 && w.errors.length === 0
+    && w.ref.current[W1].dayCall === "s2" && w.ref.current[W1].nights.tue === "s1" && w.ref.current[W2].dayCall === "s1" && w.ref.current[W2].nights.tue === "s2"
+    && w.ref.current[W1].off === "s7" && w.ref.current[W2].off === "s7" && (!extra || extra(w));
+  // Not applied: the status PATCH, then the compensating one; nothing else.
+  // (Compared canonically: a mirror the engine seeded holds jsonb key order.)
+  const canonK = (x) => JSON.stringify(x, (k, v) => (v && typeof v === "object" && !Array.isArray(v) ? Object.keys(v).sort().reduce((o, kk) => { o[kk] = v[kk]; return o; }, {}) : v));
+  const unapplied = (w, adopted) => w.reqs.length === 2 && isAccept(w.reqs[0]) && isBack(w.reqs[1]) && w.writes === 0 && w.undo === 0 && w.notes.length === 0 && w.emails.length === 0
+    && canonK(w.ref.current) === canonK(adopted) && w.audits.length === 1 && w.audits[0].action === "trade.accept_unapplied" && w.toasts.length === 1
+    && /^This trade was not applied — the schedule for those shifts changed while it was being accepted\./.test(w.toasts[0][0]) && w.toasts[0][1] === "error";
+  const reverted = (w, adopted) => unapplied(w, adopted) && w.trades.join() === "pending" && w.audits[0].details.reverted === true && /set back to pending$/.test(w.audits[0].summary)
+    && /pending again/.test(w.toasts[0][0]) && !/still marked accepted/.test(w.toasts[0][0]) && w.errors.length === 0;
+  const show = (w) => JSON.stringify({ reqs: w.reqs.map(r => r.method + " " + r.url.replace(/^.*\/rest\/v1\//, "") + " " + JSON.stringify(r.body)), writes: w.writes, undo: w.undo, trades: w.trades,
+    audits: w.audits.map(a => a.action + ":" + (a.details && a.details.reverted)), notes: w.notes, toasts: w.toasts.map(t => t[0].slice(0, 90)), errors: w.errors, confirms: w.confirms.length, silvis: w.silvis });
+
+  // GREEN: nothing changes while the status PATCH is in flight.
+  const g1 = await world().run();
+  check("SE-K nothing changes during the status PATCH → applied: the two cascades the confirm listed come from the MIRROR (not the stale render), and land with both legs in ONE schedule write after ONE undo step; accepted locally, audited (+2 cascade changes), the trade notice + both cascade notices + 3 emails; no toast, no error",
+    applied(g1, (w) => w.confirms.length === 1 && w.confirms[0].includes("BBB is now Service Week — Tue Night moves to AAA") && w.confirms[0].includes("AAA is now Service Week — Tue Night moves to BBB")
+      && w.silvis.length === 4 && w.silvis.every(x => x === "mirror")), show(g1));
+  const adoptW3 = with1(MIRROR(), W3, wk("s7", ["s1", "s2", "s3", "s4", "s6"], "s5"));
+  const g2 = await world({ during: (ref) => { ref.current = with1(ref.current, W3, adoptW3[W3]); } }).run();
+  check("SE-K a week the trade doesn't touch is adopted during the PATCH → still applied, onto the LATEST mirror: the adopted week survives the commit",
+    applied(g2, (w) => w.ref.current[W3].dayCall === "s7" && w.ref.current[W3].off === "s5"), show(g2));
+  // A cascade can move the very slot a leg fills: DDD (s4, who also has the
+  // Thu night) gives W1's Wed night to AAA, that week's service-week holder,
+  // and the cascade hands it on to the off surgeon EEE (s5). Its `from` is AAA
+  // once the leg lands, not DDD as the mirror shows it now.
+  const ONE = Object.assign({}, REQ, { from_surgeon_id: "s4", to_surgeon_id: "s1", from_surgeon_name: "DDD", to_surgeon_name: "AAA", shift_key: "wed", shift_label: "Wed Night", return_week: null, return_shift: null });
+  const g3w = world({ ref: { current: with1(MIRROR(), W1, wk("s1", ["s3", "s2", "s4", "s4", "s6"], "s5")) } }), g3 = await g3w.run(ONE);
+  check("SE-K a cascade that moves a slot the leg just filled (Wed night → the service-week holder → the off surgeon) is checked as it stands AFTER the legs → applied: one write, the Wed night is EEE's, one cascade notice; no refusal",
+    g3.reqs.length === 1 && isAccept(g3.reqs[0]) && g3.writes === 1 && g3.undo === 1 && g3.ref.current[W1].nights.wed === "s5" && g3.ref.current[W1].dayCall === "s1" && g3.ref.current[W1].off === "s7"
+      && g3.confirms.length === 1 && /Wed Night moves to EEE \(off surgeon\)/.test(g3.confirms[0]) && /EEE will be notified/.test(g3.confirms[0])
+      && g3.notes.join() === "trade_accepted,schedule_changed" && / \(\+1 cascade change\)$/.test(g3.audits[0].summary) && g3.toasts.length === 0 && g3.errors.length === 0, show(g3));
+
+  // RED: a pull adopts a change to what the trade needs while the PATCH is in flight.
+  const during = (k, row) => ({ adopted: with1(MIRROR(), k, row), during: (ref) => { ref.current = with1(ref.current, k, row); } });
+  const cases = [
+    ["the primary leg's holder (W1's service week is someone else's now)", during(W1, wk("s7", ["s3", "s2", "s4", "s5", "s6"], "s1"))],
+    ["the return leg's holder (W2's service week is someone else's now)", during(W2, wk("s7", ["s4", "s1", "s3", "s5", "s6"], "s2"))],
+    ["a confirmed cascade's `from` (W2's Tue night is someone else's now)", during(W2, wk("s2", ["s4", "s7", "s3", "s5", "s6"], "s1"))],
+    ["the cascade SET (W1's weekend is BBB's now: a third cascade, while both legs and every confirmed `from` still hold)", during(W1, wk("s1", ["s3", "s2", "s4", "s5", "s2"], "s6"))],
+  ];
+  check("SE-K setup: the last case really keeps both legs and both confirmed cascades' `from`, and only adds a cascade",
+    (() => { const a = cases[3][1].adopted, cs = detect(a, REQ); return a[W1].dayCall === "s1" && a[W2].dayCall === "s2" && a[W1].nights.tue === "s2" && a[W2].nights.tue === "s1" && cs.length === 3 && sig(cs) !== WANT; })(),
+    JSON.stringify(detect(cases[3][1].adopted, REQ)));
+  for (const [what, c] of cases) {
+    const r = await world({ during: c.during }).run();
+    check(`SE-K a pull adopts a change to ${what} during the status PATCH → NOT applied: no undo step, no schedule write (the screen keeps the adopted week), no notice or email; the request is PATCHed back to pending (?status=eq.accepted, return=representation) and, one row back, shown pending; one audit line, one toast`,
+      reverted(r, c.adopted), show(r));
+  }
+  // The compensating PATCH doesn't come back with the one row.
+  for (const [what, back] of [["zero rows", "none"], ["a 500", "http"], ["a thrown request (offline)", "throw"]]) {
+    const c = cases[0][1], r = await world({ during: c.during, back }).run();
+    check(`SE-K …and when setting it back answers ${what}: still NOT applied, the request is NOT shown pending (never accepted locally either), and the toast says it is still marked accepted and needs a manual fix; audited as not reverted; one console.error (expected), one toast (not the generic "Couldn't accept")`,
+      unapplied(r, c.adopted) && r.trades.length === 0 && r.audits[0].details.reverted === false && /still marked accepted/.test(r.audits[0].summary)
+        && /still marked accepted and needs a manual fix/.test(r.toasts[0][0]) && !/pending again/.test(r.toasts[0][0]) && r.errors.length === 1 && /could NOT be set back to pending/.test(r.errors[0]),
+      show(r));
+  }
+  // Nothing awaits between the re-check and the schedule write (a pause there
+  // could adopt a change after the check — no behaviour here can show that).
+  {
+    const b = accSrc, J = "await acceptRes.json()", iJ = b.indexOf(J), iNow = b.indexOf("const curNow = scheduleRef.current;"), iRet = b.indexOf("return; // no undo, no schedule write, no notifications"), iW = b.indexOf("updateSchedule(p =>");
+    check("SE-K the re-check reads the mirror right after the status PATCH's last await, and nothing awaits from the re-check to the schedule write except inside the not-applied branch (which returns)",
+      iJ > 0 && iNow > iJ && !/\bawait\b/.test(b.slice(iJ + J.length, iNow)) && iRet > iNow && iW > iRet && !/\bawait\b/.test(b.slice(iRet, iW)) && b.indexOf("await", iW) > iW,
+      JSON.stringify({ iJ, iNow, iRet, iW }));
+  }
+
+  // The REAL engine on the emulated table: its pull adopts a peer's change
+  // while the status PATCH is in flight; and, the control, the accepted trade
+  // reaches the table by CAS.
+  let createSchedSyncK = null; try { createSchedSyncK = se.compileEngine(se.extractEngine(src)); } catch (ex) { createSchedSyncK = null; }
+  if (!createSchedSyncK) { check("SE-K the engine is extractable", false, "anchor / compile"); return; }
+  let msK = Date.UTC(2026, 9, 14, 12, 0, 0);
+  const clockK = () => new Date(msK += 1000).toISOString();
+  const internalK = [];
+  const live = async () => {
+    const t = createFakeWeeksTable({ baseUrl: "https://x.supabase.co", anonKey: "ANON", users: { TOK: "user-a", TOK_P: "user-p" }, clock: clockK,
+      rows: [W1, W2, W3].map(k => ({ week_monday: k, data: MIRROR()[k], version: 2, updated_by: "user-a", updated_at: "2026-10-01T08:00:00.000Z" })) });
+    const ref = { current: {} }, toasts = [];
+    const h = () => ({ apikey: "ANON", Authorization: "Bearer TOK" });
+    const eng = createSchedSyncK({ getState: () => ref.current, commit: (n) => { ref.current = n; }, fetch: (u, i) => t.fetch(u, i), url: "https://x.supabase.co",
+      writeHeaders: h, readHeaders: h, anonHeaders: () => ({ apikey: "ANON", Authorization: "Bearer ANON" }), canWrite: () => true, token: () => "TOK", userId: () => "s1", now: clockK, nowMs: () => msK,
+      onStatus: () => {}, onToast: (m) => toasts.push(String(m)), onWipeBlocked: () => {}, onInternalError: (e) => internalK.push(String(e && e.message || e)), log: watchK.log });
+    await eng.load();
+    return { t, ref, eng, toasts };
+  };
+  {
+    const L = await live(), peerTue = wk("s2", ["s4", "s7", "s3", "s5", "s6"], "s1");
+    const w = await world({ ref: L.ref, during: async () => {
+      const row = L.t.get(W2);
+      L.t.put(Object.assign({}, row, { data: peerTue, version: row.version + 1, updated_by: "user-p", updated_at: "2026-10-14T11:00:00+00:00" }));
+      await L.eng.pull();
+    } }).run();
+    const from = L.t.log.length; await L.eng.push(); await L.eng.idle();
+    check("SE-K the REAL engine: its pull adopts a peer's change to W2's Tue night while the status PATCH is in flight → the trade is NOT applied (set back to pending), the table keeps the peer's week and W1 as it was, nothing is pending, and a push sends nothing",
+      reverted(w, Object.assign({}, MIRROR(), { [W2]: L.ref.current[W2] })) && L.eng.canon(L.ref.current[W2]) === L.eng.canon(peerTue) && L.eng.canon(L.t.get(W2).data) === L.eng.canon(peerTue)
+        && L.t.get(W1).data.dayCall === "s1" && L.t.get(W1).version === 2 && L.eng.pending().length === 0 && L.t.log.slice(from).filter(e => e.method !== "GET").length === 0 && L.toasts.length === 0,
+      show(w) + " " + JSON.stringify({ pend: L.eng.pending(), tW2: L.t.get(W2).data.nights, toasts: L.toasts }));
+    const P = await live();
+    const wp = await world({ ref: P.ref }).run();
+    const pend = P.eng.pending().join();
+    await P.eng.push(); await P.eng.idle();
+    const pW = P.t.log.filter(e => e.method === "PATCH");
+    check("SE-K …control: with no change during the PATCH, the accepted trade (both legs + both cascades) is what the engine then sends — W1 and W2 land on the table by CAS (version=eq.2 → 3), W3 untouched",
+      applied(wp) && pend === [W1, W2].join() && pW.length === 2 && pW.every(e => /version=eq\.2/.test(e.url) && e.status === 200)
+        && P.t.get(W1).version === 3 && P.t.get(W2).version === 3 && P.t.get(W3).version === 2
+        && P.t.get(W1).data.dayCall === "s2" && P.t.get(W1).data.nights.tue === "s1" && P.t.get(W2).data.dayCall === "s1" && P.t.get(W2).data.nights.tue === "s2" && P.eng.pending().length === 0 && P.toasts.length === 0,
+      JSON.stringify({ pend, pW: pW.map(e => e.url.replace(/^.*\?/, "") + " " + e.status), v: [W1, W2, W3].map(k => P.t.get(k).version) }));
+  }
+  check("SE-K no engine internal error in any run", internalK.length === 0, internalK.join(" | "));
+  check("SE-K A17(c) no unexpected error outside the expected ones: nothing on the context's console, no caught callback error in an engine (the handed-in console's errors are asserted per run above)", watchK.unexpected().length === 0, watchK.unexpected().slice(0, 3).join(" | "));
+})().catch(ex => check("SE-K harness ran without crashing", false, String(ex && ex.stack || ex).split("\n").slice(0, 3).join(" | ")));
+
+// SE-C. Sync v2 commit 12/n, EXECUTED: the periodic snapshot's minWeeks
+// (A15), the restore confirm's week change (A15), the "Sync stalled" header
+// and a job still running past its deadline (A5(f)/(g)), and an open week
+// editor told at once when its week is adopted (A13, engine.onAdopted). The
+// real component code, sliced by its anchors and run in a FRESH context (a
+// free identifier throws), with config.js's real snapshots on the stubbed
+// fetch and — for the editor — the app's OWN engine construction and bridge
+// driving the real engine against the emulated table. Every confirm, toast,
+// setter call and request is recorded.
+console.log("\nSE-C. sync v2 12/n: periodic minWeeks, the restore's week change, stalled / still running, onAdopted — executed");
+await (async () => {
+  const nsrcC = src.replace(/\r\n/g, "\n");
+  const after = (start, end) => { const i = nsrcC.indexOf(start); if (i < 0 || nsrcC.indexOf(start, i + 1) !== -1) return null; const e = nsrcC.indexOf(end, i + start.length); return e < 0 ? null : nsrcC.slice(i + start.length, e); };
+  const watchC = harnessWatch();
+  const cctx = vm.createContext({ console: watchC.console });
+  const fnC = (names, code) => { try { return vm.runInContext(`(function (env) { const { ${names} } = env; return (${code}); })`, cctx); } catch (ex) { return null; } };
+  const se = require("./sync-engine-se.js");
+  const { createFakeWeeksTable } = require("./fake-weeks-table.js");
+
+  // ── A15: the periodic snapshot passes minWeeks, after the engine's first read ──
+  const perSrc = after("  const sessionSnapRef = useRef(false);\n  useEffect(() => {", "\n  }, [loaded, isScheduler, userProfile, schedSync.seeded]);");
+  const perFx = perSrc && fnC("loaded, sessionSnapRef, schedSync, isScheduler, userProfile, snapshots, schedSyncRef", "() => {" + perSrc + "\n  }");
+  if (!perFx) check("SE-C the periodic snapshot effect is extractable", false, "anchor / compile");
+  else {
+    const per = (o) => {
+      const r = { calls: [], ref: o.ref || { current: false } };
+      perFx({ loaded: o.loaded !== false, sessionSnapRef: r.ref, schedSync: { seeded: !!o.seeded }, isScheduler: o.isScheduler !== false, userProfile: o.profile || null,
+        snapshots: { captureIfStale: (...a) => { r.calls.push(JSON.parse(JSON.stringify(a))); return Promise.resolve({ ok: true }); } },
+        schedSyncRef: { current: { knownSchedule: () => o.known || {} } } })();
+      return r;
+    };
+    const three = { "2026-10-12": {}, "2026-10-19": {}, "2026-10-26": {} };
+    const unseeded = per({ seeded: false, known: three }), seededW = per({ seeded: true, known: three }), seededE = per({ seeded: true, known: {} });
+    const again = per({ seeded: true, known: three, ref: seededW.ref }), member = per({ seeded: true, known: three, isScheduler: false, profile: { role: "member" } }), admin = per({ seeded: true, known: three, isScheduler: false, profile: { role: "admin" } });
+    check("SE-C A15 the periodic snapshot passes minWeeks as the destructive captures do — 1 while the engine knows weeks (so an empty schedule read fails the capture: never a snapshot whose schedule is {}), 0 for a known-empty table",
+      seededW.calls.length === 1 && JSON.stringify(seededW.calls[0]) === JSON.stringify(["periodic_session", 6, { minWeeks: 1 }]) && seededE.calls.length === 1 && JSON.stringify(seededE.calls[0]) === JSON.stringify(["periodic_session", 6, { minWeeks: 0 }]),
+      JSON.stringify([seededW.calls, seededE.calls]));
+    check("SE-C A15 …and it waits for the engine's first read (until then no weeks are known — minWeeks would be 0) without using up its once-per-session turn; scheduler / admin only",
+      unseeded.calls.length === 0 && unseeded.ref.current === false && again.calls.length === 0 && member.calls.length === 0 && admin.calls.length === 1,
+      JSON.stringify({ unseeded: unseeded.calls, again: again.calls, member: member.calls, admin: admin.calls }));
+  }
+
+  // ── A15: the restore confirm states the week change; busy cleared in finally; A5(f) still running ──
+  const rsSrc = after("  const restoreConfirmText = ", "\n  // ─── Roll forward counts");
+  const RS_ENV = "schedEditable, isScheduler, userProfile, setRestoreBusyId, setSaveStatus, snapshots, scheduleRef, pushUndo, commitSchedule, runAuthoritativeSchedule, schedSyncRef, confirm, snapshotReasonLabel, showToast, setSurgeons, setApps, setBackupMondaySet, setFierceBackupSet, setAppShifts, setPriorCounts, setYear1Counts, setStartMonth, setStartYear, setNumWeeks, setStartMondayOverride, setHolidayAssignments, setPendingLocks, setSilvisRule, sfRule, SF_RULE_DEFAULT, setDismissedWarnings, lastSyncRef, everHadRealDataRef, logAudit, loadSnapshots, setTimeout, alert, sessionEpochRef";
+  const rsFn = rsSrc && fnC(RS_ENV, "(() => { const restoreConfirmText = " + rsSrc + "\n  return { restoreConfirmText, restoreSnapshot }; })()");
+  if (!rsFn) check("SE-C restoreConfirmText + restoreSnapshot are extractable", false, "anchor / compile");
+  else {
+    const SAVED3 = { "2026-01-05": WEEK, "2026-01-12": WEEK, "2026-01-19": WEEK };
+    const SNAP2 = { "2026-01-05": WEEK, "2026-01-12": WEEK };
+    const snapRow = (schedule) => [{ id: 7, reason: "manual", created_at: "2026-07-29T00:00:00Z", data: { surgeons: INIT_SURGEONS, vacations: { s5: [["2026-09-12", "2026-09-21"]] }, schedule } }];
+    const routes = (schedule) => [
+      { m: "GET", url: snapUrl, json: snapRow(schedule) },
+      { m: "GET", url: "call_schedule_data", json: BLOB_ROW },
+      { m: "GET", url: "schedule_weeks", json: WEEK_ROWS },
+      { m: "GET", url: "time_off", json: [] },
+      { m: "POST", url: "call_schedule_snapshots", status: 201, json: [] },
+      { m: "POST", url: "call_schedule_data", status: 201, json: [] },
+    ];
+    const rs = (o = {}) => {
+      const f = o.snapshots ? null : stubFetch(routes(o.schedule || SNAP2));
+      const w = { f, confirms: [], toasts: [], busy: [], status: [], undo: 0, commits: [], auth: [], audits: [], alerts: 0, adopted: [], snaps: 0, threw: null };
+      const noop = () => {};
+      const env = {
+        schedEditable: () => true, isScheduler: true, userProfile: null, setRestoreBusyId: (v) => w.busy.push(v), setSaveStatus: (v) => w.status.push(v), sessionEpochRef: { current: 0 },
+        snapshots: o.snapshots || snapshots,
+        scheduleRef: { current: { "2026-01-05": WEEK } }, // on screen: ONE week — the count must come from what's SAVED (three)
+        pushUndo: () => { w.undo++; }, commitSchedule: (s) => w.commits.push(Object.keys(s).length),
+        runAuthoritativeSchedule: async (s, what) => { w.auth.push([Object.keys(s).length, what]); return o.ar || { ok: true }; },
+        schedSyncRef: { current: { knownSchedule: () => o.known || SAVED3, pending: () => [], jobPending: () => null, jobLabel: (w) => w } },
+        confirm: (m) => { w.confirms.push({ m: String(m), calls: f ? f.calls.length : -1 }); return o.yes !== false; },
+        snapshotReasonLabel: (r) => "LABEL:" + r, showToast: (m, tone) => w.toasts.push([String(m), tone]),
+        setSurgeons: () => w.adopted.push("surgeons"), setApps: noop, setBackupMondaySet: noop, setFierceBackupSet: noop, setAppShifts: noop, setPriorCounts: noop, setYear1Counts: noop,
+        setStartMonth: noop, setStartYear: noop, setNumWeeks: noop, setStartMondayOverride: noop, setHolidayAssignments: noop, setPendingLocks: noop, setSilvisRule: noop,
+        sfRule: (x) => x, SF_RULE_DEFAULT: {}, setDismissedWarnings: noop, lastSyncRef: { current: null }, everHadRealDataRef: { current: false },
+        logAudit: (a) => w.audits.push(a), loadSnapshots: () => { w.snaps++; }, setTimeout: () => 0, alert: () => { w.alerts++; },
+      };
+      w.run = async () => { try { await rsFn(env).restoreSnapshot({ id: 7, reason: "manual", created_at: "2026-07-29T00:00:00Z" }); } catch (ex) { w.threw = String(ex && ex.message || ex); } return w; };
+      return w;
+    };
+    const showR = (w) => JSON.stringify({ confirms: w.confirms.map(c => [c.calls, c.m.split("\n\n")[1]]), toasts: w.toasts, busy: w.busy, status: w.status, auth: w.auth, commits: w.commits, writes: w.f ? writesIn(w.f).map(c => c.url.replace(/^.*\/rest\/v1\//, "")) : null, alerts: w.alerts, threw: w.threw });
+    const no = await rs({ yes: false }).run();
+    check("SE-C A15 the restore confirm states the week change, counted against what is SAVED (the engine's knownSchedule — not the one week on screen): 'Sets 2 weeks; deletes 1 of the 3 weeks now saved'",
+      no.confirms.length === 1 && /^Restore the "LABEL:manual" snapshot from .+\?\n\nSets 2 weeks; deletes 1 of the 3 weeks now saved \(the weeks not in the snapshot\)\.\n\nThis replaces the CURRENT schedule/.test(no.confirms[0].m), showR(no));
+    check("SE-C A15 …asked once the snapshot has been read (after its one GET) and before anything is written; 'Cancel' changes nothing: no capture, no write, no applier, no toast, never left busy",
+      no.confirms[0].calls === 1 && no.f.calls.length === 1 && writesIn(no.f).length === 0 && no.auth.length === 0 && no.commits.length === 0 && no.undo === 0 && no.toasts.length === 0
+        && no.busy.join() === "7," && no.status[no.status.length - 1] === "" && !no.threw, showR(no));
+    const empty = await rs({ yes: false, schedule: {} }).run();
+    const T = rsFn({}).restoreConfirmText;
+    check("SE-C A15 …a snapshot whose schedule is {} says it deletes ALL the saved weeks; with nothing saved the line says so too",
+      /\n\nThe snapshot's schedule is EMPTY: this deletes all 3 weeks now saved\.\n\n/.test(empty.confirms[0] && empty.confirms[0].m) && /\n\nSets 1 week \(no weeks are saved now\)\.\n\n/.test(T("L", "w", { a: 1 }, {}))
+        && /\n\nThe snapshot's schedule is empty, and so is the saved one\.\n\n/.test(T("L", "w", {}, {})) && /Sets 3 weeks; deletes 0 of the 1 week now saved/.test(T("L", "w", { a: 1, b: 1, c: 1 }, { a: 1 })),
+      showR(empty));
+    const yes = await rs().run();
+    check("SE-C A15 …'OK' restores as before: the snapshot's 2 weeks through the restore job (after one undo step), the blob adopted, the report and the success toast; never left busy",
+      yes.confirms.length === 1 && yes.auth.length === 1 && yes.auth[0].join() === "2,restore" && yes.commits.join() === "2" && yes.undo === 1 && yes.adopted.length === 1 && yes.alerts === 1
+        && yes.toasts.length === 1 && yes.toasts[0][1] === "success" && yes.busy.join() === "7," && yes.status.includes("Reading the snapshot…") && yes.status.includes("Restoring snapshot…") && yes.status.includes("Snapshot restored"), showR(yes));
+    const running = await rs({ ar: { ok: false, wrote: false, running: true, reason: "timeout", error: "Restoring the snapshot is taking longer than expected. It's still running — keep the app open; you'll see a message when it ends." } }).run();
+    check("SE-C A5(f) a restore whose schedule job is still running past its deadline: NOT 'Restore failed' — the blob it already restored is adopted, audited, and the toast says the schedule is still being written (info); no report alert",
+      running.adopted.length === 1 && running.audits.length === 1 && running.snaps === 1 && running.toasts.length === 1 && running.toasts[0][1] === "info" && /^The roster and setup are restored\. Restoring the snapshot is taking longer/.test(running.toasts[0][0])
+        && running.alerts === 0 && running.busy.join() === "7," && running.status[running.status.length - 1] === "", showR(running));
+    const failed = await rs({ ar: { ok: false, wrote: false, error: "Couldn't read the saved schedule — nothing was changed." } }).run();
+    const thrown = await rs({ snapshots: { restore: async () => { throw new Error("boom"); } } }).run();
+    const notRead = await rs({ snapshots: { restore: async () => ({ ok: false, error: "Snapshot fetch failed (503)" }) } }).run();
+    check("SE-C A5(f) …a restore whose weeks job was refused (19/n P8 — the real config.js wrote the blob first): the restored setup IS adopted and audited, and ONE message says so — 'Restore: the roster and setup were restored, but the schedule weeks were NOT restored: Couldn't read the saved schedule. Try the restore again.' (no 'nothing was changed'); one that failed before writing anything still says 'Restore failed', adopting nothing; the busy state is cleared in finally — even when the restore call throws",
+      failed.toasts.length === 1 && failed.toasts[0][0] === "Restore: the roster and setup were restored, but the schedule weeks were NOT restored: Couldn't read the saved schedule. Try the restore again." && failed.toasts[0][1] === "error"
+        && failed.busy.join() === "7," && failed.adopted.length === 1 && failed.audits.length === 1 && failed.alerts === 0
+        && notRead.toasts.length === 1 && notRead.toasts[0][0] === "Restore failed: Snapshot fetch failed (503)" && notRead.adopted.length === 0 && notRead.audits.length === 0
+        && thrown.threw === "boom" && thrown.busy.join() === "7,", showR(failed) + " " + showR(notRead) + " " + showR(thrown));
+  }
+
+  // ── A5(g): the header's "Sync stalled" ──
+  const hdrC = after("  const reloadToResync = ", "\n  // The amber");
+  const sslC = (() => { const a = nsrcC.indexOf("function schedSyncLine(st, o) {"); const b = a < 0 ? -1 : nsrcC.indexOf("\n}\n", a); if (a < 0 || b < 0) return null; try { return vm.runInContext("(" + nsrcC.slice(a, b + 2) + ")", cctx); } catch (ex) { return null; } })();
+  const hdrCFn0 = hdrC && sslC && fnC("loaded, saveStatus, schedSync, confirmReloadWithPending, window, isPublicMode, schedSyncLine", `(() => { const reloadToResync = ${hdrC}\n return { schedStaleShown, schedStalledShown, schedSyncedShown }; })()`);
+  const hdrCFn = hdrCFn0 && ((env) => hdrCFn0(Object.assign({ isPublicMode: false, schedSyncLine: sslC }, env)));
+  if (!hdrCFn) check("SE-C the header's sync decisions are extractable", false, "anchor / compile");
+  else {
+    const H = (st, loaded = true) => { try { return hdrCFn({ loaded, saveStatus: "", schedSync: Object.assign({ seeded: true, pending: 0, busy: null, staleRemovals: 0, stalled: false }, st), confirmReloadWithPending: () => true, window: {} }); } catch (ex) { return { threw: String(ex && ex.message || ex) }; } };
+    check("SE-C A5(g) the header decides: stalled → 'Sync stalled' and NOT \"☁ Synced\"; not stalled → no line; nothing before the load",
+      H({ stalled: true }).schedStalledShown === true && H({ stalled: true }).schedSyncedShown === false && H({}).schedStalledShown === false && H({}).schedSyncedShown === true && H({ stalled: true }, false).schedStalledShown === false,
+      JSON.stringify([H({ stalled: true }), H({})]));
+    const LINE = "⚠ Sync stalled — reload to resync <button onClick={reloadToResync}";
+    const pub0 = nsrcC.indexOf('isOrView ? "OR board · read-only" : "Read-only view"'), sch0 = nsrcC.indexOf("Call Schedule · Surgeons + APPs"), conn = nsrcC.indexOf("Connecting…</span>}");
+    const at1 = nsrcC.indexOf(LINE), at2 = nsrcC.indexOf(LINE, at1 + 1);
+    check("SE-C A5(g) the line is rendered in BOTH headers (public / OR board and the scheduler's), gated by schedStalledShown, its Reload through reloadToResync (the reload guard — no new reload path); 'Clearing… / Saving…' give way to it",
+      count(LINE) === 2 && count("{schedStalledShown && <span role=\"status\"") === 2 && pub0 > 0 && at1 > pub0 && at1 < sch0 && at2 > sch0 && at2 < conn && count("confirmReloadWithPending(") === 3
+        && count('{schedLineKind === "busy" && <span') === 1 && count('{schedLineKind === "saving" && <span') === 1, // they give way by schedSyncLine's order (stalled ranks above both — executed in SE-H)
+      JSON.stringify({ n: count(LINE), pub0, at1, sch0, at2, conn }));
+  }
+
+  // ── A5(f): a job still running past its deadline — the callers ──
+  const raSrc = after("  const runAuthoritativeSchedule = ", "\n  };\n");
+  const raFn = raSrc && fnC("schedSyncRef, commitSchedule, setScheduleHistory", raSrc + "\n  }");
+  const clSrc = after("  const clearSchedule = async () => {", "\n  };\n\n  // ─── Snapshot restore");
+  const clFn = clSrc && fnC("schedEditable, confirm, snapshots, schedSyncRef, showToast, scheduleRef, pushUndo, commitSchedule, setSaveStatus, runAuthoritativeSchedule, setTimeout, lastSyncRef, stateBundleRef, setupReadRef, auth, supabase, console, sessionEpochRef, setupBaseRef", "async () => {" + clSrc + "\n  }");
+  const pnSrc = after("  const publishNotLanded = (pr, what) => {", "\n  };\n");
+  const pnFn = pnSrc && fnC("showToast", "(pr, what) => {" + pnSrc + "\n  }");
+  if (!raFn || !clFn || !pnFn) check("SE-C runAuthoritativeSchedule / clearSchedule / publishNotLanded are extractable", false, JSON.stringify({ ra: !!raFn, cl: !!clFn, pn: !!pnFn }));
+  else {
+    const RUNNING = (label) => ({ ok: false, wrote: false, running: true, reason: "timeout", error: `${label} is taking longer than expected. It's still running — keep the app open; you'll see a message when it ends.` });
+    // 14/n: the screen is put back by the ENGINE, in the job (SE67 — before its follow-up push could send the refused
+    // target); the app's helper never commits the schedule. What it still decides: the caller's Undo step goes only
+    // for a job refused with nothing written — never for one still running, one whose writes failed (retried, R7),
+    // a partial or a landed one.
+    const STEP = { sched: {} }, OTHER = { sched: { a: 1 } };
+    const ra = async (res) => { const commits = []; let hist = [OTHER, STEP]; await raFn({ schedSyncRef: { current: { authoritative: async () => res, knownSchedule: () => ({ K: 1 }) } }, commitSchedule: (s) => commits.push(s), setScheduleHistory: (f) => { hist = f(hist); } })({}, "clear", STEP); return commits.length + ":" + (hist.length === 2 ? "kept" : hist.length === 1 && hist[0] === OTHER ? "dropped" : "?"); };
+    const raRun = await ra(RUNNING("Clearing the schedule")), raNone = await ra({ ok: false, wrote: false, error: "x" }), raFail = await ra({ ok: false, wrote: false, results: [{ outcome: "pending" }] }), raPart = await ra({ ok: false, wrote: true }), raOk = await ra({ ok: true, wrote: true }), raBug = await ra({ ok: false, internal: "boom" });
+    check("SE-C A5(f) runAuthoritativeSchedule never commits the schedule (the engine puts the screen back — SE67); it takes the caller's Undo step back only when the job was refused with nothing written (or hit a bug) — kept for a job still running past its deadline, one whose writes failed and are retried, a partial and a landed one",
+      raRun === "0:kept" && raNone === "0:dropped" && raFail === "0:kept" && raPart === "0:kept" && raOk === "0:kept" && raBug === "0:dropped", JSON.stringify({ raRun, raNone, raFail, raPart, raOk, raBug }));
+    const cl = async (cr) => {
+      const w = { toasts: [], status: [], upserts: 0 };
+      await clFn({ schedEditable: () => true, confirm: () => true, snapshots: { capture: async () => ({ ok: true }) }, schedSyncRef: { current: { knownSchedule: () => ({}), pending: () => ["a", "b"] } }, showToast: (m, t) => w.toasts.push([String(m), t]),
+        scheduleRef: { current: {} }, pushUndo: () => {}, commitSchedule: () => {}, setSaveStatus: (s) => w.status.push(s), runAuthoritativeSchedule: async () => cr, setTimeout: () => 0, lastSyncRef: { current: null },
+        stateBundleRef: { current: (x) => Object.assign({}, x) }, setupReadRef: { current: true }, auth: { getSession: () => ({ access_token: "TOK" }) }, sessionEpochRef: { current: 0 }, setupBaseRef: { current: null },
+        supabase: { from: () => ({ upsert: async () => { w.upserts++; return { error: null }; } }) }, console: watchC.console })();
+      await null; await null;
+      return w;
+    };
+    const clRun = await cl(RUNNING("Clearing the schedule")), clErr = await cl({ ok: false, wrote: false, error: "Couldn't read the saved schedule — nothing was changed." }), clPart = await cl({ ok: false, wrote: true }), clOk = await cl({ ok: true, wrote: true });
+    check("SE-C A5(f) Clear still running past its deadline says so (info — not 'NOT cleared', not 'N week(s) not deleted'), and the blob's cleared state is saved as for a partial clear; a refused clear still stops before it; the others unchanged",
+      clRun.toasts.length === 1 && clRun.toasts[0][1] === "info" && /still running/.test(clRun.toasts[0][0]) && !/NOT cleared|not deleted/.test(clRun.toasts[0][0]) && clRun.upserts === 1 && !clRun.status.includes("Schedule cleared")
+        && clErr.toasts.length === 1 && /^The schedule was NOT cleared — /.test(clErr.toasts[0][0]) && clErr.upserts === 0
+        && clPart.toasts.length === 1 && /^The schedule wasn't fully cleared\. 2 week\(s\) not deleted yet/.test(clPart.toasts[0][0]) && clPart.upserts === 1 && clOk.toasts.length === 0 && clOk.status.includes("Schedule cleared") && clOk.upserts === 1,
+      JSON.stringify({ clRun, clErr, clPart, clOk }));
+    const pn = (pr) => { const t = []; pnFn({ showToast: (m, tone) => t.push([String(m), tone]) })(pr, "Regenerated on this screen"); return t[0] || []; };
+    // (16/n E5: the engine's publish refusal says itself that nobody was notified — publishNotLanded adds it only for a job still running.)
+    const PN_READ = "Couldn't read the saved weeks first — the new weeks stay on this screen and will be saved automatically. Nobody was notified.";
+    const pnRun = pn(RUNNING("Publishing the new weeks")), pnErr = pn({ ok: false, wrote: false, error: PN_READ }), pnN = pn({ ok: false, results: [{ outcome: "saved" }, { outcome: "pending" }] });
+    check("SE-C A5(f) a publish still running past its deadline: the toast says so, and that nobody was notified, as info; a refused one is the engine's text as it is — 'Nobody was notified.' exactly once; the other not-landed toasts are unchanged",
+      pnRun[1] === "info" && /^Regenerated on this screen: Publishing the new weeks is taking longer than expected\. It's still running/.test(pnRun[0]) && / Nobody was notified\.$/.test(pnRun[0])
+        && pnErr[1] === "error" && pnErr[0] === "Regenerated on this screen: " + PN_READ && (pnErr[0].match(/Nobody was notified\./g) || []).length === 1
+        && pnN[1] === "error" && /— 1 week isn't saved yet; retrying automatically\. Nobody was notified\.$/.test(pnN[0]), JSON.stringify({ pnRun, pnErr, pnN }));
+    check("SE-C A5(f) the factory reset's schedule job: still running → said so (info), not 'the schedule was NOT cleared'",
+      // (17/n P3: the reset's other outcomes — refused, landed — are executed in SE-X10; 19/n: its late / fenced / stacked ones in SE-X15–17)
+      nsrcC.split('runAuthoritativeSchedule({}, "reset", null, before, weeksNotCleared).then(tellWeeks);').length === 2
+        && /\n    const tellWeeks = \(r\) => \{\n      if \(sessionEpochRef\.current !== ep\) return;[^\n]*\n      if \(r\.skipped === "reset" \|\| r\.skipped === "cancelled"\) return;[^\n]*\n      if \(r\.running\) \{ showToast\(r\.error, "info"\); return; \}\n      if \(r\.ok\) \{ setSaveStatus\("Reset complete"\);/.test(nsrcC) && count("Factory reset: the schedule was NOT cleared") === 0);
+  }
+
+  // ── A13: an open week editor is told when its week is adopted (engine.onAdopted) ──
+  // The app's OWN engine construction and bridge (sliced from the bridge
+  // assignment to the end of createSchedSync({…})), the real openWeekEditor,
+  // the real engine, the emulated table; a peer's writes go straight in.
+  const wireSrc = after("  schedSyncBridgeRef.current = { canWrite:", "\n\n  // The edit gates");
+  const wireFn = wireSrc && fnC("isPublicMode, userProfile, showToast, setEditWeekModal, swapSuggestions, swapTarget, setSwapSuggestions, setSwapTarget, schedSyncBridgeRef, useRef, createSchedSync, scheduleRef, commitSchedule, fetch, SUPABASE_URL, dbAuthHeaders, dbReadHeaders, dbHeaders, auth, setSchedSync, console",
+    "(() => { schedSyncBridgeRef.current = { canWrite:" + wireSrc + "\n  return schedSyncRef; })()");
+  const oweSrc = after("  const openWeekEditor = useCallback((mondayStr) => {", "\n  }, [appShifts, appShiftsLoaded]);");
+  const oweFn = oweSrc && fnC("scheduleRef, parse, addD, fmt, appShifts, appShiftsLoaded, setEditWeekModal, schedSyncRef", "(mondayStr) => {" + oweSrc + "\n  }");
+  let createSchedSyncC = null; try { createSchedSyncC = se.compileEngine(se.extractEngine(src)); } catch (ex) { createSchedSyncC = null; }
+  if (!wireFn || !oweFn || !createSchedSyncC) check("SE-C the engine wiring, openWeekEditor and the engine are extractable", false, JSON.stringify({ wire: !!wireFn, owe: !!oweFn, eng: !!createSchedSyncC }));
+  else {
+    const HC = vm.runInContext("({ parse, addD, fmt })", sandbox);
+    const W1 = "2026-10-12", W2 = "2026-10-19";
+    const wkC = (dc) => ({ dayCall: dc, nights: { mon: "s2", tue: "s3", wed: "s4", thu: "s5", wknd: "s6" }, off: "s7" });
+    let msC = Date.UTC(2026, 9, 14, 12, 0, 0);
+    const t = createFakeWeeksTable({ baseUrl: "https://x.supabase.co", anonKey: "ANON", users: { TOK_A: "user-a" }, clock: () => new Date(msC += 1000).toISOString(),
+      rows: [W1, W2].map(k => ({ week_monday: k, data: wkC("s1"), version: 2, updated_by: "user-a", updated_at: "2026-10-01T08:00:00.000Z" })) });
+    const peer = (k, dc) => { const row = t.get(k); t.put(Object.assign({}, row, { data: wkC(dc), version: row.version + 1, updated_by: "user-b", updated_at: new Date(msC += 60000).toISOString() })); };
+    const rec = { errors: [], toasts: [], sets: 0 };
+    let modal = null, st = null;
+    const scheduleRef = { current: {} };
+    const setEditWeekModal = (x) => { rec.sets++; modal = typeof x === "function" ? x(modal) : x; };
+    const hdrs = () => ({ apikey: "ANON", Authorization: "Bearer TOK_A" });
+    const ref = wireFn({ isPublicMode: false, userProfile: { person_id: "s1" }, showToast: (m, tone) => rec.toasts.push([String(m), tone]), setEditWeekModal, schedSyncBridgeRef: { current: null },
+      useRef: (v) => ({ current: v }), createSchedSync: createSchedSyncC, scheduleRef, commitSchedule: (n) => { scheduleRef.current = n; }, fetch: (u, i) => t.fetch(u, i), SUPABASE_URL: "https://x.supabase.co",
+      dbAuthHeaders: hdrs, dbReadHeaders: hdrs, dbHeaders: { apikey: "ANON", Authorization: "Bearer ANON" }, auth: { getSession: () => ({ access_token: "TOK_A" }) }, setSchedSync: (f) => { st = typeof f === "function" ? f(st) : f; },
+      console: { error: (...a) => rec.errors.push(a.map(String).join(" ")), warn: watchC.console.warn, log: () => {} } });
+    const eng = ref.current;
+    const open = oweFn({ scheduleRef, parse: HC.parse, addD: HC.addD, fmt: HC.fmt, appShifts: {}, appShiftsLoaded: true, setEditWeekModal, schedSyncRef: ref });
+    await eng.load();
+    open(W1);
+    const opened = modal;
+    peer(W2, "peer2"); await eng.pull();
+    const afterOther = modal;
+    peer(W1, "peer1"); await eng.pull();
+    const flagged = modal;
+    check("SE-C A13 the editor open on W1: a peer's change to W2 is adopted → the editor is untouched (same object); a peer's change to W1 is adopted → at once the editor says so (adoptedAway), its draft kept to read — exactly when its Save would be refused (the open epoch)",
+      !!opened && opened.mondayStr === W1 && !opened.adoptedAway && afterOther === opened && scheduleRef.current[W2].dayCall === "peer2"
+        && flagged !== opened && flagged.adoptedAway === true && flagged.draft.dayCall === "s1" && scheduleRef.current[W1].dayCall === "peer1" && eng.changedSince([W1], flagged.openEpoch).length === 1,
+      JSON.stringify({ opened: opened && opened.mondayStr, other: afterOther === opened, flagged: flagged && flagged.adoptedAway, draft: flagged && flagged.draft.dayCall }));
+    open(W1);
+    const reopened = modal;
+    await eng.pull();
+    open(W2); const w2 = modal; await eng.pull();
+    const w2After = modal;
+    modal = null; peer(W2, "peer2b"); await eng.pull();
+    check("SE-C A13 …'Reopen with the latest' (openWeekEditor) starts clean from the adopted week, and a save from it would go through; an editor opened AFTER an adoption isn't flagged by it; with no editor open nothing is opened",
+      !reopened.adoptedAway && reopened.draft.dayCall === "peer1" && eng.changedSince([W1], reopened.openEpoch).length === 0 && modal === null
+        && !w2.adoptedAway && w2After === w2 && scheduleRef.current[W2].dayCall === "peer2b" && rec.errors.length === 0 && rec.toasts.length === 0,
+      JSON.stringify({ reopened: reopened && [reopened.adoptedAway, reopened.draft.dayCall], w2: w2After === w2, modal, errors: rec.errors }));
+    const NOTE = "⚠ This week was just changed by someone else — including a slot you changed here, so saving it would be refused. Your draft stays here to read.";
+    const NOTE_OK = "⚠ This week was just changed by someone else — this editor still shows the old version. Saving writes only what you changed here; their other changes stay.";
+    const ed0 = nsrcC.indexOf("✏️ Edit Week — {wkLabel}"), note = nsrcC.indexOf(NOTE), nav = nsrcC.indexOf("{(prevMonday || nextMonday) && (", ed0);
+    check("SE-C A13 the editor renders the note when adoptedAway is set — inside the editor, under its title — with 'Reopen with the latest' (asking first only when there are unsaved changes)",
+      count("{editWeekModal.adoptedAway && (") === 1 && count(NOTE) === 1 && count(NOTE_OK) === 1 && count("{adoptRefused") === 1 && ed0 > 0 && note > ed0 && note < nav
+        && count('<button onClick={()=>{ if (!hasUnsaved || confirm("Reopen this week as it is now? What you changed in this editor is discarded.")) openWeekEditor(mondayStr); }}') === 1,
+      JSON.stringify({ ed0, note, nav }));
+  }
+  check("SE-C A17(c) no unexpected error in any run: no console.error (the sliced code's context, the consoles handed in), no caught callback error in the app's engine", watchC.unexpected().length === 0, watchC.unexpected().slice(0, 3).join(" | "));
+})().catch(ex => check("SE-C harness ran without crashing", false, String(ex && ex.stack || ex).split("\n").slice(0, 3).join(" | ")));
+// SE-H. Sync v2 commit 13/n, EXECUTED: the header's ONE schedule-sync line
+// (A16) and the client / schema error class (A4). The real schedSyncLine
+// over a precedence matrix (every condition set, then the winner switched
+// off, again and again); the component's own decision block (isPublicMode,
+// the blob's status); both headers' markup gated by the line's kind; the real
+// writeFailReason; and, on the REAL engine against the emulated table, the
+// lines it drives — a rejection's sticky "couldn't be saved (CODE)" line and
+// its toast (reason from writeFailReason), the real reload guard counting
+// the week, a conflict then that week edited again — plus the app's OWN
+// engine construction reading as anon once the server refused the token.
+console.log("\nSE-H. sync v2 13/n: the header's one line (A16), client / schema errors (A4), anon reads after a 401 — executed");
+await (async () => {
+  const nsrcH = src.replace(/\r\n/g, "\n");
+  const after = (start, end) => { const i = nsrcH.indexOf(start); if (i < 0 || nsrcH.indexOf(start, i + 1) !== -1) return null; const e = nsrcH.indexOf(end, i + start.length); return e < 0 ? null : nsrcH.slice(i + start.length, e); };
+  const fnDecl = (decl) => { const a = nsrcH.indexOf(decl); if (a < 0 || nsrcH.indexOf(decl, a + 1) !== -1) return null; const b = nsrcH.indexOf("\n}\n", a); return b < 0 ? null : nsrcH.slice(a, b + 2); };
+  const watchH = harnessWatch();
+  const hctx = vm.createContext({ console: watchH.console });
+  const fnH = (names, code) => { try { return vm.runInContext(`(function (env) { const { ${names} } = env; return (${code}); })`, hctx); } catch (ex) { return null; } };
+  const se = require("./sync-engine-se.js");
+  const { createFakeWeeksTable } = require("./fake-weeks-table.js");
+  let line = null, wfr = null;
+  try { line = vm.runInContext("(" + fnDecl("function schedSyncLine(st, o) {") + ")", hctx); } catch (ex) { line = null; }
+  try { wfr = vm.runInContext("(" + fnDecl("function writeFailReason(err) {") + ")", hctx); } catch (ex) { wfr = null; }
+  if (typeof line !== "function" || typeof wfr !== "function") { check("SE-H schedSyncLine and writeFailReason are extractable (module scope, once each)", false, JSON.stringify({ line: typeof line, wfr: typeof wfr })); return; }
+
+  // ── the precedence matrix ──
+  const ALL = { seeded: true, loadFailed: true, pending: 5, pendingKeys: [], saving: 1, failing: 3, auth: "expired", authNeeded: true, rejected: ["k1"], rejectCodes: ["PGRST204"], noPermission: [],
+    blockedDeletes: 2, staleRemovals: 4, conflicts: [{ k: "k9", at: 1 }], busy: "restore", stalled: true };
+  const OFF = { auth: { authNeeded: false }, loadFailed: { loadFailed: false }, notSaved: { failing: 1 }, rejected: { rejected: [], rejectCodes: [], failing: 0 }, blocked: { blockedDeletes: 0 },
+    stalled: { stalled: false }, busy: { busy: null }, stale: { staleRemovals: 0 }, conflicts: { conflicts: [] }, saving: { saving: 0, pending: 0 }, synced: { seeded: false } };
+  const walk = (o) => { let st = Object.assign({}, ALL); const seen = []; for (let i = 0; i < 14; i++) { const r = line(st, Object.assign({ loaded: true }, o)); seen.push(r ? r.kind + ":" + r.n : "none"); if (!r) break; st = Object.assign({}, st, OFF[r.kind]); } return seen; };
+  const wr = walk({ readOnly: false }), ro = walk({ readOnly: true });
+  check("SE-H A16 the scheduler header's line, strict precedence (all set, then each winner switched off): sign in again > didn't load > not saved > couldn't be saved > deletions blocked > stalled > Clearing/Restoring > stale removals > conflicts > Saving > Synced > nothing — one at a time, with its count",
+    wr.join() === "auth:5,loadFailed:0,notSaved:2,rejected:1,blocked:2,stalled:0,busy:0,stale:4,conflicts:1,saving:1,synced:0,none", wr.join());
+  check("SE-H A16 the public / OR-board line: only what a read-only view can show — didn't load > stalled > stale removals > nothing (never sign-in, saving, conflicts or Synced, whatever the status says)",
+    ro.join() === "loadFailed:0,stalled:0,stale:4,none", ro.join());
+  const CLEAN = { seeded: true, loadFailed: false, pending: 0, saving: 0, failing: 0, authNeeded: false, rejected: [], rejectCodes: [], noPermission: [], blockedDeletes: 0, staleRemovals: 0, conflicts: [], busy: null, stalled: false };
+  const k = (st, o) => { const r = line(Object.assign({}, CLEAN, st), Object.assign({ loaded: true }, o)); return r ? r.kind + ":" + r.n : "none"; };
+  check("SE-H A16 …nothing before the app has loaded; Synced waits for the blob leg's own status; a rejected week is a client error, not 'not saved' (failing counts it), and only the failures beyond the rejected ones are 'not saved'",
+    k({ authNeeded: true, pending: 2 }, { loaded: false }) === "none" && k({}) === "synced:0" && k({}, { blobStatus: true }) === "none"
+      && k({ pending: 1, failing: 1, rejected: ["a"], rejectCodes: ["22P02"] }) === "rejected:1" && k({ pending: 3, failing: 3, rejected: ["a"], rejectCodes: ["22P02"] }) === "notSaved:2" && k({ pending: 1, saving: 1 }) === "saving:1",
+    JSON.stringify([k({}), k({}, { blobStatus: true }), k({ pending: 1, failing: 1, rejected: ["a"] }), k({ pending: 3, failing: 3, rejected: ["a"] })]));
+
+  // ── the component's decision block, for real ──
+  const blk = after("  const reloadToResync = ", "\n  // The amber");
+  const blkFn = blk && fnH("loaded, saveStatus, schedSync, confirmReloadWithPending, window, isPublicMode, schedSyncLine",
+    `(() => { const reloadToResync = ${blk}\n return { schedLine, schedLineKind, schedStaleShown, schedStalledShown, schedSyncedShown }; })()`);
+  if (!blkFn) { check("SE-H the header's decision block is extractable", false, "anchor / compile"); return; }
+  const B = (st, o = {}) => blkFn({ loaded: o.loaded !== false, saveStatus: o.saveStatus || "", schedSync: Object.assign({}, CLEAN, st), confirmReloadWithPending: () => true, window: {}, isPublicMode: !!o.pub, schedSyncLine: line });
+  const both = { authNeeded: true, pending: 1, staleRemovals: 3 };
+  check("SE-H A16 the component asks schedSyncLine ONCE with its own view: a scheduler with sign-in needed AND stale removals shows only the sign-in line; the same status in a public / OR view shows the stale line; the blob's status holds back Synced",
+    B(both).schedLineKind === "auth" && B(both).schedStaleShown === false && B(both, { pub: true }).schedLineKind === "stale" && B(both, { pub: true }).schedStaleShown === true
+      && B({}).schedSyncedShown === true && B({}, { saveStatus: "Saved" }).schedSyncedShown === false && B({ stalled: true }).schedStalledShown === true && B({ stalled: true }).schedSyncedShown === false
+      && count("const schedLine = schedSyncLine(schedSync, { loaded, readOnly: isPublicMode, blobStatus: !!saveStatus });") === 1 && count("schedSyncLine(") === 2,
+    JSON.stringify([B(both).schedLineKind, B(both, { pub: true }).schedLineKind, B({}).schedLineKind]));
+
+  // ── both headers' markup: every line rendered only for its own kind ──
+  {
+    const pub0 = nsrcH.indexOf('isOrView ? "OR board · read-only" : "Read-only view"'), sch0 = nsrcH.indexOf("Call Schedule · Surgeons + APPs"), conn = nsrcH.indexOf("Connecting…</span>}");
+    const pubH = pub0 > 0 && sch0 > pub0 ? nsrcH.slice(pub0, sch0) : "", schH = sch0 > 0 && conn > sch0 ? nsrcH.slice(sch0, conn) : "";
+    const n = (hay, s) => hay.split(s).length - 1;
+    const GATE = { auth: '{schedLineKind === "auth" && <span', loadFailed: '{schedLineKind === "loadFailed" && <span', notSaved: '{schedLineKind === "notSaved" && <span', rejected: '{schedLineKind === "rejected" && <span',
+      blocked: '{schedLineKind === "blocked" && <span', stalled: '{schedStalledShown && <span', busy: '{schedLineKind === "busy" && <span', stale: '{schedStaleShown && <span',
+      conflicts: '{schedLineKind === "conflicts" && <button', saving: '{schedLineKind === "saving" && <span', synced: '{schedSyncedShown && <span' };
+    const order = Object.keys(GATE).map(kk => schH.indexOf(GATE[kk]));
+    const RAW_GATE = /\{[^{}]*\bschedSync\.[^{}]*&& </; // a JSX `{cond && <…` whose condition reads the raw status
+    check("SE-H A16 the scheduler header: exactly one line per kind, each rendered only for its kind (in precedence order), and no other schedule-sync line gated on the raw status",
+      !!schH && Object.keys(GATE).every(kk => n(schH, GATE[kk]) === 1) && order.every((x, i) => x > 0 && (i === 0 || x > order[i - 1])) && !RAW_GATE.test(schH)
+        && n(schH, "schedLineKind === ") === 8, // + stalled / stale / Synced through their flags
+      JSON.stringify({ order, n: Object.keys(GATE).map(kk => n(schH, GATE[kk])), raw: (schH.match(RAW_GATE) || [""])[0].slice(0, 80) }));
+    check("SE-H A16 the public / OR-board header: didn't load, stalled and stale removals, each only for its kind — nothing gated on the raw status",
+      !!pubH && n(pubH, GATE.loadFailed) === 1 && n(pubH, GATE.stalled) === 1 && n(pubH, GATE.stale) === 1 && n(pubH, "schedLineKind === ") === 1 && !RAW_GATE.test(pubH),
+      String(pubH.length));
+    check("SE-H A4 the sticky client-error line names the count and the codes and says to reload / update, with the guarded Reload; A16 the conflicts item says how many weeks were replaced, and its tap tells which and dismisses",
+      n(schH, '⚠ {schedLine.n} week{schedLine.n === 1 ? "" : "s"} couldn' + "'" + 't be saved ({schedSync.rejectCodes.join(", ")}) — reload/update the app <button onClick={reloadToResync}') === 1
+        && n(schH, "⚠ {schedLine.n} week{schedLine.n === 1 ? \"\" : \"s\"} replaced by someone else's change — tap for details</button>}") === 1 && n(schH, "schedSyncRef.current.dismissConflicts();") === 1
+        && count("confirmReloadWithPending(") === 3);
+    // 16/n E2: a READ refused for the token turns authNeeded on with NOTHING
+    // pending (a member who only views; SE74 — the line is { kind: "auth", n: 0 }).
+    // Every sign-in text then reads right with 0: no week is counted.
+    check("SE-H 16/n E2 with 0 pending the sign-in texts count no week: the header's auth line says 'Sign-in expired — sign in again' (a count only when n > 0), the red banner just 'Your sign-in has expired.' (its count only when weeks are pending), the password sheet 'nothing on this screen is lost'",
+      n(schH, '⚠ {schedLine.n ? `${schedLine.n} week${schedLine.n === 1 ? "" : "s"} not saved — sign in again` : "Sign-in expired — sign in again"}</span>}') === 1
+        && count('<span>⚠ Your sign-in has expired{schedSync.pending ? ` — ${schedSync.pending} week${schedSync.pending === 1 ? "" : "s"} of the schedule not saved yet` : ""}.</span>') === 1
+        && count('sent once you\'re in.` : "nothing on this screen is lost."}</p>') === 1);
+  }
+
+  // ── writeFailReason: the reason a rejection's toast gives ──
+  {
+    const CLIENT = "the server rejected it — this app may be out of date (reload or update it)";
+    const client = ["PGRST204", "PGRST100", "22P02", "23502", "23505", "23514", "42703", "P0001"].map(c => wfr({ code: c, message: "x" }));
+    const other = [wfr({ code: "42501", message: "permission denied for table schedule_weeks" }), wfr({ code: "PGRST303", message: "JWT expired" }), wfr({ code: "PGRST000", message: "db down" }), wfr({ code: "57014", message: "canceling statement due to statement timeout" }), wfr("upstream connect error"), wfr(null), wfr({ code: 22 })];
+    check("SE-H A4 writeFailReason: a PostgREST client / schema error (PGRST1xx/2xx, 22xxx, 23xxx, 42xxx, P0xxx) is the request's content — 'the server rejected it — this app may be out of date'; a permission refusal, an expired sign-in and the connection keep their reasons",
+      client.every(x => x === CLIENT) && /permission/.test(other[0]) && /sign-in has expired/.test(other[1]) && other.slice(2).every(x => x === "check your connection and try again"),
+      JSON.stringify({ client, other }));
+  }
+
+  // ── the lines a real engine drives, on the emulated table ──
+  let createSchedSyncH = null; try { createSchedSyncH = se.compileEngine(se.extractEngine(src)); } catch (ex) { createSchedSyncH = null; }
+  const crSrc = after("  const confirmReloadWithPending = (base) => {", "\n  };\n");
+  const crFn = crSrc && fnH("schedSyncRef, confirm", "(base) => {" + crSrc + "\n  }");
+  if (!createSchedSyncH || !crFn) { check("SE-H the engine and the reload guard are extractable", false, JSON.stringify({ eng: !!createSchedSyncH, cr: !!crFn })); return; }
+  const WH = ["2026-10-12", "2026-10-19", "2026-10-26"];
+  const wkH = (dc) => ({ dayCall: dc, nights: { mon: "s2", tue: "s3", wed: "s4", thu: "s5", wknd: "s6" }, off: "s1" });
+  let msH = Date.UTC(2026, 9, 14, 12, 0, 0);
+  const clockH = () => new Date(msH += 1000).toISOString();
+  const internalH = [];
+  const t = createFakeWeeksTable({ baseUrl: "https://x.supabase.co", anonKey: "ANON", users: { TOK_A: "user-a", TOK_B: "user-b" }, clock: clockH,
+    rows: WH.map(kk => ({ week_monday: kk, data: wkH("s1"), version: 2, updated_by: "user-a", updated_at: "2026-10-01T08:00:00.000Z" })) });
+  const mkH = (tok) => {
+    const s = { mirror: {}, st: null, toasts: [] };
+    const h = () => ({ apikey: "ANON", Authorization: "Bearer " + tok });
+    s.engine = createSchedSyncH({ getState: () => s.mirror, commit: (x) => { s.mirror = x; }, fetch: (u, i) => t.fetch(u, i), url: "https://x.supabase.co",
+      writeHeaders: h, readHeaders: h, anonHeaders: () => ({ apikey: "ANON", Authorization: "Bearer ANON" }), canWrite: () => true, token: () => tok, userId: () => "s1", now: clockH, nowMs: () => msH,
+      onStatus: (st) => { s.st = st; }, onToast: (m) => s.toasts.push(String(m)), onWipeBlocked: () => {}, onInternalError: (e) => internalH.push(String(e && e.message || e)), log: watchH.log });
+    s.edit = (kk, dc) => { s.mirror = Object.assign({}, s.mirror, { [kk]: wkH(dc) }); };
+    s.L = () => { const r = line(s.st, { loaded: true, readOnly: false }); return r ? r.kind + ":" + r.n : "none"; };
+    return s;
+  };
+  const A = mkH("TOK_A"), P = mkH("TOK_B");
+  await A.engine.load(); await P.engine.load();
+  const loadedLine = A.L();
+  t.control.fail({ method: "PATCH", week: WH[0], kind: "400-schema", count: 5 });
+  A.edit(WH[0], "mine"); await A.engine.push();
+  const rejLine = A.L(), codes = (A.st.rejectCodes || []).join(), toast0 = A.toasts.slice();
+  const asked = []; const reloadOk = crFn({ schedSyncRef: { current: A.engine }, confirm: (m) => { asked.push(m); return false; } })();
+  await A.engine.push(); msH += 30000; await A.engine.push();
+  check("SE-H A4 a PGRST204 rejection, on the real engine: the header line is 'couldn't be saved' for 1 week naming PGRST204 (sticky across the next pushes); ONE toast, its reason the real writeFailReason's",
+    loadedLine === "synced:0" && rejLine === "rejected:1" && codes === "PGRST204" && A.L() === "rejected:1" && toast0.length === 1 && A.toasts.length === 1
+      && toast0[0].includes("(PGRST204): " + wfr({ code: "PGRST204", message: "x" }) + "."),
+    JSON.stringify({ loadedLine, rejLine, codes, toasts: A.toasts }));
+  check("SE-H A4 …and the real reload guard counts the rejected week: it asks ('1 week of the schedule isn't saved yet — reloading now loses it') and a 'no' doesn't reload",
+    reloadOk === false && asked.length === 1 && /^1 week of the schedule isn't saved yet — reloading now loses it\./.test(asked[0]), JSON.stringify(asked));
+  t.control.clear(); msH += 61000; await A.engine.push();
+  const landedLine = A.L();
+  P.edit(WH[1], "peer"); await P.engine.push();
+  A.edit(WH[1], "mine1"); await A.engine.push();
+  const confLine = A.L();
+  A.edit(WH[1], "reapplied"); await A.engine.push();
+  check("SE-H A16 …the rejected week lands after its backoff → Synced; a conflict → the 'replaced by someone else's change' line (1 week); that week edited again → the item is gone and the edit lands → Synced",
+    landedLine === "synced:0" && t.get(WH[0]).data.dayCall === "mine" && confLine === "conflicts:1" && A.L() === "synced:0" && t.get(WH[1]).data.dayCall === "reapplied" && A.st.conflicts.length === 0,
+    JSON.stringify({ landedLine, confLine, now: A.L() }));
+  t.control.expiredTokens.add("TOK_A");
+  A.edit(WH[2], "mine2"); await A.engine.push();
+  check("SE-H A16 …a 401 → the sign-in line, counting the week not saved", A.L() === "auth:1" && A.st.authNeeded === true, A.L());
+  check("SE-H no engine internal error", internalH.length === 0, internalH.join(" | "));
+
+  // ── the app's OWN engine construction reads as anon once the server refused the token ──
+  const wireSrc = after("  schedSyncBridgeRef.current = { canWrite:", "\n\n  // The edit gates");
+  const wireFn = wireSrc && fnH("isPublicMode, userProfile, showToast, setEditWeekModal, swapSuggestions, swapTarget, setSwapSuggestions, setSwapTarget, schedSyncBridgeRef, useRef, createSchedSync, scheduleRef, commitSchedule, fetch, SUPABASE_URL, dbAuthHeaders, dbReadHeaders, dbHeaders, auth, setSchedSync, console",
+    "(() => { schedSyncBridgeRef.current = { canWrite:" + wireSrc + "\n  return schedSyncRef; })()");
+  if (!wireFn) { check("SE-H the app's engine construction is extractable", false, "anchor / compile"); return; }
+  const t2 = createFakeWeeksTable({ baseUrl: "https://x.supabase.co", anonKey: "ANON", users: { TOK_A: "user-a", TOK_B: "user-b" }, clock: clockH,
+    rows: WH.map(kk => ({ week_monday: kk, data: wkH("s1"), version: 2, updated_by: "user-a", updated_at: "2026-10-01T08:00:00.000Z" })) });
+  const errs = [], scheduleRef = { current: {} };
+  const tokH = () => ({ apikey: "ANON", Authorization: "Bearer TOK_A" }); // the device clock calls TOK_A fresh: dbReadHeaders keeps sending it
+  const ref = wireFn({ isPublicMode: false, userProfile: { person_id: "s1" }, showToast: () => {}, setEditWeekModal: () => {}, schedSyncBridgeRef: { current: null },
+    useRef: (v) => ({ current: v }), createSchedSync: createSchedSyncH, scheduleRef, commitSchedule: (x) => { scheduleRef.current = x; }, fetch: (u, i) => t2.fetch(u, i), SUPABASE_URL: "https://x.supabase.co",
+    dbAuthHeaders: tokH, dbReadHeaders: tokH, dbHeaders: { apikey: "ANON", Authorization: "Bearer ANON", "Content-Type": "application/json" }, auth: { getSession: () => ({ access_token: "TOK_A" }) }, setSchedSync: () => {},
+    console: { error: (...a) => errs.push(a.map(String).join(" ")), warn: watchH.console.warn, log: () => {} } });
+  const eng = ref.current;
+  await eng.load();
+  t2.control.expiredTokens.add("TOK_A");
+  scheduleRef.current = Object.assign({}, scheduleRef.current, { [WH[0]]: wkH("mine") }); await eng.push();
+  const peerRow = t2.get(WH[1]); t2.put(Object.assign({}, peerRow, { data: wkH("peer"), version: 3, updated_by: "user-b", updated_at: "2026-10-14T11:00:00+00:00" }));
+  const from = t2.log.length;
+  const pr = await eng.pull();
+  const reqs = t2.log.slice(from);
+  check("SE-H A7 the app's own engine (its deps as wired: dbHeaders for anon): after the server's 401 for a token the clock calls fresh, the pull reads as anon and adopts the peer's week; the unsaved week stays pending, nothing written",
+    pr.ok === true && reqs.length >= 2 && reqs.every(e => e.method === "GET" && e.headers.authorization === "Bearer ANON" && e.status === 200) && scheduleRef.current[WH[1]].dayCall === "peer" && eng.pending().join() === WH[0] && errs.length === 0,
+    JSON.stringify({ pr, reqs: reqs.map(e => [e.method, e.headers.authorization, e.status]), errs }));
+  check("SE-H A17(c) no unexpected error in any run: nothing on the context's console, no caught callback error in an engine", watchH.unexpected().length === 0, watchH.unexpected().slice(0, 3).join(" | "));
+})().catch(ex => check("SE-H harness ran without crashing", false, String(ex && ex.stack || ex).split("\n").slice(0, 3).join(" | ")));
+// SE-G. Sync v2 commit 14/n, EXECUTED: the app's intents and gates. The real
+// component code, sliced by its anchors and run in a FRESH context (a free
+// identifier throws), with the real engine against the emulated table:
+//  - the edit gate (the real schedEditable over the real engine) before the
+//    first side effect of the backup / fierce marks, Clear, Factory reset and
+//    Restore — and again after their snapshot's await (or, for Restore, its
+//    read);
+//  - Clear / Restore take their Undo step only once they go ahead, and give
+//    exactly that step back when the job then wrote nothing;
+//  - ONE message per clear / reset / restore / publish outcome: the caller's
+//    words with the engine's notice in them (the app's showToast and the
+//    engine's onToast are one toast slot here, as wired);
+//  - the week editor's pure merge (mergeEditorEdits) as a matrix, then the
+//    real openWeekEditor + saveWeekEdits: someone else's change adopted to a
+//    NON-edited slot is kept, to an EDITED slot the save is refused, naming
+//    it; the editor's note says which (A17(a), design §2.6);
+//  - swap options closed when a week they involve is adopted (A13; the app's
+//    own bridge and engine construction);
+//  - the one-way swap, the trade proposal and the lock read the MIRROR, not a
+//    stale render.
+console.log("\nSE-G. sync v2 14/n: the edit gate on marks / clear / reset / restore, one message per outcome, the editor's merge, swap options on adoption, the mirror in write paths — executed");
+await (async () => {
+  const nsrcG = src.replace(/\r\n/g, "\n");
+  const after = (start, end) => { const i = nsrcG.indexOf(start); if (i < 0 || nsrcG.indexOf(start, i + 1) !== -1) return null; const e = nsrcG.indexOf(end, i + start.length); return e < 0 ? null : nsrcG.slice(i + start.length, e); };
+  const watchG = harnessWatch();
+  const gctx = vm.createContext({ console: watchG.console });
+  const fnG = (names, code) => { try { return vm.runInContext(`(function (env) { const { ${names} } = env; return (${code}); })`, gctx); } catch (ex) { return null; } };
+  const se = require("./sync-engine-se.js");
+  const { createFakeWeeksTable } = require("./fake-weeks-table.js");
+  let createSchedSyncG = null, merge = null;
+  try { const code = se.extractEngine(src); createSchedSyncG = se.compileEngine(code); merge = se.compileMerge(code); } catch (ex) { /* reported just below */ }
+  const HG = vm.runInContext("({ parse, addD, fmt, SHIFT_LABELS })", sandbox);
+  const geSrc = after("  const schedEditable = ", "\n  };\n");
+  const geF = geSrc && fnG("schedSyncRef, showToast, setReauthNeeded", geSrc + "\n  }");
+  const puSrc = after("  const pushUndo = useCallback((counts) => {", "\n  }, []);");
+  const puF = puSrc && fnG("scheduleRef, schedSyncRef, setScheduleHistory", "(counts) => {" + puSrc + "\n  }");
+  const raSrc = after("  const runAuthoritativeSchedule = ", "\n  };\n");
+  const raF = raSrc && fnG("schedSyncRef, commitSchedule, setScheduleHistory", raSrc + "\n  }");
+  const usSrc = after("  const updateSchedule = useCallback((fn) => {", "\n  }, [commitSchedule]);");
+  const usF = usSrc && fnG("scheduleRef, commitSchedule", "(fn) => {" + usSrc + "\n  }");
+  const partsG = { engine: !!createSchedSyncG, merge: typeof merge === "function", gate: !!geF, undo: !!puF, authoritative: !!raF, update: !!usF };
+  if (!Object.values(partsG).every(Boolean)) { check("SE-G the engine, mergeEditorEdits and the app's gate / pushUndo / runAuthoritativeSchedule / updateSchedule are extractable", false, JSON.stringify(partsG)); return; }
+
+  const WG = ["2026-10-12", "2026-10-19", "2026-10-26", "2026-11-02"];
+  const wkG = (dc, nights) => ({ dayCall: dc, nights: Object.assign({ mon: "s2", tue: "s3", wed: "s4", thu: "s5", wknd: "s6" }, nights || {}), off: "s7" });
+  let msG = Date.UTC(2026, 9, 14, 12, 0, 0);
+  const clockG = () => new Date(msG += 1000).toISOString();
+  const internalG = [], appsG = [];
+  const mkTableG = () => createFakeWeeksTable({ baseUrl: "https://x.supabase.co", anonKey: "ANON", users: { TOK_A: "user-a", TOK_B: "user-b" }, clock: clockG,
+    rows: WG.map(k => ({ week_monday: k, data: wkG("s1"), version: 2, updated_by: "user-a", updated_at: "2026-10-01T08:00:00.000Z" })) });
+  const writesG = (t, from, tok) => t.log.slice(from || 0).filter(e => e.method !== "GET" && (!tok || e.headers.authorization === "Bearer " + tok));
+  const S7 = ["s1", "s2", "s3", "s4", "s5", "s6", "s7"].map(id => ({ id, name: id.toUpperCase() }));
+  // One "app" session: the mirror and its one writer, the undo history, ONE
+  // toast slot (the engine's onToast is the app's showToast, as wired), the
+  // real gate / pushUndo / runAuthoritativeSchedule / updateSchedule, the real engine.
+  const mkApp = (t, tok) => {
+    const a = { history: [], toasts: [], reauth: 0, token: tok || "TOK_A", errors: [], ref: { current: {} } };
+    a.commitSchedule = (n) => { a.ref.current = n; };
+    a.setScheduleHistory = (f) => { a.history = typeof f === "function" ? f(a.history) : f; };
+    a.showToast = (m, tone) => a.toasts.push([String(m), tone || "info"]);
+    const hdr = () => ({ apikey: "ANON", Authorization: "Bearer " + (a.token || "ANON") });
+    a.eng = createSchedSyncG({ getState: () => a.ref.current, commit: a.commitSchedule, fetch: (u, i) => t.fetch(u, i), url: "https://x.supabase.co",
+      writeHeaders: hdr, readHeaders: hdr, anonHeaders: () => ({ apikey: "ANON", Authorization: "Bearer ANON" }), canWrite: () => true, token: () => a.token, userId: () => "s1",
+      now: clockG, nowMs: () => msG, onStatus: () => {}, onToast: (m, tone) => a.showToast(m, tone),
+      onWipeBlocked: () => a.showToast("Blocked an unexpected schedule wipe — your saved schedule is safe. Reload to resync.", "error"), // as the app wires it
+      onInternalError: (e) => internalG.push(String(e && e.message || e)), log: watchG.log });
+    a.schedSyncRef = { current: a.eng };
+    appsG.push(a);
+    a.schedEditable = geF({ schedSyncRef: a.schedSyncRef, showToast: a.showToast, setReauthNeeded: () => { a.reauth++; } });
+    a.pushUndo = puF({ scheduleRef: a.ref, schedSyncRef: a.schedSyncRef, setScheduleHistory: a.setScheduleHistory });
+    a.runAuthoritativeSchedule = raF({ schedSyncRef: a.schedSyncRef, commitSchedule: a.commitSchedule, setScheduleHistory: a.setScheduleHistory });
+    a.updateSchedule = usF({ scheduleRef: a.ref, commitSchedule: a.commitSchedule });
+    a.settle = async () => { for (let i = 0; i < 4; i++) await a.eng.idle(); };
+    return a;
+  };
+  const NOT_LOADED = /^The schedule hasn't loaded yet — nothing was changed\./;
+  const SIGNED_OUT = /^Your sign-in has expired — nothing was changed\./;
+  const DEL1 = "Couldn't delete 1 week yet — retrying every minute while the app is open.";
+  const SAVE1 = "Couldn't save 1 week yet — retrying every minute while the app is open.";
+
+  // ── (1) the backup / fierce marks: the edit gate before the set changes ──
+  const flSrc = after("  const setWeekFlag = (monday, flagKey, val) => {", "\n\n  // Generate shareable read-only HTML");
+  const flF = flSrc && fnG("schedEditable, updateSchedule, bkMonday, setBackupMondaySet, setFierceBackupSet, logAudit, setBkMonday, mondayOfToday",
+    "(() => { const setWeekFlag = (monday, flagKey, val) => {" + flSrc + "\n  return { markBackupWeek, unmarkBackupWeek, markFierceBackupWeek, unmarkFierceBackupWeek }; })()");
+  if (!flF) check("SE-G the backup / fierce mark handlers (with setWeekFlag) are extractable", false, "anchor / compile");
+  else {
+    const marks = (a) => {
+      const r = { backup: new Set(), fierce: new Set(), setCalls: 0, audits: [], picker: 0 };
+      r.h = flF({ schedEditable: a.schedEditable, updateSchedule: a.updateSchedule, bkMonday: WG[0],
+        setBackupMondaySet: (f) => { r.setCalls++; r.backup = f(r.backup); }, setFierceBackupSet: (f) => { r.setCalls++; r.fierce = f(r.fierce); },
+        logAudit: (x) => r.audits.push(x), setBkMonday: () => { r.picker++; }, mondayOfToday: () => "2026-10-12" });
+      return r;
+    };
+    const all4 = (m) => { m.h.markBackupWeek(); m.h.unmarkBackupWeek(WG[0]); m.h.markFierceBackupWeek(); m.h.unmarkFierceBackupWeek(WG[0]); };
+    const t0 = mkTableG(), a0 = mkApp(t0), m0 = marks(a0); all4(m0);
+    check("SE-G 14/n the four backup / fierce mark handlers before the schedule has loaded: each refused by the edit gate BEFORE its first side effect — no set change, no schedule write, no audit, the Monday picker untouched, no request; each says why",
+      m0.setCalls === 0 && Object.keys(a0.ref.current).length === 0 && m0.audits.length === 0 && m0.picker === 0 && t0.log.length === 0 && a0.toasts.length === 4 && a0.toasts.every(x => NOT_LOADED.test(x[0])),
+      JSON.stringify({ sets: m0.setCalls, audits: m0.audits, toasts: a0.toasts }));
+    const t1 = mkTableG(), a1 = mkApp(t1); await a1.eng.load(); a1.token = null;
+    const m1 = marks(a1); all4(m1);
+    check("SE-G 14/n …and with the sign-in gone: all four refused the same way (sign in again — the banner raised), nothing changed",
+      m1.setCalls === 0 && m1.audits.length === 0 && m1.picker === 0 && a1.toasts.length === 4 && a1.toasts.every(x => SIGNED_OUT.test(x[0])) && a1.reauth === 4 && a1.ref.current[WG[0]].isBackup === undefined,
+      JSON.stringify(a1.toasts));
+    a1.token = "TOK_A"; a1.toasts.length = 0;
+    const m2 = marks(a1); m2.h.markBackupWeek(); await a1.eng.push();
+    const marked = m2.backup.has(WG[0]) && a1.ref.current[WG[0]].isBackup === true && t1.get(WG[0]).data.isBackup === true && m2.audits.length === 1 && m2.picker === 1;
+    m2.h.unmarkBackupWeek(WG[0]); m2.h.markFierceBackupWeek(); await a1.eng.push();
+    const fierced = t1.get(WG[0]).data.isFierceBackup === true && m2.fierce.has(WG[0]);
+    m2.h.unmarkFierceBackupWeek(WG[0]); await a1.eng.push();
+    check("SE-G 14/n positive control: loaded and signed in, each handler changes its set AND the week's flag together, and the flag lands on the table (mark → isBackup; unmark → off; fierce mark → on; unmark → off), audited, no toast",
+      marked && fierced && !m2.backup.has(WG[0]) && !m2.fierce.has(WG[0]) && t1.get(WG[0]).data.isBackup === false && t1.get(WG[0]).data.isFierceBackup === false && m2.setCalls === 4 && m2.audits.length === 4 && a1.toasts.length === 0,
+      JSON.stringify({ row: t1.get(WG[0]).data, audits: m2.audits.length, toasts: a1.toasts }));
+  }
+
+  // ── (2) Clear: the gate, the Undo step, one message ──
+  const clSrc = after("  const clearSchedule = async () => {", "\n  };\n\n  // ─── Snapshot restore");
+  const clF = clSrc && fnG("schedEditable, confirm, snapshots, schedSyncRef, showToast, scheduleRef, pushUndo, commitSchedule, setSaveStatus, runAuthoritativeSchedule, setTimeout, lastSyncRef, stateBundleRef, setupReadRef, auth, supabase, console, sessionEpochRef, setupBaseRef", "async () => {" + clSrc + "\n  }");
+  if (!clF) check("SE-G clearSchedule is extractable", false, "anchor / compile");
+  else {
+    const clear = async (a, o = {}) => {
+      const w = { confirms: 0, snaps: 0, status: [], upserts: 0 };
+      await clF({ schedEditable: a.schedEditable, confirm: () => { w.confirms++; return true; }, sessionEpochRef: { current: 0 }, setupBaseRef: { current: null },
+        snapshots: o.realSnapshots ? snapshots : { capture: async () => { w.snaps++; if (o.duringSnap) o.duringSnap(); return { ok: !o.snapFails }; } },
+        schedSyncRef: a.schedSyncRef, showToast: a.showToast, scheduleRef: a.ref, pushUndo: a.pushUndo, commitSchedule: a.commitSchedule, setSaveStatus: (s) => w.status.push(s),
+        runAuthoritativeSchedule: a.runAuthoritativeSchedule, setTimeout: () => 0, lastSyncRef: { current: null }, stateBundleRef: { current: (x) => Object.assign({}, x) },
+        setupReadRef: { current: true }, auth: { getSession: () => (a.token ? { access_token: a.token } : null) },
+        supabase: { from: () => ({ upsert: async () => { w.upserts++; return { error: null }; } }) }, console: { error: (...x) => a.errors.push(x.map(String).join(" ")), warn: () => {} } })();
+      await a.settle();
+      return w;
+    };
+    const show = (a, w, t) => JSON.stringify({ w, toasts: a.toasts, history: a.history.length, shown: Object.keys(a.ref.current).length, rows: t.rows().length, errors: a.errors });
+    { const t = mkTableG(), a = mkApp(t); const w = await clear(a);
+      check("SE-G 14/n Clear before the schedule has loaded: refused by the edit gate before even asking — no confirm, no snapshot, no Undo step, no request; it says why",
+        w.confirms === 0 && w.snaps === 0 && a.history.length === 0 && t.log.length === 0 && a.toasts.length === 1 && NOT_LOADED.test(a.toasts[0][0]), show(a, w, t)); }
+    { const t = mkTableG(), a = mkApp(t); await a.eng.load(); a.token = null; const from = t.log.length; const w = await clear(a);
+      check("SE-G 14/n …with the sign-in gone at the tap: refused before the question (sign in again) — nothing changed or written",
+        w.confirms === 0 && w.snaps === 0 && a.history.length === 0 && writesG(t, from).length === 0 && Object.keys(a.ref.current).length === 4 && a.toasts.length === 1 && SIGNED_OUT.test(a.toasts[0][0]), show(a, w, t)); }
+    { const t = mkTableG(), a = mkApp(t); await a.eng.load(); const from = t.log.length; const w = await clear(a, { snapFails: true });
+      check("SE-G 14/n …a snapshot that fails: refused — no Undo step, the screen untouched, nothing written",
+        w.snaps === 1 && a.history.length === 0 && writesG(t, from).length === 0 && Object.keys(a.ref.current).length === 4 && a.toasts.length === 1 && /Couldn't save a backup snapshot/.test(a.toasts[0][0]), show(a, w, t)); }
+    { const t = mkTableG(), a = mkApp(t); await a.eng.load(); const from = t.log.length;
+      // (20/n, review r3 regress-3) the REAL config.js capture, its first request never answering: it times out
+      // (snapshots.timeoutMs), and the clear says what it says for any failed snapshot — never held open
+      const ms0 = snapshots.timeoutMs; snapshots.timeoutMs = 30;
+      setFetch((url, opts = {}) => new Promise((_, rej) => { if (opts.signal) opts.signal.addEventListener("abort", () => rej(new Error("AbortError: the request was aborted"))); }));
+      const t0 = Date.now(); const w = await Promise.race([clear(a, { realSnapshots: true }), new Promise(r => setTimeout(() => r({ held: "no answer in 1 s" }), 1000))]); const ms = Date.now() - t0;
+      snapshots.timeoutMs = ms0;
+      check("SE-G 20/n …the REAL capture with a request that never answers: it times out, and the clear is refused as for any failed snapshot — 'Couldn't save a backup snapshot — clear cancelled. Schedule unchanged.' — no Undo step, the screen untouched, nothing written",
+        ms < 1000 && a.history.length === 0 && writesG(t, from).length === 0 && Object.keys(a.ref.current).length === 4 && a.toasts.length === 1 && a.toasts[0][0] === "Couldn't save a backup snapshot — clear cancelled. Schedule unchanged." && w.upserts === 0, show(a, w, t)); }
+    { const t = mkTableG(), a = mkApp(t); await a.eng.load(); const from = t.log.length; const w = await clear(a, { duringSnap: () => { a.token = null; } });
+      check("SE-G 14/n …the sign-in gone DURING the snapshot's await: the gate again, after it — no Undo step, the screen untouched, nothing written, no 'Clearing…'",
+        w.confirms === 1 && w.snaps === 1 && a.history.length === 0 && writesG(t, from).length === 0 && Object.keys(a.ref.current).length === 4 && a.toasts.length === 1 && SIGNED_OUT.test(a.toasts[0][0]) && w.status.length === 0, show(a, w, t)); }
+    { const t = mkTableG(), a = mkApp(t); await a.eng.load(); a.pushUndo(); const earlier = a.history[0];
+      t.control.fail({ method: "GET", kind: "5xx-before", count: 1 }); const hold = t.control.pause({ method: "GET", count: 1 });
+      const from = t.log.length;
+      const pw = clear(a); await hold.arrived;
+      const clearStep = a.history[1]; a.pushUndo(); const meanwhile = a.history[2];
+      hold.release(); const w = await pw;
+      check("SE-G 14/n …a clear whose job writes NOTHING (the table couldn't be re-read): the screen goes back to what is saved, and its Undo step is taken back — exactly that one (the step before it and one taken meanwhile stay); ONE message (its follow-up push trips no wipe guard: nothing left to delete), no blob save",
+        !!clearStep && clearStep !== earlier && a.history.length === 2 && a.history[0] === earlier && a.history[1] === meanwhile && Object.keys(a.ref.current).length === 4 && writesG(t, from).length === 0
+          && a.toasts.length === 1 && a.toasts[0][0] === "The schedule was NOT cleared — Couldn't read the saved schedule — nothing was changed." && w.upserts === 0, show(a, w, t)); }
+    { const t = mkTableG(), a = mkApp(t); await a.eng.load(); t.control.fail({ method: "DELETE", week: WG[1], kind: "5xx-before", count: 1 });
+      const w = await clear(a);
+      check("SE-G 14/n a partly failed clear: exactly ONE message — 'The schedule wasn't fully cleared.' with the engine's own detail (the week not deleted) — not a second toast from the engine; the Undo step kept; the follow-up push then deletes the week",
+        a.toasts.length === 1 && a.toasts[0][0] === "The schedule wasn't fully cleared. " + DEL1 && a.toasts[0][1] === "error"
+          && a.history.length === 1 && Object.keys(a.history[0].sched).length === 4 && t.rows().length === 0 && w.upserts === 1, show(a, w, t)); }
+    { const t = mkTableG(), a = mkApp(t); await a.eng.load(); const w = await clear(a);
+      check("SE-G 14/n positive control: a clear that lands — the table empty, ONE Undo step (the 4 weeks), 'Schedule cleared', no toast",
+        t.rows().length === 0 && a.history.length === 1 && Object.keys(a.history[0].sched).length === 4 && w.status.includes("Schedule cleared") && a.toasts.length === 0 && w.upserts === 1, show(a, w, t)); }
+  }
+
+  // ── (3) Factory reset: the gate, one message ──
+  const rstSrc = after("  const resetAllData = async () => {", "\n  };\n\n  // ─── Push Notifications");
+  const rstF = rstSrc && fnG("isScheduler, userProfile, alert, schedEditable, prompt, setSaveStatus, setTimeout, snapshots, schedSyncRef, showToast, logAudit, allowWipeSaveRef, everHadRealDataRef, supabase, console, setSurgeons, INIT_SURGEONS, setApps, INIT_APPS, toClearAll, setBackupMondaySet, setFierceBackupSet, scheduleRef, commitSchedule, runAuthoritativeSchedule, setAppShifts, setPriorCounts, setYear1Counts, setStartMonth, setStartYear, sessionEpochRef, resetBusyRef",
+    "async () => {" + rstSrc + "\n  }"); // (23/n: + the reset's hold on the setup autosave — review r6 broke-1)
+  if (!rstF) check("SE-G resetAllData is extractable", false, "anchor / compile");
+  else {
+    const reset = async (a, o = {}) => {
+      const w = { prompts: 0, snaps: 0, status: [], upserts: 0, audits: 0, cleared: 0 };
+      const noop = () => {};
+      await rstF({ isScheduler: true, userProfile: null, alert: noop, schedEditable: a.schedEditable, prompt: () => { w.prompts++; return "RESET"; }, setSaveStatus: (s) => w.status.push(s), setTimeout: () => 0, sessionEpochRef: { current: 0 },
+        snapshots: { capture: async () => { w.snaps++; if (o.duringSnap) o.duringSnap(); return { ok: true }; } }, schedSyncRef: a.schedSyncRef, showToast: a.showToast, logAudit: () => { w.audits++; },
+        allowWipeSaveRef: { current: false }, everHadRealDataRef: { current: true }, resetBusyRef: { current: false }, supabase: { from: () => ({ upsert: async () => { w.upserts++; return { error: null }; } }) },
+        console: { error: (...x) => a.errors.push(x.map(String).join(" ")), warn: noop }, setSurgeons: () => { w.cleared++; }, INIT_SURGEONS: [], setApps: noop, INIT_APPS: [], toClearAll: async () => ({ ok: true }), // (21/n: it answers { ok } — review r4 fixes-2)
+        setBackupMondaySet: noop, setFierceBackupSet: noop, scheduleRef: a.ref, commitSchedule: a.commitSchedule, runAuthoritativeSchedule: a.runAuthoritativeSchedule,
+        setAppShifts: noop, setPriorCounts: noop, setYear1Counts: noop, setStartMonth: noop, setStartYear: noop })();
+      await a.settle();
+      return w;
+    };
+    const showR = (a, w, t) => JSON.stringify({ w, toasts: a.toasts, rows: t.rows().length, shown: Object.keys(a.ref.current).length });
+    { const t = mkTableG(), a = mkApp(t); const w = await reset(a);
+      check("SE-G 14/n Factory reset before the schedule has loaded: refused by the edit gate before anything — no typed confirmation asked, no snapshot, no audit, no stored-data clear; it says why",
+        w.prompts === 0 && w.snaps === 0 && w.audits === 0 && w.upserts === 0 && w.cleared === 0 && t.log.length === 0 && a.toasts.length === 1 && NOT_LOADED.test(a.toasts[0][0]), showR(a, w, t)); }
+    { const t = mkTableG(), a = mkApp(t); await a.eng.load(); const from = t.log.length; const w = await reset(a, { duringSnap: () => { a.token = null; } });
+      check("SE-G 14/n …the sign-in gone DURING its snapshot's await: the gate again before the first write — no audit, nothing cleared or written, 'Reset cancelled'",
+        w.prompts === 1 && w.snaps === 1 && w.audits === 0 && w.upserts === 0 && w.cleared === 0 && writesG(t, from).length === 0 && Object.keys(a.ref.current).length === 4 && w.status.includes("Reset cancelled") && a.toasts.length === 1 && SIGNED_OUT.test(a.toasts[0][0]), showR(a, w, t)); }
+    { const t = mkTableG(), a = mkApp(t); await a.eng.load(); t.control.fail({ method: "DELETE", week: WG[2], kind: "5xx-before", count: 1 }); const w = await reset(a);
+      check("SE-G 14/n a partly failed factory reset: exactly ONE message — 'Factory reset: the schedule wasn't fully cleared.' with the engine's detail; the follow-up push then deletes the week",
+        a.toasts.length === 1 && a.toasts[0][0] === "Factory reset: the schedule wasn't fully cleared. " + DEL1 && w.upserts === 2 && w.audits === 1 && t.rows().length === 0, showR(a, w, t)); }
+    { const t = mkTableG(), a = mkApp(t); await a.eng.load(); const w = await reset(a);
+      check("SE-G 14/n positive control: a factory reset that lands — stored data cleared, the table empty, 'Reset complete', no toast",
+        a.toasts.length === 0 && w.upserts === 2 && w.audits === 1 && t.rows().length === 0 && w.status.includes("Reset complete"), showR(a, w, t)); }
+  }
+
+  // ── (4) Restore: the gate (at the tap, and again once the snapshot is read), the Undo step, one message ──
+  const rvSrc = after("  const restoreConfirmText = ", "\n  // ─── Roll forward counts");
+  const rvF = rvSrc && fnG("schedEditable, isScheduler, userProfile, setRestoreBusyId, setSaveStatus, snapshots, scheduleRef, pushUndo, commitSchedule, runAuthoritativeSchedule, schedSyncRef, confirm, snapshotReasonLabel, showToast, setSurgeons, setApps, setBackupMondaySet, setFierceBackupSet, setAppShifts, setPriorCounts, setYear1Counts, setStartMonth, setStartYear, setNumWeeks, setStartMondayOverride, setHolidayAssignments, setPendingLocks, setSilvisRule, sfRule, SF_RULE_DEFAULT, setDismissedWarnings, lastSyncRef, everHadRealDataRef, logAudit, loadSnapshots, setTimeout, alert, sessionEpochRef",
+    "(() => { const restoreConfirmText = " + rvSrc + "\n  return { restoreSnapshot }; })()");
+  if (!rvF) check("SE-G restoreSnapshot is extractable", false, "anchor / compile");
+  else {
+    const SNAPG = { [WG[0]]: wkG("snapA"), [WG[1]]: wkG("snapB") };
+    const restore = async (a, o = {}) => {
+      const f = stubFetch([
+        { m: "GET", url: snapUrl, json: [{ id: 9, reason: "manual", created_at: "2026-10-13T00:00:00Z", data: { surgeons: INIT_SURGEONS, vacations: { s5: [["2026-09-12", "2026-09-21"]] }, schedule: SNAPG } }] },
+        { m: "GET", url: "call_schedule_data", json: BLOB_ROW }, { m: "GET", url: "schedule_weeks", json: WEEK_ROWS }, { m: "GET", url: "time_off", json: [] },
+        { m: "POST", url: "call_schedule_snapshots", status: 201, json: [] }, { m: "POST", url: "call_schedule_data", status: 201, json: [] },
+      ]);
+      const w = { f, confirms: 0, busy: [], status: [], alerts: 0, atGate: [], adopted: 0 };
+      const noop = () => {};
+      await rvF({ schedEditable: () => { w.atGate.push(f.calls.length); return o.gate ? o.gate(w.atGate.length) : a.schedEditable(); }, isScheduler: true, userProfile: null, sessionEpochRef: { current: 0 },
+        setRestoreBusyId: (v) => w.busy.push(v), setSaveStatus: (v) => w.status.push(v), snapshots, scheduleRef: a.ref, pushUndo: a.pushUndo, commitSchedule: a.commitSchedule,
+        runAuthoritativeSchedule: a.runAuthoritativeSchedule, schedSyncRef: a.schedSyncRef, confirm: () => { w.confirms++; return true; }, snapshotReasonLabel: (r) => r, showToast: a.showToast,
+        setSurgeons: () => { w.adopted++; }, setApps: noop, setBackupMondaySet: noop, setFierceBackupSet: noop, setAppShifts: noop, setPriorCounts: noop, setYear1Counts: noop, setStartMonth: noop, setStartYear: noop,
+        setNumWeeks: noop, setStartMondayOverride: noop, setHolidayAssignments: noop, setPendingLocks: noop, setSilvisRule: noop, sfRule: (x) => x, SF_RULE_DEFAULT: {}, setDismissedWarnings: noop,
+        lastSyncRef: { current: null }, everHadRealDataRef: { current: false }, logAudit: noop, loadSnapshots: noop, setTimeout: () => 0, alert: () => { w.alerts++; } })
+        .restoreSnapshot({ id: 9, reason: "manual", created_at: "2026-10-13T00:00:00Z" });
+      await a.settle();
+      return w;
+    };
+    const showV = (a, w, t) => JSON.stringify({ atGate: w.atGate, confirms: w.confirms, busy: w.busy, cfgWrites: writesIn(w.f).map(c => c.url.replace(/^.*\/rest\/v1\//, "")), toasts: a.toasts, history: a.history.length, rows: t.rows().map(r => r.week_monday + ":" + r.data.dayCall) });
+    { const t = mkTableG(), a = mkApp(t); const w = await restore(a);
+      check("SE-G 14/n Restore before the schedule has loaded: refused by the edit gate at the tap — not busy, the snapshot not even read, nothing asked; it says why",
+        w.atGate.join() === "0" && w.busy.length === 0 && w.f.calls.length === 0 && w.confirms === 0 && t.log.length === 0 && a.toasts.length === 1 && NOT_LOADED.test(a.toasts[0][0]), showV(a, w, t)); }
+    { const t = mkTableG(), a = mkApp(t); await a.eng.load(); const from = t.log.length; const w = await restore(a, { gate: (n) => n === 1 });
+      check("SE-G 14/n …the gate open at the tap but closed once the snapshot is read: asked again THEN (after its one read), before the confirm — nothing asked, captured or written (the blob, the weeks), the screen untouched, never left busy",
+        w.atGate.join() === "0,1" && w.confirms === 0 && writesIn(w.f).length === 0 && writesG(t, from).length === 0 && a.history.length === 0 && Object.keys(a.ref.current).length === 4 && w.busy.join() === "9," && w.status[w.status.length - 1] === "", showV(a, w, t)); }
+    { const t = mkTableG(), a = mkApp(t); await a.eng.load(); a.pushUndo(); const earlier = a.history[0];
+      t.control.fail({ method: "GET", kind: "5xx-before", count: 1 }); const from = t.log.length; const w = await restore(a);
+      check("SE-G 14/n …a restore whose schedule job writes NOTHING (the table couldn't be re-read): its Undo step is taken back (the earlier one stays), the screen back to what is saved, ONE message — (19/n P8, the real config.js: the blob was written first) that the roster and setup WERE restored, the weeks not, and why — and that setup adopted",
+        a.history.length === 1 && a.history[0] === earlier && Object.keys(a.ref.current).length === 4 && a.ref.current[WG[0]].dayCall === "s1" && writesG(t, from).length === 0 && w.adopted === 1
+          && a.toasts.length === 1 && a.toasts[0][0] === "Restore: the roster and setup were restored, but the schedule weeks were NOT restored: Couldn't read the saved schedule. Try the restore again.", showV(a, w, t)); }
+    { const t = mkTableG(), a = mkApp(t); await a.eng.load(); t.control.fail({ method: "PATCH", week: WG[1], kind: "5xx-before", count: 1 }); const w = await restore(a);
+      check("SE-G 14/n a partly failed restore: exactly ONE message — (19/n P8) the roster and setup restored, not every week saved yet, with the engine's own detail (the week not saved) — not 'Restore failed', not a second toast; the setup adopted; its Undo step kept; the follow-up push lands the week",
+        a.toasts.length === 1 && a.toasts[0][0] === "Restore: the roster and setup were restored, but not every schedule week is saved yet: " + SAVE1 && w.adopted === 1 && a.history.length === 1 && w.alerts === 0 && t.rows().length === 2 && t.get(WG[1]).data.dayCall === "snapB", showV(a, w, t)); }
+    { const t = mkTableG(), a = mkApp(t); await a.eng.load(); const w = await restore(a);
+      check("SE-G 14/n positive control: a restore that lands — the table = the snapshot's 2 weeks, one Undo step, the report and the success toast only",
+        t.rows().length === 2 && t.get(WG[0]).data.dayCall === "snapA" && a.history.length === 1 && w.confirms === 1 && w.alerts === 1 && a.toasts.length === 1 && a.toasts[0][1] === "success", showV(a, w, t)); }
+  }
+
+  // ── (5) Generate & Publish: one message with the job's notice ──
+  const pnSrcG = after("  const publishNotLanded = (pr, what) => {", "\n  };\n");
+  const cgSrc = after("  const commitGenerated = async (result) => {", "\n  };\n  genFinishRef.current = finishGenerate;");
+  const cgF = pnSrcG && cgSrc && fnG("publishWeeks, numWeeks, MO, startMonth, startYear, runPublish, setPreviewSchedule, setShowPreview, setSaveStatus, lastSyncRef, buildStateBundle, supabase, console, showToast, setTimeout, sessionEpochRef",
+    "(() => { const publishNotLanded = (pr, what) => {" + pnSrcG + "\n  };\n  return async (result) => {" + cgSrc + "\n  }; })()");
+  if (!cgF) check("SE-G commitGenerated + publishNotLanded are extractable", false, "anchor / compile");
+  else {
+    const NOTICE = "The week of Oct 26 was changed by someone else — showing the latest. Reapply your change if it's still needed.";
+    const cg = async (pr) => {
+      const w = { toasts: [], status: [] };
+      const out = await cgF({ publishWeeks: () => ({ merged: {}, prior: {}, y1: {} }), numWeeks: 2, MO: ["Jan"], startMonth: 0, startYear: 2026, runPublish: () => Promise.resolve(pr), sessionEpochRef: { current: 0 },
+        setPreviewSchedule: () => {}, setShowPreview: () => {}, setSaveStatus: (s) => w.status.push(s), lastSyncRef: { current: null }, buildStateBundle: (x) => Object.assign({}, x),
+        supabase: { from: () => ({ upsert: async () => ({ error: null }) }) }, console: watchG.console, showToast: (m, tone) => w.toasts.push([String(m), tone]), setTimeout: () => 0 })({ [WG[0]]: wkG("g") });
+      w.out = out; return w;
+    };
+    const landed = await cg({ ok: true, results: [], notice: NOTICE }), quiet = await cg({ ok: true, results: [], notice: null }), part = await cg({ ok: false, results: [{ k: WG[0], outcome: "pending" }], notice: SAVE1 });
+    check("SE-G 14/n Generate & Publish: landed with the job's notice (another week someone else changed) → 'Regenerated!' AND that notice, the one toast; landed without one → no toast; not landed → ONE message, the real publishNotLanded with the engine's detail, 'Nobody was notified.'",
+      landed.out.ok === true && landed.status.includes("Regenerated!") && landed.toasts.length === 1 && landed.toasts[0][0] === NOTICE
+        && quiet.out.ok === true && quiet.toasts.length === 0
+        && part.out.ok === false && part.toasts.length === 1 && part.toasts[0][0] === "Regenerated on this screen: " + SAVE1 + " Nobody was notified." && part.toasts[0][1] === "error",
+      JSON.stringify({ landed: landed.toasts, quiet: quiet.toasts, part: part.toasts }));
+  }
+
+  // ── (6) mergeEditorEdits: the matrix (pure) ──
+  {
+    const OPEN = { dayCall: "s1", nights: { mon: "s2", tue: "s3", wed: "s4", thu: "s5", wknd: "s6" }, dayCallOverrides: { "2026-10-14": "s4" }, off: "s7", isBackup: true, holidayCoverage: { "2026-10-17": { surgeonId: "s2" } } };
+    const IDS = S7.map(s => s.id);
+    const APPS = { "2026-10-12": "a1", "2026-10-13": "", "2026-10-14": "a2" };
+    const cl = (x) => JSON.parse(JSON.stringify(x));
+    const D = (f) => { const d = { dayCall: OPEN.dayCall, nights: cl(OPEN.nights), dayCallOverrides: cl(OPEN.dayCallOverrides), apps: cl(APPS), reason: "" }; if (f) f(d); return d; };
+    const L = (f) => { const l = cl(OPEN); if (f) f(l); return l; };
+    const oc = (week) => ({ week: week === undefined ? cl(OPEN) : week, apps: cl(APPS) });
+    const OPTS = { surgeonIds: IDS, flags: { isBackup: true, isFierceBackup: false } };
+    const sorted = (x) => JSON.stringify(x, (k, v) => (v && typeof v === "object" && !Array.isArray(v)) ? Object.keys(v).sort().reduce((o, kk) => (o[kk] = v[kk], o), {}) : v);
+    const M = (openCopy, draft, latest, openEpoch, ep) => {
+      const before = sorted([openCopy, draft, latest]);
+      const r = merge(openCopy, draft, latest, openEpoch, ep, OPTS);
+      r.pure = sorted([openCopy, draft, latest]) === before;
+      return r;
+    };
+    const slots = (r) => (r.slots || []).map(x => x.kind + ":" + x.key).join();
+    const r1 = M(oc(), D(d => { d.dayCall = "s7"; }), L(), 5, 0);
+    check("SE-G 14/n mergeEditorEdits, no adoption since the editor opened: the edited slot onto the latest week, every other field kept (overrides, flags, holiday coverage), 'off' recomputed (coverers included), nothing to create, no APP edits",
+      r1.ok && r1.week.dayCall === "s7" && sorted(r1.week.nights) === sorted(OPEN.nights) && sorted(r1.week.dayCallOverrides) === sorted(OPEN.dayCallOverrides) && r1.week.off === "s1" && r1.week.isBackup === true
+        && sorted(r1.week.holidayCoverage) === sorted(OPEN.holidayCoverage) && r1.creating === false && r1.appEdits.length === 0 && r1.pure, sorted(r1));
+    const r2 = M(oc(), D(d => { d.dayCall = "s7"; }), L(l => { l.nights.tue = "s9"; }), 5, 6);
+    check("SE-G 14/n …someone else's change adopted to a slot NOT edited here (Tue night) → merged: their Tue night kept, the edit applied",
+      r2.ok && r2.week.dayCall === "s7" && r2.week.nights.tue === "s9" && r2.pure, sorted(r2));
+    const r3 = M(oc(), D(d => { d.dayCall = "s7"; }), L(l => { l.dayCall = "s8"; }), 5, 6);
+    check("SE-G 14/n …someone else's change adopted to the slot edited here → REFUSED, naming it (the service week)", !r3.ok && slots(r3) === "dayCall:dayCall" && !r3.week && r3.pure, sorted(r3));
+    const r4 = M(oc(), D(d => { d.dayCall = "s7"; }), L(l => { l.dayCall = "s7"; }), 5, 6);
+    check("SE-G 14/n …the SAME change made underneath → not a conflict: merged", r4.ok && r4.week.dayCall === "s7", sorted(r4));
+    const r5 = M(oc(), D(d => { d.dayCall = "s7"; }), L(l => { l.dayCall = "s8"; }), 5, 5);
+    check("SE-G 14/n …the latest differs but nothing was adopted SINCE the editor opened (the week's epoch equals the open epoch) → no refusal, the edit applied", r5.ok && r5.week.dayCall === "s7", sorted(r5));
+    const r6 = M(oc(), D(d => { d.dayCall = "s7"; d.nights.wed = "s1"; }), L(l => { l.nights.wed = "s9"; l.nights.thu = "s8"; }), 5, 6);
+    check("SE-G 14/n …a night edited here and changed underneath → refused naming only THAT night (the service week edited but not moved; Thu moved but not edited)", !r6.ok && slots(r6) === "night:wed", sorted(r6));
+    const r7 = M(oc(), D(d => { delete d.dayCallOverrides["2026-10-14"]; }), L(l => { l.dayCallOverrides["2026-10-15"] = "s5"; l.nights.mon = "s9"; }), 5, 6);
+    check("SE-G 14/n …Service Day overrides merge per day: the day cleared here goes, their new override on another day and their Mon night stay",
+      r7.ok && sorted(r7.week.dayCallOverrides) === sorted({ "2026-10-15": "s5" }) && r7.week.nights.mon === "s9" && r7.week.dayCall === "s1", sorted(r7));
+    const r8 = M(oc(), D(d => { d.dayCallOverrides["2026-10-14"] = "s2"; }), L(l => { l.dayCallOverrides["2026-10-14"] = "s9"; }), 5, 6);
+    check("SE-G 14/n …an override day edited here and changed underneath → refused naming that day", !r8.ok && slots(r8) === "override:2026-10-14", sorted(r8));
+    const r9 = M(oc(), D(d => { d.dayCall = "s4"; }), L(), 5, 0);
+    check("SE-G 14/n …an override equal to the (new) service surgeon isn't a real override: dropped", r9.ok && r9.week.dayCall === "s4" && !("dayCallOverrides" in r9.week), sorted(r9));
+    const r10 = M(oc(null), { dayCall: "s3", nights: { mon: "s2" }, dayCallOverrides: {}, apps: {} }, undefined, 5, 0);
+    check("SE-G 14/n …a week the save CREATES: the edited slots, the backup / fierce flags from the sets, 'off' — nothing else",
+      r10.ok && r10.creating === true && sorted(r10.week) === sorted({ isBackup: true, isFierceBackup: false, dayCall: "s3", nights: { mon: "s2" }, off: "s1" }), sorted(r10));
+    const r11 = M(oc(null), { dayCall: "s3", nights: {}, dayCallOverrides: {}, apps: {} }, L(l => { l.dayCall = "s8"; }), 5, 6);
+    const r12 = M(oc(), D(d => { d.nights.tue = "s1"; }), undefined, 5, 6);
+    check("SE-G 14/n …the week CREATED elsewhere while this editor was creating it, or DELETED elsewhere while edited here → refused, naming the edited slot",
+      !r11.ok && slots(r11) === "dayCall:dayCall" && !r12.ok && slots(r12) === "night:tue", sorted([r11, r12]));
+    const r13 = M(oc(), D(d => { d.apps["2026-10-12"] = ""; d.apps["2026-10-13"] = "a3"; }), L(l => { l.nights.tue = "s9"; }), 5, 6);
+    check("SE-G 14/n …APP days: exactly the ones edited against what the editor showed (a cleared day included, an untouched one not), handed back for the APP map; no surgeon slot edited → the latest week as it is (their Tue night)",
+      r13.ok && sorted(r13.appEdits) === sorted([["2026-10-12", ""], ["2026-10-13", "a3"]]) && r13.week.nights.tue === "s9" && r13.week.dayCall === "s1", sorted(r13));
+    const r14 = M(oc(), D(d => { d.dayCall = "s7"; d.nights.tue = "s1"; d.dayCallOverrides["2026-10-14"] = "s2"; }), L(l => { l.dayCall = "s8"; l.nights.tue = "s9"; l.dayCallOverrides["2026-10-14"] = "s9"; }), 5, 6);
+    check("SE-G 14/n …several edited slots moved: all named, in order (service week, nights, override days); every call left its inputs untouched (pure)",
+      !r14.ok && slots(r14) === "dayCall:dayCall,night:tue,override:2026-10-14" && [r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13, r14].every(r => r.pure), sorted(r14));
+  }
+
+  // ── (7) the real openWeekEditor + saveWeekEdits on the real engine: someone else's change while it's open ──
+  const oweSrc = after("  const openWeekEditor = useCallback((mondayStr) => {", "\n  }, [appShifts, appShiftsLoaded]);");
+  const oweF = oweSrc && fnG("scheduleRef, parse, addD, fmt, appShifts, appShiftsLoaded, setEditWeekModal, schedSyncRef", "(mondayStr) => {" + oweSrc + "\n  }");
+  const weSrc = after("  const saveWeekEdits = useCallback((openAfter) => {", "\n  }, [editWeekModal,");
+  const weF = weSrc && fnG("editWeekModal, schedule, appShifts, appShiftsLoaded, openWeekEditor, setEditWeekModal, silvisActive, silvisFakId, silvisDays, silvisBlock, silvisRefuse, sfSlotDays, confirm, pushUndo, updateSchedule, scheduleRef, schedEditable, schedSyncRef, mergeEditorEdits, SHIFT_LABELS, backupMondaySet, fierceBackupSet, surgeons, showToast, APP_SHIFTS_NOT_LOADED, setAppShifts, saveAppShifts, logAudit, nameOf, aMap, sMap, schedulerAdminIds, addNotification, sendEmailNotif, setTimeout",
+    "(openAfter) => {" + weSrc + "\n  }");
+  const noteSrc = after("            const adoptRefused = ", ";\n");
+  const noteF = noteSrc && fnG("editWeekModal, appsBase, draft, schedule, mondayStr, mergeEditorEdits, schedSyncRef", noteSrc);
+  const dirtySrc = after("            // Detect unsaved changes: what was changed IN THIS EDITOR", "\n            // After someone else's copy");
+  const dirtyF = dirtySrc && fnG("editWeekModal, draft, schedule, mondayStr", "(() => { //" + dirtySrc + "\n  return hasUnsaved; })()");
+  if (!oweF || !weF || !noteF || !dirtyF) check("SE-G openWeekEditor, saveWeekEdits and the editor's note / unsaved decisions are extractable", false, JSON.stringify({ owe: !!oweF, we: !!weF, note: !!noteF, dirty: !!dirtyF }));
+  else {
+    const t = mkTableG(), A = mkApp(t), P = mkApp(t, "TOK_B");
+    await A.eng.load(); await P.eng.load();
+    let modal = null; const ed = { closed: 0, audits: [], notes: [], appSets: [] };
+    const setModal = (x) => { modal = typeof x === "function" ? x(modal) : x; if (x === null) ed.closed++; };
+    const open = oweF({ scheduleRef: A.ref, parse: HG.parse, addD: HG.addD, fmt: HG.fmt, appShifts: {}, appShiftsLoaded: true, setEditWeekModal: setModal, schedSyncRef: A.schedSyncRef });
+    const edit = (f) => { const d = JSON.parse(JSON.stringify(modal.draft)); f(d); modal = Object.assign({}, modal, { draft: d }); };
+    const save = () => weF({ editWeekModal: modal, schedule: {}, appShifts: {}, appShiftsLoaded: true, openWeekEditor: open, setEditWeekModal: setModal,
+      silvisActive: false, silvisFakId: null, silvisDays: { primary: new Set() }, silvisBlock: () => null, silvisRefuse: () => false, sfSlotDays: () => [], confirm: () => true,
+      pushUndo: A.pushUndo, updateSchedule: A.updateSchedule, scheduleRef: A.ref, schedEditable: A.schedEditable, schedSyncRef: A.schedSyncRef, mergeEditorEdits: merge, SHIFT_LABELS: HG.SHIFT_LABELS,
+      backupMondaySet: new Set(), fierceBackupSet: new Set(), surgeons: S7, showToast: A.showToast, APP_SHIFTS_NOT_LOADED: "APP shifts haven't loaded yet",
+      setAppShifts: (u) => ed.appSets.push(u), saveAppShifts: () => {}, logAudit: (x, msg, meta) => ed.audits.push(meta), nameOf: (x) => x, aMap: {}, sMap: {}, schedulerAdminIds: [],
+      addNotification: (type, title, msg) => ed.notes.push(msg), sendEmailNotif: () => {}, setTimeout: () => {} })(null);
+    const note = () => noteF({ editWeekModal: Object.assign({}, modal, { adoptedAway: true }), appsBase: modal.appsBase, draft: modal.draft, schedule: A.ref.current, mondayStr: modal.mondayStr, mergeEditorEdits: merge, schedSyncRef: A.schedSyncRef });
+    const dirty = (m) => dirtyF({ editWeekModal: m, draft: m.draft, schedule: A.ref.current, mondayStr: m.mondayStr });
+    const peer = async (k, f) => { const w = JSON.parse(JSON.stringify(P.ref.current[k])); f(w); P.commitSchedule(Object.assign({}, P.ref.current, { [k]: w })); await P.eng.push(); };
+    const aWrites = (from) => writesG(t, from, "TOK_A");
+    const changesOf = (i) => (ed.audits[i] && ed.audits[i].changes || []).map(c => c.slot + ":" + c.from + ">" + c.to).join();
+    // control: nobody else touches the week
+    open(WG[0]); edit(d => { d.dayCall = "s7"; }); save(); await A.eng.push();
+    check("SE-G 14/n the real editor, control: the edit saves and lands on the table by CAS (one Undo step, one audit line naming exactly that slot, the editor closed)",
+      t.get(WG[0]).data.dayCall === "s7" && t.get(WG[0]).version === 3 && A.history.length === 1 && changesOf(0) === "Service Week:s1>s7" && ed.closed === 1 && A.toasts.length === 0,
+      JSON.stringify({ row: t.get(WG[0]).data, audits: ed.audits, toasts: A.toasts }));
+    // someone else's change to a slot NOT edited here, adopted while the editor is open
+    open(WG[1]); edit(d => { d.dayCall = "s7"; });
+    await peer(WG[1], w => { w.nights.tue = "p9"; }); await A.eng.pull();
+    const adopted = A.ref.current[WG[1]].nights.tue === "p9" && A.eng.changedSince([WG[1]], modal.openEpoch).length === 1, keepNote = note();
+    // "• unsaved" is what was changed IN this editor: the service week, not their Tue night (an untouched editor on the same week isn't dirty)
+    const dirtyEdited = dirty(modal), dirtyUntouched = dirty(Object.assign({}, modal, { draft: JSON.parse(JSON.stringify(Object.assign({}, modal.draft, { dayCall: "s1" }))) }));
+    check("SE-G 14/n the real editor's '• unsaved': after someone else's change to another slot is adopted, it counts only what was changed IN this editor (the service week) — an editor with no edit of its own isn't dirty",
+      dirtyEdited === true && dirtyUntouched === false, JSON.stringify({ dirtyEdited, dirtyUntouched }));
+    save(); await A.eng.push();
+    check("SE-G 14/n the real editor: someone else's change to a slot NOT edited here (Tue night) is adopted while it's open → Save keeps THEIR value and writes the edit: the table has both; the audit / notice name only the edited slot; the editor's note said it would save (not refused)",
+      adopted && keepNote === false && t.get(WG[1]).data.dayCall === "s7" && t.get(WG[1]).data.nights.tue === "p9" && changesOf(1) === "Service Week:s1>s7" && ed.notes.length === 2 && !/Tue Night/.test(ed.notes[1]) && A.toasts.length === 0 && ed.closed === 2,
+      JSON.stringify({ adopted, keepNote, row: t.get(WG[1]).data, audits: ed.audits[1], toasts: A.toasts }));
+    // someone else's change to the slot edited here
+    open(WG[2]); edit(d => { d.nights.tue = "s1"; });
+    await peer(WG[2], w => { w.nights.tue = "p8"; }); await A.eng.pull();
+    const refuseNote = note(), fromR = t.log.length, histR = A.history.length, auditsR = ed.audits.length;
+    save(); await A.eng.push();
+    check("SE-G 14/n the real editor: someone else's change to the slot edited here (Tue night) adopted while it's open → Save REFUSED, naming it — nothing written (no request, no Undo step, no audit / notice), the editor stays open with its draft, the screen keeps their value; the note said so",
+      refuseNote === true && aWrites(fromR).length === 0 && A.history.length === histR && ed.audits.length === auditsR && ed.closed === 2 && modal && modal.mondayStr === WG[2] && modal.draft.nights.tue === "s1"
+        && A.ref.current[WG[2]].nights.tue === "p8" && t.get(WG[2]).data.nights.tue === "p8" && A.toasts.length === 1
+        && /^This week was changed by someone else while the editor was open — nothing was saved \(surgeon slots or APP days\)\. They changed the Tue Night you edited here\./.test(A.toasts[0][0]),
+      JSON.stringify({ refuseNote, toasts: A.toasts, writes: aWrites(fromR).length }));
+    // the same change made underneath: nothing left to save
+    A.toasts.length = 0; setModal(null);
+    open(WG[3]); edit(d => { d.dayCall = "s7"; });
+    await peer(WG[3], w => { w.dayCall = "s7"; }); await A.eng.pull();
+    const fromS = t.log.length; save(); await A.eng.push();
+    check("SE-G 14/n the real editor: the SAME change made by someone else meanwhile → no refusal, nothing left to write (closes quietly)",
+      A.toasts.length === 0 && aWrites(fromS).length === 0 && modal === null && t.get(WG[3]).data.dayCall === "s7", JSON.stringify({ toasts: A.toasts, modal: !!modal }));
+    // an APP-only save on a Monday with no week: the APP map only — no empty week created
+    const NEW = "2026-11-09";
+    open(NEW); edit(d => { d.apps["2026-11-10"] = "a3"; });
+    const fromN = t.log.length, histN = A.history.length; save(); await A.eng.push();
+    check("SE-G 14/n the real editor: an APP-only save on a Monday that has no week writes the APP day and creates NO schedule week (no insert, no Undo step)",
+      ed.appSets.length === 1 && !(NEW in A.ref.current) && aWrites(fromN).length === 0 && A.history.length === histN && modal === null, JSON.stringify({ appSets: ed.appSets.length, shown: NEW in A.ref.current }));
+  }
+
+  // ── (8) swap options closed when a week they involve is adopted (A13): the app's OWN bridge + engine construction ──
+  const wireSrcG = after("  schedSyncBridgeRef.current = { canWrite:", "\n\n  // The edit gates");
+  const wireG = wireSrcG && fnG("isPublicMode, userProfile, showToast, setEditWeekModal, swapSuggestions, swapTarget, setSwapSuggestions, setSwapTarget, schedSyncBridgeRef, useRef, createSchedSync, scheduleRef, commitSchedule, fetch, SUPABASE_URL, dbAuthHeaders, dbReadHeaders, dbHeaders, auth, setSchedSync, console",
+    "(() => { schedSyncBridgeRef.current = { canWrite:" + wireSrcG + "\n  return schedSyncRef; })()");
+  if (!wireG) check("SE-G the app's bridge + engine construction are extractable", false, "anchor / compile");
+  else {
+    const t = mkTableG(), P = mkApp(t, "TOK_B");
+    const st = { suggestions: null, target: null, sets: [], toasts: [], warns: [], errors: [], modalCalls: 0 };
+    const bridge = { current: null }, engRef = { current: null }, ref = { current: {} };
+    const hdr = () => ({ apikey: "ANON", Authorization: "Bearer TOK_A" });
+    // one "render": the bridge is re-made with this render's swap state (the engine is made once, in its ref)
+    const render = () => wireG({ isPublicMode: false, userProfile: { person_id: "s1" }, showToast: (m, tone) => st.toasts.push([String(m), tone]), setEditWeekModal: () => { st.modalCalls++; },
+      swapSuggestions: st.suggestions, swapTarget: st.target, setSwapSuggestions: (v) => { st.sets.push("suggestions:" + v); st.suggestions = v; }, setSwapTarget: (v) => { st.sets.push("target:" + v); st.target = v; },
+      schedSyncBridgeRef: bridge, useRef: () => engRef, createSchedSync: createSchedSyncG, scheduleRef: ref, commitSchedule: (n) => { ref.current = n; }, fetch: (u, i) => t.fetch(u, i), SUPABASE_URL: "https://x.supabase.co",
+      dbAuthHeaders: hdr, dbReadHeaders: hdr, dbHeaders: { apikey: "ANON", Authorization: "Bearer ANON" }, auth: { getSession: () => ({ access_token: "TOK_A" }) }, setSchedSync: () => {},
+      console: { error: (...x) => st.errors.push(x.map(String).join(" ")), warn: (...x) => st.warns.push(x.map(String).join(" ")), log: () => {} } });
+    render(); const eng = engRef.current; await eng.load(); await P.eng.load();
+    const peer = async (k, dc) => { P.commitSchedule(Object.assign({}, P.ref.current, { [k]: wkG(dc) })); await P.eng.push(); };
+    const offer = () => { st.target = { mondayStr: WG[0], shift: "tue", surgeonId: "s3", surgeonName: "S3" };
+      st.suggestions = [{ candidateId: "s5", returnSwaps: [{ mondayStr: WG[2], shift: "wed", label: "Wed" }] }, { candidateId: "s6", returnSwaps: [] }]; st.sets.length = 0; st.toasts.length = 0; render(); };
+    offer();
+    await peer(WG[1], "p1"); await eng.pull();
+    const keptOther = st.sets.length === 0 && !!st.suggestions && ref.current[WG[1]].dayCall === "p1" && st.toasts.length === 0;
+    await peer(WG[2], "p2"); await eng.pull();
+    const byReturn = st.sets.join() === "suggestions:null,target:null" && st.toasts.length === 1 && st.toasts[0][1] === "info" && st.toasts[0][0] === "Someone else just changed a week these swap options were for — they were closed. Find swaps again.";
+    offer(); await peer(WG[0], "p0"); await eng.pull();
+    const byTarget = st.sets.join() === "suggestions:null,target:null" && st.toasts.length === 1;
+    check("SE-G 14/n A13 swap options open for the Tue night of W1 (one with a return swap on W3): a pull adopting someone else's change to W2 leaves them; to W3 (a return swap's week) closes them, and says why; to W1 (the target's week) closes them",
+      keptOther && byReturn && byTarget, JSON.stringify({ keptOther, byReturn, byTarget, sets: st.sets, toasts: st.toasts }));
+    st.target = { mondayStr: WG[0], shift: "tue" }; st.suggestions = null; st.sets.length = 0; st.toasts.length = 0; render();
+    await peer(WG[0], "p0b"); await eng.pull();
+    check("SE-G 14/n A13 …a week merely PICKED in the swap tool (no options found yet) stays picked when that week is adopted; the bridge never threw (a throw is logged as a warning) and no error",
+      st.sets.length === 0 && !!st.target && st.target.mondayStr === WG[0] && st.toasts.length === 0 && ref.current[WG[0]].dayCall === "p0b" && st.modalCalls >= 4
+        && !st.warns.some(x => / threw/.test(x)) && st.errors.length === 0, JSON.stringify({ sets: st.sets, warns: st.warns, errors: st.errors })); // (A17(c): any caught callback error the engine logged)
+  }
+
+  // ── (9) write paths read the MIRROR: the one-way swap, the trade proposal, the lock ──
+  {
+    const W1 = "2030-01-07", W2 = "2030-01-14";
+    const MIRROR = { [W1]: { dayCall: "s1", nights: { mon: "s2", tue: "s4", wed: "s5", thu: "s2", wknd: "s1" }, off: null }, [W2]: { dayCall: "s2", nights: { mon: "s1", tue: "s1", wed: "s6", thu: "s1", wknd: "s2" }, off: null } };
+    const STALE = { [W1]: { dayCall: "s1", nights: { mon: "s2", tue: "s3", wed: "s5", thu: "s2", wknd: "s1" }, off: null }, [W2]: { dayCall: "s2", nights: { mon: "s1", tue: "s1", wed: "s3", thu: "s1", wknd: "s2" }, off: null } }; // the render, a pull behind
+    const ssSrc = after("  const swapShift = ", "\n  };\n");
+    const ssF = ssSrc && fnG("schedEditable, schedule, scheduleRef, showToast, silvisActive, silvisBlock, silvisRefuse, pushUndo, updateSchedule, surgeons, setEditShift, setEditingWeek, setSwapSuggestions, setSwapTarget, sMap, SHIFT_LABELS, schedulerAdminIds, addNotification, sendEmailNotif", ssSrc + "\n  }");
+    const stSrc = after("  const submitTradeRequest = useCallback(async () => {", "\n  }, [tradeFrom,");
+    const stF = stSrc && fnG("tradeSubmitBusyRef, showToast, tradeFrom, tradeTo, tradeWeek, tradeShift, tradeReturnWeek, tradeReturnShift, isScheduler, alert, confirm, silvisActive, silvisBlock, silvisRefuse, schedule, scheduleRef, surgeons, SHIFT_LABELS, db, writeFailReason, setTradeRequests, setTradeWeek, setTradeShift, setTradeReturnWeek, setTradeReturnShift, tradeProposeMsg, logAudit, addNotification, sendEmailNotif, console", "async () => {" + stSrc + "\n  }");
+    const alSrc = after("            const addLock = () => {", "\n            };\n");
+    const alF = alSrc && fnG("newLockWeek, newLockSlot, newLockSurgeon, silvisActive, silvisBlock, silvisRefuse, schedule, scheduleRef, setPendingLocks, setNewLockWeek, setNewLockSlot, setNewLockSurgeon", "() => {" + alSrc + "\n            }");
+    if (!ssF || !stF || !alF) check("SE-G swapShift, submitTradeRequest and addLock are extractable", false, JSON.stringify({ ss: !!ssF, st: !!stF, al: !!alF }));
+    else {
+      const sw = (expect) => {
+        const rec = { notes: [], emails: [], silvisWk: undefined, next: null, toasts: [], undo: 0 };
+        ssF({ schedEditable: () => true, schedule: STALE, scheduleRef: { current: MIRROR }, showToast: (m) => rec.toasts.push(String(m)), silvisActive: true,
+          silvisBlock: (id, m, s, wk) => { rec.silvisWk = wk; return null; }, silvisRefuse: () => false, pushUndo: () => { rec.undo++; }, updateSchedule: (f) => { rec.next = f(MIRROR); },
+          surgeons: S7, setEditShift: () => {}, setEditingWeek: () => {}, setSwapSuggestions: () => {}, setSwapTarget: () => {},
+          sMap: { s3: { name: "CCC" }, s4: { name: "DDD" }, s6: { name: "FFF" } }, SHIFT_LABELS: HG.SHIFT_LABELS, schedulerAdminIds: ["s7"],
+          addNotification: (type, title, msg, meta, targets) => rec.notes.push({ msg, targets: targets.slice().sort() }), sendEmailNotif: (type, p, targets) => rec.emails.push({ p, targets: targets.slice().sort() }) })(W1, "tue", "s6", expect);
+        return rec;
+      };
+      const rc = sw(undefined), ro = sw("s4"), rs = sw("s3");
+      check("SE-G 14/n (5) the one-way swap reads the MIRROR, not a stale render: a record correction names the holder the mirror has (DDD → FFF, DDD notified — not the render's CCC), hands the Silvis check the mirror's week, writes onto the mirror",
+        rc.notes.length === 1 && / DDD → FFF$/.test(rc.notes[0].msg) && rc.notes[0].targets.join() === "s4,s6,s7" && rc.emails[0].p.old_surgeon === "DDD" && rc.emails[0].targets.join() === "s4,s6,s7"
+          && rc.silvisWk === MIRROR[W1] && rc.next[W1].nights.tue === "s6" && rc.undo === 1, JSON.stringify(rc));
+      check("SE-G 14/n (5) …from suggestions: the expected holder is checked against the mirror — the current one (DDD) lands, the render's stale one (CCC) is refused with zero writes / notices",
+        ro.notes.length === 1 && !!ro.next && ro.undo === 1 && rs.notes.length === 0 && rs.next === null && rs.undo === 0 && /This swap is out of date/.test(rs.toasts.join(" ")), JSON.stringify([ro.notes, rs.toasts]));
+      const tr = { blocks: [], inserts: 0 };
+      await stF({ tradeSubmitBusyRef: { current: false }, showToast: () => {}, tradeFrom: "s4", tradeTo: "s6", tradeWeek: W1, tradeShift: "tue", tradeReturnWeek: W2, tradeReturnShift: "wed", isScheduler: true, alert: () => {}, confirm: () => true,
+        silvisActive: true, silvisBlock: (id, m, s, wk) => { tr.blocks.push(wk); return "hit"; }, silvisRefuse: () => true, schedule: STALE, scheduleRef: { current: MIRROR }, surgeons: S7, SHIFT_LABELS: HG.SHIFT_LABELS,
+        db: { insert: async () => { tr.inserts++; return { data: null }; } }, writeFailReason: () => "", setTradeRequests: () => {}, setTradeWeek: () => {}, setTradeShift: () => {}, setTradeReturnWeek: () => {}, setTradeReturnShift: () => {},
+        tradeProposeMsg: () => "", logAudit: () => {}, addNotification: async () => {}, sendEmailNotif: () => {}, console: watchG.console })();
+      const lk = { wk: undefined, locks: null };
+      alF({ newLockWeek: W1, newLockSlot: "tue", newLockSurgeon: "s6", silvisActive: true, silvisBlock: (id, m, s, wk) => { lk.wk = wk; return null; }, silvisRefuse: () => false, schedule: STALE, scheduleRef: { current: MIRROR },
+        setPendingLocks: (f) => { lk.locks = f([]); }, setNewLockWeek: () => {}, setNewLockSlot: () => {}, setNewLockSurgeon: () => {} })();
+      check("SE-G 14/n (5) …the trade proposal's Silvis check gets the mirror's weeks for both legs (refused here: nothing inserted), and the lock's gets the mirror's week (then the lock is added)",
+        tr.blocks.length === 2 && tr.blocks[0] === MIRROR[W1] && tr.blocks[1] === MIRROR[W2] && tr.inserts === 0 && lk.wk === MIRROR[W1] && Array.isArray(lk.locks) && lk.locks.length === 1,
+        JSON.stringify({ blocks: tr.blocks.map(b => b === MIRROR[W1] ? "mirror1" : b === MIRROR[W2] ? "mirror2" : "other"), lock: lk.wk === MIRROR[W1] }));
+    }
+  }
+  check("SE-G no engine internal error in any run", internalG.length === 0, internalG.join(" | "));
+  const badG = appsG.reduce((acc, a) => acc.concat(a.errors), watchG.unexpected());
+  check("SE-G A17(c) no unexpected error in any run: no console.error (the sliced code's context, every session's console handed in), no caught callback error in an engine", badG.length === 0, badG.slice(0, 3).join(" | "));
+})().catch(ex => check("SE-G harness ran without crashing", false, String(ex && ex.stack || ex).split("\n").slice(0, 3).join(" | ")));
+{
+  const { spawnSync } = require("child_process");
+  const r = spawnSync(process.execPath, [path.join(__dirname, "fake-weeks-table.test.js")], { encoding: "utf8" });
+  const m = /(\d+)\/(\d+) tests passed/.exec(r.stdout || "");
+  check("SE-T the emulated schedule_weeks table passes its own contract tests",
+    r.status === 0 && !!m && m[1] === m[2] && Number(m[2]) >= 44,
+    ((r.stdout || "").split("\n").filter(l => /^FAIL/.test(l)).join(" | ") || r.stderr || "no verdict").slice(0, 300));
+}
+
 // ─── Verdict ───
+verdictReached = true;
 console.log(`\n${checks} checks, ${failures.length} failure(s)`);
 if (failures.length) {
   console.error("\nFAIL — sync/snapshot guard regression:");
