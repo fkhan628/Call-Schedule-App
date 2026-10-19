@@ -3659,9 +3659,15 @@ function CallSchedule() {
     // This session, at the tap (review r4 branch-2): the decline (its status
     // write) is this account's, done — but after a session change meanwhile
     // nothing more of it is done, sent or said in the next session: no list
-    // update, no notice, no e-mail, no toast.
-    const ep = sessionEpochRef.current;
+    // update, no notice, no e-mail, no toast. Its audit line is still written
+    // — as this account: the tap's headers, and the tap's name. (The deps
+    // below list what logAudit reads — userProfile, surgeons, mySurgeon — as
+    // the deny's do; with only the notice deps this callback kept a closure
+    // from before the profile loaded, and every decline was logged "Unknown".)
+    const ep = sessionEpochRef.current, tapH = dbAuthHeaders();
     const live = () => sessionEpochRef.current === ep;
+    const declineMsg = tradeDeclineMsg(req);
+    const declineAudit = (hdrs) => logAudit("trade.decline", declineMsg, { request_id: req.id }, hdrs);
     try {
       // Fail-closed status write with a status precondition — same pattern
       // (and same reasons) as acceptTradeRequest above: HTTP failure must not
@@ -3669,7 +3675,7 @@ function CallSchedule() {
       // already handled elsewhere (race/withdraw) must no-op cleanly.
       const declineRes = await fetch(`${SUPABASE_URL}/rest/v1/shift_trade_requests?id=eq.${req.id}&status=eq.pending`, {
         method: "PATCH",
-        headers: { ...dbAuthHeaders(), "Content-Type": "application/json", Prefer: "return=representation" },
+        headers: { ...tapH, "Content-Type": "application/json", Prefer: "return=representation" },
         body: JSON.stringify({ status: "declined", reviewed_at: new Date().toISOString() }),
       });
       if (!declineRes.ok) {
@@ -3678,14 +3684,13 @@ function CallSchedule() {
         return;
       }
       const declineRows = await declineRes.json().catch(() => []);
-      if (!live()) return; // another session now
+      if (!live()) { if (Array.isArray(declineRows) && declineRows.length) declineAudit(tapH); return; } // another session now: recorded as this account, nothing more
       if (!Array.isArray(declineRows) || declineRows.length === 0) {
         showToast("This trade was already handled or withdrawn — nothing was changed.", "error");
         return; // realtime/60s poll will refresh the visible status
       }
       setTradeRequests(prev => prev.map(r => r.id === req.id ? { ...r, status: "declined" } : r));
-      const declineMsg = tradeDeclineMsg(req);
-      logAudit("trade.decline", declineMsg, { request_id: req.id });
+      declineAudit();
       await addNotification("trade_declined", "Shift Trade Declined",
         declineMsg,
         { from_surgeon_id: req.from_surgeon_id, to_surgeon_id: req.to_surgeon_id },
@@ -3693,19 +3698,21 @@ function CallSchedule() {
       if (!live()) return; // another session now: no e-mail from it
       sendEmailNotif("trade_declined", { from_name: req.from_surgeon_name, to_name: req.to_surgeon_name, shift: req.shift_label, week: req.week_monday, detail: declineMsg }, [req.from_surgeon_id, req.to_surgeon_id], ep);
     } catch(e) { console.error("Decline trade error:", e); if (live()) showToast("Couldn't decline the trade — check your connection and try again.", "error"); }
-  }, [addNotification, sendEmailNotif]);
+  }, [addNotification, sendEmailNotif, userProfile, surgeons, mySurgeon]);
 
   // ─── Delete Trade Request ───
   // (review r5 fix-1) This one and the two request deletes below: sent with
   // this account's headers at the tap; after a session change during the
   // DELETE, nothing of it is said or changed on the next session's screen.
+  // A failed DELETE says so and leaves the list alone — the row is still
+  // there, so it stays on screen (it used to vanish until the next reload).
   const deleteTradeRequest = useCallback(async (reqId) => {
     if (!confirm("Delete this trade request?")) return;
     const ep = sessionEpochRef.current;
     try {
       const res = await fetch(`${SUPABASE_URL}/rest/v1/shift_trade_requests?id=eq.${reqId}`, { method: "DELETE", headers: { ...dbAuthHeaders(), Prefer: "return=minimal" } });
       if (sessionEpochRef.current !== ep) { if (!res.ok) console.error("Delete trade request failed:", res.status); return; } // another session now
-      if (!res.ok) { console.error("Delete trade request failed:", res.status); showToast("Couldn't delete the trade request — check your connection and try again.", "error"); }
+      if (!res.ok) { console.error("Delete trade request failed:", res.status); showToast("Couldn't delete the trade request — check your connection and try again.", "error"); return; } // not deleted: the row stays
       setTradeRequests(prev => prev.filter(r => r.id !== reqId));
     } catch(e) {
       console.error("Delete trade request failed:", e);
@@ -3745,7 +3752,7 @@ function CallSchedule() {
     try {
       const res = await fetch(`${SUPABASE_URL}/rest/v1/vacation_requests?id=eq.${reqId}`, { method: "DELETE", headers: { ...dbAuthHeaders(), Prefer: "return=minimal" } });
       if (sessionEpochRef.current !== ep) { if (!res.ok) console.error("Delete vacation request failed:", res.status); return; } // another session now
-      if (!res.ok) { console.error("Delete vacation request failed:", res.status); showToast("Couldn't delete the request — check your connection and try again.", "error"); }
+      if (!res.ok) { console.error("Delete vacation request failed:", res.status); showToast("Couldn't delete the request — check your connection and try again.", "error"); return; } // not deleted: the row stays
       setVacRequests(prev => prev.filter(r => r.id !== reqId));
     } catch(e) { console.error("Delete vacation request error:", e); if (sessionEpochRef.current === ep) showToast("Couldn't delete the request — check your connection and try again.", "error"); }
   }, []);
@@ -3877,7 +3884,7 @@ function CallSchedule() {
     try {
       const res = await fetch(`${SUPABASE_URL}/rest/v1/vacation_requests?status=neq.pending`, { method: "DELETE", headers: { ...dbAuthHeaders(), Prefer: "return=minimal" } });
       if (sessionEpochRef.current !== ep) { if (!res.ok) console.error("Clear reviewed requests failed:", res.status); return; } // another session now
-      if (!res.ok) { console.error("Clear reviewed requests failed:", res.status); showToast("Couldn't clear reviewed requests — check your connection and try again.", "error"); }
+      if (!res.ok) { console.error("Clear reviewed requests failed:", res.status); showToast("Couldn't clear reviewed requests — check your connection and try again.", "error"); return; } // nothing cleared: the list stays
       setVacRequests(prev => prev.filter(r => r.status === "pending"));
     } catch(e) { console.error("Clear reviewed requests error:", e); if (sessionEpochRef.current === ep) showToast("Couldn't clear reviewed requests — check your connection and try again.", "error"); }
   }, []);
@@ -12065,12 +12072,12 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                         })()}
                         {canAnswer(r) && (
                           <>
-                            {tradeLegsNotStarted(r) && <button onClick={()=>acceptTradeRequest(r)} style={{background:"#e8f8e8",border:"1px solid #a0d8a0",color:"#1a8040",borderRadius:6,padding:"3px 10px",fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:font}}>✓ Accept</button>}
-                            <button onClick={()=>declineTradeRequest(r)} style={{background:"#fce8e8",border:"1px solid #e0b0b0",color:"#c04040",borderRadius:6,padding:"3px 10px",fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:font}}>✕ Decline</button>
+                            {tradeLegsNotStarted(r) && <button onClick={()=>acceptTradeRequest(r)} style={{background:"#e8f8e8",border:"1px solid #a0d8a0",color:"#1a8040",borderRadius:6,padding:"3px 10px",fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:font,...(dk ? {background:"#1b4d2c",border:"1px solid #3a8a55",color:"#d6f5e0"} : {})}}>✓ Accept</button>}
+                            <button onClick={()=>declineTradeRequest(r)} style={{background:"#fce8e8",border:"1px solid #e0b0b0",color:"#c04040",borderRadius:6,padding:"3px 10px",fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:font,...(dk ? {background:"#5c1f1f",border:"1px solid #a04848",color:"#fadada"} : {})}}>✕ Decline</button>
                           </>
                         )}
                         {mySurgeon === r.from_surgeon_id && !canAnswer(r) && tradeLegsNotStarted(r) && <span style={{fontSize:10,color:"#8a6a10",fontWeight:600}}>Waiting for {r.to_surgeon_name}'s answer</span>}
-                        {mySurgeon === r.from_surgeon_id && <button onClick={()=>deleteTradeRequest(r.id)} style={{background:"none",border:"1px solid #d0d8e0",color:"#8a94a0",borderRadius:5,padding:"2px 8px",fontSize:10,cursor:"pointer",fontFamily:font}}>Withdraw</button>}
+                        {mySurgeon === r.from_surgeon_id && <button onClick={()=>deleteTradeRequest(r.id)} style={{background:"none",border:"1px solid #d0d8e0",color:"#8a94a0",borderRadius:5,padding:"2px 8px",fontSize:10,cursor:"pointer",fontFamily:font,...(dk ? {background:"#2a3448",border:"1px solid #4a5670",color:"#e0e6f0"} : {})}}>Withdraw</button>}
                         {mySurgeon !== r.to_surgeon_id && mySurgeon !== r.from_surgeon_id && !isScheduler && (
                           <span style={{fontSize:10,color:"#8a6a10",fontWeight:600}}>Awaiting {r.to_surgeon_name}'s response</span>
                         )}

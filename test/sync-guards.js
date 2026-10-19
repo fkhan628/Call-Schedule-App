@@ -7289,6 +7289,176 @@ console.log("\nAZ. Mine works for an APP");
   }
 }
 
+// ─── BA. Requests: a decline is audited as who declined; a failed delete keeps its row; the trade buttons in dark mode (UX audit 2026-10-19) ───
+// (1) declineTradeRequest's useCallback listed only its notice deps, so React kept the closure of the render those
+//     last changed in — before the profile had loaded — and its logAudit wrote actor_id null, actor_name "Unknown"
+//     (the accept, whose deps change with the schedule, logged the account). It now lists what logAudit reads
+//     (userProfile, surgeons, mySurgeon), as the deny does; and a decline whose session changed while its status
+//     PATCH was out is still audited — as the account that tapped it, with the tap's headers — while nothing else
+//     of it is done or said in the next session (the sync-v2 I4 rule).
+// (2) deleteTradeRequest, deleteVacRequest and clearReviewedRequests said "Couldn't delete" on a failed DELETE and
+//     then took the row off the list anyway; now the list is left alone (SE-X24's in-session control flipped).
+// (3) The dark sheet's `button { color: #c0c8d8 !important }` paints every button's text light grey (an inline
+//     colour can't beat it); the pending trade's Accept / Decline / Withdraw kept light backgrounds (~1.5:1). In
+//     dark mode they now get dark backgrounds (inline, on dk) that the forced text reads on.
+//   BA1 the REAL declineTradeRequest hook (its deps array included) and the REAL logAudit, rendered as React renders
+//       them — once before the profile loads, then signed in as RPC (s3) — and tapped: its audit line names RPC
+//   BA2 …the session changing while its status PATCH is out (another account rendered meanwhile; or a sign-out):
+//       the line is still RPC's, sent with RPC's token; no list update, notice, e-mail or toast; a PATCH that
+//       declined nothing (zero rows), or failed, is not audited
+//   BA3 the three deletes, executed: a failing (500) or thrown DELETE leaves the list setter uncalled and says so
+//       once; a 204 takes the row(s) off (the updater, run); after a session change nothing is said or changed
+//   BA4 dark mode: Accept / Decline / Withdraw — their browser-serialized styles against the app's real dark sheet:
+//       the colour the sheet forces on a button's text, and the inline colour, each ≥ 4.5:1 on its dark
+//       background; light mode unchanged
+console.log("\nBA. Requests: who declined, failed deletes, the trade buttons in dark mode");
+await (async () => {
+  const nsrcBA = src.replace(/\r\n/g, "\n");   // a Windows checkout is CRLF, CI's is LF
+  const spinBA = async (n) => { for (let j = 0; j < (n || 20); j++) await null; };
+  const quietBA = { error() {}, warn() {}, log() {}, info() {} };
+  const respBA = (status, json) => ({ ok: status >= 200 && status < 300, status, json: async () => json, text: async () => JSON.stringify(json) });
+  // a whole `const NAME = useCallback(…, [deps]);` — its deps array included — and the component's logAudit
+  const hookBA = (name) => {
+    const head = `  const ${name} = useCallback(`, a = nsrcBA.indexOf(head);
+    if (a < 0 || nsrcBA.indexOf(head, a + 1) !== -1) return null;
+    const d = nsrcBA.indexOf("\n  }, [", a), e = d < 0 ? -1 : nsrcBA.indexOf("]);\n", d);
+    return d < 0 || e < 0 ? null : nsrcBA.slice(a + 2, e + 3);
+  };
+  const logSrcBA = (() => { const head = "  const logAudit = (action, summary, details, hdrs) => {", a = nsrcBA.indexOf(head), e = a < 0 ? -1 : nsrcBA.indexOf("\n  };\n", a); return a < 0 || e < 0 || nsrcBA.indexOf(head, a + 1) !== -1 ? null : nsrcBA.slice(a + 2, e + 5); })();
+  const declSrcBA = hookBA("declineTradeRequest");
+  let mkDecline = null;
+  try {
+    mkDecline = logSrcBA && declSrcBA ? vm.runInContext(`(function (env) { const { useCallback, db, fetch, SUPABASE_URL, dbAuthHeaders, console, showToast, setTradeRequests, tradeDeclineMsg, addNotification, sendEmailNotif, sessionEpochRef, userProfile, surgeons, mySurgeon } = env;\n${logSrcBA}\n${declSrcBA}\n  return declineTradeRequest; })`, sandbox) : null;
+  } catch (ex) { mkDecline = null; console.log("  (BA compile error) " + String(ex).slice(0, 200)); }
+  const TDM = vm.runInContext('typeof tradeDeclineMsg === "function" ? tradeDeclineMsg : null', sandbox);
+  const SURG_BA = ["DJA", "MCC", "RPC", "KJH", "REH", "FAK", "ARW"].map((name, i) => ({ id: "s" + (i + 1), name }));
+  const RPC = { id: "s3", token: "TOK_RPC", profile: { person_id: "s3", display_name: "RPC", role: "member" } };
+  const FAK = { id: "s6", token: "TOK_FAK", profile: { person_id: "s6", display_name: "FAK", role: "scheduler" } };
+  const REQ = { id: 42, from_surgeon_id: "s6", to_surgeon_id: "s3", from_surgeon_name: "FAK", to_surgeon_name: "RPC", week_monday: "2099-03-02", shift_key: "mon", shift_label: "Mon Night",
+    return_week: "2099-03-09", return_shift: "tue", status: "pending" };
+  // The component as React renders it: ONE hook slot whose callback is kept while every dep is Object.is-equal;
+  // addNotification / sendEmailNotif are the same functions every render (memoized in the app). The token is the
+  // signed-in account's; db.insert (logAudit's in-session path) writes with the token of NOW.
+  const rigBA = (o) => {
+    const S = { token: RPC.token, ep: { current: 0 }, slot: null, audits: [], reqs: [], toasts: [], lists: 0, listAfter: null, notes: [], emails: [] };
+    S.useCallback = (fn, deps) => { if (S.slot && S.slot.deps.length === deps.length && S.slot.deps.every((d, i) => Object.is(d, deps[i]))) return S.slot.fn; S.slot = { fn, deps }; return fn; };
+    const addNotification = async (type) => { S.notes.push(type + "@" + (S.token || "ANON")); };
+    const sendEmailNotif = (type) => { S.emails.push(type + "@" + (S.token || "ANON")); };
+    const db = { insert: async (tb, row) => { S.audits.push({ via: "now:" + (S.token || "ANON"), tb, actor_id: row.actor_id, actor_name: row.actor_name, action: row.action }); return { data: null, error: null }; } };
+    const fetch = async (url, init) => {
+      const u = String(url).replace(/^.*\/rest\/v1\//, ""), auth = init.headers.Authorization;
+      if (/^audit_log/.test(u)) { const row = JSON.parse(init.body); S.audits.push({ via: auth, tb: "audit_log", actor_id: row.actor_id, actor_name: row.actor_name, action: row.action }); return respBA(201, null); }
+      S.reqs.push(init.method + " " + u.replace(/\?.*$/, "") + " " + auth);
+      if (o.cross) { await o.cross(S); await spinBA(4); }
+      return o.status ? respBA(o.status, { message: "upstream" }) : respBA(200, o.zero ? [] : [Object.assign({}, REQ, { status: "declined" })]);
+    };
+    S.render = (who) => mkDecline({ useCallback: S.useCallback, db, fetch, SUPABASE_URL: "https://x.supabase.co", dbAuthHeaders: () => ({ apikey: "ANON", Authorization: "Bearer " + (S.token || "ANON") }),
+      console: quietBA, showToast: (m) => S.toasts.push(String(m)), setTradeRequests: (f) => { S.lists++; S.listAfter = f([Object.assign({}, REQ)]).map(r => r.status).join(); }, tradeDeclineMsg: TDM,
+      addNotification, sendEmailNotif, sessionEpochRef: S.ep, userProfile: who ? who.profile : null, surgeons: SURG_BA, mySurgeon: who ? who.id : "" });
+    return S;
+  };
+  // the session boundary while the status PATCH is out: "Sign in again" landing on FAK (FAK's render), or a sign-out
+  const crossTo = (how) => async (S) => { S.ep.current++; if (how === "other") { S.token = FAK.token; S.render(FAK); } else { S.token = null; S.render(null); } };
+  const declineBA = async (o) => { const S = rigBA(o); S.render(null); const tap = S.render(RPC); await tap(Object.assign({}, REQ)); await spinBA(10); return S; };
+  const outBA = (S) => ({ audits: S.audits, reqs: S.reqs, toasts: S.toasts, lists: S.lists, listAfter: S.listAfter, notes: S.notes, emails: S.emails });
+  const AS_RPC = (via) => JSON.stringify([{ via, tb: "audit_log", actor_id: "s3", actor_name: "RPC", action: "trade.decline" }]);
+  const NONE_BA = "declineTradeRequest / logAudit / tradeDeclineMsg not extractable";
+  // BA1
+  const b1 = mkDecline && TDM ? await declineBA({}) : null;
+  check("BA1 the real declineTradeRequest (its useCallback deps included) with the real logAudit, rendered as React does — first before the profile loads, then signed in as RPC (s3) — and tapped: its audit line names RPC (s3), not \"Unknown\"; the decline itself as before (its status PATCH as RPC, the list, one notice, one e-mail, nothing said)",
+    !!b1 && JSON.stringify(b1.audits) === AS_RPC("now:TOK_RPC") && b1.reqs.join() === "PATCH shift_trade_requests Bearer TOK_RPC" && b1.lists === 1 && b1.listAfter === "declined"
+      && b1.notes.join() === "trade_declined@TOK_RPC" && b1.emails.join() === "trade_declined@TOK_RPC" && b1.toasts.length === 0,
+    b1 ? JSON.stringify(outBA(b1)) : NONE_BA);
+  // BA2
+  const b2 = [];
+  if (mkDecline && TDM) for (const how of ["other", "signout"]) b2.push([how, await declineBA({ cross: crossTo(how) })]);
+  check("BA2 …the session changing while its status PATCH is out (\"Sign in again\" landing on FAK, rendered meanwhile; or a sign-out): the decline (sent as RPC) is still audited — RPC (s3), written with RPC's token, never the next session's — and nothing else of it happens in the next session: no list update, no notice, no e-mail, no toast",
+    b2.length === 2 && b2.every(([, S]) => JSON.stringify(S.audits) === AS_RPC("Bearer TOK_RPC") && S.reqs.join() === "PATCH shift_trade_requests Bearer TOK_RPC" && S.lists === 0
+      && S.notes.length === 0 && S.emails.length === 0 && S.toasts.length === 0),
+    b2.length ? JSON.stringify(b2.map(([h, S]) => [h, outBA(S)])) : NONE_BA);
+  const b2z = mkDecline && TDM ? await declineBA({ cross: crossTo("other"), zero: true }) : null, b2f = mkDecline && TDM ? await declineBA({ cross: crossTo("signout"), status: 500 }) : null;
+  check("BA2 …a status PATCH that declined nothing (zero rows — handled elsewhere first) or failed (500), across a session change: no audit line, nothing done or said",
+    !!b2z && !!b2f && [b2z, b2f].every(S => S.audits.length === 0 && S.lists === 0 && S.notes.length === 0 && S.emails.length === 0 && S.toasts.length === 0),
+    b2z ? JSON.stringify([outBA(b2z), outBA(b2f)]) : NONE_BA);
+  // BA3 — the three deletes, sliced whole (their useCallback) and run
+  const ENV_DEL = "useCallback, confirm, fetch, SUPABASE_URL, dbAuthHeaders, console, showToast, setTradeRequests, setVacRequests, sessionEpochRef";
+  const mkDel = (name) => { const h = hookBA(name); try { return h ? vm.runInContext(`(function (env) { const { ${ENV_DEL} } = env;\n${h}\n  return ${name}; })`, sandbox) : null; } catch (ex) { return null; } };
+  const DELS = [
+    ["deleteTradeRequest", "setTradeRequests", [{ id: 7 }, { id: 8 }], "8", /^error: Couldn't delete the trade request/],
+    ["deleteVacRequest", "setVacRequests", [{ id: 7, status: "pending" }, { id: 8, status: "approved" }], "8", /^error: Couldn't delete the request/],
+    ["clearReviewedRequests", "setVacRequests", [{ id: 7, status: "pending" }, { id: 8, status: "approved" }, { id: 9, status: "denied" }], "7", /^error: Couldn't clear reviewed requests/],
+  ];
+  const delRun = async (mk, list, o) => {
+    const S = { ep: { current: 0 }, token: RPC.token, sets: [], after: null, toasts: [], reqs: [] };
+    const set = (k) => (f) => { S.sets.push(k); S.after = f(list.map(r => Object.assign({}, r))).map(r => r.id).join(); };
+    await mk({ useCallback: (fn) => fn, confirm: () => true, SUPABASE_URL: "https://x.supabase.co", console: quietBA, sessionEpochRef: S.ep,
+      dbAuthHeaders: () => ({ apikey: "ANON", Authorization: "Bearer " + (S.token || "ANON") }), showToast: (m, t) => S.toasts.push((t || "info") + ": " + m),
+      setTradeRequests: set("setTradeRequests"), setVacRequests: set("setVacRequests"),
+      fetch: async (url, init) => { S.reqs.push(init.method + " " + init.headers.Authorization); await spinBA(2); if (o.cross) { S.ep.current++; S.token = null; } if (o.thrown) throw new TypeError("Failed to fetch"); return respBA(o.status, null); } })(7);
+    await spinBA(4);
+    return S;
+  };
+  const b3 = [];
+  for (const [name, setK, list, left, said] of DELS) {
+    const mk = mkDel(name);
+    if (!mk) { b3.push({ name, missing: true }); continue; }
+    b3.push({ name, setK, left, said, f: await delRun(mk, list, { status: 500 }), t: await delRun(mk, list, { thrown: true }), ok: await delRun(mk, list, { status: 204 }), x: await delRun(mk, list, { status: 500, cross: true }) });
+  }
+  check("BA3 the three deletes (a trade request, a vacation request, 'Clear All Reviewed'), executed: a failing DELETE (500) leaves the list alone — its setter never called — and says so once; so does a thrown one; a 204 takes the row(s) off (its updater, run, leaves the rest)",
+    b3.length === 3 && b3.every(c => !c.missing && c.f.reqs.join() === "DELETE Bearer TOK_RPC" && c.f.sets.length === 0 && c.f.toasts.length === 1 && c.said.test(c.f.toasts[0])
+      && c.t.sets.length === 0 && c.t.toasts.length === 1 && c.said.test(c.t.toasts[0]) && c.ok.sets.join() === c.setK && c.ok.after === c.left && c.ok.toasts.length === 0),
+    JSON.stringify(b3.map(c => c.missing ? c.name + ": not extractable" : { name: c.name, failed: [c.f.sets, c.f.toasts], thrown: [c.t.sets, c.t.toasts], ok: [c.ok.sets, c.ok.after, c.ok.toasts] })));
+  check("BA3 …the session fence kept: a DELETE failing after a session change says nothing and changes nothing on the next session's screen",
+    b3.length === 3 && b3.every(c => !c.missing && c.x.sets.length === 0 && c.x.toasts.length === 0), JSON.stringify(b3.map(c => c.missing ? c.name : [c.name, c.x.sets, c.x.toasts])));
+  // BA4 — dark mode: the row's three buttons, their styles as the browser writes them, against the app's real dark sheet
+  const iMapBA = nsrcBA.indexOf("{pendingTrades.map(r => ("), iRevBA = iMapBA < 0 ? -1 : nsrcBA.indexOf("{reviewedTrades.length > 0 && (", iMapBA);
+  const rowBA = iMapBA >= 0 && iRevBA > iMapBA ? nsrcBA.slice(iMapBA, iRevBA) : "";
+  const darkCssBA = (nsrcBA.match(/\{darkMode && <style>\{`([\s\S]*?)`\}<\/style>\}/) || [])[1] || "";
+  const rulesBA = [...darkCssBA.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map(m => ({ sels: m[1].split(",").map(s => s.trim()), decl: m[2] }));
+  const declOfBA = (decl, prop) => { const m = decl.match(new RegExp("(?:^|;)\\s*" + prop + "\\s*:\\s*([^;!]+?)\\s*(?:!important)?\\s*(?:;|$)")); return m ? m[1].trim() : null; };
+  const UNITLESS_BA = new Set(["fontWeight", "lineHeight", "opacity", "zIndex", "flex", "flexGrow", "flexShrink"]);
+  const rgbBA = (hex) => `rgb(${hex.slice(1).match(/../g).map((h) => parseInt(h, 16)).join(", ")})`;
+  // React sets each property through the CSSOM, which serializes a hex colour as rgb() and a number as px (as AT6)
+  const serBA = (o) => Object.entries(o).map(([k, v]) => `${k.replace(/[A-Z]/g, (c) => "-" + c.toLowerCase())}: ${typeof v === "number" && !UNITLESS_BA.has(k) ? v + "px" : String(v).replace(/#[0-9a-fA-F]{6}\b/g, rgbBA)};`).join(" ");
+  // what the dark sheet makes of a <button> with this inline style: `button { … }`, and `button[style*="…"] { … }` when
+  // the written style contains it (more specific; both !important, so either beats the inline colour)
+  const onButtonBA = (st) => {
+    const ser = serBA(st); let color = null, bg = null, by = null;
+    for (const r of rulesBA) for (const s of r.sels) {
+      const m = s.match(/^button(?:\[style\*="([^"]+)"\])?$/); if (!m || (m[1] && !ser.includes(m[1]))) continue;
+      const c = declOfBA(r.decl, "color"), b = declOfBA(r.decl, "background");
+      if (c && (!by || m[1])) { color = c; by = s; }
+      if (b && m[1]) bg = b;
+    }
+    return { color: color || st.color, bg: bg || st.background, by };
+  };
+  const lumBA = (hex) => { const v = hex.slice(1).match(/../g).map((h) => parseInt(h, 16) / 255).map((c) => (c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4))); return 0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2]; };
+  const crBA = (a, b) => (Math.max(lumBA(a), lumBA(b)) + 0.05) / (Math.min(lumBA(a), lumBA(b)) + 0.05);
+  const ROW_BG_BA = "#f8f0ff";   // the pending row a "none" background shows through — light in both themes (AT6)
+  const hexBA = (x) => /^#[0-9a-f]{6}$/i.test(String(x));
+  const styleBA = (re) => { const m = rowBA.match(re); if (!m) return null; try { const f = vm.runInContext(`(function (dk, font) { return (${m[1]}); })`, sandbox); return { light: f(false, "F"), dark: f(true, "F") }; } catch (ex) { return null; } };
+  const BTN_BA = {
+    accept: styleBA(/<button onClick=\{\(\)=>acceptTradeRequest\(r\)\} style=\{(\{[^\n]*?\})\}>✓ Accept<\/button>/),
+    decline: styleBA(/<button onClick=\{\(\)=>declineTradeRequest\(r\)\} style=\{(\{[^\n]*?\})\}>✕ Decline<\/button>/),
+    withdraw: styleBA(/<button onClick=\{\(\)=>deleteTradeRequest\(r\.id\)\} style=\{(\{[^\n]*?\})\}>Withdraw<\/button>/),
+  };
+  const LIGHT_BA = {
+    accept: { background: "#e8f8e8", border: "1px solid #a0d8a0", color: "#1a8040", borderRadius: 6, padding: "3px 10px", fontSize: 11, fontWeight: 600, cursor: "pointer", fontFamily: "F" },
+    decline: { background: "#fce8e8", border: "1px solid #e0b0b0", color: "#c04040", borderRadius: 6, padding: "3px 10px", fontSize: 11, fontWeight: 600, cursor: "pointer", fontFamily: "F" },
+    withdraw: { background: "none", border: "1px solid #d0d8e0", color: "#8a94a0", borderRadius: 5, padding: "2px 8px", fontSize: 10, cursor: "pointer", fontFamily: "F" },
+  };
+  const readBA = (st) => { const e = onButtonBA(st), bg = hexBA(e.bg) ? e.bg : ROW_BG_BA; return { bg, text: e.color, by: e.by, cr: +crBA(e.color, bg).toFixed(2), inline: st.color, crInline: hexBA(st.color) ? +crBA(st.color, bg).toFixed(2) : 0 }; };
+  const ba4 = Object.fromEntries(Object.keys(BTN_BA).map(k => [k, BTN_BA[k] ? readBA(BTN_BA[k].dark) : null]));
+  const forcedBA = rulesBA.find(r => r.sels.includes("button") && /!important/.test(r.decl) && declOfBA(r.decl, "color"));
+  check("BA4 dark mode: the pending trade's ✓ Accept, ✕ Decline and Withdraw read at ≥ 4.5:1 — the text colour the app's real dark sheet forces on a button (`button { color … !important }`, which an inline colour can't beat) on each one's own dark background, and the inline colour too",
+    !!forcedBA && Object.values(ba4).every(v => !!v && v.by === "button" && v.text === declOfBA(forcedBA.decl, "color") && lumBA(v.bg) < 0.1 && v.cr >= 4.5 && v.crInline >= 4.5)
+      && Object.keys(BTN_BA).every(k => !!BTN_BA[k] && hexBA(BTN_BA[k].dark.background)),
+    JSON.stringify(ba4));
+  check("BA4 …light mode unchanged (the same styles as before, value for value); and the check bites: those light styles in dark mode (as shipped before) read below 4.5:1 with the forced text",
+    Object.keys(LIGHT_BA).every(k => BTN_BA[k] && JSON.stringify(BTN_BA[k].light) === JSON.stringify(LIGHT_BA[k])) && Object.keys(LIGHT_BA).every(k => readBA(LIGHT_BA[k]).cr < 4.5),
+    JSON.stringify(Object.fromEntries(Object.keys(BTN_BA).map(k => [k, BTN_BA[k] && BTN_BA[k].light]))));
+})().catch(ex => check("BA harness ran without crashing", false, String(ex && ex.stack || ex).split("\n").slice(0, 3).join(" | ")));
+
 // ─── AJ. Owner decisions 2026-10-13: Silvis next to a Davenport night, the spacing box, holiday pairs ───
 console.log("\nAJ. owner decisions 2026-10-13");
 {

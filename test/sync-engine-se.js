@@ -784,7 +784,7 @@ const MUTANTS = [
   { id: "H2g", app: true, what: "H2: a trade not holding at commit, its set-back crossing a session change: 'This trade was not applied…' told on the next screen",
     from: "        if (!here) return; // another session now: nothing said on its screen\n", to: "" },
   { id: "H2h", app: true, what: "H2: the decline goes on after its status PATCH though the session changed (the list, the notice and the e-mail in the next session)",
-    from: "      const declineRows = await declineRes.json().catch(() => []);\n      if (!live()) return; // another session now\n", to: "      const declineRows = await declineRes.json().catch(() => []);\n" },
+    from: "      if (!live()) { if (Array.isArray(declineRows) && declineRows.length) declineAudit(tapH); return; }", to: "      if (false) { if (Array.isArray(declineRows) && declineRows.length) declineAudit(tapH); return; }" }, // (re-anchored: the session check now also audits the decline as the tap's account — sync-guards BA)
   { id: "H2i", app: true, what: "H2: the decline's e-mail goes out after its notice though the session changed",
     from: "      if (!live()) return; // another session now: no e-mail from it\n", to: "" },
   // H7 (fixes-3): the notice paths fenced inside them — SE-X20 (g), (h).
@@ -4976,7 +4976,7 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
     gen: fnX("searchRef, showToast, schedEditable, schedSyncRef, buildPrefs", decl("doGenerate", "\n  };\n")), // (only its first statements are reached here: the gates, then buildPrefs)
     // (21/n) the trade's decline, and the notice paths (addNotification, sendPushNotif, sendEmailNotif) — review r4 branch-2 / fixes-3
     decline: sess(fnX("fetch, SUPABASE_URL, dbAuthHeaders, console, showToast, setTradeRequests, tradeDeclineMsg, logAudit, addNotification, sendEmailNotif, sessionEpochRef",
-      wrap("async (req) => {", after("  const declineTradeRequest = useCallback(async (req) => {", "\n  }, [addNotification, sendEmailNotif]);"), "\n  }"))),
+      wrap("async (req) => {", after("  const declineTradeRequest = useCallback(async (req) => {", "\n  }, [addNotification, sendEmailNotif, userProfile, surgeons, mySurgeon]);"), "\n  }"))), // (its deps list what logAudit reads — sync-guards BA)
     addNote: sess(fnX("db, showToast, setNotifications, buildDeepLink, filterPushTargetsByType, sendPushNotif, console, sessionEpochRef",
       after("  const addNotification = useCallback(", ", [sendPushNotif, buildDeepLink, filterPushTargetsByType]);"))),
     pushNote: sess(fnX("edgeFunctionUrl, fetch, dbAuthHeaders, console, showToast, sessionEpochRef", after("  const sendPushNotif = useCallback(", ", [edgeFunctionUrl]);"))),
@@ -7485,11 +7485,13 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
         addNotification: async () => r.mark("notice")(), sendEmailNotif: () => r.mark("e-mail")(), console: r.console, sessionEpochRef: r.ep, dbAuthHeaders: r.hdr })();
     }, (x, x0, f, f0) => x.writes.join() === "INSERT shift_trade_requests Bearer TOK_A" && x.audits.join() === "trade.propose@Bearer TOK_A" && f.late.length === 0 && f.audits.length === 0
       && ["list", "form", "notice", "e-mail"].every(k => x0.early.includes(k)) && x0.audits.join() === "trade.propose@now:TOK_A" && f0.early.some(k => /^toast: Couldn't propose the trade/.test(k)));
+    // (UX 2026-10-19, flipped deliberately — sync-guards BA: in one session a FAILED DELETE says so once and leaves the
+    // list alone — the row wasn't deleted, so it stays on screen. It used to be removed anyway: `f0.early.includes("list")`.)
     for (const [id, fnK, setK, msg] of [["delTrade", "delTrade", "setTradeRequests", "Couldn't delete the trade request"], ["delVac", "delVac", "setVacRequests", "Couldn't delete the request"], ["clearReviewed", "clearReviewed", "setVacRequests", "Couldn't clear reviewed requests"]]) {
-      add(id, `the ${id === "delTrade" ? "trade request delete" : id === "delVac" ? "vacation request delete" : "'clear reviewed requests'"} (its DELETE, failing): nothing said, the list left alone, on the next session's screen`, async (r, fail) => {
+      add(id, `the ${id === "delTrade" ? "trade request delete" : id === "delVac" ? "vacation request delete" : "'clear reviewed requests'"} (its DELETE, failing): nothing said, the list left alone, on the next session's screen; in one session a failed DELETE is said once and leaves the list alone, a 204 updates it`, async (r, fail) => {
         await H[fnK]({ confirm: () => true, SUPABASE_URL: BASE, dbAuthHeaders: r.hdr, console: r.console, showToast: r.say("toast"), [setK]: r.mark("list"), sessionEpochRef: r.ep,
           fetch: async (url, init) => { r.writes.push("DELETE " + init.headers.Authorization); await r.cross(); return fail ? r.resp(500, {}) : r.resp(204, null); } })(7);
-      }, (x, x0, f, f0) => x.writes.join() === "DELETE Bearer TOK_A" && f.late.length === 0 && x0.early.includes("list") && f0.early.some(k => k.startsWith("toast: " + msg)) && f0.early.includes("list"));
+      }, (x, x0, f, f0) => x.writes.join() === "DELETE Bearer TOK_A" && f.late.length === 0 && x0.early.includes("list") && f0.early.filter(k => k.startsWith("toast: ")).length === 1 && f0.early.some(k => k.startsWith("toast: " + msg)) && !f0.early.includes("list"));
     }
     add("saveApp", "saveAppShifts (its upsert): nothing said on the next session's screen ('APP shifts saved', or its failure)", async (r, fail) => {
       await H.saveApp({ supabase: { from: () => ({ upsert: async () => { r.write("UPSERT app_shifts_data"); await r.cross(); return { error: fail ? "HTTP 503" : null }; } }) }, setSaveError: r.mark("saveError"), setSaveStatus: r.say("status"),
