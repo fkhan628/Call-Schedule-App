@@ -4545,6 +4545,123 @@ console.log("\nAS. The UX batch's review fixes");
       && count('...(dk ? {background:"#0f3460",color:"#e0e0f0",border:"1px solid #2a3a5e"} : {})}}>Go to {MO[goTo.m]} {goTo.y}</button>') === 1);
 }
 
+// ─── AT. A trade waiting on your answer is said first, in your own words (UX audit 2026-10-19) ───
+// Requests → Pending Trades showed two badges and two dated legs; nothing said which leg the reader
+// would take and which they would give, and nothing at the top of Requests said a trade was waiting
+// on them. Render-only plus one pure helper (helpers.js tradeLegsFor, composed with slotLabel THERE
+// so L's ledger stays 23); the accept / decline / withdraw handlers, the state and every write are
+// unchanged. JSX can't run here (no Babel in CI), so the helper and the decisions the markup makes
+// are EXECUTED on the real code and the markup is pinned.
+//   AT1 tradeLegsFor, executed on a two-way trade (FAK s6 gives Mon night 11/2, DJA s1 gives back
+//       Tue night 11/10) and its one-way variant, for the answerer, the proposer and anyone else
+//   AT2 each Pending Trades row says it in words, under the badges line and above the buttons; the
+//       proposer reads "Waiting for <name>'s answer" beside Withdraw; the row keeps its 3 handlers
+//   AT3 the banner is the FIRST thing in the Requests view (before the Vacation Request Deadline
+//       card); its condition, sliced and executed, counts pending trades whose to_surgeon is you
+//   AT4 Review ↓, executed: scrolls the one #pending-trades card (the Pending Trades card) into view;
+//       render-only, phone-wrapping, dark-mode colors
+console.log("\nAT. A trade waiting on your answer");
+{
+  const nsrcAT = src.replace(/\r\n/g, "\n");   // a Windows checkout is CRLF, CI's is LF
+  // AT1 — the helper, executed
+  const TLF = vm.runInContext('typeof tradeLegsFor === "function" ? tradeLegsFor : null', sandbox);
+  const TWO = {
+    from_surgeon_id: "s6", from_surgeon_name: "FAK", to_surgeon_id: "s1", to_surgeon_name: "DJA",
+    week_monday: "2026-11-02", shift_key: "mon", return_week: "2026-11-09", return_shift: "tue", status: "pending",
+  };
+  const ONE = { ...TWO, return_week: null, return_shift: null };
+  const said = TLF ? {
+    to: TLF(TWO, "s1"), from: TLF(TWO, "s6"), other: TLF(TWO, "s3"), nobody: TLF(TWO, ""),
+    oneTo: TLF(ONE, "s1"), oneFrom: TLF(ONE, "s6"), oneOther: TLF(ONE, "s3"),
+  } : null;
+  const wantAT1 = {
+    to: "You'd take Mon Nov 2 — Night; you'd give Tue Nov 10 — Night",
+    from: "You'd give Mon Nov 2 — Night; you'd take Tue Nov 10 — Night",
+    other: "DJA would take Mon Nov 2 — Night; FAK would take Tue Nov 10 — Night",
+    nobody: "DJA would take Mon Nov 2 — Night; FAK would take Tue Nov 10 — Night",
+    oneTo: "You'd take Mon Nov 2 — Night (one-way — no return shift)",
+    oneFrom: "You'd give Mon Nov 2 — Night (one-way — no return shift)",
+    oneOther: "DJA would take Mon Nov 2 — Night (one-way — no return shift)",
+  };
+  check("AT1 tradeLegsFor (helpers.js), executed: the answerer (DJA s1) reads \"You'd take Mon Nov 2 — Night; you'd give Tue Nov 10 — Night\", the proposer (FAK s6) the mirror, anyone else (s3, or no surgeon) tradeLegsText's third-person line; a one-way trade names its one leg and says it is one-way",
+    !!said && JSON.stringify(said) === JSON.stringify(wantAT1), said ? JSON.stringify(said) : "tradeLegsFor not found in helpers.js");
+  check("AT1 the return leg is dated by its own shift (Tue Nov 10), never its week's Monday (Nov 9); the helper lives in helpers.js only, and L's slotLabel ledger in index-source.html stays 23",
+    !!said && Object.values(said).every(s => !s.includes("Nov 9") && !s.includes("2026-11")) && count("function tradeLegsFor") === 0 && count("slotLabel(") === 23,
+    `slotLabel( ×${count("slotLabel(")} · tradeLegsFor defined in the app ×${count("function tradeLegsFor")}`);
+
+  // AT2 — the Pending Trades row
+  const iMap = nsrcAT.indexOf("{pendingTrades.map(r => ("), iRev = iMap < 0 ? -1 : nsrcAT.indexOf("{reviewedTrades.length > 0 && (", iMap);
+  const row = iMap >= 0 && iRev > iMap ? nsrcAT.slice(iMap, iRev) : "";
+  const at2 = {
+    badgesEnd: row.indexOf("(one-way — no return shift)</span>}"), guard: row.indexOf('{typeof tradeLegsFor === "function" && ('),
+    call: row.indexOf("{tradeLegsFor(r, mySurgeon)}"), proposed: row.indexOf("Proposed {new Date(r.submitted_at).toLocaleDateString()}"),
+    onClicks: (row.match(/onClick=/g) || []).length,
+  };
+  const WAIT_RE = /\{mySurgeon === r\.from_surgeon_id && <span style=\{\{fontSize:10,color:"#8a6a10",fontWeight:600\}\}>Waiting for \{r\.to_surgeon_name\}'s answer<\/span>\}\n\s*\{mySurgeon === r\.from_surgeon_id && <button onClick=\{\(\)=>deleteTradeRequest\(r\.id\)\}/;
+  check("AT2 each Pending Trades row says the legs in words for whoever reads it — tradeLegsFor(r, mySurgeon), guarded by typeof — under the badges line and above the Proposed date and buttons; one call site, dark-mode colors",
+    !!row && at2.badgesEnd > 0 && at2.guard > at2.badgesEnd && at2.call > at2.guard && at2.proposed > at2.call && count("tradeLegsFor(") === 1
+      && row.includes('color:dk?"#e8dcff":"#3a2060",background:dk?"#2a2040":"#ffffff"'),
+    JSON.stringify(at2));
+  check("AT2 the proposer reads \"Waiting for <name>'s answer\" beside Withdraw (same gate); the row's handlers are unchanged: Accept, Decline, Withdraw and nothing else",
+    !!row && WAIT_RE.test(row) && at2.onClicks === 3 && row.includes("onClick={()=>acceptTradeRequest(r)}") && row.includes("onClick={()=>declineTradeRequest(r)}")
+      && row.includes("onClick={()=>deleteTradeRequest(r.id)}"),
+    `wait line ${WAIT_RE.test(row) ? "found" : "missing"} · onClick ×${at2.onClicks}`);
+
+  // AT3 — the banner: first in the Requests view, and its condition, executed
+  const OPEN = '{view==="requests" && !isPublicMode && <>';
+  const iReq = nsrcAT.indexOf(OPEN), iSet = nsrcAT.indexOf('{view==="settings" && !isPublicMode && <>');
+  const iCond = iReq < 0 ? -1 : nsrcAT.indexOf("const waitingOnMe = ", iReq);
+  const iBan = iCond < 0 ? -1 : nsrcAT.lastIndexOf("{(() => {", iCond), iBanEnd = iCond < 0 ? -1 : nsrcAT.indexOf("})()}", iCond);
+  const iDead = iReq < 0 ? -1 : nsrcAT.indexOf("{/* Vacation Request Deadline", iReq);
+  const banner = iBan > iReq && iBanEnd > iCond ? nsrcAT.slice(iBan, iBanEnd + 5) : "";
+  const placed = iReq >= 0 && iBan > iReq && iBanEnd > iBan && iDead > iBanEnd && iSet > iDead
+    && /^\n\s*\{\/\*[^\n]*\*\/\}\n\s*$/.test(nsrcAT.slice(iReq + OPEN.length, iBan)) && /^\s*$/.test(nsrcAT.slice(iBanEnd + 5, iDead));
+  const condSrc = iCond < 0 ? null : (nsrcAT.slice(iCond).match(/^const waitingOnMe = ([^\n;]*);/) || [])[1];
+  let waiting = null;
+  try {
+    const f = condSrc ? vm.runInContext(`(function (myTradeRequests, mySurgeon) { return (${condSrc}); })`, sandbox) : null;
+    if (f) {
+      const T = [TWO, { ...TWO, id: 2, status: "accepted" }, { ...TWO, id: 3, to_surgeon_id: "s3", to_surgeon_name: "RPC" }];
+      waiting = { s1: f(T, "s1"), s3: f(T, "s3"), s6: f(T, "s6"), s2: f(T, "s2"), none: f([], "s1"), two: f([TWO, { ...TWO, id: 4 }], "s1") };
+    }
+  } catch (ex) { waiting = { err: String(ex).slice(0, 120) }; }
+  check("AT3 the banner is the first thing in the Requests view, before the Vacation Request Deadline card; it shows only when it has something to say",
+    placed && count("const waitingOnMe = ") === 1 && banner.includes("if (!waitingOnMe) return null;")
+      && banner.includes('"A shift trade is waiting for your answer."') && banner.includes("shift trades are waiting for your answer."),
+    JSON.stringify({ iReq, iBan, iBanEnd, iDead, iSet }));
+  check("AT3 its condition, sliced and executed: counts PENDING trades whose to_surgeon is you — DJA (s1) 1, RPC (s3) 1, the proposer FAK (s6) 0, a bystander 0, none 0, two waiting 2 (an accepted one never counts)",
+    !!condSrc && /r\.status === "pending"/.test(condSrc) && /r\.to_surgeon_id === mySurgeon/.test(condSrc)
+      && JSON.stringify(waiting) === JSON.stringify({ s1: 1, s3: 1, s6: 0, s2: 0, none: 0, two: 2 }),
+    condSrc ? JSON.stringify(waiting) : "no waitingOnMe condition in the Requests view");
+
+  // AT4 — Review ↓, executed against a fake document; the target is the Pending Trades card
+  const click = (banner.match(/<button onClick=\{\(\)=>\{ ([^\n]*?) \}\} style=\{\{\.\.\.css\.btn\(true\),[^\n]*\}\}>Review ↓<\/button>/) || [])[1];
+  let scrolled = null;
+  try {
+    if (click) {
+      const run = vm.runInContext(`(function (document) { ${click} })`, sandbox);
+      const asked = [], calls = [];
+      run({ getElementById: (id) => { asked.push(id); return id === "pending-trades" ? { scrollIntoView: (o) => calls.push(o) } : null; } });
+      let missingOk = true; try { run({ getElementById: () => null }); } catch (ex) { missingOk = false; }
+      scrolled = { asked, calls, missingOk };
+    }
+  } catch (ex) { scrolled = { err: String(ex).slice(0, 120) }; }
+  check("AT4 Review ↓, executed: asks for #pending-trades and scrolls it smoothly to the top of the screen; no card (nothing pending) is not an error",
+    !!scrolled && JSON.stringify(scrolled) === JSON.stringify({ asked: ["pending-trades"], calls: [{ behavior: "smooth", block: "start" }], missingOk: true }),
+    click ? JSON.stringify(scrolled) : "no Review ↓ button in the banner");
+  const PEND = '<div id="pending-trades" style={{...css.card,scrollMarginTop:"calc(env(safe-area-inset-top, 0px) + 12px)"}}>\n                  <div style={css.cardT}>⏳ Pending Trades';
+  const iPend = nsrcAT.indexOf(PEND);
+  check("AT4 #pending-trades is the Pending Trades card (once, after the banner, inside the Requests view; clears the iPhone status bar when scrolled to)",
+    count('id="pending-trades"') === 1 && iPend > iBanEnd && iPend < iSet && iPend < iMap,
+    `id ×${count('id="pending-trades"')} · card at ${iPend} (banner ends ${iBanEnd}, rows ${iMap}, settings ${iSet})`);
+  check("AT4 the banner is render-only (one button, no write, no notification, no handler) and fits a phone (wraps; the text shrinks, the button doesn't) in both themes",
+    !!banner && (banner.match(/onClick=/g) || []).length === 1
+      && !/fetch\(|db\.|supabase|set[A-Z]\w*\(|localStorage|addNotification|sendEmailNotif|acceptTradeRequest|declineTradeRequest|deleteTradeRequest|dbAuthHeaders/.test(banner)
+      && banner.includes('flexWrap:"wrap"') && banner.includes('flex:"1 1 180px",minWidth:0') && banner.includes('whiteSpace:"nowrap"')
+      && banner.includes('background:dk?"#2a2040":"#f3ecff"') && banner.includes('color:dk?"#e8dcff":"#3a2060"'),
+    banner ? ((banner.match(/fetch\(|db\.|supabase|set[A-Z]\w*\(|localStorage|addNotification|sendEmailNotif|acceptTradeRequest|declineTradeRequest|deleteTradeRequest|dbAuthHeaders/) || ["layout or colors"])[0]) : "banner not found");
+}
+
 // ─── AB. APP call-shift edits wait for the APP-shift row (2026-10-11, audit QW4 + its review) ───
 // Every APP write upserts the WHOLE app_shifts_data 'main' map (no CAS, no
 // snapshot, no restore path). If the read failed, appShifts stayed at its

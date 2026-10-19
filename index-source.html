@@ -11167,6 +11167,17 @@ ${"</"}script>${"</"}body>${"</"}html>`;
 
         {/* ════════════════ REQUESTS ════════════════ */}
         {view==="requests" && !isPublicMode && <>
+          {/* A trade waiting on this person's answer is said at the top (UX audit 2026-10-19); Review scrolls to Pending Trades */}
+          {(() => {
+            const waitingOnMe = myTradeRequests.filter(r => r.status === "pending" && r.to_surgeon_id === mySurgeon).length;
+            if (!waitingOnMe) return null;
+            return (
+              <div role="status" style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap",background:dk?"#2a2040":"#f3ecff",border:`1px solid ${dk?"#5a4a90":"#b8a0e0"}`,borderRadius:10,padding:"10px 12px",marginBottom:14}}>
+                <span style={{flex:"1 1 180px",minWidth:0,fontSize:13.5,fontWeight:700,lineHeight:1.4,color:dk?"#e8dcff":"#3a2060"}}>🔄 {waitingOnMe === 1 ? "A shift trade is waiting for your answer." : `${waitingOnMe} shift trades are waiting for your answer.`}</span>
+                <button onClick={()=>{ const el = document.getElementById("pending-trades"); if (el && el.scrollIntoView) el.scrollIntoView({ behavior: "smooth", block: "start" }); }} style={{...css.btn(true),padding:"8px 14px",whiteSpace:"nowrap"}}>Review ↓</button>
+              </div>
+            );
+          })()}
           {/* Vacation Request Deadline — auto-detected from latest schedule period */}
           {vacationDeadline && (() => {
             const { nextPeriodStart, nextPeriodEnd, periodWeeks, deadline, daysRemaining, isPast } = vacationDeadline;
@@ -11669,7 +11680,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             const reviewedTrades = myTradeRequests.filter(r => r.status !== "pending");
             return <>
               {pendingTrades.length > 0 && (
-                <div style={css.card}>
+                <div id="pending-trades" style={{...css.card,scrollMarginTop:"calc(env(safe-area-inset-top, 0px) + 12px)"}}>
                   <div style={css.cardT}>⏳ Pending Trades <span style={{fontWeight:400,fontSize:12,color:"#8a94a0"}}>— {pendingTrades.length}</span></div>
                   {pendingTrades.map(r => (
                     <div key={r.id} style={{padding:"10px 12px",marginBottom:6,background:"#f8f0ff",border:"1px solid #d0c0e8",borderRadius:8,flexWrap:"wrap"}}>
@@ -11682,6 +11693,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                           ? <span style={{fontSize:11,color:"#8a94a0"}}>↔ {slotLabel(r.return_week, r.return_shift)}</span>
                           : <span style={{fontSize:11,color:"#a08040"}}>(one-way — no return shift)</span>}
                       </div>
+                      {/* The legs in words for whoever reads the row: "You'd take …; you'd give …" (helpers.js tradeLegsFor) */}
+                      {typeof tradeLegsFor === "function" && (
+                        <div style={{fontSize:12.5,fontWeight:600,lineHeight:1.4,color:dk?"#e8dcff":"#3a2060",background:dk?"#2a2040":"#ffffff",border:`1px solid ${dk?"#4a3a70":"#e0d4f0"}`,borderRadius:6,padding:"5px 8px",marginBottom:6}}>{tradeLegsFor(r, mySurgeon)}</div>
+                      )}
                       <div style={{display:"flex",gap:6,alignItems:"center",flexWrap:"wrap"}}>
                         <span style={{fontSize:10,color:"#a0a8b0"}}>Proposed {new Date(r.submitted_at).toLocaleDateString()}</span>
                         {silvisActive && (()=>{
@@ -11699,6 +11714,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                             <button onClick={()=>declineTradeRequest(r)} style={{background:"#fce8e8",border:"1px solid #e0b0b0",color:"#c04040",borderRadius:6,padding:"3px 10px",fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:font}}>✕ Decline</button>
                           </>
                         )}
+                        {mySurgeon === r.from_surgeon_id && <span style={{fontSize:10,color:"#8a6a10",fontWeight:600}}>Waiting for {r.to_surgeon_name}'s answer</span>}
                         {mySurgeon === r.from_surgeon_id && <button onClick={()=>deleteTradeRequest(r.id)} style={{background:"none",border:"1px solid #d0d8e0",color:"#8a94a0",borderRadius:5,padding:"2px 8px",fontSize:10,cursor:"pointer",fontFamily:font}}>Withdraw</button>}
                         {mySurgeon !== r.to_surgeon_id && mySurgeon !== r.from_surgeon_id && !isScheduler && (
                           <span style={{fontSize:10,color:"#8a6a10",fontWeight:600}}>Awaiting {r.to_surgeon_name}'s response</span>

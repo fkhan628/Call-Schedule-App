@@ -513,6 +513,26 @@ function tradeLegsText(req, tense) {
   const back = slotLabel(req.return_week, req.return_shift);
   return `${req.to_surgeon_name} ${tense} ${gets}; ${req.from_surgeon_name} ${tense} ${back}`;
 }
+/* The same two legs, said to the person reading them (UX audit 2026-10-19),
+   for each row of Requests → Pending Trades. The surgeon who has to answer
+   reads what they would take and what they would give; the proposer reads
+   the mirror; anyone else (the scheduler on two colleagues' trade) reads
+   tradeLegsText's line. Who gets what is the rule above: to_surgeon takes
+   shift_key @ week_monday, from_surgeon takes return_shift @ return_week.
+   Composed with slotLabel HERE, so the card adds no slotLabel call site to
+   index-source.html (sync-guards L keeps its ledger). */
+function tradeLegsFor(req, viewerId) {
+  const gets = slotLabel(req.week_monday, req.shift_key);
+  const oneWay = !req.return_week || !req.return_shift;
+  const back = oneWay ? "" : slotLabel(req.return_week, req.return_shift);
+  if (viewerId && viewerId === req.to_surgeon_id) {
+    return oneWay ? `You'd take ${gets} (one-way — no return shift)` : `You'd take ${gets}; you'd give ${back}`;
+  }
+  if (viewerId && viewerId === req.from_surgeon_id) {
+    return oneWay ? `You'd give ${gets} (one-way — no return shift)` : `You'd give ${gets}; you'd take ${back}`;
+  }
+  return tradeLegsText(req, "would take");
+}
 /* The SWAP family (2026-09-07), same doctrine as the trade composers above.
    executeTwoWaySwap's semantics, read off its own apply:
      the CANDIDATE (newName) takes targetShift @ targetMon
