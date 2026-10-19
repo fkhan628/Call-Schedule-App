@@ -63,6 +63,21 @@ function mineUpcoming(myShifts, todayStr) {
     .filter(w => w.roles.length > 0);
 }
 
+// The Mine tab for an APP (UX audit 2026-10-19): two of the seven users are
+// APPs, and Mine read only the surgeon schedule. appShifts maps a date to the
+// APP on call that day ({ "2026-10-20": "a1", ... }: the Calendar's and the
+// full export's source). Returns that APP's days from todayStr on (today
+// included), oldest first, as { ds, weekend }: a Saturday or Sunday is the
+// 7a–7a 24h shift, a weekday the 5p–7a night (buildAppICSEvents' rule).
+// Pure: todayStr is passed in, nothing is read but the arguments.
+function appUpcoming(appShifts, appId, todayStr) {
+  if (!appShifts || typeof appShifts !== "object" || !appId || typeof todayStr !== "string") return [];
+  return Object.keys(appShifts)
+    .filter(ds => appShifts[ds] === appId && /^\d{4}-\d{2}-\d{2}$/.test(ds) && ds >= todayStr)
+    .sort()
+    .map(ds => { const dow = parse(ds).getDay(); return { ds, weekend: dow === 0 || dow === 6 }; });
+}
+
 // Billing credits for one week (Stats → Billing, owner rule 2026-10-01). Each
 // credit is { ds, sid, kind, n }: kind "dc" for a service day (each of the 7
 // days Mon–Sun, a single-day override winning its date), "nights" for a Mon–Thu
@@ -88,6 +103,21 @@ function weekBillingCredits(mondayStr, wk) {
   if (wk.nights?.wknd) [4, 5, 6].forEach(i => add(days[i], wk.nights.wknd, "wknd"));
   Object.entries(covered).forEach(([ds, sid]) => credits.push({ ds, sid, kind: "hol", n: 2 }));
   return credits;
+}
+
+// The order Stats → Billing lists its months in (UX audit 2026-10-19). Oldest
+// first meant scrolling past a year of history to reach the month being
+// billed. months: "YYYY-MM" keys; todayStr: "YYYY-MM-DD" (the device date).
+//   done:  this month and every month before it, NEWEST first
+//   ahead: the months after this one, soonest first (shown collapsed)
+// Order only: no month is added or dropped. A todayStr that is not a date
+// puts every month in done, newest first, so nothing is hidden. Pure: no
+// clock, no state; the input is not changed.
+function billingMonthOrder(months, todayStr) {
+  const ms = (months || []).slice().sort();
+  const cur = /^\d{4}-\d{2}-\d{2}$/.test(String(todayStr || "")) ? String(todayStr).slice(0, 7) : null;
+  if (!cur) return { done: ms.reverse(), ahead: [] };
+  return { done: ms.filter(m => m <= cur).reverse(), ahead: ms.filter(m => m > cur) };
 }
 
 /* ═══ Personal call totals: DSG + Silvis (owner request 2026-10-09; decisions 2026-10-11) ═══
@@ -264,6 +294,154 @@ function overnightHolderOn(schedule, ds) {
   const day = weekHolders(mStr, wk).days[(dow + 6) % 7];
   if (day.cover) return day.cover.sid || null;
   return day.night || day.wkndFri || day.sat || day.wkndSun || null;
+}
+
+// The Calendar's day sheet (UX audit 2026-10-19): what one date holds, as
+// plain lines. A tapped day shows these; an iPhone never shows the cells'
+// title tooltips, and a cell has no room for hours or coverage notes.
+// Who holds what is weekHolders' rule (the calendar's own; sync-guards X1),
+// so the lines name exactly the holders the cell draws for that date —
+// a holiday entry stored in a neighbouring week included, since the
+// calendar draws it on its date too. Hours come from SHIFT_TIMES (config.js)
+// with the leading day dropped (the sheet is headed with its date): service
+// "7a–5p", the service Saturday "7a–Sun 7a", a night "5p–7a", the weekend's
+// Friday "5p–Sat 7a" and its Sunday "7a–Mon 7a". A holiday entry shows the
+// hours stored with it; an APP shift is 7a–7a on a Sat or Sun and 5p–7a on
+// a weekday (the rule of buildAppICSEvents and the On Call Today banner).
+// Each line is { slot, sid, backup, label, who, hours, note, holiday, text }:
+//   slot    cover | svc | sat | night | wkndFri | wkndSun | app | fierce | fierceBkp
+//   sid     the holder's id (the APP's id for "app"); null for an unassigned
+//           cover and the two Fierce lines
+//   backup  the week is a Fierce primary week, the group is backup (the cell's "B")
+//   text    e.g. "Service week: ARW (7a–5p)", "Labor Day 24h: RPC (7a–7a)"
+// opts = { appShifts, nameOf }. Pure: no clock, no state.
+function dayDetailLines(schedule, ds, opts) {
+  const o = opts || {};
+  const nameOf = typeof o.nameOf === "function" ? o.nameOf : (id => id);
+  const sched = schedule || {};
+  const x = parse(ds), dow = x.getDay(), mStr = fmt(addD(x, dow === 0 ? -6 : 1 - dow));
+  const T = typeof SHIFT_TIMES === "object" && SHIFT_TIMES ? SHIFT_TIMES : {};
+  const hrs = (seg) => String(seg || "").replace(/^\S+\s+/, ""); // "Tue 5p–7a" → "5p–7a"
+  const [svcSeg, satSeg] = String(T.dayCall || "").split(" + ");
+  const [friSeg, sunSeg] = String(T.wknd || "").split(" & ");
+  const lines = [];
+  const add = (slot, sid, backup, label, hours, extra) => {
+    const fierce = slot === "fierce" || slot === "fierceBkp";
+    const line = Object.assign({ slot, sid: sid || null, backup: !!backup, label: label + (backup ? " (backup)" : ""),
+      who: fierce ? null : sid ? nameOf(sid) : "Unassigned", hours: hours || "", note: "", holiday: null }, extra || {});
+    line.text = fierce ? line.label : `${line.label}: ${line.who}${line.hours ? ` (${line.hours})` : ""}${line.note ? ` — ${line.note}` : ""}`;
+    lines.push(line);
+  };
+  // A holiday or coverage entry dated ds, from whichever week stores it
+  Object.keys(sched).sort().forEach(m => {
+    const w = sched[m];
+    if (!w || typeof w !== "object" || !/^\d{4}-\d{2}-\d{2}$/.test(m)) return;
+    weekHolders(m, w).covers.filter(c => c.ds === ds).forEach(c => {
+      const label = c.type === "swap" ? (c.label || "Coverage") : `${holidayTitleName(c)} 24h`;
+      const stored = String(((w.holidayCoverage || {})[ds] || {}).hours || "");
+      // "Memorial Day 24h" needs no second "(24h)"; "7a–7a", or a swap's "24h", is shown
+      add("cover", c.sid, w.isBackup, label, /24h$/.test(label) && stored.trim() === "24h" ? "" : stored, { holiday: c.holiday || c.label || "" });
+    });
+  });
+  const wk = sched[mStr];
+  if (wk && typeof wk === "object") {
+    const day = weekHolders(mStr, wk).days[(dow + 6) % 7];
+    const bk = !!wk.isBackup;
+    const ovr = (wk.dayCallOverrides || {})[ds];
+    const note = ovr && wk.dayCall && ovr !== wk.dayCall ? `covering ${nameOf(wk.dayCall)}'s service week` : "";
+    if (day.svc) add("svc", day.svc, bk, note ? "Service day" : "Service week", hrs(svcSeg), { note });
+    if (day.sat) add("sat", day.sat, bk, note ? "Service day" : "Service week", hrs(satSeg), { note });
+    if (day.night) add("night", day.night, bk, "Night", hrs(T[day.nightKey]));
+    if (day.wkndFri) add("wkndFri", day.wkndFri, bk, "Weekend", hrs(friSeg));
+    if (day.wkndSun) add("wkndSun", day.wkndSun, bk, "Weekend", hrs(sunSeg));
+  }
+  const aid = (o.appShifts || {})[ds];
+  if (aid) add("app", aid, false, "APP", dow === 0 || dow === 6 ? "7a–7a" : "5p–7a");
+  if (wk && wk.isBackup) add("fierce", null, false, "Fierce Primary week — the group is backup");
+  if (wk && wk.isFierceBackup) add("fierceBkp", null, false, "Fierce Backup week");
+  return lines;
+}
+
+// Who is on call RIGHT NOW (UX audit 2026-10-19). The On Call Today banner
+// reads only today's date, so between midnight and 7a it named TONIGHT's
+// holder instead of the one on call since last evening. The handover hours
+// are weekHolders' slots (SHIFT_TIMES in config.js gives the same hours):
+//   before 7a    the PREVIOUS date's overnight, overnightHolderOn's rule: a
+//                holiday 24h on that date, else its Mon–Thu night, the Fri
+//                night or Sun 24h weekend leg, or the service Saturday 24h
+//   7a – 5p      today: a holiday 24h, else Mon–Fri the daytime service
+//                holder (the date's override, else the dayCall) until 5p;
+//                Sat the service Saturday 24h, Sun the weekend's Sunday 24h
+//   5p – 12a     today's overnight, overnightHolderOn's rule again
+// Every overnight and 24h slot runs to 7a. Returns { sid, slot, until, backup }
+// with until "7a" or "5p", or null when nobody holds that window (no week
+// entry, a blank slot, an unassigned holiday). The weekend's two legs say
+// which leg (review fix): "Weekend (Fri night)" (Fri 5p–Sat 7a) and "Weekend
+// (Sun)" (Sun 7a–Mon 7a) — before 7a on a Saturday the banner's own WEEKEND
+// chip names the service Saturday's holder, so a bare "Weekend" read as two
+// people holding one slot. backup is true in a Fierce Primary (isBackup) week:
+// Fierce holds first call and this holder is DSG's backup (onCallNowText says
+// so). The hours are CENTRAL hours (review fix): the date and the hour come
+// from centralClock, so a phone in another time zone names the same holder;
+// now is passed in, so there is no clock here.
+function onCallNow(schedule, now) {
+  const c = centralClock(now);
+  if (!c) return null;
+  const h = c.h;
+  const x = parse(h < 7 ? fmt(addD(parse(c.ds), -1)) : c.ds), dow = x.getDay(), mStr = fmt(addD(x, dow === 0 ? -6 : 1 - dow));
+  const wk = schedule && schedule[mStr];
+  if (!wk) return null;
+  const day = weekHolders(mStr, wk).days[(dow + 6) % 7];
+  const svc = (sid) => (sid === wk.dayCall ? "Service Week" : "Service Day");
+  let sid = null, slot = "", until = "7a";
+  if (day.cover) { sid = day.cover.sid; slot = day.cover.type === "swap" ? (day.cover.label || "Coverage") : `${holidayTitleName(day.cover)} 24h`; }
+  else if (h >= 7 && h < 17 && day.i <= 4) { sid = day.svc; slot = svc(sid); until = "5p"; }
+  else if (day.night) { sid = day.night; slot = SHIFT_LABELS[day.nightKey]; }
+  else if (day.wkndFri) { sid = day.wkndFri; slot = `${SHIFT_LABELS.wknd} (Fri night)`; }
+  else if (day.wkndSun) { sid = day.wkndSun; slot = `${SHIFT_LABELS.wknd} (Sun)`; }
+  else if (day.sat) { sid = day.sat; slot = `${svc(day.sat)} (Sat 24h)`; }
+  return sid ? { sid, slot, until, backup: !!wk.isBackup } : null;
+}
+
+// The Central (America/Chicago) wall clock of an instant (review fix
+// 2026-10-19): the 7a / 5p handovers are Central hours — the schedule, the
+// .ics ("Times are Central") and the hospital run on them — so a phone in
+// another zone must not apply them at its own hours. formatToParts with a
+// timeZone, as silvis-feed.js's sfCentralDay; one formatter, made on first
+// use. Returns { ds: "YYYY-MM-DD", h: 0–23 }, or null for no instant or a bad
+// one. Where Intl can't name the zone (a very old browser) it falls back to
+// the device's own clock, as the app read it before. No clock is read here.
+let _centralClockFmt = null;
+function centralClock(now) {
+  if (!now || typeof now.getTime !== "function" || isNaN(now.getTime())) return null;
+  try {
+    if (!_centralClockFmt) _centralClockFmt = new Intl.DateTimeFormat("en-US", { timeZone: "America/Chicago", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", hourCycle: "h23" });
+    const parts = _centralClockFmt.formatToParts(now);
+    const get = (k) => (parts.find(p => p.type === k) || {}).value;
+    const ds = `${get("year")}-${get("month")}-${get("day")}`, h = Number(get("hour")) % 24; // (an engine that ignores hourCycle says "24" at midnight)
+    if (/^\d{4}-\d{2}-\d{2}$/.test(ds) && h >= 0 && h <= 23) return { ds, h };
+  } catch (e) { /* the device clock, below */ }
+  return { ds: fmt(now), h: now.getHours() };
+}
+
+// The On Call Today banner's window key (review fix 2026-10-19): the Central
+// date plus a / b / c for before 7a, 7a–5p and from 5p — onCallNow's answer
+// can change only when this does, so the banner's minute tick re-renders on a
+// new key and never misses a handover, in any time zone. "" for no instant.
+function onCallWindowKey(now) {
+  const c = centralClock(now);
+  return c ? c.ds + (c.h < 7 ? "a" : c.h < 17 ? "b" : "c") : "";
+}
+
+// The banner's top line for onCallNow's answer and the holder's name (review
+// fix 2026-10-19). In a Fierce Primary (isBackup) week Fierce holds first
+// call: DSG's holder is the BACKUP, so the line says so, with a yellow mark —
+// never the green "On call now". null when there is nothing to name.
+function onCallNowText(callNow, name) {
+  if (!callNow || !name) return null;
+  return callNow.backup
+    ? { backup: true, text: `🟡 DSG backup now: ${name} — ${callNow.slot} (Fierce is primary), until ${callNow.until}` }
+    : { backup: false, text: `🟢 On call now: ${name} — ${callNow.slot}, until ${callNow.until}` };
 }
 
 // Why a calendar month is blank (UX audit, 2026-10-18). A month with no
@@ -538,6 +716,42 @@ function publishedThrough(schedule) {
   return keys.length ? fmt(addD(parse(keys[keys.length - 1]), 6)) : null;
 }
 
+// The one question Generate & Publish asks before it starts (UX audit
+// 2026-10-19): it used to run on the tap, and a publish notifies everyone, so
+// one mis-tap published. Names the period (its first Monday through its last
+// Sunday) and the number of weeks, warns when weeks of it are already
+// published (publishWeeks' rule: a period Monday the schedule already holds
+// is replaced) — "Both weeks" for a two-week period (review fix) — or when it
+// has already started (its first Monday is before today: the app's own
+// "started" rule, shiftStartDate(m) < today, as trades and swaps use), or is
+// wholly over (its last Sunday is before today — review fix: republishing a
+// finished period changes call history, counts and billing), and says who is
+// notified. What it says is what doGenerateAndNotify does (review fix): a
+// publish that goes straight through broadcasts the "Schedule Published"
+// notice (the in-app notice and a device push) and the e-mail (sent by the
+// server to everyone whose settings take schedule e-mails); a result that
+// needs your OK — or that changed during the search — opens the preview
+// instead, and Accept & Publish there (acceptPreview) sends no notice.
+//   mondays: the period's Mondays, as Dates or "YYYY-MM-DD"
+//   opts:    { schedule: the published weeks by Monday, today: "YYYY-MM-DD" }
+// Pure: no clock, no state.
+function publishConfirmText(mondays, opts) {
+  const o = opts || {};
+  const ms = (mondays || []).map(m => (typeof m === "string" ? m : fmt(m))).sort();
+  const notify = "If it publishes straight away, everyone is notified by push and email (per their notification settings). If anything needs your OK, the preview opens instead — publishing from there notifies no one.";
+  if (!ms.length) return `Generate and publish the schedule?\n\n${notify}`;
+  const n = ms.length, first = ms[0], end = fmt(addD(parse(ms[n - 1]), 6));
+  const sched = o.schedule || {};
+  const k = ms.filter(m => sched[m]).length;
+  const warn = [];
+  if (k > 0) warn.push(n === 1 ? "⚠ This week is already published and will be replaced."
+    : k === n ? `⚠ ${n === 2 ? "Both weeks" : `All ${n} weeks`} are already published and will be replaced.`
+    : `⚠ ${k} of the ${n} weeks ${k === 1 ? "is" : "are"} already published and will be replaced.`);
+  if (typeof o.today === "string" && end < o.today) warn.push("⚠ This whole period is already over — publishing it changes past call history, counts and billing.");
+  else if (typeof o.today === "string" && first < o.today) warn.push("⚠ This period has already started.");
+  return `Generate and publish ${monthDayLabel(first, true)} → ${monthDayLabel(end, true)} (${n} week${n === 1 ? "" : "s"})?\n\n${warn.length ? warn.join("\n") + "\n\n" : ""}${notify}`;
+}
+
 // The line a service week or weekend carries for a date someone else holds,
 // e.g. "Mon 9/7 covered by RPC (Labor Day)". holderSid is who holds it; a swap
 // names its own label; a single-day override has no parenthesis.
@@ -626,8 +840,14 @@ function tradeProposeMsg(req) {
 function tradeAcceptMsg(req) {
   return `${req.to_surgeon_name} accepted the trade: ${tradeLegsText(req, "takes")}`;
 }
-function tradeDeclineMsg(req) {
-  return `${req.to_surgeon_name} declined the trade: ${tradeLegsText(req, "would have taken")}`;
+// byName (review fix 2026-10-19): who declined, when it was not the trade's
+// recipient — a scheduler answering for them (the Requests tab's canAnswer).
+// The audit line is the scheduler's, so its summary, the notice and the
+// e-mail (which all carry this text) say "FAK declined the trade for RPC";
+// without byName, or naming the recipient, the recipient declined.
+function tradeDeclineMsg(req, byName) {
+  const who = byName && byName !== req.to_surgeon_name ? `${byName} declined the trade for ${req.to_surgeon_name}` : `${req.to_surgeon_name} declined the trade`;
+  return `${who}: ${tradeLegsText(req, "would have taken")}`;
 }
 
 // Dated slot label for pickers and rows where the WEEK is known (2026-09-06):

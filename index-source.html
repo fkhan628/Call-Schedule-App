@@ -382,9 +382,42 @@ function CallSchedule() {
   const [showAllMyVacs, setShowAllMyVacs] = useState(false); // Mine: expand vacation list beyond first few
   const [showAllMyNoCall, setShowAllMyNoCall] = useState(false); // Mine: expand no-call list beyond first few
   const [showAllMySilvis, setShowAllMySilvis] = useState(false); // Mine (FAK): expand the Silvis list beyond the first few
+  const [showAllMyApp, setShowAllMyApp] = useState(false); // Mine (an APP): expand the APP call-day list beyond the first few
   const [calSurgeonFilter, setCalSurgeonFilter] = useState(""); // "" = all, or surgeon ID
   const [calAppFilter, setCalAppFilter] = useState("all"); // "all" | "none" | APP id
   const [calDeptFilter, setCalDeptFilter] = useState(""); // "" = no dept filter, "CWM" or "CBH"
+  // The Calendar's day sheet (UX audit 2026-10-19): the date ("YYYY-MM-DD") a tap
+  // opened, or null. Escape closes it (as do its ✕ and the backdrop). Review
+  // fixes: closing puts the focus back on the day cell that opened it (it fell
+  // to <body>) — except "Edit this week": the week editor it opens is in
+  // front, so the focus is not put on a cell behind it;
+  // while it is open the page behind it does not scroll (a drag on the
+  // backdrop, or on a sheet too short to scroll, moved the calendar); and it
+  // opens already lifted above the update banner (calSheetLift, kept up to
+  // date by the effect after updateAvailable below).
+  const [calDayOpen, setCalDayOpen] = useState(null);
+  const calDayOpenerRef = useRef(null); // the day cell that opened the sheet
+  const updateBannerRef = useRef(null); // the update banner (fixed to the bottom), measured for the sheet
+  const [calSheetLift, setCalSheetLift] = useState(0); // px the sheet sits above the bottom: the banner's height
+  const bannerLift = () => { const el = updateBannerRef.current; return el && el.isConnected ? Math.ceil(el.getBoundingClientRect().height) : 0; };
+  const openCalDay = (ds, el) => { calDayOpenerRef.current = el || null; setCalSheetLift(bannerLift()); setCalDayOpen(ds); };
+  const closeCalDay = (refocus) => {
+    const el = calDayOpenerRef.current;
+    calDayOpenerRef.current = null;
+    setCalDayOpen(null);
+    if (refocus !== false && el && el.isConnected && typeof el.focus === "function") { try { el.focus({ preventScroll: true }); } catch (e) { /* nothing to put it back on */ } }
+  };
+  useEffect(() => {
+    if (!calDayOpen) return;
+    const onKey = (e) => { if (e.key === "Escape") closeCalDay(); };
+    window.addEventListener("keydown", onKey);
+    const body = document.body, prevOverflow = body.style.overflow;
+    body.style.overflow = "hidden"; // the page behind stays put; restored on close
+    return () => { window.removeEventListener("keydown", onKey); body.style.overflow = prevOverflow; };
+  }, [calDayOpen]);
+  // Leaving the Calendar tab (a keyboard user can reach the tabs behind the sheet) closes the sheet, so its
+  // scroll lock never outlives it on another tab.
+  useEffect(() => { if (view !== "calendar") closeCalDay(false); }, [view]);
   const rememberSilvisToggle = (v) => {
     try { if (v === null) localStorage.removeItem(CAL_SILVIS_STORE_KEY); else localStorage.setItem(CAL_SILVIS_STORE_KEY, String(v)); }
     catch (e) { console.warn("Couldn't remember the Silvis calendar switch:", e); }
@@ -532,6 +565,14 @@ function CallSchedule() {
   // Backup Monday defaults to the CURRENT week's Monday (same Bucket-B rule).
   const mondayOfToday = () => { const t = new Date(); return fmt(addD(t, t.getDay() === 0 ? -6 : 1 - t.getDay())); };
   const [bkMonday, setBkMonday] = useState(mondayOfToday);
+  // The Backup / Fierce Backup week pickers snap to that week's Monday (UX
+  // audit 2026-10-19): a week is stored by its Monday, so a picked Wednesday
+  // was marked and matched no week — silently nothing. The snap is on leaving
+  // the picker (blur), not on each change: a date typed on a keyboard arrives
+  // in pieces (the "1" of "15" is the 1st), and snapping those moved the field
+  // mid-typing. Tapping "+ Mark" leaves the picker first. Only a whole date
+  // (year 1000+) is snapped; anything else is kept as typed.
+  const snapBkMonday = () => setBkMonday(v => (/^[1-9]\d{3}-\d\d-\d\d$/.test(v) ? fmt(monOf(parse(v))) : v));
   const [appDate, setAppDate] = useState(() => fmt(new Date()));
   const [appPerson, setAppPerson] = useState("");
   const [scanning, setScanning] = useState(false);
@@ -754,6 +795,24 @@ function CallSchedule() {
     document.addEventListener("visibilitychange", onVisible);
     return () => { clearTimeout(t); document.removeEventListener("visibilitychange", onVisible); };
   }, []);
+  // The Calendar's day sheet sits ABOVE the update banner (review fix): the
+  // banner (fixed to the bottom, z 9998, over the sheet's backdrop) wraps to
+  // two rows on a 375px phone, ~100px, and a fixed 64px reserve hid the
+  // sheet's last line and most of "Edit this week". The lift is the banner's
+  // real height — measured when the sheet opens (openCalDay, so its first
+  // frame is right), then again here: on a resize or a rotation, when the
+  // banner's own size changes, and when it appears or is dismissed meanwhile.
+  // The banner stays visible and reachable above the backdrop.
+  useEffect(() => {
+    if (!calDayOpen) return;
+    const remeasure = () => setCalSheetLift(bannerLift());
+    remeasure();
+    window.addEventListener("resize", remeasure);
+    const el = updateBannerRef.current;
+    const ro = el && typeof ResizeObserver === "function" ? new ResizeObserver(remeasure) : null;
+    if (ro) ro.observe(el);
+    return () => { window.removeEventListener("resize", remeasure); if (ro) ro.disconnect(); };
+  }, [calDayOpen, updateAvailable]);
 
   // If non-scheduler ends up on a restricted tab, redirect them
   useEffect(() => {
@@ -3649,9 +3708,19 @@ function CallSchedule() {
     // This session, at the tap (review r4 branch-2): the decline (its status
     // write) is this account's, done — but after a session change meanwhile
     // nothing more of it is done, sent or said in the next session: no list
-    // update, no notice, no e-mail, no toast.
-    const ep = sessionEpochRef.current;
+    // update, no notice, no e-mail, no toast. Its audit line is still written
+    // — as this account: the tap's headers, and the tap's name. (The deps
+    // below list what logAudit reads — userProfile, surgeons, mySurgeon — as
+    // the deny's do; with only the notice deps this callback kept a closure
+    // from before the profile loaded, and every decline was logged "Unknown".)
+    const ep = sessionEpochRef.current, tapH = dbAuthHeaders();
     const live = () => sessionEpochRef.current === ep;
+    // Who declined (review fix): the recipient, or a scheduler answering for them (canAnswer). The
+    // audit line is the tapping account's, so its summary — and the notice and the e-mail, which
+    // carry the same text — say "FAK declined the trade for RPC", never that RPC declined.
+    const declinedBy = mySurgeon === req.to_surgeon_id ? null : (surgeons.find(s => s.id === mySurgeon)?.name || userProfile?.display_name || "A scheduler");
+    const declineMsg = tradeDeclineMsg(req, declinedBy);
+    const declineAudit = (hdrs) => logAudit("trade.decline", declineMsg, { request_id: req.id }, hdrs);
     try {
       // Fail-closed status write with a status precondition — same pattern
       // (and same reasons) as acceptTradeRequest above: HTTP failure must not
@@ -3659,7 +3728,7 @@ function CallSchedule() {
       // already handled elsewhere (race/withdraw) must no-op cleanly.
       const declineRes = await fetch(`${SUPABASE_URL}/rest/v1/shift_trade_requests?id=eq.${req.id}&status=eq.pending`, {
         method: "PATCH",
-        headers: { ...dbAuthHeaders(), "Content-Type": "application/json", Prefer: "return=representation" },
+        headers: { ...tapH, "Content-Type": "application/json", Prefer: "return=representation" },
         body: JSON.stringify({ status: "declined", reviewed_at: new Date().toISOString() }),
       });
       if (!declineRes.ok) {
@@ -3668,14 +3737,13 @@ function CallSchedule() {
         return;
       }
       const declineRows = await declineRes.json().catch(() => []);
-      if (!live()) return; // another session now
+      if (!live()) { if (Array.isArray(declineRows) && declineRows.length) declineAudit(tapH); return; } // another session now: recorded as this account, nothing more
       if (!Array.isArray(declineRows) || declineRows.length === 0) {
         showToast("This trade was already handled or withdrawn — nothing was changed.", "error");
         return; // realtime/60s poll will refresh the visible status
       }
       setTradeRequests(prev => prev.map(r => r.id === req.id ? { ...r, status: "declined" } : r));
-      const declineMsg = tradeDeclineMsg(req);
-      logAudit("trade.decline", declineMsg, { request_id: req.id });
+      declineAudit();
       await addNotification("trade_declined", "Shift Trade Declined",
         declineMsg,
         { from_surgeon_id: req.from_surgeon_id, to_surgeon_id: req.to_surgeon_id },
@@ -3683,19 +3751,21 @@ function CallSchedule() {
       if (!live()) return; // another session now: no e-mail from it
       sendEmailNotif("trade_declined", { from_name: req.from_surgeon_name, to_name: req.to_surgeon_name, shift: req.shift_label, week: req.week_monday, detail: declineMsg }, [req.from_surgeon_id, req.to_surgeon_id], ep);
     } catch(e) { console.error("Decline trade error:", e); if (live()) showToast("Couldn't decline the trade — check your connection and try again.", "error"); }
-  }, [addNotification, sendEmailNotif]);
+  }, [addNotification, sendEmailNotif, userProfile, surgeons, mySurgeon]);
 
   // ─── Delete Trade Request ───
   // (review r5 fix-1) This one and the two request deletes below: sent with
   // this account's headers at the tap; after a session change during the
   // DELETE, nothing of it is said or changed on the next session's screen.
+  // A failed DELETE says so and leaves the list alone — the row is still
+  // there, so it stays on screen (it used to vanish until the next reload).
   const deleteTradeRequest = useCallback(async (reqId) => {
     if (!confirm("Delete this trade request?")) return;
     const ep = sessionEpochRef.current;
     try {
       const res = await fetch(`${SUPABASE_URL}/rest/v1/shift_trade_requests?id=eq.${reqId}`, { method: "DELETE", headers: { ...dbAuthHeaders(), Prefer: "return=minimal" } });
       if (sessionEpochRef.current !== ep) { if (!res.ok) console.error("Delete trade request failed:", res.status); return; } // another session now
-      if (!res.ok) { console.error("Delete trade request failed:", res.status); showToast("Couldn't delete the trade request — check your connection and try again.", "error"); }
+      if (!res.ok) { console.error("Delete trade request failed:", res.status); showToast("Couldn't delete the trade request — check your connection and try again.", "error"); return; } // not deleted: the row stays
       setTradeRequests(prev => prev.filter(r => r.id !== reqId));
     } catch(e) {
       console.error("Delete trade request failed:", e);
@@ -3735,7 +3805,7 @@ function CallSchedule() {
     try {
       const res = await fetch(`${SUPABASE_URL}/rest/v1/vacation_requests?id=eq.${reqId}`, { method: "DELETE", headers: { ...dbAuthHeaders(), Prefer: "return=minimal" } });
       if (sessionEpochRef.current !== ep) { if (!res.ok) console.error("Delete vacation request failed:", res.status); return; } // another session now
-      if (!res.ok) { console.error("Delete vacation request failed:", res.status); showToast("Couldn't delete the request — check your connection and try again.", "error"); }
+      if (!res.ok) { console.error("Delete vacation request failed:", res.status); showToast("Couldn't delete the request — check your connection and try again.", "error"); return; } // not deleted: the row stays
       setVacRequests(prev => prev.filter(r => r.id !== reqId));
     } catch(e) { console.error("Delete vacation request error:", e); if (sessionEpochRef.current === ep) showToast("Couldn't delete the request — check your connection and try again.", "error"); }
   }, []);
@@ -3867,7 +3937,7 @@ function CallSchedule() {
     try {
       const res = await fetch(`${SUPABASE_URL}/rest/v1/vacation_requests?status=neq.pending`, { method: "DELETE", headers: { ...dbAuthHeaders(), Prefer: "return=minimal" } });
       if (sessionEpochRef.current !== ep) { if (!res.ok) console.error("Clear reviewed requests failed:", res.status); return; } // another session now
-      if (!res.ok) { console.error("Clear reviewed requests failed:", res.status); showToast("Couldn't clear reviewed requests — check your connection and try again.", "error"); }
+      if (!res.ok) { console.error("Clear reviewed requests failed:", res.status); showToast("Couldn't clear reviewed requests — check your connection and try again.", "error"); return; } // nothing cleared: the list stays
       setVacRequests(prev => prev.filter(r => r.status === "pending"));
     } catch(e) { console.error("Clear reviewed requests error:", e); if (sessionEpochRef.current === ep) showToast("Couldn't clear reviewed requests — check your connection and try again.", "error"); }
   }, []);
@@ -4316,10 +4386,15 @@ function CallSchedule() {
   };
 
   // ─── Build Individual ICS for a surgeon (their shifts + vacations only) ───
+  // An APP (UX audit 2026-10-19) gets their own APP call days instead — the full export's
+  // builder on just their dates — plus their vacations; this used to return without a file.
   const downloadMyCal = (surgeonId) => {
-    const s = surgeons.find(x => x.id === surgeonId);
+    const myApp = surgeons.some(x => x.id === surgeonId) ? null : apps.find(x => x.id === surgeonId);
+    const s = myApp || surgeons.find(x => x.id === surgeonId);
     if (!s) return;
-    const events = buildICSEvents(schedule, s.id, s.name, { nameOf });
+    const events = myApp
+      ? buildAppICSEvents(Object.fromEntries(Object.entries(appShifts || {}).filter(([, aid]) => aid === myApp.id)), { [myApp.id]: myApp })
+      : buildICSEvents(schedule, s.id, s.name, { nameOf });
     // Vacations as all-day events; the end date is exclusive, so the day after the last vacation day
     const vacRanges = vacations[s.id] || [];
     vacRanges.forEach(([vs, ve]) => {
@@ -4614,21 +4689,38 @@ function CallSchedule() {
     toAdd(vacSurgeon, "vacation", vacStart, vacEnd);
     setVacStart(fmt(new Date())); setVacEnd(fmt(new Date()));
   };
-  const rmVac = (sid,idx) => { const r=(vacations[sid]||[])[idx]; if(r) toRemove(sid,"vacation",r[0],r[1]); };
+  // Setup's ✕ on a vacation or a no-call asks first (UX audit 2026-10-19): it
+  // deletes the time_off row, and time off is in neither Undo nor a Restore —
+  // one mis-tap on the small ✕ took a surgeon's vacation. The question names
+  // the person and the dates ("Wed 10/14 → Fri 10/16", the year added when it
+  // isn't this year, as Mine writes it).
+  const timeOffDates = (s, e) => {
+    const day = (ds) => (!/^\d{4}-\d\d-\d\d$/.test(ds) ? String(ds) : ds.slice(0, 4) === fmt(new Date()).slice(0, 4) ? dayMonthLabel(ds) : `${dayMonthLabel(ds)}/${ds.slice(0, 4)}`);
+    return s === e ? day(s) : `${day(s)} → ${day(e)}`;
+  };
+  const rmVac = (sid,idx) => { const r=(vacations[sid]||[])[idx]; if(!r) return; if(!confirm(`Remove ${nameOf(sid)}'s vacation ${timeOffDates(r[0],r[1])}?`)) return; toRemove(sid,"vacation",r[0],r[1]); };
   const addNoCall = () => {
     if(!ncSurgeon||!ncStart||!ncEnd) return;
     toAdd(ncSurgeon, "nocall", ncStart, ncEnd);
     setNcStart(fmt(new Date())); setNcEnd(fmt(new Date()));
   };
-  const rmNoCall = (sid,idx) => { const r=(noCallDays[sid]||[])[idx]; if(r) toRemove(sid,"nocall",r[0],r[1]); };
+  const rmNoCall = (sid,idx) => { const r=(noCallDays[sid]||[])[idx]; if(!r) return; if(!confirm(`Remove ${nameOf(sid)}'s no-call ${r[0]===r[1]?"day":"days"} ${timeOffDates(r[0],r[1])}?`)) return; toRemove(sid,"nocall",r[0],r[1]); };
   const saveEditVac = () => {
     if (!editVac || !editVac.start || !editVac.end) return;
     const old = (vacations[editVac.sid] || [])[editVac.idx];
     if (old) toEdit(editVac.sid, "vacation", old[0], old[1], editVac.start, editVac.end);
     setEditVac(null);
   };
+  // A typed word, not a tap (UX audit 2026-10-19): this deletes every
+  // vacation for everyone, and time off is in neither Undo nor a Restore.
+  // Review fixes: the word is read trimmed and in any case (an iPhone
+  // capitalises "Delete" by itself), and any other answer says nothing was
+  // deleted — it used to do nothing, silently, like a dead button. Cancel
+  // stays silent.
   const clearAllVacations = () => {
-    if (!confirm("Delete ALL vacations for ALL surgeons and APPs? This cannot be undone.")) return;
+    const typed = prompt("Delete ALL vacations for ALL surgeons and APPs? This cannot be undone. Type DELETE to confirm.");
+    if (typed === null) return; // Cancel
+    if (String(typed).trim().toLowerCase() !== "delete") { showToast("Nothing deleted — type DELETE to confirm.", "error"); return; }
     toClearAll("vacation");
   };
 
@@ -7399,6 +7491,28 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     return c;
   }, [calYear,calMonth]);
 
+  // A calendar day's two GATED layers (UX audit 2026-10-19): the APP day-offs
+  // (internal and the OR board only — plain ?public=1 never shows them) and
+  // FAK's Silvis day (only while the viewer's 🚑 switch is on). ONE definition,
+  // read by the month cell AND the day sheet, so the sheet shows either layer
+  // exactly where the cell does and nowhere else. Each also follows the cell's
+  // surgeon / APP / department filters, as before. Render-time helpers, not hooks.
+  const calAppOffNames = (ds) => {
+    const sf = calSurgeonFilter;
+    if (!(appOffVisible && calFilters.appOff && !sf && calAppFilter!=="none" && !calDeptFilter)) return [];
+    return (appDayOff[ds]||[]).map(dayOffId)
+      .filter(aid => aid && (calAppFilter==="all"||aid===calAppFilter))
+      .map(aid => aMap[aid]?.name||aid);
+  };
+  const calSilvisChip = (ds) => {
+    const sf = calSurgeonFilter;
+    const chip = sfCellChip(silvisDays, ds, silvisFakId, {
+      on: calFilters.silvis, sf, fakName: sMap[silvisFakId]?.name, ruleOn: silvisActive,
+      deptOk: !calDeptFilter || (SURGEON_DEPTS[sMap[silvisFakId]?.name]||[]).includes(calDeptFilter),
+    });
+    return chip;
+  };
+
   // ─── On Call Today ───
   const todayStr = fmt(new Date());
   // A pending trade Accept can still take: neither leg has started (acceptTradeRequest's own
@@ -7426,6 +7540,21 @@ ${"</"}script>${"</"}body>${"</"}html>`;
   }, [todayEntries, sMap, aMap]);
 
   const hasCallToday = todayCall.dayCall || todayCall.night || todayCall.weekend || todayCall.holiday;
+  // Who is on call at this moment (UX audit 2026-10-19): before 7a that is LAST night's holder, not
+  // tonight's — helpers.js onCallNow has the handover rule, at Central hours on any device. The
+  // banner's top line names them (onCallNowText: in a Fierce Primary week, as DSG's backup) — and
+  // shows even on a morning with no call of its own (review fix: the first morning past the
+  // published schedule, last night's holder is still on until 7a).
+  const callNow = typeof onCallNow === "function" ? onCallNow(schedule, new Date()) : null;
+  const callNowName = callNow ? (sMap[callNow.sid]?.name || null) : null;
+  const callNowLine = callNowName && typeof onCallNowText === "function" ? onCallNowText(callNow, callNowName) : null;
+  // Re-render when the on-call window turns over (midnight, 7a, 5p — Central, as onCallNow reads
+  // them: helpers.js onCallWindowKey), so a phone left open or the OR board never keeps the last
+  // window's holder. The 60-s data poll re-renders only while its reads succeed; this needs no
+  // network. Same window = same value, so React skips the render.
+  const nowWindowKey = () => (typeof onCallWindowKey === "function" ? onCallWindowKey(new Date()) : "");
+  const [, setNowWindow] = useState(nowWindowKey);
+  useEffect(() => { const t = setInterval(() => setNowWindow(nowWindowKey()), 60000); return () => clearInterval(t); }, []);
 
   // Build notification message for tonight
   const buildTonightMsg = () => {
@@ -7561,9 +7690,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           (never forced — a mid-action reload is jarring and kills adoption). */}
       {/* Hidden while the paint sheet is open: the banner sits at z 9998
           (over the sheet footer) and its reload button hard-resets — one
-          mis-tap would destroy an unsaved draft. It reappears on close. */}
+          mis-tap would destroy an unsaved draft. It reappears on close.
+          The Calendar's day sheet measures it (updateBannerRef) and sits above it. */}
       {updateAvailable && !paintSheet && (
-        <div role="status" aria-live="polite" style={{position:"fixed",left:0,right:0,bottom:0,zIndex:9998,background:"#1a2a3a",color:"#fff",display:"flex",alignItems:"center",justifyContent:"center",flexWrap:"wrap",gap:10,padding:"9px 14px",fontSize:12.5,fontWeight:600,fontFamily:font,boxShadow:"0 -2px 12px rgba(0,0,0,0.25)"}}>
+        <div ref={updateBannerRef} role="status" aria-live="polite" style={{position:"fixed",left:0,right:0,bottom:0,zIndex:9998,background:"#1a2a3a",color:"#fff",display:"flex",alignItems:"center",justifyContent:"center",flexWrap:"wrap",gap:10,padding:"9px 14px",fontSize:12.5,fontWeight:600,fontFamily:font,boxShadow:"0 -2px 12px rgba(0,0,0,0.25)"}}>
           <span>⬆ New version available ({updateAvailable})</span>
           <button onClick={()=>{ if (!confirmReloadWithPending()) return; if (window.__dsgHardReset) window.__dsgHardReset(); else window.location.reload(); }} style={{background:"#2a8a5a",border:"none",color:"#fff",borderRadius:6,padding:"5px 14px",fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:font}}>Tap to reload</button>
           <button aria-label="Dismiss" onClick={()=>{ updateDismissedRef.current = updateAvailable; setUpdateAvailable(null); }} style={{background:"none",border:"none",color:"#8a9aa8",cursor:"pointer",fontSize:14,padding:"2px 6px"}}>✕</button>
@@ -8436,7 +8566,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             <div style={{display:"flex",gap:6,alignItems:"end",flexWrap:"wrap",marginBottom:12}}>
               <div>
                 <label style={{fontSize:10,color:"#7a8a98",display:"block",marginBottom:2}}>Add manually — Week Starting (Monday)</label>
-                <input type="date" value={bkMonday} onChange={e=>setBkMonday(e.target.value)} style={{...css.inp,width:160}}/>
+                <input type="date" value={bkMonday} onChange={e=>setBkMonday(e.target.value)} onBlur={snapBkMonday} style={{...css.inp,width:160}}/>
               </div>
               <button onClick={markBackupWeek} style={css.btn(true)}>+ Mark Backup</button>
             </div>
@@ -8454,7 +8584,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               <div style={{display:"flex",gap:6,alignItems:"end",flexWrap:"wrap",marginBottom:10}}>
                 <div>
                   <label style={{fontSize:10,color:"#7a8a98",display:"block",marginBottom:2}}>Week Starting (Monday)</label>
-                  <input type="date" value={bkMonday} onChange={e=>setBkMonday(e.target.value)} style={{...css.inp,width:160}}/>
+                  <input type="date" value={bkMonday} onChange={e=>setBkMonday(e.target.value)} onBlur={snapBkMonday} style={{...css.inp,width:160}}/>
                 </div>
                 <button onClick={markFierceBackupWeek} style={{...css.btn(true),background:"linear-gradient(135deg,#e0ecf8,#d0e0f0)",borderColor:"#a0c0e0",color:"#1a6fa8",padding:"7px 16px",fontSize:12}}>+ Mark Fierce Backup</button>
               </div>
@@ -8814,7 +8944,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               </button>
               <input ref={loadJsonInputRef} type="file" accept=".json,application/json" onChange={onLoadJsonFile} style={{display:"none"}} aria-label="Load schedule (JSON)" />
             </>}
-            <button onClick={doGenerateAndNotify} disabled={publishing || !!searching} style={{...css.btn(true),padding:"13px 24px",fontSize:14,fontWeight:700,borderRadius:9,letterSpacing:0.3,flex:1,opacity:publishing||searching?0.55:1}}>
+            {/* Asks once before it starts (UX audit 2026-10-19): a publish notifies everyone, so a mis-tap must not publish. helpers.js publishConfirmText */}
+            <button onClick={()=>{ if (confirm(publishConfirmText(mondays, { schedule: scheduleRef.current, today: fmt(new Date()) }))) doGenerateAndNotify(); }} disabled={publishing || !!searching} style={{...css.btn(true),padding:"13px 24px",fontSize:14,fontWeight:700,borderRadius:9,letterSpacing:0.3,flex:1,opacity:publishing||searching?0.55:1}}>
               {publishing ? "Publishing…" : searching === "publish" ? "🔍 Searching…" : "Generate & Publish →"}
             </button>
           </div>
@@ -9360,8 +9491,16 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         {/* ════════════════ CALENDAR ════════════════ */}
         {view==="calendar"&&<>
           {/* ─── On Call Today Banner ─── */}
-          {hasCallToday && (
+          {/* Shown when today has call, or when someone is on call right now without it (review fix:
+              the first morning past the published schedule) — then only the "now" line. */}
+          {(hasCallToday || callNowLine) && (
             <div style={{background:"linear-gradient(135deg,#ffffff,#f0f8ff)",border:"1px solid #b0d0f0",borderRadius:12,padding:"14px 18px",marginBottom:14,boxShadow:"0 2px 8px rgba(26,111,168,0.08)"}}>
+              {callNowLine && (
+                <div style={{fontSize:13,fontWeight:700,color:callNowLine.backup?"#8a6a10":"#1a6e3c",marginBottom:hasCallToday?8:0}}>
+                  {callNowLine.text}
+                </div>
+              )}
+              {hasCallToday && <>
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10,flexWrap:"wrap",gap:8}}>
                 <div style={{fontSize:15,fontWeight:700,color:"#1a2a3a"}}>
                   📋 On Call Today — {["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][todayDow]} {new Date().getMonth()+1}/{new Date().getDate()}
@@ -9427,6 +9566,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   {todayCall.fierce ? "⚡ Fierce Primary Week — Group is backup" : "🛡 Fierce Backup Week"}
                 </div>
               )}
+              </>}
             </div>
           )}
 
@@ -9479,6 +9619,25 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               </button>
             ))}
             <span style={{margin:"0 4px",color:dkSubtext}}>|</span>
+            {/* 👤 Me (UX audit 2026-10-19): one tap shows only my own call — a surgeon gets the
+                surgeon filter set to them (the department filter cleared, as picking a name does),
+                an APP the APP filter (the surgeon and department filters cleared: either hides
+                every APP chip). Tapped again, back to All. Signed-in roster members only.
+                Review fixes: an APP's label says what it does — only their own APP shifts among the
+                APPs, the surgeons' call still shown (no new filter); and in dark mode, where the
+                sheet forces every button's text to one grey, "on" is a solid blue fill, not a tint. */}
+            {!isPublicMode && (sMap[mySurgeon] || aMap[mySurgeon]) && (() => {
+              const meIsApp = !sMap[mySurgeon];
+              const meOn = meIsApp ? calAppFilter === mySurgeon : calSurgeonFilter === mySurgeon;
+              const meLabel = meIsApp ? "Me — show only my APP shifts (the surgeons' call stays shown)" : "Me — show only my call";
+              const toggleMe = () => { if (meIsApp) { setCalAppFilter(meOn ? "all" : mySurgeon); if (!meOn) { setCalSurgeonFilter(""); setCalDeptFilter(""); } } else { setCalSurgeonFilter(meOn ? "" : mySurgeon); if (!meOn) setCalDeptFilter(""); } };
+              return (
+                <button onClick={toggleMe} aria-pressed={meOn} aria-label={meLabel} title={meLabel}
+                  style={{background:meOn?(dk?"#1a4a78":"#1a6fa818"):"transparent",border:`1px solid ${meOn?(dk?"#7ab8e8":"#1a6fa8"):dk?"#3a4a6e":"#d0d8e0"}`,color:meOn?(dk?"#7ab8e8":"#1a6fa8"):dkSubtext,borderRadius:5,padding:"3px 8px",fontSize:10,fontWeight:600,cursor:"pointer",fontFamily:font,opacity:meOn?1:0.75}}>
+                  👤 Me
+                </button>
+              );
+            })()}
             <select value={calSurgeonFilter} onChange={e=>{setCalSurgeonFilter(e.target.value);if(e.target.value)setCalDeptFilter("");}}
               style={{...css.inp,padding:"3px 6px",fontSize:10,width:100,...dkInp}}>
               <option value="">All Surgeons</option>
@@ -9642,6 +9801,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                 return { isFirst, isLast };
               };
 
+              // Read only by a screen reader (review fix): a day cell is a button, and a button's name
+              // is its content — so the cell's full date leads it, and its chips follow as before.
+              const SR_ONLY = {position:"absolute",width:1,height:1,padding:0,margin:-1,overflow:"hidden",clip:"rect(0 0 0 0)",whiteSpace:"nowrap",border:0};
+
               return calGrid.map((day,i)=>{
               if(!day) return <div key={`e${i}`} style={{background:"#f8f9fb",minHeight:82}}/>;
               const ds=`${calYear}-${String(calMonth+1).padStart(2,"0")}-${String(day).padStart(2,"0")}`;
@@ -9688,18 +9851,30 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                 cellBorder = "1px solid #e8ecf0";
               }
 
+              // Tap (or Enter, or Space on release, as a native button) opens the day sheet: the
+              // day's holders with their hours, the holiday's name and the coverage notes a cell has
+              // no room for (UX audit 2026-10-19). No aria-label (review fix): it replaced the cell's
+              // content, so a screen reader heard only "Mon 10/19 — day details" for every day. The
+              // name is the content — a hidden full date first (the visible day number is hidden from
+              // it), then the chips the cell shows. The cell is kept to put the focus back on close.
               return (
-                <div key={ds} data-cal-today={isToday ? "1" : undefined} style={{
+                <div key={ds} data-cal-today={isToday ? "1" : undefined}
+                  role="button" tabIndex={0} aria-haspopup="dialog"
+                  onClick={e=>openCalDay(ds, e.currentTarget)}
+                  onKeyDown={e=>{ if (e.key === "Enter") { e.preventDefault(); openCalDay(ds, e.currentTarget); } else if (e.key === " ") e.preventDefault(); }}
+                  onKeyUp={e=>{ if (e.key === " ") openCalDay(ds, e.currentTarget); }}
+                  style={{
                   background: cellBg,
                   border: cellBorder,
                   minHeight:82, padding:"3px 4px", borderRadius:2,
-                  display:"flex", flexDirection:"column", minWidth:0,
+                  display:"flex", flexDirection:"column", minWidth:0, cursor:"pointer",
                 }}>
+                  <span style={SR_ONLY}>{`${dayMonthLabel(ds)}${isToday ? ", today" : ""}: `}</span>
                   <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:2}}>
                     {isToday ? (
-                      <span style={{fontSize:11,fontWeight:700,color:"#ffffff",fontFamily:mono,background:"#1a6fa8",borderRadius:"50%",width:20,height:20,display:"inline-flex",alignItems:"center",justifyContent:"center",lineHeight:1}}>{day}</span>
+                      <span aria-hidden="true" style={{fontSize:11,fontWeight:700,color:"#ffffff",fontFamily:mono,background:"#1a6fa8",borderRadius:"50%",width:20,height:20,display:"inline-flex",alignItems:"center",justifyContent:"center",lineHeight:1}}>{day}</span>
                     ) : (
-                      <span style={{fontSize:11,fontWeight:600,color:isWknd?"#5a7090":"#4a5868",fontFamily:mono}}>{day}</span>
+                      <span aria-hidden="true" style={{fontSize:11,fontWeight:600,color:isWknd?"#5a7090":"#4a5868",fontFamily:mono}}>{day}</span>
                     )}
                     {calFilters.fierce && hasFierce && <span style={{fontSize:8,fontWeight:700,color:"#8a6a10",background:"#fef8e8",borderRadius:3,padding:"0 4px",letterSpacing:0.5}}>BKP</span>}
                     {calFilters.fierce && hasFierceBkp && !hasFierce && <span style={{fontSize:8,fontWeight:700,color:"#1a6fa8",background:"#e8f0fc",borderRadius:3,padding:"0 4px",letterSpacing:0.5}}>F·BKP</span>}
@@ -9755,12 +9930,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
 
                   {/* Silvis (trauma) day — ON DEMAND (🚑 switch). Reads silvisDays
                       DIRECTLY via sfCellChip — never a calData row (a non-Davenport
-                      row there renders as a phantom "N" night: #57). FAK only. */}
+                      row there renders as a phantom "N" night: #57). FAK only.
+                      calSilvisChip is the one gate the day sheet shares. */}
                   {(() => {
-                    const chip = sfCellChip(silvisDays, ds, silvisFakId, {
-                      on: calFilters.silvis, sf, fakName: sMap[silvisFakId]?.name, ruleOn: silvisActive,
-                      deptOk: !calDeptFilter || (SURGEON_DEPTS[sMap[silvisFakId]?.name]||[]).includes(calDeptFilter),
-                    });
+                    const chip = calSilvisChip(ds);
                     if (!chip) return null;
                     const P = chip.role === "P";
                     return (
@@ -9792,11 +9965,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                       is self-teaching. Deliberately the least-loud element in
                       the cell (it's the least important); an APP off during
                       the day can still take call that night — both render.
-                      Entries tolerate the planned v2 {id, note} shape. */}
-                  {appOffVisible && calFilters.appOff && !sf && calAppFilter!=="none" && !calDeptFilter && (() => {
-                    const offNames = (appDayOff[ds]||[]).map(dayOffId)
-                      .filter(aid => aid && (calAppFilter==="all"||aid===calAppFilter))
-                      .map(aid => aMap[aid]?.name||aid);
+                      Entries tolerate the planned v2 {id, note} shape.
+                      calAppOffNames is the one gate the day sheet shares. */}
+                  {(() => {
+                    const offNames = calAppOffNames(ds);
                     return offNames.length ? (
                       <div style={{marginTop:1,fontSize:8.5,color:"#8a94a0",whiteSpace:"nowrap"}}>
                         ☕ {offNames.join(", ")}
@@ -9879,6 +10051,82 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             });
             })()}
           </div>
+
+          {/* ─── Day sheet (UX audit 2026-10-19) ─── One tapped day in full: who holds it and when
+              (dayDetailLines, helpers.js: the calendar's own holders, hours from SHIFT_TIMES), the
+              holiday's name, who is on vacation, and the two gated layers exactly where the cell
+              shows them (calAppOffNames, calSilvisChip). Read-only; a scheduler or admin also gets
+              Edit this week, the Manual Adjustments card's own gate and opener. ✕, the backdrop
+              and Escape close it. */}
+          {calDayOpen && (() => {
+            const ds = calDayOpen;
+            // ── day sheet data (plain JS; sync-guards AX runs this slice) ──
+            const lines = dayDetailLines(schedule, ds, { appShifts, nameOf: (id) => sMap[id]?.name || aMap[id]?.name || "?" });
+            const holLabel = calHolidayLabels[ds] || null;
+            const onVacNames = [...surgeons, ...apps].filter(s => onVac(s.id, ds, vacations)).map(s => s.name);
+            const offNames = calAppOffNames(ds);
+            const chip = calSilvisChip(ds);
+            const canEdit = (isScheduler || userProfile?.role === "admin");
+            const mondayStr = fmt(monOf(parse(ds)));
+            // ── end day sheet data ──
+            const title = `${["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"][parse(ds).getDay()]}, ${monthDayLabel(ds, true)}`;
+            const ICON = { svc:"☀️", sat:"☀️", night:"🌙", wkndFri:"🌗", wkndSun:"🌗", app:"👩‍⚕️", fierce:"⚡", fierceBkp:"🛡" };
+            const TONE = dk
+              ? { svc:"#7ab8e0", sat:"#7ab8e0", night:"#b8a0e8", wkndFri:"#d8c890", wkndSun:"#d8c890", app:"#e0a070", cover:"#f0a060", fierce:"#e0c060", fierceBkp:"#7ab8e8" }
+              : { svc:"#3080a8", sat:"#3080a8", night:"#6850a0", wkndFri:"#908050", wkndSun:"#908050", app:"#985020", cover:"#c06020", fierce:"#8a6a10", fierceBkp:"#1a6fa8" };
+            // ✕, the backdrop and Escape put the focus back on the day cell (closeCalDay); Edit this week
+            // closes without that — the week editor it opens is in front, not the cell behind it.
+            const close = () => closeCalDay();
+            const row = {display:"flex",alignItems:"flex-start",gap:8,padding:"8px 0",borderTop:`1px solid ${dkCardBorder}`,fontSize:14,lineHeight:1.4,color:dkText};
+            const ico = {width:22,textAlign:"center",flexShrink:0};
+            // Lifted above the update banner by its measured height (calSheetLift; 0 with no banner): the
+            // banner wraps to two rows on a 375px phone and used to cover the sheet's bottom lines.
+            return (
+              <div onClick={close} style={{position:"fixed",inset:0,zIndex:9000,background:"rgba(0,0,0,0.45)",display:"flex",alignItems:"flex-end",justifyContent:"center"}}>
+                <div role="dialog" aria-modal="true" aria-label={`${title} — details`} onClick={e=>e.stopPropagation()}
+                  style={{width:"100%",maxWidth:520,maxHeight:"70vh",overflowY:"auto",overscrollBehavior:"contain",WebkitOverflowScrolling:"touch",boxSizing:"border-box",
+                    background:dk?"#1a1f2a":"#fff",borderRadius:"14px 14px 0 0",boxShadow:"0 -6px 24px rgba(0,0,0,0.25)",padding:"10px 16px",
+                    paddingBottom:"calc(env(safe-area-inset-bottom, 0px) + 16px)",marginBottom:calSheetLift,fontFamily:font}}>
+                  <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:4}}>
+                    <div style={{flex:1,minWidth:0}}>
+                      <div style={{fontSize:16,fontWeight:700,color:dk?"#e8e8f0":"#2c5a80"}}>{title}</div>
+                      {holLabel && <div style={{fontSize:13,fontWeight:600,color:dk?"#f0a060":"#c06020",marginTop:2}}>{holLabel.emoji} {holLabel.name}</div>}
+                    </div>
+                    <button autoFocus aria-label="Close" onClick={close}
+                      style={{minWidth:44,minHeight:44,background:"none",border:"none",fontSize:20,cursor:"pointer",color:dk?"#8a94a0":"#5a6a78",flexShrink:0,fontFamily:font}}>✕</button>
+                  </div>
+                  {lines.length === 0 && <div style={{...row,color:dkSubtext}}>No call scheduled for this day.</div>}
+                  {lines.map((l, i) => (
+                    <div key={i} style={row}>
+                      <span style={ico}>{l.slot === "cover" ? holidayEmoji(l.holiday) : ICON[l.slot]}</span>
+                      <span style={{flex:1,minWidth:0,overflowWrap:"anywhere"}}>
+                        <span style={{color:TONE[l.slot],fontWeight:600}}>{l.label}</span>
+                        {l.who !== null && <>: <b>{l.who}</b></>}
+                        {l.hours && <span style={{color:dkSubtext,fontFamily:mono,fontSize:12,whiteSpace:"nowrap"}}> {l.hours}</span>}
+                        {l.note && <span style={{display:"block",fontSize:12,color:dkSubtext,marginTop:1}}>{l.note}</span>}
+                      </span>
+                    </div>
+                  ))}
+                  {onVacNames.length > 0 && (
+                    <div style={row}><span style={ico}>🏖</span><span style={{flex:1,minWidth:0,overflowWrap:"anywhere"}}>On vacation: <b>{onVacNames.join(", ")}</b></span></div>
+                  )}
+                  {offNames.length > 0 && (
+                    <div style={row}><span style={ico}>☕</span><span style={{flex:1,minWidth:0,overflowWrap:"anywhere"}}>APP off (daytime): <b>{offNames.join(", ")}</b></span></div>
+                  )}
+                  {chip && (
+                    <div style={row}><span style={ico}>🚑</span><span style={{flex:1,minWidth:0,overflowWrap:"anywhere"}}>
+                      <b style={{color:chip.role==="P"?(dk?"#8ab0f0":"#1a4a9a"):dkSubtext}}>{chip.label.replace(/^🚑\s*/, "")}</b>
+                      <span style={{display:"block",fontSize:12,color:dkSubtext,marginTop:1}}>{chip.title}</span>
+                    </span></div>
+                  )}
+                  {canEdit && (
+                    <button onClick={()=>{ closeCalDay(false); openWeekEditor(mondayStr); }}
+                      style={{...css.btn(true),width:"100%",marginTop:12,padding:"10px 14px",fontSize:14,minHeight:44}}>✏️ Edit this week</button>
+                  )}
+                </div>
+              </div>
+            );
+          })()}
 
           <div style={{marginTop:10,display:"flex",gap:12,fontSize:10,color:"#8a94a0",flexWrap:"wrap"}}>
             <span><span style={{color:"#3080a8",fontWeight:700}}>S</span> Service Wk</span>
@@ -10666,18 +10914,20 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             const sortedMonths = [...allMonths].sort();
             const moLabel = (mk) => { const [y,mo] = mk.split("-"); return `${MO[parseInt(mo)-1]} ${y}`; };
             const billingDays = (r) => (r.dc||0) + (r.nights||0) + (r.wknd||0) + (r.hol||0);
-            return (
-            <div style={css.card}>
-              <div style={css.cardT}>💰 Billing Summary <span style={{fontWeight:400,fontSize:11,color:"#7a8a98"}}>— Monthly, 1st Call Only</span></div>
-              <p style={{fontSize:11,color:"#7a8a98",margin:"0 0 14px",lineHeight:1.5}}>
-                Breakdown by calendar month. Backup weeks are excluded — only 1st-call shifts count toward billing. Each call day is counted in the month it actually falls in (a service week or weekend spanning a month boundary is split across both months). A covered holiday bills 2 days (the day and the night) to the surgeon who covers it, and that date's regular credits don't count.
-              </p>
-              {sortedMonths.map(mk => {
+            // A month is listed only when someone shown has a billing day in it.
+            const hasAny = (mk) => {
                 const monthData = monthly[mk] || {};
-                const hasAny = billVisible.some(s => {
+                return billVisible.some(s => {
                   return billingDays(monthData[s.id] || {}) > 0;
                 });
-                if (!hasAny) return null;
+            };
+            // Newest first, from this month back (UX audit 2026-10-19): the month
+            // being billed is at the top, not a year of history down. Months after
+            // this one sit in a collapsed "Upcoming months". Order only — every
+            // number is the same. helpers.js billingMonthOrder
+            const billOrder = billingMonthOrder(sortedMonths.filter(hasAny), fmt(new Date()));
+            const billMonth = (mk) => {
+                const monthData = monthly[mk] || {};
                 return (
                   <div key={mk} style={{marginBottom:16}}>
                     <div style={{fontSize:12,fontWeight:700,color:"#1a6fa8",marginBottom:4,textTransform:"uppercase",letterSpacing:0.8}}>{moLabel(mk)}</div>
@@ -10714,7 +10964,25 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                     </div>
                   </div>
                 );
-              })}
+            };
+            return (
+            <div style={css.card}>
+              <div style={css.cardT}>💰 Billing Summary <span style={{fontWeight:400,fontSize:11,color:"#7a8a98"}}>— Monthly, 1st Call Only</span></div>
+              <p style={{fontSize:11,color:"#7a8a98",margin:"0 0 14px",lineHeight:1.5}}>
+                Breakdown by calendar month. Backup weeks are excluded — only 1st-call shifts count toward billing. Each call day is counted in the month it actually falls in (a service week or weekend spanning a month boundary is split across both months). A covered holiday bills 2 days (the day and the night) to the surgeon who covers it, and that date's regular credits don't count.
+              </p>
+              {billOrder.done.map(billMonth)}
+              {billOrder.ahead.length > 0 && (
+                /* Review fixes: a dark border in dark mode (it was a light line on the dark card), a dark
+                   fill the sheet's forced summary blue (details summary { color:#6080c0 !important }) reads
+                   on at 4.5:1+, and a 44px-tall summary to tap (the line was ~14px). */
+                <details open={billOrder.done.length === 0} style={{background:dk?"#12161e":"#f4f6f8",border:`1px solid ${dk?"#2a3a5e":"#d0d8e0"}`,borderRadius:6,padding:"0 10px",marginBottom:16}}>
+                  <summary style={{cursor:"pointer",fontSize:12,fontWeight:700,color:dk?"#a0b0c0":"#5a6a78",padding:"14px 0",lineHeight:"16px"}}>
+                    Upcoming months ({billOrder.ahead.length})
+                  </summary>
+                  <div style={{marginTop:4,paddingBottom:6}}>{billOrder.ahead.map(billMonth)}</div>
+                </details>
+              )}
               <div style={{fontSize:11,color:"#7a8a98",lineHeight:1.5,marginTop:6}}>
                 <strong style={{color:"#2c5a80"}}>Formula:</strong> Svc Days + Nights + Wknd Days + Holiday Days = Total Call Days. Each day counted in the month it falls in. Billed monthly.
               </div>
@@ -10939,6 +11207,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               <select value={mineId} onChange={e=>setMineViewId(e.target.value === mySurgeon ? "" : e.target.value)} style={{...css.inp,width:180,fontSize:14}}>
                 <option value="">Select your name…</option>
                 {surgeons.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
+                {/* A signed-in APP's own name, so their picker shows it instead of the placeholder (picking it = Back to mine) */}
+                {aMap[mySurgeon] && <option value={aMap[mySurgeon].id}>{aMap[mySurgeon].name}</option>}
               </select>
               {mineId && (
                 <button onClick={()=>downloadMyCal(mineId)} style={{...css.btn(true),padding:"8px 18px"}}>
@@ -10950,7 +11220,9 @@ ${"</"}script>${"</"}body>${"</"}html>`;
 
           {mineId && Object.keys(schedule).length > 0 && (() => {
             const myId = mineId;
-            const myName = sMap[myId]?.name || "?";
+            // An APP's own code too (review fix): an APP who adjusts or removes a vacation here is named
+            // in the schedulers' notice — it read "? removed their vacation" (sMap is surgeons only).
+            const myName = sMap[myId]?.name || aMap[myId]?.name || "?";
             const myVacs = vacations[myId] || [];
             const myNoCall = noCallDays[myId] || [];
             // Mine view hides completed vacations (end before today) and shows the
@@ -11052,6 +11324,11 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             // The My Shifts list shows only shifts not yet done, and offers Find Swap only before a
             // shift starts (the helper owns both rules). The full list stays for the Next call card.
             const myShiftsView = mineUpcoming(myShifts, myToday);
+            // An APP (UX audit 2026-10-19; two of the seven users) holds no surgeon shift: their Mine shows
+            // their APP call days (appShifts, the Calendar's source) in place of the surgeon Next call card
+            // and My Shifts. Guarded like the dates below, against an old cached helpers.js.
+            const mineApp = !!aMap[myId];
+            const myAppDays = mineApp && typeof appUpcoming === "function" ? appUpcoming(appShifts, myId, myToday) : [];
 
             // ─── Next call at-a-glance ───
             // Flatten each upcoming role to a concrete start date (a night lands on
@@ -11102,10 +11379,62 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             return (
               <>
                 <div style={{fontSize:15,fontWeight:700,color:"#1a2a3a",marginBottom:12}}>
-                  <Badge id={myId}/> {pubThrough && <span style={{marginLeft:8,fontSize:13,fontWeight:600,color:dk?"#9aa8b6":"#5a6a78"}}>Published through {monthDayLabel(pubThrough, true)}</span>}
+                  {mineApp ? <AppBadge id={myId}/> : <><Badge id={myId}/> {pubThrough && <span style={{marginLeft:8,fontSize:13,fontWeight:600,color:dk?"#9aa8b6":"#5a6a78"}}>Published through {monthDayLabel(pubThrough, true)}</span>}</>}
                 </div>
 
-                {/* Next call at-a-glance — pinned summary of upcoming assignments */}
+                {/* An APP's call days (UX audit 2026-10-19), in the Next call card's place: the next one, then the rest, soonest first */}
+                {mineApp && (() => {
+                  const APP_LIMIT = 5;
+                  const nextA = myAppDays[0], restA = myAppDays.slice(1);
+                  const shownA = showAllMyApp ? restA : restA.slice(0, APP_LIMIT);
+                  const inDays = (ds) => Math.round((parse(ds) - _today0) / _DAY);
+                  const appIcon = (d) => (d.weekend ? "🌗" : "🌙");
+                  const appHours = (d) => (d.weekend ? "7a–7a (24h)" : "5p–7a");
+                  return (
+                  <div style={{...css.card, padding:0, overflow:"hidden", marginBottom:16, border:"1px solid "+(dk?"#2a3a48":"#dfe6ec")}}>
+                    <div style={{background:dk?"linear-gradient(135deg,#16202c,#1b2735)":"linear-gradient(135deg,#f3f7fb,#e9f1f8)", padding:"9px 14px", borderBottom:"1px solid "+(dk?"#243240":"#e4ebf1"), fontSize:11, fontWeight:800, letterSpacing:0.6, color:dk?"#9fb4c8":"#3a5a78", textTransform:"uppercase"}}>
+                      🗓 Next APP Call{myAppDays.length > 0 && <span style={{fontWeight:600}}> · {myAppDays.length} upcoming</span>}
+                    </div>
+                    {!nextA ? (
+                      <div style={{padding:"16px 14px", fontSize:13, color:"#8a94a0"}}>No upcoming APP call days in the current schedule.</div>
+                    ) : (
+                      <div style={{padding:"13px 14px"}}>
+                        <div style={{display:"flex", alignItems:"center", gap:12}}>
+                          <div style={{fontSize:30, lineHeight:1}}>{appIcon(nextA)}</div>
+                          <div style={{flex:1, minWidth:0}}>
+                            <div style={{display:"flex", alignItems:"center", gap:8, flexWrap:"wrap"}}>
+                              <span style={{fontSize:16, fontWeight:800, color:dk?"#dde6ef":"#1a2a3a"}}>APP Call</span>
+                              <span style={{fontSize:12, fontWeight:800, padding:"2px 9px", borderRadius:20, background:_whenTone(inDays(nextA.ds))+"1f", color:_whenTone(inDays(nextA.ds))}}>{_whenTxt(inDays(nextA.ds))}</span>
+                            </div>
+                            <div style={{fontSize:13, color:dk?"#9aa8b6":"#4a5a68", marginTop:3}}>{mineDay(nextA.ds)}</div>
+                            <div style={{fontSize:11, color:"#9aa4ae", marginTop:1}}>{appHours(nextA)}</div>
+                          </div>
+                        </div>
+                        {restA.length > 0 && (
+                          <div style={{marginTop:12, paddingTop:10, borderTop:"1px dashed "+(dk?"#2a3a48":"#e4ebf1"), display:"flex", flexDirection:"column", gap:9}}>
+                            {shownA.map(d => (
+                              <div key={d.ds} style={{display:"flex", alignItems:"center", gap:10}}>
+                                <span style={{fontSize:16}}>{appIcon(d)}</span>
+                                <span style={{flex:1, minWidth:0, fontSize:13, fontWeight:600, color:dk?"#c8d2dc":"#3a4a58", whiteSpace:"nowrap"}}>{mineDay(d.ds)}</span>
+                                <span style={{fontSize:12, color:dk?"#9aa8b6":"#5a6a78", whiteSpace:"nowrap"}}>{appHours(d)}</span>
+                                <span style={{fontSize:11, fontWeight:700, color:_whenTone(inDays(d.ds)), minWidth:60, textAlign:"right"}}>{_whenTxt(inDays(d.ds))}</span>
+                              </div>
+                            ))}
+                            {restA.length > APP_LIMIT && (
+                              <button onClick={()=>setShowAllMyApp(v=>!v)} style={{alignSelf:"flex-start",background:"none",border:"none",color:"#1a6fa8",fontSize:11,fontWeight:600,cursor:"pointer",padding:"6px 0",fontFamily:font}}>
+                                {showAllMyApp ? "Show fewer" : `Show all ${myAppDays.length}`}
+                              </button>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                  );
+                })()}
+
+                {/* Next call at-a-glance — pinned summary of upcoming assignments (a surgeon's; an APP has the card above) */}
+                {!mineApp && (
                 <div style={{...css.card, padding:0, overflow:"hidden", marginBottom:16, border:"1px solid "+(dk?"#2a3a48":"#dfe6ec")}}>
                   <div style={{background:dk?"linear-gradient(135deg,#16202c,#1b2735)":"linear-gradient(135deg,#f3f7fb,#e9f1f8)", padding:"9px 14px", borderBottom:"1px solid "+(dk?"#243240":"#e4ebf1"), fontSize:11, fontWeight:800, letterSpacing:0.6, color:dk?"#9fb4c8":"#3a5a78", textTransform:"uppercase"}}>
                     🗓 Next Call
@@ -11146,6 +11475,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                     </div>
                   )}
                 </div>
+                )}
 
                 {/* 🚑 Silvis — FAK only: his upcoming Silvis days, soonest first */}
                 {myId && silvisFakId && myId === silvisFakId && (() => {
@@ -11273,13 +11603,16 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   </div>
                 ))}
 
-                {/* Only a scheduler can generate, so only a scheduler is told to (UX audit 2026-10-19) */}
+                {/* Only a scheduler can generate, so only a scheduler is told to (UX audit 2026-10-19).
+                    An APP never holds a surgeon shift, so these two lines are a surgeon's; the APP card above stands in. */}
+                {!mineApp && <>
                 {myShifts.length === 0 && (
                   <div style={{...css.card,textAlign:"center",color:"#8a94a0",padding:30}}>{isScheduler ? "No shifts assigned yet. Generate a schedule first." : "No shifts assigned yet."}</div>
                 )}
                 {myShifts.length > 0 && myShiftsView.length === 0 && (
                   <div style={{...css.card,textAlign:"center",color:"#8a94a0",padding:30}}>No upcoming shifts in the current schedule.</div>
                 )}
+                </>}
               </>
             );
           })()}
@@ -11510,8 +11843,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                             <span style={{fontSize:11,color:"#a0a8b0"}}>Submitted {new Date(r.submitted_at).toLocaleDateString()}</span>
                             {(r.surgeon_id !== mySurgeon || isScheduler) && (
                               <div style={{marginLeft:"auto",display:"flex",gap:6}}>
-                                <button onClick={()=>approveVacRequest(r)} style={{background:"#e8f8e8",border:"1px solid #a0d8a0",color:"#1a8040",borderRadius:6,padding:"4px 12px",fontSize:12,fontWeight:600,cursor:"pointer",fontFamily:font}}>✓ Approve</button>
-                                <button onClick={()=>{const note=prompt("Reason for denial (optional):"); if(note!==null) denyVacRequest(r,note);}} style={{background:"#fce8e8",border:"1px solid #e0b0b0",color:"#c04040",borderRadius:6,padding:"4px 12px",fontSize:12,fontWeight:600,cursor:"pointer",fontFamily:font}}>✕ Deny</button>
+                                <button onClick={()=>approveVacRequest(r)} style={{background:"#e8f8e8",border:"1px solid #a0d8a0",color:"#1a8040",borderRadius:6,padding:"4px 12px",fontSize:12,fontWeight:600,cursor:"pointer",fontFamily:font,...(dk ? {background:"#1b4d2c",border:"1px solid #3a8a55",color:"#d6f5e0"} : {})}}>✓ Approve</button>
+                                <button onClick={()=>{const note=prompt("Reason for denial (optional):"); if(note!==null) denyVacRequest(r,note);}} style={{background:"#fce8e8",border:"1px solid #e0b0b0",color:"#c04040",borderRadius:6,padding:"4px 12px",fontSize:12,fontWeight:600,cursor:"pointer",fontFamily:font,...(dk ? {background:"#5c1f1f",border:"1px solid #a04848",color:"#fadada"} : {})}}>✕ Deny</button>
+                                {/* Dark mode (review fix): the dark sheet forces every button's text to #c0c8d8, which read ~1.5:1 on
+                                    these two light fills — they get the same dark fills as the trade's Accept / Decline. */}
                               </div>
                             )}
                             {r.surgeon_id === mySurgeon && !isScheduler && <span style={{marginLeft:"auto",fontSize:11,color:"#c09030",fontWeight:600,background:"#fef8e8",padding:"2px 8px",borderRadius:4,border:"1px solid #e8d090"}}>Pending review</span>}
@@ -11858,12 +12193,12 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                         })()}
                         {canAnswer(r) && (
                           <>
-                            {tradeLegsNotStarted(r) && <button onClick={()=>acceptTradeRequest(r)} style={{background:"#e8f8e8",border:"1px solid #a0d8a0",color:"#1a8040",borderRadius:6,padding:"3px 10px",fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:font}}>✓ Accept</button>}
-                            <button onClick={()=>declineTradeRequest(r)} style={{background:"#fce8e8",border:"1px solid #e0b0b0",color:"#c04040",borderRadius:6,padding:"3px 10px",fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:font}}>✕ Decline</button>
+                            {tradeLegsNotStarted(r) && <button onClick={()=>acceptTradeRequest(r)} style={{background:"#e8f8e8",border:"1px solid #a0d8a0",color:"#1a8040",borderRadius:6,padding:"3px 10px",fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:font,...(dk ? {background:"#1b4d2c",border:"1px solid #3a8a55",color:"#d6f5e0"} : {})}}>✓ Accept</button>}
+                            <button onClick={()=>declineTradeRequest(r)} style={{background:"#fce8e8",border:"1px solid #e0b0b0",color:"#c04040",borderRadius:6,padding:"3px 10px",fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:font,...(dk ? {background:"#5c1f1f",border:"1px solid #a04848",color:"#fadada"} : {})}}>✕ Decline</button>
                           </>
                         )}
                         {mySurgeon === r.from_surgeon_id && !canAnswer(r) && tradeLegsNotStarted(r) && <span style={{fontSize:10,color:"#8a6a10",fontWeight:600}}>Waiting for {r.to_surgeon_name}'s answer</span>}
-                        {mySurgeon === r.from_surgeon_id && <button onClick={()=>deleteTradeRequest(r.id)} style={{background:"none",border:"1px solid #d0d8e0",color:"#8a94a0",borderRadius:5,padding:"2px 8px",fontSize:10,cursor:"pointer",fontFamily:font}}>Withdraw</button>}
+                        {mySurgeon === r.from_surgeon_id && <button onClick={()=>deleteTradeRequest(r.id)} style={{background:"none",border:"1px solid #d0d8e0",color:"#8a94a0",borderRadius:5,padding:"2px 8px",fontSize:10,cursor:"pointer",fontFamily:font,...(dk ? {background:"#2a3448",border:"1px solid #4a5670",color:"#e0e6f0"} : {})}}>Withdraw</button>}
                         {mySurgeon !== r.to_surgeon_id && mySurgeon !== r.from_surgeon_id && !isScheduler && (
                           <span style={{fontSize:10,color:"#8a6a10",fontWeight:600}}>Awaiting {r.to_surgeon_name}'s response</span>
                         )}
