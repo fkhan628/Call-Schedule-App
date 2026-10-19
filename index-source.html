@@ -10977,10 +10977,19 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             _nextUp.sort((a, b) => a.start - b.start);
             const _upNext = _nextUp.slice(0, 3);
 
+            // Mine dates (UX audit 2026-10-19, helpers.js): the header says what is PUBLISHED (not the
+            // Generate tab's setup window), each My Shifts week reads "Oct 19 – Oct 25", and each row
+            // carries its date. Guarded like the totals card, against an old cached helpers.js.
+            const mineDates = typeof weekRangeLabel === "function" && typeof roleDateLabel === "function" && typeof publishedThrough === "function" && typeof monthDayLabel === "function";
+            const pubThrough = mineDates ? publishedThrough(schedule) : null;
+            const weekHead = (w) => (mineDates ? weekRangeLabel(w.mStr) : `${w.mStr} → ${w.endStr}`);
+            const rowDate = (mStr, r) => (mineDates ? roleDateLabel(mStr, r) : null);
+            const mineDateChip = {fontSize:11,fontWeight:600,color:"#2c4a68",background:"#e6eef6",border:"1px solid #c8d8e8",borderRadius:4,padding:"1px 6px",whiteSpace:"nowrap"};
+
             return (
               <>
                 <div style={{fontSize:15,fontWeight:700,color:"#1a2a3a",marginBottom:12}}>
-                  <Badge id={myId}/> <span style={{marginLeft:8}}>{MO[startMonth]} – {MO[endMoIdx]} {startYear}</span>
+                  <Badge id={myId}/> {pubThrough && <span style={{marginLeft:8,fontSize:13,fontWeight:600,color:dk?"#9aa8b6":"#5a6a78"}}>Published through {monthDayLabel(pubThrough, true)}</span>}
                 </div>
 
                 {/* Next call at-a-glance — pinned summary of upcoming assignments */}
@@ -11084,7 +11093,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                             </>
                           ) : (
                             <>
-                              <span style={{fontSize:13,color:"#5a5030",fontFamily:mono,flex:1,minWidth:140}}>{vs} → {ve}</span>
+                              <span style={{fontSize:13,color:"#5a5030",fontFamily:mono,flex:1,minWidth:140}}>{dayMonthLabel(vs)} → {dayMonthLabel(ve)}</span>
                               {canEditTimeOff && <>
                                 <button onClick={()=>setMyVacEdit({idx:origIdx,start:vs,end:ve})} style={{background:"#e8f0fc",border:"1px solid #a8c8e0",color:"#1a6fa8",borderRadius:5,padding:"2px 10px",fontSize:10,fontWeight:600,cursor:"pointer",fontFamily:font}}>✏️ Edit</button>
                                 <button onClick={()=>removeMyVac(origIdx)} style={{background:"#fdecec",border:"1px solid #e8a0a0",color:"#a82828",borderRadius:5,padding:"2px 10px",fontSize:10,fontWeight:600,cursor:"pointer",fontFamily:font}}>Remove</button>
@@ -11112,7 +11121,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   <div style={{...css.card,background:"#f4f0fb",border:"1px solid #d8cdec"}}>
                     <div style={{fontSize:12,fontWeight:700,color:"#5a3a90",marginBottom:6}}>🚫 My No-Call Days <span style={{fontWeight:400,color:"#9a82c0"}}>({myNoCallView.length})</span></div>
                     {shown.map(({ns,ne},i) => (
-                      <div key={i} style={{fontSize:13,color:"#4a3a60",fontFamily:mono,marginBottom:3}}>{ns}{ns!==ne ? ` → ${ne}` : ""}</div>
+                      <div key={i} style={{fontSize:13,color:"#4a3a60",fontFamily:mono,marginBottom:3}}>{dayMonthLabel(ns)}{ns!==ne ? ` → ${dayMonthLabel(ne)}` : ""}</div>
                     ))}
                     {myNoCallView.length > NC_LIMIT && (
                       <button onClick={()=>setShowAllMyNoCall(v=>!v)} style={{background:"none",border:"none",color:"#6a4aa0",fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:font,padding:"4px 0 0",textDecoration:"underline"}}>
@@ -11128,14 +11137,15 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                 {myShiftsView.map(wk => (
                   <div key={wk.mStr} style={{...css.card,padding:12,marginBottom:8,border:wk.isBackup?"1px solid #e8d090":"1px solid #e0e4ea"}}>
                     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6,flexWrap:"wrap",gap:4}}>
-                      <span style={{fontFamily:mono,fontSize:13,color:wk.isBackup?"#8a6a10":"#1a6fa8",fontWeight:600}}>{wk.mStr} → {wk.endStr}</span>
+                      <span style={{fontSize:13,color:wk.isBackup?"#8a6a10":"#1a6fa8",fontWeight:600}}>{weekHead(wk)}</span>
                       {wk.isBackup && <span style={css.backupBanner}>⚡ BACKUP</span>}
                       {wk.isFierceBackup && <span style={{fontSize:11,color:"#1a6fa8",background:"#e8f0fc",border:"1px solid #a8c8e0",borderRadius:6,padding:"2px 8px",fontWeight:600}}>🛡 Fierce Backup</span>}
                     </div>
                     {wk.roles.map((r,i) => (
-                      <div key={i} style={{display:"flex",alignItems:"center",gap:8,padding:"5px 10px",background:"#f8f9fb",borderRadius:5,border:"1px solid #e8ecf0",marginBottom:3}}>
+                      <div key={i} style={{display:"flex",flexWrap:"wrap",alignItems:"center",gap:8,rowGap:3,padding:"5px 10px",background:"#f8f9fb",borderRadius:5,border:"1px solid #e8ecf0",marginBottom:3}}>
                         <span style={{fontSize:14}}>{r.icon}</span>
                         <span style={{fontSize:13,fontWeight:600,color:r.color}}>{r.type}</span>
+                        {rowDate(wk.mStr, r) && <span style={mineDateChip}>{rowDate(wk.mStr, r)}</span>}
                         <span style={{fontSize:11,color:"#8a94a0",fontFamily:mono}}>{r.detail}</span>
                         {r.canSwap ? (mineViewId && !isScheduler ? null : (
                           <button onClick={()=>{findSwapSuggestions(wk.mStr, r.shiftKey, myId); setView("calendar"); setTimeout(() => { const el = document.querySelector('[data-swap-tool="1"]'); if (el && el.scrollIntoView) el.scrollIntoView({ behavior: "smooth", block: "start" }); }, 60);}}
@@ -11150,8 +11160,9 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   </div>
                 ))}
 
+                {/* Only a scheduler can generate, so only a scheduler is told to (UX audit 2026-10-19) */}
                 {myShifts.length === 0 && (
-                  <div style={{...css.card,textAlign:"center",color:"#8a94a0",padding:30}}>No shifts assigned yet. Generate a schedule first.</div>
+                  <div style={{...css.card,textAlign:"center",color:"#8a94a0",padding:30}}>{isScheduler ? "No shifts assigned yet. Generate a schedule first." : "No shifts assigned yet."}</div>
                 )}
                 {myShifts.length > 0 && myShiftsView.length === 0 && (
                   <div style={{...css.card,textAlign:"center",color:"#8a94a0",padding:30}}>No upcoming shifts in the current schedule.</div>
@@ -11159,6 +11170,13 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               </>
             );
           })()}
+
+          {/* No weeks to show (UX audit 2026-10-19): this used to leave the page blank. Say which —
+              still loading, the read failed (the 60-s pull retries it), or nothing is published;
+              only a scheduler is told to generate. */}
+          {mineId && Object.keys(schedule).length === 0 && (
+            <div role="status" style={{...css.card,textAlign:"center",color:"#8a94a0",padding:20,fontSize:13}}>{!loaded || (!schedSync.seeded && !schedSync.loadFailed) ? "Loading the schedule…" : schedSync.loadFailed ? "The schedule didn't load — it retries every minute; reload the app if this stays." : isScheduler ? "No call schedule is published yet. Generate a schedule first." : "No call schedule is published yet."}</div>
+          )}
 
           {!mineId && (
             <div style={{...css.card,textAlign:"center",color:"#8a94a0",padding:30}}>Select your name above to view your schedule.</div>

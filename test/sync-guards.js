@@ -4792,6 +4792,278 @@ console.log("\nAT. A trade waiting on your answer");
   }
 }
 
+// ─── AU. Mine: readable dates, "Published through …", empty states by role (UX audit 2026-10-19) ───
+// My Shifts headed each week "2026-10-19 → 2026-10-25" and listed rows like
+// "Tue Night 5p–7a" with no date, so a member had to work out which night was
+// theirs. The Mine header printed the Generate tab's setup window ("October –
+// December 2026"), not what is published. Members were told "Generate a
+// schedule first.", which only a scheduler can do, and an empty schedule
+// (still loading, or a failed read) left the page blank. Render-only, plus pure
+// helpers (helpers.js); the Mine builder's roles are unchanged (X3/X4 hold).
+//   AU1 the helpers, executed: weekRangeLabel / monthDayLabel / roleDateLabel on
+//       the 2026-10-19 week, the fall-back week 2026-10-26 (DST), the spring-
+//       forward week and a year boundary; every role kind (a night's own date,
+//       the weekend's held legs, the service week's held range; a dated role,
+//       an OFF week or nothing held → no chip); pure (input untouched, no clock)
+//   AU2 roleDateLabel on the REAL Mine builder's roles (sliced, as X3 does):
+//       worked examples, and every role of every surgeon on the 46 live weeks
+//       gets dates inside its own week, on its own weekdays
+//   AU3 publishedThrough, executed: no counting week → null; else the last
+//       counting week's Sunday; blank entries ignored; it equals the end of the
+//       Calendar's published range (calMonthStatus) on every case
+//   AU4 AU1 + AU3 again in a child pinned to TZ=America/Chicago (proven)
+//   AU5 the Mine render, sliced and run: the setup-window header is gone; the
+//       header, week-header and row-date code run on the live weeks, and
+//       degrade to today's text with an old cached helpers.js; the chip's style
+//       is one const outside the map; vacation and no-call rows print
+//       dayMonthLabel; U4's in-order span stays under its 2500 bound
+//   AU6 the empty states, executed as written: a member is never told to
+//       generate; an empty schedule says loading / didn't load / nothing
+//       published (by role), and never shows alongside the shifts list
+console.log("\nAU. Mine: readable dates, Published through, empty states by role");
+{
+  const AU_FN = ["weekRangeLabel", "monthDayLabel", "roleDateLabel", "publishedThrough", "calMonthStatus"];
+  const H = vm.runInContext(`({ ${AU_FN.map((f) => `${f}: typeof ${f} === "function" ? ${f} : null`).join(", ")} })`, sandbox);
+  const NONE = AU_FN.filter((f) => !H[f]).length ? "not defined in helpers.js: " + AU_FN.filter((f) => !H[f]).join(", ") : "";
+  const tryRun = (f) => { try { return f(); } catch (ex) { return "threw: " + String((ex && ex.message) || ex).slice(0, 120); } };
+  const FIXD = path.join(ROOT, "test", "fixtures");
+  const LIVE = JSON.parse(fs.readFileSync(path.join(FIXD, "schedule-weeks-live-2026-10-02.json"), "utf8"));
+  const argOf = (x) => (x === "@LIVE" ? LIVE : JSON.parse(JSON.stringify(x)));
+  const runCases = (cases) => cases.map(([f, args]) => (H[f] ? tryRun(() => H[f](...args.map(argOf))) : "missing " + f));
+  const badOf = (cases, got) => cases.map((c, i) => (JSON.stringify(got[i]) === JSON.stringify(c[2]) ? null : `${c[0]}(${JSON.stringify(c[1]).slice(1, 80)}) → ${JSON.stringify(got[i])}, want ${JSON.stringify(c[2])}`)).filter(Boolean);
+
+  // AU1 — the helpers
+  const rl = (shiftKey, extra) => Object.assign({ type: "role", shiftKey }, extra || {});
+  const AU1 = [
+    ["weekRangeLabel", ["2026-10-19"], "Oct 19 – Oct 25"],
+    ["weekRangeLabel", ["2026-10-26"], "Oct 26 – Nov 1"],
+    ["weekRangeLabel", ["2027-03-08"], "Mar 8 – Mar 14"],
+    ["weekRangeLabel", ["2026-12-28"], "Dec 28 – Jan 3"],
+    ["monthDayLabel", ["2026-10-19"], "Oct 19"],
+    ["monthDayLabel", ["2026-11-01", true], "Nov 1, 2026"],
+    ["monthDayLabel", ["2027-01-03", true], "Jan 3, 2027"],
+    // [7..22] wk 2026-10-19
+    ["roleDateLabel", ["2026-10-19", rl("mon")], "Mon 10/19"],
+    ["roleDateLabel", ["2026-10-19", rl("tue")], "Tue 10/20"],
+    ["roleDateLabel", ["2026-10-19", rl("wed")], "Wed 10/21"],
+    ["roleDateLabel", ["2026-10-19", rl("thu")], "Thu 10/22"],
+    ["roleDateLabel", ["2026-10-19", rl("wknd")], "Fri 10/23 + Sun 10/25"],
+    ["roleDateLabel", ["2026-10-19", rl("wknd", { held: ["2026-10-25", "2026-10-23"] })], "Fri 10/23 + Sun 10/25"],
+    ["roleDateLabel", ["2026-10-19", rl("wknd", { held: ["2026-10-23"] })], "Fri 10/23"],
+    ["roleDateLabel", ["2026-10-19", rl("wknd", { held: ["2026-10-25"] })], "Sun 10/25"],
+    ["roleDateLabel", ["2026-10-19", rl("wknd", { held: [] })], null],
+    ["roleDateLabel", ["2026-10-19", rl("dayCall")], "Mon 10/19 – Sat 10/24"],
+    ["roleDateLabel", ["2026-10-19", rl("dayCall", { held: ["2026-10-20", "2026-10-21", "2026-10-22", "2026-10-23", "2026-10-24"] })], "Tue 10/20 – Sat 10/24"],
+    ["roleDateLabel", ["2026-10-19", rl("dayCall", { held: ["2026-10-24"] })], "Sat 10/24"],
+    ["roleDateLabel", ["2026-10-19", rl("dayCall", { held: [] })], null],
+    ["roleDateLabel", ["2026-10-19", rl(null, { date: "2026-10-21" })], null],
+    ["roleDateLabel", ["2026-10-19", rl("wed", { date: "2026-10-21" })], null],
+    ["roleDateLabel", ["2026-10-19", rl(null)], null],
+    // [23..] the fall-back week, the spring-forward weekend, New Year's
+    ["roleDateLabel", ["2026-10-26", rl("thu")], "Thu 10/29"],
+    ["roleDateLabel", ["2026-10-26", rl("wknd")], "Fri 10/30 + Sun 11/1"],
+    ["roleDateLabel", ["2026-10-26", rl("dayCall")], "Mon 10/26 – Sat 10/31"],
+    ["roleDateLabel", ["2027-03-08", rl("wknd")], "Fri 3/12 + Sun 3/14"],
+    ["roleDateLabel", ["2026-12-28", rl("wknd")], "Fri 1/1 + Sun 1/3"],
+  ];
+  const au1Got = runCases(AU1);
+  const b1 = badOf(AU1.slice(0, 7), au1Got.slice(0, 7)), b2 = badOf(AU1.slice(7, 23), au1Got.slice(7, 23)), b3 = badOf(AU1.slice(23), au1Got.slice(23));
+  check("AU1 a My Shifts week heads \"Oct 19 – Oct 25\" (Monday → Sunday), also across the fall-back week (Oct 26 – Nov 1), the spring-forward week and a year boundary (Dec 28 – Jan 3); with the year a date reads \"Nov 1, 2026\"",
+    !NONE && b1.length === 0, NONE || b1.join(" | "));
+  check("AU1 a row's date on wk 2026-10-19: a night → its own date (Tue 10/20); the weekend → the legs held (Fri 10/23 + Sun 10/25, or one leg, none → no chip); the service week → first to last held day (Mon 10/19 – Sat 10/24, from Tue when Monday was given away); a dated role or an OFF week → no chip",
+    !NONE && b2.length === 0, NONE || b2.join(" | "));
+  check("AU1 …and across the fall-back week 2026-10-26 (Thu 10/29; Fri 10/30 + Sun 11/1; Mon 10/26 – Sat 10/31), the spring-forward weekend (Fri 3/12 + Sun 3/14) and New Year's (Fri 1/1 + Sun 1/3)",
+    !NONE && b3.length === 0, NONE || b3.join(" | "));
+  const pureIn = [rl("wknd", { held: ["2026-10-25", "2026-10-23"] }), rl("dayCall", { held: ["2026-10-24", "2026-10-20"] })];
+  const pureBefore = JSON.stringify(pureIn);
+  const pureOut = H.roleDateLabel ? pureIn.map((r) => tryRun(() => H.roleDateLabel("2026-10-19", r))) : [];
+  const clocked = ["weekRangeLabel", "monthDayLabel", "roleDateLabel", "publishedThrough"].filter((f) => H[f] && /Date\.now|new Date\(\s*\)/.test(String(H[f])));
+  check("AU1 pure: an unsorted held list is read in date order and left as it was; none of the four reads a clock (no Date.now, no new Date())",
+    !NONE && JSON.stringify(pureIn) === pureBefore && JSON.stringify(pureOut) === JSON.stringify(["Fri 10/23 + Sun 10/25", "Tue 10/20 – Sat 10/24"]) && clocked.length === 0,
+    NONE || JSON.stringify({ pureIn, pureOut, clocked }));
+
+  // AU2 — the REAL Mine builder's roles (sliced, as X3 does)
+  const SURG = ["DJA", "MCC", "RPC", "KJH", "REH", "FAK", "ARW"].map((name, i) => ({ id: "s" + (i + 1), name }));
+  const nameOf = (id) => (SURG.find((s) => s.id === id) || {}).name || id || "?";
+  const MA = "            const myShifts = [];", MB = "            const myShiftsView = mineUpcoming(myShifts, myToday);";
+  const ma = src.indexOf(MA), mb = ma < 0 ? -1 : src.indexOf(MB, ma);
+  const ha = src.indexOf("const holidayEmoji = (label) => {"), hb = ha < 0 ? -1 : src.indexOf("\n  };", ha);
+  let mineRun = null;
+  try {
+    const holidayEmoji = ha > 0 && hb > 0 ? vm.runInContext(`(function () { ${src.slice(ha, hb + 4)}\n return holidayEmoji; })()`, sandbox) : null;
+    const build = ma > 0 && mb > 0 && holidayEmoji ? vm.runInContext(`(function (schedule, myId, nameOf, holidayEmoji, myToday) { ${src.slice(ma, mb + MB.length)}\n return myShifts; })`, sandbox) : null;
+    mineRun = build ? (sched, sid) => JSON.parse(JSON.stringify(build(sched, sid, nameOf, holidayEmoji, "2016-01-01"))) : null;
+  } catch (ex) { mineRun = null; }
+  const roleOf = (sid, sched, mStr, pred) => { const w = mineRun ? mineRun(sched, sid).find((x) => x.mStr === mStr) : null; return w ? w.roles.find(pred) || null : null; };
+  const lab = (mStr, r) => (H.roleDateLabel && r ? tryRun(() => H.roleDateLabel(mStr, r)) : "no role / no helper");
+  const COVSUN = { "2026-08-17": { dayCall: "s2", nights: { wknd: "s4" }, holidayCoverage: { "2026-08-23": { surgeonId: "s6", type: "major", name: "Sun 24h", holiday: "Test Sunday" } } } };
+  const ex2 = {
+    fakLaborSvc: lab("2026-09-07", roleOf("s6", LIVE, "2026-09-07", (r) => r.shiftKey === "dayCall")),
+    rpcLaborDay: lab("2026-09-07", roleOf("s3", LIVE, "2026-09-07", (r) => r.date === "2026-09-07")),
+    fakMonNight: lab("2026-06-29", roleOf("s6", LIVE, "2026-06-29", (r) => r.shiftKey === "mon")),
+    fakWknd: lab("2026-06-29", roleOf("s6", LIVE, "2026-06-29", (r) => r.shiftKey === "wknd")),
+    fakSvcDay: lab("2026-06-29", roleOf("s6", LIVE, "2026-06-29", (r) => r.date === "2026-07-03")),
+    kjhCovSun: lab("2026-08-17", roleOf("s4", COVSUN, "2026-08-17", (r) => r.shiftKey === "wknd")),
+  };
+  check("AU2 the real Mine builder's roles: FAK's Labor Day service week reads Tue 9/8 – Sat 9/12 (RPC holds Mon 9/7); RPC's Labor Day 24h and FAK's 7/3 Service Day get no chip (their detail leads with the date); FAK's 6/29 Mon night and weekend read Mon 6/29 and Fri 7/3 + Sun 7/5; a weekend whose Sunday is covered reads Fri 8/21",
+    !!mineRun && !NONE && JSON.stringify(ex2) === JSON.stringify({ fakLaborSvc: "Tue 9/8 – Sat 9/12", rpcLaborDay: null, fakMonNight: "Mon 6/29", fakWknd: "Fri 7/3 + Sun 7/5", fakSvcDay: null, kjhCovSun: "Fri 8/21" }),
+    JSON.stringify(ex2) + (mineRun ? "" : " — the Mine builder slice is missing"));
+  const ALLOWED = { mon: ["Mon"], tue: ["Tue"], wed: ["Wed"], thu: ["Thu"], wknd: ["Fri", "Sun"], dayCall: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] };
+  const dowInWeek = vm.runInContext("(function (mStr, m, d) { for (let i = 0; i < 7; i++) { const x = addD(parse(mStr), i); if (x.getMonth() + 1 === m && x.getDate() === d) return x.getDay(); } return -1; })", sandbox);
+  const propBad = []; let propN = 0, propNull = 0;
+  if (mineRun && H.roleDateLabel) for (const s of SURG) for (const w of mineRun(LIVE, s.id)) for (const r of w.roles) {
+    const t = tryRun(() => H.roleDateLabel(w.mStr, r));
+    if (r.date || !r.shiftKey || (Array.isArray(r.held) && r.held.length === 0)) { propNull++; if (t !== null) propBad.push(`${s.name} ${w.mStr} ${r.type}: ${t}`); continue; }
+    propN++;
+    const toks = typeof t === "string" ? [...t.matchAll(/(\w{3}) (\d{1,2})\/(\d{1,2})/g)] : [];
+    const ok = toks.length > 0 && (toks.length === 1 || r.shiftKey === "wknd" || r.shiftKey === "dayCall")
+      && toks.every(([, dw, m, d]) => { const k = dowInWeek(w.mStr, +m, +d); return k >= 0 && ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][k] === dw && (ALLOWED[r.shiftKey] || []).includes(dw); });
+    if (!ok) propBad.push(`${s.name} ${w.mStr} ${r.type}: ${t}`);
+  }
+  check(`AU2 every role of every surgeon on the ${Object.keys(LIVE).length} live weeks (${propN} dated by the chip, ${propNull} without one): the chip's dates fall inside the role's own week, on its own weekdays (a night on its day, the weekend Fri / Sun, the service week Mon–Sat); dated and OFF roles get none`,
+    !!mineRun && !NONE && propN >= 200 && propNull > 0 && propBad.length === 0, propBad.slice(0, 4).join(" | ") || NONE || (mineRun ? `only ${propN} roles` : "the Mine builder slice is missing"));
+
+  // AU3 — publishedThrough
+  const wkAQ = {};
+  for (let d = new Date(Date.UTC(2026, 3, 6)); d <= new Date(Date.UTC(2026, 11, 28)); d.setUTCDate(d.getUTCDate() + 7)) wkAQ[d.toISOString().slice(0, 10)] = { dayCall: "s1", nights: { mon: "s2", tue: null, wed: null, thu: null, wknd: null } };
+  const blankWk = { dayCall: null, nights: { mon: null, tue: null, wed: null, thu: null, wknd: null }, holidayCoverage: {}, isBackup: false, isFierceBackup: false };
+  const withBlank = Object.assign({}, wkAQ, { "2027-02-01": blankWk, "2027-02-08": {} });
+  const AU3 = [
+    ["publishedThrough", [{}], null],
+    ["publishedThrough", [null], null],
+    ["publishedThrough", [{ meta: { dayCall: "s1" } }], null],
+    ["publishedThrough", [{ "2026-11-02": blankWk }], null],
+    ["publishedThrough", [wkAQ], "2027-01-03"],
+    ["publishedThrough", [withBlank], "2027-01-03"],
+    ["publishedThrough", [{ "2026-10-26": { dayCall: "s2" }, "2026-10-19": { dayCall: "s1" } }], "2026-11-01"],
+    ["publishedThrough", [{ "2027-03-08": { dayCall: null, nights: { wknd: "s3" } } }], "2027-03-14"],
+    ["publishedThrough", [{ "2027-05-31": { dayCall: null, nights: {}, holidayCoverage: { "2027-05-31": { surgeonId: "s4", name: "Memorial Day 24h" } } } }], "2027-06-06"],
+    ["publishedThrough", ["@LIVE"], "2026-11-15"],
+  ];
+  const au3Got = runCases(AU3), b4 = badOf(AU3, au3Got);
+  check(`AU3 publishedThrough: no week that holds call → null ({}, null, non-date keys, blank weeks); else the last such week's Sunday, in date order (the fall-back week ends 11/1), blank entries after it ignored, a nights-only or holiday-only week counted; the live weeks → 2026-11-15 (${AU3.length} cases)`,
+    !NONE && b4.length === 0, NONE || b4.join(" | "));
+  const blankBefore = JSON.stringify(withBlank);
+  const agree = H.calMonthStatus && H.publishedThrough ? AU3.map(([, [s]]) => { const sc = argOf(s); const c = H.calMonthStatus(sc, 2040, 0); const want = c && c.to ? c.to : null; const got = tryRun(() => H.publishedThrough(sc)); return got === want ? null : `${JSON.stringify(s).slice(0, 40)}: ${JSON.stringify(got)} vs the Calendar's ${JSON.stringify(want)}`; }).filter(Boolean) : ["missing"];
+  if (H.publishedThrough) tryRun(() => H.publishedThrough(withBlank));
+  check("AU3 …it is the end of the Calendar's published range (calMonthStatus) on every case, so Mine and the Calendar name the same last day; the schedule passed in is untouched",
+    !NONE && agree.length === 0 && JSON.stringify(withBlank) === blankBefore, NONE || agree.join(" | "));
+
+  // AU4 — AU1 + AU3 again under TZ=America/Chicago
+  {
+    const { execFileSync } = require("child_process");
+    const ALL = AU1.concat(AU3);
+    const code = [
+      'const vm = require("vm"), fs = require("fs"), path = require("path");',
+      'const sb = { console, window: {}, document: undefined, navigator: { userAgent: "node-test" }, localStorage: { getItem: () => null, setItem() {}, removeItem() {} }, fetch: () => { throw new Error("no fetch"); }, setTimeout, clearTimeout };',
+      "sb.globalThis = sb; vm.createContext(sb);",
+      `for (const f of ["helpers.js", "config.js"]) vm.runInContext(fs.readFileSync(path.join(${JSON.stringify(ROOT)}, f), "utf8"), sb, { filename: f });`,
+      `const LIVE = JSON.parse(fs.readFileSync(${JSON.stringify(path.join(FIXD, "schedule-weeks-live-2026-10-02.json"))}, "utf8"));`,
+      `const h = {}; for (const f of ${JSON.stringify(AU_FN)}) h[f] = vm.runInContext("typeof " + f + " === 'function' ? " + f + " : null", sb);`,
+      `const cases = ${JSON.stringify(ALL.map(([f, a]) => [f, a]))};`,
+      'const run = (f, a) => { try { return h[f] ? h[f](...a.map((x) => (x === "@LIVE" ? LIVE : x))) : "missing " + f; } catch (ex) { return "threw: " + String((ex && ex.message) || ex).slice(0, 80); } };',
+      'process.stdout.write(JSON.stringify({ off: new Date(2026, 9, 24).getTimezoneOffset(), naive: new Date("2026-10-11").getDay(), out: cases.map(([f, a]) => run(f, a)) }));',
+    ].join("\n");
+    let out = null;
+    try { out = JSON.parse(execFileSync(process.execPath, ["-e", code], { env: Object.assign({}, process.env, { TZ: "America/Chicago" }), encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })); } catch (ex) { out = { err: String(ex).slice(0, 300) }; }
+    check("AU4 the child really runs in America/Chicago (CDT offset 300) and there the NAIVE new Date('2026-10-11') is a Saturday — the trap is visible",
+      !!out && out.off === 300 && out.naive === 6, JSON.stringify(out).slice(0, 300));
+    const tzBad = out && Array.isArray(out.out) ? badOf(ALL, out.out) : ["no output: " + JSON.stringify(out).slice(0, 200)];
+    check(`AU4 under TZ=America/Chicago every AU1 and AU3 case gives the same answer (${ALL.length} cases: week headers, row dates across both DST weeks, publishedThrough)`,
+      !!out && tzBad.length === 0, tzBad.slice(0, 3).join(" | "));
+  }
+
+  // AU5 — the Mine render, sliced
+  const AMa = '{view==="myschedule" && !isPublicMode && <>', AMb = "{/* ════════════════ REQUESTS ════════════════ */}";
+  const mA = src.indexOf(AMa), mB = mA < 0 ? -1 : src.indexOf(AMb, mA);
+  const mine = mA < 0 || mB < 0 ? "" : src.slice(mA, mB).replace(/\r\n/g, "\n");
+  const betweenAU = (text, a, b) => { const i = text.indexOf(a); if (i < 0) return null; const j = text.indexOf(b, i + a.length); return j < 0 ? null : text.slice(i + a.length, j); };
+  check("AU5 the Mine header no longer prints the Generate tab's setup window (no MO[startMonth], MO[endMoIdx] or startYear in the Mine page); after the badge it reads \"Published through …\" only when something is published",
+    !!mine && !/MO\[startMonth\]|MO\[endMoIdx\]|startYear/.test(mine) && mine.includes("<Badge id={myId}/> {pubThrough && <span style={{") && mine.includes(">Published through {monthDayLabel(pubThrough, true)}</span>}"),
+    mine ? (mine.match(/MO\[startMonth\][^\n]{0,60}/) || ["header line not found"])[0] : "the Mine block was not found");
+  const D0 = "const mineDates = ", D1 = "const mineDateChip = ";
+  const dA = mine.indexOf(D0), dB = dA < 0 ? -1 : mine.indexOf(D1, dA);
+  let declFn = null;
+  try { declFn = dA >= 0 && dB > dA ? vm.runInContext(`(function (env) { const { schedule, weekRangeLabel, roleDateLabel, publishedThrough, monthDayLabel } = env; ${mine.slice(dA, dB)} return { mineDates, pubThrough, weekHead, rowDate }; })`, sandbox) : null; } catch (ex) { declFn = null; }
+  const hdrExpr = betweenAU(mine, ">Published through {", "}</span>}");
+  let hdrFn = null; try { hdrFn = hdrExpr ? vm.runInContext(`(function (pubThrough, monthDayLabel) { return "Published through " + (${hdrExpr}); })`, sandbox) : null; } catch (ex) { hdrFn = null; }
+  const wk1019 = { mStr: "2026-10-19", endStr: "2026-10-25" };
+  const viewOf = (env) => { if (!declFn) return null; const d = tryRun(() => declFn(env)); if (!d || typeof d !== "object") return d; return tryRun(() => ({ on: d.mineDates, pub: d.pubThrough, hdr: d.pubThrough && hdrFn ? hdrFn(d.pubThrough, env.monthDayLabel) : null, week: d.weekHead(wk1019), row: d.rowDate("2026-10-19", rl("tue")), dated: d.rowDate("2026-10-19", rl(null, { date: "2026-10-21" })) })); };
+  const Rv = viewOf({ schedule: LIVE, weekRangeLabel: H.weekRangeLabel, roleDateLabel: H.roleDateLabel, publishedThrough: H.publishedThrough, monthDayLabel: H.monthDayLabel });
+  const Ov = viewOf({ schedule: LIVE }); // an old cached helpers.js: none of the four exists
+  check("AU5 executed — the Mine page's own date code on the live weeks: the header reads \"Published through Nov 15, 2026\", a week heads \"Oct 19 – Oct 25\", a Tuesday night's chip reads \"Tue 10/20\", a dated role gets none",
+    !!Rv && Rv.on === true && Rv.hdr === "Published through Nov 15, 2026" && Rv.week === "Oct 19 – Oct 25" && Rv.row === "Tue 10/20" && Rv.dated === null,
+    JSON.stringify(Rv) + (declFn ? "" : " — the Mine date consts were not found") + (hdrFn ? "" : " — the header expression was not found"));
+  check("AU5 executed — with an old cached helpers.js (none of the new helpers defined) Mine still renders: no header line, the week heads in today's ISO form, no chips, nothing throws",
+    !!Ov && Ov.on === false && Ov.pub === null && Ov.hdr === null && Ov.week === "2026-10-19 → 2026-10-25" && Ov.row === null, JSON.stringify(Ov));
+  const mapAt = mine.indexOf("{myShiftsView.map(wk => ("), rolesAt = mapAt < 0 ? -1 : mine.indexOf("{wk.roles.map((r,i) => (", mapAt);
+  const typeAt = rolesAt < 0 ? -1 : mine.indexOf("{r.type}</span>", rolesAt);
+  const CHIP = "{rowDate(wk.mStr, r) && <span style={mineDateChip}>{rowDate(wk.mStr, r)}</span>}";
+  const chipAt = typeAt < 0 ? -1 : mine.indexOf(CHIP, typeAt), detAt = chipAt < 0 ? -1 : mine.indexOf("{r.detail}</span>", chipAt);
+  const headSeg = mapAt >= 0 && rolesAt > mapAt ? mine.slice(mapAt, rolesAt) : "";
+  check("AU5 inside the My Shifts map: the week header is weekHead(wk) (the ISO \"{wk.mStr} → {wk.endStr}\" is gone), and each row shows its date chip right after the role's name, before its detail",
+    headSeg.includes("{weekHead(wk)}</span>") && !headSeg.includes("{wk.mStr} → {wk.endStr}") && typeAt > rolesAt && chipAt > typeAt && chipAt - typeAt < 80 && detAt > chipAt && detAt - chipAt < CHIP.length + 120 && count(CHIP) === 1,
+    JSON.stringify({ mapAt, rolesAt, typeAt, chipAt, detAt }));
+  const declAt = mine.indexOf("const mineDateChip = {"), retAt = declAt < 0 ? -1 : mine.indexOf("return (", declAt);
+  const chipLit = betweenAU(mine, "const mineDateChip = ", ";\n");
+  const chipStyle = chipLit ? tryRun(() => vm.runInContext("(" + chipLit + ")", sandbox)) : null;
+  const rowStyle = rolesAt < 0 ? "" : betweenAU(mine.slice(rolesAt), "<div key={i} style={{", "}}>") || "";
+  check("AU5 the chip's style is ONE const, declared before the Mine page's return and outside the map (no per-row style object); the chip doesn't wrap, and the row wraps instead so a long row fits a phone",
+    count("const mineDateChip = {") === 1 && declAt >= 0 && retAt > declAt && mapAt > retAt && !mine.slice(mapAt).includes('color:"#2c4a68",background:"#e6eef6"')
+      && !!chipStyle && typeof chipStyle === "object" && chipStyle.whiteSpace === "nowrap" && /(^|,)flexWrap:"wrap"(,|$)/.test(rowStyle),
+    JSON.stringify({ declAt, retAt, mapAt, chipStyle, rowStyle }));
+  const u4span = (() => {
+    const at = src.indexOf("{myShiftsView.map(wk => (");
+    const seq = ["{r.canSwap ? (", 'findSwapSuggestions(wk.mStr, r.shiftKey, myId); setView("calendar");', "🔄 Find Swap", ") : r.shiftKey ? (", ">in progress</span>", ") : null}"];
+    let pos = at, last = -1;
+    for (const s of seq) { const i = at < 0 ? -1 : src.indexOf(s, pos); if (i < 0) return -1; last = i - at; pos = i + s.length; }
+    return last;
+  })();
+  check(`AU5 U4's in-order span (the My Shifts map to its last branch) is ${u4span} characters, inside U4's 2500 bound`,
+    u4span > 0 && u4span <= 2500, String(u4span));
+  check("AU5 My Vacations and My No-Call Days print readable dates (dayMonthLabel: \"Mon 12/21 → Fri 12/25\"), not ISO dates",
+    mine.includes("minWidth:140}}>{dayMonthLabel(vs)} → {dayMonthLabel(ve)}</span>") && !mine.includes(">{vs} → {ve}</span>")
+      && mine.includes("{dayMonthLabel(ns)}{ns!==ne ? ` → ${dayMonthLabel(ne)}` : \"\"}") && !mine.includes("{ns}{ns!==ne ? ` → ${ne}` : \"\"}"));
+
+  // AU6 — the empty states, executed as written
+  const noAt = mine.indexOf("{myShifts.length === 0 && (");
+  const noExpr = noAt < 0 ? null : betweenAU(mine.slice(noAt), "padding:30}}>{", "}</div>");
+  const GATE0 = "{mineId && Object.keys(schedule).length === 0 && (", GATE1 = "{mineId && Object.keys(schedule).length > 0 && (() => {";
+  const g0At = mine.indexOf(GATE0);
+  const emptyExpr = g0At < 0 ? null : betweenAU(mine.slice(g0At), "fontSize:13}}>{", "}</div>");
+  const fn6 = (code) => { if (!code) return null; try { return vm.runInContext(`(function (env) { const { isScheduler, loaded, schedSync, mineId, schedule } = env; return (${code}); })`, sandbox); } catch (ex) { return null; } };
+  const noFn = fn6(noExpr), emptyFn = fn6(emptyExpr);
+  // each gate is the text between its "{" and its " && (": exactly what the page evaluates
+  const gate0 = mine.split(GATE0).length === 2 ? fn6(GATE0.slice(1, GATE0.indexOf(" && ("))) : null, gate1 = mine.split(GATE1).length === 2 ? fn6(GATE1.slice(1, GATE1.indexOf(" && (() => {"))) : null;
+  const E = (o) => (emptyFn ? tryRun(() => emptyFn(Object.assign({ isScheduler: false, loaded: true, schedSync: { seeded: true, loadFailed: false }, mineId: "s3", schedule: {} }, o))) : "the empty-schedule line was not found");
+  const SS = (seeded, loadFailed) => ({ seeded, loadFailed });
+  const ec = {
+    loadingMember: E({ loaded: false, schedSync: SS(false, false) }), loadingSched: E({ loaded: false, schedSync: SS(false, false), isScheduler: true }),
+    loadedNotSeeded: E({ schedSync: SS(false, false) }),
+    failedMember: E({ schedSync: SS(false, true) }), failedSched: E({ schedSync: SS(false, true), isScheduler: true }),
+    noneMember: E({}), noneSched: E({ isScheduler: true }),
+  };
+  const LOADING = "Loading the schedule…", FAILED = "The schedule didn't load — it retries every minute; reload the app if this stays.";
+  check("AU6 executed — an empty schedule says why, as written: loading (before the first read, and until it lands), the read failed (retrying), or nothing published — a scheduler is told to generate, a member is not",
+    ec.loadingMember === LOADING && ec.loadingSched === LOADING && ec.loadedNotSeeded === LOADING && ec.failedMember === FAILED && ec.failedSched === FAILED
+      && ec.noneMember === "No call schedule is published yet." && ec.noneSched === "No call schedule is published yet. Generate a schedule first.",
+    JSON.stringify(ec));
+  const nc = noFn ? { sched: tryRun(() => noFn({ isScheduler: true })), member: tryRun(() => noFn({ isScheduler: false })) } : null;
+  check("AU6 executed — weeks are published but none is this person's: the scheduler keeps U4's sentence (\"No shifts assigned yet. Generate a schedule first.\", still once in the file), a member reads \"No shifts assigned yet.\"",
+    !!nc && nc.sched === "No shifts assigned yet. Generate a schedule first." && nc.member === "No shifts assigned yet." && count("No shifts assigned yet. Generate a schedule first.") === 1,
+    JSON.stringify(nc) + (noFn ? "" : " — the no-shifts line was not found"));
+  const genAts = []; { let i = -1; while ((i = mine.indexOf("Generate a schedule first.", i + 1)) >= 0) genAts.push(i); }
+  const genGuarded = genAts.length > 0 && genAts.every((i) => /isScheduler \? "[^"]*$/.test(mine.slice(Math.max(0, i - 120), i)));
+  check("AU6 every \"Generate a schedule first.\" on the Mine page sits in a scheduler-only branch (isScheduler ? \"…\"), and none of a member's lines above mentions generating",
+    genAts.length === 2 && genGuarded && [ec.loadingMember, ec.failedMember, ec.noneMember, nc && nc.member].every((t) => typeof t === "string" && !/generat/i.test(t)),
+    JSON.stringify({ found: genAts.length, genGuarded }));
+  const G = gate0 && gate1 ? [["s3", {}], ["s3", LIVE], ["", {}], ["", LIVE]].map(([mineId, schedule]) => [!!gate0({ mineId, schedule }), !!gate1({ mineId, schedule })]) : null;
+  check("AU6 for a picked person exactly one of the two shows — the empty-schedule line with no weeks, the shifts page with weeks (with nobody picked, neither; the pick-your-name line shows) — and the line sits after the shifts page, before the pick-your-name line",
+    !!G && JSON.stringify(G) === JSON.stringify([[true, false], [false, true], [false, false], [false, false]])
+      && g0At > mine.indexOf("No upcoming shifts in the current schedule.") && g0At < mine.indexOf("{!mineId && ("),
+    JSON.stringify({ G, g0At }));
+}
+
 // ─── AD. Month grids fit a phone (2026-10-11, Generate preview overflow) ───
 // A bare `repeat(7,1fr)` column can't shrink below its content: in the Generate
 // preview a long vacation list ("🏖DJA,FAK,JH", no spaces) widened its column and
