@@ -4975,8 +4975,8 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
     setupSig: fnX("", after("  const setupSig = ", ";\n")),
     gen: fnX("searchRef, showToast, schedEditable, schedSyncRef, buildPrefs", decl("doGenerate", "\n  };\n")), // (only its first statements are reached here: the gates, then buildPrefs)
     // (21/n) the trade's decline, and the notice paths (addNotification, sendPushNotif, sendEmailNotif) — review r4 branch-2 / fixes-3
-    decline: sess(fnX("fetch, SUPABASE_URL, dbAuthHeaders, console, showToast, setTradeRequests, tradeDeclineMsg, logAudit, addNotification, sendEmailNotif, sessionEpochRef",
-      wrap("async (req) => {", after("  const declineTradeRequest = useCallback(async (req) => {", "\n  }, [addNotification, sendEmailNotif, userProfile, surgeons, mySurgeon]);"), "\n  }"))), // (its deps list what logAudit reads — sync-guards BA)
+    decline: sess(fnX("fetch, SUPABASE_URL, dbAuthHeaders, console, showToast, setTradeRequests, tradeDeclineMsg, logAudit, addNotification, sendEmailNotif, sessionEpochRef, userProfile, surgeons, mySurgeon",
+      wrap("async (req) => {", after("  const declineTradeRequest = useCallback(async (req) => {", "\n  }, [addNotification, sendEmailNotif, userProfile, surgeons, mySurgeon]);"), "\n  }"))), // (its deps list what logAudit reads — sync-guards BA; it reads who declined from them too — BA5)
     addNote: sess(fnX("db, showToast, setNotifications, buildDeepLink, filterPushTargetsByType, sendPushNotif, console, sessionEpochRef",
       after("  const addNotification = useCallback(", ", [sendPushNotif, buildDeepLink, filterPushTargetsByType]);"))),
     pushNote: sess(fnX("edgeFunctionUrl, fetch, dbAuthHeaders, console, showToast, sessionEpochRef", after("  const sendPushNotif = useCallback(", ", [edgeFunctionUrl]);"))),
@@ -6715,6 +6715,8 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
       const rec = { reqs: [], notes: [], emails: [], list: [Object.assign({}, REQ)] };
       await G.decline({ SUPABASE_URL: BASE, dbAuthHeaders: hdr(A), console: { error: noopX, warn: noopX, log: noopX }, showToast: A.showToast, setTradeRequests: (f) => { rec.list = f(rec.list); },
         tradeDeclineMsg: HX.tradeDeclineMsg, logAudit: noopX, sessionEpochRef: A.sessionEpochRef, sendEmailNotif: (type) => { rec.emails.push(type); },
+        // (UX review fix 2026-10-19: the decline reads who tapped it, to say who declined — here the recipient, BBB; sync-guards BA5 has a scheduler's)
+        userProfile: { person_id: "s2", display_name: "BBB", role: "member" }, surgeons: [{ id: "s1", name: "AAA" }, { id: "s2", name: "BBB" }], mySurgeon: "s2",
         addNotification: async (type) => { rec.notes.push(type); if (at === "notice") { await cross(A, c, "other"); await spin(6); } },
         fetch: async (url, init) => { rec.reqs.push(init.method + " " + init.headers.Authorization); if (at === "status") { await cross(A, c, "other"); await spin(6); } return resp(200, [Object.assign({}, REQ, { status: "declined" })]); } })(Object.assign({}, REQ));
       await ticks(A);

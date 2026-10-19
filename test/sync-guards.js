@@ -1491,7 +1491,7 @@ check("prefs audit never logs the plaintext email (masked only)",
     check("each event composes ONCE and reuses it (3 named consts)",
       count("const proposeMsg = tradeProposeMsg(req);") === 1
       && count("const acceptMsg = tradeAcceptMsg(req);") === 1
-      && count("const declineMsg = tradeDeclineMsg(req);") === 1);
+      && count("const declineMsg = tradeDeclineMsg(req, declinedBy);") === 1); // (who declined, when a scheduler answers for the recipient — BA5)
     check("all three email payloads carry detail: <composed>",
       count("detail: proposeMsg }") === 1 && count("detail: acceptMsg }") === 1
       && count("detail: declineMsg }") === 1);
@@ -2526,6 +2526,22 @@ check("prefs audit never logs the plaintext email (masked only)",
   }
 }
 
+// ─── The app's real dark sheet, read as a browser applies it (shared by BC6, AX7 and BA6 — UX review fixes 2026-10-19) ───
+// The `{darkMode && <style>{`…`}</style>}` block parsed into rules. forced(sel, prop) is the !important value a rule
+// whose selector list holds exactly `sel` ("button", "details summary") gives `prop` — an inline colour can't beat it.
+// (React writes an inline colour through the CSSOM, which serializes hex as rgb(), so the sheet's
+// `[style*="background:#…"]` selectors never match a React element; BA4 reads them the same way.)
+const DARK_SHEET = (() => {
+  const css = ((src.replace(/\r\n/g, "\n").match(/\{darkMode && <style>\{`([\s\S]*?)`\}<\/style>\}/) || [])[1] || "").replace(/\/\*[\s\S]*?\*\//g, ""); // (its /* section */ notes off)
+  const rules = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((m) => ({ sels: m[1].split(",").map((s) => s.trim()), decl: m[2] }));
+  const declOf = (decl, prop) => { const m = decl.match(new RegExp("(?:^|;)\\s*" + prop + "\\s*:\\s*([^;!]+?)\\s*(?:!important)?\\s*(?:;|$)")); return m ? m[1].trim() : null; };
+  const forced = (sel, prop) => { for (const r of rules) if (r.sels.includes(sel) && /!important/.test(r.decl)) { const v = declOf(r.decl, prop); if (v) return v; } return null; };
+  const hex = (x) => /^#[0-9a-f]{6}$/i.test(String(x));
+  const lum = (h) => { const v = h.slice(1).match(/../g).map((x) => parseInt(x, 16) / 255).map((c) => (c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4))); return 0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2]; };
+  const cr = (a, b) => (hex(a) && hex(b) ? +((Math.max(lum(a), lum(b)) + 0.05) / (Math.min(lum(a), lum(b)) + 0.05)).toFixed(2) : 0);
+  return { css, rules, forced, hex, lum, cr };
+})();
+
 // ─── BC. Generate & Publish asks once; Stats → Billing opens on the newest months (UX audit 2026-10-19) ───
 // Generate & Publish ran on the tap and a publish pushes and emails everyone,
 // so one mis-tap published. Stats → Billing listed its months oldest first, so
@@ -2546,6 +2562,13 @@ check("prefs audit never logs the plaintext email (masked only)",
 //       drops their empty months
 //   BC5 the render: done months first, the upcoming ones in a collapsed
 //       <details>; the oldest-first loop is gone (V8 updated with it)
+// Review fixes (2026-10-19):
+//   BC1 "Both weeks" for a two-week period; a period wholly over says so
+//       (not "already started"); the last line says what the publish path
+//       really sends — BC2 runs doGenerateAndNotify and pins acceptPreview to
+//       hold the sentence true
+//   BC6 the Upcoming months box in dark mode: a dark border, the sheet's
+//       forced summary blue at 4.5:1+, a 44px-tall summary to tap
 console.log("\nBC. Generate & Publish asks once; Billing opens on the newest months");
 {
   const H = vm.runInContext('({ pct: typeof publishConfirmText === "function" ? publishConfirmText : null, bmo: typeof billingMonthOrder === "function" ? billingMonthOrder : null, fmt, parse, addD, RealDate: Date })', sandbox);
@@ -2553,7 +2576,8 @@ console.log("\nBC. Generate & Publish asks once; Billing opens on the newest mon
   const weeksFrom = (m, n) => Array.from({ length: n }, (_, i) => H.fmt(H.addD(H.parse(m), 7 * i)));
   const pub = (ms) => Object.fromEntries(ms.map((m) => [m, { dayCall: "s1", nights: { mon: "s2" } }]));
   const pct = (ms, o) => { try { return H.pct ? H.pct(ms, o) : null; } catch (ex) { return "threw " + String(ex); } };
-  const NOTE = "Everyone will be notified by push and email.";
+  // (review fix: it said "Everyone will be notified by push and email." — but a result that needs your OK opens the preview, and its Accept & Publish notifies no one; BC2 holds this true)
+  const NOTE = "If it publishes straight away, everyone is notified by push and email (per their notification settings). If anything needs your OK, the preview opens instead — publishing from there notifies no one.";
   const NOV = weeksFrom("2026-11-16", 14), OCT12 = weeksFrom("2026-10-12", 14);
   const upTo = pub(weeksFrom("2026-08-03", 15)); // published through the week of 11/9, the week before NOV
 
@@ -2580,8 +2604,26 @@ console.log("\nBC. Generate & Publish asks once; Billing opens on the newest mon
     ["no weeks", pct([], { schedule: {}, today: "2026-10-19" }), `Generate and publish the schedule?\n\n${NOTE}`],
   ];
   const bad1 = t1.filter(([, got, want]) => got !== want);
-  check("BC1 publishConfirmText names the period and the weeks, warns on published weeks (1 / some / all / a one-week period) and on a started period, and says everyone is notified by push and email — exact strings",
+  check("BC1 publishConfirmText names the period and the weeks, warns on published weeks (1 / some / all / a one-week period) and on a started period, and says who is notified when — exact strings",
     bad1.length === 0, bad1.map(([what, got]) => `${what}: ${JSON.stringify(got)}`).join(" | "));
+  // Review fixes: "Both weeks" (it said "All 2 weeks"); a wholly past period says so (it said only "already started")
+  const TWO = weeksFrom("2026-11-02", 2), MAY = weeksFrom("2026-05-04", 14);
+  const t1r = [
+    ["a two-week period, both published", pct(TWO, { schedule: pub(TWO), today: "2026-10-19" }),
+      `Generate and publish Nov 2, 2026 → Nov 15, 2026 (2 weeks)?\n\n⚠ Both weeks are already published and will be replaced.\n\n${NOTE}`],
+    ["a two-week period, one published", pct(TWO, { schedule: pub([TWO[1]]), today: "2026-10-19" }),
+      `Generate and publish Nov 2, 2026 → Nov 15, 2026 (2 weeks)?\n\n⚠ 1 of the 2 weeks is already published and will be replaced.\n\n${NOTE}`],
+    ["a period wholly over (May 4 → Aug 9 on 10/19, the reviewer's case)", pct(MAY, { schedule: pub(MAY), today: "2026-10-19" }),
+      `Generate and publish May 4, 2026 → Aug 9, 2026 (14 weeks)?\n\n⚠ All 14 weeks are already published and will be replaced.\n⚠ This whole period is already over — publishing it changes past call history, counts and billing.\n\n${NOTE}`],
+    ["over, nothing published", pct(TWO, { schedule: {}, today: "2026-11-16" }),
+      `Generate and publish Nov 2, 2026 → Nov 15, 2026 (2 weeks)?\n\n⚠ This whole period is already over — publishing it changes past call history, counts and billing.\n\n${NOTE}`],
+    ["today IS its last Sunday: started, not over", pct(TWO, { schedule: {}, today: "2026-11-15" }),
+      `Generate and publish Nov 2, 2026 → Nov 15, 2026 (2 weeks)?\n\n⚠ This period has already started.\n\n${NOTE}`],
+  ];
+  const bad1r = t1r.filter(([, got, want]) => got !== want);
+  check("BC1 review fixes, exact strings: a fully published two-week period says \"Both weeks\" (not \"All 2 weeks\"); a period wholly in the past says it is over and what publishing it changes (not \"already started\"); on its last Sunday it has started; and the last line never promises a notice the preview path doesn't send",
+    bad1r.length === 0 && t1.concat(t1r).every(([, got]) => typeof got === "string" && !got.includes("All 2 weeks") && !got.includes("Everyone will be notified")),
+    bad1r.map(([what, got]) => `${what}: ${JSON.stringify(got)}`).join(" | "));
   // The app passes its mondays as Dates (the Generate tab's useMemo), unsorted input is sorted, and a key holding nothing is not a published week (publishWeeks: cur[m])
   const asDates = pct(NOV.map(H.parse), { schedule: Object.assign(pub(NOV.slice(0, 3)), { [NOV[5]]: null }), today: "2026-10-19" });
   const shuffled = pct(NOV.slice().reverse(), { schedule: pub(NOV.slice(0, 3)), today: "2026-10-19" });
@@ -2612,6 +2654,24 @@ console.log("\nBC. Generate & Publish asks once; Billing opens on the newest mon
     count("onClick={doGenerateAndNotify}") === 0 && count("doGenerateAndNotify()") === 1
       && count("if (confirm(publishConfirmText(mondays, { schedule: scheduleRef.current, today: fmt(new Date()) }))) doGenerateAndNotify();") === 1
       && dgBody.length > 0 && !dgBody.includes("confirm("), JSON.stringify({ bare: count("onClick={doGenerateAndNotify}"), calls: count("doGenerateAndNotify()"), body: dgBody.length }));
+  // What the question's last line says, held true (review fix): the REAL doGenerateAndNotify, run on each doGenerate result
+  let mkDgn = null;
+  try { mkDgn = dgBody ? vm.runInContext(`(function (env) { const { sessionEpochRef, doGenerate, addNotification, sendEmailNotif, MO, startMonth, endMoIdx, startYear } = env;\n${dgBody}\n  };\n return doGenerateAndNotify; })`, sandbox, { filename: "bc-dgn.js" }) : null; } catch (ex) { mkDgn = null; }
+  const dgn = async (result) => {
+    const log = [];
+    await mkDgn({ sessionEpochRef: { current: 0 }, doGenerate: async () => result, MO: ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"], startMonth: 10, endMoIdx: 1, startYear: 2026,
+      addNotification: async (type, title, msg, data, targets) => { log.push(`notice ${type} to ${targets === null ? "everyone" : JSON.stringify(targets)}`); },
+      sendEmailNotif: (type, data, targets) => { log.push(`e-mail ${type} to ${targets === null ? "everyone" : JSON.stringify(targets)}`); } })();
+    return log;
+  };
+  const dgnRuns = mkDgn ? { published: await dgn("published"), review: await dgn("review"), preview: await dgn("preview"), refused: await dgn("refused"), busy: await dgn("busy") } : null;
+  const ap0 = src.indexOf("  const acceptPreview = async () => {"), ap1 = ap0 < 0 ? -1 : src.indexOf("\n  };", ap0);
+  const apBody = ap0 < 0 || ap1 < 0 || src.indexOf("  const acceptPreview = async () => {", ap0 + 1) !== -1 ? "" : src.slice(ap0, ap1);
+  check("BC2 the question's last line is what happens (review fix), executed: the REAL doGenerateAndNotify notifies everyone (the notice — in-app + push — and the e-mail, no target list) only when doGenerate published; a result sent to the preview for review, or refused, notifies no one; and Accept & Publish (acceptPreview) sends no notice — if that ever changes, publishConfirmText's sentence must change with it",
+    !!dgnRuns && JSON.stringify(dgnRuns.published) === JSON.stringify(["notice schedule_published to everyone", "e-mail schedule_published to everyone"])
+      && ["review", "preview", "refused", "busy"].every((k) => dgnRuns[k].length === 0)
+      && apBody.length > 200 && !/addNotification\(|sendEmailNotif\(|sendPushNotif\(/.test(apBody),
+    JSON.stringify({ dgnRuns, acceptPreview: apBody.length }));
 
   // BC3 — billingMonthOrder, executed
   const MONTHS = ["2026-03", "2025-12", "2026-10", "2027-01", "2026-11", "2026-09", "2026-01", "2026-12"];
@@ -2664,6 +2724,23 @@ console.log("\nBC. Generate & Publish asks once; Billing opens on the newest mon
       && iDone > 0 && iDet > iDone && iAhead > iDet && iFormula > iAhead, J({ iDone, iDet, iAhead, iFormula }));
   check("BC5 the oldest-first month loop is gone; the order comes from billingMonthOrder over the months with a billing day, today's device date",
     count("{sortedMonths.map(mk => {") === 0 && count("const billOrder = billingMonthOrder(sortedMonths.filter(hasAny), fmt(new Date()));") === 1 && count("billingMonthOrder(") === 1);
+
+  // BC6 — the Upcoming months box, its styles evaluated from the source, against the app's real dark sheet
+  const nsrcBC = src.replace(/\r\n/g, "\n");
+  const detM = nsrcBC.match(/<details open=\{billOrder\.done\.length === 0\} style=\{(\{[^\n]*?\})\}>\n\s*<summary style=\{(\{[^\n]*?\})\}>\n\s*Upcoming months \(\{billOrder\.ahead\.length\}\)/);
+  const evBC = (code) => { try { return vm.runInContext(`(function (dk) { return (${code}); })`, sandbox); } catch (ex) { return null; } };
+  const detF = detM ? evBC(detM[1]) : null, sumF = detM ? evBC(detM[2]) : null;
+  const pxBC = (v) => (typeof v === "number" ? v : parseFloat(String(v || "0")) || 0);
+  const tapH = (s) => (s ? pxBC(s.lineHeight) + 2 * pxBC(String(s.padding || "0").split(/\s+/)[0]) : 0); // a one-line summary: its line plus top and bottom padding
+  const borderHex = (s) => ((String(s && s.border).match(/#[0-9a-fA-F]{6}\b/) || [])[0] || null);
+  const dD = detF && detF(true), dL = detF && detF(false), sD = sumF && sumF(true), sL = sumF && sumF(false);
+  const sumBlue = DARK_SHEET.forced("details summary", "color");
+  const bc6 = { dBorder: borderHex(dD), dBg: dD && dD.background, sumBlue, crSum: DARK_SHEET.cr(sumBlue, dD && dD.background), tapDark: tapH(sD), tapLight: tapH(sL), lBorder: borderHex(dL), lBg: dL && dL.background };
+  check("BC6 dark mode (review fix): the Upcoming months box has a DARK border (it was #d0d8e0 on the dark card) and a fill the sheet's forced summary blue (details summary { color … !important }) reads on at ≥ 4.5:1 (it was ~4.2:1); light mode keeps its #d0d8e0 border on #f4f6f8",
+    !!detM && DARK_SHEET.hex(bc6.dBorder) && DARK_SHEET.lum(bc6.dBorder) < 0.1 && DARK_SHEET.hex(bc6.dBg) && DARK_SHEET.lum(bc6.dBg) < 0.05 && DARK_SHEET.hex(sumBlue) && bc6.crSum >= 4.5
+      && bc6.lBorder === "#d0d8e0" && bc6.lBg === "#f4f6f8", JSON.stringify(bc6));
+  check("BC6 the summary is a phone-sized target (review fix): one 16px line with 14px above and below = 44px, in both modes (it was a ~14px line)",
+    bc6.tapDark >= 44 && bc6.tapLight >= 44 && !!sD && !!sL && sD.cursor === "pointer", JSON.stringify({ sD, sL }));
 }
 
 // ─── T. The app's .ics exports are ALL-DAY (owner request 2026-09-25) ───
@@ -3586,8 +3663,18 @@ console.log("\nAO. On Call Today banner on a covered holiday");
   const ban = B0 > 0 && B1 > B0 ? src.slice(B0, B1) : "";
   const hi = ban.indexOf("{todayCall.holiday && ("), di = ban.indexOf("{todayCall.dayCall && (");
   const chip = hi > 0 && di > hi ? ban.slice(hi, di) : "";
-  check("AO3 the banner is still gated on hasCallToday and its holiday chip comes BEFORE the Service Week chip",
-    /^\{\/\* ─── On Call Today Banner ─── \*\/\}\s*\{hasCallToday && \(/.test(ban) && count("{todayCall.holiday && (") === 1 && hi > 0 && di > hi, `holiday chip at ${hi}, service chip at ${di}`);
+  // (UX review fix 2026-10-19, updated deliberately — AY6: the banner also shows, with only its "now" line, when someone is
+  // on call right now and today holds no call — the first morning past the published schedule. Everything else in it —
+  // the heading, the Send Notification button, the chips, the Fierce line — is still gated on hasCallToday.)
+  const gateAO = ban.match(/^\{\/\* ─── On Call Today Banner ─── \*\/\}\s*(?:\{\/\*[\s\S]*?\*\/\}\s*)?\{\(([^\r\n]*?)\) && \(\r?\n/);
+  const gateFnAO = (() => { try { return gateAO ? vm.runInContext(`(function (hasCallToday, callNowLine) { return !!(${gateAO[1]}); })`, sandbox) : null; } catch (ex) { return null; } })();
+  const innerAO = ban.indexOf("{hasCallToday && <>"), headAO = ban.indexOf("📋 On Call Today — "), nowAO = ban.indexOf("{callNowLine && (");
+  const fbAO = src.indexOf('"🛡 Fierce Backup Week"}'), closeAO = fbAO < 0 ? -1 : src.indexOf("</>}", fbAO);
+  check("AO3 the banner's gate, executed: today's call shows it (as before); no call today and nobody on now hides it; nobody today but someone on call right now shows it — then only the \"now\" line: the heading, the Send Notification button, the holiday / Service Week chips (holiday FIRST) and the Fierce line sit inside ONE {hasCallToday && <>…</>}",
+    !!gateFnAO && gateFnAO(true, null) === true && gateFnAO(false, null) === false && gateFnAO(false, { text: "x" }) === true && gateFnAO(true, { text: "x" }) === true
+      && count("{hasCallToday && <>") === 1 && nowAO > 0 && nowAO < innerAO && innerAO < headAO && headAO < hi && count("{todayCall.holiday && (") === 1 && hi > 0 && di > hi
+      && closeAO > fbAO && closeAO - fbAO < 200 && /^<\/>\}\s*<\/div>\s*\)\}/.test(src.slice(closeAO)),
+    JSON.stringify({ gate: gateAO && gateAO[1], nowAO, innerAO, headAO, hi, di, close: closeAO - fbAO }));
   check("AO3 the holiday chip: the holiday colors (the 10px label darkened to #a04810 for contrast — batch review), \"<label> · 24h 7a–7a\", the emoji, and \"Unassigned\" when nobody holds it",
     ['background:"#fef0e8"', 'border:"1px solid #e0a868"', 'color:"#a04810"', "{todayCall.holiday.label} · 24h 7a–7a", "{todayCall.holiday.emoji}", '{todayCall.holiday.who || "Unassigned"}'].every((s) => chip.includes(s)), chip.slice(0, 200));
 }
@@ -5746,6 +5833,13 @@ console.log("\nAV. Pending requests: a collapsed group shows a coverage-floor br
 //   AX7 👤 Me: one button in the Show bar after the "|", signed-in roster members
 //       only, its toggle executed — only the existing filter setters
 //   AX8 calDayOpen is declared before the hook that lists it (§P's TDZ rule)
+// Review fixes (2026-10-19), each with a check that fails without it:
+//   AX6 the cell has no aria-label (its content is its name, a hidden full date
+//       first); closing puts the focus back on the opening cell; the page
+//       behind is scroll-locked while the sheet is open — all executed
+//   AX7 an APP's Me says what it does; dark mode's "on" is a solid fill
+//   AX9 the sheet sits above the update banner, lifted by its MEASURED height
+//       (the medium: at 375px the banner hid the sheet's last line)
 console.log("\nAX. calendar day sheet + 👤 Me filter");
 {
   // Its own context, the app's modules in the app's order (+ generator.js: getHolidays; silvis-feed.js: sfCellChip)
@@ -5946,54 +6040,98 @@ console.log("\nAX. calendar day sheet + 👤 Me filter");
   check("AX5 the sheet's Edit gate is the Manual Adjustments card's gate, word for word, and it opens the same week editor (openWeekEditor) after closing the sheet",
     !!cardExpr && cardExpr === sheetExpr && cardExpr === '(isScheduler || userProfile?.role === "admin")' && iCard - iGate < 300 && count("openWeekEditor(editWeekPick)") === 1
       && sheetSrc.includes("{canEdit && (")
-      && sheetSrc.split("openWeekEditor(").length === 2 && sheetSrc.includes("onClick={()=>{ close(); openWeekEditor(mondayStr); }}") && count("✏️ Edit this week") === 1,
+      && sheetSrc.split("openWeekEditor(").length === 2 && sheetSrc.includes("onClick={()=>{ closeCalDay(false); openWeekEditor(mondayStr); }}") && count("✏️ Edit this week") === 1,
     JSON.stringify({ cardExpr, sheetExpr }));
-  check("AX5 the sheet is read-only: no fetch / save / schedule write / audit / notification in it; the only state it sets is calDayOpen (close)",
+  // (review fix: the sheet closes through closeCalDay — it puts the focus back on the cell; Edit this week passes false, the editor takes the focus — AX6)
+  check("AX5 the sheet is read-only: no fetch / save / schedule write / audit / notification in it; it sets no state itself — ✕ and the backdrop close it through closeCalDay(), Edit this week through closeCalDay(false)",
     !!sheetSrc && !/fetch\(|db\.|setSchedule|commitSchedule|updateSchedule|schedSync|localStorage|saveAppShifts|logAudit|addNotification|sendEmailNotif/.test(sheetSrc)
-      && (sheetSrc.match(/\bset[A-Z]\w*/g) || []).every((n) => n === "setCalDayOpen") && sheetSrc.includes("const close = () => setCalDayOpen(null);"),
-    (sheetSrc.match(/fetch\(|db\.|setSchedule|commitSchedule|updateSchedule|schedSync|localStorage|saveAppShifts|logAudit|addNotification|sendEmailNotif|\bset[A-Z]\w*/g) || []).filter((n) => n !== "setCalDayOpen").join(","));
+      && (sheetSrc.match(/\bset[A-Z]\w*/g) || []).length === 0 && sheetSrc.includes("const close = () => closeCalDay();") && sheetSrc.split("closeCalDay(").length === 3,
+    (sheetSrc.match(/fetch\(|db\.|setSchedule|commitSchedule|updateSchedule|schedSync|localStorage|saveAppShifts|logAudit|addNotification|sendEmailNotif|\bset[A-Z]\w*/g) || []).join(","));
 
-  // AX6 — the cell is a button, the sheet a dialog; the keys and Escape, executed
-  const CELL = 'role="button" tabIndex={0} aria-haspopup="dialog" aria-label={`${dayMonthLabel(ds)} — day details`}';
-  check("AX6 the day cell is a button: role=button, tabIndex 0, a dialog popup, an aria-label with its date, a pointer; a tap opens the sheet on that date",
-    count(CELL) === 1 && gridSrc.includes(CELL) && gridSrc.includes("onClick={()=>setCalDayOpen(ds)}") && count("onClick={()=>setCalDayOpen(ds)}") === 1 && gridSrc.includes('minWidth:0, cursor:"pointer",'));
-  const KD = src.match(/onKeyDown=\{(e=>\{ if \(e\.key === "Enter"\)[^\n]*?)\}\r?\n/), KU = src.match(/onKeyUp=\{(e=>\{ if \(e\.key === " "\)[^\n]*?)\}\r?\n/);
+  // AX6 — the cell is a button, the sheet a dialog; the keys and Escape, executed. Review fixes: no aria-label on the cell
+  // (it replaced the cell's content: every day read "<date> — day details") — its content is its name, a hidden full date
+  // first; closing puts the focus back on the cell that opened the sheet (it fell to <body>); the page behind it does not
+  // scroll while it is open.
+  const nsrcX = src.replace(/\r\n/g, "\n");
+  const gridX = nsrcX.slice(nsrcX.indexOf("return calGrid.map((day,i)=>{"), nsrcX.indexOf("{calDayOpen && (() => {"));
+  const cA = gridX.indexOf("<div key={ds} data-cal-today="), cB = cA < 0 ? -1 : gridX.indexOf("}}>", cA);
+  const cellTag = cA >= 0 && cB > cA ? gridX.slice(cA, cB + 3) : "";
+  check("AX6 the day cell is a button: role=button, tabIndex 0, a dialog popup, a pointer; a tap opens the sheet on that date, the cell itself its opener (openCalDay)",
+    count('role="button" tabIndex={0} aria-haspopup="dialog"') === 1 && cellTag.includes('role="button" tabIndex={0} aria-haspopup="dialog"') && cellTag.includes("onClick={e=>openCalDay(ds, e.currentTarget)}")
+      && count("onClick={e=>openCalDay(ds, e.currentTarget)}") === 1 && cellTag.includes('minWidth:0, cursor:"pointer",'), cellTag.slice(0, 240));
+  const srM = nsrcX.match(/<span style=\{SR_ONLY\}>\{(`[^`\n]*`)\}<\/span>/);
+  const dmlX = vm.runInContext("dayMonthLabel", axsb);
+  let srFn = null, srStyle = null;
+  try { srFn = srM ? vm.runInContext(`(function (dayMonthLabel, ds, isToday) { return ${srM[1]}; })`, axsb) : null; } catch (ex) { srFn = null; }
+  const srDef = (nsrcX.match(/\n\s*const SR_ONLY = (\{[^\n]*\});\n/) || [])[1];
+  try { srStyle = srDef ? vm.runInContext("(" + srDef + ")", axsb) : null; } catch (ex) { srStyle = null; }
+  const afterTag = cellTag ? gridX.slice(cB + 3).replace(/^\s+/, "") : "";
+  check("AX6 review fix — the cell's content is its name: no aria-label on it; its FIRST child is a visually hidden full date, executed — \"Tue 10/20: \", and today \"Mon 10/19, today: \" — then the chips as the cell shows them; the visible day number is hidden from screen readers (it would be read twice); the hidden style is the usual 1px clip",
+    !!cellTag && !cellTag.includes("aria-label") && count("aria-label={`${dayMonthLabel(ds)} — day details`}") === 0 && afterTag.startsWith("<span style={SR_ONLY}>")
+      && !!srFn && srFn(dmlX, "2026-10-20", false) === "Tue 10/20: " && srFn(dmlX, "2026-10-19", true) === "Mon 10/19, today: "
+      && count('<span aria-hidden="true" style={{fontSize:11,fontWeight:') === 2 && count("<span style={SR_ONLY}>") === 1
+      && !!srStyle && srStyle.position === "absolute" && srStyle.width === 1 && srStyle.height === 1 && srStyle.overflow === "hidden" && /^rect\(0/.test(srStyle.clip) && srStyle.whiteSpace === "nowrap",
+    JSON.stringify({ tag: cellTag.slice(0, 120), first: afterTag.slice(0, 40), sr: srFn && srFn(dmlX, "2026-10-20", false), srStyle }));
+  const KD = nsrcX.match(/onKeyDown=\{(e=>\{ if \(e\.key === "Enter"\)[^\n]*?)\}\n/), KU = nsrcX.match(/onKeyUp=\{(e=>\{ if \(e\.key === " "\)[^\n]*?)\}\n/);
   const keyRun = (m1, key) => {
     if (!m1) return "handler not found";
-    const log = []; let prevented = false;
-    try { vm.runInContext(`(function (setCalDayOpen, ds) { return (${m1[1]}); })`, axsb)((v) => log.push(v), "2026-10-20")({ key, preventDefault: () => { prevented = true; } }); } catch (ex) { return "threw: " + String(ex).slice(0, 100); }
+    const log = []; let prevented = false; const cell = { id: "the cell" };
+    try { vm.runInContext(`(function (openCalDay, ds) { return (${m1[1]}); })`, axsb)((d, el) => log.push([d, el === cell]), "2026-10-20")({ key, currentTarget: cell, preventDefault: () => { prevented = true; } }); } catch (ex) { return "threw: " + String(ex).slice(0, 100); }
     return JSON.stringify({ log, prevented });
   };
-  check("AX6 keys, executed: Enter opens the sheet (default prevented); Space only prevents the page scroll on keydown and opens on keyup, as a native button (so the focused ✕ never gets it); other keys do nothing",
-    keyRun(KD, "Enter") === '{"log":["2026-10-20"],"prevented":true}' && keyRun(KD, " ") === '{"log":[],"prevented":true}' && keyRun(KU, " ") === '{"log":["2026-10-20"],"prevented":false}'
+  check("AX6 keys, executed: Enter opens the sheet with the cell as its opener (default prevented); Space only prevents the page scroll on keydown and opens on keyup, as a native button (so the focused ✕ never gets it); other keys do nothing",
+    keyRun(KD, "Enter") === '{"log":[["2026-10-20",true]],"prevented":true}' && keyRun(KD, " ") === '{"log":[],"prevented":true}' && keyRun(KU, " ") === '{"log":[["2026-10-20",true]],"prevented":false}'
       && keyRun(KD, "a") === '{"log":[],"prevented":false}' && keyRun(KU, "Enter") === '{"log":[],"prevented":false}' && count("onKeyDown={e=>{ if (e.key === \"Enter\")") === 1,
     JSON.stringify([keyRun(KD, "Enter"), keyRun(KD, " "), keyRun(KU, " ")]));
-  const EF = src.indexOf("    if (!calDayOpen) return;"), EU = EF < 0 ? -1 : src.lastIndexOf("useEffect(", EF), EE = EF < 0 ? -1 : src.indexOf(", [calDayOpen]);", EF);
-  const esc = (open) => {
-    if (EU < 0 || EE < 0 || EF - EU > 40) return "effect not found";
-    const added = [], removed = [], set = [];
-    const win = { addEventListener: (t, f) => added.push([t, f]), removeEventListener: (t, f) => removed.push([t, f]) };
-    try {
-      const eff = vm.runInContext(`(function (calDayOpen, setCalDayOpen, window) { return (${src.slice(EU + "useEffect(".length, EE)}); })`, axsb)(open, (v) => set.push(v), win);
-      const cleanup = eff();
-      if (added.length) { added[0][1]({ key: "Enter" }); added[0][1]({ key: "Escape" }); }
-      if (typeof cleanup === "function") cleanup();
-      return JSON.stringify({ added: added.map((a) => a[0]), set, removedSame: removed.length === 1 && !!added[0] && removed[0][1] === added[0][1] });
-    } catch (ex) { return "threw: " + String(ex).slice(0, 100); }
+  // The sheet's open / close / Escape / scroll lock, the real lines (from the calDayOpen state through its effect), executed
+  const DS0 = nsrcX.indexOf("  const [calDayOpen, setCalDayOpen] = useState(null);"), DSE = "  }, [calDayOpen]);", DS1 = DS0 < 0 ? -1 : nsrcX.indexOf(DSE, DS0);
+  let mkDay = null;
+  try { mkDay = DS0 >= 0 && DS1 > DS0 && DS1 - DS0 < 2500 ? vm.runInContext("(function (env) { const { useState, useRef, useEffect, window, document } = env;\n" + nsrcX.slice(DS0, DS1 + DSE.length) + "\n return { openCalDay, closeCalDay, calDayOpenerRef, updateBannerRef }; })", axsb, { filename: "ax-dayopen.js" }) : null; } catch (ex) { mkDay = null; }
+  const dayRig = (open) => {
+    const S = { sets: [], effs: [], added: [], removed: [], body: { style: { overflow: "scroll" } } };
+    let n = 0;
+    S.r = mkDay({ useState: (init) => { const i = n++; return [i === 0 ? open : (typeof init === "function" ? init() : init), (v) => S.sets.push([i === 0 ? "open" : "lift", v])]; },
+      useRef: (v) => ({ current: v }), useEffect: (fn, deps) => S.effs.push({ fn, deps }),
+      window: { addEventListener: (t, f) => S.added.push([t, f]), removeEventListener: (t, f) => S.removed.push([t, f]) }, document: { body: S.body } });
+    return S;
   };
-  check("AX6 Escape, executed: while the sheet is open one keydown listener closes it on Escape (not on other keys) and is removed on cleanup; closed, none is added",
-    esc("2026-10-20") === '{"added":["keydown"],"set":[null],"removedSame":true}' && esc(null) === '{"added":[],"set":[],"removedSame":false}', JSON.stringify([esc("2026-10-20"), esc(null)]));
-  check("AX6 the sheet is a bottom-sheet dialog: fixed backdrop (a tap on it closes), the panel stops the tap, max 70vh and scrolls, a ✕ button (44px) that closes, safe-area padding; once, in the Calendar view, after the grid and before the legend",
+  const cellX = (connected) => { const c = { focused: 0, isConnected: connected !== false }; c.focus = () => { c.focused++; }; return c; };
+  let dayOut = null;
+  if (mkDay) {
+    try {
+      const o1 = dayRig(null), c1 = cellX(); o1.r.openCalDay("2026-10-20", c1);
+      const o2 = dayRig(null); o2.r.updateBannerRef.current = { isConnected: true, getBoundingClientRect: () => ({ height: 99.2 }) }; o2.r.openCalDay("2026-10-21", cellX());
+      const e1 = dayRig("2026-10-20"), c2 = cellX(); e1.r.calDayOpenerRef.current = c2;
+      const cleanup = e1.effs[0].fn(), lockedOverflow = e1.body.style.overflow;
+      e1.added[0][1]({ key: "Enter" }); const afterEnter = e1.sets.length;
+      e1.added[0][1]({ key: "Escape" });
+      const escaped = { sets: e1.sets.slice(), focused: c2.focused, openerCleared: e1.r.calDayOpenerRef.current === null };
+      cleanup();
+      const e2 = dayRig("2026-10-22"), c3 = cellX(); e2.r.calDayOpenerRef.current = c3; e2.r.closeCalDay(false);
+      const e3 = dayRig("2026-10-22"), c4 = cellX(false); e3.r.calDayOpenerRef.current = c4; e3.r.closeCalDay();
+      const e4 = dayRig(null), noEff = e4.effs[0].fn();
+      dayOut = { open: o1.sets, openerKept: o1.r.calDayOpenerRef.current === c1, openLifted: o2.sets, deps: e1.effs.length === 1 && JSON.stringify(e1.effs[0].deps) === '["2026-10-20"]',
+        lockedOverflow, afterEnter, escaped, restored: e1.body.style.overflow, removedSame: e1.removed.length === 1 && e1.removed[0][1] === e1.added[0][1] && e1.added[0][0] === "keydown",
+        editClose: { sets: e2.sets, focused: c3.focused }, goneOpener: { sets: e3.sets, focused: c4.focused }, closed: { ret: noEff === undefined, added: e4.added.length, overflow: e4.body.style.overflow } };
+    } catch (ex) { dayOut = { threw: String(ex).slice(0, 200) }; }
+  }
+  check("AX6 open and close, the real lines executed: a tap keeps its cell as the opener and opens the sheet already lifted (no banner: 0; a 99.2px banner: 100); while open the page behind is locked (body overflow hidden) and one keydown listener closes on Escape only — putting the focus back on the opening cell (review fix: it fell to <body>); cleanup removes it and restores the page's own overflow; Edit this week's closeCalDay(false) moves no focus; a cell gone from the page is not focused; closed, nothing is added or locked",
+    !!dayOut && !dayOut.threw && JSON.stringify(dayOut.open) === '[["lift",0],["open","2026-10-20"]]' && dayOut.openerKept && JSON.stringify(dayOut.openLifted) === '[["lift",100],["open","2026-10-21"]]' && dayOut.deps
+      && dayOut.lockedOverflow === "hidden" && dayOut.afterEnter === 0 && JSON.stringify(dayOut.escaped) === '{"sets":[["open",null]],"focused":1,"openerCleared":true}'
+      && dayOut.restored === "scroll" && dayOut.removedSame && JSON.stringify(dayOut.editClose) === '{"sets":[["open",null]],"focused":0}' && JSON.stringify(dayOut.goneOpener) === '{"sets":[["open",null]],"focused":0}'
+      && JSON.stringify(dayOut.closed) === '{"ret":true,"added":0,"overflow":"scroll"}',
+    mkDay ? JSON.stringify(dayOut).slice(0, 500) : "the calDayOpen block was not found / did not compile");
+  check("AX6 the sheet is a bottom-sheet dialog: fixed backdrop (a tap on it closes), the panel stops the tap, max 70vh and scrolls, a ✕ button (44px) that closes, safe-area padding plus the update banner's lift (AX9); once, in the Calendar view, after the grid and before the legend",
     count("{calDayOpen && (() => {") === 1 && sheetSrc.includes('<div onClick={close} style={{position:"fixed",inset:0,zIndex:9000,') && sheetSrc.includes('role="dialog" aria-modal="true"')
       && sheetSrc.includes("onClick={e=>e.stopPropagation()}") && sheetSrc.includes('maxHeight:"70vh",overflowY:"auto"') && sheetSrc.includes('<button autoFocus aria-label="Close" onClick={close}')
-      && sheetSrc.includes("minWidth:44,minHeight:44") && sheetSrc.includes("env(safe-area-inset-bottom, 0px)")
+      && sheetSrc.includes("minWidth:44,minHeight:44") && sheetSrc.includes('paddingBottom:"calc(env(safe-area-inset-bottom, 0px) + 16px)",marginBottom:calSheetLift,') && !sheetSrc.includes("updateAvailable ? 64")
       && src.indexOf('{view==="calendar"&&<>') < gridA && gridA < SH0 && SH0 < src.indexOf('<span><span style={{color:"#3080a8",fontWeight:700}}>S</span> Service Wk</span>'));
 
   // AX7 — 👤 Me
   const ME = "{!isPublicMode && (sMap[mySurgeon] || aMap[mySurgeon]) && (() => {";
   const iMe = src.indexOf(ME), iBar = src.indexOf('<span style={{margin:"0 4px",color:dkSubtext}}>|</span>'), iSel = src.indexOf("<select value={calSurgeonFilter}"), iShow = src.indexOf(">Show:</span>");
   check("AX7 one 👤 Me button, in the Show bar right after the \"|\" and before the surgeon filter; signed-in roster members only (never the public link)",
-    count(ME) === 1 && (src.match(/>\s*👤 Me\s*<\/button>/g) || []).length === 1 && iShow >= 0 && iShow < iBar && iBar < iMe && iMe < iSel && iSel - iMe < 1800);
+    count(ME) === 1 && (src.match(/>\s*👤 Me\s*<\/button>/g) || []).length === 1 && iShow >= 0 && iShow < iBar && iBar < iMe && iMe < iSel && iSel - iMe < 2400);
   const meGate = iMe < 0 ? null : vm.runInContext(`(function (isPublicMode, mySurgeon, sMap, aMap) { return !!(${ME.slice(1, ME.indexOf(" && (() => {"))}); })`, axsb);
   check("AX7 the gate, executed: a surgeon and an APP see it signed in; not on the public link, not for 'admin' or no one, not for an id off the roster",
     !!meGate && meGate(false, "s3", sMapFull, aMapFull) === true && meGate(false, "a1", sMapFull, aMapFull) === true && meGate(true, "s3", sMapFull, aMapFull) === false
@@ -6018,11 +6156,83 @@ console.log("\nAX. calendar day sheet + 👤 Me filter");
   check("AX7 the toggle calls only the existing filter setters (surgeon, APP, department) — no new state, no save, no restyling of anyone's chips",
     !!meSrc && (meSrc.match(/\bset[A-Z]\w*/g) || []).every((n) => ["setCalSurgeonFilter", "setCalAppFilter", "setCalDeptFilter"].includes(n)) && !/fetch\(|localStorage|setCalFilters|toggleFilter/.test(meSrc)
       && count("const [calSurgeonFilter, setCalSurgeonFilter] = useState(") === 1 && count("const [calAppFilter, setCalAppFilter] = useState(") === 1, meSrc.slice(0, 160));
+  // review fix: an APP's Me hides only the OTHER APPs' chips — the surgeons' call stays — so its label says so (no new filter)
+  const meLabelOf = (mySurgeon) => { try { return vm.runInContext(`(function (env) { const { mySurgeon, sMap, calSurgeonFilter, calAppFilter } = env; ${meSrc}\n return meLabel; })`, axsb)({ mySurgeon, sMap: sMapFull, calSurgeonFilter: "", calAppFilter: "all" }); } catch (ex) { return "threw: " + String(ex).slice(0, 80); } };
+  check("AX7 review fix — the label is honest, executed: a surgeon's Me is \"Me — show only my call\"; an APP's is \"Me — show only my APP shifts (the surgeons' call stays shown)\" — it hides only the other APPs' chips; the button's aria-label and title are that label, never a fixed string",
+    meLabelOf("s3") === "Me — show only my call" && meLabelOf("a1") === "Me — show only my APP shifts (the surgeons' call stays shown)"
+      && count("aria-pressed={meOn} aria-label={meLabel} title={meLabel}") === 1 && count('aria-label="Me — show only my call"') === 0,
+    JSON.stringify([meLabelOf("s3"), meLabelOf("a1")]));
+  const meStyleM = nsrcX.match(/<button onClick=\{toggleMe\} aria-pressed=\{meOn\} aria-label=\{meLabel\} title=\{meLabel\}\n\s*style=\{(\{[^\n]*\})\}>/);
+  const barBgM = nsrcX.match(/\{\/\* Calendar Filters \*\/\}\n\s*<div style=\{\{[^\n]*background:dk\?"(#[0-9a-fA-F]{6})":"#fff"/);
+  let meSt = null;
+  try { meSt = meStyleM ? vm.runInContext(`(function (meOn, dk, dkSubtext, font) { return (${meStyleM[1]}); })`, axsb) : null; } catch (ex) { meSt = null; }
+  const btnText = DARK_SHEET.forced("button", "color"), barBg = barBgM && barBgM[1];
+  const meDark = meSt ? { on: meSt(true, true, "#8a8aaa", "F"), off: meSt(false, true, "#8a8aaa", "F") } : null;
+  const meLight = meSt ? { on: meSt(true, false, "#7a8a98", "F"), off: meSt(false, false, "#7a8a98", "F") } : null;
+  const meDk = meDark ? { onBg: meDark.on.background, crText: DARK_SHEET.cr(btnText, meDark.on.background), crOnOff: DARK_SHEET.cr(meDark.on.background, barBg), barBg, btnText } : null;
+  check("AX7 review fix — dark mode, the Me button's on and off differ by more than a border: the dark sheet forces every button's text to one grey (button { color … !important }), so \"on\" is a SOLID fill, ≥ 1.5:1 against the Show bar's dark fill that \"off\" shows, with the forced text ≥ 4.5:1 on it; light mode as before",
+    !!meDk && DARK_SHEET.hex(btnText) && DARK_SHEET.hex(barBg) && DARK_SHEET.hex(meDk.onBg) && meDk.crText >= 4.5 && meDk.crOnOff >= 1.5 && meDark.off.background === "transparent"
+      && JSON.stringify([meLight.on.background, meLight.on.border, meLight.on.color, meLight.off.background, meLight.off.border, meLight.off.opacity]) === JSON.stringify(["#1a6fa818", "1px solid #1a6fa8", "#1a6fa8", "transparent", "1px solid #d0d8e0", 0.75]),
+    JSON.stringify({ meDk, meLight }));
 
   // AX8 — §P's rule, for this state
-  const iDecl = src.indexOf("const [calDayOpen, setCalDayOpen] = useState(null);");
-  check("AX8 calDayOpen is declared once, beside the other calendar filters, BEFORE the Escape effect that lists it (the 2026.09.24a TDZ class)",
-    count("const [calDayOpen, setCalDayOpen] = useState(null);") === 1 && count("}, [calDayOpen]);") === 1 && iDecl > src.indexOf("const [calDeptFilter, setCalDeptFilter] = useState(") && iDecl < EE && EE - iDecl < 600);
+  const iDecl = src.indexOf("const [calDayOpen, setCalDayOpen] = useState(null);"), EE = src.indexOf("}, [calDayOpen]);");
+  const iOp = src.indexOf("const calDayOpenerRef = useRef(null);"), iBR = src.indexOf("const updateBannerRef = useRef(null);"), iSL = src.indexOf("const [calSheetLift, setCalSheetLift] = useState(0);");
+  const iUA = src.indexOf("const [updateAvailable, setUpdateAvailable] = useState(null);"), iLE = src.indexOf("}, [calDayOpen, updateAvailable]);");
+  check("AX8 calDayOpen is declared once, beside the other calendar filters, BEFORE the Escape effect that lists it; the opener ref, the banner ref and the lift state too; the lift effect, which lists updateAvailable, comes AFTER updateAvailable's declaration (the 2026.09.24a TDZ class)",
+    count("const [calDayOpen, setCalDayOpen] = useState(null);") === 1 && count("}, [calDayOpen]);") === 1 && iDecl > src.indexOf("const [calDeptFilter, setCalDeptFilter] = useState(") && iDecl < EE && EE - iDecl < 2500
+      && [iOp, iBR, iSL].every((i) => i > iDecl && i < EE) && count("const updateBannerRef = useRef(null);") === 1 && count("const [calSheetLift, setCalSheetLift] = useState(0);") === 1
+      && count("}, [calDayOpen, updateAvailable]);") === 1 && iUA > 0 && iLE > iUA && iLE > EE,
+    JSON.stringify({ iDecl, iOp, iBR, iSL, EE, iUA, iLE }));
+
+  // AX9 — review fix (the medium): the sheet sits ABOVE the update banner. The banner (fixed to the bottom, z 9998, over the
+  // backdrop) wraps to two rows on a 375px phone — 100px measured (render review) — and the sheet reserved 64px, so its last
+  // line and most of "Edit this week" were under it. The sheet is lifted by the banner's MEASURED height.
+  const LE0 = nsrcX.lastIndexOf("  useEffect(() => {\n    if (!calDayOpen) return;\n    const remeasure", nsrcX.indexOf("}, [calDayOpen, updateAvailable]);")), LE1 = nsrcX.indexOf("  }, [calDayOpen, updateAvailable]);");
+  const BLm = nsrcX.match(/\n  (const bannerLift = \(\) => \{[^\n]*\};)\n/);
+  let mkLift = null;
+  try { mkLift = LE0 > 0 && LE1 > LE0 && BLm ? vm.runInContext("(function (env) { const { calDayOpen, updateAvailable, setCalSheetLift, updateBannerRef, window, ResizeObserver, useEffect } = env;\n" + BLm[1] + "\n" + nsrcX.slice(LE0, LE1 + "  }, [calDayOpen, updateAvailable]);".length) + "\n })", axsb, { filename: "ax-lift.js" }) : null; } catch (ex) { mkLift = null; }
+  const liftRun = (open, el, withRO) => {
+    const L = { sets: [], added: [], removed: [], observed: [], disconnected: 0, eff: null };
+    const RO = withRO ? class { constructor(cb) { L.roCb = cb; } observe(t) { L.observed.push(t); } disconnect() { L.disconnected++; } } : undefined;
+    mkLift({ calDayOpen: open, updateAvailable: el ? "2026.10.20a" : null, setCalSheetLift: (v) => L.sets.push(v), updateBannerRef: { current: el }, ResizeObserver: RO,
+      window: { addEventListener: (t, f) => L.added.push([t, f]), removeEventListener: (t, f) => L.removed.push([t, f]) }, useEffect: (fn, deps) => { L.eff = { fn, deps }; } });
+    return L;
+  };
+  let liftOut = null;
+  if (mkLift) {
+    try {
+      const ban = { isConnected: true, h: 100, getBoundingClientRect() { return { height: this.h }; } };
+      const l1 = liftRun("2026-10-20", ban, true), cl = l1.eff.fn();
+      ban.h = 54; l1.added[0][1](); // a rotation: the banner fits one row
+      ban.h = 100; l1.roCb(); // the banner's own size changed (a font arrived)
+      cl();
+      const l2 = liftRun("2026-10-20", null, true), cl2 = l2.eff.fn(); if (typeof cl2 === "function") cl2();
+      const l3 = liftRun(null, ban, true), r3 = l3.eff.fn();
+      liftOut = { deps: JSON.stringify(l1.eff.deps), sets: l1.sets, resize: l1.added.map((x) => x[0]), observed: l1.observed.length === 1 && l1.observed[0] === ban, cleaned: l1.removed.length === 1 && l1.removed[0][1] === l1.added[0][1] && l1.disconnected === 1,
+        noBanner: { sets: l2.sets, observed: l2.observed.length }, closed: { ret: r3 === undefined, sets: l3.sets.length, added: l3.added.length } };
+    } catch (ex) { liftOut = { threw: String(ex).slice(0, 200) }; }
+  }
+  check("AX9 the lift, the real effect executed: while the sheet is open it measures the update banner — 100px — and again on a resize / rotation (54px, one row) and when the banner's own size changes (a ResizeObserver on it); no banner → 0; listeners removed and the observer disconnected on close; closed, nothing measured",
+    !!liftOut && !liftOut.threw && liftOut.deps === '["2026-10-20","2026.10.20a"]' && JSON.stringify(liftOut.sets) === "[100,54,100]" && JSON.stringify(liftOut.resize) === '["resize"]' && liftOut.observed && liftOut.cleaned
+      && JSON.stringify(liftOut.noBanner) === '{"sets":[0],"observed":0}' && JSON.stringify(liftOut.closed) === '{"ret":true,"sets":0,"added":0}',
+    mkLift ? JSON.stringify(liftOut) : "the lift effect / bannerLift was not found");
+  // The geometry, from the panel's real style (evaluated): at 375×812 the measured banner was 100px; at 393×852, 54px (one row,
+  // the real Outfit font) or 100px (the fallback font). The sheet's content must end at or above the banner's top.
+  const panelM = sheetSrc.replace(/\r\n/g, "\n").match(/role="dialog" aria-modal="true" aria-label=\{`\$\{title\} — details`\} onClick=\{e=>e\.stopPropagation\(\)\}\n\s*style=\{(\{[\s\S]*?fontFamily:font\})\}>/);
+  let panelSt = null;
+  try { panelSt = panelM ? vm.runInContext(`(function (calSheetLift, dk, font, updateAvailable) { return (${panelM[1]}); })`, axsb) : null; } catch (ex) { panelSt = null; }
+  const geo = (vh, bannerH) => {
+    if (!panelSt) return null;
+    const st = panelSt(bannerH, false, "F", "2026.10.20a"), pad = +((String(st.paddingBottom).match(/\+\s*(\d+)px\)$/) || [])[1] || NaN); // env(safe-area-inset-bottom) is 0: no viewport-fit=cover
+    const panelBottom = vh - (+st.marginBottom || 0), contentBottom = panelBottom - pad, bannerTop = vh - bannerH;
+    return { panelBottom, contentBottom, bannerTop, ok: panelBottom <= bannerTop && contentBottom <= bannerTop && pad >= 16 };
+  };
+  const g375 = geo(812, 100), g393a = geo(852, 54), g393b = geo(852, 100), g0 = geo(812, 0);
+  const zBan = +((nsrcX.match(/<div ref=\{updateBannerRef\} role="status" aria-live="polite" style=\{\{position:"fixed",left:0,right:0,bottom:0,zIndex:(\d+),/) || [])[1] || NaN);
+  check("AX9 the geometry, from the panel's real style: at 375×812 with the measured 100px banner the sheet ends at its top (712) and its content above it — so the last line and Edit this week are not covered (they were: 36px under it); the same at 393×852 with a 54px or a 100px banner; no banner → the bottom of the screen; the banner (ref={updateBannerRef}, z above the sheet's 9000) stays tappable over the backdrop",
+    !!g375 && g375.ok && g375.panelBottom === 712 && g393a.ok && g393a.panelBottom === 798 && g393b.ok && g0.ok && g0.panelBottom === 812 && count("ref={updateBannerRef}") === 1 && zBan > 9000,
+    JSON.stringify({ g375, g393a, g393b, g0, zBan }));
 }
 
 // ─── AF. Schedule Warnings: on call while off (2026-10-11, owner decision G) ───
@@ -6377,16 +6587,40 @@ await (async () => {
 //   AY4 the component's real lines, run at a pinned clock: callNow / callNowName
 //       map the holder through sMap; the window tick arms a 60-s interval, hands
 //       React a new key exactly when the answer can change, and cleans up
-//   AY5 source pins: the line is the banner's first child, gated on callNowName;
-//       the banner's own gate (hasCallToday) and the share message are untouched
+//   AY5 source pins: the line is the banner's first child, gated on callNowLine;
+//       the share message is untouched
+// Review fixes (2026-10-19), each with a check that fails without it:
+//   - CENTRAL hours on any device: every case below is a Central wall-clock
+//     time (ct), and AY3 runs them again in children pinned to UTC, Chicago,
+//     New York and Los Angeles, with the reviewer's probe instants
+//   - the weekend's legs say which: "Weekend (Fri night)" / "Weekend (Sun)"
+//     (Sat 03:00 sat above a WEEKEND chip naming the service Saturday)
+//   - a Fierce Primary week: backup:true, and the line reads "🟡 DSG backup
+//     now: … (Fierce is primary)" — never the green "On call now" (AY1, AY4)
+//   - the first morning past the published schedule: the banner shows the
+//     line though today holds no call (AY6; AO3's gate pin updated with it)
 console.log("\nAY. On Call Today: an \"On call now\" line");
 {
   const ocn = vm.runInContext('typeof onCallNow === "function" ? onCallNow : null', sandbox);
   const ohn = vm.runInContext('typeof overnightHolderOn === "function" ? overnightHolderOn : null', sandbox);
+  const ccl = vm.runInContext('typeof centralClock === "function" ? centralClock : null', sandbox);
+  const ocwk = vm.runInContext('typeof onCallWindowKey === "function" ? onCallWindowKey : null', sandbox);
+  const ocnt = vm.runInContext('typeof onCallNowText === "function" ? onCallNowText : null', sandbox);
   const fmtS = vm.runInContext("fmt", sandbox);
   const NONE = "onCallNow is not defined in helpers.js";
   const J = (o) => JSON.stringify(o);
-  const sig = (r) => (r ? r.sid + "|" + r.slot + "|" + r.until : "null");
+  const sig = (r) => (r ? r.sid + "|" + r.slot + "|" + r.until + (r.backup ? "|B" : "") : "null");
+  // A CENTRAL wall-clock time → its instant, whatever this machine's zone (CI runs in UTC): the handovers are Central
+  // hours. CDT is UTC−5, CST UTC−6; the fall-back hour's 01:30 (it happens twice) is its first, CDT one.
+  const CT_FMT = new Intl.DateTimeFormat("en-US", { timeZone: "America/Chicago", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+  const ct = ([y0, m0, d0, h, mi]) => {
+    const n = new Date(Date.UTC(y0, m0, d0)), y = n.getUTCFullYear(), m = n.getUTCMonth(), d = n.getUTCDate(); // (Oct 32 = Nov 1)
+    for (const off of [5, 6]) {
+      const t = new Date(Date.UTC(y, m, d, h + off, mi || 0)), p = Object.fromEntries(CT_FMT.formatToParts(t).map((x) => [x.type, x.value]));
+      if (+p.year === y && +p.month === m + 1 && +p.day === d && +p.hour % 24 === h && +p.minute === (mi || 0)) return t;
+    }
+    return new Date(NaN);
+  };
   const HOL = (sid, holiday, name) => ({ surgeonId: sid, role: "holiday_24h", hours: "7a–7a", name, type: "major", holiday });
   // Weeks 10/19 → 12/6. 10/12 and 11/9 are unpublished (no entry), 11/16 is a blank entry, 11/2 is a backup (Fierce primary) week.
   const SCHED = {
@@ -6397,14 +6631,16 @@ console.log("\nAY. On Call Today: an \"On call now\" line");
     "2026-11-23": { dayCall: "s1", nights: { mon: "s2", tue: "s3", wed: "s2", thu: "s5", wknd: "s7" }, holidayCoverage: { "2026-11-26": HOL("s4", "Thanksgiving", "Thanksgiving 24h") } },
     "2026-11-30": { dayCall: "s3", nights: { mon: "s1", thu: "s5", wknd: "s2" }, holidayCoverage: { "2026-12-03": HOL(null, "Test Day", "Thu 24h"), "2026-12-05": { surgeonId: "s7", type: "swap", name: "Saturday swap coverage" } } },
   };
-  // [group, label, [y, month0, d, h, min] local, want "sid|slot|until" or "null"]
+  // [group, label, [y, month0, d, h, min] CENTRAL wall clock, want "sid|slot|until[|B]" or "null" — |B: backup, a Fierce Primary week]
+  // (review fixes: the weekend's legs are named — "Weekend (Fri night)" / "Weekend (Sun)", they were both "Weekend";
+  // a backup week is backup:true — its slot used to carry " (backup)")
   const CASES = [
     ["plan", "Tue 10/20 03:00 → Monday night's holder, not tonight's", [2026, 9, 20, 3, 0], "s2|Mon Night|7a"],
     ["plan", "Tue 10/20 10:00 → the service week", [2026, 9, 20, 10, 0], "s1|Service Week|5p"],
     ["plan", "Tue 10/20 18:00 → Tuesday night", [2026, 9, 20, 18, 0], "s3|Tue Night|7a"],
-    ["plan", "Sat 10/24 03:00 → the weekend's Friday-night leg", [2026, 9, 24, 3, 0], "s7|Weekend|7a"],
-    ["plan", "Sun 10/25 12:00 → the weekend's Sunday 24h (SHIFT_TIMES: Sun 7a–Mon 7a)", [2026, 9, 25, 12, 0], "s7|Weekend|7a"],
-    ["plan", "Mon 10/26 03:00 → the weekend's last leg", [2026, 9, 26, 3, 0], "s7|Weekend|7a"],
+    ["plan", "Sat 10/24 03:00 → the weekend's Friday-night leg, named so (the WEEKEND chip below names the service Saturday)", [2026, 9, 24, 3, 0], "s7|Weekend (Fri night)|7a"],
+    ["plan", "Sun 10/25 12:00 → the weekend's Sunday 24h (SHIFT_TIMES: Sun 7a–Mon 7a)", [2026, 9, 25, 12, 0], "s7|Weekend (Sun)|7a"],
+    ["plan", "Mon 10/26 03:00 → the weekend's last leg", [2026, 9, 26, 3, 0], "s7|Weekend (Sun)|7a"],
     ["plan", "Thanksgiving Thu 11/26 10:00 → the holiday 24h", [2026, 10, 26, 10, 0], "s4|Thanksgiving 24h|7a"],
     ["plan", "Fri 11/27 03:00 → Thanksgiving's 24h, which ends at 7a", [2026, 10, 27, 3, 0], "s4|Thanksgiving 24h|7a"],
     ["plan", "Tue 11/10 03:00, an unpublished week → null", [2026, 10, 10, 3, 0], "null"],
@@ -6417,19 +6653,21 @@ console.log("\nAY. On Call Today: an \"On call now\" line");
     ["edge", "Thu 11/26 03:00 → the Wednesday night before Thanksgiving runs to 7a", [2026, 10, 26, 3, 0], "s2|Wed Night|7a"],
     ["edge", "Thu 11/26 18:00 → the holiday holder all evening (that Thu night is dropped)", [2026, 10, 26, 18, 0], "s4|Thanksgiving 24h|7a"],
     ["edge", "Fri 11/27 07:00 → back to the service week", [2026, 10, 27, 7, 0], "s1|Service Week|5p"],
+    ["edge", "Sat 10/24 06:59 → still the Friday-night leg", [2026, 9, 24, 6, 59], "s7|Weekend (Fri night)|7a"],
+    ["edge", "Sat 10/24 07:00 → the service Saturday takes over", [2026, 9, 24, 7, 0], "s1|Service Week (Sat 24h)|7a"],
     ["slot", "Fri 10/23 10:00 → a single-day override is a Service Day", [2026, 9, 23, 10, 0], "s6|Service Day|5p"],
-    ["slot", "Fri 10/23 18:00 → the weekend's Friday night", [2026, 9, 23, 18, 0], "s7|Weekend|7a"],
+    ["slot", "Fri 10/23 18:00 → the weekend's Friday night", [2026, 9, 23, 18, 0], "s7|Weekend (Fri night)|7a"],
     ["slot", "Sat 10/24 10:00 → the service Saturday 24h", [2026, 9, 24, 10, 0], "s1|Service Week (Sat 24h)|7a"],
     ["slot", "Sun 10/25 03:00 → the service Saturday runs to Sun 7a", [2026, 9, 25, 3, 0], "s1|Service Week (Sat 24h)|7a"],
     ["slot", "Mon 10/26 10:00 → the next week's service", [2026, 9, 26, 10, 0], "s3|Service Week|5p"],
     ["slot", "Sat 10/31 10:00 → a Saturday override is a Service Day 24h", [2026, 9, 31, 10, 0], "s2|Service Day (Sat 24h)|7a"],
     ["slot", "Sun 11/1 01:30, the fall-back night → that Saturday's holder", [2026, 10, 1, 1, 30], "s2|Service Day (Sat 24h)|7a"],
-    ["slot", "Mon 11/2 03:00 → the weekend before a backup week", [2026, 10, 2, 3, 0], "s5|Weekend|7a"],
-    ["slot", "Tue 11/3 03:00 → a backup week's night says (backup)", [2026, 10, 3, 3, 0], "s1|Mon Night (backup)|7a"],
-    ["slot", "Tue 11/3 10:00 → a backup week's service says (backup)", [2026, 10, 3, 10, 0], "s5|Service Week (backup)|5p"],
-    ["slot", "Mon 11/9 03:00 → the backup week's Sunday 24h, into an unpublished Monday", [2026, 10, 9, 3, 0], "s6|Weekend (backup)|7a"],
-    ["slot", "Mon 11/30 03:00 → Thanksgiving week's Sunday 24h", [2026, 10, 30, 3, 0], "s7|Weekend|7a"],
-    ["slot", "Fri 12/4 18:00 → the weekend", [2026, 11, 4, 18, 0], "s2|Weekend|7a"],
+    ["slot", "Mon 11/2 03:00 → the weekend before a backup week (not backup itself)", [2026, 10, 2, 3, 0], "s5|Weekend (Sun)|7a"],
+    ["slot", "Tue 11/3 03:00 → a backup week's night is backup", [2026, 10, 3, 3, 0], "s1|Mon Night|7a|B"],
+    ["slot", "Tue 11/3 10:00 → a backup week's service is backup", [2026, 10, 3, 10, 0], "s5|Service Week|5p|B"],
+    ["slot", "Mon 11/9 03:00 → the backup week's Sunday 24h, into an unpublished Monday", [2026, 10, 9, 3, 0], "s6|Weekend (Sun)|7a|B"],
+    ["slot", "Mon 11/30 03:00 → Thanksgiving week's Sunday 24h", [2026, 10, 30, 3, 0], "s7|Weekend (Sun)|7a"],
+    ["slot", "Fri 12/4 18:00 → the weekend", [2026, 11, 4, 18, 0], "s2|Weekend (Fri night)|7a"],
     ["slot", "Sat 12/5 10:00 → a swap is named by its own label", [2026, 11, 5, 10, 0], "s7|Saturday swap coverage|7a"],
     ["slot", "Sun 12/6 03:00 → the swap runs to 7a", [2026, 11, 6, 3, 0], "s7|Saturday swap coverage|7a"],
     ["null", "Mon 11/9 10:00 → the unpublished week's service", [2026, 10, 9, 10, 0], "null"],
@@ -6440,17 +6678,23 @@ console.log("\nAY. On Call Today: an \"On call now\" line");
     ["null", "Thu 12/3 10:00 → an unassigned holiday 24h", [2026, 11, 3, 10, 0], "null"],
     ["null", "Fri 12/4 03:00 → the unassigned holiday's overnight (not the dropped Thu night holder)", [2026, 11, 4, 3, 0], "null"],
   ];
-  const at = ([y, m, d, h, mi]) => new Date(y, m, d, h, mi);
+  const at = ct; // every case is a Central time (review fix: onCallNow reads Central hours on any device)
   const before = J(SCHED);
   const got = ocn ? CASES.map((c) => { try { return sig(ocn(SCHED, at(c[2]))); } catch (ex) { return "threw: " + String(ex).slice(0, 100); } }) : null;
   const badIn = (grp) => (got ? CASES.map((c, i) => (c[0] !== grp || got[i] === c[3] ? null : `${c[1]}: got ${got[i]}`)).filter(Boolean) : [NONE]);
   const nIn = (grp) => CASES.filter((c) => c[0] === grp).length;
   check(`AY1 onCallNow, the plan's ${nIn("plan")} fixtures: Tue 03:00 Mon night's holder, Tue 10:00 the service week (until 5p), Tue 18:00 Tue night, Sat 03:00 / Sun 12:00 / Mon 03:00 the weekend's legs, Thanksgiving 10:00 and Fri 03:00 the holiday 24h (until 7a), an unpublished week null`,
     !!got && badIn("plan").length === 0, badIn("plan").join(" | "));
-  check(`AY1 the edges (${nIn("edge")}): 06:59 last night / 07:00 the day / 16:59 the day / 17:00 tonight / 23:59 and 00:00 still tonight; the night before a holiday runs to 7a and the holiday holds the evening`,
+  check(`AY1 the edges (${nIn("edge")}): 06:59 last night / 07:00 the day / 16:59 the day / 17:00 tonight / 23:59 and 00:00 still tonight; the night before a holiday runs to 7a and the holiday holds the evening; Sat 06:59 the Friday-night leg, 07:00 the service Saturday`,
     !!got && badIn("edge").length === 0, badIn("edge").join(" | "));
-  check(`AY1 the other slots (${nIn("slot")}): an override is a Service Day, the service Saturday 24h, the fall-back night, a backup week says (backup), a swap by its own label`,
+  check(`AY1 the other slots (${nIn("slot")}): an override is a Service Day, the service Saturday 24h, the fall-back night, a backup (Fierce primary) week is backup:true, a swap by its own label, the weekend's legs named "Weekend (Fri night)" / "Weekend (Sun)"`,
     !!got && badIn("slot").length === 0, badIn("slot").join(" | "));
+  const legs = got ? CASES.map((c, i) => [c[2], got[i]]).filter(([, g]) => /\|Weekend/.test(g)) : [];
+  check("AY1 review fix — no bare \"Weekend\": every weekend answer names its leg — Fri 17:00 → Sat 07:00 \"Weekend (Fri night)\", Sun 07:00 → Mon 07:00 \"Weekend (Sun)\" — so Sat 03:00's line can't be read as the WEEKEND chip's service-Saturday holder",
+    legs.length >= 9 && legs.every(([t, g]) => { const dow = new Date(Date.UTC(t[0], t[1], t[2])).getUTCDay(); return /\|Weekend \((Fri night|Sun)\)\|/.test(g) && (/Fri night/.test(g) ? dow === 5 || dow === 6 : dow === 0 || dow === 1); }),
+    J(legs));
+  check("AY1 review fix — a Fierce Primary (isBackup) week's answer carries backup:true and a plain slot; no answer's slot says \"(backup)\" any more (onCallNowText words the backup line)",
+    !!got && got.filter((g) => /\|B$/.test(g)).length === 3 && got.every((g) => !/\(backup\)/.test(g)), J(got && got.filter((g) => /\|B$|\(backup\)/.test(g))));
   check(`AY1 nobody to name → null (${nIn("null")}): an unpublished or blank week, an empty night, an unassigned holiday and its overnight`,
     !!got && badIn("null").length === 0, badIn("null").join(" | "));
   let junk = null;
@@ -6461,13 +6705,37 @@ console.log("\nAY. On Call Today: an \"On call now\" line");
     vm.runInContext("JSON.stringify(SHIFT_TIMES)", sandbox) === J({ dayCall: "M–F 7a–5p + Sat 7a–Sun 7a", mon: "Mon 5p–7a", tue: "Tue 5p–7a", wed: "Wed 5p–7a", thu: "Thu 5p–7a", wknd: "Fri 5p–Sat 7a & Sun 7a–Mon 7a" })
       && vm.runInContext("[SHIFT_LABELS.mon, SHIFT_LABELS.tue, SHIFT_LABELS.wed, SHIFT_LABELS.thu, SHIFT_LABELS.wknd].join()", sandbox) === "Mon Night,Tue Night,Wed Night,Thu Night,Weekend",
     vm.runInContext("JSON.stringify(SHIFT_TIMES)", sandbox));
-  check("AY1 onCallNow is pure: the schedule passed in is untouched and it reads no clock (no Date.now, no new Date())",
-    !!ocn && J(SCHED) === before && !/Date\.now|new Date\(\s*\)/.test(String(ocn)), ocn ? String(ocn).slice(0, 120) : NONE);
+  check("AY1 onCallNow, centralClock, onCallWindowKey and onCallNowText are pure: the schedule passed in is untouched and none reads a clock (no Date.now, no new Date())",
+    !!ocn && !!ccl && !!ocwk && !!ocnt && J(SCHED) === before && [ocn, ccl, ocwk, ocnt].every((f) => !/Date\.now|new Date\(\s*\)/.test(String(f))), ocn ? String(ocn).slice(0, 120) : NONE);
+  // centralClock (review fix): the Central date and hour of an instant, whatever the device's zone
+  const CC = [["2026-10-20T11:30:00Z", "2026-10-20", 6], ["2026-10-20T12:00:00Z", "2026-10-20", 7], ["2026-10-20T21:59:00Z", "2026-10-20", 16], ["2026-10-20T22:00:00Z", "2026-10-20", 17],
+    ["2026-10-21T05:00:00Z", "2026-10-21", 0], ["2026-10-21T04:59:00Z", "2026-10-20", 23], ["2026-11-01T06:30:00Z", "2026-11-01", 1], ["2026-11-01T07:30:00Z", "2026-11-01", 1],
+    ["2026-11-01T13:00:00Z", "2026-11-01", 7], ["2027-03-14T07:59:00Z", "2027-03-14", 1], ["2027-03-14T08:00:00Z", "2027-03-14", 3], ["2027-01-01T05:59:00Z", "2026-12-31", 23]];
+  const ccGot = ccl ? CC.map(([iso]) => { try { return J(ccl(new Date(iso))); } catch (ex) { return "threw"; } }) : null;
+  check("AY1 centralClock: the Central date and hour — 06:30 / 07:00 / 16:59 / 17:00 CDT, midnight is hour 0 (never 24), both 01:30s of the fall-back night, the spring-forward jump 01:59 → 03:00, New Year's Eve 23:59 CST; bad input → null",
+    !!ccGot && ccGot.every((g, i) => g === J({ ds: CC[i][1], h: CC[i][2] })) && [null, undefined, "2026-10-20", new Date(NaN), {}].every((x) => ccl(x) === null), J(ccGot));
+  let fallback = null;
+  try {
+    const sbF = { console, window: {}, navigator: { userAgent: "node-test" }, localStorage: { getItem: () => null, setItem() {}, removeItem() {} }, setTimeout, clearTimeout };
+    sbF.globalThis = sbF; vm.createContext(sbF);
+    vm.runInContext(fs.readFileSync(path.join(ROOT, "helpers.js"), "utf8"), sbF, { filename: "helpers.js" });
+    vm.runInContext('Intl = { DateTimeFormat: function () { throw new RangeError("no time zones here"); } };', sbF);
+    const d = vm.runInContext("new Date(2026, 9, 20, 6, 30)", sbF);
+    fallback = { got: J(vm.runInContext("centralClock", sbF)(d)), want: J({ ds: vm.runInContext("fmt", sbF)(d), h: 6 }) };
+  } catch (ex) { fallback = { err: String(ex).slice(0, 160) }; }
+  check("AY1 centralClock where Intl can't name the zone (a very old browser): the device's own date and hour, as the app read them before — never a throw",
+    !!fallback && !fallback.err && fallback.got === fallback.want, J(fallback));
+  const lineOf = (r, name) => { try { return ocnt ? J(ocnt(r, name)) : NONE; } catch (ex) { return "threw"; } };
+  check("AY1 onCallNowText (review fix): a DSG week reads \"🟢 On call now: MCC — Mon Night, until 7a\"; a Fierce Primary (backup) week reads \"🟡 DSG backup now: REH — Service Week (Fierce is primary), until 5p\" — never the green \"On call now\"; nothing to name → null",
+    lineOf({ sid: "s2", slot: "Mon Night", until: "7a", backup: false }, "MCC") === J({ backup: false, text: "🟢 On call now: MCC — Mon Night, until 7a" })
+      && lineOf({ sid: "s5", slot: "Service Week", until: "5p", backup: true }, "REH") === J({ backup: true, text: "🟡 DSG backup now: REH — Service Week (Fierce is primary), until 5p" })
+      && lineOf(null, "MCC") === "null" && lineOf({ sid: "s2", slot: "Mon Night", until: "7a" }, null) === "null",
+    J([lineOf({ sid: "s5", slot: "Service Week", until: "5p", backup: true }, "REH"), lineOf(null, "x")]));
 
   // AY2 — cross-checks, every date 10/12 → 12/13 (nine weeks, two of them unpublished and one blank)
   const days = [];
   for (let d = new Date(2026, 9, 12); d < new Date(2026, 11, 14); d.setDate(d.getDate() + 1)) days.push([d.getFullYear(), d.getMonth(), d.getDate()]);
-  const sidAt = (y, m, d, h) => { try { const r = ocn(SCHED, new Date(y, m, d, h, 0)); return r ? r.sid : null; } catch (ex) { return "threw"; } };
+  const sidAt = (y, m, d, h) => { try { const r = ocn(SCHED, ct([y, m, d, h, 0])); return r ? r.sid : null; } catch (ex) { return "threw"; } };
   const overBad = [];
   let overNamed = 0;
   if (ocn && ohn) for (const [y, m, d] of days) {
@@ -6503,32 +6771,40 @@ console.log("\nAY. On Call Today: an \"On call now\" line");
   check(`AY2 every 10:00, 18:00 and next-03:00 answer is the holder the calendar's own rows show for that date (the real calData memo, sliced; ${days.length} dates, ${calNamed} daytimes with a holder)`,
     !!ocn && !!cal && calBad.length === 0 && calNamed >= 30, !cal ? "calData memo not found / did not run" : calBad.slice(0, 4).join(" | "));
 
-  // AY3 — AY1 + the overnight cross-check under TZ=UTC and TZ=America/Chicago
+  // AY3 — AY1, the overnight cross-check and the reviewer's probe instants, in children pinned to four time zones (review
+  // fix: onCallNow read the DEVICE's hours, so a phone in New York or Los Angeles named the wrong holder around each
+  // handover). The instants are made here, from Central wall-clock times, and handed to each child as epoch ms.
   {
     const { execFileSync } = require("child_process");
+    const PROBES = [["Tue 10/20 06:30 CDT", [2026, 9, 20, 6, 30], "s2|Mon Night|7a", "2026-10-20a"], ["Tue 10/20 16:30 CDT", [2026, 9, 20, 16, 30], "s1|Service Week|5p", "2026-10-20b"],
+      ["Tue 10/20 17:30 CDT", [2026, 9, 20, 17, 30], "s3|Tue Night|7a", "2026-10-20c"]];
     const code = [
       'const vm = require("vm"), fs = require("fs"), path = require("path");',
       'const sb = { console, window: {}, document: undefined, navigator: { userAgent: "node-test" }, localStorage: { getItem: () => null, setItem() {}, removeItem() {} }, fetch: () => { throw new Error("no fetch"); }, setTimeout, clearTimeout };',
       "sb.globalThis = sb; vm.createContext(sb);",
       `for (const f of ["helpers.js", "config.js"]) vm.runInContext(fs.readFileSync(path.join(${J(ROOT)}, f), "utf8"), sb, { filename: f });`,
-      'const f = vm.runInContext("typeof onCallNow === \\"function\\" ? onCallNow : null", sb), o = vm.runInContext("overnightHolderOn", sb), fmt = vm.runInContext("fmt", sb);',
-      `const S = ${J(SCHED)}, T = ${J(CASES.map((c) => c[2]))};`,
+      'const f = vm.runInContext("typeof onCallNow === \\"function\\" ? onCallNow : null", sb), o = vm.runInContext("overnightHolderOn", sb), k = vm.runInContext("typeof onCallWindowKey === \\"function\\" ? onCallWindowKey : null", sb);',
+      `const S = ${J(SCHED)}, T = ${J(CASES.map((c) => ct(c[2]).getTime()))};`,
+      `const OVER = ${J(days.map(([y, m, d]) => [fmtS(new Date(y, m, d)), ct([y, m, d, 18, 0]).getTime(), ct([y, m, d + 1, 3, 0]).getTime()]))};`,
+      `const P = ${J(PROBES.map((p) => ct(p[1]).getTime()))};`,
       `const sig = ${sig.toString()};`,
-      "const out = f ? T.map(([y, m, d, h, mi]) => sig(f(S, new Date(y, m, d, h, mi)))) : null, over = [];",
-      "if (f) for (let d = new Date(2026, 9, 12); d < new Date(2026, 11, 14); d.setDate(d.getDate() + 1)) {",
-      "  const e = f(S, new Date(d.getFullYear(), d.getMonth(), d.getDate(), 18)), p = f(S, new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1, 3)), w = o(S, fmt(d));",
-      "  if ((e ? e.sid : null) !== w || (p ? p.sid : null) !== w) over.push(fmt(d));",
-      "}",
-      'process.stdout.write(JSON.stringify({ off: new Date(2026, 9, 24).getTimezoneOffset(), utc3: new Date("2026-10-20T03:00:00Z").getHours(), out, over }));',
+      "const out = f ? T.map((ms) => sig(f(S, new Date(ms)))) : null, over = [];",
+      "if (f) for (const [ds, e, p] of OVER) { const ev = f(S, new Date(e)), pr = f(S, new Date(p)), w = o(S, ds); if ((ev ? ev.sid : null) !== w || (pr ? pr.sid : null) !== w) over.push(ds); }",
+      "const probes = f ? P.map((ms) => [sig(f(S, new Date(ms))), k ? k(new Date(ms)) : null]) : null;",
+      'process.stdout.write(JSON.stringify({ off: new Date(2026, 9, 24).getTimezoneOffset(), utc3: new Date("2026-10-20T03:00:00Z").getHours(), local0630: new Date(P[0]).getHours(), out, over, probes }));',
     ].join("\n");
     const inZone = (TZ) => { try { return JSON.parse(execFileSync(process.execPath, ["-e", code], { env: Object.assign({}, process.env, { TZ }), encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })); } catch (ex) { return { err: String(ex).slice(0, 300) }; } };
-    const utc = inZone("UTC"), chi = inZone("America/Chicago");
+    const ZONES = [["UTC", 0, 3, 11], ["America/Chicago", 300, 22, 6], ["America/New_York", 240, 23, 7], ["America/Los_Angeles", 420, 20, 4]]; // [TZ, CDT-season offset, what 03:00Z reads, what Tue 06:30 CDT reads]
+    const runs = ZONES.map(([tz]) => [tz, inZone(tz)]);
     const want = J(CASES.map((c) => c[3]));
-    check("AY3 the children really run in UTC (offset 0; 03:00Z reads 3) and America/Chicago (CDT offset 300; 03:00Z reads 22, the evening before)",
-      !!utc && utc.off === 0 && utc.utc3 === 3 && !!chi && chi.off === 300 && chi.utc3 === 22, J({ utc: utc && { off: utc.off, utc3: utc.utc3, err: utc.err }, chi: chi && { off: chi.off, utc3: chi.utc3, err: chi.err } }));
-    check("AY3 under TZ=UTC and TZ=America/Chicago every AY1 case gives the same answer, and every evening / pre-7a answer is overnightHolderOn's",
-      !!utc && !!utc.out && J(utc.out) === want && J(utc.over) === "[]" && !!chi && !!chi.out && J(chi.out) === want && J(chi.over) === "[]",
-      J({ utc: utc && (utc.err || (utc.out ? utc.out.filter((s, i) => s !== CASES[i][3]) : NONE)), chi: chi && (chi.err || (chi.out ? chi.out.filter((s, i) => s !== CASES[i][3]) : NONE)), over: [utc && utc.over, chi && chi.over] }).slice(0, 300));
+    check("AY3 the children really run in UTC (offset 0), America/Chicago (300), America/New_York (240) and America/Los_Angeles (420): 03:00Z reads 3 / 22 / 23 / 20, and Tue 06:30 CDT reads 11 / 6 / 7 / 4 on the device's own clock",
+      runs.every(([tz, r], i) => !!r && !r.err && r.off === ZONES[i][1] && r.utc3 === ZONES[i][2] && r.local0630 === ZONES[i][3]),
+      J(runs.map(([tz, r]) => [tz, r && (r.err || [r.off, r.utc3, r.local0630])])).slice(0, 400));
+    check("AY3 in every one of the four zones each AY1 case gives AY1's answer, and every evening / pre-7a answer is overnightHolderOn's — the handovers are Central hours on any device",
+      runs.every(([, r]) => !!r && !!r.out && J(r.out) === want && J(r.over) === "[]"),
+      J(runs.map(([tz, r]) => [tz, r && (r.err || (r.out ? r.out.map((s, i) => (s === CASES[i][3] ? null : CASES[i][1] + ": " + s)).filter(Boolean).slice(0, 2) : NONE)), r && r.over && r.over.slice(0, 3)])).slice(0, 400));
+    check("AY3 the reviewer's probes (a device in New York or Los Angeles named the wrong holder): Tue 06:30 CDT → Monday night's MCC (s2), 16:30 CDT → the service week's DJA (s1), 17:30 CDT → Tuesday night's RPC (s3) — in all four zones; and the banner's window key there is Central's (a / b / c)",
+      runs.every(([, r]) => !!r && J(r.probes) === J(PROBES.map((p) => [p[2], p[3]]))), J(runs.map(([tz, r]) => [tz, r && (r.err || r.probes)])).slice(0, 400));
   }
 
   // AY4 — the component's real lines, run with a pinned clock (a Date whose no-argument form reads clock.ms)
@@ -6537,12 +6813,12 @@ console.log("\nAY. On Call Today: an \"On call now\" line");
   const HCT = "  const hasCallToday = todayCall.dayCall || todayCall.night || todayCall.weekend || todayCall.holiday;";
   const w0 = src.indexOf(DECL), w1 = w0 < 0 ? -1 : src.indexOf(EFF, w0), hc = src.indexOf(HCT);
   const wiredOk = w0 > 0 && w1 > w0 && w1 - w0 < 2000 && count(DECL) === 1 && count(EFF) === 1;
-  check("AY4 the wiring (callNow, callNowName, the window key, its state, its tick) is one block, each line once, right after hasCallToday (only comments between)",
+  check("AY4 the wiring (callNow, callNowName, callNowLine, the window key, its state, its tick) is one block, each line once, right after hasCallToday (only comments between)",
     wiredOk && count(HCT) === 1 && hc > 0 && /^  const hasCallToday = [^\n]*\n(?:[ \t]*\/\/[^\n]*\n)*$/.test(src.slice(hc, w0)), `${hc} < ${w0} < ${w1}`);
   let wire = null;
   try {
     wire = wiredOk ? vm.runInContext("(function (env) {\n  const { schedule, sMap, useState, useEffect, setInterval, clearInterval } = env;\n  const Date = env.Date;\n"
-      + src.slice(w0, w1 + EFF.length) + "\n  return { callNow, callNowName, key: nowWindowKey() };\n})", sandbox, { filename: "on-call-now-wiring.js" }) : null;
+      + src.slice(w0, w1 + EFF.length) + "\n  return { callNow, callNowName, callNowLine, key: nowWindowKey() };\n})", sandbox, { filename: "on-call-now-wiring.js" }) : null;
   } catch (ex) { check("AY4 …and it compiles standalone", false, String(ex)); }
   const clock = { ms: 0 };
   const PinnedDate = vm.runInContext("(function (clock) { return class extends Date { constructor(...a) { if (a.length) super(...a); else super(clock.ms); } }; })", sandbox)(clock);
@@ -6559,23 +6835,30 @@ console.log("\nAY. On Call Today: an \"On call now\" line");
     } catch (ex) { return { err: String(ex).slice(0, 200), st }; }
   };
   const SM = { s1: { name: "DJA" }, s2: { name: "MCC" }, s3: { name: "RPC" }, s4: { name: "KJH" }, s5: { name: "REH" }, s6: { name: "FAK" }, s7: { name: "ARW" } };
-  const m1 = wire ? mount(SM, new Date(2026, 9, 20, 3, 0)) : null;
-  check("AY4 at a pinned Tue 10/20 03:00 the real lines give callNow = Monday night (\"Mon Night\", until 7a) and callNowName \"MCC\", the name the line shows",
-    !!m1 && !!m1.r && sig(m1.r.callNow) === "s2|Mon Night|7a" && m1.r.callNowName === "MCC", J(m1 && (m1.r || m1.err)));
-  const m2 = wire ? mount({}, new Date(2026, 9, 20, 3, 0)) : null, m3 = wire ? mount(SM, new Date(2026, 10, 10, 3, 0)) : null;
-  check("AY4 the gate: a holder missing from the roster, or no holder at all (an unpublished week), leaves callNowName null, so no line",
-    !!m2 && !!m2.r && !!m2.r.callNow && m2.r.callNowName === null && !!m3 && !!m3.r && m3.r.callNow === null && m3.r.callNowName === null, J([m2 && (m2.r || m2.err), m3 && (m3.r || m3.err)]));
+  const m1 = wire ? mount(SM, ct([2026, 9, 20, 3, 0])) : null;
+  check("AY4 at a pinned Tue 10/20 03:00 CT the real lines give callNow = Monday night (\"Mon Night\", until 7a), callNowName \"MCC\", and the line \"🟢 On call now: MCC — Mon Night, until 7a\"",
+    !!m1 && !!m1.r && sig(m1.r.callNow) === "s2|Mon Night|7a" && m1.r.callNowName === "MCC" && J(m1.r.callNowLine) === J({ backup: false, text: "🟢 On call now: MCC — Mon Night, until 7a" }), J(m1 && (m1.r || m1.err)));
+  const m2 = wire ? mount({}, ct([2026, 9, 20, 3, 0])) : null, m3 = wire ? mount(SM, ct([2026, 10, 10, 3, 0])) : null;
+  check("AY4 the gate: a holder missing from the roster, or no holder at all (an unpublished week), leaves callNowName and callNowLine null, so no line",
+    !!m2 && !!m2.r && !!m2.r.callNow && m2.r.callNowName === null && m2.r.callNowLine === null && !!m3 && !!m3.r && m3.r.callNow === null && m3.r.callNowName === null && m3.r.callNowLine === null,
+    J([m2 && (m2.r || m2.err), m3 && (m3.r || m3.err)]));
+  const mSat = wire ? mount(SM, ct([2026, 9, 24, 3, 0])) : null, mBk = wire ? mount(SM, ct([2026, 10, 3, 10, 0])) : null, mBkN = wire ? mount(SM, ct([2026, 10, 3, 3, 0])) : null;
+  check("AY4 review fixes, the real lines: Sat 03:00 reads \"🟢 On call now: ARW — Weekend (Fri night), until 7a\" (not a bare \"Weekend\" above the service Saturday's WEEKEND chip); in a Fierce Primary week, \"🟡 DSG backup now: REH — Service Week (Fierce is primary), until 5p\" and \"🟡 DSG backup now: DJA — Mon Night (Fierce is primary), until 7a\" — backup, never the green \"On call now\"",
+    !!mSat && !!mSat.r && J(mSat.r.callNowLine) === J({ backup: false, text: "🟢 On call now: ARW — Weekend (Fri night), until 7a" })
+      && !!mBk && !!mBk.r && J(mBk.r.callNowLine) === J({ backup: true, text: "🟡 DSG backup now: REH — Service Week (Fierce is primary), until 5p" })
+      && !!mBkN && !!mBkN.r && J(mBkN.r.callNowLine) === J({ backup: true, text: "🟡 DSG backup now: DJA — Mon Night (Fierce is primary), until 7a" }),
+    J([mSat && (mSat.r || mSat.err), mBk && (mBk.r || mBk.err), mBkN && (mBkN.r || mBkN.err)]).slice(0, 400));
   let tick = null;
   if (m1 && m1.r) {
     const st = m1.st;
     const armed = st.init.length === 1 && st.init[0] === "2026-10-20a" && st.effects.length === 1 && Array.isArray(st.effects[0].deps) && st.effects[0].deps.length === 0;
     const cleanup = armed ? st.effects[0].fn() : null;
-    const keyAt = (y, m, d, h, mi) => { clock.ms = new Date(y, m, d, h, mi).getTime(); st.intervals[0].fn(); return st.sets[st.sets.length - 1]; };
+    const keyAt = (y, m, d, h, mi) => { clock.ms = ct([y, m, d, h, mi]).getTime(); st.intervals[0].fn(); return st.sets[st.sets.length - 1]; };
     const seq = st.intervals.length === 1 ? [keyAt(2026, 9, 20, 6, 59), keyAt(2026, 9, 20, 7, 0), keyAt(2026, 9, 20, 16, 59), keyAt(2026, 9, 20, 17, 0), keyAt(2026, 9, 20, 23, 59), keyAt(2026, 9, 21, 0, 0)] : [];
     if (typeof cleanup === "function") cleanup();
     tick = { armed, ms: st.intervals.map((i) => i.ms), seq, cleared: st.cleared };
   }
-  check("AY4 the tick: its state starts at this window's key; ONE effect with [] deps arms a 60-s interval whose tick hands React the current window's key (06:59 a, 07:00 b, 16:59 b, 17:00 c, 23:59 c, next 00:00 a); the cleanup clears it",
+  check("AY4 the tick: its state starts at this window's key; ONE effect with [] deps arms a 60-s interval whose tick hands React the current window's key — Central's (06:59 a, 07:00 b, 16:59 b, 17:00 c, 23:59 c, next 00:00 a); the cleanup clears it",
     !!tick && tick.armed && J(tick.ms) === "[60000]" && J(tick.seq) === J(["2026-10-20a", "2026-10-20b", "2026-10-20b", "2026-10-20c", "2026-10-20c", "2026-10-21a"]) && J(tick.cleared) === "[4242]", J(tick));
   // Minute by minute: a new on-call answer must always come with a new key (React re-renders only on a new value)
   const sweep = (from, to) => {
@@ -6585,40 +6868,61 @@ console.log("\nAY. On Call Today: an \"On call now\" line");
       clock.ms = t;
       let r;
       try { r = wire({ schedule: SCHED, sMap: SM, Date: PinnedDate, useState: (i) => [typeof i === "function" ? i() : i, () => {}], useEffect: () => {}, setInterval: () => 0, clearInterval: () => {} }); } catch (ex) { out.missed.push(String(ex).slice(0, 80)); break; }
-      const cur = { a: sig(r.callNow), k: r.key };
+      const cur = { a: sig(r.callNow) + "|" + (r.callNowLine ? r.callNowLine.text : ""), k: r.key };
       if (prev) {
         if (cur.a !== prev.a) out.answerChanges++;
         if (cur.k !== prev.k) out.keyChanges++;
-        if (cur.a !== prev.a && cur.k === prev.k) out.missed.push(new Date(t).toString().slice(0, 21));
+        if (cur.a !== prev.a && cur.k === prev.k) out.missed.push(new Date(t).toISOString().slice(0, 16));
       }
       prev = cur; out.minutes++;
     }
     return out;
   };
-  const sw1 = wire ? sweep(new Date(2026, 9, 19), new Date(2026, 10, 9)) : null, sw2 = wire ? sweep(new Date(2026, 10, 23), new Date(2026, 11, 7)) : null;
-  check("AY4 minute by minute over five weeks (the fall-back night included): every change of the on-call answer comes with a new window key, so the banner re-renders within a minute; the key changes only 3 times a day (midnight, 7a, 5p)",
+  // (Central midnights: the key is Central's, in any zone this runs in)
+  const sw1 = wire ? sweep(ct([2026, 9, 19, 0, 0]), ct([2026, 10, 9, 0, 0])) : null, sw2 = wire ? sweep(ct([2026, 10, 23, 0, 0]), ct([2026, 11, 7, 0, 0])) : null;
+  check("AY4 minute by minute over five weeks (the fall-back night included): every change of the on-call answer (and its line) comes with a new window key, so the banner re-renders within a minute; the key changes only 3 times a Central day (midnight, 7a, 5p)",
     !!sw1 && !!sw2 && sw1.missed.length === 0 && sw2.missed.length === 0 && sw1.answerChanges >= 30 && sw2.answerChanges >= 15
-      && sw1.keyChanges === 21 * 3 - 1 && sw2.keyChanges === 14 * 3 - 1 && sw1.minutes >= 21 * 1440 && sw2.minutes === 14 * 1440,
+      && sw1.keyChanges === 21 * 3 - 1 && sw2.keyChanges === 14 * 3 - 1 && sw1.minutes === 21 * 1440 + 60 && sw2.minutes === 14 * 1440,
     J({ sw1, sw2 }).slice(0, 300));
 
   // AY5 — placement and gate (source), and what stays as it was
-  const B0 = src.indexOf("{/* ─── On Call Today Banner ─── */}"), BH = B0 < 0 ? -1 : src.indexOf("📋 On Call Today — ", B0);
-  const head = B0 > 0 && BH > B0 ? src.slice(B0, BH) : "";
-  const LINE = "🟢 On call now: {callNowName} — {callNow.slot}, until {callNow.until}";
-  check("AY5 the line is the banner's FIRST child, above the \"On Call Today\" heading, gated on callNowName, reading \"🟢 On call now: {name} — {slot}, until {7a|5p}\" (once in the app)",
-    /^\{\/\* ─── On Call Today Banner ─── \*\/\}\s*\{hasCallToday && \(\s*<div style=\{\{background:"linear-gradient\(135deg,#ffffff,#f0f8ff\)"[^\n]*>\s*\{callNowName && \(\s*<div style=\{\{fontSize:13,fontWeight:700,color:"#1a6e3c",marginBottom:8\}\}>\s*🟢 On call now: \{callNowName\} — \{callNow\.slot\}, until \{callNow\.until\}\s*<\/div>\s*\)\}\s*<div style=\{\{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10,flexWrap:"wrap",gap:8\}\}>\s*<div style=\{\{fontSize:15,fontWeight:700,color:"#1a2a3a"\}\}>\s*$/.test(head)
-      && count(LINE) === 1 && count("On call now") === 1,
-    head.slice(0, 400));
-  check("AY5 callNow is read only there: onCallNow is called once in the app, callNowName three times (declared, gate, text), callNow's fields only for the name, the slot and the hours",
-    count("onCallNow(") === 1 && count("callNowName") === 3 && count("callNow.") === 3 && count("callNow.sid") === 1 && count("callNow.slot") === 1 && count("callNow.until") === 1,
-    J({ call: count("onCallNow("), name: count("callNowName"), fields: count("callNow.") }));
+  const nsrcY = src.replace(/\r\n/g, "\n");
+  const B0 = nsrcY.indexOf("{/* ─── On Call Today Banner ─── */}"), BH = B0 < 0 ? -1 : nsrcY.indexOf("📋 On Call Today — ", B0);
+  const head = B0 > 0 && BH > B0 ? nsrcY.slice(B0, BH) : "";
+  check("AY5 the line is the banner's FIRST child, above the \"On Call Today\" heading: gated on callNowLine, its text onCallNowText's, green for DSG and amber (#8a6a10, the Fierce line's) for a backup week; the heading follows inside {hasCallToday && <>",
+    /^\{\/\* ─── On Call Today Banner ─── \*\/\}\s*\{\/\*[^]*?\*\/\}\s*\{\(hasCallToday \|\| callNowLine\) && \(\s*<div style=\{\{background:"linear-gradient\(135deg,#ffffff,#f0f8ff\)"[^\n]*>\s*\{callNowLine && \(\s*<div style=\{\{fontSize:13,fontWeight:700,color:callNowLine\.backup\?"#8a6a10":"#1a6e3c",marginBottom:hasCallToday\?8:0\}\}>\s*\{callNowLine\.text\}\s*<\/div>\s*\)\}\s*\{hasCallToday && <>\s*<div style=\{\{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10,flexWrap:"wrap",gap:8\}\}>\s*<div style=\{\{fontSize:15,fontWeight:700,color:"#1a2a3a"\}\}>\s*$/.test(head)
+      && count("{callNowLine.text}") === 1 && count("On call now") === 0,
+    head.slice(0, 500));
+  check("AY5 callNow is read only there: onCallNow is called once in the app, callNowName three times (declared, and twice in callNowLine), callNowLine five times (declared, the banner's gate, the line's gate, its colour, its text), callNow's fields only for the name",
+    count("onCallNow(") === 1 && count("onCallNowText(") === 1 && count("callNowName") === 3 && count("callNowLine") === 5 && count("callNow.") === 1 && count("callNow.sid") === 1,
+    J({ call: count("onCallNow("), text: count("onCallNowText("), name: count("callNowName"), line: count("callNowLine"), fields: count("callNow.") }));
   const BM = "  const buildTonightMsg = () => {", b0 = src.indexOf(BM), b1 = b0 < 0 ? -1 : src.indexOf("\n  };", b0);
-  check("AY5 the rest stays as it was: the banner is still gated on hasCallToday alone, todayCall / hasCallToday unchanged, and the share message (buildTonightMsg) does not read callNow",
-    count("{hasCallToday && (") === 1 && count(HCT) === 1 && b0 > 0 && b1 > b0 && !src.slice(b0, b1).includes("callNow"), `${count("{hasCallToday && (")} ${count(HCT)} ${b0}..${b1}`);
-  const iKey = src.indexOf("  const nowWindowKey = () => {"), iState = src.indexOf("  const [, setNowWindow] = useState(nowWindowKey);");
-  check("AY5 the tick's key and state are declared before the effect that uses them, all at the component's top level (2-space indent, never inside a condition)",
-    count("const nowWindowKey = () => {") === 1 && count("const [, setNowWindow] = useState(nowWindowKey);") === 1 && iKey > 0 && iKey < iState && iState < w1
-      && src.slice(iKey - 1, iKey) === "\n" && src.slice(iState - 1, iState) === "\n" && src.slice(w1 - 1, w1) === "\n", `${iKey} < ${iState} < ${w1}`);
+  check("AY5 the rest stays as it was: the banner's own content is gated on hasCallToday (AO3), todayCall / hasCallToday unchanged, and the share message (buildTonightMsg) does not read callNow",
+    count("{hasCallToday && (") === 0 && count("{hasCallToday && <>") === 1 && count(HCT) === 1 && b0 > 0 && b1 > b0 && !src.slice(b0, b1).includes("callNow"), `${count("{hasCallToday && <>")} ${count(HCT)} ${b0}..${b1}`);
+  const iKey = src.indexOf("  const nowWindowKey = () => "), iState = src.indexOf("  const [, setNowWindow] = useState(nowWindowKey);");
+  check("AY5 the tick's key (Central: onCallWindowKey) and state are declared before the effect that uses them, all at the component's top level (2-space indent, never inside a condition)",
+    count("const nowWindowKey = () => (typeof onCallWindowKey === \"function\" ? onCallWindowKey(new Date()) : \"\");") === 1 && count("const [, setNowWindow] = useState(nowWindowKey);") === 1 && iKey > 0 && iKey < iState && iState < w1
+      && src.slice(iKey - 1, iKey) === "\n" && src.slice(iState - 1, iState) === "\n" && src.slice(w1 - 1, w1) === "\n" && !/getHours\(\)/.test(src.slice(w0, w1)), `${iKey} < ${iState} < ${w1}`);
+
+  // AY6 — review fix: the first morning past the published schedule. Last night's holder is on call until 7a, but today
+  // holds no call (hasCallToday false: calData has no row for a date with no week), so the banner — and the line in it —
+  // was hidden. The banner's own gate, executed (AO3 slices it), with the real wiring's answer at that minute.
+  {
+    const PAST = { "2026-12-21": { dayCall: "s1", nights: { mon: "s3", wknd: "s4" } }, "2026-12-28": { dayCall: "s5", nights: { mon: "s1", wknd: "s2" } } }; // published through Sun 1/3/2027
+    const mountP = (when) => { clock.ms = when.getTime(); try { return wire({ schedule: PAST, sMap: SM, Date: PinnedDate, useState: (i) => [typeof i === "function" ? i() : i, () => {}], useEffect: () => {}, setInterval: () => 0, clearInterval: () => {} }); } catch (ex) { return { err: String(ex).slice(0, 160) }; } };
+    const nsrcG = nsrcY.slice(B0, BH);
+    const gm = nsrcG.match(/\{\(([^\n]*?)\) && \(\n/);
+    let gate = null;
+    try { gate = gm ? vm.runInContext(`(function (hasCallToday, callNowLine) { return !!(${gm[1]}); })`, sandbox) : null; } catch (ex) { gate = null; }
+    let calP = null;
+    try { calP = c0 > 0 && c1 > c0 ? vm.runInContext("(function (schedule, appShifts) {" + src.slice(c0 + CD.length, c1) + "\n})", sandbox, { filename: "ay6-caldata.js" })(PAST, {}) : null; } catch (ex) { calP = null; }
+    const at3 = wire ? mountP(ct([2027, 0, 4, 3, 0])) : null, at8 = wire ? mountP(ct([2027, 0, 4, 8, 0])) : null;
+    const today = calP ? (calP["2027-01-04"] || []).length : -1;
+    check("AY6 Mon 1/4/2027 03:00, the first morning past the published schedule (it ends Sun 1/3): today holds no call (no calData row), the real wiring names MCC — the weekend's Sunday leg, until 7a — and the banner's gate SHOWS it (it was gated on hasCallToday alone: hidden); at 08:00 nobody is on and the banner is hidden",
+      today === 0 && !!at3 && !at3.err && J(at3.callNowLine) === J({ backup: false, text: "🟢 On call now: MCC — Weekend (Sun), until 7a" }) && !!gate && gate(false, at3.callNowLine) === true
+        && !!at8 && at8.callNowLine === null && gate(false, at8.callNowLine) === false,
+      J({ today, at3: at3 && (at3.err || at3.callNowLine), at8: at8 && (at8.err || at8.callNowLine), gate: gm && gm[1] }));
+  }
 }
 
 // ─── AH. The search, strain and the floor in the app (owner brief 2026-10-12, PR 2) ───
@@ -7125,6 +7429,8 @@ await (async () => {
 //       like a surgeon's), "DSG APP Call — <code>" with the hours, plus their
 //       vacation; a surgeon's file is exactly main's (UIDs aside); an unknown
 //       id still downloads nothing
+//   AZ6 review fix, executed: an APP's vacation adjust / remove notices from
+//       Mine name the APP (myName read surgeons only: "? removed their vacation")
 console.log("\nAZ. Mine works for an APP");
 {
   const nsrcZ = src.replace(/\r\n/g, "\n");
@@ -7263,6 +7569,32 @@ console.log("\nAZ. Mine works for an APP");
   const none = ["zz", "admin", ""].map((id) => { const r = dl(id); return r.threw || r.files.length; });
   check("AZ5 executed — an id that is neither a surgeon nor an APP (\"zz\", \"admin\", \"\") still downloads nothing and throws nothing",
     !!dlMk && J(none) === J([0, 0, 0]), J(none));
+
+  // AZ6 — review fix: Mine's notices to the schedulers name an APP. myName read sMap (surgeons only), so an APP who adjusted
+  // or removed a vacation from Mine told them "? removed their vacation …". The real lines (myName, saveMyVacEdit,
+  // removeMyVac), sliced from the Mine block and run.
+  const NMZ = mineZ.match(/\n(            const myName = [^\n]*;)\n/), ENDZ = "\n            };";
+  const svA = mineZ.indexOf("            const saveMyVacEdit = () => {"), svB = svA < 0 ? -1 : mineZ.indexOf(ENDZ, svA);
+  const rmA = mineZ.indexOf("            const removeMyVac = (idx) => {"), rmB = rmA < 0 ? -1 : mineZ.indexOf(ENDZ, rmA);
+  let mkMineZ = null;
+  try {
+    mkMineZ = NMZ && svB > svA && rmB > rmA ? vm.runInContext("(function (env) { const { sMap, aMap, myId, myVacs, myVacEdit, isScheduler, showToast, confirm, alert, toRemove, toEdit, setMyVacEdit, addNotification, schedulerAdminIds, console } = env;\n"
+      + NMZ[1] + "\n" + mineZ.slice(svA, svB + ENDZ.length) + "\n" + mineZ.slice(rmA, rmB + ENDZ.length) + "\n return { myName, saveMyVacEdit, removeMyVac }; })", sandbox, { filename: "az6-mine.js" }) : null;
+  } catch (ex) { mkMineZ = null; }
+  const SMAPZ = Object.fromEntries(ROSTERZ.map((s, idx) => [s.id, Object.assign({ idx }, s)]));
+  const mineNotes = (myId) => (mkMineZ ? tryZ(() => {
+    const notes = [], removed = [];
+    const m = mkMineZ({ sMap: SMAPZ, aMap: AMAPZ, myId, myVacs: [["2099-11-02", "2099-11-06"]], myVacEdit: { idx: 0, start: "2099-11-02", end: "2099-11-04" }, isScheduler: false,
+      showToast: () => {}, confirm: () => true, alert: () => {}, toRemove: (...a) => removed.push(a[0]), toEdit: () => {}, setMyVacEdit: () => {},
+      addNotification: (type, title, msg, data, targets) => { notes.push(`${type}: ${msg} → ${J(targets)}`); }, schedulerAdminIds: ["s6"], console: { error() {} } });
+    m.saveMyVacEdit(); m.removeMyVac(0);
+    return { name: m.myName, notes, removed };
+  }) : null);
+  const mzA = mineNotes("a1"), mzS = mineNotes("s3"), mzX = mineNotes("zz");
+  check("AZ6 executed — an APP (MA, a1) adjusting then removing a vacation from Mine: the schedulers are told \"MA adjusted a vacation to 2099-11-02 → 2099-11-04.\" and \"MA removed their vacation 2099-11-02 → 2099-11-06 (gave days back).\" (it was \"? …\"); a surgeon (RPC) as before; an id off both rosters still \"?\"",
+    !!mzA && J(mzA) === J({ name: "MA", notes: ["vacation_revoked: MA adjusted a vacation to 2099-11-02 → 2099-11-04. → [\"s6\"]", "vacation_revoked: MA removed their vacation 2099-11-02 → 2099-11-06 (gave days back). → [\"s6\"]"], removed: ["a1"] })
+      && !!mzS && mzS.name === "RPC" && /^vacation_revoked: RPC removed their vacation/.test(mzS.notes[1] || "") && !!mzX && mzX.name === "?",
+    (mkMineZ ? "" : "myName / saveMyVacEdit / removeMyVac not found in the Mine block — ") + J({ mzA, mzS: mzS && mzS.name, mzX: mzX && mzX.name }));
 
   // AZ2 — AZ1 and the card's day counts again under TZ=America/Chicago
   {
@@ -7455,6 +7787,10 @@ console.log("\nAZ. Mine works for an APP");
 //   BA4 dark mode: Accept / Decline / Withdraw — their browser-serialized styles against the app's real dark sheet:
 //       the colour the sheet forces on a button's text, and the inline colour, each ≥ 4.5:1 on its dark
 //       background; light mode unchanged
+// Review fixes (2026-10-19), each with a check that fails without it:
+//   BA5 who declined: a scheduler declining for the recipient — the audit line's summary, the notice and the
+//       e-mail say "FAK declined the trade for RPC", not that RPC declined; the session fence kept (executed)
+//   BA6 the vacation request's ✓ Approve / ✕ Deny get the trade buttons' dark fills (they read ~1.5:1)
 console.log("\nBA. Requests: who declined, failed deletes, the trade buttons in dark mode");
 await (async () => {
   const nsrcBA = src.replace(/\r\n/g, "\n");   // a Windows checkout is CRLF, CI's is LF
@@ -7484,26 +7820,28 @@ await (async () => {
   // addNotification / sendEmailNotif are the same functions every render (memoized in the app). The token is the
   // signed-in account's; db.insert (logAudit's in-session path) writes with the token of NOW.
   const rigBA = (o) => {
-    const S = { token: RPC.token, ep: { current: 0 }, slot: null, audits: [], reqs: [], toasts: [], lists: 0, listAfter: null, notes: [], emails: [] };
+    const req0 = o.req || REQ;
+    // (texts, BA5: what each channel says — the audit line's summary, the notice's message, the e-mail's detail)
+    const S = { token: (o.who || RPC).token, ep: { current: 0 }, slot: null, audits: [], reqs: [], toasts: [], lists: 0, listAfter: null, notes: [], emails: [], texts: [] };
     S.useCallback = (fn, deps) => { if (S.slot && S.slot.deps.length === deps.length && S.slot.deps.every((d, i) => Object.is(d, deps[i]))) return S.slot.fn; S.slot = { fn, deps }; return fn; };
-    const addNotification = async (type) => { S.notes.push(type + "@" + (S.token || "ANON")); };
-    const sendEmailNotif = (type) => { S.emails.push(type + "@" + (S.token || "ANON")); };
-    const db = { insert: async (tb, row) => { S.audits.push({ via: "now:" + (S.token || "ANON"), tb, actor_id: row.actor_id, actor_name: row.actor_name, action: row.action }); return { data: null, error: null }; } };
+    const addNotification = async (type, title, msg) => { S.notes.push(type + "@" + (S.token || "ANON")); S.texts.push("notice: " + msg); };
+    const sendEmailNotif = (type, data) => { S.emails.push(type + "@" + (S.token || "ANON")); S.texts.push("e-mail: " + (data && data.detail)); };
+    const db = { insert: async (tb, row) => { S.audits.push({ via: "now:" + (S.token || "ANON"), tb, actor_id: row.actor_id, actor_name: row.actor_name, action: row.action }); S.texts.push("audit: " + row.summary); return { data: null, error: null }; } };
     const fetch = async (url, init) => {
       const u = String(url).replace(/^.*\/rest\/v1\//, ""), auth = init.headers.Authorization;
-      if (/^audit_log/.test(u)) { const row = JSON.parse(init.body); S.audits.push({ via: auth, tb: "audit_log", actor_id: row.actor_id, actor_name: row.actor_name, action: row.action }); return respBA(201, null); }
+      if (/^audit_log/.test(u)) { const row = JSON.parse(init.body); S.audits.push({ via: auth, tb: "audit_log", actor_id: row.actor_id, actor_name: row.actor_name, action: row.action }); S.texts.push("audit: " + row.summary); return respBA(201, null); }
       S.reqs.push(init.method + " " + u.replace(/\?.*$/, "") + " " + auth);
       if (o.cross) { await o.cross(S); await spinBA(4); }
-      return o.status ? respBA(o.status, { message: "upstream" }) : respBA(200, o.zero ? [] : [Object.assign({}, REQ, { status: "declined" })]);
+      return o.status ? respBA(o.status, { message: "upstream" }) : respBA(200, o.zero ? [] : [Object.assign({}, req0, { status: "declined" })]);
     };
     S.render = (who) => mkDecline({ useCallback: S.useCallback, db, fetch, SUPABASE_URL: "https://x.supabase.co", dbAuthHeaders: () => ({ apikey: "ANON", Authorization: "Bearer " + (S.token || "ANON") }),
-      console: quietBA, showToast: (m) => S.toasts.push(String(m)), setTradeRequests: (f) => { S.lists++; S.listAfter = f([Object.assign({}, REQ)]).map(r => r.status).join(); }, tradeDeclineMsg: TDM,
+      console: quietBA, showToast: (m) => S.toasts.push(String(m)), setTradeRequests: (f) => { S.lists++; S.listAfter = f([Object.assign({}, req0)]).map(r => r.status).join(); }, tradeDeclineMsg: TDM,
       addNotification, sendEmailNotif, sessionEpochRef: S.ep, userProfile: who ? who.profile : null, surgeons: SURG_BA, mySurgeon: who ? who.id : "" });
     return S;
   };
   // the session boundary while the status PATCH is out: "Sign in again" landing on FAK (FAK's render), or a sign-out
   const crossTo = (how) => async (S) => { S.ep.current++; if (how === "other") { S.token = FAK.token; S.render(FAK); } else { S.token = null; S.render(null); } };
-  const declineBA = async (o) => { const S = rigBA(o); S.render(null); const tap = S.render(RPC); await tap(Object.assign({}, REQ)); await spinBA(10); return S; };
+  const declineBA = async (o) => { const S = rigBA(o); S.render(null); const tap = S.render(o.who || RPC); await tap(Object.assign({}, o.req || REQ)); await spinBA(10); return S; };
   const outBA = (S) => ({ audits: S.audits, reqs: S.reqs, toasts: S.toasts, lists: S.lists, listAfter: S.listAfter, notes: S.notes, emails: S.emails });
   const AS_RPC = (via) => JSON.stringify([{ via, tb: "audit_log", actor_id: "s3", actor_name: "RPC", action: "trade.decline" }]);
   const NONE_BA = "declineTradeRequest / logAudit / tradeDeclineMsg not extractable";
@@ -7601,6 +7939,45 @@ await (async () => {
   check("BA4 …light mode unchanged (the same styles as before, value for value); and the check bites: those light styles in dark mode (as shipped before) read below 4.5:1 with the forced text",
     Object.keys(LIGHT_BA).every(k => BTN_BA[k] && JSON.stringify(BTN_BA[k].light) === JSON.stringify(LIGHT_BA[k])) && Object.keys(LIGHT_BA).every(k => readBA(LIGHT_BA[k]).cr < 4.5),
     JSON.stringify(Object.fromEntries(Object.keys(BTN_BA).map(k => [k, BTN_BA[k] && BTN_BA[k].light]))));
+
+  // BA5 — review fix: who declined. A scheduler may decline for the recipient (canAnswer); the audit line was the scheduler's
+  // (BA1) but its summary — and the notice and the e-mail, which carry the same text — said the recipient declined.
+  const REQ_D_BA = () => Object.assign({}, REQ, { id: 43, from_surgeon_id: "s1", from_surgeon_name: "DJA" }); // DJA → RPC: FAK is neither side
+  const LEGS_BA = "RPC would have taken Mon Mar 2 — Night; DJA would have taken Tue Mar 10 — Night";
+  check("BA5 the real tradeDeclineMsg: with who declined, when it is not the recipient, \"FAK declined the trade for RPC: …\"; naming the recipient, or no one, \"RPC declined the trade: …\" (the M composers' wording)",
+    !!TDM && TDM(REQ_D_BA(), "FAK") === "FAK declined the trade for RPC: " + LEGS_BA && TDM(REQ_D_BA(), "RPC") === "RPC declined the trade: " + LEGS_BA && TDM(REQ_D_BA()) === "RPC declined the trade: " + LEGS_BA && TDM(REQ_D_BA(), null) === TDM(REQ_D_BA()),
+    TDM ? JSON.stringify([TDM(REQ_D_BA(), "FAK"), TDM(REQ_D_BA())]) : NONE_BA);
+  const b5f = mkDecline && TDM ? await declineBA({ who: FAK, req: REQ_D_BA() }) : null, b5r = mkDecline && TDM ? await declineBA({ req: REQ_D_BA() }) : null;
+  const b5x = mkDecline && TDM ? await declineBA({ who: FAK, req: REQ_D_BA(), cross: crossTo("signout") }) : null;
+  const SAY = (who) => ["audit", "notice", "e-mail"].map((ch) => `${ch}: ${who}: ${LEGS_BA}`);
+  check("BA5 the real declineTradeRequest, executed: FAK (the scheduler) declining DJA → RPC's trade — the audit line (FAK's, BA1's rule), the notice and the e-mail all say \"FAK declined the trade for RPC: …\" (they said RPC declined); RPC declining it — all three \"RPC declined the trade: …\" as before",
+    !!b5f && JSON.stringify(b5f.texts) === JSON.stringify(SAY("FAK declined the trade for RPC")) && b5f.audits.length === 1 && b5f.audits[0].actor_id === "s6" && b5f.audits[0].actor_name === "FAK"
+      && !!b5r && JSON.stringify(b5r.texts) === JSON.stringify(SAY("RPC declined the trade")) && b5r.audits.length === 1 && b5r.audits[0].actor_name === "RPC",
+    b5f ? JSON.stringify({ fak: b5f.texts, rpc: b5r.texts }) : NONE_BA);
+  check("BA5 …the v2 session fence kept: FAK's decline whose session ends while its status PATCH is out is audited once — FAK's line, with FAK's token, saying FAK declined for RPC — and nothing else of it is done or said",
+    !!b5x && JSON.stringify(b5x.texts) === JSON.stringify(["audit: FAK declined the trade for RPC: " + LEGS_BA]) && JSON.stringify(b5x.audits.map(a => [a.via, a.actor_name])) === '[["Bearer TOK_FAK","FAK"]]'
+      && b5x.lists === 0 && b5x.notes.length === 0 && b5x.emails.length === 0 && b5x.toasts.length === 0,
+    b5x ? JSON.stringify(outBA(b5x)) + JSON.stringify(b5x.texts) : NONE_BA);
+
+  // BA6 — review fix: the vacation request's ✓ Approve / ✕ Deny in dark mode — light fills under the forced light text (~1.5:1),
+  // as the trade buttons were. They get the trade buttons' dark fills; read as BA4 reads those, against the app's real dark sheet.
+  const vacStyleBA = (re) => { const m = nsrcBA.match(re); if (!m) return null; try { const f = vm.runInContext(`(function (dk, font) { return (${m[1]}); })`, sandbox); return { light: f(false, "F"), dark: f(true, "F") }; } catch (ex) { return null; } };
+  const VAC_BA = {
+    approve: vacStyleBA(/<button onClick=\{\(\)=>approveVacRequest\(r\)\} style=\{(\{[^\n]*?\})\}>✓ Approve<\/button>/),
+    deny: vacStyleBA(/<button onClick=\{\(\)=>\{const note=prompt\("Reason for denial \(optional\):"\); if\(note!==null\) denyVacRequest\(r,note\);\}\} style=\{(\{[^\n]*?\})\}>✕ Deny<\/button>/),
+  };
+  const VAC_LIGHT_BA = {
+    approve: { background: "#e8f8e8", border: "1px solid #a0d8a0", color: "#1a8040", borderRadius: 6, padding: "4px 12px", fontSize: 12, fontWeight: 600, cursor: "pointer", fontFamily: "F" },
+    deny: { background: "#fce8e8", border: "1px solid #e0b0b0", color: "#c04040", borderRadius: 6, padding: "4px 12px", fontSize: 12, fontWeight: 600, cursor: "pointer", fontFamily: "F" },
+  };
+  const ba6 = Object.fromEntries(Object.keys(VAC_BA).map(k => [k, VAC_BA[k] ? readBA(VAC_BA[k].dark) : null]));
+  check("BA6 dark mode: the vacation request's ✓ Approve and ✕ Deny read at ≥ 4.5:1 — the dark sheet's forced button text on each one's own dark fill (the trade's Accept / Decline fills), and the inline colour too (they read ~1.5:1)",
+    !!forcedBA && count("approveVacRequest(r)}") === 1 && Object.values(ba6).every(v => !!v && v.by === "button" && v.text === declOfBA(forcedBA.decl, "color") && lumBA(v.bg) < 0.1 && v.cr >= 4.5 && v.crInline >= 4.5)
+      && VAC_BA.approve.dark.background === BTN_BA.accept.dark.background && VAC_BA.deny.dark.background === BTN_BA.decline.dark.background,
+    JSON.stringify(ba6));
+  check("BA6 …light mode unchanged, value for value; and the check bites: those light styles in dark mode (as shipped) read below 4.5:1 with the forced text",
+    Object.keys(VAC_LIGHT_BA).every(k => VAC_BA[k] && JSON.stringify(VAC_BA[k].light) === JSON.stringify(VAC_LIGHT_BA[k])) && Object.keys(VAC_LIGHT_BA).every(k => readBA(VAC_LIGHT_BA[k]).cr < 4.5),
+    JSON.stringify(Object.fromEntries(Object.keys(VAC_BA).map(k => [k, VAC_BA[k] && VAC_BA[k].light]))));
 })().catch(ex => check("BA harness ran without crashing", false, String(ex && ex.stack || ex).split("\n").slice(0, 3).join(" | ")));
 
 // ─── AJ. Owner decisions 2026-10-13: Silvis next to a Davenport night, the spacing box, holiday pairs ───
@@ -7918,7 +8295,9 @@ console.log("\nAJ. owner decisions 2026-10-13");
 //   BB1 rmVac: Cancel → nothing removed; OK → toRemove once, (person, "vacation", start, end); the question
 //       names the person (the real nameOf) and readable dates, the year only when it isn't this year
 //   BB2 rmNoCall: the same, "no-call day" / "no-call days"
-//   BB3 clearAllVacations: Cancel, "", "delete", " DELETE", "DELETE " → no clear; "DELETE" → toClearAll("vacation") once
+//   BB3 clearAllVacations: "DELETE" → toClearAll("vacation") once; review fixes — read trimmed and in any case
+//       ("delete", an iPhone's "Delete", " DELETE" clear too), a wrong word clears nothing and says
+//       "Nothing deleted — type DELETE to confirm." (it was silent); Cancel clears nothing, silently
 //   BB4 snapBkMonday: a day → its week's Monday (Sunday → the Monday before, as mondayOfToday counts it), a Monday
 //       stays, "" stays, a part-typed year is kept as typed
 //   BB5 pins: both week pickers snap on blur (raw on change: a typed date arrives in pieces), no other bkMonday
@@ -7967,19 +8346,25 @@ console.log("\nBB. Setup time-off deletes ask first; backup pickers snap to Mond
   }
 
   const caB = cutB("  const clearAllVacations = () => {", "\n  };\n");
-  const caF = caB && compileB("prompt, confirm, toClearAll", caB + "\n  };", "clearAllVacations");
+  const caF = caB && compileB("prompt, confirm, toClearAll, showToast", caB + "\n  };", "clearAllVacations");
   if (!caF) check("BB clearAllVacations is extractable", false, "anchor / compile");
   else {
     const runCA = (typed) => {
-      const r = { prompts: [], confirms: 0, cleared: [] };
-      caF({ prompt: (m) => { r.prompts.push(String(m)); return typed; }, confirm: () => { r.confirms++; return true; }, toClearAll: (...a) => { r.cleared.push(a); } })();
+      const r = { prompts: [], confirms: 0, cleared: [], toasts: [] };
+      caF({ prompt: (m) => { r.prompts.push(String(m)); return typed; }, confirm: () => { r.confirms++; return true; }, toClearAll: (...a) => { r.cleared.push(a); }, showToast: (m, t) => { r.toasts.push([m, t]); } })();
       return r;
     };
-    const no = [null, "", "delete", " DELETE", "DELETE "].map(runCA), yes = runCA("DELETE");
-    check("BB3 Clear All vacations wants DELETE typed: Cancel, an empty answer, \"delete\" and DELETE with a space clear nothing; \"DELETE\" clears once (toClearAll(\"vacation\")); the question says so, and no plain OK can clear",
-      no.every(r => r.cleared.length === 0 && r.prompts.length === 1) && JSON.stringify(yes.cleared) === JSON.stringify([["vacation"]])
-        && yes.prompts[0] === "Delete ALL vacations for ALL surgeons and APPs? This cannot be undone. Type DELETE to confirm." && no.concat([yes]).every(r => r.confirms === 0),
-      JSON.stringify({ no: no.map(r => r.cleared.length), yes }));
+    // (review fixes: the word is read trimmed and in any case — an iPhone capitalises "Delete" by itself — and a wrong
+    // answer says nothing was deleted; it used to be ignored silently, like a dead button. Cancel stays silent.)
+    const cancel = runCA(null), wrong = ["", "delet", "DELETE IT", "D E L E T E", "yes"].map(runCA), yes = ["DELETE", "delete", "Delete", " DELETE", "DELETE ", " Delete\n"].map(runCA);
+    const NOTHING = JSON.stringify([["Nothing deleted — type DELETE to confirm.", "error"]]);
+    check("BB3 Clear All vacations wants DELETE typed (review fixes): trimmed and in any case — \"DELETE\", \"delete\", iPhone's auto-capitalised \"Delete\", a stray space — clears once (toClearAll(\"vacation\")) and says nothing more; the question says so, and no plain OK can clear",
+      yes.every(r => JSON.stringify(r.cleared) === JSON.stringify([["vacation"]]) && r.toasts.length === 0 && r.prompts.length === 1)
+        && yes[0].prompts[0] === "Delete ALL vacations for ALL surgeons and APPs? This cannot be undone. Type DELETE to confirm." && [cancel].concat(wrong, yes).every(r => r.confirms === 0),
+      JSON.stringify(yes.map(r => [r.cleared.length, r.toasts])));
+    check("BB3 …any other answer (empty, \"delet\", \"DELETE IT\", \"yes\") clears nothing and says so once — \"Nothing deleted — type DELETE to confirm.\" (it was silent); Cancel clears nothing and stays silent",
+      wrong.every(r => r.cleared.length === 0 && JSON.stringify(r.toasts) === NOTHING) && cancel.cleared.length === 0 && cancel.toasts.length === 0 && cancel.prompts.length === 1,
+      JSON.stringify({ wrong: wrong.map(r => [r.cleared.length, r.toasts]), cancel }));
   }
 
   const snB = cutB("  const snapBkMonday = ", "\n");

@@ -373,15 +373,22 @@ function dayDetailLines(schedule, ds, opts) {
 //                holder (the date's override, else the dayCall) until 5p;
 //                Sat the service Saturday 24h, Sun the weekend's Sunday 24h
 //   5p – 12a     today's overnight, overnightHolderOn's rule again
-// Every overnight and 24h slot runs to 7a. Returns { sid, slot, until } with
-// until "7a" or "5p", or null when nobody holds that window (no week entry, a
-// blank slot, an unassigned holiday). A backup (Fierce primary) week's slot
-// says "(backup)". now is read in local time like every date in the app;
-// it is passed in, so there is no clock here.
+// Every overnight and 24h slot runs to 7a. Returns { sid, slot, until, backup }
+// with until "7a" or "5p", or null when nobody holds that window (no week
+// entry, a blank slot, an unassigned holiday). The weekend's two legs say
+// which leg (review fix): "Weekend (Fri night)" (Fri 5p–Sat 7a) and "Weekend
+// (Sun)" (Sun 7a–Mon 7a) — before 7a on a Saturday the banner's own WEEKEND
+// chip names the service Saturday's holder, so a bare "Weekend" read as two
+// people holding one slot. backup is true in a Fierce Primary (isBackup) week:
+// Fierce holds first call and this holder is DSG's backup (onCallNowText says
+// so). The hours are CENTRAL hours (review fix): the date and the hour come
+// from centralClock, so a phone in another time zone names the same holder;
+// now is passed in, so there is no clock here.
 function onCallNow(schedule, now) {
-  if (!now || typeof now.getHours !== "function" || isNaN(now.getTime())) return null;
-  const h = now.getHours();
-  const x = parse(fmt(h < 7 ? addD(now, -1) : now)), dow = x.getDay(), mStr = fmt(addD(x, dow === 0 ? -6 : 1 - dow));
+  const c = centralClock(now);
+  if (!c) return null;
+  const h = c.h;
+  const x = parse(h < 7 ? fmt(addD(parse(c.ds), -1)) : c.ds), dow = x.getDay(), mStr = fmt(addD(x, dow === 0 ? -6 : 1 - dow));
   const wk = schedule && schedule[mStr];
   if (!wk) return null;
   const day = weekHolders(mStr, wk).days[(dow + 6) % 7];
@@ -390,9 +397,51 @@ function onCallNow(schedule, now) {
   if (day.cover) { sid = day.cover.sid; slot = day.cover.type === "swap" ? (day.cover.label || "Coverage") : `${holidayTitleName(day.cover)} 24h`; }
   else if (h >= 7 && h < 17 && day.i <= 4) { sid = day.svc; slot = svc(sid); until = "5p"; }
   else if (day.night) { sid = day.night; slot = SHIFT_LABELS[day.nightKey]; }
-  else if (day.wkndFri || day.wkndSun) { sid = day.wkndFri || day.wkndSun; slot = SHIFT_LABELS.wknd; }
+  else if (day.wkndFri) { sid = day.wkndFri; slot = `${SHIFT_LABELS.wknd} (Fri night)`; }
+  else if (day.wkndSun) { sid = day.wkndSun; slot = `${SHIFT_LABELS.wknd} (Sun)`; }
   else if (day.sat) { sid = day.sat; slot = `${svc(day.sat)} (Sat 24h)`; }
-  return sid ? { sid, slot: slot + (wk.isBackup ? " (backup)" : ""), until } : null;
+  return sid ? { sid, slot, until, backup: !!wk.isBackup } : null;
+}
+
+// The Central (America/Chicago) wall clock of an instant (review fix
+// 2026-10-19): the 7a / 5p handovers are Central hours — the schedule, the
+// .ics ("Times are Central") and the hospital run on them — so a phone in
+// another zone must not apply them at its own hours. formatToParts with a
+// timeZone, as silvis-feed.js's sfCentralDay; one formatter, made on first
+// use. Returns { ds: "YYYY-MM-DD", h: 0–23 }, or null for no instant or a bad
+// one. Where Intl can't name the zone (a very old browser) it falls back to
+// the device's own clock, as the app read it before. No clock is read here.
+let _centralClockFmt = null;
+function centralClock(now) {
+  if (!now || typeof now.getTime !== "function" || isNaN(now.getTime())) return null;
+  try {
+    if (!_centralClockFmt) _centralClockFmt = new Intl.DateTimeFormat("en-US", { timeZone: "America/Chicago", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", hourCycle: "h23" });
+    const parts = _centralClockFmt.formatToParts(now);
+    const get = (k) => (parts.find(p => p.type === k) || {}).value;
+    const ds = `${get("year")}-${get("month")}-${get("day")}`, h = Number(get("hour")) % 24; // (an engine that ignores hourCycle says "24" at midnight)
+    if (/^\d{4}-\d{2}-\d{2}$/.test(ds) && h >= 0 && h <= 23) return { ds, h };
+  } catch (e) { /* the device clock, below */ }
+  return { ds: fmt(now), h: now.getHours() };
+}
+
+// The On Call Today banner's window key (review fix 2026-10-19): the Central
+// date plus a / b / c for before 7a, 7a–5p and from 5p — onCallNow's answer
+// can change only when this does, so the banner's minute tick re-renders on a
+// new key and never misses a handover, in any time zone. "" for no instant.
+function onCallWindowKey(now) {
+  const c = centralClock(now);
+  return c ? c.ds + (c.h < 7 ? "a" : c.h < 17 ? "b" : "c") : "";
+}
+
+// The banner's top line for onCallNow's answer and the holder's name (review
+// fix 2026-10-19). In a Fierce Primary (isBackup) week Fierce holds first
+// call: DSG's holder is the BACKUP, so the line says so, with a yellow mark —
+// never the green "On call now". null when there is nothing to name.
+function onCallNowText(callNow, name) {
+  if (!callNow || !name) return null;
+  return callNow.backup
+    ? { backup: true, text: `🟡 DSG backup now: ${name} — ${callNow.slot} (Fierce is primary), until ${callNow.until}` }
+    : { backup: false, text: `🟢 On call now: ${name} — ${callNow.slot}, until ${callNow.until}` };
 }
 
 // Why a calendar month is blank (UX audit, 2026-10-18). A month with no
@@ -672,26 +721,34 @@ function publishedThrough(schedule) {
 // one mis-tap published. Names the period (its first Monday through its last
 // Sunday) and the number of weeks, warns when weeks of it are already
 // published (publishWeeks' rule: a period Monday the schedule already holds
-// is replaced) or when it has already started (its first Monday is before
-// today: the app's own "started" rule, shiftStartDate(m) < today, as trades
-// and swaps use), and says who is notified. Generate & Publish broadcasts
-// both the push and the email (doGenerateAndNotify).
+// is replaced) — "Both weeks" for a two-week period (review fix) — or when it
+// has already started (its first Monday is before today: the app's own
+// "started" rule, shiftStartDate(m) < today, as trades and swaps use), or is
+// wholly over (its last Sunday is before today — review fix: republishing a
+// finished period changes call history, counts and billing), and says who is
+// notified. What it says is what doGenerateAndNotify does (review fix): a
+// publish that goes straight through broadcasts the "Schedule Published"
+// notice (the in-app notice and a device push) and the e-mail (sent by the
+// server to everyone whose settings take schedule e-mails); a result that
+// needs your OK — or that changed during the search — opens the preview
+// instead, and Accept & Publish there (acceptPreview) sends no notice.
 //   mondays: the period's Mondays, as Dates or "YYYY-MM-DD"
 //   opts:    { schedule: the published weeks by Monday, today: "YYYY-MM-DD" }
 // Pure: no clock, no state.
 function publishConfirmText(mondays, opts) {
   const o = opts || {};
   const ms = (mondays || []).map(m => (typeof m === "string" ? m : fmt(m))).sort();
-  const notify = "Everyone will be notified by push and email.";
+  const notify = "If it publishes straight away, everyone is notified by push and email (per their notification settings). If anything needs your OK, the preview opens instead — publishing from there notifies no one.";
   if (!ms.length) return `Generate and publish the schedule?\n\n${notify}`;
   const n = ms.length, first = ms[0], end = fmt(addD(parse(ms[n - 1]), 6));
   const sched = o.schedule || {};
   const k = ms.filter(m => sched[m]).length;
   const warn = [];
   if (k > 0) warn.push(n === 1 ? "⚠ This week is already published and will be replaced."
-    : k === n ? `⚠ All ${n} weeks are already published and will be replaced.`
+    : k === n ? `⚠ ${n === 2 ? "Both weeks" : `All ${n} weeks`} are already published and will be replaced.`
     : `⚠ ${k} of the ${n} weeks ${k === 1 ? "is" : "are"} already published and will be replaced.`);
-  if (typeof o.today === "string" && first < o.today) warn.push("⚠ This period has already started.");
+  if (typeof o.today === "string" && end < o.today) warn.push("⚠ This whole period is already over — publishing it changes past call history, counts and billing.");
+  else if (typeof o.today === "string" && first < o.today) warn.push("⚠ This period has already started.");
   return `Generate and publish ${monthDayLabel(first, true)} → ${monthDayLabel(end, true)} (${n} week${n === 1 ? "" : "s"})?\n\n${warn.length ? warn.join("\n") + "\n\n" : ""}${notify}`;
 }
 
@@ -783,8 +840,14 @@ function tradeProposeMsg(req) {
 function tradeAcceptMsg(req) {
   return `${req.to_surgeon_name} accepted the trade: ${tradeLegsText(req, "takes")}`;
 }
-function tradeDeclineMsg(req) {
-  return `${req.to_surgeon_name} declined the trade: ${tradeLegsText(req, "would have taken")}`;
+// byName (review fix 2026-10-19): who declined, when it was not the trade's
+// recipient — a scheduler answering for them (the Requests tab's canAnswer).
+// The audit line is the scheduler's, so its summary, the notice and the
+// e-mail (which all carry this text) say "FAK declined the trade for RPC";
+// without byName, or naming the recipient, the recipient declined.
+function tradeDeclineMsg(req, byName) {
+  const who = byName && byName !== req.to_surgeon_name ? `${byName} declined the trade for ${req.to_surgeon_name}` : `${req.to_surgeon_name} declined the trade`;
+  return `${who}: ${tradeLegsText(req, "would have taken")}`;
 }
 
 // Dated slot label for pickers and rows where the WEEK is known (2026-09-06):

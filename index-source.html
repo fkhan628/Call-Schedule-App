@@ -387,13 +387,33 @@ function CallSchedule() {
   const [calAppFilter, setCalAppFilter] = useState("all"); // "all" | "none" | APP id
   const [calDeptFilter, setCalDeptFilter] = useState(""); // "" = no dept filter, "CWM" or "CBH"
   // The Calendar's day sheet (UX audit 2026-10-19): the date ("YYYY-MM-DD") a tap
-  // opened, or null. Escape closes it (as do its ✕ and the backdrop).
+  // opened, or null. Escape closes it (as do its ✕ and the backdrop). Review
+  // fixes: closing puts the focus back on the day cell that opened it (it fell
+  // to <body>) — except "Edit this week": the week editor it opens is in
+  // front, so the focus is not put on a cell behind it;
+  // while it is open the page behind it does not scroll (a drag on the
+  // backdrop, or on a sheet too short to scroll, moved the calendar); and it
+  // opens already lifted above the update banner (calSheetLift, kept up to
+  // date by the effect after updateAvailable below).
   const [calDayOpen, setCalDayOpen] = useState(null);
+  const calDayOpenerRef = useRef(null); // the day cell that opened the sheet
+  const updateBannerRef = useRef(null); // the update banner (fixed to the bottom), measured for the sheet
+  const [calSheetLift, setCalSheetLift] = useState(0); // px the sheet sits above the bottom: the banner's height
+  const bannerLift = () => { const el = updateBannerRef.current; return el && el.isConnected ? Math.ceil(el.getBoundingClientRect().height) : 0; };
+  const openCalDay = (ds, el) => { calDayOpenerRef.current = el || null; setCalSheetLift(bannerLift()); setCalDayOpen(ds); };
+  const closeCalDay = (refocus) => {
+    const el = calDayOpenerRef.current;
+    calDayOpenerRef.current = null;
+    setCalDayOpen(null);
+    if (refocus !== false && el && el.isConnected && typeof el.focus === "function") { try { el.focus(); } catch (e) { /* nothing to put it back on */ } }
+  };
   useEffect(() => {
     if (!calDayOpen) return;
-    const onKey = (e) => { if (e.key === "Escape") setCalDayOpen(null); };
+    const onKey = (e) => { if (e.key === "Escape") closeCalDay(); };
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    const body = document.body, prevOverflow = body.style.overflow;
+    body.style.overflow = "hidden"; // the page behind stays put; restored on close
+    return () => { window.removeEventListener("keydown", onKey); body.style.overflow = prevOverflow; };
   }, [calDayOpen]);
   const rememberSilvisToggle = (v) => {
     try { if (v === null) localStorage.removeItem(CAL_SILVIS_STORE_KEY); else localStorage.setItem(CAL_SILVIS_STORE_KEY, String(v)); }
@@ -772,6 +792,24 @@ function CallSchedule() {
     document.addEventListener("visibilitychange", onVisible);
     return () => { clearTimeout(t); document.removeEventListener("visibilitychange", onVisible); };
   }, []);
+  // The Calendar's day sheet sits ABOVE the update banner (review fix): the
+  // banner (fixed to the bottom, z 9998, over the sheet's backdrop) wraps to
+  // two rows on a 375px phone, ~100px, and a fixed 64px reserve hid the
+  // sheet's last line and most of "Edit this week". The lift is the banner's
+  // real height — measured when the sheet opens (openCalDay, so its first
+  // frame is right), then again here: on a resize or a rotation, when the
+  // banner's own size changes, and when it appears or is dismissed meanwhile.
+  // The banner stays visible and reachable above the backdrop.
+  useEffect(() => {
+    if (!calDayOpen) return;
+    const remeasure = () => setCalSheetLift(bannerLift());
+    remeasure();
+    window.addEventListener("resize", remeasure);
+    const el = updateBannerRef.current;
+    const ro = el && typeof ResizeObserver === "function" ? new ResizeObserver(remeasure) : null;
+    if (ro) ro.observe(el);
+    return () => { window.removeEventListener("resize", remeasure); if (ro) ro.disconnect(); };
+  }, [calDayOpen, updateAvailable]);
 
   // If non-scheduler ends up on a restricted tab, redirect them
   useEffect(() => {
@@ -3674,7 +3712,11 @@ function CallSchedule() {
     // from before the profile loaded, and every decline was logged "Unknown".)
     const ep = sessionEpochRef.current, tapH = dbAuthHeaders();
     const live = () => sessionEpochRef.current === ep;
-    const declineMsg = tradeDeclineMsg(req);
+    // Who declined (review fix): the recipient, or a scheduler answering for them (canAnswer). The
+    // audit line is the tapping account's, so its summary — and the notice and the e-mail, which
+    // carry the same text — say "FAK declined the trade for RPC", never that RPC declined.
+    const declinedBy = mySurgeon === req.to_surgeon_id ? null : (surgeons.find(s => s.id === mySurgeon)?.name || userProfile?.display_name || "A scheduler");
+    const declineMsg = tradeDeclineMsg(req, declinedBy);
     const declineAudit = (hdrs) => logAudit("trade.decline", declineMsg, { request_id: req.id }, hdrs);
     try {
       // Fail-closed status write with a status precondition — same pattern
@@ -4668,9 +4710,14 @@ function CallSchedule() {
   };
   // A typed word, not a tap (UX audit 2026-10-19): this deletes every
   // vacation for everyone, and time off is in neither Undo nor a Restore.
-  // Anything but DELETE (Cancel, "delete") does nothing.
+  // Review fixes: the word is read trimmed and in any case (an iPhone
+  // capitalises "Delete" by itself), and any other answer says nothing was
+  // deleted — it used to do nothing, silently, like a dead button. Cancel
+  // stays silent.
   const clearAllVacations = () => {
-    if (prompt("Delete ALL vacations for ALL surgeons and APPs? This cannot be undone. Type DELETE to confirm.") !== "DELETE") return;
+    const typed = prompt("Delete ALL vacations for ALL surgeons and APPs? This cannot be undone. Type DELETE to confirm.");
+    if (typed === null) return; // Cancel
+    if (String(typed).trim().toLowerCase() !== "delete") { showToast("Nothing deleted — type DELETE to confirm.", "error"); return; }
     toClearAll("vacation");
   };
 
@@ -7491,13 +7538,18 @@ ${"</"}script>${"</"}body>${"</"}html>`;
 
   const hasCallToday = todayCall.dayCall || todayCall.night || todayCall.weekend || todayCall.holiday;
   // Who is on call at this moment (UX audit 2026-10-19): before 7a that is LAST night's holder, not
-  // tonight's — helpers.js onCallNow has the handover rule. The banner's top line names them.
+  // tonight's — helpers.js onCallNow has the handover rule, at Central hours on any device. The
+  // banner's top line names them (onCallNowText: in a Fierce Primary week, as DSG's backup) — and
+  // shows even on a morning with no call of its own (review fix: the first morning past the
+  // published schedule, last night's holder is still on until 7a).
   const callNow = typeof onCallNow === "function" ? onCallNow(schedule, new Date()) : null;
   const callNowName = callNow ? (sMap[callNow.sid]?.name || null) : null;
-  // Re-render when the on-call window turns over (midnight, 7a, 5p), so a phone left open or the OR
-  // board never keeps the last window's holder. The 60-s data poll re-renders only while its reads
-  // succeed; this needs no network. Same window = same value, so React skips the render.
-  const nowWindowKey = () => { const n = new Date(), h = n.getHours(); return fmt(n) + (h < 7 ? "a" : h < 17 ? "b" : "c"); };
+  const callNowLine = callNowName && typeof onCallNowText === "function" ? onCallNowText(callNow, callNowName) : null;
+  // Re-render when the on-call window turns over (midnight, 7a, 5p — Central, as onCallNow reads
+  // them: helpers.js onCallWindowKey), so a phone left open or the OR board never keeps the last
+  // window's holder. The 60-s data poll re-renders only while its reads succeed; this needs no
+  // network. Same window = same value, so React skips the render.
+  const nowWindowKey = () => (typeof onCallWindowKey === "function" ? onCallWindowKey(new Date()) : "");
   const [, setNowWindow] = useState(nowWindowKey);
   useEffect(() => { const t = setInterval(() => setNowWindow(nowWindowKey()), 60000); return () => clearInterval(t); }, []);
 
@@ -7635,9 +7687,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           (never forced — a mid-action reload is jarring and kills adoption). */}
       {/* Hidden while the paint sheet is open: the banner sits at z 9998
           (over the sheet footer) and its reload button hard-resets — one
-          mis-tap would destroy an unsaved draft. It reappears on close. */}
+          mis-tap would destroy an unsaved draft. It reappears on close.
+          The Calendar's day sheet measures it (updateBannerRef) and sits above it. */}
       {updateAvailable && !paintSheet && (
-        <div role="status" aria-live="polite" style={{position:"fixed",left:0,right:0,bottom:0,zIndex:9998,background:"#1a2a3a",color:"#fff",display:"flex",alignItems:"center",justifyContent:"center",flexWrap:"wrap",gap:10,padding:"9px 14px",fontSize:12.5,fontWeight:600,fontFamily:font,boxShadow:"0 -2px 12px rgba(0,0,0,0.25)"}}>
+        <div ref={updateBannerRef} role="status" aria-live="polite" style={{position:"fixed",left:0,right:0,bottom:0,zIndex:9998,background:"#1a2a3a",color:"#fff",display:"flex",alignItems:"center",justifyContent:"center",flexWrap:"wrap",gap:10,padding:"9px 14px",fontSize:12.5,fontWeight:600,fontFamily:font,boxShadow:"0 -2px 12px rgba(0,0,0,0.25)"}}>
           <span>⬆ New version available ({updateAvailable})</span>
           <button onClick={()=>{ if (!confirmReloadWithPending()) return; if (window.__dsgHardReset) window.__dsgHardReset(); else window.location.reload(); }} style={{background:"#2a8a5a",border:"none",color:"#fff",borderRadius:6,padding:"5px 14px",fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:font}}>Tap to reload</button>
           <button aria-label="Dismiss" onClick={()=>{ updateDismissedRef.current = updateAvailable; setUpdateAvailable(null); }} style={{background:"none",border:"none",color:"#8a9aa8",cursor:"pointer",fontSize:14,padding:"2px 6px"}}>✕</button>
@@ -9435,13 +9488,16 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         {/* ════════════════ CALENDAR ════════════════ */}
         {view==="calendar"&&<>
           {/* ─── On Call Today Banner ─── */}
-          {hasCallToday && (
+          {/* Shown when today has call, or when someone is on call right now without it (review fix:
+              the first morning past the published schedule) — then only the "now" line. */}
+          {(hasCallToday || callNowLine) && (
             <div style={{background:"linear-gradient(135deg,#ffffff,#f0f8ff)",border:"1px solid #b0d0f0",borderRadius:12,padding:"14px 18px",marginBottom:14,boxShadow:"0 2px 8px rgba(26,111,168,0.08)"}}>
-              {callNowName && (
-                <div style={{fontSize:13,fontWeight:700,color:"#1a6e3c",marginBottom:8}}>
-                  🟢 On call now: {callNowName} — {callNow.slot}, until {callNow.until}
+              {callNowLine && (
+                <div style={{fontSize:13,fontWeight:700,color:callNowLine.backup?"#8a6a10":"#1a6e3c",marginBottom:hasCallToday?8:0}}>
+                  {callNowLine.text}
                 </div>
               )}
+              {hasCallToday && <>
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10,flexWrap:"wrap",gap:8}}>
                 <div style={{fontSize:15,fontWeight:700,color:"#1a2a3a"}}>
                   📋 On Call Today — {["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][todayDow]} {new Date().getMonth()+1}/{new Date().getDate()}
@@ -9507,6 +9563,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   {todayCall.fierce ? "⚡ Fierce Primary Week — Group is backup" : "🛡 Fierce Backup Week"}
                 </div>
               )}
+              </>}
             </div>
           )}
 
@@ -9562,14 +9619,18 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             {/* 👤 Me (UX audit 2026-10-19): one tap shows only my own call — a surgeon gets the
                 surgeon filter set to them (the department filter cleared, as picking a name does),
                 an APP the APP filter (the surgeon and department filters cleared: either hides
-                every APP chip). Tapped again, back to All. Signed-in roster members only. */}
+                every APP chip). Tapped again, back to All. Signed-in roster members only.
+                Review fixes: an APP's label says what it does — only their own APP shifts among the
+                APPs, the surgeons' call still shown (no new filter); and in dark mode, where the
+                sheet forces every button's text to one grey, "on" is a solid blue fill, not a tint. */}
             {!isPublicMode && (sMap[mySurgeon] || aMap[mySurgeon]) && (() => {
               const meIsApp = !sMap[mySurgeon];
               const meOn = meIsApp ? calAppFilter === mySurgeon : calSurgeonFilter === mySurgeon;
+              const meLabel = meIsApp ? "Me — show only my APP shifts (the surgeons' call stays shown)" : "Me — show only my call";
               const toggleMe = () => { if (meIsApp) { setCalAppFilter(meOn ? "all" : mySurgeon); if (!meOn) { setCalSurgeonFilter(""); setCalDeptFilter(""); } } else { setCalSurgeonFilter(meOn ? "" : mySurgeon); if (!meOn) setCalDeptFilter(""); } };
               return (
-                <button onClick={toggleMe} aria-pressed={meOn} aria-label="Me — show only my call"
-                  style={{background:meOn?"#1a6fa818":"transparent",border:`1px solid ${meOn?"#1a6fa8":dk?"#3a4a6e":"#d0d8e0"}`,color:meOn?(dk?"#7ab8e8":"#1a6fa8"):dkSubtext,borderRadius:5,padding:"3px 8px",fontSize:10,fontWeight:600,cursor:"pointer",fontFamily:font,opacity:meOn?1:0.75}}>
+                <button onClick={toggleMe} aria-pressed={meOn} aria-label={meLabel} title={meLabel}
+                  style={{background:meOn?(dk?"#1a4a78":"#1a6fa818"):"transparent",border:`1px solid ${meOn?(dk?"#7ab8e8":"#1a6fa8"):dk?"#3a4a6e":"#d0d8e0"}`,color:meOn?(dk?"#7ab8e8":"#1a6fa8"):dkSubtext,borderRadius:5,padding:"3px 8px",fontSize:10,fontWeight:600,cursor:"pointer",fontFamily:font,opacity:meOn?1:0.75}}>
                   👤 Me
                 </button>
               );
@@ -9737,6 +9798,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                 return { isFirst, isLast };
               };
 
+              // Read only by a screen reader (review fix): a day cell is a button, and a button's name
+              // is its content — so the cell's full date leads it, and its chips follow as before.
+              const SR_ONLY = {position:"absolute",width:1,height:1,padding:0,margin:-1,overflow:"hidden",clip:"rect(0 0 0 0)",whiteSpace:"nowrap",border:0};
+
               return calGrid.map((day,i)=>{
               if(!day) return <div key={`e${i}`} style={{background:"#f8f9fb",minHeight:82}}/>;
               const ds=`${calYear}-${String(calMonth+1).padStart(2,"0")}-${String(day).padStart(2,"0")}`;
@@ -9785,24 +9850,28 @@ ${"</"}script>${"</"}body>${"</"}html>`;
 
               // Tap (or Enter, or Space on release, as a native button) opens the day sheet: the
               // day's holders with their hours, the holiday's name and the coverage notes a cell has
-              // no room for (UX audit 2026-10-19).
+              // no room for (UX audit 2026-10-19). No aria-label (review fix): it replaced the cell's
+              // content, so a screen reader heard only "Mon 10/19 — day details" for every day. The
+              // name is the content — a hidden full date first (the visible day number is hidden from
+              // it), then the chips the cell shows. The cell is kept to put the focus back on close.
               return (
                 <div key={ds} data-cal-today={isToday ? "1" : undefined}
-                  role="button" tabIndex={0} aria-haspopup="dialog" aria-label={`${dayMonthLabel(ds)} — day details`}
-                  onClick={()=>setCalDayOpen(ds)}
-                  onKeyDown={e=>{ if (e.key === "Enter") { e.preventDefault(); setCalDayOpen(ds); } else if (e.key === " ") e.preventDefault(); }}
-                  onKeyUp={e=>{ if (e.key === " ") setCalDayOpen(ds); }}
+                  role="button" tabIndex={0} aria-haspopup="dialog"
+                  onClick={e=>openCalDay(ds, e.currentTarget)}
+                  onKeyDown={e=>{ if (e.key === "Enter") { e.preventDefault(); openCalDay(ds, e.currentTarget); } else if (e.key === " ") e.preventDefault(); }}
+                  onKeyUp={e=>{ if (e.key === " ") openCalDay(ds, e.currentTarget); }}
                   style={{
                   background: cellBg,
                   border: cellBorder,
                   minHeight:82, padding:"3px 4px", borderRadius:2,
                   display:"flex", flexDirection:"column", minWidth:0, cursor:"pointer",
                 }}>
+                  <span style={SR_ONLY}>{`${dayMonthLabel(ds)}${isToday ? ", today" : ""}: `}</span>
                   <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:2}}>
                     {isToday ? (
-                      <span style={{fontSize:11,fontWeight:700,color:"#ffffff",fontFamily:mono,background:"#1a6fa8",borderRadius:"50%",width:20,height:20,display:"inline-flex",alignItems:"center",justifyContent:"center",lineHeight:1}}>{day}</span>
+                      <span aria-hidden="true" style={{fontSize:11,fontWeight:700,color:"#ffffff",fontFamily:mono,background:"#1a6fa8",borderRadius:"50%",width:20,height:20,display:"inline-flex",alignItems:"center",justifyContent:"center",lineHeight:1}}>{day}</span>
                     ) : (
-                      <span style={{fontSize:11,fontWeight:600,color:isWknd?"#5a7090":"#4a5868",fontFamily:mono}}>{day}</span>
+                      <span aria-hidden="true" style={{fontSize:11,fontWeight:600,color:isWknd?"#5a7090":"#4a5868",fontFamily:mono}}>{day}</span>
                     )}
                     {calFilters.fierce && hasFierce && <span style={{fontSize:8,fontWeight:700,color:"#8a6a10",background:"#fef8e8",borderRadius:3,padding:"0 4px",letterSpacing:0.5}}>BKP</span>}
                     {calFilters.fierce && hasFierceBkp && !hasFierce && <span style={{fontSize:8,fontWeight:700,color:"#1a6fa8",background:"#e8f0fc",borderRadius:3,padding:"0 4px",letterSpacing:0.5}}>F·BKP</span>}
@@ -10002,15 +10071,19 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             const TONE = dk
               ? { svc:"#7ab8e0", sat:"#7ab8e0", night:"#b8a0e8", wkndFri:"#d8c890", wkndSun:"#d8c890", app:"#e0a070", cover:"#f0a060", fierce:"#e0c060", fierceBkp:"#7ab8e8" }
               : { svc:"#3080a8", sat:"#3080a8", night:"#6850a0", wkndFri:"#908050", wkndSun:"#908050", app:"#985020", cover:"#c06020", fierce:"#8a6a10", fierceBkp:"#1a6fa8" };
-            const close = () => setCalDayOpen(null);
+            // ✕, the backdrop and Escape put the focus back on the day cell (closeCalDay); Edit this week
+            // closes without that — the week editor it opens is in front, not the cell behind it.
+            const close = () => closeCalDay();
             const row = {display:"flex",alignItems:"flex-start",gap:8,padding:"8px 0",borderTop:`1px solid ${dkCardBorder}`,fontSize:14,lineHeight:1.4,color:dkText};
             const ico = {width:22,textAlign:"center",flexShrink:0};
+            // Lifted above the update banner by its measured height (calSheetLift; 0 with no banner): the
+            // banner wraps to two rows on a 375px phone and used to cover the sheet's bottom lines.
             return (
               <div onClick={close} style={{position:"fixed",inset:0,zIndex:9000,background:"rgba(0,0,0,0.45)",display:"flex",alignItems:"flex-end",justifyContent:"center"}}>
                 <div role="dialog" aria-modal="true" aria-label={`${title} — details`} onClick={e=>e.stopPropagation()}
                   style={{width:"100%",maxWidth:520,maxHeight:"70vh",overflowY:"auto",overscrollBehavior:"contain",WebkitOverflowScrolling:"touch",boxSizing:"border-box",
                     background:dk?"#1a1f2a":"#fff",borderRadius:"14px 14px 0 0",boxShadow:"0 -6px 24px rgba(0,0,0,0.25)",padding:"10px 16px",
-                    paddingBottom:`calc(env(safe-area-inset-bottom, 0px) + ${updateAvailable ? 64 : 16}px)`,fontFamily:font}}>
+                    paddingBottom:"calc(env(safe-area-inset-bottom, 0px) + 16px)",marginBottom:calSheetLift,fontFamily:font}}>
                   <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:4}}>
                     <div style={{flex:1,minWidth:0}}>
                       <div style={{fontSize:16,fontWeight:700,color:dk?"#e8e8f0":"#2c5a80"}}>{title}</div>
@@ -10044,7 +10117,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                     </span></div>
                   )}
                   {canEdit && (
-                    <button onClick={()=>{ close(); openWeekEditor(mondayStr); }}
+                    <button onClick={()=>{ closeCalDay(false); openWeekEditor(mondayStr); }}
                       style={{...css.btn(true),width:"100%",marginTop:12,padding:"10px 14px",fontSize:14,minHeight:44}}>✏️ Edit this week</button>
                   )}
                 </div>
@@ -10897,11 +10970,14 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               </p>
               {billOrder.done.map(billMonth)}
               {billOrder.ahead.length > 0 && (
-                <details open={billOrder.done.length === 0} style={{background:dk?"#1a1f2a":"#f4f6f8",border:"1px solid #d0d8e0",borderRadius:6,padding:"6px 10px",marginBottom:16}}>
-                  <summary style={{cursor:"pointer",fontSize:12,fontWeight:700,color:dk?"#a0b0c0":"#5a6a78"}}>
+                /* Review fixes: a dark border in dark mode (it was a light line on the dark card), a dark
+                   fill the sheet's forced summary blue (details summary { color:#6080c0 !important }) reads
+                   on at 4.5:1+, and a 44px-tall summary to tap (the line was ~14px). */
+                <details open={billOrder.done.length === 0} style={{background:dk?"#12161e":"#f4f6f8",border:`1px solid ${dk?"#2a3a5e":"#d0d8e0"}`,borderRadius:6,padding:"0 10px",marginBottom:16}}>
+                  <summary style={{cursor:"pointer",fontSize:12,fontWeight:700,color:dk?"#a0b0c0":"#5a6a78",padding:"14px 0",lineHeight:"16px"}}>
                     Upcoming months ({billOrder.ahead.length})
                   </summary>
-                  <div style={{marginTop:10}}>{billOrder.ahead.map(billMonth)}</div>
+                  <div style={{marginTop:4,paddingBottom:6}}>{billOrder.ahead.map(billMonth)}</div>
                 </details>
               )}
               <div style={{fontSize:11,color:"#7a8a98",lineHeight:1.5,marginTop:6}}>
@@ -11141,7 +11217,9 @@ ${"</"}script>${"</"}body>${"</"}html>`;
 
           {mineId && Object.keys(schedule).length > 0 && (() => {
             const myId = mineId;
-            const myName = sMap[myId]?.name || "?";
+            // An APP's own code too (review fix): an APP who adjusts or removes a vacation here is named
+            // in the schedulers' notice — it read "? removed their vacation" (sMap is surgeons only).
+            const myName = sMap[myId]?.name || aMap[myId]?.name || "?";
             const myVacs = vacations[myId] || [];
             const myNoCall = noCallDays[myId] || [];
             // Mine view hides completed vacations (end before today) and shows the
@@ -11762,8 +11840,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                             <span style={{fontSize:11,color:"#a0a8b0"}}>Submitted {new Date(r.submitted_at).toLocaleDateString()}</span>
                             {(r.surgeon_id !== mySurgeon || isScheduler) && (
                               <div style={{marginLeft:"auto",display:"flex",gap:6}}>
-                                <button onClick={()=>approveVacRequest(r)} style={{background:"#e8f8e8",border:"1px solid #a0d8a0",color:"#1a8040",borderRadius:6,padding:"4px 12px",fontSize:12,fontWeight:600,cursor:"pointer",fontFamily:font}}>✓ Approve</button>
-                                <button onClick={()=>{const note=prompt("Reason for denial (optional):"); if(note!==null) denyVacRequest(r,note);}} style={{background:"#fce8e8",border:"1px solid #e0b0b0",color:"#c04040",borderRadius:6,padding:"4px 12px",fontSize:12,fontWeight:600,cursor:"pointer",fontFamily:font}}>✕ Deny</button>
+                                <button onClick={()=>approveVacRequest(r)} style={{background:"#e8f8e8",border:"1px solid #a0d8a0",color:"#1a8040",borderRadius:6,padding:"4px 12px",fontSize:12,fontWeight:600,cursor:"pointer",fontFamily:font,...(dk ? {background:"#1b4d2c",border:"1px solid #3a8a55",color:"#d6f5e0"} : {})}}>✓ Approve</button>
+                                <button onClick={()=>{const note=prompt("Reason for denial (optional):"); if(note!==null) denyVacRequest(r,note);}} style={{background:"#fce8e8",border:"1px solid #e0b0b0",color:"#c04040",borderRadius:6,padding:"4px 12px",fontSize:12,fontWeight:600,cursor:"pointer",fontFamily:font,...(dk ? {background:"#5c1f1f",border:"1px solid #a04848",color:"#fadada"} : {})}}>✕ Deny</button>
+                                {/* Dark mode (review fix): the dark sheet forces every button's text to #c0c8d8, which read ~1.5:1 on
+                                    these two light fills — they get the same dark fills as the trade's Accept / Decline. */}
                               </div>
                             )}
                             {r.surgeon_id === mySurgeon && !isScheduler && <span style={{marginLeft:"auto",fontSize:11,color:"#c09030",fontWeight:600,background:"#fef8e8",padding:"2px 8px",borderRadius:4,border:"1px solid #e8d090"}}>Pending review</span>}
