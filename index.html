@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.10.18c";
+    var APP_VERSION = "2026.10.18d";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -8941,7 +8941,11 @@ ${"</"}script>${"</"}body>${"</"}html>`;
   }, "Start"), React.createElement("input", {
     type: "date",
     value: vacStart,
-    onChange: e => setVacStart(e.target.value),
+    onChange: e => {
+      const v = e.target.value;
+      setVacStart(v);
+      setVacEnd(end => endOnOrAfter(v, end, vacStart));
+    },
     style: _objectSpread(_objectSpread({}, css.inp), {}, {
       width: 140
     })
@@ -8954,6 +8958,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     }
   }, "End"), React.createElement("input", {
     type: "date",
+    min: vacStart || undefined,
     value: vacEnd,
     onChange: e => setVacEnd(e.target.value),
     style: _objectSpread(_objectSpread({}, css.inp), {}, {
@@ -9145,9 +9150,13 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         }, React.createElement("input", {
           type: "date",
           value: editVac.start,
-          onChange: e => setEditVac(pr => _objectSpread(_objectSpread({}, pr), {}, {
-            start: e.target.value
-          })),
+          onChange: e => {
+            const v = e.target.value;
+            setEditVac(pr => _objectSpread(_objectSpread({}, pr), {}, {
+              start: v,
+              end: endOnOrAfter(v, pr.end, pr.start)
+            }));
+          },
           style: _objectSpread(_objectSpread({}, css.inp), {}, {
             width: 120,
             fontSize: 11,
@@ -9160,6 +9169,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           }
         }, "→"), React.createElement("input", {
           type: "date",
+          min: editVac.start || undefined,
           value: editVac.end,
           onChange: e => setEditVac(pr => _objectSpread(_objectSpread({}, pr), {}, {
             end: e.target.value
@@ -9288,7 +9298,11 @@ ${"</"}script>${"</"}body>${"</"}html>`;
   }, "Start"), React.createElement("input", {
     type: "date",
     value: ncStart,
-    onChange: e => setNcStart(e.target.value),
+    onChange: e => {
+      const v = e.target.value;
+      setNcStart(v);
+      setNcEnd(end => endOnOrAfter(v, end, ncStart));
+    },
     style: _objectSpread(_objectSpread({}, css.inp), {}, {
       width: 140
     })
@@ -9301,6 +9315,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     }
   }, "End"), React.createElement("input", {
     type: "date",
+    min: ncStart || undefined,
     value: ncEnd,
     onChange: e => setNcEnd(e.target.value),
     style: _objectSpread(_objectSpread({}, css.inp), {}, {
@@ -15224,10 +15239,13 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         }, editing ? React.createElement(React.Fragment, null, React.createElement("input", {
           type: "date",
           value: myVacEdit.start,
-          max: myVacEdit.end,
-          onChange: e => setMyVacEdit(p => _objectSpread(_objectSpread({}, p), {}, {
-            start: e.target.value
-          })),
+          onChange: e => {
+            const v = e.target.value;
+            setMyVacEdit(p => _objectSpread(_objectSpread({}, p), {}, {
+              start: v,
+              end: endOnOrAfter(v, p.end, p.start)
+            }));
+          },
           style: _objectSpread(_objectSpread({}, css.inp), {}, {
             padding: "3px 6px",
             fontSize: 12,
@@ -15682,7 +15700,11 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     type: "date",
     min: todayStr,
     value: vacReqStart,
-    onChange: e => setVacReqStart(e.target.value),
+    onChange: e => {
+      const v = e.target.value;
+      setVacReqStart(v);
+      setVacReqEnd(end => endOnOrAfter(v, end, vacReqStart));
+    },
     style: _objectSpread(_objectSpread({}, css.inp), {}, {
       width: 150
     })
@@ -15695,7 +15717,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     }
   }, "End Date"), React.createElement("input", {
     type: "date",
-    min: todayStr,
+    min: vacReqStart && vacReqStart > todayStr ? vacReqStart : todayStr,
     value: vacReqEnd,
     onChange: e => setVacReqEnd(e.target.value),
     style: _objectSpread(_objectSpread({}, css.inp), {}, {
@@ -15853,9 +15875,13 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         type: "date",
         min: isScheduler ? undefined : fmt(new Date()),
         value: editingVacReq.start_date,
-        onChange: e => setEditingVacReq(p => _objectSpread(_objectSpread({}, p), {}, {
-          start_date: e.target.value
-        })),
+        onChange: e => {
+          const v = e.target.value;
+          setEditingVacReq(p => _objectSpread(_objectSpread({}, p), {}, {
+            start_date: v,
+            end_date: endOnOrAfter(v, p.end_date, p.start_date)
+          }));
+        },
         style: _objectSpread(_objectSpread({}, css.inp), {}, {
           width: 140,
           fontSize: 12
@@ -15868,7 +15894,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         }
       }, "End"), React.createElement("input", {
         type: "date",
-        min: isScheduler ? undefined : fmt(new Date()),
+        min: [editingVacReq.start_date || "", isScheduler ? "" : fmt(new Date())].sort().pop() || undefined,
         value: editingVacReq.end_date,
         onChange: e => setEditingVacReq(p => _objectSpread(_objectSpread({}, p), {}, {
           end_date: e.target.value
@@ -16207,9 +16233,13 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       }, "Start"), React.createElement("input", {
         type: "date",
         value: editingVacReq.start_date,
-        onChange: e => setEditingVacReq(p => _objectSpread(_objectSpread({}, p), {}, {
-          start_date: e.target.value
-        })),
+        onChange: e => {
+          const v = e.target.value;
+          setEditingVacReq(p => _objectSpread(_objectSpread({}, p), {}, {
+            start_date: v,
+            end_date: endOnOrAfter(v, p.end_date, p.start_date)
+          }));
+        },
         style: _objectSpread(_objectSpread({}, css.inp), {}, {
           width: 140,
           fontSize: 12
@@ -16222,6 +16252,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         }
       }, "End"), React.createElement("input", {
         type: "date",
+        min: editingVacReq.start_date || undefined,
         value: editingVacReq.end_date,
         onChange: e => setEditingVacReq(p => _objectSpread(_objectSpread({}, p), {}, {
           end_date: e.target.value
