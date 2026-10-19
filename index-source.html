@@ -11282,11 +11282,30 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                 {/* A signed-in APP's own name, so their picker shows it instead of the placeholder (picking it = Back to mine) */}
                 {aMap[mySurgeon] && <option value={aMap[mySurgeon].id}>{aMap[mySurgeon].name}</option>}
               </select>
-              {mineId && (
-                <button onClick={()=>downloadMyCal(mineId)} style={{...css.btn(true),padding:"8px 18px"}}>
-                  📅 {mineViewId ? `Download ${sMap[mineViewId]?.name || mineViewId}'s Calendar` : "Download My Calendar"} (.ics)
-                </button>
-              )}
+              {(() => {
+                // Subscribe (UX audit 2026-10-19): a surgeon's OWN Mine offers the live calendar-sync feed, which keeps
+                // itself up to date; a downloaded .ics is a one-time copy (its random UIDs add every shift again on a
+                // re-import). Not while viewing a colleague (mineViewId), not for an APP or "admin" (calendar-sync
+                // matches surgeon codes only — an APP's link would 404).
+                const mineFeed = !mineViewId && sMap[mySurgeon] && typeof calendarFeedUrls === "function" ? calendarFeedUrls(SUPABASE_URL, sMap[mySurgeon].name) : null;
+                const dkBtn = dk ? {background:"#0f3460",color:"#e0e0f0",border:"1px solid #2a3a5e"} : {};
+                return <>
+                  {mineFeed && <>
+                    <a href={mineFeed.webcal} style={{...css.btn(true),padding:"8px 18px",textDecoration:"none",display:"inline-block"}}>📅 Subscribe in Calendar</a>
+                    <button onClick={()=>copyText(mineFeed.https, "my")} style={{...css.btn(false),padding:"8px 14px",...dkBtn}}>{copiedUrl==="my" ? "✓ Copied" : "Copy link"}</button>
+                  </>}
+                  {mineId && (
+                    <button onClick={()=>downloadMyCal(mineId)} style={{...css.btn(!mineFeed),padding:"8px 18px",...(mineFeed ? dkBtn : {})}}>
+                      📥 {mineViewId ? `Download a one-time copy of ${sMap[mineViewId]?.name || mineViewId}'s calendar` : "Download a one-time copy"} (.ics)
+                    </button>
+                  )}
+                  {mineFeed && (
+                    <div style={{flexBasis:"100%",fontSize:11,color:dk?"#9aa0b8":"#5a6a78",lineHeight:1.5}}>
+                      Subscribed, your calendar updates itself when the schedule changes. On Android or in Google Calendar: Copy link, then Other calendars (+) → From URL. A downloaded copy never updates, and importing it again adds every shift twice.
+                    </div>
+                  )}
+                </>;
+              })()}
             </div>
           </div>
 
@@ -12917,11 +12936,16 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               <strong>How to subscribe:</strong> In Google Calendar: Other calendars (+) → From URL → paste the link below.
             </div>
 
-            {/* Personal calendar link (shown to everyone with a surgeon/APP identity) */}
+            {/* Personal calendar link — a surgeon's only (UX audit 2026-10-19): calendar-sync matches ?surgeon= against
+                surgeon codes, so an APP's link would 404; an APP is told so instead */}
             {mySurgeon && mySurgeon !== "admin" && (() => {
-              const myName = [...surgeons, ...apps].find(p => p.id === mySurgeon)?.name;
-              if (!myName) return null;
-              const myUrl = `${SUPABASE_URL}/functions/v1/calendar-sync?surgeon=${myName}`;
+              const myFeed = sMap[mySurgeon] && typeof calendarFeedUrls === "function" ? calendarFeedUrls(SUPABASE_URL, sMap[mySurgeon].name) : null;
+              if (!myFeed) return aMap[mySurgeon] ? (
+                <div style={{fontSize:11,color:dk?"#9aa0b8":"#5a6a78",lineHeight:1.5,marginBottom:10}}>
+                  The live feed covers surgeon call only, so there's no link for APP days yet. For a copy of yours, use Mine → 📥 Download a one-time copy (.ics).
+                </div>
+              ) : null;
+              const myUrl = myFeed.https;
               return (
                 <div style={{marginBottom:10}}>
                   <div style={{fontSize:11,fontWeight:600,color:"#5a6a78",marginBottom:4}}>My Calendar:</div>
@@ -12963,7 +12987,12 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                 )}
               </div>
             </>}
-            <p style={{fontSize:10,color:"#8a94a0",marginTop:6}}>{isScheduler ? "Click a name to copy their subscribe URL." : "Paste this URL into your calendar app to subscribe."} Requires deploying the calendar-sync Edge Function.</p>
+            {/* The developer note is the scheduler's alone; a surgeon gets the how-to, an APP the note above (UX audit 2026-10-19) */}
+            {isScheduler ? (
+              <p style={{fontSize:10,color:"#8a94a0",marginTop:6}}>Click a name to copy their subscribe URL. Requires deploying the calendar-sync Edge Function.</p>
+            ) : sMap[mySurgeon] ? (
+              <p style={{fontSize:10,color:"#8a94a0",marginTop:6}}>Paste this URL into your calendar app to subscribe.</p>
+            ) : null}
           </div>
 
           {/* Refresh App */}

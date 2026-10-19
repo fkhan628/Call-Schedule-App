@@ -1188,12 +1188,34 @@ function generateICS(events, calName) {
   return lines.map(icsFold).join("\r\n") + "\r\n";
 }
 
+// The live calendar-sync feed for one surgeon (UX audit 2026-10-19), the URL
+// Settings → Live Calendar Sync has always offered: { https } to paste into a
+// calendar app ("From URL"), and the same address as { webcal }, which an
+// iPhone opens as Calendar's "Subscribe" sheet. A subscribed calendar updates
+// itself; a downloaded .ics is a snapshot whose random UIDs add every shift
+// again on a re-import. calendar-sync matches ?surgeon= against a SURGEON's
+// code (or id) only — an APP's code would 404 — so callers offer it to
+// surgeons only. The code is URL-encoded; no base or no code → null.
+function calendarFeedUrls(base, code) {
+  const b = String(base == null ? "" : base).trim().replace(/\/+$/, ""), c = String(code == null ? "" : code).trim();
+  if (!b || !c) return null;
+  const https = `${b}/functions/v1/calendar-sync?surgeon=${encodeURIComponent(c)}`;
+  return { https, webcal: https.replace(/^https?:\/\//i, "webcal://") };
+}
+
 function downloadICS(content, filename) {
   const blob = new Blob([content], { type: "text/calendar;charset=utf-8" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
-  a.href = url; a.download = filename; a.click();
-  URL.revokeObjectURL(url);
+  a.href = url; a.download = filename;
+  // In the document for the click, and the URL revoked a second later, not in
+  // the same tick (UX audit 2026-10-19; downloadJSON below does the same):
+  // iOS Safari can ignore a click on a detached link, and revoking at once can
+  // cancel the download before it starts.
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 // Download an arbitrary object as a pretty-printed JSON file. Used for the

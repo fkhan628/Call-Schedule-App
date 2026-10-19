@@ -6028,7 +6028,8 @@ console.log("\nAS. The UX batch's review fixes");
   // AS4 — the small things
   check("AS4 the swap card clears the iPhone status bar when scrolled to; Download names whose calendar it is while viewing a colleague; 'Back to mine' and 'Go to <Month>' have dark-mode colors",
     count('data-swap-tool="1" style={{...css.card,marginTop:14,scrollMarginTop:"calc(env(safe-area-inset-top, 0px) + 12px)",') === 1
-      && count('📅 {mineViewId ? `Download ${sMap[mineViewId]?.name || mineViewId}\'s Calendar` : "Download My Calendar"} (.ics)') === 1
+      // (BJ, 2026-10-19: the label now says the file is a one-time copy; it still names a colleague's calendar)
+      && count('📥 {mineViewId ? `Download a one-time copy of ${sMap[mineViewId]?.name || mineViewId}\'s calendar` : "Download a one-time copy"} (.ics)') === 1
       && count('...(dk ? {background:"#0f3460",color:"#e0e0f0",border:"1px solid #2a3a5e"} : {})}}>Back to mine</button>') === 1
       && count('...(dk ? {background:"#0f3460",color:"#e0e0f0",border:"1px solid #2a3a5e"} : {})}}>Go to {MO[goTo.m]} {goTo.y}</button>') === 1);
 }
@@ -8621,6 +8622,182 @@ await (async () => {
         r.counts.hard === 1 && plain.counts.lastRes === 1 && plain.counts.hard === 0, JSON.stringify([r.counts, plain.counts]));
     }
   }
+})();
+
+// ─── BJ. Mine: Subscribe in Calendar (the live feed) for a surgeon; the download is a one-time copy (UX audit 2026-10-19) ───
+// A downloaded .ics is a snapshot: its UIDs are random, so importing it again
+// adds every shift twice, and it never hears of a swap. The live calendar-sync
+// feed updates itself, but it sat in Settings → Live Calendar Sync, which also
+// handed an APP a link that 404s (calendar-sync matches ?surgeon= against
+// SURGEON codes only). Now helpers.js calendarFeedUrls(base, code) builds the
+// feed's https + webcal URLs (the code encoded); a surgeon's OWN Mine shows
+// "📅 Subscribe in Calendar" (the webcal:// link — iPhone's Subscribe sheet)
+// and Copy link (the https URL, through copyText and its fallbacks), and the
+// download reads "📥 Download a one-time copy (.ics)". Settings offers the
+// personal link to a surgeon only, tells an APP why there is none, and keeps
+// "Requires deploying …" for the scheduler. downloadICS puts its link in the
+// document for the click and revokes the URL a second later (iOS Safari).
+// calendar-sync itself is unchanged. JSX can't run here (no Babel in CI): the
+// helpers and the plain-JS lines the markup decides on are EXECUTED; the
+// markup is pinned.
+//   BJ1 calendarFeedUrls, executed: FAK's exact https / webcal URLs (Settings'
+//       old string); a code with & space / ? # é encoded and read back whole;
+//       a trailing slash dropped, http → webcal; no base / no code → null
+//   BJ2 downloadICS, executed against a fake document / URL / Blob / timer:
+//       the link is in the document when clicked and taken out after; the URL
+//       is revoked by a ~1 s timer, never in the same tick
+//   BJ3 Mine's real mineFeed line, sliced and run: a surgeon's own view gets
+//       their feed; a colleague's view (mineViewId), an APP, "admin", no
+//       identity and an old cached helpers.js get none, and nothing throws;
+//       the markup in order: Subscribe = the webcal link, Copy link = the https
+//       URL, the relabelled download, the hint; mineFeed lives in that block only
+//   BJ4 Copy link, executed: the button's real onClick through the real
+//       copyText — the clipboard in a secure context, else the hidden-textarea
+//       copy, else a prompt holding the URL
+//   BJ5 Settings → Live Calendar Sync: the real myFeed line, sliced and run
+//       (surgeon → their feed, APP → none); an APP gets the "surgeon call only"
+//       note; no APP code goes into a feed URL; the developer line is the
+//       scheduler's branch only
+console.log("\nBJ. Mine: Subscribe in Calendar; the download is a one-time copy");
+await (async () => {
+  const nsrcJ = src.replace(/\r\n/g, "\n");
+  const J = (x) => JSON.stringify(x);
+  const tryJ = (f) => { try { return f(); } catch (ex) { return { threw: String((ex && ex.message) || ex).slice(0, 160) }; } };
+  const feedFn = vm.runInContext('typeof calendarFeedUrls === "function" ? calendarFeedUrls : null', sandbox);
+  const NOFEED = feedFn ? "" : "calendarFeedUrls is not defined in helpers.js — ";
+  const SB_URL = vm.runInContext("SUPABASE_URL", sandbox);
+  const feedOf = (code) => { const https = SB_URL + "/functions/v1/calendar-sync?surgeon=" + code; return { https, webcal: https.replace(/^https:\/\//, "webcal://") }; };
+
+  // BJ1 — calendarFeedUrls
+  const f1 = feedFn ? {
+    fak: tryJ(() => feedFn(SB_URL, "FAK")),
+    odd: tryJ(() => feedFn("https://x.test/", "A&B C/?#é")),
+    http: tryJ(() => feedFn("http://localhost:54321//", "RPC")),
+    none: [["", "FAK"], [null, "FAK"], [undefined, "FAK"], [SB_URL, ""], [SB_URL, null], [SB_URL, undefined], [SB_URL, "   "]].map((a) => tryJ(() => feedFn(...a))),
+  } : null;
+  check("BJ1 calendarFeedUrls(SUPABASE_URL, \"FAK\") is exactly { https: <SUPABASE_URL>/functions/v1/calendar-sync?surgeon=FAK — the URL Settings always built — and webcal: the same address as webcal:// }",
+    !!f1 && SB_URL.startsWith("https://") && J(f1.fak) === J(feedOf("FAK")) && f1.fak.webcal === SB_URL.replace("https://", "webcal://") + "/functions/v1/calendar-sync?surgeon=FAK",
+    NOFEED + J(f1 && f1.fak));
+  const ODD = "A%26B%20C%2F%3F%23%C3%A9";
+  let oddBack = null;
+  try { oddBack = f1 && f1.odd && f1.odd.https ? new URL(f1.odd.https).searchParams.get("surgeon") : null; } catch (ex) { oddBack = null; }
+  check("BJ1 …the code is URL-encoded (\"A&B C/?#é\" → surgeon=" + ODD + ", read back whole as the one surgeon param); a trailing slash on the base is dropped; an http:// base becomes webcal:// too",
+    !!f1 && J(f1.odd) === J({ https: "https://x.test/functions/v1/calendar-sync?surgeon=" + ODD, webcal: "webcal://x.test/functions/v1/calendar-sync?surgeon=" + ODD }) && oddBack === "A&B C/?#é"
+      && J(f1.http) === J({ https: "http://localhost:54321/functions/v1/calendar-sync?surgeon=RPC", webcal: "webcal://localhost:54321/functions/v1/calendar-sync?surgeon=RPC" }),
+    NOFEED + J(f1 && [f1.odd, f1.http, oddBack]));
+  check("BJ1 …no base or no code (\"\", null, undefined, blank) → null, never a URL with an empty surgeon=",
+    !!f1 && J(f1.none) === J([null, null, null, null, null, null, null]), NOFEED + J(f1 && f1.none));
+
+  // BJ2 — downloadICS, the real function run against a fake document / URL / Blob / timer
+  const dlReal = vm.runInContext('typeof downloadICS === "function" ? downloadICS : null', sandbox);
+  const runDl = (fnSrc) => {
+    const log = [], timers = [];
+    const body = { kids: [], appendChild(n) { this.kids.push(n); log.push("append"); return n; }, removeChild(n) { this.kids = this.kids.filter((k) => k !== n); log.push("remove"); return n; } };
+    const doc = { body, createElement: (tag) => { log.push("create:" + tag); const a = { href: "", download: "", click() { log.push(`click attached=${body.kids.includes(a)} href=${a.href} download=${a.download}`); } }; return a; } };
+    const ctx = vm.createContext({
+      document: doc,
+      Blob: class { constructor(parts, opts) { log.push(`blob ${opts && opts.type} ${J(parts)}`); } },
+      URL: { createObjectURL: () => { log.push("createObjectURL"); return "blob:fake/1"; }, revokeObjectURL: (u) => { log.push("revoke " + u); } },
+      setTimeout: (fn, ms) => { timers.push({ fn, ms }); log.push("timer"); return timers.length; },
+    });
+    vm.runInContext("(" + fnSrc + ")", ctx)("BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n", "my-schedule-fak.ics");
+    const sync = log.slice();
+    timers.forEach((t) => t.fn());
+    return { sync, later: log.slice(sync.length), ms: timers.map((t) => t.ms) };
+  };
+  const dz = dlReal ? tryJ(() => runDl(String(dlReal))) : null;
+  const CLICK = "click attached=true href=blob:fake/1 download=my-schedule-fak.ics";
+  check("BJ2 executed — downloadICS builds the text/calendar blob, puts the link in the document, clicks it there (href = the blob URL, download = the file name) and takes it out again",
+    !!dz && !dz.threw && J(dz.sync.slice(0, 6)) === J([`blob text/calendar;charset=utf-8 ${J(["BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n"])}`, "createObjectURL", "create:a", "append", CLICK, "remove"]),
+    J(dz));
+  check("BJ2 executed — …and the blob URL is NOT revoked in the same tick (iOS Safari can drop the download): one timer of 0.5–5 s revokes exactly that URL, once",
+    !!dz && !dz.threw && !dz.sync.some((l) => l.startsWith("revoke")) && dz.ms.length === 1 && dz.ms[0] >= 500 && dz.ms[0] <= 5000 && J(dz.later) === J(["revoke blob:fake/1"]),
+    J(dz));
+
+  // BJ3 — Mine: the real mineFeed line, sliced and run; the markup pinned
+  const mA = nsrcJ.indexOf('{view==="myschedule" && !isPublicMode && <>'), mB = mA < 0 ? -1 : nsrcJ.indexOf("{/* ════════════════ REQUESTS ════════════════ */}", mA);
+  const mineJ = mA < 0 || mB < 0 ? "" : nsrcJ.slice(mA, mB);
+  const MF = mineJ.match(/\n[ ]*const mineFeed = ([^\n]*);\n/);
+  let mfFn = null;
+  try { mfFn = MF ? vm.runInContext(`(function (env) { const { mineViewId, mySurgeon, sMap, SUPABASE_URL, calendarFeedUrls } = env; return (${MF[1]}); })`, sandbox) : null; } catch (ex) { mfFn = null; }
+  const ROSTERJ = ["DJA", "MCC", "RPC", "KJH", "REH", "FAK", "ARW"].map((name, i) => ({ id: "s" + (i + 1), name }));
+  const SMAPJ = Object.fromEntries(ROSTERJ.map((s, idx) => [s.id, Object.assign({ idx }, s)]));
+  const AMAPJ = Object.fromEntries([["a1", "MA"], ["a2", "SJ"], ["a3", "MS"], ["a4", "SS"], ["a5", "JH"]].map(([id, name], idx) => [id, { id, name, idx }]));
+  const H = feedFn || undefined;
+  const mf = (mineViewId, mySurgeon, helper) => (mfFn ? tryJ(() => mfFn({ mineViewId, mySurgeon, sMap: SMAPJ, SUPABASE_URL: SB_URL, calendarFeedUrls: helper })) : "no mineFeed line");
+  const mz = { fakOwn: mf("", "s6", H), rpcOwn: mf("", "s3", H), fakViewsRpc: mf("s3", "s6", H), rpcViewsFak: mf("s6", "s3", H),
+    app: mf("", "a1", H), admin: mf("", "admin", H), nobody: mf("", "", H), oldHelpers: mf("", "s6", undefined) };
+  check("BJ3 executed — Mine's real mineFeed line: FAK's own Mine → FAK's feed, RPC's own → RPC's; FAK viewing RPC, or RPC viewing FAK → none (a colleague's view never offers a subscribe)",
+    !!mfFn && !!feedFn && J(mz.fakOwn) === J(feedOf("FAK")) && J(mz.rpcOwn) === J(feedOf("RPC")) && mz.fakViewsRpc === null && mz.rpcViewsFak === null,
+    (mfFn ? "" : "const mineFeed = …; not found in the Mine block — ") + NOFEED + J(mz));
+  check("BJ3 executed — …an APP (a1), \"admin\" and no identity → none (calendar-sync knows surgeon codes only: an APP's link would 404); an old cached helpers.js (no calendarFeedUrls) → none, and nothing throws",
+    !!mfFn && mz.app === null && mz.admin === null && mz.nobody === null && mz.oldHelpers === null, J(mz));
+  const LABEL = '📥 {mineViewId ? `Download a one-time copy of ${sMap[mineViewId]?.name || mineViewId}\'s calendar` : "Download a one-time copy"} (.ics)';
+  const iSel = mineJ.indexOf("</select>"), iIife = iSel < 0 ? -1 : mineJ.indexOf("{(() => {", iSel);
+  const PARTS = [
+    "const mineFeed = ", "{mineFeed && <>", '<a href={mineFeed.webcal} style={{...css.btn(true),', ">📅 Subscribe in Calendar</a>",
+    '<button onClick={()=>copyText(mineFeed.https, "my")} style={{...css.btn(false),', '{copiedUrl==="my" ? "✓ Copied" : "Copy link"}</button>', "</>}",
+    "{mineId && (", '<button onClick={()=>downloadMyCal(mineId)} style={{...css.btn(!mineFeed),', LABEL,
+    "{mineFeed && (", "Copy link, then Other calendars (+) → From URL. A downloaded copy never updates, and importing it again adds every shift twice.", "})()}",
+  ];
+  const at = []; { let from = iIife; for (const p of PARTS) { const i = from < 0 ? -1 : mineJ.indexOf(p, from); at.push(i); from = i < 0 ? -1 : i + p.length; } }
+  const iEnd = at[at.length - 1], iife = iIife >= 0 && iEnd > iIife ? mineJ.slice(iIife, iEnd) : "";
+  check("BJ3 the Mine row, after the name picker and in order: mineFeed; then, only when it is set, the 📅 Subscribe in Calendar link (the primary button, href = the webcal URL) and Copy link (the https URL, ✓ Copied after); the download for any mineId, now \"📥 Download a one-time copy (.ics)\" (\"… of RPC's calendar\" for a colleague; a secondary button beside Subscribe); the Android / Google how-to under them, only with mineFeed",
+    iSel > 0 && iIife > iSel && at.every((i) => i >= 0) && count("📅 Subscribe in Calendar") === 1 && count(LABEL) === 1 && count('copyText(mineFeed.https, "my")') === 1,
+    J(PARTS.map((p, k) => [p.slice(0, 28), at[k]])));
+  check("BJ3 the old labels are gone (\"Download My Calendar\", \"Download <code>'s Calendar\"); mineFeed exists only inside that render block, with no hook there (no state, nothing in a deps array)",
+    count('"Download My Calendar"') === 0 && count("'s Calendar` :") === 0 && !!iife && src.split("mineFeed").length === iife.split("mineFeed").length && !/\buse(State|Effect|Memo|Callback|Ref)\(/.test(iife),
+    J({ old: count('"Download My Calendar"'), feedRefs: [src.split("mineFeed").length - 1, iife.split("mineFeed").length - 1] }));
+
+  // BJ4 — Copy link: the button's real onClick through the real copyText (sliced), with each of its fallbacks
+  const CT0 = nsrcJ.indexOf("  const copyText = async (text, label) => {"), CT1 = CT0 < 0 ? -1 : nsrcJ.indexOf("\n  };\n", CT0);
+  const ctSrc = CT0 >= 0 && CT1 > CT0 ? nsrcJ.slice(CT0 + "  const copyText = ".length, CT1 + "\n  }".length) : null;
+  const OC = mineJ.match(/<button onClick=\{(\(\)=>copyText\(mineFeed\.https, "my"\))\}/);
+  const copyRun = async (mode) => {
+    const log = [], ta = { value: "", style: {}, select() { log.push("select " + ta.value); } };
+    const ctx = vm.createContext({
+      navigator: mode === "clipboard" ? { clipboard: { writeText: async (t) => { log.push("clipboard " + t); } } } : {},
+      window: { isSecureContext: mode === "clipboard" },
+      document: { createElement: (t) => { log.push("create:" + t); return ta; }, body: { appendChild: () => { log.push("append"); }, removeChild: () => { log.push("remove"); } },
+        execCommand: (c) => { if (mode === "prompt") throw new Error("execCommand unavailable"); log.push("execCommand " + c); return true; } },
+      prompt: (m, t) => { log.push(`prompt ${m} ${t}`); },
+      setTimeout: () => 0,
+    });
+    const copyText = vm.runInContext(`(function (setCopiedUrl) { return (${ctSrc}); })`, ctx)((l) => { log.push("copied " + l); });
+    await vm.runInContext(`(function (copyText, mineFeed) { return (${OC[1]}); })`, ctx)(copyText, feedOf("FAK"))();
+    return log;
+  };
+  const cz = {};
+  for (const mode of ["clipboard", "textarea", "prompt"]) cz[mode] = ctSrc && OC ? await copyRun(mode).catch((ex) => ({ threw: String(ex && ex.message || ex) })) : null;
+  const U = feedOf("FAK").https;
+  check("BJ4 executed — Copy link (its real onClick, through the real copyText): in a secure context the https feed URL goes to the clipboard and the button reads ✓ Copied (\"my\")",
+    J(cz.clipboard) === J(["clipboard " + U, "copied my"]), (OC ? "" : "the Copy link button was not found in the Mine block — ") + J(cz.clipboard));
+  check("BJ4 executed — …without the clipboard API it copies through a hidden textarea; if even that fails, a prompt holds the URL to copy by hand",
+    J(cz.textarea) === J(["create:textarea", "append", "select " + U, "execCommand copy", "remove", "copied my"]) && J(cz.prompt) === J(["create:textarea", "append", "select " + U, "prompt Copy this URL: " + U]),
+    J([cz.textarea, cz.prompt]));
+
+  // BJ5 — Settings → Live Calendar Sync
+  const sA = nsrcJ.indexOf("📅 Live Calendar Sync</div>"), sB = sA < 0 ? -1 : nsrcJ.indexOf("{/* Refresh App */}", sA);
+  const setJ = sA < 0 || sB < 0 ? "" : nsrcJ.slice(sA, sB);
+  const SF = setJ.match(/\n[ ]*const myFeed = ([^\n]*);\n/);
+  let sfFn = null;
+  try { sfFn = SF ? vm.runInContext(`(function (env) { const { mySurgeon, sMap, SUPABASE_URL, calendarFeedUrls } = env; return (${SF[1]}); })`, sandbox) : null; } catch (ex) { sfFn = null; }
+  const sf = (me, helper) => (sfFn ? tryJ(() => sfFn({ mySurgeon: me, sMap: SMAPJ, SUPABASE_URL: SB_URL, calendarFeedUrls: helper })) : "no myFeed line");
+  const szs = { fak: sf("s6", H), rpc: sf("s3", H), app: sf("a1", H), app5: sf("a5", H), zz: sf("zz", H), oldHelpers: sf("s6", undefined) };
+  check("BJ5 executed — Settings' real myFeed line: a surgeon (FAK, RPC) → their feed (the same URL as before); an APP (MA a1, JH a5) → none (it was …?surgeon=MA, a 404); an id off the roster or an old helpers.js → none, no throw",
+    !!sfFn && !!feedFn && J(szs.fak) === J(feedOf("FAK")) && J(szs.rpc) === J(feedOf("RPC")) && szs.app === null && szs.app5 === null && szs.zz === null && szs.oldHelpers === null,
+    (sfFn ? "" : "const myFeed = …; not found in the Live Calendar Sync card — ") + J(szs));
+  const NOTE = "The live feed covers surgeon call only, so there's no link for APP days yet.";
+  const iNoFeed = setJ.indexOf("if (!myFeed) return aMap[mySurgeon] ? ("), iNote = setJ.indexOf(NOTE), iUrl = setJ.indexOf("const myUrl = myFeed.https;");
+  const PER = "{surgeons.map(s => (\n                  <button key={s.id} onClick={()=>copyText(`${SUPABASE_URL}/functions/v1/calendar-sync?surgeon=${s.name}`, s.id)}";
+  check("BJ5 an APP reads the note instead of a link (no myFeed → aMap[mySurgeon] ? the \"surgeon call only\" note), before the surgeon's URL; the old [...surgeons, ...apps] lookup is gone; the only hand-built calendar-sync?surgeon= left is the scheduler's per-surgeon list (surgeons.map)",
+    !!SF && iNoFeed > setJ.indexOf(SF[0]) && iNote > iNoFeed && iUrl > iNote && count(NOTE) === 1 && count("[...surgeons, ...apps].find(p => p.id === mySurgeon)") === 0
+      && count("calendar-sync?surgeon=") === 1 && setJ.split(PER).length === 2,
+    J({ iNoFeed, iNote, iUrl, note: count(NOTE), hand: count("calendar-sync?surgeon="), per: setJ.split(PER).length - 1 }));
+  const DEV = "Requires deploying the calendar-sync Edge Function.";
+  const iSch = setJ.indexOf("{isScheduler ? (\n"), iDev = setJ.indexOf(DEV), iSur = setJ.indexOf(") : sMap[mySurgeon] ? (\n"), iPaste = setJ.indexOf("Paste this URL into your calendar app to subscribe."), iNull = iPaste < 0 ? -1 : setJ.indexOf(") : null}", iPaste);
+  check("BJ5 \"" + DEV + "\" is the scheduler's line only (once, in the isScheduler branch); a surgeon gets the paste how-to; anyone else (an APP) no line",
+    count(DEV) === 1 && iSch > 0 && iDev > iSch && iSur > iDev && iPaste > iSur && iNull > iPaste && iNull - iSch < 600, J({ iSch, iDev, iSur, iPaste, iNull }));
 })();
 
 // ─── AH9. The REAL finishGenerate: Generate's end, with the LATEST state (2026-10-13) ───
