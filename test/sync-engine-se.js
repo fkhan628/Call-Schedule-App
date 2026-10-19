@@ -980,8 +980,9 @@ const MUTANTS = [
     from: "    appDayOffRef.current = {}; setAppDayOff({}); // the map shown,", to: "    // the map shown," },
   { id: "R6j", app: true, what: "r6-fix-3: the boundary leaves the unsaved day-off taps flagged (dirty: the next account's read never adopts the stored row)",
     from: "    dayOffDirtyRef.current = false; // the unsaved taps,", to: "    // the unsaved taps," },
-  { id: "R6k", app: true, what: "r6-fix-3: a day-off save that lands after the boundary sets this device's watermark (the next account's read skips the row it wrote: A's committed day-off wiped by B's next save)",
-    from: "        if (here) dayOffLastWriteTsRef.current = ts;", to: "        dayOffLastWriteTsRef.current = ts;" },
+  { id: "R6k", app: true, what: "r6-fix-3: a day-off save that lands after the boundary sets this device's watermark without its row on screen (the next account's read skips the row it wrote: A's committed day-off wiped by B's next save)",
+    // (re-pinned 26/n: the landing after the boundary now takes the watermark WITH its committed row — the 26/n review; the same bug)
+    from: "          appDayOffRef.current = sentMap; setAppDayOff(sentMap);\n", to: "" },
   { id: "R6l", app: true, what: "r6-fix-3: a day-off save that lands after the boundary looks for its audit lines in the forgotten array (A's committed day-off unaudited)",
     edits: [["const carried = dayOffPendingAuditRef.current, auditCount = carried.length;", "const carried = null, auditCount = dayOffPendingAuditRef.current.length;"],
       ["        carried.splice(0, auditCount).forEach(a =>", "        dayOffPendingAuditRef.current.splice(0, auditCount).forEach(a =>"]] },
@@ -1008,7 +1009,7 @@ const MUTANTS = [
   // r7-broke-2: each of the factory reset's three clears bounded, and unarm() nudging a held setup change — SE-X21 r7-broke-2 (j).
   { id: "R7c", app: true, what: "r7-broke-2: the reset's clears unbounded (one that never answers holds the setup autosave for good, nothing said, the reset never ends)",
     from: "    const bounded = (p) => Promise.race([p, ", to: "    const bounded = (p) => p || Promise.race([p, " },
-  { id: "R7d", app: true, what: "r7-broke-2: the setup clear alone unbounded",
+  { id: "R7j", app: true, what: "r7-broke-2: the setup clear alone unbounded",
     from: "    const blobClear = await bounded(clearRow(\"call_schedule_data\", { _intentionalClear: true }));", to: "    const blobClear = await clearRow(\"call_schedule_data\", { _intentionalClear: true });" },
   { id: "R7e", app: true, what: "r7-broke-2: the APP-shifts clear alone unbounded",
     from: "    const appClear = blobClear.ok ? await bounded(clearRow(\"app_shifts_data\", {})) : null;", to: "    const appClear = blobClear.ok ? await clearRow(\"app_shifts_data\", {}) : null;" },
@@ -1017,10 +1018,23 @@ const MUTANTS = [
   { id: "R7g", app: true, what: "r7-broke-2: unarm() doesn't nudge the setup change the hold kept back (after the setup clear's stop path it is written only at the next poll — lost if the page closes first)",
     from: "everHadRealDataRef.current = true; if (pendingSaveRef.current) setSetupSaveNudge(n => n + 1); };", to: "everHadRealDataRef.current = true; };" },
   // r7-fix-2: the time-off reads' sequence, moved by deleteTimeOff — SE-X21 r7-fix-2 (j).
-  { id: "R7h", app: true, what: "r7-fix-2: loadTimeOff takes a superseded answer in (a poll served before the reset's DELETE committed puts the time off back and re-arms the guard: '⚠ Save blocked')",
-    from: "      if (seq !== timeOffLoadSeqRef.current) return; // superseded — dropped\n", to: "" },
-  { id: "R7i", app: true, what: "r7-fix-2: deleteTimeOff doesn't move the time-off reads' sequence (the same stale poll answer taken in)",
-    from: "      } finally { timeOffLoadSeqRef.current++; } // (answered or not)", to: "      } finally { } // (answered or not)" },
+  { id: "R7h", app: true, what: "r7-fix-2: loadTimeOff takes in an answer a time_off DELETE answered during (a poll served before the reset's DELETE committed puts the time off back and re-arms the guard: '⚠ Save blocked')",
+    from: "      if (del !== sq.del) { await readTimeOff(quiet); return; } // a DELETE answered meanwhile — read again\n", to: "" },
+  { id: "R7i", app: true, what: "r7-fix-2: deleteTimeOff doesn't count its answer for the time-off reads (the same stale poll answer taken in)",
+    from: "      } finally { timeOffLoadSeqRef.current.del++; } // (answered or not)", to: "      } finally { } // (answered or not)" },
+  // ── the 26/n review (a fix lens + a what-it-broke lens) ──
+  { id: "R7k", app: true, what: "26/n review (H2): a missing day-off row arms the chips even while the previous session's FIRST save is out (the next account's tap saves its map alone over A's first row) — SE-X25 (d4)",
+    from: "    if (dayOffInFlightRef.current && !dayOffDirtyRef.current) return;\n", to: "    if (!offRow) { setAppDayOffLoaded(true); return; }\n    if (dayOffInFlightRef.current && !dayOffDirtyRef.current) return;\n" },
+  { id: "R7o", app: true, what: "26/n review (r26-fix-1): a day-off save that commits after the boundary doesn't put its row on screen (the next account's pre-commit read, answering last, is adopted: its tap saves the older map over A's) — SE-X25 (d3)",
+    from: "        else if (!dayOffDirtyRef.current) {\n", to: "        else if (false) {\n" },
+  { id: "R7l", app: true, what: "26/n review (H10): the time-off reads without newest-wins (an older read answering last brings back a row another device removed) — SE-X26 (n)",
+    from: "const sq = timeOffLoadSeqRef.current, seq = ++sq.read, del = sq.del;", to: "const sq = timeOffLoadSeqRef.current, seq = sq.read, del = sq.del;" },
+  { id: "R7m", app: true, what: "26/n review (H11): only the clear-all DELETE counted for the time-off reads (a stale poll after a single removal puts the row back) — SE-X26 (r)",
+    from: "      } finally { timeOffLoadSeqRef.current.del++; } // (answered or not)", to: "      } finally { if (filter.startsWith(\"id=not.is.null\")) timeOffLoadSeqRef.current.del++; } // (answered or not)" },
+  { id: "R7n", app: true, what: "26/n review (r26-fix-2): a time-off read a DELETE answered during is dropped and NOT read again (another device's change, or the painted rows, missing until the next poll) — SE-X26 (f), (p)",
+    from: "{ await readTimeOff(quiet); return; } // a DELETE answered meanwhile", to: "return; // a DELETE answered meanwhile" },
+  { id: "R7p", app: true, what: "26/n review (r26-fix-3): the reset's APP-shifts clear that got no answer (thrown, or past its bound) is said to have failed (it may have landed) — SE-X19, SE-X21 r7-broke-2 (j)",
+    from: "(appClear.unanswered ? \"got no answer — so the APP shifts may have been cleared, and the\" : \"failed — so the\")", to: "(\"failed — so the\")" },
 ];
 
 async function scenarios(createSchedSync, check, line) {
@@ -4863,7 +4877,7 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
     setupBaseRef: env.setupBaseRef || { current: null },
     resetBusyRef: env.resetBusyRef || { current: false }, forgetDayOffs: env.forgetDayOffs || (() => {}), // (23/n: the reset's hold on the setup autosave — review r6 broke-1; the boundary's day-off forget — r6 fix-3)
     pendingSaveRef: env.pendingSaveRef || { current: null }, setSetupSaveNudge: env.setSetupSaveNudge || (() => {}), // (the reset's unarm() nudges a held setup change — review r7 broke-2)
-    timeOffLoadSeqRef: env.timeOffLoadSeqRef || { current: 0 } })) : mk); // (deleteTimeOff moves the time-off reads' sequence — review r7 fix-2)
+    timeOffLoadSeqRef: env.timeOffLoadSeqRef || { current: { read: 0, del: 0 } } })) : mk); // (deleteTimeOff counts its answers for the time-off reads — review r7 fix-2)
   const HX = appHelpers();
   const F = {
     wire: fnX("isPublicMode, userProfile, showToast, setEditWeekModal, swapSuggestions, swapTarget, setSwapSuggestions, setSwapTarget, schedSyncBridgeRef, useRef, createSchedSync, scheduleRef, commitSchedule, fetch, SUPABASE_URL, dbAuthHeaders, dbReadHeaders, dbHeaders, auth, setSchedSync, console",
@@ -6553,6 +6567,7 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
   await run("SE-X19", async () => {
     if (!gotG("SE-X19 20/n G3", ["runAuth", "reset"])) return;
     const HALF = "Factory reset: the setup was reset, but clearing the APP shifts failed — so the time off and the schedule weeks were left as they are. Run the reset again, or restore the \"Before factory reset\" snapshot.";
+    const HALF_NA = "Factory reset: the setup was reset, but clearing the APP shifts got no answer — so the APP shifts may have been cleared, and the time off and the schedule weeks were left as they are. Run the reset again, or restore the \"Before factory reset\" snapshot.";
     const NONE = "Couldn't clear the stored data — reset cancelled. Nothing was changed.";
     const UNKNOWN = "Couldn't clear the stored data — reset cancelled. The server didn't answer, so the setup may have been reset; nothing else was. Run the reset again, or restore the \"Before factory reset\" snapshot.";
     const half = async (fails) => {
@@ -6566,8 +6581,8 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
         appShiftsCleared, status: rec.status.slice(), errs: errs.length, allow: refs.allow.current, ever: refs.ever.current };
     };
     const ha = await half({ app_shifts_data: "HTTP 503 upstream" }), ht = await half({ app_shifts_data: "throw" });
-    check("SE-X19 G3 (p-reset-partial) the setup clear LANDS and the APP-shifts clear fails (an HTTP error, or no answer): exactly '" + HALF + "' — never 'Nothing was changed' — the server's setup cleared, its APP shifts untouched; on this screen the reset's setup (matching the server) while the APP shifts, time off and weeks stay as they are (no weeks job); the guard refs back; no 'Reset complete'",
-      [ha, ht].every(x => x.toasts.join("|") === HALF + " :error" && x.ups.join() === "call_schedule_data,app_shifts_data" && x.server.call_schedule_data._intentionalClear === true && x.server.app_shifts_data["2030-01-08"] === "a1"
+    check("SE-X19 G3 (p-reset-partial) the setup clear LANDS and the APP-shifts clear fails (an HTTP error: exactly '" + HALF + "'; no answer — 26/n review: '" + HALF_NA + "', it may have landed) — never 'Nothing was changed' — the server's setup cleared, its APP shifts untouched; on this screen the reset's setup (matching the server) while the APP shifts, time off and weeks stay as they are (no weeks job); the guard refs back; no 'Reset complete'",
+      [ha, ht].every(x => x.toasts.join("|") === (x === ha ? HALF : HALF_NA) + " :error" &&x.ups.join() === "call_schedule_data,app_shifts_data" && x.server.call_schedule_data._intentionalClear === true && x.server.app_shifts_data["2030-01-08"] === "a1"
         && x.setup === 1 && x.timeOff === 0 && x.appShiftsCleared === 0 && !x.job && x.rows === 4 && x.shown === 4 && x.errs === 1 && x.allow === false && x.ever === true && !x.status.includes("Reset complete")),
       JSON.stringify({ ha, ht }));
     const hb = await half({ call_schedule_data: "HTTP 503" }), hu = await half({ call_schedule_data: "throw" });
@@ -6851,7 +6866,8 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
         backupMondaySet: new Set([X[0]]), fierceBackupSet: new Set(), schedule: A.ref.current, setupSaveNudge: 0, priorCounts: { s1: { dc: 3 } }, year1Counts: { s1: { dc: 1 } },
         startMonth: 0, startYear: 2030, numWeeks: 13, holidayAssignments: {}, startMondayOverride: "", pendingLocks: [], silvisRule: null, dismissedWarnings: [], appShifts: { "2030-01-08": "a1" } };
       const refs = { ever: { current: true }, allow: { current: false }, setupRead: { current: true }, lastSync: { current: "2026-10-01T08:00:00+00:00" }, loadedAt: { current: 1 }, loadFailed: { current: false },
-        pending: { current: null }, base: { current: null }, bundle: { current: null }, busy: { current: false }, toSeq: { current: 0 } };
+        pending: { current: null }, base: { current: null }, bundle: { current: null }, busy: { current: false }, toSeq: { current: { read: 0, del: 0 } } };
+      let serverTO = OLD_TO();   // (26/n) the time_off table as the server holds it: emptied when the reset's DELETE lands
       const timers = new Map(); let tid = 0;
       const sT = (f, ms) => { const id = ++tid; timers.set(id, { f, ms: ms || 0 }); return id; }, cT = (id) => { timers.delete(id); };
       // the timers due within a few seconds (the debounce, the statuses); fire(25000): 25 s pass (26/n — the reset's bound on a clear)
@@ -6882,7 +6898,7 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
       render(); await fire(); await macro(); status.length = 0; renders.length = 0; const w0 = writes.length;
       const sent = [];
       const del = G.delTO({ SUPABASE_URL: BASE, dbAuthHeaders: () => ({ Authorization: "Bearer " + (A.token || "ANON") }), console: quiet, showToast: A.showToast, sessionEpochRef: A.sessionEpochRef,
-        fetch: async (url, init) => { sent.push(init.method + " " + init.headers.Authorization); if (at === "delete") { out = true; await gate; } if (o.sc) { A.sessionEpochRef.current++; refs.setupRead.current = false; } const st0 = o.del || 204; return { ok: st0 < 300, status: st0, text: async () => "" }; },
+        fetch: async (url, init) => { sent.push(init.method + " " + init.headers.Authorization); if (at === "delete") { out = true; await gate; } if (o.sc) { A.sessionEpochRef.current++; refs.setupRead.current = false; } const st0 = o.del || 204; if (st0 < 300) serverTO = []; return { ok: st0 < 300, status: st0, text: async () => "" }; },
         timeOffLoadSeqRef: refs.toSeq });
       const tca = G.clearTO({ setVacations: set("vacations"), setNoCallDays: set("noCallDays"), logAudit: noopX, USE_TIME_OFF: true, deleteTimeOff: del, sessionEpochRef: A.sessionEpochRef, dbAuthHeaders: () => ({ Authorization: "Bearer " + (A.token || "ANON") }) });
       let jobP = null;
@@ -6900,7 +6916,7 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
         everHadRealDataRef: refs.ever, console: quiet, showToast: A.showToast, timeOffLoadSeqRef: refs.toSeq })(true);   // the 60-s poll's loadTimeOff (the real one): served at the call, answered once `held` opens
       for (let i = 0; i < 200 && !out; i++) await macro();                               // …until the held request is out
       if (o.gap) await poll(OLD_TO); // the poll's answer
-      let lateOpen = null; const lateGate = new Promise(r => { lateOpen = r; }), lateP = o.late ? poll(OLD_TO, lateGate) : null;   // (o.late) the poll's read: served now, its answer held
+      let lateOpen = null; const lateGate = new Promise(r => { lateOpen = r; }), lateP = o.late ? poll(() => serverTO, lateGate) : null;   // (o.late) the poll's read: served now (the rows as they are), its answer held
       if (o.edit !== undefined) set("startMonth")(o.edit);                                // (o.edit, 25/n) the scheduler changes the setup meanwhile
       await macro(); await macro(); await macro();                                       // React renders what's pending meanwhile
       const gap = { renders: renders.slice(), ever: refs.ever.current };
@@ -6990,7 +7006,7 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
       const H = {};
       for (const g of ["blob", "app", "delete"]) H[g] = await rearm(false, { at: g, hang: true, edit: 7 });
       const BLOB_NA = "Couldn't clear the stored data — reset cancelled. The server didn't answer, so the setup may have been reset; nothing else was. Run the reset again, or restore the \"Before factory reset\" snapshot.";
-      const APP_NA = "Factory reset: the setup was reset, but clearing the APP shifts failed — so the time off and the schedule weeks were left as they are. Run the reset again, or restore the \"Before factory reset\" snapshot.";
+      const APP_NA = "Factory reset: the setup was reset, but clearing the APP shifts got no answer — so the APP shifts may have been cleared, and the time off and the schedule weeks were left as they are. Run the reset again, or restore the \"Before factory reset\" snapshot.";
       const heldOk = (x) => x.held.blobs.length === 0 && x.held.busy === true && x.held.toasts.length === 0;
       const ends = (x, toast) => x.bound.busy === false && x.bound.toasts.join("|") === toast && !x.bound.status.includes(BLOCKED) && x.bound.saveError === false && x.bound.ever === true
         && x.bound.sent.length === 0 && x.late.sent.length === 0 && !x.late.job && x.late.rows === 4 && x.late.toasts.length === 0;
@@ -7347,7 +7363,7 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
       paintApp: fnX("appShiftsLoaded, appShifts, APP_SHIFTS_NOT_LOADED, supabase, setAppShifts, logAudit, sessionEpochRef, dbAuthHeaders", decl("commitAppPaint", "\n  };\n")),
       paintTO: fnX("USE_TIME_OFF, userProfile, db, logAudit, loadTimeOff, sessionEpochRef, dbAuthHeaders", decl("commitTimeOffPaint", "\n  };\n")),
       dayTap: fnX("appDayOffLoaded, showToast, appDayOffRef, dayOffId, setAppDayOff, dayOffDirtyRef, dayOffEpochRef, sessionEpochRef, dayOffPendingAuditRef, nameOf, dayOffSaveTimerRef, clearTimeout, setTimeout, enqueueDayOffSave", decl("toggleAppDayOff", "\n  };\n")),
-      daySave: fnX("dayOffSaveChainRef, dayOffDirtyRef, dayOffEpochRef, sessionEpochRef, dbAuthHeaders, dayOffPendingAuditRef, supabase, appDayOffRef, dayOffLastWriteTsRef, logAudit, scheduleDayOffRetry, setSaveError, setSaveStatus, setTimeout, console, showToast, dayOffInFlightRef", decl("enqueueDayOffSave", "\n  };\n")),
+      daySave: fnX("dayOffSaveChainRef, dayOffDirtyRef, dayOffEpochRef, sessionEpochRef, dbAuthHeaders, dayOffPendingAuditRef, supabase, appDayOffRef, dayOffLastWriteTsRef, logAudit, scheduleDayOffRetry, setSaveError, setSaveStatus, setTimeout, console, showToast, dayOffInFlightRef, setAppDayOff", decl("enqueueDayOffSave", "\n  };\n")),
       pref: fnX("setNotifPrefs, notifPrefsRef, notifSaveTimerRef, setTimeout, clearTimeout, setNotifPrefsSaving, db, auditRef, showToast, console, sessionEpochRef, dbAuthHeaders", cbody("saveNotifPref", "[]")),
       officeAdd: fnX("newOfficeName, newOfficeEmail, newOfficeDepts, alert, setOfficeNotifBusy, db, setOfficeContacts, setNewOfficeName, setNewOfficeEmail, setNewOfficeDepts, sessionEpochRef, console", decl("addOfficeContact", "\n  };\n")),
       officeUpd: fnX("setOfficeContacts, db, alert, console, showToast, sessionEpochRef", decl("updateOfficeContact", "\n  };\n")),
@@ -7437,7 +7453,7 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
       const refs = { map: { current: {} }, dirty: { current: false }, epoch: { current: 0 }, pend: { current: [] }, timer: { current: null }, chain: { current: Promise.resolve() }, ts: { current: null } };
       r.retries = 0;
       const daySave = H.daySave({ dayOffSaveChainRef: refs.chain, dayOffDirtyRef: refs.dirty, dayOffEpochRef: refs.epoch, sessionEpochRef: r.ep, dbAuthHeaders: r.hdr, dayOffPendingAuditRef: refs.pend, appDayOffRef: refs.map, dayOffLastWriteTsRef: refs.ts,
-        logAudit: r.logAudit, scheduleDayOffRetry: () => { r.retries++; }, setSaveError: r.mark("saveError"), setSaveStatus: r.say("status"), setTimeout: r.setTimeout, console: r.console, showToast: r.say("toast"), dayOffInFlightRef: { current: 0 },
+        logAudit: r.logAudit, scheduleDayOffRetry: () => { r.retries++; }, setSaveError: r.mark("saveError"), setSaveStatus: r.say("status"), setTimeout: r.setTimeout, console: r.console, showToast: r.say("toast"), dayOffInFlightRef: { current: 0 }, setAppDayOff: noopX,
         supabase: { from: () => ({ upsert: async () => { r.write("UPSERT dayoff"); if (at === "save" && !r.crossed) await r.cross(); return { error: fail ? "HTTP 503" : null }; } }) } });
       H.dayTap({ appDayOffLoaded: true, showToast: r.say("toast"), appDayOffRef: refs.map, dayOffId: (x) => (typeof x === "string" ? x : (x && x.id) || ""), setAppDayOff: noopX, dayOffDirtyRef: refs.dirty, dayOffEpochRef: refs.epoch,
         sessionEpochRef: r.ep, dayOffPendingAuditRef: refs.pend, nameOf: (x) => x, dayOffSaveTimerRef: refs.timer, clearTimeout: r.clearTimeout, setTimeout: r.setTimeout, enqueueDayOffSave: daySave })("2030-01-08", "a1");
@@ -7548,7 +7564,7 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
     if (!gotG("SE-X25 23/n r6-fix-3", ["boundary", "reauth", "commit", "autosave", "bundle"])) return;
     const D = {
       tap: fnX("appDayOffLoaded, showToast, appDayOffRef, dayOffId, setAppDayOff, dayOffDirtyRef, dayOffEpochRef, sessionEpochRef, dayOffPendingAuditRef, nameOf, dayOffSaveTimerRef, clearTimeout, setTimeout, enqueueDayOffSave", decl("toggleAppDayOff", "\n  };\n")),
-      save: fnX("dayOffSaveChainRef, dayOffDirtyRef, dayOffEpochRef, sessionEpochRef, dbAuthHeaders, dayOffPendingAuditRef, supabase, appDayOffRef, dayOffLastWriteTsRef, logAudit, scheduleDayOffRetry, setSaveError, setSaveStatus, setTimeout, console, showToast, dayOffInFlightRef", decl("enqueueDayOffSave", "\n  };\n")),
+      save: fnX("dayOffSaveChainRef, dayOffDirtyRef, dayOffEpochRef, sessionEpochRef, dbAuthHeaders, dayOffPendingAuditRef, supabase, appDayOffRef, dayOffLastWriteTsRef, logAudit, scheduleDayOffRetry, setSaveError, setSaveStatus, setTimeout, console, showToast, dayOffInFlightRef, setAppDayOff", decl("enqueueDayOffSave", "\n  };\n")),
       retry: fnX("dayOffRetryTimerRef, clearTimeout, setTimeout, dayOffDirtyRef, enqueueDayOffSave", decl("scheduleDayOffRetry", "\n  };\n")),
       adopt: fnX("setAppDayOffLoaded, dayOffDirtyRef, dayOffLastWriteTsRef, appDayOffRef, setAppDayOff, dayOffInFlightRef", decl("adoptDayOffRow", "\n  };\n")), // (+ the saves in flight — review r7 fix-1)
       forget: fnX("dayOffDirtyRef, dayOffPendingAuditRef, dayOffSaveTimerRef, dayOffRetryTimerRef, dayOffLastWriteTsRef, appDayOffRef, setAppDayOff, setAppDayOffLoaded, clearTimeout", decl("forgetDayOffs", "\n  };\n")), // (23/n — none before it)
@@ -7572,13 +7588,14 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
         if (r.hold) await r.hold;
         if (r.fail) return { error: "HTTP 401 JWT expired" };
         r.stored = { data: JSON.parse(JSON.stringify(row.data)), updated_at: row.updated_at };
+        if (r.holdAns) await r.holdAns;   // (26/n) committed; its answer held
         return { error: null };
       } }) };
       const logAudit = (action, summary, details, hdrs) => r.audits.push(action + " " + details.date + " @" + (hdrs ? hdrs.Authorization : "now:" + (A.token || "ANON")));
       let save = null;
       const retry = D.retry({ dayOffRetryTimerRef: refs.retry, clearTimeout: cT, setTimeout: sT, dayOffDirtyRef: refs.dirty, enqueueDayOffSave: () => save() });
       save = D.save({ dayOffSaveChainRef: refs.chain, dayOffDirtyRef: refs.dirty, dayOffEpochRef: refs.epoch, sessionEpochRef: A.sessionEpochRef, dbAuthHeaders: () => ({ Authorization: tok() }), dayOffPendingAuditRef: refs.pend,
-        supabase: sup, appDayOffRef: refs.map, dayOffLastWriteTsRef: refs.ts, logAudit, scheduleDayOffRetry: retry, setSaveError: noopX, setSaveStatus: noopX, setTimeout: sT, console: con, showToast: (m) => r.toasts.push(String(m)), dayOffInFlightRef: refs.inFlight });
+        supabase: sup, appDayOffRef: refs.map, dayOffLastWriteTsRef: refs.ts, logAudit, scheduleDayOffRetry: retry, setSaveError: noopX, setSaveStatus: noopX, setTimeout: sT, console: con, showToast: (m) => r.toasts.push(String(m)), dayOffInFlightRef: refs.inFlight, setAppDayOff: noopX });
       const setLoaded = (v) => { r.loaded = v; };
       r.tap = (ds, aid) => D.tap({ appDayOffLoaded: r.loaded, showToast: (m) => r.toasts.push(String(m)), appDayOffRef: refs.map, dayOffId: (x) => (typeof x === "string" ? x : (x && x.id) || ""), setAppDayOff: noopX,
         dayOffDirtyRef: refs.dirty, dayOffEpochRef: refs.epoch, sessionEpochRef: A.sessionEpochRef, dayOffPendingAuditRef: refs.pend, nameOf: (x) => x, dayOffSaveTimerRef: refs.timer, clearTimeout: cT, setTimeout: sT,
@@ -7712,6 +7729,126 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
     const D1f = [await runD1("other"), await runD1("signout")];
     check("SE-X25 r7-fix-1 (d1) control: …A's save on the wire FAILS after the boundary: the hold on adoption ends with it — the next read adopts the stored a0 and arms the chips; the next account's save is a0 + its tap (A's uncommitted a1 never written or audited as it)",
       D1f.every(x => x.bSave.length === 1 && x.bSave[0].startsWith(sorted({ "2030-01-07": ["a0"], "2030-01-09": ["a2"] }) + " ") && !x.asB.some(w => w.includes("2030-01-08")) && !x.audits.some(a => a.includes("2030-01-08"))), JSON.stringify(D1f));
+    // (d3) 26/n review (r26-fix-1): the next account's load read R1 served before A's save commits; A's save COMMITS but
+    // its answer is still out when the realtime read R2 of that commit is served and answered (refused: a save in
+    // flight); then A's answer lands; then R1's answer lands; then the next account taps, with no other read before the
+    // 60-s poll. A save that commits after the boundary puts its own row on screen with its watermark: R1's older row is
+    // refused as stale, and the tap keeps A's a1. (Without that, R1 was adopted and the tap saved a0 + a2 over A's a1 —
+    // worse than main, where R2 was adopted and R1 refused.) (d3') control: R2 answering after A's answer.
+    const runD3 = async (how, r2AfterAnswer) => {
+      const r = await dayRig();
+      r.tap("2030-01-07", "a0"); await r.fire();
+      await nap(5);
+      let openC, openA; r.hold = new Promise(res => { openC = res; }); r.holdAns = new Promise(res => { openA = res; });
+      r.tap("2030-01-08", "a1"); const f = r.fire(); await spin(10);   // A's save of a0 + a1 out, not committed
+      await r.cross(how);
+      const R1 = r.serve();                                             // the next account's load: served now (a0)
+      r.hold = null; openC(); await spin(10);                           // A's save COMMITS (a0 + a1); its answer still out
+      const R2 = r.serve();                                             // the realtime read of that commit: served now (a0 + a1)
+      if (!r2AfterAnswer) R2();                                         // …and answered while A's answer is out
+      r.holdAns = null; openA(); await f; await spin(10);               // A's answer lands
+      if (r2AfterAnswer) R2();
+      R1();                                                             // R1's answer lands
+      const w1 = r.writes.length;
+      r.tap("2030-01-09", "a2"); await r.fire();
+      return { bSave: r.writes.slice(w1), final: r.stored && sorted(r.stored.data) };
+    };
+    const D3 = [await runD3("other", false), await runD3("signout", false)], D3c = [await runD3("other", true), await runD3("signout", true)];
+    check("SE-X25 26/n (d3) …A's save committing while the realtime read of its commit is refused (its answer still out), then the next account's pre-commit read answering last: A's committed row was put on screen when its save landed, so that older read is refused — the next account's save is a0 + a1 + a2 (and the control: that realtime read answering after A's answer)",
+      [...D3, ...D3c].every(x => x.bSave.length === 1 && x.bSave[0].startsWith(KEPT + " ") && x.final === KEPT), JSON.stringify({ D3, D3c }));
+    // (d4) 26/n review (r26-fix-4 H2): A's FIRST day-off save (no stored row yet) on the wire across the boundary; the
+    // next account's load, served before it commits, finds NO row — that read is refused like any other (a missing row
+    // arms the chips only when no save is out): its tap while A's save is out is refused, and after the read of A's
+    // landing its save is a1 + a2, never a2 alone over A's first row.
+    const runD4 = async (how, tapWhileOut) => {
+      const r = await dayRig();                                         // A's own load: no row (the chips armed)
+      let open; r.hold = new Promise(res => { open = res; });
+      r.tap("2030-01-08", "a1"); const f = r.fire(); await spin(10);   // A's first save out
+      await r.cross(how);
+      r.read();                                                         // the next account's load: no row yet
+      r.toasts.length = 0; const w1 = r.writes.length;
+      let g = null;
+      if (tapWhileOut) { r.tap("2030-01-09", "a2"); g = r.fire(); await spin(10); }
+      r.hold = null; open(); await f; if (g) await g; await spin(10);   // A's lands ({a1})
+      const early = { refused: r.toasts.includes(NOT_LOADED), writes: r.writes.slice(w1) };
+      if (!tapWhileOut) { r.tap("2030-01-09", "a2"); await r.fire(); early.refused = r.toasts.includes(NOT_LOADED); early.writes = r.writes.slice(w1); }
+      r.read(); const w2 = r.writes.length;                             // the realtime read of A's write
+      r.tap("2030-01-09", "a2"); await r.fire();
+      return { early, bSave: r.writes.slice(w2), final: r.stored && sorted(r.stored.data) };
+    };
+    const A1A2 = sorted({ "2030-01-08": ["a1"], "2030-01-09": ["a2"] });
+    const D4 = [await runD4("other", true), await runD4("signout", true), await runD4("other", false), await runD4("signout", false)];
+    check("SE-X25 26/n (d4) …A's FIRST day-off save (no stored row) on the wire across the boundary, the next account's load finding no row: its taps refused until A's lands and is read ('Day-offs haven't loaded yet', nothing written), then its save is a1 + a2 — never a2 alone over A's first row",
+      D4.every(x => x.early.refused && x.early.writes.length === 0 && x.bSave.length === 1 && x.bSave[0].startsWith(A1A2 + " ") && x.final === A1A2), JSON.stringify(D4));
+  });
+
+  // SE-X26 — 26/n, review r7 fix-2 and the 26/n review (r26-fix-2, -4): the time-off reads outside the factory reset.
+  // The REAL loadTimeOff, buildTimeOffMaps, deleteTimeOff, toRemove and commitTimeOffPaint, one sequence ref shared as
+  // the component shares it, the time_off table emulated (a read is SERVED at its call, its answer can be held).
+  // (n) the newest read wins: an older read (served before another device removed V1) answering last never brings V1
+  // back; (r) a single removal: a 60-s poll served before its DELETE committed, answering after the DELETE answered,
+  // never puts V1 back; (f) a fresh read (the realtime event of the DELETE, carrying another device's V3) sent before
+  // the DELETE's answer and answering after it: read again, V3 shown — never dropped until the next poll; (p) the
+  // paint's own read (the painted row shown only through it) answering after a removal's DELETE answered: shown.
+  await run("SE-X26", async () => {
+    const T = { load: fnX("db, buildTimeOffMaps, setVacations, setNoCallDays, everHadRealDataRef, console, showToast, timeOffLoadSeqRef", decl("loadTimeOff", "\n  };\n")), maps: fnX("", decl("buildTimeOffMaps", "\n  };\n")),
+      remove: fnX("noCallDays, vacations, setterFor, logAudit, nameOf, USE_TIME_OFF, deleteTimeOff", decl("toRemove", "\n  };\n")),
+      paint: fnX("USE_TIME_OFF, userProfile, db, logAudit, loadTimeOff, sessionEpochRef, dbAuthHeaders", decl("commitTimeOffPaint", "\n  };\n")) };
+    const tMiss = Object.keys(T).filter(k => typeof T[k] !== "function").concat(typeof G.delTO === "function" ? [] : ["delTO"]);
+    if (tMiss.length) { check("SE-X26 26/n — the time-off slices are extractable", false, tMiss.join(", ")); return; }
+    const quiet = { error: noopX, warn: noopX, log: noopX };
+    const spin = async (n) => { for (let j = 0; j < (n || 20); j++) await null; };
+    const V = (id, p, s, e) => ({ id, person_id: p, kind: "vacation", start_date: s, end_date: e });
+    const gate = () => { let open; const p = new Promise(r => { open = r; }); return { p, open }; };
+    const rig = (rows) => {
+      const st = { vacations: {}, noCallDays: {} }, seq = { current: { read: 0, del: 0 } }, ep = { current: 0 };
+      let table = rows.slice(), delGate = null, insGate = null;
+      const buildTimeOffMaps = T.maps({});
+      const setVacations = (v) => { st.vacations = typeof v === "function" ? v(st.vacations) : v; };
+      const setNoCallDays = (v) => { st.noCallDays = typeof v === "function" ? v(st.noCallDays) : v; };
+      const read = (held) => T.load({ db: { query: async () => { const r0 = table.map(x => Object.assign({}, x)); if (held) await held; return r0; } }, buildTimeOffMaps, setVacations, setNoCallDays,
+        everHadRealDataRef: { current: false }, console: quiet, showToast: noopX, timeOffLoadSeqRef: seq })(true);
+      const deleteTimeOff = G.delTO({ SUPABASE_URL: BASE, dbAuthHeaders: () => ({ Authorization: "Bearer TOK_A" }), console: quiet, showToast: noopX, sessionEpochRef: ep, timeOffLoadSeqRef: seq,
+        fetch: async (url) => { const m = /id=eq\.(\d+)/.exec(url); table = table.filter(x => !(m && String(x.id) === m[1])); if (delGate) await delGate.p; return { ok: true, status: 204, text: async () => "" }; } });
+      const remove = (p, s, e) => T.remove({ noCallDays: st.noCallDays, vacations: st.vacations, setterFor: () => setVacations, logAudit: noopX, nameOf: (x) => x, USE_TIME_OFF: true, deleteTimeOff })(p, "vacation", s, e);
+      const paint = (entries) => T.paint({ USE_TIME_OFF: true, userProfile: null, logAudit: noopX, sessionEpochRef: ep, dbAuthHeaders: () => ({ Authorization: "Bearer TOK_A" }),
+        db: { insert: async (tb, rs) => { rs.forEach((x, i) => table.push(Object.assign({ id: 100 + i }, x))); return { data: [], error: null }; } }, loadTimeOff: () => read(insGate && insGate.p) })(entries);
+      return { st, read, remove, paint, table: () => table, setTable: (t) => { table = t; }, setDelGate: (g) => { delGate = g; }, setInsGate: (g) => { insGate = g; },
+        ids: () => JSON.stringify(Object.values(st.vacations).flat().map(x => x[2]).sort()), tids: () => JSON.stringify(table.map(x => x.id).sort()) };
+    };
+    const ROWS = () => [V(1, "s1", "2030-01-08", "2030-01-10"), V(2, "s2", "2030-01-15", "2030-01-16")];
+    const out = {};
+    { const r = rig(ROWS()); await r.read(); const g = gate();
+      const older = r.read(g.p);                                        // served now: V1 + V2
+      r.setTable(r.table().filter(x => x.id !== 1));                    // another device removes V1
+      await r.read();                                                   // the newer read (realtime): V2 only — answered first
+      g.open(); await older; await spin(6);                             // the older read answers last
+      out.n = { shown: r.ids() }; }
+    { const r = rig(ROWS()); await r.read(); const g = gate();
+      const poll = r.read(g.p);                                         // the 60-s poll: served now (V1 still there)
+      await r.remove("s1", "2030-01-08", "2030-01-10");                 // the removal: on screen at once, its DELETE answered
+      g.open(); await poll; await spin(6);                              // the poll's answer lands after it
+      out.r = { shown: r.ids(), table: r.tids() }; }
+    { const r = rig(ROWS()); await r.read(); const dg = gate(); r.setDelGate(dg);
+      const rem = r.remove("s1", "2030-01-08", "2030-01-10"); await spin(6);   // the DELETE committed; its answer held
+      r.setTable(r.table().concat([V(3, "s3", "2030-02-01", "2030-02-05")])); // another device adds V3
+      const rg = gate(), rt = r.read(rg.p);                             // the realtime read: sent now, served after both commits
+      dg.open(); await rem;                                             // the DELETE's answer lands
+      rg.open(); await rt; await spin(6);                               // the realtime read answers after it
+      out.f = { shown: r.ids(), table: r.tids() }; }
+    { const r = rig(ROWS()); await r.read(); const ig = gate(); r.setInsGate(ig);
+      await r.paint([{ personId: "s4", kind: "vacation", start: "2030-03-02", end: "2030-03-06" }]);   // inserted (id 100); its read sent, answer held
+      await r.remove("s1", "2030-01-08", "2030-01-10");                 // a removal right after: its DELETE answered
+      ig.open(); await spin(10);                                        // the paint's read answers
+      out.p = { shown: r.ids(), table: r.tids() }; }
+    check("SE-X26 26/n (n) the time-off reads: the newest wins — an older read (served before another device removed V1) answering last never brings V1 back",
+      out.n.shown === "[2]", JSON.stringify(out.n));
+    check("SE-X26 26/n (r) …a single removal: the 60-s poll served before its DELETE committed, answering after the DELETE answered — V1 never back on screen",
+      out.r.shown === "[2]", JSON.stringify(out.r));
+    check("SE-X26 26/n (f) …a fresh read (the realtime event, carrying another device's V3) sent before the DELETE's answer and answering after it: read again — V3 shown at once, not at the next poll",
+      out.f.shown === "[2,3]", JSON.stringify(out.f));
+    check("SE-X26 26/n (p) …the paint's own read (the painted row is shown only through it) answering after a removal's DELETE answered: the painted row shown, the removed one not",
+      out.p.shown === "[100,2]", JSON.stringify(out.p));
   });
 
   // SE-X-I — the harness rule (A17(c)).

@@ -322,8 +322,9 @@ function CallSchedule() {
     // and armed the chips — and the next account's first tap saved that older
     // map over the committed one, nobody told. Within one session a save in
     // flight is always dirty, so this bites only after a forget: the chips stay
-    // refused, and the read after the save settles (its own realtime event, or
-    // the 60-s poll) adopts the committed row and arms them.
+    // refused; a save that commits puts its own row on screen (enqueueDayOffSave),
+    // and the read after it settles (its own realtime event, or the 60-s poll)
+    // arms them.
     if (dayOffInFlightRef.current && !dayOffDirtyRef.current) return;
     setAppDayOffLoaded(true); // ANY successful read arms the edit gate — missing row included
     if (!offRow?.data || typeof offRow.data !== "object") return;
@@ -518,7 +519,7 @@ function CallSchedule() {
   // No-call days: person is working but should NOT be assigned call. Tracked
   // separately from vacations; the generator treats them the same (block call).
   const [noCallDays, setNoCallDays] = useState({}); // { personId: [[start,end],...] }
-  const timeOffLoadSeqRef = useRef(0); // time-off reads: the newest wins, and one answering after a time_off DELETE it was sent before is dropped (review r7 fix-2 — loadTimeOff, deleteTimeOff)
+  const timeOffLoadSeqRef = useRef({ read: 0, del: 0 }); // time-off reads sent, time_off DELETEs answered: the newest read wins, and one a DELETE answered during is read again (review r7 fix-2 — loadTimeOff, deleteTimeOff)
   const [ncSurgeon, setNcSurgeon] = useState("");
   const [ncStart, setNcStart] = useState(() => fmt(new Date()));
   const [ncEnd, setNcEnd] = useState(() => fmt(new Date()));
@@ -1352,18 +1353,20 @@ function CallSchedule() {
   // Load the whole time_off table and project it into the two maps.
   // quiet=true (the 60s poll) logs failures console-only — a transient outage
   // must not toast once a minute; the initial load and realtime path stay loud.
-  // A superseded answer is dropped (review r7 fix-2; loadSilvisFeed's rule):
-  // a newer read was sent since, or a time_off DELETE answered since this
-  // read left (deleteTimeOff moves the sequence) — it may have been served
-  // before that DELETE committed. Taken in, a 60-s poll's answer landing
-  // after the factory reset's final run put the deleted time off back on
-  // screen and re-armed the empty-save guard (every setup change after the
-  // next poll "⚠ Save blocked").
-  const loadTimeOff = async (quiet) => {
-    const seq = ++timeOffLoadSeqRef.current;
+  // The newest read wins (review r7 fix-2; loadSilvisFeed's rule): an answer
+  // is dropped when a newer read was sent since. And one a time_off DELETE
+  // answered during (deleteTimeOff counts them) may have been served before
+  // that DELETE committed: it is dropped and the table read again — sent now,
+  // so served after it. Taken in, a 60-s poll's answer landing after the
+  // factory reset's final run put the deleted time off back on screen and
+  // re-armed the empty-save guard (every setup change after the next poll
+  // "⚠ Save blocked"); a single removal's came back until the next poll.
+  const loadTimeOff = async function readTimeOff(quiet) {
+    const sq = timeOffLoadSeqRef.current, seq = ++sq.read, del = sq.del;
     try {
       const rows = await db.query("time_off", { select: "id,person_id,kind,start_date,end_date" });
-      if (seq !== timeOffLoadSeqRef.current) return; // superseded — dropped
+      if (seq !== sq.read) return; // superseded — the newer read's answer lands instead
+      if (del !== sq.del) { await readTimeOff(quiet); return; } // a DELETE answered meanwhile — read again
       const { vac, nc } = buildTimeOffMaps(rows || []);
       setVacations(vac);
       setNoCallDays(nc);
@@ -1488,9 +1491,9 @@ function CallSchedule() {
   // message); otherwise it toasts — never on the next session's screen (the
   // session at the call, checked after the await — review r4 fixes-2).
   // A time-off read sent before this DELETE answered — before it was sent, or
-  // while it was out — may have been served before it committed: the reads'
-  // sequence moves when it answers, so loadTimeOff drops such a read's answer
-  // when it lands later (review r7 fix-2).
+  // while it was out — may have been served before it committed: it is counted
+  // when it answers, so loadTimeOff reads again when such a read's answer
+  // lands later (review r7 fix-2).
   const deleteTimeOff = async (filter, opts) => {
     const ep = sessionEpochRef.current, quiet = !!(opts && opts.quiet);
     const tell = () => { if (!quiet && sessionEpochRef.current === ep) showToast("Couldn't remove that — check your connection and try again.", "error"); };
@@ -1501,7 +1504,7 @@ function CallSchedule() {
           method: "DELETE",
           headers: dbAuthHeaders(),
         });
-      } finally { timeOffLoadSeqRef.current++; } // (answered or not)
+      } finally { timeOffLoadSeqRef.current.del++; } // (answered or not)
       if (!res.ok) {
         const t = await res.text().catch(() => "");
         console.error("time_off delete failed", res.status, t);
@@ -2707,9 +2710,10 @@ function CallSchedule() {
         // The setup WAS cleared on the server — the APP shifts not: the reset
         // stops there. The screen takes the reset's setup too (it matches the
         // server); the APP shifts, time off and weeks stay as they are. Said
-        // exactly so — never "Nothing was changed".
+        // exactly so — never "Nothing was changed". No answer (thrown, or past
+        // its bound): the APP-shifts clear may have landed — said so (26/n review).
         resetSetupHere();
-        showToast("Factory reset: the setup was reset, but clearing the APP shifts failed — so the time off and the schedule weeks were left as they are. Run the reset again, or restore the \"Before factory reset\" snapshot.", "error");
+        showToast("Factory reset: the setup was reset, but clearing the APP shifts " + (appClear.unanswered ? "got no answer — so the APP shifts may have been cleared, and the" : "failed — so the") + " time off and the schedule weeks were left as they are. Run the reset again, or restore the \"Before factory reset\" snapshot.", "error");
         return;
       }
       // The setup clear failed — so nothing else was sent. Refused (an HTTP
@@ -4732,18 +4736,29 @@ function CallSchedule() {
       if (dayOffEpochRef.current !== sessionEpochRef.current) { dayOffDirtyRef.current = false; dayOffPendingAuditRef.current = []; return; } // another session's taps: dropped, never sent from this one
       const ep = sessionEpochRef.current, tapH = dbAuthHeaders();
       const carried = dayOffPendingAuditRef.current, auditCount = carried.length; // (the array of this save's taps — kept if a session boundary forgets them meanwhile: review r6 fix-3)
-      const ts = new Date().toISOString();
+      const ts = new Date().toISOString(), sentMap = appDayOffRef.current;
       try {
         dayOffInFlightRef.current++; // counted while it is out, settled or not (review r7 fix-1: adoptDayOffRow waits for it after a boundary)
         let res;
         try {
           res = await supabase.from("app_shifts_data")
-            .upsert({ id: "dayoff", data: appDayOffRef.current, updated_at: ts });
+            .upsert({ id: "dayoff", data: sentMap, updated_at: ts });
         } finally { dayOffInFlightRef.current--; }
         const { error } = res;
         if (error) throw new Error(String(error).slice(0, 200));
         const here = sessionEpochRef.current === ep;
-        if (here) dayOffLastWriteTsRef.current = ts; // (another session now: its read adopts this row — the watermark was forgotten at the boundary, review r6 fix-3)
+        if (here) dayOffLastWriteTsRef.current = ts;
+        // Committed after a session boundary (26/n review): this row is the
+        // stored one, the newest this device knows — so it goes on screen with
+        // its watermark, and a read answered later with an older row (served
+        // before this commit; or the read of this very commit refused while its
+        // answer was still out, so no other read follows) is refused as stale,
+        // never adopted under the next account's taps. (Nothing is dirty here:
+        // adoptDayOffRow kept the chips refused while it was out.)
+        else if (!dayOffDirtyRef.current) {
+          appDayOffRef.current = sentMap; setAppDayOff(sentMap);
+          dayOffLastWriteTsRef.current = ts;
+        }
         // Audit only what this save actually CARRIED and COMMITTED; entries
         // queued by taps landing mid-save wait for the next confirmed save.
         carried.splice(0, auditCount).forEach(a =>
