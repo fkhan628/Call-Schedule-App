@@ -708,6 +708,25 @@ const MUTANTS = [
       ["    const t = tokOf(known[k]), seen = readSeen[k] || 0;", "    const t = known[k] ? String(known[k].version) : DEL, seen = readSeen[k] || 0;"]] },
   { id: "MX1", what: "r7-fix-3 (r6-fix-4): reset() keeps the keepalives it should forget (the next session's failed write of that week, read back unchanged, takes the previous session's body into its ledger: the week 'Saving…' until a reload — SE88 (f2))",
     from: "putBack.clear(); Object.keys(kaLive).forEach(k => delete kaLive[k]); ", to: "putBack.clear(); " },
+  // 25/n — the 24/n verification's variant hunt (v24 hunt-1..4): the token rule at every read that can drop a dead
+  // keepalive (SE88 (j4), (j5)); reset()'s forget for good (SE88 (f3)); a gen-fenced done() adds nothing back (SE88 (f4)).
+  { id: "J1f", what: "v24 hunt-1: readBack re-tags a keepalive to a version-equal row's token (an old build's re-send read back by the push: the dead keepalive kept — 'Saving…', a false conflict, another device's write overwritten — SE88 (j4))",
+    edits: [["    if (s > (readSeen[k] || 0)) readSeen[k] = s;\n", "    if (s > (readSeen[k] || 0)) readSeen[k] = s;\n    if (r.body[0]) (kaLive[k] || []).forEach(e => { if (e.tok.split(\"|\")[0] === String(r.body[0].version === undefined ? null : r.body[0].version)) e.tok = tokOf(fromRow(r.body[0])); });\n"]] },
+  { id: "J1g", what: "v24 hunt-1: the push's re-read of an unconfirmed week re-tags a keepalive to a version-equal row's token (SE88 (j4))",
+    edits: [["      const delBack = !rb.row && !!known[k] && (sent[k] || []).includes(DEL);", "      if (rb.row) (kaLive[k] || []).forEach(e => { if (e.tok.split(\"|\")[0] === String(rb.row.version === undefined ? null : rb.row.version)) e.tok = tokOf(fromRow(rb.row)); });\n      const delBack = !rb.row && !!known[k] && (sent[k] || []).includes(DEL);"]] },
+  { id: "J1h", what: "v24 hunt-2: a clear / restore's whole-table read re-tags version-equal keepalives before rebuilding the ledger (SE88 (j5))",
+    edits: [["        Object.keys(sent).forEach(k => keepLive(k)); lostIns.clear(); resend.clear(); putBack.clear(); // (a keepalive that may still land",
+      "        Object.keys(kaLive).forEach(k => (kaLive[k] || []).forEach(e => { if (known[k] && e.tok.split(\"|\")[0] === String(known[k].version)) e.tok = tokOf(known[k]); }));\n        Object.keys(sent).forEach(k => keepLive(k)); lostIns.clear(); resend.clear(); putBack.clear(); // (a keepalive that may still land"]] },
+  { id: "MX1b", what: "v24 hunt-3: reset() keeps what it forgets and the next keepaliveRequests() puts it back (the next session's week 'Saving…' for good — SE88 (f3))",
+    edits: [["  let rseq = 0; const readSeen = {};", "  let rseq = 0; const readSeen = {}; let kaCarry = null;"],
+      ["      gen++; known = {}; seeded = false; loadFailed = false;", "      kaCarry = Object.assign({}, kaLive);\n      gen++; known = {}; seeded = false; loadFailed = false;"],
+      ["    if (!seeded || !d.canWrite() || authState() !== \"ok\") return [];\n", "    if (!seeded || !d.canWrite() || authState() !== \"ok\") return [];\n    if (kaCarry) { Object.keys(kaCarry).forEach(k => { kaLive[k] = (kaLive[k] || []).concat(kaCarry[k]); }); kaCarry = null; }\n"]] },
+  { id: "MX1c", what: "v24 hunt-3: …the next pull puts it back (SE88 (f3))",
+    edits: [["  let rseq = 0; const readSeen = {};", "  let rseq = 0; const readSeen = {}; let kaCarry = null;"],
+      ["      gen++; known = {}; seeded = false; loadFailed = false;", "      kaCarry = Object.assign({}, kaLive);\n      gen++; known = {}; seeded = false; loadFailed = false;"],
+      ["  const runPull = async () => {\n    const g = gen;\n    if (!seeded) return runLoad();\n", "  const runPull = async () => {\n    const g = gen;\n    if (!seeded) return runLoad();\n    if (kaCarry) { Object.keys(kaCarry).forEach(k => { kaLive[k] = (kaLive[k] || []).concat(kaCarry[k]); }); kaCarry = null; }\n"]] },
+  { id: "MX1d", what: "v24 hunt-4: a done() from an earlier session puts its body back in the ledger (the next account takes the previous account's landed keepalive for its own and PATCHes over it, nobody told — SE88 (f4))",
+    from: "      if (gen !== g) return; // (another session now: reset() forgot it)\n", to: "      if (gen !== g) { addSent(k, ent.c); return; }\n" },
   { id: "J2a", what: "r6-fix-2: a failed re-read of a week whose DELETE of ours is unproven doesn't hold it (the re-add PATCHed, met the deletion, re-inserted without I2's message — SE88 (e))",
     from: "      if (!rb.ok && known[k] && (sent[k] || []).includes(DEL)) { unread.add(k); continue; }\n", to: "" },
   { id: "J3a", what: "r6-matrix-2: a force DELETE sent again at the server's token keeps no grant (its answer lost, the follow-up push's wipe guard blocks it for good — SE88 (i))",
@@ -968,6 +987,10 @@ const MUTANTS = [
   { id: "R6m", app: true, what: "r7-fix-5: the autosave's timer reads the reset's hold as it was when it was SCHEDULED (a render during the reset's snapshot capture, before the hold: its debounce fires in a clear's gap and writes the OLD setup over the cleared blob)",
     edits: [["    if (!payloadLooksWiped(payload)) everHadRealDataRef.current = true;\n    const timer = setTimeout(async () => {\n      // Never while a factory reset is under way",
       "    if (!payloadLooksWiped(payload)) everHadRealDataRef.current = true;\n    const busyAtRender = resetBusyRef.current;\n    const timer = setTimeout(async () => {\n      const resetBusyRef = { current: busyAtRender };\n      // Never while a factory reset is under way"]] },
+  // 25/n — the 24/n verification's variant hunt (v24 hunt-5): the hold covers a setup CHANGE too — SE-X21 v24-hunt-5 (j).
+  { id: "R6n", app: true, what: "v24 hunt-5: the autosave's timer honours the reset's hold only for an UNCHANGED setup (a setup change made while a clear is out writes the OLD setup with it over the cleared blob)",
+    edits: [["    // guard is otherwise set.\n    if (!payloadLooksWiped(payload)) everHadRealDataRef.current = true;", "    const busyRef0 = resetBusyRef;\n    // guard is otherwise set.\n    if (!payloadLooksWiped(payload)) everHadRealDataRef.current = true;"],
+      ["      if (resetBusyRef.current) return;\n      // Never across the session boundary", "      const resetBusyRef = { current: busyRef0.current && !setupChanged };\n      if (resetBusyRef.current) return;\n      // Never across the session boundary"]] },
   // r6-fix-6 (review r6): the approval's set-back only for a row this tap wrote — the reviewer's MX7, and its edit twin — SE-X23 (h).
   { id: "MX7", app: true, what: "I4 (r6-fix-6): the approval's set-back is sent after a boundary even when its PATCH matched 0 rows (another scheduler's approval set back to pending)",
     from: "      const approveRows = await approveRes.json().catch(() => []);\n", to: "      const approveRows = await approveRes.json().catch(() => []);\n      if (!live() && Array.isArray(approveRows) && !approveRows.length) approveRows.push({});\n" },
@@ -4451,6 +4474,48 @@ async function scenarios(createSchedSync, check, line) {
       check("SE88 r7-fix-3 (f2) …the next session's write of that week failing (a 503, not applied; read back unchanged) and then undone: nothing of the previous session's keepalive enters its ledger — nothing pending (status and api.pending()), nothing said, the row untouched",
         res.n === 1 && loaded && after503 === K && res.st === 0 && res.pending.length === 0 && res.row === "s3@v3" && res.toasts.length === 0, JSON.stringify(res));
     }
+    // (f3) 25/n, review v24 hunt-3: the same with one more step in the next session BEFORE its failing write — a
+    // pagehide the page survives (keepaliveRequests, nothing to send), or a 60-s poll — so nothing forgotten comes
+    // back later either. (f4) hunt-4: the held keepalive LANDS in the next session (as the previous account, at the
+    // token it named) and then settles: that session takes it as someone else's write — adopted quietly.
+    {
+      const F3 = [];
+      for (const step of ["pagehide", "poll"]) {
+        const t = mkTable(seedRows(6, 3));
+        const S = mkSession(t); await S.engine.load();
+        S.edit(K, w => (w.dayCall = "a1", w));
+        const reqs = S.engine.keepaliveRequests();
+        S.token = "TOK_B"; S.user = "user-b";
+        await S.engine.reset(); await S.engine.idle();
+        reqs.forEach(x => { if (x.done) x.done(); });
+        const saved = clone(S.mirror), loaded = S.engine.isSeeded() && S.mirror[K] && S.mirror[K].dayCall === "s3";
+        const extra = step === "pagehide" ? S.engine.keepaliveRequests().length : (await S.engine.pull(), await S.engine.idle(), -1);
+        S.edit(K, w => (w.dayCall = "b2", w));
+        t.control.fail({ method: "PATCH", week: K, kind: "5xx-before" });
+        await S.engine.push(); await S.engine.idle();
+        const after503 = S.engine.pending().join(), tS = S.toasts.length;
+        S.mirror = clone(saved);                                       // ↩ Undo
+        await S.engine.push(); await S.engine.idle();
+        for (let i = 0; i < 2; i++) { await S.engine.pull(); await S.engine.idle(); }
+        F3.push({ step, extra, n: reqs.length, loaded, after503, st: S.st().pending, pending: S.engine.pending(), row: t.get(K).data.dayCall + "@v" + t.get(K).version, toasts: S.toasts.slice(tS) });
+      }
+      check("SE88 v24-hunt-3 (f3) …with a pagehide the page survives, or a 60-s poll, in the next session before that failing write: still nothing pending after the Undo (status and api.pending()), nothing said, the row untouched",
+        F3.length === 2 && F3.every(r => r.n === 1 && r.loaded && r.after503 === K && r.st === 0 && r.pending.length === 0 && r.row === "s3@v3" && r.toasts.length === 0), JSON.stringify(F3));
+      const t = mkTable(seedRows(6, 3));
+      const S = mkSession(t); await S.engine.load();
+      S.edit(K, w => (w.dayCall = "a1", w));
+      const reqs = S.engine.keepaliveRequests();
+      S.token = "TOK_B"; S.user = "user-b";
+      await S.engine.reset(); await S.engine.idle();
+      for (const x of reqs) { await t.fetch(x.url, x.init); if (x.done) x.done(); }   // it lands now (as user-a), then settles
+      const landed = t.get(K).data.dayCall === "a1" && t.get(K).updated_by === "user-a";
+      const from = t.log.length, tS = S.toasts.length;
+      for (let i = 0; i < 2; i++) { await S.engine.pull(); await S.engine.idle(); }
+      const res = { n: reqs.length, landed, row: t.get(K).data.dayCall + " by " + t.get(K).updated_by, shown: S.mirror[K] && S.mirror[K].dayCall,
+        w: writes(t, from).map(e => e.method + " " + e.headers.authorization), told: S.toasts.slice(tS), pending: S.engine.pending() };
+      check("SE88 v24-hunt-4 (f4) a keepalive held across reset() that lands in the next session (the previous account's write) and then settles: adopted there quietly — nothing written over it, nothing said, nothing pending",
+        res.n === 1 && landed && res.row === "a1 by user-a" && res.shown === "a1" && res.w.length === 0 && res.told.length === 0 && res.pending.length === 0, JSON.stringify(res));
+    }
     // (g) r6-fix-5 (p9): H3's re-send lands with its own answer and read-back lost, and A edits the week again before
     // reconnecting — the re-read then finds the row "ours" (not "mirror"): still told, once.
     {
@@ -4525,8 +4590,9 @@ async function scenarios(createSchedSync, check, line) {
     }
     // (j) 24/n, review r7 fix-4 / matrix-1: the token rule on the WHOLE token. A's unload keepalive is held (its done()
     // never called; the page survives); A taps Undo; an old build's tab re-sends the week unchanged — a
-    // version-KEEPING upsert: the version stays, updated_at moves — so the keepalive can never land now. A's poll (it
-    // tells the accepted I1 conflict) leaves nothing pending; then B writes the week — another value (j1), or the
+    // version-KEEPING upsert: the version stays, updated_at moves — so the keepalive can never land now. A's poll finds
+    // the row equal to its screen (the Undo), confirms it and drops the dead keepalive: nothing pending, nothing said
+    // (25/n, review v24 claims-1: the I1 loud conflict is for a screen that differs). Then B writes the week — another value (j1), or the
     // keepalive's own body (j2: the user re-entering it on the phone): adopted quietly — A writes nothing over it and
     // says nothing, nothing pending. (j3) the same on today's build alone: the week deleted and put back as it was
     // elsewhere (a clear + restore: DELETE, then INSERT at v1 — the row seeded at v1, so the version repeats and only
@@ -4544,8 +4610,9 @@ async function scenarios(createSchedSync, check, line) {
       if (road === "recreate") await t.recreate("TOK_B", k, clone(t.get(k).data), { by: "user-b" });
       else await t.oldBuild("TOK_B", "user-b").upsert({ [k]: clone(t.get(k).data) });   // unchanged: version kept, updated_at moved
       const kept = t.get(k).version === v0 && t.get(k).updated_at !== u0 && t.get(k).data.dayCall === "s1";
+      const tP = A.toasts.length;
       await A.engine.pull(); await A.engine.idle();
-      const afterPoll = { pending: A.engine.pending().join(), st: A.st().pending };
+      const afterPoll = { pending: A.engine.pending().join(), st: A.st().pending, told: A.toasts.slice(tP), c: A.st().conflicts.map(x => x.k), shown: A.mirror[k].dayCall };
       await B.engine.pull(); await B.engine.idle();
       B.edit(k, w => (w.dayCall = bBody, w)); await B.engine.push(); await B.engine.idle();
       const from = t.log.length, tA = A.toasts.length;
@@ -4555,13 +4622,63 @@ async function scenarios(createSchedSync, check, line) {
     };
     {
       const j1 = await oldBuildRun("b4"), j2 = await oldBuildRun("a1"), j3 = [await oldBuildRun("a1", "recreate"), await oldBuildRun("b4", "recreate")];
-      const ok = (x) => x.n === 1 && x.kept && x.afterPoll.pending === "" && x.afterPoll.st === 0 && x.row === x.bBody + " by user-b" && x.shown === x.bBody && x.aW.length === 0 && x.told.length === 0 && x.c.length === 0 && x.pending.length === 0;
-      check("SE88 r7-fix-4 (j1) a keepalive held while an old build re-sends the week unchanged (version kept, updated_at moved) can never land: after A's poll nothing is pending, and B's later edit is adopted quietly (no 'changed by someone else')",
+      const ok = (x) => x.n === 1 && x.kept && x.afterPoll.pending === "" && x.afterPoll.st === 0 && x.afterPoll.told.length === 0 && x.afterPoll.c.length === 0 && x.afterPoll.shown === "s1" && x.row === x.bBody + " by user-b" && x.shown === x.bBody && x.aW.length === 0 && x.told.length === 0 && x.c.length === 0 && x.pending.length === 0;
+      check("SE88 r7-fix-4 (j1) a keepalive held while an old build re-sends the week unchanged (version kept, updated_at moved) can never land: A's poll leaves nothing pending and says nothing, and B's later edit is adopted quietly (no 'changed by someone else')",
         ok(j1), JSON.stringify(j1));
       check("SE88 r7-matrix-1 (j2) …B then writing the keepalive's own body: adopted quietly — A doesn't read it as its own landing and PATCH its Undo's copy over it; the table keeps B's write, nothing said, nothing pending",
         ok(j2), JSON.stringify(j2));
       check("SE88 r7-matrix-1 (j3) …the same on today's build alone — the week deleted and put back as it was elsewhere (a clear + restore: back at v1, the version repeated): nothing pending after A's poll; B's write — the keepalive's body, or another — adopted quietly, nothing written over it, nothing said",
         j3.every(ok), JSON.stringify(j3));
+    }
+    // (j4) 25/n, review v24 hunt-1: the token rule on every read that can drop the dead keepalive — the old build's
+    // re-send lands BEFORE A's push re-reads the week (after A's Undo, or with the edit kept), so the push's read-back /
+    // re-read is the first to see the version kept and updated_at moved. (j5) hunt-2: the re-send, then a restore of
+    // another week, whose whole-table read rebuilds the ledger.
+    const kaTail = async (t, A, B, K, bBody) => {
+      await B.engine.pull(); await B.engine.idle();
+      B.edit(K, w => (w.dayCall = bBody, w)); await B.engine.push(); await B.engine.idle();
+      const from = t.log.length, tA = A.toasts.length;
+      for (let i = 0; i < 3; i++) { await A.engine.pull(); await A.engine.idle(); }
+      return { row: t.get(K).data.dayCall + " by " + t.get(K).updated_by, shown: A.mirror[K].dayCall,
+        aW: writes(t, from).filter(e => e.headers.authorization === "Bearer TOK_A").map(e => e.method), told: A.toasts.slice(tA), pending: A.engine.pending() };
+    };
+    const kaQuiet = (x) => x.n === 1 && x.kept && x.mid.pending === "" && x.mid.st === 0 && x.row === x.bBody + " by user-b" && x.shown === x.bBody && x.aW.length === 0 && x.told.length === 0 && x.pending.length === 0;
+    const kaHeld = async (K) => {
+      const t = mkTable(seedRows(3, 3));
+      const A = mkSession(t), B = mkSession(t, { token: "TOK_B", user: "user-b" });
+      await A.engine.load(); await B.engine.load();
+      const saved = clone(A.mirror[K]);
+      A.edit(K, w => (w.dayCall = "a1", w));
+      const reqs = A.engine.keepaliveRequests();                                    // held in the radio (done() never called)
+      return { t, A, B, saved, reqs };
+    };
+    const reSend = async (t, K) => { const v0 = t.get(K).version, u0 = t.get(K).updated_at; await t.oldBuild("TOK_B", "user-b").upsert({ [K]: clone(t.get(K).data) }); return t.get(K).version === v0 && t.get(K).updated_at !== u0 && t.get(K).data.dayCall === "s1"; };
+    {
+      const J4 = [];
+      for (const keep of [false, true]) for (const bBody of ["b4", "a1"]) {
+        const K = W[0], { t, A, B, saved, reqs } = await kaHeld(K);
+        const kept = await reSend(t, K);
+        if (!keep) A.mirror = Object.assign({}, A.mirror, { [K]: clone(saved) });   // ↩ Undo after the re-send
+        await A.engine.push(); await A.engine.idle();
+        const mid = { pending: A.engine.pending().join(), st: A.st().pending, shown: A.mirror[K].dayCall };
+        J4.push(Object.assign({ keep, bBody, n: reqs.length, kept, mid }, await kaTail(t, A, B, K, bBody)));
+      }
+      check("SE88 v24-hunt-1 (j4) a held keepalive, an old build's unchanged re-send BEFORE A's push re-reads the week (A's Undo, or the edit kept): nothing pending after that push; B's later write — another value or the keepalive's body — adopted quietly: A writes nothing over it, says nothing",
+        J4.length === 4 && J4.every(kaQuiet), JSON.stringify(J4));
+      const J5 = [];
+      for (const bBody of ["b4", "a1"]) {
+        const K = W[0], { t, A, B, saved, reqs } = await kaHeld(K);
+        A.mirror = Object.assign({}, A.mirror, { [K]: clone(saved) });              // ↩ Undo
+        await A.engine.push(); await A.engine.idle();
+        const kept = await reSend(t, K);
+        const before = clone(A.mirror), snap = clone(A.mirror); snap[W[1]] = wk("r9");
+        A.mirror = clone(snap);
+        const jr = await A.engine.authoritative(snap, true, "restore", null, { before }); await A.engine.idle();
+        const mid = { pending: A.engine.pending().join(), st: A.st().pending, ok: !!(jr && jr.ok), w1: t.get(W[1]).data.dayCall };
+        J5.push(Object.assign({ bBody, n: reqs.length, kept, mid }, await kaTail(t, A, B, K, bBody)));
+      }
+      check("SE88 v24-hunt-2 (j5) …the re-send, then A's restore of another week (its whole-table read rebuilds the ledger): the restore lands and nothing is pending after it; B's later write adopted quietly",
+        J5.length === 2 && J5.every(x => kaQuiet(x) && x.mid.ok && x.mid.w1 === "r9"), JSON.stringify(J5));
     }
   });
 
@@ -6748,6 +6865,7 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
         setStartMonth: set("startMonth"), setStartYear: set("startYear"), sessionEpochRef: A.sessionEpochRef, resetBusyRef: refs.busy })();
       for (let i = 0; i < 200 && !out; i++) await macro();                               // …until the held request is out
       if (o.gap) await LT.load({ db: { query: async () => OLD_TO() }, buildTimeOffMaps: LT.maps({}), setVacations: set("vacations"), setNoCallDays: set("noCallDays"), everHadRealDataRef: refs.ever, console: quiet, showToast: A.showToast })(true); // the poll's answer
+      if (o.edit !== undefined) set("startMonth")(o.edit);                                // (o.edit, 25/n) the scheduler changes the setup meanwhile
       await macro(); await macro(); await macro();                                       // React renders what's pending meanwhile
       const gap = { renders: renders.slice(), ever: refs.ever.current };
       if (slow) await fire();                                                            // (slow) the debounce fires while the DELETE is out
@@ -6792,6 +6910,19 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
       safe(capF) && safe(capS), JSON.stringify({ capF, capS }));
     check("SE-X21 r7-fix-5 (j) …the same with a sign-out while that DELETE is out (the reset stops there, silently): nothing of the old setup written after the clear — the server keeps the cleared setup; the hold released",
       !capSC.blobs.includes(0) && capSC.server === "cleared" && capSC.busy === false && !capSC.after.status.includes("Reset complete") && capSC.after.toasts.length === 0, JSON.stringify(capSC));
+    // 25/n, review v24 hunt-5: the hold also covers a setup CHANGE made while a request is out (the start month): its
+    // debounce firing then never writes the old setup with the change over the cleared blob — the reset's own setup
+    // replaces it on screen, as a finished reset does; with a sign-out during the DELETE the server keeps the cleared setup.
+    {
+      const edS = await rearm(true, { edit: 6 }), edF = await rearm(false, { edit: 6 }), edSC = await rearm(true, { edit: 6, sc: true }), edB = await rearm(true, { edit: 6, gap: "blob" });
+      const noOld = (x) => !x.blobs.includes(6) && !x.blobs.includes(0);
+      check("SE-X21 v24-hunt-5 (j) …a setup change made while the time_off DELETE is out, its debounce firing then (and, the control, after it): the OLD setup with the change is never written over the cleared blob — only the reset's own setup; 'Reset complete'; the hold released",
+        noOld(edS) && edS.server === 4 && edS.busy === false && edS.after.status.includes("Reset complete") && noOld(edF) && edF.server === 4, JSON.stringify({ edS, edF }));
+      check("SE-X21 v24-hunt-5 (j) …the same with a sign-out during that DELETE (the reset stops there, silently): the server keeps the cleared setup — not the old setup with the change; the hold released",
+        noOld(edSC) && edSC.server === "cleared" && edSC.busy === false && edSC.after.toasts.length === 0, JSON.stringify(edSC));
+      check("SE-X21 v24-hunt-5 (j) …the same while the setup clear itself is out: never the OLD setup over it",
+        noOld(edB) && edB.server === 4 && edB.busy === false, JSON.stringify(edB));
+    }
     const stop = await rearm(false, { del: 503 });
     check("SE-X21 r6-broke-1 (j) …a reset that STOPS at its time-off clear (the DELETE answers 503): its hold on the setup autosave ends with it — the scheduler's next setup change is written (no '⚠ Save blocked'), the guard re-armed (the time off is still there)",
       stop.edit.saved && !stop.edit.status.includes(BLOCKED) && stop.busy === false && stop.after.ever === true && !stop.after.status.includes("Reset complete"), JSON.stringify(stop));
