@@ -10005,14 +10005,18 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             // (Light error ink #b03030, 5.3:1 on #fce8e8 — the old #c04040 read 4.4:1: review fix P9.)
             const lineInk = (sev) => sev === "error" ? (dk ? "#f07070" : "#b03030") : sev === "warning" ? (dk ? "#e0a050" : "#a06020") : (dk ? "#9aa0b8" : "#5a6a78");
             const listRow = {display:"flex",flexWrap:"wrap",alignItems:"center",gap:8,padding:"4px 8px",marginTop:3,fontSize:12,color:dk ? "#9aa0b8" : "#5a6a78",background:dk?"#1e2430":"#f4f6fa",borderRadius:6,border:"1px solid #d8dee6"};
+            // The ✕ on an ERROR line takes the line's own error ink (rendered check 2026-10-19): #a06020 read 4.26:1 on the light
+            // error fill #fce8e8 — and every member sees the ✕ now; #b03030 reads 5.3:1. A warning / info line's ✕ keeps #a06020
+            // (4.7:1 on #fef8e8 and on #f0f8ff). Dark mode: the sheet forces every button's text #c0c8d8 (≥ 10:1 on each dark fill).
+            const xStyleOf = (x) => x.severity === "error" ? {...xStyle, color: lineInk("error")} : xStyle;
             // The ✕ — every role, every dismissable keyed line. A member: hide here, at once. A scheduler: open this line's choice.
             const dismissBtn = (x) => (x.key && x.dismissable !== false) ? (canWriteBlob ? (
               <button data-warn-x="1" data-warn-key={x.key} onClick={()=>setWarnChoiceKey(k => k === x.key ? null : x.key)} aria-expanded={warnChoiceKey === x.key}
                 onKeyDown={(e)=>{ if (e.key === "Escape" && warnChoiceKey === x.key) warnChoiceCancel(e.currentTarget); }}
-                title="Hide this warning…" aria-label="Hide this warning — opens a choice: this phone or everyone" style={xStyle}>✕</button>
+                title="Hide this warning…" aria-label="Hide this warning — opens a choice: this phone or everyone" style={xStyleOf(x)}>✕</button>
             ) : (
               <button data-warn-x="1" data-warn-key={x.key} onClick={(e)=>hideWarningHere(x, e.currentTarget)}
-                title="Hide on this phone" aria-label="Hide this warning on this phone" style={xStyle}>✕</button>
+                title="Hide on this phone" aria-label="Hide this warning on this phone" style={xStyleOf(x)}>✕</button>
             )) : null;
             // The scheduler's choice, ON the line (its own full-width row under the text — not a modal); Escape = Cancel (here or on the ✕).
             const warnChoice = (x) => (canWriteBlob && x.key && x.dismissable !== false && warnChoiceKey === x.key) ? (

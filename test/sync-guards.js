@@ -3289,7 +3289,9 @@ console.log("\nBF. toasts stack (up to 3), errors stay longer, no doubled ⚠");
 //   BL7 (T1) the bars' show/hide toggles, tapped: each opens / closes its OWN list; (P3) each says what it opens;
 //       (P4) with the card gone the bar names what is hidden; (P5) short buttons ≥ 36px wide; (P6) in dark mode
 //       "Everyone…" keeps a red the sheet can't override; (P8 / T2) the hidden / dismissed rows really wrap (the
-//       text has a basis, so the by-line and the button drop under it); (P9) "+ N more" and light error ink ≥ 4.5:1
+//       text has a basis, so the by-line and the button drop under it); (P9) "+ N more" and light error ink ≥ 4.5:1;
+//       (P10, after the merge with #90) the ✕ on an error line takes the line's error ink — #a06020 read 4.26:1 on
+//       the light error fill; every ✕ ≥ 4.5:1, light and dark, member and scheduler
 console.log("\nBL. Schedule Warnings: anyone can hide a warning on this phone");
 {
   const nsrcL = src.replace(/\r\n/g, "\n");
@@ -3923,6 +3925,28 @@ console.log("\nBL. Schedule Warnings: anyone can hide a warning on this phone");
       !!everyoneBtn && everyoneBtn.props["data-warn-everyone"] === "1" && gb.filter((b) => b.props["data-warn-everyone"]).length === 1 && !!evRule && evRule.toLowerCase() !== String(forcedBtn).toLowerCase()
         && rgbOfHex(evRule)[0] > rgbOfHex(evRule)[1] + 60 && rgbOfHex(evRule)[0] > rgbOfHex(evRule)[2] + 60 && evCr >= 4.5,
       J({ marked: everyoneBtn && everyoneBtn.props["data-warn-everyone"], evRule, forcedBtn, evCr: +evCr.toFixed(2) }));
+    // (P10, rendered check 2026-10-19, after the merge with #90) The ✕ was #a06020 on every line — 4.26:1 on the light
+    // error fill #fce8e8, and every member sees the ✕ now. On an ERROR line it takes the line's own error ink (light
+    // #b03030, 5.3:1); a warning / info line's ✕ keeps #a06020 (≥ 4.5:1 on #fef8e8 / #f0f8ff). Every ✕ — each severity
+    // in each list (Silvis, schedule, vacation-overlap), a member's and a scheduler's — is measured on its own line's
+    // fill: light as written, dark as the sheet forces it (its `button { color … !important }` beats the inline colour;
+    // the ✕ is not data-warn-everyone, so the forced light text is what shows).
+    const XSEV = { silvisConflicts: [FEED, { key: "silvis|s6|2026-10-19|tue|2026-10-20", severity: "error", week: "2026-10-19", message: "FAK: Silvis primary + Davenport Tue Night, 10/20" },
+        { key: "silvis-adj|s6|2026-10-21|2026-10-22", severity: "warning", week: "2026-10-19", message: "FAK: Silvis primary next to a Davenport night" }, { key: "silvis-horizon|2026-10-28|2026-11-02|9", severity: "info", week: "2026-11-02", message: "9 published weeks lie beyond the Silvis feed horizon" }],
+      conflicts: [A, { key: "x-warn|2026-11-02|s1", severity: "warning", week: "2026-11-02", message: "a warning-level line" }, { key: "x-info|2026-11-09|s2", severity: "info", week: "2026-11-09", message: "an info-level line" }],
+      vacOverlapWarnings: [V, { key: "apps-off|2026-11-04|a1+a2+a3", date: "2026-11-04", severity: "info", message: "3 APPs off on 2026-11-04 (prefer ≤2)" }] };
+    const sevOfKey = new Map([].concat(XSEV.silvisConflicts, XSEV.conflicts, XSEV.vacOverlapWarnings).map((x) => [x.key, x.severity]));
+    const xOn = (o) => { const v = render(Object.assign({ lists: XSEV }, o)); return v.lines.map((ln) => { const b = v.xOf(ln); if (!b) return null; const sev = sevOfKey.get(b.props["data-warn-key"]), bg = ln.props.style.background;
+      const shown = o.dk ? (b.props["data-warn-everyone"] ? null : forcedBtn) : b.props.style.color;
+      return { sev, ink: b.props.style.color, line: ln.props.style.color, bg, cr: +crL(shown || "", bg).toFixed(2) }; }).filter(Boolean); };
+    const xRuns = { lightMember: xOn({}), lightSched: xOn({ sched: true }), darkMember: xOn({ dk: true }), darkSched: xOn({ dk: true, sched: true }) };
+    const xSevs = (r) => J(r.map((x) => x.sev).sort());
+    const xWant = J(["error", "error", "error", "info", "info", "info", "warning", "warning"]);
+    check("BL7 (P10) the ✕ on an ERROR line reads ≥ 4.5:1 in light mode — it takes the line's own error ink (#b03030 on #fce8e8: was #a06020, 4.26:1); a warning / info line's ✕ keeps #a06020 (≥ 4.5:1 on its fill); every ✕ of every severity, a member's and a scheduler's, ≥ 4.5:1 light and dark (dark: the sheet's forced " + forcedBtn + " on each dark fill)",
+      Object.values(xRuns).every((r) => xSevs(r) === xWant && r.every((x) => x.cr >= 4.5))
+        && [xRuns.lightMember, xRuns.lightSched].every((r) => r.every((x) => x.sev === "error" ? x.ink === "#b03030" && x.ink === x.line && x.bg === "#fce8e8" : x.ink === "#a06020"))
+        && [xRuns.darkMember, xRuns.darkSched].every((r) => r.filter((x) => x.sev === "error").every((x) => x.ink === x.line)),
+      J(Object.fromEntries(Object.entries(xRuns).map(([k, r]) => [k, r.map((x) => `${x.sev}:${x.ink}/${x.bg}=${x.cr}`)]))));
   }
 
   // BL8 — phone-only, and the hooks' order
