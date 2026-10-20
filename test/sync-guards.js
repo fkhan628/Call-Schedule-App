@@ -11721,6 +11721,98 @@ console.log("\nBB. Setup time-off deletes ask first; backup pickers snap to Mond
     JSON.stringify({ pickers: count(picker), blur: count("onBlur={snapBkMonday}") }));
 }
 
+// ─── CC. Calendar is the first tab (owner decision 2026-10-20) ───
+// "Calendar should be first open item" — the owner chose Calendar as the
+// first tab, for everyone: the bar reads Calendar, Mine, Requests, Stats,
+// Totals, then the scheduler's Setup and Generate, Settings last. A
+// scheduler's bar used to start with Setup and Generate. Only the ORDER
+// moved: who sees which tab is unchanged, the app still opens on Calendar
+// (now the tab at the left for every role), and nothing about the bar is
+// positional — each button, its key and the Requests badge go by the tab's
+// name, never an index. (The calendar's "← Setup" is a back step to the
+// inputs, not a pointer along the bar; it stays.) Signed out and ?public=1
+// have no bar at all. The real tab list — sliced from `const allTabs = ` to
+// its `return tabs.map(` and run in a fresh context (a new free identifier
+// throws) — per role: scheduler, admin, member surgeon, APP, an APP-assign
+// member, and a scheduler / member before the profile has loaded:
+//   CC1 the order: Calendar first for every role, then that role's tabs in the new order; the app opens (its useState)
+//       on that first tab
+//   CC2 who sees which tab, and its label: the same as the pre-10/20 list gives through the SAME real filters
+//   CC3 a restricted tab (the real redirect effect, executed) falls back to the role's first tab; a visible one stays
+//   CC4 every tab in the list is a real view (one {view==="k"} block each, no key twice); the bar maps the list in
+//       its order, by name; nothing indexes it; it still wraps (css.nav), so a phone fits it as before
+console.log("\nCC. Calendar is the first tab");
+{
+  const nsrcCC = src.replace(/\r\n/g, "\n");
+  const DECL = "const allTabs = [", MAP = "return tabs.map(([k,l]) =>";
+  const t0 = nsrcCC.indexOf(DECL), t1 = t0 === -1 ? -1 : nsrcCC.indexOf(MAP, t0);
+  const tabSrc = t0 !== -1 && nsrcCC.indexOf(DECL, t0 + 1) === -1 && t1 > t0 ? nsrcCC.slice(t0, t1) : null;
+  const nl = tabSrc ? tabSrc.indexOf("\n") : -1;
+  const listLine = nl > 0 ? tabSrc.slice(0, nl) : null, filtersCC = nl > 0 ? tabSrc.slice(nl + 1) : null; // the list; the role filters after it
+  // The list as it was before 10/20 (main 0839440) — run through TODAY's real filters for CC2.
+  const OLD_TABS = 'const allTabs = [["setup","Setup"],["generate","Generate"],["calendar","Calendar"],["myschedule","Mine"],["requests","Requests"],["stats","Stats"],["totals","Totals"],["settings","Settings"]];';
+  const compileCC = (body, ret) => { try { return vm.runInContext(`(function (env) { const { userProfile, isScheduler } = env;\n${body}\nreturn ${ret}; })`, vm.createContext({})); } catch (ex) { return null; } };
+  const runCC = (f, env) => { try { return f(env); } catch (ex) { return { err: String(ex && ex.message || ex).slice(0, 160) }; } };
+  const nowF = tabSrc && compileCC(tabSrc, "tabs"), oldF = filtersCC && compileCC(OLD_TABS + "\n" + filtersCC, "tabs"), listF = listLine && compileCC(listLine, "allTabs");
+  const ROLES = {
+    scheduler: { userProfile: { role: "scheduler", person_id: "s6" }, isScheduler: true },
+    admin: { userProfile: { role: "admin", person_id: "s1" }, isScheduler: true },
+    member: { userProfile: { role: "member", person_id: "s3" }, isScheduler: false },
+    app: { userProfile: { role: "member", person_id: "a1" }, isScheduler: false },
+    appAssign: { userProfile: { role: "member", person_id: "a2", can_assign_apps: true }, isScheduler: false },
+    schedNoProfile: { userProfile: null, isScheduler: true }, // a saved scheduler role sets isScheduler before the profile read lands
+    memberNoProfile: { userProfile: null, isScheduler: false },
+  };
+  const keysOf = (t) => (Array.isArray(t) ? t.map(([k]) => k) : t);
+  if (!nowF || !oldF || !listF) check("CC the tab list (const allTabs … return tabs.map) is extractable", false, JSON.stringify({ slice: !!tabSrc, now: !!nowF, old: !!oldF, list: !!listF }));
+  else {
+    const S = ["calendar", "myschedule", "requests", "stats", "totals", "setup", "generate", "settings"];
+    const M = ["calendar", "myschedule", "requests", "stats", "settings"];
+    const WANT = { scheduler: S, admin: S.filter((k) => k !== "myschedule"), member: M, app: M,
+      appAssign: ["calendar", "myschedule", "requests", "stats", "setup", "settings"], schedNoProfile: S, memberNoProfile: M };
+    const got = {}; for (const r of Object.keys(ROLES)) got[r] = keysOf(runCC(nowF, ROLES[r]));
+    const inits = [...nsrcCC.matchAll(/\n  const \[view, setView\] = useState\("([a-z]+)"\);/g)].map((m) => m[1]);
+    check("CC1 Calendar is the first tab for every role (owner decision 2026-10-20) — the real list, executed: scheduler Calendar · Mine · Requests · Stats · Totals · Setup · Generate · Settings; admin the same without Mine; member and APP Calendar · Mine · Requests · Stats · Settings; an APP-assign member gets Setup before Settings; before the profile loads, as the role says — and the app opens on that first tab",
+      Object.keys(WANT).every((r) => JSON.stringify(got[r]) === JSON.stringify(WANT[r]))
+        && inits.length === 1 && Object.keys(ROLES).every((r) => Array.isArray(got[r]) && got[r][0] === inits[0]),
+      JSON.stringify({ got, opensOn: inits }));
+
+    // CC2 — only the order moved: the same (key, label) set per role as the old list through today's real filters.
+    // The control: the old list really did start a scheduler's bar with Setup, Generate.
+    const pairs = (t) => (Array.isArray(t) ? t.map(([k, l]) => k + "=" + l).sort().join(",") : JSON.stringify(t));
+    const diff = Object.keys(ROLES).filter((r) => { const a = runCC(nowF, ROLES[r]), b = runCC(oldF, ROLES[r]); return !Array.isArray(a) || !Array.isArray(b) || pairs(a) !== pairs(b); })
+      .map((r) => r + ": now " + pairs(runCC(nowF, ROLES[r])) + " / before " + pairs(runCC(oldF, ROLES[r])));
+    const oldSched = keysOf(runCC(oldF, ROLES.scheduler));
+    check("CC2 …only the order moved: every role sees the same tabs with the same labels as before 10/20 (the old list run through the same real filters — Totals scheduler-only, Generate scheduler/admin, Setup also for an APP-assign member, no Mine for an admin)",
+      diff.length === 0 && Array.isArray(oldSched) && oldSched.slice(0, 3).join() === "setup,generate,calendar", diff.join(" | ") || JSON.stringify(oldSched));
+
+    // CC3 — the real "restricted tab" redirect, executed: it lands on the role's first tab (Calendar), and leaves a tab the role can see.
+    const rdSrc = (() => { const a = nsrcCC.indexOf("  // If non-scheduler ends up on a restricted tab, redirect them\n  useEffect(() => {"), b = a === -1 ? -1 : nsrcCC.indexOf("\n  }, [isScheduler, view, userProfile]);", a);
+      return a !== -1 && b > a ? nsrcCC.slice(nsrcCC.indexOf("useEffect(() => {", a) + "useEffect(() => {".length, b) : null; })();
+    const rdF = (() => { try { return rdSrc && vm.runInContext(`(function (env) { const { isScheduler, view, userProfile, setView } = env;\n${rdSrc}\n })`, vm.createContext({})); } catch (ex) { return null; } })();
+    const allKeys = keysOf(runCC(listF, {}));
+    const bad = [];
+    if (rdF && Array.isArray(allKeys)) for (const r of Object.keys(ROLES)) for (const k of allKeys) {
+      const sets = []; rdF(Object.assign({ view: k, setView: (v) => sets.push(v) }, ROLES[r]));
+      const shown = Array.isArray(got[r]) && got[r].includes(k), first = Array.isArray(got[r]) ? got[r][0] : null;
+      if (shown ? sets.length !== 0 : !sets.every((v) => v === first)) bad.push(r + "/" + k + " → " + JSON.stringify(sets));
+      if (!shown && ["setup", "totals", "myschedule"].includes(k) && sets.length !== 1) bad.push(r + "/" + k + " not redirected");
+    }
+    check("CC3 a tab a role can't see (Setup, Totals, an admin's Mine — the real redirect effect, executed per role) falls back to that role's first tab, Calendar; a tab the role can see is left alone",
+      !!rdF && Array.isArray(allKeys) && bad.length === 0, rdF ? bad.join(" | ") : "redirect effect not found");
+
+    // CC4 — the list is the bar's only source of truth, by name.
+    const views = Array.isArray(allKeys) ? allKeys.map((k) => nsrcCC.split(`{view==="${k}"`).length - 1) : [];
+    const styles = fs.readFileSync(path.join(ROOT, "app-styles.js"), "utf8");
+    check("CC4 every tab in the list is a real view (one {view===\"k\"} block each) and no tab is listed twice; the bar maps the list in its order — one button per tab, keyed, selected and wired by its name, the Requests badge by name — and nothing indexes it; ?public=1 has no bar; the bar still wraps (css.nav), so it fits a phone as before",
+      Array.isArray(allKeys) && allKeys.length === 8 && new Set(allKeys).size === allKeys.length && views.every((n) => n === 1)
+        && count("return tabs.map(([k,l]) =>") === 1 && count('<button key={k} style={{...css.tab(view===k),position:"relative"}} onClick={()=>setView(k)}>') === 1
+        && count('{k==="requests" && (') === 1 && count("allTabs") === 3 && count("allTabs[") === 0 && !/[^A-Za-z]tabs\[/.test(nsrcCC)
+        && count("{!isPublicMode && <div style={css.nav}>") === 1 && styles.split('nav: { display:"flex", gap:3, flexWrap:"wrap" },').length === 2,
+      JSON.stringify({ allKeys, views }));
+  }
+}
+
 // ─── AK. The calendar's Today button (owner 2026-10-14) ───
 console.log("\nAK. calendar Today button");
 check("AK1 the calendar has a Today button beside the month arrows: it sets the month AND the year from a fresh Date (not a stale render), then scrolls today's cell into view",

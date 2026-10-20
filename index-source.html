@@ -8285,7 +8285,11 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         </div>
         {!isPublicMode && <div style={css.nav}>
           {(() => {
-            const allTabs = [["setup","Setup"],["generate","Generate"],["calendar","Calendar"],["myschedule","Mine"],["requests","Requests"],["stats","Stats"],["totals","Totals"],["settings","Settings"]];
+            // Calendar is the first tab for everyone (owner decision 2026-10-20): it is what the app opens on and what
+            // most people come for. Then Mine, Requests, Stats, Totals; the scheduler's Setup and Generate after those
+            // (Setup still just left of Generate), Settings last. Only the ORDER changed — the filters below still decide
+            // who sees which tab (sync-guards CC).
+            const allTabs = [["calendar","Calendar"],["myschedule","Mine"],["requests","Requests"],["stats","Stats"],["totals","Totals"],["setup","Setup"],["generate","Generate"],["settings","Settings"]];
             const isAdmin = userProfile?.role === "admin";
             const canAssignApps = userProfile?.can_assign_apps === true;
             const canSeeSetup = isScheduler || isAdmin || canAssignApps;
