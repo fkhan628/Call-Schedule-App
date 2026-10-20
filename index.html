@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.10.19f";
+    var APP_VERSION = "2026.10.20a";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -366,6 +366,47 @@ function CallSchedule() {
   const [silvisRule, setSilvisRule] = useState(SF_RULE_DEFAULT);
   const [dismissedWarnings, setDismissedWarnings] = useState([]);
   const [showDismissedWarnings, setShowDismissedWarnings] = useState(false);
+  const phoneHiddenRead = () => {
+    let raw;
+    try {
+      raw = localStorage.getItem("dsg-hidden-warnings");
+    } catch (e) {
+      return null;
+    }
+    try {
+      const v = JSON.parse(raw || "[]");
+      if (!Array.isArray(v)) return [];
+      const byKey = new Map();
+      v.forEach(e => {
+        if (e && typeof e.key === "string" && e.key) {
+          byKey.delete(e.key);
+          byKey.set(e.key, {
+            key: e.key,
+            text: typeof e.text === "string" ? e.text : e.key,
+            at: typeof e.at === "string" ? e.at : ""
+          });
+        }
+      });
+      return [...byKey.values()].slice(-300);
+    } catch (e) {
+      return [];
+    }
+  };
+  const [phoneHiddenWarnings, setPhoneHiddenWarnings] = useState(() => phoneHiddenRead() || []);
+  const phoneHiddenMemOnlyRef = useRef(false);
+  const warnPhoneTapRef = useRef(0);
+  useEffect(() => {
+    const onHiddenWarningsStorage = e => {
+      if (e && e.key !== null && e.key !== "dsg-hidden-warnings") return;
+      if (phoneHiddenMemOnlyRef.current) return;
+      const v = phoneHiddenRead();
+      if (v) setPhoneHiddenWarnings(v);
+    };
+    window.addEventListener("storage", onHiddenWarningsStorage);
+    return () => window.removeEventListener("storage", onHiddenWarningsStorage);
+  }, []);
+  const [showPhoneHidden, setShowPhoneHidden] = useState(false);
+  const [warnChoiceKey, setWarnChoiceKey] = useState(null);
   const [silvisRefreshing, setSilvisRefreshing] = useState(false);
   const [silvisLoadError, setSilvisLoadError] = useState(null);
   const silvisRowsRef = useRef([]);
@@ -7146,15 +7187,24 @@ ${"</"}script>${"</"}body>${"</"}html>`;
   }, [mondays, surgeons, apps, vacations, noCallDays, holidayAssignments, sMap, silvisActive, silvisFakId, silvisDays]);
   const warnShown = useMemo(() => {
     const hid = new Set((dismissedWarnings || []).map(d => d && d.key).filter(Boolean));
-    const keep = arr => arr.filter(x => x.dismissable === false || !(x.key && hid.has(x.key)));
+    const here = new Set((phoneHiddenWarnings || []).map(d => d && d.key).filter(Boolean));
+    const keep = arr => arr.filter(x => x.dismissable === false || !(x.key && (hid.has(x.key) || here.has(x.key))));
     const live = new Set([...silvisConflicts, ...conflicts, ...vacOverlapWarnings].filter(x => x.dismissable !== false).map(x => x.key).filter(Boolean));
     return {
       silvis: keep(silvisConflicts),
       conflicts: keep(conflicts),
       vac: keep(vacOverlapWarnings),
-      hidden: (dismissedWarnings || []).filter(d => d && d.key && live.has(d.key))
+      hidden: (dismissedWarnings || []).filter(d => d && d.key && live.has(d.key)),
+      hiddenHere: (phoneHiddenWarnings || []).filter(d => d && d.key && live.has(d.key) && !hid.has(d.key))
     };
-  }, [silvisConflicts, conflicts, vacOverlapWarnings, dismissedWarnings]);
+  }, [silvisConflicts, conflicts, vacOverlapWarnings, dismissedWarnings, phoneHiddenWarnings]);
+  useEffect(() => {
+    if (warnChoiceKey && ![...warnShown.silvis.slice(0, 10), ...warnShown.conflicts.slice(0, 10), ...warnShown.vac.slice(0, 10)].some(x => x.key === warnChoiceKey)) setWarnChoiceKey(null);
+  }, [warnShown, warnChoiceKey]);
+  useEffect(() => {
+    if (showPhoneHidden && warnShown.hiddenHere.length === 0) setShowPhoneHidden(false);
+    if (showDismissedWarnings && warnShown.hidden.length === 0) setShowDismissedWarnings(false);
+  }, [warnShown, showPhoneHidden, showDismissedWarnings]);
   const warnLineText = x => (x.week && x.week !== "feed" ? x.week + " · " : "") + x.message;
   const warnActor = () => {
     var _surgeons$find14;
@@ -7182,6 +7232,67 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     logAudit("warning_restored", `${by} restored: ${d.text || d.key}`, {
       key: d.key
     });
+  };
+  const hideWarningHere = (x, el) => {
+    if (!x || !x.key || x.dismissable === false) return;
+    const now = Date.now(),
+      gap = now - warnPhoneTapRef.current;
+    if (gap >= 0 && gap < 400) return;
+    warnPhoneTapRef.current = now;
+    const text = warnLineText(x);
+    warnRefocus(el, "[data-warn-line]", "[data-warn-x]");
+    setWarnChoiceKey(null);
+    changePhoneHidden(list => list.filter(e => e && e.key !== x.key).concat({
+      key: x.key,
+      text,
+      at: new Date(now).toISOString()
+    }).slice(-300));
+    showToast("Hidden on this phone only — not for everyone. It comes back if the schedule changes.", "info-passthrough");
+  };
+  const showWarningHere = (d, el) => {
+    if (!d || !d.key) return;
+    const now = Date.now(),
+      gap = now - warnPhoneTapRef.current;
+    if (gap >= 0 && gap < 400) return;
+    warnPhoneTapRef.current = now;
+    warnRefocus(el, "[data-warn-hidden]", "[data-warn-show]", d.key);
+    changePhoneHidden(list => list.filter(e => e && e.key !== d.key));
+  };
+  const changePhoneHidden = fn => {
+    const stored = phoneHiddenMemOnlyRef.current ? null : phoneHiddenRead();
+    const next = fn(stored || (Array.isArray(phoneHiddenWarnings) ? phoneHiddenWarnings : []));
+    try {
+      localStorage.setItem("dsg-hidden-warnings", JSON.stringify(next));
+    } catch (e) {
+      phoneHiddenMemOnlyRef.current = true;
+      console.warn("Couldn't persist the warnings hidden on this phone:", e);
+    }
+    setPhoneHiddenWarnings(next);
+  };
+  const warnChoiceEveryone = (x, el) => {
+    setWarnChoiceKey(null);
+    warnRefocus(el, "[data-warn-line]", "[data-warn-x]");
+    dismissWarning(x);
+  };
+  const warnChoiceCancel = el => {
+    setWarnChoiceKey(null);
+    warnRefocus(el, "[data-warn-line]", "[data-warn-x]");
+  };
+  const warnRefocus = (el, rowSel, btnSel, key) => {
+    try {
+      const row = el && el.closest ? el.closest(rowSel) : null;
+      const own = row ? row.querySelector(btnSel) : null;
+      const all = Array.from(document.querySelectorAll(btnSel));
+      const i = own ? all.indexOf(own) : -1;
+      const near = i >= 0 ? all[i + 1] || all[i - 1] || null : null;
+      setTimeout(() => {
+        try {
+          const line = key ? Array.from(document.querySelectorAll("[data-warn-x]")).find(b => b.getAttribute("data-warn-key") === key) : null;
+          const t = [own, near, line, document.querySelector("[data-warn-bar] button")].find(b => b && b.isConnected);
+          if (t && typeof t.focus === "function") t.focus();
+        } catch (e) {}
+      }, 0);
+    } catch (e) {}
   };
   const exportYearlySummary = useCallback(() => {
     const header = ["Surgeon", "Svc Wk", "Nights", "Wknds", "B-SW", "B-Nights", "B-Wknds", "Total"];
@@ -7555,7 +7666,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
   }, toasts.map(t => React.createElement("div", {
     key: t.id,
     onClick: () => dismissToast(t.id),
-    style: {
+    style: _objectSpread({
       pointerEvents: "auto",
       maxWidth: "min(90vw, 600px)",
       boxSizing: "border-box",
@@ -7569,7 +7680,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       boxShadow: "0 4px 16px rgba(0,0,0,0.25)",
       cursor: "pointer",
       letterSpacing: 0.2
-    }
+    }, t.tone === "info-passthrough" ? {
+      pointerEvents: "none",
+      cursor: "default"
+    } : null)
   }, typeof toastText === "function" ? toastText(t) : `${t.tone === "success" ? "✓ " : t.tone === "error" ? "⚠ " : ""}${t.msg}`))), !isPublicMode && authUser && (schedSync.authNeeded || reauthNeeded) && React.createElement("div", {
     role: "alert",
     style: {
@@ -7825,6 +7939,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         select, input[type="date"], input[type="number"], input[type="text"], input[type="password"], input[type="email"] { background: #0f3460 !important; border-color: #2a3a5e !important; color: #e0e0f0 !important; }
         button { color: #c0c8d8 !important; }
         button[style*="background: linear-gradient"] { color: #fff !important; }
+        /* Schedule Warnings: "Everyone…" (dismiss for everyone, audited) keeps its red, so it doesn't read like "This phone" / "Cancel". */
+        button[data-warn-everyone] { color: #f09090 !important; }
         /* Secondary buttons: css.btn(false) in app-styles.js, a light grey fill the forced light text above could not be read on. As the browser writes it. */
         button[style*="background: rgb(240, 242, 245)"] { background: #22304e !important; }
         /* …and a dark border only where it is still css.btn(false)'s own grey (#c8d0d8): a button that sets its own border colour keeps it — ✕ Clear's red. */
@@ -12600,60 +12716,172 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     }, "🚑 ", note.text) : null;
   })(), !isPublicMode && (() => {
     const shownTotal = warnShown.silvis.length + warnShown.conflicts.length + warnShown.vac.length;
-    const dismissBtn = x => canWriteBlob && x.key && x.dismissable !== false ? React.createElement("button", {
-      onClick: () => dismissWarning(x),
-      title: "Dismiss for everyone",
-      "aria-label": "Dismiss this warning for everyone",
+    const xStyle = {
+      marginLeft: "auto",
+      minWidth: 36,
+      minHeight: 36,
+      padding: "4px 10px",
+      border: "1px solid #e0c0a8",
+      borderRadius: 6,
+      background: "transparent",
+      color: "#a06020",
+      fontSize: 14,
+      fontWeight: 700,
+      cursor: "pointer",
+      fontFamily: font,
+      flexShrink: 0
+    };
+    const choiceStyle = red => ({
+      minHeight: 36,
+      padding: "6px 12px",
+      border: `1px solid ${red ? "#e0b0b0" : "#c8d0dc"}`,
+      borderRadius: 6,
+      background: "transparent",
+      color: red ? "#b03030" : "#1a6fa8",
+      fontSize: 12,
+      fontWeight: 600,
+      cursor: "pointer",
+      fontFamily: font
+    });
+    const barText = dk ? "#8a94a0" : "#5a6a78";
+    const toggleStyle = {
+      border: "none",
+      background: "none",
+      color: "#1a6fa8",
+      textDecoration: "underline",
+      cursor: "pointer",
+      fontSize: 11,
+      minHeight: 36,
+      minWidth: 44,
+      padding: "8px 6px",
+      fontFamily: font
+    };
+    const lineInk = sev => sev === "error" ? dk ? "#f07070" : "#b03030" : sev === "warning" ? dk ? "#e0a050" : "#a06020" : dk ? "#9aa0b8" : "#5a6a78";
+    const listRow = {
+      display: "flex",
+      flexWrap: "wrap",
+      alignItems: "center",
+      gap: 8,
+      padding: "4px 8px",
+      marginTop: 3,
+      fontSize: 12,
+      color: dk ? "#9aa0b8" : "#5a6a78",
+      background: dk ? "#1e2430" : "#f4f6fa",
+      borderRadius: 6,
+      border: "1px solid #d8dee6"
+    };
+    const xStyleOf = x => x.severity === "error" ? _objectSpread(_objectSpread({}, xStyle), {}, {
+      color: lineInk("error")
+    }) : xStyle;
+    const dismissBtn = x => x.key && x.dismissable !== false ? canWriteBlob ? React.createElement("button", {
+      "data-warn-x": "1",
+      "data-warn-key": x.key,
+      onClick: () => setWarnChoiceKey(k => k === x.key ? null : x.key),
+      "aria-expanded": warnChoiceKey === x.key,
+      onKeyDown: e => {
+        if (e.key === "Escape" && warnChoiceKey === x.key) warnChoiceCancel(e.currentTarget);
+      },
+      title: "Hide this warning…",
+      "aria-label": "Hide this warning — opens a choice: this phone or everyone",
+      style: xStyleOf(x)
+    }, "✕") : React.createElement("button", {
+      "data-warn-x": "1",
+      "data-warn-key": x.key,
+      onClick: e => hideWarningHere(x, e.currentTarget),
+      title: "Hide on this phone",
+      "aria-label": "Hide this warning on this phone",
+      style: xStyleOf(x)
+    }, "✕") : null;
+    const warnChoice = x => canWriteBlob && x.key && x.dismissable !== false && warnChoiceKey === x.key ? React.createElement("div", {
+      role: "group",
+      "aria-label": "Hide this warning",
+      onKeyDown: e => {
+        if (e.key === "Escape") warnChoiceCancel(e.target);
+      },
+      style: {
+        flexBasis: "100%",
+        display: "flex",
+        flexWrap: "wrap",
+        justifyContent: "flex-end",
+        gap: 6,
+        paddingTop: 2
+      }
+    }, React.createElement("button", {
+      onClick: e => hideWarningHere(x, e.currentTarget),
+      "aria-label": "This phone only — hide it here",
+      style: choiceStyle(false)
+    }, "This phone"), React.createElement("button", {
+      "data-warn-everyone": "1",
+      onClick: e => warnChoiceEveryone(x, e.currentTarget),
+      "aria-label": "Everyone… — dismiss it for everyone (asks first)",
+      style: choiceStyle(true)
+    }, "Everyone…"), React.createElement("button", {
+      onClick: e => warnChoiceCancel(e.currentTarget),
+      style: choiceStyle(false)
+    }, "Cancel")) : null;
+    const warnNoun = n => shownTotal ? "" : `schedule warning${n === 1 ? "" : "s"} `;
+    const barLabel = (open, n, what) => `${open ? "Hide the list of" : "Show"} the ${n} warning${n === 1 ? "" : "s"} ${what}`;
+    const phoneBar = warnShown.hiddenHere.length > 0 ? React.createElement("div", {
+      "data-warn-bar": "phone",
+      style: {
+        fontSize: 11,
+        color: barText,
+        marginTop: shownTotal ? 6 : 0
+      }
+    }, warnShown.hiddenHere.length, " ", warnNoun(warnShown.hiddenHere.length), "hidden on this phone · ", React.createElement("button", {
+      "aria-expanded": showPhoneHidden,
+      onClick: () => setShowPhoneHidden(v => !v),
+      "aria-label": barLabel(showPhoneHidden, warnShown.hiddenHere.length, "hidden on this phone"),
+      style: toggleStyle
+    }, showPhoneHidden ? "hide" : "show"), showPhoneHidden && warnShown.hiddenHere.map(d => React.createElement("div", {
+      key: d.key,
+      "data-warn-hidden": "1",
+      style: listRow
+    }, React.createElement("span", {
+      style: {
+        flex: "1 1 160px",
+        minWidth: 0,
+        overflowWrap: "anywhere"
+      }
+    }, d.text), React.createElement("button", {
+      "data-warn-show": "1",
+      onClick: e => showWarningHere(d, e.currentTarget),
+      "aria-label": "Show this warning again on this phone",
       style: {
         marginLeft: "auto",
-        minWidth: 36,
         minHeight: 36,
-        padding: "4px 10px",
-        border: "1px solid #e0c0a8",
+        padding: "4px 12px",
+        border: "1px solid #c8d0dc",
         borderRadius: 6,
         background: "transparent",
-        color: "#a06020",
-        fontSize: 14,
-        fontWeight: 700,
+        color: "#1a6fa8",
+        fontSize: 12,
+        fontWeight: 600,
         cursor: "pointer",
         fontFamily: font,
         flexShrink: 0
       }
-    }, "✕") : null;
+    }, "Show again")))) : null;
     const dismissedBar = canWriteBlob && warnShown.hidden.length > 0 ? React.createElement("div", {
+      "data-warn-bar": "everyone",
       style: {
         fontSize: 11,
-        color: "#8a94a0",
-        marginTop: shownTotal ? 6 : 0
+        color: barText,
+        marginTop: shownTotal || phoneBar ? 6 : 0
       }
-    }, warnShown.hidden.length, " dismissed · ", React.createElement("button", {
+    }, warnShown.hidden.length, " ", warnNoun(warnShown.hidden.length), "dismissed for everyone · ", React.createElement("button", {
+      "aria-expanded": showDismissedWarnings,
       onClick: () => setShowDismissedWarnings(v => !v),
-      style: {
-        border: "none",
-        background: "none",
-        color: "#1a6fa8",
-        textDecoration: "underline",
-        cursor: "pointer",
-        fontSize: 11,
-        padding: "8px 4px",
-        fontFamily: font
-      }
+      "aria-label": barLabel(showDismissedWarnings, warnShown.hidden.length, "dismissed for everyone"),
+      style: toggleStyle
     }, showDismissedWarnings ? "hide" : "show"), showDismissedWarnings && warnShown.hidden.map(d => React.createElement("div", {
       key: d.key,
-      style: {
-        display: "flex",
-        alignItems: "center",
-        gap: 8,
-        padding: "4px 8px",
-        marginTop: 3,
-        fontSize: 12,
-        color: "#7a8a98",
-        background: dk ? "#1e2430" : "#f4f6fa",
-        borderRadius: 6,
-        border: "1px solid #d8dee6"
-      }
+      style: listRow
     }, React.createElement("span", {
       style: {
+        flex: "1 1 160px",
+        minWidth: 0,
+        overflowWrap: "anywhere",
         textDecoration: "line-through"
       }
     }, d.text), React.createElement("span", {
@@ -12678,11 +12906,11 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         flexShrink: 0
       }
     }, "Restore")))) : null;
-    if (shownTotal === 0) return dismissedBar ? React.createElement("div", {
+    if (shownTotal === 0) return phoneBar || dismissedBar ? React.createElement("div", {
       style: {
         marginBottom: 10
       }
-    }, dismissedBar) : null;
+    }, phoneBar, dismissedBar) : null;
     return React.createElement("div", {
       style: _objectSpread(_objectSpread({}, css.card), {}, {
         marginBottom: 14,
@@ -12704,14 +12932,16 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       }
     }, "⚠️ Schedule Warnings — ", shownTotal)), warnShown.silvis.slice(0, 10).map((c, i) => React.createElement("div", {
       key: c.key || `s${i}`,
+      "data-warn-line": "1",
       style: {
         display: "flex",
+        flexWrap: "wrap",
         alignItems: "center",
         gap: 8,
         padding: "4px 8px",
         marginBottom: 3,
         fontSize: 12,
-        color: c.severity === "error" ? "#c04040" : "#5a6a78",
+        color: lineInk(c.severity === "error" ? "error" : "info"),
         background: c.severity === "error" ? dk ? "#2a0a0a" : "#fce8e8" : dk ? "#1a1a2a" : "#f0f8ff",
         borderRadius: 4,
         border: `1px solid ${c.severity === "error" ? "#e0b0b0" : "#c0d8f0"}`
@@ -12726,16 +12956,24 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         fontSize: 11,
         color: dkSubtext
       }
-    }, c.week), React.createElement("span", null, c.message), dismissBtn(c))), warnShown.conflicts.slice(0, 10).map((c, i) => React.createElement("div", {
+    }, c.week), React.createElement("span", {
+      style: {
+        flex: "1 1 0",
+        minWidth: 0,
+        overflowWrap: "anywhere"
+      }
+    }, c.message), dismissBtn(c), warnChoice(c))), warnShown.conflicts.slice(0, 10).map((c, i) => React.createElement("div", {
       key: c.key || `c${i}`,
+      "data-warn-line": "1",
       style: {
         display: "flex",
+        flexWrap: "wrap",
         alignItems: "center",
         gap: 8,
         padding: "4px 8px",
         marginBottom: 3,
         fontSize: 12,
-        color: c.severity === "error" ? "#c04040" : c.severity === "warning" ? "#a06020" : "#5a6a78",
+        color: lineInk(c.severity),
         background: c.severity === "error" ? dk ? "#2a0a0a" : "#fce8e8" : dk ? "#2a1a0a" : "#fef8e8",
         borderRadius: 4,
         border: `1px solid ${c.severity === "error" ? "#e0b0b0" : "#e8d0b0"}`
@@ -12750,16 +12988,24 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         fontSize: 11,
         color: dkSubtext
       }
-    }, c.week), React.createElement("span", null, c.message), dismissBtn(c))), warnShown.vac.slice(0, 10).map((w, i) => React.createElement("div", {
+    }, c.week), React.createElement("span", {
+      style: {
+        flex: "1 1 0",
+        minWidth: 0,
+        overflowWrap: "anywhere"
+      }
+    }, c.message), dismissBtn(c), warnChoice(c))), warnShown.vac.slice(0, 10).map((w, i) => React.createElement("div", {
       key: w.key || `v${i}`,
+      "data-warn-line": "1",
       style: {
         display: "flex",
+        flexWrap: "wrap",
         alignItems: "center",
         gap: 8,
         padding: "4px 8px",
         marginBottom: 3,
         fontSize: 12,
-        color: w.severity === "error" ? "#c04040" : "#5a6a78",
+        color: lineInk(w.severity === "error" ? "error" : "info"),
         background: w.severity === "error" ? dk ? "#2a0a0a" : "#fce8e8" : dk ? "#1a1a2a" : "#f0f8ff",
         borderRadius: 4,
         border: `1px solid ${w.severity === "error" ? "#e0b0b0" : "#c0d8f0"}`
@@ -12768,25 +13014,31 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       style: {
         fontWeight: 700
       }
-    }, w.severity === "error" ? "🔴" : "🔵"), React.createElement("span", null, w.message), dismissBtn(w))), warnShown.silvis.length > 10 && React.createElement("p", {
+    }, w.severity === "error" ? "🔴" : "🔵"), React.createElement("span", {
+      style: {
+        flex: "1 1 0",
+        minWidth: 0,
+        overflowWrap: "anywhere"
+      }
+    }, w.message), dismissBtn(w), warnChoice(w))), warnShown.silvis.length > 10 && React.createElement("p", {
       style: {
         fontSize: 11,
-        color: "#8a94a0",
+        color: barText,
         marginTop: 4
       }
     }, "+ ", warnShown.silvis.length - 10, " more Silvis line", warnShown.silvis.length - 10 === 1 ? "" : "s", "…"), warnShown.conflicts.length > 10 && React.createElement("p", {
       style: {
         fontSize: 11,
-        color: "#8a94a0",
+        color: barText,
         marginTop: 4
       }
     }, "+ ", warnShown.conflicts.length - 10, " more schedule line", warnShown.conflicts.length - 10 === 1 ? "" : "s", "…"), warnShown.vac.length > 10 && React.createElement("p", {
       style: {
         fontSize: 11,
-        color: "#8a94a0",
+        color: barText,
         marginTop: 4
       }
-    }, "+ ", warnShown.vac.length - 10, " more vacation-overlap line", warnShown.vac.length - 10 === 1 ? "" : "s", "…"), dismissedBar);
+    }, "+ ", warnShown.vac.length - 10, " more vacation-overlap line", warnShown.vac.length - 10 === 1 ? "" : "s", "…"), phoneBar, dismissedBar);
   })(), (() => {
     const st = loaded && typeof calMonthStatus === "function" ? calMonthStatus(schedule, calYear, calMonth) : null;
     const ym = ds => Number(ds.slice(0, 4)) * 12 + Number(ds.slice(5, 7)) - 1,
