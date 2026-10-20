@@ -546,6 +546,32 @@ function CallSchedule() {
   // only fires for fields in that list), and the snapshot-restore adopter.
   const [dismissedWarnings, setDismissedWarnings] = useState([]);
   const [showDismissedWarnings, setShowDismissedWarnings] = useState(false);
+  // …and HIDDEN ON THIS PHONE (owner request 2026-10-19: "can everyone have the
+  // ability to dismiss the warnings on the calendar? It would be for their own
+  // phone" — Dr Winters couldn't X one out): anyone who sees the panel can hide a
+  // line on THIS device only. localStorage "dsg-hidden-warnings" [{ key, text, at }],
+  // newest last, at most 300 (stale keys are never pruned against the live lists —
+  // those are empty while loading — the cap bounds them). The same fact keys as
+  // dismissedWarnings, so a changed fact is a new line and comes back; a
+  // dismissable:false line is never hidden. NOT in the blob, buildStateBundle,
+  // autosave, snapshots, polls or the audit log — no network write of any kind.
+  // Read once (malformed / unreadable → nothing hidden; an entry with no string key
+  // is dropped, a duplicate key kept once); written on change (private mode or
+  // storage off: the hide still holds for this session).
+  const [phoneHiddenWarnings, setPhoneHiddenWarnings] = useState(() => {
+    try {
+      const v = JSON.parse(localStorage.getItem("dsg-hidden-warnings") || "[]");
+      if (!Array.isArray(v)) return [];
+      const byKey = new Map();
+      v.forEach(e => { if (e && typeof e.key === "string" && e.key) { byKey.delete(e.key); byKey.set(e.key, { key: e.key, text: typeof e.text === "string" ? e.text : e.key, at: typeof e.at === "string" ? e.at : "" }); } });
+      return [...byKey.values()].slice(-300);
+    } catch (e) { return []; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem("dsg-hidden-warnings", JSON.stringify(phoneHiddenWarnings)); } catch (e) { console.warn("Couldn't persist the warnings hidden on this phone:", e); }
+  }, [phoneHiddenWarnings]);
+  const [showPhoneHidden, setShowPhoneHidden] = useState(false);
+  const [warnChoiceKey, setWarnChoiceKey] = useState(null); // the one line whose "This phone · Everyone… · Cancel" is open (scheduler)
   const [silvisRefreshing, setSilvisRefreshing] = useState(false);
   const [silvisLoadError, setSilvisLoadError] = useState(null);
   const silvisRowsRef = useRef([]);     // last adopted rows — the empty-read tripwire (probe rule)
@@ -7451,18 +7477,27 @@ ${"</"}script>${"</"}body>${"</"}html>`;
   // ─── Schedule Warnings: dismissals applied ───
   // Every viewer's panel reads THESE lists (header count and "+ more" too);
   // `hidden` = dismissed entries whose warning is still being produced — the
-  // scheduler's "N dismissed · show" review list.
+  // scheduler's "N dismissed for everyone · show" review list. `hiddenHere`
+  // (2026-10-19) = the lines hidden on THIS phone that are still produced, still
+  // dismissable and not already dismissed for everyone (one line, one list).
   const warnShown = useMemo(() => {
     const hid = new Set((dismissedWarnings || []).map(d => d && d.key).filter(Boolean));
+    const here = new Set((phoneHiddenWarnings || []).map(d => d && d.key).filter(Boolean));
     // dismissable:false lines are ALWAYS shown — a dismissal already stored
-    // in the blob for one of their keys is inert — and never listed as hidden.
-    const keep = (arr) => arr.filter(x => x.dismissable === false || !(x.key && hid.has(x.key)));
+    // in the blob (or on this phone) for one of their keys is inert — and never listed as hidden.
+    const keep = (arr) => arr.filter(x => x.dismissable === false || !(x.key && (hid.has(x.key) || here.has(x.key))));
     const live = new Set([...silvisConflicts, ...conflicts, ...vacOverlapWarnings].filter(x => x.dismissable !== false).map(x => x.key).filter(Boolean));
     return {
       silvis: keep(silvisConflicts), conflicts: keep(conflicts), vac: keep(vacOverlapWarnings),
       hidden: (dismissedWarnings || []).filter(d => d && d.key && live.has(d.key)),
+      hiddenHere: (phoneHiddenWarnings || []).filter(d => d && d.key && live.has(d.key) && !hid.has(d.key)),
     };
-  }, [silvisConflicts, conflicts, vacOverlapWarnings, dismissedWarnings]);
+  }, [silvisConflicts, conflicts, vacOverlapWarnings, dismissedWarnings, phoneHiddenWarnings]);
+  // The scheduler's open choice closes once its line is no longer shown (dismissed
+  // elsewhere, hidden, or its facts changed) — so it can't pop open again when that line comes back.
+  useEffect(() => {
+    if (warnChoiceKey && ![...warnShown.silvis, ...warnShown.conflicts, ...warnShown.vac].some(x => x.key === warnChoiceKey)) setWarnChoiceKey(null);
+  }, [warnShown, warnChoiceKey]);
   // The line as the panel shows it (week prefix where the line carries one).
   const warnLineText = (x) => (x.week && x.week !== "feed" ? x.week + " · " : "") + x.message;
   const warnActor = () => userProfile?.display_name || surgeons.find(s => s.id === userProfile?.person_id)?.name || "a scheduler";
@@ -7482,6 +7517,56 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     const by = warnActor();
     setDismissedWarnings(prev => (prev || []).filter(e => e && e.key !== d.key));
     logAudit("warning_restored", `${by} restored: ${d.text || d.key}`, { key: d.key });
+  };
+  // ─── Hide on THIS PHONE (owner request 2026-10-19) — anyone who sees the panel ───
+  // At once, no confirm: it touches only this device and "Show again" undoes it.
+  // Never the blob, never the audit log, never a fetch. A scheduler reaches it
+  // through the line's choice ("This phone"); "Everyone…" is dismissWarning above.
+  // After the line goes, focus moves to a neighbour (warnRefocus) — never <body>.
+  const hideWarningHere = (x, el) => {
+    if (!x || !x.key || x.dismissable === false) return;
+    const text = warnLineText(x);
+    warnRefocus(el, "[data-warn-line]", "[data-warn-x]");
+    setWarnChoiceKey(null);
+    setPhoneHiddenWarnings(prev => (Array.isArray(prev) ? prev : []).filter(e => e && e.key !== x.key).concat({ key: x.key, text, at: new Date().toISOString() }).slice(-300));
+    showToast("Hidden on this phone only — not for everyone. It comes back if the schedule changes.", "info");
+  };
+  const showWarningHere = (d, el) => {
+    if (!d || !d.key) return;
+    warnRefocus(el, "[data-warn-hidden]", "[data-warn-show]", d.key);
+    setPhoneHiddenWarnings(prev => (Array.isArray(prev) ? prev : []).filter(e => e && e.key !== d.key));
+  };
+  // The scheduler's choice: "Everyone…" is the UNCHANGED dismissWarning (its confirm
+  // quoting the line, the blob write, the audit row); "Cancel" just closes.
+  const warnChoiceEveryone = (x, el) => {
+    setWarnChoiceKey(null);
+    warnRefocus(el, "[data-warn-line]", "[data-warn-x]");
+    dismissWarning(x);
+  };
+  const warnChoiceCancel = (el) => {
+    setWarnChoiceKey(null);
+    warnRefocus(el, "[data-warn-line]", "[data-warn-x]");
+  };
+  // Focus after a hide: the tapped control's row (rowSel) — if it is still there
+  // (Cancel, a declined confirm) its own button, else the next row's (else the
+  // previous one's), else the line `key` names, back on the card ("Show again" on
+  // the last hidden line), else a bar's button. Measured before the change, applied
+  // after React has drawn it. A nicety: it can never break the hide itself.
+  const warnRefocus = (el, rowSel, btnSel, key) => {
+    try {
+      const row = el && el.closest ? el.closest(rowSel) : null;
+      const own = row ? row.querySelector(btnSel) : null;
+      const all = Array.from(document.querySelectorAll(btnSel));
+      const i = own ? all.indexOf(own) : -1;
+      const near = i >= 0 ? (all[i + 1] || all[i - 1] || null) : null;
+      setTimeout(() => {
+        try {
+          const line = key ? Array.from(document.querySelectorAll("[data-warn-x]")).find(b => b.getAttribute("data-warn-key") === key) : null;
+          const t = [own, near, line, document.querySelector("[data-warn-bar] button")].find(b => b && b.isConnected);
+          if (t && typeof t.focus === "function") t.focus();
+        } catch (e) { /* focus only */ }
+      }, 0);
+    } catch (e) { /* focus only */ }
   };
 
   // ─── Yearly Summary Export ───
@@ -9834,21 +9919,67 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           {/* Schedule Warnings — INTERNAL ONLY (owner decision 2026-09-24: outsiders on
               ?public=1 / the OR board can't act on warnings). Everything here reads
               the DISMISSAL-FILTERED lists (warnShown) — header count and "+ more"
-              included. Scheduler/admin: a dismiss control per line (confirm quoting
-              the line, audited) and "N dismissed · show" to review and Restore. */}
+              included. EVERYONE who sees it gets a ✕ on each dismissable line (owner
+              request 2026-10-19 — Dr Winters couldn't X one out on her phone): a
+              member's hides the line on THIS phone at once (hideWarningHere: no
+              confirm, no network); a scheduler's opens a choice on that line —
+              "This phone" (the same) · "Everyone…" (dismissWarning: confirm quoting
+              the line, the blob, audited) · "Cancel". "N hidden on this phone · show"
+              lists this phone's own (Show again, here only); a scheduler's "N
+              dismissed for everyone · show" reviews and Restores (audited). Phone
+              polish: 36px targets, lines wrap at 320px, dark mode reads (the dark
+              sheet forces every button's text light, so no button here has a light
+              fill), focus never falls to <body> after a hide (warnRefocus). */}
           {!isPublicMode && (()=>{
             const shownTotal = warnShown.silvis.length + warnShown.conflicts.length + warnShown.vac.length;
-            const dismissBtn = (x) => (canWriteBlob && x.key && x.dismissable !== false) ? (
-              <button onClick={()=>dismissWarning(x)} title="Dismiss for everyone" aria-label="Dismiss this warning for everyone"
-                style={{marginLeft:"auto",minWidth:36,minHeight:36,padding:"4px 10px",border:"1px solid #e0c0a8",borderRadius:6,background:"transparent",color:"#a06020",fontSize:14,fontWeight:700,cursor:"pointer",fontFamily:font,flexShrink:0}}>✕</button>
+            const xStyle = {marginLeft:"auto",minWidth:36,minHeight:36,padding:"4px 10px",border:"1px solid #e0c0a8",borderRadius:6,background:"transparent",color:"#a06020",fontSize:14,fontWeight:700,cursor:"pointer",fontFamily:font,flexShrink:0};
+            const choiceStyle = (red) => ({minHeight:36,padding:"6px 12px",border:`1px solid ${red ? "#e0b0b0" : "#c8d0dc"}`,borderRadius:6,background:"transparent",color:red ? "#b03030" : "#1a6fa8",fontSize:12,fontWeight:600,cursor:"pointer",fontFamily:font});
+            const barText = dk ? "#8a94a0" : "#5a6a78"; // ≥ 4.5:1 on the card and the page, light and dark (the old #8a94a0 read 2.9:1 in light)
+            const toggleStyle = {border:"none",background:"none",color:"#1a6fa8",textDecoration:"underline",cursor:"pointer",fontSize:11,minHeight:36,padding:"8px 6px",fontFamily:font};
+            // A line's own text colour, readable on its fill in light AND dark: the dark sheet's [style*="color:#…"]
+            // rules never match React's rgb() styles, so the light reds / greys sat at 2.9–3.5:1 on the dark fills.
+            const lineInk = (sev) => sev === "error" ? (dk ? "#f07070" : "#c04040") : sev === "warning" ? (dk ? "#e0a050" : "#a06020") : (dk ? "#9aa0b8" : "#5a6a78");
+            const listRow = {display:"flex",flexWrap:"wrap",alignItems:"center",gap:8,padding:"4px 8px",marginTop:3,fontSize:12,color:dk ? "#9aa0b8" : "#5a6a78",background:dk?"#1e2430":"#f4f6fa",borderRadius:6,border:"1px solid #d8dee6"};
+            // The ✕ — every role, every dismissable keyed line. A member: hide here, at once. A scheduler: open this line's choice.
+            const dismissBtn = (x) => (x.key && x.dismissable !== false) ? (canWriteBlob ? (
+              <button data-warn-x="1" data-warn-key={x.key} onClick={()=>setWarnChoiceKey(k => k === x.key ? null : x.key)} aria-expanded={warnChoiceKey === x.key}
+                onKeyDown={(e)=>{ if (e.key === "Escape" && warnChoiceKey === x.key) warnChoiceCancel(e.currentTarget); }}
+                title="Hide this warning…" aria-label="Hide this warning — opens a choice: this phone or everyone" style={xStyle}>✕</button>
+            ) : (
+              <button data-warn-x="1" data-warn-key={x.key} onClick={(e)=>hideWarningHere(x, e.currentTarget)}
+                title="Hide on this phone" aria-label="Hide this warning on this phone" style={xStyle}>✕</button>
+            )) : null;
+            // The scheduler's choice, ON the line (its own full-width row under the text — not a modal); Escape = Cancel (here or on the ✕).
+            const warnChoice = (x) => (canWriteBlob && x.key && x.dismissable !== false && warnChoiceKey === x.key) ? (
+              <div role="group" aria-label="Hide this warning" onKeyDown={(e)=>{ if (e.key === "Escape") warnChoiceCancel(e.target); }}
+                style={{flexBasis:"100%",display:"flex",flexWrap:"wrap",justifyContent:"flex-end",gap:6,paddingTop:2}}>
+                <button onClick={(e)=>hideWarningHere(x, e.currentTarget)} aria-label="This phone only — hide it here" style={choiceStyle(false)}>This phone</button>
+                <button onClick={(e)=>warnChoiceEveryone(x, e.currentTarget)} aria-label="Everyone… — dismiss it for everyone (asks first)" style={choiceStyle(true)}>Everyone…</button>
+                <button onClick={(e)=>warnChoiceCancel(e.currentTarget)} style={choiceStyle(false)}>Cancel</button>
+              </div>
             ) : null;
+            // Hidden on THIS phone (2026-10-19) — everyone's own list: the stored line text; "Show again" un-hides it here only (no audit).
+            const phoneBar = warnShown.hiddenHere.length > 0 ? (
+              <div data-warn-bar="phone" style={{fontSize:11,color:barText,marginTop:shownTotal ? 6 : 0}}>
+                {warnShown.hiddenHere.length} hidden on this phone · <button aria-expanded={showPhoneHidden} onClick={()=>setShowPhoneHidden(v=>!v)}
+                  style={toggleStyle}>{showPhoneHidden ? "hide" : "show"}</button>
+                {showPhoneHidden && warnShown.hiddenHere.map(d => (
+                  <div key={d.key} data-warn-hidden="1" style={listRow}>
+                    <span style={{flex:"1 1 0",minWidth:0,overflowWrap:"anywhere"}}>{d.text}</span>
+                    <button data-warn-show="1" onClick={(e)=>showWarningHere(d, e.currentTarget)} aria-label="Show this warning again on this phone"
+                      style={{marginLeft:"auto",minHeight:36,padding:"4px 12px",border:"1px solid #c8d0dc",borderRadius:6,background:"transparent",color:"#1a6fa8",fontSize:12,fontWeight:600,cursor:"pointer",fontFamily:font,flexShrink:0}}>Show again</button>
+                  </div>
+                ))}
+              </div>
+            ) : null;
+            // Dismissed for EVERYONE — the scheduler's review list (relabelled 2026-10-19 so the two bars can't be confused).
             const dismissedBar = (canWriteBlob && warnShown.hidden.length > 0) ? (
-              <div style={{fontSize:11,color:"#8a94a0",marginTop:shownTotal ? 6 : 0}}>
-                {warnShown.hidden.length} dismissed · <button onClick={()=>setShowDismissedWarnings(v=>!v)}
-                  style={{border:"none",background:"none",color:"#1a6fa8",textDecoration:"underline",cursor:"pointer",fontSize:11,padding:"8px 4px",fontFamily:font}}>{showDismissedWarnings ? "hide" : "show"}</button>
+              <div data-warn-bar="everyone" style={{fontSize:11,color:barText,marginTop:(shownTotal || phoneBar) ? 6 : 0}}>
+                {warnShown.hidden.length} dismissed for everyone · <button aria-expanded={showDismissedWarnings} onClick={()=>setShowDismissedWarnings(v=>!v)}
+                  style={toggleStyle}>{showDismissedWarnings ? "hide" : "show"}</button>
                 {showDismissedWarnings && warnShown.hidden.map(d => (
-                  <div key={d.key} style={{display:"flex",alignItems:"center",gap:8,padding:"4px 8px",marginTop:3,fontSize:12,color:"#7a8a98",background:dk?"#1e2430":"#f4f6fa",borderRadius:6,border:"1px solid #d8dee6"}}>
-                    <span style={{textDecoration:"line-through"}}>{d.text}</span>
+                  <div key={d.key} style={listRow}>
+                    <span style={{flex:"1 1 0",minWidth:0,overflowWrap:"anywhere",textDecoration:"line-through"}}>{d.text}</span>
                     <span style={{fontSize:10,whiteSpace:"nowrap"}}>— {d.by}{d.at ? ", " + new Date(d.at).toLocaleDateString() : ""}</span>
                     <button onClick={()=>restoreWarning(d)}
                       style={{marginLeft:"auto",minHeight:36,padding:"4px 12px",border:"1px solid #c8d0dc",borderRadius:6,background:"transparent",color:"#1a6fa8",fontSize:12,fontWeight:600,cursor:"pointer",fontFamily:font,flexShrink:0}}>Restore</button>
@@ -9856,7 +9987,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                 ))}
               </div>
             ) : null;
-            if (shownTotal === 0) return dismissedBar ? <div style={{marginBottom:10}}>{dismissedBar}</div> : null;
+            if (shownTotal === 0) return (phoneBar || dismissedBar) ? <div style={{marginBottom:10}}>{phoneBar}{dismissedBar}</div> : null;
             return (
             <div style={{...css.card,marginBottom:14,background:dk?"#2a1a1a":"#fef8f0",border:"1px solid #e8c0a0"}}>
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
@@ -9864,31 +9995,35 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               </div>
               {/* silvisBusy — feed health + hard overlaps (🔴) */}
               {warnShown.silvis.slice(0,10).map((c,i) => (
-                <div key={c.key || `s${i}`} style={{display:"flex",alignItems:"center",gap:8,padding:"4px 8px",marginBottom:3,fontSize:12,color:c.severity==="error"?"#c04040":"#5a6a78",background:c.severity==="error"?(dk?"#2a0a0a":"#fce8e8"):dk?"#1a1a2a":"#f0f8ff",borderRadius:4,border:`1px solid ${c.severity==="error"?"#e0b0b0":"#c0d8f0"}`}}>
+                <div key={c.key || `s${i}`} data-warn-line="1" style={{display:"flex",flexWrap:"wrap",alignItems:"center",gap:8,padding:"4px 8px",marginBottom:3,fontSize:12,color:lineInk(c.severity==="error"?"error":"info"),background:c.severity==="error"?(dk?"#2a0a0a":"#fce8e8"):dk?"#1a1a2a":"#f0f8ff",borderRadius:4,border:`1px solid ${c.severity==="error"?"#e0b0b0":"#c0d8f0"}`}}>
                   <span style={{fontWeight:700}}>{c.severity==="error"?"🔴":"🔵"}</span>
                   <span style={{fontFamily:mono,fontSize:11,color:dkSubtext}}>{c.week}</span>
-                  <span>{c.message}</span>
+                  <span style={{flex:"1 1 0",minWidth:0,overflowWrap:"anywhere"}}>{c.message}</span>
                   {dismissBtn(c)}
+                  {warnChoice(c)}
                 </div>
               ))}
               {warnShown.conflicts.slice(0,10).map((c,i) => (
-                <div key={c.key || `c${i}`} style={{display:"flex",alignItems:"center",gap:8,padding:"4px 8px",marginBottom:3,fontSize:12,color:c.severity==="error"?"#c04040":c.severity==="warning"?"#a06020":"#5a6a78",background:c.severity==="error"?(dk?"#2a0a0a":"#fce8e8"):dk?"#2a1a0a":"#fef8e8",borderRadius:4,border:`1px solid ${c.severity==="error"?"#e0b0b0":"#e8d0b0"}`}}>
+                <div key={c.key || `c${i}`} data-warn-line="1" style={{display:"flex",flexWrap:"wrap",alignItems:"center",gap:8,padding:"4px 8px",marginBottom:3,fontSize:12,color:lineInk(c.severity),background:c.severity==="error"?(dk?"#2a0a0a":"#fce8e8"):dk?"#2a1a0a":"#fef8e8",borderRadius:4,border:`1px solid ${c.severity==="error"?"#e0b0b0":"#e8d0b0"}`}}>
                   <span style={{fontWeight:700}}>{c.severity==="error"?"🔴":c.severity==="warning"?"🟡":"🔵"}</span>
                   <span style={{fontFamily:mono,fontSize:11,color:dkSubtext}}>{c.week}</span>
-                  <span>{c.message}</span>
+                  <span style={{flex:"1 1 0",minWidth:0,overflowWrap:"anywhere"}}>{c.message}</span>
                   {dismissBtn(c)}
+                  {warnChoice(c)}
                 </div>
               ))}
               {warnShown.vac.slice(0,10).map((w,i) => (
-                <div key={w.key || `v${i}`} style={{display:"flex",alignItems:"center",gap:8,padding:"4px 8px",marginBottom:3,fontSize:12,color:w.severity==="error"?"#c04040":"#5a6a78",background:w.severity==="error"?(dk?"#2a0a0a":"#fce8e8"):dk?"#1a1a2a":"#f0f8ff",borderRadius:4,border:`1px solid ${w.severity==="error"?"#e0b0b0":"#c0d8f0"}`}}>
+                <div key={w.key || `v${i}`} data-warn-line="1" style={{display:"flex",flexWrap:"wrap",alignItems:"center",gap:8,padding:"4px 8px",marginBottom:3,fontSize:12,color:lineInk(w.severity==="error"?"error":"info"),background:w.severity==="error"?(dk?"#2a0a0a":"#fce8e8"):dk?"#1a1a2a":"#f0f8ff",borderRadius:4,border:`1px solid ${w.severity==="error"?"#e0b0b0":"#c0d8f0"}`}}>
                   <span style={{fontWeight:700}}>{w.severity==="error"?"🔴":"🔵"}</span>
-                  <span>{w.message}</span>
+                  <span style={{flex:"1 1 0",minWidth:0,overflowWrap:"anywhere"}}>{w.message}</span>
                   {dismissBtn(w)}
+                  {warnChoice(w)}
                 </div>
               ))}
               {warnShown.silvis.length > 10 && <p style={{fontSize:11,color:"#8a94a0",marginTop:4}}>+ {warnShown.silvis.length - 10} more Silvis line{warnShown.silvis.length - 10 === 1 ? "" : "s"}…</p>}
               {warnShown.conflicts.length > 10 && <p style={{fontSize:11,color:"#8a94a0",marginTop:4}}>+ {warnShown.conflicts.length - 10} more schedule line{warnShown.conflicts.length - 10 === 1 ? "" : "s"}…</p>}
               {warnShown.vac.length > 10 && <p style={{fontSize:11,color:"#8a94a0",marginTop:4}}>+ {warnShown.vac.length - 10} more vacation-overlap line{warnShown.vac.length - 10 === 1 ? "" : "s"}…</p>}
+              {phoneBar}
               {dismissedBar}
             </div>
             );
