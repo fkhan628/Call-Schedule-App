@@ -402,8 +402,10 @@ function CallSchedule() {
   const bannerLift = () => { const el = updateBannerRef.current; return el && el.isConnected ? Math.ceil(el.getBoundingClientRect().height) : 0; };
   // The toast stack's lift (UX review fix 2026-10-19): above the update banner AND above any open bottom sheet or
   // action bar marked data-toast-floor="1" — the Calendar's day sheet, the month painter's Save / Discard bar — so a
-  // toast never lands on their buttons (a tap there only dismissed the toast). At most the screen less 120px, so the
-  // newest toast stays in view above a tall sheet. Measured by showToast and by the effect beside the toasts.
+  // toast never lands on their buttons (a tap there only dismissed the toast). Measured by showToast and by the effect
+  // beside the toasts. No cap here (UX fix 2026-10-20): the old "at most the screen less 120px" put a toast on a tall
+  // sheet's title (a date range sheet at 320×568) and still sent the oldest of three off the top of a landscape phone.
+  // The stack itself now shows only the newest toasts that fit above the floor, and keeps the newest on screen.
   const toastLiftNow = () => {
     let lift = bannerLift();
     const vh = window.innerHeight || 0;
@@ -412,7 +414,7 @@ function CallSchedule() {
       const r = el.getBoundingClientRect();
       if (r.height > 0) lift = Math.max(lift, Math.ceil(vh - r.top));
     });
-    return vh > 120 ? Math.min(lift, vh - 120) : lift;
+    return lift;
   };
   const openCalDay = (ds, el) => { calDayOpenerRef.current = el || null; setCalSheetLift(bannerLift()); setCalDayOpen(ds); };
   const closeCalDay = (refocus) => {
@@ -5076,6 +5078,12 @@ function CallSchedule() {
     }
   };
 
+  // Less room above the toasts' lift than the 72px their stack always keeps (UX fix 2026-10-20: a sheet filling a short
+  // screen, e.g. a date range sheet at 320×568 with the update banner up): the newest toast then sits at the very top,
+  // as high as it can, so it covers as little of the sheet as it can (at 568×320 with the banner and the day sheet:
+  // none of it).
+  const toastTight = toastLift > 0 && (window.innerHeight || 0) - toastLift - 18 < 72;
+
   // The toast stack sits ABOVE the update banner (UX audit 2026-10-19): the
   // banner (fixed to the bottom, z 9998) wraps to ~100px on a phone, and a
   // toast 24px up covered its words and its buttons. Its height is measured as
@@ -5091,6 +5099,8 @@ function CallSchedule() {
   // range field's sheet (DateRangeField, its own state) says when it opens or
   // closes with a "toastfloorchange" event (range review fix 2026-10-19: a toast
   // already up when the sheet opened sat on its Done — the tap only dismissed it).
+  // The week editor's sticky Cancel / Save row says so the same way (its state
+  // is declared below this effect: editWeekOpen, UX fix 2026-10-20).
   const toastsShown = toasts.length > 0;
   useEffect(() => {
     if (!toastsShown) return;
@@ -6382,6 +6392,35 @@ function CallSchedule() {
   const [editWeekPick, setEditWeekPick] = useState(""); // dropdown selection on the Manual Adjustments card
   // Clear stale selection when the user navigates to a different month
   useEffect(() => { setEditWeekPick(""); }, [calMonth, calYear]);
+  // The week editor's Cancel / Save buttons are a row sticky at its bottom (UX fix 2026-10-20): toasts landed on them
+  // (a tap there only dismissed the toast), and the update banner (fixed to the bottom, z 9998, ~100px on a phone)
+  // covered them. Now the editor ends above the banner (editWeekLift: the banner's measured height — when it opens,
+  // before the first paint (a layout effect: openWeekEditor stays as it is), then on a resize, the banner's own resize,
+  // and when it comes or goes) and the row is a toast floor (data-toast-floor): the toasts sit above it. Their lift
+  // effect is declared before this state (§P), so the editor tells it — "toastfloorchange", as a date range sheet
+  // does — when it opens, when it moves, when the row's own size changes (Save & Next comes and goes) and when it closes.
+  const editWeekOpen = !!editWeekModal;
+  const [editWeekLift, setEditWeekLift] = useState(0); // px the editor ends above the bottom: the banner's height
+  const editWeekFootRef = useRef(null); // the sticky Cancel / Save row
+  React.useLayoutEffect(() => {
+    if (!editWeekOpen) return;
+    const remeasure = () => setEditWeekLift(bannerLift());
+    remeasure();
+    window.addEventListener("resize", remeasure);
+    const el = updateBannerRef.current;
+    const ro = el && typeof ResizeObserver === "function" ? new ResizeObserver(remeasure) : null;
+    if (ro) ro.observe(el);
+    return () => { window.removeEventListener("resize", remeasure); if (ro) ro.disconnect(); };
+  }, [editWeekOpen, updateAvailable]);
+  useEffect(() => {
+    if (!editWeekOpen) return;
+    const floorMoved = () => { try { window.dispatchEvent(new Event("toastfloorchange")); } catch (e) { /* nothing listens: the toasts keep their lift */ } };
+    floorMoved();
+    const el = editWeekFootRef.current;
+    const ro = el && typeof ResizeObserver === "function" ? new ResizeObserver(floorMoved) : null;
+    if (ro) ro.observe(el);
+    return () => { if (ro) ro.disconnect(); floorMoved(); };
+  }, [editWeekOpen, editWeekLift]);
 
   const findSwapSuggestions = useCallback((mondayStr, shift, currentSurgeonId) => {
     if (!schedule[mondayStr]) return;
@@ -8049,13 +8088,22 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           "info-passthrough" toast (an info toast in every other way — its colour,
           its time, an old helpers.js) lets taps through too: one that lands where
           the next tap is likely ("Hidden on this phone only…" over the next ✕).
+          Only what fits (UX fix 2026-10-20): the stack is the room between the top
+          of the screen and the lift, a column filled from the bottom, newest first
+          (order −id: ids only grow), that wraps — so a toast with no room left above a sheet goes to a
+          second column, past the right edge, clipped: out of sight, not off the top
+          of a landscape phone, until there is room again or its time is up. At
+          least 72px tall: with no room above a floor (toastTight), the newest still
+          shows, whole, at the top of the screen.
           While the sign-in card's "No connection — you're still signed in" note is up, the red toasts are held back
           (review fix 2026-10-20): they are the startup reads failing for the same missing signal, about data no one
           signed in can see yet, and on a 320px phone three of them covered the e-mail, the password and Sign In. */}
-      <div role="status" aria-live="polite" style={{position:"fixed",left:0,right:0,bottom:toastLift ? toastLift + 10 : "calc(env(safe-area-inset-bottom, 0px) + 24px)",zIndex:9999,display:"flex",flexDirection:"column",alignItems:"center",gap:6,pointerEvents:"none"}}>
+      <div role="status" aria-live="polite" style={{position:"fixed",left:0,right:0,top:"calc(env(safe-area-inset-top, 0px) + 8px)",bottom:toastLift ? toastLift + 10 : "calc(env(safe-area-inset-bottom, 0px) + 24px)",minHeight:72,zIndex:9999,display:"flex",flexDirection:"column-reverse",flexWrap:"wrap",alignContent:"flex-start",justifyContent:toastTight ? "flex-end" : "flex-start",gap:6,overflowX:"clip",pointerEvents:"none"}}>
         {toasts.filter(t => !(t.tone === "error" && authNetErr && authMode === "login" && !authUser)).map(t => (
-          <div key={t.id} onClick={()=>dismissToast(t.id)} style={{pointerEvents:"auto",maxWidth:"min(90vw, 600px)",boxSizing:"border-box",background:t.tone==="success"?"#1a7a4a":t.tone==="error"?"#a83232":"#1a2a3a",color:"#fff",borderRadius:9,padding:"10px 18px",fontSize:13,fontWeight:600,fontFamily:font,boxShadow:"0 4px 16px rgba(0,0,0,0.25)",cursor:"pointer",letterSpacing:0.2,...(t.tone==="info-passthrough" ? {pointerEvents:"none",cursor:"default"} : null)}}>
-            {typeof toastText === "function" ? toastText(t) : `${t.tone==="success"?"✓ ":t.tone==="error"?"⚠ ":""}${t.msg}`}
+          <div key={t.id} style={{width:"100%",display:"flex",justifyContent:"center",order:-t.id}}>
+            <div onClick={()=>dismissToast(t.id)} style={{pointerEvents:"auto",maxWidth:"min(90vw, 600px)",boxSizing:"border-box",background:t.tone==="success"?"#1a7a4a":t.tone==="error"?"#a83232":"#1a2a3a",color:"#fff",borderRadius:9,padding:"10px 18px",fontSize:13,fontWeight:600,fontFamily:font,boxShadow:"0 4px 16px rgba(0,0,0,0.25)",cursor:"pointer",letterSpacing:0.2,...(t.tone==="info-passthrough" ? {pointerEvents:"none",cursor:"default"} : null)}}>
+              {typeof toastText === "function" ? toastText(t) : `${t.tone==="success"?"✓ ":t.tone==="error"?"⚠ ":""}${t.msg}`}
+            </div>
           </div>
         ))}
       </div>
@@ -10176,6 +10224,9 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             // (Light error ink #b03030, 5.3:1 on #fce8e8 — the old #c04040 read 4.4:1: review fix P9.)
             const lineInk = (sev) => sev === "error" ? (dk ? "#f07070" : "#b03030") : sev === "warning" ? (dk ? "#e0a050" : "#a06020") : (dk ? "#9aa0b8" : "#5a6a78");
             const listRow = {display:"flex",flexWrap:"wrap",alignItems:"center",gap:8,padding:"4px 8px",marginTop:3,fontSize:12,color:dk ? "#9aa0b8" : "#5a6a78",background:dk?"#1e2430":"#f4f6fa",borderRadius:6,border:"1px solid #d8dee6"};
+            // A line's week label (the small mono date): light #5a6a78 reads 4.7:1 on the error fill #fce8e8 and 5.2:1 on the
+            // info / warning fills (dkSubtext's #7a8a98 read 3.0:1 and 3.3:1 — UX fix 2026-10-20); dark keeps dkSubtext.
+            const weekInk = dk ? dkSubtext : "#5a6a78";
             // The ✕ on an ERROR line takes the line's own error ink (rendered check 2026-10-19): #a06020 read 4.26:1 on the light
             // error fill #fce8e8 — and every member sees the ✕ now; #b03030 reads 5.3:1. A warning / info line's ✕ keeps #a06020
             // (4.7:1 on #fef8e8 and on #f0f8ff). Dark mode: the sheet forces every button's text #c0c8d8 (≥ 10:1 on each dark fill).
@@ -10242,7 +10293,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               {warnShown.silvis.slice(0,10).map((c,i) => (
                 <div key={c.key || `s${i}`} data-warn-line="1" style={{display:"flex",flexWrap:"wrap",alignItems:"center",gap:8,padding:"4px 8px",marginBottom:3,fontSize:12,color:lineInk(c.severity==="error"?"error":"info"),background:c.severity==="error"?(dk?"#2a0a0a":"#fce8e8"):dk?"#1a1a2a":"#f0f8ff",borderRadius:4,border:`1px solid ${c.severity==="error"?"#e0b0b0":"#c0d8f0"}`}}>
                   <span style={{fontWeight:700}}>{c.severity==="error"?"🔴":"🔵"}</span>
-                  <span style={{fontFamily:mono,fontSize:11,color:dkSubtext}}>{c.week}</span>
+                  <span style={{fontFamily:mono,fontSize:11,color:weekInk}}>{c.week}</span>
                   <span style={{flex:"1 1 0",minWidth:0,overflowWrap:"anywhere"}}>{c.message}</span>
                   {dismissBtn(c)}
                   {warnChoice(c)}
@@ -10251,7 +10302,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               {warnShown.conflicts.slice(0,10).map((c,i) => (
                 <div key={c.key || `c${i}`} data-warn-line="1" style={{display:"flex",flexWrap:"wrap",alignItems:"center",gap:8,padding:"4px 8px",marginBottom:3,fontSize:12,color:lineInk(c.severity),background:c.severity==="error"?(dk?"#2a0a0a":"#fce8e8"):dk?"#2a1a0a":"#fef8e8",borderRadius:4,border:`1px solid ${c.severity==="error"?"#e0b0b0":"#e8d0b0"}`}}>
                   <span style={{fontWeight:700}}>{c.severity==="error"?"🔴":c.severity==="warning"?"🟡":"🔵"}</span>
-                  <span style={{fontFamily:mono,fontSize:11,color:dkSubtext}}>{c.week}</span>
+                  <span style={{fontFamily:mono,fontSize:11,color:weekInk}}>{c.week}</span>
                   <span style={{flex:"1 1 0",minWidth:0,overflowWrap:"anywhere"}}>{c.message}</span>
                   {dismissBtn(c)}
                   {warnChoice(c)}
@@ -11060,8 +11111,13 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               return `${MO[m.getMonth()].slice(0,3)} ${m.getDate()}`;
             };
 
+            // It ends above the update banner (editWeekLift; 0 with none), so the banner never covers its buttons. No
+            // space below the card (no bottom padding, no margin): the sticky button row stopped at the padding's edge
+            // (a strip of the editor showed under it), and with a gap below the card the row sat 20px higher at the
+            // end of the scroll than stuck — the toasts, measured once, sit above where it is either way only if it
+            // never moves. So the editor's last row lies on the bottom edge, scrolled or not.
             return (
-              <div onClick={()=>setEditWeekModal(null)} style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.55)",zIndex:9000,display:"flex",alignItems:"flex-start",justifyContent:"center",padding:"20px 10px",overflowY:"auto"}}>
+              <div onClick={()=>setEditWeekModal(null)} style={{position:"fixed",top:0,left:0,right:0,bottom:editWeekLift,background:"rgba(0,0,0,0.55)",zIndex:9000,display:"flex",alignItems:"flex-start",justifyContent:"center",padding:"20px 10px 0",overflowY:"auto"}}>
                 <div onClick={e=>e.stopPropagation()} style={{background:dk?"#1a1f2a":"#fff",borderRadius:10,maxWidth:520,width:"100%",padding:20,boxShadow:"0 10px 40px rgba(0,0,0,0.3)"}}>
                   <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
                     <div style={{fontSize:16,fontWeight:700,color:dk?"#e8e8f0":"#2c5a80"}}>✏️ Edit Week — {wkLabel}</div>
@@ -11175,8 +11231,9 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                     <input type="text" value={draft.reason} onChange={e=>updateDraft(d=>({...d,reason:e.target.value}))} placeholder="e.g. REH sick, covering with FAK" style={{...css.inp,width:"100%",padding:"6px 8px"}} />
                   </div>
 
-                  {/* Buttons */}
-                  <div style={{display:"flex",gap:8,justifyContent:"flex-end",flexWrap:"wrap"}}>
+                  {/* Buttons — sticky at the editor's bottom, so they stay in view on a phone (the editor is taller than
+                      the screen), and a toast floor: the app's toasts sit above them, never on Save (toastLiftNow). */}
+                  <div ref={editWeekFootRef} data-toast-floor="1" style={{position:"sticky",bottom:0,display:"flex",gap:8,justifyContent:"flex-end",flexWrap:"wrap",margin:"0 -20px -20px",padding:"12px 20px 20px",background:dk?"#1a1f2a":"#fff",borderTop:`1px solid ${dk?"#2a3a5e":"#e8ecf0"}`,borderRadius:"0 0 10px 10px"}}>
                     <button onClick={()=>setEditWeekModal(null)} style={{...css.btn(false),padding:"8px 16px"}}>Cancel</button>
                     <button onClick={()=>saveWeekEdits()} style={{...css.btn(true),padding:"8px 16px"}}>💾 Save Changes</button>
                     {nextMonday && (
@@ -15420,8 +15477,9 @@ function sheetTabTrap(e) {
 // one end (a day before the start moves the start, the start or a later day the end), where the add rule made one
 // tap a new one-day range that Done + Save then wrote; the line under the range says so (rangeEditHint), and
 // "Start over" (it only ever restarted the draft — it was "Clear") goes back to the add rule. The month is always
-// six week rows, so ◀ ▶ and ✕ never move under a finger tapping ▶ again (a 2nd ▶ used to land on ✕ or a day); Start
-// over / Done stay in view at the sheet's bottom (sticky) on a short phone; the arrow keys stop at min; Tab stays
+// six week rows, so ◀ ▶ and ✕ never move under a finger tapping ▶ again (a 2nd ▶ used to land on ✕ or a day); on a
+// short phone the rows shrink (44px → 38px) before the sheet scrolls, and Start over / Done stay in view at the
+// sheet's bottom (sticky); the arrow keys stop at min; Tab stays
 // inside the sheet (sheetTabTrap); a toast lifts above it (data-toast-floor, "toastfloorchange"); the field's text
 // wraps rather than hiding the end date and the day count.
 function DateRangeField({ start, end, onChange, min = "", label = "Dates", placeholder = "Pick dates", dk = false, css, compact = false, editing = false, bannerRef = null, bannerOn = null, style = null }) {
@@ -15554,12 +15612,16 @@ function DateRangeField({ start, end, onChange, min = "", label = "Dates", place
         <div onClick={(e) => { e.stopPropagation(); close(); }} style={{ position: "fixed", inset: 0, zIndex: 9000, background: "rgba(0,0,0,0.45)", display: "flex", alignItems: "flex-end", justifyContent: "center" }}>
           {/* data-toast-floor: the app's toasts sit above the sheet, never on Start over / Done (toastLiftNow). Tab stays
               inside it (sheetTabTrap; tabIndex -1 so a tap on its background keeps the focus in it). Up to the whole
-              screen less the banner's lift and a 24px strip of backdrop: 80vh hid Done on a 320×568 phone. */}
+              screen less the banner's lift and a 24px strip of backdrop: 80vh hid Done on a 320×568 phone. A column
+              (UX fix 2026-10-20): on a short screen the six week rows give up their spare height first — 44px each down
+              to the day circle's own 38px — and only then does the sheet scroll (at 320×568 with the update banner up,
+              the sixth row sat behind Start over / Done until the sheet was scrolled). */}
           <div role="dialog" aria-modal="true" aria-label={label} data-toast-floor="1" onClick={(e) => e.stopPropagation()} onKeyDown={sheetTabTrap} tabIndex={-1}
             style={{ width: "100%", maxWidth: 420, maxHeight: `calc(100% - ${lift + 24}px)`, overflowY: "auto", overscrollBehavior: "contain", WebkitOverflowScrolling: "touch", boxSizing: "border-box",
+              display: "flex", flexDirection: "column",
               background: C.sheet, borderRadius: "14px 14px 0 0", boxShadow: "0 -6px 24px rgba(0,0,0,0.25)", padding: "10px 16px 0", outline: "none",
               marginBottom: lift, fontFamily: font }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: 16, fontWeight: 700, color: C.title }}>{label}</div>
                 <div aria-live="polite" style={{ marginTop: 2 }}>
@@ -15569,15 +15631,16 @@ function DateRangeField({ start, end, onChange, min = "", label = "Dates", place
               </div>
               <button type="button" aria-label="Close" onClick={() => close()} style={{ ...navBtn, fontSize: 20, flexShrink: 0 }}><span style={{ color: C.sub }}>✕</span></button>
             </div>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 4 }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 4, flexShrink: 0 }}>
               <button type="button" aria-label="Previous month" aria-disabled={prevOff || undefined} onClick={() => shiftMonth(-1)} style={{ ...navBtn, cursor: prevOff ? "default" : "pointer" }}><span style={{ color: prevOff ? C.off : C.text }}>◀</span></button>
               <div style={{ fontSize: 15, fontWeight: 700, color: C.text }}>{MO[sheet.m]} {sheet.y}</div>
               <button type="button" aria-label="Next month" onClick={() => shiftMonth(1)} style={navBtn}><span style={{ color: C.text }}>▶</span></button>
             </div>
-            <div aria-hidden="true" style={{ display: "grid", gridTemplateColumns:"repeat(7,minmax(0,1fr))", marginTop: 2 }}>
+            <div aria-hidden="true" style={{ display: "grid", gridTemplateColumns:"repeat(7,minmax(0,1fr))", marginTop: 2, flexShrink: 0 }}>
               {DAY_HDR.map(d => <div key={d} style={{ textAlign: "center", fontSize: 11, fontWeight: 700, color: C.sub, padding: "4px 0", letterSpacing: 0.5 }}>{d}</div>)}
             </div>
-            <div ref={gridRef} role="group" aria-label={`${MO[sheet.m]} ${sheet.y}`} onKeyDown={onGridKey} style={{ display: "grid", gridTemplateColumns:"repeat(7,minmax(0,1fr))", gridTemplateRows: "repeat(6, 44px)", rowGap: 2 }}>
+            {/* The one part that shrinks: rows of 44px, each down to 38px (6 × 38 + 5 × 2 = 238) when the screen is short. */}
+            <div ref={gridRef} role="group" aria-label={`${MO[sheet.m]} ${sheet.y}`} onKeyDown={onGridKey} style={{ display: "grid", gridTemplateColumns:"repeat(7,minmax(0,1fr))", gridTemplateRows: "repeat(6, minmax(38px, 44px))", rowGap: 2, flexShrink: 1, minHeight: 238 }}>
               {cells.map((ds, i) => {
                 if (!ds) return <span key={"b" + i} aria-hidden="true" />;
                 const edge = !!lo && (ds === lo || ds === hi), between = !!lo && ds > lo && ds < hi, off = !pickable(ds), isToday = ds === today;
@@ -15587,7 +15650,7 @@ function DateRangeField({ start, end, onChange, min = "", label = "Dates", place
                 return (
                   <button key={ds} type="button" data-ds={ds} tabIndex={ds === tabDs ? 0 : -1} aria-label={dayLabel(ds)} aria-pressed={edge} aria-disabled={off || undefined} aria-current={isToday ? "date" : undefined}
                     onClick={() => tap(ds)}
-                    style={{ height: 44, width: "100%", padding: 0, margin: 0, border: "none", background: "transparent", display: "flex", alignItems: "center", justifyContent: "center", cursor: off ? "default" : "pointer", fontFamily: font, touchAction: "manipulation" }}>
+                    style={{ height: "100%", width: "100%", padding: 0, margin: 0, border: "none", background: "transparent", display: "flex", alignItems: "center", justifyContent: "center", cursor: off ? "default" : "pointer", fontFamily: font, touchAction: "manipulation" }}>
                     <span aria-hidden="true" style={{ width: "100%", height: 38, display: "flex", alignItems: "center", justifyContent: "center", background: band,
                       borderRadius: between && dow === 0 ? "19px 0 0 19px" : between && dow === 6 ? "0 19px 19px 0" : 0 }}>
                       <span style={{ width: 38, height: 38, borderRadius: "50%", display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 15,
@@ -15601,7 +15664,7 @@ function DateRangeField({ start, end, onChange, min = "", label = "Dates", place
             {/* Sticky at the sheet's bottom, inside its scroll: on a short phone (320×568, or with the banner up) the six
                 rows overflow the sheet, and Start over / Done stay in view; it carries the sheet's bottom padding and the
                 safe area. */}
-            <div style={{ position: "sticky", bottom: 0, display: "flex", gap: 8, marginTop: 4, paddingTop: 8, paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 16px)", background: C.sheet }}>
+            <div style={{ position: "sticky", bottom: 0, display: "flex", gap: 8, marginTop: 4, paddingTop: 8, paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 16px)", background: C.sheet, flexShrink: 0 }}>
               <button type="button" onClick={clear} style={{ ...css.btn(false), flex: 1, minHeight: 44, fontSize: 14 }}>Start over</button>
               {/* A solid fill, its label in its own white span: white on the gradient's light end measured 3.9:1; on #1a6fa8 it is 5.4:1, in both themes. */}
               <button type="button" onClick={done} disabled={!sheet.start} style={{ ...css.btn(true), background: "#1a6fa8", flex: 2, minHeight: 44, fontSize: 14, ...(sheet.start ? {} : { opacity: 0.5, cursor: "default" }) }}><span style={{ color: "#fff" }}>Done</span></button>
