@@ -527,7 +527,8 @@ function CallSchedule() {
   // this is set (both publish buttons are disabled too).
   const publishingRef = useRef(false);
   const [publishing, setPublishing] = useState(false);
-  // Accept & Publish tells nobody by itself (owner decision 2026-10-20): once
+  // Accept & Publish tells nobody by itself (owner decision 2026-10-20), nor
+  // does the Calendar's ↻ Regenerate (doRegenerate, owner 2026-10-20): once
   // its publish lands, the Calendar tab asks the scheduler — "✓ Published
   // <period>. Nobody has been notified yet." with 📣 Notify everyone / Not now.
   // { label, ep }: the period, and the session it was published in (a tap from
@@ -4567,11 +4568,11 @@ function CallSchedule() {
   // ─── Tell everyone a schedule was published ───
   // The group's "Schedule Published" notice (in-app + push) and e-mail, both
   // to everyone (no target list). Generate & Publish sends them as soon as its
-  // publish lands; Accept & Publish only when the scheduler taps 📣 Notify
-  // everyone on the Calendar's banner (owner decision 2026-10-20 — nothing is
-  // sent by itself). ep: the session of the tap that published — from any
-  // other session nothing is sent (review r3 regress-3). Resolves true only
-  // when the notice was saved.
+  // publish lands; Accept & Publish and the Calendar's ↻ Regenerate only when
+  // the scheduler taps 📣 Notify everyone on the Calendar's banner (owner
+  // decisions 2026-10-20 — nothing is sent by itself). ep: the session of the
+  // tap that published — from any other session nothing is sent (review r3
+  // regress-3). Resolves true only when the notice was saved.
   const notifyPublished = async (ep, period) => {
     if (sessionEpochRef.current !== ep) return false;
     // Whoever sends it, the group is being told now (review fix 2026-10-20):
@@ -4613,6 +4614,32 @@ function CallSchedule() {
     // of any weeks it replaced.) The notice, then the e-mail — the one
     // sender Accept & Publish's banner uses too (2026-10-20).
     await notifyPublished(ep, period);
+  };
+
+  // ─── ↻ Regenerate (the Calendar's): the same one-tap Notify banner ───
+  // It publishes as Generate & Publish does (doGenerate: the search, the
+  // backup snapshot, the publish job) but told nobody and never asked (review
+  // finding F4). It still sends nothing by itself (owner 2026-10-20): once its
+  // publish has LANDED — doGenerate resolves "published" only when every week
+  // of the period landed, in the tap's session (A14) — it raises the
+  // Calendar's scheduler-only "✓ Published" banner exactly as ✓ Accept &
+  // Publish does, with 📣 Notify everyone (one send) and Not now. A result
+  // sent to the preview (Needs your OK, inputs changed during the search)
+  // raises nothing here — its ✓ Accept & Publish raises its own. No confirm
+  // (it never had one).
+  const doRegenerate = async () => {
+    // This session, at the tap (review r3 regress-3): a sign-out / another
+    // account meanwhile → no banner on the next session's screen.
+    const ep = sessionEpochRef.current;
+    // The period it publishes, taken at the tap — the Mondays doGenerate
+    // searches and publishes (periodText: helpers.js periodLabel, guarded), as
+    // doGenerateAndNotify takes the e-mail's.
+    const period = periodText;
+    if ((await doGenerate(false)) !== "published") return;
+    if (sessionEpochRef.current !== ep) return;
+    setJustPublished({ label: period, ep });
+    // Brought into view as acceptPreview's is: the Calendar may have been scrolled during the search (on another tab: no banner, nothing).
+    setTimeout(() => { const el = document.querySelector('[data-just-published="1"]'); if (el && el.scrollIntoView) el.scrollIntoView({ behavior: "smooth", block: "nearest" }); }, 60);
   };
 
   // ─── Build Individual ICS for a surgeon (their shifts + vacations only) ───
@@ -9997,7 +10024,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
 
         {/* ════════════════ CALENDAR ════════════════ */}
         {view==="calendar"&&<>
-          {/* Accept & Publish told nobody (owner decision 2026-10-20): the scheduler is asked here, on the Calendar it lands on.
+          {/* Accept & Publish and ↻ Regenerate tell nobody (owner decisions 2026-10-20): the scheduler is asked here, on the Calendar.
               📣 Notify everyone sends the group's notice + e-mail once (notifyJustPublished); Not now only closes it. Members never
               see it; the session boundary clears it. ≥44px buttons that wrap at 320px; the toasts sit at the bottom, never over it. */}
           {isScheduler && justPublished && (
@@ -10112,7 +10139,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
               {isScheduler && <>
                 <button onClick={()=>setView("setup")} style={css.btn(false)}>Setup →</button>
-                <button onClick={()=>doGenerate(false)} disabled={!!searching} style={{...css.btn(true),opacity:searching?0.55:1}}>{searching === "publish" ? "🔍 Searching…" : "↻ Regenerate"}</button>
+                <button onClick={doRegenerate} disabled={!!searching} style={{...css.btn(true),opacity:searching?0.55:1}}>{searching === "publish" ? "🔍 Searching…" : "↻ Regenerate"}</button>
                 <button onClick={clearSchedule} style={{...css.btn(false),color:"#c04040",borderColor:"#e0a0a0"}}>✕ Clear</button>
               </>}
             </div>
