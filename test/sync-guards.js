@@ -3085,7 +3085,10 @@ console.log("\nBF. toasts stack (up to 3), errors stay longer, no doubled ⚠");
 
   // Q2 — executed on fixtures
   const warnMemo = memoOf("  const warnShown = useMemo(() => {");
-  check("Q2 warnShown filter memo extractable; deps = the three producers + dismissedWarnings", !!warnMemo && warnMemo.deps.replace(/\s+/g, " ").trim() === "}, [silvisConflicts, conflicts, vacOverlapWarnings, dismissedWarnings]);", warnMemo && warnMemo.deps);
+  // (2026-10-19, changed ON PURPOSE: the owner's "hide on this phone" — warnShown now also filters the lines hidden on
+  // THIS device, so it must re-run when phoneHiddenWarnings changes, or a member's ✕ would hide nothing until the next
+  // schedule change. Section BL owns that behaviour; this pin keeps the deps exact.)
+  check("Q2 warnShown filter memo extractable; deps = the three producers + dismissedWarnings + phoneHiddenWarnings (BL)", !!warnMemo && warnMemo.deps.replace(/\s+/g, " ").trim() === "}, [silvisConflicts, conflicts, vacOverlapWarnings, dismissedWarnings, phoneHiddenWarnings]);", warnMemo && warnMemo.deps);
   const confMemo = memoOf("  const conflicts = useMemo(() => {");
   const vacMemo = memoOf("  const vacOverlapWarnings = useMemo(() => {");
   if (warnMemo && confMemo && vacMemo) {
@@ -3093,7 +3096,8 @@ console.log("\nBF. toasts stack (up to 3), errors stay longer, no doubled ⚠");
     try {
       runConf = vm.runInContext("(function (env) { const { schedule, surgeons, sMap, SHIFT_LABELS, holidayAssignments, vacations, noCallDays } = env; const buildGenAvailability = env.buildGenAvailability || (() => { const m = {}; [vacations || {}, noCallDays || {}].forEach(src => Object.keys(src).forEach(k => { m[k] = (m[k] || []).concat(src[k]); })); return m; }); const buildSilvisPrimary = env.buildSilvisPrimary || (() => null); return (() => {" + confMemo.body + "})(); })", sandbox, { filename: "q-conflicts.js" });
       runVac = vm.runInContext("(function (env) { const { mondays, surgeons, apps, vacations, holidayAssignments, sMap } = env; const takesChristWknd = env.takesChristWknd || (() => false); return (() => {" + vacMemo.body + "})(); })", sandbox, { filename: "q-vac.js" });
-      runShown = vm.runInContext("(function (env) { const { silvisConflicts, conflicts, vacOverlapWarnings, dismissedWarnings } = env; return (() => {" + warnMemo.body + "})(); })", sandbox, { filename: "q-shown.js" });
+      // (2026-10-19: + phoneHiddenWarnings, the memo's new input — absent here = nothing hidden on this phone, so Q2's own fixtures are unchanged)
+      runShown = vm.runInContext("(function (env) { const { silvisConflicts, conflicts, vacOverlapWarnings, dismissedWarnings, phoneHiddenWarnings } = env; return (() => {" + warnMemo.body + "})(); })", sandbox, { filename: "q-shown.js" });
       check("Q2 conflicts / vacOverlap / warnShown memos compile standalone", true);
     } catch (ex) { check("Q2 conflicts / vacOverlap / warnShown memos compile standalone", false, String(ex)); }
     if (runConf && runVac && runShown) {
@@ -3211,10 +3215,18 @@ console.log("\nBF. toasts stack (up to 3), errors stay longer, no doubled ⚠");
       check("Q4 a MEMBER cannot restore either", r.log.length === 0 && r.state().length === 1);
     }
   }
-  check("Q4 controls render only for canWriteBlob: the ✕ per line and the 'N dismissed · show' bar",
+  // (2026-10-19, changed ON PURPOSE — owner request: "can everyone have the ability to dismiss the warnings … for their
+  // own phone"; Dr Winters had no ✕. Was: "controls render only for canWriteBlob: the ✕ per line and the 'N dismissed ·
+  // show' bar". Now EVERY viewer gets the ✕ — a member's hides on this phone only (section BL) — while the EVERYONE
+  // paths stay scheduler-only: the ✕ opens dismissWarning only through the scheduler's choice (canWriteBlob), the
+  // handlers above still refuse a member, and the "dismissed for everyone" bar with its audited Restore is still
+  // canWriteBlob-only.)
+  check("Q4 the ✕ renders for EVERY viewer (a member's hides on this phone — BL); the 'Everyone…' choice and the 'N dismissed for everyone · show' bar stay canWriteBlob-only",
     // (2026-09-24: the ✕ also requires a dismissable line — section S owns that half)
-    count("const dismissBtn = (x) => (canWriteBlob && x.key && x.dismissable !== false) ? (") === 1 && count("const dismissedBar = (canWriteBlob && warnShown.hidden.length > 0) ? (") === 1
-    && count("{dismissBtn(c)}") === 2 && count("{dismissBtn(w)}") === 1);
+    count("const dismissBtn = (x) => (x.key && x.dismissable !== false) ? (canWriteBlob ? (") === 1 && count("const dismissedBar = (canWriteBlob && warnShown.hidden.length > 0) ? (") === 1
+    && count("const warnChoice = (x) => (canWriteBlob && x.key && x.dismissable !== false && warnChoiceKey === x.key) ? (") === 1
+    && count("{dismissBtn(c)}") === 2 && count("{dismissBtn(w)}") === 1 && count("{warnChoice(c)}") === 2 && count("{warnChoice(w)}") === 1
+    && count("dismissWarning(") === 1 /* one call: the scheduler choice's "Everyone…" (warnChoiceEveryone — BL runs it) */);
 
   // Q5 / Q6 — the panel
   {
@@ -3226,10 +3238,749 @@ console.log("\nBF. toasts stack (up to 3), errors stay longer, no doubled ⚠");
       panel.length > 0 && !/(^|[^.\w])(conflicts|silvisConflicts|vacOverlapWarnings)\b/.test(panel)
       && /const shownTotal = warnShown\.silvis\.length \+ warnShown\.conflicts\.length \+ warnShown\.vac\.length;/.test(panel)
       && panel.includes("⚠️ Schedule Warnings — {shownTotal}") && panel.includes("warnShown.silvis.length > 10") && panel.includes("warnShown.conflicts.length > 10") && panel.includes("warnShown.vac.length > 10"));
-    check("Q5 nothing undismissed → no panel (only a scheduler's small dismissed bar)", panel.includes("if (shownTotal === 0) return dismissedBar ? <div style={{marginBottom:10}}>{dismissedBar}</div> : null;"));
+    // (2026-10-19, changed ON PURPOSE: the "hidden on this phone" bar joins the scheduler's dismissed bar — every line
+    // hidden, either way → no card, just the small bar(s). Was: return dismissedBar ? <div …>{dismissedBar}</div> : null)
+    check("Q5 nothing left to show → no panel (only the small bars: hidden on this phone, and a scheduler's dismissed for everyone)", panel.includes("if (shownTotal === 0) return (phoneBar || dismissedBar) ? <div style={{marginBottom:10}}>{phoneBar}{dismissedBar}</div> : null;"));
     check("Q6 the panel is gated OFF ?public=1 and the OR board (owner decision 2026-09-24)",
       /\{!isPublicMode && \(\(\)=>\{\s*const shownTotal = warnShown\.silvis\.length/.test(src) && count("Schedule Warnings — {") === 1);
   }
+}
+
+// ─── BL. Schedule Warnings: anyone can hide a warning on THEIR OWN PHONE (owner request 2026-10-19) ───
+// "can everyone have the ability to dismiss the warnings on the calendar? It would be for their own phone - I looked
+// at Dr winters phone and she could not X out the warnings" (the owner, 2026-10-19). The ✕ was scheduler-only: it dismisses for EVERYONE,
+// through the blob, audited (section Q). Now every viewer who sees the panel gets a ✕ on each dismissable line. A
+// member's hides it on THIS device at once (localStorage "dsg-hidden-warnings" [{ key, text, at }]) with a toast; a
+// scheduler's opens a choice ON the line — "This phone" (the same) · "Everyone…" (the unchanged dismissWarning) ·
+// "Cancel". "N hidden on this phone · show" lists them with "Show again"; the scheduler's bar now reads "N dismissed
+// for everyone". Nothing of a phone hide reaches the network, the blob or the audit log.
+//   BL1 the real storage read (phoneHiddenRead + the lazy useState init), executed: nothing / malformed / not an array / getItem throws /
+//       no localStorage → []; entries with no string key dropped; a non-string text never reaches the render; a
+//       duplicate kept once; 350 stored → the newest 300
+//   BL2 the real storage write (changePhoneHidden since RS-1), executed: the list as JSON under "dsg-hidden-warnings"; setItem throws
+//       (private mode, quota) → nothing thrown, and the line stays hidden in memory
+//   BL3 the real warnShown, executed: a member's hide → the line leaves the list, hiddenHere lists it, the count drops;
+//       Show again → back; a dismissable:false line is never hidden by a stored phone key, nor by the handler;
+//       dismissed for everyone + hidden here → listed only in `hidden`; a changed fact comes back
+//   BL4 the real hideWarningHere / showWarningHere, executed: no confirm, no setDismissedWarnings, no logAudit, no
+//       fetch; the toast says "this phone" and "not for everyone"; a duplicate hide replaces; capped at the newest 300
+//   BL5 the scheduler's choice, executed: "Everyone…" runs the REAL, unchanged dismissWarning (confirm quoting the line,
+//       the blob write, the audit row) and leaves this phone's list alone; declined → nothing; a member can't reach it;
+//       "This phone" = the member's hide; "Cancel" closes; the open choice closes once its line is gone (the effect)
+//   BL6 focus after a hide (the real warnRefocus, a stub DOM): the next line's ✕, else the previous, else the bar's
+//       button — never <body>; Cancel / a declined confirm → its own ✕; Show again on the last → that line's ✕
+//   BL7 the panel itself, RENDERED (its real JSX, lightly compiled to h() calls and run on fixtures): a ✕ for EVERY
+//       viewer with VoiceOver labels; the scheduler's ✕ toggles the line's choice (aria-expanded) and only that line
+//       shows it; both bars, the card gone when all is hidden; 36px targets; lines wrap; dark mode readable (no
+//       button has a fill under the dark sheet's forced light text; text ≥ 4.5:1)
+//   BL8 phone-only: "dsg-hidden-warnings" read once, written once; phoneHiddenWarnings is in none of the blob's paths
+//       (buildStateBundle, autosave deps, blob adopt, poll, snapshot restore); the new state precedes its hooks (§P)
+// Review fixes (2026-10-19):
+//   BL2 (RS-1) STORAGE is the list, not the tab's copy: two tabs of the app on one phone (a Mail link opens a new
+//       Safari tab) overwrote each other — a hide was lost, and a stale tab hid again a line brought back with "Show
+//       again". Executed against a store another tab changed since this tab read it: every change re-reads, changes
+//       that and writes at once (nothing written at mount); storage unreadable / a failed write → this tab's own list;
+//       the real storage listener follows another tab's change (or a cleared storage)
+//   BL4 (P1) a double-tap hid TWO lines (the next one moves up under the finger): a phone hide or "Show again" within
+//       400 ms of the last is ignored; (P2) the toast lets taps through ("info-passthrough" — the real pill style,
+//       evaluated: pointer-events none) so it never takes the tap meant for the next ✕ or the bar's "show"
+//   BL5 (RS-3) the open choice closes when its line is past the 10 lines the panel DRAWS of its list; (P7) a bar whose
+//       list has emptied is closed, so the next hide doesn't bring it back already open
+//   BL7 (T1) the bars' show/hide toggles, tapped: each opens / closes its OWN list; (P3) each says what it opens;
+//       (P4) with the card gone the bar names what is hidden; (P5) short buttons ≥ 36px wide; (P6) in dark mode
+//       "Everyone…" keeps a red the sheet can't override; (P8 / T2) the hidden / dismissed rows really wrap (the
+//       text has a basis, so the by-line and the button drop under it); (P9) "+ N more" and light error ink ≥ 4.5:1;
+//       (P10, after the merge with #90) the ✕ on an error line takes the line's error ink — #a06020 read 4.26:1 on
+//       the light error fill; every ✕ ≥ 4.5:1, light and dark, member and scheduler
+console.log("\nBL. Schedule Warnings: anyone can hide a warning on this phone");
+{
+  const nsrcL = src.replace(/\r\n/g, "\n");
+  const bodyOfL = (START) => { const s0 = nsrcL.indexOf(START); if (s0 === -1 || nsrcL.indexOf(START, s0 + 1) !== -1) return null; const e0 = nsrcL.indexOf("\n  };", s0); return e0 === -1 ? null : nsrcL.slice(s0 + START.length, e0); };
+  const LS_KEY = "dsg-hidden-warnings";
+  // Fixtures shaped as the producers make them: three dismissable lines (two schedule, one vacation-overlap) and the
+  // feed-health line that is never dismissable (section S).
+  const A = { key: "consecutive|2026-10-26|s6|mon+tue", type: "consecutive", severity: "error", week: "2026-10-26", message: "FAK has consecutive nights (Mon Night + Tue Night)" };
+  const B = { key: "svc-wknd|2026-11-02|s1", type: "double", severity: "error", week: "2026-11-02", message: "DJA is on Service Week AND Weekend (same week)" };
+  const V = { key: "surgeons-off|2026-11-04|s1+s2+s3+s4+s5", date: "2026-11-04", severity: "error", message: "5 surgeons off on 2026-11-04 (max 4): DJA, MCC, RPC, KJH, REH" };
+  const FEED = { key: "silvis-feed|empty", dismissable: false, week: "feed", severity: "error", message: "Silvis feed is EMPTY — no Silvis days are known" };
+  const TEXT_A = "2026-10-26 · " + A.message, TEXT_B = "2026-11-02 · " + B.message;
+  const LISTS = { silvisConflicts: [FEED], conflicts: [A, B], vacOverlapWarnings: [V] };
+  const J = (x) => JSON.stringify(x);
+
+  // BL1 — the read (review fix RS-1: one function, phoneHiddenRead — at mount, before every change, on another tab's change)
+  const readBody = bodyOfL("  const phoneHiddenRead = () => {");
+  let mkRead = null;
+  try { mkRead = readBody && readBody.length < 1500 ? vm.runInContext("(function (localStorage) { return () => {" + readBody + "\n  }; })", sandbox, { filename: "bl-read.js" }) : null; } catch (ex) { mkRead = null; }
+  const initM = nsrcL.match(/\n  const \[phoneHiddenWarnings, setPhoneHiddenWarnings\] = useState\((\(\) => phoneHiddenRead\(\) \|\| \[\])\);\n/);
+  const runInit = mkRead && initM ? (ls) => vm.runInContext("(function (phoneHiddenRead) { return (" + initM[1] + ")(); })", sandbox)(mkRead(ls)) : null;
+  if (!mkRead || !runInit) check("BL1 the phone list's read (phoneHiddenRead) and its lazy useState init (phoneHiddenRead() || []) are extractable", false, J({ read: !!readBody, compiled: !!mkRead, init: !!initM }));
+  else {
+    const runRead = (ls) => mkRead(ls)();
+    const store = (raw) => ({ getItem: (k) => (k === LS_KEY ? raw : null) });
+    const THREW = { getItem: () => { throw new Error("SecurityError: storage disabled"); } };
+    const r = { none: runInit(store(null)), bad: runInit(store("{not json")), obj: runInit(store('{"key":"a"}')), str: runInit(store('"x"')), nul: runInit(store("null")), num: runInit(store("5")),
+      threw: runInit(THREW), noLS: runInit(undefined) };
+    const notEmpty = Object.keys(r).filter((k) => !(Array.isArray(r[k]) && r[k].length === 0));
+    check("BL1 the real read + lazy init: nothing stored, malformed JSON, JSON that isn't an array ({}, \"x\", null, 5), getItem throwing (private mode / storage off) and no localStorage at all → [] — nothing hidden, nothing thrown",
+      notEmpty.length === 0, J({ notEmpty }));
+    const rd = { bad: runRead(store("{not json")), obj: runRead(store('{"key":"a"}')), threw: runRead(THREW), noLS: runRead(undefined) };
+    check("BL1 (RS-1) …the read itself tells the two apart: malformed / not an array → [] (nothing stored worth keeping — the next change overwrites it); storage that can't be READ (getItem throws, no localStorage) → null, so a change falls back on this tab's own list instead of wiping it",
+      J(rd.bad) === "[]" && J(rd.obj) === "[]" && rd.threw === null && rd.noLS === null, J(rd));
+    const mixed = runInit(store(J([null, 7, "k", { text: "no key" }, { key: 12, text: "number key" }, { key: "", text: "empty key" }, { key: A.key, text: { evil: 1 }, at: 5 },
+      { key: B.key, text: "B old", at: "t1" }, { key: "x|1", text: "X" }, { key: B.key, text: "B new", at: "t2" }])));
+    check("BL1 …entries with no string key are dropped (null, 7, \"k\", none, a number, \"\"); a text that isn't a string falls back to the key (an object would crash the render); a duplicate key is kept ONCE, at its newest place with its newest text",
+      J(mixed) === J([{ key: A.key, text: A.key, at: "" }, { key: "x|1", text: "X", at: "" }, { key: B.key, text: "B new", at: "t2" }]), J(mixed));
+    const many = runInit(store(J(Array.from({ length: 350 }, (_, i) => ({ key: "k" + i, text: "t" + i, at: "a" })))));
+    check("BL1 …350 stored → the newest 300 are kept (k50 … k349, in order)", many.length === 300 && many[0].key === "k50" && many[299].key === "k349", many.length + " " + J(many[0]));
+  }
+
+  // The real warnShown and the panel's own count expression
+  const wsS = nsrcL.indexOf("  const warnShown = useMemo(() => {"), wsE = wsS === -1 ? -1 : nsrcL.indexOf("\n  }, [", wsS);
+  let runWS = null;
+  try { runWS = wsS !== -1 && wsE !== -1 ? vm.runInContext("(function (env) { const { silvisConflicts, conflicts, vacOverlapWarnings, dismissedWarnings, phoneHiddenWarnings } = env; return (() => {" + nsrcL.slice(wsS + "  const warnShown = useMemo(() => {".length, wsE) + "})(); })", sandbox, { filename: "bl-shown.js" }) : null; } catch (ex) { runWS = null; }
+  const totalM = nsrcL.match(/\n\s*const shownTotal = (warnShown\.silvis\.length \+ warnShown\.conflicts\.length \+ warnShown\.vac\.length);\n/);
+  const shownTotalOf = totalM ? vm.runInContext("(function (warnShown) { return " + totalM[1] + "; })", sandbox) : () => NaN;
+  const WS = (blob, phone, lists) => runWS(Object.assign({}, lists || LISTS, { dismissedWarnings: blob || [], phoneHiddenWarnings: phone || [] }));
+
+  // The real handlers, compiled together with the real dismissWarning and its helpers
+  const H_SRC = {
+    lineText: (nsrcL.match(/\n  (const warnLineText = \(x\) => [^\n]*;)\n/) || [])[1],
+    actor: (nsrcL.match(/\n  (const warnActor = \(\) => [^\n]*;)\n/) || [])[1],
+    dismiss: bodyOfL("  const dismissWarning = (x) => {"),
+    hide: bodyOfL("  const hideWarningHere = (x, el) => {"),
+    show: bodyOfL("  const showWarningHere = (d, el) => {"),
+    change: bodyOfL("  const changePhoneHidden = (fn) => {"),
+    everyone: bodyOfL("  const warnChoiceEveryone = (x, el) => {"),
+    cancel: bodyOfL("  const warnChoiceCancel = (el) => {"),
+    refocus: bodyOfL("  const warnRefocus = (el, rowSel, btnSel, key) => {"),
+  };
+  let mkH = null;
+  try {
+    mkH = Object.values(H_SRC).every(Boolean) && mkRead ? vm.runInContext(`(function (env) {
+      const { canWriteBlob, confirm, setDismissedWarnings, logAudit, userProfile, surgeons, setPhoneHiddenWarnings, setWarnChoiceKey, showToast, document, setTimeout, fetch,
+        localStorage, phoneHiddenRead, phoneHiddenWarnings, phoneHiddenMemOnlyRef, warnPhoneTapRef, console, Date } = env;
+      ${H_SRC.lineText}
+      ${H_SRC.actor}
+      const dismissWarning = (x) => {${H_SRC.dismiss}
+      };
+      const hideWarningHere = (x, el) => {${H_SRC.hide}
+      };
+      const showWarningHere = (d, el) => {${H_SRC.show}
+      };
+      const changePhoneHidden = (fn) => {${H_SRC.change}
+      };
+      const warnChoiceEveryone = (x, el) => {${H_SRC.everyone}
+      };
+      const warnChoiceCancel = (el) => {${H_SRC.cancel}
+      };
+      const warnRefocus = (el, rowSel, btnSel, key) => {${H_SRC.refocus}
+      };
+      return { dismissWarning, hideWarningHere, showWarningHere, warnChoiceEveryone, warnChoiceCancel, warnRefocus };
+    })`, sandbox, { filename: "bl-handlers.js" }) : null;
+  } catch (ex) { mkH = null; }
+  // A rig: the state each handler sets, and a log of every side effect (confirm, the blob, the audit, a fetch, a toast).
+  // The device's storage (review fix RS-1) is a stub holding the RAW stored text: by default what this tab holds (a tab
+  // in step); o.stored = what another tab has written since this one read it; o.setThrows = a full / disabled store;
+  // o.store = a stub of its own; o.noLS = no localStorage at all. The real phoneHiddenRead reads that same stub. Each
+  // `r.h` is a fresh render (the handlers re-made with the state as it is now, as React does); the refs persist. The
+  // clock: each Date.now() moves it 1 s on (taps far apart) unless o.still — then only r.tick(ms) moves it.
+  const rig = (o = {}) => {
+    const log = [], timers = [], io = [], warned = [];
+    let phone = o.phone || [], blob = o.blob || [], choice = o.choice === undefined ? null : o.choice;
+    let raw = o.stored === undefined ? J(phone) : typeof o.stored === "string" ? o.stored : J(o.stored);
+    const store = o.noLS ? undefined : o.store || {
+      getItem: (k) => { io.push(["get", k]); return k === LS_KEY ? raw : null; },
+      setItem: (k, v) => { io.push(["set", k]); if (o.setThrows) throw new Error("QuotaExceededError"); if (k === LS_KEY) raw = v; },
+    };
+    const clock = { t: 1.8e12 };
+    class FakeDate extends Date { constructor(...a) { super(...(a.length ? a : [clock.t])); } static now() { const t = clock.t; if (!o.still) clock.t += 1000; return t; } }
+    const env = {
+      canWriteBlob: !!o.sched,
+      confirm: (m) => { log.push(["confirm", m]); return !!o.yes; },
+      setDismissedWarnings: (f) => { blob = typeof f === "function" ? f(blob) : f; log.push(["setDismissed"]); },
+      logAudit: (...a) => log.push(["audit", ...a]),
+      userProfile: { display_name: "FAK", person_id: "s6" }, surgeons: [{ id: "s6", name: "FAK" }],
+      setPhoneHiddenWarnings: (f) => { phone = typeof f === "function" ? f(phone) : f; log.push(["setPhone"]); },
+      setWarnChoiceKey: (v) => { choice = typeof v === "function" ? v(choice) : v; log.push(["choice", choice]); },
+      showToast: (m, tone) => log.push(["toast", m, tone]),
+      document: o.noDoc ? undefined : (o.document || { querySelectorAll: () => [], querySelector: () => null }),
+      setTimeout: (fn) => { timers.push(fn); return timers.length; },
+      fetch: (...a) => { log.push(["fetch", ...a]); return new Promise(() => {}); },
+      localStorage: store, phoneHiddenRead: mkRead(store), phoneHiddenMemOnlyRef: { current: false }, warnPhoneTapRef: { current: 0 },
+      console: { warn: (...a) => warned.push(a), log() {}, error() {} }, Date: FakeDate,
+    };
+    return { get h() { return mkH(Object.assign({}, env, { phoneHiddenWarnings: phone })); }, log, timers, io, warned, phone: () => phone, blob: () => blob, choice: () => choice,
+      raw: () => raw, stored: () => { try { return JSON.parse(raw); } catch (e) { return "unparsable"; } }, tick: (ms) => { clock.t += ms; }, memOnly: () => env.phoneHiddenMemOnlyRef.current,
+      kinds: () => log.map((x) => x[0]).join(">") };
+  };
+  const keysOf = (list) => J((Array.isArray(list) ? list : []).map((e) => e && e.key));
+
+  if (!runWS || !totalM) check("BL3 the real warnShown memo and the panel's shownTotal expression are extractable", false, J({ runWS: !!runWS, totalM: !!totalM }));
+  if (!mkH) check("BL4 the real hideWarningHere / showWarningHere / changePhoneHidden / warnChoiceEveryone / warnChoiceCancel / warnRefocus (+ dismissWarning, phoneHiddenRead) extract and compile", false, J(Object.keys(H_SRC).filter((k) => !H_SRC[k])));
+  if (runWS && totalM && mkH) {
+    // BL3 — warnShown
+    const before = WS();
+    const m = rig();
+    m.h.hideWarningHere(A, null);
+    const after = WS(m.blob(), m.phone());
+    check("BL3 a MEMBER's ✕ through the real hideWarningHere + warnShown: the line leaves the shown list, hiddenHere lists it { key, text: the line as shown, at }, the header count (the panel's shownTotal) drops 4 → 3; the other lines and the feed-health line stay; nothing in `hidden`",
+      shownTotalOf(before) === 4 && before.hiddenHere.length === 0 && shownTotalOf(after) === 3 && !after.conflicts.some((x) => x.key === A.key) && after.conflicts.some((x) => x.key === B.key)
+        && after.silvis.length === 1 && after.vac.length === 1 && after.hiddenHere.length === 1 && after.hiddenHere[0].key === A.key && after.hiddenHere[0].text === TEXT_A
+        && typeof after.hiddenHere[0].at === "string" && after.hiddenHere[0].at.length > 0 && after.hidden.length === 0,
+      J({ before: shownTotalOf(before), after: shownTotalOf(after), hiddenHere: after.hiddenHere }));
+    m.h.showWarningHere(after.hiddenHere[0], null);
+    const back = WS(m.blob(), m.phone());
+    check("BL3 Show again (the real showWarningHere) → the line is back on this phone, nothing listed as hidden here, the count is 4 again",
+      shownTotalOf(back) === 4 && back.conflicts.some((x) => x.key === A.key) && back.hiddenHere.length === 0 && m.phone().length === 0, J({ total: shownTotalOf(back), phone: m.phone() }));
+    const f = rig();
+    f.h.hideWarningHere(FEED, null);
+    const fs1 = WS([], [{ key: FEED.key, text: "Silvis feed is EMPTY", at: "x" }]);
+    check("BL3 a dismissable:false line (the Silvis feed EMPTY) is NEVER hidden on a phone: a stored phone key for it is inert (still shown, not in hiddenHere, still counted) and the handler refuses it (no write, no toast)",
+      fs1.silvis.some((x) => x.key === FEED.key) && fs1.hiddenHere.length === 0 && shownTotalOf(fs1) === 4 && f.log.length === 0 && f.phone().length === 0, J({ fs1, log: f.log }));
+    const both = WS([{ key: A.key, text: TEXT_A, by: "FAK", at: "x" }], [{ key: A.key, text: TEXT_A, at: "y" }, { key: B.key, text: TEXT_B, at: "z" }]);
+    check("BL3 dismissed for EVERYONE and also hidden on this phone → listed ONLY in `hidden` (the scheduler's list), never twice; the line hidden only here is in hiddenHere; count 2",
+      both.hidden.length === 1 && both.hidden[0].key === A.key && both.hiddenHere.length === 1 && both.hiddenHere[0].key === B.key && shownTotalOf(both) === 2, J(both));
+    const A2 = Object.assign({}, A, { key: "consecutive|2026-10-26|s6|tue+wed", message: "FAK has consecutive nights (Tue Night + Wed Night)" });
+    const moved = WS([], [{ key: A.key, text: TEXT_A, at: "y" }], { silvisConflicts: [FEED], conflicts: [A2, B], vacOverlapWarnings: [V] });
+    check("BL3 the facts change (Mon+Tue → Tue+Wed nights) → a new key → the line is SHOWN on this phone again; the stale entry is not listed as hidden here",
+      moved.conflicts.some((x) => x.key === A2.key) && moved.hiddenHere.length === 0 && shownTotalOf(moved) === 4, J(moved.hiddenHere));
+
+    // BL2 — the write: in changePhoneHidden, at the change (review fix RS-1: no longer an effect that wrote this tab's
+    // whole copy on every change — and on mount)
+    {
+      const w = rig();
+      w.h.hideWarningHere(A, null);
+      check("BL2 the real write: a hide reads storage, then writes the new list under \"dsg-hidden-warnings\" as JSON at once — exactly what is now in memory; no warning",
+        J(w.io) === J([["get", LS_KEY], ["set", LS_KEY]]) && w.raw() === J(w.phone()) && keysOf(w.phone()) === J([A.key]) && w.warned.length === 0, J({ io: w.io, raw: w.raw() }));
+      let threw = null;
+      const q = rig({ setThrows: true });
+      try { q.h.hideWarningHere(A, null); q.h.hideWarningHere(B, null); } catch (ex) { threw = String(ex); }
+      const none = rig({ noLS: true });
+      try { none.h.hideWarningHere(A, null); none.h.hideWarningHere(B, null); } catch (ex) { threw = threw || String(ex); }
+      const still = WS([], q.phone());
+      check("BL2 …setItem throwing (private mode, a full store) or no localStorage → nothing thrown (a console warning), the line is STILL hidden in memory for this session — and a SECOND hide keeps the first (from the failed write on this tab's own list is the truth: the store still says [] and is not re-read)",
+        threw === null && q.warned.length >= 1 && q.memOnly() === true && keysOf(q.phone()) === J([A.key, B.key]) && keysOf(none.phone()) === J([A.key, B.key])
+          && still.hiddenHere.length === 2 && !still.conflicts.some((x) => x.key === A.key) && q.raw() === "[]",
+        J({ threw, warned: q.warned.length, q: keysOf(q.phone()), none: keysOf(none.phone()), memOnly: q.memOnly() }));
+    }
+    // RS-1 — two tabs of the app on one phone: this tab's copy is stale; the store is what another tab wrote since
+    {
+      const TA = { key: A.key, text: TEXT_A, at: "t-other" }, TB = { key: B.key, text: TEXT_B, at: "t-other" }, TV = { key: V.key, text: V.message, at: "t-other" };
+      const lost = rig({ phone: [], stored: [TA] });            // this tab opened before the other hid A
+      lost.h.hideWarningHere(B, null);
+      const back = rig({ phone: [TA], stored: [] });            // this tab read [A]; the other tab then brought A back ("Show again")
+      back.h.hideWarningHere(B, null);
+      const backWS = WS([], back.phone());
+      check("BL2 (RS-1) a hide in a STALE tab applies to what is stored NOW: another tab hid A after this one read [] → hiding B keeps A ([A, B] stored and shown — the lost hide); another tab brought A back after this one read [A] → hiding B does NOT hide A again ([B] — the resurrected hide); memory follows the store",
+        keysOf(lost.stored()) === J([A.key, B.key]) && keysOf(lost.phone()) === J([A.key, B.key])
+          && keysOf(back.stored()) === J([B.key]) && keysOf(back.phone()) === J([B.key]) && backWS.conflicts.some((x) => x.key === A.key) && backWS.hiddenHere.length === 1,
+        J({ lost: [keysOf(lost.stored()), keysOf(lost.phone())], back: [keysOf(back.stored()), keysOf(back.phone())] }));
+      const sh = rig({ phone: [TA, TB], stored: [TB, TV] });  // stale [A, B]; the other tab showed A again and hid V
+      sh.h.showWarningHere({ key: B.key, text: TEXT_B }, null);
+      const junk = rig({ phone: [TA], stored: J([null, { key: 7 }, TV, TV]) }); // another writer left junk: cleaned by the same read
+      junk.h.hideWarningHere(B, null);
+      const blind = rig({ phone: [TA], store: { getItem: () => { throw new Error("SecurityError"); }, setItem: () => { throw new Error("SecurityError"); } } });
+      let blindThrew = null;
+      try { blind.h.hideWarningHere(B, null); } catch (ex) { blindThrew = String(ex); }
+      check("BL2 (RS-1) …\"Show again\" in a stale tab too: [B, V] stored → showing B leaves [V] (not this tab's stale [A]); what another writer stored is cleaned by the same read before the change (junk dropped, a duplicate once); storage that can't be read at all → the change applies to this tab's own list ([A] + B, not B alone), nothing thrown",
+        keysOf(sh.stored()) === J([V.key]) && keysOf(sh.phone()) === J([V.key]) && keysOf(junk.stored()) === J([V.key, B.key]) && keysOf(junk.phone()) === J([V.key, B.key])
+          && keysOf(blind.phone()) === J([A.key, B.key]) && blindThrew === null,
+        J({ sh: keysOf(sh.phone()), junk: keysOf(junk.phone()), blind: keysOf(blind.phone()), blindThrew }));
+    }
+    // RS-1 — the storage listener: another tab's change (or a cleared storage) is followed here
+    {
+      const LIS = "  useEffect(() => {\n    const onHiddenWarningsStorage = (e) => {\n"; // (its own name: SE-X22's extractor finds the dsg-auth-token listener as the FIRST `const onStorage = (e) => {`)
+      const l0 = nsrcL.indexOf(LIS), l1 = l0 === -1 || nsrcL.indexOf(LIS, l0 + 1) !== -1 ? -1 : nsrcL.indexOf("\n  }, []);\n", l0);
+      let mkLis = null;
+      try { mkLis = l1 > l0 && l1 - l0 < 900 && mkRead ? vm.runInContext("(function (env) { const { window, phoneHiddenRead, phoneHiddenMemOnlyRef, setPhoneHiddenWarnings, useEffect } = env;\n" + nsrcL.slice(l0, l1 + "\n  }, []);".length) + "\n})", sandbox, { filename: "bl-storage-listener.js" }) : null; } catch (ex) { mkLis = null; }
+      if (!mkLis) check("BL2 (RS-1) the storage listener effect for \"dsg-hidden-warnings\" is extractable (deps [])", false, J({ l0, l1 }));
+      else {
+        const lis = (raw, o = {}) => {
+          const L = { sets: [], added: [], removed: [], eff: null };
+          const ls = o.throws ? { getItem: () => { throw new Error("SecurityError"); } } : { getItem: (k) => (k === LS_KEY ? L.raw : null) };
+          L.raw = raw;
+          mkLis({ window: { addEventListener: (t, f) => L.added.push([t, f]), removeEventListener: (t, f) => L.removed.push([t, f]) }, phoneHiddenRead: mkRead(ls), phoneHiddenMemOnlyRef: { current: !!o.memOnly },
+            setPhoneHiddenWarnings: (v) => L.sets.push(v), useEffect: (fn, deps) => { L.eff = { fn, deps }; } });
+          L.cleanup = L.eff.fn();
+          L.fire = (key) => L.added.forEach(([t, f]) => t === "storage" && f({ key }));
+          return L;
+        };
+        const a = lis(J([{ key: A.key, text: TEXT_A, at: "x" }, { key: 5 }]));
+        a.fire(LS_KEY); a.fire("dsg-auth-token"); a.fire("dsg-dark-mode");
+        a.raw = null; a.fire(null);
+        a.cleanup();
+        const mem = lis(J([{ key: A.key }]), { memOnly: true }); mem.fire(LS_KEY);
+        const blind = lis(null, { throws: true }); blind.fire(LS_KEY);
+        check("BL2 (RS-1) the real storage listener: another tab writes \"dsg-hidden-warnings\" → this tab re-reads it (cleaned) into its state; another key → nothing; storage cleared (key null) → []; while this tab is memory-only, or storage can't be read → nothing (its own hides kept); one \"storage\" listener, removed on cleanup; deps [] (it runs once)",
+          a.sets.length === 2 && J(a.sets[0]) === J([{ key: A.key, text: TEXT_A, at: "x" }]) && J(a.sets[1]) === "[]" && a.added.length === 1 && a.added[0][0] === "storage"
+            && a.removed.length === 1 && a.removed[0][1] === a.added[0][1] && J(a.eff.deps) === "[]" && mem.sets.length === 0 && blind.sets.length === 0,
+          J({ sets: a.sets, mem: mem.sets, blind: blind.sets, deps: a.eff.deps }));
+      }
+    }
+
+    // BL4 — the handlers' side effects
+    const p = rig();
+    p.h.hideWarningHere(A, null);
+    const toast = p.log.find((x) => x[0] === "toast") || [];
+    // (review fix P2, changed ON PURPOSE: the toast's tone was "info" — its pill caught taps for ~5 s right where the next
+    // ✕ or the new bar's "show" is; "info-passthrough" is an info toast whose pill lets taps through — checked below)
+    check("BL4 the real hideWarningHere (a member): at once — NO confirm, NO setDismissedWarnings, NO logAudit, NO fetch; any open choice closes; then this phone's list; one toast (\"info-passthrough\": it lets taps through) that says \"this phone\" and that it is not for everyone",
+      p.kinds() === "choice>setPhone>toast" && p.blob().length === 0 && toast[2] === "info-passthrough" && /this phone/i.test(toast[1] || "") && /not for everyone/i.test(toast[1] || "") && /comes back/i.test(toast[1] || ""),
+      J(p.log));
+    // P1 — the double-tap: the clock stands still (o.still) and only tick() moves it
+    {
+      const dt = rig({ still: true });
+      dt.h.hideWarningHere(A, null); dt.tick(80); dt.h.hideWarningHere(B, null);          // a double-tap: B moved up under the finger
+      const afterDouble = keysOf(dt.phone()), toastsDouble = dt.log.filter((x) => x[0] === "toast").length;
+      dt.tick(319); dt.h.hideWarningHere(B, null);                                          // 399 ms after the first: still ignored
+      const at399 = keysOf(dt.phone());
+      dt.tick(1); dt.h.hideWarningHere(B, null);                                            // 400 ms: a deliberate second hide goes through
+      const at400 = keysOf(dt.phone());
+      const ds = rig({ still: true, phone: [{ key: A.key, text: TEXT_A, at: "a" }, { key: B.key, text: TEXT_B, at: "b" }] });
+      ds.h.showWarningHere({ key: A.key, text: TEXT_A }, null); ds.tick(150); ds.h.showWarningHere({ key: B.key, text: TEXT_B }, null); // "Show again" double-tapped
+      const showDouble = keysOf(ds.phone());
+      ds.tick(400); ds.h.showWarningHere({ key: B.key, text: TEXT_B }, null);
+      const back = rig({ still: true });                                                    // the phone's clock is set BACK an hour after a hide
+      back.h.hideWarningHere(A, null); back.tick(-3600e3); back.h.hideWarningHere(B, null);
+      check("BL4 (P1) a DOUBLE-TAP on a member's ✕ hides ONE line: a second hide 80 ms later (the next line has moved up under the finger) is ignored — one stored, one toast; still ignored at 399 ms; at 400 ms a deliberate hide goes through; \"Show again\" double-tapped brings back ONE (the next row moves up too), and a later one works; a clock set back (a negative gap) never blocks a hide",
+        afterDouble === J([A.key]) && toastsDouble === 1 && at399 === J([A.key]) && at400 === J([A.key, B.key]) && showDouble === J([B.key]) && keysOf(ds.phone()) === "[]" && keysOf(back.phone()) === J([A.key, B.key]),
+        J({ afterDouble, toastsDouble, at399, at400, showDouble, end: keysOf(ds.phone()), back: keysOf(back.phone()) }));
+    }
+    // P2 — the toast pill's real style (the same markup BF6 reads), evaluated per tone
+    {
+      const pillM = nsrcL.match(/\n\s*<div key=\{t\.id\} onClick=\{\(\)=>dismissToast\(t\.id\)\} style=\{(\{pointerEvents:"auto",[^\n]*?\})\}>\n/);
+      let pill = null;
+      try { pill = pillM ? vm.runInContext(`(function (t, font) { return (${pillM[1]}); })`, sandbox) : null; } catch (ex) { pill = null; }
+      const H2 = vm.runInContext("({ toastText: typeof toastText === 'function' ? toastText : null, toastMs: typeof toastMs === 'function' ? toastMs : null })", sandbox);
+      const MSG = "Hidden on this phone only — not for everyone. It comes back if the schedule changes.";
+      if (!pill || !H2.toastText || !H2.toastMs) check("BL4 (P2) the toast pill's style is extractable and evaluable", false, J({ pill: !!pillM }));
+      else {
+        const pp = pill({ id: 1, msg: MSG, tone: "info-passthrough" }, "F"), pi = pill({ id: 2, msg: MSG, tone: "info" }, "F"), pe = pill({ id: 3, msg: "x", tone: "error" }, "F");
+        check("BL4 (P2) the \"Hidden on this phone\" toast lets taps THROUGH (its pill: pointer-events none, no pointer cursor) — so a tap on the next ✕ or the bar's \"show\" under it lands there; it is an info toast in every other way (the info colour, no ✓ / ⚠ prefix, the info time — toastMs); every other toast still catches its tap (info, error: auto)",
+          pp.pointerEvents === "none" && pp.cursor === "default" && pp.background === pi.background && pi.pointerEvents === "auto" && pe.pointerEvents === "auto" && pi.cursor === "pointer"
+            && H2.toastText({ msg: MSG, tone: "info-passthrough" }) === MSG && H2.toastMs("info-passthrough", MSG) === H2.toastMs("info", MSG),
+          J({ pp: [pp.pointerEvents, pp.cursor, pp.background], pi: [pi.pointerEvents, pi.background], pe: pe.pointerEvents }));
+      }
+    }
+    const d = rig({ phone: [{ key: A.key, text: "old text", at: "2026-01-01T00:00:00Z" }, { key: B.key, text: TEXT_B, at: "b" }] });
+    d.h.hideWarningHere(A, null);
+    check("BL4 hiding a line already hidden here REPLACES its entry (no duplicate): once, now the newest, with the current line text and a new time",
+      J(d.phone().map((e) => e.key)) === J([B.key, A.key]) && d.phone()[1].text === TEXT_A && d.phone()[1].at !== "2026-01-01T00:00:00Z", J(d.phone()));
+    const full = Array.from({ length: 300 }, (_, i) => ({ key: "k" + i, text: "t" + i, at: "a" }));
+    const c = rig({ phone: full });
+    c.h.hideWarningHere(A, null);
+    check("BL4 the list is capped at 300: with 300 stored, a new hide keeps the newest 300 (k0 drops, the new line is last); the list given is not changed in place",
+      c.phone().length === 300 && c.phone()[0].key === "k1" && c.phone()[299].key === A.key && full.length === 300 && full[0].key === "k0", J({ n: c.phone().length, first: c.phone()[0], last: c.phone()[299] }));
+    const s = rig({ phone: [{ key: A.key, text: TEXT_A, at: "a" }, { key: B.key, text: TEXT_B, at: "b" }] });
+    s.h.showWarningHere({ key: A.key, text: TEXT_A, at: "a" }, null);
+    check("BL4 the real showWarningHere: only that key leaves this phone's list — no confirm, no blob, no audit, no fetch, no toast",
+      s.kinds() === "setPhone" && J(s.phone().map((e) => e.key)) === J([B.key]), J(s.log));
+
+    // BL5 — the scheduler's choice
+    const e = rig({ sched: true, yes: true, phone: [{ key: B.key, text: TEXT_B, at: "b" }], choice: A.key });
+    e.h.warnChoiceEveryone(A, null);
+    check("BL5 the scheduler's \"Everyone…\" (the real warnChoiceEveryone) runs the REAL, unchanged dismissWarning: the choice closes, then confirm quoting the line (EVERYONE), the blob write { key, text, by, at }, the audit row warning_dismissed \"FAK dismissed: <line>\" { key }; this phone's list untouched; no toast",
+      e.kinds() === "choice>confirm>setDismissed>audit" && e.choice() === null && e.log[1][1].includes(TEXT_A) && /EVERYONE/.test(e.log[1][1])
+        && e.blob().length === 1 && e.blob()[0].key === A.key && e.blob()[0].text === TEXT_A && e.blob()[0].by === "FAK" && typeof e.blob()[0].at === "string"
+        && e.log[3][1] === "warning_dismissed" && e.log[3][2] === "FAK dismissed: " + TEXT_A && J(e.log[3][3]) === J({ key: A.key }) && J(e.phone()) === J([{ key: B.key, text: TEXT_B, at: "b" }]),
+      J(e.log.map((x) => x.slice(0, 2))));
+    const n = rig({ sched: true, yes: false, choice: A.key });
+    n.h.warnChoiceEveryone(A, null);
+    const mem = rig({ yes: true, choice: A.key });
+    mem.h.warnChoiceEveryone(A, null);
+    check("BL5 …the confirm declined → nothing written, nothing audited; a MEMBER reaching it anyway → dismissWarning still refuses (no confirm, no blob, no audit)",
+      n.kinds() === "choice>confirm" && n.blob().length === 0 && mem.kinds() === "choice" && mem.blob().length === 0, J({ n: n.kinds(), mem: mem.kinds() }));
+    const sp = rig({ sched: true, yes: true, choice: A.key });
+    sp.h.hideWarningHere(A, null);
+    const cc = rig({ sched: true, yes: true, choice: A.key });
+    cc.h.warnChoiceCancel(null);
+    check("BL5 the scheduler's \"This phone\" is the member's hide exactly (closes the choice, this phone's list only, the same toast — no confirm, no blob, no audit); \"Cancel\" closes the choice and changes nothing",
+      sp.kinds() === "choice>setPhone>toast" && sp.choice() === null && sp.blob().length === 0 && sp.phone().length === 1 && sp.phone()[0].key === A.key
+        && cc.kinds() === "choice" && cc.choice() === null && cc.blob().length === 0 && cc.phone().length === 0, J({ sp: sp.kinds(), cc: cc.kinds() }));
+    const ccM = nsrcL.match(/\n  useEffect\(\(\) => \{\n(    if \(warnChoiceKey [^\n]*)\n  \}, \[warnShown, warnChoiceKey\]\);\n/);
+    let runCC = null;
+    try { runCC = ccM ? vm.runInContext("(function (warnShown, warnChoiceKey, setWarnChoiceKey) {\n" + ccM[1] + "\n})", sandbox, { filename: "bl-choice-close.js" }) : null; } catch (ex) { runCC = null; }
+    if (!runCC) check("BL5 the choice-closing effect is extractable (deps [warnShown, warnChoiceKey])", false, ccM ? "compile" : "anchor");
+    else {
+      const sets = (ws, k) => { const out = []; runCC(ws, k, (v) => out.push(v)); return J(out); };
+      check("BL5 the real choice-closing effect: the open line still shown → left open; its line gone (hidden here, dismissed elsewhere, or its facts changed) → closed (null); nothing open → nothing set",
+        sets(WS(), A.key) === "[]" && sets(WS([], [{ key: A.key, text: TEXT_A, at: "a" }]), A.key) === "[null]" && sets(WS([{ key: A.key, text: TEXT_A }]), A.key) === "[null]"
+          && sets(WS(), "consecutive|2026-10-26|s6|tue+wed") === "[null]" && sets(WS(), null) === "[]" && sets(WS(), V.key) === "[]",
+        J([sets(WS(), A.key), sets(WS([], [{ key: A.key }]), A.key), sets(WS(), null)]));
+      // (RS-3) the panel draws the first 10 lines of EACH list: 11 lines in each, the choice open on a 10th (drawn) or an
+      // 11th (not drawn — "+ 1 more … line…")
+      const elevenOf = (p) => Array.from({ length: 11 }, (_, i) => ({ key: `${p}|2026-11-${String(i + 2).padStart(2, "0")}`, type: p, severity: "error", week: "w" + i, message: p + " line " + i }));
+      const bigL = { silvisConflicts: [FEED].concat(elevenOf("silvis-x").slice(0, 10)), conflicts: elevenOf("consecutive"), vacOverlapWarnings: elevenOf("surgeons-off") };
+      const big = WS([], [], bigL);
+      const tenthOf = (arr) => arr[9].key, eleventhOf = (arr) => arr[10].key;
+      const rs3 = { s11: sets(big, eleventhOf(bigL.silvisConflicts)), s10: sets(big, tenthOf(bigL.silvisConflicts)), c11: sets(big, eleventhOf(bigL.conflicts)), c10: sets(big, tenthOf(bigL.conflicts)),
+        v11: sets(big, eleventhOf(bigL.vacOverlapWarnings)), v10: sets(big, tenthOf(bigL.vacOverlapWarnings)) };
+      check("BL5 (RS-3) the real choice-closing effect closes a choice whose line is no longer DRAWN — the 11th line of the Silvis, the schedule and the vacation-overlap list (past the 10 the panel draws of each: it would stay open unseen and reappear open later) → closed; each list's 10th → left open",
+        big.silvis.length === 11 && big.conflicts.length === 11 && big.vac.length === 11 && J(rs3) === J({ s11: "[null]", s10: "[]", c11: "[null]", c10: "[]", v11: "[null]", v10: "[]" }),
+        J(rs3));
+    }
+    // (P7) a bar whose list has emptied is closed
+    {
+      const P7 = "  useEffect(() => {\n    if (showPhoneHidden && ";
+      const q0 = nsrcL.indexOf(P7), q1 = q0 === -1 || nsrcL.indexOf(P7, q0 + 1) !== -1 ? -1 : nsrcL.indexOf("\n  }, [warnShown, showPhoneHidden, showDismissedWarnings]);\n", q0);
+      let runP7 = null;
+      try { runP7 = q1 > q0 && q1 - q0 < 500 ? vm.runInContext("(function (env) { const { warnShown, showPhoneHidden, showDismissedWarnings, setShowPhoneHidden, setShowDismissedWarnings, useEffect } = env;\n" + nsrcL.slice(q0, q1 + "\n  }, [warnShown, showPhoneHidden, showDismissedWarnings]);".length) + "\n})", sandbox, { filename: "bl-bar-close.js" }) : null; } catch (ex) { runP7 = null; }
+      if (!runP7) check("BL5 (P7) the bars' closing effect is extractable (deps [warnShown, showPhoneHidden, showDismissedWarnings])", false, J({ q0, q1 }));
+      else {
+        const p7 = (ws, openPhone, openBlob) => { const out = []; let deps = null; runP7({ warnShown: ws, showPhoneHidden: openPhone, showDismissedWarnings: openBlob, setShowPhoneHidden: (v) => out.push(["phone", v]), setShowDismissedWarnings: (v) => out.push(["everyone", v]), useEffect: (fn, d) => { deps = d; fn(); } }); return { out: J(out), deps }; };
+        const empty = WS(), withHere = WS([], [{ key: A.key, text: TEXT_A, at: "a" }]), withBlob = WS([{ key: B.key, text: TEXT_B }]);
+        const r1 = p7(empty, true, true), r2 = p7(withHere, true, false), r3 = p7(empty, false, false), r4 = p7(withBlob, false, true);
+        check("BL5 (P7) the real bars' closing effect: the phone list open and now empty (the last \"Show again\") → closed, and the everyone list likewise (the last Restore) — so the next hide brings its bar back CLOSED; a list still holding a line stays open; nothing open → nothing set; it re-runs on warnShown and on either toggle",
+          r1.out === J([["phone", false], ["everyone", false]]) && r2.out === "[]" && r3.out === "[]" && r4.out === "[]" && r1.deps.length === 3 && r1.deps[0] === empty && r1.deps[1] === true,
+          J({ r1: r1.out, r2: r2.out, r3: r3.out, r4: r4.out }));
+      }
+    }
+
+    // BL6 — focus after a hide, through the real warnRefocus (a stub DOM: lines with their ✕, hidden-list rows with Show again, a bar)
+    const dom = (nLines, o = {}) => {
+      const D = { focused: null };
+      const el = (attrs, row) => ({ attrs, row, gone: false, get isConnected() { return !this.gone && !(this.row && this.row.gone); }, getAttribute(a) { return a in this.attrs ? this.attrs[a] : null; }, focus() { D.focused = this; }, closest(sel) { return this.row && this.row.sel === sel ? this.row : null; } });
+      const row = (sel, btnSel, attrs) => { const r = { sel, gone: false }; r.btn = el(attrs, r); r.querySelector = (q) => (q === btnSel ? r.btn : null); r.other = () => el({}, r); return r; };
+      D.lines = Array.from({ length: nLines }, (_, i) => row("[data-warn-line]", "[data-warn-x]", { "data-warn-x": "1", "data-warn-key": "L" + i }));
+      D.shows = Array.from({ length: o.shows || 0 }, () => row("[data-warn-hidden]", "[data-warn-show]", { "data-warn-show": "1" }));
+      D.bar = o.bar ? el({}, null) : null;
+      D.document = {
+        querySelectorAll: (q) => (q === "[data-warn-x]" ? D.lines : q === "[data-warn-show]" ? D.shows : []).filter((r) => !r.gone).map((r) => r.btn),
+        querySelector: (q) => (q === "[data-warn-bar] button" && D.bar && !D.bar.gone ? D.bar : null),
+      };
+      return D;
+    };
+    const tap = (D, o, act) => { const r = rig(Object.assign({ document: D.document }, o)); act(r); return r; };
+    const runTimers = (r) => r.timers.splice(0).forEach((fn) => fn());
+    const d1 = dom(3, { bar: true }); const r1 = tap(d1, {}, (r) => r.h.hideWarningHere(A, d1.lines[1].btn)); const early = d1.focused, queued = r1.timers.length; d1.lines[1].gone = true; runTimers(r1);
+    const d2 = dom(3, { bar: true }); const r2 = tap(d2, {}, (r) => r.h.hideWarningHere(A, d2.lines[2].btn)); d2.lines[2].gone = true; runTimers(r2);
+    const d3 = dom(1, { bar: true }); const r3 = tap(d3, {}, (r) => r.h.hideWarningHere(A, d3.lines[0].btn)); d3.lines[0].gone = true; runTimers(r3);
+    const d4 = dom(2, { bar: true }); const r4 = tap(d4, { sched: true, choice: A.key }, (r) => r.h.hideWarningHere(A, d4.lines[0].other())); d4.lines[0].gone = true; runTimers(r4);
+    check("BL6 focus after a hide (the real warnRefocus): the middle line's ✕ → the NEXT line's ✕; the last line → the previous line's ✕; the only line → the bar's button; the scheduler's \"This phone\" (in the line's choice) → the next line's ✕ — never <body>; applied after the draw (a timer), not before",
+      d1.focused === d1.lines[2].btn && d2.focused === d2.lines[1].btn && d3.focused === d3.bar && d4.focused === d4.lines[1].btn && early === null && queued === 1,
+      J({ d1: d1.focused && d1.focused.attrs, d2: d2.focused && d2.focused.attrs, d3: d3.focused === d3.bar, d4: d4.focused && d4.focused.attrs }));
+    const d5 = dom(2, { bar: true }); const r5 = tap(d5, { sched: true, choice: A.key }, (r) => r.h.warnChoiceCancel(d5.lines[0].other())); runTimers(r5);
+    const d6 = dom(2, { bar: true }); const r6 = tap(d6, { sched: true, yes: false, choice: A.key }, (r) => r.h.warnChoiceEveryone(A, d6.lines[1].other())); runTimers(r6);
+    const d7 = dom(2, { bar: true }); const r7 = tap(d7, { sched: true, yes: true, choice: A.key }, (r) => r.h.warnChoiceEveryone(A, d7.lines[0].other())); d7.lines[0].gone = true; runTimers(r7);
+    const d8 = dom(2, { shows: 1 }); const r8 = tap(d8, { phone: [{ key: "L1", text: "t", at: "a" }] }, (r) => r.h.showWarningHere({ key: "L1", text: "t" }, d8.shows[0].btn)); d8.shows[0].gone = true; runTimers(r8);
+    const d9 = dom(2, { shows: 2, bar: true }); const r9 = tap(d9, {}, (r) => r.h.showWarningHere({ key: "L0", text: "t" }, d9.shows[0].btn)); d9.shows[0].gone = true; runTimers(r9);
+    let noDocOk = false;
+    try { const r10 = rig({ noDoc: true }); r10.h.hideWarningHere(A, { closest: () => { throw new Error("detached"); } }); runTimers(r10); noDocOk = r10.phone().length === 1 && r10.kinds() === "choice>setPhone>toast"; } catch (ex) { noDocOk = false; }
+    check("BL6 …Cancel → its own line's ✕; a declined \"Everyone…\" confirm (the line stays) → its own ✕; an accepted one (the line goes) → the next ✕; Show again on the LAST hidden line → that line's ✕, back on the card; on one of two → the next Show again; no document / a detached control → the hide still happens, nothing thrown",
+      d5.focused === d5.lines[0].btn && d6.focused === d6.lines[1].btn && d7.focused === d7.lines[1].btn && d8.focused === d8.lines[1].btn && d9.focused === d9.shows[1].btn && noDocOk,
+      J({ d5: d5.focused && d5.focused.attrs, d6: d6.focused && d6.focused.attrs, d7: d7.focused && d7.focused.attrs, d8: d8.focused && d8.focused.attrs, d9: d9.focused === d9.shows[1].btn, noDocOk }));
+  }
+
+  // BL7 — the panel, rendered. Its real JSX (the IIFE inside {!isPublicMode && …}) compiled by a tiny JSX→h() pass —
+  // enough for this panel: elements, "…" / {…} attributes, text, {…} children (comments dropped) — then run with a
+  // recording h() on fixtures, through the real warnShown.
+  const P_START = "{!isPublicMode && (()=>{\n            const shownTotal = warnShown";
+  const pS = nsrcL.indexOf(P_START), pE = pS === -1 ? -1 : nsrcL.indexOf("\n          })()}", pS);
+  const jsxLite = (code) => {
+    const q = (x) => JSON.stringify(x);
+    const skipStr = (k) => { const ch = code[k]; for (let m = k + 1; m < code.length; m++) { if (code[m] === "\\") { m++; continue; } if (code[m] === ch) return m; } return code.length; };
+    const close = (j) => { // code[j] === "{" → its matching "}" (strings and template literals skipped)
+      let depth = 0;
+      for (let k = j; k < code.length; k++) {
+        const ch = code[k];
+        if (ch === '"' || ch === "'") { k = skipStr(k); continue; }
+        if (ch === "`") { for (k = k + 1; k < code.length && code[k] !== "`"; k++) { if (code[k] === "\\") k++; else if (code[k] === "$" && code[k + 1] === "{") k = close(k + 1); } continue; }
+        if (ch === "{") depth++; else if (ch === "}" && --depth === 0) return k;
+      }
+      throw new Error("unbalanced { at " + j);
+    };
+    const el = (k) => {
+      let j = k + 1;
+      const tag = /^[A-Za-z][\w.]*/.exec(code.slice(j))[0]; j += tag.length;
+      const props = [], kids = [];
+      for (;;) {
+        while (/\s/.test(code[j])) j++;
+        if (code[j] === "/" && code[j + 1] === ">") return [`h(${q(tag)}, {${props.join(", ")}})`, j + 2];
+        if (code[j] === ">") { j++; break; }
+        const nm = (/^[\w-]+/.exec(code.slice(j)) || [""])[0];
+        if (!nm) throw new Error("attribute at " + j + ": " + code.slice(j, j + 30));
+        j += nm.length;
+        if (code[j] !== "=") { props.push(`${q(nm)}: true`); continue; }
+        j++;
+        if (code[j] === '"') { const e = skipStr(j); props.push(`${q(nm)}: ${code.slice(j, e + 1)}`); j = e + 1; }
+        else if (code[j] === "{") { const e = close(j); props.push(`${q(nm)}: (${jsxLite(code.slice(j + 1, e))})`); j = e + 1; }
+        else throw new Error("attribute value at " + j);
+      }
+      let text = "";
+      const flush = () => {
+        if (!text) return;
+        const lines = text.split("\n");
+        const t = lines.length === 1 ? text : lines.map((l, i) => (i > 0 ? l.replace(/^\s+/, "") : l)).map((l, i, a) => (i < a.length - 1 ? l.replace(/\s+$/, "") : l)).filter((l) => l.length).join(" ");
+        if (t.length && !(lines.length > 1 && !t.trim())) kids.push(q(t));
+        text = "";
+      };
+      for (;;) {
+        if (j >= code.length) throw new Error("unclosed <" + tag + ">");
+        if (code.startsWith("</", j)) { flush(); j = code.indexOf(">", j) + 1; break; }
+        if (code[j] === "<" && /[A-Za-z]/.test(code[j + 1])) { flush(); const [js, e] = el(j); kids.push(js); j = e; continue; }
+        if (code[j] === "{") { flush(); const e = close(j); const inner = code.slice(j + 1, e); if (inner.replace(/\/\*[\s\S]*?\*\//g, "").trim()) kids.push(`(${jsxLite(inner)})`); j = e + 1; continue; }
+        text += code[j]; j++;
+      }
+      return [`h(${q(tag)}, {${props.join(", ")}}${kids.length ? ", " + kids.join(", ") : ""})`, j];
+    };
+    let out = "";
+    for (let i = 0; i < code.length;) {
+      const ch = code[i];
+      if (ch === '"' || ch === "'") { const e = skipStr(i); out += code.slice(i, e + 1); i = e + 1; continue; }
+      if (ch === "`") { const e0 = i; let k = i + 1; for (; k < code.length && code[k] !== "`"; k++) { if (code[k] === "\\") k++; else if (code[k] === "$" && code[k + 1] === "{") k = close(k + 1); } out += code.slice(e0, k + 1); i = k + 1; continue; }
+      if (ch === "<" && /[A-Za-z]/.test(code[i + 1] || "") && /[(?:,&|>{[=]$/.test(out.replace(/\s+$/, "")) ) { const [js, e] = el(i); out += js; i = e; continue; }
+      out += ch; i++;
+    }
+    return out;
+  };
+  let renderPanel = null, jsxErr = "";
+  try {
+    if (pS === -1 || pE === -1) throw new Error("panel anchor");
+    const iife = nsrcL.slice(pS + "{!isPublicMode && ".length, pE + "\n          })()".length).replace(/^\s*\/\/[^\n]*$/gm, "").replace(/;\s*\/\/[^\n]*$/gm, ";");
+    renderPanel = vm.runInContext(`(function (env) { const { h, warnShown, canWriteBlob, warnChoiceKey, showPhoneHidden, showDismissedWarnings, dk, font, mono, dkSubtext, css, hideWarningHere, showWarningHere, warnChoiceEveryone, warnChoiceCancel, setWarnChoiceKey, setShowPhoneHidden, setShowDismissedWarnings, restoreWarning, dismissWarning } = env; return ${jsxLite(iife)}; })`, sandbox, { filename: "bl-panel.js" });
+  } catch (ex) { renderPanel = null; jsxErr = String(ex).slice(0, 200); }
+  if (!renderPanel || !runWS) check("BL7 the Schedule Warnings panel (its real JSX) compiles and renders on fixtures", false, jsxErr || "warnShown");
+  else {
+    const hh = (tag, props, ...kids) => ({ tag, props: props || {}, kids: kids.flat(Infinity).filter((k) => k !== null && k !== undefined && k !== false && k !== true && k !== "") });
+    const all = (n, out = []) => { if (n && typeof n === "object") { out.push(n); n.kids.forEach((k) => all(k, out)); } return out; };
+    const textOf = (n) => (n == null ? "" : typeof n !== "object" ? String(n) : n.kids.map(textOf).join(""));
+    const calls = [];
+    const spy = (name) => (...a) => { calls.push([name, ...a]); };
+    const render = (o = {}) => {
+      calls.length = 0;
+      const ws = WS(o.blob, o.phone, o.lists);
+      const tree = renderPanel({ h: hh, warnShown: ws, canWriteBlob: !!o.sched, warnChoiceKey: o.choice === undefined ? null : o.choice, showPhoneHidden: !!o.openPhone, showDismissedWarnings: !!o.openBlob,
+        dk: !!o.dk, font: "F", mono: "M", dkSubtext: o.dk ? "#8a8aaa" : "#7a8a98", css: { card: { padding: 14 } },
+        hideWarningHere: spy("hide"), showWarningHere: spy("show"), warnChoiceEveryone: spy("everyone"), warnChoiceCancel: spy("cancel"), setWarnChoiceKey: spy("setChoice"),
+        setShowPhoneHidden: spy("togglePhone"), setShowDismissedWarnings: spy("toggleBlob"), restoreWarning: spy("restore"), dismissWarning: spy("dismissDirect") });
+      const nodes = all(tree);
+      const lines = nodes.filter((x) => x.props["data-warn-line"] === "1");
+      const xOf = (ln) => ln.kids.find((k) => k && k.tag === "button" && k.props["data-warn-x"] === "1") || null;
+      return { tree, nodes, lines, xOf, text: textOf(tree), buttons: nodes.filter((x) => x.tag === "button"), lineOf: (key) => lines.find((ln) => { const b = xOf(ln); return b && b.props["data-warn-key"] === key; }) || null };
+    };
+    const EL = { tag: "fake-currentTarget" };
+    // a member, nothing hidden
+    const mv = render();
+    const mx = mv.lines.map(mv.xOf);
+    const xA = mv.xOf(mv.lineOf(A.key) || { kids: [] });
+    if (xA) xA.props.onClick({ currentTarget: EL });
+    const mClick = calls.slice();
+    check("BL7 a MEMBER sees a ✕ on every dismissable line (A, B and the vacation line) and none on the feed-health line; each is labelled \"Hide this warning on this phone\" (no aria-expanded — it acts at once); tapping one calls hideWarningHere(that line, the button) — the owner's ask",
+      mv.lines.length === 4 && mx.filter(Boolean).length === 3 && !mv.xOf(mv.lines[0]) && mx.filter(Boolean).every((b) => b.props["aria-label"] === "Hide this warning on this phone" && !("aria-expanded" in b.props) && b.kids.join("") === "✕")
+        && J(mClick.map((c) => [c[0], c[1] && c[1].key, c[2] === EL])) === J([["hide", A.key, true]]) && /⚠️ Schedule Warnings — 4/.test(mv.text) && !/Everyone…|dismissed for everyone/.test(mv.text),
+      J({ lines: mv.lines.length, x: mx.map((b) => b && b.props["aria-label"]), mClick: mClick.map((c) => c[0]) }));
+    // a member with A hidden here, the list open
+    const mh = render({ phone: [{ key: A.key, text: TEXT_A, at: "a" }], openPhone: true });
+    const bar = mh.nodes.find((x) => x.props["data-warn-bar"] === "phone");
+    const showBtn = mh.nodes.find((x) => x.props["data-warn-show"] === "1");
+    if (showBtn) showBtn.props.onClick({ currentTarget: EL });
+    const showCall = calls.slice();
+    const tog = bar && bar.kids.find((k) => k && k.tag === "button");
+    check("BL7 …with one line hidden here: the card counts 3 and no longer shows it; the bar reads \"1 hidden on this phone · hide\" (its toggle has aria-expanded), lists the line's text with \"Show again\" (labelled for VoiceOver) → showWarningHere(that entry); no Restore, no \"dismissed for everyone\" bar for a member",
+      /⚠️ Schedule Warnings — 3/.test(mh.text) && !mh.lineOf(A.key) && !!bar && /^1 hidden on this phone · hide/.test(textOf(bar)) && textOf(bar).includes(TEXT_A) && tog && tog.props["aria-expanded"] === true
+        && showBtn && textOf(showBtn) === "Show again" && showBtn.props["aria-label"] === "Show this warning again on this phone" && J(showCall.map((c) => [c[0], c[1] && c[1].key, c[2] === EL])) === J([["show", A.key, true]])
+        && !/Restore|dismissed for everyone/.test(mh.text),
+      J({ bar: bar && textOf(bar), show: showCall.map((c) => c[0]) }));
+    // everything hidden (no feed-health line in this fixture) → no card, only the bar
+    const gone = render({ lists: { silvisConflicts: [], conflicts: [A, B], vacOverlapWarnings: [V] }, phone: [{ key: A.key, text: TEXT_A, at: "a" }, { key: B.key, text: TEXT_B, at: "b" }, { key: V.key, text: V.message, at: "v" }] });
+    const none = render({ lists: { silvisConflicts: [], conflicts: [], vacOverlapWarnings: [] } });
+    const goneS = render({ sched: true, lists: { silvisConflicts: [], conflicts: [A, B], vacOverlapWarnings: [] }, blob: [{ key: B.key, text: TEXT_B, by: "FAK", at: "x" }], phone: [{ key: A.key, text: TEXT_A, at: "a" }] });
+    // (review fix P4, changed ON PURPOSE: was "3 hidden on this phone · show" — with the card gone nothing said WHAT was
+    // hidden, between the filter chips and the calendar; on the card the header says it, so there it stays short)
+    check("BL7 …every line hidden here → the card is gone (no header, no lines) and only the small bar remains, naming what it holds: \"3 schedule warnings hidden on this phone · show\" (a scheduler's: \"1 schedule warning hidden on this phone\" + \"1 schedule warning dismissed for everyone\"); nothing at all to show or list → nothing rendered",
+      !/Schedule Warnings/.test(gone.text) && gone.lines.length === 0 && gone.tree && gone.tree.tag === "div" && /^3 schedule warnings hidden on this phone · show$/.test(gone.text) && none.tree === null
+        && goneS.lines.length === 0 && /^1 schedule warning hidden on this phone · show1 schedule warning dismissed for everyone · show$/.test(goneS.text),
+      J({ gone: gone.text, goneS: goneS.text, none: none.tree }));
+    // the scheduler: the ✕ toggles the line's choice
+    const sv = render({ sched: true });
+    const sx = sv.xOf(sv.lineOf(A.key) || { kids: [] });
+    if (sx) sx.props.onClick({ currentTarget: EL });
+    const toggle = calls.find((c) => c[0] === "setChoice");
+    check("BL7 the SCHEDULER's ✕ (every dismissable line) says it opens a choice, carries aria-expanded=false, and toggles THAT line's choice (setWarnChoiceKey: closed → its key, open → closed); no choice row while none is open; it never dismisses directly",
+      !!sx && /opens a choice/.test(sx.props["aria-label"]) && sx.props["aria-expanded"] === false && sv.lines.map(sv.xOf).filter(Boolean).length === 3
+        && toggle && typeof toggle[1] === "function" && toggle[1](null) === A.key && toggle[1](A.key) === null && toggle[1](B.key) === A.key
+        && !sv.nodes.some((x) => x.props.role === "group") && !calls.some((c) => c[0] === "dismissDirect" || c[0] === "hide"),
+      J({ label: sx && sx.props["aria-label"], exp: sx && sx.props["aria-expanded"] }));
+    const so = render({ sched: true, choice: A.key });
+    const lineA = so.lineOf(A.key), groups = so.nodes.filter((x) => x.props.role === "group");
+    const gA = lineA && lineA.kids.find((k) => k && k.props && k.props.role === "group");
+    const gb = gA ? gA.kids.filter((k) => k && k.tag === "button") : [];
+    gb.forEach((b) => b.props.onClick({ currentTarget: EL }));
+    const choiceCalls = calls.map((c) => [c[0], c[1] && c[1].key ? c[1].key : c[1] === EL ? "EL" : c[1], c[2] === EL]);
+    calls.length = 0;
+    if (gA) gA.props.onKeyDown({ key: "Escape", target: EL }); if (gA) gA.props.onKeyDown({ key: "Enter", target: EL });
+    const escCalls = calls.map((c) => c[0]);
+    // Escape on the ✕ itself (where focus is right after opening — rendered check 2026-10-19: the row's own handler
+    // never saw it): closes A's open choice; on B's ✕ (its choice closed) nothing
+    calls.length = 0;
+    const xA2 = so.xOf(lineA), xB2 = so.xOf(so.lineOf(B.key));
+    if (xA2 && xA2.props.onKeyDown) xA2.props.onKeyDown({ key: "Escape", currentTarget: EL });
+    if (xB2 && xB2.props.onKeyDown) xB2.props.onKeyDown({ key: "Escape", currentTarget: EL });
+    if (xA2 && xA2.props.onKeyDown) xA2.props.onKeyDown({ key: "Tab", currentTarget: EL });
+    const escX = calls.map((c) => [c[0], c[1] === EL]);
+    check("BL7 …with A's choice open: ONLY A's line has the choice row (a group, on the line, full width), its ✕ says aria-expanded=true; the row's buttons read \"This phone\" · \"Everyone…\" · \"Cancel\" and call hideWarningHere(A) / warnChoiceEveryone(A) / warnChoiceCancel; Escape = Cancel, in the row and on A's ✕ (not on another line's ✕, not another key)",
+      groups.length === 1 && !!gA && so.xOf(lineA).props["aria-expanded"] === true && so.xOf(so.lineOf(B.key)).props["aria-expanded"] === false && gA.props.style.flexBasis === "100%"
+        && J(gb.map(textOf)) === J(["This phone", "Everyone…", "Cancel"]) && J(choiceCalls) === J([["hide", A.key, true], ["everyone", A.key, true], ["cancel", "EL", false]]) && J(escCalls) === J(["cancel"])
+        && J(escX) === J([["cancel", true]]),
+      J({ groups: groups.length, labels: gb.map(textOf), choiceCalls, escCalls, escX }));
+    const sb = render({ sched: true, blob: [{ key: B.key, text: TEXT_B, by: "FAK", at: "2026-10-19T00:00:00Z" }], phone: [{ key: A.key, text: TEXT_A, at: "a" }], openBlob: true });
+    const bars = sb.nodes.filter((x) => x.props["data-warn-bar"]);
+    const restore = sb.buttons.find((b) => textOf(b) === "Restore");
+    if (restore) restore.props.onClick({ currentTarget: EL });
+    const restoreCalls = calls.slice();
+    const mb = render({ blob: [{ key: B.key, text: TEXT_B, by: "FAK", at: "x" }] });
+    check("BL7 …the two bars can't be confused: \"1 hidden on this phone\" first, then the scheduler's relabelled \"1 dismissed for everyone · hide\" with its (audited) Restore → restoreWarning; a MEMBER never sees the everyone bar (the line is just gone for them)",
+      J(bars.map((b) => b.props["data-warn-bar"])) === J(["phone", "everyone"]) && /^1 hidden on this phone · show/.test(textOf(bars[0])) && /^1 dismissed for everyone · hide/.test(textOf(bars[1]))
+        && restoreCalls.some((c) => c[0] === "restore" && c[1].key === B.key) && !mb.nodes.some((x) => x.props["data-warn-bar"]) && !mb.lineOf(B.key),
+      J(bars.map(textOf)));
+    // (T1) the toggles, TAPPED: each must open / close its OWN list — a member never sees the everyone bar, so a phone
+    // toggle wired to the other list leaves "Show again" out of reach. (P3) and each says what it opens.
+    const togOf = (v, kind) => { const b = v.nodes.find((x) => x.props["data-warn-bar"] === kind); return b ? b.kids.find((k) => k && k.tag === "button") : null; };
+    const tapTog = (v, kind) => { calls.length = 0; const t = togOf(v, kind); if (t) t.props.onClick({ currentTarget: EL }); return calls.map((c) => [c[0], typeof c[1] === "function" ? [c[1](false), c[1](true)] : c[1]]); };
+    const sc = render({ sched: true, blob: [{ key: B.key, text: TEXT_B, by: "FAK", at: "x" }], phone: [{ key: A.key, text: TEXT_A, at: "a" }] });
+    const two = { sched: true, blob: [{ key: B.key, text: TEXT_B, by: "FAK", at: "x" }, { key: V.key, text: V.message, by: "FAK", at: "x" }], phone: [{ key: A.key, text: TEXT_A, at: "a" }] };
+    const so2 = render(Object.assign({ openPhone: true, openBlob: false }, two)), so3 = render(Object.assign({ openPhone: false, openBlob: true }, two));
+    const mt = render({ phone: [{ key: A.key, text: TEXT_A, at: "a" }] });
+    const tapPhone = tapTog(mt, "phone"), tapPhoneS = tapTog(sc, "phone"), tapBlob = tapTog(sc, "everyone");
+    const lab = (v, kind) => { const t = togOf(v, kind); return t ? t.props["aria-label"] : null; };
+    check("BL7 (T1) the bars' toggles, tapped: \"N hidden on this phone · show\" flips ONLY the phone list (setShowPhoneHidden(v => !v): closed → open, open → closed — a member's and a scheduler's), \"N dismissed for everyone · show\" ONLY the everyone list (setShowDismissedWarnings); neither touches the other",
+      J(tapPhone) === J([["togglePhone", [true, false]]]) && J(tapPhoneS) === J([["togglePhone", [true, false]]]) && J(tapBlob) === J([["toggleBlob", [true, false]]]),
+      J({ tapPhone, tapPhoneS, tapBlob }));
+    check("BL7 (P3) each toggle says what it opens (VoiceOver heard \"show, button\" — twice for a scheduler): \"Show the 1 warning hidden on this phone\" / \"Show the 1 warning dismissed for everyone\"; each open by itself: \"Hide the list of the 1 warning hidden on this phone\" / \"Hide the list of the 2 warnings dismissed for everyone\" (the other still \"Show …\"); aria-expanded kept; the visible show / hide starts the name",
+      lab(sc, "phone") === "Show the 1 warning hidden on this phone" && lab(sc, "everyone") === "Show the 1 warning dismissed for everyone" && lab(mt, "phone") === "Show the 1 warning hidden on this phone"
+        && lab(so2, "phone") === "Hide the list of the 1 warning hidden on this phone" && lab(so2, "everyone") === "Show the 2 warnings dismissed for everyone"
+        && lab(so3, "phone") === "Show the 1 warning hidden on this phone" && lab(so3, "everyone") === "Hide the list of the 2 warnings dismissed for everyone"
+        && togOf(sc, "phone").props["aria-expanded"] === false && togOf(so3, "everyone").props["aria-expanded"] === true && togOf(so2, "phone").props["aria-expanded"] === true,
+      J({ sc: [lab(sc, "phone"), lab(sc, "everyone")], so2: [lab(so2, "phone"), lab(so2, "everyone")], so3: [lab(so3, "phone"), lab(so3, "everyone")] }));
+    // phone polish: tap targets, wrapping, dark mode
+    const views = [render({ sched: true, choice: A.key, blob: [{ key: B.key, text: TEXT_B, by: "FAK", at: "x" }], phone: [{ key: V.key, text: V.message, at: "v" }], openPhone: true, openBlob: true }),
+      render({ dk: true, sched: true, choice: A.key, blob: [{ key: B.key, text: TEXT_B, by: "FAK", at: "x" }], phone: [{ key: V.key, text: V.message, at: "v" }], openPhone: true, openBlob: true }), render(), render({ dk: true })];
+    const btns = views.flatMap((v) => v.buttons);
+    const small = btns.filter((b) => !(b.props.style && b.props.style.minHeight >= 36)).map(textOf);
+    const xs = views.flatMap((v) => v.lines.map(v.xOf).filter(Boolean));
+    // (review fix P5: the bars' "hide" was 36px tall but 33px wide — a button whose label is a word or a ✕ is 36px wide too)
+    const narrow = btns.filter((b) => textOf(b).length <= 4 && !(b.props.style.minWidth >= 36)).map(textOf);
+    check("BL7 phone: every button in the panel — each ✕, the choice's three, both bars' show/hide, Show again, Restore — is at least 36px tall; each ✕ and each bar's show / hide (a one-word label) at least 36px wide too (P5)",
+      btns.length >= 20 && small.length === 0 && xs.every((b) => b.props.style.minWidth >= 36) && narrow.length === 0 && btns.filter((b) => /^(show|hide)$/.test(textOf(b))).length >= 4,
+      J({ n: btns.length, small, narrow }));
+    const lineDivs = views.flatMap((v) => v.lines);
+    const msgSpan = (ln) => ln.kids.filter((k) => k && k.tag === "span").pop();
+    check("BL7 phone: a line WRAPS at 320px instead of scrolling sideways — each line row wraps (flexWrap), its message span may shrink to nothing and grow (flex 1 1 0, minWidth 0) and breaks a long word (overflowWrap); the choice row takes its own full-width row",
+      lineDivs.length >= 12 && lineDivs.every((ln) => ln.props.style.flexWrap === "wrap" && msgSpan(ln).props.style.flex === "1 1 0" && msgSpan(ln).props.style.minWidth === 0 && msgSpan(ln).props.style.overflowWrap === "anywhere"),
+      J(lineDivs.slice(0, 2).map((ln) => [ln.props.style.flexWrap, msgSpan(ln).props.style])));
+    // (review fix P8 / T2: the hidden / dismissed rows had flexWrap but a text span of basis 0 — the row never wrapped, and
+    // at 320px the struck-through text sat in a ~60px column next to the nowrap "— FAK, date" and Restore. The text now
+    // has a real basis, so on a narrow phone the by-line and the button drop under it.)
+    const listRows = views.flatMap((v) => v.nodes.filter((x) => x.props["data-warn-bar"]).flatMap((bar) => bar.kids.filter((k) => k && k.tag === "div").map((row) => ({ kind: bar.props["data-warn-bar"], row }))));
+    const basisOf = (st) => { const m = /^1 1 (\d+)px$/.exec(String(st && st.flex)); return m ? +m[1] : 0; };
+    check("BL7 phone (P8 / T2): the \"hidden on this phone\" and \"dismissed for everyone\" rows WRAP — the row wraps (flexWrap) and its text has a real basis (flex 1 1 ≥ 120px, minWidth 0, breaks a long word), so under ~300px the \"— FAK, date\" and Restore / Show again drop under the text instead of squeezing it",
+      listRows.some((r) => r.kind === "phone") && listRows.some((r) => r.kind === "everyone")
+        && listRows.every(({ row }) => { const t = row.kids.find((k) => k && k.tag === "span"); return row.props.style.flexWrap === "wrap" && t && basisOf(t.props.style) >= 120 && t.props.style.minWidth === 0 && t.props.style.overflowWrap === "anywhere"; }),
+      J(listRows.slice(0, 3).map(({ kind, row }) => [kind, row.props.style.flexWrap, (row.kids.find((k) => k && k.tag === "span") || { props: {} }).props.style])));
+    // Dark mode: the app's dark sheet forces EVERY button's text light (`button { color: … !important }`) and its
+    // [style*="#hex"] selectors never match React's rgb() styles — so a button here must not have a light fill, and
+    // the bars' own text colour must read on the card and on the page. (Parsed here, not via DARK_SHEET: that const is
+    // declared after this section.)
+    const sheet = ((nsrcL.match(/\{darkMode && <style>\{`([\s\S]*?)`\}<\/style>\}/) || [])[1] || "").replace(/\/\*[\s\S]*?\*\//g, "");
+    const forcedBtn = (sheet.match(/(?:^|\})\s*button\s*\{\s*color:\s*(#[0-9a-f]{6})\s*!important;?\s*\}/i) || [])[1] || null;
+    const lumL = (hx) => hx.slice(1).match(/../g).map((x) => parseInt(x, 16) / 255).map((ch) => (ch <= 0.03928 ? ch / 12.92 : Math.pow((ch + 0.055) / 1.055, 2.4))).reduce((s, v, i) => s + v * [0.2126, 0.7152, 0.0722][i], 0);
+    const crL = (a, b) => (/^#[0-9a-f]{6}$/i.test(a) && /^#[0-9a-f]{6}$/i.test(b) ? (Math.max(lumL(a), lumL(b)) + 0.05) / (Math.min(lumL(a), lumL(b)) + 0.05) : 0);
+    const darkV = views[1];
+    const darkBtns = darkV.buttons, fills = darkBtns.map((b) => b.props.style.background).filter((bg) => bg !== "transparent" && bg !== "none");
+    const darkLineBgs = darkV.lines.map((ln) => ln.props.style.background);
+    const worstLine = Math.min(...darkLineBgs.map((bg) => crL(forcedBtn || "", bg)));
+    const darkBars = darkV.nodes.filter((x) => x.props["data-warn-bar"]), lightBars = views[0].nodes.filter((x) => x.props["data-warn-bar"]);
+    const barCr = { dkCard: Math.min(...darkBars.map((b) => crL(b.props.style.color, "#2a1a1a"))), dkPage: Math.min(...darkBars.map((b) => crL(b.props.style.color, "#1a1a2e"))),
+      ltCard: Math.min(...lightBars.map((b) => crL(b.props.style.color, "#fef8f0"))), ltPage: Math.min(...lightBars.map((b) => crL(b.props.style.color, "#ffffff"))) };
+    check("BL7 dark mode reads: no button in the panel has a fill (transparent / none — the sheet's forced light button text (" + forcedBtn + ") on each line's dark background ≥ 4.5:1); both bars' text ≥ 4.5:1 on the card and the page, light and dark",
+      !!forcedBtn && darkBtns.length >= 8 && fills.length === 0 && worstLine >= 4.5 && Object.values(barCr).every((v) => v >= 4.5) && darkBars.length === 2 && lightBars.length === 2,
+      J({ forcedBtn, fills, worstLine: +worstLine.toFixed(2), barCr }));
+    // Each line's own text on its own fill, every severity: an info Silvis note, an error, a "warning" schedule line, an
+    // info vacation-overlap line (rendered check 2026-10-19: in dark mode the light reds / greys read 2.9–3.5:1 —
+    // the dark sheet's hex selectors never match). Light mode keeps its colours exactly.
+    const MIXED = { silvisConflicts: [FEED, { key: "silvis-horizon|2026-10-28|2026-11-02|9", severity: "info", week: "2026-11-02", message: "9 published weeks lie beyond the Silvis feed horizon" }],
+      conflicts: [A, { key: "x-warn|2026-11-02|s1", severity: "warning", week: "2026-11-02", message: "a warning-level line" }], vacOverlapWarnings: [V, { key: "apps-off|2026-11-04|a1+a2+a3", date: "2026-11-04", severity: "info", message: "3 APPs off on 2026-11-04 (prefer ≤2)" }] };
+    const inkOf = (v) => v.lines.map((ln) => ({ ink: ln.props.style.color, bg: ln.props.style.background, cr: +crL(ln.props.style.color, ln.props.style.background).toFixed(2) }));
+    const inkDark = inkOf(render({ dk: true, lists: MIXED })), inkLight = inkOf(render({ lists: MIXED }));
+    // (review fix P9, changed ON PURPOSE: the light error ink was #c04040 — 4.4:1 on its #fce8e8 fill; now #b03030, 5.3:1.
+    // Was: "in light mode the lines keep their colours (#c04040 / #a06020 / #5a6a78)".)
+    check("BL7 dark mode reads: every line's own text (error, warning, info — Silvis, schedule, vacation-overlap) is ≥ 4.5:1 on its own dark fill; in light mode too (P9: error #b03030, warning #a06020, info #5a6a78 — each ≥ 4.5:1 on its own fill)",
+      inkDark.length === 6 && inkDark.every((x) => x.cr >= 4.5) && J(inkLight.map((x) => x.ink)) === J(["#b03030", "#5a6a78", "#b03030", "#a06020", "#b03030", "#5a6a78"]) && inkLight.every((x) => x.cr >= 4.5),
+      J({ inkDark, inkLight }));
+    // (P9) "+ N more …" under a list longer than 10: the bars' readable grey — it read 2.9:1 in light (#8a94a0)
+    const twelve = (x) => Array.from({ length: 12 }, (_, i) => Object.assign({}, x, { key: x.key + "|" + i, message: "line " + i }));
+    const MORE = { silvisConflicts: twelve({ key: "silvis-horizon|x", severity: "info", week: "w" }), conflicts: twelve(A), vacOverlapWarnings: twelve(V) };
+    const moreOf = (v) => v.nodes.filter((x) => x.tag === "p" && /^\+ 2 more (Silvis|schedule|vacation-overlap) lines…$/.test(textOf(x))).map((p) => p.props.style.color);
+    const moreL = moreOf(render({ lists: MORE })), moreD = moreOf(render({ dk: true, lists: MORE }));
+    check("BL7 (P9) each \"+ 2 more … lines…\" note (Silvis, schedule, vacation-overlap) is ≥ 4.5:1 on the card, light (#fef8f0) and dark (#2a1a1a) — it was #8a94a0, 2.9:1 in light",
+      moreL.length === 3 && moreD.length === 3 && moreL.every((c) => crL(c, "#fef8f0") >= 4.5) && moreD.every((c) => crL(c, "#2a1a1a") >= 4.5),
+      J({ moreL, moreD, l: moreL.map((c) => +crL(c, "#fef8f0").toFixed(2)), d: moreD.map((c) => +crL(c, "#2a1a1a").toFixed(2)) }));
+    // (P6) in dark mode the sheet forces every button's text light (forcedBtn), so "Everyone…" — the for-everyone,
+    // audited choice — looked exactly like "This phone" and "Cancel". It is marked, and the sheet keeps it red.
+    const everyoneBtn = gb.find((b) => textOf(b) === "Everyone…");
+    const evRule = (sheet.match(/(?:^|\})\s*button\[data-warn-everyone\]\s*\{\s*color:\s*(#[0-9a-f]{6})\s*!important;?\s*\}/i) || [])[1] || null;
+    const rgbOfHex = (hx) => hx.slice(1).match(/../g).map((x) => parseInt(x, 16));
+    const evCr = evRule ? Math.min(...darkLineBgs.map((bg) => crL(evRule, bg))) : 0;
+    check("BL7 (P6) dark mode: \"Everyone…\" is marked (data-warn-everyone, and only it among the choice's buttons) and the dark sheet keeps it RED over its forced light button text — a different colour from \"This phone\" / \"Cancel\" (" + forcedBtn + "), red-led, ≥ 4.5:1 on every line's dark fill",
+      !!everyoneBtn && everyoneBtn.props["data-warn-everyone"] === "1" && gb.filter((b) => b.props["data-warn-everyone"]).length === 1 && !!evRule && evRule.toLowerCase() !== String(forcedBtn).toLowerCase()
+        && rgbOfHex(evRule)[0] > rgbOfHex(evRule)[1] + 60 && rgbOfHex(evRule)[0] > rgbOfHex(evRule)[2] + 60 && evCr >= 4.5,
+      J({ marked: everyoneBtn && everyoneBtn.props["data-warn-everyone"], evRule, forcedBtn, evCr: +evCr.toFixed(2) }));
+    // (P10, rendered check 2026-10-19, after the merge with #90) The ✕ was #a06020 on every line — 4.26:1 on the light
+    // error fill #fce8e8, and every member sees the ✕ now. On an ERROR line it takes the line's own error ink (light
+    // #b03030, 5.3:1); a warning / info line's ✕ keeps #a06020 (≥ 4.5:1 on #fef8e8 / #f0f8ff). Every ✕ — each severity
+    // in each list (Silvis, schedule, vacation-overlap), a member's and a scheduler's — is measured on its own line's
+    // fill: light as written, dark as the sheet forces it (its `button { color … !important }` beats the inline colour;
+    // the ✕ is not data-warn-everyone, so the forced light text is what shows).
+    const XSEV = { silvisConflicts: [FEED, { key: "silvis|s6|2026-10-19|tue|2026-10-20", severity: "error", week: "2026-10-19", message: "FAK: Silvis primary + Davenport Tue Night, 10/20" },
+        { key: "silvis-adj|s6|2026-10-21|2026-10-22", severity: "warning", week: "2026-10-19", message: "FAK: Silvis primary next to a Davenport night" }, { key: "silvis-horizon|2026-10-28|2026-11-02|9", severity: "info", week: "2026-11-02", message: "9 published weeks lie beyond the Silvis feed horizon" }],
+      conflicts: [A, { key: "x-warn|2026-11-02|s1", severity: "warning", week: "2026-11-02", message: "a warning-level line" }, { key: "x-info|2026-11-09|s2", severity: "info", week: "2026-11-09", message: "an info-level line" }],
+      vacOverlapWarnings: [V, { key: "apps-off|2026-11-04|a1+a2+a3", date: "2026-11-04", severity: "info", message: "3 APPs off on 2026-11-04 (prefer ≤2)" }] };
+    const sevOfKey = new Map([].concat(XSEV.silvisConflicts, XSEV.conflicts, XSEV.vacOverlapWarnings).map((x) => [x.key, x.severity]));
+    const xOn = (o) => { const v = render(Object.assign({ lists: XSEV }, o)); return v.lines.map((ln) => { const b = v.xOf(ln); if (!b) return null; const sev = sevOfKey.get(b.props["data-warn-key"]), bg = ln.props.style.background;
+      const shown = o.dk ? (b.props["data-warn-everyone"] ? null : forcedBtn) : b.props.style.color;
+      return { sev, ink: b.props.style.color, line: ln.props.style.color, bg, cr: +crL(shown || "", bg).toFixed(2) }; }).filter(Boolean); };
+    const xRuns = { lightMember: xOn({}), lightSched: xOn({ sched: true }), darkMember: xOn({ dk: true }), darkSched: xOn({ dk: true, sched: true }) };
+    const xSevs = (r) => J(r.map((x) => x.sev).sort());
+    const xWant = J(["error", "error", "error", "info", "info", "info", "warning", "warning"]);
+    check("BL7 (P10) the ✕ on an ERROR line reads ≥ 4.5:1 in light mode — it takes the line's own error ink (#b03030 on #fce8e8: was #a06020, 4.26:1); a warning / info line's ✕ keeps #a06020 (≥ 4.5:1 on its fill); every ✕ of every severity, a member's and a scheduler's, ≥ 4.5:1 light and dark (dark: the sheet's forced " + forcedBtn + " on each dark fill)",
+      Object.values(xRuns).every((r) => xSevs(r) === xWant && r.every((x) => x.cr >= 4.5))
+        && [xRuns.lightMember, xRuns.lightSched].every((r) => r.every((x) => x.sev === "error" ? x.ink === "#b03030" && x.ink === x.line && x.bg === "#fce8e8" : x.ink === "#a06020"))
+        && [xRuns.darkMember, xRuns.darkSched].every((r) => r.filter((x) => x.sev === "error").every((x) => x.ink === x.line)),
+      J(Object.fromEntries(Object.entries(xRuns).map(([k, r]) => [k, r.map((x) => `${x.sev}:${x.ink}/${x.bg}=${x.cr}`)]))));
+  }
+
+  // BL8 — phone-only, and the hooks' order
+  const lsCount = nsrcL.split("\n").filter((l) => l.includes('"dsg-hidden-warnings"') && !/^\s*\/\//.test(l)).length; // code lines only (the state's comment names the key too)
+  const bundle = (nsrcL.match(/\n  const buildStateBundle = \(overrides = \{\}\) => \(\{[\s\S]*?\n  \}\);\n/) || [""])[0];
+  const autoA = nsrcL.indexOf("// ─── Supabase: Auto-save on changes ───"), autoE = autoA === -1 ? -1 : nsrcL.indexOf("\n  }, [", autoA);
+  const autoDeps = autoE === -1 ? "" : nsrcL.slice(autoE, nsrcL.indexOf("]);", autoE) + 3);
+  const mentions = (src.match(/\bphoneHiddenWarnings\b/g) || []).length;
+  // (review fix RS-1, changed ON PURPOSE: was "exactly twice — the one read, the one write; 6 mentions: the state, the
+  // write effect and its deps, warnShown ×2 and its deps". The write effect is gone (it wrote this tab's whole copy on
+  // every change and on mount); the write is in changePhoneHidden, and the storage listener names the key too.)
+  check("BL8 phone-only: \"dsg-hidden-warnings\" is on exactly 3 code lines (the read, the one write — in changePhoneHidden, nothing written on mount — and the storage listener's key test); phoneHiddenWarnings is NOT in buildStateBundle, the autosave deps, any blob adopt / poll / snapshot restore (no `d.phoneHiddenWarnings` anywhere) — its 6 mentions are the state, changePhoneHidden's fallback (×2), warnShown (×2) and its deps",
+    lsCount === 3 && count('localStorage.getItem("dsg-hidden-warnings")') === 1 && count('localStorage.setItem("dsg-hidden-warnings", JSON.stringify(next));') === 1 && count('localStorage.setItem("dsg-hidden-warnings"') === 1
+      && count("}, [phoneHiddenWarnings]);") === 0 && count('e.key !== "dsg-hidden-warnings"') === 1
+      // (the listener keeps its own name: `const onStorage = (e) => {` stays the dsg-auth-token listener's alone — SE-X22's
+      // extractor takes the FIRST one, and a second ahead of it broke "tab 2 hears the change at once")
+      && count("    const onStorage = (e) => {") === 1 && count("    const onHiddenWarningsStorage = (e) => {") === 1 && src.indexOf("    const onHiddenWarningsStorage = (e) => {") < src.indexOf("    const onStorage = (e) => {")
+      && bundle.length > 0 && !/phoneHiddenWarnings/.test(bundle) && autoDeps.length > 0 && !/phoneHiddenWarnings/.test(autoDeps) && count("d.phoneHiddenWarnings") === 0 && mentions === 6,
+    J({ lsCount, bundle: bundle.length, autoDeps: autoDeps.slice(0, 40), mentions }));
+  const iState = src.indexOf("const [phoneHiddenWarnings, setPhoneHiddenWarnings] = useState("), iChoice = src.indexOf("const [warnChoiceKey, setWarnChoiceKey] = useState(null);");
+  const iWS = src.indexOf("const warnShown = useMemo(() => {"), iWSdeps = src.indexOf("}, [silvisConflicts, conflicts, vacOverlapWarnings, dismissedWarnings, phoneHiddenWarnings]);"), iCC = src.indexOf("}, [warnShown, warnChoiceKey]);");
+  const iRead = src.indexOf("const phoneHiddenRead = () => {"), iRefs = [src.indexOf("const phoneHiddenMemOnlyRef = useRef(false);"), src.indexOf("const warnPhoneTapRef = useRef(0);")];
+  const iShowP = src.indexOf("const [showPhoneHidden, setShowPhoneHidden] = useState(false);"), iShowD = src.indexOf("const [showDismissedWarnings, setShowDismissedWarnings] = useState(false);");
+  const iP7 = src.indexOf("}, [warnShown, showPhoneHidden, showDismissedWarnings]);"), iLis = src.indexOf('if (e && e.key !== null && e.key !== "dsg-hidden-warnings") return;');
+  // (review fixes, changed ON PURPOSE: + §P for the new pieces — phoneHiddenRead, the two refs, the storage listener, the
+  // bars' closing effect; and "beside dismissedWarnings" is now < 4000 chars, was < 2500: the RS-1 / RS-2 comment block
+  // between them grew to ~2650)
+  check("BL8 §P: phoneHiddenWarnings and warnChoiceKey are declared once, beside dismissedWarnings, BEFORE warnShown and the choice-closing effect that list them (the 2026.09.24a TDZ class); (review fixes) phoneHiddenRead before the useState that calls it; the two refs declared once, top-level, before the storage listener (deps []) and the handlers; showPhoneHidden / showDismissedWarnings before the bars' closing effect that lists them",
+    count("const [phoneHiddenWarnings, setPhoneHiddenWarnings] = useState(") === 1 && count("const [warnChoiceKey, setWarnChoiceKey] = useState(null);") === 1
+      && iState > src.indexOf("const [dismissedWarnings, setDismissedWarnings] = useState([]);") && iState - src.indexOf("const [dismissedWarnings, setDismissedWarnings] = useState([]);") < 4000
+      && iState < iWS && iChoice < iWS && iWS < iWSdeps && iWSdeps < iCC && count("}, [warnShown, warnChoiceKey]);") === 1
+      && count("const phoneHiddenRead = () => {") === 1 && iRead > 0 && iRead < iState && iRefs.every((i) => i > iState && i < iLis) && count("const phoneHiddenMemOnlyRef = useRef(false);") === 1 && count("const warnPhoneTapRef = useRef(0);") === 1
+      && count("}, [warnShown, showPhoneHidden, showDismissedWarnings]);") === 1 && [iShowP, iShowD, iWSdeps].every((i) => i > 0 && i < iP7),
+    J({ iState, iChoice, iWS, iWSdeps, iCC, iRead, iRefs, iLis, iP7 }));
 }
 
 // ─── BG. Sign-in: iPhone autofill hints, plain network errors, no stuck "Sending…" offline (UX audit 2026-10-19) ───
@@ -3866,7 +4617,8 @@ await (async () => {
   let runSC = null, runWS = null;
   try {
     runSC = vm.runInContext("(function (env) { const { schedule, silvisActive, isPublicMode, nameOf, silvisFakId, silvisRows, silvisLoadError, silvisDays } = env; return (() => {" + scBody + "})(); })", sandbox, { filename: "s-silvisconflicts.js" });
-    runWS = vm.runInContext("(function (env) { const { silvisConflicts, conflicts, vacOverlapWarnings, dismissedWarnings } = env; return (() => {" + wsBody + "})(); })", sandbox, { filename: "s-warnshown.js" });
+    // (2026-10-19: + phoneHiddenWarnings, warnShown's new input; absent = nothing hidden on this phone — BL3 runs S2's rule against it)
+    runWS = vm.runInContext("(function (env) { const { silvisConflicts, conflicts, vacOverlapWarnings, dismissedWarnings, phoneHiddenWarnings } = env; return (() => {" + wsBody + "})(); })", sandbox, { filename: "s-warnshown.js" });
     check("S silvisConflicts + warnShown memos extract and compile", !!scBody && !!wsBody);
   } catch (ex) { check("S silvisConflicts + warnShown memos extract and compile", false, String(ex)); }
   if (runSC && runWS) {
@@ -3897,7 +4649,11 @@ await (async () => {
     check("S2 POSITIVE CONTROL: the dismissable horizon note still hides and is listed as hidden", s2h.silvis.length === 0 && s2h.hidden.length === 1, JSON.stringify(s2h));
   }
   // S3 — the control and the handler
-  check("S3 the ✕ renders only for a dismissable line", count("const dismissBtn = (x) => (canWriteBlob && x.key && x.dismissable !== false) ? (") === 1);
+  // (2026-10-19, changed ON PURPOSE: the ✕ is no longer scheduler-only — every viewer gets one (section BL) — but it still
+  // needs a dismissable keyed line, and so does the scheduler's choice row; hideWarningHere refuses one too — BL3.)
+  check("S3 the ✕ (every viewer's) and the scheduler's choice row render only for a dismissable line",
+    count("const dismissBtn = (x) => (x.key && x.dismissable !== false) ? (canWriteBlob ? (") === 1
+    && count("const warnChoice = (x) => (canWriteBlob && x.key && x.dismissable !== false && warnChoiceKey === x.key) ? (") === 1);
   {
     const s0 = src.indexOf("  const dismissWarning = (x) => {"), e0 = s0 === -1 ? -1 : src.indexOf("\n  };", s0);
     const body = s0 === -1 || e0 === -1 ? null : src.slice(s0 + "  const dismissWarning = (x) => {".length, e0);
@@ -10297,7 +11053,9 @@ console.log("\nAZ. Mine works for an APP");
       pathBodies(fs_["index-source.html"]).forEach(b => writes(b).forEach(w => bad.push("in a preview path: " + w.slice(0, 120))));
       if (pathBodies(fs_["index-source.html"]).some(b => !b)) bad.push("a preview path was not found");
       // an ALLOWLIST of the keys the app may write (anything else — a helper that stashes "a value", a new key — must be reviewed here first)
-      const STORE_KEYS = ["AUTH_TOKEN_KEY", "AUTH_REFRESH_KEY", "BIOMETRIC_CRED_KEY", "BIOMETRIC_USER_KEY", '"dsg_collapse_" + ck', '"dsg-notif-seen"', '"dsg-notif-cleared"', "CAL_SILVIS_STORE_KEY", '"dsg-dark-mode"', '"dsg-my-surgeon"', '"dsg_app_version"'];
+      // (2026-10-19, reviewed ON PURPOSE: "dsg-hidden-warnings" — the Schedule Warnings lines hidden on THIS phone, [{ key, text,
+      // at }] of warning keys and their text, never a schedule or the search's result; section BL owns it.)
+      const STORE_KEYS = ["AUTH_TOKEN_KEY", "AUTH_REFRESH_KEY", "BIOMETRIC_CRED_KEY", "BIOMETRIC_USER_KEY", '"dsg_collapse_" + ck', '"dsg-notif-seen"', '"dsg-notif-cleared"', "CAL_SILVIS_STORE_KEY", '"dsg-dark-mode"', '"dsg-my-surgeon"', '"dsg_app_version"', '"dsg-hidden-warnings"'];
       for (const f in fs_) writes(fs_[f]).filter(w => /Storage\.setItem/.test(w)).forEach(w => { const k = w.slice(w.indexOf("(") + 1).split(",")[0].trim(); if (!STORE_KEYS.includes(k)) bad.push(`${f}: a storage key not on the allowlist — ${k}`); });
       const n = Object.values(fs_).reduce((t, x) => t + writes(x).length, 0);
       return { ok: bad.length === 0 && n > 0, why: bad.join(" | ") || `${n} storage writes scanned` };
