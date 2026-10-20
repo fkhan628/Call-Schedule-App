@@ -1091,7 +1091,22 @@ function CallSchedule() {
           if (user) {
             auth.bindUser(user.id); // this tab is this account's (review r4 branch-4: another tab's sign-in is no session here)
             setAuthUser(user);
-            const profile = await dbAuth.getProfile(user.id);
+            let profile;
+            try { profile = await dbAuth.getProfile(user.id); }
+            catch (e) {
+              // The profile read never reached the server — the signal dropped
+              // after getUser answered (review fix 2026-10-20): the app opened
+              // signed in with no profile. Undo the half-done auto-login
+              // (nothing bound or signed in), keep the stored session, and say
+              // what an open with no signal says: the note, with Retry. Any
+              // other error goes to the catch below, as before (an old cached
+              // helpers.js: as before).
+              if (!(typeof isNoConnectionError === "function" && isNoConnectionError(e))) throw e;
+              auth.bindUser(null); setAuthUser(null);
+              setAuthNetErr(true);
+              setAuthLoading(false);
+              return;
+            }
             if (profile) { setUserProfile(profile); setMySurgeon(profile.person_id); }
             else { setNeedsProfile(true); }
             // Same second-pass reload the biometric path gets (line ~525):
@@ -1296,7 +1311,19 @@ function CallSchedule() {
         auth.bindUser(user && user.id); // (review r4 branch-4: the sign-in's own request ran unbound; from here this tab is this account's)
         setAuthUser(user);
         // Load profile
-        const profile = await dbAuth.getProfile(user.id);
+        let profile;
+        try { profile = await dbAuth.getProfile(user.id); }
+        catch (e) {
+          // The profile read never reached the server — the signal dropped
+          // after the sign-in answered (review fix 2026-10-20): the app opened
+          // signed in with no profile. Undo the half-done sign-in (nothing
+          // bound or signed in; the session it stored is kept, so a reopen
+          // with signal signs straight in); the catch below then says "No
+          // connection …" on the card, the fields still filled. Any other
+          // error goes on as before (an old cached helpers.js: as before).
+          if (typeof isNoConnectionError === "function" && isNoConnectionError(e)) { auth.bindUser(null); setAuthUser(null); }
+          throw e;
+        }
         if (profile) {
           setUserProfile(profile);
           setMySurgeon(profile.person_id);
@@ -8254,8 +8281,11 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               style={{...css.btn(true),width:"100%",padding:"13px 16px",fontSize:15,fontWeight:700,marginBottom:10,opacity:authBusy?0.6:1}}>
               {authBusy ? "Verifying…" : "🔓 Unlock with Face ID / Touch ID"}
             </button>
-            <button onClick={()=>{setBiometricPending(false);setAuthError("");}}
-              style={{background:"none",border:"none",color:"#1a6fa8",fontSize:12,cursor:"pointer",fontFamily:font,textDecoration:"underline"}}>
+            {/* Inert while a tap is being verified (review fix 2026-10-20): left mid-unlock, the app showed with no
+                profile, then the sign-in card said "tap Unlock again" — a button it doesn't have. (The card's own
+                buttons wait on the same authBusy, so nothing usable is lost.) */}
+            <button onClick={()=>{setBiometricPending(false);setAuthError("");}} disabled={authBusy}
+              style={{background:"none",border:"none",color:"#1a6fa8",fontSize:12,cursor:authBusy?"default":"pointer",fontFamily:font,textDecoration:"underline",opacity:authBusy?0.5:1}}>
               Use email & password instead
             </button>
           </div>

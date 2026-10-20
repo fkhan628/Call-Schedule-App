@@ -814,10 +814,12 @@ const auth = {
   // refuses the refresh token itself (owner 2026-10-20, "getting signed out on
   // a network blip"): GoTrue answers 400 for a refresh token it no longer
   // honours (invalid_grant — refresh_token_not_found, refresh_token_already_used,
-  // session_expired …) and 401 / 403 for a request it won't serve. Anything
-  // else refuses nothing — no answer at all (no signal), a 5xx (an outage), a
-  // 429 (rate limited), any other status, or a 200 that isn't a session (a
-  // captive portal's page): the stored session is KEPT and the answer is
+  // session_expired …) and 401 / 403 for a request it won't serve — each with
+  // its JSON error body. Anything else refuses nothing — no answer at all (no
+  // signal), a 5xx (an outage), a 429 (rate limited), any other status, a
+  // 400 / 401 / 403 that isn't the auth server's JSON (an edge or firewall
+  // page), or a 200 that isn't a session (a captive portal's page): the
+  // stored session is KEPT and the answer is
   // { user: null, error: "network" }, which getUser passes on, so the app says
   // "No connection — you're still signed in" instead of showing the sign-in
   // card. Nothing retries on its own: getUser runs at app open and on a Face
@@ -831,7 +833,17 @@ const auth = {
         body: JSON.stringify({ refresh_token: refreshToken }),
       });
     } catch(e) { return { user: null, error: "network" }; }
-    if (res.status === 400 || res.status === 401 || res.status === 403) { auth._clearSession(); return { user: null }; }
+    if (res.status === 400 || res.status === 401 || res.status === 403) {
+      // A refusal is the auth server's own JSON answer: GoTrue's error /
+      // error_code / msg, or its gateway's message (review fix 2026-10-20). The
+      // same status on anything else — an edge or firewall HTML page, an empty
+      // body, a body that never arrived — refuses nothing: kept, as above.
+      let body = null;
+      try { body = await res.json(); } catch(e) { body = null; }
+      const refused = !!body && typeof body === "object" && ["error", "error_code", "msg", "message"].some((k) => typeof body[k] === "string" && body[k].trim() !== "");
+      if (!refused) return { user: null, error: "network" };
+      auth._clearSession(); return { user: null };
+    }
     if (!res.ok) return { user: null, error: "network" };
     let data = null;
     try { data = await res.json(); } catch(e) { data = null; }
