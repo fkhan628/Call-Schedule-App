@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.10.19e";
+    var APP_VERSION = "2026.10.19f";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -4430,11 +4430,13 @@ function CallSchedule() {
     const remeasure = () => setToastLift(toastLiftNow());
     remeasure();
     window.addEventListener("resize", remeasure);
+    window.addEventListener("toastfloorchange", remeasure);
     const els = [updateBannerRef.current, ...Array.from(document.querySelectorAll('[data-toast-floor="1"]'))].filter(Boolean);
     const ro = els.length && typeof ResizeObserver === "function" ? new ResizeObserver(remeasure) : null;
     if (ro) els.forEach(el => ro.observe(el));
     return () => {
       window.removeEventListener("resize", remeasure);
+      window.removeEventListener("toastfloorchange", remeasure);
       if (ro) ro.disconnect();
     };
   }, [toastsShown, updateAvailable, paintSheet, calDayOpen]);
@@ -9257,39 +9259,34 @@ ${"</"}script>${"</"}body>${"</"}html>`;
   }, apps.map(a => React.createElement("option", {
     key: a.id,
     value: a.id
-  }, a.name))))), React.createElement("div", null, React.createElement("label", {
+  }, a.name))))), React.createElement("div", {
+    style: {
+      minWidth: 0,
+      maxWidth: "100%"
+    }
+  }, React.createElement("label", {
     style: {
       fontSize: 10,
       color: "#7a8a98",
       display: "block",
       marginBottom: 2
     }
-  }, "Start"), React.createElement("input", {
-    type: "date",
-    value: vacStart,
-    onChange: e => {
-      const v = e.target.value;
-      setVacStart(v);
-      setVacEnd(end => endOnOrAfter(v, end, vacStart));
+  }, "Dates"), React.createElement(DateRangeField, {
+    label: "Vacation dates",
+    start: vacStart,
+    end: vacEnd,
+    min: "",
+    onChange: (s, e) => {
+      setVacStart(s);
+      setVacEnd(e);
     },
-    style: _objectSpread(_objectSpread({}, css.inp), {}, {
-      width: 140
-    })
-  })), React.createElement("div", null, React.createElement("label", {
+    dk: dk,
+    css: css,
+    bannerRef: updateBannerRef,
+    bannerOn: updateAvailable,
     style: {
-      fontSize: 10,
-      color: "#7a8a98",
-      display: "block",
-      marginBottom: 2
+      minWidth: 230
     }
-  }, "End"), React.createElement("input", {
-    type: "date",
-    min: vacStart || undefined,
-    value: vacEnd,
-    onChange: e => setVacEnd(e.target.value),
-    style: _objectSpread(_objectSpread({}, css.inp), {}, {
-      width: 140
-    })
   })), React.createElement("button", {
     onClick: addVac,
     style: css.btn(true)
@@ -9466,6 +9463,9 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             display: "inline-flex",
             gap: 4,
             alignItems: "center",
+            flexWrap: "wrap",
+            maxWidth: "100%",
+            boxSizing: "border-box",
             background: "#f0f8ff",
             border: "1px solid #a0c0e0",
             borderRadius: 5,
@@ -9473,58 +9473,47 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             marginBottom: 4,
             marginRight: 4
           }
-        }, React.createElement("input", {
-          type: "date",
-          value: editVac.start,
-          onChange: e => {
-            const v = e.target.value;
-            setEditVac(pr => _objectSpread(_objectSpread({}, pr), {}, {
-              start: v,
-              end: endOnOrAfter(v, pr.end, pr.start)
-            }));
-          },
-          style: _objectSpread(_objectSpread({}, css.inp), {}, {
-            width: 120,
-            fontSize: 11,
-            padding: "2px 4px"
-          })
-        }), React.createElement("span", {
-          style: {
-            fontSize: 11,
-            color: "#7a8a98"
-          }
-        }, "→"), React.createElement("input", {
-          type: "date",
-          min: editVac.start || undefined,
-          value: editVac.end,
-          onChange: e => setEditVac(pr => _objectSpread(_objectSpread({}, pr), {}, {
-            end: e.target.value
+        }, React.createElement(DateRangeField, {
+          label: "Vacation dates",
+          compact: true,
+          editing: true,
+          start: editVac.start,
+          end: editVac.end,
+          min: "",
+          onChange: (s, e) => setEditVac(pr => _objectSpread(_objectSpread({}, pr), {}, {
+            start: s,
+            end: e
           })),
-          style: _objectSpread(_objectSpread({}, css.inp), {}, {
-            width: 120,
-            fontSize: 11,
-            padding: "2px 4px"
-          })
+          dk: dk,
+          css: css,
+          bannerRef: updateBannerRef,
+          bannerOn: updateAvailable
         }), React.createElement("button", {
           onClick: saveEditVac,
           style: {
             background: "none",
             border: "none",
-            color: "#1a8040",
             cursor: "pointer",
             fontSize: 13,
             fontWeight: 700
           }
-        }, "✓"), React.createElement("button", {
+        }, React.createElement("span", {
+          style: {
+            color: "#1a8040"
+          }
+        }, "✓")), React.createElement("button", {
           onClick: () => setEditVac(null),
           style: {
             background: "none",
             border: "none",
-            color: "#904040",
             cursor: "pointer",
             fontSize: 11
           }
-        }, "✕")) : React.createElement("span", {
+        }, React.createElement("span", {
+          style: {
+            color: "#904040"
+          }
+        }, "✕"))) : React.createElement("span", {
           key: i,
           style: {
             display: "inline-flex",
@@ -9614,39 +9603,34 @@ ${"</"}script>${"</"}body>${"</"}html>`;
   }, apps.map(a => React.createElement("option", {
     key: a.id,
     value: a.id
-  }, a.name))))), React.createElement("div", null, React.createElement("label", {
+  }, a.name))))), React.createElement("div", {
+    style: {
+      minWidth: 0,
+      maxWidth: "100%"
+    }
+  }, React.createElement("label", {
     style: {
       fontSize: 10,
       color: "#7a8a98",
       display: "block",
       marginBottom: 2
     }
-  }, "Start"), React.createElement("input", {
-    type: "date",
-    value: ncStart,
-    onChange: e => {
-      const v = e.target.value;
-      setNcStart(v);
-      setNcEnd(end => endOnOrAfter(v, end, ncStart));
+  }, "Dates"), React.createElement(DateRangeField, {
+    label: "No-call dates",
+    start: ncStart,
+    end: ncEnd,
+    min: "",
+    onChange: (s, e) => {
+      setNcStart(s);
+      setNcEnd(e);
     },
-    style: _objectSpread(_objectSpread({}, css.inp), {}, {
-      width: 140
-    })
-  })), React.createElement("div", null, React.createElement("label", {
+    dk: dk,
+    css: css,
+    bannerRef: updateBannerRef,
+    bannerOn: updateAvailable,
     style: {
-      fontSize: 10,
-      color: "#7a8a98",
-      display: "block",
-      marginBottom: 2
+      minWidth: 230
     }
-  }, "End"), React.createElement("input", {
-    type: "date",
-    min: ncStart || undefined,
-    value: ncEnd,
-    onChange: e => setNcEnd(e.target.value),
-    style: _objectSpread(_objectSpread({}, css.inp), {}, {
-      width: 140
-    })
   })), React.createElement("button", {
     onClick: addNoCall,
     style: css.btn(true)
@@ -12340,7 +12324,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     style: {
       display: "flex",
       alignItems: "center",
-      gap: 10
+      gap: 10,
+      flexWrap: "wrap",
+      minWidth: 0,
+      maxWidth: "100%"
     }
   }, React.createElement("button", {
     "aria-label": "Previous month",
@@ -12393,7 +12380,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
   })()), React.createElement("div", {
     style: {
       display: "flex",
-      gap: 5
+      gap: 5,
+      flexWrap: "wrap"
     }
   }, isScheduler && React.createElement(React.Fragment, null, React.createElement("button", {
     onClick: () => setView("setup"),
@@ -13297,6 +13285,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       "aria-label": `${title} — details`,
       "data-toast-floor": "1",
       onClick: e => e.stopPropagation(),
+      onKeyDown: sheetTabTrap,
+      tabIndex: -1,
       style: {
         width: "100%",
         maxWidth: 520,
@@ -13305,6 +13295,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         overscrollBehavior: "contain",
         WebkitOverflowScrolling: "touch",
         boxSizing: "border-box",
+        outline: "none",
         background: dk ? "#1a1f2a" : "#fff",
         borderRadius: "14px 14px 0 0",
         boxShadow: "0 -6px 24px rgba(0,0,0,0.25)",
@@ -16241,37 +16232,21 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             padding: "4px 0",
             borderBottom: i < shown.length - 1 ? "1px solid #f0e4d0" : "none"
           }
-        }, editing ? React.createElement(React.Fragment, null, React.createElement("input", {
-          type: "date",
-          value: myVacEdit.start,
-          onChange: e => {
-            const v = e.target.value;
-            setMyVacEdit(p => _objectSpread(_objectSpread({}, p), {}, {
-              start: v,
-              end: endOnOrAfter(v, p.end, p.start)
-            }));
-          },
-          style: _objectSpread(_objectSpread({}, css.inp), {}, {
-            padding: "3px 6px",
-            fontSize: 12,
-            width: 148
-          })
-        }), React.createElement("span", {
-          style: {
-            color: "#8a94a0"
-          }
-        }, "→"), React.createElement("input", {
-          type: "date",
-          value: myVacEdit.end,
-          min: myVacEdit.start,
-          onChange: e => setMyVacEdit(p => _objectSpread(_objectSpread({}, p), {}, {
-            end: e.target.value
+        }, editing ? React.createElement(React.Fragment, null, React.createElement(DateRangeField, {
+          label: "Vacation dates",
+          compact: true,
+          editing: true,
+          start: myVacEdit.start,
+          end: myVacEdit.end,
+          min: "",
+          onChange: (s, e) => setMyVacEdit(p => _objectSpread(_objectSpread({}, p), {}, {
+            start: s,
+            end: e
           })),
-          style: _objectSpread(_objectSpread({}, css.inp), {}, {
-            padding: "3px 6px",
-            fontSize: 12,
-            width: 148
-          })
+          dk: dk,
+          css: css,
+          bannerRef: updateBannerRef,
+          bannerOn: updateAvailable
         }), React.createElement("button", {
           onClick: saveMyVacEdit,
           style: {
@@ -16750,50 +16725,35 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       color: "#1a6fa8",
       padding: "6px 0"
     }
-  }, ((_find = [...surgeons, ...apps].find(p => p.id === mySurgeon)) === null || _find === void 0 ? void 0 : _find.name) || "—")), React.createElement("div", null, React.createElement("label", {
+  }, ((_find = [...surgeons, ...apps].find(p => p.id === mySurgeon)) === null || _find === void 0 ? void 0 : _find.name) || "—")), React.createElement("div", {
+    style: {
+      minWidth: 0,
+      maxWidth: "100%"
+    }
+  }, React.createElement("label", {
     style: {
       fontSize: 11,
       color: "#7a8a98",
       display: "block",
       marginBottom: 2
     }
-  }, "Start Date"), React.createElement("input", {
-    type: "date",
+  }, "Dates"), React.createElement(DateRangeField, {
+    label: vacReqType === "nocall" ? "No-call dates" : "Vacation dates",
+    start: vacReqStart,
+    end: vacReqEnd,
     min: todayStr,
-    value: vacReqStart,
-    onChange: e => {
-      const v = e.target.value;
-      setVacReqStart(v);
-      setVacReqEnd(end => endOnOrAfter(v, end, vacReqStart));
+    onChange: (s, e) => {
+      setVacReqStart(s);
+      setVacReqEnd(e);
     },
-    style: _objectSpread(_objectSpread({}, css.inp), {}, {
-      width: 150
-    })
-  })), React.createElement("div", null, React.createElement("label", {
+    dk: dk,
+    css: css,
+    bannerRef: updateBannerRef,
+    bannerOn: updateAvailable,
     style: {
-      fontSize: 11,
-      color: "#7a8a98",
-      display: "block",
-      marginBottom: 2
+      minWidth: 230
     }
-  }, "End Date"), React.createElement("input", {
-    type: "date",
-    min: vacReqStart && vacReqStart > todayStr ? vacReqStart : todayStr,
-    value: vacReqEnd,
-    onChange: e => setVacReqEnd(e.target.value),
-    style: _objectSpread(_objectSpread({}, css.inp), {}, {
-      width: 150
-    })
-  }))), (() => {
-    const sum = typeof rangeSummary === "function" ? rangeSummary(vacReqStart, vacReqEnd) : null;
-    return sum ? React.createElement("div", {
-      style: {
-        fontSize: 12,
-        color: dk ? "#9aa0b8" : "#5a6a78",
-        margin: "0 0 8px"
-      }
-    }, sum) : null;
-  })(), React.createElement("div", {
+  }))), React.createElement("div", {
     style: {
       marginBottom: 10
     }
@@ -16956,44 +16916,32 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           alignItems: "end",
           flexWrap: "wrap"
         }
-      }, React.createElement("div", null, React.createElement("label", {
+      }, React.createElement("div", {
+        style: {
+          minWidth: 0,
+          maxWidth: "100%"
+        }
+      }, React.createElement("label", {
         style: {
           fontSize: 10,
           color: "#7a8a98",
           display: "block"
         }
-      }, "Start"), React.createElement("input", {
-        type: "date",
-        min: isScheduler ? undefined : fmt(new Date()),
-        value: editingVacReq.start_date,
-        onChange: e => {
-          const v = e.target.value;
-          setEditingVacReq(p => _objectSpread(_objectSpread({}, p), {}, {
-            start_date: v,
-            end_date: endOnOrAfter(v, p.end_date, p.start_date)
-          }));
-        },
-        style: _objectSpread(_objectSpread({}, css.inp), {}, {
-          width: 140,
-          fontSize: 12
-        })
-      })), React.createElement("div", null, React.createElement("label", {
-        style: {
-          fontSize: 10,
-          color: "#7a8a98",
-          display: "block"
-        }
-      }, "End"), React.createElement("input", {
-        type: "date",
-        min: [editingVacReq.start_date || "", isScheduler ? "" : fmt(new Date())].sort().pop() || undefined,
-        value: editingVacReq.end_date,
-        onChange: e => setEditingVacReq(p => _objectSpread(_objectSpread({}, p), {}, {
-          end_date: e.target.value
+      }, "Dates"), React.createElement(DateRangeField, {
+        label: "Request dates",
+        compact: true,
+        editing: true,
+        start: editingVacReq.start_date,
+        end: editingVacReq.end_date,
+        min: isScheduler ? "" : fmt(new Date()),
+        onChange: (s, e) => setEditingVacReq(p => _objectSpread(_objectSpread({}, p), {}, {
+          start_date: s,
+          end_date: e
         })),
-        style: _objectSpread(_objectSpread({}, css.inp), {}, {
-          width: 140,
-          fontSize: 12
-        })
+        dk: dk,
+        css: css,
+        bannerRef: updateBannerRef,
+        bannerOn: updateAvailable
       })), React.createElement("div", null, React.createElement("label", {
         style: {
           fontSize: 10,
@@ -17323,43 +17271,32 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           alignItems: "end",
           flexWrap: "wrap"
         }
-      }, React.createElement("div", null, React.createElement("label", {
+      }, React.createElement("div", {
+        style: {
+          minWidth: 0,
+          maxWidth: "100%"
+        }
+      }, React.createElement("label", {
         style: {
           fontSize: 10,
           color: "#7a8a98",
           display: "block"
         }
-      }, "Start"), React.createElement("input", {
-        type: "date",
-        value: editingVacReq.start_date,
-        onChange: e => {
-          const v = e.target.value;
-          setEditingVacReq(p => _objectSpread(_objectSpread({}, p), {}, {
-            start_date: v,
-            end_date: endOnOrAfter(v, p.end_date, p.start_date)
-          }));
-        },
-        style: _objectSpread(_objectSpread({}, css.inp), {}, {
-          width: 140,
-          fontSize: 12
-        })
-      })), React.createElement("div", null, React.createElement("label", {
-        style: {
-          fontSize: 10,
-          color: "#7a8a98",
-          display: "block"
-        }
-      }, "End"), React.createElement("input", {
-        type: "date",
-        min: editingVacReq.start_date || undefined,
-        value: editingVacReq.end_date,
-        onChange: e => setEditingVacReq(p => _objectSpread(_objectSpread({}, p), {}, {
-          end_date: e.target.value
+      }, "Dates"), React.createElement(DateRangeField, {
+        label: "Request dates",
+        compact: true,
+        editing: true,
+        start: editingVacReq.start_date,
+        end: editingVacReq.end_date,
+        min: "",
+        onChange: (s, e) => setEditingVacReq(p => _objectSpread(_objectSpread({}, p), {}, {
+          start_date: s,
+          end_date: e
         })),
-        style: _objectSpread(_objectSpread({}, css.inp), {}, {
-          width: 140,
-          fontSize: 12
-        })
+        dk: dk,
+        css: css,
+        bannerRef: updateBannerRef,
+        bannerOn: updateAvailable
       })), React.createElement("button", {
         onClick: saveVacRequestEdit,
         style: _objectSpread(_objectSpread({}, css.btn(true)), {}, {
@@ -22634,6 +22571,546 @@ function Collapsible({
       marginTop: 12
     }
   }, children));
+}
+function sheetTabTrap(e) {
+  if (e.key !== "Tab" || !e.currentTarget) return;
+  const box = e.currentTarget,
+    doc = box.ownerDocument,
+    at = doc ? doc.activeElement : null;
+  const els = Array.from(box.querySelectorAll("button, [href], input, select, textarea, [tabindex]")).filter(el => el !== box && !el.disabled && el.tabIndex >= 0);
+  if (!els.length) {
+    e.preventDefault();
+    return;
+  }
+  const first = els[0],
+    last = els[els.length - 1],
+    inside = !!at && at !== box && box.contains(at);
+  if (e.shiftKey ? !inside || at === first : !inside || at === last) {
+    e.preventDefault();
+    try {
+      (e.shiftKey ? last : first).focus();
+    } catch (err) {}
+  }
+}
+function DateRangeField({
+  start,
+  end,
+  onChange,
+  min = "",
+  label = "Dates",
+  placeholder = "Pick dates",
+  dk = false,
+  css,
+  compact = false,
+  editing = false,
+  bannerRef = null,
+  bannerOn = null,
+  style = null
+}) {
+  const today = fmt(new Date());
+  const ready = typeof rangeTap === "function" && typeof monthCells === "function" && typeof rangeLabel === "function" && typeof rangeSheetLine === "function" && typeof rangeEditHint === "function" && typeof monthDayLabel === "function";
+  const [sheet, setSheet] = React.useState(null);
+  const [lift, setLift] = React.useState(0);
+  const [focusDs, setFocusDs] = React.useState("");
+  const fieldRef = React.useRef(null),
+    gridRef = React.useRef(null),
+    focusWantRef = React.useRef(false);
+  const open = !!sheet;
+  const bannerHeight = () => {
+    const el = bannerRef && bannerRef.current;
+    return el && el.isConnected ? Math.ceil(el.getBoundingClientRect().height) : 0;
+  };
+  const pickable = ds => !!ds && (!min || ds >= min);
+  const openSheet = () => {
+    const s = start || "",
+      e = s && end && end >= s ? end : "";
+    const at = s && pickable(s) ? s : min && min > today ? min : today,
+      d = parse(at);
+    focusWantRef.current = true;
+    setLift(bannerHeight());
+    setFocusDs(at);
+    setSheet({
+      start: s,
+      end: e,
+      phase: s && e ? editing ? "edit" : "start" : s ? "end" : "start",
+      y: d.getFullYear(),
+      m: d.getMonth()
+    });
+  };
+  const close = refocus => {
+    setSheet(null);
+    const el = fieldRef.current;
+    if (refocus !== false && el && el.isConnected && typeof el.focus === "function") {
+      try {
+        el.focus({
+          preventScroll: true
+        });
+      } catch (err) {}
+    }
+  };
+  const tap = ds => {
+    if (min && ds < min) return;
+    setFocusDs(ds);
+    setSheet(s => s ? _objectSpread(_objectSpread({}, s), rangeTap(s.start, s.end, ds, s.phase, min)) : s);
+  };
+  const clear = () => setSheet(s => s ? _objectSpread(_objectSpread({}, s), {}, {
+    start: "",
+    end: "",
+    phase: "start"
+  }) : s);
+  const done = () => {
+    if (!sheet || !sheet.start) return;
+    onChange(sheet.start, sheet.end || sheet.start);
+    close();
+  };
+  const prevOff = !!sheet && !!min && fmt(new Date(sheet.y, sheet.m, 0)) < min;
+  const shiftMonth = k => {
+    if (k < 0 && prevOff) return;
+    setSheet(s => {
+      if (!s) return s;
+      const d = new Date(s.y, s.m + k, 1);
+      return _objectSpread(_objectSpread({}, s), {}, {
+        y: d.getFullYear(),
+        m: d.getMonth()
+      });
+    });
+  };
+  const cells = sheet && ready ? monthCells(sheet.y, sheet.m) : [];
+  while (cells.length && cells.length < 42) cells.push(null);
+  const line = sheet && ready ? rangeSheetLine(sheet.start, sheet.end, sheet.phase, today) : "";
+  const hint = sheet && ready && sheet.phase === "edit" ? rangeEditHint(sheet.start, today, min) : "";
+  const tabDs = (focusDs && cells.indexOf(focusDs) !== -1 && pickable(focusDs) ? focusDs : "") || sheet && [sheet.start, today].find(d => !!d && cells.indexOf(d) !== -1 && pickable(d)) || cells.find(pickable) || cells.find(Boolean) || "";
+  const onGridKey = e => {
+    const step = {
+      ArrowLeft: -1,
+      ArrowRight: 1,
+      ArrowUp: -7,
+      ArrowDown: 7
+    }[e.key];
+    if (!step || !sheet || !tabDs) return;
+    e.preventDefault();
+    let d = addD(parse(tabDs), step);
+    if (min && fmt(d) < min) d = parse(min);
+    if (fmt(d) === tabDs) return;
+    focusWantRef.current = true;
+    setFocusDs(fmt(d));
+    if (d.getFullYear() !== sheet.y || d.getMonth() !== sheet.m) setSheet(s => s ? _objectSpread(_objectSpread({}, s), {}, {
+      y: d.getFullYear(),
+      m: d.getMonth()
+    }) : s);
+  };
+  const floorMoved = () => {
+    try {
+      window.dispatchEvent(new Event("toastfloorchange"));
+    } catch (err) {}
+  };
+  React.useEffect(() => {
+    if (!open) return;
+    const onKey = e => {
+      if (e.key === "Escape") close();
+    };
+    window.addEventListener("keydown", onKey);
+    const body = document.body,
+      prevOverflow = body.style.overflow;
+    body.style.overflow = "hidden";
+    floorMoved();
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      body.style.overflow = prevOverflow;
+      floorMoved();
+    };
+  }, [open]);
+  React.useEffect(() => {
+    if (!open) return;
+    const remeasure = () => setLift(bannerHeight());
+    remeasure();
+    window.addEventListener("resize", remeasure);
+    const el = bannerRef && bannerRef.current;
+    const ro = el && typeof ResizeObserver === "function" ? new ResizeObserver(remeasure) : null;
+    if (ro) ro.observe(el);
+    return () => {
+      window.removeEventListener("resize", remeasure);
+      if (ro) ro.disconnect();
+    };
+  }, [open, bannerOn]);
+  React.useEffect(() => {
+    if (!open || !focusWantRef.current) return;
+    focusWantRef.current = false;
+    const b = gridRef.current && gridRef.current.querySelector('[data-ds="' + tabDs + '"]');
+    if (b && typeof b.focus === "function") {
+      try {
+        b.focus({
+          preventScroll: true
+        });
+      } catch (err) {}
+    }
+  }, [open, tabDs]);
+  if (!ready) {
+    const inp = _objectSpread(_objectSpread(_objectSpread({}, css.inp), compact ? {
+      padding: "3px 6px",
+      fontSize: 12
+    } : {}), {}, {
+      width: compact ? 130 : 140
+    });
+    return React.createElement("span", {
+      style: {
+        display: "inline-flex",
+        gap: 4,
+        alignItems: "center",
+        flexWrap: "wrap"
+      }
+    }, React.createElement("input", {
+      type: "date",
+      "aria-label": label + ", start",
+      min: min || undefined,
+      value: start || "",
+      onChange: e => {
+        const v = e.target.value;
+        onChange(v, v && (!end || end < v || end === start) ? v : end);
+      },
+      style: inp
+    }), React.createElement("span", {
+      "aria-hidden": "true",
+      style: {
+        color: "#8a94a0"
+      }
+    }, "→"), React.createElement("input", {
+      type: "date",
+      "aria-label": label + ", end",
+      min: [start || "", min || ""].sort().pop() || undefined,
+      value: end || "",
+      onChange: e => onChange(start, e.target.value),
+      style: inp
+    }));
+  }
+  const C = dk ? {
+    sheet: "#1a1f2a",
+    title: "#e8e8f0",
+    line: "#c8d0e0",
+    text: "#e0e0f0",
+    sub: "#9aa4bc",
+    off: "#5c6478",
+    accent: "#5aafe8",
+    onAccent: "#0b1a2a",
+    band: "#1f3b5c",
+    onBand: "#e6eefa",
+    field: "#0f3460",
+    fieldBorder: "#2a3a5e",
+    placeholder: "#9aa0b8"
+  } : {
+    sheet: "#fff",
+    title: "#2c5a80",
+    line: "#3a4a58",
+    text: "#2c3e50",
+    sub: "#5a6a78",
+    off: "#b8c0c8",
+    accent: "#1a6fa8",
+    onAccent: "#fff",
+    band: "#d8e8f6",
+    onBand: "#123a5c",
+    field: "#f8f9fb",
+    fieldBorder: "#d0d8e0",
+    placeholder: "#5a6a78"
+  };
+  const text = rangeLabel(start || "", start ? end || "" : "", today);
+  const keepCount = t => {
+    const cut = t.lastIndexOf(" · ");
+    return cut > 0 ? React.createElement(React.Fragment, null, t.slice(0, cut), " ", React.createElement("span", {
+      style: {
+        whiteSpace: "nowrap"
+      }
+    }, t.slice(cut + 1))) : t;
+  };
+  const navBtn = {
+    minWidth: 44,
+    minHeight: 44,
+    background: "none",
+    border: "none",
+    fontSize: 16,
+    cursor: "pointer",
+    fontFamily: font,
+    padding: 0
+  };
+  const lo = sheet ? sheet.start : "",
+    hi = sheet ? sheet.end || sheet.start : "";
+  const dayLabel = ds => `${DAY_HDR[parse(ds).getDay()]}, ${monthDayLabel(ds, true)}`;
+  return React.createElement(React.Fragment, null, React.createElement("button", {
+    type: "button",
+    ref: fieldRef,
+    onClick: openSheet,
+    "aria-haspopup": "dialog",
+    "aria-expanded": open,
+    "aria-label": `${label}: ${text || placeholder}`,
+    style: _objectSpread(_objectSpread(_objectSpread({}, css.inp), {}, {
+      background: C.field,
+      border: `1px solid ${C.fieldBorder}`,
+      display: "inline-flex",
+      alignItems: "center",
+      gap: 6,
+      maxWidth: "100%",
+      boxSizing: "border-box",
+      minHeight: 40,
+      cursor: "pointer",
+      textAlign: "left"
+    }, compact ? {
+      padding: "3px 8px",
+      fontSize: 12
+    } : {}), style || {})
+  }, React.createElement("span", {
+    "aria-hidden": "true",
+    style: {
+      flexShrink: 0
+    }
+  }, "📅"), React.createElement("span", {
+    style: {
+      color: text ? C.text : C.placeholder,
+      whiteSpace: "normal",
+      lineHeight: 1.3,
+      minWidth: 0
+    }
+  }, text ? keepCount(text) : placeholder)), open && ReactDOM.createPortal(React.createElement("div", {
+    onClick: e => {
+      e.stopPropagation();
+      close();
+    },
+    style: {
+      position: "fixed",
+      inset: 0,
+      zIndex: 9000,
+      background: "rgba(0,0,0,0.45)",
+      display: "flex",
+      alignItems: "flex-end",
+      justifyContent: "center"
+    }
+  }, React.createElement("div", {
+    role: "dialog",
+    "aria-modal": "true",
+    "aria-label": label,
+    "data-toast-floor": "1",
+    onClick: e => e.stopPropagation(),
+    onKeyDown: sheetTabTrap,
+    tabIndex: -1,
+    style: {
+      width: "100%",
+      maxWidth: 420,
+      maxHeight: `calc(100% - ${lift + 24}px)`,
+      overflowY: "auto",
+      overscrollBehavior: "contain",
+      WebkitOverflowScrolling: "touch",
+      boxSizing: "border-box",
+      background: C.sheet,
+      borderRadius: "14px 14px 0 0",
+      boxShadow: "0 -6px 24px rgba(0,0,0,0.25)",
+      padding: "10px 16px 0",
+      outline: "none",
+      marginBottom: lift,
+      fontFamily: font
+    }
+  }, React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 8
+    }
+  }, React.createElement("div", {
+    style: {
+      flex: 1,
+      minWidth: 0
+    }
+  }, React.createElement("div", {
+    style: {
+      fontSize: 16,
+      fontWeight: 700,
+      color: C.title
+    }
+  }, label), React.createElement("div", {
+    "aria-live": "polite",
+    style: {
+      marginTop: 2
+    }
+  }, React.createElement("div", {
+    style: {
+      fontSize: 14,
+      color: C.line
+    }
+  }, keepCount(line)), hint && React.createElement("div", {
+    style: {
+      fontSize: 12.5,
+      color: C.sub,
+      marginTop: 2
+    }
+  }, hint))), React.createElement("button", {
+    type: "button",
+    "aria-label": "Close",
+    onClick: () => close(),
+    style: _objectSpread(_objectSpread({}, navBtn), {}, {
+      fontSize: 20,
+      flexShrink: 0
+    })
+  }, React.createElement("span", {
+    style: {
+      color: C.sub
+    }
+  }, "✕"))), React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "space-between",
+      marginTop: 4
+    }
+  }, React.createElement("button", {
+    type: "button",
+    "aria-label": "Previous month",
+    "aria-disabled": prevOff || undefined,
+    onClick: () => shiftMonth(-1),
+    style: _objectSpread(_objectSpread({}, navBtn), {}, {
+      cursor: prevOff ? "default" : "pointer"
+    })
+  }, React.createElement("span", {
+    style: {
+      color: prevOff ? C.off : C.text
+    }
+  }, "◀")), React.createElement("div", {
+    style: {
+      fontSize: 15,
+      fontWeight: 700,
+      color: C.text
+    }
+  }, MO[sheet.m], " ", sheet.y), React.createElement("button", {
+    type: "button",
+    "aria-label": "Next month",
+    onClick: () => shiftMonth(1),
+    style: navBtn
+  }, React.createElement("span", {
+    style: {
+      color: C.text
+    }
+  }, "▶"))), React.createElement("div", {
+    "aria-hidden": "true",
+    style: {
+      display: "grid",
+      gridTemplateColumns: "repeat(7,minmax(0,1fr))",
+      marginTop: 2
+    }
+  }, DAY_HDR.map(d => React.createElement("div", {
+    key: d,
+    style: {
+      textAlign: "center",
+      fontSize: 11,
+      fontWeight: 700,
+      color: C.sub,
+      padding: "4px 0",
+      letterSpacing: 0.5
+    }
+  }, d))), React.createElement("div", {
+    ref: gridRef,
+    role: "group",
+    "aria-label": `${MO[sheet.m]} ${sheet.y}`,
+    onKeyDown: onGridKey,
+    style: {
+      display: "grid",
+      gridTemplateColumns: "repeat(7,minmax(0,1fr))",
+      gridTemplateRows: "repeat(6, 44px)",
+      rowGap: 2
+    }
+  }, cells.map((ds, i) => {
+    if (!ds) return React.createElement("span", {
+      key: "b" + i,
+      "aria-hidden": "true"
+    });
+    const edge = !!lo && (ds === lo || ds === hi),
+      between = !!lo && ds > lo && ds < hi,
+      off = !pickable(ds),
+      isToday = ds === today;
+    const dow = i % 7;
+    const band = between ? C.band : edge && lo !== hi ? `linear-gradient(to ${ds === lo ? "right" : "left"}, transparent 50%, ${C.band} 50%)` : "transparent";
+    return React.createElement("button", {
+      key: ds,
+      type: "button",
+      "data-ds": ds,
+      tabIndex: ds === tabDs ? 0 : -1,
+      "aria-label": dayLabel(ds),
+      "aria-pressed": edge,
+      "aria-disabled": off || undefined,
+      "aria-current": isToday ? "date" : undefined,
+      onClick: () => tap(ds),
+      style: {
+        height: 44,
+        width: "100%",
+        padding: 0,
+        margin: 0,
+        border: "none",
+        background: "transparent",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        cursor: off ? "default" : "pointer",
+        fontFamily: font,
+        touchAction: "manipulation"
+      }
+    }, React.createElement("span", {
+      "aria-hidden": "true",
+      style: {
+        width: "100%",
+        height: 38,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        background: band,
+        borderRadius: between && dow === 0 ? "19px 0 0 19px" : between && dow === 6 ? "0 19px 19px 0" : 0
+      }
+    }, React.createElement("span", {
+      style: {
+        width: 38,
+        height: 38,
+        borderRadius: "50%",
+        display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "center",
+        fontSize: 15,
+        background: edge ? C.accent : "transparent",
+        color: edge ? C.onAccent : off ? C.off : between ? C.onBand : C.text,
+        fontWeight: edge || isToday ? 700 : 500,
+        boxShadow: isToday && !edge ? `inset 0 0 0 1.5px ${C.accent}` : "none"
+      }
+    }, Number(ds.slice(8)))));
+  })), React.createElement("div", {
+    style: {
+      position: "sticky",
+      bottom: 0,
+      display: "flex",
+      gap: 8,
+      marginTop: 4,
+      paddingTop: 8,
+      paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 16px)",
+      background: C.sheet
+    }
+  }, React.createElement("button", {
+    type: "button",
+    onClick: clear,
+    style: _objectSpread(_objectSpread({}, css.btn(false)), {}, {
+      flex: 1,
+      minHeight: 44,
+      fontSize: 14
+    })
+  }, "Start over"), React.createElement("button", {
+    type: "button",
+    onClick: done,
+    disabled: !sheet.start,
+    style: _objectSpread(_objectSpread({}, css.btn(true)), {}, {
+      background: "#1a6fa8",
+      flex: 2,
+      minHeight: 44,
+      fontSize: 14
+    }, sheet.start ? {} : {
+      opacity: 0.5,
+      cursor: "default"
+    })
+  }, React.createElement("span", {
+    style: {
+      color: "#fff"
+    }
+  }, "Done"))))), document.body));
 }
 class ErrorBoundary extends React.Component {
   constructor(props) {
