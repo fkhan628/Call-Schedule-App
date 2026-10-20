@@ -4694,7 +4694,7 @@ const DARK_SHEET = (() => {
   return { css, rules, forced, hex, lum, cr };
 })();
 
-// ─── CF. Stats → Billing: this month until the next period open, the last 12 months collapsed, older months dropped (owner 2026-10-20) ───
+// ─── CG. Stats → Billing: this month until the next period open, the last 12 months collapsed, older months dropped (owner 2026-10-20) ───
 // Owner request (2026-10-20): "The billing tab under stats. Can we have it show the next 4 months by default
 // and then make the last year hidden. And then billing prior to the last year drops off" — "the next 4
 // months" replaced the same day by "This month until the start of the next period". The card listed this
@@ -4704,25 +4704,25 @@ const DARK_SHEET = (() => {
 // period starts (the day after the published schedule ends: publishedThrough + 1, not Generate's settings);
 // the 12 calendar months before this one in a collapsed "Last 12 months", newest first; anything older not
 // shown. A caption says where the open months end and why. Display only: every number is the same.
-//   CF1 the real billingMonthGroups (helpers.js), executed, exact: the owner's case (today 10/20/2026, the
+//   CG1 the real billingMonthGroups (helpers.js), executed, exact: the owner's case (today 10/20/2026, the
 //       schedule ending Sun 2/21/2027 → Oct … Feb open, Sep 2026 … Oct 2025 collapsed, Sep 2025 and older
 //       dropped); a schedule ending on a month's last day, on a month's first day, before today, today;
 //       Jan and Dec todays (the year rolls over); a 13-months-ago month dropped, exactly 12 kept
-//   CF2 malformed input never throws and drops nothing it should show; the input is not changed (a frozen
+//   CG2 malformed input never throws and drops nothing it should show; the input is not changed (a frozen
 //       array works); no clock; the same answers under TZ=America/Chicago and Asia/Tokyo
-//   CF3 the REAL card block (sliced, the clock pinned at 10/20/2026) on a synthetic schedule from Mon
+//   CG3 the REAL card block (sliced, the clock pinned at 10/20/2026) on a synthetic schedule from Mon
 //       6/2/2025 to Sun 2/21/2027: the scheduler's view; a member's view (their own months only); a
 //       schedule that ended before this month (nothing open → the box opens, no caption); an old cached
 //       helpers.js (no billingMonthGroups → the old split; no publishedThrough → no caption; neither
 //       billingMonthGroups nor billingMonthOrder → every month open, newest first)
-//   CF4 the render: the caption under the title (only over open months), the open months, then ONE
+//   CG4 the render: the caption under the title (only over open months), the open months, then ONE
 //       collapsed <details> "Last 12 months (n)" (open only when nothing is open), then the formula note;
 //       the caption reads at 4.5:1+ on the card in both modes (the box's own contrast: BC6)
 // Review fixes (2026-10-20):
-//   CF1 the next period starting in a NEW year (Mon 1/1/2029, on 11/15 and on 12/20/2028): the caption's month
-//       and day carry their own years ("Dec 2028", "1/1/2029"); CF2's time-zone run holds that case too; and a
+//   CG1 the next period starting in a NEW year (Mon 1/1/2029, on 11/15 and on 12/20/2028): the caption's month
+//       and day carry their own years ("Dec 2028", "1/1/2029"); CG2's time-zone run holds that case too; and a
 //       schedule ending a year on in this month's name says "through Oct 2027", not "This month"
-//   CF4 the box's months keep nearly the card's full width (the 10px side inset is the summary's alone; it took
+//   CG4 the box's months keep nearly the card's full width (the 10px side inset is the summary's alone; it took
 //       22px from every boxed table on a phone); the billing column headers read at 4.5:1+ on the card and on the
 //       box's fill (thS2's #7a8a98 was 3.55:1 and 3.28:1); an open month's name reads at 4.5:1+ on the dark card
 //       (#1a6fa8 was 2.9:1 — the sheet's div[style*="color:#1a6fa8"] never matches React's rgb() form)
@@ -4731,7 +4731,7 @@ console.log("\nCF. Stats → Billing: this month until the next period open, the
   const H = vm.runInContext('({ bmg: typeof billingMonthGroups === "function" ? billingMonthGroups : null, bmo: typeof billingMonthOrder === "function" ? billingMonthOrder : null, pt: typeof publishedThrough === "function" ? publishedThrough : null, fmt, parse, addD, RealDate: Date })', sandbox);
   const J = (o) => JSON.stringify(o);
   const grp = (...a) => { try { return H.bmg ? JSON.parse(J(H.bmg(...a))) : null; } catch (ex) { return { threw: String(ex) }; } };
-  check("CF0 billingMonthGroups is defined in helpers.js, and billingMonthOrder stays defined (an old cached index.html still calls it)", !!H.bmg && !!H.bmo);
+  check("CG0 billingMonthGroups is defined in helpers.js, and billingMonthOrder stays defined (an old cached index.html still calls it)", !!H.bmg && !!H.bmo);
   const span = (a, b) => { const out = []; for (let y = +a.slice(0, 4), m = +a.slice(5); `${y}-${String(m).padStart(2, "0")}` <= b; m === 12 ? (m = 1, y++) : m++) out.push(`${y}-${String(m).padStart(2, "0")}`); return out; };
   const MS = span("2025-06", "2027-02"); // ~16 months back from 10/20/2026 to the schedule's end
   const PAST12 = span("2025-10", "2026-09").reverse();
@@ -4739,9 +4739,9 @@ console.log("\nCF. Stats → Billing: this month until the next period open, the
   const CAP = "This month through Feb 2027 — the next period starts Mon 2/22/2027";
   const OWNER = { now: NOW5, past: PAST12, through: "2027-02", nextStart: "2027-02-22", caption: CAP };
 
-  // CF1 — the helper, executed
+  // CG1 — the helper, executed
   const owner = grp(MS, "2026-10-20", "2027-02-22");
-  check("CF1 the owner's case, exact: today Tue 10/20/2026, the schedule ending Sun 2/21/2027 (the next period starts Mon 2/22/2027) → Oct 2026 … Feb 2027 open, this month first; Sep 2026 … Oct 2025 (12) collapsed, newest first; Sep 2025 and older dropped; the caption",
+  check("CG1 the owner's case, exact: today Tue 10/20/2026, the schedule ending Sun 2/21/2027 (the next period starts Mon 2/22/2027) → Oct 2026 … Feb 2027 open, this month first; Sep 2026 … Oct 2025 (12) collapsed, newest first; Sep 2025 and older dropped; the caption",
     J(owner) === J(OWNER) && PAST12.length === 12 && MS.length === 21, J(owner));
   const t1 = [
     ["ending on a month's last day (Sun 1/31/2027 → Mon 2/1/2027)", grp(span("2025-06", "2027-01"), "2026-10-20", "2027-02-01"),
@@ -4764,7 +4764,7 @@ console.log("\nCF. Stats → Billing: this month until the next period open, the
       { now: ["2026-12", "2027-01"], past: span("2025-12", "2026-11").reverse(), through: "2027-01", nextStart: "2027-01-04", caption: "This month through Jan 2027 — the next period starts Mon 1/4/2027" }],
   ];
   const bad1 = t1.filter(([, got, want]) => J(got) !== J(want));
-  check(`CF1 exact groups and captions: ${t1.map(([w]) => w).join("; ")}`, bad1.length === 0, bad1.map(([w, got]) => `${w}: ${J(got)}`).join(" | "));
+  check(`CG1 exact groups and captions: ${t1.map(([w]) => w).join("; ")}`, bad1.length === 0, bad1.map(([w, got]) => `${w}: ${J(got)}`).join(" | "));
   // (review fix 2026-10-20: no fixture had the next period starting in a NEW year, so a caption taking the wrong year
   // went uncaught — the open months' last month keeps the old year, the next period's day carries the new one)
   const tY = [
@@ -4777,7 +4777,7 @@ console.log("\nCF. Stats → Billing: this month until the next period open, the
       { now: span("2026-10", "2027-10"), past: span("2025-11", "2026-09").reverse(), through: "2027-10", nextStart: "2027-10-25", caption: "This month through Oct 2027 — the next period starts Mon 10/25/2027" }],
   ];
   const badY = tY.filter(([, got, want]) => J(got) !== J(want));
-  check(`CF1 the years in the caption, exact — the next period starting in a new year (the schedule ending Sun 12/31/2028, the next period Mon 1/1/2029: the month says 2028, the day 2029) and a schedule ending a year on in this month's name: ${tY.map(([w]) => w).join("; ")}`,
+  check(`CG1 the years in the caption, exact — the next period starting in a new year (the schedule ending Sun 12/31/2028, the next period Mon 1/1/2029: the month says 2028, the day 2029) and a schedule ending a year on in this month's name: ${tY.map(([w]) => w).join("; ")}`,
     badY.length === 0, badY.map(([w, got]) => `${w}: ${J(got)}`).join(" | "));
   const edge = [
     ["13 months ago (Sep 2025 on 10/20/2026) dropped, 12 months ago (Oct 2025) kept", grp(["2025-09", "2025-10", "2026-09"], "2026-10-20", "2027-02-22"), { now: [], past: ["2026-09", "2025-10"] }],
@@ -4789,26 +4789,26 @@ console.log("\nCF. Stats → Billing: this month until the next period open, the
   ];
   const pick = (g, w) => (g && !Array.isArray(g) ? Object.fromEntries(Object.keys(w).map((k) => [k, g[k]])) : g);
   const badE = edge.filter(([, got, want]) => J(pick(got, want)) !== J(want));
-  check(`CF1 the window's edges: ${edge.map(([w]) => w).join("; ")}`, badE.length === 0, badE.map(([w, got]) => `${w}: ${J(got)}`).join(" | "));
+  check(`CG1 the window's edges: ${edge.map(([w]) => w).join("; ")}`, badE.length === 0, badE.map(([w, got]) => `${w}: ${J(got)}`).join(" | "));
 
-  // CF2 — malformed input, the input untouched, no clock, two time zones
+  // CG2 — malformed input, the input untouched, no clock, two time zones
   const NONE = { through: null, nextStart: null, caption: null };
   const badMonths = [null, undefined, "2026-10", {}, 42].map((m) => grp(m, "2026-10-20", "2027-02-22"));
   const junk = grp(["2026-10", "2026-13", "2026-00", "2026-1", 202610, null, "2026-10-01", "2026-10", " 2026-11", "2026-11", "2025-09"], "2026-10-20", "2027-02-22");
   const badToday = ["", undefined, null, "2026-10", "2026-02-30", "Oct 20", "NaN-NaN-NaN", 20261020].map((t) => grp(MS, t, "2027-02-22"));
   const badNext = [null, undefined, "", "2027-02-30", "Feb 22", "2027-2-22", 20270222].map((n) => grp(MS, "2026-10-20", n));
-  check("CF2 months that is not an array → nothing listed (no throw); entries that are not a YYYY-MM month (13, 00, one digit, a number, null, a date, a space) are skipped and a repeat is listed once",
+  check("CG2 months that is not an array → nothing listed (no throw); entries that are not a YYYY-MM month (13, 00, one digit, a number, null, a date, a space) are skipped and a repeat is listed once",
     badMonths.every((g) => J(g) === J(Object.assign({ now: [], past: [] }, { through: "2027-02", nextStart: "2027-02-22", caption: CAP })))
       && J(junk && { now: junk.now, past: junk.past }) === J({ now: ["2026-10", "2026-11"], past: [] }), J({ badMonths, junk }));
-  check("CF2 a today that is not a real date hides and drops nothing: every month open in calendar order, no box, no caption",
+  check("CG2 a today that is not a real date hides and drops nothing: every month open in calendar order, no box, no caption",
     badToday.every((g) => J(g) === J(Object.assign({ now: MS, past: [] }, NONE))), J(badToday.find((g) => J(g) !== J(Object.assign({ now: MS, past: [] }, NONE)))));
-  check("CF2 a next-period start that is not a real date leaves the groups as they are, with no through, nextStart or caption",
+  check("CG2 a next-period start that is not a real date leaves the groups as they are, with no through, nextStart or caption",
     badNext.every((g) => J(g) === J(Object.assign({ now: NOW5, past: PAST12 }, NONE))), J(badNext.find((g) => J(g) !== J(Object.assign({ now: NOW5, past: PAST12 }, NONE)))));
   const shuffled = MS.slice().reverse().concat(MS.slice(0, 3)), before = J(shuffled), frozen = Object.freeze(MS.slice().reverse());
   const gS = H.bmg ? H.bmg(shuffled, "2026-10-20", "2027-02-22") : null, gF = grp(frozen, "2026-10-20", "2027-02-22");
-  check("CF2 the input array is not changed (an unsorted, repeated input sorts and dedupes into NEW arrays; a frozen array works), the result is the owner's case",
+  check("CG2 the input array is not changed (an unsorted, repeated input sorts and dedupes into NEW arrays; a frozen array works), the result is the owner's case",
     !!gS && J(shuffled) === before && J(gS) === J(OWNER) && gS.now !== shuffled && gS.past !== shuffled && J(gF) === J(OWNER), J({ gS, gF }));
-  check("CF2 pure: billingMonthGroups reads no clock (no Date.now, no new Date())",
+  check("CG2 pure: billingMonthGroups reads no clock (no Date.now, no new Date())",
     !!H.bmg && !/Date\.now|new Date\(\s*\)/.test(String(H.bmg)));
   {
     const { execFileSync } = require("child_process");
@@ -4824,15 +4824,15 @@ console.log("\nCF. Stats → Billing: this month until the next period open, the
     ].join("\n");
     const inZone = (TZ) => { try { return JSON.parse(execFileSync(process.execPath, ["-e", code], { env: Object.assign({}, process.env, { TZ }), encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })); } catch (ex) { return { err: String(ex).slice(0, 300) }; } };
     const here = J(CASES.map((a) => grp(...a))), chi = inZone("America/Chicago"), tok = inZone("Asia/Tokyo");
-    check("CF2 under TZ=America/Chicago (offset 300) and Asia/Tokyo (−540) the owner's case, the month-end and month-start endings, the rollovers, a next period on the March DST Monday and one starting in a new year give the same groups and captions",
+    check("CG2 under TZ=America/Chicago (offset 300) and Asia/Tokyo (−540) the owner's case, the month-end and month-start endings, the rollovers, a next period on the March DST Monday and one starting in a new year give the same groups and captions",
       !!H.bmg && chi.off === 300 && tok.off === -540 && J(chi.out) === here && J(tok.out) === here && here.includes("Mon 3/9/2026") && here.includes("through Dec 2028 — the next period starts Mon 1/1/2029"), J({ chi: J(chi).slice(0, 200), tok: J(tok).slice(0, 200) }));
   }
 
-  // CF3 — the REAL card block, the clock pinned at Tue 10/20/2026
+  // CG3 — the REAL card block, the clock pinned at Tue 10/20/2026
   const ba = src.indexOf("const monthly = {};"), bb = ba < 0 ? -1 : src.indexOf("const billMonth = (mk) => {", ba);
   const block = ba < 0 || bb < 0 || src.indexOf("const monthly = {};", ba + 1) !== -1 ? null : src.slice(ba, bb);
   let runCard = null;
-  try { runCard = block ? vm.runInContext(`(function (schedule, surgeons, billVisible, Date, billingMonthGroups, publishedThrough, billingMonthOrder) { ${block}\n return { billView }; })`, sandbox, { filename: "cf-billing-block.js" }) : null; } catch (ex) { check("CF3 the billing block compiles", false, String(ex)); }
+  try { runCard = block ? vm.runInContext(`(function (schedule, surgeons, billVisible, Date, billingMonthGroups, publishedThrough, billingMonthOrder) { ${block}\n return { billView }; })`, sandbox, { filename: "cf-billing-block.js" }) : null; } catch (ex) { check("CG3 the billing block compiles", false, String(ex)); }
   function Pinned() { return new H.RealDate(2026, 9, 20); }
   const SURG = ["DJA", "MCC", "RPC", "KJH", "REH", "FAK", "ARW"].map((name, i) => ({ id: "s" + (i + 1), name }));
   const ROT = ["s1", "s2", "s3", "s4", "s5", "s6"];
@@ -4845,37 +4845,37 @@ console.log("\nCF. Stats → Billing: this month until the next period open, the
   const REAL = { bmg: H.bmg, pt: H.pt, bmo: H.bmo };
   const card = (sched, vis, h) => { try { return runCard ? JSON.parse(J(runCard(sched, SURG, vis, Pinned, h.bmg, h.pt, h.bmo).billView)) : null; } catch (ex) { return { threw: String(ex) }; } };
   const NEW_ALL = { open: NOW5, box: PAST12, boxLabel: "Last 12 months", caption: CAP };
-  check("CF3 the REAL card block, the scheduler's view (every surgeon), today 10/20/2026 on weeks Mon 6/2/2025 … Sun 2/21/2027: Oct … Feb open with the caption \"This month through Feb 2027 — the next period starts Mon 2/22/2027\"; Sep 2026 … Oct 2025 in \"Last 12 months\"; Jun … Sep 2025 not shown",
+  check("CG3 the REAL card block, the scheduler's view (every surgeon), today 10/20/2026 on weeks Mon 6/2/2025 … Sun 2/21/2027: Oct … Feb open with the caption \"This month through Feb 2027 — the next period starts Mon 2/22/2027\"; Sep 2026 … Oct 2025 in \"Last 12 months\"; Jun … Sep 2025 not shown",
     H.pt && H.pt(SA) === "2027-02-21" && J(card(SA, SURG, REAL)) === J(NEW_ALL), J(card(SA, SURG, REAL)));
-  check("CF3 a member's view (ARW's own row): only ARW's months — Dec 2026 open (with the caption), Mar 2026 in \"Last 12 months\", Aug 2025 dropped",
+  check("CG3 a member's view (ARW's own row): only ARW's months — Dec 2026 open (with the caption), Mar 2026 in \"Last 12 months\", Aug 2025 dropped",
     J(card(SA, [SURG[6]], REAL)) === J({ open: ["2026-12"], box: ["2026-03"], boxLabel: "Last 12 months", caption: CAP }), J(card(SA, [SURG[6]], REAL)));
-  check("CF3 nothing for the viewer from this month on (ARW with no Dec week; a schedule that ended Sun 9/27/2026): nothing open, no caption — the \"Last 12 months\" box is what shows (it opens: CF4)",
+  check("CG3 nothing for the viewer from this month on (ARW with no Dec week; a schedule that ended Sun 9/27/2026): nothing open, no caption — the \"Last 12 months\" box is what shows (it opens: CG4)",
     J(card(SB, [SURG[6]], REAL)) === J({ open: [], box: ["2026-03"], boxLabel: "Last 12 months", caption: null })
       && J(card(SC, SURG, REAL)) === J({ open: [], box: PAST12, boxLabel: "Last 12 months", caption: null }), J([card(SB, [SURG[6]], REAL), card(SC, SURG, REAL)]));
   const oldSplit = H.bmo ? JSON.parse(J(H.bmo(MS, "2026-10-20"))) : null;
-  check("CF3 an old cached helpers.js with no billingMonthGroups: the card falls back to billingMonthOrder's split, exactly — this month back open (Oct 2026 … Jun 2025), the later months in \"Upcoming months\", no caption",
+  check("CG3 an old cached helpers.js with no billingMonthGroups: the card falls back to billingMonthOrder's split, exactly — this month back open (Oct 2026 … Jun 2025), the later months in \"Upcoming months\", no caption",
     !!oldSplit && J(card(SA, SURG, { bmg: undefined, pt: H.pt, bmo: H.bmo })) === J({ open: oldSplit.done, box: oldSplit.ahead, boxLabel: "Upcoming months", caption: null })
       && J(oldSplit.ahead) === J(NOW5.slice(1)), J(card(SA, SURG, { bmg: undefined, pt: H.pt, bmo: H.bmo })));
-  check("CF3 no publishedThrough: the same groups, no caption; neither billingMonthGroups nor billingMonthOrder: every month open, newest first, no box — never a throw",
+  check("CG3 no publishedThrough: the same groups, no caption; neither billingMonthGroups nor billingMonthOrder: every month open, newest first, no box — never a throw",
     J(card(SA, SURG, { bmg: H.bmg, pt: undefined, bmo: H.bmo })) === J(Object.assign({}, NEW_ALL, { caption: null }))
       && J(card(SA, SURG, { bmg: undefined, pt: undefined, bmo: undefined })) === J({ open: MS.slice().reverse(), box: [], boxLabel: "Upcoming months", caption: null }),
     J([card(SA, SURG, { bmg: H.bmg, pt: undefined, bmo: H.bmo }), card(SA, SURG, { bmg: undefined, pt: undefined, bmo: undefined })]));
-  check("CF3 pins: the next period's start is publishedThrough + 1 (typeof-guarded), today is the device date, the months are those with a billing day (hasAny); Generate's settings are not read",
+  check("CG3 pins: the next period's start is publishedThrough + 1 (typeof-guarded), today is the device date, the months are those with a billing day (hasAny); Generate's settings are not read",
     count('const billPubEnd = typeof publishedThrough === "function" ? publishedThrough(schedule) : null;') === 1
       && count('const billGroups = typeof billingMonthGroups === "function" ? billingMonthGroups(billMonths, billToday, billPubEnd ? fmt(addD(parse(billPubEnd), 1)) : null) : null;') === 1
       && count("const billToday = fmt(new Date());") === 1 && count("const billMonths = sortedMonths.filter(hasAny);") === 1 && count("billingMonthGroups(") === 1
       && !!block && !/startMonth|startYear|numWeeks|mondays|genStart/.test(block));
 
-  // CF4 — the render
+  // CG4 — the render
   const iT = src.indexOf("💰 Billing Summary"), iCap = src.indexOf("{billView.caption && ("), iEx = src.indexOf("Breakdown by calendar month."), iOpen = src.indexOf("{billView.open.map(billMonth)}"),
     iDet = src.indexOf("<details open={billView.open.length === 0}"), iBox = src.indexOf("{billView.box.map(billMonth)}"), iF = src.indexOf("Svc Days + Nights + Wknd Days + Holiday Days = Total Call Days.");
-  check("CF4 the card: the title, the caption (only when there is one), the explainer, the open months, then ONE <details> holding the box's months — \"Last 12 months (n)\" — open by default only when nothing is open, then the formula note",
+  check("CG4 the card: the title, the caption (only when there is one), the explainer, the open months, then ONE <details> holding the box's months — \"Last 12 months (n)\" — open by default only when nothing is open, then the formula note",
     [iT, iCap, iEx, iOpen, iDet, iBox, iF].every((x, k, a) => x > 0 && (k === 0 || x > a[k - 1]))
       && count("{billView.caption && (") === 1 && count("{billView.open.map(billMonth)}") === 1 && count("<details open={billView.open.length === 0}") === 1
       && count("{billView.box.map(billMonth)}") === 1 && count("{billView.boxLabel} ({billView.box.length})") === 1 && count("{billView.box.length > 0 && (") === 1
       && count('{ open: billGroups.now, box: billGroups.past, boxLabel: "Last 12 months", caption: billGroups.now.length > 0 ? billGroups.caption : null }') === 1,
     J({ iT, iCap, iEx, iOpen, iDet, iBox, iF }));
-  check("CF4 the old \"Upcoming months\" box is gone from the render (its months are open now): no billOrder.done / billOrder.ahead map, the label only in the old-helpers fallback",
+  check("CG4 the old \"Upcoming months\" box is gone from the render (its months are open now): no billOrder.done / billOrder.ahead map, the label only in the old-helpers fallback",
     count("{billOrder.done.map(billMonth)}") === 0 && count("{billOrder.ahead.map(billMonth)}") === 0 && count("Upcoming months (") === 0
       && count('{ open: billOrder.done, box: billOrder.ahead, boxLabel: "Upcoming months", caption: null }') === 1);
   const nsrc = src.replace(/\r\n/g, "\n");
@@ -4891,11 +4891,11 @@ console.log("\nCF. Stats → Billing: this month until the next period open, the
   const rgbOf = (h) => (DARK_SHEET.hex(h) ? `rgb(${h.slice(1).match(/../g).map((x) => parseInt(x, 16)).join(", ")})` : "?");
   const sheetHits = (h) => DARK_SHEET.rules.some((r) => squash(r.sels.join(",")).includes(squash(rgbOf(h))));
   const cf4 = { cL: cL && cL.color, cD: cD && cD.color, cardLight, cardDark, crL: DARK_SHEET.cr(cL && cL.color, cardLight), crD: DARK_SHEET.cr(cD && cD.color, cardDark) };
-  check("CF4 the caption reads at 4.5:1+ on the card in both modes (light: its colour on css.card's white; dark: on the sheet's dark card fill), 12px+, and no dark-sheet rule recolours it",
+  check("CG4 the caption reads at 4.5:1+ on the card in both modes (light: its colour on css.card's white; dark: on the sheet's dark card fill), 12px+, and no dark-sheet rule recolours it",
     !!capM && cardLight === "#ffffff" && DARK_SHEET.hex(cardDark) && cf4.crL >= 4.5 && cf4.crD >= 4.5 && cL.fontSize >= 12 && cD.fontSize >= 12
       && !sheetHits(cL.color) && !sheetHits(cD.color) && sheetHits("#2a3e50"), J(cf4)); // (#2a3e50: the one inline colour the sheet does name, as rgb() — the detector's positive control)
 
-  // CF4 review fixes (2026-10-20) — the box's width, the column headers, a month's name; styles evaluated from the source
+  // CG4 review fixes (2026-10-20) — the box's width, the column headers, a month's name; styles evaluated from the source
   const boxM = nsrc.match(/<details open=\{billView\.open\.length === 0\} style=\{(\{[^\n]*?\})\}>\n\s*<summary style=\{(\{[^\n]*?\})\}>\n\s*\{billView\.boxLabel\} \(\{billView\.box\.length\}\)\n\s*<\/summary>\n\s*<div style=\{(\{[^\n]*?\})\}>\{billView\.box\.map\(billMonth\)\}<\/div>/);
   const evDk = (code) => { try { return vm.runInContext(`(function (dk) { return (${code}); })`, sandbox); } catch (ex) { return null; } };
   const pxV = (v) => (typeof v === "number" ? v : parseFloat(String(v == null ? "0" : v)) || 0);
@@ -4914,7 +4914,7 @@ console.log("\nCF. Stats → Billing: this month until the next period open, the
     return { l: side("l"), r: side("r"), sumL: box4(det, "padding").l + box4(sum, "padding").l, bg: det.background };
   };
   const inL = inset(false), inD = inset(true);
-  check("CF4 review fix: the box's months keep nearly the card's full width — each boxed table sits at most 3px in from the card's content edge on either side (the box's 10px side padding + its 1px border took 22px from every boxed table on a phone), while the summary keeps its 8px+ inset from the border; both modes",
+  check("CG4 review fix: the box's months keep nearly the card's full width — each boxed table sits at most 3px in from the card's content edge on either side (the box's 10px side padding + its 1px border took 22px from every boxed table on a phone), while the summary keeps its 8px+ inset from the border; both modes",
     !!inL && !!inD && [inL, inD].every((x) => x.l <= 3 && x.r <= 3 && x.sumL >= 8), J({ inL, inD }));
   const thS2M = nsrc.match(/\nconst thS2 = (\{[^\n]*?\});\n/);
   const thS2V = (() => { try { return thS2M ? vm.runInContext(`(${thS2M[1]})`, sandbox) : null; } catch (ex) { return null; } })();
@@ -4926,14 +4926,14 @@ console.log("\nCF. Stats → Billing: this month until the next period open, the
   const thL = (() => { try { return thF ? thF(thS2V, {}, "2026-10", false) : null; } catch (ex) { return null; } })();
   const thDark = DARK_SHEET.forced("th", "color");
   const p2 = { labels: thList.map((t) => t.label), light: thL && thL.map((s) => [s.color, DARK_SHEET.cr(s.color, cardLight), DARK_SHEET.cr(s.color, inL && inL.bg)]), thDark, onDarkCard: DARK_SHEET.cr(thDark, cardDark), onDarkBox: DARK_SHEET.cr(thDark, inD && inD.bg) };
-  check("CF4 review fix: the billing column headers read at 4.5:1+ — light: every header's colour on the card's white and on the box's #f4f6f8 fill (thS2's #7a8a98 was 3.55:1 and 3.28:1); dark: the sheet's forced th colour on the dark card and on the box's dark fill",
+  check("CG4 review fix: the billing column headers read at 4.5:1+ — light: every header's colour on the card's white and on the box's #f4f6f8 fill (thS2's #7a8a98 was 3.55:1 and 3.28:1); dark: the sheet's forced th colour on the dark card and on the box's dark fill",
     !!thS2V && J(p2.labels) === J(["Surgeon", "Total Days", "Svc Days", "Nights", "Wknd Days", "Holiday"]) && !!thL && thL.length === 6
       && p2.light.every(([, onCard, onBox]) => onCard >= 4.5 && onBox >= 4.5) && inL.bg === "#f4f6f8" && DARK_SHEET.hex(thDark) && p2.onDarkCard >= 4.5 && p2.onDarkBox >= 4.5, J(p2));
   const lblM = bmHead.match(/<div style=\{(\{[^\n]*?\})\}>\{moLabel\(mk\)\}<\/div>/);
   const lblF = lblM ? evDk(lblM[1]) : null, lblL = lblF && lblF(false), lblD = lblF && lblF(true);
   const detDiv = DARK_SHEET.forced("details div", "color");
   const p3 = { light: lblL && lblL.color, dark: lblD && lblD.color, onCard: DARK_SHEET.cr(lblL && lblL.color, cardLight), onBox: DARK_SHEET.cr(lblL && lblL.color, inL && inL.bg), onDarkCard: DARK_SHEET.cr(lblD && lblD.color, cardDark), detDiv, detDivOnDarkBox: DARK_SHEET.cr(detDiv, inD && inD.bg) };
-  check("CF4 review fix: a month's name reads at 4.5:1+ — light on the card and on the box's fill; dark: an open month's on the dark card (#1a6fa8 was 2.9:1 there: the sheet's div[style*=\"color:#1a6fa8\"] never matches React's rgb() form), no dark-sheet rule recolouring it, and a boxed month's in the sheet's forced \"details div\" colour on the box's dark fill",
+  check("CG4 review fix: a month's name reads at 4.5:1+ — light on the card and on the box's fill; dark: an open month's on the dark card (#1a6fa8 was 2.9:1 there: the sheet's div[style*=\"color:#1a6fa8\"] never matches React's rgb() form), no dark-sheet rule recolouring it, and a boxed month's in the sheet's forced \"details div\" colour on the box's dark fill",
     !!lblM && p3.onCard >= 4.5 && p3.onBox >= 4.5 && p3.onDarkCard >= 4.5 && !sheetHits(p3.dark) && DARK_SHEET.hex(detDiv) && p3.detDivOnDarkBox >= 4.5 && lblD.fontSize >= 12, J(p3));
 }
 
@@ -4964,7 +4964,7 @@ console.log("\nCF. Stats → Billing: this month until the next period open, the
 //       hold the sentence true
 //   BC6 the Upcoming months box in dark mode: a dark border, the sheet's
 //       forced summary blue at 4.5:1+, a 44px-tall summary to tap
-// Changed ON PURPOSE 2026-10-20 (owner request, section CF): the card no
+// Changed ON PURPOSE 2026-10-20 (owner request, section CG): the card no
 // longer splits its months with billingMonthOrder — billingMonthGroups opens
 // this month until the next period and collapses the last 12 months.
 // billingMonthOrder stays (an old cached index.html calls it; it is the
@@ -5076,7 +5076,7 @@ console.log("\nBC. Generate & Publish asks once; Billing opens on the newest mon
       && apBody.length > 200 && !/addNotification\(|sendEmailNotif\(|sendPushNotif\(/.test(apBody),
     JSON.stringify({ dgnRuns, acceptPreview: apBody.length }));
 
-  // BC3 — billingMonthOrder, executed (2026-10-20: no longer the card's split — section CF — but unchanged and
+  // BC3 — billingMonthOrder, executed (2026-10-20: no longer the card's split — section CG — but unchanged and
   // still defined: an old cached index.html calls it, and the card falls back to it under an old cached helpers.js)
   const MONTHS = ["2026-03", "2025-12", "2026-10", "2027-01", "2026-11", "2026-09", "2026-01", "2026-12"];
   const input = MONTHS.slice();
@@ -5105,7 +5105,7 @@ console.log("\nBC. Generate & Publish asks once; Billing opens on the newest mon
   // new Date() inside the block is the device clock: a stand-in returns 2026-05-15 (helpers' own Date is untouched)
   function PinnedDate() { return new H.RealDate(2026, 4, 15); }
   let runBill = null;
-  // (2026-10-20, changed ON PURPOSE — section CF: the block now groups with billingMonthGroups and keeps billingMonthOrder
+  // (2026-10-20, changed ON PURPOSE — section CG: the block now groups with billingMonthGroups and keeps billingMonthOrder
   // as its fallback for an old cached helpers.js; billingMonthGroups is a parameter here, so passing undefined runs that
   // fallback — main's split, which these checks keep pinning — and passing the real one runs the new grouping, billView)
   try { runBill = billBlock ? vm.runInContext(`(function (schedule, surgeons, billVisible, Date, billingMonthGroups) { ${billBlock}\n return { monthly, billOrder, billView }; })`, sandbox, { filename: "bc-billing-block.js" }) : null; } catch (ex) { check("BC4 the billing block compiles", false, String(ex)); }
@@ -5124,15 +5124,15 @@ console.log("\nBC. Generate & Publish asks once; Billing opens on the newest mon
   check("BC4 a member's view (MCC's own row), the same fallback: only the months with a billing day for MCC, newest first — the same months main listed for them",
     !!memberView && J(memberView.done.concat(memberView.ahead).sort()) === J(mainMember) && J(memberView.done) === J(mainMember.filter((m) => m <= "2026-05").reverse())
       && J(memberView.ahead) === J(mainMember.filter((m) => m > "2026-05")) && memberView.ahead.length > 0 && mainMember.length < mainAll.length, J({ memberView, mainMember }));
-  // (2026-10-20, section CF) the new grouping on the same live weeks: published through Sun 10/4/2026, so the open months
+  // (2026-10-20, section CG) the new grouping on the same live weeks: published through Sun 10/4/2026, so the open months
   // run "This month through Oct 2026"; every month main listed is still listed — all are within the year before May 2026
   const newAll = viewFor(SURGB), newMember = viewFor([SURGB[1]]);
-  check("BC4 (section CF) the new grouping, the same live weeks and clock: May, August, September open (calendar order) under \"This month through Oct 2026 — the next period starts Mon 10/5/2026\"; April back to December 2025 in \"Last 12 months\" — main's months, none dropped; MCC's view is MCC's months the same way",
+  check("BC4 (section CG) the new grouping, the same live weeks and clock: May, August, September open (calendar order) under \"This month through Oct 2026 — the next period starts Mon 10/5/2026\"; April back to December 2025 in \"Last 12 months\" — main's months, none dropped; MCC's view is MCC's months the same way",
     J(newAll) === J({ open: ["2026-05", "2026-08", "2026-09"], box: ["2026-04", "2026-03", "2026-02", "2026-01", "2025-12"], boxLabel: "Last 12 months", caption: "This month through Oct 2026 — the next period starts Mon 10/5/2026" })
       && !!newMember && J(newMember.open) === J(mainMember.filter((m) => m >= "2026-05")) && J(newMember.box) === J(mainMember.filter((m) => m < "2026-05").reverse()),
     J({ newAll, newMember }));
 
-  // BC5 — the render (2026-10-20, changed ON PURPOSE — section CF: the open months are billView.open — this month until the
+  // BC5 — the render (2026-10-20, changed ON PURPOSE — section CG: the open months are billView.open — this month until the
   // next period — and the one collapsed box is billView.box, "Last 12 months"; "Upcoming months" only under an old helpers.js)
   const iOpen = src.indexOf("{billView.open.map(billMonth)}"), iDet = src.indexOf("<details open={billView.open.length === 0}"), iBoxM = src.indexOf("{billView.box.map(billMonth)}"), iFormula = src.indexOf("Svc Days + Nights + Wknd Days + Holiday Days = Total Call Days.");
   check("BC5 the card lists the open months, then a collapsed <details> holding the box's months (open only when nothing is open), then the formula note; the old done/ahead render is gone",
@@ -5957,16 +5957,16 @@ console.log("\nAM. Mine's name picker is a view, not a sign-in");
     && !src.includes("const svcSid = (wk.dayCallOverrides && wk.dayCallOverrides[ds]) || wk.dayCall;") && !/\]\.(dc|nights|wknd) \+= 1;/.test(newBlock || "x].dc += 1;"));
   check("V8 Holiday header + cell after Wknd Days; rows default hol to 0",
     // \r?\n: a Windows checkout has CRLF, CI's has LF
-    // (2026-10-20, changed ON PURPOSE — section CF review fix: the billing headers use billTh, thS2 with a 4.5:1+ colour)
+    // (2026-10-20, changed ON PURPOSE — section CG review fix: the billing headers use billTh, thS2 with a 4.5:1+ colour)
     (src.match(/<th style=\{billTh\}>Wknd Days<\/th>\r?\n[ \t]*<th style=\{billTh\}>Holiday<\/th>/g) || []).length === 1
     && (src.match(/<td style=\{tdS\}>\{r\.wknd\|\|"–"\}<\/td>\r?\n[ \t]*<td style=\{tdS\}>\{r\.hol\|\|"–"\}<\/td>/g) || []).length === 1
     && count("{dc:0,nights:0,wknd:0,hol:0}") === 1 && count("{ dc:0, nights:0, wknd:0, hol:0 }") === 1);
   // (2026-10-19, section BC: the month ORDER changed deliberately — newest first, later months in a
   // collapsed "Upcoming months" — through helpers.js billingMonthOrder; which months are listed and every number are unchanged)
-  // (2026-10-20, changed ON PURPOSE — section CF, owner request: the months are grouped by helpers.js billingMonthGroups —
+  // (2026-10-20, changed ON PURPOSE — section CG, owner request: the months are grouped by helpers.js billingMonthGroups —
   // this month until the next period open, the last 12 months collapsed, older months not shown — over the same hasAny
   // months; billingMonthOrder is the old-helpers fallback. Every number, hasAny and row visibility are unchanged.)
-  check("V8 billingDays includes Holiday and feeds both the Total Days cell and hasAny; the formula note and explainer name it; row visibility by authenticated identity is unchanged; the months are grouped through billingMonthGroups (section CF; billingMonthOrder the fallback)",
+  check("V8 billingDays includes Holiday and feeds both the Total Days cell and hasAny; the formula note and explainer name it; row visibility by authenticated identity is unchanged; the months are grouped through billingMonthGroups (section CG; billingMonthOrder the fallback)",
     count("const billingDays = (r) => (r.dc||0) + (r.nights||0) + (r.wknd||0) + (r.hol||0);") === 1 && count("return billingDays(monthData[s.id] || {}) > 0;") === 1
     && /const days = billingDays\(r\);[\s\S]{0,700}\{days\|\|"–"\}/.test(src) && count("const days = billingDays(r);") === 1
     && count("const billVisible = canSeeAllBilling ? surgeons : surgeons.filter(s => s.id === ownBillId);") === 1
