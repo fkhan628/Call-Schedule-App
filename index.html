@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.10.20b";
+    var APP_VERSION = "2026.10.20c";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -15415,9 +15415,30 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         return billingDays(monthData[s.id] || {}) > 0;
       });
     };
-    const billOrder = billingMonthOrder(sortedMonths.filter(hasAny), fmt(new Date()));
+    const billToday = fmt(new Date());
+    const billMonths = sortedMonths.filter(hasAny);
+    const billPubEnd = typeof publishedThrough === "function" ? publishedThrough(schedule) : null;
+    const billGroups = typeof billingMonthGroups === "function" ? billingMonthGroups(billMonths, billToday, billPubEnd ? fmt(addD(parse(billPubEnd), 1)) : null) : null;
+    const billOrder = billGroups ? null : typeof billingMonthOrder === "function" ? billingMonthOrder(billMonths, billToday) : {
+      done: billMonths.slice().reverse(),
+      ahead: []
+    };
+    const billView = billGroups ? {
+      open: billGroups.now,
+      box: billGroups.past,
+      boxLabel: "Last 12 months",
+      caption: billGroups.now.length > 0 ? billGroups.caption : null
+    } : {
+      open: billOrder.done,
+      box: billOrder.ahead,
+      boxLabel: "Upcoming months",
+      caption: null
+    };
     const billMonth = mk => {
       const monthData = monthly[mk] || {};
+      const billTh = _objectSpread(_objectSpread({}, thS2), {}, {
+        color: "#5a6a78"
+      });
       return React.createElement("div", {
         key: mk,
         style: {
@@ -15427,7 +15448,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         style: {
           fontSize: 12,
           fontWeight: 700,
-          color: "#1a6fa8",
+          color: dk ? "#5aafe8" : "#1a6fa8",
           marginBottom: 4,
           textTransform: "uppercase",
           letterSpacing: 0.8
@@ -15447,19 +15468,19 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           borderBottom: "1px solid #d0d8e0"
         }
       }, React.createElement("th", {
-        style: thS2
+        style: billTh
       }, "Surgeon"), React.createElement("th", {
-        style: _objectSpread(_objectSpread({}, thS2), {}, {
+        style: _objectSpread(_objectSpread({}, billTh), {}, {
           color: "#1a8040"
         })
       }, "Total Days"), React.createElement("th", {
-        style: thS2
+        style: billTh
       }, "Svc Days"), React.createElement("th", {
-        style: thS2
+        style: billTh
       }, "Nights"), React.createElement("th", {
-        style: thS2
+        style: billTh
       }, "Wknd Days"), React.createElement("th", {
-        style: thS2
+        style: billTh
       }, "Holiday"))), React.createElement("tbody", null, billVisible.map(s => {
         const r = monthData[s.id] || {
           dc: 0,
@@ -15509,20 +15530,28 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         fontSize: 11,
         color: "#7a8a98"
       }
-    }, "— Monthly, 1st Call Only")), React.createElement("p", {
+    }, "— Monthly, 1st Call Only")), billView.caption && React.createElement("div", {
+      style: {
+        fontSize: 12,
+        fontWeight: 600,
+        color: dk ? "#a8b8c8" : "#3a4a58",
+        margin: "-4px 0 10px",
+        lineHeight: 1.4
+      }
+    }, billView.caption), React.createElement("p", {
       style: {
         fontSize: 11,
         color: "#7a8a98",
         margin: "0 0 14px",
         lineHeight: 1.5
       }
-    }, "Breakdown by calendar month. Backup weeks are excluded — only 1st-call shifts count toward billing. Each call day is counted in the month it actually falls in (a service week or weekend spanning a month boundary is split across both months). A covered holiday bills 2 days (the day and the night) to the surgeon who covers it, and that date's regular credits don't count."), billOrder.done.map(billMonth), billOrder.ahead.length > 0 && React.createElement("details", {
-      open: billOrder.done.length === 0,
+    }, "Breakdown by calendar month. Backup weeks are excluded — only 1st-call shifts count toward billing. Each call day is counted in the month it actually falls in (a service week or weekend spanning a month boundary is split across both months). A covered holiday bills 2 days (the day and the night) to the surgeon who covers it, and that date's regular credits don't count."), billView.open.map(billMonth), billView.box.length > 0 && React.createElement("details", {
+      open: billView.open.length === 0,
       style: {
         background: dk ? "#12161e" : "#f4f6f8",
         border: `1px solid ${dk ? "#2a3a5e" : "#d0d8e0"}`,
         borderRadius: 6,
-        padding: "0 10px",
+        padding: 0,
         marginBottom: 16
       }
     }, React.createElement("summary", {
@@ -15531,15 +15560,15 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         fontSize: 12,
         fontWeight: 700,
         color: dk ? "#a0b0c0" : "#5a6a78",
-        padding: "14px 0",
+        padding: "14px 10px",
         lineHeight: "16px"
       }
-    }, "Upcoming months (", billOrder.ahead.length, ")"), React.createElement("div", {
+    }, billView.boxLabel, " (", billView.box.length, ")"), React.createElement("div", {
       style: {
         marginTop: 4,
-        paddingBottom: 6
+        padding: "0 2px 6px"
       }
-    }, billOrder.ahead.map(billMonth))), React.createElement("div", {
+    }, billView.box.map(billMonth))), React.createElement("div", {
       style: {
         fontSize: 11,
         color: "#7a8a98",
