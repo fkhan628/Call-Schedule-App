@@ -7555,6 +7555,259 @@ console.log("\nAT. A trade waiting on your answer");
   }
 }
 
+// ─── CB. The Next call card reads a service week Mon–Sat (owner decision 2026-10-20) ───
+// The card read a service week "Mon, Nov 2 – Sun, Nov 8" while the My Shifts
+// chip under it (roleDateLabel, helpers.js) read "Mon 11/2 – Sat 11/7". The
+// owner: "Mon - Sat is correct". The card's builder (sliced verbatim, as X8
+// does) now ends a service week on the last day its surgeon holds — the
+// Saturday when there is no held list — and the card's line follows. Nothing
+// else moves: the weekend still reads to its Sunday (Fri night–Sun), a night or
+// a dated role is its one day, and every role stays on the card through its
+// week's Sunday, the My Shifts rule (shiftLastDay: the service Saturday runs
+// 7a–Sun 7a). No other place in the app shows a service week as a Mon–Sun range
+// (trades and the swap tool say "Service Wk of …", the day sheet and On Call
+// Today name no range, the .ics events end on the Saturday); whole-week labels
+// (a week header, "Week of …") are not the service week and stay as they are.
+//   CB1 the card's real builder on the REAL Mine builder's roles: a full
+//       service week is Mon → Sat; Labor Day's (Mon covered) Tue → Sat; one
+//       whose Saturday is someone else's ends Friday; Thanksgiving's (Thu +
+//       Fri covered) Mon → Sat; one held on its Saturday only is that one day;
+//       the fall-back week Mon 10/26 → Sat 10/31
+//   CB1 a service-week role with no held list (an older role shape) is Mon → Sat
+//   CB2 everything else is exactly as before: the card's code from main
+//       (0839440, frozen below) and the new code give the same entries in the
+//       same order, every field, on every day of the live weeks and synthetic
+//       weeks, but a service week's end and its range flag; worked examples:
+//       the weekend Fri → Sun, a weekend whose Friday is covered still a
+//       Sun → Sun range, a night and a dated role their one day
+//   CB3 the card's line, executed (the real _nice and the real expression,
+//       which the card writes twice): the service week reads "Mon, Nov 2 –
+//       Sat, Nov 7" in the device's words — never its Sunday; one day reads as
+//       that day; the weekend still Fri – Sun
+//   CB4 every service-week role of every surgeon on the 46 live weeks and the
+//       holiday weeks: the card's range runs from the first to the last day the
+//       My Shifts chip shows (read back into days), and never ends on a Sunday
+//   CB5 the list itself is unchanged: on the week's Sunday the service week is
+//       still on it ("in progress"), on Monday it is gone; and every role is on
+//       the card exactly while My Shifts (mineUpcoming) keeps it, every day of
+//       six weeks
+//   CB6 CB1 + CB5 again in a child pinned to TZ=America/Chicago across the
+//       fall-back week (Sun 11/1 is the DST day)
+console.log("\nCB. The Next call card reads a service week Mon–Sat (owner decision 2026-10-20)");
+{
+  const FIXD = path.join(ROOT, "test", "fixtures");
+  const LIVE = JSON.parse(fs.readFileSync(path.join(FIXD, "schedule-weeks-live-2026-10-02.json"), "utf8"));
+  const SURG = ["DJA", "MCC", "RPC", "KJH", "REH", "FAK", "ARW"].map((name, i) => ({ id: "s" + (i + 1), name }));
+  const nameOf = (id) => (SURG.find((s) => s.id === id) || {}).name || id || "?";
+  const J = JSON.stringify;
+  const fmtD = vm.runInContext("fmt", sandbox), P = vm.runInContext("parse", sandbox), addDs = vm.runInContext("addD", sandbox);
+  const nextDay = (ds) => fmtD(addDs(P(ds), 1));
+  const tryRun = (f) => { try { return f(); } catch (ex) { return "threw: " + String((ex && ex.message) || ex).slice(0, 120); } };
+  // The REAL Mine builder (sliced, as X3 / AU2 do); the REAL card builder and its _startOff, _nice and
+  // _whenTxt (sliced, as X8 does); the card's date line, as the page writes it (twice)
+  const MA = "            const myShifts = [];", MB = "            const myShiftsView = mineUpcoming(myShifts, myToday);";
+  const ma = src.indexOf(MA), mb = ma < 0 ? -1 : src.indexOf(MB, ma);
+  const ha = src.indexOf("const holidayEmoji = (label) => {"), hb = ha < 0 ? -1 : src.indexOf("\n  };", ha);
+  const NA = "            const _nextUp = [];", NB = "_nextUp.sort((a, b) => a.start - b.start);";
+  const na = src.indexOf(NA), nb = na < 0 ? -1 : src.indexOf(NB, na);
+  const lineOf = (head) => { const i = src.indexOf(head), j = i < 0 ? -1 : src.indexOf("\n", i); return i < 0 || j < 0 || count(head) !== 1 ? null : src.slice(i, j).trim(); };
+  const SO = lineOf("const _startOff = "), NI = lineOf("const _nice = "), WT = lineOf("const _whenTxt = ");
+  const LINE = "{e.span ? `${_nice(e.start)} – ${_nice(e.end)}` : _nice(e.start)}";
+  const MINE_SRC = ma > 0 && mb > 0 ? `(function (schedule, myId, nameOf, holidayEmoji, myToday) { ${src.slice(ma, mb + MB.length)}\n return myShifts; })` : null;
+  const CARD_SRC = na > 0 && nb > 0 ? `(function (myShifts, _today0, _DAY, _startOff) { ${src.slice(na, nb + NB.length)}\n return _nextUp; })` : null;
+  const HE_SRC = ha > 0 && hb > 0 ? `(function () { ${src.slice(ha, hb + 4)}\n return holidayEmoji; })()` : null;
+  // The card's builder as main had it (0839440), byte for byte but the indentation — CB2 holds the new one to it
+  const OLD_CARD = [
+    "const _nextUp = [];",
+    "myShifts.forEach(s => {",
+    "  const mon = parse(s.mStr);",
+    "  s.roles.forEach(r => {",
+    "    if (!r.shiftKey && !r.date) return; // OFF isn't a call shift",
+    "    if (r.date) {",
+    "      const day = parse(r.date);",
+    "      if (day < _today0) return;",
+    "      _nextUp.push({ ...r, start: day, end: day, days: Math.round((day - _today0) / _DAY), span: false, isBackup: s.isBackup, isFierceBackup: s.isFierceBackup });",
+    "      return;",
+    "    }",
+    "    const span = (r.shiftKey === \"dayCall\" || r.shiftKey === \"wknd\");",
+    "    const start = r.held && r.held.length ? parse(r.held[0]) : addD(mon, _startOff[r.shiftKey] ?? 0);",
+    "    const end = span ? addD(mon, 6) : start;",
+    "    if (end < _today0) return; // fully in the past",
+    "    const days = Math.round((start - _today0) / _DAY);",
+    "    _nextUp.push({ ...r, start, end, days, span, isBackup: s.isBackup, isFierceBackup: s.isFierceBackup });",
+    "  });",
+    "});",
+    "_nextUp.sort((a, b) => a.start - b.start);",
+  ].join("\n");
+  let mineB = null, cardB = null, oldB = null, H = null;
+  try {
+    const holidayEmoji = HE_SRC ? vm.runInContext(HE_SRC, sandbox) : null;
+    const mineFn = MINE_SRC && holidayEmoji ? vm.runInContext(MINE_SRC, sandbox) : null;
+    mineB = mineFn ? (sched, sid) => JSON.parse(J(mineFn(sched, sid, nameOf, holidayEmoji, "2016-01-01"))) : null;
+    H = SO && NI && WT ? vm.runInContext(`(function () { ${SO} ${NI} ${WT} return { _startOff, _nice, _whenTxt }; })()`, sandbox) : null;
+    cardB = CARD_SRC ? vm.runInContext(CARD_SRC, sandbox) : null;
+    oldB = vm.runInContext(`(function (myShifts, _today0, _DAY, _startOff) { ${OLD_CARD}\n return _nextUp; })`, sandbox);
+  } catch (ex) { mineB = cardB = oldB = H = null; }
+  const READY = !!(mineB && cardB && oldB && H);
+  const NOT_READY = READY ? "" : "not extracted: " + J({ mine: !!mineB, card: !!cardB, old: !!oldB, startOff: !!SO, nice: !!NI, whenTxt: !!WT });
+  // raw entries (Dates) from a builder on a COPY of the shifts; view = the entry in plain words
+  const raw = (B, shifts, today) => (READY ? B(JSON.parse(J(shifts)), P(today), 86400000, H._startOff) : []);
+  const view = (e) => ({ type: e.type, key: e.shiftKey || e.date || null, start: fmtD(e.start), end: fmtD(e.end), span: e.span, days: e.days, isBackup: e.isBackup, isFierceBackup: e.isFierceBackup });
+  const cardOf = (sched, sid, today) => (READY ? raw(cardB, mineB(sched, sid), today).map(view) : []);
+  const pick = (list, key, start) => list.find((e) => e.key === key && e.start === start) || null;
+  const SYN = {
+    // the fall-back week (DST ends Sun 11/1): s7 the service week, s4 the weekend, s1 the Thu night
+    "2026-10-26": { dayCall: "s7", nights: { thu: "s1", wknd: "s4" } },
+    // a plain week: s1 the service week, s2–s5 the nights, s6 the weekend
+    "2026-11-02": { dayCall: "s1", nights: { mon: "s2", tue: "s3", wed: "s4", thu: "s5", wknd: "s6" } },
+    // the Saturday is someone else's (a single-day override to s4): s3 holds Mon–Fri, s4 a dated Service Day
+    "2026-11-09": { dayCall: "s3", dayCallOverrides: { "2026-11-14": "s4" }, nights: { mon: "s1", tue: "s2", wed: "s5", thu: "s6", wknd: "s7" } },
+    // Mon–Fri all overridden: s5 holds only the Saturday
+    "2026-11-16": { dayCall: "s5", dayCallOverrides: { "2026-11-16": "s1", "2026-11-17": "s2", "2026-11-18": "s3", "2026-11-19": "s4", "2026-11-20": "s6" }, nights: { wknd: "s2" } },
+    // Thanksgiving (as X8): s1 keeps Mon–Wed + Sat (Thu is his own 24h, Fri is s3's); s7's weekend has only its Sunday
+    "2026-11-23": { dayCall: "s1", nights: { mon: "s2", wknd: "s7" }, holidayCoverage: { "2026-11-26": { surgeonId: "s1", type: "major", name: "Thanksgiving 24h", holiday: "Thanksgiving" }, "2026-11-27": { surgeonId: "s3", type: "major", name: "Fri 24h", holiday: "Thanksgiving" } } },
+  };
+
+  // CB1 — the service week on the card
+  const c1 = {
+    full: pick(cardOf(SYN, "s1", "2026-10-20"), "dayCall", "2026-11-02"),
+    laborDay: pick(cardOf(LIVE, "s6", "2026-09-01"), "dayCall", "2026-09-08"),
+    satOther: pick(cardOf(SYN, "s3", "2026-10-20"), "dayCall", "2026-11-09"),
+    thanksgiving: pick(cardOf(SYN, "s1", "2026-10-20"), "dayCall", "2026-11-23"),
+    satOnly: pick(cardOf(SYN, "s5", "2026-10-20"), "dayCall", "2026-11-21"),
+    fallBack: pick(cardOf(SYN, "s7", "2026-10-20"), "dayCall", "2026-10-26"),
+  };
+  const se = (e) => (e ? `${e.start}..${e.end}${e.span ? " range" : " one day"}` : null);
+  const c1s = Object.fromEntries(Object.entries(c1).map(([k, e]) => [k, se(e)]));
+  check("CB1 the card's real code on the real Mine roles: a full service week reads Mon 11/2 → Sat 11/7 (it read → Sun 11/8); Labor Day's (Mon covered) Tue 9/8 → Sat 9/12; one whose Saturday is someone else's ends Fri 11/13; Thanksgiving's (Thu + Fri covered) Mon 11/23 → Sat 11/28; one held on its Saturday only is that one day; the fall-back week Mon 10/26 → Sat 10/31",
+    READY && J(c1s) === J({ full: "2026-11-02..2026-11-07 range", laborDay: "2026-09-08..2026-09-12 range", satOther: "2026-11-09..2026-11-13 range",
+      thanksgiving: "2026-11-23..2026-11-28 range", satOnly: "2026-11-21..2026-11-21 one day", fallBack: "2026-10-26..2026-10-31 range" }) && c1.full.days === 13,
+    NOT_READY || J(c1s));
+  const noHeld = READY ? raw(cardB, [{ mStr: "2026-11-02", roles: [{ type: "Service Week (incl. Sat)", shiftKey: "dayCall" }] }], "2026-10-20").map(view) : [];
+  check("CB1 a service-week role with no held list (an older role shape) reads Mon 11/2 → Sat 11/7",
+    READY && noHeld.length === 1 && se(noHeld[0]) === "2026-11-02..2026-11-07 range", NOT_READY || J(noHeld));
+
+  // CB2 — everything but a service week's end is as before (main's code, frozen above)
+  const cb2Bad = [], cb2N = {};
+  if (READY) for (const [sched, from, to, tag] of [[LIVE, "2026-08-24", "2026-11-17", "live"], [SYN, "2026-10-19", "2026-12-01", "synthetic"]]) {
+    for (const s of SURG) {
+      const shifts = mineB(sched, s.id);
+      for (let today = from; today <= to; today = nextDay(today)) {
+        const a = raw(oldB, shifts, today).map(view), b = raw(cardB, shifts, today).map(view);
+        if (a.length !== b.length) { cb2Bad.push(`${tag} ${s.name} ${today}: ${a.length} entries before, ${b.length} now`); continue; }
+        a.forEach((x, i) => {
+          const y = b[i], kind = x.key === "dayCall" ? "service week" : x.key === "wknd" ? "weekend" : /^\d{4}-/.test(x.key) ? "dated" : "night";
+          cb2N[kind] = (cb2N[kind] || 0) + 1;
+          const same = kind === "service week" ? J({ ...x, end: 0, span: 0 }) === J({ ...y, end: 0, span: 0 }) : J(x) === J(y);
+          if (!same) cb2Bad.push(`${tag} ${s.name} ${today}: ${J(x)} → ${J(y)}`);
+        });
+      }
+    }
+  }
+  check(`CB2 everything else on the card is exactly as before: main's code and the new code give the same entries in the same order, every field, but a service week's end and range flag — every surgeon, every day of the live weeks (8/24–11/17) and the synthetic weeks (${J(cb2N)})`,
+    READY && cb2Bad.length === 0 && ["service week", "weekend", "night", "dated"].every((k) => (cb2N[k] || 0) >= 50), NOT_READY || cb2Bad.slice(0, 3).join(" | ") || J(cb2N));
+  const c2 = {
+    weekend: se(pick(cardOf(SYN, "s6", "2026-10-20"), "wknd", "2026-11-06")),
+    sundayOnly: se(pick(cardOf(SYN, "s7", "2026-10-20"), "wknd", "2026-11-29")),
+    monNight: se(pick(cardOf(SYN, "s2", "2026-10-20"), "mon", "2026-11-02")),
+    serviceDay: se(pick(cardOf(SYN, "s4", "2026-10-20"), "2026-11-14", "2026-11-14")),
+    holiday: se(pick(cardOf(SYN, "s1", "2026-10-20"), "2026-11-26", "2026-11-26")),
+    noHeldWknd: READY ? se(raw(cardB, [{ mStr: "2026-11-02", roles: [{ type: "Weekend", shiftKey: "wknd" }] }], "2026-10-20").map(view)[0]) : null,
+  };
+  check("CB2 worked examples: the weekend still reads Fri 11/6 → Sun 11/8 (and with no held list); a weekend whose Friday is covered is still its Sunday as a range, as before; a Mon night, a dated Service Day and a holiday 24h are their one day",
+    READY && J(c2) === J({ weekend: "2026-11-06..2026-11-08 range", sundayOnly: "2026-11-29..2026-11-29 range", monNight: "2026-11-02..2026-11-02 one day",
+      serviceDay: "2026-11-14..2026-11-14 one day", holiday: "2026-11-26..2026-11-26 one day", noHeldWknd: "2026-11-06..2026-11-08 range" }),
+    NOT_READY || J(c2));
+
+  // CB3 — the card's line, executed
+  const lineFn = count(LINE) === 2 ? tryRun(() => vm.runInContext(`(function (e, _nice) { return ${LINE.slice(1, -1)}; })`, sandbox)) : null;
+  const rawPick = (sid, today, key, start) => (READY ? raw(cardB, mineB(SYN, sid), today).find((e) => { const v = view(e); return v.key === key && v.start === start; }) || null : null);
+  const say = (e) => (typeof lineFn === "function" && e && H ? tryRun(() => lineFn(e, H._nice)) : null);
+  const N = (ds) => (H ? H._nice(P(ds)) : "?");
+  const c3 = { full: say(rawPick("s1", "2026-10-20", "dayCall", "2026-11-02")), satOnly: say(rawPick("s5", "2026-10-20", "dayCall", "2026-11-21")),
+    weekend: say(rawPick("s6", "2026-10-20", "wknd", "2026-11-06")), night: say(rawPick("s2", "2026-10-20", "mon", "2026-11-02")) };
+  check(`CB3 the card's line, executed (the real _nice and the real expression, written twice): a service week reads "${c3.full}" — to its Saturday, never its Sunday (${N("2026-11-08")}); one held day reads as that day; the weekend still reads to its Sunday`,
+    READY && typeof lineFn === "function" && c3.full === `${N("2026-11-02")} – ${N("2026-11-07")}` && !String(c3.full).includes(N("2026-11-08"))
+      && (N("2026-11-02") !== "Mon, Nov 2" || c3.full === "Mon, Nov 2 – Sat, Nov 7")
+      && c3.satOnly === N("2026-11-21") && c3.weekend === `${N("2026-11-06")} – ${N("2026-11-08")}` && c3.night === N("2026-11-02"),
+    NOT_READY || J({ c3, lines: count(LINE) }));
+
+  // CB4 — on every live and holiday service week, the card spans exactly the chip's first → last day
+  const chipFn = vm.runInContext('typeof roleDateLabel === "function" ? roleDateLabel : null', sandbox);
+  const readBack = vm.runInContext(`(function (mStr, t) {
+    const dsOf = (m, d) => { for (let i = 0; i < 7; i++) { const x = addD(parse(mStr), i); if (x.getMonth() + 1 === m && x.getDate() === d) return fmt(x); } return null; };
+    const out = [];
+    for (const part of String(t).split(" + ")) {
+      const ends = part.split(" – ").map((p) => { const m = p.match(/^\\w{3} (\\d{1,2})\\/(\\d{1,2})$/); return m ? dsOf(+m[1], +m[2]) : null; });
+      if (!ends.length || ends.length > 2 || ends.some((e) => !e)) return null;
+      for (let x = parse(ends[0]); fmt(x) <= ends[ends.length - 1]; x = addD(x, 1)) out.push(fmt(x));
+    }
+    return out;
+  })`, sandbox);
+  const hc = (sid, name, holiday) => Object.assign({ name, role: "holiday_24h", type: "major", hours: "7a–7a", surgeonId: sid }, holiday ? { holiday } : {});
+  const HOL = {
+    "2026-11-23": { dayCall: "s1", nights: { mon: "s2", tue: "s3", wed: "s4", thu: "s5", wknd: "s6" }, holidayCoverage: { "2026-11-26": hc("s3", "Thanksgiving"), "2026-11-27": hc("s7", "Fri 24h", "Thanksgiving") } },
+    "2026-12-21": { dayCall: "s2", nights: { mon: "s1", tue: "s3", wed: "s4", thu: "s5", wknd: "s7" }, holidayCoverage: { "2026-12-24": hc("s6", "Christmas Eve"), "2026-12-25": hc("s6", "Christmas Day") } },
+  };
+  const cb4Bad = []; let cb4N = 0, cb4Full = 0;
+  if (READY && chipFn) for (const [sched, tag] of [[LIVE, "live"], [HOL, "holiday"], [SYN, "synthetic"]]) for (const s of SURG) for (const w of mineB(sched, s.id)) for (const r of w.roles) {
+    if (r.shiftKey !== "dayCall" || !Array.isArray(r.held) || !r.held.length) continue;
+    cb4N++;
+    const e = raw(cardB, [{ ...w, roles: [r] }], "2016-01-01").map(view)[0], days = readBack(w.mStr, chipFn(w.mStr, r));
+    const endDow = e ? P(e.end).getDay() : -1;
+    if (r.held.length === 6) cb4Full++;
+    if (!e || !days || e.start !== days[0] || e.end !== days[days.length - 1] || endDow === 0 || (r.held.length === 6 && endDow !== 6))
+      cb4Bad.push(`${tag} ${s.name} ${w.mStr}: card ${se(e)}, chip "${chipFn(w.mStr, r)}"`);
+  }
+  check(`CB4 every service week of every surgeon on the ${Object.keys(LIVE).length} live weeks, the holiday weeks and the synthetic weeks (${cb4N}, ${cb4Full} held whole): the card runs from the first to the last day the My Shifts chip shows, a whole week Mon → Sat, and none ends on a Sunday`,
+    READY && !!chipFn && cb4N >= 45 && cb4Full >= 35 && cb4Bad.length === 0, NOT_READY || cb4Bad.slice(0, 3).join(" | ") || `only ${cb4N} roles`);
+
+  // CB5 — the list: still on the card through its Sunday, the same roles as My Shifts on every day
+  const sunV = pick(cardOf(SYN, "s1", "2026-11-08"), "dayCall", "2026-11-02"), monV = pick(cardOf(SYN, "s1", "2026-11-09"), "dayCall", "2026-11-02");
+  const sunTxt = sunV && H ? H._whenTxt(sunV.days) : null;
+  check(`CB5 on its Sunday (11/8) the service week is still on the card, "${sunTxt}", reading Mon 11/2 → Sat 11/7; on Monday 11/9 it is gone`,
+    READY && !!sunV && se(sunV) === "2026-11-02..2026-11-07 range" && sunV.days === -6 && sunTxt === "in progress" && monV === null, NOT_READY || J({ sunV, monV }));
+  const upFn = vm.runInContext('typeof mineUpcoming === "function" ? mineUpcoming : null', sandbox);
+  const cb5Bad = []; let cb5In = 0, cb5Out = 0;
+  if (READY && upFn) for (const s of SURG) {
+    const shifts = mineB(SYN, s.id);
+    for (let today = "2026-10-25"; today <= "2026-12-06"; today = nextDay(today)) for (const w of shifts) for (const r of w.roles) {
+      if (!r.shiftKey && !r.date) continue; // OFF: never on the card
+      const one = [{ ...w, roles: [r] }], onCard = raw(cardB, one, today).length === 1, onMine = upFn(JSON.parse(J(one)), today).length === 1;
+      if (onCard) cb5In++; else cb5Out++;
+      if (onCard !== onMine) cb5Bad.push(`${s.name} ${w.mStr} ${r.type} on ${today}: card ${onCard}, My Shifts ${onMine}`);
+    }
+  }
+  check(`CB5 every role of every surgeon on the synthetic weeks is on the card exactly while My Shifts (mineUpcoming) keeps it, every day 10/25–12/6 (${cb5In} on, ${cb5Out} off)`,
+    READY && !!upFn && cb5Bad.length === 0 && cb5In >= 200 && cb5Out >= 200, NOT_READY || cb5Bad.slice(0, 3).join(" | ") || J({ cb5In, cb5Out }));
+
+  // CB6 — CB1 + CB5 under TZ=America/Chicago, across the fall-back week
+  {
+    const { execFileSync } = require("child_process");
+    let out = null;
+    if (READY) {
+      const code = [
+        'const vm = require("vm"), fs = require("fs"), path = require("path");',
+        'const sb = { console, window: {}, document: undefined, navigator: { userAgent: "node-test" }, localStorage: { getItem: () => null, setItem() {}, removeItem() {} }, fetch: () => { throw new Error("no fetch"); }, setTimeout, clearTimeout };',
+        "sb.globalThis = sb; vm.createContext(sb);",
+        `for (const f of ["helpers.js", "config.js"]) vm.runInContext(fs.readFileSync(path.join(${J(ROOT)}, f), "utf8"), sb, { filename: f });`,
+        `const mineFn = vm.runInContext(${J(MINE_SRC)}, sb), cardFn = vm.runInContext(${J(CARD_SRC)}, sb), hE = vm.runInContext(${J(HE_SRC)}, sb);`,
+        `const W = vm.runInContext(${J(`(function () { ${SO} ${WT} return { _startOff, _whenTxt }; })()`)}, sb);`,
+        `const SYN = ${J(SYN)};`,
+        'const fmt = vm.runInContext("fmt", sb), parse = vm.runInContext("parse", sb);',
+        'const at = (sid, today) => cardFn(mineFn(SYN, sid, (x) => x, hE, "2016-01-01"), parse(today), 86400000, W._startOff).map((e) => [e.shiftKey || e.date, fmt(e.start), fmt(e.end), e.span, e.days, W._whenTxt(e.days)].join(" "));',
+        'process.stdout.write(JSON.stringify({ off: new Date(2026, 9, 24).getTimezoneOffset(), offAfter: new Date(2026, 10, 2).getTimezoneOffset(), before: at("s7", "2026-10-20"), sunday: at("s7", "2026-11-01"), monday: at("s7", "2026-11-02"), wknd: at("s4", "2026-10-20") }));',
+      ].join("\n");
+      try { out = JSON.parse(execFileSync(process.execPath, ["-e", code], { env: Object.assign({}, process.env, { TZ: "America/Chicago" }), encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })); } catch (ex) { out = { err: String(ex).slice(0, 300) }; }
+    }
+    const has = (list, s) => Array.isArray(list) && list.includes(s);
+    check("CB6 under TZ=America/Chicago (CDT 300 → CST 360, proven) the fall-back week's service week reads Mon 10/26 → Sat 10/31, \"in 6 days\" on 10/20; on Sun 11/1 (the DST day) it is still on, \"in progress\"; on Mon 11/2 it is gone; that week's weekend still reads Fri 10/30 → Sun 11/1",
+      READY && !!out && out.off === 300 && out.offAfter === 360 && has(out.before, "dayCall 2026-10-26 2026-10-31 true 6 in 6 days") && has(out.sunday, "dayCall 2026-10-26 2026-10-31 true -6 in progress")
+        && Array.isArray(out.monday) && !out.monday.some((x) => x.startsWith("dayCall 2026-10-26")) && has(out.wknd, "wknd 2026-10-30 2026-11-01 true 10 in 10 days"),
+      NOT_READY || J(out).slice(0, 400));
+  }
+}
+
 // ─── AU. Mine: readable dates, "Published through …", empty states by role (UX audit 2026-10-19) ───
 // My Shifts headed each week "2026-10-19 → 2026-10-25" and listed rows like
 // "Tue Night 5p–7a" with no date, so a member had to work out which night was

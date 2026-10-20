@@ -11710,10 +11710,15 @@ ${"</"}script>${"</"}body>${"</"}html>`;
 
             // ─── Next call at-a-glance ───
             // Flatten each upcoming role to a concrete start date (a night lands on
-            // its weekday; service week + weekend run Mon→Sun, starting on the first
-            // day the surgeon actually holds; a dated role is that one day), drop
+            // its weekday; the service week and the weekend start on the first day
+            // the surgeon actually holds; a dated role is that one day), drop
             // anything fully past, sort soonest-first. OFF weeks aren't call, so
-            // they're excluded.
+            // they're excluded. The service week READS Mon–Sat (owner decision
+            // 2026-10-20: it showed "Mon, Nov 2 – Sun, Nov 8" beside the My Shifts
+            // chip's "Mon 11/2 – Sat 11/7"): it ends on the last day the surgeon
+            // holds, the Saturday with no held list. The weekend still reads to its
+            // Sunday. Both stay listed through the week's Sunday, as My Shifts
+            // (shiftLastDay: the service Saturday runs 7a–Sun 7a).
             const _today0 = new Date(); _today0.setHours(0, 0, 0, 0);
             const _DAY = 86400000;
             const _startOff = { dayCall: 0, mon: 0, tue: 1, wed: 2, thu: 3, wknd: 4 };
@@ -11733,10 +11738,11 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                 }
                 const span = (r.shiftKey === "dayCall" || r.shiftKey === "wknd");
                 const start = r.held && r.held.length ? parse(r.held[0]) : addD(mon, _startOff[r.shiftKey] ?? 0);
-                const end = span ? addD(mon, 6) : start;
-                if (end < _today0) return; // fully in the past
+                const end = r.shiftKey === "dayCall" ? (r.held && r.held.length ? parse(r.held[r.held.length - 1]) : addD(mon, 5)) : span ? addD(mon, 6) : start;
+                if ((span ? addD(mon, 6) : start) < _today0) return; // fully in the past (a span: its week's Sunday)
                 const days = Math.round((start - _today0) / _DAY);
-                _nextUp.push({ ...r, start, end, days, span, isBackup: s.isBackup, isFierceBackup: s.isFierceBackup });
+                // A service week held on one day only reads as that day, not "Sat, Nov 7 – Sat, Nov 7"; the weekend as before
+                _nextUp.push({ ...r, start, end, days, span: r.shiftKey === "wknd" || end > start, isBackup: s.isBackup, isFierceBackup: s.isFierceBackup });
               });
             });
             _nextUp.sort((a, b) => a.start - b.start);
