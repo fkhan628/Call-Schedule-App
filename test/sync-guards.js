@@ -2785,7 +2785,7 @@ console.log("\nBD. Generate: one period label, the period's seam, holidays with 
 // Review fixes (2026-10-19):
 //   BF5 the lift also clears any open bottom sheet or action bar (toastLiftNow: data-toast-floor="1" — the Calendar's
 //       day sheet, the month painter's Save / Discard bar), executed: a toast lands above the sheet, never on "Edit
-//       this week" or Save; capped so the newest toast stays on screen; remeasured when either opens (calDayOpen,
+//       this week" or Save; (2026-10-20, BM3) no cap — the stack keeps the newest on screen; remeasured when either opens (calDayOpen,
 //       paintSheet) and on their own resize — and (the range sheet's review fix) when a date range sheet opens or
 //       closes ("toastfloorchange"; its dialog is a floor too)
 //   BF7 an OLD cached helpers.js (OLD_SB: no toastAdd / toastMs / toastText): the real showToast keeps one toast at a
@@ -2943,9 +2943,11 @@ console.log("\nBF. toasts stack (up to 3), errors stay longer, no doubled ⚠");
       dayLift === 412 && dayBottomEdge < 400 && JSON.stringify(dayRe) === "[412,412]" && day.asked.every((s) => s === FLOOR) && day.asked.length >= 2 && day.observed.length === 2 && day.observed[0] === BAN && day.observed[1] === day.els[0]
         && JSON.stringify(day.eff.deps) === JSON.stringify([true, "2026.10.20a", null, "2026-10-22"]) && day.disconnected === 1,
       JSON.stringify({ dayLift, dayBottomEdge, dayRe, asked: day.asked, observed: day.observed.length, deps: day.eff.deps }));
-    check("BF5 (review fix) …the month painter open (no banner — it hides while painting): the lift is its Save / Discard bar's height, 72 (the stack's lowest pixel at 730, above the bar at 740; it was 0 — the toast sat on Save and Discard); a sheet taller than the screen allows: capped at 812 − 120 = 692 so the newest toast stays in view; a floor no longer on the page, or with no height, is ignored (the banner's 100)",
+    // (Changed on purpose 2026-10-20, BM3: the cap "812 − 120 = 692" is gone — it put a toast on a tall sheet's title. The
+    // lift is the sheet's full 762 now; the stack itself keeps the newest toast on screen, whole: its 72px minimum, BM3.)
+    check("BF5 (review fix) …the month painter open (no banner — it hides while painting): the lift is its Save / Discard bar's height, 72 (the stack's lowest pixel at 730, above the bar at 740; it was 0 — the toast sat on Save and Discard); a sheet taller than the screen allows: its full height, 762 — no cap (BM3: the stack keeps the newest on screen); a floor no longer on the page, or with no height, is ignored (the banner's 100)",
       JSON.stringify(paint.sets) === "[72]" && 812 - (72 + 10) < 740 && JSON.stringify(paint.eff.deps) === JSON.stringify([true, null, { kind: "timeoff" }, null])
-        && JSON.stringify(tall.sets) === "[692]" && JSON.stringify(stale.sets) === "[100]",
+        && JSON.stringify(tall.sets) === "[762]" && JSON.stringify(stale.sets) === "[100]",
       JSON.stringify({ paint: paint.sets, tall: tall.sets, stale: stale.sets }));
     // (range review fix, 2026-10-19) A toast already up when a date range sheet opens: "Pick who it's for and both dates
     // first." (8 s), then the member opens Dates — the sheet's dialog (data-toast-floor) appears AFTER the effect ran, and
@@ -2973,31 +2975,35 @@ console.log("\nBF. toasts stack (up to 3), errors stay longer, no doubled ⚠");
       && [iTo, iLift, iUA, iPS, iBL, iCD, iTL].every(i => i > 0 && i < iShown) && iShown < iDeps && iTo < src.indexOf("const showToast = (msg, tone) => {") && iTL < src.indexOf("const showToast = (msg, tone) => {")
       && count("setToastLift(toastLiftNow());") === 2 && count("setToastLift(bannerLift())") === 0,
     JSON.stringify({ iTo, iLift, iUA, iPS, iBL, iCD, iTL, iShown, iDeps }));
-  check("BF5 (review fix) the floors are marked where they are: the day sheet's dialog, the painter's sticky Save / Discard bar and (range review fix) the date range sheet's dialog — data-toast-floor=\"1\" on each, once",
+  // (Changed on purpose 2026-10-20, BM4: a fourth floor — the week editor's sticky Cancel / Save row.)
+  check("BF5 (review fix) the floors are marked where they are: the day sheet's dialog, the painter's sticky Save / Discard bar, (range review fix) the date range sheet's dialog and (BM4) the week editor's sticky Cancel / Save row — data-toast-floor=\"1\" on each, once",
     count('aria-label={`${title} — details`} data-toast-floor="1" onClick={e=>e.stopPropagation()}') === 1 && count('<div data-toast-floor="1" style={{ background: panelBg, borderTop: `1px solid ${border}`, padding: "10px 14px", paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 10px)", flexShrink: 0 }}>') === 1
       && count('<div role="dialog" aria-modal="true" aria-label={label} data-toast-floor="1" onClick={(e) => e.stopPropagation()}') === 1
-      && (src.match(/\sdata-toast-floor="1"\s+(?:onClick|style)=/g) || []).length === 3);
+      && count('<div ref={editWeekFootRef} data-toast-floor="1" style={{position:"sticky",bottom:0,') === 1
+      && (src.match(/\sdata-toast-floor="1"\s+(?:onClick|style)=/g) || []).length === 4);
 
-  // BF6 — the stack's real style, evaluated
-  const stackM = nsrcF.match(/\n      <div role="status" aria-live="polite" style=\{(\{position:"fixed",left:0,right:0,bottom:toastLift [^\n]*?\})\}>\n\s*\{toasts\.map\(t => \(\n\s*<div key=\{t\.id\} onClick=\{\(\)=>dismissToast\(t\.id\)\} style=\{(\{pointerEvents:"auto",[^\n]*?\})\}>\n\s*\{(typeof toastText === "function" \? toastText\(t\) : [^\n]*)\}\n/);
+  // BF6 — the stack's real style, evaluated. (Changed on purpose 2026-10-20, BM3: each pill sits in a full-width wrapper
+  // — its key and its place in the column (order) — and the stack is a wrapping column filled from the bottom; the
+  // column's own rules are BM3's.)
+  const stackM = nsrcF.match(/\n      <div role="status" aria-live="polite" style=\{(\{position:"fixed",left:0,right:0,top:[^\n]*?\})\}>\n\s*\{toasts\.map\(\(t, i\) => \(\n\s*<div key=\{t\.id\} style=\{(\{width:"100%",[^\n]*?\})\}>\n\s*<div onClick=\{\(\)=>dismissToast\(t\.id\)\} style=\{(\{pointerEvents:"auto",[^\n]*?\})\}>\n\s*\{(typeof toastText === "function" \? toastText\(t\) : [^\n]*)\}\n/);
   let stackSt = null, pillSt = null;
-  try { stackSt = stackM ? vm.runInContext(`(function (toastLift) { return (${stackM[1]}); })`, sandbox) : null; pillSt = stackM ? vm.runInContext(`(function (t, font) { return (${stackM[2]}); })`, sandbox) : null; } catch (ex) { stackSt = pillSt = null; }
+  try { stackSt = stackM ? vm.runInContext(`(function (toastLift, toastTight) { return (${stackM[1]}); })`, sandbox) : null; pillSt = stackM ? vm.runInContext(`(function (t, font) { return (${stackM[3]}); })`, sandbox) : null; } catch (ex) { stackSt = pillSt = null; }
   const zBanF = +((nsrcF.match(/<div ref=\{updateBannerRef\} role="status" aria-live="polite" style=\{\{position:"fixed",left:0,right:0,bottom:0,zIndex:(\d+),/) || [])[1] || NaN);
   if (!stackSt || !pillSt) check("BF6 the toast stack and its pills render from toasts (role=status, aria-live) and are evaluable", false, stackM ? "eval" : "markup not found");
   else {
-    const s0 = stackSt(0), s100 = stackSt(100), s54 = stackSt(54);
+    const s0 = stackSt(0, false), s100 = stackSt(100, false), s54 = stackSt(54, false);
     const pe = pillSt(T(1, "x", "error"), "Outfit"), ps = pillSt(T(2, "x", "success"), "Outfit"), pi = pillSt(T(3, "x", "info"), "Outfit");
-    check("BF6 the stack's real style: with the update banner measured at 100px (two rows on a 375px phone) its bottom is 110 — above the banner, not over its buttons; at 54px, 64; with no banner, 24px above the iPhone home bar (safe area); stacked in a column, z above the banner; the stack lets taps through, each pill catches its own",
-      s100.bottom === 110 && s54.bottom === 64 && s0.bottom === "calc(env(safe-area-inset-bottom, 0px) + 24px)" && s0.position === "fixed" && s0.flexDirection === "column"
+    check("BF6 the stack's real style: with the update banner measured at 100px (two rows on a 375px phone) its bottom is 110 — above the banner, not over its buttons; at 54px, 64; with no banner, 24px above the iPhone home bar (safe area); stacked in a column (filled from the bottom — BM3), z above the banner; the stack lets taps through, each pill catches its own",
+      s100.bottom === 110 && s54.bottom === 64 && s0.bottom === "calc(env(safe-area-inset-bottom, 0px) + 24px)" && s0.position === "fixed" && s0.flexDirection === "column-reverse"
         && s0.zIndex > zBanF && zBanF === 9998 && s0.pointerEvents === "none" && pe.pointerEvents === "auto"
         && pe.background === "#a83232" && ps.background === "#1a7a4a" && pi.background === "#1a2a3a" && pe.cursor === "pointer",
-      JSON.stringify({ s0: s0.bottom, s54: s54.bottom, s100: s100.bottom, z: s0.zIndex, zBanF }));
+      JSON.stringify({ s0: s0.bottom, s54: s54.bottom, s100: s100.bottom, dir: s0.flexDirection, z: s0.zIndex, zBanF }));
   }
   check("BF6 …the single slot is gone (no setToast / toastTimerRef / {toast && …}); one live region renders the list; each pill shows toastText(t) (guarded — BF7) and a tap dismisses that one; showToast keeps its signature (its 100+ callers unchanged)",
     count("setToast(") === 0 && count("toastTimerRef") === 0 && count("{toast && (") === 0 && count("const [toast, setToast]") === 0
-      && count("{toasts.map(t => (") === 1 && count("{typeof toastText === \"function\" ? toastText(t) : `${t.tone===\"success\"?\"✓ \":t.tone===\"error\"?\"⚠ \":\"\"}${t.msg}`}") === 1 && count("onClick={()=>dismissToast(t.id)}") === 1
+      && count("{toasts.map((t, i) => (") === 1 && count("{typeof toastText === \"function\" ? toastText(t) : `${t.tone===\"success\"?\"✓ \":t.tone===\"error\"?\"⚠ \":\"\"}${t.msg}`}") === 1 && count("onClick={()=>dismissToast(t.id)}") === 1
       && count("const showToast = (msg, tone) => {") === 1 && count("showToast(") > 100,
-    JSON.stringify({ setToast: count("setToast("), timer: count("toastTimerRef"), map: count("{toasts.map(t => ("), calls: count("showToast(") }));
+    JSON.stringify({ setToast: count("setToast("), timer: count("toastTimerRef"), map: count("{toasts.map((t, i) => ("), calls: count("showToast(") }));
 
   // BF7 — an OLD cached helpers.js (review fix): the toast path falls back instead of crashing the root
   const OLDH = vm.runInContext(`(${JSON.stringify(BATCH4_HELPERS)}).map(n => typeof globalThis[n] === "function" ? n : null).filter(Boolean).join() + "|" + typeof monthDayLabel + typeof slotLabel + typeof fmt`, OLD_SB);
@@ -3015,7 +3021,7 @@ console.log("\nBF. toasts stack (up to 3), errors stay longer, no doubled ⚠");
     } catch (ex) { oldShow.threw = String(ex).slice(0, 160); }
   }
   let pillOld = null, pillNew = null;
-  try { pillOld = stackM ? vm.runInContext(`(function (t) { return (${stackM[3]}); })`, OLD_SB) : null; pillNew = stackM ? vm.runInContext(`(function (t) { return (${stackM[3]}); })`, sandbox) : null; } catch (ex) { pillOld = pillNew = null; }
+  try { pillOld = stackM ? vm.runInContext(`(function (t) { return (${stackM[4]}); })`, OLD_SB) : null; pillNew = stackM ? vm.runInContext(`(function (t) { return (${stackM[4]}); })`, sandbox) : null; } catch (ex) { pillOld = pillNew = null; }
   const pillTexts = (f) => (f ? [f(T(1, "Saved.", "success")), f(T(2, "Couldn't save.", "error")), f(T(3, "Plain", "info")), f(T(4, "⚠ 2 locks were NOT honored", "error"))] : null);
   check("BF7 (review fix) the REAL showToast with an OLD cached helpers.js (no toastAdd / toastMs): three errors in a row (an offline open) leave ONE toast — the newest, as the single slot did — each on a 4 s timer; its timer takes it; nothing throws (main of this batch: \"toastAdd is not defined\" in the state update — the error boundary replaced the app)",
     !!oldShow && !oldShow.threw && oldShow.list === "error: ⚠ 1 lock was NOT honored" && JSON.stringify(oldShow.ms) === "[4000,4000,4000]" && oldShow.ids === "3" && oldShow.after === 0,
@@ -3548,7 +3554,8 @@ console.log("\nBL. Schedule Warnings: anyone can hide a warning on this phone");
     }
     // P2 — the toast pill's real style (the same markup BF6 reads), evaluated per tone
     {
-      const pillM = nsrcL.match(/\n\s*<div key=\{t\.id\} onClick=\{\(\)=>dismissToast\(t\.id\)\} style=\{(\{pointerEvents:"auto",[^\n]*?\})\}>\n/);
+      // (Changed on purpose 2026-10-20, BM3: the pill sits in a full-width wrapper that carries its key.)
+      const pillM = nsrcL.match(/\n\s*<div onClick=\{\(\)=>dismissToast\(t\.id\)\} style=\{(\{pointerEvents:"auto",[^\n]*?\})\}>\n/);
       let pill = null;
       try { pill = pillM ? vm.runInContext(`(function (t, font) { return (${pillM[1]}); })`, sandbox) : null; } catch (ex) { pill = null; }
       const H2 = vm.runInContext("({ toastText: typeof toastText === 'function' ? toastText : null, toastMs: typeof toastMs === 'function' ? toastMs : null })", sandbox);
@@ -10560,26 +10567,28 @@ await (async () => {
       comp.includes('<div aria-live="polite" style={{ marginTop: 2 }}>') && comp.includes("<div style={{ fontSize: 14, color: C.line }}>{keepCount(line)}</div>") && comp.includes("{hint && <div style={{ fontSize: 12.5, color: C.sub, marginTop: 2 }}>{hint}</div>}"),
       comp.includes('aria-label="Previous month" aria-disabled={prevOff || undefined} onClick={() => shiftMonth(-1)}') && comp.includes('aria-label="Next month" onClick={() => shiftMonth(1)}') && comp.includes("{MO[sheet.m]} {sheet.y}"),
       comp.includes("{DAY_HDR.map(d => <div key={d}") && (comp.match(/gridTemplateColumns:"repeat\(7,minmax\(0,1fr\)\)"/g) || []).length === 2, // AD's phone-safe columns
-      // (review fix) six fixed 44px rows (the 42 cells, BK4)
-      comp.includes('<div ref={gridRef} role="group" aria-label={`${MO[sheet.m]} ${sheet.y}`} onKeyDown={onGridKey} style={{ display: "grid", gridTemplateColumns:"repeat(7,minmax(0,1fr))", gridTemplateRows: "repeat(6, 44px)", rowGap: 2 }}>')
+      // (review fix) six fixed rows (the 42 cells, BK4) — (changed on purpose 2026-10-20, BM2) 44px each, down to 38px on a
+      // short screen (the sheet is a column; BM2 runs the styles)
+      comp.includes('<div ref={gridRef} role="group" aria-label={`${MO[sheet.m]} ${sheet.y}`} onKeyDown={onGridKey} style={{ display: "grid", gridTemplateColumns:"repeat(7,minmax(0,1fr))", gridTemplateRows: "repeat(6, minmax(38px, 44px))", rowGap: 2, flexShrink: 1, minHeight: 238 }}>')
         && comp.includes("while (cells.length && cells.length < 42) cells.push(null);"),
-      // the days: buttons with a date label, pressed for the ends, disabled before min, today marked, ≥ 44px tall; the band between
+      // the days: buttons with a date label, pressed for the ends, disabled before min, today marked, filling their row
+      // (44px; 38px at the least — BM2); the band between
       comp.includes('<button key={ds} type="button" data-ds={ds} tabIndex={ds === tabDs ? 0 : -1} aria-label={dayLabel(ds)} aria-pressed={edge} aria-disabled={off || undefined} aria-current={isToday ? "date" : undefined}'),
-      comp.includes("onClick={() => tap(ds)}") && comp.includes('style={{ height: 44, width: "100%", padding: 0, margin: 0, border: "none", background: "transparent"'),
+      comp.includes("onClick={() => tap(ds)}") && comp.includes('style={{ height: "100%", width: "100%", padding: 0, margin: 0, border: "none", background: "transparent"'),
       comp.includes("const edge = !!lo && (ds === lo || ds === hi), between = !!lo && ds > lo && ds < hi, off = !pickable(ds), isToday = ds === today;"),
       comp.includes("const band = between ? C.band") && comp.includes('`linear-gradient(to ${ds === lo ? "right" : "left"}, transparent 50%, ${C.band} 50%)`'),
       // Start over (review fix: it was "Clear", which only ever restarted the draft), and Done — disabled until a start
       // exists — in a row sticky at the sheet's bottom (review fix), carrying the bottom padding and the safe area
       comp.includes("<button type=\"button\" onClick={clear} style={{ ...css.btn(false), flex: 1, minHeight: 44, fontSize: 14 }}>Start over</button>") && !comp.includes(">Clear<"),
       comp.includes('<button type="button" onClick={done} disabled={!sheet.start} style={{ ...css.btn(true), background: "#1a6fa8", flex: 2, minHeight: 44, fontSize: 14,') && comp.includes('<span style={{ color: "#fff" }}>Done</span>'),
-      comp.includes('<div style={{ position: "sticky", bottom: 0, display: "flex", gap: 8, marginTop: 4, paddingTop: 8, paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 16px)", background: C.sheet }}>')
+      comp.includes('<div style={{ position: "sticky", bottom: 0, display: "flex", gap: 8, marginTop: 4, paddingTop: 8, paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 16px)", background: C.sheet, flexShrink: 0 }}>')
         && comp.indexOf('position: "sticky", bottom: 0') < comp.indexOf(">Start over</button>") && comp.indexOf(">Start over</button>") < comp.indexOf(">Done</span>"),
       // an old cached helpers.js: the guard (review fix: rangeEditHint too), and the two native boxes
       comp.includes('const ready = typeof rangeTap === "function" && typeof monthCells === "function" && typeof rangeLabel === "function" && typeof rangeSheetLine === "function" && typeof rangeEditHint === "function" && typeof monthDayLabel === "function";'),
       comp.includes("  if (!ready) {") && (comp.match(/<input type="date"/g) || []).length === 2,
     ];
     const pinBad = PIN.map((ok, i) => (ok ? null : i)).filter((x) => x !== null);
-    check("BK6 the markup: ONE module-scope DateRangeField (after CallSchedule, React.* hooks); the field is a button reading the range or \"Pick dates\" — (review fix) its words wrap, \"· N days\" whole, no ellipsis, 40px tall compact too; the sheet is portaled to <body>, a modal dialog with its label over a backdrop that closes it — (review fix) a toast floor, Tab trapped, up to the screen less the lift and 24px (not 80vh) — with its own scroll, lifted by `lift`; ✕; the live line and (review fix) the edit hint under it; ◀ (off before min) / ▶ and the month; Sun–Sat; a 7-column grid of day buttons (date label, aria-pressed ends, aria-disabled before min, aria-current today, 44px tall, a tap is tap(ds)) in (review fix) six fixed rows; the band; (review fix) Start over and Done (disabled until a start) in a row sticky at the bottom with the safe area; the old-helpers guard (rangeEditHint too) and its two native boxes",
+    check("BK6 the markup: ONE module-scope DateRangeField (after CallSchedule, React.* hooks); the field is a button reading the range or \"Pick dates\" — (review fix) its words wrap, \"· N days\" whole, no ellipsis, 40px tall compact too; the sheet is portaled to <body>, a modal dialog with its label over a backdrop that closes it — (review fix) a toast floor, Tab trapped, up to the screen less the lift and 24px (not 80vh) — with its own scroll, lifted by `lift`; ✕; the live line and (review fix) the edit hint under it; ◀ (off before min) / ▶ and the month; Sun–Sat; a 7-column grid of day buttons (date label, aria-pressed ends, aria-disabled before min, aria-current today, filling a 44px row — 38px at the least on a short screen, BM2 — a tap is tap(ds)) in (review fix) six fixed rows; the band; (review fix) Start over and Done (disabled until a start) in a row sticky at the bottom with the safe area; the old-helpers guard (rangeEditHint too) and its two native boxes",
       !!comp && pinBad.length === 0, "failing pins: " + J(pinBad));
     // The day's label, executed: "Mon, Dec 14, 2026".
     const dl = comp.match(/\n  const dayLabel = (\(ds\) => [^\n]*);\n/);
@@ -10680,6 +10689,243 @@ await (async () => {
     check("BK7 (review fix) the Calendar's ◀ month ▶ Today row wraps (flexWrap, minWidth 0, at most its row) so a 320px phone no longer scrolls sideways — Today drops below the arrows, which keep their places (the month's minWidth 170 kept); the scheduler's Setup / Regenerate / Clear group beside it wraps too",
       iCal > 0 && nsrcBK.split(CALROW).length === 2 && iToday > iCal && iTools > iToday && iTools - iToday < 900 && nsrcBK.includes('<span style={{fontSize:15,fontWeight:700,color:"#2c5a80",minWidth:170,textAlign:"center"}}>{MO[calMonth]} {calYear}</span>'),
       J({ iCal, iToday, iTools }));
+  }
+})();
+
+// ─── BM. Phone lows: the week label's ink, the range sheet's rows, toasts that fit, the week editor's buttons (UX fix 2026-10-20) ───
+// The four lows the 10/19 UX batches left (their reviews and rendered checks found nothing that blocked use), fixed in
+// index-source.html and checked here on the real code. A rendered check (320 / 375 / 393 and landscape, light and dark,
+// against a mock reachable only on 127.0.0.1) measured each on the built page; the numbers below are its.
+//   BM1 Schedule Warnings: a line's week label (the 11px mono date) reads ≥ 4.5:1 on its own fill in light — weekInk,
+//       #5a6a78 (dkSubtext's #7a8a98 read 3.0:1 on the error fill #fce8e8, 3.3:1 on the info fill #f0f8ff); dark keeps
+//       dkSubtext. The real line styles and inks, evaluated; the contrast measured.
+//   BM2 the date range sheet is a column: on a short screen the six week rows give up their spare height — 44px each, down
+//       to the day circle's own 38px — before the sheet scrolls (at 320×568 with the update banner up the sixth row sat
+//       behind the sticky Start over / Done until the sheet was scrolled). The real styles, evaluated.
+//   BM3 toastLiftNow has no cap (the screen less 120px put a toast already showing on a tall sheet's title); the stack is
+//       the room between the top of the screen and the lift — a column filled from the bottom, newest first (order),
+//       that wraps, so a toast with no room goes to a second column past the right edge (held, clipped) instead of off
+//       the top of a landscape phone; at least 72px tall, and with less room than that (toastTight) packed at the top,
+//       so the newest always shows whole. The real toastLiftNow, toastTight and styles, run — and laid out by a small
+//       model of the column (CSS's own rules for one wrapping flex column) on the rendered check's cases.
+//   BM4 the week editor ends above the update banner (editWeekLift, measured in a LAYOUT effect: right from its first
+//       frame), its Cancel / Save / Save & Next row is sticky at its bottom and a toast floor, and it tells the toasts'
+//       lift ("toastfloorchange") when it opens, moves, resizes and closes. The real effects run with stubs; §P.
+console.log("\nBM. phone lows (2026-10-20): the week label's ink, the range sheet's rows, toasts that fit, the week editor's buttons");
+await (async () => {
+  const nsrcBM = src.replace(/\r\n/g, "\n");
+  const J = JSON.stringify;
+  const countBM = (s) => nsrcBM.split(s).length - 1;
+  const lumBM = (h) => { const v = h.slice(1).match(/../g).map((x) => parseInt(x, 16) / 255).map((c) => (c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4))); return 0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2]; };
+  const ratioBM = (a, b) => { const x = lumBM(a), y = lumBM(b); return Math.round((Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05) * 100) / 100; };
+  const fnBM = (params, body) => { try { return vm.runInContext(`(function (${params}) { return (${body}); })`, sandbox); } catch (ex) { return null; } };
+
+  // BM1 — the week label's ink
+  {
+    const dkSubM = nsrcBM.match(/\n  const dkSubtext = (dk \? "#[0-9a-f]{6}" : "#[0-9a-f]{6}");\n/);
+    const inkM = nsrcBM.match(/\n            const weekInk = ([^;\n]*);\n/);
+    // the three line kinds (Silvis, schedule, vacation overlap): the line's own style, and the two spans after it
+    const lineMs = [...nsrcBM.matchAll(/\n\s*<div key=\{(c|w)\.key \|\| `([scv])\$\{i\}`\} data-warn-line="1" style=\{(\{[^\n]*?\})\}>\n([^\n]*)\n([^\n]*)\n/g)];
+    const dkSub = dkSubM ? fnBM("dk", dkSubM[1]) : null, ink = inkM ? fnBM("dk, dkSubtext", inkM[1]) : null;
+    const lineInkStub = () => "#000000";
+    const rows = [];
+    let ok = !!dkSub && !!ink && lineMs.length === 3;
+    if (ok) {
+      for (const m of lineMs) {
+        const st = fnBM(`${m[1]}, dk, lineInk`, m[3]);
+        const wk = m[5].match(/^\s*<span style=\{(\{fontFamily:mono,fontSize:11,color:[^\n]*?\})\}>\{c\.week\}<\/span>$/);
+        const wkSt = wk ? fnBM("mono, weekInk, dkSubtext", wk[1]) : null;
+        if (!st) { ok = false; continue; }
+        for (const dk of [false, true]) for (const sev of ["error", "warning", "info"]) {
+          const bg = st({ severity: sev }, dk, lineInkStub).background;
+          const fg = wkSt ? wkSt("M", ink(dk, dkSub(dk)), dkSub(dk)).color : null;
+          rows.push({ kind: m[2], dk, sev, bg, fg, r: fg ? ratioBM(fg, bg) : null });
+        }
+      }
+    }
+    const labelled = rows.filter((x) => x.fg), light = labelled.filter((x) => !x.dk), dark = labelled.filter((x) => x.dk);
+    check("BM1 a Schedule Warnings line's week label (the real line styles and weekInk, evaluated): in light #5a6a78 on every fill it sits on — ≥ 4.5:1 (error #fce8e8 4.74, info #f0f8ff 5.2, warning #fef8e8 5.26); in dark it is still dkSubtext (#8a8aaa, unchanged) at ≥ 4.5:1; the Silvis and schedule lines carry the label, the vacation-overlap line has none",
+      ok && labelled.length === 12 && rows.filter((x) => x.kind === "v").every((x) => !x.fg)
+        && light.every((x) => x.fg === "#5a6a78" && x.r >= 4.5) && dark.every((x) => x.fg === dkSub(true) && x.fg === "#8a8aaa" && x.r >= 4.5)
+        && light.some((x) => x.bg === "#fce8e8" && x.r === 4.74) && light.some((x) => x.bg === "#f0f8ff" && x.r === 5.2),
+      J({ lines: lineMs.length, rows: rows.map((x) => `${x.kind}${x.dk ? "D" : "L"}${x.sev[0]} ${x.fg} on ${x.bg} ${x.r}`) }));
+    check("BM1 …the old ink (dkSubtext in light, #7a8a98) read under 4.5:1 on the error and info fills (3.02, 3.31 — the low the rendered check measured); both week labels now use weekInk, none dkSubtext",
+      !!dkSub && ratioBM(dkSub(false), "#fce8e8") === 3.02 && ratioBM(dkSub(false), "#f0f8ff") === 3.31
+        && countBM("<span style={{fontFamily:mono,fontSize:11,color:weekInk}}>{c.week}</span>") === 2 && countBM("color:dkSubtext}}>{c.week}") === 0,
+      J({ old: dkSub ? [ratioBM(dkSub(false), "#fce8e8"), ratioBM(dkSub(false), "#f0f8ff")] : null, uses: countBM("color:weekInk}}>{c.week}") }));
+  }
+
+  // BM2 — the range sheet's rows give up their spare height before it scrolls
+  {
+    const f0 = nsrcBM.indexOf("function DateRangeField("), f1 = f0 < 0 ? -1 : nsrcBM.indexOf("\nclass ErrorBoundary", f0);
+    const comp = f0 > 0 && f1 > f0 ? nsrcBM.slice(f0, f1) : "";
+    const one = (re) => { const m = comp.match(re); return m && comp.split(m[0]).length === 2 ? m : null; };
+    const dlgM = one(/data-toast-floor="1" onClick=\{\(e\) => e\.stopPropagation\(\)\} onKeyDown=\{sheetTabTrap\} tabIndex=\{-1\}\n\s*style=\{(\{[\s\S]*?\})\}>\n/);
+    const hdrM = one(/\n {12}<div style=\{(\{ display: "flex", alignItems: "center", gap: 8[^\n]*?\})\}>\n/);
+    const navM = one(/\n {12}<div style=\{(\{ display: "flex", alignItems: "center", justifyContent: "space-between"[^\n]*?\})\}>\n/);
+    const dowM = one(/\n {12}<div aria-hidden="true" style=\{(\{ display: "grid"[^\n]*?\})\}>\n/);
+    const gridM = one(/\n {12}<div ref=\{gridRef\} role="group" [^\n]*? style=\{(\{[^\n]*?\})\}>\n/);
+    const footM = one(/\n {12}<div style=\{(\{ position: "sticky", bottom: 0[^\n]*?\})\}>\n/);
+    const dayM = one(/\n\s*style=\{(\{ height: [^\n]*?touchAction: "manipulation" \})\}>\n/);
+    const circM = one(/<span style=\{\{ width: (\d+), height: (\d+), borderRadius: "50%"/), bandM = one(/<span aria-hidden="true" style=\{\{ width: "100%", height: (\d+), display: "flex"/);
+    const C = { sheet: "#fff" };
+    const dlg = dlgM ? fnBM("lift, C, font", dlgM[1]) : null, hdr = hdrM ? fnBM("", hdrM[1]) : null, nav = navM ? fnBM("", navM[1]) : null, dow = dowM ? fnBM("", dowM[1]) : null;
+    const grid = gridM ? fnBM("", gridM[1]) : null, foot = footM ? fnBM("C", footM[1]) : null, day = dayM ? fnBM("off, font", dayM[1]) : null;
+    const d80 = dlg ? dlg(80, C, "F") : null, g = grid ? grid() : null, rowsM = g && String(g.gridTemplateRows).match(/^repeat\(6, minmax\((\d+)px, (\d+)px\)\)$/);
+    const rMin = rowsM ? +rowsM[1] : NaN, rMax = rowsM ? +rowsM[2] : NaN, circle = circM ? +circM[1] : NaN, band = bandM ? +bandM[1] : NaN;
+    check("BM2 the date range sheet is a column (the real dialog style, lifted 80px: display flex, flexDirection column, its own scroll, up to the screen less the lift and 24px); its title row, ◀ month ▶ row, Sun–Sat row and the sticky Start over / Done row never shrink (flexShrink 0) — only the grid does (flexShrink 1)",
+      !!d80 && d80.display === "flex" && d80.flexDirection === "column" && d80.overflowY === "auto" && d80.maxHeight === "calc(100% - 104px)"
+        && !!hdr && hdr().flexShrink === 0 && !!nav && nav().flexShrink === 0 && !!dow && dow().flexShrink === 0 && !!foot && foot(C).flexShrink === 0 && foot(C).position === "sticky" && !!g && g.flexShrink === 1,
+      J({ dlg: d80 && [d80.display, d80.flexDirection, d80.maxHeight], shrink: [hdr && hdr().flexShrink, nav && nav().flexShrink, dow && dow().flexShrink, foot && foot(C).flexShrink, g && g.flexShrink] }));
+    check("BM2 …six week rows of 44px that give up their spare height down to 38px — the day circle's own size (38 × 38, its band 38 tall), so a circle is never cut — the grid at least 6 × 38 + 5 gaps of 2 = 238px; each day button fills its row (height 100%)",
+      rMin === 38 && rMax === 44 && circle === rMin && +circM[2] === rMin && band === rMin && g.rowGap === 2 && g.minHeight === 6 * rMin + 5 * g.rowGap && g.minHeight === 238
+        && !!day && day(false, "F").height === "100%",
+      J({ rows: g && g.gridTemplateRows, rowGap: g && g.rowGap, minHeight: g && g.minHeight, circle, band, day: day && day(false, "F").height }));
+    // The rendered check at 320×568 with the update banner up (80px): the sheet may take 568 − 80 − 24 = 464px; its parts
+    // that don't shrink took 492 − (6 × 44 + 5 × 2) = 218px (an edit sheet: title, the range, the two-line hint). Rows
+    // fixed at 44px needed 492 → 28px of the sixth row behind Start over / Done; now they are (464 − 218 − 10) / 6 =
+    // 39.3px ≥ 38 — nothing scrolls (measured: rows 39px, scrollHeight 464 = clientHeight, the sixth row 377–416, the
+    // footer from 420).
+    const strip = d80 ? +(String(d80.maxHeight).match(/^calc\(100% - (\d+)px\)$/) || [])[1] - 80 : NaN; // the backdrop strip left above the sheet
+    const avail = 568 - 80 - strip, fixed = 492 - (6 * 44 + 5 * 2), per = rowsM ? (avail - fixed - 5 * g.rowGap) / 6 : NaN;
+    check("BM2 …at 320×568 with the update banner up (the rendered check's numbers): the sheet's 464px fit — rows of (464 − 218 − 10) / 6 = 39.3px, between 38 and 44 — where 44px rows needed 492 (the sixth row 28px behind the footer); with room to spare (375×667 and up) the rows stay 44",
+      avail === 464 && Math.abs(per - 39.33) < 0.01 && per >= rMin && per <= rMax && fixed + 6 * rMax + 5 * g.rowGap === 492 && 667 - 100 - 24 >= fixed + 6 * rMax + 5 * g.rowGap,
+      J({ avail, fixed, per }));
+  }
+
+  // BM3 — toasts that fit
+  {
+    const TLm = nsrcBM.match(/\n  (const toastLiftNow = \(\) => \{\n[\s\S]*?\n  \};)\n/);
+    const tightM = nsrcBM.match(/\n  const toastTight = ([^;\n]*);\n/);
+    const stackM = nsrcBM.match(/\n      <div role="status" aria-live="polite" style=\{(\{position:"fixed",left:0,right:0,top:[^\n]*?\})\}>\n\s*\{toasts\.map\(\(t, i\) => \(\n\s*<div key=\{t\.id\} style=\{(\{width:"100%",[^\n]*?\})\}>\n/);
+    let liftOf = null;
+    try {
+      liftOf = TLm ? vm.runInContext(`(function (banner, floors, vh) { const bannerLift = () => banner; const window = { innerHeight: vh }; const document = { querySelectorAll: () => floors.map((f) => ({ isConnected: !f.gone, getBoundingClientRect: () => ({ top: f.top, height: f.height }) })) };\n${TLm[1]}\n return toastLiftNow(); })`, sandbox) : null;
+    } catch (ex) { liftOf = null; }
+    const tight = tightM ? fnBM("toastLift, window", tightM[1]) : null;
+    const stack = stackM ? fnBM("toastLift, toastTight", stackM[1]) : null, wrap = stackM ? fnBM("toasts, i", stackM[2]) : null;
+    const lifts = liftOf ? { tall: liftOf(100, [{ top: 50, height: 662 }], 812), day: liftOf(100, [{ top: 400, height: 312 }], 812), range320: liftOf(0, [{ top: 98, height: 470 }], 568), none: liftOf(0, [], 812), gone: liftOf(100, [{ top: 50, height: 662, gone: true }], 812) } : null;
+    check("BM3 the real toastLiftNow has no cap: a sheet whose top is at 50 on an 812px screen lifts the stack 762 (it was capped at 812 − 120 = 692 — on a tall sheet, a toast sat on its title); the day sheet 412; the range sheet at 320×568 (its top at 98) 470 (it was 448: the toast at 73–110, on the sheet); nothing on screen 0; a floor gone → the banner's 100",
+      !!lifts && lifts.tall === 762 && lifts.day === 412 && lifts.range320 === 470 && lifts.none === 0 && lifts.gone === 100 && countBM("vh - 120") === 0,
+      J(lifts));
+    const T = (n) => Array.from({ length: n }, (_, k) => ({ id: k + 1 }));
+    const tg = tight ? { none: tight(0, { innerHeight: 812 }), noneTiny: tight(0, { innerHeight: 60 }), day: tight(412, { innerHeight: 812 }), edge: tight(722, { innerHeight: 812 }), past: tight(723, { innerHeight: 812 }), full: tight(544, { innerHeight: 568 }) } : null;
+    check("BM3 toastTight (the real expression): less than 72px of room above the lift (the screen − lift − 18) — 812 with the lift at 722 leaves 72 (not tight), at 723 71 (tight); the range sheet filling 320×568 with the banner (lift 544) tight; the day sheet (412) not; no floor (lift 0) never — not even on a 60px-tall window",
+      !!tg && tg.none === false && tg.noneTiny === false && tg.day === false && tg.edge === false && tg.past === true && tg.full === true, J(tg));
+    const sN = stack ? stack(110, false) : null, sT = stack ? stack(544, true) : null, s0 = stack ? stack(0, false) : null;
+    const orders = wrap ? [0, 1, 2].map((i) => wrap(T(3), i).order) : null, w0 = wrap ? wrap(T(3), 0) : null;
+    check("BM3 the stack's real style: the room between the top of the screen (safe area + 8px) and the lift (bottom: lift + 10; no floor: 24px above the home bar), at least 72px tall; a column filled from the bottom (column-reverse) that wraps, its second column at the left of the first's right edge, past the screen's (alignContent flex-start) and clipped (overflowX clip); newest first: each toast's full-width wrapper is ordered 2, 1, 0 (the newest 0, at the bottom); packed at the bottom — at the top when tight; it lets taps through",
+      !!sN && sN.top === "calc(env(safe-area-inset-top, 0px) + 8px)" && sN.bottom === 120 && s0.bottom === "calc(env(safe-area-inset-bottom, 0px) + 24px)" && sN.minHeight === 72 && sN.flexDirection === "column-reverse" && sN.flexWrap === "wrap"
+        && sN.alignContent === "flex-start" && sN.overflowX === "clip" && sN.justifyContent === "flex-start" && sT.justifyContent === "flex-end" && sN.pointerEvents === "none" && sN.left === 0 && sN.right === 0
+        && J(orders) === "[2,1,0]" && !!w0 && w0.width === "100%" && w0.display === "flex" && w0.justifyContent === "center",
+      J({ sN: sN && [sN.top, sN.bottom, sN.minHeight, sN.flexDirection, sN.flexWrap, sN.alignContent, sN.overflowX, sN.justifyContent], tight: sT && sT.justifyContent, orders }));
+    // A model of the column (CSS's rules for ONE wrapping flex column; no safe-area inset): the room runs from `top` down to
+    // `bottom` (at least minHeight; a negative room is 0); items go in `order`; the first line takes them while they fit (its
+    // first always); later lines are past the right edge (held). column-reverse puts the first item at the bottom; packing at
+    // flex-start sits the line on the bottom, at flex-end on the top (an item too tall overflows away from the packed edge).
+    const layout = (vh, lift, isTight, heights) => {
+      const s = stack(lift, isTight);
+      const topPx = +String(s.top).match(/\+ (\d+)px\)$/)[1], botPx = typeof s.bottom === "number" ? s.bottom : +String(s.bottom).match(/\+ (\d+)px\)$/)[1];
+      const h = Math.max(s.minHeight || 0, vh - topPx - botPx, 0), cTop = topPx, cBot = topPx + h, gap = s.gap;
+      const seq = heights.map((x, i) => ({ id: i + 1, x, o: wrap(T(heights.length), i).order })).sort((a, b) => a.o - b.o || a.id - b.id);
+      const line = []; let used = 0;
+      for (const it of seq) { const need = used + (line.length ? gap : 0) + it.x; if (line.length && need > h && s.flexWrap === "wrap") break; line.push(it); used = need; }
+      const reverse = s.flexDirection === "column-reverse", packEnd = s.justifyContent === "flex-end";
+      const shown = [];
+      if (reverse) { let edge = packEnd ? cTop + used : cBot; for (const it of line) { shown.push({ id: it.id, t: edge - it.x, b: edge }); edge -= it.x + gap; } }
+      else { let edge = packEnd ? cBot - used : cTop; for (const it of line) { shown.push({ id: it.id, t: edge, b: edge + it.x }); edge += it.x + gap; } }
+      return { shown, held: heights.length - line.length, onScreen: shown.every((p) => p.t >= 0 && p.b <= vh) };
+    };
+    let L = null;
+    try {
+      L = stack && wrap ? {
+        // landscape 812×375, the banner and the day sheet up (its top at 130: lift 245), three failures (52px each)
+        land: layout(375, 245, tight(245, { innerHeight: 375 }), [52, 52, 52]),
+        // 320×568, a toast already up when the request's range sheet opens (its top at 98: lift 470)
+        range: layout(568, 470, tight(470, { innerHeight: 568 }), [37]),
+        // 320×568 with the banner: the sheet fills the screen (its top at 24: lift 544)
+        full: layout(568, 544, tight(544, { innerHeight: 568 }), [37, 37]),
+        // …the same with toastTight not yet set (the lift re-measured, the render to come): the 72px minimum
+        stale: layout(568, 544, false, [37]),
+        // 375×812, no floor
+        free: layout(812, 0, false, [52, 52, 52]),
+      } : null;
+    } catch (ex) { L = { err: String(ex).slice(0, 160) }; }
+    check("BM3 …laid out (the model, on the rendered check's cases): landscape 812×375 with the banner and the day sheet — the two NEWEST of three show, at 10–62 and 68–120 above the sheet (its top at 130), the oldest held off to the side, every toast shown on screen (it was −49–3: off the top); at 320×568 a toast already showing sits at 51–88, above the range sheet's top at 98 (it was 73–110: on it)",
+      !!L && !L.err && J(L.land.shown.map((p) => p.id)) === "[3,2]" && L.land.held === 1 && L.land.onScreen && L.land.shown[0].b === 120 && L.land.shown[1].t === 10 && L.land.shown.every((p) => p.b <= 130)
+        && L.range.held === 0 && L.range.shown[0].t === 51 && L.range.shown[0].b === 88 && L.range.shown[0].b <= 98,
+      J(L));
+    check("BM3 …with no room above the floor (the range sheet filling 320×568 with the banner up) only the newest shows, whole, at the very top (8–45), the other held; before toastTight lands the 72px minimum still keeps it whole on screen (43–80); with no floor all three show",
+      !!L && !L.err && J(L.full.shown.map((p) => p.id)) === "[2]" && L.full.held === 1 && L.full.shown[0].t === 8 && L.full.shown[0].b === 45
+        && L.stale.onScreen && L.stale.shown[0].t === 43 && L.stale.shown[0].b === 80 && L.free.held === 0 && L.free.onScreen && L.free.shown[0].b === 812 - 24,
+      J(L && { full: L.full, stale: L.stale, free: L.free }));
+  }
+
+  // BM4 — the week editor: above the banner, its buttons a sticky toast floor
+  {
+    const ovM = nsrcBM.match(/\n\s*<div onClick=\{\(\)=>setEditWeekModal\(null\)\} style=\{(\{position:"fixed",[^\n]*?\})\}>\n\s*<div onClick=\{e=>e\.stopPropagation\(\)\} style=\{(\{[^\n]*?\})\}>\n/);
+    const footM = nsrcBM.match(/\n( *)<div ref=\{editWeekFootRef\} data-toast-floor="1" style=\{(\{[^\n]*?\})\}>\n([\s\S]*?)\n\1<\/div>\n/);
+    const ov = ovM ? fnBM("editWeekLift", ovM[1]) : null, card = ovM ? fnBM("dk", ovM[2]) : null, foot = footM ? fnBM("dk", footM[2]) : null;
+    const o100 = ov ? ov(100) : null, fL = foot ? foot(false) : null, fD = foot ? foot(true) : null, cL = card ? card(false) : null, cD = card ? card(true) : null;
+    const pad = cL ? cL.padding : NaN, inner = footM ? footM[3] : "";
+    check("BM4 the week editor (the real styles, evaluated): its backdrop ends above the update banner (top / left / right 0, bottom = editWeekLift: 100 with the banner measured at 100 — it was inset 0, and the banner covered Cancel / Save) and has no space below the card — no bottom padding (a sticky row stops at the padding's edge: the rendered check saw a 20px strip of the editor under the buttons) and no margin under the card (with one the row sat 20px higher at the end of the scroll than stuck, and toasts measured with it stuck could reach its top), so the row lies on the bottom edge scrolled or not; its Cancel / Save / Save & Next row is sticky at its bottom, on the card's own background in both themes, reaching the card's edges (its margin undoes the card's padding of 20)",
+      !!o100 && o100.position === "fixed" && o100.top === 0 && o100.left === 0 && o100.right === 0 && o100.bottom === 100 && o100.inset === undefined && o100.overflowY === "auto"
+        && o100.padding === "20px 10px 0" && !!cL && cL.marginBottom === undefined && cL.margin === undefined
+        && !!fL && fL.position === "sticky" && fL.bottom === 0 && fL.background === cL.background && fD.background === cD.background && fD.background !== fL.background
+        && pad === 20 && fL.margin === `0 -${pad}px -${pad}px` && fL.padding === `12px ${pad}px ${pad}px`
+        && inner.includes(">Cancel</button>") && inner.includes("onClick={()=>saveWeekEdits()}") && inner.includes("onClick={()=>saveWeekEdits(nextMonday)}"),
+      J({ ov: o100 && [o100.top, o100.bottom, o100.inset], foot: fL && [fL.position, fL.bottom, fL.margin, fL.padding, fL.background, fD.background], card: cL && [cL.background, cL.padding] }));
+
+    const e0 = nsrcBM.indexOf("  const editWeekOpen = !!editWeekModal;\n"), ED = "  }, [editWeekOpen, editWeekLift]);", e1 = nsrcBM.indexOf(ED);
+    const BLm = nsrcBM.match(/\n  (const bannerLift = \(\) => \{[^\n]*\};)\n/);
+    let mkEd = null;
+    try { mkEd = e0 > 0 && e1 > e0 && e1 - e0 < 2500 && BLm ? vm.runInContext("(function (env) { const { editWeekModal, updateAvailable, useState, useRef, useEffect, React, updateBannerRef, window, ResizeObserver, Event } = env;\n" + BLm[1] + "\n" + nsrcBM.slice(e0, e1 + ED.length) + "\n })", sandbox, { filename: "bm-editweek.js" }) : null; } catch (ex) { mkEd = null; }
+    const rig = (open, banner) => {
+      const R = { layout: [], effects: [], sets: [], added: [], removed: [], sent: [], observed: [], disconnected: 0, ros: [] };
+      const FOOT = { foot: true };
+      const RO = class { constructor(cb) { this.cb = cb; R.ros.push(this); } observe(t) { R.observed.push(t); } disconnect() { R.disconnected++; } };
+      mkEd({ editWeekModal: open ? { mondayStr: "2026-11-23" } : null, updateAvailable: banner ? "2026.10.20b" : null,
+        useState: (v) => [v, (x) => R.sets.push(x)], useRef: () => ({ current: FOOT }), useEffect: (fn, deps) => R.effects.push({ fn, deps }), React: { useLayoutEffect: (fn, deps) => R.layout.push({ fn, deps }) },
+        updateBannerRef: { current: banner ? { isConnected: true, getBoundingClientRect: () => ({ height: banner }) } : null }, ResizeObserver: RO, Event: class { constructor(t) { this.type = t; } },
+        window: { addEventListener: (t, f) => R.added.push([t, f]), removeEventListener: (t, f) => R.removed.push([t, f]), dispatchEvent: (e) => R.sent.push(e.type) } });
+      R.FOOT = FOOT;
+      return R;
+    };
+    if (!mkEd) check("BM4 the week editor's lift and floor effects (with bannerLift) are extractable", false, J({ e0, e1, bannerLift: !!BLm }));
+    else {
+      const a = rig(true, 99.2);
+      const aOff = a.layout[0] && a.layout[0].fn(); const first = a.sets.slice();
+      const rs = a.added.find((x) => x[0] === "resize"); if (rs) rs[1](); if (a.ros[0]) a.ros[0].cb(); const re = a.sets.slice();
+      if (typeof aOff === "function") aOff();
+      const c = rig(false, 99.2), cOff = c.layout[0] && c.layout[0].fn();
+      const n = rig(true, 0), nOff = n.layout[0] && n.layout[0].fn();
+      check("BM4 …the real lift effect: a LAYOUT effect (the editor's first frame is already above the banner — openWeekEditor is unchanged), deps [editWeekOpen, updateAvailable]; open with the banner measured at 99.2 → editWeekLift 100, again on a resize and on the banner's own resize (ResizeObserver on the banner); the listener removed and the observer disconnected after; closed → nothing; no banner → 0",
+        a.layout.length === 1 && a.effects.length === 1 && J(a.layout[0].deps) === J([true, "2026.10.20b"]) && J(first) === "[100]" && J(re) === "[100,100,100]"
+          && a.added.length === 1 && a.observed.length >= 1 && a.removed.length === 1 && a.removed[0][1] === a.added[0][1] && a.disconnected >= 1
+          && cOff === undefined && c.sets.length === 0 && c.added.length === 0 && J(c.layout[0].deps) === J([false, "2026.10.20b"]) && J(n.sets) === "[0]" && typeof nOff === "function",
+        J({ layout: a.layout.length, effects: a.effects.length, deps: a.layout[0] && a.layout[0].deps, first, re, closed: c.sets }));
+      const f = rig(true, 99.2), fOff = f.effects[0].fn(); const sentOpen = f.sent.slice(), obs = f.observed.slice();
+      if (f.ros[0]) f.ros[0].cb(); const sentResize = f.sent.slice();
+      if (typeof fOff === "function") fOff();
+      const g = rig(false, 0), gOff = g.effects[0].fn();
+      check("BM4 …the real floor effect: deps [editWeekOpen, editWeekLift] (the toasts' lift effect is declared before the editor's state — §P — so the editor tells it): on open \"toastfloorchange\" once and a ResizeObserver on the Cancel / Save row (Save & Next comes and goes); its resize says it again; on close (cleanup) the observer disconnects and it says it once more; closed → nothing",
+        J(f.effects[0].deps) === J([true, 0]) && J(sentOpen) === J(["toastfloorchange"]) && obs.length === 1 && obs[0] === f.FOOT && J(sentResize) === J(["toastfloorchange", "toastfloorchange"])
+          && f.disconnected === 1 && J(f.sent) === J(["toastfloorchange", "toastfloorchange", "toastfloorchange"]) && gOff === undefined && g.sent.length === 0 && g.observed.length === 0,
+        J({ deps: f.effects[0].deps, sentOpen, sent: f.sent, disc: f.disconnected }));
+    }
+    // §P for the editor's state, and the toasts' lift with its row as a floor (the real toastLiftNow): on 375×812 with the
+    // banner (100) the row's top at 580 (the rendered check) → the lift 232, the stack's lowest pixel at 570 — above Save.
+    const iModal = nsrcBM.indexOf("const [editWeekModal, setEditWeekModal] = useState(null);"), iOpen = nsrcBM.indexOf("const editWeekOpen = !!editWeekModal;"), iLift = nsrcBM.indexOf("const [editWeekLift, setEditWeekLift] = useState(0);"), iRef = nsrcBM.indexOf("const editWeekFootRef = useRef(null);");
+    const iD1 = nsrcBM.indexOf("}, [editWeekOpen, updateAvailable]);"), iD2 = nsrcBM.indexOf("}, [editWeekOpen, editWeekLift]);"), iUA = nsrcBM.indexOf("const [updateAvailable, setUpdateAvailable] = useState(null);"), iBL = nsrcBM.indexOf("const bannerLift = () => {");
+    const iToastFx = nsrcBM.indexOf("}, [toastsShown, updateAvailable, paintSheet, calDayOpen]);");
+    const TLm = nsrcBM.match(/\n  (const toastLiftNow = \(\) => \{\n[\s\S]*?\n  \};)\n/);
+    let rowLift = null;
+    try { rowLift = TLm ? vm.runInContext(`(function () { const bannerLift = () => 100; const window = { innerHeight: 812 }; const document = { querySelectorAll: () => [{ isConnected: true, getBoundingClientRect: () => ({ top: 580, height: 132 }) }] };\n${TLm[1]}\n return toastLiftNow(); })`, sandbox)() : null; } catch (ex) { rowLift = null; }
+    check("BM4 …§P: editWeekOpen, editWeekLift and editWeekFootRef are declared once, after editWeekModal (and updateAvailable, bannerLift) and before both effects that list them; the toasts' lift effect, declared earlier, lists none of them; with the row as a floor the real toastLiftNow lifts the stack 232 on 375×812 with the banner — its lowest pixel at 570, above the row's top at 580",
+      [iModal, iOpen, iLift, iRef, iD1, iD2, iUA, iBL].every((i) => i > 0) && countBM("const editWeekOpen = !!editWeekModal;") === 1 && countBM("const [editWeekLift, setEditWeekLift] = useState(0);") === 1 && countBM("const editWeekFootRef = useRef(null);") === 1
+        && iUA < iModal && iBL < iModal && iModal < iOpen && iOpen < iLift && iLift < iRef && iRef < iD1 && iD1 < iD2 && iToastFx > 0 && iToastFx < iModal
+        && rowLift === 232 && 812 - (rowLift + 10) < 580,
+      J({ iModal, iOpen, iLift, iRef, iD1, iD2, iToastFx, rowLift }));
   }
 })();
 
