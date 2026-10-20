@@ -5103,7 +5103,7 @@ const DARK_SHEET = (() => {
 //       22px from every boxed table on a phone); the billing column headers read at 4.5:1+ on the card and on the
 //       box's fill (thS2's #7a8a98 was 3.55:1 and 3.28:1); an open month's name reads at 4.5:1+ on the dark card
 //       (#1a6fa8 was 2.9:1 — the sheet's div[style*="color:#1a6fa8"] never matches React's rgb() form)
-console.log("\nCF. Stats → Billing: this month until the next period open, the last 12 months collapsed, older months dropped");
+console.log("\nCG. Stats → Billing: this month until the next period open, the last 12 months collapsed, older months dropped");
 {
   const H = vm.runInContext('({ bmg: typeof billingMonthGroups === "function" ? billingMonthGroups : null, bmo: typeof billingMonthOrder === "function" ? billingMonthOrder : null, pt: typeof publishedThrough === "function" ? publishedThrough : null, fmt, parse, addD, RealDate: Date })', sandbox);
   const J = (o) => JSON.stringify(o);
