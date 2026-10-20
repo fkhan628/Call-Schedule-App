@@ -120,6 +120,47 @@ function billingMonthOrder(months, todayStr) {
   return { done: ms.filter(m => m <= cur).reverse(), ahead: ms.filter(m => m > cur) };
 }
 
+// Which months Stats → Billing shows, and how (owner request 2026-10-20: "show the next 4 months by
+// default and then make the last year hidden. And then billing prior to the last year drops off",
+// clarified the same day: "This month until the start of the next period"). The card uses this in
+// place of billingMonthOrder, which stays: an old cached index.html still calls it.
+//   months:       "YYYY-MM" keys, the months with a billing day for someone shown
+//   todayStr:     "YYYY-MM-DD", the device date
+//   nextStartStr: "YYYY-MM-DD", the day the next period starts: the day after the published schedule
+//                 ends (publishedThrough + 1, the first unpublished Monday), or null
+// → { now, past, through, nextStart, caption }
+//   now:       this month and every later listed month, in calendar order (shown open). Billing days
+//              exist only in published weeks, so these ARE this month through the month that holds the
+//              day before the next period starts; a later month (inputs that disagree) is listed here
+//              too, so nothing from this month on is ever hidden.
+//   past:      the listed months among the 12 calendar months before this one, newest first (shown
+//              collapsed). Months before those 12 are dropped: not returned.
+//   through:   "YYYY-MM", the month that holds the day before the next period starts; nextStart: that day
+//   caption:   "This month through Feb 2027 — the next period starts Mon 2/22/2027" ("This month — …"
+//              when that month is this one); null when nothing is published after today
+// Malformed input: months that is not an array → none; an entry that is not a "YYYY-MM" month is
+// skipped, a repeated one listed once; a todayStr that is not a real date hides and drops nothing
+// (every month in now, calendar order, no caption); a nextStartStr that is not a real date leaves the
+// groups as they are, with no through, nextStart or caption. Pure: no clock, no state; the input is not
+// changed.
+function billingMonthGroups(months, todayStr, nextStartStr) {
+  const isDay = (s) => typeof s === "string" && /^\d{4}-\d{2}-\d{2}$/.test(s) && fmt(parse(s)) === s;
+  const ms = [...new Set((Array.isArray(months) ? months : []).filter(m => typeof m === "string" && /^\d{4}-(0[1-9]|1[0-2])$/.test(m)))].sort();
+  const none = { through: null, nextStart: null, caption: null };
+  if (!isDay(todayStr)) return Object.assign({ now: ms, past: [] }, none);
+  const cur = todayStr.slice(0, 7);
+  const from = `${String(Number(cur.slice(0, 4)) - 1).padStart(4, "0")}${cur.slice(4)}`; // this month a year ago: the first of the 12
+  const out = { now: ms.filter(m => m >= cur), past: ms.filter(m => m >= from && m < cur).reverse() };
+  if (!isDay(nextStartStr)) return Object.assign(out, none);
+  const last = fmt(addD(parse(nextStartStr), -1)); // the published schedule's last day
+  const through = last.slice(0, 7);
+  const moName = `${["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][Number(through.slice(5)) - 1]} ${through.slice(0, 4)}`;
+  const d = parse(nextStartStr);
+  const day = `${["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][d.getDay()]} ${d.getMonth() + 1}/${d.getDate()}/${d.getFullYear()}`;
+  const caption = last > todayStr ? `${through === cur ? "This month" : `This month through ${moName}`} — the next period starts ${day}` : null;
+  return Object.assign(out, { through, nextStart: nextStartStr, caption });
+}
+
 /* ═══ Personal call totals: DSG + Silvis (owner request 2026-10-09; decisions 2026-10-11) ═══
    The ONE counter behind the FAK-only totals card in the Mine tab AND the Silvis
    app's copy of that card, so both apps show the same numbers for the same period.

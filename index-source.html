@@ -11276,11 +11276,26 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   return billingDays(monthData[s.id] || {}) > 0;
                 });
             };
-            // Newest first, from this month back (UX audit 2026-10-19): the month
-            // being billed is at the top, not a year of history down. Months after
-            // this one sit in a collapsed "Upcoming months". Order only — every
-            // number is the same. helpers.js billingMonthOrder
-            const billOrder = billingMonthOrder(sortedMonths.filter(hasAny), fmt(new Date()));
+            // Which months show (owner request 2026-10-20, clarified: "This month until the start of
+            // the next period"; the last year hidden; billing before the last year drops off): this
+            // month and every later listed month, OPEN, in calendar order — billing days exist only in
+            // published weeks, so that is this month through the month holding the day before the next
+            // period starts (the day after the published schedule ends, publishedThrough + 1 — not
+            // Generate's settings); the 12 months before this one in a collapsed "Last 12 months",
+            // newest first; older months not at all. Display only: every number is the same.
+            // helpers.js billingMonthGroups. An old cached helpers.js has none: then the old split,
+            // billingMonthOrder (this month back open, the later months in "Upcoming months"); older
+            // still, neither: every month open, newest first.
+            const billToday = fmt(new Date());
+            const billMonths = sortedMonths.filter(hasAny);
+            const billPubEnd = typeof publishedThrough === "function" ? publishedThrough(schedule) : null;
+            const billGroups = typeof billingMonthGroups === "function" ? billingMonthGroups(billMonths, billToday, billPubEnd ? fmt(addD(parse(billPubEnd), 1)) : null) : null;
+            const billOrder = billGroups ? null : typeof billingMonthOrder === "function" ? billingMonthOrder(billMonths, billToday) : { done: billMonths.slice().reverse(), ahead: [] };
+            // open: shown open; box: the collapsed <details> (open by default only when nothing is open,
+            // so the card is never blank while there is history); caption: only over open months
+            const billView = billGroups
+              ? { open: billGroups.now, box: billGroups.past, boxLabel: "Last 12 months", caption: billGroups.now.length > 0 ? billGroups.caption : null }
+              : { open: billOrder.done, box: billOrder.ahead, boxLabel: "Upcoming months", caption: null };
             const billMonth = (mk) => {
                 const monthData = monthly[mk] || {};
                 return (
@@ -11323,19 +11338,24 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             return (
             <div style={css.card}>
               <div style={css.cardT}>💰 Billing Summary <span style={{fontWeight:400,fontSize:11,color:"#7a8a98"}}>— Monthly, 1st Call Only</span></div>
+              {billView.caption && (
+                /* What is open and why it ends there (owner 2026-10-20), from the real dates. 4.5:1+ on the card in both modes. */
+                <div style={{fontSize:12,fontWeight:600,color:dk?"#a8b8c8":"#3a4a58",margin:"-4px 0 10px",lineHeight:1.4}}>{billView.caption}</div>
+              )}
               <p style={{fontSize:11,color:"#7a8a98",margin:"0 0 14px",lineHeight:1.5}}>
                 Breakdown by calendar month. Backup weeks are excluded — only 1st-call shifts count toward billing. Each call day is counted in the month it actually falls in (a service week or weekend spanning a month boundary is split across both months). A covered holiday bills 2 days (the day and the night) to the surgeon who covers it, and that date's regular credits don't count.
               </p>
-              {billOrder.done.map(billMonth)}
-              {billOrder.ahead.length > 0 && (
-                /* Review fixes: a dark border in dark mode (it was a light line on the dark card), a dark
-                   fill the sheet's forced summary blue (details summary { color:#6080c0 !important }) reads
-                   on at 4.5:1+, and a 44px-tall summary to tap (the line was ~14px). */
-                <details open={billOrder.done.length === 0} style={{background:dk?"#12161e":"#f4f6f8",border:`1px solid ${dk?"#2a3a5e":"#d0d8e0"}`,borderRadius:6,padding:"0 10px",marginBottom:16}}>
+              {billView.open.map(billMonth)}
+              {billView.box.length > 0 && (
+                /* "Last 12 months" (an old cached helpers.js: "Upcoming months"). Review fixes 2026-10-19: a dark
+                   border in dark mode (it was a light line on the dark card), a dark fill the sheet's forced
+                   summary blue (details summary { color:#6080c0 !important }) reads on at 4.5:1+, and a
+                   44px-tall summary to tap (the line was ~14px). */
+                <details open={billView.open.length === 0} style={{background:dk?"#12161e":"#f4f6f8",border:`1px solid ${dk?"#2a3a5e":"#d0d8e0"}`,borderRadius:6,padding:"0 10px",marginBottom:16}}>
                   <summary style={{cursor:"pointer",fontSize:12,fontWeight:700,color:dk?"#a0b0c0":"#5a6a78",padding:"14px 0",lineHeight:"16px"}}>
-                    Upcoming months ({billOrder.ahead.length})
+                    {billView.boxLabel} ({billView.box.length})
                   </summary>
-                  <div style={{marginTop:4,paddingBottom:6}}>{billOrder.ahead.map(billMonth)}</div>
+                  <div style={{marginTop:4,paddingBottom:6}}>{billView.box.map(billMonth)}</div>
                 </details>
               )}
               <div style={{fontSize:11,color:"#7a8a98",lineHeight:1.5,marginTop:6}}>
