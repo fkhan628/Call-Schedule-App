@@ -4915,7 +4915,9 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
     gate: fnX("schedSyncRef, showToast, setReauthNeeded", wrap("", after("  const schedEditable = ", "\n  };\n"), "\n  }")),
     pushUndo: fnX("scheduleRef, schedSyncRef, setScheduleHistory", wrap("(counts) => {", after("  const pushUndo = useCallback((counts) => {", "\n  }, []);"), "\n  }")),
     update: fnX("scheduleRef, commitSchedule", wrap("(fn) => {", after("  const updateSchedule = useCallback((fn) => {", "\n  }, [commitSchedule]);"), "\n  }")),
-    undo: fnX("scheduleHistory, schedEditable, schedSyncRef, showToast, commitSchedule, setPriorCounts, setYear1Counts, setScheduleHistory", wrap("() => {", after("  const undoLastChange = () => {", "\n  };\n"), "\n  }")),
+    // (2026-10-20, review R1: ↩ Undo of a publish takes the Calendar's "nobody notified yet" banner down — sess() gives
+    // setJustPublished its no-op; sync-guards CH5 runs it)
+    undo: sess(fnX("scheduleHistory, schedEditable, schedSyncRef, showToast, commitSchedule, setPriorCounts, setYear1Counts, setScheduleHistory, setJustPublished", wrap("() => {", after("  const undoLastChange = () => {", "\n  };\n"), "\n  }"))),
     unload: fnX("isPublicMode, dayOffDirtyRef, dayOffSaveTimerRef, clearTimeout, dayOffEnqueueRef, console, schedSyncRef, fetch, document, window",
       wrap("() => {\n    // (The blob keepalive is gone", after("  useEffect(() => {\n    // (The blob keepalive is gone", "\n  }, []);"), "\n  }")),
     load: fnX("loadFailedRef, supabase, lastSyncRef, setupReadRef, setSurgeons, setApps, USE_TIME_OFF, setVacations, setNoCallDays, setBackupMondaySet, setFierceBackupSet, setAppShifts, setPriorCounts, setYear1Counts, setStartMonth, setStartYear, setNumWeeks, setStartMondayOverride, setHolidayAssignments, setPendingLocks, setSilvisRule, sfRule, setDismissedWarnings, everHadRealDataRef, setEdgeFunctionUrl, console, setAppShiftsLoaded, appOffVisible, adoptDayOffRow, db, setVacRequests, setTradeRequests, setNotifications, showToast, schedSyncRef, scheduleRef, loadTimeOff, loadSilvisFeed, refreshSilvisFeed, setLoaded, loadedAtRef, getSupabaseRT, window, setTimeout, setInterval, clearInterval",
@@ -4960,7 +4962,9 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
     bundle: fnX("surgeons, apps, vacations, noCallDays, backupMondaySet, fierceBackupSet, schedule, priorCounts, year1Counts, startMonth, startYear, numWeeks, holidayAssignments, startMondayOverride, pendingLocks, silvisRule, dismissedWarnings, useRef",
       wrap("(() => { const buildStateBundle = (overrides = {}) => ({", after("  const buildStateBundle = (overrides = {}) => ({", "\n\n  // Mirrors the DB predicate"), "\n  return buildStateBundle; })()")),
     // clear / factory reset / restore and their helper (P2, P3, P5, P6); Generate & Publish's commit (P6)
-    runAuth: fnX("schedSyncRef, setScheduleHistory", decl("runAuthoritativeSchedule", "\n  };\n")),
+    // (2026-10-20, review R1: a clear / reset / restore that stands takes the Calendar's "nobody notified yet" banner
+    // down, in this session only — sess() gives the session and setJustPublished's no-op; sync-guards CH5 runs it)
+    runAuth: sess(fnX("schedSyncRef, setScheduleHistory, sessionEpochRef, setJustPublished", decl("runAuthoritativeSchedule", "\n  };\n"))),
     clear: sess(fnX("schedEditable, confirm, snapshots, schedSyncRef, showToast, scheduleRef, pushUndo, commitSchedule, setSaveStatus, runAuthoritativeSchedule, setTimeout, lastSyncRef, buildStateBundle, stateBundleRef, setupReadRef, auth, supabase, console, sessionEpochRef, setupBaseRef",
       decl("clearSchedule", "\n  };\n\n  // ─── Snapshot restore"))),
     reset: sess(fnX("isScheduler, userProfile, alert, schedEditable, prompt, setSaveStatus, setTimeout, snapshots, schedSyncRef, showToast, logAudit, allowWipeSaveRef, everHadRealDataRef, supabase, console, setSurgeons, INIT_SURGEONS, setApps, INIT_APPS, toClearAll, setBackupMondaySet, setFierceBackupSet, scheduleRef, commitSchedule, runAuthoritativeSchedule, setAppShifts, setPriorCounts, setYear1Counts, setStartMonth, setStartYear, sessionEpochRef, resetBusyRef, pendingSaveRef, setSetupSaveNudge",
@@ -4968,10 +4972,10 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
     restore: sess(fnX("schedEditable, isScheduler, userProfile, setRestoreBusyId, setSaveStatus, snapshots, scheduleRef, pushUndo, commitSchedule, runAuthoritativeSchedule, schedSyncRef, confirm, snapshotReasonLabel, showToast, setSurgeons, setApps, setBackupMondaySet, setFierceBackupSet, setAppShifts, setPriorCounts, setYear1Counts, setStartMonth, setStartYear, setNumWeeks, setStartMondayOverride, setHolidayAssignments, setPendingLocks, setSilvisRule, sfRule, SF_RULE_DEFAULT, setDismissedWarnings, lastSyncRef, everHadRealDataRef, logAudit, loadSnapshots, setTimeout, alert, sessionEpochRef",
       wrap("(() => { const restoreConfirmText = ", after("  const restoreConfirmText = ", "\n  // ─── Roll forward counts"), "\n  return restoreSnapshot; })()"))),
     genCommit: sess(fnX("publishWeeks, numWeeks, MO, startMonth, startYear, runPublish, setPreviewSchedule, setShowPreview, setSaveStatus, lastSyncRef, buildStateBundle, supabase, console, showToast, setTimeout, publishNotLanded, sessionEpochRef",
-      wrap("async (result) => {", after("  const commitGenerated = async (result) => {", "\n  };\n  genFinishRef.current = finishGenerate;"), "\n  }"))),
+      wrap("async (result, via) => {", after("  const commitGenerated = async (result, via) => {", "\n  };\n  genFinishRef.current = finishGenerate;"), "\n  }"))),
     // Generate & Publish's end (after its search) and its click — as sync-guards AH9 runs them (19/n P7: the job gate)
-    finish: sess(fnX("pendingLocks, nameOf, slotLabel, showToast, setPreviewSchedule, setPreviewOrigin, setShowPreview, genInputsSig, listScheduleBends, surgeons, mondays, buildGenAvailability, buildSilvisPrimary, vacations, holidayAssignments, buildPrevWeekSeed, publishingRef, setPublishing, setSaveStatus, snapshots, genCommitRef, previewEpochRef, schedEditable, schedSyncRef, sessionEpochRef",
-      decl("finishGenerate", "\n  };\n"))),
+    finish: sess(fnX("pendingLocks, nameOf, slotLabel, showToast, setPreviewSchedule, setPreviewOrigin, setShowPreview, genInputsSig, listScheduleBends, surgeons, mondays, buildGenAvailability, buildSilvisPrimary, vacations, holidayAssignments, buildPrevWeekSeed, publishingRef, setPublishing, setSaveStatus, snapshots, genCommitRef, previewEpochRef, schedEditable, schedSyncRef, sessionEpochRef, view",
+      decl("finishGenerate", "\n  };\n"))), // (view, 2026-10-20 — review R2: its preview toasts say where the preview is)
     // (20/n) Generate & Publish's notice and e-mail (doGenerateAndNotify), and the setup's signature (setupSig — review r3 G7)
     // (review fix 2026-10-20: notifyPublished takes down a pending Accept & Publish banner — justPublished, notifiedRef,
     // setJustPublished; none is up in these runs, and sess() gives setJustPublished its no-op)
