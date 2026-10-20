@@ -1602,12 +1602,17 @@ console.log("\nBD. Generate: one period label, the period's seam, holidays with 
   const memoBody = after("  const mondays = useMemo(() => {", "\n  }, [startYear, startMonth, numWeeks, startMondayOverride]);");
   const endSrc = span("  const endDate = mondays.length > 0", "\n  const endYr = ");
   const dgnSrc = span("  const doGenerateAndNotify = async () => {", "\n  };");
+  // (2026-10-20: the notice and the e-mail moved into notifyPublished — the one sender Accept & Publish's banner uses
+  // too, sync-guards CD — so it is sliced with doGenerateAndNotify and run with the same stubs, on purpose)
+  const npSrcBD = span("  const notifyPublished = async (ep, period) => {", "\n  };");
   const mk = (code, ctx, filename) => { try { return code ? vm.runInContext(code, ctx, { filename }) : null; } catch (ex) { return null; } };
   const runMemo = memoBody && mk(`(function (env) { const { startMondayOverride, numWeeks, startYear, startMonth } = env; return (() => {${memoBody}\n  })(); })`, sandbox, "bd-mondays.js");
   const runEnd = endSrc && mk(`(function (env) { const { mondays, startMonth } = env;\n${endSrc}\n return { endDate, endMoIdx }; })`, sandbox, "bd-enddate.js");
   // (every name the e-mail's period was ever built from — main's selects and endMoIdx, the Mondays — and periodText,
   // the component's one line for it since the review fixes, run for real from the Mondays the memo made)
-  const mkDgn = dgnSrc && mk(`(function (env) { const { sessionEpochRef, doGenerate, addNotification, sendEmailNotif, MO, startMonth, endMoIdx, startYear, mondays, periodText } = env;\n${dgnSrc}\n  };\n return doGenerateAndNotify; })`, sandbox, "bd-dgn.js");
+  // (review fix 2026-10-20, on purpose: notifyPublished also takes down a pending Accept & Publish banner — it reads
+  // justPublished / notifiedRef and calls setJustPublished; no banner is up here, CD7 runs that)
+  const mkDgn = dgnSrc && npSrcBD && mk(`(function (env) { const { sessionEpochRef, doGenerate, addNotification, sendEmailNotif, MO, startMonth, endMoIdx, startYear, mondays, periodText, justPublished, notifiedRef, setJustPublished } = env;\n${npSrcBD}\n  };\n${dgnSrc}\n  };\n return doGenerateAndNotify; })`, sandbox, "bd-dgn.js");
   const ptNew = periodTextIn(sandbox);
   const publishRun = async (settings) => {
     if (!runMemo || !runEnd || !mkDgn || !ptNew) return null;
@@ -1615,6 +1620,7 @@ console.log("\nBD. Generate: one period label, the period's seam, holidays with 
       const mondays = runMemo(settings), { endMoIdx } = runEnd({ mondays, startMonth: settings.startMonth });
       const sent = [];
       await mkDgn({ sessionEpochRef: { current: 0 }, doGenerate: async () => "published", MO: H.MO, startMonth: settings.startMonth, endMoIdx, startYear: settings.startYear, mondays, periodText: ptNew(mondays),
+        justPublished: null, notifiedRef: { current: null }, setJustPublished: () => {},
         addNotification: async (type, title, msg) => { sent.push(["notice", type, msg]); },
         sendEmailNotif: (type, data, targets) => { sent.push(["e-mail", type, J(data), targets]); } })();
       return { first: H.fmt(mondays[0]), n: mondays.length, sent };
@@ -2118,12 +2124,15 @@ console.log("\nBD. Generate: one period label, the period's seam, holidays with 
 
   // BE4 — the edit's range gate, and its toast
   {
-    const editMk = fnBE("sessionEpochRef, dbAuthHeaders, editingVacReq, isScheduler, showToast, vacRequests, fetch, SUPABASE_URL, console, setBackRequest, logAudit, setVacRequests, toEdit, setEditingVacReq",
-      afterBE("  const saveVacRequestEdit = useCallback(", ", [editingVacReq, vacRequests, isScheduler]);"));
+    // (owner decision 2026-10-20, changed ON PURPOSE — CA: the edit first asks canChangeVacRequest and lists it in its
+    // deps. Here every edit is the requester's own or the scheduler's, so the stand-in allows any request it is
+    // handed; CA3 runs the real predicate, colleagues included.)
+    const editMk = fnBE("sessionEpochRef, dbAuthHeaders, editingVacReq, isScheduler, canChangeVacRequest, showToast, vacRequests, fetch, SUPABASE_URL, console, setBackRequest, logAudit, setVacRequests, toEdit, setEditingVacReq",
+      afterBE("  const saveVacRequestEdit = useCallback(", ", [editingVacReq, vacRequests, isScheduler, canChangeVacRequest]);"));
     const edit = async (draft, o = {}) => {
       if (!editMk) return null;
       const ev = [], ep = { current: 0 };
-      await editMk({ sessionEpochRef: ep, dbAuthHeaders: () => ({ Authorization: "Bearer A" }), editingVacReq: Object.assign({ id: 7, reason: "trip" }, draft), isScheduler: o.member ? false : true,
+      await editMk({ sessionEpochRef: ep, dbAuthHeaders: () => ({ Authorization: "Bearer A" }), editingVacReq: Object.assign({ id: 7, reason: "trip" }, draft), isScheduler: o.member ? false : true, canChangeVacRequest: (r) => !!r,
         showToast: (m, t) => ev.push("toast " + (t || "info") + ": " + m), vacRequests: [VREQ_BE("approved")], SUPABASE_URL: "https://x.test", console: quietBE,
         fetch: async () => { ev.push("request"); if (o.cross) ep.current++; return respBE(200, [{ id: 7 }]); },
         setBackRequest: async () => { ev.push("set back"); return true; }, logAudit: () => {}, setVacRequests: () => ev.push("list"), toEdit: () => ev.push("time off"), setEditingVacReq: () => ev.push("editor closed") })();
@@ -2982,10 +2991,12 @@ console.log("\nBF. toasts stack (up to 3), errors stay longer, no doubled ⚠");
       && count('<div ref={editWeekFootRef} data-toast-floor="1" style={{position:"sticky",bottom:0,') === 1
       && (src.match(/\sdata-toast-floor="1"\s+(?:onClick|style)=/g) || []).length === 4);
 
-  // BF6 — the stack's real style, evaluated. (Changed on purpose 2026-10-20, BM3: each pill sits in a full-width wrapper
-  // — its key and its place in the column (order) — and the stack is a wrapping column filled from the bottom; the
-  // column's own rules are BM3's.)
-  const stackM = nsrcF.match(/\n      <div role="status" aria-live="polite" style=\{(\{position:"fixed",left:0,right:0,top:[^\n]*?\})\}>\n\s*\{toasts\.map\(\(t, i\) => \(\n\s*<div key=\{t\.id\} style=\{(\{width:"100%",[^\n]*?\})\}>\n\s*<div onClick=\{\(\)=>dismissToast\(t\.id\)\} style=\{(\{pointerEvents:"auto",[^\n]*?\})\}>\n\s*\{(typeof toastText === "function" \? toastText\(t\) : [^\n]*)\}\n/);
+  // BF6 — the stack's real style, evaluated
+  // (review fix 2026-10-20, on purpose: the list it maps holds back the red toasts while the sign-in card's "No
+  // connection — you're still signed in" note is up — that filter is executed in CE3)
+  // (Changed on purpose 2026-10-20, BM3: each pill sits in a full-width wrapper — its key and its place in the column
+  // (order) — and the stack is a wrapping column filled from the bottom; the column's own rules are BM3's.)
+  const stackM = nsrcF.match(/\n      <div role="status" aria-live="polite" style=\{(\{position:"fixed",left:0,right:0,top:[^\n]*?\})\}>\n\s*\{toasts\.filter\(t => !\(t\.tone === "error" && authNetErr && authMode === "login" && !authUser\)\)\.map\(t => \(\n\s*<div key=\{t\.id\} style=\{(\{width:"100%",[^\n]*?\})\}>\n\s*<div onClick=\{\(\)=>dismissToast\(t\.id\)\} style=\{(\{pointerEvents:"auto",[^\n]*?\})\}>\n\s*\{(typeof toastText === "function" \? toastText\(t\) : [^\n]*)\}\n/);
   let stackSt = null, pillSt = null;
   try { stackSt = stackM ? vm.runInContext(`(function (toastLift, toastTight) { return (${stackM[1]}); })`, sandbox) : null; pillSt = stackM ? vm.runInContext(`(function (t, font) { return (${stackM[3]}); })`, sandbox) : null; } catch (ex) { stackSt = pillSt = null; }
   const zBanF = +((nsrcF.match(/<div ref=\{updateBannerRef\} role="status" aria-live="polite" style=\{\{position:"fixed",left:0,right:0,bottom:0,zIndex:(\d+),/) || [])[1] || NaN);
@@ -3001,9 +3012,12 @@ console.log("\nBF. toasts stack (up to 3), errors stay longer, no doubled ⚠");
   }
   check("BF6 …the single slot is gone (no setToast / toastTimerRef / {toast && …}); one live region renders the list; each pill shows toastText(t) (guarded — BF7) and a tap dismisses that one; showToast keeps its signature (its 100+ callers unchanged)",
     count("setToast(") === 0 && count("toastTimerRef") === 0 && count("{toast && (") === 0 && count("const [toast, setToast]") === 0
-      && count("{toasts.map((t, i) => (") === 1 && count("{typeof toastText === \"function\" ? toastText(t) : `${t.tone===\"success\"?\"✓ \":t.tone===\"error\"?\"⚠ \":\"\"}${t.msg}`}") === 1 && count("onClick={()=>dismissToast(t.id)}") === 1
+      // (review fix 2026-10-20, on purpose: the one list it renders is `toasts` less the red ones held back under the
+      // sign-in card's no-signal note — CE3 executes that filter)
+      && count("{toasts.filter(t => !(t.tone === \"error\" && authNetErr && authMode === \"login\" && !authUser)).map(t => (") === 1 && count("toasts.map(") === 0
+      && count("{typeof toastText === \"function\" ? toastText(t) : `${t.tone===\"success\"?\"✓ \":t.tone===\"error\"?\"⚠ \":\"\"}${t.msg}`}") === 1 && count("onClick={()=>dismissToast(t.id)}") === 1
       && count("const showToast = (msg, tone) => {") === 1 && count("showToast(") > 100,
-    JSON.stringify({ setToast: count("setToast("), timer: count("toastTimerRef"), map: count("{toasts.map((t, i) => ("), calls: count("showToast(") }));
+    JSON.stringify({ setToast: count("setToast("), timer: count("toastTimerRef"), map: count("{toasts.filter(t => !(t.tone === \"error\" && authNetErr && authMode === \"login\" && !authUser)).map(t => ("), calls: count("showToast(") }));
 
   // BF7 — an OLD cached helpers.js (review fix): the toast path falls back instead of crashing the root
   const OLDH = vm.runInContext(`(${JSON.stringify(BATCH4_HELPERS)}).map(n => typeof globalThis[n] === "function" ? n : null).filter(Boolean).join() + "|" + typeof monthDayLabel + typeof slotLabel + typeof fmt`, OLD_SB);
@@ -3990,6 +4004,369 @@ console.log("\nBL. Schedule Warnings: anyone can hide a warning on this phone");
     J({ iState, iChoice, iWS, iWSdeps, iCC, iRead, iRefs, iLis, iP7 }));
 }
 
+// ─── CE. Opening with no signal no longer looks signed out (owner decision 2026-10-20) ───
+// With the network down config.js auth.getUser() answers { user: null, error: "network" } and KEEPS the stored
+// session (by design), but both callers dropped `error`: the mount auto-login fell through to a plain "Sign in to
+// your account" with nothing said (the token still stored), and Face ID left its screen saying "Session expired.
+// Please sign in with your password to refresh." — false; the password sign-in then failed with "Load failed".
+//   CE1 the REAL mount auth effect (sliced; run in a fresh context, so a free name throws), auto-login with no
+//       signal — on the REAL config.js auth (its fetch rejecting as an iPhone's does, an in-memory localStorage) and
+//       on a stubbed getUser: the note is set (authNetErr true), nobody signed in or bound, the stored session
+//       untouched (one /auth/v1/user request; no refresh, no logout, no _clearSession / signOut); a real "no user,
+//       no error" (token and refresh both refused) and a non-network error show today's plain sign-in (no note); a
+//       good token signs straight in (no note); Face ID enrolled → its screen, getUser not asked
+//   CE2 the REAL handleBiometricUnlock: no signal → stays on the Face ID screen (biometricPending never set false)
+//       with "No connection — you're still signed in. Check your signal and tap Unlock again.", the session
+//       untouched; any other failure keeps "Session expired…" (and leaves the screen); a failed Face ID and a
+//       success as before
+//   CE3 the card's note, its real JSX rendered: the card's first child, amber, role="status", the exact words, a
+//       Retry ≥ 44px tall that reloads (nothing can be pending here: the note is set only on the mount path, before
+//       any sign-in — so no confirmReloadWithPending); only in sign-in mode and only while authNetErr; ≥ 4.5:1
+//       light and dark (the Retry's gradient keeps its text white under the dark sheet's forced button grey)
+//   CE4 startSignIn, executed: drops the note, then runs the real submit; the card's button and both Enter keys
+//       use it (no direct handleAuthSubmit left on the card); the note is set in one place only
+//   CE5 §P: authNetErr declared once, beside the auth state, before the mount effect and startSignIn, in no
+//       hook's deps; the mount effect keeps [] deps and sync v2's bindUser line
+// Review fixes (2026-10-20):
+//   CE4 a Sign In that never reached the server (still no signal), with the session held before it still stored,
+//       brings the note and Retry back (one offline attempt took them away and the card looked signed out again —
+//       OFF-2 / PH-4): startSignIn over stubs and over the REAL handleAuthSubmit on the REAL config.js auth; the
+//       helper it asks (helpers.js isNoConnectionError — authErrorText's own test), executed
+//   CE3 while the note is up the red toasts are held back (at 320px the three startup load failures covered the
+//       form — PH-3 / F9); the card's and the Face ID screen's error lines are role="alert", 5.6:1 (PH-5)
+console.log("\nCE. Opening with no signal no longer looks signed out");
+await (async () => {
+  const nsrcCE = src.replace(/\r\n/g, "\n");   // a Windows checkout is CRLF, CI's is LF
+  const J = (x) => JSON.stringify(x);
+  const afterCE = (start, end) => { const i = nsrcCE.indexOf(start); if (i < 0 || nsrcCE.indexOf(start, i + 1) !== -1) return null; const e = nsrcCE.indexOf(end, i + start.length); return e < 0 ? null : nsrcCE.slice(i + start.length, e); };
+  const cctx = vm.createContext({});
+  const fnCE = (names, code) => { if (!code) return null; try { return vm.runInContext(`(function (env) { const { ${names} } = env; return (${code}); })`, cctx, { filename: "ce-auth.js" }); } catch (ex) { return null; } };
+  const NET_FACE = "No connection — you're still signed in. Check your signal and tap Unlock again.";
+  const EXPIRED = "Session expired. Please sign in with your password to refresh.";
+  const NOTE = "No connection — you're still signed in on this phone. Check your signal, then tap Retry.";
+  const quietCE = { error() {}, warn() {}, log() {}, info() {} };
+  const tick = () => new Promise((r) => setTimeout(r, 0));
+
+  // config.js's auth, for real: its own context, a stubbed fetch, an in-memory localStorage; _clearSession,
+  // signOut and _refresh recorded (and still run — the real calls go through the same object)
+  const SESS_CE = { "dsg-auth-token": "TOK_A", "dsg-auth-refresh": "REF_A" };
+  const mkAuthCE = (store, route) => {
+    const ls = new Map(Object.entries(store || {})), calls = [], spied = [];
+    const g = { console: quietCE, window: {}, document: undefined, navigator: { userAgent: "node-test" }, setTimeout, clearTimeout,
+      localStorage: { getItem: (k) => (ls.has(k) ? ls.get(k) : null), setItem: (k, v) => { ls.set(k, String(v)); }, removeItem: (k) => { ls.delete(k); } },
+      fetch: async (url, init) => { calls.push(((init && init.method) || "GET") + " " + String(url).replace(/^https?:\/\/[^/]+/, "")); return route(String(url)); } };
+    g.globalThis = g;
+    vm.createContext(g);
+    for (const f of ["helpers.js", "config.js"]) vm.runInContext(fs.readFileSync(path.join(ROOT, f), "utf8"), g, { filename: f });
+    const auth = vm.runInContext("auth", g);
+    for (const k of ["_clearSession", "signOut", "_refresh"]) { const orig = auth[k]; auth[k] = function (...a) { spied.push(k); return orig.apply(this, a); }; }
+    // (review fixes 2026-10-20: the same context's helpers, for the REAL sign-in submit and startSignIn — CE4)
+    const helpers = vm.runInContext("({ authErrorText, isNoConnectionError: typeof isNoConnectionError === 'function' ? isNoConnectionError : undefined })", g);
+    return { auth, ls, calls, spied, helpers, kept: () => ls.get("dsg-auth-token") === "TOK_A" && ls.get("dsg-auth-refresh") === "REF_A" && ls.size === 2 };
+  };
+  const respCE = (status, json) => ({ ok: status >= 200 && status < 300, status, json: async () => json, text: async () => JSON.stringify(json) });
+  const noSignal = () => { throw new TypeError("Load failed"); };   // an iPhone's fetch with no signal
+  const refusedCE = (url) => (url.includes("grant_type=refresh_token") ? respCE(400, { error: "invalid_grant", error_description: "Invalid Refresh Token: Already Used" }) : respCE(403, { msg: "invalid JWT" }));
+  const goodCE = (url) => { if (url.includes("/auth/v1/user")) return respCE(200, { id: "auth-c", email: "c@dsg.test" }); throw new Error("unrouted " + url); };
+  // a stubbed auth whose getUser gives `answer`; every session-changing call recorded
+  const stubCE = (answer) => {
+    const spied = [], a = { getSession: () => ({ access_token: "TOK_A", refresh_token: "REF_A" }), getUser: async () => { spied.push("getUser"); return answer; } };
+    for (const k of ["_clearSession", "signOut", "_refresh", "_saveSession", "refreshKeep", "bindUser"]) a[k] = () => { spied.push(k); };
+    return { auth: a, spied };
+  };
+  const SESSION_CHANGERS = ["_clearSession", "signOut", "_refresh", "_saveSession", "refreshKeep"];
+
+  // CE1 — the mount auth effect
+  const mountSrc = afterCE("  // ─── Auth: Check session on mount ───\n  useEffect(", "\n  }, []);\n");
+  const mkMount = fnCE("isPublicMode, setAuthLoading, window, URLSearchParams, auth, setAuthMode, biometric, setBiometricAvail, setBiometricReason, setBiometricEnrolled, setBiometricPending, dbAuth, setAuthUser, setUserProfile, setMySurgeon, setNeedsProfile, setReloadTrigger, setAuthNetErr, console",
+    mountSrc && mountSrc + "\n  }");
+  check("CE1 the mount auth effect (deps []) sliced and compiled", !!mkMount);
+  const runMount = async (auth, o = {}) => {
+    const log = [], rec = (name) => (v) => { log.push(name + ":" + (typeof v === "function" ? "fn" : J(v))); };
+    const env = { isPublicMode: false, URLSearchParams, auth,
+      window: { location: { hash: "", pathname: "/", search: "" }, history: { replaceState: () => log.push("replaceState") } },
+      biometric: { isAvailable: async () => ({ available: true, reason: "" }), isEnrolled: () => !!o.bio },
+      dbAuth: { getProfile: async (id) => { log.push("getProfile:" + id); return { person_id: "s3", display_name: "RPC", role: "member" }; } },
+      setAuthLoading: rec("authLoading"), setAuthMode: rec("authMode"), setBiometricAvail: () => {}, setBiometricReason: () => {}, setBiometricEnrolled: rec("bioEnrolled"),
+      setBiometricPending: rec("biometricPending"), setAuthUser: (u) => log.push("authUser:" + (u && u.id)), setUserProfile: () => log.push("profile"), setMySurgeon: rec("mySurgeon"),
+      setNeedsProfile: rec("needsProfile"), setReloadTrigger: () => log.push("reloadTrigger"), setAuthNetErr: rec("authNetErr"),
+      console: { error: (...a) => log.push("console.error:" + a.map(String).join(" ").slice(0, 120)), warn() {}, log() {}, info() {} } };
+    try { mkMount(env)(); } catch (ex) { log.push("threw " + String(ex).slice(0, 120)); }
+    for (let i = 0; i < 50 && !log.includes("authLoading:false"); i++) await tick();
+    return log;
+  };
+  if (mkMount) {
+    const off = mkAuthCE(SESS_CE, noSignal), mOff = await runMount(off.auth);
+    check("CE1 auto-login with no signal, on the REAL config.js auth: the note is set (authNetErr true) and the card shows (loading ends); nobody signed in or bound; the stored session untouched — one GET /auth/v1/user, no refresh, no logout, no _clearSession / signOut",
+      mOff.includes("authNetErr:true") && mOff[mOff.length - 1] === "authLoading:false" && !mOff.some((x) => /^(authUser|getProfile|reloadTrigger|biometricPending:true|console\.error|threw)/.test(x))
+        && off.kept() && J(off.calls) === J(["GET /auth/v1/user"]) && off.spied.length === 0 && off.auth.boundUser() === null,
+      J({ mOff, ls: [...off.ls], calls: off.calls, spied: off.spied, bound: off.auth.boundUser() }));
+    const st = stubCE({ user: null, error: "network" }), mSt = await runMount(st.auth);
+    check("CE1 …the same with a stubbed auth.getUser answering { user: null, error: \"network\" }: the note, no sign-in, and nothing that changes the session called (_clearSession, signOut, _refresh, _saveSession, refreshKeep, bindUser)",
+      mSt.includes("authNetErr:true") && mSt[mSt.length - 1] === "authLoading:false" && !mSt.some((x) => /^(authUser|reloadTrigger|console\.error|threw)/.test(x))
+        && J(st.spied) === J(["getUser"]), J({ mSt, spied: st.spied }));
+    const ref = mkAuthCE(SESS_CE, refusedCE), mRef = await runMount(ref.auth);
+    const st2 = stubCE({ user: null }), mNo = await runMount(st2.auth);
+    const st3 = stubCE({ user: null, error: "timeout" }), mOther = await runMount(st3.auth);
+    check("CE1 a real \"no user, no error\" still shows today's plain sign-in, no note: the REAL auth with the token and its refresh both refused (config.js clears the dead session, as before), a stub answering { user: null }, and a non-network error",
+      [mRef, mNo, mOther].every((m) => !m.some((x) => /^authNetErr|^authUser|^reloadTrigger|^console\.error|^threw/.test(x)) && m[m.length - 1] === "authLoading:false")
+        && !ref.ls.has("dsg-auth-token") && ref.spied.includes("_refresh"), J({ mRef, mNo, mOther, ls: [...ref.ls], spied: ref.spied }));
+    const ok = mkAuthCE(SESS_CE, goodCE), mOk = await runMount(ok.auth);
+    const bio = mkAuthCE(SESS_CE, noSignal), mBio = await runMount(bio.auth, { bio: true });
+    check("CE1 unchanged otherwise: a good token signs straight in (bound to its account, its profile, the data reload) with no note; Face ID enrolled → its screen, getUser not asked, no note",
+      mOk.includes("authUser:auth-c") && mOk.includes("getProfile:auth-c") && mOk.includes("reloadTrigger") && !mOk.some((x) => /^authNetErr|^console\.error|^threw/.test(x)) && ok.auth.boundUser() === "auth-c"
+        && J(mBio) === J(["bioEnrolled:true", "biometricPending:true", "authLoading:false"]) && bio.calls.length === 0 && bio.kept(),
+      J({ mOk, mBio, bound: ok.auth.boundUser(), bioCalls: bio.calls }));
+  }
+
+  // CE2 — the Face ID unlock
+  const bioSrc = afterCE("  const handleBiometricUnlock = ", "\n  };\n");
+  const mkBio = fnCE("setAuthError, setAuthBusy, biometric, auth, setAuthUser, dbAuth, setUserProfile, setMySurgeon, setNeedsProfile, setBiometricPending, setReloadTrigger", bioSrc && bioSrc + "\n  }");
+  check("CE2 handleBiometricUnlock sliced and compiled", !!mkBio);
+  const runBio = async (auth, o = {}) => {
+    const log = [];
+    const env = { auth, biometric: { authenticate: async () => (o.bioFail ? { success: false, error: o.bioFail } : { success: true }) },
+      dbAuth: { getProfile: async (id) => { log.push("getProfile:" + id); return { person_id: "s3", display_name: "RPC", role: "member" }; } },
+      setAuthError: (v) => log.push("error:" + v), setAuthBusy: (v) => log.push("busy:" + v), setAuthUser: (u) => log.push("authUser:" + (u && u.id)), setUserProfile: () => log.push("profile"),
+      setMySurgeon: () => {}, setNeedsProfile: () => {}, setBiometricPending: (v) => log.push("biometricPending:" + v), setReloadTrigger: () => log.push("reloadTrigger") };
+    try { await mkBio(env)(); } catch (ex) { log.push("threw " + String(ex).slice(0, 120)); }
+    return log;
+  };
+  if (mkBio) {
+    const off = mkAuthCE(SESS_CE, noSignal), bOff = await runBio(off.auth);
+    const st = stubCE({ user: null, error: "network" }), bSt = await runBio(st.auth);
+    check("CE2 Face ID with no signal (the REAL config.js auth, and a stub answering the network error): stays on the Face ID screen — biometricPending never set false — saying \"" + NET_FACE + "\", busy back to false; nobody signed in; the stored session untouched (no _clearSession / signOut / refresh)",
+      [bOff, bSt].every((b) => J(b) === J(["error:", "busy:true", "error:" + NET_FACE, "busy:false"]))
+        && off.kept() && J(off.calls) === J(["GET /auth/v1/user"]) && off.spied.length === 0 && off.auth.boundUser() === null && J(st.spied) === J(["getUser"]),
+      J({ bOff, bSt, ls: [...off.ls], spied: off.spied, stSpied: st.spied }));
+    const ref = mkAuthCE(SESS_CE, refusedCE), bRef = await runBio(ref.auth);
+    const bNo = await runBio(stubCE({ user: null }).auth), bOther = await runBio(stubCE({ user: null, error: "timeout" }).auth);
+    check("CE2 every other failure keeps today's words and leaves the Face ID screen: \"" + EXPIRED + "\" — the REAL auth with the token and refresh refused, a stub's { user: null }, a non-network error",
+      [bRef, bNo, bOther].every((b) => J(b) === J(["error:", "busy:true", "biometricPending:false", "error:" + EXPIRED, "busy:false"])), J({ bRef, bNo, bOther }));
+    const fail = stubCE({ user: null, error: "network" }), bFail = await runBio(fail.auth, { bioFail: "Face ID was cancelled" });
+    const good = mkAuthCE(SESS_CE, goodCE), bOk = await runBio(good.auth);
+    check("CE2 unchanged otherwise: a failed Face ID says its own error and asks nothing of the session; a success signs in (bound, its profile, the data reload) and leaves the Face ID screen",
+      J(bFail) === J(["error:", "busy:true", "error:Face ID was cancelled", "busy:false"]) && fail.spied.length === 0
+        && J(bOk) === J(["error:", "busy:true", "authUser:auth-c", "getProfile:auth-c", "profile", "biometricPending:false", "reloadTrigger", "busy:false"]) && good.auth.boundUser() === "auth-c",
+      J({ bFail, bOk }));
+  }
+
+  // CE3 — the note, rendered: its real JSX through a tiny JSX→h() pass (sync-guards BL7's jsxLite, as is)
+  const cardA = nsrcCE.indexOf(") : !authUser && !isPublicMode ? ("), cardB = cardA < 0 ? -1 : nsrcCE.indexOf(") : needsProfile ? (", cardA);
+  const card = cardA >= 0 && cardB > cardA ? nsrcCE.slice(cardA, cardB) : "";
+  // the note: the card's FIRST child (after its comment) — a {cond && (…)} up to its own "\n            )}" line;
+  // sliced by place, not by its condition's text, so whatever the condition says is what renders below
+  const NOTE_HEAD = '{authNetErr && authMode==="login" && (';
+  const openTag = '<div style={{...css.card,maxWidth:380,width:"100%",padding:28}}>';
+  const oi = card.indexOf(openTag), afterOpen = oi < 0 ? "" : card.slice(oi + openTag.length);
+  const lead = afterOpen.replace(/^\s*(\{\/\*[\s\S]*?\*\/\}\s*)*/, ""), nA = oi < 0 ? -1 : oi + openTag.length + (afterOpen.length - lead.length);
+  const nB = nA < 0 || !/^\{[^\n]*&& \($/.test(lead.split("\n")[0]) ? -1 : card.indexOf("\n            )}\n", nA);
+  const noteExpr = nB > nA && oi >= 0 && card.indexOf(openTag, oi + 1) === -1 ? card.slice(nA + 1, nB + "\n            )".length) : null;
+  const jsxCE = (code) => {
+    const q = (x) => JSON.stringify(x);
+    const skipStr = (k) => { const ch = code[k]; for (let m = k + 1; m < code.length; m++) { if (code[m] === "\\") { m++; continue; } if (code[m] === ch) return m; } return code.length; };
+    const close = (j) => {
+      let depth = 0;
+      for (let k = j; k < code.length; k++) {
+        const ch = code[k];
+        if (ch === '"' || ch === "'") { k = skipStr(k); continue; }
+        if (ch === "`") { for (k = k + 1; k < code.length && code[k] !== "`"; k++) { if (code[k] === "\\") k++; else if (code[k] === "$" && code[k + 1] === "{") k = close(k + 1); } continue; }
+        if (ch === "{") depth++; else if (ch === "}" && --depth === 0) return k;
+      }
+      throw new Error("unbalanced { at " + j);
+    };
+    const el = (k) => {
+      let j = k + 1;
+      const tag = /^[A-Za-z][\w.]*/.exec(code.slice(j))[0]; j += tag.length;
+      const props = [], kids = [];
+      for (;;) {
+        while (/\s/.test(code[j])) j++;
+        if (code[j] === "/" && code[j + 1] === ">") return [`h(${q(tag)}, {${props.join(", ")}})`, j + 2];
+        if (code[j] === ">") { j++; break; }
+        const nm = (/^[\w-]+/.exec(code.slice(j)) || [""])[0];
+        if (!nm) throw new Error("attribute at " + j + ": " + code.slice(j, j + 30));
+        j += nm.length;
+        if (code[j] !== "=") { props.push(`${q(nm)}: true`); continue; }
+        j++;
+        if (code[j] === '"') { const e = skipStr(j); props.push(`${q(nm)}: ${code.slice(j, e + 1)}`); j = e + 1; }
+        else if (code[j] === "{") { const e = close(j); props.push(`${q(nm)}: (${jsxCE(code.slice(j + 1, e))})`); j = e + 1; }
+        else throw new Error("attribute value at " + j);
+      }
+      let text = "";
+      const flush = () => {
+        if (!text) return;
+        const lines = text.split("\n");
+        const t = lines.length === 1 ? text : lines.map((l, i) => (i > 0 ? l.replace(/^\s+/, "") : l)).map((l, i, a) => (i < a.length - 1 ? l.replace(/\s+$/, "") : l)).filter((l) => l.length).join(" ");
+        if (t.length && !(lines.length > 1 && !t.trim())) kids.push(q(t));
+        text = "";
+      };
+      for (;;) {
+        if (j >= code.length) throw new Error("unclosed <" + tag + ">");
+        if (code.startsWith("</", j)) { flush(); j = code.indexOf(">", j) + 1; break; }
+        if (code[j] === "<" && /[A-Za-z]/.test(code[j + 1])) { flush(); const [js, e] = el(j); kids.push(js); j = e; continue; }
+        if (code[j] === "{") { flush(); const e = close(j); const inner = code.slice(j + 1, e); if (inner.replace(/\/\*[\s\S]*?\*\//g, "").trim()) kids.push(`(${jsxCE(inner)})`); j = e + 1; continue; }
+        text += code[j]; j++;
+      }
+      return [`h(${q(tag)}, {${props.join(", ")}}${kids.length ? ", " + kids.join(", ") : ""})`, j];
+    };
+    let out = "";
+    for (let i = 0; i < code.length;) {
+      const ch = code[i];
+      if (ch === '"' || ch === "'") { const e = skipStr(i); out += code.slice(i, e + 1); i = e + 1; continue; }
+      if (ch === "`") { const e0 = i; let k = i + 1; for (; k < code.length && code[k] !== "`"; k++) { if (code[k] === "\\") k++; else if (code[k] === "$" && code[k + 1] === "{") k = close(k + 1); } out += code.slice(e0, k + 1); i = k + 1; continue; }
+      if (ch === "<" && /[A-Za-z]/.test(code[i + 1] || "") && /[(?:,&|>{[=]$/.test(out.replace(/\s+$/, ""))) { const [js, e] = el(i); out += js; i = e; continue; }
+      out += ch; i++;
+    }
+    return out;
+  };
+  let renderNote = null, noteErr = "";
+  try { if (!noteExpr) throw new Error("note anchor"); renderNote = vm.runInContext(`(function (env) { const { h, authNetErr, authMode, font, window } = env; return (${jsxCE(noteExpr)}); })`, cctx, { filename: "ce-note.js" }); }
+  catch (ex) { renderNote = null; noteErr = String(ex).slice(0, 200); }
+  check("CE3 the card's note (its real JSX) found once, compiles and renders", !!renderNote, noteErr || "anchor " + nA + ".." + nB);
+  if (renderNote) {
+    const hh = (tag, props, ...kids) => ({ tag, props: props || {}, kids: kids.flat(Infinity).filter((k) => k !== null && k !== undefined && k !== false && k !== true && k !== "") });
+    const all = (n, out = []) => { if (n && typeof n === "object") { out.push(n); n.kids.forEach((k) => all(k, out)); } return out; };
+    const textOf = (n) => (n == null ? "" : typeof n !== "object" ? String(n) : n.kids.map(textOf).join(""));
+    const reloads = [];
+    const render = (authNetErr, authMode) => renderNote({ h: hh, authNetErr, authMode, font: "F", window: { location: { reload: (...a) => reloads.push(a.length) } } });
+    const on = render(true, "login"), offs = [render(false, "login"), render(true, "signup"), render(true, "reset"), render(true, "newpassword")];
+    const nodes = on && typeof on === "object" ? all(on) : [], btns = nodes.filter((n) => n.tag === "button");
+    const retry = btns.length === 1 ? btns[0] : null, words = nodes.filter((n) => n !== on && n.tag === "div");
+    if (retry && typeof retry.props.onClick === "function") retry.props.onClick({});
+    check("CE3 with authNetErr in sign-in mode: an amber role=\"status\" note — the exact words \"" + NOTE + "\" — and ONE button, type=\"button\", \"Retry\", at least 44px tall and full width, that reloads the page once; nothing else on it",
+      !!on && on.tag === "div" && on.props.role === "status" && words.length === 1 && textOf(words[0]) === NOTE && textOf(on) === NOTE + "Retry"
+        && !!retry && retry.props.type === "button" && textOf(retry) === "Retry" && retry.props.style.minHeight >= 44 && retry.props.style.width === "100%" && J(reloads) === J([0]),
+      J({ tag: on && on.tag, role: on && on.props.role, text: textOf(on), btns: btns.length, style: retry && retry.props.style, reloads }));
+    check("CE3 no note without authNetErr, nor in Create account / Reset password / Set a new password (it is about this phone's sign-in)",
+      offs.every((x) => x === false), J(offs.map((x) => (x && x.tag) || x)));
+    // readable: the note's ink on its fill, and the Retry's white on both ends of its gradient — light, and dark too: the
+    // dark sheet recolours neither the note (no rule names its colours) nor the Retry (`button[style*="background:
+    // linear-gradient"]` keeps white over the sheet's forced light-grey button text)
+    const lumCE = (hx) => { const v = hx.slice(1).match(/../g).map((x) => parseInt(x, 16) / 255).map((c) => (c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4))); return 0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2]; };
+    const crCE = (a, b) => (/^#[0-9a-f]{6}$/i.test(a || "") && /^#[0-9a-f]{6}$/i.test(b || "") ? (Math.max(lumCE(a), lumCE(b)) + 0.05) / (Math.min(lumCE(a), lumCE(b)) + 0.05) : 0);
+    const st = on ? on.props.style : {}, rb = retry ? String(retry.props.style.background) : "", stops = rb.match(/#[0-9a-f]{6}/gi) || [];
+    const sheet = afterCE("{darkMode && <style>{`", "`}</style>}") || "";
+    check("CE3 readable light and dark: the note's ink on its amber fill ≥ 4.5:1 (an amber, not a red error box); the Retry white on both gradient stops ≥ 4.5:1 — a gradient, so the dark sheet keeps its text white over its forced button grey; the dark sheet names neither the note's fill nor its ink",
+      crCE(st.color, st.background) >= 4.5 && /^#f[0-9a-f]{5}$/i.test(st.background || "") && st.background !== "#fce8e8" && rb.startsWith("linear-gradient(") && stops.length === 2 && retry.props.style.color === "#fff" && stops.every((c) => crCE("#ffffff", c) >= 4.5)
+        && sheet.includes('button[style*="background: linear-gradient"] { color: #fff !important; }') && sheet.includes("button { color: #c0c8d8 !important; }")
+        && !/fdf0e0|253, 240, 224|7a4a00|122, 74, 0/i.test(sheet),
+      J({ ink: st.color, fill: st.background, cr: +crCE(st.color, st.background).toFixed(2), rb, stopsCr: stops.map((c) => +crCE("#ffffff", c).toFixed(2)) }));
+    check("CE3 at the TOP of the sign-in card: the note is the card's first child, above the DSG header — and the card's only authNetErr",
+      lead.startsWith(NOTE_HEAD) && (card.match(/\bauthNetErr\b/g) || []).length === 1 && lead.indexOf("DSG Call Schedule") > lead.indexOf('role="status"'), J(lead.slice(0, 60)));
+  }
+
+  // CE3 (review fixes 2026-10-20) — what else the no-signal sign-in card shows
+  //   the red toasts are held back while the note is up (PH-3: at 320px the three startup load failures covered the
+  //   e-mail, the password and Sign In) — the stack's real filter, executed, against the note's own condition;
+  //   both auth error boxes (the sign-in card's, the Face ID screen's) are role="alert" and #a83232 on #fce8e8 (PH-5:
+  //   VoiceOver said nothing of "No connection — you're still signed in…", and #c04040 read 4.4:1)
+  const filtM = nsrcCE.match(/\n {8}\{toasts\.filter\((t => [^\n]*?)\)\.map\(t => \(\n/);
+  let heldF = null;
+  try { heldF = filtM ? vm.runInContext(`(function (env) { const { authNetErr, authMode, authUser } = env; return (${filtM[1]}); })`, cctx, { filename: "ce-toasts.js" }) : null; } catch (ex) { heldF = null; }
+  const TOASTS_CE = [{ id: 1, tone: "error", msg: "Couldn't load the latest data" }, { id: 2, tone: "info", msg: "i" }, { id: 3, tone: "success", msg: "s" }, { id: 4, tone: "info-passthrough", msg: "p" }, { id: 5, tone: "error", msg: "Couldn't load vacations" }];
+  const shownCE = (authNetErr, authMode, authUser) => (heldF ? TOASTS_CE.filter(heldF({ authNetErr, authMode, authUser })).map((t) => t.id).join() : null);
+  const heldRuns = { note: shownCE(true, "login", null), noNote: shownCE(false, "login", null), signedIn: shownCE(true, "login", { id: "u" }), signup: shownCE(true, "signup", null), reset: shownCE(true, "reset", null) };
+  check("CE3 (review fix) while the note is up the stack holds back the RED toasts only (the startup load failures — the note already says there is no connection); with no note, once signed in, or in Create account / Reset password: every toast, as before — the stack's real filter, executed",
+    !!heldF && J(heldRuns) === J({ note: "2,3,4", noNote: "1,2,3,4,5", signedIn: "1,2,3,4,5", signup: "1,2,3,4,5", reset: "1,2,3,4,5" }), J({ found: !!filtM, heldRuns }));
+  if (renderNote && heldF) {
+    const agree = [[true, "login"], [false, "login"], [true, "signup"], [true, "reset"], [true, "newpassword"], [false, "signup"]].every(([e, m]) => {
+      const noteShown = !!renderNote({ h: (tag, props, ...kids) => ({ tag, props, kids }), authNetErr: e, authMode: m, font: "F", window: { location: { reload() {} } } });
+      return noteShown === (shownCE(e, m, null) !== "1,2,3,4,5");
+    });
+    check("CE3 (review fix) …held back exactly while the card shows the note (the same authNetErr and sign-in mode, signed out) — never a red toast lost with no note to say why",
+      agree, J(heldRuns));
+  }
+  const bioA = nsrcCE.indexOf(") : biometricPending && !isPublicMode ? ("), bioB = bioA < 0 ? -1 : nsrcCE.indexOf(") : !authUser && !isPublicMode ? (", bioA);
+  const bioScr = bioA >= 0 && bioB > bioA ? nsrcCE.slice(bioA, bioB) : "";
+  const ERR_BOX = /\{authError && <div( role="alert")? style=\{\{fontSize:12,color:"(#[0-9a-f]{6})",padding:"6px 10px",background:"(#[0-9a-f]{6})"[^\n]*>\{authError\}<\/div>\}/g;
+  const boxes = { card: [...card.matchAll(ERR_BOX)], faceId: [...bioScr.matchAll(ERR_BOX)] };
+  const lumE = (hx) => { const v = hx.slice(1).match(/../g).map((x) => parseInt(x, 16) / 255).map((c) => (c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4))); return 0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2]; };
+  const crE = (a, b) => (Math.max(lumE(a), lumE(b)) + 0.05) / (Math.min(lumE(a), lumE(b)) + 0.05);
+  check("CE3 (review fix) the sign-in card's error lines (sign in / create account, reset, new password) and the Face ID screen's (where \"No connection — you're still signed in… tap Unlock again\" appears) are role=\"alert\" — announced as they appear, focus having dropped to the page — reading ≥ 4.5:1 (#a83232 on #fce8e8, 5.6:1; #c04040 was 4.4:1)",
+    boxes.card.length === 3 && boxes.faceId.length === 1 && [...boxes.card, ...boxes.faceId].every((m) => m[1] === ' role="alert"' && crE(m[2], m[3]) >= 4.5 && m[2] === "#a83232" && m[3] === "#fce8e8"),
+    J(Object.fromEntries(Object.entries(boxes).map(([k, ms]) => [k, ms.map((m) => [m[1] || "", m[2], m[3], +crE(m[2], m[3]).toFixed(2)])]))));
+
+  // CE4 — the attempt drops the note; one that never reached the server brings it back (review fix 2026-10-20 — OFF-2 /
+  // PH-4: one offline Sign In took the note and Retry away though the session was still stored, and the card looked
+  // signed out again — exactly what the owner's decision removed)
+  const ssSrc = afterCE("  const startSignIn = ", "\n  };\n");
+  const mkSS = fnCE("setAuthNetErr, handleAuthSubmit, auth, isNoConnectionError", ssSrc && ssSrc + "\n  }");
+  const H_CE = mkAuthCE(SESS_CE, noSignal).helpers;
+  // a stubbed submit: it resolves `failed` (what the real one's catch hands back; nothing when the server answered);
+  // o.newToken: a sign-in stored a new session before failing; o.noSession: nothing stored; o.old: an old cached helpers.js
+  const ssRun = async (o) => {
+    const log = []; let tok = "TOK_A";
+    const a = { getSession: () => (o.noSession ? null : { access_token: tok, refresh_token: "REF_A" }) };
+    try {
+      await mkSS({ setAuthNetErr: (v) => log.push("authNetErr:" + v), auth: a, isNoConnectionError: o.old ? undefined : H_CE.isNoConnectionError,
+        handleAuthSubmit: async (...args) => { log.push("submit:" + args.length); if (o.newToken) tok = "TOK_B"; return o.failed; } })({ type: "click" });
+    } catch (ex) { log.push("threw " + String(ex).slice(0, 80)); }
+    return log;
+  };
+  const ss = mkSS && typeof H_CE.isNoConnectionError === "function" ? {
+    offline: await ssRun({ failed: new TypeError("Load failed") }), chrome: await ssRun({ failed: new TypeError("Failed to fetch") }),
+    answered: await ssRun({ failed: undefined }), codeErr: await ssRun({ failed: new SyntaxError("Unexpected token < in JSON") }), serverObj: await ssRun({ failed: { message: "Load failed" } }),
+    noSession: await ssRun({ failed: new TypeError("Load failed"), noSession: true }), signedInThenOffline: await ssRun({ failed: new TypeError("Load failed"), newToken: true }),
+    oldHelpers: await ssRun({ failed: new TypeError("Load failed"), old: true }),
+  } : null;
+  const OFF_SS = ["authNetErr:false", "submit:0"];
+  check("CE4 startSignIn, executed: drops the note (authNetErr false) BEFORE the submit runs — called with nothing (as onClick={handleAuthSubmit}'s event was ignored); an attempt that never reached the server (\"Load failed\", \"Failed to fetch\") with the session held before it still stored brings the note back",
+    !!ss && J(ss.offline) === J(OFF_SS.concat("authNetErr:true")) && J(ss.chrome) === J(OFF_SS.concat("authNetErr:true")), ss ? J(ss) : "startSignIn / isNoConnectionError not found");
+  check("CE4 …and leaves it off otherwise: the server answered (a wrong password, a sign-in), a code error or a server's error object, nothing stored, a sign-in that stored a new session before failing, or an OLD cached helpers.js (no isNoConnectionError) — as before",
+    !!ss && ["answered", "codeErr", "serverObj", "noSession", "signedInThenOffline", "oldHelpers"].every((k) => J(ss[k]) === J(OFF_SS)), ss ? J(ss) : "startSignIn / isNoConnectionError not found");
+  // …through the REAL handleAuthSubmit (sliced, BG3's names) on the REAL config.js auth, its fetch routed
+  const hsSrc = afterCE("  const handleAuthSubmit = async () => {", "\n  };\n");
+  const mkHS = fnCE("setAuthError, setAuthBusy, authMode, signupPersonId, dbAuth, auth, authEmail, authPassword, allPeople, setAuthUser, setUserProfile, setMySurgeon, setNeedsProfile, setIsScheduler, setReloadTrigger, setAuthEmail, setAuthPassword, fetch, SUPABASE_URL, dbAuthHeaders, saveNotifPref, showToast, console, authErrorText",
+    hsSrc && "async () => {" + hsSrc + "\n  }");
+  const chain = async (route, o = {}) => {
+    const A = mkAuthCE(SESS_CE, route), log = [];
+    const env = { setAuthError: (v) => log.push("error:" + v), setAuthBusy: (v) => log.push("busy:" + v), authMode: "login", signupPersonId: "", auth: A.auth, authEmail: "rpc@dsg.test", authPassword: "pw",
+      dbAuth: { getProfile: async (id) => { log.push("getProfile:" + id); if (o.profileOffline) throw new TypeError("Load failed"); return { person_id: "s3", display_name: "RPC", role: "member" }; } },
+      allPeople: [], setAuthUser: (u) => log.push("authUser:" + (u && u.id)), setUserProfile: () => log.push("profile"), setMySurgeon: () => {}, setNeedsProfile: () => {}, setIsScheduler: () => {},
+      setReloadTrigger: () => log.push("reloadTrigger"), setAuthEmail: () => {}, setAuthPassword: () => {}, fetch: () => { throw new Error("no fetch in this run"); }, SUPABASE_URL: "https://x.test",
+      dbAuthHeaders: () => ({}), saveNotifPref: () => {}, showToast: (m) => log.push("toast:" + m), console: quietCE, authErrorText: A.helpers.authErrorText };
+    try { await mkSS({ setAuthNetErr: (v) => log.push("authNetErr:" + v), handleAuthSubmit: mkHS(env), auth: A.auth, isNoConnectionError: A.helpers.isNoConnectionError })(); } catch (ex) { log.push("threw " + String(ex).slice(0, 100)); }
+    return { log, calls: A.calls, kept: A.kept(), spied: A.spied };
+  };
+  const GOOD_SIGNIN = (url) => (url.includes("grant_type=password") ? respCE(200, { access_token: "TOK_B", refresh_token: "REF_B", user: { id: "auth-c" } }) : respCE(404, {}));
+  const ch = mkSS && mkHS ? {
+    offline: await chain(noSignal),
+    wrongPw: await chain((url) => respCE(400, { error: "invalid_grant", error_description: "Invalid login credentials" })),
+    profileOffline: await chain(GOOD_SIGNIN, { profileOffline: true }),
+    signedIn: await chain(GOOD_SIGNIN),
+  } : null;
+  const NOCONN = "No connection — check your internet and try again.";
+  check("CE4 through the REAL handleAuthSubmit on the REAL config.js auth: an offline Sign In (its POST rejecting \"Load failed\") says \"" + NOCONN + "\", then the note comes back — one sign-in request, the stored session untouched (no _clearSession / signOut / refresh)",
+    !!ch && J(ch.offline.log) === J(["authNetErr:false", "error:", "busy:true", "error:" + NOCONN, "busy:false", "authNetErr:true"]) && J(ch.offline.calls) === J(["POST /auth/v1/token?grant_type=password"])
+      && ch.offline.kept && ch.offline.spied.length === 0, ch ? J(ch.offline) : "not extracted");
+  check("CE4 …a wrong password (the server's own words), a sign-in, and a sign-in whose profile read then failed offline (a NEW session stored): the note stays off",
+    !!ch && J(ch.wrongPw.log) === J(["authNetErr:false", "error:", "busy:true", "error:Invalid login credentials", "busy:false"])
+      && ch.signedIn.log.includes("authUser:auth-c") && !ch.signedIn.log.includes("authNetErr:true") && ch.profileOffline.log.includes("error:" + NOCONN) && !ch.profileOffline.log.includes("authNetErr:true"),
+    ch ? J({ wrongPw: ch.wrongPw.log, signedIn: ch.signedIn.log, profileOffline: ch.profileOffline.log }) : "not extracted");
+  // the helper itself, executed (helpers.js; authErrorText now asks it too — its words unchanged, BG)
+  const nce = H_CE.isNoConnectionError, aet = H_CE.authErrorText;
+  const DOMX = (() => { try { return new DOMException("The network connection was lost.", "NetworkError"); } catch (e) { return null; } })();
+  check("CE4 isNoConnectionError (helpers.js), executed: a thrown TypeError / DOMException with a browser's no-connection words (Safari \"Load failed\", Chrome \"Failed to fetch\", Firefox \"NetworkError …\", \"The network connection was lost.\") yes; a server's answer (a plain object, even saying \"Load failed\"), a string, nothing, a SyntaxError no — and authErrorText's \"No connection\" line is exactly its yes",
+    typeof nce === "function" && [new TypeError("Load failed"), new TypeError("Failed to fetch"), new TypeError("NetworkError when attempting to fetch resource."), DOMX].filter(Boolean).every((e) => nce(e) === true && aet(e) === NOCONN)
+      && [{ message: "Load failed" }, "Load failed", null, undefined, new SyntaxError("Unexpected token"), new Error("boom")].every((e) => nce(e) === false && aet(e) !== NOCONN),
+    String(typeof nce));
+  check("CE4 the card's Sign In / Create Account button and both Enter keys (email, password) start through startSignIn — no direct handleAuthSubmit left on the card; the note is SET in two places (the mount path, and startSignIn after a no-signal attempt — behind its typeof guard) and cleared in one (startSignIn)",
+    card.length > 0 && (card.match(/onKeyDown=\{e=>e\.key==="Enter"&&startSignIn\(\)\}/g) || []).length === 2 && (card.match(/<button onClick=\{startSignIn\} disabled=\{authBusy\}/g) || []).length === 1
+      && !/handleAuthSubmit/.test(card) && count("const startSignIn = ") === 1 && count("startSignIn()") === 2 && count("onClick={startSignIn}") === 1
+      && count("setAuthNetErr(true)") === 2 && count("setAuthNetErr(false)") === 1 && count("setAuthNetErr(") === 3 && !!mountSrc && mountSrc.includes("setAuthNetErr(true)")
+      && !!ssSrc && /typeof isNoConnectionError === "function" && isNoConnectionError\(failed\)\) setAuthNetErr\(true\);/.test(ssSrc),
+    J({ keys: (card.match(/startSignIn\(\)/g) || []).length, direct: (card.match(/handleAuthSubmit/g) || []).length, sets: count("setAuthNetErr(") }));
+
+  // CE5 — §P, and what stays as it was
+  const iDecl = src.indexOf("const [authNetErr, setAuthNetErr] = useState(false);"), iErr = src.indexOf('const [authError, setAuthError] = useState("");'), iBusy = src.indexOf("const [authBusy, setAuthBusy] = useState(false);");
+  const iMount = src.indexOf("// ─── Auth: Check session on mount ───"), iSS = src.indexOf("const startSignIn = "), iCard = src.indexOf(NOTE_HEAD);
+  check("CE5 §P: authNetErr declared once (useState(false) — off until the mount path finds no signal), beside the auth state, before the mount effect, startSignIn and the card; in no hook's deps; the mount effect keeps [] deps and sync v2's bindUser line",
+    count("const [authNetErr, setAuthNetErr] = useState(false);") === 1 && iErr > 0 && iBusy > iErr && iDecl > iBusy && iDecl - iErr < 1500
+      && iDecl < iMount && iDecl < iSS && iDecl < iCard && !/,\s*\[[^\]\n]*\bauthNetErr\b[^\]\n]*\]\s*\)/.test(src) && !!mountSrc
+      && count("auth.bindUser(user.id); // this tab is this account's (review r4 branch-4: another tab's sign-in is no session here)") === 1 && count("auth.bindUser(user.id); // (review r4 branch-4)") === 1,
+    J({ iErr, iBusy, iDecl, iMount, iSS, iCard }));
+})().catch(ex => check("CE harness ran without crashing", false, String(ex && ex.stack || ex).split("\n").slice(0, 3).join(" | ")));
+
 // ─── BG. Sign-in: iPhone autofill hints, plain network errors, no stuck "Sending…" offline (UX audit 2026-10-19) ───
 // The sign-in, sign-up and reset forms gave the iPhone no autofill hints (its saved passwords and account
 // suggestions are offered on fields that say what they hold). Offline, the reset and new-password chains had no
@@ -4701,6 +5078,249 @@ const DARK_SHEET = (() => {
   return { css, rules, forced, hex, lum, cr };
 })();
 
+// ─── CG. Stats → Billing: this month until the next period open, the last 12 months collapsed, older months dropped (owner 2026-10-20) ───
+// Owner request (2026-10-20): "The billing tab under stats. Can we have it show the next 4 months by default
+// and then make the last year hidden. And then billing prior to the last year drops off" — "the next 4
+// months" replaced the same day by "This month until the start of the next period". The card listed this
+// month back through a year+ of history, all open, and the later months in a collapsed "Upcoming months"
+// (section BC). Now: this month and every later listed month OPEN, in calendar order — billing days exist
+// only in published weeks, so that is this month through the month that holds the day before the next
+// period starts (the day after the published schedule ends: publishedThrough + 1, not Generate's settings);
+// the 12 calendar months before this one in a collapsed "Last 12 months", newest first; anything older not
+// shown. A caption says where the open months end and why. Display only: every number is the same.
+//   CG1 the real billingMonthGroups (helpers.js), executed, exact: the owner's case (today 10/20/2026, the
+//       schedule ending Sun 2/21/2027 → Oct … Feb open, Sep 2026 … Oct 2025 collapsed, Sep 2025 and older
+//       dropped); a schedule ending on a month's last day, on a month's first day, before today, today;
+//       Jan and Dec todays (the year rolls over); a 13-months-ago month dropped, exactly 12 kept
+//   CG2 malformed input never throws and drops nothing it should show; the input is not changed (a frozen
+//       array works); no clock; the same answers under TZ=America/Chicago and Asia/Tokyo
+//   CG3 the REAL card block (sliced, the clock pinned at 10/20/2026) on a synthetic schedule from Mon
+//       6/2/2025 to Sun 2/21/2027: the scheduler's view; a member's view (their own months only); a
+//       schedule that ended before this month (nothing open → the box opens, no caption); an old cached
+//       helpers.js (no billingMonthGroups → the old split; no publishedThrough → no caption; neither
+//       billingMonthGroups nor billingMonthOrder → every month open, newest first)
+//   CG4 the render: the caption under the title (only over open months), the open months, then ONE
+//       collapsed <details> "Last 12 months (n)" (open only when nothing is open), then the formula note;
+//       the caption reads at 4.5:1+ on the card in both modes (the box's own contrast: BC6)
+// Review fixes (2026-10-20):
+//   CG1 the next period starting in a NEW year (Mon 1/1/2029, on 11/15 and on 12/20/2028): the caption's month
+//       and day carry their own years ("Dec 2028", "1/1/2029"); CG2's time-zone run holds that case too; and a
+//       schedule ending a year on in this month's name says "through Oct 2027", not "This month"
+//   CG4 the box's months keep nearly the card's full width (the 10px side inset is the summary's alone; it took
+//       22px from every boxed table on a phone); the billing column headers read at 4.5:1+ on the card and on the
+//       box's fill (thS2's #7a8a98 was 3.55:1 and 3.28:1); an open month's name reads at 4.5:1+ on the dark card
+//       (#1a6fa8 was 2.9:1 — the sheet's div[style*="color:#1a6fa8"] never matches React's rgb() form)
+console.log("\nCG. Stats → Billing: this month until the next period open, the last 12 months collapsed, older months dropped");
+{
+  const H = vm.runInContext('({ bmg: typeof billingMonthGroups === "function" ? billingMonthGroups : null, bmo: typeof billingMonthOrder === "function" ? billingMonthOrder : null, pt: typeof publishedThrough === "function" ? publishedThrough : null, fmt, parse, addD, RealDate: Date })', sandbox);
+  const J = (o) => JSON.stringify(o);
+  const grp = (...a) => { try { return H.bmg ? JSON.parse(J(H.bmg(...a))) : null; } catch (ex) { return { threw: String(ex) }; } };
+  check("CG0 billingMonthGroups is defined in helpers.js, and billingMonthOrder stays defined (an old cached index.html still calls it)", !!H.bmg && !!H.bmo);
+  const span = (a, b) => { const out = []; for (let y = +a.slice(0, 4), m = +a.slice(5); `${y}-${String(m).padStart(2, "0")}` <= b; m === 12 ? (m = 1, y++) : m++) out.push(`${y}-${String(m).padStart(2, "0")}`); return out; };
+  const MS = span("2025-06", "2027-02"); // ~16 months back from 10/20/2026 to the schedule's end
+  const PAST12 = span("2025-10", "2026-09").reverse();
+  const NOW5 = ["2026-10", "2026-11", "2026-12", "2027-01", "2027-02"];
+  const CAP = "This month through Feb 2027 — the next period starts Mon 2/22/2027";
+  const OWNER = { now: NOW5, past: PAST12, through: "2027-02", nextStart: "2027-02-22", caption: CAP };
+
+  // CG1 — the helper, executed
+  const owner = grp(MS, "2026-10-20", "2027-02-22");
+  check("CG1 the owner's case, exact: today Tue 10/20/2026, the schedule ending Sun 2/21/2027 (the next period starts Mon 2/22/2027) → Oct 2026 … Feb 2027 open, this month first; Sep 2026 … Oct 2025 (12) collapsed, newest first; Sep 2025 and older dropped; the caption",
+    J(owner) === J(OWNER) && PAST12.length === 12 && MS.length === 21, J(owner));
+  const t1 = [
+    ["ending on a month's last day (Sun 1/31/2027 → Mon 2/1/2027)", grp(span("2025-06", "2027-01"), "2026-10-20", "2027-02-01"),
+      { now: NOW5.slice(0, 4), past: PAST12, through: "2027-01", nextStart: "2027-02-01", caption: "This month through Jan 2027 — the next period starts Mon 2/1/2027" }],
+    ["ending on a month's first day (Sun 11/1/2026 → Mon 11/2/2026): that day's month is the last", grp(span("2025-06", "2026-11"), "2026-10-20", "2026-11-02"),
+      { now: ["2026-10", "2026-11"], past: PAST12, through: "2026-11", nextStart: "2026-11-02", caption: "This month through Nov 2026 — the next period starts Mon 11/2/2026" }],
+    ["ending this month after today (Sun 10/25/2026 on Sat 10/24): \"This month\"", grp(span("2025-06", "2026-10"), "2026-10-24", "2026-10-26"),
+      { now: ["2026-10"], past: PAST12, through: "2026-10", nextStart: "2026-10-26", caption: "This month — the next period starts Mon 10/26/2026" }],
+    ["ending TODAY (Sun 10/25/2026): nothing published after today, no caption", grp(span("2025-06", "2026-10"), "2026-10-25", "2026-10-26"),
+      { now: ["2026-10"], past: PAST12, through: "2026-10", nextStart: "2026-10-26", caption: null }],
+    ["ending this month before today (Sun 10/18/2026)", grp(span("2025-06", "2026-10"), "2026-10-20", "2026-10-19"),
+      { now: ["2026-10"], past: PAST12, through: "2026-10", nextStart: "2026-10-19", caption: null }],
+    ["ending before this month (Sun 9/27/2026): nothing open", grp(span("2025-06", "2026-09"), "2026-10-20", "2026-09-28"),
+      { now: [], past: PAST12, through: "2026-09", nextStart: "2026-09-28", caption: null }],
+    ["a January today (Tue 1/5/2027): the 12 are Jan … Dec 2026, Dec 2025 dropped", grp(MS, "2027-01-05", "2027-02-22"),
+      { now: ["2027-01", "2027-02"], past: span("2026-01", "2026-12").reverse(), through: "2027-02", nextStart: "2027-02-22", caption: CAP }],
+    ["a December today (Thu 12/31/2026): Dec, Jan, Feb open; the 12 are Dec 2025 … Nov 2026", grp(MS, "2026-12-31", "2027-02-22"),
+      { now: ["2026-12", "2027-01", "2027-02"], past: span("2025-12", "2026-11").reverse(), through: "2027-02", nextStart: "2027-02-22", caption: CAP }],
+    ["a December today, the schedule ending in January (Sun 1/3/2027)", grp(span("2025-06", "2027-01"), "2026-12-01", "2027-01-04"),
+      { now: ["2026-12", "2027-01"], past: span("2025-12", "2026-11").reverse(), through: "2027-01", nextStart: "2027-01-04", caption: "This month through Jan 2027 — the next period starts Mon 1/4/2027" }],
+  ];
+  const bad1 = t1.filter(([, got, want]) => J(got) !== J(want));
+  check(`CG1 exact groups and captions: ${t1.map(([w]) => w).join("; ")}`, bad1.length === 0, bad1.map(([w, got]) => `${w}: ${J(got)}`).join(" | "));
+  // (review fix 2026-10-20: no fixture had the next period starting in a NEW year, so a caption taking the wrong year
+  // went uncaught — the open months' last month keeps the old year, the next period's day carries the new one)
+  const tY = [
+    ["on Wed 11/15/2028", grp(span("2027-06", "2028-12"), "2028-11-15", "2029-01-01"),
+      { now: ["2028-11", "2028-12"], past: span("2027-11", "2028-10").reverse(), through: "2028-12", nextStart: "2029-01-01", caption: "This month through Dec 2028 — the next period starts Mon 1/1/2029" }],
+    ["on Wed 12/20/2028 (\"This month\")", grp(span("2027-06", "2028-12"), "2028-12-20", "2029-01-01"),
+      { now: ["2028-12"], past: span("2027-12", "2028-11").reverse(), through: "2028-12", nextStart: "2029-01-01", caption: "This month — the next period starts Mon 1/1/2029" }],
+    // (and a schedule published a year ahead: the open months end in THIS month's name a year on — not "This month")
+    ["a year ahead: on Tue 10/20/2026, the schedule ending Sun 10/24/2027 (\"through Oct 2027\", not \"This month\")", grp(span("2025-11", "2027-10"), "2026-10-20", "2027-10-25"),
+      { now: span("2026-10", "2027-10"), past: span("2025-11", "2026-09").reverse(), through: "2027-10", nextStart: "2027-10-25", caption: "This month through Oct 2027 — the next period starts Mon 10/25/2027" }],
+  ];
+  const badY = tY.filter(([, got, want]) => J(got) !== J(want));
+  check(`CG1 the years in the caption, exact — the next period starting in a new year (the schedule ending Sun 12/31/2028, the next period Mon 1/1/2029: the month says 2028, the day 2029) and a schedule ending a year on in this month's name: ${tY.map(([w]) => w).join("; ")}`,
+    badY.length === 0, badY.map(([w, got]) => `${w}: ${J(got)}`).join(" | "));
+  const edge = [
+    ["13 months ago (Sep 2025 on 10/20/2026) dropped, 12 months ago (Oct 2025) kept", grp(["2025-09", "2025-10", "2026-09"], "2026-10-20", "2027-02-22"), { now: [], past: ["2026-09", "2025-10"] }],
+    ["exactly the 12 months before this one: all 12 kept, newest first", grp(PAST12.slice().reverse(), "2026-10-20", "2027-02-22"), { now: [], past: PAST12 }],
+    ["the first and the last day of the month group the same way", [grp(MS, "2026-10-01", "2027-02-22"), grp(MS, "2026-10-31", "2027-02-22")].map((g) => g && { now: g.now, past: g.past }), [{ now: NOW5, past: PAST12 }, { now: NOW5, past: PAST12 }]],
+    ["a month with no billing day is simply not listed (gaps kept as gaps)", grp(["2025-12", "2026-01", "2026-04", "2026-05", "2026-08", "2026-09", "2026-10", "2026-12"], "2026-10-20", "2027-02-22"), { now: ["2026-10", "2026-12"], past: ["2026-09", "2026-08", "2026-05", "2026-04", "2026-01", "2025-12"] }],
+    ["a month after the next period starts (inputs that disagree) is still OPEN: nothing from this month on is hidden", grp(MS.concat(["2027-03"]), "2026-10-20", "2027-02-22"), { now: NOW5.concat(["2027-03"]), past: PAST12 }],
+    ["no months at all: nothing, and the caption still says where the window ends", grp([], "2026-10-20", "2027-02-22"), { now: [], past: [], through: "2027-02", nextStart: "2027-02-22", caption: CAP }],
+  ];
+  const pick = (g, w) => (g && !Array.isArray(g) ? Object.fromEntries(Object.keys(w).map((k) => [k, g[k]])) : g);
+  const badE = edge.filter(([, got, want]) => J(pick(got, want)) !== J(want));
+  check(`CG1 the window's edges: ${edge.map(([w]) => w).join("; ")}`, badE.length === 0, badE.map(([w, got]) => `${w}: ${J(got)}`).join(" | "));
+
+  // CG2 — malformed input, the input untouched, no clock, two time zones
+  const NONE = { through: null, nextStart: null, caption: null };
+  const badMonths = [null, undefined, "2026-10", {}, 42].map((m) => grp(m, "2026-10-20", "2027-02-22"));
+  const junk = grp(["2026-10", "2026-13", "2026-00", "2026-1", 202610, null, "2026-10-01", "2026-10", " 2026-11", "2026-11", "2025-09"], "2026-10-20", "2027-02-22");
+  const badToday = ["", undefined, null, "2026-10", "2026-02-30", "Oct 20", "NaN-NaN-NaN", 20261020].map((t) => grp(MS, t, "2027-02-22"));
+  const badNext = [null, undefined, "", "2027-02-30", "Feb 22", "2027-2-22", 20270222].map((n) => grp(MS, "2026-10-20", n));
+  check("CG2 months that is not an array → nothing listed (no throw); entries that are not a YYYY-MM month (13, 00, one digit, a number, null, a date, a space) are skipped and a repeat is listed once",
+    badMonths.every((g) => J(g) === J(Object.assign({ now: [], past: [] }, { through: "2027-02", nextStart: "2027-02-22", caption: CAP })))
+      && J(junk && { now: junk.now, past: junk.past }) === J({ now: ["2026-10", "2026-11"], past: [] }), J({ badMonths, junk }));
+  check("CG2 a today that is not a real date hides and drops nothing: every month open in calendar order, no box, no caption",
+    badToday.every((g) => J(g) === J(Object.assign({ now: MS, past: [] }, NONE))), J(badToday.find((g) => J(g) !== J(Object.assign({ now: MS, past: [] }, NONE)))));
+  check("CG2 a next-period start that is not a real date leaves the groups as they are, with no through, nextStart or caption",
+    badNext.every((g) => J(g) === J(Object.assign({ now: NOW5, past: PAST12 }, NONE))), J(badNext.find((g) => J(g) !== J(Object.assign({ now: NOW5, past: PAST12 }, NONE)))));
+  const shuffled = MS.slice().reverse().concat(MS.slice(0, 3)), before = J(shuffled), frozen = Object.freeze(MS.slice().reverse());
+  const gS = H.bmg ? H.bmg(shuffled, "2026-10-20", "2027-02-22") : null, gF = grp(frozen, "2026-10-20", "2027-02-22");
+  check("CG2 the input array is not changed (an unsorted, repeated input sorts and dedupes into NEW arrays; a frozen array works), the result is the owner's case",
+    !!gS && J(shuffled) === before && J(gS) === J(OWNER) && gS.now !== shuffled && gS.past !== shuffled && J(gF) === J(OWNER), J({ gS, gF }));
+  check("CG2 pure: billingMonthGroups reads no clock (no Date.now, no new Date())",
+    !!H.bmg && !/Date\.now|new Date\(\s*\)/.test(String(H.bmg)));
+  {
+    const { execFileSync } = require("child_process");
+    const CASES = [[MS, "2026-10-20", "2027-02-22"], [span("2025-06", "2027-01"), "2026-10-20", "2027-02-01"], [MS, "2027-01-05", "2027-02-22"], [MS, "2026-12-31", "2027-02-22"], [span("2025-06", "2026-11"), "2026-10-20", "2026-11-02"], [MS, "2026-03-01", "2026-03-09"],
+      [span("2027-06", "2028-12"), "2028-11-15", "2029-01-01"]]; // (review fix: the next period starting in a new year)
+    const code = [
+      'const vm = require("vm"), fs = require("fs"), path = require("path");',
+      'const sb = { console, window: {}, document: undefined, navigator: { userAgent: "node-test" }, localStorage: { getItem: () => null, setItem() {}, removeItem() {} }, fetch: () => { throw new Error("no fetch"); }, setTimeout, clearTimeout };',
+      "sb.globalThis = sb; vm.createContext(sb);",
+      `for (const f of ["helpers.js", "config.js"]) vm.runInContext(fs.readFileSync(path.join(${J(ROOT)}, f), "utf8"), sb, { filename: f });`,
+      'const g = vm.runInContext("billingMonthGroups", sb);',
+      `process.stdout.write(JSON.stringify({ off: new Date(2026, 9, 24).getTimezoneOffset(), out: ${J(CASES)}.map((a) => g(...a)) }));`,
+    ].join("\n");
+    const inZone = (TZ) => { try { return JSON.parse(execFileSync(process.execPath, ["-e", code], { env: Object.assign({}, process.env, { TZ }), encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })); } catch (ex) { return { err: String(ex).slice(0, 300) }; } };
+    const here = J(CASES.map((a) => grp(...a))), chi = inZone("America/Chicago"), tok = inZone("Asia/Tokyo");
+    check("CG2 under TZ=America/Chicago (offset 300) and Asia/Tokyo (−540) the owner's case, the month-end and month-start endings, the rollovers, a next period on the March DST Monday and one starting in a new year give the same groups and captions",
+      !!H.bmg && chi.off === 300 && tok.off === -540 && J(chi.out) === here && J(tok.out) === here && here.includes("Mon 3/9/2026") && here.includes("through Dec 2028 — the next period starts Mon 1/1/2029"), J({ chi: J(chi).slice(0, 200), tok: J(tok).slice(0, 200) }));
+  }
+
+  // CG3 — the REAL card block, the clock pinned at Tue 10/20/2026
+  const ba = src.indexOf("const monthly = {};"), bb = ba < 0 ? -1 : src.indexOf("const billMonth = (mk) => {", ba);
+  const block = ba < 0 || bb < 0 || src.indexOf("const monthly = {};", ba + 1) !== -1 ? null : src.slice(ba, bb);
+  let runCard = null;
+  try { runCard = block ? vm.runInContext(`(function (schedule, surgeons, billVisible, Date, billingMonthGroups, publishedThrough, billingMonthOrder) { ${block}\n return { billView }; })`, sandbox, { filename: "cf-billing-block.js" }) : null; } catch (ex) { check("CG3 the billing block compiles", false, String(ex)); }
+  function Pinned() { return new H.RealDate(2026, 9, 20); }
+  const SURG = ["DJA", "MCC", "RPC", "KJH", "REH", "FAK", "ARW"].map((name, i) => ({ id: "s" + (i + 1), name }));
+  const ROT = ["s1", "s2", "s3", "s4", "s5", "s6"];
+  const mondays = (a, b) => { const out = []; for (let d = H.parse(a); H.fmt(d) <= b; d = H.addD(d, 7)) out.push(H.fmt(d)); return out; };
+  const mkSched = (a, b, arwWeeks) => Object.fromEntries(mondays(a, b).map((m, i) => [m, arwWeeks.includes(m)
+    ? { dayCall: "s7", nights: { mon: "s7", tue: "s7", wed: "s7", thu: "s7", wknd: "s7" } }
+    : { dayCall: ROT[i % 6], nights: { mon: ROT[(i + 1) % 6], tue: ROT[(i + 2) % 6], wed: ROT[(i + 3) % 6], thu: ROT[(i + 4) % 6], wknd: ROT[(i + 5) % 6] } }]));
+  const ARW3 = ["2025-08-04", "2026-03-09", "2026-12-07"]; // ARW (s7) holds call only in Aug 2025 (dropped), Mar 2026 (last year), Dec 2026 (open)
+  const SA = mkSched("2025-06-02", "2027-02-15", ARW3), SB = mkSched("2025-06-02", "2027-02-15", ARW3.slice(0, 2)), SC = mkSched("2025-06-02", "2026-09-21", []);
+  const REAL = { bmg: H.bmg, pt: H.pt, bmo: H.bmo };
+  const card = (sched, vis, h) => { try { return runCard ? JSON.parse(J(runCard(sched, SURG, vis, Pinned, h.bmg, h.pt, h.bmo).billView)) : null; } catch (ex) { return { threw: String(ex) }; } };
+  const NEW_ALL = { open: NOW5, box: PAST12, boxLabel: "Last 12 months", caption: CAP };
+  check("CG3 the REAL card block, the scheduler's view (every surgeon), today 10/20/2026 on weeks Mon 6/2/2025 … Sun 2/21/2027: Oct … Feb open with the caption \"This month through Feb 2027 — the next period starts Mon 2/22/2027\"; Sep 2026 … Oct 2025 in \"Last 12 months\"; Jun … Sep 2025 not shown",
+    H.pt && H.pt(SA) === "2027-02-21" && J(card(SA, SURG, REAL)) === J(NEW_ALL), J(card(SA, SURG, REAL)));
+  check("CG3 a member's view (ARW's own row): only ARW's months — Dec 2026 open (with the caption), Mar 2026 in \"Last 12 months\", Aug 2025 dropped",
+    J(card(SA, [SURG[6]], REAL)) === J({ open: ["2026-12"], box: ["2026-03"], boxLabel: "Last 12 months", caption: CAP }), J(card(SA, [SURG[6]], REAL)));
+  check("CG3 nothing for the viewer from this month on (ARW with no Dec week; a schedule that ended Sun 9/27/2026): nothing open, no caption — the \"Last 12 months\" box is what shows (it opens: CG4)",
+    J(card(SB, [SURG[6]], REAL)) === J({ open: [], box: ["2026-03"], boxLabel: "Last 12 months", caption: null })
+      && J(card(SC, SURG, REAL)) === J({ open: [], box: PAST12, boxLabel: "Last 12 months", caption: null }), J([card(SB, [SURG[6]], REAL), card(SC, SURG, REAL)]));
+  const oldSplit = H.bmo ? JSON.parse(J(H.bmo(MS, "2026-10-20"))) : null;
+  check("CG3 an old cached helpers.js with no billingMonthGroups: the card falls back to billingMonthOrder's split, exactly — this month back open (Oct 2026 … Jun 2025), the later months in \"Upcoming months\", no caption",
+    !!oldSplit && J(card(SA, SURG, { bmg: undefined, pt: H.pt, bmo: H.bmo })) === J({ open: oldSplit.done, box: oldSplit.ahead, boxLabel: "Upcoming months", caption: null })
+      && J(oldSplit.ahead) === J(NOW5.slice(1)), J(card(SA, SURG, { bmg: undefined, pt: H.pt, bmo: H.bmo })));
+  check("CG3 no publishedThrough: the same groups, no caption; neither billingMonthGroups nor billingMonthOrder: every month open, newest first, no box — never a throw",
+    J(card(SA, SURG, { bmg: H.bmg, pt: undefined, bmo: H.bmo })) === J(Object.assign({}, NEW_ALL, { caption: null }))
+      && J(card(SA, SURG, { bmg: undefined, pt: undefined, bmo: undefined })) === J({ open: MS.slice().reverse(), box: [], boxLabel: "Upcoming months", caption: null }),
+    J([card(SA, SURG, { bmg: H.bmg, pt: undefined, bmo: H.bmo }), card(SA, SURG, { bmg: undefined, pt: undefined, bmo: undefined })]));
+  check("CG3 pins: the next period's start is publishedThrough + 1 (typeof-guarded), today is the device date, the months are those with a billing day (hasAny); Generate's settings are not read",
+    count('const billPubEnd = typeof publishedThrough === "function" ? publishedThrough(schedule) : null;') === 1
+      && count('const billGroups = typeof billingMonthGroups === "function" ? billingMonthGroups(billMonths, billToday, billPubEnd ? fmt(addD(parse(billPubEnd), 1)) : null) : null;') === 1
+      && count("const billToday = fmt(new Date());") === 1 && count("const billMonths = sortedMonths.filter(hasAny);") === 1 && count("billingMonthGroups(") === 1
+      && !!block && !/startMonth|startYear|numWeeks|mondays|genStart/.test(block));
+
+  // CG4 — the render
+  const iT = src.indexOf("💰 Billing Summary"), iCap = src.indexOf("{billView.caption && ("), iEx = src.indexOf("Breakdown by calendar month."), iOpen = src.indexOf("{billView.open.map(billMonth)}"),
+    iDet = src.indexOf("<details open={billView.open.length === 0}"), iBox = src.indexOf("{billView.box.map(billMonth)}"), iF = src.indexOf("Svc Days + Nights + Wknd Days + Holiday Days = Total Call Days.");
+  check("CG4 the card: the title, the caption (only when there is one), the explainer, the open months, then ONE <details> holding the box's months — \"Last 12 months (n)\" — open by default only when nothing is open, then the formula note",
+    [iT, iCap, iEx, iOpen, iDet, iBox, iF].every((x, k, a) => x > 0 && (k === 0 || x > a[k - 1]))
+      && count("{billView.caption && (") === 1 && count("{billView.open.map(billMonth)}") === 1 && count("<details open={billView.open.length === 0}") === 1
+      && count("{billView.box.map(billMonth)}") === 1 && count("{billView.boxLabel} ({billView.box.length})") === 1 && count("{billView.box.length > 0 && (") === 1
+      && count('{ open: billGroups.now, box: billGroups.past, boxLabel: "Last 12 months", caption: billGroups.now.length > 0 ? billGroups.caption : null }') === 1,
+    J({ iT, iCap, iEx, iOpen, iDet, iBox, iF }));
+  check("CG4 the old \"Upcoming months\" box is gone from the render (its months are open now): no billOrder.done / billOrder.ahead map, the label only in the old-helpers fallback",
+    count("{billOrder.done.map(billMonth)}") === 0 && count("{billOrder.ahead.map(billMonth)}") === 0 && count("Upcoming months (") === 0
+      && count('{ open: billOrder.done, box: billOrder.ahead, boxLabel: "Upcoming months", caption: null }') === 1);
+  const nsrc = src.replace(/\r\n/g, "\n");
+  const capM = nsrc.match(/\{billView\.caption && \(\n[^\n]*\n\s*<div style=\{(\{[^\n]*?\})\}>\{billView\.caption\}<\/div>\n\s*\)\}/);
+  const capF = (() => { try { return capM ? vm.runInContext(`(function (dk) { return (${capM[1]}); })`, sandbox) : null; } catch (ex) { return null; } })();
+  const cL = capF && capF(false), cD = capF && capF(true);
+  const cardLight = (fs.readFileSync(path.join(ROOT, "app-styles.js"), "utf8").match(/\bcard: \{ background:"(#[0-9a-fA-F]{6})"/) || [])[1] || null;
+  // (the card's dark fill: the rule naming React's own "background: rgb(255, 255, 255)" — read from the joined selector
+  // list, white space squeezed out: DARK_SHEET splits a list on its commas and trims, and an rgb() holds commas of its own)
+  const squash = (s) => String(s).replace(/\s+/g, "");
+  const cardRule = DARK_SHEET.rules.find((r) => squash(r.sels.join(",")).includes(squash('div[style*="background: rgb(255, 255, 255)"]')) && /!important/.test(r.decl));
+  const cardDark = cardRule ? ((cardRule.decl.match(/(?:^|;)\s*background\s*:\s*(#[0-9a-fA-F]{6})/) || [])[1] || null) : null;
+  const rgbOf = (h) => (DARK_SHEET.hex(h) ? `rgb(${h.slice(1).match(/../g).map((x) => parseInt(x, 16)).join(", ")})` : "?");
+  const sheetHits = (h) => DARK_SHEET.rules.some((r) => squash(r.sels.join(",")).includes(squash(rgbOf(h))));
+  const cf4 = { cL: cL && cL.color, cD: cD && cD.color, cardLight, cardDark, crL: DARK_SHEET.cr(cL && cL.color, cardLight), crD: DARK_SHEET.cr(cD && cD.color, cardDark) };
+  check("CG4 the caption reads at 4.5:1+ on the card in both modes (light: its colour on css.card's white; dark: on the sheet's dark card fill), 12px+, and no dark-sheet rule recolours it",
+    !!capM && cardLight === "#ffffff" && DARK_SHEET.hex(cardDark) && cf4.crL >= 4.5 && cf4.crD >= 4.5 && cL.fontSize >= 12 && cD.fontSize >= 12
+      && !sheetHits(cL.color) && !sheetHits(cD.color) && sheetHits("#2a3e50"), J(cf4)); // (#2a3e50: the one inline colour the sheet does name, as rgb() — the detector's positive control)
+
+  // CG4 review fixes (2026-10-20) — the box's width, the column headers, a month's name; styles evaluated from the source
+  const boxM = nsrc.match(/<details open=\{billView\.open\.length === 0\} style=\{(\{[^\n]*?\})\}>\n\s*<summary style=\{(\{[^\n]*?\})\}>\n\s*\{billView\.boxLabel\} \(\{billView\.box\.length\}\)\n\s*<\/summary>\n\s*<div style=\{(\{[^\n]*?\})\}>\{billView\.box\.map\(billMonth\)\}<\/div>/);
+  const evDk = (code) => { try { return vm.runInContext(`(function (dk) { return (${code}); })`, sandbox); } catch (ex) { return null; } };
+  const pxV = (v) => (typeof v === "number" ? v : parseFloat(String(v == null ? "0" : v)) || 0);
+  // a padding / margin shorthand (plus its Left / Right longhands) → { t, r, b, l } in px
+  const box4 = (s, prop) => {
+    const p = s && s[prop] != null ? String(s[prop]).trim().split(/\s+/).map(pxV) : [0];
+    const [t, r, b, l] = p.length === 1 ? [p[0], p[0], p[0], p[0]] : p.length === 2 ? [p[0], p[1], p[0], p[1]] : p.length === 3 ? [p[0], p[1], p[2], p[1]] : p;
+    return { t, b, r: s && s[prop + "Right"] != null ? pxV(s[prop + "Right"]) : r, l: s && s[prop + "Left"] != null ? pxV(s[prop + "Left"]) : l };
+  };
+  const bwV = (s) => pxV((String(s && s.border).match(/(\d+(?:\.\d+)?)px/) || [])[1]);
+  const boxF = boxM ? [evDk(boxM[1]), evDk(boxM[2]), evDk(boxM[3])] : [null, null, null];
+  const inset = (dk) => {
+    const [det, sum, con] = boxF.map((f) => f && f(dk));
+    if (!det || !sum || !con) return null;
+    const side = (k) => box4(det, "padding")[k] + bwV(det) + box4(con, "padding")[k] + box4(con, "margin")[k];
+    return { l: side("l"), r: side("r"), sumL: box4(det, "padding").l + box4(sum, "padding").l, bg: det.background };
+  };
+  const inL = inset(false), inD = inset(true);
+  check("CG4 review fix: the box's months keep nearly the card's full width — each boxed table sits at most 3px in from the card's content edge on either side (the box's 10px side padding + its 1px border took 22px from every boxed table on a phone), while the summary keeps its 8px+ inset from the border; both modes",
+    !!inL && !!inD && [inL, inD].every((x) => x.l <= 3 && x.r <= 3 && x.sumL >= 8), J({ inL, inD }));
+  const thS2M = nsrc.match(/\nconst thS2 = (\{[^\n]*?\});\n/);
+  const thS2V = (() => { try { return thS2M ? vm.runInContext(`(${thS2M[1]})`, sandbox) : null; } catch (ex) { return null; } })();
+  const bmA = nsrc.indexOf("const billMonth = (mk) => {"), bmR = bmA < 0 ? -1 : nsrc.indexOf("return (", bmA), bmT = bmA < 0 ? -1 : nsrc.indexOf("</thead>", bmA);
+  const bmPre = bmA < 0 || bmR < 0 ? "" : nsrc.slice(bmA + "const billMonth = (mk) => {".length, bmR);
+  const bmHead = bmA < 0 || bmT < 0 ? "" : nsrc.slice(bmA, bmT);
+  const thList = [...bmHead.matchAll(/<th style=\{(\{[^{}\n]*\}|[A-Za-z_$][\w$]*)\}>([^<\n]*)<\/th>/g)].map((m) => ({ label: m[2], expr: m[1] }));
+  const thF = (() => { try { return thList.length ? vm.runInContext(`(function (thS2, monthly, mk, dk) { ${bmPre}\n return [${thList.map((t) => `(${t.expr})`).join(", ")}]; })`, sandbox) : null; } catch (ex) { return null; } })();
+  const thL = (() => { try { return thF ? thF(thS2V, {}, "2026-10", false) : null; } catch (ex) { return null; } })();
+  const thDark = DARK_SHEET.forced("th", "color");
+  const p2 = { labels: thList.map((t) => t.label), light: thL && thL.map((s) => [s.color, DARK_SHEET.cr(s.color, cardLight), DARK_SHEET.cr(s.color, inL && inL.bg)]), thDark, onDarkCard: DARK_SHEET.cr(thDark, cardDark), onDarkBox: DARK_SHEET.cr(thDark, inD && inD.bg) };
+  check("CG4 review fix: the billing column headers read at 4.5:1+ — light: every header's colour on the card's white and on the box's #f4f6f8 fill (thS2's #7a8a98 was 3.55:1 and 3.28:1); dark: the sheet's forced th colour on the dark card and on the box's dark fill",
+    !!thS2V && J(p2.labels) === J(["Surgeon", "Total Days", "Svc Days", "Nights", "Wknd Days", "Holiday"]) && !!thL && thL.length === 6
+      && p2.light.every(([, onCard, onBox]) => onCard >= 4.5 && onBox >= 4.5) && inL.bg === "#f4f6f8" && DARK_SHEET.hex(thDark) && p2.onDarkCard >= 4.5 && p2.onDarkBox >= 4.5, J(p2));
+  const lblM = bmHead.match(/<div style=\{(\{[^\n]*?\})\}>\{moLabel\(mk\)\}<\/div>/);
+  const lblF = lblM ? evDk(lblM[1]) : null, lblL = lblF && lblF(false), lblD = lblF && lblF(true);
+  const detDiv = DARK_SHEET.forced("details div", "color");
+  const p3 = { light: lblL && lblL.color, dark: lblD && lblD.color, onCard: DARK_SHEET.cr(lblL && lblL.color, cardLight), onBox: DARK_SHEET.cr(lblL && lblL.color, inL && inL.bg), onDarkCard: DARK_SHEET.cr(lblD && lblD.color, cardDark), detDiv, detDivOnDarkBox: DARK_SHEET.cr(detDiv, inD && inD.bg) };
+  check("CG4 review fix: a month's name reads at 4.5:1+ — light on the card and on the box's fill; dark: an open month's on the dark card (#1a6fa8 was 2.9:1 there: the sheet's div[style*=\"color:#1a6fa8\"] never matches React's rgb() form), no dark-sheet rule recolouring it, and a boxed month's in the sheet's forced \"details div\" colour on the box's dark fill",
+    !!lblM && p3.onCard >= 4.5 && p3.onBox >= 4.5 && p3.onDarkCard >= 4.5 && !sheetHits(p3.dark) && DARK_SHEET.hex(detDiv) && p3.detDivOnDarkBox >= 4.5 && lblD.fontSize >= 12, J(p3));
+}
+
 // ─── BC. Generate & Publish asks once; Stats → Billing opens on the newest months (UX audit 2026-10-19) ───
 // Generate & Publish ran on the tap and a publish pushes and emails everyone,
 // so one mis-tap published. Stats → Billing listed its months oldest first, so
@@ -4728,6 +5348,13 @@ const DARK_SHEET = (() => {
 //       hold the sentence true
 //   BC6 the Upcoming months box in dark mode: a dark border, the sheet's
 //       forced summary blue at 4.5:1+, a 44px-tall summary to tap
+// Changed ON PURPOSE 2026-10-20 (owner request, section CG): the card no
+// longer splits its months with billingMonthOrder — billingMonthGroups opens
+// this month until the next period and collapses the last 12 months.
+// billingMonthOrder stays (an old cached index.html calls it; it is the
+// card's fallback for an old cached helpers.js), so BC3 still runs it as is;
+// BC4 runs the fallback path, and the new path on the same live weeks; BC5
+// and BC6 read the new render (the one box is now "Last 12 months").
 console.log("\nBC. Generate & Publish asks once; Billing opens on the newest months");
 {
   const H = vm.runInContext('({ pct: typeof publishConfirmText === "function" ? publishConfirmText : null, bmo: typeof billingMonthOrder === "function" ? billingMonthOrder : null, fmt, parse, addD, RealDate: Date })', sandbox);
@@ -4736,7 +5363,9 @@ console.log("\nBC. Generate & Publish asks once; Billing opens on the newest mon
   const pub = (ms) => Object.fromEntries(ms.map((m) => [m, { dayCall: "s1", nights: { mon: "s2" } }]));
   const pct = (ms, o) => { try { return H.pct ? H.pct(ms, o) : null; } catch (ex) { return "threw " + String(ex); } };
   // (review fix: it said "Everyone will be notified by push and email." — but a result that needs your OK opens the preview, and its Accept & Publish notifies no one; BC2 holds this true)
-  const NOTE = "If it publishes straight away, everyone is notified by push and email (per their notification settings). If anything needs your OK, the preview opens instead — publishing from there notifies no one.";
+  // (review fix 2026-10-20, on purpose: Accept & Publish still sends nothing itself, but the Calendar then offers
+  // 📣 Notify everyone — sync-guards CD — so the line says the scheduler chooses, not that no one is told)
+  const NOTE = "If it publishes straight away, everyone is notified by push and email (per their notification settings). If anything needs your OK, the preview opens instead — after ✓ Accept & Publish there, you choose whether to notify everyone.";
   const NOV = weeksFrom("2026-11-16", 14), OCT12 = weeksFrom("2026-10-12", 14);
   const upTo = pub(weeksFrom("2026-08-03", 15)); // published through the week of 11/9, the week before NOV
 
@@ -4809,17 +5438,24 @@ console.log("\nBC. Generate & Publish asks once; Billing opens on the newest mon
     ok.asked[0] === wantAsk && /Nov 16, 2026 → Feb 21, 2027 \(14 weeks\)/.test(ok.asked[0] || "") && /3 of the 14 weeks/.test(ok.asked[0] || ""), JSON.stringify(ok.asked[0]));
   const dg = src.indexOf("  const doGenerateAndNotify = async () => {"), dge = dg < 0 ? -1 : src.indexOf("\n  };", dg);
   const dgBody = dg < 0 || dge < 0 ? "" : src.slice(dg, dge);
+  // (2026-10-20: doGenerateAndNotify sends through notifyPublished — the one sender Accept & Publish's banner uses too,
+  // sync-guards CD — so the run below slices it with doGenerateAndNotify, on purpose; it asks nothing either)
+  const np = src.indexOf("  const notifyPublished = async (ep, period) => {"), npe = np < 0 ? -1 : src.indexOf("\n  };", np);
+  const npBody = np < 0 || npe < 0 || src.indexOf("  const notifyPublished = async (ep, period) => {", np + 1) !== -1 ? "" : src.slice(np, npe);
   check("BC2 pins: no bare onClick={doGenerateAndNotify}; ONE call site, behind the confirm; doGenerateAndNotify itself asks nothing (one question, not two)",
     count("onClick={doGenerateAndNotify}") === 0 && count("doGenerateAndNotify()") === 1
       && count("if (confirm(publishConfirmText(mondays, { schedule: scheduleRef.current, today: fmt(new Date()) }))) doGenerateAndNotify();") === 1
-      && dgBody.length > 0 && !dgBody.includes("confirm("), JSON.stringify({ bare: count("onClick={doGenerateAndNotify}"), calls: count("doGenerateAndNotify()"), body: dgBody.length }));
+      && dgBody.length > 0 && !dgBody.includes("confirm(") && npBody.length > 0 && !npBody.includes("confirm("), JSON.stringify({ bare: count("onClick={doGenerateAndNotify}"), calls: count("doGenerateAndNotify()"), body: dgBody.length, sender: npBody.length }));
   // What the question's last line says, held true (review fix): the REAL doGenerateAndNotify, run on each doGenerate result
   let mkDgn = null;
   // (mondays, periodText: the e-mail's period is taken from the Generate Mondays since BD — UX audit 2026-10-19 — through the component's one line, periodText, since its review fixes)
-  try { mkDgn = dgBody ? vm.runInContext(`(function (env) { const { sessionEpochRef, doGenerate, addNotification, sendEmailNotif, MO, startMonth, endMoIdx, startYear, mondays, periodText } = env;\n${dgBody}\n  };\n return doGenerateAndNotify; })`, sandbox, { filename: "bc-dgn.js" }) : null; } catch (ex) { mkDgn = null; }
+  // (review fix 2026-10-20, on purpose: notifyPublished also takes down a pending Accept & Publish banner — justPublished,
+  // notifiedRef, setJustPublished; none is up here, CD7 runs that)
+  try { mkDgn = dgBody && npBody ? vm.runInContext(`(function (env) { const { sessionEpochRef, doGenerate, addNotification, sendEmailNotif, MO, startMonth, endMoIdx, startYear, mondays, periodText, justPublished, notifiedRef, setJustPublished } = env;\n${npBody}\n  };\n${dgBody}\n  };\n return doGenerateAndNotify; })`, sandbox, { filename: "bc-dgn.js" }) : null; } catch (ex) { mkDgn = null; }
   const dgn = async (result) => {
     const log = [];
     await mkDgn({ sessionEpochRef: { current: 0 }, doGenerate: async () => result, MO: ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"], startMonth: 10, endMoIdx: 1, startYear: 2026, mondays: NOV.map(H.parse), periodText: "Nov 16, 2026 – Feb 21, 2027",
+      justPublished: null, notifiedRef: { current: null }, setJustPublished: () => {},
       addNotification: async (type, title, msg, data, targets) => { log.push(`notice ${type} to ${targets === null ? "everyone" : JSON.stringify(targets)}`); },
       sendEmailNotif: (type, data, targets) => { log.push(`e-mail ${type} to ${targets === null ? "everyone" : JSON.stringify(targets)}`); } })();
     return log;
@@ -4833,7 +5469,8 @@ console.log("\nBC. Generate & Publish asks once; Billing opens on the newest mon
       && apBody.length > 200 && !/addNotification\(|sendEmailNotif\(|sendPushNotif\(/.test(apBody),
     JSON.stringify({ dgnRuns, acceptPreview: apBody.length }));
 
-  // BC3 — billingMonthOrder, executed
+  // BC3 — billingMonthOrder, executed (2026-10-20: no longer the card's split — section CG — but unchanged and
+  // still defined: an old cached index.html calls it, and the card falls back to it under an old cached helpers.js)
   const MONTHS = ["2026-03", "2025-12", "2026-10", "2027-01", "2026-11", "2026-09", "2026-01", "2026-12"];
   const input = MONTHS.slice();
   const ord = (ms, today) => { try { return H.bmo ? JSON.parse(JSON.stringify(H.bmo(ms, today))) : null; } catch (ex) { return { threw: String(ex) }; } };
@@ -4861,33 +5498,49 @@ console.log("\nBC. Generate & Publish asks once; Billing opens on the newest mon
   // new Date() inside the block is the device clock: a stand-in returns 2026-05-15 (helpers' own Date is untouched)
   function PinnedDate() { return new H.RealDate(2026, 4, 15); }
   let runBill = null;
-  try { runBill = billBlock ? vm.runInContext(`(function (schedule, surgeons, billVisible, Date) { ${billBlock}\n return { monthly, billOrder }; })`, sandbox, { filename: "bc-billing-block.js" }) : null; } catch (ex) { check("BC4 the billing block compiles", false, String(ex)); }
+  // (2026-10-20, changed ON PURPOSE — section CG: the block now groups with billingMonthGroups and keeps billingMonthOrder
+  // as its fallback for an old cached helpers.js; billingMonthGroups is a parameter here, so passing undefined runs that
+  // fallback — main's split, which these checks keep pinning — and passing the real one runs the new grouping, billView)
+  try { runBill = billBlock ? vm.runInContext(`(function (schedule, surgeons, billVisible, Date, billingMonthGroups) { ${billBlock}\n return { monthly, billOrder, billView }; })`, sandbox, { filename: "bc-billing-block.js" }) : null; } catch (ex) { check("BC4 the billing block compiles", false, String(ex)); }
   const SURGB = ["DJA", "MCC", "RPC", "KJH", "REH", "FAK", "ARW"].map((name, i) => ({ id: "s" + (i + 1), name }));
   const oldMonthly = JSON.parse(JSON.stringify(vm.runInContext("(function (schedule, surgeons) { " + oldBlockB + "\n return monthly; })", sandbox)(liveB, SURGB)));
   const daysOf = (r) => (r ? (r.dc || 0) + (r.nights || 0) + (r.wknd || 0) + (r.hol || 0) : 0);
   const shownByMain = (vis) => Object.keys(oldMonthly).sort().filter((mk) => vis.some((s) => daysOf(oldMonthly[mk][s.id]) > 0)); // main's loop: oldest first, a month with nothing for anyone shown skipped
-  const runFor = (vis) => { try { return runBill ? JSON.parse(JSON.stringify(runBill(liveB, SURGB, vis, PinnedDate).billOrder)) : null; } catch (ex) { return { threw: String(ex) }; } };
+  const BMG = vm.runInContext('typeof billingMonthGroups === "function" ? billingMonthGroups : null', sandbox);
+  const runFor = (vis) => { try { return runBill ? JSON.parse(JSON.stringify(runBill(liveB, SURGB, vis, PinnedDate, undefined).billOrder)) : null; } catch (ex) { return { threw: String(ex) }; } };
+  const viewFor = (vis) => { try { return runBill && BMG ? JSON.parse(JSON.stringify(runBill(liveB, SURGB, vis, PinnedDate, BMG).billView)) : null; } catch (ex) { return { threw: String(ex) }; } };
   const allView = runFor(SURGB), mainAll = shownByMain(SURGB);
   const LIVE_ORDER = { done: ["2026-05", "2026-04", "2026-03", "2026-02", "2026-01", "2025-12"], ahead: ["2026-08", "2026-09"] };
-  check("BC4 the REAL billing block on the 19 live weeks, today 2026-05-15: May first, back to December 2025; August and September under Upcoming — exactly the months main listed (October bills nothing, as on main), none added or dropped",
+  check("BC4 the REAL billing block on the 19 live weeks, today 2026-05-15, an old cached helpers.js (no billingMonthGroups — the fallback): May first, back to December 2025; August and September under Upcoming — exactly the months main listed (October bills nothing, as on main), none added or dropped",
     J(allView) === J(LIVE_ORDER) && J(allView && allView.done.concat(allView.ahead).sort()) === J(mainAll), J({ allView, mainAll }));
   const memberView = runFor([SURGB[1]]), mainMember = shownByMain([SURGB[1]]);
-  check("BC4 a member's view (MCC's own row): only the months with a billing day for MCC, newest first — the same months main listed for them",
+  check("BC4 a member's view (MCC's own row), the same fallback: only the months with a billing day for MCC, newest first — the same months main listed for them",
     !!memberView && J(memberView.done.concat(memberView.ahead).sort()) === J(mainMember) && J(memberView.done) === J(mainMember.filter((m) => m <= "2026-05").reverse())
       && J(memberView.ahead) === J(mainMember.filter((m) => m > "2026-05")) && memberView.ahead.length > 0 && mainMember.length < mainAll.length, J({ memberView, mainMember }));
+  // (2026-10-20, section CG) the new grouping on the same live weeks: published through Sun 10/4/2026, so the open months
+  // run "This month through Oct 2026"; every month main listed is still listed — all are within the year before May 2026
+  const newAll = viewFor(SURGB), newMember = viewFor([SURGB[1]]);
+  check("BC4 (section CG) the new grouping, the same live weeks and clock: May, August, September open (calendar order) under \"This month through Oct 2026 — the next period starts Mon 10/5/2026\"; April back to December 2025 in \"Last 12 months\" — main's months, none dropped; MCC's view is MCC's months the same way",
+    J(newAll) === J({ open: ["2026-05", "2026-08", "2026-09"], box: ["2026-04", "2026-03", "2026-02", "2026-01", "2025-12"], boxLabel: "Last 12 months", caption: "This month through Oct 2026 — the next period starts Mon 10/5/2026" })
+      && !!newMember && J(newMember.open) === J(mainMember.filter((m) => m >= "2026-05")) && J(newMember.box) === J(mainMember.filter((m) => m < "2026-05").reverse()),
+    J({ newAll, newMember }));
 
-  // BC5 — the render
-  const iDone = src.indexOf("{billOrder.done.map(billMonth)}"), iDet = src.indexOf("<details open={billOrder.done.length === 0}"), iAhead = src.indexOf("{billOrder.ahead.map(billMonth)}"), iFormula = src.indexOf("Svc Days + Nights + Wknd Days + Holiday Days = Total Call Days.");
-  check("BC5 the card lists the done months, then a collapsed <details> \"Upcoming months (n)\" holding the later ones (open only when there is no done month), then the formula note",
-    count("{billOrder.done.map(billMonth)}") === 1 && count("{billOrder.ahead.map(billMonth)}") === 1 && count("<details open={billOrder.done.length === 0}") === 1
-      && count("Upcoming months ({billOrder.ahead.length})") === 1 && count("{billOrder.ahead.length > 0 && (") === 1
-      && iDone > 0 && iDet > iDone && iAhead > iDet && iFormula > iAhead, J({ iDone, iDet, iAhead, iFormula }));
-  check("BC5 the oldest-first month loop is gone; the order comes from billingMonthOrder over the months with a billing day, today's device date",
-    count("{sortedMonths.map(mk => {") === 0 && count("const billOrder = billingMonthOrder(sortedMonths.filter(hasAny), fmt(new Date()));") === 1 && count("billingMonthOrder(") === 1);
+  // BC5 — the render (2026-10-20, changed ON PURPOSE — section CG: the open months are billView.open — this month until the
+  // next period — and the one collapsed box is billView.box, "Last 12 months"; "Upcoming months" only under an old helpers.js)
+  const iOpen = src.indexOf("{billView.open.map(billMonth)}"), iDet = src.indexOf("<details open={billView.open.length === 0}"), iBoxM = src.indexOf("{billView.box.map(billMonth)}"), iFormula = src.indexOf("Svc Days + Nights + Wknd Days + Holiday Days = Total Call Days.");
+  check("BC5 the card lists the open months, then a collapsed <details> holding the box's months (open only when nothing is open), then the formula note; the old done/ahead render is gone",
+    count("{billView.open.map(billMonth)}") === 1 && count("{billView.box.map(billMonth)}") === 1 && count("<details open={billView.open.length === 0}") === 1
+      && count("{billView.boxLabel} ({billView.box.length})") === 1 && count("{billView.box.length > 0 && (") === 1
+      && count("{billOrder.done.map(billMonth)}") === 0 && count("{billOrder.ahead.map(billMonth)}") === 0
+      && iOpen > 0 && iDet > iOpen && iBoxM > iDet && iFormula > iBoxM, J({ iOpen, iDet, iBoxM, iFormula }));
+  check("BC5 the oldest-first month loop is gone; the months come from billingMonthGroups over the months with a billing day and today's device date — billingMonthOrder only as the old-helpers fallback (one call each)",
+    count("{sortedMonths.map(mk => {") === 0 && count("const billMonths = sortedMonths.filter(hasAny);") === 1 && count("const billToday = fmt(new Date());") === 1
+      && count("billingMonthGroups(") === 1 && count("billingMonthOrder(") === 1
+      && count('const billOrder = billGroups ? null : typeof billingMonthOrder === "function" ? billingMonthOrder(billMonths, billToday) : { done: billMonths.slice().reverse(), ahead: [] };') === 1);
 
-  // BC6 — the Upcoming months box, its styles evaluated from the source, against the app's real dark sheet
+  // BC6 — the box (2026-10-20: "Last 12 months"; the same styles), evaluated from the source, against the app's real dark sheet
   const nsrcBC = src.replace(/\r\n/g, "\n");
-  const detM = nsrcBC.match(/<details open=\{billOrder\.done\.length === 0\} style=\{(\{[^\n]*?\})\}>\n\s*<summary style=\{(\{[^\n]*?\})\}>\n\s*Upcoming months \(\{billOrder\.ahead\.length\}\)/);
+  const detM = nsrcBC.match(/<details open=\{billView\.open\.length === 0\} style=\{(\{[^\n]*?\})\}>\n\s*<summary style=\{(\{[^\n]*?\})\}>\n\s*\{billView\.boxLabel\} \(\{billView\.box\.length\}\)/);
   const evBC = (code) => { try { return vm.runInContext(`(function (dk) { return (${code}); })`, sandbox); } catch (ex) { return null; } };
   const detF = detM ? evBC(detM[1]) : null, sumF = detM ? evBC(detM[2]) : null;
   const pxBC = (v) => (typeof v === "number" ? v : parseFloat(String(v || "0")) || 0);
@@ -4896,7 +5549,7 @@ console.log("\nBC. Generate & Publish asks once; Billing opens on the newest mon
   const dD = detF && detF(true), dL = detF && detF(false), sD = sumF && sumF(true), sL = sumF && sumF(false);
   const sumBlue = DARK_SHEET.forced("details summary", "color");
   const bc6 = { dBorder: borderHex(dD), dBg: dD && dD.background, sumBlue, crSum: DARK_SHEET.cr(sumBlue, dD && dD.background), tapDark: tapH(sD), tapLight: tapH(sL), lBorder: borderHex(dL), lBg: dL && dL.background };
-  check("BC6 dark mode (review fix): the Upcoming months box has a DARK border (it was #d0d8e0 on the dark card) and a fill the sheet's forced summary blue (details summary { color … !important }) reads on at ≥ 4.5:1 (it was ~4.2:1); light mode keeps its #d0d8e0 border on #f4f6f8",
+  check("BC6 dark mode (review fix): the collapsed box (\"Last 12 months\" since 2026-10-20; \"Upcoming months\" under an old helpers.js) has a DARK border (it was #d0d8e0 on the dark card) and a fill the sheet's forced summary blue (details summary { color … !important }) reads on at ≥ 4.5:1 (it was ~4.2:1); light mode keeps its #d0d8e0 border on #f4f6f8",
     !!detM && DARK_SHEET.hex(bc6.dBorder) && DARK_SHEET.lum(bc6.dBorder) < 0.1 && DARK_SHEET.hex(bc6.dBg) && DARK_SHEET.lum(bc6.dBg) < 0.05 && DARK_SHEET.hex(sumBlue) && bc6.crSum >= 4.5
       && bc6.lBorder === "#d0d8e0" && bc6.lBg === "#f4f6f8", JSON.stringify(bc6));
   check("BC6 the summary is a phone-sized target (review fix): one 16px line with 14px above and below = 44px, in both modes (it was a ~14px line)",
@@ -5697,17 +6350,21 @@ console.log("\nAM. Mine's name picker is a view, not a sign-in");
     && !src.includes("const svcSid = (wk.dayCallOverrides && wk.dayCallOverrides[ds]) || wk.dayCall;") && !/\]\.(dc|nights|wknd) \+= 1;/.test(newBlock || "x].dc += 1;"));
   check("V8 Holiday header + cell after Wknd Days; rows default hol to 0",
     // \r?\n: a Windows checkout has CRLF, CI's has LF
-    (src.match(/<th style=\{thS2\}>Wknd Days<\/th>\r?\n[ \t]*<th style=\{thS2\}>Holiday<\/th>/g) || []).length === 1
+    // (2026-10-20, changed ON PURPOSE — section CG review fix: the billing headers use billTh, thS2 with a 4.5:1+ colour)
+    (src.match(/<th style=\{billTh\}>Wknd Days<\/th>\r?\n[ \t]*<th style=\{billTh\}>Holiday<\/th>/g) || []).length === 1
     && (src.match(/<td style=\{tdS\}>\{r\.wknd\|\|"–"\}<\/td>\r?\n[ \t]*<td style=\{tdS\}>\{r\.hol\|\|"–"\}<\/td>/g) || []).length === 1
     && count("{dc:0,nights:0,wknd:0,hol:0}") === 1 && count("{ dc:0, nights:0, wknd:0, hol:0 }") === 1);
   // (2026-10-19, section BC: the month ORDER changed deliberately — newest first, later months in a
   // collapsed "Upcoming months" — through helpers.js billingMonthOrder; which months are listed and every number are unchanged)
-  check("V8 billingDays includes Holiday and feeds both the Total Days cell and hasAny; the formula note and explainer name it; row visibility by authenticated identity is unchanged; the months are listed through billingMonthOrder (section BC)",
+  // (2026-10-20, changed ON PURPOSE — section CG, owner request: the months are grouped by helpers.js billingMonthGroups —
+  // this month until the next period open, the last 12 months collapsed, older months not shown — over the same hasAny
+  // months; billingMonthOrder is the old-helpers fallback. Every number, hasAny and row visibility are unchanged.)
+  check("V8 billingDays includes Holiday and feeds both the Total Days cell and hasAny; the formula note and explainer name it; row visibility by authenticated identity is unchanged; the months are grouped through billingMonthGroups (section CG; billingMonthOrder the fallback)",
     count("const billingDays = (r) => (r.dc||0) + (r.nights||0) + (r.wknd||0) + (r.hol||0);") === 1 && count("return billingDays(monthData[s.id] || {}) > 0;") === 1
     && /const days = billingDays\(r\);[\s\S]{0,700}\{days\|\|"–"\}/.test(src) && count("const days = billingDays(r);") === 1
     && count("const billVisible = canSeeAllBilling ? surgeons : surgeons.filter(s => s.id === ownBillId);") === 1
-    && count("const billOrder = billingMonthOrder(sortedMonths.filter(hasAny), fmt(new Date()));") === 1
-    && count("{billOrder.done.map(billMonth)}") === 1 && count("{billOrder.ahead.map(billMonth)}") === 1
+    && count("const billMonths = sortedMonths.filter(hasAny);") === 1 && count("billingMonthGroups(billMonths, billToday,") === 1 && count("billingMonthOrder(billMonths, billToday)") === 1
+    && count("{billView.open.map(billMonth)}") === 1 && count("{billView.box.map(billMonth)}") === 1
     && count("Svc Days + Nights + Wknd Days + Holiday Days = Total Call Days.") === 1
     && count("A covered holiday bills 2 days (the day and the night) to the surgeon who covers it, and that date's regular credits don't count.") === 1);
 
@@ -6255,9 +6912,11 @@ console.log("\nAO. On Call Today banner on a covered holiday");
 
   // X8 — the Next call card's own code (sliced verbatim), run on real roles
   const na = src.indexOf("            const _nextUp = [];"), nb = na < 0 ? -1 : src.indexOf("_nextUp.sort((a, b) => a.start - b.start);", na);
-  const nextRun = na > 0 && nb > 0 ? vm.runInContext(`(function (myShifts, _today0, _DAY, _startOff) { ${src.slice(na, nb + "_nextUp.sort((a, b) => a.start - b.start);".length)}\n return _nextUp; })`, sandbox) : null;
+  // (review fix 2026-10-20, on purpose: the builder reads the clock, _now — a service week's Saturday 24h ends Sun 7a,
+  // sync-guards CF7; run here at the day's midnight, as before)
+  const nextRun = na > 0 && nb > 0 ? vm.runInContext(`(function (myShifts, _today0, _DAY, _startOff, _now) { ${src.slice(na, nb + "_nextUp.sort((a, b) => a.start - b.start);".length)}\n return _nextUp; })`, sandbox) : null;
   const P = (ds) => vm.runInContext(`parse("${ds}")`, sandbox);
-  const nextOf = (sid, today, sched) => (nextRun && mineRun ? nextRun(mineRun(sched || LIVE, sid, nameOf, holidayEmoji, today).myShifts, P(today), 86400000, { dayCall: 0, mon: 0, tue: 1, wed: 2, thu: 3, wknd: 4 })
+  const nextOf = (sid, today, sched) => (nextRun && mineRun ? nextRun(mineRun(sched || LIVE, sid, nameOf, holidayEmoji, today).myShifts, P(today), 86400000, { dayCall: 0, mon: 0, tue: 1, wed: 2, thu: 3, wknd: 4 }, P(today))
     .map((e) => ({ type: e.type, start: vm.runInContext(`fmt`, sandbox)(e.start), end: vm.runInContext(`fmt`, sandbox)(e.end), span: e.span, days: e.days })) : []);
   const rpcNext = nextOf("s3", "2026-09-01").filter((e) => e.start <= "2026-09-13");
   const fakNext = nextOf("s6", "2026-09-01").filter((e) => e.start <= "2026-09-13");
@@ -7076,6 +7735,19 @@ console.log("\nAR. Requests tab copy + the APP trade note");
   // overwrote it with "the scheduler has been notified"). A thrown insert releases the
   // guard and keeps the form; a tap while a submit is in flight shows nothing at all.
   {
+    // (review fix 2026-10-20 — F5) every "has been notified" in the page, by place: "Everyone has been notified." once,
+    // inside notifyJustPublished (after its notice was saved); "Nobody has been notified yet." twice — the banner's own
+    // line, and the comment over its state (a `//` line) — and no third copy of either, nor any other "has been notified"
+    const notifiedPlacesAA3 = (() => {
+      const n = src.replace(/\r\n/g, "\n"), at = (s) => { const r = []; for (let i = n.indexOf(s); i >= 0; i = n.indexOf(s, i + 1)) r.push(i); return r; };
+      const nj = n.indexOf("  const notifyJustPublished = async () => {"), njEnd = nj < 0 ? -1 : n.indexOf("\n  };\n", nj);
+      const lineOfAt = (i) => n.slice(n.lastIndexOf("\n", i) + 1, n.indexOf("\n", i)).trim();
+      const every = at("has been notified"), everyone = at("Everyone has been notified."), nobody = at("Nobody has been notified yet.");
+      const lines = nobody.map(lineOfAt);
+      const ok = every.length === 3 && everyone.length === 1 && nobody.length === 2 && nj >= 0 && everyone[0] > nj && everyone[0] < njEnd
+        && lines.filter((l) => l === "✓ Published {justPublished.label}. Nobody has been notified yet.").length === 1 && lines.filter((l) => l.startsWith("//")).length === 1;
+      return { ok, every: every.length, everyone: everyone.length, nobody: lines };
+    })();
     // the handler destructures env when it is built, so the failing stub goes in up front
     const notifFails = (box) => ({ env: { addNotification: async () => { box.it.rec.notifs++; box.it.env.showToast("Couldn't save that notification.", "error"); } } });
     const vBox = {}, tBox = {};
@@ -7084,8 +7756,12 @@ console.log("\nAR. Requests tab copy + the APP trade note");
     check("AA3 a notification failure is the LAST toast after a successful submit (vacation + trade); nothing claims the scheduler was notified",
       !!v.run && !!t.run && v.rec.toasts.length === 2 && /^success: Vacation request sent\.$/.test(v.rec.toasts[0]) && /^error: Couldn't save that notification/.test(v.rec.toasts[1])
         && t.rec.toasts.length === 2 && /^success: Trade proposed/.test(t.rec.toasts[0]) && /^error: Couldn't save that notification/.test(t.rec.toasts[1])
-        && v.rec.cleared === 1 && t.rec.cleared === 1 && count("has been notified") === 0,
-      JSON.stringify([v.rec.toasts, t.rec.toasts]));
+        // (2026-10-20, on purpose: the Calendar's "Published" banner says "Nobody has been notified yet." and its 📣 tap
+        // "Everyone has been notified." — only once the notice was saved, CD3. Any OTHER "has been notified" still fails here.
+        // Review fix 2026-10-20 — F5: pinned by place, not by a sum any number of copies would keep: the toast ONCE, inside
+        // notifyJustPublished; "Nobody…" ONCE in the page — the banner's line — and once more only in its state's comment.)
+        && v.rec.cleared === 1 && t.rec.cleared === 1 && notifiedPlacesAA3.ok,
+      JSON.stringify([v.rec.toasts, t.rec.toasts, notifiedPlacesAA3]));
     const throwIns = { insert: async () => { throw new TypeError("Failed to fetch"); } };
     const vt = vEnv(OK_V, { env: { db: throwIns } }); if (vt.run) await vt.run();
     const tt = tEnv({ data: { id: 9 }, error: null }, { env: { db: throwIns } }); if (tt.run) await tt.run();
@@ -7561,6 +8237,330 @@ console.log("\nAT. A trade waiting on your answer");
       !!mkSave && /Couldn't save APP shifts/.test(s1.rec.toasts.join(" ")) && /Couldn't save APP shifts/.test(s2.rec.toasts.join(" ")), JSON.stringify([s1.rec.toasts, s2.rec.toasts]));
   }
 }
+
+// ─── CF. The Next call card reads a service week Mon–Sat (owner decision 2026-10-20) ───
+// The card read a service week "Mon, Nov 2 – Sun, Nov 8" while the My Shifts
+// chip under it (roleDateLabel, helpers.js) read "Mon 11/2 – Sat 11/7". The
+// owner: "Mon - Sat is correct". The card's builder (sliced verbatim, as X8
+// does) now ends a service week on the last day its surgeon holds — the
+// Saturday when there is no held list — and the card's line follows. Nothing
+// else moves: the weekend still reads to its Sunday (Fri night–Sun), a night or
+// a dated role is its one day, and every role stays on the card through its
+// week's Sunday, the My Shifts rule (shiftLastDay: the service Saturday runs
+// 7a–Sun 7a). No other place in the app shows a service week as a Mon–Sun range
+// (trades and the swap tool say "Service Wk of …", the day sheet and On Call
+// Today name no range, the .ics events end on the Saturday); whole-week labels
+// (a week header, "Week of …") are not the service week and stay as they are.
+//   CF1 the card's real builder on the REAL Mine builder's roles: a full
+//       service week is Mon → Sat; Labor Day's (Mon covered) Tue → Sat; one
+//       whose Saturday is someone else's ends Friday; Thanksgiving's (Thu +
+//       Fri covered) Mon → Sat; one held on its Saturday only is that one day;
+//       the fall-back week Mon 10/26 → Sat 10/31
+//   CF1 a service-week role with no held list (an older role shape) is Mon → Sat
+//   CF2 everything else is exactly as before: the card's code from main
+//       (0839440, frozen below) and the new code give the same entries in the
+//       same order, every field, on every day of the live weeks and synthetic
+//       weeks, but a service week's end and its range flag; worked examples:
+//       the weekend Fri → Sun, a weekend whose Friday is covered still a
+//       Sun → Sun range, a night and a dated role their one day
+//   CF3 the card's line, executed (the real _nice and the real expression,
+//       which the card writes twice): the service week reads "Mon, Nov 2 –
+//       Sat, Nov 7" in the device's words — never its Sunday; one day reads as
+//       that day; the weekend still Fri – Sun
+//   CF4 every service-week role of every surgeon on the 46 live weeks and the
+//       holiday weeks: the card's range runs from the first to the last day the
+//       My Shifts chip shows (read back into days), and never ends on a Sunday
+//   CF5 the list itself is unchanged: on the week's Sunday the service week is
+//       still on it ("in progress"), on Monday it is gone; and every role is on
+//       the card exactly while My Shifts (mineUpcoming) keeps it, every day of
+//       six weeks
+//   CF6 CF1 + CF5 again in a child pinned to TZ=America/Chicago across the
+//       fall-back week (Sun 11/1 is the DST day)
+// Review fixes (2026-10-20; this section was "CB" — main's CB is config.js's account binding, so it is CF now):
+//   CF7 a service week stays on the card only while its held shifts last — through its last held weekday (7a–5p), or
+//       to Sun 7a when that is the Saturday (its 24h): one whose Saturday is someone else's, Christmas 2027 (Fri + Sat
+//       the holiday pair's) and one held on its Monday only leave the day after their last held day, and the real
+//       next call takes the top slot ("in progress" past the dates shown — NC-1); a whole week reads "in progress"
+//       until Sun 7a and is gone from 7a (it said "Mon – Sat · in progress" all Sunday — PH-7 / F3). CF5 and CF6 now
+//       hold these, on purpose: the weekend and every other role still follow My Shifts' rule exactly.
+//   CF3 a day someone else holds splits the card's line into runs, as the My Shifts chip ("Mon, Dec 21 – Wed, Dec 23
+//       + Sat, Dec 26" — PH-6); CF4 holds the card's runs to the chip's on every live and holiday week
+//   the section runs inside its own catch (a throw fails one named check, never the run — F8)
+console.log("\nCF. The Next call card reads a service week Mon–Sat (owner decision 2026-10-20)");
+await (async () => {
+  const FIXD = path.join(ROOT, "test", "fixtures");
+  const LIVE = JSON.parse(fs.readFileSync(path.join(FIXD, "schedule-weeks-live-2026-10-02.json"), "utf8"));
+  const SURG = ["DJA", "MCC", "RPC", "KJH", "REH", "FAK", "ARW"].map((name, i) => ({ id: "s" + (i + 1), name }));
+  const nameOf = (id) => (SURG.find((s) => s.id === id) || {}).name || id || "?";
+  const J = JSON.stringify;
+  const fmtD = vm.runInContext("fmt", sandbox), P = vm.runInContext("parse", sandbox), addDs = vm.runInContext("addD", sandbox);
+  const nextDay = (ds) => fmtD(addDs(P(ds), 1));
+  const tryRun = (f) => { try { return f(); } catch (ex) { return "threw: " + String((ex && ex.message) || ex).slice(0, 120); } };
+  // The REAL Mine builder (sliced, as X3 / AU2 do); the REAL card builder and its _startOff, _nice, _range and
+  // _whenTxt (sliced, as X8 does); the card's date line, as the page writes it (twice: {_range(e)} since the review
+  // fixes — the runs, PH-6). The builder now also reads the clock (_now: a Saturday's 24h ends Sun 7a — NC-1 / F3);
+  // `at` below is that clock, the day's midnight unless a check gives an hour.
+  const MA = "            const myShifts = [];", MB = "            const myShiftsView = mineUpcoming(myShifts, myToday);";
+  const ma = src.indexOf(MA), mb = ma < 0 ? -1 : src.indexOf(MB, ma);
+  const ha = src.indexOf("const holidayEmoji = (label) => {"), hb = ha < 0 ? -1 : src.indexOf("\n  };", ha);
+  const NA = "            const _nextUp = [];", NB = "_nextUp.sort((a, b) => a.start - b.start);";
+  const na = src.indexOf(NA), nb = na < 0 ? -1 : src.indexOf(NB, na);
+  const lineOf = (head) => { const i = src.indexOf(head), j = i < 0 ? -1 : src.indexOf("\n", i); return i < 0 || j < 0 || count(head) !== 1 ? null : src.slice(i, j).trim(); };
+  const SO = lineOf("const _startOff = "), NI = lineOf("const _nice = "), WT = lineOf("const _whenTxt = "), RG = lineOf("const _range = ");
+  const LINE = "{_range(e)}", OLD_LINE = "{e.span ? `${_nice(e.start)} – ${_nice(e.end)}` : _nice(e.start)}";
+  const MINE_SRC = ma > 0 && mb > 0 ? `(function (schedule, myId, nameOf, holidayEmoji, myToday) { ${src.slice(ma, mb + MB.length)}\n return myShifts; })` : null;
+  const CARD_SRC = na > 0 && nb > 0 ? `(function (myShifts, _today0, _DAY, _startOff, _now) { ${src.slice(na, nb + NB.length)}\n return _nextUp; })` : null;
+  const HE_SRC = ha > 0 && hb > 0 ? `(function () { ${src.slice(ha, hb + 4)}\n return holidayEmoji; })()` : null;
+  // The card's builder as main had it (0839440), byte for byte but the indentation — CF2 holds the new one to it
+  const OLD_CARD = [
+    "const _nextUp = [];",
+    "myShifts.forEach(s => {",
+    "  const mon = parse(s.mStr);",
+    "  s.roles.forEach(r => {",
+    "    if (!r.shiftKey && !r.date) return; // OFF isn't a call shift",
+    "    if (r.date) {",
+    "      const day = parse(r.date);",
+    "      if (day < _today0) return;",
+    "      _nextUp.push({ ...r, start: day, end: day, days: Math.round((day - _today0) / _DAY), span: false, isBackup: s.isBackup, isFierceBackup: s.isFierceBackup });",
+    "      return;",
+    "    }",
+    "    const span = (r.shiftKey === \"dayCall\" || r.shiftKey === \"wknd\");",
+    "    const start = r.held && r.held.length ? parse(r.held[0]) : addD(mon, _startOff[r.shiftKey] ?? 0);",
+    "    const end = span ? addD(mon, 6) : start;",
+    "    if (end < _today0) return; // fully in the past",
+    "    const days = Math.round((start - _today0) / _DAY);",
+    "    _nextUp.push({ ...r, start, end, days, span, isBackup: s.isBackup, isFierceBackup: s.isFierceBackup });",
+    "  });",
+    "});",
+    "_nextUp.sort((a, b) => a.start - b.start);",
+  ].join("\n");
+  let mineB = null, cardB = null, oldB = null, H = null;
+  try {
+    const holidayEmoji = HE_SRC ? vm.runInContext(HE_SRC, sandbox) : null;
+    const mineFn = MINE_SRC && holidayEmoji ? vm.runInContext(MINE_SRC, sandbox) : null;
+    mineB = mineFn ? (sched, sid) => JSON.parse(J(mineFn(sched, sid, nameOf, holidayEmoji, "2016-01-01"))) : null;
+    H = SO && NI && WT && RG ? vm.runInContext(`(function () { ${SO} ${NI} ${RG} ${WT} return { _startOff, _nice, _range, _whenTxt }; })()`, sandbox) : null;
+    cardB = CARD_SRC ? vm.runInContext(CARD_SRC, sandbox) : null;
+    oldB = vm.runInContext(`(function (myShifts, _today0, _DAY, _startOff) { ${OLD_CARD}\n return _nextUp; })`, sandbox);
+  } catch (ex) { mineB = cardB = oldB = H = null; }
+  const READY = !!(mineB && cardB && oldB && H);
+  const NOT_READY = READY ? "" : "not extracted: " + J({ mine: !!mineB, card: !!cardB, old: !!oldB, startOff: !!SO, nice: !!NI, range: !!RG, whenTxt: !!WT });
+  // raw entries (Dates) from a builder on a COPY of the shifts; view = the entry in plain words. `at`: the clock
+  // ("HH:MM" on that day), the day's midnight by default (main's builder reads no clock)
+  const clock = (today, at) => { const d = P(today); if (at) { const [h, m] = at.split(":").map(Number); d.setHours(h, m, 0, 0); } return d; };
+  const raw = (B, shifts, today, at) => (READY ? B(JSON.parse(J(shifts)), P(today), 86400000, H._startOff, clock(today, at)) : []);
+  const view = (e) => ({ type: e.type, key: e.shiftKey || e.date || null, start: fmtD(e.start), end: fmtD(e.end), span: e.span, days: e.days, isBackup: e.isBackup, isFierceBackup: e.isFierceBackup });
+  const cardOf = (sched, sid, today, at) => (READY ? raw(cardB, mineB(sched, sid), today, at).map(view) : []);
+  const pick = (list, key, start) => list.find((e) => e.key === key && e.start === start) || null;
+  // The one change to the LIST (review fix 2026-10-20 — CF7): a service week whose last held day is a weekday leaves the
+  // card the day after it (main's code and My Shifts keep it to the week's Sunday). r: the Mine role.
+  const lastHeld = (r) => (r && r.shiftKey === "dayCall" && Array.isArray(r.held) && r.held.length ? r.held[r.held.length - 1] : null);
+  const endedEarly = (r, today) => { const l = lastHeld(r); return !!l && P(l).getDay() !== 6 && l < today; };
+  // …the role behind one of main's entries (its week holds its start; one service-week role a week)
+  const roleOf = (shifts, x) => { const w = shifts.find((w) => w.mStr <= x.start && x.start < fmtD(addDs(P(w.mStr), 7))); return w ? w.roles.find((r) => r.shiftKey === "dayCall") : null; };
+  const SYN = {
+    // the fall-back week (DST ends Sun 11/1): s7 the service week, s4 the weekend, s1 the Thu night
+    "2026-10-26": { dayCall: "s7", nights: { thu: "s1", wknd: "s4" } },
+    // a plain week: s1 the service week, s2–s5 the nights, s6 the weekend
+    "2026-11-02": { dayCall: "s1", nights: { mon: "s2", tue: "s3", wed: "s4", thu: "s5", wknd: "s6" } },
+    // the Saturday is someone else's (a single-day override to s4): s3 holds Mon–Fri, s4 a dated Service Day
+    "2026-11-09": { dayCall: "s3", dayCallOverrides: { "2026-11-14": "s4" }, nights: { mon: "s1", tue: "s2", wed: "s5", thu: "s6", wknd: "s7" } },
+    // Mon–Fri all overridden: s5 holds only the Saturday
+    "2026-11-16": { dayCall: "s5", dayCallOverrides: { "2026-11-16": "s1", "2026-11-17": "s2", "2026-11-18": "s3", "2026-11-19": "s4", "2026-11-20": "s6" }, nights: { wknd: "s2" } },
+    // Thanksgiving (as X8): s1 keeps Mon–Wed + Sat (Thu is his own 24h, Fri is s3's); s7's weekend has only its Sunday
+    "2026-11-23": { dayCall: "s1", nights: { mon: "s2", wknd: "s7" }, holidayCoverage: { "2026-11-26": { surgeonId: "s1", type: "major", name: "Thanksgiving 24h", holiday: "Thanksgiving" }, "2026-11-27": { surgeonId: "s3", type: "major", name: "Fri 24h", holiday: "Thanksgiving" } } },
+  };
+
+  // CF1 — the service week on the card
+  const c1 = {
+    full: pick(cardOf(SYN, "s1", "2026-10-20"), "dayCall", "2026-11-02"),
+    laborDay: pick(cardOf(LIVE, "s6", "2026-09-01"), "dayCall", "2026-09-08"),
+    satOther: pick(cardOf(SYN, "s3", "2026-10-20"), "dayCall", "2026-11-09"),
+    thanksgiving: pick(cardOf(SYN, "s1", "2026-10-20"), "dayCall", "2026-11-23"),
+    satOnly: pick(cardOf(SYN, "s5", "2026-10-20"), "dayCall", "2026-11-21"),
+    fallBack: pick(cardOf(SYN, "s7", "2026-10-20"), "dayCall", "2026-10-26"),
+  };
+  const se = (e) => (e ? `${e.start}..${e.end}${e.span ? " range" : " one day"}` : null);
+  const c1s = Object.fromEntries(Object.entries(c1).map(([k, e]) => [k, se(e)]));
+  check("CF1 the card's real code on the real Mine roles: a full service week reads Mon 11/2 → Sat 11/7 (it read → Sun 11/8); Labor Day's (Mon covered) Tue 9/8 → Sat 9/12; one whose Saturday is someone else's ends Fri 11/13; Thanksgiving's (Thu + Fri covered) Mon 11/23 → Sat 11/28; one held on its Saturday only is that one day; the fall-back week Mon 10/26 → Sat 10/31",
+    READY && J(c1s) === J({ full: "2026-11-02..2026-11-07 range", laborDay: "2026-09-08..2026-09-12 range", satOther: "2026-11-09..2026-11-13 range",
+      thanksgiving: "2026-11-23..2026-11-28 range", satOnly: "2026-11-21..2026-11-21 one day", fallBack: "2026-10-26..2026-10-31 range" }) && c1.full.days === 13,
+    NOT_READY || J(c1s));
+  const noHeld = READY ? raw(cardB, [{ mStr: "2026-11-02", roles: [{ type: "Service Week (incl. Sat)", shiftKey: "dayCall" }] }], "2026-10-20").map(view) : [];
+  check("CF1 a service-week role with no held list (an older role shape) reads Mon 11/2 → Sat 11/7",
+    READY && noHeld.length === 1 && se(noHeld[0]) === "2026-11-02..2026-11-07 range", NOT_READY || J(noHeld));
+
+  // CF2 — everything but a service week's end is as before (main's code, frozen above)
+  const cb2Bad = [], cb2N = {};
+  if (READY) for (const [sched, from, to, tag] of [[LIVE, "2026-08-24", "2026-11-17", "live"], [SYN, "2026-10-19", "2026-12-01", "synthetic"]]) {
+    for (const s of SURG) {
+      const shifts = mineB(sched, s.id);
+      for (let today = from; today <= to; today = nextDay(today)) {
+        // (review fix 2026-10-20, on purpose: main's entries for a service week that ended early — CF7 — are taken out first)
+        const a = raw(oldB, shifts, today).map(view).filter((x) => { const gone = x.key === "dayCall" && endedEarly(roleOf(shifts, x), today); if (gone) cb2N.endedEarly = (cb2N.endedEarly || 0) + 1; return !gone; }), b = raw(cardB, shifts, today).map(view);
+        if (a.length !== b.length) { cb2Bad.push(`${tag} ${s.name} ${today}: ${a.length} entries before, ${b.length} now`); continue; }
+        a.forEach((x, i) => {
+          const y = b[i], kind = x.key === "dayCall" ? "service week" : x.key === "wknd" ? "weekend" : /^\d{4}-/.test(x.key) ? "dated" : "night";
+          cb2N[kind] = (cb2N[kind] || 0) + 1;
+          const same = kind === "service week" ? J({ ...x, end: 0, span: 0 }) === J({ ...y, end: 0, span: 0 }) : J(x) === J(y);
+          if (!same) cb2Bad.push(`${tag} ${s.name} ${today}: ${J(x)} → ${J(y)}`);
+        });
+      }
+    }
+  }
+  check(`CF2 everything else on the card is exactly as before: main's code and the new code give the same entries in the same order, every field, but a service week's end and range flag, and a service week that ended early (its last held day a weekday — CF7) — every surgeon, every day of the live weeks (8/24–11/17) and the synthetic weeks (${J(cb2N)})`,
+    READY && cb2Bad.length === 0 && ["service week", "weekend", "night", "dated"].every((k) => (cb2N[k] || 0) >= 50) && (cb2N.endedEarly || 0) >= 2, NOT_READY || cb2Bad.slice(0, 3).join(" | ") || J(cb2N));
+  const c2 = {
+    weekend: se(pick(cardOf(SYN, "s6", "2026-10-20"), "wknd", "2026-11-06")),
+    sundayOnly: se(pick(cardOf(SYN, "s7", "2026-10-20"), "wknd", "2026-11-29")),
+    monNight: se(pick(cardOf(SYN, "s2", "2026-10-20"), "mon", "2026-11-02")),
+    serviceDay: se(pick(cardOf(SYN, "s4", "2026-10-20"), "2026-11-14", "2026-11-14")),
+    holiday: se(pick(cardOf(SYN, "s1", "2026-10-20"), "2026-11-26", "2026-11-26")),
+    noHeldWknd: READY ? se(raw(cardB, [{ mStr: "2026-11-02", roles: [{ type: "Weekend", shiftKey: "wknd" }] }], "2026-10-20").map(view)[0]) : null,
+  };
+  check("CF2 worked examples: the weekend still reads Fri 11/6 → Sun 11/8 (and with no held list); a weekend whose Friday is covered is still its Sunday as a range, as before; a Mon night, a dated Service Day and a holiday 24h are their one day",
+    READY && J(c2) === J({ weekend: "2026-11-06..2026-11-08 range", sundayOnly: "2026-11-29..2026-11-29 range", monNight: "2026-11-02..2026-11-02 one day",
+      serviceDay: "2026-11-14..2026-11-14 one day", holiday: "2026-11-26..2026-11-26 one day", noHeldWknd: "2026-11-06..2026-11-08 range" }),
+    NOT_READY || J(c2));
+
+  // CF3 — the card's line, executed (the real _range over the real _nice — review fix 2026-10-20: one helper, written twice)
+  const lineFn = count(LINE) === 2 && count(OLD_LINE) === 0 && H ? H._range : null;
+  const rawPickIn = (sched, sid, today, key, start) => (READY ? raw(cardB, mineB(sched, sid), today).find((e) => { const v = view(e); return v.key === key && v.start === start; }) || null : null);
+  const rawPick = (sid, today, key, start) => rawPickIn(SYN, sid, today, key, start);
+  const say = (e) => (typeof lineFn === "function" && e && H ? tryRun(() => lineFn(e)) : null);
+  const N = (ds) => (H ? H._nice(P(ds)) : "?");
+  const hc = (sid, name, holiday) => Object.assign({ name, role: "holiday_24h", type: "major", hours: "7a–7a", surgeonId: sid }, holiday ? { holiday } : {});
+  const HOL = {
+    "2026-11-23": { dayCall: "s1", nights: { mon: "s2", tue: "s3", wed: "s4", thu: "s5", wknd: "s6" }, holidayCoverage: { "2026-11-26": hc("s3", "Thanksgiving"), "2026-11-27": hc("s7", "Fri 24h", "Thanksgiving") } },
+    "2026-12-21": { dayCall: "s2", nights: { mon: "s1", tue: "s3", wed: "s4", thu: "s5", wknd: "s7" }, holidayCoverage: { "2026-12-24": hc("s6", "Christmas Eve"), "2026-12-25": hc("s6", "Christmas Day") } },
+  };
+  const c3 = { full: say(rawPick("s1", "2026-10-20", "dayCall", "2026-11-02")), satOnly: say(rawPick("s5", "2026-10-20", "dayCall", "2026-11-21")),
+    weekend: say(rawPick("s6", "2026-10-20", "wknd", "2026-11-06")), night: say(rawPick("s2", "2026-10-20", "mon", "2026-11-02")),
+    satOther: say(rawPick("s3", "2026-10-20", "dayCall", "2026-11-09")), thanksgiving: say(rawPick("s1", "2026-10-20", "dayCall", "2026-11-23")),
+    christmas: say(rawPickIn(HOL, "s2", "2026-10-20", "dayCall", "2026-12-21")) };
+  check(`CF3 the card's line, executed (the real _range and _nice, written twice): a service week reads "${c3.full}" — to its Saturday, never its Sunday (${N("2026-11-08")}); one held day reads as that day; the weekend still reads to its Sunday`,
+    READY && typeof lineFn === "function" && c3.full === `${N("2026-11-02")} – ${N("2026-11-07")}` && !String(c3.full).includes(N("2026-11-08"))
+      && (N("2026-11-02") !== "Mon, Nov 2" || c3.full === "Mon, Nov 2 – Sat, Nov 7")
+      && c3.satOnly === N("2026-11-21") && c3.weekend === `${N("2026-11-06")} – ${N("2026-11-08")}` && c3.night === N("2026-11-02"),
+    NOT_READY || J({ c3, lines: count(LINE), oldLines: count(OLD_LINE) }));
+  check(`CF3 (review fix — PH-6) a day someone else holds splits the line into runs, as the My Shifts chip under it: Christmas "${c3.christmas}", Thanksgiving "${c3.thanksgiving}"; one whose Saturday is someone else's is one run to its Friday`,
+    READY && typeof lineFn === "function" && c3.christmas === `${N("2026-12-21")} – ${N("2026-12-23")} + ${N("2026-12-26")}` && c3.thanksgiving === `${N("2026-11-23")} – ${N("2026-11-25")} + ${N("2026-11-28")}`
+      && c3.satOther === `${N("2026-11-09")} – ${N("2026-11-13")}` && (N("2026-12-21") !== "Mon, Dec 21" || c3.christmas === "Mon, Dec 21 – Wed, Dec 23 + Sat, Dec 26"),
+    NOT_READY || J(c3));
+  // the rendered check at 320px: in the card's second list a split week's runs, wrapping beside the role, squeezed its name
+  // ("Service Week (incl. Sat)") to nothing — they go on their own line under the row (order 3, a full-width basis)
+  const restRow = (src.replace(/\r\n/g, "\n").match(/\{_upNext\.slice\(1\)\.map\(\(e, i\) => \(\n\s*<div key=\{i\} style=\{\{([^\n]*)\}\}>\n(?:\s*<span[^\n]*\n){2}\s*<span style=\{\{([^\n]*)\}\}>\{_range\(e\)\}<\/span>/) || []);
+  check("CF3 (review fix — rendered at 320px) in the card's second list a split week's runs take their own line under the row (its row wraps; the date: order 3, full width, wrapping) so the role's name keeps its room; every other row as before (one line, its date unwrapped)",
+    !!restRow[1] && restRow[1] === 'display:"flex", alignItems:"center", gap:10, ...(e.runs && e.runs.length > 1 ? {flexWrap:"wrap", rowGap:2} : null)'
+      && !!restRow[2] && restRow[2].endsWith('whiteSpace:"nowrap", ...(e.runs && e.runs.length > 1 ? {order:3, flexBasis:"100%", paddingLeft:26, whiteSpace:"normal"} : null)'),
+    J({ row: restRow[1] || null, date: restRow[2] || null }));
+
+  // CF4 — on every live and holiday service week, the card spans exactly the chip's first → last day
+  const chipFn = vm.runInContext('typeof roleDateLabel === "function" ? roleDateLabel : null', sandbox);
+  const readBack = vm.runInContext(`(function (mStr, t) {
+    const dsOf = (m, d) => { for (let i = 0; i < 7; i++) { const x = addD(parse(mStr), i); if (x.getMonth() + 1 === m && x.getDate() === d) return fmt(x); } return null; };
+    const out = [];
+    for (const part of String(t).split(" + ")) {
+      const ends = part.split(" – ").map((p) => { const m = p.match(/^\\w{3} (\\d{1,2})\\/(\\d{1,2})$/); return m ? dsOf(+m[1], +m[2]) : null; });
+      if (!ends.length || ends.length > 2 || ends.some((e) => !e)) return null;
+      for (let x = parse(ends[0]); fmt(x) <= ends[ends.length - 1]; x = addD(x, 1)) out.push(fmt(x));
+    }
+    return out;
+  })`, sandbox);
+  const cb4Bad = []; let cb4N = 0, cb4Full = 0, cb4Split = 0;
+  if (READY && chipFn) for (const [sched, tag] of [[LIVE, "live"], [HOL, "holiday"], [SYN, "synthetic"]]) for (const s of SURG) for (const w of mineB(sched, s.id)) for (const r of w.roles) {
+    if (r.shiftKey !== "dayCall" || !Array.isArray(r.held) || !r.held.length) continue;
+    cb4N++;
+    const re = raw(cardB, [{ ...w, roles: [r] }], "2016-01-01")[0], e = re ? view(re) : null, chip = chipFn(w.mStr, r), days = readBack(w.mStr, chip);
+    const endDow = e ? P(e.end).getDay() : -1;
+    // (review fix 2026-10-20 — PH-6) the card's runs, each [first, last], against the chip's parts read back
+    const cardRuns = re && Array.isArray(re.runs) ? re.runs.map(([a, b]) => [fmtD(a), fmtD(b)]) : null;
+    const chipRuns = String(chip).split(" + ").map((part) => { const d = readBack(w.mStr, part); return d && d.length ? [d[0], d[d.length - 1]] : null; });
+    if (r.held.length === 6) cb4Full++;
+    if (cardRuns && cardRuns.length > 1) cb4Split++;
+    if (!e || !days || e.start !== days[0] || e.end !== days[days.length - 1] || endDow === 0 || (r.held.length === 6 && endDow !== 6) || J(cardRuns) !== J(chipRuns))
+      cb4Bad.push(`${tag} ${s.name} ${w.mStr}: card ${se(e)} ${J(cardRuns)}, chip "${chip}"`);
+  }
+  check(`CF4 every service week of every surgeon on the ${Object.keys(LIVE).length} live weeks, the holiday weeks and the synthetic weeks (${cb4N}, ${cb4Full} held whole, ${cb4Split} split): the card runs from the first to the last day the My Shifts chip shows, in the chip's own runs (review fix — PH-6), a whole week Mon → Sat, and none ends on a Sunday`,
+    READY && !!chipFn && cb4N >= 45 && cb4Full >= 35 && cb4Split >= 3 && cb4Bad.length === 0, NOT_READY || cb4Bad.slice(0, 3).join(" | ") || `only ${cb4N} roles, ${cb4Split} split`);
+
+  // CF5 — the list: a whole service week stays on the card until Sun 7a (review fix 2026-10-20, on purpose — it stayed
+  // all Sunday: "in progress" for a call that ended at 7a, PH-7 / F3); otherwise the same roles as My Shifts on every day
+  const sunV = pick(cardOf(SYN, "s1", "2026-11-08"), "dayCall", "2026-11-02"), monV = pick(cardOf(SYN, "s1", "2026-11-09"), "dayCall", "2026-11-02");
+  const sun659 = pick(cardOf(SYN, "s1", "2026-11-08", "06:59"), "dayCall", "2026-11-02"), sun700 = pick(cardOf(SYN, "s1", "2026-11-08", "07:00"), "dayCall", "2026-11-02");
+  const sunTxt = sunV && H ? H._whenTxt(sunV.days) : null;
+  check(`CF5 on its Sunday (11/8) the service week is on the card until 7a — at midnight and 6:59, "${sunTxt}" (its Saturday 24h runs to Sun 7a), reading Mon 11/2 → Sat 11/7 — and gone from 7:00 (review fix); on Monday 11/9 it is gone`,
+    READY && !!sunV && se(sunV) === "2026-11-02..2026-11-07 range" && sunV.days === -6 && sunTxt === "in progress" && J(sun659) === J(sunV) && sun700 === null && monV === null, NOT_READY || J({ sunV, sun659, sun700, monV }));
+  const upFn = vm.runInContext('typeof mineUpcoming === "function" ? mineUpcoming : null', sandbox);
+  const cb5Bad = []; let cb5In = 0, cb5Out = 0, cb5Early = 0;
+  if (READY && upFn) for (const s of SURG) {
+    const shifts = mineB(SYN, s.id);
+    for (let today = "2026-10-25"; today <= "2026-12-06"; today = nextDay(today)) for (const w of shifts) for (const r of w.roles) {
+      if (!r.shiftKey && !r.date) continue; // OFF: never on the card
+      const one = [{ ...w, roles: [r] }], onCard = raw(cardB, one, today).length === 1, onMine = upFn(JSON.parse(J(one)), today).length === 1;
+      if (onCard) cb5In++; else cb5Out++;
+      // (review fix 2026-10-20, on purpose — CF7: a service week whose last held day is a weekday leaves the card the day after it)
+      const early = onMine && endedEarly(r, today);
+      if (early) cb5Early++;
+      if (onCard !== (onMine && !early)) cb5Bad.push(`${s.name} ${w.mStr} ${r.type} on ${today}: card ${onCard}, My Shifts ${onMine}`);
+    }
+  }
+  check(`CF5 every role of every surgeon on the synthetic weeks is on the card exactly while My Shifts (mineUpcoming) keeps it — but a service week whose last held day is a weekday, gone the day after it (CF7) — every day 10/25–12/6 at midnight (${cb5In} on, ${cb5Out} off, ${cb5Early} ended early)`,
+    READY && !!upFn && cb5Bad.length === 0 && cb5In >= 200 && cb5Out >= 200 && cb5Early >= 2, NOT_READY || cb5Bad.slice(0, 3).join(" | ") || J({ cb5In, cb5Out, cb5Early }));
+
+  // CF7 — a service week leaves the card when its held shifts end (review fix 2026-10-20 — NC-1; PH-7 / F3)
+  const X27 = { // Christmas 2027 (the finding's own case): Fri 12/24 + Sat 12/25 are the holiday pair's — s1 holds Mon–Thu; his next call is the Tue night 12/28
+    "2027-12-20": { dayCall: "s1", nights: { mon: "s2" }, holidayCoverage: { "2027-12-24": hc("s6", "Christmas Eve"), "2027-12-25": hc("s6", "Christmas Day") } },
+    "2027-12-27": { dayCall: "s3", nights: { tue: "s1" } } };
+  const MON1 = { "2026-12-07": { dayCall: "s2", dayCallOverrides: { "2026-12-08": "s1", "2026-12-09": "s3", "2026-12-10": "s4", "2026-12-11": "s5", "2026-12-12": "s6" } } }; // s2 holds the Monday only
+  const svc = (list, start) => { const e = pick(list, "dayCall", start); return e && H ? `${se(e)} ${H._whenTxt(e.days)}` : null; };
+  const top = (list) => (list[0] ? `${list[0].key} ${list[0].start}` : null);
+  const c7 = READY ? {
+    satOtherFri: svc(cardOf(SYN, "s3", "2026-11-13"), "2026-11-09"), satOtherSat: svc(cardOf(SYN, "s3", "2026-11-14"), "2026-11-09"), satOtherTop: top(cardOf(SYN, "s3", "2026-11-14")),
+    xmasThu: svc(cardOf(X27, "s1", "2027-12-23", "23:59"), "2027-12-20"), xmasFri: svc(cardOf(X27, "s1", "2027-12-24"), "2027-12-20"), xmasFriTop: top(cardOf(X27, "s1", "2027-12-24")),
+    monOnlyMon: svc(cardOf(MON1, "s2", "2026-12-07", "16:00"), "2026-12-07"), monOnlyTue: svc(cardOf(MON1, "s2", "2026-12-08"), "2026-12-07"),
+    sat2359: svc(cardOf(SYN, "s1", "2026-11-07", "23:59"), "2026-11-02"), sunTop: top(cardOf(SYN, "s1", "2026-11-08", "07:00")),
+    satOnly659: svc(cardOf(SYN, "s5", "2026-11-22", "06:59"), "2026-11-21"), satOnly700: svc(cardOf(SYN, "s5", "2026-11-22", "07:00"), "2026-11-21"),
+    thanksSun659: svc(cardOf(SYN, "s1", "2026-11-29", "06:59"), "2026-11-23"), thanksSun700: svc(cardOf(SYN, "s1", "2026-11-29", "07:00"), "2026-11-23"),
+  } : null;
+  check("CF7 a service week whose last held day is a weekday leaves the card the day after it — never \"in progress\" past the dates it shows: one whose Saturday is someone else's (on Fri, Mon 11/9 → Fri 11/13 in progress; Sat: gone, the real next call — a Service Day Wed 11/18 — on top); Christmas 2027, Fri + Sat the holiday pair's (Thu night still on; Fri: gone, the Tue night 12/28 on top); one held on its Monday only (that day, \"today\"; Tue: gone)",
+    !!c7 && c7.satOtherFri === "2026-11-09..2026-11-13 range in progress" && c7.satOtherSat === null && c7.satOtherTop === "2026-11-18 2026-11-18"
+      && c7.xmasThu === "2027-12-20..2027-12-23 range in progress" && c7.xmasFri === null && c7.xmasFriTop === "tue 2027-12-28"
+      && c7.monOnlyMon === "2026-12-07..2026-12-07 one day today" && c7.monOnlyTue === null, NOT_READY || J(c7));
+  check("CF7 …one that ends on its Saturday (its 24h runs to Sun 7a) stays through Saturday night and until 6:59 on Sunday, and is gone at 7:00 — a whole week (the next call, the Mon night 11/9, then on top), one held on its Saturday only, and Thanksgiving's (split, its last run the Saturday)",
+    !!c7 && c7.sat2359 === "2026-11-02..2026-11-07 range in progress" && c7.sunTop === "mon 2026-11-09"
+      && c7.satOnly659 === "2026-11-21..2026-11-21 one day in progress" && c7.satOnly700 === null
+      && c7.thanksSun659 === "2026-11-23..2026-11-28 range in progress" && c7.thanksSun700 === null, NOT_READY || J(c7));
+
+  // CF6 — CF1 + CF5 under TZ=America/Chicago, across the fall-back week
+  {
+    const { execFileSync } = require("child_process");
+    let out = null;
+    if (READY) {
+      const code = [
+        'const vm = require("vm"), fs = require("fs"), path = require("path");',
+        'const sb = { console, window: {}, document: undefined, navigator: { userAgent: "node-test" }, localStorage: { getItem: () => null, setItem() {}, removeItem() {} }, fetch: () => { throw new Error("no fetch"); }, setTimeout, clearTimeout };',
+        "sb.globalThis = sb; vm.createContext(sb);",
+        `for (const f of ["helpers.js", "config.js"]) vm.runInContext(fs.readFileSync(path.join(${J(ROOT)}, f), "utf8"), sb, { filename: f });`,
+        `const mineFn = vm.runInContext(${J(MINE_SRC)}, sb), cardFn = vm.runInContext(${J(CARD_SRC)}, sb), hE = vm.runInContext(${J(HE_SRC)}, sb);`,
+        `const W = vm.runInContext(${J(`(function () { ${SO} ${WT} return { _startOff, _whenTxt }; })()`)}, sb);`,
+        `const SYN = ${J(SYN)};`,
+        'const fmt = vm.runInContext("fmt", sb), parse = vm.runInContext("parse", sb);',
+        // (review fix 2026-10-20: the builder reads the clock — the day's midnight, or an hour on it; the wall-clock 7:00 of the DST day)
+        'const at = (sid, today, hm) => { const now = parse(today); if (hm) now.setHours(+hm.slice(0, 2), +hm.slice(3), 0, 0); return cardFn(mineFn(SYN, sid, (x) => x, hE, "2016-01-01"), parse(today), 86400000, W._startOff, now).map((e) => [e.shiftKey || e.date, fmt(e.start), fmt(e.end), e.span, e.days, W._whenTxt(e.days)].join(" ")); };',
+        'process.stdout.write(JSON.stringify({ off: new Date(2026, 9, 24).getTimezoneOffset(), offAfter: new Date(2026, 10, 2).getTimezoneOffset(), before: at("s7", "2026-10-20"), sunday: at("s7", "2026-11-01"), sun659: at("s7", "2026-11-01", "06:59"), sun700: at("s7", "2026-11-01", "07:00"), monday: at("s7", "2026-11-02"), wknd: at("s4", "2026-10-20"), wkndSun700: at("s4", "2026-11-01", "07:00"), sevenOff: (() => { const d = parse("2026-11-01"); d.setHours(7, 0, 0, 0); return d.getTimezoneOffset(); })() }));',
+      ].join("\n");
+      try { out = JSON.parse(execFileSync(process.execPath, ["-e", code], { env: Object.assign({}, process.env, { TZ: "America/Chicago" }), encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })); } catch (ex) { out = { err: String(ex).slice(0, 300) }; }
+    }
+    const has = (list, s) => Array.isArray(list) && list.includes(s);
+    check("CF6 under TZ=America/Chicago (CDT 300 → CST 360, proven) the fall-back week's service week reads Mon 10/26 → Sat 10/31, \"in 6 days\" on 10/20; on Sun 11/1 (the DST day) it is on, \"in progress\", at midnight and 6:59 and gone at 7:00 CST (review fix); on Mon 11/2 it is gone; that week's weekend still reads Fri 10/30 → Sun 11/1, still on at 7:00 that Sunday (its own rule — through its Sunday)",
+      READY && !!out && out.off === 300 && out.offAfter === 360 && out.sevenOff === 360 && has(out.before, "dayCall 2026-10-26 2026-10-31 true 6 in 6 days") && has(out.sunday, "dayCall 2026-10-26 2026-10-31 true -6 in progress")
+        && has(out.sun659, "dayCall 2026-10-26 2026-10-31 true -6 in progress") && Array.isArray(out.sun700) && !out.sun700.some((x) => x.startsWith("dayCall 2026-10-26"))
+        && Array.isArray(out.monday) && !out.monday.some((x) => x.startsWith("dayCall 2026-10-26")) && has(out.wknd, "wknd 2026-10-30 2026-11-01 true 10 in 10 days")
+        && has(out.wkndSun700, "wknd 2026-10-30 2026-11-01 true -2 in progress"),
+      NOT_READY || J(out).slice(0, 600));
+  }
+})().catch(ex => check("CF harness ran without crashing", false, String(ex && ex.stack || ex).split("\n").slice(0, 3).join(" | ")));
 
 // ─── AU. Mine: readable dates, "Published through …", empty states by role (UX audit 2026-10-19) ───
 // My Shifts headed each week "2026-10-19 → 2026-10-25" and listed rows like
@@ -8078,6 +9078,348 @@ console.log("\nAV. Pending requests: a collapsed group shows a coverage-floor br
     JSON.stringify({ bareAV, iCov, iMemo, iReqView, cond: condAV && condAV[1] }));
 }
 
+// ─── CD. After ✓ Accept & Publish, one tap tells everyone (owner decision 2026-10-20) ───
+// Only Generate & Publish sent the group's "Schedule Published" notice and
+// e-mail. Accept & Publish published, switched to the Calendar and told
+// nobody — and since 2026-10-11 Generate & Publish opens the preview whenever
+// anything needs the scheduler's OK, so the usual path (review → ✓ Accept &
+// Publish) was silent. The owner left it to the recommendation: nothing is
+// ever sent by itself. The two sends moved into ONE sender,
+// notifyPublished(ep, period), which Generate & Publish calls exactly as
+// before; a publish from the preview that LANDS raises a scheduler-only banner
+// at the top of the Calendar — "✓ Published <period>. Nobody has been notified
+// yet." — with 📣 Notify everyone (one send) and Not now.
+//   CD1 the REAL notifyPublished, executed: one notice + one e-mail, both to
+//       everyone, the e-mail with the period; nothing once the session moved
+//       (before the call; during the notice's await — then no e-mail); true
+//       only when the notice was saved — the REAL addNotification behind it
+//       (saved / an insert error / a throw)
+//   CD2 the REAL acceptPreview: a publish that lands — the usual path, Needs
+//       your OK ticked, and an empty box — raises the banner with the
+//       published period and the tap's session, after the job landed; a job
+//       that didn't land, a refused or blocked publish, or a session change
+//       during the job raise nothing; it never sends a notice, a push or an
+//       e-mail itself; an OLD cached helpers.js (no periodLabel): the plain
+//       weeks, never a throw; the banner is scrolled into view (the rendered
+//       check found it ~500 px above a phone's screen — the Calendar opens at
+//       the Generate tab's scroll)
+//   CD3 the REAL notifyJustPublished (📣 Notify everyone): the banner goes on
+//       the tap, then ONE notice + e-mail and "Everyone has been notified.";
+//       a double tap or a late second tap sends nothing more, the next
+//       publish's tap sends again; nothing to send → nothing; the notice not
+//       saved → no "notified"; a stale tap or a session change during the
+//       send → nothing more sent, nothing said
+//   CD4 the REAL doGenerateAndNotify still sends exactly once, through the
+//       one sender, only when its publish landed in its session; the two
+//       sends exist once in the app
+//   CD5 the REAL sessionBoundary clears the banner, and a tap from before it
+//       sends nothing: publish → sign-out → the old screen's tap
+//   CD6 the banner: scheduler-only (its gate, evaluated), first in the
+//       Calendar view, in the page's flow (the toasts are fixed at the
+//       bottom), its exact text, 4.5:1+ in light and dark, ≥44px buttons that
+//       wrap, its two handlers (Not now, executed: closes, sends nothing), no
+//       write path of its own; only five places set it
+// Review fixes (2026-10-20):
+//   CD7 any send of the group's notice takes the banner down: Accept &
+//       Publish's banner up, then Generate & Publish (it tells everyone) —
+//       the banner went on saying "Nobody has been notified yet" and 📣 sent
+//       a duplicate; now the sender closes it and marks that publish sent for
+//   CD3 a re-publish of the SAME period is a new publish (its tap sends);
+//       the tap moves the focus to the Calendar's month heading (the banner
+//       unmounted with it, and VoiceOver jumped to the top of the page)
+//   the section runs inside its own catch: a throw fails one named check,
+//   it never ends the run (as CA and CE)
+console.log("\nCD. After Accept & Publish, one tap tells everyone");
+await (async () => {
+  const nsrcCD = src.replace(/\r\n/g, "\n");
+  const afterCD = (start, end) => { const i = nsrcCD.indexOf(start); if (i < 0 || nsrcCD.indexOf(start, i + 1) !== -1) return null; const e = nsrcCD.indexOf(end, i + start.length); return e < 0 ? null : nsrcCD.slice(i + start.length, e); };
+  const fnCD = (names, code, ctx) => { if (code === null) return null; try { return vm.runInContext(`(function (env) { const { ${names} } = env; return (${code}); })`, ctx || sandbox, { filename: "cd-slice.js" }); } catch (ex) { return null; } };
+  const J = (o) => JSON.stringify(o);
+  const gate = () => { let open; const p = new Promise((r) => { open = r; }); return { p, open }; };
+  const MSG = "A new call schedule has been generated. Check the Schedule or Calendar tab.";
+  const P1 = "Nov 16 – Nov 29, 2026", P2 = "Nov 30 – Dec 13, 2026";
+  const npBody = afterCD("  const notifyPublished = async (ep, period) => {", "\n  };\n");
+  // (review fix 2026-10-20, on purpose: the sender also takes down a pending banner — it reads justPublished and
+  // notifiedRef and calls setJustPublished; CD7 runs that)
+  const npMk = fnCD("sessionEpochRef, addNotification, sendEmailNotif, justPublished, notifiedRef, setJustPublished", npBody === null ? null : "async (ep, period) => {" + npBody + "\n  }");
+  // One session's senders, recorded in `log`: the notice resolves `saved` (true unless o.saved is given), and can hold
+  // its await open (o.hold) or see the session move during it (o.moveDuringNotice); the REAL notifyPublished over them
+  // (with no banner up — o.jp, o.notifiedRef and o.setJP give it one; w.banners records what it sets)
+  const world = (o = {}, log = []) => {
+    const w = { ep: { current: o.ep || 0 }, log, banners: [] };
+    w.addNotification = async (...a) => { log.push(J(["notice", ...a])); if (o.moveDuringNotice) w.ep.current++; if (o.hold) await o.hold; return "saved" in o ? o.saved : true; };
+    w.sendEmailNotif = (...a) => { log.push(J(["e-mail", ...a])); };
+    w.npWith = (jp, notifiedRef, setJP) => (npMk ? npMk({ sessionEpochRef: w.ep, addNotification: w.addNotification, sendEmailNotif: w.sendEmailNotif,
+      justPublished: jp === undefined ? null : jp, notifiedRef: notifiedRef || { current: null }, setJustPublished: setJP || ((v) => w.banners.push(v)) }) : null);
+    w.np = w.npWith(o.jp, o.notifiedRef, o.setJP);
+    return w;
+  };
+  const NOTICE = (ep) => J(["notice", "schedule_published", "Schedule Published", MSG, {}, null, ep]);
+  const EMAIL = (period, ep) => J(["e-mail", "schedule_published", { period }, null, ep]);
+  const notices = (log) => log.filter((x) => x.startsWith('["notice"')).length, emails = (log) => log.filter((x) => x.startsWith('["e-mail"')).length;
+
+  // CD1 — notifyPublished
+  let cd1 = null;
+  if (npMk) {
+    try {
+      const a = world(), ra = await a.np(0, P1);
+      const b = world({ ep: 1 }), rb = await b.np(0, P1);
+      const c = world({ moveDuringNotice: true }), rc = await c.np(0, P1);
+      const d = world({ saved: false }), rd = await d.np(0, P1);
+      const e = world({ saved: undefined }), re = await e.np(0, P1);
+      cd1 = { a: a.log, ra, b: b.log, rb, c: c.log, rc, d: d.log, rd, re };
+    } catch (ex) { cd1 = { threw: String(ex).slice(0, 160) }; }
+  }
+  check("CD1 the REAL notifyPublished, executed: ONE notice (\"Schedule Published\", the same text, no target list — everyone, the tap's session) then ONE e-mail (everyone, { period }), and it resolves true when the notice was saved",
+    !!cd1 && !cd1.threw && J(cd1.a) === J([NOTICE(0), EMAIL(P1, 0)]) && cd1.ra === true, J(cd1));
+  check("CD1 nothing once the session moved: from another session than the publish's, no notice and no e-mail (false); the session moving during the notice's await → no e-mail (false)",
+    !!cd1 && !cd1.threw && cd1.b.length === 0 && cd1.rb === false && J(cd1.c) === J([NOTICE(0)]) && cd1.rc === false, J(cd1));
+  check("CD1 a notice that wasn't saved (false, or addNotification's own nothing) resolves false — the e-mail still goes, as Generate & Publish's always did",
+    !!cd1 && !cd1.threw && J(cd1.d) === J([NOTICE(0), EMAIL(P1, 0)]) && cd1.rd === false && cd1.re === false, J(cd1));
+  // …with the REAL addNotification behind it: what it resolves is what the sender reports
+  const anBody = afterCD("  const addNotification = useCallback(", ", [sendPushNotif, buildDeepLink, filterPushTargetsByType]);");
+  const anMk = fnCD("db, showToast, setNotifications, buildDeepLink, filterPushTargetsByType, sendPushNotif, console, sessionEpochRef", anBody);
+  let cd1r = null;
+  if (anMk && npMk) {
+    const realRun = async (insert) => {
+      const r = { pushes: 0, toasts: [], emails: 0, listed: 0 }, ep = { current: 0 };
+      const an = anMk({ db: { insert }, showToast: (m) => r.toasts.push(String(m)), setNotifications: () => { r.listed++; }, buildDeepLink: () => "#calendar", filterPushTargetsByType: (t, ids) => ids,
+        sendPushNotif: () => { r.pushes++; }, console: { error() {}, log() {}, warn() {} }, sessionEpochRef: ep });
+      r.saved = await an("schedule_published", "Schedule Published", MSG, {}, null, 0);
+      r.sent = await npMk({ sessionEpochRef: ep, addNotification: an, sendEmailNotif: () => { r.emails++; }, justPublished: null, notifiedRef: { current: null }, setJustPublished: () => {} })(0, P1);
+      return r;
+    };
+    try {
+      cd1r = { ok: await realRun(async (t, row) => ({ data: Object.assign({ id: 1 }, row), error: null })),
+        err: await realRun(async () => ({ data: null, error: "TypeError: Failed to fetch" })),
+        thrown: await realRun(async () => { throw new Error("offline"); }) };
+    } catch (ex) { cd1r = { threw: String(ex).slice(0, 160) }; }
+  }
+  check("CD1 with the REAL addNotification: saved → true (listed, pushed); an insert error → false (its own \"Couldn't save that notification.\"); a throw → not true — and notifyPublished reports the same",
+    !!cd1r && !cd1r.threw && cd1r.ok.saved === true && cd1r.ok.sent === true && cd1r.ok.listed === 2 && cd1r.ok.pushes === 2
+      && cd1r.err.saved === false && cd1r.err.sent === false && cd1r.err.toasts[0] === "Couldn't save that notification."
+      && cd1r.thrown.saved !== true && cd1r.thrown.sent === false, J(cd1r));
+
+  // CD2 — the REAL acceptPreview (AE1's harness shape), every sender a spy
+  const apBody = afterCD("  const acceptPreview = async () => {", "\n  };\n");
+  const AP_ENV = "previewSchedule, previewSchedRef, previewNeedsOk, previewAck, previewOrigin, publishWeeks, runPublish, publishNotLanded, publishingRef, setPublishing, snapshots, showToast, schedEditable, schedSyncRef, previewEpochRef, setPreviewSchedule, setShowPreview, setCalMonth, setCalYear, setView, setSaveStatus, setTimeout, numWeeks, MO, startMonth, startYear, cancelSearch, publishSearchRunning, sessionEpochRef, setJustPublished, addNotification, sendEmailNotif, sendPushNotif, notifyPublished, document";
+  const apCode = apBody === null ? null : "async () => {" + apBody + "\n  }";
+  const apMk = fnCD(AP_ENV, apCode), apMkOld = fnCD(AP_ENV, apCode, OLD_SB);
+  const PS = { "2026-11-16": { dayCall: "s1", nights: {} }, "2026-11-23": { dayCall: "s2", nights: {} } };
+  // (timers are recorded and run after the publish; document answers the banner's selector — o.noEl: the scheduler is on another tab)
+  const accept = async (o = {}, mkIt = apMk) => {
+    const rec = { jp: [], sends: [], order: [], toasts: [], timers: [], asked: [], scrolled: [] };
+    const ep = o.epRef || { current: 4 };
+    if (!mkIt) return { threw: "acceptPreview not extractable" };
+    try {
+      await mkIt({
+        previewSchedule: PS, previewSchedRef: { current: PS }, previewNeedsOk: { cost: (o.items || []).length * 6, items: o.items || [] }, previewAck: !!o.ack, previewOrigin: "generated",
+        publishWeeks: () => { rec.order.push("publishWeeks"); return {}; },
+        // the job lands a tick later (o.moveDuringJob: a sign-out meanwhile)
+        runPublish: () => { rec.order.push("job"); return new Promise((r) => setTimeout(() => { if (o.moveDuringJob) ep.current++; rec.order.push("landed"); r(o.landed === false ? { ok: false, results: [{ k: "2026-11-23", outcome: "pending" }] } : { ok: true, results: [] }); }, 0)); },
+        publishNotLanded: (pr, what) => rec.toasts.push("NOT LANDED: " + what), publishingRef: { current: !!o.busy }, setPublishing: () => {},
+        snapshots: { capture: async () => { rec.order.push("snapshot"); return { ok: !o.snapFail }; } }, showToast: (m) => rec.toasts.push(String(m)), schedEditable: () => !o.gated,
+        schedSyncRef: { current: { changedSince: () => [], knownSchedule: () => ({ "2026-11-09": {} }) } }, previewEpochRef: { current: 3 },
+        setPreviewSchedule: () => {}, setShowPreview: () => {}, setCalMonth: () => {}, setCalYear: () => {}, setView: (v) => rec.order.push("view " + v), setSaveStatus: () => {},
+        setTimeout: (fn, ms) => { rec.timers.push([ms, fn]); return 0; },
+        document: { querySelector: (sel) => { rec.asked.push(sel); return o.noEl ? null : { scrollIntoView: (how) => rec.scrolled.push(how) }; } },
+        numWeeks: 2, MO: ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"], startMonth: 10, startYear: 2026,
+        cancelSearch: () => {}, publishSearchRunning: () => !!o.pubSearch, sessionEpochRef: ep,
+        setJustPublished: (v) => { rec.jp.push(v); rec.order.push("banner"); },
+        addNotification: (t) => rec.sends.push("notice " + t), sendEmailNotif: (t) => rec.sends.push("e-mail " + t), sendPushNotif: (t) => rec.sends.push("push " + t), notifyPublished: () => rec.sends.push("notifyPublished"),
+      })();
+      rec.timers.forEach(([, fn]) => fn()); rec.timers = rec.timers.map(([ms]) => ms);
+    } catch (ex) { rec.threw = String(ex).slice(0, 160); }
+    return rec;
+  };
+  const TWO = [{ kind: "bend", text: "a" }, { kind: "crowded", text: "b" }];
+  const cd2 = { clean: await accept(), reviewed: await accept({ items: TWO, ack: true }), notLanded: await accept({ landed: false }),
+    unticked: await accept({ items: TWO, ack: false }), snapFail: await accept({ snapFail: true }), gated: await accept({ gated: true }), busy: await accept({ busy: true }),
+    pubSearch: await accept({ pubSearch: true }), moved: await accept({ moveDuringJob: true }), old: await accept({}, apMkOld), offTab: await accept({ noEl: true }) };
+  check("CD2 the REAL acceptPreview: a publish that lands raises the banner ONCE — { label: the published period (periodLabel), ep: the tap's session } — after the job landed, on the Calendar it switched to; the usual path (Needs your OK reviewed and ticked) the same",
+    !cd2.clean.threw && J(cd2.clean.jp) === J([{ label: P1, ep: 4 }]) && cd2.clean.order.join() === "snapshot,publishWeeks,job,view calendar,landed,banner"
+      && !cd2.reviewed.threw && J(cd2.reviewed.jp) === J([{ label: P1, ep: 4 }]), J({ clean: cd2.clean, reviewed: cd2.reviewed }));
+  check("CD2 no banner when nothing was published for everyone to hear of: the job didn't land (it says so), the box unticked, no backup snapshot, the edit gate, a publish or a Generate & Publish search already running, or a session change while the job ran",
+    ["notLanded", "unticked", "snapFail", "gated", "busy", "pubSearch", "moved"].every((k) => !cd2[k].threw && cd2[k].jp.length === 0) && /NOT LANDED: Published on this screen/.test(cd2.notLanded.toasts.join(" ")),
+    J(Object.fromEntries(Object.entries(cd2).map(([k, r]) => [k, r.threw || r.jp]))));
+  check("CD2 Accept & Publish itself never sends — no notice, push, e-mail or notifyPublished, in any run (nothing is sent by itself)",
+    Object.values(cd2).every((r) => !r.threw && r.sends.length === 0), J(Object.fromEntries(Object.entries(cd2).map(([k, r]) => [k, r.threw || r.sends]))));
+  check("CD2 with an OLD cached helpers.js (no periodLabel — OLD_SB) the banner names the plain weeks, \"weeks of 2026-11-16 – 2026-11-23\", never a throw",
+    !cd2.old.threw && J(cd2.old.jp) === J([{ label: "weeks of 2026-11-16 – 2026-11-23", ep: 4 }]), J(cd2.old));
+  // the rendered check found the banner ~500 px ABOVE a 375 px phone's screen: ✓ Accept & Publish sits far down the
+  // Generate tab and the Calendar opens at that scroll — so the banner is brought into view (the Today button's idiom)
+  check("CD2 the banner is brought into view: 60 ms after it is raised, [data-just-published=\"1\"] is scrolled into view (smooth, nearest); on another tab (no banner in the page) nothing, no throw; nothing landed → no scroll",
+    J(cd2.clean.asked) === J(['[data-just-published="1"]']) && J(cd2.clean.scrolled) === J([{ behavior: "smooth", block: "nearest" }]) && cd2.clean.timers.includes(60)
+      && !cd2.offTab.threw && cd2.offTab.asked.length === 1 && cd2.offTab.scrolled.length === 0 && J(cd2.offTab.jp) === J([{ label: P1, ep: 4 }])
+      && ["notLanded", "moved", "unticked", "snapFail"].every((k) => cd2[k].asked.length === 0 && cd2[k].scrolled.length === 0),
+    J({ clean: [cd2.clean.timers, cd2.clean.asked, cd2.clean.scrolled], offTab: [cd2.offTab.asked, cd2.offTab.scrolled, cd2.offTab.threw], notLanded: cd2.notLanded.asked }));
+
+  // CD3 — the REAL notifyJustPublished (📣 Notify everyone) over the REAL notifyPublished
+  const njBody = afterCD("  const notifyJustPublished = async () => {", "\n  };\n");
+  // (review fix 2026-10-20, on purpose: + document, setTimeout — the tap moves the focus to the Calendar's month heading)
+  const njMk = fnCD("justPublished, notifiedRef, setJustPublished, notifyPublished, sessionEpochRef, showToast, document, setTimeout", njBody === null ? null : "async () => {" + njBody + "\n  }");
+  // one component: its session's senders (world), the ref that outlives renders, the banner's setter and the toasts in one
+  // log. The banner's state is React's: a set to the value it already holds changes nothing (no re-render), so only a
+  // change is logged — the tap's own close, then the sender's close of the same banner (review fix 2026-10-20) is no
+  // change. Each tap's render holds `jp` (its banner) in both handlers, as one render of the component does.
+  const comp = (o = {}) => {
+    const log = [], w = world(o, log), notified = { current: null }, focus = [], timers = [];
+    let state = null;
+    const setJP = (v) => { if (!Object.is(v, state)) { state = v; log.push("banner " + J(v)); } };
+    const doc = { querySelector: (sel) => ({ focus: () => focus.push(sel) }) };
+    const tap = (jp) => { state = jp; return njMk({ justPublished: jp, notifiedRef: notified, setJustPublished: setJP, notifyPublished: w.npWith(jp, notified, setJP), sessionEpochRef: w.ep,
+      showToast: (m, t) => log.push("toast " + t + ": " + m), document: doc, setTimeout: (fn, ms) => { timers.push(ms); fn(); return 0; } })(); };
+    return { log, w, tap, focus, timers };
+  };
+  const JP = { label: P1, ep: 0 }, JP2 = { label: P2, ep: 0 };
+  const TOAST = "toast success: Everyone has been notified.";
+  let cd3 = null;
+  if (njMk && npMk) {
+    try {
+      const one = comp(); await one.tap(JP); const oneLog = one.log.slice(), oneFocus = one.focus.slice(), oneTimers = one.timers.slice(); await one.tap(JP); const lateLog = one.log.slice(); await one.tap(JP2);
+      const nextLog = one.log.slice();
+      // (review fix 2026-10-20 — F6) the SAME period published again right after a fix: a new publish (a new banner
+      // object, the same label), so its tap sends again — straight after the first, so a label-keyed guard would refuse it
+      const same = comp(); await same.tap(JP); await same.tap({ label: P1, ep: 0 });
+      const g = gate(), dbl = comp({ hold: g.p }); const t1 = dbl.tap(JP), t2 = dbl.tap(JP); g.open(); await Promise.all([t1, t2]);
+      const none = comp(); await none.tap(null);
+      const unsaved = comp({ saved: false }); await unsaved.tap(JP);
+      const during = comp({ moveDuringNotice: true }); await during.tap(JP);
+      const stale = comp({ ep: 1 }); await stale.tap(JP);
+      cd3 = { one: oneLog, oneFocus, oneTimers, late: lateLog, next: nextLog, again: same.log, dbl: dbl.log, none: none.log, noneFocus: none.focus, unsaved: unsaved.log, during: during.log, stale: stale.log };
+    } catch (ex) { cd3 = { threw: String(ex).slice(0, 160) }; }
+  }
+  check("CD3 the REAL 📣 Notify everyone, executed: the banner goes on the tap (first), then ONE notice and ONE e-mail for the published period, then \"Everyone has been notified.\"",
+    !!cd3 && !cd3.threw && J(cd3.one) === J(["banner null", NOTICE(0), EMAIL(P1, 0), TOAST]), J(cd3));
+  check("CD3 one send per publish: a double tap (the second while the first is still out) sends once; a late second tap on the same publish sends nothing more; the NEXT publish's tap sends again — and so does a re-publish of the SAME period (a new publish, the same label: the one-send guard is the publish, never its label)",
+    !!cd3 && !cd3.threw && notices(cd3.dbl) === 1 && emails(cd3.dbl) === 1 && cd3.dbl.filter((x) => x === TOAST).length === 1
+      && J(cd3.late) === J(cd3.one) && J(cd3.next) === J(cd3.one.concat(["banner null", NOTICE(0), EMAIL(P2, 0), TOAST]))
+      && J(cd3.again) === J(cd3.one.concat(["banner null", NOTICE(0), EMAIL(P1, 0), TOAST])), J(cd3));
+  check("CD3 (review fix 2026-10-20 — PH-8) the banner unmounts with the focus in it, so the tap moves the focus to the Calendar's month heading ([data-cal-month=\"1\"], tabIndex -1 — focusable, not in the tab order) once it is gone (a 0 ms timer); no banner → no move",
+    !!cd3 && !cd3.threw && J(cd3.oneFocus) === J(['[data-cal-month="1"]']) && J(cd3.oneTimers) === J([0]) && cd3.noneFocus.length === 0
+      && count('<span tabIndex={-1} data-cal-month="1" style={{fontSize:15,fontWeight:700,color:"#2c5a80",minWidth:170,textAlign:"center"}}>{MO[calMonth]} {calYear}</span>') === 1 && count('data-cal-month="1"') === 2,
+    cd3 ? J({ focus: cd3.oneFocus, timers: cd3.oneTimers, none: cd3.noneFocus }) : "not run");
+  check("CD3 nothing to send (no banner) → nothing at all; the notice not saved → no \"Everyone has been notified.\" (addNotification says what failed)",
+    !!cd3 && !cd3.threw && cd3.none.length === 0 && J(cd3.unsaved) === J(["banner null", NOTICE(0), EMAIL(P1, 0)]), J(cd3));
+  check("CD3 the session moving during the send → no e-mail and nothing said; a tap from before a session change (stale) → the banner closes, nothing sent, nothing said",
+    !!cd3 && !cd3.threw && J(cd3.during) === J(["banner null", NOTICE(0)]) && J(cd3.stale) === J(["banner null"]), J(cd3));
+
+  // CD4 — Generate & Publish, through the one sender
+  const dgnBody = afterCD("  const doGenerateAndNotify = async () => {", "\n  };\n");
+  const dgnMk = fnCD("sessionEpochRef, doGenerate, periodText, notifyPublished", dgnBody === null ? null : "async () => {" + dgnBody + "\n  }");
+  const PT = "Nov 16, 2026 – Feb 21, 2027";
+  const gp = async (result, move) => {
+    const w = world();
+    try { await dgnMk({ sessionEpochRef: w.ep, periodText: PT, notifyPublished: w.np, doGenerate: async () => { if (move) w.ep.current++; return result; } })(); } catch (ex) { return ["threw " + String(ex).slice(0, 120)]; }
+    return w.log;
+  };
+  const cd4 = dgnMk && npMk ? { published: await gp("published"), moved: await gp("published", true), review: await gp("review"), refused: await gp("refused"), busy: await gp("busy"), notPub: await gp("not-published"), cancelled: await gp("cancelled") } : null;
+  check("CD4 the REAL doGenerateAndNotify through the REAL notifyPublished: published → exactly one notice and one e-mail with the Generate period, as before; sent to the preview, refused, busy, not landed, cancelled, or the session gone meanwhile → nothing",
+    !!cd4 && J(cd4.published) === J([NOTICE(0), EMAIL(PT, 0)]) && ["moved", "review", "refused", "busy", "notPub", "cancelled"].every((k) => cd4[k].length === 0), J(cd4));
+  check("CD4 the two sends exist ONCE in the app — in notifyPublished — and both publish paths reach them only through it: doGenerateAndNotify calls it once, the banner's tap once, acceptPreview never",
+    count('addNotification("schedule_published",') === 1 && count('sendEmailNotif("schedule_published", { period }, null, ep);') === 1
+      && !!npBody && npBody.includes('addNotification("schedule_published",') && npBody.includes('sendEmailNotif("schedule_published", { period }, null, ep);')
+      && !!dgnBody && (dgnBody.match(/notifyPublished\(/g) || []).length === 1 && !/addNotification\(|sendEmailNotif\(/.test(dgnBody)
+      && !!njBody && (njBody.match(/notifyPublished\(/g) || []).length === 1 && !!apBody && !/notifyPublished\(|addNotification\(|sendEmailNotif\(|sendPushNotif\(/.test(apBody)
+      && count("notifyPublished(") === 2, J({ an: count('addNotification("schedule_published",'), np: count("notifyPublished(") }));
+
+  // CD5 — the REAL session boundary between the publish and the tap
+  const sbBody = afterCD("  const sessionBoundary = ", "\n  };\n");
+  const sbMk = fnCD("searchRef, setSearching, setSearchStats, setPreviewSchedule, setShowPreview, schedSyncRef, setScheduleHistory, setEditWeekModal, setReauthNeeded, setStaleTokenWarn, setIsScheduler, setupReadRef, lastSyncRef, sessionEpochRef, forgetDayOffs, setJustPublished", sbBody === null ? null : sbBody + "\n  }");
+  let cd5 = null;
+  if (sbMk && njMk && npMk && apMk) {
+    try {
+      const c = comp(); c.w.ep.current = 4;
+      const pub = await accept({ epRef: c.w.ep }); const jp = pub.jp[0];               // the publish lands in session 4: the banner
+      const bl = [], set = (n) => (v) => bl.push(n + ":" + J(v === undefined ? null : v));
+      sbMk({ searchRef: { current: null }, setSearching: set("setSearching"), setSearchStats: set("setSearchStats"), setPreviewSchedule: set("setPreviewSchedule"), setShowPreview: set("setShowPreview"),
+        schedSyncRef: { current: { reset: () => {} } }, setScheduleHistory: set("setScheduleHistory"), setEditWeekModal: set("setEditWeekModal"), setReauthNeeded: set("setReauthNeeded"),
+        setStaleTokenWarn: set("setStaleTokenWarn"), setIsScheduler: set("setIsScheduler"), setupReadRef: { current: true }, lastSyncRef: { current: "x" }, sessionEpochRef: c.w.ep,
+        forgetDayOffs: () => {}, setJustPublished: set("setJustPublished") })();          // a sign-out
+      await c.tap(jp);                                                                   // the old screen's tap, its closure still holding the banner
+      cd5 = { jp, boundary: bl, epoch: c.w.ep.current, tap: c.log };
+    } catch (ex) { cd5 = { threw: String(ex).slice(0, 160) }; }
+  }
+  check("CD5 the REAL sessionBoundary clears the banner (setJustPublished(null)) as it moves the session on; the old screen's 📣 tap after it — publish in session 4, sign-out, tap — sends nothing and says nothing",
+    !!cd5 && !cd5.threw && J(cd5.jp) === J({ label: P1, ep: 4 }) && cd5.boundary.includes("setJustPublished:null") && cd5.epoch === 5 && J(cd5.tap) === J(["banner null"]), J(cd5));
+
+  // CD7 — any send of the group's notice takes the banner down (review fix 2026-10-20 — PN-1 / PH-1 / F1): after ✓ Accept
+  // & Publish raised it, Generate & Publish (it publishes straight away and tells everyone) left it saying "Nobody has
+  // been notified yet", and 📣 then sent the same notice, push and e-mail a second time. The REAL acceptPreview raises the
+  // banner in session 4; the REAL doGenerateAndNotify runs through the REAL notifyPublished, its render holding that
+  // banner; then the old screen's 📣 (the REAL notifyJustPublished, its closure still holding the banner) is tapped.
+  let cd7 = null;
+  if (dgnMk && npMk && njMk && apMk) {
+    try {
+      const run = async (result, o = {}) => {
+        const log = [], w = world({ ep: 4 }, log), notified = { current: null };
+        let state = null;
+        const setJP = (v) => { if (!Object.is(v, state)) { state = v; log.push("banner " + J(v)); } };
+        const jp = o.noBanner ? null : (await accept({ epRef: w.ep })).jp[0] || null;
+        state = jp;
+        await dgnMk({ sessionEpochRef: w.ep, periodText: P1, notifyPublished: w.npWith(jp, notified, setJP), doGenerate: async () => { if (o.move) w.ep.current++; return result; } })();
+        const afterGP = { up: state, marked: !!jp && notified.current === jp };
+        log.push("—— the old screen's 📣 ——");
+        await njMk({ justPublished: jp, notifiedRef: notified, setJustPublished: setJP, notifyPublished: w.npWith(jp, notified, setJP), sessionEpochRef: w.ep,
+          showToast: (m, t) => log.push("toast " + t + ": " + m), document: { querySelector: () => null }, setTimeout: (fn) => { fn(); return 0; } })();
+        return { jp, afterGP, log };
+      };
+      cd7 = { published: await run("published"), review: await run("review"), refused: await run("refused"), noBanner: await run("published", { noBanner: true }) };
+    } catch (ex) { cd7 = { threw: String(ex).slice(0, 160) }; }
+  }
+  const TAP7 = "—— the old screen's 📣 ——", JP4 = { label: P1, ep: 4 };
+  check("CD7 the banner up (Accept & Publish, session 4), then Generate & Publish publishes: the banner goes as its notice goes out — ONE notice and ONE e-mail — and that publish counts as sent for; the old screen's 📣 afterwards sends nothing and says nothing",
+    !!cd7 && !cd7.threw && J(cd7.published.jp) === J(JP4) && cd7.published.afterGP.up === null && cd7.published.afterGP.marked === true
+      && J(cd7.published.log) === J(["banner null", NOTICE(4), EMAIL(P1, 4), TAP7]), J(cd7));
+  check("CD7 …a Generate & Publish that did NOT publish (sent to the preview for review, refused) leaves the banner up and its 📣 still sends, once; with no banner up, Generate & Publish sends as before and there is nothing to close",
+    !!cd7 && !cd7.threw && ["review", "refused"].every((k) => J(cd7[k].afterGP) === J({ up: JP4, marked: false }) && J(cd7[k].log) === J([TAP7, "banner null", NOTICE(4), EMAIL(P1, 4), TOAST]))
+      && J(cd7.noBanner.log) === J([NOTICE(4), EMAIL(P1, 4), TAP7]), J(cd7));
+  check("CD7 …in the sender itself: after its session check, before the notice — it closes the banner (setJustPublished(null)) and marks the banner its render holds as sent for (notifiedRef); from another session it closes nothing (the boundary already did)",
+    !!npBody && /^\s*if \(sessionEpochRef\.current !== ep\) return false;\n[^]*?if \(justPublished\) notifiedRef\.current = justPublished;\n\s*setJustPublished\(null\);\n[^]*?await addNotification\("schedule_published",/.test(npBody), String(npBody).slice(0, 400));
+
+  // CD6 — the banner's markup (JSX can't run here — no Babel in CI — so its gate, colours and handlers are run, the rest pinned)
+  const B_OPEN = "\n          {isScheduler && justPublished && (\n", bAt = nsrcCD.indexOf(B_OPEN), bEnd = bAt < 0 ? -1 : nsrcCD.indexOf("\n          )}", bAt + B_OPEN.length);
+  const ban = bAt < 0 || bEnd < 0 || nsrcCD.indexOf(B_OPEN, bAt + 1) !== -1 ? "" : nsrcCD.slice(bAt + B_OPEN.length, bEnd);
+  const gateCD = (nsrcCD.match(/\n {10}\{([^\n{}]*\bjustPublished\b[^\n{}]*) && \(\n {12}<div role="status" aria-live="polite" data-just-published="1"/) || [])[1] || null;
+  let shows = null;
+  try { shows = gateCD ? vm.runInContext(`(function (isScheduler, justPublished) { return !!(${gateCD}); })`, sandbox) : null; } catch (ex) { shows = null; }
+  check("CD6 scheduler-only, evaluated: the banner's own gate shows it to a scheduler with a publish to announce, never to a member (nor with nothing published)",
+    !!shows && shows(true, JP) === true && shows(false, JP) === false && shows(true, null) === false && shows(false, null) === false, String(gateCD));
+  const iCalCD = nsrcCD.indexOf('{view==="calendar"&&<>'), iTodayCD = nsrcCD.indexOf("{/* ─── On Call Today Banner ─── */}");
+  check("CD6 it is the FIRST thing in the Calendar view (only its comment before it), above On Call Today, in the page's flow — not fixed, so the toasts (fixed at the bottom) never sit on it",
+    !!ban && iCalCD >= 0 && /^\{view==="calendar"&&<>\n {10}\{\/\*[^]*?\*\/\}$/.test(nsrcCD.slice(iCalCD, bAt)) && bAt < iTodayCD && !/position:/.test(ban.split("\n")[0]),
+    J({ iCalCD, bAt, iTodayCD, between: iCalCD >= 0 && bAt > iCalCD ? nsrcCD.slice(iCalCD, bAt).length : null }));
+  const lum = (hex) => { const n = parseInt(hex.slice(1), 16); const c = [n >> 16, (n >> 8) & 255, n & 255].map((v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); }); return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]; };
+  const ratio = (a, b) => { const x = lum(a), y = lum(b); return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05); };
+  const bg = ban.match(/background:dk\?"(#[0-9a-f]{6})":"(#[0-9a-f]{6})"/), fg = ban.match(/\bcolor:dk\?"(#[0-9a-f]{6})":"(#[0-9a-f]{6})"/);
+  const cr = bg && fg ? { dark: Math.round(ratio(fg[1], bg[1]) * 10) / 10, light: Math.round(ratio(fg[2], bg[2]) * 10) / 10 } : null;
+  check("CD6 its exact words, \"✓ Published <period>. Nobody has been notified yet.\", read at 4.5:1 or more in light and in dark (its own colours by theme, computed); the line wraps (minWidth 0, overflowWrap anywhere)",
+    ban.includes("✓ Published {justPublished.label}. Nobody has been notified yet.") && !!cr && cr.dark >= 4.5 && cr.light >= 4.5 && ban.includes('minWidth:0,fontSize:14') && ban.includes('overflowWrap:"anywhere"'), J(cr));
+  const btns = ban.match(/<button [^\n]*<\/button>/g) || [];
+  check("CD6 two buttons, both ≥44px tall and in a row that wraps at 320px: 📣 Notify everyone (notifyJustPublished) and Not now (only closes it)",
+    btns.length === 2 && btns.every((b) => /minHeight:44\b/.test(b)) && (ban.match(/flexWrap:"wrap"/g) || []).length === 2
+      && btns[0].startsWith("<button onClick={notifyJustPublished} ") && btns[0].endsWith(">📣 Notify everyone</button>")
+      && btns[1].startsWith("<button onClick={()=>setJustPublished(null)} ") && btns[1].endsWith(">Not now</button>") && count("onClick={notifyJustPublished}") === 1, J(btns));
+  // (render check 2026-10-20) the white label reads at 4.5:1 on BOTH ends of the button's own gradient — css.btn(true)'s
+  // #2488c8 end was 3.9:1 — and the fill is still a linear-gradient, so the dark sheet keeps the label white
+  const nGrad = btns[0] ? (btns[0].match(/background:"linear-gradient\(135deg,(#[0-9a-f]{6}),(#[0-9a-f]{6})\)"/) || null) : null;
+  const nStops = nGrad ? [ratio("#ffffff", nGrad[1]), ratio("#ffffff", nGrad[2])].map((x) => Math.round(x * 100) / 100) : null;
+  check("CD6 📣 Notify everyone has its own linear-gradient fill, and its white label reads at 4.5:1 or more on both ends (the app's primary gradient ends at 3.9:1)",
+    !!nStops && nStops.every((x) => x >= 4.5) && /button\[style\*="background: linear-gradient"\] \{ color: #fff !important; \}/.test(src), J(nStops));
+  const notNow = (ban.match(/<button onClick=\{(\(\)=>[^}]*)\}/) || [])[1] || null;
+  let nn = null;
+  try { if (notNow) { const r = { set: [], sends: 0 }; vm.runInContext(`(function (env) { const { setJustPublished, notifyPublished, addNotification, sendEmailNotif } = env; return (${notNow}); })`, sandbox)({ setJustPublished: (v) => r.set.push(v), notifyPublished: () => { r.sends++; }, addNotification: () => { r.sends++; }, sendEmailNotif: () => { r.sends++; } })(); nn = r; } } catch (ex) { nn = { threw: String(ex).slice(0, 120) }; }
+  check("CD6 Not now, executed: closes the banner (setJustPublished(null)) and sends nothing; the banner has no write path of its own",
+    !!nn && !nn.threw && J(nn.set) === J([null]) && nn.sends === 0 && !!ban && !/fetch\(|db\.|supabase|localStorage|addNotification|sendEmailNotif|sendPushNotif|notifyPublished\(|logAudit/.test(ban), J(nn));
+  // the five places that set it: raised only where a publish lands; closed by the tap, Not now, the session boundary and
+  // (review fix 2026-10-20, on purpose — CD7) the one sender, whenever the group's notice goes out
+  const setSites = []; for (let i = nsrcCD.indexOf("setJustPublished("); i >= 0; i = nsrcCD.indexOf("setJustPublished(", i + 1)) setSites.push(nsrcCD.slice(i, i + 32));
+  check("CD6 only five places set it: raised ONCE (acceptPreview, where the job landed), closed by the 📣 tap, Not now, the session boundary and the sender (notifyPublished — any notice to the group)",
+    count("setJustPublished(") === 5 && count("setJustPublished({ label: pubPeriod, ep });") === 1 && count("setJustPublished(null)") === 4
+      && !!apBody && apBody.includes("setJustPublished({ label: pubPeriod, ep });") && !!njBody && njBody.includes("setJustPublished(null)") && !!sbBody && sbBody.includes("setJustPublished(null)")
+      && !!npBody && npBody.includes("setJustPublished(null)"), J(setSites));
+})().catch(ex => check("CD harness ran without crashing", false, String(ex && ex.stack || ex).split("\n").slice(0, 3).join(" | ")));
+
 // ─── AE. Generator: "Needs your OK" before publish + Setup holiday text (2026-10-11) ───
 // Owner decisions 2026-10-11: time off is a hard stop, card eves are night
 // shifts, Christmas week is FAK's, and a squeezed week takes the mildest bend.
@@ -8098,7 +9440,9 @@ console.log("\nAV. Pending requests: a collapsed group shows a coverage-floor br
   const A0 = "  const acceptPreview = async () => {";
   const i = nsrcAE.indexOf(A0), e = i < 0 ? -1 : nsrcAE.indexOf("\n  };\n", i);
   const body = i < 0 || e < 0 ? null : "async () => {" + nsrcAE.slice(i + A0.length, e) + "\n  }";
-  const ENV = "previewSchedule, previewSchedRef, previewNeedsOk, previewAck, previewOrigin, publishWeeks, runPublish, publishNotLanded, publishingRef, setPublishing, snapshots, showToast, schedEditable, schedSyncRef, previewEpochRef, setPreviewSchedule, setShowPreview, setCalMonth, setCalYear, setView, setSaveStatus, setTimeout, numWeeks, MO, startMonth, startYear, cancelSearch, publishSearchRunning, sessionEpochRef";
+  // (+ setJustPublished, on purpose — 2026-10-20: a publish that lands raises the Calendar's "Nobody has been notified
+  // yet" banner; a stub here, CD runs what it is handed)
+  const ENV = "previewSchedule, previewSchedRef, previewNeedsOk, previewAck, previewOrigin, publishWeeks, runPublish, publishNotLanded, publishingRef, setPublishing, snapshots, showToast, schedEditable, schedSyncRef, previewEpochRef, setPreviewSchedule, setShowPreview, setCalMonth, setCalYear, setView, setSaveStatus, setTimeout, numWeeks, MO, startMonth, startYear, cancelSearch, publishSearchRunning, sessionEpochRef, setJustPublished";
   let mk = null; try { mk = body ? vm.runInContext(`(function (env) { const { ${ENV} } = env; return (${body}); })`, sandbox) : null; } catch (ex) { mk = null; }
   // o: busy (a publish in progress) · pubSearch (a Generate & Publish search running) · moved (a week of the preview adopted
   // since it was made) · movedAfter (…adopted during the snapshot's await) · gated (the edit gate refuses) · snapFail · landed:false
@@ -8121,6 +9465,7 @@ console.log("\nAV. Pending requests: a collapsed group shows a coverage-floor br
       setView: () => {}, setSaveStatus: (x) => rec.status.push(x), setTimeout: () => {},
       numWeeks: 14, MO: ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"], startMonth: 10, startYear: 2026,
       cancelSearch: () => { rec.cancelled++; }, publishSearchRunning: () => !!o.pubSearch,
+      setJustPublished: () => {},
     })();
     return rec;
   };
@@ -10427,11 +11772,13 @@ await (async () => {
           db: { insert: async (t, row) => { w.push(["insert", t, row.start_date, row.end_date]); return { data: Object.assign({ id: 9 }, row), error: null }; } }, setVacRequests: () => {}, addNotification: async () => {}, schedulerAdminIds: ["s6"], sendEmailNotif: () => {},
           setVacReqStart: () => {}, setVacReqEnd: () => {}, setVacReqReason: () => {}, setVacReqType: () => {}, vacSubmitBusyRef: { current: false }, sessionEpochRef: { current: 0 }, setVacSubmitting: () => {}, console: quietBK })();
         return w; },
+      // (owner decision 2026-10-20, changed ON PURPOSE — CA: the edit first asks canChangeVacRequest, listed in its deps;
+      // "member" here is the request's own requester, so the stand-in allows — CA3 runs the real predicate)
       saveVacRequestEdit: async (S, member) => { const w = [];
-        const f = fnBK("sessionEpochRef, dbAuthHeaders, editingVacReq, isScheduler, showToast, vacRequests, fetch, SUPABASE_URL, console, setBackRequest, logAudit, setVacRequests, toEdit, setEditingVacReq",
-          (() => { const s = sliceBK("  const saveVacRequestEdit = useCallback(", ", [editingVacReq, vacRequests, isScheduler]);"); return s ? s.slice("  const saveVacRequestEdit = useCallback(".length, s.lastIndexOf(", [editingVacReq")) : null; })());
+        const f = fnBK("sessionEpochRef, dbAuthHeaders, editingVacReq, isScheduler, canChangeVacRequest, showToast, vacRequests, fetch, SUPABASE_URL, console, setBackRequest, logAudit, setVacRequests, toEdit, setEditingVacReq",
+          (() => { const s = sliceBK("  const saveVacRequestEdit = useCallback(", ", [editingVacReq, vacRequests, isScheduler, canChangeVacRequest]);"); return s ? s.slice("  const saveVacRequestEdit = useCallback(".length, s.lastIndexOf(", [editingVacReq")) : null; })());
         if (!f) return null;
-        await f({ sessionEpochRef: { current: 0 }, dbAuthHeaders: () => ({}), editingVacReq: S.editingVacReq, isScheduler: !member, showToast: () => {}, SUPABASE_URL: "https://x.test", console: quietBK,
+        await f({ sessionEpochRef: { current: 0 }, dbAuthHeaders: () => ({}), editingVacReq: S.editingVacReq, isScheduler: !member, canChangeVacRequest: (r) => !!r, showToast: () => {}, SUPABASE_URL: "https://x.test", console: quietBK,
           vacRequests: [{ id: 7, surgeon_id: "s3", surgeon_name: "RPC", start_date: "2099-03-02", end_date: "2099-03-06", request_type: "vacation", reason: "trip", status: member ? "pending" : "approved" }],
           fetch: async (url, init) => { const b = JSON.parse(init.body); w.push(["PATCH", b.start_date, b.end_date]); return respBK(200, [{ id: 7 }]); },
           setBackRequest: async () => true, logAudit: () => {}, setVacRequests: () => {}, toEdit: (...a) => w.push(["toEdit", ...a]), setEditingVacReq: () => {} })();
@@ -10687,7 +12034,9 @@ await (async () => {
     const CALROW = '<div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap",minWidth:0,maxWidth:"100%"}}>\n              <button aria-label="Previous month" onClick={()=>{if(calMonth===0)';
     const iCal = nsrcBK.indexOf(CALROW), iToday = nsrcBK.indexOf('aria-label="Go to today"'), iTools = iToday < 0 ? -1 : nsrcBK.indexOf('<div style={{display:"flex",gap:5,flexWrap:"wrap"}}>', iToday);
     check("BK7 (review fix) the Calendar's ◀ month ▶ Today row wraps (flexWrap, minWidth 0, at most its row) so a 320px phone no longer scrolls sideways — Today drops below the arrows, which keep their places (the month's minWidth 170 kept); the scheduler's Setup / Regenerate / Clear group beside it wraps too",
-      iCal > 0 && nsrcBK.split(CALROW).length === 2 && iToday > iCal && iTools > iToday && iTools - iToday < 900 && nsrcBK.includes('<span style={{fontSize:15,fontWeight:700,color:"#2c5a80",minWidth:170,textAlign:"center"}}>{MO[calMonth]} {calYear}</span>'),
+      // (review fix 2026-10-20, on purpose: the month is focusable — tabIndex -1, data-cal-month — for 📣 Notify everyone to
+      // move the focus to once its banner is gone, sync-guards CD3; its style, and so its width, unchanged)
+      iCal > 0 && nsrcBK.split(CALROW).length === 2 && iToday > iCal && iTools > iToday && iTools - iToday < 900 && nsrcBK.includes('<span tabIndex={-1} data-cal-month="1" style={{fontSize:15,fontWeight:700,color:"#2c5a80",minWidth:170,textAlign:"center"}}>{MO[calMonth]} {calYear}</span>'),
       J({ iCal, iToday, iTools }));
   }
 })();
@@ -10797,13 +12146,14 @@ await (async () => {
   {
     const TLm = nsrcBM.match(/\n  (const toastLiftNow = \(\) => \{\n[\s\S]*?\n  \};)\n/);
     const tightM = nsrcBM.match(/\n  const toastTight = ([^;\n]*);\n/);
-    const stackM = nsrcBM.match(/\n      <div role="status" aria-live="polite" style=\{(\{position:"fixed",left:0,right:0,top:[^\n]*?\})\}>\n\s*\{toasts\.map\(\(t, i\) => \(\n\s*<div key=\{t\.id\} style=\{(\{width:"100%",[^\n]*?\})\}>\n/);
+    // (the list it maps is main's — the red toasts held back under the sign-in card's no-signal note, CE3)
+    const stackM = nsrcBM.match(/\n      <div role="status" aria-live="polite" style=\{(\{position:"fixed",left:0,right:0,top:[^\n]*?\})\}>\n\s*\{toasts\.filter\(t => !\(t\.tone === "error" && authNetErr && authMode === "login" && !authUser\)\)\.map\(t => \(\n\s*<div key=\{t\.id\} style=\{(\{width:"100%",[^\n]*?\})\}>\n/);
     let liftOf = null;
     try {
       liftOf = TLm ? vm.runInContext(`(function (banner, floors, vh) { const bannerLift = () => banner; const window = { innerHeight: vh }; const document = { querySelectorAll: () => floors.map((f) => ({ isConnected: !f.gone, getBoundingClientRect: () => ({ top: f.top, height: f.height }) })) };\n${TLm[1]}\n return toastLiftNow(); })`, sandbox) : null;
     } catch (ex) { liftOf = null; }
     const tight = tightM ? fnBM("toastLift, window", tightM[1]) : null;
-    const stack = stackM ? fnBM("toastLift, toastTight", stackM[1]) : null, wrap = stackM ? fnBM("toasts, i", stackM[2]) : null;
+    const stack = stackM ? fnBM("toastLift, toastTight", stackM[1]) : null, wrap = stackM ? fnBM("t", stackM[2]) : null;
     const lifts = liftOf ? { tall: liftOf(100, [{ top: 50, height: 662 }], 812), day: liftOf(100, [{ top: 400, height: 312 }], 812), range320: liftOf(0, [{ top: 98, height: 470 }], 568), none: liftOf(0, [], 812), gone: liftOf(100, [{ top: 50, height: 662, gone: true }], 812) } : null;
     check("BM3 the real toastLiftNow has no cap: a sheet whose top is at 50 on an 812px screen lifts the stack 762 (it was capped at 812 − 120 = 692 — on a tall sheet, a toast sat on its title); the day sheet 412; the range sheet at 320×568 (its top at 98) 470 (it was 448: the toast at 73–110, on the sheet); nothing on screen 0; a floor gone → the banner's 100",
       !!lifts && lifts.tall === 762 && lifts.day === 412 && lifts.range320 === 470 && lifts.none === 0 && lifts.gone === 100 && countBM("vh - 120") === 0,
@@ -10813,12 +12163,12 @@ await (async () => {
     check("BM3 toastTight (the real expression): less than 72px of room above the lift (the screen − lift − 18) — 812 with the lift at 722 leaves 72 (not tight), at 723 71 (tight); the range sheet filling 320×568 with the banner (lift 544) tight; the day sheet (412) not; no floor (lift 0) never — not even on a 60px-tall window",
       !!tg && tg.none === false && tg.noneTiny === false && tg.day === false && tg.edge === false && tg.past === true && tg.full === true, J(tg));
     const sN = stack ? stack(110, false) : null, sT = stack ? stack(544, true) : null, s0 = stack ? stack(0, false) : null;
-    const orders = wrap ? [0, 1, 2].map((i) => wrap(T(3), i).order) : null, w0 = wrap ? wrap(T(3), 0) : null;
-    check("BM3 the stack's real style: the room between the top of the screen (safe area + 8px) and the lift (bottom: lift + 10; no floor: 24px above the home bar), at least 72px tall; a column filled from the bottom (column-reverse) that wraps, its second column at the left of the first's right edge, past the screen's (alignContent flex-start) and clipped (overflowX clip); newest first: each toast's full-width wrapper is ordered 2, 1, 0 (the newest 0, at the bottom); packed at the bottom — at the top when tight; it lets taps through",
+    const orders = wrap ? T(3).map((t) => wrap(t).order) : null, gapped = wrap ? [{ id: 4 }, { id: 7 }, { id: 9 }].map((t) => wrap(t).order) : null, w0 = wrap ? wrap({ id: 1 }) : null;
+    check("BM3 the stack's real style: the room between the top of the screen (safe area + 8px) and the lift (bottom: lift + 10; no floor: 24px above the home bar), at least 72px tall; a column filled from the bottom (column-reverse) that wraps, its second column at the left of the first's right edge, past the screen's (alignContent flex-start) and clipped (overflowX clip); newest first: each toast's full-width wrapper is ordered by −id (ids only grow: toasts 1, 2, 3 → −1, −2, −3, the newest at the bottom) — so it holds for the list as rendered, red toasts held back or not (ids 4, 7, 9 → −4, −7, −9); packed at the bottom — at the top when tight; it lets taps through",
       !!sN && sN.top === "calc(env(safe-area-inset-top, 0px) + 8px)" && sN.bottom === 120 && s0.bottom === "calc(env(safe-area-inset-bottom, 0px) + 24px)" && sN.minHeight === 72 && sN.flexDirection === "column-reverse" && sN.flexWrap === "wrap"
         && sN.alignContent === "flex-start" && sN.overflowX === "clip" && sN.justifyContent === "flex-start" && sT.justifyContent === "flex-end" && sN.pointerEvents === "none" && sN.left === 0 && sN.right === 0
-        && J(orders) === "[2,1,0]" && !!w0 && w0.width === "100%" && w0.display === "flex" && w0.justifyContent === "center",
-      J({ sN: sN && [sN.top, sN.bottom, sN.minHeight, sN.flexDirection, sN.flexWrap, sN.alignContent, sN.overflowX, sN.justifyContent], tight: sT && sT.justifyContent, orders }));
+        && J(orders) === "[-1,-2,-3]" && J(gapped) === "[-4,-7,-9]" && !!w0 && w0.width === "100%" && w0.display === "flex" && w0.justifyContent === "center",
+      J({ sN: sN && [sN.top, sN.bottom, sN.minHeight, sN.flexDirection, sN.flexWrap, sN.alignContent, sN.overflowX, sN.justifyContent], tight: sT && sT.justifyContent, orders, gapped }));
     // A model of the column (CSS's rules for ONE wrapping flex column; no safe-area inset): the room runs from `top` down to
     // `bottom` (at least minHeight; a negative room is 0); items go in `order`; the first line takes them while they fit (its
     // first always); later lines are past the right edge (held). column-reverse puts the first item at the bottom; packing at
@@ -10827,7 +12177,7 @@ await (async () => {
       const s = stack(lift, isTight);
       const topPx = +String(s.top).match(/\+ (\d+)px\)$/)[1], botPx = typeof s.bottom === "number" ? s.bottom : +String(s.bottom).match(/\+ (\d+)px\)$/)[1];
       const h = Math.max(s.minHeight || 0, vh - topPx - botPx, 0), cTop = topPx, cBot = topPx + h, gap = s.gap;
-      const seq = heights.map((x, i) => ({ id: i + 1, x, o: wrap(T(heights.length), i).order })).sort((a, b) => a.o - b.o || a.id - b.id);
+      const seq = heights.map((x, i) => ({ id: i + 1, x, o: wrap({ id: i + 1 }).order })).sort((a, b) => a.o - b.o || a.id - b.id);
       const line = []; let used = 0;
       for (const it of seq) { const need = used + (line.length ? gap : 0) + it.x; if (line.length && need > h && s.flexWrap === "wrap") break; line.push(it); used = need; }
       const reverse = s.flexDirection === "column-reverse", packEnd = s.justifyContent === "flex-end";
@@ -11344,6 +12694,294 @@ console.log("\nAZ. Mine works for an APP");
   }
 }
 
+// ─── CA. Requests: only the requester or a scheduler edits or withdraws a request (owner decision 2026-10-20) ───
+// The owner (2026-10-20): "edit requests is only for schedulers" — a doctor edits or withdraws only their OWN request; a
+// scheduler, anyone's. The pending rows showed ✎ Edit and Withdraw on EVERY request to any signed-in member, and
+// saveVacRequestEdit / deleteVacRequest acted on whatever request they were handed. Now one predicate,
+// canChangeVacRequest (the signed-in account's person_id — userProfile, never Mine's view pick — or isScheduler),
+// gates those two controls, both editors and both handlers; deleteTradeRequest gets the same rule (its proposer or a
+// scheduler) behind its already-gated buttons. Members still see every row and its ✓ Approve / ✕ Deny (that gate is
+// unchanged — AR1). Each confirm now says what its button does. JSX can't run here (no Babel in CI): the markup's
+// conditions are sliced and EXECUTED with the real predicate; the handlers are the REAL useCallback bodies, run.
+//   CA1 the REAL canChangeVacRequest, executed: the requester (a surgeon; an APP) yes, a colleague no, the scheduler yes
+//       on anyone's, signed out / no person id / no request no; its deps are exactly what it reads; declared before
+//       every hook that lists it (§P)
+//   CA2 the markup's gates, executed: the pending row's ✎ Edit + Withdraw and both editors render for the requester and
+//       a scheduler only (an editor left open on a colleague's row is not shown); the row and its Approve/Deny stay
+//   CA3 the REAL saveVacRequestEdit: anyone else's save does nothing — no request, toast (not even the range's), list,
+//       time off, editor change or audit; the requester's and the scheduler's save as before; the v2 fence kept
+//   CA4 the REAL deleteVacRequest: anyone else's call does nothing (no confirm, no DELETE, nothing said); the requester
+//       is asked "Withdraw your vacation request, … ?", the scheduler "Withdraw RPC's …", the Reviewed ✕ "Delete this
+//       request?"; a declined confirm sends nothing; a failed DELETE keeps the row, and the session fence holds
+//   CA5 the REAL deleteTradeRequest: only the proposer or a scheduler — "Withdraw this trade request?" on a pending one
+//       (its button reads Withdraw), "Delete this trade request?" on a completed one (the scheduler's ✕)
+//   CA6 freshness: each of the three handlers rendered as React renders it (one hook slot, kept while its deps are
+//       equal) — as the requester, then signed in as a colleague with the same list and editor: the colleague's tap
+//       does nothing (a deps array missing what the gate reads keeps the requester's closure)
+//   CA7 the tab's other per-request actions (audited): Reviewed ✎ Edit / ↩ Revoke / ✕, Clear All Reviewed and Completed
+//       Trades' ✕ are a scheduler's; the pending trade's Withdraw its proposer's — none shown to a colleague (executed);
+//       the revoke's and Clear All Reviewed's confirms already match their buttons
+// Review fixes (2026-10-20 — RQ-1, older than the decision but behind the same handlers): a member's Withdraw / edit
+// acted on the request by id alone, so a list a minute behind a scheduler's approval deleted or rewrote the APPROVED
+// request under its time off. A member's DELETE and PATCH now ask for the request still pending (and the DELETE for what
+// it removed); nothing changed → said so (CA3, CA4). A scheduler's stay id-only (corrections to reviewed requests).
+console.log("\nCA. Requests: only the requester or a scheduler edits or withdraws a request");
+await (async () => {
+  const nsrcCA = src.replace(/\r\n/g, "\n");   // a Windows checkout is CRLF, CI's is LF
+  const J = JSON.stringify;
+  const quietCA = { error() {}, warn() {}, log() {}, info() {} };
+  const respCA = (status, json) => ({ ok: status >= 200 && status < 300, status, json: async () => json, text: async () => J(json) });
+  const spinCA = async (n) => { for (let j = 0; j < (n || 20); j++) await null; };
+  // `  const NAME = useCallback(BODY, [DEPS]);` (declared once) → { body, deps } — one line, or a block closing "\n  }, [DEPS]);"
+  const hookCA = (name) => {
+    const head = `  const ${name} = useCallback(`, a = nsrcCA.indexOf(head);
+    if (a < 0 || nsrcCA.indexOf(head, a + 1) !== -1) return null;
+    const one = nsrcCA.slice(a, nsrcCA.indexOf("\n", a)).match(/^  const \w+ = useCallback\((.*), \[([^\]]*)\]\);$/);
+    if (one) return { body: one[1], deps: one[2], at: a };
+    const d = nsrcCA.indexOf("\n  }, [", a), e = d < 0 ? -1 : nsrcCA.indexOf("]);\n", d);
+    return d < 0 || e < 0 ? null : { body: nsrcCA.slice(a + head.length, d + 4), deps: nsrcCA.slice(d + 7, e), at: a };
+  };
+  // a maker: env → { fn: the callback, deps: its deps array evaluated in that env } (every name the slice reads is listed)
+  const mkCA = (name, names) => {
+    const h = hookCA(name); if (!h) return null;
+    try { return vm.runInContext(`(function (env) { const { ${names} } = env; return { fn: (${h.body}), deps: [${h.deps}] }; })`, sandbox, { filename: "ca-" + name + ".js" }); }
+    catch (ex) { console.log("  (CA compile error) " + name + ": " + String(ex).slice(0, 200)); return null; }
+  };
+  // a markup condition as a function of its env; a throw (a name it shouldn't read) answers "threw", never crashes the section
+  const condCA = (cond, names) => { if (!cond) return null; try { const f = vm.runInContext(`(function (env) { const { ${names} } = env; return !!(${cond}); })`, sandbox); return (env) => { try { return f(env); } catch (ex) { return "threw: " + String(ex).slice(0, 60); } }; } catch (ex) { return null; } };
+  const runCA = async (ev, p) => { try { await p(); } catch (ex) { ev.push("threw: " + String(ex).slice(0, 80)); } await spinCA(4); return ev; };
+  const PRED = mkCA("canChangeVacRequest", "isScheduler, userProfile");
+  const V_CA = {   // who is signed in: the account's profile (person_id) and role; mySurgeon follows the profile when signed in
+    RPC: { isScheduler: false, userProfile: { person_id: "s3", display_name: "RPC", role: "member" }, mySurgeon: "s3" },
+    ARW: { isScheduler: false, userProfile: { person_id: "s7", display_name: "ARW", role: "member" }, mySurgeon: "s7" },
+    KJH: { isScheduler: false, userProfile: { person_id: "s4", display_name: "KJH", role: "member" }, mySurgeon: "s4" },
+    MA: { isScheduler: false, userProfile: { person_id: "a1", display_name: "MA", role: "member" }, mySurgeon: "a1" },
+    FAK: { isScheduler: true, userProfile: { person_id: "s6", display_name: "FAK", role: "scheduler" }, mySurgeon: "s6" },
+    OUT: { isScheduler: false, userProfile: null, mySurgeon: "" },
+    NOID: { isScheduler: false, userProfile: { display_name: "?", role: "member" }, mySurgeon: "" },   // a profile row with no person id
+    STALE: { isScheduler: false, userProfile: null, mySurgeon: "s3" },   // no account (profile not loaded) though the device's stored pick says RPC
+  };
+  const predFor = (who) => (PRED ? PRED({ isScheduler: V_CA[who].isScheduler, userProfile: V_CA[who].userProfile }).fn : null);
+  const VR_CA = (o) => Object.assign({ id: 7, surgeon_id: "s3", surgeon_name: "RPC", start_date: "2099-03-02", end_date: "2099-03-06", request_type: "vacation", reason: "trip", status: "pending", reviewed_at: null }, o || {});
+  const TR_CA = (o) => Object.assign({ id: 9, from_surgeon_id: "s3", to_surgeon_id: "s7", from_surgeon_name: "RPC", to_surgeon_name: "ARW", week_monday: "2099-03-02", shift_key: "mon", status: "pending" }, o || {});
+  const NONE_CA = "a slice was not found or did not compile";
+
+  // CA1 — the predicate
+  const ask1 = (who, r) => { try { const f = predFor(who); return f ? f(r) : "missing"; } catch (ex) { return "threw: " + String(ex).slice(0, 60); } };
+  const ca1 = PRED ? {
+    own: ask1("RPC", VR_CA()), colleague: ask1("RPC", VR_CA({ surgeon_id: "s1", surgeon_name: "DJA" })), otherMember: ask1("ARW", VR_CA()),
+    appOwn: ask1("MA", VR_CA({ surgeon_id: "a1", surgeon_name: "MA" })), appColleague: ask1("MA", VR_CA()), ownReviewed: ask1("RPC", VR_CA({ status: "approved" })),
+    scheduler: ask1("FAK", VR_CA()), schedulerOwn: ask1("FAK", VR_CA({ surgeon_id: "s6", surgeon_name: "FAK" })), schedulerReviewed: ask1("FAK", VR_CA({ status: "approved" })),
+    signedOut: ask1("OUT", VR_CA()), noPersonId: ask1("NOID", VR_CA({ surgeon_id: undefined })), noRequest: [ask1("RPC", null), ask1("FAK", null), ask1("FAK", undefined)],
+  } : null;
+  const WANT1 = { own: true, colleague: false, otherMember: false, appOwn: true, appColleague: false, ownReviewed: true, scheduler: true, schedulerOwn: true, schedulerReviewed: true,
+    signedOut: false, noPersonId: false, noRequest: [false, false, false] };
+  const h1 = hookCA("canChangeVacRequest");
+  check("CA1 the REAL canChangeVacRequest, executed: the requester's own request yes (a surgeon's; an APP's), a colleague's no (for a surgeon or an APP), the scheduler yes on anyone's (pending or reviewed); signed out, a profile with no person id, or no request: no — answered from the signed-in account alone (isScheduler + userProfile, its deps exactly; Mine's view pick is no input)",
+    !!PRED && J(ca1) === J(WANT1) && !!h1 && h1.deps.replace(/\s/g, "") === "isScheduler,userProfile", PRED ? J(ca1) : NONE_CA);
+  // §P for it: declared once, before every hook that lists it
+  const listsAt = []; { const re = /[})]\s*,\s*\[([^\]]*)\]\s*\)/g; let m; while ((m = re.exec(nsrcCA)) !== null) if (/\bcanChangeVacRequest\b/.test(m[1])) listsAt.push(m.index); }
+  check("CA1 …canChangeVacRequest is declared once, BEFORE every hook that lists it (saveVacRequestEdit, deleteVacRequest — the 2026.09.24a TDZ class), and is what those two handlers' deps name",
+    !!h1 && listsAt.length === 2 && listsAt.every(i => i > h1.at) && /\bcanChangeVacRequest\b/.test((hookCA("saveVacRequestEdit") || {}).deps || "") && /\bcanChangeVacRequest\b/.test((hookCA("deleteVacRequest") || {}).deps || ""),
+    J({ declared: h1 && h1.at, lists: listsAt }));
+
+  // CA2 — the markup's gates
+  const at = (s, from) => nsrcCA.indexOf(s, from || 0);
+  const iPend = at("{/* Pending Requests — Grouped by Person */}"), iRev = at("📋 Reviewed <span", iPend), iTrades = at("{/* ─── Shift Trade Requests ─── */}", iRev);
+  const iPT = at("{/* Pending Trades */}", iTrades), iSet = at("{/* ════════════════ SETTINGS", iPT);
+  const pendCA = iPend >= 0 && iRev > iPend ? nsrcCA.slice(iPend, iRev) : "", revCA = iRev >= 0 && iTrades > iRev ? nsrcCA.slice(iRev, iTrades) : "", trCA = iPT >= 0 && iSet > iPT ? nsrcCA.slice(iPT, iSet) : "";
+  const EDITOR_RE = /\n[ ]*\{([^\n{}]*?) \? \(\n[ ]*<div style=\{\{display:"flex",gap:6,alignItems:"end",flexWrap:"wrap"\}\}>/;
+  const CTRL_RE = /\n[ ]*\{([^\n]*?) && <>\n[ ]*<button onClick=\{\(\)=>setEditingVacReq\(\{id:r\.id,[^\n]*>✎ Edit<\/button>\n[ ]*<button onClick=\{\(\)=>deleteVacRequest\(r\.id\)\}[^\n]*>Withdraw<\/button>\n[ ]*<\/>\}/;
+  const edM = pendCA.match(EDITOR_RE), ctM = pendCA.match(CTRL_RE), edRevM = revCA.match(EDITOR_RE);
+  const GATE_ENV = "editingVacReq, r, canChangeVacRequest, mySurgeon, isScheduler";   // what the row's scope offers; the gates must use the predicate
+  const edF = condCA(edM && edM[1], GATE_ENV), ctF = condCA(ctM && ctM[1], GATE_ENV), edRevF = condCA(edRevM && edRevM[1], GATE_ENV);
+  const apM = pendCA.match(/\{\(([^\n]*?)\) && \(\n\s*<div style=\{\{marginLeft:"auto",display:"flex",gap:6\}\}>\n\s*<button onClick=\{\(\)=>approveVacRequest\(r\)\}/), apF = condCA(apM && apM[1], "r, mySurgeon, isScheduler");
+  const ROWS_CA = [["RPC", VR_CA()], ["RPC", VR_CA({ surgeon_id: "s1", surgeon_name: "DJA" })], ["MA", VR_CA({ surgeon_id: "a1", surgeon_name: "MA" })], ["MA", VR_CA()], ["ARW", VR_CA()], ["FAK", VR_CA()], ["OUT", VR_CA()], ["STALE", VR_CA()]];
+  const ca2 = edF && ctF && edRevF && apF && PRED ? ROWS_CA.map(([who, r]) => { const v = V_CA[who], g = (o) => Object.assign({ canChangeVacRequest: predFor(who), mySurgeon: v.mySurgeon, isScheduler: v.isScheduler }, o);
+    return { who, row: r.surgeon_id, controls: ctF(g({ r })), editor: edF(g({ editingVacReq: { id: r.id }, r })),
+      reviewedEditor: edRevF(g({ editingVacReq: { id: r.id }, r: Object.assign({}, r, { status: "approved" }) })), approveDeny: apF({ r, mySurgeon: v.mySurgeon, isScheduler: v.isScheduler }) }; }) : null;
+  const WANT2 = [[true, true, true, false], [false, false, false, true], [true, true, true, false], [false, false, false, true], [false, false, false, true], [true, true, true, true], [false, false, false, true], [false, false, false, false]];
+  check("CA2 the pending row's ✎ Edit + Withdraw and BOTH editors, their conditions sliced and executed with the real predicate: shown for the requester (RPC on his own row, MA on hers) and the scheduler; NOT for a colleague (a surgeon or an APP), even with an editor left open on that row, nor with no account signed in (whatever the device's stored pick); a colleague keeps ✓ Approve / ✕ Deny on it (AR1's gate, unchanged)",
+    !!ca2 && J(ca2.map(x => [x.controls, x.editor, x.reviewedEditor, x.approveDeny])) === J(WANT2) && edF({ editingVacReq: { id: 8 }, r: VR_CA(), canChangeVacRequest: predFor("FAK") }) === false,
+    ca2 ? J(ca2) : J({ editor: !!edM, controls: !!ctM, reviewedEditor: !!edRevM, approveDeny: !!apM }));
+  check("CA2 …each gate IS the one predicate (`canChangeVacRequest(r)` — no second copy of the rule, no mySurgeon / Mine pick); the pending card has one ✎ Edit and one Withdraw (both inside it), the Reviewed card one ✎ Edit; members still see every row (myVacRequests is every request — decided as a group)",
+    !!ctM && ctM[1] === "canChangeVacRequest(r)" && !!edM && edM[1] === "editingVacReq?.id === r.id && canChangeVacRequest(r)" && !!edRevM && edRevM[1] === edM[1]
+      && pendCA.split(">✎ Edit</button>").length === 2 && pendCA.split(">Withdraw</button>").length === 2 && revCA.split(">✎ Edit</button>").length === 2
+      && count("canChangeVacRequest(r)") === 3 && count("const myVacRequests = useMemo(() => {\n    // Everyone sees all vacation requests — they're decided as a group.\n    return vacRequests;\n  }, [vacRequests]);".replace(/\n/g, src.includes("\r\n") ? "\r\n" : "\n")) === 1,
+    J({ controls: ctM && ctM[1], editor: edM && edM[1], reviewedEditor: edRevM && edRevM[1], calls: count("canChangeVacRequest(r)") }));
+
+  // CA3 — the REAL saveVacRequestEdit
+  const EDIT_CA = mkCA("saveVacRequestEdit", "sessionEpochRef, dbAuthHeaders, editingVacReq, isScheduler, canChangeVacRequest, showToast, vacRequests, fetch, SUPABASE_URL, console, setBackRequest, logAudit, setVacRequests, toEdit, setEditingVacReq");
+  const editCA = async (who, draft, o = {}) => {
+    if (!EDIT_CA || !PRED) return null;
+    const ev = [], ep = { current: 0 };
+    const { fn } = EDIT_CA({ sessionEpochRef: ep, dbAuthHeaders: () => ({ Authorization: "Bearer " + who }), editingVacReq: Object.assign({ id: 7, reason: "trip" }, draft),
+      isScheduler: V_CA[who].isScheduler, canChangeVacRequest: predFor(who), showToast: (m, t) => ev.push("toast " + (t || "info") + ": " + m), vacRequests: [VR_CA(o.req)],
+      SUPABASE_URL: "https://x.test", console: quietCA, fetch: async (url, init) => { ev.push(init.method + " " + init.headers.Authorization); (o.urls || []).push(String(url).replace(/^.*\/rest\/v1\//, "")); if (o.cross) ep.current++; return respCA(200, o.rows || [{ id: 7 }]); },
+      setBackRequest: async () => { ev.push("set back"); return true; }, logAudit: (a) => ev.push("audit " + a), setVacRequests: () => ev.push("list"), toEdit: () => ev.push("time off"), setEditingVacReq: () => ev.push("editor closed") });
+    return runCA(ev, () => fn());
+  };
+  const NEW_CA = { start_date: "2099-03-09", end_date: "2099-03-13" };
+  const ca3 = EDIT_CA && PRED ? {
+    colleague: await editCA("ARW", NEW_CA), colleagueBadRange: await editCA("ARW", { start_date: "", end_date: "2099-03-13" }), colleagueReviewed: await editCA("ARW", NEW_CA, { req: { status: "approved" } }),
+    app: await editCA("MA", NEW_CA), signedOut: await editCA("OUT", NEW_CA),
+    own: await editCA("RPC", NEW_CA), ownPast: await editCA("RPC", { start_date: "2020-01-06", end_date: "2020-01-08" }), appOwn: await editCA("MA", NEW_CA, { req: { surgeon_id: "a1", surgeon_name: "MA" } }),
+    scheduler: await editCA("FAK", NEW_CA, { req: { status: "approved" } }), ownCrossed: await editCA("RPC", NEW_CA, { cross: true }),
+  } : null;
+  check("CA3 the REAL saveVacRequestEdit: a colleague's save (ARW on RPC's pending or approved request; an APP; signed out) does NOTHING — no request, no toast (not even the empty date's), no list, time off, editor change or audit",
+    !!ca3 && ["colleague", "colleagueBadRange", "colleagueReviewed", "app", "signedOut"].every(k => J(ca3[k]) === "[]"), ca3 ? J(ca3) : NONE_CA);
+  check("CA3 …the requester's own save (a surgeon's, an APP's) and the scheduler's (an approved one: its time off moves) land as before and say so; a member's past date is still refused with its message; the v2 fence kept — a session change during the PATCH sets it back, nothing said",
+    !!ca3 && J(ca3.own) === J(["PATCH Bearer RPC", "list", "toast success: Changes saved.", "editor closed"]) && J(ca3.appOwn) === J(["PATCH Bearer MA", "list", "toast success: Changes saved.", "editor closed"])
+      && J(ca3.scheduler) === J(["PATCH Bearer FAK", "list", "toast success: Changes saved.", "time off", "editor closed"]) && ca3.ownPast.length === 1 && /^toast error: Requests are for upcoming time off/.test(ca3.ownPast[0])
+      && J(ca3.ownCrossed) === J(["PATCH Bearer RPC", "set back"]), ca3 ? J({ own: ca3.own, appOwn: ca3.appOwn, scheduler: ca3.scheduler, ownPast: ca3.ownPast, ownCrossed: ca3.ownCrossed }) : NONE_CA);
+  // (review fix 2026-10-20 — RQ-1) a member's save is of a request still PENDING: their list can be a minute behind a
+  // scheduler's approval, and the id-only PATCH then rewrote the APPROVED request's dates under its unmoved time off
+  const urlsM = [], urlsS = [], urlsA = [];
+  const ca3p = EDIT_CA && PRED ? {
+    member: await editCA("RPC", NEW_CA, { urls: urlsM }), app: await editCA("MA", NEW_CA, { req: { surgeon_id: "a1", surgeon_name: "MA" }, urls: urlsA }),
+    scheduler: await editCA("FAK", NEW_CA, { req: { status: "approved" }, urls: urlsS }),
+    memberReviewed: await editCA("RPC", NEW_CA, { rows: [] }), schedulerGone: await editCA("FAK", NEW_CA, { rows: [] }),
+  } : null;
+  check("CA3 (review fix — RQ-1) a member's save (a surgeon's, an APP's) asks for the request still pending (&status=eq.pending on its PATCH); a scheduler's correction stays id-only (pending or reviewed); a member's save the server finds already reviewed changes nothing and says so — \"This request was already reviewed or withdrawn — nothing was changed.\" (no list, no time off, the editor left open); a scheduler's on a deleted one keeps its words",
+    !!ca3p && J(urlsM) === J(["vacation_requests?id=eq.7&status=eq.pending"]) && J(urlsA) === J(["vacation_requests?id=eq.7&status=eq.pending"]) && J(urlsS) === J(["vacation_requests?id=eq.7"])
+      && J(ca3p.memberReviewed) === J(["PATCH Bearer RPC", "toast error: This request was already reviewed or withdrawn — nothing was changed."])
+      && J(ca3p.schedulerGone) === J(["PATCH Bearer FAK", "toast error: This request no longer exists — nothing was changed."]),
+    ca3p ? J({ urlsM, urlsA, urlsS, memberReviewed: ca3p.memberReviewed, schedulerGone: ca3p.schedulerGone }) : NONE_CA);
+
+  // CA4 — the REAL deleteVacRequest
+  // (review fix 2026-10-20, on purpose — RQ-1: a member's DELETE asks for the request still pending, so the delete reads
+  // isScheduler; o.body: what the DELETE answers — a member's asks for the rows it removed; o.prefer records its Prefer)
+  const DELV_CA = mkCA("deleteVacRequest", "vacRequests, canChangeVacRequest, userProfile, isScheduler, confirm, fetch, SUPABASE_URL, dbAuthHeaders, console, showToast, setVacRequests, sessionEpochRef");
+  const delVacCA = async (who, o = {}) => {
+    if (!DELV_CA || !PRED) return null;
+    const ev = [], ep = { current: 0 }, list = [VR_CA(o.req), VR_CA({ id: 8, surgeon_id: "s1", surgeon_name: "DJA" })];
+    const { fn } = DELV_CA({ vacRequests: list, canChangeVacRequest: predFor(who), userProfile: V_CA[who].userProfile, isScheduler: V_CA[who].isScheduler, confirm: (m) => { ev.push("confirm: " + m); return !o.no; },
+      SUPABASE_URL: "https://x.test", dbAuthHeaders: () => ({ Authorization: "Bearer " + who }), console: quietCA, showToast: (m, t) => ev.push("toast " + (t || "info") + ": " + m),
+      setVacRequests: (f) => ev.push("list " + f(list.map(r => Object.assign({}, r))).map(r => r.id).join()), sessionEpochRef: ep,
+      fetch: async (url, init) => { ev.push(init.method + " " + String(url).replace(/^.*\/rest\/v1\//, "") + " " + init.headers.Authorization); if (o.prefer) o.prefer.push(init.headers.Prefer); if (o.cross) ep.current++;
+        const r = respCA(o.status || ("body" in o ? 200 : 204), "body" in o ? o.body : null);
+        if (o.crossInBody) { const j = r.json; r.json = async () => { ep.current++; return j(); }; }   // the session changes while its answer is read
+        return r; } });
+    return runCA(ev, () => fn(o.id || 7));
+  };
+  const ca4 = DELV_CA && PRED ? {
+    colleague: await delVacCA("ARW"), app: await delVacCA("MA"), signedOut: await delVacCA("OUT"), othersRow: await delVacCA("RPC", { id: 8 }),
+    own: await delVacCA("RPC"), ownNoCall: await delVacCA("RPC", { req: { request_type: "nocall" } }), appOwn: await delVacCA("MA", { req: { surgeon_id: "a1", surgeon_name: "MA" } }),
+    scheduler: await delVacCA("FAK"), schedulerReviewed: await delVacCA("FAK", { req: { status: "approved" } }), declined: await delVacCA("RPC", { no: true }),
+    failed: await delVacCA("RPC", { status: 500 }), crossed: await delVacCA("RPC", { status: 500, cross: true }),
+  } : null;
+  // (review fix 2026-10-20, on purpose — RQ-1: a member's DELETE carries &status=eq.pending; a scheduler's stays id-only)
+  const W4 = (who, q) => ["confirm: " + q, "DELETE vacation_requests?id=eq.7" + (V_CA[who].isScheduler ? "" : "&status=eq.pending") + " Bearer " + who, "list 8"];
+  check("CA4 the REAL deleteVacRequest: a colleague's call (ARW on RPC's; an APP; signed out; RPC on DJA's) does NOTHING — no confirm, no DELETE, nothing said",
+    !!ca4 && ["colleague", "app", "signedOut", "othersRow"].every(k => J(ca4[k]) === "[]"), ca4 ? J(ca4) : NONE_CA);
+  check("CA4 …the confirm says what its button does: the requester's Withdraw — \"Withdraw your vacation request, 2099-03-02 → 2099-03-06?\" (\"no-call\" for a no-call one; an APP's too), the scheduler's Withdraw — \"Withdraw RPC's vacation request, …?\", the Reviewed list's ✕ — \"Delete this request?\"; each then deletes it",
+    !!ca4 && J(ca4.own) === J(W4("RPC", "Withdraw your vacation request, 2099-03-02 → 2099-03-06?")) && J(ca4.ownNoCall) === J(W4("RPC", "Withdraw your no-call request, 2099-03-02 → 2099-03-06?"))
+      && J(ca4.appOwn) === J(W4("MA", "Withdraw your vacation request, 2099-03-02 → 2099-03-06?")) && J(ca4.scheduler) === J(W4("FAK", "Withdraw RPC's vacation request, 2099-03-02 → 2099-03-06?"))
+      && J(ca4.schedulerReviewed) === J(W4("FAK", "Delete this request?")), ca4 ? J({ own: ca4.own, ownNoCall: ca4.ownNoCall, appOwn: ca4.appOwn, scheduler: ca4.scheduler, schedulerReviewed: ca4.schedulerReviewed }) : NONE_CA);
+  check("CA4 …a declined confirm sends nothing; a failed DELETE says so once and keeps the row (BA3); failing after a session change: nothing said, nothing changed (the fence)",
+    !!ca4 && ca4.declined.length === 1 && /^confirm: Withdraw your /.test(ca4.declined[0])
+      // (review fix 2026-10-20, on purpose — RQ-1: RPC's DELETE asks for his request still pending)
+      && J(ca4.failed.slice(1)) === J(["DELETE vacation_requests?id=eq.7&status=eq.pending Bearer RPC", "toast error: Couldn't delete the request — check your connection and try again."]) && J(ca4.crossed.slice(1)) === J(["DELETE vacation_requests?id=eq.7&status=eq.pending Bearer RPC"]),
+    ca4 ? J({ declined: ca4.declined, failed: ca4.failed, crossed: ca4.crossed }) : NONE_CA);
+
+  // (review fix 2026-10-20 — RQ-1) a member's Withdraw takes back a request still PENDING: their list can be a minute
+  // behind a scheduler's approval, and the id-only DELETE then removed the APPROVED request (its time off stayed, with no
+  // request left to ↩ Revoke). It now asks for the pending one and for what it removed; a scheduler's stays id-only.
+  const pref4 = { member: [], app: [], sched: [], schedRev: [] };
+  const ca4p = DELV_CA && PRED ? {
+    member: await delVacCA("RPC", { body: [{ id: 7 }], prefer: pref4.member }), app: await delVacCA("MA", { req: { surgeon_id: "a1", surgeon_name: "MA" }, body: [{ id: 7 }], prefer: pref4.app }),
+    memberReviewed: await delVacCA("RPC", { body: [] }), memberReviewedCrossed: await delVacCA("RPC", { body: [], crossInBody: true }), memberRemovedCrossed: await delVacCA("RPC", { body: [{ id: 7 }], crossInBody: true }),
+    memberOddBody: await delVacCA("RPC", { status: 200, body: "not json" }),
+    sched: await delVacCA("FAK", { prefer: pref4.sched }), schedReviewed: await delVacCA("FAK", { req: { status: "approved" }, prefer: pref4.schedRev }),
+  } : null;
+  const REVIEWED4 = "toast error: This request was already reviewed or withdrawn — nothing was changed.";
+  check("CA4 (review fix — RQ-1) a member's Withdraw (a surgeon's, an APP's) DELETEs only a request still pending (&status=eq.pending, Prefer return=representation) and takes the row off once the server says it removed it; a scheduler's Withdraw and the Reviewed ✕ stay id-only (return=minimal)",
+    !!ca4p && J(ca4p.member) === J(W4("RPC", "Withdraw your vacation request, 2099-03-02 → 2099-03-06?")) && J(ca4p.app) === J(W4("MA", "Withdraw your vacation request, 2099-03-02 → 2099-03-06?"))
+      && J(pref4.member) === J(["return=representation"]) && J(pref4.app) === J(["return=representation"])
+      && J(ca4p.sched) === J(W4("FAK", "Withdraw RPC's vacation request, 2099-03-02 → 2099-03-06?")) && J(ca4p.schedReviewed) === J(W4("FAK", "Delete this request?"))
+      && J(pref4.sched) === J(["return=minimal"]) && J(pref4.schedRev) === J(["return=minimal"]),
+    ca4p ? J({ member: ca4p.member, app: ca4p.app, sched: ca4p.sched, schedReviewed: ca4p.schedReviewed, pref4 }) : NONE_CA);
+  check("CA4 (review fix — RQ-1) …the server found it already reviewed (it removed nothing): nothing changed, the row kept, said once — \"This request was already reviewed or withdrawn — nothing was changed.\"; the session changing while its answer is read: nothing said, the list left alone (the fence, either answer); a 2xx with a body it can't read takes the row off (the DELETE was accepted)",
+    !!ca4p && J(ca4p.memberReviewed) === J(["confirm: Withdraw your vacation request, 2099-03-02 → 2099-03-06?", "DELETE vacation_requests?id=eq.7&status=eq.pending Bearer RPC", REVIEWED4])
+      && J(ca4p.memberReviewedCrossed) === J(["confirm: Withdraw your vacation request, 2099-03-02 → 2099-03-06?", "DELETE vacation_requests?id=eq.7&status=eq.pending Bearer RPC"])
+      && J(ca4p.memberRemovedCrossed) === J(["confirm: Withdraw your vacation request, 2099-03-02 → 2099-03-06?", "DELETE vacation_requests?id=eq.7&status=eq.pending Bearer RPC"])
+      && J(ca4p.memberOddBody) === J(W4("RPC", "Withdraw your vacation request, 2099-03-02 → 2099-03-06?")),
+    ca4p ? J({ memberReviewed: ca4p.memberReviewed, crossed: ca4p.memberReviewedCrossed, removedCrossed: ca4p.memberRemovedCrossed, odd: ca4p.memberOddBody }) : NONE_CA);
+
+  // CA5 — the REAL deleteTradeRequest
+  const DELT_CA = mkCA("deleteTradeRequest", "tradeRequests, isScheduler, userProfile, confirm, fetch, SUPABASE_URL, dbAuthHeaders, console, showToast, setTradeRequests, sessionEpochRef");
+  const delTrCA = async (who, o = {}) => {
+    if (!DELT_CA) return null;
+    const ev = [], ep = { current: 0 }, list = [TR_CA(o.tr), TR_CA({ id: 10, from_surgeon_id: "s1", from_surgeon_name: "DJA" })];
+    const { fn } = DELT_CA({ tradeRequests: list, isScheduler: V_CA[who].isScheduler, userProfile: V_CA[who].userProfile, confirm: (m) => { ev.push("confirm: " + m); return !o.no; },
+      SUPABASE_URL: "https://x.test", dbAuthHeaders: () => ({ Authorization: "Bearer " + who }), console: quietCA, showToast: (m, t) => ev.push("toast " + (t || "info") + ": " + m),
+      setTradeRequests: (f) => ev.push("list " + f(list.map(r => Object.assign({}, r))).map(r => r.id).join()), sessionEpochRef: ep,
+      fetch: async (url, init) => { ev.push(init.method + " " + String(url).replace(/^.*\/rest\/v1\//, "") + " " + init.headers.Authorization); return respCA(204, null); } });
+    return runCA(ev, () => fn(o.id || 9));
+  };
+  const ca5 = DELT_CA ? {
+    counterparty: await delTrCA("ARW"), third: await delTrCA("KJH"), app: await delTrCA("MA"), signedOut: await delTrCA("OUT"), noPersonId: await delTrCA("NOID", { tr: { from_surgeon_id: undefined } }), othersTrade: await delTrCA("RPC", { id: 10 }),
+    proposer: await delTrCA("RPC"), declined: await delTrCA("RPC", { no: true }), scheduler: await delTrCA("FAK"), schedulerCompleted: await delTrCA("FAK", { tr: { status: "accepted" } }),
+  } : null;
+  const W5 = (who, q) => ["confirm: " + q, "DELETE shift_trade_requests?id=eq.9 Bearer " + who, "list 10"];
+  check("CA5 the REAL deleteTradeRequest: only its proposer or a scheduler — the counterparty (ARW), a third member, an APP, signed out, a profile with no person id, or the proposer of another trade: nothing (no confirm, no DELETE, nothing said)",
+    !!ca5 && ["counterparty", "third", "app", "signedOut", "noPersonId", "othersTrade"].every(k => J(ca5[k]) === "[]"), ca5 ? J(ca5) : NONE_CA);
+  check("CA5 …the confirm says what its button does: the proposer's (and a scheduler's) Withdraw on a pending trade — \"Withdraw this trade request?\" (it read \"Delete …\"); Completed Trades' ✕ — \"Delete this trade request?\"; each then deletes it; a declined confirm sends nothing",
+    !!ca5 && J(ca5.proposer) === J(W5("RPC", "Withdraw this trade request?")) && J(ca5.scheduler) === J(W5("FAK", "Withdraw this trade request?"))
+      && J(ca5.schedulerCompleted) === J(W5("FAK", "Delete this trade request?")) && J(ca5.declined) === J(["confirm: Withdraw this trade request?"]),
+    ca5 ? J({ proposer: ca5.proposer, scheduler: ca5.scheduler, schedulerCompleted: ca5.schedulerCompleted, declined: ca5.declined }) : NONE_CA);
+
+  // CA6 — freshness: React keeps a useCallback's function while every dep is Object.is-equal (BA1's rig)
+  const slotCA = () => { let s = null; return (made) => { if (s && s.deps.length === made.deps.length && s.deps.every((d, i) => Object.is(d, made.deps[i]))) return s.fn; s = made; return made.fn; }; };
+  const freshCA = async (kind, first, then) => {
+    const MK = kind === "edit" ? EDIT_CA : kind === "vac" ? DELV_CA : DELT_CA;
+    if (!MK || !PRED) return null;
+    const ev = [], ep = { current: 0 }, predSlot = slotCA(), hSlot = slotCA();
+    const vacList = [VR_CA()], trList = [TR_CA()], editing = Object.assign({ id: 7, reason: "trip" }, NEW_CA);   // the SAME objects in both renders
+    const render = (who) => {
+      const v = V_CA[who], pred = predSlot(PRED({ isScheduler: v.isScheduler, userProfile: v.userProfile }));
+      return hSlot(MK({ isScheduler: v.isScheduler, userProfile: v.userProfile, canChangeVacRequest: pred, vacRequests: vacList, tradeRequests: trList, editingVacReq: editing,
+        dbAuthHeaders: () => ({ Authorization: "Bearer " + who }), SUPABASE_URL: "https://x.test", console: quietCA, sessionEpochRef: ep, showToast: (m) => ev.push("toast " + m), confirm: () => { ev.push("confirm"); return true; },
+        fetch: async (u, init) => { ev.push(init.method + " " + init.headers.Authorization); return kind === "edit" ? respCA(200, [{ id: 7 }]) : respCA(204, null); },
+        setVacRequests: () => ev.push("list"), setTradeRequests: () => ev.push("list"), setBackRequest: async () => true, logAudit: () => {}, toEdit: () => ev.push("time off"), setEditingVacReq: () => ev.push("editor closed") }));
+    };
+    render(first); const tap = render(then);
+    return runCA(ev, () => tap(kind === "edit" ? undefined : kind === "vac" ? 7 : 9));
+  };
+  const ca6 = EDIT_CA && DELV_CA && DELT_CA && PRED ? {
+    edit: await freshCA("edit", "RPC", "ARW"), vac: await freshCA("vac", "RPC", "ARW"), trade: await freshCA("trade", "RPC", "ARW"),
+    editBack: await freshCA("edit", "ARW", "RPC"), vacBack: await freshCA("vac", "ARW", "RPC"), tradeBack: await freshCA("trade", "ARW", "RPC"),
+  } : null;
+  check("CA6 freshness, rendered as React renders them (one hook slot each, kept while the deps are equal): the requester renders, then a colleague signs in (the request list and the open editor the SAME objects) — the colleague's save / Withdraw / trade Withdraw does nothing; the other way round the requester's lands (each deps array names what its gate reads)",
+    !!ca6 && J(ca6.edit) === "[]" && J(ca6.vac) === "[]" && J(ca6.trade) === "[]"
+      && J(ca6.editBack) === J(["PATCH Bearer RPC", "list", "toast Changes saved.", "editor closed"]) && J(ca6.vacBack) === J(["confirm", "DELETE Bearer RPC", "list"]) && J(ca6.tradeBack) === J(["confirm", "DELETE Bearer RPC", "list"]),
+    ca6 ? J(ca6) : NONE_CA);
+
+  // CA7 — the tab's other per-request actions (item 3 of the decision): none is an edit / withdraw open to a colleague
+  const gateCA = (block, re) => { const m = block.match(re); return m ? condCA(m[1], "isScheduler, mySurgeon, r, reviewed") : null; };
+  const G7 = {
+    reviewedEditRevoke: gateCA(revCA, /\n[ ]*\{([^\n]*?) && \(\n[ ]*<>\n[ ]*<button onClick=\{\(\)=>setEditingVacReq\(\{id:r\.id,[^\n]*>✎ Edit<\/button>\n[ ]*<button onClick=\{\(\)=>revokeApprovedVac\(r\)\}[^\n]*>↩ Revoke<\/button>/),
+    reviewedDelete: gateCA(revCA, /\n[ ]*\{([^\n]*?) && \(\n[ ]*<button onClick=\{\(\)=>deleteVacRequest\(r\.id\)\}[^\n]*>✕<\/button>/),
+    clearAllReviewed: gateCA(revCA, /\n[ ]*\{([^\n]*?) && \(\n[ ]*<button onClick=\{clearReviewedRequests\}[^\n]*>Clear All Reviewed<\/button>/),
+    tradeWithdraw: gateCA(trCA, /\n[ ]*\{([^\n]*?) && <button onClick=\{\(\)=>deleteTradeRequest\(r\.id\)\}[^\n]*>Withdraw<\/button>\}/),
+    completedTradeDelete: gateCA(trCA, /\n[ ]*\{([^\n]*?) && <button onClick=\{\(\)=>deleteTradeRequest\(r\.id\)\}[^\n]*>✕<\/button>\}/),
+  };
+  const shown7 = (who) => { const v = V_CA[who], env = (r) => ({ isScheduler: v.isScheduler, mySurgeon: v.mySurgeon, r, reviewed: [VR_CA({ status: "approved" })] });
+    return Object.keys(G7).map(k => (G7[k] ? G7[k](env(k.startsWith("reviewed") || k === "clearAllReviewed" ? VR_CA({ status: "approved" }) : TR_CA(k === "completedTradeDelete" ? { status: "accepted" } : {}))) : "missing")); };
+  const ca7 = { ARW: shown7("ARW"), KJH: shown7("KJH"), MA: shown7("MA"), RPC: shown7("RPC"), FAK: shown7("FAK") };
+  // …and the delete behind the Reviewed ✕ and Completed Trades' ✕, called by a colleague anyway (a stale render): nothing
+  const calls7 = DELV_CA && DELT_CA && PRED ? [await delVacCA("ARW", { req: { status: "approved" } }), await delVacCA("MA", { req: { status: "denied" } }), await delTrCA("ARW", { tr: { status: "accepted" } }), await delTrCA("KJH", { tr: { status: "declined" } })] : null;
+  check("CA7 the tab's other per-request actions, their gates sliced and executed — Reviewed ✎ Edit / ↩ Revoke, its ✕, Clear All Reviewed, the pending trade's Withdraw, Completed Trades' ✕: a colleague (the trade's counterparty ARW, a third member, an APP) sees none, and the delete behind the two ✕s does nothing if called anyway; the requester / proposer RPC sees only his trade's Withdraw; the scheduler all but another's trade Withdraw (unchanged: he declines it)",
+    J(ca7) === J({ ARW: [false, false, false, false, false], KJH: [false, false, false, false, false], MA: [false, false, false, false, false], RPC: [false, false, false, true, false], FAK: [true, true, true, false, true] })
+      && !!calls7 && calls7.every(ev => J(ev) === "[]"),
+    J({ shown: ca7, calls: calls7 }));
+  check("CA7 …their confirms match their buttons: ↩ Revoke asks \"Revoke <name>'s approved …?\", Clear All Reviewed asks \"Clear all reviewed …?\" (unchanged); the request deletes' Withdraw / ✕ wording is CA4's and CA5's (executed); no confirm on the tab says \"Delete\" for a Withdraw any more",
+    count("if (!confirm(`Revoke ${req.surgeon_name}'s approved ${kindLabel} ${req.start_date} → ${req.end_date}? This will remove it from the schedule.`)) return;") === 1 && count(">↩ Revoke</button>") === 1
+      && count("if (!confirm(\"Clear all reviewed (approved/denied) requests? Pending requests will be kept.\")) return;") === 1 && count(">Clear All Reviewed</button>") === 1
+      && count("if (!confirm(\"Delete this request?\")) return;") === 0 && count("if (!confirm(\"Delete this trade request?\")) return;") === 0,
+    J({ revoke: count(">↩ Revoke</button>"), clear: count(">Clear All Reviewed</button>") }));
+})().catch(ex => check("CA harness ran without crashing", false, String(ex && ex.stack || ex).split("\n").slice(0, 3).join(" | ")));
+
 // ─── BA. Requests: a decline is audited as who declined; a failed delete keeps its row; the trade buttons in dark mode (UX audit 2026-10-19) ───
 // (1) declineTradeRequest's useCallback listed only its notice deps, so React kept the closure of the render those
 //     last changed in — before the profile had loaded — and its logAudit wrote actor_id null, actor_name "Unknown"
@@ -11443,7 +13081,10 @@ await (async () => {
     !!b2z && !!b2f && [b2z, b2f].every(S => S.audits.length === 0 && S.lists === 0 && S.notes.length === 0 && S.emails.length === 0 && S.toasts.length === 0),
     b2z ? JSON.stringify([outBA(b2z), outBA(b2f)]) : NONE_BA);
   // BA3 — the three deletes, sliced whole (their useCallback) and run
-  const ENV_DEL = "useCallback, confirm, fetch, SUPABASE_URL, dbAuthHeaders, console, showToast, setTradeRequests, setVacRequests, sessionEpochRef";
+  // (owner decision 2026-10-20, changed ON PURPOSE — CA: the two request deletes now find the request in their list and
+  // ask who may withdraw it first — the trade's proposer or a scheduler; canChangeVacRequest for a time-off request. The
+  // rig runs them as the scheduler, so each goes ahead as before; CA4 / CA5 run the gates themselves.)
+  const ENV_DEL = "useCallback, confirm, fetch, SUPABASE_URL, dbAuthHeaders, console, showToast, setTradeRequests, setVacRequests, sessionEpochRef, tradeRequests, vacRequests, isScheduler, userProfile, canChangeVacRequest";
   const mkDel = (name) => { const h = hookBA(name); try { return h ? vm.runInContext(`(function (env) { const { ${ENV_DEL} } = env;\n${h}\n  return ${name}; })`, sandbox) : null; } catch (ex) { return null; } };
   const DELS = [
     ["deleteTradeRequest", "setTradeRequests", [{ id: 7 }, { id: 8 }], "8", /^error: Couldn't delete the trade request/],
@@ -11454,6 +13095,7 @@ await (async () => {
     const S = { ep: { current: 0 }, token: RPC.token, sets: [], after: null, toasts: [], reqs: [] };
     const set = (k) => (f) => { S.sets.push(k); S.after = f(list.map(r => Object.assign({}, r))).map(r => r.id).join(); };
     await mk({ useCallback: (fn) => fn, confirm: () => true, SUPABASE_URL: "https://x.supabase.co", console: quietBA, sessionEpochRef: S.ep,
+      tradeRequests: list, vacRequests: list, isScheduler: true, userProfile: FAK.profile, canChangeVacRequest: (r) => !!r,   // (CA) the scheduler's delete
       dbAuthHeaders: () => ({ apikey: "ANON", Authorization: "Bearer " + (S.token || "ANON") }), showToast: (m, t) => S.toasts.push((t || "info") + ": " + m),
       setTradeRequests: set("setTradeRequests"), setVacRequests: set("setVacRequests"),
       fetch: async (url, init) => { S.reqs.push(init.method + " " + init.headers.Authorization); await spinBA(2); if (o.cross) { S.ep.current++; S.token = null; } if (o.thrown) throw new TypeError("Failed to fetch"); return respBA(o.status, null); } })(7);
@@ -11967,6 +13609,109 @@ console.log("\nBB. Setup time-off deletes ask first; backup pickers snap to Mond
     JSON.stringify({ pickers: count(picker), blur: count("onBlur={snapBkMonday}") }));
 }
 
+// ─── CC. Calendar is the first tab (owner decision 2026-10-20) ───
+// "Calendar should be first open item" — the owner chose Calendar as the
+// first tab, for everyone: the bar reads Calendar, Mine, Requests, Stats,
+// Totals, then the scheduler's Setup and Generate, Settings last. A
+// scheduler's bar used to start with Setup and Generate. Only the ORDER
+// moved: who sees which tab is unchanged, the app still opens on Calendar
+// (now the tab at the left for every role), and nothing about the bar is
+// positional — each button, its key and the Requests badge go by the tab's
+// name, never an index. (The calendar's "← Setup" pointed left, where Setup
+// sat in a scheduler's bar; it reads "Setup →" since the review fixes — CC5.)
+// Signed out and ?public=1 have no bar at all. The real tab list — sliced from `const allTabs = ` to
+// its `return tabs.map(` and run in a fresh context (a new free identifier
+// throws) — per role: scheduler, admin, member surgeon, APP, an APP-assign
+// member, and a scheduler / member before the profile has loaded:
+//   CC1 the order: Calendar first for every role, then that role's tabs in the new order; the app opens (its useState)
+//       on that first tab
+//   CC2 who sees which tab, and its label: the same as the pre-10/20 list gives through the SAME real filters
+//   CC3 a restricted tab (the real redirect effect, executed) falls back to the role's first tab; a visible one stays
+//   CC4 every tab in the list is a real view (one {view==="k"} block each, no key twice); the bar maps the list in
+//       its order, by name; nothing indexes it; it still wraps (css.nav), so a phone fits it as before
+// Review fixes (2026-10-20):
+//   CC5 the Calendar's scheduler button to Setup reads "Setup →" — Setup is now to the RIGHT of Calendar in the bar
+//       ("← Setup" pointed the other way — PH-9); it still opens Setup
+//   the section runs inside its own catch (a throw fails one named check, never the run — F8)
+console.log("\nCC. Calendar is the first tab");
+await (async () => {
+  const nsrcCC = src.replace(/\r\n/g, "\n");
+  const DECL = "const allTabs = [", MAP = "return tabs.map(([k,l]) =>";
+  const t0 = nsrcCC.indexOf(DECL), t1 = t0 === -1 ? -1 : nsrcCC.indexOf(MAP, t0);
+  const tabSrc = t0 !== -1 && nsrcCC.indexOf(DECL, t0 + 1) === -1 && t1 > t0 ? nsrcCC.slice(t0, t1) : null;
+  const nl = tabSrc ? tabSrc.indexOf("\n") : -1;
+  const listLine = nl > 0 ? tabSrc.slice(0, nl) : null, filtersCC = nl > 0 ? tabSrc.slice(nl + 1) : null; // the list; the role filters after it
+  // The list as it was before 10/20 (main 0839440) — run through TODAY's real filters for CC2.
+  const OLD_TABS = 'const allTabs = [["setup","Setup"],["generate","Generate"],["calendar","Calendar"],["myschedule","Mine"],["requests","Requests"],["stats","Stats"],["totals","Totals"],["settings","Settings"]];';
+  const compileCC = (body, ret) => { try { return vm.runInContext(`(function (env) { const { userProfile, isScheduler } = env;\n${body}\nreturn ${ret}; })`, vm.createContext({})); } catch (ex) { return null; } };
+  const runCC = (f, env) => { try { return f(env); } catch (ex) { return { err: String(ex && ex.message || ex).slice(0, 160) }; } };
+  const nowF = tabSrc && compileCC(tabSrc, "tabs"), oldF = filtersCC && compileCC(OLD_TABS + "\n" + filtersCC, "tabs"), listF = listLine && compileCC(listLine, "allTabs");
+  const ROLES = {
+    scheduler: { userProfile: { role: "scheduler", person_id: "s6" }, isScheduler: true },
+    admin: { userProfile: { role: "admin", person_id: "s1" }, isScheduler: true },
+    member: { userProfile: { role: "member", person_id: "s3" }, isScheduler: false },
+    app: { userProfile: { role: "member", person_id: "a1" }, isScheduler: false },
+    appAssign: { userProfile: { role: "member", person_id: "a2", can_assign_apps: true }, isScheduler: false },
+    schedNoProfile: { userProfile: null, isScheduler: true }, // a saved scheduler role sets isScheduler before the profile read lands
+    memberNoProfile: { userProfile: null, isScheduler: false },
+  };
+  const keysOf = (t) => (Array.isArray(t) ? t.map(([k]) => k) : t);
+  if (!nowF || !oldF || !listF) check("CC the tab list (const allTabs … return tabs.map) is extractable", false, JSON.stringify({ slice: !!tabSrc, now: !!nowF, old: !!oldF, list: !!listF }));
+  else {
+    const S = ["calendar", "myschedule", "requests", "stats", "totals", "setup", "generate", "settings"];
+    const M = ["calendar", "myschedule", "requests", "stats", "settings"];
+    const WANT = { scheduler: S, admin: S.filter((k) => k !== "myschedule"), member: M, app: M,
+      appAssign: ["calendar", "myschedule", "requests", "stats", "setup", "settings"], schedNoProfile: S, memberNoProfile: M };
+    const got = {}; for (const r of Object.keys(ROLES)) got[r] = keysOf(runCC(nowF, ROLES[r]));
+    const inits = [...nsrcCC.matchAll(/\n  const \[view, setView\] = useState\("([a-z]+)"\);/g)].map((m) => m[1]);
+    check("CC1 Calendar is the first tab for every role (owner decision 2026-10-20) — the real list, executed: scheduler Calendar · Mine · Requests · Stats · Totals · Setup · Generate · Settings; admin the same without Mine; member and APP Calendar · Mine · Requests · Stats · Settings; an APP-assign member gets Setup before Settings; before the profile loads, as the role says — and the app opens on that first tab",
+      Object.keys(WANT).every((r) => JSON.stringify(got[r]) === JSON.stringify(WANT[r]))
+        && inits.length === 1 && Object.keys(ROLES).every((r) => Array.isArray(got[r]) && got[r][0] === inits[0]),
+      JSON.stringify({ got, opensOn: inits }));
+
+    // CC2 — only the order moved: the same (key, label) set per role as the old list through today's real filters.
+    // The control: the old list really did start a scheduler's bar with Setup, Generate.
+    const pairs = (t) => (Array.isArray(t) ? t.map(([k, l]) => k + "=" + l).sort().join(",") : JSON.stringify(t));
+    const diff = Object.keys(ROLES).filter((r) => { const a = runCC(nowF, ROLES[r]), b = runCC(oldF, ROLES[r]); return !Array.isArray(a) || !Array.isArray(b) || pairs(a) !== pairs(b); })
+      .map((r) => r + ": now " + pairs(runCC(nowF, ROLES[r])) + " / before " + pairs(runCC(oldF, ROLES[r])));
+    const oldSched = keysOf(runCC(oldF, ROLES.scheduler));
+    check("CC2 …only the order moved: every role sees the same tabs with the same labels as before 10/20 (the old list run through the same real filters — Totals scheduler-only, Generate scheduler/admin, Setup also for an APP-assign member, no Mine for an admin)",
+      diff.length === 0 && Array.isArray(oldSched) && oldSched.slice(0, 3).join() === "setup,generate,calendar", diff.join(" | ") || JSON.stringify(oldSched));
+
+    // CC3 — the real "restricted tab" redirect, executed: it lands on the role's first tab (Calendar), and leaves a tab the role can see.
+    const rdSrc = (() => { const a = nsrcCC.indexOf("  // If non-scheduler ends up on a restricted tab, redirect them\n  useEffect(() => {"), b = a === -1 ? -1 : nsrcCC.indexOf("\n  }, [isScheduler, view, userProfile]);", a);
+      return a !== -1 && b > a ? nsrcCC.slice(nsrcCC.indexOf("useEffect(() => {", a) + "useEffect(() => {".length, b) : null; })();
+    const rdF = (() => { try { return rdSrc && vm.runInContext(`(function (env) { const { isScheduler, view, userProfile, setView } = env;\n${rdSrc}\n })`, vm.createContext({})); } catch (ex) { return null; } })();
+    const allKeys = keysOf(runCC(listF, {}));
+    const bad = [];
+    if (rdF && Array.isArray(allKeys)) for (const r of Object.keys(ROLES)) for (const k of allKeys) {
+      const sets = []; rdF(Object.assign({ view: k, setView: (v) => sets.push(v) }, ROLES[r]));
+      const shown = Array.isArray(got[r]) && got[r].includes(k), first = Array.isArray(got[r]) ? got[r][0] : null;
+      if (shown ? sets.length !== 0 : !sets.every((v) => v === first)) bad.push(r + "/" + k + " → " + JSON.stringify(sets));
+      if (!shown && ["setup", "totals", "myschedule"].includes(k) && sets.length !== 1) bad.push(r + "/" + k + " not redirected");
+    }
+    check("CC3 a tab a role can't see (Setup, Totals, an admin's Mine — the real redirect effect, executed per role) falls back to that role's first tab, Calendar; a tab the role can see is left alone",
+      !!rdF && Array.isArray(allKeys) && bad.length === 0, rdF ? bad.join(" | ") : "redirect effect not found");
+
+    // CC4 — the list is the bar's only source of truth, by name.
+    const views = Array.isArray(allKeys) ? allKeys.map((k) => nsrcCC.split(`{view==="${k}"`).length - 1) : [];
+    const styles = fs.readFileSync(path.join(ROOT, "app-styles.js"), "utf8");
+    check("CC4 every tab in the list is a real view (one {view===\"k\"} block each) and no tab is listed twice; the bar maps the list in its order — one button per tab, keyed, selected and wired by its name, the Requests badge by name — and nothing indexes it; ?public=1 has no bar; the bar still wraps (css.nav), so it fits a phone as before",
+      Array.isArray(allKeys) && allKeys.length === 8 && new Set(allKeys).size === allKeys.length && views.every((n) => n === 1)
+        && count("return tabs.map(([k,l]) =>") === 1 && count('<button key={k} style={{...css.tab(view===k),position:"relative"}} onClick={()=>setView(k)}>') === 1
+        && count('{k==="requests" && (') === 1 && count("allTabs") === 3 && count("allTabs[") === 0 && !/[^A-Za-z]tabs\[/.test(nsrcCC)
+        && count("{!isPublicMode && <div style={css.nav}>") === 1 && styles.split('nav: { display:"flex", gap:3, flexWrap:"wrap" },').length === 2,
+      JSON.stringify({ allKeys, views }));
+
+    // CC5 (review fix 2026-10-20 — PH-9): the Calendar's button to Setup points the way Setup now sits in the bar
+    const sched = Array.isArray(got.scheduler) ? got.scheduler : [];
+    const setupBtn = nsrcCC.match(/\n\s*<button onClick=\{\(\)=>setView\("setup"\)\} style=\{css\.btn\(false\)\}>([^<\n]*)<\/button>\n\s*<button onClick=\{\(\)=>doGenerate\(false\)\}/);
+    check("CC5 the Calendar's scheduler button to Setup reads \"Setup →\" — Setup is to the RIGHT of Calendar in the scheduler's bar now (\"← Setup\" pointed the other way); it still opens Setup (setView(\"setup\")), beside ↻ Regenerate",
+      !!setupBtn && setupBtn[1] === "Setup →" && sched.indexOf("setup") > sched.indexOf("calendar") && sched.indexOf("calendar") === 0 && count("← Setup") === 0,
+      JSON.stringify({ label: setupBtn && setupBtn[1], bar: sched }));
+  }
+})().catch(ex => check("CC harness ran without crashing", false, String(ex && ex.stack || ex).split("\n").slice(0, 3).join(" | ")));
+
 // ─── AK. The calendar's Today button (owner 2026-10-14) ───
 console.log("\nAK. calendar Today button");
 check("AK1 the calendar has a Today button beside the month arrows: it sets the month AND the year from a fresh Date (not a stale render), then scrolls today's cell into view",
@@ -12378,13 +14123,13 @@ await (async () => {
   // ── the component's re-auth, for real ──
   const sbSrc = after("  const sessionBoundary = ", "\n  };\n"), soSrc = after("  const handleSignOut = ", "\n  };\n"),
     rlSrc = after("  const reauthLanded = ", "\n  };\n"), raSrc = after("  const reauthForSync = ", "\n  };\n"), smSrc = after("  const submitReauth = ", "\n  };\n");
-  const sbFn = sbSrc && fnR("searchRef, setSearching, setSearchStats, setPreviewSchedule, setShowPreview, schedSyncRef, setScheduleHistory, setEditWeekModal, setReauthNeeded, setStaleTokenWarn, setIsScheduler, setupReadRef, lastSyncRef, sessionEpochRef, forgetDayOffs", sbSrc + "\n  }"); // (23/n: + the day-off forget — review r6 fix-3)
+  const sbFn = sbSrc && fnR("searchRef, setSearching, setSearchStats, setPreviewSchedule, setShowPreview, schedSyncRef, setScheduleHistory, setEditWeekModal, setReauthNeeded, setStaleTokenWarn, setIsScheduler, setupReadRef, lastSyncRef, sessionEpochRef, forgetDayOffs, setJustPublished", sbSrc + "\n  }"); // (23/n: + the day-off forget — review r6 fix-3; 2026-10-20: + the Calendar's "Published" banner, cleared — sync-guards CD)
   const soFn = soSrc && fnR("schedSyncRef, confirm, sessionBoundary, auth, biometric, setAuthUser, setUserProfile, setNeedsProfile, setMySurgeon, setBiometricEnrolled, setBiometricPending", soSrc + "\n  }");
   const rlFn = rlSrc && fnR("schedSyncRef, authUser, setReauthNeeded, setStaleTokenWarn, showToast, sessionBoundary, biometric, setBiometricEnrolled, setBiometricPending, setAuthUser, dbAuth, setUserProfile, setMySurgeon, setNeedsProfile, setIsScheduler, setReloadTrigger, handleSignOut, auth, pendingSaveRef, setSetupSaveNudge", rlSrc + "\n  }");
   const raFn = raSrc && fnR("reauthBusy, setReauthBusy, auth, authUser, reauthLanded, setReauthPassword, setReauthError, setReauthSheet", raSrc + "\n  }");
   const smFn = smSrc && fnR("reauthBusy, setReauthBusy, authUser, reauthPassword, setReauthError, auth, setReauthSheet, setReauthPassword, reauthLanded", smSrc + "\n  }");
   if (!sbFn || !soFn || !rlFn || !raFn || !smFn) { check("SE-R the re-auth wiring is extractable (sessionBoundary, handleSignOut, reauthLanded, reauthForSync, submitReauth)", false, JSON.stringify({ sbFn: !!sbFn, soFn: !!soFn, rlFn: !!rlFn, raFn: !!raFn, smFn: !!smFn })); return; }
-  const SETTERS = ["setSearching", "setSearchStats", "setPreviewSchedule", "setShowPreview", "setScheduleHistory", "setEditWeekModal", "setReauthNeeded", "setStaleTokenWarn",
+  const SETTERS = ["setSearching", "setSearchStats", "setPreviewSchedule", "setShowPreview", "setJustPublished", "setScheduleHistory", "setEditWeekModal", "setReauthNeeded", "setStaleTokenWarn",
     "setAuthUser", "setUserProfile", "setNeedsProfile", "setMySurgeon", "setBiometricEnrolled", "setBiometricPending", "setIsScheduler", "setReloadTrigger",
     "setReauthBusy", "setReauthPassword", "setReauthError", "setReauthSheet", "setSetupSaveNudge"];
   // One component instance: every setter and call it makes, in order, in w.log.
@@ -12427,8 +14172,9 @@ await (async () => {
   // The session boundary on its own, then sign-out around it.
   const B = world({ engine: stubEng() }); B.env.sessionBoundary();
   const B0 = B.log.slice();
-  check("SE-R the session boundary, executed: search / preview dropped, the engine reset (the mirror too), the undo history and the week editor cleared, both banners down; then (17/n P4) the scheduler flag cleared, the setup autosave disarmed and the blob row forgotten — in that order",
-    JSON.stringify(B0) === JSON.stringify(["setSearching:null", "setSearchStats:null", "setPreviewSchedule:null", "setShowPreview:false", "reset", "setScheduleHistory:[]", "setEditWeekModal:null", "setReauthNeeded:false", "setStaleTokenWarn:false",
+  // (2026-10-20, on purpose: the Calendar's "Published — nobody notified yet" banner goes with the preview — setJustPublished:null)
+  check("SE-R the session boundary, executed: search / preview dropped (and the Calendar's \"Published\" banner — 2026-10-20), the engine reset (the mirror too), the undo history and the week editor cleared, both banners down; then (17/n P4) the scheduler flag cleared, the setup autosave disarmed and the blob row forgotten — in that order",
+    JSON.stringify(B0) === JSON.stringify(["setSearching:null", "setSearchStats:null", "setPreviewSchedule:null", "setShowPreview:false", "setJustPublished:null", "reset", "setScheduleHistory:[]", "setEditWeekModal:null", "setReauthNeeded:false", "setStaleTokenWarn:false",
       "setIsScheduler:false", "setupReadRef:false", "lastSyncRef:null"]) && B.env.searchRef.current === null,
     JSON.stringify(B0));
   const O1 = world({ engine: stubEng([]) }); await O1.signOut();

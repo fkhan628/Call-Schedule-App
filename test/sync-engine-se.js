@@ -617,7 +617,8 @@ const MUTANTS = [
     from: "if (sessionEpochRef.current === ep) showToast(\"Couldn't save the regenerated schedule — check your connection.\", \"error\");", to: "showToast(\"Couldn't save the regenerated schedule — check your connection.\", \"error\");" },
   { id: "G2f", app: true, what: "G2: Generate & Publish's e-mail goes out after a session change while its notice was written (sent from the next session)",
     // (re-pinned 21/n: the call now passes the tap's session — review r4 fixes-3; the same mutation)
-    from: "      \"A new call schedule has been generated. Check the Schedule or Calendar tab.\", {}, null, ep);\n    if (sessionEpochRef.current !== ep) return;\n", to: "      \"A new call schedule has been generated. Check the Schedule or Calendar tab.\", {}, null, ep);\n" },
+    // (re-pinned 2026-10-20: the notice and the e-mail moved into notifyPublished, whose fence returns false — the same mutation)
+    from: "      \"A new call schedule has been generated. Check the Schedule or Calendar tab.\", {}, null, ep);\n    if (sessionEpochRef.current !== ep) return false;\n", to: "      \"A new call schedule has been generated. Check the Schedule or Calendar tab.\", {}, null, ep);\n" },
   { id: "G2g", app: true, what: "G2: Accept & Publish goes on after its snapshot though the session changed (published as the next account)",
     from: "        if (sessionEpochRef.current !== ep) { setSaveStatus(\"\"); return; } // nothing published as the next session", to: "        // nothing published as the next session" },
   { id: "G2g2", app: true, what: "G2 (variant): Accept & Publish takes the session's identity after its snapshot's await",
@@ -4905,6 +4906,7 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
     setupBaseRef: env.setupBaseRef || { current: null },
     resetBusyRef: env.resetBusyRef || { current: false }, forgetDayOffs: env.forgetDayOffs || (() => {}), // (23/n: the reset's hold on the setup autosave — review r6 broke-1; the boundary's day-off forget — r6 fix-3)
     pendingSaveRef: env.pendingSaveRef || { current: null }, setSetupSaveNudge: env.setSetupSaveNudge || (() => {}), // (the reset's unarm() nudges a held setup change — review r7 broke-2)
+    setJustPublished: env.setJustPublished || (() => {}), // (2026-10-20: Accept & Publish's landed publish raises the Calendar's "nobody notified yet" banner; the boundary clears it — sync-guards CD runs both)
     timeOffLoadSeqRef: env.timeOffLoadSeqRef || { current: { read: 0, del: 0, shown: 0 } } })) : mk); // (deleteTimeOff counts its answers for the time-off reads — review r7 fix-2)
   const HX = appHelpers();
   const F = {
@@ -4928,7 +4930,7 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
     openEditor: fnX("scheduleRef, parse, addD, fmt, appShifts, appShiftsLoaded, setEditWeekModal, schedSyncRef", wrap("(mondayStr) => {", after("  const openWeekEditor = useCallback((mondayStr) => {", "\n  }, [appShifts, appShiftsLoaded]);"), "\n  }")),
     saveEditor: fnX("editWeekModal, schedule, appShifts, appShiftsLoaded, openWeekEditor, setEditWeekModal, silvisActive, silvisFakId, silvisDays, silvisBlock, silvisRefuse, sfSlotDays, confirm, pushUndo, updateSchedule, scheduleRef, schedEditable, schedSyncRef, mergeEditorEdits, SHIFT_LABELS, backupMondaySet, fierceBackupSet, surgeons, showToast, APP_SHIFTS_NOT_LOADED, setAppShifts, saveAppShifts, logAudit, nameOf, aMap, sMap, schedulerAdminIds, addNotification, sendEmailNotif, setTimeout",
       wrap("(openAfter) => {", after("  const saveWeekEdits = useCallback((openAfter) => {", "\n  }, [editWeekModal,"), "\n  }")),
-    acceptPreview: sess(fnX("publishSearchRunning, showToast, cancelSearch, previewSchedule, previewNeedsOk, previewAck, publishingRef, schedEditable, schedSyncRef, previewEpochRef, previewOrigin, startMonth, startYear, numWeeks, setPublishing, setSaveStatus, snapshots, previewSchedRef, publishWeeks, MO, runPublish, setPreviewSchedule, setShowPreview, setCalMonth, setCalYear, setView, setTimeout, publishNotLanded, sessionEpochRef",
+    acceptPreview: sess(fnX("publishSearchRunning, showToast, cancelSearch, previewSchedule, previewNeedsOk, previewAck, publishingRef, schedEditable, schedSyncRef, previewEpochRef, previewOrigin, startMonth, startYear, numWeeks, setPublishing, setSaveStatus, snapshots, previewSchedRef, publishWeeks, MO, runPublish, setPreviewSchedule, setShowPreview, setCalMonth, setCalYear, setView, setTimeout, publishNotLanded, sessionEpochRef, setJustPublished",
       wrap("async () => {", after("  const acceptPreview = async () => {", "\n  };\n"), "\n  }"))),
     notLanded: fnX("showToast", wrap("(pr, what) => {", after("  const publishNotLanded = (pr, what) => {", "\n  };\n"), "\n  }")),
     runPublish: fnX("schedSyncRef", after("  const runPublish = ", ";\n")),
@@ -4946,7 +4948,7 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
     // the weeks push effect (its 800-ms debounce)
     pushFx: fnX("loaded, isPublicMode, schedSyncRef, setTimeout, clearTimeout", wrap("() => {", after("  // for edits (the pull and the authoritative jobs request their own).\n  useEffect(() => {", "\n  }, [loaded, schedule]);"), "\n  }")),
     // the session boundary + sign-out, and the re-auth that can land on another account (P4)
-    boundary: sess(fnX("searchRef, setSearching, setSearchStats, setPreviewSchedule, setShowPreview, schedSyncRef, setScheduleHistory, setEditWeekModal, setReauthNeeded, setStaleTokenWarn, setIsScheduler, setupReadRef, lastSyncRef, confirm, auth, biometric, setAuthUser, setUserProfile, setNeedsProfile, setMySurgeon, setBiometricEnrolled, setBiometricPending, sessionEpochRef, forgetDayOffs",
+    boundary: sess(fnX("searchRef, setSearching, setSearchStats, setPreviewSchedule, setShowPreview, schedSyncRef, setScheduleHistory, setEditWeekModal, setReauthNeeded, setStaleTokenWarn, setIsScheduler, setupReadRef, lastSyncRef, confirm, auth, biometric, setAuthUser, setUserProfile, setNeedsProfile, setMySurgeon, setBiometricEnrolled, setBiometricPending, sessionEpochRef, forgetDayOffs, setJustPublished",
       wrap("(() => { const sessionBoundary = () => {", after("  const sessionBoundary = () => {", "\n  // ════"), "\n  return { sessionBoundary, handleSignOut }; })()"))),
     reauth: fnX("schedSyncRef, authUser, setReauthNeeded, setStaleTokenWarn, showToast, sessionBoundary, biometric, setBiometricEnrolled, setBiometricPending, setAuthUser, dbAuth, setUserProfile, setMySurgeon, setNeedsProfile, setIsScheduler, setReloadTrigger, pendingSaveRef, setSetupSaveNudge, auth",
       decl("reauthLanded", "\n  };\n")),
@@ -4971,7 +4973,9 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
     finish: sess(fnX("pendingLocks, nameOf, slotLabel, showToast, setPreviewSchedule, setPreviewOrigin, setShowPreview, genInputsSig, listScheduleBends, surgeons, mondays, buildGenAvailability, buildSilvisPrimary, vacations, holidayAssignments, buildPrevWeekSeed, publishingRef, setPublishing, setSaveStatus, snapshots, genCommitRef, previewEpochRef, schedEditable, schedSyncRef, sessionEpochRef",
       decl("finishGenerate", "\n  };\n"))),
     // (20/n) Generate & Publish's notice and e-mail (doGenerateAndNotify), and the setup's signature (setupSig — review r3 G7)
-    notify: sess(fnX("sessionEpochRef, doGenerate, addNotification, sendEmailNotif, MO, startMonth, endMoIdx, startYear, mondays, periodLabel, periodText", decl("doGenerateAndNotify", "\n  };\n"))), // (mondays, periodLabel: the e-mail's period since sync-guards BD — UX audit 2026-10-19; periodText, the component's one guarded line for it, since the review fixes)
+    // (review fix 2026-10-20: notifyPublished takes down a pending Accept & Publish banner — justPublished, notifiedRef,
+    // setJustPublished; none is up in these runs, and sess() gives setJustPublished its no-op)
+    notify: sess(fnX("sessionEpochRef, doGenerate, addNotification, sendEmailNotif, MO, startMonth, endMoIdx, startYear, mondays, periodLabel, periodText, justPublished, notifiedRef, setJustPublished", decl("doGenerateAndNotify", "\n  };\n") && wrap("(() => { const notifyPublished = ", after("  const notifyPublished = ", "\n  };\n"), "\n  };\n  return " + decl("doGenerateAndNotify", "\n  };\n") + "; })()"))), // (mondays, periodLabel: the e-mail's period since sync-guards BD — UX audit 2026-10-19; periodText, the component's one guarded line for it, since the review fixes; 2026-10-20: + notifyPublished, the one sender it and Accept & Publish's banner share — sync-guards CD)
     setupSig: fnX("", after("  const setupSig = ", ";\n")),
     gen: fnX("searchRef, showToast, schedEditable, schedSyncRef, buildPrefs", decl("doGenerate", "\n  };\n")), // (only its first statements are reached here: the gates, then buildPrefs)
     // (21/n) the trade's decline, and the notice paths (addNotification, sendPushNotif, sendEmailNotif) — review r4 branch-2 / fixes-3
@@ -7265,8 +7269,10 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
         after("  const approveVacRequest = useCallback(", ", [addNotification, sendEmailNotif, schedulerAdminIds, userProfile, surgeons, mySurgeon, vacations, noCallDays]);")),
       revoke: fnX("sessionEpochRef, dbAuthHeaders, confirm, fetch, SUPABASE_URL, console, showToast, setBackRequest, setVacRequests, toRemove, schedulerAdminIds, addNotification",
         after("  const revokeApprovedVac = useCallback(", ", [addNotification, schedulerAdminIds]);")),
-      edit: fnX("sessionEpochRef, dbAuthHeaders, editingVacReq, isScheduler, fmt, showToast, vacRequests, fetch, SUPABASE_URL, console, setBackRequest, logAudit, setVacRequests, toEdit, setEditingVacReq",
-        after("  const saveVacRequestEdit = useCallback(", ", [editingVacReq, vacRequests, isScheduler]);")),
+      // (owner decision 2026-10-20, changed ON PURPOSE — sync-guards CA: the edit first asks canChangeVacRequest, now in
+      // its deps; this is the scheduler's edit, so the stand-in below allows it — CA runs the real predicate)
+      edit: fnX("sessionEpochRef, dbAuthHeaders, editingVacReq, isScheduler, canChangeVacRequest, fmt, showToast, vacRequests, fetch, SUPABASE_URL, console, setBackRequest, logAudit, setVacRequests, toEdit, setEditingVacReq",
+        after("  const saveVacRequestEdit = useCallback(", ", [editingVacReq, vacRequests, isScheduler, canChangeVacRequest]);")),
       toAdd: fnX("sessionEpochRef, showToast, setterFor, logAudit, nameOf, USE_TIME_OFF, db, userProfile, console", decl("toAdd", "\n  };\n")),
       toRemove: fnX("noCallDays, vacations, setterFor, logAudit, nameOf, USE_TIME_OFF, deleteTimeOff", decl("toRemove", "\n  };\n")),
       toEdit: fnX("sessionEpochRef, dbAuthHeaders, showToast, noCallDays, vacations, setterFor, logAudit, nameOf, USE_TIME_OFF, db, deleteTimeOff, userProfile, fetch, SUPABASE_URL, console", decl("toEdit", "\n  };\n")),
@@ -7343,7 +7349,7 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
       else if (which === "approve") await V.approve(Object.assign({}, common, { parse: HX.parse, fmt: HX.fmt, addD: HX.addD, surgeons: S7, onVac: () => false, vacations: vac, noCallDays: {},
         userProfile: { person_id: "s1", display_name: "AAA" }, mySurgeon: "s1", toAdd }))(Object.assign({}, REQ));
       else if (which === "revoke") await V.revoke(Object.assign({}, common, { toRemove }))(Object.assign({}, REQ));
-      else await V.edit(Object.assign({}, common, { editingVacReq: Object.assign({ id: 7, reason: "trip, longer" }, NEW), isScheduler: true, fmt: HX.fmt, vacRequests: [Object.assign({}, REQ)], toEdit,
+      else await V.edit(Object.assign({}, common, { editingVacReq: Object.assign({ id: 7, reason: "trip, longer" }, NEW), isScheduler: true, canChangeVacRequest: (q) => !!q, fmt: HX.fmt, vacRequests: [Object.assign({}, REQ)], toEdit,
         setEditingVacReq: mark("editor closed") }))();
       await spin(40); await ticks(A);
       return { reqs: rec.reqs, to: rec.to, notes: rec.notes, pushes: rec.pushes, emails: rec.emails, audits: rec.audits, errors: rec.errors.length, early: rec.early, late: rec.late,
@@ -7425,8 +7431,13 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
         cbody("denyVacRequest", "[addNotification, sendEmailNotif, schedulerAdminIds, userProfile, surgeons, mySurgeon]")),
       submitTrade: fnX("tradeSubmitBusyRef, showToast, tradeFrom, tradeTo, tradeWeek, tradeShift, tradeReturnWeek, tradeReturnShift, isScheduler, alert, confirm, silvisActive, silvisBlock, silvisRefuse, schedule, scheduleRef, surgeons, SHIFT_LABELS, db, writeFailReason, setTradeRequests, setTradeWeek, setTradeShift, setTradeReturnWeek, setTradeReturnShift, tradeProposeMsg, logAudit, addNotification, sendEmailNotif, console, sessionEpochRef, dbAuthHeaders, setTradeSubmitting",
         cbody("submitTradeRequest", "[tradeFrom, tradeTo, tradeWeek, tradeShift, tradeReturnWeek, tradeReturnShift, surgeons, addNotification, sendEmailNotif, isScheduler, schedule, silvisActive, silvisBlock, silvisRefuse]")),
-      delTrade: fnX("confirm, fetch, SUPABASE_URL, dbAuthHeaders, console, showToast, setTradeRequests, sessionEpochRef", cbody("deleteTradeRequest", "[]")),
-      delVac: fnX("confirm, fetch, SUPABASE_URL, dbAuthHeaders, console, showToast, setVacRequests, sessionEpochRef", cbody("deleteVacRequest", "[]")),
+      // (owner decision 2026-10-20, changed ON PURPOSE — sync-guards CA: the two request deletes first find the request in
+      // their list and ask who may withdraw it — its proposer / requester or a scheduler; the deps list what that reads.
+      // Run below as the scheduler, so each goes ahead as before.)
+      delTrade: fnX("confirm, fetch, SUPABASE_URL, dbAuthHeaders, console, showToast, setTradeRequests, sessionEpochRef, tradeRequests, isScheduler, userProfile", cbody("deleteTradeRequest", "[tradeRequests, isScheduler, userProfile]")),
+      // (review fix 2026-10-20, on purpose — sync-guards CA4: a member's DELETE carries &status=eq.pending, so the
+      // delete reads isScheduler and lists it; run here as the scheduler: id-only, as before)
+      delVac: fnX("confirm, fetch, SUPABASE_URL, dbAuthHeaders, console, showToast, setVacRequests, sessionEpochRef, vacRequests, canChangeVacRequest, userProfile, isScheduler", cbody("deleteVacRequest", "[vacRequests, canChangeVacRequest, userProfile, isScheduler]")),
       clearReviewed: fnX("confirm, fetch, SUPABASE_URL, dbAuthHeaders, console, showToast, setVacRequests, sessionEpochRef", cbody("clearReviewedRequests", "[]")),
       saveApp: fnX("supabase, setSaveError, setSaveStatus, showToast, setTimeout, sessionEpochRef, console", decl("saveAppShifts", "\n  };\n")),
       paintApp: fnX("appShiftsLoaded, appShifts, APP_SHIFTS_NOT_LOADED, supabase, setAppShifts, logAudit, sessionEpochRef, dbAuthHeaders", decl("commitAppPaint", "\n  };\n")),
@@ -7507,6 +7518,7 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
     for (const [id, fnK, setK, msg] of [["delTrade", "delTrade", "setTradeRequests", "Couldn't delete the trade request"], ["delVac", "delVac", "setVacRequests", "Couldn't delete the request"], ["clearReviewed", "clearReviewed", "setVacRequests", "Couldn't clear reviewed requests"]]) {
       add(id, `the ${id === "delTrade" ? "trade request delete" : id === "delVac" ? "vacation request delete" : "'clear reviewed requests'"} (its DELETE, failing): nothing said, the list left alone, on the next session's screen; in one session a failed DELETE is said once and leaves the list alone, a 204 updates it`, async (r, fail) => {
         await H[fnK]({ confirm: () => true, SUPABASE_URL: BASE, dbAuthHeaders: r.hdr, console: r.console, showToast: r.say("toast"), [setK]: r.mark("list"), sessionEpochRef: r.ep,
+          tradeRequests: [{ id: 7, from_surgeon_id: "s3", status: "pending" }], vacRequests: [{ id: 7, surgeon_id: "s3", status: "pending" }], isScheduler: true, userProfile: { person_id: "s6" }, canChangeVacRequest: (q) => !!q,
           fetch: async (url, init) => { r.writes.push("DELETE " + init.headers.Authorization); await r.cross(); return fail ? r.resp(500, {}) : r.resp(204, null); } })(7);
       }, (x, x0, f, f0) => x.writes.join() === "DELETE Bearer TOK_A" && f.late.length === 0 && x0.early.includes("list") && f0.early.filter(k => k.startsWith("toast: ")).length === 1 && f0.early.some(k => k.startsWith("toast: " + msg)) && !f0.early.includes("list"));
     }

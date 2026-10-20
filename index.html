@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.10.20a";
+    var APP_VERSION = "2026.10.20c";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -361,6 +361,8 @@ function CallSchedule() {
   const loadJsonInputRef = useRef(null);
   const publishingRef = useRef(false);
   const [publishing, setPublishing] = useState(false);
+  const [justPublished, setJustPublished] = useState(null);
+  const notifiedRef = useRef(null);
   const [pendingLocks, setPendingLocks] = useState([]);
   const [silvisRows, setSilvisRows] = useState([]);
   const [silvisRule, setSilvisRule] = useState(SF_RULE_DEFAULT);
@@ -504,6 +506,7 @@ function CallSchedule() {
   const [newPasswordConfirm, setNewPasswordConfirm] = useState("");
   const [authError, setAuthError] = useState("");
   const [authBusy, setAuthBusy] = useState(false);
+  const [authNetErr, setAuthNetErr] = useState(false);
   const [signupPersonId, setSignupPersonId] = useState("");
   const [userProfile, setUserProfile] = useState(null);
   const [needsProfile, setNeedsProfile] = useState(false);
@@ -696,6 +699,7 @@ function CallSchedule() {
     if (!mySurgeon || mySurgeon === "admin") return tradeRequests;
     return tradeRequests.filter(r => r.from_surgeon_id === mySurgeon || r.to_surgeon_id === mySurgeon);
   }, [tradeRequests, isScheduler, mySurgeon]);
+  const canChangeVacRequest = useCallback(req => !!req && (isScheduler || !!(userProfile !== null && userProfile !== void 0 && userProfile.person_id) && req.surgeon_id === userProfile.person_id), [isScheduler, userProfile]);
   const vacationDeadline = useMemo(() => {
     try {
       const mondays = Object.keys(schedule || {}).sort();
@@ -760,7 +764,8 @@ function CallSchedule() {
         }
         if (session && !bioEnrolled) {
           const {
-            user
+            user,
+            error
           } = await auth.getUser();
           if (user) {
             auth.bindUser(user.id);
@@ -773,6 +778,8 @@ function CallSchedule() {
               setNeedsProfile(true);
             }
             setReloadTrigger(t => t + 1);
+          } else if (error === "network") {
+            setAuthNetErr(true);
           }
         }
       } catch (e) {
@@ -787,7 +794,8 @@ function CallSchedule() {
     const result = await biometric.authenticate();
     if (result.success) {
       const {
-        user
+        user,
+        error
       } = await auth.getUser();
       if (user) {
         auth.bindUser(user.id);
@@ -803,6 +811,8 @@ function CallSchedule() {
         setReloadTrigger(t => t + 1);
         setAuthBusy(false);
         return;
+      } else if (error === "network") {
+        setAuthError("No connection — you're still signed in. Check your signal and tap Unlock again.");
       } else {
         setBiometricPending(false);
         setAuthError("Session expired. Please sign in with your password to refresh.");
@@ -955,8 +965,17 @@ function CallSchedule() {
       setAuthPassword("");
     } catch (e) {
       setAuthError(typeof authErrorText === "function" ? authErrorText(e) : e && e.message || "Something went wrong — please try again.");
+      setAuthBusy(false);
+      return e;
     }
     setAuthBusy(false);
+  };
+  const startSignIn = async () => {
+    setAuthNetErr(false);
+    const held = auth.getSession();
+    const failed = await handleAuthSubmit();
+    const kept = auth.getSession();
+    if (failed && held && kept && kept.access_token === held.access_token && typeof isNoConnectionError === "function" && isNoConnectionError(failed)) setAuthNetErr(true);
   };
   const handleSetProfile = async () => {
     if (!signupPersonId || !authUser) return;
@@ -1021,6 +1040,7 @@ function CallSchedule() {
     setSearchStats(null);
     setPreviewSchedule(null);
     setShowPreview(false);
+    setJustPublished(null);
     schedSyncRef.current.reset();
     setScheduleHistory([]);
     setEditWeekModal(null);
@@ -2466,6 +2486,7 @@ function CallSchedule() {
       } else {
         sendPushNotif(title, message, filteredTargets, deepLinkUrl, ep);
       }
+      return !insertErr;
     } catch (e) {
       console.error("Notification error:", e);
       if (sessionEpochRef.current === ep) showToast("Couldn't send the notification — check your connection.", "error");
@@ -3273,7 +3294,9 @@ function CallSchedule() {
     }
   }, [addNotification, sendEmailNotif, userProfile, surgeons, mySurgeon]);
   const deleteTradeRequest = useCallback(async reqId => {
-    if (!confirm("Delete this trade request?")) return;
+    const req = tradeRequests.find(r => r.id === reqId);
+    if (!req || !(isScheduler || !!(userProfile !== null && userProfile !== void 0 && userProfile.person_id) && req.from_surgeon_id === userProfile.person_id)) return;
+    if (!confirm(req.status === "pending" ? "Withdraw this trade request?" : "Delete this trade request?")) return;
     const ep = sessionEpochRef.current;
     try {
       const res = await fetch(`${SUPABASE_URL}/rest/v1/shift_trade_requests?id=eq.${reqId}`, {
@@ -3296,7 +3319,7 @@ function CallSchedule() {
       console.error("Delete trade request failed:", e);
       if (sessionEpochRef.current === ep) showToast("Couldn't delete the trade request — check your connection and try again.", "error");
     }
-  }, []);
+  }, [tradeRequests, isScheduler, userProfile]);
   const markNotifsSeen = () => {
     const now = new Date().toISOString();
     setNotifLastSeen(now);
@@ -3319,13 +3342,17 @@ function CallSchedule() {
     }
   }, []);
   const deleteVacRequest = useCallback(async reqId => {
-    if (!confirm("Delete this request?")) return;
+    const req = vacRequests.find(r => r.id === reqId);
+    if (!canChangeVacRequest(req)) return;
+    const ask = req.status === "pending" ? `Withdraw ${req.surgeon_id === (userProfile === null || userProfile === void 0 ? void 0 : userProfile.person_id) ? "your" : `${req.surgeon_name || "this person"}'s`} ${req.request_type === "nocall" ? "no-call" : "vacation"} request, ${req.start_date} → ${req.end_date}?` : "Delete this request?";
+    if (!confirm(ask)) return;
     const ep = sessionEpochRef.current;
+    const onlyPending = !isScheduler;
     try {
-      const res = await fetch(`${SUPABASE_URL}/rest/v1/vacation_requests?id=eq.${reqId}`, {
+      const res = await fetch(`${SUPABASE_URL}/rest/v1/vacation_requests?id=eq.${reqId}${onlyPending ? "&status=eq.pending" : ""}`, {
         method: "DELETE",
         headers: _objectSpread(_objectSpread({}, dbAuthHeaders()), {}, {
-          Prefer: "return=minimal"
+          Prefer: onlyPending ? "return=representation" : "return=minimal"
         })
       });
       if (sessionEpochRef.current !== ep) {
@@ -3337,15 +3364,25 @@ function CallSchedule() {
         showToast("Couldn't delete the request — check your connection and try again.", "error");
         return;
       }
+      if (onlyPending) {
+        const removed = await res.json().catch(() => null);
+        if (sessionEpochRef.current !== ep) return;
+        if (Array.isArray(removed) && removed.length === 0) {
+          showToast("This request was already reviewed or withdrawn — nothing was changed.", "error");
+          return;
+        }
+      }
       setVacRequests(prev => prev.filter(r => r.id !== reqId));
     } catch (e) {
       console.error("Delete vacation request error:", e);
       if (sessionEpochRef.current === ep) showToast("Couldn't delete the request — check your connection and try again.", "error");
     }
-  }, []);
+  }, [vacRequests, canChangeVacRequest, userProfile, isScheduler]);
   const [editingVacReq, setEditingVacReq] = useState(null);
   const saveVacRequestEdit = useCallback(async () => {
     if (!editingVacReq) return;
+    const req = vacRequests.find(r => r.id === editingVacReq.id);
+    if (!canChangeVacRequest(req)) return;
     if (!editingVacReq.start_date || !editingVacReq.end_date) {
       showToast("Both dates are needed.", "error");
       return;
@@ -3364,14 +3401,13 @@ function CallSchedule() {
     const ep = sessionEpochRef.current,
       tapH = dbAuthHeaders();
     const live = () => sessionEpochRef.current === ep;
-    const req = vacRequests.find(r => r.id === editingVacReq.id);
     try {
       const updates = {
         start_date: editingVacReq.start_date,
         end_date: editingVacReq.end_date,
         reason: editingVacReq.reason
       };
-      const editRes = await fetch(`${SUPABASE_URL}/rest/v1/vacation_requests?id=eq.${editingVacReq.id}`, {
+      const editRes = await fetch(`${SUPABASE_URL}/rest/v1/vacation_requests?id=eq.${editingVacReq.id}${isScheduler ? "" : "&status=eq.pending"}`, {
         method: "PATCH",
         headers: _objectSpread(_objectSpread({}, tapH), {}, {
           "Content-Type": "application/json",
@@ -3407,7 +3443,7 @@ function CallSchedule() {
         return;
       }
       if (!Array.isArray(editRows) || editRows.length === 0) {
-        showToast("This request no longer exists — nothing was changed.", "error");
+        showToast(isScheduler ? "This request no longer exists — nothing was changed." : "This request was already reviewed or withdrawn — nothing was changed.", "error");
         return;
       }
       setVacRequests(prev => prev.map(r => r.id === editingVacReq.id ? _objectSpread(_objectSpread({}, r), updates) : r));
@@ -3420,7 +3456,7 @@ function CallSchedule() {
       console.error("Edit vacation error:", e);
       if (live()) showToast("Couldn't save the changes — check your connection and try again.", "error");
     }
-  }, [editingVacReq, vacRequests, isScheduler]);
+  }, [editingVacReq, vacRequests, isScheduler, canChangeVacRequest]);
   const revokeApprovedVac = useCallback(async req => {
     const isNoCall = req.request_type === "nocall";
     const kindLabel = isNoCall ? "no-call days" : "vacation";
@@ -3898,16 +3934,23 @@ function CallSchedule() {
     }
     setTimeout(() => setNotifTestSent(""), 3000);
   }, [sendBrowserNotif, sendEmailNotif, edgeFunctionUrl, notifPrefs, mySurgeon]);
+  const notifyPublished = async (ep, period) => {
+    if (sessionEpochRef.current !== ep) return false;
+    if (justPublished) notifiedRef.current = justPublished;
+    setJustPublished(null);
+    const saved = await addNotification("schedule_published", "Schedule Published", "A new call schedule has been generated. Check the Schedule or Calendar tab.", {}, null, ep);
+    if (sessionEpochRef.current !== ep) return false;
+    sendEmailNotif("schedule_published", {
+      period
+    }, null, ep);
+    return saved === true;
+  };
   const doGenerateAndNotify = async () => {
     const ep = sessionEpochRef.current;
     const period = periodText;
     if ((await doGenerate(false)) !== "published") return;
     if (sessionEpochRef.current !== ep) return;
-    await addNotification("schedule_published", "Schedule Published", "A new call schedule has been generated. Check the Schedule or Calendar tab.", {}, null, ep);
-    if (sessionEpochRef.current !== ep) return;
-    sendEmailNotif("schedule_published", {
-      period
-    }, null, ep);
+    await notifyPublished(ep, period);
   };
   const downloadMyCal = surgeonId => {
     const myApp = surgeons.some(x => x.id === surgeonId) ? null : apps.find(x => x.id === surgeonId);
@@ -5334,6 +5377,17 @@ function CallSchedule() {
           setSaveStatus("Published — totals updated");
           setTimeout(() => setSaveStatus(""), 3000);
           if (pr.notice) showToast(pr.notice, "error");
+          setJustPublished({
+            label: pubPeriod,
+            ep
+          });
+          setTimeout(() => {
+            const el = document.querySelector('[data-just-published="1"]');
+            if (el && el.scrollIntoView) el.scrollIntoView({
+              behavior: "smooth",
+              block: "nearest"
+            });
+          }, 60);
         } else {
           setSaveStatus("");
           publishNotLanded(pr, "Published on this screen");
@@ -5349,6 +5403,17 @@ function CallSchedule() {
     setSearchStats(null);
     setPreviewSchedule(null);
     setShowPreview(false);
+  };
+  const notifyJustPublished = async () => {
+    const jp = justPublished;
+    if (!jp || notifiedRef.current === jp) return;
+    notifiedRef.current = jp;
+    setJustPublished(null);
+    setTimeout(() => {
+      const h = document.querySelector('[data-cal-month="1"]');
+      if (h && h.focus) h.focus();
+    }, 0);
+    if ((await notifyPublished(jp.ep, jp.label)) && sessionEpochRef.current === jp.ep) showToast("Everyone has been notified.", "success");
   };
   const searchMore = async () => {
     const base = previewSchedRef.current;
@@ -7663,7 +7728,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       gap: 6,
       pointerEvents: "none"
     }
-  }, toasts.map(t => React.createElement("div", {
+  }, toasts.filter(t => !(t.tone === "error" && authNetErr && authMode === "login" && !authUser)).map(t => React.createElement("div", {
     key: t.id,
     onClick: () => dismissToast(t.id),
     style: _objectSpread({
@@ -8059,9 +8124,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       margin: "0 0 16px"
     }
   }, biometric.getStoredUser() || "Use biometric to unlock"), authError && React.createElement("div", {
+    role: "alert",
     style: {
       fontSize: 12,
-      color: "#c04040",
+      color: "#a83232",
       padding: "6px 10px",
       background: "#fce8e8",
       borderRadius: 6,
@@ -8108,7 +8174,38 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       width: "100%",
       padding: 28
     })
-  }, React.createElement("div", {
+  }, authNetErr && authMode === "login" && React.createElement("div", {
+    role: "status",
+    style: {
+      background: "#fdf0e0",
+      color: "#7a4a00",
+      border: "1px solid #e0b070",
+      borderRadius: 8,
+      padding: "10px 12px",
+      marginBottom: 16,
+      fontSize: 13,
+      fontWeight: 600,
+      lineHeight: 1.45,
+      fontFamily: font
+    }
+  }, React.createElement("div", null, "No connection — you're still signed in on this phone. Check your signal, then tap Retry."), React.createElement("button", {
+    type: "button",
+    onClick: () => window.location.reload(),
+    style: {
+      display: "block",
+      width: "100%",
+      minHeight: 44,
+      marginTop: 10,
+      background: "linear-gradient(135deg,#7a4a00,#8a5a10)",
+      border: "none",
+      borderRadius: 7,
+      color: "#fff",
+      fontSize: 14,
+      fontWeight: 700,
+      cursor: "pointer",
+      fontFamily: font
+    }
+  }, "Retry")), React.createElement("div", {
     style: {
       textAlign: "center",
       marginBottom: 20
@@ -8209,9 +8306,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       fontSize: 14
     })
   }), authError && React.createElement("div", {
+    role: "alert",
     style: {
       fontSize: 12,
-      color: "#c04040",
+      color: "#a83232",
       padding: "6px 10px",
       background: "#fce8e8",
       borderRadius: 6,
@@ -8325,9 +8423,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       fontSize: 14
     })
   }), authError && React.createElement("div", {
+    role: "alert",
     style: {
       fontSize: 12,
-      color: "#c04040",
+      color: "#a83232",
       padding: "6px 10px",
       background: "#fce8e8",
       borderRadius: 6,
@@ -8396,7 +8495,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     inputMode: "email",
     autoCapitalize: "none",
     autoCorrect: "off",
-    onKeyDown: e => e.key === "Enter" && handleAuthSubmit(),
+    onKeyDown: e => e.key === "Enter" && startSignIn(),
     style: _objectSpread(_objectSpread({}, css.inp), {}, {
       width: "100%",
       padding: "10px 12px",
@@ -8408,7 +8507,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     value: authPassword,
     onChange: e => setAuthPassword(e.target.value),
     autoComplete: authMode === "login" ? "current-password" : "new-password",
-    onKeyDown: e => e.key === "Enter" && handleAuthSubmit(),
+    onKeyDown: e => e.key === "Enter" && startSignIn(),
     style: _objectSpread(_objectSpread({}, css.inp), {}, {
       width: "100%",
       padding: "10px 12px",
@@ -8435,16 +8534,17 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     key: a.id,
     value: a.id
   }, a.name)))), authError && React.createElement("div", {
+    role: "alert",
     style: {
       fontSize: 12,
-      color: "#c04040",
+      color: "#a83232",
       padding: "6px 10px",
       background: "#fce8e8",
       borderRadius: 6,
       border: "1px solid #e8c0c0"
     }
   }, authError), React.createElement("button", {
-    onClick: handleAuthSubmit,
+    onClick: startSignIn,
     disabled: authBusy,
     style: _objectSpread(_objectSpread({}, css.btn(true)), {}, {
       width: "100%",
@@ -8812,7 +8912,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
   }, "Connecting…"))))), !isPublicMode && React.createElement("div", {
     style: css.nav
   }, (() => {
-    const allTabs = [["setup", "Setup"], ["generate", "Generate"], ["calendar", "Calendar"], ["myschedule", "Mine"], ["requests", "Requests"], ["stats", "Stats"], ["totals", "Totals"], ["settings", "Settings"]];
+    const allTabs = [["calendar", "Calendar"], ["myschedule", "Mine"], ["requests", "Requests"], ["stats", "Stats"], ["totals", "Totals"], ["setup", "Setup"], ["generate", "Generate"], ["settings", "Settings"]];
     const isAdmin = (userProfile === null || userProfile === void 0 ? void 0 : userProfile.role) === "admin";
     const canAssignApps = (userProfile === null || userProfile === void 0 ? void 0 : userProfile.can_assign_apps) === true;
     const canSeeSetup = isScheduler || isAdmin || canAssignApps;
@@ -12233,7 +12333,56 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     style: {
       color: "#2c5a80"
     }
-  }, "B-SW"), " = backup service week days. Type breakdown (Svc Wk, Nights, Wknds) used by generator for balancing."))), view === "calendar" && React.createElement(React.Fragment, null, (hasCallToday || callNowLine) && React.createElement("div", {
+  }, "B-SW"), " = backup service week days. Type breakdown (Svc Wk, Nights, Wknds) used by generator for balancing."))), view === "calendar" && React.createElement(React.Fragment, null, isScheduler && justPublished && React.createElement("div", {
+    role: "status",
+    "aria-live": "polite",
+    "data-just-published": "1",
+    style: {
+      background: dk ? "#16301f" : "#eaf7ee",
+      border: `1px solid ${dk ? "#2f5a3c" : "#a8d8b8"}`,
+      borderRadius: 12,
+      padding: "12px 14px",
+      marginBottom: 14,
+      display: "flex",
+      alignItems: "center",
+      flexWrap: "wrap",
+      gap: 10
+    }
+  }, React.createElement("div", {
+    style: {
+      flex: "1 1 200px",
+      minWidth: 0,
+      fontSize: 14,
+      fontWeight: 600,
+      lineHeight: 1.4,
+      color: dk ? "#b8e8c8" : "#1a5a32",
+      overflowWrap: "anywhere"
+    }
+  }, "✓ Published ", justPublished.label, ". Nobody has been notified yet."), React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 8,
+      flexWrap: "wrap",
+      flex: "1 1 auto",
+      justifyContent: "flex-end"
+    }
+  }, React.createElement("button", {
+    onClick: notifyJustPublished,
+    style: _objectSpread(_objectSpread({}, css.btn(true)), {}, {
+      background: "linear-gradient(135deg,#155a8a,#1a6fa8)",
+      minHeight: 44,
+      padding: "8px 14px",
+      fontSize: 14,
+      flex: "1 1 auto"
+    })
+  }, "📣 Notify everyone"), React.createElement("button", {
+    onClick: () => setJustPublished(null),
+    style: _objectSpread(_objectSpread({}, css.btn(false)), {}, {
+      minHeight: 44,
+      padding: "8px 14px",
+      fontSize: 14
+    })
+  }, "Not now"))), (hasCallToday || callNowLine) && React.createElement("div", {
     style: {
       background: "linear-gradient(135deg,#ffffff,#f0f8ff)",
       border: "1px solid #b0d0f0",
@@ -12455,6 +12604,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     },
     style: css.btn(false)
   }, "◀"), React.createElement("span", {
+    tabIndex: -1,
+    "data-cal-month": "1",
     style: {
       fontSize: 15,
       fontWeight: 700,
@@ -12502,7 +12653,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
   }, isScheduler && React.createElement(React.Fragment, null, React.createElement("button", {
     onClick: () => setView("setup"),
     style: css.btn(false)
-  }, "← Setup"), React.createElement("button", {
+  }, "Setup →"), React.createElement("button", {
     onClick: () => doGenerate(false),
     disabled: !!searching,
     style: _objectSpread(_objectSpread({}, css.btn(true)), {}, {
@@ -15264,9 +15415,30 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         return billingDays(monthData[s.id] || {}) > 0;
       });
     };
-    const billOrder = billingMonthOrder(sortedMonths.filter(hasAny), fmt(new Date()));
+    const billToday = fmt(new Date());
+    const billMonths = sortedMonths.filter(hasAny);
+    const billPubEnd = typeof publishedThrough === "function" ? publishedThrough(schedule) : null;
+    const billGroups = typeof billingMonthGroups === "function" ? billingMonthGroups(billMonths, billToday, billPubEnd ? fmt(addD(parse(billPubEnd), 1)) : null) : null;
+    const billOrder = billGroups ? null : typeof billingMonthOrder === "function" ? billingMonthOrder(billMonths, billToday) : {
+      done: billMonths.slice().reverse(),
+      ahead: []
+    };
+    const billView = billGroups ? {
+      open: billGroups.now,
+      box: billGroups.past,
+      boxLabel: "Last 12 months",
+      caption: billGroups.now.length > 0 ? billGroups.caption : null
+    } : {
+      open: billOrder.done,
+      box: billOrder.ahead,
+      boxLabel: "Upcoming months",
+      caption: null
+    };
     const billMonth = mk => {
       const monthData = monthly[mk] || {};
+      const billTh = _objectSpread(_objectSpread({}, thS2), {}, {
+        color: "#5a6a78"
+      });
       return React.createElement("div", {
         key: mk,
         style: {
@@ -15276,7 +15448,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         style: {
           fontSize: 12,
           fontWeight: 700,
-          color: "#1a6fa8",
+          color: dk ? "#5aafe8" : "#1a6fa8",
           marginBottom: 4,
           textTransform: "uppercase",
           letterSpacing: 0.8
@@ -15296,19 +15468,19 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           borderBottom: "1px solid #d0d8e0"
         }
       }, React.createElement("th", {
-        style: thS2
+        style: billTh
       }, "Surgeon"), React.createElement("th", {
-        style: _objectSpread(_objectSpread({}, thS2), {}, {
+        style: _objectSpread(_objectSpread({}, billTh), {}, {
           color: "#1a8040"
         })
       }, "Total Days"), React.createElement("th", {
-        style: thS2
+        style: billTh
       }, "Svc Days"), React.createElement("th", {
-        style: thS2
+        style: billTh
       }, "Nights"), React.createElement("th", {
-        style: thS2
+        style: billTh
       }, "Wknd Days"), React.createElement("th", {
-        style: thS2
+        style: billTh
       }, "Holiday"))), React.createElement("tbody", null, billVisible.map(s => {
         const r = monthData[s.id] || {
           dc: 0,
@@ -15358,20 +15530,28 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         fontSize: 11,
         color: "#7a8a98"
       }
-    }, "— Monthly, 1st Call Only")), React.createElement("p", {
+    }, "— Monthly, 1st Call Only")), billView.caption && React.createElement("div", {
+      style: {
+        fontSize: 12,
+        fontWeight: 600,
+        color: dk ? "#a8b8c8" : "#3a4a58",
+        margin: "-4px 0 10px",
+        lineHeight: 1.4
+      }
+    }, billView.caption), React.createElement("p", {
       style: {
         fontSize: 11,
         color: "#7a8a98",
         margin: "0 0 14px",
         lineHeight: 1.5
       }
-    }, "Breakdown by calendar month. Backup weeks are excluded — only 1st-call shifts count toward billing. Each call day is counted in the month it actually falls in (a service week or weekend spanning a month boundary is split across both months). A covered holiday bills 2 days (the day and the night) to the surgeon who covers it, and that date's regular credits don't count."), billOrder.done.map(billMonth), billOrder.ahead.length > 0 && React.createElement("details", {
-      open: billOrder.done.length === 0,
+    }, "Breakdown by calendar month. Backup weeks are excluded — only 1st-call shifts count toward billing. Each call day is counted in the month it actually falls in (a service week or weekend spanning a month boundary is split across both months). A covered holiday bills 2 days (the day and the night) to the surgeon who covers it, and that date's regular credits don't count."), billView.open.map(billMonth), billView.box.length > 0 && React.createElement("details", {
+      open: billView.open.length === 0,
       style: {
         background: dk ? "#12161e" : "#f4f6f8",
         border: `1px solid ${dk ? "#2a3a5e" : "#d0d8e0"}`,
         borderRadius: 6,
-        padding: "0 10px",
+        padding: 0,
         marginBottom: 16
       }
     }, React.createElement("summary", {
@@ -15380,15 +15560,15 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         fontSize: 12,
         fontWeight: 700,
         color: dk ? "#a0b0c0" : "#5a6a78",
-        padding: "14px 0",
+        padding: "14px 10px",
         lineHeight: "16px"
       }
-    }, "Upcoming months (", billOrder.ahead.length, ")"), React.createElement("div", {
+    }, billView.boxLabel, " (", billView.box.length, ")"), React.createElement("div", {
       style: {
         marginTop: 4,
-        paddingBottom: 6
+        padding: "0 2px 6px"
       }
-    }, billOrder.ahead.map(billMonth))), React.createElement("div", {
+    }, billView.box.map(billMonth))), React.createElement("div", {
       style: {
         fontSize: 11,
         color: "#7a8a98",
@@ -16001,6 +16181,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     const myShiftsView = mineUpcoming(myShifts, myToday);
     const mineApp = !!aMap[myId];
     const myAppDays = mineApp && typeof appUpcoming === "function" ? appUpcoming(appShifts, myId, myToday) : [];
+    const _now = new Date();
     const _today0 = new Date();
     _today0.setHours(0, 0, 0, 0);
     const _DAY = 86400000;
@@ -16017,6 +16198,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       month: "short",
       day: "numeric"
     });
+    const _range = e => e.runs && e.runs.length > 1 ? e.runs.map(([a, b]) => b > a ? `${_nice(a)} – ${_nice(b)}` : _nice(a)).join(" + ") : e.span ? `${_nice(e.start)} – ${_nice(e.end)}` : _nice(e.start);
     const _whenTxt = d => d > 1 ? `in ${d} days` : d === 1 ? "tomorrow" : d === 0 ? "today" : "in progress";
     const _whenTone = d => d <= 0 ? "#1a8040" : d <= 2 ? "#c0392b" : d <= 7 ? "#b9770e" : "#5a6a78";
     const _nextUp = [];
@@ -16040,14 +16222,21 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         }
         const span = r.shiftKey === "dayCall" || r.shiftKey === "wknd";
         const start = r.held && r.held.length ? parse(r.held[0]) : addD(mon, (_startOff$r$shiftKey = _startOff[r.shiftKey]) !== null && _startOff$r$shiftKey !== void 0 ? _startOff$r$shiftKey : 0);
-        const end = span ? addD(mon, 6) : start;
-        if (end < _today0) return;
+        const end = r.shiftKey === "dayCall" ? r.held && r.held.length ? parse(r.held[r.held.length - 1]) : addD(mon, 5) : span ? addD(mon, 6) : start;
+        if (r.shiftKey === "dayCall" ? end.getDay() === 6 ? _now >= new Date(end.getFullYear(), end.getMonth(), end.getDate() + 1, 7) : end < _today0 : (span ? addD(mon, 6) : start) < _today0) return;
         const days = Math.round((start - _today0) / _DAY);
+        const runs = [];
+        if (r.shiftKey === "dayCall" && r.held) r.held.slice().sort().forEach(ds => {
+          const last = runs[runs.length - 1];
+          if (last && ds <= fmt(last[1])) return;
+          if (last && fmt(addD(last[1], 1)) === ds) last[1] = parse(ds);else runs.push([parse(ds), parse(ds)]);
+        });
         _nextUp.push(_objectSpread(_objectSpread({}, r), {}, {
           start,
           end,
+          runs,
           days,
-          span,
+          span: r.shiftKey === "wknd" || end > start,
           isBackup: s.isBackup,
           isFierceBackup: s.isFierceBackup
         }));
@@ -16319,7 +16508,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           color: dk ? "#9aa8b6" : "#4a5a68",
           marginTop: 3
         }
-      }, e.span ? `${_nice(e.start)} – ${_nice(e.end)}` : _nice(e.start)), React.createElement("div", {
+      }, _range(e)), React.createElement("div", {
         style: {
           fontSize: 11,
           color: "#9aa4ae",
@@ -16337,11 +16526,14 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       }
     }, _upNext.slice(1).map((e, i) => React.createElement("div", {
       key: i,
-      style: {
+      style: _objectSpread({
         display: "flex",
         alignItems: "center",
         gap: 10
-      }
+      }, e.runs && e.runs.length > 1 ? {
+        flexWrap: "wrap",
+        rowGap: 2
+      } : null)
     }, React.createElement("span", {
       style: {
         fontSize: 16
@@ -16365,12 +16557,17 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         marginLeft: 6
       }
     }, "· backup")), React.createElement("span", {
-      style: {
+      style: _objectSpread({
         fontSize: 12,
         color: dk ? "#9aa8b6" : "#5a6a78",
         whiteSpace: "nowrap"
-      }
-    }, e.span ? `${_nice(e.start)} – ${_nice(e.end)}` : _nice(e.start)), React.createElement("span", {
+      }, e.runs && e.runs.length > 1 ? {
+        order: 3,
+        flexBasis: "100%",
+        paddingLeft: 26,
+        whiteSpace: "normal"
+      } : null)
+    }, _range(e)), React.createElement("span", {
       style: {
         fontSize: 11,
         fontWeight: 700,
@@ -17161,7 +17358,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           padding: "8px 0",
           borderBottom: "1px solid #f0e8d8"
         }
-      }, (editingVacReq === null || editingVacReq === void 0 ? void 0 : editingVacReq.id) === r.id ? React.createElement("div", {
+      }, (editingVacReq === null || editingVacReq === void 0 ? void 0 : editingVacReq.id) === r.id && canChangeVacRequest(r) ? React.createElement("div", {
         style: {
           display: "flex",
           gap: 6,
@@ -17322,7 +17519,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           borderRadius: 4,
           border: "1px solid #e8d090"
         }
-      }, "Pending review"), React.createElement("button", {
+      }, "Pending review"), canChangeVacRequest(r) && React.createElement(React.Fragment, null, React.createElement("button", {
         onClick: () => setEditingVacReq({
           id: r.id,
           start_date: r.start_date,
@@ -17351,7 +17548,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           cursor: "pointer",
           fontFamily: font
         }
-      }, "Withdraw")), (() => {
+      }, "Withdraw"))), (() => {
         const cov = vacRequestCoverage(r);
         if (!cov || !cov.breach && cov.conflicts.length === 0 && cov.pendingOverlaps.length === 0) return null;
         return React.createElement("div", {
@@ -17516,7 +17713,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           padding: "6px 0",
           borderBottom: "1px solid #e8f0e8"
         }
-      }, (editingVacReq === null || editingVacReq === void 0 ? void 0 : editingVacReq.id) === r.id ? React.createElement("div", {
+      }, (editingVacReq === null || editingVacReq === void 0 ? void 0 : editingVacReq.id) === r.id && canChangeVacRequest(r) ? React.createElement("div", {
         style: {
           display: "flex",
           gap: 6,
