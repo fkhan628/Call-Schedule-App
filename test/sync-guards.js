@@ -4718,6 +4718,14 @@ const DARK_SHEET = (() => {
 //   CF4 the render: the caption under the title (only over open months), the open months, then ONE
 //       collapsed <details> "Last 12 months (n)" (open only when nothing is open), then the formula note;
 //       the caption reads at 4.5:1+ on the card in both modes (the box's own contrast: BC6)
+// Review fixes (2026-10-20):
+//   CF1 the next period starting in a NEW year (Mon 1/1/2029, on 11/15 and on 12/20/2028): the caption's month
+//       and day carry their own years ("Dec 2028", "1/1/2029"); CF2's time-zone run holds that case too; and a
+//       schedule ending a year on in this month's name says "through Oct 2027", not "This month"
+//   CF4 the box's months keep nearly the card's full width (the 10px side inset is the summary's alone; it took
+//       22px from every boxed table on a phone); the billing column headers read at 4.5:1+ on the card and on the
+//       box's fill (thS2's #7a8a98 was 3.55:1 and 3.28:1); an open month's name reads at 4.5:1+ on the dark card
+//       (#1a6fa8 was 2.9:1 — the sheet's div[style*="color:#1a6fa8"] never matches React's rgb() form)
 console.log("\nCF. Stats → Billing: this month until the next period open, the last 12 months collapsed, older months dropped");
 {
   const H = vm.runInContext('({ bmg: typeof billingMonthGroups === "function" ? billingMonthGroups : null, bmo: typeof billingMonthOrder === "function" ? billingMonthOrder : null, pt: typeof publishedThrough === "function" ? publishedThrough : null, fmt, parse, addD, RealDate: Date })', sandbox);
@@ -4757,6 +4765,20 @@ console.log("\nCF. Stats → Billing: this month until the next period open, the
   ];
   const bad1 = t1.filter(([, got, want]) => J(got) !== J(want));
   check(`CF1 exact groups and captions: ${t1.map(([w]) => w).join("; ")}`, bad1.length === 0, bad1.map(([w, got]) => `${w}: ${J(got)}`).join(" | "));
+  // (review fix 2026-10-20: no fixture had the next period starting in a NEW year, so a caption taking the wrong year
+  // went uncaught — the open months' last month keeps the old year, the next period's day carries the new one)
+  const tY = [
+    ["on Wed 11/15/2028", grp(span("2027-06", "2028-12"), "2028-11-15", "2029-01-01"),
+      { now: ["2028-11", "2028-12"], past: span("2027-11", "2028-10").reverse(), through: "2028-12", nextStart: "2029-01-01", caption: "This month through Dec 2028 — the next period starts Mon 1/1/2029" }],
+    ["on Wed 12/20/2028 (\"This month\")", grp(span("2027-06", "2028-12"), "2028-12-20", "2029-01-01"),
+      { now: ["2028-12"], past: span("2027-12", "2028-11").reverse(), through: "2028-12", nextStart: "2029-01-01", caption: "This month — the next period starts Mon 1/1/2029" }],
+    // (and a schedule published a year ahead: the open months end in THIS month's name a year on — not "This month")
+    ["a year ahead: on Tue 10/20/2026, the schedule ending Sun 10/24/2027 (\"through Oct 2027\", not \"This month\")", grp(span("2025-11", "2027-10"), "2026-10-20", "2027-10-25"),
+      { now: span("2026-10", "2027-10"), past: span("2025-11", "2026-09").reverse(), through: "2027-10", nextStart: "2027-10-25", caption: "This month through Oct 2027 — the next period starts Mon 10/25/2027" }],
+  ];
+  const badY = tY.filter(([, got, want]) => J(got) !== J(want));
+  check(`CF1 the years in the caption, exact — the next period starting in a new year (the schedule ending Sun 12/31/2028, the next period Mon 1/1/2029: the month says 2028, the day 2029) and a schedule ending a year on in this month's name: ${tY.map(([w]) => w).join("; ")}`,
+    badY.length === 0, badY.map(([w, got]) => `${w}: ${J(got)}`).join(" | "));
   const edge = [
     ["13 months ago (Sep 2025 on 10/20/2026) dropped, 12 months ago (Oct 2025) kept", grp(["2025-09", "2025-10", "2026-09"], "2026-10-20", "2027-02-22"), { now: [], past: ["2026-09", "2025-10"] }],
     ["exactly the 12 months before this one: all 12 kept, newest first", grp(PAST12.slice().reverse(), "2026-10-20", "2027-02-22"), { now: [], past: PAST12 }],
@@ -4790,7 +4812,8 @@ console.log("\nCF. Stats → Billing: this month until the next period open, the
     !!H.bmg && !/Date\.now|new Date\(\s*\)/.test(String(H.bmg)));
   {
     const { execFileSync } = require("child_process");
-    const CASES = [[MS, "2026-10-20", "2027-02-22"], [span("2025-06", "2027-01"), "2026-10-20", "2027-02-01"], [MS, "2027-01-05", "2027-02-22"], [MS, "2026-12-31", "2027-02-22"], [span("2025-06", "2026-11"), "2026-10-20", "2026-11-02"], [MS, "2026-03-01", "2026-03-09"]];
+    const CASES = [[MS, "2026-10-20", "2027-02-22"], [span("2025-06", "2027-01"), "2026-10-20", "2027-02-01"], [MS, "2027-01-05", "2027-02-22"], [MS, "2026-12-31", "2027-02-22"], [span("2025-06", "2026-11"), "2026-10-20", "2026-11-02"], [MS, "2026-03-01", "2026-03-09"],
+      [span("2027-06", "2028-12"), "2028-11-15", "2029-01-01"]]; // (review fix: the next period starting in a new year)
     const code = [
       'const vm = require("vm"), fs = require("fs"), path = require("path");',
       'const sb = { console, window: {}, document: undefined, navigator: { userAgent: "node-test" }, localStorage: { getItem: () => null, setItem() {}, removeItem() {} }, fetch: () => { throw new Error("no fetch"); }, setTimeout, clearTimeout };',
@@ -4801,8 +4824,8 @@ console.log("\nCF. Stats → Billing: this month until the next period open, the
     ].join("\n");
     const inZone = (TZ) => { try { return JSON.parse(execFileSync(process.execPath, ["-e", code], { env: Object.assign({}, process.env, { TZ }), encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })); } catch (ex) { return { err: String(ex).slice(0, 300) }; } };
     const here = J(CASES.map((a) => grp(...a))), chi = inZone("America/Chicago"), tok = inZone("Asia/Tokyo");
-    check("CF2 under TZ=America/Chicago (offset 300) and Asia/Tokyo (−540) the owner's case, the month-end and month-start endings, the rollovers and a next period on the March DST Monday give the same groups and captions",
-      !!H.bmg && chi.off === 300 && tok.off === -540 && J(chi.out) === here && J(tok.out) === here && here.includes("Mon 3/9/2026"), J({ chi: J(chi).slice(0, 200), tok: J(tok).slice(0, 200) }));
+    check("CF2 under TZ=America/Chicago (offset 300) and Asia/Tokyo (−540) the owner's case, the month-end and month-start endings, the rollovers, a next period on the March DST Monday and one starting in a new year give the same groups and captions",
+      !!H.bmg && chi.off === 300 && tok.off === -540 && J(chi.out) === here && J(tok.out) === here && here.includes("Mon 3/9/2026") && here.includes("through Dec 2028 — the next period starts Mon 1/1/2029"), J({ chi: J(chi).slice(0, 200), tok: J(tok).slice(0, 200) }));
   }
 
   // CF3 — the REAL card block, the clock pinned at Tue 10/20/2026
@@ -4871,6 +4894,47 @@ console.log("\nCF. Stats → Billing: this month until the next period open, the
   check("CF4 the caption reads at 4.5:1+ on the card in both modes (light: its colour on css.card's white; dark: on the sheet's dark card fill), 12px+, and no dark-sheet rule recolours it",
     !!capM && cardLight === "#ffffff" && DARK_SHEET.hex(cardDark) && cf4.crL >= 4.5 && cf4.crD >= 4.5 && cL.fontSize >= 12 && cD.fontSize >= 12
       && !sheetHits(cL.color) && !sheetHits(cD.color) && sheetHits("#2a3e50"), J(cf4)); // (#2a3e50: the one inline colour the sheet does name, as rgb() — the detector's positive control)
+
+  // CF4 review fixes (2026-10-20) — the box's width, the column headers, a month's name; styles evaluated from the source
+  const boxM = nsrc.match(/<details open=\{billView\.open\.length === 0\} style=\{(\{[^\n]*?\})\}>\n\s*<summary style=\{(\{[^\n]*?\})\}>\n\s*\{billView\.boxLabel\} \(\{billView\.box\.length\}\)\n\s*<\/summary>\n\s*<div style=\{(\{[^\n]*?\})\}>\{billView\.box\.map\(billMonth\)\}<\/div>/);
+  const evDk = (code) => { try { return vm.runInContext(`(function (dk) { return (${code}); })`, sandbox); } catch (ex) { return null; } };
+  const pxV = (v) => (typeof v === "number" ? v : parseFloat(String(v == null ? "0" : v)) || 0);
+  // a padding / margin shorthand (plus its Left / Right longhands) → { t, r, b, l } in px
+  const box4 = (s, prop) => {
+    const p = s && s[prop] != null ? String(s[prop]).trim().split(/\s+/).map(pxV) : [0];
+    const [t, r, b, l] = p.length === 1 ? [p[0], p[0], p[0], p[0]] : p.length === 2 ? [p[0], p[1], p[0], p[1]] : p.length === 3 ? [p[0], p[1], p[2], p[1]] : p;
+    return { t, b, r: s && s[prop + "Right"] != null ? pxV(s[prop + "Right"]) : r, l: s && s[prop + "Left"] != null ? pxV(s[prop + "Left"]) : l };
+  };
+  const bwV = (s) => pxV((String(s && s.border).match(/(\d+(?:\.\d+)?)px/) || [])[1]);
+  const boxF = boxM ? [evDk(boxM[1]), evDk(boxM[2]), evDk(boxM[3])] : [null, null, null];
+  const inset = (dk) => {
+    const [det, sum, con] = boxF.map((f) => f && f(dk));
+    if (!det || !sum || !con) return null;
+    const side = (k) => box4(det, "padding")[k] + bwV(det) + box4(con, "padding")[k] + box4(con, "margin")[k];
+    return { l: side("l"), r: side("r"), sumL: box4(det, "padding").l + box4(sum, "padding").l, bg: det.background };
+  };
+  const inL = inset(false), inD = inset(true);
+  check("CF4 review fix: the box's months keep nearly the card's full width — each boxed table sits at most 3px in from the card's content edge on either side (the box's 10px side padding + its 1px border took 22px from every boxed table on a phone), while the summary keeps its 8px+ inset from the border; both modes",
+    !!inL && !!inD && [inL, inD].every((x) => x.l <= 3 && x.r <= 3 && x.sumL >= 8), J({ inL, inD }));
+  const thS2M = nsrc.match(/\nconst thS2 = (\{[^\n]*?\});\n/);
+  const thS2V = (() => { try { return thS2M ? vm.runInContext(`(${thS2M[1]})`, sandbox) : null; } catch (ex) { return null; } })();
+  const bmA = nsrc.indexOf("const billMonth = (mk) => {"), bmR = bmA < 0 ? -1 : nsrc.indexOf("return (", bmA), bmT = bmA < 0 ? -1 : nsrc.indexOf("</thead>", bmA);
+  const bmPre = bmA < 0 || bmR < 0 ? "" : nsrc.slice(bmA + "const billMonth = (mk) => {".length, bmR);
+  const bmHead = bmA < 0 || bmT < 0 ? "" : nsrc.slice(bmA, bmT);
+  const thList = [...bmHead.matchAll(/<th style=\{(\{[^{}\n]*\}|[A-Za-z_$][\w$]*)\}>([^<\n]*)<\/th>/g)].map((m) => ({ label: m[2], expr: m[1] }));
+  const thF = (() => { try { return thList.length ? vm.runInContext(`(function (thS2, monthly, mk, dk) { ${bmPre}\n return [${thList.map((t) => `(${t.expr})`).join(", ")}]; })`, sandbox) : null; } catch (ex) { return null; } })();
+  const thL = (() => { try { return thF ? thF(thS2V, {}, "2026-10", false) : null; } catch (ex) { return null; } })();
+  const thDark = DARK_SHEET.forced("th", "color");
+  const p2 = { labels: thList.map((t) => t.label), light: thL && thL.map((s) => [s.color, DARK_SHEET.cr(s.color, cardLight), DARK_SHEET.cr(s.color, inL && inL.bg)]), thDark, onDarkCard: DARK_SHEET.cr(thDark, cardDark), onDarkBox: DARK_SHEET.cr(thDark, inD && inD.bg) };
+  check("CF4 review fix: the billing column headers read at 4.5:1+ — light: every header's colour on the card's white and on the box's #f4f6f8 fill (thS2's #7a8a98 was 3.55:1 and 3.28:1); dark: the sheet's forced th colour on the dark card and on the box's dark fill",
+    !!thS2V && J(p2.labels) === J(["Surgeon", "Total Days", "Svc Days", "Nights", "Wknd Days", "Holiday"]) && !!thL && thL.length === 6
+      && p2.light.every(([, onCard, onBox]) => onCard >= 4.5 && onBox >= 4.5) && inL.bg === "#f4f6f8" && DARK_SHEET.hex(thDark) && p2.onDarkCard >= 4.5 && p2.onDarkBox >= 4.5, J(p2));
+  const lblM = bmHead.match(/<div style=\{(\{[^\n]*?\})\}>\{moLabel\(mk\)\}<\/div>/);
+  const lblF = lblM ? evDk(lblM[1]) : null, lblL = lblF && lblF(false), lblD = lblF && lblF(true);
+  const detDiv = DARK_SHEET.forced("details div", "color");
+  const p3 = { light: lblL && lblL.color, dark: lblD && lblD.color, onCard: DARK_SHEET.cr(lblL && lblL.color, cardLight), onBox: DARK_SHEET.cr(lblL && lblL.color, inL && inL.bg), onDarkCard: DARK_SHEET.cr(lblD && lblD.color, cardDark), detDiv, detDivOnDarkBox: DARK_SHEET.cr(detDiv, inD && inD.bg) };
+  check("CF4 review fix: a month's name reads at 4.5:1+ — light on the card and on the box's fill; dark: an open month's on the dark card (#1a6fa8 was 2.9:1 there: the sheet's div[style*=\"color:#1a6fa8\"] never matches React's rgb() form), no dark-sheet rule recolouring it, and a boxed month's in the sheet's forced \"details div\" colour on the box's dark fill",
+    !!lblM && p3.onCard >= 4.5 && p3.onBox >= 4.5 && p3.onDarkCard >= 4.5 && !sheetHits(p3.dark) && DARK_SHEET.hex(detDiv) && p3.detDivOnDarkBox >= 4.5 && lblD.fontSize >= 12, J(p3));
 }
 
 // ─── BC. Generate & Publish asks once; Stats → Billing opens on the newest months (UX audit 2026-10-19) ───
@@ -5893,7 +5957,8 @@ console.log("\nAM. Mine's name picker is a view, not a sign-in");
     && !src.includes("const svcSid = (wk.dayCallOverrides && wk.dayCallOverrides[ds]) || wk.dayCall;") && !/\]\.(dc|nights|wknd) \+= 1;/.test(newBlock || "x].dc += 1;"));
   check("V8 Holiday header + cell after Wknd Days; rows default hol to 0",
     // \r?\n: a Windows checkout has CRLF, CI's has LF
-    (src.match(/<th style=\{thS2\}>Wknd Days<\/th>\r?\n[ \t]*<th style=\{thS2\}>Holiday<\/th>/g) || []).length === 1
+    // (2026-10-20, changed ON PURPOSE — section CF review fix: the billing headers use billTh, thS2 with a 4.5:1+ colour)
+    (src.match(/<th style=\{billTh\}>Wknd Days<\/th>\r?\n[ \t]*<th style=\{billTh\}>Holiday<\/th>/g) || []).length === 1
     && (src.match(/<td style=\{tdS\}>\{r\.wknd\|\|"–"\}<\/td>\r?\n[ \t]*<td style=\{tdS\}>\{r\.hol\|\|"–"\}<\/td>/g) || []).length === 1
     && count("{dc:0,nights:0,wknd:0,hol:0}") === 1 && count("{ dc:0, nights:0, wknd:0, hol:0 }") === 1);
   // (2026-10-19, section BC: the month ORDER changed deliberately — newest first, later months in a
