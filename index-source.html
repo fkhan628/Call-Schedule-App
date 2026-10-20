@@ -525,6 +525,15 @@ function CallSchedule() {
   // this is set (both publish buttons are disabled too).
   const publishingRef = useRef(false);
   const [publishing, setPublishing] = useState(false);
+  // Accept & Publish tells nobody by itself (owner decision 2026-10-20): once
+  // its publish lands, the Calendar tab asks the scheduler — "✓ Published
+  // <period>. Nobody has been notified yet." with 📣 Notify everyone / Not now.
+  // { label, ep }: the period, and the session it was published in (a tap from
+  // any other session sends nothing — notifyPublished). The session boundary
+  // clears it. notifiedRef: the one it already sent for (one send, however
+  // many taps).
+  const [justPublished, setJustPublished] = useState(null);
+  const notifiedRef = useRef(null);
   const [pendingLocks, setPendingLocks] = useState([]); // [{ mondayStr, slot: "dc"|"mon"|"tue"|"wed"|"thu"|"wknd", surgeonId }]
 
   // ─── Silvis (trauma) feed — rule silvisBusy (silvis-feed.js) ───
@@ -1361,7 +1370,7 @@ function CallSchedule() {
   // are forgotten (forgetDayOffs, review r6 fix-3): never sent, kept or shown
   // into the next one, the chips refused until the next account's own read.
   const sessionBoundary = () => {
-    sessionEpochRef.current++; searchRef.current = null; setSearching(null); setSearchStats(null); setPreviewSchedule(null); setShowPreview(false); // nothing searched, generated or loaded by this user is published as the next one
+    sessionEpochRef.current++; searchRef.current = null; setSearching(null); setSearchStats(null); setPreviewSchedule(null); setShowPreview(false); setJustPublished(null); // nothing searched, generated or loaded by this user is published (or announced) as the next one
     schedSyncRef.current.reset();
     setScheduleHistory([]); setEditWeekModal(null); forgetDayOffs(); setReauthNeeded(false); setStaleTokenWarn(false);
     setIsScheduler(false); setupReadRef.current = false; lastSyncRef.current = null;
@@ -3121,6 +3130,7 @@ function CallSchedule() {
       } else {
         sendPushNotif(title, message, filteredTargets, deepLinkUrl, ep);
       }
+      return !insertErr; // true: the notice was saved (2026-10-20 — the 📣 Notify everyone tap says so only then; other callers ignore it)
     } catch(e) { console.error("Notification error:", e); if (sessionEpochRef.current === ep) showToast("Couldn't send the notification — check your connection.", "error"); }
   }, [sendPushNotif, buildDeepLink, filterPushTargetsByType]);
 
@@ -4525,6 +4535,26 @@ function CallSchedule() {
     setTimeout(() => setNotifTestSent(""), 3000);
   }, [sendBrowserNotif, sendEmailNotif, edgeFunctionUrl, notifPrefs, mySurgeon]);
 
+  // ─── Tell everyone a schedule was published ───
+  // The group's "Schedule Published" notice (in-app + push) and e-mail, both
+  // to everyone (no target list). Generate & Publish sends them as soon as its
+  // publish lands; Accept & Publish only when the scheduler taps 📣 Notify
+  // everyone on the Calendar's banner (owner decision 2026-10-20 — nothing is
+  // sent by itself). ep: the session of the tap that published — from any
+  // other session nothing is sent (review r3 regress-3). Resolves true only
+  // when the notice was saved.
+  const notifyPublished = async (ep, period) => {
+    if (sessionEpochRef.current !== ep) return false;
+    // The tap's session is passed in (review r4 fixes-3): the notice's device
+    // push, sent after its insert's await, and its failure toasts are fenced
+    // inside addNotification too.
+    const saved = await addNotification("schedule_published", "Schedule Published",
+      "A new call schedule has been generated. Check the Schedule or Calendar tab.", {}, null, ep);
+    if (sessionEpochRef.current !== ep) return false;
+    sendEmailNotif("schedule_published", { period }, null, ep);
+    return saved === true;
+  };
+
   // ─── Publish Schedule (with notification) ───
   const doGenerateAndNotify = async () => {
     // This session, at the tap (review r3 regress-3): the notice and the
@@ -4544,13 +4574,9 @@ function CallSchedule() {
     if ((await doGenerate(false)) !== "published") return;
     if (sessionEpochRef.current !== ep) return;
     // (The counts roll forward inside doGenerate's publish, at commit — net
-    // of any weeks it replaced.) The tap's session is passed in (review r4
-    // fixes-3): the notice's device push, sent after its insert's await, and
-    // its failure toasts are fenced inside addNotification too.
-    await addNotification("schedule_published", "Schedule Published",
-      "A new call schedule has been generated. Check the Schedule or Calendar tab.", {}, null, ep);
-    if (sessionEpochRef.current !== ep) return;
-    sendEmailNotif("schedule_published", { period }, null, ep);
+    // of any weeks it replaced.) The notice, then the e-mail — the one
+    // sender Accept & Publish's banner uses too (2026-10-20).
+    await notifyPublished(ep, period);
   };
 
   // ─── Build Individual ICS for a surgeon (their shifts + vacations only) ───
@@ -5859,7 +5885,14 @@ function CallSchedule() {
         setSaveStatus(""); // the snapshot's status ends: while the job runs, the engine's "Publishing… keep the app open" is the header's ONE line (A16)
         const pr = await job;
         if (sessionEpochRef.current !== ep) return; // another session now: nothing said on its screen
-        if (pr && pr.ok) { setSaveStatus("Published — totals updated"); setTimeout(() => setSaveStatus(""), 3000); if (pr.notice) showToast(pr.notice, "error"); } // (a notice here: another week someone else changed)
+        if (pr && pr.ok) {
+          setSaveStatus("Published — totals updated"); setTimeout(() => setSaveStatus(""), 3000); if (pr.notice) showToast(pr.notice, "error"); // (a notice here: another week someone else changed)
+          // Nobody is told by itself (owner decision 2026-10-20): the Calendar's banner asks the scheduler — 📣 Notify everyone / Not now.
+          setJustPublished({ label: pubPeriod, ep });
+          // ✓ Accept & Publish sits far down the Generate tab, and the Calendar opens at that scroll (rendered check: the
+          // banner was ~500 px above a 375 px phone's screen) — so it is brought into view, as the Today button does.
+          setTimeout(() => { const el = document.querySelector('[data-just-published="1"]'); if (el && el.scrollIntoView) el.scrollIntoView({ behavior: "smooth", block: "nearest" }); }, 60);
+        }
         else { setSaveStatus(""); publishNotLanded(pr, "Published on this screen"); }
       } finally { publishingRef.current = false; setPublishing(false); }
     }
@@ -5868,6 +5901,18 @@ function CallSchedule() {
   const discardPreview = () => {
     cancelSearch(); setSearchStats(null);
     setPreviewSchedule(null); setShowPreview(false);
+  };
+
+  // 📣 Notify everyone, on the Calendar's "Published" banner (owner decision
+  // 2026-10-20): ONE send per publish — the banner goes on the tap, and a
+  // second tap finds this publish already sent for. A tap from another session
+  // than the publish's sends nothing (notifyPublished); "Everyone has been
+  // notified." only once the notice was saved, and only in that session.
+  const notifyJustPublished = async () => {
+    const jp = justPublished;
+    if (!jp || notifiedRef.current === jp) return;
+    notifiedRef.current = jp; setJustPublished(null);
+    if ((await notifyPublished(jp.ep, jp.label)) && sessionEpochRef.current === jp.ep) showToast("Everyone has been notified.", "success");
   };
 
   // 🔍 Search more (owner 2026-10-12, item 5): another SEARCH_MS of searching
@@ -9860,6 +9905,20 @@ ${"</"}script>${"</"}body>${"</"}html>`;
 
         {/* ════════════════ CALENDAR ════════════════ */}
         {view==="calendar"&&<>
+          {/* Accept & Publish told nobody (owner decision 2026-10-20): the scheduler is asked here, on the Calendar it lands on.
+              📣 Notify everyone sends the group's notice + e-mail once (notifyJustPublished); Not now only closes it. Members never
+              see it; the session boundary clears it. ≥44px buttons that wrap at 320px; the toasts sit at the bottom, never over it. */}
+          {isScheduler && justPublished && (
+            <div role="status" aria-live="polite" data-just-published="1" style={{background:dk?"#16301f":"#eaf7ee",border:`1px solid ${dk?"#2f5a3c":"#a8d8b8"}`,borderRadius:12,padding:"12px 14px",marginBottom:14,display:"flex",alignItems:"center",flexWrap:"wrap",gap:10}}>
+              <div style={{flex:"1 1 200px",minWidth:0,fontSize:14,fontWeight:600,lineHeight:1.4,color:dk?"#b8e8c8":"#1a5a32",overflowWrap:"anywhere"}}>
+                ✓ Published {justPublished.label}. Nobody has been notified yet.
+              </div>
+              <div style={{display:"flex",gap:8,flexWrap:"wrap",flex:"1 1 auto",justifyContent:"flex-end"}}>
+                <button onClick={notifyJustPublished} style={{...css.btn(true),minHeight:44,padding:"8px 14px",fontSize:14,flex:"1 1 auto"}}>📣 Notify everyone</button>
+                <button onClick={()=>setJustPublished(null)} style={{...css.btn(false),minHeight:44,padding:"8px 14px",fontSize:14}}>Not now</button>
+              </div>
+            </div>
+          )}
           {/* ─── On Call Today Banner ─── */}
           {/* Shown when today has call, or when someone is on call right now without it (review fix:
               the first morning past the published schedule) — then only the "now" line. */}

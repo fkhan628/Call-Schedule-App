@@ -1602,12 +1602,15 @@ console.log("\nBD. Generate: one period label, the period's seam, holidays with 
   const memoBody = after("  const mondays = useMemo(() => {", "\n  }, [startYear, startMonth, numWeeks, startMondayOverride]);");
   const endSrc = span("  const endDate = mondays.length > 0", "\n  const endYr = ");
   const dgnSrc = span("  const doGenerateAndNotify = async () => {", "\n  };");
+  // (2026-10-20: the notice and the e-mail moved into notifyPublished — the one sender Accept & Publish's banner uses
+  // too, sync-guards CD — so it is sliced with doGenerateAndNotify and run with the same stubs, on purpose)
+  const npSrcBD = span("  const notifyPublished = async (ep, period) => {", "\n  };");
   const mk = (code, ctx, filename) => { try { return code ? vm.runInContext(code, ctx, { filename }) : null; } catch (ex) { return null; } };
   const runMemo = memoBody && mk(`(function (env) { const { startMondayOverride, numWeeks, startYear, startMonth } = env; return (() => {${memoBody}\n  })(); })`, sandbox, "bd-mondays.js");
   const runEnd = endSrc && mk(`(function (env) { const { mondays, startMonth } = env;\n${endSrc}\n return { endDate, endMoIdx }; })`, sandbox, "bd-enddate.js");
   // (every name the e-mail's period was ever built from — main's selects and endMoIdx, the Mondays — and periodText,
   // the component's one line for it since the review fixes, run for real from the Mondays the memo made)
-  const mkDgn = dgnSrc && mk(`(function (env) { const { sessionEpochRef, doGenerate, addNotification, sendEmailNotif, MO, startMonth, endMoIdx, startYear, mondays, periodText } = env;\n${dgnSrc}\n  };\n return doGenerateAndNotify; })`, sandbox, "bd-dgn.js");
+  const mkDgn = dgnSrc && npSrcBD && mk(`(function (env) { const { sessionEpochRef, doGenerate, addNotification, sendEmailNotif, MO, startMonth, endMoIdx, startYear, mondays, periodText } = env;\n${npSrcBD}\n  };\n${dgnSrc}\n  };\n return doGenerateAndNotify; })`, sandbox, "bd-dgn.js");
   const ptNew = periodTextIn(sandbox);
   const publishRun = async (settings) => {
     if (!runMemo || !runEnd || !mkDgn || !ptNew) return null;
@@ -5070,14 +5073,18 @@ console.log("\nBC. Generate & Publish asks once; Billing opens on the newest mon
     ok.asked[0] === wantAsk && /Nov 16, 2026 → Feb 21, 2027 \(14 weeks\)/.test(ok.asked[0] || "") && /3 of the 14 weeks/.test(ok.asked[0] || ""), JSON.stringify(ok.asked[0]));
   const dg = src.indexOf("  const doGenerateAndNotify = async () => {"), dge = dg < 0 ? -1 : src.indexOf("\n  };", dg);
   const dgBody = dg < 0 || dge < 0 ? "" : src.slice(dg, dge);
+  // (2026-10-20: doGenerateAndNotify sends through notifyPublished — the one sender Accept & Publish's banner uses too,
+  // sync-guards CD — so the run below slices it with doGenerateAndNotify, on purpose; it asks nothing either)
+  const np = src.indexOf("  const notifyPublished = async (ep, period) => {"), npe = np < 0 ? -1 : src.indexOf("\n  };", np);
+  const npBody = np < 0 || npe < 0 || src.indexOf("  const notifyPublished = async (ep, period) => {", np + 1) !== -1 ? "" : src.slice(np, npe);
   check("BC2 pins: no bare onClick={doGenerateAndNotify}; ONE call site, behind the confirm; doGenerateAndNotify itself asks nothing (one question, not two)",
     count("onClick={doGenerateAndNotify}") === 0 && count("doGenerateAndNotify()") === 1
       && count("if (confirm(publishConfirmText(mondays, { schedule: scheduleRef.current, today: fmt(new Date()) }))) doGenerateAndNotify();") === 1
-      && dgBody.length > 0 && !dgBody.includes("confirm("), JSON.stringify({ bare: count("onClick={doGenerateAndNotify}"), calls: count("doGenerateAndNotify()"), body: dgBody.length }));
+      && dgBody.length > 0 && !dgBody.includes("confirm(") && npBody.length > 0 && !npBody.includes("confirm("), JSON.stringify({ bare: count("onClick={doGenerateAndNotify}"), calls: count("doGenerateAndNotify()"), body: dgBody.length, sender: npBody.length }));
   // What the question's last line says, held true (review fix): the REAL doGenerateAndNotify, run on each doGenerate result
   let mkDgn = null;
   // (mondays, periodText: the e-mail's period is taken from the Generate Mondays since BD — UX audit 2026-10-19 — through the component's one line, periodText, since its review fixes)
-  try { mkDgn = dgBody ? vm.runInContext(`(function (env) { const { sessionEpochRef, doGenerate, addNotification, sendEmailNotif, MO, startMonth, endMoIdx, startYear, mondays, periodText } = env;\n${dgBody}\n  };\n return doGenerateAndNotify; })`, sandbox, { filename: "bc-dgn.js" }) : null; } catch (ex) { mkDgn = null; }
+  try { mkDgn = dgBody && npBody ? vm.runInContext(`(function (env) { const { sessionEpochRef, doGenerate, addNotification, sendEmailNotif, MO, startMonth, endMoIdx, startYear, mondays, periodText } = env;\n${npBody}\n  };\n${dgBody}\n  };\n return doGenerateAndNotify; })`, sandbox, { filename: "bc-dgn.js" }) : null; } catch (ex) { mkDgn = null; }
   const dgn = async (result) => {
     const log = [];
     await mkDgn({ sessionEpochRef: { current: 0 }, doGenerate: async () => result, MO: ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"], startMonth: 10, endMoIdx: 1, startYear: 2026, mondays: NOV.map(H.parse), periodText: "Nov 16, 2026 – Feb 21, 2027",
@@ -7345,7 +7352,9 @@ console.log("\nAR. Requests tab copy + the APP trade note");
     check("AA3 a notification failure is the LAST toast after a successful submit (vacation + trade); nothing claims the scheduler was notified",
       !!v.run && !!t.run && v.rec.toasts.length === 2 && /^success: Vacation request sent\.$/.test(v.rec.toasts[0]) && /^error: Couldn't save that notification/.test(v.rec.toasts[1])
         && t.rec.toasts.length === 2 && /^success: Trade proposed/.test(t.rec.toasts[0]) && /^error: Couldn't save that notification/.test(t.rec.toasts[1])
-        && v.rec.cleared === 1 && t.rec.cleared === 1 && count("has been notified") === 0,
+        // (2026-10-20, on purpose: the Calendar's "Published" banner says "Nobody has been notified yet." and its 📣 tap
+        // "Everyone has been notified." — only once the notice was saved, CD3. Any OTHER "has been notified" still fails here.)
+        && v.rec.cleared === 1 && t.rec.cleared === 1 && count("has been notified") === count("Nobody has been notified yet.") + count("Everyone has been notified."),
       JSON.stringify([v.rec.toasts, t.rec.toasts]));
     const throwIns = { insert: async () => { throw new TypeError("Failed to fetch"); } };
     const vt = vEnv(OK_V, { env: { db: throwIns } }); if (vt.run) await vt.run();
@@ -8592,6 +8601,275 @@ console.log("\nAV. Pending requests: a collapsed group shows a coverage-floor br
     JSON.stringify({ bareAV, iCov, iMemo, iReqView, cond: condAV && condAV[1] }));
 }
 
+// ─── CD. After ✓ Accept & Publish, one tap tells everyone (owner decision 2026-10-20) ───
+// Only Generate & Publish sent the group's "Schedule Published" notice and
+// e-mail. Accept & Publish published, switched to the Calendar and told
+// nobody — and since 2026-10-11 Generate & Publish opens the preview whenever
+// anything needs the scheduler's OK, so the usual path (review → ✓ Accept &
+// Publish) was silent. The owner left it to the recommendation: nothing is
+// ever sent by itself. The two sends moved into ONE sender,
+// notifyPublished(ep, period), which Generate & Publish calls exactly as
+// before; a publish from the preview that LANDS raises a scheduler-only banner
+// at the top of the Calendar — "✓ Published <period>. Nobody has been notified
+// yet." — with 📣 Notify everyone (one send) and Not now.
+//   CD1 the REAL notifyPublished, executed: one notice + one e-mail, both to
+//       everyone, the e-mail with the period; nothing once the session moved
+//       (before the call; during the notice's await — then no e-mail); true
+//       only when the notice was saved — the REAL addNotification behind it
+//       (saved / an insert error / a throw)
+//   CD2 the REAL acceptPreview: a publish that lands — the usual path, Needs
+//       your OK ticked, and an empty box — raises the banner with the
+//       published period and the tap's session, after the job landed; a job
+//       that didn't land, a refused or blocked publish, or a session change
+//       during the job raise nothing; it never sends a notice, a push or an
+//       e-mail itself; an OLD cached helpers.js (no periodLabel): the plain
+//       weeks, never a throw; the banner is scrolled into view (the rendered
+//       check found it ~500 px above a phone's screen — the Calendar opens at
+//       the Generate tab's scroll)
+//   CD3 the REAL notifyJustPublished (📣 Notify everyone): the banner goes on
+//       the tap, then ONE notice + e-mail and "Everyone has been notified.";
+//       a double tap or a late second tap sends nothing more, the next
+//       publish's tap sends again; nothing to send → nothing; the notice not
+//       saved → no "notified"; a stale tap or a session change during the
+//       send → nothing more sent, nothing said
+//   CD4 the REAL doGenerateAndNotify still sends exactly once, through the
+//       one sender, only when its publish landed in its session; the two
+//       sends exist once in the app
+//   CD5 the REAL sessionBoundary clears the banner, and a tap from before it
+//       sends nothing: publish → sign-out → the old screen's tap
+//   CD6 the banner: scheduler-only (its gate, evaluated), first in the
+//       Calendar view, in the page's flow (the toasts are fixed at the
+//       bottom), its exact text, 4.5:1+ in light and dark, ≥44px buttons that
+//       wrap, its two handlers (Not now, executed: closes, sends nothing), no
+//       write path of its own; only four places set it
+console.log("\nCD. After Accept & Publish, one tap tells everyone");
+{
+  const nsrcCD = src.replace(/\r\n/g, "\n");
+  const afterCD = (start, end) => { const i = nsrcCD.indexOf(start); if (i < 0 || nsrcCD.indexOf(start, i + 1) !== -1) return null; const e = nsrcCD.indexOf(end, i + start.length); return e < 0 ? null : nsrcCD.slice(i + start.length, e); };
+  const fnCD = (names, code, ctx) => { if (code === null) return null; try { return vm.runInContext(`(function (env) { const { ${names} } = env; return (${code}); })`, ctx || sandbox, { filename: "cd-slice.js" }); } catch (ex) { return null; } };
+  const J = (o) => JSON.stringify(o);
+  const gate = () => { let open; const p = new Promise((r) => { open = r; }); return { p, open }; };
+  const MSG = "A new call schedule has been generated. Check the Schedule or Calendar tab.";
+  const P1 = "Nov 16 – Nov 29, 2026", P2 = "Nov 30 – Dec 13, 2026";
+  const npBody = afterCD("  const notifyPublished = async (ep, period) => {", "\n  };\n");
+  const npMk = fnCD("sessionEpochRef, addNotification, sendEmailNotif", npBody === null ? null : "async (ep, period) => {" + npBody + "\n  }");
+  // One session's senders, recorded in `log`: the notice resolves `saved` (true unless o.saved is given), and can hold
+  // its await open (o.hold) or see the session move during it (o.moveDuringNotice); the REAL notifyPublished over them.
+  const world = (o = {}, log = []) => {
+    const w = { ep: { current: o.ep || 0 }, log };
+    w.addNotification = async (...a) => { log.push(J(["notice", ...a])); if (o.moveDuringNotice) w.ep.current++; if (o.hold) await o.hold; return "saved" in o ? o.saved : true; };
+    w.sendEmailNotif = (...a) => { log.push(J(["e-mail", ...a])); };
+    w.np = npMk ? npMk({ sessionEpochRef: w.ep, addNotification: w.addNotification, sendEmailNotif: w.sendEmailNotif }) : null;
+    return w;
+  };
+  const NOTICE = (ep) => J(["notice", "schedule_published", "Schedule Published", MSG, {}, null, ep]);
+  const EMAIL = (period, ep) => J(["e-mail", "schedule_published", { period }, null, ep]);
+  const notices = (log) => log.filter((x) => x.startsWith('["notice"')).length, emails = (log) => log.filter((x) => x.startsWith('["e-mail"')).length;
+
+  // CD1 — notifyPublished
+  let cd1 = null;
+  if (npMk) {
+    try {
+      const a = world(), ra = await a.np(0, P1);
+      const b = world({ ep: 1 }), rb = await b.np(0, P1);
+      const c = world({ moveDuringNotice: true }), rc = await c.np(0, P1);
+      const d = world({ saved: false }), rd = await d.np(0, P1);
+      const e = world({ saved: undefined }), re = await e.np(0, P1);
+      cd1 = { a: a.log, ra, b: b.log, rb, c: c.log, rc, d: d.log, rd, re };
+    } catch (ex) { cd1 = { threw: String(ex).slice(0, 160) }; }
+  }
+  check("CD1 the REAL notifyPublished, executed: ONE notice (\"Schedule Published\", the same text, no target list — everyone, the tap's session) then ONE e-mail (everyone, { period }), and it resolves true when the notice was saved",
+    !!cd1 && !cd1.threw && J(cd1.a) === J([NOTICE(0), EMAIL(P1, 0)]) && cd1.ra === true, J(cd1));
+  check("CD1 nothing once the session moved: from another session than the publish's, no notice and no e-mail (false); the session moving during the notice's await → no e-mail (false)",
+    !!cd1 && !cd1.threw && cd1.b.length === 0 && cd1.rb === false && J(cd1.c) === J([NOTICE(0)]) && cd1.rc === false, J(cd1));
+  check("CD1 a notice that wasn't saved (false, or addNotification's own nothing) resolves false — the e-mail still goes, as Generate & Publish's always did",
+    !!cd1 && !cd1.threw && J(cd1.d) === J([NOTICE(0), EMAIL(P1, 0)]) && cd1.rd === false && cd1.re === false, J(cd1));
+  // …with the REAL addNotification behind it: what it resolves is what the sender reports
+  const anBody = afterCD("  const addNotification = useCallback(", ", [sendPushNotif, buildDeepLink, filterPushTargetsByType]);");
+  const anMk = fnCD("db, showToast, setNotifications, buildDeepLink, filterPushTargetsByType, sendPushNotif, console, sessionEpochRef", anBody);
+  let cd1r = null;
+  if (anMk && npMk) {
+    const realRun = async (insert) => {
+      const r = { pushes: 0, toasts: [], emails: 0, listed: 0 }, ep = { current: 0 };
+      const an = anMk({ db: { insert }, showToast: (m) => r.toasts.push(String(m)), setNotifications: () => { r.listed++; }, buildDeepLink: () => "#calendar", filterPushTargetsByType: (t, ids) => ids,
+        sendPushNotif: () => { r.pushes++; }, console: { error() {}, log() {}, warn() {} }, sessionEpochRef: ep });
+      r.saved = await an("schedule_published", "Schedule Published", MSG, {}, null, 0);
+      r.sent = await npMk({ sessionEpochRef: ep, addNotification: an, sendEmailNotif: () => { r.emails++; } })(0, P1);
+      return r;
+    };
+    try {
+      cd1r = { ok: await realRun(async (t, row) => ({ data: Object.assign({ id: 1 }, row), error: null })),
+        err: await realRun(async () => ({ data: null, error: "TypeError: Failed to fetch" })),
+        thrown: await realRun(async () => { throw new Error("offline"); }) };
+    } catch (ex) { cd1r = { threw: String(ex).slice(0, 160) }; }
+  }
+  check("CD1 with the REAL addNotification: saved → true (listed, pushed); an insert error → false (its own \"Couldn't save that notification.\"); a throw → not true — and notifyPublished reports the same",
+    !!cd1r && !cd1r.threw && cd1r.ok.saved === true && cd1r.ok.sent === true && cd1r.ok.listed === 2 && cd1r.ok.pushes === 2
+      && cd1r.err.saved === false && cd1r.err.sent === false && cd1r.err.toasts[0] === "Couldn't save that notification."
+      && cd1r.thrown.saved !== true && cd1r.thrown.sent === false, J(cd1r));
+
+  // CD2 — the REAL acceptPreview (AE1's harness shape), every sender a spy
+  const apBody = afterCD("  const acceptPreview = async () => {", "\n  };\n");
+  const AP_ENV = "previewSchedule, previewSchedRef, previewNeedsOk, previewAck, previewOrigin, publishWeeks, runPublish, publishNotLanded, publishingRef, setPublishing, snapshots, showToast, schedEditable, schedSyncRef, previewEpochRef, setPreviewSchedule, setShowPreview, setCalMonth, setCalYear, setView, setSaveStatus, setTimeout, numWeeks, MO, startMonth, startYear, cancelSearch, publishSearchRunning, sessionEpochRef, setJustPublished, addNotification, sendEmailNotif, sendPushNotif, notifyPublished, document";
+  const apCode = apBody === null ? null : "async () => {" + apBody + "\n  }";
+  const apMk = fnCD(AP_ENV, apCode), apMkOld = fnCD(AP_ENV, apCode, OLD_SB);
+  const PS = { "2026-11-16": { dayCall: "s1", nights: {} }, "2026-11-23": { dayCall: "s2", nights: {} } };
+  // (timers are recorded and run after the publish; document answers the banner's selector — o.noEl: the scheduler is on another tab)
+  const accept = async (o = {}, mkIt = apMk) => {
+    const rec = { jp: [], sends: [], order: [], toasts: [], timers: [], asked: [], scrolled: [] };
+    const ep = o.epRef || { current: 4 };
+    if (!mkIt) return { threw: "acceptPreview not extractable" };
+    try {
+      await mkIt({
+        previewSchedule: PS, previewSchedRef: { current: PS }, previewNeedsOk: { cost: (o.items || []).length * 6, items: o.items || [] }, previewAck: !!o.ack, previewOrigin: "generated",
+        publishWeeks: () => { rec.order.push("publishWeeks"); return {}; },
+        // the job lands a tick later (o.moveDuringJob: a sign-out meanwhile)
+        runPublish: () => { rec.order.push("job"); return new Promise((r) => setTimeout(() => { if (o.moveDuringJob) ep.current++; rec.order.push("landed"); r(o.landed === false ? { ok: false, results: [{ k: "2026-11-23", outcome: "pending" }] } : { ok: true, results: [] }); }, 0)); },
+        publishNotLanded: (pr, what) => rec.toasts.push("NOT LANDED: " + what), publishingRef: { current: !!o.busy }, setPublishing: () => {},
+        snapshots: { capture: async () => { rec.order.push("snapshot"); return { ok: !o.snapFail }; } }, showToast: (m) => rec.toasts.push(String(m)), schedEditable: () => !o.gated,
+        schedSyncRef: { current: { changedSince: () => [], knownSchedule: () => ({ "2026-11-09": {} }) } }, previewEpochRef: { current: 3 },
+        setPreviewSchedule: () => {}, setShowPreview: () => {}, setCalMonth: () => {}, setCalYear: () => {}, setView: (v) => rec.order.push("view " + v), setSaveStatus: () => {},
+        setTimeout: (fn, ms) => { rec.timers.push([ms, fn]); return 0; },
+        document: { querySelector: (sel) => { rec.asked.push(sel); return o.noEl ? null : { scrollIntoView: (how) => rec.scrolled.push(how) }; } },
+        numWeeks: 2, MO: ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"], startMonth: 10, startYear: 2026,
+        cancelSearch: () => {}, publishSearchRunning: () => !!o.pubSearch, sessionEpochRef: ep,
+        setJustPublished: (v) => { rec.jp.push(v); rec.order.push("banner"); },
+        addNotification: (t) => rec.sends.push("notice " + t), sendEmailNotif: (t) => rec.sends.push("e-mail " + t), sendPushNotif: (t) => rec.sends.push("push " + t), notifyPublished: () => rec.sends.push("notifyPublished"),
+      })();
+      rec.timers.forEach(([, fn]) => fn()); rec.timers = rec.timers.map(([ms]) => ms);
+    } catch (ex) { rec.threw = String(ex).slice(0, 160); }
+    return rec;
+  };
+  const TWO = [{ kind: "bend", text: "a" }, { kind: "crowded", text: "b" }];
+  const cd2 = { clean: await accept(), reviewed: await accept({ items: TWO, ack: true }), notLanded: await accept({ landed: false }),
+    unticked: await accept({ items: TWO, ack: false }), snapFail: await accept({ snapFail: true }), gated: await accept({ gated: true }), busy: await accept({ busy: true }),
+    pubSearch: await accept({ pubSearch: true }), moved: await accept({ moveDuringJob: true }), old: await accept({}, apMkOld), offTab: await accept({ noEl: true }) };
+  check("CD2 the REAL acceptPreview: a publish that lands raises the banner ONCE — { label: the published period (periodLabel), ep: the tap's session } — after the job landed, on the Calendar it switched to; the usual path (Needs your OK reviewed and ticked) the same",
+    !cd2.clean.threw && J(cd2.clean.jp) === J([{ label: P1, ep: 4 }]) && cd2.clean.order.join() === "snapshot,publishWeeks,job,view calendar,landed,banner"
+      && !cd2.reviewed.threw && J(cd2.reviewed.jp) === J([{ label: P1, ep: 4 }]), J({ clean: cd2.clean, reviewed: cd2.reviewed }));
+  check("CD2 no banner when nothing was published for everyone to hear of: the job didn't land (it says so), the box unticked, no backup snapshot, the edit gate, a publish or a Generate & Publish search already running, or a session change while the job ran",
+    ["notLanded", "unticked", "snapFail", "gated", "busy", "pubSearch", "moved"].every((k) => !cd2[k].threw && cd2[k].jp.length === 0) && /NOT LANDED: Published on this screen/.test(cd2.notLanded.toasts.join(" ")),
+    J(Object.fromEntries(Object.entries(cd2).map(([k, r]) => [k, r.threw || r.jp]))));
+  check("CD2 Accept & Publish itself never sends — no notice, push, e-mail or notifyPublished, in any run (nothing is sent by itself)",
+    Object.values(cd2).every((r) => !r.threw && r.sends.length === 0), J(Object.fromEntries(Object.entries(cd2).map(([k, r]) => [k, r.threw || r.sends]))));
+  check("CD2 with an OLD cached helpers.js (no periodLabel — OLD_SB) the banner names the plain weeks, \"weeks of 2026-11-16 – 2026-11-23\", never a throw",
+    !cd2.old.threw && J(cd2.old.jp) === J([{ label: "weeks of 2026-11-16 – 2026-11-23", ep: 4 }]), J(cd2.old));
+  // the rendered check found the banner ~500 px ABOVE a 375 px phone's screen: ✓ Accept & Publish sits far down the
+  // Generate tab and the Calendar opens at that scroll — so the banner is brought into view (the Today button's idiom)
+  check("CD2 the banner is brought into view: 60 ms after it is raised, [data-just-published=\"1\"] is scrolled into view (smooth, nearest); on another tab (no banner in the page) nothing, no throw; nothing landed → no scroll",
+    J(cd2.clean.asked) === J(['[data-just-published="1"]']) && J(cd2.clean.scrolled) === J([{ behavior: "smooth", block: "nearest" }]) && cd2.clean.timers.includes(60)
+      && !cd2.offTab.threw && cd2.offTab.asked.length === 1 && cd2.offTab.scrolled.length === 0 && J(cd2.offTab.jp) === J([{ label: P1, ep: 4 }])
+      && ["notLanded", "moved", "unticked", "snapFail"].every((k) => cd2[k].asked.length === 0 && cd2[k].scrolled.length === 0),
+    J({ clean: [cd2.clean.timers, cd2.clean.asked, cd2.clean.scrolled], offTab: [cd2.offTab.asked, cd2.offTab.scrolled, cd2.offTab.threw], notLanded: cd2.notLanded.asked }));
+
+  // CD3 — the REAL notifyJustPublished (📣 Notify everyone) over the REAL notifyPublished
+  const njBody = afterCD("  const notifyJustPublished = async () => {", "\n  };\n");
+  const njMk = fnCD("justPublished, notifiedRef, setJustPublished, notifyPublished, sessionEpochRef, showToast", njBody === null ? null : "async () => {" + njBody + "\n  }");
+  // one component: its session's senders (world), the ref that outlives renders, the banner's setter and the toasts in one log
+  const comp = (o = {}) => {
+    const log = [], w = world(o, log), notified = { current: null };
+    const tap = (jp) => njMk({ justPublished: jp, notifiedRef: notified, setJustPublished: (v) => log.push("banner " + J(v)), notifyPublished: w.np, sessionEpochRef: w.ep,
+      showToast: (m, t) => log.push("toast " + t + ": " + m) })();
+    return { log, w, tap };
+  };
+  const JP = { label: P1, ep: 0 }, JP2 = { label: P2, ep: 0 };
+  const TOAST = "toast success: Everyone has been notified.";
+  let cd3 = null;
+  if (njMk && npMk) {
+    try {
+      const one = comp(); await one.tap(JP); const oneLog = one.log.slice(); await one.tap(JP); const lateLog = one.log.slice(); await one.tap(JP2);
+      const g = gate(), dbl = comp({ hold: g.p }); const t1 = dbl.tap(JP), t2 = dbl.tap(JP); g.open(); await Promise.all([t1, t2]);
+      const none = comp(); await none.tap(null);
+      const unsaved = comp({ saved: false }); await unsaved.tap(JP);
+      const during = comp({ moveDuringNotice: true }); await during.tap(JP);
+      const stale = comp({ ep: 1 }); await stale.tap(JP);
+      cd3 = { one: oneLog, late: lateLog, next: one.log, dbl: dbl.log, none: none.log, unsaved: unsaved.log, during: during.log, stale: stale.log };
+    } catch (ex) { cd3 = { threw: String(ex).slice(0, 160) }; }
+  }
+  check("CD3 the REAL 📣 Notify everyone, executed: the banner goes on the tap (first), then ONE notice and ONE e-mail for the published period, then \"Everyone has been notified.\"",
+    !!cd3 && !cd3.threw && J(cd3.one) === J(["banner null", NOTICE(0), EMAIL(P1, 0), TOAST]), J(cd3));
+  check("CD3 one send per publish: a double tap (the second while the first is still out) sends once; a late second tap on the same publish sends nothing more; the NEXT publish's tap sends again",
+    !!cd3 && !cd3.threw && notices(cd3.dbl) === 1 && emails(cd3.dbl) === 1 && cd3.dbl.filter((x) => x === TOAST).length === 1
+      && J(cd3.late) === J(cd3.one) && J(cd3.next) === J(cd3.one.concat(["banner null", NOTICE(0), EMAIL(P2, 0), TOAST])), J(cd3));
+  check("CD3 nothing to send (no banner) → nothing at all; the notice not saved → no \"Everyone has been notified.\" (addNotification says what failed)",
+    !!cd3 && !cd3.threw && cd3.none.length === 0 && J(cd3.unsaved) === J(["banner null", NOTICE(0), EMAIL(P1, 0)]), J(cd3));
+  check("CD3 the session moving during the send → no e-mail and nothing said; a tap from before a session change (stale) → the banner closes, nothing sent, nothing said",
+    !!cd3 && !cd3.threw && J(cd3.during) === J(["banner null", NOTICE(0)]) && J(cd3.stale) === J(["banner null"]), J(cd3));
+
+  // CD4 — Generate & Publish, through the one sender
+  const dgnBody = afterCD("  const doGenerateAndNotify = async () => {", "\n  };\n");
+  const dgnMk = fnCD("sessionEpochRef, doGenerate, periodText, notifyPublished", dgnBody === null ? null : "async () => {" + dgnBody + "\n  }");
+  const PT = "Nov 16, 2026 – Feb 21, 2027";
+  const gp = async (result, move) => {
+    const w = world();
+    try { await dgnMk({ sessionEpochRef: w.ep, periodText: PT, notifyPublished: w.np, doGenerate: async () => { if (move) w.ep.current++; return result; } })(); } catch (ex) { return ["threw " + String(ex).slice(0, 120)]; }
+    return w.log;
+  };
+  const cd4 = dgnMk && npMk ? { published: await gp("published"), moved: await gp("published", true), review: await gp("review"), refused: await gp("refused"), busy: await gp("busy"), notPub: await gp("not-published"), cancelled: await gp("cancelled") } : null;
+  check("CD4 the REAL doGenerateAndNotify through the REAL notifyPublished: published → exactly one notice and one e-mail with the Generate period, as before; sent to the preview, refused, busy, not landed, cancelled, or the session gone meanwhile → nothing",
+    !!cd4 && J(cd4.published) === J([NOTICE(0), EMAIL(PT, 0)]) && ["moved", "review", "refused", "busy", "notPub", "cancelled"].every((k) => cd4[k].length === 0), J(cd4));
+  check("CD4 the two sends exist ONCE in the app — in notifyPublished — and both publish paths reach them only through it: doGenerateAndNotify calls it once, the banner's tap once, acceptPreview never",
+    count('addNotification("schedule_published",') === 1 && count('sendEmailNotif("schedule_published", { period }, null, ep);') === 1
+      && !!npBody && npBody.includes('addNotification("schedule_published",') && npBody.includes('sendEmailNotif("schedule_published", { period }, null, ep);')
+      && !!dgnBody && (dgnBody.match(/notifyPublished\(/g) || []).length === 1 && !/addNotification\(|sendEmailNotif\(/.test(dgnBody)
+      && !!njBody && (njBody.match(/notifyPublished\(/g) || []).length === 1 && !!apBody && !/notifyPublished\(|addNotification\(|sendEmailNotif\(|sendPushNotif\(/.test(apBody)
+      && count("notifyPublished(") === 2, J({ an: count('addNotification("schedule_published",'), np: count("notifyPublished(") }));
+
+  // CD5 — the REAL session boundary between the publish and the tap
+  const sbBody = afterCD("  const sessionBoundary = ", "\n  };\n");
+  const sbMk = fnCD("searchRef, setSearching, setSearchStats, setPreviewSchedule, setShowPreview, schedSyncRef, setScheduleHistory, setEditWeekModal, setReauthNeeded, setStaleTokenWarn, setIsScheduler, setupReadRef, lastSyncRef, sessionEpochRef, forgetDayOffs, setJustPublished", sbBody === null ? null : sbBody + "\n  }");
+  let cd5 = null;
+  if (sbMk && njMk && npMk && apMk) {
+    try {
+      const c = comp(); c.w.ep.current = 4;
+      const pub = await accept({ epRef: c.w.ep }); const jp = pub.jp[0];               // the publish lands in session 4: the banner
+      const bl = [], set = (n) => (v) => bl.push(n + ":" + J(v === undefined ? null : v));
+      sbMk({ searchRef: { current: null }, setSearching: set("setSearching"), setSearchStats: set("setSearchStats"), setPreviewSchedule: set("setPreviewSchedule"), setShowPreview: set("setShowPreview"),
+        schedSyncRef: { current: { reset: () => {} } }, setScheduleHistory: set("setScheduleHistory"), setEditWeekModal: set("setEditWeekModal"), setReauthNeeded: set("setReauthNeeded"),
+        setStaleTokenWarn: set("setStaleTokenWarn"), setIsScheduler: set("setIsScheduler"), setupReadRef: { current: true }, lastSyncRef: { current: "x" }, sessionEpochRef: c.w.ep,
+        forgetDayOffs: () => {}, setJustPublished: set("setJustPublished") })();          // a sign-out
+      await c.tap(jp);                                                                   // the old screen's tap, its closure still holding the banner
+      cd5 = { jp, boundary: bl, epoch: c.w.ep.current, tap: c.log };
+    } catch (ex) { cd5 = { threw: String(ex).slice(0, 160) }; }
+  }
+  check("CD5 the REAL sessionBoundary clears the banner (setJustPublished(null)) as it moves the session on; the old screen's 📣 tap after it — publish in session 4, sign-out, tap — sends nothing and says nothing",
+    !!cd5 && !cd5.threw && J(cd5.jp) === J({ label: P1, ep: 4 }) && cd5.boundary.includes("setJustPublished:null") && cd5.epoch === 5 && J(cd5.tap) === J(["banner null"]), J(cd5));
+
+  // CD6 — the banner's markup (JSX can't run here — no Babel in CI — so its gate, colours and handlers are run, the rest pinned)
+  const B_OPEN = "\n          {isScheduler && justPublished && (\n", bAt = nsrcCD.indexOf(B_OPEN), bEnd = bAt < 0 ? -1 : nsrcCD.indexOf("\n          )}", bAt + B_OPEN.length);
+  const ban = bAt < 0 || bEnd < 0 || nsrcCD.indexOf(B_OPEN, bAt + 1) !== -1 ? "" : nsrcCD.slice(bAt + B_OPEN.length, bEnd);
+  const gateCD = (nsrcCD.match(/\n {10}\{([^\n{}]*\bjustPublished\b[^\n{}]*) && \(\n {12}<div role="status" aria-live="polite" data-just-published="1"/) || [])[1] || null;
+  let shows = null;
+  try { shows = gateCD ? vm.runInContext(`(function (isScheduler, justPublished) { return !!(${gateCD}); })`, sandbox) : null; } catch (ex) { shows = null; }
+  check("CD6 scheduler-only, evaluated: the banner's own gate shows it to a scheduler with a publish to announce, never to a member (nor with nothing published)",
+    !!shows && shows(true, JP) === true && shows(false, JP) === false && shows(true, null) === false && shows(false, null) === false, String(gateCD));
+  const iCalCD = nsrcCD.indexOf('{view==="calendar"&&<>'), iTodayCD = nsrcCD.indexOf("{/* ─── On Call Today Banner ─── */}");
+  check("CD6 it is the FIRST thing in the Calendar view (only its comment before it), above On Call Today, in the page's flow — not fixed, so the toasts (fixed at the bottom) never sit on it",
+    !!ban && iCalCD >= 0 && /^\{view==="calendar"&&<>\n {10}\{\/\*[^]*?\*\/\}$/.test(nsrcCD.slice(iCalCD, bAt)) && bAt < iTodayCD && !/position:/.test(ban.split("\n")[0]),
+    J({ iCalCD, bAt, iTodayCD, between: iCalCD >= 0 && bAt > iCalCD ? nsrcCD.slice(iCalCD, bAt).length : null }));
+  const lum = (hex) => { const n = parseInt(hex.slice(1), 16); const c = [n >> 16, (n >> 8) & 255, n & 255].map((v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); }); return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]; };
+  const ratio = (a, b) => { const x = lum(a), y = lum(b); return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05); };
+  const bg = ban.match(/background:dk\?"(#[0-9a-f]{6})":"(#[0-9a-f]{6})"/), fg = ban.match(/\bcolor:dk\?"(#[0-9a-f]{6})":"(#[0-9a-f]{6})"/);
+  const cr = bg && fg ? { dark: Math.round(ratio(fg[1], bg[1]) * 10) / 10, light: Math.round(ratio(fg[2], bg[2]) * 10) / 10 } : null;
+  check("CD6 its exact words, \"✓ Published <period>. Nobody has been notified yet.\", read at 4.5:1 or more in light and in dark (its own colours by theme, computed); the line wraps (minWidth 0, overflowWrap anywhere)",
+    ban.includes("✓ Published {justPublished.label}. Nobody has been notified yet.") && !!cr && cr.dark >= 4.5 && cr.light >= 4.5 && ban.includes('minWidth:0,fontSize:14') && ban.includes('overflowWrap:"anywhere"'), J(cr));
+  const btns = ban.match(/<button [^\n]*<\/button>/g) || [];
+  check("CD6 two buttons, both ≥44px tall and in a row that wraps at 320px: 📣 Notify everyone (notifyJustPublished) and Not now (only closes it)",
+    btns.length === 2 && btns.every((b) => /minHeight:44\b/.test(b)) && (ban.match(/flexWrap:"wrap"/g) || []).length === 2
+      && btns[0].startsWith("<button onClick={notifyJustPublished} ") && btns[0].endsWith(">📣 Notify everyone</button>")
+      && btns[1].startsWith("<button onClick={()=>setJustPublished(null)} ") && btns[1].endsWith(">Not now</button>") && count("onClick={notifyJustPublished}") === 1, J(btns));
+  const notNow = (ban.match(/<button onClick=\{(\(\)=>[^}]*)\}/) || [])[1] || null;
+  let nn = null;
+  try { if (notNow) { const r = { set: [], sends: 0 }; vm.runInContext(`(function (env) { const { setJustPublished, notifyPublished, addNotification, sendEmailNotif } = env; return (${notNow}); })`, sandbox)({ setJustPublished: (v) => r.set.push(v), notifyPublished: () => { r.sends++; }, addNotification: () => { r.sends++; }, sendEmailNotif: () => { r.sends++; } })(); nn = r; } } catch (ex) { nn = { threw: String(ex).slice(0, 120) }; }
+  check("CD6 Not now, executed: closes the banner (setJustPublished(null)) and sends nothing; the banner has no write path of its own",
+    !!nn && !nn.threw && J(nn.set) === J([null]) && nn.sends === 0 && !!ban && !/fetch\(|db\.|supabase|localStorage|addNotification|sendEmailNotif|sendPushNotif|notifyPublished\(|logAudit/.test(ban), J(nn));
+  // the four places that set it: raised only where a publish lands; closed by the tap, Not now and the session boundary
+  const setSites = []; for (let i = nsrcCD.indexOf("setJustPublished("); i >= 0; i = nsrcCD.indexOf("setJustPublished(", i + 1)) setSites.push(nsrcCD.slice(i, i + 32));
+  check("CD6 only four places set it: raised ONCE (acceptPreview, where the job landed), closed by the 📣 tap, Not now and the session boundary",
+    count("setJustPublished(") === 4 && count("setJustPublished({ label: pubPeriod, ep });") === 1 && count("setJustPublished(null)") === 3
+      && !!apBody && apBody.includes("setJustPublished({ label: pubPeriod, ep });") && !!njBody && njBody.includes("setJustPublished(null)") && !!sbBody && sbBody.includes("setJustPublished(null)"), J(setSites));
+}
+
 // ─── AE. Generator: "Needs your OK" before publish + Setup holiday text (2026-10-11) ───
 // Owner decisions 2026-10-11: time off is a hard stop, card eves are night
 // shifts, Christmas week is FAK's, and a squeezed week takes the mildest bend.
@@ -8612,7 +8890,9 @@ console.log("\nAV. Pending requests: a collapsed group shows a coverage-floor br
   const A0 = "  const acceptPreview = async () => {";
   const i = nsrcAE.indexOf(A0), e = i < 0 ? -1 : nsrcAE.indexOf("\n  };\n", i);
   const body = i < 0 || e < 0 ? null : "async () => {" + nsrcAE.slice(i + A0.length, e) + "\n  }";
-  const ENV = "previewSchedule, previewSchedRef, previewNeedsOk, previewAck, previewOrigin, publishWeeks, runPublish, publishNotLanded, publishingRef, setPublishing, snapshots, showToast, schedEditable, schedSyncRef, previewEpochRef, setPreviewSchedule, setShowPreview, setCalMonth, setCalYear, setView, setSaveStatus, setTimeout, numWeeks, MO, startMonth, startYear, cancelSearch, publishSearchRunning, sessionEpochRef";
+  // (+ setJustPublished, on purpose — 2026-10-20: a publish that lands raises the Calendar's "Nobody has been notified
+  // yet" banner; a stub here, CD runs what it is handed)
+  const ENV = "previewSchedule, previewSchedRef, previewNeedsOk, previewAck, previewOrigin, publishWeeks, runPublish, publishNotLanded, publishingRef, setPublishing, snapshots, showToast, schedEditable, schedSyncRef, previewEpochRef, setPreviewSchedule, setShowPreview, setCalMonth, setCalYear, setView, setSaveStatus, setTimeout, numWeeks, MO, startMonth, startYear, cancelSearch, publishSearchRunning, sessionEpochRef, setJustPublished";
   let mk = null; try { mk = body ? vm.runInContext(`(function (env) { const { ${ENV} } = env; return (${body}); })`, sandbox) : null; } catch (ex) { mk = null; }
   // o: busy (a publish in progress) · pubSearch (a Generate & Publish search running) · moved (a week of the preview adopted
   // since it was made) · movedAfter (…adopted during the snapshot's await) · gated (the edit gate refuses) · snapFail · landed:false
@@ -8635,6 +8915,7 @@ console.log("\nAV. Pending requests: a collapsed group shows a coverage-floor br
       setView: () => {}, setSaveStatus: (x) => rec.status.push(x), setTimeout: () => {},
       numWeeks: 14, MO: ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"], startMonth: 10, startYear: 2026,
       cancelSearch: () => { rec.cancelled++; }, publishSearchRunning: () => !!o.pubSearch,
+      setJustPublished: () => {},
     })();
     return rec;
   };
@@ -12991,13 +13272,13 @@ await (async () => {
   // ── the component's re-auth, for real ──
   const sbSrc = after("  const sessionBoundary = ", "\n  };\n"), soSrc = after("  const handleSignOut = ", "\n  };\n"),
     rlSrc = after("  const reauthLanded = ", "\n  };\n"), raSrc = after("  const reauthForSync = ", "\n  };\n"), smSrc = after("  const submitReauth = ", "\n  };\n");
-  const sbFn = sbSrc && fnR("searchRef, setSearching, setSearchStats, setPreviewSchedule, setShowPreview, schedSyncRef, setScheduleHistory, setEditWeekModal, setReauthNeeded, setStaleTokenWarn, setIsScheduler, setupReadRef, lastSyncRef, sessionEpochRef, forgetDayOffs", sbSrc + "\n  }"); // (23/n: + the day-off forget — review r6 fix-3)
+  const sbFn = sbSrc && fnR("searchRef, setSearching, setSearchStats, setPreviewSchedule, setShowPreview, schedSyncRef, setScheduleHistory, setEditWeekModal, setReauthNeeded, setStaleTokenWarn, setIsScheduler, setupReadRef, lastSyncRef, sessionEpochRef, forgetDayOffs, setJustPublished", sbSrc + "\n  }"); // (23/n: + the day-off forget — review r6 fix-3; 2026-10-20: + the Calendar's "Published" banner, cleared — sync-guards CD)
   const soFn = soSrc && fnR("schedSyncRef, confirm, sessionBoundary, auth, biometric, setAuthUser, setUserProfile, setNeedsProfile, setMySurgeon, setBiometricEnrolled, setBiometricPending", soSrc + "\n  }");
   const rlFn = rlSrc && fnR("schedSyncRef, authUser, setReauthNeeded, setStaleTokenWarn, showToast, sessionBoundary, biometric, setBiometricEnrolled, setBiometricPending, setAuthUser, dbAuth, setUserProfile, setMySurgeon, setNeedsProfile, setIsScheduler, setReloadTrigger, handleSignOut, auth, pendingSaveRef, setSetupSaveNudge", rlSrc + "\n  }");
   const raFn = raSrc && fnR("reauthBusy, setReauthBusy, auth, authUser, reauthLanded, setReauthPassword, setReauthError, setReauthSheet", raSrc + "\n  }");
   const smFn = smSrc && fnR("reauthBusy, setReauthBusy, authUser, reauthPassword, setReauthError, auth, setReauthSheet, setReauthPassword, reauthLanded", smSrc + "\n  }");
   if (!sbFn || !soFn || !rlFn || !raFn || !smFn) { check("SE-R the re-auth wiring is extractable (sessionBoundary, handleSignOut, reauthLanded, reauthForSync, submitReauth)", false, JSON.stringify({ sbFn: !!sbFn, soFn: !!soFn, rlFn: !!rlFn, raFn: !!raFn, smFn: !!smFn })); return; }
-  const SETTERS = ["setSearching", "setSearchStats", "setPreviewSchedule", "setShowPreview", "setScheduleHistory", "setEditWeekModal", "setReauthNeeded", "setStaleTokenWarn",
+  const SETTERS = ["setSearching", "setSearchStats", "setPreviewSchedule", "setShowPreview", "setJustPublished", "setScheduleHistory", "setEditWeekModal", "setReauthNeeded", "setStaleTokenWarn",
     "setAuthUser", "setUserProfile", "setNeedsProfile", "setMySurgeon", "setBiometricEnrolled", "setBiometricPending", "setIsScheduler", "setReloadTrigger",
     "setReauthBusy", "setReauthPassword", "setReauthError", "setReauthSheet", "setSetupSaveNudge"];
   // One component instance: every setter and call it makes, in order, in w.log.
@@ -13040,8 +13321,9 @@ await (async () => {
   // The session boundary on its own, then sign-out around it.
   const B = world({ engine: stubEng() }); B.env.sessionBoundary();
   const B0 = B.log.slice();
-  check("SE-R the session boundary, executed: search / preview dropped, the engine reset (the mirror too), the undo history and the week editor cleared, both banners down; then (17/n P4) the scheduler flag cleared, the setup autosave disarmed and the blob row forgotten — in that order",
-    JSON.stringify(B0) === JSON.stringify(["setSearching:null", "setSearchStats:null", "setPreviewSchedule:null", "setShowPreview:false", "reset", "setScheduleHistory:[]", "setEditWeekModal:null", "setReauthNeeded:false", "setStaleTokenWarn:false",
+  // (2026-10-20, on purpose: the Calendar's "Published — nobody notified yet" banner goes with the preview — setJustPublished:null)
+  check("SE-R the session boundary, executed: search / preview dropped (and the Calendar's \"Published\" banner — 2026-10-20), the engine reset (the mirror too), the undo history and the week editor cleared, both banners down; then (17/n P4) the scheduler flag cleared, the setup autosave disarmed and the blob row forgotten — in that order",
+    JSON.stringify(B0) === JSON.stringify(["setSearching:null", "setSearchStats:null", "setPreviewSchedule:null", "setShowPreview:false", "setJustPublished:null", "reset", "setScheduleHistory:[]", "setEditWeekModal:null", "setReauthNeeded:false", "setStaleTokenWarn:false",
       "setIsScheduler:false", "setupReadRef:false", "lastSyncRef:null"]) && B.env.searchRef.current === null,
     JSON.stringify(B0));
   const O1 = world({ engine: stubEng([]) }); await O1.signOut();
