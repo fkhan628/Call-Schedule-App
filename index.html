@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.10.20c";
+    var APP_VERSION = "2026.10.20d";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -252,7 +252,7 @@ function CallSchedule() {
       const r = el.getBoundingClientRect();
       if (r.height > 0) lift = Math.max(lift, Math.ceil(vh - r.top));
     });
-    return vh > 120 ? Math.min(lift, vh - 120) : lift;
+    return lift;
   };
   const openCalDay = (ds, el) => {
     calDayOpenerRef.current = el || null;
@@ -4508,6 +4508,7 @@ function CallSchedule() {
       };
     }
   };
+  const toastTight = toastLift > 0 && (window.innerHeight || 0) - toastLift - 18 < 72;
   const toastsShown = toasts.length > 0;
   useEffect(() => {
     if (!toastsShown) return;
@@ -5880,6 +5881,38 @@ function CallSchedule() {
   useEffect(() => {
     setEditWeekPick("");
   }, [calMonth, calYear]);
+  const editWeekOpen = !!editWeekModal;
+  const [editWeekLift, setEditWeekLift] = useState(0);
+  const editWeekFootRef = useRef(null);
+  React.useLayoutEffect(() => {
+    if (!editWeekOpen) return;
+    const remeasure = () => setEditWeekLift(bannerLift());
+    remeasure();
+    window.addEventListener("resize", remeasure);
+    const el = updateBannerRef.current;
+    const ro = el && typeof ResizeObserver === "function" ? new ResizeObserver(remeasure) : null;
+    if (ro) ro.observe(el);
+    return () => {
+      window.removeEventListener("resize", remeasure);
+      if (ro) ro.disconnect();
+    };
+  }, [editWeekOpen, updateAvailable]);
+  useEffect(() => {
+    if (!editWeekOpen) return;
+    const floorMoved = () => {
+      try {
+        window.dispatchEvent(new Event("toastfloorchange"));
+      } catch (e) {}
+    };
+    floorMoved();
+    const el = editWeekFootRef.current;
+    const ro = el && typeof ResizeObserver === "function" ? new ResizeObserver(floorMoved) : null;
+    if (ro) ro.observe(el);
+    return () => {
+      if (ro) ro.disconnect();
+      floorMoved();
+    };
+  }, [editWeekOpen, editWeekLift]);
   const findSwapSuggestions = useCallback((mondayStr, shift, currentSurgeonId) => {
     var _sMap$currentSurgeonI;
     if (!schedule[mondayStr]) return;
@@ -7720,16 +7753,28 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       position: "fixed",
       left: 0,
       right: 0,
+      top: "calc(env(safe-area-inset-top, 0px) + 8px)",
       bottom: toastLift ? toastLift + 10 : "calc(env(safe-area-inset-bottom, 0px) + 24px)",
+      minHeight: 72,
       zIndex: 9999,
       display: "flex",
-      flexDirection: "column",
-      alignItems: "center",
+      flexDirection: "column-reverse",
+      flexWrap: "wrap",
+      alignContent: "flex-start",
+      justifyContent: toastTight ? "flex-end" : "flex-start",
       gap: 6,
+      overflowX: "clip",
       pointerEvents: "none"
     }
   }, toasts.filter(t => !(t.tone === "error" && authNetErr && authMode === "login" && !authUser)).map(t => React.createElement("div", {
     key: t.id,
+    style: {
+      width: "100%",
+      display: "flex",
+      justifyContent: "center",
+      order: -t.id
+    }
+  }, React.createElement("div", {
     onClick: () => dismissToast(t.id),
     style: _objectSpread({
       pointerEvents: "auto",
@@ -7749,7 +7794,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       pointerEvents: "none",
       cursor: "default"
     } : null)
-  }, typeof toastText === "function" ? toastText(t) : `${t.tone === "success" ? "✓ " : t.tone === "error" ? "⚠ " : ""}${t.msg}`))), !isPublicMode && authUser && (schedSync.authNeeded || reauthNeeded) && React.createElement("div", {
+  }, typeof toastText === "function" ? toastText(t) : `${t.tone === "success" ? "✓ " : t.tone === "error" ? "⚠ " : ""}${t.msg}`)))), !isPublicMode && authUser && (schedSync.authNeeded || reauthNeeded) && React.createElement("div", {
     role: "alert",
     style: {
       position: "fixed",
@@ -12921,6 +12966,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       borderRadius: 6,
       border: "1px solid #d8dee6"
     };
+    const weekInk = dk ? dkSubtext : "#5a6a78";
     const xStyleOf = x => x.severity === "error" ? _objectSpread(_objectSpread({}, xStyle), {}, {
       color: lineInk("error")
     }) : xStyle;
@@ -13105,7 +13151,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       style: {
         fontFamily: mono,
         fontSize: 11,
-        color: dkSubtext
+        color: weekInk
       }
     }, c.week), React.createElement("span", {
       style: {
@@ -13137,7 +13183,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       style: {
         fontFamily: mono,
         fontSize: 11,
-        color: dkSubtext
+        color: weekInk
       }
     }, c.week), React.createElement("span", {
       style: {
@@ -14578,13 +14624,16 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       onClick: () => setEditWeekModal(null),
       style: {
         position: "fixed",
-        inset: 0,
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: editWeekLift,
         background: "rgba(0,0,0,0.55)",
         zIndex: 9000,
         display: "flex",
         alignItems: "flex-start",
         justifyContent: "center",
-        padding: "20px 10px",
+        padding: "20px 10px 0",
         overflowY: "auto"
       }
     }, React.createElement("div", {
@@ -14896,11 +14945,20 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         padding: "6px 8px"
       })
     })), React.createElement("div", {
+      ref: editWeekFootRef,
+      "data-toast-floor": "1",
       style: {
+        position: "sticky",
+        bottom: 0,
         display: "flex",
         gap: 8,
         justifyContent: "flex-end",
-        flexWrap: "wrap"
+        flexWrap: "wrap",
+        margin: "0 -20px -20px",
+        padding: "12px 20px 20px",
+        background: dk ? "#1a1f2a" : "#fff",
+        borderTop: `1px solid ${dk ? "#2a3a5e" : "#e8ecf0"}`,
+        borderRadius: "0 0 10px 10px"
       }
     }, React.createElement("button", {
       onClick: () => setEditWeekModal(null),
@@ -23347,6 +23405,8 @@ function DateRangeField({
       overscrollBehavior: "contain",
       WebkitOverflowScrolling: "touch",
       boxSizing: "border-box",
+      display: "flex",
+      flexDirection: "column",
       background: C.sheet,
       borderRadius: "14px 14px 0 0",
       boxShadow: "0 -6px 24px rgba(0,0,0,0.25)",
@@ -23359,7 +23419,8 @@ function DateRangeField({
     style: {
       display: "flex",
       alignItems: "center",
-      gap: 8
+      gap: 8,
+      flexShrink: 0
     }
   }, React.createElement("div", {
     style: {
@@ -23405,7 +23466,8 @@ function DateRangeField({
       display: "flex",
       alignItems: "center",
       justifyContent: "space-between",
-      marginTop: 4
+      marginTop: 4,
+      flexShrink: 0
     }
   }, React.createElement("button", {
     type: "button",
@@ -23439,7 +23501,8 @@ function DateRangeField({
     style: {
       display: "grid",
       gridTemplateColumns: "repeat(7,minmax(0,1fr))",
-      marginTop: 2
+      marginTop: 2,
+      flexShrink: 0
     }
   }, DAY_HDR.map(d => React.createElement("div", {
     key: d,
@@ -23459,8 +23522,10 @@ function DateRangeField({
     style: {
       display: "grid",
       gridTemplateColumns: "repeat(7,minmax(0,1fr))",
-      gridTemplateRows: "repeat(6, 44px)",
-      rowGap: 2
+      gridTemplateRows: "repeat(6, minmax(38px, 44px))",
+      rowGap: 2,
+      flexShrink: 1,
+      minHeight: 238
     }
   }, cells.map((ds, i) => {
     if (!ds) return React.createElement("span", {
@@ -23484,7 +23549,7 @@ function DateRangeField({
       "aria-current": isToday ? "date" : undefined,
       onClick: () => tap(ds),
       style: {
-        height: 44,
+        height: "100%",
         width: "100%",
         padding: 0,
         margin: 0,
@@ -23532,7 +23597,8 @@ function DateRangeField({
       marginTop: 4,
       paddingTop: 8,
       paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 16px)",
-      background: C.sheet
+      background: C.sheet,
+      flexShrink: 0
     }
   }, React.createElement("button", {
     type: "button",
