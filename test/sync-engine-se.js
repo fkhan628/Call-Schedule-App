@@ -4973,7 +4973,9 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
     finish: sess(fnX("pendingLocks, nameOf, slotLabel, showToast, setPreviewSchedule, setPreviewOrigin, setShowPreview, genInputsSig, listScheduleBends, surgeons, mondays, buildGenAvailability, buildSilvisPrimary, vacations, holidayAssignments, buildPrevWeekSeed, publishingRef, setPublishing, setSaveStatus, snapshots, genCommitRef, previewEpochRef, schedEditable, schedSyncRef, sessionEpochRef",
       decl("finishGenerate", "\n  };\n"))),
     // (20/n) Generate & Publish's notice and e-mail (doGenerateAndNotify), and the setup's signature (setupSig — review r3 G7)
-    notify: sess(fnX("sessionEpochRef, doGenerate, addNotification, sendEmailNotif, MO, startMonth, endMoIdx, startYear, mondays, periodLabel, periodText", decl("doGenerateAndNotify", "\n  };\n") && wrap("(() => { const notifyPublished = ", after("  const notifyPublished = ", "\n  };\n"), "\n  };\n  return " + decl("doGenerateAndNotify", "\n  };\n") + "; })()"))), // (mondays, periodLabel: the e-mail's period since sync-guards BD — UX audit 2026-10-19; periodText, the component's one guarded line for it, since the review fixes; 2026-10-20: + notifyPublished, the one sender it and Accept & Publish's banner share — sync-guards CD)
+    // (review fix 2026-10-20: notifyPublished takes down a pending Accept & Publish banner — justPublished, notifiedRef,
+    // setJustPublished; none is up in these runs, and sess() gives setJustPublished its no-op)
+    notify: sess(fnX("sessionEpochRef, doGenerate, addNotification, sendEmailNotif, MO, startMonth, endMoIdx, startYear, mondays, periodLabel, periodText, justPublished, notifiedRef, setJustPublished", decl("doGenerateAndNotify", "\n  };\n") && wrap("(() => { const notifyPublished = ", after("  const notifyPublished = ", "\n  };\n"), "\n  };\n  return " + decl("doGenerateAndNotify", "\n  };\n") + "; })()"))), // (mondays, periodLabel: the e-mail's period since sync-guards BD — UX audit 2026-10-19; periodText, the component's one guarded line for it, since the review fixes; 2026-10-20: + notifyPublished, the one sender it and Accept & Publish's banner share — sync-guards CD)
     setupSig: fnX("", after("  const setupSig = ", ";\n")),
     gen: fnX("searchRef, showToast, schedEditable, schedSyncRef, buildPrefs", decl("doGenerate", "\n  };\n")), // (only its first statements are reached here: the gates, then buildPrefs)
     // (21/n) the trade's decline, and the notice paths (addNotification, sendPushNotif, sendEmailNotif) — review r4 branch-2 / fixes-3
@@ -7433,7 +7435,9 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
       // their list and ask who may withdraw it — its proposer / requester or a scheduler; the deps list what that reads.
       // Run below as the scheduler, so each goes ahead as before.)
       delTrade: fnX("confirm, fetch, SUPABASE_URL, dbAuthHeaders, console, showToast, setTradeRequests, sessionEpochRef, tradeRequests, isScheduler, userProfile", cbody("deleteTradeRequest", "[tradeRequests, isScheduler, userProfile]")),
-      delVac: fnX("confirm, fetch, SUPABASE_URL, dbAuthHeaders, console, showToast, setVacRequests, sessionEpochRef, vacRequests, canChangeVacRequest, userProfile", cbody("deleteVacRequest", "[vacRequests, canChangeVacRequest, userProfile]")),
+      // (review fix 2026-10-20, on purpose — sync-guards CA4: a member's DELETE carries &status=eq.pending, so the
+      // delete reads isScheduler and lists it; run here as the scheduler: id-only, as before)
+      delVac: fnX("confirm, fetch, SUPABASE_URL, dbAuthHeaders, console, showToast, setVacRequests, sessionEpochRef, vacRequests, canChangeVacRequest, userProfile, isScheduler", cbody("deleteVacRequest", "[vacRequests, canChangeVacRequest, userProfile, isScheduler]")),
       clearReviewed: fnX("confirm, fetch, SUPABASE_URL, dbAuthHeaders, console, showToast, setVacRequests, sessionEpochRef", cbody("clearReviewedRequests", "[]")),
       saveApp: fnX("supabase, setSaveError, setSaveStatus, showToast, setTimeout, sessionEpochRef, console", decl("saveAppShifts", "\n  };\n")),
       paintApp: fnX("appShiftsLoaded, appShifts, APP_SHIFTS_NOT_LOADED, supabase, setAppShifts, logAudit, sessionEpochRef, dbAuthHeaders", decl("commitAppPaint", "\n  };\n")),

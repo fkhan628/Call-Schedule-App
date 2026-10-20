@@ -1296,13 +1296,25 @@ function CallSchedule() {
         }
       }
       setAuthEmail(""); setAuthPassword("");
-    } catch(e) { setAuthError(typeof authErrorText === "function" ? authErrorText(e) : (e && e.message) || "Something went wrong — please try again."); } // (UX audit 2026-10-19: plain words — offline says "No connection", not Safari's "Load failed"; an old cached helpers.js: the raw message, as before)
+    } catch(e) { setAuthError(typeof authErrorText === "function" ? authErrorText(e) : (e && e.message) || "Something went wrong — please try again."); setAuthBusy(false); return e; } // (UX audit 2026-10-19: plain words — offline says "No connection", not Safari's "Load failed"; an old cached helpers.js: the raw message, as before. 2026-10-20: what was thrown goes back to startSignIn)
     setAuthBusy(false);
   };
   // The sign-in form's Sign In / Create Account button and its Enter keys
   // (owner decision 2026-10-20): an attempt drops the "No connection — you're
   // still signed in" note first — its own outcome says what happened next.
-  const startSignIn = () => { setAuthNetErr(false); return handleAuthSubmit(); };
+  // An attempt that never reached the server (still no signal), with the
+  // session this phone held before it still the one stored, brings the note
+  // and its Retry back (review fix 2026-10-20): nothing about the sign-in
+  // changed, and without it the card looked signed out again. Any answer from
+  // the server (a wrong password, a sign-in), or no stored session, leaves it
+  // off. An old cached helpers.js (no isNoConnectionError): left off, as before.
+  const startSignIn = async () => {
+    setAuthNetErr(false);
+    const held = auth.getSession();
+    const failed = await handleAuthSubmit();
+    const kept = auth.getSession();
+    if (failed && held && kept && kept.access_token === held.access_token && typeof isNoConnectionError === "function" && isNoConnectionError(failed)) setAuthNetErr(true);
+  };
 
   const handleSetProfile = async () => {
     if (!signupPersonId || !authUser) return;
@@ -3952,13 +3964,24 @@ function CallSchedule() {
       : "Delete this request?";
     if (!confirm(ask)) return;
     const ep = sessionEpochRef.current; // (review r5 fix-1 — as deleteTradeRequest's)
+    // A member withdraws a request only while it is still PENDING (review fix 2026-10-20): their list can be a minute
+    // behind a scheduler's approval (realtime dropped; the poll runs every 60 s), and an id-only DELETE then removed the
+    // APPROVED request — its time off stayed, with no request left to ↩ Revoke. So the DELETE itself says "still
+    // pending" and answers with what it removed: nothing → nothing changed, said so, the row kept until the next read
+    // shows what it is now. A scheduler's (the Reviewed list's ✕, a correction) stays id-only.
+    const onlyPending = !isScheduler;
     try {
-      const res = await fetch(`${SUPABASE_URL}/rest/v1/vacation_requests?id=eq.${reqId}`, { method: "DELETE", headers: { ...dbAuthHeaders(), Prefer: "return=minimal" } });
+      const res = await fetch(`${SUPABASE_URL}/rest/v1/vacation_requests?id=eq.${reqId}${onlyPending ? "&status=eq.pending" : ""}`, { method: "DELETE", headers: { ...dbAuthHeaders(), Prefer: onlyPending ? "return=representation" : "return=minimal" } });
       if (sessionEpochRef.current !== ep) { if (!res.ok) console.error("Delete vacation request failed:", res.status); return; } // another session now
       if (!res.ok) { console.error("Delete vacation request failed:", res.status); showToast("Couldn't delete the request — check your connection and try again.", "error"); return; } // not deleted: the row stays
+      if (onlyPending) {
+        const removed = await res.json().catch(() => null);
+        if (sessionEpochRef.current !== ep) return; // another session now
+        if (Array.isArray(removed) && removed.length === 0) { showToast("This request was already reviewed or withdrawn — nothing was changed.", "error"); return; }
+      }
       setVacRequests(prev => prev.filter(r => r.id !== reqId));
     } catch(e) { console.error("Delete vacation request error:", e); if (sessionEpochRef.current === ep) showToast("Couldn't delete the request — check your connection and try again.", "error"); }
-  }, [vacRequests, canChangeVacRequest, userProfile]);
+  }, [vacRequests, canChangeVacRequest, userProfile, isScheduler]);
 
   // ─── Edit Vacation Request ───
   const [editingVacReq, setEditingVacReq] = useState(null); // { id, start_date, end_date, reason }
@@ -4002,12 +4025,16 @@ function CallSchedule() {
     const live = () => sessionEpochRef.current === ep;
     try {
       const updates = { start_date: editingVacReq.start_date, end_date: editingVacReq.end_date, reason: editingVacReq.reason };
-      // Fail-closed row update. Id-only precondition — edits are valid on both
-      // pending and approved rows, so no status filter; the rows-affected check
-      // still catches a request withdrawn/deleted meanwhile (and RLS zero-row
-      // no-ops). Abort BEFORE touching the time_off bucket, else the bucket
-      // carries new dates while the request records the old ones.
-      const editRes = await fetch(`${SUPABASE_URL}/rest/v1/vacation_requests?id=eq.${editingVacReq.id}`, {
+      // Fail-closed row update. A scheduler's: id-only precondition — edits are
+      // valid on both pending and approved rows, so no status filter. A
+      // member's: only while still pending (review fix 2026-10-20 — their editor
+      // is the pending list's, and their list can be a minute behind an
+      // approval: an approved request is never rewritten under its time off).
+      // The rows-affected check still catches a request withdrawn/deleted (or
+      // reviewed) meanwhile (and RLS zero-row no-ops). Abort BEFORE touching the
+      // time_off bucket, else the bucket carries new dates while the request
+      // records the old ones.
+      const editRes = await fetch(`${SUPABASE_URL}/rest/v1/vacation_requests?id=eq.${editingVacReq.id}${isScheduler ? "" : "&status=eq.pending"}`, {
         method: "PATCH",
         headers: { ...tapH, "Content-Type": "application/json", Prefer: "return=representation" },
         body: JSON.stringify(updates),
@@ -4027,7 +4054,7 @@ function CallSchedule() {
         return;
       }
       if (!Array.isArray(editRows) || editRows.length === 0) {
-        showToast("This request no longer exists — nothing was changed.", "error");
+        showToast(isScheduler ? "This request no longer exists — nothing was changed." : "This request was already reviewed or withdrawn — nothing was changed.", "error");
         return;
       }
       setVacRequests(prev => prev.map(r => r.id === editingVacReq.id ? { ...r, ...updates } : r));
@@ -4545,6 +4572,13 @@ function CallSchedule() {
   // when the notice was saved.
   const notifyPublished = async (ep, period) => {
     if (sessionEpochRef.current !== ep) return false;
+    // Whoever sends it, the group is being told now (review fix 2026-10-20):
+    // a Calendar banner still up from an earlier ✓ Accept & Publish goes, and
+    // its publish counts as sent for (notifiedRef) — after Generate & Publish
+    // had told everyone, the banner still said nobody was told, and its 📣
+    // sent the same notice, push and e-mail a second time.
+    if (justPublished) notifiedRef.current = justPublished;
+    setJustPublished(null);
     // The tap's session is passed in (review r4 fixes-3): the notice's device
     // push, sent after its insert's await, and its failure toasts are fenced
     // inside addNotification too.
@@ -5912,6 +5946,9 @@ function CallSchedule() {
     const jp = justPublished;
     if (!jp || notifiedRef.current === jp) return;
     notifiedRef.current = jp; setJustPublished(null);
+    // The banner unmounts with the focus in it (review fix 2026-10-20): VoiceOver's cursor jumped to the top of the
+    // page. It goes to the Calendar's month heading instead; the toast's live region still says what happened.
+    setTimeout(() => { const h = document.querySelector('[data-cal-month="1"]'); if (h && h.focus) h.focus(); }, 0);
     if ((await notifyPublished(jp.ep, jp.label)) && sessionEpochRef.current === jp.ep) showToast("Everyone has been notified.", "success");
   };
 
@@ -8011,9 +8048,12 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           itself lets taps through to the page (only the pills catch them). An
           "info-passthrough" toast (an info toast in every other way — its colour,
           its time, an old helpers.js) lets taps through too: one that lands where
-          the next tap is likely ("Hidden on this phone only…" over the next ✕). */}
+          the next tap is likely ("Hidden on this phone only…" over the next ✕).
+          While the sign-in card's "No connection — you're still signed in" note is up, the red toasts are held back
+          (review fix 2026-10-20): they are the startup reads failing for the same missing signal, about data no one
+          signed in can see yet, and on a 320px phone three of them covered the e-mail, the password and Sign In. */}
       <div role="status" aria-live="polite" style={{position:"fixed",left:0,right:0,bottom:toastLift ? toastLift + 10 : "calc(env(safe-area-inset-bottom, 0px) + 24px)",zIndex:9999,display:"flex",flexDirection:"column",alignItems:"center",gap:6,pointerEvents:"none"}}>
-        {toasts.map(t => (
+        {toasts.filter(t => !(t.tone === "error" && authNetErr && authMode === "login" && !authUser)).map(t => (
           <div key={t.id} onClick={()=>dismissToast(t.id)} style={{pointerEvents:"auto",maxWidth:"min(90vw, 600px)",boxSizing:"border-box",background:t.tone==="success"?"#1a7a4a":t.tone==="error"?"#a83232":"#1a2a3a",color:"#fff",borderRadius:9,padding:"10px 18px",fontSize:13,fontWeight:600,fontFamily:font,boxShadow:"0 4px 16px rgba(0,0,0,0.25)",cursor:"pointer",letterSpacing:0.2,...(t.tone==="info-passthrough" ? {pointerEvents:"none",cursor:"default"} : null)}}>
             {typeof toastText === "function" ? toastText(t) : `${t.tone==="success"?"✓ ":t.tone==="error"?"⚠ ":""}${t.msg}`}
           </div>
@@ -8144,7 +8184,9 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             </div>
             <h2 style={{fontSize:18,fontWeight:700,color:dkText,margin:"0 0 4px"}}>Welcome Back</h2>
             <p style={{fontSize:12,color:"#7a8a98",margin:"0 0 16px"}}>{biometric.getStoredUser() || "Use biometric to unlock"}</p>
-            {authError && <div style={{fontSize:12,color:"#c04040",padding:"6px 10px",background:"#fce8e8",borderRadius:6,border:"1px solid #e8c0c0",marginBottom:10,textAlign:"left"}}>{authError}</div>}
+            {/* role="alert" (review fix 2026-10-20): VoiceOver says the message as it appears — "No connection — you're still
+                signed in…" after Unlock is otherwise silent (focus drops to the page). #a83232 on its fill: 5.6:1 (#c04040 was 4.4:1). */}
+            {authError && <div role="alert" style={{fontSize:12,color:"#a83232",padding:"6px 10px",background:"#fce8e8",borderRadius:6,border:"1px solid #e8c0c0",marginBottom:10,textAlign:"left"}}>{authError}</div>}
             <button onClick={handleBiometricUnlock} disabled={authBusy}
               style={{...css.btn(true),width:"100%",padding:"13px 16px",fontSize:15,fontWeight:700,marginBottom:10,opacity:authBusy?0.6:1}}>
               {authBusy ? "Verifying…" : "🔓 Unlock with Face ID / Touch ID"}
@@ -8200,7 +8242,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                     }).catch(e=>{setAuthBusy(false);setAuthError(typeof authErrorText === "function" ? authErrorText(e) : (e && e.message) || "Something went wrong — please try again.");});
                   }}}
                   style={{...css.inp,width:"100%",padding:"10px 12px",fontSize:14}}/>
-                {authError && <div style={{fontSize:12,color:"#c04040",padding:"6px 10px",background:"#fce8e8",borderRadius:6,border:"1px solid #e8c0c0"}}>{authError}</div>}
+                {authError && <div role="alert" style={{fontSize:12,color:"#a83232",padding:"6px 10px",background:"#fce8e8",borderRadius:6,border:"1px solid #e8c0c0"}}>{authError}</div>}
                 <button onClick={()=>{
                   if(!newPassword||newPassword.length<6){setAuthError("Password must be at least 6 characters");return;}
                   if(newPassword!==newPasswordConfirm){setAuthError("Passwords don't match");return;}
@@ -8243,7 +8285,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                         }).catch(e=>{setAuthBusy(false);setAuthError(typeof authErrorText === "function" ? authErrorText(e) : (e && e.message) || "Something went wrong — please try again.");});
                       }}}
                       style={{...css.inp,width:"100%",padding:"10px 12px",fontSize:14}}/>
-                    {authError && <div style={{fontSize:12,color:"#c04040",padding:"6px 10px",background:"#fce8e8",borderRadius:6,border:"1px solid #e8c0c0"}}>{authError}</div>}
+                    {authError && <div role="alert" style={{fontSize:12,color:"#a83232",padding:"6px 10px",background:"#fce8e8",borderRadius:6,border:"1px solid #e8c0c0"}}>{authError}</div>}
                     <button onClick={()=>{
                       if(!resetEmail){setAuthError("Please enter your email");return;}
                       setAuthBusy(true);setAuthError("");
@@ -8295,7 +8337,9 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   </optgroup>
                 </select>
               )}
-              {authError && <div style={{fontSize:12,color:"#c04040",padding:"6px 10px",background:"#fce8e8",borderRadius:6,border:"1px solid #e8c0c0"}}>{authError}</div>}
+              {/* Announced as it appears, and #a83232 on its fill (5.6:1; #c04040 was 4.4:1) — review fix 2026-10-20, as the
+                  card's reset and new-password lines above and the Face ID screen's */}
+              {authError && <div role="alert" style={{fontSize:12,color:"#a83232",padding:"6px 10px",background:"#fce8e8",borderRadius:6,border:"1px solid #e8c0c0"}}>{authError}</div>}
               <button onClick={startSignIn} disabled={authBusy}
                 style={{...css.btn(true),width:"100%",padding:"11px 16px",fontSize:14,fontWeight:700,opacity:authBusy?0.6:1}}>
                 {authBusy ? "Please wait…" : authMode==="login" ? "Sign In" : "Create Account"}
@@ -10004,7 +10048,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14,flexWrap:"wrap",gap:8}}>
             <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap",minWidth:0,maxWidth:"100%"}}>
               <button aria-label="Previous month" onClick={()=>{if(calMonth===0){setCalMonth(11);setCalYear(y=>y-1);}else setCalMonth(m=>m-1);}} style={css.btn(false)}>◀</button>
-              <span style={{fontSize:15,fontWeight:700,color:"#2c5a80",minWidth:170,textAlign:"center"}}>{MO[calMonth]} {calYear}</span>
+              <span tabIndex={-1} data-cal-month="1" style={{fontSize:15,fontWeight:700,color:"#2c5a80",minWidth:170,textAlign:"center"}}>{MO[calMonth]} {calYear}</span>
               <button aria-label="Next month" onClick={()=>{if(calMonth===11){setCalMonth(0);setCalYear(y=>y+1);}else setCalMonth(m=>m+1);}} style={css.btn(false)}>▶</button>
               {/* Back to today (owner 2026-10-14): today's month, then today's cell scrolled into view (a long grid on a phone).
                   Blue while another month is showing. */}
@@ -10016,7 +10060,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             </div>
             <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
               {isScheduler && <>
-                <button onClick={()=>setView("setup")} style={css.btn(false)}>← Setup</button>
+                <button onClick={()=>setView("setup")} style={css.btn(false)}>Setup →</button>
                 <button onClick={()=>doGenerate(false)} disabled={!!searching} style={{...css.btn(true),opacity:searching?0.55:1}}>{searching === "publish" ? "🔍 Searching…" : "↻ Regenerate"}</button>
                 <button onClick={clearSchedule} style={{...css.btn(false),color:"#c04040",borderColor:"#e0a0a0"}}>✕ Clear</button>
               </>}
@@ -11837,12 +11881,19 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             // 2026-10-20: it showed "Mon, Nov 2 – Sun, Nov 8" beside the My Shifts
             // chip's "Mon 11/2 – Sat 11/7"): it ends on the last day the surgeon
             // holds, the Saturday with no held list. The weekend still reads to its
-            // Sunday. Both stay listed through the week's Sunday, as My Shifts
-            // (shiftLastDay: the service Saturday runs 7a–Sun 7a).
+            // Sunday, through which it stays listed, as My Shifts. A service week
+            // stays only while its held shifts last (review fix 2026-10-20): through
+            // its last held weekday (7a–5p), or to Sun 7a when that is the Saturday
+            // (its 24h) — "in progress" never outlasts the dates the card shows, and
+            // the real next call takes the top slot. A day someone else holds in it
+            // splits the line into runs, as the My Shifts chip ("Mon, Dec 21 – Wed,
+            // Dec 23 + Sat, Dec 26").
+            const _now = new Date();
             const _today0 = new Date(); _today0.setHours(0, 0, 0, 0);
             const _DAY = 86400000;
             const _startOff = { dayCall: 0, mon: 0, tue: 1, wed: 2, thu: 3, wknd: 4 };
             const _nice = (d) => d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+            const _range = (e) => e.runs && e.runs.length > 1 ? e.runs.map(([a, b]) => (b > a ? `${_nice(a)} – ${_nice(b)}` : _nice(a))).join(" + ") : e.span ? `${_nice(e.start)} – ${_nice(e.end)}` : _nice(e.start);
             const _whenTxt = (d) => d > 1 ? `in ${d} days` : d === 1 ? "tomorrow" : d === 0 ? "today" : "in progress";
             const _whenTone = (d) => d <= 0 ? "#1a8040" : d <= 2 ? "#c0392b" : d <= 7 ? "#b9770e" : "#5a6a78";
             const _nextUp = [];
@@ -11859,10 +11910,14 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                 const span = (r.shiftKey === "dayCall" || r.shiftKey === "wknd");
                 const start = r.held && r.held.length ? parse(r.held[0]) : addD(mon, _startOff[r.shiftKey] ?? 0);
                 const end = r.shiftKey === "dayCall" ? (r.held && r.held.length ? parse(r.held[r.held.length - 1]) : addD(mon, 5)) : span ? addD(mon, 6) : start;
-                if ((span ? addD(mon, 6) : start) < _today0) return; // fully in the past (a span: its week's Sunday)
+                if (r.shiftKey === "dayCall" ? (end.getDay() === 6 ? _now >= new Date(end.getFullYear(), end.getMonth(), end.getDate() + 1, 7) : end < _today0)
+                  : (span ? addD(mon, 6) : start) < _today0) return; // over: a service week once its last held shift ended (a Saturday's at Sun 7a); the weekend after its Sunday
                 const days = Math.round((start - _today0) / _DAY);
+                // the held days as runs of consecutive days (roleDateLabel's rule): a day someone else holds splits the line
+                const runs = [];
+                if (r.shiftKey === "dayCall" && r.held) r.held.slice().sort().forEach(ds => { const last = runs[runs.length - 1]; if (last && ds <= fmt(last[1])) return; if (last && fmt(addD(last[1], 1)) === ds) last[1] = parse(ds); else runs.push([parse(ds), parse(ds)]); });
                 // A service week held on one day only reads as that day, not "Sat, Nov 7 – Sat, Nov 7"; the weekend as before
-                _nextUp.push({ ...r, start, end, days, span: r.shiftKey === "wknd" || end > start, isBackup: s.isBackup, isFierceBackup: s.isFierceBackup });
+                _nextUp.push({ ...r, start, end, runs, days, span: r.shiftKey === "wknd" || end > start, isBackup: s.isBackup, isFierceBackup: s.isFierceBackup });
               });
             });
             _nextUp.sort((a, b) => a.start - b.start);
@@ -11958,7 +12013,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                                 {e.isBackup && <span style={{fontSize:9, fontWeight:800, letterSpacing:0.5, padding:"2px 6px", borderRadius:4, background:"#efe3c8", color:"#8a6a10"}}>BACKUP</span>}
                                 <span style={{fontSize:12, fontWeight:800, padding:"2px 9px", borderRadius:20, background:_whenTone(e.days)+"1f", color:_whenTone(e.days)}}>{_whenTxt(e.days)}</span>
                               </div>
-                              <div style={{fontSize:13, color:dk?"#9aa8b6":"#4a5a68", marginTop:3}}>{e.span ? `${_nice(e.start)} – ${_nice(e.end)}` : _nice(e.start)}</div>
+                              <div style={{fontSize:13, color:dk?"#9aa8b6":"#4a5a68", marginTop:3}}>{_range(e)}</div>
                               <div style={{fontSize:11, color:"#9aa4ae", marginTop:1}}>{e.detail}</div>
                             </div>
                           </div>
@@ -11966,11 +12021,13 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                       })()}
                       {_upNext.length > 1 && (
                         <div style={{marginTop:12, paddingTop:10, borderTop:"1px dashed "+(dk?"#2a3a48":"#e4ebf1"), display:"flex", flexDirection:"column", gap:9}}>
+                          {/* A split service week's runs are long ("Mon, Dec 21 – Wed, Dec 23 + Sat, Dec 26"): on their own line
+                              under the row, so a 320px phone keeps the role's name (rendered check, review fix 2026-10-20) */}
                           {_upNext.slice(1).map((e, i) => (
-                            <div key={i} style={{display:"flex", alignItems:"center", gap:10}}>
+                            <div key={i} style={{display:"flex", alignItems:"center", gap:10, ...(e.runs && e.runs.length > 1 ? {flexWrap:"wrap", rowGap:2} : null)}}>
                               <span style={{fontSize:16}}>{e.icon}</span>
                               <span style={{flex:1, minWidth:0, fontSize:13, fontWeight:600, color:dk?"#c8d2dc":"#3a4a58", whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis"}}>{e.type}{e.isBackup && <span style={{fontSize:9, fontWeight:700, color:"#8a6a10", marginLeft:6}}>· backup</span>}</span>
-                              <span style={{fontSize:12, color:dk?"#9aa8b6":"#5a6a78", whiteSpace:"nowrap"}}>{e.span ? `${_nice(e.start)} – ${_nice(e.end)}` : _nice(e.start)}</span>
+                              <span style={{fontSize:12, color:dk?"#9aa8b6":"#5a6a78", whiteSpace:"nowrap", ...(e.runs && e.runs.length > 1 ? {order:3, flexBasis:"100%", paddingLeft:26, whiteSpace:"normal"} : null)}}>{_range(e)}</span>
                               <span style={{fontSize:11, fontWeight:700, color:_whenTone(e.days), minWidth:60, textAlign:"right"}}>{_whenTxt(e.days)}</span>
                             </div>
                           ))}
