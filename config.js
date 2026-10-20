@@ -793,8 +793,13 @@ const auth = {
       if (session.refresh_token) {
         const refreshed = await auth._refresh(session.refresh_token);
         if (refreshed?.user) return refreshed;
+        // The refresh got no answer, or one that refuses nothing (an outage, a
+        // rate limit): _refresh KEPT the stored session — pass that on, and
+        // clear nothing here either (owner 2026-10-20: a network blip must not
+        // sign anyone out).
+        if (refreshed?.error === "network") return { user: null, error: "network" };
       }
-      // Refresh wasn't possible or genuinely failed — token is dead.
+      // Refresh wasn't possible, or the refresh token was refused — token is dead.
       auth._clearSession();
       return { user: null };
     } catch (e) {
@@ -805,19 +810,34 @@ const auth = {
     }
   },
 
-  // Refresh token
+  // Refresh token. The stored sign-in is cleared ONLY when the auth server
+  // refuses the refresh token itself (owner 2026-10-20, "getting signed out on
+  // a network blip"): GoTrue answers 400 for a refresh token it no longer
+  // honours (invalid_grant — refresh_token_not_found, refresh_token_already_used,
+  // session_expired …) and 401 / 403 for a request it won't serve. Anything
+  // else refuses nothing — no answer at all (no signal), a 5xx (an outage), a
+  // 429 (rate limited), any other status, or a 200 that isn't a session (a
+  // captive portal's page): the stored session is KEPT and the answer is
+  // { user: null, error: "network" }, which getUser passes on, so the app says
+  // "No connection — you're still signed in" instead of showing the sign-in
+  // card. Nothing retries on its own: getUser runs at app open and on a Face
+  // ID tap, and Retry reloads. (refreshKeep — "Sign in again" — never clears.)
   async _refresh(refreshToken) {
+    let res;
     try {
-      const res = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`, {
+      res = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`, {
         method: "POST",
         headers: { apikey: SUPABASE_ANON_KEY, "Content-Type": "application/json" },
         body: JSON.stringify({ refresh_token: refreshToken }),
       });
-      if (!res.ok) { auth._clearSession(); return { user: null }; }
-      const data = await res.json();
-      auth._saveSession(data);
-      return { user: data.user, session: data };
-    } catch(e) { auth._clearSession(); return { user: null }; }
+    } catch(e) { return { user: null, error: "network" }; }
+    if (res.status === 400 || res.status === 401 || res.status === 403) { auth._clearSession(); return { user: null }; }
+    if (!res.ok) return { user: null, error: "network" };
+    let data = null;
+    try { data = await res.json(); } catch(e) { data = null; }
+    if (!data || !data.access_token) return { user: null, error: "network" };
+    auth._saveSession(data);
+    return { user: data.user, session: data };
   },
 
   // Refresh that KEEPS the stored session on failure (sync v2 "Sign in

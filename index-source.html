@@ -1123,7 +1123,22 @@ function CallSchedule() {
       if (user) {
         auth.bindUser(user.id); // (review r4 branch-4)
         setAuthUser(user);
-        const profile = await dbAuth.getProfile(user.id);
+        let profile;
+        try { profile = await dbAuth.getProfile(user.id); }
+        catch (e) {
+          // The profile read never reached the server — the signal dropped
+          // after getUser answered (owner 2026-10-20): it threw, and the button
+          // stayed on "Verifying…" for good. Undo the half-done unlock (nothing
+          // was bound or signed in on this screen), so Unlock and "Use email &
+          // password instead" work as before the tap; the stored session is
+          // untouched. Say what a no-signal unlock says. Any other error is
+          // thrown on, as before (an old cached helpers.js: thrown on, as before).
+          if (!(typeof isNoConnectionError === "function" && isNoConnectionError(e))) throw e;
+          auth.bindUser(null); setAuthUser(null);
+          setAuthError("No connection — you're still signed in. Check your signal and tap Unlock again.");
+          setAuthBusy(false);
+          return;
+        }
         if (profile) { setUserProfile(profile); setMySurgeon(profile.person_id); }
         else { setNeedsProfile(true); }
         setBiometricPending(false);
