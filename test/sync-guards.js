@@ -3986,6 +3986,271 @@ console.log("\nBL. Schedule Warnings: anyone can hide a warning on this phone");
     J({ iState, iChoice, iWS, iWSdeps, iCC, iRead, iRefs, iLis, iP7 }));
 }
 
+// ─── CE. Opening with no signal no longer looks signed out (owner decision 2026-10-20) ───
+// With the network down config.js auth.getUser() answers { user: null, error: "network" } and KEEPS the stored
+// session (by design), but both callers dropped `error`: the mount auto-login fell through to a plain "Sign in to
+// your account" with nothing said (the token still stored), and Face ID left its screen saying "Session expired.
+// Please sign in with your password to refresh." — false; the password sign-in then failed with "Load failed".
+//   CE1 the REAL mount auth effect (sliced; run in a fresh context, so a free name throws), auto-login with no
+//       signal — on the REAL config.js auth (its fetch rejecting as an iPhone's does, an in-memory localStorage) and
+//       on a stubbed getUser: the note is set (authNetErr true), nobody signed in or bound, the stored session
+//       untouched (one /auth/v1/user request; no refresh, no logout, no _clearSession / signOut); a real "no user,
+//       no error" (token and refresh both refused) and a non-network error show today's plain sign-in (no note); a
+//       good token signs straight in (no note); Face ID enrolled → its screen, getUser not asked
+//   CE2 the REAL handleBiometricUnlock: no signal → stays on the Face ID screen (biometricPending never set false)
+//       with "No connection — you're still signed in. Check your signal and tap Unlock again.", the session
+//       untouched; any other failure keeps "Session expired…" (and leaves the screen); a failed Face ID and a
+//       success as before
+//   CE3 the card's note, its real JSX rendered: the card's first child, amber, role="status", the exact words, a
+//       Retry ≥ 44px tall that reloads (nothing can be pending here: the note is set only on the mount path, before
+//       any sign-in — so no confirmReloadWithPending); only in sign-in mode and only while authNetErr; ≥ 4.5:1
+//       light and dark (the Retry's gradient keeps its text white under the dark sheet's forced button grey)
+//   CE4 startSignIn, executed: drops the note, then runs the real submit; the card's button and both Enter keys
+//       use it (no direct handleAuthSubmit left on the card); the note is set in one place only
+//   CE5 §P: authNetErr declared once, beside the auth state, before the mount effect and startSignIn, in no
+//       hook's deps; the mount effect keeps [] deps and sync v2's bindUser line
+console.log("\nCE. Opening with no signal no longer looks signed out");
+await (async () => {
+  const nsrcCE = src.replace(/\r\n/g, "\n");   // a Windows checkout is CRLF, CI's is LF
+  const J = (x) => JSON.stringify(x);
+  const afterCE = (start, end) => { const i = nsrcCE.indexOf(start); if (i < 0 || nsrcCE.indexOf(start, i + 1) !== -1) return null; const e = nsrcCE.indexOf(end, i + start.length); return e < 0 ? null : nsrcCE.slice(i + start.length, e); };
+  const cctx = vm.createContext({});
+  const fnCE = (names, code) => { if (!code) return null; try { return vm.runInContext(`(function (env) { const { ${names} } = env; return (${code}); })`, cctx, { filename: "ce-auth.js" }); } catch (ex) { return null; } };
+  const NET_FACE = "No connection — you're still signed in. Check your signal and tap Unlock again.";
+  const EXPIRED = "Session expired. Please sign in with your password to refresh.";
+  const NOTE = "No connection — you're still signed in on this phone. Check your signal, then tap Retry.";
+  const quietCE = { error() {}, warn() {}, log() {}, info() {} };
+  const tick = () => new Promise((r) => setTimeout(r, 0));
+
+  // config.js's auth, for real: its own context, a stubbed fetch, an in-memory localStorage; _clearSession,
+  // signOut and _refresh recorded (and still run — the real calls go through the same object)
+  const SESS_CE = { "dsg-auth-token": "TOK_A", "dsg-auth-refresh": "REF_A" };
+  const mkAuthCE = (store, route) => {
+    const ls = new Map(Object.entries(store || {})), calls = [], spied = [];
+    const g = { console: quietCE, window: {}, document: undefined, navigator: { userAgent: "node-test" }, setTimeout, clearTimeout,
+      localStorage: { getItem: (k) => (ls.has(k) ? ls.get(k) : null), setItem: (k, v) => { ls.set(k, String(v)); }, removeItem: (k) => { ls.delete(k); } },
+      fetch: async (url, init) => { calls.push(((init && init.method) || "GET") + " " + String(url).replace(/^https?:\/\/[^/]+/, "")); return route(String(url)); } };
+    g.globalThis = g;
+    vm.createContext(g);
+    for (const f of ["helpers.js", "config.js"]) vm.runInContext(fs.readFileSync(path.join(ROOT, f), "utf8"), g, { filename: f });
+    const auth = vm.runInContext("auth", g);
+    for (const k of ["_clearSession", "signOut", "_refresh"]) { const orig = auth[k]; auth[k] = function (...a) { spied.push(k); return orig.apply(this, a); }; }
+    return { auth, ls, calls, spied, kept: () => ls.get("dsg-auth-token") === "TOK_A" && ls.get("dsg-auth-refresh") === "REF_A" && ls.size === 2 };
+  };
+  const respCE = (status, json) => ({ ok: status >= 200 && status < 300, status, json: async () => json, text: async () => JSON.stringify(json) });
+  const noSignal = () => { throw new TypeError("Load failed"); };   // an iPhone's fetch with no signal
+  const refusedCE = (url) => (url.includes("grant_type=refresh_token") ? respCE(400, { error: "invalid_grant", error_description: "Invalid Refresh Token: Already Used" }) : respCE(403, { msg: "invalid JWT" }));
+  const goodCE = (url) => { if (url.includes("/auth/v1/user")) return respCE(200, { id: "auth-c", email: "c@dsg.test" }); throw new Error("unrouted " + url); };
+  // a stubbed auth whose getUser gives `answer`; every session-changing call recorded
+  const stubCE = (answer) => {
+    const spied = [], a = { getSession: () => ({ access_token: "TOK_A", refresh_token: "REF_A" }), getUser: async () => { spied.push("getUser"); return answer; } };
+    for (const k of ["_clearSession", "signOut", "_refresh", "_saveSession", "refreshKeep", "bindUser"]) a[k] = () => { spied.push(k); };
+    return { auth: a, spied };
+  };
+  const SESSION_CHANGERS = ["_clearSession", "signOut", "_refresh", "_saveSession", "refreshKeep"];
+
+  // CE1 — the mount auth effect
+  const mountSrc = afterCE("  // ─── Auth: Check session on mount ───\n  useEffect(", "\n  }, []);\n");
+  const mkMount = fnCE("isPublicMode, setAuthLoading, window, URLSearchParams, auth, setAuthMode, biometric, setBiometricAvail, setBiometricReason, setBiometricEnrolled, setBiometricPending, dbAuth, setAuthUser, setUserProfile, setMySurgeon, setNeedsProfile, setReloadTrigger, setAuthNetErr, console",
+    mountSrc && mountSrc + "\n  }");
+  check("CE1 the mount auth effect (deps []) sliced and compiled", !!mkMount);
+  const runMount = async (auth, o = {}) => {
+    const log = [], rec = (name) => (v) => { log.push(name + ":" + (typeof v === "function" ? "fn" : J(v))); };
+    const env = { isPublicMode: false, URLSearchParams, auth,
+      window: { location: { hash: "", pathname: "/", search: "" }, history: { replaceState: () => log.push("replaceState") } },
+      biometric: { isAvailable: async () => ({ available: true, reason: "" }), isEnrolled: () => !!o.bio },
+      dbAuth: { getProfile: async (id) => { log.push("getProfile:" + id); return { person_id: "s3", display_name: "RPC", role: "member" }; } },
+      setAuthLoading: rec("authLoading"), setAuthMode: rec("authMode"), setBiometricAvail: () => {}, setBiometricReason: () => {}, setBiometricEnrolled: rec("bioEnrolled"),
+      setBiometricPending: rec("biometricPending"), setAuthUser: (u) => log.push("authUser:" + (u && u.id)), setUserProfile: () => log.push("profile"), setMySurgeon: rec("mySurgeon"),
+      setNeedsProfile: rec("needsProfile"), setReloadTrigger: () => log.push("reloadTrigger"), setAuthNetErr: rec("authNetErr"),
+      console: { error: (...a) => log.push("console.error:" + a.map(String).join(" ").slice(0, 120)), warn() {}, log() {}, info() {} } };
+    try { mkMount(env)(); } catch (ex) { log.push("threw " + String(ex).slice(0, 120)); }
+    for (let i = 0; i < 50 && !log.includes("authLoading:false"); i++) await tick();
+    return log;
+  };
+  if (mkMount) {
+    const off = mkAuthCE(SESS_CE, noSignal), mOff = await runMount(off.auth);
+    check("CE1 auto-login with no signal, on the REAL config.js auth: the note is set (authNetErr true) and the card shows (loading ends); nobody signed in or bound; the stored session untouched — one GET /auth/v1/user, no refresh, no logout, no _clearSession / signOut",
+      mOff.includes("authNetErr:true") && mOff[mOff.length - 1] === "authLoading:false" && !mOff.some((x) => /^(authUser|getProfile|reloadTrigger|biometricPending:true|console\.error|threw)/.test(x))
+        && off.kept() && J(off.calls) === J(["GET /auth/v1/user"]) && off.spied.length === 0 && off.auth.boundUser() === null,
+      J({ mOff, ls: [...off.ls], calls: off.calls, spied: off.spied, bound: off.auth.boundUser() }));
+    const st = stubCE({ user: null, error: "network" }), mSt = await runMount(st.auth);
+    check("CE1 …the same with a stubbed auth.getUser answering { user: null, error: \"network\" }: the note, no sign-in, and nothing that changes the session called (_clearSession, signOut, _refresh, _saveSession, refreshKeep, bindUser)",
+      mSt.includes("authNetErr:true") && mSt[mSt.length - 1] === "authLoading:false" && !mSt.some((x) => /^(authUser|reloadTrigger|console\.error|threw)/.test(x))
+        && J(st.spied) === J(["getUser"]), J({ mSt, spied: st.spied }));
+    const ref = mkAuthCE(SESS_CE, refusedCE), mRef = await runMount(ref.auth);
+    const st2 = stubCE({ user: null }), mNo = await runMount(st2.auth);
+    const st3 = stubCE({ user: null, error: "timeout" }), mOther = await runMount(st3.auth);
+    check("CE1 a real \"no user, no error\" still shows today's plain sign-in, no note: the REAL auth with the token and its refresh both refused (config.js clears the dead session, as before), a stub answering { user: null }, and a non-network error",
+      [mRef, mNo, mOther].every((m) => !m.some((x) => /^authNetErr|^authUser|^reloadTrigger|^console\.error|^threw/.test(x)) && m[m.length - 1] === "authLoading:false")
+        && !ref.ls.has("dsg-auth-token") && ref.spied.includes("_refresh"), J({ mRef, mNo, mOther, ls: [...ref.ls], spied: ref.spied }));
+    const ok = mkAuthCE(SESS_CE, goodCE), mOk = await runMount(ok.auth);
+    const bio = mkAuthCE(SESS_CE, noSignal), mBio = await runMount(bio.auth, { bio: true });
+    check("CE1 unchanged otherwise: a good token signs straight in (bound to its account, its profile, the data reload) with no note; Face ID enrolled → its screen, getUser not asked, no note",
+      mOk.includes("authUser:auth-c") && mOk.includes("getProfile:auth-c") && mOk.includes("reloadTrigger") && !mOk.some((x) => /^authNetErr|^console\.error|^threw/.test(x)) && ok.auth.boundUser() === "auth-c"
+        && J(mBio) === J(["bioEnrolled:true", "biometricPending:true", "authLoading:false"]) && bio.calls.length === 0 && bio.kept(),
+      J({ mOk, mBio, bound: ok.auth.boundUser(), bioCalls: bio.calls }));
+  }
+
+  // CE2 — the Face ID unlock
+  const bioSrc = afterCE("  const handleBiometricUnlock = ", "\n  };\n");
+  const mkBio = fnCE("setAuthError, setAuthBusy, biometric, auth, setAuthUser, dbAuth, setUserProfile, setMySurgeon, setNeedsProfile, setBiometricPending, setReloadTrigger", bioSrc && bioSrc + "\n  }");
+  check("CE2 handleBiometricUnlock sliced and compiled", !!mkBio);
+  const runBio = async (auth, o = {}) => {
+    const log = [];
+    const env = { auth, biometric: { authenticate: async () => (o.bioFail ? { success: false, error: o.bioFail } : { success: true }) },
+      dbAuth: { getProfile: async (id) => { log.push("getProfile:" + id); return { person_id: "s3", display_name: "RPC", role: "member" }; } },
+      setAuthError: (v) => log.push("error:" + v), setAuthBusy: (v) => log.push("busy:" + v), setAuthUser: (u) => log.push("authUser:" + (u && u.id)), setUserProfile: () => log.push("profile"),
+      setMySurgeon: () => {}, setNeedsProfile: () => {}, setBiometricPending: (v) => log.push("biometricPending:" + v), setReloadTrigger: () => log.push("reloadTrigger") };
+    try { await mkBio(env)(); } catch (ex) { log.push("threw " + String(ex).slice(0, 120)); }
+    return log;
+  };
+  if (mkBio) {
+    const off = mkAuthCE(SESS_CE, noSignal), bOff = await runBio(off.auth);
+    const st = stubCE({ user: null, error: "network" }), bSt = await runBio(st.auth);
+    check("CE2 Face ID with no signal (the REAL config.js auth, and a stub answering the network error): stays on the Face ID screen — biometricPending never set false — saying \"" + NET_FACE + "\", busy back to false; nobody signed in; the stored session untouched (no _clearSession / signOut / refresh)",
+      [bOff, bSt].every((b) => J(b) === J(["error:", "busy:true", "error:" + NET_FACE, "busy:false"]))
+        && off.kept() && J(off.calls) === J(["GET /auth/v1/user"]) && off.spied.length === 0 && off.auth.boundUser() === null && J(st.spied) === J(["getUser"]),
+      J({ bOff, bSt, ls: [...off.ls], spied: off.spied, stSpied: st.spied }));
+    const ref = mkAuthCE(SESS_CE, refusedCE), bRef = await runBio(ref.auth);
+    const bNo = await runBio(stubCE({ user: null }).auth), bOther = await runBio(stubCE({ user: null, error: "timeout" }).auth);
+    check("CE2 every other failure keeps today's words and leaves the Face ID screen: \"" + EXPIRED + "\" — the REAL auth with the token and refresh refused, a stub's { user: null }, a non-network error",
+      [bRef, bNo, bOther].every((b) => J(b) === J(["error:", "busy:true", "biometricPending:false", "error:" + EXPIRED, "busy:false"])), J({ bRef, bNo, bOther }));
+    const fail = stubCE({ user: null, error: "network" }), bFail = await runBio(fail.auth, { bioFail: "Face ID was cancelled" });
+    const good = mkAuthCE(SESS_CE, goodCE), bOk = await runBio(good.auth);
+    check("CE2 unchanged otherwise: a failed Face ID says its own error and asks nothing of the session; a success signs in (bound, its profile, the data reload) and leaves the Face ID screen",
+      J(bFail) === J(["error:", "busy:true", "error:Face ID was cancelled", "busy:false"]) && fail.spied.length === 0
+        && J(bOk) === J(["error:", "busy:true", "authUser:auth-c", "getProfile:auth-c", "profile", "biometricPending:false", "reloadTrigger", "busy:false"]) && good.auth.boundUser() === "auth-c",
+      J({ bFail, bOk }));
+  }
+
+  // CE3 — the note, rendered: its real JSX through a tiny JSX→h() pass (sync-guards BL7's jsxLite, as is)
+  const cardA = nsrcCE.indexOf(") : !authUser && !isPublicMode ? ("), cardB = cardA < 0 ? -1 : nsrcCE.indexOf(") : needsProfile ? (", cardA);
+  const card = cardA >= 0 && cardB > cardA ? nsrcCE.slice(cardA, cardB) : "";
+  // the note: the card's FIRST child (after its comment) — a {cond && (…)} up to its own "\n            )}" line;
+  // sliced by place, not by its condition's text, so whatever the condition says is what renders below
+  const NOTE_HEAD = '{authNetErr && authMode==="login" && (';
+  const openTag = '<div style={{...css.card,maxWidth:380,width:"100%",padding:28}}>';
+  const oi = card.indexOf(openTag), afterOpen = oi < 0 ? "" : card.slice(oi + openTag.length);
+  const lead = afterOpen.replace(/^\s*(\{\/\*[\s\S]*?\*\/\}\s*)*/, ""), nA = oi < 0 ? -1 : oi + openTag.length + (afterOpen.length - lead.length);
+  const nB = nA < 0 || !/^\{[^\n]*&& \($/.test(lead.split("\n")[0]) ? -1 : card.indexOf("\n            )}\n", nA);
+  const noteExpr = nB > nA && oi >= 0 && card.indexOf(openTag, oi + 1) === -1 ? card.slice(nA + 1, nB + "\n            )".length) : null;
+  const jsxCE = (code) => {
+    const q = (x) => JSON.stringify(x);
+    const skipStr = (k) => { const ch = code[k]; for (let m = k + 1; m < code.length; m++) { if (code[m] === "\\") { m++; continue; } if (code[m] === ch) return m; } return code.length; };
+    const close = (j) => {
+      let depth = 0;
+      for (let k = j; k < code.length; k++) {
+        const ch = code[k];
+        if (ch === '"' || ch === "'") { k = skipStr(k); continue; }
+        if (ch === "`") { for (k = k + 1; k < code.length && code[k] !== "`"; k++) { if (code[k] === "\\") k++; else if (code[k] === "$" && code[k + 1] === "{") k = close(k + 1); } continue; }
+        if (ch === "{") depth++; else if (ch === "}" && --depth === 0) return k;
+      }
+      throw new Error("unbalanced { at " + j);
+    };
+    const el = (k) => {
+      let j = k + 1;
+      const tag = /^[A-Za-z][\w.]*/.exec(code.slice(j))[0]; j += tag.length;
+      const props = [], kids = [];
+      for (;;) {
+        while (/\s/.test(code[j])) j++;
+        if (code[j] === "/" && code[j + 1] === ">") return [`h(${q(tag)}, {${props.join(", ")}})`, j + 2];
+        if (code[j] === ">") { j++; break; }
+        const nm = (/^[\w-]+/.exec(code.slice(j)) || [""])[0];
+        if (!nm) throw new Error("attribute at " + j + ": " + code.slice(j, j + 30));
+        j += nm.length;
+        if (code[j] !== "=") { props.push(`${q(nm)}: true`); continue; }
+        j++;
+        if (code[j] === '"') { const e = skipStr(j); props.push(`${q(nm)}: ${code.slice(j, e + 1)}`); j = e + 1; }
+        else if (code[j] === "{") { const e = close(j); props.push(`${q(nm)}: (${jsxCE(code.slice(j + 1, e))})`); j = e + 1; }
+        else throw new Error("attribute value at " + j);
+      }
+      let text = "";
+      const flush = () => {
+        if (!text) return;
+        const lines = text.split("\n");
+        const t = lines.length === 1 ? text : lines.map((l, i) => (i > 0 ? l.replace(/^\s+/, "") : l)).map((l, i, a) => (i < a.length - 1 ? l.replace(/\s+$/, "") : l)).filter((l) => l.length).join(" ");
+        if (t.length && !(lines.length > 1 && !t.trim())) kids.push(q(t));
+        text = "";
+      };
+      for (;;) {
+        if (j >= code.length) throw new Error("unclosed <" + tag + ">");
+        if (code.startsWith("</", j)) { flush(); j = code.indexOf(">", j) + 1; break; }
+        if (code[j] === "<" && /[A-Za-z]/.test(code[j + 1])) { flush(); const [js, e] = el(j); kids.push(js); j = e; continue; }
+        if (code[j] === "{") { flush(); const e = close(j); const inner = code.slice(j + 1, e); if (inner.replace(/\/\*[\s\S]*?\*\//g, "").trim()) kids.push(`(${jsxCE(inner)})`); j = e + 1; continue; }
+        text += code[j]; j++;
+      }
+      return [`h(${q(tag)}, {${props.join(", ")}}${kids.length ? ", " + kids.join(", ") : ""})`, j];
+    };
+    let out = "";
+    for (let i = 0; i < code.length;) {
+      const ch = code[i];
+      if (ch === '"' || ch === "'") { const e = skipStr(i); out += code.slice(i, e + 1); i = e + 1; continue; }
+      if (ch === "`") { const e0 = i; let k = i + 1; for (; k < code.length && code[k] !== "`"; k++) { if (code[k] === "\\") k++; else if (code[k] === "$" && code[k + 1] === "{") k = close(k + 1); } out += code.slice(e0, k + 1); i = k + 1; continue; }
+      if (ch === "<" && /[A-Za-z]/.test(code[i + 1] || "") && /[(?:,&|>{[=]$/.test(out.replace(/\s+$/, ""))) { const [js, e] = el(i); out += js; i = e; continue; }
+      out += ch; i++;
+    }
+    return out;
+  };
+  let renderNote = null, noteErr = "";
+  try { if (!noteExpr) throw new Error("note anchor"); renderNote = vm.runInContext(`(function (env) { const { h, authNetErr, authMode, font, window } = env; return (${jsxCE(noteExpr)}); })`, cctx, { filename: "ce-note.js" }); }
+  catch (ex) { renderNote = null; noteErr = String(ex).slice(0, 200); }
+  check("CE3 the card's note (its real JSX) found once, compiles and renders", !!renderNote, noteErr || "anchor " + nA + ".." + nB);
+  if (renderNote) {
+    const hh = (tag, props, ...kids) => ({ tag, props: props || {}, kids: kids.flat(Infinity).filter((k) => k !== null && k !== undefined && k !== false && k !== true && k !== "") });
+    const all = (n, out = []) => { if (n && typeof n === "object") { out.push(n); n.kids.forEach((k) => all(k, out)); } return out; };
+    const textOf = (n) => (n == null ? "" : typeof n !== "object" ? String(n) : n.kids.map(textOf).join(""));
+    const reloads = [];
+    const render = (authNetErr, authMode) => renderNote({ h: hh, authNetErr, authMode, font: "F", window: { location: { reload: (...a) => reloads.push(a.length) } } });
+    const on = render(true, "login"), offs = [render(false, "login"), render(true, "signup"), render(true, "reset"), render(true, "newpassword")];
+    const nodes = on && typeof on === "object" ? all(on) : [], btns = nodes.filter((n) => n.tag === "button");
+    const retry = btns.length === 1 ? btns[0] : null, words = nodes.filter((n) => n !== on && n.tag === "div");
+    if (retry && typeof retry.props.onClick === "function") retry.props.onClick({});
+    check("CE3 with authNetErr in sign-in mode: an amber role=\"status\" note — the exact words \"" + NOTE + "\" — and ONE button, type=\"button\", \"Retry\", at least 44px tall and full width, that reloads the page once; nothing else on it",
+      !!on && on.tag === "div" && on.props.role === "status" && words.length === 1 && textOf(words[0]) === NOTE && textOf(on) === NOTE + "Retry"
+        && !!retry && retry.props.type === "button" && textOf(retry) === "Retry" && retry.props.style.minHeight >= 44 && retry.props.style.width === "100%" && J(reloads) === J([0]),
+      J({ tag: on && on.tag, role: on && on.props.role, text: textOf(on), btns: btns.length, style: retry && retry.props.style, reloads }));
+    check("CE3 no note without authNetErr, nor in Create account / Reset password / Set a new password (it is about this phone's sign-in)",
+      offs.every((x) => x === false), J(offs.map((x) => (x && x.tag) || x)));
+    // readable: the note's ink on its fill, and the Retry's white on both ends of its gradient — light, and dark too: the
+    // dark sheet recolours neither the note (no rule names its colours) nor the Retry (`button[style*="background:
+    // linear-gradient"]` keeps white over the sheet's forced light-grey button text)
+    const lumCE = (hx) => { const v = hx.slice(1).match(/../g).map((x) => parseInt(x, 16) / 255).map((c) => (c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4))); return 0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2]; };
+    const crCE = (a, b) => (/^#[0-9a-f]{6}$/i.test(a || "") && /^#[0-9a-f]{6}$/i.test(b || "") ? (Math.max(lumCE(a), lumCE(b)) + 0.05) / (Math.min(lumCE(a), lumCE(b)) + 0.05) : 0);
+    const st = on ? on.props.style : {}, rb = retry ? String(retry.props.style.background) : "", stops = rb.match(/#[0-9a-f]{6}/gi) || [];
+    const sheet = afterCE("{darkMode && <style>{`", "`}</style>}") || "";
+    check("CE3 readable light and dark: the note's ink on its amber fill ≥ 4.5:1 (an amber, not a red error box); the Retry white on both gradient stops ≥ 4.5:1 — a gradient, so the dark sheet keeps its text white over its forced button grey; the dark sheet names neither the note's fill nor its ink",
+      crCE(st.color, st.background) >= 4.5 && /^#f[0-9a-f]{5}$/i.test(st.background || "") && st.background !== "#fce8e8" && rb.startsWith("linear-gradient(") && stops.length === 2 && retry.props.style.color === "#fff" && stops.every((c) => crCE("#ffffff", c) >= 4.5)
+        && sheet.includes('button[style*="background: linear-gradient"] { color: #fff !important; }') && sheet.includes("button { color: #c0c8d8 !important; }")
+        && !/fdf0e0|253, 240, 224|7a4a00|122, 74, 0/i.test(sheet),
+      J({ ink: st.color, fill: st.background, cr: +crCE(st.color, st.background).toFixed(2), rb, stopsCr: stops.map((c) => +crCE("#ffffff", c).toFixed(2)) }));
+    check("CE3 at the TOP of the sign-in card: the note is the card's first child, above the DSG header — and the card's only authNetErr",
+      lead.startsWith(NOTE_HEAD) && (card.match(/\bauthNetErr\b/g) || []).length === 1 && lead.indexOf("DSG Call Schedule") > lead.indexOf('role="status"'), J(lead.slice(0, 60)));
+  }
+
+  // CE4 — the attempt drops the note
+  const ssSrc = afterCE("  const startSignIn = ", ";\n");
+  const mkSS = fnCE("setAuthNetErr, handleAuthSubmit", ssSrc);
+  let ssLog = null, ssRet = null;
+  if (mkSS) { ssLog = []; try { ssRet = mkSS({ setAuthNetErr: (v) => ssLog.push("authNetErr:" + v), handleAuthSubmit: (...a) => { ssLog.push("submit:" + a.length); return "SUBMIT_PROMISE"; } })({ type: "click" }); } catch (ex) { ssLog.push("threw " + String(ex)); } }
+  check("CE4 startSignIn, executed: drops the note (authNetErr false) BEFORE the submit runs — called with nothing (as onClick={handleAuthSubmit}'s event was ignored) — and hands back its promise",
+    !!ssLog && J(ssLog) === J(["authNetErr:false", "submit:0"]) && ssRet === "SUBMIT_PROMISE", J({ ssLog, ssRet }));
+  check("CE4 the card's Sign In / Create Account button and both Enter keys (email, password) start through startSignIn — no direct handleAuthSubmit left on the card; the note is SET in one place (the mount path) and cleared in one (startSignIn)",
+    card.length > 0 && (card.match(/onKeyDown=\{e=>e\.key==="Enter"&&startSignIn\(\)\}/g) || []).length === 2 && (card.match(/<button onClick=\{startSignIn\} disabled=\{authBusy\}/g) || []).length === 1
+      && !/handleAuthSubmit/.test(card) && count("const startSignIn = ") === 1 && count("startSignIn()") === 2 && count("onClick={startSignIn}") === 1
+      && count("setAuthNetErr(true)") === 1 && count("setAuthNetErr(false)") === 1 && count("setAuthNetErr(") === 2 && !!mountSrc && mountSrc.includes("setAuthNetErr(true)"),
+    J({ keys: (card.match(/startSignIn\(\)/g) || []).length, direct: (card.match(/handleAuthSubmit/g) || []).length, sets: count("setAuthNetErr(") }));
+
+  // CE5 — §P, and what stays as it was
+  const iDecl = src.indexOf("const [authNetErr, setAuthNetErr] = useState(false);"), iErr = src.indexOf('const [authError, setAuthError] = useState("");'), iBusy = src.indexOf("const [authBusy, setAuthBusy] = useState(false);");
+  const iMount = src.indexOf("// ─── Auth: Check session on mount ───"), iSS = src.indexOf("const startSignIn = "), iCard = src.indexOf(NOTE_HEAD);
+  check("CE5 §P: authNetErr declared once (useState(false) — off until the mount path finds no signal), beside the auth state, before the mount effect, startSignIn and the card; in no hook's deps; the mount effect keeps [] deps and sync v2's bindUser line",
+    count("const [authNetErr, setAuthNetErr] = useState(false);") === 1 && iErr > 0 && iBusy > iErr && iDecl > iBusy && iDecl - iErr < 1500
+      && iDecl < iMount && iDecl < iSS && iDecl < iCard && !/,\s*\[[^\]\n]*\bauthNetErr\b[^\]\n]*\]\s*\)/.test(src) && !!mountSrc
+      && count("auth.bindUser(user.id); // this tab is this account's (review r4 branch-4: another tab's sign-in is no session here)") === 1 && count("auth.bindUser(user.id); // (review r4 branch-4)") === 1,
+    J({ iErr, iBusy, iDecl, iMount, iSS, iCard }));
+})().catch(ex => check("CE harness ran without crashing", false, String(ex && ex.stack || ex).split("\n").slice(0, 3).join(" | ")));
+
 // ─── BG. Sign-in: iPhone autofill hints, plain network errors, no stuck "Sending…" offline (UX audit 2026-10-19) ───
 // The sign-in, sign-up and reset forms gave the iPhone no autofill hints (its saved passwords and account
 // suggestions are offered on fields that say what they hold). Offline, the reset and new-password chains had no

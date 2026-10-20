@@ -747,6 +747,12 @@ function CallSchedule() {
   const [newPasswordConfirm, setNewPasswordConfirm] = useState("");
   const [authError, setAuthError] = useState("");
   const [authBusy, setAuthBusy] = useState(false);
+  // Opened with no signal (owner decision 2026-10-20): auth.getUser() answers
+  // { user: null, error: "network" } and KEEPS the stored session, so the
+  // sign-in card says "you're still signed in" (amber, with Retry) instead of
+  // looking signed out. Set only by the mount auto-login; cleared when a
+  // sign-in attempt starts (startSignIn). Listed in no hook's deps.
+  const [authNetErr, setAuthNetErr] = useState(false);
   const [signupPersonId, setSignupPersonId] = useState(""); // person_id during signup
   const [userProfile, setUserProfile] = useState(null);  // { person_id, display_name, role }
   const [needsProfile, setNeedsProfile] = useState(false); // true if logged in but no profile yet
@@ -1070,7 +1076,7 @@ function CallSchedule() {
 
         if (session && !bioEnrolled) {
           // Has session but no biometric — auto-login (legacy behavior)
-          const { user } = await auth.getUser();
+          const { user, error } = await auth.getUser();
           if (user) {
             auth.bindUser(user.id); // this tab is this account's (review r4 branch-4: another tab's sign-in is no session here)
             setAuthUser(user);
@@ -1084,6 +1090,11 @@ function CallSchedule() {
             // empty all session and (pre-PR#14) the first edit autosaved the
             // wiped state into the blob mirror (the digest-poison vector).
             setReloadTrigger(t => t + 1);
+          } else if (error === "network") {
+            // No signal (owner decision 2026-10-20): getUser() kept the
+            // stored session, so nothing is signed out — the card says so,
+            // with Retry, instead of a plain "Sign in to your account".
+            setAuthNetErr(true);
           }
         }
       } catch(e) { console.error("Auth check error:", e); }
@@ -1097,7 +1108,7 @@ function CallSchedule() {
     const result = await biometric.authenticate();
     if (result.success) {
       // Biometric passed — use stored session
-      const { user } = await auth.getUser();
+      const { user, error } = await auth.getUser();
       if (user) {
         auth.bindUser(user.id); // (review r4 branch-4)
         setAuthUser(user);
@@ -1111,6 +1122,12 @@ function CallSchedule() {
         setReloadTrigger(t => t + 1);
         setAuthBusy(false);
         return;
+      } else if (error === "network") {
+        // No signal (owner decision 2026-10-20): getUser() kept the stored
+        // session — nothing expired. Stay on the Face ID screen (Unlock works
+        // once there's signal). Was "Session expired…" and the password form,
+        // whose sign-in then failed with "Load failed".
+        setAuthError("No connection — you're still signed in. Check your signal and tap Unlock again.");
       } else {
         // Session is invalid or refresh failed. Don't unenroll biometric —
         // preserve the credential so that after the user signs in once
@@ -1273,6 +1290,10 @@ function CallSchedule() {
     } catch(e) { setAuthError(typeof authErrorText === "function" ? authErrorText(e) : (e && e.message) || "Something went wrong — please try again."); } // (UX audit 2026-10-19: plain words — offline says "No connection", not Safari's "Load failed"; an old cached helpers.js: the raw message, as before)
     setAuthBusy(false);
   };
+  // The sign-in form's Sign In / Create Account button and its Enter keys
+  // (owner decision 2026-10-20): an attempt drops the "No connection — you're
+  // still signed in" note first — its own outcome says what happened next.
+  const startSignIn = () => { setAuthNetErr(false); return handleAuthSubmit(); };
 
   const handleSetProfile = async () => {
     if (!signupPersonId || !authUser) return;
@@ -8092,6 +8113,20 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       ) : !authUser && !isPublicMode ? (
         <div style={{display:"flex",justifyContent:"center",alignItems:"center",minHeight:"80vh",padding:20}}>
           <div style={{...css.card,maxWidth:380,width:"100%",padding:28}}>
+            {/* Opened with no signal (owner decision 2026-10-20): the stored
+                session is still on this phone — say so at the top of the card,
+                with Retry (a reload runs the auto-login again). The Retry's
+                fill is a gradient so the dark sheet keeps its text white (it
+                forces every other button's text light grey). */}
+            {authNetErr && authMode==="login" && (
+              <div role="status" style={{background:"#fdf0e0",color:"#7a4a00",border:"1px solid #e0b070",borderRadius:8,padding:"10px 12px",marginBottom:16,fontSize:13,fontWeight:600,lineHeight:1.45,fontFamily:font}}>
+                <div>No connection — you're still signed in on this phone. Check your signal, then tap Retry.</div>
+                <button type="button" onClick={()=>window.location.reload()}
+                  style={{display:"block",width:"100%",minHeight:44,marginTop:10,background:"linear-gradient(135deg,#7a4a00,#8a5a10)",border:"none",borderRadius:7,color:"#fff",fontSize:14,fontWeight:700,cursor:"pointer",fontFamily:font}}>
+                  Retry
+                </button>
+              </div>
+            )}
             <div style={{textAlign:"center",marginBottom:20}}>
               <div style={{width:48,height:48,borderRadius:10,background:"linear-gradient(135deg,#1a6fa8,#2488c8)",display:"inline-flex",alignItems:"center",justifyContent:"center",marginBottom:10}}>
                 <span style={{color:"#fff",fontSize:18,fontWeight:800,fontFamily:font}}>DSG</span>
@@ -8191,11 +8226,11 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               <div style={{display:"flex",flexDirection:"column",gap:10}}>
               <input type="email" placeholder="Email address" value={authEmail} onChange={e=>setAuthEmail(e.target.value)}
                 autoComplete="username" inputMode="email" autoCapitalize="none" autoCorrect="off"
-                onKeyDown={e=>e.key==="Enter"&&handleAuthSubmit()}
+                onKeyDown={e=>e.key==="Enter"&&startSignIn()}
                 style={{...css.inp,width:"100%",padding:"10px 12px",fontSize:14}}/>
               <input type="password" placeholder="Password" value={authPassword} onChange={e=>setAuthPassword(e.target.value)}
                 autoComplete={authMode==="login" ? "current-password" : "new-password"}
-                onKeyDown={e=>e.key==="Enter"&&handleAuthSubmit()}
+                onKeyDown={e=>e.key==="Enter"&&startSignIn()}
                 style={{...css.inp,width:"100%",padding:"10px 12px",fontSize:14}}/>
               {authMode==="signup" && (
                 <select value={signupPersonId} onChange={e=>setSignupPersonId(e.target.value)}
@@ -8216,7 +8251,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                 </select>
               )}
               {authError && <div style={{fontSize:12,color:"#c04040",padding:"6px 10px",background:"#fce8e8",borderRadius:6,border:"1px solid #e8c0c0"}}>{authError}</div>}
-              <button onClick={handleAuthSubmit} disabled={authBusy}
+              <button onClick={startSignIn} disabled={authBusy}
                 style={{...css.btn(true),width:"100%",padding:"11px 16px",fontSize:14,fontWeight:700,opacity:authBusy?0.6:1}}>
                 {authBusy ? "Please wait…" : authMode==="login" ? "Sign In" : "Create Account"}
               </button>
