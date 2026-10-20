@@ -9122,6 +9122,12 @@ await (async () => {
     btns.length === 2 && btns.every((b) => /minHeight:44\b/.test(b)) && (ban.match(/flexWrap:"wrap"/g) || []).length === 2
       && btns[0].startsWith("<button onClick={notifyJustPublished} ") && btns[0].endsWith(">📣 Notify everyone</button>")
       && btns[1].startsWith("<button onClick={()=>setJustPublished(null)} ") && btns[1].endsWith(">Not now</button>") && count("onClick={notifyJustPublished}") === 1, J(btns));
+  // (render check 2026-10-20) the white label reads at 4.5:1 on BOTH ends of the button's own gradient — css.btn(true)'s
+  // #2488c8 end was 3.9:1 — and the fill is still a linear-gradient, so the dark sheet keeps the label white
+  const nGrad = btns[0] ? (btns[0].match(/background:"linear-gradient\(135deg,(#[0-9a-f]{6}),(#[0-9a-f]{6})\)"/) || null) : null;
+  const nStops = nGrad ? [ratio("#ffffff", nGrad[1]), ratio("#ffffff", nGrad[2])].map((x) => Math.round(x * 100) / 100) : null;
+  check("CD6 📣 Notify everyone has its own linear-gradient fill, and its white label reads at 4.5:1 or more on both ends (the app's primary gradient ends at 3.9:1)",
+    !!nStops && nStops.every((x) => x >= 4.5) && /button\[style\*="background: linear-gradient"\] \{ color: #fff !important; \}/.test(src), J(nStops));
   const notNow = (ban.match(/<button onClick=\{(\(\)=>[^}]*)\}/) || [])[1] || null;
   let nn = null;
   try { if (notNow) { const r = { set: [], sends: 0 }; vm.runInContext(`(function (env) { const { setJustPublished, notifyPublished, addNotification, sendEmailNotif } = env; return (${notNow}); })`, sandbox)({ setJustPublished: (v) => r.set.push(v), notifyPublished: () => { r.sends++; }, addNotification: () => { r.sends++; }, sendEmailNotif: () => { r.sends++; } })(); nn = r; } } catch (ex) { nn = { threw: String(ex).slice(0, 120) }; }

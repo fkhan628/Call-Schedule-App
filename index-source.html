@@ -9958,7 +9958,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                 ✓ Published {justPublished.label}. Nobody has been notified yet.
               </div>
               <div style={{display:"flex",gap:8,flexWrap:"wrap",flex:"1 1 auto",justifyContent:"flex-end"}}>
-                <button onClick={notifyJustPublished} style={{...css.btn(true),minHeight:44,padding:"8px 14px",fontSize:14,flex:"1 1 auto"}}>📣 Notify everyone</button>
+                {/* Its own darker gradient (render check 2026-10-20): white on css.btn(true)'s light end (#2488c8) is 3.9:1, under
+                    the wide label's right side; #155a8a→#1a6fa8 keeps both ends ≥ 5.4:1 and still matches the dark sheet's
+                    button[style*="background: linear-gradient"] rule, so the label stays white in dark mode. */}
+                <button onClick={notifyJustPublished} style={{...css.btn(true),background:"linear-gradient(135deg,#155a8a,#1a6fa8)",minHeight:44,padding:"8px 14px",fontSize:14,flex:"1 1 auto"}}>📣 Notify everyone</button>
                 <button onClick={()=>setJustPublished(null)} style={{...css.btn(false),minHeight:44,padding:"8px 14px",fontSize:14}}>Not now</button>
               </div>
             </div>
