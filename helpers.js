@@ -916,14 +916,16 @@ function publishedThrough(schedule) {
 // notice (the in-app notice and a device push) and the e-mail (sent by the
 // server to everyone whose settings take schedule e-mails); a result that
 // needs your OK — or that changed during the search — opens the preview
-// instead, and Accept & Publish there (acceptPreview) sends no notice.
+// instead, and Accept & Publish there (acceptPreview) sends no notice by
+// itself: the Calendar then asks the scheduler whether to notify everyone
+// (owner decision 2026-10-20 — said so here since the review fixes).
 //   mondays: the period's Mondays, as Dates or "YYYY-MM-DD"
 //   opts:    { schedule: the published weeks by Monday, today: "YYYY-MM-DD" }
 // Pure: no clock, no state.
 function publishConfirmText(mondays, opts) {
   const o = opts || {};
   const ms = (mondays || []).map(m => (typeof m === "string" ? m : fmt(m))).sort();
-  const notify = "If it publishes straight away, everyone is notified by push and email (per their notification settings). If anything needs your OK, the preview opens instead — publishing from there notifies no one.";
+  const notify = "If it publishes straight away, everyone is notified by push and email (per their notification settings). If anything needs your OK, the preview opens instead — after ✓ Accept & Publish there, you choose whether to notify everyone.";
   if (!ms.length) return `Generate and publish the schedule?\n\n${notify}`;
   const n = ms.length, first = ms[0], end = fmt(addD(parse(ms[n - 1]), 6));
   const sched = o.schedule || {};
@@ -1181,14 +1183,21 @@ function authErrorText(e) {
   if (typeof e === "string") return e.trim() || GENERIC;
   if (!e || typeof e !== "object") return GENERIC;
   // A thrown Error (from any realm) or DOMException is never a server answer.
-  if (Object.prototype.toString.call(e) !== "[object Object]") {
-    const m = typeof e.message === "string" ? e.message : "";
-    return /failed to fetch|load failed|networkerror|network request failed|network connection was lost|internet connection appears to be offline/i.test(m) ? NO_CONNECTION : GENERIC;
-  }
+  if (Object.prototype.toString.call(e) !== "[object Object]") return isNoConnectionError(e) ? NO_CONNECTION : GENERIC;
   for (const k of ["msg", "error_description", "message", "error"]) {
     if (typeof e[k] === "string" && e[k].trim()) return e[k].trim();
   }
   return GENERIC;
+}
+// Did this request never reach the server? authErrorText's own test, on its
+// own (owner decision 2026-10-20, review fix): a thrown Error or DOMException
+// whose message is a browser's no-connection words. A server's answer (a
+// plain object), a string or nothing is never one. The sign-in card keeps its
+// "you're still signed in" note after an attempt that failed this way.
+function isNoConnectionError(e) {
+  if (!e || typeof e !== "object" || Object.prototype.toString.call(e) === "[object Object]") return false;
+  const m = typeof e.message === "string" ? e.message : "";
+  return /failed to fetch|load failed|networkerror|network request failed|network connection was lost|internet connection appears to be offline/i.test(m);
 }
 
 /* ═══ ICS Calendar Generation ═══ */
