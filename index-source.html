@@ -985,6 +985,13 @@ function CallSchedule() {
     return tradeRequests.filter(r => r.from_surgeon_id === mySurgeon || r.to_surgeon_id === mySurgeon);
   }, [tradeRequests, isScheduler, mySurgeon]);
 
+  // Who may edit or withdraw a time-off request (owner decision 2026-10-20: "edit requests is only for schedulers"
+  // — a member edits or withdraws only their OWN request; a scheduler, anyone's). "Own" is the signed-in account's
+  // person_id (userProfile, the identity the request form files under), never Mine's view-only pick; an APP's own
+  // request counts. Everyone still SEES every row (they're decided as a group): only the row's ✎ Edit / Withdraw
+  // and its editor follow this, and saveVacRequestEdit / deleteVacRequest refuse anyone else's request.
+  const canChangeVacRequest = useCallback((req) => !!req && (isScheduler || (!!userProfile?.person_id && req.surgeon_id === userProfile.person_id)), [isScheduler, userProfile]);
+
   // ─── Vacation Request Deadline (auto-detected) ───
   // The latest Monday in `schedule` is the FINAL week of the current period.
   // The next period begins the following Monday (+ 1 week).
@@ -3858,7 +3865,12 @@ function CallSchedule() {
   // A failed DELETE says so and leaves the list alone — the row is still
   // there, so it stays on screen (it used to vanish until the next reload).
   const deleteTradeRequest = useCallback(async (reqId) => {
-    if (!confirm("Delete this trade request?")) return;
+    // Only its proposer or a scheduler (owner decision 2026-10-20, canChangeVacRequest's rule): the pending row's
+    // Withdraw shows only to the proposer and Completed Trades' ✕ only to a scheduler; this is the gate behind them —
+    // anyone else's call does nothing (no confirm, no DELETE, nothing said). The confirm says what its button does.
+    const req = tradeRequests.find(r => r.id === reqId);
+    if (!req || !(isScheduler || (!!userProfile?.person_id && req.from_surgeon_id === userProfile.person_id))) return;
+    if (!confirm(req.status === "pending" ? "Withdraw this trade request?" : "Delete this trade request?")) return;
     const ep = sessionEpochRef.current;
     try {
       const res = await fetch(`${SUPABASE_URL}/rest/v1/shift_trade_requests?id=eq.${reqId}`, { method: "DELETE", headers: { ...dbAuthHeaders(), Prefer: "return=minimal" } });
@@ -3869,7 +3881,7 @@ function CallSchedule() {
       console.error("Delete trade request failed:", e);
       if (sessionEpochRef.current === ep) showToast("Couldn't delete the trade request — check your connection and try again.", "error");
     }
-  }, []);
+  }, [tradeRequests, isScheduler, userProfile]);
 
   // ─── Mark Notifications as Seen ───
   const markNotifsSeen = () => {
@@ -3898,7 +3910,16 @@ function CallSchedule() {
 
   // ─── Delete a Single Vacation Request ───
   const deleteVacRequest = useCallback(async (reqId) => {
-    if (!confirm("Delete this request?")) return;
+    // Only the requester or a scheduler (owner decision 2026-10-20 — canChangeVacRequest): the gate behind the
+    // pending row's Withdraw and the Reviewed list's ✕ (a scheduler's) — anyone else's call does nothing (no
+    // confirm, no DELETE, nothing said). The confirm says what its button does: Withdraw names whose request and
+    // its dates (a scheduler withdraws for anyone); the ✕ deletes a reviewed one.
+    const req = vacRequests.find(r => r.id === reqId);
+    if (!canChangeVacRequest(req)) return;
+    const ask = req.status === "pending"
+      ? `Withdraw ${req.surgeon_id === userProfile?.person_id ? "your" : `${req.surgeon_name || "this person"}'s`} ${req.request_type === "nocall" ? "no-call" : "vacation"} request, ${req.start_date} → ${req.end_date}?`
+      : "Delete this request?";
+    if (!confirm(ask)) return;
     const ep = sessionEpochRef.current; // (review r5 fix-1 — as deleteTradeRequest's)
     try {
       const res = await fetch(`${SUPABASE_URL}/rest/v1/vacation_requests?id=eq.${reqId}`, { method: "DELETE", headers: { ...dbAuthHeaders(), Prefer: "return=minimal" } });
@@ -3906,13 +3927,21 @@ function CallSchedule() {
       if (!res.ok) { console.error("Delete vacation request failed:", res.status); showToast("Couldn't delete the request — check your connection and try again.", "error"); return; } // not deleted: the row stays
       setVacRequests(prev => prev.filter(r => r.id !== reqId));
     } catch(e) { console.error("Delete vacation request error:", e); if (sessionEpochRef.current === ep) showToast("Couldn't delete the request — check your connection and try again.", "error"); }
-  }, []);
+  }, [vacRequests, canChangeVacRequest, userProfile]);
 
   // ─── Edit Vacation Request ───
   const [editingVacReq, setEditingVacReq] = useState(null); // { id, start_date, end_date, reason }
 
   const saveVacRequestEdit = useCallback(async () => {
     if (!editingVacReq) return;
+    // The request as it was (its old dates — what a set-back restores, and
+    // what an approved one's time off is moved from).
+    const req = vacRequests.find(r => r.id === editingVacReq.id);
+    // Only the requester or a scheduler (owner decision 2026-10-20 —
+    // canChangeVacRequest): the gate behind ✎ Edit and its editor. Anyone
+    // else's save (a stale render, an editor left open across an account
+    // change) does nothing — no write, no audit, no notice, nothing said.
+    if (!canChangeVacRequest(req)) return;
     // A broken range is refused here, before anything is sent (UX audit
     // 2026-10-19): the editor's end follows its start (#84), but a typed or
     // cleared date still reached the PATCH and saved an empty or inverted
@@ -3940,9 +3969,6 @@ function CallSchedule() {
     // with the tap's headers — only from the dates this tap wrote.
     const ep = sessionEpochRef.current, tapH = dbAuthHeaders();
     const live = () => sessionEpochRef.current === ep;
-    // The request as it was (its old dates — what a set-back restores, and
-    // what an approved one's time off is moved from).
-    const req = vacRequests.find(r => r.id === editingVacReq.id);
     try {
       const updates = { start_date: editingVacReq.start_date, end_date: editingVacReq.end_date, reason: editingVacReq.reason };
       // Fail-closed row update. Id-only precondition — edits are valid on both
@@ -3982,7 +4008,7 @@ function CallSchedule() {
       }
       setEditingVacReq(null);
     } catch(e) { console.error("Edit vacation error:", e); if (live()) showToast("Couldn't save the changes — check your connection and try again.", "error"); }
-  }, [editingVacReq, vacRequests, isScheduler]);
+  }, [editingVacReq, vacRequests, isScheduler, canChangeVacRequest]);
 
   // ─── Revoke Approved Vacation (scheduler only) ───
   const revokeApprovedVac = useCallback(async (req) => {
@@ -12199,7 +12225,9 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                     {/* Expanded detail rows */}
                     {expanded && <div style={{borderTop:"1px solid #e8d8c0",padding:"4px 12px 8px"}}>
                       {reqs.map(r => <div key={r.id} style={{padding:"8px 0",borderBottom:"1px solid #f0e8d8"}}>
-                        {editingVacReq?.id === r.id ? (
+                        {/* The editor, ✎ Edit and Withdraw: the requester's own row, or a scheduler's (owner decision 2026-10-20 — canChangeVacRequest);
+                            a colleague sees the row and its ✓ Approve / ✕ Deny only. */}
+                        {editingVacReq?.id === r.id && canChangeVacRequest(r) ? (
                           <div style={{display:"flex",gap:6,alignItems:"end",flexWrap:"wrap"}}>
                             <div style={{minWidth:0,maxWidth:"100%"}}>
                               <label style={{fontSize:10,color:"#7a8a98",display:"block"}}>Dates</label>
@@ -12230,8 +12258,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                               </div>
                             )}
                             {r.surgeon_id === mySurgeon && !isScheduler && <span style={{marginLeft:"auto",fontSize:11,color:"#c09030",fontWeight:600,background:"#fef8e8",padding:"2px 8px",borderRadius:4,border:"1px solid #e8d090"}}>Pending review</span>}
-                            <button onClick={()=>setEditingVacReq({id:r.id,start_date:r.start_date,end_date:r.end_date,reason:r.reason||""})} style={{background:"none",border:"1px solid #d0d8e0",color:"#5a6a78",borderRadius:5,padding:"2px 8px",fontSize:10,cursor:"pointer",fontFamily:font}}>✎ Edit</button>
-                            <button onClick={()=>deleteVacRequest(r.id)} style={{background:"none",border:"1px solid #e0c0c0",color:"#904040",borderRadius:5,padding:"2px 8px",fontSize:10,cursor:"pointer",fontFamily:font}}>Withdraw</button>
+                            {canChangeVacRequest(r) && <>
+                              <button onClick={()=>setEditingVacReq({id:r.id,start_date:r.start_date,end_date:r.end_date,reason:r.reason||""})} style={{background:"none",border:"1px solid #d0d8e0",color:"#5a6a78",borderRadius:5,padding:"2px 8px",fontSize:10,cursor:"pointer",fontFamily:font}}>✎ Edit</button>
+                              <button onClick={()=>deleteVacRequest(r.id)} style={{background:"none",border:"1px solid #e0c0c0",color:"#904040",borderRadius:5,padding:"2px 8px",fontSize:10,cursor:"pointer",fontFamily:font}}>Withdraw</button>
+                            </>}
                           </div>
                         )}
                         {/* Coverage-floor check + vacation-overlap context (per-day) */}
@@ -12301,7 +12331,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                       </div>
                       {expanded && <div style={{borderTop:"1px solid #d8e0d8",padding:"4px 12px 6px"}}>
                         {reqs.map(r => <div key={r.id} style={{padding:"6px 0",borderBottom:"1px solid #e8f0e8"}}>
-                          {editingVacReq?.id === r.id ? (
+                          {/* Its ✎ Edit / ↩ Revoke / ✕ are a scheduler's; the editor follows canChangeVacRequest too (owner decision 2026-10-20) */}
+                          {editingVacReq?.id === r.id && canChangeVacRequest(r) ? (
                             <div style={{display:"flex",gap:6,alignItems:"end",flexWrap:"wrap"}}>
                               <div style={{minWidth:0,maxWidth:"100%"}}>
                                 <label style={{fontSize:10,color:"#7a8a98",display:"block"}}>Dates</label>

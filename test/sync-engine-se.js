@@ -7265,8 +7265,10 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
         after("  const approveVacRequest = useCallback(", ", [addNotification, sendEmailNotif, schedulerAdminIds, userProfile, surgeons, mySurgeon, vacations, noCallDays]);")),
       revoke: fnX("sessionEpochRef, dbAuthHeaders, confirm, fetch, SUPABASE_URL, console, showToast, setBackRequest, setVacRequests, toRemove, schedulerAdminIds, addNotification",
         after("  const revokeApprovedVac = useCallback(", ", [addNotification, schedulerAdminIds]);")),
-      edit: fnX("sessionEpochRef, dbAuthHeaders, editingVacReq, isScheduler, fmt, showToast, vacRequests, fetch, SUPABASE_URL, console, setBackRequest, logAudit, setVacRequests, toEdit, setEditingVacReq",
-        after("  const saveVacRequestEdit = useCallback(", ", [editingVacReq, vacRequests, isScheduler]);")),
+      // (owner decision 2026-10-20, changed ON PURPOSE — sync-guards CA: the edit first asks canChangeVacRequest, now in
+      // its deps; this is the scheduler's edit, so the stand-in below allows it — CA runs the real predicate)
+      edit: fnX("sessionEpochRef, dbAuthHeaders, editingVacReq, isScheduler, canChangeVacRequest, fmt, showToast, vacRequests, fetch, SUPABASE_URL, console, setBackRequest, logAudit, setVacRequests, toEdit, setEditingVacReq",
+        after("  const saveVacRequestEdit = useCallback(", ", [editingVacReq, vacRequests, isScheduler, canChangeVacRequest]);")),
       toAdd: fnX("sessionEpochRef, showToast, setterFor, logAudit, nameOf, USE_TIME_OFF, db, userProfile, console", decl("toAdd", "\n  };\n")),
       toRemove: fnX("noCallDays, vacations, setterFor, logAudit, nameOf, USE_TIME_OFF, deleteTimeOff", decl("toRemove", "\n  };\n")),
       toEdit: fnX("sessionEpochRef, dbAuthHeaders, showToast, noCallDays, vacations, setterFor, logAudit, nameOf, USE_TIME_OFF, db, deleteTimeOff, userProfile, fetch, SUPABASE_URL, console", decl("toEdit", "\n  };\n")),
@@ -7343,7 +7345,7 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
       else if (which === "approve") await V.approve(Object.assign({}, common, { parse: HX.parse, fmt: HX.fmt, addD: HX.addD, surgeons: S7, onVac: () => false, vacations: vac, noCallDays: {},
         userProfile: { person_id: "s1", display_name: "AAA" }, mySurgeon: "s1", toAdd }))(Object.assign({}, REQ));
       else if (which === "revoke") await V.revoke(Object.assign({}, common, { toRemove }))(Object.assign({}, REQ));
-      else await V.edit(Object.assign({}, common, { editingVacReq: Object.assign({ id: 7, reason: "trip, longer" }, NEW), isScheduler: true, fmt: HX.fmt, vacRequests: [Object.assign({}, REQ)], toEdit,
+      else await V.edit(Object.assign({}, common, { editingVacReq: Object.assign({ id: 7, reason: "trip, longer" }, NEW), isScheduler: true, canChangeVacRequest: (q) => !!q, fmt: HX.fmt, vacRequests: [Object.assign({}, REQ)], toEdit,
         setEditingVacReq: mark("editor closed") }))();
       await spin(40); await ticks(A);
       return { reqs: rec.reqs, to: rec.to, notes: rec.notes, pushes: rec.pushes, emails: rec.emails, audits: rec.audits, errors: rec.errors.length, early: rec.early, late: rec.late,
@@ -7425,8 +7427,11 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
         cbody("denyVacRequest", "[addNotification, sendEmailNotif, schedulerAdminIds, userProfile, surgeons, mySurgeon]")),
       submitTrade: fnX("tradeSubmitBusyRef, showToast, tradeFrom, tradeTo, tradeWeek, tradeShift, tradeReturnWeek, tradeReturnShift, isScheduler, alert, confirm, silvisActive, silvisBlock, silvisRefuse, schedule, scheduleRef, surgeons, SHIFT_LABELS, db, writeFailReason, setTradeRequests, setTradeWeek, setTradeShift, setTradeReturnWeek, setTradeReturnShift, tradeProposeMsg, logAudit, addNotification, sendEmailNotif, console, sessionEpochRef, dbAuthHeaders, setTradeSubmitting",
         cbody("submitTradeRequest", "[tradeFrom, tradeTo, tradeWeek, tradeShift, tradeReturnWeek, tradeReturnShift, surgeons, addNotification, sendEmailNotif, isScheduler, schedule, silvisActive, silvisBlock, silvisRefuse]")),
-      delTrade: fnX("confirm, fetch, SUPABASE_URL, dbAuthHeaders, console, showToast, setTradeRequests, sessionEpochRef", cbody("deleteTradeRequest", "[]")),
-      delVac: fnX("confirm, fetch, SUPABASE_URL, dbAuthHeaders, console, showToast, setVacRequests, sessionEpochRef", cbody("deleteVacRequest", "[]")),
+      // (owner decision 2026-10-20, changed ON PURPOSE — sync-guards CA: the two request deletes first find the request in
+      // their list and ask who may withdraw it — its proposer / requester or a scheduler; the deps list what that reads.
+      // Run below as the scheduler, so each goes ahead as before.)
+      delTrade: fnX("confirm, fetch, SUPABASE_URL, dbAuthHeaders, console, showToast, setTradeRequests, sessionEpochRef, tradeRequests, isScheduler, userProfile", cbody("deleteTradeRequest", "[tradeRequests, isScheduler, userProfile]")),
+      delVac: fnX("confirm, fetch, SUPABASE_URL, dbAuthHeaders, console, showToast, setVacRequests, sessionEpochRef, vacRequests, canChangeVacRequest, userProfile", cbody("deleteVacRequest", "[vacRequests, canChangeVacRequest, userProfile]")),
       clearReviewed: fnX("confirm, fetch, SUPABASE_URL, dbAuthHeaders, console, showToast, setVacRequests, sessionEpochRef", cbody("clearReviewedRequests", "[]")),
       saveApp: fnX("supabase, setSaveError, setSaveStatus, showToast, setTimeout, sessionEpochRef, console", decl("saveAppShifts", "\n  };\n")),
       paintApp: fnX("appShiftsLoaded, appShifts, APP_SHIFTS_NOT_LOADED, supabase, setAppShifts, logAudit, sessionEpochRef, dbAuthHeaders", decl("commitAppPaint", "\n  };\n")),
@@ -7507,6 +7512,7 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
     for (const [id, fnK, setK, msg] of [["delTrade", "delTrade", "setTradeRequests", "Couldn't delete the trade request"], ["delVac", "delVac", "setVacRequests", "Couldn't delete the request"], ["clearReviewed", "clearReviewed", "setVacRequests", "Couldn't clear reviewed requests"]]) {
       add(id, `the ${id === "delTrade" ? "trade request delete" : id === "delVac" ? "vacation request delete" : "'clear reviewed requests'"} (its DELETE, failing): nothing said, the list left alone, on the next session's screen; in one session a failed DELETE is said once and leaves the list alone, a 204 updates it`, async (r, fail) => {
         await H[fnK]({ confirm: () => true, SUPABASE_URL: BASE, dbAuthHeaders: r.hdr, console: r.console, showToast: r.say("toast"), [setK]: r.mark("list"), sessionEpochRef: r.ep,
+          tradeRequests: [{ id: 7, from_surgeon_id: "s3", status: "pending" }], vacRequests: [{ id: 7, surgeon_id: "s3", status: "pending" }], isScheduler: true, userProfile: { person_id: "s6" }, canChangeVacRequest: (q) => !!q,
           fetch: async (url, init) => { r.writes.push("DELETE " + init.headers.Authorization); await r.cross(); return fail ? r.resp(500, {}) : r.resp(204, null); } })(7);
       }, (x, x0, f, f0) => x.writes.join() === "DELETE Bearer TOK_A" && f.late.length === 0 && x0.early.includes("list") && f0.early.filter(k => k.startsWith("toast: ")).length === 1 && f0.early.some(k => k.startsWith("toast: " + msg)) && !f0.early.includes("list"));
     }

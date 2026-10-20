@@ -2118,12 +2118,15 @@ console.log("\nBD. Generate: one period label, the period's seam, holidays with 
 
   // BE4 — the edit's range gate, and its toast
   {
-    const editMk = fnBE("sessionEpochRef, dbAuthHeaders, editingVacReq, isScheduler, showToast, vacRequests, fetch, SUPABASE_URL, console, setBackRequest, logAudit, setVacRequests, toEdit, setEditingVacReq",
-      afterBE("  const saveVacRequestEdit = useCallback(", ", [editingVacReq, vacRequests, isScheduler]);"));
+    // (owner decision 2026-10-20, changed ON PURPOSE — CA: the edit first asks canChangeVacRequest and lists it in its
+    // deps. Here every edit is the requester's own or the scheduler's, so the stand-in allows any request it is
+    // handed; CA3 runs the real predicate, colleagues included.)
+    const editMk = fnBE("sessionEpochRef, dbAuthHeaders, editingVacReq, isScheduler, canChangeVacRequest, showToast, vacRequests, fetch, SUPABASE_URL, console, setBackRequest, logAudit, setVacRequests, toEdit, setEditingVacReq",
+      afterBE("  const saveVacRequestEdit = useCallback(", ", [editingVacReq, vacRequests, isScheduler, canChangeVacRequest]);"));
     const edit = async (draft, o = {}) => {
       if (!editMk) return null;
       const ev = [], ep = { current: 0 };
-      await editMk({ sessionEpochRef: ep, dbAuthHeaders: () => ({ Authorization: "Bearer A" }), editingVacReq: Object.assign({ id: 7, reason: "trip" }, draft), isScheduler: o.member ? false : true,
+      await editMk({ sessionEpochRef: ep, dbAuthHeaders: () => ({ Authorization: "Bearer A" }), editingVacReq: Object.assign({ id: 7, reason: "trip" }, draft), isScheduler: o.member ? false : true, canChangeVacRequest: (r) => !!r,
         showToast: (m, t) => ev.push("toast " + (t || "info") + ": " + m), vacRequests: [VREQ_BE("approved")], SUPABASE_URL: "https://x.test", console: quietBE,
         fetch: async () => { ev.push("request"); if (o.cross) ep.current++; return respBE(200, [{ id: 7 }]); },
         setBackRequest: async () => { ev.push("set back"); return true; }, logAudit: () => {}, setVacRequests: () => ev.push("list"), toEdit: () => ev.push("time off"), setEditingVacReq: () => ev.push("editor closed") })();
@@ -10673,11 +10676,13 @@ await (async () => {
           db: { insert: async (t, row) => { w.push(["insert", t, row.start_date, row.end_date]); return { data: Object.assign({ id: 9 }, row), error: null }; } }, setVacRequests: () => {}, addNotification: async () => {}, schedulerAdminIds: ["s6"], sendEmailNotif: () => {},
           setVacReqStart: () => {}, setVacReqEnd: () => {}, setVacReqReason: () => {}, setVacReqType: () => {}, vacSubmitBusyRef: { current: false }, sessionEpochRef: { current: 0 }, setVacSubmitting: () => {}, console: quietBK })();
         return w; },
+      // (owner decision 2026-10-20, changed ON PURPOSE — CA: the edit first asks canChangeVacRequest, listed in its deps;
+      // "member" here is the request's own requester, so the stand-in allows — CA3 runs the real predicate)
       saveVacRequestEdit: async (S, member) => { const w = [];
-        const f = fnBK("sessionEpochRef, dbAuthHeaders, editingVacReq, isScheduler, showToast, vacRequests, fetch, SUPABASE_URL, console, setBackRequest, logAudit, setVacRequests, toEdit, setEditingVacReq",
-          (() => { const s = sliceBK("  const saveVacRequestEdit = useCallback(", ", [editingVacReq, vacRequests, isScheduler]);"); return s ? s.slice("  const saveVacRequestEdit = useCallback(".length, s.lastIndexOf(", [editingVacReq")) : null; })());
+        const f = fnBK("sessionEpochRef, dbAuthHeaders, editingVacReq, isScheduler, canChangeVacRequest, showToast, vacRequests, fetch, SUPABASE_URL, console, setBackRequest, logAudit, setVacRequests, toEdit, setEditingVacReq",
+          (() => { const s = sliceBK("  const saveVacRequestEdit = useCallback(", ", [editingVacReq, vacRequests, isScheduler, canChangeVacRequest]);"); return s ? s.slice("  const saveVacRequestEdit = useCallback(".length, s.lastIndexOf(", [editingVacReq")) : null; })());
         if (!f) return null;
-        await f({ sessionEpochRef: { current: 0 }, dbAuthHeaders: () => ({}), editingVacReq: S.editingVacReq, isScheduler: !member, showToast: () => {}, SUPABASE_URL: "https://x.test", console: quietBK,
+        await f({ sessionEpochRef: { current: 0 }, dbAuthHeaders: () => ({}), editingVacReq: S.editingVacReq, isScheduler: !member, canChangeVacRequest: (r) => !!r, showToast: () => {}, SUPABASE_URL: "https://x.test", console: quietBK,
           vacRequests: [{ id: 7, surgeon_id: "s3", surgeon_name: "RPC", start_date: "2099-03-02", end_date: "2099-03-06", request_type: "vacation", reason: "trip", status: member ? "pending" : "approved" }],
           fetch: async (url, init) => { const b = JSON.parse(init.body); w.push(["PATCH", b.start_date, b.end_date]); return respBK(200, [{ id: 7 }]); },
           setBackRequest: async () => true, logAudit: () => {}, setVacRequests: () => {}, toEdit: (...a) => w.push(["toEdit", ...a]), setEditingVacReq: () => {} })();
@@ -11351,6 +11356,246 @@ console.log("\nAZ. Mine works for an APP");
   }
 }
 
+// ─── CA. Requests: only the requester or a scheduler edits or withdraws a request (owner decision 2026-10-20) ───
+// The owner (2026-10-20): "edit requests is only for schedulers" — a doctor edits or withdraws only their OWN request; a
+// scheduler, anyone's. The pending rows showed ✎ Edit and Withdraw on EVERY request to any signed-in member, and
+// saveVacRequestEdit / deleteVacRequest acted on whatever request they were handed. Now one predicate,
+// canChangeVacRequest (the signed-in account's person_id — userProfile, never Mine's view pick — or isScheduler),
+// gates those two controls, both editors and both handlers; deleteTradeRequest gets the same rule (its proposer or a
+// scheduler) behind its already-gated buttons. Members still see every row and its ✓ Approve / ✕ Deny (that gate is
+// unchanged — AR1). Each confirm now says what its button does. JSX can't run here (no Babel in CI): the markup's
+// conditions are sliced and EXECUTED with the real predicate; the handlers are the REAL useCallback bodies, run.
+//   CA1 the REAL canChangeVacRequest, executed: the requester (a surgeon; an APP) yes, a colleague no, the scheduler yes
+//       on anyone's, signed out / no person id / no request no; its deps are exactly what it reads; declared before
+//       every hook that lists it (§P)
+//   CA2 the markup's gates, executed: the pending row's ✎ Edit + Withdraw and both editors render for the requester and
+//       a scheduler only (an editor left open on a colleague's row is not shown); the row and its Approve/Deny stay
+//   CA3 the REAL saveVacRequestEdit: anyone else's save does nothing — no request, toast (not even the range's), list,
+//       time off, editor change or audit; the requester's and the scheduler's save as before; the v2 fence kept
+//   CA4 the REAL deleteVacRequest: anyone else's call does nothing (no confirm, no DELETE, nothing said); the requester
+//       is asked "Withdraw your vacation request, … ?", the scheduler "Withdraw RPC's …", the Reviewed ✕ "Delete this
+//       request?"; a declined confirm sends nothing; a failed DELETE keeps the row, and the session fence holds
+//   CA5 the REAL deleteTradeRequest: only the proposer or a scheduler — "Withdraw this trade request?" on a pending one
+//       (its button reads Withdraw), "Delete this trade request?" on a completed one (the scheduler's ✕)
+//   CA6 freshness: each of the three handlers rendered as React renders it (one hook slot, kept while its deps are
+//       equal) — as the requester, then signed in as a colleague with the same list and editor: the colleague's tap
+//       does nothing (a deps array missing what the gate reads keeps the requester's closure)
+//   CA7 the tab's other per-request actions (audited): Reviewed ✎ Edit / ↩ Revoke / ✕, Clear All Reviewed and Completed
+//       Trades' ✕ are a scheduler's; the pending trade's Withdraw its proposer's — none shown to a colleague (executed);
+//       the revoke's and Clear All Reviewed's confirms already match their buttons
+console.log("\nCA. Requests: only the requester or a scheduler edits or withdraws a request");
+await (async () => {
+  const nsrcCA = src.replace(/\r\n/g, "\n");   // a Windows checkout is CRLF, CI's is LF
+  const J = JSON.stringify;
+  const quietCA = { error() {}, warn() {}, log() {}, info() {} };
+  const respCA = (status, json) => ({ ok: status >= 200 && status < 300, status, json: async () => json, text: async () => J(json) });
+  const spinCA = async (n) => { for (let j = 0; j < (n || 20); j++) await null; };
+  // `  const NAME = useCallback(BODY, [DEPS]);` (declared once) → { body, deps } — one line, or a block closing "\n  }, [DEPS]);"
+  const hookCA = (name) => {
+    const head = `  const ${name} = useCallback(`, a = nsrcCA.indexOf(head);
+    if (a < 0 || nsrcCA.indexOf(head, a + 1) !== -1) return null;
+    const one = nsrcCA.slice(a, nsrcCA.indexOf("\n", a)).match(/^  const \w+ = useCallback\((.*), \[([^\]]*)\]\);$/);
+    if (one) return { body: one[1], deps: one[2], at: a };
+    const d = nsrcCA.indexOf("\n  }, [", a), e = d < 0 ? -1 : nsrcCA.indexOf("]);\n", d);
+    return d < 0 || e < 0 ? null : { body: nsrcCA.slice(a + head.length, d + 4), deps: nsrcCA.slice(d + 7, e), at: a };
+  };
+  // a maker: env → { fn: the callback, deps: its deps array evaluated in that env } (every name the slice reads is listed)
+  const mkCA = (name, names) => {
+    const h = hookCA(name); if (!h) return null;
+    try { return vm.runInContext(`(function (env) { const { ${names} } = env; return { fn: (${h.body}), deps: [${h.deps}] }; })`, sandbox, { filename: "ca-" + name + ".js" }); }
+    catch (ex) { console.log("  (CA compile error) " + name + ": " + String(ex).slice(0, 200)); return null; }
+  };
+  // a markup condition as a function of its env; a throw (a name it shouldn't read) answers "threw", never crashes the section
+  const condCA = (cond, names) => { if (!cond) return null; try { const f = vm.runInContext(`(function (env) { const { ${names} } = env; return !!(${cond}); })`, sandbox); return (env) => { try { return f(env); } catch (ex) { return "threw: " + String(ex).slice(0, 60); } }; } catch (ex) { return null; } };
+  const runCA = async (ev, p) => { try { await p(); } catch (ex) { ev.push("threw: " + String(ex).slice(0, 80)); } await spinCA(4); return ev; };
+  const PRED = mkCA("canChangeVacRequest", "isScheduler, userProfile");
+  const V_CA = {   // who is signed in: the account's profile (person_id) and role; mySurgeon follows the profile when signed in
+    RPC: { isScheduler: false, userProfile: { person_id: "s3", display_name: "RPC", role: "member" }, mySurgeon: "s3" },
+    ARW: { isScheduler: false, userProfile: { person_id: "s7", display_name: "ARW", role: "member" }, mySurgeon: "s7" },
+    KJH: { isScheduler: false, userProfile: { person_id: "s4", display_name: "KJH", role: "member" }, mySurgeon: "s4" },
+    MA: { isScheduler: false, userProfile: { person_id: "a1", display_name: "MA", role: "member" }, mySurgeon: "a1" },
+    FAK: { isScheduler: true, userProfile: { person_id: "s6", display_name: "FAK", role: "scheduler" }, mySurgeon: "s6" },
+    OUT: { isScheduler: false, userProfile: null, mySurgeon: "" },
+    NOID: { isScheduler: false, userProfile: { display_name: "?", role: "member" }, mySurgeon: "" },   // a profile row with no person id
+    STALE: { isScheduler: false, userProfile: null, mySurgeon: "s3" },   // no account (profile not loaded) though the device's stored pick says RPC
+  };
+  const predFor = (who) => (PRED ? PRED({ isScheduler: V_CA[who].isScheduler, userProfile: V_CA[who].userProfile }).fn : null);
+  const VR_CA = (o) => Object.assign({ id: 7, surgeon_id: "s3", surgeon_name: "RPC", start_date: "2099-03-02", end_date: "2099-03-06", request_type: "vacation", reason: "trip", status: "pending", reviewed_at: null }, o || {});
+  const TR_CA = (o) => Object.assign({ id: 9, from_surgeon_id: "s3", to_surgeon_id: "s7", from_surgeon_name: "RPC", to_surgeon_name: "ARW", week_monday: "2099-03-02", shift_key: "mon", status: "pending" }, o || {});
+  const NONE_CA = "a slice was not found or did not compile";
+
+  // CA1 — the predicate
+  const ask1 = (who, r) => { try { const f = predFor(who); return f ? f(r) : "missing"; } catch (ex) { return "threw: " + String(ex).slice(0, 60); } };
+  const ca1 = PRED ? {
+    own: ask1("RPC", VR_CA()), colleague: ask1("RPC", VR_CA({ surgeon_id: "s1", surgeon_name: "DJA" })), otherMember: ask1("ARW", VR_CA()),
+    appOwn: ask1("MA", VR_CA({ surgeon_id: "a1", surgeon_name: "MA" })), appColleague: ask1("MA", VR_CA()), ownReviewed: ask1("RPC", VR_CA({ status: "approved" })),
+    scheduler: ask1("FAK", VR_CA()), schedulerOwn: ask1("FAK", VR_CA({ surgeon_id: "s6", surgeon_name: "FAK" })), schedulerReviewed: ask1("FAK", VR_CA({ status: "approved" })),
+    signedOut: ask1("OUT", VR_CA()), noPersonId: ask1("NOID", VR_CA({ surgeon_id: undefined })), noRequest: [ask1("RPC", null), ask1("FAK", null), ask1("FAK", undefined)],
+  } : null;
+  const WANT1 = { own: true, colleague: false, otherMember: false, appOwn: true, appColleague: false, ownReviewed: true, scheduler: true, schedulerOwn: true, schedulerReviewed: true,
+    signedOut: false, noPersonId: false, noRequest: [false, false, false] };
+  const h1 = hookCA("canChangeVacRequest");
+  check("CA1 the REAL canChangeVacRequest, executed: the requester's own request yes (a surgeon's; an APP's), a colleague's no (for a surgeon or an APP), the scheduler yes on anyone's (pending or reviewed); signed out, a profile with no person id, or no request: no — answered from the signed-in account alone (isScheduler + userProfile, its deps exactly; Mine's view pick is no input)",
+    !!PRED && J(ca1) === J(WANT1) && !!h1 && h1.deps.replace(/\s/g, "") === "isScheduler,userProfile", PRED ? J(ca1) : NONE_CA);
+  // §P for it: declared once, before every hook that lists it
+  const listsAt = []; { const re = /[})]\s*,\s*\[([^\]]*)\]\s*\)/g; let m; while ((m = re.exec(nsrcCA)) !== null) if (/\bcanChangeVacRequest\b/.test(m[1])) listsAt.push(m.index); }
+  check("CA1 …canChangeVacRequest is declared once, BEFORE every hook that lists it (saveVacRequestEdit, deleteVacRequest — the 2026.09.24a TDZ class), and is what those two handlers' deps name",
+    !!h1 && listsAt.length === 2 && listsAt.every(i => i > h1.at) && /\bcanChangeVacRequest\b/.test((hookCA("saveVacRequestEdit") || {}).deps || "") && /\bcanChangeVacRequest\b/.test((hookCA("deleteVacRequest") || {}).deps || ""),
+    J({ declared: h1 && h1.at, lists: listsAt }));
+
+  // CA2 — the markup's gates
+  const at = (s, from) => nsrcCA.indexOf(s, from || 0);
+  const iPend = at("{/* Pending Requests — Grouped by Person */}"), iRev = at("📋 Reviewed <span", iPend), iTrades = at("{/* ─── Shift Trade Requests ─── */}", iRev);
+  const iPT = at("{/* Pending Trades */}", iTrades), iSet = at("{/* ════════════════ SETTINGS", iPT);
+  const pendCA = iPend >= 0 && iRev > iPend ? nsrcCA.slice(iPend, iRev) : "", revCA = iRev >= 0 && iTrades > iRev ? nsrcCA.slice(iRev, iTrades) : "", trCA = iPT >= 0 && iSet > iPT ? nsrcCA.slice(iPT, iSet) : "";
+  const EDITOR_RE = /\n[ ]*\{([^\n{}]*?) \? \(\n[ ]*<div style=\{\{display:"flex",gap:6,alignItems:"end",flexWrap:"wrap"\}\}>/;
+  const CTRL_RE = /\n[ ]*\{([^\n]*?) && <>\n[ ]*<button onClick=\{\(\)=>setEditingVacReq\(\{id:r\.id,[^\n]*>✎ Edit<\/button>\n[ ]*<button onClick=\{\(\)=>deleteVacRequest\(r\.id\)\}[^\n]*>Withdraw<\/button>\n[ ]*<\/>\}/;
+  const edM = pendCA.match(EDITOR_RE), ctM = pendCA.match(CTRL_RE), edRevM = revCA.match(EDITOR_RE);
+  const GATE_ENV = "editingVacReq, r, canChangeVacRequest, mySurgeon, isScheduler";   // what the row's scope offers; the gates must use the predicate
+  const edF = condCA(edM && edM[1], GATE_ENV), ctF = condCA(ctM && ctM[1], GATE_ENV), edRevF = condCA(edRevM && edRevM[1], GATE_ENV);
+  const apM = pendCA.match(/\{\(([^\n]*?)\) && \(\n\s*<div style=\{\{marginLeft:"auto",display:"flex",gap:6\}\}>\n\s*<button onClick=\{\(\)=>approveVacRequest\(r\)\}/), apF = condCA(apM && apM[1], "r, mySurgeon, isScheduler");
+  const ROWS_CA = [["RPC", VR_CA()], ["RPC", VR_CA({ surgeon_id: "s1", surgeon_name: "DJA" })], ["MA", VR_CA({ surgeon_id: "a1", surgeon_name: "MA" })], ["MA", VR_CA()], ["ARW", VR_CA()], ["FAK", VR_CA()], ["OUT", VR_CA()], ["STALE", VR_CA()]];
+  const ca2 = edF && ctF && edRevF && apF && PRED ? ROWS_CA.map(([who, r]) => { const v = V_CA[who], g = (o) => Object.assign({ canChangeVacRequest: predFor(who), mySurgeon: v.mySurgeon, isScheduler: v.isScheduler }, o);
+    return { who, row: r.surgeon_id, controls: ctF(g({ r })), editor: edF(g({ editingVacReq: { id: r.id }, r })),
+      reviewedEditor: edRevF(g({ editingVacReq: { id: r.id }, r: Object.assign({}, r, { status: "approved" }) })), approveDeny: apF({ r, mySurgeon: v.mySurgeon, isScheduler: v.isScheduler }) }; }) : null;
+  const WANT2 = [[true, true, true, false], [false, false, false, true], [true, true, true, false], [false, false, false, true], [false, false, false, true], [true, true, true, true], [false, false, false, true], [false, false, false, false]];
+  check("CA2 the pending row's ✎ Edit + Withdraw and BOTH editors, their conditions sliced and executed with the real predicate: shown for the requester (RPC on his own row, MA on hers) and the scheduler; NOT for a colleague (a surgeon or an APP), even with an editor left open on that row, nor with no account signed in (whatever the device's stored pick); a colleague keeps ✓ Approve / ✕ Deny on it (AR1's gate, unchanged)",
+    !!ca2 && J(ca2.map(x => [x.controls, x.editor, x.reviewedEditor, x.approveDeny])) === J(WANT2) && edF({ editingVacReq: { id: 8 }, r: VR_CA(), canChangeVacRequest: predFor("FAK") }) === false,
+    ca2 ? J(ca2) : J({ editor: !!edM, controls: !!ctM, reviewedEditor: !!edRevM, approveDeny: !!apM }));
+  check("CA2 …each gate IS the one predicate (`canChangeVacRequest(r)` — no second copy of the rule, no mySurgeon / Mine pick); the pending card has one ✎ Edit and one Withdraw (both inside it), the Reviewed card one ✎ Edit; members still see every row (myVacRequests is every request — decided as a group)",
+    !!ctM && ctM[1] === "canChangeVacRequest(r)" && !!edM && edM[1] === "editingVacReq?.id === r.id && canChangeVacRequest(r)" && !!edRevM && edRevM[1] === edM[1]
+      && pendCA.split(">✎ Edit</button>").length === 2 && pendCA.split(">Withdraw</button>").length === 2 && revCA.split(">✎ Edit</button>").length === 2
+      && count("canChangeVacRequest(r)") === 3 && count("const myVacRequests = useMemo(() => {\n    // Everyone sees all vacation requests — they're decided as a group.\n    return vacRequests;\n  }, [vacRequests]);".replace(/\n/g, src.includes("\r\n") ? "\r\n" : "\n")) === 1,
+    J({ controls: ctM && ctM[1], editor: edM && edM[1], reviewedEditor: edRevM && edRevM[1], calls: count("canChangeVacRequest(r)") }));
+
+  // CA3 — the REAL saveVacRequestEdit
+  const EDIT_CA = mkCA("saveVacRequestEdit", "sessionEpochRef, dbAuthHeaders, editingVacReq, isScheduler, canChangeVacRequest, showToast, vacRequests, fetch, SUPABASE_URL, console, setBackRequest, logAudit, setVacRequests, toEdit, setEditingVacReq");
+  const editCA = async (who, draft, o = {}) => {
+    if (!EDIT_CA || !PRED) return null;
+    const ev = [], ep = { current: 0 };
+    const { fn } = EDIT_CA({ sessionEpochRef: ep, dbAuthHeaders: () => ({ Authorization: "Bearer " + who }), editingVacReq: Object.assign({ id: 7, reason: "trip" }, draft),
+      isScheduler: V_CA[who].isScheduler, canChangeVacRequest: predFor(who), showToast: (m, t) => ev.push("toast " + (t || "info") + ": " + m), vacRequests: [VR_CA(o.req)],
+      SUPABASE_URL: "https://x.test", console: quietCA, fetch: async (url, init) => { ev.push(init.method + " " + init.headers.Authorization); if (o.cross) ep.current++; return respCA(200, [{ id: 7 }]); },
+      setBackRequest: async () => { ev.push("set back"); return true; }, logAudit: (a) => ev.push("audit " + a), setVacRequests: () => ev.push("list"), toEdit: () => ev.push("time off"), setEditingVacReq: () => ev.push("editor closed") });
+    return runCA(ev, () => fn());
+  };
+  const NEW_CA = { start_date: "2099-03-09", end_date: "2099-03-13" };
+  const ca3 = EDIT_CA && PRED ? {
+    colleague: await editCA("ARW", NEW_CA), colleagueBadRange: await editCA("ARW", { start_date: "", end_date: "2099-03-13" }), colleagueReviewed: await editCA("ARW", NEW_CA, { req: { status: "approved" } }),
+    app: await editCA("MA", NEW_CA), signedOut: await editCA("OUT", NEW_CA),
+    own: await editCA("RPC", NEW_CA), ownPast: await editCA("RPC", { start_date: "2020-01-06", end_date: "2020-01-08" }), appOwn: await editCA("MA", NEW_CA, { req: { surgeon_id: "a1", surgeon_name: "MA" } }),
+    scheduler: await editCA("FAK", NEW_CA, { req: { status: "approved" } }), ownCrossed: await editCA("RPC", NEW_CA, { cross: true }),
+  } : null;
+  check("CA3 the REAL saveVacRequestEdit: a colleague's save (ARW on RPC's pending or approved request; an APP; signed out) does NOTHING — no request, no toast (not even the empty date's), no list, time off, editor change or audit",
+    !!ca3 && ["colleague", "colleagueBadRange", "colleagueReviewed", "app", "signedOut"].every(k => J(ca3[k]) === "[]"), ca3 ? J(ca3) : NONE_CA);
+  check("CA3 …the requester's own save (a surgeon's, an APP's) and the scheduler's (an approved one: its time off moves) land as before and say so; a member's past date is still refused with its message; the v2 fence kept — a session change during the PATCH sets it back, nothing said",
+    !!ca3 && J(ca3.own) === J(["PATCH Bearer RPC", "list", "toast success: Changes saved.", "editor closed"]) && J(ca3.appOwn) === J(["PATCH Bearer MA", "list", "toast success: Changes saved.", "editor closed"])
+      && J(ca3.scheduler) === J(["PATCH Bearer FAK", "list", "toast success: Changes saved.", "time off", "editor closed"]) && ca3.ownPast.length === 1 && /^toast error: Requests are for upcoming time off/.test(ca3.ownPast[0])
+      && J(ca3.ownCrossed) === J(["PATCH Bearer RPC", "set back"]), ca3 ? J({ own: ca3.own, appOwn: ca3.appOwn, scheduler: ca3.scheduler, ownPast: ca3.ownPast, ownCrossed: ca3.ownCrossed }) : NONE_CA);
+
+  // CA4 — the REAL deleteVacRequest
+  const DELV_CA = mkCA("deleteVacRequest", "vacRequests, canChangeVacRequest, userProfile, confirm, fetch, SUPABASE_URL, dbAuthHeaders, console, showToast, setVacRequests, sessionEpochRef");
+  const delVacCA = async (who, o = {}) => {
+    if (!DELV_CA || !PRED) return null;
+    const ev = [], ep = { current: 0 }, list = [VR_CA(o.req), VR_CA({ id: 8, surgeon_id: "s1", surgeon_name: "DJA" })];
+    const { fn } = DELV_CA({ vacRequests: list, canChangeVacRequest: predFor(who), userProfile: V_CA[who].userProfile, confirm: (m) => { ev.push("confirm: " + m); return !o.no; },
+      SUPABASE_URL: "https://x.test", dbAuthHeaders: () => ({ Authorization: "Bearer " + who }), console: quietCA, showToast: (m, t) => ev.push("toast " + (t || "info") + ": " + m),
+      setVacRequests: (f) => ev.push("list " + f(list.map(r => Object.assign({}, r))).map(r => r.id).join()), sessionEpochRef: ep,
+      fetch: async (url, init) => { ev.push(init.method + " " + String(url).replace(/^.*\/rest\/v1\//, "") + " " + init.headers.Authorization); if (o.cross) ep.current++; return respCA(o.status || 204, null); } });
+    return runCA(ev, () => fn(o.id || 7));
+  };
+  const ca4 = DELV_CA && PRED ? {
+    colleague: await delVacCA("ARW"), app: await delVacCA("MA"), signedOut: await delVacCA("OUT"), othersRow: await delVacCA("RPC", { id: 8 }),
+    own: await delVacCA("RPC"), ownNoCall: await delVacCA("RPC", { req: { request_type: "nocall" } }), appOwn: await delVacCA("MA", { req: { surgeon_id: "a1", surgeon_name: "MA" } }),
+    scheduler: await delVacCA("FAK"), schedulerReviewed: await delVacCA("FAK", { req: { status: "approved" } }), declined: await delVacCA("RPC", { no: true }),
+    failed: await delVacCA("RPC", { status: 500 }), crossed: await delVacCA("RPC", { status: 500, cross: true }),
+  } : null;
+  const W4 = (who, q) => ["confirm: " + q, "DELETE vacation_requests?id=eq.7 Bearer " + who, "list 8"];
+  check("CA4 the REAL deleteVacRequest: a colleague's call (ARW on RPC's; an APP; signed out; RPC on DJA's) does NOTHING — no confirm, no DELETE, nothing said",
+    !!ca4 && ["colleague", "app", "signedOut", "othersRow"].every(k => J(ca4[k]) === "[]"), ca4 ? J(ca4) : NONE_CA);
+  check("CA4 …the confirm says what its button does: the requester's Withdraw — \"Withdraw your vacation request, 2099-03-02 → 2099-03-06?\" (\"no-call\" for a no-call one; an APP's too), the scheduler's Withdraw — \"Withdraw RPC's vacation request, …?\", the Reviewed list's ✕ — \"Delete this request?\"; each then deletes it",
+    !!ca4 && J(ca4.own) === J(W4("RPC", "Withdraw your vacation request, 2099-03-02 → 2099-03-06?")) && J(ca4.ownNoCall) === J(W4("RPC", "Withdraw your no-call request, 2099-03-02 → 2099-03-06?"))
+      && J(ca4.appOwn) === J(W4("MA", "Withdraw your vacation request, 2099-03-02 → 2099-03-06?")) && J(ca4.scheduler) === J(W4("FAK", "Withdraw RPC's vacation request, 2099-03-02 → 2099-03-06?"))
+      && J(ca4.schedulerReviewed) === J(W4("FAK", "Delete this request?")), ca4 ? J({ own: ca4.own, ownNoCall: ca4.ownNoCall, appOwn: ca4.appOwn, scheduler: ca4.scheduler, schedulerReviewed: ca4.schedulerReviewed }) : NONE_CA);
+  check("CA4 …a declined confirm sends nothing; a failed DELETE says so once and keeps the row (BA3); failing after a session change: nothing said, nothing changed (the fence)",
+    !!ca4 && ca4.declined.length === 1 && /^confirm: Withdraw your /.test(ca4.declined[0])
+      && J(ca4.failed.slice(1)) === J(["DELETE vacation_requests?id=eq.7 Bearer RPC", "toast error: Couldn't delete the request — check your connection and try again."]) && J(ca4.crossed.slice(1)) === J(["DELETE vacation_requests?id=eq.7 Bearer RPC"]),
+    ca4 ? J({ declined: ca4.declined, failed: ca4.failed, crossed: ca4.crossed }) : NONE_CA);
+
+  // CA5 — the REAL deleteTradeRequest
+  const DELT_CA = mkCA("deleteTradeRequest", "tradeRequests, isScheduler, userProfile, confirm, fetch, SUPABASE_URL, dbAuthHeaders, console, showToast, setTradeRequests, sessionEpochRef");
+  const delTrCA = async (who, o = {}) => {
+    if (!DELT_CA) return null;
+    const ev = [], ep = { current: 0 }, list = [TR_CA(o.tr), TR_CA({ id: 10, from_surgeon_id: "s1", from_surgeon_name: "DJA" })];
+    const { fn } = DELT_CA({ tradeRequests: list, isScheduler: V_CA[who].isScheduler, userProfile: V_CA[who].userProfile, confirm: (m) => { ev.push("confirm: " + m); return !o.no; },
+      SUPABASE_URL: "https://x.test", dbAuthHeaders: () => ({ Authorization: "Bearer " + who }), console: quietCA, showToast: (m, t) => ev.push("toast " + (t || "info") + ": " + m),
+      setTradeRequests: (f) => ev.push("list " + f(list.map(r => Object.assign({}, r))).map(r => r.id).join()), sessionEpochRef: ep,
+      fetch: async (url, init) => { ev.push(init.method + " " + String(url).replace(/^.*\/rest\/v1\//, "") + " " + init.headers.Authorization); return respCA(204, null); } });
+    return runCA(ev, () => fn(o.id || 9));
+  };
+  const ca5 = DELT_CA ? {
+    counterparty: await delTrCA("ARW"), third: await delTrCA("KJH"), app: await delTrCA("MA"), signedOut: await delTrCA("OUT"), noPersonId: await delTrCA("NOID", { tr: { from_surgeon_id: undefined } }), othersTrade: await delTrCA("RPC", { id: 10 }),
+    proposer: await delTrCA("RPC"), declined: await delTrCA("RPC", { no: true }), scheduler: await delTrCA("FAK"), schedulerCompleted: await delTrCA("FAK", { tr: { status: "accepted" } }),
+  } : null;
+  const W5 = (who, q) => ["confirm: " + q, "DELETE shift_trade_requests?id=eq.9 Bearer " + who, "list 10"];
+  check("CA5 the REAL deleteTradeRequest: only its proposer or a scheduler — the counterparty (ARW), a third member, an APP, signed out, a profile with no person id, or the proposer of another trade: nothing (no confirm, no DELETE, nothing said)",
+    !!ca5 && ["counterparty", "third", "app", "signedOut", "noPersonId", "othersTrade"].every(k => J(ca5[k]) === "[]"), ca5 ? J(ca5) : NONE_CA);
+  check("CA5 …the confirm says what its button does: the proposer's (and a scheduler's) Withdraw on a pending trade — \"Withdraw this trade request?\" (it read \"Delete …\"); Completed Trades' ✕ — \"Delete this trade request?\"; each then deletes it; a declined confirm sends nothing",
+    !!ca5 && J(ca5.proposer) === J(W5("RPC", "Withdraw this trade request?")) && J(ca5.scheduler) === J(W5("FAK", "Withdraw this trade request?"))
+      && J(ca5.schedulerCompleted) === J(W5("FAK", "Delete this trade request?")) && J(ca5.declined) === J(["confirm: Withdraw this trade request?"]),
+    ca5 ? J({ proposer: ca5.proposer, scheduler: ca5.scheduler, schedulerCompleted: ca5.schedulerCompleted, declined: ca5.declined }) : NONE_CA);
+
+  // CA6 — freshness: React keeps a useCallback's function while every dep is Object.is-equal (BA1's rig)
+  const slotCA = () => { let s = null; return (made) => { if (s && s.deps.length === made.deps.length && s.deps.every((d, i) => Object.is(d, made.deps[i]))) return s.fn; s = made; return made.fn; }; };
+  const freshCA = async (kind, first, then) => {
+    const MK = kind === "edit" ? EDIT_CA : kind === "vac" ? DELV_CA : DELT_CA;
+    if (!MK || !PRED) return null;
+    const ev = [], ep = { current: 0 }, predSlot = slotCA(), hSlot = slotCA();
+    const vacList = [VR_CA()], trList = [TR_CA()], editing = Object.assign({ id: 7, reason: "trip" }, NEW_CA);   // the SAME objects in both renders
+    const render = (who) => {
+      const v = V_CA[who], pred = predSlot(PRED({ isScheduler: v.isScheduler, userProfile: v.userProfile }));
+      return hSlot(MK({ isScheduler: v.isScheduler, userProfile: v.userProfile, canChangeVacRequest: pred, vacRequests: vacList, tradeRequests: trList, editingVacReq: editing,
+        dbAuthHeaders: () => ({ Authorization: "Bearer " + who }), SUPABASE_URL: "https://x.test", console: quietCA, sessionEpochRef: ep, showToast: (m) => ev.push("toast " + m), confirm: () => { ev.push("confirm"); return true; },
+        fetch: async (u, init) => { ev.push(init.method + " " + init.headers.Authorization); return kind === "edit" ? respCA(200, [{ id: 7 }]) : respCA(204, null); },
+        setVacRequests: () => ev.push("list"), setTradeRequests: () => ev.push("list"), setBackRequest: async () => true, logAudit: () => {}, toEdit: () => ev.push("time off"), setEditingVacReq: () => ev.push("editor closed") }));
+    };
+    render(first); const tap = render(then);
+    return runCA(ev, () => tap(kind === "edit" ? undefined : kind === "vac" ? 7 : 9));
+  };
+  const ca6 = EDIT_CA && DELV_CA && DELT_CA && PRED ? {
+    edit: await freshCA("edit", "RPC", "ARW"), vac: await freshCA("vac", "RPC", "ARW"), trade: await freshCA("trade", "RPC", "ARW"),
+    editBack: await freshCA("edit", "ARW", "RPC"), vacBack: await freshCA("vac", "ARW", "RPC"), tradeBack: await freshCA("trade", "ARW", "RPC"),
+  } : null;
+  check("CA6 freshness, rendered as React renders them (one hook slot each, kept while the deps are equal): the requester renders, then a colleague signs in (the request list and the open editor the SAME objects) — the colleague's save / Withdraw / trade Withdraw does nothing; the other way round the requester's lands (each deps array names what its gate reads)",
+    !!ca6 && J(ca6.edit) === "[]" && J(ca6.vac) === "[]" && J(ca6.trade) === "[]"
+      && J(ca6.editBack) === J(["PATCH Bearer RPC", "list", "toast Changes saved.", "editor closed"]) && J(ca6.vacBack) === J(["confirm", "DELETE Bearer RPC", "list"]) && J(ca6.tradeBack) === J(["confirm", "DELETE Bearer RPC", "list"]),
+    ca6 ? J(ca6) : NONE_CA);
+
+  // CA7 — the tab's other per-request actions (item 3 of the decision): none is an edit / withdraw open to a colleague
+  const gateCA = (block, re) => { const m = block.match(re); return m ? condCA(m[1], "isScheduler, mySurgeon, r, reviewed") : null; };
+  const G7 = {
+    reviewedEditRevoke: gateCA(revCA, /\n[ ]*\{([^\n]*?) && \(\n[ ]*<>\n[ ]*<button onClick=\{\(\)=>setEditingVacReq\(\{id:r\.id,[^\n]*>✎ Edit<\/button>\n[ ]*<button onClick=\{\(\)=>revokeApprovedVac\(r\)\}[^\n]*>↩ Revoke<\/button>/),
+    reviewedDelete: gateCA(revCA, /\n[ ]*\{([^\n]*?) && \(\n[ ]*<button onClick=\{\(\)=>deleteVacRequest\(r\.id\)\}[^\n]*>✕<\/button>/),
+    clearAllReviewed: gateCA(revCA, /\n[ ]*\{([^\n]*?) && \(\n[ ]*<button onClick=\{clearReviewedRequests\}[^\n]*>Clear All Reviewed<\/button>/),
+    tradeWithdraw: gateCA(trCA, /\n[ ]*\{([^\n]*?) && <button onClick=\{\(\)=>deleteTradeRequest\(r\.id\)\}[^\n]*>Withdraw<\/button>\}/),
+    completedTradeDelete: gateCA(trCA, /\n[ ]*\{([^\n]*?) && <button onClick=\{\(\)=>deleteTradeRequest\(r\.id\)\}[^\n]*>✕<\/button>\}/),
+  };
+  const shown7 = (who) => { const v = V_CA[who], env = (r) => ({ isScheduler: v.isScheduler, mySurgeon: v.mySurgeon, r, reviewed: [VR_CA({ status: "approved" })] });
+    return Object.keys(G7).map(k => (G7[k] ? G7[k](env(k.startsWith("reviewed") || k === "clearAllReviewed" ? VR_CA({ status: "approved" }) : TR_CA(k === "completedTradeDelete" ? { status: "accepted" } : {}))) : "missing")); };
+  const ca7 = { ARW: shown7("ARW"), KJH: shown7("KJH"), MA: shown7("MA"), RPC: shown7("RPC"), FAK: shown7("FAK") };
+  // …and the delete behind the Reviewed ✕ and Completed Trades' ✕, called by a colleague anyway (a stale render): nothing
+  const calls7 = DELV_CA && DELT_CA && PRED ? [await delVacCA("ARW", { req: { status: "approved" } }), await delVacCA("MA", { req: { status: "denied" } }), await delTrCA("ARW", { tr: { status: "accepted" } }), await delTrCA("KJH", { tr: { status: "declined" } })] : null;
+  check("CA7 the tab's other per-request actions, their gates sliced and executed — Reviewed ✎ Edit / ↩ Revoke, its ✕, Clear All Reviewed, the pending trade's Withdraw, Completed Trades' ✕: a colleague (the trade's counterparty ARW, a third member, an APP) sees none, and the delete behind the two ✕s does nothing if called anyway; the requester / proposer RPC sees only his trade's Withdraw; the scheduler all but another's trade Withdraw (unchanged: he declines it)",
+    J(ca7) === J({ ARW: [false, false, false, false, false], KJH: [false, false, false, false, false], MA: [false, false, false, false, false], RPC: [false, false, false, true, false], FAK: [true, true, true, false, true] })
+      && !!calls7 && calls7.every(ev => J(ev) === "[]"),
+    J({ shown: ca7, calls: calls7 }));
+  check("CA7 …their confirms match their buttons: ↩ Revoke asks \"Revoke <name>'s approved …?\", Clear All Reviewed asks \"Clear all reviewed …?\" (unchanged); the request deletes' Withdraw / ✕ wording is CA4's and CA5's (executed); no confirm on the tab says \"Delete\" for a Withdraw any more",
+    count("if (!confirm(`Revoke ${req.surgeon_name}'s approved ${kindLabel} ${req.start_date} → ${req.end_date}? This will remove it from the schedule.`)) return;") === 1 && count(">↩ Revoke</button>") === 1
+      && count("if (!confirm(\"Clear all reviewed (approved/denied) requests? Pending requests will be kept.\")) return;") === 1 && count(">Clear All Reviewed</button>") === 1
+      && count("if (!confirm(\"Delete this request?\")) return;") === 0 && count("if (!confirm(\"Delete this trade request?\")) return;") === 0,
+    J({ revoke: count(">↩ Revoke</button>"), clear: count(">Clear All Reviewed</button>") }));
+})().catch(ex => check("CA harness ran without crashing", false, String(ex && ex.stack || ex).split("\n").slice(0, 3).join(" | ")));
+
 // ─── BA. Requests: a decline is audited as who declined; a failed delete keeps its row; the trade buttons in dark mode (UX audit 2026-10-19) ───
 // (1) declineTradeRequest's useCallback listed only its notice deps, so React kept the closure of the render those
 //     last changed in — before the profile had loaded — and its logAudit wrote actor_id null, actor_name "Unknown"
@@ -11450,7 +11695,10 @@ await (async () => {
     !!b2z && !!b2f && [b2z, b2f].every(S => S.audits.length === 0 && S.lists === 0 && S.notes.length === 0 && S.emails.length === 0 && S.toasts.length === 0),
     b2z ? JSON.stringify([outBA(b2z), outBA(b2f)]) : NONE_BA);
   // BA3 — the three deletes, sliced whole (their useCallback) and run
-  const ENV_DEL = "useCallback, confirm, fetch, SUPABASE_URL, dbAuthHeaders, console, showToast, setTradeRequests, setVacRequests, sessionEpochRef";
+  // (owner decision 2026-10-20, changed ON PURPOSE — CA: the two request deletes now find the request in their list and
+  // ask who may withdraw it first — the trade's proposer or a scheduler; canChangeVacRequest for a time-off request. The
+  // rig runs them as the scheduler, so each goes ahead as before; CA4 / CA5 run the gates themselves.)
+  const ENV_DEL = "useCallback, confirm, fetch, SUPABASE_URL, dbAuthHeaders, console, showToast, setTradeRequests, setVacRequests, sessionEpochRef, tradeRequests, vacRequests, isScheduler, userProfile, canChangeVacRequest";
   const mkDel = (name) => { const h = hookBA(name); try { return h ? vm.runInContext(`(function (env) { const { ${ENV_DEL} } = env;\n${h}\n  return ${name}; })`, sandbox) : null; } catch (ex) { return null; } };
   const DELS = [
     ["deleteTradeRequest", "setTradeRequests", [{ id: 7 }, { id: 8 }], "8", /^error: Couldn't delete the trade request/],
@@ -11461,6 +11709,7 @@ await (async () => {
     const S = { ep: { current: 0 }, token: RPC.token, sets: [], after: null, toasts: [], reqs: [] };
     const set = (k) => (f) => { S.sets.push(k); S.after = f(list.map(r => Object.assign({}, r))).map(r => r.id).join(); };
     await mk({ useCallback: (fn) => fn, confirm: () => true, SUPABASE_URL: "https://x.supabase.co", console: quietBA, sessionEpochRef: S.ep,
+      tradeRequests: list, vacRequests: list, isScheduler: true, userProfile: FAK.profile, canChangeVacRequest: (r) => !!r,   // (CA) the scheduler's delete
       dbAuthHeaders: () => ({ apikey: "ANON", Authorization: "Bearer " + (S.token || "ANON") }), showToast: (m, t) => S.toasts.push((t || "info") + ": " + m),
       setTradeRequests: set("setTradeRequests"), setVacRequests: set("setVacRequests"),
       fetch: async (url, init) => { S.reqs.push(init.method + " " + init.headers.Authorization); await spinBA(2); if (o.cross) { S.ep.current++; S.token = null; } if (o.thrown) throw new TypeError("Failed to fetch"); return respBA(o.status, null); } })(7);
