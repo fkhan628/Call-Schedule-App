@@ -525,6 +525,15 @@ function CallSchedule() {
   // this is set (both publish buttons are disabled too).
   const publishingRef = useRef(false);
   const [publishing, setPublishing] = useState(false);
+  // Accept & Publish tells nobody by itself (owner decision 2026-10-20): once
+  // its publish lands, the Calendar tab asks the scheduler — "✓ Published
+  // <period>. Nobody has been notified yet." with 📣 Notify everyone / Not now.
+  // { label, ep }: the period, and the session it was published in (a tap from
+  // any other session sends nothing — notifyPublished). The session boundary
+  // clears it. notifiedRef: the one it already sent for (one send, however
+  // many taps).
+  const [justPublished, setJustPublished] = useState(null);
+  const notifiedRef = useRef(null);
   const [pendingLocks, setPendingLocks] = useState([]); // [{ mondayStr, slot: "dc"|"mon"|"tue"|"wed"|"thu"|"wknd", surgeonId }]
 
   // ─── Silvis (trauma) feed — rule silvisBusy (silvis-feed.js) ───
@@ -747,6 +756,12 @@ function CallSchedule() {
   const [newPasswordConfirm, setNewPasswordConfirm] = useState("");
   const [authError, setAuthError] = useState("");
   const [authBusy, setAuthBusy] = useState(false);
+  // Opened with no signal (owner decision 2026-10-20): auth.getUser() answers
+  // { user: null, error: "network" } and KEEPS the stored session, so the
+  // sign-in card says "you're still signed in" (amber, with Retry) instead of
+  // looking signed out. Set only by the mount auto-login; cleared when a
+  // sign-in attempt starts (startSignIn). Listed in no hook's deps.
+  const [authNetErr, setAuthNetErr] = useState(false);
   const [signupPersonId, setSignupPersonId] = useState(""); // person_id during signup
   const [userProfile, setUserProfile] = useState(null);  // { person_id, display_name, role }
   const [needsProfile, setNeedsProfile] = useState(false); // true if logged in but no profile yet
@@ -985,6 +1000,13 @@ function CallSchedule() {
     return tradeRequests.filter(r => r.from_surgeon_id === mySurgeon || r.to_surgeon_id === mySurgeon);
   }, [tradeRequests, isScheduler, mySurgeon]);
 
+  // Who may edit or withdraw a time-off request (owner decision 2026-10-20: "edit requests is only for schedulers"
+  // — a member edits or withdraws only their OWN request; a scheduler, anyone's). "Own" is the signed-in account's
+  // person_id (userProfile, the identity the request form files under), never Mine's view-only pick; an APP's own
+  // request counts. Everyone still SEES every row (they're decided as a group): only the row's ✎ Edit / Withdraw
+  // and its editor follow this, and saveVacRequestEdit / deleteVacRequest refuse anyone else's request.
+  const canChangeVacRequest = useCallback((req) => !!req && (isScheduler || (!!userProfile?.person_id && req.surgeon_id === userProfile.person_id)), [isScheduler, userProfile]);
+
   // ─── Vacation Request Deadline (auto-detected) ───
   // The latest Monday in `schedule` is the FINAL week of the current period.
   // The next period begins the following Monday (+ 1 week).
@@ -1063,7 +1085,7 @@ function CallSchedule() {
 
         if (session && !bioEnrolled) {
           // Has session but no biometric — auto-login (legacy behavior)
-          const { user } = await auth.getUser();
+          const { user, error } = await auth.getUser();
           if (user) {
             auth.bindUser(user.id); // this tab is this account's (review r4 branch-4: another tab's sign-in is no session here)
             setAuthUser(user);
@@ -1077,6 +1099,11 @@ function CallSchedule() {
             // empty all session and (pre-PR#14) the first edit autosaved the
             // wiped state into the blob mirror (the digest-poison vector).
             setReloadTrigger(t => t + 1);
+          } else if (error === "network") {
+            // No signal (owner decision 2026-10-20): getUser() kept the
+            // stored session, so nothing is signed out — the card says so,
+            // with Retry, instead of a plain "Sign in to your account".
+            setAuthNetErr(true);
           }
         }
       } catch(e) { console.error("Auth check error:", e); }
@@ -1090,7 +1117,7 @@ function CallSchedule() {
     const result = await biometric.authenticate();
     if (result.success) {
       // Biometric passed — use stored session
-      const { user } = await auth.getUser();
+      const { user, error } = await auth.getUser();
       if (user) {
         auth.bindUser(user.id); // (review r4 branch-4)
         setAuthUser(user);
@@ -1104,6 +1131,12 @@ function CallSchedule() {
         setReloadTrigger(t => t + 1);
         setAuthBusy(false);
         return;
+      } else if (error === "network") {
+        // No signal (owner decision 2026-10-20): getUser() kept the stored
+        // session — nothing expired. Stay on the Face ID screen (Unlock works
+        // once there's signal). Was "Session expired…" and the password form,
+        // whose sign-in then failed with "Load failed".
+        setAuthError("No connection — you're still signed in. Check your signal and tap Unlock again.");
       } else {
         // Session is invalid or refresh failed. Don't unenroll biometric —
         // preserve the credential so that after the user signs in once
@@ -1263,8 +1296,24 @@ function CallSchedule() {
         }
       }
       setAuthEmail(""); setAuthPassword("");
-    } catch(e) { setAuthError(typeof authErrorText === "function" ? authErrorText(e) : (e && e.message) || "Something went wrong — please try again."); } // (UX audit 2026-10-19: plain words — offline says "No connection", not Safari's "Load failed"; an old cached helpers.js: the raw message, as before)
+    } catch(e) { setAuthError(typeof authErrorText === "function" ? authErrorText(e) : (e && e.message) || "Something went wrong — please try again."); setAuthBusy(false); return e; } // (UX audit 2026-10-19: plain words — offline says "No connection", not Safari's "Load failed"; an old cached helpers.js: the raw message, as before. 2026-10-20: what was thrown goes back to startSignIn)
     setAuthBusy(false);
+  };
+  // The sign-in form's Sign In / Create Account button and its Enter keys
+  // (owner decision 2026-10-20): an attempt drops the "No connection — you're
+  // still signed in" note first — its own outcome says what happened next.
+  // An attempt that never reached the server (still no signal), with the
+  // session this phone held before it still the one stored, brings the note
+  // and its Retry back (review fix 2026-10-20): nothing about the sign-in
+  // changed, and without it the card looked signed out again. Any answer from
+  // the server (a wrong password, a sign-in), or no stored session, leaves it
+  // off. An old cached helpers.js (no isNoConnectionError): left off, as before.
+  const startSignIn = async () => {
+    setAuthNetErr(false);
+    const held = auth.getSession();
+    const failed = await handleAuthSubmit();
+    const kept = auth.getSession();
+    if (failed && held && kept && kept.access_token === held.access_token && typeof isNoConnectionError === "function" && isNoConnectionError(failed)) setAuthNetErr(true);
   };
 
   const handleSetProfile = async () => {
@@ -1333,7 +1382,7 @@ function CallSchedule() {
   // are forgotten (forgetDayOffs, review r6 fix-3): never sent, kept or shown
   // into the next one, the chips refused until the next account's own read.
   const sessionBoundary = () => {
-    sessionEpochRef.current++; searchRef.current = null; setSearching(null); setSearchStats(null); setPreviewSchedule(null); setShowPreview(false); // nothing searched, generated or loaded by this user is published as the next one
+    sessionEpochRef.current++; searchRef.current = null; setSearching(null); setSearchStats(null); setPreviewSchedule(null); setShowPreview(false); setJustPublished(null); // nothing searched, generated or loaded by this user is published (or announced) as the next one
     schedSyncRef.current.reset();
     setScheduleHistory([]); setEditWeekModal(null); forgetDayOffs(); setReauthNeeded(false); setStaleTokenWarn(false);
     setIsScheduler(false); setupReadRef.current = false; lastSyncRef.current = null;
@@ -3093,6 +3142,7 @@ function CallSchedule() {
       } else {
         sendPushNotif(title, message, filteredTargets, deepLinkUrl, ep);
       }
+      return !insertErr; // true: the notice was saved (2026-10-20 — the 📣 Notify everyone tap says so only then; other callers ignore it)
     } catch(e) { console.error("Notification error:", e); if (sessionEpochRef.current === ep) showToast("Couldn't send the notification — check your connection.", "error"); }
   }, [sendPushNotif, buildDeepLink, filterPushTargetsByType]);
 
@@ -3858,7 +3908,12 @@ function CallSchedule() {
   // A failed DELETE says so and leaves the list alone — the row is still
   // there, so it stays on screen (it used to vanish until the next reload).
   const deleteTradeRequest = useCallback(async (reqId) => {
-    if (!confirm("Delete this trade request?")) return;
+    // Only its proposer or a scheduler (owner decision 2026-10-20, canChangeVacRequest's rule): the pending row's
+    // Withdraw shows only to the proposer and Completed Trades' ✕ only to a scheduler; this is the gate behind them —
+    // anyone else's call does nothing (no confirm, no DELETE, nothing said). The confirm says what its button does.
+    const req = tradeRequests.find(r => r.id === reqId);
+    if (!req || !(isScheduler || (!!userProfile?.person_id && req.from_surgeon_id === userProfile.person_id))) return;
+    if (!confirm(req.status === "pending" ? "Withdraw this trade request?" : "Delete this trade request?")) return;
     const ep = sessionEpochRef.current;
     try {
       const res = await fetch(`${SUPABASE_URL}/rest/v1/shift_trade_requests?id=eq.${reqId}`, { method: "DELETE", headers: { ...dbAuthHeaders(), Prefer: "return=minimal" } });
@@ -3869,7 +3924,7 @@ function CallSchedule() {
       console.error("Delete trade request failed:", e);
       if (sessionEpochRef.current === ep) showToast("Couldn't delete the trade request — check your connection and try again.", "error");
     }
-  }, []);
+  }, [tradeRequests, isScheduler, userProfile]);
 
   // ─── Mark Notifications as Seen ───
   const markNotifsSeen = () => {
@@ -3898,21 +3953,49 @@ function CallSchedule() {
 
   // ─── Delete a Single Vacation Request ───
   const deleteVacRequest = useCallback(async (reqId) => {
-    if (!confirm("Delete this request?")) return;
+    // Only the requester or a scheduler (owner decision 2026-10-20 — canChangeVacRequest): the gate behind the
+    // pending row's Withdraw and the Reviewed list's ✕ (a scheduler's) — anyone else's call does nothing (no
+    // confirm, no DELETE, nothing said). The confirm says what its button does: Withdraw names whose request and
+    // its dates (a scheduler withdraws for anyone); the ✕ deletes a reviewed one.
+    const req = vacRequests.find(r => r.id === reqId);
+    if (!canChangeVacRequest(req)) return;
+    const ask = req.status === "pending"
+      ? `Withdraw ${req.surgeon_id === userProfile?.person_id ? "your" : `${req.surgeon_name || "this person"}'s`} ${req.request_type === "nocall" ? "no-call" : "vacation"} request, ${req.start_date} → ${req.end_date}?`
+      : "Delete this request?";
+    if (!confirm(ask)) return;
     const ep = sessionEpochRef.current; // (review r5 fix-1 — as deleteTradeRequest's)
+    // A member withdraws a request only while it is still PENDING (review fix 2026-10-20): their list can be a minute
+    // behind a scheduler's approval (realtime dropped; the poll runs every 60 s), and an id-only DELETE then removed the
+    // APPROVED request — its time off stayed, with no request left to ↩ Revoke. So the DELETE itself says "still
+    // pending" and answers with what it removed: nothing → nothing changed, said so, the row kept until the next read
+    // shows what it is now. A scheduler's (the Reviewed list's ✕, a correction) stays id-only.
+    const onlyPending = !isScheduler;
     try {
-      const res = await fetch(`${SUPABASE_URL}/rest/v1/vacation_requests?id=eq.${reqId}`, { method: "DELETE", headers: { ...dbAuthHeaders(), Prefer: "return=minimal" } });
+      const res = await fetch(`${SUPABASE_URL}/rest/v1/vacation_requests?id=eq.${reqId}${onlyPending ? "&status=eq.pending" : ""}`, { method: "DELETE", headers: { ...dbAuthHeaders(), Prefer: onlyPending ? "return=representation" : "return=minimal" } });
       if (sessionEpochRef.current !== ep) { if (!res.ok) console.error("Delete vacation request failed:", res.status); return; } // another session now
       if (!res.ok) { console.error("Delete vacation request failed:", res.status); showToast("Couldn't delete the request — check your connection and try again.", "error"); return; } // not deleted: the row stays
+      if (onlyPending) {
+        const removed = await res.json().catch(() => null);
+        if (sessionEpochRef.current !== ep) return; // another session now
+        if (Array.isArray(removed) && removed.length === 0) { showToast("This request was already reviewed or withdrawn — nothing was changed.", "error"); return; }
+      }
       setVacRequests(prev => prev.filter(r => r.id !== reqId));
     } catch(e) { console.error("Delete vacation request error:", e); if (sessionEpochRef.current === ep) showToast("Couldn't delete the request — check your connection and try again.", "error"); }
-  }, []);
+  }, [vacRequests, canChangeVacRequest, userProfile, isScheduler]);
 
   // ─── Edit Vacation Request ───
   const [editingVacReq, setEditingVacReq] = useState(null); // { id, start_date, end_date, reason }
 
   const saveVacRequestEdit = useCallback(async () => {
     if (!editingVacReq) return;
+    // The request as it was (its old dates — what a set-back restores, and
+    // what an approved one's time off is moved from).
+    const req = vacRequests.find(r => r.id === editingVacReq.id);
+    // Only the requester or a scheduler (owner decision 2026-10-20 —
+    // canChangeVacRequest): the gate behind ✎ Edit and its editor. Anyone
+    // else's save (a stale render, an editor left open across an account
+    // change) does nothing — no write, no audit, no notice, nothing said.
+    if (!canChangeVacRequest(req)) return;
     // A broken range is refused here, before anything is sent (UX audit
     // 2026-10-19): the editor's end follows its start (#84), but a typed or
     // cleared date still reached the PATCH and saved an empty or inverted
@@ -3940,17 +4023,18 @@ function CallSchedule() {
     // with the tap's headers — only from the dates this tap wrote.
     const ep = sessionEpochRef.current, tapH = dbAuthHeaders();
     const live = () => sessionEpochRef.current === ep;
-    // The request as it was (its old dates — what a set-back restores, and
-    // what an approved one's time off is moved from).
-    const req = vacRequests.find(r => r.id === editingVacReq.id);
     try {
       const updates = { start_date: editingVacReq.start_date, end_date: editingVacReq.end_date, reason: editingVacReq.reason };
-      // Fail-closed row update. Id-only precondition — edits are valid on both
-      // pending and approved rows, so no status filter; the rows-affected check
-      // still catches a request withdrawn/deleted meanwhile (and RLS zero-row
-      // no-ops). Abort BEFORE touching the time_off bucket, else the bucket
-      // carries new dates while the request records the old ones.
-      const editRes = await fetch(`${SUPABASE_URL}/rest/v1/vacation_requests?id=eq.${editingVacReq.id}`, {
+      // Fail-closed row update. A scheduler's: id-only precondition — edits are
+      // valid on both pending and approved rows, so no status filter. A
+      // member's: only while still pending (review fix 2026-10-20 — their editor
+      // is the pending list's, and their list can be a minute behind an
+      // approval: an approved request is never rewritten under its time off).
+      // The rows-affected check still catches a request withdrawn/deleted (or
+      // reviewed) meanwhile (and RLS zero-row no-ops). Abort BEFORE touching the
+      // time_off bucket, else the bucket carries new dates while the request
+      // records the old ones.
+      const editRes = await fetch(`${SUPABASE_URL}/rest/v1/vacation_requests?id=eq.${editingVacReq.id}${isScheduler ? "" : "&status=eq.pending"}`, {
         method: "PATCH",
         headers: { ...tapH, "Content-Type": "application/json", Prefer: "return=representation" },
         body: JSON.stringify(updates),
@@ -3970,7 +4054,7 @@ function CallSchedule() {
         return;
       }
       if (!Array.isArray(editRows) || editRows.length === 0) {
-        showToast("This request no longer exists — nothing was changed.", "error");
+        showToast(isScheduler ? "This request no longer exists — nothing was changed." : "This request was already reviewed or withdrawn — nothing was changed.", "error");
         return;
       }
       setVacRequests(prev => prev.map(r => r.id === editingVacReq.id ? { ...r, ...updates } : r));
@@ -3982,7 +4066,7 @@ function CallSchedule() {
       }
       setEditingVacReq(null);
     } catch(e) { console.error("Edit vacation error:", e); if (live()) showToast("Couldn't save the changes — check your connection and try again.", "error"); }
-  }, [editingVacReq, vacRequests, isScheduler]);
+  }, [editingVacReq, vacRequests, isScheduler, canChangeVacRequest]);
 
   // ─── Revoke Approved Vacation (scheduler only) ───
   const revokeApprovedVac = useCallback(async (req) => {
@@ -4478,6 +4562,33 @@ function CallSchedule() {
     setTimeout(() => setNotifTestSent(""), 3000);
   }, [sendBrowserNotif, sendEmailNotif, edgeFunctionUrl, notifPrefs, mySurgeon]);
 
+  // ─── Tell everyone a schedule was published ───
+  // The group's "Schedule Published" notice (in-app + push) and e-mail, both
+  // to everyone (no target list). Generate & Publish sends them as soon as its
+  // publish lands; Accept & Publish only when the scheduler taps 📣 Notify
+  // everyone on the Calendar's banner (owner decision 2026-10-20 — nothing is
+  // sent by itself). ep: the session of the tap that published — from any
+  // other session nothing is sent (review r3 regress-3). Resolves true only
+  // when the notice was saved.
+  const notifyPublished = async (ep, period) => {
+    if (sessionEpochRef.current !== ep) return false;
+    // Whoever sends it, the group is being told now (review fix 2026-10-20):
+    // a Calendar banner still up from an earlier ✓ Accept & Publish goes, and
+    // its publish counts as sent for (notifiedRef) — after Generate & Publish
+    // had told everyone, the banner still said nobody was told, and its 📣
+    // sent the same notice, push and e-mail a second time.
+    if (justPublished) notifiedRef.current = justPublished;
+    setJustPublished(null);
+    // The tap's session is passed in (review r4 fixes-3): the notice's device
+    // push, sent after its insert's await, and its failure toasts are fenced
+    // inside addNotification too.
+    const saved = await addNotification("schedule_published", "Schedule Published",
+      "A new call schedule has been generated. Check the Schedule or Calendar tab.", {}, null, ep);
+    if (sessionEpochRef.current !== ep) return false;
+    sendEmailNotif("schedule_published", { period }, null, ep);
+    return saved === true;
+  };
+
   // ─── Publish Schedule (with notification) ───
   const doGenerateAndNotify = async () => {
     // This session, at the tap (review r3 regress-3): the notice and the
@@ -4497,13 +4608,9 @@ function CallSchedule() {
     if ((await doGenerate(false)) !== "published") return;
     if (sessionEpochRef.current !== ep) return;
     // (The counts roll forward inside doGenerate's publish, at commit — net
-    // of any weeks it replaced.) The tap's session is passed in (review r4
-    // fixes-3): the notice's device push, sent after its insert's await, and
-    // its failure toasts are fenced inside addNotification too.
-    await addNotification("schedule_published", "Schedule Published",
-      "A new call schedule has been generated. Check the Schedule or Calendar tab.", {}, null, ep);
-    if (sessionEpochRef.current !== ep) return;
-    sendEmailNotif("schedule_published", { period }, null, ep);
+    // of any weeks it replaced.) The notice, then the e-mail — the one
+    // sender Accept & Publish's banner uses too (2026-10-20).
+    await notifyPublished(ep, period);
   };
 
   // ─── Build Individual ICS for a surgeon (their shifts + vacations only) ───
@@ -5812,7 +5919,14 @@ function CallSchedule() {
         setSaveStatus(""); // the snapshot's status ends: while the job runs, the engine's "Publishing… keep the app open" is the header's ONE line (A16)
         const pr = await job;
         if (sessionEpochRef.current !== ep) return; // another session now: nothing said on its screen
-        if (pr && pr.ok) { setSaveStatus("Published — totals updated"); setTimeout(() => setSaveStatus(""), 3000); if (pr.notice) showToast(pr.notice, "error"); } // (a notice here: another week someone else changed)
+        if (pr && pr.ok) {
+          setSaveStatus("Published — totals updated"); setTimeout(() => setSaveStatus(""), 3000); if (pr.notice) showToast(pr.notice, "error"); // (a notice here: another week someone else changed)
+          // Nobody is told by itself (owner decision 2026-10-20): the Calendar's banner asks the scheduler — 📣 Notify everyone / Not now.
+          setJustPublished({ label: pubPeriod, ep });
+          // ✓ Accept & Publish sits far down the Generate tab, and the Calendar opens at that scroll (rendered check: the
+          // banner was ~500 px above a 375 px phone's screen) — so it is brought into view, as the Today button does.
+          setTimeout(() => { const el = document.querySelector('[data-just-published="1"]'); if (el && el.scrollIntoView) el.scrollIntoView({ behavior: "smooth", block: "nearest" }); }, 60);
+        }
         else { setSaveStatus(""); publishNotLanded(pr, "Published on this screen"); }
       } finally { publishingRef.current = false; setPublishing(false); }
     }
@@ -5821,6 +5935,21 @@ function CallSchedule() {
   const discardPreview = () => {
     cancelSearch(); setSearchStats(null);
     setPreviewSchedule(null); setShowPreview(false);
+  };
+
+  // 📣 Notify everyone, on the Calendar's "Published" banner (owner decision
+  // 2026-10-20): ONE send per publish — the banner goes on the tap, and a
+  // second tap finds this publish already sent for. A tap from another session
+  // than the publish's sends nothing (notifyPublished); "Everyone has been
+  // notified." only once the notice was saved, and only in that session.
+  const notifyJustPublished = async () => {
+    const jp = justPublished;
+    if (!jp || notifiedRef.current === jp) return;
+    notifiedRef.current = jp; setJustPublished(null);
+    // The banner unmounts with the focus in it (review fix 2026-10-20): VoiceOver's cursor jumped to the top of the
+    // page. It goes to the Calendar's month heading instead; the toast's live region still says what happened.
+    setTimeout(() => { const h = document.querySelector('[data-cal-month="1"]'); if (h && h.focus) h.focus(); }, 0);
+    if ((await notifyPublished(jp.ep, jp.label)) && sessionEpochRef.current === jp.ep) showToast("Everyone has been notified.", "success");
   };
 
   // 🔍 Search more (owner 2026-10-12, item 5): another SEARCH_MS of searching
@@ -7919,9 +8048,12 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           itself lets taps through to the page (only the pills catch them). An
           "info-passthrough" toast (an info toast in every other way — its colour,
           its time, an old helpers.js) lets taps through too: one that lands where
-          the next tap is likely ("Hidden on this phone only…" over the next ✕). */}
+          the next tap is likely ("Hidden on this phone only…" over the next ✕).
+          While the sign-in card's "No connection — you're still signed in" note is up, the red toasts are held back
+          (review fix 2026-10-20): they are the startup reads failing for the same missing signal, about data no one
+          signed in can see yet, and on a 320px phone three of them covered the e-mail, the password and Sign In. */}
       <div role="status" aria-live="polite" style={{position:"fixed",left:0,right:0,bottom:toastLift ? toastLift + 10 : "calc(env(safe-area-inset-bottom, 0px) + 24px)",zIndex:9999,display:"flex",flexDirection:"column",alignItems:"center",gap:6,pointerEvents:"none"}}>
-        {toasts.map(t => (
+        {toasts.filter(t => !(t.tone === "error" && authNetErr && authMode === "login" && !authUser)).map(t => (
           <div key={t.id} onClick={()=>dismissToast(t.id)} style={{pointerEvents:"auto",maxWidth:"min(90vw, 600px)",boxSizing:"border-box",background:t.tone==="success"?"#1a7a4a":t.tone==="error"?"#a83232":"#1a2a3a",color:"#fff",borderRadius:9,padding:"10px 18px",fontSize:13,fontWeight:600,fontFamily:font,boxShadow:"0 4px 16px rgba(0,0,0,0.25)",cursor:"pointer",letterSpacing:0.2,...(t.tone==="info-passthrough" ? {pointerEvents:"none",cursor:"default"} : null)}}>
             {typeof toastText === "function" ? toastText(t) : `${t.tone==="success"?"✓ ":t.tone==="error"?"⚠ ":""}${t.msg}`}
           </div>
@@ -8052,7 +8184,9 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             </div>
             <h2 style={{fontSize:18,fontWeight:700,color:dkText,margin:"0 0 4px"}}>Welcome Back</h2>
             <p style={{fontSize:12,color:"#7a8a98",margin:"0 0 16px"}}>{biometric.getStoredUser() || "Use biometric to unlock"}</p>
-            {authError && <div style={{fontSize:12,color:"#c04040",padding:"6px 10px",background:"#fce8e8",borderRadius:6,border:"1px solid #e8c0c0",marginBottom:10,textAlign:"left"}}>{authError}</div>}
+            {/* role="alert" (review fix 2026-10-20): VoiceOver says the message as it appears — "No connection — you're still
+                signed in…" after Unlock is otherwise silent (focus drops to the page). #a83232 on its fill: 5.6:1 (#c04040 was 4.4:1). */}
+            {authError && <div role="alert" style={{fontSize:12,color:"#a83232",padding:"6px 10px",background:"#fce8e8",borderRadius:6,border:"1px solid #e8c0c0",marginBottom:10,textAlign:"left"}}>{authError}</div>}
             <button onClick={handleBiometricUnlock} disabled={authBusy}
               style={{...css.btn(true),width:"100%",padding:"13px 16px",fontSize:15,fontWeight:700,marginBottom:10,opacity:authBusy?0.6:1}}>
               {authBusy ? "Verifying…" : "🔓 Unlock with Face ID / Touch ID"}
@@ -8066,6 +8200,20 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       ) : !authUser && !isPublicMode ? (
         <div style={{display:"flex",justifyContent:"center",alignItems:"center",minHeight:"80vh",padding:20}}>
           <div style={{...css.card,maxWidth:380,width:"100%",padding:28}}>
+            {/* Opened with no signal (owner decision 2026-10-20): the stored
+                session is still on this phone — say so at the top of the card,
+                with Retry (a reload runs the auto-login again). The Retry's
+                fill is a gradient so the dark sheet keeps its text white (it
+                forces every other button's text light grey). */}
+            {authNetErr && authMode==="login" && (
+              <div role="status" style={{background:"#fdf0e0",color:"#7a4a00",border:"1px solid #e0b070",borderRadius:8,padding:"10px 12px",marginBottom:16,fontSize:13,fontWeight:600,lineHeight:1.45,fontFamily:font}}>
+                <div>No connection — you're still signed in on this phone. Check your signal, then tap Retry.</div>
+                <button type="button" onClick={()=>window.location.reload()}
+                  style={{display:"block",width:"100%",minHeight:44,marginTop:10,background:"linear-gradient(135deg,#7a4a00,#8a5a10)",border:"none",borderRadius:7,color:"#fff",fontSize:14,fontWeight:700,cursor:"pointer",fontFamily:font}}>
+                  Retry
+                </button>
+              </div>
+            )}
             <div style={{textAlign:"center",marginBottom:20}}>
               <div style={{width:48,height:48,borderRadius:10,background:"linear-gradient(135deg,#1a6fa8,#2488c8)",display:"inline-flex",alignItems:"center",justifyContent:"center",marginBottom:10}}>
                 <span style={{color:"#fff",fontSize:18,fontWeight:800,fontFamily:font}}>DSG</span>
@@ -8094,7 +8242,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                     }).catch(e=>{setAuthBusy(false);setAuthError(typeof authErrorText === "function" ? authErrorText(e) : (e && e.message) || "Something went wrong — please try again.");});
                   }}}
                   style={{...css.inp,width:"100%",padding:"10px 12px",fontSize:14}}/>
-                {authError && <div style={{fontSize:12,color:"#c04040",padding:"6px 10px",background:"#fce8e8",borderRadius:6,border:"1px solid #e8c0c0"}}>{authError}</div>}
+                {authError && <div role="alert" style={{fontSize:12,color:"#a83232",padding:"6px 10px",background:"#fce8e8",borderRadius:6,border:"1px solid #e8c0c0"}}>{authError}</div>}
                 <button onClick={()=>{
                   if(!newPassword||newPassword.length<6){setAuthError("Password must be at least 6 characters");return;}
                   if(newPassword!==newPasswordConfirm){setAuthError("Passwords don't match");return;}
@@ -8137,7 +8285,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                         }).catch(e=>{setAuthBusy(false);setAuthError(typeof authErrorText === "function" ? authErrorText(e) : (e && e.message) || "Something went wrong — please try again.");});
                       }}}
                       style={{...css.inp,width:"100%",padding:"10px 12px",fontSize:14}}/>
-                    {authError && <div style={{fontSize:12,color:"#c04040",padding:"6px 10px",background:"#fce8e8",borderRadius:6,border:"1px solid #e8c0c0"}}>{authError}</div>}
+                    {authError && <div role="alert" style={{fontSize:12,color:"#a83232",padding:"6px 10px",background:"#fce8e8",borderRadius:6,border:"1px solid #e8c0c0"}}>{authError}</div>}
                     <button onClick={()=>{
                       if(!resetEmail){setAuthError("Please enter your email");return;}
                       setAuthBusy(true);setAuthError("");
@@ -8165,11 +8313,11 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               <div style={{display:"flex",flexDirection:"column",gap:10}}>
               <input type="email" placeholder="Email address" value={authEmail} onChange={e=>setAuthEmail(e.target.value)}
                 autoComplete="username" inputMode="email" autoCapitalize="none" autoCorrect="off"
-                onKeyDown={e=>e.key==="Enter"&&handleAuthSubmit()}
+                onKeyDown={e=>e.key==="Enter"&&startSignIn()}
                 style={{...css.inp,width:"100%",padding:"10px 12px",fontSize:14}}/>
               <input type="password" placeholder="Password" value={authPassword} onChange={e=>setAuthPassword(e.target.value)}
                 autoComplete={authMode==="login" ? "current-password" : "new-password"}
-                onKeyDown={e=>e.key==="Enter"&&handleAuthSubmit()}
+                onKeyDown={e=>e.key==="Enter"&&startSignIn()}
                 style={{...css.inp,width:"100%",padding:"10px 12px",fontSize:14}}/>
               {authMode==="signup" && (
                 <select value={signupPersonId} onChange={e=>setSignupPersonId(e.target.value)}
@@ -8189,8 +8337,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   </optgroup>
                 </select>
               )}
-              {authError && <div style={{fontSize:12,color:"#c04040",padding:"6px 10px",background:"#fce8e8",borderRadius:6,border:"1px solid #e8c0c0"}}>{authError}</div>}
-              <button onClick={handleAuthSubmit} disabled={authBusy}
+              {/* Announced as it appears, and #a83232 on its fill (5.6:1; #c04040 was 4.4:1) — review fix 2026-10-20, as the
+                  card's reset and new-password lines above and the Face ID screen's */}
+              {authError && <div role="alert" style={{fontSize:12,color:"#a83232",padding:"6px 10px",background:"#fce8e8",borderRadius:6,border:"1px solid #e8c0c0"}}>{authError}</div>}
+              <button onClick={startSignIn} disabled={authBusy}
                 style={{...css.btn(true),width:"100%",padding:"11px 16px",fontSize:14,fontWeight:700,opacity:authBusy?0.6:1}}>
                 {authBusy ? "Please wait…" : authMode==="login" ? "Sign In" : "Create Account"}
               </button>
@@ -8285,7 +8435,11 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         </div>
         {!isPublicMode && <div style={css.nav}>
           {(() => {
-            const allTabs = [["setup","Setup"],["generate","Generate"],["calendar","Calendar"],["myschedule","Mine"],["requests","Requests"],["stats","Stats"],["totals","Totals"],["settings","Settings"]];
+            // Calendar is the first tab for everyone (owner decision 2026-10-20): it is what the app opens on and what
+            // most people come for. Then Mine, Requests, Stats, Totals; the scheduler's Setup and Generate after those
+            // (Setup still just left of Generate), Settings last. Only the ORDER changed — the filters below still decide
+            // who sees which tab (sync-guards CC).
+            const allTabs = [["calendar","Calendar"],["myschedule","Mine"],["requests","Requests"],["stats","Stats"],["totals","Totals"],["setup","Setup"],["generate","Generate"],["settings","Settings"]];
             const isAdmin = userProfile?.role === "admin";
             const canAssignApps = userProfile?.can_assign_apps === true;
             const canSeeSetup = isScheduler || isAdmin || canAssignApps;
@@ -9795,6 +9949,23 @@ ${"</"}script>${"</"}body>${"</"}html>`;
 
         {/* ════════════════ CALENDAR ════════════════ */}
         {view==="calendar"&&<>
+          {/* Accept & Publish told nobody (owner decision 2026-10-20): the scheduler is asked here, on the Calendar it lands on.
+              📣 Notify everyone sends the group's notice + e-mail once (notifyJustPublished); Not now only closes it. Members never
+              see it; the session boundary clears it. ≥44px buttons that wrap at 320px; the toasts sit at the bottom, never over it. */}
+          {isScheduler && justPublished && (
+            <div role="status" aria-live="polite" data-just-published="1" style={{background:dk?"#16301f":"#eaf7ee",border:`1px solid ${dk?"#2f5a3c":"#a8d8b8"}`,borderRadius:12,padding:"12px 14px",marginBottom:14,display:"flex",alignItems:"center",flexWrap:"wrap",gap:10}}>
+              <div style={{flex:"1 1 200px",minWidth:0,fontSize:14,fontWeight:600,lineHeight:1.4,color:dk?"#b8e8c8":"#1a5a32",overflowWrap:"anywhere"}}>
+                ✓ Published {justPublished.label}. Nobody has been notified yet.
+              </div>
+              <div style={{display:"flex",gap:8,flexWrap:"wrap",flex:"1 1 auto",justifyContent:"flex-end"}}>
+                {/* Its own darker gradient (render check 2026-10-20): white on css.btn(true)'s light end (#2488c8) is 3.9:1, under
+                    the wide label's right side; #155a8a→#1a6fa8 keeps both ends ≥ 5.4:1 and still matches the dark sheet's
+                    button[style*="background: linear-gradient"] rule, so the label stays white in dark mode. */}
+                <button onClick={notifyJustPublished} style={{...css.btn(true),background:"linear-gradient(135deg,#155a8a,#1a6fa8)",minHeight:44,padding:"8px 14px",fontSize:14,flex:"1 1 auto"}}>📣 Notify everyone</button>
+                <button onClick={()=>setJustPublished(null)} style={{...css.btn(false),minHeight:44,padding:"8px 14px",fontSize:14}}>Not now</button>
+              </div>
+            </div>
+          )}
           {/* ─── On Call Today Banner ─── */}
           {/* Shown when today has call, or when someone is on call right now without it (review fix:
               the first morning past the published schedule) — then only the "now" line. */}
@@ -9880,7 +10051,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14,flexWrap:"wrap",gap:8}}>
             <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap",minWidth:0,maxWidth:"100%"}}>
               <button aria-label="Previous month" onClick={()=>{if(calMonth===0){setCalMonth(11);setCalYear(y=>y-1);}else setCalMonth(m=>m-1);}} style={css.btn(false)}>◀</button>
-              <span style={{fontSize:15,fontWeight:700,color:"#2c5a80",minWidth:170,textAlign:"center"}}>{MO[calMonth]} {calYear}</span>
+              <span tabIndex={-1} data-cal-month="1" style={{fontSize:15,fontWeight:700,color:"#2c5a80",minWidth:170,textAlign:"center"}}>{MO[calMonth]} {calYear}</span>
               <button aria-label="Next month" onClick={()=>{if(calMonth===11){setCalMonth(0);setCalYear(y=>y+1);}else setCalMonth(m=>m+1);}} style={css.btn(false)}>▶</button>
               {/* Back to today (owner 2026-10-14): today's month, then today's cell scrolled into view (a long grid on a phone).
                   Blue while another month is showing. */}
@@ -9892,7 +10063,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             </div>
             <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
               {isScheduler && <>
-                <button onClick={()=>setView("setup")} style={css.btn(false)}>← Setup</button>
+                <button onClick={()=>setView("setup")} style={css.btn(false)}>Setup →</button>
                 <button onClick={()=>doGenerate(false)} disabled={!!searching} style={{...css.btn(true),opacity:searching?0.55:1}}>{searching === "publish" ? "🔍 Searching…" : "↻ Regenerate"}</button>
                 <button onClick={clearSchedule} style={{...css.btn(false),color:"#c04040",borderColor:"#e0a0a0"}}>✕ Clear</button>
               </>}
@@ -11706,14 +11877,26 @@ ${"</"}script>${"</"}body>${"</"}html>`;
 
             // ─── Next call at-a-glance ───
             // Flatten each upcoming role to a concrete start date (a night lands on
-            // its weekday; service week + weekend run Mon→Sun, starting on the first
-            // day the surgeon actually holds; a dated role is that one day), drop
+            // its weekday; the service week and the weekend start on the first day
+            // the surgeon actually holds; a dated role is that one day), drop
             // anything fully past, sort soonest-first. OFF weeks aren't call, so
-            // they're excluded.
+            // they're excluded. The service week READS Mon–Sat (owner decision
+            // 2026-10-20: it showed "Mon, Nov 2 – Sun, Nov 8" beside the My Shifts
+            // chip's "Mon 11/2 – Sat 11/7"): it ends on the last day the surgeon
+            // holds, the Saturday with no held list. The weekend still reads to its
+            // Sunday, through which it stays listed, as My Shifts. A service week
+            // stays only while its held shifts last (review fix 2026-10-20): through
+            // its last held weekday (7a–5p), or to Sun 7a when that is the Saturday
+            // (its 24h) — "in progress" never outlasts the dates the card shows, and
+            // the real next call takes the top slot. A day someone else holds in it
+            // splits the line into runs, as the My Shifts chip ("Mon, Dec 21 – Wed,
+            // Dec 23 + Sat, Dec 26").
+            const _now = new Date();
             const _today0 = new Date(); _today0.setHours(0, 0, 0, 0);
             const _DAY = 86400000;
             const _startOff = { dayCall: 0, mon: 0, tue: 1, wed: 2, thu: 3, wknd: 4 };
             const _nice = (d) => d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+            const _range = (e) => e.runs && e.runs.length > 1 ? e.runs.map(([a, b]) => (b > a ? `${_nice(a)} – ${_nice(b)}` : _nice(a))).join(" + ") : e.span ? `${_nice(e.start)} – ${_nice(e.end)}` : _nice(e.start);
             const _whenTxt = (d) => d > 1 ? `in ${d} days` : d === 1 ? "tomorrow" : d === 0 ? "today" : "in progress";
             const _whenTone = (d) => d <= 0 ? "#1a8040" : d <= 2 ? "#c0392b" : d <= 7 ? "#b9770e" : "#5a6a78";
             const _nextUp = [];
@@ -11729,10 +11912,15 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                 }
                 const span = (r.shiftKey === "dayCall" || r.shiftKey === "wknd");
                 const start = r.held && r.held.length ? parse(r.held[0]) : addD(mon, _startOff[r.shiftKey] ?? 0);
-                const end = span ? addD(mon, 6) : start;
-                if (end < _today0) return; // fully in the past
+                const end = r.shiftKey === "dayCall" ? (r.held && r.held.length ? parse(r.held[r.held.length - 1]) : addD(mon, 5)) : span ? addD(mon, 6) : start;
+                if (r.shiftKey === "dayCall" ? (end.getDay() === 6 ? _now >= new Date(end.getFullYear(), end.getMonth(), end.getDate() + 1, 7) : end < _today0)
+                  : (span ? addD(mon, 6) : start) < _today0) return; // over: a service week once its last held shift ended (a Saturday's at Sun 7a); the weekend after its Sunday
                 const days = Math.round((start - _today0) / _DAY);
-                _nextUp.push({ ...r, start, end, days, span, isBackup: s.isBackup, isFierceBackup: s.isFierceBackup });
+                // the held days as runs of consecutive days (roleDateLabel's rule): a day someone else holds splits the line
+                const runs = [];
+                if (r.shiftKey === "dayCall" && r.held) r.held.slice().sort().forEach(ds => { const last = runs[runs.length - 1]; if (last && ds <= fmt(last[1])) return; if (last && fmt(addD(last[1], 1)) === ds) last[1] = parse(ds); else runs.push([parse(ds), parse(ds)]); });
+                // A service week held on one day only reads as that day, not "Sat, Nov 7 – Sat, Nov 7"; the weekend as before
+                _nextUp.push({ ...r, start, end, runs, days, span: r.shiftKey === "wknd" || end > start, isBackup: s.isBackup, isFierceBackup: s.isFierceBackup });
               });
             });
             _nextUp.sort((a, b) => a.start - b.start);
@@ -11828,7 +12016,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                                 {e.isBackup && <span style={{fontSize:9, fontWeight:800, letterSpacing:0.5, padding:"2px 6px", borderRadius:4, background:"#efe3c8", color:"#8a6a10"}}>BACKUP</span>}
                                 <span style={{fontSize:12, fontWeight:800, padding:"2px 9px", borderRadius:20, background:_whenTone(e.days)+"1f", color:_whenTone(e.days)}}>{_whenTxt(e.days)}</span>
                               </div>
-                              <div style={{fontSize:13, color:dk?"#9aa8b6":"#4a5a68", marginTop:3}}>{e.span ? `${_nice(e.start)} – ${_nice(e.end)}` : _nice(e.start)}</div>
+                              <div style={{fontSize:13, color:dk?"#9aa8b6":"#4a5a68", marginTop:3}}>{_range(e)}</div>
                               <div style={{fontSize:11, color:"#9aa4ae", marginTop:1}}>{e.detail}</div>
                             </div>
                           </div>
@@ -11836,11 +12024,13 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                       })()}
                       {_upNext.length > 1 && (
                         <div style={{marginTop:12, paddingTop:10, borderTop:"1px dashed "+(dk?"#2a3a48":"#e4ebf1"), display:"flex", flexDirection:"column", gap:9}}>
+                          {/* A split service week's runs are long ("Mon, Dec 21 – Wed, Dec 23 + Sat, Dec 26"): on their own line
+                              under the row, so a 320px phone keeps the role's name (rendered check, review fix 2026-10-20) */}
                           {_upNext.slice(1).map((e, i) => (
-                            <div key={i} style={{display:"flex", alignItems:"center", gap:10}}>
+                            <div key={i} style={{display:"flex", alignItems:"center", gap:10, ...(e.runs && e.runs.length > 1 ? {flexWrap:"wrap", rowGap:2} : null)}}>
                               <span style={{fontSize:16}}>{e.icon}</span>
                               <span style={{flex:1, minWidth:0, fontSize:13, fontWeight:600, color:dk?"#c8d2dc":"#3a4a58", whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis"}}>{e.type}{e.isBackup && <span style={{fontSize:9, fontWeight:700, color:"#8a6a10", marginLeft:6}}>· backup</span>}</span>
-                              <span style={{fontSize:12, color:dk?"#9aa8b6":"#5a6a78", whiteSpace:"nowrap"}}>{e.span ? `${_nice(e.start)} – ${_nice(e.end)}` : _nice(e.start)}</span>
+                              <span style={{fontSize:12, color:dk?"#9aa8b6":"#5a6a78", whiteSpace:"nowrap", ...(e.runs && e.runs.length > 1 ? {order:3, flexBasis:"100%", paddingLeft:26, whiteSpace:"normal"} : null)}}>{_range(e)}</span>
                               <span style={{fontSize:11, fontWeight:700, color:_whenTone(e.days), minWidth:60, textAlign:"right"}}>{_whenTxt(e.days)}</span>
                             </div>
                           ))}
@@ -12189,7 +12379,9 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                     {/* Expanded detail rows */}
                     {expanded && <div style={{borderTop:"1px solid #e8d8c0",padding:"4px 12px 8px"}}>
                       {reqs.map(r => <div key={r.id} style={{padding:"8px 0",borderBottom:"1px solid #f0e8d8"}}>
-                        {editingVacReq?.id === r.id ? (
+                        {/* The editor, ✎ Edit and Withdraw: the requester's own row, or a scheduler's (owner decision 2026-10-20 — canChangeVacRequest);
+                            a colleague sees the row and its ✓ Approve / ✕ Deny only. */}
+                        {editingVacReq?.id === r.id && canChangeVacRequest(r) ? (
                           <div style={{display:"flex",gap:6,alignItems:"end",flexWrap:"wrap"}}>
                             <div style={{minWidth:0,maxWidth:"100%"}}>
                               <label style={{fontSize:10,color:"#7a8a98",display:"block"}}>Dates</label>
@@ -12220,8 +12412,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                               </div>
                             )}
                             {r.surgeon_id === mySurgeon && !isScheduler && <span style={{marginLeft:"auto",fontSize:11,color:"#c09030",fontWeight:600,background:"#fef8e8",padding:"2px 8px",borderRadius:4,border:"1px solid #e8d090"}}>Pending review</span>}
-                            <button onClick={()=>setEditingVacReq({id:r.id,start_date:r.start_date,end_date:r.end_date,reason:r.reason||""})} style={{background:"none",border:"1px solid #d0d8e0",color:"#5a6a78",borderRadius:5,padding:"2px 8px",fontSize:10,cursor:"pointer",fontFamily:font}}>✎ Edit</button>
-                            <button onClick={()=>deleteVacRequest(r.id)} style={{background:"none",border:"1px solid #e0c0c0",color:"#904040",borderRadius:5,padding:"2px 8px",fontSize:10,cursor:"pointer",fontFamily:font}}>Withdraw</button>
+                            {canChangeVacRequest(r) && <>
+                              <button onClick={()=>setEditingVacReq({id:r.id,start_date:r.start_date,end_date:r.end_date,reason:r.reason||""})} style={{background:"none",border:"1px solid #d0d8e0",color:"#5a6a78",borderRadius:5,padding:"2px 8px",fontSize:10,cursor:"pointer",fontFamily:font}}>✎ Edit</button>
+                              <button onClick={()=>deleteVacRequest(r.id)} style={{background:"none",border:"1px solid #e0c0c0",color:"#904040",borderRadius:5,padding:"2px 8px",fontSize:10,cursor:"pointer",fontFamily:font}}>Withdraw</button>
+                            </>}
                           </div>
                         )}
                         {/* Coverage-floor check + vacation-overlap context (per-day) */}
@@ -12291,7 +12485,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                       </div>
                       {expanded && <div style={{borderTop:"1px solid #d8e0d8",padding:"4px 12px 6px"}}>
                         {reqs.map(r => <div key={r.id} style={{padding:"6px 0",borderBottom:"1px solid #e8f0e8"}}>
-                          {editingVacReq?.id === r.id ? (
+                          {/* Its ✎ Edit / ↩ Revoke / ✕ are a scheduler's; the editor follows canChangeVacRequest too (owner decision 2026-10-20) */}
+                          {editingVacReq?.id === r.id && canChangeVacRequest(r) ? (
                             <div style={{display:"flex",gap:6,alignItems:"end",flexWrap:"wrap"}}>
                               <div style={{minWidth:0,maxWidth:"100%"}}>
                                 <label style={{fontSize:10,color:"#7a8a98",display:"block"}}>Dates</label>
