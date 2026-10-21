@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.10.20e";
+    var APP_VERSION = "2026.10.20f";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -771,7 +771,17 @@ function CallSchedule() {
           if (user) {
             auth.bindUser(user.id);
             setAuthUser(user);
-            const profile = await dbAuth.getProfile(user.id);
+            let profile;
+            try {
+              profile = await dbAuth.getProfile(user.id);
+            } catch (e) {
+              if (!(typeof isNoConnectionError === "function" && isNoConnectionError(e))) throw e;
+              auth.bindUser(null);
+              setAuthUser(null);
+              setAuthNetErr(true);
+              setAuthLoading(false);
+              return;
+            }
             if (profile) {
               setUserProfile(profile);
               setMySurgeon(profile.person_id);
@@ -801,7 +811,17 @@ function CallSchedule() {
       if (user) {
         auth.bindUser(user.id);
         setAuthUser(user);
-        const profile = await dbAuth.getProfile(user.id);
+        let profile;
+        try {
+          profile = await dbAuth.getProfile(user.id);
+        } catch (e) {
+          if (!(typeof isNoConnectionError === "function" && isNoConnectionError(e))) throw e;
+          auth.bindUser(null);
+          setAuthUser(null);
+          setAuthError("No connection — you're still signed in. Check your signal and tap Unlock again.");
+          setAuthBusy(false);
+          return;
+        }
         if (profile) {
           setUserProfile(profile);
           setMySurgeon(profile.person_id);
@@ -947,7 +967,16 @@ function CallSchedule() {
         }
         auth.bindUser(user && user.id);
         setAuthUser(user);
-        const profile = await dbAuth.getProfile(user.id);
+        let profile;
+        try {
+          profile = await dbAuth.getProfile(user.id);
+        } catch (e) {
+          if (typeof isNoConnectionError === "function" && isNoConnectionError(e)) {
+            auth.bindUser(null);
+            setAuthUser(null);
+          }
+          throw e;
+        }
         if (profile) {
           setUserProfile(profile);
           setMySurgeon(profile.person_id);
@@ -8239,14 +8268,16 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       setBiometricPending(false);
       setAuthError("");
     },
+    disabled: authBusy,
     style: {
       background: "none",
       border: "none",
       color: "#1a6fa8",
       fontSize: 12,
-      cursor: "pointer",
+      cursor: authBusy ? "default" : "pointer",
       fontFamily: font,
-      textDecoration: "underline"
+      textDecoration: "underline",
+      opacity: authBusy ? 0.5 : 1
     }
   }, "Use email & password instead"))) : !authUser && !isPublicMode ? React.createElement("div", {
     style: {
