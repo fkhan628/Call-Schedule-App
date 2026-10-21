@@ -1800,7 +1800,8 @@ console.log("\nBD. Generate: one period label, the period's seam, holidays with 
       && count("const yrA = holidayAssignments[String(y)] || [];") === 0 && count("const years = new Set([periodStart.getFullYear()-1") === 0, J({ sites, iSetup, iIssues, iGen, iLocks }));
   check("BD7 the old period templates are gone — the e-mail's from the selects, Stats' \"This Period — {MO[startMonth]} to …\", the prefill's whole-schedule span — and each says the Generate Mondays' period (periodText: periodLabel, guarded — review fix)",
     count("{ period: `${MO[startMonth]} – ${MO[endMoIdx]} ${startYear}` }") === 0 && count("This Period — {MO[startMonth]} to {MO[endMoIdx]} {startYear}") === 0 && count("const fmtNice = (d) =>") === 0
-      && count("const period = periodText;") === 1 && count('sendEmailNotif("schedule_published", { period }, null, ep);') === 1
+      // (2: the e-mail's in doGenerateAndNotify, and — 2026-10-20, on purpose, CH — ↻ Regenerate's banner label, which its 📣 e-mails)
+      && count("const period = periodText;") === 2 && count('sendEmailNotif("schedule_published", { period }, null, ep);') === 1
       && count("const computePeriodLabel = () => {") === 1 && count("if (gen.length && gen.every(m => schedule[m])) return label(gen[0], gen[gen.length - 1]);") === 1
       && count("<>This Period — {periodText}</>") === 1);
   check("BD7 the Generate panel adds no hook (the 2026.09.24a TDZ class): plain code in a JSX IIFE; it shows the exact dates and the week count",
@@ -1835,7 +1836,8 @@ console.log("\nBD. Generate: one period label, the period's seam, holidays with 
   const lbl = (ctx) => { try { return vm.runInContext(`(function (pubMs) { return (${pubLbl[0][1]}); })`, ctx)(weeksFrom("2027-01-04", 14)); } catch (ex) { return "threw " + ex; } };
   check("BD8 …its file name, run: dsg-call-schedule-2027-01-04-to-2027-04-11.html; the Generate & Publish and Accept & Publish audit lines name the weeks they publish (\"14 weeks, Jan 4 – Apr 11, 2027, Generate & Publish\" — they said \"14 weeks from May 2026\" from the selects), plain dates with an old helpers.js",
     fileName === "dsg-call-schedule-2027-01-04-to-2027-04-11.html" && pubLbl.length === 2 && lbl(sandbox) === "Jan 4 – Apr 11, 2027" && lbl(OLD_SB) === "weeks of 2027-01-04 – 2027-04-05"
-      && count("label: `${pubMs.length} weeks, ${pubPeriod}, Generate & Publish`,") === 1 && count("label: `${pubMs.length} weeks, ${pubPeriod}${origin === \"json\" ? \", loaded from JSON\" : \"\"}`,") === 1
+      // (its last words: who published — "Generate & Publish" unless the Calendar's ↻ Regenerate says so: review R3, 2026-10-20, CH2)
+      && count("label: `${pubMs.length} weeks, ${pubPeriod}, ${via || \"Generate & Publish\"}`,") === 1 && count("label: `${pubMs.length} weeks, ${pubPeriod}${origin === \"json\" ? \", loaded from JSON\" : \"\"}`,") === 1
       && count("weeks from ${MO[startMonth]} ${startYear}") === 0 && count("weeks from ${MO[sM]} ${sY}") === 0 && count("const pubMs = Object.keys(result).sort();") === 1 && count("const pubMs = Object.keys(weeks).sort();") === 1,
     J({ fileName, n: pubLbl.length, now: pubLbl.length && lbl(sandbox), old: pubLbl.length && lbl(OLD_SB) }));
 }
@@ -9543,6 +9545,359 @@ console.log("\nAV. Pending requests: a collapsed group shows a coverage-floor br
     JSON.stringify({ bareAV, iCov, iMemo, iReqView, cond: condAV && condAV[1] }));
 }
 
+// ─── CH. After ↻ Regenerate publishes, the same one-tap Notify banner (owner 2026-10-20) ───
+// The Calendar's ↻ Regenerate publishes as Generate & Publish does
+// (doGenerate: the search, the backup snapshot, the publish job), but it sent
+// nothing and raised nothing: a regenerated schedule reached nobody unless the
+// scheduler told them some other way (review finding F4). The owner left it to
+// the recommendation: once its publish LANDS it raises the SAME Calendar
+// banner ✓ Accept & Publish raises (CD) — "✓ Published <period>. Nobody has
+// been notified yet." with 📣 Notify everyone / Not now. Nothing is sent by
+// itself, and no confirm is added (it never had one).
+//   CH1 the REAL doRegenerate, every sender a spy: doGenerate resolving
+//       "published" → the banner ONCE, { label: the period taken at the tap
+//       (periodText), ep: the tap's session }, only after doGenerate resolved;
+//       every other outcome (not landed, refused, busy, cancelled, no
+//       snapshot, moved) → nothing; the session moving meanwhile → nothing;
+//       it never sends
+//   CH2 the landed signal, end to end — the REAL doRegenerate over the REAL
+//       finishGenerate and the REAL commitGenerated (+ publishNotLanded), only
+//       the I/O stubbed: the job landed → the banner, naming the weeks the
+//       publish's own audit line names; a partial publish (a week still
+//       pending) → no banner and "…Nobody was notified."; a sign-out during
+//       the job → no banner, nothing said; no backup snapshot, a week changed
+//       by someone else, Needs your OK → no job, no banner
+//   CH3 it is the same banner: the REAL 📣 (notifyJustPublished → the REAL
+//       notifyPublished) sends ONE notice + ONE e-mail with Regenerate's
+//       period, a late second tap nothing; the REAL Not now closes it and
+//       sends nothing; the REAL sessionBoundary between the publish and the
+//       tap clears it and the old screen's tap sends nothing; members never
+//       see it (the banner's own gate, evaluated)
+//   CH4 the wiring: the Calendar's ↻ Regenerate (scheduler-only, disabled
+//       while a search runs) calls doRegenerate on the tap, no confirm;
+//       doRegenerate calls doGenerate once and none of the senders; its label
+//       is the component's ONE period line (periodText — helpers.js
+//       periodLabel, guarded): an OLD cached helpers.js gives the plain dates
+// Review fixes (2026-10-20):
+//   CH1 F2 — the banner is brought into view only for a scheduler who STAYED
+//       (the tapped button still in the page, no sheet open, the page not
+//       scrolled: scrollY or the button's spot unchanged, ±8 px); one who
+//       scrolled on (the copied scroll pulled them back ~900 px, even under
+//       an open day sheet), opened a day or left the tab is not moved; the
+//       page moving by itself (scroll anchoring, a line growing above the
+//       button) is not a scroll
+//   CH1 R2 — Needs your OK / inputs changed during the search: a scheduler
+//       who stayed is taken to the preview (the Generate tab, the preview card
+//       scrolled into view); one who moved on is left where they are; nothing
+//       is raised
+//   CH2 R2 — the preview's toasts say where it is: "in the preview on the
+//       Generate tab" from the Calendar, still "in the preview below" on the
+//       Generate tab (they said "below" on the Calendar, where it isn't)
+//   CH2 R3 — Regenerate's audit line ends "↻ Regenerate"; Generate &
+//       Publish's still ends "Generate & Publish" (the log couldn't tell a
+//       publish that told everyone from one still waiting for 📣)
+//   CH5 R1 — the banner goes when its weeks do: a clear / factory reset /
+//       restore that STANDS (the REAL runAuthoritativeSchedule, their one job
+//       helper — landed, partly landed, retried, still running) and ↩ Undo of
+//       a publish (the REAL undoLastChange); a job refused with nothing
+//       written, a bug, another kind of Undo step, a refused Undo or a session
+//       change during the job leave it; the REAL ✕ Clear end to end from
+//       Regenerate's banner: confirmed and landed → gone (its 📣 can no longer
+//       announce a cleared schedule), cancelled or refused → still up
+//   the section runs inside its own catch: a throw fails one named check,
+//   it never ends the run (as CD)
+console.log("\nCH. After Regenerate publishes, the same one-tap Notify banner");
+await (async () => {
+  const nsrcCH = src.replace(/\r\n/g, "\n");
+  const bodyCH = (start, end) => { const i = nsrcCH.indexOf(start); if (i < 0 || nsrcCH.indexOf(start, i + 1) !== -1) return null; const e = nsrcCH.indexOf(end, i + start.length); return e < 0 ? null : nsrcCH.slice(i + start.length, e); };
+  const fnCH = (names, code, ctx) => { if (code === null) return null; try { return vm.runInContext(`(function (env) { const { ${names} } = env; return (${code}); })`, ctx || sandbox, { filename: "ch-slice.js" }); } catch (ex) { return null; } };
+  const J = (o) => JSON.stringify(o);
+  const MSG = "A new call schedule has been generated. Check the Schedule or Calendar tab.";
+  const NOTICE = (ep) => J(["notice", "schedule_published", "Schedule Published", MSG, {}, null, ep]);
+  const EMAIL = (period, ep) => J(["e-mail", "schedule_published", { period }, null, ep]);
+  const TOAST = "toast success: Everyone has been notified.";
+  // the two weeks published below, and their period through the component's REAL period line (and with an OLD cached helpers.js)
+  const parseCH = vm.runInContext("parse", sandbox);
+  const MONS = ["2026-11-16", "2026-11-23"];
+  const ptNewCH = periodTextIn(sandbox), ptOldCH = periodTextIn(OLD_SB);
+  const PT = ptNewCH ? ptNewCH(MONS.map(parseCH)) : null, PT_OLD = ptOldCH ? ptOldCH(MONS.map(parseCH)) : null;
+  const rgBody = bodyCH("  const doRegenerate = async (e) => {", "\n  };\n");
+  const rgCode = rgBody === null ? null : "async (e) => {" + rgBody + "\n  }";
+  // (every sender is handed in, as a spy: doRegenerate must call none of them)
+  const RG_ENV = "sessionEpochRef, periodText, doGenerate, setJustPublished, setView, setTimeout, window, document, addNotification, sendEmailNotif, sendPushNotif, notifyPublished";
+  const rgMk = fnCH(RG_ENV, rgCode), rgMkOld = fnCH(RG_ENV, rgCode, OLD_SB);
+  const spies = (rec) => ({ addNotification: (t) => rec.sends.push("notice " + t), sendEmailNotif: (t) => rec.sends.push("e-mail " + t), sendPushNotif: (t) => rec.sends.push("push " + t), notifyPublished: () => rec.sends.push("notifyPublished") });
+  // The page around the tap (review F2): scrollY, the tapped button's spot on the screen, whether it is still in the page,
+  // whether a sheet is open. The tap's click hands doRegenerate the button (e.currentTarget), as React does.
+  const pageCH = () => { const pg = { y: 300, top: 120, inPage: true, sheet: false }; pg.btn = { get isConnected() { return pg.inPage; }, getBoundingClientRect: () => ({ top: pg.top, bottom: pg.top + 36 }) }; pg.window = { get scrollY() { return pg.y; } }; return pg; };
+  // What the scheduler does while the search / publish runs: o.scrolled — scrolls by N px (scrollY and the button both
+  // move); o.anchored — the page moves by itself, scroll anchoring (scrollY moves, the button holds still); o.shifted — a
+  // line grows above the button at the top of the page (the button moves, scrollY doesn't); o.sheet — opens a day's
+  // sheet; o.leftTab — leaves the Calendar (the button leaves the page)
+  const actCH = (pg, o) => { if (o.scrolled) { pg.y += o.scrolled; pg.top -= o.scrolled; } if (o.anchored) pg.y += o.anchored; if (o.shifted) pg.top += o.shifted; if (o.sheet) pg.sheet = true; if (o.leftTab) pg.inPage = false; };
+  const docCH = (pg, rec, o) => ({ querySelector: (sel) => { if (sel === '[role="dialog"]') return pg.sheet ? { role: "dialog" } : null; rec.asked.push(sel); return o.noEl ? null : { scrollIntoView: (how) => rec.scrolled.push([sel, how]) }; } });
+
+  // CH1 — the REAL doRegenerate. o.outcome: what doGenerate resolves (default "published"); o.move: the session moves while
+  // it runs; o.noEl: nothing to scroll in the page; o.noEvent: called without the tap's click. Timers are recorded and run after it.
+  const regen = async (o = {}, mk = rgMk) => {
+    const rec = { jp: [], sends: [], order: [], gen: [], timers: [], asked: [], scrolled: [], views: [] };
+    if (!mk) return { threw: "doRegenerate not extractable" };
+    const ep = { current: 4 }, pg = pageCH();
+    try {
+      await mk(Object.assign({
+        sessionEpochRef: ep, periodText: "periodText" in o ? o.periodText : PT,
+        doGenerate: async (...a) => { rec.gen.push(a); rec.order.push("search+publish"); await null; if (o.move) ep.current++; actCH(pg, o); rec.order.push("resolved"); return "outcome" in o ? o.outcome : "published"; },
+        setJustPublished: (v) => { rec.jp.push(v); rec.order.push("banner"); },
+        setView: (v) => { rec.views.push(v); rec.order.push("view " + v); },
+        setTimeout: (fn, ms) => { rec.timers.push([ms, fn]); return 0; },
+        window: pg.window, document: docCH(pg, rec, o),
+      }, spies(rec)))(o.noEvent ? undefined : { currentTarget: pg.btn });
+      rec.timers.forEach(([, fn]) => fn()); rec.timers = rec.timers.map(([ms]) => ms);
+    } catch (ex) { rec.threw = String(ex).slice(0, 160); }
+    return rec;
+  };
+  const OTHER = ["not-published", "refused", "busy", "cancelled", "no-snapshot", "moved"];
+  const ch1 = { landed: await regen(), noEl: await regen({ noEl: true }), session: await regen({ move: true }), sessionReview: await regen({ move: true, outcome: "review" }) };
+  for (const k of OTHER) ch1[k] = await regen({ outcome: k });
+  // F2 / R2: where the scheduler is when the outcome comes in — moved on, or still where they tapped
+  const MOVES = { scrolledOn: { scrolled: 900 }, scrolledUp: { scrolled: -200 }, sheet: { sheet: true }, leftTab: { leftTab: true }, noEvent: { noEvent: true } };
+  const STILL = { anchored: { anchored: 39 }, shifted: { shifted: 39 }, jitter: { scrolled: 6 } };
+  const f2 = {}, r2 = { stayed: await regen({ outcome: "review" }) };
+  for (const [k, o] of Object.entries(Object.assign({}, MOVES, STILL))) { f2[k] = await regen(o); r2[k] = await regen(Object.assign({ outcome: "review" }, o)); }
+  const BAN4 = J([{ label: PT, ep: 4 }]);
+  const SCROLL_BAN = J([['[data-just-published="1"]', { behavior: "smooth", block: "nearest" }]]);
+  const SCROLL_PREV = J([['[data-gen-preview="1"]', { behavior: "smooth", block: "start" }]]);
+  check("CH1 the REAL doRegenerate: a publish that LANDED (doGenerate resolves \"published\") raises the Calendar's banner ONCE — { label: the period taken at the tap (periodText), ep: the tap's session } — only after doGenerate resolved; doGenerate is asked to publish (false: no preview), as \"↻ Regenerate\" (its audit line — R3)",
+    !ch1.landed.threw && PT === "Nov 16 – Nov 29, 2026" && J(ch1.landed.jp) === BAN4 && ch1.landed.order.join() === "search+publish,resolved,banner" && J(ch1.landed.gen) === J([[false, "↻ Regenerate"]]), J(ch1.landed));
+  check("CH1 F2 a scheduler who STAYED (the button still in the page, no sheet open, not scrolled) sees the banner brought into view 60 ms later (smooth, nearest) — also when the page moved by itself: scroll anchoring moved scrollY +39 px with the button still, a line grew above the button at the top (+39 px), a 6 px jitter; with nothing in the page to scroll: no scroll, no throw",
+    [ch1.landed, f2.anchored, f2.shifted, f2.jitter].every((r) => !r.threw && J(r.jp) === BAN4 && J(r.timers) === J([60]) && J(r.scrolled) === SCROLL_BAN && r.views.length === 0)
+      && !ch1.noEl.threw && J(ch1.noEl.jp) === BAN4 && J(ch1.noEl.asked) === J(['[data-just-published="1"]']) && ch1.noEl.scrolled.length === 0,
+    J({ landed: ch1.landed, anchored: f2.anchored, shifted: f2.shifted, jitter: f2.jitter, noEl: ch1.noEl }));
+  check("CH1 F2 a scheduler who moved on is NOT moved: scrolled on 900 px (the copied scroll pulled them back), scrolled up 200 px, a day's sheet open, left the Calendar, no tap event — the banner is still raised (it waits at the top of the Calendar), nothing scrolls, nothing is even looked up",
+    Object.keys(MOVES).every((k) => !f2[k].threw && J(f2[k].jp) === BAN4 && f2[k].timers.length === 0 && f2[k].asked.length === 0 && f2[k].scrolled.length === 0 && f2[k].views.length === 0),
+    J(Object.fromEntries(Object.keys(MOVES).map((k) => [k, f2[k].threw || [f2[k].jp.length, f2[k].timers, f2[k].scrolled]]))));
+  check("CH1 R2 Needs your OK / inputs changed (\"review\") on the Calendar: a scheduler who stayed (also with the page moving by itself) is taken to the preview — the Generate tab, then the preview card scrolled into view (smooth, start) 60 ms later; nothing is raised",
+    ["stayed", "anchored", "shifted", "jitter"].every((k) => !r2[k].threw && J(r2[k].views) === J(["generate"]) && J(r2[k].timers) === J([60]) && J(r2[k].scrolled) === SCROLL_PREV && r2[k].jp.length === 0)
+      && r2.stayed.order.join() === "search+publish,resolved,view generate", J({ stayed: r2.stayed, anchored: r2.anchored }));
+  check("CH1 R2 …one who moved on (scrolled, a sheet open, left the Calendar, no tap event) is left where they are: no tab switch, nothing scrolled, nothing raised (the toast says where the preview is — CH2)",
+    Object.keys(MOVES).every((k) => !r2[k].threw && r2[k].views.length === 0 && r2[k].timers.length === 0 && r2[k].asked.length === 0 && r2[k].jp.length === 0),
+    J(Object.fromEntries(Object.keys(MOVES).map((k) => [k, r2[k].threw || [r2[k].views, r2[k].timers]]))));
+  check("CH1 no banner unless it landed: not landed (a partial publish), refused, busy, cancelled (the Silvis confirm; a sign-out drops the search), no backup snapshot, a week changed by someone else — nothing raised, no tab switch, nothing scrolled; published (or sent to the preview) but the session moved meanwhile → nothing either",
+    OTHER.concat(["session", "sessionReview"]).every((k) => !ch1[k].threw && ch1[k].jp.length === 0 && ch1[k].views.length === 0 && ch1[k].timers.length === 0 && ch1[k].asked.length === 0) && J(ch1.session.order) === J(["search+publish", "resolved"]),
+    J(Object.fromEntries(Object.entries(ch1).map(([k, r]) => [k, r.threw || r.jp]))));
+  const allCH1 = Object.values(ch1).concat(Object.values(f2), Object.values(r2));
+  check("CH1 ↻ Regenerate itself never sends — no notice, push, e-mail or notifyPublished in any run (nothing is sent by itself; 📣 is the scheduler's)",
+    allCH1.every((r) => !r.threw && r.sends.length === 0), J(allCH1.filter((r) => r.threw || r.sends.length).slice(0, 3)));
+
+  // CH2 — the landed signal, end to end: the REAL finishGenerate (AH9's env) and the REAL commitGenerated + publishNotLanded (SE-G's)
+  const fgBody = bodyCH("  const finishGenerate = (result, preview, clickSig, clickLocks, genEpoch, via) => {", "\n  };\n");
+  const fgMk = fnCH("pendingLocks, nameOf, slotLabel, showToast, setPreviewSchedule, setPreviewOrigin, setShowPreview, genInputsSig, listScheduleBends, surgeons, mondays, buildGenAvailability, buildSilvisPrimary, vacations, holidayAssignments, buildPrevWeekSeed, publishingRef, setPublishing, setSaveStatus, snapshots, genCommitRef, previewEpochRef, schedEditable, schedSyncRef, sessionEpochRef, view",
+    fgBody === null ? null : "(result, preview, clickSig, clickLocks, genEpoch, via) => {" + fgBody + "\n  }");
+  const pnBody = bodyCH("  const publishNotLanded = (pr, what) => {", "\n  };\n");
+  const cgBody = bodyCH("  const commitGenerated = async (result, via) => {", "\n  };\n  genFinishRef.current = finishGenerate;");
+  const cgMk = fnCH("publishWeeks, numWeeks, MO, startMonth, startYear, runPublish, setPreviewSchedule, setShowPreview, setSaveStatus, lastSyncRef, buildStateBundle, supabase, console, showToast, setTimeout, sessionEpochRef",
+    pnBody === null || cgBody === null ? null : "(() => { const publishNotLanded = (pr, what) => {" + pnBody + "\n  };\n  return async (result, via) => {" + cgBody + "\n  }; })()");
+  const RES = Object.fromEntries(MONS.map((m, k) => [m, { dayCall: "s" + (k + 1), nights: {} }]));
+  // o.landed:false — the job didn't land every week (the second still pending); o.moveDuringJob — a sign-out while the job
+  // ran; o.snapFail; o.moved — a week changed by someone else since the tap; o.items — Needs your OK; o.sigNow — the
+  // inputs changed during the search; o.view — the tab the scheduler is on when the search ends (default the Calendar);
+  // o.gp — Generate & Publish's own call instead (doGenerateAndNotify's doGenerate(false): no `via`)
+  const e2e = async (o = {}) => {
+    const rec = { jp: [], sends: [], toasts: [], status: [], audits: [], jobs: 0, snaps: 0, scrolled: 0, timers: [], views: [], asked: [] };
+    if (!rgMk || !fgMk || !cgMk) return { threw: "not extractable: " + J({ rg: !!rgMk, fg: !!fgMk, cg: !!cgMk }) };
+    const ep = { current: 4 }, pg = pageCH();
+    const T = (fn, ms) => { rec.timers.push(ms); if (ms === 60) rec.scroll = fn; return 0; }; // ("Regenerated!"'s own 2 s clear is not run)
+    try {
+      const commit = cgMk({ publishWeeks: (w, how) => { rec.audits.push(how.label); return { merged: {}, prior: {}, y1: {} }; }, numWeeks: 2, MO: ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"], startMonth: 10, startYear: 2026,
+        runPublish: (w) => { rec.jobs++; rec.jobWeeks = Object.keys(w).join(); return new Promise((r) => setTimeout(() => { if (o.moveDuringJob) ep.current++; r(o.landed === false ? { ok: false, results: [{ k: MONS[0], outcome: "saved" }, { k: MONS[1], outcome: "pending" }] } : { ok: true, results: MONS.map((k) => ({ k, outcome: "saved" })) }); }, 0)); },
+        setPreviewSchedule: () => {}, setShowPreview: () => {}, setSaveStatus: (s) => rec.status.push(s), lastSyncRef: { current: null }, buildStateBundle: (x) => Object.assign({}, x),
+        supabase: { from: () => ({ upsert: async () => ({ error: null }) }) }, console: { error() {}, log() {}, warn() {} }, showToast: (m) => rec.toasts.push(String(m)), setTimeout: T, sessionEpochRef: ep });
+      const finish = fgMk({ view: o.view || "calendar", sessionEpochRef: ep, pendingLocks: [], nameOf: (x) => x, slotLabel: () => "slot", showToast: (m) => rec.toasts.push(String(m)), setPreviewSchedule: () => {}, setPreviewOrigin: () => {}, setShowPreview: () => {},
+        genInputsSig: () => o.sigNow || "SIG0", listScheduleBends: () => ({ items: o.items || [] }), surgeons: [], mondays: [], buildGenAvailability: () => ({}), buildSilvisPrimary: () => null, vacations: {}, holidayAssignments: {}, buildPrevWeekSeed: () => null,
+        publishingRef: { current: false }, setPublishing: () => {}, setSaveStatus: (s) => rec.status.push(s), snapshots: { capture: async () => { rec.snaps++; return { ok: !o.snapFail }; } }, genCommitRef: { current: commit },
+        previewEpochRef: { current: -1 }, schedEditable: () => true, schedSyncRef: { current: { knownSchedule: () => ({}), changedSince: (keys) => (o.moved ? keys.slice(0, 1) : []) } } });
+      if (o.gp) rec.outcome = await finish(RES, false, "SIG0", [], 3);
+      else await rgMk(Object.assign({ sessionEpochRef: ep, periodText: PT, doGenerate: async (preview, via) => (rec.outcome = await finish(RES, preview, "SIG0", [], 3, via)),
+        setJustPublished: (v) => rec.jp.push(v), setView: (v) => rec.views.push(v), setTimeout: T, window: pg.window,
+        document: { querySelector: (sel) => { if (sel === '[role="dialog"]') return null; rec.asked.push(sel); return { scrollIntoView: () => { rec.scrolled++; } }; } } }, spies(rec)))({ currentTarget: pg.btn });
+      if (rec.scroll) rec.scroll();
+    } catch (ex) { rec.threw = String(ex).slice(0, 160); }
+    return rec;
+  };
+  const ITEM = [{ kind: "bend", text: "x" }];
+  const ch2 = { landed: await e2e(), gp: await e2e({ gp: true, view: "generate" }), partial: await e2e({ landed: false }), signOut: await e2e({ moveDuringJob: true }), noSnap: await e2e({ snapFail: true }), moved: await e2e({ moved: true }),
+    review: await e2e({ items: ITEM }), changed: await e2e({ sigNow: "SIG1" }), gpReview: await e2e({ gp: true, view: "generate", items: ITEM }), gpChanged: await e2e({ gp: true, view: "generate", sigNow: "SIG1" }) };
+  check("CH2 end to end (the REAL doRegenerate → finishGenerate → commitGenerated): the job landed every week → \"published\", \"Regenerated!\", and the banner ONCE in the tap's session, naming the weeks the publish's own audit line names (the two it sent to the table), brought into view; nothing sent, nothing else said",
+    !ch2.landed.threw && ch2.landed.outcome === "published" && ch2.landed.status.includes("Regenerated!") && J(ch2.landed.jp) === BAN4
+      && ch2.landed.audits.length === 1 && ch2.landed.audits[0].startsWith(`2 weeks, ${PT}, `) && ch2.landed.jobWeeks === MONS.join() && ch2.landed.scrolled === 1 && ch2.landed.sends.length === 0 && ch2.landed.toasts.length === 0, J(ch2.landed));
+  check("CH2 R3 the publish's audit line says who published: \"2 weeks, <period>, ↻ Regenerate\" for the Calendar's ↻ Regenerate (it tells nobody until 📣), still \"…, Generate & Publish\" for Generate & Publish's own call (it tells everyone) — the same REAL finishGenerate → commitGenerated",
+    J(ch2.landed.audits) === J([`2 weeks, ${PT}, ↻ Regenerate`]) && !ch2.gp.threw && ch2.gp.outcome === "published" && J(ch2.gp.audits) === J([`2 weeks, ${PT}, Generate & Publish`]), J({ rg: ch2.landed.audits, gp: ch2.gp.audits }));
+  check("CH2 a partial publish (the second week still pending) → \"not-published\": no banner, nothing scrolled, and ONE message — the week isn't saved yet, \"Nobody was notified.\" (the REAL publishNotLanded); a sign-out while the job ran → no banner, nothing said on the next session's screen (no \"Regenerated!\")",
+    !ch2.partial.threw && ch2.partial.outcome === "not-published" && ch2.partial.jobs === 1 && ch2.partial.jp.length === 0 && ch2.partial.scrolled === 0
+      && J(ch2.partial.toasts) === J(["Regenerated on this screen — 1 week isn't saved yet; retrying automatically. Nobody was notified."]) && !ch2.partial.status.includes("Regenerated!")
+      && !ch2.signOut.threw && ch2.signOut.outcome === "not-published" && ch2.signOut.jobs === 1 && ch2.signOut.jp.length === 0 && ch2.signOut.toasts.length === 0 && !ch2.signOut.status.includes("Regenerated!"),
+    J({ partial: ch2.partial, signOut: ch2.signOut }));
+  check("CH2 stopped before any job — no backup snapshot (\"no-snapshot\"), a week changed by someone else since the tap (\"moved\"), Needs your OK and inputs changed during the search (\"review\": the preview opens, and its ✓ Accept & Publish raises its own banner) — no job, no banner, nothing sent",
+    ch2.noSnap.outcome === "no-snapshot" && ch2.moved.outcome === "moved" && ch2.review.outcome === "review" && ch2.changed.outcome === "review"
+      && ["noSnap", "moved", "review", "changed"].every((k) => !ch2[k].threw && ch2[k].jobs === 0 && ch2[k].jp.length === 0 && ch2[k].sends.length === 0)
+      && ch2.noSnap.scrolled === 0 && ch2.moved.scrolled === 0,
+    J(Object.fromEntries(["noSnap", "moved", "review", "changed"].map((k) => [k, ch2[k].threw || [ch2[k].outcome, ch2[k].jobs, ch2[k].jp]]))));
+  check("CH2 R2 from the Calendar the preview's toast says where it is — \"…review them in the preview on the Generate tab, then ✓ Accept & Publish.\" / \"…review the result in the preview on the Generate tab before publishing.\" — and the scheduler (who stayed) is taken there: the Generate tab, the preview card scrolled into view",
+    J(ch2.review.toasts) === J(["1 item needs your OK before publishing — review them in the preview on the Generate tab, then ✓ Accept & Publish."])
+      && J(ch2.changed.toasts) === J(["Time off, a lock, a holiday card or the Generate settings changed during the search — review the result in the preview on the Generate tab before publishing."])
+      && ["review", "changed"].every((k) => J(ch2[k].views) === J(["generate"]) && J(ch2[k].asked) === J(['[data-gen-preview="1"]']) && ch2[k].scrolled === 1),
+    J({ review: [ch2.review.toasts, ch2.review.views, ch2.review.asked], changed: [ch2.changed.toasts, ch2.changed.views] }));
+  check("CH2 R2 …on the Generate tab (Generate & Publish) the same REAL finishGenerate still says \"in the preview below\" — the preview IS below there",
+    !ch2.gpReview.threw && ch2.gpReview.outcome === "review" && J(ch2.gpReview.toasts) === J(["1 item needs your OK before publishing — review them in the preview below, then ✓ Accept & Publish."])
+      && !ch2.gpChanged.threw && J(ch2.gpChanged.toasts) === J(["Time off, a lock, a holiday card or the Generate settings changed during the search — review the result in the preview below before publishing."]),
+    J({ gpReview: ch2.gpReview.toasts, gpChanged: ch2.gpChanged.toasts }));
+
+  // CH3 — the banner Regenerate raises is the SAME banner: the REAL 📣, the REAL Not now, the REAL session boundary, its gate
+  const npBody = bodyCH("  const notifyPublished = async (ep, period) => {", "\n  };\n");
+  const npMk = fnCH("sessionEpochRef, addNotification, sendEmailNotif, justPublished, notifiedRef, setJustPublished", npBody === null ? null : "async (ep, period) => {" + npBody + "\n  }");
+  const njBody = bodyCH("  const notifyJustPublished = async () => {", "\n  };\n");
+  const njMk = fnCH("justPublished, notifiedRef, setJustPublished, notifyPublished, sessionEpochRef, showToast, document, setTimeout", njBody === null ? null : "async () => {" + njBody + "\n  }");
+  const sbBody = bodyCH("  const sessionBoundary = ", "\n  };\n");
+  const sbMk = fnCH("searchRef, setSearching, setSearchStats, setPreviewSchedule, setShowPreview, schedSyncRef, setScheduleHistory, setEditWeekModal, setReauthNeeded, setStaleTokenWarn, setIsScheduler, setupReadRef, lastSyncRef, sessionEpochRef, forgetDayOffs, setJustPublished", sbBody === null ? null : sbBody + "\n  }");
+  const B_OPEN = "\n          {isScheduler && justPublished && (\n", bAt = nsrcCH.indexOf(B_OPEN), bEnd = bAt < 0 ? -1 : nsrcCH.indexOf("\n          )}", bAt + B_OPEN.length);
+  const banCH = bAt < 0 || bEnd < 0 || nsrcCH.indexOf(B_OPEN, bAt + 1) !== -1 ? "" : nsrcCH.slice(bAt + B_OPEN.length, bEnd);
+  const notNowCH = (banCH.match(/<button onClick=\{(\(\)=>[^}]*)\}/) || [])[1] || null;
+  const nnMk = fnCH("setJustPublished, notifyPublished, addNotification, sendEmailNotif", notNowCH);
+  const gateCH = (nsrcCH.match(/\n {10}\{([^\n{}]*\bjustPublished\b[^\n{}]*) && \(\n {12}<div role="status" aria-live="polite" data-just-published="1"/) || [])[1] || null;
+  let showsCH = null;
+  try { showsCH = gateCH ? vm.runInContext(`(function (isScheduler, justPublished) { return !!(${gateCH}); })`, sandbox) : null; } catch (ex) { showsCH = null; }
+  // one component: the banner's state (React's: a set to the value it already holds changes nothing, so only a change is
+  // logged), the ref that outlives renders, one log; ↻ Regenerate's publish lands in session 4. A tap is made from a
+  // render holding `jp` (by default, the banner up now).
+  const compCH = () => {
+    const c = { log: [], ep: { current: 4 }, notified: { current: null }, state: null };
+    c.setJP = (v) => { if (!Object.is(v, c.state)) { c.state = v; c.log.push("banner " + J(v)); } };
+    c.np = (jp) => npMk({ sessionEpochRef: c.ep, addNotification: async (...a) => { c.log.push(J(["notice", ...a])); return true; }, sendEmailNotif: (...a) => { c.log.push(J(["e-mail", ...a])); },
+      justPublished: jp, notifiedRef: c.notified, setJustPublished: c.setJP });
+    c.regen = () => rgMk(Object.assign({ sessionEpochRef: c.ep, periodText: PT, doGenerate: async () => "published", setJustPublished: c.setJP, setView: () => {}, setTimeout: () => 0, window: { scrollY: 0 }, document: { querySelector: () => null } }, spies({ sends: c.log })))();
+    c.tap = (jp = c.state) => njMk({ justPublished: jp, notifiedRef: c.notified, setJustPublished: c.setJP, notifyPublished: c.np(jp), sessionEpochRef: c.ep,
+      showToast: (m, t) => c.log.push("toast " + t + ": " + m), document: { querySelector: () => null }, setTimeout: (fn) => { fn(); return 0; } })();
+    return c;
+  };
+  let ch3 = null;
+  if (rgMk && npMk && njMk && sbMk && nnMk) {
+    try {
+      const one = compCH(); await one.regen(); const raised = one.state; await one.tap(); const afterTap = one.log.slice(); await one.tap(raised); const late = one.log.slice();
+      const nn = compCH(); await nn.regen(); let nnSends = 0;
+      nnMk({ setJustPublished: nn.setJP, notifyPublished: () => { nnSends++; }, addNotification: () => { nnSends++; }, sendEmailNotif: () => { nnSends++; } })();
+      const so = compCH(); await so.regen(); const held = so.state;
+      sbMk({ searchRef: { current: null }, setSearching: () => {}, setSearchStats: () => {}, setPreviewSchedule: () => {}, setShowPreview: () => {}, schedSyncRef: { current: { reset: () => {} } }, setScheduleHistory: () => {},
+        setEditWeekModal: () => {}, setReauthNeeded: () => {}, setStaleTokenWarn: () => {}, setIsScheduler: () => {}, setupReadRef: { current: true }, lastSyncRef: { current: "x" }, sessionEpochRef: so.ep,
+        forgetDayOffs: () => {}, setJustPublished: so.setJP })();                       // a sign-out
+      const atBoundary = so.log.slice();
+      await so.tap(held);                                                               // the old screen's 📣, its render still holding the banner
+      ch3 = { raised, afterTap, late, nn: nn.log, nnSends, so: so.log, atBoundary, epoch: so.ep.current, sched: showsCH ? showsCH(true, raised) : null, member: showsCH ? showsCH(false, raised) : null };
+    } catch (ex) { ch3 = { threw: String(ex).slice(0, 160) }; }
+  }
+  const BAN = "banner " + J({ label: PT, ep: 4 });
+  check("CH3 Regenerate's banner, then the REAL 📣 Notify everyone (over the REAL notifyPublished): the banner goes on the tap, then ONE notice and ONE e-mail for Regenerate's period in the tap's session, then \"Everyone has been notified.\"; a late second tap on it sends nothing more",
+    !!ch3 && !ch3.threw && J(ch3.raised) === J({ label: PT, ep: 4 }) && J(ch3.afterTap) === J([BAN, "banner null", NOTICE(4), EMAIL(PT, 4), TOAST]) && J(ch3.late) === J(ch3.afterTap), J(ch3));
+  check("CH3 the REAL Not now on Regenerate's banner closes it and sends nothing",
+    !!ch3 && !ch3.threw && J(ch3.nn) === J([BAN, "banner null"]) && ch3.nnSends === 0, J(ch3));
+  check("CH3 the REAL sessionBoundary (a sign-out) clears Regenerate's banner as it moves the session on; the old screen's 📣 after it sends nothing and says nothing",
+    !!ch3 && !ch3.threw && J(ch3.atBoundary) === J([BAN, "banner null"]) && ch3.epoch === 5 && J(ch3.so) === J([BAN, "banner null"]), J(ch3));
+  check("CH3 members never see it: the banner's own gate, evaluated, shows Regenerate's banner to a scheduler and not to a member",
+    !!ch3 && !ch3.threw && ch3.sched === true && ch3.member === false, J({ sched: ch3 && ch3.sched, member: ch3 && ch3.member, gate: gateCH }));
+
+  // CH4 — the wiring
+  const rowCH = (nsrcCH.match(/\n {14}\{isScheduler && <>\n {16}<button onClick=\{\(\)=>setView\("setup"\)\}[^\n]*\n {16}(<button [^\n]*↻ Regenerate"\}<\/button>)\n {16}<button onClick=\{clearSchedule\}/) || [])[1] || null;
+  check("CH4 the Calendar's ↻ Regenerate — in the scheduler-only block, between Setup → and ✕ Clear — calls doRegenerate on the tap with its click (the handler itself, so React hands it the event: e.currentTarget is the button — F2), no confirm (it never had one), disabled while a search runs; nothing else calls doRegenerate",
+    !!rowCH && rowCH.startsWith("<button onClick={doRegenerate} disabled={!!searching} ") && !/confirm\(/.test(rowCH) && count("onClick={doRegenerate}") === 1
+      && count("const doRegenerate = async (e) => {") === 1 && !/\bdoRegenerate\(/.test(nsrcCH), String(rowCH));
+  check("CH4 doRegenerate takes the tap's session, the period (periodText) and where the scheduler is (the tapped button, scrollY) first, asks doGenerate to publish ONCE as \"↻ Regenerate\", gates on the session, sends a \"review\" to the preview (a scheduler who stayed only), gates on \"published\", judges \"stayed\" before raising the banner, then scrolls only if so; it names none of the senders and no confirm",
+    !!rgBody && (rgBody.match(/doGenerate\(/g) || []).length === 1
+      && /^\n[^]*?    const ep = sessionEpochRef\.current;\n[^]*?    const period = periodText;\n[^]*?    const btn = \(e && e\.currentTarget\) \|\| null;\n    const at0 = btn \? \{ y: window\.scrollY, top: btn\.getBoundingClientRect\(\)\.top \} : null;\n[^]*?    const outcome = await doGenerate\(false, "↻ Regenerate"\);\n    if \(sessionEpochRef\.current !== ep\) return;\n[^]*?    if \(outcome === "review"\) \{\n      if \(stayed\(\)\) \{\n        setView\("generate"\);\n[^]*?    if \(outcome !== "published"\) return;\n    const here = stayed\(\);[^\n]*\n    setJustPublished\(\{ label: period, ep \}\);\n[^]*?    if \(here\) setTimeout\(/.test(rgBody)
+      && !/addNotification\(|sendEmailNotif\(|sendPushNotif\(|notifyPublished\(|confirm\(/.test(rgBody), String(rgBody).slice(0, 900));
+  const dgBody = bodyCH("  const doGenerate = async (preview, via) => {", "\n  };\n");
+  const fgPass = !!fgBody && fgBody.includes("const out = await genCommitRef.current(result, via);");
+  check("CH4 R3 / R2 the wiring of the review fixes: doGenerate hands `via` to finishGenerate, finishGenerate to commitGenerated (whose audit line ends with it — or \"Generate & Publish\"); finishGenerate's two preview toasts say where the preview is by the tab (inPreview); the preview card carries data-gen-preview=\"1\" (what Regenerate scrolls to), once",
+    !!dgBody && dgBody.includes("return genFinishRef.current(result, preview, clickSig, pendingLocks, genEpoch, via);") && fgPass
+      && count('label: `${pubMs.length} weeks, ${pubPeriod}, ${via || "Generate & Publish"}`,') === 1
+      && count('const inPreview = view === "generate" ? "in the preview below" : "in the preview on the Generate tab";') === 1 && (fgBody.match(/\$\{inPreview\}/g) || []).length === 2 && count("in the preview below") === 1
+      && /\n {14}<div data-gen-preview="1" style=\{\{\.\.\.css\.card,marginTop:14,[^\n]*\n[^\n]*\n {18}<div style=\{css\.cardT\}>👁 Schedule Preview/.test(nsrcCH) && count('data-gen-preview="1"') === 2,
+    J({ dg: !!dgBody, fgPass, inPreview: count("in the preview below") }));
+  const old = await regen({ periodText: PT_OLD }, rgMkOld);
+  check("CH4 with an OLD cached helpers.js (no periodLabel — OLD_SB) the banner names the component's own fallback, the plain dates \"2026-11-16 – 2026-11-29\", never a throw (doRegenerate calls no helper of its own)",
+    PT_OLD === "2026-11-16 – 2026-11-29" && !old.threw && J(old.jp) === J([{ label: PT_OLD, ep: 4 }]), J({ PT_OLD, old }));
+
+  // CH5 — review R1: the banner goes when its weeks do. The REAL runAuthoritativeSchedule (clear / factory reset / restore's
+  // one job helper) with the banner up — r: the engine job's answer; o.move: a sign-out during the job
+  const raBody = bodyCH("  const runAuthoritativeSchedule = async (target, what, undoStep, before, late) => {", "\n  };\n");
+  const raMk = fnCH("schedSyncRef, setScheduleHistory, sessionEpochRef, setJustPublished", raBody === null ? null : "async (target, what, undoStep, before, late) => {" + raBody + "\n  }");
+  const ra5 = async (r, o = {}) => {
+    const rec = { jp: [] }; let hist = ["OTHER", "STEP"];
+    if (!raMk) return { threw: "runAuthoritativeSchedule not extractable" };
+    const ep = { current: 4 };
+    try {
+      const got = await raMk({ schedSyncRef: { current: { authoritative: async () => { await null; if (o.move) ep.current++; return r; } } }, setScheduleHistory: (f) => { hist = f(hist); },
+        sessionEpochRef: ep, setJustPublished: (v) => rec.jp.push(v) })({}, "clear", "STEP");
+      rec.same = got === r; rec.hist = hist.join();
+    } catch (ex) { rec.threw = String(ex).slice(0, 160); }
+    return rec;
+  };
+  const RUN5 = { ok: false, wrote: false, running: true, reason: "timeout", error: "Clearing the schedule is taking longer than expected. It's still running — keep the app open; you'll see a message when it ends." };
+  const ch5 = { landed: await ra5({ ok: true, wrote: true }), partial: await ra5({ ok: false, wrote: true, notice: "1 week not deleted" }), retried: await ra5({ ok: false, wrote: false, results: [{ outcome: "pending" }] }),
+    running: await ra5(RUN5), refused: await ra5({ ok: false, wrote: false, error: "Couldn't read the saved schedule — nothing was changed." }), bug: await ra5({ ok: false, internal: "boom" }),
+    cancelled: await ra5({ ok: false, wrote: false, skipped: "cancelled", error: "It was cancelled before its turn came — nothing was changed." }), signOut: await ra5({ ok: true, wrote: true }, { move: true }) };
+  check("CH5 R1 the REAL runAuthoritativeSchedule (✕ Clear, factory reset, restore): a job that STANDS — landed, partly landed, its writes retried, still running past its deadline — takes the banner down (setJustPublished(null), once), and still hands the job's answer back with the Undo step kept",
+    ["landed", "partial", "retried", "running"].every((k) => !ch5[k].threw && J(ch5[k].jp) === J([null]) && ch5[k].same && ch5[k].hist === "OTHER,STEP"), J(ch5));
+  check("CH5 R1 …one refused with nothing written (the screen put back, its Undo step taken back), a bug, or cancelled before its turn leaves the banner up (nothing changed: the publish stands); a sign-out during the job too (the boundary cleared that session's banner — the next one's is never touched)",
+    ["refused", "bug", "cancelled"].every((k) => !ch5[k].threw && ch5[k].jp.length === 0 && ch5[k].hist === "OTHER") && !ch5.signOut.threw && ch5.signOut.jp.length === 0 && ch5.signOut.hist === "OTHER,STEP", J(ch5));
+  // the REAL undoLastChange with the banner up: o.step — the step undone; o.blocked — a week of it changed by someone else since
+  const unBody = bodyCH("  const undoLastChange = () => {", "\n  };\n");
+  const unMk = fnCH("scheduleHistory, schedEditable, schedSyncRef, showToast, commitSchedule, setPriorCounts, setYear1Counts, setScheduleHistory, setJustPublished", unBody === null ? null : "() => {" + unBody + "\n  }");
+  const un5 = (step, o = {}) => {
+    const rec = { jp: [], commits: 0, toasts: [], counts: 0 };
+    if (!unMk) return { threw: "undoLastChange not extractable" };
+    try {
+      unMk({ scheduleHistory: step ? [step] : [], schedEditable: () => true, schedSyncRef: { current: { undoPlan: (s) => ({ next: s, touched: [], blocked: o.blocked ? ["2026-11-16"] : [] }) } }, showToast: (m) => rec.toasts.push(String(m)),
+        commitSchedule: () => { rec.commits++; }, setPriorCounts: () => { rec.counts++; }, setYear1Counts: () => { rec.counts++; }, setScheduleHistory: () => {}, setJustPublished: (v) => rec.jp.push(v) })();
+    } catch (ex) { rec.threw = String(ex).slice(0, 160); }
+    return rec;
+  };
+  const PUB_STEP = { sched: { "2026-11-09": { dayCall: "s5" } }, epoch: 3, counts: { prior: {}, y1: {} } }, EDIT_STEP = { sched: { "2026-11-09": { dayCall: "s5" } }, epoch: 3, counts: null };
+  const un = { pub: un5(PUB_STEP), edit: un5(EDIT_STEP), blocked: un5(PUB_STEP, { blocked: true }), none: un5(null) };
+  check("CH5 R1 the REAL ↩ Undo of a PUBLISH step (it carries the counts) takes the banner down with the schedule and the counts — its 📣 would announce a schedule that was undone; another kind of step, an Undo refused (a week changed by someone else since) or nothing to undo leaves it",
+    !un.pub.threw && J(un.pub.jp) === J([null]) && un.pub.commits === 1 && un.pub.counts === 2
+      && !un.edit.threw && un.edit.jp.length === 0 && un.edit.commits === 1 && !un.blocked.threw && un.blocked.jp.length === 0 && un.blocked.commits === 0 && /Can't undo/.test(un.blocked.toasts.join(" "))
+      && !un.none.threw && un.none.jp.length === 0 && un.none.commits === 0, J(un));
+  // the REAL ✕ Clear end to end, over the REAL runAuthoritativeSchedule, from Regenerate's banner (raised by the REAL
+  // doRegenerate): o.cancel — "Cancel" at its question; o.job — the engine job's answer
+  const clBody = bodyCH("  const clearSchedule = async () => {", "\n  };\n\n  // ─── Snapshot restore");
+  const clMk = fnCH("schedEditable, confirm, snapshots, schedSyncRef, showToast, scheduleRef, pushUndo, commitSchedule, setSaveStatus, runAuthoritativeSchedule, setTimeout, lastSyncRef, stateBundleRef, setupReadRef, auth, supabase, console, sessionEpochRef, setupBaseRef",
+    clBody === null ? null : "async () => {" + clBody + "\n  }");
+  const clear5 = async (o = {}) => {
+    if (!clMk || !raMk || !rgMk) return { threw: "not extractable: " + J({ cl: !!clMk, ra: !!raMk, rg: !!rgMk }) };
+    const c = compCH(), w = { jobs: 0, toasts: [], asked: 0 };
+    try {
+      await c.regen(); w.raised = c.state;
+      const sched = { current: { "2026-11-16": { dayCall: "s1" }, "2026-11-23": { dayCall: "s2" } } };
+      const sync = { current: { knownSchedule: () => sched.current, pending: () => [], authoritative: async () => { w.jobs++; await null; return o.job || { ok: true, wrote: true }; } } };
+      const ra = raMk({ schedSyncRef: sync, setScheduleHistory: () => {}, sessionEpochRef: c.ep, setJustPublished: c.setJP });
+      await clMk({ schedEditable: () => true, confirm: () => { w.asked++; return !o.cancel; }, snapshots: { capture: async () => ({ ok: true }) }, schedSyncRef: sync, showToast: (m) => w.toasts.push(String(m)),
+        scheduleRef: sched, pushUndo: () => ({}), commitSchedule: (s) => { sched.current = s; }, setSaveStatus: () => {}, runAuthoritativeSchedule: ra, setTimeout: () => 0, lastSyncRef: { current: null },
+        stateBundleRef: { current: (x) => Object.assign({}, x) }, setupReadRef: { current: true }, auth: { getSession: () => ({ access_token: "TOK" }) }, sessionEpochRef: c.ep, setupBaseRef: { current: null },
+        supabase: { from: () => ({ upsert: async () => ({ error: null }) }) }, console: { error() {}, log() {}, warn() {} } })();
+      await null; await null;
+      w.after = c.state; w.log = c.log.slice();
+      if (c.state) { await c.tap(); w.tapLog = c.log.slice(); }
+    } catch (ex) { w.threw = String(ex).slice(0, 160); }
+    return w;
+  };
+  const cl5 = { landed: await clear5(), cancel: await clear5({ cancel: true }), refused: await clear5({ job: { ok: false, wrote: false, error: "Couldn't read the saved schedule — nothing was changed." } }) };
+  check("CH5 R1 the REAL ✕ Clear (over the REAL runAuthoritativeSchedule) right after Regenerate's banner went up: confirmed and landed → the banner is gone (there is no 📣 left to announce a cleared schedule) and nothing was sent",
+    !cl5.landed.threw && J(cl5.landed.raised) === J({ label: PT, ep: 4 }) && cl5.landed.asked === 1 && cl5.landed.jobs === 1 && cl5.landed.after === null && J(cl5.landed.log) === J([BAN, "banner null"]), J(cl5.landed));
+  check("CH5 R1 …\"Cancel\" at its question (no job) or a clear refused with nothing written (\"The schedule was NOT cleared\") leaves the banner up — the publish stands — and its 📣 still sends once",
+    !cl5.cancel.threw && cl5.cancel.jobs === 0 && J(cl5.cancel.after) === J({ label: PT, ep: 4 }) && J(cl5.cancel.tapLog) === J([BAN, "banner null", NOTICE(4), EMAIL(PT, 4), TOAST])
+      && !cl5.refused.threw && cl5.refused.jobs === 1 && /^The schedule was NOT cleared/.test(cl5.refused.toasts.join(" ")) && J(cl5.refused.after) === J({ label: PT, ep: 4 }) && J(cl5.refused.tapLog) === J([BAN, "banner null", NOTICE(4), EMAIL(PT, 4), TOAST]),
+    J({ cancel: cl5.cancel, refused: cl5.refused }));
+})().catch(ex => check("CH harness ran without crashing", false, String(ex && ex.stack || ex).split("\n").slice(0, 3).join(" | ")));
+
 // ─── CD. After ✓ Accept & Publish, one tap tells everyone (owner decision 2026-10-20) ───
 // Only Generate & Publish sent the group's "Schedule Published" notice and
 // e-mail. Accept & Publish published, switched to the Calendar and told
@@ -9583,7 +9938,10 @@ console.log("\nAV. Pending requests: a collapsed group shows a coverage-floor br
 //       Calendar view, in the page's flow (the toasts are fixed at the
 //       bottom), its exact text, 4.5:1+ in light and dark, ≥44px buttons that
 //       wrap, its two handlers (Not now, executed: closes, sends nothing), no
-//       write path of its own; only five places set it
+//       write path of its own; only eight places set it (2026-10-20: ↻
+//       Regenerate raises it too once its publish landed — CH; and, review
+//       R1, a clear / reset / restore that stands and ↩ Undo of a publish
+//       take it down — CH5)
 // Review fixes (2026-10-20):
 //   CD7 any send of the group's notice takes the banner down: Accept &
 //       Publish's banner up, then Generate & Publish (it tells everyone) —
@@ -9876,13 +10234,19 @@ await (async () => {
   try { if (notNow) { const r = { set: [], sends: 0 }; vm.runInContext(`(function (env) { const { setJustPublished, notifyPublished, addNotification, sendEmailNotif } = env; return (${notNow}); })`, sandbox)({ setJustPublished: (v) => r.set.push(v), notifyPublished: () => { r.sends++; }, addNotification: () => { r.sends++; }, sendEmailNotif: () => { r.sends++; } })(); nn = r; } } catch (ex) { nn = { threw: String(ex).slice(0, 120) }; }
   check("CD6 Not now, executed: closes the banner (setJustPublished(null)) and sends nothing; the banner has no write path of its own",
     !!nn && !nn.threw && J(nn.set) === J([null]) && nn.sends === 0 && !!ban && !/fetch\(|db\.|supabase|localStorage|addNotification|sendEmailNotif|sendPushNotif|notifyPublished\(|logAudit/.test(ban), J(nn));
-  // the five places that set it: raised only where a publish lands; closed by the tap, Not now, the session boundary and
-  // (review fix 2026-10-20, on purpose — CD7) the one sender, whenever the group's notice goes out
+  // the eight places that set it: raised only where a publish lands — acceptPreview and (2026-10-20, on purpose — CH) the
+  // Calendar's ↻ Regenerate, doRegenerate; closed by the tap, Not now, the session boundary, (review fix 2026-10-20,
+  // on purpose — CD7) the one sender, whenever the group's notice goes out, and (review R1 2026-10-20, on purpose — CH5)
+  // a clear / factory reset / restore that stands (runAuthoritativeSchedule, their one job helper) and ↩ Undo of a publish
+  const rgBodyCD = afterCD("  const doRegenerate = async (e) => {", "\n  };\n");
+  const raBodyCD = afterCD("  const runAuthoritativeSchedule = async (target, what, undoStep, before, late) => {", "\n  };\n");
+  const unBodyCD = afterCD("  const undoLastChange = () => {", "\n  };\n");
   const setSites = []; for (let i = nsrcCD.indexOf("setJustPublished("); i >= 0; i = nsrcCD.indexOf("setJustPublished(", i + 1)) setSites.push(nsrcCD.slice(i, i + 32));
-  check("CD6 only five places set it: raised ONCE (acceptPreview, where the job landed), closed by the 📣 tap, Not now, the session boundary and the sender (notifyPublished — any notice to the group)",
-    count("setJustPublished(") === 5 && count("setJustPublished({ label: pubPeriod, ep });") === 1 && count("setJustPublished(null)") === 4
-      && !!apBody && apBody.includes("setJustPublished({ label: pubPeriod, ep });") && !!njBody && njBody.includes("setJustPublished(null)") && !!sbBody && sbBody.includes("setJustPublished(null)")
-      && !!npBody && npBody.includes("setJustPublished(null)"), J(setSites));
+  check("CD6 only eight places set it: raised TWICE, each where its publish landed (acceptPreview, and ↻ Regenerate's doRegenerate — CH), closed by the 📣 tap, Not now, the session boundary, the sender (notifyPublished — any notice to the group), a clear / reset / restore that stands (runAuthoritativeSchedule) and ↩ Undo of a publish (undoLastChange) — CH5",
+    count("setJustPublished(") === 8 && count("setJustPublished({ label: pubPeriod, ep });") === 1 && count("setJustPublished({ label: period, ep });") === 1 && count("setJustPublished(null)") === 6
+      && !!apBody && apBody.includes("setJustPublished({ label: pubPeriod, ep });") && !!rgBodyCD && rgBodyCD.includes("setJustPublished({ label: period, ep });")
+      && !!njBody && njBody.includes("setJustPublished(null)") && !!sbBody && sbBody.includes("setJustPublished(null)")
+      && !!npBody && npBody.includes("setJustPublished(null)") && !!raBodyCD && raBodyCD.includes("setJustPublished(null)") && !!unBodyCD && unBodyCD.includes("setJustPublished(null)"), J(setSites));
 })().catch(ex => check("CD harness ran without crashing", false, String(ex && ex.stack || ex).split("\n").slice(0, 3).join(" | ")));
 
 // ─── AE. Generator: "Needs your OK" before publish + Setup holiday text (2026-10-11) ───
@@ -9992,7 +10356,8 @@ await (async () => {
     count('    if (needsOkN > 0) {\n      setPreviewSchedule(result); setPreviewOrigin("generated"); previewEpochRef.current = genEpoch;\n      setShowPreview(true);'.replace(/\n/g, src.includes("\r\n") ? "\r\n" : "\n")) === 1
       && count('previewEpochRef.current = genEpoch;') === 3 // preview · inputs changed · Needs your OK (sync v2)
       && count('return "review";') === 2 && count('return out && out.ok ? "published" : "not-published";') === 1 && count('return "published";') === 0 && count('return "cancelled";') === 2 // review: + inputs changed during the search (2026-10-12) — // the Silvis confirm; a cancelled / empty search (2026-10-12)
-      && count('if ((await doGenerate(false)) !== "published") return;') === 1);
+      && count('if ((await doGenerate(false)) !== "published") return;') === 1 // Generate & Publish's notice (↻ Regenerate's banner gates on its outcome itself — "published", or "review" → the preview: CH, 2026-10-20 review fixes)
+      && count('const outcome = await doGenerate(false, "↻ Regenerate");') === 1 && count('if (outcome !== "published") return;') === 1);
   check("AE4 the box and the generator share ONE availability builder (vacations ∪ no-call ∪ Silvis), and the box reads the bends from generator.js",
     count("const availability = buildGenAvailability();") === 1 && count("vac: buildGenAvailability(), vacationsOnly: vacations,") === 2 // the box + Generate & Publish's gate (today's inputs, 2026-10-12)
       && count("return listScheduleBends(previewSchedule, {") === 1 && count("const availability = {};") === 1);
@@ -10694,11 +11059,11 @@ await (async () => {
       && count("hadExistingSchedule") === 0 && !/rollForwardCounts\(latest\)/.test(nsrc));
   {
     // since 2026-10-12 the publish runs after the search, in finishGenerate → commitGenerated (with the latest state)
-    const g = nsrc.indexOf("  const finishGenerate = (result, preview, clickSig, clickLocks, genEpoch) => {"), ge = nsrc.indexOf("\n  genFinishRef.current = finishGenerate; genCommitRef.current = commitGenerated;", g), body = g < 0 || ge < 0 ? "" : nsrc.slice(g, ge);
+    const g = nsrc.indexOf("  const finishGenerate = (result, preview, clickSig, clickLocks, genEpoch, via) => {"), ge = nsrc.indexOf("\n  genFinishRef.current = finishGenerate; genCommitRef.current = commitGenerated;", g), body = g < 0 || ge < 0 ? "" : nsrc.slice(g, ge);
     const busy = body.indexOf("if (publishingRef.current) {"), arm = body.indexOf("publishingRef.current = true; setPublishing(true);"), iife = body.indexOf("(async () => {", arm);
-    const snapOk = body.indexOf("if (!snap.ok) {"), commit = body.indexOf("await genCommitRef.current(result);"), fin = body.indexOf("} finally { publishingRef.current = false; setPublishing(false); }"), pub = body.indexOf("publishWeeks(result, {");
+    const snapOk = body.indexOf("if (!snap.ok) {"), commit = body.indexOf("await genCommitRef.current(result, via);"), fin = body.indexOf("} finally { publishingRef.current = false; setPublishing(false); }"), pub = body.indexOf("publishWeeks(result, {");
     check("AG4 Generate & Publish: refused while a publish is in progress, armed BEFORE the snapshot's await, released in finally; the counts move only AFTER a good snapshot (a refused publish moves nothing), in commitGenerated — with the state as it is after the await",
-      busy > 0 && arm > busy && iife > arm && snapOk > iife && commit > snapOk && fin > commit && pub > fin && body.indexOf("const commitGenerated = async (result) => {") > fin && body.indexOf("const commitGenerated = async (result) => {") < pub && count('return "busy";') === 2 // + a search already running (2026-10-12)
+      busy > 0 && arm > busy && iife > arm && snapOk > iife && commit > snapOk && fin > commit && pub > fin && body.indexOf("const commitGenerated = async (result, via) => {") > fin && body.indexOf("const commitGenerated = async (result, via) => {") < pub && count('return "busy";') === 2 // + a search already running (2026-10-12)
         && count("disabled={publishing || !!searching}") === 1 && count("disabled={publishing || searching === \"publish\" || (previewNeedsOk.items.length > 0 && !previewAck)}") === 1,
       JSON.stringify({ busy, arm, iife, snapOk, commit, fin, pub }));
   }
@@ -10716,7 +11081,7 @@ await (async () => {
     if ([iU, eU, iC, kC, eC, iP, eP].every(x => x >= 0)) {
       try {
         factory = vm.runInContext(`(function (env) {
-          const { surgeons, parse, useCallback, scheduleRef, commitSchedule, schedSyncRef, schedEditable, showToast, priorCounts, year1Counts, setPriorCounts, setYear1Counts, scheduleHistory, setScheduleHistory, logAudit } = env;
+          const { surgeons, parse, useCallback, scheduleRef, commitSchedule, schedSyncRef, schedEditable, showToast, priorCounts, year1Counts, setPriorCounts, setYear1Counts, scheduleHistory, setScheduleHistory, logAudit, setJustPublished } = env;
           ${nsrc.slice(iU, eU)}
           ${nsrc.slice(iC, eC) + "\n  });"}
           ${nsrc.slice(iP, eP)}
@@ -10735,7 +11100,7 @@ await (async () => {
         commitSchedule: (v) => { st.schedule = v; ref.current = v; }, schedEditable: () => true, showToast: (m) => st.toasts.push(String(m)),
         schedSyncRef: { current: { epochNow: () => eng.epoch, undoPlan: (snap) => ({ next: JSON.parse(JSON.stringify(snap)), touched: [], blocked: eng.blocked.slice() }) } }, priorCounts: st.prior, year1Counts: st.y1,
         setPriorCounts: upd("prior"), setYear1Counts: upd("y1"), scheduleHistory: st.history, setScheduleHistory: upd("history"),
-        logAudit: (a, msg, meta) => st.audits.push({ a, msg, meta }) });
+        logAudit: (a, msg, meta) => st.audits.push({ a, msg, meta }), setJustPublished: () => {} }); // (↩ Undo of a publish takes the "nobody notified yet" banner down — 2026-10-20, review R1; run in CH5)
       const wk = (dc, n) => ({ dayCall: dc, nights: { wknd: n[4], mon: n[0], tue: n[1], wed: n[2], thu: n[3] }, off: "s7", isBackup: false, isFierceBackup: false, holidayCoverage: null });
       const OLD = { "2026-11-09": wk("s5", ["s1", "s2", "s3", "s4", "s6"]) };
       const P = { "2026-11-16": wk("s1", ["s2", "s3", "s4", "s5", "s6"]), "2026-11-23": wk("s2", ["s1", "s4", "s3", "s6", "s5"]) };
@@ -11334,9 +11699,9 @@ await (async () => {
   }
   // ── AH6 ──
   {
-    const dg = nsrcAH.indexOf("  const doGenerate = async (preview) => {"), dge = nsrcAH.indexOf("\n  };\n", dg), dgb = dg < 0 ? "" : nsrcAH.slice(dg, dge);
+    const dg = nsrcAH.indexOf("  const doGenerate = async (preview, via) => {"), dge = nsrcAH.indexOf("\n  };\n", dg), dgb = dg < 0 ? "" : nsrcAH.slice(dg, dge);
     check("AH6 Generate goes through the search for SEARCH_MS and refuses a second search while one runs",
-      dgb.indexOf('if (searchRef.current) { showToast("A schedule search is already running') > 0 && dgb.indexOf('const done = await runSearch(search, preview ? "generate" : "publish", SEARCH_MS);') > dgb.indexOf("const search = createScheduleSearch(") && dgb.indexOf("return genFinishRef.current(result, preview, clickSig, pendingLocks, genEpoch);") > 0 && dgb.indexOf("const result = done && done.session.best();") > 0);
+      dgb.indexOf('if (searchRef.current) { showToast("A schedule search is already running') > 0 && dgb.indexOf('const done = await runSearch(search, preview ? "generate" : "publish", SEARCH_MS);') > dgb.indexOf("const search = createScheduleSearch(") && dgb.indexOf("return genFinishRef.current(result, preview, clickSig, pendingLocks, genEpoch, via);") > 0 && dgb.indexOf("const result = done && done.session.best();") > 0);
     check("AH6 Accept, Discard and a JSON load cancel a running search first (Discard and a load also clear the last search's count, which no longer applies)",
       /const acceptPreview = async \(\) => \{\n[^]*?if \(publishSearchRunning\(\)\) \{[^\n]*return; \}\n    cancelSearch\(\);/.test(nsrcAH) && /const discardPreview = \(\) => \{\n    cancelSearch\(\); setSearchStats\(null\);/.test(nsrcAH)
         && /const loadScheduleJson = \(text, fileName\) => \{\n    if \(publishSearchRunning\(\)\) \{[^\n]*return false; \}\n    cancelSearch\(\); setSearchStats\(null\);/.test(nsrcAH)
@@ -11350,7 +11715,8 @@ await (async () => {
         && count("createScheduleSearch(surgeons, ms, buildGenAvailability(), backupMondaySet, priorCounts, buildPrefs(), fierceBackupSet, holidayAssignments, pendingLocks, buildPrevWeekSeed(ms[0]), vacations, year1Counts, { silvisPrimary: buildSilvisPrimary() })") === 1
         && count("createScheduleSearch(") === 2);
     check("AH6 the buttons that start a search are disabled while one runs; the progress line polls the ref itself (setInterval in SearchProgress), not app state",
-      count('<button onClick={()=>doGenerate(true)} disabled={!!searching}') === 1 && count("disabled={publishing || !!searching}") === 1 && count("<button onClick={()=>doGenerate(false)} disabled={!!searching}") === 1
+      // (↻ Regenerate: through doRegenerate since 2026-10-20, on purpose — CH; it calls doGenerate(false) and raises the banner once that landed)
+      count('<button onClick={()=>doGenerate(true)} disabled={!!searching}') === 1 && count("disabled={publishing || !!searching}") === 1 && count("<button onClick={doRegenerate} disabled={!!searching}") === 1
         && /function SearchProgress\(\{ searchRef, dk \}\) \{\n  const \[, setTick\] = React\.useState\(0\);\n  React\.useEffect\(\(\) => \{ const t = setInterval\(\(\) => setTick\(n => n \+ 1\), 250\); return \(\) => clearInterval\(t\); \}, \[\]\);/.test(nsrcAH)
         && count("<SearchProgress searchRef={searchRef} dk={dk} />") === 3);
   }
@@ -12747,14 +13113,14 @@ await (async () => {
 // ─── AH9. The REAL finishGenerate: Generate's end, with the LATEST state (2026-10-13) ───
 await (async () => {
   const nsrcF = src.replace(/\r\n/g, "\n");
-  const i = nsrcF.indexOf("  const finishGenerate = (result, preview, clickSig, clickLocks, genEpoch) => {"), e = i < 0 ? -1 : nsrcF.indexOf("\n  };\n", i);
-  const ENV = "pendingLocks, nameOf, slotLabel, showToast, setPreviewSchedule, setPreviewOrigin, setShowPreview, genInputsSig, listScheduleBends, surgeons, mondays, buildGenAvailability, buildSilvisPrimary, vacations, holidayAssignments, buildPrevWeekSeed, publishingRef, setPublishing, setSaveStatus, snapshots, genCommitRef, previewEpochRef, schedEditable, schedSyncRef, sessionEpochRef";
+  const i = nsrcF.indexOf("  const finishGenerate = (result, preview, clickSig, clickLocks, genEpoch, via) => {"), e = i < 0 ? -1 : nsrcF.indexOf("\n  };\n", i);
+  const ENV = "pendingLocks, nameOf, slotLabel, showToast, setPreviewSchedule, setPreviewOrigin, setShowPreview, genInputsSig, listScheduleBends, surgeons, mondays, buildGenAvailability, buildSilvisPrimary, vacations, holidayAssignments, buildPrevWeekSeed, publishingRef, setPublishing, setSaveStatus, snapshots, genCommitRef, previewEpochRef, schedEditable, schedSyncRef, sessionEpochRef, view"; // (view: 2026-10-20 — its preview toasts say where the preview is, CH2)
   let mk = null; try { mk = i < 0 ? null : vm.runInContext("(function (env) { const { " + ENV + " } = env; return (" + nsrcF.slice(i + "  const finishGenerate = ".length, e) + "\n  }); })", sandbox); } catch (ex) { mk = null; }
   if (!mk) { check("AH9 finishGenerate extractable for execution", false, "anchor / compile"); return; }
   const RES = { "2099-03-02": { dayCall: "s1", nights: {} } };
   const go = async (o) => {
     const rec = { toasts: [], preview: null, shown: false, captured: 0, committed: 0 }, pub = { current: false }, pe = { current: -1 };
-    const fn = mk({ sessionEpochRef: { current: 0 }, pendingLocks: o.locksNow || [], nameOf: (x) => x, slotLabel: () => "slot", showToast: (m) => rec.toasts.push(String(m)), setPreviewSchedule: (x) => { rec.preview = x; }, setPreviewOrigin: () => {}, setShowPreview: (x) => { rec.shown = x; },
+    const fn = mk({ view: "generate", sessionEpochRef: { current: 0 }, pendingLocks: o.locksNow || [], nameOf: (x) => x, slotLabel: () => "slot", showToast: (m) => rec.toasts.push(String(m)), setPreviewSchedule: (x) => { rec.preview = x; }, setPreviewOrigin: () => {}, setShowPreview: (x) => { rec.shown = x; },
       genInputsSig: () => o.sigNow, listScheduleBends: () => ({ items: o.items || [] }), surgeons: [], mondays: [], buildGenAvailability: () => ({}), buildSilvisPrimary: () => null, vacations: {}, holidayAssignments: {}, buildPrevWeekSeed: () => null,
       publishingRef: pub, setPublishing: () => {}, setSaveStatus: () => {}, snapshots: { capture: async () => { rec.captured++; if (o.gateAfter) o.gated = true; return { ok: !o.snapFail }; } }, genCommitRef: { current: async () => { rec.committed++; return { ok: !o.notLanded }; } },
       previewEpochRef: pe, schedEditable: () => !o.gated, schedSyncRef: { current: { knownSchedule: () => ({}), changedSince: (keys, since) => (o.moved && since === 5) ? keys.slice() : [] } } });
@@ -13106,7 +13472,7 @@ console.log("\nAZ. Mine works for an APP");
       return out;
     };
     // …and ANY storage write inside the paths that hold the preview or the search's result under another name
-    const PREVIEW_PATHS = ["  const runSearch = (session, purpose, budgetMs) => new Promise(resolve => {", "  const doGenerate = async (preview) => {", "  const finishGenerate = (result, preview, clickSig, clickLocks, genEpoch) => {", "  const commitGenerated = async (result) => {", "  const searchMore = async () => {", "  const acceptPreview = async () => {", "  const discardPreview = () => {", "  const loadScheduleJson = (text, fileName) => {", "  const onLoadJsonFile = (e) => {"];
+    const PREVIEW_PATHS = ["  const runSearch = (session, purpose, budgetMs) => new Promise(resolve => {", "  const doGenerate = async (preview, via) => {", "  const finishGenerate = (result, preview, clickSig, clickLocks, genEpoch, via) => {", "  const commitGenerated = async (result, via) => {", "  const searchMore = async () => {", "  const acceptPreview = async () => {", "  const discardPreview = () => {", "  const loadScheduleJson = (text, fileName) => {", "  const onLoadJsonFile = (e) => {"];
     const pathBodies = (text) => PREVIEW_PATHS.map(a => { const i = text.indexOf(a); if (i < 0) return ""; const e = text.indexOf("\n  };\n", i); return text.slice(i, e < 0 ? i : e); });
     const guardStore = (fs_) => {
       const bad = [];
@@ -13124,7 +13490,7 @@ console.log("\nAZ. Mine works for an APP");
     twoSided("AI3 no localStorage / sessionStorage / IndexedDB write in any app file mentions the preview",
       guardStore, files, Object.assign({}, files, { "index-source.html": plant(src0, "  const discardPreview = () => {\n", "  const discardPreview = () => {\n    try { localStorage.setItem(\"dsg-last-preview\", JSON.stringify(previewSchedule)); } catch (e) {}\n", "AI3a") }));
     twoSided("AI3 …nor one that keeps the search's result under its own name (result / better / shaped) in a preview path",
-      guardStore, files, Object.assign({}, files, { "index-source.html": plant(src0, "  const finishGenerate = (result, preview, clickSig, clickLocks, genEpoch) => {\n", "  const finishGenerate = (result, preview, clickSig, clickLocks, genEpoch) => {\n    try { localStorage.setItem(\"dsg-gen\", JSON.stringify(result)); } catch (e) {}\n", "AI3d") }));
+      guardStore, files, Object.assign({}, files, { "index-source.html": plant(src0, "  const finishGenerate = (result, preview, clickSig, clickLocks, genEpoch, via) => {\n", "  const finishGenerate = (result, preview, clickSig, clickLocks, genEpoch, via) => {\n    try { localStorage.setItem(\"dsg-gen\", JSON.stringify(result)); } catch (e) {}\n", "AI3d") }));
     twoSided("AI3 …nor a helper that stores something under its own key (the storage keys are an allowlist)",
       guardStore, files, Object.assign({}, files, { "index-source.html": plant(src0, "  const discardPreview = () => {\n", "  const stash = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} };\n  const discardPreview = () => {\n", "AI3e") }));
     twoSided("AI3 …nor one inside the search runner",
@@ -14170,7 +14536,8 @@ await (async () => {
 
     // CC5 (review fix 2026-10-20 — PH-9): the Calendar's button to Setup points the way Setup now sits in the bar
     const sched = Array.isArray(got.scheduler) ? got.scheduler : [];
-    const setupBtn = nsrcCC.match(/\n\s*<button onClick=\{\(\)=>setView\("setup"\)\} style=\{css\.btn\(false\)\}>([^<\n]*)<\/button>\n\s*<button onClick=\{\(\)=>doGenerate\(false\)\}/);
+    // (↻ Regenerate's handler is doRegenerate since 2026-10-20, on purpose — CH)
+    const setupBtn = nsrcCC.match(/\n\s*<button onClick=\{\(\)=>setView\("setup"\)\} style=\{css\.btn\(false\)\}>([^<\n]*)<\/button>\n\s*<button onClick=\{doRegenerate\}/);
     check("CC5 the Calendar's scheduler button to Setup reads \"Setup →\" — Setup is to the RIGHT of Calendar in the scheduler's bar now (\"← Setup\" pointed the other way); it still opens Setup (setView(\"setup\")), beside ↻ Regenerate",
       !!setupBtn && setupBtn[1] === "Setup →" && sched.indexOf("setup") > sched.indexOf("calendar") && sched.indexOf("calendar") === 0 && count("← Setup") === 0,
       JSON.stringify({ label: setupBtn && setupBtn[1], bar: sched }));
@@ -14260,8 +14627,8 @@ const harnessWatch = () => {
       && gateBefore("  const executeTwoWaySwap = useCallback(", "\n  }, [", "pushUndo();")
       && gateBefore("  const saveWeekEdits = useCallback(", "\n  }, [", "pushUndo();")
       && gateBefore("  const acceptPreview = async () => {", "\n  };\n", "snapshots.capture(")
-      && gateBefore("  const doGenerate = async (preview) => {", "\n  };\n", "buildPrefs()")
-      && gateBefore("  const finishGenerate = (result, preview, clickSig, clickLocks, genEpoch) => {", "\n  };\n", "publishingRef.current = true;")
+      && gateBefore("  const doGenerate = async (preview, via) => {", "\n  };\n", "buildPrefs()")
+      && gateBefore("  const finishGenerate = (result, preview, clickSig, clickLocks, genEpoch, via) => {", "\n  };\n", "publishingRef.current = true;")
       // 14/n (all executed in SE-G): clear, factory reset and restore before anything is asked, read or written; the four backup / fierce mark handlers before their set changes
       && gateBefore("  const clearSchedule = async () => {", "\n  };\n", "confirm(")
       && gateBefore("  const resetAllData = async () => {", "\n  };\n", "prompt(")
@@ -14269,8 +14636,8 @@ const harnessWatch = () => {
       && gateBefore("  const markBackupWeek = () => {", "\n  };\n", "setBackupMondaySet(") && gateBefore("  const unmarkBackupWeek = (m) => {", "\n  };\n", "setBackupMondaySet(")
       && gateBefore("  const markFierceBackupWeek = () => {", "\n  };\n", "setFierceBackupSet(") && gateBefore("  const unmarkFierceBackupWeek = (m) => {", "\n  };\n", "setFierceBackupSet("));
   {
-    const fb = bodyOf("  const finishGenerate = (result, preview, clickSig, clickLocks, genEpoch) => {", "\n  };\n");
-    const snapOk = fb.indexOf("if (!snap.ok) {"), gate = fb.indexOf('if (!schedEditable("job")) { setSaveStatus(""); return "refused"; }'), stale = fb.indexOf("changedSince(Object.keys(result), genEpoch)"), commit = fb.indexOf("await genCommitRef.current(result);");
+    const fb = bodyOf("  const finishGenerate = (result, preview, clickSig, clickLocks, genEpoch, via) => {", "\n  };\n");
+    const snapOk = fb.indexOf("if (!snap.ok) {"), gate = fb.indexOf('if (!schedEditable("job")) { setSaveStatus(""); return "refused"; }'), stale = fb.indexOf("changedSince(Object.keys(result), genEpoch)"), commit = fb.indexOf("await genCommitRef.current(result, via);");
     check("SE-W Generate & Publish re-checks AFTER the snapshot's await and before the commit: the edit gate (with the job gate — 19/n P7, executed in SE-X15), then the click's engine epoch",
       snapOk > 0 && gate > snapOk && stale > gate && commit > stale, JSON.stringify({ snapOk, gate, stale, commit }));
   }
@@ -14280,7 +14647,7 @@ const harnessWatch = () => {
       // the editor: its epoch through the pure merge (14/n — executed in AB2 and SE-G), the save's and the note's
       && count("mergeEditorEdits({ week: editWeekModal.openWeek, apps: editWeekModal.appsBase || {} }, draft, scheduleRef.current[mondayStr], editWeekModal.openEpoch || 0, schedSyncRef.current.epochOf(mondayStr),") === 1
       && count("mergeEditorEdits({ week: editWeekModal.openWeek, apps: ") === 2 && count("swapShift(swapTarget.mondayStr, swapTarget.shift, s.candidateId, swapTarget.surgeonId)") === 1
-      && count("previewEpochRef.current = genEpoch;") === 3 && count("previewEpochRef.current = schedSyncRef.current.epochNow();") === 1 && count("return genFinishRef.current(result, preview, clickSig, pendingLocks, genEpoch);") === 1);
+      && count("previewEpochRef.current = genEpoch;") === 3 && count("previewEpochRef.current = schedSyncRef.current.epochNow();") === 1 && count("return genFinishRef.current(result, preview, clickSig, pendingLocks, genEpoch, via);") === 1);
   check("SE-W unload: the weeks keepalive comes ONLY from the engine (CAS, no insert, no delete) and only on pagehide/beforeunload; hide pushes through the chain",
     count("keepaliveRequests()") === 1 && count('if (source === "visibilitychange") { schedSyncRef.current.push(); return; }') === 1 && count("on_conflict=week_monday") === 0);
   check("SE-W reload / sign-out guards: every reload button (update banner, Settings → Refresh, the stale-removal Reload — A14) asks while weeks are unsaved; sign-out asks, then resets the engine (mirror too), undo and editor BEFORE signing out",
@@ -15148,7 +15515,9 @@ await (async () => {
 
   // ── A5(f): a job still running past its deadline — the callers ──
   const raSrc = after("  const runAuthoritativeSchedule = ", "\n  };\n");
-  const raFn = raSrc && fnC("schedSyncRef, commitSchedule, setScheduleHistory", raSrc + "\n  }");
+  // (sessionEpochRef, setJustPublished: 2026-10-20, review R1 — a clear that stands takes the Calendar's "nobody
+  // notified yet" banner down, in its own session; CH5 runs that, these runs give it a no-op)
+  const raFn = raSrc && fnC("schedSyncRef, commitSchedule, setScheduleHistory, sessionEpochRef, setJustPublished", raSrc + "\n  }");
   const clSrc = after("  const clearSchedule = async () => {", "\n  };\n\n  // ─── Snapshot restore");
   const clFn = clSrc && fnC("schedEditable, confirm, snapshots, schedSyncRef, showToast, scheduleRef, pushUndo, commitSchedule, setSaveStatus, runAuthoritativeSchedule, setTimeout, lastSyncRef, stateBundleRef, setupReadRef, auth, supabase, console, sessionEpochRef, setupBaseRef", "async () => {" + clSrc + "\n  }");
   const pnSrc = after("  const publishNotLanded = (pr, what) => {", "\n  };\n");
@@ -15161,7 +15530,7 @@ await (async () => {
     // for a job refused with nothing written — never for one still running, one whose writes failed (retried, R7),
     // a partial or a landed one.
     const STEP = { sched: {} }, OTHER = { sched: { a: 1 } };
-    const ra = async (res) => { const commits = []; let hist = [OTHER, STEP]; await raFn({ schedSyncRef: { current: { authoritative: async () => res, knownSchedule: () => ({ K: 1 }) } }, commitSchedule: (s) => commits.push(s), setScheduleHistory: (f) => { hist = f(hist); } })({}, "clear", STEP); return commits.length + ":" + (hist.length === 2 ? "kept" : hist.length === 1 && hist[0] === OTHER ? "dropped" : "?"); };
+    const ra = async (res) => { const commits = []; let hist = [OTHER, STEP]; await raFn({ schedSyncRef: { current: { authoritative: async () => res, knownSchedule: () => ({ K: 1 }) } }, commitSchedule: (s) => commits.push(s), setScheduleHistory: (f) => { hist = f(hist); }, sessionEpochRef: { current: 0 }, setJustPublished: () => {} })({}, "clear", STEP); return commits.length + ":" + (hist.length === 2 ? "kept" : hist.length === 1 && hist[0] === OTHER ? "dropped" : "?"); };
     const raRun = await ra(RUNNING("Clearing the schedule")), raNone = await ra({ ok: false, wrote: false, error: "x" }), raFail = await ra({ ok: false, wrote: false, results: [{ outcome: "pending" }] }), raPart = await ra({ ok: false, wrote: true }), raOk = await ra({ ok: true, wrote: true }), raBug = await ra({ ok: false, internal: "boom" });
     check("SE-C A5(f) runAuthoritativeSchedule never commits the schedule (the engine puts the screen back — SE67); it takes the caller's Undo step back only when the job was refused with nothing written (or hit a bug) — kept for a job still running past its deadline, one whose writes failed and are retried, a partial and a landed one",
       raRun === "0:kept" && raNone === "0:dropped" && raFail === "0:kept" && raPart === "0:kept" && raOk === "0:kept" && raBug === "0:dropped", JSON.stringify({ raRun, raNone, raFail, raPart, raOk, raBug }));
@@ -15464,7 +15833,7 @@ await (async () => {
   const puSrc = after("  const pushUndo = useCallback((counts) => {", "\n  }, []);");
   const puF = puSrc && fnG("scheduleRef, schedSyncRef, setScheduleHistory", "(counts) => {" + puSrc + "\n  }");
   const raSrc = after("  const runAuthoritativeSchedule = ", "\n  };\n");
-  const raF = raSrc && fnG("schedSyncRef, commitSchedule, setScheduleHistory", raSrc + "\n  }");
+  const raF = raSrc && fnG("schedSyncRef, commitSchedule, setScheduleHistory, sessionEpochRef, setJustPublished", raSrc + "\n  }"); // (+ the banner's two — review R1, run in CH5)
   const usSrc = after("  const updateSchedule = useCallback((fn) => {", "\n  }, [commitSchedule]);");
   const usF = usSrc && fnG("scheduleRef, commitSchedule", "(fn) => {" + usSrc + "\n  }");
   const partsG = { engine: !!createSchedSyncG, merge: typeof merge === "function", gate: !!geF, undo: !!puF, authoritative: !!raF, update: !!usF };
@@ -15497,7 +15866,7 @@ await (async () => {
     appsG.push(a);
     a.schedEditable = geF({ schedSyncRef: a.schedSyncRef, showToast: a.showToast, setReauthNeeded: () => { a.reauth++; } });
     a.pushUndo = puF({ scheduleRef: a.ref, schedSyncRef: a.schedSyncRef, setScheduleHistory: a.setScheduleHistory });
-    a.runAuthoritativeSchedule = raF({ schedSyncRef: a.schedSyncRef, commitSchedule: a.commitSchedule, setScheduleHistory: a.setScheduleHistory });
+    a.runAuthoritativeSchedule = raF({ schedSyncRef: a.schedSyncRef, commitSchedule: a.commitSchedule, setScheduleHistory: a.setScheduleHistory, sessionEpochRef: { current: 0 }, setJustPublished: () => {} });
     a.updateSchedule = usF({ scheduleRef: a.ref, commitSchedule: a.commitSchedule });
     a.settle = async () => { for (let i = 0; i < 4; i++) await a.eng.idle(); };
     return a;
@@ -15678,9 +16047,9 @@ await (async () => {
 
   // ── (5) Generate & Publish: one message with the job's notice ──
   const pnSrcG = after("  const publishNotLanded = (pr, what) => {", "\n  };\n");
-  const cgSrc = after("  const commitGenerated = async (result) => {", "\n  };\n  genFinishRef.current = finishGenerate;");
+  const cgSrc = after("  const commitGenerated = async (result, via) => {", "\n  };\n  genFinishRef.current = finishGenerate;");
   const cgF = pnSrcG && cgSrc && fnG("publishWeeks, numWeeks, MO, startMonth, startYear, runPublish, setPreviewSchedule, setShowPreview, setSaveStatus, lastSyncRef, buildStateBundle, supabase, console, showToast, setTimeout, sessionEpochRef",
-    "(() => { const publishNotLanded = (pr, what) => {" + pnSrcG + "\n  };\n  return async (result) => {" + cgSrc + "\n  }; })()");
+    "(() => { const publishNotLanded = (pr, what) => {" + pnSrcG + "\n  };\n  return async (result, via) => {" + cgSrc + "\n  }; })()");
   if (!cgF) check("SE-G commitGenerated + publishNotLanded are extractable", false, "anchor / compile");
   else {
     const NOTICE = "The week of Oct 26 was changed by someone else — showing the latest. Reapply your change if it's still needed.";
