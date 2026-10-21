@@ -493,6 +493,9 @@ function CallSchedule() {
     commitSchedule(plan.next);
     // A publish step takes its counts back off too — only together with the schedule, never one without the other.
     if (step.counts) { setPriorCounts(step.counts.prior || {}); setYear1Counts(step.counts.y1 || {}); }
+    // …and the Calendar's "✓ Published" banner (justPublished — review R1): the publish is taken back, and its 📣
+    // would announce a schedule that was undone. (Any other step leaves it.)
+    if (step.counts) setJustPublished(null);
     setScheduleHistory(h => h.slice(0, -1));
   };
 
@@ -527,13 +530,15 @@ function CallSchedule() {
   // this is set (both publish buttons are disabled too).
   const publishingRef = useRef(false);
   const [publishing, setPublishing] = useState(false);
-  // Accept & Publish tells nobody by itself (owner decision 2026-10-20): once
+  // Accept & Publish tells nobody by itself (owner decision 2026-10-20), nor
+  // does the Calendar's ↻ Regenerate (doRegenerate, owner 2026-10-20): once
   // its publish lands, the Calendar tab asks the scheduler — "✓ Published
   // <period>. Nobody has been notified yet." with 📣 Notify everyone / Not now.
   // { label, ep }: the period, and the session it was published in (a tap from
   // any other session sends nothing — notifyPublished). The session boundary
-  // clears it. notifiedRef: the one it already sent for (one send, however
-  // many taps).
+  // clears it, and so does a clear / factory reset / restore that stands, or
+  // ↩ Undo of a publish (review R1: its weeks are gone). notifiedRef: the one
+  // it already sent for (one send, however many taps).
   const [justPublished, setJustPublished] = useState(null);
   const notifiedRef = useRef(null);
   const [pendingLocks, setPendingLocks] = useState([]); // [{ mondayStr, slot: "dc"|"mon"|"tue"|"wed"|"thu"|"wknd", surgeonId }]
@@ -2404,9 +2409,19 @@ function CallSchedule() {
   // message about the outcome carries it. `late(r)` (E8, review r2 fixes-1):
   // the caller's words for that outcome when the job ends after its deadline
   // — a factory reset or a restore knows what it did before the weeks job.
+  // The Calendar's "✓ Published" banner (justPublished) goes here too
+  // (review R1): a clear / factory reset / restore that STANDS —
+  // landed, partly landed (its writes retried), or still running past its
+  // deadline — has deleted or replaced the weeks it names, and its 📣 would
+  // announce them. One refused with nothing written (the screen put back, its
+  // Undo step taken back) changed nothing and leaves it; so does a session
+  // change during the job (the boundary already cleared it).
   const runAuthoritativeSchedule = async (target, what, undoStep, before, late) => {
+    const ep = sessionEpochRef.current;
     const r = await schedSyncRef.current.authoritative(target, true, what, null, { before, late });
-    if (undoStep && !r.ok && !r.wrote && !r.running && (r.error || r.internal)) setScheduleHistory(h => h.filter(s => s !== undoStep));
+    const putBack = !r.ok && !r.wrote && !r.running && (r.error || r.internal); // refused, nothing written (or a bug): the engine put the screen back
+    if (undoStep && putBack) setScheduleHistory(h => h.filter(s => s !== undoStep));
+    if (!putBack && sessionEpochRef.current === ep) setJustPublished(null);
     return r;
   };
   // Generate & Publish / Accept & Publish (A14): the engine's PUBLISH job —
@@ -4567,11 +4582,11 @@ function CallSchedule() {
   // ─── Tell everyone a schedule was published ───
   // The group's "Schedule Published" notice (in-app + push) and e-mail, both
   // to everyone (no target list). Generate & Publish sends them as soon as its
-  // publish lands; Accept & Publish only when the scheduler taps 📣 Notify
-  // everyone on the Calendar's banner (owner decision 2026-10-20 — nothing is
-  // sent by itself). ep: the session of the tap that published — from any
-  // other session nothing is sent (review r3 regress-3). Resolves true only
-  // when the notice was saved.
+  // publish lands; Accept & Publish and the Calendar's ↻ Regenerate only when
+  // the scheduler taps 📣 Notify everyone on the Calendar's banner (owner
+  // decisions 2026-10-20 — nothing is sent by itself). ep: the session of the
+  // tap that published — from any other session nothing is sent (review r3
+  // regress-3). Resolves true only when the notice was saved.
   const notifyPublished = async (ep, period) => {
     if (sessionEpochRef.current !== ep) return false;
     // Whoever sends it, the group is being told now (review fix 2026-10-20):
@@ -4613,6 +4628,59 @@ function CallSchedule() {
     // of any weeks it replaced.) The notice, then the e-mail — the one
     // sender Accept & Publish's banner uses too (2026-10-20).
     await notifyPublished(ep, period);
+  };
+
+  // ─── ↻ Regenerate (the Calendar's): the same one-tap Notify banner ───
+  // It publishes as Generate & Publish does (doGenerate: the search, the
+  // backup snapshot, the publish job) but told nobody and never asked (review
+  // finding F4). It still sends nothing by itself (owner 2026-10-20): once its
+  // publish has LANDED — doGenerate resolves "published" only when every week
+  // of the period landed, in the tap's session (A14) — it raises the
+  // Calendar's scheduler-only "✓ Published" banner exactly as ✓ Accept &
+  // Publish does, with 📣 Notify everyone (one send) and Not now. A result
+  // sent to the preview (Needs your OK, inputs changed during the search)
+  // raises nothing here — its ✓ Accept & Publish raises its own. No confirm
+  // (it never had one). e: the tap's click (the button's onClick hands it in).
+  const doRegenerate = async (e) => {
+    // This session, at the tap (review r3 regress-3): a sign-out / another
+    // account meanwhile → no banner on the next session's screen.
+    const ep = sessionEpochRef.current;
+    // The period it publishes, taken at the tap — the Mondays doGenerate
+    // searches and publishes (periodText: helpers.js periodLabel, guarded), as
+    // doGenerateAndNotify takes the e-mail's.
+    const period = periodText;
+    // Where the scheduler is at the tap (review F2): only one who STAYED — on
+    // the Calendar (the tapped button still in the page), no sheet open, the
+    // page not scrolled — is shown the outcome (the banner brought into view,
+    // or the preview opened); one who scrolled on, opened a day or left the tab
+    // stays where they are (the banner waits at the top of the Calendar). Not
+    // scrolled: scrollY OR the button's spot on screen unchanged (±8 px) — a
+    // scroll moves both, while the page shifting by itself moves only one (the
+    // browser's scroll anchoring moves scrollY to hold the button still when
+    // something above it changes height).
+    const btn = (e && e.currentTarget) || null;
+    const at0 = btn ? { y: window.scrollY, top: btn.getBoundingClientRect().top } : null;
+    const stayed = () => !!at0 && btn.isConnected && !document.querySelector('[role="dialog"]')
+      && (Math.abs(window.scrollY - at0.y) <= 8 || Math.abs(btn.getBoundingClientRect().top - at0.top) <= 8);
+    // (Its audit line says "↻ Regenerate", not "Generate & Publish" — which tells everyone by itself: review R3.)
+    const outcome = await doGenerate(false, "↻ Regenerate");
+    if (sessionEpochRef.current !== ep) return;
+    // Needs your OK, or the inputs changed during the search (review R2): the
+    // result waits in the preview, on the Generate tab (finishGenerate's toast
+    // says where); a scheduler who stayed is taken to it. Nothing is raised.
+    if (outcome === "review") {
+      if (stayed()) {
+        setView("generate");
+        setTimeout(() => { const el = document.querySelector('[data-gen-preview="1"]'); if (el && el.scrollIntoView) el.scrollIntoView({ behavior: "smooth", block: "start" }); }, 60);
+      }
+      return;
+    }
+    if (outcome !== "published") return;
+    const here = stayed(); // (judged before the banner goes in above the button)
+    setJustPublished({ label: period, ep });
+    // Brought into view (as acceptPreview's is) only for a scheduler who stayed: the banner went in above the button, off
+    // the top of a scrolled page. On another tab there's no banner in the page, and nothing moves.
+    if (here) setTimeout(() => { const el = document.querySelector('[data-just-published="1"]'); if (el && el.scrollIntoView) el.scrollIntoView({ behavior: "smooth", block: "nearest" }); }, 60);
   };
 
   // ─── Build Individual ICS for a surgeon (their shifts + vacations only) ───
@@ -5363,7 +5431,10 @@ function CallSchedule() {
   });
   const cancelSearch = () => { const sr = searchRef.current; if (sr && sr.purpose !== "publish") { searchRef.current = null; setSearching(null); } };
   const publishSearchRunning = () => !!(searchRef.current && searchRef.current.purpose === "publish");
-  const doGenerate = async (preview) => {
+  // via: who publishes, for the publish's audit line (finishGenerate → commitGenerated) — "Generate & Publish" when not
+  // given; the Calendar's ↻ Regenerate names itself (review R3: the log couldn't tell a publish that told everyone
+  // from one still waiting for 📣).
+  const doGenerate = async (preview, via) => {
     if (searchRef.current) { showToast("A schedule search is already running — wait for it to finish.", "error"); return "busy"; }
     if (!schedEditable(preview ? null : "job")) return "refused"; // Generate & Publish: no clear / reset / restore / publish queued or running either (P7)
     // The engine epoch this result is computed from — the CLICK (the search
@@ -5411,11 +5482,11 @@ function CallSchedule() {
     const result = done && done.session.best();
     if (!result) { if (done) showToast("The schedule search found nothing — try again.", "error"); return "cancelled"; }
     { const st = done.session.status(); setSearchStats({ checked: st.checked, starts: st.starts, ms: done.ms, purpose: "generate", improved: true }); }
-    return genFinishRef.current(result, preview, clickSig, pendingLocks, genEpoch); // the locks and the engine epoch this search used
+    return genFinishRef.current(result, preview, clickSig, pendingLocks, genEpoch, via); // the locks and the engine epoch this search used
   };
   // The rest of Generate, run with the LATEST state (genFinishRef, set every
   // render): what changed during the search counts.
-  const finishGenerate = (result, preview, clickSig, clickLocks, genEpoch) => {
+  const finishGenerate = (result, preview, clickSig, clickLocks, genEpoch, via) => {
     // Locks the generator could not honor (a Service-Week / Weekend lock on a
     // surgeon the availability map blocks that week is dropped silently in
     // generator.js) — say so; a confirmed lock must never vanish unnoticed.
@@ -5437,11 +5508,14 @@ function CallSchedule() {
     // changed during the search (time off, locks, holidays, the settings…), or
     // the result has anything in "Needs your OK" (2026-10-11), judged on
     // TODAY's inputs and with the locks, exactly like the box: then it opens
-    // the preview instead, so nothing is ever published unseen.
+    // the preview instead, so nothing is ever published unseen. The preview
+    // shows on the Generate tab only: from anywhere else — the Calendar's
+    // ↻ Regenerate (review R2) — the toast says where it is, not "below".
+    const inPreview = view === "generate" ? "in the preview below" : "in the preview on the Generate tab";
     if (genInputsSig() !== clickSig) {
       setPreviewSchedule(result); setPreviewOrigin("generated"); previewEpochRef.current = genEpoch;
       setShowPreview(true);
-      showToast("Time off, a lock, a holiday card or the Generate settings changed during the search — review the result in the preview below before publishing.", "error");
+      showToast(`Time off, a lock, a holiday card or the Generate settings changed during the search — review the result ${inPreview} before publishing.`, "error");
       return "review";
     }
     const needsOkN = (() => {
@@ -5452,7 +5526,7 @@ function CallSchedule() {
     if (needsOkN > 0) {
       setPreviewSchedule(result); setPreviewOrigin("generated"); previewEpochRef.current = genEpoch;
       setShowPreview(true);
-      showToast(`${needsOkN} item${needsOkN === 1 ? " needs" : "s need"} your OK before publishing — review them in the preview below, then ✓ Accept & Publish.`, "error");
+      showToast(`${needsOkN} item${needsOkN === 1 ? " needs" : "s need"} your OK before publishing — review them ${inPreview}, then ✓ Accept & Publish.`, "error");
       return "review";
     }
     if (publishingRef.current) { showToast("A publish is already in progress — wait for it to finish.", "error"); return "busy"; }
@@ -5490,14 +5564,15 @@ function CallSchedule() {
           setSaveStatus("");
           return "moved";
         }
-        const out = await genCommitRef.current(result); // with the state as it is NOW (after the snapshot's await)
+        const out = await genCommitRef.current(result, via); // with the state as it is NOW (after the snapshot's await)
         return out && out.ok ? "published" : "not-published";
        } finally { publishingRef.current = false; setPublishing(false); }
     })();
   };
   // Generate & Publish's commit, after a good snapshot — through genCommitRef,
-  // so the counts, the bundle and the blob are the LATEST state's.
-  const commitGenerated = async (result) => {
+  // so the counts, the bundle and the blob are the LATEST state's. via: who
+  // published (doGenerate's), for the audit line.
+  const commitGenerated = async (result, via) => {
         // This session — finishGenerate's, checked right before this call (review r3 regress-3).
         const ep = sessionEpochRef.current;
         // Counts move by the NET change, here at commit (owner 2026-10-12):
@@ -5510,10 +5585,12 @@ function CallSchedule() {
         // overwrites just those keys.
         // The audit line names the weeks it publishes (review fix 2026-10-19): their first Monday → last Sunday
         // (helpers.js periodLabel, guarded), not the start month/year selects a start-Monday override leaves behind.
+        // Its last words say who published (review R3): "Generate & Publish" (it tells everyone by itself) or the
+        // Calendar's "↻ Regenerate" (it tells nobody until 📣).
         const pubMs = Object.keys(result).sort();
         const pubPeriod = typeof periodLabel === "function" ? periodLabel(pubMs[0], pubMs[pubMs.length - 1]) : `weeks of ${pubMs[0]} – ${pubMs[pubMs.length - 1]}`;
         const { merged, prior, y1 } = publishWeeks(result, {
-          label: `${pubMs.length} weeks, ${pubPeriod}, Generate & Publish`,
+          label: `${pubMs.length} weeks, ${pubPeriod}, ${via || "Generate & Publish"}`,
           meta: { startMonth, startYear, numWeeks, origin: "generated" },
         });
         const job = runPublish(result); // the period's weeks → the table, as ONE engine job (A14) — registered now, before any await
@@ -9605,7 +9682,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             })();
 
             return (
-              <div style={{...css.card,marginTop:14,background:dk?"#1a2a1a":"#f0faf0",border:"2px solid #80c080"}}>
+              <div data-gen-preview="1" style={{...css.card,marginTop:14,background:dk?"#1a2a1a":"#f0faf0",border:"2px solid #80c080"}}>
                 <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12,flexWrap:"wrap",gap:8}}>
                   <div style={css.cardT}>👁 Schedule Preview{previewOrigin === "json" && <span style={{marginLeft:8,fontSize:11,fontWeight:700,color:dk?"#f0c890":"#8a5020",background:dk?"#3a2a10":"#fef3e6",border:"1px solid #e8c89a",borderRadius:5,padding:"2px 7px"}}>Loaded from JSON — not generated</span>}</div>
                   <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
@@ -9997,9 +10074,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
 
         {/* ════════════════ CALENDAR ════════════════ */}
         {view==="calendar"&&<>
-          {/* Accept & Publish told nobody (owner decision 2026-10-20): the scheduler is asked here, on the Calendar it lands on.
+          {/* Accept & Publish and ↻ Regenerate tell nobody (owner decisions 2026-10-20): the scheduler is asked here, on the Calendar.
               📣 Notify everyone sends the group's notice + e-mail once (notifyJustPublished); Not now only closes it. Members never
-              see it; the session boundary clears it. ≥44px buttons that wrap at 320px; the toasts sit at the bottom, never over it. */}
+              see it; the session boundary clears it, as does ✕ Clear (a reset, a restore, ↩ Undo of the publish) once it stands.
+              ≥44px buttons that wrap at 320px; the toasts sit at the bottom, never over it. */}
           {isScheduler && justPublished && (
             <div role="status" aria-live="polite" data-just-published="1" style={{background:dk?"#16301f":"#eaf7ee",border:`1px solid ${dk?"#2f5a3c":"#a8d8b8"}`,borderRadius:12,padding:"12px 14px",marginBottom:14,display:"flex",alignItems:"center",flexWrap:"wrap",gap:10}}>
               <div style={{flex:"1 1 200px",minWidth:0,fontSize:14,fontWeight:600,lineHeight:1.4,color:dk?"#b8e8c8":"#1a5a32",overflowWrap:"anywhere"}}>
@@ -10112,7 +10190,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
               {isScheduler && <>
                 <button onClick={()=>setView("setup")} style={css.btn(false)}>Setup →</button>
-                <button onClick={()=>doGenerate(false)} disabled={!!searching} style={{...css.btn(true),opacity:searching?0.55:1}}>{searching === "publish" ? "🔍 Searching…" : "↻ Regenerate"}</button>
+                <button onClick={doRegenerate} disabled={!!searching} style={{...css.btn(true),opacity:searching?0.55:1}}>{searching === "publish" ? "🔍 Searching…" : "↻ Regenerate"}</button>
                 <button onClick={clearSchedule} style={{...css.btn(false),color:"#c04040",borderColor:"#e0a0a0"}}>✕ Clear</button>
               </>}
             </div>
