@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.10.20d";
+    var APP_VERSION = "2026.10.20e";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -346,6 +346,7 @@ function CallSchedule() {
       setPriorCounts(step.counts.prior || {});
       setYear1Counts(step.counts.y1 || {});
     }
+    if (step.counts) setJustPublished(null);
     setScheduleHistory(h => h.slice(0, -1));
   };
   const [previewSchedule, setPreviewSchedule] = useState(null);
@@ -1981,11 +1982,14 @@ function CallSchedule() {
   const SCHED_LINE_RED = ["auth", "loadFailed", "notSaved", "rejected", "blocked", "stalled"];
   const saveStatusShown = !!saveStatus && !(saveStatus === "Saved" && !saveError && (SCHED_LINE_RED.includes(schedLineKind) || schedLineKind === "busy"));
   const runAuthoritativeSchedule = async (target, what, undoStep, before, late) => {
+    const ep = sessionEpochRef.current;
     const r = await schedSyncRef.current.authoritative(target, true, what, null, {
       before,
       late
     });
-    if (undoStep && !r.ok && !r.wrote && !r.running && (r.error || r.internal)) setScheduleHistory(h => h.filter(s => s !== undoStep));
+    const putBack = !r.ok && !r.wrote && !r.running && (r.error || r.internal);
+    if (undoStep && putBack) setScheduleHistory(h => h.filter(s => s !== undoStep));
+    if (!putBack && sessionEpochRef.current === ep) setJustPublished(null);
     return r;
   };
   const runPublish = weeks => schedSyncRef.current.authoritative(weeks, false, "publish", Object.keys(weeks));
@@ -3952,6 +3956,44 @@ function CallSchedule() {
     if (sessionEpochRef.current !== ep) return;
     await notifyPublished(ep, period);
   };
+  const doRegenerate = async e => {
+    const ep = sessionEpochRef.current;
+    const period = periodText;
+    const btn = e && e.currentTarget || null;
+    const at0 = btn ? {
+      y: window.scrollY,
+      top: btn.getBoundingClientRect().top
+    } : null;
+    const stayed = () => !!at0 && btn.isConnected && !document.querySelector('[role="dialog"]') && (Math.abs(window.scrollY - at0.y) <= 8 || Math.abs(btn.getBoundingClientRect().top - at0.top) <= 8);
+    const outcome = await doGenerate(false, "↻ Regenerate");
+    if (sessionEpochRef.current !== ep) return;
+    if (outcome === "review") {
+      if (stayed()) {
+        setView("generate");
+        setTimeout(() => {
+          const el = document.querySelector('[data-gen-preview="1"]');
+          if (el && el.scrollIntoView) el.scrollIntoView({
+            behavior: "smooth",
+            block: "start"
+          });
+        }, 60);
+      }
+      return;
+    }
+    if (outcome !== "published") return;
+    const here = stayed();
+    setJustPublished({
+      label: period,
+      ep
+    });
+    if (here) setTimeout(() => {
+      const el = document.querySelector('[data-just-published="1"]');
+      if (el && el.scrollIntoView) el.scrollIntoView({
+        behavior: "smooth",
+        block: "nearest"
+      });
+    }, 60);
+  };
   const downloadMyCal = surgeonId => {
     const myApp = surgeons.some(x => x.id === surgeonId) ? null : apps.find(x => x.id === surgeonId);
     const s = myApp || surgeons.find(x => x.id === surgeonId);
@@ -4743,7 +4785,7 @@ function CallSchedule() {
     }
   };
   const publishSearchRunning = () => !!(searchRef.current && searchRef.current.purpose === "publish");
-  const doGenerate = async preview => {
+  const doGenerate = async (preview, via) => {
     if (searchRef.current) {
       showToast("A schedule search is already running — wait for it to finish.", "error");
       return "busy";
@@ -4798,9 +4840,9 @@ function CallSchedule() {
         improved: true
       });
     }
-    return genFinishRef.current(result, preview, clickSig, pendingLocks, genEpoch);
+    return genFinishRef.current(result, preview, clickSig, pendingLocks, genEpoch, via);
   };
-  const finishGenerate = (result, preview, clickSig, clickLocks, genEpoch) => {
+  const finishGenerate = (result, preview, clickSig, clickLocks, genEpoch, via) => {
     const droppedLocks = (clickLocks || []).filter(l => {
       var _wk$nights;
       const wk = result[l.mondayStr];
@@ -4818,12 +4860,13 @@ function CallSchedule() {
       if (JSON.stringify(clickLocks || []) !== JSON.stringify(pendingLocks || [])) showToast("The locks changed during the search — this preview used the earlier ones. Re-roll to use the new ones.", "error");
       return "preview";
     }
+    const inPreview = view === "generate" ? "in the preview below" : "in the preview on the Generate tab";
     if (genInputsSig() !== clickSig) {
       setPreviewSchedule(result);
       setPreviewOrigin("generated");
       previewEpochRef.current = genEpoch;
       setShowPreview(true);
-      showToast("Time off, a lock, a holiday card or the Generate settings changed during the search — review the result in the preview below before publishing.", "error");
+      showToast(`Time off, a lock, a holiday card or the Generate settings changed during the search — review the result ${inPreview} before publishing.`, "error");
       return "review";
     }
     const needsOkN = (() => {
@@ -4848,7 +4891,7 @@ function CallSchedule() {
       setPreviewOrigin("generated");
       previewEpochRef.current = genEpoch;
       setShowPreview(true);
-      showToast(`${needsOkN} item${needsOkN === 1 ? " needs" : "s need"} your OK before publishing — review them in the preview below, then ✓ Accept & Publish.`, "error");
+      showToast(`${needsOkN} item${needsOkN === 1 ? " needs" : "s need"} your OK before publishing — review them ${inPreview}, then ✓ Accept & Publish.`, "error");
       return "review";
     }
     if (publishingRef.current) {
@@ -4884,7 +4927,7 @@ function CallSchedule() {
           setSaveStatus("");
           return "moved";
         }
-        const out = await genCommitRef.current(result);
+        const out = await genCommitRef.current(result, via);
         return out && out.ok ? "published" : "not-published";
       } finally {
         publishingRef.current = false;
@@ -4892,7 +4935,7 @@ function CallSchedule() {
       }
     })();
   };
-  const commitGenerated = async result => {
+  const commitGenerated = async (result, via) => {
     const ep = sessionEpochRef.current;
     const pubMs = Object.keys(result).sort();
     const pubPeriod = typeof periodLabel === "function" ? periodLabel(pubMs[0], pubMs[pubMs.length - 1]) : `weeks of ${pubMs[0]} – ${pubMs[pubMs.length - 1]}`;
@@ -4901,7 +4944,7 @@ function CallSchedule() {
       prior,
       y1
     } = publishWeeks(result, {
-      label: `${pubMs.length} weeks, ${pubPeriod}, Generate & Publish`,
+      label: `${pubMs.length} weeks, ${pubPeriod}, ${via || "Generate & Publish"}`,
       meta: {
         startMonth,
         startYear,
@@ -11456,6 +11499,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       }
     })();
     return React.createElement("div", {
+      "data-gen-preview": "1",
       style: _objectSpread(_objectSpread({}, css.card), {}, {
         marginTop: 14,
         background: dk ? "#1a2a1a" : "#f0faf0",
@@ -12699,7 +12743,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     onClick: () => setView("setup"),
     style: css.btn(false)
   }, "Setup →"), React.createElement("button", {
-    onClick: () => doGenerate(false),
+    onClick: doRegenerate,
     disabled: !!searching,
     style: _objectSpread(_objectSpread({}, css.btn(true)), {}, {
       opacity: searching ? 0.55 : 1
