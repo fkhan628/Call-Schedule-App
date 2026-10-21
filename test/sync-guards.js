@@ -4006,6 +4006,469 @@ console.log("\nBL. Schedule Warnings: anyone can hide a warning on this phone");
     J({ iState, iChoice, iWS, iWSdeps, iCC, iRead, iRefs, iLis, iP7 }));
 }
 
+// ─── CI. A token refresh that fails for lack of signal keeps you signed in (owner 2026-10-20) ───
+// config.js auth._refresh cleared the stored sign-in on ANY failed refresh. getUser refreshes when /auth/v1/user
+// refuses an access token over an hour old; if that refresh then got no answer (no signal) — or a Supabase 5xx, or a
+// 429 — the person was signed out and met the sign-in card. Now only the auth server's refusal of the refresh token
+// itself (400 — invalid_grant, refresh_token_not_found, refresh_token_already_used …; 401; 403) clears it; anything
+// else keeps the stored session and answers { user: null, error: "network" }, which getUser passes on (CE's "you're
+// still signed in" note, and the Face ID screen's no-signal line). And handleBiometricUnlock's profile read, which
+// threw offline and left the Face ID button on "Verifying…" for good, now says the no-signal line.
+// Everything below runs the REAL config.js auth (its own context: helpers.js + config.js, a stubbed fetch routed to
+// a pretend auth server, an in-memory localStorage) and the REAL component code (sliced, run in a fresh context).
+//   CI1 _refresh, one request per call: no answer (Safari "Load failed", Chrome "Failed to fetch"), 500 / 502 / 503 /
+//       504, 429, 408 / 404, a 200 that is no session (a captive portal's page, JSON with no access_token) →
+//       { user: null, error: "network" } and the stored session exactly as it was; 400 (both GoTrue body shapes),
+//       401, 403 → cleared, { user: null } with no error; 200 → the new session stored, its user answered
+//   CI2 getUser end to end with an expired access token (/auth/v1/user 403, and 401) and each refresh outcome: the
+//       same answers, exactly two requests (no retry); no signal at all, and a fresh token, as before; a real
+//       sign-out still clears (offline too)
+//   CI3 the callers on that auth: the mount auto-login (refresh dropped / 503 → the note, kept; refused → today's
+//       plain card, cleared) and the Face ID tap (dropped → the no-signal line, the screen kept; refused → "Session
+//       expired…"; renewed → signed in)
+//   CI4 Face ID's profile read with no signal → the no-signal line, busy back to false, the screen still up and
+//       usable (the half-done unlock undone; a second tap signs in); any other error, and an old cached helpers.js
+//       (no isNoConnectionError), thrown on exactly as before
+//   CI5 no storm: _refresh is called once, from getUser; getUser twice (the mount, the Face ID tap); no timer calls
+//       either; refreshKeep ("Sign in again") unchanged — it never clears
+//   CI-M the mutant battery (config.js and index-source.html): each mutant turns a CI check red, and every CI check is
+//       turned red by at least one mutant
+// Review fixes (2026-10-20):
+//   CI1 a refusal is the auth server's own JSON (GoTrue's error / error_code / msg — both API versions' shapes — or
+//       its gateway's message): a 400 / 401 / 403 that isn't (an edge or firewall HTML page, an empty body, JSON
+//       naming no error) refuses nothing — kept + "network" (F2)
+//   CI2h getUser's own clear, pinned: a stored session with no refresh token, /auth/v1/user refusing it → cleared,
+//       { user: null }, one request (F4)
+//   CI3g/h the mount auto-login's profile read with no signal → the half-done sign-in undone, the "still signed in"
+//       note, kept; any other error, and an old cached helpers.js, as before (F2, second review)
+//   CI4e/f the password sign-in's profile read with no signal → undone, "No connection …" on the card, the session it
+//       stored kept; any other error, and an old cached helpers.js, as before (F3)
+//   CI6a "Use email & password instead" is inert while a Face ID tap is being verified (F1, both reviews)
+console.log("\nCI. A token refresh that fails for lack of signal keeps you signed in (+ mutant battery)");
+await (async () => {
+  const J = (x) => JSON.stringify(x);
+  const helpersCI = fs.readFileSync(path.join(ROOT, "helpers.js"), "utf8");
+  const cfgLF = fs.readFileSync(path.join(ROOT, "config.js"), "utf8").replace(/\r\n/g, "\n");   // a Windows checkout is CRLF, CI's is LF
+  const idxLF = src.replace(/\r\n/g, "\n");
+  const quietCI = { error() {}, warn() {}, log() {}, info() {} };
+  const tickCI = () => new Promise((r) => setTimeout(r, 0));
+  const NET_FACE = "No connection — you're still signed in. Check your signal and tap Unlock again.";
+  const EXPIRED = "Session expired. Please sign in with your password to refresh.";
+  const REFRESH = "/auth/v1/token?grant_type=refresh_token";
+  const b64 = (o) => Buffer.from(JSON.stringify(o)).toString("base64").replace(/=+$/, "").replace(/\+/g, "-").replace(/\//g, "_");
+  const jwt = (sub, secs) => "eyJhbGciOiJIUzI1NiJ9." + b64({ sub, exp: Math.floor(Date.now() / 1000) + secs }) + ".sig";
+  const TOK_OLD = jwt("auth-c", -7200), TOK_NEW = jwt("auth-c", 3600);   // an access token two hours old (expired), and a renewed one
+  const UC = { id: "auth-c", email: "c@dsg.test" };
+  const OLD = { "dsg-auth-token": TOK_OLD, "dsg-auth-refresh": "REF_OLD" }, NEW = { "dsg-auth-token": TOK_NEW, "dsg-auth-refresh": "REF_NEW" };
+  // (a string body is raw text: res.json() parses it, so "<html>" and "" throw as a browser's does)
+  const resp = (status, body) => ({ ok: status >= 200 && status < 300, status, json: async () => (typeof body === "string" ? JSON.parse(body) : body), text: async () => (typeof body === "string" ? body : JSON.stringify(body)) });
+  // what the refresh request meets: a fetch that rejects (no signal), or the auth server's answer
+  const RF = {
+    noSignal: () => { throw new TypeError("Load failed"); },          // an iPhone's fetch with no signal
+    chromeOffline: () => { throw new TypeError("Failed to fetch"); },
+    s500: () => resp(500, { code: 500, msg: "Internal Server Error" }), s502: () => resp(502, "<html>"), s503: () => resp(503, { message: "Service Unavailable" }), s504: () => resp(504, "<html>"),
+    s429: () => resp(429, { code: 429, error_code: "over_request_rate_limit", msg: "Request rate limit reached" }),
+    s408: () => resp(408, "<html>"), s404: () => resp(404, { message: "no Route matched with those values" }),
+    portal: () => resp(200, "<html>"),                                   // a captive portal's sign-in page, answered 200
+    noToken: () => resp(200, { message: "ok" }),                         // a 200 that is no session
+    invalidGrant: () => resp(400, { error: "invalid_grant", error_description: "Invalid Refresh Token: Already Used" }),
+    notFound: () => resp(400, { code: 400, error_code: "refresh_token_not_found", msg: "Invalid Refresh Token: Refresh Token Not Found" }),
+    alreadyUsed: () => resp(400, { code: 400, error_code: "refresh_token_already_used", msg: "Invalid Refresh Token: Already Used" }),
+    expired: () => resp(400, { code: "session_expired", message: "Invalid Refresh Token: Session Expired" }),   // GoTrue's 2024-01-01 API shape
+    // 401 / 403 on the refresh endpoint (review fix F2): the gateway's own JSON (a key it won't take), and GoTrue-shaped JSON
+    s401: () => resp(401, { message: "Invalid API key", hint: "Double check your Supabase `anon` or `service_role` API key." }),
+    s401gt: () => resp(401, { code: 401, error_code: "no_authorization", msg: "This endpoint requires a valid Bearer token" }),
+    s403: () => resp(403, { code: 403, error_code: "session_not_found", msg: "Session from session_id claim in JWT does not exist" }),
+    // the same statuses on something that is not the auth server's refusal: an edge / firewall HTML page, an empty
+    // body, JSON naming no error — they refuse nothing (review fix F2)
+    html400: () => resp(400, "<html>"), html401: () => resp(401, "<html>"), html403: () => resp(403, "<html>"),
+    empty401: () => resp(401, ""), bare403: () => resp(403, { ok: false }), blank400: () => resp(400, { error: " ", msg: "" }),
+    ok: () => resp(200, { access_token: TOK_NEW, refresh_token: "REF_NEW", token_type: "bearer", expires_in: 3600, user: UC }),
+  };
+  // the auth server: /auth/v1/user refuses the expired access token (403, as this project answers — or 401) and
+  // knows the renewed one; the refresh meets `rf`; a sign-out is answered 204 (or never arrives)
+  const server = (rf, o = {}) => (u, init) => {
+    if (u.startsWith("/auth/v1/user")) {
+      if (o.userOffline) throw new TypeError("Load failed");
+      const tok = String((init.headers && init.headers.Authorization) || "").replace(/^Bearer /, "");
+      return tok === TOK_NEW ? resp(200, UC) : resp(o.user401 ? 401 : 403, { code: o.user401 ? 401 : 403, error_code: "bad_jwt", msg: "invalid JWT: unable to parse or verify signature, token has invalid claims: token is expired" });
+    }
+    if (u.startsWith(REFRESH)) return rf();
+    if (u.startsWith("/auth/v1/token?grant_type=password")) return RF.ok();   // a password sign-in, answered (CI4e/f)
+    if (u.startsWith("/auth/v1/logout")) { if (o.logoutOffline) throw new TypeError("Load failed"); return resp(204, null); }
+    throw new Error("unrouted " + u);
+  };
+
+  // Every CI check, run on the config.js and index-source.html given (the real ones, or a mutant): [{ id, name, cond, detail }]
+  const ciRun = async (cfgCode, idxCode) => {
+    const out = [], ck = (id, name, cond, detail) => out.push({ id, name, cond: !!cond, detail: detail === undefined ? "" : J(detail) });
+    const guard = async (ids, fn) => { try { await fn(); } catch (e) { for (const id of ids) if (!out.some((r) => r.id === id)) ck(id, "(crashed)", false, String((e && e.message) || e).slice(0, 160)); } };
+    const ls = new Map(), calls = [];
+    let route = () => { throw new Error("no route installed"); }, auth = null, nce, aetCI;
+    try {
+      const g = { console: quietCI, window: {}, document: undefined, navigator: { userAgent: "node-test" }, setTimeout, clearTimeout, AbortController,
+        atob: (s) => Buffer.from(String(s), "base64").toString("binary"),
+        localStorage: { getItem: (k) => (ls.has(k) ? ls.get(k) : null), setItem: (k, v) => { ls.set(k, String(v)); }, removeItem: (k) => { ls.delete(k); } },
+        fetch: async (url, init) => {
+          const u = String(url).replace(/^https?:\/\/[^/]+/, "");
+          calls.push(((init && init.method) || "GET") + " " + u + (init && typeof init.body === "string" && /refresh_token/.test(init.body) ? " rt=" + JSON.parse(init.body).refresh_token : ""));
+          return route(u, init || {});
+        } };
+      g.globalThis = g; vm.createContext(g);
+      vm.runInContext(helpersCI, g, { filename: "helpers.js" }); vm.runInContext(cfgCode, g, { filename: "config.js" });
+      auth = vm.runInContext("auth", g); nce = vm.runInContext("typeof isNoConnectionError === 'function' ? isNoConnectionError : undefined", g); aetCI = vm.runInContext("authErrorText", g);
+    } catch (e) { ck("CI0", "config.js loads", false, String(e)); return out; }
+    const at = (store, r) => { ls.clear(); for (const [k, v] of Object.entries(store)) ls.set(k, v); calls.length = 0; route = r; auth.bindUser(null); };
+    const holds = (store) => J([...ls].sort()) === J(Object.entries(store).sort());
+    const gone = () => ls.size === 0;
+    const ONE = ["POST " + REFRESH + " rt=REF_OLD"], TWO = ["GET /auth/v1/user", "POST " + REFRESH + " rt=REF_OLD"];
+    const NET = J({ user: null, error: "network" }), NOUSER = J({ user: null });
+
+    // CI1 — _refresh itself
+    await guard(["CI1a", "CI1b", "CI1c", "CI1d", "CI1e", "CI1f", "CI1g", "CI1h", "CI1i"], async () => {
+      const rf = async (k) => { at(OLD, server(RF[k])); const r = await auth._refresh("REF_OLD"); return { k, r: J(r), kept: holds(OLD), cleared: gone(), calls: calls.slice() }; };
+      const keeps = (x) => x.r === NET && x.kept && J(x.calls) === J(ONE);
+      const clears = (x) => x.r === NOUSER && x.cleared && J(x.calls) === J(ONE);
+      const a = [await rf("noSignal"), await rf("chromeOffline")];
+      ck("CI1a", "_refresh with no answer (Safari's \"Load failed\", Chrome's \"Failed to fetch\"): { user: null, error: \"network\" }, the stored session kept exactly as it was, one request", a.every(keeps), a);
+      const b = [await rf("s500"), await rf("s502"), await rf("s503"), await rf("s504")];
+      ck("CI1b", "…a 5xx (500, 502, 503, 504 — an outage): the same, kept", b.every(keeps), b);
+      const c = [await rf("s429")];
+      ck("CI1c", "…a 429 (rate limited): the same, kept", c.every(keeps), c);
+      const d = [await rf("s408"), await rf("s404"), await rf("html400"), await rf("html401"), await rf("html403"), await rf("empty401"), await rf("bare403"), await rf("blank400")];
+      ck("CI1d", "…any other status that refuses nothing (408, 404) — and a 400 / 401 / 403 that is not the auth server's JSON (an edge or firewall HTML page, an empty body, JSON naming no error or a blank one): the same, kept (review fix F2)", d.every(keeps), d);
+      const e = [await rf("portal"), await rf("noToken")];
+      ck("CI1e", "…a 200 that is no session (a captive portal's page; JSON with no access_token): the same, kept — nothing stored over it", e.every(keeps), e);
+      const f = [await rf("invalidGrant"), await rf("notFound"), await rf("alreadyUsed"), await rf("expired")];
+      ck("CI1f", "…the refresh token REFUSED, 400 (invalid_grant; error_code refresh_token_not_found / refresh_token_already_used; GoTrue's 2024-01-01 shape, code session_expired + message): the stored session cleared, { user: null } with no network error, one request", f.every(clears), f);
+      const g4 = [await rf("s401"), await rf("s401gt")];
+      ck("CI1g", "…401 with the gateway's JSON (\"Invalid API key\") or GoTrue's: cleared, { user: null }", g4.every(clears), g4);
+      const h = [await rf("s403")];
+      ck("CI1h", "…403: cleared, { user: null }", h.every(clears), h);
+      at(OLD, server(RF.ok)); const r = await auth._refresh("REF_OLD");
+      ck("CI1i", "…200 with a session: the new session stored (access and refresh token), its user answered, one request",
+        !!r && !!r.user && r.user.id === "auth-c" && !!r.session && r.session.access_token === TOK_NEW && holds(NEW) && J(calls) === J(ONE), { r, ls: [...ls], calls: calls.slice() });
+    });
+
+    // CI2 — getUser, end to end
+    await guard(["CI2a", "CI2b", "CI2c", "CI2d", "CI2e", "CI2f", "CI2g", "CI2h"], async () => {
+      const gu = async (k, o) => { at(OLD, server(RF[k], o)); const r = await auth.getUser(); return { k, r: J(r), kept: holds(OLD), cleared: gone(), calls: calls.slice() }; };
+      const keeps = (x) => x.r === NET && x.kept && J(x.calls) === J(TWO);
+      const a = [await gu("noSignal"), await gu("chromeOffline")];
+      ck("CI2a", "getUser with an access token over an hour old (/auth/v1/user 403) and its refresh getting no answer: { user: null, error: \"network\" }, the stored session kept — exactly two requests (the user check, ONE refresh: no retry)", a.every(keeps), a);
+      const b = [await gu("s500"), await gu("s503"), await gu("s429")];
+      ck("CI2b", "…the refresh answered 500 / 503 / 429: the same, kept, two requests", b.every(keeps), b);
+      const c = [await gu("invalidGrant"), await gu("alreadyUsed"), await gu("s401")];
+      ck("CI2c", "…the refresh token refused (400 invalid_grant / refresh_token_already_used, 401): cleared, { user: null } with no network error (the sign-in card, as before)",
+        c.every((x) => x.r === NOUSER && x.cleared && J(x.calls) === J(TWO)), c);
+      at(OLD, server(RF.ok)); const r = await auth.getUser();
+      ck("CI2d", "…renewed (200): its user and session answered, the new session stored, two requests",
+        !!r && !!r.user && r.user.id === "auth-c" && !!r.session && r.session.access_token === TOK_NEW && holds(NEW) && J(calls) === J(TWO), { r, ls: [...ls], calls: calls.slice() });
+      const e = [await gu("noSignal", { user401: true }), await gu("s503", { user401: true })], e2 = await gu("invalidGrant", { user401: true });
+      ck("CI2e", "…the same when /auth/v1/user answers 401 rather than 403: no answer / 503 → kept + network; refused → cleared", e.every(keeps) && e2.r === NOUSER && e2.cleared, { e, e2 });
+      const f = await gu("ok", { userOffline: true });
+      at(NEW, server(RF.noSignal)); const fresh = await auth.getUser(), freshCalls = calls.slice(), freshKept = holds(NEW);
+      ck("CI2f", "unchanged: no signal at all (the /auth/v1/user request itself fails) → { user: null, error: \"network\" }, kept, one request, no refresh; a fresh token → its user, one request, no refresh",
+        f.r === NET && f.kept && J(f.calls) === J(["GET /auth/v1/user"]) && !!fresh.user && fresh.user.id === "auth-c" && J(freshCalls) === J(["GET /auth/v1/user"]) && freshKept, { f, fresh, freshCalls });
+      at(OLD, server(RF.noSignal)); await auth.signOut(); const so1 = { cleared: gone(), calls: calls.slice() };
+      at(OLD, server(RF.noSignal, { logoutOffline: true })); await auth.signOut(); const so2 = { cleared: gone(), calls: calls.slice() };
+      ck("CI2g", "a real sign-out still clears: the logout sent and the stored session cleared — offline too (the logout request failing)",
+        so1.cleared && J(so1.calls) === J(["POST /auth/v1/logout"]) && so2.cleared && J(so2.calls) === J(["POST /auth/v1/logout"]), { so1, so2 });
+      // (review fix F4) getUser's own clear: a stored session with no refresh token, its access token refused — nothing
+      // can renew it, so it is dead: cleared, no refresh tried
+      const noRt = [];
+      for (const o of [{}, { user401: true }]) {
+        at({ "dsg-auth-token": TOK_OLD }, server(RF.ok, o)); const r = await auth.getUser();
+        noRt.push({ r: J(r), cleared: gone(), calls: calls.slice() });
+      }
+      ck("CI2h", "getUser with a stored session that has no refresh token, /auth/v1/user refusing its access token (403, and 401): { user: null } with no network error, the stored session cleared, ONE request (no refresh tried)",
+        noRt.every((x) => x.r === NOUSER && x.cleared && J(x.calls) === J(["GET /auth/v1/user"])), noRt);
+    });
+
+    // the component's callers, sliced from the index-source.html given and run in a fresh context (a free name throws)
+    const slice = (start, end) => { const i = idxCode.indexOf(start); if (i < 0 || idxCode.indexOf(start, i + 1) !== -1) return null; const e = idxCode.indexOf(end, i + start.length); return e < 0 ? null : idxCode.slice(i + start.length, e); };
+    const cctx = vm.createContext({});
+    const comp = (names, code) => { if (!code) return null; try { return vm.runInContext(`(function (env) { const { ${names} } = env; return (${code}); })`, cctx, { filename: "ci-auth.js" }); } catch (ex) { return null; } };
+    const mountSrc = slice("  // ─── Auth: Check session on mount ───\n  useEffect(", "\n  }, []);\n");
+    const bioSrc = slice("  const handleBiometricUnlock = ", "\n  };\n");
+    const mkMount = comp("isPublicMode, setAuthLoading, window, URLSearchParams, auth, setAuthMode, biometric, setBiometricAvail, setBiometricReason, setBiometricEnrolled, setBiometricPending, dbAuth, setAuthUser, setUserProfile, setMySurgeon, setNeedsProfile, setReloadTrigger, setAuthNetErr, console, isNoConnectionError",
+      mountSrc && mountSrc + "\n  }");
+    const mkBio = comp("setAuthError, setAuthBusy, biometric, auth, setAuthUser, dbAuth, setUserProfile, setMySurgeon, setNeedsProfile, setBiometricPending, setReloadTrigger, isNoConnectionError",
+      bioSrc && bioSrc + "\n  }");
+    // o.profileThrows: the profile read rejects with it; o.oldHelpers: an old cached helpers.js (no isNoConnectionError)
+    const runMount = async (o = {}) => {
+      const log = [], rec = (n) => (v) => log.push(n + ":" + J(v));
+      const env = { isPublicMode: false, URLSearchParams, auth, isNoConnectionError: o.oldHelpers ? undefined : nce,
+        window: { location: { hash: "", pathname: "/", search: "" }, history: { replaceState: () => log.push("replaceState") } },
+        biometric: { isAvailable: async () => ({ available: true, reason: "" }), isEnrolled: () => false },
+        dbAuth: { getProfile: async (id) => { log.push("getProfile:" + id); if (o.profileThrows) throw o.profileThrows; return { person_id: "s6", display_name: "FAK", role: "scheduler" }; } },
+        setAuthLoading: rec("authLoading"), setAuthMode: rec("authMode"), setBiometricAvail: () => {}, setBiometricReason: () => {}, setBiometricEnrolled: () => {},
+        setBiometricPending: rec("biometricPending"), setAuthUser: (u) => log.push("authUser:" + (u ? u.id : null)), setUserProfile: () => log.push("profile"), setMySurgeon: () => {},
+        setNeedsProfile: rec("needsProfile"), setReloadTrigger: () => log.push("reloadTrigger"), setAuthNetErr: rec("authNetErr"),
+        console: { error: (...a) => log.push("console.error:" + a.map(String).join(" ").slice(0, 120)), warn() {}, log() {}, info() {} } };
+      try { mkMount(env)(); } catch (ex) { log.push("threw " + String(ex).slice(0, 120)); }
+      for (let i = 0; i < 200 && !log.includes("authLoading:false"); i++) await tickCI();
+      return log;
+    };
+    const runBio = async (o = {}) => {
+      const log = [], st = o.st || { busy: false, pending: true };
+      const env = { auth, isNoConnectionError: o.oldHelpers ? undefined : nce,
+        biometric: { authenticate: async () => ({ success: true }) },
+        dbAuth: { getProfile: async (id) => { log.push("getProfile:" + id); if (o.profileThrows) throw o.profileThrows; return { person_id: "s6", display_name: "FAK", role: "scheduler" }; } },
+        setAuthError: (v) => log.push("error:" + v), setAuthBusy: (v) => { st.busy = v; log.push("busy:" + v); }, setAuthUser: (u) => log.push("authUser:" + (u ? u.id : null)),
+        setUserProfile: () => log.push("profile"), setMySurgeon: () => {}, setNeedsProfile: (v) => log.push("needsProfile:" + v),
+        setBiometricPending: (v) => { st.pending = v; log.push("biometricPending:" + v); }, setReloadTrigger: () => log.push("reloadTrigger") };
+      let threw = null;
+      try { await mkBio(env)(); } catch (ex) { threw = ex; }
+      return { log, threw, st };
+    };
+    const SIGNED_IN = J(["error:", "busy:true", "authUser:auth-c", "getProfile:auth-c", "profile", "biometricPending:false", "reloadTrigger", "busy:false"]);
+    // (review fix F3) the password sign-in's submit, BG3's names, on this auth; it hands back what its catch caught
+    const submitSrc = slice("  const handleAuthSubmit = async () => {", "\n  };\n");
+    const mkSubmit = comp("setAuthError, setAuthBusy, authMode, signupPersonId, dbAuth, auth, authEmail, authPassword, allPeople, setAuthUser, setUserProfile, setMySurgeon, setNeedsProfile, setIsScheduler, setReloadTrigger, setAuthEmail, setAuthPassword, fetch, SUPABASE_URL, dbAuthHeaders, saveNotifPref, showToast, console, authErrorText, isNoConnectionError",
+      submitSrc && "async () => {" + submitSrc + "\n  }");
+    const runSubmit = async (o = {}) => {
+      const log = [];
+      const env = { authMode: "login", signupPersonId: "", authEmail: UC.email, authPassword: "pw", allPeople: [], auth, isNoConnectionError: o.oldHelpers ? undefined : nce, authErrorText: aetCI,
+        dbAuth: { getProfile: async (id) => { log.push("getProfile:" + id); if (o.profileThrows) throw o.profileThrows; return { person_id: "s6", display_name: "FAK", role: "scheduler" }; } },
+        setAuthError: (v) => log.push("error:" + v), setAuthBusy: (v) => log.push("busy:" + v), setAuthUser: (u) => log.push("authUser:" + (u ? u.id : null)),
+        setUserProfile: () => log.push("profile"), setMySurgeon: () => {}, setNeedsProfile: (v) => log.push("needsProfile:" + v), setIsScheduler: () => {}, setReloadTrigger: () => log.push("reloadTrigger"),
+        setAuthEmail: () => {}, setAuthPassword: () => {}, fetch: () => { throw new Error("no fetch in this run"); }, SUPABASE_URL: "https://x.test", dbAuthHeaders: () => ({}),
+        saveNotifPref: () => {}, showToast: (m) => log.push("toast:" + m), console: quietCI };
+      let threw = null, back;
+      try { back = await mkSubmit(env)(); } catch (ex) { threw = ex; }
+      return { log, threw, back };
+    };
+
+    // CI3 — the callers, on that auth
+    await guard(["CI3a", "CI3b", "CI3c", "CI3d", "CI3e", "CI3f", "CI3g", "CI3h"], async () => {
+      if (!mkMount || !mkBio) throw new Error("the mount auth effect / handleBiometricUnlock not found or not compiling");
+      at(OLD, server(RF.noSignal)); const m1 = await runMount(), m1s = { kept: holds(OLD), bound: auth.boundUser(), calls: calls.slice() };
+      ck("CI3a", "the REAL mount auto-login, the access token expired and its refresh getting no answer: the \"you're still signed in\" note (authNetErr) and the card — nobody signed in or bound, the stored session kept",
+        J(m1) === J(["authNetErr:true", "authLoading:false"]) && m1s.kept && m1s.bound === null && J(m1s.calls) === J(TWO), { m1, m1s });
+      at(OLD, server(RF.s503)); const m2 = await runMount(), m2k = holds(OLD);
+      ck("CI3b", "…its refresh answered 503 (an outage): the same note, kept", J(m2) === J(["authNetErr:true", "authLoading:false"]) && m2k, { m2 });
+      at(OLD, server(RF.invalidGrant)); const m3 = await runMount(), m3c = gone();
+      ck("CI3c", "…its refresh token refused: today's plain sign-in card (no note), the dead session cleared", J(m3) === J(["authLoading:false"]) && m3c, { m3, ls: [...ls] });
+      at(OLD, server(RF.noSignal)); const b1 = await runBio(), b1s = { kept: holds(OLD), bound: auth.boundUser(), calls: calls.slice() };
+      ck("CI3d", "the REAL Face ID unlock, the access token expired and its refresh getting no answer: stays on the Face ID screen saying \"" + NET_FACE + "\", busy back to false; the stored session kept",
+        J(b1.log) === J(["error:", "busy:true", "error:" + NET_FACE, "busy:false"]) && !b1.threw && b1s.kept && b1s.bound === null && J(b1s.calls) === J(TWO), { b1, b1s });
+      at(OLD, server(RF.invalidGrant)); const b2 = await runBio(), b2c = gone();
+      ck("CI3e", "…its refresh token refused: \"" + EXPIRED + "\" and the password form, as before; cleared",
+        J(b2.log) === J(["error:", "busy:true", "biometricPending:false", "error:" + EXPIRED, "busy:false"]) && b2c, { b2 });
+      at(OLD, server(RF.ok)); const b3 = await runBio(), b3s = { stored: holds(NEW), bound: auth.boundUser() };
+      ck("CI3f", "…renewed: signs in (bound to its account, its profile, the data reload), the new session stored",
+        J(b3.log) === SIGNED_IN && b3s.stored && b3s.bound === "auth-c", { b3, b3s });
+      // (review fix — F2, second review) the mount auto-login's profile read, after getUser answered
+      const mp = [];
+      for (const err of [new TypeError("Load failed"), new TypeError("Failed to fetch")]) {
+        at(NEW, server(RF.ok)); const m = await runMount({ profileThrows: err });
+        mp.push({ m, bound: auth.boundUser(), kept: holds(NEW), calls: calls.slice() });
+      }
+      ck("CI3g", "the REAL mount auto-login, getUser answered and then the profile read gets no answer (\"Load failed\", \"Failed to fetch\"): the half-done sign-in undone (the user null again, nothing bound), the \"you're still signed in\" note (authNetErr) and the card (loading ends); the stored session kept; no profile, no reload, nothing logged",
+        mp.every((x) => J(x.m) === J(["authUser:auth-c", "getProfile:auth-c", "authUser:null", "authNetErr:true", "authLoading:false"]) && x.bound === null && x.kept && J(x.calls) === J(["GET /auth/v1/user"])), mp);
+      const mo = [];
+      for (const [err, oldHelpers] of [[new TypeError("Cannot read properties of undefined (reading 'person_id')"), false], [new SyntaxError("Unexpected token '<', \"<html>\" is not valid JSON"), false], [new TypeError("Load failed"), true]]) {
+        at(NEW, server(RF.ok)); const m = await runMount({ profileThrows: err, oldHelpers });
+        mo.push({ m, bound: auth.boundUser(), kept: holds(NEW), want: J(["authUser:auth-c", "getProfile:auth-c", "console.error:" + ("Auth check error: " + String(err)).slice(0, 120), "authLoading:false"]) });
+      }
+      ck("CI3h", "…any other error from that profile read (a code error, a reply that isn't JSON), and an OLD cached helpers.js (no isNoConnectionError): as before — the same error logged by the effect's catch, nothing undone or said, loading ends",
+        mo.every((x) => J(x.m) === x.want && x.bound === "auth-c" && x.kept), mo);
+    });
+
+    // CI4 — Face ID's profile read
+    await guard(["CI4a", "CI4b", "CI4c", "CI4d", "CI4e", "CI4f"], async () => {
+      if (!mkBio) throw new Error("handleBiometricUnlock not found or not compiling");
+      const runs = [];
+      for (const err of [new TypeError("Load failed"), new TypeError("Failed to fetch")]) {
+        at(NEW, server(RF.ok)); const st = { busy: false, pending: true };
+        const r = await runBio({ st, profileThrows: err });
+        runs.push({ log: r.log, threw: r.threw && String(r.threw), st: Object.assign({}, st), bound: auth.boundUser(), kept: holds(NEW), calls: calls.slice() });
+      }
+      ck("CI4a", "Face ID: getUser answered, then the profile read gets no answer (\"Load failed\", \"Failed to fetch\"): says \"" + NET_FACE + "\", busy back to false — no throw, no stuck \"Verifying…\"; the half-done unlock undone (the user null again, nothing bound); the stored session kept; no profile, no reload",
+        runs.every((x) => J(x.log) === J(["error:", "busy:true", "authUser:auth-c", "getProfile:auth-c", "authUser:null", "error:" + NET_FACE, "busy:false"]) && !x.threw && x.st.busy === false && x.bound === null && x.kept && J(x.calls) === J(["GET /auth/v1/user"])),
+        runs);
+      at(NEW, server(RF.ok)); const st = { busy: false, pending: true };
+      const t1 = await runBio({ st, profileThrows: new TypeError("Load failed") }), after1 = Object.assign({}, st);
+      const t2 = after1.pending && !after1.busy ? await runBio({ st }) : null;
+      ck("CI4b", "…the Face ID screen still usable after it: never left (biometricPending untouched), Unlock enabled again (busy false); a second tap, with signal, signs in (bound, the profile, the data reload) and leaves the screen",
+        after1.pending === true && after1.busy === false && !t1.log.includes("biometricPending:false") && !!t2 && J(t2.log) === SIGNED_IN && auth.boundUser() === "auth-c" && st.pending === false,
+        { t1: t1.log, after1, t2: t2 && t2.log });
+      const TODAY = J(["error:", "busy:true", "authUser:auth-c", "getProfile:auth-c"]);   // main's: the rejection goes on, nothing else
+      const others = [];
+      for (const err of [new TypeError("Cannot read properties of undefined (reading 'person_id')"), new SyntaxError("Unexpected token '<', \"<html>\" is not valid JSON")]) {
+        at(NEW, server(RF.ok)); const r = await runBio({ profileThrows: err });
+        others.push({ log: r.log, same: r.threw === err, bound: auth.boundUser(), kept: holds(NEW) });
+      }
+      ck("CI4c", "…any other error from the profile read (a code error, a reply that isn't JSON) is thrown on exactly as before — the same error, nothing said, nothing undone",
+        others.every((x) => J(x.log) === TODAY && x.same && x.bound === "auth-c" && x.kept), others);
+      at(NEW, server(RF.ok)); const errOld = new TypeError("Load failed"), old = await runBio({ profileThrows: errOld, oldHelpers: true });
+      ck("CI4d", "…with an OLD cached helpers.js (no isNoConnectionError): thrown on as before — the same error (never a ReferenceError from the helper), nothing said",
+        J(old.log) === TODAY && old.threw === errOld, { log: old.log, threw: old.threw && String(old.threw) });
+
+      // (review fix F3) the password sign-in's profile read: the REAL handleAuthSubmit (sliced, BG3's names) on this auth
+      if (!mkSubmit) throw new Error("handleAuthSubmit not found or not compiling");
+      const NOCONN = aetCI(new TypeError("Load failed")), GENERIC = aetCI(new Error("boom"));
+      const pw = [];
+      for (const err of [new TypeError("Load failed"), new TypeError("Failed to fetch")]) {
+        at({}, server(RF.ok)); const r = await runSubmit({ profileThrows: err });
+        pw.push({ log: r.log, threw: r.threw && String(r.threw), back: r.back === err, bound: auth.boundUser(), stored: holds(NEW), calls: calls.slice() });
+      }
+      ck("CI4e", "the REAL password sign-in, answered, then its profile read gets no answer (\"Load failed\", \"Failed to fetch\"): the half-done sign-in undone (the user null again, nothing bound), \"" + NOCONN + "\" on the card, busy back to false, the error handed back to startSignIn; the session the sign-in stored kept (a reopen with signal signs straight in); one sign-in request, no profile, no reload",
+        pw.every((x) => J(x.log) === J(["error:", "busy:true", "authUser:auth-c", "getProfile:auth-c", "authUser:null", "error:" + NOCONN, "busy:false"]) && !x.threw && x.back && x.bound === null && x.stored
+          && J(x.calls) === J(["POST /auth/v1/token?grant_type=password"])), pw);
+      const po = [];
+      for (const [err, oldHelpers, said] of [[new TypeError("Cannot read properties of undefined (reading 'person_id')"), false, GENERIC], [new TypeError("Load failed"), true, NOCONN]]) {
+        at({}, server(RF.ok)); const r = await runSubmit({ profileThrows: err, oldHelpers });
+        po.push({ log: r.log, back: r.back === err, bound: auth.boundUser(), stored: holds(NEW), want: J(["error:", "busy:true", "authUser:auth-c", "getProfile:auth-c", "error:" + said, "busy:false"]) });
+      }
+      ck("CI4f", "…any other error from that profile read, and an OLD cached helpers.js (no isNoConnectionError): as before — nothing undone (signed in, bound), the catch's words, busy false, the same error handed back",
+        po.every((x) => J(x.log) === x.want && x.back && x.bound === "auth-c" && x.stored), po);
+    });
+
+    // CI5 — no storm; "Sign in again" unchanged
+    await guard(["CI5a", "CI5b", "CI5c"], async () => {
+      const code = (s) => String(s || "").split("\n").filter((l) => !/^\s*\/\//.test(l)).join("\n");   // code lines only
+      const gi = cfgCode.indexOf("  async getUser() {"), ge = gi < 0 ? -1 : cfgCode.indexOf("  async _refresh(refreshToken) {", gi), guSrc = ge < 0 ? "" : cfgCode.slice(gi, ge);
+      const refreshCalls = (code(cfgCode).match(/\bauth\._refresh\(/g) || []).length, inGetUser = (code(guSrc).match(/\bauth\._refresh\(/g) || []).length, idxRefresh = (code(idxCode).match(/\b_refresh\(/g) || []).length;
+      ck("CI5a", "no refresh storm: auth._refresh is called in ONE place — getUser, once per call (no retry) — and nowhere in the app",
+        refreshCalls === 1 && inGetUser === 1 && idxRefresh === 0, { refreshCalls, inGetUser, idxRefresh });
+      const getUserCalls = (code(idxCode).match(/\bauth\.getUser\(\)/g) || []).length;
+      const timed = [cfgCode, idxCode].map((s) => code(s).split("\n").filter((l) => /\bset(Timeout|Interval)\(/.test(l) && /getUser|_refresh|refreshKeep/.test(l)).length);
+      ck("CI5b", "…auth.getUser() is called in two places — the mount auto-login (once per app open) and the Face ID tap — and no timer calls getUser / _refresh / refreshKeep (config.js or the app)",
+        getUserCalls === 2 && /\bauth\.getUser\(\)/.test(code(mountSrc)) && /\bauth\.getUser\(\)/.test(code(bioSrc)) && J(timed) === J([0, 0]), { getUserCalls, timed });
+      const rk = [];
+      for (const k of ["noSignal", "s503", "s429", "invalidGrant", "s401"]) { at(OLD, server(RF[k])); const r = await auth.refreshKeep(); rk.push({ k, r: J(r), kept: holds(OLD), calls: calls.length }); }
+      const RK_WANT = [{ ok: false, error: "network" }, { ok: false, error: "refused" }, { ok: false, error: "refused" }, { ok: false, error: "refused" }, { ok: false, error: "refused" }].map(J);
+      ck("CI5c", "\"Sign in again\" (refreshKeep) unchanged: it never clears — no answer → network; 503 / 429 / 400 / 401 → refused; the stored session kept every time, one request",
+        J(rk.map((x) => x.r)) === J(RK_WANT) && rk.every((x) => x.kept && x.calls === 1), rk);
+    });
+
+    // CI6 — (review fix F1, both reviews) the Face ID screen's "Use email & password instead", inert while a tap is
+    // verified: left mid-unlock, the app showed with no profile, then the sign-in card said "tap Unlock again" (a
+    // button it hasn't got). Its real disabled expression, evaluated.
+    await guard(["CI6a"], async () => {
+      const a = idxCode.indexOf(") : biometricPending && !isPublicMode ? ("), b = a < 0 ? -1 : idxCode.indexOf(") : !authUser && !isPublicMode ? (", a);
+      const scr = a >= 0 && b > a ? idxCode.slice(a, b) : "";
+      const HEAD = '<button onClick={()=>{setBiometricPending(false);setAuthError("");}}';
+      const i = scr.indexOf(HEAD), end = i < 0 ? -1 : scr.indexOf(">", i + HEAD.length), attrs = end < 0 ? "" : scr.slice(i + HEAD.length, end);
+      const dm = attrs.match(/(?:^|\s)disabled=\{([^{}\n]*)\}/), ds = attrs.match(/\bdisabled=/g) || [];
+      let fn = null; try { fn = dm ? vm.runInContext(`(function (authBusy) { return (${dm[1]}); })`, cctx) : null; } catch (ex) { fn = null; }
+      const busy = fn ? fn(true) : undefined, idle = fn ? fn(false) : undefined;
+      ck("CI6a", "the Face ID screen's \"Use email & password instead\" (found once): disabled while authBusy (a tap being verified — the card's own buttons wait on the same authBusy, so nothing usable is lost), enabled otherwise",
+        i >= 0 && scr.indexOf(HEAD, i + 1) === -1 && scr.slice(end, end + 80).includes("Use email & password instead") && ds.length === 1 && busy === true && idle === false,
+        { found: i >= 0, attrs: attrs.slice(0, 120), busy, idle });
+    });
+    return out;
+  };
+
+  const real = await ciRun(cfgLF, idxLF);
+  for (const r of real) check(r.id + " " + r.name, r.cond, r.detail);
+
+  // The battery: each mutant re-breaks one thing above (main's own code among them) and must turn a CI check red.
+  const CUR_REFRESH = (() => { const i = cfgLF.indexOf("  async _refresh(refreshToken) {\n"), e = cfgLF.indexOf("\n  // Refresh that KEEPS the stored session on failure"); return i < 0 || e < i ? null : cfgLF.slice(i, e); })();
+  const MAIN_REFRESH = [   // main's _refresh (4e46072), whole
+    "  async _refresh(refreshToken) {",
+    "    try {",
+    "      const res = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`, {",
+    "        method: \"POST\",",
+    "        headers: { apikey: SUPABASE_ANON_KEY, \"Content-Type\": \"application/json\" },",
+    "        body: JSON.stringify({ refresh_token: refreshToken }),",
+    "      });",
+    "      if (!res.ok) { auth._clearSession(); return { user: null }; }",
+    "      const data = await res.json();",
+    "      auth._saveSession(data);",
+    "      return { user: data.user, session: data };",
+    "    } catch(e) { auth._clearSession(); return { user: null }; }",
+    "  },",
+    "",
+  ].join("\n");
+  const BIO_TRY = (() => { const a = "        let profile;\n        try { profile = await dbAuth.getProfile(user.id); }\n", i = idxLF.indexOf(a), e = i < 0 ? -1 : idxLF.indexOf("        if (profile) { setUserProfile(profile); setMySurgeon(profile.person_id); }\n", i); return e < 0 ? null : idxLF.slice(i, e); })();
+  const CATCH_R = "    } catch(e) { return { user: null, error: \"network\" }; }\n    if (res.status === 400";
+  const STATUS_R = "    if (res.status === 400 || res.status === 401 || res.status === 403) {";
+  const REFUSE_R = "      if (!refused) return { user: null, error: \"network\" };\n      auth._clearSession(); return { user: null };\n";
+  const FIELDS_R = "[\"error\", \"error_code\", \"msg\", \"message\"]", BLANK_R = "typeof body[k] === \"string\" && body[k].trim() !== \"\"";
+  const REFUSED_R = "const refused = !!body && typeof body === \"object\" && " + FIELDS_R + ".some((k) => " + BLANK_R + ");";
+  const NETG = "        if (refreshed?.error === \"network\") return { user: null, error: \"network\" };\n";
+  const DEAD_G = "token is dead.\n      auth._clearSession();\n      return { user: null };\n";
+  // (UNDO_B and GUARD_B's Face ID anchors start at their line's own indent: the mount's copies are indented deeper)
+  const UNDO_B = "\n          auth.bindUser(null); setAuthUser(null);\n", END_B = "          setAuthBusy(false);\n          return;\n        }\n";
+  const GUARD_B = "if (!(typeof isNoConnectionError === \"function\" && isNoConnectionError(e))) throw e;";
+  const MOUNT_TRY = (() => { const a = "            let profile;\n            try { profile = await dbAuth.getProfile(user.id); }\n", i = idxLF.indexOf(a), e = i < 0 ? -1 : idxLF.indexOf("            if (profile) { setUserProfile(profile); setMySurgeon(profile.person_id); }\n", i); return e < 0 ? null : idxLF.slice(i, e); })();
+  const UNDO_M = "\n              auth.bindUser(null); setAuthUser(null);\n              setAuthNetErr(true);\n              setAuthLoading(false);\n              return;\n";
+  const PW_TRY = (() => { const a = "        // Load profile\n", i = idxLF.indexOf(a), e = i < 0 ? -1 : idxLF.indexOf("        if (profile) {\n", i); return e < 0 ? null : idxLF.slice(i + a.length, e); })();
+  const UNDO_P = "if (typeof isNoConnectionError === \"function\" && isNoConnectionError(e)) { auth.bindUser(null); setAuthUser(null); }";
+  const LINK_F = "<button onClick={()=>{setBiometricPending(false);setAuthError(\"\");}} disabled={authBusy}\n";
+  const CI_MUTANTS = [
+    { id: "R0", file: "cfg", what: "main's _refresh, whole: every failed refresh — no answer, a 5xx, a 429 — clears the stored session (the bug)", from: CUR_REFRESH, to: MAIN_REFRESH },
+    { id: "R1", file: "cfg", what: "no answer clears again (the catch)", from: CATCH_R, to: "    } catch(e) { auth._clearSession(); return { user: null }; }\n    if (res.status === 400" },
+    { id: "R2", file: "cfg", what: "no answer keeps the session but says nothing (getUser then clears it)", from: CATCH_R, to: "    } catch(e) { return { user: null }; }\n    if (res.status === 400" },
+    { id: "R3", file: "cfg", what: "any non-OK answer clears (a 5xx, a 429)", from: STATUS_R, to: "    if (!res.ok) {" },
+    { id: "R4", file: "cfg", what: "a 5xx clears", from: STATUS_R, to: "    if (res.status === 400 || res.status === 401 || res.status === 403 || res.status >= 500) {" },
+    { id: "R5", file: "cfg", what: "a 429 clears", from: STATUS_R, to: "    if (res.status === 400 || res.status === 401 || res.status === 403 || res.status === 429) {" },
+    { id: "R6", file: "cfg", what: "every 4xx clears (429, 408, 404 too)", from: STATUS_R, to: "    if (res.status >= 400 && res.status < 500) {" },
+    { id: "R7", file: "cfg", what: "only a 400 clears (a 401 / 403 refusal kept for good)", from: STATUS_R, to: "    if (res.status === 400) {" },
+    { id: "R8", file: "cfg", what: "a 403 refusal kept", from: STATUS_R, to: "    if (res.status === 400 || res.status === 401) {" },
+    { id: "R9", file: "cfg", what: "a refusal not cleared by _refresh", from: REFUSE_R, to: "      if (!refused) return { user: null, error: \"network\" };\n      return { user: null };\n" },
+    { id: "R10", file: "cfg", what: "a refusal said as no connection (the note over a dead session)", from: REFUSE_R, to: "      if (!refused) return { user: null, error: \"network\" };\n      auth._clearSession(); return { user: null, error: \"network\" };\n" },
+    { id: "R15", file: "cfg", what: "(F2) the status alone refuses: an edge / firewall HTML 400 / 401 / 403 clears", from: REFUSE_R, to: "      auth._clearSession(); return { user: null };\n" },
+    { id: "R16", file: "cfg", what: "(F2) any JSON body refuses, whatever it names", from: REFUSED_R, to: "const refused = !!body && typeof body === \"object\";" },
+    { id: "R17", file: "cfg", what: "(F2) the gateway's / GoTrue 2024's message not counted (their refusals kept for good)", from: FIELDS_R, to: "[\"error\", \"error_code\", \"msg\"]" },
+    { id: "R18", file: "cfg", what: "(F2) a blank error field counts as a refusal", from: BLANK_R, to: "typeof body[k] === \"string\"" },
+    { id: "R19", file: "cfg", what: "(F2) a refusal's body that isn't JSON throws out of _refresh", from: "      try { body = await res.json(); } catch(e) { body = null; }\n", to: "      body = await res.json();\n" },
+    { id: "R11", file: "cfg", what: "a non-refusal keeps the session but says nothing (getUser then clears it)", from: "    if (!res.ok) return { user: null, error: \"network\" };\n", to: "    if (!res.ok) return { user: null };\n" },
+    { id: "R12", file: "cfg", what: "a 200 that isn't JSON (a captive portal) clears", from: "    try { data = await res.json(); } catch(e) { data = null; }\n", to: "    try { data = await res.json(); } catch(e) { auth._clearSession(); return { user: null }; }\n" },
+    { id: "R13", file: "cfg", what: "a 200 that is no session taken as one", from: "    if (!data || !data.access_token) return { user: null, error: \"network\" };\n", to: "" },
+    { id: "R14", file: "cfg", what: "a renewed session not stored", from: "    auth._saveSession(data);\n    return { user: data.user, session: data };\n", to: "    return { user: data.user, session: data };\n" },
+    { id: "G1", file: "cfg", what: "getUser drops the refresh's network answer (falls through to its clear)", from: NETG, to: "" },
+    { id: "G2", file: "cfg", what: "getUser passes the network answer on but clears", from: NETG, to: "        if (refreshed?.error === \"network\") { auth._clearSession(); return { user: null, error: \"network\" }; }\n" },
+    { id: "G3", file: "cfg", what: "getUser tries the refresh once more (a storm in the making)", from: NETG, to: "        if (refreshed?.error === \"network\") { await auth._refresh(session.refresh_token); return { user: null, error: \"network\" }; }\n" },
+    { id: "G4", file: "cfg", what: "getUser's own no-signal catch clears", from: "    } catch (e) {\n      // Network error (offline, transient blip). Do NOT clear the session —", to: "    } catch (e) {\n      auth._clearSession();\n      // Network error (offline, transient blip). Do NOT clear the session —" },
+    { id: "G5", file: "cfg", what: "(F4) getUser's own clear dropped: a refused session with no refresh token kept for good", from: DEAD_G, to: "token is dead.\n      return { user: null };\n" },
+    { id: "S1", file: "cfg", what: "signOut no longer clears", from: "    if (!stored || session) auth._clearSession();", to: "" },
+    { id: "K1", file: "cfg", what: "refreshKeep clears on a refusal", from: "      if (!res.ok) return { ok: false, error: \"refused\" };", to: "      if (!res.ok) { auth._clearSession(); return { ok: false, error: \"refused\" }; }" },
+    { id: "B1", file: "idx", what: "main's Face ID profile read, unguarded (throws offline: \"Verifying…\" for good)", from: BIO_TRY, to: "        const profile = await dbAuth.getProfile(user.id);\n" },
+    { id: "B2", file: "idx", what: "every profile-read error taken as no signal (a code error swallowed)", from: "\n          " + GUARD_B + "\n", to: "\n" },
+    { id: "B3", file: "idx", what: "the half-done unlock not undone (signed in with no profile behind the Face ID screen)", from: UNDO_B, to: "\n" },
+    { id: "B4", file: "idx", what: "only the user undone — the tab left bound", from: UNDO_B, to: "\n          setAuthUser(null);\n" },
+    { id: "B5", file: "idx", what: "the Face ID screen left", from: UNDO_B, to: "\n          auth.bindUser(null); setAuthUser(null); setBiometricPending(false);\n" },
+    { id: "B6", file: "idx", what: "busy left on (\"Verifying…\")", from: END_B, to: "          return;\n        }\n" },
+    { id: "B7", file: "idx", what: "no return: falls through to the profile screen", from: END_B, to: "          setAuthBusy(false);\n        }\n" },
+    { id: "B8", file: "idx", what: "says \"Session expired\" instead", from: "          setAuthError(\"" + NET_FACE + "\");\n", to: "          setAuthError(\"" + EXPIRED + "\");\n" },
+    { id: "B9", file: "idx", what: "the helper called bare (an old cached helpers.js: a ReferenceError)", from: "\n          " + GUARD_B, to: "\n          if (!isNoConnectionError(e)) throw e;" },
+    { id: "M1", file: "idx", what: "(F2, 2nd review) main's mount profile read, unguarded (signed in with no profile offline)", from: MOUNT_TRY, to: "            const profile = await dbAuth.getProfile(user.id);\n" },
+    { id: "M2", file: "idx", what: "(F2, 2nd review) the mount's half-done auto-login not undone", from: UNDO_M, to: "\n              setAuthNetErr(true);\n              setAuthLoading(false);\n              return;\n" },
+    { id: "M3", file: "idx", what: "(F2, 2nd review) the mount: only the user undone — the tab left bound", from: UNDO_M, to: "\n              setAuthUser(null);\n              setAuthNetErr(true);\n              setAuthLoading(false);\n              return;\n" },
+    { id: "M4", file: "idx", what: "(F2, 2nd review) the mount: no note (a plain sign-in card over a kept session)", from: UNDO_M, to: "\n              auth.bindUser(null); setAuthUser(null);\n              setAuthLoading(false);\n              return;\n" },
+    { id: "M5", file: "idx", what: "(F2, 2nd review) the mount: loading never ends", from: UNDO_M, to: "\n              auth.bindUser(null); setAuthUser(null);\n              setAuthNetErr(true);\n              return;\n" },
+    { id: "M6", file: "idx", what: "(F2, 2nd review) the mount: no return (falls through to the profile screen and the reload)", from: UNDO_M, to: "\n              auth.bindUser(null); setAuthUser(null);\n              setAuthNetErr(true);\n              setAuthLoading(false);\n" },
+    { id: "M7", file: "idx", what: "(F2, 2nd review) the mount: every profile-read error taken as no signal", from: "\n              " + GUARD_B + "\n", to: "\n" },
+    { id: "M8", file: "idx", what: "(F2, 2nd review) the mount: the helper called bare (an old cached helpers.js)", from: "\n              " + GUARD_B, to: "\n              if (!isNoConnectionError(e)) throw e;" },
+    { id: "P1", file: "idx", what: "(F3) main's password-path profile read, unguarded (signed in with no profile offline)", from: PW_TRY, to: "        const profile = await dbAuth.getProfile(user.id);\n" },
+    { id: "P2", file: "idx", what: "(F3) every profile-read error undone (a code error signs nobody in)", from: UNDO_P, to: "{ auth.bindUser(null); setAuthUser(null); }" },
+    { id: "P3", file: "idx", what: "(F3) undone but not thrown on (no words; the profile screen)", from: UNDO_P + "\n          throw e;\n", to: UNDO_P + "\n" },
+    { id: "P4", file: "idx", what: "(F3) only the user undone — the tab left bound", from: UNDO_P, to: "if (typeof isNoConnectionError === \"function\" && isNoConnectionError(e)) { setAuthUser(null); }" },
+    { id: "P5", file: "idx", what: "(F3) the helper called bare (an old cached helpers.js)", from: UNDO_P, to: "if (isNoConnectionError(e)) { auth.bindUser(null); setAuthUser(null); }" },
+    { id: "L1", file: "idx", what: "(F1) \"Use email & password instead\" live while a tap is verified", from: LINK_F, to: "<button onClick={()=>{setBiometricPending(false);setAuthError(\"\");}}\n" },
+    { id: "L2", file: "idx", what: "(F1) \"Use email & password instead\" disabled the wrong way round", from: LINK_F, to: "<button onClick={()=>{setBiometricPending(false);setAuthError(\"\");}} disabled={!authBusy}\n" },
+    { id: "T1", file: "idx", what: "a timer re-runs getUser", from: "  // Biometric unlock handler\n", to: "  useEffect(() => { const t = setInterval(() => auth.getUser(), 30000); return () => clearInterval(t); }, []);\n  // Biometric unlock handler\n" },
+  ];
+  const killedBy = {};
+  for (const m of CI_MUTANTS) {
+    const base = m.file === "cfg" ? cfgLF : idxLF;
+    const n = m.from ? base.split(m.from).length - 1 : 0;
+    if (n !== 1) { check(`CI-M ${m.id} anchor present exactly once (${m.what})`, false, `found ${n}`); continue; }
+    const mut = base.replace(m.from, () => m.to);
+    const res = await ciRun(m.file === "cfg" ? mut : cfgLF, m.file === "idx" ? mut : idxLF);
+    const red = res.filter((r) => !r.cond).map((r) => r.id);
+    for (const id of red) (killedBy[id] = killedBy[id] || []).push(m.id);
+    check(`CI-M ${m.id} killed: ${m.what}`, red.length > 0, "every CI check still passes with this bug in place");
+    if (process.env.CI_WHO) console.log("     " + m.id + " ← " + J(red));
+  }
+  const unkilled = real.map((r) => r.id).filter((id) => !killedBy[id]);
+  check("CI-M every CI check is turned red by at least one mutant (none of them decoration)", real.length > 0 && unkilled.length === 0, J({ unkilled }));
+})().catch(ex => check("CI harness ran without crashing", false, String(ex && ex.stack || ex).split("\n").slice(0, 3).join(" | ")));
+
 // ─── CE. Opening with no signal no longer looks signed out (owner decision 2026-10-20) ───
 // With the network down config.js auth.getUser() answers { user: null, error: "network" } and KEEPS the stored
 // session (by design), but both callers dropped `error`: the mount auto-login fell through to a plain "Sign in to
@@ -4352,10 +4815,12 @@ await (async () => {
     typeof nce === "function" && [new TypeError("Load failed"), new TypeError("Failed to fetch"), new TypeError("NetworkError when attempting to fetch resource."), DOMX].filter(Boolean).every((e) => nce(e) === true && aet(e) === NOCONN)
       && [{ message: "Load failed" }, "Load failed", null, undefined, new SyntaxError("Unexpected token"), new Error("boom")].every((e) => nce(e) === false && aet(e) !== NOCONN),
     String(typeof nce));
-  check("CE4 the card's Sign In / Create Account button and both Enter keys (email, password) start through startSignIn — no direct handleAuthSubmit left on the card; the note is SET in two places (the mount path, and startSignIn after a no-signal attempt — behind its typeof guard) and cleared in one (startSignIn)",
+  // (changed ON PURPOSE 2026-10-20, sync-guards CI review fixes: the mount path sets the note twice now — getUser's
+  // no-signal answer, and a profile read with no signal after getUser answered — so three sets, four calls in all)
+  check("CE4 the card's Sign In / Create Account button and both Enter keys (email, password) start through startSignIn — no direct handleAuthSubmit left on the card; the note is SET in three places (the mount path twice — getUser's no-signal answer, a profile read with no signal — and startSignIn after a no-signal attempt — behind its typeof guard) and cleared in one (startSignIn)",
     card.length > 0 && (card.match(/onKeyDown=\{e=>e\.key==="Enter"&&startSignIn\(\)\}/g) || []).length === 2 && (card.match(/<button onClick=\{startSignIn\} disabled=\{authBusy\}/g) || []).length === 1
       && !/handleAuthSubmit/.test(card) && count("const startSignIn = ") === 1 && count("startSignIn()") === 2 && count("onClick={startSignIn}") === 1
-      && count("setAuthNetErr(true)") === 2 && count("setAuthNetErr(false)") === 1 && count("setAuthNetErr(") === 3 && !!mountSrc && mountSrc.includes("setAuthNetErr(true)")
+      && count("setAuthNetErr(true)") === 3 && count("setAuthNetErr(false)") === 1 && count("setAuthNetErr(") === 4 && !!mountSrc && (mountSrc.match(/setAuthNetErr\(true\)/g) || []).length === 2
       && !!ssSrc && /typeof isNoConnectionError === "function" && isNoConnectionError\(failed\)\) setAuthNetErr\(true\);/.test(ssSrc),
     J({ keys: (card.match(/startSignIn\(\)/g) || []).length, direct: (card.match(/handleAuthSubmit/g) || []).length, sets: count("setAuthNetErr(") }));
 
@@ -14472,13 +14937,19 @@ await (async () => {
       r3.ok === true && !!r3.user && r3.user.id === "auth-a" && A3.ls.get(KEYS[0]) === "TOK_NEW" && A3.ls.get(KEYS[1]) === "REF_NEW" && r4.ok === false && r4.error === "no-session" && A4.calls.length === 0,
       JSON.stringify({ r3, r4, ls3: [...A3.ls] }));
     // The control: the refresh behind auth.getUser() — what "Sign in again"
-    // ran before 10/n — CLEARS the stored session on the same answers.
+    // ran before 10/n — CLEARS the stored session on a refused refresh.
+    // (changed ON PURPOSE 2026-10-20, sync-guards CI: was "…on the same refused / failed refresh", C2 being _refresh
+    // OFFLINE → cleared. A refresh that never reached the server now KEEPS the stored session — owner: "getting signed
+    // out on a network blip" — so C2 is the REFUSED _refresh, and the offline one is pinned the other way, C3. CI runs
+    // every outcome.)
     const C1 = mkAuth(SESS); C1.on(refused);
     const c1 = await C1.auth.getUser();
-    const C2 = mkAuth(SESS); C2.on(offline);
+    const C2 = mkAuth(SESS); C2.on(refused);
     const c2 = await C2.auth._refresh("REF_OLD");
-    check("SE-R control: auth.getUser() and _refresh CLEAR the stored session on the same refused / failed refresh (why the re-auth no longer uses them; and this harness sees a clear)",
-      !c1.user && gone(C1) && !c2.user && gone(C2), JSON.stringify({ c1, ls1: [...C1.ls], ls2: [...C2.ls] }));
+    const C3 = mkAuth(SESS); C3.on(offline);
+    const c3 = await C3.auth._refresh("REF_OLD");
+    check("SE-R control: auth.getUser() and _refresh CLEAR the stored session on a refused refresh (why the re-auth no longer uses them; and this harness sees a clear) — an offline _refresh keeps it and says \"network\" (sync-guards CI)",
+      !c1.user && gone(C1) && !c2.user && gone(C2) && !c3.user && c3.error === "network" && kept(C3), JSON.stringify({ c1, c3, ls1: [...C1.ls], ls2: [...C2.ls], ls3: [...C3.ls] }));
     const S1 = mkAuth(SESS); S1.on(rt([[PASSWORD, resp(400, { error: "invalid_grant", error_description: "Invalid login credentials" })]]));
     const s1 = await S1.auth.signIn("a@dsg.test", "wrong");
     const S2 = mkAuth(SESS); S2.on(offline);
