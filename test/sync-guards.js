@@ -6266,8 +6266,11 @@ console.log("\nCG. Stats → Billing: this month until the next period open, the
   const bmPre = bmA < 0 || bmR < 0 ? "" : nsrc.slice(bmA + "const billMonth = (mk) => {".length, bmR);
   const bmHead = bmA < 0 || bmT < 0 ? "" : nsrc.slice(bmA, bmT);
   const thList = [...bmHead.matchAll(/<th style=\{(\{[^{}\n]*\}|[A-Za-z_$][\w$]*)\}>([^<\n]*)<\/th>/g)].map((m) => ({ label: m[2], expr: m[1] }));
-  const thF = (() => { try { return thList.length ? vm.runInContext(`(function (thS2, monthly, mk, dk) { ${bmPre}\n return [${thList.map((t) => `(${t.expr})`).join(", ")}]; })`, sandbox) : null; } catch (ex) { return null; } })();
-  const thL = (() => { try { return thF ? thF(thS2V, {}, "2026-10", false) : null; } catch (ex) { return null; } })();
+  // (2026-10-25, section CP: billMonth's preamble also builds billTd from tdS — handed in too)
+  const tdSM = nsrc.match(/\nconst tdS = (\{[^\n]*?\});\n/);
+  const tdSV = (() => { try { return tdSM ? vm.runInContext(`(${tdSM[1]})`, sandbox) : null; } catch (ex) { return null; } })();
+  const thF = (() => { try { return thList.length ? vm.runInContext(`(function (thS2, tdS, monthly, mk, dk) { ${bmPre}\n return [${thList.map((t) => `(${t.expr})`).join(", ")}]; })`, sandbox) : null; } catch (ex) { return null; } })();
+  const thL = (() => { try { return thF ? thF(thS2V, tdSV, {}, "2026-10", false) : null; } catch (ex) { return null; } })();
   const thDark = DARK_SHEET.forced("th", "color");
   const p2 = { labels: thList.map((t) => t.label), light: thL && thL.map((s) => [s.color, DARK_SHEET.cr(s.color, cardLight), DARK_SHEET.cr(s.color, inL && inL.bg)]), thDark, onDarkCard: DARK_SHEET.cr(thDark, cardDark), onDarkBox: DARK_SHEET.cr(thDark, inD && inD.bg) };
   check("CG4 review fix: the billing column headers read at 4.5:1+ — light: every header's colour on the card's white and on the box's #f4f6f8 fill (thS2's #7a8a98 was 3.55:1 and 3.28:1); dark: the sheet's forced th colour on the dark card and on the box's dark fill",
@@ -6279,6 +6282,92 @@ console.log("\nCG. Stats → Billing: this month until the next period open, the
   const p3 = { light: lblL && lblL.color, dark: lblD && lblD.color, onCard: DARK_SHEET.cr(lblL && lblL.color, cardLight), onBox: DARK_SHEET.cr(lblL && lblL.color, inL && inL.bg), onDarkCard: DARK_SHEET.cr(lblD && lblD.color, cardDark), detDiv, detDivOnDarkBox: DARK_SHEET.cr(detDiv, inD && inD.bg) };
   check("CG4 review fix: a month's name reads at 4.5:1+ — light on the card and on the box's fill; dark: an open month's on the dark card (#1a6fa8 was 2.9:1 there: the sheet's div[style*=\"color:#1a6fa8\"] never matches React's rgb() form), no dark-sheet rule recolouring it, and a boxed month's in the sheet's forced \"details div\" colour on the box's dark fill",
     !!lblM && p3.onCard >= 4.5 && p3.onBox >= 4.5 && p3.onDarkCard >= 4.5 && !sheetHits(p3.dark) && DARK_SHEET.hex(detDiv) && p3.detDivOnDarkBox >= 4.5 && lblD.fontSize >= 12, J(p3));
+}
+
+// ─── CP. Stats → Billing fits a phone: no sideways scroll inside the month's box from 340px up (2026-10-25) ───
+// Each month's table (six columns: Surgeon, Total Days, Svc Days, Nights, Wknd Days, Holiday) sat in an overflow box
+// and, with thS2 / tdS's 8px side padding and the headers' 0.3px letter spacing, was 325px at its narrowest (measured
+// in the built app) — wider than the box on any screen under 390px (254px at 320, 294 at 360, 309 at 375), so it
+// scrolled sideways inside it. The billing cells now take 4px sides and the headers no letter spacing: 268px, which
+// fits from a 340px screen up (a boxed month too; at 320 it still scrolls, by 20px at most). Only the billing table
+// moves: thS2 and tdS themselves (every other table) are unchanged. The REAL styles, evaluated:
+//   CP1 billTh = thS2 with #5a6a78 (CG4's colour), 4px sides, no letter spacing; billTd = tdS with 4px sides — every
+//       other field as thS2 / tdS; thS2 and tdS themselves untouched (8px sides)
+//   CP2 every cell of the billing table takes them: six headers on billTh, the five number cells on billTd (the total
+//       its own colour and weight over it), the Surgeon cell 4px sides; nothing in the block on tdS — so a row's side
+//       padding is 48px (it was 96)
+console.log("\nCP. Stats → Billing fits a phone");
+{
+  const nsrcCP = src.replace(/\r\n/g, "\n"), J = JSON.stringify;
+  const lineCP = (head) => { const i = nsrcCP.indexOf(head), j = i < 0 ? -1 : nsrcCP.indexOf("\n", i); return i < 0 || nsrcCP.indexOf(head, i + 1) !== -1 ? null : nsrcCP.slice(i, j).trim(); };
+  const thS2L = lineCP("const thS2 = {"), tdSL = lineCP("const tdS = {"), billThL = lineCP("const billTh = {"), billTdL = lineCP("const billTd = {");
+  let st = null;
+  try { st = vm.runInContext(`(function () { ${thS2L}\n${tdSL}\n${billThL || "const billTh = null;"}\n${billTdL || "const billTd = null;"}\n return { thS2, tdS, billTh, billTd }; })()`, vm.createContext({})); } catch (ex) { st = { threw: String(ex).slice(0, 120) }; }
+  const sides = (p) => { const v = String(p || "").trim().split(/\s+/).map((x) => parseFloat(x)); return v.length === 1 ? [v[0], v[0]] : v.length >= 2 ? [v[1], v.length === 4 ? v[3] : v[1]] : [NaN, NaN]; };
+  const same = (a, b, skip) => !!a && !!b && Object.keys(Object.assign({}, a, b)).filter((k) => !skip.includes(k)).every((k) => J(a[k]) === J(b[k]));
+  check("CP1 the billing table's own styles (the REAL lines, evaluated): billTh = thS2 with #5a6a78, 4px sides and no letter spacing; billTd = tdS with 4px sides — every other field as thS2 / tdS; thS2 and tdS themselves untouched (8px sides, every other table as before)",
+    !!st && !st.threw && !!st.billTh && !!st.billTd && J(sides(st.billTh.padding)) === "[4,4]" && st.billTh.letterSpacing === 0 && st.billTh.color === "#5a6a78" && same(st.billTh, st.thS2, ["padding", "letterSpacing", "color"])
+      && J(sides(st.billTd.padding)) === "[4,4]" && same(st.billTd, st.tdS, ["padding"]) && J(sides(st.thS2.padding)) === "[8,8]" && J(sides(st.tdS.padding)) === "[8,8]" && st.thS2.letterSpacing === 0.3,
+    J(st));
+  const bm0 = nsrcCP.indexOf("            const billMonth = (mk) => {"), bm1 = bm0 < 0 ? -1 : nsrcCP.indexOf("\n            };\n", bm0), bmCP = bm1 > bm0 && bm0 > 0 ? nsrcCP.slice(bm0, bm1) : "";
+  const ths = (bmCP.match(/<th style=\{[^}]*billTh[^}]*\}+>/g) || []).length, tdsB = (bmCP.match(/<td style=\{billTd\}>/g) || []).length;
+  const total = (bmCP.match(/<td style=\{\{\.\.\.billTd,color:empty\?"#a0a8b0":"#1a8040",fontWeight:700,fontSize:14\}\}>\{days\|\|"–"\}<\/td>/g) || []).length;
+  const badge = (bmCP.match(/<td style=\{\{padding:"5px 4px"\}\}><Badge id=\{s\.id\} small\/><\/td>/g) || []).length;
+  const rowSides = st && st.billTd && !st.threw ? 2 * 4 + 5 * sides(st.billTd.padding).reduce((a, b) => a + b, 0) : null;
+  check(`CP2 every cell of the billing table takes them: six headers on billTh, the four number cells on billTd and the total over it (its own colour and weight), the Surgeon cell 4px sides; nothing in the block on tdS — a row's side padding ${rowSides}px (it was 96)`,
+    !!bmCP && ths === 6 && tdsB === 4 && total === 1 && badge === 1 && !/style=\{tdS\}|style=\{\{\.\.\.tdS,/.test(bmCP) && rowSides === 48, J({ found: !!bmCP, ths, tdsB, total, badge, rowSides }));
+}
+
+// ─── CQ. Dark mode: Setup's group boxes are dark too (2026-10-25) ───
+// In dark mode Setup's Surgeons and APPs rows (#f4f6f8) and its holiday "Major group / Minor group" boxes (#e8f8e8 /
+// #fce8e8, and the Rotation box #fdf3e3) stayed pale: the dark sheet's rules for those fills are written in hex
+// (div[style*="background:#f4f6f8"] …) and React writes an inline colour as rgb(), so they never match. On the pale
+// rows the sheet's forced light button colour left the ✕ near invisible. Switching the sheet's rules on was tried and
+// rejected: across the app (rendered, every tab) it darkened boxes whose text keeps its own inline dark colour (the
+// calendar's day numbers, Mine's role names, Settings' names — down to 1.5:1). So these boxes are dark-aware inline,
+// as the rest of the app is. The REAL style expressions, evaluated for light and dark:
+//   CQ1 the Surgeons and APPs rows: dark → the card's fill (#16213e) and border, the name #e0e0f0 at 4.5:1+ on it, the ✕
+//       (the sheet's forced button colour) at 4.5:1+ on it, the colour dot ringed; light → exactly as before
+//   CQ2 the holiday group boxes (both outcomes) and the Rotation box: dark → their own dark fill, border and text at
+//       4.5:1+; light → exactly as before
+//   CQ3 none of those dark fills is matched by a dark-sheet rule (no rgb() selector there): nothing re-colours them
+console.log("\nCQ. Dark mode: Setup's group boxes are dark too");
+{
+  const nsrcCQ = src.replace(/\r\n/g, "\n"), J = JSON.stringify;
+  const evQ = (code, names) => { try { return vm.runInContext(`(function (dk${names ? ", " + names : ""}) { return (${code}); })`, vm.createContext({})); } catch (ex) { return null; } };
+  const btnDark = DARK_SHEET.forced("button", "color"), CARD_DK = "#16213e";
+  // the rows: the div that opens each list's map, and its name input's style
+  const rowOf = (mapHead) => { const i = nsrcCQ.indexOf(mapHead); if (i < 0 || nsrcCQ.indexOf(mapHead, i + 1) !== -1) return null; const seg = nsrcCQ.slice(i, i + 1600);
+    const div = (seg.match(/<div key=\{[sa]\.id\} style=\{(\{[^\n]*\})\}>\n/) || [])[1] || null, dot = (seg.match(/\n\s*<div style=\{(\{width:8,height:8[^\n]*\})\}\/>\n/) || [])[1] || null, inp = (seg.match(/\n\s*style=\{(\{\.\.\.css\.inp,[^\n]*\})\}\/>\n/) || [])[1] || null; return { div, dot, inp }; };
+  const ROWS = { surgeons: rowOf("              {surgeons.map((s,i)=>("), apps: rowOf("              {apps.map((a,i)=>(") };
+  const NAMES = "surgeonColors, s, a, i, APP_PAL, css";
+  const ENV = [(n) => ({ tx: "#806010" }), { name: "DJA" }, { name: "MA" }, 0, [{ tx: "#1a6fa8", bd: "#a0c8d8" }], { inp: { background: "#f8f9fb", color: "#2c3e50", border: "1px solid #d0d8e0" } }];
+  const rowView = (r, dk) => { if (!r || !r.div || !r.dot || !r.inp) return null; const d = evQ(r.div, NAMES), o = evQ(r.dot, NAMES), n = evQ(r.inp, NAMES); if (!d || !o || !n) return null;
+    const dv = d(dk, ...ENV), ov = o(dk, ...ENV), nv = n(dk, ...ENV); return { bg: dv.background, border: dv.border, ring: ov.boxShadow, name: nv.color }; };
+  const q1 = {};
+  for (const k of Object.keys(ROWS)) { const L = rowView(ROWS[k], false), D = rowView(ROWS[k], true);
+    q1[k] = { L, D, nameOnDark: D ? DARK_SHEET.cr(D.name, D.bg) : 0, xOnDark: D ? DARK_SHEET.cr(btnDark, D.bg) : 0 }; }
+  check("CQ1 Setup's Surgeons and APPs rows (the REAL styles, evaluated): dark → the card's #16213e (the sheet's dark border on a surgeon's), the name #e0e0f0 at 4.5:1+ on it, the ✕ (the sheet's forced button colour) at 4.5:1+ on it, the colour dot ringed; light → as before (#f4f6f8, the name css.inp's colour, no ring)",
+    ["surgeons", "apps"].every((k) => { const x = q1[k]; return !!x.L && !!x.D && x.D.bg === CARD_DK && x.D.name === "#e0e0f0" && x.nameOnDark >= 4.5 && x.xOnDark >= 4.5 && /^0 0 0 1px/.test(x.D.ring || "")
+      && x.L.bg === "#f4f6f8" && x.L.name === "#2c3e50" && (x.L.ring === "none" || x.L.ring === undefined); }) && q1.surgeons.D.border === "1px solid #2a3a5e" && q1.surgeons.L.border === "1px solid #e0e4ea",
+    J(q1));
+  // the holiday group boxes and the Rotation box
+  const grp = (nsrcCQ.match(/<div key=\{ck\.label\} style=\{(\{flex:1,minWidth:180,[^\n]*\n[^\n]*\})\}>/) || [])[1] || null;
+  const rot = (nsrcCQ.match(/<div style=\{(\{flexBasis:"100%",padding:"8px 12px",borderRadius:6,fontSize:11,[^\n]*\})\}>\n\s*<span style=\{\{fontWeight:700\}\}>⚠ Rotation:/) || [])[1] || null;
+  const gF = grp && evQ(grp, "ck"), rF = rot && evQ(rot);
+  const box = (f, dk, ck) => { const v = f(dk, ck); return { bg: v.background, border: v.border, color: v.color }; };
+  const q2 = gF && rF ? { okL: box(gF, false, { ok: true }), okD: box(gF, true, { ok: true }), badL: box(gF, false, { ok: false }), badD: box(gF, true, { ok: false }), rotL: box(rF, false), rotD: box(rF, true) } : null;
+  const cr2 = q2 ? { ok: DARK_SHEET.cr(q2.okD.color, q2.okD.bg), bad: DARK_SHEET.cr(q2.badD.color, q2.badD.bg), rot: DARK_SHEET.cr(q2.rotD.color, q2.rotD.bg) } : null;
+  check("CQ2 the holiday \"Major group / Minor group\" boxes (both outcomes) and the Rotation box: dark → their own dark fill and border, the text at 4.5:1+ (it stayed on the pale fill); light → exactly as before",
+    !!q2 && J(q2.okL) === J({ bg: "#e8f8e8", border: "1px solid #a0d8a0", color: "#1a6030" }) && J(q2.badL) === J({ bg: "#fce8e8", border: "1px solid #e0a0a0", color: "#903030" }) && J(q2.rotL) === J({ bg: "#fdf3e3", border: "1px solid #e0c080", color: "#7a5010" })
+      && [q2.okD, q2.badD, q2.rotD].every((v) => DARK_SHEET.lum(v.bg) < 0.05) && cr2.ok >= 4.5 && cr2.bad >= 4.5 && cr2.rot >= 4.5,
+    J({ q2, cr2 }));
+  // CQ3 — the sheet has no rule for those dark fills (nor an rgb() selector at all for the boxes'), so nothing re-colours them
+  const rgbOfQ = (h) => "rgb(" + h.slice(1).match(/../g).map((x) => parseInt(x, 16)).join(", ") + ")";
+  const fills = q2 ? [CARD_DK, q2.okD.bg, q2.badD.bg, q2.rotD.bg, "#f4f6f8", "#e8f8e8", "#fce8e8", "#fdf3e3"] : [];
+  const hitQ = fills.filter((h) => DARK_SHEET.rules.some((r) => r.sels.some((sel) => sel.replace(/\s+/g, "").includes(("background:" + rgbOfQ(h)).replace(/\s+/g, "")))));
+  check("CQ3 no dark-sheet rule matches any of those fills as the browser writes them (rgb()) — the dark ones or the light ones — so the inline colours above are what shows",
+    !!q2 && hitQ.length === 0, J({ hitQ }));
 }
 
 // ─── BC. Generate & Publish asks once; Stats → Billing opens on the newest months (UX audit 2026-10-19) ───
@@ -7312,7 +7401,8 @@ console.log("\nAM. Mine's name picker is a view, not a sign-in");
     // \r?\n: a Windows checkout has CRLF, CI's has LF
     // (2026-10-20, changed ON PURPOSE — section CG review fix: the billing headers use billTh, thS2 with a 4.5:1+ colour)
     (src.match(/<th style=\{billTh\}>Wknd Days<\/th>\r?\n[ \t]*<th style=\{billTh\}>Holiday<\/th>/g) || []).length === 1
-    && (src.match(/<td style=\{tdS\}>\{r\.wknd\|\|"–"\}<\/td>\r?\n[ \t]*<td style=\{tdS\}>\{r\.hol\|\|"–"\}<\/td>/g) || []).length === 1
+    // (2026-10-25, changed ON PURPOSE — section CP: the billing cells use billTd, tdS with 4px sides, so the table fits a phone)
+    && (src.match(/<td style=\{billTd\}>\{r\.wknd\|\|"–"\}<\/td>\r?\n[ \t]*<td style=\{billTd\}>\{r\.hol\|\|"–"\}<\/td>/g) || []).length === 1
     && count("{dc:0,nights:0,wknd:0,hol:0}") === 1 && count("{ dc:0, nights:0, wknd:0, hol:0 }") === 1);
   // (2026-10-19, section BC: the month ORDER changed deliberately — newest first, later months in a
   // collapsed "Upcoming months" — through helpers.js billingMonthOrder; which months are listed and every number are unchanged)

@@ -8839,12 +8839,16 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             <div style={{display:"flex",justifyContent:"flex-end",marginBottom:10}}>
               <button onClick={addSurgeon} style={{...css.btn(true),padding:"4px 12px",fontSize:12}}>+ Add Surgeon</button>
             </div>
+            {/* Dark mode (2026-10-25): these rows stayed pale — the dark sheet's div[style*="background:#f4f6f8"]
+                never matches the rgb() React writes — and the sheet's light button text left their ✕ near invisible
+                on them. Each row is dark-aware here, as the rest of the app is: the card's fill, a light name, and
+                a faint ring so a near-black colour dot (REH's) still shows. Same in the APPs list below. */}
             <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(160px,1fr))",gap:6}}>
               {surgeons.map((s,i)=>(
-                <div key={s.id} style={{display:"flex",alignItems:"center",gap:6,background:"#f4f6f8",borderRadius:6,padding:"5px 8px",border:"1px solid #e0e4ea"}}>
-                  <div style={{width:8,height:8,borderRadius:2,background:surgeonColors(s.name, i).tx,flexShrink:0}}/>
+                <div key={s.id} style={{display:"flex",alignItems:"center",gap:6,background:dk?"#16213e":"#f4f6f8",borderRadius:6,padding:"5px 8px",border:`1px solid ${dk?"#2a3a5e":"#e0e4ea"}`}}>
+                  <div style={{width:8,height:8,borderRadius:2,background:surgeonColors(s.name, i).tx,flexShrink:0,boxShadow:dk?"0 0 0 1px rgba(224,224,240,0.55)":"none"}}/>
                   <input value={s.name} onChange={e=>rename(s.id,e.target.value)}
-                    style={{...css.inp,border:"none",padding:"3px 4px",background:"transparent",width:"100%",fontWeight:600,letterSpacing:0.5}}/>
+                    style={{...css.inp,border:"none",padding:"3px 4px",background:"transparent",width:"100%",fontWeight:600,letterSpacing:0.5,color:dk?"#e0e0f0":css.inp.color}}/>
                   <button aria-label={`Remove surgeon ${s.name}`} onClick={()=>removeSurgeon(s.id)} style={{background:"none",border:"none",color:"#c04040",cursor:"pointer",fontSize:14,flexShrink:0,padding:"6px 8px"}}>✕</button>
                 </div>
               ))}
@@ -8868,10 +8872,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             </div>
             <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(160px,1fr))",gap:6}}>
               {apps.map((a,i)=>(
-                <div key={a.id} style={{display:"flex",alignItems:"center",gap:6,background:"#f4f6f8",borderRadius:6,padding:"5px 8px",border:`1px solid ${APP_PAL[i%APP_PAL.length].bd}`}}>
-                  <div style={{width:8,height:8,borderRadius:2,background:APP_PAL[i%APP_PAL.length].tx,flexShrink:0}}/>
+                <div key={a.id} style={{display:"flex",alignItems:"center",gap:6,background:dk?"#16213e":"#f4f6f8",borderRadius:6,padding:"5px 8px",border:`1px solid ${APP_PAL[i%APP_PAL.length].bd}`}}>
+                  <div style={{width:8,height:8,borderRadius:2,background:APP_PAL[i%APP_PAL.length].tx,flexShrink:0,boxShadow:dk?"0 0 0 1px rgba(224,224,240,0.55)":"none"}}/>
                   <input value={a.name} onChange={e=>renameApp(a.id,e.target.value)}
-                    style={{...css.inp,border:"none",padding:"3px 4px",background:"transparent",width:"100%",fontWeight:600,letterSpacing:0.5}}/>
+                    style={{...css.inp,border:"none",padding:"3px 4px",background:"transparent",width:"100%",fontWeight:600,letterSpacing:0.5,color:dk?"#e0e0f0":css.inp.color}}/>
                   <button aria-label={`Remove APP ${a.name}`} onClick={()=>removeApp(a.id)} style={{background:"none",border:"none",color:"#c04040",cursor:"pointer",fontSize:14,flexShrink:0,padding:"6px 8px"}}>✕</button>
                 </div>
               ))}
@@ -9380,8 +9384,11 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   return (
                     <div style={{marginTop:10,display:"flex",gap:8,flexWrap:"wrap"}}>
                       {[rc.major, rc.minor].map(ck => (
+                        // Dark mode (2026-10-25): the dark sheet's rules for these fills are hex (div[style*="background:#e8f8e8"]),
+                        // which never match the rgb() React writes, so the group boxes stayed pale; their own dark colours here
+                        // (the sheet's: 9:1 and 6.5:1)
                         <div key={ck.label} style={{flex:1,minWidth:180,padding:"8px 12px",borderRadius:6,fontSize:11,
-                          background:ck.ok?"#e8f8e8":"#fce8e8",border:`1px solid ${ck.ok?"#a0d8a0":"#e0a0a0"}`,color:ck.ok?"#1a6030":"#903030"}}>
+                          background:dk?(ck.ok?"#1a2a1a":"#2a1a1a"):(ck.ok?"#e8f8e8":"#fce8e8"),border:`1px solid ${dk?(ck.ok?"#2a4a2a":"#4a2a2a"):(ck.ok?"#a0d8a0":"#e0a0a0")}`,color:dk?(ck.ok?"#90d090":"#d09090"):(ck.ok?"#1a6030":"#903030")}}>
                           <span style={{fontWeight:700}}>{ck.ok?"✓":"⚠"} {ck.label} group:</span>{" "}
                           {ck.ok
                             ? `All ${ck.uniqueCount} surgeons distinct${ck.label === "Major" && ck.none.length ? ` · sitting out a major: ${ck.none.map(nm).join(", ")}` : ""}`
@@ -9389,7 +9396,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                         </div>
                       ))}
                       {rc.issues.length > 0 && (
-                        <div style={{flexBasis:"100%",padding:"8px 12px",borderRadius:6,fontSize:11,background:"#fdf3e3",border:"1px solid #e0c080",color:"#7a5010"}}>
+                        <div style={{flexBasis:"100%",padding:"8px 12px",borderRadius:6,fontSize:11,background:dk?"#2a2820":"#fdf3e3",border:`1px solid ${dk?"#4a4030":"#e0c080"}`,color:dk?"#d0c090":"#7a5010"}}>
                           <span style={{fontWeight:700}}>⚠ Rotation:</span> {rc.issues.join(" · ")}
                         </div>
                       )}
@@ -11721,7 +11728,12 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                 // the sheet's div[style*="color:#1a6fa8"] never matched and an open month's name read at 2.9:1 on the
                 // dark card; the sheet's own #5aafe8 is now inline in dark mode (6.6:1). In the box the sheet's
                 // "details div" colour still decides, as before.
-                const billTh = {...thS2,color:"#5a6a78"};
+                // Phone fit (2026-10-25): with thS2 / tdS's 8px sides and the headers' letter spacing the table was
+                // 325px at its narrowest — wider than its box on any screen under 390px (309px at 375), so it
+                // scrolled sideways inside the box. 4px sides and no letter spacing: 268px, which fits from a 340px
+                // screen up (a boxed month too); at 320 it still scrolls, by 20px at most.
+                const billTh = {...thS2,color:"#5a6a78",padding:"4px 4px",letterSpacing:0};
+                const billTd = {...tdS,padding:"7px 4px"};
                 return (
                   <div key={mk} style={{marginBottom:16}}>
                     <div style={{fontSize:12,fontWeight:700,color:dk?"#5aafe8":"#1a6fa8",marginBottom:4,textTransform:"uppercase",letterSpacing:0.8}}>{moLabel(mk)}</div>
@@ -11744,12 +11756,12 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                             const empty = days === 0;
                             return (
                               <tr key={s.id} style={{borderBottom:"1px solid #e8ecf0",opacity:empty?0.45:1}}>
-                                <td style={{padding:"5px 6px"}}><Badge id={s.id} small/></td>
-                                <td style={{...tdS,color:empty?"#a0a8b0":"#1a8040",fontWeight:700,fontSize:14}}>{days||"–"}</td>
-                                <td style={tdS}>{r.dc||"–"}</td>
-                                <td style={tdS}>{r.nights||"–"}</td>
-                                <td style={tdS}>{r.wknd||"–"}</td>
-                                <td style={tdS}>{r.hol||"–"}</td>
+                                <td style={{padding:"5px 4px"}}><Badge id={s.id} small/></td>
+                                <td style={{...billTd,color:empty?"#a0a8b0":"#1a8040",fontWeight:700,fontSize:14}}>{days||"–"}</td>
+                                <td style={billTd}>{r.dc||"–"}</td>
+                                <td style={billTd}>{r.nights||"–"}</td>
+                                <td style={billTd}>{r.wknd||"–"}</td>
+                                <td style={billTd}>{r.hol||"–"}</td>
                               </tr>
                             );
                           })}
