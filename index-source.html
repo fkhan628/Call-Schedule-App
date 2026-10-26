@@ -1146,16 +1146,19 @@ function CallSchedule() {
         let profile;
         try { profile = await dbAuth.getProfile(user.id); }
         catch (e) {
-          // The profile read never reached the server — the signal dropped
-          // after getUser answered (owner 2026-10-20): it threw, and the button
-          // stayed on "Verifying…" for good. Undo the half-done unlock (nothing
-          // was bound or signed in on this screen), so Unlock and "Use email &
+          // The profile read failed after getUser answered: it threw, and the
+          // button stayed on "Verifying…" for good (owner 2026-10-20 — no
+          // signal; 2026-10-25 — any other error, which was thrown on, out of
+          // this onClick, still stuck). Undo the half-done unlock (nothing was
+          // bound or signed in on this screen), so Unlock and "Use email &
           // password instead" work as before the tap; the stored session is
-          // untouched. Say what a no-signal unlock says. Any other error is
-          // thrown on, as before (an old cached helpers.js: thrown on, as before).
-          if (!(typeof isNoConnectionError === "function" && isNoConnectionError(e))) throw e;
+          // untouched. No signal says what a no-signal unlock says; anything
+          // else — a reply that isn't JSON (a Wi-Fi sign-in page), a code
+          // error, any error on an old cached helpers.js — that the profile
+          // didn't load.
+          const noSignal = typeof isNoConnectionError === "function" && isNoConnectionError(e);
           auth.bindUser(null); setAuthUser(null);
-          setAuthError("No connection — you're still signed in. Check your signal and tap Unlock again.");
+          setAuthError(noSignal ? "No connection — you're still signed in. Check your signal and tap Unlock again." : "Couldn't load your profile — tap Unlock to try again, or use email & password.");
           setAuthBusy(false);
           return;
         }

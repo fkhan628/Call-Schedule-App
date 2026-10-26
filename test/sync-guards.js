@@ -4028,7 +4028,7 @@ console.log("\nBL. Schedule Warnings: anyone can hide a warning on this phone");
 //       expired…"; renewed → signed in)
 //   CI4 Face ID's profile read with no signal → the no-signal line, busy back to false, the screen still up and
 //       usable (the half-done unlock undone; a second tap signs in); any other error, and an old cached helpers.js
-//       (no isNoConnectionError), thrown on exactly as before
+//       (no isNoConnectionError), thrown on exactly as before — until CN (2026-10-25): undone the same way and said
 //   CI5 no storm: _refresh is called once, from getUser; getUser twice (the mount, the Face ID tap); no timer calls
 //       either; refreshKeep ("Sign in again") unchanged — it never clears (its 5xx / 429 "network" since CM, 2026-10-25)
 //   CI-M the mutant battery (config.js and index-source.html): each mutant turns a CI check red, and every CI check is
@@ -4294,17 +4294,20 @@ await (async () => {
       ck("CI4b", "…the Face ID screen still usable after it: never left (biometricPending untouched), Unlock enabled again (busy false); a second tap, with signal, signs in (bound, the profile, the data reload) and leaves the screen",
         after1.pending === true && after1.busy === false && !t1.log.includes("biometricPending:false") && !!t2 && J(t2.log) === SIGNED_IN && auth.boundUser() === "auth-c" && st.pending === false,
         { t1: t1.log, after1, t2: t2 && t2.log });
-      const TODAY = J(["error:", "busy:true", "authUser:auth-c", "getProfile:auth-c"]);   // main's: the rejection goes on, nothing else
+      // (CN, 2026-10-25, on purpose: CI4c / CI4d pinned "thrown on exactly as before" — which left "Verifying…" stuck for
+      // these too. Any other error, and any error on an old cached helpers.js, is now undone the same way and said.)
+      const PROFILE_LINE = "Couldn't load your profile — tap Unlock to try again, or use email & password.";
+      const UNDONE = J(["error:", "busy:true", "authUser:auth-c", "getProfile:auth-c", "authUser:null", "error:" + PROFILE_LINE, "busy:false"]);
       const others = [];
       for (const err of [new TypeError("Cannot read properties of undefined (reading 'person_id')"), new SyntaxError("Unexpected token '<', \"<html>\" is not valid JSON")]) {
         at(NEW, server(RF.ok)); const r = await runBio({ profileThrows: err });
-        others.push({ log: r.log, same: r.threw === err, bound: auth.boundUser(), kept: holds(NEW) });
+        others.push({ log: r.log, threw: r.threw && String(r.threw), bound: auth.boundUser(), kept: holds(NEW) });
       }
-      ck("CI4c", "…any other error from the profile read (a code error, a reply that isn't JSON) is thrown on exactly as before — the same error, nothing said, nothing undone",
-        others.every((x) => J(x.log) === TODAY && x.same && x.bound === "auth-c" && x.kept), others);
+      ck("CI4c", "…any other error from the profile read (a code error, a reply that isn't JSON) is undone the same way — no throw, busy false, the user null again, nothing bound — and says \"" + PROFILE_LINE + "\"; the stored session kept (CN)",
+        others.every((x) => J(x.log) === UNDONE && !x.threw && x.bound === null && x.kept), others);
       at(NEW, server(RF.ok)); const errOld = new TypeError("Load failed"), old = await runBio({ profileThrows: errOld, oldHelpers: true });
-      ck("CI4d", "…with an OLD cached helpers.js (no isNoConnectionError): thrown on as before — the same error (never a ReferenceError from the helper), nothing said",
-        J(old.log) === TODAY && old.threw === errOld, { log: old.log, threw: old.threw && String(old.threw) });
+      ck("CI4d", "…with an OLD cached helpers.js (no isNoConnectionError): no throw (never a ReferenceError from the helper), undone, the profile line (CN)",
+        J(old.log) === UNDONE && !old.threw && auth.boundUser() === null, { log: old.log, threw: old.threw && String(old.threw) });
 
       // (review fix F3) the password sign-in's profile read: the REAL handleAuthSubmit (sliced, BG3's names) on this auth
       if (!mkSubmit) throw new Error("handleAuthSubmit not found or not compiling");
@@ -4397,6 +4400,8 @@ await (async () => {
   // (UNDO_B and GUARD_B's Face ID anchors start at their line's own indent: the mount's copies are indented deeper)
   const UNDO_B = "\n          auth.bindUser(null); setAuthUser(null);\n", END_B = "          setAuthBusy(false);\n          return;\n        }\n";
   const GUARD_B = "if (!(typeof isNoConnectionError === \"function\" && isNoConnectionError(e))) throw e;";
+  // (CN, 2026-10-25: Face ID's catch no longer throws — it decides the line; B2 / B8 / B9 re-anchored on it, B10 added)
+  const NOSIG_B = "          const noSignal = typeof isNoConnectionError === \"function\" && isNoConnectionError(e);\n";
   const MOUNT_TRY = (() => { const a = "            let profile;\n            try { profile = await dbAuth.getProfile(user.id); }\n", i = idxLF.indexOf(a), e = i < 0 ? -1 : idxLF.indexOf("            if (profile) { setUserProfile(profile); setMySurgeon(profile.person_id); }\n", i); return e < 0 ? null : idxLF.slice(i, e); })();
   const UNDO_M = "\n              auth.bindUser(null); setAuthUser(null);\n              setAuthNetErr(true);\n              setAuthLoading(false);\n              return;\n";
   const PW_TRY = (() => { const a = "        // Load profile\n", i = idxLF.indexOf(a), e = i < 0 ? -1 : idxLF.indexOf("        if (profile) {\n", i); return e < 0 ? null : idxLF.slice(i + a.length, e); })();
@@ -4433,14 +4438,15 @@ await (async () => {
     { id: "K1", file: "cfg", what: "refreshKeep clears on a refusal", from: "      return { ok: false, error: refused ? \"refused\" : \"network\" };", to: "      if (refused) auth._clearSession();\n      return { ok: false, error: refused ? \"refused\" : \"network\" };" },
     { id: "K2", file: "cfg", what: "(CM) refreshKeep calls a 5xx / 429 \"refused\" again (the sheet loses its \"Couldn't reach the server\" line)", from: "    if (!res.ok) return { ok: false, error: \"network\" };", to: "    if (!res.ok) return { ok: false, error: \"refused\" };" },
     { id: "B1", file: "idx", what: "main's Face ID profile read, unguarded (throws offline: \"Verifying…\" for good)", from: BIO_TRY, to: "        const profile = await dbAuth.getProfile(user.id);\n" },
-    { id: "B2", file: "idx", what: "every profile-read error taken as no signal (a code error swallowed)", from: "\n          " + GUARD_B + "\n", to: "\n" },
+    { id: "B2", file: "idx", what: "every profile-read error taken as no signal (a code error said as no connection)", from: NOSIG_B, to: "          const noSignal = true;\n" },
     { id: "B3", file: "idx", what: "the half-done unlock not undone (signed in with no profile behind the Face ID screen)", from: UNDO_B, to: "\n" },
     { id: "B4", file: "idx", what: "only the user undone — the tab left bound", from: UNDO_B, to: "\n          setAuthUser(null);\n" },
     { id: "B5", file: "idx", what: "the Face ID screen left", from: UNDO_B, to: "\n          auth.bindUser(null); setAuthUser(null); setBiometricPending(false);\n" },
     { id: "B6", file: "idx", what: "busy left on (\"Verifying…\")", from: END_B, to: "          return;\n        }\n" },
     { id: "B7", file: "idx", what: "no return: falls through to the profile screen", from: END_B, to: "          setAuthBusy(false);\n        }\n" },
-    { id: "B8", file: "idx", what: "says \"Session expired\" instead", from: "          setAuthError(\"" + NET_FACE + "\");\n", to: "          setAuthError(\"" + EXPIRED + "\");\n" },
-    { id: "B9", file: "idx", what: "the helper called bare (an old cached helpers.js: a ReferenceError)", from: "\n          " + GUARD_B, to: "\n          if (!isNoConnectionError(e)) throw e;" },
+    { id: "B8", file: "idx", what: "says \"Session expired\" instead", from: "setAuthError(noSignal ? \"" + NET_FACE + "\"", to: "setAuthError(noSignal ? \"" + EXPIRED + "\"" },
+    { id: "B9", file: "idx", what: "the helper called bare (an old cached helpers.js: a ReferenceError)", from: NOSIG_B, to: "          const noSignal = isNoConnectionError(e);\n" },
+    { id: "B10", file: "idx", what: "(CN) any other profile-read error thrown on again (10/20's code: \"Verifying…\" for good)", from: NOSIG_B, to: "          " + GUARD_B + "\n          const noSignal = true;\n" },
     { id: "M1", file: "idx", what: "(F2, 2nd review) main's mount profile read, unguarded (signed in with no profile offline)", from: MOUNT_TRY, to: "            const profile = await dbAuth.getProfile(user.id);\n" },
     { id: "M2", file: "idx", what: "(F2, 2nd review) the mount's half-done auto-login not undone", from: UNDO_M, to: "\n              setAuthNetErr(true);\n              setAuthLoading(false);\n              return;\n" },
     { id: "M3", file: "idx", what: "(F2, 2nd review) the mount: only the user undone — the tab left bound", from: UNDO_M, to: "\n              setAuthUser(null);\n              setAuthNetErr(true);\n              setAuthLoading(false);\n              return;\n" },
@@ -4930,6 +4936,73 @@ await (async () => {
       && sh.ok.sheet === false && sh.ok.landed === "auth-m" && Object.values(sh).every((x) => !x.threw && J(x.busy) === J([true, false])),
     J(sh));
 })().catch(ex => check("CM harness ran without crashing", false, String(ex && ex.stack || ex).split("\n").slice(0, 3).join(" | ")));
+
+// ─── CN. Face ID never sticks on "Verifying…": any error from its profile read is undone and said (2026-10-25) ───
+// CI4 fixed the no-signal case: the profile read after getUser threw "Load failed" and the Unlock button stayed on
+// "Verifying…" for good. Any OTHER error still did — thrown on, out of handleBiometricUnlock (an onClick: nothing
+// catches it), busy never set back: a Wi-Fi sign-in page answering the read with 200 (res.json() throws a
+// SyntaxError), a code error, and every error at all on an old cached helpers.js (no isNoConnectionError). Now any
+// error from that read undoes the half-done unlock the same way (no user, the tab unbound, the stored session left
+// alone) and says so: the no-signal line for no signal, otherwise "Couldn't load your profile — tap Unlock to try
+// again, or use email & password." The REAL handleBiometricUnlock (sliced, run in a fresh context: a new free name
+// throws) on a stubbed auth and profile read:
+//   CN1 a reply that isn't JSON, a code error, a rejection that isn't an Error (a string, nothing): no throw, busy back
+//       to false, the user null again and the tab unbound, the profile line; the Face ID screen kept (biometricPending
+//       untouched); no profile, no reload
+//   CN2 an old cached helpers.js (no isNoConnectionError): no signal and any other error alike — no throw (never a
+//       ReferenceError from the helper), busy false, undone, the profile line
+//   CN3 no signal still says the no-signal line; after any of them a second tap, the read answering, signs in (bound,
+//       the profile, the data reload, the screen left)
+//   the section runs inside its own catch (a throw fails one named check, never the run)
+console.log("\nCN. Face ID never sticks on \"Verifying…\" (any profile-read error)");
+await (async () => {
+  const J = JSON.stringify;
+  const nsrcCN = src.replace(/\r\n/g, "\n"), BA = "  const handleBiometricUnlock = ", ba = nsrcCN.indexOf(BA), bb = ba < 0 || nsrcCN.indexOf(BA, ba + 1) !== -1 ? -1 : nsrcCN.indexOf("\n  };\n", ba);
+  const NAMES = "setAuthError, setAuthBusy, biometric, auth, setAuthUser, dbAuth, setUserProfile, setMySurgeon, setNeedsProfile, setBiometricPending, setReloadTrigger, isNoConnectionError";
+  const bioF = (() => { try { return bb > ba && ba > 0 ? vm.runInContext(`(function (env) { const { ${NAMES} } = env; return (${nsrcCN.slice(ba + BA.length, bb + 4)}); })`, vm.createContext({})) : null; } catch (ex) { return null; } })();
+  const nceCN = vm.runInContext("typeof isNoConnectionError === 'function' ? isNoConnectionError : undefined", sandbox);
+  const NET_FACE = "No connection — you're still signed in. Check your signal and tap Unlock again.";
+  const PROFILE = "Couldn't load your profile — tap Unlock to try again, or use email & password.";
+  const U = { id: "u-cn", email: "cn@dsg.test" };
+  const tap = async (o = {}) => {
+    const log = [], st = o.st || { busy: false, pending: true, bound: null };
+    const env = { isNoConnectionError: o.oldHelpers ? undefined : nceCN,
+      auth: { getUser: async () => ({ user: U }), bindUser: (id) => { st.bound = id || null; } },
+      biometric: { authenticate: async () => ({ success: true }) },
+      dbAuth: { getProfile: async (id) => { log.push("getProfile:" + id); if ("throws" in o) throw o.throws; return { person_id: "s6", display_name: "FAK", role: "scheduler" }; } },
+      setAuthError: (v) => log.push("error:" + v), setAuthBusy: (v) => { st.busy = v; log.push("busy:" + v); }, setAuthUser: (u) => log.push("authUser:" + (u ? u.id : null)),
+      setUserProfile: () => log.push("profile"), setMySurgeon: () => {}, setNeedsProfile: (v) => log.push("needsProfile:" + v),
+      setBiometricPending: (v) => { st.pending = v; log.push("biometricPending:" + v); }, setReloadTrigger: () => log.push("reloadTrigger") };
+    let threw = null;
+    try { await bioF(env)(); } catch (ex) { threw = String(ex).slice(0, 120) || "(thrown)"; }
+    return { log, threw, st };
+  };
+  if (!bioF || !nceCN) { check("CN handleBiometricUnlock is extractable and compiles in a fresh context", false, J({ bio: !!bioF, helper: !!nceCN })); return; }
+  const UNDONE = (line) => J(["error:", "busy:true", "authUser:u-cn", "getProfile:u-cn", "authUser:null", "error:" + line, "busy:false"]);
+  const SIGNED_IN = J(["error:", "busy:true", "authUser:u-cn", "getProfile:u-cn", "profile", "biometricPending:false", "reloadTrigger", "busy:false"]);
+  const fine = (x, line) => J(x.log) === UNDONE(line) && x.threw === null && x.st.busy === false && x.st.bound === null && x.st.pending === true;
+
+  // CN1 — not no signal
+  const others = {};
+  for (const [k, err] of [["notJson", new SyntaxError("Unexpected token '<', \"<html>\" is not valid JSON")], ["codeError", new TypeError("Cannot read properties of undefined (reading 'person_id')")], ["aString", "boom"], ["nothing", undefined]])
+    others[k] = await tap({ throws: err });
+  check("CN1 Face ID, getUser answered, then the profile read fails with something other than no signal — a reply that isn't JSON (a Wi-Fi sign-in page), a code error, a string, nothing: no throw (it was thrown on, \"Verifying…\" for good), busy back to false, the half-done unlock undone (no user, the tab unbound), \"" + PROFILE + "\", the Face ID screen kept; no profile, no reload",
+    Object.values(others).every((x) => fine(x, PROFILE)), J(others));
+
+  // CN2 — an old cached helpers.js
+  const old = { noSignal: await tap({ throws: new TypeError("Load failed"), oldHelpers: true }), codeError: await tap({ throws: new TypeError("x is not a function"), oldHelpers: true }) };
+  check("CN2 …with an OLD cached helpers.js (no isNoConnectionError): no signal and a code error alike — no throw (never a ReferenceError from the helper), busy false, undone, the profile line",
+    Object.values(old).every((x) => fine(x, PROFILE)), J(old));
+
+  // CN3 — no signal unchanged; a second tap signs in
+  const ns = [await tap({ throws: new TypeError("Load failed") }), await tap({ throws: new TypeError("Failed to fetch") })];
+  const st = { busy: false, pending: true, bound: null };
+  const first = await tap({ st, throws: new SyntaxError("Unexpected token '<'") }), after1 = Object.assign({}, st);
+  const second = after1.busy === false && after1.pending === true ? await tap({ st }) : null;
+  check("CN3 no signal still says \"" + NET_FACE + "\" (CI4a's words, undone the same way); after a failed read the screen is usable — a second tap, the read answering, signs in (bound, the profile, the data reload, the screen left)",
+    ns.every((x) => fine(x, NET_FACE)) && fine(Object.assign({}, first, { st: after1 }), PROFILE) && !!second && J(second.log) === SIGNED_IN && second.threw === null && st.bound === "u-cn" && st.pending === false && st.busy === false,
+    J({ ns, first: first.log, after1, second: second && second.log }));
+})().catch(ex => check("CN harness ran without crashing", false, String(ex && ex.stack || ex).split("\n").slice(0, 3).join(" | ")));
 
 // ─── BG. Sign-in: iPhone autofill hints, plain network errors, no stuck "Sending…" offline (UX audit 2026-10-19) ───
 // The sign-in, sign-up and reset forms gave the iPhone no autofill hints (its saved passwords and account
