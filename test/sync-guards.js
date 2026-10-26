@@ -14440,6 +14440,83 @@ console.log("\nBB. Setup time-off deletes ask first; backup pickers snap to Mond
     JSON.stringify({ pickers: count(picker), blur: count("onBlur={snapBkMonday}") }));
 }
 
+// ─── CK. A ?tab=mine link opens Mine, not a blank page (2026-10-25) ───
+// A push or a shared link lands on the app with ?tab=X (the deep-link effect). The Mine tab's view is
+// "myschedule", but the effect's list named it "mine" and set the view to that — which no {view==="…"} block
+// renders: a blank page under the tab bar. The effect now maps a link's tab to its view (mine and myschedule
+// both open Mine), and ?public=1 (the OR board: the calendar only) takes no other tab. The REAL effect (sliced,
+// run in a fresh context: a new free name throws) and the REAL restricted-tab redirect and tab list (CC's slices),
+// for every role:
+//   CK1 each link tab → the view it sets: mine / myschedule → myschedule; calendar, requests, stats, settings,
+//       setup, totals → themselves; anything else (generate, MINE, an empty or unknown tab) → nothing set
+//   CK2 every view a link can set is one the page renders (a {view==="k"} block), and for every role the link then
+//       lands on a tab that role's bar shows (the redirect sends a restricted one to the Calendar) — never a blank page
+//   CK3 ?public=1 takes only ?tab=calendar; the tab and the week are still cleared from the URL (other params kept),
+//       and the week still moves the calendar
+//   the section runs inside its own catch (a throw fails one named check, never the run)
+console.log("\nCK. A ?tab=mine link opens Mine, not a blank page");
+await (async () => {
+  const nsrcCK = src.replace(/\r\n/g, "\n");
+  const J = JSON.stringify;
+  const HEAD = "  // ─── Deep-link handler for push notification clicks ───\n", OPEN = "  useEffect(() => {\n", CLOSE = "\n  }, [loaded]);";
+  const h0 = nsrcCK.indexOf(HEAD), o0 = h0 < 0 || nsrcCK.indexOf(HEAD, h0 + 1) !== -1 ? -1 : nsrcCK.indexOf(OPEN, h0), c0 = o0 < 0 ? -1 : nsrcCK.indexOf(CLOSE, o0);
+  const dlBody = c0 > o0 && o0 > 0 ? nsrcCK.slice(o0 + OPEN.length, c0) : null;
+  const dlF = (() => { try { return dlBody && vm.runInContext(`(function (env) { const { loaded, window, URLSearchParams, setView, setCalMonth, setCalYear, console, isPublicMode } = env;\n${dlBody}\n })`, vm.createContext({})); } catch (ex) { return null; } })();
+  const runDL = (search, pub) => {
+    const r = { views: [], month: null, year: null, url: null, errs: [] };
+    try {
+      dlF({ loaded: true, isPublicMode: !!pub, URLSearchParams, window: { location: { search, pathname: "/", hash: "" }, history: { replaceState: (a, b, u) => { r.url = u; } } },
+        setView: (v) => r.views.push(v), setCalMonth: (m) => { r.month = m; }, setCalYear: (y) => { r.year = y; }, console: { error: (...a) => r.errs.push(a.map(String).join(" ")) } });
+    } catch (ex) { r.threw = String(ex && ex.message || ex).slice(0, 160); }
+    return r;
+  };
+  // CC's slices: the tab list (per role) and the restricted-tab redirect
+  const DECL = "const allTabs = [", MAP = "return tabs.map(([k,l]) =>";
+  const t0 = nsrcCK.indexOf(DECL), t1 = t0 === -1 ? -1 : nsrcCK.indexOf(MAP, t0);
+  const tabF = (() => { try { return t1 > t0 && t0 > 0 ? vm.runInContext(`(function (env) { const { userProfile, isScheduler } = env;\n${nsrcCK.slice(t0, t1)}\nreturn tabs.map(([k]) => k); })`, vm.createContext({})) : null; } catch (ex) { return null; } })();
+  const RD = "  // If non-scheduler ends up on a restricted tab, redirect them\n  useEffect(() => {", r0 = nsrcCK.indexOf(RD), r1 = r0 < 0 ? -1 : nsrcCK.indexOf("\n  }, [isScheduler, view, userProfile]);", r0);
+  const rdF = (() => { try { return r1 > r0 && r0 > 0 ? vm.runInContext(`(function (env) { const { isScheduler, view, userProfile, setView } = env;\n${nsrcCK.slice(r0 + RD.length, r1)}\n })`, vm.createContext({})) : null; } catch (ex) { return null; } })();
+  if (!dlF || !tabF || !rdF) { check("CK the deep-link effect, the tab list and the redirect are extractable", false, J({ deepLink: !!dlF, tabs: !!tabF, redirect: !!rdF })); return; }
+
+  // CK1 — the link's tab → the view it sets
+  const WANT1 = { mine: "myschedule", myschedule: "myschedule", calendar: "calendar", requests: "requests", stats: "stats", settings: "settings", setup: "setup", totals: "totals",
+    generate: null, MINE: null, "": null, bogus: null, "mine ": null, constructor: null, hasOwnProperty: null };
+  const got1 = {}; for (const t of Object.keys(WANT1)) got1[t] = runDL("?tab=" + encodeURIComponent(t));
+  check("CK1 the REAL deep-link effect: ?tab=mine and ?tab=myschedule open Mine (view \"myschedule\" — it set \"mine\", which nothing renders); calendar / requests / stats / settings / setup / totals open themselves; generate, MINE, an empty, unknown or prototype tab name sets nothing; nothing thrown or logged",
+    Object.keys(WANT1).every((t) => J(got1[t].views) === J(WANT1[t] ? [WANT1[t]] : []) && !got1[t].threw && got1[t].errs.length === 0),
+    J(Object.fromEntries(Object.entries(got1).map(([t, r]) => [t, r.threw || r.views]))));
+
+  // CK2 — every link lands on a rendered view the role's bar shows
+  const ROLES = {
+    scheduler: { userProfile: { role: "scheduler", person_id: "s6" }, isScheduler: true },
+    admin: { userProfile: { role: "admin", person_id: "s1" }, isScheduler: true },
+    member: { userProfile: { role: "member", person_id: "s3" }, isScheduler: false },
+    app: { userProfile: { role: "member", person_id: "a1" }, isScheduler: false },
+    appAssign: { userProfile: { role: "member", person_id: "a2", can_assign_apps: true }, isScheduler: false },
+  };
+  const views = [...new Set(Object.values(got1).flatMap((r) => r.views))];
+  const unrendered = views.filter((v) => !nsrcCK.includes(`{view==="${v}"`));
+  const blank = [];
+  for (const [role, env] of Object.entries(ROLES)) {
+    const bar = tabF(env);
+    for (const t of Object.keys(WANT1)) for (const v of got1[t].views) {
+      const sets = []; rdF(Object.assign({ view: v, setView: (x) => sets.push(x) }, env));
+      const lands = sets.length ? sets[sets.length - 1] : v;
+      if (!bar.includes(lands) || !nsrcCK.includes(`{view==="${lands}"`)) blank.push(`${role} ?tab=${t} → ${v} → ${lands}`);
+    }
+  }
+  check("CK2 every view a link can set has a {view===\"k\"} block, and for every role (scheduler, admin, member, APP, APP-assign member) each link lands on a tab that role's bar shows — Mine for a member / APP / scheduler, the Calendar for an admin (no Mine) and for a restricted tab — never a blank page",
+    views.length >= 7 && unrendered.length === 0 && blank.length === 0 && got1.mine.views[0] === "myschedule", J({ views, unrendered, blank: blank.slice(0, 6) }));
+
+  // CK3 — ?public=1 and the URL cleanup
+  const p1 = runDL("?public=1&tab=requests&week=2026-11-16", true), p2 = runDL("?public=1&tab=calendar", true), p3 = runDL("?public=1&tab=mine", true);
+  const m1 = runDL("?tab=mine&week=2026-11-16&_v=3");
+  check("CK3 ?public=1 (the OR board) takes only ?tab=calendar — requests / mine set nothing; the tab and the week are cleared from the URL either way (other params kept: \"?public=1\", \"?_v=3\"), and the week still moves the calendar (Nov 2026)",
+    J(p1.views) === "[]" && J(p3.views) === "[]" && J(p2.views) === J(["calendar"]) && p1.url === "/?public=1" && p2.url === "/?public=1" && p1.month === 10 && p1.year === 2026
+      && J(m1.views) === J(["myschedule"]) && m1.url === "/?_v=3" && m1.month === 10 && m1.year === 2026,
+    J({ p1, p2, p3, m1 }));
+})().catch(ex => check("CK harness ran without crashing", false, String(ex && ex.stack || ex).split("\n").slice(0, 3).join(" | ")));
+
 // ─── CC. Calendar is the first tab (owner decision 2026-10-20) ───
 // "Calendar should be first open item" — the owner chose Calendar as the
 // first tab, for everyone: the bar reads Calendar, Mine, Requests, Stats,

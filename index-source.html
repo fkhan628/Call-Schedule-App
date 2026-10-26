@@ -4460,9 +4460,15 @@ function CallSchedule() {
       const params = new URLSearchParams(window.location.search);
       const tab = params.get("tab");
       const week = params.get("week"); // YYYY-MM-DD (a Monday)
-      const validTabs = ["calendar", "mine", "requests", "stats", "settings", "setup", "totals"];
-      if (tab && validTabs.includes(tab)) {
-        setView(tab);
+      // A link's tab → the view it opens (2026-10-25). The Mine tab's view is
+      // "myschedule": ?tab=mine set the view to "mine", which nothing renders —
+      // a blank page. Both names open Mine now. A tab the person can't see still
+      // falls back to the Calendar (the restricted-tab redirect above), and
+      // ?public=1 (the OR board) has only the Calendar.
+      const TAB_VIEWS = { calendar: "calendar", mine: "myschedule", myschedule: "myschedule", requests: "requests", stats: "stats", settings: "settings", setup: "setup", totals: "totals" };
+      const toView = tab && Object.prototype.hasOwnProperty.call(TAB_VIEWS, tab) ? TAB_VIEWS[tab] : null;
+      if (toView && (!isPublicMode || toView === "calendar")) {
+        setView(toView);
       }
       if (week && /^\d{4}-\d{2}-\d{2}$/.test(week)) {
         const [y, m] = week.split("-").map(Number);
