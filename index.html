@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.10.25a";
+    var APP_VERSION = "2026.10.25b";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -323,6 +323,7 @@ function CallSchedule() {
     }
   }, [darkMode]);
   const [scheduleHistory, setScheduleHistory] = useState([]);
+  const publishUndoneRef = useRef(0);
   const pushUndo = useCallback(counts => {
     const snap = {
       sched: JSON.parse(JSON.stringify(scheduleRef.current)),
@@ -346,7 +347,10 @@ function CallSchedule() {
       setPriorCounts(step.counts.prior || {});
       setYear1Counts(step.counts.y1 || {});
     }
-    if (step.counts) setJustPublished(null);
+    if (step.counts) {
+      setJustPublished(null);
+      publishUndoneRef.current++;
+    }
     setScheduleHistory(h => h.slice(0, -1));
   };
   const [previewSchedule, setPreviewSchedule] = useState(null);
@@ -815,10 +819,10 @@ function CallSchedule() {
         try {
           profile = await dbAuth.getProfile(user.id);
         } catch (e) {
-          if (!(typeof isNoConnectionError === "function" && isNoConnectionError(e))) throw e;
+          const noSignal = typeof isNoConnectionError === "function" && isNoConnectionError(e);
           auth.bindUser(null);
           setAuthUser(null);
-          setAuthError("No connection — you're still signed in. Check your signal and tap Unlock again.");
+          setAuthError(noSignal ? "No connection — you're still signed in. Check your signal and tap Unlock again." : "Couldn't load your profile — tap Unlock to try again, or use email & password.");
           setAuthBusy(false);
           return;
         }
@@ -2021,7 +2025,23 @@ function CallSchedule() {
     if (!putBack && sessionEpochRef.current === ep) setJustPublished(null);
     return r;
   };
-  const runPublish = weeks => schedSyncRef.current.authoritative(weeks, false, "publish", Object.keys(weeks));
+  const runPublish = weeks => {
+    const ep = sessionEpochRef.current,
+      undone0 = publishUndoneRef.current,
+      ms = Object.keys(weeks).sort();
+    const label = typeof periodLabel === "function" ? periodLabel(ms[0], ms[ms.length - 1]) : `weeks of ${ms[0]} – ${ms[ms.length - 1]}`;
+    const late = r => {
+      if (!r || !r.ok || sessionEpochRef.current !== ep || publishUndoneRef.current !== undone0) return null;
+      setJustPublished({
+        label,
+        ep
+      });
+      return `Publishing the new weeks has finished — every week is saved.${r.notice ? " " + r.notice : ""} Nobody has been notified yet: 📣 Notify everyone is on the Calendar.`;
+    };
+    return schedSyncRef.current.authoritative(weeks, false, "publish", Object.keys(weeks), {
+      late
+    });
+  };
   const publishNotLanded = (pr, what) => {
     if (pr && (pr.skipped === "reset" || pr.skipped === "cancelled")) return;
     const n = (pr && pr.results || []).filter(x => x.outcome !== "saved").length;
@@ -3833,9 +3853,19 @@ function CallSchedule() {
       const params = new URLSearchParams(window.location.search);
       const tab = params.get("tab");
       const week = params.get("week");
-      const validTabs = ["calendar", "mine", "requests", "stats", "settings", "setup", "totals"];
-      if (tab && validTabs.includes(tab)) {
-        setView(tab);
+      const TAB_VIEWS = {
+        calendar: "calendar",
+        mine: "myschedule",
+        myschedule: "myschedule",
+        requests: "requests",
+        stats: "stats",
+        settings: "settings",
+        setup: "setup",
+        totals: "totals"
+      };
+      const toView = tab && Object.prototype.hasOwnProperty.call(TAB_VIEWS, tab) ? TAB_VIEWS[tab] : null;
+      if (toView && (!isPublicMode || toView === "calendar")) {
+        setView(toView);
       }
       if (week && /^\d{4}-\d{2}-\d{2}$/.test(week)) {
         const [y, m] = week.split("-").map(Number);
@@ -16321,7 +16351,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         });
       }
     });
-    const myShiftsView = mineUpcoming(myShifts, myToday);
+    const myShiftsView = mineUpcoming(myShifts, myToday, new Date().toTimeString().slice(0, 5));
     const mineApp = !!aMap[myId];
     const myAppDays = mineApp && typeof appUpcoming === "function" ? appUpcoming(appShifts, myId, myToday) : [];
     const _now = new Date();
