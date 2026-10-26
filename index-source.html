@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.10.20f";
+    var APP_VERSION = "2026.10.25a";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -4977,16 +4977,34 @@ function CallSchedule() {
   // publish ended and the one before it began, and periods follow each other
   // back to back, so the whole run would be every period ever published). The
   // field stays editable, shown before Send. An old cached helpers.js (no
-  // periodLabel): the plain dates.
+  // periodLabel): the plain dates. The rule itself is madePeriodMondays, just
+  // below — Stats' "This Period" reads the same one (owner decision 2026-10-24).
   const computePeriodLabel = () => {
     const label = (a, b) => (typeof periodLabel === "function" ? periodLabel(a, b) : `${a} – ${fmt(addD(parse(b), 6))}`);
-    const gen = mondays.map(m => fmt(m));
-    if (gen.length && gen.every(m => schedule[m])) return label(gen[0], gen[gen.length - 1]);
-    const pub = Object.keys(schedule || {}).filter(k => /^\d{4}-\d{2}-\d{2}$/.test(k) && schedule[k]).sort();
-    if (!pub.length) return "";
+    const made = madePeriodMondays(schedule, mondays);
+    return made.length ? label(made[0], made[made.length - 1]) : "";
+  };
+  // The MADE period's Mondays ("YYYY-MM-DD", sorted): the period whose schedule
+  // is made, whatever the Generate tab is set up for — the Generate period
+  // (gen: its Mondays, as Dates) when every one of its weeks is published;
+  // otherwise the latest published run, at most as many weeks as the Generate
+  // period has; none published → []. Pure. The office e-mail's prefill
+  // (computePeriodLabel) and Stats' "This Period" (owner decision 2026-10-24:
+  // the Counts card and Vacation Days Used) both read it. Known limit, kept on
+  // purpose (the prefill has always had it): the run takes the Generate
+  // period's LENGTH — with the Generate tab on 10 weeks a 14-week period reads
+  // as its last 10 weeks, on 16 it takes in the 2 weeks before it. Declared
+  // here, after computePeriodLabel, so the prefill's slice in sync-guards BD2
+  // runs the real rule too; computePeriodLabel calls it only when the dialog
+  // opens, and the Stats memos are far below (no TDZ).
+  const madePeriodMondays = (sched, gen) => {
+    const genKeys = gen.map(m => fmt(m));
+    if (genKeys.length && genKeys.every(m => sched[m])) return genKeys;
+    const pub = Object.keys(sched || {}).filter(k => /^\d{4}-\d{2}-\d{2}$/.test(k) && sched[k]).sort();
+    if (!pub.length) return [];
     let i = pub.length - 1;
-    while (i > 0 && pub.length - i < (gen.length || pub.length) && fmt(addD(parse(pub[i - 1]), 7)) === pub[i]) i--;
-    return label(pub[i], pub[pub.length - 1]);
+    while (i > 0 && pub.length - i < (genKeys.length || pub.length) && fmt(addD(parse(pub[i - 1]), 7)) === pub[i]) i--;
+    return pub.slice(i);
   };
   const openPublishDialog = () => {
     setPublishLabel(computePeriodLabel());
@@ -7282,6 +7300,23 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     const periodKeys = new Set(mondays.map(m => fmt(m)));
     return tallySchedule(mStr => periodKeys.has(mStr));
   }, [schedule, surgeons, mondays]);
+  // Stats' "This Period" is the MADE period (owner decision 2026-10-24): the
+  // latest published period, whatever the Generate tab says (madePeriodMondays —
+  // the office prefill's rule). Everyone loads the Generate settings from the
+  // blob, so once the Generate tab was set up for the next period every user's
+  // Counts card showed that unmade period ("Generate a schedule first."). The
+  // Counts card's period view reads statsMade / madePeriodText; Vacation Days
+  // Used reads vacDaysPeriod (below), windowed on madeMondays too. `stats` stays
+  // the Generate period on purpose: buildCum and exportYearlySummary add it to
+  // priorCounts / year1Counts.
+  const madeMondays = useMemo(() => madePeriodMondays(schedule, mondays), [schedule, mondays]);
+  // Said as periodText says the Generate period (helpers.js periodLabel, guarded: an old cached helpers.js gives the
+  // plain dates); nothing published → "" (the header then says just "This Period")
+  const madePeriodText = useMemo(() => (madeMondays.length === 0 ? "" : typeof periodLabel === "function" ? periodLabel(madeMondays[0], madeMondays[madeMondays.length - 1]) : `${madeMondays[0]} – ${fmt(addD(parse(madeMondays[madeMondays.length - 1]), 6))}`), [madeMondays]);
+  const statsMade = useMemo(() => {
+    const madeKeys = new Set(madeMondays);
+    return tallySchedule(mStr => madeKeys.has(mStr));
+  }, [schedule, surgeons, madeMondays]);
   // Year view (FAK-resolved 2026-07-18): ALL scheduled weeks whose Monday
   // falls in the CURRENT CALENDAR YEAR — including future weeks through the
   // end of the last scheduled period ("count the full period as scheduled",
@@ -7328,11 +7363,13 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     return d;
   }, [vacations, surgeons, apps]);
 
-  // Vacation days per person, COUNTED ONLY WITHIN THE CURRENT SCHEDULE PERIOD.
-  // Each range is clamped to [period start … period end]; days outside the
-  // 14-week window don't count. Returns { id: { days, ranges:[[s,e],…] } } where
-  // `ranges` are the clamped, in-period spans (for display). If there's no
-  // generated period yet, falls back to all-time counts so the card isn't blank.
+  // Vacation days per person, COUNTED ONLY WITHIN THE MADE PERIOD (owner
+  // decision 2026-10-24: madeMondays — its first Monday → its last Sunday; it
+  // was the Generate period). Each range is clamped to [period start … period
+  // end]; days outside the window don't count. Returns { id: { days,
+  // ranges:[[s,e],…] } } where `ranges` are the clamped, in-period spans (for
+  // display). If nothing is published yet, falls back to all-time counts so the
+  // card isn't blank.
   // Shared window-clamped vacation-day counter: clamp each range to
   // [winStart … winEnd] (null bound = unclamped) and count inclusive days.
   // Used by BOTH the per-period and year-to-date tables so the day-counting
@@ -7356,10 +7393,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     return out;
   };
   const vacDaysPeriod = useMemo(() => {
-    const pStart = mondays.length > 0 ? fmt(mondays[0]) : null;
-    const pEnd = endDate ? fmt(endDate) : null;
+    const pStart = madeMondays.length > 0 ? madeMondays[0] : null;
+    const pEnd = madeMondays.length > 0 ? fmt(addD(parse(madeMondays[madeMondays.length - 1]), 6)) : null;
     return { out: countVacDaysInWindow(pStart, pEnd), pStart, pEnd, hasPeriod: !!(pStart && pEnd) };
-  }, [vacations, surgeons, apps, mondays, endDate]);
+  }, [vacations, surgeons, apps, madeMondays]);
   // Day-level "this person actually WORKED this calendar day" set — used ONLY
   // by the year vacation table to exclude worked-vacation days. Mapping:
   // Service Week covers Mon–Sat (a per-day dayCallOverride moves that day to
@@ -11410,10 +11447,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               {showBackupStats ? "Hide 2nd Call" : "Show 2nd Call"}
             </button>
           </div>
-          {/* Surgeon stats — This Period or Year to Date (statsScope) */}
+          {/* Surgeon stats — This Period (the made period: statsMade, owner decision 2026-10-24) or Year to Date (statsScope) */}
           <div style={css.card}>
-            <div style={css.cardT}>{statsScope==="ytd" ? <>Current Period — {ytdRange.start} → {ytdRange.end}</> : <>This Period — {periodText}</>}</div>
-            {!Object.values(statsScope==="ytd"?statsYTD:stats).some(s=>s.dc>0||s.nights>0) ? (
+            <div style={css.cardT}>{statsScope==="ytd" ? <>Current Period — {ytdRange.start} → {ytdRange.end}</> : <>This Period{madePeriodText ? <> — {madePeriodText}</> : null}</>}</div>
+            {!Object.values(statsScope==="ytd"?statsYTD:statsMade).some(s=>s.dc>0||s.nights>0) ? (
               <p style={{color:"#7a8a98",fontSize:13}}>Generate a schedule first.</p>
             ) : (
               <div style={{overflowX:"auto"}}>
@@ -11434,7 +11471,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   </thead>
                   <tbody>
                     {surgeons.filter(s => isScheduler || !mySurgeon || mySurgeon === "admin" || s.id === mySurgeon).map(s=>{
-                      const st=(statsScope==="ytd"?statsYTD:stats)[s.id]||{};
+                      const st=(statsScope==="ytd"?statsYTD:statsMade)[s.id]||{};
                       const total = calcRawCount(st);
                       return (
                         <tr key={s.id} style={{borderBottom:"1px solid #e8ecf0"}}>
@@ -11767,7 +11804,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           )}
 
           {statsTab==="fairness" && (<>
-          {/* Vacation Days — scoped to the current 14-week schedule period */}
+          {/* Vacation Days — scoped to the made period (vacDaysPeriod: madeMondays, owner decision 2026-10-24) or the year */}
           <div style={css.card}>
             <div style={css.cardT}>
               Vacation Days Used
