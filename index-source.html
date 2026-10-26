@@ -6613,10 +6613,18 @@ function CallSchedule() {
     const mon = parse(mondayStr);
     const ids = surgeons.map(s => s.id).filter(id => id !== currentSurgeonId);
 
-    // Current shift counts from schedule
+    // Shift counts THIS PERIOD — the made period, the one Stats → Counts → This Period shows (madePeriodMondays,
+    // owner decision 2026-10-24), 1st + 2nd call together as before. This used to tally every stored week (2026-10-26
+    // fix): since the historical import that is years, not a period — and "overall" below added it to priorCounts,
+    // which already holds them all. periodSaid: its dates, taken now with the counts (the options are a snapshot;
+    // the made period can move while they're open), for the line under the options.
+    const periodMs = madePeriodMondays(schedule, mondays);
+    const periodKeys = new Set(periodMs);
+    const periodSaid = periodMs.length === 0 ? "" : typeof periodLabel === "function" ? periodLabel(periodMs[0], periodMs[periodMs.length - 1]) : `${periodMs[0]} – ${fmt(addD(parse(periodMs[periodMs.length - 1]), 6))}`;
     const sCounts = {};
     surgeons.forEach(s => { sCounts[s.id] = { dc: 0, nights: 0, wknd: 0 }; });
-    Object.values(schedule).forEach(wk => {
+    Object.entries(schedule).forEach(([m, wk]) => {
+      if (!wk || !periodKeys.has(m)) return;
       if (wk.dayCall && sCounts[wk.dayCall]) sCounts[wk.dayCall].dc++;
       Object.entries(wk.nights || {}).forEach(([sk, sid]) => {
         if (!sid || !sCounts[sid]) return;
@@ -6627,6 +6635,7 @@ function CallSchedule() {
 
     // Determine shift type for counting
     const shiftType = shift === "dayCall" ? "dc" : shift === "wknd" ? "wknd" : "nights";
+    const unit = (n) => shiftType === "dc" ? (n === 1 ? "service week" : "service weeks") : shiftType === "wknd" ? (n === 1 ? "weekend" : "weekends") : (n === 1 ? "night" : "nights");
 
     // Check each candidate
     const candidates = [];
@@ -6680,16 +6689,18 @@ function CallSchedule() {
       const candCount = sCounts[candId]?.[shiftType] || 0;
       const countDiff = currentCount - candCount; // positive = current has more → good swap
 
-      // Include prior counts for total fairness
-      const priorCurr = priorCounts[currentSurgeonId] || {};
-      const priorCand = priorCounts[candId] || {};
-      const totalCurrType = (priorCurr[shiftType === "dc" ? "dc" : shiftType === "wknd" ? "wknd" : "nights"] || 0) + (sCounts[currentSurgeonId]?.[shiftType] || 0);
-      const totalCandType = (priorCand[shiftType === "dc" ? "dc" : shiftType === "wknd" ? "wknd" : "nights"] || 0) + (sCounts[candId]?.[shiftType] || 0);
+      // Overall = the Multi-Year counts alone (priorCounts, Stats' Running Totals), 1st + 2nd call like "this period".
+      // rollForwardCounts adds every published week to them at its publish (a backup week into dcB / nightsB /
+      // wkndB), so no tally of the schedule goes on top (2026-10-26: the whole schedule's tally on top counted each
+      // published week twice — the Running Totals bug, #101).
+      const overallOf = (id) => { const p = priorCounts[id] || {}; return (p[shiftType] || 0) + (p[shiftType + "B"] || 0); };
+      const totalCurrType = overallOf(currentSurgeonId);
+      const totalCandType = overallOf(candId);
       const totalDiff = totalCurrType - totalCandType;
 
-      if (countDiff > 0) reasons.push(`${candName} has ${countDiff} fewer ${shiftType === "dc" ? "service weeks" : shiftType === "wknd" ? "weekends" : "nights"} this period`);
-      else if (countDiff === 0) reasons.push(`Equal ${shiftType === "dc" ? "service weeks" : shiftType === "wknd" ? "weekends" : "nights"} this period`);
-      else reasons.push(`${candName} has ${Math.abs(countDiff)} more ${shiftType === "dc" ? "service weeks" : shiftType === "wknd" ? "weekends" : "nights"} — less ideal`);
+      if (countDiff > 0) reasons.push(`${candName} has ${countDiff} fewer ${unit(countDiff)} this period`);
+      else if (countDiff === 0) reasons.push(`Equal ${unit(2)} this period`);
+      else reasons.push(`${candName} has ${Math.abs(countDiff)} more ${unit(Math.abs(countDiff))} this period — less ideal`);
 
       if (totalDiff > 1) reasons.push(`${totalDiff} fewer overall (good for balance)`);
 
@@ -6745,9 +6756,9 @@ function CallSchedule() {
 
     // Sort by score descending (best first)
     candidates.sort((a, b) => b.score - a.score);
-    setSwapTarget({ mondayStr, shift, surgeonId: currentSurgeonId, surgeonName: currentName });
+    setSwapTarget({ mondayStr, shift, surgeonId: currentSurgeonId, surgeonName: currentName, periodSaid });
     setSwapSuggestions(candidates);
-  }, [schedule, surgeons, sMap, vacations, priorCounts, silvisActive, silvisFakId, silvisDays]);
+  }, [schedule, mondays, surgeons, sMap, vacations, priorCounts, silvisActive, silvisFakId, silvisDays]);
 
   // ─── Execute a two-way swap ───
   const executeTwoWaySwap = useCallback((targetMon, targetShift, targetOldId, candId, returnMon, returnShift) => {
@@ -11107,6 +11118,15 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   <div style={{fontSize:12,fontWeight:700,color:"#6030a0",marginBottom:8}}>
                     Swap options for <Badge id={swapTarget.surgeonId}/> — {slotLabel(swapTarget.mondayStr, swapTarget.shift)}
                   </div>
+                  {/* What the reasons count (2026-10-26): "this period" is Stats' This Period (the made period) as it was
+                      when the options were made (swapTarget.periodSaid), which need not hold the week being swapped;
+                      "overall" is the multi-year Running Totals (priorCounts); both 1st + 2nd call. One colour in both
+                      modes, as the reasons': the swap tool's box is the same light gradient in dark mode. */}
+                  {swapSuggestions.length > 0 && swapTarget.periodSaid && (
+                    <div data-swap-basis="1" style={{fontSize:11,color:"#5a6a78",margin:"-4px 0 8px",lineHeight:1.5}}>
+                      “This period” = {swapTarget.periodSaid} (This Period on Stats) · “overall” = the multi-year Running Totals · both count 1st + 2nd call
+                    </div>
+                  )}
                   {swapSuggestions.length === 0 ? (
                     <p style={{color:"#8a94a0",fontSize:13,padding:10}}>No eligible swap candidates found. All surgeons are either on vacation or have conflicts.</p>
                   ) : swapSuggestions.map((s,i) => (
