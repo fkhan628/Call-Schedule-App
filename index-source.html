@@ -465,10 +465,11 @@ function CallSchedule() {
 
   // ─── Undo History ───
   const [scheduleHistory, setScheduleHistory] = useState([]);
-  // How many publish steps ↩ Undo has taken back (2026-10-25): a publish that
-  // lands after its deadline raises its 📣 banner only if none was since —
-  // Undo is last-in-first-out, so one after the publish took it back
-  // (runPublish's late()).
+  // How many publish steps ↩ Undo has taken back (2026-10-25): a publish
+  // raises its 📣 banner (or sends Generate & Publish's notice) only if none
+  // was since its tap — Undo is last-in-first-out, so one after the publish
+  // took it back (runPublish's late() and its answer's undone; 2026-10-26,
+  // commitGenerated re-checks it when it reads the answer).
   const publishUndoneRef = useRef(0);
   // Each step is { sched, epoch, counts }: the schedule MIRROR when it was
   // taken and the sync engine's epoch then (sync v2, R15) — Undo is
@@ -1104,14 +1105,18 @@ function CallSchedule() {
             let profile;
             try { profile = await dbAuth.getProfile(user.id); }
             catch (e) {
-              // The profile read never reached the server — the signal dropped
-              // after getUser answered (review fix 2026-10-20): the app opened
-              // signed in with no profile. Undo the half-done auto-login
-              // (nothing bound or signed in), keep the stored session, and say
-              // what an open with no signal says: the note, with Retry. Any
-              // other error goes to the catch below, as before (an old cached
-              // helpers.js: as before).
-              if (!(typeof isNoConnectionError === "function" && isNoConnectionError(e))) throw e;
+              // The profile read failed after getUser answered — the signal
+              // dropped (review fix 2026-10-20), or (2026-10-26) anything else:
+              // a body that dropped mid-read (Chrome's "network error", which
+              // isNoConnectionError doesn't name), a reply that isn't the
+              // profile, a code error. Either way the app opened
+              // signed in with no profile (any other error went to the catch
+              // below, which left this tab bound with no profile). Undo the
+              // half-done auto-login (nothing bound or signed in), keep the
+              // stored session, and say what an open with no signal says: the
+              // note, with Retry. Anything but no signal is logged, as the
+              // catch below logged it (an old cached helpers.js: logged too).
+              if (!(typeof isNoConnectionError === "function" && isNoConnectionError(e))) console.error("Auth check error:", e);
               auth.bindUser(null); setAuthUser(null);
               setAuthNetErr(true);
               setAuthLoading(false);
@@ -1158,8 +1163,9 @@ function CallSchedule() {
           // bound or signed in on this screen), so Unlock and "Use email &
           // password instead" work as before the tap; the stored session is
           // untouched. No signal says what a no-signal unlock says; anything
-          // else — a reply that isn't JSON (a Wi-Fi sign-in page), a code
-          // error, any error on an old cached helpers.js — that the profile
+          // else — a body that dropped mid-read (Chrome's "network error"), a
+          // reply that isn't JSON, a code error, any error on an old cached
+          // helpers.js — that the profile
           // didn't load.
           const noSignal = typeof isNoConnectionError === "function" && isNoConnectionError(e);
           auth.bindUser(null); setAuthUser(null);
@@ -1327,15 +1333,16 @@ function CallSchedule() {
         let profile;
         try { profile = await dbAuth.getProfile(user.id); }
         catch (e) {
-          // The profile read never reached the server — the signal dropped
-          // after the sign-in answered (review fix 2026-10-20): the app opened
-          // signed in with no profile. Undo the half-done sign-in (nothing
-          // bound or signed in; the session it stored is kept, so a reopen
-          // with signal signs straight in); the catch below then says "No
-          // connection …" on the card, the fields still filled. Any other
-          // error goes on as before (an old cached helpers.js: as before).
-          if (typeof isNoConnectionError === "function" && isNoConnectionError(e)) { auth.bindUser(null); setAuthUser(null); }
-          throw e;
+          // The profile read failed after the sign-in answered — the signal
+          // dropped (review fix 2026-10-20), or (2026-10-26) anything else: a
+          // body that dropped mid-read (Chrome's "network error", which
+          // isNoConnectionError doesn't name), a reply that isn't the
+          // profile, a code error. Each left the app signed in with no
+          // profile. Undo the half-done sign-in (nothing bound or signed in;
+          // the session it stored is kept, so a reopen with signal signs
+          // straight in); the catch below then says its words on the card —
+          // "No connection …" or its plain line — the fields still filled.
+          auth.bindUser(null); setAuthUser(null); throw e;
         }
         if (profile) {
           setUserProfile(profile);
@@ -2487,6 +2494,9 @@ function CallSchedule() {
   // (E8) raises it: every week landed, in the session it was published in,
   // and not taken back by ↩ Undo meanwhile (Undo works while the job runs) →
   // the "✓ Published" banner for those weeks, as one that lands in time.
+  // A job that answers in time says the same in its answer (2026-10-26):
+  // undone: true when ↩ Undo took a publish back while it ran, so its caller
+  // raises no 📣 and sends nothing for a schedule that was taken back.
   const runPublish = (weeks) => {
     const ep = sessionEpochRef.current, undone0 = publishUndoneRef.current, ms = Object.keys(weeks).sort();
     const label = typeof periodLabel === "function" ? periodLabel(ms[0], ms[ms.length - 1]) : `weeks of ${ms[0]} – ${ms[ms.length - 1]}`;
@@ -2495,13 +2505,16 @@ function CallSchedule() {
       setJustPublished({ label, ep });
       return `Publishing the new weeks has finished — every week is saved.${r.notice ? " " + r.notice : ""} Nobody has been notified yet: 📣 Notify everyone is on the Calendar.`;
     };
-    return schedSyncRef.current.authoritative(weeks, false, "publish", Object.keys(weeks), { late });
+    return schedSyncRef.current.authoritative(weeks, false, "publish", Object.keys(weeks), { late })
+      .then((r) => (r && publishUndoneRef.current !== undone0 ? Object.assign({}, r, { undone: true }) : r));
   };
   // What a publish that didn't fully land tells the scheduler (nobody is
   // notified) — ONE message, with the engine's own detail (pr.notice: which
   // weeks, and why) in it; the engine doesn't toast it beside this.
   const publishNotLanded = (pr, what) => {
     if (pr && (pr.skipped === "reset" || pr.skipped === "cancelled")) return; // fenced by a sign-out (another session now): nothing is said on its screen
+    // ↩ Undone while its job ran (2026-10-26): the weeks are off the screen and the retry sends the undone ones — not "saved yet"
+    if (pr && pr.undone && !pr.running) { showToast(`${what}, then undone — nothing to announce.`, "info"); return; }
     const n = ((pr && pr.results) || []).filter(x => x.outcome !== "saved").length;
     showToast(pr && pr.error ? `${what}: ${pr.error}${pr.running ? " Nobody was notified." : ""}`
       : pr && pr.notice ? `${what}: ${pr.notice} Nobody was notified.`
@@ -5654,7 +5667,8 @@ function CallSchedule() {
           return "moved";
         }
         const out = await genCommitRef.current(result, via); // with the state as it is NOW (after the snapshot's await)
-        return out && out.ok ? "published" : "not-published";
+        // "undone" (2026-10-26): it landed, but ↩ Undo took it back while it ran — no notice, e-mail or 📣 for it
+        return out && out.ok ? (out.undone ? "undone" : "published") : "not-published";
        } finally { publishingRef.current = false; setPublishing(false); }
     })();
   };
@@ -5682,6 +5696,7 @@ function CallSchedule() {
           label: `${pubMs.length} weeks, ${pubPeriod}, ${via || "Generate & Publish"}`,
           meta: { startMonth, startYear, numWeeks, origin: "generated" },
         });
+        const undone0 = publishUndoneRef.current; // (2026-10-26: the answer's undone is fixed when the job settles — the blob save below can outlast the job)
         const job = runPublish(result); // the period's weeks → the table, as ONE engine job (A14) — registered now, before any await
         setPreviewSchedule(null); setShowPreview(false);
         setSaveStatus(""); // the snapshot's status ends: while the job runs, the engine's "Publishing… keep the app open" is the header's ONE line (A16)
@@ -5695,10 +5710,11 @@ function CallSchedule() {
           const { error: regenErr } = await supabase.from("call_schedule_data").upsert({ id: "main", data: blobData, updated_at: ts });
           if (regenErr) throw new Error(`regenerate blob save failed: ${String(regenErr).slice(0, 200)}`); // catch toasts; checked autosave retries
         } catch(e) { console.error("Immediate save failed:", e); if (sessionEpochRef.current === ep) showToast("Couldn't save the regenerated schedule — check your connection.", "error"); }
-        // "Regenerated!" only when every week of the period landed (A14)
-        const pr = await job;
+        // "Regenerated!" only when every week of the period landed (A14) — and ↩ Undo of it during that save counts too
+        const prJob = await job;
+        const pr = prJob && !prJob.undone && publishUndoneRef.current !== undone0 ? Object.assign({}, prJob, { undone: true }) : prJob;
         if (sessionEpochRef.current !== ep) return { ok: false }; // another session now: nothing said on its screen — and not "published", so no notice or e-mail
-        if (pr && pr.ok) { setSaveStatus("Regenerated!"); setTimeout(() => setSaveStatus(""), 2000); if (pr.notice) showToast(pr.notice, "error"); return { ok: true }; } // (a notice here: another week someone else changed)
+        if (pr && pr.ok) { setSaveStatus(pr.undone ? "Regenerated, then undone" : "Regenerated!"); setTimeout(() => setSaveStatus(""), 2000); if (pr.notice) showToast(pr.notice, "error"); return pr.undone ? { ok: true, undone: true } : { ok: true }; } // (a notice here: another week someone else changed)
         setSaveStatus(""); publishNotLanded(pr, "Regenerated on this screen");
         return { ok: false };
   };
@@ -6096,12 +6112,15 @@ function CallSchedule() {
         const pr = await job;
         if (sessionEpochRef.current !== ep) return; // another session now: nothing said on its screen
         if (pr && pr.ok) {
-          setSaveStatus("Published — totals updated"); setTimeout(() => setSaveStatus(""), 3000); if (pr.notice) showToast(pr.notice, "error"); // (a notice here: another week someone else changed)
+          setSaveStatus(pr.undone ? "Published, then undone — nothing to announce" : "Published — totals updated"); setTimeout(() => setSaveStatus(""), 3000); if (pr.notice) showToast(pr.notice, "error"); // (a notice here: another week someone else changed)
           // Nobody is told by itself (owner decision 2026-10-20): the Calendar's banner asks the scheduler — 📣 Notify everyone / Not now.
-          setJustPublished({ label: pubPeriod, ep });
-          // ✓ Accept & Publish sits far down the Generate tab, and the Calendar opens at that scroll (rendered check: the
-          // banner was ~500 px above a 375 px phone's screen) — so it is brought into view, as the Today button does.
-          setTimeout(() => { const el = document.querySelector('[data-just-published="1"]'); if (el && el.scrollIntoView) el.scrollIntoView({ behavior: "smooth", block: "nearest" }); }, 60);
+          // Not for a publish ↩ Undone while its job ran (pr.undone, 2026-10-26): its 📣 would announce a schedule taken back.
+          if (!pr.undone) {
+            setJustPublished({ label: pubPeriod, ep });
+            // ✓ Accept & Publish sits far down the Generate tab, and the Calendar opens at that scroll (rendered check: the
+            // banner was ~500 px above a 375 px phone's screen) — so it is brought into view, as the Today button does.
+            setTimeout(() => { const el = document.querySelector('[data-just-published="1"]'); if (el && el.scrollIntoView) el.scrollIntoView({ behavior: "smooth", block: "nearest" }); }, 60);
+          }
         }
         else { setSaveStatus(""); publishNotLanded(pr, "Published on this screen"); }
       } finally { publishingRef.current = false; setPublishing(false); }
@@ -11922,9 +11941,14 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                 const tSp = sp(totalArr);
                 const tOk = tSp <= 7;
                 return <>
-                  <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10,padding:"8px 12px",background:tOk?"#e8f8e8":"#fef8e8",border:`1px solid ${tOk?"#b0d8b0":"#302810"}`,borderRadius:7}}>
+                  {/* Both modes (2026-10-26): the spread line's colours were dark mode's (#60e0a0 / #e0a060, a #302810
+                      border) on a light fill — 1.5:1 and 2.1:1 in light mode, and the pale fill stayed in dark mode
+                      (the dark sheet's hex rules never match React's rgb()). Light: dark text on the light fill; dark: the
+                      same light text on a dark fill. The lines below: their #50b070 / #b09040 read ~3:1 on the white
+                      card; darker in light mode, as they were in dark. */}
+                  <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10,padding:"8px 12px",background:dk?(tOk?"#1a2a1a":"#2a2820"):(tOk?"#e8f8e8":"#fef8e8"),border:`1px solid ${dk?(tOk?"#2a4a2a":"#4a4030"):(tOk?"#b0d8b0":"#e0c080")}`,borderRadius:7}}>
                     <span style={{fontSize:16}}>{tOk?"✅":"⚠️"}</span>
-                    <span style={{fontSize:13,fontWeight:700,color:tOk?"#60e0a0":"#e0a060"}}>
+                    <span style={{fontSize:13,fontWeight:700,color:dk?(tOk?"#60e0a0":"#e0a060"):(tOk?"#1a6030":"#8a5a10")}}>
                       Total Call Days (1yr): spread {tSp} (min {Math.min(...totalArr)}, max {Math.max(...totalArr)}) — {tOk?"Fair":"Review recommended"}
                     </span>
                   </div>
@@ -11940,7 +11964,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                     return (
                       <div key={label} style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}>
                         <span style={{fontSize:15}}>{ok?"✅":"⚠️"}</span>
-                        <span style={{fontSize:12,color:ok?"#50b070":"#b09040"}}>
+                        <span style={{fontSize:12,color:dk?(ok?"#50b070":"#b09040"):(ok?"#2a7a40":"#8a6a10")}}>
                           {label}: spread {s} (min {Math.min(...arr)}, max {Math.max(...arr)}) — {ok?"Fair":"Review"}
                         </span>
                       </div>
