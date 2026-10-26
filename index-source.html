@@ -7340,23 +7340,16 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     });
     return s;
   };
-  const stats = useMemo(() => {
-    // Only count weeks within the currently-selected Schedule Period.
-    // Without this filter, stats would include all weeks ever stored in
-    // `schedule`, causing the "This Period" totals to not match the header
-    // label when the period changes.
-    const periodKeys = new Set(mondays.map(m => fmt(m)));
-    return tallySchedule(mStr => periodKeys.has(mStr));
-  }, [schedule, surgeons, mondays]);
   // Stats' "This Period" is the MADE period (owner decision 2026-10-24): the
   // latest published period, whatever the Generate tab says (madePeriodMondays —
   // the office prefill's rule). Everyone loads the Generate settings from the
   // blob, so once the Generate tab was set up for the next period every user's
   // Counts card showed that unmade period ("Generate a schedule first."). The
   // Counts card's period view reads statsMade / madePeriodText; Vacation Days
-  // Used reads vacDaysPeriod (below), windowed on madeMondays too. `stats` stays
-  // the Generate period on purpose: buildCum and exportYearlySummary add it to
-  // priorCounts / year1Counts.
+  // Used reads vacDaysPeriod (below), windowed on madeMondays too. The Generate
+  // period's own tally (`stats`) is gone (2026-10-26): its last readers, the
+  // running totals and the Yearly Summary CSV, added it to counts that already
+  // held it (see buildCum).
   const madeMondays = useMemo(() => madePeriodMondays(schedule, mondays), [schedule, mondays]);
   // Said as periodText says the Generate period (helpers.js periodLabel, guarded: an old cached helpers.js gives the
   // plain dates); nothing published → "" (the header then says just "This Period")
@@ -7369,7 +7362,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
   // falls in the CURRENT CALENDAR YEAR — including future weeks through the
   // end of the last scheduled period ("count the full period as scheduled",
   // overriding the earlier through-today default). Same counting rules as
-  // `stats` by construction (shared tallySchedule).
+  // statsMade by construction (shared tallySchedule).
   const statsYTD = useMemo(() => {
     const yr = new Date().getFullYear();
     return tallySchedule(mStr => mStr >= `${yr}-01-01` && mStr <= `${yr}-12-31`);
@@ -7548,29 +7541,27 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     return ids;
   }, [vacRequests, vacations, surgeons, sMap]);
 
-  // Cumulative stats: 1-year, 2-year, multi-year (each = prior tier + current schedule)
+  // Running totals (Stats → Fairness Check, Running Totals): the stored counts ALONE (2026-10-26) — 1-Year =
+  // year1Counts, Multi-Year = priorCounts. rollForwardCounts adds every published week to both at its publish, so
+  // adding the Generate period's tally on top (as this did) counted that period twice once it was published, and
+  // the cards hid while it wasn't. A week now counts once, from its publish — the totals the generator balances on.
   const buildCum = (prior) => {
     const c = {};
     const estTotal = (s) => (s.dc||0)*6 + (s.nights||0) + (s.wknd||0)*1 + (s.svcAdj6||0);
     surgeons.forEach(s => {
       const p = prior[s.id] || {};
-      const cur = stats[s.id] || {};
-      const pTotal = p.totalDays !== undefined ? p.totalDays : estTotal(p);
-      const cTotal = cur.totalDays !== undefined ? cur.totalDays : estTotal(cur);
-      const pTotalB = p.totalDaysB !== undefined ? p.totalDaysB : ((p.dcB||0)*6 + (p.nightsB||0) + (p.wkndB||0)*1);
-      const cTotalB = cur.totalDaysB !== undefined ? cur.totalDaysB : ((cur.dcB||0)*6 + (cur.nightsB||0) + (cur.wkndB||0)*1);
       c[s.id] = {
-        dc: (p.dc||0)+(cur.dc||0), nights: (p.nights||0)+(cur.nights||0), wknd: (p.wknd||0)+(cur.wknd||0), off: (p.off||0)+(cur.off||0),
-        dcB: (p.dcB||0)+(cur.dcB||0), nightsB: (p.nightsB||0)+(cur.nightsB||0), wkndB: (p.wkndB||0)+(cur.wkndB||0), offB: (p.offB||0)+(cur.offB||0),
-        svcAdj6: (p.svcAdj6||0)+(cur.svcAdj6||0), svcAdj7: (p.svcAdj7||0)+(cur.svcAdj7||0),
-        totalDays: pTotal + cTotal,
-        totalDaysB: pTotalB + cTotalB,
+        dc: p.dc||0, nights: p.nights||0, wknd: p.wknd||0, off: p.off||0,
+        dcB: p.dcB||0, nightsB: p.nightsB||0, wkndB: p.wkndB||0, offB: p.offB||0,
+        svcAdj6: p.svcAdj6||0, svcAdj7: p.svcAdj7||0,
+        totalDays: p.totalDays !== undefined ? p.totalDays : estTotal(p),
+        totalDaysB: p.totalDaysB !== undefined ? p.totalDaysB : ((p.dcB||0)*6 + (p.nightsB||0) + (p.wkndB||0)*1),
       };
     });
     return c;
   };
-  const cum1yr = useMemo(() => buildCum(year1Counts), [stats, year1Counts, surgeons]);
-  const cumStats = useMemo(() => buildCum(priorCounts), [stats, priorCounts, surgeons]);
+  const cum1yr = useMemo(() => buildCum(year1Counts), [year1Counts, surgeons]);
+  const cumStats = useMemo(() => buildCum(priorCounts), [priorCounts, surgeons]);
 
   // Total call days — uses stored totalDays from spreadsheet if available, otherwise estimates
   // Formula: Service Week=6, Week Night=1, Weekend=2
@@ -8003,19 +7994,16 @@ ${"</"}script>${"</"}body>${"</"}html>`;
   };
 
   // ─── Yearly Summary Export ───
+  // The Multi-Year counts as stored (2026-10-26): every published week is already in priorCounts (rollForwardCounts,
+  // at its publish), so the Generate period's tally is no longer added on top — that counted a published period twice.
   const exportYearlySummary = useCallback(() => {
     const header = ["Surgeon","Svc Wk","Nights","Wknds","B-SW","B-Nights","B-Wknds","Total"];
     const rows = surgeons.map(s => {
-      const cur = stats[s.id] || {};
       const pri = priorCounts[s.id] || {};
-      const cumDc = (pri.dc||0) + (cur.dc||0);
-      const cumN = (pri.nights||0) + (cur.nights||0);
-      const cumW = (pri.wknd||0) + (cur.wknd||0);
-      const cumDcB = (pri.dcB||0) + (cur.dcB||0);
-      const cumNB = (pri.nightsB||0) + (cur.nightsB||0);
-      const cumWB = (pri.wkndB||0) + (cur.wkndB||0);
-      const total1 = calcShifts({dc:cumDc,nights:cumN,wknd:cumW,totalDays:(pri.totalDays||0)+(cur.totalDays||0)});
-      const total2 = (pri.totalDaysB||0) + (cur.totalDaysB||0);
+      const cumDc = pri.dc||0, cumN = pri.nights||0, cumW = pri.wknd||0;
+      const cumDcB = pri.dcB||0, cumNB = pri.nightsB||0, cumWB = pri.wkndB||0;
+      const total1 = calcShifts({dc:cumDc,nights:cumN,wknd:cumW,totalDays:pri.totalDays||0});
+      const total2 = pri.totalDaysB||0;
       return [s.name, cumDc, cumN, cumW, cumDcB, cumNB, cumWB, total1+total2].join(",");
     });
     const csv = [header.join(","), ...rows].join("\n");
@@ -8024,7 +8012,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     const a = document.createElement("a");
     a.href = url; a.download = `call-schedule-summary-${startYear}.csv`; a.click();
     URL.revokeObjectURL(url);
-  }, [surgeons, stats, priorCounts, startYear, calcShifts]);
+  }, [surgeons, priorCounts, startYear, calcShifts]);
 
   // ─── Dark Mode Styles ───
   const dk = darkMode;
@@ -11927,12 +11915,14 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             )}
           </div>
 
-          {/* Fairness — based on 1-YEAR totals (scheduler/admin only) */}
-          {(isScheduler || mySurgeon === "admin") && Object.values(stats).some(s=>s.dc>0) && (
+          {/* Fairness — based on 1-YEAR totals (scheduler/admin only); shown whenever there are counts, not only while
+              the Generate period is published (2026-10-26: the totals are the counts alone — see buildCum). Not before
+              the blob has loaded: until then the counts are config.js's fresh-install seeds. */}
+          {loaded && (isScheduler || mySurgeon === "admin") && Object.values(cum1yr).some(s=>s.dc>0) && (
             <div style={css.card}>
-              <div style={css.cardT}>Fairness Check <span style={{fontWeight:400,fontSize:11,color:"#7a8a98"}}>— 1-Year (Prior + This Period)</span></div>
+              <div style={css.cardT}>Fairness Check <span style={{fontWeight:400,fontSize:11,color:"#7a8a98"}}>— 1-Year totals</span></div>
               <p style={{fontSize:12,color:"#7a8a98",margin:"0 0 10px",lineHeight:1.5}}>
-                Evaluated against 1-year running totals. Enter current year prior counts in the Totals tab.
+                Evaluated against the 1-year running totals kept on the Totals tab: each publish adds its weeks in that calendar year, once.
               </p>
               {(()=>{
                 const v=fn=>surgeons.map(s=>fn(cum1yr[s.id]||{}));
@@ -11975,10 +11965,11 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             </div>
           )}
 
-          {/* Running Totals — 1yr, 2yr, multi-year */}
-          {Object.values(stats).some(s=>s.dc>0) && (
+          {/* Running Totals — 1-Year and Multi-Year, the counts as stored (2026-10-26: see buildCum); not before the blob
+              has loaded (the seeds, as above) */}
+          {loaded && Object.values(cumStats).some(s=>s.dc>0) && (
             <div style={css.card}>
-              <div style={css.cardT}>Running Totals <span style={{fontWeight:400,fontSize:11,color:"#7a8a98"}}>— Prior + This Period</span></div>
+              <div style={css.cardT}>Running Totals <span style={{fontWeight:400,fontSize:11,color:"#7a8a98"}}>— counted at each publish</span></div>
 
               {[
                 {label:"1-Year", color:"#1a6fa8", data:cum1yr},
